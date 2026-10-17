@@ -537,6 +537,18 @@ check "그 shift.live 는 살아 있는 교대로 읽힌다 (검사가 공허하
 printf '%s\n%s\n' "$$" "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/shift.live"
 check "지문이 어긋난 shift.live 는 살아 있는 교대가 아니다" \
   "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "dead"
+# LINES 3–4 ARE THE LAUNCHER, and the shift's own answer reads lines 1–2 only:
+# a four-line file answers exactly as the two-line file with the same head, both
+# ways round — a dead launcher does not kill a live shift, and a live launcher
+# does not revive a dead one.
+printf '%s\n%s\n%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" "999999" "Mon Jan  1 00:00:00 2001" \
+  > "$FX_RUN_DIR/shift.live"
+check "실행기 줄이 붙은 shift.live 도 앞 두 줄로 살아 있는 교대다" \
+  "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "live"
+printf '%s\n%s\n%s\n%s\n' "$$" "Mon Jan  1 00:00:00 2001" "$$" "$(cc_proc_fingerprint "$$")" \
+  > "$FX_RUN_DIR/shift.live"
+check "산 실행기 줄이 지문이 어긋난 교대를 살리지 않는다" \
+  "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "dead"
 rm -f "$FX_RUN_DIR/shift.live"
 RD_R="$FX_RUN_DIR"
 
@@ -971,6 +983,21 @@ fx_row '중단 답' "중단 기록=/elsewhere/20261012-0000000a/halt/S1.md" "답
 check "유휴 B — 다른 런의 같은 이름 기록을 가리키는 답은 이 기록의 답이 아니다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
 
+# A SHIFT'S STOP IS A QUESTION TOO. Its record sits one level down, under
+# `halt/shift/`, and a run whose only open question is one of those still waits
+# on a person.
+id_mkrun 20261012-00000010 90000
+mkdir -p "$FX_RUN_DIR/halt/shift"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/shift/S1#1.md"
+check "유휴 G — 교대 정지 기록만 있어도 답이 없으면 유휴가 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_row '중단 답' "중단 기록=/elsewhere/20261012-00000010/halt/S1#1.md" "답=재시도"
+check "유휴 G — halt/ 의 같은 이름을 가리키는 답은 교대 기록의 답이 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/shift/S1#1.md" "답=재시도"
+check "유휴 G′ — 그 교대 기록을 원장의 중단 답 행이 가리키면 유휴다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+
 id_mkrun 20261012-0000000c 90000
 fx_approval A1 대기
 check "유휴 C — 대기 중인 승인이 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
@@ -1219,7 +1246,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-lost-dispatch.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-stage-supervisor.sh test-suite-isolation.sh"
+_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-lost-dispatch.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"

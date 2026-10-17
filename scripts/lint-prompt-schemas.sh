@@ -16,9 +16,10 @@
 #      because each direction is a different silent failure (a required key
 #      with no property definition rejects every output; a property with no
 #      required entry lets the model drop it).
-#   2. `entry-plan.schema.json` carries the design-tier pair: `design_tier`
-#      and `design_tier_rationale` are in both sets, and the `design_tier`
-#      enum is exactly `lead-solo` / `team-2` / `team-4`. The tier is a
+#   2. `entry-plan.schema.json` carries the design-tier keys: `design_tier`,
+#      `design_tier_judged`, `design_heavy_reasons`, `estimated_files` and
+#      `design_tier_rationale` are in both sets, and the `design_tier` and
+#      `design_tier_judged` enums are exactly `solo` / `team-4`. The tier is a
 #      configuration parameter of one stage, not a new entry skill, and the
 #      enum is pinned so that a value the kickoff hands to the person cannot
 #      appear or vanish without this lint noticing.
@@ -31,12 +32,24 @@
 #      and `design_scope_rationale` are in both sets, and the `design_scope`
 #      enum is exactly `single` / `base`. The gate, the driver and both
 #      routers branch on the value, so a third value would reach none of them.
+#   5. `entry-plan.check.jq` reads no key the schema does not define. The
+#      checker is run by the kickoff, `check_manifest` and the C4 test section,
+#      and a key it misspells reads as null — every assertion on it then
+#      passes, silently. So every key the checker names (`$p.<key>`,
+#      `has("<key>")`, `.steps`) must be a schema property, and the keys its
+#      three assertions rest on must each appear in it.
+#   6. `entry-plan.md` judges the tier without a closed list. The sentences of
+#      the old closed rule (the risk-indicator list and the more-than-one-target
+#      rule) and the retired tier names `lead-solo` and `team-2` are absent, and
+#      the graph rule that a `solo` graph carries no audit step is present —
+#      the producer states the shape the checker's (c) asserts.
 #
 # Usage:
 #   bash scripts/lint-prompt-schemas.sh
 #
 # Env override:
-#   SCHEMA_DIR=<dir>   directory holding *.schema.json (fixture runner)
+#   SCHEMA_DIR=<dir>   directory holding *.schema.json, entry-plan.check.jq
+#                      and entry-plan.md (fixture runner)
 #
 # Exit codes:
 #   0 — every schema passes
@@ -116,24 +129,40 @@ done
 ENTRY="$schema_dir/entry-plan.schema.json"
 if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
   rel=${ENTRY#"$repo_root/"}
-  for key in design_tier design_tier_rationale; do
+  tier_ok=1
+  for key in design_tier design_tier_judged design_heavy_reasons estimated_files design_tier_rationale; do
     in_props=$(jq -r --arg k "$key" '(.properties // {}) | has($k)' "$ENTRY")
     in_req=$(jq -r --arg k "$key" '(.required // []) | index($k) != null' "$ENTRY")
     if [[ "$in_props" != "true" ]]; then
       echo "FAIL: $rel — '$key' is missing from .properties" >&2
-      fail=1
+      tier_ok=0
     fi
     if [[ "$in_req" != "true" ]]; then
       echo "FAIL: $rel — '$key' is missing from .required" >&2
-      fail=1
+      tier_ok=0
     fi
   done
-  tier_enum=$(jq -c '.properties.design_tier.enum // []' "$ENTRY")
-  if [[ "$tier_enum" != '["lead-solo","team-2","team-4"]' ]]; then
-    echo "FAIL: $rel — design_tier enum must be exactly [\"lead-solo\",\"team-2\",\"team-4\"], found $tier_enum" >&2
-    fail=1
+  for key in design_tier design_tier_judged; do
+    tier_enum=$(jq -c --arg k "$key" '.properties[$k].enum // []' "$ENTRY")
+    if [[ "$tier_enum" != '["solo","team-4"]' ]]; then
+      echo "FAIL: $rel — $key enum must be exactly [\"solo\",\"team-4\"], found $tier_enum" >&2
+      tier_ok=0
+    fi
+  done
+  reasons_type=$(jq -r '.properties.design_heavy_reasons.type // ""' "$ENTRY")
+  files_type=$(jq -r '.properties.estimated_files.type // ""' "$ENTRY")
+  if [[ "$reasons_type" != "array" ]]; then
+    echo "FAIL: $rel — design_heavy_reasons must be an array of free sentences, found type '$reasons_type'" >&2
+    tier_ok=0
+  fi
+  if [[ "$files_type" != "integer" ]]; then
+    echo "FAIL: $rel — estimated_files must be an integer, found type '$files_type'" >&2
+    tier_ok=0
+  fi
+  if [[ "$tier_ok" == "1" ]]; then
+    echo "OK:   $rel — design-tier keys present on both sides, enums pinned"
   else
-    echo "OK:   $rel — design_tier pair present on both sides, enum pinned"
+    fail=1
   fi
 fi
 
@@ -190,6 +219,70 @@ if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
   fi
   if [[ "$scope_ok" == "1" ]]; then
     echo "OK:   $rel — design_scope pair present on both sides, enum pinned"
+  else
+    fail=1
+  fi
+fi
+
+# ---------- Rule 5: the checker reads only keys the schema defines ------------
+
+CHECK="$schema_dir/entry-plan.check.jq"
+if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
+  rel=${CHECK#"$repo_root/"}
+  if [[ ! -f "$CHECK" ]]; then
+    echo "FAIL: $rel — the entry-plan checker is missing" >&2
+    fail=1
+  else
+    check_ok=1
+    # Every top-level key the checker names. Step-level keys (`.skill`) are
+    # read through `plan_steps` and are not top-level, so they are not here.
+    read_keys=$(
+      {
+        grep -oE '\$p\.[a-z_]+' "$CHECK" | sed -E 's/^\$p\.//'
+        grep -oE 'has\("[a-z_]+"\)' "$CHECK" | sed -E 's/^has\("//; s/"\)$//'
+        grep -oE '\.steps\[' "$CHECK" | sed -E 's/^\.//; s/\[$//'
+      } | sort -u
+    )
+    while IFS= read -r k; do
+      [[ -n "$k" ]] || continue
+      in_props=$(jq -r --arg k "$k" '(.properties // {}) | has($k)' "$ENTRY")
+      if [[ "$in_props" != "true" ]]; then
+        echo "FAIL: $rel — the checker reads '$k', which entry-plan.schema.json does not define (a misspelt key reads as null and every assertion on it passes)" >&2
+        check_ok=0
+      fi
+    done <<< "$read_keys"
+    for k in design_tier_judged design_heavy_reasons design_tier design_required design_scope steps; do
+      if ! grep -qxF "$k" <<<"$read_keys"; then
+        echo "FAIL: $rel — the checker does not read '$k', on which its assertions rest" >&2
+        check_ok=0
+      fi
+    done
+    if [[ "$check_ok" == "1" ]]; then
+      echo "OK:   $rel — every key the checker reads is a schema property"
+    else
+      fail=1
+    fi
+  fi
+fi
+
+# ---------- Rule 6: the entry prompt judges the tier without a closed list ----
+
+PROMPT="$schema_dir/entry-plan.md"
+if [[ -f "$PROMPT" ]]; then
+  rel=${PROMPT#"$repo_root/"}
+  prompt_ok=1
+  for gone in 'risk indicators outrank the size row' 'More than one entry in `targets` is also `team-4`' 'lead-solo' 'team-2'; do
+    if grep -qF -- "$gone" "$PROMPT"; then
+      echo "FAIL: $rel — still carries '$gone' (the tier is judged without a closed list, on solo | team-4)" >&2
+      prompt_ok=0
+    fi
+  done
+  if ! grep -qF -- 'a `solo` graph carries no audit step' "$PROMPT"; then
+    echo "FAIL: $rel — the graph rule that a \`solo\` graph carries no audit step is missing" >&2
+    prompt_ok=0
+  fi
+  if [[ "$prompt_ok" == "1" ]]; then
+    echo "OK:   $rel — no closed tier list, no retired tier, solo graph rule stated"
   else
     fail=1
   fi

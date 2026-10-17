@@ -455,7 +455,22 @@ hook_run_dir_verdict() {
     # 가 한 단계 팔에 먼저 걸려 허용된다.
     halt/*/*)
       deny "$(jstr 'gate: a halt record in the run directory is one level deep only — halt/<stage-id>.md')" ;;
+    # 스테이지는 자기 id 가 적는 정지 기록 이름 하나만 쓴다. 두 독자는 기동기가 넘긴
+    # id(시도 번호 포함)로 기록을 찾으므로, 세그먼트 이름만으로 쓴 기록은 읽히지
+    # 않았다 — 시도 4 의 스테이지가 `halt/S2.md` 를 썼고 두 독자 모두 `정상 완료` 로
+    # 분류해 그 질문이 사람을 기다렸다. 거부 문면이 허용되는 경로 하나를 적으므로
+    # 스테이지는 다음 쓰기에서 그 이름을 쓴다. 점으로 시작하는 이름은 원자 쓰기의
+    # 같은 디렉터리 임시 파일이라 통과한다. 스테이지 id 가 없는 호출자(좌석, 교대)는
+    # 예전처럼 한 단계 아래를 모두 쓴다. 문면은 게이트의 `gate_halt_name_refusal` 과
+    # 바이트가 같고 `scripts/test-gate.sh` 가 그것을 핀한다.
     halt/*)
+      if [ -n "${CC_PIPELINE_STAGE_ID:-}" ]; then
+        case "${1#halt/}" in
+          .*) ;;
+          "${CC_PIPELINE_STAGE_ID}.md") ;;
+          *) deny "$(jstr "gate: the halt record of this stage is halt/${CC_PIPELINE_STAGE_ID}.md and no other name under halt/ — both readers look up that one name, attempt number included, so a record written under another name is never read; write it there")" ;;
+        esac
+      fi
       hook_leaf_is_symlink "$ap" \
         && deny "$(jstr 'gate: even an allowed name in the run directory cannot be judged when its leaf is a symlink — what is allowed is the file sitting in that place, not the name')" ;;
     # 위트니스 스크래치 디렉터리. 팀 멤버가 라운드 산출물을 여기 발행하는데 그

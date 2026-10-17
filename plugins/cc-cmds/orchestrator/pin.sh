@@ -196,11 +196,206 @@ pin__copy_bracket() {
   return 1
 }
 
+pin__fetch_bounded() {
+  # pin__fetch_bounded <top> <branch> — fetch one branch of `origin` into its
+  # remote-tracking ref, killed after 20 seconds. rc 0 only when the fetch itself
+  # succeeded in time.
+  #
+  # A SHELL WATCHDOG, NOT `timeout(1)`: stock macOS does not ship it. The fetch
+  # runs in the background as an `exec`ed subshell, so `$!` is git's own pid; the
+  # watchdog sleeps, then sends TERM to git's direct children (the transport
+  # helper or ssh a hanging remote is stuck in) and to git. A fetch that ends
+  # first has its watchdog taken down with the watchdog's own sleep, so no
+  # sleeper outlives the call.
+  local top="$1" b="$2" fpid wpid rc limit=20
+  ( cd "$top" 2>/dev/null || exit 1
+    GIT_TERMINAL_PROMPT=0 exec git fetch --quiet --no-tags origin "+refs/heads/$b:refs/remotes/origin/$b" ) </dev/null >/dev/null 2>&1 &
+  fpid=$!
+  ( s=""
+    trap 'if [ -n "$s" ]; then kill "$s" 2>/dev/null; fi; exit 0' TERM
+    sleep "$limit" &
+    s=$!
+    wait "$s"
+    pkill -TERM -P "$fpid" 2>/dev/null
+    kill -TERM "$fpid" 2>/dev/null
+    exit 0 ) </dev/null >/dev/null 2>&1 &
+  wpid=$!
+  rc=0
+  wait "$fpid" 2>/dev/null || rc=$?
+  kill -TERM "$wpid" 2>/dev/null
+  wait "$wpid" 2>/dev/null
+  return "$rc"
+}
+
+pin__overlap() {
+  # pin__overlap <top> <branch> — rc 0 when a local change of the working tree
+  # (tracked or untracked, anywhere in the repository) is a path the fast-forward
+  # to `origin/<branch>` would write. Both sides of a rename are compared, on the
+  # status side and on the diff side, so a moved file cannot slip between them.
+  #
+  # AN IGNORED FILE IS A LOCAL CHANGE TOO. `git status` does not list it, and
+  # `git merge` overwrites it without refusing when the merge starts tracking
+  # its path; it lives in no object store, so nothing could bring it back. This
+  # repository ignores `/docs/`, where uncommitted design documents live. So
+  # every path the merge would add is checked for something already on disk
+  # there — which also covers an untracked file, whatever the ignore rules say.
+  local top="$1" b="$2" mine theirs p
+  theirs=$(cd "$top" 2>/dev/null && git --no-optional-locks diff --no-renames --name-only -z HEAD "refs/remotes/origin/$b" 2>/dev/null \
+    | tr '\0' '\n') || theirs=""
+  [ -n "$theirs" ] || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ -e "$top/$p" ] || [ -L "$top/$p" ]; then
+      return 0
+    fi
+  done <<EOF
+$(cd "$top" 2>/dev/null && git --no-optional-locks diff --no-renames --diff-filter=A --name-only -z HEAD "refs/remotes/origin/$b" 2>/dev/null | tr '\0' '\n')
+EOF
+  mine=$(cd "$top" 2>/dev/null && git --no-optional-locks status --porcelain -z --untracked-files=all 2>/dev/null \
+    | tr '\0' '\n' \
+    | awk 'skip { print; skip = 0; next } { xy = substr($0, 1, 2); print substr($0, 4); if (xy ~ /[RC]/) skip = 1 }') || mine=""
+  [ -n "$mine" ] || return 1
+  # One stream, the merge's paths first and then a separator no path can be,
+  # so the comparison needs neither a temporary file nor a second descriptor.
+  { printf '%s\n' "$theirs"; printf '\001\n'; printf '%s\n' "$mine"; } \
+    | awk 'sep { if ($0 in t) hit = 1; next } $0 == "\001" { sep = 1; next } { t[$0] = 1 } END { exit hit ? 0 : 1 }'
+}
+
+pin_sync() {
+  # pin_sync <src-plugin-dir> [<targets>] — bring the pin's source up to its
+  # remote before the copy is taken. <targets> holds one line per declared
+  # target, `<common git dir><TAB><base branch>`. Results are left in globals,
+  # because `pin_take` reads several of them and a function cannot return more
+  # than a status:
+  #
+  #   PIN_SYNC_ORIGIN    the `origin-sync` value
+  #   PIN_SYNC_BASE      the base branch, or `-`
+  #   PIN_SYNC_OCOMMIT   `origin/<base>` after the fetch, or `-`
+  #   PIN_SYNC_REFUSED   why the checkout was not fast-forwarded, or `-`
+  #   PIN_SYNC_DIFFERS   whether the subtree differed from the remote before the
+  #                      fast-forward (`예` / `아니오`), or `-`
+  #   PIN_SYNC_REMOTE    1 when the caller must pin the remote tip tree instead of
+  #                      the checkout
+  #
+  # NO BRANCH OF THIS FUNCTION FAILS THE PIN AND NONE OF THEM RETRIES. A failed
+  # or slow fetch falls back to pinning the local HEAD, and a fast-forward that
+  # cannot be made falls back to pinning the remote tip tree; the run opens
+  # either way and the record says which happened. The only ways `pin_take`
+  # itself fails are still the copy bracket and the publication.
+  #
+  # TWO RUNS OPENING AT ONCE DO NOT QUEUE HERE. git's ref and index locks fail at
+  # once instead of waiting, so the loser of a ref-lock race lands on `fetch 실패`
+  # and the loser of an index-lock race on `ff-refused=ff 실패`. No lock of our
+  # own is added: both fallbacks are correct pins.
+  #
+  # THE FAST-FORWARD NEVER DISCARDS A PERSON'S WORK. It runs only on the base
+  # branch, only when HEAD is an ancestor of the remote, only with `--ff-only`,
+  # and only when no local change sits on a path the merge would write; that
+  # overlap is measured before the merge rather than read back from git's refusal
+  # text, so an overwrite refusal (`충돌 변경`) and a lock race (`ff 실패`) are
+  # told apart. An ignored file counts as a local change in that measure, and
+  # the merge itself runs with `--no-overwrite-ignore`, because git's default is
+  # to overwrite ignored files silently.
+  #
+  # `CC_GATE_PIN_SYNC_DISABLE=1` IS A TEST SEAM. A test harness opens runs with
+  # the repository's own gate, and without the seam every such run would fetch
+  # the real `origin` and might pin the remote tip — testing code that is not the
+  # checkout. With it set, nothing below runs: no fetch, no fast-forward, no
+  # remote pin, and the pin is taken from the checkout as before.
+  local src="$1" targets="${2:-}" top prefix cg cgp line tcg tb tcgp b cur
+  PIN_SYNC_ORIGIN='-'; PIN_SYNC_BASE='-'; PIN_SYNC_OCOMMIT='-'
+  PIN_SYNC_REFUSED='-'; PIN_SYNC_DIFFERS='-'; PIN_SYNC_REMOTE=0
+  if [ "${CC_GATE_PIN_SYNC_DISABLE:-0}" = "1" ]; then
+    PIN_SYNC_ORIGIN='시험 봉합'
+    return 0
+  fi
+
+  top=""
+  if command -v git >/dev/null 2>&1; then
+    top=$(cd "$src" 2>/dev/null && git --no-optional-locks rev-parse --show-toplevel 2>/dev/null) || top=""
+  fi
+  if [ -z "$top" ]; then
+    PIN_SYNC_ORIGIN='비git'
+    return 0
+  fi
+  prefix=$(cd "$src" 2>/dev/null && git --no-optional-locks rev-parse --show-prefix 2>/dev/null) || prefix=""
+
+  # The base branch: the declared one when this repository is a declared
+  # target, compared by physical path because git prints the common directory
+  # as it stored it; otherwise whatever `origin/HEAD` names.
+  b=""
+  cg=$(cd "$src" 2>/dev/null && git --no-optional-locks rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || cg=""
+  cgp=$(cd "$cg" 2>/dev/null && pwd -P) || cgp=""
+  if [ -n "$cgp" ] && [ -n "$targets" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      tcg=$(printf '%s' "$line" | cut -f1)
+      tb=$(printf '%s' "$line" | cut -f2)
+      case "$tb" in ''|'(없음)') continue ;; esac
+      tcgp=$(cd "$tcg" 2>/dev/null && pwd -P) || tcgp=""
+      if [ "$tcg" = "$cg" ] || { [ -n "$tcgp" ] && [ "$tcgp" = "$cgp" ]; }; then
+        b="$tb"
+        break
+      fi
+    done <<EOF
+$targets
+EOF
+  fi
+  if [ -z "$b" ]; then
+    b=$(cd "$top" 2>/dev/null && git --no-optional-locks symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) || b=""
+    b="${b#refs/remotes/origin/}"
+  fi
+  if [ -z "$b" ]; then
+    PIN_SYNC_ORIGIN='베이스 미상'
+    return 0
+  fi
+  PIN_SYNC_BASE="$b"
+
+  if ! pin__fetch_bounded "$top" "$b"; then
+    PIN_SYNC_ORIGIN='fetch 실패'
+    return 0
+  fi
+  PIN_SYNC_OCOMMIT=$(cd "$top" 2>/dev/null && git --no-optional-locks rev-parse --verify --quiet "refs/remotes/origin/$b^{commit}" 2>/dev/null) || PIN_SYNC_OCOMMIT=""
+  if [ -z "$PIN_SYNC_OCOMMIT" ]; then
+    PIN_SYNC_OCOMMIT='-'
+    PIN_SYNC_ORIGIN='fetch 실패'
+    return 0
+  fi
+  # The #752 measure: did the bytes this pin copies differ from the remote,
+  # taken before the fast-forward can make them equal.
+  if ( cd "$top" 2>/dev/null && git --no-optional-locks diff --quiet HEAD "refs/remotes/origin/$b" -- ${prefix:+"$prefix"} ) >/dev/null 2>&1; then
+    PIN_SYNC_DIFFERS='아니오'
+  else
+    PIN_SYNC_DIFFERS='예'
+  fi
+
+  cur=$(cd "$top" 2>/dev/null && git --no-optional-locks symbolic-ref --quiet --short HEAD 2>/dev/null) || cur=""
+  if [ "$cur" != "$b" ]; then
+    PIN_SYNC_REFUSED='다른 브랜치'
+  elif [ "$(cd "$top" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null)" = "$PIN_SYNC_OCOMMIT" ]; then
+    PIN_SYNC_ORIGIN='최신'
+    return 0
+  elif ! ( cd "$top" 2>/dev/null && git --no-optional-locks merge-base --is-ancestor HEAD "refs/remotes/origin/$b" ) >/dev/null 2>&1; then
+    PIN_SYNC_REFUSED='로컬 커밋'
+  elif pin__overlap "$top" "$b"; then
+    PIN_SYNC_REFUSED='충돌 변경'
+  elif ( cd "$top" 2>/dev/null && GIT_TERMINAL_PROMPT=0 git merge --ff-only --no-overwrite-ignore --quiet "refs/remotes/origin/$b" ) </dev/null >/dev/null 2>&1; then
+    PIN_SYNC_ORIGIN='ff'
+    return 0
+  else
+    PIN_SYNC_REFUSED='ff 실패'
+  fi
+  PIN_SYNC_ORIGIN='원격 끝'
+  PIN_SYNC_REMOTE=1
+  return 0
+}
+
 pin_take() {
-  # pin_take <run-dir> <src-plugin-dir> — copy the plugin root into the run
-  # directory and publish the pin. rc 0 when this run is pinned (by us or by the
-  # process that won the race), rc 1 when no untorn copy could be taken.
-  local rd="$1" src="$2"
+  # pin_take <run-dir> <src-plugin-dir> [<targets>] — copy the plugin root into
+  # the run directory and publish the pin. rc 0 when this run is pinned (by us or
+  # by the process that won the race), rc 1 when no untorn copy could be taken.
+  # <targets> is passed through to `pin_sync`, which runs once, before the copy.
+  local rd="$1" src="$2" targets="${3:-}"
   local tmpdir="$rd/plugin.$$" tmppin="$rd/plugin-pin.$$" dst
   local method commit tree dirty digest ver onorigin top prefix ref waited
   dst="$tmpdir/cc-cmds"
@@ -213,7 +408,36 @@ pin_take() {
   if command -v git >/dev/null 2>&1; then
     top=$(cd "$src" 2>/dev/null && git --no-optional-locks rev-parse --show-toplevel 2>/dev/null) || top=""
   fi
-  if [ -n "$top" ]; then
+  pin_sync "$src" "$targets"
+  if [ -n "$top" ] && [ "$PIN_SYNC_REMOTE" = 1 ]; then
+    # THE REMOTE TIP TREE, TAKEN WITHOUT TOUCHING THE CHECKOUT. The checkout could
+    # not be fast-forwarded, so the pin names the remote's commit and the
+    # remote's subtree, and the bytes are exactly that tree object — the morning
+    # report's `git archive <판본 트리>` reproduces them as it does for `archive`.
+    # The checkout's own HEAD went into nothing, so no key carries it;
+    # `ff-refused` says why.
+    prefix=$(cd "$src" 2>/dev/null && git --no-optional-locks rev-parse --show-prefix 2>/dev/null) || prefix=""
+    if [ -n "$prefix" ]; then ref="refs/remotes/origin/$PIN_SYNC_BASE:${prefix%/}"; else ref="refs/remotes/origin/$PIN_SYNC_BASE^{tree}"; fi
+    tree=$(cd "$top" 2>/dev/null && git --no-optional-locks rev-parse --verify --quiet "$ref" 2>/dev/null) || tree=""
+    if [ -n "$tree" ]; then
+      mkdir -p "$dst" || return 1
+      if ( cd "$top" 2>/dev/null && git --no-optional-locks archive --format=tar "$tree" ) | tar -x -C "$dst" \
+         && [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
+        method=archive-remote; commit="$PIN_SYNC_OCOMMIT"; dirty='아니오'; onorigin='예'
+      else
+        rm -rf "$dst"
+        tree=""
+      fi
+    fi
+    if [ -z "$tree" ]; then
+      # The remote tip has no such subtree, or it could not be extracted: the
+      # pin falls back to the local HEAD exactly as a failed fetch does, and is
+      # recorded as one.
+      tree='(미상)'
+      PIN_SYNC_ORIGIN='fetch 실패'; PIN_SYNC_REMOTE=0
+    fi
+  fi
+  if [ -n "$top" ] && [ "$method" != archive-remote ]; then
     prefix=$(cd "$src" 2>/dev/null && git --no-optional-locks rev-parse --show-prefix 2>/dev/null) || prefix=""
     commit=$(cd "$src" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null) || commit=""
     [ -n "$commit" ] || commit='(미상)'
@@ -256,7 +480,7 @@ pin_take() {
       fi
     fi
   fi
-  if [ "$method" != archive ]; then
+  if [ "$method" = copy ]; then
     # A dirty subtree has no tree object naming the bytes we copied, so the
     # field stays `(미상)` rather than pointing at a HEAD the copy is not.
     tree='(미상)'
@@ -282,6 +506,11 @@ pin_take() {
     printf 'version\t%s\n' "$ver"
     printf 'pinned-at\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'commit-on-origin\t%s\n' "$onorigin"
+    printf 'origin-sync\t%s\n' "$PIN_SYNC_ORIGIN"
+    printf 'base-branch\t%s\n' "$PIN_SYNC_BASE"
+    printf 'origin-commit\t%s\n' "$PIN_SYNC_OCOMMIT"
+    printf 'ff-refused\t%s\n' "$PIN_SYNC_REFUSED"
+    printf 'subtree-differs\t%s\n' "$PIN_SYNC_DIFFERS"
   } > "$tmppin" || { rm -rf "$tmpdir" "$tmppin"; return 1; }
 
   # THE PUBLICATION. A single `link(2)` — the same idiom `gate_end_run` uses to

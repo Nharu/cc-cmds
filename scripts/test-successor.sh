@@ -1074,7 +1074,8 @@ case "$first" in
       *-A\ *) [ -z "${R12_REVIEW_UNTIL:-}" ] || while [ "$(date -u +%s)" -lt "$R12_REVIEW_UNTIL" ]; do sleep 1; done ;;
     esac
     mkdir -p "$(dirname "$rp")"
-    printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' > "$rp" ;;
+    printf '# 리뷰\n\n- **리뷰 HEAD**: `%s`\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' \
+      "$(git rev-parse "refs/heads/$(printf '%s' "$first" | awk '{ print $2 }')")" > "$rp" ;;
 esac
 printf '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"%s","result":"ok"}\n' "$sid"
 exit 0

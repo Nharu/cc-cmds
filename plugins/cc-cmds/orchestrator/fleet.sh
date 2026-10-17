@@ -161,6 +161,8 @@ readonly FLEET_TARGET_CONCURRENCY_DEGRADED=1    # the lane rung's target while u
 readonly FLEET_LANE_OCCUPANCY_MAX=1             # K: a lane admits a launch below this occupancy
 readonly FLEET_SCAN_FILES_MAX=1000              # transcript scan caps, per home; over either -> that home is truncated
 readonly FLEET_SCAN_BYTES_MAX=2147483648
+readonly FLEET_REENTRY_CALLS_MAX=12             # router-shift calls that launched no shift, at most, in one boot-time re-entry chain
+readonly FLEET_REENTRY_QUICK_SECONDS=60         # a `대기` call back sooner than this with no launch is a quick return
 # The burn calibration is a literal by decision, and it is not an integer, so the
 # threshold lint does not own it: 0.104 %p of weekly quota per million weighted
 # tokens over a 4h window.
@@ -1094,6 +1096,367 @@ fleet_label_homes_json() {
      | {id, home: (.config_dir | if endswith("/") then .[0:-1] else . end)}]'
 }
 
+fleet_start_watch() {
+  # fleet_start_watch <config home> <plugin dir> <manifest> <run dir> <ledger> —
+  # one snapshot so the run directory exists, then the watcher, then the CI
+  # poller, both in the background. The backlog dispatch passes the label's
+  # account home and this checkout; a boot-time re-entry passes the run's own
+  # `config-dir` and the directory of the run's pinned gate, because the run
+  # it re-enters was opened there and not here. ONE FUNCTION, SO ONE WATCHER
+  # LAUNCH LINE in this file, which `lint-watch-threshold-pins.sh` holds to one.
+  # The optional sixth argument is the re-entry marker for the snapshot, which
+  # is a gate call of the re-entry like any other; the watcher and the poller
+  # do not carry it. A seventh argument `poller` starts the poller alone: a
+  # re-entry whose relay came back because the poller died restarts that one
+  # and not a second watcher beside the first. A seventh argument `snapped`
+  # skips the snapshot: the backlog dispatch takes it itself, because it reads
+  # the snapshot's refusal to decide whether the run starts at all.
+  local home="$1" pdir="$2" manifest="$3" run_dir="$4" ledger="$5" mark="${6:-}" only="${7:-}"
+  if [ "$only" != "poller" ]; then
+    [ "$only" = "snapped" ] \
+      || CLAUDE_CONFIG_DIR="$home" CC_PIPELINE_REENTRY="$mark" bash "$pdir/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
+    mkdir -p "$run_dir"
+    # THE WATCHER LEADS A PROCESS GROUP OF ITS OWN. launchd tears down the
+    # job's group when the job exits, and the watcher's whole purpose is to
+    # speak after the run stopped — the moment the job returns. Job control in
+    # a subshell puts it in a new group; it is still started here, not detached
+    # by a helper.
+    ( set -m; bash "$pdir/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null & )
+  fi
+  # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
+  # merge refusal it feeds is the only thing standing between a red check and a
+  # merged branch, and this timer-driven path is the one with no session and no
+  # terminal — the path where nobody would notice the refusal never fired. It
+  # writes nothing to the ledger itself; the gate transcribes `checks.observed`
+  # on its next act. A run with no poller leaves no `checks` row, and no row
+  # reads as "nothing recorded", which the gate passes — so the absence is
+  # byte-identical to a green night. Interval is pinned to 60 for the same
+  # reason the watcher's is: they are one threshold, not two.
+  bash "$pdir/checks.sh" --run-dir "$run_dir" --ledger "$ledger" --manifest "$manifest" --interval 60 > "$run_dir/checks.log" 2>&1 < /dev/null &
+  return 0
+}
+
+# ===========================================================================
+# BOOT-TIME RE-ENTRY — a run the reboot cut, called again from a dispatch tick
+#
+# A reboot kills the seat's gate, the shift and the watcher together, and
+# nothing that survives it re-issues the seat's `router-shift`: the run waits on
+# a person until morning. The dispatch labels run at login and every tick, so
+# the first tick after a boot looks for such runs and issues that one call for
+# each, as the seat would have. IT DECIDES NOTHING: the reason it issues is read
+# off the ledger the gate has just settled, and the shift it starts does the
+# routing. One call per run per boot value, and only on the run's own lane — the
+# `config-dir` the run recorded — since the session it resumes lives there.
+# ===========================================================================
+
+fleet_reentry_dir() { printf '%s/reentry' "$PACE_ROOT"; }
+
+fleet_reentry_lock() {
+  # fleet_reentry_lock <lock dir> — take the per-run claim for as long as this
+  # re-entry lives: `mkdir`, then an owner line `<pid> <fingerprint>`. TAKEN
+  # OVER ONLY FROM A DEAD OWNER, never by age: the claim is held across a call
+  # that runs for hours, so an age rule would let the next label's tick steal a
+  # live claim. A pid from before the boot is dead by this test, since its
+  # recorded start time cannot match the process that holds the pid now.
+  local lk="$1" pid fp
+  if mkdir "$lk" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$lk/owner"
+    return 0
+  fi
+  pid=$(sed -n '1s/ .*//p' "$lk/owner" 2>/dev/null || true)
+  fp=$(sed -n '1s/^[^ ]* //p' "$lk/owner" 2>/dev/null || true)
+  if [ -n "$pid" ] && cc_holder_is_live "$pid" "$fp"; then return 1; fi
+  # An owner line not written yet is a claim being taken this instant.
+  [ -f "$lk/owner" ] || return 1
+  mv "$lk" "$lk.stale.$$" 2>/dev/null || return 1
+  rm -rf "$lk.stale.$$"
+  mkdir "$lk" 2>/dev/null || return 1
+  printf '%s %s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$lk/owner"
+}
+
+fleet_reentry_unlock() { rm -rf "$1"; }
+
+fleet_reentry_latest_handoff() {
+  # fleet_reentry_latest_handoff <ledger> — the `사유` of the latest `handoff`
+  # row, or empty.
+  LC_ALL=C awk -F'|' '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^- `handoff` / {
+      for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, "사유=") == 1) r = substr(f, length("사유=") + 1) }
+    }
+    END { printf "%s", r }
+  ' "$1" 2>/dev/null || true
+}
+
+fleet_reentry_launches() {
+  # fleet_reentry_launches <ledger> — how many `교대 기동` rows the ledger holds.
+  grep -c '^- `교대 기동` ' "$1" 2>/dev/null || true
+}
+
+fleet_reentry_poller_live() {
+  # fleet_reentry_poller_live <run dir> — the gate's test for the CI poller
+  # (`gate_relay_poller_live`): a bare pid in `checks.pid` that exists.
+  local p
+  p=$( { cat "$1/checks.pid" 2>/dev/null || true; } | tr -d '[:space:]')
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  cc_pid_exists "$p"
+}
+
+fleet_reentry_driven_since() {
+  # fleet_reentry_driven_since <run dir> <boot epoch> — succeeds when the seat,
+  # a relay or a shift wrote this run's `seat-call`, `relay.live` or
+  # `shift.live` at or after the boot. Those three are rewritten on every seat
+  # launch, every relay poll and hand-back, and every shift launch, so a run
+  # with any of them from this boot was being driven after the boot and the
+  # boot did not cut it: it sits in the gap between two seat calls — after a
+  # relay hand-back, a shift's return, a limit-shaped `무기록` — which is the
+  # seat's to fill. A run born this boot is the plainest case.
+  local f mt
+  for f in seat-call relay.live shift.live; do
+    mt=$(fleet_mtime "$1/$f")
+    [ -n "$mt" ] && [ "$mt" -ge "$2" ] && return 0
+  done
+  return 1
+}
+
+fleet_reentry_candidate() {
+  # fleet_reentry_candidate <run dir> <boot epoch> — succeeds for a run this
+  # boot cut: it ends on `done` and has not, the seat recorded how it calls,
+  # neither a shift nor a relay holds it, nothing drove it since the boot, this
+  # boot value was not handled for it yet, and it is not waiting on a person's
+  # answer to an approval. THE BOOT MUST HAVE CUT IT: without the evidence that
+  # its last drive predates the boot, an unhandled boot value alone admits a
+  # run this boot started, and the re-entry would then trigger on "every
+  # process is dead" on an awake host — the trigger the design turned down as a
+  # second decider.
+  local rd="$1" boot="$2" ledger
+  [ -f "$rd/ends-on-done" ] && [ ! -e "$rd/done" ] || return 1
+  [ -s "$rd/config-dir" ] && [ -s "$rd/ledger-path" ] && [ -s "$rd/seat-call" ] || return 1
+  if cc_shift_is_live "$rd" || cc_relay_is_live "$rd"; then return 1; fi
+  if fleet_reentry_driven_since "$rd" "$boot"; then return 1; fi
+  [ "$(sed -n '1p' "$(fleet_reentry_dir)/$(basename "$rd").boot" 2>/dev/null)" != "$boot" ] || return 1
+  ledger=$(sed -n '1p' "$rd/ledger-path" 2>/dev/null)
+  [ -f "$ledger" ] || return 1
+  [ "$(fleet_reentry_latest_handoff "$ledger")" != "승인" ]
+}
+
+fleet_reentry_settled_since() {
+  # fleet_reentry_settled_since <ledger> <boot epoch> — succeeds when some gate
+  # call of this boot settled something the boot cut: a `stage-result` row
+  # ending `외부 종료` whose settlement time is after the boot, or the dead-shift
+  # `무기록` (exit code `-`) recorded after it. Not only this re-entry's own
+  # snapshot: any gate call after the boot settles first, and an earlier
+  # re-entry may have died between its settlement and its launch. Read only
+  # for a candidate, which nothing drove since the boot, so a row settled after
+  # the boot is of a dispatch from before it and not a plain cut of this boot.
+  local ts e
+  for ts in $(LC_ALL=C awk -F'|' '
+      function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+      /^- `stage-result` / && index($0, "종단 부류=외부 종료") > 0 {
+        if (match($0, /정산 시각 [0-9TZ:-]+/)) print substr($0, RSTART + length("정산 시각 "), RLENGTH - length("정산 시각 "))
+      }
+      /^- `handoff` / && index($0, " | 사유=무기록 | ") > 0 && index($0, " | 종료 코드=- ") > 0 {
+        for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, "기록 시각=") == 1) print substr(f, length("기록 시각=") + 1) }
+      }' "$1" 2>/dev/null); do
+    e=$(fleet_iso_epoch "$ts")
+    [ -n "$e" ] && [ "$e" -gt "$2" ] && return 0
+  done
+  return 1
+}
+
+fleet_reentry_reason_wait() {
+  # fleet_reentry_reason_wait <run dir> <ledger> — succeeds in the two states
+  # the run's own pinned gate takes `대기` in, asked of that gate.
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; LEDGER="$3"; gate_relay_reentry_allowed' \
+    _ "$R_GATE" "$1" "$2" >/dev/null 2>&1
+}
+
+fleet_reentry_reason() {
+  # fleet_reentry_reason <run dir> <ledger> <boot epoch> — the reason
+  # the re-entry issues, read off the settled ledger, or empty for none.
+  # `대기` in the two states the gate takes it in — the latest handoff `대기`
+  # with no launch after it, or a limit-shaped `무기록` whose shift's stream
+  # yields a reset within the horizon — asked of the run's own pinned gate so
+  # the two never disagree. Otherwise `중단`, but only when this boot's
+  # settlement added a row: a run a person left at `중단` is not restarted on
+  # every boot.
+  local rd="$1" ledger="$2" boot="$3"
+  if fleet_reentry_reason_wait "$rd" "$ledger"; then
+    printf '대기'
+  elif fleet_reentry_settled_since "$ledger" "$boot"; then
+    printf '중단'
+  fi
+}
+
+fleet_reentry_snap() {
+  # fleet_reentry_snap — a fresh digest from the run's gate, empty on failure.
+  ( cd "$R_WT" 2>/dev/null || cd /
+    CLAUDE_CONFIG_DIR="$R_HOME" CC_PIPELINE_REENTRY="$R_MARK" \
+      bash "$R_GATE" snapshot --manifest "$R_MAN" 2>/dev/null | jq -r '.H // empty' 2>/dev/null ) || true
+}
+
+fleet_reentry_act() {
+  # fleet_reentry_act <act args...> — one act on the run's gate with a digest
+  # taken just before it; exit 4 (the ledger moved under the digest) takes a
+  # new one and issues the same call again, three times at most, as the router
+  # does. Returns the gate's status.
+  local h rc=4 n=0
+  while [ "$rc" = "4" ] && [ "$n" -lt 4 ]; do
+    n=$((n + 1)); rc=0
+    h=$(fleet_reentry_snap)
+    ( cd "$R_WT" 2>/dev/null || cd /
+      CLAUDE_CONFIG_DIR="$R_HOME" CC_PIPELINE_REENTRY="$R_MARK" \
+        bash "$R_GATE" act --manifest "$R_MAN" "$@" --snapshot-digest "$h" ) < /dev/null || rc=$?
+  done
+  return "$rc"
+}
+
+fleet_reentry_run() {
+  # fleet_reentry_run <lane> <run dir> <boot epoch> — re-enter one run.
+  # Succeeds when it issued the call. IN THIS ORDER, IN ONE TICK: settle, the
+  # `재진입` row, the watcher and poller, the call. The row is the base time of
+  # a reboot-class delay, so it goes before the call; the watcher goes before
+  # the call because the call runs in the foreground for hours, and a relay
+  # waiting on CI hands back at once when no poller is alive.
+  local lane="$1" rd="$2" boot="$3" id lk mk reason rc ledger pdir latest hb
+  local R_HOME R_GATE R_MAN R_WT R_MARK R_TGT R_CP R_SF
+  id=$(basename "$rd")
+  mkdir -p "$(fleet_reentry_dir)"
+  lk="$(fleet_reentry_dir)/$id.lock"; mk="$(fleet_reentry_dir)/$id.boot"
+  fleet_reentry_lock "$lk" || return 1
+  if [ "$(sed -n '1p' "$mk" 2>/dev/null)" = "$boot" ]; then fleet_reentry_unlock "$lk"; return 1; fi
+  R_HOME=$(sed -n '1p' "$rd/config-dir" 2>/dev/null); R_HOME=${R_HOME%/}
+  R_MAN=$(sed -n 's/^manifest=//p' "$rd/seat-call" | tail -1)
+  R_TGT=$(sed -n 's/^target=//p' "$rd/seat-call" | tail -1)
+  R_GATE=$(sed -n 's/^gate=//p' "$rd/seat-call" | tail -1)
+  R_CP=$(sed -n 's/^cutpoint=//p' "$rd/seat-call" | tail -1)
+  R_SF=$(sed -n 's/^surface=//p' "$rd/seat-call" | tail -1)
+  R_MARK="$id@$boot"
+  ledger=$(sed -n '1p' "$rd/ledger-path" 2>/dev/null)
+  if [ -z "$R_HOME" ] || [ -z "$R_MAN" ] || [ -z "$R_TGT" ] || [ ! -f "$R_GATE" ] || [ -z "$R_CP" ] || [ -z "$R_SF" ]; then
+    printf '%s\n' "$boot" > "$mk"
+    fleet_reentry_unlock "$lk"
+    fleet_log "재진입 $lane: $id 의 seat-call 이 온전하지 않다 — 이 부팅에는 다시 부르지 않는다"
+    return 1
+  fi
+  R_WT=$(fleet_manifest_field "$R_MAN" origin-worktree)
+  pdir=$(dirname "$R_GATE")
+
+  # SETTLE FIRST: every verb but `plan` settles lost dispatches and dead shifts
+  # in its preamble, so one snapshot leaves the boot's cuts in the ledger.
+  fleet_reentry_snap >/dev/null
+  reason=$(fleet_reentry_reason "$rd" "$ledger" "$boot")
+  if [ -z "$reason" ]; then
+    printf '%s\n' "$boot" > "$mk"
+    fleet_reentry_unlock "$lk"
+    fleet_log "재진입 $lane: $id — 이 부팅이 끊은 것이 없다, 사람을 기다린다"
+    return 1
+  fi
+  fleet_reentry_act --kind reentry --target "$R_TGT" --cutpoint "$R_CP" --surface 읽기 \
+    -- "사유=$reason" "레이블=$lane" > /dev/null 2>&1 \
+    || fleet_log "재진입 $lane: $id 의 재진입 행을 쓰지 못했다 — 호출은 그대로 낸다"
+  ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" )
+  fleet_log "재진입 $lane: $id — 사유 $reason 로 교대를 부른다 (레인 $R_HOME)"
+
+  # THE CALL, IN THE FOREGROUND: the label template does not abandon its
+  # process group, so a background call would die with the job. Issued again
+  # as the seat would: `대기` on a hand-back or a limit-shaped `무기록`, `상한`
+  # when the shift came back on its cap. Anything else ends the chain and
+  # leaves the run to the ledger and the watcher.
+  #
+  # BOUNDED, BECAUSE A HAND-BACK WRITES NO ROW. The ledger stays in the `대기`
+  # state across a hand-back, so the re-issue test stays true whatever came
+  # back, and each call still appends its act rows. A relay that holds hands
+  # back after its hold; one that comes back sooner with no shift launched met
+  # a return condition that will stand on the next call too — the poller of a
+  # CI wait is dead, or the gate keeps failing. The first quick return restarts
+  # a dead poller and waits one quick period before the next call; a second in
+  # a row ends the chain. FLEET_REENTRY_CALLS_MAX caps the calls that launched
+  # no shift, above the calls a reset at the far end of the horizon needs. A
+  # call that launched one worked, so it is not counted: a `상한` chain runs as
+  # long as the night does, and ends on the floor's approval, a quick return
+  # or `done`.
+  local calls=0 quick=0 t0 launches after pause
+  pause=$FLEET_REENTRY_QUICK_SECONDS
+  case "${FLEET_REENTRY_PAUSE_TEST_SECONDS:-}" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$FLEET_REENTRY_PAUSE_TEST_SECONDS" -lt "$pause" ] && pause=$FLEET_REENTRY_PAUSE_TEST_SECONDS ;;
+  esac
+  while :; do
+    rc=0
+    t0=$(date -u +%s); launches=$(fleet_reentry_launches "$ledger")
+    fleet_reentry_act --kind router-shift --target "$R_TGT" --cutpoint "$R_CP" --surface "$R_SF" \
+      -- "$reason" -p "/cc-cmds:autopilot-router-shift $R_MAN" || rc=$?
+    after=$(fleet_reentry_launches "$ledger")
+    [ "$after" != "$launches" ] || calls=$((calls + 1))
+    # 3: another launcher holds the run, or a rule refused. 4: still stale
+    # after three fresh digests. 5: an approval for a person.
+    case "$rc" in 3|4|5) break ;; esac
+    [ ! -e "$rd/done" ] || break
+    if [ "$calls" -ge "$FLEET_REENTRY_CALLS_MAX" ]; then
+      fleet_log "재진입 $lane: $id — 교대를 띄우지 않은 호출이 ${calls}번에 이르러 사슬을 멈춘다"
+      break
+    fi
+    if fleet_reentry_reason_wait "$rd" "$ledger"; then
+      if [ $(( $(date -u +%s) - t0 )) -lt "$FLEET_REENTRY_QUICK_SECONDS" ] \
+        && [ "$after" = "$launches" ]; then
+        quick=$((quick + 1))
+        if [ "$quick" -ge 2 ]; then
+          fleet_log "재진입 $lane: $id — 교대 없이 곧바로 돌아온 대기가 두 번 이어져 사슬을 멈춘다"
+          break
+        fi
+        if ! fleet_reentry_poller_live "$rd"; then
+          ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" poller )
+        fi
+        sleep "$pause"
+      else
+        quick=0
+      fi
+      reason=대기; continue
+    fi
+    quick=0
+    latest=$(fleet_reentry_latest_handoff "$ledger")
+    if [ "$rc" = "0" ] && [ "$latest" = "상한" ]; then reason=상한; continue; fi
+    break
+  done
+  hb=$(fleet_reentry_latest_handoff "$ledger")
+  printf '%s\n' "$boot" > "$mk"
+  fleet_reentry_unlock "$lk"
+  fleet_log "재진입 $lane: $id 종료 — 마지막 rc=$rc, 최신 handoff ${hb:--}"
+  return 0
+}
+
+fleet_reentry_tick() {
+  # fleet_reentry_tick <lane> — re-enter every run this boot cut on this
+  # label's account. Succeeds when at least one call was issued, and the tick
+  # then dispatches no backlog head. No boot reading — a host whose kernel
+  # gives none — is no re-entry.
+  #
+  # A RUN ON ANOTHER LABEL'S ACCOUNT IS THAT LABEL'S. The chain holds the tick
+  # for hours, so a label that took it would dispatch nothing on its own idle
+  # account all that time, while the run's own label is held off its backlog
+  # by the run's lane occupancy anyway. A run whose account no label holds —
+  # the interactive lane — has no label of its own, and any label takes it.
+  local lane="$1" boot rd ran=1 inv home homes rh
+  boot=$(boot_epoch 2>/dev/null || true)
+  case "$boot" in ''|0|*[!0-9]*) return 1 ;; esac
+  inv=$(fleet_inventory_json)
+  home=$(printf '%s' "$inv" | jq -r --arg i "$lane" '.accounts[] | select(.id == $i) | .config_dir')
+  home=${home%/}
+  homes=$(fleet_label_homes_json "$inv" "$(fleet_dirs_json "$inv")")
+  for rd in "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"/*; do
+    [ -d "$rd" ] || continue
+    fleet_reentry_candidate "$rd" "$boot" || continue
+    rh=$(sed -n '1p' "$rd/config-dir" 2>/dev/null); rh=${rh%/}
+    if [ "$rh" != "$home" ] \
+      && printf '%s' "$homes" | jq -e --arg d "$rh" 'any(.[]; .home == $d)' >/dev/null 2>&1; then
+      continue
+    fi
+    if fleet_reentry_run "$lane" "$rd" "$boot"; then ran=0; fi
+  done
+  return "$ran"
+}
+
 fleet_dispatch() {
   local lane="$1" home state verdict head rec id line line2 clause="" detail="-" park probe rc=0 occ
   local manifest run_id run_dir wt ledger now iso inv dirs ctx why rec_dir other census busy res
@@ -1106,14 +1469,26 @@ fleet_dispatch() {
   mkdir -p "$PACE_ROOT"
   now=$(fleet_now); iso=$(fleet_iso "$now")
 
-  # THE SUCCESSOR SWEEP, BEFORE ELIGIBILITY. Ended runs whose manifest carries
-  # a `재킥오프` row are judged here and their successors enqueued, so a lane
-  # that may not work now still sweeps — a successor waits in the backlog for
-  # whichever lane is eligible next. It runs in the foreground and takes the
-  # same `backlog.lock` for its own claims; its failure is a log line, never a
-  # reason not to dispatch.
+  # THE SUCCESSOR SWEEP, BEFORE RE-ENTRY AND ELIGIBILITY. Ended runs whose
+  # manifest carries a `재킥오프` row are judged here and their successors
+  # enqueued, so a lane that may not work now, or that re-enters a run this
+  # tick, still sweeps — a successor waits in the backlog for whichever lane is
+  # eligible next. It runs in the foreground and takes the same `backlog.lock`
+  # for its own claims, released before the re-entry below; its failure is a
+  # log line, never a reason not to dispatch.
   bash "$FLEET_DIR/successor.sh" sweep --pace-root "$PACE_ROOT" --lane present \
     || fleet_log "dispatch $lane: 후속 런 sweep 이 실패했다 (rc=$?) — 디스패치는 그대로 간다"
+
+  # (1b) BOOT-TIME RE-ENTRY, BEFORE ELIGIBILITY AND THE BACKLOG LOCK. The
+  #      eligibility below is for a new run on this label's account, and a run
+  #      this boot cut is re-entered on its own recorded lane whatever this
+  #      label's state; the backlog lock and its EXIT trap must not wrap a call
+  #      that runs for hours. A tick that re-entered a run starts no backlog
+  #      head.
+  if fleet_reentry_tick "$lane"; then
+    fleet_log "dispatch $lane: 이번 틱은 재진입을 돌렸다 — 백로그는 다음 틱에 본다"
+    return 0
+  fi
 
   # (2) ELIGIBILITY, BEFORE THE LOCK. A lane that may not work now ends with one
   #     log line and no refusal row: that is "this lane is idle", not a verdict
@@ -1312,22 +1687,7 @@ fleet_dispatch() {
     fleet_log "dispatch $lane: $id park — lineage-invalid (연쇄 입장 검사가 거부했다; 기동하지 않는다)"
     return 0
   fi
-  mkdir -p "$run_dir"
-  # THE WATCHER LEADS A PROCESS GROUP OF ITS OWN. launchd tears down this job's
-  # group when the job exits, and the watcher's whole purpose is to speak after
-  # the run stopped — the moment this job returns. Job control in a subshell
-  # puts it in a new group; it is still started here, not detached by a helper.
-  ( set -m; bash "$FLEET_DIR/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 > "$run_dir/watch.log" 2>&1 < /dev/null & )
-  # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
-  # merge refusal it feeds is the only thing standing between a red check and a
-  # merged branch, and this timer-driven path is the one with no session and no
-  # terminal — the path where nobody would notice the refusal never fired. It
-  # writes nothing to the ledger itself; the gate transcribes `checks.observed`
-  # on its next act. A run with no poller leaves no `checks` row, and no row
-  # reads as "nothing recorded", which the gate passes — so the absence is
-  # byte-identical to a green night. Interval is pinned to 60 for the same
-  # reason the watcher's is: they are one threshold, not two.
-  bash "$FLEET_DIR/checks.sh" --run-dir "$run_dir" --ledger "$ledger" --manifest "$manifest" --interval 60 > "$run_dir/checks.log" 2>&1 < /dev/null &
+  fleet_start_watch "$home" "$FLEET_DIR" "$manifest" "$run_dir" "$ledger" "" snapped
   fleet_log "dispatch $lane: $id 기동 — run $run_id (매니페스트 $manifest)"
   CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/run.sh" --manifest "$manifest" || rc=$?
   line2=$(printf '%s' "$line" | jq -c '.status = "done"')

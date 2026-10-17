@@ -49,11 +49,11 @@ Internal 5-level → document 4-level mapping:
 ## Merge Recommendation Rules
 
 - **P0 ≥ 1** → "머지 불가 (즉시 수정 필요)"
-- **P0 = 0, 차단 P1 = 0, 이월 가능 P1 1~3건** → "이월 후 머지 가능 (이월 가능 항목을 후속 이슈로 넘긴 뒤 머지)"
+- **P0 = 0, 차단 P1 = 0, 이월 가능 P1 ≥ 1** → "이월 후 머지 가능 (이월 가능 항목을 후속 이슈로 넘긴 뒤 머지)"
 - **P1 ≥ 1, P0 = 0** (위 줄에 해당하지 않을 때) → "머지 전 수정 권장"
 - **P0 + P1 = 0** → "머지 가능"
 
-무인 파이프라인은 「이월 후 머지 가능」 줄을 두 번째 리뷰(사이클 2)부터 적용하고, 이슈 등록과 머지 판정은 게이트가 한다. 대화형 리뷰에서는 사람이 정한다.
+무인 파이프라인은 「이월 후 머지 가능」 줄을 리드 수정 뒤의 확인 리뷰에서만 적용하고, 이슈 등록과 머지 판정은 게이트가 한다. 대화형 리뷰에서는 사람이 정한다.
 
 The interactive `/review` and `/review-lite` take no `--slice` and register no issue: they write the classification below, and the person decides whether the carryable items go to follow-up issues before merging.
 
@@ -231,6 +231,41 @@ When a finding only **confirms an existing PR comment** (it carries `📎 관련
 > 이미 PR 코멘트 #N에서 제기된 사항입니다 — 해당 스레드에 동의하시거나 resolve 처리해주시면 될 것 같습니다.
 
 (If the thread reference is a URL, substitute `이미 [이 PR 코멘트](URL)에서 제기된 사항입니다`.) The absence of a blockquote on a confirms-existing finding is the signal for "nothing new to post" (P3 excepted — a P3 line is itself the comment). In the rare case a P3 line is itself confirms-existing, the dedup rule wins: do not post that line as a comment, leave only the confirms-existing plain note.
+
+## Fix Record
+
+Written only by `review-unattended --lead-fix`, at the path that skill's `## The fix record and its path` defines, never inside a report. One line per P0 and P1 item of the cap report, every item, nothing else on the line:
+
+```
+- P0-1: 수정됨
+- P1-2: 수정 불가 — <사유 한 문장>
+```
+
+`P0-<k>` / `P1-<k>` numbers the cap report's items from 1 down each severity section, inherited items included, in report order. The value is exactly `수정됨` or `수정 불가 — ` followed by a non-empty reason; the driver counts lines of this shape against the cap report's P0 + P1. `수정됨` is a claim the re-check judges, never a verdict.
+
+## Cap Cycle Re-check
+
+Written only by `review-unattended --recheck`. After `핵심 요약` and before the P0 section — and before `## 기준 사이클 재판정` when that section is present too — one entry per P0 and P1 item of the cap report, none omitted:
+
+```
+## 상한 사이클 재확인
+
+- **[category]** `파일:라인` (상한 사이클 N, P1-2) — 원 서술 한 문장
+    - **수정 기록**: 수정됨 | 수정 불가 — <사유> | 없음
+    - **판정**: 해결됨 | 미해결
+    - **근거**: <수정 위치와 내용, 또는 결함이 남아 있음을 확인한 근거>
+```
+
+`수정 기록` copies the item's fix record value, or `없음` when the record or its line is missing — an item with no line is judged from the code like any other. The entries number exactly the cap report's P0 + P1. A verdict left unsettled after reassignment, or contested with no `## 자율 승인 기록` row settling it, is `미해결` with `**근거**: 이번 사이클에서 판정이 확정되지 않았습니다 (누락)` or `(충돌)`.
+
+**One finding, one entry.** When the delta basis report is the cap report itself, an item here has no `## 기준 사이클 재판정` entry of its own; that section then holds only basis items that are not cap items, or its single `없음` line. A new finding that is the same defect as an unresolved cap item is folded into that item.
+
+**Counting** — the `발견 요약` line's form is unchanged. An item judged `미해결` re-enters its severity section at its cap severity (or at an explicit re-grade under the higher-grade rule) carrying `(상한 사이클 N에서 상속, 재확인 미해결)`, and a P1 one carries its own `**[차단]**` or `**[이월 가능]**` tag like any P1. An item judged `해결됨` leaves the severity sections. Then:
+
+```
+P0 = 미해결 상한 P0 + 그 밖의 P0(기준 재판정·신규, 중복 제거 뒤)
+P1 = 미해결 상한 P1 + 그 밖의 P1(기준 재판정·신규, 중복 제거 뒤)
+```
 
 ## Recovery report — the termination-predicate interlock
 

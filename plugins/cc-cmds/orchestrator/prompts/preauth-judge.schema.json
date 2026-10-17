@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": { "type": "string", "enum": ["open", "park"] },
+    "row": { "type": ["string", "null"] },
+    "reason": { "type": "string", "maxLength": 400 }
+  },
+  "required": ["verdict", "row", "reason"],
+  "additionalProperties": false
+}

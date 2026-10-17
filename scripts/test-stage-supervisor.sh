@@ -639,6 +639,19 @@ check "(11) --effort·--model 옵션도 --instructions 아래에서 exit 0" "$wr
 check "(11) 그 둘은 --autocompact 바로 뒤에 순서대로 한 번 실린다" \
   "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 --effort high --model opus ' || true; } | { grep -c . || true; })" "1"
 
+# The members file rides beside the other options: the subagent append names
+# it and the main append keeps the lead file, with the window and the effort in
+# their places.
+printf 'members\n' > "$WORK/wrap-members.md"
+: > "$WORK/wrap-argv.out"
+CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
+  bash "$WRAP" --settings "$WORK/wrap-settings.json" --plugin-dir "$WORK/wrap-plugin" \
+    --session-id x --instructions "$WORK/wrap-instructions.md" --member-instructions "$WORK/wrap-members.md" \
+    --autocompact 300000 --effort high --model opus -- -p x >/dev/null 2>&1; wrap_rc5=$?
+check "(11) --member-instructions 도 다른 옵션과 함께 exit 0" "$wrap_rc5" "0"
+check "(11) 두 append 가 리드 파일과 팀원 파일로 갈린다" \
+  "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- "--effort high --model opus --append-system-prompt-file $WORK/wrap-instructions.md --append-subagent-system-prompt-file $WORK/wrap-members.md " || true; } | { grep -c . || true; })" "1"
+
 # ---------------------------------------------------------------------------
 # (12) ROUTING ON — the same dispatch, in a run opened where an inventory exists.
 #
@@ -999,6 +1012,203 @@ check "(13) 마감 파킹 뒤 대기 표지가 없다" "$( [ -e "$RD/D.waiting" 
 g wait --manifest "$MANIFEST" --segment D --interval 1 --timeout 5 >/dev/null; rc_dw=$?
 check "(13) 마감 파킹된 시도의 wait 은 16 이다" "$rc_dw" "16"
 kill -TERM "$W13_BLOCK" 2>/dev/null || true
+
+# WAIT ON A RESET PASS, then the deadline. Usage written at the supervisor's start
+# leaves the account's weekly window without room until its reset, which is past
+# the deadline — today that is a deadline park. The group holds a weekly reset
+# pass that would let the stage in, so the router answers WAIT with no release
+# time and no account instead. Nobody presses the pass, so the supervisor's own
+# turn must still park once a release now could no longer finish in time.
+W13_USAGE="$XDG_STATE_HOME/cc-lane/usage.json"
+mkdir -p "$XDG_STATE_HOME/cc-lane"
+W13_NOW=$(date +%s)
+jq -cn --argjson now "$W13_NOW" --arg d "$R12_CFG" \
+  '{schema: "cc-lane-usage v1", written_at_epoch: $now, publish_interval_s: 60,
+    accounts: [{id: "r12a", config_dir: $d, org_hash: "abcdefabcdefabcd", login: "ok", status: null,
+      exhausted_until_epoch: null,
+      windows: {five_hour: {utilization: 0.1, resets_at_epoch: ($now + 3600), observed_at_epoch: $now, source: "tracker"},
+                seven_day: {utilization: 0.99, resets_at_epoch: ($now + 432000), observed_at_epoch: $now, source: "tracker"}},
+      reset_passes: {held: [{id: "rp-13", kind: "seven_day", expires_at_epoch: ($now + 864000)}],
+                     reserve: {five_hour: 0, seven_day: 0.99}}}]}' > "$W13_USAGE"
+# The margin covers opening the run: once a release now could not finish in time
+# the router itself parks the dispatch, and this case is about the waiting loop.
+W13_DL=$(( W13_NOW + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 20 ))
+mk_run SUPRV '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
+w13_stall
+seg RV
+dispatch RV >/dev/null; rc_rv=$?
+if [ "$rc_rv" = "0" ]; then
+  ok "(13) 리셋권 예비 공급 WAIT 파견도 0 으로 반환한다"
+else
+  bad "(13) 리셋권 예비 공급 WAIT 파견도 0 으로 반환한다" \
+    "rc=$rc_rv — $( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '세그먼트=RV ' || true; } | tail -1)"
+fi
+wait_rv=$( { grep -F '`stage-wait`' "$LEDGER" || true; } | { grep -F '계보=B:RV#1 ' || true; } | head -1)
+case "$wait_rv" in
+  *"| 그룹=org:abcdefabcdefabcd | 계정=- | 까지=- | 비용=0."*"| 근거=no-room"*) ok "(13) 첫 대기 행은 마감 없이 비용을 단 no-room 이다" ;;
+  *) bad "(13) 예비 공급 대기 행" "${wait_rv:-행 없음}" ;;
+esac
+SUP_RV=$( { cat "$RD/RV.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+n=0
+while [ "$(alive "$SUP_RV")" = "alive" ] && [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 리셋권이 눌리지 않으면 감독자가 마감에 스스로 끝난다" "$(alive "$SUP_RV")" "dead"
+row_rv=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '사유=마감 초과 — RV ' || true; } )
+check "(13) 예비 공급 대기의 마감 파킹은 cone 행 하나다" "$(printf '%s' "$row_rv" | { grep -c . || true; })" "1"
+check "(13) 예비 공급 대기의 마감 파킹은 스테이지를 띄우지 않는다" "$( [ -e "$RD/RV.pid" ] && printf yes || printf no)" "no"
+rm -f "$W13_USAGE"
+
+# THE PASS IS PRESSED WHILE THE STAGE WAITS. The same account and pass as RV, but
+# the deadline D leaves 90 seconds past `now + 예상 소요` — about 90 chunks of one
+# second (the threshold record of 2 seconds above) — while the window's own reset
+# R is days away, so `R + 예상 소요 > D` still sends the first answer to the reserve
+# branch. Pressing is shown the way the usage file shows it: the pass leaves
+# `held` while the windows still read from before the reset. Only the memory the
+# wait carries in its marker (`예비`) tells the router the pass was pressed rather
+# than gone; without it this is the deadline park of RV. Each variant ends its own
+# supervisor by publishing the reset and letting the stage run to the end.
+w13r_usage() {  # w13r_usage <held json> <seven_day utilization> <observed epoch>
+  jq -cn --argjson now "$(date +%s)" --argjson obs "$3" --argjson u "$2" --argjson held "$1" --arg d "$R12_CFG" \
+    '{schema: "cc-lane-usage v1", written_at_epoch: $now, publish_interval_s: 60,
+      accounts: [{id: "r12a", config_dir: $d, org_hash: "abcdefabcdefabcd", login: "ok", status: null,
+        exhausted_until_epoch: null,
+        windows: {five_hour: {utilization: 0.1, resets_at_epoch: ($obs + 3600), observed_at_epoch: $obs, source: "tracker"},
+                  seven_day: {utilization: $u, resets_at_epoch: ($obs + 432000), observed_at_epoch: $obs, source: "tracker"}},
+        reset_passes: {held: $held, reserve: {five_hour: 0, seven_day: 0.99}}}]}' > "$W13_USAGE.tmp" \
+    && mv -f "$W13_USAGE.tmp" "$W13_USAGE"
+}
+seen_of() {  # seen_of <key> — the marker's `예비` as `<type>:<rp-13's pressed_at_epoch type>`
+  local v
+  v=$(sed -n 's/^예비=//p' "$RD/$1.waiting" 2>/dev/null | tail -1)
+  printf '%s' "$v" | jq -r '(type) + ":" + ([.[]? | select(.id == "rp-13") | .pressed_at_epoch | type] | join(","))' 2>/dev/null \
+    || printf 'unreadable'
+}
+blocked_n() { { grep -cF '`blocked`' "$LEDGER" || true; }; }
+w13r_open() {  # w13r_open <run-id> <key> — usage with the pass held, a run with D, the key dispatched
+  W13R_OBS=$(date +%s)
+  W13R_PASS=$(jq -cn --argjson x "$(( W13R_OBS + 864000 ))" '[{id: "rp-13", kind: "seven_day", expires_at_epoch: $x}]')
+  w13r_usage "$W13R_PASS" 0.99 "$W13R_OBS"
+  W13_DL=$(( W13R_OBS + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 90 ))
+  mk_run "$1" '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
+  w13_stall
+  seg "$2"
+  CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_SLEEP=1 dispatch "$2" >/dev/null
+}
+w13r_rows_past() {  # w13r_rows_past <lineage> <count> — wait until the lineage has more rows than <count> plus two
+  local n=0
+  while [ "$(waits_of "$1")" -lt $(( $2 + 3 )) ] && [ "$n" -lt 150 ]; do sleep 0.1; n=$((n + 1)); done
+  [ "$(waits_of "$1")" -ge $(( $2 + 3 )) ]
+}
+w13r_release() {  # w13r_release <key> — publish the reset, then the stage runs to its end
+  w13r_usage '[]' 0.05 "$(date +%s)"
+  wait_file "$RD/$1.pid" 150 || true
+  check "(13) 리셋이 반영되면 감독자가 부여를 받아 스폰한다 — $1" "$( [ -e "$RD/$1.pid" ] && printf yes || printf no)" "yes"
+  g wait --manifest "$MANIFEST" --segment "$1" --interval 1 --timeout 60 >/dev/null; rc_rw=$?
+  check "(13) 그 스테이지가 끝까지 돈다 — $1" "$rc_rw" "0"
+  case "$( { grep -F '`stage-lease`' "$LEDGER" || true; } | tail -1)" in
+    *"| 계보=B:$1#1 | 계정=r12a | "*) ok "(13) 부여 뒤 감독자가 stage-lease 행을 쓴다 — $1" ;;
+    *) bad "(13) 리셋 반영 뒤 stage-lease 행 — $1" "$( { grep -F '`stage-lease`' "$LEDGER" || true; } | tail -1)" ;;
+  esac
+}
+
+# (a)(b)(c): pressed after the first chunk.
+w13r_open SUPRA RA; rc_ra=$?
+check "(13) 리셋권 대기 변형의 파견이 0 으로 반환한다" "$rc_ra" "0"
+check "(13) 게이트가 심은 첫 표지의 예비에 그 리셋권이 눌리지 않은 채 있다" "$(seen_of RA)" "array:null"
+SUP_RA=$( { cat "$RD/RA.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+n=0
+while [ "$(waits_of 'B:RA#1')" -lt 2 ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+w13r_usage '[]' 0.99 "$W13R_OBS"
+ra0=$(waits_of 'B:RA#1')
+if w13r_rows_past 'B:RA#1' "$ra0"; then
+  ok "(13) 리셋권이 눌린 뒤에도 여러 조각 동안 대기가 이어진다"
+else
+  bad "(13) 리셋권이 눌린 뒤에도 여러 조각 동안 대기가 이어진다" \
+    "행 $(waits_of 'B:RA#1') / blocked: $( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1)"
+fi
+check "(13) 눌린 뒤의 감독자가 살아 있다" "$(alive "$SUP_RA")" "alive"
+check "(13) 눌린 뒤에 blocked 행이 없다" "$(blocked_n)" "0"
+check "(13) 표지의 예비에 그 리셋권이 눌림 표시로 있다" "$(seen_of RA)" "array:number"
+w13r_release RA
+check "(13) 눌림 대기는 끝까지 blocked 행을 쓰지 않는다" "$(blocked_n)" "0"
+
+# (d): the marker's `예비` broken to plain text. The loop sends `[]` and goes on;
+# the next WAIT writes the memory back as an array. The break lands just after a
+# heartbeat row, so it does not race the refresh that follows that row.
+w13r_open SUPRD RDK; rc_rd=$?
+check "(13) 예비 손상 변형의 파견이 0 으로 반환한다" "$rc_rd" "0"
+SUP_RD=$( { cat "$RD/RDK.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+n=0
+while [ "$(waits_of 'B:RDK#1')" -lt 2 ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+sleep 0.3
+awk 'index($0, "예비=") == 1 { print "예비=깨진 값"; next } { print }' "$RD/RDK.waiting" > "$RD/RDK.waiting.n" \
+  && mv -f "$RD/RDK.waiting.n" "$RD/RDK.waiting"
+check "(13) 표지의 예비가 평문으로 깨졌다" "$(seen_of RDK)" "unreadable"
+rd0=$(waits_of 'B:RDK#1')
+if w13r_rows_past 'B:RDK#1' "$rd0"; then
+  ok "(13) 예비가 깨져도 대기 루프가 멈추지 않는다"
+else
+  bad "(13) 예비가 깨져도 대기 루프가 멈추지 않는다" \
+    "행 $(waits_of 'B:RDK#1') / blocked: $( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1)"
+fi
+check "(13) 예비 손상 뒤의 감독자가 살아 있다" "$(alive "$SUP_RD")" "alive"
+check "(13) 예비 손상 뒤에 blocked 행이 없다" "$(blocked_n)" "0"
+check "(13) 다음 WAIT 가 예비를 배열로 다시 쓴다" "$(seen_of RDK)" "array:null"
+w13r_release RDK
+
+# (e): pressed inside the first chunk, before the loop's first re-query — the
+# only memory the router can read then is the one the gate planted.
+w13r_open SUPRE RE; rc_re=$?
+w13r_usage '[]' 0.99 "$W13R_OBS"
+check "(13) 첫 조각 변형의 파견이 0 으로 반환한다" "$rc_re" "0"
+SUP_RE=$( { cat "$RD/RE.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+if w13r_rows_past 'B:RE#1' 1; then
+  ok "(13) 첫 조각 안에 눌려도 대기가 이어진다"
+else
+  bad "(13) 첫 조각 안에 눌려도 대기가 이어진다" \
+    "행 $(waits_of 'B:RE#1') / blocked: $( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1)"
+fi
+check "(13) 첫 조각에 눌린 감독자가 살아 있다" "$(alive "$SUP_RE")" "alive"
+check "(13) 첫 조각에 눌린 뒤에 blocked 행이 없다" "$(blocked_n)" "0"
+check "(13) 첫 조각에 눌린 표지의 예비도 눌림 표시다" "$(seen_of RE)" "array:number"
+w13r_release RE
+
+# (g): the driver's seed. `spawn_route_wait` is called from a shell that sourced
+# run.sh the way the gate does, with the WAIT envelope the router gives the
+# driver's own request; its first marker must carry that envelope's
+# `reserve_seen`. The waiter is then ended and its marker and FIFO entry dropped.
+W13R_OBS=$(date +%s)
+w13r_usage "$(jq -cn --argjson x "$(( W13R_OBS + 864000 ))" '[{id: "rp-13", kind: "seven_day", expires_at_epoch: $x}]')" 0.99 "$W13R_OBS"
+W13_DL=$(( W13R_OBS + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 90 ))
+mk_run SUPRG '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
+w13_stall
+seg G
+rm -f "$WORK/r13g-env"
+# Sourcing resets the driver's run globals to empty, so this suite's values are
+# kept aside first and put back after.
+(
+  w13g_mf=$MANIFEST; w13g_led=$LEDGER
+  CC_ORCH_SOURCE_ONLY=1
+  . "$ORCH/run.sh"
+  set +eu
+  MANIFEST=$w13g_mf; RUN_ID=$RUN; RUN_DIR=$RD; LEDGER=$w13g_led; GRANT="$WT/docs/pipeline-grant/$RUN.md"
+  SPAWN_LINEAGE=$(route_lineage_of 'S5:G:1')
+  env=$(route_resolve "$(spawn_route_request "$SPAWN_LINEAGE" first review '')")
+  printf '%s' "$env" > "$WORK/r13g-env"
+  spawn_route_wait 'S5:G:1' review first '' "$env"
+) > "$WORK/r13g.log" 2>&1 &
+W13G=$!; KILL_LIST="$KILL_LIST $W13G"
+wait_file "$RD/G.waiting" 100 || true
+g_env_seen=$(jq -c '.reserve_seen' "$WORK/r13g-env" 2>/dev/null || true)
+check "(13) 드라이버가 받은 봉투는 예비 공급 WAIT 이고 리셋권을 본 기억을 싣는다" \
+  "$(jq -r '"\(.verdict):\(.reserve != null):\([.reserve_seen[]? | .id] | join(","))"' "$WORK/r13g-env" 2>/dev/null \
+     || printf '봉투 없음 — %s' "$(tail -3 "$WORK/r13g.log" 2>/dev/null)")" "WAIT:true:rp-13"
+check "(13) 드라이버가 심은 첫 표지의 예비는 그 봉투의 reserve_seen 과 같다" \
+  "$(sed -n 's/^예비=//p' "$RD/G.waiting" 2>/dev/null | tail -1)" "${g_env_seen:-봉투 없음 — $(tail -3 "$WORK/r13g.log" 2>/dev/null)}"
+check "(13) 드라이버 표지의 기록자는 드라이버다" "$(sed -n 's/^기록자=//p' "$RD/G.waiting" 2>/dev/null)" "드라이버"
+kill -TERM "$W13G" 2>/dev/null; wait "$W13G" 2>/dev/null || true
+( CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; set +eu; RUN_ID=$RUN; RUN_DIR=$RD; wait_drop "$RD/G.waiting" )
+check "(13) 끝낸 드라이버 대기자의 표지가 남지 않는다" "$( [ -e "$RD/G.waiting" ] && printf yes || printf no)" "no"
+rm -f "$W13_USAGE"
 
 # THE SAME DEADLINE ON A RUN-SCOPE DESIGN STEP. Its key is the plan's step id,
 # but `act` takes the step only as `--segment -` with `design` as the first

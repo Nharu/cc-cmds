@@ -12,7 +12,7 @@
 
 ### Step 5: The interview
 
-**5a — Termination point.** Asked before the requirement is settled.
+Before the requirement is settled, Read `${CLAUDE_SKILL_DIR}/references/boundaries.md` now; it holds 5a.
 
 **5j — The requirements interview.** This is the interview `design` would have held.
 

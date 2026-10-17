@@ -2,9 +2,9 @@
 # lint-bash-portability: self-skip
 # 계정 라우터 `plugins/cc-cmds/orchestrator/route.sh` 의 시험.
 #
-# 라우터는 휴면 스위치 아래에 실려 있어 제품 경로 어디에서도 불리지 않는다. 그래서
-# 이 파일이 그 코드의 유일한 실행자이고, 뒤 슬라이스는 이 파일을 고칠 수 없으므로
-# 스위치가 1 로 뒤집힌 뒤에도 같은 단언이 초록이어야 한다.
+# 드라이버는 인벤토리 기준선을 받은 런에서 스테이지마다 `route_resolve` 로 계정을
+# 고른다. 이 파일은 그 판정 경로를 문맥 주입으로 돌리는 시험이고, 가드 절은 스위치를
+# 1 로 뒤집은 스크래치 사본으로도 같은 단언이 초록인지 본다.
 #
 # 무엇을 왜 단언하는가:
 #   정적 검사        — route.sh 가 있고 `run.sh` 소싱 뒤 `route_resolve` 가 정의된다.
@@ -26,6 +26,11 @@
 #   임대 표          — 세 상태와 처분, 대기 프리미티브, 생존 네 갈래, 반납·보유자 규칙,
 #                      stale-깨짐, 모르는 kind, 키 인코더, 락과 거래 프로세스, 재검증과
 #                      경합, 임대 쓰기 뒤 차용 재판독과 복원, 실패 경로, 지문의 TZ 고정.
+#   관측 로그        — 계약 픽스처와 같은 키 순서, 판정된 그룹의 W7, WAIT·PARK 처분,
+#                      쓸 수 없을 때와 락이 잡혔을 때의 봉투 불변, 보존 나이·크기 정리.
+#   리셋권           — 계약 고정 입력의 바이트 해시, 버려질 한도(W7) 순서와 경계, 예비
+#                      공급 대기의 자리·봉투·지명, 낡은 파일과 비정형 기록, 그 대기 행의
+#                      원장 검사.
 #   전역 충돌 린트   — 소스 줄 파생의 네 스크래치 트리와 case 갈래 머리 이름 추출.
 #
 # 격리: HOME·XDG_CONFIG_HOME·XDG_STATE_HOME·RUN_PACE_ROOT 를 $WORK 아래로 두고
@@ -77,8 +82,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 651(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
-ASSERTION_FLOOR=630
+# 실측 950(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
+ASSERTION_FLOOR=929
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -521,6 +526,59 @@ tr_g_shipped() {
   check "$lb: run_routed 없는 셸은 기록 1 의 런에서도 휴면 답" "$x" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)"
 }
 
+tr_g_lent() {
+  # 대여 좌석 고정의 진입. fleet 이 대여 레인으로 띄운 런은 런 디렉터리에 `fleet-lane`
+  # 기록을 두고, 라우팅되지 않으면 좌석을 쓰지 않는다.
+  local lb="$1" b="$2" rec want out rc g
+  unset CLAUDE_CONFIG_DIR
+  export XDG_STATE_HOME="$b/state" RUN_PACE_ROOT="$b/pace"
+  mkdir -p "$XDG_STATE_HOME"
+  for rec in none 0 1; do
+    export RUN_DIR="$b/run-$rec"
+    mkdir -p "$RUN_DIR"
+    tr_write_inv valid "$RUN_DIR/inventory.json"
+    [ "$rec" = none ] || printf '%s\n' "$rec" > "$RUN_DIR/routing-guard"
+    printf 'cc\n' > "$RUN_DIR/fleet-lane"
+    rc=0; out=$(routing_guard_check) || rc=$?
+    if [ "$rec" = 1 ]; then want="0:"
+    else want="1:대여 좌석 미라우팅 — 런 기록 $( [ "$rec" = none ] && printf 없음 || printf '%s' "$rec" ), fleet-lane 기록 있음"; fi
+    check "$lb: fleet-lane·런 기록 $rec 의 라우팅 가드" "$rc:$out" "$want"
+  done
+  export RUN_DIR="$b/run-dormant"
+  mkdir -p "$RUN_DIR"
+  printf 'cc\n' > "$RUN_DIR/fleet-lane"
+  for g in 0 1; do
+    out=$(route__resolve_as "$g" "$(tr_req)" 2>/dev/null)
+    expect "$lb: fleet-lane·가드 ${g}·인벤토리 부재 → PARK lent-seat-unrouted" "$out" '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  done
+  tr_write_inv corrupt "$RUN_DIR/inventory.json"
+  expect "$lb: fleet-lane·가드 0·인벤토리 깨짐 → PARK lent-seat-unrouted" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  rm -f "$RUN_DIR/fleet-lane"
+  check "$lb: fleet-lane 없음 → 휴면 봉투" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)" "$(tr_dormant "$(resolve_account)")"
+  # 고정 계정이 인벤토리에 없는 활성 경로.
+  export RUN_DIR="$b/run-active"
+  mkdir -p "$RUN_DIR"
+  tr_write_inv valid "$RUN_DIR/inventory.json"
+  printf 'cc\n' > "$RUN_DIR/fleet-lane"
+  expect "$lb: fleet-lane·가드 1·고정 계정 없는 인벤토리 → PARK lent-seat-unrouted" "$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  # 문맥의 좌석. 기록이 없으면 오늘의 바이트, 있으면 첫 줄, 비었으면 어느 계정과도 맞지 않는 값.
+  rm -f "$RUN_DIR/fleet-lane"
+  check "$lb: fleet-lane 없음 → 문맥 seat 는 오늘과 같다" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat"}'
+  printf ' cc \nzz\n' > "$RUN_DIR/fleet-lane"
+  check "$lb: fleet-lane 첫 줄 → seat.lane" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat","lane":"cc"}'
+  : > "$RUN_DIR/fleet-lane"
+  check "$lb: 빈 fleet-lane → 맞는 계정 없는 고정" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat","lane":"-"}'
+  # 등록 cc 말고 무인 허용이 없는 인벤토리.
+  export RUN_DIR="$b/run-noenabled"
+  mkdir -p "$RUN_DIR"
+  jq -cn --arg h "$HOME" '{schema: "cc-lane-accounts v1", accounts: [{id: "cc", config_dir: ($h + "/.claude-cc"), label: "cc",
+    interactive_reserved: true, unattended: "disabled", interactive_lending: "auto", added_at: 0}]}' > "$RUN_DIR/inventory.json"
+  expect "$lb: 등록 cc 말고 무인 허용 없음 → PARK no-enabled-account" "$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "no-enabled-account"'
+}
+
 tr_guard_sections() {
   local rs="$1" lb="$2" b
   b="$WORK/guard-$lb"
@@ -532,6 +590,8 @@ tr_guard_sections() {
 }
 
 tr_guard_sections "$TR_RUN_SH" "원본"
+mkdir -p "$WORK/guard-lent"
+tr_in_run "$TR_RUN_SH" tr_g_lent "대여 고정" "$WORK/guard-lent"
 check "오케스트레이터에 빌드 스위치 이름이 남지 않는다" \
   "$(grep -l -r 'ROUTE_ROUTING_BUILD_COMPLETE' "$TR_ORCH" || true)" ""
 
@@ -567,6 +627,37 @@ check "인벤토리 파싱 불가 → rc 1" "$rc" 1
 check "인벤토리 파싱 불가 → 사유 parse" "$(grep -c '(parse)' "$INV/parse.err")" 1
 rc=0; bash "$TR_ROUTE" inventory-check "$INV/absent.json" 2>/dev/null || rc=$?
 check "인벤토리 부재 → rc 2" "$rc" 2
+
+# 판정 말뭉치. cc-lane 이 같은 바이트의 파일을 갖고 같은 두 칸을 맞춘다. 치명 판정은
+# `inventory-check` 의 rc 와 사유로, 연성 판정은 rc 0 그대로 표준 오류 한 줄로 본다.
+# 치명 판정이 있는 줄은 연성 줄을 내지 않으므로 그 칸은 `rt_lending_why` 를 직접 부른다.
+INVC="$repo_root/tests/fixtures/route-inventory-contract/inventory-verdicts.jsonl"
+check "판정 말뭉치는 23줄" "$(grep -c '' "$INVC")" 23
+n=0
+while IFS= read -r line; do
+  n=$((n + 1))
+  cn=$(printf '%s' "$line" | jq -r '.case')
+  fatal=$(printf '%s' "$line" | jq -r '.fatal')
+  soft=$(printf '%s' "$line" | jq -r '.soft')
+  f="$INV/corpus-$n.json"
+  printf '%s' "$line" | jq -c --arg h "$HOME" '.document | walk(if type == "string" then gsub("@HOME@"; $h) else . end)' > "$f"
+  rc=0; bash "$TR_ROUTE" inventory-check "$f" 2>"$f.err" </dev/null || rc=$?
+  if [ "$fatal" = ok ]; then
+    check "말뭉치 $cn → 치명 rc 0" "$rc" 0
+  else
+    check "말뭉치 $cn → 치명 rc 1" "$rc" 1
+    check "말뭉치 $cn → 치명 사유 $fatal" "$(grep -c "($fatal)" "$f.err")" 1
+  fi
+  if [ "$fatal" != ok ]; then
+    got=$( . "$TR_ROUTE"; jq -r -s "$(route__jq_lib)"' rt_lending_why' "$f" </dev/null 2>/dev/null )
+    check "말뭉치 $cn → 연성 판정 $soft(직접)" "$got" "$soft"
+  elif [ "$soft" = ok ]; then
+    check "말뭉치 $cn → 연성 줄 없음" "$(grep -c '연성 결함' "$f.err")" 0
+  else
+    check "말뭉치 $cn → 연성 사유 $soft 한 번" "$(grep -c "연성 결함: .*($soft)" "$f.err")" 1
+  fi
+done < "$INVC"
+check "판정 말뭉치의 모든 줄을 돌았다" "$n" 23
 out=$(decide '.inventory.accounts = [A("a") + {config_dir: "/h/.claude-a//x/./"}] | ONLY(["a"]) | .inventory.accounts[0].config_dir = "/h/.claude-a//x/." | .usage.accounts = []')
 expect "config_dir 는 정규화하지 않고 축자로 싣는다" "$out" '.config_dir == "/h/.claude-a//x/."'
 
@@ -979,6 +1070,46 @@ expect "until 이 없으면 마감이 있어도 기다린다" "$out" '.verdict =
 out=$(decide "$ONE | $FULL_A | REQ({event: \"resume\", bound_account: \"a\"}) | .deadline = {deadline_epoch: ($NOW + 100), expected_duration_s: 200}")
 expect "재개 대기도 마감을 넘기면 PARK deadline" "$out" '.verdict == "PARK" and .reason == "deadline"'
 
+# 섞인 후보의 사유 — 지명된 그룹의 후보 항목이 모두 소진일 때만 group-exhausted 다.
+# 소진 계정(XU)은 계정 수준 소진 시각을 싣고, 자리 없음 계정은 5시간 0.9(RU)나 주간
+# 0.99(KU)로 입장에 실패한다. 같은 org 의 두 계정은 한 그룹이고, 그룹 창은 관측이 더
+# 신선한 계정의 것이다.
+MIXD='def WO($u; $r; $o): {utilization: $u, resets_at_epoch: $r, observed_at_epoch: ($now + $o), source: "tracker"};
+  def PX: {reset_passes: {held: [{id: "rp-x", kind: "seven_day", expires_at_epoch: ($now + 864000)}]}};
+  def XU($id; $org; $ready; $o): UW($id; WO(0.2; $now + 3600; $o); WO(1.0; $ready; $o)) + {org_hash: $org, exhausted_until_epoch: $ready};
+  def RU($id; $org; $r5): UW($id; WO(0.9; $r5; -60); WO(0.1; $now + 86400; -60)) + {org_hash: $org};
+  def KU($id; $org): UW($id; WO(0.2; $now + 3600; -60); WO(0.99; $now + 432000; -60)) + {org_hash: $org};
+  def MDL: .deadline = {deadline_epoch: ($now + 3000), expected_duration_s: 600};'
+out=$(decide "$MIXD ONLY([\"x\",\"y\"]) | USE([XU(\"x\"; \"aa\"; \$now + 3000; -60), RU(\"y\"; \"bb\"; \$now + 9000)])")
+expect "섞인 후보: 소진 그룹이 먼저 준비되면 group-exhausted" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .group == \"org:aa\" and .until_epoch == $((NOW + 3000))"
+out=$(decide "$MIXD ONLY([\"x\",\"y\"]) | USE([XU(\"x\"; \"aa\"; \$now + 432000; -60), RU(\"y\"; \"bb\"; \$now + 3600)])")
+expect "섞인 후보: 자리 없음 그룹이 먼저 준비되면 no-room" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"no-room\" and .group == \"org:bb\" and .until_epoch == $((NOW + 3600))"
+out=$(decide "$MIXD ONLY([\"x\",\"y\"]) | USE([XU(\"x\"; \"aa\"; \$now + 432000; -60) + PX, RU(\"y\"; \"bb\"; \$now + 3600)]) | MDL")
+expect "섞인 후보: 리셋권으로 지명된 소진 그룹의 예비 공급은 group-exhausted" "$out" \
+  '.verdict == "WAIT" and .reason == "group-exhausted" and .group == "org:aa" and .until_epoch == null and .account == null and .reserve.pass_id == "rp-x"'
+for ids in x:y y:x; do
+  xi=${ids%%:*} ki=${ids#*:}
+  out=$(decide "$MIXD ONLY([\"$xi\",\"$ki\"]) | USE([XU(\"$xi\"; \"aa\"; \$now + 432000; -600) + PX, KU(\"$ki\"; \"aa\")]) | MDL")
+  expect "섞인 후보: 한 그룹 안 소진 ${xi}·자리 없음 $ki 의 예비 공급은 no-room" "$out" \
+    '.verdict == "WAIT" and .reason == "no-room" and .group == "org:aa" and .until_epoch == null and .reserve.pass_id == "rp-x"'
+  out=$(decide "$MIXD ONLY([\"$xi\",\"$ki\"]) | USE([XU(\"$xi\"; \"aa\"; \$now + 1800; -600), KU(\"$ki\"; \"aa\")])")
+  expect "섞인 후보: 한 그룹 안 소진 ${xi}·자리 없음 $ki 의 시각 대기는 no-room" "$out" \
+    ".verdict == \"WAIT\" and .reason == \"no-room\" and .group == \"org:aa\" and .until_epoch == $((NOW + 1800))"
+done
+out=$(decide "$MIXD ONLY([\"x\",\"y\"]) | USE([XU(\"x\"; \"aa\"; \$now + 3000; -60), XU(\"y\"; \"aa\"; \$now + 5000; -60)])")
+expect "섞인 후보: 한 그룹 전부 소진이면 group-exhausted" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .group == \"org:aa\" and .until_epoch == $((NOW + 3000))"
+out=$(decide "$MIXD ONLY([\"u\",\"x\"]) | USE([UW(\"u\"; null; null) + {org_hash: \"cc\"},
+  UW(\"x\"; null; null) + {org_hash: \"cc\", exhausted_until_epoch: (\$now + 3000)}]) | ITEMS([LG(\"r2\"; \"S1\"; \"u\"; true)])")
+expect "섞인 후보: 한 그룹 안 미상 동시성·소진 혼합은 no-room" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"no-room\" and .group == \"org:cc\" and .until_epoch == $((NOW + 3000))"
+out=$(decide "$MIXD ONLY([\"u\",\"z\"]) | USE([UW(\"u\"; null; null), UW(\"z\"; WO(0.9; null; -60); WO(0.1; \$now + 86400; -60))])
+  | ITEMS([LG(\"r2\"; \"S1\"; \"u\"; true)])")
+expect "섞인 후보: 시각 없는 대기가 미상 동시성만의 그룹을 지명해도 no-room" "$out" \
+  '.verdict == "WAIT" and .reason == "no-room" and .group == "acct:u" and .until_epoch == null'
+
 FIFO='ONLY(["a"]) | USE([UA("a"; 0.1; 0.1)])'
 out=$(decide "$FIFO | ITEMS([LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; true; 1)])")
 expect "더 이른 대기자가 있으면 신참은 fifo-yield" "$out" '.verdict == "WAIT" and .reason == "fifo-yield" and .group == "acct:a"'
@@ -1267,6 +1398,9 @@ tr_consts_case() {
   check "판독 상한 ROUTE_COST_READ_MAX_BYTES" "$ROUTE_COST_READ_MAX_BYTES" 8388608
   check "보존 나이 ROUTE_COST_KEEP_S" "$ROUTE_COST_KEEP_S" 1209600
   check "보존 줄 수 ROUTE_COST_KEEP_LINES" "$ROUTE_COST_KEEP_LINES" 4000
+  check "관측 로그 스키마 ROUTE_OBSERVE_SCHEMA" "$ROUTE_OBSERVE_SCHEMA" "cc-cmds-route-observe v1"
+  check "관측 로그 정리 문턱 ROUTE_OBSERVE_MAX_BYTES" "$ROUTE_OBSERVE_MAX_BYTES" 16777216
+  check "관측 로그 보존 나이 ROUTE_OBSERVE_KEEP_S" "$ROUTE_OBSERVE_KEEP_S" 10368000
   check "config 는 판독 상한과 보존 상수를 싣지 않는다" \
     "$(printf '%s' "$cfg" | jq -c '.cost | keys')" '["floor","hygiene","max_age_s","max_n","min_n"]'
   want=$(sed -n 's/^readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=\([0-9]*\).*$/\1/p' "$TR_RUN_SH")
@@ -2008,6 +2142,589 @@ tr_active_lock_case() {
 tr_in_run "$TR_RUN_SH" tr_active_lock_case
 
 # ===========================================================================
+# 관측 로그. `lease-txn` 이 GRANT·WAIT 봉투를 낼 때 표의 형제 `observe/route.jsonl`
+# 에 남기는 한 줄. 모양은 cc-lane 과 나눠 쓰는 계약 픽스처와 키 순서까지 같아야
+# 한다. 단언은 `check` 로만 쓴다 — 관측 줄의 `verdict` 를 부류 포괄에 섞지 않는다.
+# ===========================================================================
+FXO="$repo_root/tests/fixtures/route-usage-contract/route-observe.jsonl"
+OB="$WORK/ob"
+# 한도와 락 대기를 작게 미리 정한 래퍼. 같은 이름을 먼저 readonly 로 두면 route.sh
+# 의 가드가 다시 선언하지 못하고 앞선 값이 남는다(그 오류는 소싱의 표준 오류로 버린다).
+WRAPO="$WORK/wrap-observe.sh"
+cat > "$WRAPO" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+readonly ROUTE_OBSERVE_MAX_BYTES="$TRO_MAX" ROUTE_OBSERVE_KEEP_S="$TRO_KEEP" ROUTE_LEASE_LOCK_WAIT_S=1
+. "$TRH_ORCH/liveness.sh"
+. "$TRH_ORCH/route.sh" 2>/dev/null
+route__main "$@"
+EOF
+# obn <부모> — 관측 로그의 줄 수. 파일이 없으면 0.
+obn() { if [ -f "$1/observe/route.jsonl" ]; then wc -l < "$1/observe/route.jsonl" | tr -d ' '; else printf 0; fi; }
+# obtxn <부모> <문맥 필터> [래퍼 환경…] — 그 부모 아래 `leases` 표로 거래 하나.
+obtxn() {
+  local p="$1" f="$2"
+  shift 2
+  ctx "$f" | env "$@" bash "${OBW:-$TR_ROUTE}" lease-txn --table "$p/leases" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER"
+}
+# 주간 리셋이 한 시간 뒤인 계정 a 는 W7 이 0 보다 크고, 그래서 a 가 먼저 뽑힌다.
+OBF='USE([UW("a"; W(0.1; $now + 3600); W(0.1; $now + 3600)), UA("b"; 0.1; 0.1)])'
+OBWAIT='USE([UA("a"; 0.1; 1.2), UA("b"; 0.1; 1.2)])'
+FXO1=$(sed -n 1p "$FXO")
+
+check "관측 픽스처는 두 줄이다" "$(wc -l < "$FXO" | tr -d ' ')" 2
+check "관측 픽스처 두 줄의 최상위 키 순서가 같다" "$(jq -c keys_unsorted "$FXO" | sort -u | wc -l | tr -d ' ')" 1
+check "관측 픽스처의 groups 항목 키 순서" "$(jq -c '.groups[] | keys_unsorted' "$FXO" | sort -u)" \
+  '["group","w7_bp","u7_bp","sigma7_bp","resets_at"]'
+
+P="$OB/grant"
+rc=0; out=$(obtxn "$P" "$OBF" 2>"$OB.grant.err") || rc=$?
+check "관측: GRANT 거래는 rc 0 으로 a 를 그룹 acct:a 로 준다" "$rc/$(printf '%s' "$out" | jq -r '.verdict + " " + .account + " " + .group')" "0/GRANT a acct:a"
+check "관측: GRANT 거래가 관측 줄 정확히 하나를 쓴다" "$(obn "$P")" 1
+check "관측: 쓸 수 있는 실행은 표준 오류가 비어 있다" "$(cat "$OB.grant.err")" ""
+line=$(cat "$P/observe/route.jsonl" 2>/dev/null)
+check "관측: 줄의 최상위 키 순서가 픽스처 1행과 같다" "$(printf '%s' "$line" | jq -c keys_unsorted)" "$(printf '%s' "$FXO1" | jq -c keys_unsorted)"
+check "관측: groups 항목 키 순서가 픽스처 1행과 같다" \
+  "$(printf '%s' "$line" | jq -c '[.groups[] | keys_unsorted] | unique')" "$(printf '%s' "$FXO1" | jq -c '[.groups[] | keys_unsorted] | unique')"
+check "관측: GRANT 줄의 요청·판정 필드" \
+  "$(printf '%s' "$line" | jq -c '[.schema, .at, .run_id, .lineage, .event, .kind, .verdict, .basis, .op, .account, .group]')" \
+  "[\"cc-cmds-route-observe v1\",$NOW,\"r1\",\"S1\",\"first\",\"implement\",\"GRANT\",\"first\",\"write\",\"a\",\"acct:a\"]"
+check "관측: groups 는 모든 그룹을 group 순으로 담는다" "$(printf '%s' "$line" | jq -c '[.groups[].group]')" '["acct:a","acct:b"]'
+check "관측: 판정된 그룹의 주간 값" "$(printf '%s' "$line" | jq -c '.groups[0] | [.u7_bp, .sigma7_bp, .resets_at]')" "[1000,0,$((NOW + 3600))]"
+c=$(ctx "$OBF")
+w7want=$(printf '%s' "$c" | bash "$TR_ROUTE" classify \
+  | ( . "$TR_ROUTE"; jq -r --argjson c "$c" "$(route__jq_lib)"' .groups[] | select(.group == "acct:a") | rt_w7($c; .; rt_admit_core($c; .; null).cost)' ))
+check "관측: 판정된 그룹의 w7_bp 는 같은 문맥의 rt_w7" "$(printf '%s' "$line" | jq -r '.groups[0].w7_bp')" "$w7want"
+check "관측: 그 W7 은 0 보다 크다" "$( [ "${w7want:-0}" -gt 0 ] 2>/dev/null && printf 큼 || printf 아님)" "큼"
+
+P="$OB/wait"
+rc=0; out=$(obtxn "$P" "$OBWAIT") || rc=$?
+check "관측: WAIT 거래가 관측 줄 하나를 쓴다" "$rc/$(printf '%s' "$out" | jq -r .verdict)/$(obn "$P")" "0/WAIT/1"
+line=$(cat "$P/observe/route.jsonl" 2>/dev/null)
+check "관측: WAIT 줄은 계정·근거 null, op none" "$(printf '%s' "$line" | jq -c '[.verdict, .account, .basis, .op]')" '["WAIT",null,null,"none"]'
+check "관측: WAIT 줄의 group 은 봉투의 group" "$(printf '%s' "$line" | jq -c .group)" "$(printf '%s' "$out" | jq -c .group)"
+check "관측: 쓰지 않는 결정은 표 디렉터리를 만들지 않는다" "$([ -e "$P/leases" ] && printf 있음 || printf 없음)" "없음"
+
+P="$OB/park"
+out=$(obtxn "$P" '.inventory = {state: "corrupt"}')
+check "관측: PARK 봉투는 줄을 더하지 않는다" "$(printf '%s' "$out" | jq -r .verdict)/$(obn "$P")" "PARK/0"
+mkdir -p "$P/leases"
+printf '{' > "$P/leases/r9+x.lease"
+out=$(obtxn "$P" '.')
+check "관측: 깨진 표의 PARK 도 줄을 더하지 않는다" "$(printf '%s' "$out" | jq -r .reason)/$(obn "$P")" "lease-table-corrupt/0"
+
+# 관측 디렉터리 자리에 일반 파일이 있으면 쓸 수 없다. 봉투·rc 는 쓸 수 있는 실행과 같다.
+for v in WAIT GRANT; do
+  if [ "$v" = WAIT ]; then f="$OBWAIT"; else f="$OBF"; fi
+  rc1=0; o1=$(obtxn "$OB/ok-$v" "$f" 2>"$OB/ok-$v.err") || rc1=$?
+  mkdir -p "$OB/ro-$v"
+  printf 'x\n' > "$OB/ro-$v/observe"
+  rc2=0; o2=$(obtxn "$OB/ro-$v" "$f" 2>"$OB/ro-$v.err") || rc2=$?
+  if [ "$v" = GRANT ]; then
+    o1=$(printf '%s' "$o1" | jq -c 'del(.nonce)'); o2=$(printf '%s' "$o2" | jq -c 'del(.nonce)')
+  fi
+  check "관측: 쓸 수 없는 관측 디렉터리에서 $v 봉투·rc 가 같다" "$rc2/$o2" "$rc1/$o1"
+  check "관측: 쓸 수 없는 관측 디렉터리에서 $v 경고 한 줄" \
+    "$(wc -l < "$OB/ro-$v.err" | tr -d ' ')/$(grep -c '관측 로그' "$OB/ro-$v.err")/$(wc -c < "$OB/ok-$v.err" | tr -d ' ')" "1/1/0"
+done
+
+# 정리. 보존 나이를 작게 정해 오래된 줄·다른 스키마 줄·깨진 줄이 지워지고, 최근 줄과
+# 새 줄이 남는다. 문턱은 그 둘의 바이트 합과 같게 둔다.
+P="$OB/prune"
+newl=$(cat "$OB/wait/observe/route.jsonl")
+recent=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 10))" '.at = $t')
+old=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 2000))" '.at = $t')
+lim=$(( $(printf '%s\n%s\n' "$recent" "$newl" | wc -c | tr -d ' ') ))
+mkdir -p "$P/observe"
+{
+  printf '%s\n' "$old"
+  printf '%s\n' "$FXO1" | jq -c '.schema = "cc-cmds-route-observe v0" | .at = '"$NOW"
+  printf '{\n'
+  printf '%s\n' "$recent"
+} > "$P/observe/route.jsonl"
+OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX="$lim" TRO_KEEP=1000 >/dev/null
+check "관측 정리: 오래된·다른 스키마·깨진 줄이 지워지고 최근 줄과 새 줄이 남는다" \
+  "$(cat "$P/observe/route.jsonl")" "$recent
+$newl"
+P="$OB/prune-keep"
+mkdir -p "$P/observe"
+printf '%s\n' "$old" > "$P/observe/route.jsonl"
+OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX=16777216 TRO_KEEP=1000 >/dev/null
+check "관측 정리: 문턱 아래면 오래된 줄도 지우지 않는다" "$(obn "$P")/$(sed -n 1p "$P/observe/route.jsonl")" "2/$old"
+P="$OB/prune-tail"
+mkdir -p "$P/observe"
+r2=$(printf '%s' "$recent" | jq -c '.lineage = "I9"')
+printf '%s\n%s\n' "$recent" "$r2" > "$P/observe/route.jsonl"
+OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX="$lim" TRO_KEEP=1000 >/dev/null
+check "관측 정리: 그래도 넘치면 최신 줄부터 문턱 안만 남는다" "$(cat "$P/observe/route.jsonl")" "$r2
+$newl"
+
+# 관측 로그 락이 살아 있는 보유자에게 잡혀 있으면 봉투는 그대로이고 줄은 버려진다.
+P="$OB/locked"
+mkdir -p "$P/observe/.lock"
+printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$P/observe/.lock/owner"
+rc=0; out=$(OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX=16777216 TRO_KEEP=10368000 2>"$OB/locked.err") || rc=$?
+check "관측: 락이 잡혀 있으면 봉투·rc 가 같다" "$rc/$out" "0/$(obtxn "$OB/wait2" "$OBWAIT")"
+check "관측: 락이 잡혀 있으면 줄을 버리고 경고한다" \
+  "$(obn "$P")/$(grep -c '관측 로그 락을 잡지 못해' "$OB/locked.err")/$([ -d "$P/observe/.lock" ] && printf 남음)" "0/1/남음"
+
+# ===========================================================================
+# 리셋권. cc-lane 이 발행하는 계약 고정 입력을 `usage-read` 로 읽어 그대로 문맥에
+# 넣는다. 인벤토리는 고정 입력의 계정으로 통째로 바꾸고 `config_dir` 를 고정 입력
+# 값과 맞춘다 — `A($id)` 의 디렉터리를 그대로 두면 `mismatch` 가 켜진다. 비용은 위
+# 주입값이라 ρ7 = (800/3000)·8000/18000 bp/초다.
+# ===========================================================================
+FX="$repo_root/tests/fixtures/route-usage-contract/usage-reset-passes.json"
+FX_NOW=1800000000
+FX_SHA=f282ea51d54fc5166381a464ed2cb5ef4ea033d761b021bda5888b3f1a27017c
+FX_JQ='
+def FXINV: .inventory.accounts = [.usage.accounts[].id | A(.) + {config_dir: ("/fixture/" + .)}];
+def FONLY($ids): .inventory.accounts = [$ids[] | A(.) + {config_dir: ("/fixture/" + .)}];
+def UAC($id; f): .usage.accounts |= map(if .id == $id then f else . end);
+def UCOPY($from; $id): .usage.accounts += [.usage.accounts[] | select(.id == $from) | .id = $id | .config_dir = ("/fixture/" + $id)];
+def DL($s): .deadline = {deadline_epoch: ($now + $s), expected_duration_s: 600};
+def R4: FONLY(["full"]) | REQ({event: "resume", bound_account: "full"}) | DL(86400);
+'
+# fxctx <now> <usage 정규형> <필터> — 고정 입력 문맥. 필터는 인벤토리를 맞춘 뒤에 돈다.
+fxctx() {
+  jq -cn --argjson now "$1" --argjson fxu "$2" --arg schema "$LEASE_SCHEMA" \
+    --argjson k5 "$TK5" --argjson k7 "$TK7" --argjson ks "$TKS" --argjson c5 "$TC5" --argjson c7 "$TC7" \
+    --argjson cap "$TCAP" --argjson r5 "$TR5" --argjson r7 "$TR7" --arg bp "$TR_NO_BORROW" \
+    "$TR_JQ $FX_JQ base | .usage = \$fxu | FXINV | $3"
+}
+fxdecide() { fxctx "$FX_NOW" "$FXU" "$1" | bash "$TR_ROUTE" decide; }
+# fx_w7 <필터> <그룹> — 분류기가 만든 그룹 보기에 rt_w7 을 직접 돌린다.
+fx_w7() {
+  local c
+  c=$(fxctx "$FX_NOW" "$FXU" "$1")
+  printf '%s' "$c" | bash "$TR_ROUTE" classify \
+    | ( . "$TR_ROUTE"; jq -r --argjson c "$c" --argjson cost "$TCOST" --arg g "$2" \
+          "$(route__jq_lib)"' .groups[] | select(.group == $g) | rt_w7($c; .; $cost)' )
+}
+# fx_order <필터> — 고른 계정을 인벤토리에서 빼 가며 GRANT 가 끊길 때까지의 순서.
+fx_order() {
+  local ex='[]' a out="" i=0
+  while [ "$i" -lt 8 ]; do
+    a=$(fxdecide "$1 | .inventory.accounts |= map(select(.id as \$x | $ex | any(.[]; . == \$x) | not))" \
+          | jq -r 'if .verdict == "GRANT" then (.account // "") else "" end')
+    [ -n "$a" ] || break
+    out="${out:+$out }$a"
+    ex=$(jq -cn --argjson e "$ex" --arg a "$a" '$e + [$a]')
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+tr_sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'; }
+
+check "라우터-9: 고정 입력 바이트의 SHA-256 이 cc-lane 리터럴과 같다" "$(tr_sha256 "$FX")" "$FX_SHA"
+FXU=$(bash "$TR_ROUTE" usage-read "$FX" "$FX_NOW")
+expect "고정 입력이 지금 1800000000 에서 신선하게 읽힌다" "$FXU" '.state == "valid" and .fresh == true and (.accounts | length) == 5'
+
+G_WORK='org:1111111111111111'; G_BUSY='org:2222222222222222'; G_LATE='org:3333333333333333'
+G_FULL='org:4444444444444444'; G_FULL2='org:5555555555555555'
+
+# 라우터-1 — 버려질 한도가 5시간 여유보다 앞선다.
+check "라우터-1: busy 의 W7" "$(fx_w7 '.' "$G_BUSY")" 6147
+check "라우터-1: work 의 W7" "$(fx_w7 '.' "$G_WORK")" 0
+check "라우터-1: late 의 W7" "$(fx_w7 '.' "$G_LATE")" 0
+expect "라우터-1: busy 를 고른다" "$(fxdecide '.')" '.verdict == "GRANT" and .basis == "first" and .account == "busy" and .config_dir == "/fixture/busy"'
+check "라우터-1: 순서" "$(fx_order '.')" "busy work late spare"
+
+# 라우터-2 — 리셋 전에 만료되는 주간 리셋권이 순서를 바꾼다.
+LATE2='UAC("late"; .windows.five_hour.utilization = 0.4 | .windows.seven_day.utilization = 0.1
+  | .windows.seven_day.resets_at_epoch = 1800155000 | .reset_passes.held[0].expires_at_epoch = 1800140000)'
+check "라우터-2: late 변형의 W7" "$(fx_w7 "$LATE2" "$G_LATE")" 630
+check "라우터-2: 순서" "$(fx_order "$LATE2")" "busy late work spare"
+expect "라우터-2: work·late 중 late" "$(fxdecide "$LATE2 | FONLY([\"work\",\"late\"])")" '.verdict == "GRANT" and .account == "late"'
+expect "라우터-2: late 리셋권을 지우면 work" "$(fxdecide "$LATE2 | UAC(\"late\"; del(.reset_passes)) | FONLY([\"work\",\"late\"])")" '.verdict == "GRANT" and .account == "work"'
+expect "라우터-2: late 리셋권이 unknown 이면 work" "$(fxdecide "$LATE2 | UAC(\"late\"; .reset_passes.held[0].kind = \"unknown\") | FONLY([\"work\",\"late\"])")" '.verdict == "GRANT" and .account == "work"'
+check "라우터-2: 리셋권을 지운 전체 순서" "$(fx_order "$LATE2 | UAC(\"late\"; del(.reset_passes))")" "busy work late spare"
+
+# 라우터-4 — 오늘이면 마감 PARK 일 자리에서 누를 수 있는 리셋권이 마감 없는 대기를 낸다.
+R4_RESERVE='{"group":"org:4444444444444444","account":"full","pass_id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000}'
+r4=$(fxdecide 'R4')
+r4today=$(fxdecide 'R4 | del(.deadline)')
+expect "라우터-4: 마감이 없으면 오늘의 리셋 시각 대기" "$r4today" '.verdict == "WAIT" and .reason == "resume-bound-no-room" and .until_epoch == 1800432000'
+expect "라우터-4: 예비 공급 WAIT" "$r4" ".verdict == \"WAIT\" and .until_epoch == null and .reason == \"resume-bound-no-room\" and .account == \"full\" and .group == \"$G_FULL\" and .cost == $TCOST and .reserve == $R4_RESERVE"
+check "라우터-4: 비용은 같은 요청의 오늘 값" "$(printf '%s' "$r4" | jq -c .cost)" "$(printf '%s' "$r4today" | jq -c .cost)"
+r4core() { printf '%s' "$1" | jq -c '{verdict, reason, account, group, until_epoch, cost, reserve}'; }
+
+# 라우터-4b — 창 소진에서도 리셋권이 덮는 창이면 예비 공급이다.
+EXH='UAC("full"; .windows.seven_day.utilization = 1.0 | .exhausted_until_epoch = 1800432000)'
+expect "라우터-4b: 소진 계정의 예비 공급 WAIT" "$(fxdecide "$EXH | R4")" ".verdict == \"WAIT\" and .until_epoch == null and .reason == \"resume-bound-exhausted\" and .account == \"full\" and .cost == $TCOST and .reserve == $R4_RESERVE"
+expect "라우터-4b: 마감이 없으면 오늘의 소진 대기" "$(fxdecide "$EXH | R4 | del(.deadline)")" '.verdict == "WAIT" and .reason == "resume-bound-exhausted" and .until_epoch == 1800432000 and (has("reserve") | not)'
+
+# 라우터-3 — 같은 그룹 두 계정의 리셋권은 id 로 한 번이다.
+TWO='UCOPY("full"; "full-b") | FONLY(["full","full-b"])'
+got=$(fxctx "$FX_NOW" "$FXU" "$TWO" | bash "$TR_ROUTE" classify | jq -c --arg g "$G_FULL" '[.groups[] | select(.group == $g) | .passes[].id]')
+check "라우터-3: 두 계정 그룹의 passes 에 rp-0000000e 하나" "$got" '["rp-0000000e"]'
+check "라우터-3: 두 계정 그룹에서도 라우터-4 판정" "$(r4core "$(fxdecide "UCOPY(\"full\"; \"full-b\") | R4 | FONLY([\"full\",\"full-b\"])")")" "$(r4core "$r4")"
+
+# 라우터-5 — 누를 수 있는 리셋권이 없으면 오늘의 마감 PARK.
+for v in 'UAC("full"; .reset_passes.held[0].kind = "unknown")' 'UAC("full"; .reset_passes.held[0].kind = "bogus")' \
+         'UAC("full"; .reset_passes.held[0].expires_at_epoch = 1799999999)' 'UAC("full"; del(.reset_passes))' \
+         "$EXH | UAC(\"full\"; .reset_passes.held[0].kind = \"five_hour\")"; do
+  expect "라우터-5: $v → 마감 PARK" "$(fxdecide "$v | R4")" '.verdict == "PARK" and .reason == "deadline" and (has("reserve") | not)'
+done
+r4del=$(fxdecide 'UAC("full"; del(.reset_passes)) | R4')
+
+# 라우터-10 — 형이 틀린 리셋권 기록은 지운 것과 같다.
+for v in 'UAC("full"; .reset_passes = null)' 'UAC("full"; .reset_passes.held = null)' 'UAC("full"; .reset_passes.held = [1, "x", {id: 2}])'; do
+  check "라우터-10: $v 는 리셋권을 지운 판정과 같다" "$(fxdecide "$v | R4")" "$r4del"
+done
+
+# 라우터-5b — 대기 선택 자리는 만료가 가장 이른 리셋권의 그룹을 지명한다.
+SECOND='UCOPY("full"; "full2") | UAC("full2"; .org_hash = "5555555555555555"
+  | .reset_passes.held = [{id: "rp-00000011", kind: "seven_day", expires_at_epoch: 1800500000}]) | FONLY(["full","full2"]) | DL(86400)'
+expect "라우터-5b: 만료가 이른 리셋권의 그룹" "$(fxdecide "$SECOND")" ".verdict == \"WAIT\" and .reason == \"no-room\" and .account == null and .until_epoch == null and .group == \"$G_FULL2\" and .reserve.pass_id == \"rp-00000011\" and .reserve.account == null and .cost == $TCOST"
+expect "라우터-5b: 만료 동률이면 그룹 id 가 앞선 쪽" "$(fxdecide "$SECOND | UAC(\"full2\"; .reset_passes.held[0].expires_at_epoch = 1800864000)")" ".verdict == \"WAIT\" and .group == \"$G_FULL\" and .reserve.pass_id == \"rp-0000000e\""
+
+# 라우터-6 — 두 창 리셋권.
+check "라우터-6: both 는 라우터-4 와 같은 WAIT" "$(r4core "$(fxdecide 'UAC("full"; .reset_passes.held[0].kind = "both") | R4')" | jq -c '.reserve.kind = "seven_day"')" "$(r4core "$r4")"
+
+# 라우터-7 — 5시간 리셋권. 마감은 지금 + e 와 리셋5 + e 사이다.
+F7='UAC("full"; .windows.five_hour.utilization = 0.9 | .windows.seven_day.utilization = 0.5 | .reset_passes.held[0].kind = "five_hour") | FONLY(["full"]) | DL(3000)'
+expect "라우터-7: 리셋권이 없으면 오늘의 마감 PARK" "$(fxdecide "$F7 | UAC(\"full\"; del(.reset_passes))")" '.verdict == "PARK" and .reason == "deadline" and .ready_at == 1800003600'
+expect "라우터-7: 5시간 리셋권의 예비 공급 WAIT" "$(fxdecide "$F7")" '.verdict == "WAIT" and .reason == "no-room" and .account == null and .until_epoch == null and .reserve.kind == "five_hour" and .reserve.account == null'
+expect "라우터-7: 주간 0.99 이면 마감 PARK" "$(fxdecide "$F7 | UAC(\"full\"; .windows.seven_day.utilization = 0.99)")" '.verdict == "PARK" and .reason == "deadline" and (has("reserve") | not)'
+
+# 라우터-7b — 그룹 소진.
+expect "라우터-7b: 소진 그룹의 예비 공급 WAIT" "$(fxdecide "$EXH | FONLY([\"full\"]) | DL(86400)")" ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .account == null and .until_epoch == null and .reserve.pass_id == \"rp-0000000e\""
+
+# 눌린 리셋권의 유예. 대기 루프가 표지에서 나르는 기억(`reserve_seen`)을 재질의에
+# 싣는다. 보유 목록에서 빠진 리셋권은 파일이 신선하고, 만료 전이고, 그 계정이 보유
+# 목록을 싣고, 오늘도 누를 수 있었던 종류일 때만 눌림이다. 기억 없는 입력은 위
+# 라우터-5·7 단언 그대로다.
+SN='def SP($id; $kind; $exp; $pr): {group: "org:4444444444444444", account: "full", id: $id, kind: $kind, expires_at_epoch: $exp, pressed_at_epoch: $pr};
+  def SEEN($xs): REQ({after_wait: true, reserve_seen: $xs});
+  def GONE: UAC("full"; .reset_passes.held = []);
+  def AGE($s): UAC("full"; .windows.five_hour.observed_at_epoch = ($now - $s) | .windows.seven_day.observed_at_epoch = ($now - $s));'
+EL5='SP("rp-0000000e"; "five_hour"; 1800864000; null)'
+EL7='SP("rp-0000000e"; "seven_day"; 1800864000; null)'
+expect "눌림-1: 기억 없는 재질의는 오늘의 마감 PARK" "$(fxdecide "$SN $F7 | GONE | REQ({after_wait: true})")" \
+  '.verdict == "PARK" and .reason == "deadline" and .ready_at == 1800003600'
+p2=$(fxdecide "$SN $F7 | GONE | SEEN([$EL5])")
+expect "눌림-2: 사용 표시로 빠진 리셋권은 예비 공급 WAIT 를 잇는다" "$p2" \
+  ".verdict == \"WAIT\" and .reason == \"no-room\" and .until_epoch == null and .account == null and .reserve.account == null
+   and .group == \"$G_FULL\" and .reserve.pass_id == \"rp-0000000e\" and .reserve.pressed_at_epoch == $FX_NOW"
+check "눌림-2: 비용은 같은 입력의 보유 지명 봉투와 같다" "$(printf '%s' "$p2" | jq -c .cost)" "$(fxdecide "$F7" | jq -c .cost)"
+check "눌림-2: 내보낸 기억에 눌림 표시" "$(printf '%s' "$p2" | jq -c .reserve_seen)" \
+  "[{\"group\":\"$G_FULL\",\"account\":\"full\",\"id\":\"rp-0000000e\",\"kind\":\"five_hour\",\"expires_at_epoch\":1800864000,\"pressed_at_epoch\":$FX_NOW}]"
+expect "눌림-3: 한 번 눌린 리셋권은 만료가 지나도 눌림" \
+  "$(fxdecide "$SN $F7 | GONE | SEEN([SP(\"rp-0000000e\"; \"five_hour\"; 1799999000; 1799990000)])")" \
+  '.verdict == "WAIT" and .reserve.pass_id == "rp-0000000e" and .reserve.pressed_at_epoch == 1799990000'
+expect "눌림-4: 눌리지 않은 채 만료로 빠지면 마감 PARK" \
+  "$(fxdecide "$SN $F7 | GONE | SEEN([SP(\"rp-0000000e\"; \"five_hour\"; $FX_NOW; null)])")" \
+  '.verdict == "PARK" and .reason == "deadline" and (has("reserve_seen") | not)'
+for v in "REQ({reserve_seen: [$EL5]})" "SEEN([$EL5 | .group = \"$G_FULL2\"])" "SEEN([$EL5]) | UAC(\"full\"; .reset_passes = null)" \
+         "SEEN([$EL5 | .account = \"gone\"])" "SEEN([$EL5 | .kind = \"bogus\"])"; do
+  expect "눌림-5: $v → 마감 PARK" "$(fxdecide "$SN $F7 | GONE | $v")" '.verdict == "PARK" and .reason == "deadline"'
+done
+expect "눌림-7: 지금 + 예상 소요가 마감을 넘으면 기억이 있어도 마감 PARK" \
+  "$(fxdecide "$SN $F7 | GONE | SEEN([$EL5 | .pressed_at_epoch = 1799999000]) | DL(500)")" '.verdict == "PARK" and .reason == "deadline"'
+expect "눌림-8: 만료로 빠진 리셋권은 버리고 만료 전에 빠진 리셋권을 지명한다" \
+  "$(fxdecide "$SN $F7 | GONE | SEEN([SP(\"rp-p1\"; \"five_hour\"; $FX_NOW; null), SP(\"rp-p2\"; \"five_hour\"; 1800700000; null)])")" \
+  '.verdict == "WAIT" and .reserve.pass_id == "rp-p2" and ([.reserve_seen[].id] == ["rp-p2"])'
+expect "눌림-9: 재개 자리도 눌린 리셋권으로 기다린다" "$(fxdecide "$SN R4 | GONE | SEEN([$EL7])")" \
+  ".verdict == \"WAIT\" and .reason == \"resume-bound-no-room\" and .account == \"full\" and .reserve.account == \"full\"
+   and .until_epoch == null and .reserve.pass_id == \"rp-0000000e\" and .reserve.pressed_at_epoch == $FX_NOW"
+base10=$(fxdecide "$SN $F7 | GONE | REQ({after_wait: true})")
+for v in 'null' '"s"' '{}' '[1, "x", {id: "rp-0000000e"}, SP("rp-0000000e"; "five_hour"; "1800864000"; null), SP("rp-0000000e"; "five_hour"; 1800864000; "now")]'; do
+  check "눌림-10: reserve_seen $v 는 기억 없음과 같다" "$(fxdecide "$SN $F7 | GONE | SEEN($v)")" "$base10"
+done
+check "눌림-11: 분류는 기억 유무와 무관하다" "$(fxctx "$FX_NOW" "$FXU" "$SN $F7 | GONE | SEEN([$EL5])" | bash "$TR_ROUTE" classify)" \
+  "$(fxctx "$FX_NOW" "$FXU" "$SN $F7 | GONE" | bash "$TR_ROUTE" classify)"
+expect "눌림-11: 보유 지명 봉투의 reserve 는 기억이 있어도 오늘과 같다" "$(fxdecide "$SN R4 | SEEN([$EL7])")" ".reserve == $R4_RESERVE"
+expect "눌림-12: 소진 그룹의 눌린 리셋권 지명은 group-exhausted 로 기다린다" \
+  "$(fxdecide "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | SEEN([$EL7])")" \
+  ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .account == null and .reserve.pass_id == \"rp-0000000e\" and .reserve.pressed_at_epoch == $FX_NOW"
+expect "눌림-12: 판독이 리셋을 반영하면 GRANT known" \
+  "$(fxdecide "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | UAC(\"full\"; .windows.seven_day.utilization = 0 | .exhausted_until_epoch = null)
+     | SEEN([$EL7 | .pressed_at_epoch = 1799999000])")" '.verdict == "GRANT" and .admitted_as == "known" and .basis == "after-wait"'
+expect "눌림-13: 기억 없는 첫 예비 공급 봉투도 기억을 싣는다" "$(fxdecide "$F7")" \
+  ".reserve_seen == [{group: \"$G_FULL\", account: \"full\", id: \"rp-0000000e\", kind: \"five_hour\", expires_at_epoch: 1800864000, pressed_at_epoch: null}]"
+expect "눌림-13: 시각 대기에는 기억이 없다" "$r4today" '.verdict == "WAIT" and (has("reserve_seen") | not)'
+expect "눌림-13: 마감 PARK 에는 기억이 없다" "$(fxdecide "$F7 | UAC(\"full\"; del(.reset_passes))")" '.verdict == "PARK" and (has("reserve_seen") | not)'
+expect "눌림-13: GRANT 에는 기억이 없다" "$(fxdecide '.')" '.verdict == "GRANT" and (has("reserve_seen") | not)'
+expect "눌림-14: 판독 나이 1700초면 소진 계정의 눌림 유예가 선다" \
+  "$(fxdecide "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | AGE(1700) | SEEN([$EL7])")" '.verdict == "WAIT" and .reserve.pass_id == "rp-0000000e"'
+expect "눌림-14: 판독 나이 1801초면 소진 계정의 눌림 유예도 마감 PARK" \
+  "$(fxdecide "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | AGE(1801) | SEEN([$EL7 | .pressed_at_epoch = 1799999000])")" \
+  '.verdict == "PARK" and .reason == "deadline"'
+t15=$(fxdecide "$SN $SECOND | GONE | LEND(\"full\") | SEEN([$EL7 | .pressed_at_epoch = 1799999000])")
+expect "눌림-15: 후보에서 빠진 그룹의 눌린 원소는 그대로 남는다" "$t15" \
+  ".verdict == \"WAIT\" and .group == \"$G_FULL2\" and ([.reserve_seen[] | select(.id == \"rp-0000000e\") | .pressed_at_epoch] == [1799999000])"
+expect "눌림-15: 계정이 돌아온 다음 턴에 눌린 리셋권으로 기다린다" \
+  "$(fxdecide "$SN $SECOND | GONE | FONLY([\"full\"]) | SEEN($(printf '%s' "$t15" | jq -c .reserve_seen))")" \
+  ".verdict == \"WAIT\" and .group == \"$G_FULL\" and .reserve.pass_id == \"rp-0000000e\" and .reserve.pressed_at_epoch == 1799999000"
+
+# 예비 공급 대기도 그룹 FIFO 에 선다. 대기자(S1)의 대기 항목이 사는 동안 같은 그룹에
+# 입장할 수 있는 더 싼 스테이지(S2)는 양보하고, 대기자 자신은 같은 예비 공급 대기를 다시 받는다.
+F7F='UAC("full"; .windows.five_hour.utilization = 0.75 | .windows.seven_day.utilization = 0.5 | .reset_passes.held[0].kind = "five_hour") | FONLY(["full"]) | DL(3000)'
+CHEAP='.config.c.five_hour.by_kind.review = 0.01 | REQ({lineage: "S2", kind: "review"})'
+RWAIT='ITEMS([LR("r1"; "S1"; "full"; "wait"; null; true; 1)])'
+expect "FIFO: 대기자의 예비 공급 WAIT" "$(fxdecide "$F7F")" ".verdict == \"WAIT\" and .reason == \"no-room\" and .until_epoch == null and .group == \"$G_FULL\" and .reserve.kind == \"five_hour\""
+expect "FIFO: 대기자가 없으면 더 싼 스테이지는 입장한다" "$(fxdecide "$F7F | $CHEAP")" '.verdict == "GRANT" and .account == "full"'
+expect "FIFO: 예비 공급 대기자 뒤의 같은 그룹 스테이지는 fifo-yield" "$(fxdecide "$F7F | $CHEAP | $RWAIT")" ".verdict == \"WAIT\" and .reason == \"fifo-yield\" and .group == \"$G_FULL\" and (has(\"reserve\") | not)"
+expect "FIFO: 대기자 자신은 예비 공급 대기를 다시 받는다" "$(fxdecide "$F7F | $RWAIT")" ".verdict == \"WAIT\" and .reason == \"no-room\" and .until_epoch == null and .group == \"$G_FULL\" and .reserve.kind == \"five_hour\""
+
+# 라우터-8 — 낡은 파일의 리셋권은 세지 않는다. 스테이지 로그 창은 신선도와 무관하다.
+FX_STALE=1800000181
+FXU_STALE=$(bash "$TR_ROUTE" usage-read "$FX" "$FX_STALE")
+expect "라우터-8: 낡은 파일은 창을 잃는다" "$FXU_STALE" '.fresh == false and all(.accounts[]; has("windows") | not) and any(.accounts[]; has("reset_passes"))'
+for f in 'R4' 'DL(86400)'; do
+  a=$(fxctx "$FX_STALE" "$FXU_STALE" "$f" | bash "$TR_ROUTE" decide)
+  b=$(fxctx "$FX_STALE" "$FXU_STALE" "UAC(\"full\"; del(.reset_passes)) | $f" | bash "$TR_ROUTE" decide)
+  check "라우터-8: 낡은 파일에서 $f 는 리셋권을 지운 판정과 같다" "$a" "$b"
+done
+FRAME='.frames = [{account: "full", observed_at_epoch: $now,
+  windows: {five_hour: {u: 0.2, resets_at: 1800003600}, seven_day: {u: 0.99, resets_at: 1800432000}}}]'
+expect "라우터-8: 스테이지 로그 창으로 닿아도 낡은 리셋권은 없다" "$(fxctx "$FX_STALE" "$FXU_STALE" "$FRAME | R4" | bash "$TR_ROUTE" decide)" \
+  '.verdict == "PARK" and .reason == "deadline" and .ready_at == 1800432000 and (has("reserve") | not)'
+# 낡은 파일 한 턴은 눌림 기억이 있어도 오늘처럼 판정한다.
+expect "눌림-6: 낡은 파일에서 계정 수준 소진은 눌림 기억이 있어도 마감 PARK" \
+  "$(fxctx "$FX_STALE" "$FXU_STALE" "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | SEEN([$EL7 | .pressed_at_epoch = 1799999000])" | bash "$TR_ROUTE" decide)" \
+  '.verdict == "PARK" and .reason == "deadline"'
+expect "눌림-6: 낡은 파일에서 창만 있는 판독은 미지 입장 GRANT" \
+  "$(fxctx "$FX_STALE" "$FXU_STALE" "$SN $F7 | GONE | SEEN([$EL5 | .pressed_at_epoch = 1799999000])" | bash "$TR_ROUTE" decide)" \
+  '.verdict == "GRANT" and .admitted_as == "unknown"'
+
+# 버려질 한도의 경계. 그룹 보기를 직접 만들어 rt_w7 만 돈다. r7 3000, 리셋까지
+# 36000초이면 ρ7·T ≈ 4266.67 이라 리셋권 없는 값은 0 이고, 항이 켜지면 양수다.
+tr_w7u() {
+  # tr_w7u <상태> <u_bp> <리셋7> <리셋권 JSON 배열>
+  ( . "$TR_ROUTE"
+    jq -n --argjson now "$FX_NOW" --argjson cap "$TCAP" --argjson cost "$TCOST" --arg st "$1" \
+      --argjson u "$2" --argjson r "$3" --argjson ps "$4" \
+      "$(route__jq_lib)"' rt_w7({now: $now, config: {cap_bp: $cap}};
+        {windows: {seven_day: {state: $st, u_bp: $u, resets_at: $r}}, sigma: {seven_day: 0}, passes: $ps}; $cost)' )
+}
+tr_p() { printf '[{"id":"p","kind":"%s","expires_at_epoch":%s}]' "$1" "$2"; }
+R7B=$((FX_NOW + 36000))
+check "W7 경계: 리셋권 없음" "$(tr_w7u known 7000 "$R7B" '[]')" 0
+check "W7 경계: 만료 = 리셋7 은 리셋권 없는 값" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day "$R7B")")" 0
+check "W7 경계: 만료 = 리셋7 − 1 은 항을 켠다" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day $((R7B - 1)))")" 8733
+check "W7 경계: 만료 = 지금 + 1 은 항을 켠다" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day $((FX_NOW + 1)))")" 5733
+check "W7 경계: 만료된 리셋권은 리셋권 없는 값" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day "$FX_NOW")")" 0
+check "W7 경계: five_hour 는 리셋권 없는 값" "$(tr_w7u known 7000 "$R7B" "$(tr_p five_hour $((R7B - 1)))")" 0
+check "W7 경계: unknown 은 리셋권 없는 값" "$(tr_w7u known 7000 "$R7B" "$(tr_p unknown $((R7B - 1)))")" 0
+check "W7 경계: both 는 항을 켠다" "$(tr_w7u known 7000 "$R7B" "$(tr_p both $((R7B - 1)))")" 8733
+check "W7 경계: 리셋7 = 지금이면 0" "$(tr_w7u known 7000 "$FX_NOW" "$(tr_p seven_day "$FX_NOW")")" 0
+check "W7 경계: 리셋이 지난 창은 0" "$(tr_w7u reset_elapsed 0 "$FX_NOW" '[]')" 0
+check "W7 경계: 주간을 모르면 0" "$(tr_w7u unknown null null '[]')" 0
+check "W7 경계: 라우터-2 의 late 행" "$(tr_w7u known 1000 $((FX_NOW + 155000)) "$(tr_p seven_day $((FX_NOW + 154999)))")" 630
+
+# 예비 공급 대기의 원장 행 — 비용 칸이 있는 마감 없는 행을 계열 검사가 받는다.
+for row in "-:no-room" "full:resume-bound-no-room" "full:resume-bound-exhausted" "-:group-exhausted"; do
+  rc=0
+  tr_in_run "$TR_RUN_SH" run_ledger_series_check stage-wait 계보=S1 "그룹=$G_FULL" "계정=${row%%:*}" 까지=- \
+    비용=0.3000/0.0800 '비용 출처=default/default' "근거=${row#*:}" 2>"$WORK/series.err" || rc=$?
+  check "원장 검사: 마감 없는 stage-wait 계정=${row%%:*} 근거=${row#*:}" "$rc" 0
+done
+
+# ===========================================================================
+# 대여. 대화형으로 예약된 cc 가 `interactive_lending: "auto"` 로 등록되면 발행된 대여
+# 결정이 열려 있고 단단한 검사를 모두 통과할 때만 무인 단계가 그 계정에 든다. 주입
+# 예약은 5시간 TR5(3000), 주간 TR7(2400) 이고, cc 의 두 창은 0.1 이다.
+# ===========================================================================
+LJ='def CCA: A("cc") + {interactive_reserved: true, unattended: "disabled", interactive_lending: "auto"};
+  def DEC: {state: "open", mode: "auto", evaluated_at_epoch: ($now - 30), net_armed: true, donor_ready: true,
+            resets_at_epoch: ($now + 86400), ceiling_bp: 9000};
+  def CCX(f): .usage.accounts |= map(if .id == "cc" then f else . end);
+  def CCD(f): CCX(.lending |= f);
+  def LB0($ua): .inventory.accounts = [A("a"), CCA] | USE([UA("a"; $ua; 0.1), UA("cc"; 0.1; 0.1) + {lending: DEC}])
+    | .borrow = {state: "none"};
+  def OPEN: LB0(0.1);
+  def UBLK: LB0(0.9);
+  def CL: CCD(.state = "closed");
+  def PIN: .seat.lane = "cc";
+  def RP: CCX(.reset_passes = {held: [{id: "rp-cc", kind: "five_hour", expires_at_epoch: ($now + 864000)}]});
+  def DL1: .deadline = {deadline_epoch: ($now + 100), expected_duration_s: 600};
+  def LIVE($acct; $l): ITEMS([LG("r1"; "S1"; $acct; $l)]);
+  def RSM($b): REQ({event: "resume", bound_account: $b});
+  def SHIFT: REQ({kind: "shift", lineage: "shift#1"});'
+lwhy() { classify "$LJ $1" | jq -r '[.accounts[] | select(.id == "cc") | .lend.why] | .[0] | tostring'; }
+NOTCC='(.verdict == "GRANT" and .account == "cc") | not'
+
+# 입장 술어.
+expect "대여-입장: 열림·u 여유 → u 먼저" "$(decide "$LJ OPEN")" '.verdict == "GRANT" and .account == "a"'
+expect "대여-입장: u 의 주간이 cc 보다 차도 u 먼저" "$(decide "$LJ OPEN | USE([UA(\"a\"; 0.1; 0.5), UA(\"cc\"; 0.1; 0.0) + {lending: DEC}])")" \
+  '.verdict == "GRANT" and .account == "a"'
+expect "대여-입장: u 모두 막힘 → 첫 요청 후보 cc 에 GRANT" "$(decide "$LJ UBLK")" \
+  '.verdict == "GRANT" and .account == "cc" and .basis == "first" and .admitted_as == "known"'
+check "대여-입장: 열린 cc 의 사유 없음" "$(lwhy UBLK)" null
+for row in \
+  'no-decision|CCX(del(.lending))' \
+  'closed|CL' \
+  'decision-stale|CCD(.evaluated_at_epoch = ($now - 181))' \
+  'net-disarmed|CCD(.net_armed = false)' \
+  'no-donor|CCD(.donor_ready = false)' \
+  'window-stale|CCX(.windows.seven_day.observed_at_epoch = ($now - 301))' \
+  'resets-drift|CCD(.resets_at_epoch = ($now + 86521))' \
+  'borrow|.borrow = {state: "absent"}' \
+  'borrow|.borrow = BRW("intent"; "zz"; "/h/.claude-zz")' \
+  'ceiling|CCD(.ceiling_bp = 3399)' \
+  'five-hour-cap|CCX(.windows.five_hour.utilization = 0.21)' \
+  'five-hour-cap|CCX(.windows.five_hour.utilization = 0.9)' \
+  'window-unknown|CCX(.windows.five_hour.utilization = null)' \
+  'five-hour-cap|CCD(.mode = "open") | CCX(.windows.five_hour.utilization = 0.21)' \
+  'no-donor|CCD(.mode = "open" | .donor_ready = false)' \
+  'net-disarmed|CCD(.mode = "open" | .net_armed = false)'; do
+  why=${row%%|*} f=${row#*|}
+  expect "대여-입장: $f → GRANT cc 아님" "$(decide "$LJ UBLK | $f")" "$NOTCC"
+  check "대여-입장: $f → 사유 $why" "$(lwhy "UBLK | $f")" "$why"
+done
+for f in 'CCD(.evaluated_at_epoch = ($now - 180))' 'CCX(.windows.seven_day.observed_at_epoch = ($now - 300))' \
+         'CCD(.resets_at_epoch = ($now + 86520))' 'CCD(.ceiling_bp = 3400)' 'CCX(.windows.five_hour.utilization = 0.2)'; do
+  expect "대여-입장: 경계 $f → GRANT cc" "$(decide "$LJ UBLK | $f")" '.verdict == "GRANT" and .account == "cc"'
+done
+GR='.inventory.accounts = [A("a"), A("b"), CCA] | .borrow = {state: "none"}
+  | USE([UA("a"; 0.1; 0.1) + {org_hash: "h"}, UA("b"; 0.5; 0.5), UA("cc"; 0.1; 0.1) + {org_hash: "h", lending: DEC}])'
+expect "대여-입장: cc 홈 그룹의 다른 계정은 group-reserved" "$(classify "$LJ $GR")" '[.accounts[] | select(.id == "a") | .group_reserved] == [true]'
+expect "대여-입장: cc 홈 그룹의 다른 계정은 고르지 않는다" "$(decide "$LJ $GR")" '.verdict == "GRANT" and .account == "b"'
+expect "대여-입장: 등록 안 된 행의 보기는 대여 칸이 없다" "$(classify "$LJ UBLK")" \
+  '[.accounts[] | select(.id == "a") | has("lend_enrolled") or has("lend")] == [false]'
+
+# 둘째 요청과 잠금 아래 재검사.
+expect "대여-재검사: 첫 대여 임대가 있으면 둘째 요청은 cc 아님(u 막힘 → WAIT)" "$(decide "$LJ UBLK | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"})")" \
+  '.verdict == "WAIT"'
+check "대여-재검사: 둘째 요청의 사유" "$(lwhy "UBLK | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"})")" five-hour-cap
+expect "대여-재검사: 첫 대여 임대가 있어도 u 여유면 u" "$(decide "$LJ OPEN | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"})")" \
+  '.verdict == "GRANT" and .account == "a"'
+expect "대여-재검사: 고정된 둘째 요청 → WAIT" "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"})")" '.verdict == "WAIT"'
+expect "대여-재검사: 고정된 둘째 요청의 기한 지남 → PARK deadline" \
+  "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"}) | CCX(.windows.five_hour.utilization = 0.9) | DL1")" \
+  '.verdict == "PARK" and .reason == "deadline"'
+LEND_INJ="$WORK/lend-inj"
+put_lease "$LEND_INJ" r2 S1 grant cc "$RES_JSON" "$TR_HOLDER" "$TR_HOLDER_FP" 1 n-inj
+INJ="cp '$LEND_INJ/$(tr_key r2 S1).lease' \"\$1/\""
+i=0
+for f in 'UBLK' 'UBLK | PIN' 'UBLK | PIN | SHIFT'; do
+  i=$((i + 1))
+  d=$(tnew "lend-reval-$i")
+  BP=$(lb_bp "lend-reval-$i")
+  lb_rec "$BP" none a
+  out=$(lbx "$d" "$BP" "$LJ $f" ":")
+  expect "대여-재검사: 끼어든 임대 없음 $f → GRANT cc" "$out" '.verdict == "GRANT" and .account == "cc"'
+  d=$(tnew "lend-reval-inj-$i")
+  out=$(lbx "$d" "$BP" "$LJ $f" "$INJ")
+  expect "대여-재검사: 쓰기 뒤 끼어든 대여 임대 $f → WAIT lease-contention" "$out" "$WAITC"
+  check "대여-재검사: 되돌린 뒤 끼어든 임대만 남는다 $f" "$(count_files "$d")" 1
+done
+d=$(tnew lend-reval-shift-unpinned)
+BP=$(lb_bp lend-reval-shift-unpinned)
+lb_rec "$BP" none a
+expect "대여-재검사: 고정 없는 교대의 되돌림은 좌석" "$(lbx "$d" "$BP" "$LJ UBLK | SHIFT" "$INJ")" '.verdict == "GRANT" and .basis == "shift-seat-fallback"'
+
+# 차용 경합.
+d=$(tnew lend-brw)
+BP=$(lb_bp lend-brw)
+lb_rec "$BP" none a
+out=$(lbx "$d" "$BP" "$LJ UBLK" "cp '$LB/intent-b.json' '$BP'")
+expect "대여-차용: 쓰기 뒤 차용 기록이 none 아님 → 새 대여 쓰기 WAIT lease-contention" "$out" "$WAITC"
+check "대여-차용: 되돌린 뒤 임대 없음" "$(count_files "$d")" 0
+d=$(tnew lend-brw-u)
+BP=$(lb_bp lend-brw-u)
+lb_rec "$BP" none a
+expect "대여-차용: 같은 재판독에서 u 계정 쓰기는 진행" "$(lbx "$d" "$BP" "$LJ OPEN" "cp '$LB/intent-b.json' '$BP'")" '.verdict == "GRANT" and .account == "a"'
+d=$(tnew lend-brw-absent)
+expect "대여-차용: 차용 기록 파일이 없으면 새 대여 쓰기는 되돌린다" "$(txn "$d" "$LJ UBLK")" "$WAITC"
+check "대여-차용: 기록 부재의 되돌림 뒤 임대 없음" "$(count_files "$d")" 0
+i=0
+for f in 'REQ({nonce: "n-r1-S1"})|같은 nonce 유지' '.|nonce 없는 멱등 재부여'; do
+  i=$((i + 1))
+  d=$(tnew "lend-brw-hold-$i")
+  live_lease "$d" r1 S1 cc
+  BP=$(lb_bp lend-brw-hold)
+  lb_rec "$BP" none a
+  out=$(lbx "$d" "$BP" "$LJ UBLK | ${f%%|*}" "cp '$LB/intent-b.json' '$BP'")
+  expect "대여-차용: ${f#*|} 는 차용 기록이 바뀌어도 GRANT" "$out" '.verdict == "GRANT" and .account == "cc" and .nonce == "n-r1-S1"'
+  check "대여-차용: ${f#*|} 뒤 임대 유지" "$(count_files "$d")" 1
+done
+
+# 닫힌 뒤의 유지와 재개.
+for f in 'REQ({event: "crash-retry"})|sticky' 'REQ({event: "hollow-retry"})|sticky' 'REQ({nonce: "n-r1-S1"})|first' \
+         '.|first' 'REQ({event: "resume"})|resume-bound'; do
+  expect "대여-유지: 닫힘 + 살아 있는 cc 임대의 ${f%|*} → GRANT cc" "$(decide "$LJ UBLK | CL | LIVE(\"cc\"; true) | ${f%|*}")" \
+    ".verdict == \"GRANT\" and .account == \"cc\" and .basis == \"${f#*|}\""
+done
+expect "대여-유지: 닫힘 + 죽은 cc 임대의 resume → PARK resume-bound-ineligible, 리셋권 대기 없음" \
+  "$(decide "$LJ UBLK | CL | RP | LIVE(\"cc\"; false) | RSM(\"cc\") | DL1")" \
+  '.verdict == "PARK" and .reason == "resume-bound-ineligible" and (.recovery | contains("대여 닫힘(closed)")) and (has("reserve") | not)'
+expect "대여-유지: 열림 + 죽은 cc 임대의 resume → GRANT resume-bound" "$(decide "$LJ UBLK | LIVE(\"cc\"; false) | RSM(\"cc\")")" \
+  '.verdict == "GRANT" and .account == "cc" and .basis == "resume-bound"'
+expect "대여-유지: 닫힘 + 죽은 cc 임대의 crash-retry 는 cc 재입장 아님" "$(decide "$LJ UBLK | CL | LIVE(\"cc\"; false) | REQ({event: \"crash-retry\"})")" "$NOTCC"
+# 소진된 cc 의 대여 유지 거부. 살아 있는 cc 대여 임대가 있어도 cc 의 주간 창이 소진되면
+# 네 유지 경로 모두 cc 를 잇지 않고, u 계정 여유가 있는 문맥이라 u 계정으로 재배정된다.
+# 문맥은 사례마다 여기서 모두 만들고, 소진 전제와 술어 자체도 이 자리에서 확인한다.
+XC='CCX(.windows.seven_day.utilization = 1.0)'
+check "대여-유지 소진: 전제 — cc 의 분류는 X" \
+  "$(classify "$LJ OPEN | LIVE(\"cc\"; true) | $XC" | jq -c '[.accounts[] | select(.id == "cc") | .class]')" '["X"]'
+for st in 'OPEN|열림' 'OPEN | CL|닫힘'; do
+  check "대여-유지 소진: ${st##*|} 의 rt_lend_hold_ok 는 거짓" \
+    "$(classify "$LJ ${st%|*} | LIVE(\"cc\"; true) | $XC" \
+       | ( . "$TR_ROUTE"; jq -c "$(route__jq_lib)"' [.accounts[] | select(.id == "cc") | rt_lend_hold_ok(.)]' ))" '[false]'
+  check "대여-유지 소진 대조: ${st##*|} 의 소진 아닌 cc 는 rt_lend_hold_ok 참" \
+    "$(classify "$LJ ${st%|*} | LIVE(\"cc\"; true)" \
+       | ( . "$TR_ROUTE"; jq -c "$(route__jq_lib)"' [.accounts[] | select(.id == "cc") | rt_lend_hold_ok(.)]' ))" '[true]'
+  for f in 'REQ({event: "crash-retry"})|sticky' 'REQ({event: "hollow-retry"})|sticky' 'REQ({nonce: "n-r1-S1"})|first' '.|first'; do
+    expect "대여-유지 소진: ${st##*|} + 살아 있는 cc 임대의 ${f%|*} → u 재배정" \
+      "$(decide "$LJ ${st%|*} | LIVE(\"cc\"; true) | $XC | ${f%|*}")" '.verdict == "GRANT" and .account == "a"'
+    expect "대여-유지 소진 대조: ${st##*|} + 소진 아닌 cc 임대의 ${f%|*} → GRANT cc" \
+      "$(decide "$LJ ${st%|*} | LIVE(\"cc\"; true) | ${f%|*}")" ".verdict == \"GRANT\" and .account == \"cc\" and .basis == \"${f#*|}\""
+  done
+done
+
+# 대여 좌석 고정.
+expect "대여-고정: 열림 → GRANT cc" "$(decide "$LJ UBLK | PIN")" '.verdict == "GRANT" and .account == "cc"'
+expect "대여-고정: u 여유 → GRANT u 아님" "$(decide "$LJ OPEN | PIN")" '.verdict == "GRANT" and .account == "cc"'
+expect "대여-고정: 닫힘 → 기존 대기 토큰의 WAIT" "$(decide "$LJ OPEN | PIN | CL")" '.verdict == "WAIT" and .reason == "no-room"'
+expect "대여-고정: 기한 지남 → 기한 PARK, 대여 그룹 리셋권 대기 없음" \
+  "$(decide "$LJ OPEN | PIN | RP | CCX(.windows.five_hour.utilization = 0.9) | DL1")" \
+  '.verdict == "PARK" and .reason == "deadline" and (has("reserve") | not)'
+expect "대여-고정: resume 이 u 에 묶임(죽은 임대) → PARK resume-bound-ineligible" "$(decide "$LJ OPEN | PIN | RSM(\"a\")")" \
+  '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+expect "대여-고정: resume 이 u 의 살아 있는 임대 → PARK resume-bound-ineligible" \
+  "$(decide "$LJ OPEN | PIN | LIVE(\"a\"; true) | REQ({event: \"resume\"})")" '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+expect "대여-고정: u 의 살아 있는 임대는 sticky 로 잇지 않는다" "$(decide "$LJ OPEN | PIN | LIVE(\"a\"; true) | REQ({event: \"crash-retry\"})")" \
+  '.verdict == "GRANT" and .account == "cc"'
+expect "대여-고정: u 의 살아 있는 임대는 첫 요청 멱등으로 잇지 않는다" "$(decide "$LJ OPEN | PIN | LIVE(\"a\"; true) | REQ({nonce: \"n-r1-S1\"})")" \
+  '.verdict == "GRANT" and .account == "cc"'
+# 한도 뒤 재배정은 고정 계정을 제외하지 않는다. 회수된 스테이지의 죽은 자기 임대가 남아
+# 제외 계정이 고정 계정이어도, 고정 행 자신의 입장 판정으로 부여하거나 기다린다.
+for ev in limit-reclaim first-reject; do
+  expect "대여-고정: 죽은 cc 임대가 남은 $ev → GRANT cc" \
+    "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | REQ({event: \"$ev\"}) | REQ({after_wait: true})")" \
+    '.verdict == "GRANT" and .account == "cc" and .basis == "after-wait"'
+  expect "대여-고정: 묶인 계정이 cc 인 $ev → GRANT cc" "$(decide "$LJ OPEN | PIN | REQ({event: \"$ev\"}) | REQ({bound_account: \"cc\"})")" \
+    '.verdict == "GRANT" and .account == "cc" and .basis == "reassigned-after-limit"'
+  check "대여-고정: 닫힘 + 죽은 cc 임대의 $ev 는 첫 요청과 같은 대기" \
+    "$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false) | REQ({event: \"$ev\"})" | jq -c '[.verdict, .reason, .group, .until_epoch]')" \
+    "$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false)" | jq -c '[.verdict, .reason, .group, .until_epoch]')"
+  expect "대여-고정: 소진 창 + 죽은 cc 임대의 $ev → 리셋 시각의 WAIT" \
+    "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | CCD(.mode = \"open\") | CCX(.windows.seven_day.utilization = 1.0) | REQ({event: \"$ev\"})")" \
+    '.verdict == "WAIT" and (.until_epoch | type) == "number"'
+done
+expect "대여-고정 대조: 고정 없는 limit-reclaim 은 제외 계정을 건너뛴다" \
+  "$(decide "$LJ OPEN | LIVE(\"a\"; false) | REQ({event: \"limit-reclaim\"})")" '(.verdict == "GRANT" and .account == "a") | not'
+for st in absent corrupt; do
+  f="OPEN | PIN | .inventory = {state: \"$st\", accounts: []}"
+  expect "대여-고정: 인벤토리 $st → PARK lent-seat-unrouted" "$(decide "$LJ $f")" '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+done
+expect "대여-고정: 고정 계정이 인벤토리에 없음 → PARK lent-seat-unrouted" "$(decide "$LJ OPEN | .seat.lane = \"zz\"")" \
+  '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+expect "대여-고정: 후보 없음 + 교대 → shift-seat-fallback 아님" "$(decide "$LJ OPEN | PIN | CL | SHIFT")" '.verdict == "WAIT" and .reason == "no-room"'
+expect "대여-고정 대조: 고정 없는 교대의 후보 없음은 좌석" "$(decide "$LJ UBLK | CL | SHIFT")" '.verdict == "GRANT" and .basis == "shift-seat-fallback"'
+KS=$(tr_key r1 'shift#1')
+OC=".leases.corrupt = [{key: \"$KS\", path: \"/t/$KS.lease\"}]"
+expect "대여-고정: 교대의 자기 임대 깨짐 → PARK own-lease-corrupt" "$(decide "$LJ OPEN | PIN | SHIFT | $OC")" '.verdict == "PARK" and .reason == "own-lease-corrupt"'
+expect "대여-고정 대조: 고정 없는 교대의 자기 임대 깨짐은 좌석" "$(decide "$LJ OPEN | SHIFT | $OC")" '.verdict == "GRANT" and .basis == "shift-seat-fallback"'
+d=$(tnew lend-pin-brw)
+BP=$(lb_bp lend-pin-brw)
+lb_rec "$BP" none a
+expect "대여-고정: 교대 거래의 되돌림은 좌석 아님" "$(lbx "$d" "$BP" "$LJ OPEN | PIN | SHIFT" "cp '$LB/intent-b.json' '$BP'")" "$WAITC"
+
+# ===========================================================================
 # 전역 충돌 린트 파생
 # ===========================================================================
 LT="$WORK/lint"
@@ -2070,7 +2787,7 @@ fi
 for tok in \
   "PARK inventory-corrupt" "PARK no-enabled-account" "PARK lease-table-corrupt" "PARK own-lease-corrupt" \
   "PARK resume-unbound" "PARK resume-logged-out" "PARK resume-bound-ineligible" "PARK resume-bound-unknown-account" \
-  "PARK deadline" "PARK borrow-record-corrupt" \
+  "PARK deadline" "PARK borrow-record-corrupt" "PARK lent-seat-unrouted" \
   "WAIT group-exhausted" "WAIT no-room" "WAIT unknown-concurrency" "WAIT resume-bound-exhausted" \
   "WAIT resume-bound-no-room" "WAIT lease-lock-busy" "WAIT lease-contention" "WAIT fifo-yield" \
   "GRANT first" "GRANT sticky" "GRANT resume-bound" "GRANT reassigned-after-limit" "GRANT reassigned-no-room" \

@@ -22,6 +22,11 @@
 # retitle would skip every block and report success for exactly the rewrite
 # being guarded against.
 #
+# The arm's body sits in `review-unattended/references/recovery-arm.md`, and
+# each fixture keeps it there. FAIL-7 is OK-1 with a `review-unattended/SKILL.md`
+# that carries the retracted reap-stamp claim: the moved file is intact, so only
+# the fence that also reads SKILL.md can fail it.
+#
 # The test invokes the lint with `SKILLS_ROOT=<fixture-dir>` so the real plugin
 # skills are untouched.
 

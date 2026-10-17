@@ -7,7 +7,7 @@
 # before freezing them into the manifest. The whole safety of that rests on the
 # confirmation being the ONLY path from the file into a run: if the gate, the
 # driver, the fleet or the watcher ever read the file, an edit to it would change
-# a run that is already going, with nobody asked. A sentence in SKILL.md says so;
+# a run that is already going, with nobody asked. A sentence in the kickoff says so;
 # this lint is what notices when an edit breaks it.
 #
 # Rules:
@@ -16,7 +16,8 @@
 #      itself names `autopilot-defaults`, `kickoff-defaults.sh` or
 #      `CC_CMDS_AUTOPILOT_DEFAULT`. Comments count: a comment naming the helper
 #      is how a caller starts.                                           [fail]
-#   2  the helper's key table and the key table in SKILL.md 5o are the same
+#   2  the helper's key table and the key table in the autopilot boundaries
+#      reference's 5o are the same
 #      SET — a key the helper reads and the kickoff never mentions is a value
 #      the person cannot find out how to write, and a key the kickoff mentions
 #      that the helper does not read is one they write for nothing.     [fail]
@@ -45,7 +46,7 @@
 # Env overrides (fixture runner):
 #   ORCH_ROOT=<dir>     # the orchestrator directory, holding kickoff-defaults.sh
 #   HOOKS_ROOT=<dir>    # the hooks directory
-#   SKILLS_ROOT=<dir>   # skills root holding autopilot/SKILL.md
+#   SKILLS_ROOT=<dir>   # skills root holding autopilot/references/boundaries.md
 #
 # Posture: if the helper is absent the whole check is a silent skip.
 #
@@ -64,14 +65,16 @@ hooks_root="${HOOKS_ROOT:-$repo_root/plugins/cc-cmds/hooks}"
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 HELPER="$orch_root/kickoff-defaults.sh"
 REKICK="$orch_root/rekick.sh"
-KICKOFF="$skills_root/autopilot/SKILL.md"
+# The 5o paragraph lives in the boundaries reference, which Step 1 reads when it
+# reaches the questions outside the fence.
+KICKOFF="$skills_root/autopilot/references/boundaries.md"
 
 if [[ ! -f "$HELPER" ]]; then
   echo "SKIP: kickoff-defaults.sh not found under $orch_root — kickoff defaults not present"
   exit 0
 fi
 if [[ ! -f "$KICKOFF" ]]; then
-  echo "SKIP: autopilot/SKILL.md not found under $skills_root"
+  echo "SKIP: autopilot/references/boundaries.md not found under $skills_root"
   exit 0
 fi
 
@@ -109,10 +112,10 @@ if [[ -z "$code_keys" ]]; then
   echo "FAIL: kickoff-defaults.sh — KD_RUN_KEYS·KD_REPO_KEYS 줄에서 키를 하나도 읽지 못했다" >&2
   fail=1
 elif [[ -z "$prose_keys" ]]; then
-  echo "FAIL: autopilot/SKILL.md — 5o 문단에서 키 표 행을 하나도 읽지 못했다" >&2
+  echo "FAIL: autopilot/references/boundaries.md — 5o 문단에서 키 표 행을 하나도 읽지 못했다" >&2
   fail=1
 elif [[ "$code_keys" != "$prose_keys" ]]; then
-  echo "FAIL: 킥오프 기본값 키 집합이 보조 스크립트와 SKILL.md 5o 사이에서 갈렸다" >&2
+  echo "FAIL: 킥오프 기본값 키 집합이 보조 스크립트와 boundaries.md 5o 사이에서 갈렸다" >&2
   echo "       보조 : $(printf '%s' "$code_keys" | tr '\n' ' ')" >&2
   echo "       5o 표: $(printf '%s' "$prose_keys" | tr '\n' ' ')" >&2
   fail=1

@@ -216,7 +216,7 @@ cc_notify_scope_enabled() {
 }
 
 cc_caller_is_router() {
-  # ALL THREE variables must be empty. The gate is called by the router, by a
+  # ALL FOUR variables must be empty. The gate is called by the router, by a
   # launched STAGE and by a routing SHARD, and only the router may decide that a
   # banner reaches the user.
   #
@@ -232,8 +232,8 @@ cc_caller_is_router() {
   # the direction that goes through it: firing does, while clearing calls this
   # predicate directly. So a shard was refused a banner and was still allowed to
   # take one down — the seat question answered two different ways in two files.
-  # A fourth marker added to one file and not the other splits them again, which
-  # is why all three live here and the gate holds none.
+  # A marker added to one file and not the other splits them again, which is why
+  # all of them live here and the gate holds none.
   #
   # The asymmetry sets the direction. Judging a stage to be the router breaks
   # the operating rule outright; judging the router to be a stage costs one
@@ -241,6 +241,14 @@ cc_caller_is_router() {
   if [ -n "${CC_PIPELINE_SEGMENT:-}" ]; then return 1; fi
   if [ -n "${CC_PIPELINE_STAGE_ID:-}" ]; then return 1; fi
   if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then return 1; fi
+  # THE FOURTH MARKER, and it lives here for the reason the paragraph above
+  # gives. A boot-time re-entry calls the gate the way the seat does — no
+  # segment, stage or shift marker — from a launchd job with no person and no
+  # terminal behind it, so without this line every banner and every clearing
+  # site would take it for the seat. It exports `CC_PIPELINE_REENTRY` for the
+  # whole call, and the gate blanks it in the successor shift's environment.
+  # Read with `-n`, so an empty value is the same as none.
+  if [ -n "${CC_PIPELINE_REENTRY:-}" ]; then return 1; fi
   return 0
 }
 

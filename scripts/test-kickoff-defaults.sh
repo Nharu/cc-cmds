@@ -34,6 +34,8 @@ HELPER="$ORCH/kickoff-defaults.sh"
 DRIVER="$ORCH/run.sh"
 GATE_SH="$ORCH/gate.sh"
 SKILL="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+# 5a–5p 의 경계 문단은 상주 본문이 아니라 이 참조 파일에 있다.
+BOUNDARIES="$repo_root/plugins/cc-cmds/skills/autopilot/references/boundaries.md"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-kickoff-defaults-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -272,6 +274,9 @@ expect repo act-allow 적용 '형태=gh pr | 사유=리뷰'
 expect repo act-allow '형식 오류' '형태=gh pr | 사유=a | 인터뷰 기록=x' '형태=bash | 사유=a' '형태=a|b | 사유=c' '사유=a | 형태=gh pr' '형태=gh pr | 사유='
 expect run auto-adopt 적용 '판단 부류=감사-발견 | 상한=없음 | 심각도 상한=major | 사유=a'
 expect run auto-adopt '금지 부류' '판단 부류=팀-구성 | 상한=1 | 심각도 상한=minor | 사유=a'
+# 사람만 답하는 부류도 금지 목록 소속이라 같은 사유로 무시된다 — 어휘 루프가 아니라
+# 이 줄이 그 이름을 직접 부른다(부류가 목록에서 빠지면 루프는 조용히 적용으로 바뀐다).
+expect run auto-adopt '금지 부류' '판단 부류=사람-결정 | 상한=1 | 심각도 상한=minor | 사유=a'
 expect run auto-adopt '어휘 밖' '판단 부류=없는부류 | 상한=1 | 심각도 상한=minor | 사유=a' '판단 부류=감사-발견 | 상한=1 | 심각도 상한=huge | 사유=a'
 expect run auto-adopt '형식 오류' '상한=1 | 판단 부류=감사-발견 | 심각도 상한=minor | 사유=a' '판단 부류=감사-발견 | 상한=1 | 심각도 상한=minor'
 
@@ -308,16 +313,21 @@ expect repo act-allow '형식 오류' '형태=terraform -chdir=infra apply | 사
 expect repo act-allow 적용 '형태=terraform apply | 사유=a' '형태=git -C dir | 사유=a'
 check "정규화가 바꿀 형태의 거부 사유는 대조기가 보는 철자와 그 철자가 여는 범위, 행이 없을 때의 결과를 적는다" "$(col "$(kf '[Nharu/cc-cmds]
 act-allow = 형태=terraform -chdir=infra apply | 사유=a' $T)" act-allow 7)" \
-  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`). 이 철자는 뗀 경로와 낱말의 모든 값을 엽니다 — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"
+  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`). 이 철자는 뗀 경로의 모든 값을 열고, 이 철자의 마지막 낱말 앞에 -x=y 낱말이 끼어든 행위는 열지 않으며, 이 낱말들로 시작하는 비파괴 행위는 마지막 낱말 뒤에 무엇이 오든 전부 엽니다. 기기전역 칸은 다릅니다 — 행위를 명령 경로 없이 낱말 그대로 다 적은 행만 판단 없이 열고, 그 밖의 행위는 판단 호출이 행의 형태와 사유에 비추어 열지 정합니다 — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"
 check "거부 근거: 형태=terraform -chdir=infra apply 는 같은 철자의 행위와도 맞지 않는다" \
   "$(probe_row '형태=terraform -chdir=infra apply | 사유=a' 'terraform -chdir=infra apply -auto-approve')" "0"
 check "거부 근거: 형태=/usr/bin/gh pr 는 같은 철자의 행위와도 맞지 않는다" \
   "$(probe_row '형태=/usr/bin/gh pr | 사유=a' '/usr/bin/gh pr view 1')" "0"
-for p in 'terraform apply|terraform -chdir=infra apply -auto-approve' 'gh pr|/usr/bin/gh pr view 1'; do
+# 안내된 철자는 뗀 경로를 열고, 러너가 아닌 명령이면 그 마지막 낱말 뒤의 `-x=y` 낱말도
+# 열지만, 그 앞에 끼어든 `-x=y` 낱말이 있는 행위는 열지 않는다(대조기가 범위 안에서
+# 떨어진 낱말을 불일치로 본다). 아래 셋은 모두 러너가 아닌 명령이다.
+for p in 'gh pr|/usr/bin/gh pr view 1|1' 'gh pr|gh pr view 1 --repo=o/r|1' \
+         'terraform apply|terraform -chdir=infra apply -auto-approve|0'; do
+  pf=${p%%|*}; pa=${p#*|}; pw=${pa##*|}; pa=${pa%|*}
   o=$(kf "[Nharu/cc-cmds]
-act-allow = 형태=${p%%|*} | 사유=a" $T)
-  check "안내된 철자 '${p%%|*}' 는 적용되고 대조기에서 '${p#*|}' 와 맞는다" \
-    "$(st "$o" act-allow)|$(probe_row "$(col "$o" act-allow 4)" "${p#*|}")" "적용|1"
+act-allow = 형태=$pf | 사유=a" $T)
+  check "안내된 철자 '$pf' 는 적용되고 대조기에서 '$pa' 와 일치 $pw" \
+    "$(st "$o" act-allow)|$(probe_row "$(col "$o" act-allow 4)" "$pa")" "적용|$pw"
 done
 
 # ---------------------------------------------------------------------------
@@ -419,6 +429,23 @@ apply-actor = 사람
 [b/two]
 cutpoint = 배포' --target a/one --target b/two)
 check "배포 대상 둘 → 배포 대상 수" "$(st "$out" apply-actor)" "배포 대상 수"
+# apply-probe-codes — `<불필요>/<필요>`, held to the manifest check's own value rule.
+for pc in '0/21:적용' '0/2:적용' '3/0:적용' '125/0:적용' '0/1:형식 오류' '1/0:형식 오류' '0/126:형식 오류' \
+          '0/128:형식 오류' '2/2:형식 오류' '0/021:형식 오류' '0:형식 오류' '0/2/3:형식 오류' '/2:형식 오류' 'x/2:형식 오류'; do
+  out=$(kf "[Nharu/cc-cmds]
+cutpoint = 배포
+apply-probe = make probe
+apply-probe-codes = ${pc%%:*}" $T)
+  check "apply-probe-codes '${pc%%:*}' → ${pc#*:}" "$(st "$out" apply-probe-codes)" "${pc#*:}"
+done
+out=$(kf '[Nharu/cc-cmds]
+cutpoint = 머지
+apply-probe-codes = 0/21' $T)
+check "절단점이 배포가 아니면 apply-probe-codes 도 불활성" "$(st "$out" apply-probe-codes)" "불활성"
+out=$(kf '[Nharu/cc-cmds]
+cutpoint = 배포
+apply-probe-codes = 0/21' $T --apply-actor 없음)
+check "--apply-actor 없음 → apply-probe-codes 인터뷰 답과 다름" "$(st "$out" apply-probe-codes)" "인터뷰 답과 다름"
 
 # ---------------------------------------------------------------------------
 # 다중 대상
@@ -619,6 +646,63 @@ act-allow = 형태=$1 | 사유=a" $T)" act-allow 7)" in *'러너 형태'*) echo 
 check "형태=npm run 은 러너 형태" "$(runner 'npm run')" "예"
 check "형태=go run 은 러너 형태" "$(runner 'go run')" "예"
 check "형태=gh pr 은 러너 형태가 아니다" "$(runner 'gh pr')" "아니오"
+# 인터프리터 형태는 스크립트 낱말이 실재하고 그 앞이 모두 닫힌 플래그일 때만 완전하다.
+# 코드 문자열·모듈·표준 입력, 값을 받는 옵션 뒤의 코드 플래그는 길이와 상관없이 러너다.
+for p in 'bash scripts/x.sh|아니오' 'bash -x scripts/x.sh|아니오' 'bash -c x y|예' \
+         'python3 -m pip install|예' 'bash /dev/stdin|예' 'sh -s|예' 'node -e|예' \
+         'bash -o pipefail -c echo|예' 'python3 -W ignore -c x|예' 'node -r x -e y|예' \
+         'bash --norc scripts/x.sh a|예' 'bash scripts/x.sh -c|아니오' \
+         'bash +e scripts/x.sh|예' 'bash +e -c x|예'; do
+  check "형태=${p%|*} 의 러너 판정" "$(runner "${p%|*}")" "${p#*|}"
+done
+# 거부 사유가 말하는 대로, 완전한 형태는 기기전역 칸 밖에서 마지막 낱말 뒤에 무엇이
+# 오든 그 낱말들로 시작하는 행위를 연다 — 러너의 꼬리도 대조기가 막지 않는다.
+match_rc() {   # match_rc <shape> <argv> → the matcher's exit status outside the probe
+  printf -- '- `사전 인가` | 형태=%s | 사유=a\n' "$1" > "$WORK/preauth.md"
+  env GATE_MARK= GATE_MARK_TRIGGER= GATE_DESTRUCTIVE=0 GATE_REACH_EFF= GATE_PREAUTH_PROBE=0 \
+    GATE_KIND=exec GATE_SURFACE=외부상태변경 GATE_ARGV="$2" GATE_MANIFEST="$WORK/preauth.md" \
+    sh "$MATCHER" >/dev/null 2>&1
+  echo $?
+}
+for p in 'npm run deploy|npm run deploy --script-shell x' 'make deploy ENV=dev|make deploy ENV=dev ENV=prod' \
+         'make deploy ENV=dev|make deploy ENV=dev -- ENV=prod' 'make deploy ENV=prod|make deploy ENV=prod -f x.mk'; do
+  check "형태=${p%%|*} 는 '${p#*|}' 를 연다" "$(match_rc "${p%%|*}" "${p#*|}")" "0"
+done
+# 러너 판정은 대조기의 판정과 같아야 한다 — 같은 형태를 행으로 두고 그 형태 자체를
+# 행위로 탐침했을 때, 러너라고 말한 형태만 `형태=완전` 이 아니다.
+probe_form() {   # probe_form <shape> → the probe's 형태= field
+  printf -- '- `사전 인가` | 형태=%s | 사유=a\n' "$1" > "$WORK/preauth.md"
+  GATE_PREAUTH_PROBE=1 GATE_MANIFEST="$WORK/preauth.md" GATE_ARGV="$1" sh "$MATCHER" 2>/dev/null \
+    | sed -n 's/^.*형태=\([^ ]*\).*$/\1/p'
+}
+for s in 'npm run' 'go run' 'gh pr' 'bash scripts/x.sh' 'bash -x scripts/x.sh' 'bash -c x y' \
+         'python3 -m pip install' 'bash /dev/stdin' 'sh -s' 'node -e' 'bash -o pipefail -c echo' \
+         'python3 -W ignore -c x' 'node -r x -e y' 'bash --norc scripts/x.sh a' 'bash scripts/x.sh -c' \
+         'bash +e' 'bash +e -c x' 'bash +e scripts/x.sh'; do
+  f=$(probe_form "$s")
+  case "$(runner "$s"):$f" in
+    예:완전|아니오:러너|아니오:없음|*:) bad "형태=$s 의 러너 판정이 대조기의 형태 판정과 같다" "러너=$(runner "$s") 형태=$f" ;;
+    *) ok "형태=$s 의 러너 판정이 대조기의 형태 판정과 같다" ;;
+  esac
+done
+# 판정의 사본은 규칙 함수와 본문 바이트가 같다(함수 이름 줄 다음부터 닫는 중괄호까지).
+fn_body() { awk -v n="$2" '$0 ~ "^"n"\\(\\) \\{" { on = 1; next } on && /^}/ { exit } on' "$1"; }
+kd_body=$(fn_body "$HELPER" kd_closed_flags_only)
+rule_body=$(fn_body "$MATCHER" closed_flags_only)
+if [ -n "$kd_body" ] && [ "$kd_body" = "$rule_body" ]; then
+  ok "kd_closed_flags_only 의 본문이 규칙의 closed_flags_only 와 바이트로 같다"
+else
+  bad "kd_closed_flags_only 의 본문이 규칙의 closed_flags_only 와 바이트로 같다" "사본 ${#kd_body}바이트, 규칙 ${#rule_body}바이트"
+fi
+# 두 낱말을 넘는 러너 형태는 대조기의 러너 갈래가 앞 한두 낱말만 맞추므로 어떤 행위와도
+# 맞지 않는다 — 효과 줄이 그렇게 말한다.
+for s in 'bash -c x y' 'python3 -m pip install'; do
+  case "$(col "$(kf "[Nharu/cc-cmds]
+act-allow = 형태=$s | 사유=a" $T)" act-allow 7)" in
+    *'러너 형태 — 이 행은 어떤 행위와도 일치하지 않는다'*) ok "형태=$s 의 효과 줄은 어떤 행위와도 맞지 않는다고 말한다" ;;
+    *) bad "형태=$s 의 효과 줄은 어떤 행위와도 맞지 않는다고 말한다" "" ;;
+  esac
+done
 eff=$(col "$(kf 'cost-ceiling = 120' $T)" cost-ceiling 7)
 check "비용 천장 효과 줄" "$eff" "96 USD 에서 승인을 열고 기다리며, 120 USD 에서 묻지 않고 런을 끝냅니다"
 # 게이트는 자동 채택 행을 부류로만 맞추고 두 상한 칸을 읽지 않는다 — 효과 줄이
@@ -824,6 +908,71 @@ widen() { printf '%s\n' "$out" | awk -F'\t' -v k="$1" '$1=="권한" && $3==k { p
 check "권한 넓힘 표식 — 절단점 머지 1 · 리뷰 상한 선리뷰후머지 0 · 말단 상한 없음 1 · 사전 인가 1 · 자동 채택 1 · 적용 주체 없음 0" \
   "$(widen cutpoint)$(widen review-ceiling)$(widen terminal-cap)$(widen act-allow)$(widen auto-adopt)$(widen apply-actor)" "101110"
 check "권한 행 수가 원천 자동 채택+사전 인가 형태 행 수와 대상별 권한 필드 수의 합" "$(cnt "$out" 권한 '')" "7"
+check "적용 프로브 코드 행 없는 원천 → 이어받지 않음 행 없음" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="apply-probe-codes" { print $4 }')" "행 없음"
+
+# 적용 프로브 코드 행은 `<불필요>/<필요>` 로 이어받는다. 원천 절단점이 머지라
+# 파일의 적용 키는 불활성이고, 차이 행도 빈칸 행도 생기지 않는다.
+CW_ROWS_SAVE="$CW_ROWS"; CW_AP_SAVE="$CW_AP"
+CW_AP='`make probe`'
+CW_ROWS="$CW_ROWS
+- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' 'make probe' | shasum -a 256 | awk '{ print $1 }')"
+cw_write "$CW"
+out=$(kc '[Nharu/cc-cmds]
+apply-probe-codes = 0/2')
+check "원천의 적용 프로브 코드 행을 0/21 로 이어받는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="apply-probe-codes" { print $4 }')" "0/21"
+check "적용 프로브 코드는 차이·빈칸 행이 되지 않는다" "$(cnt "$out" 차이 apply-probe-codes)$(cnt "$out" 빈칸 apply-probe-codes)" "00"
+CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"
+cw_write "$CW"
+out=$(kc '[Nharu/cc-cmds]
+apply-probe-codes = 0/21')
+check "원천에 행이 없으면 파일 값이 있어도 빈칸이 아니다" "$(cnt "$out" 빈칸 apply-probe-codes)" "0"
+
+# ---------------------------------------------------------------------------
+# --apply-probe-sha — 초안의 프로브 해시를 드라이버 함수로 재고, 적용 프로브
+# 코드 행을 매니페스트 검사의 그 절반으로 판정한다. 작은따옴표가 든 프로브는
+# `printf '%s' '<프로브>'` 로 재면 셸이 따옴표를 벗겨 다른 해시가 나오므로,
+# 그 해시로 얼린 행은 여기서 거부돼야 한다.
+# ---------------------------------------------------------------------------
+aps() { kd --apply-probe-sha "$1"; }
+aps_row() { printf '%s\n' "$1" | awk -F'\t' '$1=="행" { print $2 }'; }
+APS_PROBE="grep -q 'needle' f || exit 3"
+APS_SHA=$(printf '%s' "$APS_PROBE" | shasum -a 256 | awk '{ print $1 }')
+APS_BAD=$(printf '%s' "grep -q needle f || exit 3" | shasum -a 256 | awk '{ print $1 }')
+[ "$APS_SHA" != "$APS_BAD" ] && ok "전제: 따옴표를 벗긴 해시는 원래 바이트의 해시와 다르다" \
+  || bad "전제" "두 해시가 같다"
+CW_ROWS_SAVE="$CW_ROWS"; CW_AP_SAVE="$CW_AP"
+CW_AP="\`$APS_PROBE\`"
+cw_write "$CW"
+out=$(aps "$CW"); rc=$?
+check "--apply-probe-sha 는 0 으로 끝난다" "$rc" "0"
+check "--apply-probe-sha 는 백틱을 벗긴 원래 바이트를 잰다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="프로브" { print $2 }')" "$APS_SHA"
+check "--apply-probe-sha 행 없는 초안 → 행 없음" "$(aps_row "$out")" "없음"
+CW_ROWS="$CW_ROWS
+- \`적용 프로브 코드\` | 불필요=2 | 필요=0 | 프로브 sha256=$APS_SHA"
+cw_write "$CW"
+check "--apply-probe-sha 원래 바이트로 얼린 행 → 맞음" "$(aps_row "$(aps "$CW")")" "맞음"
+CW_ROWS="$CW_ROWS_SAVE
+- \`적용 프로브 코드\` | 불필요=2 | 필요=0 | 프로브 sha256=$APS_BAD"
+cw_write "$CW"
+out=$(aps "$CW")
+check "--apply-probe-sha 따옴표를 벗겨 잰 행 → 거부" "$(aps_row "$out")" "거부"
+case "$(printf '%s\n' "$out" | awk -F'\t' '$1=="행" { print $3 }')" in
+  *"행 $APS_BAD, 프로브 $APS_SHA"*) ok "--apply-probe-sha 거부 문면은 매니페스트 검사의 두 해시를 싣는다" ;;
+  *) bad "--apply-probe-sha 거부 문면" "$out" ;;
+esac
+CW_ROWS="$CW_ROWS_SAVE
+- \`적용 프로브 코드\` | 불필요=2 | 필요=2 | 프로브 sha256=$APS_SHA"
+cw_write "$CW"
+check "--apply-probe-sha 깨진 행 → 거부" "$(aps_row "$(aps "$CW")")" "거부"
+check "--apply-probe-sha 는 원본을 바꾸지 않는다" "$(grep -c '필요=2 | 프로브' "$CW")" "1"
+CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"
+cw_write "$CW"
+check "--apply-probe-sha 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" "$HELPER" --apply-probe-sha "$CW" >/dev/null 2>&1; echo $?)" "3"
+check "--apply-probe-sha 는 --target 과 함께 쓰지 않는다" "$(kd --apply-probe-sha "$CW" $T >/dev/null 2>&1; echo $?)" "2"
+check "--apply-probe-sha 에 없는 파일 → 3" "$(kd --apply-probe-sha "$WORK/none.md" >/dev/null 2>&1; echo $?)" "3"
 
 # 행 0개 원천 + 파일의 auto-adopt — 「없음으로 답함」 은 적용이지 빈칸이 아니다.
 CW_ROWS_SAVE="$CW_ROWS"; CW_ROWS=''
@@ -929,7 +1078,7 @@ if grep -F 'bash <plugin root>/orchestrator/kickoff-defaults.sh' "$SKILL" >/dev/
 else
   bad "호출 철자" "SKILL.md 에 'bash <plugin root>/orchestrator/kickoff-defaults.sh' 가 없다"
 fi
-p5n=$(awk '/^\*\*5n — /{f=1; print; next} f&&(/^\*\*5[a-z] — /||/^#/){exit} f' "$SKILL")
+p5n=$(awk '/^\*\*5n — /{f=1; print; next} f&&(/^\*\*5[a-z] — /||/^#/){exit} f' "$BOUNDARIES")
 case "$p5n" in *deadline-passed*) ok "5n 문단이 deadline-passed 를 담는다" ;; *) bad "5n 문단" "deadline-passed 가 없다" ;; esac
 case "$p5n" in *'no environment variable selects it'*) ok "5n 문단이 「no environment variable selects it」 을 그대로 담는다" ;;
   *) bad "5n 문단" "「no environment variable selects it」 문장이 없다" ;; esac
@@ -937,7 +1086,7 @@ case "$p5n" in *'no environment variable selects it'*) ok "5n 문단이 「no en
 # 5p 의 손 입력 재질문은 대조기 철자가 한 낱말이 되면 그 철자를 내놓지 않는다 — 보조는
 # 같은 입력과 그 한 낱말 철자를 모두 거부하므로, 두 입구가 같은 입력에 같게 답한다.
 expect repo act-allow '형식 오류' '형태=kubectl --context=prod | 사유=a' '형태=gh -R=org/repo | 사유=a' '형태=kubectl | 사유=a'
-p5p=$(awk '/^\*\*5p — /{f=1; print; next} f&&(/^\*\*5[a-z] — /||/^#/){exit} f' "$SKILL")
+p5p=$(awk '/^\*\*5p — /{f=1; print; next} f&&(/^\*\*5[a-z] — /||/^#/){exit} f' "$BOUNDARIES")
 case "$p5p" in *"When the matcher's spelling comes to fewer than two words, do not offer it"*) ok "5p 문단이 한 낱말 대조기 철자를 제안하지 않는다고 적는다" ;;
   *) bad "5p 문단" "한 낱말 대조기 철자를 제안하지 않는다는 문장이 없다" ;; esac
 

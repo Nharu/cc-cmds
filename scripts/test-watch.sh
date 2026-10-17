@@ -103,6 +103,11 @@ export PATH CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND CC_TEST_NOTIFY_LOG
 # every banner below a click value nobody asked for. A case that wants a pane
 # passes one.
 unset TMUX TMUX_PANE
+# The threshold reads fleet's run markers under the pace root, and the real one
+# is this host's live fleet state. Every case reads an empty directory of the
+# suite's own; the fixed-graph cases below write their marker into it.
+FLEET_PACE_ROOT="$WORK/pace"
+export FLEET_PACE_ROOT
 
 # The host check is SEAMED, so every leg can drive the Darwin branch. Skipping
 # these on the other leg counted an unreachable path as a pass, which is how a
@@ -187,8 +192,11 @@ runb() { CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$
 # seeding helper right under this, which has to know how old a fixture's run row
 # claims to be before it can say whether a threshold is out of that fixture's
 # reach.
-iso_fn=$(sed -n '/^iso_to_epoch() {/,/^}/p' "$WATCH")
-iso_epoch() { CC_ISO_FN="$iso_fn" bash -c 'eval "$CC_ISO_FN"; iso_to_epoch "$1"' _ "$1"; }
+# The body lives in `liveness.sh` (`cc_iso_to_epoch`), which the watcher's
+# `iso_to_epoch` calls, so it is read from there.
+LIVENESS_SH="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+iso_fn=$(sed -n '/^cc_iso_to_epoch() {/,/^}/p' "$LIVENESS_SH")
+iso_epoch() { CC_ISO_FN="$iso_fn" bash -c 'eval "$CC_ISO_FN"; cc_iso_to_epoch "$1"' _ "$1"; }
 
 out_of_reach() {
   # out_of_reach <이름> <효력 임계> <측정값> — the override has to STRICTLY
@@ -225,7 +233,7 @@ seed_idle() {
   # carrying its own copy of these numbers would go on asserting about a
   # threshold the pass no longer ran with.
   local secs="$1"; shift
-  set -- "$@" --stall 99999999999 --after-stage 99999999999 --run-open 99999999999
+  set -- "$@" --stall 99999999999 --silence 99999999999 --after-stage 99999999999 --run-open 99999999999
   run "$@" >/dev/null
   # And the assumption is checked rather than trusted, because it is the kind
   # that stops holding quietly: an arm carrying no threshold, or one whose
@@ -245,10 +253,11 @@ seed_idle() {
   # be deleted with the whole suite staying green. So each threshold IN EFFECT —
   # last spelling wins, the rule the watcher's own parser applies — is compared
   # against the quantity its arm reads on this pass.
-  local _a _prev="" _eff_stall="" _eff_after="" _eff_open=""
+  local _a _prev="" _eff_stall="" _eff_silence="" _eff_after="" _eff_open=""
   for _a in "$@"; do
     case "$_prev" in
       --stall)       _eff_stall="$_a" ;;
+      --silence)     _eff_silence="$_a" ;;
       --after-stage) _eff_after="$_a" ;;
       --run-open)    _eff_open="$_a" ;;
     esac
@@ -265,6 +274,7 @@ seed_idle() {
     *)
       _idle=$(( _now - _seen ))
       out_of_reach --stall "$_eff_stall" "$_idle"
+      out_of_reach --silence "$_eff_silence" "$_idle"
       out_of_reach --after-stage "$_eff_after" "$_idle" ;;
   esac
   # The gate-idle reading the after-stage threshold is also compared against. A
@@ -313,11 +323,13 @@ case "$out" in
   *) bad "하트비트 내용" "'$out'" ;;
 esac
 # The threshold this pass used is left for a stage that waits for an account:
-# three lines, rewritten on every pass, the first being --stall.
-run --stall 777 >/dev/null
+# three lines, rewritten on every pass, the first being --stall. --silence is
+# passed below --stall so the first line also shows it is STALL that is written
+# and not the general arm's min(STALL, SILENCE).
+run --stall 777 --silence 300 >/dev/null
 check "매 패스 watch.stall 이 세 줄로 쓰인다" "$(grep -c '' "$RD/watch.stall" 2>/dev/null || true)" "3"
-check "그 첫 줄은 --stall 값이다" "$(sed -n '1p' "$RD/watch.stall" 2>/dev/null)" "777"
-run --stall 555 >/dev/null
+check "그 첫 줄은 --stall 값이다 (--silence 와 그 둘의 최솟값이 아니다)" "$(sed -n '1p' "$RD/watch.stall" 2>/dev/null)" "777"
+run --stall 555 --silence 300 >/dev/null
 check "다음 패스는 그 값을 다시 쓴다" "$(sed -n '1p' "$RD/watch.stall" 2>/dev/null)" "555"
 case "$(sed -n '2p' "$RD/watch.stall" 2>/dev/null)/$(sed -n '3p' "$RD/watch.stall" 2>/dev/null)" in
   [0-9]*/?*) ok "둘째·셋째 줄은 필자의 pid 와 지문이다" ;;
@@ -484,8 +496,8 @@ fresh
   printf -- '- `stage-wait` | 세그먼트=S1 | 스테이지=S1 | 계보=B:S1#2 | 그룹= | 계정= | 까지= | 근거=wait\n'
 } > "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
-seed_idle 300 --stall 99999 --after-stage 0 --run-open 99999
-out=$(run --stall 99999 --after-stage 0 --run-open 99999)
+seed_idle 300 --stall 99999 --silence 99999 --after-stage 0 --run-open 99999
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 99999)
 case "$out" in
   *"스테이지가 끝났는데 라우터가"*) bad "스테이지 뒤 갈래" "대기 행이 붙은 원장을 라우터 정지로 읽었다" ;;
   *) ok "stage-result 뒤 stage-wait 행이 붙으면 스테이지 뒤 갈래는 울리지 않는다" ;;
@@ -503,9 +515,9 @@ fresh
   printf -- '- `cost` | 세그먼트=S2 | 스테이지=S2\n'
 } > "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
-seed_idle 300 --stall 99999 --after-stage 0 --run-open 99999
+seed_idle 300 --stall 99999 --silence 99999 --after-stage 0 --run-open 99999
 seed_waiter S1 0
-out=$(run --stall 99999 --after-stage 0 --run-open 99999)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 99999)
 case "$out" in
   *"스테이지가 끝났는데 라우터가"*) bad "스테이지 뒤 갈래" "신선한 대기자가 있는데 다른 키의 종단 행을 라우터 정지로 읽었다" ;;
   *) ok "다른 키의 stage-result·cost 가 마지막이어도 신선한 대기자가 있으면 스테이지 뒤 갈래는 울리지 않는다" ;;
@@ -520,9 +532,9 @@ kill "$WAITER_PID" 2>/dev/null; wait "$WAITER_PID" 2>/dev/null || true
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
-seed_idle 300 --stall 99999 --after-stage 0 --run-open 0
+seed_idle 300 --stall 99999 --silence 99999 --after-stage 0 --run-open 0
 seed_waiter S1design 0
-out=$(run --stall 99999 --after-stage 0 --run-open 0)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 0)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) bad "런 열림 갈래" "대기하는 설계 스텝을 세그먼트 미개시로 지목했다" ;;
   *) ok "0 세그먼트 런의 대기하는 설계 스텝은 세그먼트 미개시가 아니다" ;;
@@ -797,7 +809,7 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
 # The FIRST pass, not the second: with the threshold at zero this arm fires
 # immediately, and the second pass is suppressed by the announce-once guard.
-out=$(run --stall 99999 --after-stage 0)
+out=$(run --stall 99999 --silence 99999 --after-stage 0)
 case "$out" in
   *"스테이지가 끝났는데"*) ok "스테이지 종단 뒤 라우터 무응답을 잡는다" ;;
   *) bad "종단 후 무응답" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
@@ -813,7 +825,7 @@ fresh
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
 printf -- '- `자율 승인` | kind=segment | 결정=act | prev=y\n' >> "$LG"
-out=$(run --stall 99999 --after-stage 0)
+out=$(run --stall 99999 --silence 99999 --after-stage 0)
 case "$out" in
   *"스테이지가 끝났는데"*) bad "종단 후 무응답" "라우터가 이어서 행위했는데 경보가 났다" ;;
   *) ok "라우터가 이어서 행위했으면 경보가 나지 않는다" ;;
@@ -824,7 +836,7 @@ fresh
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
 printf '2026-08-30T00:00:00Z 종단\n' > "$RD/done"
-out=$(run --stall 99999 --after-stage 0 2>&1 || true)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 2>&1 || true)
 case "$out" in
   *"스테이지가 끝났는데"*) bad "종단 후 무응답" "종단한 런에서 경보가 났다" ;;
   *) ok "종단한 런에서는 나지 않는다" ;;
@@ -850,7 +862,7 @@ fresh
 printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG"
 printf -- '- `stage-result` | 세그먼트=- | 종단 부류=정상 완료 | prev=y\n' >> "$LG"
 printf -- '- `cost` | 세그먼트=- | prev=z\n' >> "$LG"
-out=$(run --stall 99999 --after-stage 0 --run-open 0)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 0)
 case "$out" in
   *"스테이지가 끝났는데"*) bad "무응답 arm" "세그먼트를 연 적 없는 원장에서 발화했다" ;;
   *) ok "세그먼트 행이 없는 원장에서 무응답 arm 은 침묵한다" ;;
@@ -872,7 +884,7 @@ fi
 # ---------------------------------------------------------------------------
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
-out=$(run --stall 99999 --after-stage 0 --run-open 60)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 60)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) ok "run 행이 오래됐고 세그먼트가 없으면 발화한다" ;;
   *) bad "run 나이 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
@@ -886,7 +898,7 @@ fi
 # The once-guard has to be a DEDICATED MARKER, not a grep of `stall`: the gate
 # empties that file on every act, so a guard reading it comes back to life and
 # the arm re-fires every pass for the rest of the night.
-out=$(run --stall 99999 --after-stage 0 --run-open 60)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 60)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm 재발화" "매 pass 마다 다시 알린다" ;;
   *) ok "같은 조건을 다시 알리지 않는다" ;;
@@ -899,7 +911,7 @@ check "그 관측도 한 번만 남는다" "$(grep -c '세그먼트 미개시' "
 # wrong epoch would arm right here.
 fresh
 printf -- '- `run` | run-id=R1 | 시작=%s | prev=x\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LG"
-out=$(run --stall 99999 --after-stage 0 --run-open 60)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 60)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "막 열린 런을 세그먼트 미개시로 판정했다" ;;
   *) ok "임계 이전에는 발화하지 않는다" ;;
@@ -913,7 +925,7 @@ esac
 # arrives here as ±86400.
 fresh
 printf -- '- `run` | run-id=R1 | 시작=%s | prev=x\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LG"
-out=$(run --stall 99999 --after-stage 0 --run-open 0)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 0)
 age_said=$(printf '%s' "$out" | sed -n 's/.*런이 열린 지 \([0-9-][0-9]*\)초.*/\1/p' | tail -1)
 if [ -n "$age_said" ] && [ "$age_said" -ge 0 ] 2>/dev/null && [ "$age_said" -le 60 ] 2>/dev/null; then
   ok "ISO 시각을 epoch 으로 옮긴 나이가 실제 경과와 맞는다 (${age_said}초)"
@@ -945,9 +957,9 @@ fi
 # found something to run.
 # ---------------------------------------------------------------------------
 if [ -n "$iso_fn" ]; then
-  ok "watch.sh 에서 시각 환산 함수를 떼어냈다"
+  ok "liveness.sh 에서 시각 환산 함수를 떼어냈다"
 else
-  bad "시각 환산 추출" "iso_to_epoch 를 찾지 못했다 — 아래 행들은 잴 것이 없다"
+  bad "시각 환산 추출" "cc_iso_to_epoch 를 찾지 못했다 — 아래 행들은 잴 것이 없다"
 fi
 
 # The valid side. The rows are the boundaries hand-rolled civil-date arithmetic
@@ -990,7 +1002,7 @@ done
 # for every ledger written before that field existed.
 fresh
 printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG"
-out=$(run --stall 99999 --after-stage 0 --run-open 0)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 0)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "시각 없는 run 행을 나이 0 으로 읽었다" ;;
   *) ok "run 행에 시각이 없으면 판정하지 않는다" ;;
@@ -1003,7 +1015,7 @@ esac
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf -- '- `segment` | id=S1 | 상태=머지됨\n' >> "$LG"
-out=$(run --stall 99999 --after-stage 0 --run-open 0)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 0)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "정상 종단한 런에서 발화했다" ;;
   *) ok "정상 종단한 런에서는 발화하지 않는다" ;;
@@ -1017,7 +1029,7 @@ esac
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf '2026-08-30T00:00:00Z 종단\n' > "$RD/done"
-out=$(run --stall 99999 --after-stage 0 --run-open 0 2>&1 || true)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 0 2>&1 || true)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "종단 표시가 있는 런에서 발화했다" ;;
   *) ok "종단 표시가 있으면 발화하지 않는다" ;;
@@ -1044,8 +1056,8 @@ esac
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
-seed_idle 300 --stall 99999 --after-stage 120 --run-open 300
-out=$(run --stall 99999 --after-stage 120 --run-open 300)
+seed_idle 300 --stall 99999 --silence 99999 --after-stage 120 --run-open 300
+out=$(run --stall 99999 --silence 99999 --after-stage 120 --run-open 300)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*)
     bad "run 나이 arm" "게이트를 방금 부른 라우터를 세그먼트 미개시로 지목했다" ;;
@@ -1067,8 +1079,8 @@ fi
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
-seed_idle 300 --stall 99999 --after-stage 120 --run-open 300
-out=$(run --stall 99999 --after-stage 120 --run-open 300)
+seed_idle 300 --stall 99999 --silence 99999 --after-stage 120 --run-open 300
+out=$(run --stall 99999 --silence 99999 --after-stage 120 --run-open 300)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) ok "게이트도 오래 조용하면 발화한다 (arm 이 죽지 않았다)" ;;
   *) bad "run 나이 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
@@ -1081,8 +1093,8 @@ esac
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 rm -f "$RD/started-at"
-seed_idle 300 --stall 99999 --after-stage 120 --run-open 300
-out=$(run --stall 99999 --after-stage 120 --run-open 300)
+seed_idle 300 --stall 99999 --silence 99999 --after-stage 120 --run-open 300
+out=$(run --stall 99999 --silence 99999 --after-stage 120 --run-open 300)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*)
     bad "run 나이 arm" "게이트 호출 기록이 없는 것을 호출이 없었던 것으로 읽었다" ;;
@@ -1119,7 +1131,7 @@ fi
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
-out=$(run --stall 99999 --after-stage 120 --run-open 60)
+out=$(run --stall 99999 --silence 99999 --after-stage 120 --run-open 60)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*)
     bad "run 나이 arm" "원장이 방금 갱신된 런을 세그먼트 미개시로 지목했다" ;;
@@ -1138,7 +1150,7 @@ fi
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
-out=$(run --stall 99999 --after-stage 0 --run-open 60)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 60)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*)
     ok "임계만 내리면 같은 픽스처가 발화한다 (나머지 연언지는 전부 참이었다)" ;;
@@ -1151,7 +1163,7 @@ fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf -- '- `승인` | 승인 id=A1 | 상태=대기 | 막는 세그먼트=S1\n' >> "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
-out=$(run --stall 99999 --after-stage 0 --run-open 60)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 60)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*)
     bad "run 나이 arm" "사람을 기다리는 런을 세그먼트 미개시로 지목했다" ;;
@@ -1166,7 +1178,7 @@ printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
 FX_RUN_DIR="$RD"; FX_PIDS=""
 fx_stage_live S1
-out=$(run --stall 99999 --after-stage 0 --run-open 60)
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 60)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*)
     bad "run 나이 arm" "스테이지가 도는 런을 세그먼트 미개시로 지목했다" ;;
@@ -1207,9 +1219,15 @@ case "$out" in
     ok "시딩 pass 가 once 마커를 가져가지 않아 측정 pass 가 발화한다" ;;
   *) bad "시딩 헬퍼" "임계가 닿는 픽스처에서 측정 pass 가 침묵했다 — 시딩 pass 가 arm 을 먼저 발화시켰다" ;;
 esac
+# The stall arm yields to the run-age arm in the zero-segment window, so its
+# override is measured on a ledger with an open segment, where only it can fire.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+seed_idle 300 --stall 0 --silence 0 --after-stage 0 --run-open 0
+out=$(run --stall 0 --silence 0 --after-stage 0 --run-open 0)
 case "$out" in
   *"아무것도 쓰지 않았습니다"*)
-    ok "같은 pass 에서 정지 arm 도 발화한다 (그 임계의 override 도 잴 것이 생긴다)" ;;
+    ok "정지 arm 의 override 도 시딩 pass 를 막아 측정 pass 가 발화한다" ;;
   *) bad "시딩 헬퍼" "정지 임계가 닿는 픽스처에서 측정 pass 가 침묵했다 — 시딩 pass 가 정지 arm 을 먼저 발화시켰다" ;;
 esac
 
@@ -1228,8 +1246,8 @@ fresh
   printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종료 코드=0 | 종단 부류=정상 완료\n'
 } > "$LG"
 printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
-seed_idle 300 --stall 99999 --after-stage 0 --run-open 99999
-out=$(run --stall 99999 --after-stage 0 --run-open 99999)
+seed_idle 300 --stall 99999 --silence 99999 --after-stage 0 --run-open 99999
+out=$(run --stall 99999 --silence 99999 --after-stage 0 --run-open 99999)
 case "$out" in
   *"스테이지가 끝났는데 라우터가"*)
     ok "시딩 pass 가 스테이지 종단 arm 의 마커를 가져가지 않아 측정 pass 가 발화한다" ;;
@@ -1241,9 +1259,10 @@ esac
 #
 # No arm returns before the heartbeat, so adding one cannot swallow a pass — but
 # that is a property to measure rather than assume, and this arm sits between
-# two that fire on the very same ledger. One pass with both thresholds met must
-# produce both announcements, leave both observations under their own reasons,
-# and still reach the heartbeat.
+# two that meet on the very same ledger. With the stall arm at `min(STALL,
+# SILENCE)` the two reach one silence in one pass, so the stall arm yields once
+# this arm has recorded: one announcement, one observation, and still the
+# heartbeat.
 # ---------------------------------------------------------------------------
 fresh
 printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
@@ -1253,14 +1272,14 @@ case "$out" in
   *) bad "동시 발화" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
 case "$out" in
-  *"아무것도 쓰지 않았습니다"*) ok "같은 pass 에서 정지 arm 도 발화한다 (뒤 arm 이 가려지지 않는다)" ;;
-  *) bad "동시 발화" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+  *"아무것도 쓰지 않았습니다"*) bad "첫 창 양보" "run 나이 arm 이 기록한 pass 에서 정지 arm 도 발화했다" ;;
+  *) ok "같은 pass 에서 정지 arm 은 run 나이 arm 에 양보한다" ;;
 esac
 case "$out" in
-  *"[watch] 살아 있음"*) ok "두 arm 이 발화한 pass 도 하트비트까지 도달한다" ;;
+  *"[watch] 살아 있음"*) ok "run 나이 arm 이 발화한 pass 도 하트비트까지 도달한다" ;;
   *) bad "동시 발화 하트비트" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
-check "두 arm 이 각자의 사유로 관측을 남긴다" "$(grep -c . "$RD/stall" || true)" "2"
+check "첫 창의 관측은 하나다" "$(grep -c . "$RD/stall" || true)" "1"
 
 # ---------------------------------------------------------------------------
 # It stays alive across passes.
@@ -1929,7 +1948,7 @@ fresh
 : > "$NOTIFY_LOG"
 FX_RUN_DIR="$RD"; FX_PIDS=""
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
-# THE ROUTER IS WORKING IN THIS FIXTURE, and the three thresholds below are the
+# THE ROUTER IS WORKING IN THIS FIXTURE, and the thresholds below are the
 # PRODUCTION ones rather than large numbers. The ledger was just written and the
 # gate was just called, so the sibling arms are silent because their conditions
 # genuinely do not hold — not because a test put them out of reach. That is what
@@ -1938,7 +1957,7 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
 fx_stage_live S1
 fx_age_file "$RD/S1.start" 7300
-out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200 --silence 300)
 case "$out" in
   *"스테이지 S1 이"*"살아 있습니다"*) ok "스테이지가 임계를 넘게 살아 있으면 발화한다" ;;
   *) bad "스테이지 연령 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
@@ -1960,7 +1979,7 @@ fi
 # The once-guard is a DEDICATED PER-STAGE MARKER for the same reason the arms
 # above use one: the gate empties `stall` on every act, so a guard reading that
 # file would come back to life and this arm would re-fire every pass.
-out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200 --silence 300)
 case "$out" in
   *"스테이지 S1 이"*"살아 있습니다"*) bad "재발화" "매 pass 마다 같은 스테이지를 다시 알린다" ;;
   *) ok "같은 스테이지를 다시 알리지 않는다" ;;
@@ -1994,7 +2013,7 @@ fx_reap
 rm -f "$RD"/S1.pid "$RD"/S1.start
 fx_stage_live S1
 fx_age_file "$RD/S1.start" 7400
-out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200 --silence 300)
 case "$out" in
   *"스테이지 S1 이"*"살아 있습니다"*) ok "같은 세그먼트의 새 스테이지에는 다시 발화한다 (마커가 세그먼트가 아니라 인스턴스에 걸린다)" ;;
   *) bad "once 가드 입도" "같은 세그먼트라는 이유로 새 스테이지가 침묵했다 — 한 번의 오탐이 그 세그먼트의 탐지기를 런 내내 소비한다" ;;
@@ -2007,7 +2026,7 @@ FX_RUN_DIR="$RD"; FX_PIDS=""
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
 fx_stage_live S2
-out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200 --silence 300)
 case "$out" in
   *"살아 있습니다"*) bad "스테이지 연령 arm" "막 시작한 스테이지를 걸린 것으로 지목했다" ;;
   *) ok "임계 이전에는 발화하지 않는다" ;;
@@ -2024,7 +2043,7 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
 fx_stage_dead S3
 fx_age_file "$RD/S3.start" 7300
-out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200 --silence 300)
 case "$out" in
   *"살아 있습니다"*) bad "스테이지 연령 arm" "죽은 스테이지의 낡은 지문을 걸린 스테이지로 읽었다" ;;
   *) ok "죽은 스테이지에는 발화하지 않는다 (연령만이 아니라 생존도 본다)" ;;
@@ -2037,7 +2056,8 @@ esac
 # own default, or the sentence beside it saying these are the defaults becomes
 # false and nothing says so.
 # ---------------------------------------------------------------------------
-SKILL_MD="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+# The launch line lives in the Act 2 seat reference that Step 7 reads.
+SKILL_MD="$repo_root/plugins/cc-cmds/skills/autopilot/references/act2-seat.md"
 sa_decl=$( { grep -oE '(^|[;[:space:]])STAGE_AGE=[0-9]+' "$WATCH" || true; } \
            | sed -E 's/.*STAGE_AGE=//')
 check "watch.sh 가 STAGE_AGE 기본값을 정확히 하나 선언한다" \
@@ -2225,7 +2245,7 @@ eod_kill_shift() {
 eod_loop() {
   # eod_loop <stall> — 진짜 루프를 백그라운드로 띄운다. pid 는 EOD_LOOP_PID.
   CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" \
-    --interval 1 --stall "$1" --after-stage 99999 --run-open 99999 >/dev/null 2>&1 &
+    --interval 1 --stall "$1" --silence "$1" --after-stage 99999 --run-open 99999 >/dev/null 2>&1 &
   EOD_LOOP_PID=$!
   FX_PIDS="${FX_PIDS:-}$EOD_LOOP_PID "
 }
@@ -2269,7 +2289,7 @@ fresh
 : > "$NOTIFY_LOG"
 eod_mark
 printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
-runb --stall 99999 >/dev/null
+runb --stall 99999 --silence 99999 >/dev/null
 sleep 0.3
 check "표지 있는 런은 done 없이 유도 종단만으로 ended 를 울리지 않는다" "$(n_ended)" "0"
 check "그 패스는 런의 종단 점유를 잡지 않는다" \
@@ -2279,7 +2299,7 @@ check "그 패스는 런의 종단 점유를 잡지 않는다" \
 fresh
 : > "$NOTIFY_LOG"
 printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
-runb --stall 99999 >/dev/null
+runb --stall 99999 --silence 99999 >/dev/null
 notify_settle 1
 check "대조군 — 표지 없는 같은 원장은 ended 를 한 번 울린다" "$(n_ended)" "1"
 
@@ -2298,7 +2318,7 @@ eod_r4_2=$(n_settle)
 # 원장이 자란 뒤 다시 묵힌다. 한 패스로 새 크기를 기록시키고 그 관측 시각을 되돌린다
 # — `seed_idle` 은 앞 에피소드의 마커를 시딩 발화로 읽으므로 여기서는 쓰지 않는다.
 printf -- '- `segment` | id=S2 | 상태=머지됨\n' >> "$LG"
-run --stall 99999 --after-stage 99999 --run-open 99999 >/dev/null
+run --stall 99999 --silence 99999 --after-stage 99999 --run-open 99999 >/dev/null
 printf '%s\n%s\n%s\n' "$(sed -n '1p' "$RD/watch.state")" \
   "$(( $(date -u +%s) - 300 ))" "$LG" > "$RD/watch.state"
 runb --stall 100 --after-stage 99999 --run-open 99999 >/dev/null
@@ -2462,7 +2482,7 @@ fresh
 : > "$NOTIFY_LOG"
 printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
 printf '2026-10-10T00:00:00Z 종단 — 경계 B4 · 비용이 선언 천장에 닿았습니다 (100/100)\n' > "$RD/done"
-runb --stall 99999 >/dev/null
+runb --stall 99999 --silence 99999 >/dev/null
 notify_settle 1
 eod_loop 100
 eod_loop_exited >/dev/null
@@ -2479,7 +2499,7 @@ fresh
 printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
 eod_racers=""
 for eod_r in 1 2 3 4; do
-  runb --stall 99999 >/dev/null &
+  runb --stall 99999 --silence 99999 >/dev/null &
   eod_racers="$eod_racers $!"
 done
 for eod_r in $eod_racers; do wait "$eod_r" 2>/dev/null || true; done
@@ -2525,7 +2545,7 @@ r7_drive() {
       eval "$CC_SETTLE_FN"
       announce() { [ "$R7_WHERE" = before ] && sleep 1; return 0; }
       cc_notify_fire() { printf "%s\n" "$1" >> "$R7_LOG"; [ "$R7_WHERE" = after ] && sleep 1; return 0; }
-      STALL=100 age=300 live=0 pend=0 nonterm=0 size=1
+      STALL=100 age=300 live=0 pend=0 nonterm=0 size=1 thr=100 quiet=300 relay_eff=0
       settle_stall_arm
     '
   wait "$racer" 2>/dev/null || true
@@ -2572,7 +2592,7 @@ idle_fixture() {
 idle_loop() {
   # idle_loop — 진짜 루프를 띄우고 출력을 남긴다. pid 는 EOD_LOOP_PID.
   CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" \
-    --interval 1 --stall 99999 --after-stage 99999 --run-open 99999 > "$WORK/idle$case_n.out" 2>&1 &
+    --interval 1 --stall 99999 --silence 99999 --after-stage 99999 --run-open 99999 > "$WORK/idle$case_n.out" 2>&1 &
   EOD_LOOP_PID=$!
   FX_PIDS="${FX_PIDS:-}$EOD_LOOP_PID "
 }
@@ -2621,6 +2641,284 @@ case "$(idle_over "$(( $(date -u +%s) - 90000 ))")" in
   *"판정=끝나지 않음") ok "답 없는 중단 기록이 있으면 25시간 조용해도 감시자가 끝나지 않는다" ;;
   *) bad "중단 기록 대기" "$(idle_over "$(( $(date -u +%s) - 90000 ))")" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 기본 임계(플래그 없음)에서 일반 갈래가 기록하는 때.
+#
+# 임계 T 는 좌석 턴이 열려 있거나 답 없는 중단 기록이 있거나 이 런의 살아 있는 fleet
+# 실행 표지가 있으면 STALL(1200), 아니면
+# min(STALL, SILENCE) = 300 이다. 조용함은 원장 성장·게이트 진입·릴레이 handback·
+# 살아 있는 교대의 스트림 로그 가운데 가장 늦은 것부터 잰다. 유효한 릴레이는 일반·
+# 정착 갈래를 따로 멈춘다. 모든 사례가 기본 임계로 돌므로 seed_idle 뒤의 측정
+# 패스에는 플래그가 없다.
+#
+# 경계 바로 아래 사례(299·1199)는 sil_measure_at 으로 잰다. seed_idle 이 관측 시각을
+# 적은 뒤 측정 패스가 시계를 읽기까지 초 경계 하나를 넘을 수 있어, 299 가 300 으로
+# 읽히면 경계 위의 판정을 낸다. 그래서 측정 패스가 하트비트에 적은 원장 유휴가 바로
+# 그 값인 패스만 판정에 쓰고, 아니면 준비부터 다시 한다.
+# ---------------------------------------------------------------------------
+sil_fired() { if grep -q '라이브니스 침묵' "$RD/stall" 2>/dev/null; then printf 1; else printf 0; fi; }
+sil_case() {
+  # sil_case <게이트 유휴 초> — 비종단 세그먼트 하나, 게이트 마지막 진입을 그만큼 전으로.
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+  printf '%s\n' "$(( $(date -u +%s) - $1 ))" > "$RD/started-at"
+}
+sil_measure() {  # sil_measure <원장 유휴 초> — 시딩한 뒤 기본 임계로 한 패스
+  seed_idle "$1"
+  run >/dev/null
+}
+sil_measure_at() {
+  # sil_measure_at <원장 유휴 초> <준비 명령…> — 준비·시딩·측정을, 측정 패스의 하트비트가
+  # 그 유휴를 적을 때까지 최대 다섯 번 되풀이한다. 원장보다 먼저 쓰인 게이트 진입은 더
+  # 오래됐으므로, 조용함은 원장 유휴와 같다.
+  local want="$1" i=0 out seen=""; shift
+  while [ "$i" -lt 5 ]; do
+    "$@"
+    seed_idle "$want"
+    out=$(run 2>&1)
+    seen=$(printf '%s\n' "$out" | sed -n 's/.*원장 \([0-9][0-9]*\)초 전 갱신.*/\1/p' | tail -1)
+    [ "$seen" = "$want" ] && return 0
+    i=$((i + 1))
+  done
+  bad "기본 임계 경계" "측정 패스가 원장 유휴 ${want}초를 다섯 번 모두 읽지 못했다 (마지막 '${seen}')"
+}
+sil_live() {  # sil_live <파일> — 이 스위트가 가진 살아 있는 프로세스를 pid·지문으로 적는다
+  sleep 600 & SIL_PID=$!; FX_PIDS="${FX_PIDS:-}$SIL_PID "
+  printf '%s\n%s\n' "$SIL_PID" "$(cc_proc_fingerprint "$SIL_PID")" > "$1"
+}
+sil_dead() {  # sil_dead — 이 셸이 거둔 죽은 pid 하나, SIL_DEAD 에
+  sh -c 'exit 0' & SIL_DEAD=$!; wait "$SIL_DEAD" 2>/dev/null || true
+}
+
+# 교대도 릴레이도 없는 조용한 런.
+sil_measure_at 299 sil_case 299
+check "기본 임계: 교대 없는 런은 299초에 기록하지 않는다" "$(sil_fired)" "0"
+sil_case 301; sil_measure 301
+check "기본 임계: 교대 없는 런은 301초에 기록한다" "$(sil_fired)" "1"
+
+# 살아 있는 교대 — 스트림 로그·게이트 진입·원장 셋이 모두 조용할 때만.
+sil_shift() {  # sil_shift <로그 나이> <게이트 유휴> — 살아 있는 교대 하나
+  sil_case "$2"
+  sil_live "$RD/shift.live"
+  mkdir -p "$RD/log"; printf '{}\n' > "$RD/log/shift-1.json"
+  fx_age_file "$RD/log/shift-1.json" "$1"
+}
+sil_shift 301 301; sil_measure 301
+check "기본 임계: 살아 있는 교대의 세 신호가 모두 301초 조용하면 기록한다" "$(sil_fired)" "1"
+sil_shift 5 301; sil_measure 301
+check "기본 임계: 교대의 스트림 로그가 신선하면 기록하지 않는다" "$(sil_fired)" "0"
+sil_shift 301 5; sil_measure 301
+check "기본 임계: 게이트 진입이 신선하면 기록하지 않는다" "$(sil_fired)" "0"
+sil_shift 301 301; sil_measure 5
+check "기본 임계: 원장이 신선하면 기록하지 않는다" "$(sil_fired)" "0"
+sil_case 301
+sil_live "$RD/shift.live"
+sil_measure 301
+check "기본 임계: 스트림 로그 없이 shift.live 만 있는 교대는 판정하지 않는다" "$(sil_fired)" "0"
+
+# 인수인계 뒤의 좌석 턴 — 최신 handoff 가 최신 교대 기동보다 뒤이고 살아 있는 릴레이가
+# 없으면 T 는 STALL 이다. 두 사유 모두.
+sil_handoff_case() {  # sil_handoff_case <게이트 유휴> <사유> — 기동 뒤 인계가 최신 행
+  sil_case "$1"
+  printf -- '- `교대 기동` | 서수=1 | 사유=상한\n- `handoff` | 교대=1 | 사유=%s | CI 대기=-\n' "$2" >> "$LG"
+}
+for sil_why in 대기 상한; do
+  for sil_s in 301 1199 1200; do
+    if [ "$sil_s" = 1199 ]; then
+      sil_measure_at "$sil_s" sil_handoff_case "$sil_s" "$sil_why"
+    else
+      sil_handoff_case "$sil_s" "$sil_why"
+      sil_measure "$sil_s"
+    fi
+    check "기본 임계: $sil_why 인계 뒤 좌석 턴은 ${sil_s}초에 $( [ "$sil_s" = 1200 ] && printf 기록한다 || printf '기록하지 않는다')" \
+      "$(sil_fired)" "$( [ "$sil_s" = 1200 ] && printf 1 || printf 0)"
+  done
+done
+
+# 반환 — 3601초 묵은 대기 인계, relay.live 의 pid 는 죽었고 handback 이 남았다. 조용함은
+# handback 부터 잰다.
+for sil_hb in 30 1201; do
+  sil_case 3601
+  printf -- '- `교대 기동` | 서수=1 | 사유=상한\n- `handoff` | 교대=1 | 사유=대기 | CI 대기=-\n' >> "$LG"
+  sil_dead
+  printf '%s\n%s\nrefreshed=%s\nstarted=%s\nstages=-\nci=-\nhandback=%s\n' "$SIL_DEAD" 'Thu Jan  1 00:00:00 1970' \
+    "$(( $(date -u +%s) - sil_hb ))" "$(( $(date -u +%s) - 3601 ))" "$(( $(date -u +%s) - sil_hb ))" > "$RD/relay.live"
+  sil_measure 3601
+  check "기본 임계: handback ${sil_hb}초 뒤에는 $( [ "$sil_hb" = 1201 ] && printf 기록한다 || printf '기록하지 않는다')" \
+    "$(sil_fired)" "$( [ "$sil_hb" = 1201 ] && printf 1 || printf 0)"
+done
+
+# 게이트 유휴 읽기가 비면 그 항만 빼고 판정한다.
+sil_case 0
+rm -f "$RD/started-at"
+sil_measure 301
+check "기본 임계: 게이트 진입 기록이 없으면 원장 유휴 301초에 기록한다" "$(sil_fired)" "1"
+
+# 답 없는 중단 기록 — 사람을 기다리는 동안 T 는 STALL 이다.
+sil_halt() {  # sil_halt <유휴> [답] — halt/S1.md 하나, 답이 있으면 그것을 가리키는 중단 답 행
+  sil_case "$1"
+  mkdir -p "$RD/halt"; printf '# 중단 기록\n' > "$RD/halt/S1.md"
+  [ -z "${2:-}" ] || printf -- '- `중단 답` | 중단 기록=%s/halt/S1.md | 선택지=x\n' "$RD" >> "$LG"
+}
+sil_halt 301; sil_measure 301
+check "기본 임계: 답 없는 중단 기록이 있으면 301초에 기록하지 않는다" "$(sil_fired)" "0"
+sil_halt 1200; sil_measure 1200
+check "기본 임계: 답 없는 중단 기록이 있어도 1200초에는 기록한다" "$(sil_fired)" "1"
+sil_halt 301 답; sil_measure 301
+check "기본 임계: 답한 중단 기록은 임계를 늘리지 않는다 (301초에 기록)" "$(sil_fired)" "1"
+
+# 고정 그래프 런 — 라우터·교대·handoff 행이 없고 드라이버가 CI 를 게이트 밖에서
+# 기다린다. 이 런 id 를 단 살아 있는 fleet 실행 표지가 있는 동안 T 는 STALL 이다.
+sil_fleet() {  # sil_fleet <유휴> [표지의 런 id] — busy/ 에 살아 있는 표지 하나, 런 id 를 안 주면 이 런
+  local run
+  sil_case "$1"
+  run="${2:-$(basename "$RD")}"
+  mkdir -p "$FLEET_PACE_ROOT/busy"
+  sleep 600 & SIL_FLEET_PID=$!; FX_PIDS="${FX_PIDS:-}$SIL_FLEET_PID "
+  printf '%s\n%s\n%s\n' "$SIL_FLEET_PID" "$(TZ=UTC0 cc_proc_fingerprint "$SIL_FLEET_PID")" "$run" \
+    > "$FLEET_PACE_ROOT/busy/u1.$SIL_FLEET_PID"
+}
+sil_fleet_clear() {
+  kill "$SIL_FLEET_PID" 2>/dev/null || true
+  wait "$SIL_FLEET_PID" 2>/dev/null || true
+  rm -f "$FLEET_PACE_ROOT/busy"/*
+}
+sil_fleet 301; sil_measure 301
+check "고정 그래프: 이 런의 살아 있는 표지가 있으면 301초에 기록하지 않는다" "$(sil_fired)" "0"
+sil_fleet_clear
+sil_fleet 1200; sil_measure 1200
+check "고정 그래프: 살아 있는 표지가 있어도 1200초에는 기록한다" "$(sil_fired)" "1"
+sil_fleet_clear
+sil_fleet 301
+kill "$SIL_FLEET_PID" 2>/dev/null || true; wait "$SIL_FLEET_PID" 2>/dev/null || true
+sil_measure 301
+check "고정 그래프: 표지의 pid 가 죽었으면 301초에 기록한다" "$(sil_fired)" "1"
+sil_fleet_clear
+sil_fleet 301 다른-런; sil_measure 301
+check "고정 그래프: 다른 런 id 의 표지는 임계를 늘리지 않는다 (301초에 기록)" "$(sil_fired)" "1"
+sil_fleet_clear
+sil_fleet 301
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf '1\n' > "$RD/ends-on-done"
+sil_measure 301
+check "고정 그래프: 정착 갈래도 살아 있는 표지 곁에서는 301초에 기록하지 않는다" \
+  "$( [ -z "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null || true)" ] && printf 0 || printf 1)" "0"
+sil_fleet_clear
+
+# ---------------------------------------------------------------------------
+# 릴레이 — 유효한 릴레이는 일반·정착 갈래를 멈추고, 걸린 릴레이는 그러지 못한다.
+# 처음 셋은 최신 handoff 를 대기 인계로 두고 릴레이 pid 를 살려 둔다: 살아 있는
+# 릴레이에는 좌석 턴 유예가 걸리지 않으므로 T 는 300 이다.
+# ---------------------------------------------------------------------------
+sil_relay() {  # sil_relay <refreshed 나이> <ci> <stages> — 살아 있는 릴레이와 대기 인계
+  sil_case 301
+  printf -- '- `교대 기동` | 서수=1 | 사유=상한\n- `handoff` | 교대=1 | 사유=대기 | CI 대기=%s\n' "$2" >> "$LG"
+  sil_live "$RD/relay.live"
+  printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\n' "$(( $(date -u +%s) - $1 ))" \
+    "$(( $(date -u +%s) - 400 ))" "$3" "$2" >> "$RD/relay.live"
+}
+sil_relay 0 - -; sil_measure 301
+check "릴레이: 신선한 릴레이가 있으면 유휴 301초에도 기록하지 않는다" "$(sil_fired)" "0"
+sil_relay 301 - -; sil_measure 301
+check "릴레이: refreshed 가 301초 묵은 릴레이는 유효하지 않아 기록한다" "$(sil_fired)" "1"
+sil_relay 0 RLC1 -
+printf -- '- `checks` | PR=7 | head sha=abc1234 | 상태=통과 | 관측=%s | 세그먼트=RLC1\n' \
+  "$(perl -MPOSIX -e 'print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(time - 301))')" >> "$LG"
+sil_measure 301
+check "릴레이: 관측이 301초 묵은 통과 위에 앉은 릴레이는 유효하지 않아 기록한다" "$(sil_fired)" "1"
+
+# 스테이지 깨움의 시계는 워처가 처음 본 시각이고, --once 사이에 남는다.
+sil_relay 0 - S2
+printf -- '- `stage-result` | 세그먼트=S2 | 스테이지=S2 | 종단 부류=정상 완료\n- `자율 승인` | 교대=0 | kind=x\n' >> "$LG"
+sil_measure 301
+check "릴레이: 스테이지 깨움을 처음 본 패스는 기록하지 않는다" "$(sil_fired)" "0"
+check "릴레이: 그 패스가 깨움 키의 첫 관측을 남긴다" \
+  "$(awk -F'\t' '$2 == "sr" { n++ } END { print n + 0 }' "$RD/watch.relay-seen" 2>/dev/null)" "1"
+awk -F'\t' -v t="$(( $(date -u +%s) - 121 ))" 'BEGIN { OFS = "\t" } { $3 = t; print }' \
+  "$RD/watch.relay-seen" > "$RD/watch.relay-seen.t" && mv "$RD/watch.relay-seen.t" "$RD/watch.relay-seen"
+run >/dev/null
+check "릴레이: 첫 관측이 121초 전이면 둘째 --once 가 기록한다" "$(sil_fired)" "1"
+
+# 리셋 깨움 — relay.live 의 reset= 줄은 rl:<key> 를 epoch+G 전에는 내지 않고 뒤에는
+# 내며, 그 키는 제 시계(epoch+G)를 싣는다. 그래서 나이는 watch.relay-seen 이 아니라
+# 그 시계로 매겨진다: 처음 본 패스에서도 오래 선 키는 늦은 것이다.
+sil_relay 0 - -
+printf 'reset=RJ1:%s\n' "$(( $(date -u +%s) + 30 ))" >> "$RD/relay.live"
+check "릴레이: 리셋+G 전에는 rl 깨움 키가 서지 않는다" \
+  "$( { cc_relay_wake_keys "$RD" "$LG" | grep -c '^rl:' || true; } | tr -d ' ')" "0"
+sil_relay 0 - -
+sil_rl=$(( $(date -u +%s) - 61 ))
+printf 'reset=RJ1:%s\n' "$sil_rl" >> "$RD/relay.live"
+check "릴레이: 리셋+G 가 지나면 rl 키가 그 합을 시계로 선다" \
+  "$(cc_relay_wake_keys "$RD" "$LG" | grep '^rl:')" "$(printf 'rl:RJ1\t%s' "$((sil_rl + 60))")"
+sil_measure 301
+check "릴레이: 막 선 rl 키 옆에서는 기록하지 않고 relay-seen 에 그 키를 남기지 않는다" \
+  "$(sil_fired):$( { cat "$RD/watch.relay-seen" 2>/dev/null | grep -c 'rl:' || true; } | tr -d ' ')" "0:0"
+sil_relay 0 - -
+printf 'reset=RJ1:%s\n' "$(( $(date -u +%s) - 60 - 200 ))" >> "$RD/relay.live"
+sil_measure 301
+check "릴레이: 200초 전에 선 rl 키는 첫 패스에서도 그 시계로 늦어 기록한다" "$(sil_fired)" "1"
+
+# 한도 해제 — 끊긴 행보다 뒤의 `한도 해제` 행만 lc:<key> 를 그 `기록 시각` 으로 낸다.
+sil_relay 0 - -
+printf 'reset=RJ2:%s\n' "$(( $(date -u +%s) + 900 ))" >> "$RD/relay.live"
+printf -- '- `한도 해제` | 근거=앞선 해제 | 레인=~/.claude | 기록 시각=2020-01-01T00:00:00Z\n' >> "$LG"
+printf -- '- `stage-result` | 세그먼트=RJ2 | 스테이지=RJ2 | 종단 부류=한도 종료\n' >> "$LG"
+check "릴레이: 끊긴 행보다 앞의 한도 해제 행은 lc 키를 내지 않는다" \
+  "$( { cc_relay_wake_keys "$RD" "$LG" | grep -c '^lc:' || true; } | tr -d ' ')" "0"
+sil_lc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf -- '- `한도 해제` | 근거=좌석 | 레인=~/.claude | 기록 시각=%s\n' "$sil_lc" >> "$LG"
+check "릴레이: 끊긴 행보다 뒤의 한도 해제 행이 lc 키를 그 기록 시각으로 낸다" \
+  "$(cc_relay_wake_keys "$RD" "$LG" | grep '^lc:')" "$(printf 'lc:RJ2\t%s' "$(cc_iso_to_epoch "$sil_lc")")"
+
+# 걸린 릴레이는 스테이지 종료 뒤 갈래가 잡는다 — 마지막 행이 stage-result, 스테이지 pid
+# 없음, 릴레이 표지는 낡았다(pid 죽음).
+sil_case 121
+printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종단 부류=정상 완료\n' >> "$LG"
+sil_dead
+printf '%s\n%s\nrefreshed=1\nstarted=1\nstages=S1\nci=-\n' "$SIL_DEAD" 'Thu Jan  1 00:00:00 1970' > "$RD/relay.live"
+sil_measure 121
+check "릴레이: 낡은 릴레이 표지 옆에서 스테이지 종료 뒤 갈래가 121초에 기록한다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 1 || printf 0)" "1"
+
+sil_relay 0 - S1
+FX_RUN_DIR_SAVE="${FX_RUN_DIR:-}"; FX_RUN_DIR="$RD"; fx_stage_live S1; FX_RUN_DIR="$FX_RUN_DIR_SAVE"
+sil_measure 301
+check "릴레이: 신선한 표지와 살아 있는 스테이지에서는 기록하지 않는다" "$(sil_fired)" "0"
+
+# 정착 갈래도 같은 결합을 읽는다 — 세그먼트가 모두 끝난 ends-on-done 런.
+sil_settle() {  # sil_settle [릴레이] — 정산 중인 런, 원장 유휴 301초; 판정은 SIL_SETTLE 에
+  sil_case 301
+  printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+  printf '1\n' > "$RD/ends-on-done"
+  if [ -n "${1:-}" ]; then
+    printf -- '- `교대 기동` | 서수=1 | 사유=상한\n- `handoff` | 교대=1 | 사유=대기 | CI 대기=-\n' >> "$LG"
+    sil_live "$RD/relay.live"
+    printf 'refreshed=%s\nstarted=%s\nstages=-\nci=-\n' "$(date -u +%s)" "$(date -u +%s)" >> "$RD/relay.live"
+  fi
+  sil_measure 301
+  SIL_SETTLE=0
+  [ -z "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null || true)" ] || SIL_SETTLE=1
+}
+sil_settle
+check "정착 갈래: 릴레이 없는 정산 런은 301초에 기록한다" "$SIL_SETTLE" "1"
+sil_settle 릴레이
+check "정착 갈래: 유효한 릴레이가 있으면 기록하지 않는다" "$SIL_SETTLE" "0"
+
+# ---------------------------------------------------------------------------
+# 런 개시 첫 창 — 계획만 있고 세그먼트 행이 없는 원장, 원장 유휴 301초.
+# ---------------------------------------------------------------------------
+sil_open() {  # sil_open — 세그먼트 없는 런, 게이트 유휴 301초
+  sil_case 301
+  printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+}
+sil_open; sil_measure 301
+check "런 개시: 게이트에 들어온 런의 첫 창 기록은 하나이고 세그먼트 미개시 다" \
+  "$(grep -c . "$RD/stall" 2>/dev/null || true):$(grep -c '세그먼트 미개시' "$RD/stall" 2>/dev/null || true)" "1:1"
+sil_open; rm -f "$RD/started-at"; sil_measure 301
+check "런 개시: 게이트에 한 번도 들어오지 않은 런은 일반 갈래가 하나 기록한다" \
+  "$(grep -c . "$RD/stall" 2>/dev/null || true):$(sil_fired)" "1:1"
 
 # ---------------------------------------------------------------------------
 # A manifest with a `재킥오프` row: the next run is the successor sweep's, so the

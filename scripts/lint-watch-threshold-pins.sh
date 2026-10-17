@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pin the watcher's four thresholds against the watcher script's own defaults.
+# Pin the watcher's launch thresholds against the watcher script's own defaults.
 #
 # The autopilot skill's watcher launch line spells all four thresholds out, and
 # the paragraph under it gives the reason: the status line has to judge whether a
@@ -14,8 +14,8 @@
 # tree stays green, and the next person finds out during a night run.
 #
 # Rules:
-#   1  watch.sh declares exactly one default for each of the four     [fail]
-#   2  the launch line carries each of the four flags exactly once    [fail]
+#   1  watch.sh declares exactly one default for each pinned flag     [fail]
+#   2  the launch line carries each pinned flag exactly once          [fail]
 #   3  each pinned value equals the declared default                  [fail]
 #   4  every other mention of a flag in the document agrees too       [fail]
 #   5  liveness.sh declares the idle self-exit threshold once, as
@@ -61,7 +61,7 @@
 #
 # Env overrides (fixture runner):
 #   ORCH_ROOT=<dir>     # directory holding watch.sh (the defaults' SOT) and fleet.sh
-#   SKILLS_ROOT=<dir>   # skills root holding autopilot/SKILL.md
+#   SKILLS_ROOT=<dir>   # skills root holding autopilot/references/act2-seat.md
 #
 # Posture: if the watcher is absent the whole check is a silent skip; an absent
 # consumer skips that consumer only.
@@ -79,8 +79,10 @@ repo_root=$(cd "$script_dir/.." && pwd)
 orch_root="${ORCH_ROOT:-$repo_root/plugins/cc-cmds/orchestrator}"
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 WATCHER="$orch_root/watch.sh"
+# The autopilot launch line and the paragraph restating its thresholds sit in
+# the Act 2 seat reference, which Step 7 reads before it launches the watcher.
 CONSUMERS=(
-  "$skills_root/autopilot/SKILL.md"
+  "$skills_root/autopilot/references/act2-seat.md"
   "$orch_root/fleet.sh"
 )
 
@@ -98,6 +100,10 @@ PINS=(
   "--interval|INTERVAL"
   "--after-stage|AFTER_STAGE"
   "--run-open|RUN_OPEN"
+  # The general and settle-stall arms' own threshold. Pinned like the others:
+  # the arms fire at `min(STALL, SILENCE)`, so a launch line that omitted it
+  # would run a value no contract states.
+  "--silence|SILENCE"
 )
 
 fail=0
@@ -188,7 +194,7 @@ for CONSUMER in "${CONSUMERS[@]}"; do
     # --- Rule 3: the two agree --------------------------------------------
     if [[ "$got" != "$want" ]]; then
       echo "FAIL: $cname $flag — 기동 줄은 $got 을 못 박는데 watch.sh 의 $var 기본값은 $want 이다" >&2
-      echo "       둘이 갈라지면 '네 임계 전부가 스크립트 기본값' 이라는 진술이 거짓이 된다" >&2
+      echo "       둘이 갈라지면 '임계 전부가 스크립트 기본값' 이라는 진술이 거짓이 된다" >&2
       fail=1
     fi
 
@@ -211,7 +217,7 @@ for CONSUMER in "${CONSUMERS[@]}"; do
     mentions_total=$((mentions_total + nment))
     if [[ "$nstale" != "0" ]]; then
       echo "FAIL: $cname $flag — 문서 안 기재 ${nment}건 중 ${nstale}건이 watch.sh 의 $var 기본값 $want 과 다르다" >&2
-      echo "       기동 줄 밖의 기재도 같은 값을 못 박아야 한다 — '네 임계 전부가 스크립트 기본값' 이라고 단언하는 문장이 그 기재다" >&2
+      echo "       기동 줄 밖의 기재도 같은 값을 못 박아야 한다 — '임계 전부가 스크립트 기본값' 이라고 단언하는 문장이 그 기재다" >&2
       fail=1
     fi
   done

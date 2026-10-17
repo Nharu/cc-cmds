@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "required": ["defects"],
+  "additionalProperties": false,
+  "properties": {
+    "defects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "routing", "class", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "routing": {
+            "enum": ["조정 패스 적용", "미해결 이슈", "implement 사전 게이트", "design-conformance", "기각"]
+          },
+          "class": { "enum": ["골격급", "비골격", "애매", "제외"] },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

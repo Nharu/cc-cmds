@@ -68,7 +68,7 @@ fi
   exit 1
 }
 
-# 리뷰 없음 — 원장을 읽기 전에 통과한다. 원장 가독성 검사를 앞에 두면 정책이
+# 리뷰 없음 — 리뷰 기록을 읽기 전에 통과한다. 기록 검사를 앞에 두면 정책이
 # 면제한 세그먼트가 정책과 무관한 이유로 멈춘다.
 [ "$GATE_REVIEW_POLICY_INDEX" = "2" ] && exit 0
 
@@ -89,13 +89,16 @@ fi
 
 # 리뷰 먼저 — 아래는 신선도 사다리다. 「리뷰가 있었다」와 「리뷰가 지금 머지될
 # 것을 덮는다」는 다른 명제이고, 이 사다리가 재는 것은 뒤쪽이다.
-[ -f "$GATE_LEDGER" ] || { echo "rule refused: 리뷰-후-머지 — cannot read the ledger" >&2; exit 1; }
 [ -n "$GATE_SEGMENT" ] && [ "$GATE_SEGMENT" != "-" ] || {
   echo "rule refused: 리뷰-후-머지 — no 세그먼트 was given for the merge act" >&2
   exit 1
 }
 
-row=$(grep -E '^- `cycle`' "$GATE_LEDGER" | grep -F "세그먼트=$GATE_SEGMENT " | tail -1)
+# 이 파일은 원장을 훑지 않는다. 세그먼트의 마지막 cycle 행은 게이트가 필드
+# 동등으로 골라 넘긴다. 여기서 부분 문자열로 고르면 다른 세그먼트의 행에 든
+# `선행 세그먼트=<seg>` 나 이웃 id(`A` 에 대한 `A2`)의 행을 이 세그먼트의
+# 마지막 리뷰로 읽는다 — 같은 선택이 게이트와 룰에 둘로 살면 둘은 갈라진다.
+row="${GATE_SEGMENT_LAST_CYCLE:-}"
 [ -n "$row" ] || {
   echo "rule refused: 리뷰-후-머지 — no review record for 세그먼트 '$GATE_SEGMENT'" >&2
   exit 1
@@ -103,20 +106,47 @@ row=$(grep -E '^- `cycle`' "$GATE_LEDGER" | grep -F "세그먼트=$GATE_SEGMENT 
 
 field() { printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$1=//p" | sed 's/[[:space:]]*$//' | tail -1; }
 
-p0=$(field 'P0'); p1=$(field 'P1'); reviewed=$(field '리뷰 HEAD')
-[ -n "$p0" ] || p0=0
-[ -n "$p1" ] || p1=0
+# 정준 정수 — 0, 또는 0 이 아닌 숫자로 시작하는 십진수.
+canon() {
+  case "$1" in
+    0) return 0 ;;
+    [1-9]*) case "$1" in *[!0-9]*) return 1 ;; esac; return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
-# 사람이 이 사이클의 발견을 기각했으면 남은 발견을 미해결로 세지 않는다. 기각은
-# 게이트가 좌석만 쓸 수 있는 `리뷰 기각` 행에서 접어 「사이클@리뷰 HEAD」로
-# 넘기고, 여기서는 그 값이 지금 읽은 마지막 cycle 행과 같은지만 본다 — 그 뒤에
-# 새 리뷰가 기록됐으면 값이 어긋나 기각은 효력을 잃는다. 아래 신선도 사다리와
-# 리포트 검사는 기각과 무관하게 그대로 선다.
-if [ "$p0" != "0" ] || [ "$p1" != "0" ]; then
-  if [ -z "${GATE_SEGMENT_REVIEW_DISMISSED:-}" ] \
-     || [ "$GATE_SEGMENT_REVIEW_DISMISSED" != "$(field '사이클')@$reviewed" ]; then
-    echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1)" >&2
+p0=$(field 'P0'); p1=$(field 'P1'); reviewed=$(field '리뷰 HEAD'); cyc=$(field '사이클')
+
+# 순서는 게이트의 「다음」 표와 같다 — 기각을 먼저 보고, 그다음 카운트를 본다.
+#
+# 사람이 이 사이클의 발견을 기각했으면 카운트와 상관없이 남은 발견을 미해결로
+# 세지 않는다. 기각은 게이트가 좌석만 쓸 수 있는 `리뷰 기각` 행에서 접어
+# 「사이클@리뷰 HEAD」로 넘기고, 여기서는 그 값이 지금 읽은 마지막 cycle 행과
+# 같은지만 본다 — 그 뒤에 새 리뷰가 기록됐으면 값이 어긋나 기각은 효력을 잃는다.
+#
+# 기각이 아니면 빈 값이나 정준 정수가 아닌 카운트는 거절한다. 0 으로 채우면
+# 카운트를 잃은 행이 깨끗한 리뷰로 읽힌다.
+#
+# 발견이 남았으면 P0 가 0 이고 이 사이클의 P1 이 이슈로 이월됐을 때만 통과한다.
+# 이월도 「사이클@리뷰 HEAD」로 접혀 오므로 새 리뷰가 기록되면 효력을 잃는다.
+#
+# 아래 신선도 사다리와 리포트 검사는 기각·이월과 무관하게 그대로 선다.
+if [ -n "${GATE_SEGMENT_REVIEW_DISMISSED:-}" ] \
+   && [ "$GATE_SEGMENT_REVIEW_DISMISSED" = "$cyc@$reviewed" ]; then
+  :
+else
+  if ! canon "$p0" || ! canon "$p1"; then
+    echo "rule refused: 리뷰-후-머지 — the review record's counts are not canonical integers (P0='$p0' P1='$p1'), so the review cannot be judged" >&2
     exit 1
+  fi
+  if [ "$p0" != "0" ] || [ "$p1" != "0" ]; then
+    if [ "$p0" = "0" ] && [ -n "${GATE_SEGMENT_REVIEW_CARRIED:-}" ] \
+       && [ "$GATE_SEGMENT_REVIEW_CARRIED" = "$cyc@$reviewed" ]; then
+      :
+    else
+      echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1)" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -181,7 +211,8 @@ if [ -n "${GATE_SUBJECT_HEAD:-}" ]; then
   exit 1
 fi
 
-seg_row=$(grep -E '^- `segment`' "$GATE_LEDGER" | grep -F "id=$GATE_SEGMENT " | tail -1)
+# 세그먼트의 마지막 segment 행도 게이트가 필드 동등으로 골라 넘긴다.
+seg_row="${GATE_SEGMENT_LAST_SEGMENT:-}"
 wt=$(printf '%s' "$seg_row" | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//' | tail -1)
 [ -d "$wt" ] || { echo "rule refused: 리뷰-후-머지 — the segment worktree does not exist: $wt" >&2; exit 1; }
 
@@ -195,6 +226,14 @@ now=$(cd "$wt" && git rev-parse HEAD 2>/dev/null)
 t_now=$(cd "$wt" && git rev-parse "$now^{tree}" 2>/dev/null)
 t_rev=$(cd "$wt" && git rev-parse "$reviewed^{tree}" 2>/dev/null)
 if [ -n "$t_now" ] && [ "$t_now" = "$t_rev" ]; then
+  exit 0
+fi
+
+# 릴리스 메타 재번호 — 현재 HEAD 가 리뷰된 HEAD 와 게이트가 판정한 베이스를
+# 부모로 갖고, 그 트리가 둘에서 기계적으로 정해지는 기대 트리와 객체 id 까지
+# 같은 머지다. 이 검사기는 원장을 읽지 않고 그 트리를 계산할 수도 없으므로,
+# 게이트가 증명한 HEAD 하나만 받아 지금 HEAD 와 같은지 본다.
+if [ -n "${GATE_META_RESOLVED_HEAD:-}" ] && [ "$now" = "$GATE_META_RESOLVED_HEAD" ]; then
   exit 0
 fi
 

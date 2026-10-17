@@ -30,7 +30,23 @@
 # seam, the shape `run_gate_call` uses. That child compares the return with the
 # gate's own `GATE_EXIT_RULE`, so the number is not written here. A child that
 # cannot source the gate, or a return that is neither 0 nor that value, is "not
-# decidable" and the run is reported `열림`.
+# decidable" and the run is reported `진행 중`.
+#
+# ONE LIVENESS, THE CLOSING VERB'S. `detect` asks the four predicates
+# `gate.sh end-abandoned` refuses on — a live stage, a fresh waiting stage, a
+# live shift, a live relay — so a run it offers for adoption is one the close
+# at the end of the re-kickoff accepts. A run the gate has not ended and in
+# which none of the four is alive is `대기`: it waits on something (an
+# approval, a halt record, a usage limit) or on nothing, and the re-kickoff
+# adopts it and closes it `이어받음`. Only the person's interactive re-kickoff
+# reaches that; the chain does not call this program.
+#
+# ONLY A RE-KICKOFF WORD ADOPTS AN UN-ENDED RUN. The close that follows an
+# adoption cannot be undone, and an empty argument or a resume word (`이어서`,
+# `재개`, `계속`, `resume`) is how a person comes back to a run that was cut. So
+# those, and the intent verbatim, report such a run `진행 중` with what it waits
+# on, and only `다시`, `재킥오프`, `다시 킥오프`, `rekick`, `again` or `retry`
+# report it `대기`. A run the gate ended is a re-kickoff whatever the argument.
 #
 # Usage
 #
@@ -57,6 +73,13 @@
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
 #
+# The `적용 프로브 코드` row of `## 인가` has no `--set` key: it is bound to the
+# probe's hash, so `render-manifest` copies it byte for byte with the rest of
+# the section and `verify-subset` refuses a draft whose row differs from the
+# previous one — added, dropped or changed. A previous run without the row
+# keeps the default mapping. Nothing here writes the previous run's pinned
+# plugin copy or its pin record; the draft is the only file this mode makes.
+#
 # `--blank-rows` is the `--carry` output 5o showed, saved byte for byte. It is
 # required with `--set` in `verify-subset`: each entry must equal one of its
 # `빈칸` rows in scope, key and value, so a value moved to another target or
@@ -72,8 +95,9 @@
 # `render-manifest` (the draft's bytes) and `render-interview` (the record's
 # bytes), which print nothing else.
 #
-#   detect         판정  재킥오프|새 런|없음|열림|완료  [<id>  [<base>]]
-#                  갈래  게이트 종료|강제 표면 이동 무효화
+#   detect         판정  재킥오프|대기|새 런|없음|진행 중|완료  [<id>  [<base>]]
+#                  갈래  게이트 종료|강제 표면 이동 무효화|대기 이어받기
+#                  대기 원인  승인 대기|사람 대기|한도 대기|무기록|멈춤
 #                  킥오프  <이전 킥오프 일시>
 #                  종료 표시  <게이트가 남긴 종료 표시>
 #                  고지  <한 줄>          굵게  <굵게 보일 한 줄>
@@ -232,10 +256,11 @@ set +o pipefail
 for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_json manifest_plan_field \
             manifest_targets manifest_rule_lines manifest_preauth_rows manifest_autoadopt_rows_anywhere \
             manifest_design_roster_rows_anywhere manifest_clause_rows_raw manifest_base_design_rows \
-            manifest_design_scope target_field target_aliases canonical_targets binding_set_bytes \
+            manifest_design_scope manifest_apply_code_rows target_field target_aliases canonical_targets binding_set_bytes \
             check_manifest rundir_of_run_id deadline_instant cutpoint_index \
             judgment_class_ok judgment_class_forbidden \
-            cc_live_stages cc_shift_is_live cc_unresolved_blocked cc_open_approval_rows cc_segment_states; do
+            cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts \
+            cc_unresolved_blocked cc_open_approval_rows cc_segment_states; do
   command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
 done
 
@@ -436,7 +461,7 @@ EOF
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_detect_none
 
   # The argument.
-  local raw n t intent
+  local raw n t intent rekick_word=0
   raw=$(rk_trim "$RK_ARG")
   n=$(printf '%s' "$raw" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -d '[:punct:]')
   for t in '해 주세요' '해줘' '하자' 'please'; do
@@ -445,7 +470,8 @@ EOF
   n=$(rk_trim "$n")
   intent=$(rk_trim "$(rk_intent)")
   case "$n" in
-    ''|다시|재킥오프|'다시 킥오프'|이어서|재개|계속|rekick|resume|again|retry) ;;
+    다시|재킥오프|'다시 킥오프'|rekick|again|retry) rekick_word=1 ;;
+    ''|이어서|재개|계속|resume) ;;
     *)
       if [ -z "$intent" ] || [ "$raw" != "$intent" ]; then
         printf '판정\t새 런\t%s\n' "$RK_PREV"
@@ -455,10 +481,17 @@ EOF
   esac
 
   # Eligibility, in order; the first branch that applies decides.
-  local live=0 nlive st ub inv=0 gate_tok mark err
+  #
+  # Liveness is the four predicates `gate_verb_end_abandoned` refuses on, so
+  # nothing judged adoptable here is refused by the close. A count that is not a
+  # number reads as alive: a run that cannot be shown idle is not taken over.
+  local live=0 nlive nwait st ub inv=0 gate_tok mark err
   nlive=$(cc_live_stages "$RK_PRD" 2>/dev/null)
   case "$nlive" in ''|*[!0-9]*) live=1 ;; 0) ;; *) live=1 ;; esac
+  nwait=$(cc_waiting_fresh_count "$RK_PRD" "$RK_PL" 2>/dev/null)
+  case "$nwait" in ''|*[!0-9]*) live=1 ;; 0) ;; *) live=1 ;; esac
   if cc_shift_is_live "$RK_PRD" 2>/dev/null; then live=1; fi
+  if cc_relay_is_live "$RK_PRD" 2>/dev/null; then live=1; fi
   if [ "$live" = "1" ]; then rk_detect_open running; fi
 
   local states nclause=0 nmet=0 cid cst cev
@@ -484,7 +517,20 @@ EOF
   err="$RK_TMP/gate.err"
   if [ "$inv" = "0" ]; then
     gate_tok=$(rk_gate ended "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err")
-    [ "$gate_tok" = "끝남" ] || rk_detect_open stopped
+    case "$gate_tok" in
+      끝남) ;;
+      # Not ended and nothing alive: adopted on a re-kickoff word, and held for
+      # resuming on any other argument, provided the ledger the causes are read
+      # from is a regular file. Any other ledger, or a gate that could not
+      # answer, is not a run this program can show to be idle.
+      안끝남)
+        if [ -f "$RK_PL" ] && [ -r "$RK_PL" ]; then
+          if [ "$rekick_word" = "1" ]; then rk_detect_wait "$states"; fi
+          rk_detect_held
+        fi
+        rk_detect_open stopped ;;
+      *) rk_detect_open stopped ;;
+    esac
     mark=$(rk_end_mark "$err")
   fi
 
@@ -495,7 +541,23 @@ EOF
     printf '굵게\t이전 런 %s 은 집행 표면이 옮겨져 무효화됐습니다 — 그 런은 재개하지 않습니다\n' "$RK_PREV"
   else
     printf '종료 표시\t%s\n' "$mark"
-    printf '굵게\t이전 런 %s 을 끝낸 경계는 같은 값으로 다시 주어집니다 (%s) — 같은 한도가 다시 바닥날 수 있습니다\n' "$RK_PREV" "$mark"
+    # The limit sentence only when a budget boundary ended the source: a run
+    # ended by anything else would meet nothing that runs out again.
+    local etok
+    etok=$(rk_end_token "$RK_PL")
+    if [ -z "$etok" ]; then
+      case "$mark" in '벽시계 마감 경과'*) etok='마감' ;; esac
+    fi
+    if rk_budget_token "$etok"; then
+      printf '굵게\t이전 런 %s 을 끝낸 경계는 같은 값으로 다시 주어집니다 (%s) — 같은 한도가 다시 바닥날 수 있습니다\n' "$RK_PREV" "$mark"
+    else
+      printf '굵게\t이전 런 %s 을 끝낸 경계는 같은 값으로 다시 주어집니다 (%s)\n' "$RK_PREV" "$mark"
+    fi
+    # An approval the source left waiting is listed, never closed or moved: the
+    # answer belongs to the source's tree.
+    rk_open_approvals "$RK_PL"
+    [ "$RK_AP_N" -eq 0 ] || printf '굵게\t이전 런 %s 의 열린 승인 %s건(%s)은 닫거나 옮기지 않습니다 — 그 답은 원천 런에 남고, 이 새 런이 같은 자리에 이르면 다시 묻습니다\n' \
+      "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
     local parks np=0 why reasons=""
     parks=$(printf '%s\n' "$ub" | awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }')
     while IFS= read -r why; do
@@ -509,7 +571,14 @@ EOF
         "$RK_PREV" "$mark" "$np" "$reasons"
     fi
   fi
-  local imp_ids="" imp_ev="" hold_ids=""
+  rk_clause_lines "$states"
+  rk_detect_tail
+}
+
+# rk_clause_lines <states> — the `굵게` lines for termination clauses the source
+# left `불가능` or `보류`.
+rk_clause_lines() {
+  local cid cst cev imp_ids="" imp_ev="" hold_ids=""
   while IFS="$TAB" read -r cid cst cev; do
     [ -n "$cid" ] || continue
     case "$cst" in
@@ -517,12 +586,18 @@ EOF
       보류)   hold_ids="${hold_ids:+$hold_ids, }$cid" ;;
     esac
   done <<EOF
-$states
+$1
 EOF
   [ -z "$imp_ids" ] || printf '굵게\t이전 런 %s 은 종료 절 %s 를 불가능으로 끝냈습니다(%s) — 같은 조건이면 이 새 런도 같은 곳에서 멈출 수 있습니다\n' \
     "$RK_PREV" "$imp_ids" "$imp_ev"
   [ -z "$hold_ids" ] || printf '굵게\t이전 런 %s 의 종료 절 %s 는 보류(사람의 답 대기)로 끝났습니다 — 그 답은 이어받지 않으며 이 새 런이 다시 묻습니다\n' \
     "$RK_PREV" "$hold_ids"
+  return 0
+}
+
+# rk_detect_tail — the unlanded-work notice and the way out, then exit 0. Every
+# adopting verdict ends with these two lines.
+rk_detect_tail() {
   # Segments that did not land are done again by the new run.
   local seg segst segv pr unl=""
   while IFS="$TAB" read -r seg segst segv; do
@@ -544,32 +619,80 @@ rk_detect_none() {
   exit 0
 }
 
-# rk_detect_open <running|stopped> — the `열림` verdict and its sentences.
+# rk_detect_open <running|stopped> — the `진행 중` verdict: shown, not adopted.
+# `running` is a run with something alive in it; `stopped` is one the gate could
+# not answer for, or whose ledger is not a regular file.
 rk_detect_open() {
-  local ap n=0 aid acut q reasons="" ub cmds cmd why last
-  printf '판정\t열림\t%s\n' "$RK_PREV"
-  ap=$(cc_open_approval_rows "$RK_PL" 2>/dev/null) || ap=""
-  while IFS="$TAB" read -r aid acut; do
-    [ -n "$aid" ] || continue
-    n=$((n + 1))
-    last=$( { grep -E '^- `승인`' "$RK_PL" 2>/dev/null | grep -F "| 승인 id=$aid |" || true; } | tail -n 1)
-    q=$(manifest_row_fields "$last" '질문 문면' | tail -n 1)
-    reasons="${reasons:+$reasons, }${q:-$aid}"
-  done <<EOF
-$ap
-EOF
+  printf '판정\t진행 중\t%s\n' "$RK_PREV"
   if [ "$1" = "running" ]; then
     printf '고지\t이전 런 %s 은 아직 돌고 있습니다\n' "$RK_PREV"
-  elif [ "$n" -gt 0 ]; then
-    printf '고지\t이전 런 %s 은 아직 열려 있습니다 — 승인 대기 %s건(%s). 그 승인에 답하면 그 런이 이어집니다(「Resuming after a break」); 새 런을 열 이유가 아닙니다\n' \
-      "$RK_PREV" "$n" "$reasons"
   else
-    printf '고지\t이전 런 %s 은 멈춰 있지만 게이트에 종료가 기록되지 않았습니다 — 그 런을 재개해 끝내면 다음 호출에서 이어받습니다. 지금 처음부터 시작하려면 의도를 적어 부르세요\n' "$RK_PREV"
+    printf '고지\t이전 런 %s 은 멈춰 있지만 게이트에서 종료 여부를 판정하지 못했습니다 — 그 런을 재개해 끝내면 다음 호출에서 이어받습니다. 지금 처음부터 시작하려면 의도를 적어 부르세요\n' "$RK_PREV"
   fi
   # A resume command a still-open block left is quoted verbatim, after the
   # sentence that names both ways out.
+  rk_resume_quotes
+  exit 0
+}
+
+# rk_detect_held — the `진행 중` verdict for a run `rk_detect_wait` would adopt,
+# called with an argument that is not a re-kickoff word: what it waits on is
+# named, nothing is adopted, and the way to adopt it is said.
+rk_detect_held() {
+  local cause
+  rk_open_approvals "$RK_PL"
+  rk_unanswered_halt_names "$RK_PRD" "$RK_PL"
+  cause=$(rk_wait_cause "$RK_PL")
+  printf '판정\t진행 중\t%s\n' "$RK_PREV"
+  printf '대기 원인\t%s\n' "$cause"
+  printf '고지\t이전 런 %s 은 끝나지 않은 채 멈춰 있습니다(%s) — 이 호출은 재개로 보고 이어받지 않습니다. 그 런을 재개해 끝내거나, 새 런이 이어받고 원천을 이어받음으로 닫게 하려면 인자 「다시」 로 부르세요\n' "$RK_PREV" "$cause"
+  [ "$RK_AP_N" -eq 0 ] || printf '고지\t이전 런 %s 의 열린 승인 %s건(%s)에 답하면 그 런이 이어집니다\n' \
+    "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
+  [ "$RK_HALT_N" -eq 0 ] || printf '고지\t이전 런 %s 의 답 없는 정지 기록 %s건(%s)에 답하면 그 런이 이어집니다\n' \
+    "$RK_PREV" "$RK_HALT_N" "$RK_HALT_LIST"
+  rk_resume_quotes
+  exit 0
+}
+
+# rk_detect_wait <states> — the `대기` verdict: a run the gate has not ended,
+# with nothing alive in it. The re-kickoff adopts it and closes it `이어받음`;
+# nothing of it is carried, so what it waits on is named and left where it is.
+rk_detect_wait() {
+  local cause
+  rk_open_approvals "$RK_PL"
+  rk_unanswered_halt_names "$RK_PRD" "$RK_PL"
+  cause=$(rk_wait_cause "$RK_PL")
+  printf '판정\t대기\t%s\t%s\n' "$RK_PREV" "$RK_BASE"
+  printf '갈래\t대기 이어받기\n'
+  printf '대기 원인\t%s\n' "$cause"
+  printf '킥오프\t%s\n' "$(manifest_field '런 정체' '킥오프 일시')"
+  printf '굵게\t이전 런 %s 은 끝나지 않은 채 멈춰 있습니다(%s) — 이 새 런이 이어받고, 원천 런은 이어받음으로 닫습니다\n' "$RK_PREV" "$cause"
+  case "$cause" in
+    '한도 대기')
+      printf '굵게\t이전 런 %s 은 사용 한도를 기다리며 멈췄습니다 — 같은 한도가 다시 바닥날 수 있습니다\n' "$RK_PREV" ;;
+    무기록)
+      printf '굵게\t이전 런 %s 의 마지막 교대가 인계 없이 끝났습니다 — 그 교대가 하던 일은 이 새 런이 처음부터 다시 만납니다\n' "$RK_PREV" ;;
+    멈춤)
+      if rk_last_handoff_waited "$RK_PL"; then
+        printf '굵게\t이전 런 %s 의 마지막 교대는 스테이지·CI 결과를 기다리며 끝났고, 그 대기를 이어 갈 중계가 없습니다 — 남은 단계는 이 새 런이 이어 갑니다\n' "$RK_PREV"
+      else
+        printf '굵게\t이전 런 %s 은 기다리는 것 없이 멈췄습니다 — 남은 단계는 이 새 런이 이어 갑니다\n' "$RK_PREV"
+      fi ;;
+  esac
+  [ "$RK_AP_N" -eq 0 ] || printf '굵게\t이전 런 %s 의 열린 승인 %s건(%s)은 옮기지 않습니다 — 그 답은 원천 런에 남고, 이 새 런이 같은 자리에 이르면 다시 묻습니다\n' \
+    "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
+  [ "$RK_HALT_N" -eq 0 ] || printf '굵게\t이전 런 %s 의 답 없는 정지 기록 %s건(%s)은 옮기지 않습니다 — 그 기록은 원천 런에 남고, 이 새 런이 같은 자리에 이르면 다시 묻습니다\n' \
+    "$RK_PREV" "$RK_HALT_N" "$RK_HALT_LIST"
+  rk_clause_lines "$1"
+  rk_resume_quotes
+  rk_detect_tail
+}
+
+# rk_resume_quotes — one `고지` line per distinct resume command an unresolved
+# block of the source left, verbatim.
+rk_resume_quotes() {
+  local ub cmds="" cmd why last
   ub=$(cc_unresolved_blocked "$RK_PL" 2>/dev/null) || ub=""
-  cmds=""
   while IFS="$TAB" read -r _ why; do
     [ -n "$why" ] || continue
     last=$(rk_ledger_last "$RK_PL" blocked '사유' "$why")
@@ -581,12 +704,135 @@ EOF
   done <<EOF
 $ub
 EOF
-  # The approval form names only the way back, so a quoted command that says to
-  # start over is followed by the way forward.
-  if [ -n "$cmds" ] && [ "$1" = "stopped" ] && [ "$n" -gt 0 ]; then
-    printf '고지\t지금 처음부터 시작하려면 의도를 적어 부르세요\n'
-  fi
-  exit 0
+  return 0
+}
+
+# rk_open_approvals <ledger> — sets RK_AP_N and RK_AP_LIST: how many approvals
+# still wait, and each one's question text (its id when the row has none), read
+# off that id's last `승인` row.
+rk_open_approvals() {
+  local ap aid acut last q
+  RK_AP_N=0; RK_AP_LIST=""
+  ap=$(cc_open_approval_rows "$1" 2>/dev/null) || ap=""
+  while IFS="$TAB" read -r aid acut; do
+    [ -n "$aid" ] || continue
+    RK_AP_N=$((RK_AP_N + 1))
+    last=$( { grep -E '^- `승인`' "$1" 2>/dev/null | grep -F "| 승인 id=$aid |" || true; } | tail -n 1)
+    q=$(manifest_row_fields "$last" '질문 문면' | tail -n 1)
+    RK_AP_LIST="${RK_AP_LIST:+$RK_AP_LIST, }${q:-$aid}"
+  done <<EOF
+$ap
+EOF
+  return 0
+}
+
+# rk_unanswered_halt_names <run dir> <ledger> — sets RK_HALT_N and RK_HALT_LIST:
+# the halt records no `중단 답` row names, by their name under `halt/`. The
+# selection is `cc_unanswered_halts`'s — answer attachments skipped, `halt/shift/`
+# scanned, the `중단 기록=` field matched on its tail from the run directory's
+# name down — so the count here is that function's.
+rk_unanswered_halt_names() {
+  local rd="${1%/}" led="$2" f name rel tail
+  RK_HALT_N=0; RK_HALT_LIST=""
+  [ -n "$rd" ] && [ -d "$rd/halt" ] || return 0
+  for f in "$rd"/halt/*.md "$rd"/halt/shift/*.md; do
+    [ -f "$f" ] || continue
+    case "$f" in *.answer.md) continue ;; esac
+    name=${f##*/}
+    case "$f" in
+      "$rd"/halt/shift/*) rel="shift/$name" ;;
+      *) rel="$name" ;;
+    esac
+    tail="/${rd##*/}/halt/$rel"
+    if [ -n "$led" ] && [ -f "$led" ] && awk -v t="$tail" '
+         index($0, "- `중단 답` | ") == 1 {
+           n = split($0, f, / \| /)
+           for (i = 2; i <= n; i++) {
+             if (index(f[i], "중단 기록=") != 1) continue
+             v = substr(f[i], length("중단 기록=") + 1)
+             sub(/[[:space:]]+$/, "", v)
+             if (length(v) >= length(t) && substr(v, length(v) - length(t) + 1) == t) { hit = 1; exit }
+           }
+         }
+         END { exit hit ? 0 : 1 }' "$led" 2>/dev/null; then
+      continue
+    fi
+    RK_HALT_N=$((RK_HALT_N + 1))
+    RK_HALT_LIST="${RK_HALT_LIST:+$RK_HALT_LIST, }$rel"
+  done
+  return 0
+}
+
+# rk_wait_cause <ledger> — what an un-ended quiet run waits on, the first that
+# holds: an open approval, an unanswered halt record (RK_AP_N and RK_HALT_N are
+# set before), a usage limit, a shift lost without a handoff, nothing. Rows are
+# compared on whole fields between ` | ` separators, never as substrings.
+#
+# A usage limit is read only off a stage cut by it — the last `stage-result`
+# whose `종단 부류` is `한도 종료` or `한도-형상 회수` with no `한도 해제` or
+# `교대 기동` row after it. A `handoff 사유=대기` is not one: a shift writes it
+# when all that is left is a live stage's result or a CI verdict, so a run idle
+# after it waited on those, never on a limit.
+rk_wait_cause() {
+  if [ "$RK_AP_N" -gt 0 ]; then printf '승인 대기'; return 0; fi
+  if [ "$RK_HALT_N" -gt 0 ]; then printf '사람 대기'; return 0; fi
+  awk '
+    function fld(name,   i, s) {
+      for (i = 2; i <= nf; i++) {
+        s = f[i]; sub(/[[:space:]]+$/, "", s)
+        if (index(s, name "=") == 1) return substr(s, length(name) + 2)
+      }
+      return ""
+    }
+    { nf = split($0, f, / \| /) }
+    index($0, "- `handoff` | ") == 1      { lh = NR; lhw = fld("사유") }
+    index($0, "- `stage-result` | ") == 1 { ls = NR; lsk = fld("종단 부류") }
+    index($0, "- `한도 해제` | ") == 1 || index($0, "- `교대 기동` | ") == 1 { lr = NR }
+    END {
+      if (ls && (lsk == "한도 종료" || lsk == "한도-형상 회수") && lr < ls) { printf "한도 대기"; exit }
+      if (lh && lhw == "무기록") { printf "무기록"; exit }
+      printf "멈춤"
+    }' "$1" 2>/dev/null || printf '멈춤'
+}
+
+# rk_last_handoff_waited <ledger> — succeeds when the ledger's last `handoff`
+# carries `사유=대기` as a whole field.
+rk_last_handoff_waited() {
+  awk '
+    index($0, "- `handoff` | ") == 1 {
+      w = 0; n = split($0, f, / \| /)
+      for (i = 2; i <= n; i++) { s = f[i]; sub(/[[:space:]]+$/, "", s); if (s == "사유=대기") w = 1 }
+    }
+    END { exit !w }' "$1" 2>/dev/null
+}
+
+# rk_end_token <ledger> — the end token the gate reads: `재킥 원인` of the first
+# ending row (`자율 승인` with `결정=종료`) or run-scope `blocked` row, skipping
+# the two causes that park a slice and do not end the run. The selection is
+# `gate_end_token_row`'s; the earliest row wins, as there.
+rk_end_token() {
+  awk '
+    (index($0, "- `자율 승인` | ") == 1 && index($0, " | 결정=종료 | ") > 0) ||
+    (index($0, "- `blocked` | ") == 1 && index($0, " | 스코프=run | ") > 0) {
+      blk = (index($0, "- `blocked` | ") == 1)
+      n = split($0, f, / \| /)
+      for (i = 2; i <= n; i++) {
+        if (index(f[i], "재킥 원인=") == 1) {
+          v = f[i]; sub(/^재킥 원인=/, "", v); sub(/[[:space:]]+$/, "", v)
+          if (blk && (v == "대상미선언" || v == "슬라이싱")) break
+          print v; exit
+        }
+      }
+    }' "$1" 2>/dev/null || true
+}
+
+# rk_budget_token <token> — succeeds for an end token that a budget ran out on,
+# the ones a new run handed the same values can meet again.
+rk_budget_token() {
+  case "$1" in
+    마감|천장|무진전|사이클예산|연기마감|말단상한) return 0 ;;
+  esac
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -1306,6 +1552,9 @@ EOF
     if [ -z "$pval" ] && vs_set_is 런 "$k" "$dval"; then continue; fi
     why="${why:+$why; }$k 가 원천과 다릅니다"
   done
+  # The apply mapping row has no `--set`: it is the previous row, or none.
+  [ "$(MANIFEST="$prev" manifest_apply_code_rows)" = "$(MANIFEST="$draft" manifest_apply_code_rows)" ] \
+    || why="${why:+$why; }적용 프로브 코드 행이 원천과 다릅니다"
   local prules drules rl rk rv
   prules=$(MANIFEST="$prev" manifest_rule_lines | sort); drules=$(MANIFEST="$draft" manifest_rule_lines | sort)
   if [ "$prules" != "$drules" ]; then

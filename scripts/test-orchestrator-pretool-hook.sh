@@ -29,6 +29,10 @@ GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-hook-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 RUN_DIR="$WORK/run"; mkdir -p "$RUN_DIR/settings"
+# 스테이지 안에서 돌린 스위트가 그 스테이지의 id 를 물려받으면 정지 기록 이름 팔이
+# 그 id 로 판정해, 아래의 「id 없음」 단언이 실행한 좌석에 따라 갈린다. id 를 쓰는
+# 단언은 호출마다 직접 준다.
+unset CC_PIPELINE_STAGE_ID
 LEDGER="$WORK/ledger.md"; GRANT="$WORK/grant.md"; MANIFEST="$WORK/plan.md"
 : > "$LEDGER"; : > "$GRANT"; : > "$MANIFEST"
 
@@ -694,6 +698,32 @@ if grep -qF 'shared/*/*' "$HOOK" && grep -qF 'shared/*/*' "$repo_root/plugins/cc
 else
   bad "shared/ 예외 합의" "훅과 게이트의 shared/*/* 철자가 어긋난다"
 fi
+# 정지 기록 이름 — 스테이지는 자기 id 가 적는 이름 하나만 쓴다. 시도 4 의 스테이지가
+# 세그먼트 이름만으로 `halt/S2.md` 를 썼고, 두 독자가 그 기록을 찾지 못해 질문이 사람을
+# 기다렸다. 거부 문면은 허용되는 경로를 적어 다음 쓰기를 가르치고, 게이트의 Bash 가드와
+# 바이트가 같다.
+decide_stage() {
+  out=$(printf '%s' "$2" | CC_PIPELINE_STAGE_ID="$1" bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATE" \
+          --ledger "$LEDGER" --grant "$GRANT" --manifest "$MANIFEST" 2>/dev/null)
+  dec=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)
+}
+decide_stage 'S2#4' "$(write_json "$RUN_DIR/halt/S2.md")"
+check "스테이지 S2#4 의 halt/S2.md 쓰기는 거부된다" "$dec" "deny"
+reason_halt=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+case "$reason_halt" in
+  *'halt/S2#4.md'*) ok "정지 기록 거부 문면이 허용되는 경로 halt/S2#4.md 를 적는다" ;;
+  *) bad "정지 기록 거부 문면" "'$reason_halt'" ;;
+esac
+gate_halt_text=$(CC_PIPELINE_STAGE_ID='S2#4' bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_halt_name_refusal' _ "$GATE" 2>/dev/null)
+check "훅의 정지 기록 거부 문면이 게이트의 문면과 바이트가 같다" "$reason_halt" "gate: $gate_halt_text"
+decide_stage 'S2#4' "$(write_json "$RUN_DIR/halt/S2#4.md")"
+check "스테이지 S2#4 의 halt/S2#4.md 는 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+decide_stage 'S2#4' "$(write_json "$RUN_DIR/halt/.S2#4.md.AbC123")"
+check "원자 쓰기의 점 접두 임시 이름은 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+decide_stage 'S2#4' "$(write_json "$RUN_DIR/halt/S2#3.md")"
+check "앞 시도의 이름 halt/S2#3.md 도 거부된다" "$dec" "deny"
+decide "$(write_json "$RUN_DIR/halt/S2.md")"
+check "스테이지 id 가 없는 호출자의 halt/S2.md 는 예전처럼 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
 
 # ---------------------------------------------------------------------------
 # 8. 라우터 입력 디렉터리 — cc-lane 설정·상태 디렉터리와 페이싱 디렉터리

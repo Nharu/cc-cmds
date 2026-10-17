@@ -1,10 +1,10 @@
 # Runtime Classification Default (Shared Predicate)
 
-Single source of truth for the runtime-classification default: when a runtime point in the product being designed defaults to a type-decision-only classification model, the two exits that route away from it, and where the resulting decision sentence, `Category: UR` entry, and `### R<n>` residual item land. `design` and `design-lite` cite this file from Step 4; `autopilot`'s `lead-solo` tier cites it from item (f) of its "What a `lead-solo` document owes" paragraph.
+Single source of truth for the runtime-classification default: when a runtime point in the product being designed defaults to a type-decision-only classification model, the two exits that route away from it, and where the resulting decision sentence, `Category: UR` entry, and `### R<n>` residual item land. `design` and `design-lite` cite this file from Step 4; the unattended design stages reach it through `design`'s Step 4.
 
 **What this file owns vs. what each SKILL.md owns.** This file is contracts-only: the predicate, the exclusion, the two exits, and the placement rules. It does not own workflow prose — when during the session to check the predicate, how to phrase any interview question, and the UR walkthrough / refinement mechanics all stay in each owning SKILL.md's own Step 4 / Step 5.
 
-**Consumption matrix.** `design` Reads this file in full from Step 4, when a candidate runtime point is noticed. `design-lite` Reads it the same way — a conditional Read, not an unconditional one, since this predicate does not fire on most designs, unlike `_common/verification.md`. `autopilot`'s `lead-solo` tier Reads it from item (f) of its own document-contract paragraph, the same point in the interview that produces the document.
+**Consumption matrix.** `design` Reads this file in full from Step 4, when a candidate runtime point is noticed. `design-lite` Reads it the same way — a conditional Read, not an unconditional one, since this predicate does not fire on most designs, unlike `_common/verification.md`. The unattended design stages that synthesize through `design`'s Step 4 Read it there, on the same condition; no other consumer exists.
 
 ## 1. The predicate
 
