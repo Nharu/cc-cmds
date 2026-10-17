@@ -10919,8 +10919,10 @@ rekick_branch_input() {
   while IFS='	' read -r sid rep; do
     [ -n "$sid" ] || continue
     sec=$(rekick_p0_report_section "$rep")
-    nd=$(printf '%s\n' "$sec" | grep -c '결함 수준: 설계' || true)
-    ni=$(printf '%s\n' "$sec" | grep -c '결함 수준: 구현' || true)
+    # The sub-line spelling of the review report template, the one the gate's
+    # report parser counts too.
+    nd=$(printf '%s\n' "$sec" | grep -cE '^    - \*\*결함 수준\*\*: 설계 — .' || true)
+    ni=$(printf '%s\n' "$sec" | grep -cE '^    - \*\*결함 수준\*\*: 구현 — .' || true)
     if [ "${nd:-0}" = "0" ] && [ "${ni:-0}" = "0" ]; then lv="없음"; else lv="설계 ${nd} · 구현 ${ni}"; fi
     done_rv=$(awk -v s="| 세그먼트=$sid |" '
       index($0, "- `stage-result` ") == 1 && index($0, s) && index($0, "| 종류=reconverge |") { f = 1 }

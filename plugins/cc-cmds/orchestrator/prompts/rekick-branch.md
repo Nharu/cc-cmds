@@ -2,7 +2,7 @@ You are choosing how an unattended successor run takes up the work its predecess
 
 ## What you are given
 
-The input is plain text in sections. For each segment parked at the cap with P0 left there is a `segment` section: the P0 section of its last review report, verbatim; how many of those findings carry each defect level (`결함 수준: 설계` and `결함 수준: 구현` sub-lines), or `없음` when no finding carries the sub-line; and whether the predecessor already re-converged that segment's design once. Then comes the frozen interview record, verbatim — the person's requirements, the only boundary of what the run may build. Last comes the frozen design document, verbatim — the design the predecessor implemented.
+The input is plain text in sections. For each segment parked at the cap with P0 left there is a `segment` section: the P0 section of its last review report, verbatim; how many of those findings carry each defect level (`**결함 수준**: 설계 — …` and `**결함 수준**: 구현 — …` sub-lines), or `없음` when no finding carries the sub-line; and whether the predecessor already re-converged that segment's design once. Then comes the frozen interview record, verbatim — the person's requirements, the only boundary of what the run may build. Last comes the frozen design document, verbatim — the design the predecessor implemented.
 
 ## The three answers
 

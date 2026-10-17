@@ -12329,8 +12329,10 @@ chmod +x "$S0W/cli"
 s0_fix() {  # s0_fix <name> — a fresh fixture directory; S0_SEL and S0_ISHA follow it
   local d="$S0W/$1"
   rm -rf "$d"; mkdir -p "$d/run/log" "$d/mf" "$d/doc" "$d/rep" "$d/base/docs/design-audit"
-  printf '# 리포트 A\n\n## 🔴 P0\n\n- 결함 하나\n  - 결함 수준: 설계\n\n## 🟠 P1\n\n- 덜한 것\n  - 결함 수준: 구현\n' > "$d/rep/A.md"
-  printf '# 리포트 B\n\n## 🔴 P0\n\n- 결함 둘\n\n## 메모\n' > "$d/rep/B.md"
+  # A carries the review template's sub-line spelling; B carries an unbolded
+  # one, which the template does not write and the count must not read.
+  printf '# 리포트 A\n\n## 🔴 P0\n\n- 결함 하나\n    - **결함 수준**: 설계 — 구속 문면을 고친다\n\n## 🟠 P1\n\n- 덜한 것\n    - **결함 수준**: 구현 — 코드만 고친다\n' > "$d/rep/A.md"
+  printf '# 리포트 B\n\n## 🔴 P0\n\n- 결함 둘\n  - 결함 수준: 설계\n\n## 메모\n' > "$d/rep/B.md"
   printf -- '- `run` | run-id=PRED\n- `stage-result` | 세그먼트=segB | 파견 id=S1R:segB:2 | 종류=reconverge | 종단 부류=정상 완료\n' > "$d/mf/PRED.md"
   : > "$d/mf/PRED.plan.md"
   printf '인터뷰 본문\n' > "$d/mf/ROOT.interview.md"
