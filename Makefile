@@ -19,7 +19,9 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 # environment, so `TZ=UTC0 make test` still runs under this value. It is not
 # UTC on purpose: under an offset of zero that mistake passes everywhere and
 # hides. Calling a suite directly outside make inherits the host's zone instead;
-# put `TZ=Asia/Seoul` in front of it on a host that is not KST.
+# put `TZ=Asia/Seoul` in front of it on a host that is not KST. A child a suite
+# starts with `env -i` does not receive the exported TZ either, so a new suite
+# that does so passes `TZ` to that child explicitly.
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
