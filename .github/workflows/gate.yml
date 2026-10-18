@@ -223,7 +223,7 @@ jobs:
 
       - name: Merge the measured times
         run: |
-          bash scripts/test-gate.sh --list < /dev/null > "$RUNNER_TEMP/list"
+          make -s print-gate-sections > "$RUNNER_TEMP/list"
           mkdir -p "$RUNNER_TEMP/timing"
           if [ -f "$RUNNER_TEMP/plan/gate-timing.tsv" ]; then
             set -- --source "$RUNNER_TEMP/plan/gate-timing.tsv"

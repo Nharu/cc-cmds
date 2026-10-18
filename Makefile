@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-gate-timing-selftest run-ci-duration-selftest
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-gate-timing-selftest run-ci-duration-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -437,6 +437,11 @@ GATE_SHARDS ?= 13
 # So CI can read the number instead of spelling it a second time.
 print-gate-shards:
 	@echo $(GATE_SHARDS)
+
+# The gate suite's section list, for CI's timing merge. It goes through make so
+# that make stays the one entry point to the suites and its pinned zone applies.
+print-gate-sections:
+	@bash scripts/test-gate.sh --list < /dev/null
 
 # The zone a recipe actually receives, and the offset it resolves to. The
 # offset is printed beside the name because glibc falls back to UTC in silence
