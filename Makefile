@@ -12,7 +12,7 @@ export CC_CMDS_DASHBOARD := off
 # `CC_GATE_PIN_SYNC_DISABLE=1` in front of it.
 export CC_GATE_PIN_SYNC_DISABLE := 1
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest check-cheap check-push check-push-verify run-check-push-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -98,6 +98,26 @@ readme:
 check: lint readme
 	@git diff --exit-code README.md || (echo "README.md is stale — run 'make readme' and commit" >&2; exit 1)
 	@$(MAKE) --no-print-directory check-gate-suite
+
+# The repository-wide checks that read files and paths and nothing else, bundled
+# so a stage that ran only the axis it changed can still run them: the gate
+# suite's four static sections, the static invariants moved out of four large
+# suites, and the darwin leg's keepset lint. Each line is a component that must
+# fail the target on its own defect, so no line carries a prefix or a `|| true`
+# that would swallow it — scripts/test-local-bundle.sh asserts both. Not part of
+# `check`: `check-push` runs it once on the committed tree before push.
+check-cheap:
+	bash scripts/test-gate.sh --sections 0a,0b,0c,0d
+	bash scripts/test-meta-invariants.sh
+	bash scripts/lint-macos-keepset-paths.sh
+
+# Check the committed HEAD once in a clean clone before push, and stamp its tree
+# on a pass; `check-push-verify` answers whether HEAD's tree carries a stamp.
+check-push:
+	bash scripts/check-push.sh run
+
+check-push-verify:
+	bash scripts/check-push.sh verify
 
 # `check` runs the gate suite, but only when the change touches gate.sh.
 # scripts/test-gate.sh is the one suite that catches a broken grading table —
@@ -367,7 +387,9 @@ ORCH_TESTS := \
 	scripts/test-run-issue-filing.sh \
 	scripts/test-visual-config.sh \
 	scripts/test-visual-check.sh \
-	scripts/test-visual-capture.sh
+	scripts/test-visual-capture.sh \
+	scripts/test-meta-invariants.sh \
+	scripts/test-local-bundle.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \
@@ -387,7 +409,8 @@ $(TEST_GOALS): run/%:
 	bash scripts/suite-guard.sh $*
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
+	run-check-push-selftest
 
 # How many shards the gate suite is cut into. CI reads it so the matrix, the
 # per-shard dispatch and the union check all take their N from one place; a
@@ -406,7 +429,8 @@ print-gate-shards:
 ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
 test-rest: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
+	run-check-push-selftest
 
 # One shard of the gate suite. SHARD is 1-based. An empty assignment is a
 # success and not a failure — the partitioner exits 4 when the requested shard
@@ -425,6 +449,9 @@ run-gate-shard-selftest:
 
 run-gate-census-selftest:
 	bash scripts/gate-census.sh --self-test
+
+run-check-push-selftest:
+	bash scripts/check-push.sh --self-test
 
 # Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
 # every section alone, the whole suite once and every shard once — about an hour
