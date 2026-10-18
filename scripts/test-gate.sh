@@ -336,6 +336,31 @@ if [ "$sections_given" = "1" ] && [ -z "$sections_want" ]; then
   exit 2
 fi
 
+# THE SECTION-BOUNDARY MARKERS GO TO A FILE, NEVER TO THE TRANSCRIPT. CI weighs
+# the shard partition by what each section actually took, so a cut can be asked
+# to write one `<id><TAB><epoch>` line in front of every section range, every
+# prelude it inserts (`@pre-<group>`) and the epilogue (`@epilogue`). The lines
+# are appended by the cut itself, to a path written into it as a literal, so
+# the PASS/FAIL stream and what the oracle reads stay exactly as they were; the
+# oracle map counts each marker line the way it counts a prelude insert and
+# attributes it to no section.
+#
+# The variable is read once and dropped from the environment here, before
+# anything runs: a section that calls the selector again would otherwise append
+# its own cut's markers into the same file. A path carrying a single quote
+# cannot be written as a literal and stops the run; a path that is not absolute
+# is ignored, because the cut does not run where the caller stood. A full run
+# writes no markers — there is no cut to write them into.
+sec_timing_out="${CC_GATE_TIMING_OUT:-}"
+unset CC_GATE_TIMING_OUT
+case "$sec_timing_out" in
+  *"'"*)
+    printf 'test-gate: CC_GATE_TIMING_OUT 경로에 작은따옴표가 있어 표지 줄에 리터럴로 쓸 수 없습니다: %s\n' "$sec_timing_out" >&2
+    exit 2 ;;
+  /*) ;;
+  *) sec_timing_out="" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # THE THREE-SIGNAL ORACLE — totals, FAIL reconciliation, noise
 #
@@ -1019,6 +1044,14 @@ FRONTEOF
     : > "$sec_map"
     sec_cur="$sec_pre"
     sec_pre_done=" "
+    # One marker line, when the caller asked for them; counted like a prelude
+    # insert and attributed to no section. The single quotes around the epoch
+    # expansion are the format's own, written out by this printf.
+    sec_mark() {
+      [ -n "$sec_timing_out" ] || return 0
+      printf "printf '%%s\\\\t%%s\\\\n' '%s' \"\${EPOCHREALTIME:-\$(date +%%s)}\" >> '%s'\n" "$1" "$sec_timing_out" >> "$sec_cut"
+      sec_cur=$(( sec_cur + 1 ))
+    }
     while read -r sec_a sec_b; do
       [ -n "$sec_a" ] || continue
       sec_grp=$(printf '%s\n' "$sec_idx" \
@@ -1031,14 +1064,16 @@ FRONTEOF
             *)
               sec_pre_done="$sec_pre_done$sec_grp "
               if [ "$(grep -cE "^pre_${sec_grp}\(\) *\{" "$SELF" || true)" != "0" ]; then
+                sec_mark "@pre-$sec_grp"
                 printf '\n# --- prelude: %s (inserted by the selector) ---\npre_%s\n' "$sec_grp" "$sec_grp" >> "$sec_cut"
                 sec_cur=$(( sec_cur + 3 ))
               fi ;;
           esac ;;
       esac
-      sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
       sec_id=$(printf '%s\n' "$sec_idx" \
         | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* .*\$/\1/p")
+      sec_mark "${sec_id:--}"
+      sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
       printf '%s %s %s %s\n' \
         "$(( sec_cur + 1 ))" "$(( sec_cur + sec_b - sec_a + 1 ))" \
         "${sec_id:--}" "${sec_grp:--}" >> "$sec_map"
@@ -1046,6 +1081,7 @@ FRONTEOF
     done <<SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
+    sec_mark "@epilogue"
     sed -n "${sec_epi},\$p" "$SELF" >> "$sec_cut"
 
     # THE ANCHOR CHECK READS THE CUT, NOT THE TRANSCRIPT, and it runs before the
@@ -4726,6 +4762,47 @@ fi
 # without running a single section inside this one.
 emp_rc=0; bash "$SELF" --sections=0a --list >/dev/null 2>&1 || emp_rc=$?
 check "비지 않은 --sections 는 가드를 지나간다" "$emp_rc" "0"
+
+# ---------------------------------------------------------------------------
+# 0e. Section-boundary markers land in their file and leave the verdict alone
+# --- section: 0e | group: static | covers: - | anchors: 표지 파일에 컷의 절·프렐류드·에필로그가 한 줄씩 있다 ---
+# ---------------------------------------------------------------------------
+# CI weighs the shard partition by the markers a timed cut writes, so two
+# things are asserted on one small cut of the real file, run once without the
+# variable and once with it: the marker file holds exactly one line for the
+# section, one for the prelude the selector inserted and one for the epilogue,
+# and the two runs pass the same assertions with the same exit status. The
+# cut is taken from the tree's own file rather than `$SELF`, which inside a cut
+# is the cut, and it names `0d` because that section stands on nothing another
+# section makes and runs in seconds.
+tim_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-timing.XXXXXX")
+tim_suite="$repo_root/scripts/test-gate.sh"
+tim_rc_a=0; bash "$tim_suite" --run-one 0d > "$tim_dir/a.out" 2>&1 || tim_rc_a=$?
+tim_rc_b=0; CC_GATE_TIMING_OUT="$tim_dir/t.tsv" bash "$tim_suite" --run-one 0d > "$tim_dir/b.out" 2>&1 || tim_rc_b=$?
+tim_ids=$(cut -f1 "$tim_dir/t.tsv" 2>/dev/null | tr '\n' ' ')
+check "표지 파일에 컷의 절·프렐류드·에필로그가 한 줄씩 있다" "$tim_ids" "@pre-static 0d @epilogue "
+tim_bad=$(awk -F '\t' 'NF != 2 || $2 !~ /^[0-9]+([.,][0-9]+)?$/' "$tim_dir/t.tsv" 2>/dev/null | grep -c . || true)
+check "표지 줄은 id 와 시각 두 칸이다" "${tim_bad:-0}" "0"
+tim_pass_a=$(grep -c '^PASS:' "$tim_dir/a.out" || true)
+tim_pass_b=$(grep -c '^PASS:' "$tim_dir/b.out" || true)
+if [ "${tim_pass_a:-0}" -ge 1 ] && [ "$tim_pass_a" = "$tim_pass_b" ] && [ "$tim_rc_a" = "$tim_rc_b" ]; then
+  ok "표지가 있는 컷과 없는 컷의 PASS 수와 종료 코드가 같다 (PASS ${tim_pass_a}, rc ${tim_rc_a})"
+else
+  bad "표지가 판정을 바꿨다" "PASS ${tim_pass_a:-0} 대 ${tim_pass_b:-0}, rc ${tim_rc_a} 대 ${tim_rc_b}"
+fi
+# The nested runs inside the timed cut never saw the variable: the selector
+# drops it before the cut runs, so 0d's own calls to the selector wrote nothing.
+tim_n=$(grep -c . "$tim_dir/t.tsv" 2>/dev/null || true)
+check "중첩된 선택기 호출은 표지를 덧쓰지 않는다" "${tim_n:-0}" "3"
+tim_rc_q=0; CC_GATE_TIMING_OUT="$tim_dir/it's.tsv" bash "$tim_suite" --run-one 0d >/dev/null 2>&1 || tim_rc_q=$?
+check "작은따옴표가 든 표지 경로는 exit 2 로 멈춘다" "$tim_rc_q" "2"
+CC_GATE_TIMING_OUT="$tim_dir/list.tsv" bash "$tim_suite" --list >/dev/null 2>&1 || true
+if [ ! -e "$tim_dir/list.tsv" ]; then
+  ok "컷을 만들지 않는 호출은 표지 파일을 만들지 않는다"
+else
+  bad "컷 없는 표지" "--list 가 $tim_dir/list.tsv 를 만들었다"
+fi
+rm -rf "$tim_dir"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
