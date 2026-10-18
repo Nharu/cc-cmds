@@ -1044,6 +1044,29 @@ CW_DL='없음'
 check "이전 마감 없음은 사유 토큰" "$(dl_row | cut -d'|' -f1)" "마감 없음"
 CW_DL='2026-10-09T12:00:00Z'
 
+# --carry --auto — 이전 간격을 옮길 수 없으면 재킥오프 행의 길이로 물러선다.
+dl_auto() { cw_write "$CW"; kc '' "$@" | awk -F'\t' '$1=="마감" { print $2"|"$3"|"$4"|"$5 }'; }
+CW_ROWS_SAVE="$CW_ROWS"
+CW_ROWS="$CW_ROWS
+- \`재킥오프\` | 연쇄 상한=3 | 길이=PT48H0M0S | 사유=밤새 이어 간다"
+CW_DL='2026-10-09T21:00:00'
+r=$(dl_auto --auto)
+check "--carry --auto: 간격을 못 옮기면 길이로 물러서 ok 를 낸다" "${r%%|*}" "ok"
+check "--carry --auto: 물러선 줄은 출처=길이 를 싣는다" "${r##*|}" "출처=길이"
+check "--carry --auto: 물러선 마감은 킥오프 일시 + 길이의 순간이다" "$(dl_inst "$(printf '%s' "$r" | cut -d'|' -f2)")" "$((KAT_E + 172800))"
+check "--carry --auto: 물러선 줄의 간격 칸은 길이의 초다" "$(printf '%s' "$r" | cut -d'|' -f3)" "172800"
+check "--carry --auto: 물러선 마감은 ±HH:MM 오프셋으로 쓴다" \
+  "$(printf '%s' "$r" | cut -d'|' -f2 | grep -cE '[+-][0-9]{2}:[0-9]{2}$')" "1"
+check "--auto 없는 --carry 는 같은 원천에서 기존 사유 토큰을 낸다" "$(dl_auto | cut -d'|' -f1)" "영역 없음"
+CW_DL='2026-10-09T12:00:00Z'
+r=$(dl_auto --auto)
+check "--carry --auto: 간격을 옮길 수 있으면 이전 간격이고 출처 칸이 없다" "$(printf '%s' "$r" | cut -d'|' -f3)|$(printf '%s' "$r" | cut -d'|' -f4)" "32400|"
+CW_ROWS="$CW_ROWS_SAVE"
+CW_DL='2026-10-09T21:00:00'
+check "--carry --auto: 재킥오프 행이 없는 원천은 물러서지 않는다" "$(dl_auto --auto | cut -d'|' -f1)" "영역 없음"
+CW_DL='2026-10-09T12:00:00Z'
+check "--auto 는 --carry 와 함께만 쓴다" "$(kd $T --auto >/dev/null 2>&1; echo $?)" "2"
+
 # 해시 — 틀린 해시는 아무것도 내지 않고, 사본을 뜬 뒤 원천이 바뀌어도 사본의 값을 낸다.
 cw_write "$CW"
 out=$(CC_CMDS_AUTOPILOT_DEFAULTS_FILE=off kd --now "$NOW" --carry "$CW" --kickoff-at "$KAT" \

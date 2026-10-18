@@ -17,9 +17,10 @@
 # authorization record and interview record is of such a copy — so the bytes it
 # measured are the bytes it reads.
 #
-# ONLY THE KICKOFF CALLS THIS. Inside a pipeline run (`CC_PIPELINE_RUN_ID`,
-# `CC_PIPELINE_STAGE_ID` or `CC_PIPELINE_SHIFT_ID` set) it refuses with exit 3
-# before it reads anything.
+# ONLY THE KICKOFF AND THE SEAT CALL THIS. Inside a pipeline run
+# (`CC_PIPELINE_RUN_ID`, `CC_PIPELINE_STAGE_ID`, `CC_PIPELINE_SHIFT_ID` or
+# `CC_PIPELINE_REENTRY` set) every mode, `judge` included, refuses with exit 3
+# and an empty stdout before it reads anything.
 #
 # THE GATE IS NEVER SOURCED INTO THIS SHELL. `gate.sh` sources `run.sh` again,
 # and `run.sh`'s top-level `readonly` lines die on a second source in a shell
@@ -39,7 +40,8 @@
 # which none of the four is alive is `대기`: it waits on something (an
 # approval, a halt record, a usage limit) or on nothing, and the re-kickoff
 # adopts it and closes it `이어받음`. Only the person's interactive re-kickoff
-# reaches that; the chain does not call this program.
+# reaches that: the kickoff and the seat call this program, the chain does not,
+# and the seat's `judge` refuses an un-ended run.
 #
 # ONLY A RE-KICKOFF WORD ADOPTS AN UN-ENDED RUN. The close that follows an
 # adoption cannot be undone, and an empty argument or a resume word (`이어서`,
@@ -51,17 +53,37 @@
 # Usage
 #
 #   rekick.sh detect --arg <인자>
+#   rekick.sh judge --prev <id> --base <base> [--asked <파일>]
 #   rekick.sh verify --prev <id> --base <base>
 #   rekick.sh graph --prev <id> --base <base> [--expect-sha256 <hex>] [--accepted <별칭,…>]
 #   rekick.sh render-manifest --prev <id> --base <base> --run-id <new> --kickoff-at <ISO8601>
 #                             --deadline <ISO8601> --expect-sha256 <hex> --expect-grant-sha256 <hex>
 #                             [--arg <인자>] [--asked <TSV>] [--visual-marker <값>]
 #                             [--targets <파일>] [--rows <파일>] [--rule <키>=<켬|끔>]…
-#                             [--bind-base <hex>] [--set <범위>:<키>=<값>]…
+#                             [--bind-base <hex>] [--set <범위>:<키>=<값>]… [--auto]
 #   rekick.sh render-interview --prev <id> --base <base> [--expect-sha256 <hex>]
 #   rekick.sh verify-subset <초안> <이전 매니페스트> --expect-sha256 <hex>
 #                           --expect-grant-sha256 <hex> --asked <TSV> [--grant <블록 파일>]
-#                           [--set <범위>:<키>=<값>]… [--blank-rows <파일>]
+#                           [--set <범위>:<키>=<값>]… [--blank-rows <파일>] [--auto]
+#
+# `judge` is the seat's verdict on a run that just ended, read-only like every
+# other mode and reading neither the terminal nor stdin. It evaluates every
+# prohibition line (L14 L1 L2 L3 L5 L6 L7 L9 L15 L10 L11 L12 L13) and prints
+# each that fires; its only waits are the two questions `verify` asks, and a
+# wait whose key the `--asked` file already holds is not printed — the answer
+# is not read here, `verify-subset` measures what it allows. It never decides
+# a deadline: that is the kickoff helper's `--carry --auto`. L13 reads only
+# the manifests under this `<base>`; a source carried on from another base is
+# not seen.
+#
+# `--auto` is the seat's link. `render-manifest --auto` fixes the approval text
+# to `좌석 재킥오프` and the confirmation text to `좌석 재킥오프 <원천 id>` and
+# each answer, takes no `--set` or `--accepted`, and adds `좌석 연쇄=<k> |
+# 뿌리 런=<id> | 원인=<종료 토큰>` to the provenance row; a k past the consent
+# row's `연쇄 상한`, and a graph `graph` would call changed, are refused with 3. `verify-subset --auto` wants that seven-field row exactly,
+# the previous `재킥오프` row byte for byte, and a deadline that keeps either
+# the previous interval or the consent row's `길이` from the draft's kickoff.
+# Without `--auto` nothing of this changes: the four-field row only.
 #
 # `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
 # is that row's scope (`런`, or a target named by its alias or by the remote
@@ -101,7 +123,11 @@
 #                  킥오프  <이전 킥오프 일시>
 #                  종료 표시  <게이트가 남긴 종료 표시>
 #                  고지  <한 줄>          굵게  <굵게 보일 한 줄>
-#   verify         검사  다이제스트|인터뷰|인가|머리  통과|실패  <사유>
+#   judge          판정  허용|대기|금지
+#                  금지선  <L>  <사유>
+#                  대기  베이스설계|어휘  <--asked 키>  <질문 문면>
+#                  사실  종료 토큰|연쇄|진전|열린 승인|미답 중단|종료 절|남은 단계  <값>
+#   verify        검사  다이제스트|인터뷰|인가|머리  통과|실패  <사유>
 #                  해시  매니페스트|인가 기록|인터뷰  <hex|->
 #                  베이스설계  <문서>  <행 sha256>  <지금 sha256|->
 #                  질문  베이스설계  <문서>  <행 sha256>  <지금 sha256>
@@ -127,8 +153,8 @@
 #
 # Exit codes: 0 read (a `verify` or `verify-subset` that passed) · 1 a check
 # failed (`verify`, `verify-subset`, `render-interview`, a hash that does not
-# match) · 2 usage · 3 refused (inside a run) or the driver's vocabulary could
-# not be read. On 2 and 3, and on 1 from `render-manifest`, `render-interview`
+# match) · 2 usage · 3 refused (inside a run, or a `render-manifest --auto`
+# link the chain or the graph does not allow) or the driver's vocabulary could not be read. On 2 and 3, and on 1 from `render-manifest`, `render-interview`
 # and `graph`, stdout is empty and stderr carries one line.
 #
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`. Time is
@@ -143,10 +169,10 @@ rk_refuse() { printf '%s: %s\n' "$RK_PROG" "$1" >&2; exit 3; }
 rk_usage()  { printf '%s: %s\n' "$RK_PROG" "$1" >&2; exit 2; }
 rk_fail()   { printf '%s: %s\n' "$RK_PROG" "$1" >&2; exit 1; }
 
-for rk_v in CC_PIPELINE_RUN_ID CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID; do
+for rk_v in CC_PIPELINE_RUN_ID CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY; do
   eval "rk_val=\${$rk_v:-}"
   if [ -n "$rk_val" ]; then
-    rk_refuse "파이프라인 런 안에서는 읽지 않습니다 — 재킥오프는 킥오프만 읽습니다 ($rk_v 가 설정돼 있습니다)"
+    rk_refuse "파이프라인 런 안에서는 읽지 않습니다 — 재킥오프는 킥오프와 좌석만 읽습니다 ($rk_v 가 설정돼 있습니다)"
   fi
 done
 
@@ -158,7 +184,7 @@ RK_MODE="${1:-}"
 RK_ARG=""; RK_ARG_GIVEN=0; RK_PREV=""; RK_BASE=""; RK_XSHA=""; RK_XGSHA=""
 RK_ACCEPTED=""; RK_NEWID=""; RK_KAT=""; RK_DEADLINE=""; RK_ASKED=""
 RK_VISUAL=""; RK_TARGETS=""; RK_ROWS=""; RK_RULES=""; RK_BIND=""; RK_GRANT_BLOCK=""
-RK_POS1=""; RK_POS2=""; RK_SETS=""; RK_BLANKS=""
+RK_POS1=""; RK_POS2=""; RK_SETS=""; RK_BLANKS=""; RK_AUTO=0
 
 rk_need() { [ $# -ge 2 ] || rk_usage "$1 에 값이 없습니다"; }
 while [ $# -gt 0 ]; do
@@ -186,6 +212,7 @@ while [ $# -gt 0 ]; do
     --bind-base)           rk_need "$@"; RK_BIND="$2"; shift 2 ;;
     --grant)               rk_need "$@"; RK_GRANT_BLOCK="$2"; shift 2 ;;
     --blank-rows)          rk_need "$@"; RK_BLANKS="$2"; shift 2 ;;
+    --auto)                RK_AUTO=1; shift ;;
     --set)                 rk_need "$@"
                            case "$2" in
                              *"$(printf '\t')"*|*'
@@ -217,7 +244,7 @@ rk_need_prev() {
 case "$RK_MODE" in
   detect)
     [ "$RK_ARG_GIVEN" = "1" ] || rk_usage "detect 에는 --arg 가 필요합니다 (빈 인자는 --arg '')" ;;
-  verify|render-interview)
+  verify|render-interview|judge)
     rk_need_prev ;;
   graph)
     rk_need_prev
@@ -236,9 +263,17 @@ case "$RK_MODE" in
     rk_hex64 "$RK_XSHA" || rk_usage "--expect-sha256 은 64자리 소문자 16진수입니다"
     rk_hex64 "$RK_XGSHA" || rk_usage "--expect-grant-sha256 은 64자리 소문자 16진수입니다"
     [ -n "$RK_ASKED" ] || rk_usage "verify-subset 에는 --asked 가 필요합니다 (물은 것이 없으면 빈 파일)" ;;
-  '') rk_usage "모드가 없습니다 — detect | verify | graph | render-manifest | render-interview | verify-subset" ;;
+  '') rk_usage "모드가 없습니다 — detect | judge | verify | graph | render-manifest | render-interview | verify-subset" ;;
   *)  rk_usage "알 수 없는 모드입니다: $RK_MODE" ;;
 esac
+if [ "$RK_AUTO" = "1" ]; then
+  case "$RK_MODE" in
+    render-manifest|verify-subset) ;;
+    *) rk_usage "--auto 는 render-manifest 와 verify-subset 에만 씁니다" ;;
+  esac
+  [ -z "$RK_SETS" ] || rk_usage "--auto 에는 --set 을 넘기지 않습니다 — 좌석은 빈칸을 이전 값 그대로 둡니다"
+  [ -z "$RK_ACCEPTED" ] || rk_usage "--auto 에는 --accepted 를 넘기지 않습니다 — 좌석은 대상을 더하지 않습니다"
+fi
 [ -z "$RK_ASKED" ] || [ -r "$RK_ASKED" ] || rk_usage "--asked 파일을 읽을 수 없습니다: $RK_ASKED"
 [ -z "$RK_TARGETS" ] || [ -r "$RK_TARGETS" ] || rk_usage "--targets 파일을 읽을 수 없습니다: $RK_TARGETS"
 [ -z "$RK_ROWS" ] || [ -r "$RK_ROWS" ] || rk_usage "--rows 파일을 읽을 수 없습니다: $RK_ROWS"
@@ -260,7 +295,8 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             check_manifest rundir_of_run_id deadline_instant cutpoint_index \
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts \
-            cc_unresolved_blocked cc_open_approval_rows cc_segment_states; do
+            cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
+            dr_duration_seconds manifest_rekick_rows; do
   command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
 done
 
@@ -425,6 +461,51 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Shared predicates — `detect` and `judge` ask the same functions, over the run
+# RK_PREV / RK_BASE / MANIFEST name, so the two never disagree on a run.
+# ---------------------------------------------------------------------------
+
+# rk_is_live — 0 when any of the four predicates `gate_verb_end_abandoned`
+# refuses on holds, so nothing judged adoptable here is refused by the close. A
+# count that is not a number reads as alive: a run that cannot be shown idle is
+# not taken over.
+rk_is_live() {
+  local nlive nwait
+  nlive=$(cc_live_stages "$RK_PRD" 2>/dev/null)
+  case "$nlive" in 0) ;; *) return 0 ;; esac
+  nwait=$(cc_waiting_fresh_count "$RK_PRD" "$RK_PL" 2>/dev/null)
+  case "$nwait" in 0) ;; *) return 0 ;; esac
+  if cc_shift_is_live "$RK_PRD" 2>/dev/null; then return 0; fi
+  if cc_relay_is_live "$RK_PRD" 2>/dev/null; then return 0; fi
+  return 1
+}
+
+# rk_clauses_all_met <states> — 0 when the manifest declares at least one
+# `종료 절` and the ledger left every one of them `충족`.
+rk_clauses_all_met() {
+  local nclause=0 nmet=0 cid cst cev
+  while IFS="$TAB" read -r cid cst cev; do
+    [ -n "$cid" ] || continue
+    nclause=$((nclause + 1))
+    [ "$cst" = "충족" ] && nmet=$((nmet + 1))
+  done <<EOF
+$1
+EOF
+  [ "$nclause" -ge 1 ] && [ "$nclause" = "$nmet" ]
+}
+
+# rk_invalidated <unresolved blocked> — 0 when a forced surface move left the
+# run's run-scope block `무효화`.
+rk_invalidated() {
+  printf '%s\n' "$1" | awk -F '\t' '$1 == "무효화" && $2 == "강제 표면 이동" { f = 1 } END { exit !f }'
+}
+
+# rk_gate_ended <stderr file> — 끝남 | 안끝남 | 판정불가, the gate's own word.
+rk_gate_ended() {
+  rk_gate ended "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$1"
+}
+
+# ---------------------------------------------------------------------------
 # detect
 # ---------------------------------------------------------------------------
 rk_detect() {
@@ -481,29 +562,11 @@ EOF
   esac
 
   # Eligibility, in order; the first branch that applies decides.
-  #
-  # Liveness is the four predicates `gate_verb_end_abandoned` refuses on, so
-  # nothing judged adoptable here is refused by the close. A count that is not a
-  # number reads as alive: a run that cannot be shown idle is not taken over.
-  local live=0 nlive nwait st ub inv=0 gate_tok mark err
-  nlive=$(cc_live_stages "$RK_PRD" 2>/dev/null)
-  case "$nlive" in ''|*[!0-9]*) live=1 ;; 0) ;; *) live=1 ;; esac
-  nwait=$(cc_waiting_fresh_count "$RK_PRD" "$RK_PL" 2>/dev/null)
-  case "$nwait" in ''|*[!0-9]*) live=1 ;; 0) ;; *) live=1 ;; esac
-  if cc_shift_is_live "$RK_PRD" 2>/dev/null; then live=1; fi
-  if cc_relay_is_live "$RK_PRD" 2>/dev/null; then live=1; fi
-  if [ "$live" = "1" ]; then rk_detect_open running; fi
+  local ub inv=0 gate_tok mark err states
+  if rk_is_live; then rk_detect_open running; fi
 
-  local states nclause=0 nmet=0 cid cst cev
   states=$(rk_clause_states "$RK_PL")
-  while IFS="$TAB" read -r cid cst cev; do
-    [ -n "$cid" ] || continue
-    nclause=$((nclause + 1))
-    [ "$cst" = "충족" ] && nmet=$((nmet + 1))
-  done <<EOF
-$states
-EOF
-  if [ "$nclause" -ge 1 ] && [ "$nclause" = "$nmet" ]; then
+  if rk_clauses_all_met "$states"; then
     printf '판정\t완료\t%s\n' "$RK_PREV"
     printf '고지\t이전 런 %s 은 완료 기준을 모두 채웠습니다 — 이어받을 남은 단계가 없습니다\n' "$RK_PREV"
     printf '고지\t이어받지 않고 처음부터 묻게 하려면 의도를 적어 다시 부르세요\n'
@@ -511,12 +574,10 @@ EOF
   fi
 
   ub=$(cc_unresolved_blocked "$RK_PL" 2>/dev/null) || ub=""
-  if printf '%s\n' "$ub" | awk -F '\t' '$1 == "무효화" && $2 == "강제 표면 이동" { f = 1 } END { exit !f }'; then
-    inv=1
-  fi
+  if rk_invalidated "$ub"; then inv=1; fi
   err="$RK_TMP/gate.err"
   if [ "$inv" = "0" ]; then
-    gate_tok=$(rk_gate ended "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err")
+    gate_tok=$(rk_gate_ended "$err")
     case "$gate_tok" in
       끝남) ;;
       # Not ended and nothing alive: adopted on a re-kickoff word, and held for
@@ -824,6 +885,259 @@ rk_end_token() {
         }
       }
     }' "$1" 2>/dev/null || true
+}
+
+# rk_end_row <ledger> — `<재킥 원인><TAB><종료 부류>` of the row rk_end_token
+# reads, each empty when absent. The selection is rk_end_token's, line for line.
+rk_end_row() {
+  awk '
+    (index($0, "- `자율 승인` | ") == 1 && index($0, " | 결정=종료 | ") > 0) ||
+    (index($0, "- `blocked` | ") == 1 && index($0, " | 스코프=run | ") > 0) {
+      blk = (index($0, "- `blocked` | ") == 1)
+      n = split($0, f, / \| /); v = ""; k = ""; hit = 0
+      for (i = 2; i <= n; i++) {
+        s = f[i]; sub(/[[:space:]]+$/, "", s)
+        if (index(s, "재킥 원인=") == 1) { v = substr(s, length("재킥 원인=") + 1); hit = 1 }
+        else if (index(s, "종료 부류=") == 1) k = substr(s, length("종료 부류=") + 1)
+      }
+      if (!hit) next
+      if (blk && (v == "대상미선언" || v == "슬라이싱")) next
+      printf "%s\t%s\n", v, k; exit
+    }' "$1" 2>/dev/null || true
+}
+
+# rk_progress_rows <ledger> — the rows that show a run moved: a `종료 절` met, a
+# segment merged or done, any `cycle`, and a normal completion of a design or
+# design-audit stage. A row carrying `출처=` is a copy from elsewhere and does
+# not count.
+rk_progress_rows() {
+  grep -E '^- `(종료 절|segment|cycle|stage-result)` \| ' "$1" 2>/dev/null \
+    | grep -v ' | 출처=' \
+    | awk '
+        index($0, "- `종료 절` | ") == 1 { if ($0 ~ / \| 상태=충족( \||$)/) print; next }
+        index($0, "- `segment` | ") == 1 { if ($0 ~ / \| 상태=(머지됨|완료)( \||$)/) print; next }
+        index($0, "- `cycle` | ") == 1 { print; next }
+        index($0, "- `stage-result` | ") == 1 {
+          if ($0 ~ / \| 종단 부류=정상 완료( \||$)/ &&
+              $0 ~ / \| (스테이지=(S1design|S2)|종류=(design|design-audit))( \||$)/) print
+          next
+        }' || true
+}
+
+# rk_chain <source manifest> <source ledger> <source id> — the seat chain the
+# next link would carry. Sets RK_CH_K (the next link's count, empty when the
+# source's provenance row is malformed), RK_CH_ROOT, RK_CH_CAUSE (the source's
+# end token), RK_CH_PREVCAUSE (the `원인=` the source's own row carries, if
+# any), RK_CH_CAP (`연쇄 상한` of the consent row, empty without one) and
+# RK_CH_WHY (why the provenance row could not be read).
+#
+# A source without a provenance row, or with the four-field row a person's
+# re-kickoff writes, starts the count: the next link is 1. A seven-field row
+# carries the count on.
+rk_chain() {
+  local mf="$1" led="$2" sid="$3" rows n row rk
+  RK_CH_K=""; RK_CH_ROOT="$sid"; RK_CH_CAUSE=""; RK_CH_PREVCAUSE=""; RK_CH_CAP=""; RK_CH_WHY=""
+  RK_CH_CAUSE=$(rk_end_token "$led")
+  rk=$(MANIFEST="$mf" manifest_rekick_rows | head -n 1)
+  [ -z "$rk" ] || RK_CH_CAP=$(manifest_row_fields "$rk" '연쇄 상한' | head -n 1)
+  case "$RK_CH_CAP" in ''|*[!0-9]*) RK_CH_CAP="" ;; esac
+  rows=$(MANIFEST="$mf" rk_carry_rows)
+  n=$(printf '%s' "$rows" | grep -c . || true)
+  case "${n:-0}" in
+    0) RK_CH_K=1; return 0 ;;
+    1) row=$rows ;;
+    *) RK_CH_WHY="원천 출처 행이 ${n}개입니다"; return 0 ;;
+  esac
+  local out
+  out=$(printf '%s\n' "$row" | awk '
+    function hex(v) { return v ~ /^[0-9a-f]+$/ && length(v) == 64 }
+    function idok(v) { return v ~ /^[A-Za-z0-9._-]+$/ && v != "." && v != ".." }
+    {
+      n = split($0, f, / \| /)
+      if (n != 4 && n != 7) { print "bad\t출처 행의 필드 수가 맞지 않습니다"; exit }
+      if (f[1] != "- `사전 인가`") { print "bad\t출처 행의 머리가 다릅니다"; exit }
+      split("이어받은 런,매니페스트 sha256,인가 기록 sha256,좌석 연쇄,뿌리 런,원인", want, ",")
+      for (i = 2; i <= n; i++) {
+        p = index(f[i], "=")
+        if (p == 0 || substr(f[i], 1, p - 1) != want[i - 1]) { print "bad\t출처 행의 필드 이름이나 순서가 다릅니다"; exit }
+        v[i - 1] = substr(f[i], p + 1)
+      }
+      if (!idok(v[1]) || !hex(v[2]) || !hex(v[3])) { print "bad\t출처 행의 런 id 나 해시가 형식에 맞지 않습니다"; exit }
+      if (n == 4) { print "ok\t0\t\t"; exit }
+      if (v[4] !~ /^[1-9][0-9]*$/) { print "bad\t출처 행의 좌석 연쇄가 양의 정수가 아닙니다"; exit }
+      if (!idok(v[5])) { print "bad\t출처 행의 뿌리 런이 런 id 가 아닙니다"; exit }
+      if (v[6] == "" || v[6] ~ /[ \t]/) { print "bad\t출처 행의 원인이 비었거나 형식에 맞지 않습니다"; exit }
+      printf "ok\t%s\t%s\t%s\n", v[4], v[5], v[6]
+    }')
+  case "$out" in
+    ok"$TAB"*)
+      local seat root pc
+      IFS="$TAB" read -r _ seat root pc <<EOF
+$out
+EOF
+      RK_CH_K=$((seat + 1))
+      [ -z "$root" ] || RK_CH_ROOT=$root
+      RK_CH_PREVCAUSE=$pc ;;
+    *) RK_CH_WHY=${out#bad"$TAB"} ;;
+  esac
+  [ -n "$RK_CH_K" ] || [ -n "$RK_CH_WHY" ] || RK_CH_WHY="출처 행을 읽지 못했습니다"
+  return 0
+}
+
+# rk_seat_token <token> — succeeds for the end tokens a seat may carry on: the
+# budget a new link is handed again.
+rk_seat_token() {
+  case "$1" in 마감|천장|무진전) return 0 ;; esac
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# judge — the seat's verdict on the run it just saw end. Every prohibition is
+# evaluated and printed; nothing is written and nothing is asked.
+# ---------------------------------------------------------------------------
+rk_judge() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" lines="" waits="" ub gate_tok states
+  local endrow etok ekind nprog nclause=0 nmet=0 cid cst cev remain
+  rk_prev_paths
+  MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_fail "원천 매니페스트를 읽을 수 없습니다: $RK_PM"
+  rk_fire() { lines="${lines}금지선${TAB}$1${TAB}$2
+"; }
+
+  # L14 — the run belongs to this session's lineage.
+  if [ -z "$sid" ] || [ -z "$RK_PRD" ] || ! grep -qxF -- "$sid" "$RK_PRD/session-lineage" 2>/dev/null; then
+    rk_fire L14 "이 세션은 원천 런 $RK_PREV 의 계보에 없습니다"
+  fi
+
+  # L1 — the run ended. An invalidated run is L10's, not this line's.
+  ub=$(cc_unresolved_blocked "$RK_PL" 2>/dev/null) || ub=""
+  if rk_is_live; then
+    rk_fire L1 "원천 런 $RK_PREV 은 아직 살아 있습니다"
+  elif ! rk_invalidated "$ub"; then
+    gate_tok=$(rk_gate_ended "$RK_TMP/judge-gate.err")
+    case "$gate_tok" in
+      끝남) ;;
+      안끝남) rk_fire L1 "원천 런 $RK_PREV 은 게이트가 끝내지 않았습니다 (보류·대기)" ;;
+      *) rk_fire L1 "원천 런 $RK_PREV 의 종료를 게이트에서 판정하지 못했습니다" ;;
+    esac
+  fi
+
+  # L2 — the run completed.
+  endrow=$(rk_end_row "$RK_PL")
+  etok=${endrow%%"$TAB"*}; ekind=${endrow#*"$TAB"}
+  [ -n "$endrow" ] || { etok=""; ekind=""; }
+  states=$(rk_clause_states "$RK_PL")
+  while IFS="$TAB" read -r cid cst cev; do
+    [ -n "$cid" ] || continue
+    nclause=$((nclause + 1))
+    [ "$cst" = "충족" ] && nmet=$((nmet + 1))
+  done <<EOF
+$states
+EOF
+  if rk_clauses_all_met "$states"; then
+    rk_fire L2 "원천 런 $RK_PREV 은 종료 절을 모두 채웠습니다"
+  elif [ "$etok" = "해당없음" ] && [ "$ekind" = "완료" ]; then
+    rk_fire L2 "원천 런 $RK_PREV 은 정상 완료로 끝났습니다"
+  fi
+
+  # L3 — a person gave it up, or another run took it over.
+  case "$ekind" in
+    포기|이어받음) rk_fire L3 "원천 런 $RK_PREV 의 종료 부류가 $ekind 입니다" ;;
+  esac
+
+  # L5 — nothing the source still waits on.
+  rk_open_approvals "$RK_PL"
+  rk_unanswered_halt_names "$RK_PRD" "$RK_PL"
+  if [ "$RK_AP_N" -gt 0 ] || [ "$RK_HALT_N" -gt 0 ]; then
+    rk_fire L5 "원천 런 $RK_PREV 에 열린 승인 ${RK_AP_N}건·답 없는 중단 기록 ${RK_HALT_N}건이 있습니다"
+  fi
+
+  # L6 · L7 — the chain's count against the consent row's cap, and the row.
+  rk_chain "$MANIFEST" "$RK_PL" "$RK_PREV"
+  if [ -n "$RK_CH_WHY" ]; then
+    rk_fire L6 "연쇄 수를 낼 수 없습니다 — $RK_CH_WHY"
+  elif [ -n "$RK_CH_CAP" ] && [ "$RK_CH_K" -gt "$RK_CH_CAP" ]; then
+    rk_fire L6 "좌석 연쇄 $RK_CH_K 가 연쇄 상한 $RK_CH_CAP 을 넘습니다"
+  fi
+  [ -n "$(manifest_rekick_rows)" ] || rk_fire L7 "원천 매니페스트에 재킥오프 동의 행이 없습니다"
+
+  # L9 — a budget end with nothing moved.
+  nprog=$(rk_progress_rows "$RK_PL" | grep -c . || true)
+  if rk_seat_token "$etok" && [ "${nprog:-0}" = "0" ]; then
+    rk_fire L9 "원천 런 $RK_PREV 은 $etok 로 끝났지만 진전 행이 없습니다"
+  fi
+
+  # L15 — no progress twice in a row inside the seat chain.
+  if [ "$etok" = "무진전" ] && [ "$RK_CH_PREVCAUSE" = "무진전" ]; then
+    rk_fire L15 "좌석 연쇄 안에서 무진전이 두 번 연속입니다"
+  fi
+
+  # L10 · L11 — the end token.
+  if [ "$etok" = "표면이동" ] || rk_invalidated "$ub"; then
+    rk_fire L10 "원천 런 $RK_PREV 은 집행 표면 이동으로 끝났습니다"
+  elif ! rk_seat_token "$etok"; then
+    if [ "$etok" = "해당없음" ] && [ "$ekind" = "완료" ]; then :
+    else rk_fire L11 "종료 토큰 '${etok:-}' 은 좌석이 이어 가는 끝(마감·천장·무진전)이 아닙니다"; fi
+  fi
+
+  # L12 — the source's frozen files, through `verify`. Its two questions are
+  # the only waits.
+  ( rk_verify ) > "$RK_TMP/judge-verify.out" 2>/dev/null
+  if awk -F '\t' '$1 == "판정" && $2 == "실패" { f = 1 } END { exit !f }' "$RK_TMP/judge-verify.out"; then
+    rk_fire L12 "verify 가 실패했습니다 ($(awk -F '\t' '$1 == "판정" { print $3; exit }' "$RK_TMP/judge-verify.out"))"
+  elif ! grep -q "^판정${TAB}통과" "$RK_TMP/judge-verify.out"; then
+    rk_fire L12 "verify 의 판정을 읽지 못했습니다"
+  fi
+  local qk qkind qa qb qc qd
+  while IFS="$TAB" read -r qk qkind qa qb qc qd; do
+    [ "$qk" = "질문" ] || continue
+    case "$qkind" in
+      베이스설계)
+        rk_judge_asked '7.8' && continue
+        waits="${waits}대기${TAB}베이스설계${TAB}7.8${TAB}베이스 설계 문서 $qa 이 원천을 얼린 뒤 바뀌었습니다 (행 sha256 $(printf '%.12s' "$qb") → 지금 $(printf '%.12s' "$qc")) — 지금 해시로 묶을까요?
+" ;;
+      자동채택)
+        rk_judge_asked '7.7 자동채택' && continue
+        waits="${waits}대기${TAB}어휘${TAB}7.7 자동채택${TAB}이 자동 채택 행의 판단 부류는 지금 어휘가 받지 않습니다: $qa — 어떻게 할까요?
+" ;;
+    esac
+  done < "$RK_TMP/judge-verify.out"
+
+  # L13 — another manifest under this base already carried the source on.
+  local m
+  for m in "$RK_BASE"/docs/pipeline-run/*.plan.md; do
+    [ -f "$m" ] || continue
+    [ "$m" = "$RK_PM" ] && continue
+    if grep -E '^- `사전 인가` \| ' "$m" 2>/dev/null | awk -v p="이어받은 런=$RK_PREV" '
+         { n = split($0, f, / \| /); for (i = 2; i <= n; i++) { s = f[i]; sub(/[[:space:]]+$/, "", s); if (s == p) h = 1 } }
+         END { exit !h }'; then
+      rk_fire L13 "다른 매니페스트가 이미 원천 런 $RK_PREV 을 이어받았습니다: ${m#"$RK_BASE"/}"
+    fi
+  done
+
+  rk_graph_compute
+  remain=$(printf '%s' "$G_PLAN" | jq -r '[.steps[]? | select(type == "object") | .id] | join(",")' 2>/dev/null)
+
+  printf 'cc-rekick v1\n'
+  if [ -n "$lines" ]; then printf '판정\t금지\n'
+  elif [ -n "$waits" ]; then printf '판정\t대기\n'
+  else printf '판정\t허용\n'; fi
+  printf '%s' "$lines"
+  printf '%s' "$waits"
+  printf '사실\t종료 토큰\t%s\n' "${etok:--}"
+  printf '사실\t연쇄\t%s/%s\n' "${RK_CH_K:--}" "${RK_CH_CAP:--}"
+  printf '사실\t진전\t%s\n' "${nprog:-0}"
+  printf '사실\t열린 승인\t%s\n' "$RK_AP_N"
+  printf '사실\t미답 중단\t%s\n' "$RK_HALT_N"
+  printf '사실\t종료 절\t%s/%s\n' "$nmet" "$nclause"
+  printf '사실\t남은 단계\t%s\n' "${remain:--}"
+  exit 0
+}
+
+# rk_judge_asked <key> — the seat's `--asked` file has a line with that key.
+# The answer itself is not read: what it allows, verify-subset measures again.
+rk_judge_asked() {
+  [ -n "$RK_ASKED" ] || return 1
+  awk -F '\t' -v k="$1" '$1 == k { f = 1 } END { exit !f }' "$RK_ASKED"
 }
 
 # rk_budget_token <token> — succeeds for an end token that a budget ran out on,
@@ -1153,7 +1467,7 @@ rk_render() {
     planf="$RK_TMP/plan.json"
     printf '%s' "$G_PLAN" | jq . > "$planf" 2>/dev/null || return 1
   fi
-  prov="- \`사전 인가\` | 이어받은 런=$RK_PREV | 매니페스트 sha256=$pmsha | 인가 기록 sha256=$pgsha"
+  prov="- \`사전 인가\` | 이어받은 런=$RK_PREV | 매니페스트 sha256=$pmsha | 인가 기록 sha256=$pgsha${RK_PROV_SEAT:-}"
   printf '%s' "$trows" > "$RK_TMP/targets.rows"
   if [ -n "$RK_ROWS" ]; then
     grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$RK_ROWS" > "$RK_TMP/shape.rows" 2>/dev/null || : > "$RK_TMP/shape.rows"
@@ -1307,6 +1621,20 @@ EOF
   printf '%s' "$s"
 }
 
+# rk_seat_confirm_text <source id> — the seat link's `사용자 확인 문면`:
+# `좌석 재킥오프 <source id>`, then each answer the seat asked, joined with
+# ` / `. The seat's own words never stand where a person's approval would.
+rk_seat_confirm_text() {
+  local s="좌석 재킥오프 $1" k a
+  if [ -n "$RK_ASKED" ]; then
+    while IFS="$TAB" read -r k a; do
+      [ -n "$k" ] || continue
+      s="$s / $a"
+    done < "$RK_ASKED"
+  fi
+  printf '%s' "$s"
+}
+
 rk_asked_answer() {
   # rk_asked_answer <key> — the answer recorded for that key, the last one.
   [ -n "$RK_ASKED" ] || return 0
@@ -1402,11 +1730,33 @@ rk_render_manifest() {
   rk_graph_compute
   [ -n "$G_PLAN" ] || rk_fail "원천 매니페스트의 실행 계획을 읽지 못했습니다"
   local confirm approval
-  confirm=$(rk_confirm_text)
-  approval=$(rk_asked_answer '5l')
-  if [ -z "$approval" ]; then approval=$(rk_trim "$RK_ARG"); [ -n "$approval" ] || approval='/cc-cmds:autopilot'; fi
+  if [ "$RK_AUTO" = "1" ]; then
+    # The seat's link: the texts are fixed here, not written by the seat, and
+    # the provenance row carries the chain on. A link past the consent row's
+    # cap is refused before anything is drawn.
+    rk_chain "$MANIFEST" "$RK_PL" "$RK_PREV"
+    [ -z "$RK_CH_WHY" ] || rk_refuse "좌석 연쇄를 낼 수 없습니다 — $RK_CH_WHY"
+    [ -n "$RK_CH_CAP" ] || rk_refuse "원천 매니페스트에 재킥오프 동의 행이 없습니다"
+    [ "$RK_CH_K" -le "$RK_CH_CAP" ] || rk_refuse "좌석 연쇄 $RK_CH_K 가 연쇄 상한 $RK_CH_CAP 을 넘습니다"
+    [ -n "$RK_CH_CAUSE" ] || rk_refuse "원천 런의 종료 토큰을 읽지 못했습니다"
+    # The graph `graph` calls changed has no approval a seat may give: a plan
+    # that fails the shape check is refused here, as the removal's manifest
+    # check is after the draft is drawn.
+    rk_plan_shape "$G_PLAN" "$G_SCOPE" || rk_refuse "빼고 난 그래프가 모양 검사를 통과하지 않습니다 — 좌석은 바뀐 그래프를 승인하지 않습니다"
+    RK_PROV_SEAT=" | 좌석 연쇄=$RK_CH_K | 뿌리 런=$RK_CH_ROOT | 원인=$RK_CH_CAUSE"
+    confirm=$(rk_seat_confirm_text "$RK_PREV")
+    approval='좌석 재킥오프'
+  else
+    confirm=$(rk_confirm_text)
+    approval=$(rk_asked_answer '5l')
+    if [ -z "$approval" ]; then approval=$(rk_trim "$RK_ARG"); [ -n "$approval" ] || approval='/cc-cmds:autopilot'; fi
+  fi
   rk_render "$RK_TMP/draft.md" "$RK_NEWID" "$RK_KAT" "$RK_DEADLINE" "$confirm" "$approval" "$RK_XSHA" "$RK_XGSHA" \
     || rk_fail "매니페스트 초안을 그리지 못했습니다"
+  if [ "$RK_AUTO" = "1" ] && [ -n "$G_REMOVED" ]; then
+    rk_check_manifest "$RK_TMP/draft.md" \
+      || rk_refuse "빼고 난 매니페스트가 매니페스트 검사를 통과하지 않습니다 — 좌석은 바뀐 그래프를 승인하지 않습니다"
+  fi
   cat "$RK_TMP/draft.md"
   exit 0
 }
@@ -1605,14 +1955,33 @@ EOF
   vs_check 확정값 "$why"
 
   # 3 — exactly one provenance row, naming the previous run and its hashes.
-  local crow ncr
+  # Under `--auto` the row is the seven-field one recomputed here from the
+  # previous manifest and its ledger; without it, only the four-field row.
+  local crow ncr wantrow
   crow=$(MANIFEST="$draft" rk_carry_rows); ncr=$(printf '%s' "$crow" | grep -c . || true)
+  wantrow="- \`사전 인가\` | 이어받은 런=$pid | 매니페스트 sha256=$RK_XSHA | 인가 기록 sha256=$RK_XGSHA"
   why=""
-  if [ "${ncr:-0}" != "1" ]; then why="출처 행이 ${ncr:-0}개입니다"
-  elif [ "$crow" != "- \`사전 인가\` | 이어받은 런=$pid | 매니페스트 sha256=$RK_XSHA | 인가 기록 sha256=$RK_XGSHA" ]; then
+  if [ "$RK_AUTO" = "1" ]; then
+    rk_chain "$prev" "$pbase/docs/pipeline-run/$pid.md" "$pid"
+    if [ -n "$RK_CH_WHY" ]; then why="좌석 연쇄를 다시 낼 수 없습니다 — $RK_CH_WHY"
+    elif [ -z "$RK_CH_CAUSE" ]; then why="원천 런의 종료 토큰을 읽지 못했습니다"
+    else wantrow="$wantrow | 좌석 연쇄=$RK_CH_K | 뿌리 런=$RK_CH_ROOT | 원인=$RK_CH_CAUSE"; fi
+  fi
+  if [ -n "$why" ]; then :
+  elif [ "${ncr:-0}" != "1" ]; then why="출처 행이 ${ncr:-0}개입니다"
+  elif [ "$crow" != "$wantrow" ]; then
     why="출처 행이 이전 런과 그 해시를 가리키지 않습니다"
   fi
   vs_check 출처 "$why"
+
+  # 3b — the consent row is the previous one, byte for byte, so neither the cap
+  # nor the length widens along the seat's chain.
+  if [ "$RK_AUTO" = "1" ]; then
+    why=""
+    [ "$(MANIFEST="$prev" manifest_rekick_rows)" = "$(MANIFEST="$draft" manifest_rekick_rows)" ] \
+      || why="재킥오프 동의 행이 원천과 다릅니다"
+    vs_check 동의 "$why"
+  fi
 
   # 4 — the base binding.
   local pbd dbd bind bdoc bnow
@@ -1714,6 +2083,22 @@ EOF
     elif [ -z "$de" ] || [ -z "$ve" ]; then why="마감이나 5e 값을 시각으로 읽지 못했습니다"
     elif [ "$de" != "$ve" ]; then why="5e 를 물었는데 마감이 그 답을 해석한 시각이 아닙니다"
     fi
+  elif [ "$RK_AUTO" = "1" ]; then
+    # The seat's deadline is the previous interval, or the consent row's
+    # length — what the kickoff helper's `--carry --auto` falls back to — both
+    # measured from the draft's kickoff. A previous deadline the reader cannot
+    # place does not fail first: the length still decides.
+    local plen lsec
+    pe=$(rk_wide_instant "$P_DL"); pk=$(rk_wide_instant "$P_KAT")
+    de=$(rk_wide_instant "$D_DL"); dk=$(rk_wide_instant "$D_KAT")
+    plen=$(MANIFEST="$prev" manifest_rekick_rows | head -n 1)
+    plen=$(manifest_row_fields "$plen" '길이' | head -n 1)
+    lsec=""; [ -n "$plen" ] && lsec=$(dr_duration_seconds "$plen" 2>/dev/null)
+    if [ -z "$de" ] || [ -z "$dk" ]; then why="초안의 마감이나 킥오프 일시를 시각으로 읽지 못했습니다"
+    elif [ -n "$pe" ] && [ -n "$pk" ] && [ $((de - dk)) = $((pe - pk)) ]; then :
+    elif [ -n "$lsec" ] && [ $((de - dk)) = "$lsec" ]; then :
+    else why="마감 간격이 원천 간격과도 재킥오프 행의 길이와도 다릅니다 ($((de - dk)))"
+    fi
   else
     pe=$(rk_wide_instant "$P_DL"); pk=$(rk_wide_instant "$P_KAT")
     de=$(rk_wide_instant "$D_DL"); dk=$(rk_wide_instant "$D_KAT")
@@ -1770,6 +2155,7 @@ EOF
 
 case "$RK_MODE" in
   detect)           rk_detect ;;
+  judge)            rk_judge ;;
   verify)           rk_verify ;;
   graph)            rk_graph ;;
   render-manifest)  rk_render_manifest ;;
