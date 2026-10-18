@@ -338,6 +338,7 @@ ORCH_TESTS := \
 	scripts/test-gate.sh \
 	scripts/test-suite-isolation.sh \
 	scripts/test-kickoff-defaults.sh \
+	scripts/test-kickoff-hook-probe.sh \
 	scripts/test-rekick.sh \
 	scripts/test-successor.sh \
 	scripts/test-team-witness-init.sh \
