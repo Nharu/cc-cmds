@@ -122,7 +122,7 @@ CFI-2 and CFI-3 of the base skill (Step 5 → 6 → 7 and the freeze) are the se
 
 What this lead Reads of other files, and when: a row names a file under `plugins/cc-cmds/skills/` (or a run input `입력:<이름>`), a part of it — a verbatim heading, or the verbatim start of a line — and how far the part reaches: `절` to the next heading of the same or a higher level, `본문만` to the next heading of any level, `항목` the list item with its indented continuation (a paragraph: to the next blank line), `` 끝:`<line start>` `` to the line before that one, `전체` the whole file. `파견전` rows are Read before the first spawn, by the dispatcher in `디스패치` (`공통` is both); each later phase's rows are Read on entering that phase, never before. `팀원:` rows are the parts a member prompt names, not the lead's reads.
 
-**파견전 상한**: 155000 바이트
+**파견전 상한**: 159000 바이트
 
 | 단계 | 디스패치 | 파일 | 부분 | 범위 |
 |---|---|---|---|---|
@@ -247,7 +247,7 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 
 `ToolSearch("select:SendMessage,TaskStop")`. `Agent` is built-in. **`AskUserQuestion` is deliberately absent**: it is absent from every headless process anyway.
 
-**Fail-loud, durably — through one site.** If a Step-0 tool cannot be loaded, if the brief fails a guard below, if the target-document guard below parks, or if the ledger stub cannot be created, park **before spawning** with `자리 id: ledger-missing`; `분류` (`tool-unavailable` / `precondition-failed`) and `관측 상세` carry the specifics. No tenth site is minted for a pre-spawn failure.
+**Fail-loud, durably — through one site.** If a Step-0 tool cannot be loaded, if the brief fails a guard below, if the target-document guard below parks, if the ledger stub cannot be created, or if a file the redesign input names does not exist, park **before spawning** with `자리 id: ledger-missing`; `분류` (`tool-unavailable` / `precondition-failed`) and `관측 상세` carry the specifics. No tenth site is minted for a pre-spawn failure.
 
 **Dispatcher resolution (once).** Read `CC_PIPELINE_RUN_ID` by name (`printenv CC_PIPELINE_RUN_ID`, never bare `env`). Non-empty → driver dispatch for the rest of this process; take `CC_PIPELINE_RUN_DIR` and `CC_PIPELINE_STAGE_ID` the same way. Under driver dispatch two more pre-spawn checks run here, and both halt with `분류: precondition-failed`:
 
@@ -273,6 +273,8 @@ The roster this stage instantiates when the manifest carries no `설계 로스�
 ### Step 1: Read the brief and guard it
 
 Under **driver dispatch there is no brief**: `$ARGUMENTS` is the design-document path followed by the task sentence, and the interview product is the interview record when this run has one and otherwise the task sentence plus the manifest's `## 의도` block; exploration findings and reproduction data start from the record's `## 탐색 결과` and `## 재현 근거` when it carries them, and the Step 3 team re-checks every one the design rests on and reads the tree for everything else (the base skill's Step 3 already has them do this against the codebase); the roster is the one instantiated at Step 0; the baseline is `git status --porcelain` + `git worktree list --porcelain` taken **now**, before any spawn. Skip the brief guards below and the target-document guard — the document-present guard at Step 0 is its driver-dispatch form — and proceed to Step 2.
+
+**A redesign input, when the driver passes one.** A successor run that sets the predecessor's design aside after its review cap left P0 findings adds one more argument, `재설계 입력: <앞 문서> <판단 답 파일> <상한 리포트>…` — every operand a file path. Read each named file whole before spawning and hand them to the Step 3 team as evidence of why the previous design failed: what the old document decided, which findings outlived the review cap, and why the branch judgment chose a redesign. They are evidence, not requirements — the boundary of what the design may decide stays the interview record alone, and a finding that asks for something the record does not is a requirement-decision list entry, not a requirement. A named file that does not exist → **halt before spawning**, `자리 id: ledger-missing`, `분류: precondition-failed`, with the missing path in `관측 상세`.
 
 **The interview record, when this run has one.** The kickoff freezes the person's interview answers verbatim; this stage is its reader. Resolve it by **path convention** — `$(dirname "$CC_PIPELINE_MANIFEST")/${CC_PIPELINE_RUN_ID}.interview.md`, the same `<base>/docs/pipeline-run/` directory the manifest sits in — and not from the row, so that the resolution does not depend on the very row it is about to be checked against. Then:
 

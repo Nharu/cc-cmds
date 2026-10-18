@@ -16631,7 +16631,11 @@ bsq_form "길이가 빈 기간(PT)인 재킥오프 행은 거부된다" \
 bsq_form "재킥오프 행 둘은 거부된다" "$BSQ_RK
 ${BSQ_RK%=3*}=2 | 길이=PT8H0M0S | 사유=둘째" "「재킥오프」 행이 2개입니다"
 bsq_form "원인이 닫힌 토큰 밖인 연쇄 행은 거부된다" \
-  "${BSQ_CH%원인=마감}원인=피곤" "「연쇄」 행의 원인이 닫힌 토큰 열두 개 중 하나가 아닙니다"
+  "${BSQ_CH%원인=마감}원인=피곤" "「연쇄」 행의 원인이 닫힌 토큰 열세 개 중 하나가 아닙니다"
+# `P0잔존` is one of the thirteen: the row passes the token check and is refused
+# only further on, for the predecessor this fixture does not have.
+bsq_form "원인이 P0잔존 인 연쇄 행은 토큰 검사를 지나 lineage-invalid 로 거부된다" "$BSQ_RK
+${BSQ_CH%원인=마감}원인=P0잔존" "lineage-invalid — (나) 앞 런 매니페스트가 없습니다"
 bsq_form "재킥오프 시각이 Z 표기가 아닌 연쇄 행은 거부된다" \
   "${BSQ_CH/2026-09-21T14:13:20Z/2026-09-21T23:13:20+09:00}" "「연쇄」 행의 형식이 어긋났습니다"
 bsq_form "재인가 승인만 있고 답변 다이제스트가 없는 연쇄 행은 거부된다" \
@@ -29208,6 +29212,109 @@ shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
 shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
 
+# --- 34m. 빈 대상 리뷰 정지 — 좌석은 구현 재파견으로 답하고, park 답은 park 행이 소비한다 ---
+# --- section: 34m | group: cone | covers: snapshot, act | anchors: 34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다, 34m: 뒤의 park 행이 세그먼트 park 답을 소비한다, 34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다 ---
+#
+# A REVIEW SENT TO A BRANCH WITH NO COMMIT STOPS, AND THE SEAT ANSWERS IT. The
+# record below keeps the shape review-unattended writes when the base and the
+# target head are the same commit: `gate-unanswerable`, the two options, and a
+# recommendation resting on the count of this machine. The routing shift answers
+# `구현 재파견` with an implementation, whose `stage-result` row spends the
+# answer; it answers `세그먼트 park` with a park row, which dispatches nothing,
+# so the gate counts that row as spending it — and only for that option, or an
+# answer to re-dispatch would vanish under a park written for another reason.
+SEB_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+SEB_RID=RSEB1
+cap_fx_new "$SEB_RID"
+mkdir -p "$CAP_DIR/halt"
+SEB_SEAT="7f7f7f7f-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SEB_SEAT.jsonl"
+seb_seg() {  # seb_seg <id> <상태> — a segment row the seat writes
+  cap_gate "$SEB_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$1" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SEB_SEAT" '')" \
+           --rationale x -- 워크트리="$CONE_A" "상태=$2" 선행=없음
+}
+seb_rec() {  # seb_rec <파일> <stage> — the empty-target halt as review-unattended writes it
+  { printf '<!-- cc-pipeline-halt v1; writer=review-unattended; reader=orchestrator; stage=%s; run=%s -->\n' "$2" "$SEB_RID"
+    printf '**중단 시각**: 2026-10-18T00:00:00Z\n**스킬**: review-unattended\n**스텝**: Step 1b 빈 대상\n'
+    printf '**분류**: gate-unanswerable\n'
+    printf '**질문 문면**: 대상 seg/x 가 베이스 abc1234 위에 커밋을 하나도 싣지 않아 리뷰할 것이 없습니다. 어떻게 할까요?\n'
+    printf '**관측 상세**: 대상 seg/x · 베이스 abc1234 · git rev-list --count abc1234..seg/x → 0\n'
+    printf '**선택지**:\n'
+    printf '%s\n' '- `구현 재파견` — 같은 계획으로 이 세그먼트의 구현 스테이지를 다시 보내 커밋을 만든 뒤 리뷰를 다시 받습니다' \
+      '- `세그먼트 park` — 이 세그먼트를 이 런에서 내려놓고 아침 보고서에 남깁니다' \
+      '**추천**: `구현 재파견` — 리뷰할 커밋이 없으므로 구현을 다시 보내야 리뷰할 대상이 생깁니다' \
+      '**추천 근거**: 기기 사실:git rev-list --count abc1234..seg/x → 0'
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$1"
+}
+seb_sr() {  # seb_sr <키> <종류> <실행 버전> <종단 부류>
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=%s | 실행 버전=%s | 세션 id=s-%s-%s | 종단 부류=%s | prev=x\n' \
+    "$1" "$1" "$2" "$3" "$1" "$3" "$4" >> "$CAP_LEDGER"
+}
+seb_answer() {  # seb_answer <키> <기록> <답한 주체> [argv…]
+  local key="$1" rec="$2" who="$3" att="${2%.md}.answer.md"; shift 3
+  if [ "$who" = "좌석" ]; then
+    printf '%s\n' '추천 근거 인용: 픽스처의 인용 (픽스처.md:1)' '되돌리는 법: 다른 선택지로 다시 답한다' > "$att"
+    cap_gate "$SEB_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SEB_SEAT" '')" \
+             --rationale "픽스처 — 좌석의 자동 답" \
+             -- "중단 기록=$rec" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$att" "$@"
+  else
+    cap_gate "$SEB_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SEB_SEAT" '')" \
+             --rationale "픽스처 — 사람의 답" \
+             -- "중단 기록=$rec" '답한 주체=사람' '근거=사람이 고름' "$@"
+  fi
+}
+seb_held() {  # seb_held <기록> — that record's option in answered_halts, or nothing
+  cap_snap "$SEB_SEAT" '' | jq -r --arg r "$1" '[.answered_halts[] | select(.record == $r) | .option] | last // ""'
+}
+
+# E1: the seat answers with the recommendation, and nothing else is needed.
+seb_seg E1 실행중; seb_s1=$rc
+SEB_E1="$CAP_DIR/halt/E1#1.md"
+seb_rec "$SEB_E1" 'E1#1'
+seb_sr E1 review 1 '의도된 park'
+seb_answer E1 "$SEB_E1" 좌석
+check "34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다" \
+  "$seb_s1/$rc/$(row_field "$(cap_rows '중단 답' | tail -1)" '선택지')" "0/0/구현 재파견"
+check "34m: 그 행의 근거 종류는 기기 사실이다" "$(row_field "$(cap_rows '중단 답' | tail -1)" '근거 종류')" "기기 사실"
+check "34m: 스냅숏이 그 답을 answered_halts 로 내놓는다" "$(seb_held "$SEB_E1")" "구현 재파견"
+# A park row written for some other reason does not spend an answer to re-dispatch.
+seb_seg E1 park
+check "34m: 구현 재파견 답은 뒤의 park 행으로 소비되지 않는다" "$rc/$(seb_held "$SEB_E1")" "0/구현 재파견"
+seb_sr E1 implement 2 '정상 완료'
+check "34m: 구현 재파견 답은 뒤의 구현 stage-result 행이 소비한다" "$(seb_held "$SEB_E1")" ""
+
+# E2: a person answers `세그먼트 park`; a later segment row that is not a park
+# leaves the answer standing, and the park row spends it.
+seb_seg E2 실행중; seb_s2=$rc
+SEB_E2="$CAP_DIR/halt/E2#1.md"
+seb_rec "$SEB_E2" 'E2#1'
+seb_sr E2 review 1 '의도된 park'
+seb_answer E2 "$SEB_E2" 사람 '선택지=세그먼트 park'
+check "34m: 사람의 세그먼트 park 답이 선다" "$seb_s2/$rc/$(seb_held "$SEB_E2")" "0/0/세그먼트 park"
+seb_seg E2 실행중
+check "34m: park 아닌 세그먼트 행은 세그먼트 park 답을 소비하지 않는다" "$rc/$(seb_held "$SEB_E2")" "0/세그먼트 park"
+seb_seg E2 park
+check "34m: 뒤의 park 행이 세그먼트 park 답을 소비한다" "$rc/$(seb_held "$SEB_E2")" "0/"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SEB_PREV_AR"
+
+# The review skill writes that shape: the step, the class and the recommended
+# option are the literals the seat and the routing shift read.
+SEB_RU="$repo_root/plugins/cc-cmds/skills/review-unattended/SKILL.md"
+seb_lits=0
+for lit in '`**스텝**: Step 1b 빈 대상`' '`**분류**: gate-unanswerable`' \
+  '- `구현 재파견` — 같은 계획으로 이 세그먼트의 구현 스테이지를 다시 보내 커밋을 만든 뒤 리뷰를 다시 받습니다' \
+  '- `세그먼트 park` — 이 세그먼트를 이 런에서 내려놓고 아침 보고서에 남깁니다' \
+  '**추천**: `구현 재파견` — ' '**추천 근거**: 기기 사실:git rev-list --count <base>..<target head> → 0'
+do
+  grep -qF -- "$lit" "$SEB_RU" && seb_lits=$((seb_lits + 1))
+done
+check "34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다" "$seb_lits" "6"
+
 # --- 34k. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
 # --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다 ---
 #
@@ -40066,7 +40173,8 @@ h87_plan S3 review "$(rv87p '--slice S3')"
 check "87b: 대조 — 세그먼트와 같은 --slice 의 리뷰 파견은 통과한다" "$rc" "0"
 
 # S3 의 사다리 — 확인 리뷰가 P0 을 남기면 다음 리드 수정, 설계 수준 잔여면 재수렴, 정상
-# 재수렴 뒤에는 재구현이고, 재구현의 구현 파견만 상한 거절에서 면제된다. 이 리포트들은
+# 재수렴 뒤에는 재구현이고, 재구현과 그 뒤 implement_next 가 구현 인 동안의 구현 파견만
+# 상한 거절에서 면제된다. 이 리포트들은
 # 결함 수준 줄을 첫째 것만 빼고 싣는다.
 snap87s3() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R87.md" 2>/dev/null | jq -r '.review_next[] | select(.["세그먼트"] == "S3") | .["다음"]' ); }
 rp87 "$WORK/rv87-g3.md" 1 0 -
@@ -40097,9 +40205,20 @@ ri87p="/cc-cmds:implement-unattended $doc87 \"세그먼트 S3 (사이클 5) · �
 h87_plan S3 implement "$ri87p"
 check "87b: 다음 이 재구현이면 상한에 닿은 세그먼트의 구현 파견도 통과한다" "$rc" "0"
 [ "$rc" = "0" ] || bad "87b 재구현 파견 거절 문면" "$msg"
+# 재구현은 재수렴이 계획을 무효로 했으므로 과정 A 로 계획만 내고 끝날 수 있다. 그 행이
+# 서면 다음 은 확인 리뷰지만, 브랜치에 커밋이 없는 동안 implement_next 는 구현 이고
+# 그 재파견도 상한 거절에서 면제된다 — 면제를 묶는 것은 무커밋 구현 한도다. 이
+# 픽스처의 세그먼트 트리는 베이스보다 앞서지 않으므로 앞선 커밋 은 0 이다.
+in87s3() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R87.md" 2>/dev/null | jq -r '.implement_next[] | select(.["세그먼트"] == "S3") | .["다음"] + "|" + (.["무커밋 구현"] | tostring)' ); }
+printf -- '- `stage-result` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n' >> "$L87A"
+check "87b: 커밋 없이 끝난 재구현 행 뒤 다음 은 확인 리뷰이고 implement_next 는 구현 이다" "$(snap87s3)|$(in87s3)" "확인 리뷰|구현|1"
+h87_plan S3 implement "$ri87p"
+check "87b: implement_next 가 구현 인 재구현 뒤의 구현 파견은 상한에서도 통과한다" "$rc" "0"
+[ "$rc" = "0" ] || bad "87b 재구현 과정 B 파견 거절 문면" "$msg"
+printf -- '- `stage-result` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n' >> "$L87A"
 printf -- '- `stage-result` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n' >> "$L87A"
 h87_plan S3 implement "$ri87p"
-check "87b: 재구현 행이 선 뒤의 둘째 구현 파견은 rc 3 이고 다음 은 확인 리뷰다" "$rc|$(snap87s3)" "3|확인 리뷰"
+check "87b: 무커밋 구현 한도에 닿은 재구현 뒤의 구현 파견은 rc 3 이고 implement_next 는 사람 이다" "$rc|$(in87s3)" "3|사람|3"
 case "$msg" in
   *"사이클 예산이 소진됐습니다"*) ok "87b: 그 거부는 사이클 상한의 거부다" ;;
   *) bad "87b 재구현 뒤 구현 거부 문면" "$msg" ;;
@@ -41026,6 +41145,158 @@ lsr_rp_lead_fix "$L88QF" C
 o88qf="$o88qf/$(lsr_rp_state "$L88QF" "$M88Q" C)"
 check "88q: 갈래 F 의 정상 완료 아닌 재수렴은 리드 수정이고 그 뒤 확인 리뷰다" "$o88qf" \
   "리드 수정|3|거부|통과|0/확인 리뷰|3|거부|거부|1"
+
+# ---------------------------------------------------------------------------
+# 88s. P0 잔존 종료 — 선택자의 네 조건, 의존 park 의 전이, P0 지문, 한 자리 훅
+# --- section: 88s | group: ledger_series | covers: gate_rekick_p0_residual, gate_segment_p0_cap_park, gate_segment_dep_park_unmet, gate_segment_review_walk, gate_segment_recheck_cap, gate_cycle_p0_fingerprint, gate_p0_residual_fingerprint, gate_p0_residual_done_line, gate_end_row, gate_end_run | anchors: 88s: 상한을 넘긴 확인 리뷰의 P0 park 는 리포트 경로를 낸다, 88s: 나머지가 착지한 런에서 선택자는 P0 세그먼트와 리포트를 낸다, 88s: 설계 문서가 없는 런에서 선택자는 거짓이다, 88s: 의존 park 가 아닌 park 가 남으면 선택자는 거짓이다, 88s: 열린 행위 승인이 있으면 선택자는 거짓이다, 88s: 전이 의존 park 둘은 인정된다, 88s: P0 지문 성분은 P1 이 바뀌어도 같다, 88s: 해당없음 종료는 P0잔존 행이 되고 종료 부류를 뺀다, 88s: P0 지문 성분 여섯이 행에 실린다 ---
+#
+# 확인 리뷰 상한까지의 수열은 88q 갈래 B 와 같다(c1·c2, 리드 수정 뒤 확인 리뷰 셋). 세그먼트
+# 행의 상태와 의존 park 의 `blocked` 행은 픽스처가 직접 쓴다 — 선택자는 원장과 매니페스트만
+# 읽는다. 리포트의 식별자는 세그먼트마다 다르게 두어 지문 성분이 서로 갈리게 한다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88S="$lsr_root/s88s"; rm -rf "$D88S"; mkdir -p "$D88S"
+M88S=$(lsr_rp_manifest "$D88S/manifest.md")
+M88SN="$D88S/manifest-nodoc.md"
+printf '## 대상\n\n- `target` | 별칭=t | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: (없음)\n\n## 인가\n\n' > "$M88SN"
+rp88s_report() {  # rp88s_report <파일> <P0 식별자,…> <P1 식별자,…> — 식별자를 고른 정규 리포트 하나
+  local f=$1 id n0=0 n1=0
+  for id in $(printf '%s' "$2" | tr ',' ' '); do n0=$((n0 + 1)); done
+  for id in $(printf '%s' "$3" | tr ',' ' '); do n1=$((n1 + 1)); done
+  {
+    printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `abc1234`\n'
+    printf -- '- **발견 요약**: 🔴 P0 %s건 | 🟠 P1 %s건 | 🟡 P2 0건 | 🟢 P3 0건\n' "$n0" "$n1"
+    printf -- '- **P1 분류**: 차단 %s건 | 이월 가능 0건\n\n## 🔴 P0 (즉시 수정 필수)\n\n' "$n1"
+    for id in $(printf '%s' "$2" | tr ',' ' '); do printf -- '- **[c]** `%s` 결함 — r\n' "$id"; done
+    [ "$n0" != "0" ] || printf '없음\n'
+    printf '\n## 🟠 P1 (머지 전 수정 권장)\n\n'
+    for id in $(printf '%s' "$3" | tr ',' ' '); do printf -- '- **[c]** **[차단]** `%s` 덜한 것 — r\n' "$id"; done
+    [ "$n1" != "0" ] || printf '없음\n'
+  } > "$f"
+  printf '%s' "$f"
+}
+rp88s_cap() {  # rp88s_cap <원장> <세그먼트> <리포트> [<확인 리뷰 수>] — 상한 수열과 park 행
+  local l=$1 s=$2 r=$3 n=${4:-3} c=3 k=0
+  printf -- '- `segment` | 교대=1 | id=%s | 상태=계획됨 | prev=x\n' "$s" >> "$l"
+  lsr_rp_cycle "$l" "$s" 1 1 0 "$r"
+  lsr_rp_cycle "$l" "$s" 2 1 1 "$r"
+  while [ "$k" -lt "$n" ]; do
+    lsr_rp_lead_fix "$l" "$s"
+    lsr_rp_cycle "$l" "$s" "$c" 1 0 "$r"
+    c=$((c + 1)); k=$((k + 1))
+  done
+  printf -- '- `segment` | 교대=1 | id=%s | 상태=park | prev=x\n' "$s" >> "$l"
+}
+rp88s_seg() {  # rp88s_seg <원장> <세그먼트> <상태>
+  printf -- '- `segment` | 교대=1 | id=%s | 상태=%s | prev=x\n' "$2" "$3" >> "$1"
+}
+rp88s_dep() {  # rp88s_dep <원장> <세그먼트> <미완 선행|-> — 의존 park 의 blocked 행(`-` 면 필드 없이)
+  rp88s_seg "$1" "$2" park
+  printf -- '- `blocked` | 교대=1 | 대상=%s | 스코프=cone | 원인=무효화 | 사유=게이트 park%s | prev=x\n' \
+    "$2" "$( [ "$3" = "-" ] || printf ' | 미완 선행=%s' "$3")" >> "$1"
+}
+q88s() { local l=$1 m=$2; shift 2; lsr_in Linux "$l" - lsr_rp_in "$m" "$@" 2>/dev/null; }
+r88s() {  # r88s <원장> [<매니페스트>] — 선택자의 「rc:출력」
+  local rc=0 o
+  o=$(q88s "$1" "${2:-$M88S}" gate_rekick_p0_residual) || rc=$?
+  printf '%s:%s' "$rc" "$o"
+}
+T88S=$'\t'
+R88SA=$(rp88s_report "$D88S/a.md" "x/a.sh:1" "y/b.sh:1")
+R88SF=$(rp88s_report "$D88S/f.md" "x/f.sh:7" "")
+
+L88S1=$(lsr_ledger w88s-1)
+rp88s_cap "$L88S1" A "$R88SA"
+rp88s_seg "$L88S1" B 머지됨
+check "88s: 상한을 넘긴 확인 리뷰의 P0 park 는 리포트 경로를 낸다" \
+  "$(q88s "$L88S1" "$M88S" gate_segment_p0_cap_park A)" "$R88SA"
+check "88s: 나머지가 착지한 런에서 선택자는 P0 세그먼트와 리포트를 낸다" "$(r88s "$L88S1")" "0:A${T88S}$R88SA"
+check "88s: 설계 문서가 없는 런에서 선택자는 거짓이다" "$(r88s "$L88S1" "$M88SN")" "1:"
+L88S2=$(lsr_ledger w88s-2)
+rp88s_cap "$L88S2" A "$R88SA" 2
+rp88s_seg "$L88S2" B 머지됨
+check "88s: 확인 리뷰가 상한 안이면 P0 park 이어도 선택자는 거짓이다" \
+  "$(r88s "$L88S2")|$(q88s "$L88S2" "$M88S" gate_segment_p0_cap_park A || printf 'rc1')" "1:|rc1"
+L88S3=$(lsr_ledger w88s-3)
+rp88s_cap "$L88S3" A "$R88SA"
+rp88s_dep "$L88S3" C -
+check "88s: 의존 park 가 아닌 park 가 남으면 선택자는 거짓이다" "$(r88s "$L88S3")" "1:"
+L88S4=$(lsr_ledger w88s-4)
+cp "$L88S1" "$L88S4"
+printf -- '- `승인` | 교대=1 | 승인 id=ap-1 | 상태=대기 | 절단점=머지 | prev=x\n' >> "$L88S4"
+L88S4J=$(lsr_ledger w88s-4j)
+cp "$L88S1" "$L88S4J"
+printf -- '- `승인` | 교대=1 | 승인 id=ap-2 | 상태=대기 | 절단점=판단 | prev=x\n' >> "$L88S4J"
+check "88s: 열린 행위 승인이 있으면 선택자는 거짓이다" "$(r88s "$L88S4")" "1:"
+check "88s: 열린 판단 승인이 있어도 선택자는 거짓이다" "$(r88s "$L88S4J")" "1:"
+
+# --- 의존 park 의 네 원장: 전이, 미완 선행이 P0 밖, 필드 없는 의존, P0 세그먼트 둘 ---
+L88S5=$(lsr_ledger w88s-5)
+rp88s_cap "$L88S5" A "$R88SA"
+rp88s_dep "$L88S5" B A
+rp88s_dep "$L88S5" D B
+check "88s: 전이 의존 park 둘은 인정된다" "$(r88s "$L88S5")" "0:A${T88S}$R88SA"
+L88S6=$(lsr_ledger w88s-6)
+rp88s_cap "$L88S6" A "$R88SA"
+rp88s_dep "$L88S6" B A
+rp88s_seg "$L88S6" E 계획됨
+rp88s_dep "$L88S6" D B,E
+check "88s: 미완 선행 하나가 P0 세그먼트도 의존 park 도 아니면 선택자는 거짓이다" "$(r88s "$L88S6")" "1:"
+L88S7=$(lsr_ledger w88s-7)
+rp88s_cap "$L88S7" A "$R88SA"
+rp88s_dep "$L88S7" B -
+check "88s: 미완 선행 필드 없는 의존 park 는 인정되지 않는다" "$(r88s "$L88S7")" "1:"
+L88S8=$(lsr_ledger w88s-8)
+rp88s_cap "$L88S8" A "$R88SA"
+rp88s_cap "$L88S8" F "$R88SF"
+rp88s_dep "$L88S8" B A,F
+check "88s: P0 세그먼트 둘은 원장 순서로 둘 다 나온다" "$(r88s "$L88S8")" \
+  "0:A${T88S}$R88SA
+F${T88S}$R88SF"
+
+# --- P0 지문: 네 리포트 ---
+R88SA2=$(rp88s_report "$D88S/a2.md" "x/a.sh:1" "y/c.sh:9")
+R88SZ=$(rp88s_report "$D88S/z.md" "" "y/b.sh:1")
+c88s_a=$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SA")
+check "88s: P0 지문 성분은 P1 이 바뀌어도 같다" \
+  "$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SA2")" "$c88s_a"
+check "88s: P0 식별자가 다르면 성분이 다르고, P0 절이 비었거나 리포트가 없으면 (미상) 이다" \
+  "$( [ "$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SF")" != "$c88s_a" ] && echo 다름 || echo 같음)|$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SZ")|$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$D88S/none.md")" \
+  "다름|(미상)|(미상)"
+c88s_f=$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SF")
+check "88s: 런의 P0 지문은 성분을 정렬해 쉼표로 잇고, 하나라도 (미상) 이면 전체가 (미상) 이다" \
+  "$(q88s "$L88S1" "$M88S" gate_p0_residual_fingerprint "F${T88S}$R88SF
+A${T88S}$R88SA")|$(q88s "$L88S1" "$M88S" gate_p0_residual_fingerprint "A${T88S}$R88SA
+Z${T88S}$R88SZ")" \
+  "$(printf '%s\n%s\n' "$c88s_a" "$c88s_f" | LC_ALL=C sort | paste -s -d, -)|(미상)"
+
+# --- 한 자리 훅: gate_end_run 이 부르는 gate_end_row ---
+e88s() {  # e88s <원본 원장> <이름> <원인> <종료 부류> — 사본 원장에서 종료하고 「원인|부류|지문|done 첫 줄」
+  local l
+  l=$(lsr_ledger "w88s-e-$2")
+  cp "$1" "$l"
+  q88s "$l" "$M88S" gate_end_run "주 루프 종료" "시험 종료" "$3" "$4" "" >/dev/null
+  printf '%s|%s' "$(lsr_last_fields "$l" '자율 승인' '재킥 원인' '종료 부류' '재킥 지문')" \
+    "$(sed -n 1p "${l%/*}/done" 2>/dev/null | sed 's/^[^ ]* //')"
+}
+check "88s: 해당없음 종료는 P0잔존 행이 되고 종료 부류를 뺀다" \
+  "$(e88s "$L88S1" none 해당없음 "")" \
+  "P0잔존||$c88s_a|종단 — P0 잔존 — 확인 리뷰 상한에서 P0 가 남은 세그먼트: A · 근거 시험 종료"
+check "88s: 종료 부류=완료 로 온 종료도 P0잔존 이 된다" \
+  "$(e88s "$L88S1" done 해당없음 완료 | cut -d'|' -f1-3)" "P0잔존||$c88s_a"
+check "88s: 다른 원인과 포기 는 훅이 건드리지 않는다" \
+  "$(e88s "$L88S1" dl 마감 "" | cut -d'|' -f1-3)/$(e88s "$L88S1" ab 해당없음 포기 | cut -d'|' -f1-3)" \
+  "마감||/해당없음|포기|"
+check "88s: 선택자가 거짓이면 해당없음 종료는 그대로이고 done 첫 줄이 P0 를 말하지 않는다" \
+  "$(e88s "$L88S2" neg 해당없음 "" | cut -d'|' -f1-3)/$(e88s "$L88S2" neg2 해당없음 "" | grep -c 'P0 잔존' || true)" \
+  "해당없음||/0"
+L88S9=$(lsr_ledger w88s-9)
+for s88s in S1 S2 S3 S4 S5 S6; do
+  rp88s_cap "$L88S9" "$s88s" "$(rp88s_report "$D88S/$s88s.md" "x/$s88s/a.sh:1" "")"
+done
+fp88s=$(e88s "$L88S9" six 해당없음 "" | cut -d'|' -f3)
+check "88s: P0 지문 성분 여섯이 행에 실린다" \
+  "$(printf '%s' "$fp88s" | tr ',' '\n' | grep -cE '^[0-9a-f]{12}$' || true)" "6"
 
 # ---------------------------------------------------------------------------
 # 88b. 베이스 판정과 해소 — base-check 의 세 판정, 다음 오버레이, 해소 사이클, 상한

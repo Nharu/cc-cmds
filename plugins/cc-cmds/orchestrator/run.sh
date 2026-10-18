@@ -1520,7 +1520,7 @@ EOF
       gate_rekick_cause_ok "$ch_cause"
     else
       run_gate_call gate_rekick_cause_ok "$ch_cause"
-    fi || die "「연쇄」 행의 원인이 닫힌 토큰 열두 개 중 하나가 아닙니다: $ch_cause"
+    fi || die "「연쇄」 행의 원인이 닫힌 토큰 열세 개 중 하나가 아닙니다: $ch_cause"
   done <<EOF
 $ch_rows
 EOF
@@ -3435,6 +3435,41 @@ ledger_row() {
   local _rc=0
   run_chained_append "$line" || _rc=$?
   [ "$_rc" = "0" ] || die "원장 행을 쓰지 못했습니다 (rc=${_rc}, 계열 ${series}) — 기록 없는 행위는 수행하지 않습니다"
+  [ "$series" != "stage-result" ] || driver_doc_hash_row "$@"
+}
+
+driver_doc_hash_row() {
+  # driver_doc_hash_row <the stage-result row's fields> — after a stage
+  # termination this driver recorded, the design document's digest as it is
+  # now, in the gate's `문서 해시` row shape and under the gate's key (the
+  # segment, or the stage for a run-scope stage). A stage may rewrite the
+  # document within the run, and the successor's deriver carries forward the
+  # latest digest a run RECORDED; a fixed-graph run that recorded only its
+  # starting digest would hand the next link a document that is no longer there.
+  #
+  # The same (stage, value) pair is written once, whichever writer wrote it:
+  # the gate's stage recorder writes the same row for a stage it terminated.
+  # The test reads the two fields wherever they sit in the row, since the gate
+  # may put a field of its own in front of them.
+  local a seg="" st="" key cur
+  [ -n "${DOC:-}" ] && [ -f "$DOC" ] && [ -n "${LEDGER:-}" ] || return 0
+  for a in "$@"; do
+    case "$a" in
+      세그먼트=*) seg="${a#세그먼트=}" ;;
+      스테이지=*) st="${a#스테이지=}" ;;
+    esac
+  done
+  if [ -n "$seg" ] && [ "$seg" != "-" ]; then key="$seg"; else key="$st"; fi
+  [ -n "$key" ] || return 0
+  cur=$(whole_digest 2>/dev/null || true)
+  [ -n "$cur" ] || return 0
+  if LC_ALL=C awk -v k="| 스테이지=$key 이후 |" -v v="| sha256=$cur |" '
+       index($0, "- `문서 해시` ") == 1 && index($0, k) && index($0, v) { f = 1 }
+       END { exit !f }' "$LEDGER" 2>/dev/null; then
+    return 0
+  fi
+  ledger_row '문서 해시' "스테이지=$key 이후" "sha256=$cur" \
+    "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
 }
 
 run_row_sidecar() {
@@ -5240,19 +5275,22 @@ readonly PARK_CAUSES="막힘|무효화|불명|거절 소진"
 
 park() {
   # park <target> <scope> <cause> <reason> <observed> [<resume command>]
-  #      [<anchor segment>] [<basis>] [<issue url>]
-  # The seventh to ninth fields are written only when given, so a call with
+  #      [<anchor segment>] [<basis>] [<issue url>] [<unmet predecessors>]
+  # The seventh to tenth fields are written only when given, so a call with
   # six arguments writes the same bytes it always did. The anchor is what a
   # cone reader matches on; the basis carries a deadline park's lineage or a
-  # residual park's class; the issue is the one a `리뷰 잔여` park filed.
+  # residual park's class; the issue is the one a `리뷰 잔여` park filed; the
+  # unmet predecessors, comma-joined, mark a dependency park and are what the
+  # gate's `P0잔존` selector reads — the free sentence in `관측` is never parsed.
   local target="$1" scope="$2" cause="$3" reason="$4" observed="$5" recmd="${6:-(없음)}"
-  local anchor="${7:-}" basis="${8:-}" issue="${9:-}"
+  local anchor="${7:-}" basis="${8:-}" issue="${9:-}" unmet="${10:-}"
   local -a extra=()
   case " $PARK_SCOPES " in *" $scope "*) : ;; *) die "park 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;; esac
   case "|$PARK_CAUSES|" in *"|$cause|"*) : ;; *) die "park 원인을 지명하지 못했다: '$cause' (대상 $target)" ;; esac
   [ -z "$anchor" ] || extra+=("앵커 세그먼트=$anchor")
   [ -z "$basis" ] || extra+=("근거=$basis")
   [ -z "$issue" ] || extra+=("이슈=$issue")
+  [ -z "$unmet" ] || extra+=("미완 선행=$unmet")
   ledger_row 'blocked' "대상=$target" "스코프=$scope" "원인=$cause" \
     "사유=$reason" "관측=$observed" "재개 명령=$recmd" ${extra[@]+"${extra[@]}"}
   report_append "보류" "$target — [$scope/$cause] $reason — $observed"
@@ -5865,7 +5903,7 @@ stage_kind_of() {
     S4)       printf 'implement'; return 0 ;;
     S5|S5R)   printf 'review'; return 0 ;;
     S5F)      printf 'lead-fix'; return 0 ;;
-    "S1'")    printf 'reconverge'; return 0 ;;
+    "S1'"|S0R) printf 'reconverge'; return 0 ;;
   esac
   case "$stage" in
     *split*)                printf 'split' ;;
@@ -8851,7 +8889,7 @@ APPLY_PARKED_RADIUS=""
 # ---------------------------------------------------------------------------
 PROMPT_DIR="$ORCH_DIR/prompts"
 
-readonly JUDGMENTS="segment-plan triage redesign-impact preauth-judge"
+readonly JUDGMENTS="segment-plan triage redesign-impact preauth-judge rekick-branch"
 
 judgment_call() {
   # judgment_call <name> <input-file> [<output-file> [<prefix>...]] — prompt and
@@ -8872,9 +8910,11 @@ judgment_call() {
   # THE PRE-AUTHORIZATION JUDGMENT GETS NO TOOLS AND LEAVES NO SESSION. Its input
   # carries an argv a stage assembled, so a call that could run a tool is a call
   # that argv could steer; every other judgment keeps the flags it always had.
+  # The rekick branch judgment is the same case: its input carries review report
+  # text no ledger row pins, verbatim.
   local extra=()
   case "$name" in
-    preauth-judge) extra=(--tools "" --no-session-persistence) ;;
+    preauth-judge|rekick-branch) extra=(--tools "" --no-session-persistence) ;;
   esac
 
   [ -f "$prompt" ] || { warn "판단 호출 프롬프트 부재: $prompt"; return 1; }
@@ -10811,6 +10851,301 @@ s4_park_unfinished() {
 }
 
 # ---------------------------------------------------------------------------
+# S0 — the first step of a `P0잔존` successor, before the design arm.
+#
+# The predecessor ended with segments parked at the re-check cap and P0 left.
+# This step reads that ending from the predecessor's own ledger, picks how the
+# run takes the work up — re-converge the document on those findings, or set
+# it aside and design again from the interview record — and carries the choice
+# out. Everything after it is the ordinary graph: a re-converged document is
+# there and audited, so design and audit are skipped as usual; a document set
+# aside is absent, so the design arm designs and the audit audits.
+#
+# THE CHOICE IS A JUDGMENT ONLY WHEN THERE IS ONE TO MAKE. Redesign needs a
+# design stage that reads the interview record, so it is offered only when the
+# plan requires design, the manifest carries the interview record row and the
+# design skill is the discussion or the lead-only one. Otherwise the run
+# re-converges, without a call, and the selection row says why.
+#
+# AN ANSWER THAT CANNOT BE USED STOPS THE RUN, AND SO DOES `사람`. A failed
+# call, a missing structured answer, a value outside the closed set, an input
+# over the cap, an unreadable predecessor ledger or report: the run parks at
+# run scope here and ends `해당없음`, so the successor verdict is `사람`. An
+# answer that can be read is carried out as given.
+#
+# A RESUMED RUN DOES NOT ASK AGAIN. The selection row is the record of the
+# choice; with it present the judgment is not called, and each step already
+# done — a re-convergence that ended normally, a move, a copy — is not done
+# again.
+#
+# The cap is the input's bytes. `judgment_call` spreads the prompt and the input
+# into ONE `-p` argument, and Linux caps one argument at 131072 bytes on top of
+# the whole-argv `ARG_MAX`; the cap leaves the prompt and a margin below that.
+# A design document bigger than the cap always stops the judgment, which is the
+# price of the bound.
+# ---------------------------------------------------------------------------
+readonly REKICK_BRANCH_INPUT_MAX=112000
+
+manifest_chain_field() {
+  # manifest_chain_field <key> — that field of the manifest's `연쇄` row.
+  local r
+  r=$(manifest_chain_rows | sed -n 1p)
+  [ -n "$r" ] || return 1
+  manifest_row_fields "$r" "$1"
+}
+
+rekick_branch_row() {
+  # The last `kind=rekick-branch` selection row of this run, or nothing.
+  { run_section_rows '자율 승인' || true; } | { grep -F '| kind=rekick-branch |' || true; } | tail -1
+}
+
+rekick_redesign_allowed() {
+  # Prints nothing and returns 0 when a redesign may be chosen; prints why not
+  # and returns 1 otherwise.
+  local skill
+  [ "$(manifest_plan_field '.design_required')" = "true" ] \
+    || { printf '계획의 design_required 가 참이 아니다'; return 1; }
+  [ -n "$(manifest_interview_row)" ] \
+    || { printf '매니페스트에 사전 인가 인터뷰 기록 행이 없다'; return 1; }
+  skill=$(manifest_design_skill)
+  case "$skill" in
+    design-discuss-unattended|design-solo-unattended) return 0 ;;
+  esac
+  printf '설계 스킬이 %s 로 풀린다 — 재설계는 토론·단독 무인 스킬만 받는다' "$skill"
+  return 1
+}
+
+manifest_interview_row() {
+  { manifest_preauth_rows || true; } | { grep -F '| 인터뷰 기록=' || true; } | sed -n 1p
+}
+
+rekick_p0_report_section() {
+  # rekick_p0_report_section <report> — the report's P0 section, heading to the
+  # next `## ` heading, verbatim.
+  LC_ALL=C awk 'index($0, "## \360\237\224\264 P0") == 1 { on = 1; print; next }
+       on && /^## / { exit }
+       on { print }' "$1"
+}
+
+rekick_branch_input() {
+  # rekick_branch_input <selector output> <predecessor ledger> — the judgment's
+  # input text on stdout: one section per P0 segment, then the interview
+  # record and the design document, both verbatim.
+  local sel="$1" pled="$2" sid rep sec nd ni lv done_rv irow ipath
+  while IFS='	' read -r sid rep; do
+    [ -n "$sid" ] || continue
+    sec=$(rekick_p0_report_section "$rep")
+    # The sub-line spelling of the review report template, the one the gate's
+    # report parser counts too.
+    nd=$(printf '%s\n' "$sec" | grep -cE '^    - \*\*결함 수준\*\*: 설계 — .' || true)
+    ni=$(printf '%s\n' "$sec" | grep -cE '^    - \*\*결함 수준\*\*: 구현 — .' || true)
+    if [ "${nd:-0}" = "0" ] && [ "${ni:-0}" = "0" ]; then lv="없음"; else lv="설계 ${nd} · 구현 ${ni}"; fi
+    done_rv=$(awk -v s="| 세그먼트=$sid |" '
+      index($0, "- `stage-result` ") == 1 && index($0, s) && index($0, "| 종류=reconverge |") { f = 1 }
+      END { print (f ? "있음" : "없음") }' "$pled" 2>/dev/null || printf '없음')
+    printf '## segment %s\n\n리포트: %s\n결함 수준별 수: %s\n앞 런의 재수렴: %s\n\n%s\n\n' "$sid" "$rep" "$lv" "$done_rv" "$sec"
+  done <<EOF
+$sel
+EOF
+  irow=$(manifest_interview_row)
+  ipath=$(manifest_row_fields "$irow" '인터뷰 기록')
+  printf '## interview record\n\n'
+  cat "$(dirname "$MANIFEST")/$(basename "$ipath")" 2>/dev/null || printf '(없음)\n'
+  printf '\n## design document\n\n'
+  cat "$DOC" 2>/dev/null || printf '(없음)\n'
+}
+
+rekick_s0_unusable() {
+  # rekick_s0_unusable <why> — the run-scope park of an input or answer S0
+  # cannot use. Always returns 1.
+  park "S0" run 무효화 "게이트 park" "P0 잔존 후속 런의 첫 단계가 쓸 수 없는 입력이다 — $1"
+  return 1
+}
+
+s0_arm() {
+  # Returns 0 when the run goes on to the design arm, 1 when it was parked.
+  [ "$(manifest_chain_field '원인' 2>/dev/null)" = "P0잔존" ] || return 0
+  local pred pled pman sel row branch why insha dest rep sid
+  pred=$(manifest_chain_field '선행 런')
+  pled="$(dirname "$MANIFEST")/$pred.md"
+  pman="$(dirname "$MANIFEST")/$pred.plan.md"
+  run_gate_call gate_chain_verify "$pled" "$pred" >/dev/null 2>&1 \
+    || { rekick_s0_unusable "앞 런 $pred 의 원장이 사슬 검증을 지나지 않는다 ($pled)"; return 1; }
+  sel=$(run_gate_call gate_rekick_p0_residual "$pled" "$pman" 2>/dev/null) \
+    || { rekick_s0_unusable "앞 런 $pred 의 원장에서 확인 리뷰 상한의 P0 잔존 세그먼트를 찾지 못했다"; return 1; }
+  while IFS='	' read -r sid rep; do
+    [ -n "$sid" ] || continue
+    [ -f "$rep" ] || { rekick_s0_unusable "세그먼트 $sid 의 상한 리포트가 없다: ${rep:-(없음)}"; return 1; }
+  done <<EOF
+$sel
+EOF
+  printf '%s\n' "$sel" > "$RUN_DIR/rekick-p0.tsv"
+
+  row=$(rekick_branch_row)
+  if [ -n "$row" ]; then
+    branch=$(manifest_row_fields "$row" '갈래')
+    log "S0 — 이 런의 갈래 선택 행이 이미 있다(갈래 $branch) — 판단을 다시 부르지 않는다"
+  elif why=$(rekick_redesign_allowed); then
+    local input env out_json
+    input="$RUN_DIR/rekick-branch.input.md"
+    rekick_branch_input "$sel" "$pled" > "$input"
+    insha=$(shasum -a 256 "$input" | cut -d' ' -f1)
+    if [ "$(wc -c < "$input" | tr -d ' ')" -gt "$REKICK_BRANCH_INPUT_MAX" ]; then
+      rekick_s0_unusable "판단 입력이 상한 ${REKICK_BRANCH_INPUT_MAX} 바이트를 넘는다 ($(wc -c < "$input" | tr -d ' ') 바이트)"
+      return 1
+    fi
+    env="$RUN_DIR/log/rekick-branch.envelope.json"
+    mkdir -p "$RUN_DIR/log"
+    judgment_call rekick-branch "$input" "$env" >/dev/null \
+      || { rekick_s0_unusable "갈래 판단 호출이 쓸 수 있는 답을 내지 못했다"; return 1; }
+    out_json="$RUN_DIR/rekick-branch.json"
+    judgment_result "$env" > "$out_json" 2>/dev/null \
+      || { rekick_s0_unusable "갈래 판단 답을 읽지 못했다"; return 1; }
+    branch=$(jq -r '.branch // empty' "$out_json" 2>/dev/null || true)
+    why=$(jq -r '.rationale // empty' "$out_json" 2>/dev/null || true)
+    case "$branch" in
+      재수렴|재설계) : ;;
+      사람) park "S0" run 무효화 "게이트 park" "갈래 판단이 사람을 골랐다 — ${why:-근거 없음}"; return 1 ;;
+      *) rekick_s0_unusable "갈래 판단 답이 닫힌 값 밖이다: ${branch:-(없음)}"; return 1 ;;
+    esac
+    case "$branch" in
+      재수렴) dest="$(printf '%s\n' "$sel" | cut -f1 | awk 'NF { printf "%sS0R:%s:reconverge", (n++ ? ", " : ""), $0 }')" ;;
+      재설계) dest="$RUN_DIR/prior-design/ · $RUN_DIR/prior-audit/" ;;
+    esac
+    ledger_row '자율 승인' "kind=rekick-branch" "갈래=$branch" "근거=${why:-근거 없음}" \
+      "입력 sha256=$insha" "목적지=$dest"
+  else
+    branch=재수렴
+    dest="$(printf '%s\n' "$sel" | cut -f1 | awk 'NF { printf "%sS0R:%s:reconverge", (n++ ? ", " : ""), $0 }')"
+    ledger_row '자율 승인' "kind=rekick-branch" "갈래=재수렴" "근거=재설계가 허용되지 않아 판단 없이 재수렴한다 — $why" \
+      "입력 sha256=-" "목적지=$dest"
+  fi
+
+  case "$branch" in
+    재수렴) s0_reconverge "$sel" ;;
+    재설계) s0_redesign_prepare ;;
+    *) rekick_s0_unusable "선택 행의 갈래를 읽지 못했다: ${branch:-(없음)}" ;;
+  esac
+}
+
+s0_reconverge() {
+  # s0_reconverge <selector output> — one re-convergence per P0 segment, in
+  # ledger order. The stage id is `S0R:<segment>:reconverge`: the same on a
+  # resumed run, so a re-convergence that already ended normally is known by
+  # its row, and the same in every link, so a `결함` ending it causes carries
+  # the same fingerprint a second time and the chain stops on it.
+  local sel="$1" seg rep sid prior pclass src rclass
+  while IFS='	' read -r seg rep; do
+    [ -n "$seg" ] || continue
+    sid="S0R:$seg:reconverge"
+    prior=$( { run_section_rows 'stage-result' || true; } | { grep -F "| 파견 id=$sid |" || true; } | tail -1)
+    if [ -n "$prior" ]; then
+      pclass=$(manifest_row_fields "$prior" '종단 부류')
+      if [ "$pclass" = "정상 완료" ]; then
+        log "S0 — $sid 는 이 런에서 이미 정상 종단했다 — 다시 띄우지 않는다"
+        continue
+      fi
+      RUN_END_HALT_STAGE="$sid"
+      park "$sid" run 무효화 "게이트 park" \
+        "이 런의 S0 재수렴이 이미 종단 부류 ${pclass:-미상} 로 끝났다 — 다시 띄우지 않는다" \
+        "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
+      return 1
+    fi
+    src=0
+    CC_SPAWN_PARK_TARGET="$sid" stage_spawn "$sid" "$(alias_root "$(home_alias)")" \
+      "/cc-cmds:design-reconverge $(doc_arg) \"상한 P0 잔여 $rep\"" || src=$?
+    if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+      park_router "$sid" "$sid" run; return 1
+    fi
+    [ "$src" = "0" ] || (exit "$src")
+    stage_wait_all "$sid"
+    spawn_lineage_release "$sid"
+    if predicate_reconverge "$sid"; then
+      rclass=$(classify_termination "$sid" "$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')" 0)
+    else
+      rclass=$(classify_termination "$sid" "$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')" 1)
+      [ "$rclass" != "정상 완료" ] || rclass='공허한 성공'
+    fi
+    reconverge_row "$seg" "$sid" "$rclass"
+    if [ "$rclass" != "정상 완료" ]; then
+      # Parked, not passed over as the loop's re-convergence is: the run's end
+      # classification reads RUN_END_HALT_STAGE, and a halt this stage wrote
+      # must reach it to end the run under its own cause.
+      RUN_END_HALT_STAGE="$sid"
+      park "$sid" run 무효화 "게이트 park" "S0 재수렴이 종단 부류 $rclass 로 끝났다" \
+        "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
+      return 1
+    fi
+    report_append "재수렴" "S0 — $seg 의 상한 P0 잔여로 문서를 다시 수렴했다 ($sid)"
+  done <<EOF
+$sel
+EOF
+  return 0
+}
+
+s0_redesign_prepare() {
+  # Copy the interview record under this run's id, then move the document and
+  # its audit reports aside, so the design arm designs and the audit audits.
+  # Each step is skipped when its result is already there.
+  local irow ipath isha src dst cur f name pd pa
+  irow=$(manifest_interview_row)
+  ipath=$(manifest_row_fields "$irow" '인터뷰 기록')
+  isha=$(manifest_row_fields "$irow" 'sha256')
+  src="$(dirname "$MANIFEST")/$(basename "$ipath")"
+  dst="$(dirname "$MANIFEST")/$RUN_ID.interview.md"
+  cur=$( { shasum -a 256 "$dst" 2>/dev/null || true; } | cut -d' ' -f1)
+  if [ "$cur" != "$isha" ]; then
+    [ -f "$src" ] || { rekick_s0_unusable "인터뷰 기록이 없다: $src"; return 1; }
+    cur=$(shasum -a 256 "$src" | cut -d' ' -f1)
+    [ "$cur" = "$isha" ] || { rekick_s0_unusable "인터뷰 기록의 sha256 이 매니페스트 행과 다르다 ($src)"; return 1; }
+    cp "$src" "$dst.tmp.$$" && mv "$dst.tmp.$$" "$dst" \
+      || { rm -f "$dst.tmp.$$"; rekick_s0_unusable "인터뷰 기록을 이 런 id 로 복사하지 못했다: $dst"; return 1; }
+  fi
+  pd="$RUN_DIR/prior-design"; pa="$RUN_DIR/prior-audit"
+  mkdir -p "$pd" "$pa"
+  name=$(basename "$DOC")
+  if [ ! -f "$pd/$name" ]; then
+    [ -f "$DOC" ] || { rekick_s0_unusable "옮길 설계 문서가 없다: $DOC"; return 1; }
+    mv "$DOC" "$pd/$name" || { rekick_s0_unusable "설계 문서를 옮기지 못했다: $DOC"; return 1; }
+  fi
+  # The marker, not the moved files, says the move was done: a document never
+  # audited leaves nothing in the directory, and a resumed run would otherwise
+  # move the new design's own audit reports aside.
+  if [ -n "$DOC_SLUG" ] && [ ! -f "$pa/.moved" ]; then
+    for f in "$DOC_BASE/docs/design-audit/$DOC_SLUG.md" "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md; do
+      [ -f "$f" ] || continue
+      mv "$f" "$pa/" || { rekick_s0_unusable "감사 리포트를 옮기지 못했다: $f"; return 1; }
+    done
+    : > "$pa/.moved"
+  fi
+  report_append "재설계" "S0 — 앞 문서를 $pd 로, 감사 리포트를 $pa 로 옮기고 인터뷰 기록을 이 런 id 로 복사했다"
+  return 0
+}
+
+rekick_redesign_input() {
+  # The `재설계 입력:` operands — the set-aside document, the judgment's answer
+  # and each cap report — when this run chose to redesign; nothing otherwise.
+  local row sel out
+  row=$(rekick_branch_row)
+  [ -n "$row" ] && [ "$(manifest_row_fields "$row" '갈래')" = "재설계" ] || return 1
+  sel=$(cut -f2 "$RUN_DIR/rekick-p0.tsv" 2>/dev/null | awk 'NF' | tr '\n' ' ')
+  out="$RUN_DIR/prior-design/$(basename "$DOC") $RUN_DIR/rekick-branch.json ${sel% }"
+  printf '%s' "${out% }"
+}
+
+design_stage_cmd() {
+  # design_stage_cmd <skill> — the design stage's command, for its first
+  # dispatch and for every re-dispatch alike, so a redesign's input reaches
+  # each of them.
+  local cmd ri
+  cmd="/cc-cmds:$1 $DOC \"$(manifest_intent_line)\""
+  if ri=$(rekick_redesign_input); then
+    cmd="$cmd \"재설계 입력: $ri\""
+  fi
+  printf '%s' "$cmd"
+}
+
+# ---------------------------------------------------------------------------
 # S1 DESIGN — headless, one pass, BEFORE the audit: the audit reads a frozen
 # document and this is the stage that writes and freezes one. Returns 0 when the
 # run goes on to the audit and 1 when it was parked here.
@@ -10924,7 +11259,7 @@ design_arm() {
   quiet_window_begin
   local src1=0
   dispatch_stage S1design "$(alias_root "$(home_alias)")" \
-    "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" || src1=$?
+    "$(design_stage_cmd "$skill1")" || src1=$?
   if [ "$src1" = "$STAGE_SPAWN_PARK_RC" ]; then
     quiet_window_end
     park_router "S1design" "S1design" run
@@ -10957,7 +11292,7 @@ design_arm() {
     '의도된 park') RUN_END_HALT_STAGE=S1design; park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 1 ;;
     '공허한 성공')
       if continue_or_park S1design S1design - S1design "$(alias_root "$(home_alias)")" \
-           "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" \
+           "$(design_stage_cmd "$skill1")" \
            "동결된 설계 문서도 정지 기록도 없다" "$(home_alias)" -- predicate_design; then
         report_append "설계" "문서 동결 — $DOC_KEY"
       else
@@ -10970,7 +11305,7 @@ design_arm() {
     # gets one re-attachment of its own session, then a park under `거절 소진`.
     '거절 종료')
       if refusal_or_park S1design S1design - S1design "$(alias_root "$(home_alias)")" \
-           "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" \
+           "$(design_stage_cmd "$skill1")" \
            "동결된 설계 문서도 정지 기록도 없다" "$(home_alias)" -- predicate_design; then
         report_append "설계" "문서 동결 — $DOC_KEY"
       else
@@ -11139,8 +11474,10 @@ main_loop_body() {
     "RUN_DIR=$RUN_DIR" "보고서=$(report_path)"
   report_append "개시" "run-id=$RUN_ID · 문서 $DOC_KEY · 권한 절단점 $(grant_field "$RUN_ID" '권한 절단점')"
 
-  # S1 DESIGN — see `design_arm`. A non-zero return means the run was parked
-  # there and goes no further.
+  # S0 — see `s0_arm`; a no-op unless the chain row's cause is `P0잔존`. S1
+  # DESIGN — see `design_arm`. A non-zero return from either means the run was
+  # parked there and goes no further.
+  s0_arm || return 0
   design_arm || return 0
 
   # S2 AUDIT — headless, one pass. Runs before any segment, so the freeze window
@@ -11363,8 +11700,15 @@ main_loop_body() {
     # merge-order successor starts only after its predecessor has landed: the
     # stricter reading of the second kind, and the one that keeps its merge in
     # declaration order without a second check at the merge.
+    # The row is anchored on the slice itself, as a router's cone row is, and
+    # names every unmet predecessor in `미완 선행`, so a reader that asks why
+    # the slice waited — the gate's `P0잔존` selector — reads fields rather than
+    # the sentence.
     if ! deps_satisfied "$deps" "$morder"; then
-      park "$seg" cone 무효화 "게이트 park" "선행 슬라이스가 완료되지 않음: $(deps_unmet_desc "$deps" "$morder")"
+      local _unmet
+      _unmet=$(deps_unmet_ids "$deps" "$morder")
+      park "$seg" cone 무효화 "게이트 park" "선행 슬라이스가 완료되지 않음: $(deps_unmet_desc "$deps" "$morder")" \
+        "" "$seg" "" "" "$_unmet"
       parked=$((parked + 1)); continue
     fi
     cross_repo_deps "$seg" "$deps" "$morder"
@@ -11685,6 +12029,21 @@ deps_unmet_desc() {
   printf '%s' "${out:-없음}"
 }
 
+deps_unmet_ids() {
+  # deps_unmet_ids <선행> <머지 순서> — the ids of either list not yet in this
+  # run's done list, once each in first-named order and comma-joined: the
+  # `미완 선행` field of a dependency park, read from the same tokens
+  # `deps_unmet_desc` names so the field and the sentence cannot disagree.
+  local d out=" "
+  for d in $(dep_tokens "$1") $(dep_tokens "${2:-}"); do
+    grep -qxF "$d" "$RUN_DIR/done.txt" 2>/dev/null && continue
+    case "$out" in *" $d "*) continue ;; esac
+    out="$out$d "
+  done
+  out="${out# }"; out="${out% }"
+  printf '%s' "$out" | tr ' ' ','
+}
+
 # THE SLICES THAT OWN A DECLARATION DEFECT, one `<id>\t<defect>` line each in
 # `decl-defects.tsv`, written by `plan_from_declaration` before any row. A
 # defect one slice owns parks that slice and what reaches it, and the rest of
@@ -11844,6 +12203,25 @@ plan_from_declaration() {
   done
   decl_defects_record "$doc"
   plan_dep_floor_or_park || return 1
+  # A `P0잔존` SUCCESSOR KEEPS EVERY SLICE AN EARLIER RUN LANDED. Its document
+  # may have been re-converged or designed again, and a slice that already
+  # merged cannot be undone by planning around it: a landed id the new document
+  # no longer declares — renamed or dropped — stops the run here, before any
+  # slice is planned. Every other run plans as it always did.
+  local _p0r=""
+  [ "$(manifest_chain_field '원인' 2>/dev/null)" != "P0잔존" ] || _p0r=1
+  if [ -n "$_p0r" ]; then
+    local _landed _lost="" _lid _ids
+    _landed=$(run_gate_call gate_prior_landed_ids 2>/dev/null || true)
+    _ids=" $(slice_ids "$doc" | tr '\n' ' ')"
+    for _lid in $_landed; do
+      case "$_ids" in *" $_lid "*) : ;; *) _lost="${_lost:+$_lost, }$_lid" ;; esac
+    done
+    if [ -n "$_lost" ]; then
+      park "S3" run 무효화 "게이트 park" "앞 런이 착지시킨 슬라이스를 새 문서가 선언하지 않는다: $_lost"
+      return 1
+    fi
+  fi
   for id in $(slice_ids "$doc"); do
     # A SLICE AN EARLIER RUN OF THIS DOCUMENT LANDED IS BROUGHT IN, NOT PLANNED.
     # The gate's import writes its terminal row, `done.txt` — emptied above —
@@ -11869,6 +12247,14 @@ plan_from_declaration() {
          printf '%s\n' "$id" >> "$RUN_DIR/skipped.txt"
          log "착지 들여오기 — ${id} 는 이전 런의 PR 이 아직 열려 있어 디스패치하지 않고, 이 슬라이스에 기대는 슬라이스도 그 PR 이 머지될 때까지 디스패치하지 않습니다"
          continue ;;
+      # Landed before, and the declaration it was built to has since moved. A
+      # `P0잔존` successor stops: the merged work stands under a slice the new
+      # document declares differently. Every other run does the slice again.
+      0/'선언 이동')
+         if [ -n "$_p0r" ]; then
+           park "S3" run 무효화 "게이트 park" "앞 런이 착지시킨 슬라이스 ${id} 의 선언이 새 문서에서 바뀌었다"
+           return 1
+         fi ;;
       0/*)
          warn "착지 들여오기가 처분을 알리지 않았습니다(「${_ikind}」) — ${id} 는 행이 들어왔으므로 디스패치하지 않고, 기대는 슬라이스도 디스패치하지 않습니다"
          printf '%s\n' "$id" >> "$RUN_DIR/skipped.txt"

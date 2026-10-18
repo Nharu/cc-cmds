@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "branch": { "type": "string", "enum": ["재수렴", "재설계", "사람"] },
+    "rationale": { "type": "string", "maxLength": 1200 },
+    "cited": { "type": "array", "items": { "type": "string", "maxLength": 400 }, "maxItems": 12 }
+  },
+  "required": ["branch", "rationale", "cited"],
+  "additionalProperties": false
+}
