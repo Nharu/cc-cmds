@@ -83,7 +83,9 @@ count_runs() {
     | grep -vE "^[[:space:]]*-[[:space:]]*['\"]" \
     | grep -cE "$RUN_ERE" || true
 }
-planted_run=$(printf '      - run: bash scripts/test-gate.sh --sections 5\n' | count_runs)
+# The interpreter word goes in as an argument so that this source line does
+# not itself read as a gate invocation to test-liveness-agreement.sh.
+planted_run=$(printf '      - run: %s scripts/test-gate.sh --sections 5\n' bash | count_runs)
 planted_filter=$(printf "      - 'scripts/test-gate.sh'\n      # bash scripts/test-gate.sh\n" | count_runs)
 if [[ "$planted_run" == "1" && "$planted_filter" == "0" ]]; then
   pass "진입점 단일성 계수기: 심은 실행 줄은 세고 경로 필터·주석 줄은 세지 않는다"
