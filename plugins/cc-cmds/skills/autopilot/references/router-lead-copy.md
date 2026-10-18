@@ -293,7 +293,11 @@ Wait on it with `gate.sh wait --manifest <매니페스트> --segment <step id>`.
 
 #### Planning the segments
 
-Segment planning starts only after the audit has ended as above, or straight after item 5's freeze check when the plan names no audit step. The snapshot's `슬라이싱` field is the read: its branch (`미통치`, `선언통치`, `선언불완전`), the slice ids in declaration order, and each id's branch name and worktree path. A slice the planning rule below defers gets none of the three calls — no `git fetch` and no `git worktree add -b` either — until that rule plans it. **For each slice, in declaration order, three calls:**
+Segment planning starts only after the audit has ended as above, or straight after item 5's freeze check when the plan names no audit step.
+
+**A plan with no `implement` step plans no segment.** When `steps[]` names no step whose `skill` is `implement`, the graph ends at the design — or at the audit, when the plan names one — and there is nothing to plan. Once item 5's freeze check passes and, when the plan names an audit step, the check after the audit in 「Dispatching the audit stage」 passes too, nothing is left to dispatch: propose done, with each clause's evidence the design (and audit) step's `stage-result` row and the document's freeze line. Do not settle a clause as `불가능` because no segment exists: in that state termination condition 1 holds, so when every clause is settled satisfied the gate records the proposal as satisfied.
+
+The snapshot's `슬라이싱` field is the read: its branch (`미통치`, `선언통치`, `선언불완전`), the slice ids in declaration order, and each id's branch name and worktree path. A slice the planning rule below defers gets none of the three calls — no `git fetch` and no `git worktree add -b` either — until that rule plans it. **For each slice, in declaration order, three calls:**
 
 1. `gate.sh exec … --surface 읽기 -- git fetch` against the slice's target.
 2. `gate.sh exec … --surface 워크트리쓰기 -- git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>`.
