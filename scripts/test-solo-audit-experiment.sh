@@ -563,17 +563,21 @@ scenario halt-rec
 export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=rec
 rc=0; xp run --exp-id 20261017-000000a5 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
 ha=$(grep -c -- '--kind halt-answer' "$STUB_GATE_LOG" || true)
-first_ha=$(grep -n -- '--kind halt-answer' "$STUB_GATE_LOG" | head -n 1 | cut -d: -f1)
+first_ha=$(grep -n -- '--kind halt-answer' "$STUB_GATE_LOG" | sed -n '1p' | cut -d: -f1)
 after=$(sed -n "$((first_ha + 1))p" "$STUB_GATE_LOG")
 # Every run finishes, so the call goes on to classification and stops on its
 # ambiguous defect, as the full scenario's first call does.
 [[ "$rc" == "3" && "$ha" == "10" ]] && grep -q 'ambiguous defect(s) wait on a person' "$sc/out" \
   && pass "seat: a recommended halt is answered on every run and the experiment reaches classification" || { fail "seat: recommended halt gave exit $rc with $ha answers"; cat "$sc/out" >&2; }
-grep -- '--kind halt-answer' "$STUB_GATE_LOG" | head -n 1 | grep -q '답한 주체=좌석 근거=중단 기록의 추천을 받았다 — 근거 종류 인터뷰 기록,상시 지침 첨부=' \
-  && pass "seat: the answer is a seat answer naming the grounds' kinds" || fail "seat: the answer argv is $(grep -- '--kind halt-answer' "$STUB_GATE_LOG" | head -n 1)"
+first_ha_line=$(grep -- '--kind halt-answer' "$STUB_GATE_LOG" | sed -n '1p' || true)
+case "$first_ha_line" in
+  *'답한 주체=좌석 근거=중단 기록의 추천을 받았다 — 근거 종류 인터뷰 기록,상시 지침 첨부='*)
+    pass "seat: the answer is a seat answer naming the grounds' kinds" ;;
+  *) fail "seat: the answer argv is $first_ha_line" ;;
+esac
 [[ "$after" == *"--kind router-shift"*" -- 중단 -p "* ]] \
   && pass "seat: after the answer the seat relaunches with 중단" || fail "seat: the call after the answer is $after"
-ans=$(ls "$sc"/xdg/cc-cmds/run/*/halt/D1#1.answer.md 2>/dev/null | head -n 1)
+ans=$(ls "$sc"/xdg/cc-cmds/run/*/halt/D1#1.answer.md 2>/dev/null | sed -n '1p')
 [[ -n "$ans" ]] && grep -q '^- 인터뷰 기록:첫째로 한다$' "$ans" && grep -q '^되돌리는 법: ' "$ans" \
   && pass "seat: the attachment carries each ground and how to take the answer back" || fail "seat: the attachment is missing or incomplete"
 

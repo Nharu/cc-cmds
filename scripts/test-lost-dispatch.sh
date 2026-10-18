@@ -285,7 +285,10 @@ else
   bad "교대 스킬" "파견 문장을 찾지 못했다 — 아래 반전 단언이 전부 공허하다"
 fi
 for lit in 'HARNESS-TRACKED BACKGROUND' 'HOLD THE SESSION'; do
-  if printf '%s' "$dl" | grep -qF "$lit"; then
+  if grep -qF "$lit" <<EOF
+$dl
+EOF
+  then
     bad "교대 스킬" "파견 문장에 「${lit}」 가 남아 있다 — 그것이 실측상 죽는 모드다"
   else
     ok "파견 문장에 「${lit}」 가 없다"

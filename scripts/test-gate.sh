@@ -1959,6 +1959,24 @@ pre_static() {
       printf '%s\n' "$f"
     done
   }
+  # THE PIPEFAIL SCAN ALONE TAKES THE WHOLE TEST FAMILY BY GLOB, because that is
+  # where this class actually landed: an assertion of the form
+  # `grep … | head -n 1 | grep -q …` in a suite this list never named failed now
+  # and then on CI, while the scan that refuses the shape stayed green for not
+  # reading the file. The helper-order scan keeps the list above — nobody has
+  # measured what widening it would turn up, and a scan widened unmeasured is a
+  # red build waiting for the next unrelated change. The union keeps the first
+  # appearance of each path, so a fixed entry that is also a `test-*.sh` is read
+  # once.
+  scanned_files_0a() {
+    {
+      scanned_files
+      for f in "$repo_root"/scripts/test-*.sh; do
+        [ -f "$f" ] || continue
+        printf '%s\n' "$f"
+      done
+    } | awk '!seen[$0]++'
+  }
 }
 
 # `base` — the definitions the base family's sections used to write in line as
@@ -3662,6 +3680,24 @@ pre_sb() {
   }
 
   sb_seg_last() { { grep -E '^- `segment`' "$SA_LEDGER" 2>/dev/null || true; } | grep -F "id=$1 " | tail -1; }
+  sb_apply_state() {
+    # sb_apply_state <세그먼트> — 스냅숏 segments[] 원소의 `적용`. 원소가 없으면 `원소 없음`.
+    ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+      | jq -r --arg s "$1" '[.segments[] | select(.id == $s) | .["적용"]] | if length == 0 then "원소 없음" else .[0] // "null" end'
+  }
+  sb_not_owed() {
+    # sb_not_owed <라벨> <행 수 기준값> <세그먼트> — 「적용 불필요」 처분: rc 0,
+    # 그 문면, 원장 행 불변, 적용 워크트리 없음, 스냅숏 `적용` 은 `없음`.
+    check "$1" "$rc" "0"
+    case "$raw" in
+      *"적용 불필요 — $3 는 적용을 빚지지 않습니다"*) ok "$1 — 적용 불필요 문면이다" ;;
+      *) bad "$1 문면" "$raw" ;;
+    esac
+    check "$1 — 원장에 행이 늘지 않는다" "$(sa_rows)" "$2"
+    if [ -e "$(sb_apply_wt "$3")" ]; then bad "$1 — 적용 워크트리" "남았다: $(sb_apply_wt "$3")"
+    else ok "$1 — 적용 워크트리를 만들지 않는다"; fi
+    check "$1 — 스냅숏 적용 은 없음 이다" "$(sb_apply_state "$3")" "없음"
+  }
   sb_apply_wt() { printf '%s-run-%s-%s-apply' "$SA_WT" "$SA_ID" "$1"; }
   sb_count() { { grep -cF "$1" "$SA_LEDGER" 2>/dev/null || true; }; }
 
@@ -4517,6 +4553,16 @@ if [ "$nlint" -ge 1 ]; then
 else
   bad "스캔 목록" "scripts/lint-*.sh 가 하나도 잡히지 않았다 — 목록이 비면 아래 루프는 조용히 짧아진다"
 fi
+ntest=0
+for f in "$repo_root"/scripts/test-*.sh; do
+  [ -f "$f" ] || continue
+  ntest=$((ntest + 1))
+done
+if [ "$ntest" -ge 1 ]; then
+  ok "스캔 목록이 시험 계열을 글로브로 흡수한다 (${ntest}개)"
+else
+  bad "스캔 목록" "scripts/test-*.sh 가 하나도 잡히지 않았다 — 목록이 비면 아래 루프는 조용히 짧아진다"
+fi
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   [ -f "$f" ] || continue
@@ -4533,14 +4579,19 @@ while IFS= read -r f; do
   # failure — so on the right of a pipe under `pipefail` it fails the pipeline
   # for finding nothing. Taking the count into a variable is what moves the
   # verdict from an exit status onto a value, which is the shape this tree wants.
-  early=$(sed 's/#.*//' "$f" | grep -nE '\| *(head -|grep -[A-Za-z]*q|grep -c[A-Za-z]* [^|]*>/dev/null)' || true)
+  #
+  # The bar in front of the reader must be a pipe and not the second half of
+  # `||`. A logical or runs its right side only on the left's failure and sends
+  # it no input, so `grep -q a "$f" || grep -qi b "$f"` has no writer to kill —
+  # yet a bare `\|` matched it, and the test family carries exactly that line.
+  early=$(sed 's/#.*//' "$f" | grep -nE '(^|[^|])\| *(head -|grep -[A-Za-z]*q|grep -c[A-Za-z]* [^|]*>/dev/null)' || true)
   if [ -z "$early" ]; then
     ok "파이프 오른쪽에 조기 종료 읽기가 없다: $(basename "$f")"
   else
     bad "pipefail 함정" "$(basename "$f"): $(printf '%s' "$early" | awk 'NR<=3' | tr '\n' ' ')"
   fi
 done <<EOF
-$(scanned_files)
+$(scanned_files_0a)
 EOF
 
 # ---------------------------------------------------------------------------
@@ -6279,7 +6330,7 @@ fi
 # 수리의 결과이기 때문이다.
 sa_self="$repo_root/scripts/test-gate.sh"
 sa_pat='--manifest "\$FX_MANIFEST" .*--cutpoint '"$(printf '(%s|%s|%s)' 머지 배포 머지후착수)"
-sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self" | head -1 | cut -d: -f1)
+sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self" | sed -n '1p' | cut -d: -f1)
 sa_we=$(grep -n '^FX_MANIFEST="\$WT/plan2\.md"$' "$sa_self" | sed -n '1s/:.*$//p')
 if [ -n "$sa_ws" ] && [ -n "$sa_we" ] && [ "$sa_we" -gt "$sa_ws" ]; then
   sa_wn=$(awk -v a="$sa_ws" -v b="$sa_we" 'NR>a && NR<b' "$sa_self" | grep -cE -- "$sa_pat" || true)
@@ -30918,7 +30969,7 @@ sb_silent 'terraform plan 은 침묵한다' -- terraform plan
 sb_silent 'gh api 의 GET 은 침묵한다'  -- gh api repos/o/r/pulls/1/merge
 
 # --- 38-12. 적용 행위의 다섯 전제 ------------------------------------------------
-# --- section: 38-12 | group: sb | covers: act, apply | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 기본 대응 0/2 로 읽고 문면에 싣는다 ---
+# --- section: 38-12 | group: sb | covers: act, apply, gate_segment_apply_state, snapshot | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 기본 대응 0/2 로 읽고 문면에 싣는다, 12: 적용 명령이 없으면 적용 불필요 로 rc 0 이다, 12: 절단점이 배포 가 아니면 적용 불필요 로 rc 0 이다, 12: 빚지지 않은 세그먼트는 M^2 가 리뷰 HEAD 와 달라도 전제 4 앞에서 적용 불필요 로 끝난다, 12: 두 번째 적용 행위는 적용 불필요 로 끝난다 ---
 #
 # 다섯 전제는 규칙 카탈로그 앞에 있고 끌 수 없다. 거부마다 원장 행 수와 적용
 # 워크트리 부재를 함께 잰다 — 코드만 재면 행을 쓰고 거부하는 구현도 초록이다.
@@ -31038,24 +31089,43 @@ sb12_base=$(sa_base)
 sb_apply SB12H
 sb_refused_clean "12: 리뷰 뒤 head 가 움직인 머지는 전제 4 에서 거부된다" 4 "$sb12_base" SB12H
 
-# 적용 명령이 없으면 전제 5.
+# 적용 명령이 없으면 적용을 빚지지 않는다 — 거부가 아니라 「적용 불필요」.
 sb_apply_new '12 명령 없음' '' '' '(해당 없음)'
 sb_reviewed_landing SB12C
 sb12_base=$(sa_base)
+sag plan --manifest "$SA_MANIFEST" --kind apply --target main --segment SB12C --cutpoint 배포 \
+    --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x -- 적용
+case "$raw" in
+  *"통과 예상: kind=apply target=main 처분=불필요(적용을 빚지지 않음)"*) ok "12: 빚지지 않은 적용의 plan 은 처분=불필요 를 찍는다" ;;
+  *) bad "12: 빚지지 않은 적용의 plan" "$raw" ;;
+esac
 sb_apply SB12C
-sb_refused_clean "12: 적용 명령이 없으면 전제 5 에서 거부된다" 5 "$sb12_base" SB12C
+sb_not_owed "12: 적용 명령이 없으면 적용 불필요 로 rc 0 이다" "$sb12_base" SB12C
 
-# 절단점이 배포 가 아니면 전제 5.
+# 절단점이 배포 가 아니면 적용을 빚지지 않는다.
 sb_apply_new '12 절단점' 'exit 0' 'true'
 sb_target_field 절단점 머지
 sb_reviewed_landing SB12K
 sb12_base=$(sa_base)
 sb_apply SB12K
-sb_refused_clean "12: 절단점이 배포 가 아니면 전제 5 에서 거부된다" 5 "$sb12_base" SB12K
+sb_not_owed "12: 절단점이 배포 가 아니면 적용 불필요 로 rc 0 이다" "$sb12_base" SB12K
+
+# 관측 런의 모양 — 절단점 머지, 적용 명령 없음, 리뷰 뒤 커밋을 더한 머지라
+# M^2 ≠ 리뷰 HEAD. rc 0 이면 전제 4 에 닿기 전에 끝났다는 뜻이다.
+sb_apply_new '12 관측 모양' '' '' '(해당 없음)'
+sb_target_field 절단점 머지
+sa_seg_row SB12O ""
+SB_TIP=$(sa_commit '작업'); sb_cycle SB12O "$SB_TIP"
+sa_commit '리뷰 뒤 작업' >/dev/null
+SB_M=$(sb_land_merge); sb_merged_row SB12O "$SB_M"
+sb12_base=$(sa_base)
+sb_apply SB12O
+sb_not_owed "12: 빚지지 않은 세그먼트는 M^2 가 리뷰 HEAD 와 달라도 전제 4 앞에서 적용 불필요 로 끝난다" "$sb12_base" SB12O
 
 # 적용 주체가 사람이면 인계 행 하나와 rc 0.
 sb_apply_new '12 사람' 'exit 0' "touch $WORK/sb12-person" 사람
 sb_reviewed_landing SB12S
+check "12: 인계 전 사람 세그먼트의 스냅숏 적용 은 인계 다" "$(sb_apply_state SB12S)" "인계"
 sb_apply SB12S
 check "12: 적용 주체가 사람이면 rc 0 이다" "$rc" "0"
 check "12: 그리고 인계 행 하나를 남긴다" "$(sb_count '`적용 인계`')" "1"
@@ -31065,6 +31135,27 @@ case "$(sb_seg_last SB12S)" in
   *"적용=대기"*) bad "12: 사람 세그먼트의 머지됨" "적용=대기 가 붙었다" ;;
   *) ok "12: 적용 주체 사람 세그먼트의 머지됨 에는 표지가 붙지 않는다" ;;
 esac
+check "12: 인계 뒤 스냅숏 적용 은 없음 이다" "$(sb_apply_state SB12S)" "없음"
+sb_apply SB12S
+check "12: 인계 뒤 두 번째 적용 행위도 rc 0 이다" "$rc" "0"
+case "$raw" in
+  *"적용 불필요 — SB12S"*) ok "12: 두 번째 적용 행위는 적용 불필요 로 끝난다" ;;
+  *) bad "12: 두 번째 적용 행위 문면" "$raw" ;;
+esac
+check "12: 인계 행은 하나 그대로다" "$(sb_count '`적용 인계`')" "1"
+
+# 라우터의 두 사본 — 교대 스킬과 리드 사본의 「**The apply.**」 문단 첫머리가 같고,
+# 둘 다 `적용` 의 `없음` 갈래에서 fetch 도 적용 행위도 내지 않는다고 적는다.
+ap12_shift=$(grep -m1 -F '**The apply.**' "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md" || true)
+ap12_lead=$(grep -m1 -F '**The apply.**' "$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md" || true)
+check "12: 두 라우터 사본의 적용 문단 첫머리가 같다" "$ap12_shift" "$ap12_lead"
+for ap12 in "$ap12_shift" "$ap12_lead"; do
+  case "$ap12" in
+    *'look at `적용` on that segment'*'`없음` → the merge is the segment'"'"'s end'*'issue neither the fetch nor the apply act'*'`대기` or `인계` → first issue'*)
+      ok "12: 라우터 사본의 적용 문단이 적용 없음 갈래를 싣는다" ;;
+    *) bad "12: 라우터 사본의 적용 문단" "$ap12" ;;
+  esac
+done
 
 # --- 38-13. 적용의 처분과 종료 조건 ----------------------------------------------
 # --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 2 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다, 13: 해시 불일치 거부 문면이 두 해시를 싣는다, 13: 해시 불일치에서 사전 프로브도 적용 명령도 돌지 않는다, 13: 불필요=2·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 2 는 완료 로 끝난다 ---
@@ -31076,6 +31167,7 @@ case "$(sb_seg_last SB13)" in
   *"상태=머지됨"*"적용=대기"*) ok "13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다" ;;
   *) bad "13: 적용=대기" "$(sb_seg_last SB13)" ;;
 esac
+check "13: 그때 스냅숏 적용 은 대기 다" "$(sb_apply_state SB13)" "대기"
 sb_done_msg
 case "$msg" in
   *"세그먼트 SB13 의 적용이 남았습니다"*) ok "13: 적용이 남은 동안 조건 1 이 그 세그먼트를 미충족으로 낸다" ;;
@@ -34541,11 +34633,12 @@ case "$(p59_field "$p59_row" 근거)" in
 esac
 # 셋 다 같은 예산을 쓴다 — 자유 문면을 싣는 세 자리(act 승인·무효화 종단·경계 종단)의
 # 근거는 전부 `gate_free_budget` 이 잰 값으로 잘린다. 리터럴 240 으로 되돌아간 자리가
-# 생기면 여기서 잡힌다.
+# 생기면 여기서 잡힌다. 한 자리가 예산을 다시 잴 수 있으므로(경계 종단은 `P0잔존` 지문이
+# 행에 들어가지 않으면 `(미상)` 으로 바꿔 한 번 더 잰다) 대입 줄이 아니라 예산 변수를 센다.
 check "59: 자유 문면 예산으로 잘리는 근거 자리가 셋이다" \
   "$(grep -c 'gate_row_safe "\$[a-z]*" "\$_[a-z]*_free"' "$GATE" || true)" "3"
 check "59: 그 셋의 예산이 전부 gate_free_budget 에서 온다" \
-  "$(grep -c '_free=\$(gate_free_budget ' "$GATE" || true)" "3"
+  "$({ grep -o '_[a-z]*_free=\$(gate_free_budget ' "$GATE" || true; } | sort -u | wc -l | tr -d ' ')" "3"
 
 # (6) 라우팅 좌석의 shared/ 울타리 — 네 철자, 그리고 두 대조군 ------------------------
 #
@@ -41521,7 +41614,7 @@ check "88b: 다음이 해소 리뷰 가 아닌 세그먼트의 해소 사이클 
 
 # ---------------------------------------------------------------------------
 # 88c. 릴리스 메타만의 충돌 — 기대 트리, 고정 도우미, 머지 대조의 메타 해소
-# --- section: 88c | group: ledger_series | covers: release_meta_expected_tree, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_merge_check_value, gate_done_conditions | anchors: 88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다, 88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다, 88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다, 88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다, 88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다, 88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다, 88c: 조건 11 은 메타 해소 를 통과시킨다, 88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다, 88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다, 88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다 ---
+# --- section: 88c | group: ledger_series | covers: release_meta_expected_tree, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_merge_check_value, gate_done_conditions, gate_apply_preconditions, gate_segment_apply_state | anchors: 88c: 빚지지 않은 메타 해소 착지의 적용 전제는 rc 0 이고 빚지지 않음을 세운다, 88c: 적용 명령이 있는 메타 해소 착지는 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88c: 증명되지 않는 둘째 부모의 착지는 전제 4 로 거부되고 증명 실패 사유를 싣는다, 88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다, 88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다, 88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다, 88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다, 88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다, 88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다, 88c: 조건 11 은 메타 해소 를 통과시킨다, 88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다, 88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다, 88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다 ---
 #
 # 두 세그먼트가 같은 플러그인의 판을 올리면 `plugin.json` 과 `CHANGELOG.md` 에서만
 # 충돌하고, 그 해소는 판단이 아니다. 여기서는 같은 등급(minor) 의 두 올림을 쓴다 —
@@ -41657,6 +41750,62 @@ T288C=$( ( cd "$U88C" && git checkout -q main && echo x > seg.txt && git add -A 
 check "88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다" \
   "$(c88c)|$(lsr_last_fields "$L88C" '베이스 판정' 판정\ HEAD 베이스 판정 부류)|$(q88c "$L88C" gate_segment_review_next S)" \
   "0|$MM88C|$T288C|충돌|일반|베이스 해소"
+
+# 적용 행위 전제 4 의 메타 해소 갈래 — 착지 커밋 M 은 상류 클론에서 베이스와 메타 해소
+# HEAD 를 --no-ff 로 머지해 원격에 밀고 메인 클론에서 fetch 해 만든다. 위의 충돌 행 뒤로
+# 원격 main 은 MM88C 와 충돌하므로, 착지는 T88C 에서 갈라진 착지 브랜치에 두고 그
+# 브랜치를 베이스로 둔 매니페스트 사본으로 판정한다. 마지막 베이스 판정 행의 베이스는
+# T288C 이고 MM88C 의 둘째 부모 T88C 는 그 조상이다.
+( cd "$W88C" && git branch -q slip-88c "$SLIP88C" ) >/dev/null 2>&1
+la88c() {  # la88c <브랜치> <둘째 부모> — T88C 위의 --no-ff 착지를 밀고 그 sha 를 찍는다
+  ( cd "$U88C" && git checkout -q -b "$1" "$T88C" && git merge -q --no-ff -m "land $1" "$2" \
+      && git push -q origin "$1" && git rev-parse HEAD ) 2>/dev/null
+}
+( cd "$U88C" && git fetch -q "$G88C" seg-88c bad-88c slip-88c ) >/dev/null 2>&1
+LM88C=$(la88c land-88c "$MM88C")
+LB88C=$(la88c landbad-88c "$BAD88C")
+LS88C=$(la88c landslip-88c "$SLIP88C")
+( cd "$G88C" && git fetch -q origin ) >/dev/null 2>&1
+check "88c: 착지 커밋의 둘째 부모는 메타 해소 HEAD 다" \
+  "$(cd "$G88C" && git rev-parse "$LM88C^1" "$LM88C^2" | tr '\n' ' ')" "$T88C $MM88C "
+MN88C="$D88C/manifest-land.md"
+sed 's/베이스 브랜치=main/베이스 브랜치=land-88c/' "$M88C" > "$MN88C"
+MA88C="$D88C/manifest-apply.md"
+sed 's/절단점=머지/절단점=배포/' "$MN88C" | awk '
+  { print }
+  /^\*\*설계 문서\*\*: / { print "**적용 주체**: 파이프라인"; print "**적용 지점**: `true`"; print "**적용 프로브**: `exit 0`" }
+' > "$MA88C"
+ap88c() {  # ap88c <매니페스트> <원장> — 적용 전제의 rc 와 세 값, 그리고 거부 문면
+  local m=$1 l=$2
+  lsr_in Linux "$l" - lsr_rp_in "$m" ap88c_in 2>/dev/null
+}
+ap88c_in() {
+  local rc=0
+  gate_apply_preconditions act t S 2>"$D88C/ap.err" >/dev/null || rc=$?
+  [ "$rc" != "$GATE_EXIT_RULE" ] || rc=규칙
+  printf '%s|%s|%s|%s|%s' "$rc" "${GATE_APPLY_NOT_OWED:-}" "${GATE_APPLY_MERGE:-}" "${GATE_APPLY_SUBJECT:-}" \
+    "$(tr '\n' ' ' < "$D88C/ap.err")"
+}
+lap88c() {  # lap88c <이름> <머지 커밋> [추가 필드] — L88C 뒤에 머지됨 행 하나를 붙인 원장 사본
+  local l
+  l=$(lsr_ledger "w88c-$1"); cp "$L88C" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf -- '- `segment` | 교대=1 | id=S | 상태=머지됨 | 워크트리=%s | 머지 커밋=%s%s | prev=x\n' "$W88C" "$2" "${3:+ | $3}" >> "$l"
+  printf '%s' "$l"
+}
+ap88c_out=$(ap88c "$MN88C" "$(lap88c ap-none "$LM88C")")
+check "88c: 빚지지 않은 메타 해소 착지의 적용 전제는 rc 0 이고 빚지지 않음을 세운다" \
+  "$(printf '%s' "$ap88c_out" | cut -d'|' -f1-2)" "0|1"
+ap88c_out=$(ap88c "$MA88C" "$(lap88c ap-owed "$LM88C" '적용=대기')")
+check "88c: 적용 명령이 있는 메타 해소 착지는 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다" \
+  "$(printf '%s' "$ap88c_out" | cut -d'|' -f1-4)" "0||$LM88C|$R88C"
+for bad88c in "$LB88C" "$LS88C"; do
+  ap88c_out=$(ap88c "$MA88C" "$(lap88c ap-bad "$bad88c" '적용=대기')")
+  case "$ap88c_out" in
+    "규칙|"*"적용 행위 전제 4 불충족"*"릴리스 메타 재번호 머지로도 증명되지 않습니다 (H's tree is not the expected release tree)"*)
+      ok "88c: 증명되지 않는 둘째 부모의 착지는 전제 4 로 거부되고 증명 실패 사유를 싣는다 ($(cd "$G88C" && git rev-parse --short "$bad88c^2"))" ;;
+    *) bad "88c: 증명되지 않는 둘째 부모의 착지" "$ap88c_out" ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
