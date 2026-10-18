@@ -4922,6 +4922,31 @@ fi
 ci=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .chain_intact)
 check "스텁 산문이 앞에 있어도 체인은 무결이다" "$ci" "true"
 
+# A stub may carry one more prose line after the H1 and the identifying line —
+# the rationale a run opened by the seat records. The chain hashes rows, never
+# lines, so that line and the rows written after it leave the chain intact.
+cp "$FX_LEDGER" "$WORK/ledger-stub.bak"
+awk '/^- `/ && !d { print "좌석이 연 후속 런 — 이전 런이 마감으로 끝나 이어 간다"; d = 1 } { print }' \
+  "$WORK/ledger-stub.bak" > "$FX_LEDGER"
+stub_rows0=$(grep -c '^- `' "$FX_LEDGER" || true)
+gate act --manifest "$FX_MANIFEST" --kind x --target nope --cutpoint 커밋 \
+     --worktree "$WT" --snapshot-digest "$(HH)" --rationale "근거 줄 뒤의 행" -- touch "$WORK/nd-stub1"
+gate act --manifest "$FX_MANIFEST" --kind x --target nope --cutpoint 커밋 \
+     --worktree "$WT" --snapshot-digest "$(HH)" --rationale "근거 줄 뒤의 행" -- touch "$WORK/nd-stub2"
+check "근거 줄을 더한 스텁 뒤에도 행이 쓰인다 (아래가 공허하지 않다)" \
+  "$( [ "$(grep -c '^- `' "$FX_LEDGER" || true)" -gt "$stub_rows0" ] && printf 늘었다 || printf 그대로 )/$(grep -c '^좌석이 연 후속 런 — ' "$FX_LEDGER" || true)" \
+  "늘었다/1"
+ci=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .chain_intact)
+check "리포트 스텁에 근거 한 줄을 더해도 체인은 끊기지 않는다" "$ci" "true"
+out=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" --render 2>/dev/null)
+case "$out" in
+  *"해시 체인 : 끊김"*) bad "근거 줄 스텁의 체인" "$(printf '%s' "$out" | grep '해시 체인' || true)" ;;
+  *"해시 체인"*) ok "근거 줄 스텁의 렌더가 끊김을 내지 않는다" ;;
+  *) bad "근거 줄 스텁의 렌더" "해시 체인 줄이 없다" ;;
+esac
+cp "$WORK/ledger-stub.bak" "$FX_LEDGER"
+rm -f "$WORK/nd-stub1" "$WORK/nd-stub2"
+
 # And when it IS broken the render says WHERE. Every caller used to throw the
 # row number into `2>&1`, so the morning was told `끊김` and given nowhere to
 # look.
@@ -7532,14 +7557,12 @@ if [ "$rc" = "7" ]; then
         --surface 읽기 --snapshot-digest "$(HH7)" --rationale x -- ls 2>&1) || true
   n_twice=$(grep -c '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true)
   check "같은 조건을 반복 기록하지 않는다" "$n_twice" "$n_after"
-  # 표면 이동은 런을 끝내는 행이라 종료 토큰을 싣고 재킥 후보 표지를 남긴다.
+  # 표면 이동은 런을 끝내는 행이라 종료 토큰을 싣는다.
   # 무엇이 움직였는지는 기준선 옆의 파일 목록이 답한다 — 해시 하나는 런 설정과
   # 대상 설정 중 어느 쪽이 움직였는지 말하지 못한다.
   check "표면 이동 행이 재킥 원인=표면이동 을 싣는다" \
     "$( { grep '^- `blocked` ' "$FX_LEDGER" || true; } | { grep -F '사유=강제 표면 이동' || true; } \
         | { grep -cF '재킥 원인=표면이동' || true; } )" "1"
-  check "표면 이동이 재킥 후보 표지를 표면이동 으로 남긴다" \
-    "$(sed -n 's/^토큰=//p' "$STATE7/cc-cmds/run/R1/rekick-candidate" 2>/dev/null)" "표면이동"
   check "기준선 옆 파일 목록이 움직인 런 설정 파일을 런설정 으로 든다" \
     "$( { grep -F "$(printf '런설정\t')" "$STATE7/cc-cmds/run/R1/surface-digest.files" 2>/dev/null || true; } \
         | { grep -cF '/settings/generic.json' || true; } )" "1"
@@ -8849,7 +8872,7 @@ check "마감 뒤에도 장부 행위는 통과한다" "$rc" "0"
 check "마감 뒤 첫 act 가 재킥 원인=마감 종료 행을 하나 쓴다" "$(k14_end)" "1"
 check "그 종료가 종단 표시를 남긴다" "$( [ -s "$RD_K/done" ] && printf 있음 || printf 없음 )" "있음"
 cp "$WORK/ledger-14k.bak" "$FX_LEDGER"
-rm -f "$RD_K/done" "$RD_K/rekick-candidate"
+rm -f "$RD_K/done"
 past_dl '2030-01-01T00:00:00Z'
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
@@ -13378,28 +13401,6 @@ cp "$GBAK" "$FX_GRANT"
 gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
 check "온전한 인가 기록에서는 통과한다" "$rc" "0"
 
-# The successor deriver writes a successor's manifest and grant record, so a
-# stage is refused it on every spelling that runs it — and not on the suite that
-# tests it, whose name carries the deriver's as a suffix, nor on the kickoff's
-# restart helper, which is a different program under a different name.
-for spell in "successor.sh derive" "/x/orchestrator/successor.sh id" "bash /x/successor.sh verdict" \
-             "env A=1 /x/successor.sh derive" "lockf -k /tmp/l bash ./successor.sh derive" \
-             "sh -c ./successor.sh"; do
-  # shellcheck disable=SC2086
-  gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- $spell
-  check "후속 런 파생기는 등급표에서 거부된다: $spell" "$rc" "$GATE_EXIT_RULE"
-  case "$msg" in
-    *"successor deriver (successor.sh) runs only outside every run"*) ok "거부가 파생기를 지목한다: $spell" ;;
-    *) bad "파생기 거부 문면: $spell" "$msg" ;;
-  esac
-done
-gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash scripts/test-successor.sh
-check "파생기의 시험 스크립트는 거부되지 않는다" "$rc" "0"
-gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- grep -n derive successor.sh
-check "파생기 파일을 읽는 것은 거부되지 않는다" "$rc" "0"
-gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash /x/orchestrator/rekick.sh detect
-check "재킥오프 도우미는 파생기 거부에 걸리지 않는다" "$rc" "0"
-
 # The pacing guard answers on the grade verb too, so asking what to declare for
 # a write into the dispatcher's directory does not come back with a grade a
 # declaration could meet — and a read naming the same file still grades.
@@ -16564,10 +16565,10 @@ case "$msg" in
   *) bad "구속 다이제스트 문면" "$msg" ;;
 esac
 
-# THE CONSENT ROW AND THE CHAIN ROW ARE IN THE FROZEN SET, AND A MANIFEST THAT
-# CARRIES NEITHER HASHES TO THE SAME BYTES IT ALWAYS DID. The second half is
-# what keeps every run frozen before these rows existed admissible: a kind is
-# serialized only when its row is present, so absence adds no line.
+# THE CONSENT ROW IS IN THE FROZEN SET, AND A MANIFEST THAT DOES NOT CARRY IT
+# HASHES TO THE SAME BYTES IT ALWAYS DID. The second half is what keeps every
+# run frozen before the row existed admissible: the kind is serialized only when
+# its row is present, so absence adds no line.
 bsq_bytes() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; binding_set_bytes' \
     _ "$GATE" "$1" 2>/dev/null
@@ -16580,19 +16581,24 @@ bsq_reseal() {
   sed "s/^\*\*구속 다이제스트\*\*: .*\$/**구속 다이제스트**: $d/" "$1" > "$1.r" && mv "$1.r" "$1"
 }
 BSQ_RK='- `재킥오프` | 연쇄 상한=3 | 길이=PT8H0M0S | 사유=밤새 이어서 돈다'
-BSQ_CH='- `연쇄` | 뿌리 런=20260921-aaaaaaaa | 선행 런=20260921-aaaaaaaa | 순번=1 | 선행 구속 다이제스트=0000000000000000000000000000000000000000000000000000000000000000 | 재킥오프 시각=2026-09-21T14:13:20Z | 원인=마감'
 case "$(bsq_bytes "$FX_MANIFEST")" in
-  *"rekick	"*|*"chain	"*) bad "두 행이 없는 매니페스트의 구속 집합" "rekick·chain 줄이 생겼다" ;;
-  "") bad "두 행이 없는 매니페스트의 구속 집합" "구속 집합을 계산하지 못했다" ;;
-  *) ok "두 행이 없는 매니페스트의 구속 집합에는 rekick·chain 줄이 없다 (다이제스트 불변)" ;;
+  *"rekick	"*) bad "재킥오프 행이 없는 매니페스트의 구속 집합" "rekick 줄이 생겼다" ;;
+  "") bad "재킥오프 행이 없는 매니페스트의 구속 집합" "구속 집합을 계산하지 못했다" ;;
+  *) ok "재킥오프 행이 없는 매니페스트의 구속 집합에는 rekick 줄이 없다 (다이제스트 불변)" ;;
 esac
 BRK="$WORK/rekick-binding.md"
 cp "$FX_MANIFEST" "$BRK"
-printf '%s\n%s\n' "$BSQ_RK" "$BSQ_CH" >> "$BRK"
+printf '%s\n' "$BSQ_RK" >> "$BRK"
 case "$(bsq_bytes "$BRK")" in
-  *"rekick	$BSQ_RK"*"chain	$BSQ_CH"*|*"chain	$BSQ_CH"*"rekick	$BSQ_RK"*)
-    ok "재킥오프 행과 연쇄 행이 구속 집합에 실린다" ;;
-  *) bad "재킥오프·연쇄 행의 구속 집합" "$(bsq_bytes "$BRK" | grep -E '^(rekick|chain)')" ;;
+  *"rekick	$BSQ_RK"*) ok "재킥오프 행이 구속 집합에 실린다" ;;
+  *) bad "재킥오프 행의 구속 집합" "$(bsq_bytes "$BRK" | grep -E '^rekick')" ;;
+esac
+# A `연쇄` line appended beside it is no row kind the frozen set knows.
+printf -- '- `연쇄` | 뿌리 런=20260921-aaaaaaaa | 원인=마감\n' >> "$BRK"
+case "$(bsq_bytes "$BRK")" in
+  *"chain	"*) bad "덧붙인 연쇄 줄의 구속 집합" "chain 줄이 생겼다" ;;
+  *"rekick	$BSQ_RK"*) ok "덧붙인 연쇄 줄은 구속 집합에 chain 멤버를 만들지 않는다" ;;
+  *) bad "덧붙인 연쇄 줄의 구속 집합" "재킥오프 줄이 사라졌다" ;;
 esac
 cp "$FX_MANIFEST" "$BRK"
 printf '%s\n' "$BSQ_RK" >> "$BRK"
@@ -16609,7 +16615,7 @@ sed 's/| 사유=밤새 이어서 돈다$/| 사유=런이 고쳐 썼다/' "$BRK" 
 gate snapshot --manifest "$BRK"
 case "$rc/$msg" in
   0/*) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
-  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"재킥오프·연쇄"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
   *) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
 # The form of each row is refused before anything reads it, fail-closed.
@@ -16630,23 +16636,6 @@ bsq_form "길이가 빈 기간(PT)인 재킥오프 행은 거부된다" \
   '- `재킥오프` | 연쇄 상한=3 | 길이=PT | 사유=x' "「재킥오프」 행의 길이가 ISO 8601 기간으로 읽히지 않습니다"
 bsq_form "재킥오프 행 둘은 거부된다" "$BSQ_RK
 ${BSQ_RK%=3*}=2 | 길이=PT8H0M0S | 사유=둘째" "「재킥오프」 행이 2개입니다"
-bsq_form "원인이 닫힌 토큰 밖인 연쇄 행은 거부된다" \
-  "${BSQ_CH%원인=마감}원인=피곤" "「연쇄」 행의 원인이 닫힌 토큰 열세 개 중 하나가 아닙니다"
-# `P0잔존` is one of the thirteen: the row passes the token check and is refused
-# only further on, for the predecessor this fixture does not have.
-bsq_form "원인이 P0잔존 인 연쇄 행은 토큰 검사를 지나 lineage-invalid 로 거부된다" "$BSQ_RK
-${BSQ_CH%원인=마감}원인=P0잔존" "lineage-invalid — (나) 앞 런 매니페스트가 없습니다"
-bsq_form "재킥오프 시각이 Z 표기가 아닌 연쇄 행은 거부된다" \
-  "${BSQ_CH/2026-09-21T14:13:20Z/2026-09-21T23:13:20+09:00}" "「연쇄」 행의 형식이 어긋났습니다"
-bsq_form "재인가 승인만 있고 답변 다이제스트가 없는 연쇄 행은 거부된다" \
-  "$BSQ_CH | 재인가 승인=20260921-aaaaaaaa#3" "「연쇄」 행의 형식이 어긋났습니다"
-# A well-formed chain row is a claim about another run, and the gate entry
-# checks it against that run's files: with no predecessor manifest beside this
-# one, the entry is refused in the lineage wording, before anything acts.
-bsq_form "앞 런 매니페스트가 없는 연쇄 행은 lineage-invalid 로 거부된다" "$BSQ_RK
-$BSQ_CH" "lineage-invalid — (나) 앞 런 매니페스트가 없습니다"
-bsq_form "재킥오프 행 없이 연쇄 행만 있는 매니페스트는 lineage-invalid 로 거부된다" \
-  "$BSQ_CH" "lineage-invalid — (가) 재킥오프 행 0개 · 연쇄 행 1개"
 
 # THE FLOOR HONOURS ONLY `## 인가`. "Exactly one authorization section" is the
 # uniqueness guarantee arm (a) leans on, and a whole-file scan does not inherit
@@ -17177,9 +17166,9 @@ rm -f "$WORK/R9.notes.md"
 
 # THE PACING DIRECTORY. The hook closes it to the edit tools and leaves Bash to
 # the gate, and the gate had no arm there: a stage could append a backlog record
-# the dispatcher launches an unattended run from, or create the claim a
-# successor's admission reads as proof the sweep derived it. Each write is made
-# where it would succeed — the file exists, the claim directory exists — so a
+# the dispatcher launches an unattended run from, or write any other file under
+# the dispatcher's directory. Each write is made where it would succeed — the
+# file exists, the subdirectory exists — so a
 # refusal is the guard's and not a missing directory's, and each is asserted on
 # the code, on the guard's own text, and on the target's bytes.
 mkdir -p "$PACE_N/rekick/R1"
@@ -17215,7 +17204,7 @@ pace_try "백로그, 자동 해소 켬" "$PACE_N/backlog.jsonl" \
   gateN_ar exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
         --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
         -- cp "$WORK/r3x" "$PACE_N/backlog.jsonl"
-pace_try "클레임 successor" "$PACE_N/rekick/R1/successor" \
+pace_try "하위 디렉터리 파일" "$PACE_N/rekick/R1/successor" \
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
         --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
         -- cp "$WORK/r3x" "$PACE_N/rekick/R1/successor"
@@ -30237,8 +30226,6 @@ check "5: exec 뒤에도 종료 행은 하나다" "$(sb5_end)" "1"
 sag end-overdue --manifest "$SA_MANIFEST"
 sag end-overdue --manifest "$SA_MANIFEST"
 check "5: end-overdue 를 두 번 불러도 종료 행은 하나다" "$(sb5_end)" "1"
-check "5: 종료 행이 재킥 후보 표지를 남긴다" \
-  "$( sed -n 's/^토큰=//p' "$SA_RUN/rekick-candidate" 2>/dev/null )" "마감"
 # 마감 갈래가 끝낸 런은 정말 끝난 런이다 — 종료 행과 함께 done 이 남고, 그래서
 # 그 뒤 교대의 `사유=종단` 인계는 종료 제안 없이도 받아들여진다. 종단 인계는
 # 끝난 런에서만 받으므로, 마감이 done 을 남기지 않으면 이 인계가 3 으로 선다.
@@ -30367,8 +30354,6 @@ sc_overdue
 check "5c: 살아 있는 구동기가 없으면 해당없음 종료 행을 한 번 쓴다" "$rc/$(sc_ends)/$(sc_ends 해당없음)" "0/1/1"
 sc_overdue
 check "5c: 다시 불러도 행은 그대로다" "$(sc_ends)" "1"
-check "5c: 그 종료가 재킥 후보 표지를 남긴다" \
-  "$(sed -n 's/^토큰=//p' "$SA_RUN/rekick-candidate" 2>/dev/null)" "해당없음"
 
 sc_new '5c 라우터'
 printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/shift.live"
@@ -34441,8 +34426,10 @@ esac
 # 생기면 여기서 잡힌다.
 check "59: 자유 문면 예산으로 잘리는 근거 자리가 셋이다" \
   "$(grep -c 'gate_row_safe "\$[a-z]*" "\$_[a-z]*_free"' "$GATE" || true)" "3"
+# 줄이 아니라 변수 이름을 센다: 경계 종단은 `P0잔존` 지문을 실을 수 없을 때 같은
+# 변수에 예산을 다시 잰다.
 check "59: 그 셋의 예산이 전부 gate_free_budget 에서 온다" \
-  "$(grep -c '_free=\$(gate_free_budget ' "$GATE" || true)" "3"
+  "$(grep -o '_[a-z]*_free=\$(gate_free_budget ' "$GATE" | sort -u | wc -l | tr -d ' ')" "3"
 
 # (6) 라우팅 좌석의 shared/ 울타리 — 네 철자, 그리고 두 대조군 ------------------------
 #

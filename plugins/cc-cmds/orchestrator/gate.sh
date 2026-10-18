@@ -16078,9 +16078,7 @@ gate_surface_check() {
       "재개 명령=새 런으로 다시 킥오프 — 이 런의 기준선은 다시 잡히지 않습니다" \
       "재킥 원인=표면이동"
     # This row ends the run without `done`, so it is the row that settles the
-    # end token, and the candidate marker is written here or nowhere: the router
-    # stops after exit 7 and reaches no other ending site.
-    gate_mark_rekick_candidate
+    # end token: the router stops after exit 7 and reaches no other ending site.
     # THE RUN ANCHORED AND CANNOT BE UNANCHORED. This is one of the two places
     # the run's own end is decided rather than observed, and the notice belongs
     # here because the other channel cannot carry it: the watcher's terminal arm
@@ -16685,7 +16683,6 @@ gate_main() {
   fi
 
   rundir_init
-  rekick_memo_settle
 
   # THE DETACHED METRICS ROUND LEAVES HERE, before anything below writes. What
   # follows is the per-entry bookkeeping of a caller — the ledger handle, the
@@ -17059,16 +17056,9 @@ GATE_DRIFT_DIRS
     grade)
       [ $# -ge 1 ] || { printf 'gate: grade needs an argv after --\n' >&2; exit 2; }
       local g
-      # The deriver's refusal answers here as well, so that asking what to
-      # declare for it does not come back with a grade a declaration could meet.
-      if gate_rekick_argv_refuse "$@"; then
-        printf '축2=거부\n'
-        warn "axis 2 refusal — the successor deriver (successor.sh) runs only outside every run, never from a stage: $1"
-        exit "$GATE_EXIT_RULE"
-      fi
       g=$(surface_of_argv0 "$@")
-      # The pacing guard answers here for the same reason: a write into the
-      # dispatcher's directory has no grade a declaration could meet. A read
+      # The pacing guard answers here, because a write into the dispatcher's
+      # directory has no grade a declaration could meet. A read
       # grade passes it, so naming the directory while reading still grades.
       if ! gate_pace_write_guard "$g" "$@"; then
         printf '축2=거부\n'
@@ -17178,8 +17168,7 @@ GATE_DRIFT_DIRS
       gate_answers "$approval"
       ;;
     end-overdue)
-      # Writing, and the writer is fleet's sweep rather than a stage or the
-      # router: a run no verb reaches cannot meet the acting path's deadline
+      # Writing: a run no verb reaches cannot meet the acting path's deadline
       # branch, so this is the one place its end row can come from.
       gate_verb_end_overdue
       ;;
@@ -21563,8 +21552,8 @@ gate_nocase_glob() {
   #
   # CASE IS NOT IDENTITY ON THIS PLATFORM, and the identity walk
   # (`gate_path_is_at_or_under`) answers it only for a path whose ancestor
-  # exists. A pacing root before its first lease, a claim directory before the
-  # sweep and a record name before its file is written have no inode, and on
+  # exists. A pacing root before its first lease and a record name before its
+  # file is written have no inode, and on
   # the default case-insensitive volume `…/PACE/backlog.jsonl` and
   # `R8.PLAN.md` create or overwrite the real files. Text compared case-blind
   # closes that without touching the filesystem; on a case-sensitive volume it
@@ -23088,7 +23077,7 @@ gate_progfile_refuse() {
 }
 
 gate_sibling_record_refuse() {
-  warn "this is a write to another run's kickoff-frozen record — only kickoff and the rekick deriver write it: $1"
+  warn "this is a write to another run's kickoff-frozen record — only kickoff writes it: $1"
   warn "a rekick copies the predecessor's manifest and grant record byte for byte, so a run that edits a sibling's record writes the authorization of the run that comes after it"
 }
 
@@ -23096,7 +23085,7 @@ gate_sibling_record_write_guard() {
   # gate_sibling_record_write_guard <매니페스트 디렉터리> <그 물리 철자> <argv...>
   #
   # THE OWN-PATH ARMS ABOVE ARE NOT ENOUGH ONCE A RUN CAN BE DERIVED FROM
-  # ANOTHER. The deriver builds a successor by copying the predecessor's
+  # ANOTHER. A re-kickoff builds a new run by copying the previous run's
   # manifest and grant record byte for byte, so a stage that edits a SIBLING
   # run's `*.plan.md`, `*.interview.md`, `*.kickoff.md` or grant record has
   # written the authorization of a run it is not part of, and nothing above
@@ -23320,49 +23309,8 @@ gate_sibling_record_write_guard() {
   return 0
 }
 
-gate_rekick_argv_refuse() {
-  # gate_rekick_argv_refuse <argv...> — 0 when the act runs the successor
-  # deriver `successor.sh`. The kickoff's restart helper under the other name
-  # is a different program and is not refused here.
-  #
-  # THE DERIVER IS NOT A STAGE'S TOOL. It writes the successor's manifest and
-  # grant record, which are exactly the files the guards above keep a stage
-  # away from, so letting a stage call it would hand back through a script what
-  # those guards took away from a direct write. It refuses itself when it finds
-  # `CC_PIPELINE_RUN_ID`; this is the second wall, on the gate, for a caller who
-  # clears the variable first.
-  #
-  # Matched by basename at argv0, past the transparent wrappers by element, and
-  # inside a shell's `-c` body by containment. The containment arm refuses a
-  # `bash -c` that merely mentions the name; a read of the file goes through
-  # `cat` or `grep`, which this does not touch.
-  local a w shell=0
-  w=${1##*/}
-  [ "$w" = successor.sh ] && return 0
-  case "$w" in
-    bash|sh|zsh|dash|ksh) shell=1 ;;
-    env|command|nice|nohup|timeout|stdbuf|time|lockf|xargs|sudo|caffeinate)
-      for a in "$@"; do
-        [ "${a##*/}" = successor.sh ] && return 0
-        case "${a##*/}" in bash|sh|zsh|dash|ksh) shell=1 ;; esac
-      done ;;
-    *) return 1 ;;
-  esac
-  [ "$shell" = 1 ] || return 1
-  # A NAME BOUNDARY ON BOTH SIDES, because `test-successor.sh` is this tree's
-  # own suite for the deriver and runs under `bash` on every check.
-  for a in "$@"; do
-    case "$a" in
-      successor.sh|successor.sh[!A-Za-z0-9_.-]*) return 0 ;;
-      *[/\ \	\"\'\;\&\|\(\`]successor.sh) return 0 ;;
-      *[/\ \	\"\'\;\&\|\(\`]successor.sh[!A-Za-z0-9_.-]*) return 0 ;;
-    esac
-  done
-  return 1
-}
-
 gate_pace_write_refuse() {
-  warn "rule refused: the pacing directory belongs to the lane dispatcher, the sweep and the rekick deriver — a stage writing there forges the launch of an unattended run (backlog.jsonl) or the claim a successor's admission reads as evidence (rekick/), so no declaration and no auto-resolve admits it (pace root: $2): $1"
+  warn "rule refused: the pacing directory belongs to the lane dispatcher — a stage writing there forges the launch of an unattended run (backlog.jsonl), so no declaration and no auto-resolve admits it (pace root: $2): $1"
 }
 
 gate_pace_write_guard() {
@@ -23372,10 +23320,8 @@ gate_pace_write_guard() {
   # leaves a write through Bash to the gate, and the gate had no arm looking at
   # that directory: measured, `cp x <pace>/backlog.jsonl` declared `트리밖쓰기 /
   # 런로컬` returned 0 and changed the file, with auto-resolve on or off and with
-  # `--reach` left out, and `cp x <pace>/rekick/<런>/successor` created the
-  # claim's file the same way. A backlog record is what the dispatcher launches
-  # an unattended run from, and a claim is what a successor's admission reads as
-  # proof the sweep derived it — both are writes no stage has a reason to make.
+  # `--reach` left out. A backlog record is what the dispatcher launches an
+  # unattended run from — a write no stage has a reason to make.
   #
   # THE ROOT IS THE ONE THE GATE PACES BY, IN EVERY SPELLING IT CAN TAKE. The
   # gate reads its verdict from `gate_pace_root` and holds leases under
@@ -23392,7 +23338,7 @@ gate_pace_write_guard() {
   # in the manifest guard's second arm, and is tested by containment of a root
   # spelling. Every other element (and an option's `=` value) is resolved
   # against the act's directory — logically, then through its deepest existing
-  # ancestor, because `rekick/<런>/successor` does not exist before the claim —
+  # ancestor, because a destination does not exist before it is written —
   # and refused when it is the root or lies under it. A symlinked final
   # component and a `..` after a symlinked directory are followed the way the
   # kernel follows them (`gate_pace_path_hit`), and `ln` is refused when its
@@ -23403,8 +23349,8 @@ gate_pace_write_guard() {
   # `cd` inside a wrapper, a destination written inside a script or an
   # interpreter's program text, and a link swapped between this check and the
   # act running, are not seen here; the
-  # dispatcher and the deriver run outside every gate, so nothing legitimate is
-  # refused by widening later.
+  # dispatcher runs outside every gate, so nothing legitimate is refused by
+  # widening later.
   #
   # A PATH CARRIED INSIDE A LARGER ELEMENT IS A DESTINATION TOO, and the two arms
   # above did not see it. `sed -n 'w <pace>/backlog.jsonl' /dev/null` grades as
@@ -27613,9 +27559,9 @@ gate_end_token() {
 
 gate_end_token_row() {
   # gate_end_token_row — print the whole row `gate_end_token` reads its token
-  # from, or print nothing and return 1. One selector for both, because the
-  # successor verdict also reads `종료 부류` and `재킥 지문` off that same row,
-  # and a second copy of the selection would be free to pick a different one.
+  # from, or print nothing and return 1. One selector for every reader, because
+  # `종료 부류` and `재킥 지문` are read off that same row, and a second copy of
+  # the selection would be free to pick a different one.
   #
   # A run-scope `blocked` row whose cause is `대상미선언` or `슬라이싱` is NOT an
   # ending: those two park a slice and the run goes on, so they settle no end
@@ -27639,37 +27585,6 @@ gate_end_token_row() {
     END { exit found ? 0 : 1 }' "$LEDGER" 2>/dev/null
 }
 
-gate_mark_rekick_candidate() {
-  # gate_mark_rekick_candidate — publish `$RUN_DIR/rekick-candidate` once.
-  #
-  # THE MARKER IS A CACHE AND THE LEDGER ROW IS THE AUTHORITY, exactly as for
-  # `done`: whoever looks for runs that ended reads this file to find the
-  # manifest and the ledger, then judges from the rows. It is written by every
-  # site whose row FIRST settles the end token — the surface-move `blocked` row
-  # included, because that run never writes `done` and would otherwise reach no
-  # one. It does not depend on any consent row in the manifest; filtering on
-  # that is the reader's job.
-  #
-  # FIRST WRITE WINS, by hard link, for the reason `gate_end_run` gives. The
-  # token written is the end token as the ledger reads it now, so a second site
-  # that lost the race to the first row could only have written the same value.
-  local tok tmp
-  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
-  [ -e "$RUN_DIR/rekick-candidate" ] && return 0
-  tok=$(gate_end_token) || return 0
-  tmp="$RUN_DIR/rekick-candidate.$$"
-  {
-    printf '매니페스트=%s\n' "${MANIFEST:-}"
-    printf '원장=%s\n' "${LEDGER:-}"
-    printf '런 id=%s\n' "${RUN_ID:-}"
-    printf '토큰=%s\n' "$tok"
-    printf '기록 시각=%s\n' "$(now_iso)"
-  } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 0; }
-  ln "$tmp" "$RUN_DIR/rekick-candidate" 2>/dev/null || true
-  rm -f "$tmp" 2>/dev/null || true
-  return 0
-}
-
 gate_end_row() {
   # gate_end_row <기준> <근거> <재킥 원인> [<종료 부류>] [<재킥 지문>]
   #
@@ -27678,7 +27593,7 @@ gate_end_row() {
   # still `해당없음`; `재킥 지문` goes with `결함` and `P0잔존` only. The row is appended
   # whether or not the run already has an end token — a later row is a true
   # account of what else happened, and the earliest-row rule keeps it from
-  # changing the token — and the candidate marker follows.
+  # changing the token.
   #
   # EVERY SITE THAT WRITES `done` WRITES AN ENDING ROW. The three `done` arms of
   # a termination proposal reach `done` without `gate_end_run`, so they call
@@ -27724,7 +27639,6 @@ gate_end_row() {
     "되돌리는 법=새 런으로 다시 킥오프" "재킥 원인=$cause" \
     ${ekind:+"종료 부류=$ekind"} ${fp:+"재킥 지문=$fp"} \
     "근거=$(gate_row_safe "$why" "$_why_free")"
-  gate_mark_rekick_candidate
 }
 
 gate_end_cause_of() {
@@ -27895,12 +27809,12 @@ gate_verb_end_overdue() {
   # token, once.
   #
   # A QUIET RUN IS ONE NO VERB REACHES, so the deadline branch inside the
-  # acting path never fires for it; fleet's sweep calls this instead. The token
-  # is chosen by whether the driver is still alive, not by the deadline alone:
-  # an alive run past its deadline is the quiet run this verb exists for and
-  # takes `마감`, while a run that already stopped without a classified end row
-  # takes `해당없음` and goes to a person. Writing `마감` for both would send
-  # every unclassified stop down the automatic branch.
+  # acting path never fires for it, and this verb writes its end row instead.
+  # The token is chosen by whether the driver is still alive, not by the
+  # deadline alone: an alive run past its deadline is the quiet run this verb
+  # exists for and takes `마감`, while a run that already stopped without a
+  # classified end row takes `해당없음` and goes to a person. Writing `마감` for
+  # both would read every unclassified stop as a deadline.
   #
   # UNOBSERVABLE COUNTS AS STOPPED. Every doubt lands on the human branch.
   #
@@ -30824,14 +30738,6 @@ gate_verb_act() {
   if [ "$graded" = "$GATE_FORM_UNKNOWN" ]; then
     warn "axis 2 \`형태 미상\` — this is a tool in the table, but what it does cannot be read in this shape: $1 (it cannot be waved through by declaration. Rewrite it so the subcommand and the options are visible)"
     exit "$GATE_EXIT_VOCAB"
-  fi
-  # THE SUCCESSOR DERIVER IS REFUSED AS A ROW OF THE TABLE, NOT AS A GRADE. Left
-  # to the table it is `등급 미상`, and in auto-resolve mode a declared unknown
-  # command still runs capped at read — which is the deriver writing a
-  # successor's manifest from inside a stage. No declaration rescues it.
-  if [ "$argv_graded" = "1" ] && gate_rekick_argv_refuse "$@"; then
-    warn "axis 2 refusal — the successor deriver (successor.sh) runs only outside every run, never from a stage: $1"
-    exit "$GATE_EXIT_RULE"
   fi
   # --- 부류·표지·하한 -----------------------------------------------------
   # Three values the grade cannot carry, computed once here so the comparator,
