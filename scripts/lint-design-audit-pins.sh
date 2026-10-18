@@ -22,6 +22,12 @@
 #         for the first duty, one each for the second and third). They are prose the
 #         contract delegates to the caller, and nothing else checks that a duty
 #         stated in one arm was stated in the other.
+#   (v)   the separate skeleton-grade fence of the unattended arm — its two
+#         fence lines and five keys. It sits beside the disclosure v1 block in
+#         the same report rather than inside it, so (iv) does not see it, and
+#         it lives in the unattended arm's SKILL.md alone because no other arm
+#         writes it. A fence whose keys drift away from the code that reads it
+#         keeps the audit green while the reader finds nothing.
 #
 # It also carries a NEGATIVE fence: the loop machinery the overhaul deleted must
 # not reappear under this skill. Each forbidden token is asserted to occur on
@@ -211,6 +217,27 @@ for lit in "${DISCLOSURE_PINS[@]}"; do
   assert_in_file "$lit" "$DISCLOSURE" "design-audit/references/04-disclosure-block.md"
 done
 
+# ---------- (v) skeleton-grade fence — the unattended arm only ----------------
+
+SKELETAL_PINS=(
+  '<!-- cc-design-audit-skeletal v1 begin -->'
+  '<!-- /cc-design-audit-skeletal v1 end -->'
+  '**골격급 수**'
+  '**합성 요구 후보 수**'
+  '**합성 요구 골격급 수**'
+  '**회차**'
+  '**문서 sha256**'
+)
+
+skeletal_skill="$skills_root/design-audit-unattended/SKILL.md"
+if [[ -f "$skeletal_skill" ]]; then
+  for lit in "${SKELETAL_PINS[@]}"; do
+    assert_in_file "$lit" "$skeletal_skill" "design-audit-unattended/SKILL.md (skeletal fence)"
+  done
+else
+  echo "SKIP: design-audit-unattended/SKILL.md — arm absent, skeletal fence not checked" >&2
+fi
+
 # ---------- negative fence — loop machinery must not reappear ----------------
 
 FORBIDDEN=(
@@ -292,7 +319,7 @@ if [[ -d "$skills_root/design-audit/references" ]]; then
 fi
 
 if (( fail == 0 )); then
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#FORBIDDEN[@]} denylist + ${#CUSTODY_PINS[@]} custody over ${#ARM_SKILLS[@]} arm(s), ${#PROMPT_PINS[@]} reader-prompt + ${#DISCLOSURE_PINS[@]} disclosure over the shared reference tree — all intact"
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#FORBIDDEN[@]} denylist + ${#CUSTODY_PINS[@]} custody over ${#ARM_SKILLS[@]} arm(s), ${#PROMPT_PINS[@]} reader-prompt + ${#DISCLOSURE_PINS[@]} disclosure over the shared reference tree, ${#SKELETAL_PINS[@]} skeletal in the unattended arm — all intact"
 fi
 
 exit "$fail"

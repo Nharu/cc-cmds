@@ -28,3 +28,15 @@ Step 0 through Step 7, then stop.
 Custody: the two boundary baselines are persisted out-of-tree at
 `${WITNESS_DIR}/baseline.status` and `${WITNESS_DIR}/baseline.worktree`;
 assertion 2a's creation record lives beside them.
+
+Skeleton-grade fence, after the disclosure v1 block:
+
+```text
+<!-- cc-design-audit-skeletal v1 begin -->
+**골격급 수**: <n>
+**합성 요구 후보 수**: <n>
+**합성 요구 골격급 수**: <n>
+**회차**: <최초|재감사>
+**문서 sha256**: <64 hex>
+<!-- /cc-design-audit-skeletal v1 end -->
+```
