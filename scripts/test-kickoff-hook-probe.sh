@@ -247,12 +247,12 @@ at_least "두 레포: push 이상 닿는다" "$(reach "$out")" push
 if grep -qxF "git -C $WORK/seg push origin seg/kickoff-probe-A" "$LOG"; then
   ok "두 레포: 맨 push 는 git -C <워크트리> 철자로 홈 가드에 간다"
 else
-  bad "두 레포: 맨 push 는 git -C <워크트리> 철자로 홈 가드에 간다" "$(grep push "$LOG" | head -n 3)"
+  bad "두 레포: 맨 push 는 git -C <워크트리> 철자로 홈 가드에 간다" "$(grep push "$LOG" | awk 'NR<=3')"
 fi
 if grep -q '^gh -R fx/seg-target pr create ' "$LOG"; then
   ok "두 레포: 맨 PR 생성은 gh -R <slug> 철자로 홈 가드에 간다"
 else
-  bad "두 레포: 맨 PR 생성은 gh -R <slug> 철자로 홈 가드에 간다" "$(grep create "$LOG" | head -n 3)"
+  bad "두 레포: 맨 PR 생성은 gh -R <slug> 철자로 홈 가드에 간다" "$(grep create "$LOG" | awk 'NR<=3')"
 fi
 tgf_install "$WORK/seg" guard_words.sh
 out=$(kh --worktree "$WORK/seg" --root "$WORK/home" --gate-path "$GATE" --cutpoint 머지)

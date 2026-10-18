@@ -1,0 +1,3 @@
+# Fixture baseline: the first entry still hits, the second no longer does.
+sample.sh|clock-margin|soon=$((now + 5))
+sample.sh|clock-margin|check "fresh" "$(w_fresh "$((now + 5))")" "[1,true]"

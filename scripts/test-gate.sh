@@ -1959,6 +1959,24 @@ pre_static() {
       printf '%s\n' "$f"
     done
   }
+  # THE PIPEFAIL SCAN ALONE TAKES THE WHOLE TEST FAMILY BY GLOB, because that is
+  # where this class actually landed: an assertion of the form
+  # `grep … | head -n 1 | grep -q …` in a suite this list never named failed now
+  # and then on CI, while the scan that refuses the shape stayed green for not
+  # reading the file. The helper-order scan keeps the list above — nobody has
+  # measured what widening it would turn up, and a scan widened unmeasured is a
+  # red build waiting for the next unrelated change. The union keeps the first
+  # appearance of each path, so a fixed entry that is also a `test-*.sh` is read
+  # once.
+  scanned_files_0a() {
+    {
+      scanned_files
+      for f in "$repo_root"/scripts/test-*.sh; do
+        [ -f "$f" ] || continue
+        printf '%s\n' "$f"
+      done
+    } | awk '!seen[$0]++'
+  }
 }
 
 # `base` — the definitions the base family's sections used to write in line as
@@ -4507,6 +4525,16 @@ if [ "$nlint" -ge 1 ]; then
 else
   bad "스캔 목록" "scripts/lint-*.sh 가 하나도 잡히지 않았다 — 목록이 비면 아래 루프는 조용히 짧아진다"
 fi
+ntest=0
+for f in "$repo_root"/scripts/test-*.sh; do
+  [ -f "$f" ] || continue
+  ntest=$((ntest + 1))
+done
+if [ "$ntest" -ge 1 ]; then
+  ok "스캔 목록이 시험 계열을 글로브로 흡수한다 (${ntest}개)"
+else
+  bad "스캔 목록" "scripts/test-*.sh 가 하나도 잡히지 않았다 — 목록이 비면 아래 루프는 조용히 짧아진다"
+fi
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   [ -f "$f" ] || continue
@@ -4523,14 +4551,19 @@ while IFS= read -r f; do
   # failure — so on the right of a pipe under `pipefail` it fails the pipeline
   # for finding nothing. Taking the count into a variable is what moves the
   # verdict from an exit status onto a value, which is the shape this tree wants.
-  early=$(sed 's/#.*//' "$f" | grep -nE '\| *(head -|grep -[A-Za-z]*q|grep -c[A-Za-z]* [^|]*>/dev/null)' || true)
+  #
+  # The bar in front of the reader must be a pipe and not the second half of
+  # `||`. A logical or runs its right side only on the left's failure and sends
+  # it no input, so `grep -q a "$f" || grep -qi b "$f"` has no writer to kill —
+  # yet a bare `\|` matched it, and the test family carries exactly that line.
+  early=$(sed 's/#.*//' "$f" | grep -nE '(^|[^|])\| *(head -|grep -[A-Za-z]*q|grep -c[A-Za-z]* [^|]*>/dev/null)' || true)
   if [ -z "$early" ]; then
     ok "파이프 오른쪽에 조기 종료 읽기가 없다: $(basename "$f")"
   else
     bad "pipefail 함정" "$(basename "$f"): $(printf '%s' "$early" | awk 'NR<=3' | tr '\n' ' ')"
   fi
 done <<EOF
-$(scanned_files)
+$(scanned_files_0a)
 EOF
 
 # ---------------------------------------------------------------------------
@@ -6269,7 +6302,7 @@ fi
 # 수리의 결과이기 때문이다.
 sa_self="$repo_root/scripts/test-gate.sh"
 sa_pat='--manifest "\$FX_MANIFEST" .*--cutpoint '"$(printf '(%s|%s|%s)' 머지 배포 머지후착수)"
-sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self" | head -1 | cut -d: -f1)
+sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self" | sed -n '1p' | cut -d: -f1)
 sa_we=$(grep -n '^FX_MANIFEST="\$WT/plan2\.md"$' "$sa_self" | sed -n '1s/:.*$//p')
 if [ -n "$sa_ws" ] && [ -n "$sa_we" ] && [ "$sa_we" -gt "$sa_ws" ]; then
   sa_wn=$(awk -v a="$sa_ws" -v b="$sa_we" 'NR>a && NR<b' "$sa_self" | grep -cE -- "$sa_pat" || true)

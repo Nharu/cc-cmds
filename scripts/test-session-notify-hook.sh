@@ -477,7 +477,9 @@ ts_missing_markers() {
   have=$(grep -oE 'CC_PIPELINE_[A-Z_]+' "$file" 2>/dev/null | LC_ALL=C sort -u || true)
   while IFS= read -r nm; do
     [ -n "$nm" ] || continue
-    printf '%s\n' "$have" | grep -qxF -- "$nm" || printf '%s\n' "$nm"
+    grep -qxF -- "$nm" <<HAVE || printf '%s\n' "$nm"
+$have
+HAVE
   done <<EOF
 $ROUTER_NAMES
 EOF

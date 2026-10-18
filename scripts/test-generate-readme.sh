@@ -62,8 +62,8 @@ MIT
 EOF
 SKILLS_DIR="$repo_root/tests/fixtures/readme-gen/simple" README_PATH="$fallback_input" bash "$gen" >/dev/null
 
-opt_end_line=$(grep -n '<!-- SKILLS_OPTIONS_END -->' "$fallback_input" | head -1 | cut -d: -f1)
-license_line=$(grep -n '^## License' "$fallback_input" | head -1 | cut -d: -f1)
+opt_end_line=$(grep -n '<!-- SKILLS_OPTIONS_END -->' "$fallback_input" | sed -n '1p' | cut -d: -f1)
+license_line=$(grep -n '^## License' "$fallback_input" | sed -n '1p' | cut -d: -f1)
 
 if grep -q '<!-- SKILLS_TABLE_START -->' "$fallback_input" \
    && grep -q '<!-- SKILLS_OPTIONS_START -->' "$fallback_input" \

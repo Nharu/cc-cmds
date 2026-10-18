@@ -31,8 +31,18 @@ fail=0
 ok()    { pass=$((pass + 1)); printf 'PASS: %s\n' "$1"; }
 bad()   { fail=$((fail + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
-has()   { if printf '%s\n' "$2" | grep -qF -- "$3"; then ok "$1"; else bad "$1" "missing '$3' in: $2"; fi; }
-hasnt() { if printf '%s\n' "$2" | grep -qF -- "$3"; then bad "$1" "unexpected '$3' in: $2"; else ok "$1"; fi; }
+has() {
+  if grep -qF -- "$3" <<EOF
+$2
+EOF
+  then ok "$1"; else bad "$1" "missing '$3' in: $2"; fi
+}
+hasnt() {
+  if grep -qF -- "$3" <<EOF
+$2
+EOF
+  then bad "$1" "unexpected '$3' in: $2"; else ok "$1"; fi
+}
 
 [ -x "$BS" ] && ok "base-split.py is executable" || bad "base-split.py is executable"
 
@@ -588,8 +598,14 @@ gen ok && cp "$DOCS/ok.md" "$DOCS/cu.md"
 real_ready=1
 [ -x "$ORCH/clickup-relate.py" ] || real_ready=0
 if [ "$real_ready" = 1 ]; then
-  "$ORCH/clickup-relate.py" --help 2>/dev/null | grep -qE -- '--depends-on' || real_ready=0
-  "$ORCH/clickup-create.py" --help 2>/dev/null | grep -qE -- '--parent' || real_ready=0
+  relate_help=$("$ORCH/clickup-relate.py" --help 2>/dev/null) || real_ready=0
+  create_help=$("$ORCH/clickup-create.py" --help 2>/dev/null) || real_ready=0
+  grep -qE -- '--depends-on' <<EOF || real_ready=0
+$relate_help
+EOF
+  grep -qE -- '--parent' <<EOF || real_ready=0
+$create_help
+EOF
 fi
 printf 'stale\n' > "$OUT/plan.jsonl"
 run_bs plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
