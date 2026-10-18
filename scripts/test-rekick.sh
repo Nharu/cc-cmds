@@ -1638,10 +1638,12 @@ P_PLAN='{ "design_required": true, "entry_skill": "design", "steps": [ { "id": "
 check "12: 빼고 난 계획의 의존이 끊긴 원천은 graph 가 바뀜 이다" "$(col "$(rk graph --prev RKCG --base "$BASE")" 그래프)" "바뀜"
 SL_ASKED=""; seat_link RKCG RKCG1
 check "12: 그 원천에서 render-manifest --auto 는 3 이고 초안이 없다" "$SL_RC/$( [ -s "$WORK/sl.draft" ] && echo 있음 || echo 없음)" "3/없음"
-out=$(rk render-manifest --auto --accepted extra --prev RKS0 --base "$BASE" 2>/dev/null); rc=$?
+L1DL=$(awk -F': ' '$1 == "**벽시계 마감**" { print $2 }' "$L1DRAFT")
+out=$(rk render-manifest --auto --accepted extra --prev RKS0 --base "$BASE" --run-id RKSA --kickoff-at "$L1KAT" --deadline "$L1DL" \
+        --expect-sha256 "$L1PMS" --expect-grant-sha256 "$L1PGS" --asked "$WORK/asked-seat0" 2>/dev/null); rc=$?
 check "12: --auto 에 --accepted 는 용법 오류다" "$rc/$out" "2/"
 
-# R2 (7) — an answered base-design wait reaches the draft and verify-subset --auto.
+# An answered base-design wait reaches the draft and verify-subset --auto.
 P_EXTRA="$SEAT_ROW
 - \`베이스 설계\` | 문서=docs/rk-base.md | sha256=$OLDBASESHA | 티켓=T1" mk_seat RKCB 마감
 out=$(jdg RKCB)
@@ -1655,7 +1657,7 @@ check "12: 답한 7.8 과 --bind-base 로 그린 초안이 verify-subset --auto 
 check "12: 그 초안의 사용자 확인 문면은 좌석 재킥오프 <원천> / 묶는다" \
   "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$SL_OUT")" "좌석 재킥오프 RKCB / 묶는다"
 
-# R2 (8) — an answered target confirmation, with and without --targets.
+# An answered target confirmation, with and without --targets.
 mk_seat RKCT 마감
 sed 's/| 원격 슬러그=t\/rk |/| 원격 슬러그=t\/rk-moved |/' "$BASE/docs/pipeline-run/RKCT.plan.md" | grep -E '^- `target`' > "$WORK/targets-ct"
 printf '대상확인 rk\t원격 슬러그는 t/rk-moved 다\n' > "$WORK/asked-ct"
