@@ -11668,6 +11668,8 @@ er15_blk() {  # er15_blk <argv…> — a `blocked` act on the fixture run
   gateL act --manifest "$M15ER" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
         --snapshot-digest "$(au15_H R15ER)" --rationale x -- "$@"
 }
+er15_fold() { cc_unresolved_blocked "$er15_led" | { grep -c . || true; }; }
+er15_f0=$(er15_fold)
 er15_blk 스코프=cone 원인=막힘 '앵커 세그먼트=ZZ9' "사유=$er15_why" "근거=중단 답 줄 $er15_ln"
 check "15e-2: 계획에 없는 앵커의 cone 은 rc 2 이다" "$rc" "2"
 er15_blk 스코프=cone 원인=막힘 '앵커 세그먼트=A1' "사유=$er15_why" "근거=중단 답 줄 $er15_ln"
@@ -11675,6 +11677,7 @@ er15_brow=$( { grep -F '`blocked`' "$er15_led" || true; } | tail -1)
 er15_field() { printf '%s' "$er15_brow" | tr '|' '\n' | sed -n "s/^ *$1=//p" | sed 's/[[:space:]]*$//' | tail -1; }
 check "15e-2: 감사 단계에 앵커한 라우팅 막힘이 서고 막힌 답 줄이 찍힌다" \
   "$rc/$(er15_field '막힌 답 줄')/$(er15_field '의존 세그먼트')" "0/$er15_ln/A1"
+check "15e-2: 감사 단계 앵커의 막힘을 막힘 접기가 하나 더 센다" "$(er15_fold)" "$((er15_f0 + 1))"
 check "15e-2: 되돌려진 기록은 답 없는 기록으로 다시 센다" "$(cc_unanswered_halts "$RD15ER" "$er15_led")" "1"
 check "15e-2: 스냅숏의 returned_halts 가 그 기록을 내놓는다" \
   "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -r '[.returned_halts[] | .record] | last // ""')" "$er15_rec3"
@@ -11683,6 +11686,29 @@ check "15e-2: 되돌려진 기록에 쓴 사람의 새 답이 선다" "$rc" "0"
 er15_blk 스코프=run 원인=해소 "사유=$er15_why" '근거=사람이 새 답을 남겼다'
 check "15e-2: 같은 사유의 스코프=run 원인=해소 가 감사 단계 앵커의 막힘을 푼다" "$rc" "0"
 check "15e-2: 새 답 뒤에는 답 없는 기록이 없다" "$(cc_unanswered_halts "$RD15ER" "$er15_led")" "0"
+check "15e-2: 해소 뒤 막힘 접기가 막힘 전의 수로 돌아온다" "$(er15_fold)" "$er15_f0"
+check "15e-2: 해소 행은 도장을 받지 않아 사람의 새 답이 answered_halts 에 남고 returned_halts 는 빈다" \
+  "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -r '"\([.answered_halts[] | select(.record | endswith("A1#3.md")) | .option] | last // "")/\(.returned_halts | length)"')" "reject/0"
+
+# THE AUDIT STEP'S DEADLINE PARK IS A CONE ROW. The anchor check used to accept
+# only the design step, so an audit key fell back to an act-scope row.
+er15_dl=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$1" >/dev/null 2>&1 || exit 9
+  set +e
+  unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+  MANIFEST=$2; RUN_ID=$3; RUN_DIR=$4; LEDGER=$5; GRANT=""
+  gate_wait_deadline_park infra - A1 B:A1#9 2026-01-01T00:00:00Z 픽스처 "" "다시 파견" 2>&1
+' _ "$GATE" "$M15ER" R15ER "$RD15ER" "$er15_led")
+er15_dlrow=$( { grep -F '`blocked`' "$er15_led" || true; } | { grep -F '사유=마감 초과 — A1 ' || true; } | tail -1)
+case "$er15_dlrow" in
+  *"스코프=cone"*"앵커 세그먼트=A1 "*) ok "15e-2: 감사 단계의 마감 park 는 그 단계에 앵커한 cone 행이다" ;;
+  *) bad "15e-2 감사 단계 마감 park 행" "행: $er15_dlrow / 출력: $er15_dl" ;;
+esac
+case "$er15_dl" in
+  *"an act-scope row stands in"*) bad "15e-2 감사 단계 마감 park 의 act 스코프 대체" "$er15_dl" ;;
+  *) ok "15e-2: 그 마감 park 는 act 스코프 행으로 대체되지 않는다" ;;
+esac
+check "15e-2: 감사 단계의 마감 park 를 막힘 접기가 센다" "$(er15_fold)" "$((er15_f0 + 1))"
 ( cd "$WT" && git worktree remove --force "$WT-run-R15ER-A1" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 rm -f "$WT/$DOC15ER"
