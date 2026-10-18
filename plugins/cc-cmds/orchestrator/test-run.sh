@@ -5894,6 +5894,11 @@ case "$verb" in
     for a in "$@"; do
       [ "$a" = "--required" ] && { printf 'no required checks reported on the branch\n' >&2; exit 1; }
     done
+    # A row planted in `accept-row` is appended to the ledger while this answer
+    # is being given, once: the gate's `수락` landing in the middle of a pass.
+    if [ -f "$GH_STUB_DIR/accept-row" ]; then
+      cat "$GH_STUB_DIR/accept-row" >> "$GH_STUB_DIR/ledger.md"; rm -f "$GH_STUB_DIR/accept-row"
+    fi
     case "$mode" in
       pending)  exit 8 ;;
       pass)     printf 'lint\tpass\t1s\thttp://x\n'; exit 0 ;;
@@ -5977,6 +5982,24 @@ GHSTUB
   else
     bad "폴러 회차" "T-P2: 받아들여지지 않은 회차가 키를 옮겼다: $(cat "$CR_OB")"
   fi
+
+  # (T-P2b) A `수락` written while a pass is asking `gh pr checks` belongs to the
+  # next pass: the straddling pass keys its answer — the screen from before the
+  # rerun — under the round it read first, and g=1's first line is the answer of
+  # the pass after it.
+  cr_reset
+  cr_run fail
+  printf -- '- `CI 처분` | 교대=0 | 세그먼트=S1 | PR=Nharu/cc-cmds#7 | head sha=%s | 처분=재실행 | 상태=수락 | 회차=1 | prev=dddd\n' \
+    "$CR_SHA" > "$CR_RD/accept-row"
+  cr_run fail
+  cr_p2b_mid="$(cr_lines)|$(cr_last)"
+  cr_run fail
+  if [ "$cr_p2b_mid" = "1|실패|0|0" ] && [ "$(cr_lines)" = "2" ] && [ "$(cr_last)" = "실패|1|0" ]; then
+    ok "T-P2b: 패스 도중에 쓰인 수락은 그 패스의 화면을 g=1 의 첫 관측으로 만들지 않는다"
+  else
+    bad "폴러 회차" "T-P2b: 수락에 걸친 패스가 재실행 전 화면을 새 회차로 기록했다 (도중 $cr_p2b_mid): $(cat "$CR_OB")"
+  fi
+  rm -f "$CR_RD/accept-row"
 
   # (T-P3) The new columns are read back by the seeding: a fresh process on the
   # same state writes nothing, and a line of the earlier seven-column shape seeds

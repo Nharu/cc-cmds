@@ -35755,6 +35755,15 @@ done
 cb60_new "CI 재실행 — Actions 아닌 링크"
 printf '[{"name":"ext","bucket":"fail","link":"https://ci.example.invalid/build/9"}]\n' > "$CB60_S/checks.pre"
 cb60_park 재실행대상미상 "ext:" "Actions 아닌 링크"
+# 링크 없는 실패(target URL 없이 올린 커밋 상태) — 그것만 있어도, Actions 실패와 섞여도
+# 판정할 수 없는 체크이므로 POST 없이 park 한다.
+cb60_new "CI 재실행 — 링크 없는 실패뿐"
+printf '[{"name":"nolink","bucket":"fail","link":""}]\n' > "$CB60_S/checks.pre"
+cb60_park 재실행대상미상 "nolink:" "링크 없는 실패뿐"
+cb60_new "CI 재실행 — 링크 없는 실패와 Actions 실패"
+printf '[{"name":"gate","bucket":"fail","link":"https://github.com/%s/actions/runs/777/job/1"},{"name":"nolink","bucket":"fail"}]\n' \
+  "$CB60_SLUG" > "$CB60_S/checks.pre"
+cb60_park 재실행대상미상 "nolink:" "링크 없는 실패와 Actions 실패"
 cb60_new "CI 재실행 — 실행 읽기 실패"
 rm -f "$CB60_S/run.777"
 cb60_park 재실행대상미상 "777" "실행 읽기 실패"
@@ -35889,6 +35898,10 @@ cb60_spell "--reach 협업" --segment CK --cutpoint PR --surface 외부상태변
 
 # R11 — 재실행 수행자와 머지가 같은 자격 증명 환경으로 gh 를 부른다.
 cb60_new "CI 재실행 — 자격 증명 환경"
+# 스위트 전역의 오프라인 가드(GH_HOST=invalid.invalid)를 이 블록 뒤에 그대로 되돌린다 —
+# unset 으로 지우면 같은 프로세스의 뒤 절이 실제 gh 로 호스트에 나간다.
+CB60_PREV_GHREPO="${GH_REPO-}"; CB60_HAD_GHREPO="${GH_REPO+1}"
+CB60_PREV_GHHOST="${GH_HOST-}"; CB60_HAD_GHHOST="${GH_HOST+1}"
 export GH_REPO=evil/x GH_HOST=evil.invalid
 cb60_act
 cb60_r11_rc=$rc
@@ -35896,7 +35909,10 @@ SA_PREAUTH_EXTRA='gh api'; sa_manifest 리뷰없음
 cb60_line 통과 1 0 -
 sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment CK --cutpoint 머지 \
     --snapshot-digest "$(SAH)" --rationale x -- gh api -X PUT "repos/$CB60_SLUG/pulls/1/merge" -f "sha=$CK60_SHA"
-unset GH_REPO GH_HOST
+if [ -n "$CB60_HAD_GHREPO" ]; then export GH_REPO="$CB60_PREV_GHREPO"; else unset GH_REPO; fi
+if [ -n "$CB60_HAD_GHHOST" ]; then export GH_HOST="$CB60_PREV_GHHOST"; else unset GH_HOST; fi
+unset CB60_PREV_GHREPO CB60_HAD_GHREPO CB60_PREV_GHHOST CB60_HAD_GHHOST
+check "60b: 자격 증명 환경 블록 뒤에도 스위트의 오프라인 가드가 남는다" "${GH_HOST-unset}" "invalid.invalid"
 cb60_epost=$( { grep '^api -X POST|' "$CB60_S/env.log" || true; } | tail -1 | cut -d'|' -f2-)
 cb60_eput=$( { grep '^api -X PUT|' "$CB60_S/env.log" || true; } | tail -1 | cut -d'|' -f2- | sed 's/|GH_REPO=.*$//')
 check "60b: 재실행 POST 의 자격 증명 환경이 읽기 전용이고 GH_REPO·GH_HOST 가 없다" \
@@ -35927,6 +35943,13 @@ CC60C_LOG="$WORK/cc60c-gh.log"; : > "$CC60C_LOG"
 export CC60C_LOG
 gh() { printf '%s\n' "$*" >> "$CC60C_LOG"; printf '{}\n'; return 0; }
 export -f gh
+# `timeout`·`gtimeout` 처럼 함수 대역을 거치지 않는 철자는 PATH 의 실제 gh 를 실행한다.
+# 그 gh 가 사람의 자격 증명을 싣고 나가지 않도록, 스위트의 오프라인 가드
+# (GH_HOST=invalid.invalid) 아래에서 이 절 동안 게이트의 읽기 토큰은 픽스처 값이다 — 비어
+# 있으면 게이트가 키체인 항목을 꺼내 GH_TOKEN 으로 넘긴다.
+CC60C_PREV_RO="${CC_GATE_TOKEN_RO-}"; CC60C_HAD_RO="${CC_GATE_TOKEN_RO+1}"
+export CC_GATE_TOKEN_RO=cc60c-ro-fixture
+check "60c: 이 절은 스위트의 오프라인 가드 아래에서 돈다" "${GH_HOST-unset}" "invalid.invalid"
 printf 'mutation{rerequestCheckSuite(input:{checkSuiteId:"X",repositoryId:"Y"}){checkSuite{id}}}\n' > "$WT/q.graphql"
 cc60c_x() {
   # cc60c_x <모드 1|0> <대상> <도달> <절단점> -- <argv...>
@@ -35984,6 +36007,12 @@ PR|gh --repo=o/r run rerun 5
 머지|gh api graphql -f query=@q.graphql
 머지|gh api graphql --input q.json
 머지|gh api graphql --input -
+머지|gh api -X POST 'repos/t/x/actions/runs/5/rerun-failed-jobs#x'
+머지|gh api -X POST /repos/t/x/actions/runs/5/rerun/
+머지|gh api -X POST https://api.github.com/repos/t/x/actions/runs/5/rerun-failed-jobs
+머지|gh api /graphql -F query=@q.graphql
+머지|gh api https://api.github.com/graphql -f 'query=mutation{rerequestCheckSuite(input:{checkSuiteId:"X",repositoryId:"Y"}){checkSuite{id}}}'
+머지|gh api https://ghe.example/api/graphql --input q.json
 PR|env CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0 gh run rerun 5
 PR|command gh run rerun 5
 머지|env gh api -X POST repos/t/x/actions/runs/5/rerun-failed-jobs
@@ -36017,6 +36046,11 @@ for cc60c_rows in 'gh run rerun' 'gh api -X POST' 'gh api' 'OFF'; do
   for cc60c_tg in front3 devt3; do
     cc60c_cell "행 $cc60c_rows" "$cc60c_tg" 협업 PR -- gh run rerun 5
     cc60c_cell "행 $cc60c_rows REST" "$cc60c_tg" 협업 머지 -- gh api -X POST repos/t/x/actions/runs/5/rerun-failed-jobs
+    # 넓은 행 아래에서는 이 규칙의 닫기가 유일한 방어선이므로, 정규화가 필요한 철자도 잰다.
+    cc60c_cell "행 $cc60c_rows fragment" "$cc60c_tg" 협업 머지 -- gh api -X POST 'repos/t/x/actions/runs/5/rerun-failed-jobs#x'
+    cc60c_cell "행 $cc60c_rows /graphql" "$cc60c_tg" 협업 머지 -- gh api /graphql -F query=@q.graphql
+    cc60c_cell "행 $cc60c_rows URL graphql" "$cc60c_tg" 협업 머지 -- gh api https://api.github.com/graphql \
+      -f 'query=mutation{rerequestCheckSuite(input:{checkSuiteId:"X",repositoryId:"Y"}){checkSuite{id}}}'
   done
 done
 check "60c: 무인 모드에서 재실행 철자는 도달·행과 무관하게 rc 3 이다" "$cc60c_fail3" ""
@@ -36064,6 +36098,8 @@ ok "60c: gh run cancel 1 의 dev 행 없음 오늘 값 rc=$rc"
 rm -f "$WT/q.graphql"
 unset -f gh
 unset CC60C_LOG
+if [ -n "$CC60C_HAD_RO" ]; then CC_GATE_TOKEN_RO="$CC60C_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
+unset CC60C_PREV_RO CC60C_HAD_RO
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC60C_PREV_AR"
 
 # ---------------------------------------------------------------------------

@@ -29015,9 +29015,12 @@ EOF
     warn "PR $pnum shows no failing check now — nothing to rerun"
     exit "$GATE_EXIT_RULE"
   fi
-  # X1 on each link, and the distinct run ids.
+  # X1 on each link, and the distinct run ids. A failing check with no details
+  # link (a commit status posted without a target URL) cannot be judged, so it
+  # is unknown like any other non-Actions link — skipping it would rerun the
+  # rest, or leave nothing to rerun and no park.
   while IFS="$(printf '\t')" read -r _b name link; do
-    [ -n "$link" ] || continue
+    [ -n "$_b$name$link" ] || continue
     case "$link" in
       "https://github.com/$slug/actions/runs/"*)
         r=${link#"https://github.com/$slug/actions/runs/"}; r=${r%%/*}

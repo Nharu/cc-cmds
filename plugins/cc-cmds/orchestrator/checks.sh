@@ -497,6 +497,12 @@ pass_once() {
       *) sha="미상" ;;
     esac
 
+    # The round is read again on every pass, and BEFORE the checks: the gate
+    # writes the `수락` row at any moment, so the first observation under a new
+    # key must be a `gh pr checks` answer asked after that row was read. Read
+    # the other way round, a pass straddling the row files the screen from
+    # before the rerun — its `실패` — as round g's first line.
+    g=$(num_or_zero "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$sha")" g)")
     line=$(poll_status "$slug" "$n")
     status=${line%%"$TAB"*}
     line=${line#*"$TAB"}
@@ -504,9 +510,6 @@ pass_once() {
     fails=${line#*"$TAB"}
     req=$(poll_required "$slug" "$n")
 
-    # The round is read again on every pass: the gate writes the `수락` row
-    # between two passes, and the pass that first reads it makes the new key.
-    g=$(num_or_zero "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$sha")" g)")
     cur=$(tbl_state "$status" "$pend")
     prev=$(tbl_get "$slug#$n" "$sha" "$g")
     [ "$prev" = "$cur" ] && continue

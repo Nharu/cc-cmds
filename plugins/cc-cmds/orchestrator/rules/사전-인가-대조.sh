@@ -109,12 +109,15 @@ if [ "$probe" != "1" ]; then
       }
       if (m >= 2 && r[1] == "run" && r[2] == "rerun") { print "run rerun"; exit }
       gql = 0; outside = 0
+      # gh 가 요청 줄에서 떼는 query 와 fragment, 절대 URL 의 스킴과 호스트, 선두 `/` 와 끝 `/` 하나를 떼고 본다 — 모두 같은 엔드포인트에 닿는 철자다.
       for (k = 1; k <= m; k++) {
-        w = r[k]; sub(/\?.*$/, "", w)
+        w = r[k]; sub(/[?#].*$/, "", w)
+        if (w ~ /^https?:\/\//) { sub(/^https?:\/\/[^\/]*/, "", w) }
+        sub(/^\/+/, "", w); sub(/\/$/, "", w)
         if (w ~ /(^|\/)actions\/runs\/[^\/]+\/rerun(-failed-jobs)?$/ ||
             w ~ /(^|\/)actions\/jobs\/[^\/]+\/rerun$/ ||
             w ~ /(^|\/)check-(suites|runs)\/[^\/]+\/rerequest$/) { print "rest " w; exit }
-        if (r[k] == "graphql") gql = 1
+        if (w == "graphql" || w == "api/graphql") gql = 1
         if (index(r[k], "query=@") || r[k] == "--input" || r[k] ~ /^--input=/) outside = 1
       }
       if (gql && (index(tolower($0), "rerequestchecksuite") || outside)) print "graphql"
