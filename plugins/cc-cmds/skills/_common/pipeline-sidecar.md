@@ -248,12 +248,18 @@ planning act checks the rest, at the moment it brings the predecessor in (see
 
 **The `재킥오프` row is the person's consent that an ending run may be followed
 by a successor**, written by the kickoff on every run, unasked and with no
-toggle; the closing read-back shows it and says that nothing reads it to open a
-successor run now. `길이` is the kickoff's resolved deadline minus the moment it
-was resolved. The row is not the re-kickoff of `autopilot` Step 1.0, where a
-person calls the kickoff again and its restart helper carries a stopped run's
-answers into a new run: that path is the kickoff's own and writes its files as a
-kickoff does. The row is in the frozen set, so editing its `연쇄 상한` or `길이`
+toggle; the closing read-back shows it and says what it consents to: the seat
+may open a successor run without a person when this run ends on its deadline,
+its cost ceiling or its stagnation bound. `길이` is the kickoff's resolved
+deadline minus the moment it was resolved. The row is not the re-kickoff of
+`autopilot` Step 1.0, where a person calls the kickoff again and its restart
+helper carries a stopped run's answers into a new run: that path is the
+kickoff's own and writes its files as a kickoff does. The seat's re-kickoff
+runs the same path with `--auto`, and reads the row there: `rekick.sh judge`
+refuses a source without it, `연쇄 상한` caps the chain, `kickoff-defaults.sh
+--carry --auto` falls back to `길이` when the previous deadline interval cannot
+be carried, and `verify-subset --auto` requires the successor's row to equal
+the source's byte for byte. The row is in the frozen set, so editing its `연쇄 상한` or `길이`
 after the kickoff moves the digest the person confirmed.
 
 The `자동 채택` rows are in that list because they decide whether a judgment is
@@ -435,6 +441,16 @@ inside `구속 다이제스트`, where an edit stops the manifest check. A reade
 by the first field `이어받은 런=`, never by the absence of `형태=`, which the
 interview-record row shares. A run carried from a run that was itself carried
 has one such row, naming its direct source. No session id is written into it.
+**A successor the seat opened on its own carries three more fields** at the end
+of the same row — `` | 좌석 연쇄=<k> | 뿌리 런=<id> | 원인=<종료 토큰> `` —
+and only `rekick.sh render-manifest --auto` writes them. `좌석 연쇄` is the
+source's `좌석 연쇄` plus one, or 1 when the source's row lacks it; `뿌리 런` is
+the source's `뿌리 런`, or the source's run id when it lacks it; `원인` is the
+source's end token. A person's re-kickoff writes the four-field row, so the
+count starts again at that link. The source's `재킥오프` row's `연쇄 상한` caps
+`좌석 연쇄`; `verify-subset --auto` recomputes the seven-field row and refuses
+any other bytes, and `verify-subset` without `--auto` accepts only the
+four-field row.
 
 **The `종료 절` rows are `종료 지점` split into clauses the gate can check**, one
 clause per row and at least one row. The gate collects the rows that match
