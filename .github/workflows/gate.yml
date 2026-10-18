@@ -4,7 +4,25 @@ name: gate
 # workflow rather than as another job in `lint` because its path filter is
 # narrower: the lint leg has to run on skill and README edits that cannot
 # possibly move a gate section, and pulling the suite along with them (about
-# 177 shard-minutes, 10 to 22 per shard) is what this split removes.
+# 170 shard-minutes) is what this split removes.
+#
+# THE PARTITION IS WEIGHED WITH WHAT THE LAST MASTER RUN MEASURED. Every shard
+# writes a marker line in front of each section it runs, `gate-report` turns
+# those into per-section times, and a push to master uploads them as the
+# `gate-timing` artifact. The next run's `gate-plan` job downloads the newest
+# such artifact a master push run still has, makes the partition table from it
+# once, and every shard and the coverage check read that one table — no job
+# partitions on its own, so no two jobs can see different inputs. With no
+# artifact the committed seed `scripts/gate-timing.tsv` is used if there is one,
+# and the census weight model if not, each with a warning; no person has to
+# regenerate anything for the weights to stay current.
+#
+# THE TEST TIME IS A SIGNAL OF ITS OWN. `gate-report` sums the thirteen shard
+# times and hands them to `scripts/ci-duration.sh`, which fails a pull request
+# whose increment over the master baseline is past the tolerance without a
+# matching budget raise, and warns whenever the absolute level is over budget.
+# How even the shards actually were is in the report job's summary, with a
+# warning past a max/median of 1.5.
 #
 # THE FILTER NAMES THIS FILE. Without that line the workflow is absent from the
 # pull request that introduces it, so its check names never render and there is
@@ -17,6 +35,10 @@ on:
       - 'scripts/gate-shard.sh'
       - 'scripts/gate-census.sh'
       - 'scripts/gate-census.tsv'
+      - 'scripts/gate-timing.sh'
+      - 'scripts/gate-timing.tsv'
+      - 'scripts/ci-duration.sh'
+      - 'scripts/ci-duration-budget.tsv'
       - 'plugins/cc-cmds/orchestrator/**'
       - 'Makefile'
       - '.github/workflows/gate.yml'
@@ -24,11 +46,83 @@ on:
     branches:
       - master
 
+# Naming one permission sets every unnamed one to `none`, so both are written:
+# `contents` for the checkout and `actions` to read other runs' artifacts.
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  # The one place the partition is made. The source is said in the summary —
+  # `artifact <run id>`, `seed` or `census` — with its age and the sections it
+  # did not measure, which are weighed at the median of the measured ones.
+  # Only master push runs of this repository are read, so an artifact of the
+  # same name uploaded by a fork's pull request never becomes the source.
+  gate-plan:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the timing source
+        run: |
+          plan="$RUNNER_TEMP/plan"; mkdir -p "$plan" "$RUNNER_TEMP/src"
+          if got=$(bash scripts/ci-duration.sh fetch-base --name gate-timing --workflow gate.yml --out "$RUNNER_TEMP/src") \
+             && [ -f "$RUNNER_TEMP/src/gate-timing.tsv" ]; then
+            cp "$RUNNER_TEMP/src/gate-timing.tsv" "$plan/gate-timing.tsv"
+            set -- $got
+            echo "artifact $1" > "$plan/source"
+            created="$2"
+          elif [ -f scripts/gate-timing.tsv ]; then
+            echo "::warning::gate-timing 아티팩트를 가진 master push 실행을 찾지 못해 커밋된 시드 scripts/gate-timing.tsv 로 분할합니다"
+            cp scripts/gate-timing.tsv "$plan/gate-timing.tsv"
+            echo "seed" > "$plan/source"
+            created=$(sed -n '1s/^.* generated: //p' scripts/gate-timing.tsv)
+          else
+            echo "::warning::gate-timing 아티팩트도 시드 scripts/gate-timing.tsv 도 없어 센서스 무게 모델로 분할합니다"
+            echo "census" > "$plan/source"
+            created=""
+          fi
+          age="-"
+          if [ -n "$created" ]; then
+            age=$(jq -rn --arg c "$created" '((now - ($c | fromdateiso8601)) / 3600 | floor | tostring) + "시간"' 2>/dev/null) || age="-"
+          fi
+          echo "$age" > "$plan/age"
+
+      - name: Make the partition table
+        run: |
+          plan="$RUNNER_TEMP/plan"
+          if [ -f "$plan/gate-timing.tsv" ]; then set -- --timing "$plan/gate-timing.tsv"; else set --; fi
+          rc=0
+          bash scripts/gate-shard.sh --shards "$(make -s print-gate-shards)" "$@" --table \
+            > "$plan/table.tsv" 2> "$plan/table.err" || rc=$?
+          cat "$plan/table.err" >&2
+          [ "$rc" = "0" ] || exit "$rc"
+          {
+            echo "### gate 분할 계획"
+            echo ""
+            echo "- 출처: $(cat "$plan/source") · 나이: $(cat "$plan/age")"
+            un=$(sed -n 's/^gate-shard: 실측 없는 절 /실측 없는 절 /p' "$plan/table.err")
+            echo "- ${un:-실측 없는 절: 센서스 무게 모델이라 해당 없음}"
+            sed -n 's/^gate-shard: 예산 초과 덩어리 — /- 예산 초과 덩어리: /p' "$plan/table.err"
+            echo ""
+            echo "| 샤드 | 예측 적재 | 절 수 |"
+            echo "| --- | --- | --- |"
+            awk -F '\t' '{ n = split($3, a, ","); print "| " $1 " | " $2 " | " (($3 == "") ? 0 : n) " |" }' "$plan/table.tsv"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-plan
+          path: ${{ runner.temp }}/plan/
+
   # `fail-fast: false` because a red shard must not cancel the other twelve. The
   # first thing anyone asks of a sharded failure is whether it is one section or
-  # the whole suite, and a cancelled run cannot answer it.
+  # the whole suite, and a cancelled run cannot answer it. The marker file is
+  # uploaded even from a red shard: the sections it finished were measured.
   gate-shards:
+    needs: gate-plan
     runs-on: ubuntu-latest
     # The hosted runner has a docker daemon, so the real docker section must run
     # here: a missing daemon is a failure, not a skip.
@@ -41,19 +135,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-plan
+          path: ${{ runner.temp }}/plan
+
       - name: Run shard ${{ matrix.shard }}
-        run: make gate-shard SHARD=${{ matrix.shard }}
+        run: make gate-shard SHARD=${{ matrix.shard }} GATE_TABLE="$RUNNER_TEMP/plan/table.tsv" GATE_TIMING_OUT="$RUNNER_TEMP/timing-${{ matrix.shard }}.tsv"
+
+      - name: Upload the section markers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-timing-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/timing-${{ matrix.shard }}.tsv
+          if-no-files-found: ignore
 
   # NOT CHAINED BEHIND THE SHARDS AND NOT CHAINED BEHIND THE RATCHET. This is
   # the job that proves no section fell out of the partition, so it has to have
-  # its own verdict even on a run where every shard is red.
+  # its own verdict even on a run where every shard is red. It is chained
+  # behind the plan only, and checks the very table the shards ran.
   shard-coverage:
+    needs: gate-plan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install mikefarah/yq
         uses: mikefarah/yq@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-plan
+          path: ${{ runner.temp }}/plan
 
       # The matrix spells its shard numbers out and the Makefile holds the
       # count. They are two places, so they are compared here — a matrix that
@@ -79,30 +193,80 @@ jobs:
           echo "샤드 $want 개"
 
       - name: Union of the shards is the whole section list
-        run: bash scripts/gate-shard.sh --shards "$(make -s print-gate-shards)" --check
+        run: bash scripts/gate-shard.sh --shards "$(make -s print-gate-shards)" --check --from-table "$RUNNER_TEMP/plan/table.tsv"
 
-      # A REPORT, NEVER A VERDICT. The census decides balance and nothing else —
-      # a section it does not know still lands in a shard, so a stale census
-      # costs wall clock and never coverage. Failing on staleness would put an
-      # hour-long regeneration in front of every pull request that adds a
-      # section, which is more time than the sharding saves.
-      # The sort is a pipe rather than an in-awk one: the runner's awk is mawk,
-      # which has no `asort`, and the failure would be a silent empty report
-      # rather than an error.
-      - name: Report the skew
+  # Runs whatever the shards did, so a red run still uploads what it measured.
+  # The increment check is skipped when a shard failed: its time was cut short,
+  # and the run is red already.
+  gate-report:
+    needs: [gate-plan, gate-shards]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-plan
+          path: ${{ runner.temp }}/plan
+
+      # A run whose shards all died before uploading leaves nothing to match;
+      # the merge then keeps the source's values, which is the right answer.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: gate-timing-shard-*
+          path: ${{ runner.temp }}/shards
+          merge-multiple: true
+
+      - name: Merge the measured times
         run: |
-          bash scripts/gate-shard.sh --shards "$(make -s print-gate-shards)" --table \
-            | cut -f2 | sort -n > /tmp/loads
-          awk '
-            { load[NR] = $1 }
-            END {
-              n = NR; if (n == 0) exit 0
-              max = load[n]
-              mid = (n % 2) ? load[(n+1)/2] : (load[n/2] + load[n/2+1]) / 2
-              ratio = (mid > 0) ? max / mid : 0
-              printf "샤드 %d개 · 최대 %d · 중앙값 %d · 최대/중앙값 %.2f\n", n, max, mid, ratio
-              if (ratio > 1.6) print "센서스 재생성 권장 — make census"
-            }' /tmp/loads
+          bash scripts/test-gate.sh --list < /dev/null > "$RUNNER_TEMP/list"
+          mkdir -p "$RUNNER_TEMP/timing"
+          if [ -f "$RUNNER_TEMP/plan/gate-timing.tsv" ]; then
+            set -- --source "$RUNNER_TEMP/plan/gate-timing.tsv"
+          else
+            set --
+          fi
+          bash scripts/gate-timing.sh merge --list "$RUNNER_TEMP/list" --run "$GITHUB_RUN_ID" --sha "$GITHUB_SHA" "$@" \
+            --out "$RUNNER_TEMP/timing/gate-timing.tsv" "$RUNNER_TEMP"/shards/timing-*.tsv
+
+      - name: Upload the timing for the next runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-timing
+          path: ${{ runner.temp }}/timing/gate-timing.tsv
+
+      - name: Upload the timing candidate
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-timing-candidate
+          path: ${{ runner.temp }}/timing/gate-timing.tsv
+
+      - name: Report the shard times
+        id: report
+        run: |
+          bash scripts/gate-timing.sh report --table "$RUNNER_TEMP/plan/table.tsv" --dir "$RUNNER_TEMP/shards" | tee "$RUNNER_TEMP/report.out"
+          echo "sum=$(tail -n 1 "$RUNNER_TEMP/report.out")" >> "$GITHUB_OUTPUT"
+
+      - name: Duration signal
+        if: needs.gate-shards.result == 'success'
+        run: bash scripts/ci-duration.sh check --key gate --seconds "${{ steps.report.outputs.sum }}" --window-out "$RUNNER_TEMP/ci-duration-gate"
+
+      - name: Duration signal skipped
+        if: needs.gate-shards.result != 'success'
+        run: echo "::notice::gate 샤드가 성공하지 않아(${{ needs.gate-shards.result }}) 소요 증분 판정을 건너뜁니다 — 잘린 소요로는 판정하지 않습니다"
+
+      - name: Upload the duration window
+        if: needs.gate-shards.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-duration-gate
+          path: ${{ runner.temp }}/ci-duration-gate/
 
   # Set-based, never count-based: one section regressing while another is fixed
   # leaves a count flat and hides exactly the thing being watched. Sections the

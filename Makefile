@@ -12,7 +12,7 @@ export CC_CMDS_DASHBOARD := off
 # `CC_GATE_PIN_SYNC_DISABLE=1` in front of it.
 export CC_GATE_PIN_SYNC_DISABLE := 1
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-gate-timing-selftest run-ci-duration-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -386,7 +386,8 @@ $(TEST_GOALS): run/%:
 	bash scripts/suite-guard.sh $*
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
+	run-gate-timing-selftest run-ci-duration-selftest
 
 # How many shards the gate suite is cut into. CI reads it so the matrix, the
 # per-shard dispatch and the union check all take their N from one place; a
@@ -405,22 +406,48 @@ print-gate-shards:
 ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
 test-rest: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
+	run-gate-timing-selftest run-ci-duration-selftest
 
 # One shard of the gate suite. SHARD is 1-based. An empty assignment is a
 # success and not a failure — the partitioner exits 4 when the requested shard
 # drew nothing, which happens whenever the components outnumber no shard.
-gate-shard:
-	@ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --shard $(SHARD)); rc=$$?; \
-	if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SHARDS): 배정된 절이 없습니다"; exit 0; fi; \
-	[ "$$rc" = "0" ] || exit "$$rc"; \
-	bash scripts/test-gate.sh --sections "$$ids"
+#
+# CI hands every shard the one table its plan job made (GATE_TABLE), so no shard
+# partitions on its own. Without a table the shard partitions here, weighed with
+# the measured times in GATE_TIMING when that file exists and with the census
+# model when it does not. GATE_TIMING_OUT, an absolute path, asks for the
+# section markers: `@start` and `@end` around the whole shard from here, and
+# the selector's own line in front of each section, prelude and the epilogue.
+GATE_TIMING ?= scripts/gate-timing.tsv
+GATE_TABLE ?=
+GATE_TIMING_OUT ?=
 
-# The partitioner and the census are driven by flags, so they cannot sit in the
-# argument-less `bash <script>` lists above; their self-tests run no suite and
-# take seconds.
+gate-shard:
+	@out='$(GATE_TIMING_OUT)'; \
+	mark() { [ -z "$$out" ] || printf '%s\t%s\n' "$$1" "$$(date +%s)" >> "$$out"; }; \
+	mark @start; \
+	if [ -n '$(GATE_TABLE)' ]; then \
+	  ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --shard $(SHARD) --from-table '$(GATE_TABLE)'); rc=$$?; \
+	else \
+	  ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --timing '$(GATE_TIMING)' --shard $(SHARD)); rc=$$?; \
+	fi; \
+	if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SHARDS): 배정된 절이 없습니다"; mark @end; exit 0; fi; \
+	[ "$$rc" = "0" ] || exit "$$rc"; \
+	rc=0; CC_GATE_TIMING_OUT="$$out" bash scripts/test-gate.sh --sections "$$ids" || rc=$$?; \
+	mark @end; exit "$$rc"
+
+# The partitioner, the census and the timing and duration scripts are driven by
+# flags, so they cannot sit in the argument-less `bash <script>` lists above;
+# their self-tests run no suite and take seconds.
 run-gate-shard-selftest:
 	bash scripts/gate-shard.sh --self-test
+
+run-gate-timing-selftest:
+	bash scripts/gate-timing.sh --self-test
+
+run-ci-duration-selftest:
+	bash scripts/ci-duration.sh --self-test
 
 run-gate-census-selftest:
 	bash scripts/gate-census.sh --self-test
