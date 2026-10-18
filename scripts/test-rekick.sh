@@ -1571,6 +1571,8 @@ check "12: 링크 1 을 원천으로 한 judge 는 허용 · 연쇄 2/3" "$(col 
 [ "$(col "$out" 판정)" = 허용 ] || printf '%s\n' "$out" >&2
 seat_link RKS1 RKS2
 check "12: 링크 2 의 출처 행은 좌석 연쇄=2 · 뿌리 런=RKS0" "$SL_RC/$SL_VS/$(prov_of "$SL_OUT" | sed 's/.*| 좌석 연쇄=/좌석 연쇄=/')" "0/통과/좌석 연쇄=2 | 뿌리 런=RKS0 | 원인=마감"
+mf_check "$SL_OUT"; rc=$?
+check "12: 링크 2 초안도 check_manifest 를 통과한다" "$rc" "0"
 adopt_run RKS2; seat_end 천장
 out=$(jdg RKS2)
 check "12: 링크 2 를 원천으로 한 judge 는 허용 · 연쇄 3/3" "$(col "$out" 판정)/$(fact "$out" 연쇄)" "허용/3/3"
@@ -1580,6 +1582,8 @@ check "12: 링크 3 의 출처 행은 좌석 연쇄=3 · 원인=천장" "$SL_RC/
 mf_check "$SL_OUT"; rc=$?
 check "12: 링크 3 초안도 check_manifest 를 통과한다" "$rc" "0"
 sed 's/| 좌석 연쇄=3 |/| 좌석 연쇄=1 |/' "$SL_OUT" > "$WORK/rkc3-low.md"
+VS_PREV="$BASE/docs/pipeline-run/RKS2.plan.md"; VS_PMSHA="$SL_PMS"; VS_PGSHA="$SL_PGS"
+vs "링크 3 초안의 좌석 연쇄를 3 에서 1 로 낮추면 --auto 검사 3 이 실패한다" 실패 "$WORK/rkc3-low.md" "$SL_ASKED" 출처 --auto
 mf_check "$WORK/rkc3-low.md"; rc=$?
 check "12: 얼린 매니페스트에서 좌석 연쇄를 고치면 check_manifest 가 거부한다" "$( [ "$rc" != 0 ] && echo 거부)" "거부"
 adopt_run RKS3; seat_end 마감
