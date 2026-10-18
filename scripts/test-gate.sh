@@ -11658,6 +11658,8 @@ er15_ans 사람 '선택지=adopt as a requirement' '근거=사람이 요구로 �
 check "15e-2: 같은 키의 사람 채택은 통과한다" "$rc" "0"
 check "15e-2: 스냅숏이 그 답의 route 를 감사-재수렴으로 내놓는다" \
   "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -r '[.answered_halts[] | .route] | last // ""')" "감사-재수렴"
+plan15er reconverge "$reconv15er"
+check "15e-2: 그 사람 채택을 실행할 두 번째 - reconverge 파견의 plan 이 통과한다" "$rc" "0"
 
 # A RUN-SCOPE STEP ANCHORS THE ROUTING BLOCK. The shift could not carry the
 # adoption out and hands it back; the step has no segment row, and the cone is
