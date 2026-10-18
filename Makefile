@@ -12,7 +12,7 @@ export CC_CMDS_DASHBOARD := off
 # `CC_GATE_PIN_SYNC_DISABLE=1` in front of it.
 export CC_GATE_PIN_SYNC_DISABLE := 1
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -386,7 +386,8 @@ $(TEST_GOALS): run/%:
 	bash scripts/suite-guard.sh $*
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
+	run-rest-shard-selftest
 
 # How many shards the gate suite is cut into. CI reads it so the matrix, the
 # per-shard dispatch and the union check all take their N from one place; a
@@ -404,8 +405,35 @@ print-gate-shards:
 # is still the whole thing.
 ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
-test-rest: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
+	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
+	run-rest-shard-selftest
+
+test-rest: $(REST_GOALS)
+
+# How many runners `test-rest` is cut into in CI. The lint workflow's matrix and
+# its union check both take N from here, as the gate shards take GATE_SHARDS.
+REST_SHARDS ?= 3
+
+print-rest-shards:
+	@echo $(REST_SHARDS)
+
+# The goal list the partitioner cuts, one per line. It is REST_GOALS itself, so
+# a suite added to `test-rest` is in some shard without anyone naming it.
+print-rest-goals:
+	@printf '%s\n' $(REST_GOALS)
+
+# One shard of `test-rest`. SHARD is 1-based. The goals come from the
+# partitioner heaviest first and go to a sub-make on its command line, which
+# starts them in that order, as many at once as the outer -j allows: `$(MAKE)`
+# on the same recipe line is what hands the sub-make the outer jobserver. An
+# empty assignment is a success, as it is for gate-shard.
+rest-shard:
+	@goals=$$(bash scripts/rest-shard.sh --shards $(REST_SHARDS) --shard $(SHARD)); rc=$$?; \
+	if [ "$$rc" = "4" ]; then echo "rest shard $(SHARD)/$(REST_SHARDS): 배정된 목표가 없습니다"; exit 0; fi; \
+	[ "$$rc" = "0" ] || exit "$$rc"; \
+	echo "rest shard $(SHARD)/$(REST_SHARDS): $$goals"; \
+	$(MAKE) --no-print-directory $$goals
 
 # One shard of the gate suite. SHARD is 1-based. An empty assignment is a
 # success and not a failure — the partitioner exits 4 when the requested shard
@@ -424,6 +452,9 @@ run-gate-shard-selftest:
 
 run-gate-census-selftest:
 	bash scripts/gate-census.sh --self-test
+
+run-rest-shard-selftest:
+	bash scripts/rest-shard.sh --self-test
 
 # Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
 # every section alone, the whole suite once and every shard once — about an hour
