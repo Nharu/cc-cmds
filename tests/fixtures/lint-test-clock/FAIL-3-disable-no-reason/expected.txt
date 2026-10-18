@@ -1,0 +1,4 @@
+sample.sh:5:disable-no-reason
+sample.sh:5:clock-margin
+sample.sh:6:disable-no-reason
+sample.sh:7:clock-margin

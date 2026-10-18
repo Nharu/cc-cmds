@@ -6,10 +6,10 @@ The sidecar kinds below and one non-sidecar record are defined:
 
 | Artifact | Kind token | Writer | Location |
 | --- | --- | --- | --- |
-| Run manifest | `cc-run-manifest v1` | `autopilot` (kickoff) **only**; for a derived successor, the successor deriver `orchestrator/successor.sh` **only** | `<run 디렉터리>/plan.md` |
-| Authorization record | `cc-pipeline-grant v1` | `autopilot` (kickoff) **only**; for a derived successor, the successor deriver `orchestrator/successor.sh` **only** | `<base>/docs/pipeline-grant/{slug}.md` |
+| Run manifest | `cc-run-manifest v1` | `autopilot` (kickoff) **only** | `<run 디렉터리>/plan.md` |
+| Authorization record | `cc-pipeline-grant v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-grant/{slug}.md` |
 | Interview record | `cc-run-interview v2` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.interview.md` |
-| Kickoff trace | `cc-run-kickoff v1` | `autopilot` (kickoff) **only**; for a derived successor, the successor deriver `orchestrator/successor.sh` **only** | `<base>/docs/pipeline-run/<run-id>.kickoff.md` |
+| Kickoff trace | `cc-run-kickoff v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.kickoff.md` |
 | Run ledger | `cc-pipeline-run v1` | the driver **only** | `<base>/docs/pipeline-run/<run-id>.md` for a manifest run, `<base>/docs/pipeline-run/{slug}.md` for a run without one — a stage reads the path from `$CC_PIPELINE_LEDGER` and never derives it |
 | Approval sidecar | `cc-pipeline-approval v1` | the gate **only** | `<base>/docs/pipeline-approval/<run-id>.md` |
 | Halt record | `cc-pipeline-halt v1` | the halting stage | volatile run directory (§4) — **not a sidecar** |
@@ -20,7 +20,7 @@ The sidecar kinds below and one non-sidecar record are defined:
 
 ## 1. Writer partition — and why it is total
 
-**The driver is read-only against the grant.** The writer of `cc-pipeline-grant` is the kickoff skill `autopilot` for a run a person kicks off, and the successor deriver `orchestrator/successor.sh` for a derived successor — started only by the lane dispatcher, outside every run, and writing only a new successor's file, never a block into its predecessor's. The driver reaches it by no path at all, so it cannot append a **well-formed new block that grants more**; and the deriver cannot either, because the successor's gate admits its output only when the frozen set equals the predecessor's apart from the deadline, the `연쇄` row and exactly a delta a person approved. The interview record (§2b.5) has the single writer `autopilot`: it holds the person's own words, so it is written once, whole, while that person is present — a successor copies the root's interview row byte for byte and writes no interview record. **The gate refuses a Bash write to any run's `*.interview.md` or `*.kickoff.md`**, the way it refuses one to the manifest or the grant, so a stage cannot reach another run's frozen record through the gate. That covers the destination the argv carries literally — glued to a command letter or option, after any sed address (`sed 'w<path>'`, `sed '$!w<path>'`, `sed '1{w<path>'`, `sort -o<path>`), in another case, or as the record directory itself beside a record-named source — and a symbolic link made beforehand, which is followed to the file it leads to, as well as an `ln` whose target, read from the link's own directory, is such a record. A write-graded act that reads its program or its argument list from a file (`sed -f`, `awk -f`, `xargs -a`, `vim -s`) is refused whatever the file says, because its destination is a byte of that file and not of the argv. It does not cover a destination written inside a script or an interpreter's program text, a path assembled by a `cd` inside a wrapper, a whole ancestor directory copied over the record directory, a link swapped between the gate's check and the act, or the `ln` itself when its link directory follows a `t` bundled into an option cluster (`ln -st <dir> <target>`) — a later write through that link is still refused. A write through the edit tools (Write, Edit, NotebookEdit, MultiEdit) is not refused until the hook's guard is widened to match, and nothing outside the record pins its bytes: a run started later from a frozen manifest and grant record — a deferred kickoff the lane dispatcher launches unattended — re-reads both files and recomputes the binding digest from the same manifest it compares it against, so an edit that rewrites the digest along with the rows is admitted as that run's authorization. The kickoff trace (§2b.6) is written by the kickoff, which appends its progress lines while Act 1 runs, and for a derived successor by the deriver, which writes the successor's trace once; nothing else writes it.
+**The driver is read-only against the grant.** The writer of `cc-pipeline-grant` is the kickoff skill `autopilot`, for a run a person kicks off. The driver reaches it by no path at all, so it cannot append a **well-formed new block that grants more**. The interview record (§2b.5) has the single writer `autopilot`: it holds the person's own words, so it is written once, whole, while that person is present. **The gate refuses a Bash write to any run's `*.interview.md` or `*.kickoff.md`**, the way it refuses one to the manifest or the grant, so a stage cannot reach another run's frozen record through the gate. That covers the destination the argv carries literally — glued to a command letter or option, after any sed address (`sed 'w<path>'`, `sed '$!w<path>'`, `sed '1{w<path>'`, `sort -o<path>`), in another case, or as the record directory itself beside a record-named source — and a symbolic link made beforehand, which is followed to the file it leads to, as well as an `ln` whose target, read from the link's own directory, is such a record. A write-graded act that reads its program or its argument list from a file (`sed -f`, `awk -f`, `xargs -a`, `vim -s`) is refused whatever the file says, because its destination is a byte of that file and not of the argv. It does not cover a destination written inside a script or an interpreter's program text, a path assembled by a `cd` inside a wrapper, a whole ancestor directory copied over the record directory, a link swapped between the gate's check and the act, or the `ln` itself when its link directory follows a `t` bundled into an option cluster (`ln -st <dir> <target>`) — a later write through that link is still refused. A write through the edit tools (Write, Edit, NotebookEdit, MultiEdit) is not refused until the hook's guard is widened to match, and nothing outside the record pins its bytes: a run started later from a frozen manifest and grant record — a deferred kickoff the lane dispatcher launches unattended — re-reads both files and recomputes the binding digest from the same manifest it compares it against, so an edit that rewrites the digest along with the rows is admitted as that run's authorization. The kickoff trace (§2b.6) is written by the kickoff, which appends its progress lines while Act 1 runs; nothing else writes it.
 
 **The driver is the sole writer of the ledger, from the main worktree.** Stage processes emit structured output on stdout and **never write a sidecar** — not the ledger, not the grant — because `sidecar.md` §1.3's compare-and-swap only narrows the window N segment processes would contend in.
 
@@ -34,8 +34,6 @@ This partition is what lets the ledger's `stage-result` rows exist at all: the d
 # 파이프라인 인가 기록 — {slug}
 <!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=<document key>[; origin-worktree=<absolute worktree root>]; NOT a design doc; mechanism-local, never staged by a skill -->
 ```
-
-A derived successor's record differs from its predecessor's in the header alone: `writer=rekick; derived-from=<선행 런>; root=<뿌리 런>` stands where `writer=autopilot;` stood. The successor deriver's admission check is the first reader of `writer=`, and it refuses a successor whose record differs from the predecessor's anywhere outside those three fields.
 
 ### 2.1 Blocks
 
@@ -167,7 +165,6 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 - `적용 프로브 코드` | 불필요=<0–125> | 필요=<0–125> | 프로브 sha256=<64자 소문자 hex>     ← 킥오프 5c 가 기본 0/2 가 아닌 대응을 받았을 때만, 많아야 한 행
 - `재킥오프` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>     ← 킥오프가 묻지 않고 토글 없이 쓰는 한 행
-- `연쇄` | 뿌리 런=<id> | 선행 런=<id> | 순번=<k> | 선행 구속 다이제스트=<hex> | 재킥오프 시각=<ISO Z> | 원인=<토큰> [| 재인가 승인=<run>#<승인 id> | 답변 다이제스트=<hex>]     ← 파생된 후속 런에만, 파생기가 쓰는 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
@@ -251,23 +248,13 @@ planning act checks the rest, at the moment it brings the predecessor in (see
 
 **The `재킥오프` row is the person's consent that an ending run may be followed
 by a successor**, written by the kickoff on every run, unasked and with no
-toggle; the closing read-back shows it together with the chain's wall-clock
-maximum, `(연쇄 상한 + 1) × 길이`, and says that the chain's successors carry no
-spending cap. `길이` is the kickoff's resolved deadline minus the moment it was
-resolved, and a successor's deadline is exactly its `재킥오프 시각` plus that
-length. **The `연쇄` row is written only by the successor deriver
-`orchestrator/successor.sh`**, into a successor, and names the chain's root, the
-predecessor, the successor's position, the predecessor's binding digest, the
-moment of derivation and the predecessor's end token; a successor re-authorized
-by an approval carries that approval and its answer digest besides. From the
-second successor on, the deriver replaces the predecessor's `연쇄` row rather
-than adding a second. A manifest without a `재킥오프` row is never derived from.
-The row is not the re-kickoff of `autopilot` Step 1.0, where a person calls the
-kickoff again and its restart helper carries a stopped run's answers into a new
-run: that path is the kickoff's own and writes its files as a kickoff does,
-while the `재킥오프` row is consent for the successor deriver alone.
-Both rows are in the frozen set, so editing a root's `연쇄 상한` or `길이` after
-the kickoff moves the digest the person confirmed.
+toggle; the closing read-back shows it and says that nothing reads it to open a
+successor run now. `길이` is the kickoff's resolved deadline minus the moment it
+was resolved. The row is not the re-kickoff of `autopilot` Step 1.0, where a
+person calls the kickoff again and its restart helper carries a stopped run's
+answers into a new run: that path is the kickoff's own and writes its files as a
+kickoff does. The row is in the frozen set, so editing its `연쇄 상한` or `길이`
+after the kickoff moves the digest the person confirmed.
 
 The `자동 채택` rows are in that list because they decide whether a judgment is
 taken without a person. Serialization is over the whole file rather than over
@@ -475,7 +462,7 @@ approval silently.
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양`, `선행 착지`, `적용 프로브 코드`, `재킥오프` and `연쇄` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양`, `선행 착지`, `적용 프로브 코드` and `재킥오프` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -601,17 +588,9 @@ never compared.
     and no slice carries two. Whether the slice is declared, whether the slug is
     its `레포` and whether the commit landed are not checked here. Each
     violation is a **hard stop**.
-19. **`재킥오프` and `연쇄` rows.** Each matches its form in §2b.1, the
-    `길이` reads as an ISO 8601 duration of more than nothing, the `연쇄`
-    row's `원인` is one of the thirteen `재킥 원인` tokens, and each kind is at
-    most one row. Each violation is a **hard stop**.
-20. **A successor's lineage.** A manifest with a `연쇄` row is admitted only
-    when the files bear it out: the predecessor's recomputed binding digest,
-    identity with the predecessor outside the allowed changes, the position in
-    the chain, the deadline and the id are checked on every entry; the
-    predecessor's ledger, the chain's ledgers and the dispatcher's claim are
-    checked once per manifest digest and memoised in the run directory. A
-    failure is a **hard stop** reading `lineage-invalid — <사유>`.
+19. **The `재킥오프` row.** It matches its form in §2b.1, the `길이` reads as
+    an ISO 8601 duration of more than nothing, and there is at most one row.
+    Each violation is a **hard stop**.
 21. **The entry judgment's structure.** A plan carrying `design_tier_judged` is
     run through `orchestrator/prompts/entry-plan.check.jq`, the same file the
     kickoff runs on its own output and the gate's tests run on their fixtures,
@@ -1015,7 +994,7 @@ An approval and a deferred review obligation are **non-terminal states with thei
 
 **`admit` is the second permitted shape of a remote act in a hooked target.** The run hook refuses a bare command and records its bytes as a request under `admit/req/<caller key>`; `gate.sh admit --request <id|last> --manifest … --target … [--segment …] --surface … [--reach …] --snapshot-digest … --rationale …` takes no argv, splits the recorded bytes with a closed grammar (exit 2 outside it), grades them like `exec` — the cutpoint derived from the words when none is declared, raised to `push` for a push — and writes the `자율 승인` row with `형태=맨`, `요청`, `티켓` and `예측`. It refuses (exit 3) a request older than three hundred seconds, one of another caller, a push whose refspec is `HEAD` outside the segment worktree, an issuing root that is not the target's own checkout while the target's main worktree carries a Bash hook, and a write under a separated credential, which a bare command cannot carry. Then it runs the root's hooks on the bytes: a refusal, `ask`, `defer`, the failure of a hook entry carrying `onFailure: "block"`, a hook that outlives the probe's time bound (`시간 초과(<n>초)`) and settings that cannot be read are a `대상 거절` row and exit 3; any other hook failure (an exit other than 0 or 2, a hook that cannot start, JSON output that does not parse) is `비차단 오류`, which the harness runs the tool after, and counts as a pass. A pass issues a one-use ticket under `admit/ticket/` and prints the bytes to issue again, verbatim, within three hundred seconds from the same directory. **`admit` itself runs nothing**; the run hook spends the ticket when the same bytes come back.
 
-**The snapshot carries what a shift needs to push and open a PR without reading logs.** `guard_refusals[]` lists the newest `대상 거절` row per act and form, at most twenty, with `대상`, `세그먼트`, `형태`, `근거`, `행위 다이제스트`, `명령`, `거절 문면` and `조건` — `같음` while the condition is unchanged, `바뀜` once it moved. Every `segments[]` element carries `브랜치`, `HEAD`, `원격 팁`, `PR` (`번호`, `상태`, `HEAD`) from the last `원격 판독` row, `원격 단계` — `push 필요`, `PR 필요`, `PR 있음`, `머지됨`, `불일치` or `미상`, `미상` when the last read was not taken at the live HEAD — and `리뷰 줄`, the line `review-line` prints for the segment (`null` without a branch).
+**The snapshot carries what a shift needs to push and open a PR without reading logs.** `guard_refusals[]` lists the newest `대상 거절` row per act and form, at most twenty, with `대상`, `세그먼트`, `형태`, `근거`, `행위 다이제스트`, `명령`, `거절 문면` and `조건` — `같음` while the condition is unchanged, `바뀜` once it moved. Every `segments[]` element carries `적용`, right after `상태`: `대기` when the last `segment` row is `머지됨` carrying `적용=대기`, `인계` when the last row is `머지됨`, a frozen apply command exists, its `적용 주체` is `사람` and no `적용 인계` row names the segment yet, and `없음` otherwise, never `null`. The apply act's preconditions read the same value and end an apply on `없음` with exit 0 and no row. Every element also carries `브랜치`, `HEAD`, `원격 팁`, `PR` (`번호`, `상태`, `HEAD`) from the last `원격 판독` row, `원격 단계` — `push 필요`, `PR 필요`, `PR 있음`, `머지됨`, `불일치` or `미상`, `미상` when the last read was not taken at the live HEAD — and `리뷰 줄`, the line `review-line` prints for the segment (`null` without a branch).
 
 **A routing shift stops one segment with `act --kind shift-halt`, which writes a halt record and a cone `blocked` row and no row kind of its own.** The caller has to be a routing shift (a stage or the seat is exit 3). Argv carries `--segment` (a segment the ledger has a row for), the site as `--site <자리>` or `자리=<자리>` (one of the gate's closed site table, else exit 2), `질문`, `관측` and, optionally, `추천` with `추천 근거`; any other key is exit 2. The table's sites are `적용 전제 거부`, `병합 거절`, `push원격불일치`, `도달 거부`, `베이스 해소 한도`, `워크트리 기록 없음`, `종료 조건 11 판독 불가` and `대상 훅 거절`; each offers the options `재시도` and `세그먼트 park`, and the next shift carries out the one answered. At `대상 훅 거절` the answer is itself one of the five elements of the refusal condition (`대상 거절` below), so a `재시도` answer lets the next shift issue the blocked act once more. At `push원격불일치`, `도달 거부`, `베이스 해소 한도` and `대상 훅 거절` the gate drops any recommendation and writes `(없음)`. Elsewhere `추천` has to be one of the two labels and every part of `추천 근거` a `인터뷰 기록` (the run's `<run id>.interview.md` beside the manifest), `매니페스트 인가` (the manifest) or `상시 지침` (the target's `CLAUDE.md`) quote found verbatim in that file; `기기 사실`, a kind the gate does not know, or a quote not found is exit 3 with nothing written. The gate writes the record (§4) into `halt/shift/` — refused with exit 3 and nothing written unless that is a real directory at its own place, and when a file already sits at the name (`mv -n`) — and then the cone row `스코프=cone`, `원인=막힘`, `앵커 세그먼트=<segment>`, `사유=교대 정지 — <자리>`, `근거` (the clipped `관측`), `중단 기록`, `기록 다이제스트` (the `sha256` of the bytes written), `자리` and `교대`. Those four fields ride on no other `blocked` row: `act --kind blocked` carrying any of them is exit 2. The gate does not refuse acts on the cone; the shift holds it. The snapshot's `shift_halts[]` lists every such row whose record no `중단 답` row has answered yet — `세그먼트`, `자리`, `기록`, `줄` and `보류` (the cone's members now, the anchor left out) — together with any cone row whose `사유` opens with `교대 정지 기록 불가 — `, which has no record and holds its segment for the rest of the run; an element whose segment is terminal is left out. A stop whose slice has no `segment` row yet (a refused predecessor landing or adoption) and an apply that failed after the gate parked the segment itself are not sites: the first has no segment to anchor on, and the second is already a terminal `park` whose apply no answer could retry.
 
@@ -1071,7 +1050,7 @@ At the three base values `review_next[]` also carries `기준 사이클` and `�
 
 **A widened residual, stated rather than closed: the row anchor reaches these rows too.** The `A-<8 hex>` evidence anchor that closes a `problem` obligation resolves by its `prev=` prefix to a row of ANY series, so the two routing series — frequent machine rows that say nothing about a finding — widen the set of rows a rationale can point at. While routing is dormant there are no such rows and the widening is empty.
 
-**`종료 절` and `문서 해시` are listed with the fields the gate actually writes**, because a table that under-reports its writer's series is not a closed definition. The fixed-graph driver writes `문서 해시` rows too, in the same shape and order — `스테이지=<세그먼트, or the stage for a run-scope stage> 이후 | sha256=<the document now> | 동결값=<frozen whole-document digest> | 관측=<time>` — after every stage termination it records, and skips a (stage, value) pair already on the ledger whichever writer wrote it, so that a successor reads the document the run last left rather than the one it started from.
+**`종료 절` and `문서 해시` are listed with the fields the gate actually writes**, because a table that under-reports its writer's series is not a closed definition. The fixed-graph driver writes `문서 해시` rows too, in the same shape and order — `스테이지=<세그먼트, or the stage for a run-scope stage> 이후 | sha256=<the document now> | 동결값=<frozen whole-document digest> | 관측=<time>` — after every stage termination it records, and skips a (stage, value) pair already on the ledger whichever writer wrote it, so that a reader of the ledger takes the latest digest the run recorded.
 
 **The gate's row lookup (`gate_has_row <계열> <키=값> [<키=값>…]`) matches whole fields, not substrings.** Each argument names one `키=값` field; one leading and one trailing `|` and the whitespace around them are ignored, so `"| 키=값 |"` and `"키=값"` are the same lookup. A row answers only when it carries, for every argument, a field byte-identical to it, and several arguments are joined on one row — two fields found on two different rows are not a hit. So a key spelled inside another field's value, a key that ends another key and an id that prefixes another id do not answer, and two fields joined into one argument answer nothing; `scripts/lint-sidecar-field-table.sh` refuses that last shape at the call site. **The answer is sound only while every writer keeps this grammar**, mapping `|` and line breaks out of keys and values alike: a ` | ` spliced in by a writer that skipped that step is a real separator at the byte level, and no reader can tell it from one the writer meant.
 
@@ -1138,7 +1117,7 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 
 **`P0잔존` is decided at one place, inside the gate's end-row writer, from the ledger and the manifest alone.** When a caller hands it `해당없음` and `종료 부류` is empty or `완료` — never `포기` or `이어받음` — the writer asks whether the run stopped only because the re-check review cap left P0 findings: the manifest declares a design document; at least one segment's last `cycle` row counts more than zero `P0`, its re-check rounds counted again from the ledger exceed that segment's cap, and its last `segment` row is `park`; every other segment the ledger has a `segment` row for is `머지됨`, `완료`, such a segment, or a dependency park whose `미완 선행` names only such segments or other dependency parks counted the same way; and no approval is open. When all of that holds the row is written with `재킥 원인=P0잔존`, without `종료 부류`, and with the per-segment `재킥 지문` of the field table; otherwise nothing changes. A dependency park without `미완 선행` — a router run's — is not counted, so such a run stays `해당없음` and goes to a person. The `done` file's first line follows the same decision: `P0 잔존 — 확인 리뷰 상한에서 P0 가 남은 세그먼트: <목록>` in place of the completion line.
 
-**The successor derivation treats `P0잔존` like `결함` and stops on a person, not on a cap.** `P0잔존` is an automatic cause. A stop predicate — the same fingerprint again (for `결함` the whole value, for `P0잔존` any shared comma component with an earlier `P0잔존` link, and an empty, `-` or `(미상)` value always), or any other stop the deriver reads — gives the verdict `사람`; only the chain cap gives `상한`. The document digest the deriver carries forward is the latest `문서 해시` row a run recorded, whichever of the gate and the driver wrote it. A `P0잔존` successor's first step, before the design step, chooses between re-converging the frozen document on the P0 findings and redesigning from the interview record, records that choice as a `자율 승인` row with `kind=rekick-branch`, and on a restart reads the row back instead of choosing again.
+**A `P0잔존` successor chooses its first step once.** A `P0잔존` successor's first step, before the design step, chooses between re-converging the frozen document on the P0 findings and redesigning from the interview record, records that choice as a `자율 승인` row with `kind=rekick-branch`, and on a restart reads the row back instead of choosing again.
 
 **`gate.sh end-overdue --manifest <path>`** closes a run that passed `벽시계 마감` with no end token, once; a second call writes nothing. The token follows whether the driver is alive: a fixed-graph run whose fleet marker `busy/<id>.<pid>` names a live process takes `마감`, a router run with a live shift or stage takes `마감` only when neither progress axis is declared (a declared axis ends that run itself, so nothing is written), and a run that stopped or cannot be observed takes `해당없음`. The backlog record's state is never evidence that a run is alive.
 
@@ -1617,7 +1596,6 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `session-lineage` | gate (`gate.sh`) | session id → run id, the ancestry index |
 | `surface-digest` | gate (`gate.sh`) | the enforcement-surface baseline compared at each act |
 | `surface-digest.files` | gate (`gate.sh`) | the per-file list behind that baseline, written by every site that writes `surface-digest`: one `<구분>\t<sha256>  <path>` line per file, `<구분>` being `런설정` (a file under the run's own `settings/`) or `대상설정` (a target's settings file). The digest is the hash of the list's sha-and-path half, so a moved baseline can be traced to the file that moved it |
-| `rekick-candidate` | gate (`gate.sh`) | written once, by whichever site first settles the run's end token (an end row, or the run-scope `blocked` row of a forced surface move), and never overwritten — published by a single `link(2)`. `키=값` lines: `매니페스트` · `원장` · `런 id` · `토큰` · `기록 시각`. **A cache of the ledger, not the authority**: the end token is the ledger's, and a run whose directory was collected loses this file without losing its token |
 | `progress-digest` · `progress-repeat` | gate (`gate.sh`) | the stagnation boundary's previous value and its repeat count |
 | `obligation-window` · `obligation-window-done` · `obligation-repeat` | gate (`gate.sh`) | the obligation boundary's state — the obligations its count is waiting on, and which of them have been seen disposed since that count started — and its repeat count |
 | `act-budget-base` · `act-budget-digest` | gate (`gate.sh`) | the terminal-act budget's baseline and its input digest |
