@@ -10532,6 +10532,17 @@ gate_design_next_undispatched_step() {
   printf '%s' "$istep"
 }
 
+gate_plan_ends_at_design() {
+  # gate_plan_ends_at_design — 0 when the plan's steps are a non-empty array of
+  # objects whose `skill` is only `design` or `design-audit`, so the graph ends
+  # at the design (or at its audit) and nothing follows. 1 otherwise, an
+  # unparsable plan included: a plan this cannot read keeps its present verdict.
+  manifest_plan_json 2>/dev/null \
+    | jq -e '(.steps | type == "array" and length > 0)
+             and all(.steps[]; type == "object" and (.skill == "design" or .skill == "design-audit"))' \
+      >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # The segment plan, read from the frozen document rather than transcribed.
 #
@@ -16359,8 +16370,8 @@ gate_main() {
   GATE_RECOVERY=""
   # THE APPLY ACT'S THREE VALUES ARE CLEARED ON ENTRY, AND NO FLAG SETS THEM.
   # `GATE_SUBJECT_HEAD` is the head the merge rule judges an apply against, and
-  # the act sets it only after its own preconditions proved `M^2` equal to the
-  # reviewed head; an exec that inherited one from its environment would carry a
+  # the act sets it only after its own preconditions proved `M^2` to be the
+  # reviewed head or its honest renumbering merge; an exec that inherited one from its environment would carry a
   # head nobody proved into the rule. `GATE_APPLY_ARM` is the marker that lets
   # the segment arm accept `적용 준비` and `완료` for a segment that still owes
   # an apply, and a caller that could export it would write those states by hand.
@@ -28765,6 +28776,31 @@ gate_apply_line_of() {
     | gate_rows_field_eq "$2" "$3" | tail -1 | cut -d: -f1
 }
 
+gate_segment_apply_state() {
+  # gate_segment_apply_state <alias> <segment> — what the segment still owes
+  # after its merge, one of three words. `대기`: the last row is `머지됨`
+  # carrying `적용=대기`, read from the ledger alone, so it answers from the
+  # bytes exit condition 1 and `cc_nonterminal_segments` read. `인계`: the last
+  # row is `머지됨`, a frozen apply command exists, its actor is a person, and
+  # no `적용 인계` row names the segment yet — the handover row is the only way
+  # that command reaches the morning. `없음`: everything else, so a merge with
+  # no command, a cutpoint below `배포` or a handover already written is the
+  # segment's end. Two readers only: the apply preconditions and the snapshot.
+  # The alias is taken for the signature; the answer reads the ledger and the
+  # frozen apply fields alone.
+  if [ "$(gate_segment_field "$2" '상태')" != "머지됨" ]; then
+    printf '없음'
+  elif gate_segment_apply_pending "$2"; then
+    printf '대기'
+  elif [ -n "$(gate_apply_value "$2" '적용 명령')" ] \
+       && [ "$(gate_apply_value "$2" '적용 주체')" = "사람" ] \
+       && [ -z "$(gate_apply_line_of '적용 인계' '세그먼트' "$2")" ]; then
+    printf '인계'
+  else
+    printf '없음'
+  fi
+}
+
 gate_apply_refuse() {
   # gate_apply_refuse <전제 번호> <message> — one refusal shape for all five, so
   # the router's handoff can quote the number and the sentence.
@@ -28775,13 +28811,22 @@ gate_apply_refuse() {
 
 gate_apply_preconditions() {
   # gate_apply_preconditions <verb> <alias> <segment> — the five, in order. On
-  # success sets GATE_APPLY_MERGE (M), GATE_APPLY_SUBJECT (M^2),
-  # GATE_APPLY_COMMAND and GATE_APPLY_PROBE. A segment whose actor is a person
-  # gets its handover row here and the caller ends with 0.
+  # success sets GATE_APPLY_MERGE (M), GATE_APPLY_SUBJECT (the reviewed head,
+  # which is M^2 or the head M^2 honestly renumbers), GATE_APPLY_COMMAND and
+  # GATE_APPLY_PROBE. A segment whose actor is a person gets its handover row
+  # here and the caller ends with 0.
+  #
+  # THE ORDER IS REPOSITORY, 1, THEN WHAT THE SEGMENT OWES, THEN 2 TO 5. A
+  # segment past 1 whose `gate_segment_apply_state` is `없음` owes no apply:
+  # GATE_APPLY_NOT_OWED is set and 0 returned before 2 to 5 are read, so a merge
+  # with no command or a cutpoint below `배포` ends there instead of being
+  # refused by a precondition that only an owed apply needs. 1 stays ahead of
+  # it, so an apply on an unmerged segment, or a second one on a segment that
+  # already ended, is still refused.
   local verb="$1" alias="$2" seg="$3"
-  local st m pol cline sline crow p0 p1 rh rep rep_abs root base parents m2 rhfull actor cut repo ralias
+  local st m pol cline sline crow p0 p1 rh rep rep_abs root base parents m2 rhfull actor cut repo ralias t why
   GATE_APPLY_MERGE=""; GATE_APPLY_SUBJECT=""; GATE_APPLY_COMMAND=""; GATE_APPLY_PROBE=""
-  GATE_APPLY_HANDOVER=""
+  GATE_APPLY_HANDOVER=""; GATE_APPLY_NOT_OWED=""
 
   # The repository is the one the plan row declares. Every path below — the
   # merge commit's lookup and the apply worktree beside the root — is derived
@@ -28798,6 +28843,12 @@ gate_apply_preconditions() {
   [ "$st" = "머지됨" ] || { gate_apply_refuse 1 "세그먼트 ${seg} 의 마지막 segment 행이 머지됨 이 아닙니다 (${st:-행 없음})"; return $?; }
   m=$(gate_segment_field "$seg" '머지 커밋')
   [ -n "$m" ] || { gate_apply_refuse 1 "세그먼트 ${seg} 의 머지됨 행에 머지 커밋 이 없습니다"; return $?; }
+
+  # A segment that owes no apply ends here: no row, no worktree, and 0.
+  if [ "$(gate_segment_apply_state "$alias" "$seg")" = "없음" ]; then
+    GATE_APPLY_NOT_OWED=1
+    return 0
+  fi
 
   # 2 — the resolved policy reviews before it merges. Resolved the way
   # `gate_resolve_review_policy` resolves it: the row, and absence is strict.
@@ -28829,8 +28880,10 @@ gate_apply_preconditions() {
   { [ -n "$cline" ] && [ -n "$sline" ] && [ "$cline" -lt "$sline" ]; } \
     || { gate_apply_refuse 3 "마지막 cycle 행이 원장 순서로 머지됨 행보다 앞서지 않습니다"; return $?; }
 
-  # 4 — M is a two-parent merge of exactly the reviewed head, and the local
-  # remote-tracking base already holds it.
+  # 4 — M is a two-parent merge of the reviewed head, or of the honest release
+  # metadata renumbering merge of it against the base the segment's last
+  # `베이스 판정` row named — the proof the merge act and the merge check use —
+  # and the local remote-tracking base already holds it.
   rh=$(gate_row_field "$crow" '리뷰 HEAD')
   root=$(alias_root "$alias" 2>/dev/null || true)
   [ -n "$root" ] && [ -d "$root" ] || { gate_apply_refuse 4 "대상 ${alias} 의 루트를 찾지 못했습니다"; return $?; }
@@ -28842,8 +28895,19 @@ gate_apply_preconditions() {
   [ "$parents" = "2" ] || { gate_apply_refuse 4 "머지 커밋 ${m} 의 부모가 둘이 아닙니다 (${parents:-?}) — squash·rebase 착지는 적용하지 않습니다"; return $?; }
   m2=$( cd "$root" && git rev-parse --verify -q "${m}^2" 2>/dev/null || true)
   rhfull=$( cd "$root" && git rev-parse --verify -q "${rh}^{commit}" 2>/dev/null || true)
-  { [ -n "$m2" ] && [ "$m2" = "$rhfull" ]; } \
-    || { gate_apply_refuse 4 "머지 커밋의 둘째 부모(${m2:-?})가 cycle 행의 리뷰 HEAD(${rh:-?})와 같지 않습니다"; return $?; }
+  if ! { [ -n "$m2" ] && [ "$m2" = "$rhfull" ]; }; then
+    t=$(gate_row_field "$(gate_base_last_row "$seg")" '베이스')
+    why='베이스 판정 행 없음'
+    if [ -n "$m2" ] && [ -n "$rhfull" ] && [ -n "$t" ]; then
+      if gate_meta_resolved "$root" "$rhfull" "$m2" "$t"; then
+        why=""
+      else
+        why=${GATE_META_WHY:-no answer}
+      fi
+    fi
+    [ -z "$why" ] \
+      || { gate_apply_refuse 4 "머지 커밋의 둘째 부모(${m2:-?})가 cycle 행의 리뷰 HEAD(${rh:-?})와 같지 않습니다 — 리뷰 HEAD 의 릴리스 메타 재번호 머지로도 증명되지 않습니다 (${why})"; return $?; }
+  fi
   ( cd "$root" && git merge-base --is-ancestor "$m" "refs/remotes/origin/$base" ) 2>/dev/null \
     || { gate_apply_refuse 4 "머지 커밋 ${m} 이 로컬 origin/${base} 의 조상이 아닙니다 — 게이트는 fetch 하지 않습니다"; return $?; }
 
@@ -28866,7 +28930,10 @@ gate_apply_preconditions() {
   [ -n "$GATE_APPLY_PROBE" ] || { gate_apply_refuse 5 "세그먼트 ${seg} 에 적용 프로브 가 없습니다"; return $?; }
   cut=$(gate_segment_cutpoint "$alias" "$seg")
   [ "$cut" = "배포" ] || { gate_apply_refuse 5 "세그먼트 ${seg} 의 절단점이 배포 가 아닙니다 (${cut:-(없음)})"; return $?; }
-  GATE_APPLY_MERGE="$m"; GATE_APPLY_SUBJECT="$m2"
+  # 5's refusals of a missing command and of a cutpoint other than `배포` are
+  # no longer reached past the owed check above; they stay as the last net
+  # should the two readings ever disagree.
+  GATE_APPLY_MERGE="$m"; GATE_APPLY_SUBJECT="$rhfull"
   return 0
 }
 
@@ -29999,10 +30066,19 @@ gate_verb_act() {
   # THE APPLY ACT'S FIVE PRECONDITIONS, before the first writer below — the
   # undeclared-target registration is one — and so before the catalog, the
   # approval block and every row. A person as the actor ends here with its
-  # handover row and 0. The subject head is bound only after precondition 4
-  # proved it, and only for this act.
+  # handover row and 0. A segment that owes no apply ends here too, with no row
+  # and 0. The subject head is bound only after precondition 4 proved it, and
+  # only for this act.
   if [ "$kind" = "apply" ]; then
     gate_apply_preconditions "$verb" "$alias" "$segment" || exit $?
+    if [ -n "${GATE_APPLY_NOT_OWED:-}" ]; then
+      if [ "$verb" = "plan" ]; then
+        printf '통과 예상: kind=apply target=%s 처분=불필요(적용을 빚지지 않음)\n' "$alias"
+      else
+        log "적용 불필요 — ${segment} 는 적용을 빚지지 않습니다 (머지됨 행에 적용=대기 가 없고 사람 인계도 남지 않았습니다)"
+      fi
+      exit 0
+    fi
     if [ -n "${GATE_APPLY_HANDOVER:-}" ]; then
       [ "$verb" = "plan" ] && printf '통과 예상: kind=apply target=%s 처분=인계(적용 주체 사람)\n' "$alias"
       exit 0
@@ -37300,10 +37376,22 @@ gate_done_conditions() {
   # its head is not one `gate_done_disposition` drops: the run is unfinished,
   # not void. An audit that ran and ended any other way is not named here; the
   # router stops on it, and the old line then lets the run record its end.
-  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep
+  #
+  # AND A PLAN THAT ENDS AT THE DESIGN HAS NO STEP TO NAME. When every step of
+  # the plan is the design or its audit (`gate_plan_ends_at_design`), a design
+  # that ended `정상 완료` — with its audit, when the plan has one, ended
+  # `정상 완료` too — is the run's work done, provided the document is still
+  # frozen when this reads it. The condition then holds and prints nothing, as
+  # the audit-first arm does, and condition 10 measures the clauses the person
+  # authorized. Read as `종단 행 있음`, the run closed as invalidated with every
+  # clause settled satisfied. A document no longer frozen prints the dropped
+  # line with its own reason; a re-convergence on the audit's key that came
+  # after its last audit row waits on a fresh audit, with the audit-first arm's
+  # line; an audit that ended any other way keeps `종단 행 있음`.
+  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep dwait dmet alastrow
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
-    dwhy=""; dnext=""
+    dwhy=""; dnext=""; dwait=""; dmet=""
     if dstep=$(gate_run_scope_step design); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
@@ -37340,6 +37428,27 @@ gate_done_conditions() {
         dwhy='종단 행 있음'
         if [ "$dlast" = '정상 완료' ]; then
           dnext=$(gate_design_next_undispatched_step) || dnext=""
+          if [ -z "$dnext" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+             && gate_plan_ends_at_design; then
+            if astep=$(gate_run_scope_step audit); then
+              alastrow=$( { gate_stage_result_rows_of "$astep" || true; } \
+                          | { grep -F -- '- `stage-result`' || true; } | tail -1)
+              case "$alastrow" in
+                *'| 종류=reconverge '*)
+                  dwait=$(printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 재수렴 뒤 새 감사를 기다립니다' "$astep")
+                  dwhy="" ;;
+                *)
+                  if [ "$(gate_row_field "$(gate_audit_result_rows_of "$astep" | tail -1)" '종단 부류')" = '정상 완료' ]; then
+                    if doc_is_frozen "${DOC:-}"; then dwhy=""; dmet=1
+                    else dwhy='설계 문서가 동결돼 있지 않음'; fi
+                  fi ;;
+              esac
+            elif doc_is_frozen "${DOC:-}"; then
+              dwhy=""; dmet=1
+            else
+              dwhy='설계 문서가 동결돼 있지 않음'
+            fi
+          fi
         fi
       else
         case "$dname" in
@@ -37363,9 +37472,11 @@ gate_done_conditions() {
         fi
       fi
       # A BASE RUN'S FINISHED DESIGN IS NOT A DEAD ONE. In a single run a design
-      # that ended `정상 완료` with no segment after it can only mean the plan
-      # stopped there; in a base run that is the normal road to the audit and the
-      # split, which the base arm below judges.
+      # that ended `정상 완료` with no segment after it means the plan stopped
+      # there, and when the plan ends at the design (and its audit) that ending
+      # and the frozen document are the run's work done, judged above; in a base
+      # run it is the normal road to the audit and the split, which the base arm
+      # below judges.
       #
       # So is one that was never dispatched because the document was already
       # there and frozen. A base run kicked off again over the same document —
@@ -37383,8 +37494,15 @@ gate_done_conditions() {
     fi
     if [ -n "$dnext" ]; then
       printf '1 설계가 동결됐으나 다음 단계(%s)가 아직 파견되지 않았습니다\n' "$dnext"
+    elif [ -n "$dwait" ]; then
+      # A plan that ends at its audit, waiting on the fresh audit after a
+      # re-convergence: not a head the disposition drops.
+      printf '%s\n' "$dwait"
     elif [ -n "$dwhy" ]; then
       printf '1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$dstep" "$dwhy"
+    elif [ "$dmet" = 1 ]; then
+      # The plan ended at the design (and its audit), and it froze: held.
+      :
     elif [ "$(gate_snapshot_design_scope)" = "base" ]; then
       # A BASE RUN NEVER HAS A SEGMENT. Its graph ends at the split, so "no
       # segment" is its normal end and the plain line below would hold it
@@ -38273,9 +38391,13 @@ gate_snapshot_segments_json() {
            srr=$(gate_remote_last_row "$sid")
            srl=""
            [ -z "$sbr" ] || srl=$(gate_review_line "$sid" 2>/dev/null || true)
-           printf '    {"id": "%s", "상태": "%s", "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s", "브랜치": %s, "HEAD": %s, "원격 팁": %s, "PR": {"번호": %s, "상태": %s, "HEAD": %s}, "원격 단계": "%s", "리뷰 줄": %s},\n' \
+           # `적용` is the apply state the apply act's preconditions read, so
+           # the router and the gate cannot disagree on whether a merge is the
+           # segment's end.
+           printf '    {"id": "%s", "상태": "%s", "적용": "%s", "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s", "브랜치": %s, "HEAD": %s, "원격 팁": %s, "PR": {"번호": %s, "상태": %s, "HEAD": %s}, "원격 단계": "%s", "리뷰 줄": %s},\n' \
              "$(gate_json_escape "$sid")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '상태')")" \
+             "$(gate_json_escape "$(gate_segment_apply_state "" "$sid")")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '워크트리')")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '선행')")" \
              "$(gate_json_escape "${mo:-없음}")" \

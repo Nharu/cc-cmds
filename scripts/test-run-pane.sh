@@ -46,7 +46,12 @@ skip() { skipped=$((skipped + 1)); printf 'SKIP: %s — %s\n' "$1" "${2:-}"; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
 has()  { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "'$2' 에 '$3' 없음" ;; esac; }
 hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" ;; esac; }
-like() { if printf '%s' "$2" | grep -qE -- "$3"; then ok "$1"; else bad "$1" "'$2' 이 /$3/ 에 맞지 않음"; fi; }
+like() {
+  if grep -qE -- "$3" <<EOF
+$2
+EOF
+  then ok "$1"; else bad "$1" "'$2' 이 /$3/ 에 맞지 않음"; fi
+}
 
 TAB=$(printf '\t')
 SESSION_DIR="$XDG_STATE_HOME/cc-cmds/session"
@@ -72,7 +77,7 @@ pane() {
   printf '%s %s\n' "$cap" "$cols" > "$f.dim"
   printf '%s' "$out"
 }
-head_row() { printf '%s\n' "$1" | head -1; }
+head_row() { printf '%s\n' "$1" | sed -n '1p'; }
 hfield()   { head_row "$1" | cut -f"$2"; }
 body()     { printf '%s\n' "$1" | awk 'NR > 1'; }
 body_n()   { body "$1" | grep -c . || true; }

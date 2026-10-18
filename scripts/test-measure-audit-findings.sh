@@ -82,7 +82,10 @@ bash "$measure" --reports "$fixtures/reports" > "$tmp" 2>/dev/null || true
 fenced_block=$(awk '/^# missing-fence/ { exit } { print }' "$tmp")
 decoy_hit=0
 for v in 101 999 888 38 21 18 26 14 33 25 77 99; do
-  if printf '%s\n' "$fenced_block" | grep -qE "	${v}	"; then
+  if grep -qE "	${v}	" <<EOF
+$fenced_block
+EOF
+  then
     decoy_hit=1
     echo "  decoy value $v appeared in the fenced rows" >&2
   fi
