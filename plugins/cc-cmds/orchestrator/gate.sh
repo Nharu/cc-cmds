@@ -37872,7 +37872,7 @@ gate_done_conditions() {
         if [ "$cause" = "무효화" ]; then
           printf '5 런 스코프 blocked 가 해소 불가입니다 (%s) — 이 런은 끝났습니다\n' "$reason"
         else
-          printf '5 런을 막는 blocked(런 스코프 또는 런 범위 스텝 앵커 cone)가 미해소입니다 (%s) — 해소했다면 act --kind blocked 로 원인=해소 행을 쓰세요; 런 범위 스텝의 마감 파킹은 그 재개 명령으로 다시 파견해도 풀립니다\n' "$reason"
+          printf '5 런을 막는 blocked(런 스코프 또는 런 범위 스텝 앵커 cone)가 미해소입니다 (%s) — 해소했다면 act --kind blocked 로 원인=해소 행을 쓰세요; 런 범위 스텝의 마감 파킹은 그 재개 명령으로 다시 파견해도 풀립니다(사유가 중단 답 라우팅 — 으로 시작하는 라우팅 막힘은 계보가 없어 다시 파견해도 풀리지 않고 원인=해소 로만 풀립니다)\n' "$reason"
         fi
       done
 

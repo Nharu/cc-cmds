@@ -11513,7 +11513,7 @@ rm -f "$WT/$DOC15EN"
 
 # ---------------------------------------------------------------------------
 # 15e-2. An adopted composed requirement re-converges on the run-scope audit's key
-# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-2: 설계 단계 없는 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15e-2: 그 줄만 남으면 처분은 무효화다, 15e-2: 재수렴 뒤의 감사 단계는 닫힌 것으로 읽히지 않는다 ---
+# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-2: 설계 단계 없는 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15e-2: 그 줄만 남으면 처분은 무효화다, 15e-2: 재수렴 뒤의 감사 단계는 닫힌 것으로 읽히지 않는다, 15e-2: 라우팅 막힘은 같은 키의 뒤 시도로 풀리지 않는다 ---
 #
 # An audit with no segment asks a person whether to adopt the requirement its
 # findings compose, and parks on purpose. When the person adopts it, the router
@@ -11685,6 +11685,19 @@ check "15e-2: 스냅숏의 returned_halts 가 그 기록을 내놓는다" \
   "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -r '[.returned_halts[] | .record] | last // ""')" "$er15_rec3"
 er15_ans 사람 '선택지=reject' '근거=사람이 기각으로 바꿈'
 check "15e-2: 되돌려진 기록에 쓴 사람의 새 답이 선다" "$rc" "0"
+# A later attempt of the step does not release the routing block: its row
+# carries no lineage, so only the release row below does. A copy of the ledger
+# takes the later attempt, beside a deadline-park-shaped row whose own lineage
+# that attempt does release, so the first assertion is not vacuous.
+er15_lin="$RD15ER/er15-lineage.md"
+cp "$er15_led" "$er15_lin"
+printf -- '- `blocked` | 교대=1 | 대상=infra | 스코프=cone | 원인=막힘 | 앵커 세그먼트=A1 | 사유=마감 초과 — 대조 | 근거=계보=B:A1#9 대조 | prev=x\n' >> "$er15_lin"
+printf -- '- `stage-result` | 교대=1 | 세그먼트=- | 스테이지=A1 | 종류=audit | 실행 버전=10 | 계보=B:A1#10 | 종단 부류=정상 완료 | prev=x\n' >> "$er15_lin"
+check "15e-2: 계보를 실은 마감 park 모양 행은 같은 키의 뒤 시도가 푼다" \
+  "$(cc_unresolved_blocked "$er15_lin" | { grep -cF '마감 초과 — 대조' || true; })" "0"
+check "15e-2: 라우팅 막힘은 같은 키의 뒤 시도로 풀리지 않는다" \
+  "$(cc_unresolved_blocked "$er15_lin" | { grep -cF "$er15_why" || true; })" "1"
+rm -f "$er15_lin"
 er15_blk 스코프=run 원인=해소 "사유=$er15_why" '근거=사람이 새 답을 남겼다'
 check "15e-2: 같은 사유의 스코프=run 원인=해소 가 감사 단계 앵커의 막힘을 푼다" "$rc" "0"
 check "15e-2: 새 답 뒤에는 답 없는 기록이 없다" "$(cc_unanswered_halts "$RD15ER" "$er15_led")" "0"
@@ -29803,7 +29816,7 @@ check "34n: 새 답이 서면 답 없는 기록 수가 돌아온다" "$(cc_unans
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$RRT_PREV_AR"
 
 # --- 34o. 답 라우팅의 문면 — 게이트의 경로 id 와 기록의 고정 문자열이 읽는 쪽 문서에 있다 ---
-# --- section: 34o | group: base | covers: act | anchors: 34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다, 34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다, 34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다, 34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다 ---
+# --- section: 34o | group: base | covers: act | anchors: 34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다, 34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다, 34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다, 34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다, 34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다 ---
 #
 # THE GATE DECIDES THE ROUTE, AND THREE DOCUMENTS HAVE TO AGREE WITH IT. The
 # shift maps each route id to its item, the stage skills write the literal the
@@ -29848,6 +29861,18 @@ for rp_lit in 'warn "라우팅 불가 — ' 'warn "실행할 수 있는 선택�
   grep -qF -- "$rp_lit" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" && rp_gate=$((rp_gate + 1))
 done
 check "34o: 게이트가 좌석이 읽는 거절 문면 넷을 그대로 낸다" "$rp_gate" "4"
+# A routing block carries no lineage, so no reader may be told that a later
+# dispatch of the step releases it. The counts below pass vacuously on a moved
+# file, so each file must be non-empty first.
+rp_files=0
+for rp_f in "$RP_SHIFT" "$RP_LEAD"; do [ -s "$rp_f" ] && rp_files=$((rp_files + 1)); done
+check "34o: 교대 스킬과 리드 사본이 비어 있지 않다 (아래가 공허하지 않다)" "$rp_files" "2"
+check "34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다" \
+  "$(grep -cF 'A later dispatch of the step releases the block as well' "$RP_SHIFT" || true)" "0"
+check "34o: 교대 스킬과 리드 사본에 뒤 시도나 해소 행이 단계 cone 을 푼다는 문장이 없다" \
+  "$(cat "$RP_SHIFT" "$RP_LEAD" | grep -cF 'until a later attempt of the step or a `원인=해소` row' || true)" "0"
+check "34o: 교대 스킬이 사람의 새 답을 넘기기 전에 런 범위 라우팅 막힘을 푼다고 적는다" \
+  "$(grep -cF '**Release a run-scope routing block first.**' "$RP_SHIFT" || true)" "1"
 
 # --- 34k. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
 # --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다 ---
