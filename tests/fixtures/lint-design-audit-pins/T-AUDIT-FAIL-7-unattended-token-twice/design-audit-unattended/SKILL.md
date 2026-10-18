@@ -31,4 +31,16 @@ assertion 2a's creation record lives beside them; and when `CODE_ROOT` is
 not a repository both baselines are undefined, so skip them and
 report the skip.
 
+Skeleton-grade fence, after the disclosure v1 block:
+
+```text
+<!-- cc-design-audit-skeletal v1 begin -->
+**골격급 수**: <n>
+**합성 요구 후보 수**: <n>
+**합성 요구 골격급 수**: <n>
+**회차**: <최초|재감사>
+**문서 sha256**: <64 hex>
+<!-- /cc-design-audit-skeletal v1 end -->
+```
+
 The loop used `consecutive_no_major` to decide, and that is gone.

@@ -25,3 +25,15 @@ None of the following may appear anywhere under this skill: `consecutive_no_majo
 
 Step 0 through Step 7, then stop.
 
+Skeleton-grade fence, after the disclosure v1 block:
+
+```text
+<!-- cc-design-audit-skeletal v1 begin -->
+**골격급 수**: <n>
+**합성 요구 후보 수**: <n>
+**합성 요구 골격급 수**: <n>
+**회차**: <최초|재감사>
+**문서 sha256**: <64 hex>
+<!-- /cc-design-audit-skeletal v1 end -->
+```
+
