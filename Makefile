@@ -12,7 +12,20 @@ export CC_CMDS_DASHBOARD := off
 # `CC_GATE_PIN_SYNC_DISABLE=1` in front of it.
 export CC_GATE_PIN_SYNC_DISABLE := 1
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
+# Every check and suite runs in one time zone, whatever the caller's TZ says:
+# the local host and CI's runners otherwise disagree, and a suite that mistakes
+# local time for UTC passes on a UTC runner and fails here, or the other way
+# round. A variable defined in the makefile beats the same name in the
+# environment, so `TZ=UTC0 make test` still runs under this value. It is not
+# UTC on purpose: under an offset of zero that mistake passes everywhere and
+# hides. Calling a suite directly outside make inherits the host's zone instead;
+# put `TZ=Asia/Seoul` in front of it on a host that is not KST. A child a suite
+# starts with `env -i` does not receive the exported TZ either, so a new suite
+# that does so passes `TZ` to that child explicitly.
+TEST_TZ := Asia/Seoul
+export TZ := $(TEST_TZ)
+
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest print-test-tz tz-probe
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -20,6 +33,7 @@ lint:
 	bash scripts/lint-skill-paths.sh
 	bash scripts/lint-skill-description-budget.sh
 	bash scripts/lint-bash-portability.sh
+	bash scripts/lint-test-clock.sh
 	bash scripts/lint-skill-auq-spec.sh
 	bash scripts/lint-verification-literals.sh
 	bash scripts/lint-design-audit-pins.sh
@@ -295,6 +309,8 @@ LINT_TESTS := \
 	scripts/test-lint-skill-invariants.sh \
 	scripts/test-lint-skill-paths.sh \
 	scripts/test-lint-bash-portability.sh \
+	scripts/test-lint-test-clock.sh \
+	scripts/test-tz-pin.sh \
 	scripts/test-lint-skill-auq-spec.sh \
 	scripts/test-lint-verification-literals.sh \
 	scripts/test-lint-design-audit-pins.sh \
@@ -398,6 +414,19 @@ GATE_SHARDS ?= 13
 # So CI can read the number instead of spelling it a second time.
 print-gate-shards:
 	@echo $(GATE_SHARDS)
+
+# The zone a recipe actually receives, and the offset it resolves to. The
+# offset is printed beside the name because glibc falls back to UTC in silence
+# when it cannot find the zone data, and the name alone would still read right.
+print-test-tz:
+	@echo "$$TZ $$(date +%z)"
+
+# Runs one script under the pinned zone. scripts/test-tz-pin.sh uses it to show
+# that a fixture which mistakes local time for UTC fails through make.
+TZ_PROBE ?=
+
+tz-probe:
+	bash $(TZ_PROBE)
 
 # `test` minus the gate suite. CI runs this in the always-on leg because the
 # gate suite runs sharded in its own workflow, and running it in both places
