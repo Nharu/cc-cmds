@@ -280,7 +280,10 @@ cu_sec4=$(sed -n '/^## 4\. /,$p' "$repo_root/$CLICKUP_OPS")
 has "clickup-ops ## 3. — <plugin root> 정의 문장이 있다" "$cu_sec3" "$DEF"
 has "clickup-ops ## 4. — <plugin root> 정의 문장이 있다" "$cu_sec4" "$DEF"
 STAGE_SENTENCE='When you are running as an unattended pipeline stage (`CC_PIPELINE_RUN_ID` is set), add `--lexical-only`, do not propose the candidates or ask about them, and copy the output lines — the `similar-items:` line, any `notice:` line and the candidate lines — verbatim into the report the stage writes when it finishes. Proceed with the original ticket'"'"'s scope.'
-if printf '%s\n' "$cu_sec4" | grep -qxF "$STAGE_SENTENCE"; then
+if grep -qxF "$STAGE_SENTENCE" <<EOF
+$cu_sec4
+EOF
+then
   ok "clickup-ops ## 4. — 무인 스테이지 문장이 바이트 그대로 있다"
 else
   bad "clickup-ops ## 4. — 무인 스테이지 문장이 바이트 그대로 있다" "한 줄로 일치하는 문장 없음"

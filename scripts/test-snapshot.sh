@@ -423,6 +423,10 @@ check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이�
 check "대상 훅 거절이 없으면 guard_refusals 는 빈 배열이다" "$(jq -c .guard_refusals "$WORK/s1.json")" "[]"
 check "segments[] 의 원소는 원격 상태 필드를 싣는다" \
   "$(jq -r '[.segments[] | has("브랜치") and has("HEAD") and has("원격 팁") and has("PR") and has("원격 단계") and has("리뷰 줄")] | if length == 0 then "원소 없음" else all | tostring end' "$WORK/s1.json")" "true"
+# `적용` is always one of three words, never null: the router branches on it
+# right after a merge, and an absent key would read as neither.
+check "segments[] 의 원소는 적용 을 세 값 중 하나로 싣는다" \
+  "$(jq -r '[.segments[] | (.["적용"] // "null") | IN("대기", "인계", "없음")] | if length == 0 then "원소 없음" else all | tostring end' "$WORK/s1.json")" "true"
 # THE CONE AND REPLAN ARRAYS ARE ALWAYS PRESENT, right after `blocked`, and stay
 # out of the default projection: the router asks for them by name, and a key that
 # appeared only when it had elements would read as absent on the ordinary night.
@@ -1248,7 +1252,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '교대=#### Merging and applying a segment|No shift sends the same merge again until the answer comes back' \
     '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \
     "#### Merging and applying a segment|-- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>" \
-    '#### Merging and applying a segment|First issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
+    '#### Merging and applying a segment|`대기` or `인계` → first issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
+    '#### Merging and applying a segment|look at `적용` on that segment'"'"'s `segments[]` element. `없음` → the merge is the segment'"'"'s end' \
+    '#### Merging and applying a segment|so issue neither the fetch nor the apply act' \
+    '#### Merging and applying a segment|is answered with `적용 불필요` and exit 0, and the gate writes nothing: that too is the segment'"'"'s end, not a refusal' \
     '#### Merging and applying a segment|--kind apply --target <alias> --segment <id>' \
     '#### Merging and applying a segment|--cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용' \
     '#### Merging and applying a segment|fetch and issue it once more, and only once' \

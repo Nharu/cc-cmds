@@ -1,0 +1,3 @@
+# Fixture baseline: the repeated line is listed once per occurrence.
+sample.sh|clock-margin|out=$(txn --boot-epoch "$((NOW - 10))")
+sample.sh|clock-margin|out=$(txn --boot-epoch "$((NOW - 10))")
