@@ -414,7 +414,7 @@ tr_contract() {
     check "$n (c) 빈 표준 출력" "$(wc -c < "$d/g.out" | tr -d ' ')" 0
   fi
   check "$n (d) 표준 오류" "$(sed 's/^[^ ]* //' "$d/g.err")" "$(sed 's/^[^ ]* //' "$d/e.err")"
-  check "$n (e) 상태 루트" "$(find "$XDG_STATE_HOME" -mindepth 1 | head -n 1)" ""
+  check "$n (e) 상태 루트" "$(find "$XDG_STATE_HOME" -mindepth 1 | sed -n '1p')" ""
 }
 
 tr_g_matrix() {
@@ -478,7 +478,7 @@ tr_g_matrix() {
     else bad "$lb: 독이 든 표·인벤토리 $st — 락 대기 없이 끝난다" "${el}초"; fi
     check "$lb: 독이 든 표·인벤토리 $st — rc" "$rc" 0
     check "$lb: 독이 든 표·인벤토리 $st — 설정 디렉터리" "$gv" "$eout"
-    check "$lb: 독이 든 표·인벤토리 $st — 바뀐 파일 없음" "$(find "$RUN_PACE_ROOT" -newer "$d/marker" | head -n 1)" ""
+    check "$lb: 독이 든 표·인벤토리 $st — 바뀐 파일 없음" "$(find "$RUN_PACE_ROOT" -newer "$d/marker" | sed -n '1p')" ""
   done
 }
 

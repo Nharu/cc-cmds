@@ -760,7 +760,7 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-rid=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$man" | head -1)
+rid=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$man" | sed -n '1p')
 rd="$XDG_STATE_HOME/cc-cmds/run/$rid"
 led=$(cat "$rd/ledger-path")
 if [ "$kind" = "router-shift" ]; then
@@ -850,7 +850,7 @@ printf '14\n' > "$WORK/xdg/cc-cmds/run/T2L/t2.caps"
 rm -f "$TEST_LOG_DIR/t2.log" "$TEST_LOG_DIR/t2-checks.log"
 FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T2BOOT" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t2-1.err"; rc=$?
 t2n() { grep -c "^$1 $2 " "$TEST_LOG_DIR/t2.log" 2>/dev/null || true; }
-t2line() { grep -n "^$1 $2\( \|\$\)" "$TEST_LOG_DIR/t2.log" 2>/dev/null | head -1 | cut -d: -f1; }
+t2line() { grep -n "^$1 $2\( \|\$\)" "$TEST_LOG_DIR/t2.log" 2>/dev/null | sed -n '1p' | cut -d: -f1; }
 check "재진입: 틱은 0 으로 끝난다" "$rc" "0"
 check "재진입: 두 대상 런에 재진입 행 호출이 한 번씩" "$(t2n reentry T2A):$(t2n reentry T2B)" "1:1"
 check "재진입: 재진입 행의 사유는 정산 뒤 원장에서 읽은 중단이다" \
@@ -868,9 +868,9 @@ check "재진입 C2: 재진입 행 호출이 감시자와 router-shift 보다 �
 check "재진입: 감시자 기동은 대상 런마다 한 번" "$(grep -c '^watch T2A$' "$TEST_LOG_DIR/t2.log" || true):$(grep -c '^watch T2B$' "$TEST_LOG_DIR/t2.log" || true)" "1:1"
 check "재진입: 폴러도 대상 런마다 한 번" "$(grep -c '^checks T2A$' "$TEST_LOG_DIR/t2-checks.log" || true)" "1"
 check "재진입: router-shift 의 CLAUDE_CONFIG_DIR 는 런의 config-dir 이다" \
-  "$(grep '^router-shift T2A ' "$TEST_LOG_DIR/t2.log" | head -1 | sed -n 's/.* CLAUDE_CONFIG_DIR=\([^ ]*\) .*/\1/p')" "$H_CC"
+  "$(grep '^router-shift T2A ' "$TEST_LOG_DIR/t2.log" | sed -n '1p' | sed -n 's/.* CLAUDE_CONFIG_DIR=\([^ ]*\) .*/\1/p')" "$H_CC"
 check "재진입: router-shift 의 CC_PIPELINE_REENTRY 는 <run-id>@<부팅 값> 이다" \
-  "$(grep '^router-shift T2A ' "$TEST_LOG_DIR/t2.log" | head -1 | sed -n 's/.* REENTRY=\(.*\)$/\1/p')" "T2A@$T2BOOT"
+  "$(grep '^router-shift T2A ' "$TEST_LOG_DIR/t2.log" | sed -n '1p' | sed -n 's/.* REENTRY=\(.*\)$/\1/p')" "T2A@$T2BOOT"
 check "재진입: done·승인·살아 있는 relay·처리한 부팅 값의 런에는 호출이 없다" \
   "$(grep -c -E '^[a-z-]+ T2[CDEF] ' "$TEST_LOG_DIR/t2.log" || true)" "0"
 check "재진입: 정산할 것 없는 중단 런은 스냅숏 하나뿐이다" \

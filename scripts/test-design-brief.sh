@@ -160,7 +160,9 @@ check_brief() {
   ' "$f")
   local k
   for k in "${SHAPE_FIELDS[@]}"; do
-    printf '%s\n' "$shape" | grep -qF -- "$k: " || return 1
+    grep -qF -- "$k: " <<EOF || return 1
+$shape
+EOF
   done
   # terminator on the last non-empty line
   [[ "$(last_nonempty_line "$f")" == "$BRIEF_TERMINATOR" ]] || return 1
@@ -261,7 +263,7 @@ check_park() {
   done
   # closed site set
   local site ok=0
-  site=$(grep -F -- '**자리 id**: ' "$f" | head -n 1 | sed 's/^\*\*자리 id\*\*: //')
+  site=$(grep -F -- '**자리 id**: ' "$f" | sed -n '1p' | sed 's/^\*\*자리 id\*\*: //')
   for k in "${PARK_SITES[@]}"; do
     [[ "$site" == "$k" ]] && ok=1
   done
@@ -274,7 +276,9 @@ check_park() {
   local opt
   while IFS= read -r opt; do
     [[ -n "$opt" ]] || continue
-    printf '%s\n' "$opt" | grep -qE '^- `[^`]+` — .+$' || return 1
+    grep -qE '^- `[^`]+` — .+$' <<OPT || return 1
+$opt
+OPT
   done <<EOF
 $(grep -E '^- ' "$f" || true)
 EOF
@@ -314,7 +318,7 @@ expect_rc 1 "T7 brief FAIL-no-terminator" check_brief "$fixtures/brief/FAIL-no-t
 exemption_prefix() {
   local p
   p=$(grep -F -- 'are NOT subject to this gate' "$1" \
-    | grep -oE '`docs/design-brief/[^`]*`' | head -n 1 | tr -d '`' || true)
+    | grep -oE '`docs/design-brief/[^`]*`' | sed -n '1p' | tr -d '`' || true)
   [[ -n "$p" ]] || { echo ""; return 0; }
   echo "${p%/*}/"
 }
@@ -633,7 +637,7 @@ pin_once_in_section '**The `brief_sha256` identical guard of dispatch item 2 doe
 pin_once_in_section "**What keeps a re-dispatch away from a saved document is neither the phase guard alone nor the leg's guard alone.**" \
   "$DESIGN" "$LADDER_SECTION" "design (ladder)"
 
-pin_once_in_section 'If a Step-0 tool cannot be loaded, if the brief fails a guard below, if the target-document guard below parks, or if the ledger stub cannot be created, park **before spawning**' \
+pin_once_in_section 'If a Step-0 tool cannot be loaded, if the brief fails a guard below, if the target-document guard below parks, if the ledger stub cannot be created, or if a file the redesign input names does not exist, park **before spawning**' \
   "$LEG" "$LEG_STEP0_SECTION" "leg (Step 0)"
 
 pin_once_in_section '**Target-document guard.**' \
