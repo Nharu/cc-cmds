@@ -92,7 +92,7 @@ read_watcher() {
   # The watcher publishes its count in the heartbeat, every pass, even on the
   # passes where an arm fires.
   bash "$WATCH" --run-dir "$1" --ledger "$2" --once >/dev/null 2>&1
-  sed -n 's/.*스테이지 \([0-9][0-9]*\)개.*/\1/p' "$1/watch.heartbeat" 2>/dev/null | head -1
+  sed -n 's/.*스테이지 \([0-9][0-9]*\)개.*/\1/p' "$1/watch.heartbeat" 2>/dev/null | sed -n '1p'
 }
 
 read_statusline() {
@@ -132,7 +132,7 @@ read_pane() {
   # The status pane's helper takes its run from the status line's fields row,
   # so the two can only disagree if that borrowing breaks. Its head row carries
   # the run id in the fourth field.
-  bash "$PANE" "$1" | head -1 | cut -f4
+  bash "$PANE" "$1" | sed -n '1p' | cut -f4
 }
 
 read_statusline_rid() {

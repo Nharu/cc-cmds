@@ -1452,7 +1452,7 @@ sb_cfg_of() {
   # view matches whenever the reader accepts it; `$LANE` when jq refuses.
   local v
   v=$(jq -r 'if (.lane_config_dir | type) == "string" and .lane_config_dir != "" then .lane_config_dir else empty end' \
-        "$1" 2>/dev/null | head -1)
+        "$1" 2>/dev/null | sed -n '1p')
   printf '%s' "${v:-$LANE}"
 }
 

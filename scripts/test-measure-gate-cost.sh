@@ -295,7 +295,7 @@ bash "$MEASURE" --rows 10 --segments 3 --cycles 12 > "$WORK/st12b.txt" 2>&1
 if cmp -s "$WORK/st12.txt" "$WORK/st12b.txt"; then
   ok "같은 입력의 두 측정이 같은 출력을 낸다 (정체 축 포함)"
 else
-  bad "정체 축의 재현성" "$(diff "$WORK/st12.txt" "$WORK/st12b.txt" | head -5 | tr '\n' ' ')"
+  bad "정체 축의 재현성" "$(diff "$WORK/st12.txt" "$WORK/st12b.txt" | awk 'NR<=5' | tr '\n' ' ')"
 fi
 LGC="$WORK/fixed-cycles.md"
 {

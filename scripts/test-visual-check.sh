@@ -136,7 +136,11 @@ grep -qxF '# 검사 밖: 계산된 색(스크립트가 실행 중에 값을 이�
   && pass "보고 머리에 계산된 색이 검사 밖이라고 적는다" || fail "보고 머리에 계산된 색 줄이 없다"
 grep -qxF '# 금지 해제: 없음' "$T/v11.out" \
   && pass "해제가 없으면 머리에 '없음' 을 적는다" || fail "보고 머리에 '# 금지 해제: 없음' 이 없다"
-if grep -vE '^# ' "$T/v11.out" | grep -qvE '^[a-z0-9-]+ [^ ]+:[0-9]+ '; then
+v11_rows=$(grep -vE '^# ' "$T/v11.out" || true)
+if [ -n "$v11_rows" ] && grep -qvE '^[a-z0-9-]+ [^ ]+:[0-9]+ ' <<EOF
+$v11_rows
+EOF
+then
   fail "발견 줄이 '<규칙 id> <파일>:<줄> <문면>' 꼴이 아니다"
 else
   pass "발견 줄은 '<규칙 id> <파일>:<줄> <문면>' 꼴이다"
@@ -258,7 +262,7 @@ fi
 # Hangul in a script string or comment, a CSS string or comment, a style
 # attribute and body text is parsed, not refused, under a UTF-8 locale — the
 # locale where a byte-wise awk cuts a character in half.
-utf8=$(locale -a 2>/dev/null | grep -ixE 'en_US\.utf-?8|c\.utf-?8' | head -n 1 || true)
+utf8=$(locale -a 2>/dev/null | grep -ixE 'en_US\.utf-?8|c\.utf-?8' | sed -n '1p' || true)
 if [ -z "$utf8" ]; then
   fail "UTF-8 로캘이 없어 한글 화면을 잴 수 없다"
 else
@@ -367,8 +371,11 @@ else
     mkdir -p "$G/docs/visual"
     (cd "$G" && git init -q)
     key=$(sed -n '2p' "$T/ex.sidecar" | sed -nE 's/^<!-- cc-visual v1;.*owner-doc=([^;]*);.*$/\1/p')
-    sed -n '1p' "$T/ex.sidecar" | grep -qE '^# 시각 디자인 연결 — ' \
-      && pass "사이드카 예시의 1행은 사람이 읽는 H1" || fail "사이드카 예시의 1행이 H1 이 아니다"
+    h1=$(sed -n '1p' "$T/ex.sidecar")
+    case "$h1" in
+      '# 시각 디자인 연결 — '*) pass "사이드카 예시의 1행은 사람이 읽는 H1" ;;
+      *) fail "사이드카 예시의 1행이 H1 이 아니다" ;;
+    esac
     if [ -z "$key" ]; then
       fail "사이드카 예시의 2행 기계 머리에서 owner-doc 을 읽지 못했다"
     else
@@ -388,7 +395,7 @@ else
       sed -E "s/ — 입력 묶음 [0-9a-f]{64} — / — 입력 묶음 ${GB} — /" "$T/ex.sidecar" > "$G/docs/visual/${gslug}.md"
       rc=0; got=$(bash "$CHECK" approval "$G/$key" 2>&1) || rc=$?
       [ "$rc:$got" = "0:승인 유효 ${GB:0:12}" ] && pass "사이드카 예시는 묶음을 맞추면 승인 유효로 읽힌다" || fail "맞춘 사이드카 예시의 approval = ${rc} ${got}"
-      cand=$(grep -E '^- `' "$T/ex.sidecar" | head -n 1 || true)
+      cand=$(grep -E '^- `' "$T/ex.sidecar" | sed -n '1p' || true)
       if [ -z "$cand" ]; then
         fail "사이드카 예시에 금지 후보 줄이 없다"
       else
@@ -402,7 +409,7 @@ else
     fail "공유 계약에 '### 사이드카 예시' 아래 코드 블록이 없다"
   fi
   if example_block "$REFS" '금지 해제 예시' > "$T/ex.lift"; then
-    lid=$(sed -nE 's/^\*\*금지 해제\*\*:[[:space:]]*([a-z0-9-]+)[[:space:]]+—.*$/\1/p' "$T/ex.lift" | head -n 1)
+    lid=$(sed -nE 's/^\*\*금지 해제\*\*:[[:space:]]*([a-z0-9-]+)[[:space:]]+—.*$/\1/p' "$T/ex.lift" | sed -n '1p')
     rc=$(run_scan "$T/ex.lift.out" "$T/bans.html" --bans "$T/bans.list" --lifts "$T/ex.lift")
     if [ -n "$lid" ] && grep -qxF "# 금지 해제: ${lid}" "$T/ex.lift.out"; then
       pass "금지 해제 예시를 scan --lifts 가 읽는다 (${lid})"

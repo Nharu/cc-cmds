@@ -319,7 +319,7 @@ for a in '' '다시' '다시 해줘' 'Resume.' "$INTENT"; do
   out=$(rk_as s-RKA detect --arg "$a")
   check "1: 인자 '$a' 는 재킥오프다" "$(col "$out" 판정)" "재킥오프"
 done
-check "1: 출력 머리는 cc-rekick v1 이다" "$(printf '%s\n' "$out" | head -n 1)" "cc-rekick v1"
+check "1: 출력 머리는 cc-rekick v1 이다" "$(printf '%s\n' "$out" | sed -n '1p')" "cc-rekick v1"
 check "1: 재킥오프 판정 행이 원천 id 를 싣는다" "$(col "$out" 판정 3)" "RKA"
 out=$(rk_as s-RKA detect --arg '전혀 다른 일을 한다')
 check "1: 다른 문장은 새 런이다" "$(col "$out" 판정)" "새 런"
