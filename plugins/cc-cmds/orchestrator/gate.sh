@@ -10532,6 +10532,17 @@ gate_design_next_undispatched_step() {
   printf '%s' "$istep"
 }
 
+gate_plan_ends_at_design() {
+  # gate_plan_ends_at_design — 0 when the plan's steps are a non-empty array of
+  # objects whose `skill` is only `design` or `design-audit`, so the graph ends
+  # at the design (or at its audit) and nothing follows. 1 otherwise, an
+  # unparsable plan included: a plan this cannot read keeps its present verdict.
+  manifest_plan_json 2>/dev/null \
+    | jq -e '(.steps | type == "array" and length > 0)
+             and all(.steps[]; type == "object" and (.skill == "design" or .skill == "design-audit"))' \
+      >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # The segment plan, read from the frozen document rather than transcribed.
 #
@@ -37365,10 +37376,22 @@ gate_done_conditions() {
   # its head is not one `gate_done_disposition` drops: the run is unfinished,
   # not void. An audit that ran and ended any other way is not named here; the
   # router stops on it, and the old line then lets the run record its end.
-  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep
+  #
+  # AND A PLAN THAT ENDS AT THE DESIGN HAS NO STEP TO NAME. When every step of
+  # the plan is the design or its audit (`gate_plan_ends_at_design`), a design
+  # that ended `정상 완료` — with its audit, when the plan has one, ended
+  # `정상 완료` too — is the run's work done, provided the document is still
+  # frozen when this reads it. The condition then holds and prints nothing, as
+  # the audit-first arm does, and condition 10 measures the clauses the person
+  # authorized. Read as `종단 행 있음`, the run closed as invalidated with every
+  # clause settled satisfied. A document no longer frozen prints the dropped
+  # line with its own reason; a re-convergence on the audit's key that came
+  # after its last audit row waits on a fresh audit, with the audit-first arm's
+  # line; an audit that ended any other way keeps `종단 행 있음`.
+  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep dwait dmet alastrow
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
-    dwhy=""; dnext=""
+    dwhy=""; dnext=""; dwait=""; dmet=""
     if dstep=$(gate_run_scope_step design); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
@@ -37405,6 +37428,27 @@ gate_done_conditions() {
         dwhy='종단 행 있음'
         if [ "$dlast" = '정상 완료' ]; then
           dnext=$(gate_design_next_undispatched_step) || dnext=""
+          if [ -z "$dnext" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+             && gate_plan_ends_at_design; then
+            if astep=$(gate_run_scope_step audit); then
+              alastrow=$( { gate_stage_result_rows_of "$astep" || true; } \
+                          | { grep -F -- '- `stage-result`' || true; } | tail -1)
+              case "$alastrow" in
+                *'| 종류=reconverge '*)
+                  dwait=$(printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 재수렴 뒤 새 감사를 기다립니다' "$astep")
+                  dwhy="" ;;
+                *)
+                  if [ "$(gate_row_field "$(gate_audit_result_rows_of "$astep" | tail -1)" '종단 부류')" = '정상 완료' ]; then
+                    if doc_is_frozen "${DOC:-}"; then dwhy=""; dmet=1
+                    else dwhy='설계 문서가 동결돼 있지 않음'; fi
+                  fi ;;
+              esac
+            elif doc_is_frozen "${DOC:-}"; then
+              dwhy=""; dmet=1
+            else
+              dwhy='설계 문서가 동결돼 있지 않음'
+            fi
+          fi
         fi
       else
         case "$dname" in
@@ -37428,9 +37472,11 @@ gate_done_conditions() {
         fi
       fi
       # A BASE RUN'S FINISHED DESIGN IS NOT A DEAD ONE. In a single run a design
-      # that ended `정상 완료` with no segment after it can only mean the plan
-      # stopped there; in a base run that is the normal road to the audit and the
-      # split, which the base arm below judges.
+      # that ended `정상 완료` with no segment after it means the plan stopped
+      # there, and when the plan ends at the design (and its audit) that ending
+      # and the frozen document are the run's work done, judged above; in a base
+      # run it is the normal road to the audit and the split, which the base arm
+      # below judges.
       #
       # So is one that was never dispatched because the document was already
       # there and frozen. A base run kicked off again over the same document —
@@ -37448,8 +37494,15 @@ gate_done_conditions() {
     fi
     if [ -n "$dnext" ]; then
       printf '1 설계가 동결됐으나 다음 단계(%s)가 아직 파견되지 않았습니다\n' "$dnext"
+    elif [ -n "$dwait" ]; then
+      # A plan that ends at its audit, waiting on the fresh audit after a
+      # re-convergence: not a head the disposition drops.
+      printf '%s\n' "$dwait"
     elif [ -n "$dwhy" ]; then
       printf '1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$dstep" "$dwhy"
+    elif [ "$dmet" = 1 ]; then
+      # The plan ended at the design (and its audit), and it froze: held.
+      :
     elif [ "$(gate_snapshot_design_scope)" = "base" ]; then
       # A BASE RUN NEVER HAS A SEGMENT. Its graph ends at the split, so "no
       # segment" is its normal end and the plain line below would hold it

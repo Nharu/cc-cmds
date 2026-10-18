@@ -2341,9 +2341,13 @@ STUBEOF
   # takes, and every run carries one clause so condition 10 can be settled and
   # condition 1 is the line that decides the disposition.
   plan15e='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["A1"] } ] }'
-  au15_run() {  # au15_run <run id> <설계 문서> — manifest with clause K1, and its grant
+  # Two plans that end at the design: the design alone, and the design with its
+  # audit. 15f reads condition 1 on runs of each.
+  plan15d='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] } ] }'
+  plan15da='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] } ] }'
+  au15_run() {  # au15_run <run id> <설계 문서> [plan json] — manifest with clause K1, and its grant
     local m="$WORK/plan-$1.md"
-    write15c "$m" "$plan15e" "$2" "$1"
+    write15c "$m" "${3:-$plan15e}" "$2" "$1"
     grant15c "$1" "$2"
     printf -- '- `종료 절` | id=K1 | 문면=설계 문서가 감사된다 (K1)\n' >> "$m"
     # The binding digest no longer matches once a clause is added, so it goes.
@@ -2427,6 +2431,8 @@ STUBEOF
   # through the gate once for the same reason, and records the pair
   # the supervisor exported to it. The hollow audit stub does nothing and records
   # the prompt it was handed, which on a continuation is the continue message.
+  # The park stub writes a halt record and stops on purpose, and the
+  # re-convergence stub goes through the gate once; 15e-2 and 15f both use them.
   mkdir -p "$WORK/bin"
   STUB_AU_DESIGN="$WORK/bin/claude-stub-au-design"
   cat > "$STUB_AU_DESIGN" <<'STUBAUDEOF'
@@ -2460,7 +2466,29 @@ done
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-hollow","num_turns":1}\n'
 exit 0
 STUBAUHEOF
-  chmod +x "$STUB_AU_DESIGN" "$STUB_AU_AUDIT" "$STUB_AU_HOLLOW"
+  STUB_AU_PARK="$WORK/bin/claude-stub-au-park"
+  cat > "$STUB_AU_PARK" <<'STUBAUPEOF'
+#!/usr/bin/env bash
+mkdir -p "$CC_PIPELINE_RUN_DIR/halt"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=$CC_PIPELINE_RUN_ID -->" \
+  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — 종합 질문' \
+  '**분류**: precondition-failed' '**질문 문면**: 함께 함의하는 요구를 어떻게 처리할까요?' '**선택지**:' \
+  '- `adopt as a requirement` — 요구로 채택한다' '- `reject` — 기각한다' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-park","num_turns":1,"result":"종합 질문에서 멈춥니다."}\n'
+exit 0
+STUBAUPEOF
+  STUB_AU_RECONV="$WORK/bin/claude-stub-au-reconv"
+  cat > "$STUB_AU_RECONV" <<'STUBAUREOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 재수렴 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-reconv","num_turns":1,"result":"재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."}\n'
+exit 0
+STUBAUREOF
+  chmod +x "$STUB_AU_DESIGN" "$STUB_AU_AUDIT" "$STUB_AU_HOLLOW" "$STUB_AU_PARK" "$STUB_AU_RECONV"
 }
 pre_base
 
@@ -11483,29 +11511,6 @@ plan15er() {  # plan15er <stage kind> <prompt> — the run-scope dispatch, as pl
   gateL plan --manifest "$M15ER" --kind skill --target infra --segment - --cutpoint 커밋 \
        --surface 워크트리쓰기 -- "$1" -p "$2"
 }
-STUB_AU_PARK="$WORK/bin/claude-stub-au-park"
-cat > "$STUB_AU_PARK" <<'STUBAUPEOF'
-#!/usr/bin/env bash
-mkdir -p "$CC_PIPELINE_RUN_DIR/halt"
-printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=R15ER -->" \
-  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — 종합 질문' \
-  '**분류**: precondition-failed' '**질문 문면**: 함께 함의하는 요구를 어떻게 처리할까요?' '**선택지**:' \
-  '- `adopt as a requirement` — 요구로 채택한다' '- `reject` — 기각한다' \
-  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"
-printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-park","num_turns":1,"result":"종합 질문에서 멈춥니다."}\n'
-exit 0
-STUBAUPEOF
-STUB_AU_RECONV="$WORK/bin/claude-stub-au-reconv"
-cat > "$STUB_AU_RECONV" <<'STUBAUREOF'
-#!/usr/bin/env bash
-h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
-bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
-  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
-  --rationale "픽스처 — 재수렴 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
-printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-reconv","num_turns":1,"result":"재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."}\n'
-exit 0
-STUBAUREOF
-chmod +x "$STUB_AU_PARK" "$STUB_AU_RECONV"
 
 plan15er reconverge "$reconv15er"
 check "15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다" "$rc" "3"
@@ -11602,7 +11607,7 @@ rm -f "$WT/$DOC15ER"
 
 # ---------------------------------------------------------------------------
 # 15f. A frozen design with a step not yet started keeps the run open
-# --- section: 15f | group: base | covers: act, close | anchors: 15f: 동결 뒤 감사가 남은 0-세그먼트 런의 종료 처분은 미충족이다, 15f: 감사 뒤 구현 단계가 남은 0-세그먼트 런도 미충족이다, 15f: 감사 단계의 계속은 감사 산출물을 이름 대는 계속 메시지를 싣는다, 15f: 계속 상한에 이른 감사 단계의 셋째 계속은 감사 갈래로 거부된다 ---
+# --- section: 15f | group: base | covers: act, close, done-conditions | anchors: 15f: 동결 뒤 감사가 남은 0-세그먼트 런의 종료 처분은 미충족이다, 15f: 감사 뒤 구현 단계가 남은 0-세그먼트 런도 미충족이다, 15f: 감사 단계의 계속은 감사 산출물을 이름 대는 계속 메시지를 싣는다, 15f: 계속 상한에 이른 감사 단계의 셋째 계속은 감사 갈래로 거부된다, 15f: 설계만 있는 계획은 설계가 정상 완료하고 문서가 동결돼 있으면 조건 1 이 선다, 15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다, 15f: 같은 원장을 구현 단계를 단 계획으로 읽으면 다음 단계(S2)를 든다, 15f: 설계만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계와 감사만 있는 계획은 감사 전에 감사 단계를 든다, 15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 계획의 재수렴 뒤 감사 단계는 새 감사를 기다린다, 15f: 그 계획은 새 감사가 정상 완료하면 조건 1 이 선다, 15f: 설계와 감사만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 줄만 남으면 처분은 무효화다 ---
 #
 # A design that froze is not a design that stopped. While the plan still has a
 # step after the design that has not started — the audit with no row, or the
@@ -11610,6 +11615,12 @@ rm -f "$WT/$DOC15ER"
 # disposition does not drop, so the run is unfinished rather than void. An
 # audit that produced nothing is continued like any stage, and at the cap the
 # gate says what the router does with an unaudited document: it does not plan.
+#
+# A plan that ends at the design has no such step. Its design (and its audit,
+# when it has one) ending `정상 완료` over a document still frozen is the run's
+# work done: condition 1 holds and the clauses decide the disposition. A
+# re-convergence on the audit's key waits on a fresh audit; an unfrozen
+# document and a design that will not be dispatched again still void the run.
 # ---------------------------------------------------------------------------
 DOC15F='docs/fixture-design-15f-audit.md'
 au15_run R15FA "$DOC15F"
@@ -11688,6 +11699,98 @@ case "$msg" in
   *) bad "15f 구현 미파견 문면" "$msg" ;;
 esac
 rm -f "$WT/$DOC15FB"
+
+# A plan that ends at the design. K1 is settled satisfied, so the disposition
+# says whether condition 1 lets the run end as done.
+f15_met() {  # f15_met <run id> — settle K1 as satisfied
+  gateL act --manifest "$WORK/plan-$1.md" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H "$1")" --rationale x -- id=K1 상태=충족 "근거=설계 단계 행 정상 완료와 동결 줄"
+}
+DOC15FD='docs/fixture-design-15f-designonly.md'
+au15_run R15FD "$DOC15FD" "$plan15d"
+au15_freeze "$DOC15FD"
+au15_dispatch R15FD "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$DOC15FD \"테스트\""
+au15_wait R15FD D1
+check "15f 설계 전용 픽스처의 설계 단계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FD D1 design)" "정상 완료"
+check "15f: 설계만 있는 계획은 설계가 정상 완료하고 문서가 동결돼 있으면 조건 1 이 선다" \
+  "$(au15_c1 "$WORK/plan-R15FD.md")" ""
+printf '# 픽스처 설계\n\n## 합의된 아키텍처\n\n본문\n' > "$WT/$DOC15FD"
+case "$(au15_c1 "$WORK/plan-R15FD.md")" in
+  "1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — D1 · 설계 문서가 동결돼 있지 않음 · "*)
+    ok "15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다" ;;
+  *) bad "15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다" "$(au15_c1 "$WORK/plan-R15FD.md")" ;;
+esac
+au15_freeze "$DOC15FD"
+M15FDI="$WORK/plan15f-designonly-impl.md"
+write15c "$M15FDI" "$plan15c" "$DOC15FD" R15FD
+check "15f: 같은 원장을 구현 단계를 단 계획으로 읽으면 다음 단계(S2)를 든다" \
+  "$(au15_c1 "$M15FDI")" "1 설계가 동결됐으나 다음 단계(S2)가 아직 파견되지 않았습니다"
+f15_met R15FD
+check "15f 설계 전용 픽스처의 K1 이 충족으로 정산된다 (아래가 공허하지 않다)" "$rc" "0"
+check "15f: 설계만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다" \
+  "$(au15_snap "$WORK/plan-R15FD.md" | jq -r .disposition)" "충족"
+rm -f "$WT/$DOC15FD"
+
+# The design with its audit: the audit is named until it runs, an audit that
+# parked voids the run, and a re-convergence on its key waits on the fresh audit.
+DOC15FE='docs/fixture-design-15f-designaudit.md'
+au15_run R15FE "$DOC15FE" "$plan15da"
+au15_freeze "$DOC15FE"
+RD15FE="$STATE_LATE/cc-cmds/run/R15FE"
+audit15fe="/cc-cmds:design-audit-unattended $WT/$DOC15FE"
+reconv15fe="/cc-cmds:design-reconverge $WT/$DOC15FE 감사 종합 요구 $RD15FE/halt/A1#1.md"
+au15_dispatch R15FE "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$DOC15FE \"테스트\""
+au15_wait R15FE D1
+check "15f 설계+감사 픽스처의 설계 단계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FE D1 design)" "정상 완료"
+check "15f: 설계와 감사만 있는 계획은 감사 전에 감사 단계를 든다" \
+  "$(au15_c1 "$WORK/plan-R15FE.md")" "1 설계가 동결됐으나 다음 단계(A1)가 아직 파견되지 않았습니다"
+au15_dispatch R15FE "$STUB_AU_PARK" audit "$audit15fe"
+au15_wait R15FE A1
+check "15f 설계+감사 픽스처의 감사가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15FE A1 audit)" "의도된 park"
+case "$(au15_c1 "$WORK/plan-R15FE.md")" in
+  "1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — D1 · 종단 행 있음 · "*)
+    ok "15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다" ;;
+  *) bad "15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다" "$(au15_c1 "$WORK/plan-R15FE.md")" ;;
+esac
+gateL act --manifest "$WORK/plan-R15FE.md" --kind halt-answer --target infra --segment A1 --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(au15_H R15FE)" --rationale x \
+      -- "중단 기록=$RD15FE/halt/A1#1.md" '선택지=adopt as a requirement' '답한 주체=사람' '근거=사람이 요구로 채택'
+check "15f 설계+감사 픽스처의 중단 답이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
+au15_dispatch R15FE "$STUB_AU_RECONV" reconverge "$reconv15fe"
+au15_wait R15FE A1
+check "15f 설계+감사 픽스처의 재수렴이 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FE A1 reconverge)" "정상 완료"
+check "15f: 그 계획의 재수렴 뒤 감사 단계는 새 감사를 기다린다" \
+  "$(au15_c1 "$WORK/plan-R15FE.md")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 재수렴 뒤 새 감사를 기다립니다"
+au15_dispatch R15FE "$STUB_AU_AUDIT" audit "$audit15fe"
+au15_wait R15FE A1
+check "15f 설계+감사 픽스처의 새 감사가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FE A1 audit)" "정상 완료"
+check "15f: 그 계획은 새 감사가 정상 완료하면 조건 1 이 선다" "$(au15_c1 "$WORK/plan-R15FE.md")" ""
+f15_met R15FE
+check "15f 설계+감사 픽스처의 K1 이 충족으로 정산된다 (아래가 공허하지 않다)" "$rc" "0"
+check "15f: 설계와 감사만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다" \
+  "$(au15_snap "$WORK/plan-R15FE.md" | jq -r .disposition)" "충족"
+( cd "$WT" && git worktree remove --force "$WT-run-R15FE-A1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC15FE"
+
+# A design that stopped on purpose is not dispatched again: the plan ending at
+# the design does not change that, and the run still ends as invalidated.
+DOC15FP='docs/fixture-design-15f-designpark.md'
+au15_run R15FP "$DOC15FP" "$plan15d"
+au15_dispatch R15FP "$STUB_AU_PARK" design "/cc-cmds:design-discuss-unattended $WT/$DOC15FP \"테스트\""
+au15_wait R15FP D1
+check "15f 설계 park 픽스처의 설계 단계가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15FP D1 design)" "의도된 park"
+fp15_c1=$(au15_c1 "$WORK/plan-R15FP.md")
+case "$fp15_c1" in
+  "1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — D1 · "*"무효로 끝납니다")
+    ok "15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다" ;;
+  *) bad "15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다" "$fp15_c1" ;;
+esac
+check "15f: 그 줄만 남으면 처분은 무효화다" \
+  "$( ( gate_seam_init >/dev/null 2>&1 || exit 1
+        gate_seam_enter
+        gate_done_disposition "$fp15_c1" ) )" "무효화"
+rm -f "$WT/$DOC15FP"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
