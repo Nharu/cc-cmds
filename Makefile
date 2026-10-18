@@ -363,6 +363,7 @@ ORCH_TESTS := \
 	scripts/test-design-brief.sh \
 	scripts/test-route.sh \
 	scripts/test-collect-run-metrics.sh \
+	scripts/test-measure-cycle-causes.sh \
 	scripts/test-run-issue-filing.sh \
 	scripts/test-visual-config.sh \
 	scripts/test-visual-check.sh \
