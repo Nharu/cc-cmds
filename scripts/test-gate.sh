@@ -34497,11 +34497,12 @@ case "$(p59_field "$p59_row" 근거)" in
 esac
 # 셋 다 같은 예산을 쓴다 — 자유 문면을 싣는 세 자리(act 승인·무효화 종단·경계 종단)의
 # 근거는 전부 `gate_free_budget` 이 잰 값으로 잘린다. 리터럴 240 으로 되돌아간 자리가
-# 생기면 여기서 잡힌다.
+# 생기면 여기서 잡힌다. 한 자리가 예산을 다시 잴 수 있으므로(경계 종단은 `P0잔존` 지문이
+# 행에 들어가지 않으면 `(미상)` 으로 바꿔 한 번 더 잰다) 대입 줄이 아니라 예산 변수를 센다.
 check "59: 자유 문면 예산으로 잘리는 근거 자리가 셋이다" \
   "$(grep -c 'gate_row_safe "\$[a-z]*" "\$_[a-z]*_free"' "$GATE" || true)" "3"
 check "59: 그 셋의 예산이 전부 gate_free_budget 에서 온다" \
-  "$(grep -c '_free=\$(gate_free_budget ' "$GATE" || true)" "3"
+  "$({ grep -o '_[a-z]*_free=\$(gate_free_budget ' "$GATE" || true; } | sort -u | wc -l | tr -d ' ')" "3"
 
 # (6) 라우팅 좌석의 shared/ 울타리 — 네 철자, 그리고 두 대조군 ------------------------
 #
