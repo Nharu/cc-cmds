@@ -1,0 +1,5 @@
+# ci-duration-budget v1
+key	budget_s	tol_s	tol_pct
+gate	10257	900	12
+lint-rest-tests	1841	300	35
+notify-macos	732	180	40

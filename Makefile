@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-gate-timing-selftest run-ci-duration-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -112,6 +112,26 @@ readme:
 check: lint readme
 	@git diff --exit-code README.md || (echo "README.md is stale — run 'make readme' and commit" >&2; exit 1)
 	@$(MAKE) --no-print-directory check-gate-suite
+
+# The repository-wide checks that read files and paths and nothing else, bundled
+# so a stage that ran only the axis it changed can still run them: the gate
+# suite's four static sections, the static invariants moved out of four large
+# suites, and the darwin leg's keepset lint. Each line is a component that must
+# fail the target on its own defect, so no line carries a prefix or a `|| true`
+# that would swallow it — scripts/test-local-bundle.sh asserts both. Not part of
+# `check`: `check-push` runs it once on the committed tree before push.
+check-cheap:
+	bash scripts/test-gate.sh --sections 0a,0b,0c,0d
+	bash scripts/test-meta-invariants.sh
+	bash scripts/lint-macos-keepset-paths.sh
+
+# Check the committed HEAD once in a clean clone before push, and stamp its tree
+# on a pass; `check-push-verify` answers whether HEAD's tree carries a stamp.
+check-push:
+	bash scripts/check-push.sh run
+
+check-push-verify:
+	bash scripts/check-push.sh verify
 
 # `check` runs the gate suite, but only when the change touches gate.sh.
 # scripts/test-gate.sh is the one suite that catches a broken grading table —
@@ -382,7 +402,9 @@ ORCH_TESTS := \
 	scripts/test-run-issue-filing.sh \
 	scripts/test-visual-config.sh \
 	scripts/test-visual-check.sh \
-	scripts/test-visual-capture.sh
+	scripts/test-visual-capture.sh \
+	scripts/test-meta-invariants.sh \
+	scripts/test-local-bundle.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \
@@ -403,7 +425,8 @@ $(TEST_GOALS): run/%:
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
-	run-rest-shard-selftest
+	run-rest-shard-selftest run-check-push-selftest \
+	run-gate-timing-selftest run-ci-duration-selftest
 
 # How many shards the gate suite is cut into. CI reads it so the matrix, the
 # per-shard dispatch and the union check all take their N from one place; a
@@ -414,6 +437,11 @@ GATE_SHARDS ?= 13
 # So CI can read the number instead of spelling it a second time.
 print-gate-shards:
 	@echo $(GATE_SHARDS)
+
+# The gate suite's section list, for CI's timing merge. It goes through make so
+# that make stays the one entry point to the suites and its pinned zone applies.
+print-gate-sections:
+	@bash scripts/test-gate.sh --list < /dev/null
 
 # The zone a recipe actually receives, and the offset it resolves to. The
 # offset is printed beside the name because glibc falls back to UTC in silence
@@ -436,7 +464,8 @@ ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
-	run-rest-shard-selftest
+	run-rest-shard-selftest run-check-push-selftest \
+	run-gate-timing-selftest run-ci-duration-selftest
 
 test-rest: $(REST_GOALS)
 
@@ -467,20 +496,48 @@ rest-shard:
 # One shard of the gate suite. SHARD is 1-based. An empty assignment is a
 # success and not a failure — the partitioner exits 4 when the requested shard
 # drew nothing, which happens whenever the components outnumber no shard.
-gate-shard:
-	@ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --shard $(SHARD)); rc=$$?; \
-	if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SHARDS): 배정된 절이 없습니다"; exit 0; fi; \
-	[ "$$rc" = "0" ] || exit "$$rc"; \
-	bash scripts/test-gate.sh --sections "$$ids"
+#
+# CI hands every shard the one table its plan job made (GATE_TABLE), so no shard
+# partitions on its own. Without a table the shard partitions here, weighed with
+# the measured times in GATE_TIMING when that file exists and with the census
+# model when it does not. GATE_TIMING_OUT, an absolute path, asks for the
+# section markers: `@start` and `@end` around the whole shard from here, and
+# the selector's own line in front of each section, prelude and the epilogue.
+GATE_TIMING ?= scripts/gate-timing.tsv
+GATE_TABLE ?=
+GATE_TIMING_OUT ?=
 
-# The partitioner and the census are driven by flags, so they cannot sit in the
-# argument-less `bash <script>` lists above; their self-tests run no suite and
-# take seconds.
+gate-shard:
+	@out='$(GATE_TIMING_OUT)'; \
+	mark() { [ -z "$$out" ] || printf '%s\t%s\n' "$$1" "$$(date +%s)" >> "$$out"; }; \
+	mark @start; \
+	if [ -n '$(GATE_TABLE)' ]; then \
+	  ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --shard $(SHARD) --from-table '$(GATE_TABLE)'); rc=$$?; \
+	else \
+	  ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --timing '$(GATE_TIMING)' --shard $(SHARD)); rc=$$?; \
+	fi; \
+	if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SHARDS): 배정된 절이 없습니다"; mark @end; exit 0; fi; \
+	[ "$$rc" = "0" ] || exit "$$rc"; \
+	rc=0; CC_GATE_TIMING_OUT="$$out" bash scripts/test-gate.sh --sections "$$ids" || rc=$$?; \
+	mark @end; exit "$$rc"
+
+# The partitioner, the census and the timing and duration scripts are driven by
+# flags, so they cannot sit in the argument-less `bash <script>` lists above;
+# their self-tests run no suite and take seconds.
 run-gate-shard-selftest:
 	bash scripts/gate-shard.sh --self-test
 
+run-gate-timing-selftest:
+	bash scripts/gate-timing.sh --self-test
+
+run-ci-duration-selftest:
+	bash scripts/ci-duration.sh --self-test
+
 run-gate-census-selftest:
 	bash scripts/gate-census.sh --self-test
+
+run-check-push-selftest:
+	bash scripts/check-push.sh --self-test
 
 run-rest-shard-selftest:
 	bash scripts/rest-shard.sh --self-test
