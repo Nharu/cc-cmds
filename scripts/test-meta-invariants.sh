@@ -1050,7 +1050,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '교대=#### Merging and applying a segment|No shift sends the same merge again until the answer comes back' \
     '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \
     "#### Merging and applying a segment|-- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>" \
-    '#### Merging and applying a segment|First issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
+    '#### Merging and applying a segment|`대기` or `인계` → first issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
+    '#### Merging and applying a segment|look at `적용` on that segment'"'"'s `segments[]` element. `없음` → the merge is the segment'"'"'s end' \
+    '#### Merging and applying a segment|so issue neither the fetch nor the apply act' \
+    '#### Merging and applying a segment|is answered with `적용 불필요` and exit 0, and the gate writes nothing: that too is the segment'"'"'s end, not a refusal' \
     '#### Merging and applying a segment|--kind apply --target <alias> --segment <id>' \
     '#### Merging and applying a segment|--cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용' \
     '#### Merging and applying a segment|fetch and issue it once more, and only once' \

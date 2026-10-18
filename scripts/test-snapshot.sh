@@ -423,6 +423,10 @@ check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이�
 check "대상 훅 거절이 없으면 guard_refusals 는 빈 배열이다" "$(jq -c .guard_refusals "$WORK/s1.json")" "[]"
 check "segments[] 의 원소는 원격 상태 필드를 싣는다" \
   "$(jq -r '[.segments[] | has("브랜치") and has("HEAD") and has("원격 팁") and has("PR") and has("원격 단계") and has("리뷰 줄")] | if length == 0 then "원소 없음" else all | tostring end' "$WORK/s1.json")" "true"
+# `적용` is always one of three words, never null: the router branches on it
+# right after a merge, and an absent key would read as neither.
+check "segments[] 의 원소는 적용 을 세 값 중 하나로 싣는다" \
+  "$(jq -r '[.segments[] | (.["적용"] // "null") | IN("대기", "인계", "없음")] | if length == 0 then "원소 없음" else all | tostring end' "$WORK/s1.json")" "true"
 # THE CONE AND REPLAN ARRAYS ARE ALWAYS PRESENT, right after `blocked`, and stay
 # out of the default projection: the router asks for them by name, and a key that
 # appeared only when it had elements would read as absent on the ordinary night.
@@ -1999,8 +2003,6 @@ check "종료 행이 어느 경계였는지 이름으로 말한다" \
 check "천장이 끝낸 런의 종료 행은 재킥 원인=천장 을 싣는다" \
   "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -cF '| 재킥 원인=천장 |' || true; })" "1"
 check "종료 토큰이 천장 이다" "$(gate_end_token 2>/dev/null)" "천장"
-check "종료 행이 재킥 후보 표지를 그 토큰으로 남긴다" \
-  "$(sed -n 's/^토큰=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null)" "천장"
 # IDEMPOTENT BY THE MARK. A second evaluation past the ceiling must not write a
 # second ending row: the first reason is the morning's account of why the night
 # stopped, and a run does not end twice.
@@ -2014,12 +2016,9 @@ gate_end_run B9 "다른 경계가 뒤늦게 발화했다" >/dev/null 2>&1
 check "이미 끝난 런에 다른 경계가 발화해도 종료 행은 하나다" "$(end_rows)" "1"
 check "표시의 첫 사유가 그대로다 (첫 사유가 참인 사유다)" "$(head -1 "$RUN_DIR/done")" "$end_mark_first"
 # 종료 토큰도 첫 행의 것이다. 뒤에 같은 런에 종료 행이 더 붙어도(종료 제안 갈래는
-# 표시와 무관하게 자기 행을 쓴다) 가장 이른 행이 토큰을 정하고, 표지는 처음 쓴
-# 것이 남는다.
+# 표시와 무관하게 자기 행을 쓴다) 가장 이른 행이 토큰을 정한다.
 gate_end_row "종료 조건 성립" "뒤늦은 제안" 해당없음 완료 >/dev/null 2>&1
 check "뒤의 종료 행이 종료 토큰을 바꾸지 않는다 (가장 이른 행)" "$(gate_end_token 2>/dev/null)" "천장"
-check "재킥 후보 표지는 처음 쓴 것이 남는다" \
-  "$(sed -n 's/^토큰=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null)" "천장"
 check "정상 완료 행은 재킥 원인=해당없음 과 종료 부류=완료 를 함께 싣는다" \
   "$({ grep -F '기준=종료 조건 성립' "$ELEDGER" || true; } | { grep -F '| 재킥 원인=해당없음 |' || true; } \
      | { grep -cF '| 종료 부류=완료 |' || true; })" "1"

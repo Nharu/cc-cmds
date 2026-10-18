@@ -2341,9 +2341,13 @@ STUBEOF
   # takes, and every run carries one clause so condition 10 can be settled and
   # condition 1 is the line that decides the disposition.
   plan15e='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["A1"] } ] }'
-  au15_run() {  # au15_run <run id> <설계 문서> — manifest with clause K1, and its grant
+  # Two plans that end at the design: the design alone, and the design with its
+  # audit. 15f reads condition 1 on runs of each.
+  plan15d='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] } ] }'
+  plan15da='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] } ] }'
+  au15_run() {  # au15_run <run id> <설계 문서> [plan json] — manifest with clause K1, and its grant
     local m="$WORK/plan-$1.md"
-    write15c "$m" "$plan15e" "$2" "$1"
+    write15c "$m" "${3:-$plan15e}" "$2" "$1"
     grant15c "$1" "$2"
     printf -- '- `종료 절` | id=K1 | 문면=설계 문서가 감사된다 (K1)\n' >> "$m"
     # The binding digest no longer matches once a clause is added, so it goes.
@@ -2427,6 +2431,8 @@ STUBEOF
   # through the gate once for the same reason, and records the pair
   # the supervisor exported to it. The hollow audit stub does nothing and records
   # the prompt it was handed, which on a continuation is the continue message.
+  # The park stub writes a halt record and stops on purpose, and the
+  # re-convergence stub goes through the gate once; 15e-2 and 15f both use them.
   mkdir -p "$WORK/bin"
   STUB_AU_DESIGN="$WORK/bin/claude-stub-au-design"
   cat > "$STUB_AU_DESIGN" <<'STUBAUDEOF'
@@ -2460,7 +2466,29 @@ done
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-hollow","num_turns":1}\n'
 exit 0
 STUBAUHEOF
-  chmod +x "$STUB_AU_DESIGN" "$STUB_AU_AUDIT" "$STUB_AU_HOLLOW"
+  STUB_AU_PARK="$WORK/bin/claude-stub-au-park"
+  cat > "$STUB_AU_PARK" <<'STUBAUPEOF'
+#!/usr/bin/env bash
+mkdir -p "$CC_PIPELINE_RUN_DIR/halt"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=$CC_PIPELINE_RUN_ID -->" \
+  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — 종합 질문' \
+  '**분류**: precondition-failed' '**질문 문면**: 함께 함의하는 요구를 어떻게 처리할까요?' '**선택지**:' \
+  '- `adopt as a requirement` — 요구로 채택한다' '- `reject` — 기각한다' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-park","num_turns":1,"result":"종합 질문에서 멈춥니다."}\n'
+exit 0
+STUBAUPEOF
+  STUB_AU_RECONV="$WORK/bin/claude-stub-au-reconv"
+  cat > "$STUB_AU_RECONV" <<'STUBAUREOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 재수렴 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-reconv","num_turns":1,"result":"재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."}\n'
+exit 0
+STUBAUREOF
+  chmod +x "$STUB_AU_DESIGN" "$STUB_AU_AUDIT" "$STUB_AU_HOLLOW" "$STUB_AU_PARK" "$STUB_AU_RECONV"
 }
 pre_base
 
@@ -3652,6 +3680,24 @@ pre_sb() {
   }
 
   sb_seg_last() { { grep -E '^- `segment`' "$SA_LEDGER" 2>/dev/null || true; } | grep -F "id=$1 " | tail -1; }
+  sb_apply_state() {
+    # sb_apply_state <세그먼트> — 스냅숏 segments[] 원소의 `적용`. 원소가 없으면 `원소 없음`.
+    ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+      | jq -r --arg s "$1" '[.segments[] | select(.id == $s) | .["적용"]] | if length == 0 then "원소 없음" else .[0] // "null" end'
+  }
+  sb_not_owed() {
+    # sb_not_owed <라벨> <행 수 기준값> <세그먼트> — 「적용 불필요」 처분: rc 0,
+    # 그 문면, 원장 행 불변, 적용 워크트리 없음, 스냅숏 `적용` 은 `없음`.
+    check "$1" "$rc" "0"
+    case "$raw" in
+      *"적용 불필요 — $3 는 적용을 빚지지 않습니다"*) ok "$1 — 적용 불필요 문면이다" ;;
+      *) bad "$1 문면" "$raw" ;;
+    esac
+    check "$1 — 원장에 행이 늘지 않는다" "$(sa_rows)" "$2"
+    if [ -e "$(sb_apply_wt "$3")" ]; then bad "$1 — 적용 워크트리" "남았다: $(sb_apply_wt "$3")"
+    else ok "$1 — 적용 워크트리를 만들지 않는다"; fi
+    check "$1 — 스냅숏 적용 은 없음 이다" "$(sb_apply_state "$3")" "없음"
+  }
   sb_apply_wt() { printf '%s-run-%s-%s-apply' "$SA_WT" "$SA_ID" "$1"; }
   sb_count() { { grep -cF "$1" "$SA_LEDGER" 2>/dev/null || true; }; }
 
@@ -4954,6 +5000,31 @@ fi
 # every morning stops reading the field.
 ci=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .chain_intact)
 check "스텁 산문이 앞에 있어도 체인은 무결이다" "$ci" "true"
+
+# A stub may carry one more prose line after the H1 and the identifying line —
+# the rationale a run opened by the seat records. The chain hashes rows, never
+# lines, so that line and the rows written after it leave the chain intact.
+cp "$FX_LEDGER" "$WORK/ledger-stub.bak"
+awk '/^- `/ && !d { print "좌석이 연 후속 런 — 이전 런이 마감으로 끝나 이어 간다"; d = 1 } { print }' \
+  "$WORK/ledger-stub.bak" > "$FX_LEDGER"
+stub_rows0=$(grep -c '^- `' "$FX_LEDGER" || true)
+gate act --manifest "$FX_MANIFEST" --kind x --target nope --cutpoint 커밋 \
+     --worktree "$WT" --snapshot-digest "$(HH)" --rationale "근거 줄 뒤의 행" -- touch "$WORK/nd-stub1"
+gate act --manifest "$FX_MANIFEST" --kind x --target nope --cutpoint 커밋 \
+     --worktree "$WT" --snapshot-digest "$(HH)" --rationale "근거 줄 뒤의 행" -- touch "$WORK/nd-stub2"
+check "근거 줄을 더한 스텁 뒤에도 행이 쓰인다 (아래가 공허하지 않다)" \
+  "$( [ "$(grep -c '^- `' "$FX_LEDGER" || true)" -gt "$stub_rows0" ] && printf 늘었다 || printf 그대로 )/$(grep -c '^좌석이 연 후속 런 — ' "$FX_LEDGER" || true)" \
+  "늘었다/1"
+ci=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .chain_intact)
+check "리포트 스텁에 근거 한 줄을 더해도 체인은 끊기지 않는다" "$ci" "true"
+out=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" --render 2>/dev/null)
+case "$out" in
+  *"해시 체인 : 끊김"*) bad "근거 줄 스텁의 체인" "$(printf '%s' "$out" | grep '해시 체인' || true)" ;;
+  *"해시 체인"*) ok "근거 줄 스텁의 렌더가 끊김을 내지 않는다" ;;
+  *) bad "근거 줄 스텁의 렌더" "해시 체인 줄이 없다" ;;
+esac
+cp "$WORK/ledger-stub.bak" "$FX_LEDGER"
+rm -f "$WORK/nd-stub1" "$WORK/nd-stub2"
 
 # And when it IS broken the render says WHERE. Every caller used to throw the
 # row number into `2>&1`, so the morning was told `끊김` and given nowhere to
@@ -7565,14 +7636,12 @@ if [ "$rc" = "7" ]; then
         --surface 읽기 --snapshot-digest "$(HH7)" --rationale x -- ls 2>&1) || true
   n_twice=$(grep -c '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true)
   check "같은 조건을 반복 기록하지 않는다" "$n_twice" "$n_after"
-  # 표면 이동은 런을 끝내는 행이라 종료 토큰을 싣고 재킥 후보 표지를 남긴다.
+  # 표면 이동은 런을 끝내는 행이라 종료 토큰을 싣는다.
   # 무엇이 움직였는지는 기준선 옆의 파일 목록이 답한다 — 해시 하나는 런 설정과
   # 대상 설정 중 어느 쪽이 움직였는지 말하지 못한다.
   check "표면 이동 행이 재킥 원인=표면이동 을 싣는다" \
     "$( { grep '^- `blocked` ' "$FX_LEDGER" || true; } | { grep -F '사유=강제 표면 이동' || true; } \
         | { grep -cF '재킥 원인=표면이동' || true; } )" "1"
-  check "표면 이동이 재킥 후보 표지를 표면이동 으로 남긴다" \
-    "$(sed -n 's/^토큰=//p' "$STATE7/cc-cmds/run/R1/rekick-candidate" 2>/dev/null)" "표면이동"
   check "기준선 옆 파일 목록이 움직인 런 설정 파일을 런설정 으로 든다" \
     "$( { grep -F "$(printf '런설정\t')" "$STATE7/cc-cmds/run/R1/surface-digest.files" 2>/dev/null || true; } \
         | { grep -cF '/settings/generic.json' || true; } )" "1"
@@ -8882,7 +8951,7 @@ check "마감 뒤에도 장부 행위는 통과한다" "$rc" "0"
 check "마감 뒤 첫 act 가 재킥 원인=마감 종료 행을 하나 쓴다" "$(k14_end)" "1"
 check "그 종료가 종단 표시를 남긴다" "$( [ -s "$RD_K/done" ] && printf 있음 || printf 없음 )" "있음"
 cp "$WORK/ledger-14k.bak" "$FX_LEDGER"
-rm -f "$RD_K/done" "$RD_K/rekick-candidate"
+rm -f "$RD_K/done"
 past_dl '2030-01-01T00:00:00Z'
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
@@ -11465,29 +11534,6 @@ plan15er() {  # plan15er <stage kind> <prompt> — the run-scope dispatch, as pl
   gateL plan --manifest "$M15ER" --kind skill --target infra --segment - --cutpoint 커밋 \
        --surface 워크트리쓰기 -- "$1" -p "$2"
 }
-STUB_AU_PARK="$WORK/bin/claude-stub-au-park"
-cat > "$STUB_AU_PARK" <<'STUBAUPEOF'
-#!/usr/bin/env bash
-mkdir -p "$CC_PIPELINE_RUN_DIR/halt"
-printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=R15ER -->" \
-  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — 종합 질문' \
-  '**분류**: precondition-failed' '**질문 문면**: 함께 함의하는 요구를 어떻게 처리할까요?' '**선택지**:' \
-  '- `adopt as a requirement` — 요구로 채택한다' '- `reject` — 기각한다' \
-  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"
-printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-park","num_turns":1,"result":"종합 질문에서 멈춥니다."}\n'
-exit 0
-STUBAUPEOF
-STUB_AU_RECONV="$WORK/bin/claude-stub-au-reconv"
-cat > "$STUB_AU_RECONV" <<'STUBAUREOF'
-#!/usr/bin/env bash
-h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
-bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
-  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
-  --rationale "픽스처 — 재수렴 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
-printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-reconv","num_turns":1,"result":"재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."}\n'
-exit 0
-STUBAUREOF
-chmod +x "$STUB_AU_PARK" "$STUB_AU_RECONV"
 
 plan15er reconverge "$reconv15er"
 check "15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다" "$rc" "3"
@@ -11584,7 +11630,7 @@ rm -f "$WT/$DOC15ER"
 
 # ---------------------------------------------------------------------------
 # 15f. A frozen design with a step not yet started keeps the run open
-# --- section: 15f | group: base | covers: act, close | anchors: 15f: 동결 뒤 감사가 남은 0-세그먼트 런의 종료 처분은 미충족이다, 15f: 감사 뒤 구현 단계가 남은 0-세그먼트 런도 미충족이다, 15f: 감사 단계의 계속은 감사 산출물을 이름 대는 계속 메시지를 싣는다, 15f: 계속 상한에 이른 감사 단계의 셋째 계속은 감사 갈래로 거부된다 ---
+# --- section: 15f | group: base | covers: act, close, done-conditions | anchors: 15f: 동결 뒤 감사가 남은 0-세그먼트 런의 종료 처분은 미충족이다, 15f: 감사 뒤 구현 단계가 남은 0-세그먼트 런도 미충족이다, 15f: 감사 단계의 계속은 감사 산출물을 이름 대는 계속 메시지를 싣는다, 15f: 계속 상한에 이른 감사 단계의 셋째 계속은 감사 갈래로 거부된다, 15f: 설계만 있는 계획은 설계가 정상 완료하고 문서가 동결돼 있으면 조건 1 이 선다, 15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다, 15f: 같은 원장을 구현 단계를 단 계획으로 읽으면 다음 단계(S2)를 든다, 15f: 설계만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계와 감사만 있는 계획은 감사 전에 감사 단계를 든다, 15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 계획의 재수렴 뒤 감사 단계는 새 감사를 기다린다, 15f: 그 계획은 새 감사가 정상 완료하면 조건 1 이 선다, 15f: 설계와 감사만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 줄만 남으면 처분은 무효화다 ---
 #
 # A design that froze is not a design that stopped. While the plan still has a
 # step after the design that has not started — the audit with no row, or the
@@ -11592,6 +11638,12 @@ rm -f "$WT/$DOC15ER"
 # disposition does not drop, so the run is unfinished rather than void. An
 # audit that produced nothing is continued like any stage, and at the cap the
 # gate says what the router does with an unaudited document: it does not plan.
+#
+# A plan that ends at the design has no such step. Its design (and its audit,
+# when it has one) ending `정상 완료` over a document still frozen is the run's
+# work done: condition 1 holds and the clauses decide the disposition. A
+# re-convergence on the audit's key waits on a fresh audit; an unfrozen
+# document and a design that will not be dispatched again still void the run.
 # ---------------------------------------------------------------------------
 DOC15F='docs/fixture-design-15f-audit.md'
 au15_run R15FA "$DOC15F"
@@ -11670,6 +11722,98 @@ case "$msg" in
   *) bad "15f 구현 미파견 문면" "$msg" ;;
 esac
 rm -f "$WT/$DOC15FB"
+
+# A plan that ends at the design. K1 is settled satisfied, so the disposition
+# says whether condition 1 lets the run end as done.
+f15_met() {  # f15_met <run id> — settle K1 as satisfied
+  gateL act --manifest "$WORK/plan-$1.md" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H "$1")" --rationale x -- id=K1 상태=충족 "근거=설계 단계 행 정상 완료와 동결 줄"
+}
+DOC15FD='docs/fixture-design-15f-designonly.md'
+au15_run R15FD "$DOC15FD" "$plan15d"
+au15_freeze "$DOC15FD"
+au15_dispatch R15FD "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$DOC15FD \"테스트\""
+au15_wait R15FD D1
+check "15f 설계 전용 픽스처의 설계 단계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FD D1 design)" "정상 완료"
+check "15f: 설계만 있는 계획은 설계가 정상 완료하고 문서가 동결돼 있으면 조건 1 이 선다" \
+  "$(au15_c1 "$WORK/plan-R15FD.md")" ""
+printf '# 픽스처 설계\n\n## 합의된 아키텍처\n\n본문\n' > "$WT/$DOC15FD"
+case "$(au15_c1 "$WORK/plan-R15FD.md")" in
+  "1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — D1 · 설계 문서가 동결돼 있지 않음 · "*)
+    ok "15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다" ;;
+  *) bad "15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다" "$(au15_c1 "$WORK/plan-R15FD.md")" ;;
+esac
+au15_freeze "$DOC15FD"
+M15FDI="$WORK/plan15f-designonly-impl.md"
+write15c "$M15FDI" "$plan15c" "$DOC15FD" R15FD
+check "15f: 같은 원장을 구현 단계를 단 계획으로 읽으면 다음 단계(S2)를 든다" \
+  "$(au15_c1 "$M15FDI")" "1 설계가 동결됐으나 다음 단계(S2)가 아직 파견되지 않았습니다"
+f15_met R15FD
+check "15f 설계 전용 픽스처의 K1 이 충족으로 정산된다 (아래가 공허하지 않다)" "$rc" "0"
+check "15f: 설계만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다" \
+  "$(au15_snap "$WORK/plan-R15FD.md" | jq -r .disposition)" "충족"
+rm -f "$WT/$DOC15FD"
+
+# The design with its audit: the audit is named until it runs, an audit that
+# parked voids the run, and a re-convergence on its key waits on the fresh audit.
+DOC15FE='docs/fixture-design-15f-designaudit.md'
+au15_run R15FE "$DOC15FE" "$plan15da"
+au15_freeze "$DOC15FE"
+RD15FE="$STATE_LATE/cc-cmds/run/R15FE"
+audit15fe="/cc-cmds:design-audit-unattended $WT/$DOC15FE"
+reconv15fe="/cc-cmds:design-reconverge $WT/$DOC15FE 감사 종합 요구 $RD15FE/halt/A1#1.md"
+au15_dispatch R15FE "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$DOC15FE \"테스트\""
+au15_wait R15FE D1
+check "15f 설계+감사 픽스처의 설계 단계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FE D1 design)" "정상 완료"
+check "15f: 설계와 감사만 있는 계획은 감사 전에 감사 단계를 든다" \
+  "$(au15_c1 "$WORK/plan-R15FE.md")" "1 설계가 동결됐으나 다음 단계(A1)가 아직 파견되지 않았습니다"
+au15_dispatch R15FE "$STUB_AU_PARK" audit "$audit15fe"
+au15_wait R15FE A1
+check "15f 설계+감사 픽스처의 감사가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15FE A1 audit)" "의도된 park"
+case "$(au15_c1 "$WORK/plan-R15FE.md")" in
+  "1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — D1 · 종단 행 있음 · "*)
+    ok "15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다" ;;
+  *) bad "15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다" "$(au15_c1 "$WORK/plan-R15FE.md")" ;;
+esac
+gateL act --manifest "$WORK/plan-R15FE.md" --kind halt-answer --target infra --segment A1 --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(au15_H R15FE)" --rationale x \
+      -- "중단 기록=$RD15FE/halt/A1#1.md" '선택지=adopt as a requirement' '답한 주체=사람' '근거=사람이 요구로 채택'
+check "15f 설계+감사 픽스처의 중단 답이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
+au15_dispatch R15FE "$STUB_AU_RECONV" reconverge "$reconv15fe"
+au15_wait R15FE A1
+check "15f 설계+감사 픽스처의 재수렴이 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FE A1 reconverge)" "정상 완료"
+check "15f: 그 계획의 재수렴 뒤 감사 단계는 새 감사를 기다린다" \
+  "$(au15_c1 "$WORK/plan-R15FE.md")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 재수렴 뒤 새 감사를 기다립니다"
+au15_dispatch R15FE "$STUB_AU_AUDIT" audit "$audit15fe"
+au15_wait R15FE A1
+check "15f 설계+감사 픽스처의 새 감사가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FE A1 audit)" "정상 완료"
+check "15f: 그 계획은 새 감사가 정상 완료하면 조건 1 이 선다" "$(au15_c1 "$WORK/plan-R15FE.md")" ""
+f15_met R15FE
+check "15f 설계+감사 픽스처의 K1 이 충족으로 정산된다 (아래가 공허하지 않다)" "$rc" "0"
+check "15f: 설계와 감사만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다" \
+  "$(au15_snap "$WORK/plan-R15FE.md" | jq -r .disposition)" "충족"
+( cd "$WT" && git worktree remove --force "$WT-run-R15FE-A1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC15FE"
+
+# A design that stopped on purpose is not dispatched again: the plan ending at
+# the design does not change that, and the run still ends as invalidated.
+DOC15FP='docs/fixture-design-15f-designpark.md'
+au15_run R15FP "$DOC15FP" "$plan15d"
+au15_dispatch R15FP "$STUB_AU_PARK" design "/cc-cmds:design-discuss-unattended $WT/$DOC15FP \"테스트\""
+au15_wait R15FP D1
+check "15f 설계 park 픽스처의 설계 단계가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15FP D1 design)" "의도된 park"
+fp15_c1=$(au15_c1 "$WORK/plan-R15FP.md")
+case "$fp15_c1" in
+  "1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — D1 · "*"무효로 끝납니다")
+    ok "15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다" ;;
+  *) bad "15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다" "$fp15_c1" ;;
+esac
+check "15f: 그 줄만 남으면 처분은 무효화다" \
+  "$( ( gate_seam_init >/dev/null 2>&1 || exit 1
+        gate_seam_enter
+        gate_done_disposition "$fp15_c1" ) )" "무효화"
+rm -f "$WT/$DOC15FP"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
@@ -13410,28 +13554,6 @@ check "owner-doc 이 아예 없으면 선다 (부재는 불일치다)" "$rc" "3"
 cp "$GBAK" "$FX_GRANT"
 gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
 check "온전한 인가 기록에서는 통과한다" "$rc" "0"
-
-# The successor deriver writes a successor's manifest and grant record, so a
-# stage is refused it on every spelling that runs it — and not on the suite that
-# tests it, whose name carries the deriver's as a suffix, nor on the kickoff's
-# restart helper, which is a different program under a different name.
-for spell in "successor.sh derive" "/x/orchestrator/successor.sh id" "bash /x/successor.sh verdict" \
-             "env A=1 /x/successor.sh derive" "lockf -k /tmp/l bash ./successor.sh derive" \
-             "sh -c ./successor.sh"; do
-  # shellcheck disable=SC2086
-  gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- $spell
-  check "후속 런 파생기는 등급표에서 거부된다: $spell" "$rc" "$GATE_EXIT_RULE"
-  case "$msg" in
-    *"successor deriver (successor.sh) runs only outside every run"*) ok "거부가 파생기를 지목한다: $spell" ;;
-    *) bad "파생기 거부 문면: $spell" "$msg" ;;
-  esac
-done
-gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash scripts/test-successor.sh
-check "파생기의 시험 스크립트는 거부되지 않는다" "$rc" "0"
-gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- grep -n derive successor.sh
-check "파생기 파일을 읽는 것은 거부되지 않는다" "$rc" "0"
-gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash /x/orchestrator/rekick.sh detect
-check "재킥오프 도우미는 파생기 거부에 걸리지 않는다" "$rc" "0"
 
 # The pacing guard answers on the grade verb too, so asking what to declare for
 # a write into the dispatcher's directory does not come back with a grade a
@@ -16597,10 +16719,10 @@ case "$msg" in
   *) bad "구속 다이제스트 문면" "$msg" ;;
 esac
 
-# THE CONSENT ROW AND THE CHAIN ROW ARE IN THE FROZEN SET, AND A MANIFEST THAT
-# CARRIES NEITHER HASHES TO THE SAME BYTES IT ALWAYS DID. The second half is
-# what keeps every run frozen before these rows existed admissible: a kind is
-# serialized only when its row is present, so absence adds no line.
+# THE CONSENT ROW IS IN THE FROZEN SET, AND A MANIFEST THAT DOES NOT CARRY IT
+# HASHES TO THE SAME BYTES IT ALWAYS DID. The second half is what keeps every
+# run frozen before the row existed admissible: the kind is serialized only when
+# its row is present, so absence adds no line.
 bsq_bytes() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; binding_set_bytes' \
     _ "$GATE" "$1" 2>/dev/null
@@ -16613,19 +16735,24 @@ bsq_reseal() {
   sed "s/^\*\*구속 다이제스트\*\*: .*\$/**구속 다이제스트**: $d/" "$1" > "$1.r" && mv "$1.r" "$1"
 }
 BSQ_RK='- `재킥오프` | 연쇄 상한=3 | 길이=PT8H0M0S | 사유=밤새 이어서 돈다'
-BSQ_CH='- `연쇄` | 뿌리 런=20260921-aaaaaaaa | 선행 런=20260921-aaaaaaaa | 순번=1 | 선행 구속 다이제스트=0000000000000000000000000000000000000000000000000000000000000000 | 재킥오프 시각=2026-09-21T14:13:20Z | 원인=마감'
 case "$(bsq_bytes "$FX_MANIFEST")" in
-  *"rekick	"*|*"chain	"*) bad "두 행이 없는 매니페스트의 구속 집합" "rekick·chain 줄이 생겼다" ;;
-  "") bad "두 행이 없는 매니페스트의 구속 집합" "구속 집합을 계산하지 못했다" ;;
-  *) ok "두 행이 없는 매니페스트의 구속 집합에는 rekick·chain 줄이 없다 (다이제스트 불변)" ;;
+  *"rekick	"*) bad "재킥오프 행이 없는 매니페스트의 구속 집합" "rekick 줄이 생겼다" ;;
+  "") bad "재킥오프 행이 없는 매니페스트의 구속 집합" "구속 집합을 계산하지 못했다" ;;
+  *) ok "재킥오프 행이 없는 매니페스트의 구속 집합에는 rekick 줄이 없다 (다이제스트 불변)" ;;
 esac
 BRK="$WORK/rekick-binding.md"
 cp "$FX_MANIFEST" "$BRK"
-printf '%s\n%s\n' "$BSQ_RK" "$BSQ_CH" >> "$BRK"
+printf '%s\n' "$BSQ_RK" >> "$BRK"
 case "$(bsq_bytes "$BRK")" in
-  *"rekick	$BSQ_RK"*"chain	$BSQ_CH"*|*"chain	$BSQ_CH"*"rekick	$BSQ_RK"*)
-    ok "재킥오프 행과 연쇄 행이 구속 집합에 실린다" ;;
-  *) bad "재킥오프·연쇄 행의 구속 집합" "$(bsq_bytes "$BRK" | grep -E '^(rekick|chain)')" ;;
+  *"rekick	$BSQ_RK"*) ok "재킥오프 행이 구속 집합에 실린다" ;;
+  *) bad "재킥오프 행의 구속 집합" "$(bsq_bytes "$BRK" | grep -E '^rekick')" ;;
+esac
+# A `연쇄` line appended beside it is no row kind the frozen set knows.
+printf -- '- `연쇄` | 뿌리 런=20260921-aaaaaaaa | 원인=마감\n' >> "$BRK"
+case "$(bsq_bytes "$BRK")" in
+  *"chain	"*) bad "덧붙인 연쇄 줄의 구속 집합" "chain 줄이 생겼다" ;;
+  *"rekick	$BSQ_RK"*) ok "덧붙인 연쇄 줄은 구속 집합에 chain 멤버를 만들지 않는다" ;;
+  *) bad "덧붙인 연쇄 줄의 구속 집합" "재킥오프 줄이 사라졌다" ;;
 esac
 cp "$FX_MANIFEST" "$BRK"
 printf '%s\n' "$BSQ_RK" >> "$BRK"
@@ -16642,7 +16769,7 @@ sed 's/| 사유=밤새 이어서 돈다$/| 사유=런이 고쳐 썼다/' "$BRK" 
 gate snapshot --manifest "$BRK"
 case "$rc/$msg" in
   0/*) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
-  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"재킥오프·연쇄"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
   *) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
 # The form of each row is refused before anything reads it, fail-closed.
@@ -16663,23 +16790,6 @@ bsq_form "길이가 빈 기간(PT)인 재킥오프 행은 거부된다" \
   '- `재킥오프` | 연쇄 상한=3 | 길이=PT | 사유=x' "「재킥오프」 행의 길이가 ISO 8601 기간으로 읽히지 않습니다"
 bsq_form "재킥오프 행 둘은 거부된다" "$BSQ_RK
 ${BSQ_RK%=3*}=2 | 길이=PT8H0M0S | 사유=둘째" "「재킥오프」 행이 2개입니다"
-bsq_form "원인이 닫힌 토큰 밖인 연쇄 행은 거부된다" \
-  "${BSQ_CH%원인=마감}원인=피곤" "「연쇄」 행의 원인이 닫힌 토큰 열세 개 중 하나가 아닙니다"
-# `P0잔존` is one of the thirteen: the row passes the token check and is refused
-# only further on, for the predecessor this fixture does not have.
-bsq_form "원인이 P0잔존 인 연쇄 행은 토큰 검사를 지나 lineage-invalid 로 거부된다" "$BSQ_RK
-${BSQ_CH%원인=마감}원인=P0잔존" "lineage-invalid — (나) 앞 런 매니페스트가 없습니다"
-bsq_form "재킥오프 시각이 Z 표기가 아닌 연쇄 행은 거부된다" \
-  "${BSQ_CH/2026-09-21T14:13:20Z/2026-09-21T23:13:20+09:00}" "「연쇄」 행의 형식이 어긋났습니다"
-bsq_form "재인가 승인만 있고 답변 다이제스트가 없는 연쇄 행은 거부된다" \
-  "$BSQ_CH | 재인가 승인=20260921-aaaaaaaa#3" "「연쇄」 행의 형식이 어긋났습니다"
-# A well-formed chain row is a claim about another run, and the gate entry
-# checks it against that run's files: with no predecessor manifest beside this
-# one, the entry is refused in the lineage wording, before anything acts.
-bsq_form "앞 런 매니페스트가 없는 연쇄 행은 lineage-invalid 로 거부된다" "$BSQ_RK
-$BSQ_CH" "lineage-invalid — (나) 앞 런 매니페스트가 없습니다"
-bsq_form "재킥오프 행 없이 연쇄 행만 있는 매니페스트는 lineage-invalid 로 거부된다" \
-  "$BSQ_CH" "lineage-invalid — (가) 재킥오프 행 0개 · 연쇄 행 1개"
 
 # THE FLOOR HONOURS ONLY `## 인가`. "Exactly one authorization section" is the
 # uniqueness guarantee arm (a) leans on, and a whole-file scan does not inherit
@@ -17210,9 +17320,9 @@ rm -f "$WORK/R9.notes.md"
 
 # THE PACING DIRECTORY. The hook closes it to the edit tools and leaves Bash to
 # the gate, and the gate had no arm there: a stage could append a backlog record
-# the dispatcher launches an unattended run from, or create the claim a
-# successor's admission reads as proof the sweep derived it. Each write is made
-# where it would succeed — the file exists, the claim directory exists — so a
+# the dispatcher launches an unattended run from, or write any other file under
+# the dispatcher's directory. Each write is made where it would succeed — the
+# file exists, the subdirectory exists — so a
 # refusal is the guard's and not a missing directory's, and each is asserted on
 # the code, on the guard's own text, and on the target's bytes.
 mkdir -p "$PACE_N/rekick/R1"
@@ -17248,7 +17358,7 @@ pace_try "백로그, 자동 해소 켬" "$PACE_N/backlog.jsonl" \
   gateN_ar exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
         --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
         -- cp "$WORK/r3x" "$PACE_N/backlog.jsonl"
-pace_try "클레임 successor" "$PACE_N/rekick/R1/successor" \
+pace_try "하위 디렉터리 파일" "$PACE_N/rekick/R1/successor" \
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
         --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
         -- cp "$WORK/r3x" "$PACE_N/rekick/R1/successor"
@@ -30270,8 +30380,6 @@ check "5: exec 뒤에도 종료 행은 하나다" "$(sb5_end)" "1"
 sag end-overdue --manifest "$SA_MANIFEST"
 sag end-overdue --manifest "$SA_MANIFEST"
 check "5: end-overdue 를 두 번 불러도 종료 행은 하나다" "$(sb5_end)" "1"
-check "5: 종료 행이 재킥 후보 표지를 남긴다" \
-  "$( sed -n 's/^토큰=//p' "$SA_RUN/rekick-candidate" 2>/dev/null )" "마감"
 # 마감 갈래가 끝낸 런은 정말 끝난 런이다 — 종료 행과 함께 done 이 남고, 그래서
 # 그 뒤 교대의 `사유=종단` 인계는 종료 제안 없이도 받아들여진다. 종단 인계는
 # 끝난 런에서만 받으므로, 마감이 done 을 남기지 않으면 이 인계가 3 으로 선다.
@@ -30400,8 +30508,6 @@ sc_overdue
 check "5c: 살아 있는 구동기가 없으면 해당없음 종료 행을 한 번 쓴다" "$rc/$(sc_ends)/$(sc_ends 해당없음)" "0/1/1"
 sc_overdue
 check "5c: 다시 불러도 행은 그대로다" "$(sc_ends)" "1"
-check "5c: 그 종료가 재킥 후보 표지를 남긴다" \
-  "$(sed -n 's/^토큰=//p' "$SA_RUN/rekick-candidate" 2>/dev/null)" "해당없음"
 
 sc_new '5c 라우터'
 printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/shift.live"
@@ -30848,7 +30954,7 @@ sb_silent 'terraform plan 은 침묵한다' -- terraform plan
 sb_silent 'gh api 의 GET 은 침묵한다'  -- gh api repos/o/r/pulls/1/merge
 
 # --- 38-12. 적용 행위의 다섯 전제 ------------------------------------------------
-# --- section: 38-12 | group: sb | covers: act, apply | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 기본 대응 0/2 로 읽고 문면에 싣는다 ---
+# --- section: 38-12 | group: sb | covers: act, apply, gate_segment_apply_state, snapshot | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 기본 대응 0/2 로 읽고 문면에 싣는다, 12: 적용 명령이 없으면 적용 불필요 로 rc 0 이다, 12: 절단점이 배포 가 아니면 적용 불필요 로 rc 0 이다, 12: 빚지지 않은 세그먼트는 M^2 가 리뷰 HEAD 와 달라도 전제 4 앞에서 적용 불필요 로 끝난다, 12: 두 번째 적용 행위는 적용 불필요 로 끝난다 ---
 #
 # 다섯 전제는 규칙 카탈로그 앞에 있고 끌 수 없다. 거부마다 원장 행 수와 적용
 # 워크트리 부재를 함께 잰다 — 코드만 재면 행을 쓰고 거부하는 구현도 초록이다.
@@ -30968,24 +31074,43 @@ sb12_base=$(sa_base)
 sb_apply SB12H
 sb_refused_clean "12: 리뷰 뒤 head 가 움직인 머지는 전제 4 에서 거부된다" 4 "$sb12_base" SB12H
 
-# 적용 명령이 없으면 전제 5.
+# 적용 명령이 없으면 적용을 빚지지 않는다 — 거부가 아니라 「적용 불필요」.
 sb_apply_new '12 명령 없음' '' '' '(해당 없음)'
 sb_reviewed_landing SB12C
 sb12_base=$(sa_base)
+sag plan --manifest "$SA_MANIFEST" --kind apply --target main --segment SB12C --cutpoint 배포 \
+    --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x -- 적용
+case "$raw" in
+  *"통과 예상: kind=apply target=main 처분=불필요(적용을 빚지지 않음)"*) ok "12: 빚지지 않은 적용의 plan 은 처분=불필요 를 찍는다" ;;
+  *) bad "12: 빚지지 않은 적용의 plan" "$raw" ;;
+esac
 sb_apply SB12C
-sb_refused_clean "12: 적용 명령이 없으면 전제 5 에서 거부된다" 5 "$sb12_base" SB12C
+sb_not_owed "12: 적용 명령이 없으면 적용 불필요 로 rc 0 이다" "$sb12_base" SB12C
 
-# 절단점이 배포 가 아니면 전제 5.
+# 절단점이 배포 가 아니면 적용을 빚지지 않는다.
 sb_apply_new '12 절단점' 'exit 0' 'true'
 sb_target_field 절단점 머지
 sb_reviewed_landing SB12K
 sb12_base=$(sa_base)
 sb_apply SB12K
-sb_refused_clean "12: 절단점이 배포 가 아니면 전제 5 에서 거부된다" 5 "$sb12_base" SB12K
+sb_not_owed "12: 절단점이 배포 가 아니면 적용 불필요 로 rc 0 이다" "$sb12_base" SB12K
+
+# 관측 런의 모양 — 절단점 머지, 적용 명령 없음, 리뷰 뒤 커밋을 더한 머지라
+# M^2 ≠ 리뷰 HEAD. rc 0 이면 전제 4 에 닿기 전에 끝났다는 뜻이다.
+sb_apply_new '12 관측 모양' '' '' '(해당 없음)'
+sb_target_field 절단점 머지
+sa_seg_row SB12O ""
+SB_TIP=$(sa_commit '작업'); sb_cycle SB12O "$SB_TIP"
+sa_commit '리뷰 뒤 작업' >/dev/null
+SB_M=$(sb_land_merge); sb_merged_row SB12O "$SB_M"
+sb12_base=$(sa_base)
+sb_apply SB12O
+sb_not_owed "12: 빚지지 않은 세그먼트는 M^2 가 리뷰 HEAD 와 달라도 전제 4 앞에서 적용 불필요 로 끝난다" "$sb12_base" SB12O
 
 # 적용 주체가 사람이면 인계 행 하나와 rc 0.
 sb_apply_new '12 사람' 'exit 0' "touch $WORK/sb12-person" 사람
 sb_reviewed_landing SB12S
+check "12: 인계 전 사람 세그먼트의 스냅숏 적용 은 인계 다" "$(sb_apply_state SB12S)" "인계"
 sb_apply SB12S
 check "12: 적용 주체가 사람이면 rc 0 이다" "$rc" "0"
 check "12: 그리고 인계 행 하나를 남긴다" "$(sb_count '`적용 인계`')" "1"
@@ -30995,6 +31120,27 @@ case "$(sb_seg_last SB12S)" in
   *"적용=대기"*) bad "12: 사람 세그먼트의 머지됨" "적용=대기 가 붙었다" ;;
   *) ok "12: 적용 주체 사람 세그먼트의 머지됨 에는 표지가 붙지 않는다" ;;
 esac
+check "12: 인계 뒤 스냅숏 적용 은 없음 이다" "$(sb_apply_state SB12S)" "없음"
+sb_apply SB12S
+check "12: 인계 뒤 두 번째 적용 행위도 rc 0 이다" "$rc" "0"
+case "$raw" in
+  *"적용 불필요 — SB12S"*) ok "12: 두 번째 적용 행위는 적용 불필요 로 끝난다" ;;
+  *) bad "12: 두 번째 적용 행위 문면" "$raw" ;;
+esac
+check "12: 인계 행은 하나 그대로다" "$(sb_count '`적용 인계`')" "1"
+
+# 라우터의 두 사본 — 교대 스킬과 리드 사본의 「**The apply.**」 문단 첫머리가 같고,
+# 둘 다 `적용` 의 `없음` 갈래에서 fetch 도 적용 행위도 내지 않는다고 적는다.
+ap12_shift=$(grep -m1 -F '**The apply.**' "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md" || true)
+ap12_lead=$(grep -m1 -F '**The apply.**' "$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md" || true)
+check "12: 두 라우터 사본의 적용 문단 첫머리가 같다" "$ap12_shift" "$ap12_lead"
+for ap12 in "$ap12_shift" "$ap12_lead"; do
+  case "$ap12" in
+    *'look at `적용` on that segment'*'`없음` → the merge is the segment'"'"'s end'*'issue neither the fetch nor the apply act'*'`대기` or `인계` → first issue'*)
+      ok "12: 라우터 사본의 적용 문단이 적용 없음 갈래를 싣는다" ;;
+    *) bad "12: 라우터 사본의 적용 문단" "$ap12" ;;
+  esac
+done
 
 # --- 38-13. 적용의 처분과 종료 조건 ----------------------------------------------
 # --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 2 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다, 13: 해시 불일치 거부 문면이 두 해시를 싣는다, 13: 해시 불일치에서 사전 프로브도 적용 명령도 돌지 않는다, 13: 불필요=2·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 2 는 완료 로 끝난다 ---
@@ -31006,6 +31152,7 @@ case "$(sb_seg_last SB13)" in
   *"상태=머지됨"*"적용=대기"*) ok "13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다" ;;
   *) bad "13: 적용=대기" "$(sb_seg_last SB13)" ;;
 esac
+check "13: 그때 스냅숏 적용 은 대기 다" "$(sb_apply_state SB13)" "대기"
 sb_done_msg
 case "$msg" in
   *"세그먼트 SB13 의 적용이 남았습니다"*) ok "13: 적용이 남은 동안 조건 1 이 그 세그먼트를 미충족으로 낸다" ;;
@@ -34471,11 +34618,12 @@ case "$(p59_field "$p59_row" 근거)" in
 esac
 # 셋 다 같은 예산을 쓴다 — 자유 문면을 싣는 세 자리(act 승인·무효화 종단·경계 종단)의
 # 근거는 전부 `gate_free_budget` 이 잰 값으로 잘린다. 리터럴 240 으로 되돌아간 자리가
-# 생기면 여기서 잡힌다.
+# 생기면 여기서 잡힌다. 한 자리가 예산을 다시 잴 수 있으므로(경계 종단은 `P0잔존` 지문이
+# 행에 들어가지 않으면 `(미상)` 으로 바꿔 한 번 더 잰다) 대입 줄이 아니라 예산 변수를 센다.
 check "59: 자유 문면 예산으로 잘리는 근거 자리가 셋이다" \
   "$(grep -c 'gate_row_safe "\$[a-z]*" "\$_[a-z]*_free"' "$GATE" || true)" "3"
 check "59: 그 셋의 예산이 전부 gate_free_budget 에서 온다" \
-  "$(grep -c '_free=\$(gate_free_budget ' "$GATE" || true)" "3"
+  "$({ grep -o '_[a-z]*_free=\$(gate_free_budget ' "$GATE" || true; } | sort -u | wc -l | tr -d ' ')" "3"
 
 # (6) 라우팅 좌석의 shared/ 울타리 — 네 철자, 그리고 두 대조군 ------------------------
 #
@@ -41451,7 +41599,7 @@ check "88b: 다음이 해소 리뷰 가 아닌 세그먼트의 해소 사이클 
 
 # ---------------------------------------------------------------------------
 # 88c. 릴리스 메타만의 충돌 — 기대 트리, 고정 도우미, 머지 대조의 메타 해소
-# --- section: 88c | group: ledger_series | covers: release_meta_expected_tree, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_merge_check_value, gate_done_conditions | anchors: 88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다, 88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다, 88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다, 88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다, 88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다, 88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다, 88c: 조건 11 은 메타 해소 를 통과시킨다, 88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다, 88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다, 88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다 ---
+# --- section: 88c | group: ledger_series | covers: release_meta_expected_tree, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_merge_check_value, gate_done_conditions, gate_apply_preconditions, gate_segment_apply_state | anchors: 88c: 빚지지 않은 메타 해소 착지의 적용 전제는 rc 0 이고 빚지지 않음을 세운다, 88c: 적용 명령이 있는 메타 해소 착지는 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88c: 증명되지 않는 둘째 부모의 착지는 전제 4 로 거부되고 증명 실패 사유를 싣는다, 88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다, 88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다, 88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다, 88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다, 88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다, 88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다, 88c: 조건 11 은 메타 해소 를 통과시킨다, 88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다, 88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다, 88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다 ---
 #
 # 두 세그먼트가 같은 플러그인의 판을 올리면 `plugin.json` 과 `CHANGELOG.md` 에서만
 # 충돌하고, 그 해소는 판단이 아니다. 여기서는 같은 등급(minor) 의 두 올림을 쓴다 —
@@ -41587,6 +41735,62 @@ T288C=$( ( cd "$U88C" && git checkout -q main && echo x > seg.txt && git add -A 
 check "88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다" \
   "$(c88c)|$(lsr_last_fields "$L88C" '베이스 판정' 판정\ HEAD 베이스 판정 부류)|$(q88c "$L88C" gate_segment_review_next S)" \
   "0|$MM88C|$T288C|충돌|일반|베이스 해소"
+
+# 적용 행위 전제 4 의 메타 해소 갈래 — 착지 커밋 M 은 상류 클론에서 베이스와 메타 해소
+# HEAD 를 --no-ff 로 머지해 원격에 밀고 메인 클론에서 fetch 해 만든다. 위의 충돌 행 뒤로
+# 원격 main 은 MM88C 와 충돌하므로, 착지는 T88C 에서 갈라진 착지 브랜치에 두고 그
+# 브랜치를 베이스로 둔 매니페스트 사본으로 판정한다. 마지막 베이스 판정 행의 베이스는
+# T288C 이고 MM88C 의 둘째 부모 T88C 는 그 조상이다.
+( cd "$W88C" && git branch -q slip-88c "$SLIP88C" ) >/dev/null 2>&1
+la88c() {  # la88c <브랜치> <둘째 부모> — T88C 위의 --no-ff 착지를 밀고 그 sha 를 찍는다
+  ( cd "$U88C" && git checkout -q -b "$1" "$T88C" && git merge -q --no-ff -m "land $1" "$2" \
+      && git push -q origin "$1" && git rev-parse HEAD ) 2>/dev/null
+}
+( cd "$U88C" && git fetch -q "$G88C" seg-88c bad-88c slip-88c ) >/dev/null 2>&1
+LM88C=$(la88c land-88c "$MM88C")
+LB88C=$(la88c landbad-88c "$BAD88C")
+LS88C=$(la88c landslip-88c "$SLIP88C")
+( cd "$G88C" && git fetch -q origin ) >/dev/null 2>&1
+check "88c: 착지 커밋의 둘째 부모는 메타 해소 HEAD 다" \
+  "$(cd "$G88C" && git rev-parse "$LM88C^1" "$LM88C^2" | tr '\n' ' ')" "$T88C $MM88C "
+MN88C="$D88C/manifest-land.md"
+sed 's/베이스 브랜치=main/베이스 브랜치=land-88c/' "$M88C" > "$MN88C"
+MA88C="$D88C/manifest-apply.md"
+sed 's/절단점=머지/절단점=배포/' "$MN88C" | awk '
+  { print }
+  /^\*\*설계 문서\*\*: / { print "**적용 주체**: 파이프라인"; print "**적용 지점**: `true`"; print "**적용 프로브**: `exit 0`" }
+' > "$MA88C"
+ap88c() {  # ap88c <매니페스트> <원장> — 적용 전제의 rc 와 세 값, 그리고 거부 문면
+  local m=$1 l=$2
+  lsr_in Linux "$l" - lsr_rp_in "$m" ap88c_in 2>/dev/null
+}
+ap88c_in() {
+  local rc=0
+  gate_apply_preconditions act t S 2>"$D88C/ap.err" >/dev/null || rc=$?
+  [ "$rc" != "$GATE_EXIT_RULE" ] || rc=규칙
+  printf '%s|%s|%s|%s|%s' "$rc" "${GATE_APPLY_NOT_OWED:-}" "${GATE_APPLY_MERGE:-}" "${GATE_APPLY_SUBJECT:-}" \
+    "$(tr '\n' ' ' < "$D88C/ap.err")"
+}
+lap88c() {  # lap88c <이름> <머지 커밋> [추가 필드] — L88C 뒤에 머지됨 행 하나를 붙인 원장 사본
+  local l
+  l=$(lsr_ledger "w88c-$1"); cp "$L88C" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf -- '- `segment` | 교대=1 | id=S | 상태=머지됨 | 워크트리=%s | 머지 커밋=%s%s | prev=x\n' "$W88C" "$2" "${3:+ | $3}" >> "$l"
+  printf '%s' "$l"
+}
+ap88c_out=$(ap88c "$MN88C" "$(lap88c ap-none "$LM88C")")
+check "88c: 빚지지 않은 메타 해소 착지의 적용 전제는 rc 0 이고 빚지지 않음을 세운다" \
+  "$(printf '%s' "$ap88c_out" | cut -d'|' -f1-2)" "0|1"
+ap88c_out=$(ap88c "$MA88C" "$(lap88c ap-owed "$LM88C" '적용=대기')")
+check "88c: 적용 명령이 있는 메타 해소 착지는 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다" \
+  "$(printf '%s' "$ap88c_out" | cut -d'|' -f1-4)" "0||$LM88C|$R88C"
+for bad88c in "$LB88C" "$LS88C"; do
+  ap88c_out=$(ap88c "$MA88C" "$(lap88c ap-bad "$bad88c" '적용=대기')")
+  case "$ap88c_out" in
+    "규칙|"*"적용 행위 전제 4 불충족"*"릴리스 메타 재번호 머지로도 증명되지 않습니다 (H's tree is not the expected release tree)"*)
+      ok "88c: 증명되지 않는 둘째 부모의 착지는 전제 4 로 거부되고 증명 실패 사유를 싣는다 ($(cd "$G88C" && git rev-parse --short "$bad88c^2"))" ;;
+    *) bad "88c: 증명되지 않는 둘째 부모의 착지" "$ap88c_out" ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제

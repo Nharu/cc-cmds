@@ -3950,9 +3950,8 @@ re_case() {
 re_case deadline 'run_deadline_end "첫 마감 park"; run_deadline_end "둘째 마감 park"; run_end_record'
 check "고정 그래프 첫 마감 park 가 재킥 원인=마감 종료 행을 한 번만 쓴다" \
   "$(re_end_rows "$RE24/deadline")/$(re_end_field "$RE24/deadline" '재킥 원인')" "1/마감"
-check "그 종료 행이 done 과 표지를 함께 남긴다" \
-  "$([ -s "$RE24/deadline/run/done" ] && printf done)/$(sed -n 's/^토큰=//p' "$RE24/deadline/run/rekick-candidate" 2>/dev/null)" \
-  "done/마감"
+check "그 종료 행이 done 을 남긴다" \
+  "$([ -s "$RE24/deadline/run/done" ] && printf done)" "done"
 re_dl_pair=$(awk '
   /^ *park .*"벽시계 마감 경과/ { open = NR }
   /^ *run_deadline_end "/ { if (open && NR - open <= 2) n++; open = 0 }
@@ -4022,7 +4021,7 @@ re_case unarmed 'RUN_END_ARMED=""; run_end_record'
 check "주 루프가 시작하기 전(원장이 없는 거부)에는 아무것도 쓰지 않는다" "$(re_end_rows "$RE24/unarmed")" "0"
 
 # 스테이지 종단 뒤의 `문서 해시` 행. 같은 (스테이지, 값) 짝은 한 번만 쓰고, 문서가
-# 바뀌면 새 행을 쓴다. 후속 런의 유도는 시작 다이제스트가 아니라 마지막 행을 읽는다.
+# 바뀌면 새 행을 쓴다.
 re_case dochash 'DOC="$RUN_DIR/../docs/x.md"; printf "a\n" > "$DOC"
   driver_doc_hash_row 세그먼트=A 스테이지=S4-A; driver_doc_hash_row 세그먼트=A 스테이지=S4-A
   printf "b\n" > "$DOC"; driver_doc_hash_row 세그먼트=A 스테이지=S4-A
@@ -4036,9 +4035,6 @@ check "구동기 문서 해시 행은 같은 짝을 한 번만 쓰고 바뀐 값
 check "구동기 문서 해시 행은 게이트 행과 같은 필드를 같은 순서로 싣는다" \
   "$(printf '%s\n' "$re_dh_rows" | sed -n 1p | tr '|' '\n' | sed -n 's/^ *\([^=]*\)=.*/\1/p' | grep -vxE '교대|prev' | tr '\n' ',')" \
   "스테이지,sha256,동결값,관측,"
-check "후속 런 유도는 고쳐 쓴 문서의 다이제스트를 기록된 값으로 읽는다" \
-  "$(bash -c '. "$1" && rekick_recorded_doc_sha "$2"' _ "$script_dir/successor.sh" "$RE24/dochash/ledger.md" 2>/dev/null || true)" \
-  "$re_dh_b"
 
 # 의존 park 는 세그먼트 자신을 앵커로 두고 아직 착지하지 않은 선행을 선언 순서로 싣는다.
 re_case deppark 'printf "A\n" > "$RUN_DIR/done.txt"
@@ -10877,7 +10873,7 @@ r34_ring() {  # r34_ring <런 id> [머지|실패] — one run of the document: i
     wt_path() { printf 'WT-%s' "$1"; }
     if [ "${2:-}" = "실패" ]; then run_gate_call() { return 9; }; fi
     # `R34_P0=1` makes the ring a `P0잔존` successor.
-    if [ -n "${R34_P0:-}" ]; then manifest_chain_field() { [ "$1" = 원인 ] && printf 'P0잔존'; }; fi
+    if [ -n "${R34_P0:-}" ]; then manifest_provenance_field() { [ "$1" = 원인 ] && printf 'P0잔존'; }; fi
     plan_from_declaration "$DOC"
     printf '%s\n' "$?" > "$RUN_DIR/plan.rc"
     if [ "${2:-}" = "머지" ]; then
@@ -10930,7 +10926,7 @@ check "34: P0 잔존 후속 런은 앞 런이 착지시킨 id 를 새 문서가 
   "$(cat "$R34/ring5p/plan.rc")/$( { grep -F '앞 런이 착지시킨 슬라이스를 새 문서가 선언하지 않는다: SA' "$R34/ring5p/parked" 2>/dev/null || true; } | grep -c . || true)/$( { grep -E '^- `segment` ' "$R34/ledgers/ring5p.md" 2>/dev/null || true; } | grep -c . || true)" \
   "1/1/0"
 r34_ring ring5
-check "34: 연쇄 원인이 P0잔존 이 아닌 런은 id 가 바뀐 문서를 그대로 계획한다" \
+check "34: 출처 행 원인이 P0잔존 이 아닌 런은 id 가 바뀐 문서를 그대로 계획한다" \
   "$(cat "$R34/ring5/plan.rc")/$(r34_count "$R34/ledgers/ring5.md" SC 계획됨)/$( { cat "$R34/ring5/parked" 2>/dev/null || true; } | grep -c . || true)" "0/1/0"
 r34_doc "$R34DOC" 머지
 
@@ -12058,9 +12054,15 @@ reconverge_row() { ledger_row 'stage-result' "세그먼트=$1" "파견 id=$2" "�
 report_append() { :; }; log() { :; }
 halt_record_path() { printf '%s' "$RUN_DIR/halt/$1.md"; }
 home_alias() { printf h; }; alias_root() { printf '%s' "$S0_ROOT"; }; doc_arg() { printf '%s' "$DOC"; }
-manifest_chain_rows() { printf -- '- `연쇄` | 선행 런=PRED | 원인=%s | 재킥 지문=x\n' "$S0_CAUSE"; }
 manifest_plan_field() { printf '%s' "${S0_DESREQ:-true}"; }
 manifest_preauth_rows() {
+  # The provenance row a re-kickoff writes; `S0_PROV=4` drops `원인=`, the
+  # four-field row a person's own re-kickoff writes.
+  if [ "${S0_PROV:-}" = 4 ]; then
+    printf -- '- `사전 인가` | 이어받은 런=PRED | 매니페스트 sha256=m | 인가 기록 sha256=g\n'
+  else
+    printf -- '- `사전 인가` | 이어받은 런=PRED | 매니페스트 sha256=m | 인가 기록 sha256=g | 원인=%s\n' "$S0_CAUSE"
+  fi
   [ "${S0_IROW:-1}" = 1 ] || return 0
   printf -- '- `사전 인가` | 인터뷰 기록=docs/pipeline-run/ROOT.interview.md | sha256=%s\n' "$S0_ISHA"
 }
@@ -12109,7 +12111,7 @@ s0_run() {  # s0_run — one S0 entry in the fixture $S0D; stdout → $S0D/out
     S0_ARGV="$S0D/argv.txt" S0_CALLS="$S0D/calls" S0_ROOT="$S0D" S0_CLI="$S0W/cli" \
     S0_CAUSE="${S0_CAUSE:-P0잔존}" S0_ANS="${S0_ANS:-}" S0_SEL="$S0_SEL" S0_ISHA="$S0_ISHA" \
     S0_DESREQ="${S0_DESREQ:-true}" S0_IROW="${S0_IROW:-1}" S0_SKILL="${S0_SKILL:-design-discuss-unattended}" \
-    S0_CV="${S0_CV:-0}" S0_PREDRC="${S0_PREDRC:-0}" \
+    S0_CV="${S0_CV:-0}" S0_PREDRC="${S0_PREDRC:-0}" S0_PROV="${S0_PROV:-}" \
     bash -c 'drv="$1"; d="$2"; stubs="$3"; set --; . "$drv"; set +e; . "$stubs"
              RUN_DIR="$d/run"; RUN_ID=RUN; MANIFEST="$d/mf/RUN.plan.md"; DOC="$d/doc/design.md"
              DOC_BASE="$d/base"; DOC_SLUG=design; CLI_BIN="$S0_CLI"
@@ -12125,10 +12127,14 @@ s0_lines() { { cat "$S0D/$1" 2>/dev/null || true; } | grep -c . || true; }
 S0RV='{"branch":"재수렴","rationale":"국소 결함이다","cited":[]}'
 S0RD='{"branch":"재설계","rationale":"구조가 낳는다","cited":["결함 하나"]}'
 
-# 원인이 다른 연쇄 런은 S0 을 지나치기만 한다.
+# 원인이 다른 후속 런은 S0 을 지나치기만 한다.
 s0_fix plain; S0_CAUSE=결함 s0_run
-check "36: 연쇄 원인이 P0잔존 이 아니면 S0 은 게이트도 판단도 부르지 않고 행도 쓰지 않는다" \
+check "36: 출처 행 원인이 P0잔존 이 아니면 S0 은 게이트도 판단도 부르지 않고 행도 쓰지 않는다" \
   "$(s0_out rc)/$(s0_lines run/gate.log)/$(s0_lines calls)/$(s0_lines run/led.md)" "0/0/0/0"
+# 사람이 직접 재킥오프한 런의 네 필드 출처 행에는 `원인=` 이 없다.
+s0_fix four; S0_PROV=4 s0_run
+check "36: 원인= 없는 네 필드 출처 행은 S0 을 켜지 않고 게이트도 판단도 부르지 않고 행도 쓰지 않는다" \
+  "$(s0_out rc)/$(s0_lines run/gate.log)/$(s0_lines calls)/$(s0_lines run/led.md)/$(s0_lines run/spawn.log)" "0/0/0/0/0"
 
 # 재수렴 — 판단 한 번, 선택 행 하나, P0 세그먼트마다 재수렴 하나.
 s0_fix rv; S0_ANS="$S0RV" s0_run

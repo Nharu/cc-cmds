@@ -12,7 +12,20 @@ export CC_CMDS_DASHBOARD := off
 # `CC_GATE_PIN_SYNC_DISABLE=1` in front of it.
 export CC_GATE_PIN_SYNC_DISABLE := 1
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest check-cheap check-push check-push-verify run-check-push-selftest
+# Every check and suite runs in one time zone, whatever the caller's TZ says:
+# the local host and CI's runners otherwise disagree, and a suite that mistakes
+# local time for UTC passes on a UTC runner and fails here, or the other way
+# round. A variable defined in the makefile beats the same name in the
+# environment, so `TZ=UTC0 make test` still runs under this value. It is not
+# UTC on purpose: under an offset of zero that mistake passes everywhere and
+# hides. Calling a suite directly outside make inherits the host's zone instead;
+# put `TZ=Asia/Seoul` in front of it on a host that is not KST. A child a suite
+# starts with `env -i` does not receive the exported TZ either, so a new suite
+# that does so passes `TZ` to that child explicitly.
+TEST_TZ := Asia/Seoul
+export TZ := $(TEST_TZ)
+
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -20,6 +33,7 @@ lint:
 	bash scripts/lint-skill-paths.sh
 	bash scripts/lint-skill-description-budget.sh
 	bash scripts/lint-bash-portability.sh
+	bash scripts/lint-test-clock.sh
 	bash scripts/lint-skill-auq-spec.sh
 	bash scripts/lint-verification-literals.sh
 	bash scripts/lint-design-audit-pins.sh
@@ -315,6 +329,8 @@ LINT_TESTS := \
 	scripts/test-lint-skill-invariants.sh \
 	scripts/test-lint-skill-paths.sh \
 	scripts/test-lint-bash-portability.sh \
+	scripts/test-lint-test-clock.sh \
+	scripts/test-tz-pin.sh \
 	scripts/test-lint-skill-auq-spec.sh \
 	scripts/test-lint-verification-literals.sh \
 	scripts/test-lint-design-audit-pins.sh \
@@ -360,7 +376,6 @@ ORCH_TESTS := \
 	scripts/test-kickoff-defaults.sh \
 	scripts/test-kickoff-hook-probe.sh \
 	scripts/test-rekick.sh \
-	scripts/test-successor.sh \
 	scripts/test-team-witness-init.sh \
 	scripts/test-similar-items.sh \
 	scripts/test-base-split.sh \
@@ -410,7 +425,7 @@ $(TEST_GOALS): run/%:
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
-	run-check-push-selftest
+	run-rest-shard-selftest run-check-push-selftest
 
 # How many shards the gate suite is cut into. CI reads it so the matrix, the
 # per-shard dispatch and the union check all take their N from one place; a
@@ -422,15 +437,54 @@ GATE_SHARDS ?= 13
 print-gate-shards:
 	@echo $(GATE_SHARDS)
 
+# The zone a recipe actually receives, and the offset it resolves to. The
+# offset is printed beside the name because glibc falls back to UTC in silence
+# when it cannot find the zone data, and the name alone would still read right.
+print-test-tz:
+	@echo "$$TZ $$(date +%z)"
+
+# Runs one script under the pinned zone. scripts/test-tz-pin.sh uses it to show
+# that a fixture which mistakes local time for UTC fails through make.
+TZ_PROBE ?=
+
+tz-probe:
+	bash $(TZ_PROBE)
+
 # `test` minus the gate suite. CI runs this in the always-on leg because the
 # gate suite runs sharded in its own workflow, and running it in both places
 # would put back the three serial hours that the sharding removes. Locally `test`
 # is still the whole thing.
 ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
-test-rest: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
+REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
-	run-check-push-selftest
+	run-rest-shard-selftest run-check-push-selftest
+
+test-rest: $(REST_GOALS)
+
+# How many runners `test-rest` is cut into in CI. The lint workflow's matrix and
+# its union check both take N from here, as the gate shards take GATE_SHARDS.
+REST_SHARDS ?= 3
+
+print-rest-shards:
+	@echo $(REST_SHARDS)
+
+# The goal list the partitioner cuts, one per line. It is REST_GOALS itself, so
+# a suite added to `test-rest` is in some shard without anyone naming it.
+print-rest-goals:
+	@printf '%s\n' $(REST_GOALS)
+
+# One shard of `test-rest`. SHARD is 1-based. The goals come from the
+# partitioner heaviest first and go to a sub-make on its command line, which
+# starts them in that order, as many at once as the outer -j allows: `$(MAKE)`
+# on the same recipe line is what hands the sub-make the outer jobserver. An
+# empty assignment is a success, as it is for gate-shard.
+rest-shard:
+	@goals=$$(bash scripts/rest-shard.sh --shards $(REST_SHARDS) --shard $(SHARD)); rc=$$?; \
+	if [ "$$rc" = "4" ]; then echo "rest shard $(SHARD)/$(REST_SHARDS): 배정된 목표가 없습니다"; exit 0; fi; \
+	[ "$$rc" = "0" ] || exit "$$rc"; \
+	echo "rest shard $(SHARD)/$(REST_SHARDS): $$goals"; \
+	$(MAKE) --no-print-directory $$goals
 
 # One shard of the gate suite. SHARD is 1-based. An empty assignment is a
 # success and not a failure — the partitioner exits 4 when the requested shard
@@ -452,6 +506,9 @@ run-gate-census-selftest:
 
 run-check-push-selftest:
 	bash scripts/check-push.sh --self-test
+
+run-rest-shard-selftest:
+	bash scripts/rest-shard.sh --self-test
 
 # Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
 # every section alone, the whole suite once and every shard once — about an hour

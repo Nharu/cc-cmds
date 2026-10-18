@@ -129,6 +129,8 @@ PATTERNS=(
   '\breadarray\b|bash4 mapfile|bash 4+ alias of mapfile, absent on 3.2; same replacement'
   '\$\{[A-Za-z_][A-Za-z0-9_]*\^\^?\}|bash4 case-expansion|bash 4+ case conversion; use `tr [:lower:] [:upper:]`'
   '\$\{[A-Za-z_][A-Za-z0-9_]*,,?\}|bash4 case-expansion|bash 4+ case conversion; use `tr [:upper:] [:lower:]`'
+  'strptime\([^)]*%z|jq strptime %z|glibc reads %z and discards it, so the offset is lost on Linux; strip the offset off the string yourself before strptime'
+  '\bgetconf[[:space:]]+ARG_MAX\b|getconf ARG_MAX|Linux reports a quarter of the stack limit, so the value differs per host; compare against a fixed bound'
 )
 # Quoted-literal idioms that need substring (not word-boundary) matching.
 # Patterns that must be matched under the C locale, because what they are about

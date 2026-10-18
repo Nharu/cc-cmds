@@ -205,13 +205,12 @@ dry=$(cd "$repo_root" && make -n check-push 2>&1)
 if [ "$(printf '%s\n' "$dry" | grep -cxF 'bash scripts/check-push.sh run' || true)" -ge 1 ]; then ok "make check-push 가 check-push.sh run 을 부른다"; else bad "check-push 타깃" "$dry"; fi
 dry=$(cd "$repo_root" && make -n check-push-verify 2>&1)
 if [ "$(printf '%s\n' "$dry" | grep -cxF 'bash scripts/check-push.sh verify' || true)" -ge 1 ]; then ok "make check-push-verify 가 check-push.sh verify 를 부른다"; else bad "check-push-verify 타깃" "$dry"; fi
-# The prerequisite list continues over backslash-ended lines, so the rule is
-# read as one logical line.
+# The prerequisites are read from make's own database rather than the file: a
+# rule may name them through a variable (`test-rest: $(REST_GOALS)`), and the
+# database prints the list with every variable expanded, on one line.
+mkdb=$(cd "$repo_root" && make -pRrq : 2>/dev/null || true)
 for t in test test-rest; do
-  tline=$(awk -v t="$t:" '
-    f { s = s " " $0; if ($0 !~ /\\$/) exit; next }
-    index($0, t) == 1 { f = 1; s = $0; if ($0 !~ /\\$/) exit }
-    END { print s }' "$repo_root/Makefile")
+  tline=$(printf '%s\n' "$mkdb" | awk -v t="$t:" 'index($0, t) == 1 { print; exit }')
   case "$tline" in
     *run-check-push-selftest*) ok "$t 가 check-push 자가 시험을 선행으로 둔다" ;;
     *) bad "$t 선행" "run-check-push-selftest 가 없다: $tline" ;;
