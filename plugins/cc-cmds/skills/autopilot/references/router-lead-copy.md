@@ -353,14 +353,14 @@ gate.sh act --manifest <매니페스트> --kind segment --target <alias> --segme
 
 Every `segment` row this loop writes for the segment, this one and a `park` alike, carries the plan row's `선행` again. The gate does not trust `머지 커밋`; it checks it when the apply act runs.
 
-**The apply.** First issue the pre-authorized `gate.sh exec … -- git fetch` once more: the merge happened on the remote, and until a fetch the local clone holds neither M nor an `origin/<베이스>` that contains it. Then:
+**The apply.** After the `머지됨` row is written, read the snapshot again and look at `적용` on that segment's `segments[]` element. `없음` → the merge is the segment's end — it has no apply command, its cutpoint is below `배포`, or its handover to a person is already recorded — so issue neither the fetch nor the apply act. `대기` or `인계` → first issue the pre-authorized `gate.sh exec … -- git fetch` once more: the merge happened on the remote, and until a fetch the local clone holds neither M nor an `origin/<베이스>` that contains it. Then:
 
 ```
 gate.sh act --manifest <매니페스트> --kind apply --target <alias> --segment <id> \
   --cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용
 ```
 
-The argv is the fixed token `적용`; the gate runs the frozen apply command itself after checking five preconditions it does not let any rule switch off, and it writes `적용 준비` and `완료` itself. Do not write either state for a segment that still has an apply pending: the gate refuses both from `act --kind segment`. **When the apply act is refused on a precondition**: a missing or stale remote ref (precondition 4) → fetch and issue it once more, and only once. Any other precondition refusal → write a segment `park` row (with the plan row's `선행`) and a `스코프=cone` block whose `사유` names the refused precondition number and the gate's wording, then end the shift with a `사유=중단` handoff. The `park` makes the segment terminal, so the next shift does not walk into the same refusal.
+The argv is the fixed token `적용`; the gate runs the frozen apply command itself after checking five preconditions it does not let any rule switch off, and it writes `적용 준비` and `완료` itself. Do not write either state for a segment that still has an apply pending: the gate refuses both from `act --kind segment`. An apply act that reaches a segment owing no apply is answered with `적용 불필요` and exit 0, and the gate writes nothing: that too is the segment's end, not a refusal. **When the apply act is refused on a precondition**: a missing or stale remote ref (precondition 4) → fetch and issue it once more, and only once. Any other precondition refusal → write a segment `park` row (with the plan row's `선행`) and a `스코프=cone` block whose `사유` names the refused precondition number and the gate's wording, then end the shift with a `사유=중단` handoff. The `park` makes the segment terminal, so the next shift does not walk into the same refusal.
 
 #### Branching on `다음` after a review
 
