@@ -15,10 +15,12 @@
 #   - the detached-process fences       (from plugins/cc-cmds/orchestrator/test-run.sh, 28·28b)
 #   - the router-copy sections          (from scripts/test-snapshot.sh, 6d–6e-4)
 #
-# ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 2. The census selects every suite
-# that invokes the gate family, and this file carries its recognition corpus, so
-# it selects this file too and asserts the two exports below for it. Every other
-# assertion here is one a source suite used to make.
+# ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 4. The census selects every suite
+# that invokes the gate family and asserts two exports for each. This file
+# carries its recognition corpus, so it selects this file too, and
+# scripts/test-local-bundle.sh runs test-gate.sh on its mirror, so it selects
+# that one as well: two suites the source census did not see, two assertions
+# each. Every other assertion here is one a source suite used to make.
 #
 # Usage: bash scripts/test-meta-invariants.sh
 
