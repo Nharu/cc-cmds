@@ -1,0 +1,14 @@
+# lint-test-clock baseline — wall-clock assertions already in the tree.
+# One hit per line as <path>|<rule>|<trimmed line text>. It only shrinks:
+# delete an entry when its line is fixed. Regenerate with
+# bash scripts/lint-test-clock.sh --write-baseline
+plugins/cc-cmds/orchestrator/test-run.sh|elapsed-bound|if [ $((feed_t1 - feed_t0)) -le "$FEED_IV" ]; then
+scripts/test-notify-focus.sh|elapsed-bound|check "L12 분리: 1초 안에 돌아온다" "$([ $((t1 - t0)) -le 1 ] && echo 예 || echo "아니오 $((t1 - t0))초")" "예"
+scripts/test-notify-focus.sh|elapsed-bound|check "L17 3초 안에 끝난다" "$([ $((t1 - t0)) -le 3 ] && echo 예 || echo "아니오 $((t1 - t0))초")" "예"
+scripts/test-route.sh|clock-margin|expect "부팅 전 mtime 이어도 파싱되는 모르는 스키마는 깨짐" "$(txn "$d" '.' --boot-epoch "$((NOW - 10))")" '.verdict == "PARK" and .reason == "lease-table-corrupt"'
+scripts/test-route.sh|clock-margin|expect "현 부팅의 파싱 불가 파일은 PARK" "$(txn "$d" '.' --boot-epoch "$((NOW - 10))")" '.verdict == "PARK" and .reason == "lease-table-corrupt"'
+scripts/test-route.sh|clock-margin|out=$(txn "$d" '.' --boot-epoch "$((NOW - 10))")
+scripts/test-route.sh|clock-margin|recent=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 10))" '.at = $t')
+scripts/test-route.sh|clock-margin|{ ts_line $((NOW - 50)); rl_line 0.25 null; } > "$RUN_DIR/log/S1.retry.json"
+scripts/test-snapshot.sh|clock-margin|"그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
+scripts/test-stage-supervisor.sh|clock-margin|W13_DL=$(( W13_NOW + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 20 ))

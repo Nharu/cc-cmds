@@ -534,7 +534,7 @@ check "--check-deadline 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" 
 
 # ---------------------------------------------------------------------------
 # 상대 마감 해석기 — deadline-resolve.sh 로 뽑아낸 뒤에도 같은 절대값을 내고, 길이는
-# 「풀린 마감 − 푼 순간」이다. 파생기가 같은 산식으로 후속 런의 마감을 쓴다.
+# 「풀린 마감 − 푼 순간」이다. 매니페스트 검사가 같은 산식으로 얼린 길이를 읽는다.
 # ---------------------------------------------------------------------------
 RESOLVER="$ORCH/deadline-resolve.sh"
 rd() { TZ="${2:-Asia/Seoul}" kd --resolve-deadline "$1" --now "${3:-$NOW}"; }
@@ -576,7 +576,7 @@ check "dr_add_duration 은 그 오프셋 표기로 되돌린다" "$(dr dr_add_du
 check "dr_add_duration 은 TZ 와 무관하다" "$(TZ=America/New_York dr dr_add_duration 2026-09-21T14:13:20Z PT8H0M0S +09:00)" "2026-09-22T07:13:20+09:00"
 check "dr_add_duration 음의 오프셋" "$(dr dr_add_duration 2026-10-30T16:00:00Z PT1H0M0S -04:00)" "2026-10-30T13:00:00-04:00"
 check "dr_add_duration 은 오프셋 형태가 틀리면 1" "$(dr dr_add_duration 2026-09-21T14:13:20Z PT8H0M0S Z >/dev/null 2>&1; echo $?)" "1"
-# 해석기는 기본값을 열지 않는다 — 파생기가 이 파일을 소싱해도 린트 규칙 1 에 걸리지 않는다.
+# 해석기는 기본값을 열지 않는다 — run.sh 가 이 파일을 소싱해도 린트 규칙 1 에 걸리지 않는다.
 check "해석기가 기본값 이름을 담지 않는다" "$(grep -cE 'autopilot-defaults|kickoff-defaults\.sh|CC_CMDS_AUTOPILOT_DEFAULT' "$RESOLVER" || true)" "0"
 check "해석기를 소싱해도 아무것도 출력하지 않는다" "$(bash -c '. "$1"' _ "$RESOLVER" 2>&1)" ""
 

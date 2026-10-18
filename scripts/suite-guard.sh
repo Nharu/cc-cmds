@@ -80,6 +80,17 @@
 #                            and KILL (default 2). It has to be longer than one
 #                            `lsof` call, which each sweep prints.
 #   CC_SUITE_GUARD_LSOF      the lsof to run (default `lsof`)
+#   CC_SUITE_TIMING_DIR      a directory to record the suite's duration in
+#                            (below); empty or not a directory records nothing
+#
+# EVERY END OF WRAPPER MODE IS TIMED. Once the suite could have started, the
+# wrapper ends through one function that prints
+# `suite-guard[<args>]: 종료 rc=<final rc> 소요 <s>s` on stderr — whole seconds
+# since SG_EPOCH, the final rc as it is about to be returned — and, when
+# CC_SUITE_TIMING_DIR is a directory, writes `<args>\t<s>\t<rc>` into a file of
+# its own made there with `mktemp`, so concurrent suites never append to one
+# file. scripts/rest-shard.sh --merge reads those files. A failure to record is
+# one warning line and never changes the exit code.
 #
 # `--sweep` is the same sweep run against a marker someone else holds — the CI
 # arming line (scripts/ci-step-guard.sh) calls it for its fd 8 marker at the
@@ -334,6 +345,7 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 SG_NAME="suite-guard[$*]"
+SG_ARGS="$*"
 sg_setup_tmp
 
 # The epoch first, then the marker: every process that may hold the marker
@@ -351,6 +363,23 @@ sg_cleanup() {
   exec 7<&- 9<&-
   rm -f "$SG_MARKER"
   rm -rf "$SG_TMP"
+}
+
+# sg_finish <rc> — the one way wrapper mode ends after SG_EPOCH: the end line,
+# the timing file, then the exit with <rc> unchanged.
+sg_finish() {
+  local frc="$1" dur tf
+  dur=$(( $(date +%s) - SG_EPOCH ))
+  sg_log "종료 rc=$frc 소요 ${dur}s"
+  if [ -n "${CC_SUITE_TIMING_DIR:-}" ] && [ -d "$CC_SUITE_TIMING_DIR" ]; then
+    if tf=$(mktemp "$CC_SUITE_TIMING_DIR/suite.XXXXXX" 2>/dev/null) \
+      && printf '%s\t%s\t%s\n' "$SG_ARGS" "$dur" "$frc" >"$tf" 2>/dev/null; then
+      :
+    else
+      sg_log "WARN: 소요 기록을 쓰지 못했다: $CC_SUITE_TIMING_DIR"
+    fi
+  fi
+  exit "$frc"
 }
 
 # Mode: `marker` sweeps fd 9 holders; `group` is the fallback when the positive
@@ -371,7 +400,7 @@ if [ -n "$pc_why" ]; then
   if [ "$SG_STRICT" = 1 ]; then
     printf '::error::suite-guard: 양성 대조 실패 — %s. 묶음을 돌리지 않는다: %s\n' "$pc_why" "$*" >&2
     sg_cleanup
-    exit 4
+    sg_finish 4
   fi
   sg_log "NOTE: 양성 대조 실패($pc_why) — 표지 스윕을 끄고 묶음의 프로세스 그룹 스윕으로 대신한다"
   SG_MODE=group
@@ -522,17 +551,17 @@ fi
 sg_cleanup
 
 if [ -n "$sg_sig" ]; then
-  exit "$rc"
+  sg_finish "$rc"
 fi
 if [ "$timed_out" = 1 ] && [ "$SG_STRICT" = 1 ]; then
   printf '::error::suite-guard: 마감을 넘겨 묶음을 거뒀다(위 덤프) — %s\n' "$*" >&2
-  exit 124
+  sg_finish 124
 fi
-[ "$rc" != 0 ] && exit "$rc"
+[ "$rc" != 0 ] && sg_finish "$rc"
 if [ "$SG_STRICT" = 1 ]; then
   case "$sweep_rc" in
-    4) printf '::error::suite-guard: 잔존 판정 실패 — %s\n' "$*" >&2; exit 4 ;;
-    3) printf '::error::suite-guard: 묶음이 끝난 뒤 남은 프로세스가 있었다(위 덤프) — %s\n' "$*" >&2; exit 3 ;;
+    4) printf '::error::suite-guard: 잔존 판정 실패 — %s\n' "$*" >&2; sg_finish 4 ;;
+    3) printf '::error::suite-guard: 묶음이 끝난 뒤 남은 프로세스가 있었다(위 덤프) — %s\n' "$*" >&2; sg_finish 3 ;;
   esac
 fi
-exit 0
+sg_finish 0

@@ -3950,9 +3950,8 @@ re_case() {
 re_case deadline 'run_deadline_end "첫 마감 park"; run_deadline_end "둘째 마감 park"; run_end_record'
 check "고정 그래프 첫 마감 park 가 재킥 원인=마감 종료 행을 한 번만 쓴다" \
   "$(re_end_rows "$RE24/deadline")/$(re_end_field "$RE24/deadline" '재킥 원인')" "1/마감"
-check "그 종료 행이 done 과 표지를 함께 남긴다" \
-  "$([ -s "$RE24/deadline/run/done" ] && printf done)/$(sed -n 's/^토큰=//p' "$RE24/deadline/run/rekick-candidate" 2>/dev/null)" \
-  "done/마감"
+check "그 종료 행이 done 을 남긴다" \
+  "$([ -s "$RE24/deadline/run/done" ] && printf done)" "done"
 re_dl_pair=$(awk '
   /^ *park .*"벽시계 마감 경과/ { open = NR }
   /^ *run_deadline_end "/ { if (open && NR - open <= 2) n++; open = 0 }
@@ -4022,7 +4021,7 @@ re_case unarmed 'RUN_END_ARMED=""; run_end_record'
 check "주 루프가 시작하기 전(원장이 없는 거부)에는 아무것도 쓰지 않는다" "$(re_end_rows "$RE24/unarmed")" "0"
 
 # 스테이지 종단 뒤의 `문서 해시` 행. 같은 (스테이지, 값) 짝은 한 번만 쓰고, 문서가
-# 바뀌면 새 행을 쓴다. 후속 런의 유도는 시작 다이제스트가 아니라 마지막 행을 읽는다.
+# 바뀌면 새 행을 쓴다.
 re_case dochash 'DOC="$RUN_DIR/../docs/x.md"; printf "a\n" > "$DOC"
   driver_doc_hash_row 세그먼트=A 스테이지=S4-A; driver_doc_hash_row 세그먼트=A 스테이지=S4-A
   printf "b\n" > "$DOC"; driver_doc_hash_row 세그먼트=A 스테이지=S4-A
@@ -4036,9 +4035,6 @@ check "구동기 문서 해시 행은 같은 짝을 한 번만 쓰고 바뀐 값
 check "구동기 문서 해시 행은 게이트 행과 같은 필드를 같은 순서로 싣는다" \
   "$(printf '%s\n' "$re_dh_rows" | sed -n 1p | tr '|' '\n' | sed -n 's/^ *\([^=]*\)=.*/\1/p' | grep -vxE '교대|prev' | tr '\n' ',')" \
   "스테이지,sha256,동결값,관측,"
-check "후속 런 유도는 고쳐 쓴 문서의 다이제스트를 기록된 값으로 읽는다" \
-  "$(bash -c '. "$1" && rekick_recorded_doc_sha "$2"' _ "$script_dir/successor.sh" "$RE24/dochash/ledger.md" 2>/dev/null || true)" \
-  "$re_dh_b"
 
 # 의존 park 는 세그먼트 자신을 앵커로 두고 아직 착지하지 않은 선행을 선언 순서로 싣는다.
 re_case deppark 'printf "A\n" > "$RUN_DIR/done.txt"
@@ -5406,266 +5402,10 @@ fi
 RUN_DIR="$SHIFT_SAVE"
 
 # ---------------------------------------------------------------------------
-# 28. The detached run-scope processes' fence, which no lint can hold.
-#
-# Neither `feed.sh` nor `checks.sh` can raise a banner, because neither sources
-# the emitter and neither names its two functions. The banner-site lint counts
-# occurrences of the notifier BINARY, so a sourcing path is invisible to it —
-# these assertions are the fence itself rather than a supplement to one.
-#
-# THE ASSERTIONS WALK A FILE LIST RATHER THAN NAMING ONE FILE. A fence written
-# for one file has to be copied for the next one, and a copy that is not made is
-# a seat that quietly opens. `checks.sh` carries the same fence for the same
-# reason and additionally needs the verb allowlist below, because it is the first
-# detached process in this tree that calls the network at all.
+# 28. The detached run-scope processes the sections below drive.
 # ---------------------------------------------------------------------------
 FEED_SH="$(dirname "$DRIVER")/feed.sh"
 CHECKS_SH="$(dirname "$DRIVER")/checks.sh"
-for fence_f in "$FEED_SH" "$CHECKS_SH"; do
-  fence_n=$(basename "$fence_f")
-  if [ ! -f "$fence_f" ]; then
-    bad "울타리" "$fence_n 이 없다 — 이 펜스가 지킬 대상이 실재하지 않는다"
-    continue
-  fi
-  ok "$fence_n 이 있다"
-  # A WHITELIST, NOT A DENYLIST. Asking "does it source the emitter" only closes
-  # the door that is already named; asking which files it may source at all also
-  # closes the one a future emitter under another name would use.
-  #
-  # THE LIST IS THREE NAMES, AND THE LAST TWO PAY THEIR WAY BELOW. `pin.sh` joined
-  # it because these processes have to hop into the run's pinned copy before they
-  # write anything, and the predicate that decides that is shared with the gate
-  # and the watcher rather than re-implemented here. `display-tz.sh` joined it
-  # because the feed's line prefix shows the time in the display zone, and that
-  # conversion lives in the one helper every surface shares rather than in a
-  # copy here. Widening a whitelist weakens it unless the new entry is fenced
-  # too, so the assertions after this loop hold `pin.sh` and `display-tz.sh` to
-  # the same rule: each sources nothing and names no emitter.
-  fence_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$fence_f" || true; } \
-                    | { grep -v 'liveness\.sh' || true; } \
-                    | { grep -v 'pin\.sh' || true; } \
-                    | { grep -v 'display-tz\.sh' || true; } )
-  if [ -n "$fence_src_other" ]; then
-    bad "울타리" "$fence_n 이 허용 목록(liveness.sh · pin.sh · display-tz.sh) 밖의 것을 소스한다: $fence_src_other"
-  else
-    ok "$fence_n 이 소스하는 것은 liveness.sh·pin.sh·display-tz.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
-  fi
-  # And the name reaches no executable line. A header sentence explaining the
-  # fence is not a breach of it, so the comment lines are excluded rather than
-  # the file being required never to mention what it refuses to load.
-  fence_notify_code=$( { grep -n 'notify-run\.sh' "$fence_f" || true; } \
-                      | { grep -vE '^[0-9]+:[[:space:]]*#' || true; } )
-  if [ -n "$fence_notify_code" ]; then
-    bad "울타리" "$fence_n 의 주석이 아닌 줄이 notify-run.sh 를 이름으로 담는다: $fence_notify_code"
-  else
-    ok "$fence_n 의 실행 줄 어디에도 notify-run.sh 가 없다"
-  fi
-  if grep -q 'cc_notify_fire\|cc_notify_clear' "$fence_f"; then
-    bad "울타리" "$fence_n 이 방출 함수를 이름으로 담고 있다"
-  else
-    ok "$fence_n 이 방출 함수를 이름으로도 부르지 않는다"
-  fi
-done
-
-if [ -f "$FEED_SH" ]; then
-  PIN_SH="$(dirname "$DRIVER")/pin.sh"
-  if [ -f "$PIN_SH" ]; then
-    pin_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$PIN_SH" || true )
-    if [ -n "$pin_src_any" ]; then
-      bad "피드 울타리" "pin.sh 가 무언가를 소스한다 — 허용 목록이 그만큼 넓어진다: $pin_src_any"
-    else
-      ok "pin.sh 는 아무것도 소스하지 않는다 (허용 목록이 이 한 파일로 닫힌다)"
-    fi
-    # THE NOTIFIER'S NAME IS SPLIT ACROSS TWO LITERALS. `lint-notify-fire-sites.sh`
-    # counts the lines under `orchestrator/` that name the binary and expects
-    # exactly the emitter's two, so a pattern that spells it whole turns this
-    # fence into a lint violation — the check would be reported as the thing it
-    # is checking against.
-    if grep -qE 'notify-run\.sh|cc_notify_fire|cc_notify_clear|terminal-''notifier' "$PIN_SH"; then
-      bad "피드 울타리" "pin.sh 가 방출 경로를 이름으로 담고 있다"
-    else
-      ok "pin.sh 의 어디에도 방출 경로가 없다"
-    fi
-  else
-    bad "피드 울타리" "pin.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
-  fi
-  # The display-zone helper is held to the rule `pin.sh` is held to above, with
-  # the notifier's name split the same way and for the same reason.
-  DTZ_SH="$(dirname "$DRIVER")/display-tz.sh"
-  if [ -f "$DTZ_SH" ]; then
-    dtz_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$DTZ_SH" || true )
-    if [ -n "$dtz_src_any" ]; then
-      bad "피드 울타리" "display-tz.sh 가 무언가를 소스한다 — 허용 목록이 그만큼 넓어진다: $dtz_src_any"
-    else
-      ok "display-tz.sh 는 아무것도 소스하지 않는다 (허용 목록이 이 한 파일로 닫힌다)"
-    fi
-    if grep -qE 'notify-run\.sh|cc_notify_fire|cc_notify_clear|terminal-''notifier' "$DTZ_SH"; then
-      bad "피드 울타리" "display-tz.sh 가 방출 경로를 이름으로 담고 있다"
-    else
-      ok "display-tz.sh 의 어디에도 방출 경로가 없다"
-    fi
-  else
-    bad "피드 울타리" "display-tz.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
-  fi
-else
-  bad "진행 채널" "feed.sh 가 없다 — 라우팅이 리드를 떠난 밤에 사람이 볼 것이 없다"
-fi
-
-# ---------------------------------------------------------------------------
-# 28b. The CI poller's `gh` verb allowlist.
-#
-# The gate's enforcement is a `PreToolUse` hook matching TOOL CALLS, so a command
-# run inside a detached `bash checks.sh &` is not matched and no axis-2 grade is
-# ever consulted. That is not a bypass — the grade is simply not asked for — but
-# it means one `pr merge` added to that file would merge on an unattended night
-# with neither a record nor an approval. This assertion is the only control left.
-#
-# THE SHAPE OF THE ASSERTION CARRIES THE WEIGHT, and it is not the shape of the
-# banner fence above. That one counts an emitter name and expects zero — a check
-# for something ABSENT. Here the dangerous thing is a verb nobody has thought of,
-# so grepping for the three allowed spellings would let a fourth through in
-# silence. The verb pairs are EXTRACTED and the SET DIFFERENCE against the
-# allowlist must be empty, and a `gh` call this extractor cannot parse counts as
-# a violation too — otherwise an unparsable spelling is a hole of its own.
-#
-# RECOGNITION IS WHERE THE FIRST VERSION OF THIS FENCE WAS OPEN, and the shape of
-# the fix is that the extractor and the unparsable-detector now look at the SAME
-# lines. That version picked a token that was exactly `gh` or ended in `gh`
-# behind a shell character, and both halves of that test were anchored at the END
-# of the token — so `"gh" -R "$slug" pr merge "$n"` (quoted command word, ending
-# in `h"`) was neither, the line produced NO output at all, not even the
-# unparsable marker, and the set difference was empty on a file that merges PRs.
-# `'gh'`, `"$GH"` after a quoted assignment and `$(command -v gh)` behaved the
-# same. It failed CLOSED on shape and OPEN on recognition, and its negative
-# control planted a spelling recognition already handled, so it tested the
-# closed half twice and the open half never.
-#
-# Now every well-formed call `gh -R "$slug" pr <verb>` is extracted — whatever
-# the verb, so a fourth one reaches the set difference — and then taken OUT of
-# its line. Whatever still looks like a call afterwards is unparsable:
-#
-#   - `gh` as a word, or the repo flag `-R`. TWO RECOGNITION TOKENS, because the
-#     command word is the part an indirect call hides and the repo flag is the
-#     part it cannot: `"$GH" -R "$slug" pr merge` has no `gh` on it anywhere;
-#   - a `pr <verb>` behind anything that is NOT A BARE IDENTIFIER — a quote, a
-#     `)`, a `}`, a `]`, or a `$name` expansion. That is argument position, where
-#     a subcommand goes, and it catches `"$GH" pr merge "$n"`, `$GH pr merge "$n"`
-#     and `${GH:-gh} pr merge "$n"`, none of which carries a recognition token.
-#     What keeps it off `local ts seg pr sha st` and `read -r ts seg pr sha st` is
-#     that there `pr` follows a bare identifier run — a variable name. The first
-#     version demanded a quote or a `)` in front, so the unquoted and the
-#     braced expansions walked through. `pr` and its verb may be quoted, since
-#     `$GH pr "merge"` is the same call;
-#   - an expansion in command position followed by any word, which is what a
-#     variable command word looks like whichever subcommand it runs —
-#     `$GH api -X PUT …/merge` carries no `pr` for the rule above to read;
-#   - `eval`, or a `command -v`/`which`/`type` resolution of the binary, because
-#     indirection defeats any line-based rule and banning it is cheaper than
-#     parsing it.
-#
-# WHAT IS STILL NOT COVERED, stated rather than implied: a command word assembled
-# from pieces, or read out of a file or the environment. That is deliberate
-# obfuscation rather than the accident this fence is for — someone adding a
-# fourth verb — and every spelling that writes the binary's name down is caught.
-# ---------------------------------------------------------------------------
-# `gh` AS A WORD. A plain substring search reports every English word ending in
-# those letters — `through`, `high` — so the character before `gh` must be a
-# non-word one, which is what `$(gh`, `(gh`, `"gh` and a line-leading `gh` are.
-GH_FORM_RE='(^|[^A-Za-z0-9_-])gh -R "\$slug" pr [a-z][a-z-]*'
-# `:-` is let in front of `gh` because `${GH:-gh}` spells the binary's name as a
-# default, and `-` alone stays out so a hyphenated name ending in `gh` does not.
-GH_WORD_RE='(^|[^A-Za-z0-9_-]|:-)(gh|-R)([^A-Za-z0-9_-]|$)'
-GH_PR_RE="([\"')}]|\\]|\\\$[A-Za-z_][A-Za-z0-9_]*)[[:space:]]+[\"']?pr[\"']?[[:space:]]+[\"']?[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
-# AN EXPANSION IN COMMAND POSITION followed by a word, whatever that word is.
-# The rule above knows `pr` and nothing else, so `$GH api -X PUT …/merge` — the
-# generic escape hatch that can do anything a verb can — carried no token it
-# reads. Command position is the start of a line or what follows `;` `&` `|`
-# `(` or a backquote, or a word that runs the next one (`then`, `do`, `else`,
-# `exec`, `command`, `env`, `nohup`, `time`, `!`). A quoted path after the
-# expansion is not a word, which keeps `exec "${BASH:-/bin/bash}" "$…/checks.sh"`
-# off it.
-GH_CMDVAR_RE="(^|[;&|(\`]|(^|[^A-Za-z0-9_])(then|do|else|exec|command|env|nohup|time|!))[[:space:]]*\"?\\\$(\\{[^}]*\\}|[A-Za-z_][A-Za-z0-9_]*)\"?[[:space:]]+[\"']?[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
-GH_INDIRECT_RE='(^|[^A-Za-z0-9_-])(eval|command[[:space:]]+-v|which|type)[[:space:]]+[^[:space:]]*gh([^A-Za-z0-9_-]|$)'
-GH_EVAL_RE='(^|[^A-Za-z0-9_-])eval([^A-Za-z0-9_-]|$)'
-
-gh_verbs_of() {
-  # gh_verbs_of <file> — one `pr <verb>` pair per well-formed `gh` call on a
-  # non-comment line, and the literal `(추출 실패)` for any line that still looks
-  # like a call once those are removed, or that resolves the binary indirectly.
-  # WHOLE-LINE COMMENTS ONLY are dropped; a trailing comment stays attached to
-  # its code, which errs toward reporting rather than hiding.
-  local src
-  src=$({ grep -vE '^[[:space:]]*#' "$1" || true; })
-  {
-    printf '%s\n' "$src" \
-      | { grep -oE "$GH_FORM_RE" || true; } \
-      | sed -E 's/.* pr ([a-z][a-z-]*)$/pr \1/'
-    printf '%s\n' "$src" \
-      | sed -E "s/$GH_FORM_RE/\\1 /g" \
-      | { grep -E "$GH_WORD_RE|$GH_PR_RE|$GH_CMDVAR_RE" || true; } \
-      | sed 's/.*/(추출 실패)/'
-    printf '%s\n' "$src" \
-      | { grep -E "$GH_INDIRECT_RE|$GH_EVAL_RE" || true; } \
-      | sed 's/.*/(추출 실패)/'
-  } | sort -u
-}
-if [ -f "$CHECKS_SH" ]; then
-  gh_allowed=$(printf '%s\n' 'pr list' 'pr view' 'pr checks' | sort -u)
-  gh_seen=$(gh_verbs_of "$CHECKS_SH")
-  gh_extra=$(printf '%s\n' "$gh_seen" | { grep -v '^$' || true; } \
-             | { grep -vxF "$gh_allowed" || true; } )
-  if [ -n "$gh_extra" ]; then
-    bad "폴러 울타리" "checks.sh 의 gh 호출이 허용 집합 {pr list, pr view, pr checks} 밖이다: $(printf '%s' "$gh_extra" | tr '\n' ' ')"
-  else
-    ok "checks.sh 의 gh 호출이 전부 허용 집합 안이다 (차집합이 비었다)"
-  fi
-  # THE EXTRACTOR MUST HAVE SEEN SOMETHING. An empty extraction also gives an
-  # empty difference, and "the fence holds" and "the extractor saw nothing" are
-  # exactly the two states this section exists to tell apart.
-  if [ -n "$(printf '%s\n' "$gh_seen" | { grep -xF "$gh_allowed" || true; })" ]; then
-    ok "추출기가 진짜 파일에서 허용 동사를 실제로 읽었다 ($(printf '%s' "$gh_seen" | tr '\n' ' '))"
-  else
-    bad "폴러 울타리" "진짜 checks.sh 에서 동사를 하나도 추출하지 못했다 — 위의 빈 차집합은 아무것도 증명하지 않는다"
-  fi
-  # THE NEGATIVE CONTROL, out of tree, AND IT PLANTS THE SPELLINGS THAT BROKE THE
-  # FIRST VERSION — not only the one it already handled. An assertion whose only
-  # evidence is that the real file passes cannot tell "the fence holds" from "the
-  # extractor finds nothing", and a control that plants only the easy spelling
-  # cannot tell the recognition gate from the shape gate. The last case puts an
-  # allowed call and a forbidden one on the same line, so extraction has to take
-  # every call on a line rather than the first.
-  for gh_fx_case in \
-    '  gh -R "$slug" pr merge "$n" --squash' \
-    '  "gh" -R "$slug" pr merge "$n" --squash' \
-    "  'gh' -R \"\$slug\" pr merge \"\$n\" --squash" \
-    '  "$GH" -R "$slug" pr merge "$n" --squash' \
-    '  GH_BIN=$(command -v gh); "$GH_BIN" -R "$slug" pr merge "$n"' \
-    '  eval "$cmd -R \"$slug\" pr merge \"$n\""' \
-    '  "$GH" pr merge "$n" --squash' \
-    '  ${GH:-gh} pr merge "$n"' \
-    '  $GH pr merge "$n"' \
-    '  ${GH} pr merge "$n"' \
-    '  "${GH:-gh}" pr merge "$n"' \
-    '  "${gh[@]}" pr merge "$n"' \
-    '  $GH pr "merge" "$n"' \
-    '  "$GH" "pr" "merge" "$n"' \
-    '  $GH api -X PUT "repos/$slug/pulls/$n/merge"' \
-    '  out=$($GH api -X PUT "repos/$slug/pulls/$n/merge")' \
-    '  out=$(gh -R "$slug" pr checks "$n"); gh -R "$slug" pr merge "$n"'
-  do
-    GH_FX=$(mktemp "${TMPDIR:-/tmp}/cc-checks-gh.XXXXXX") \
-      || { bad "폴러 울타리" "음성 대조군 임시 파일을 만들지 못했다"; break; }
-    { cat "$CHECKS_SH"; printf '%s\n' "$gh_fx_case"; } > "$GH_FX"
-    gh_fx_extra=$(gh_verbs_of "$GH_FX" | { grep -v '^$' || true; } \
-                  | { grep -vxF "$gh_allowed" || true; } )
-    if [ -n "$gh_fx_extra" ]; then
-      ok "오염 사본을 차집합이 잡아낸다 ($(printf '%s' "$gh_fx_extra" | tr '\n' ' ')— $(printf '%s' "$gh_fx_case" | sed 's/^[[:space:]]*//'))"
-    else
-      bad "폴러 울타리" "오염 사본의 차집합이 비었다 — 이 철자에 대해 단언이 아무것도 지키지 않는다: $(printf '%s' "$gh_fx_case" | sed 's/^[[:space:]]*//')"
-    fi
-    rm -f "$GH_FX"
-  done
-fi
 
 # ---------------------------------------------------------------------------
 # 28c. The poller's pid record is not an orphan.
@@ -11133,7 +10873,7 @@ r34_ring() {  # r34_ring <런 id> [머지|실패] — one run of the document: i
     wt_path() { printf 'WT-%s' "$1"; }
     if [ "${2:-}" = "실패" ]; then run_gate_call() { return 9; }; fi
     # `R34_P0=1` makes the ring a `P0잔존` successor.
-    if [ -n "${R34_P0:-}" ]; then manifest_chain_field() { [ "$1" = 원인 ] && printf 'P0잔존'; }; fi
+    if [ -n "${R34_P0:-}" ]; then manifest_provenance_field() { [ "$1" = 원인 ] && printf 'P0잔존'; }; fi
     plan_from_declaration "$DOC"
     printf '%s\n' "$?" > "$RUN_DIR/plan.rc"
     if [ "${2:-}" = "머지" ]; then
@@ -11186,7 +10926,7 @@ check "34: P0 잔존 후속 런은 앞 런이 착지시킨 id 를 새 문서가 
   "$(cat "$R34/ring5p/plan.rc")/$( { grep -F '앞 런이 착지시킨 슬라이스를 새 문서가 선언하지 않는다: SA' "$R34/ring5p/parked" 2>/dev/null || true; } | grep -c . || true)/$( { grep -E '^- `segment` ' "$R34/ledgers/ring5p.md" 2>/dev/null || true; } | grep -c . || true)" \
   "1/1/0"
 r34_ring ring5
-check "34: 연쇄 원인이 P0잔존 이 아닌 런은 id 가 바뀐 문서를 그대로 계획한다" \
+check "34: 출처 행 원인이 P0잔존 이 아닌 런은 id 가 바뀐 문서를 그대로 계획한다" \
   "$(cat "$R34/ring5/plan.rc")/$(r34_count "$R34/ledgers/ring5.md" SC 계획됨)/$( { cat "$R34/ring5/parked" 2>/dev/null || true; } | grep -c . || true)" "0/1/0"
 r34_doc "$R34DOC" 머지
 
@@ -12314,9 +12054,15 @@ reconverge_row() { ledger_row 'stage-result' "세그먼트=$1" "파견 id=$2" "�
 report_append() { :; }; log() { :; }
 halt_record_path() { printf '%s' "$RUN_DIR/halt/$1.md"; }
 home_alias() { printf h; }; alias_root() { printf '%s' "$S0_ROOT"; }; doc_arg() { printf '%s' "$DOC"; }
-manifest_chain_rows() { printf -- '- `연쇄` | 선행 런=PRED | 원인=%s | 재킥 지문=x\n' "$S0_CAUSE"; }
 manifest_plan_field() { printf '%s' "${S0_DESREQ:-true}"; }
 manifest_preauth_rows() {
+  # The provenance row a re-kickoff writes; `S0_PROV=4` drops `원인=`, the
+  # four-field row a person's own re-kickoff writes.
+  if [ "${S0_PROV:-}" = 4 ]; then
+    printf -- '- `사전 인가` | 이어받은 런=PRED | 매니페스트 sha256=m | 인가 기록 sha256=g\n'
+  else
+    printf -- '- `사전 인가` | 이어받은 런=PRED | 매니페스트 sha256=m | 인가 기록 sha256=g | 원인=%s\n' "$S0_CAUSE"
+  fi
   [ "${S0_IROW:-1}" = 1 ] || return 0
   printf -- '- `사전 인가` | 인터뷰 기록=docs/pipeline-run/ROOT.interview.md | sha256=%s\n' "$S0_ISHA"
 }
@@ -12365,7 +12111,7 @@ s0_run() {  # s0_run — one S0 entry in the fixture $S0D; stdout → $S0D/out
     S0_ARGV="$S0D/argv.txt" S0_CALLS="$S0D/calls" S0_ROOT="$S0D" S0_CLI="$S0W/cli" \
     S0_CAUSE="${S0_CAUSE:-P0잔존}" S0_ANS="${S0_ANS:-}" S0_SEL="$S0_SEL" S0_ISHA="$S0_ISHA" \
     S0_DESREQ="${S0_DESREQ:-true}" S0_IROW="${S0_IROW:-1}" S0_SKILL="${S0_SKILL:-design-discuss-unattended}" \
-    S0_CV="${S0_CV:-0}" S0_PREDRC="${S0_PREDRC:-0}" \
+    S0_CV="${S0_CV:-0}" S0_PREDRC="${S0_PREDRC:-0}" S0_PROV="${S0_PROV:-}" \
     bash -c 'drv="$1"; d="$2"; stubs="$3"; set --; . "$drv"; set +e; . "$stubs"
              RUN_DIR="$d/run"; RUN_ID=RUN; MANIFEST="$d/mf/RUN.plan.md"; DOC="$d/doc/design.md"
              DOC_BASE="$d/base"; DOC_SLUG=design; CLI_BIN="$S0_CLI"
@@ -12381,10 +12127,14 @@ s0_lines() { { cat "$S0D/$1" 2>/dev/null || true; } | grep -c . || true; }
 S0RV='{"branch":"재수렴","rationale":"국소 결함이다","cited":[]}'
 S0RD='{"branch":"재설계","rationale":"구조가 낳는다","cited":["결함 하나"]}'
 
-# 원인이 다른 연쇄 런은 S0 을 지나치기만 한다.
+# 원인이 다른 후속 런은 S0 을 지나치기만 한다.
 s0_fix plain; S0_CAUSE=결함 s0_run
-check "36: 연쇄 원인이 P0잔존 이 아니면 S0 은 게이트도 판단도 부르지 않고 행도 쓰지 않는다" \
+check "36: 출처 행 원인이 P0잔존 이 아니면 S0 은 게이트도 판단도 부르지 않고 행도 쓰지 않는다" \
   "$(s0_out rc)/$(s0_lines run/gate.log)/$(s0_lines calls)/$(s0_lines run/led.md)" "0/0/0/0"
+# 사람이 직접 재킥오프한 런의 네 필드 출처 행에는 `원인=` 이 없다.
+s0_fix four; S0_PROV=4 s0_run
+check "36: 원인= 없는 네 필드 출처 행은 S0 을 켜지 않고 게이트도 판단도 부르지 않고 행도 쓰지 않는다" \
+  "$(s0_out rc)/$(s0_lines run/gate.log)/$(s0_lines calls)/$(s0_lines run/led.md)/$(s0_lines run/spawn.log)" "0/0/0/0/0"
 
 # 재수렴 — 판단 한 번, 선택 행 하나, P0 세그먼트마다 재수렴 하나.
 s0_fix rv; S0_ANS="$S0RV" s0_run

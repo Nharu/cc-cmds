@@ -42,15 +42,46 @@ jobs:
             exit 1
           fi
 
+      # The rest-tests matrix spells its shard numbers out and the Makefile holds
+      # the count, so they are compared here, by VALUE: a duplicate entry keeps the
+      # length right while one shard runs twice and another never. This job, not
+      # the test shards, carries the verdict, so it stands even when every shard
+      # is red.
+      - name: Rest matrix shard numbers are exactly 1..REST_SHARDS
+        run: |
+          want=$(make -s print-rest-shards)
+          got=$(yq '.jobs.rest-tests.strategy.matrix.shard[]' .github/workflows/lint.yml | sort -n | tr '\n' ' ')
+          expect=$(seq 1 "$want" | tr '\n' ' ')
+          if [ "$got" != "$expect" ]; then
+            echo "rest-tests matrix 의 샤드 번호 [$got] 가 1..$want [$expect] 와 다릅니다" >&2
+            exit 1
+          fi
+          echo "rest 샤드 $want 개"
+
+      - name: Union of the rest shards is the whole test-rest goal list
+        run: bash scripts/rest-shard.sh --shards "$(make -s print-rest-shards)" --check
+
   # THE GATE SUITE IS NOT HERE. It runs sharded in `gate.yml`, and running it in
   # both places would put back the three serial hours the sharding removes. What is
-  # left is everything else `make test` covers, which is minutes rather than an
-  # hour.
+  # left is everything else `make test` covers.
   #
-  # -j is what makes the suite's list-of-prerequisites form pay off; without it
-  # make still walks the scripts one at a time.
+  # CUT INTO RUNNERS BY RECORDED DURATION. scripts/rest-shard.sh deals the
+  # `test-rest` goals onto REST_SHARDS runners by the seconds in
+  # scripts/rest-census.tsv, and each runner starts its longest suite first, so
+  # the job's wall clock comes down to its longest suite rather than the sum.
+  # -j is what lets a runner's suites run at once; without it make still walks
+  # them one at a time. `fail-fast: false` so a red shard does not cancel the
+  # others and hide whether one suite or several broke.
+  #
+  # Every suite's end line (rc and seconds) is in the log, and each runner's
+  # durations are printed longest first and uploaded as rest-timing-<shard>, the
+  # input `scripts/rest-shard.sh --merge` rebuilds the census from.
   rest-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -68,18 +99,85 @@ jobs:
       - name: Record the test start
         run: echo "CC_TEST_T0=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Run tests except the gate suite
-        run: make -j"$(nproc)" test-rest
+      - name: Run rest shard ${{ matrix.shard }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/rest-timing"
+          CC_SUITE_TIMING_DIR="$RUNNER_TEMP/rest-timing" make -j"$(nproc)" rest-shard SHARD=${{ matrix.shard }}
 
-      # The token is given to this step alone, not to the workflow: the suites
-      # above must keep running without a credential they could reach out with.
+      # Only a green shard's time is kept: a red one was cut short. The shards
+      # do not judge it themselves — `rest-duration` sums them into one
+      # measurement, so the key has one reading and one window artifact a run.
+      - name: Record the shard duration
+        run: |
+          mkdir -p "$RUNNER_TEMP/rest-duration"
+          echo "$(( $(date +%s) - CC_TEST_T0 ))" > "$RUNNER_TEMP/rest-duration/shard-${{ matrix.shard }}"
+
+      - name: Upload the shard duration
+        uses: actions/upload-artifact@v4
+        with:
+          name: rest-duration-${{ matrix.shard }}
+          path: ${{ runner.temp }}/rest-duration/
+
+      - name: Suite durations, longest first
+        if: always()
+        run: |
+          printf '초\trc\t스위트\n'
+          cat "$RUNNER_TEMP"/rest-timing/suite.* 2>/dev/null \
+            | awk -F '\t' 'NF >= 3 { printf "%s\t%s\t%s\n", $2, $3, $1 }' | sort -t "$(printf '\t')" -k1,1nr
+
+      - name: Upload suite durations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rest-timing-${{ matrix.shard }}
+          path: ${{ runner.temp }}/rest-timing/
+          if-no-files-found: warn
+
+  # The duration signal of the rest suites, judged once on the sum of the shard
+  # times so a reshuffle of suites between shards does not move it. It runs
+  # whatever the shards did, and skips the increment check unless every shard
+  # was green and left its time: a cut-short sum is not a measurement.
+  rest-duration:
+    needs: rest-tests
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: rest-duration-*
+          path: ${{ runner.temp }}/rest-duration
+          merge-multiple: true
+
+      - name: Sum the shard times
+        id: sum
+        run: |
+          n=0; sum=0
+          for f in "$RUNNER_TEMP"/rest-duration/shard-*; do
+            [ -f "$f" ] || continue
+            n=$(( n + 1 )); sum=$(( sum + $(cat "$f") ))
+          done
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "want=$(make -s print-rest-shards)" >> "$GITHUB_OUTPUT"
+          echo "sum=$sum" >> "$GITHUB_OUTPUT"
+          echo "샤드 소요 $n 개, 합 $sum 초"
+
+      # The token is given to this step alone: it is the only one that reads
+      # other runs' artifacts.
       - name: Duration signal
+        if: needs.rest-tests.result == 'success' && steps.sum.outputs.count == steps.sum.outputs.want
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci-duration.sh check --key lint-rest-tests --seconds "$(( $(date +%s) - CC_TEST_T0 ))" --window-out "$RUNNER_TEMP/ci-duration-lint-rest-tests"
+        run: bash scripts/ci-duration.sh check --key lint-rest-tests --seconds "${{ steps.sum.outputs.sum }}" --window-out "$RUNNER_TEMP/ci-duration-lint-rest-tests"
+
+      - name: Duration signal skipped
+        if: needs.rest-tests.result != 'success' || steps.sum.outputs.count != steps.sum.outputs.want
+        run: echo "::notice::rest-tests 가 성공하지 않았거나(${{ needs.rest-tests.result }}) 샤드 소요가 ${{ steps.sum.outputs.count }}/${{ steps.sum.outputs.want }} 개뿐이라 소요 증분 판정을 건너뜁니다 — 잘린 소요로는 판정하지 않습니다"
 
       - name: Upload the duration window
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: needs.rest-tests.result == 'success' && steps.sum.outputs.count == steps.sum.outputs.want && github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@v4
         with:
           name: ci-duration-lint-rest-tests

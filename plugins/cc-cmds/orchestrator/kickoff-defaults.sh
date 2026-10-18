@@ -251,8 +251,8 @@ if [ -z "$KD_NOW" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Time — the resolver is sourced, never copied, so a successor run's deadline
-# is computed with the arithmetic the kickoff used.
+# Time — the resolver is sourced, never copied, so a carried deadline is
+# computed with the arithmetic the kickoff used.
 # ---------------------------------------------------------------------------
 [ -r "$KD_DIR/deadline-resolve.sh" ] || kd_refuse "deadline-resolve.sh 를 읽을 수 없습니다: $KD_DIR/deadline-resolve.sh"
 # shellcheck disable=SC1091
