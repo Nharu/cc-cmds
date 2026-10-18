@@ -15,6 +15,13 @@ on:
     branches:
       - master
 
+# Naming one permission sets every unnamed one to `none`, so both are written:
+# `contents` for the checkout and `actions` for the duration signal to read the
+# master runs' baseline artifacts.
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   lint-and-readme:
     runs-on: ubuntu-latest
@@ -56,5 +63,24 @@ jobs:
       - name: Install tmux, python3 and lsof
         run: sudo apt-get update && sudo apt-get install -y tmux python3 lsof
 
+      # The duration signal measures this one step: checkout and package
+      # installs are not what a pull request changes, and they only add noise.
+      - name: Record the test start
+        run: echo "CC_TEST_T0=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Run tests except the gate suite
         run: make -j"$(nproc)" test-rest
+
+      # The token is given to this step alone, not to the workflow: the suites
+      # above must keep running without a credential they could reach out with.
+      - name: Duration signal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-duration.sh check --key lint-rest-tests --seconds "$(( $(date +%s) - CC_TEST_T0 ))" --window-out "$RUNNER_TEMP/ci-duration-lint-rest-tests"
+
+      - name: Upload the duration window
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-duration-lint-rest-tests
+          path: ${{ runner.temp }}/ci-duration-lint-rest-tests/
