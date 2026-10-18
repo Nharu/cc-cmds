@@ -633,7 +633,7 @@ pin_once_in_section '**The `brief_sha256` identical guard of dispatch item 2 doe
 pin_once_in_section "**What keeps a re-dispatch away from a saved document is neither the phase guard alone nor the leg's guard alone.**" \
   "$DESIGN" "$LADDER_SECTION" "design (ladder)"
 
-pin_once_in_section 'If a Step-0 tool cannot be loaded, if the brief fails a guard below, if the target-document guard below parks, or if the ledger stub cannot be created, park **before spawning**' \
+pin_once_in_section 'If a Step-0 tool cannot be loaded, if the brief fails a guard below, if the target-document guard below parks, if the ledger stub cannot be created, or if a file the redesign input names does not exist, park **before spawning**' \
   "$LEG" "$LEG_STEP0_SECTION" "leg (Step 0)"
 
 pin_once_in_section '**Target-document guard.**' \
