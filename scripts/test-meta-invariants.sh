@@ -820,7 +820,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>' \
     '#### Planning the segments|--from-declaration' \
     '#### Planning the segments|-- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>' \
-    '#### Planning the segments|its predecessor'"'"'s last `segment` row is `머지됨` or `완료`' \
+    '#### Planning the segments|its predecessor'"'"'s `segments[]` entry reads `"착지": true`' \
     '#### Planning the segments|end the shift with a `사유=중단` handoff' \
     '#### Planning the segments|`슬라이싱` entry carries `입양`' \
     '#### Planning the segments|skip calls 1 and 2 and issue call 3 alone' \
@@ -1272,7 +1272,8 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '|The **dependency** condition reads `선행` alone — implementation precedence, a predecessor that has not landed. A predecessor named only in `머지 순서` does not hold back the dispatch; it holds back the merge alone (see 「Merging and applying a segment」).' \
-    '#### Planning the segments|**A slice is planned when two conditions hold together**: every `선행` token'"'"'s predecessor has its last `segment` row at `머지됨` or `완료`, and every `머지 순서` token of the slice — read from the snapshot'"'"'s `슬라이싱.세그먼트[]`, because a slice with no row yet is not in `segments[]` — already has a `segment` row.' \
+    '#### Planning the segments|That value is the dispatch floor'"'"'s own landing judgment, and it covers both a segment whose last `segment` row is `머지됨` or `완료` and one parked after a `머지됨` — unless that merge still owed this run its apply.' \
+    '#### Planning the segments|**A slice is planned when two conditions hold together**: every `선행` token'"'"'s predecessor reads `"착지": true` in its `segments[]` entry, and every `머지 순서` token of the slice — read from the snapshot'"'"'s `슬라이싱.세그먼트[]`, because a slice with no row yet is not in `segments[]` — already has a `segment` row.' \
     '#### Planning the segments|A slice whose `선행` is `없음` and whose `머지 순서` tokens all have rows is planned and dispatched at once, cut from the current base.' \
     '#### Planning the segments|A `머지 순서` token with no row yet (that slice still waits on its own `선행`) defers the slice until the row appears, and a slice carrying both lists follows the same product: with D `선행` A and D `머지 순서` C, D waits for C'"'"'s row even after A has landed.' \
     '#### Planning the segments|Planned earlier, the slice is refused with exit 2 by the floor that requires every token to name a segment this ledger knows.' \
