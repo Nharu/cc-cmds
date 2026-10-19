@@ -37991,6 +37991,19 @@ lsr93_in "$lsr93_l" gate_append blocked '스코프=run' '원인=해소' '사유=
 lsr93_in "$lsr93_l" gate_append segment 'id=S5' '상태=머지됨' >/dev/null 2>&1
 check "93: TH3 대조 — 해소된 런 범위 blocked 와 종단 세그먼트만 더한 원장의 중단 인계는 여전히 exit 3" \
   "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 중단 '무언가' | cut -d'|' -f1)/$(lsr93_n "$lsr93_l" '사유=시험 런 범위 막힘')" "3/2"
+# 승인은 끝맺음과 같은 판정으로 센다 — 대기 중인 행위 승인과 사람-결정 판단 승인은 런을
+# 붙들어 중단 인계를 받고, 그 밖의 판단 승인은 다음 런의 입력이라 「뿐」 을 바꾸지 않는다.
+lsr93_th3p() {  # lsr93_th3p <이름> <승인 id> <절단점> [<판단 부류>] — 그 승인이 대기인 원장의 중단 인계 rc
+  local l
+  l=$(lsr93_dfx "$1")
+  lsr93_in "$l" gate_append '승인' "승인 id=$2" '상태=대기' '대상=infra' "절단점=$3" \
+    ${4:+"판단 부류=$4"} '질문 문면=시험' >/dev/null 2>&1
+  lsr93_hand "$l" "$FX_MANIFEST" 중단 '승인 대기' | cut -d'|' -f1
+}
+check "93: TH3 행위 승인·사람-결정 판단 승인이 대기인 런의 중단 인계는 받는다" \
+  "$(lsr93_th3p th3p J-0093d001 커밋)/$(lsr93_th3p th3q J-0093e001 판단 사람-결정)" "0/0"
+check "93: TH3 사람-결정 이 아닌 판단 승인만 대기인 런의 중단 인계는 exit 3 이다" \
+  "$(lsr93_th3p th3j J-0093f001 판단 되돌림가능)" "3"
 # 열린 답이 하나 더 있으면 상태 검사는 지나가고, 막힌 지점의 문면이 이월된 기록을
 # 가리키는지만 남는다.
 lsr93_th3() {  # lsr93_th3 <이름> <키> <막힌 지점> — 그 키가 이월되고 S4 의 답이 열린 원장의 중단 인계 rc
@@ -38037,37 +38050,88 @@ case "$lsr93_t7a/$lsr93_t7b" in
        "${lsr93_t7a%%[|$'\n']*}" "${lsr93_t7b%%[|$'\n']*}" ;;
 esac
 
-# TH4 — 이월로 넘긴 런을 마감 뒤에 끝내는 판정. 진전 축이 있는 런에서는 남은 종료
-# 조건이 모두 이월된 답일 때만 끝나며, 그 판정은 줄의 머리로 읽는다.
+# TH4 — 이월로 넘긴 런을 마감 뒤에 끝내는 판정. 완료 조건 판독을 대역으로 바꾸지 않고
+# 실제 원장으로 돈다. 진전 축이 있는 런은 「이월 답만 남음」 이 설 때만 끝나고, 그
+# 판정은 완료 조건의 줄을 읽지 않는다 — 다음 런으로 넘긴 일의 종료 절 줄은 늘 남는다.
+# 진전 축 매니페스트에 종료 절 하나를 둔 사본이 그 줄을 만든다.
+lsr93_mfc="$lsr75/mf93-clause.md"
+{ grep -v '^- `종료 절`' "$lsr93_mfb" || true
+  printf -- '- `종료 절` | id=K93 | 문면=다음 런으로 넘긴 일 (K93)\n'; } > "$lsr93_mfc"
 lsr93_due() {
-  # lsr93_due <원장> <매니페스트> [<종료 조건 줄들>] — gate_defer_end_due 의 y/n. 셋째
-  # 인자가 있으면 그 줄들이 미충족 종료 조건이다. LSR93_LIVE 는 lsr93_hand 와 같다.
-  LSR93_DC=${3-} LSR93_DCSET=${3+1} FX_MANIFEST=$2 lsr93_in "$1" eval '
+  # lsr93_due <원장> <매니페스트> — gate_defer_end_due 의 y/n. LSR93_LIVE 는 lsr93_hand 와 같다.
+  FX_MANIFEST=$2 lsr93_in "$1" eval '
     [ -z "${LSR93_LIVE:-}" ] || cc_relay_wait_stages() { printf "%s" "$LSR93_LIVE"; }
-    [ -z "$LSR93_DCSET" ] || gate_done_conditions() { [ -z "$LSR93_DC" ] || printf "%s\n" "$LSR93_DC"; }
     gate_defer_end_due && printf y || printf n' 2>/dev/null
 }
-lsr93_hrow() {  # lsr93_hrow <원장> <사유> — 검사 없이 그 사유의 handoff 행
-  lsr93_in "$1" gate_append handoff 교대=1 "사유=$2" '버린 선택지=-' '막힌 지점=-' '다음 후보=-' 'CI 대기=-' \
+lsr93_hrow() {  # lsr93_hrow <원장> <사유> [<CI 대기>] — 검사 없이 그 사유의 handoff 행
+  lsr93_in "$1" gate_append handoff 교대=1 "사유=$2" '버린 선택지=-' '막힌 지점=-' '다음 후보=-' "CI 대기=${3:--}" \
     '대상=infra' '기록 시각=2026-10-19T00:00:00Z' >/dev/null 2>&1
 }
 lsr93_l=$(lsr93_dfx th4 A1)
 lsr93_hrow "$lsr93_l" 이월
 lsr93_dl1="1 답 이월 대기 — A1 의 중단 답(원장 $(lsr93_in "$lsr93_l" gate_key_deferred_answer A1 2>/dev/null) 번째 줄)을 다음 런이 이어받습니다"
 check "93: TH4 픽스처의 A1 답이 이월돼 있다" "$(lsr93_in "$lsr93_l" gate_key_deferred_answer A1 2>/dev/null | grep -c '^[0-9][0-9]*$')" "1"
+# 공허 방지 — 종료 절 사본이 진전 축 런이고, 그 원장의 완료 조건 판독에 미정산 종료
+# 절 줄이 실제로 나온다. 이 줄이 없으면 아래의 「끝난다」 는 줄을 읽어도 섰을 것이다.
+check "93: TH4 종료 절 사본은 지난 마감·진전 축 있음이다" "$(lsr93_axes "$lsr93_mfc")" "y|n"
+check "93: TH4 그 원장의 완료 조건 판독에 미정산 종료 절 줄이 나온다" \
+  "$(FX_MANIFEST=$lsr93_mfc lsr93_in "$lsr93_l" gate_done_conditions 2>/dev/null | { grep -cxF '10 종료 절 K93 미정산' || true; } | tr -d ' ')" "1"
+check "93: TH4 진전 축 런은 미정산 종료 절이 남아도 이월 답만 남았으면 끝난다" \
+  "$(lsr93_due "$lsr93_l" "$lsr93_mfc")" "y"
 check "93: TH4 진전 축 없는 런은 지난 마감·마지막 인계 이월·산 것 없음이면 끝난다" \
   "$(lsr93_due "$lsr93_l" "$lsr93_mfp")" "y"
 check "93: TH4 마감 전이면 끝나지 않는다" "$(lsr93_due "$lsr93_l" "$FX_MANIFEST")" "n"
-check "93: TH4 살아 있는 스테이지가 있으면 끝나지 않는다" "$(LSR93_LIVE=S9 lsr93_due "$lsr93_l" "$lsr93_mfp")" "n"
-check "93: TH4 진전 축이 있으면 남은 조건이 이월 줄뿐일 때 끝난다" "$(lsr93_due "$lsr93_l" "$lsr93_mfb" "$lsr93_dl1")" "y"
-check "93: TH4 진전 축이 있고 머지 뒤 적용이 남았으면 끝나지 않는다" \
-  "$(lsr93_due "$lsr93_l" "$lsr93_mfb" "$lsr93_dl1
-1 세그먼트 S5 의 적용이 남았습니다 (머지됨 · 적용=대기)")" "n"
-check "93: TH4 그 문구를 원인 문장 안에 인용한 다른 조건은 이월 줄이 아니다" \
-  "$(lsr93_due "$lsr93_l" "$lsr93_mfb" "3 미해결 의무가 남아 있습니다: 1 답 이월 대기 — 인용")" "n"
-check "93: TH4 진전 축이 있고 남은 조건이 없으면 이 판정으로는 끝나지 않는다" "$(lsr93_due "$lsr93_l" "$lsr93_mfb" "")" "n"
+check "93: TH4 살아 있는 스테이지가 있으면 끝나지 않는다" \
+  "$(LSR93_LIVE=S9 lsr93_due "$lsr93_l" "$lsr93_mfp")/$(LSR93_LIVE=S9 lsr93_due "$lsr93_l" "$lsr93_mfc")" "n/n"
+# 「이월 답만 남음」 의 조건마다 대조 하나. 각 원장은 A1 이 이월된 원장에 하나를 더하고,
+# 마지막 인계를 이월로 둔다. 더하는 것은 콜백 함수가 그 원장에 쓴다.
+lsr93_th4c() {  # lsr93_th4c <이름> <콜백> — 콜백이 더한 뒤 진전 축 런의 끝맺음 y/n
+  local l
+  l=$(lsr93_dfx "$1" A1)
+  "$2" "$l"
+  lsr93_hrow "$l" 이월
+  lsr93_due "$l" "$lsr93_mfc"
+}
+lsr93_c_run() { lsr93_in "$1" gate_append segment 'id=S5' '상태=실행중' >/dev/null 2>&1; }
+lsr93_c_ci() { lsr93_c_run "$1"; lsr93_hrow "$1" 대기 S5; }
+lsr93_c_apply() { lsr93_in "$1" gate_append segment 'id=S5' '상태=머지됨' '적용=대기' >/dev/null 2>&1; }
+lsr93_c_act() {
+  lsr93_in "$1" gate_append '승인' '승인 id=J-0093a001' '상태=대기' '대상=infra' '절단점=커밋' '질문 문면=시험' >/dev/null 2>&1
+}
+lsr93_c_person() {
+  lsr93_in "$1" gate_append '승인' '승인 id=J-0093b001' '상태=대기' '대상=infra' '절단점=판단' \
+    "판단 부류=사람-결정" '질문 문면=시험' >/dev/null 2>&1
+}
+lsr93_c_judg() {
+  lsr93_in "$1" gate_append '승인' '승인 id=J-0093c001' '상태=대기' '대상=infra' '절단점=판단' \
+    '판단 부류=되돌림가능' '질문 문면=시험' >/dev/null 2>&1
+}
+lsr93_c_open() {
+  lsr93_park "$1" S4 1 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge
+  lsr93_ans "$1" S4 "${1%/*}/halt/S4#1.md" design-reconverge 적용 >/dev/null
+}
+lsr93_c_blk() {
+  lsr93_in "$1" gate_append blocked '스코프=run' '원인=막힘' '사유=시험 런 범위 막힘' '근거=시험' >/dev/null 2>&1
+}
+lsr93_c_none() { :; }
+check "93: TH4 대조 — 종단 아닌 세그먼트·CI 대기 세그먼트·적용 대기 세그먼트가 남으면 끝나지 않는다" \
+  "$(lsr93_th4c th4s lsr93_c_run)/$(lsr93_th4c th4i lsr93_c_ci)/$(lsr93_th4c th4a lsr93_c_apply)" "n/n/n"
+check "93: TH4 대조 — 대기 중인 행위 승인·사람-결정 판단 승인이 남으면 끝나지 않는다" \
+  "$(lsr93_th4c th4p lsr93_c_act)/$(lsr93_th4c th4q lsr93_c_person)" "n/n"
+check "93: TH4 대조 — 열림 답·이월 행이 아닌 미해소 런 범위 blocked 가 남으면 끝나지 않는다" \
+  "$(lsr93_th4c th4o lsr93_c_open)/$(lsr93_th4c th4b lsr93_c_blk)" "n/n"
+check "93: TH4 사람-결정 이 아닌 판단 승인만 남은 런은 끝난다" \
+  "$(lsr93_th4c th4j lsr93_c_judg)/$(lsr93_th4c th4n lsr93_c_none)" "y/y"
+# 쓰이지 않은 이월 답이 없는 원장 — 답이 열린 채이고 이월 행이 없다.
+lsr93_l=$(lsr75_new th4z)
+lsr93_park "$lsr93_l" A1 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ans "$lsr93_l" A1 "${lsr93_l%/*}/halt/A1#1.md" design-reconverge 적용 >/dev/null
+lsr93_hrow "$lsr93_l" 이월
+check "93: TH4 쓰이지 않은 이월 답이 없으면 진전 축 런은 끝나지 않는다" "$(lsr93_due "$lsr93_l" "$lsr93_mfc")" "n"
+lsr93_l="$lsr_root/th4/ledger.md"
 lsr93_hrow "$lsr93_l" 대기
-check "93: TH4 마지막 인계가 이월이 아니면 끝나지 않는다" "$(lsr93_due "$lsr93_l" "$lsr93_mfp")" "n"
+check "93: TH4 마지막 인계가 이월이 아니면 끝나지 않는다" \
+  "$(lsr93_due "$lsr93_l" "$lsr93_mfp")/$(lsr93_due "$lsr93_l" "$lsr93_mfc")" "n/n"
 # end-overdue 의 갈래 — 이월로 넘긴 조용한 런은 해당없음이 아니라 마감으로 끝난다.
 lsr93_eo() {  # lsr93_eo <이름> <마지막 인계 사유> — end-overdue 뒤의 「종료 행의 재킥 원인|근거에 이월 문면」
   local l
@@ -38119,7 +38183,42 @@ lsr93_hrow "$lsr93_l" 중단
 check "93: TH2 대조 — 이월이 빠진 대기는 빈 집합으로 곧장 끝난다" \
   "$(lsr93_rwait "$lsr93_l" "$FX_MANIFEST")" "0|n|"
 
-# TD1·TD2 — 종료 조건 1 이 이월된 키를 「답 이월 대기」로 적는다: 런 스코프 감사
+# TH9 — 마감 뒤의 이월 인계는 끝맺음이 설 때만 받는다. 서지 않으면 행 없이 거절되고,
+# 같은 원장의 중단 인계는 재질문 가드 1 을 지난다. 그래서 지난 깨울 시각을 단 이월
+# 인계가 끝나지 않은 런의 가장 최근 인계로 남지 않는다. 진전 축 런은 TH4 의 종료 절
+# 사본으로 돈다.
+lsr93_l=$(lsr93_dfx th9a A1)
+lsr93_c_act "$lsr93_l"
+case "$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 이월 '다음 런의 답')" in
+  "3|"*"이월 답 말고 런을 붙드는 것이 있습니다"*"사유=중단"*) ok "93: TH9 끝맺음이 서지 않는 마감 뒤 이월 인계는 exit 3 이고 붙드는 것을 이름 짓는 사유로 가라고 한다" ;;
+  *) bad "93 TH9 이월 거절" "$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 이월 '다음 런의 답')" ;;
+esac
+check "93: TH9 그 거절은 handoff 행도 종료 행도 쓰지 않고, 같은 원장의 중단 인계는 받는다" \
+  "$(lsr93_n "$lsr93_l" '- `handoff` ')|$(lsr93_end_rows "$lsr93_l")|$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 중단 '행위 승인 대기' | cut -d'|' -f1)|$(lsr93_n "$lsr93_l" '| 사유=중단 |')" \
+  "0|0|0|1"
+lsr93_l=$(lsr93_dfx th9b A1)
+lsr93_t9=$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 이월 '다음 런의 답' | sed -n '1{s/|.*//;p;}')
+lsr93_t9h=$(lsr93_line "$lsr93_l" '| 사유=이월 |')
+lsr93_t9e=$(lsr93_line "$lsr93_l" '| 결정=종료 |')
+check "93: TH9 끝맺음이 서는 진전 축 런의 마감 뒤 이월 인계는 받고 인계 행 뒤에 마감 종료 행이 같은 act 에서 쓰인다" \
+  "$lsr93_t9|$( [ -s "${lsr93_l%/*}/done" ] && printf done || printf open)|$(lsr93_end_rows "$lsr93_l")|$( [ "$lsr93_t9h" -gt 0 ] && [ "$lsr93_t9h" -lt "$lsr93_t9e" ] && printf 뒤 || printf -)" \
+  "0|done|1|뒤"
+# 마감 전에 받은 이월 인계 뒤 깨어난 후속 교대가 끝맺지 못하는 원장 — 그 사이에 행위
+# 승인이 하나 남았다. 둘째 이월 인계는 거절되고, 교대가 중단으로 인계하면 릴레이는
+# 지난 시계로 다시 깨지 않는다.
+lsr93_l=$(lsr93_dfx th9c A1)
+check "93: TH9 마감 전의 첫 이월 인계는 받고 런을 끝내지 않는다" \
+  "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답' | cut -d'|' -f1)|$(lsr93_end_rows "$lsr93_l")" "0|0"
+lsr93_c_act "$lsr93_l"
+check "93: TH9 깨어난 후속 교대는 끝맺지 못하고, 릴레이 판정은 첫 이월 인계로 아직 재진입을 받는다" \
+  "$(lsr93_due "$lsr93_l" "$lsr93_mfc")|$(lsr93_rel2 "$lsr93_l" "$lsr93_mfc" | cut -c1)" "n|y"
+check "93: TH9 그 교대의 둘째 이월 인계는 exit 3·행 없음이고 중단 인계는 받는다" \
+  "$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 이월 '다음 런의 답' | cut -d'|' -f1)|$(lsr93_n "$lsr93_l" '| 사유=이월 |')|$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 중단 '행위 승인 대기' | cut -d'|' -f1)" \
+  "3|1|0"
+check "93: TH9 중단 인계 뒤 릴레이 상태 판정은 다시 깨지 않는다" \
+  "$(lsr93_rel2 "$lsr93_l" "$lsr93_mfc" | cut -c1)" "n"
+
+# TD1·TD2 —종료 조건 1 이 이월된 키를 「답 이월 대기」로 적는다: 런 스코프 감사
 # 키는 다른 판독보다 먼저, 세그먼트는 그 행의 상태와 무관하게.
 check "93: TD1 런 스코프 키의 이월은 종료 조건 1 의 첫 줄이다" \
   "$(FX_MANIFEST=$lsr93_mfb lsr93_in "$lsr_root/th4/ledger.md" gate_done_conditions 2>/dev/null | { grep '^1 ' || true; } | paste -sd'#' -)" \

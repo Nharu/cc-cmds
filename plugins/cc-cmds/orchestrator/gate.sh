@@ -18073,16 +18073,31 @@ gate_defer_handoff_unmet() {
   fi
 }
 
-gate_defer_only_blocks() {
-  # gate_defer_only_blocks — succeeds when nothing but answers carried over
-  # holds the run: no run-holding `blocked` row is left unresolved but the
-  # `이월` rows themselves, and every segment is terminal or waits on its own
-  # carried-over answer. The re-ask guard needs this beside the hand-off's
-  # conditions: a run-scope halt writes no halt record, a carry's cap writes a
-  # `blocked` row on a key whose answer was already given, and a segment still
-  # running its work is not the next run's — each of them is still a question
-  # for a person, and `중단` is the hand-off that asks it.
+gate_defer_only_left() {
+  # gate_defer_only_left — succeeds when nothing but answers carried over to
+  # the next run holds the run. The ending of such a run past its deadline
+  # (`gate_defer_end_ready`) and re-ask guard 1 of the `중단` hand-off read
+  # this one judgment: were they two, a run past its deadline whose ending
+  # does not hold would refuse its `이월` hand-off and its `중단` alike.
+  #
+  # All of: no live stage or supervisor; no halt record no row answers; at
+  # least one answer carried over (`이월`) and none still open (`열림`); no
+  # pending act approval and no pending `사람-결정` question — any other
+  # question is an input the next run consumes, the same reason termination
+  # condition 2 leaves it out; no run-holding `blocked` row left unresolved but
+  # the `이월` rows themselves (a run-scope halt writes no halt record, and a
+  # carry's cap writes a `blocked` row on a key whose answer was already
+  # given); and every segment terminal and not waiting to be applied, or
+  # waiting on its own carried-over answer. A segment waiting on CI or left to
+  # merge is not terminal, so a run that can still do that past its deadline
+  # without a stage is not one the next run takes over by its answers.
   local cause why sid st
+  [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ] || return 1
+  [ "$(cc_unanswered_halts "$RUN_DIR" "$LEDGER")" = "0" ] || return 1
+  [ -n "$(gate_halt_answers_by_state '이월')" ] || return 1
+  [ -z "$(gate_halt_answers_by_state '열림')" ] || return 1
+  [ -z "$(gate_pending_approval_ids act)" ] || return 1
+  [ -z "$(gate_pending_approval_ids 사람)" ] || return 1
   while IFS="$(printf '\t')" read -r cause why; do
     [ -n "$why" ] || continue
     case "$why" in '중단 답 이월 — '*) continue ;; esac
@@ -26840,21 +26855,32 @@ EOF
           warn "이월 인계를 쓸 수 없습니다 — $hdu"
           return "$GATE_EXIT_RULE"
         fi
+        # PAST THE DEADLINE THE HAND-OFF IS TAKEN ONLY WHERE IT ENDS THE RUN.
+        # The relay wakes `이월` at the deadline plus one second, a time already
+        # behind us, so a hand-off taken without the ending would stay the
+        # latest hand-off of a run that never ends, and each successor shift
+        # would hand off `이월` again. With this hand-off read as the latest,
+        # the ending (`gate_defer_end_ready`) must hold; when it does not,
+        # something besides the carried answers still holds the run, and the
+        # hand-off names it — guard 1 below then takes `중단`, since it reads
+        # the same judgment.
+        if gate_past_deadline && ! gate_defer_end_ready; then
+          warn "이월 답 말고 런을 붙드는 것이 있습니다 — 마감이 지나 이월 인계는 그 자리에서 런을 끝낼 때만 받습니다; 그것을 이름 짓는 사유(살아 있는 스테이지·감독자나 CI 대기면 사유=대기, 그 밖이면 사유=중단)로 인계하세요"
+          return "$GATE_EXIT_RULE"
+        fi
       fi
       # `중단` ASKS A PERSON, SO IT IS NOT TAKEN WHEN NOTHING IS LEFT TO ASK. An
       # answer carried over is a person's answer already given, and handing off
       # `중단` for it puts the same decision before them again. Two checks: the
-      # state — every condition of `이월` holds, and no open answer, pending
-      # approval, unanswered record, unresolved run-holding block or unfinished
-      # segment is left (`gate_defer_only_blocks`) — and the raw `막힌 지점`, before
-      # it is narrowed below, naming a carried-over record. The text is free, so
-      # the second check backs the first rather than replacing it.
+      # state — every condition of `이월` holds and nothing but the carried
+      # answers holds the run (`gate_defer_only_left`, the judgment the ending
+      # past the deadline reads too) — and the raw `막힌 지점`, before it is
+      # narrowed below, naming a carried-over record. The text is free, so the
+      # second check backs the first rather than replacing it.
       local hdrec
       if [ "$hwhy" = "중단" ]; then
         if [ -z "$hci" ] && [ -z "$(gate_defer_handoff_unmet)" ] \
-           && [ -z "$(gate_halt_answers_by_state '열림')" ] \
-           && [ -z "$(gate_pending_approval_ids)" ] \
-           && gate_defer_only_blocks; then
+           && gate_defer_only_left; then
           warn "막는 것이 다음 런으로 넘긴 중단 답뿐입니다 — 사람에게 다시 묻지 않습니다; 사유=이월 로 인계하세요"
           return "$GATE_EXIT_RULE"
         fi
@@ -28672,32 +28698,40 @@ gate_fleet_busy_state() {
 gate_defer_end_due() {
   # gate_defer_end_due — true when a run that carried its answers over should
   # end now with `마감`: the deadline has passed, the latest `handoff` says
-  # `사유=이월`, no stage or supervisor is alive, and — on a run with a
-  # progress axis, which the clock does not otherwise end — every unmet
-  # completion condition is an answer waiting for the next run.
-  #
-  # MATCHED ON THE LINE'S HEAD, `1 답 이월 대기 — `, the way the invalidation
-  # lines are matched: an unmet line whose cause sentence happens to quote the
-  # phrase is still the unmet work it names, and a run with a segment left to
-  # merge or a CI wait is not one the next run can take over by its answers.
-  local last u n=0
+  # `사유=이월`, and the ending holds (`gate_defer_end_ready`). The clock end
+  # of the acting path, `gate_verb_end_overdue` and the `이월` hand-off past
+  # the deadline all ask this one helper.
+  local last
   gate_past_deadline || return 1
   # Read from the file rather than `gate_rows`: the hand-off arm asks this
   # right after appending its row, and a warmed memo would not hold it.
   last=$( { grep "^- \`handoff\` " "$LEDGER" 2>/dev/null || true; } | tail -1)
   [ "$(gate_row_field "$last" '사유')" = "이월" ] || return 1
+  gate_defer_end_ready
+}
+
+gate_defer_end_ready() {
+  # gate_defer_end_ready — the ending's own conditions, the latest hand-off
+  # aside: no stage or supervisor is alive, and — on a run with a progress
+  # axis, which the clock does not otherwise end — nothing but the carried
+  # answers holds the run (`gate_defer_only_left`). The `이월` hand-off past
+  # the deadline asks this before it writes its row, reading itself as the
+  # latest hand-off.
+  #
+  # WHY THE COMPLETION CONDITIONS ARE NOT READ. They measure whether the run
+  # did the work it set out to do, and a run with a progress axis that handed
+  # work to the next run always keeps lines for it — an unsettled closing
+  # clause, an open obligation, an unmet review obligation. Those need a stage
+  # to clear, and past the deadline the router parks every request, so no run
+  # past its deadline clears them. Reading them kept the ending from ever
+  # holding on such a run. What is read instead is what this run can still do
+  # without a stage — merge a segment, wait on CI, take an answer to an
+  # approval, clear a `blocked` row — and what it still has to ask a person.
+  # `마감` is not `충족`, so those lines stay in the completion read after the
+  # ending row and in the morning report.
   [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ] || return 1
   gate_progress_axes_unbounded && return 0
-  while IFS= read -r u; do
-    [ -n "$u" ] || continue
-    case "$u" in
-      '1 답 이월 대기 — '*) n=$((n + 1)) ;;
-      *) return 1 ;;
-    esac
-  done <<EOF
-$(gate_done_conditions 2>/dev/null)
-EOF
-  [ "$n" -gt 0 ]
+  gate_defer_only_left
 }
 
 gate_defer_end_why() {
@@ -38294,8 +38328,8 @@ gate_step_deferred_line() {
   # return 0 when the key's last `stage-result` is `의도된 park` and its answer
   # is carried over to the next run (`gate_key_deferred_answer`); return 1
   # otherwise. Such a key is neither closed nor void: the next run dispatches it
-  # again with the person's answer. The head `1 답 이월 대기 — ` is fixed, and
-  # `gate_defer_end_due` matches it.
+  # again with the person's answer. The head `1 답 이월 대기 — ` is fixed;
+  # `gate_defer_only_left` reads the return value, not the line.
   local ln last
   ln=$(gate_key_deferred_answer "$1")
   [ -n "$ln" ] || return 1
