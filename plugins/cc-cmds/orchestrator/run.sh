@@ -9905,7 +9905,7 @@ segment_cycle() {
       fileset_escape "$seg" "$files" "$wt" || return 1
       stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
-      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
+      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$fix_target\""
       case "$(terminal_route_class "$class")" in
         '정상 완료') : ;;
         '의도된 park')
@@ -9967,7 +9967,7 @@ segment_cycle() {
           # crash.
           log "$seg: $class — 1회만 재시도"
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" \
+               "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$fix_target\"" \
                crash-retry "크래시 2회" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
