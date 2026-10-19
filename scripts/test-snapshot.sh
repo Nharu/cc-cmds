@@ -2612,6 +2612,14 @@ check "교대 계약: 좌석 실행 답 갈래가 운반 act 로 넘기는 문�
   "$(awk '/When `option` is `좌석 실행` and `answered_by` is `좌석`, the seat ran/{a=NR} /Every other answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_SKILL")" 예
 check "교대 계약: 운반 act 의 16 은 이월이고 종료 행이 있으면 종단" \
   "$(has "$RS_SKILL" "end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
+# 마감 뒤의 이월 인계는 그 act 에서 런을 끝낼 때만 받아지고, 받아지지 않으면 교대가 붙드는 것을
+# 이름 짓는 사유로 인계한다 — 그 갈래를 싣는 것은 이 문장뿐이다.
+check "교대 계약: 마감 뒤 이월은 끝맺을 때만 받고 그 act 에서 끝낸다" \
+  "$(has "$RS_SKILL" "**Past the deadline it takes \`이월\` only when nothing but those answers holds the run, and ends the run with \`마감\` in the same act**")" 예
+check "교대 계약: 마감 뒤 이월이 거절되면 붙드는 것을 이름 짓는 사유로 인계한다" \
+  "$(has "$RS_SKILL" "hand off with the reason that names it: \`대기\` for a live stage or supervisor or a CI wait, \`중단\` for anything else, and the gate does not refuse that \`중단\`.")" 예
+check "교대 계약: 재질문 가드 1 은 끝맺음과 같은 판정이다" \
+  "$(has "$RS_SKILL" "the gate refuses \`중단\` when those answers are all that holds the run — the same judgment the ending past the deadline reads —")" 예
 check "교대 계약: 종료 코드 표에 18 행이 있다" "$(grep -c '^| `18` | a carry act' "$RS_SKILL")" 1
 check "교대 계약: 종료 코드 표에 19 행이 있다" "$(grep -c '^| `19` | a carry act' "$RS_SKILL")" 1
 check "좌석 사본: 종료 코드 표에 18 행이 있다" "$(grep -c '^| 18 | a carry act' "$SEAT_REF")" 1
