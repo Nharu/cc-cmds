@@ -4331,8 +4331,8 @@ DOC="$WORK/base/docs/x.md"
 check "문서가 있으면 접근자는 그 문서를 낸다" "$(doc_arg)" "$WORK/base/docs/x.md"
 DOC=""
 # 접근자가 있어도 호출부가 `$DOC` 를 그대로 끼우면 아무것도 달라지지 않는다.
-check "구현 스테이지 두 자리가 접근자를 쓴다" \
-  "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "2"
+check "구현 스테이지 네 자리(첫 파견·새 프로세스 재시도·크래시 재시도·한도-형상 회수 뒤 재파견)가 접근자를 쓴다" \
+  "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )/$( { grep -cF 'implement-unattended $DOC' "$DRIVER" || true; } )" "4/0"
 check "리뷰 스테이지 세 자리(리뷰·복구 리뷰·리드 수정)가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "3"
 check "재수렴 스테이지 세 자리(항목 사다리·설계 수준 잔여·상한 P0 잔여)가 접근자를 쓴다" \
@@ -11799,7 +11799,13 @@ check "35: 첫 리뷰는 --slice 를 고른 값으로, 복구 리뷰는 그대�
   "1/1/1"
 check "35: 수정 대상 지시는 사이클 2 부터, 앞 사이클 리포트가 있을 때만 구현 지시에 붙는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '[ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '선언 파일: $files$fix_target' || true)" \
-  "1/1"
+  "1/4"
+check "35: 새 프로세스 재시도와 크래시 재시도도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files\"' || true)" \
+  "2/0"
+check "35: 한도-형상 회수 뒤 재파견도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files\"' || true)" \
+  "1/0"
 
 # --- 사이클 루프: 마지막 사이클의 수렴, 다른 슬라이스 몫 거절, 복구 리포트의 리뷰 HEAD ---
 # 진짜 segment_cycle 을 돌린다. 스텁은 스테이지·판단·워크트리·머지 게이트와 cycle 번들뿐이고,
