@@ -141,6 +141,11 @@
 #                    `--` (`--no-slice` drops `--slice` instead), then the
 #                    `설계는 <문서>` directive; writes nothing.
 #                    Refused (3) when the segment has no row naming a branch
+#   gate.sh binding-digest --manifest <path> -- <design document path>
+#                    prints the document's binding-surface digest — the one the
+#                    driver compares a segment plan against — on one line;
+#                    writes nothing. Refused (2) for a path that is not a
+#                    readable file
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -17206,6 +17211,18 @@ GATE_DRIFT_DIRS
       # with the flags after `--` in it. No ledger row — the dispatch is the act.
       gate_review_line "$segment" "$@"
       ;;
+    binding-digest)
+      # Reading, not acting: the driver's own `binding_digest` over the document
+      # named after `--`, so a re-convergence stage takes its before and after
+      # baselines with the same computation the plan admission compares. No
+      # ledger row. The document is named rather than taken from the manifest
+      # because a base-scope run re-converges a child document too.
+      [ $# -eq 1 ] || { printf 'gate: binding-digest needs exactly one document path after --\n' >&2; exit 2; }
+      { [ -f "$1" ] && [ -r "$1" ]; } \
+        || { printf 'gate: binding-digest: 읽을 수 있는 파일이 아닙니다: %s\n' "$1" >&2; exit 2; }
+      DOC="$1"
+      binding_digest; printf '\n'
+      ;;
     meta-merge)
       # Writing into the segment's repository and nowhere else: the merge
       # commit of a release-metadata resolution. No ledger row — the push and
@@ -18056,6 +18073,36 @@ gate_defer_handoff_unmet() {
   fi
 }
 
+gate_defer_only_blocks() {
+  # gate_defer_only_blocks — succeeds when nothing but answers carried over
+  # holds the run: no run-holding `blocked` row is left unresolved but the
+  # `이월` rows themselves, and every segment is terminal or waits on its own
+  # carried-over answer. The re-ask guard needs this beside the hand-off's
+  # conditions: a run-scope halt writes no halt record, a carry's cap writes a
+  # `blocked` row on a key whose answer was already given, and a segment still
+  # running its work is not the next run's — each of them is still a question
+  # for a person, and `중단` is the hand-off that asks it.
+  local cause why sid st
+  while IFS="$(printf '\t')" read -r cause why; do
+    [ -n "$why" ] || continue
+    case "$why" in '중단 답 이월 — '*) continue ;; esac
+    return 1
+  done <<EOF
+$(cc_unresolved_blocked "$LEDGER" 2>/dev/null)
+EOF
+  for sid in $(gate_segment_ids); do
+    [ -n "$sid" ] || continue
+    gate_step_deferred_line "$sid" >/dev/null && continue
+    gate_segment_apply_pending "$sid" && return 1
+    st=$(gate_segment_field "$sid" '상태')
+    case " $TERMINAL_SEGMENT_STATES " in
+      *" $st "*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 gate_text_names_file() {
   # gate_text_names_file <text> <name> — true when <name> appears in <text> at a
   # token boundary: the bytes on either side are not a letter, a digit or one of
@@ -18430,9 +18477,35 @@ gate_run_scope_reconverge_admitted() {
   # parked on purpose, a re-convergence whose session GATE_RESUME re-attaches,
   # or a re-convergence that parked on purpose when the act carries a halt
   # answer (GATE_CARRY_ANSWER).
+  #
+  # A CARRY LOOKS PAST THE DEATHS OF ITS OWN ANSWER. An attempt that carried
+  # this answer and died before its session started (`세션 id=미상`) never read
+  # the card, so the key still stands where the park left it; the carry check
+  # counts those deaths against its cap, and this reading must not refuse the
+  # very retry the cap is counting. Only rows carrying the same answer are
+  # passed over — any other row after the park still decides.
   local last
   [ -z "$(gate_segment_field "$1" '상태')" ] || return 1
-  last=$( { gate_stage_result_rows_of "$1" || true; } | tail -1)
+  if [ -n "${GATE_CARRY_ANSWER:-}" ]; then
+    last=$( { gate_stage_result_rows_of "$1" || true; } | LC_ALL=C awk -v ln="$GATE_CARRY_ANSWER" '
+      function fld(line, name,   n, i, a, s, v) {
+        n = split(line, a, /\|/); v = ""
+        for (i = 2; i <= n; i++) {
+          s = a[i]; sub(/^[ \t]+/, "", s)
+          if (index(s, name "=") == 1) { v = substr(s, length(name) + 2); sub(/[ \t]+$/, "", v) }
+        }
+        return v
+      }
+      NF { r[++n] = $0 }
+      END {
+        for (i = n; i >= 1; i--) {
+          if (fld(r[i], "답 운반") == ln && fld(r[i], "세션 id") == "미상") continue
+          print r[i]; exit
+        }
+      }')
+  else
+    last=$( { gate_stage_result_rows_of "$1" || true; } | tail -1)
+  fi
   case "$(gate_row_field "$last" '종류')|$(gate_row_field "$last" '종단 부류')" in
     'audit|의도된 park') return 0 ;;
     'reconverge|'*)
@@ -26772,14 +26845,16 @@ EOF
       # answer carried over is a person's answer already given, and handing off
       # `중단` for it puts the same decision before them again. Two checks: the
       # state — every condition of `이월` holds, and no open answer, pending
-      # approval or unanswered record is left — and the raw `막힌 지점`, before
+      # approval, unanswered record, unresolved run-holding block or unfinished
+      # segment is left (`gate_defer_only_blocks`) — and the raw `막힌 지점`, before
       # it is narrowed below, naming a carried-over record. The text is free, so
       # the second check backs the first rather than replacing it.
       local hdrec
       if [ "$hwhy" = "중단" ]; then
         if [ -z "$hci" ] && [ -z "$(gate_defer_handoff_unmet)" ] \
            && [ -z "$(gate_halt_answers_by_state '열림')" ] \
-           && [ -z "$(gate_pending_approval_ids)" ]; then
+           && [ -z "$(gate_pending_approval_ids)" ] \
+           && gate_defer_only_blocks; then
           warn "막는 것이 다음 런으로 넘긴 중단 답뿐입니다 — 사람에게 다시 묻지 않습니다; 사유=이월 로 인계하세요"
           return "$GATE_EXIT_RULE"
         fi
@@ -35011,9 +35086,9 @@ gate_launch_route_carry() {
   # `resume-bound-unknown-account`, `resume-bound-ineligible`,
   # `resume-logged-out`) goes on to the fresh question; any other bound PARK —
   # a run-wide or a configuration verdict — parks as today. A bound
-  # `resume-bound-exhausted` WAIT whose `until` lies past the run's deadline is
-  # read as a bound deadline PARK: it is the one WAIT the router does not hold
-  # to the deadline.
+  # `resume-bound-exhausted` WAIT whose `until` plus the stage's expected
+  # duration lies past the run's deadline is read as a bound deadline PARK: it
+  # is the one WAIT the router does not hold to the deadline.
   #
   # THE PICK takes the first of: the bound grant, a fresh grant (a seat grant
   # included), a bound WAIT with an `until`, a fresh WAIT with one, a bound WAIT
@@ -35027,7 +35102,7 @@ gate_launch_route_carry() {
   # then writes the deadline or `stage-wait` row the picked verdict calls for.
   local alias="$1" seg="$2" kind="$3" rowseg="$4" bound="${GATE_HA_BOUND:-}"
   local bind="" reqbind="" benv="" bv="" bcls="none" bwhy="" breason="" buntil=""
-  local fenv="" fv="" fcls="" freason="" funtil="" prior dl dormant pick obs
+  local fenv="" fv="" fcls="" freason="" funtil="" prior dormant pick obs
   if [ -n "$bound" ]; then
     bind=$(gate_resume_binding_of "$seg" "$bound" 2>/dev/null) || bind=""
     case "$bind" in ''|-) ;; *) reqbind=$bind ;; esac
@@ -35059,8 +35134,11 @@ gate_launch_route_carry() {
         fi ;;
       WAIT)
         buntil=$(printf '%s' "$benv" | jq -r '.until_epoch | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)
-        dl=$(deadline_epoch)
-        if [ "$breason" = "resume-bound-exhausted" ] && [ -n "$buntil" ] && [ -n "$dl" ] && [ "$buntil" -gt "$dl" ]; then
+        # Held to the deadline the way the router holds every other WAIT
+        # (`rt_past_deadline`): a release that cannot finish its expected
+        # duration before the deadline does not fit, however early it opens.
+        if [ "$breason" = "resume-bound-exhausted" ] && [ -n "$buntil" ] \
+           && wait_past_deadline "$buntil" "$(stage_expected_duration "$kind")"; then
           bcls=fall
           bwhy="$bwhy — 마감 뒤에 열리는 묶인 대기라 마감 PARK 로 다룬다"
         elif [ -n "$buntil" ]; then
