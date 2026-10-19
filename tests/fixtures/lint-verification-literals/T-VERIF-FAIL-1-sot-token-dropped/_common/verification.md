@@ -8,3 +8,4 @@
 - field key: 검증 등급 ; note-line key: **구현 시 검증 기록**
 - section headings: ## 검증 기록 / ## 구현 시 검증 항목
 - spelling lock head literal: 검증불가(
+- widened post-landing reason: the item's `차단 부류` is `사람-환경` or `외부-준비`

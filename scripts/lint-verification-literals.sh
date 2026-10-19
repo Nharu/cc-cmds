@@ -83,6 +83,9 @@ SOT_LITERALS=(
   '## 구현 시 검증 항목'
   # spelling lock (drift-inventory head literal)
   '검증불가('
+  # the widened `구현 후` definition — also pinned in implement's 1.5a bullet,
+  # so deleting it from either copy fails on its own
+  'the item'"'"'s `차단 부류` is `사람-환경` or `외부-준비`'
 )
 
 fail=0
@@ -118,7 +121,7 @@ done
 # (2) Consumer sync — deliberately narrow. The verification-timing enum is the
 # only frozen vocabulary with a live inline copy outside the SOT: implement's
 # 1.5a routing prose partitions on it. Pin ONLY what that partition is made of —
-# 14 of the 26 SOT_LITERALS (the residual reasons, the execution-caution
+# 14 of the 27 SOT_LITERALS (the residual reasons, the execution-caution
 # classes, the classification tokens, and the `## 검증 기록` heading)
 # legitimately do not appear in that file at all, so a whole-array check would
 # fail on day one. (The five grade tokens DO appear there; they are out of scope
@@ -149,6 +152,9 @@ CONSUMER_1_5A=(
   # gate entry is a positive selector on the save-time residual token; losing
   # it means every unhandled 검증 등급 state falls into the gate by default
   '검증 등급): 구현 시 검증$'
+  # the widened `구현 후` reason, the same literal the SOT carries: a copy
+  # that narrows the bucket again loses it here
+  'the item'"'"'s `차단 부류` is `사람-환경` or `외부-준비`'
 )
 
 # Extract implement's 1.5a bullet — the routing prose that partitions on the
