@@ -1060,6 +1060,39 @@ g wait --manifest "$MANIFEST" --segment D --interval 1 --timeout 5 >/dev/null; r
 check "(13) 마감 파킹된 시도의 wait 은 16 이다" "$rc_dw" "16"
 kill -TERM "$W13_BLOCK" 2>/dev/null || true
 
+# THE SAME DEADLINE, WITH AN ANSWER CARD. The attempt carried a person's halt
+# answer, so a park at the deadline would leave that answer with no session and
+# no record that the next run should take it up: the supervisor writes the
+# `이월` row naming the card's line instead of the ordinary deadline row. The
+# card is planted under the attempt's name before the dispatch claims it; the
+# run's pinned gate is this checkout's, swapped by `mv` as above.
+sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+W13_DL=$(( $(date +%s) + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 4 ))
+mk_run SUPDH '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
+cp -p "$GATE" "$WORK/dh-gate.sh" && mv "$WORK/dh-gate.sh" "$RD/plugin/cc-cmds/orchestrator/gate.sh"
+w13_stall
+w13_block "$W13_BLOCK"
+seg DH
+mkdir -p "$RD/halt-answer" && chmod 700 "$RD/halt-answer"
+printf '<!-- cc-halt-answer v1; stage=DH#1 -->\n**중단 답 줄**: 7\n<!-- /cc-halt-answer v1 -->\n' > "$RD/halt-answer/DH#1.md"
+dispatch DH >/dev/null; rc_dh=$?
+check "(13) 카드를 실은 마감 전 WAIT 파견도 0 으로 반환한다" "$rc_dh" "0"
+SUP_DH=$( { cat "$RD/DH.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+n=0
+while [ "$(alive "$SUP_DH")" = "alive" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 카드를 실은 감독자도 마감에 걸려 스스로 끝난다" "$(alive "$SUP_DH")" "dead"
+row_dh=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '| 사유=중단 답 이월 — ' || true; } )
+check "(13) 카드를 실은 마감 파킹은 이월 행 하나다" "$(printf '%s' "$row_dh" | { grep -c . || true; })" "1"
+case "$row_dh" in
+  *"| 사유=중단 답 이월 — 마감 안에 자리 없음 | 중단 답 줄=7 | "*"스테이지=DH | "*"근거=계보=B:DH#1 | 관측="*"ready_at="*" | 재개 명령=다음 런이 이 답을 이어받는다 — 다시 묻지 않는다"*)
+    ok "(13) 그 이월 행이 카드의 답 줄·계보·라우터 사유와 다음 런의 재개 문면을 싣는다" ;;
+  *) bad "(13) 카드 마감 이월 행" "$row_dh" ;;
+esac
+check "(13) 카드를 실은 마감 파킹은 일반 마감 행을 쓰지 않는다" \
+  "$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -cF '사유=마감 초과 — DH ' || true; } )" "0"
+check "(13) 카드를 실은 마감 파킹도 스테이지를 띄우지 않는다" "$( [ -e "$RD/DH.pid" ] && printf yes || printf no)" "no"
+kill -TERM "$W13_BLOCK" 2>/dev/null || true
+
 # WAIT ON A RESET PASS, then the deadline. Usage written at the supervisor's start
 # leaves the account's weekly window without room until its reset, which is past
 # the deadline — today that is a deadline park. The group holds a weekly reset

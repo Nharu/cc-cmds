@@ -647,12 +647,12 @@ gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --se
 
 ## Ending your shift
 
-Check `shift.over_soft` on every snapshot. When it is true — or when the gate answered `15`, or you took exit 5 (a `사람-결정` judgment approval only once nothing outside the held set is left to dispatch — the **CFI-S4 exception**), or a `propose-done` was accepted, or you are ending on `중단` (the gate answered exit 7, or no act is left to dispatch), or you are ending on `대기` (all that is left is a live stage's result, a pending CI verdict or the reset of a cut stage's limit) — write this and then exit:
+Check `shift.over_soft` on every snapshot. When it is true — or when the gate answered `15`, or you took exit 5 (a `사람-결정` judgment approval only once nothing outside the held set is left to dispatch — the **CFI-S4 exception**), or a `propose-done` was accepted, or you are ending on `중단` (the gate answered exit 7, or no act is left to dispatch), or you are ending on `대기` (all that is left is a live stage's result, a pending CI verdict or the reset of a cut stage's limit), or you are ending on `이월` (all that is left is answers kept in `이월` rows for the next run) — write this and then exit:
 
 ```
 gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
   --cutpoint <token> --surface <token> --snapshot-digest <H> \
-  -- 교대=<n> 사유=<상한|승인|종단|중단|대기> \
+  -- 교대=<n> 사유=<상한|승인|종단|중단|대기|이월> \
      '버린 선택지=<시도했고 버린 것 · 무엇을 보고 버렸는가>' \
      '막힌 지점=<지금 벽이 있는 자리>' \
      '다음 후보=<후임이 먼저 볼 것>' \
@@ -667,6 +667,8 @@ gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
 **`버린 선택지` is the field nothing else in the ledger can hold.** The snapshot records what LANDED — never what was considered and dropped. Leave it empty and your successor pays again for every dead end you already walked.
 
 **`종단` is written only after a termination proposal was accepted.** The gate takes `사유=종단` only from a run that has ended — its `done` file exists or the ledger carries an ending row — and otherwise refuses it with exit 3 and writes no row. A run that has not ended is handed off with `중단`, never `종단`: "nothing is left to dispatch" is not the run ending, and a `종단` row on an open run leaves the watcher waiting on a run nothing will close.
+
+**`이월` is written only when the next run is all that is left.** The gate takes `사유=이월` when no stage or supervisor is live, no halt record is unanswered, at least one `answered_halts[]` element reads `state` `이월`, the run has no ending row and `CI 대기` is empty; otherwise it refuses with exit 3 and no row — a live stage or a CI wait is `대기`, an unanswered record is `중단`, an ended run is `종단`. Before the deadline the gate holds the wait until one second past it and launches your successor, whose first act ends the run with `마감`; past the deadline the same hand-off ends it. And the gate refuses `중단` when those answers are all that blocks the run, or when `막힌 지점` names one of their records: the person already answered them.
 
 **On `중단`, `막힌 지점` carries what you measured, not an instruction to wait** — the line numbers, the lane, the `resetsAt` that has not passed. Your successor re-measures it either way, and a measurement tells it what to look at. `무기록` is never yours to write: it is the value the gate gives the row it writes for a shift that ended without one.
 

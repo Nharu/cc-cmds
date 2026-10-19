@@ -17996,6 +17996,108 @@ EOF
   return 1
 }
 
+gate_halt_answers_by_state() {
+  # gate_halt_answers_by_state <이월|열림> — `<line>\t<key>\t<record>`, one line
+  # per key, for the answers `answered_halts[]` lists with that `state`: each
+  # key's last `중단 답` row no stage has taken up, named by an `이월` row of
+  # this run (`이월`) or not (`열림`). The same selection the snapshot makes, so
+  # the hand-off checks and the snapshot never disagree on what is carried over.
+  local LC_CTYPE=C; export LC_CTYPE
+  local want="$1" lines ln row key keys st
+  # The completion conditions ask this on every snapshot; a ledger with no
+  # `이월` row has nothing carried over, and the walk below is skipped.
+  if [ "$want" = "이월" ] && ! grep -qF '| 사유=중단 답 이월 — ' "$LEDGER" 2>/dev/null; then
+    return 0
+  fi
+  lines=$(grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true)
+  [ -n "$lines" ] || return 0
+  keys=$(printf '%s\n' "$lines" | while IFS= read -r row; do
+           gate_row_field "${row#*:}" '세그먼트'
+         done | awk 'NF && !seen[$0]++')
+  for key in $keys; do
+    row=$( { printf '%s\n' "$lines" | grep -F "| 세그먼트=$key |" || true; } | tail -1)
+    [ -n "$row" ] || continue
+    ln=${row%%:*}
+    row=${row#*:}
+    if gate_halt_answer_spent "$LEDGER" "$key" "$ln"; then continue; fi
+    if gate_halt_answer_deferred "$LEDGER" "$ln"; then st='이월'; else st='열림'; fi
+    [ "$st" = "$want" ] || continue
+    printf '%s\t%s\t%s\n' "$ln" "$key" "$(gate_row_field "$row" '중단 기록')"
+  done
+}
+
+gate_key_deferred_answer() {
+  # gate_key_deferred_answer <key> — the `중단 답` line of the key's answer that
+  # is carried over to the next run (`gate_halt_answers_by_state 이월`), or
+  # nothing.
+  gate_halt_answers_by_state '이월' | awk -F '\t' -v k="$1" '$2 == k { print $1 }'
+}
+
+gate_defer_handoff_unmet() {
+  # gate_defer_handoff_unmet — the first reason a `handoff 사유=이월` cannot be
+  # taken now, or nothing when it can. The hand-off's own `CI 대기` field is
+  # the fifth condition and the caller's to check; the other four are the
+  # run's: no live stage or supervisor (they are still what the run waits on),
+  # no halt record no row answers (that is a question to a person, so the
+  # shift hands off `중단`), at least one answer carried over (otherwise there
+  # is nothing to hand to the next run), and no ending (a run that has ended
+  # hands off `종단`).
+  if [ -n "$(cc_relay_wait_stages "$RUN_DIR")" ]; then
+    printf '살아 있는 스테이지나 감독자가 있습니다 — 기다릴 것이 있으면 사유=대기 입니다'; return 0
+  fi
+  if [ "$(cc_unanswered_halts "$RUN_DIR" "$LEDGER")" != "0" ]; then
+    printf '답 없는 정지 기록이 있습니다 — 사람에게 묻는 것이므로 사유=중단 입니다'; return 0
+  fi
+  if [ -z "$(gate_halt_answers_by_state '이월')" ]; then
+    printf '다음 런으로 넘긴 중단 답이 없습니다'; return 0
+  fi
+  if [ -s "$RUN_DIR/done" ] || [ -n "$(gate_end_token)" ]; then
+    printf '런이 이미 끝났습니다 — 사유=종단 입니다'; return 0
+  fi
+}
+
+gate_text_names_file() {
+  # gate_text_names_file <text> <name> — true when <name> appears in <text> at a
+  # token boundary: the bytes on either side are not a letter, a digit or one of
+  # `. _ # -`. A record's file name in a sentence is followed by a particle
+  # (`A#1.md를`) or punctuation, and neither is part of the name; a name that is
+  # only part of a longer token (`A#1.md.bak`, `xA#1.md`) is not that file.
+  T="$1" N="$2" LC_ALL=C awk 'BEGIN {
+    t = ENVIRON["T"]; n = ENVIRON["N"]; off = 0
+    if (n == "") exit 1
+    while ((i = index(substr(t, off + 1), n)) > 0) {
+      p = off + i
+      pre = (p > 1) ? substr(t, p - 1, 1) : ""
+      post = substr(t, p + length(n), 1)
+      if (pre !~ /[A-Za-z0-9._#-]/ && post !~ /[A-Za-z0-9._#-]/) exit 0
+      off = p
+    }
+    exit 1
+  }'
+}
+
+gate_text_names_deferred() {
+  # gate_text_names_deferred <text> — the first record carried over to the next
+  # run that <text> names, by its path or by its file name at a token boundary
+  # (`gate_text_names_file`), or nothing. The file name's stem counts too when
+  # it carries the attempt mark `#`, which no ordinary word does; a bare stem
+  # such as a one-letter segment id is not looked for, so a sentence that uses
+  # the letter as a word is not taken for the record.
+  local ln key rec b stem
+  while IFS="$(printf '\t')" read -r ln key rec; do
+    [ -n "$rec" ] || continue
+    case "$1" in *"$rec"*) printf '%s' "$rec"; return 0 ;; esac
+    b=${rec##*/}
+    if gate_text_names_file "$1" "$b"; then printf '%s' "$rec"; return 0; fi
+    stem=${b%.md}
+    case "$stem" in
+      *'#'*) if gate_text_names_file "$1" "$stem"; then printf '%s' "$rec"; return 0; fi ;;
+    esac
+  done <<EOF
+$(gate_halt_answers_by_state '이월')
+EOF
+}
+
 gate_carry_cap_row() {
   # gate_carry_cap_row <alias> <key> <stage kind> <사유> <line> <basis> — the
   # act-scope row a carry refused by its cap leaves before GATE_EXIT_CARRY_CAP.
@@ -26575,8 +26677,8 @@ EOF
       hn=$(gate_field_of '교대' "$@")
       hwhy=$(gate_field_of '사유' "$@")
       case "$hwhy" in
-        상한|승인|종단|중단|대기) : ;;
-        *) warn "the \`사유\` of a handoff row is out of vocabulary: ${hwhy:-(none)} — \`상한\` \`승인\` \`종단\` \`중단\` \`대기\`"
+        상한|승인|종단|중단|대기|이월) : ;;
+        *) warn "the \`사유\` of a handoff row is out of vocabulary: ${hwhy:-(none)} — \`상한\` \`승인\` \`종단\` \`중단\` \`대기\` \`이월\`"
            return "$GATE_EXIT_VOCAB" ;;
       esac
       # `CI 대기` IS A LIST OF SEGMENT IDS, comma-joined, and it is never narrowed
@@ -26648,6 +26750,45 @@ EOF
         warn "종료 제안 없이 종단 인계를 쓸 수 없습니다 — the run has neither \`done\` nor an ending row; propose termination first, or hand off with \`사유=중단\`"
         return "$GATE_EXIT_RULE"
       fi
+      # `이월` SAYS THE RUN WAITS FOR ITS NEXT RUN, NOT FOR A PERSON: what is
+      # left is answers a carry found no room for before the deadline, kept in
+      # `이월` rows. Taken only when that is all that is left. A `CI 대기`
+      # segment is refused here because the relay reads that field from a `대기`
+      # hand-off alone, so a CI finishing before the deadline would wake nobody;
+      # `리셋 대기` is already refused above for every reason but `대기`.
+      local hdu
+      if [ "$hwhy" = "이월" ]; then
+        if [ -n "$hci" ]; then
+          warn "\`CI 대기\` 세그먼트($hci)가 있는 인계는 사유=대기 입니다 — 이월 인계를 쓰지 않습니다"
+          return "$GATE_EXIT_RULE"
+        fi
+        hdu=$(gate_defer_handoff_unmet)
+        if [ -n "$hdu" ]; then
+          warn "이월 인계를 쓸 수 없습니다 — $hdu"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
+      # `중단` ASKS A PERSON, SO IT IS NOT TAKEN WHEN NOTHING IS LEFT TO ASK. An
+      # answer carried over is a person's answer already given, and handing off
+      # `중단` for it puts the same decision before them again. Two checks: the
+      # state — every condition of `이월` holds, and no open answer, pending
+      # approval or unanswered record is left — and the raw `막힌 지점`, before
+      # it is narrowed below, naming a carried-over record. The text is free, so
+      # the second check backs the first rather than replacing it.
+      local hdrec
+      if [ "$hwhy" = "중단" ]; then
+        if [ -z "$hci" ] && [ -z "$(gate_defer_handoff_unmet)" ] \
+           && [ -z "$(gate_halt_answers_by_state '열림')" ] \
+           && [ -z "$(gate_pending_approval_ids)" ]; then
+          warn "막는 것이 다음 런으로 넘긴 중단 답뿐입니다 — 사람에게 다시 묻지 않습니다; 사유=이월 로 인계하세요"
+          return "$GATE_EXIT_RULE"
+        fi
+        hdrec=$(gate_text_names_deferred "$(gate_field_of '막힌 지점' "$@")")
+        if [ -n "$hdrec" ]; then
+          warn "막힌 지점이 다음 런으로 넘긴 중단 기록을 가리킵니다($hdrec) — 그 답은 다시 묻지 않습니다; 남은 것이 그것뿐이면 사유=이월 로 인계하세요"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
       case "$hn" in
         ''|*[!0-9]*)
            warn "a handoff row needs \`교대=<정수>\` — the \`적용 이후 교대 수\` of the morning report stands on this scale"
@@ -26686,6 +26827,12 @@ EOF
         ${hrs:+"리셋 대기=$hrs"} \
         "대상=$alias" "기록 시각=$(now_iso)"
       log "교대 $hn 기록 — 사유 $hwhy"
+      # PAST THE DEADLINE THERE IS NOTHING FOR THE RELAY TO WAKE FOR, so the
+      # same act ends the run: a run with a progress axis that carried an answer
+      # over after its deadline would otherwise never end.
+      if [ "$hwhy" = "이월" ] && gate_defer_end_due; then
+        gate_end_run 마감 "$(gate_defer_end_why)" 마감 || true
+      fi
       ;;
     limit-cleared)
       # THE SEAT'S ONE WAY TO SAY "THE LIMIT HAS CLEARED". A person at the seat
@@ -27102,6 +27249,14 @@ EOF
       [ -n "$(gate_segment_field "$seg" '상태')" ] || {
         warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
         return "$GATE_EXIT_VOCAB"; }
+      # A SEGMENT WHOSE ANSWER IS CARRIED OVER IS NOT STOPPED AGAIN. The person
+      # already answered its halt and the next run takes the answer up; a shift
+      # record here would put a second question about the same stop before them.
+      sline=$(gate_key_deferred_answer "$seg")
+      if [ -n "$sline" ]; then
+        warn "$seg 의 중단 답(원장 ${sline} 번째 줄)은 다음 런으로 넘겼습니다 — 이 세그먼트에 교대 정지 기록을 쓰지 않습니다"
+        return "$GATE_EXIT_RULE"
+      fi
       srec=$(gate_field_of '추천' "$@")
       sgr=$(gate_field_of '추천 근거' "$@")
       sinfo=$(printf '%s' "$srow" | cut -d'|' -f3)
@@ -28439,6 +28594,42 @@ gate_fleet_busy_state() {
   printf 'none'
 }
 
+gate_defer_end_due() {
+  # gate_defer_end_due — true when a run that carried its answers over should
+  # end now with `마감`: the deadline has passed, the latest `handoff` says
+  # `사유=이월`, no stage or supervisor is alive, and — on a run with a
+  # progress axis, which the clock does not otherwise end — every unmet
+  # completion condition is an answer waiting for the next run.
+  #
+  # MATCHED ON THE LINE'S HEAD, `1 답 이월 대기 — `, the way the invalidation
+  # lines are matched: an unmet line whose cause sentence happens to quote the
+  # phrase is still the unmet work it names, and a run with a segment left to
+  # merge or a CI wait is not one the next run can take over by its answers.
+  local last u n=0
+  gate_past_deadline || return 1
+  # Read from the file rather than `gate_rows`: the hand-off arm asks this
+  # right after appending its row, and a warmed memo would not hold it.
+  last=$( { grep "^- \`handoff\` " "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = "이월" ] || return 1
+  [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ] || return 1
+  gate_progress_axes_unbounded && return 0
+  while IFS= read -r u; do
+    [ -n "$u" ] || continue
+    case "$u" in
+      '1 답 이월 대기 — '*) n=$((n + 1)) ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$(gate_done_conditions 2>/dev/null)
+EOF
+  [ "$n" -gt 0 ]
+}
+
+gate_defer_end_why() {
+  printf '벽시계 마감 경과 (%s) — 남은 중단 답을 다음 런으로 넘긴 런이다' \
+    "$(manifest_field '인가' '벽시계 마감')"
+}
+
 gate_verb_end_overdue() {
   # gate_verb_end_overdue — close a run that passed its deadline with no end
   # token, once.
@@ -28465,6 +28656,13 @@ gate_verb_end_overdue() {
   gate_end_token >/dev/null 2>&1 && return 0
   gate_past_deadline || return 0
   local fleet why
+  # A RUN THAT HANDED ITS LAST ANSWERS TO THE NEXT RUN stopped by design, not
+  # unclassified: it takes `마감`, so the successor derivation picks the
+  # automatic branch and the carried answers reach the next run.
+  if gate_defer_end_due; then
+    gate_end_run 마감 "$(gate_defer_end_why)" 마감
+    return 0
+  fi
   fleet=$(gate_fleet_busy_state)
   why="벽시계 마감이 지났고 종료 토큰이 없다"
   case "$fleet" in
@@ -28617,6 +28815,17 @@ gate_run_ended_ok() {
     # function too, and a dry run writes nothing — so the ending row is written
     # under `act` and `exec` alone. After it, `done` exists and the first arm
     # above answers every later call with the same refusal this arm gives.
+    case "$verb" in
+      act|exec) gate_end_run 마감 "$mark" 마감 || true ;;
+    esac
+  elif gate_defer_end_due; then
+    # THE ONE CLOCK ENDING A RUN WITH A PROGRESS AXIS GETS. Such a run is ended
+    # by its axis, and the clock arm above never reaches it — but a run whose
+    # last hand-off gave its remaining answers to the next run has nothing left
+    # for an axis to measure, and without this it would sit past its deadline
+    # with no ending, so no successor would ever take the answers up. Written
+    # under an acting verb only, for the reason the arm above gives.
+    mark=$(gate_defer_end_why)
     case "$verb" in
       act|exec) gate_end_run 마감 "$mark" 마감 || true ;;
     esac
@@ -31586,8 +31795,25 @@ gate_verb_act() {
   # flight runs to completion and is classified normally, and the run may still
   # record, close and propose. Checking only at entry would be half — a deadline
   # that was in the future when the run started is the normal case.
+  #
+  # A CARRY ACT THE ENDED RUN REFUSES KEEPS ITS ANSWER. The person answered, and
+  # a plain refusal would leave the answer with no session and no record that
+  # the next run should take it up — so, under `act`, the carry writes its
+  # `이월` row after the ending row this check wrote, and ends as a carry that
+  # found no room does. Its own checks already passed: an answer that is not
+  # this dispatch's to carry was refused before this point, and leaves no row.
   if [ "$verb" != "grade" ]; then
-    gate_run_ended_ok "$kind" "$GATE_ACT_EFFECTIVE" "$verb" || exit $?
+    local re_rc=0
+    gate_run_ended_ok "$kind" "$GATE_ACT_EFFECTIVE" "$verb" || re_rc=$?
+    if [ "$re_rc" != "0" ]; then
+      if [ -n "$GATE_HA_LINE" ] && [ "$kind" = "skill" ] && [ "$verb" = "act" ]; then
+        gate_carry_defer_row "$alias" "$(gate_stage_row_segment "$stage_key" "${1:-}")" \
+          "$stage_key" - "$GATE_HA_LINE" \
+          "$(if gate_past_deadline; then printf '마감 경과'; else printf '런 종료 경과'; fi)"
+        exit "$GATE_EXIT_ROUTE"
+      fi
+      exit "$re_rc"
+    fi
   fi
 
   # THE PUSH RUNG IS RE-DERIVED HERE, and here is the earliest it can be: the
@@ -35024,6 +35250,14 @@ gate_sup_wait_heartbeat() {
 
 gate_sup_wait_deadline() {
   # <ready-at iso> <basis> <recovery>
+  #
+  # An attempt that waited holding a person's answer keeps the answer for the
+  # next run: the `이월` row with the card's line, not the deadline row.
+  if [ -n "${GATE_SUP_CARRY:-}" ]; then
+    gate_carry_defer_row "$GATE_SUP_ALIAS" "$GATE_SUP_ROWSEG" "$GATE_SUP_KEY" "$GATE_SUP_LINEAGE" \
+      "$GATE_SUP_CARRY" "$(gate_row_safe "$2" 200) ready_at=$1"
+    return 0
+  fi
   gate_wait_deadline_park "$GATE_SUP_ALIAS" "$GATE_SUP_ROWSEG" "$GATE_SUP_KEY" "$GATE_SUP_LINEAGE" \
     "$1" "$2" "$3" "$(cc_waiting_field "$GATE_SUP_MARKER" '재파견')"
 }
@@ -37977,6 +38211,22 @@ gate_unmet_numbers() {
   printf '%s\n' "$1" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' | sort -un
 }
 
+gate_step_deferred_line() {
+  # gate_step_deferred_line <key> — print condition 1's `답 이월 대기` line and
+  # return 0 when the key's last `stage-result` is `의도된 park` and its answer
+  # is carried over to the next run (`gate_key_deferred_answer`); return 1
+  # otherwise. Such a key is neither closed nor void: the next run dispatches it
+  # again with the person's answer. The head `1 답 이월 대기 — ` is fixed, and
+  # `gate_defer_end_due` matches it.
+  local ln last
+  ln=$(gate_key_deferred_answer "$1")
+  [ -n "$ln" ] || return 1
+  last=$( { gate_stage_result_rows_of "$1" || true; } \
+          | { grep -F -- '- `stage-result`' || true; } | tail -1)
+  [ "$(gate_row_field "$last" '종단 부류')" = '의도된 park' ] || return 1
+  printf '1 답 이월 대기 — %s 의 중단 답(원장 %s 번째 줄)을 다음 런이 이어받습니다\n' "$1" "$ln"
+}
+
 gate_base_step_closed() {
   # gate_base_step_closed <step id> <row kind> — prints why a base run's audit or
   # split step will not be dispatched again and returns 0, or returns 1. The
@@ -37995,6 +38245,9 @@ gate_base_step_closed() {
   case "$last" in
     '정상 완료' | '외부 종료') return 1 ;;
   esac
+  # A park whose answer the next run takes up is not closed: that run
+  # dispatches the step again with the answer (`gate_step_deferred_line`).
+  gate_step_deferred_line "$id" >/dev/null && return 1
   if [ "$last" = '공허한 성공' ] || [ "$(terminal_route_class "$last")" = '크래시' ]; then
     if [ "$last" != '공허한 성공' ] \
        && gate_design_row_has_limit_envelope "$(gate_row_field "$lastrow" '스테이지')" "$lastrow"; then
@@ -38024,6 +38277,9 @@ gate_audit_first_unmet() {
   # came after its last audit row is waiting on a fresh audit, so that state
   # is not read as closed.
   local astep="$1" arows alast lastrow istep why
+  if gate_step_deferred_line "$astep"; then
+    return 0
+  fi
   arows=$(gate_audit_result_rows_of "$astep")
   if [ -z "$arows" ]; then
     printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 아직 끝나지 않았습니다\n' "$astep"
@@ -38282,7 +38538,21 @@ gate_done_conditions() {
         fi
       fi
     fi
-    if [ -n "$dnext" ]; then
+    # A RUN-SCOPE STEP WHOSE PARK'S ANSWER IS CARRIED OVER comes first, before
+    # every other reading of the design, the audit, the re-convergence or the
+    # split on the same key: the step is neither closed nor void, and is not
+    # waiting on anything this run can do — the next run dispatches it again
+    # with the answer.
+    local dfer="" dk
+    for dk in "$dstep" "$(gate_run_scope_step audit 2>/dev/null || true)" \
+              "$(gate_run_scope_step split 2>/dev/null || true)"; do
+      [ -n "$dk" ] || continue
+      dfer=$(gate_step_deferred_line "$dk") && break
+      dfer=""
+    done
+    if [ -n "$dfer" ]; then
+      printf '%s\n' "$dfer"
+    elif [ -n "$dnext" ]; then
       printf '1 설계가 동결됐으나 다음 단계(%s)가 아직 파견되지 않았습니다\n' "$dnext"
     elif [ -n "$dwait" ]; then
       # A plan that ends at its audit, waiting on the fresh audit after a
@@ -38322,6 +38592,9 @@ gate_done_conditions() {
       printf '1 세그먼트 %s 의 적용이 남았습니다 (머지됨 · 적용=대기)\n' "$sid"
       continue
     fi
+    # A segment whose park's answer is carried over waits for the next run,
+    # whatever state its row reads.
+    gate_step_deferred_line "$sid" && continue
     case " $TERMINAL_SEGMENT_STATES " in
       *" $st "*) ;;
       *) printf '1 세그먼트 %s 의 상태가 종단이 아닙니다 (%s)\n' "$sid" "${st:-미상}" ;;
@@ -40175,10 +40448,12 @@ gate_relay_reentry_allowed() {
   # no clock, or one further than the horizon, it stays refused.
   local st n at
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
+  # `이월` waits too: for the deadline, after which the successor ends the run
+  # (`gate_relay_defer_clock`).
   st=$(LC_ALL=C awk '
     /^- `handoff` / {
       w = "x"
-      if (index($0, " | 사유=대기 | ") > 0) w = "w"
+      if (index($0, " | 사유=대기 | ") > 0 || index($0, " | 사유=이월 | ") > 0) w = "w"
       else if (index($0, " | 사유=무기록 | ") > 0) w = "u"
     }
     /^- `교대 기동` / { w = "x" }
@@ -40297,6 +40572,43 @@ gate_relay_reset_set() {
   printf '%s' "$out"
 }
 
+gate_deadline_epoch() {
+  # gate_deadline_epoch — the manifest's `벽시계 마감` as epoch seconds, or
+  # nothing when it is absent or does not read. The stamp's first 19
+  # characters are converted as UTC and its `±HH:MM` offset is taken off.
+  local dl ep off h m s
+  [ -n "${MANIFEST:-}" ] || return 0
+  dl=$(manifest_field '인가' '벽시계 마감')
+  case "$dl" in ''|없음|'(없음)') return 0 ;; esac
+  ep=$(cc_iso_to_epoch "$(printf '%s' "$dl" | cut -c1-19)Z")
+  case "$ep" in ''|*[!0-9]*) return 0 ;; esac
+  off=$(printf '%s' "$dl" | cut -c20-)
+  case "$off" in
+    Z|'') s=0 ;;
+    [+-][0-9][0-9]:[0-9][0-9])
+      h=$(printf '%s' "$off" | cut -c2-3); m=$(printf '%s' "$off" | cut -c5-6)
+      s=$(( (10#$h * 3600) + (10#$m * 60) ))
+      case "$off" in +*) s=$((0 - s)) ;; esac ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$((ep + s))"
+}
+
+gate_relay_defer_clock() {
+  # gate_relay_defer_clock — the `이월` member of the relay's wait set: the
+  # epoch one second past the deadline when the latest `handoff` is `이월`, or
+  # empty. Derived again from the reference row on every call, like the reset
+  # member. The reset horizon does not apply: the relay hands back after its
+  # hold as it always does, and the seat issues the same call again.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  local last dl
+  last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = "이월" ] || return 0
+  dl=$(gate_deadline_epoch)
+  [ -n "$dl" ] || return 0
+  printf '%s' "$((dl + 1))"
+}
+
 gate_cut_reset_within() {
   # gate_cut_reset_within <epoch> — the clock is close enough to wait on: no
   # further than one five_hour window plus the grace from now. A relay has no
@@ -40318,12 +40630,17 @@ gate_relay_write() {
   # `ci=`: `cc_relay_field` returns the last matching line only. Every caller
   # passes it, the per-poll refresh and the hand-back included — this file is
   # rewritten whole, so a line written once would be gone after the first poll.
-  local t="$RUN_DIR/relay.live.tmp.$$"
+  #
+  # `defer=` IS DERIVED HERE, not passed: it is the `이월` member's clock
+  # (`gate_relay_defer_clock`), and computing it inside keeps every caller —
+  # the hand-back included — writing it without one more argument each.
+  local t="$RUN_DIR/relay.live.tmp.$$" defer
   [ -n "$GATE_RELAY_FP" ] || GATE_RELAY_FP=$(cc_proc_fingerprint "$$")
+  defer=$(gate_relay_defer_clock)
   {
     printf '%s\n%s\n' "$$" "$GATE_RELAY_FP"
-    printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\nreset=%s\n' \
-      "$(date -u +%s)" "$GATE_RELAY_STARTED" "${1:--}" "${2:--}" "${3:--}"
+    printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\nreset=%s\ndefer=%s\n' \
+      "$(date -u +%s)" "$GATE_RELAY_STARTED" "${1:--}" "${2:--}" "${3:--}" "${defer:--}"
     [ -z "${4:-}" ] || printf 'handback=%s\n' "$4"
   } > "$t" 2>/dev/null && mv -f "$t" "$RUN_DIR/relay.live" 2>/dev/null || {
     rm -f "$t" 2>/dev/null
@@ -40385,14 +40702,20 @@ gate_relay_wait() {
   # until `cc_relay_wake_keys` says the reset plus the grace has passed or a
   # `한도 해제` row stands. Its keys are read again from the reference row here,
   # not carried over from the shift that named them.
-  local stages ci reset hold now
+  #
+  # `이월` IS THE FOURTH. A hand-off that carried its answers over waits for
+  # the deadline, so the set is not empty though nothing else is in it, and
+  # the relay wakes one second past the deadline (`cc_relay_wake_keys`) to
+  # launch the successor whose first act ends the run.
+  local stages ci reset defer hold now
   stages=$(cc_relay_wait_stages "$RUN_DIR")
   ci=$(gate_relay_ci_segments)
   reset=$(gate_relay_reset_set)
+  defer=$(gate_relay_defer_clock)
   [ -n "$GATE_RELAY_STARTED" ] || GATE_RELAY_STARTED=$(date -u +%s)
   gate_relay_write "$stages" "$ci" "$reset"
   hold=$(gate_relay_hold)
-  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--}"
+  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--}"
   while :; do
     now=$(date -u +%s)
     if [ -e "$RUN_DIR/done" ]; then
@@ -40407,7 +40730,7 @@ gate_relay_wait() {
       gate_relay_hand_back "$stages" "$ci" "$reset" "CI 를 기다리는데 checks 폴러가 살아 있지 않다"
       return 1
     fi
-    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ]; then
+    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ]; then
       log "교대 대기 끝 — 기다리던 것이 이미 끝났다"
       return 0
     fi
