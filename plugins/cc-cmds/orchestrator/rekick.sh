@@ -294,10 +294,9 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             manifest_design_scope manifest_apply_code_rows target_field target_aliases canonical_targets binding_set_bytes \
             check_manifest rundir_of_run_id deadline_instant cutpoint_index \
             judgment_class_ok judgment_class_forbidden \
-            cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts \
+            cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
-            dr_duration_seconds manifest_rekick_rows; do
-  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
+            dr_duration_seconds manifest_rekick_rows; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
 done
 
 RK_TMP=$(mktemp -d "${TMPDIR:-/tmp}/cc-rekick.XXXXXX" 2>/dev/null) || rk_refuse "개인 임시 디렉터리를 만들지 못했습니다"
@@ -788,10 +787,11 @@ EOF
 }
 
 # rk_unanswered_halt_names <run dir> <ledger> — sets RK_HALT_N and RK_HALT_LIST:
-# the halt records no `중단 답` row names, by their name under `halt/`. The
-# selection is `cc_unanswered_halts`'s — answer attachments skipped, `halt/shift/`
-# scanned, the `중단 기록=` field matched on its tail from the run directory's
-# name down — so the count here is that function's.
+# the halt records no `중단 답` row names, or whose answer was returned to a
+# person, by their name under `halt/`. The selection is `cc_unanswered_halts`'s
+# — answer attachments skipped, `halt/shift/` scanned, the `중단 기록=` field
+# matched on its tail from the run directory's name down, and the answered
+# test `cc_halt_answered` itself — so the count here is that function's.
 rk_unanswered_halt_names() {
   local rd="${1%/}" led="$2" f name rel tail
   RK_HALT_N=0; RK_HALT_LIST=""
@@ -805,17 +805,7 @@ rk_unanswered_halt_names() {
       *) rel="$name" ;;
     esac
     tail="/${rd##*/}/halt/$rel"
-    if [ -n "$led" ] && [ -f "$led" ] && awk -v t="$tail" '
-         index($0, "- `중단 답` | ") == 1 {
-           n = split($0, f, / \| /)
-           for (i = 2; i <= n; i++) {
-             if (index(f[i], "중단 기록=") != 1) continue
-             v = substr(f[i], length("중단 기록=") + 1)
-             sub(/[[:space:]]+$/, "", v)
-             if (length(v) >= length(t) && substr(v, length(v) - length(t) + 1) == t) { hit = 1; exit }
-           }
-         }
-         END { exit hit ? 0 : 1 }' "$led" 2>/dev/null; then
+    if [ -n "$led" ] && cc_halt_answered "$led" "$tail"; then
       continue
     fi
     RK_HALT_N=$((RK_HALT_N + 1))

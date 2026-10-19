@@ -2,12 +2,18 @@
 """Create one ClickUp ticket in a list.
 
     clickup-create.py --list ID --name T --description-file F [--parent TASK]
+                      [--assignee USER ...] [--priority 1-4]
+                      [--start-date MS [--start-date-time]] [--due-date MS [--due-date-time]]
 
 Sends one `POST /list/{list_id}/task` carrying the name and the file's text as
 the Markdown description, and prints `<id>\t<url>` of the new ticket. With
 `--parent` the ticket is made a subtask of that task, which must sit in the
-same list. No assignee, status, priority, due date or tag is sent: those are
-decided when work on the ticket starts, not when it is filed.
+same list. Assignees (user ids), priority and the start and due dates
+(milliseconds) are sent only when given, as the `assignees`, `priority`,
+`start_date` and `due_date` body keys; `--start-date-time`/`--due-date-time`
+send the matching `*_date_time` flag as true and need their date. The caller
+decides those values from the same list's other tickets and leaves a field out
+when that list does not use it. No status and no tag is ever sent.
 
 The similar-ticket lookup does not run here. It is `similar-items.py`, which
 holds no tracker write, so a write never hides behind the lookup's name.
@@ -15,8 +21,9 @@ holds no tracker write, so a write never hides behind the lookup's name.
 Inside an unattended pipeline run (`CC_PIPELINE_MANIFEST` set) a ticket is
 filed only when the manifest's `## 인가` carries exactly one row
 `` - `베이스 발행` | 트래커=clickup | 대상=<list id> `` and `--list` is that
-list. The row is frozen at kickoff, while a person is present; any other run
-files nothing.
+list; an optional ` | 원 티켓=<task id>` after the target does not change that.
+The row is frozen at kickoff, while a person is present; any other run files
+nothing.
 
 Exit codes: 0 created, 2 usage error, 3 no usable token, 4 API error,
 5 refused inside an unattended pipeline run (no frozen ClickUp publish row for
@@ -58,7 +65,26 @@ def build_parser():
     parser.add_argument("--name", required=True)
     parser.add_argument("--description-file", required=True)
     parser.add_argument("--parent")
+    parser.add_argument("--assignee", type=int, action="append", metavar="USER")
+    parser.add_argument("--priority", type=int, choices=(1, 2, 3, 4))
+    parser.add_argument("--start-date", type=millis, metavar="MS")
+    parser.add_argument("--start-date-time", action="store_true")
+    parser.add_argument("--due-date", type=millis, metavar="MS")
+    parser.add_argument("--due-date-time", action="store_true")
     return parser
+
+
+def millis(value):
+    if not value.isdigit():
+        raise argparse.ArgumentTypeError("takes a date in milliseconds")
+    return int(value)
+
+
+def check_args(parser, args):
+    if args.start_date_time and args.start_date is None:
+        parser.error("--start-date-time needs --start-date")
+    if args.due_date_time and args.due_date is None:
+        parser.error("--due-date-time needs --due-date")
 
 
 PUBLISH_ROW_PREFIX = "- `베이스 발행` | "
@@ -129,7 +155,9 @@ def send(url, token, body):
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    check_args(parser, args)
     try:
         return create(args)
     except Exception as e:  # never echo a value that might carry the token
@@ -168,6 +196,18 @@ def create(args):
     payload = {"name": args.name, "markdown_description": description}
     if args.parent:
         payload["parent"] = args.parent
+    if args.assignee:
+        payload["assignees"] = args.assignee
+    if args.priority is not None:
+        payload["priority"] = args.priority
+    if args.start_date is not None:
+        payload["start_date"] = args.start_date
+        if args.start_date_time:
+            payload["start_date_time"] = True
+    if args.due_date is not None:
+        payload["due_date"] = args.due_date
+        if args.due_date_time:
+            payload["due_date_time"] = True
     body = json.dumps(payload).encode()
     try:
         data = send(url, token, body)

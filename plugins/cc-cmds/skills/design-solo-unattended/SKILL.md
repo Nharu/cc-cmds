@@ -69,11 +69,11 @@ Follow `## Halt record (driver dispatch)` of the discuss arm as written: schema 
 - `document-present` — a saved document already exists at the document path (Step 0);
 - `ledger-missing` — the interview record or the base-design row fails its check, or a file the redesign input names does not exist (Step 1);
 - `slicing-unknown` — the slicing self-check cannot be repaired without a decision nobody made (Step 7U);
-- `ladder-unsettled` — a residual item no rung of the ladder settles, escalated as a `설계-골격` judgment (Step 7U).
+- `ladder-unsettled` — residual items no rung of the ladder settles (Step 7U); a `설계-골격` judgment only when its `**추천**` is `(없음)`, and a `등급 0` halt the seat answers when the ladder's writing rules let it carry a recommendation.
 
 The discuss arm's other sites are never reached here: the nine park sites other than `ledger-missing` all wait on a team, `roster-missing` reads a roster this arm never instantiates, and `skeleton`, `step5-zero-section` and `step7-coherence-conflict` belong to Step 5U and to the team coherence pass, neither of which runs. Adding a site takes on the discuss arm's closed-set duty.
 
-**`**추천**` and `**추천 근거**`**, after the option lines and before `**하네스 오류**`: at `ladder-unsettled` the line is always `**추천**: (없음) — <the skeleton decision the person has to make>`, because a `설계-골격` judgment is held back from every automatic answer. At the other three sites the discuss arm's general rules decide.
+**`**추천**` and `**추천 근거**`**, after the option lines and before `**하네스 오류**`: at `ladder-unsettled` the discuss arm's ladder writing rules in its Step 7U job 4 decide the line, the `**잔여 판정**` line and the fixed step, classification and option labels with it. At the other three sites the discuss arm's general rules decide.
 
 ### Per-grade disposition
 
@@ -121,7 +121,7 @@ Read the discuss arm's Step 7U and follow its five jobs in order, with the first
 2. **Slicing self-check** — unchanged; a repair that needs a decision nobody made → halt `slicing-unknown`.
 3. **Requirement-decision list** — unchanged.
 4. **Residual ladder** — unchanged, W3 included; an item no rung settles → halt `ladder-unsettled`, after every item has been walked.
-5. **Freeze.** One Edit that replaces the single line `**상태**: 초안` with `**상태**: 동결됨`; this is the last document edit. Then emit, in the terminal message, the freeze literal *"설계 문서를 동결했습니다."* on its own line, followed by the document path and its whole-file `sha256`. No judgment markers follow. Name no next step. End the turn.
+5. **Freeze.** When this freeze follows an answer to this stage's `ladder-unsettled` halt, first write the `**잔여 동결**` line directly below the status line, in the discuss arm's Step 7U job 5 form. Then one Edit that replaces the single line `**상태**: 초안` with `**상태**: 동결됨`; this is the last document edit. Then emit, in the terminal message, the freeze literal *"설계 문서를 동결했습니다."* on its own line, followed by the document path and its whole-file `sha256`. No judgment markers follow. Name no next step. End the turn.
 
 ## Constraints
 
@@ -129,6 +129,15 @@ Read the discuss arm's Step 7U and follow its five jobs in order, with the first
 - Every Bash command goes through `gate.sh exec`, with the `--reach` discipline of `implement-unattended`'s CFI-U7. Call external commands directly, never inside `bash -c`; read pipeline variables by name, never with bare `env`.
 - **Never reach a notification surface** and **never write a pipeline sidecar** (CFI-L3).
 - **Research** follows the research paragraph of the discuss arm's `## Constraints` as written.
-- **The design document's only writes** are: the Step 3 Write, Step 7U's in-place fixes, slicing repair, requirement-decision entries and `### 확인된 요구와의 대응` block, W3 lines, and the freeze Edit.
+- **The design document's only writes** are: the Step 3 Write, Step 7U's in-place fixes, slicing repair, requirement-decision entries and `### 확인된 요구와의 대응` block, W3 lines (with the `**검증 시점**` revert W3 entails), the `**잔여 동결**` line, and the freeze Edit.
+
+## Resumed turns
+
+This arm resumes only on an answer to its own `/ ladder-unsettled` halt:
+
+- **`잔여로 두고 동결`** — continue after the ladder: write the `**잔여 동결**` line, then freeze (Step 7U job 5).
+- **`골격 재검토`** — do not redesign in this session: write the `**잔여 동결**` line with the label `골격 재검토`, then freeze. The redesign is design re-convergence's, which the routing shift dispatches after this freeze.
+
+In both branches the terminal message is the freeze literal, the path and the `sha256`, unchanged.
 
 Task: $ARGUMENTS

@@ -224,6 +224,28 @@ ah=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -
 check "스냅숏의 answered_by 는 답한 주체를 읽고, 옛 행은 근거의 접두로 가른다" "$ah" '[["S2","좌석"],["S3","교대"],["S4","사람"]]'
 check "중단 답 행은 진전이 아니다" "$(digest)" "$d0"
 
+# `route` and `route_refusal` are the gate's verdict on the answer as it reads
+# the record now, and they stay out of `H`: the record appearing turns the
+# element from no verdict into a refusal while the digest a router carries
+# still matches.
+RT_REC="$WORK/halt/S9#1.md"
+printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=implement-unattended | 선택지=보류 | 답한 주체=사람 | 근거=사람이 보류\n' "$RT_REC" >> "$LEDGER"
+rt_el() {  # rt_el — S9's answered_halts element as route|route_refusal
+  (cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null) \
+    | jq -r '[.answered_halts[] | select(.segment == "S9") | "\(.route)|\(.route_refusal)"] | last // "없음"'
+}
+rt_h1=$(snapdigest)
+check "기록 파일이 없는 답의 route 와 route_refusal 은 비어 있다" "$(rt_el)" "|"
+mkdir -p "$WORK/halt"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=S9#1; run=R1 -->' \
+  '**스킬**: implement-unattended' '**스텝**: Step 3 — 픽스처' '**선택지**:' '- `보류` — 사람이 정한다' \
+  '<!-- /cc-pipeline-halt v1 -->' > "$RT_REC"
+check "세션 없는 키의 답은 route_refusal 이 재부착할 세션이 없다고 말한다" "$(rt_el)" \
+  "|S9 의 마지막 정산 stage-result 행에 세션 id 가 없어(세션 id=빈 값) 교대가 재부착할 세션이 없습니다"
+check "route 판정이 바뀌어도 H 는 움직이지 않는다" "$(snapdigest)" "$rt_h1"
+check "그 H 는 스냅숏이 내는 H 와 같다" \
+  "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)" "$rt_h1"
+
 # ---------------------------------------------------------------------------
 # 3. THE REGRESSION — issuing an approval must not move the digest
 #
@@ -2216,8 +2238,8 @@ LEDGER="$LEDGER_SAVE"
 # stays, and the close row carries `처분 사유=자동 해소`.
 #
 # Adoption needs a class that may be adopted: inside the judgment vocabulary and
-# not one of the two that hand risk to the user. A judgment with no class, a
-# class outside the vocabulary, or one of those two does not wait either — it
+# not one of the classes that hand risk to the user. A judgment with no class, a
+# class outside the vocabulary, or one of those classes does not wait either — it
 # ends as a refusal.
 # ---------------------------------------------------------------------------
 J_MANIFEST="$WT/plan-r2.md"
@@ -2283,7 +2305,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 jact 등급=2 기준="픽스처를 다시 만들지" 근거="오래된 픽스처가 있다"
 check "대기 중이던 부류 없는 판단은 재제출 때 자동 해소가 거절로 닫는다" "$?" "3"
 
-# The two classes that hand risk to the user are resolved as a refusal: the run
+# The classes that hand risk to the user are resolved as a refusal: the run
 # still does not wait, and it does not take the risk on anyone's behalf.
 jact 등급=2 "판단 부류=팀-구성" 기준="팀을 소집할지" 근거="발견이 많다"
 check "사용자에게 위험을 넘기는 부류는 대기 대신 거절로 끝난다" "$?" "3"
@@ -2613,7 +2635,7 @@ check "교대 계약: 좌석 실행 정지의 답은 답한 주체와 무관하�
 check "교대 계약: 좌석 실행 정지 갈래가 게이트가 거절하는 두 스텝 접두와 같다" \
   "$(has "$GATE" "'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)")" 예
 check "교대 계약: 좌석 실행 답 갈래가 운반 act 로 넘기는 문장보다 앞선다" \
-  "$(awk '/When the step begins with `Step 3 잔여 검증 좌석 실행`/{a=NR} /Every other answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_SKILL")" 예
+  "$(awk '/When the step begins with `Step 3 잔여 검증 좌석 실행`/{a=NR} /Every other `재부착` answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_SKILL")" 예
 check "사이드카: 좌석 실행 정지는 사람이 답해도 --resume 으로 재부착한다" \
   "$(has "$AU_ANS" "whether the seat ran the record or a person answered it: the carry act refuses an answer to it on its step alone")" 예
 check "교대 계약: 운반 act 의 16 은 이월이고 종료 행이 있으면 종단" \
@@ -2636,6 +2658,43 @@ for f in "$RS_SKILL" "$AP_ROUTER"; do
   check "$(basename "$(dirname "$f")"): 설계 단계 정지에서 이월 답은 다시 묻지 않는다" \
     "$(has "$f" "**An answer already carried over is not asked again**: when the element naming the step reads \`state\` \`이월\`")" 예
 done
+
+# ---------------------------------------------------------------------------
+# 13. An answer a routing block stamped leaves answered_halts for returned_halts
+#
+# The shift could not carry the answer out and wrote a cone row the gate
+# stamped with the answer's line. The answer is spent, so the shift does not
+# route it again, and the record is a question again until a person's new
+# answer names it — which is the next element of answered_halts.
+# ---------------------------------------------------------------------------
+RET_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-snap-returned.XXXXXX")
+RET_LEDGER="$RET_DIR/ledger.md"
+RET_REC="$RET_DIR/halt/S8#1.md"
+mkdir -p "$RET_DIR/halt"
+printf '%s\n' '스테이지 기록' > "$RET_REC"
+{
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=S8 | 스테이지=S8 | 종류=implement | 실행 버전=1 | 세션 id=s-8 | 종단 부류=의도된 park | prev=0\n'
+  printf -- '- `중단 답` | 교대=0 | 세그먼트=S8 | 중단 기록=%s | 스킬=implement-unattended | 선택지=보류 | 답한 주체=사람 | 근거=사람이 보류 | prev=0\n' "$RET_REC"
+} > "$RET_LEDGER"
+ret_read() {  # ret_read <함수> <jq> — that snapshot fragment on the fixture ledger, through jq
+  local frag
+  frag=$(CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" >/dev/null 2>&1; set +e +u
+    LEDGER="$2"; MANIFEST=/nonexistent; RUN_ID=R; RUN_DIR="$3"
+    "$4" 2>/dev/null' _ "$GATE" "$RET_LEDGER" "$RET_DIR" "$1")
+  printf '[%s]' "$frag" | jq -c "$2"
+}
+check "막힘 전의 답은 answered_halts 에 있고 returned_halts 는 비어 있다" \
+  "$(ret_read gate_answered_halts_json '[.[] | .option]')/$(ret_read gate_returned_halts_json 'length')" '["보류"]/0'
+printf -- '- `blocked` | 교대=1 | 대상=t | 스코프=cone | 원인=막힘 | 앵커 세그먼트=S8 | 사유=중단 답 라우팅 — S8#1.md — 스트림이 세션 시작을 보이지 않는다 | 근거=중단 답 줄 2 | 막힌 답 줄=2 | prev=0\n' >> "$RET_LEDGER"
+check "도장 찍힌 막힘이 그 답을 answered_halts 에서 뺀다" "$(ret_read gate_answered_halts_json 'length')" "0"
+check "returned_halts 가 기록·선택지·답한 주체·답 줄·이유·막힘 줄을 낸다" \
+  "$(ret_read gate_returned_halts_json '[.[] | [.segment, .record == "'"$RET_REC"'", .option, .answered_by, .answer_line, .reason, .line]]')" \
+  '[["S8",true,"보류","사람",2,"스트림이 세션 시작을 보이지 않는다",3]]'
+printf -- '- `중단 답` | 교대=1 | 세그먼트=S8 | 중단 기록=%s | 스킬=implement-unattended | 선택지=재시도 | 답한 주체=사람 | 근거=사람이 다시 고름 | prev=0\n' "$RET_REC" >> "$RET_LEDGER"
+check "사람의 새 답이 서면 returned_halts 는 비고 새 답이 answered_halts 에 오른다" \
+  "$(ret_read gate_returned_halts_json 'length')/$(ret_read gate_answered_halts_json '[.[] | .option]')" '0/["재시도"]'
+rm -rf "$RET_DIR"
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

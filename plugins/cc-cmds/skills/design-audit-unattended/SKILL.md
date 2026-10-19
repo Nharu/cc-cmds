@@ -34,7 +34,7 @@ This is the unattended arm of `/cc-cmds:design-audit`. It is a **separate file**
 
 `references/` is **shared with the base skill, not copied** — every reference path below points into `../design-audit/references/`. One file in that tree does route to a question, so what makes sharing safe is a disposition, not an absence. The disposition is stated here, in the form `scripts/lint-unattended-surfaces.sh` reads:
 
-**Inherited question point** — `03-adjustment-pass.md`: its adjustment pass surfaces a composed requirement with at most one question. CFI-U0 resolves that terminus to `park` — the synthesis question of CFI-3b is asked and answered **in writing** inside the pass, and a composed requirement halts, unconditionally — composing findings into a new requirement changes what the run is trying to do, which is `등급 2`. The reference names that question's three options inline, as `adopt as a requirement / record in the unresolved-issues section / reject`; the halt record does not copy that form but writes them as three option lines, `- \`adopt as a requirement\` — …`, `- \`record in the unresolved-issues section\` — …` and `- \`reject\` — …`.
+**Inherited question point** — `03-adjustment-pass.md`: its adjustment pass surfaces a composed requirement with at most one question. CFI-U0 resolves that terminus to `park` — the synthesis question of CFI-3b is asked and answered **in writing** inside the pass, and a composed requirement halts, unconditionally — composing findings into a new requirement changes what the run is trying to do, which is `등급 2`. The reference names that question's three options inline, as `adopt as a requirement / record in the unresolved-issues section / reject`; the halt record does not copy that form but writes them as three option lines, `- \`adopt as a requirement\` — …`, `- \`record in the unresolved-issues section\` — …` and `- \`reject\` — …`. Its step line is `**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`: the gate routes an `adopt as a requirement` answer only on `CFI-3b`, and re-attaches this session otherwise.
 
 ## Input
 
@@ -46,7 +46,7 @@ This is the unattended arm of `/cc-cmds:design-audit`. It is a **separate file**
 
 Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema. Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. **Take `<run-id>` from the driver-exported `CC_PIPELINE_RUN_ID`** and `RUN_DIR` from `CC_PIPELINE_RUN_DIR`; only when they are unset, re-derive `<run-id>` from `<base>/docs/pipeline-grant/{slug}.md`. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`, defaulting to this skill's name. Write it atomically (`sidecar.md` §1.3), record the question and every option **verbatim**, each option on its own `- \`<label>\` — <description>` line under `**선택지**:`, then take no further step and end the turn. **Never write a sidecar** — the driver is the sole writer of the run ledger.
 
-**A halt with options carries a recommendation.** The three halts of this arm that offer options — the CFI-3b composed-requirement halt, the halt the reconcile pass writes for one finding, and Step 7's `Step 7 / 골격급 재발` halt — put a `**추천**` line and a `**추천 근거**` line after the option lines and before `**하네스 오류**`, by the writer rules of `_common/pipeline-sidecar.md` §4 (the bullet on `**추천**`). The seat answers such a halt with the recommended label and no person, so the label is the option this pass would have chosen from the interview record, the manifest's authorization, a fact of this machine or a standing instruction — never one no stage of the run can carry out, never one whose description carries `위험 수용`, `게이트 비활성`, `그대로 진행` or `범위 축소`, and `(없음) — <what only a person knows>` when those four do not settle it. Measured: a reconcile-pass halt offering `창 값을 420초로 고친다`, `미해결 이슈로 기록한다` (described as risk acceptance) and `기각한다` carried no recommendation, so it stood all night for a person. The `Step 7 / 골격급 재발` halt always writes `(없음)`.
+**A halt with options carries a recommendation.** The three halts of this arm that offer options — the CFI-3b composed-requirement halt, the halt the reconcile pass writes for one finding, and Step 7's `Step 7 / 골격급 재발` halt — put a `**추천**` line and a `**추천 근거**` line after the option lines and before `**하네스 오류**`, by the writer rules of `_common/pipeline-sidecar.md` §4 (the bullet on `**추천**`). The seat answers such a halt with the recommended label and no person, so the label is the option this pass would have chosen from the interview record, the manifest's authorization, a fact of this machine or a standing instruction — never one no stage of the run can carry out, never one whose description carries `위험 수용`, `게이트 비활성`, `그대로 진행` or `범위 축소`, and `(없음) — <what only a person knows>` when those four do not settle it. Measured: a reconcile-pass halt with no recommendation stood all night for a person. The `Step 7 / 골격급 재발` halt always writes `(없음)`.
 
 ### Per-grade disposition
 
@@ -66,9 +66,8 @@ per grade, not one blanket rule.
   absorbs them through the same auto-adoption floor an `act --kind judgment`
   meets. Emitting is not adopting: a judgment that does not clear the floor
   becomes an approval instead of a row.
-- **`등급 2`** — write the halt record above and stop. This is the branch that
-  keeps "leave most of it to the orchestrator" from becoming "the orchestrator
-  waived the check you asked for".
+- **`등급 2`** — write the halt record above and stop, so the orchestrator never
+  waives a check the user asked for.
 
 ### Resumed with a person's answer
 

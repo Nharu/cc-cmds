@@ -85,8 +85,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 1062(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
-ASSERTION_FLOOR=1041
+# 실측 1116(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
+ASSERTION_FLOOR=1095
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -1395,7 +1395,7 @@ tr_consts_case() {
               COST_MAX_AGE_S:.cost.max_age_s COST_MAX_N:.cost.max_n COST_MIN_N:.cost.min_n \
               COST_FLOOR_FIVE_HOUR:.cost.floor.five_hour COST_FLOOR_SEVEN_DAY:.cost.floor.seven_day \
               COST_HYG_MIN_FRAMES:.cost.hygiene.min_frames COST_HYG_MIN_COVER:.cost.hygiene.min_cover \
-              REST_MIN_MASS:.rest_min_mass; do
+              REST_MIN_MASS:.rest_min_mass AFFINITY_TTL_S:.affinity.ttl_s AFFINITY_HOLD_PCT:.affinity.hold_pct; do
     want=$(sed -n "s/^  \*) readonly ROUTE_${pair%%:*}=\(.*\) ;;\$/\1/p" "$TR_ROUTE")
     check "config 가 상수 ROUTE_${pair%%:*} 를 그대로 옮긴다" "$(printf '%s' "$cfg" | jq -r "${pair#*:}")" "$want"
   done
@@ -1407,6 +1407,8 @@ tr_consts_case() {
   check "관측 로그 정리 문턱 ROUTE_OBSERVE_MAX_BYTES" "$ROUTE_OBSERVE_MAX_BYTES" 16777216
   check "관측 로그 보존 나이 ROUTE_OBSERVE_KEEP_S" "$ROUTE_OBSERVE_KEEP_S" 10368000
   check "단계 기록 스키마 ROUTE_PHASE_SCHEMA" "$ROUTE_PHASE_SCHEMA" "cc-lane-phase v1"
+  check "직전 계정 기록 스키마 ROUTE_AFFINITY_SCHEMA" "$ROUTE_AFFINITY_SCHEMA" "cc-cmds-route-affinity v1"
+  check "부여 기록 스키마 ROUTE_PICK_SCHEMA" "$ROUTE_PICK_SCHEMA" "cc-cmds-route-pick v1"
   check "config 는 판독 상한과 보존 상수를 싣지 않는다" \
     "$(printf '%s' "$cfg" | jq -c '.cost | keys')" '["floor","hygiene","max_age_s","max_n","min_n"]'
   want=$(sed -n 's/^readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=\([0-9]*\).*$/\1/p' "$TR_RUN_SH")
@@ -2344,11 +2346,13 @@ check "phase-read 인자 초과 → rc 2, 사용법은 표준 오류" "$rc|$out|
 check "phase-read 는 판독만 한다(파일·디렉터리를 만들지 않는다)" \
   "$( [ -e "$PH/no" ] && printf 있음 || printf 없음)/$( [ -e "$PH/h" ] && printf 있음 || printf 없음)" "없음/없음"
 
-# 봉투의 `order`. 몰아 쓰기는 단계 칸만 채우고 문턱 칸은 null 이다.
-expect "몰아 쓰기 GRANT 의 order 는 단계 칸만 채운다" "$(decide '.')" \
+# 봉투의 `order`. 몰아 쓰기는 단계 칸과 고른 근거 칸을 채우고 문턱 칸은 null 이다.
+# 문맥에 유지 설정이 없으니 직전 계정과 유지 문턱은 null 이고, a(1000) 와 b(2000) 를
+# 가른 것은 분산이다.
+expect "몰아 쓰기 GRANT 의 order 는 단계 칸과 근거 칸만 채운다" "$(decide '.')" \
   ".verdict == \"GRANT\" and .order == {phase: \"burst\", phase_source: \"declared\", until_epoch: ($NOW + 3600),
     burst_length_s: 28800, burst_length_source: \"declared\", threshold_bp: null, ratio_source: null, tier: null,
-    r7_bp: null, admitted: null}"
+    r7_bp: null, admitted: null, picked_by: \"spread\", load5_bp: 1000, affinity_account: null, affinity_hold_bp: null}"
 expect "단계 기록이 없으면 쉼/absent 이고 문턱을 싣는다" "$(decide 'del(.phase)')" \
   '.order | .phase == "rest" and .phase_source == "absent" and .until_epoch == null and .burst_length_s == 28800
    and .burst_length_source == "default" and .threshold_bp == 3413 and .ratio_source == "default"'
@@ -2537,12 +2541,13 @@ expect "고정 입력이 지금 1800000000 에서 신선하게 읽힌다" "$FXU"
 G_WORK='org:1111111111111111'; G_BUSY='org:2222222222222222'; G_LATE='org:3333333333333333'
 G_FULL='org:4444444444444444'; G_FULL2='org:5555555555555555'
 
-# 라우터-1 — 버려질 한도가 5시간 여유보다 앞선다.
+# 라우터-1 — 버려질 한도가 5시간 여유보다 앞선다. W7 이 둘 다 0 인 work(1250)·late(1000)
+# 는 5시간 부하가 작은 late 가 먼저다.
 check "라우터-1: busy 의 W7" "$(fx_w7 '.' "$G_BUSY")" 6147
 check "라우터-1: work 의 W7" "$(fx_w7 '.' "$G_WORK")" 0
 check "라우터-1: late 의 W7" "$(fx_w7 '.' "$G_LATE")" 0
 expect "라우터-1: busy 를 고른다" "$(fxdecide '.')" '.verdict == "GRANT" and .basis == "first" and .account == "busy" and .config_dir == "/fixture/busy"'
-check "라우터-1: 순서" "$(fx_order '.')" "busy work late spare"
+check "라우터-1: 순서" "$(fx_order '.')" "busy late work spare"
 
 # 라우터-2 — 리셋 전에 만료되는 주간 리셋권이 순서를 바꾼다.
 LATE2='UAC("late"; .windows.five_hour.utilization = 0.4 | .windows.seven_day.utilization = 0.1
@@ -2945,6 +2950,157 @@ d=$(tnew lend-pin-brw)
 BP=$(lb_bp lend-pin-brw)
 lb_rec "$BP" none a
 expect "대여-고정: 교대 거래의 되돌림은 좌석 아님" "$(lbx "$d" "$BP" "$LJ OPEN | PIN | SHIFT" "cp '$LB/intent-b.json' '$BP'")" "$WAITC"
+
+# ===========================================================================
+# 새 단계 정렬의 분산과 유지. 두 단계 모두 대여 층·U 부류 다음 키가 유지(유효한 직전
+# 계정이고 그 그룹의 load5 가 문턱 아래면 0), 그다음 W7, 분산(load5 = 5시간 사용 + 그
+# 그룹 live 임대의 5시간 예약 합), 주간 키다. 유지 문턱은 상한 8000 의 50% 인 4000 이다.
+# 직전 계정은 런 디렉터리의 `route-affinity` 를 문맥 `affinity` 로 실은 것이다.
+# ===========================================================================
+AF_JQ='
+def AFON: .config.affinity = {ttl_s: 3600, hold_pct: 50};
+def AFF($acct; $age): .affinity = {schema: "cc-cmds-route-affinity v1", run_id: "r1", account: $acct, at_epoch: ($now - $age)};
+def U5($id; $u): .usage.accounts |= map(if .id == $id then .windows.five_hour.utilization = $u else . end);
+'
+# 쏠림 재현. 서로 다른 그룹의 셋, W7 은 모두 0(주간 리셋이 하루 뒤)이다. x 는 주간
+# 사용이 0 이라 r7·남은 양이 가장 크고, y·z 는 5000 이다. 직전 부여의 예약을 같은 런의
+# live 임대로 쌓아 가며 연속 부여한다. 5시간 부하를 보지 않는 정렬이면 예약 하나를 진
+# x 의 r7·남은 양이 y·z 보다 커 둘째도 x 였다.
+SP='ONLY(["x","y","z"]) | USE([UA("x"; 0.1; 0.0), UA("y"; 0.1; 0.5), UA("z"; 0.2; 0.5)])'
+SP1='ITEMS([LR("r1"; "P0"; "x"; "grant"; RES; true; 1)])'
+# sp_seq <필터> — 앞선 부여를 live 임대로 쌓아 가며 세 번 연속 부여한 계정 순서.
+sp_seq() {
+  local items="" a out="" i=0
+  while [ "$i" -lt 3 ]; do
+    a=$(decide "$1 | ITEMS([$items])" | jq -r 'if .verdict == "GRANT" then (.account // "") else "" end')
+    [ -n "$a" ] || break
+    out="${out:+$out }$a"
+    items="${items:+$items, }LR(\"r1\"; \"P$i\"; \"$a\"; \"grant\"; RES; true; $((i + 1)))"
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+check "쏠림 재현: 몰아 쓰기 연속 부여가 세 그룹에 나뉜다" "$(sp_seq "$SP")" "x y z"
+check "쏠림 재현: 쉼 연속 부여가 세 그룹에 나뉜다" "$(sp_seq "del(.phase) | $SP")" "x y z"
+expect "쏠림 재현: 5시간 부하가 같은 첫 부여는 주간 키가 정한다" "$(decide "$SP")" \
+  '.account == "x" and .order.picked_by == "weekly" and .order.load5_bp == 1000'
+expect "쏠림 재현: 몰아 쓰기 둘째 부여는 분산이 정한다" "$(decide "$SP | $SP1")" \
+  '.account == "y" and .order.picked_by == "spread" and .order.load5_bp == 1000'
+expect "쏠림 재현: 쉼 둘째 부여도 분산이 정한다" "$(decide "del(.phase) | $SP | $SP1")" \
+  '.account == "y" and .order.picked_by == "spread" and .order.phase == "rest"'
+expect "쏠림 재현: 예약을 진 그룹의 load5 는 사용과 예약의 합이다" "$(decide "$SP | $SP1 | ONLY([\"x\"])")" \
+  ".account == \"x\" and .order.picked_by == \"only\" and .order.load5_bp == $((1000 + TR5))"
+
+# 유지. x 는 5시간·주간 모두 비어 있어 분산·주간 키로는 언제나 첫째다. 직전 계정 y 의
+# load5 는 3000 으로 문턱 4000 아래이고, z 는 y 와 같다.
+AFB='ONLY(["x","y","z"]) | USE([UA("x"; 0.0; 0.0), UA("y"; 0.3; 0.5), UA("z"; 0.3; 0.5)]) | AFON'
+for ph in burst rest; do
+  if [ "$ph" = burst ]; then pf='.'; else pf='del(.phase)'; fi
+  expect "유지 $ph (a): 문턱 아래 직전 계정이 load5·주간 키가 더 나은 계정을 이긴다" \
+    "$(decide "$AF_JQ $pf | $AFB | AFF(\"y\"; 60)")" \
+    '.account == "y" and .order.picked_by == "affinity" and .order.load5_bp == 3000
+     and .order.affinity_account == "y" and .order.affinity_hold_bp == 4000'
+  expect "유지 $ph (b): 직전 계정의 load5 가 문턱과 같으면 분산이 정한다" \
+    "$(decide "$AF_JQ $pf | $AFB | U5(\"y\"; 0.4) | AFF(\"y\"; 60)")" \
+    '.account == "x" and .order.picked_by == "spread" and .order.affinity_account == "y" and .order.affinity_hold_bp == 4000'
+  expect "유지 $ph (c): 기록이 TTL 을 지나면 분산이 정한다" \
+    "$(decide "$AF_JQ $pf | $AFB | AFF(\"y\"; 3601)")" \
+    '.account == "x" and .order.picked_by == "spread" and .order.affinity_account == null'
+  expect "유지 $ph (c'): TTL 과 같은 나이는 아직 유효하다" \
+    "$(decide "$AF_JQ $pf | $AFB | AFF(\"y\"; 3600)")" '.account == "y" and .order.picked_by == "affinity"'
+  expect "유지 $ph (d): TTL 을 지나도 이 런의 live 임대에 있으면 유지한다" \
+    "$(decide "$AF_JQ $pf | $AFB | AFF(\"y\"; 3601) | .sticky = [\"y\"]")" \
+    '.account == "y" and .order.picked_by == "affinity" and .order.affinity_account == "y"'
+  expect "유지 $ph (e): 다른 런의 기록은 무시한다" \
+    "$(decide "$AF_JQ $pf | $AFB | AFF(\"y\"; 60) | .affinity.run_id = \"r2\"")" \
+    '.account == "x" and .order.affinity_account == null and .order.affinity_hold_bp == 4000'
+  expect "유지 $ph (f): 설정에 유지 칸이 없으면 유지가 꺼진다" \
+    "$(decide "$AF_JQ $pf | $AFB | AFF(\"y\"; 60) | del(.config.affinity)")" \
+    '.account == "x" and .order.picked_by == "spread" and .order.affinity_account == null and .order.affinity_hold_bp == null'
+  expect "유지 $ph (g): W7 이 0 보다 큰 다른 계정이 있어도 문턱 아래 직전 계정이 이긴다" \
+    "$(decide "$AF_JQ $pf | $AFB | .usage.accounts[0] = UW(\"x\"; W(0.0; \$now + 3600); W(0.1; \$now + 3600)) | AFF(\"y\"; 60)")" \
+    '.account == "y" and .order.picked_by == "affinity"'
+  expect "유지 $ph (g) 대조: 직전 계정이 없으면 W7 이 정한다" \
+    "$(decide "$AF_JQ $pf | $AFB | .usage.accounts[0] = UW(\"x\"; W(0.0; \$now + 3600); W(0.1; \$now + 3600))")" \
+    '.account == "x" and .order.picked_by == "w7"'
+done
+expect "유지: 문턱은 상한을 따라 움직인다(6000 의 50%)" "$(decide "$AF_JQ $AFB | AFF(\"y\"; 60) | .config.cap_bp = 6000")" \
+  '.order.affinity_hold_bp == 3000'
+out=$(decide "$AF_JQ $AFB | AFF(\"y\"; 60) | REQ({event: \"resume\", bound_account: \"y\"})")
+expect "유지: 재부착은 근거 칸이 null 이다" "$out" \
+  '.verdict == "GRANT" and .basis == "resume-bound" and .order.picked_by == null and .order.load5_bp == null
+   and .order.affinity_account == null and .order.affinity_hold_bp == null'
+
+# 기록. 활성 경로의 GRANT 가 런 디렉터리에 직전 계정 기록과 부여 기록 한 줄을 쓰고,
+# 같은 계정의 반납이 기록의 시각만 새로 적는다.
+tr_affinity_rec_case() {
+  local b="$WORK/afr" out out2 rec before after c0 c1 bad
+  unset CLAUDE_CONFIG_DIR
+  export XDG_STATE_HOME="$b/state" RUN_DIR="$b/run" RUN_PACE_ROOT="$b/pace"
+  mkdir -p "$XDG_STATE_HOME" "$RUN_DIR"
+  tr_write_inv valid "$RUN_DIR/inventory.json"
+  check "기록: 기록이 없으면 gather 의 affinity 는 null" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.affinity')" null
+  out=$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)
+  expect "기록: 활성 경로가 a 를 준다" "$out" '.verdict == "GRANT" and .dormant != true and .account == "a"'
+  rec=$(cat "$RUN_DIR/route-affinity" 2>/dev/null)
+  check "기록: GRANT 뒤 직전 계정 기록의 계정이 봉투의 계정과 같다" \
+    "$(printf '%s' "$rec" | jq -r '.account')" "$(printf '%s' "$out" | jq -r '.account')"
+  check "기록: 직전 계정 기록의 스키마와 런" "$(printf '%s' "$rec" | jq -c '[.schema, .run_id, (.at_epoch | type)]')" \
+    '["cc-cmds-route-affinity v1","r1","number"]'
+  check "기록: 부여 기록이 한 줄이다" "$(wc -l < "$RUN_DIR/route-picks.jsonl" | tr -d ' ')" 1
+  check "기록: 부여 기록 한 줄의 근거가 봉투의 order 와 같다" \
+    "$(jq -c '[.schema, .run_id, .lineage, .event, .basis, .account, .group, .picked_by, .load5_bp, .affinity_account, .affinity_hold_bp]' "$RUN_DIR/route-picks.jsonl")" \
+    "$(printf '%s' "$out" | jq -c '["cc-cmds-route-pick v1", "r1", "S1", "first", .basis, .account, .group,
+       .order.picked_by, .order.load5_bp, .order.affinity_account, .order.affinity_hold_bp]')"
+  check "기록: 후보 하나의 근거는 only 다" "$(printf '%s' "$out" | jq -r '.order.picked_by')" "only"
+  check "기록: gather 가 기록을 affinity 로 싣는다" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.affinity')" "$rec"
+  # 같은 계정의 반납. 기록의 시각을 과거로 돌려 두고 반납한다.
+  printf '%s\n' "$rec" | jq -c '.at_epoch = 1' > "$RUN_DIR/route-affinity"
+  before=$(cat "$RUN_DIR/route-affinity")
+  route_lease_release "$RUN_PACE_ROOT/leases" r1 S1 "$(printf '%s' "$out" | jq -r '.nonce')"
+  after=$(cat "$RUN_DIR/route-affinity")
+  check "기록: 같은 계정의 반납은 at_epoch 만 바꾼다" \
+    "$(printf '%s' "$after" | jq -c 'del(.at_epoch)')/$(printf '%s' "$after" | jq -r '.at_epoch > 1')" \
+    "$(printf '%s' "$before" | jq -c 'del(.at_epoch)')/true"
+  # 계정 하나의 자리는 한 계보만 받으므로 S1 을 반납한 뒤 다음 계보를 부여받는다.
+  out2=$(route__resolve_as 1 "$(tr_req | jq -c '.lineage = "S2"')" 2>/dev/null)
+  check "기록: 다음 부여의 봉투가 직전 계정과 유지 문턱을 싣는다" \
+    "$(printf '%s' "$out2" | jq -c '[.verdict, .account, .order.affinity_account, .order.affinity_hold_bp]')" '["GRANT","a","a",4000]'
+  check "기록: 다음 부여가 부여 기록에 한 줄을 더한다" "$(wc -l < "$RUN_DIR/route-picks.jsonl" | tr -d ' ')" 2
+  # nonce 가 다른 반납과 다른 계정의 기록 위에서의 반납은 기록을 바꾸지 않는다.
+  printf '%s\n' "$rec" | jq -c '.at_epoch = 1' > "$RUN_DIR/route-affinity"
+  before=$(cat "$RUN_DIR/route-affinity")
+  route_lease_release "$RUN_PACE_ROOT/leases" r1 S2 "not-the-nonce" >/dev/null 2>&1
+  check "기록: nonce 가 다른 반납은 기록을 바꾸지 않는다" "$(cat "$RUN_DIR/route-affinity")" "$before"
+  printf '%s\n' "$rec" | jq -c '.account = "b" | .at_epoch = 1' > "$RUN_DIR/route-affinity"
+  before=$(cat "$RUN_DIR/route-affinity")
+  route_lease_release "$RUN_PACE_ROOT/leases" r1 S2 "$(printf '%s' "$out2" | jq -r '.nonce')"
+  check "기록: 다른 계정의 반납은 기록을 바꾸지 않는다" "$(cat "$RUN_DIR/route-affinity")/$(count_files "$RUN_PACE_ROOT/leases")" "$before/0"
+  # 휴면 봉투는 기록을 쓰지 않는다.
+  export RUN_DIR="$b/run-dormant"
+  mkdir -p "$RUN_DIR"
+  tr_write_inv valid "$RUN_DIR/inventory.json"
+  out=$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)
+  check "기록: 휴면 봉투는 기록을 쓰지 않는다" \
+    "$(printf '%s' "$out" | jq -r '.dormant')/$(ls -A "$RUN_DIR" | tr '\n' ' ')" "true/inventory.json "
+  # 깨진 기록은 기록이 없을 때와 같은 판정이다.
+  export RUN_DIR="$b/run-corrupt"
+  mkdir -p "$RUN_DIR"
+  tr_write_inv valid "$RUN_DIR/inventory.json"
+  c0=$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c --argjson n "$NOW" '.now = $n | del(.cost_samples)')
+  for bad in '{' '{"schema":"cc-cmds-route-affinity v0","run_id":"r1","account":"a","at_epoch":1}' \
+             '{"schema":"cc-cmds-route-affinity v1","run_id":"r1","account":7,"at_epoch":1}' \
+             '{"schema":"cc-cmds-route-affinity v1","run_id":"r1","account":"a","at_epoch":"1"}' \
+             '{"schema":"cc-cmds-route-affinity v1","run_id":"r1","account":"a","at_epoch":1} {}'; do
+    printf '%s\n' "$bad" > "$RUN_DIR/route-affinity"
+    c1=$(route_gather_context "$(tr_req)" /seat 2>"$b/corrupt.err" | jq -c --argjson n "$NOW" '.now = $n | del(.cost_samples)')
+    check "기록: 깨진 기록($bad)은 affinity null 이고 표준 오류가 비어 있다" \
+      "$(printf '%s' "$c1" | jq -c '.affinity')/$(wc -c < "$b/corrupt.err" | tr -d ' ')" "null/0"
+    check "기록: 깨진 기록($bad)의 판정이 기록 없을 때와 같다" \
+      "$(printf '%s' "$c1" | bash "$TR_ROUTE" decide | jq -c 'del(.nonce)')" "$(printf '%s' "$c0" | bash "$TR_ROUTE" decide | jq -c 'del(.nonce)')"
+  done
+}
+tr_in_run "$TR_RUN_SH" tr_affinity_rec_case
 
 # ===========================================================================
 # 전역 충돌 린트 파생
