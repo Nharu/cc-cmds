@@ -1361,7 +1361,7 @@ for tok in 마감 천장 무진전; do
   mk_seat "RKJ-E$n" "$tok"
   before=$(src_sum "RKJ-E$n")
   out=$(jdg "RKJ-E$n"); rc=$?
-  check "12: E 의 $tok 로 끝난 원천은 허용이다" "$rc/$(printf '%s\n' "$out" | head -n 1)/$(col "$out" 판정)/$(fired "$out")" "0/cc-rekick v1/허용/"
+  check "12: E 의 $tok 로 끝난 원천은 허용이다" "$rc/${out%%$'\n'*}/$(col "$out" 판정)/$(fired "$out")" "0/cc-rekick v1/허용/"
   [ "$(col "$out" 판정)" = "허용" ] || { printf '%s\n' "$out"; tail -2 "$WORK/rk.err"; } >&2
   check "12: judge 는 원천 파일·런 디렉터리·색인을 바꾸지 않는다 ($tok)" "$(src_sum "RKJ-E$n")" "$before"
 done
