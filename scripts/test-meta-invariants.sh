@@ -1170,7 +1170,7 @@ check "리드 사본의 키 표가 implement_next[] 행을 싣는다" \
   "$(grep -c -- '^| `implement_next\[\]` |' "$AP_ROUTER" || true)" "1"
 ha_sec=$(router_section "$RS_SKILL" "#### Handing on a person's answer to a halt")
 for lit in \
-  'When `skill` is `review-unattended` and the step begins with `Step 1b 빈 대상`, go to item 7.' \
+  '| `빈-대상` | 7 |' \
   '7. **A review that stopped on an empty target is answered by an implementation or a park — no session is re-attached.**' \
   "- **\`구현 재파견\`** → dispatch the segment's implementation" \
   "\`'사유=빈 대상 리뷰 정지'\`"

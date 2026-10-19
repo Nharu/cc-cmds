@@ -568,6 +568,25 @@ check "3b 사람 대기: 대조하는 수가 비어 있지 않다" "$(unanswered
 hasnt "3b 사람 대기: 사람 대기에는 한도 문장이 없다" "$OUT" "같은 한도"
 adopt_case "3b 사람 대기" RKW1281 '사람 대기'
 
+# A record whose last answer the routing shift handed back waits on a person
+# again: the block the gate stamped with that answer's line names it, so the
+# record is listed though a `중단 답` row names it. A person's new answer ends it.
+mk_prev RKWRET
+fx_row 'handoff' "교대=1" "사유=중단" "버린 선택지=-"
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/R1#1.md"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/R1#1.md" "선택지=재수렴"
+rk_ret_ln=$(grep -n '^- `중단 답` ' "$FX_LEDGER" | tail -1 | cut -d: -f1)
+fx_row 'blocked' "스코프=cone" "원인=막힘" "앵커 세그먼트=R1" "사유=중단 답 라우팅 — R1#1.md — 갈래 없음" \
+  "근거=중단 답 줄 $rk_ret_ln" "막힌 답 줄=$rk_ret_ln"
+detect_case "3b 되돌려진 기록" RKWRET 다시
+check "3b 되돌려진 기록: 판정은 대기이고 원인은 사람 대기다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/사람 대기"
+has "3b 되돌려진 기록: 되돌려진 기록이 사람 대기로 나열된다" "$OUT" \
+  "이전 런 RKWRET 의 답 없는 정지 기록 1건(R1#1.md)은 옮기지 않습니다"
+check "3b 되돌려진 기록: cc_unanswered_halts 도 그 기록을 센다" "$(unanswered RKWRET)" "1"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/R1#1.md" "선택지=보류"
+check "3b 되돌려진 기록: 사람의 새 답 뒤에는 세지 않는다" "$(unanswered RKWRET)" "0"
+
 mk_prev RKWAP
 fx_row '승인' "승인 id=AP-9" "상태=대기" "대상=-" "절단점=경계" "질문 문면=배포 창을 열까" "답변 문면=-" "해소 시각=-"
 fx_row '승인' "승인 id=AP-8" "상태=대기" "대상=-" "절단점=경계" "답변 문면=-" "해소 시각=-"
