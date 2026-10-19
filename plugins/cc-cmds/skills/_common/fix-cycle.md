@@ -11,7 +11,7 @@ An unattended implementation stage runs a fix cycle when either holds:
 
 When (1) and (2) name different reports, (1) wins. A turn dispatched with `베이스 해소:` is not a fix cycle. An unattended review stage runs a fix cycle when it is called with `--lead-fix <report>`.
 
-Recognise the shape by its two fixed pieces alone — `수정 대상: ` and ` 의 P0·P1` — and never by the path between them or by a `(사이클 n)` or `(사이클 n 재시도)` part around them.
+Recognise the shape by its two fixed pieces alone — `수정 대상: ` and ` 의 P0·P1` — and never by the path between them or by a `(사이클 n)`, `(사이클 n 재시도)` or `(사이클 n 한도-형상 회수 후 재파견)` part around them.
 
 A fix cycle that runs as process A — its plan was voided by a re-convergence or a `재계획` row — edits nothing, as every process A. The fix check and the end-of-turn lines below belong to the process B that follows it, which is a fix cycle by condition (2).
 

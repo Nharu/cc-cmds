@@ -4302,8 +4302,8 @@ DOC="$WORK/base/docs/x.md"
 check "문서가 있으면 접근자는 그 문서를 낸다" "$(doc_arg)" "$WORK/base/docs/x.md"
 DOC=""
 # 접근자가 있어도 호출부가 `$DOC` 를 그대로 끼우면 아무것도 달라지지 않는다.
-check "구현 스테이지 두 자리가 접근자를 쓴다" \
-  "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "2"
+check "구현 스테이지 네 자리(첫 파견·새 프로세스 재시도·크래시 재시도·한도-형상 회수 뒤 재파견)가 접근자를 쓴다" \
+  "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )/$( { grep -cF 'implement-unattended $DOC' "$DRIVER" || true; } )" "4/0"
 check "리뷰 스테이지 세 자리(리뷰·복구 리뷰·리드 수정)가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "3"
 check "재수렴 스테이지 세 자리(항목 사다리·설계 수준 잔여·상한 P0 잔여)가 접근자를 쓴다" \
