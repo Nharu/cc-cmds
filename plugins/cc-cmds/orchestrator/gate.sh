@@ -1442,6 +1442,14 @@ gate_collaboration_surface() {
     # The ClickUp ticket and dependency writers file tickets and relations,
     # which is the same surface as `gh issue` on the other tracker.
     clickup-create.py|clickup-relate.py) return 0 ;;
+    # A read of the same tracker is the same surface: the ClickUp field lookup
+    # sends GETs to ClickUp and writes one local file the run-directory write
+    # guard still checks apart from this cell. Only the `clickup` adapter with
+    # `--lexical-only` is here — without that flag the lookup sends titles and
+    # bodies to the judgment model, and the `github`/`file` adapters are not
+    # this tracker.
+    similar-items.py)
+      [ "${1:-}" = clickup ] && gate_argv_has_opt - lexical-only "$@" && return 0 ;;
   esac
   return 1
 }

@@ -25660,6 +25660,10 @@ check "29: pr 앞 -t 의 머지는 등급표에서 외부상태변경 이다"   
 check "29: 표가 읽지 못하는 머지 철자는 형태 미상 이다"       "$(sf29 gh pr --squash merge 1)" "형태 미상"
 check "29: 대조군 — merge 를 값으로 단 pr 코멘트는 사다리가 말하지 않는다" "$(ld29 gh pr comment 1 -b merge)" ""
 check "29: 대조군 — 배포트리거 가 아닌 동사 앞 -b 의 머지는 협업면이다" "$(cs29 협업 gh pr -b x merge 1)" "예"
+# The ClickUp field lookup is on the surface only as the GET-only clickup read.
+check "29: --lexical-only 인 similar-items.py clickup 은 협업면이다" "$(cs29 협업 similar-items.py clickup --lexical-only --list-fields 1 --log f.json)" "예"
+check "29: --lexical-only 없는 similar-items.py clickup 은 협업면이 아니다" "$(cs29 협업 similar-items.py clickup --list-fields 1 --log f.json)" "아니오"
+check "29: similar-items.py github 은 협업면이 아니다" "$(cs29 협업 similar-items.py github --lexical-only --issue 1)" "아니오"
 
 sb_new '결속' 선머지후리뷰
 sa_seg_row S29 ""
@@ -26573,6 +26577,10 @@ sp_cs() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
            if gate_collaboration_surface "" "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
 }
+check "32p: 경로로 부른 similar-items.py clickup --lexical-only 는 협업면이다" \
+  "$(sp_cs 협업 /x/orchestrator/similar-items.py clickup --list-fields 1 --lexical-only --log f.json)" "예"
+check "32p: similar-items.py file 어댑터는 협업면이 아니다" \
+  "$(sp_cs 협업 /x/orchestrator/similar-items.py file --lexical-only --corpus c.json --query 1)" "아니오"
 X32="0123456789abcdef0123456789abcdef01234567"
 q32m='mutation{mergePullRequest(input:{pullRequestId:"PR_x"}){clientMutationId}}'
 check "32p: 쿼리스트링이 붙은 REST 머지는 결속 없는 머지다" \
@@ -39071,7 +39079,7 @@ BSX_PLANLOG="$WORK/bsx-RB7-plan.txt"
 # a directory that is not the orchestrator's.
 BSX_PLANT="$WORK/bsx-plant"
 mkdir -p "$BSX_PLANT"
-for n in clickup-create.py clickup-relate.py base-split.py; do
+for n in clickup-create.py clickup-relate.py base-split.py similar-items.py; do
   cp /bin/sh "$BSX_PLANT/$n"; chmod +x "$BSX_PLANT/$n"
 done
 BSX_DOTDOT=$(dotdot_spelling 78 clickup-create.py)
@@ -39092,6 +39100,12 @@ p cuinterp 외부상태변경 협업 python3 "$BSX_CU/clickup-create.py" --list 
 p cuplant 외부상태변경 협업 "$BSX_PLANT/clickup-create.py" --list 1 --name x
 p curplant 외부상태변경 협업 "$BSX_PLANT/clickup-relate.py" --task a --depends-on b
 p cudotdot 외부상태변경 협업 "$BSX_DOTDOT" --list 1 --name x
+p sifields 트리밖쓰기 협업 "$BSX_CU/similar-items.py" clickup --lexical-only --list-fields 1 --log "\$RD/split/\$CC_PIPELINE_STAGE_ID/fields.json"
+p sinolex 외부상태변경 협업 "$BSX_CU/similar-items.py" clickup --list-fields 1 --log "\$RD/split/\$CC_PIPELINE_STAGE_ID/fields.json"
+p sigithub 트리밖쓰기 협업 "$BSX_CU/similar-items.py" github --lexical-only --issue 1 --log "\$RD/split/\$CC_PIPELINE_STAGE_ID/fields.json"
+p siinterp 트리밖쓰기 협업 python3 "$BSX_CU/similar-items.py" clickup --lexical-only --list-fields 1 --log "\$RD/split/\$CC_PIPELINE_STAGE_ID/fields.json"
+p siplant 트리밖쓰기 협업 "$BSX_PLANT/similar-items.py" clickup --lexical-only --list-fields 1 --log "\$RD/split/\$CC_PIPELINE_STAGE_ID/fields.json"
+p sioutside 트리밖쓰기 협업 "$BSX_CU/similar-items.py" clickup --lexical-only --list-fields 1 --log "\$RD/fields.json"
 p bsplan 트리밖쓰기 런로컬 "$BSX_CU/base-split.py" plan --out "\$RD/split/\$CC_PIPELINE_STAGE_ID/"
 p touchsplit 워크트리쓰기 런로컬 touch "\$RD/split/S1/T1.md"
 p touchsplits 워크트리쓰기 런로컬 touch "\$RD/splits/T1.md"
@@ -39108,7 +39122,7 @@ bash "\$CC_PIPELINE_GATE" exec --manifest "\$CC_PIPELINE_MANIFEST" --target "\$C
 printf 'execrecord %s\n' "\$?" >> "$BSX_PLANLOG"
 BSXPROBEEOF
 bsx_stub "$WORK/bin/bsx-probe" "$BSX_LIT_SPLIT" ". \"$WORK/bin/bsx-probe-body.sh\""
-# Fourteen probes, each a snapshot and a plan (the last an exec), so some thirty
+# Twenty probes, each a snapshot and a plan (the last an exec), so some forty
 # gate starts inside one stage: on a loaded machine that ran past the default
 # 60-second wait and cut the list off at its tail.
 bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1 600
@@ -39130,6 +39144,23 @@ check "78:이름만 같은 clickup-relate.py 는 통과하지 않는다" "$(bsx_
 # depends on the reach guard reading the `..` spelling, not on the trust check.
 case "$(bsx_plan_rc cudotdot)" in 3|5) _dd=막힘 ;; *) _dd="통과($(bsx_plan_rc cudotdot))" ;; esac
 check "78:심볼릭 링크 뒤 .. 로 접은 clickup-create.py 는 통과하지 않는다" "$_dd" "막힘"
+# The ClickUp field lookup the split takes before its plan: a GET-only read of
+# the same tracker, writing one file under `split/`. Every other spelling of it
+# is no collaboration act, and a `--log` outside `split/` meets the write guard.
+[ "$(bsx_plan_rc sifields)" = "0" ] || sed -n '1,12p' "$BSX_PLANLOG.sifields" >&2
+check "78:경로로 부른 similar-items.py 필드 조회는 협업으로 통과한다" "$(bsx_plan_rc sifields)" "0"
+# A file that only shares the name grades `등급 미상`. With the switch off, as
+# here, `plan` only warns about that grade and previews `축2=등급 미상`, while
+# `act` and `exec` refuse it at the same place — so that preview is a refusal.
+for _si in sinolex sigithub siinterp siplant sioutside; do
+  case "$(bsx_plan_rc "$_si")" in
+    0) if grep -q '축2=등급 미상' "$BSX_PLANLOG.$_si" 2>/dev/null; then _sv=막힘
+       else _sv="통과(0)"; sed -n '1,12p' "$BSX_PLANLOG.$_si" >&2; fi ;;
+    '') _sv="통과()" ;;
+    *) _sv=막힘 ;;
+  esac
+  check "78:similar-items.py 의 다른 철자는 통과하지 않는다 ($_si)" "$_sv" "막힘"
+done
 check "78:base-split.py plan 의 출력 디렉터리 쓰기가 통과한다" "$(bsx_plan_rc bsplan)" "0"
 check "78:split/ 아래 쓰기가 통과한다" "$(bsx_plan_rc touchsplit)" "0"
 check "78:split 이웃 이름 디렉터리 쓰기는 거부된다" "$(bsx_plan_rc touchsplits)" "3"
@@ -39214,6 +39245,30 @@ case "$rc/$msg" in
   *"원격 슬러그가 아닙니다: o/other"*) ok "80:선언되지 않은 github 대상은 거부된다" ;;
   *) bad "80:선언되지 않은 github 대상은 거부된다" "$msg" ;;
 esac
+# The optional origin ticket follows the target, on a clickup row only, and is
+# an id: anything else is the row's format error.
+bsx_fresh RB9 '- `베이스 발행` | 트래커=clickup | 대상=900 | 원 티켓=86abc_1-x'
+bsx_snapmsg "$WORK/bsx-RB9.md"
+[ "$rc" = 0 ] || printf '%s\n' "$msg" | sed -n '1,8p' >&2
+check "80:원 티켓을 단 clickup 행은 통과한다" "$rc" "0"
+for _bp in '트래커=github | 대상=t/infra | 원 티켓=86abc' '트래커=없음 | 대상=- | 원 티켓=86abc'; do
+  bsx_fresh RB9 "- \`베이스 발행\` | $_bp"
+  bsx_snapmsg "$WORK/bsx-RB9.md"
+  case "$rc/$msg" in
+    0/*) bad "80:clickup 이 아닌 행의 원 티켓은 거부된다 ($_bp)" "$msg" ;;
+    *"원 티켓 은 clickup 행에만 둡니다"*) ok "80:clickup 이 아닌 행의 원 티켓은 거부된다 ($_bp)" ;;
+    *) bad "80:clickup 이 아닌 행의 원 티켓은 거부된다 ($_bp)" "$msg" ;;
+  esac
+done
+for _bp in '트래커=clickup | 대상=900 | 원 티켓=' '트래커=clickup | 원 티켓=86abc | 대상=900' '트래커=clickup | 대상=900 | 원 티켓=86/abc'; do
+  bsx_fresh RB9 "- \`베이스 발행\` | $_bp"
+  bsx_snapmsg "$WORK/bsx-RB9.md"
+  case "$rc/$msg" in
+    0/*) bad "80:원 티켓 형식 오류는 행 형식 오류다 ($_bp)" "$msg" ;;
+    *"「베이스 발행」 행의 형식이 어긋났습니다"*) ok "80:원 티켓 형식 오류는 행 형식 오류다 ($_bp)" ;;
+    *) bad "80:원 티켓 형식 오류는 행 형식 오류다 ($_bp)" "$msg" ;;
+  esac
+done
 # The binding digest, computed from the manifest by the driver's own function
 # and appended; then the one row is changed and nothing else.
 bsx_fresh RB9 '- `베이스 발행` | 트래커=github | 대상=t/infra'
