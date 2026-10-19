@@ -32221,7 +32221,7 @@ gate_verb_act() {
       rv_ok=0
       if [ "$GATE_TRIGGER" = "라우터 판단" ]; then
         [ -z "$rv_f" ] && [ -n "$GATE_TRIGGER_REASON" ] && rv_ok=1
-      elif [ -z "$GATE_TRIGGER_REASON" ] && printf '%s\n' "$rv_f" | grep -qxF -- "$GATE_TRIGGER"; then
+      elif [ -z "$GATE_TRIGGER_REASON" ] && grep -qxF -- "$GATE_TRIGGER" <<<"$rv_f"; then
         rv_ok=1
       fi
     fi
