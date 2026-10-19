@@ -11,4 +11,5 @@
   Partition by `검증 시점` into **three** buckets — `구현 전` | `구현 중(<phase>)` | `구현 후` — with a two-step lookup:
   **Step 1 (presence)** `^(- )?(\*\*검증 시점\*\*|검증 시점): (.+)$`, then **Step 2 (value)** with the arm pinned per bucket —
   `^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 전$` | `^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 중\(.+\)$` | `^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 후$`.
+  `구현 후` is for post-landing inputs, or the item's `차단 부류` is `사람-환경` or `외부-준비`.
 - **1.5b — Consent gate**: a `구현 후` item is disclosed as "관측 창 미개시 — 미실행".

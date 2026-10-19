@@ -42,6 +42,8 @@ The question tool is absent from the Step 0 roster and from every step below, in
 
 Read `${CLAUDE_SKILL_DIR}/../design-discuss-unattended/SKILL.md` and take from it, unchanged: the discriminator `CC_PIPELINE_RUN_ID` and the two dispatchers; the park record and the halt record (driver dispatch) and their mechanics; the **nine park sites** and the **seven driver-dispatch sites**. One driver site is renamed here: **`slicing-unknown` reads `split-unrepairable`** — a base document has no slicing section, and the repair that can fail is the one of `base-split.py check` (Step 7U below).
 
+Two rules are added to what is taken. **This arm's own halt records write `**스킬**: design-base-unattended`**, never the discuss arm's name the record template fixes — the gate reads that line to refuse the seat's answer to a base run's ladder halt. **A resumed turn follows the two ladder branches of the discuss arm's `### Resumed turns`** (`잔여로 두고 동결` and `골격 재검토`) as written; in this arm the ladder halt's `**추천**` is always `(없음)`, so both answers come from a person.
+
 ### Per-grade disposition
 
 The attended skill marks its ask points with a judgment grade (`${CLAUDE_SKILL_DIR}/../_common/judgment-grade.md`); this arm's disposition is per grade, as in `design-discuss-unattended`:
