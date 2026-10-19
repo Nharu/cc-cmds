@@ -18499,17 +18499,19 @@ gate_run_scope_reconverge_admitted() {
   # or a re-convergence that parked on purpose when the act carries a halt
   # answer (GATE_CARRY_ANSWER).
   #
-  # A CARRY LOOKS PAST THE DEATHS OF ITS OWN ANSWER. An attempt that carried
-  # this answer and died before its session started (`세션 id=미상`, or a
+  # A CARRY LOOKS PAST PRE-SESSION DEATHS. An attempt that carried an answer
+  # and died before its session started (`답 운반` with `세션 id=미상`, or a
   # waiter settled with `관측=스폰 전 대기 중` after its supervisor vanished)
   # never read the card, so the key still stands where the park left it; the
   # carry check counts those deaths against its cap, and this reading must not
-  # refuse the very retry the cap is counting. Only rows carrying the same
-  # answer are passed over — any other row after the park still decides.
+  # refuse the very retry the cap is counting. Which answer the dead attempt
+  # carried does not matter: a person may answer the record again after it,
+  # and the consumer passes over the same rows whatever answer they carry. A
+  # crash with a real session still decides.
   local last
   [ -z "$(gate_segment_field "$1" '상태')" ] || return 1
   if [ -n "${GATE_CARRY_ANSWER:-}" ]; then
-    last=$( { gate_stage_result_rows_of "$1" || true; } | LC_ALL=C awk -v ln="$GATE_CARRY_ANSWER" '
+    last=$( { gate_stage_result_rows_of "$1" || true; } | LC_ALL=C awk '
       function fld(line, name,   n, i, a, s, v) {
         n = split(line, a, /\|/); v = ""
         for (i = 2; i <= n; i++) {
@@ -18521,8 +18523,8 @@ gate_run_scope_reconverge_admitted() {
       NF { r[++n] = $0 }
       END {
         for (i = n; i >= 1; i--) {
-          if (fld(r[i], "답 운반") == ln \
-              && (fld(r[i], "세션 id") == "미상" || index(fld(r[i], "관측"), "스폰 전 대기 중") == 1)) continue
+          if ((fld(r[i], "답 운반") != "" && fld(r[i], "세션 id") == "미상") \
+              || index(fld(r[i], "관측"), "스폰 전 대기 중") == 1) continue
           print r[i]; exit
         }
       }')
@@ -38339,21 +38341,23 @@ gate_step_deferred_line() {
   # again with the person's answer. The head `1 답 이월 대기 — ` is fixed;
   # `gate_defer_only_left` reads the return value, not the line.
   #
-  # The last row is read past the pre-session deaths of this same answer — a
-  # row carrying `답 운반=<the line>` with `세션 id=미상`, or a waiter settled
-  # with `관측=스폰 전 대기 중` — by the predicate the consumer, the carry cap
-  # and the run-scope admission use: such an attempt never read the card, so
-  # the key still stands where the park left it. Any other row still decides.
+  # The last row is read past pre-session deaths — a row carrying any
+  # `답 운반` with `세션 id=미상`, or a waiter settled with `관측=스폰 전 대기
+  # 중` — by the predicate the consumer and the run-scope admission use: such
+  # an attempt never read the card, so the key still stands where the park
+  # left it, whichever answer it carried, since a person may answer the record
+  # again after it. A crash with a real session still decides.
   local ln last r
   ln=$(gate_key_deferred_answer "$1")
   [ -n "$ln" ] || return 1
   last=
   while IFS= read -r r; do
     [ -n "$r" ] || continue
-    if [ "$(gate_row_field "$r" '답 운반')" = "$ln" ]; then
-      [ "$(gate_row_field "$r" '세션 id')" = '미상' ] && continue
-      case "$(gate_row_field "$r" '관측')" in '스폰 전 대기 중'*) continue ;; esac
+    if [ -n "$(gate_row_field "$r" '답 운반')" ] \
+       && [ "$(gate_row_field "$r" '세션 id')" = '미상' ]; then
+      continue
     fi
+    case "$(gate_row_field "$r" '관측')" in '스폰 전 대기 중'*) continue ;; esac
     last=$r
   done <<EOF
 $( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })

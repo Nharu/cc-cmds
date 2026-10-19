@@ -37727,8 +37727,8 @@ check "93: R8 정상 완료로 끝난 재수렴 뒤의 런 스코프 재수렴�
 lsr93_l=$(lsr75_new rw3)
 lsr93_park "$lsr93_l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
 check "93: R8 대조 — 의도된 park 로 끝난 감사 뒤에는 운반이 아니어도 받는다" "$(lsr93_rsa "$lsr93_l" "")" "yes"
-# 세션 전 사망 — 답을 실은 시도가 세션 전에 죽어도 그 답의 운반은 다시 받는다(사망
-# 상한이 세는 재시도). 다른 답을 실은 사망 행이나 세션이 있던 크래시 행은 건너뛰지 않는다.
+# 세션 전 사망 — 답을 실은 시도가 세션 전에 죽으면 그 시도는 카드를 읽지 않았으므로
+# 어느 답을 실었든 건너뛴다(사람이 그 뒤에 다시 답할 수 있다). 세션이 있던 크래시 행은 건너뛰지 않는다.
 lsr93_rsd() {  # lsr93_rsd <이름> <사망 행의 답 운반 오프셋> <세션 id> — 런 스코프 재수렴 park 뒤 사망 행 하나를 둔 원장의 「운반|비운반」
   local l r ln
   l=$(lsr75_new "$1")
@@ -37742,7 +37742,7 @@ lsr93_rsd() {  # lsr93_rsd <이름> <사망 행의 답 운반 오프셋> <세션
   printf '%s|%s' "$(lsr93_rsa "$l" "$ln")" "$(lsr93_rsa "$l" "")"
 }
 check "93: R8 답을 실은 시도가 세션 전에 죽은 뒤의 런 스코프 재수렴 운반은 받는다" "$(lsr93_rsd rw4 0 미상)" "yes|no"
-check "93: R8 대조 — 다른 답을 실은 사망 행 뒤에는 받지 않는다" "$(lsr93_rsd rw5 1 미상)" "no|no"
+check "93: R8 다른 답을 실은 사망 행 뒤에도 운반은 받는다" "$(lsr93_rsd rw5 1 미상)" "yes|no"
 check "93: R8 대조 — 세션이 있던 크래시 행 뒤에는 받지 않는다" "$(lsr93_rsd rw6 0 "$lsr93_sid")" "no|no"
 # 스폰 전 대기자 사망 — 대기 감독자가 스폰 전에 사라지면 정산이 `세션 id=-` 와
 # `관측=스폰 전 대기 중` 으로 같은 답 운반을 싣는 행을 쓴다. 이 행도 세션 전 사망이다.
@@ -37760,7 +37760,20 @@ lsr93_rsw() {  # lsr93_rsw <이름> <사망 행의 답 운반 오프셋> — 런
   printf '%s|%s' "$(lsr93_rsa "$l" "$ln")" "$(lsr93_rsa "$l" "")"
 }
 check "93: R8 답을 실은 대기자가 스폰 전에 사라진 뒤의 런 스코프 재수렴 운반은 받는다" "$(lsr93_rsw rw7 0)" "yes|no"
-check "93: R8 대조 — 다른 답을 실은 대기자 정산 행 뒤에는 받지 않는다" "$(lsr93_rsw rw8 1)" "no|no"
+check "93: R8 다른 답을 실은 대기자 정산 행 뒤에도 운반은 받는다" "$(lsr93_rsw rw8 1)" "yes|no"
+# 재답 — 첫 답 L1 의 운반이 세션 전에 죽은 뒤 사람이 같은 기록에 다른 선택지로 다시 답하면
+# L2 의 운반을 받는다. L1 사망 행이 판정을 정하지 않는다.
+lsr93_l=$(lsr75_new rw9)
+lsr93_r="${lsr93_l%/*}/halt"
+lsr93_park "$lsr93_l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
+lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#1.md" design-audit-unattended 'adopt as a requirement' >/dev/null
+LSR93_SCOPE="감사 종합 요구 $lsr93_r/A1#1.md" lsr93_park "$lsr93_l" A1 2 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+lsr93_x=$(lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#2.md" design-reconverge 적용)
+lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=1" \
+  "실행 버전=3" "세션 id=미상" "계정=u2" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_x" >/dev/null 2>&1
+lsr93_ln=$(lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#2.md" design-reconverge 기각)
+check "93: R8 L1 이 세션 전에 죽은 뒤 사람이 다시 답한 L2 의 런 스코프 운반을 받는다" \
+  "$( [ "$lsr93_ln" != "$lsr93_x" ] && lsr93_rsa "$lsr93_l" "$lsr93_ln")" "yes"
 
 lsr93_l=$(lsr75_new rn1)
 lsr93_park "$lsr93_l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
@@ -38263,7 +38276,7 @@ check "93: TD2 이월된 세그먼트는 답 이월 대기이고 대조 세그�
   "1 답 이월 대기 — S3 의 중단 답(원장 $(lsr93_in "$lsr93_l" gate_key_deferred_answer S3 2>/dev/null) 번째 줄)을 다음 런이 이어받습니다#1 세그먼트 S5 의 상태가 종단이 아닙니다 (실행중)"
 # TD3 — park 와 이월 사이에 그 답을 실은 시도가 세션 전에 죽었어도 키는 답 이월 대기다.
 # 세션 전 사망(`세션 id=미상` 크래시, 스폰 전 대기자 정산)은 카드를 읽지 않았으므로
-# park 가 키의 마지막 행으로 남는다. 다른 답을 실은 사망과 세션이 생긴 뒤의 크래시는
+# 어느 답을 실었든 park 가 키의 마지막 행으로 남는다. 세션이 생긴 뒤의 크래시는
 # 여전히 결정한다. 세그먼트를 실행중으로 두어, 건너뛰지 못하면 끝맺음이 서지 않게 한다.
 lsr93_dfd() {
   # lsr93_dfd <이름> <세션 id> <종단 부류> <관측|-> <답 운반 줄 차이> — park·답 뒤에 사망 행
@@ -38289,8 +38302,23 @@ lsr93_tdd() {  # lsr93_tdd <원장> — 「종료 조건 1 이 답 이월 대기
 lsr93_wobs='관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 2026-10-20T00:00:00Z'
 check "93: TD3 같은 답의 세션 전 사망(미상 크래시·스폰 전 대기자) 뒤에 이월된 키는 답 이월 대기이고 런이 끝난다" \
   "$(lsr93_tdd "$(lsr93_dfd td3a 미상 크래시 - 0)")/$(lsr93_tdd "$(lsr93_dfd td3b - '외부 종료' "$lsr93_wobs" 0)")" "1|y/1|y"
-check "93: TD3 대조 — 다른 답을 실은 세션 전 사망·세션이 생긴 뒤의 크래시는 키를 답 이월 대기로 두지 않는다" \
-  "$(lsr93_tdd "$(lsr93_dfd td3c 미상 크래시 - 1000)")/$(lsr93_tdd "$(lsr93_dfd td3d "$lsr93_sid2" 크래시 - 0)")" "0|n/0|n"
+check "93: TD3 다른 답을 실은 세션 전 사망 뒤에 이월된 키도 답 이월 대기이고 런이 끝난다" \
+  "$(lsr93_tdd "$(lsr93_dfd td3c 미상 크래시 - 1000)")" "1|y"
+check "93: TD3 대조 — 세션이 생긴 뒤의 크래시는 키를 답 이월 대기로 두지 않는다" \
+  "$(lsr93_tdd "$(lsr93_dfd td3d "$lsr93_sid2" 크래시 - 0)")" "0|n"
+# 재답 — 첫 답 L1 의 운반이 세션 전에 죽은 뒤 사람이 같은 기록에 다른 선택지로 다시 답하고
+# 그 L2 가 이월되면, L1 사망 행이 아니라 park 가 키의 마지막 행이다.
+lsr93_l=$(lsr75_new td3e)
+lsr93_park "$lsr93_l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_x=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/S3#1.md" design-reconverge 적용)
+lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=S3" "스테이지=S3" "종류=reconverge" "종료 코드=-" "실행 버전=2" \
+  "세션 id=미상" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_x" >/dev/null 2>&1
+lsr93_ln=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/S3#1.md" design-reconverge 기각)
+lsr93_in "$lsr93_l" gate_carry_defer_row infra S3 S3 "B:S3#3" "$lsr93_ln" '마감 경과' >/dev/null 2>&1
+lsr93_in "$lsr93_l" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+lsr93_hrow "$lsr93_l" 이월
+check "93: TD3 L1 이 세션 전에 죽은 뒤 사람이 다시 답한 L2 가 이월된 키는 답 이월 대기이고 런이 끝난다" \
+  "$( [ "$lsr93_ln" != "$lsr93_x" ] && lsr93_in "$lsr93_l" gate_key_deferred_answer S3 2>/dev/null)|$(lsr93_tdd "$lsr93_l")" "$lsr93_ln|1|y"
 
 # ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다
