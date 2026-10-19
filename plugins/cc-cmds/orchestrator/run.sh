@@ -1930,6 +1930,84 @@ implement_slice_count() {
 }
 
 # ---------------------------------------------------------------------------
+# Readers of one `### R<n>.` item of `## 구현 시 검증 항목`, shared with the
+# gate's check of a seat answer to a `/ ladder-unsettled` halt record. Every
+# key is read in the tolerant spelling `^(- )?(\*\*<key>\*\*|<key>): <value>$`.
+#
+# residual_item_lines <doc> <R<n>> — the item's body, heading excluded.
+residual_item_lines() {
+  defenced "$1" | RIL_LABEL="$2" awk '
+    /^## / { if (inr) exit }
+    $0 == "## 구현 시 검증 항목" { inr = 1; next }
+    !inr { next }
+    /^### / {
+      if (inb) exit
+      if (match($0, /^### R[0-9]+/) && substr($0, 5, RLENGTH - 4) == ENVIRON["RIL_LABEL"]) inb = 1
+      next
+    }
+    inb { print }
+  '
+}
+
+# residual_item_value <doc> <R<n>> <key> — the first value of <key>, trailing
+# blanks trimmed; nothing when the item or the key is absent.
+residual_item_value() {
+  residual_item_lines "$1" "$2" | RIV_KEY="$3" awk '
+    {
+      k = ENVIRON["RIV_KEY"]; s = $0
+      sub(/^- /, "", s)
+      if (index(s, "**" k "**: ") == 1) s = substr(s, length(k) + 7)
+      else if (index(s, k ": ") == 1) s = substr(s, length(k) + 3)
+      else next
+      sub(/[ \t\r]+$/, "", s); print s; exit
+    }
+  '
+}
+
+# residual_items_pending <doc> — the label (R<n>) of every item whose grade
+# still reads `구현 시 검증`, one per line, in document order.
+residual_items_pending() {
+  defenced "$1" | awk '
+    /^## / { if (inr) exit }
+    $0 == "## 구현 시 검증 항목" { inr = 1; next }
+    !inr { next }
+    /^### / { label = ""; if (match($0, /^### R[0-9]+/)) label = substr($0, 5, RLENGTH - 4); next }
+    label != "" && /^(- )?(\*\*검증 등급\*\*|검증 등급): 구현 시 검증$/ { print label }
+  '
+}
+
+# residual_item_block_class <doc> <R<n>> — the item's block class. A
+# `차단 부류` of `코드-부재` pairs only with `잔여 사유: 구현 필요`, and
+# `사람-환경`/`외부-준비` only with `잔여 사유: 검증 차단`; a `구현 필요` item
+# without the field reads `코드-부재`. Anything else — no field on another
+# reason, a value outside the three, a mismatched pair — reads `미분류`.
+residual_item_block_class() {
+  local cls reason
+  cls=$(residual_item_value "$1" "$2" '차단 부류')
+  reason=$(residual_item_value "$1" "$2" '잔여 사유')
+  case "$cls" in
+    '') [ "$reason" = "구현 필요" ] && { printf '코드-부재'; return 0; } ;;
+    코드-부재) [ "$reason" = "구현 필요" ] && { printf '%s' "$cls"; return 0; } ;;
+    사람-환경|외부-준비) [ "$reason" = "검증 차단" ] && { printf '%s' "$cls"; return 0; } ;;
+  esac
+  printf '미분류'
+}
+
+# residual_item_w3_marked <doc> <R<n>> — 0 when the item's `필요한 것` line is
+# the W3 form `**필요한 것**: 저장소 <경로> · 프로필 <이름> — 존재 확인 <date>`.
+residual_item_w3_marked() {
+  residual_item_lines "$1" "$2" \
+    | grep -qE '^(- )?(\*\*필요한 것\*\*|필요한 것): 저장소 [^ ]+ · 프로필 [^ ]+ — 존재 확인 [0-9]{4}-[0-9]{2}-[0-9]{2}$'
+}
+
+# residual_item_after_explicit <doc> <R<n>> — 0 when the item states
+# `검증 시점: 구현 후` on a line of its own: the same anchored line
+# residual_share_missing excuses.
+residual_item_after_explicit() {
+  residual_item_lines "$1" "$2" | grep -qE '^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 후[ \t]*$'
+}
+
+# ---------------------------------------------------------------------------
 # residual_share_missing <doc> <segment> [<halt dir>] [<plan file>]
 #
 # The verbatim `### R<n>` headings of `## 구현 시 검증 항목` that are this

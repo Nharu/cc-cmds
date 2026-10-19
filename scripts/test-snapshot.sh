@@ -2216,8 +2216,8 @@ LEDGER="$LEDGER_SAVE"
 # stays, and the close row carries `처분 사유=자동 해소`.
 #
 # Adoption needs a class that may be adopted: inside the judgment vocabulary and
-# not one of the two that hand risk to the user. A judgment with no class, a
-# class outside the vocabulary, or one of those two does not wait either — it
+# not one of the classes that hand risk to the user. A judgment with no class, a
+# class outside the vocabulary, or one of those classes does not wait either — it
 # ends as a refusal.
 # ---------------------------------------------------------------------------
 J_MANIFEST="$WT/plan-r2.md"
@@ -2283,7 +2283,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 jact 등급=2 기준="픽스처를 다시 만들지" 근거="오래된 픽스처가 있다"
 check "대기 중이던 부류 없는 판단은 재제출 때 자동 해소가 거절로 닫는다" "$?" "3"
 
-# The two classes that hand risk to the user are resolved as a refusal: the run
+# The classes that hand risk to the user are resolved as a refusal: the run
 # still does not wait, and it does not take the risk on anyone's behalf.
 jact 등급=2 "판단 부류=팀-구성" 기준="팀을 소집할지" 근거="발견이 많다"
 check "사용자에게 위험을 넘기는 부류는 대기 대신 거절로 끝난다" "$?" "3"

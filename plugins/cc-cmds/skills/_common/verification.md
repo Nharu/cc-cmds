@@ -63,7 +63,7 @@ The field key is the single literal **`검증 등급`** everywhere (no `상태` 
 | 2 | `반증됨(실패)` | ledger `### V<n>` | design-session verifier / review main session (run-now) | same as #1; `영향 결정` cites the decision **changed** by the refutation (preserved as refutation evidence) |
 | 2′ | `반증됨(실패)` | residual `### R<n>` flip | implement only (W1) | W2 note line + failure-surface utterance |
 | 3 | `미검증` | Step-3 inter-agent messages only | teammate / lead | none — **MUST NOT appear in a saved document** (sweep pass condition: both the full-line and inline-tag literal forms are document-wide grep 0; the absence-proof exception of the detection grammar in §3.4) |
-| 4 | `구현 시 검증` | at `### R<n>` creation (the only save-time residual token) | design/design-lite lead (via the transformation move) / review main session (`잔여 항목으로 기록` disposition) | `주장` `분류` `잔여 사유` `차단 사유` `검증 레시피` `기대 결과` `실패 시 영향`; optional: `필요한 것` `검증 시점` `실행 주의` `예상 소요` `관측 시점` |
+| 4 | `구현 시 검증` | at `### R<n>` creation (the only save-time residual token) | design/design-lite lead (via the transformation move) / review main session (`잔여 항목으로 기록` disposition) | `주장` `분류` `잔여 사유` `차단 사유` `검증 레시피` `기대 결과` `실패 시 영향`; optional: `필요한 것` `차단 부류` `검증 시점` `실행 주의` `예상 소요` `관측 시점` |
 | 5 | `검증불가(드리프트)` | residual `### R<n>` flip | implement only (Rung 3) | W2 note line (drift cause) + failure-surface utterance |
 
 > **Enumeration ≠ rendering.** This table (and the §4/§5 field lists, and bulleted field/value enumerations such as §3.1) fixes *which* fields exist and *what bytes* each token is; it does NOT prescribe the markdown *line rendering*. The one normative line rendering is the CANON form **`**key**: value`** — bold key, no leading bullet `- `, exactly one ASCII space after the colon — shown as a verbatim example block in §4 and §5. A markdown bullet used to enumerate a field/value in this contract's prose is a documentation device, not a rendering template; do not copy the bullet (or drop the bold) into an emitted V/R field line.
@@ -78,6 +78,8 @@ The field key is the single literal **`검증 등급`** everywhere (no `상태` 
 - `분류 제외` — a category dropped by lite.
 
 The free-prose `차단 사유` is ALWAYS mandatory alongside — it is the audit surface of the dual backstop.
+
+**`차단 부류`** (optional) is closed: `코드-부재` (no code yet) pairs with `구현 필요`; `사람-환경` (a person's environment) and `외부-준비` (a resource a person prepares) with `검증 차단`. No line on `구현 필요` reads `코드-부재`; else no line, another value or a mismatched pair reads `미분류`.
 
 ### 3.2 `실행 주의` — closed class of 4 values
 
@@ -152,11 +154,12 @@ Body marking is a **token-free anchor reference** only — at the end of the cla
 
 ## 5. Residual-item contract — `## 구현 시 검증 항목`
 
-An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` and before `## 권장 구현 순서` (the two new sections straddle the unresolved-issues section without touching its parse region). `implement` Reads this contract section wholesale, so it is self-contained here. **A consumer never narrows an enum by omission**: a value its own routing prose does not name is an **unhandled** value, not an excluded one, and reaching one is a defect to surface — never a silent default into another bucket.
+An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` and before `## 권장 구현 순서`. `implement` Reads this contract section wholesale, so it is self-contained here. **A consumer never narrows an enum by omission**: a value its own routing prose does not name is an **unhandled** value, not an excluded one, and reaching one is a defect to surface — never a silent default into another bucket.
 
 - `### R<n>. <claim title>` sub-blocks only. Fields are the required + optional set of token #4. Optional-field definitions:
-    - `검증 시점` = `구현 전` | `구현 중(<phase>)` | `구현 후`. The first two are the consumer's gate partitions. **The default for an item without the line depends on its `잔여 사유`.** An item whose `잔여 사유` is `구현 필요` defaults to `구현 중(<phase>)`, where `<phase>` is the phase of the consumer's own plan whose tasks first create what the recipe runs against; the consumer names that phase in its plan, and when no phase in the invocation's scope creates it, the item is an out-of-scope `구현 중` item. Every other `잔여 사유` defaults to `구현 전`. The split is not a convenience: `구현 필요` means the filter test answered NO — the claim cannot be settled until an implementation artifact exists — so a `구현 전` reading of it is self-contradictory. Its recipe either runs against nothing (the tests, factory or file it names do not exist yet) or passes vacuously on a tree without the change, and an unattended consumer halts on it before writing a line. Measured: a greenfield design whose nine residual items all read `구현 필요` and carried no `검증 시점` line stopped its implement stage at the pre-implementation gate, and the run could not move past it. Authors still write the line whenever they know the phase; the default only covers its absence. **`구현 후`** marks a residual whose observation is obtainable only **after the design has landed and been used** — a usage-data recipe whose inputs are N real invocations or accumulated downstream artifacts, none of which exist while the design is being implemented. It is therefore **not a consumer gate**: the consumer discloses the item, leaves it at `구현 시 검증` for a later invocation to re-discover, and does **not** read the missing verdict as a drift (nothing failed — the observation window has not opened). Author it only when the recipe's inputs are genuinely post-landing; a claim settleable at implementation time is `구현 전` or `구현 중(<phase>)`. The absence default never yields `구현 후`.
+    - `검증 시점` = `구현 전` | `구현 중(<phase>)` | `구현 후`. The first two are the consumer's gate partitions. **The default for an item without the line depends on its `잔여 사유`.** An item whose `잔여 사유` is `구현 필요` defaults to `구현 중(<phase>)`, where `<phase>` is the phase of the consumer's own plan whose tasks first create what the recipe runs against; the consumer names that phase in its plan, and when no phase in the invocation's scope creates it, the item is an out-of-scope `구현 중` item. Every other `잔여 사유` defaults to `구현 전`. `구현 필요` means no implementation artifact exists to settle the claim yet, so a `구현 전` reading runs its recipe against nothing or passes it vacuously, and halts an unattended consumer. Authors still write the line whenever they know the phase; the default only covers its absence. **`구현 후`** marks a residual whose observation is obtainable only **after the design has landed and been used** — a usage-data recipe over N real invocations or accumulated downstream artifacts. It is therefore **not a consumer gate**: the consumer discloses the item, leaves it at `구현 시 검증` for a later invocation to re-discover, and does **not** read the missing verdict as a drift (nothing failed — the observation window has not opened). Author it only when the recipe's inputs are genuinely post-landing, or when the item's `차단 부류` is `사람-환경` or `외부-준비` (a person confirms it after the merge); otherwise a claim settleable at implementation time is `구현 전` or `구현 중(<phase>)`. The absence default never yields `구현 후`, and a stated one is the whole line `**검증 시점**: 구현 후`.
     - `필요한 것` = the environment / credentials / data needed to clear the block (same meaning as the reproduction blocker field of the same name).
+    - `차단 부류` — §3.1.
     - `관측 시점` = external-environment residuals only — the date of the external observation referenced when the recipe was authored (distinct from the ledger's `관측 일시`, which is the date a verification was performed); an input to implement's drift-ladder staleness/flake judgment.
     - `실행 주의` / `예상 소요` = per §3.2 / free-form duration estimate.
 - 0 items → omit the section; the consumer treats absence as "no gate".
@@ -176,7 +179,7 @@ An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` a
 **검증 등급**: 구현 시 검증
 ```
 
-(Optional fields — `필요한 것` / `검증 시점` / `실행 주의` / `예상 소요` / `관측 시점` — render with the same `**key**: value` form. On flip, `implement` rewrites the `검증 등급` line to a terminal token and appends `**구현 시 검증 기록**: …` directly after it.)
+(Optional fields — `필요한 것` / `차단 부류` / `검증 시점` / `실행 주의` / `예상 소요` / `관측 시점` — render with the same `**key**: value` form. On flip, `implement` rewrites the `검증 등급` line to a terminal token and appends `**구현 시 검증 기록**: …` directly after it.)
 
 ### 5.1 The three birth paths of a residual item
 
@@ -190,7 +193,7 @@ The ledger holds only performed-and-completed entries; a blocked attempt lives i
 
 ### 5.2 Well-formedness predicate
 
-An R-item is MALFORMED if any of: a required field is missing / it contains a `/tmp` literal / `실패 시 영향` is an unresolved anchor / it uses a token or enum value outside this vocabulary / it carries a terminal token (`검증됨(통과)`/`반증됨(실패)`/`검증불가(드리프트)`) without an adjacent `**구현 시 검증 기록**:` line (per §3.3).
+An R-item is MALFORMED if any of: a required field is missing / it contains a `/tmp` literal / `실패 시 영향` is an unresolved anchor / it uses a token or enum value outside this vocabulary / its `차단 부류` breaks §3.1's pairing / it carries a terminal token (`검증됨(통과)`/`반증됨(실패)`/`검증불가(드리프트)`) without an adjacent `**구현 시 검증 기록**:` line (per §3.3).
 
 **Line rendering (the bullet/bold axes) is NOT a malformedness axis.** A non-canonical field-line rendering is a §3.4-tolerant-readable form, not a malformed item — the detection grammar reads all four renderings and the consumer's tolerant W1 lookup flips a legacy rendering, so a bullet/no-bold line is cosmetic drift, not a flip-breaker. It is surfaced only as a **trivial** style note by whatever pass is reading the document, scoped to lines that pass actually edited, never via this predicate and never as a retro-flag of untouched lines.
 
