@@ -165,6 +165,26 @@ case "${ROUTE_OBSERVE_KEEP_S:-}" in
   10368000) ;;
   *) readonly ROUTE_OBSERVE_KEEP_S=10368000 ;;
 esac
+# 런의 직전 계정 기록과 부여 기록. 런 디렉터리의 `route-affinity` 는 그 런이 마지막으로
+# 받은 계정 하나이고, 같은 런의 live 임대에 있거나 단계가 끝난 지 TTL 안이면 유효하다.
+# 유지 문턱은 5시간 상한의 백분율이다 — 상한에 비례해야 상한을 바꿔도 뜻이 남는다.
+# `route-picks.jsonl` 은 부여마다 고른 근거 한 줄이고 덧붙이기만 한다.
+case "${ROUTE_AFFINITY_SCHEMA:-}" in
+  'cc-cmds-route-affinity v1') ;;
+  *) readonly ROUTE_AFFINITY_SCHEMA='cc-cmds-route-affinity v1' ;;
+esac
+case "${ROUTE_PICK_SCHEMA:-}" in
+  'cc-cmds-route-pick v1') ;;
+  *) readonly ROUTE_PICK_SCHEMA='cc-cmds-route-pick v1' ;;
+esac
+case "${ROUTE_AFFINITY_TTL_S:-}" in
+  3600) ;;
+  *) readonly ROUTE_AFFINITY_TTL_S=3600 ;;
+esac
+case "${ROUTE_AFFINITY_HOLD_PCT:-}" in
+  50) ;;
+  *) readonly ROUTE_AFFINITY_HOLD_PCT=50 ;;
+esac
 
 route__dir() { cd "$(dirname "${BASH_SOURCE[0]}")" && pwd; }
 
@@ -903,7 +923,29 @@ def rt_grant_new($p; $a; $adm; $basis):
    reservation_bp: $adm.reservation_bp, admitted_as: $adm.admitted_as, observed: rt_observed($p.groups[$a.group]),
    lease_key: $p.okey, nonce: ($p.c.fresh_nonce // null), dormant: false, cost: $adm.cost,
    order: (rt_phase($p.c) | {phase, phase_source, until_epoch, burst_length_s, burst_length_source}
-           + {threshold_bp: null, ratio_source: null, tier: null, r7_bp: null, admitted: null})};
+           + {threshold_bp: null, ratio_source: null, tier: null, r7_bp: null, admitted: null,
+              picked_by: null, load5_bp: null, affinity_account: null, affinity_hold_bp: null})};
+# 새 단계 정렬의 키 배열과 그 자리 이름. 두 단계 모두 대여 층·U 부류 다음이 유지
+# (유효한 직전 계정이고 그 그룹의 load5 가 문턱 아래면 0), 그다음 버려질 한도 W7,
+# 분산(load5 작은 순), 주간 키, 붙든 계정, id 다. 쉼의 주간 키는 층과 r7 두 자리다.
+def rt_new_sticky($p): .a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end;
+def rt_new_kb($p):
+  [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .aff, (0 - .w7), .load5,
+   (0 - (if .a.lend_enrolled == true
+         then ((.a.lend.dec.ceiling_bp // 0) - (rt_ueff($p.groups[.a.group].windows.seven_day) // 10000))
+         else .a.remaining_bp end)),
+   rt_new_sticky($p), .a.id];
+def rt_new_kr($p):
+  [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .aff, (0 - .w7), .load5,
+   .tier, (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end), rt_new_sticky($p), .a.id];
+def rt_new_names_b: ["lend", "class", "affinity", "w7", "spread", "weekly", "sticky", "id"];
+def rt_new_names_r: ["lend", "class", "affinity", "w7", "spread", "weekly", "weekly", "sticky", "id"];
+# 정렬 첫째와 둘째의 키 배열이 처음 갈리는 자리의 이름. 후보가 하나면 `only` 다.
+def rt_picked_by($ks; $names):
+  if ($ks | length) < 2 then "only"
+  else $ks[0] as $x | $ks[1] as $y
+    | ([range(0; $x | length) | select($x[.] != $y[.])] | .[0]) as $i
+    | if $i == null then "id" else $names[$i] end end;
 def rt_nextseq($p): ((([($p.c.leases.items // [])[] | .seq | select(type == "number")] | max) // 0) + 1);
 def rt_rec_new($p; $e):
   {schema: $p.schema, kind: "grant", run_id: $p.c.request.run_id, lineage: $p.c.request.lineage, nonce: $e.nonce,
@@ -1033,15 +1075,26 @@ def rt_new($p; $basis0; $excl):
       | if ($cands | length) > 0 then
           # 대여 층이 두 단계 모두에서 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
           rt_phase($p.c) as $ph
+          # 유지. 직전 계정 H 는 문맥의 기록이 같은 런의 것이고, 그 계정이 이 런의 live
+          # 임대에 있거나 기록 시각이 TTL 안일 때만이다. 설정에 유지 칸이 없으면 끈다.
+          | ($p.c.config.affinity // null) as $ac
+          | ($p.c.affinity // null) as $f
+          | (if $ac == null then null
+             elif ($f | type) == "object" and $f.run_id == $p.c.request.run_id and (($f.account | type) == "string")
+                  and (any(($p.c.sticky // [])[]; . == $f.account)
+                       or ((($f.at_epoch | type) == "number") and (($p.c.now - $f.at_epoch) <= $ac.ttl_s)))
+             then $f.account else null end) as $H
+          | (if $ac == null then null else ((($p.c.config.cap_bp // 10000) * $ac.hold_pct / 100) | round) end) as $Taff
+          # 분산. load5 는 그룹의 5시간 사용(창이 풀렸으면 0)에 그 그룹 live 임대의 5시간
+          # 예약 합을 더한 지역값이다 — r7 처럼 `rt_aview` 와 그룹 보기에는 싣지 않는다.
+          | [$cands[] | $p.groups[.a.group] as $G | $G.windows.five_hour as $x
+               | (if $x == null or rt_ueff($x) == null then 10000 else rt_ueff($x) + ($G.sigma.five_hour // 0) end) as $l5
+               | . + {load5: $l5, aff: (if $H != null and .a.id == $H and $l5 < $Taff then 0 else 1 end)}] as $cands
           | (if $ph.phase == "burst" then
-               {best: ($cands | sort_by([(if .a.lend_enrolled == true then 1 else 0 end),
-                                         (if .a.class == "U" then 1 else 0 end), (0 - .w7),
-                                         (0 - (if .a.lend_enrolled == true
-                                               then ((.a.lend.dec.ceiling_bp // 0) - (rt_ueff($p.groups[.a.group].windows.seven_day) // 10000))
-                                               else .a.remaining_bp end)),
-                                         (.a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end), .a.id])
-                              | .[0]),
-                order: null}
+               ($cands | sort_by(rt_new_kb($p))) as $s
+               | {best: $s[0],
+                  order: {picked_by: rt_picked_by([$s[0:2][] | rt_new_kb($p)]; rt_new_names_b),
+                          load5_bp: $s[0].load5, affinity_account: $H, affinity_hold_bp: $Taff}}
              else
                # 쉼: 주간 여유 r7 이 문턱 T 아래인 계정을 작은 순으로 먼저 쓰고, 문턱 위는 큰
                # 순으로 그 뒤에 둔다. 주간 창을 모르는 계정은 층 2 이고 r7 을 세지 않는다.
@@ -1053,20 +1106,18 @@ def rt_new($p; $basis0; $excl):
                    | (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end) as $top
                    | (if $x.state == "unknown" then null else $top - rt_ueff($x) - $G.sigma.seven_day end) as $r7
                    | . + {r7: $r7, tier: (if $r7 == null then 2 elif $r7 < $T then 0 else 1 end)}] as $rc
-               | ($rc | sort_by([(if .a.lend_enrolled == true then 1 else 0 end),
-                                 (if .a.class == "U" then 1 else 0 end), (0 - .w7), .tier,
-                                 (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end),
-                                 (.a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end), .a.id])
-                      | .[0]) as $b
+               | ($rc | sort_by(rt_new_kr($p))) as $s
+               | $s[0] as $b
                | {best: $b,
                   order: {threshold_bp: $T, ratio_source: $rho.source, tier: (["below", "above", "unknown"][$b.tier]),
                           r7_bp: $b.r7,
                           admitted: {below: ([$rc[] | select(.tier == 0)] | length),
                                      above: ([$rc[] | select(.tier == 1)] | length),
-                                     unknown: ([$rc[] | select(.tier == 2)] | length)}}}
+                                     unknown: ([$rc[] | select(.tier == 2)] | length)},
+                          picked_by: rt_picked_by([$s[0:2][] | rt_new_kr($p)]; rt_new_names_r),
+                          load5_bp: $b.load5, affinity_account: $H, affinity_hold_bp: $Taff}}
              end) as $pick
-          | (rt_grant_new($p; $pick.best.a; $pick.best.adm; $basis)
-             | if $pick.order != null then .order += $pick.order else . end) as $e
+          | (rt_grant_new($p; $pick.best.a; $pick.best.adm; $basis) | .order += $pick.order) as $e
           | rt_env($e; "write"; rt_rec_new($p; $e))
         elif $p.shift and $p.pin == null then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null)
         elif $p.pin != null then rt_nocand($p; $pool)
@@ -1533,11 +1584,13 @@ route__config_json() {
     --argjson f5 "$ROUTE_COST_FLOOR_FIVE_HOUR" --argjson f7 "$ROUTE_COST_FLOOR_SEVEN_DAY" \
     --argjson hf "$ROUTE_COST_HYG_MIN_FRAMES" --argjson hc "$ROUTE_COST_HYG_MIN_COVER" \
     --argjson rm "$ROUTE_REST_MIN_MASS" \
+    --argjson at "$ROUTE_AFFINITY_TTL_S" --argjson ah "$ROUTE_AFFINITY_HOLD_PCT" \
     '{k: {default: {five_hour: $k5, seven_day: $k7}, shift: {five_hour: $ks, seven_day: $ks}},
       c: {five_hour: {default: $c5, by_kind: {}, by_group: {}}, seven_day: {default: $c7, by_kind: {}, by_group: {}}},
       cost: {max_age_s: $ca, max_n: $cn, min_n: $cm, floor: {five_hour: $f5, seven_day: $f7},
              hygiene: {min_frames: $hf, min_cover: $hc}},
-      cap_bp: $cap, ttl_s: {"stage-log": $tl, tracker: $tt}, file_stale_factor: $ff, rest_min_mass: $rm}'
+      cap_bp: $cap, ttl_s: {"stage-log": $tl, tracker: $tt}, file_stale_factor: $ff, rest_min_mass: $rm,
+      affinity: {ttl_s: $at, hold_pct: $ah}}'
 }
 
 route_cost_samples_read() {
@@ -1583,7 +1636,7 @@ route_gather_context() {
   # 에서 bp 로 옮긴다. 그 변수가 없는 셸에서는 null 이 되고 결정은 rc 2 로 닫힌다.
   # 비용 표본은 원문 그대로 `cost_samples` 에 싣고, 저장소 때문에 rc 2 로 닫지 않는다.
   local req="${1:-}" seat="${2:-}" now inv irc=0 inventory usage table leases frames run_id cap cfg bpath borrow bpj
-  local costs prog out phase lane
+  local costs prog out phase lane aff
   now=$(date -u +%s) || return 2
   printf '%s' "$req" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
   inv="${RUN_DIR:-}/inventory.json"
@@ -1628,13 +1681,23 @@ route_gather_context() {
     lane=$( { head -n 1 "$RUN_DIR/fleet-lane" 2>/dev/null || true; } | tr -d '[:space:]')
     lane=${lane:--}
   fi
+  # 런의 직전 계정 기록. 없거나 파싱되지 않거나 스키마·형이 틀리면 null 이고, 이 기록
+  # 때문에 rc 2 로 닫지 않는다 — 기록이 없을 때와 같은 판정으로 계속된다.
+  aff=null
+  if [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/route-affinity" ]; then
+    aff=$(jq -c -s --arg s "$ROUTE_AFFINITY_SCHEMA" \
+      'if length == 1 and (.[0] | type) == "object" and .[0].schema == $s and (.[0].run_id | type) == "string"
+          and (.[0].account | type) == "string" and (.[0].at_epoch | type) == "number"
+       then .[0] | {schema, run_id, account, at_epoch} else null end' "$RUN_DIR/route-affinity" 2>/dev/null) || aff=null
+    [ -n "$aff" ] || aff=null
+  fi
   prog='{now: $now, request: $req, inventory: $inv, usage: $usage, frames: $frames, leases: $leases,
       sticky: ([$leases.items[] | select(.run_id == $req.run_id and .kind == "grant" and .live == true) | .account] | unique),
       seat: ({config_dir: $seat} + (if $lane == "" then {} else {lane: $lane} end)), config: $cfg, deadline: ($req.deadline // null),
-      borrow: $borrow, borrow_path: $bp, phase: $phase, cost_samples: $cost_samples}'
+      borrow: $borrow, borrow_path: $bp, phase: $phase, cost_samples: $cost_samples, affinity: $aff}'
   set -- --argjson now "$now" --argjson req "$req" --argjson inv "$inventory" --argjson usage "$usage" \
     --argjson leases "$leases" --argjson frames "$frames" --argjson cfg "$cfg" --arg seat "$seat" \
-    --argjson borrow "$borrow" --argjson bp "$bpj" --argjson phase "$phase" --arg lane "$lane"
+    --argjson borrow "$borrow" --argjson bp "$bpj" --argjson phase "$phase" --arg lane "$lane" --argjson aff "$aff"
   # 판독 사이에 파일이 사라지거나 바뀌어 읽기가 실패하면 표본 없이 한 번 더 조립한다.
   if ! out=$(jq -cn "$@" --rawfile cost_samples "$costs" "$prog" 2>/dev/null); then
     [ "$costs" = /dev/null ] && return 2
@@ -2352,7 +2415,15 @@ route_lease_of() {
 # 임대를 바꾸는 API 는 모두 자기 프로세스로 돈다. 명령 치환 안에서 bash 3.2 의
 # `$$` 는 부모의 pid 이고, 프로세스 안에서 락을 잡으면 드라이버가 소유자로 적힌다.
 route_lease_hold() { bash "$(route__dir)/route.sh" lease-hold "$@"; }
-route_lease_release() { bash "$(route__dir)/route.sh" lease-release "$@"; }
+route_lease_release() {
+  # 반납 전에 그 계보의 임대를 읽어 두고, 반납이 rc 0 이면 직전 계정 기록의 시각을
+  # 새로 적을지 본다. 반납의 rc 는 그대로 돌려준다.
+  local own="" rc=0
+  if [ $# -eq 4 ]; then own=$(route_lease_of "$1" "$2" "$3" 2>/dev/null) || own=""; fi
+  bash "$(route__dir)/route.sh" lease-release "$@" || rc=$?
+  if [ "$rc" = "0" ] && [ -n "$own" ]; then route__affinity_touch "$own" "$4"; fi
+  return "$rc"
+}
 route_lease_release_run() { bash "$(route__dir)/route.sh" lease-release-run "$@"; }
 route_lease_wait_put() { bash "$(route__dir)/route.sh" lease-wait-put "$@"; }
 route_lease_wait_drop() { bash "$(route__dir)/route.sh" lease-wait-drop "$@"; }
@@ -2404,7 +2475,7 @@ route__resolve_as() {
   #
   # 휴면 봉투를 낼 자리에서 런 디렉터리에 `fleet-lane` 기록이 있으면 PARK
   # lent-seat-unrouted 다 — 대여 좌석에 고정된 런은 대여 검사 없이 좌석을 쓰지 않는다.
-  local guard="${1:-0}" req="${2:-}" ans rc=0 irc=0 inv ctx now table boot pids p
+  local guard="${1:-0}" req="${2:-}" ans rc=0 irc=0 inv ctx now table boot pids p out
   local hs=()
   ans=$(resolve_account) || rc=$?
   if [ "$rc" != "0" ]; then return "$rc"; fi
@@ -2444,8 +2515,80 @@ route__resolve_as() {
   done <<EOF
 $pids
 EOF
-  printf '%s' "$ctx" | bash "$(route__dir)/route.sh" lease-txn --table "$table" --now "$now" --boot-epoch "$boot" \
-    ${hs[@]+"${hs[@]}"} || return $?
+  # 거래의 봉투를 받아 두고, 내기 전에 런 디렉터리의 직전 계정 기록과 부여 기록을
+  # 쓴다. 봉투는 바이트 그대로, rc 는 거래의 rc 그대로다.
+  rc=0
+  out=$(printf '%s' "$ctx" | bash "$(route__dir)/route.sh" lease-txn --table "$table" --now "$now" --boot-epoch "$boot" \
+    ${hs[@]+"${hs[@]}"}) || rc=$?
+  [ -n "$out" ] || return "$rc"
+  route__affinity_grant "$req" "$out" "$now"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
+route__affinity_put() {
+  # route__affinity_put <record-json> — 런 디렉터리의 직전 계정 기록을 같은 디렉터리의
+  # 임시 파일과 `mv` 로 덮어쓴다. 실패하면 경고 한 줄과 rc 1.
+  local tmp
+  tmp=$(mktemp "$RUN_DIR/.route-affinity.XXXXXX" 2>/dev/null) || {
+    route__warn "직전 계정 기록을 쓰지 못했다 ($RUN_DIR/route-affinity)"
+    return 1
+  }
+  if printf '%s\n' "$1" > "$tmp" 2>/dev/null && mv -f "$tmp" "$RUN_DIR/route-affinity" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  route__warn "직전 계정 기록을 쓰지 못했다 ($RUN_DIR/route-affinity)"
+  return 1
+}
+
+route__affinity_grant() {
+  # route__affinity_grant <request-json> <envelope-json> <now> — 봉투가 계정이 있는 비휴면
+  # GRANT 면 직전 계정 기록을 그 계정으로 덮어쓰고 `route-picks.jsonl` 에 고른 근거 한
+  # 줄을 덧붙인다. 런 디렉터리가 없으면 아무것도 쓰지 않는다. 실패는 경고뿐이고 봉투와
+  # rc 에 닿지 않는다. 부여 기록은 되읽지 않는다.
+  local req="$1" env="$2" now="$3" rec line
+  [ -n "${RUN_DIR:-}" ] || return 0
+  case "$(printf '%s' "$env" | jq -r '.verdict == "GRANT" and .dormant != true and ((.account | type) == "string")' 2>/dev/null)" in
+    true) ;;
+    *) return 0 ;;
+  esac
+  rec=$(jq -cn --arg s "$ROUTE_AFFINITY_SCHEMA" --argjson req "$req" --argjson env "$env" --argjson now "$now" \
+        '{schema: $s, run_id: $req.run_id, account: $env.account, at_epoch: $now}' 2>/dev/null) || rec=""
+  if [ -n "$rec" ]; then
+    route__affinity_put "$rec" || true
+  else
+    route__warn "직전 계정 기록을 만들지 못했다 ($RUN_DIR/route-affinity)"
+  fi
+  line=$(jq -cn --arg s "$ROUTE_PICK_SCHEMA" --argjson req "$req" --argjson env "$env" --argjson now "$now" \
+         '{schema: $s, at_epoch: $now, run_id: $req.run_id, lineage: $req.lineage, event: $req.event,
+           basis: $env.basis, account: $env.account, group: $env.group,
+           picked_by: $env.order.picked_by, load5_bp: $env.order.load5_bp,
+           affinity_account: $env.order.affinity_account, affinity_hold_bp: $env.order.affinity_hold_bp}' 2>/dev/null) || line=""
+  if [ -z "$line" ] || ! printf '%s\n' "$line" >> "$RUN_DIR/route-picks.jsonl" 2>/dev/null; then
+    route__warn "부여 기록을 덧붙이지 못했다 ($RUN_DIR/route-picks.jsonl)"
+  fi
+  return 0
+}
+
+route__affinity_touch() {
+  # route__affinity_touch <lease-json> <nonce> — 반납한 임대의 nonce 가 넘긴 nonce 와 같고
+  # 계정이 직전 계정 기록의 계정과 같으면 기록의 `at_epoch` 만 지금으로 새로 적는다.
+  # 기록의 수명을 단계가 끝난 시각부터 재기 위해서다. 다른 계정의 반납은 기록을 바꾸지 않는다.
+  local f cur acct now new
+  [ -n "${RUN_DIR:-}" ] || return 0
+  f="$RUN_DIR/route-affinity"
+  [ -f "$f" ] || return 0
+  [ -n "${2:-}" ] && [ "$(printf '%s' "$1" | jq -r '.nonce // empty' 2>/dev/null)" = "$2" ] || return 0
+  acct=$(printf '%s' "$1" | jq -r '.account // empty' 2>/dev/null) || return 0
+  [ -n "$acct" ] || return 0
+  cur=$(jq -c -s --arg s "$ROUTE_AFFINITY_SCHEMA" --arg a "$acct" \
+        'if length == 1 and (.[0] | type) == "object" and .[0].schema == $s and .[0].account == $a then .[0] else empty end' \
+        "$f" 2>/dev/null) || return 0
+  [ -n "$cur" ] || return 0
+  now=$(date -u +%s) || return 0
+  new=$(printf '%s' "$cur" | jq -c --argjson now "$now" '.at_epoch = $now' 2>/dev/null) || return 0
+  route__affinity_put "$new" || true
   return 0
 }
 
