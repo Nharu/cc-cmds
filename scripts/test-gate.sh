@@ -37379,7 +37379,7 @@ for lit in '`design-discuss-unattended`, `design-solo-unattended` and `design-ba
   '세그먼트=- | 스테이지=<step id> | 종류=reconverge' \
   '-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> 잔여 동결 재검토 <record>"'
 do
-  printf '%s\n' "$fc67c_i8" | grep -qF -- "$lit" && fc67c_n8=$((fc67c_n8 + 1))
+  case "$fc67c_i8" in *"$lit"*) fc67c_n8=$((fc67c_n8 + 1)) ;; esac
 done
 check "67c: 라우터 항목 8 이 파견 모양을 싣는다" "$fc67c_n8" "4"
 

@@ -17725,7 +17725,7 @@ gate_halt_design_check() {
   # THE STEP IS FOUND BY SUBSTRING. Three spellings of the ladder step have been
   # observed (`Step 7U / ladder-unsettled`, `Step 7U.4 / ladder-unsettled` and
   # one with a trailing clause), and a prefix or suffix match misses some.
-  local rec="$1" step ladder='' skel='' line parts p k bad='' skill pairs lab cls doc pend dup heads h own sid nslice
+  local rec="$1" step ladder='' skel='' line parts p k bad='' skill pairs pair_labs lab cls doc pend dup heads h own sid nslice
   GATE_HALT_LADDER_STAMP=''
   step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p')
   case "$step" in
@@ -17769,14 +17769,18 @@ EOF
     return "$GATE_EXIT_RULE"
   fi
   line=$(sed -n 's/^\*\*잔여 판정\*\*: //p' "$rec" | sed 's/[[:space:]]*$//')
-  if ! printf '%s\n' "$line" | grep -qE '^(코드-부재|사람-환경|외부-준비|전제-반증|미분류): R[0-9]+(, R[0-9]+)*( / (코드-부재|사람-환경|외부-준비|전제-반증|미분류): R[0-9]+(, R[0-9]+)*)*$'; then
+  if ! grep -qE '^(코드-부재|사람-환경|외부-준비|전제-반증|미분류): R[0-9]+(, R[0-9]+)*( / (코드-부재|사람-환경|외부-준비|전제-반증|미분류): R[0-9]+(, R[0-9]+)*)*$' <<EOF
+$line
+EOF
+  then
     warn "\`**잔여 판정**\` reads \`<부류>: R<n>, R<n> / <부류>: R<n>\` with 부류 one of 코드-부재 · 사람-환경 · 외부-준비 · 전제-반증 · 미분류 — this one is \`$line\`: $rec"
     return "$GATE_EXIT_RULE"
   fi
   pairs=$(printf '%s\n' "$line" | awk 'BEGIN { FS = " / " }
     { for (i = 1; i <= NF; i++) { c = $i; sub(/: .*/, "", c); r = $i; sub(/^[^:]*: /, "", r)
         n = split(r, a, ", "); for (j = 1; j <= n; j++) print a[j] " " c } }')
-  dup=$(printf '%s\n' "$pairs" | cut -d' ' -f1 | sort | uniq -d | sed -n '1p')
+  pair_labs=$(printf '%s\n' "$pairs" | cut -d' ' -f1)
+  dup=$(printf '%s\n' "$pair_labs" | sort | uniq -d | sed -n '1p')
   if [ -n "$dup" ]; then
     warn "\`**잔여 판정**\` names $dup more than once: $rec"
     return "$GATE_EXIT_RULE"
@@ -17816,7 +17820,10 @@ EOF
   fi
   pend=$(residual_items_pending "$doc")
   while IFS=' ' read -r lab cls; do
-    if ! printf '%s\n' "$pend" | grep -qxF -- "$lab"; then
+    if ! grep -qxF -- "$lab" <<EOF2
+$pend
+EOF2
+    then
       warn "$lab is not an item of the design document still at \`구현 시 검증\`: $rec"
       return "$GATE_EXIT_RULE"
     fi
@@ -17835,7 +17842,9 @@ $pairs
 EOF
   while IFS= read -r lab; do
     [ -n "$lab" ] || continue
-    printf '%s\n' "$pairs" | cut -d' ' -f1 | grep -qxF -- "$lab" && continue
+    grep -qxF -- "$lab" <<EOF2 && continue
+$pair_labs
+EOF2
     residual_item_w3_marked "$doc" "$lab" && continue
     warn "$lab is still at \`구현 시 검증\` with no W3 mark, and \`**잔여 판정**\` leaves it out: $rec"
     return "$GATE_EXIT_RULE"
@@ -17851,7 +17860,7 @@ EOF
       own=0
       for sid in $(slice_ids "$doc"); do
         [ "$(slice_field "$doc" "$sid" '스킬')" = "implement" ] || continue
-        slice_residual_headings "$doc" "$sid" | grep -qxF -- "$h" && own=$((own + 1))
+        [ "$(slice_residual_headings "$doc" "$sid" | grep -cxF -- "$h")" -gt 0 ] && own=$((own + 1))
       done
       if [ "$own" != "1" ]; then
         warn "$lab is owned by $own implement slices' \`**잔여 항목**\` — a frozen item needs exactly one owner: $rec"
