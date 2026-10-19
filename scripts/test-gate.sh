@@ -2936,6 +2936,96 @@ pre_cone() {
     { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
   }
 
+  # THE SEAT-APPLY FIXTURES (34p 첫 답 · 34q 승계) SHARE THESE, so that each of
+  # the two cuts alone stands. Each section takes an isolated run of its own by
+  # `cap_fx_new`, a worktree of `$REPO` whose base tracks a rule file, a root
+  # CLAUDE.md, a CLAUDE.md under an ignored directory and one the declaration
+  # leaves out, and a segment row declaring the rest with three paths that are
+  # not seat-applicable.
+  SAP_DECL='plugins/x/orchestrator/rules/, CLAUDE.md, ign/CLAUDE.md, new/CLAUDE.md, sym/orchestrator/rules/, .claude/settings.json, a.txt'
+  # The apply scope of that declaration, as the gate derives it: the two
+  # directories and the three CLAUDE.md entries, sorted.
+  SAP_SCOPE=$(printf '%s\n' CLAUDE.md ign/CLAUDE.md new/CLAUDE.md plugins/x/orchestrator/rules/ sym/orchestrator/rules/)
+  SAP_RULE=plugins/x/orchestrator/rules/r.sh
+  sap_fx() {
+    # sap_fx <run-id> <세그먼트> <좌석 세션 uuid> — leaves SAP_WT, SAP_BASE,
+    # SAP_SEAT and SAP_SEG, and the segment row's `rc` in SAP_SEG_RC.
+    local rid="$1"
+    cap_fx_new "$rid"
+    mkdir -p "$CAP_DIR/halt"
+    SAP_SEG=$2; SAP_SEAT=$3
+    SAP_WT="$WORK/sap-$rid"
+    ( cd "$REPO" && git worktree add -q -b "sap-$rid" "$SAP_WT" main \
+      && cd "$SAP_WT" && mkdir -p plugins/x/orchestrator/rules ign extra \
+      && printf 'rule one\n' > "$SAP_RULE" && printf '# root\n' > CLAUDE.md \
+      && printf '# extra\n' > extra/CLAUDE.md \
+      && printf 'ign/\n' > .gitignore && printf '# ignored\n' > ign/CLAUDE.md \
+      && git add -A && git add -f ign/CLAUDE.md && git commit -qm sap-base ) >/dev/null 2>&1
+    SAP_BASE=$(cd "$SAP_WT" && git rev-parse HEAD)
+    { cap_usage_line 10000 5000 1000; } > "$NTX/$SAP_SEAT.jsonl"
+    cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$SAP_SEG" \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" \
+             --rationale x -- "워크트리=$SAP_WT" 상태=실행중 선행=없음 "선언 파일 집합=$SAP_DECL"
+    SAP_SEG_RC=$rc
+  }
+  sap_head() { (cd "$SAP_WT" && git rev-parse HEAD); }
+  sap_blob() { (cd "$SAP_WT" && git rev-parse "HEAD:$1"); }
+  sap_b64() { printf '%b' "$1" | openssl base64 -A; }   # sap_b64 <printf %b 내용>
+  sap_line() {  # sap_line <경로> <부류> <기준 blob|없음> <모드> <base64|삭제> — one file line
+    printf -- '- 파일 `%s` — %s — 기준 %s — 모드 %s — %s' "$@"
+  }
+  sap_sr() {  # sap_sr <실행 버전> — a settled implement attempt of the segment
+    printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=implement | 실행 버전=%s | 세션 id=s-%s-%s | 종단 부류=의도된 park | prev=x\n' \
+      "$SAP_SEG" "$SAP_SEG" "$1" "$SAP_SEG" "$1" >> "$CAP_LEDGER"
+  }
+  sap_rec() {
+    # sap_rec <파일> <stage> <apply|human> <본문 줄…> — a seat-apply halt as
+    # implement-unattended writes it, the body lines between the question and
+    # the options verbatim.
+    local f="$1" st="$2" kind="$3"; shift 3
+    { printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=%s; run=%s -->\n' "$st" "$(basename "$CAP_DIR")"
+      printf '**중단 시각**: 2026-10-20T00:00:00Z\n**스킬**: implement-unattended\n'
+      printf '**스텝**: Step 3 강제 표면 좌석 적용 — 규칙 파일과 지침 파일 편집\n**분류**: gate-unanswerable\n'
+      printf '**질문 문면**: 이 세그먼트의 강제 표면 편집을 어떻게 할까요?\n'
+      printf '%s\n' "$@"
+      printf '**선택지**:\n'
+      if [ "$kind" = apply ]; then
+        printf '%s\n' '- `좌석 적용` — 게이트가 기록의 바이트를 기준 커밋 위에 한 커밋으로 적용합니다' \
+          '- `보류` — 이 세그먼트를 멈춰 두고 사람이 처분을 정합니다'
+      else
+        printf '%s\n' '- `사람 몫으로 넘김` — 사람이 이 편집을 런 밖에서 하고, 스테이지는 그 편집 없이 계속합니다' \
+          '- `보류` — 이 세그먼트를 멈춰 두고 사람이 처분을 정합니다'
+      fi
+      printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+    } > "$f"
+  }
+  sap_q() {
+    # sap_q <기록> <적용 경로, 쉼표와 공백으로> <건수> — the question line the
+    # gate requires verbatim, spelled out here so a drift in it fails.
+    printf '기록 %s — 세그먼트 %s 의 강제 표면 편집 %s건을 게이트가 좌석 적용으로 커밋합니다: %s. 이 답은 같은 세그먼트에서 뒤에 나오는 적용 범위 5건(CLAUDE.md, ign/CLAUDE.md, new/CLAUDE.md, plugins/x/orchestrator/rules/, sym/orchestrator/rules/) 안의 강제 표면 편집에도 쓰입니다.' \
+      "$(shasum -a 256 "$1" | cut -d' ' -f1)" "$SAP_SEG" "$3" "$2"
+  }
+  sap_ask() {
+    # sap_ask <기록> <적용 경로> <건수> [답] [선택지…] — the person's answer in
+    # the seat's transcript, asked with the gate's question line; the frame id
+    # in SAP_TID.
+    local rec="$1" paths="$2" n="$3" a="${4:-좌석 적용}"
+    shift 3; [ "$#" -eq 0 ] || shift
+    [ "$#" -gt 0 ] || set -- '좌석 적용' '보류'
+    # Not in a command substitution: auq_frame counts its ids in AUQ_N, and a
+    # subshell's count is lost, so two records would share one frame id.
+    auq_frame "$NTX/$SAP_SEAT.jsonl" "$(shasum -a 256 "$rec" | cut -d' ' -f1)" "$(sap_q "$rec" "$paths" "$n")" "$a" "$@" > "$WORK/sap-tid"
+    SAP_TID=$(cat "$WORK/sap-tid")
+  }
+  sap_ans() {  # sap_ans <기록> <답한 주체> [선택지] — the seat's halt-answer call
+    cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$SAP_SEG" \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" \
+             --rationale "픽스처 — 좌석 적용 답" \
+             -- "중단 기록=$1" "답한 주체=$2" '근거=사람이 미리보기의 diff 를 보고 골랐다' "선택지=${3:-좌석 적용}"
+  }
+  sap_rows() { { cap_rows '중단 답' | grep -c . || true; } | tr -d ' '; }
+  sap_last() { cap_rows '중단 답' | tail -1; }
+
   # THE HUMAN-WAIT FIXTURES (31aw 형제 재계획 · 31ax 사람-결정 · 31ay cone 가시성)
   # stand on one isolated run each, made by `cap_fx_new`, and on the shape of
   # run 20261015-f482437e: S2 re-converges with `재설계 필요`, S3 is a sibling
@@ -8661,6 +8751,10 @@ graded_as '읽기' 'openssl dgst 는 읽기다'              -- openssl dgst -sh
 graded_as '읽기' 'openssl rand 도 읽기다'              -- openssl rand -hex 8
 graded_as '워크트리쓰기' 'rand 라도 -out 이면 쓰기다'  -- openssl rand -out /tmp/secrets.bin 32
 graded_as '등급 미상' '이름 없는 하위 명령은 거부된다' -- openssl s_client -connect example.com:443
+# A stage encodes a seat apply's content as `openssl base64 -A -in <file>`, a
+# read; the same subcommand writing a file is not.
+graded_as '읽기' 'openssl base64 -A -in 은 읽기다'      -- openssl base64 -A -in /tmp/x
+graded_as '워크트리쓰기' 'base64 라도 -out 이면 쓰기다' -- openssl base64 -A -in /tmp/x -out /tmp/y
 
 # 붙여 쓴 출력 옵션. 이 표의 여러 행이 공백으로 구분된 리터럴만 맞춰, 붙여 쓴
 # 철자가 전부 `읽기` 로 떨어졌다. 방향이 나쁜 쪽이다 — 쓰기를 읽기로 세탁하면
@@ -28719,6 +28813,15 @@ sdh_refused "추천 줄이 둘인 기록" 3
 sdh_neg indent '  **추천**: `채택` — 줄머리에 있지 않다' "$SDH_NBASIS"
 sdh_seat N1 "$sdh_f"
 sdh_refused "추천이 줄머리에 있지 않은 기록" 3
+# Option lines are read inside the `**선택지**:` block and above the closing
+# fence only: a fence written early, or another field opened before the option
+# lines, leaves the record with no option the seat may copy.
+sdh_neg fence '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" '<!-- /cc-pipeline-halt v1 -->' "$SDH_NOPT1" "$SDH_NOPT2"
+sdh_seat N1 "$sdh_f"
+sdh_refused "닫는 울타리 뒤에 선택지를 숨긴 기록" 3
+sdh_neg block '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" '**관측**: 선택지 블록을 닫는 줄' "$SDH_NOPT1" "$SDH_NOPT2"
+sdh_seat N1 "$sdh_f"
+sdh_refused "선택지 블록 밖에 선택지 줄을 둔 기록" 3
 cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment N1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
          --rationale "픽스처 — 첨부 없는 좌석 답" \
@@ -29658,6 +29761,369 @@ do
   grep -qF -- "$lit" "$SEB_RU" && seb_lits=$((seb_lits + 1))
 done
 check "34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다" "$seb_lits" "6"
+
+# --- 34p. 강제 표면 좌석 적용 — 사람의 첫 답이 게이트의 커밋이 된다 ---------------
+# --- section: 34p | group: cone | covers: act, snapshot, surface-class | anchors: 34p: 입증된 사람의 좌석 적용 답이 기록의 바이트를 한 커밋으로 적용한다, 34p: 미리보기의 diff 가 적용된 커밋의 diff 와 같다, 34p: 행을 쓰지 못한 좌석 적용은 커밋을 되돌린다, 34p: 사람 몫으로 넘김 답은 커밋 없이 행을 남긴다, 34p: 강제 표면을 이름 대는 좌석 실행 명령은 거절된다 ---
+#
+# A STAGE CANNOT WRITE A RULE FILE OR A CLAUDE.md, SO IT WRITES THE BYTES INTO
+# A HALT RECORD. A person sees the diff the preview prints and answers the
+# question the gate built; the gate proves that answer by its frame in the
+# seat's transcript and commits the record's bytes over the record's base. Every
+# refusal below is asserted with the row count and the branch tip together: a
+# refusal that still committed would hand the stage an edit nobody approved.
+SAP_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+sap_fx RSAP1 SAP "5a5a5a5a-1111-2222-3333-444444444444"
+check "34p: 픽스처의 세그먼트 행이 선언 파일 집합을 싣고 섰다" "$SAP_SEG_RC" "0"
+sap_sr 1
+SAP_SUBJ='**좌석 적용 커밋 제목**: fix(rules): 픽스처 규칙을 고친다'
+SAP_RL=$(sap_line "$SAP_RULE" 규칙카탈로그 "$(sap_blob "$SAP_RULE")" 100644 "$(sap_b64 'rule two\n')")
+sap_mark() { sap_n0=$(sap_rows); sap_h0=$(sap_head); }
+sap_refused() {  # sap_refused <이름> <문면 조각> — rc 3, the gate's words, no row, no commit
+  check "34p: $1 은 거절된다" "$rc" "3"
+  case "$msg" in *"$2"*) ok "34p: $1 의 거절이 이유를 댄다" ;; *) bad "34p: $1 의 거절이 이유를 댄다" "$msg" ;; esac
+  check "34p: $1 은 행도 커밋도 남기지 않는다" "$(sap_rows)/$(sap_head)" "$sap_n0/$sap_h0"
+}
+sap_apply_rec() {  # sap_apply_rec <파일> <stage> <기준> <파일 줄…>
+  local f="$1" st="$2" b="$3"; shift 3
+  sap_rec "$f" "$st" apply "**좌석 적용 기준**: $b" '**좌석 적용 파일**:' "$@" "$SAP_SUBJ"
+}
+
+# THE REFUSALS BEFORE THE FRAME: the step, a recommendation, a shift, and a path
+# the classifier does not put in a seat-applicable class.
+sap_mark
+sap_apply_rec "$CAP_DIR/halt/SAP#2.md" 'SAP#2' "$SAP_BASE" "$SAP_RL"
+sed 's/^\*\*스텝\*\*: .*/**스텝**: Step 3 게이트 도달 좌석 실행 — 픽스처/' "$CAP_DIR/halt/SAP#2.md" > "$CAP_DIR/halt/SAP#2.tmp" \
+  && mv "$CAP_DIR/halt/SAP#2.tmp" "$CAP_DIR/halt/SAP#2.md"
+sap_ans "$CAP_DIR/halt/SAP#2.md" 사람
+sap_refused "다른 스텝 기록의 좌석 적용 답" '강제 표면 좌석 적용'
+sap_apply_rec "$CAP_DIR/halt/SAP#3.md" 'SAP#3' "$SAP_BASE" "$SAP_RL" '**추천**: `좌석 적용` — 기록이 정한다'
+sap_ans "$CAP_DIR/halt/SAP#3.md" 사람
+sap_refused "추천을 실은 좌석 적용 기록" 'carries no `**추천**`'
+sap_apply_rec "$CAP_DIR/halt/SAP#4.md" 'SAP#4' "$SAP_BASE" "$SAP_RL"
+cap_gate "$SAP_SEAT" 'SH-SAP' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SAP \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" 'SH-SAP')" --rationale x \
+         -- "중단 기록=$CAP_DIR/halt/SAP#4.md" '근거=교대' '선택지=좌석 적용'
+sap_refused "교대의 좌석 적용 답" 'a shift does not answer a seat-apply halt'
+sap_apply_rec "$CAP_DIR/halt/SAP#5.md" 'SAP#5' "$SAP_BASE" "$(sap_line a.txt 규칙카탈로그 없음 100644 "$(sap_b64 'a\n')")"
+sap_ans "$CAP_DIR/halt/SAP#5.md" 사람
+sap_refused "분류되지 않는 경로의 좌석 적용" 'is not an enforcement surface'
+sap_apply_rec "$CAP_DIR/halt/SAP#6.md" 'SAP#6' "$SAP_BASE" "$(sap_line .claude/settings.json 프로젝트설정 없음 100644 "$(sap_b64 '{}\n')")"
+sap_ans "$CAP_DIR/halt/SAP#6.md" 사람
+sap_refused "프로젝트설정 경로의 좌석 적용" 'which the run never commits'
+
+# THE REFUSALS AFTER THE FRAME: each record is asked with its own frame, so what
+# refuses it is the worktree check and nothing before it.
+sap_wt_case() {  # sap_wt_case <stage n> <이름> <문면 조각> <적용 경로> <기준> <파일 줄>
+  local f="$CAP_DIR/halt/SAP#$1.md"
+  sap_apply_rec "$f" "SAP#$1" "$5" "$6"
+  sap_ask "$f" "$4" 1
+  sap_ans "$f" 사람
+  sap_refused "$2" "$3"
+}
+sap_wt_case 7 "선언 밖 경로의 좌석 적용" 'is not inside the declared file set' extra/CLAUDE.md "$SAP_BASE" \
+  "$(sap_line extra/CLAUDE.md 지침파일 "$(sap_blob extra/CLAUDE.md)" 100644 "$(sap_b64 '# extra two\n')")"
+sap_wt_case 8 "추적되는 무시 경로의 좌석 적용" 'is ignored in the worktree' ign/CLAUDE.md "$SAP_BASE" \
+  "$(sap_line ign/CLAUDE.md 지침파일 "$(sap_blob ign/CLAUDE.md)" 100644 "$(sap_b64 '# ignored two\n')")"
+sap_wt_case 9 "베이스가 추적하지 않는 CLAUDE.md 의 좌석 적용" 'the base does not track' new/CLAUDE.md "$SAP_BASE" \
+  "$(sap_line new/CLAUDE.md 지침파일 없음 100644 "$(sap_b64 '# new\n')")"
+sap_wt_case 18 "상위 디렉터리를 지나는 경로의 좌석 적용" 'is not a repository-relative path' 'plugins/x/orchestrator/rules/../rules/r.sh' "$SAP_BASE" \
+  "$(sap_line 'plugins/x/orchestrator/rules/../rules/r.sh' 규칙카탈로그 "$(sap_blob "$SAP_RULE")" 100644 "$(sap_b64 'rule two\n')")"
+sap_wt_case 19 "절대 경로의 좌석 적용" 'is not a repository-relative path' "/$SAP_RULE" "$SAP_BASE" \
+  "$(sap_line "/$SAP_RULE" 규칙카탈로그 "$(sap_blob "$SAP_RULE")" 100644 "$(sap_b64 'rule two\n')")"
+sap_wt_case 10 "기준 blob 이 다른 좌석 적용" 'not the record' "$SAP_RULE" "$SAP_BASE" \
+  "$(sap_line "$SAP_RULE" 규칙카탈로그 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 'rule two\n')")"
+sap_wt_case 11 "HEAD 가 기준이 아닌 좌석 적용" 'is not the record' "$SAP_RULE" "$(cd "$REPO" && git rev-parse main)" "$SAP_RL"
+printf 'dirty\n' >> "$SAP_WT/CLAUDE.md"
+sap_wt_case 12 "더러운 워크트리의 좌석 적용" 'has uncommitted changes' "$SAP_RULE" "$SAP_BASE" "$SAP_RL"
+(cd "$SAP_WT" && git checkout -q -- CLAUDE.md)
+mkdir -p "$WORK/sap-elsewhere/orchestrator/rules"; ln -s "$WORK/sap-elsewhere" "$SAP_WT/sym"
+sap_wt_case 13 "심볼릭 링크를 지나는 좌석 적용" 'is a symbolic link' sym/orchestrator/rules/q.sh "$SAP_BASE" \
+  "$(sap_line sym/orchestrator/rules/q.sh 규칙카탈로그 없음 100644 "$(sap_b64 'q\n')")"
+check "34p: 심볼릭 링크 밖의 파일은 그대로다" "$(ls "$WORK/sap-elsewhere/orchestrator/rules" | grep -c . || true)" "0"
+rm -f "$SAP_WT/sym"
+
+# THE FRAME ITSELF: changed after the answer, the wrong menu, a free answer, and
+# a question without the gate's line.
+sap_apply_rec "$CAP_DIR/halt/SAP#14.md" 'SAP#14' "$SAP_BASE" "$SAP_RL"
+sap_ask "$CAP_DIR/halt/SAP#14.md" "$SAP_RULE" 1
+printf '\n' >> "$CAP_DIR/halt/SAP#14.md"
+sap_ans "$CAP_DIR/halt/SAP#14.md" 사람
+sap_refused "답 뒤에 바뀐 기록의 좌석 적용" 'no answered `AskUserQuestion` carrying record digest'
+sap_apply_rec "$CAP_DIR/halt/SAP#15.md" 'SAP#15' "$SAP_BASE" "$SAP_RL"
+sap_ask "$CAP_DIR/halt/SAP#15.md" "$SAP_RULE" 1 '좌석 적용' '좌석 적용' '거부'
+sap_ans "$CAP_DIR/halt/SAP#15.md" 사람
+sap_refused "다른 선택지로 물은 좌석 적용" 'are not the record'
+sap_apply_rec "$CAP_DIR/halt/SAP#16.md" 'SAP#16' "$SAP_BASE" "$SAP_RL"
+sap_ask "$CAP_DIR/halt/SAP#16.md" "$SAP_RULE" 1 '그냥 적용해 주세요'
+sap_ans "$CAP_DIR/halt/SAP#16.md" 사람
+sap_refused "자유 답의 좌석 적용" 'a free answer or another label'
+sap_apply_rec "$CAP_DIR/halt/SAP#17.md" 'SAP#17' "$SAP_BASE" "$SAP_RL"
+auq_frame "$NTX/$SAP_SEAT.jsonl" "$(shasum -a 256 "$CAP_DIR/halt/SAP#17.md" | cut -d' ' -f1)" '규칙 파일을 고칠까요?' '좌석 적용' '좌석 적용' '보류' >/dev/null
+sap_ans "$CAP_DIR/halt/SAP#17.md" 사람
+sap_refused "질문 줄 없이 물은 좌석 적용" "preview's question line verbatim"
+
+# THE FIRST ANSWER. The preview builds the commit the apply makes, in an object
+# directory of its own, and prints the question; the person is asked with it.
+SAP_OK="$CAP_DIR/halt/SAP#20.md"
+sap_apply_rec "$SAP_OK" 'SAP#20' "$SAP_BASE" "$SAP_RL"
+SAP_NEWBLOB=$(printf 'rule two\n' | (cd "$SAP_WT" && git hash-object --stdin))
+sap_mark
+cap_gate "$SAP_SEAT" '' seat-apply-preview --manifest "$CAP_NM" --record "$SAP_OK" --target infra
+SAP_PV="$WORK/sap-preview.txt"; cp "$CAP_OUT" "$SAP_PV"
+check "34p: 미리보기가 통과한다" "$rc" "0"
+check "34p: 미리보기의 질문 줄이 게이트의 고정 문면이다" "$(sed -n 's/^질문 줄: //p' "$SAP_PV")" "$(sap_q "$SAP_OK" "$SAP_RULE" 1)"
+check "34p: 미리보기는 행도 커밋도 공통 객체도 남기지 않는다" \
+  "$(sap_rows)/$(sap_head)/$( (cd "$SAP_WT" && git cat-file -e "$SAP_NEWBLOB") 2>/dev/null && printf 'present' || printf 'absent')" \
+  "$sap_n0/$sap_h0/absent"
+sap_ask "$SAP_OK" "$SAP_RULE" 1
+SAP_TID1=$SAP_TID
+sap_ans "$SAP_OK" 사람
+SAP_TIP1=$(sap_head)
+check "34p: 입증된 사람의 좌석 적용 답이 기록의 바이트를 한 커밋으로 적용한다" \
+  "$rc/$(cd "$SAP_WT" && git rev-parse HEAD^)/$(cd "$SAP_WT" && git show "HEAD:$SAP_RULE")" "0/$SAP_BASE/rule two"
+check "34p: 게이트가 좌석 커밋을 출력한다" "$(sed -n 's/^좌석 커밋=//p' "$CAP_OUT")" "$SAP_TIP1"
+check "34p: 좌석 커밋의 제목과 본문은 기록의 제목과 고정 문장이다" \
+  "$(cd "$SAP_WT" && git log -1 --format='%s|%b' | tr '\n' ' ' | sed 's/[[:space:]]*$//')" \
+  "fix(rules): 픽스처 규칙을 고친다|강제 표면 파일을 사람 승인에 따라 좌석 적용으로 커밋했다."
+check "34p: 좌석 적용 뒤 워크트리는 깨끗하다" "$(cd "$SAP_WT" && git status --porcelain | grep -c . || true)" "0"
+sap_r=$(sap_last)
+check "34p: 행이 사람의 좌석 적용과 그 커밋을 싣는다" \
+  "$(row_field "$sap_r" '선택지')/$(row_field "$sap_r" '답한 주체')/$(row_field "$sap_r" '근거 종류')/$(row_field "$sap_r" '좌석 커밋')/$(row_field "$sap_r" '적용 파일')" \
+  "좌석 적용/사람/좌석 적용/$SAP_TIP1/1"
+check "34p: 행이 승인 프레임과 적용 범위를 싣는다" \
+  "$(row_field "$sap_r" '승인 프레임')/$(row_field "$sap_r" '적용 범위 수')/$(row_field "$sap_r" '적용 범위 다이제스트')" \
+  "$SAP_TID1/5/$(printf '%s\n' "$SAP_SCOPE" | shasum -a 256 | cut -d' ' -f1)"
+check "34p: 미리보기의 diff 가 적용된 커밋의 diff 와 같다" \
+  "$(sed -n '/^통합 diff:$/,/^적용 범위 다이제스트: /p' "$SAP_PV" | sed '1d;$d')" \
+  "$(cd "$SAP_WT" && git -c core.quotePath=false diff --no-renames --no-color "$SAP_BASE" HEAD)"
+
+# THE SAME FRAME DOES NOT APPROVE TWICE.
+sap_mark
+sap_ans "$SAP_OK" 사람
+sap_refused "같은 프레임의 두 번째 좌석 적용" 'already approved a seat apply'
+
+# THE ROW FAILS, AND THE COMMIT GOES WITH IT.
+SAP_RB="$CAP_DIR/halt/SAP#21.md"
+sap_apply_rec "$SAP_RB" 'SAP#21' "$SAP_TIP1" \
+  "$(sap_line CLAUDE.md 지침파일 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 '# root two\n')")"
+sap_ask "$SAP_RB" CLAUDE.md 1
+sap_mark
+chmod a-w "$CAP_LEDGER"
+sap_ans "$SAP_RB" 사람
+chmod u+w "$CAP_LEDGER"
+sap_refused "행을 쓰지 못한 좌석 적용" 'was undone'
+check "34p: 행을 쓰지 못한 좌석 적용은 커밋을 되돌린다" \
+  "$(sap_head)/$(cd "$SAP_WT" && git status --porcelain | grep -c . || true)/$(cat "$SAP_WT/CLAUDE.md")" "$SAP_TIP1/0/# root"
+
+# TEN RULE PATHS UNDER LONG NAMES FIT THE ROW; A RECORD PATH THAT DOES NOT FIT
+# IS REFUSED BEFORE ANYTHING IS COMMITTED. The content of one file is bytes no
+# text line carries, so the decode is checked byte for byte.
+sap_ten=''; sap_ten_paths=''
+for i in 01 02 03 04 05 06 07 08 09 10; do
+  sap_p="plugins/x/orchestrator/rules/fixture-rule-with-a-long-descriptive-name-$i.sh"
+  if [ "$i" = 01 ]; then sap_c='\0001\0377\0000bin\n'; else sap_c="rule $i\\n"; fi
+  sap_ten="$sap_ten$(sap_line "$sap_p" 규칙카탈로그 없음 100755 "$(sap_b64 "$sap_c")")"$'\n'
+  sap_ten_paths="$sap_ten_paths${sap_ten_paths:+, }$sap_p"
+done
+SAP_TEN="$CAP_DIR/halt/SAP#22.md"
+sap_apply_rec "$SAP_TEN" 'SAP#22' "$SAP_TIP1" "${sap_ten%$'\n'}"
+sap_ask "$SAP_TEN" "$sap_ten_paths" 10
+sap_ans "$SAP_TEN" 사람
+SAP_TIP2=$(sap_head)
+check "34p: 긴 이름의 규칙 파일 열 개가 한 커밋으로 적용된다" \
+  "$rc/$(row_field "$(sap_last)" '적용 파일')/$(cd "$SAP_WT" && git diff --name-only "$SAP_TIP1" HEAD | grep -c . || true)" "0/10/10"
+check "34p: 그 행이 행 상한 안이다" "$( [ "$(sap_last | wc -c | tr -d ' ')" -le 1025 ] && printf 'fits' || printf 'over')" "fits"
+check "34p: base64 를 푼 바이트가 기록한 내용과 같다" \
+  "$( (cd "$SAP_WT" && git cat-file blob "HEAD:plugins/x/orchestrator/rules/fixture-rule-with-a-long-descriptive-name-01.sh") | od -An -c | tr -s ' ')" \
+  "$(printf '\001\377\000bin\n' | od -An -c | tr -s ' ')"
+check "34p: 실행 모드가 기록대로 실린다" \
+  "$(cd "$SAP_WT" && git ls-tree HEAD -- plugins/x/orchestrator/rules/fixture-rule-with-a-long-descriptive-name-02.sh | cut -c1-6)" "100755"
+sap_long=$(printf 'd%.0s' $(seq 1 200))
+mkdir -p "$CAP_DIR/halt/$sap_long/$sap_long"
+SAP_OV="$CAP_DIR/halt/$sap_long/$sap_long/$sap_long.md"
+sap_apply_rec "$SAP_OV" 'SAP#23' "$SAP_TIP2" \
+  "$(sap_line CLAUDE.md 지침파일 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 '# root three\n')")"
+sap_ask "$SAP_OV" CLAUDE.md 1
+sap_mark
+sap_ans "$SAP_OV" 사람
+sap_refused "행 상한을 넘는 좌석 적용" 'nothing was committed'
+
+# A RECORD THAT LEAVES EVERY FILE TO A PERSON is answered by a person, and the
+# seat cannot take it for them; it commits nothing.
+SAP_HU="$CAP_DIR/halt/SAP#30.md"
+sap_rec "$SAP_HU" 'SAP#30' human '**사람 몫 파일**:' '- 파일 `.claude/settings.json` — 프로젝트설정 — 런은 프로젝트 설정을 커밋하지 않는다'
+sap_mark
+sap_ans "$SAP_HU" 좌석 '사람 몫으로 넘김'
+sap_refused "좌석의 사람 몫으로 넘김 답" 'is a person'"'"'s answer'
+sap_ans "$SAP_HU" 사람 '좌석 적용'
+sap_refused "적용할 파일이 없는 기록의 좌석 적용" 'has nothing to commit'
+sap_ans "$SAP_HU" 사람 '사람 몫으로 넘김'
+check "34p: 사람 몫으로 넘김 답은 커밋 없이 행을 남긴다" \
+  "$rc/$(sap_rows)/$(sap_head)/$(row_field "$(sap_last)" '사람 몫')/$(row_field "$(sap_last)" '좌석 커밋')" \
+  "0/$((sap_n0 + 1))/$sap_h0/1/"
+
+# A COMMAND THE SEAT RUNS NAMES NO ENFORCEMENT SURFACE, AND NEITHER DOES THE
+# OPTION A RECOMMENDATION PICKS. Both would have the seat write a surface with
+# no person. A command naming none goes through.
+sap_cmd_rec() {  # sap_cmd_rec <파일> <stage> <명령>
+  { printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=%s; run=RSAP1 -->\n' "$2"
+    printf '**스킬**: implement-unattended\n**스텝**: Step 3 게이트 도달 좌석 실행 — 픽스처\n**분류**: gate-unanswerable\n'
+    printf '**질문 문면**: 게이트가 세운 명령을 좌석이 실행해 주세요\n**좌석 실행 명령**:\n'
+    printf -- '- `%s` — `%s`\n' "$SAP_WT" "$3"
+    printf '**선택지**:\n- `좌석 실행` — 좌석이 이 호스트에서 명령을 순서대로 실행하고 이 세션을 결과와 함께 다시 붙입니다\n'
+    printf '**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$1"
+}
+sap_seat_run() {  # sap_seat_run <기록>
+  printf '%s\n' '명령 1: 종료 0' > "${1%.md}.answer.md"
+  cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SAP \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+           -- "중단 기록=$1" '답한 주체=좌석' '근거=좌석이 실행했다' '선택지=좌석 실행' "첨부=${1%.md}.answer.md"
+}
+sap_sr 2
+sap_cmd_rec "$CAP_DIR/halt/SAP#2.md" 'SAP#2' 'cp /tmp/x CLAUDE.md'
+sap_mark
+sap_seat_run "$CAP_DIR/halt/SAP#2.md"
+sap_refused "강제 표면을 이름 대는 좌석 실행 명령" 'names an enforcement surface'
+sap_cmd_rec "$CAP_DIR/halt/SAP#2.md" 'SAP#2' "cp /tmp/x \`$SAP_RULE\`"
+sap_seat_run "$CAP_DIR/halt/SAP#2.md"
+sap_refused "강제 표면을 백틱으로 감싼 좌석 실행 명령" 'names an enforcement surface'
+check "34p: 강제 표면을 이름 대는 좌석 실행 명령은 거절된다" "$rc" "3"
+sap_cmd_rec "$CAP_DIR/halt/SAP#2.md" 'SAP#2' 'brew install shellcheck'
+sap_seat_run "$CAP_DIR/halt/SAP#2.md"
+check "34p: 강제 표면을 이름 대지 않는 좌석 실행 명령은 받아들여진다" "$rc/$(sap_rows)" "0/$((sap_n0 + 1))"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+sap_sr 3
+sdh_rec_sap() {  # a recommendation whose option line names a rule file
+  { printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=SAP#3; run=RSAP1 -->\n'
+    printf '**스킬**: implement-unattended\n**스텝**: Step 3 — 픽스처의 선택\n**분류**: gate-unanswerable\n'
+    printf '**질문 문면**: 픽스처의 질문\n**선택지**:\n'
+    printf '%s\n' "- \`규칙 고침\` — $SAP_RULE 의 한 줄을 고친다" '- `그대로` — 고치지 않는다' \
+      '**추천**: `규칙 고침` — 기록이 정한다' '**추천 근거**: 상시 지침:픽스처'
+    printf '**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$1"
+}
+sdh_rec_sap "$CAP_DIR/halt/SAP#3.md"
+printf '%s\n' '추천 근거 인용: 픽스처 (픽스처.md:1)' '되돌리는 법: 다른 선택지로 다시 답한다' > "$CAP_DIR/halt/SAP#3.answer.md"
+sap_mark
+cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SAP \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+         -- "중단 기록=$CAP_DIR/halt/SAP#3.md" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$CAP_DIR/halt/SAP#3.answer.md"
+sap_refused "강제 표면을 이름 대는 추천 선택지" 'names an enforcement surface'
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAP_PREV_AR"
+
+# --- 34q. 좌석 적용 승계 — 한 세그먼트에서 사람은 한 번 답한다 -----------------------
+# --- section: 34q | group: cone | covers: act, snapshot, surface-class | anchors: 34q: 스위치가 꺼져도 승계된 좌석 적용 답이 사람 없이 커밋된다, 34q: 사람의 답 뒤에 넓어진 선언의 경로는 승계되지 않는다, 34q: park 뒤에는 승계되지 않는다 ---
+#
+# THE PERSON SAW THE APPLY SCOPE IN THE QUESTION, AND THE SEAT ANSWERS THE
+# SEGMENT'S LATER RECORDS INSIDE IT. A review fix that edits the same rule file
+# again would otherwise stop the run on a person once per cycle. What ends the
+# inheritance: the person's commit leaving the branch, a widened declaration, an
+# adopted answer, a park, and a record that leaves anything to a person. The
+# switch that turns off answers no person gave is off for the whole section: an
+# inherited answer is the person's own.
+SAQ_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+sap_fx RSAQ1 SAQ "5b5b5b5b-1111-2222-3333-444444444444"
+check "34q: 픽스처의 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+SAP_SUBJ='**좌석 적용 커밋 제목**: fix(rules): 리뷰 수정을 규칙 파일에 적용한다'
+saq_rec() {  # saq_rec <실행 버전> <기준> <파일 줄…> — the attempt's record, at the path the gate takes as current
+  local v="$1" b="$2"; shift 2
+  sap_rec "$CAP_DIR/halt/SAQ#$v.md" "SAQ#$v" apply "**좌석 적용 기준**: $b" '**좌석 적용 파일**:' "$@" "$SAP_SUBJ"
+}
+saq_mark() { saq_n0=$(sap_rows); saq_h0=$(sap_head); }
+saq_refused() {  # saq_refused <이름> <문면 조각>
+  check "34q: $1 은 거절된다" "$rc" "3"
+  case "$msg" in *"$2"*) ok "34q: $1 의 거절이 이유를 댄다" ;; *) bad "34q: $1 의 거절이 이유를 댄다" "$msg" ;; esac
+  check "34q: $1 은 행도 커밋도 남기지 않는다" "$(sap_rows)/$(sap_head)" "$saq_n0/$saq_h0"
+}
+sap_sr 1
+saq_rec 1 "$SAP_BASE" "$(sap_line "$SAP_RULE" 규칙카탈로그 "$(sap_blob "$SAP_RULE")" 100644 "$(sap_b64 'rule two\n')")"
+sap_ask "$CAP_DIR/halt/SAQ#1.md" "$SAP_RULE" 1
+SAQ_TID=$SAP_TID
+sap_ans "$CAP_DIR/halt/SAQ#1.md" 사람
+SAQ_T1=$(sap_head)
+check "34q: 사람의 첫 좌석 적용이 커밋된다" "$rc/$(cd "$SAP_WT" && git rev-parse HEAD^)" "0/$SAP_BASE"
+
+# The stage was re-attached, committed on, and stopped again on the same file.
+(cd "$SAP_WT" && printf 'x\n' > note.txt && git add note.txt && git commit -qm note)
+SAQ_T2=$(sap_head)
+sap_sr 2
+saq_rec 2 "$SAQ_T2" "$(sap_line "$SAP_RULE" 규칙카탈로그 "$(sap_blob "$SAP_RULE")" 100644 "$(sap_b64 'rule three\n')")"
+saq_mark
+sap_ans "$CAP_DIR/halt/SAQ#2.md" 좌석
+check "34q: 스위치가 꺼져도 승계된 좌석 적용 답이 사람 없이 커밋된다" \
+  "$rc/$(cd "$SAP_WT" && git rev-parse HEAD^)/$(cd "$SAP_WT" && git show "HEAD:$SAP_RULE")" "0/$SAQ_T2/rule three"
+saq_r=$(sap_last)
+check "34q: 승계 행이 좌석과 승계 근거를 싣는다" \
+  "$(row_field "$saq_r" '답한 주체')/$(row_field "$saq_r" '근거 종류')/$(row_field "$saq_r" '승계 프레임')/$(row_field "$saq_r" '승계 원본')/$(row_field "$saq_r" '좌석 커밋')" \
+  "좌석/좌석 적용 승계/$SAQ_TID/$CAP_DIR/halt/SAQ#1.md/$(sap_head)"
+SAQ_T3=$(sap_head)
+
+# A RECORD THAT LEAVES A FILE TO A PERSON goes to the person, whatever else it applies.
+sap_sr 3
+sap_rec "$CAP_DIR/halt/SAQ#3.md" 'SAQ#3' apply "**좌석 적용 기준**: $SAQ_T3" '**좌석 적용 파일**:' \
+  "$(sap_line CLAUDE.md 지침파일 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 '# root two\n')")" \
+  '**사람 몫 파일**:' '- 파일 `.claude/settings.json` — 프로젝트설정 — 런은 프로젝트 설정을 커밋하지 않는다' "$SAP_SUBJ"
+saq_mark
+sap_ans "$CAP_DIR/halt/SAQ#3.md" 좌석
+saq_refused "사람 몫이 섞인 기록의 승계" 'leaves files to a person'
+
+# THE BRANCH REBUILT WITHOUT THE PERSON'S COMMIT inherits nothing.
+(cd "$SAP_WT" && git reset -q --hard "$SAP_BASE")
+saq_rec 3 "$SAP_BASE" "$(sap_line CLAUDE.md 지침파일 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 '# root two\n')")"
+saq_mark
+sap_ans "$CAP_DIR/halt/SAQ#3.md" 좌석
+saq_refused "사람의 커밋이 조상이 아닌 브랜치의 승계" 'is no longer an ancestor'
+(cd "$SAP_WT" && git reset -q --hard "$SAQ_T3")
+
+# AN ANSWER ADOPTED INTO THE KEY AFTER THE PERSON'S ends it; taken out again, the
+# inheritance stands.
+saq_rec 3 "$SAQ_T3" "$(sap_line CLAUDE.md 지침파일 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 '# root two\n')")"
+cp "$CAP_LEDGER" "$WORK/saq-ledger.bak"
+printf -- '- `중단 답` | 세그먼트=SAQ | 중단 기록=%s | 스킬=implement-unattended | 선택지=재수렴 | 답한 주체=사람 | 근거=입양 이월 | 기록 다이제스트=x | 출처 런=R0 | 출처 기록=/x.md | 레인=좌석 | 기록 시각=2026-10-20T00:00:00Z\n' \
+  "$CAP_DIR/halt/SAQ#0.md" >> "$CAP_LEDGER"
+sap_sr 4
+saq_rec 4 "$SAQ_T3" "$(sap_line CLAUDE.md 지침파일 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 '# root two\n')")"
+saq_mark
+sap_ans "$CAP_DIR/halt/SAQ#4.md" 좌석
+saq_refused "입양된 답 뒤의 승계" 'an answer was adopted into it'
+cp "$WORK/saq-ledger.bak" "$CAP_LEDGER"
+
+# A DECLARATION WIDENED AFTER THE PERSON ANSWERED: the new path is inside the
+# declaration, so the worktree check passes it, and outside the scope the person
+# was shown, so the seat does not.
+cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment SAQ \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+         -- "워크트리=$SAP_WT" 상태=실행중 선행=없음 "선언 파일 집합=$SAP_DECL, extra/CLAUDE.md"
+check "34q: 선언을 넓힌 세그먼트 행이 선다" "$rc" "0"
+saq_rec 3 "$SAQ_T3" "$(sap_line extra/CLAUDE.md 지침파일 "$(sap_blob extra/CLAUDE.md)" 100644 "$(sap_b64 '# extra two\n')")"
+saq_mark
+sap_ans "$CAP_DIR/halt/SAQ#3.md" 좌석
+saq_refused "넓어진 선언의 경로 승계" 'is outside the scope the person approved'
+check "34q: 사람의 답 뒤에 넓어진 선언의 경로는 승계되지 않는다" "$rc" "3"
+
+# Inside the scope, the inheritance still stands across the re-planned row.
+saq_rec 3 "$SAQ_T3" "$(sap_line CLAUDE.md 지침파일 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 '# root two\n')")"
+sap_ans "$CAP_DIR/halt/SAQ#3.md" 좌석
+check "34q: 범위 안의 경로는 뒤의 세그먼트 행을 지나도 승계된다" "$rc/$(cat "$SAP_WT/CLAUDE.md")" "0/# root two"
+SAQ_T4=$(sap_head)
+
+# A PARK ENDS IT for good: the segment running again is a new judgement.
+cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment SAQ \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+         -- "워크트리=$SAP_WT" 상태=park 선행=없음
+cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment SAQ \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+         -- "워크트리=$SAP_WT" 상태=실행중 선행=없음
+sap_sr 5
+saq_rec 5 "$SAQ_T4" "$(sap_line "$SAP_RULE" 규칙카탈로그 "$(sap_blob "$SAP_RULE")" 100644 "$(sap_b64 'rule four\n')")"
+saq_mark
+sap_ans "$CAP_DIR/halt/SAQ#5.md" 좌석
+saq_refused "park 뒤의 승계" 'was parked'
+check "34q: park 뒤에는 승계되지 않는다" "$rc" "3"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAQ_PREV_AR"
 
 # --- 34n. 답의 라우팅 — 갈래가 없는 답은 누구의 것이든 기록되지 않고, 교대가 되돌린 답은 다시 질문이 된다 ---
 # --- section: 34n | group: cone | covers: act, snapshot | anchors: 34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다, 34n: 같은 감사 키의 두 번째 자동 채택은 거절된다, 34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다, 34n: 되돌려진 기록의 좌석 자동 답은 거절된다 ---
@@ -39985,6 +40451,18 @@ case "$msg" in
   *"출처 런 $SRC85 의 열린 중단 답"*"이어지지 않습니다"*"구속 티어 이탈 승인"*) ok "85: 그 답은 이어지지 않는다고 경고로 이름 댄다" ;;
   *) bad "85 이월 안 됨 경고" "$msg" ;;
 esac
+
+# A person's seat-apply answer in the origin run is not carried either: it
+# approved a commit on that run's branch, and the adopting run's ledger holds no
+# row it could inherit from.
+{ printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=리뷰중 | 워크트리=%s | 선행=없음\n' "$WT85K"
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=S9 | 스테이지=S9 | 종류=implement | 실행 버전=4 | 세션 id=s-impl-4 | 종단 부류=의도된 park | prev=x\n'
+  printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=implement-unattended | 선택지=좌석 적용 | 답한 주체=사람 | 근거=사람이 diff 를 보고 승인 | 근거 종류=좌석 적용 | 좌석 커밋=%s | 적용 파일=1 | 승인 프레임=toolu_X | 적용 범위 수=1 | 적용 범위 다이제스트=%s | 기록 다이제스트=%s | 레인=좌석 | 기록 시각=2026-01-01T01:00:00Z\n' \
+    "$REC85" "$(printf '%040d' 0)" "$(printf '%064d' 0)" "$DIG85"; } > "$LEDGER85"
+run85 R85S "$ROW85K"
+g15_plan act R85S SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 출처 런의 좌석 적용 답은 입양 사본으로 들여오지 않는다" \
+  "$rc/$(carried85 R85S)/$( { grep -cF '선택지=좌석 적용' "$WT/docs/pipeline-run/R85S.md" 2>/dev/null || true; } | tr -d ' ')" "0/0/0"
 
 src85k_ledger '재수렴' '사람이 재수렴을 골랐다' 0000
 run85 R85G "$ROW85K"
