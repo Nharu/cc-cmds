@@ -10547,7 +10547,8 @@ gate_design_reconverge_entry() {
   #   design stage froze on it — a design row ended `정상 완료` between the two
   #   answers — and a person later answered the same record `골격 재검토`, which
   #   no stage has taken up yet. The second answer is the immediately next one
-  #   on that record.
+  #   on that record, an answer a routing block returned to a person not
+  #   counted.
   #
   # ONLY A PERSON'S ANSWER, AND EACH RECORD ONCE. The last `중단 답` of the key
   # is a person's `골격 재검토`, and no re-convergence of the key lands after
@@ -10600,7 +10601,20 @@ gate_design_reconverge_entry() {
       return 1
     fi
   else
-    prev=$(printf '%s\n' "$lines" | awk -F: -v l="$ln" -v r="| 중단 기록=$rec |" '$1 < l && index($0, r) { p = $0 } END { if (p != "") print p }')
+    # AN ANSWER A ROUTING BLOCK RETURNED IS SKIPPED. The shift could not carry
+    # it out — a re-convergence refused while the audit was live, or one that
+    # also fitted the audit's continuation — and handed the record back, so the
+    # person's new answer stands where that one stood. Reading the returned
+    # `골격 재검토` as the answer before would close this entry for the rest of
+    # the run on one refusal the normal flow reaches.
+    prev=''
+    for pln in $(printf '%s\n' "$lines" | awk -F: -v l="$ln" -v r="| 중단 기록=$rec |" '$1 < l && index($0, r) { print $1 }' | LC_ALL=C sort -rn); do
+      case "$(gate_halt_answer_consumer "$LEDGER" "$dstep" "$pln")" in
+        *':- `blocked` '*) continue ;;
+      esac
+      prev="$pln:$(sed -n "${pln}p" "$LEDGER")"
+      break
+    done
     if [ -z "$prev" ] || [ "$(gate_row_field "${prev#*:}" '선택지')" != '잔여로 두고 동결' ]; then
       GATE_DRC_WHY="아직 아무 스테이지도 받지 않은 「골격 재검토」 는 같은 기록의 바로 앞 답이 「잔여로 두고 동결」 일 때만 재수렴을 엽니다: $rec"
       return 1

@@ -11807,7 +11807,7 @@ rm -f "$WT/$DOC15ER"
 
 # ---------------------------------------------------------------------------
 # 15e-3. A person's `골격 재검토` on a design stage's residual ladder re-converges on the design step's key
-# --- section: 15e-3 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-3: 동결 전 입구의 - reconverge 파견 plan 이 통과한다, 15e-3: 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다, 15e-3: 좌석 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다,15e-3: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-3: 설계 단계가 아직 받지 않은 동결 전 답으로는 재수렴하지 않는다, 15e-3: 마지막 답이 골격 재검토가 아니면 재수렴하지 않는다, 15e-3: 범위가 다른 프롬프트는 거부된다, 15e-3: 같은 기록의 두 번째 재수렴은 거부된다, 15e-3: 감사 재수렴과 설계 입구가 함께 서면 거부된다, 15e-3: 재수렴 행이 세그먼트=- · 스테이지=D1 · 종류=reconverge 다, 15e-3: 재수렴 행이 설계 단계의 중단 답을 소비한다, 15e-3: 설계 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-3: 설계 재수렴 뒤 조건 1 이 감사 단계를 든다, 15e-3: 설계 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-3: 새 감사 뒤 계획은 재수렴 때문에 거부되지 않는다, 15e-3: 설계 시도가 살아 있는 동안 사람의 골격 재검토는 거부된다 ---
+# --- section: 15e-3 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-3: 동결 전 입구의 - reconverge 파견 plan 이 통과한다, 15e-3: 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다, 15e-3: 좌석 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다,15e-3: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-3: 설계 단계가 아직 받지 않은 동결 전 답으로는 재수렴하지 않는다, 15e-3: 마지막 답이 골격 재검토가 아니면 재수렴하지 않는다, 15e-3: 범위가 다른 프롬프트는 거부된다, 15e-3: 같은 기록의 두 번째 재수렴은 거부된다, 15e-3: 감사 재수렴과 설계 입구가 함께 서면 거부된다, 15e-3: 재수렴 행이 세그먼트=- · 스테이지=D1 · 종류=reconverge 다, 15e-3: 재수렴 행이 설계 단계의 중단 답을 소비한다, 15e-3: 설계 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-3: 설계 재수렴 뒤 조건 1 이 감사 단계를 든다, 15e-3: 설계 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-3: 새 감사 뒤 계획은 재수렴 때문에 거부되지 않는다, 15e-3: 설계 시도가 살아 있는 동안 사람의 골격 재검토는 거부된다, 15e-3: 되돌림 뒤 재답은 되돌려진 앞 답에 막히지 않는다 ---
 #
 # A design stage whose residual ladder left items open writes a
 # `/ ladder-unsettled` record and parks. A person who answers it
@@ -11921,6 +11921,31 @@ check "15e-3: 감사 재수렴과 설계 입구가 함께 서면 거부된다" "
 case "$msg" in
   *"양쪽에 다 맞습니다"*) ok "15e-3: 그 거부는 두 입구를 든다" ;;
   *) bad "15e-3 두 입구 문면" "$msg" ;;
+esac
+# The router takes that refusal to item 8: a routing block on the design step
+# spends the answer and hands the record back. The person answers it again;
+# the returned `골격 재검토` must not stand as the answer before the new one,
+# or the entry stays closed for the rest of the run.
+led15ep="$WT/docs/pipeline-run/R15EP.md"
+ep15_ln=$(grep -n '^- `중단 답` ' "$led15ep" | tail -1 | cut -d: -f1)
+ep15_why='중단 답 라우팅 — D1#1.md — 감사 재수렴과 설계 입구가 함께 선다'
+ep15_blk() {  # ep15_blk <argv…> — a `blocked` act on the post-freeze fixture run
+  gateL act --manifest "$WORK/plan-R15EP.md" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H R15EP)" --rationale x -- "$@"
+}
+ep15_blk 스코프=cone 원인=막힘 '앵커 세그먼트=D1' "사유=$ep15_why" "근거=중단 답 줄 $ep15_ln"
+check "15e-3: 되돌림 막힘이 서고 그 골격 재검토 답을 소비한다" \
+  "$rc/$( { grep -F '`blocked`' "$led15ep" || true; } | tail -1 | { grep -cF "| 막힌 답 줄=$ep15_ln |" || true; })/$(dl15_halts R15EP)" "0/1/[]"
+dl15_answer R15EP '골격 재검토'
+check "15e-3 픽스처의 되돌림 뒤 골격 재검토 재답이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
+ep15_blk 스코프=run 원인=해소 "사유=$ep15_why" '근거=사람이 새 답을 남겼다'
+check "15e-3 픽스처의 되돌림 막힘이 풀린다 (아래가 공허하지 않다)" "$rc" "0"
+check "15e-3: 되돌림 뒤 재답의 route 가 설계-재수렴 이다" \
+  "$(au15_snap "$WORK/plan-R15EP.md" | jq -r '[.answered_halts[] | .route] | last // ""')" "설계-재수렴"
+dl15_plan R15EP "$reconv15ep"
+case "$rc/$msg" in
+  3/*"양쪽에 다 맞습니다"*) ok "15e-3: 되돌림 뒤 재답은 되돌려진 앞 답에 막히지 않는다" ;;
+  *) bad "15e-3: 되돌림 뒤 재답은 되돌려진 앞 답에 막히지 않는다" "$rc/$msg" ;;
 esac
 au15_dispatch R15EP "$STUB_AU_AUDIT" audit "$audit15ep"
 au15_wait R15EP A1
