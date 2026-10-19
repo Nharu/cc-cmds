@@ -105,7 +105,9 @@ The first line of an item carries the tag one space after the category tag, with
 - **[category]** **[이월 가능]** `파일:라인` 이슈 설명 — 리뷰어
 ```
 
-An item written with a `### P1-n …` head carries exactly one of the same two tokens on that head line, without backticks. That head line is the item's first line.
+**A new report writes every P0 and P1 item in this one form**: a column-0 bullet starting `- **[category]**`, never a `### ` head. A P0 item is the same line without a disposition tag: ``- **[category]** `파일:라인` 이슈 설명 — 리뷰어``. The head form is a rule for reading reports written before this one; the gate's `report-check` flags a `### ` line inside the P0 or P1 section as `비불릿`. In such an older report, an item written with a `### P1-n …` head carries exactly one of the same two tokens on that head line, without backticks, and that head line is the item's first line.
+
+**Anchor.** The first backtick token of every P0 and P1 item line is `파일:라인` — a path with no space or backtick, a colon, and a line number or range (``^[^ `]+:[0-9]+(-[0-9]+)?$``); a `[CI-CONFIRMED]` token before it is skipped. A finding about something that is missing anchors at the line its fix would touch. The finding fingerprint and the readers that tell one finding from another read this token, and `report-check` flags an item line without it as `앵커 없음`.
 
 The sub-bullets come after the existing `근거` / `💡 수정 제안` / `📎` lines and before the blank line that precedes `💬`. Every P1 item has:
 
@@ -126,7 +128,7 @@ A `**[이월 가능]**` item then has, in this order:
 The rules the gate relies on:
 
 - **Section.** The P1 section runs from the line starting `## 🟠 P1` to the next line starting `## ` (two hashes, a space). Neither a `### ` line nor any line inside a head-form item ends the section.
-- **Tag line.** A line inside the P1 section that contains `**[차단]**` or `**[이월 가능]**`. Every P1 item has exactly one tag line and it is its first line. Every tag line starts with `- ` or `### `, contains one token exactly once, and never contains both tokens. The tokens appear nowhere else in the section (`근거`, `💬`). Tags outside the P1 section are ignored.
+- **Tag line.** A line inside the P1 section that contains `**[차단]**` or `**[이월 가능]**`. Every P1 item has exactly one tag line and it is its first line. A new report's tag line starts with `- `; a reader also takes a line starting `### `, the head form of older reports. Every tag line contains one token exactly once and never contains both tokens. The tokens appear nowhere else in the section (`근거`, `💬`). Tags outside the P1 section are ignored.
 - **What is counted.** The number of tag lines containing `**[차단]**` and the number containing `**[이월 가능]**`, counted the same way in both item forms. If any tag line breaks a rule above, the report is `분류 미상` and ineligible for carryover. A parser that counts every line carrying a token and one that counts only `- ` / `### ` tag lines therefore reach the same verdict on every report.
 - **Item extent.** An item runs from its tag line to the line before the next tag line, or to the end of the section. `분류 근거`, `이월 제목` and `이월 본문` belong to the item whose extent contains them. A column-0 `- ` line and a `### ` line without a token do not end the extent.
 - **Same indentation in both forms.** `분류 근거`, `이월 제목` and `이월 본문` are written exactly as fenced above, with four spaces before `- `. Every `이월 본문` body line starts with exactly six spaces. This holds when the item is a head and its other lines are column-0 bullets. The gate matches `    - **이월 제목**: ` and `    - **이월 본문**:` at that indentation; a line written otherwise is not one.

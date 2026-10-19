@@ -1065,6 +1065,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     "#### Branching on \`다음\` after a review|-- lead-fix -p '/cc-cmds:review-unattended <브랜치> --lead-fix <리포트 경로> \"설계는 <문서 인자>\"'" \
     '#### Spelling a review dispatch|`gate.sh review-line --manifest <매니페스트> --segment <seg> [-- <flag>…]`' \
     '#### Spelling a review dispatch|Do not rebuild these arguments from an earlier stage'"'"'s stream log or from memory' \
+    '#### Spelling a review dispatch|the gate refuses a review dispatch naming any other (exit 2)' \
+    '#### Spelling a review dispatch|**Declare why the review goes** with `--trigger '"'"'<토큰>'"'"'` before `--`, on the `act` and on its `plan` alike' \
+    '#### Spelling a review dispatch|`라우터 판단` together with `--trigger-reason '"'"'<사유>'"'"'` only when none of those holds' \
+    '#### Spelling a review dispatch|`첫 리뷰`, `리뷰 P0`, `리뷰 P1`, `CI 실패`, `베이스 충돌`, `버전 경합`, `리베이스`, `해소 리뷰`, `중단 답`, `중단 인계`' \
     '#### Branching on `다음` after a review|with `--recheck <리포트 경로>` added to the prompt' \
     '#### Branching on `다음` after a review|`gate.sh residual-body --manifest <매니페스트> --segment <seg>`' \
     "#### Branching on \`다음\` after a review|\`'사유=리뷰 잔여'\`" \
@@ -1264,6 +1268,43 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   check "$who 사본에 계획 순서 거부를 새 런으로 보내던 옛 문장이 없다" \
     "$(mo_count "$(cat "$file")" "$mo_old")" "0"
 done
+
+# ---------------------------------------------------------------------------
+# 6e-5. The review stage checks its own report with `report-check`
+#
+# The gate records a report's shape on the `cycle` row and refuses nothing on
+# it, so the only place a malformed report is repaired is the review stage
+# that wrote it. The sentences below are that loop, in the ordinary Step 5 and
+# in the recovery arm: the verb and its spelling, the two-round cap, the gate
+# failure that ends without editing, and the two edits that are never made — a
+# summary bent to the items, and a review HEAD line invented for a recovery.
+# The verb's verdict line is quoted from the gate, so a rewording of either
+# side fails here.
+# ---------------------------------------------------------------------------
+RU_SKILL="$PLUGIN_ROOT/skills/review-unattended/SKILL.md"
+RU_RECOVER="$PLUGIN_ROOT/skills/review-unattended/references/recovery-arm.md"
+rc_verdict='report-check: 불일치 <n>'
+check "게이트가 report-check 의 판정 줄을 낸다" \
+  "$(mo_count "$(cat "$GATE")" "printf 'report-check: 불일치 %s")" "1"
+for pair in "Step 5:$RU_SKILL" "복구 팔:$RU_RECOVER"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for lit in \
+    'gate.sh report-check --manifest "$CC_PIPELINE_MANIFEST" --report <' \
+    "$rc_verdict" \
+    'at most two rewrites, then' \
+    'Never edit the summary counts to match the items' \
+    'Nothing here halts.'
+  do
+    case "$who:$lit" in
+      'Step 5:Never edit the summary counts to match the items') lit='Never edit the `발견 요약` counts to match the items' ;;
+    esac
+    check "$who 의 report-check 고리가 「${lit:0:50}」 을 싣는다" "$(mo_count "$(cat "$file")" "$lit")" "1"
+  done
+done
+check "Step 5 의 report-check 고리는 게이트 실패를 고치지 않고 끝낸다" \
+  "$(mo_count "$(cat "$RU_SKILL")" 'is the gate failing, not the report: end the stage without editing')" "1"
+check "복구 팔은 복구 리포트에 리뷰 HEAD 줄을 지어 넣지 않는다" \
+  "$(mo_count "$(cat "$RU_RECOVER")" 'never write a `리뷰 HEAD` line into a recovered report')" "1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
