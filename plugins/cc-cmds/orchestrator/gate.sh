@@ -206,9 +206,11 @@
 #                  ['첨부=<RUN_DIR/halt/…answer.md>']
 # `halt-answer` is the seat's alone on the same terms, save one shift case: an
 # implement-unattended CFI-U3 BT-STOP record answered `재수렴` under a
-# `자동 채택` row of class 구속-이탈, once per key. `<key>` is the segment
+# `자동 채택` row of class 구속-이탈, once per record. `<key>` is the segment
 # id, or the step id for the design step, of the stage that halted; the gate
-# checks the record is this run's, complete, and lists the option verbatim.
+# checks the record is this run's, complete, and lists the option verbatim,
+# and refuses with 3 an answer no branch of the shift can carry out
+# (`라우팅 불가 — <reason>`, then `실행할 수 있는 선택지: <labels|없음>`).
 # `첨부` is a file the seat wrote under the same `halt/` with what the person
 # supplied beyond the option — measured values, a longer instruction. An
 # adopted segment's planning act (`--from-declaration`) writes one more such
@@ -13325,6 +13327,10 @@ gate_snapshot() {
   printf '  "answered_halts": [\n'
   gate_answered_halts_json
   printf '  ],\n'
+  # The records a shift returned to a person — read as unanswered again.
+  printf '  "returned_halts": [\n'
+  gate_returned_halts_json
+  printf '  ],\n'
   # The shift stops no answer has reached yet — what a shift holds.
   printf '  "shift_halts": [\n'
   gate_shift_halts_json
@@ -17390,17 +17396,81 @@ gate_answered_halts_json() {
     # string for an answer given in this run, and the earlier run's id for one
     # the adopted segment's planning act carried over (`gate_adoption_halt_carry`).
     # `answered_by` is `사람`, `좌석` or `교대` (`gate_halt_answered_by`), so the
-    # shift's re-attach message can say who chose the option.
-    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "attachment": "%s", "origin_run": "%s", "line": %s}' \
+    # shift's re-attach message can say who chose the option. `route` is the
+    # route id `gate_halt_answer_route` gives the answer now and
+    # `route_refusal` its reason when it gives none — the same verdict
+    # `halt-answer` gave when it recorded the row, read again because the
+    # ledger has moved since; the shift maps `route` to its item and hands a
+    # refused one back to a person. Both are empty when the record file is
+    # gone, since there is nothing to read the branch from. Neither enters the
+    # digest H or the default `--fields` projection.
+    local rrec rby rroute='' rwhy=''
+    rrec=$(gate_row_field "$row" '중단 기록')
+    rby=$(gate_halt_answered_by "$row")
+    if [ -f "$rrec" ]; then
+      if gate_halt_answer_route "$key" "$rrec" "$(gate_row_field "$row" '선택지')" "$rby" >/dev/null 2>&1; then
+        rroute=$GATE_HALT_ROUTE_ID
+      else
+        rwhy=$GATE_HALT_ROUTE_REASON
+      fi
+    fi
+    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "attachment": "%s", "origin_run": "%s", "route": "%s", "route_refusal": "%s", "line": %s}' \
       "$(gate_json_escape "$key")" \
-      "$(gate_json_escape "$(gate_row_field "$row" '중단 기록')")" \
+      "$(gate_json_escape "$rrec")" \
       "$(gate_json_escape "$(gate_row_field "$row" '스킬')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '선택지')")" \
-      "$(gate_json_escape "$(gate_halt_answered_by "$row")")" \
+      "$(gate_json_escape "$rby")" \
       "$(gate_json_escape "$(gate_row_field "$row" '첨부')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '출처 런')")" \
+      "$(gate_json_escape "$rroute")" \
+      "$(gate_json_escape "$rwhy")" \
       "$ln"
   done
+  [ "$first" = "1" ] || printf '\n'
+}
+
+gate_returned_halts_json() {
+  # The snapshot's `returned_halts[]`: the halt records whose answer a shift
+  # could not carry out and returned to a person with a routing block, which
+  # the gate stamped with the answer's line (`막힌 답 줄`). One element per
+  # record, while `cc_halt_returned` holds — a person's new `중단 답` ends it.
+  #
+  # `option` and `answered_by` are the returned answer's, so the seat can say
+  # which choice came back from whom; `reason` is the block's `사유` after the
+  # record name; `answer_line` the answer's ledger line and `line` the block's.
+  # Not in the digest H, nor in the default `--fields` projection.
+  local LC_CTYPE=C; export LC_CTYPE
+  local r bl brow aln arow rec last first=1 why
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    bl=${r%%:*}; brow=${r#*:}
+    [ "$(gate_row_field "$brow" '스코프')" = "cone" ] || continue
+    [ "$(gate_row_field "$brow" '원인')" = "막힘" ] || continue
+    aln=$(gate_row_field "$brow" '막힌 답 줄')
+    case "$aln" in ''|*[!0-9]*) continue ;; esac
+    arow=$(sed -n "${aln}p" "$LEDGER" 2>/dev/null)
+    case "$arow" in "- \`중단 답\` "*) ;; *) continue ;; esac
+    rec=$(gate_row_field "$arow" '중단 기록')
+    last=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+            | { grep -F "| 중단 기록=$rec |" || true; } | tail -1)
+    [ "${last%%:*}" = "$aln" ] || continue
+    gate_halt_record_returned "$rec" || continue
+    why=$(gate_row_field "$brow" '사유')
+    why=${why#'중단 답 라우팅 — '}
+    why=${why#* — }
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"segment": "%s", "record": "%s", "option": "%s", "answered_by": "%s", "answer_line": %s, "reason": "%s", "line": %s}' \
+      "$(gate_json_escape "$(gate_row_field "$arow" '세그먼트')")" \
+      "$(gate_json_escape "$rec")" \
+      "$(gate_json_escape "$(gate_row_field "$arow" '선택지')")" \
+      "$(gate_json_escape "$(gate_halt_answered_by "$arow")")" \
+      "$aln" \
+      "$(gate_json_escape "$why")" \
+      "$bl"
+  done <<EOF
+$( { grep -n "^- \`blocked\` " "${LEDGER:-/dev/null}" 2>/dev/null || true; } | { grep -F '| 막힌 답 줄=' || true; } )
+EOF
   [ "$first" = "1" ] || printf '\n'
 }
 
@@ -17466,6 +17536,18 @@ gate_halt_answer_consumer() {
       sr=$st
     fi
   fi
+  # AN ANSWER A ROUTING BLOCK RETURNED IS TAKEN UP BY THAT BLOCK. The shift
+  # could not carry it out and handed the record back to a person; the gate
+  # stamped the block with this answer's line. Read on every ledger this is
+  # asked of — the earlier run's too, through the adoption carry — so an
+  # answer returned there is not carried into this run as an open one.
+  local bk
+  bk=$(LC_ALL=C awk -v l="$3" '
+    NR > l && !p && index($0, "- `blocked` ") == 1 && index($0, "| 스코프=cone |") \
+      && index($0, "| 원인=막힘 |") && index($0, "| 막힌 답 줄=" l " |") { print NR ":" $0; p = 1 }' "$1" 2>/dev/null)
+  if [ -n "$bk" ] && { [ -z "$sr" ] || [ "${bk%%:*}" -lt "${sr%%:*}" ]; }; then
+    sr=$bk
+  fi
   if [ "$(gate_row_field "$(sed -n "${3}p" "$1" 2>/dev/null)" '선택지')" = '세그먼트 park' ]; then
     pk=$(LC_ALL=C awk -v l="$3" -v k="$2" '
       NR > l && !p && index($0, "- `segment` ") == 1 && index($0, "| id=" k " |") \
@@ -17475,6 +17557,21 @@ gate_halt_answer_consumer() {
     fi
   fi
   [ -z "$sr" ] || printf '%s\n' "$sr"
+}
+
+gate_open_answer_line_of() {
+  # gate_open_answer_line_of <key> <record file name> — the ledger line of the
+  # key's open answer (the element `answered_halts[]` lists for it) when that
+  # answer names a record of this file name, or nothing.
+  local key="$1" name="$2" row ln
+  row=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "| 세그먼트=$key |" || true; } | tail -1)
+  [ -n "$row" ] || return 0
+  ln=${row%%:*}
+  gate_halt_answer_spent "$LEDGER" "$key" "$ln" && return 0
+  row=$(gate_row_field "${row#*:}" '중단 기록')
+  [ "${row##*/}" = "$name" ] || return 0
+  printf '%s' "$ln"
 }
 
 gate_halt_answer_is_auto() {
@@ -17578,6 +17675,23 @@ gate_halt_recommendation() {
   GATE_HALT_REC_KINDS=${kinds:-미상}
 }
 
+gate_halt_record_tail() {
+  # gate_halt_record_tail <record> — the record path from the run directory's
+  # own name down, the tail `cc_unanswered_halts` matches `중단 기록=` on. A
+  # record outside the run directory is its own tail.
+  local rd="${RUN_DIR%/}"
+  case "$1" in
+    "$rd"/*) printf '/%s/%s' "${rd##*/}" "${1#"$rd"/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+gate_halt_record_returned() {
+  # gate_halt_record_returned <record> — `cc_halt_returned` on this run's
+  # ledger, so the gate's bound and the watcher read the same answer.
+  cc_halt_returned "$LEDGER" "$(gate_halt_record_tail "$1")"
+}
+
 gate_bind_escape_cap() {
   # gate_bind_escape_cap — the `상한` of the manifest's `자동 채택` row of class
   # `구속-이탈`, or nothing when `## 인가` carries no such row.
@@ -17599,6 +17713,17 @@ gate_halt_auto_answer_admit() {
   # person gave has to pass, whoever wrote it (the shift's pre-adopted `재수렴`
   # or the seat's copy of a recommendation). A person's answer takes none of
   # them: they may answer the same record twice, and change their mind.
+  #
+  # TWO CLASSES OF CHECK, AND THEY DO NOT OVERLAP. The bounds here count
+  # repeats or read currency — the same record re-converged once, one
+  # automatic answer per record, the manifest's `상한`, one automatic adoption
+  # per audit key, a record a shift returned — and hold for automatic answers
+  # only, each refusing with its own reason line. Routability —
+  # whether a branch of the shift can carry the answer out at all — is
+  # `gate_halt_answer_route`'s, holds for every writer, a person included, and
+  # refuses with `라우팅 불가 — ` and the routable options. So "a person's
+  # answer takes no automatic bound" stays true as written, and a person still
+  # cannot record an answer no branch can carry out.
   #
   # SAME RECORD, RE-CONVERGED ONCE. A `재수렴` answer to a record whose earlier
   # `재수렴` answer — anyone's — was taken up by a re-convergence that ran goes
@@ -17671,6 +17796,36 @@ gate_halt_auto_answer_admit() {
   done <<EOF
 $rows
 EOF
+  # A RECORD A SHIFT RETURNED TO A PERSON IS A PERSON'S. The shift could not
+  # carry its answer out and said so with a routing block; an automatic answer
+  # over it would change the choice before any person saw why it came back.
+  if gate_halt_record_returned "$rec"; then
+    warn "교대가 이 기록의 답을 사람에게 되돌렸습니다 — 되돌려진 기록에는 사람의 답이 필요합니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  # ONE AUTOMATIC ADOPTION PER AUDIT KEY. An audit's synthesis question
+  # answered `adopt as a requirement` re-converges the document and audits it
+  # again; when the key already ran a re-convergence and the audit parked on
+  # the synthesis again, the automatic answer would loop the same repair. A
+  # re-convergence that ended `크래시`, `한도 종료` or `외부 종료` did nothing
+  # with the answer and is not counted — the same exclusion as the record
+  # bound above. A person's adoption takes none of this and is routed like the
+  # first.
+  if [ "$opt" = "adopt as a requirement" ] \
+     && [ "$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" 2>/dev/null | sed -n '1p' | sed 's/[[:space:]]*$//')" = "design-audit-unattended" ]; then
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      [ "$(gate_row_field "$r" '종류')" = "reconverge" ] || continue
+      cls=$(gate_row_field "$r" '종단 부류')
+      case "$cls" in
+        크래시|'한도 종료'|'외부 종료') continue ;;
+      esac
+      warn "같은 감사 키를 두 번 재수렴하려면 사람의 답이 필요합니다 — $key 는 이미 재수렴을 돌렸습니다(실행 버전 $(gate_row_field "$r" '실행 버전'), 종단 부류=${cls:-미상}): $rec"
+      return "$GATE_EXIT_RULE"
+    done <<EOF
+$( { gate_stage_result_rows_of "$key" || true; } )
+EOF
+  fi
   [ "$opt" = "재수렴" ] || return 0
   cap=$(gate_bind_escape_cap)
   [ -n "$cap" ] || return 0
@@ -17782,6 +17937,186 @@ EOF
   [ "$hst" = "$want" ] && return 0
   warn "this record is not the halt of $key's last settled attempt ($want, \`halt/$want.md\`) — an automatic answer goes only to the key's latest halt, and an older one goes to a person: $rec"
   return "$GATE_EXIT_RULE"
+}
+
+# The routes a shift hands an answered halt on by, one id per branch of
+# 「Handing on a person's answer to a halt」 in the routing shift's skill. The
+# skill maps each id to its item; `scripts/test-gate.sh` reads the ids from
+# this line and fails when the skill stops naming one.
+readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상'
+
+gate_audit_reconverge_keyable() {
+  # gate_audit_reconverge_keyable <audit step id> [<resumed session>] — whether
+  # a `- reconverge` dispatch is admitted on the run-scope audit step: the step
+  # has no `segment` row, and its last `stage-result` row is an audit that
+  # parked on purpose, or — under `--resume` — a re-convergence whose session
+  # is the one being resumed. GATE_AUDIT_RECONVERGE_LAST holds that last row
+  # for the caller's refusal text.
+  #
+  # ONE DEFINITION FOR THE DISPATCH AND THE ANSWER. The dispatch refuses a
+  # `- reconverge` on this test, and `gate_halt_answer_route` refuses an answer
+  # the shift would carry out by that dispatch on the same test, so an answer
+  # recorded is one the dispatch takes.
+  local k="$1" res="${2:-}" last
+  GATE_AUDIT_RECONVERGE_LAST=''
+  [ -z "$(gate_segment_field "$k" '상태')" ] || return 1
+  last=$( { gate_stage_result_rows_of "$k" || true; } | tail -1)
+  GATE_AUDIT_RECONVERGE_LAST=$last
+  if [ "$(gate_row_field "$last" '종류')" = "audit" ] \
+     && [ "$(gate_row_field "$last" '종단 부류')" = "의도된 park" ]; then
+    return 0
+  fi
+  if [ -n "$res" ] \
+     && [ "$(gate_row_field "$last" '종류')" = "reconverge" ] \
+     && [ "$(gate_row_field "$last" '세션 id')" = "$res" ]; then
+    return 0
+  fi
+  return 1
+}
+
+gate_implement_cycle_admissible() {
+  # gate_implement_cycle_admissible <segment> — whether an implement dispatch
+  # on the segment is inside its cycle budget. GATE_IMPL_CYCLE_N and
+  # GATE_IMPL_CYCLE_CAP hold the count and the cap for the caller's refusal
+  # text.
+  #
+  # THE RE-IMPLEMENTATION AFTER A RE-CONVERGENCE IS EXEMPT. It is the one
+  # implement dispatch the ladder sends past the cap, and only while `다음`
+  # reads `재구현`: once its row stands, `다음` is the re-check, so the
+  # exemption covers that one dispatch and nothing after it.
+  # THE EXEMPTION REACHES THE SAME RE-IMPLEMENTATION'S LATER RUNS. That
+  # dispatch starts in process A, because the re-convergence voided the
+  # plan, and its plan-only row already turns `다음` to the re-check. Until
+  # a review of the re-implementation stands — `확인 리뷰`, a `정상 완료`
+  # re-convergence after the last cycle row and no lead-fix row after it —
+  # an implement dispatch passes while `implement_next[]` reads `구현`,
+  # which the `무커밋 구현` limit already bounds.
+  #
+  # ONE DEFINITION FOR THE DISPATCH AND THE ANSWER, as
+  # `gate_audit_reconverge_keyable` is: the exemption moves with later rows,
+  # and a second copy of it would let an answer be recorded that the dispatch
+  # then refuses.
+  local seg="$1" n cap rn walk
+  n=$(gate_segment_cycle_count "$seg")
+  cap=$(gate_segment_cycle_cap "$seg")
+  GATE_IMPL_CYCLE_N=${n:-0}
+  GATE_IMPL_CYCLE_CAP=$cap
+  [ "${n:-0}" -ge "$cap" ] || return 0
+  rn=$(gate_segment_review_next "$seg")
+  [ "$rn" = "재구현" ] && return 0
+  if [ "$rn" = "확인 리뷰" ]; then
+    walk=$(gate_segment_review_walk "$seg")
+    if [ "$(gate_report_count "$walk" '마지막 뒤 재수렴')" = "정상" ] \
+       && [ "$(gate_report_count "$walk" '리드 수정 뒤')" = "0" ]; then
+      case "$(gate_implement_next_of "$seg" </dev/null)" in
+        *'"다음": "구현",'*) return 0 ;;
+      esac
+    fi
+  fi
+  return 1
+}
+
+gate_halt_answer_route() {
+  # gate_halt_answer_route <key> <record> <option> <answered_by> — the route id
+  # (one of GATE_HALT_ROUTES) a shift hands this answer on by, printed with exit
+  # 0; or GATE_HALT_ROUTE_REASON filled, `라우팅 불가 — <reason>` warned and
+  # GATE_EXIT_RULE when no branch of the shift can carry the answer out.
+  #
+  # ROUTABILITY IS NOT AN AUTOMATIC-ANSWER BOUND. It asks only whether the
+  # branch the answer falls into has its structural condition met in the
+  # ledger as it stands, so it holds for every writer, a person included. The
+  # bounds that count repeats or check currency are
+  # `gate_halt_auto_answer_admit`'s and `gate_halt_auto_answer_current`'s, and
+  # they hold for automatic answers only.
+  #
+  # ONLY WHAT THE LEDGER SETTLES NOW. A live attempt of the key, the exclusive
+  # lock, the lane, the deadline and the stream the shift reads before
+  # `--resume` move between this answer and its dispatch; they are refused when
+  # the shift acts, and the shift then returns the answer to a person with a
+  # routing block (item 8 of the shift's procedure).
+  #
+  # THE SAME TEST AT TWO TIMES. `halt-answer` asks it before writing the row,
+  # and the snapshot asks it of each `answered_halts[]` element as `route` and
+  # `route_refusal`, so the shift reads the same verdict the seat was given.
+  #
+  # `<answered_by>` is not read today: no routing condition depends on who
+  # answered. It is in the signature so the snapshot and `halt-answer` pass the
+  # same four facts.
+  local key="$1" rec="$2" opt="$3" skill step hstep st last sid id='' why=''
+  local terminal
+  GATE_HALT_ROUTE_ID=''; GATE_HALT_ROUTE_REASON=''
+  st=$(gate_segment_field "$key" '상태')
+  terminal="세그먼트 $key 가 이미 종단(상태=$st)이라 교대가 이 답을 실행할 갈래가 없습니다"
+  skill=$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" 2>/dev/null | sed -n '1p' | sed 's/[[:space:]]*$//')
+  step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" 2>/dev/null | sed -n '1p')
+  hstep=${step%% — *}
+  if [ -n "$(gate_shift_halt_row_of "$rec")" ]; then
+    # No terminal condition: two of the shift's stop sites arise on a segment
+    # that already has its `머지됨` row, and their `재시도` writes a second one.
+    id=교대-정지
+    [ -n "$st" ] || why="$key 에 segment 행이 없어 교대가 교대 정지 기록의 답을 실행할 세그먼트가 없습니다"
+  elif [ "$skill" = "design-audit-unattended" ] && [ "${step#*CFI-3b}" != "$step" ] \
+       && [ "$opt" = "adopt as a requirement" ]; then
+    id=감사-재수렴
+    if gate_run_scope_kind_of_key "$key" >/dev/null 2>&1; then
+      gate_audit_reconverge_keyable "$key" \
+        || why="감사 단계 $key 의 마지막 행이 의도된 park 로 끝난 감사가 아니어서(종류=$(gate_row_field "$GATE_AUDIT_RECONVERGE_LAST" '종류') · 종단 부류=$(gate_row_field "$GATE_AUDIT_RECONVERGE_LAST" '종단 부류')) 교대가 - reconverge 를 띄울 수 없습니다"
+    elif gate_segment_terminal "$key"; then
+      why=$terminal
+    fi
+  elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
+       && [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ]; then
+    id=구속-재수렴
+    ! gate_segment_terminal "$key" || why=$terminal
+  elif [ "$skill" = "review-unattended" ] && [ "${step#Step 1b 빈 대상}" != "$step" ]; then
+    id=빈-대상
+    case "$opt" in
+      '구현 재파견'|'세그먼트 park')
+        if gate_segment_terminal "$key"; then
+          why=$terminal
+        elif [ "$opt" = "구현 재파견" ] && ! gate_implement_cycle_admissible "$key"; then
+          why="세그먼트 $key 의 사이클 예산이 소진돼(cycle 행 ${GATE_IMPL_CYCLE_N}개, 상한 ${GATE_IMPL_CYCLE_CAP}) 구현 재파견이 거절됩니다"
+        fi ;;
+      *) why="빈 대상 리뷰 정지에는 \`$opt\` 를 실행할 갈래가 없습니다 — 갈래는 \`구현 재파견\` 과 \`세그먼트 park\` 뿐입니다" ;;
+    esac
+  else
+    # Every other answer, `좌석 실행` included, re-attaches the key's last
+    # session; the shift reads the stream before `--resume` as well.
+    id=재부착
+    last=$( { gate_stage_result_rows_of "$key" || true; } | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1)
+    sid=$(gate_row_field "$last" '세션 id')
+    case "$sid" in
+      ''|미상) why="$key 의 마지막 정산 stage-result 행에 세션 id 가 없어(세션 id=${sid:-빈 값}) 교대가 재부착할 세션이 없습니다" ;;
+    esac
+  fi
+  if [ -z "$why" ]; then
+    GATE_HALT_ROUTE_ID=$id
+    printf '%s\n' "$id"
+    return 0
+  fi
+  GATE_HALT_ROUTE_REASON=$why
+  warn "라우팅 불가 — $why"
+  return "$GATE_EXIT_RULE"
+}
+
+gate_halt_answer_routable_options() {
+  # gate_halt_answer_routable_options <key> <record> <answered_by> — the option
+  # labels of the record that `gate_halt_answer_route` routes, joined with
+  # `, `, or nothing. The seat shows them beside a refusal so a person does not
+  # pick a refused label again.
+  local key="$1" rec="$2" by="$3" ol lab out=''
+  while IFS= read -r ol; do
+    case "$ol" in
+      '- `'*'`'*) ;;
+      *) continue ;;
+    esac
+    lab=${ol#- \`}
+    lab=${lab%%\`*}
+    [ -n "$lab" ] || continue
+    gate_halt_answer_route "$key" "$rec" "$lab" "$by" >/dev/null 2>&1 || continue
+    out="$out${out:+, }$lab"
+  done < "$rec"
+  printf '%s' "$out"
 }
 
 gate_shift_halt_site_table() {
@@ -17920,7 +18255,18 @@ gate_shift_halt_fields_refused() {
   # writes. A `blocked` row carrying `중단 기록` and `기록 다이제스트` is what
   # makes a file a shift's halt record, so a router able to write them by hand
   # could vouch for a record the gate never wrote.
+  #
+  # `막힌 답 줄` IS THE GATE'S STAMP AND NEVER AN ARGUMENT, from any caller: it
+  # consumes the answer on that line and returns the record to a person, so a
+  # caller able to write it could retire any answer by line number.
   local f
+  for f in "$@"; do
+    case "${f%%=*}" in
+      '막힌 답 줄')
+        warn "\`막힌 답 줄\` on a \`blocked\` row is stamped by the gate — a routing block names its record in \`사유\` (\`중단 답 라우팅 — <기록 파일 이름> — <이유>\`) and the gate finds the answer's line"
+        return 0 ;;
+    esac
+  done
   [ -z "${GATE_SHIFT_HALT_WRITING:-}" ] || return 1
   for f in "$@"; do
     case "${f%%=*}" in
@@ -20234,14 +20580,14 @@ gate_cone_members() {
   # axis holds. In the other direction the ancestor axis catches what nobody
   # declared. Building one and calling it done leaves a suite that passes with
   # the main case void.
-  local anchor="$1" members grew sid m ident idents dstep
+  local anchor="$1" members grew sid m ident idents
   members=" $anchor "
 
-  # THE RUN-SCOPE DESIGN STEP STANDS IN FRONT OF EVERY SEGMENT, so a cone
-  # anchored on it is the step and every segment that has not ended. Such an
-  # anchor has no segment row, which is how it is told apart.
-  if [ -z "$(gate_segment_field "$anchor" '상태')" ] \
-     && dstep=$(gate_run_scope_step design 2>/dev/null) && [ "$dstep" = "$anchor" ]; then
+  # A RUN-SCOPE STEP STANDS IN FRONT OF EVERY SEGMENT — the design, the audit
+  # and the split alike — so a cone anchored on one is the step and every
+  # segment that has not ended. Such an anchor has no segment row, which
+  # `gate_run_scope_kind_of_key` requires, so a segment id is never read as one.
+  if gate_run_scope_kind_of_key "$anchor" >/dev/null 2>&1; then
     for sid in $(gate_segment_ids); do
       [ -n "$sid" ] || continue
       gate_segment_terminal "$sid" && continue
@@ -20331,10 +20677,11 @@ gate_record_cone() {
     warn "a cone row needs an \`앵커 세그먼트\` — it is where the derivation starts"
     return "$GATE_EXIT_VOCAB"
   fi
-  # The run-scope design step is the one anchor that has no segment row: a
-  # stage of it that cannot finish inside the deadline holds every segment.
+  # A run-scope step — design, audit or split — is the one anchor that has no
+  # segment row: a stage of it that cannot finish inside the deadline, or an
+  # answer to its halt the shift cannot carry out, holds every segment.
   if [ -z "$(gate_segment_field "$anchor" '상태')" ] \
-     && ! { dstep=$(gate_run_scope_step design 2>/dev/null) && [ "$dstep" = "$anchor" ]; }; then
+     && ! gate_run_scope_kind_of_key "$anchor" >/dev/null 2>&1; then
     warn "there is no segment row for the anchor segment: $anchor — a cone is not stood up on an anchor the ledger does not resolve"
     return "$GATE_EXIT_VOCAB"
   fi
@@ -20370,6 +20717,28 @@ gate_record_cone() {
     warn "leave the declaration out and the gate records the derived list in bounded form and puts the whole of it at ${RUN_DIR:-<run directory>}/cone.${anchor}"
     return "$GATE_EXIT_VOCAB"
   fi
+  # A ROUTING BLOCK RETURNS ITS ANSWER TO A PERSON. When the shift cannot carry
+  # out an answered halt it writes this cone with `사유` opening
+  # `중단 답 라우팅 — <기록 파일 이름> — `, and the gate stamps the line of the
+  # anchor key's open answer to that record as `막힌 답 줄`. The stamp is what
+  # spends the answer (`gate_halt_answer_consumer`) and what turns the record
+  # back into a question (`cc_halt_returned`). A `원인=해소` row never reaches
+  # here, so it is never stamped: the answer open at release is the person's
+  # new one. No matching open answer, no stamp — the row still stands.
+  local stamp=() why rname
+  why=$(gate_field_of '사유' "$@")
+  if [ "$cause" = "막힘" ]; then
+    case "$why" in
+      '중단 답 라우팅 — '*' — '*)
+        rname=${why#'중단 답 라우팅 — '}
+        rname=${rname%% — *}
+        local sl
+        sl=$(gate_open_answer_line_of "$anchor" "$rname")
+        [ -z "$sl" ] || stamp=("막힌 답 줄=$sl")
+        ;;
+    esac
+  fi
+
   if [ -n "$declared" ]; then
     # SUPERSET ONLY. Widening passes and narrowing does not, so the lie that
     # would pay — leaving a dependent out so it keeps running on a premise that
@@ -20381,9 +20750,9 @@ gate_record_cone() {
       warn "the declared \`의존 세그먼트\` is a proper subset of the derived result — missing:${missing}"
       return "$GATE_EXIT_GRADE"
     fi
-    gate_append 'blocked' "대상=$alias" "$@" "의존 세그먼트 수=$nderived" || return $?
+    gate_append 'blocked' "대상=$alias" "$@" ${stamp[@]+"${stamp[@]}"} "의존 세그먼트 수=$nderived" || return $?
   else
-    gate_append 'blocked' "대상=$alias" "$@" "의존 세그먼트 수=$nderived" \
+    gate_append 'blocked' "대상=$alias" "$@" ${stamp[@]+"${stamp[@]}"} "의존 세그먼트 수=$nderived" \
       "의존 세그먼트=$(gate_row_safe "$derived" "$GATE_CONE_LIST_MAX")" || return $?
   fi
   printf 'gate: full cone list (anchor %s · %s entries): %s\n' "$anchor" "$nderived" "$derived" >&2
@@ -25904,9 +26273,10 @@ EOF
         warn "the \`원인\` of a \`blocked\` row has to be \`해소\` — making a block is the work of the gate (observed: ${cause:-(none)})"
         return "$GATE_EXIT_VOCAB"
       fi
-      # A cone row anchored on a design step holds the run just as a run-scope
-      # row does, and a driver-written one has no lineage a later attempt could
-      # release it by — so this form is its only way out, and it must find it.
+      # A cone row anchored on a run-scope step (design, audit or split) holds
+      # the run just as a run-scope row does, and a driver-written one or a
+      # shift's routing block has no lineage a later attempt could release it
+      # by — so this form is its way out, and it must find it by `사유`.
       # The resolution itself stays `스코프=run`: that row is inside the set
       # `cc_unresolved_blocked` folds, which is all the release needs.
       prior=$( { gate_rows 'blocked' | grep -F '스코프=run' | grep -F "사유=$why " || true; } | tail -1)
@@ -26181,6 +26551,14 @@ EOF
       # `답한 주체` TELLS THE THREE WRITERS APART on the row: `사람` (the
       # default, which every call written before the field still means),
       # `좌석` and `교대`, which only the gate stamps.
+      #
+      # EVERY WRITER'S ANSWER IS ROUTABLE OR NOT RECORDED. After the option
+      # check, and for an automatic answer after its bounds,
+      # `gate_halt_answer_route` asks whether a branch of the shift's
+      # procedure can carry the answer out; when none can, nothing is written
+      # and the refusal's two lines — `라우팅 불가 — <reason>` and
+      # `실행할 수 있는 선택지: …` — let the seat ask again with the labels that
+      # do route. A person's answer takes no automatic bound but does take this.
       local hshift=''
       if cc_caller_is_stage; then
         warn "a \`중단 답\` row is written by the seat only — a shift or a stage cannot answer a halt record for a person"
@@ -26276,11 +26654,10 @@ EOF
       # `stage-result` row is an answer nobody can hand on. A shift's record
       # needs only the segment row: the next shift carries its answer out, and
       # a segment the shift stopped before any stage ran is still one it can
-      # act on.
+      # act on. That segment row is the `교대-정지` route's condition, so
+      # `gate_halt_answer_route` refuses its absence below, with the routing
+      # refusal's two lines.
       if [ -n "$hsrow" ]; then
-        [ -n "$(gate_segment_field "$seg" '상태')" ] || {
-          warn "there is no segment row for $seg — --segment has to be the segment the shift stopped"
-          return "$GATE_EXIT_VOCAB"; }
         gate_shift_halt_record_intact "$seg" "$hrec" "$hsrow" || return "$?"
       else
         [ -n "$(gate_stage_result_rows_of "$seg")" ] || {
@@ -26405,6 +26782,20 @@ EOF
       if [ "$hby" != "사람" ]; then
         gate_halt_auto_answer_admit "$seg" "$hrec" "$hopt" || return "$?"
         gate_halt_auto_answer_current "$seg" "$hrec" || return "$?"
+      fi
+      # AN ANSWER NO BRANCH CAN CARRY OUT IS NOT RECORDED, whoever gave it.
+      # Recorded, it sat in `answered_halts[]` as answered, so every reader
+      # that counts unanswered records — the watcher's idle exit, rekick's
+      # `사람 대기`, the seat's questions — passed over a record the shift could
+      # only stop on. The refusal writes nothing, and its second line names
+      # the labels that do route, so the seat can ask again with them.
+      local hroutable
+      if ! gate_halt_answer_route "$seg" "$hrec" "$hopt" "$hby" >/dev/null; then
+        hroutable=$(gate_halt_answer_routable_options "$seg" "$hrec" "$hby")
+        warn "실행할 수 있는 선택지: ${hroutable:-없음}"
+        return "$GATE_EXIT_RULE"
+      fi
+      if [ "$hby" != "사람" ]; then
         if [ "$hby" = "교대" ]; then
           log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
         else
@@ -30126,17 +30517,9 @@ gate_verb_act() {
   local stage_key="$segment" stage_is_run_scope_step=0 rs_kind="${1:-}" rs_table="${1:-}" rs_skill rs_astep="" rs_alast=""
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "$rs_kind" = "reconverge" ]; then
     rs_table=""
-    if rs_astep=$(gate_run_scope_step audit) \
-       && [ -z "$(gate_segment_field "$rs_astep" '상태')" ]; then
-      rs_alast=$(gate_stage_result_rows_of "$rs_astep" | tail -1)
-      if [ "$(gate_row_field "$rs_alast" '종류')" = "audit" ] \
-         && [ "$(gate_row_field "$rs_alast" '종단 부류')" = "의도된 park" ]; then
-        rs_table=audit
-      elif [ -n "${GATE_RESUME:-}" ] \
-           && [ "$(gate_row_field "$rs_alast" '종류')" = "reconverge" ] \
-           && [ "$(gate_row_field "$rs_alast" '세션 id')" = "$GATE_RESUME" ]; then
-        rs_table=audit
-      fi
+    if rs_astep=$(gate_run_scope_step audit); then
+      gate_audit_reconverge_keyable "$rs_astep" "${GATE_RESUME:-}" && rs_table=audit
+      rs_alast=$GATE_AUDIT_RECONVERGE_LAST
     fi
     if [ -z "$rs_table" ]; then
       warn "- reconverge 는 감사 단계(${rs_astep:-없음})의 마지막 행이 의도된 park 로 끝난 감사이거나, --resume 이 그 마지막 재수렴 행의 세션일 때만 받습니다 — 지금 마지막 행은 종류=$(gate_row_field "$rs_alast" '종류') · 종단 부류=$(gate_row_field "$rs_alast" '종단 부류') 입니다"
@@ -30463,38 +30846,8 @@ gate_verb_act() {
         exit "$GATE_EXIT_RULE"
       fi
     elif [ "${1:-}" = "implement" ]; then
-      local cy_n cy_cap
-      cy_n=$(gate_segment_cycle_count "$segment")
-      cy_cap=$(gate_segment_cycle_cap "$segment")
-      # THE RE-IMPLEMENTATION AFTER A RE-CONVERGENCE IS EXEMPT. It is the one
-      # implement dispatch the ladder sends past the cap, and only while `다음`
-      # reads `재구현`: once its row stands, `다음` is the re-check, so the
-      # exemption covers that one dispatch and nothing after it.
-      # THE EXEMPTION REACHES THE SAME RE-IMPLEMENTATION'S LATER RUNS. That
-      # dispatch starts in process A, because the re-convergence voided the
-      # plan, and its plan-only row already turns `다음` to the re-check. Until
-      # a review of the re-implementation stands — `확인 리뷰`, a `정상 완료`
-      # re-convergence after the last cycle row and no lead-fix row after it —
-      # an implement dispatch passes while `implement_next[]` reads `구현`,
-      # which the `무커밋 구현` limit already bounds.
-      local cy_rn cy_ok cy_walk
-      cy_ok=0
-      if [ "${cy_n:-0}" -ge "$cy_cap" ]; then
-        cy_rn=$(gate_segment_review_next "$segment")
-        if [ "$cy_rn" = "재구현" ]; then
-          cy_ok=1
-        elif [ "$cy_rn" = "확인 리뷰" ]; then
-          cy_walk=$(gate_segment_review_walk "$segment")
-          if [ "$(gate_report_count "$cy_walk" '마지막 뒤 재수렴')" = "정상" ] \
-             && [ "$(gate_report_count "$cy_walk" '리드 수정 뒤')" = "0" ]; then
-            case "$(gate_implement_next_of "$segment" </dev/null)" in
-              *'"다음": "구현",'*) cy_ok=1 ;;
-            esac
-          fi
-        fi
-      fi
-      if [ "${cy_n:-0}" -ge "$cy_cap" ] && [ "$cy_ok" = "0" ]; then
-        warn "세그먼트 ${segment} 의 사이클 예산이 소진됐습니다 — cycle 행 ${cy_n}개, 상한 ${cy_cap}"
+      if ! gate_implement_cycle_admissible "$segment"; then
+        warn "세그먼트 ${segment} 의 사이클 예산이 소진됐습니다 — cycle 행 ${GATE_IMPL_CYCLE_N}개, 상한 ${GATE_IMPL_CYCLE_CAP}"
         warn "구현을 다시 파견하지 말고 스냅숏의 review_next[] 의 「다음」 을 읽으세요 — 상한에서는 「리드 수정」 이나 끝내는 값입니다"
         exit "$GATE_EXIT_RULE"
       fi
@@ -33892,11 +34245,12 @@ gate_continuation_argv() {
   same_failure_reason "$fsig_prev" "$fsig_last" && fsig_same=1
   if [ "$fsig_same" = "1" ] || [ "$(continue_count "$key")" -ge "$CONTINUE_MAX" ]; then
     [ "$fsig_same" = "0" ] || warn "같은 실패 사유 — 직전 시도와 실패 서명이 같다: $fsig_last ($key)"
-    # THE DESIGN STEP HAS NO `blocked` ROW TO TAKE: a cone row needs a
-    # `segment` row, and the step has none. What it has is the design stop,
-    # which termination condition 1 records once the same counter reaches the cap.
-    # The audit step has no such row either, and no stop of its own: an audit
-    # that produced nothing leaves the document unaudited, and a plan built on it
+    # A RUN-SCOPE STEP IS NOT TOLD TO RECORD A BLOCK HERE. A cone may be
+    # anchored on its step id, but a block would only hold the run on a step
+    # that has nothing left to continue. What the design step has is the
+    # design stop, which termination condition 1 records once the same counter
+    # reaches the cap. The audit step has no stop of its own: an audit that
+    # produced nothing leaves the document unaudited, and a plan built on it
     # would build on what nobody read — so the run stops before planning.
     if dstep=$(gate_run_scope_step design 2>/dev/null) && [ "$dstep" = "$key" ]; then
       warn "this design step has been continued $CONTINUE_MAX times with no frozen document — it is not continued again and not dispatched afresh; stop the design: settle the clauses that need the document as 불가능 and propose done, which condition 1 records as 무효화 ($key)"
@@ -33971,8 +34325,10 @@ gate_wait_deadline_park() {
   # gate_wait_deadline_park <alias> <row segment> <key> <lineage> <ready-at iso>
   #                         <basis> <recovery> <redispatch> — the cone row a
   # stage that cannot finish inside the deadline leaves. Anchored on the key —
-  # the segment id, or the design step id — never on the lineage; the lineage
-  # rides in `근거` so this attempt's park can be recognised.
+  # the segment id, or a run-scope step id (design, audit or split) — never on
+  # the lineage; the lineage rides in `근거` so this attempt's park can be
+  # recognised. On a run-scope step it holds the run (termination condition 5)
+  # until a later attempt of the key or a `원인=해소` row releases it.
   local alias="$1" rowseg="$2" key="$3" lin="$4" ready="$5" basis="$6" rec="$7" redo="$8" rc=0
   case "$basis" in *"계보=$lin"*) ;; *) basis="계보=$lin $basis" ;; esac
   [ -n "$rec" ] || rec="$WAIT_LOOP_DEADLINE_RECOVERY"
@@ -37516,7 +37872,7 @@ gate_done_conditions() {
         if [ "$cause" = "무효화" ]; then
           printf '5 런 스코프 blocked 가 해소 불가입니다 (%s) — 이 런은 끝났습니다\n' "$reason"
         else
-          printf '5 런을 막는 blocked(런 스코프 또는 설계 스텝 앵커 cone)가 미해소입니다 (%s) — 해소했다면 act --kind blocked 로 원인=해소 행을 쓰세요; 설계 스텝의 마감 파킹은 그 재개 명령으로 다시 파견해도 풀립니다\n' "$reason"
+          printf '5 런을 막는 blocked(런 스코프 또는 런 범위 스텝 앵커 cone)가 미해소입니다 (%s) — 해소했다면 act --kind blocked 로 원인=해소 행을 쓰세요; 런 범위 스텝의 마감 파킹은 그 재개 명령으로 다시 파견해도 풀립니다(사유가 중단 답 라우팅 — 으로 시작하는 라우팅 막힘은 계보가 없어 다시 파견해도 풀리지 않고 원인=해소 로만 풀립니다)\n' "$reason"
         fi
       done
 
