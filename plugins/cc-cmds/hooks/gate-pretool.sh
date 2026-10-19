@@ -100,6 +100,18 @@ THP_OK=0
 # shellcheck source=/dev/null
 . "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/target-hook-probe.sh" 2>/dev/null && THP_OK=1
 
+# THE SURFACE CLASSIFIER IS SOURCED HERE, AT THE HEAD, from this file's own
+# directory. The suffix arms live in it and the gate, the driver and the
+# screening tool source the same file, so what this hook refuses and what they
+# screen cannot drift apart. It is sourced before anything can call
+# `hook_suffix_verdict` and does not lean on `hook_self`, which is set inside
+# the edit branch only. A missing classifier is not "no surface":
+# `hook_suffix_verdict` refuses every call it is asked about.
+ES_OK=0
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/enforcement-surfaces.sh" 2>/dev/null \
+  && command -v es_class >/dev/null 2>&1 && ES_OK=1
+
 deny() {
   # A denial carries the escalation, not just the refusal. The verb name must
   # match the gate's own table byte-for-byte: this text reaches the model
@@ -575,13 +587,23 @@ hook_lane_tail_verdict() {
 hook_suffix_verdict() {
   # hook_suffix_verdict <절대 철자> — 앵커를 변수로 잡을 수 없어 어휘 계층만 있는
   # 접미 글롭들. 같은 이유로 함수이고, 호출자는 철자를 접은 단계마다 하나씩이다.
-  case "$1" in
-    */.claude/settings.json|*/.claude/settings.local.json)
-      deny "$(jstr 'gate: project-scope settings are the hook installation channel and therefore an enforcement surface — they cannot be edited in this run')" ;;
-    */.claude/projects/*|*/transcripts/*)
-      deny "$(jstr 'gate: session transcripts are the approval-reading channel and therefore an enforcement surface')" ;;
-    */orchestrator/rules/*)
-      deny "$(jstr 'gate: the rule catalog is an enforcement surface — editing a rule is not the work of a run')" ;;
+  #
+  # 글롭은 이 함수에 없다. 분류는 `enforcement-surfaces.sh` 의 `es_class` 가 하고,
+  # 여기서는 그 토큰으로 문면만 고른다 — 게이트·드라이버·탐지 도구가 같은 분류를
+  # 소싱하므로 팔이 늘면 모두가 함께 따라간다. 분류기를 적재하지 못했으면 판정할
+  # 수 없다는 것이고, 그것은 허용이 아니다.
+  local es_tok es_route
+  [ "$ES_OK" = 1 ] \
+    || deny "$(jstr 'gate: the enforcement surface classifier next to this hook could not be loaded, so this edit cannot be judged — cannot judge is not allow')"
+  es_tok=$(es_class "$1") || return 0
+  es_route=' — a stage does not write this file; implement-unattended puts the edit in a `Step 3 강제 표면 좌석 적용` halt record (project settings and transcripts as `사람 몫 파일`) and stops; another stage records it as a finding for implementation.'
+  case "$es_tok" in
+    프로젝트설정)
+      deny "$(jstr "gate: project-scope settings are the hook installation channel and therefore an enforcement surface — they cannot be edited in this run${es_route}")" ;;
+    트랜스크립트)
+      deny "$(jstr "gate: session transcripts are the approval-reading channel and therefore an enforcement surface${es_route}")" ;;
+    규칙카탈로그)
+      deny "$(jstr "gate: the rule catalog is an enforcement surface — editing a rule is not the work of a run${es_route}")" ;;
     # CLAUDE.md IS THE ONE EDIT TARGET GIT DOES NOT WATCH. Every other file a
     # stage touches is tracked, so a review reads its diff and the declared-file
     # check bounds it. These are untracked live files that enter the next
@@ -604,8 +626,14 @@ hook_suffix_verdict() {
     # comment further down already records once. `CLAUDE.local.md` is here because
     # it is the same channel under a different name, and leaving it out would make
     # the arm a one-rename bypass.
-    */CLAUDE.md|CLAUDE.md|*/CLAUDE.local.md|CLAUDE.local.md)
-      deny "$(jstr "gate: CLAUDE.md is a live prefix git does not track, so fixing it with Write/Edit leaves no ledger row at all. Applying it has to go through the gate — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest <snapshot hash> --emit-digest --rationale 'applying the reviewed copy' -- cp <proposed copy> ${p} — reach defaults to \`기기전역\`, and only a slot application that has passed review proceeds — <snapshot hash> is the H field the previous gate call emitted into ${DIGEST_FILE} (open it with the Read tool), and when that file is absent take it from 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H 』 (only what is inside 『 』 is the command). If --emit-digest comes back refused as 'unknown argument', drop just that flag and run it again")" ;;
+    #
+    # A TRACKED CLAUDE.md IS DIFFERENT, and the sentence appended below says so.
+    # A file the segment worktree's HEAD tracks can become a commit a review
+    # reads, so its edit goes into the seat-apply halt record instead of the
+    # reroute; a tracked but ignored one cannot, and goes into the same record
+    # as a file left to a person.
+    지침파일)
+      deny "$(jstr "gate: CLAUDE.md is a live prefix git does not track, so fixing it with Write/Edit leaves no ledger row at all. Applying it has to go through the gate — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest <snapshot hash> --emit-digest --rationale 'applying the reviewed copy' -- cp <proposed copy> ${p} — reach defaults to \`기기전역\`, and only a slot application that has passed review proceeds — <snapshot hash> is the H field the previous gate call emitted into ${DIGEST_FILE} (open it with the Read tool), and when that file is absent take it from 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H 』 (only what is inside 『 』 is the command). If --emit-digest comes back refused as 'unknown argument', drop just that flag and run it again. When the segment worktree's HEAD tracks this file and it is not ignored, do not apply it this way: implement-unattended puts the edit in a \`Step 3 강제 표면 좌석 적용\` halt record and stops; when HEAD tracks it but it is ignored, it goes into the same record as a \`사람 몫 파일\`")" ;;
   esac
   return 0
 }

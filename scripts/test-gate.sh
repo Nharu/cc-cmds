@@ -42616,6 +42616,107 @@ check "91: 읽을 수 없는 인벤토리는 빈 집합이고 실패하지 않�
 check "91: 런 개시의 이탈 점검이 도우미를 부른다" \
   "$(grep -cF 'gate_stage_policy_inventory_dirs "$RUN_DIR/inventory.json"' "$GATE")/$(grep -cF "'.accounts[]? | select(.unattended == \"enabled\" or .unattended == \"draining\") | .config_dir" "$GATE")" "1/0"
 
+# ---------------------------------------------------------------------------
+# 92. 분류기와 실제 훅의 판정이 경로마다 같다
+# --- section: 92 | covers: surface-class, es_class, hook_suffix_verdict | anchors: 92: 말뭉치가 비어 있지 않다, 92: 분류되는 경로는 훅이 거부하고 분류되지 않는 경로는 허용한다, 92: 훅의 거부가 강제 표면 문면이다 ---
+#
+# 훅은 접미 판정을 강제 표면 분류기(`hooks/enforcement-surfaces.sh`)의 토큰으로만
+# 고르므로, 게이트·드라이버·탐지 도구가 같은 분류기로 미리 본 결과가 훅이 실제로
+# 하는 일과 같아야 한다. 그것을 훅을 바깥에서 돌려 확인한다 — 분류기의 등재 글롭마다
+# 만든 경로, 대소문자·접미가 다른 음성 경로, 픽스처 저장소의 `git ls-files` 와 이
+# 레포의 추적 파일 중 강제 표면 근처의 것을 말뭉치로 삼아, 분류기가 토큰을 내는
+# 경로는 훅이 거부하고 내지 않는 경로는 허용하는지를 경로마다 본다. 런 디렉터리에만
+# 있는 거부 팔은 분류기의 몫이 아니므로 말뭉치는 모두 런 디렉터리 밖의 경로다.
+# ---------------------------------------------------------------------------
+d92="$WORK/d92"; mkdir -p "$d92/run/settings" "$d92/fx"
+: > "$d92/ledger.md"; : > "$d92/grant.md"; : > "$d92/plan.md"
+h92="$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"
+e92="$repo_root/plugins/cc-cmds/hooks/enforcement-surfaces.sh"
+c92() { bash -c '. "$1" || exit 2; shift; es_class "$1"' _ "$e92" "$1" 2>/dev/null; }
+# 훅은 `..` 를 접은 철자로 판정하므로 분류기에도 접은 철자를 넣는다.
+f92() {
+  local s n=0 out="" IFS=/
+  local -a seg=()
+  for s in $1; do
+    case "$s" in
+      ''|.) ;;
+      ..) [ "$n" -gt 0 ] && { n=$((n - 1)); unset "seg[$n]"; } ;;
+      *) seg[$n]="$s"; n=$((n + 1)) ;;
+    esac
+  done
+  for s in ${seg[@]+"${seg[@]}"}; do out="$out/$s"; done
+  printf '%s\n' "${out:-/}"
+}
+k92() {  # k92 <path> — 훅의 판정과 사유를 탭으로 잇는다.
+  printf '{"tool_name":"Write","tool_input":{"file_path":%s}}' "$(jq -Rn --arg p "$1" '$p')" \
+    | env -u CC_PIPELINE_STAGE_ID bash "$h92" --run-dir "$d92/run" --gate "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
+        --ledger "$d92/ledger.md" --grant "$d92/grant.md" --manifest "$d92/plan.md" 2>/dev/null \
+    | jq -r '[(.hookSpecificOutput.permissionDecision // "none"), (.hookSpecificOutput.permissionDecisionReason // "")] | @tsv' 2>/dev/null
+}
+# 픽스처 저장소: 강제 표면 넷과 그 이웃의 평범한 파일을 함께 추적한다.
+git init -q "$d92/fx"
+for f92 in CLAUDE.md sub/CLAUDE.local.md .claude/settings.json .claude/settings.local.json \
+    .claude/settings.d.json .claude/projects/p/s.jsonl docs/transcripts/t.md \
+    plugins/cc-cmds/orchestrator/rules/r.sh plugins/cc-cmds/orchestrator/run.sh \
+    README.md docs/claude.md src/Rules/c.sh CLAUDE.md.bak; do
+  mkdir -p "$d92/fx/$(dirname "$f92")"; printf 'x\n' > "$d92/fx/$f92"
+done
+git -C "$d92/fx" add -A >/dev/null 2>&1
+# 훅의 물리 접기는 실재하는 가장 깊은 디렉터리에서 접고 그 아래는 철자 그대로 다시
+# 판정하므로, 없는 디렉터리를 지나는 `..` 는 접히기 전 철자로도 거부된다(판정할 수
+# 없음은 허용이 아니다). 분류기에 넣는 접은 철자와 같은 조건을 만들려고 `..` 가
+# 지나는 디렉터리를 실제로 둔다.
+mkdir -p "$d92/wt/plugins/cc-cmds/orchestrator/rules" "$d92/wt/plugins/cc-cmds/orchestrator/x"
+{
+  # 등재 글롭마다 하나: 앞의 `*` 는 픽스처 경로, 뒤의 `*` 는 파일 이름으로 채운다.
+  bash -c '. "$1" && es_class_list' _ "$e92" 2>/dev/null | cut -f2 \
+    | sed -e "s|^\*|$d92/g|" -e 's|\*$|x.md|' -e "s|^\([^/]\)|$d92/r/\1|"
+  # 음성: 대소문자, 접미, 이름을 포함하기만 하는 경로.
+  printf '%s\n' "$d92/n/claude.md" "$d92/n/CLAUDE.md.bak" "$d92/n/.claude/settings.d.json" \
+    "$d92/n/src/Rules/c.sh" "$d92/n/orchestrator/rulesx/a.sh" "$d92/n/transcript/t.md" "$d92/n/plain.md"
+  # 대상 트리 경로 행렬의 이웃 철자와 `..` 접힘(안으로 접히는 것과 밖으로 접히는 것).
+  printf '%s\n' "$d92/wt/plugins/cc-cmds/orchestrator/rules.md" "$d92/wt/plugins/cc-cmds/orchestrator/gate.sh" \
+    "$d92/wt/plugins/cc-cmds/orchestrator/rules/../gate.sh" "$d92/wt/plugins/cc-cmds/orchestrator/x/../rules/a.sh" \
+    "$d92/wt/plugins/cc-cmds/orchestrator/rules/sub/deep.tsv" "$d92/wt/.claude/settings/extra.json" \
+    "$d92/wt/.claude/commands/x.md" "$d92/wt/AGENTS.md" "$d92/wt/docs/CLAUDE.md" "$d92/wt/CLAUDE.local.md" \
+    "$d92/wt/transcripts/a.md" "$d92/wt/docs/pipeline-run/foo.md"
+  # 이 런의 선언 파일 26개는 어느 것도 강제 표면이 아니다.
+  for f92 in plugins/cc-cmds/hooks/enforcement-surfaces.sh plugins/cc-cmds/hooks/gate-pretool.sh \
+      plugins/cc-cmds/hooks/README.md plugins/cc-cmds/orchestrator/enforcement-surface-screen.sh \
+      plugins/cc-cmds/orchestrator/gate.sh plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/test-run.sh \
+      plugins/cc-cmds/orchestrator/prompts/entry-plan.md plugins/cc-cmds/orchestrator/prompts/entry-plan.schema.json \
+      plugins/cc-cmds/orchestrator/prompts/entry-plan.check.jq plugins/cc-cmds/orchestrator/prompts/segment-plan.md \
+      plugins/cc-cmds/skills/autopilot/SKILL.md plugins/cc-cmds/skills/autopilot/references/act2-seat.md \
+      plugins/cc-cmds/skills/autopilot/references/act3-report.md plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md \
+      plugins/cc-cmds/skills/implement-unattended/SKILL.md plugins/cc-cmds/skills/review-unattended/SKILL.md \
+      plugins/cc-cmds/skills/_common/pipeline-sidecar.md plugins/cc-cmds/skills/design/SKILL.md \
+      plugins/cc-cmds/skills/design-discuss-unattended/SKILL.md plugins/cc-cmds/skills/design-solo-unattended/SKILL.md \
+      scripts/test-gate.sh scripts/test-orchestrator-pretool-hook.sh README.md CHANGELOG.md \
+      plugins/cc-cmds/.claude-plugin/plugin.json; do
+    printf '%s\n' "$d92/wt/$f92"
+  done
+  git -C "$d92/fx" ls-files | sed "s|^|$d92/fx/|"
+  git -C "$repo_root" ls-files 2>/dev/null \
+    | grep -E '(^|/)(CLAUDE(\.local)?\.md|settings(\.local)?\.json)$|/orchestrator/rules/|/transcripts/' \
+    | sed "s|^|$d92/self/|"
+} > "$d92/corpus"
+check "92: 말뭉치가 비어 있지 않다 (아래 대조가 공허하지 않다)" \
+  "$( [ "$(grep -c . "$d92/corpus")" -ge 25 ] && printf yes || printf no )" "yes"
+m92=""; w92=""
+while IFS= read -r p92; do
+  [ -n "$p92" ] || continue
+  t92=$(c92 "$(f92 "$p92")") || t92=""
+  v92=$(k92 "$p92"); dec92=${v92%%$'\t'*}; why92=${v92#*$'\t'}
+  if [ -n "$t92" ]; then
+    [ "$dec92" = "deny" ] || m92="$m92 [$t92 $dec92 ${p92#"$d92"/}]"
+    case "$why92" in *'Step 3 강제 표면 좌석 적용'*) : ;; *) w92="$w92 [${p92#"$d92"/}]" ;; esac
+  else
+    [ "$dec92" = "allow" ] || m92="$m92 [- $dec92 ${p92#"$d92"/}]"
+  fi
+done < "$d92/corpus"
+check "92: 분류되는 경로는 훅이 거부하고 분류되지 않는 경로는 허용한다" "[$m92]" "[]"
+check "92: 훅의 거부가 강제 표면 문면이다 (다른 팔의 거부가 아니다)" "[$w92]" "[]"
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its

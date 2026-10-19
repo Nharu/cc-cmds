@@ -9895,14 +9895,18 @@ else
   bad "T17 등재된 예외" "훅 쪽 진술이 없다"
 fi
 # 그리고 그 단언이 실제로 대조한다. 결함을 심지 않은 통과는 공허할 수 있으므로,
-# 플러그인 배치를 그대로 흉내 낸 픽스처에서 훅의 룰 분기를 오케스트레이터 전체로
+# 플러그인 배치를 그대로 흉내 낸 픽스처에서 룰 분기를 오케스트레이터 전체로
 # 넓히고 같은 점검을 다시 돌린다 — 등재된 예외의 문면과 어긋났으니 잡혀야 한다.
+# 거부 팔은 훅이 소싱하는 분류기에 있으므로 변이도 분류기에 심고, 훅은 그대로
+# 함께 복사한다.
+ES_LIB="$(dirname "$HOOK")/enforcement-surfaces.sh"
 FX="$WORK/hookfix"
 mkdir -p "$FX/orchestrator" "$FX/hooks"
 cp "$script_dir"/*.sh "$FX/orchestrator/" 2>/dev/null
 cp -R "$script_dir/prompts" "$FX/orchestrator/" 2>/dev/null || true
-sed 's#\*/orchestrator/rules/\*)#*/orchestrator/*)#' "$HOOK" > "$FX/hooks/gate-pretool.sh"
-if grep -q '\*/orchestrator/\*' "$FX/hooks/gate-pretool.sh"; then
+cp "$HOOK" "$FX/hooks/gate-pretool.sh"
+sed 's#\*/orchestrator/rules/\*)#*/orchestrator/*)#' "$ES_LIB" > "$FX/hooks/enforcement-surfaces.sh"
+if grep -q '\*/orchestrator/\*)' "$FX/hooks/enforcement-surfaces.sh"; then
   env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
     bash "$FX/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
   fx_rc=$?
@@ -9923,8 +9927,9 @@ FX2="$WORK/hookfix-union"
 mkdir -p "$FX2/orchestrator" "$FX2/hooks"
 cp "$script_dir"/*.sh "$FX2/orchestrator/" 2>/dev/null
 cp -R "$script_dir/prompts" "$FX2/orchestrator/" 2>/dev/null || true
-sed 's#\*/orchestrator/rules/\*)#*/orchestrator/rules/*|*/orchestrator/*)#' "$HOOK" > "$FX2/hooks/gate-pretool.sh"
-if grep -q '\*/orchestrator/rules/\*|\*/orchestrator/\*' "$FX2/hooks/gate-pretool.sh"; then
+cp "$HOOK" "$FX2/hooks/gate-pretool.sh"
+sed 's#\*/orchestrator/rules/\*)#*/orchestrator/rules/*|*/orchestrator/*)#' "$ES_LIB" > "$FX2/hooks/enforcement-surfaces.sh"
+if grep -q '\*/orchestrator/rules/\*|\*/orchestrator/\*' "$FX2/hooks/enforcement-surfaces.sh"; then
   env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
     bash "$FX2/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
   fx2_rc=$?
@@ -9935,6 +9940,37 @@ if grep -q '\*/orchestrator/rules/\*|\*/orchestrator/\*' "$FX2/hooks/gate-pretoo
   fi
 else
   bad "T17 픽스처" "훅의 룰 분기를 합집합으로 넓히지 못했다 — 대조가 성립하지 않는다"
+fi
+# 세 번째 변이: 글롭이 분류기 밖, 훅 안으로 되돌아온 모양. 분류기만 세는 가드는
+# 이것을 보지 못하므로 훅 쪽 0 단언이 따로 있다.
+FX3="$WORK/hookfix-inhook"
+mkdir -p "$FX3/orchestrator" "$FX3/hooks"
+cp "$script_dir"/*.sh "$FX3/orchestrator/" 2>/dev/null
+cp -R "$script_dir/prompts" "$FX3/orchestrator/" 2>/dev/null || true
+cp "$ES_LIB" "$FX3/hooks/enforcement-surfaces.sh"
+{ cat "$HOOK"; printf 'case "$x" in */orchestrator/*) : ;; esac\n'; } > "$FX3/hooks/gate-pretool.sh"
+env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
+  bash "$FX3/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
+fx3_rc=$?
+if [ "$fx3_rc" != "0" ] && grep -q '훅의 orchestrator 언급 1건' "$SC_OUT"; then
+  ok "T17 훅에 오케스트레이터 글롭이 되돌아오면 잡는다"
+else
+  bad "T17 등재된 예외" "훅 안의 글롭을 놓쳤다 (rc=$fx3_rc)"
+fi
+# 네 번째: 분류기가 없으면 자체 점검은 통과하지 않는다 — 없는 파일을 0건으로 읽으면
+# 위 두 단언이 함께 공허해진다.
+FX4="$WORK/hookfix-nolib"
+mkdir -p "$FX4/orchestrator" "$FX4/hooks"
+cp "$script_dir"/*.sh "$FX4/orchestrator/" 2>/dev/null
+cp -R "$script_dir/prompts" "$FX4/orchestrator/" 2>/dev/null || true
+cp "$HOOK" "$FX4/hooks/gate-pretool.sh"
+env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
+  bash "$FX4/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
+fx4_rc=$?
+if [ "$fx4_rc" != "0" ] && grep -q '분류기 파일이 없어' "$SC_OUT"; then
+  ok "T17 분류기가 없으면 자체 점검이 실패한다"
+else
+  bad "T17 분류기 부재" "분류기 없이 통과했다 (rc=$fx4_rc)"
 fi
 
 # 30. 리뷰 복구의 읽기 측 — 픽스처 위의 행위 단언

@@ -344,6 +344,21 @@ gate_thp() {  # gate_thp <engine function> [<arg>…]
   )
 }
 
+# The enforcement-surface classifier: the run hook's suffix arms, which the hook
+# sources from its own directory and this file from the pinned copy beside it.
+# Sourced in a child shell for the reason `gate_thp` is. Exit 2 means the
+# classifier could not be loaded, which every caller reads as "cannot judge" —
+# never as "no surface": the seat application, a stage's write act and the
+# provenance check all refuse on it, and the segment stamp reads `판정불가`.
+gate_es() {  # gate_es <classifier function> [<arg>…]
+  (
+    # shellcheck source=/dev/null
+    . "$GATE_DIR/../hooks/enforcement-surfaces.sh" 2>/dev/null || exit 2  # lint-harness-global-collisions: child-shell
+    command -v es_class >/dev/null 2>&1 || exit 2
+    "$@"
+  )
+}
+
 # ---------------------------------------------------------------------------
 # THE SEAT QUESTION HAS ONE OWNER, AND IT IS NOT THIS FILE.
 #

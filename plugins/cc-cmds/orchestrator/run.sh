@@ -9043,9 +9043,10 @@ $(sed 's/#.*//' "$sib")"
   # tree every run loads is a MERGE, and that is what the permission cutpoint
   # governs. So the assertions below are that the two mechanisms still have the
   # shape this exception was registered against, not that the files are covered.
-  local orch_ex=0 gate_file hook_file n_all n_rules n_rec
+  local orch_ex=0 gate_file hook_file es_file n_all n_rules n_rec
   gate_file="$ORCH_DIR/gate.sh"
   hook_file="$(dirname "$ORCH_DIR")/hooks/gate-pretool.sh"
+  es_file="$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh"
   if [ -f "$gate_file" ]; then
     n_all=$(sed -n '/^gate_surface_digest_raw()/,/^}/p' "$gate_file" | sed 's/#.*//' \
             | grep -cE 'ORCH_DIR|orchestrator' || true)
@@ -9059,10 +9060,19 @@ $(sed 's/#.*//' "$sib")"
     printf 'FAIL 게이트 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$gate_file"
     orch_ex=$((orch_ex + 1))
   fi
-  if [ -f "$hook_file" ]; then
-    # Every mention of the orchestrator in the hook must BE the rule-catalog arm.
-    # A count comparison rather than a pattern match: it fails the moment an arm
-    # is widened, which a "does the rules arm exist" check would not.
+  if [ -f "$hook_file" ] && [ -f "$es_file" ]; then
+    # Every mention of the orchestrator in the hook's deny list must BE the
+    # rule-catalog arm. A count comparison rather than a pattern match: it fails
+    # the moment an arm is widened, which a "does the rules arm exist" check
+    # would not.
+    #
+    # THE ARMS LIVE IN THE CLASSIFIER NOW, NOT IN THE HOOK. The hook sources
+    # `enforcement-surfaces.sh` and picks only a message per class token, so the
+    # count moved with the globs: the hook itself must mention the orchestrator
+    # nowhere, and in the classifier every mention must be the rule-catalog
+    # glob, at least once. Checking only the hook would pass vacuously on the
+    # day the glob moved out of it, and a widening written into the classifier
+    # is exactly what this assertion exists to catch.
     #
     # OCCURRENCES, NOT LINES. `grep -c` counts matching LINES, and the widening
     # this assertion exists to catch does not need a new line: an arm widened in
@@ -9087,16 +9097,24 @@ $(sed 's/#.*//' "$sib")"
     n_all=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator' | grep -c . || true)
     n_rec=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator-dir' | grep -c . || true)
     n_all=$(( ${n_all:-0} - ${n_rec:-0} ))
-    n_rules=$(sed 's/#.*//' "$hook_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
+    if [ "${n_all:-0}" = "0" ]; then
+      printf 'ok   훅 자신에는 오케스트레이터 언급이 없다 (거부 팔은 분류기에 있다)\n'
+    else
+      printf 'FAIL 훅의 orchestrator 언급 %s건 — 거부 팔은 분류기에만 있어야 하므로 등재된 예외의 문면과 어긋난다\n' \
+        "${n_all:-0}"
+      orch_ex=$((orch_ex + 1))
+    fi
+    n_all=$(sed 's/#.*//' "$es_file" | grep -o 'orchestrator' | grep -c . || true)
+    n_rules=$(sed 's/#.*//' "$es_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
     if [ "${n_rules:-0}" -ge 1 ] && [ "${n_all:-0}" = "${n_rules:-0}" ]; then
       printf 'ok   등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다 (거부되는 것은 룰 카탈로그뿐)\n'
     else
-      printf 'FAIL 훅의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
+      printf 'FAIL 분류기의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
         "${n_all:-0}" "${n_rules:-0}"
       orch_ex=$((orch_ex + 1))
     fi
   else
-    printf 'FAIL 훅 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$hook_file"
+    printf 'FAIL 훅 파일이나 분류기 파일이 없어 등재된 예외를 확인할 수 없다: %s %s\n' "$hook_file" "$es_file"
     orch_ex=$((orch_ex + 1))
   fi
   fails=$((fails + orch_ex))
