@@ -14,7 +14,7 @@
 # is outside the two values below; refusing it here would stop runs that are
 # already frozen.
 #
-# THREE ASSERTIONS AND NO MORE. A `team-4` graph is never asserted on: that tier
+# FOUR ASSERTIONS AND NO MORE. A `team-4` graph is never asserted on: that tier
 # keeps the design discussion and the audit it always had.
 #
 #   (a) a `team-4` judgment carries at least one heavy reason that is not blank,
@@ -22,7 +22,15 @@
 #   (b) the confirmed tier is never below the judged one — a person raises, the
 #       kickoff never lowers;
 #   (c) a `solo` plan that designs has exactly one `design` step, no
-#       `design-audit` step, no `split` step and the `single` scope.
+#       `design-audit` step, no `split` step and the `single` scope;
+#   (d) an `enforcement_surface` judgment, WHEN THE PLAN CARRIES ONE, has its
+#       shape: a judgment from the closed four, every path naming one of the
+#       four classes and listed under `classes`, at least one path when it says
+#       `확인됨` and none when it says `없음`. A plan frozen before the key
+#       existed has none and is not asserted on it — this file runs on every
+#       gate entry, and refusing it would stop runs that are already frozen.
+#       Whether a path really is a surface is the classifier's to say, not this
+#       file's: (d) checks the shape the kickoff reads out, nothing more.
 
 def tier_rank:
   if . == "solo" then 0 elif . == "team-4" then 1 else null end;
@@ -83,6 +91,30 @@ else
           ( if ($p.design_scope // "single") != "single" then
               "(c) solo 계획의 design_scope 가 single 이 아닙니다: \($p.design_scope | tojson)"
             else empty end )
+        else empty end ),
+      # (d)
+      ( if $p | has("enforcement_surface") then
+          ($p.enforcement_surface) as $es
+          | ["프로젝트설정", "트랜스크립트", "규칙카탈로그", "지침파일"] as $cls
+          | if ($es | type) != "object" then
+              "(d) enforcement_surface 가 객체가 아닙니다: \($es | tojson)"
+            else
+              ($es.judgment) as $j
+              | ([$es.paths[]?]) as $paths
+              | ( if (["확인됨", "가능성", "없음", "판정불가"] | index($j)) == null then
+                    "(d) enforcement_surface.judgment 가 확인됨 · 가능성 · 없음 · 판정불가 중 하나가 아닙니다: \($j | tojson)"
+                  else empty end ),
+                ( if ($es.classes | type) != "array" or ([$es.classes[] | select(. as $v | ($cls | index($v)) == null)] | length) > 0 then
+                    "(d) enforcement_surface.classes 에 네 분류 밖의 값이 있습니다: \($es.classes | tojson)"
+                  else empty end ),
+                ( $paths[] | select((.class as $c | ($es.classes // []) | index($c)) == null)
+                  | "(d) enforcement_surface.paths 의 \(.path | tojson) 가 classes 에 없는 분류 \(.class | tojson) 를 답니다" ),
+                ( if $j == "확인됨" and ($paths | length) == 0 then
+                    "(d) enforcement_surface.judgment 가 확인됨인데 paths 가 비어 있습니다"
+                  elif $j == "없음" and ($paths | length) > 0 then
+                    "(d) enforcement_surface.judgment 가 없음인데 paths 가 비어 있지 않습니다"
+                  else empty end )
+            end
         else empty end )
     ]
   | if length > 0 then (join("\n") + "\n") | halt_error(1) else empty end

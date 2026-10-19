@@ -87,6 +87,24 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/liveness.sh"
 
+# The enforcement-surface classifier, for the `강제 표면` field of a planned
+# segment row. Sourced in a child shell, as the gate's `gate_es` does, so the
+# hook's library adds nothing to this file's top level; a library that cannot
+# be loaded stamps `판정불가`, never `없음`.
+run_surface_stamp() {  # run_surface_stamp [<declared path>…]
+  local v
+  if v=$(
+      # shellcheck source=/dev/null
+      . "$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh" 2>/dev/null || exit 2  # lint-harness-global-collisions: child-shell
+      command -v es_stamp >/dev/null 2>&1 || exit 2
+      es_stamp "$@"
+    ) && [ -n "$v" ]; then
+    printf '%s' "$v"
+  else
+    printf '%s' '판정불가'
+  fi
+}
+
 # The account router. Its top level is function definitions and guarded
 # `readonly` constants only, because the gate sources this file on every entry
 # and inherits whatever the router puts at top level. This driver calls
@@ -12219,6 +12237,12 @@ plan_from_declaration() {
     _rp=$(slice_field "$doc" "$id" '리뷰 정책')
     [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
     _segargs+=( "선언 다이제스트=$(slice_decl_digest "$doc" "$id")" )
+    # `강제 표면` from the declared files, as the gate's `--from-declaration`
+    # stamps it — the same classifier, the same spelling.
+    local -a _sdf=()
+    local _sf
+    while IFS= read -r _sf; do [ -z "$_sf" ] || _sdf+=("$_sf"); done <<<"$(slice_decl_files "$doc" "$id")"
+    _segargs+=( "강제 표면=$(run_surface_stamp ${_sdf[@]+"${_sdf[@]}"})" )
     _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
     ledger_row 'segment' "${_segargs[@]}"
   done
@@ -12265,9 +12289,17 @@ plan_via_planner() {
       "-" >> "$RUN_DIR/plan.tsv"
   done
   plan_dep_floor_or_park || return 1
+  local -a _pdf
+  local _pf
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
+    # The planner does not classify (its prompt says so); the field is stamped
+    # here from the files it declared, as on the slice path.
+    _pdf=()
+    while IFS= read -r _pf; do [ -z "$_pf" ] || _pdf+=("$_pf"); done \
+      <<<"$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files[]? | strings')"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
+      "강제 표면=$(run_surface_stamp ${_pdf[@]+"${_pdf[@]}"})" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
   done
   return 0

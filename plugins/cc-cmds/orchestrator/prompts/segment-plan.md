@@ -29,9 +29,10 @@ Two consequences follow:
 - If the derivation yields **more than 5 segments with no author grouping**, treat that as overfitting: fold everything into one segment and set `segmentation` to `low-confidence`. An author-numbered plan that states its dependencies inline is exempt from this fold — stating dependencies is what earns the exemption.
 - Every `weak-attribution` item is force-merged into the component it inherited from.
 
-## Two composition rules that are not heuristics
+## Three composition rules that are not heuristics
 
 - **Residual verification items go in ONE segment.** The design document is a shared write target that no segment declares: the implementation arm's two reserved write forms touch it, so two segments writing it would contend and trip a fail-loud diff gate. Assign every in-scope residual item to a single segment. Segments run one after another, so a single owner is all this needs — there is no scheduling decision to make here and no wave to mark.
+- **A path the run's hook refuses stays in the declared set.** When an item's work edits a project settings file, a transcript, a rule-catalog file or a `CLAUDE.md`, keep that path in the segment's declared files exactly as the item needs it — do not drop it because a stage cannot write it, and do not classify it. The driver stamps the segment's enforcement-surface field from the declared set, and the implementation stage routes those edits to a person through it; a path left out reaches neither.
 - **A segment that declares `SKILL.md` also declares `README.md`.** That file is generated from skill frontmatter and gated for staleness, so the sharing is real but invisible in the prose — it is the blind spot the file-set rule cannot see on its own. The trigger is creation as well as edit, so a brand-new skill file is covered too.
 
 ## Item count is not segment count

@@ -803,6 +803,12 @@ decide_stage 'S2#4' "$(write_json "$RUN_DIR/halt/S2#3.md")"
 check "앞 시도의 이름 halt/S2#3.md 도 거부된다" "$dec" "deny"
 decide "$(write_json "$RUN_DIR/halt/S2.md")"
 check "스테이지 id 가 없는 호출자의 halt/S2.md 는 예전처럼 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+# 강제 표면 탐지 — 스테이지는 고정 사본의 스크립트를 띄울 수 없으므로 게이트의 읽기
+# 동사로 탐지 도구에 닿는다. 피연산자가 강제 표면 경로여도 아무것도 쓰지 않는 읽기라
+# 거부되지 않는다.
+bash_json() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$1" '$c')"; }
+decide_stage 'S2#4' "$(bash_json "$GATE surface-screen --manifest $MANIFEST -- CLAUDE.md .claude/settings.json plugins/cc-cmds/orchestrator/rules/r.sh")"
+check "스테이지의 surface-screen 호출은 강제 표면 피연산자가 있어도 허용된다" "$dec" "allow"
 
 # ---------------------------------------------------------------------------
 # 8. 라우터 입력 디렉터리 — cc-lane 설정·상태 디렉터리와 페이싱 디렉터리

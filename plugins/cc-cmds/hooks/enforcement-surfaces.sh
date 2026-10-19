@@ -74,6 +74,30 @@ es_seat_applicable_class() {
   return 1
 }
 
+# es_stamp [<path>…] — the `강제 표면` value of a segment row for a declared
+# file set: `<n>건 <class>,<class>…` (each class once, in first-seen order) or
+# `없음`. A relative path is tried with a leading `/`, as `es_class` says. The
+# gate and the driver both stamp through this, so the two writers of a planned
+# row cannot spell the field differently.
+es_stamp() {
+  local p c n=0 cls=","
+  for p in "$@"; do
+    [ -n "$p" ] || continue
+    case "$p" in
+      /*) c=$(es_class "$p") || continue ;;
+      *)  c=$(es_class "$p") || c=$(es_class "/$p") || continue ;;
+    esac
+    n=$((n + 1))
+    case "$cls" in *",$c,"*) : ;; *) cls="$cls$c," ;; esac
+  done
+  if [ "$n" -eq 0 ]; then
+    printf '%s\n' '없음'
+  else
+    cls=${cls#,}
+    printf '%s건 %s\n' "$n" "${cls%,}"
+  fi
+}
+
 # es_class_command <command line> — print `<token>\t<class>` for every token of
 # the line that classifies, and return 0 when at least one did. A token is a
 # blank-separated word with its quotes removed; when it carries `=`, the value

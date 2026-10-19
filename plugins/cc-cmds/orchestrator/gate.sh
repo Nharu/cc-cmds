@@ -57,7 +57,8 @@
 #      here can also be the act's. A refusal always carries a `gate:` line on
 #      stderr and produces no output from the act; that, not the number, is what
 #      separates the two.
-#   2  vocabulary error — a token outside a closed set
+#   2  vocabulary error — a token outside a closed set. From `surface-screen`
+#      also: the enforcement-surface classifier could not be loaded (판정불가)
 #   3  rule refusal — a catalog rule said no
 #   4  stale snapshot digest — the router judged against state that has moved
 #   5  approval issued — the act is outside pre-authorization and irreversible
@@ -141,6 +142,15 @@
 #                    `--` (`--no-slice` drops `--slice` instead), then the
 #                    `설계는 <문서>` directive; writes nothing.
 #                    Refused (3) when the segment has no row naming a branch
+#   gate.sh surface-screen --manifest <path> [--list] [--tokens] [-z] [--] [<path>…]
+#                    prints `<path><TAB><class>` for each path the run hook
+#                    refuses as an enforcement surface (`--list` first prints
+#                    the classifier's arms, `--tokens` reads command lines,
+#                    `-z` reads NUL-separated standard input) by running
+#                    `enforcement-surface-screen.sh` from beside this file, so
+#                    a stage that cannot launch that script reaches it here;
+#                    writes nothing. Exit 2 when the classifier could not be
+#                    loaded — nothing was judged, which is never "no surface"
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -183,7 +193,7 @@
 #               -- 상태=<계획됨|실행중|리뷰중|머지됨|완료|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
 #   gate.sh act --kind segment --target <alias> --segment <id> --from-declaration ... \\
 #               -- 상태=계획됨 워크트리=<path>
-#     (레포·선언 파일 집합·선행·절단점·리뷰 정책·선언 다이제스트 는 동결 문서의 ## 구현 슬라이싱 에서
+#     (레포·선언 파일 집합·선행·절단점·리뷰 정책·선언 다이제스트·강제 표면 은 동결 문서의 ## 구현 슬라이싱 에서
 #      게이트가 채운다 — 호출자가 넘기면 거부된다)
 #   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
 #               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>'
@@ -11257,6 +11267,40 @@ gate_prior_decl_whole() {
   cat "$p" 2>/dev/null || return 1
 }
 
+gate_segment_declared_whole() {
+  # gate_segment_declared_whole <segment> — the declared set of the segment as
+  # the last of its rows carrying `선언 파일 집합` states it, read back whole
+  # when the row writer clipped it and normalized by `gate_decl_norm`; empty
+  # when no row carries one. 1 when the value was clipped and the file it names
+  # cannot be read back: a reader that needs the whole set cannot judge then.
+  #
+  # The last value any row carried, because a later state row does not repeat
+  # it. The review line and the enforcement-surface readers share this so the
+  # two cannot disagree about which set a segment declared.
+  local rows decl side
+  rows=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$1")
+  decl=$(printf '%s\n' "$rows" | gate_rows_field_values '선언 파일 집합' | awk 'NF { v = $0 } END { print v }')
+  case "$decl" in
+    *"(전체: "*")")
+      side=${decl##*"(전체: "}; side=${side%)}
+      decl=$(gate_prior_decl_whole "$side") || return 1 ;;
+  esac
+  gate_decl_norm "$decl"
+}
+
+gate_surface_stamp() {
+  # gate_surface_stamp [<path>…] — the `강제 표면` value for these declared
+  # paths: `<n>건 <분류목록>`, `없음`, or `판정불가` when the classifier could
+  # not be loaded. Never fails: an unloadable classifier is a value, not a
+  # refusal of the row.
+  local v
+  if v=$(gate_es es_stamp "$@") && [ -n "$v" ]; then
+    printf '%s' "$v"
+  else
+    printf '%s' '판정불가'
+  fi
+}
+
 gate_prior_decl_diff() {
   # gate_prior_decl_diff <segment> <ledger> <terminal-row> — empty when that
   # earlier ledger planned <segment> under the declaration the frozen document
@@ -11805,7 +11849,7 @@ gate_from_declaration() {
   for f in "$@"; do
     k=${f%%=*}
     case "$k" in
-      레포|'선언 파일 집합'|선행|'머지 순서'|절단점|'리뷰 정책'|'선언 다이제스트'|plan-binding-digest)
+      레포|'선언 파일 집합'|선행|'머지 순서'|절단점|'리뷰 정책'|'선언 다이제스트'|'강제 표면'|plan-binding-digest)
         warn "--from-declaration 은 「${k}」 를 동결 문서에서 채웁니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB" ;;
     esac
@@ -11893,6 +11937,13 @@ gate_from_declaration() {
       k=$(slice_field "$DOC" "$seg" '리뷰 정책')
       [ -z "$k" ] || GATE_DECL_FIELDS+=( "리뷰 정책=$k" )
       GATE_DECL_FIELDS+=( "선언 다이제스트=$(slice_decl_digest "$DOC" "$seg")" )
+      # `강제 표면` from the same declared files, through the classifier the run
+      # hook sources: a slice that has to edit what the hook refuses says so on
+      # its planned row, before any stage runs into the refusal. The driver's
+      # `plan_from_declaration` stamps the same value the same way.
+      local -a sdf=()
+      while IFS= read -r d; do [ -z "$d" ] || sdf+=("$d"); done <<<"$(slice_decl_files "$DOC" "$seg")"
+      GATE_DECL_FIELDS+=( "강제 표면=$(gate_surface_stamp ${sdf[@]+"${sdf[@]}"})" )
       ;;
     *)
       step=$(gate_plan_implement_step)
@@ -16380,6 +16431,7 @@ gate_main() {
   local wait_interval="" wait_timeout="" nonce=""
   local fields="" fields_seen=0
   local end_cause="" end_successor=""
+  local -a ss_flags=()
   GATE_RESUME=""; export GATE_RESUME
   # A plain global, reset here, so a value the caller's environment carries
   # never reaches the arm that reads it — only the argv flag below sets it.
@@ -16452,6 +16504,8 @@ gate_main() {
       --request)         request="$2"; shift 2 ;;
       --cause)           end_cause="$2"; shift 2 ;;
       --successor)       end_successor="$2"; shift 2 ;;
+      # The screening tool's own three switches, handed to it as they came.
+      --list|--tokens|-z) ss_flags+=("$1"); shift ;;
       # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
       # token is another flag or the `--` separator) selects the default list;
       # the value is never read as a filename, so `--fields --` cannot swallow
@@ -16463,6 +16517,10 @@ gate_main() {
     esac
   done
 
+  if [ "${#ss_flags[@]}" -gt 0 ] && [ "$verb" != "surface-screen" ]; then
+    printf 'gate: --list, --tokens and -z are used only with surface-screen (verb received: %s)\n' "$verb" >&2
+    exit 2
+  fi
   if [ "$fields_seen" = "1" ] && [ "$verb" != "snapshot" ]; then
     printf 'gate: --fields is used only with snapshot (verb received: %s)\n' "$verb" >&2
     exit 2
@@ -17186,6 +17244,15 @@ GATE_DRIFT_DIRS
       # Reading, not acting: the prompt of the segment's next review dispatch,
       # with the flags after `--` in it. No ledger row — the dispatch is the act.
       gate_review_line "$segment" "$@"
+      ;;
+    surface-screen)
+      # Reading, not acting: the screening tool from beside this file, with the
+      # same arguments and the same output, so a stage whose only Bash is the
+      # gate reaches it. No ledger row — nothing is performed. Its exit status
+      # passes through: 2 is a classifier that could not be loaded.
+      local ss_rc=0
+      bash "$GATE_DIR/enforcement-surface-screen.sh" ${ss_flags[@]+"${ss_flags[@]}"} -- "$@" || ss_rc=$?
+      exit "$ss_rc"
       ;;
     meta-merge)
       # Writing into the segment's repository and nowhere else: the merge
@@ -19674,13 +19741,7 @@ gate_review_line() {
   if [ "$slice" = "1" ] && [ "$(gate_slicing_branch)" = "선언통치" ]; then line="$line --slice $seg"; fi
   base=$(printf '%s\n' "$rows" | gate_rows_field_values '베이스 sha' | awk 'NF { v = $0 } END { print v }')
   [ -z "$base" ] || line="$line --base-sha $base"
-  decl=$(printf '%s\n' "$rows" | gate_rows_field_values '선언 파일 집합' | awk 'NF { v = $0 } END { print v }')
-  case "$decl" in
-    *"(전체: "*")")
-      side=${decl##*"(전체: "}; side=${side%)}
-      decl=$(gate_prior_decl_whole "$side") || decl='' ;;
-  esac
-  decl=$(gate_decl_norm "$decl")
+  decl=$(gate_segment_declared_whole "$seg") || decl=''
   case "$decl" in ''|'없음'|'(없음)') : ;; *) line="$line --declared-files \"$decl\"" ;; esac
   [ "${#extra[@]}" -eq 0 ] || line="$line ${extra[*]}"
   doc=$(gate_doc_arg_path)
@@ -25433,6 +25494,19 @@ gate_record_row() {
       # so its list lacked the worktree this row had just admitted. The trap
       # covers `gate_append`'s `die` — a lock left by a dead holder would turn
       # every later re-derivation into a timeout.
+      # `강제 표면` is the gate's in every state, beside `인가면`: it is the
+      # classifier's count over the declared files, written by the
+      # declaration-filled act, and a caller's value would claim — or deny —
+      # an enforcement-surface edit nothing screened. The key's presence is
+      # refused, an empty value included, as `머지 대조` is above.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ]; then
+        for f in "$@"; do
+          if [ "${f%%=*}" = '강제 표면' ]; then
+            warn "segment 행의 「강제 표면」은 게이트가 동결 문서의 선언 파일을 분류해 적는 필드입니다 — 호출자가 넘길 수 없습니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        done
+      fi
       local surf_field="" surf_lk=""
       case "$st" in
         완료|머지됨|park) : ;;
