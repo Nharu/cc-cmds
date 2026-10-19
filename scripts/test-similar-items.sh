@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Test the similar-item lookup (`plugins/cc-cmds/orchestrator/similar-items.py`),
-# its ClickUp adapter, the ClickUp ticket creator (`clickup-create.py`) and the
+# its ClickUp adapter and field mode, the ClickUp ticket creator
+# (`clickup-create.py`), the relation tool (`clickup-relate.py`) and the
 # measurement harness, offline.
 #
 # The judgment endpoint and the ClickUp API (under the `/cu` path prefix) are
@@ -716,6 +717,142 @@ check "생성 — 접두 약어 거부는 요청 0건" "$(cu_reqs)" "0"
 CC_SIMILAR_CLICKUP_URL='https://example.com' CC_CMDS_CRED_STORE="$WORK/store-cu" \
   run_create --list L1 --name x --description-file "$WORK/cu-desc.md"
 check "생성 — 루프백이 아닌 ClickUp 기점 재정의는 2" "$?" "2"
+
+cu_reset
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_create --list L1 --name "필드 티켓" --description-file "$WORK/cu-desc.md" \
+  --assignee 7 --assignee 9 --priority 2 --start-date 7000 --due-date 9000 --due-date-time
+check "생성 필드 — 종료 코드 0" "$?" "0"
+check "생성 필드 — 본문 키" \
+  "$(python3 -c 'import json,sys; print(sorted(json.loads(json.loads(open(sys.argv[1]).readline())["body"])))' "$WORK/cu-reqlog.jsonl")" \
+  "['assignees', 'due_date', 'due_date_time', 'markdown_description', 'name', 'priority', 'start_date']"
+check "생성 필드 — 본문 값" \
+  "$(python3 -c 'import json,sys; b=json.loads(json.loads(open(sys.argv[1]).readline())["body"]); print(b["assignees"], b["priority"], b["start_date"], b["due_date"], b["due_date_time"])' "$WORK/cu-reqlog.jsonl")" \
+  "[7, 9] 2 7000 9000 True"
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_create --list L1 --name x --description-file "$WORK/cu-desc.md" --start-date-time
+check "생성 필드 — 날짜 없는 시각 표지는 2" "$?" "2"
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_create --list L1 --name x --description-file "$WORK/cu-desc.md" --priority 5
+check "생성 필드 — 범위 밖 우선순위는 2" "$?" "2"
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_create --list L1 --name x --description-file "$WORK/cu-desc.md" --due-date 2026-10-20
+check "생성 필드 — 밀리초가 아닌 날짜는 2" "$?" "2"
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_create --list L1 --name x --description-file "$WORK/cu-desc.md" --status open
+check "생성 필드 — 상태 옵션은 없다" "$?" "2"
+check "생성 필드 — 거부는 요청 1건 뒤로 늘지 않는다" "$(cu_reqs)" "1"
+
+# ---------------------------------------------------------------------------
+# 17. ClickUp field mode
+# ---------------------------------------------------------------------------
+# One list of three tickets over two pages, and a ticket read beside it. The
+# reads go into the routes the lookup above already uses.
+python3 - "$WORK" <<'PYEOF'
+import json, os, sys
+w = sys.argv[1]
+routes = json.load(open(os.path.join(w, "cu.json")))
+def f(i, lst, **kw):
+    x = {"id": i, "name": "티켓 " + i, "list": {"id": lst}, "parent": None, "assignees": [], "tags": [],
+         "priority": None, "start_date": None, "due_date": None, "dependencies": []}
+    x.update(kw)
+    return x
+F1 = f("F1", "L1", assignees=[{"id": 7}], tags=[{"name": "gate"}], priority={"id": "2"},
+       due_date="9000", due_date_time=True,
+       dependencies=[{"task_id": "F1", "depends_on": "F9"}, {"task_id": "F8", "depends_on": "F1"}])
+F2 = f("F2", "L1", parent="F1", start_date="7000")
+F3 = f("F3", "L1", priority={"id": "urgent"})
+page = "/list/%s/task?subtasks=true&include_closed=false&page=%d"
+routes[page % ("L1", 0)] = {"tasks": [F1, F2], "last_page": False}
+routes[page % ("L1", 1)] = {"tasks": [F3], "last_page": True}
+routes[page % ("L3", 0)] = {"tasks": [f("B%d" % i, "L3") for i in range(2000)], "last_page": False}
+routes[page % ("L4", 0)] = {"tasks": [F3], "last_page": False}
+routes["/task/F1"] = F1
+# Relations: R1 and R2 sit in L1, R3 in L2; R2 already waits on R1.
+routes["/task/R1"] = f("R1", "L1")
+routes["/task/R2"] = f("R2", "L1", dependencies=[{"task_id": "R2", "depends_on": "R1"}])
+routes["/task/R3"] = f("R3", "L2")
+json.dump(routes, open(os.path.join(w, "cu.json"), "w"), ensure_ascii=False)
+PYEOF
+fdoc() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"d": d}))' "$WORK/fields.json" "$1"; }
+
+cu_reset; reset_reqs
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --lexical-only --list-fields L1 --task-fields F1 --log "$WORK/fields.json"
+check "필드 모드 — 종료 코드 0" "$?" "0"
+check "필드 모드 — 요약 한 줄" "$(cat "$WORK/out")" "similar-items: fields list=L1 tasks=3 task_fields=1 partial=false"
+check "필드 모드 — 첫 키는 kind 다" "$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])))))' "$WORK/fields.json")" "kind"
+check "필드 모드 — kind 값" "$(fdoc 'd["kind"]')" "fields"
+check "필드 모드 — 두 쪽을 last_page 까지 받는다" "$(fdoc '[t["id"] for t in d["tasks"]]')" "['F1', 'F2', 'F3']"
+check "필드 모드 — 요청 경로" "$(cu_log '[x["path"] for x in r]')" \
+  "['/list/L1/task?subtasks=true&include_closed=false&page=0', '/list/L1/task?subtasks=true&include_closed=false&page=1', '/task/F1']"
+check "필드 모드 — 담당자·태그·우선순위" "$(fdoc '(d["tasks"][0]["assignees"], d["tasks"][0]["tags"], d["tasks"][0]["priority"])')" "([7], ['gate'], 2)"
+check "필드 모드 — 숫자 아닌 우선순위는 없음" "$(fdoc 'd["tasks"][2]["priority"]')" "None"
+check "필드 모드 — 시각 표지는 키가 있을 때만" "$(fdoc '("due_date_time" in d["tasks"][0], "start_date_time" in d["tasks"][0], "due_date_time" in d["tasks"][1])')" "(True, False, False)"
+check "필드 모드 — 상위·날짜" "$(fdoc '(d["tasks"][1]["parent"], d["tasks"][1]["start_date"], d["tasks"][1]["due_date"])')" "('F1', '7000', None)"
+check "필드 모드 — 의존 쌍" "$(fdoc 'd["task_fields"][0]["dependencies"]')" \
+  "[{'task_id': 'F1', 'depends_on': 'F9'}, {'task_id': 'F8', 'depends_on': 'F1'}]"
+check "필드 모드 — 판정 요청 0건" "$(reqs)" "0"
+check "필드 모드 — ClickUp 요청은 모두 GET" "$(cu_log 'sorted({x["method"] for x in r})')" "['GET']"
+hasnt "필드 모드 — 토큰 값이 문서에 없다" "$(cat "$WORK/fields.json" "$WORK/out" "$WORK/err")" "$CU_SENTINEL"
+
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --lexical-only --list-fields L3 --log "$WORK/fields.json"
+check "필드 모드 상한 — 종료 코드 0" "$?" "0"
+check "필드 모드 상한 — partial 과 limit" "$(fdoc '(d["partial"], d["reason"], len(d["tasks"]))')" "(True, 'limit', 2000)"
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --lexical-only --list-fields L4 --log "$WORK/fields.json"
+check "필드 모드 쪽 실패 — partial 과 page-failed" "$(fdoc '(d["partial"], d["reason"])')" "(True, 'page-failed')"
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --lexical-only --list-fields L1 --task-fields NOPE --log "$WORK/fields.json"
+check "필드 모드 티켓 실패 — partial 과 task-failed" "$(fdoc '(d["partial"], d["reason"])')" "(True, 'task-failed')"
+cu_reset
+run_si clickup --lexical-only --list-fields L1 --log "$WORK/fields.json"
+check "필드 모드 토큰 없음 — 종료 코드 0" "$?" "0"
+check "필드 모드 토큰 없음 — partial 과 사유" "$(fdoc '(d["partial"], d["reason"])')" "(True, 'tracker-key')"
+check "필드 모드 토큰 없음 — 요청 0건" "$(cu_reqs)" "0"
+
+rm -f "$WORK/fields.json"
+run_si clickup --list-fields L1 --log "$WORK/fields.json"
+check "필드 모드 — --lexical-only 없이는 2" "$?" "2"
+run_si clickup --lexical-only --list-fields L1
+check "필드 모드 — --log 없이는 2" "$?" "2"
+run_si clickup --lexical-only --task-fields F1 --log "$WORK/fields.json"
+check "필드 모드 — --list-fields 없이는 2" "$?" "2"
+run_si clickup --lexical-only --list-fields L1 --task T1 --log "$WORK/fields.json"
+check "필드 모드 — 조회 인자와 섞으면 2" "$?" "2"
+check "필드 모드 — 인자 오류는 문서를 쓰지 않는다" "$([ -e "$WORK/fields.json" ] && echo 있음 || echo 없음)" "없음"
+
+# ---------------------------------------------------------------------------
+# 18. ClickUp relation
+# ---------------------------------------------------------------------------
+RELATE="$ORCH/clickup-relate.py"
+run_relate() { "$RELATE" "$@" > "$WORK/out" 2> "$WORK/err"; }
+printf '# m\n\n## 인가\n- `베이스 발행` | 트래커=clickup | 대상=L1 | 원 티켓=R1\n' > "$WORK/manifest-cu.md"
+
+cu_reset
+CC_PIPELINE_MANIFEST="$WORK/manifest-cu.md" CC_CMDS_CRED_STORE="$WORK/store-cu" run_relate --task R1 --depends-on R2
+check "관계 — 동결 리스트 안의 쌍은 0" "$?" "0"
+check "관계 — 두 티켓을 읽고 POST 한 건" "$(cu_log '[(x["method"], x["path"]) for x in r]')" \
+  "[('GET', '/task/R1'), ('GET', '/task/R2'), ('POST', '/task/R1/dependency')]"
+check "관계 — 본문은 depends_on 뿐이다" "$(python3 -c 'import json,sys; print(json.loads([json.loads(l) for l in open(sys.argv[1])][2]["body"]))' "$WORK/cu-reqlog.jsonl")" "{'depends_on': 'R2'}"
+check "관계 — 출력" "$(cat "$WORK/out")" "$(printf 'R1\tR2')"
+
+cu_reset
+CC_PIPELINE_MANIFEST="$WORK/manifest-cu.md" CC_CMDS_CRED_STORE="$WORK/store-cu" run_relate --task R2 --depends-on R1
+check "관계 — 이미 있는 간선은 0" "$?" "0"
+check "관계 — 이미 있는 간선은 POST 하지 않는다" "$(cu_log '[x["method"] for x in r]')" "['GET', 'GET']"
+check "관계 — 이미 있음 표지" "$(cat "$WORK/out")" "$(printf 'R2\tR1\t이미 있음')"
+
+cu_reset
+CC_PIPELINE_MANIFEST="$WORK/manifest-cu.md" CC_CMDS_CRED_STORE="$WORK/store-cu" run_relate --task R1 --depends-on R3
+check "관계 — 동결 리스트 밖 티켓은 5" "$?" "5"
+has "관계 — 거부가 리스트 밖 티켓을 적는다" "$(cat "$WORK/err")" "R3"
+check "관계 — 거부는 POST 0건" "$(cu_log '[x["method"] for x in r]')" "['GET', 'GET']"
+
+cu_reset
+CC_PIPELINE_MANIFEST="$WORK/manifest-cu.md" CC_CMDS_CRED_STORE="$WORK/store-cu" run_relate --task R1 --depends-on NOPE
+check "관계 — 읽기 실패는 4" "$?" "4"
+check "관계 — 읽기 실패는 POST 0건" "$(cu_log 'sum(x["method"] == "POST" for x in r)')" "0"
+
+cu_reset
+CC_PIPELINE_MANIFEST="$WORK/manifest-cu.md" run_relate --task R1 --depends-on R2
+check "관계 — 토큰 없음은 읽기 전에 3" "$?" "3"
+check "관계 — 토큰 없음은 요청 0건" "$(cu_reqs)" "0"
+CC_PIPELINE_MANIFEST="$WORK/manifest.md" CC_CMDS_CRED_STORE="$WORK/store-cu" run_relate --task R1 --depends-on R2
+check "관계 — 발행 행 없는 무인 런은 5" "$?" "5"
+check "관계 — 발행 행 없는 거부는 요청 0건" "$(cu_reqs)" "0"
 
 if grep -q 'POST' "$SI"; then
   bad "조회 도구 파일에 POST 코드가 없다" "$SI"

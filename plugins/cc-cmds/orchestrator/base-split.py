@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Check a base design document, plan its ticket publication, and record it.
 
-    base-split.py check  DOC
-    base-split.py plan   DOC --row ROW --out DIR [--tracker T] [--target X]
+    base-split.py check  DOC [--observed FIELDS --plan FIELDS-PLAN --row ROW]
+    base-split.py plan   DOC --row ROW --out DIR [--tracker T] [--target X] [--fields FIELDS]
     base-split.py record DOC --row ROW (--doc-only
                                        | --entry ID --plan FILE [--state S] [--ref R]
                                          [--node-id N] [--similar LIST])
@@ -13,8 +13,18 @@ and the registry format are defined once in `skills/_common/base-design.md`.
 
 `check` prints one line `<predicate> <detail>` per violation of D0 (the
 discriminator), P1 (graph shape), P2 (edges and contracts), P3 (file
-disjointness), P4 (critical path and width) and B1 (issue-body lint). It reads
-only.
+disjointness), P4 (critical path and width) and B1 (issue-body lint). With
+`--observed` (a field document re-read after publication), `--plan` (the
+`fields-plan.json` a ClickUp plan wrote) and `--row`, it also prints one line
+`observed <ticket> <field> <plan> <observed>` per field, parent link or
+relation the re-read does not show as planned. It reads only.
+
+For `트래커=clickup`, `plan` needs `--fields`: the document `similar-items.py
+clickup --list-fields` wrote, complete (`"kind": "fields"`, not partial). It
+decides each new ticket's assignees, priority and dates from that list's
+tickets and the row's optional `원 티켓=`, passes them as create arguments,
+derives the relations to existing tickets from the origin's dependencies and
+the tickets' `외부 선행`/`외부 후행`, and writes `DIR/fields-plan.json`.
 
 `plan` writes each `**발행 본문**` byte for byte to `DIR/body-*.md`, reads it
 back, and writes `DIR/plan.jsonl` — one entry per line, in execution order
@@ -91,14 +101,20 @@ B1_PATTERNS = (
     ("표제 줄", re.compile(r"(?m)^ {0,3}#{1,6}(?:[ \t]|$)")),
 )
 
-ROW_RE = re.compile(r"^- `베이스 발행` \| 트래커=(github|clickup|없음) \| 대상=(\S+)$")
+ROW_RE = re.compile(r"^- `베이스 발행` \| 트래커=(github|clickup|없음) \| 대상=(\S+)(?: \| 원 티켓=(\S*))?$")
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+EXTERNAL_FIELDS = ("외부 선행", "외부 후행")
+REL_KINDS = ("하위", "선행", "외부선행", "외부후행")
 REG_HEAD_RE = re.compile(
     r"^<!-- cc-design-base-tickets v1; doc=([^;]+); doc-sha256=([0-9a-f]{64}); "
     r"tracker=(github|clickup|없음); target=([^;]+) -->$")
 REG_BASE_RE = re.compile(r"^- `베이스` \| 상태=(발행중|발행됨|문서만) \| 참조=(\S+) \| 노드 id=(\S+)$")
 REG_TICKET_RE = re.compile(
     r"^- `티켓` \| id=(T\d+) \| 상태=(발행중|발행됨|문서만) \| 참조=(\S+) \| 노드 id=(\S+) \| 유사 후보=(.+)$")
-REG_REL_RE = re.compile(r"^- `관계` \| 종류=(하위|선행) \| 원=(T\d+) \| 대상=(T\d+|베이스) \| 상태=(대기|걸림|문서만)$")
+# An external relation (`외부선행`, `외부후행`) names an existing ticket of the
+# list by its tracker id rather than a document ticket.
+REG_REL_RE = re.compile(r"^- `관계` \| 종류=(하위|선행|외부선행|외부후행) \| 원=(T\d+) "
+                        r"\| 대상=(T\d+|베이스|[A-Za-z0-9_-]+) \| 상태=(대기|걸림|문서만)$")
 
 
 class Refused(Exception):
@@ -517,6 +533,15 @@ class Graph(object):
                 faults = list_shape_faults(f, key)
                 if faults:
                     self.add("P1", "%s %s 목록 형식 오류 %s" % (tid, key, "; ".join(faults)))
+            external = {}
+            for key in EXTERNAL_FIELDS:
+                # Optional: existing tracker tickets outside the split.
+                faults = list_shape_faults(f, key) if f.get(key) is not None else []
+                ids = split_list(f.get(key))
+                faults += ["항목 %s" % x for x in ids if not TASK_ID_RE.match(strip_code(x))]
+                if faults:
+                    self.add("P1", "%s %s 목록 형식 오류 %s" % (tid, key, "; ".join(faults)))
+                external[key] = sorted(set(strip_code(x) for x in ids if TASK_ID_RE.match(strip_code(x))))
             files = {}
             for key in ("소유 파일", "공유 파일"):
                 shape = list_shape_faults(f, key)
@@ -554,6 +579,7 @@ class Graph(object):
                 "shared": files["공유 파일"],
                 "nesting": bool((f.get("중첩 사유") or "").strip()),
                 "pub_title": f.get("발행 제목"), "body": f.get("발행 본문"),
+                "ext_pred": external["외부 선행"], "ext_succ": external["외부 후행"],
             }
             if self.t[tid]["kind"] not in ("계약", "구현"):
                 self.add("P1", "%s 종류 값 %s" % (tid, self.t[tid]["kind"] or "(빈 값)"))
@@ -825,17 +851,24 @@ def doc_field(doc_path):
 
 
 def parse_row(row):
+    """(tracker, target, origin) of a `베이스 발행` row; origin is the
+    optional `원 티켓=` id, or None."""
     m = ROW_RE.match(row.strip())
     if not m:
         raise Refused("베이스 발행 행을 읽지 못함")
-    tracker, target = m.group(1), m.group(2)
+    tracker, target, origin = m.group(1), m.group(2), m.group(3)
     if tracker == "없음" and target != "-":
         raise Refused("트래커=없음 인데 대상이 - 가 아님")
     if tracker == "github" and not REPO_RE.match(target):
         raise Refused("github 대상이 owner/name 꼴이 아님")
     if tracker != "없음" and target == "-":
         raise Refused("트래커가 있는데 대상이 -")
-    return tracker, target
+    if origin is not None:
+        if tracker != "clickup":
+            raise Refused("원 티켓 은 clickup 행에만 둡니다")
+        if not TASK_ID_RE.match(origin):
+            raise Refused("원 티켓 값 형식 오류")
+    return tracker, target, origin
 
 
 class Registry(object):
@@ -879,6 +912,9 @@ class Registry(object):
             elif t:
                 self.tickets[t.group(1)] = [t.group(2), t.group(3), t.group(4), t.group(5)]
             elif r:
+                internal = re.match(r"^(T\d+|베이스)$", r.group(3)) is not None
+                if internal != (r.group(1) in ("하위", "선행")):
+                    raise Refused("등록부에 읽을 수 없는 줄이 있음")
                 self.rels[(r.group(1), r.group(2), r.group(3))] = r.group(4)
             else:
                 raise Refused("등록부에 읽을 수 없는 줄이 있음")
@@ -905,10 +941,16 @@ class Registry(object):
         return "".join(x + "\n" for x in out)
 
     def fill_relations(self, g, default):
+        # The external relations the document names are filled here; those a
+        # plan derives from the origin ticket are added when they are recorded.
         for tid in g.ids:
             self.rels.setdefault(("하위", tid, "베이스"), default)
             for p in g.t[tid]["deps"]:
                 self.rels.setdefault(("선행", tid, p), default)
+            for x in g.t[tid]["ext_pred"]:
+                self.rels.setdefault(("외부선행", tid, x), default)
+            for x in g.t[tid]["ext_succ"]:
+                self.rels.setdefault(("외부후행", tid, x), default)
 
     def write(self, g):
         data = self.render(g).encode("utf-8")
@@ -927,7 +969,13 @@ class Registry(object):
 
 def rel_sort_key(key):
     kind, src, dst = key
-    return (0 if kind == "하위" else 1, int(src[1:]), -1 if dst == "베이스" else int(dst[1:]))
+    if dst == "베이스":
+        target = (0, -1, "")
+    elif kind in ("하위", "선행"):
+        target = (1, int(dst[1:]), "")
+    else:
+        target = (2, 0, dst)
+    return (REL_KINDS.index(kind), int(src[1:]), target)
 
 
 # --------------------------------------------------------------------------
@@ -967,7 +1015,204 @@ def entry(eid, kind, row, argv=None, title=None, why=None):
     return e
 
 
-def build_plan(doc, g, reg, out, tracker, target):
+# --------------------------------------------------------------------------
+# ClickUp fields and external relations
+# --------------------------------------------------------------------------
+
+FIELD_NAMES = ("assignees", "priority", "start_date", "due_date")
+FIELD_LIMIT_REASON = "limit"
+
+
+def load_fields_doc(path):
+    """The field document `similar-items.py clickup --list-fields` wrote."""
+    try:
+        with open(path, "rb") as f:
+            data = json.loads(f.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        raise UsageError("cannot read %s (%s)" % (path, type(e).__name__))
+    if not isinstance(data, dict) or data.get("kind") != "fields":
+        raise Refused("필드 문서가 아님 (\"kind\": \"fields\" 없음)")
+    if data.get("partial") is not False:
+        if data.get("reason") == FIELD_LIMIT_REASON:
+            raise Refused("필드 문서가 부분 조회 (limit) — 목록이 2000개를 넘어 이 경로로 발행할 수 없음")
+        raise Refused("필드 문서가 부분 조회 (%s)" % data.get("reason"))
+    for key in ("tasks", "task_fields"):
+        if not isinstance(data.get(key), list) or not all(
+                isinstance(r, dict) and isinstance(r.get("id"), str) for r in data[key]):
+            raise Refused("필드 문서의 %s 를 읽지 못함" % key)
+    return data
+
+
+def snapshot_of(fdoc):
+    """Every ticket the document read, the one-by-one reads winning."""
+    snap = {}
+    for r in fdoc["tasks"] + fdoc["task_fields"]:
+        snap[r["id"]] = r
+    return snap
+
+
+def ms_of(rec, key):
+    v = rec.get(key) if rec else None
+    return v if isinstance(v, str) and v.isdigit() else None
+
+
+def is_set(rec, name):
+    if name == "assignees":
+        return bool(rec.get("assignees"))
+    if name == "priority":
+        return rec.get("priority") is not None
+    return ms_of(rec, name) is not None
+
+
+def origin_edges(fdoc, origin):
+    """(tickets the origin waited on, tickets that waited on the origin)."""
+    rec = next((r for r in fdoc["task_fields"] if r["id"] == origin), None)
+    if rec is None:
+        raise Refused("원 티켓 %s 이 필드 문서의 task_fields 에 없음" % origin)
+    waits_on, waiters = set(), set()
+    for d in rec.get("dependencies") or []:
+        if not isinstance(d, dict):
+            continue
+        if d.get("task_id") == origin and d.get("depends_on"):
+            waits_on.add(str(d["depends_on"]))
+        elif d.get("depends_on") == origin and d.get("task_id"):
+            waiters.add(str(d["task_id"]))
+    return waits_on, waiters
+
+
+def external_edges(g, fdoc, origin):
+    """{ticket: (preds, succs)} of existing tickets outside the split.
+
+    The origin's waits-on become predecessors of every root ticket (no
+    predecessor inside the split), its waiters successors of every leaf ticket
+    (no successor inside the split); a ticket's `외부 선행`/`외부 후행` add to
+    those. Every id must be in the snapshot.
+    """
+    waits_on, waiters = origin_edges(fdoc, origin) if origin else (set(), set())
+    has_succ = set(p for t in g.ids for p in g.t[t]["deps"])
+    snap = snapshot_of(fdoc)
+    edges = {}
+    for tid in g.ids:
+        preds = set(g.t[tid]["ext_pred"]) | (waits_on if not g.t[tid]["deps"] else set())
+        succs = set(g.t[tid]["ext_succ"]) | (waiters if tid not in has_succ else set())
+        for x in sorted(preds | succs):
+            if x not in snap:
+                raise Refused("스냅숏에 없는 티켓 id %s (%s)" % (x, tid))
+        edges[tid] = (sorted(preds), sorted(succs))
+    return edges
+
+
+def decide_fields(g, fdoc, origin, run_nodes, edges):
+    """The fields of every new ticket, keyed `베이스` and the ticket ids.
+
+    A field is in use when more than half of the denominator - the list's open
+    top-level tickets other than the origin and this split's own tickets - set
+    it; exactly half, or an empty denominator, leaves it empty. Values come
+    from reference tickets: the origin's assignees, else the assignees every
+    tag-sharing denominator ticket has in common; the latest due date of the
+    ticket's existing predecessors as its start and the earliest start of its
+    existing successors as its due date, else the origin's; the origin's
+    priority, else the denominator's single most common one. A `*_date_time`
+    flag is copied only when the reference ticket's record carries the key.
+    """
+    snap = snapshot_of(fdoc)
+    o = snap.get(origin) if origin else None
+    denom = [r for r in fdoc["tasks"]
+             if not r.get("parent") and r["id"] != origin and r["id"] not in run_nodes]
+    used = dict((n, bool(denom) and 2 * sum(1 for r in denom if is_set(r, n)) > len(denom))
+                for n in FIELD_NAMES)
+
+    assignees = None
+    if o is not None and o.get("assignees"):
+        assignees = sorted(set(o["assignees"]))
+    elif o is not None:
+        tags = set(o.get("tags") or [])
+        sharing = [r for r in denom if tags & set(r.get("tags") or [])]
+        if sharing:
+            common = set(sharing[0].get("assignees") or [])
+            for r in sharing[1:]:
+                common &= set(r.get("assignees") or [])
+            assignees = sorted(common) or None
+    priority = o.get("priority") if o is not None else None
+    if priority is None:
+        counts = {}
+        for r in denom:
+            if r.get("priority") is not None:
+                counts[r["priority"]] = counts.get(r["priority"], 0) + 1
+        if counts:
+            top = max(counts.values())
+            best = [p for p, n in counts.items() if n == top]
+            priority = best[0] if len(best) == 1 else None
+
+    def date(preds_or_succs, key, pick, own_key):
+        cands = [(int(ms_of(snap[x], key)), x) for x in preds_or_succs if ms_of(snap.get(x), key)]
+        if cands:
+            ref = snap[pick(cands)[1]]
+            return ms_of(ref, key), ref, key + "_time"
+        if ms_of(o, own_key):
+            return ms_of(o, own_key), o, own_key + "_time"
+        return None, None, None
+
+    plan = {}
+    keys = ["베이스"] + list(g.ids)
+    for key in keys:
+        preds, succs = edges.get(key, ([], []))
+        values = {"assignees": assignees, "priority": priority}
+        refs = {}
+        values["start_date"], sref, sflag = date(preds, "due_date", max, "start_date")
+        values["due_date"], dref, dflag = date(succs, "start_date", min, "due_date")
+        refs["start_date"], refs["due_date"] = (sref, sflag), (dref, dflag)
+        decided, empty, flags = {}, {}, {}
+        for n in FIELD_NAMES:
+            if not used[n]:
+                empty[n] = "리스트가 쓰지 않음"
+            elif values[n] is None:
+                empty[n] = "참조 값 없음"
+            else:
+                decided[n] = values[n]
+        copied = []
+        for n in ("start_date", "due_date"):
+            if n not in decided:
+                continue
+            ref, flag = refs[n]
+            copied.append(flag in ref)
+            if flag in ref:
+                flags[n + "_time"] = bool(ref[flag])
+        fmt = "복사" if copied and all(copied) else "미상(생략)"
+        plan[key] = {"fields": decided, "empty": empty, "date_flags": flags, "date_format": fmt,
+                     "external_pred": preds, "external_succ": succs}
+    return plan
+
+
+def field_argv(decision):
+    if decision is None:
+        return []
+    f, flags = decision["fields"], decision["date_flags"]
+    argv = []
+    for a in f.get("assignees") or []:
+        argv += ["--assignee", str(a)]
+    if "priority" in f:
+        argv += ["--priority", str(f["priority"])]
+    if "start_date" in f:
+        argv += ["--start-date", f["start_date"]]
+        if flags.get("start_date_time"):
+            argv.append("--start-date-time")
+    if "due_date" in f:
+        argv += ["--due-date", f["due_date"]]
+        if flags.get("due_date_time"):
+            argv.append("--due-date-time")
+    return argv
+
+
+def field_entry(e, decision):
+    if decision is not None:
+        e["fields"] = {"values": decision["fields"], "empty": decision["empty"]}
+        e["date_format"] = decision["date_format"]
+    return e
+
+
+def build_plan(doc, g, reg, out, tracker, target, fplan=None):
+    fplan = fplan or {}
     here = os.path.dirname(os.path.realpath(__file__))
     create_tool = os.path.join(here, "clickup-create.py")
     relate_tool = os.path.join(here, "clickup-relate.py")
@@ -987,6 +1232,13 @@ def build_plan(doc, g, reg, out, tracker, target):
         s = ticket_state(tid)
         return s[2] if issued(s) and s[2] != "-" else None
 
+    def external_rels(tid):
+        d = fplan.get(tid)
+        if d is None:
+            return []
+        return ([("외부선행", x) for x in d["external_pred"]]
+                + [("외부후행", x) for x in d["external_succ"]])
+
     base_title = doc.base["발행 제목"]
     base_body = write_body(out, "body-base.md", doc.base["발행 본문"])
     base_state = reg.base
@@ -999,8 +1251,9 @@ def build_plan(doc, g, reg, out, tracker, target):
                     "--body-file", base_body]
         else:
             argv = [create_tool, "--list", target, "--name", base_title,
-                    "--description-file", base_body]
-        entries.append(entry("base", "create", "베이스", argv, title=base_title))
+                    "--description-file", base_body] + field_argv(fplan.get("베이스"))
+        entries.append(field_entry(entry("base", "create", "베이스", argv, title=base_title),
+                                   fplan.get("베이스")))
     elif base_state[0] == "발행중":
         entries.append(entry("base", "resolve", "베이스", title=base_title))
 
@@ -1028,19 +1281,32 @@ def build_plan(doc, g, reg, out, tracker, target):
                     entries.append(entry(tid, "wait", tid, title=t["pub_title"], why="참조 없음 베이스"))
                     continue
                 argv = [create_tool, "--list", target, "--name", t["pub_title"],
-                        "--description-file", body, "--parent", base_node]
-            entries.append(entry(tid, "create", tid, argv, title=t["pub_title"]))
+                        "--description-file", body, "--parent", base_node] + field_argv(fplan.get(tid))
+            entries.append(field_entry(entry(tid, "create", tid, argv, title=t["pub_title"]), fplan.get(tid)))
             continue
 
     # Relations that a creation did not carry: GitHub fills them by edit on a
     # resume, ClickUp makes every dependency with its own call.
     for tid in sorted(g.ids, key=lambda u: g.t[u]["num"]):
+        ext = external_rels(tid)
         if not issued(ticket_state(tid)):
             if tracker == "clickup":
                 for p in g.t[tid]["deps"]:
                     eid = "rel:선행:%s:%s" % (tid, p)
                     entries.append(entry(eid, "wait", "관계 선행 %s %s" % (tid, p), why="참조 없음 %s" % tid))
+                for kind, x in ext:
+                    eid = "rel:%s:%s:%s" % (kind, tid, x)
+                    entries.append(entry(eid, "wait", "관계 %s %s %s" % (kind, tid, x), why="참조 없음 %s" % tid))
             continue
+        for kind, x in ext:
+            if reg.rels.get((kind, tid, x), "대기") != "대기" or node_of(tid) is None:
+                continue
+            # An external predecessor is waited on by the new ticket; an external
+            # successor waits on it, so the same tool takes the arguments swapped.
+            pair = ["--task", node_of(tid), "--depends-on", x] if kind == "외부선행" \
+                else ["--task", x, "--depends-on", node_of(tid)]
+            entries.append(entry("rel:%s:%s:%s" % (kind, tid, x), "relate", "관계 %s %s %s" % (kind, tid, x),
+                                 [relate_tool] + pair))
         if tracker == "github" and reg.rels.get(("하위", tid, "베이스"), "대기") == "대기":
             if base_ref is not None:
                 entries.append(entry("rel:하위:%s:베이스" % tid, "edit", "관계 하위 %s 베이스" % tid,
@@ -1065,7 +1331,9 @@ def build_plan(doc, g, reg, out, tracker, target):
     return entries
 
 
-CLICKUP_TOOLS = (("clickup-create.py", ("--list", "--name", "--description-file", "--parent")),
+CLICKUP_TOOLS = (("clickup-create.py", ("--list", "--name", "--description-file", "--parent",
+                                        "--assignee", "--priority", "--start-date", "--start-date-time",
+                                        "--due-date", "--due-date-time")),
                  ("clickup-relate.py", ("--task", "--depends-on")))
 
 
@@ -1097,12 +1365,97 @@ def clickup_tools_unready(here):
 
 
 def cmd_check(args):
+    given = [x is not None for x in (args.observed, args.plan, args.row)]
+    if any(given) and not all(given):
+        raise UsageError("--observed, --plan and --row go together")
     doc = Doc(args.doc)
-    violations, _ = run_checks(doc)
-    for pred, detail in violations:
-        sys.stdout.buffer.write(("%s %s\n" % (pred, detail)).encode("utf-8"))
+    violations, g = run_checks(doc)
+    lines = ["%s %s" % (pred, detail) for pred, detail in violations]
+    if args.observed is not None:
+        lines += observed_mismatches(doc, g, args)
+    for line in lines:
+        sys.stdout.buffer.write((line + "\n").encode("utf-8"))
     sys.stdout.flush()
-    return 1 if violations else 0
+    return 1 if lines else 0
+
+
+def shown(value):
+    if value is None or value == []:
+        return "-"
+    if isinstance(value, list):
+        return ",".join(str(x) for x in value)
+    return str(value)
+
+
+def observed_mismatches(doc, g, args):
+    """`observed <ticket> <field> <plan> <observed>` for every way the
+    re-read tickets differ from the fields plan and the split's relations.
+
+    Dates are compared as millisecond values only, whatever their flags.
+    """
+    try:
+        tracker, target, _ = parse_row(args.row)
+        if tracker != "clickup":
+            raise Refused("--observed 는 트래커=clickup 행에만 씀")
+        reg = Registry(doc, tracker, target).load()
+        obs = load_fields_doc(args.observed)
+    except Refused as e:
+        return ["observed - 입력 - %s" % str(e).replace(" ", "_")]
+    try:
+        with open(args.plan, "rb") as f:
+            fplan = json.loads(f.read().decode("utf-8"))
+        tickets = fplan["tickets"]
+    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError) as e:
+        raise UsageError("cannot read %s (%s)" % (args.plan, type(e).__name__))
+    snap = snapshot_of(obs)
+    pairs = set()
+    for r in snap.values():
+        for d in r.get("dependencies") or []:
+            pairs.add((d.get("task_id"), d.get("depends_on")))
+
+    def node(key):
+        s = reg.base if key == "베이스" else (reg.tickets.get(key) or [None] * 3)
+        return s[2] if s and s[0] == "발행됨" and s[2] != "-" else None
+
+    out = []
+    base_node = node("베이스")
+    for key in ["베이스"] + [t for t in g.ids if t in tickets]:
+        d = tickets.get(key)
+        if d is None:
+            continue
+        n = node(key)
+        rec = snap.get(n) if n else None
+        if rec is None:
+            out.append("observed %s 조회 %s -" % (key, n or "-"))
+            continue
+        want = d.get("fields") or {}
+        checks = (
+            ("assignees", sorted(want.get("assignees") or []), sorted(rec.get("assignees") or [])),
+            ("priority", want.get("priority"), rec.get("priority")),
+            ("start_date", want.get("start_date"), ms_of(rec, "start_date")),
+            ("due_date", want.get("due_date"), ms_of(rec, "due_date")),
+        )
+        for name, plan_v, obs_v in checks:
+            if name in ("start_date", "due_date"):
+                same = (None if plan_v is None else int(plan_v)) == (None if obs_v is None else int(obs_v))
+            else:
+                same = plan_v == obs_v
+            if not same:
+                out.append("observed %s %s %s %s" % (key, name, shown(plan_v), shown(obs_v)))
+        if key == "베이스":
+            continue
+        if rec.get("parent") != base_node:
+            out.append("observed %s 하위 %s %s" % (key, shown(base_node), shown(rec.get("parent"))))
+        for p in g.t[key]["deps"]:
+            if (n, node(p)) not in pairs:
+                out.append("observed %s 선행 %s 없음" % (key, shown(node(p))))
+        for x in d.get("external_pred") or []:
+            if (n, x) not in pairs:
+                out.append("observed %s 외부선행 %s 없음" % (key, x))
+        for x in d.get("external_succ") or []:
+            if (x, n) not in pairs:
+                out.append("observed %s 외부후행 %s 없음" % (key, x))
+    return out
 
 
 def refuse_plan(out, why):
@@ -1120,7 +1473,7 @@ def cmd_plan(args):
     except OSError as e:
         raise UsageError("cannot create %s (%s)" % (args.out, type(e).__name__))
     try:
-        tracker, target = parse_row(args.row)
+        tracker, target, origin = parse_row(args.row)
     except Refused as e:
         return refuse_plan(out, str(e))
     if args.tracker is not None and args.tracker != tracker:
@@ -1133,16 +1486,35 @@ def cmd_plan(args):
         why = clickup_tools_unready(os.path.dirname(os.path.realpath(__file__)))
         if why:
             return refuse_plan(out, "ClickUp 도구 미비 — %s" % why)
+        if args.fields is None:
+            return refuse_plan(out, "트래커=clickup 에는 --fields <필드 문서> 가 필요함")
+    elif args.fields is not None:
+        return refuse_plan(out, "--fields 는 트래커=clickup 행에만 씀")
     violations, g = run_checks(doc)
     if violations:
         return refuse_plan(out, "점검 위반 %d건 — check 로 확인" % len(violations))
     try:
         reg = Registry(doc, tracker, target).load()
         reg.require_doc_match()
+        fplan = None
+        if tracker == "clickup":
+            fdoc = load_fields_doc(args.fields)
+            if str(fdoc.get("list")) != target:
+                raise Refused("필드 문서의 목록이 행의 대상과 다름")
+            run_nodes = set(s[2] for s in reg.tickets.values() if s[2] != "-")
+            if reg.base is not None and reg.base[2] != "-":
+                run_nodes.add(reg.base[2])
+            fplan = decide_fields(g, fdoc, origin, run_nodes, external_edges(g, fdoc, origin))
+        elif any(g.t[t]["ext_pred"] or g.t[t]["ext_succ"] for t in g.ids):
+            raise Refused("외부 선행·외부 후행 은 트래커=clickup 발행에서만 건다")
     except Refused as e:
         return refuse_plan(out, str(e))
-    entries = build_plan(doc, g, reg, out, tracker, target)
+    entries = build_plan(doc, g, reg, out, tracker, target, fplan)
     data = "".join(json.dumps(e, ensure_ascii=False, sort_keys=True) + "\n" for e in entries)
+    if fplan is not None:
+        doc_plan = {"list": target, "origin": origin, "tickets": fplan}
+        write_atomic(os.path.join(out, "fields-plan.json"),
+                     (json.dumps(doc_plan, ensure_ascii=False, sort_keys=True, indent=1) + "\n").encode("utf-8"))
     write_atomic(os.path.join(out, "plan.jsonl"), data.encode("utf-8"))
     lines = []
     for e in entries:
@@ -1208,7 +1580,12 @@ def record_entry(args, doc, g, reg, tracker):
             raise Refused("관계 항목은 --state 발행됨 으로만 기록함")
         parts = row.split(" ")
         key = (parts[1], parts[2], parts[3])
-        if key not in reg.rels:
+        external = parts[1] in ("외부선행", "외부후행")
+        if external and (kind != "relate" or parts[2] not in g.t or not TASK_ID_RE.match(parts[3])):
+            raise Refused("외부 관계 %s 를 기록할 수 없음" % row)
+        if key not in reg.rels and not external:
+            # An external relation the plan derived from the origin ticket is
+            # not in the document, so its first record adds it.
             raise Refused("등록부에 없는 관계 %s" % row)
         reg.rels[key] = "걸림"
         return
@@ -1278,7 +1655,7 @@ def transition(cur, args, tracker, kind):
 def cmd_record(args):
     doc = Doc(args.doc)
     try:
-        tracker, target = parse_row(args.row)
+        tracker, target, _ = parse_row(args.row)
     except Refused as e:
         sys.stderr.write("base-split.py: 거절 %s\n" % e)
         return 3
@@ -1326,12 +1703,16 @@ def build_parser():
     sub.required = True
     c = sub.add_parser("check", allow_abbrev=False)
     c.add_argument("doc")
+    c.add_argument("--observed")
+    c.add_argument("--plan")
+    c.add_argument("--row")
     p = sub.add_parser("plan", allow_abbrev=False)
     p.add_argument("doc")
     p.add_argument("--row", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--tracker", choices=("github", "clickup", "없음"))
     p.add_argument("--target")
+    p.add_argument("--fields")
     r = sub.add_parser("record", allow_abbrev=False)
     r.add_argument("doc")
     r.add_argument("--row", required=True)

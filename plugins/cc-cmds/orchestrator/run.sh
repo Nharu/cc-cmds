@@ -1355,7 +1355,7 @@ EOF
   # it names. A `single` run carries neither a split step nor that row, so
   # neither can come into force by accident. A plan frozen before the field
   # existed has no key and is `single`.
-  local scope bp_rows bp_n bp_trk bp_tgt bp_ok
+  local scope bp_rows bp_n bp_trk bp_tgt bp_org_seg bp_org bp_ok
   scope=$(manifest_design_scope)
   bp_rows=$(manifest_base_publish_rows)
   bp_n=$(printf '%s' "$bp_rows" | grep -c . || true)
@@ -1375,8 +1375,16 @@ EOF
     ' >/dev/null 2>&1 \
       || die "design_scope 가 base 인 런의 단계 그래프는 design → design-audit(설계에 의존) → split(설계·감사에 의존) 세 단계뿐이어야 합니다"
     [ "$bp_n" = "1" ] || die "design_scope 가 base 인데 「베이스 발행」 행이 ${bp_n}개입니다 — 정확히 하나여야 합니다"
-    bp_trk=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)$/\1/p')
-    bp_tgt=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)$/\2/p')
+    # The optional ` | 원 티켓=<task id>` names the ClickUp ticket the base splits
+    # off; it follows the target, and only on a clickup row.
+    bp_trk=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)\( | 원 티켓=[^ ]*\)\{0,1\}$/\1/p')
+    bp_tgt=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)\( | 원 티켓=[^ ]*\)\{0,1\}$/\2/p')
+    bp_org_seg=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=[^ |]* | 대상=[^ ]*\( | 원 티켓=[^ ]*\)$/\1/p')
+    if [ -n "$bp_org_seg" ]; then
+      bp_org=${bp_org_seg# | 원 티켓=}
+      [ "$bp_trk" = "clickup" ] || die "「베이스 발행」 행의 원 티켓 은 clickup 행에만 둡니다 (트래커=$bp_trk)"
+      case "$bp_org" in ''|*[!A-Za-z0-9_-]*) bp_trk= ;; esac
+    fi
     case "$bp_trk" in
       github)
         bp_ok=0
@@ -1389,7 +1397,7 @@ EOF
       없음)
         [ "$bp_tgt" = "-" ] || die "「베이스 발행」 행의 트래커가 없음인데 대상이 - 가 아닙니다: $bp_tgt" ;;
       *)
-        die "「베이스 발행」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>\` 입니다" ;;
+        die "「베이스 발행」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>[ | 원 티켓=<task id>]\` 입니다 (원 티켓 은 clickup 행에만, 영문·숫자·_·- 로)" ;;
     esac
   else
     if manifest_plan_json | jq -e '[.steps[]? | if type == "object" then .skill else . end] | index("split") != null' >/dev/null 2>&1; then
