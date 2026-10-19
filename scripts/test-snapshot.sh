@@ -2604,12 +2604,18 @@ check "design-audit-unattended: 종합 정지 전에 조정 처분과 조정 뒤
   "$(has "$AU_ANS" "then \`**조정 뒤 문서 sha256**: <64 hex>\`")" 예
 check "교대 계약: 정지 답은 운반 act 로 낸다" \
   "$(has "$RS_SKILL" "--carry-answer <line> \\")" 예
-check "교대 계약: --resume 재부착은 19 뒤와 좌석 실행 답에만" \
-  "$(has "$RS_SKILL" "**Re-attach with \`--resume\` only after exit 19, or for a \`좌석 실행\` answer item 2 sent here.**")" 예
-check "교대 계약: 좌석 실행 답은 운반 act 없이 --resume 으로 간다" \
-  "$(has "$RS_SKILL" "When \`option\` is \`좌석 실행\` and \`answered_by\` is \`좌석\`, the seat ran the record's commands or recipes and the halted session is the one that reads their results: do not issue the carry act, which refuses this answer with exit 3 — re-attach the halted session with item 3's \`--resume\` form directly")" 예
+check "교대 계약: --resume 재부착은 19 뒤와 좌석 실행 정지의 답에만" \
+  "$(has "$RS_SKILL" "**Re-attach with \`--resume\` only after exit 19, or for an answer to a \`좌석 실행\` stop item 2 sent here.**")" 예
+# 게이트는 좌석 실행 정지의 운반을 스텝 문면만으로 거절하므로, 계약도 답한 주체나
+# 선택지가 아닌 스텝으로 갈라야 사람이 한 답이 exit 3 으로 빠지지 않는다.
+check "교대 계약: 좌석 실행 정지의 답은 답한 주체와 무관하게 운반 act 없이 --resume 으로 간다" \
+  "$(has "$RS_SKILL" "When the step begins with \`Step 3 잔여 검증 좌석 실행\` or \`Step 3 게이트 도달 좌석 실행\`, whoever answered and whatever the option, the halted session is the one that reads the answer")" 예
+check "교대 계약: 좌석 실행 정지 갈래가 게이트가 거절하는 두 스텝 접두와 같다" \
+  "$(has "$GATE" "'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)")" 예
 check "교대 계약: 좌석 실행 답 갈래가 운반 act 로 넘기는 문장보다 앞선다" \
-  "$(awk '/When `option` is `좌석 실행` and `answered_by` is `좌석`, the seat ran/{a=NR} /Every other answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_SKILL")" 예
+  "$(awk '/When the step begins with `Step 3 잔여 검증 좌석 실행`/{a=NR} /Every other answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_SKILL")" 예
+check "사이드카: 좌석 실행 정지는 사람이 답해도 --resume 으로 재부착한다" \
+  "$(has "$AU_ANS" "whether the seat ran the record or a person answered it: the carry act refuses an answer to it on its step alone")" 예
 check "교대 계약: 운반 act 의 16 은 이월이고 종료 행이 있으면 종단" \
   "$(has "$RS_SKILL" "end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
 # 마감 뒤의 이월 인계는 그 act 에서 런을 끝낼 때만 받아지고, 받아지지 않으면 교대가 붙드는 것을

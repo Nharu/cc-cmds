@@ -38261,6 +38261,36 @@ lsr93_in "$lsr93_l" gate_append 'segment' 'id=S5' '상태=실행중' >/dev/null 
 check "93: TD2 이월된 세그먼트는 답 이월 대기이고 대조 세그먼트는 오늘의 줄이다" \
   "$(lsr93_in "$lsr93_l" gate_done_conditions 2>/dev/null | { grep '^1 ' || true; } | paste -sd'#' -)" \
   "1 답 이월 대기 — S3 의 중단 답(원장 $(lsr93_in "$lsr93_l" gate_key_deferred_answer S3 2>/dev/null) 번째 줄)을 다음 런이 이어받습니다#1 세그먼트 S5 의 상태가 종단이 아닙니다 (실행중)"
+# TD3 — park 와 이월 사이에 그 답을 실은 시도가 세션 전에 죽었어도 키는 답 이월 대기다.
+# 세션 전 사망(`세션 id=미상` 크래시, 스폰 전 대기자 정산)은 카드를 읽지 않았으므로
+# park 가 키의 마지막 행으로 남는다. 다른 답을 실은 사망과 세션이 생긴 뒤의 크래시는
+# 여전히 결정한다. 세그먼트를 실행중으로 두어, 건너뛰지 못하면 끝맺음이 서지 않게 한다.
+lsr93_dfd() {
+  # lsr93_dfd <이름> <세션 id> <종단 부류> <관측|-> <답 운반 줄 차이> — park·답 뒤에 사망 행
+  # 하나를 두고 이월한 S3 원장. 차이가 0 이 아니면 사망 행은 다른 줄을 싣는다.
+  local l ln obs=$4
+  l=$(lsr75_new "$1")
+  lsr93_park "$l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+  ln=$(lsr93_ans "$l" S3 "${l%/*}/halt/S3#1.md" design-reconverge 적용)
+  set -- stage-result "세그먼트=S3" "스테이지=S3" "종류=reconverge" "종료 코드=-" "실행 버전=2" \
+    "세션 id=$2" "부모=-" "기록자=게이트" "종단 부류=$3" "답 운반=$((ln + $5))"
+  [ "$obs" = - ] || set -- "${@:1:10}" "$obs" "${11}"
+  lsr93_in "$l" gate_append "$@" >/dev/null 2>&1
+  lsr93_in "$l" gate_carry_defer_row infra S3 S3 "B:S3#3" "$ln" '마감 경과' >/dev/null 2>&1
+  lsr93_in "$l" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+  lsr93_hrow "$l" 이월
+  printf '%s' "$l"
+}
+lsr93_tdd() {  # lsr93_tdd <원장> — 「종료 조건 1 이 답 이월 대기 줄을 싣는가|진전 축 런의 끝맺음」
+  printf '%s|%s' \
+    "$(lsr93_in "$1" gate_done_conditions 2>/dev/null | { grep -c '^1 답 이월 대기 — S3 ' || true; } | tr -d ' ')" \
+    "$(lsr93_due "$1" "$lsr93_mfc")"
+}
+lsr93_wobs='관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 2026-10-20T00:00:00Z'
+check "93: TD3 같은 답의 세션 전 사망(미상 크래시·스폰 전 대기자) 뒤에 이월된 키는 답 이월 대기이고 런이 끝난다" \
+  "$(lsr93_tdd "$(lsr93_dfd td3a 미상 크래시 - 0)")/$(lsr93_tdd "$(lsr93_dfd td3b - '외부 종료' "$lsr93_wobs" 0)")" "1|y/1|y"
+check "93: TD3 대조 — 다른 답을 실은 세션 전 사망·세션이 생긴 뒤의 크래시는 키를 답 이월 대기로 두지 않는다" \
+  "$(lsr93_tdd "$(lsr93_dfd td3c 미상 크래시 - 1000)")/$(lsr93_tdd "$(lsr93_dfd td3d "$lsr93_sid2" 크래시 - 0)")" "0|n/0|n"
 
 # ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다

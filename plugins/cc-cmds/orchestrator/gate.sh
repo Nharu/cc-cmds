@@ -38338,11 +38338,26 @@ gate_step_deferred_line() {
   # otherwise. Such a key is neither closed nor void: the next run dispatches it
   # again with the person's answer. The head `1 답 이월 대기 — ` is fixed;
   # `gate_defer_only_left` reads the return value, not the line.
-  local ln last
+  #
+  # The last row is read past the pre-session deaths of this same answer — a
+  # row carrying `답 운반=<the line>` with `세션 id=미상`, or a waiter settled
+  # with `관측=스폰 전 대기 중` — by the predicate the consumer, the carry cap
+  # and the run-scope admission use: such an attempt never read the card, so
+  # the key still stands where the park left it. Any other row still decides.
+  local ln last r
   ln=$(gate_key_deferred_answer "$1")
   [ -n "$ln" ] || return 1
-  last=$( { gate_stage_result_rows_of "$1" || true; } \
-          | { grep -F -- '- `stage-result`' || true; } | tail -1)
+  last=
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    if [ "$(gate_row_field "$r" '답 운반')" = "$ln" ]; then
+      [ "$(gate_row_field "$r" '세션 id')" = '미상' ] && continue
+      case "$(gate_row_field "$r" '관측')" in '스폰 전 대기 중'*) continue ;; esac
+    fi
+    last=$r
+  done <<EOF
+$( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
+EOF
   [ "$(gate_row_field "$last" '종단 부류')" = '의도된 park' ] || return 1
   printf '1 답 이월 대기 — %s 의 중단 답(원장 %s 번째 줄)을 다음 런이 이어받습니다\n' "$1" "$ln"
 }
