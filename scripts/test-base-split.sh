@@ -625,6 +625,11 @@ elif variant == "dates":
     doc["task_fields"] = [t("O", assignees=[7], priority=1, start="7000", due="9000", due_date_time=True,
                             deps=origin_deps),
                           t("w1", due="8000", due_date_time=False), t("s1", start="20000")]
+elif variant == "foreign":
+    # The list read holds neither end: w1 is closed in this list, x9 lives in
+    # another one; the tool read both alone because the origin names them.
+    doc["task_fields"] = [t("O", deps=[("O", "w1"), ("x9", "O")]), t("w1", due="8000"),
+                          t("x9", list_id="777", start="1")]
 elif variant == "tie":
     doc["tasks"] = [t("c1", priority=1), t("c2", priority=2)]
 elif variant == "runnode":
@@ -916,6 +921,24 @@ has "refusal says the list is over 2000" "$out" "2000"
 refused_stub "a document without kind" "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$(fx nokind)"
 refused_stub "a field document of another list" "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$(fx otherlist)"
 refused_stub "an origin the document did not read alone" "$DOCS/cu.md" --row "$CUO_ROW" --out "$OUT" --fields "$FX_EMPTY"
+
+# The origin's dependency on a closed ticket of the list stays a relation; one
+# on a ticket the document shows in another list is left out, with the reason,
+# instead of refusing the whole plan.
+gen ok && cp "$DOCS/ok.md" "$DOCS/ff.md"
+run_stub plan "$DOCS/ff.md" --row "$CUO_ROW" --out "$OUT" --fields "$(fx foreign)"
+check "foreign: plan exits 0" "$rc" "0"
+check "foreign: the closed ticket stays, the other list's ticket leaves the relations" \
+  "$(python3 -c 'import json,sys
+t = json.load(open(sys.argv[1]))["tickets"]
+print(" ".join("%s:%s/%s" % (k, ",".join(t[k]["external_pred"]), ",".join(t[k]["external_succ"])) for k in ("T1", "T2", "T3")))' "$OUT/fields-plan.json")" \
+  "T1:w1/ T2:w1/ T3:/"
+check "foreign: the plan names the left-out ticket on every leaf" \
+  "$(python3 -c 'import json,sys
+t = json.load(open(sys.argv[1]))["tickets"]
+print(json.dumps([t[k]["external_skipped"] for k in ("T1", "T2", "T3")], ensure_ascii=False, sort_keys=True))' "$OUT/fields-plan.json")" \
+  '[[{"direction": "후행", "id": "x9", "reason": "다른 리스트 777"}], [], [{"direction": "후행", "id": "x9", "reason": "다른 리스트 777"}]]'
+hasnt "foreign: no relation is planned with the other list's ticket" "$(entries)" "x9"
 
 # Every argv the ClickUp plans emitted parses against its tool.
 python3 - "$WORK/cu-all.jsonl" <<'PYEOF' && ok "plan clickup: every emitted argv parses against its tool" || bad "plan clickup: every emitted argv parses against its tool"

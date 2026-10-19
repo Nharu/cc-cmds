@@ -763,6 +763,9 @@ routes[page % ("L1", 1)] = {"tasks": [F3], "last_page": True}
 routes[page % ("L3", 0)] = {"tasks": [f("B%d" % i, "L3") for i in range(2000)], "last_page": False}
 routes[page % ("L4", 0)] = {"tasks": [F3], "last_page": False}
 routes["/task/F1"] = F1
+# F1's dependency ends outside the list read: F9 closed in L1, F8 in L2.
+routes["/task/F9"] = f("F9", "L1", due_date="8000", dependencies=[{"task_id": "F1", "depends_on": "F9"}])
+routes["/task/F8"] = f("F8", "L2", dependencies=[{"task_id": "F8", "depends_on": "F7"}])
 # Relations: R1 and R2 sit in L1, R3 in L2; R2 already waits on R1.
 routes["/task/R1"] = f("R1", "L1")
 routes["/task/R2"] = f("R2", "L1", dependencies=[{"task_id": "R2", "depends_on": "R1"}])
@@ -774,12 +777,14 @@ fdoc() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval
 cu_reset; reset_reqs
 CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --lexical-only --list-fields L1 --task-fields F1 --log "$WORK/fields.json"
 check "필드 모드 — 종료 코드 0" "$?" "0"
-check "필드 모드 — 요약 한 줄" "$(cat "$WORK/out")" "similar-items: fields list=L1 tasks=3 task_fields=1 partial=false"
+check "필드 모드 — 요약 한 줄" "$(cat "$WORK/out")" "similar-items: fields list=L1 tasks=3 task_fields=3 partial=false"
 check "필드 모드 — 첫 키는 kind 다" "$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])))))' "$WORK/fields.json")" "kind"
 check "필드 모드 — kind 값" "$(fdoc 'd["kind"]')" "fields"
 check "필드 모드 — 두 쪽을 last_page 까지 받는다" "$(fdoc '[t["id"] for t in d["tasks"]]')" "['F1', 'F2', 'F3']"
 check "필드 모드 — 요청 경로" "$(cu_log '[x["path"] for x in r]')" \
-  "['/list/L1/task?subtasks=true&include_closed=false&page=0', '/list/L1/task?subtasks=true&include_closed=false&page=1', '/task/F1']"
+  "['/list/L1/task?subtasks=true&include_closed=false&page=0', '/list/L1/task?subtasks=true&include_closed=false&page=1', '/task/F1', '/task/F9', '/task/F8']"
+check "필드 모드 — 목록 밖 의존 끝점을 한 번 단건으로 읽는다" \
+  "$(fdoc '[(t["id"], t["list_id"]) for t in d["task_fields"]]')" "[('F1', 'L1'), ('F9', 'L1'), ('F8', 'L2')]"
 check "필드 모드 — 담당자·태그·우선순위" "$(fdoc '(d["tasks"][0]["assignees"], d["tasks"][0]["tags"], d["tasks"][0]["priority"])')" "([7], ['gate'], 2)"
 check "필드 모드 — 숫자 아닌 우선순위는 없음" "$(fdoc 'd["tasks"][2]["priority"]')" "None"
 check "필드 모드 — 시각 표지는 키가 있을 때만" "$(fdoc '("due_date_time" in d["tasks"][0], "start_date_time" in d["tasks"][0], "due_date_time" in d["tasks"][1])')" "(True, False, False)"

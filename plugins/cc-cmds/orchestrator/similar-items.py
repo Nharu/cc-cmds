@@ -24,7 +24,10 @@ not run is `status=unavailable` with exit 0, so the caller carries on.
 Field mode (`clickup --list-fields`) is not a similarity lookup. It reads every
 page of one list's open tickets, subtasks included, and each `--task-fields`
 ticket one by one, and writes a field document to the `--log` path: here
-`--log` is the path of that document, not a judgment log. The document's first
+`--log` is the path of that document, not a judgment log. A dependency of a
+`--task-fields` ticket whose other end is in neither read - a closed ticket, or
+one in another list - is read one by one too, once, so the caller can tell such
+an end from an id nobody read. The document's first
 key is `"kind": "fields"`; a read stopped by the 2000-ticket limit, the 60 s
 budget, a failed page or a failed ticket read, or one that could not start,
 carries `"partial": true` and the reason. It runs no judgment step and calls no
@@ -486,16 +489,37 @@ def list_fields(args):
         doc["partial"], doc["reason"] = True, read_failure(e, "page-failed")
         return doc
     for ident in args.task_fields or []:
-        try:
-            t = cu.get("/task/%s" % q(task_id_of(ident)))
-        except cc_tracker.TrackerError as e:
-            doc["partial"], doc["reason"] = True, read_failure(e, "task-failed")
+        if not read_task(cu, task_id_of(ident), doc):
             return doc
-        if t.get("id") is None:
-            doc["partial"], doc["reason"] = True, "task-failed"
+    # The other end of a requested ticket's dependency, when neither read has
+    # it: the list read leaves out closed tickets and other lists, and the plan
+    # refuses an end it cannot see. One pass, not followed further.
+    seen = set(r["id"] for r in doc["tasks"] + doc["task_fields"])
+    linked = []
+    for r in list(doc["task_fields"]):
+        for d in r["dependencies"]:
+            for ident in (d["task_id"], d["depends_on"]):
+                if ident not in seen:
+                    seen.add(ident)
+                    linked.append(ident)
+    for ident in linked:
+        if not read_task(cu, ident, doc):
             return doc
-        doc["task_fields"].append(fields_of(t))
     return doc
+
+
+def read_task(cu, ident, doc):
+    """Append one ticket read by itself; False once the document is partial."""
+    try:
+        t = cu.get("/task/%s" % q(ident))
+    except cc_tracker.TrackerError as e:
+        doc["partial"], doc["reason"] = True, read_failure(e, "task-failed")
+        return False
+    if t.get("id") is None:
+        doc["partial"], doc["reason"] = True, "task-failed"
+        return False
+    doc["task_fields"].append(fields_of(t))
+    return True
 
 
 def run_fields(args):

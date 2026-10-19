@@ -24,7 +24,10 @@ clickup --list-fields` wrote, complete (`"kind": "fields"`, not partial). It
 decides each new ticket's assignees, priority and dates from that list's
 tickets and the row's optional `원 티켓=`, passes them as create arguments,
 derives the relations to existing tickets from the origin's dependencies and
-the tickets' `외부 선행`/`외부 후행`, and writes `DIR/fields-plan.json`.
+the tickets' `외부 선행`/`외부 후행`, and writes `DIR/fields-plan.json`. An
+existing ticket the document shows in another list is left out of the
+relations and named under the ticket's `external_skipped`; an id the document
+does not carry at all is refused.
 
 `plan` writes each `**발행 본문**` byte for byte to `DIR/body-*.md`, reads it
 back, and writes `DIR/plan.jsonl` — one entry per line, in execution order
@@ -1080,17 +1083,24 @@ def origin_edges(fdoc, origin):
     return waits_on, waiters
 
 
-def external_edges(g, fdoc, origin):
-    """{ticket: (preds, succs)} of existing tickets outside the split.
+def external_edges(g, fdoc, origin, target):
+    """{ticket: (preds, succs, skipped)} of existing tickets outside the split.
 
     The origin's waits-on become predecessors of every root ticket (no
     predecessor inside the split), its waiters successors of every leaf ticket
     (no successor inside the split); a ticket's `외부 선행`/`외부 후행` add to
-    those. Every id must be in the snapshot.
+    those. Every id must be in the snapshot. One the snapshot shows in another
+    list is left out, with the reason, because the dependency tool refuses a
+    pair outside the publishing list; a closed one in the same list stays.
     """
     waits_on, waiters = origin_edges(fdoc, origin) if origin else (set(), set())
     has_succ = set(p for t in g.ids for p in g.t[t]["deps"])
     snap = snapshot_of(fdoc)
+
+    def elsewhere(x):
+        lid = snap[x].get("list_id")
+        return lid if isinstance(lid, str) and lid != target else None
+
     edges = {}
     for tid in g.ids:
         preds = set(g.t[tid]["ext_pred"]) | (waits_on if not g.t[tid]["deps"] else set())
@@ -1098,7 +1108,11 @@ def external_edges(g, fdoc, origin):
         for x in sorted(preds | succs):
             if x not in snap:
                 raise Refused("스냅숏에 없는 티켓 id %s (%s)" % (x, tid))
-        edges[tid] = (sorted(preds), sorted(succs))
+        skipped = [{"id": x, "direction": side, "reason": "다른 리스트 %s" % elsewhere(x)}
+                   for side, ids in (("선행", preds), ("후행", succs))
+                   for x in sorted(ids) if elsewhere(x)]
+        edges[tid] = (sorted(x for x in preds if not elsewhere(x)),
+                      sorted(x for x in succs if not elsewhere(x)), skipped)
     return edges
 
 
@@ -1156,7 +1170,7 @@ def decide_fields(g, fdoc, origin, run_nodes, edges):
     plan = {}
     keys = ["베이스"] + list(g.ids)
     for key in keys:
-        preds, succs = edges.get(key, ([], []))
+        preds, succs, skipped = edges.get(key, ([], [], []))
         values = {"assignees": assignees, "priority": priority}
         refs = {}
         values["start_date"], sref, sflag = date(preds, "due_date", max, "start_date")
@@ -1180,7 +1194,7 @@ def decide_fields(g, fdoc, origin, run_nodes, edges):
                 flags[n + "_time"] = bool(ref[flag])
         fmt = "복사" if copied and all(copied) else "미상(생략)"
         plan[key] = {"fields": decided, "empty": empty, "date_flags": flags, "date_format": fmt,
-                     "external_pred": preds, "external_succ": succs}
+                     "external_pred": preds, "external_succ": succs, "external_skipped": skipped}
     return plan
 
 
@@ -1504,7 +1518,7 @@ def cmd_plan(args):
             run_nodes = set(s[2] for s in reg.tickets.values() if s[2] != "-")
             if reg.base is not None and reg.base[2] != "-":
                 run_nodes.add(reg.base[2])
-            fplan = decide_fields(g, fdoc, origin, run_nodes, external_edges(g, fdoc, origin))
+            fplan = decide_fields(g, fdoc, origin, run_nodes, external_edges(g, fdoc, origin, target))
         elif any(g.t[t]["ext_pred"] or g.t[t]["ext_succ"] for t in g.ids):
             raise Refused("외부 선행·외부 후행 은 트래커=clickup 발행에서만 건다")
     except Refused as e:
