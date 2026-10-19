@@ -36013,6 +36013,12 @@ PR|gh --repo=o/r run rerun 5
 머지|gh api /graphql -F query=@q.graphql
 머지|gh api https://api.github.com/graphql -f 'query=mutation{rerequestCheckSuite(input:{checkSuiteId:"X",repositoryId:"Y"}){checkSuite{id}}}'
 머지|gh api https://ghe.example/api/graphql --input q.json
+머지|gh api HTTPS://api.github.com/graphql -f 'query=mutation{rerequestCheckSuite(input:{checkSuiteId:"X",repositoryId:"Y"}){checkSuite{id}}}'
+머지|gh api -X POST repos/t/x/Actions/Runs/5/Rerun
+머지|gh api -X POST repos/t/x/actions//runs/5/rerun
+머지|gh api -X POST repos/t/x/actions/./runs/5/rerun
+머지|gh api -X POST repos/t/x/actions/runs/5/%72erun
+머지|gh api -X POST 'repos/{owner}/{repo}/{branch}'
 PR|env CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0 gh run rerun 5
 PR|command gh run rerun 5
 머지|env gh api -X POST repos/t/x/actions/runs/5/rerun-failed-jobs
@@ -36053,6 +36059,22 @@ for cc60c_rows in 'gh run rerun' 'gh api -X POST' 'gh api' 'OFF'; do
       -f 'query=mutation{rerequestCheckSuite(input:{checkSuiteId:"X",repositoryId:"Y"}){checkSuite{id}}}'
   done
 done
+# 넓은 `gh api` 행 아래에서 대소문자·`%xx`·빈 조각·`.` 조각·`{branch}` 자리표시자 철자도 닫힌다.
+for cc60c_rows in 'gh api -X POST' 'gh api'; do
+  cc60c_m "$cc60c_rows"
+  while IFS='|' read -r cc60c_lb cc60c_argv; do
+    [ -n "$cc60c_argv" ] || continue
+    eval "set -- $cc60c_argv"
+    cc60c_cell "행 $cc60c_rows $cc60c_lb" front3 협업 머지 -- "$@"
+  done <<'CC60CNORM'
+대문자 스킴 graphql|gh api HTTPS://api.github.com/graphql -f 'query=mutation{rerequestCheckSuite(input:{checkSuiteId:"X",repositoryId:"Y"}){checkSuite{id}}}'
+대소문자 REST|gh api -X POST repos/t/x/Actions/Runs/5/Rerun
+빈 조각|gh api -X POST repos/t/x/actions//runs/5/rerun
+점 조각|gh api -X POST repos/t/x/actions/./runs/5/rerun
+퍼센트|gh api -X POST repos/t/x/actions/runs/5/%72erun
+branch 자리표시자|gh api -X POST 'repos/{owner}/{repo}/{branch}'
+CC60CNORM
+done
 check "60c: 무인 모드에서 재실행 철자는 도달·행과 무관하게 rc 3 이다" "$cc60c_fail3" ""
 check "60c: 사람이 있는 모드에서 재실행 철자는 행이 있어도 승인 rc 5 다" "$cc60c_fail5" ""
 check "60c: 재실행 철자는 가짜 gh 를 부르지 않는다" "$cc60c_called" ""
@@ -36075,6 +36097,7 @@ done <<'CC60CRD'
 읽기|gh api repos/t/x/actions/runs/5
 외부상태변경|gh api graphql -f 'query={viewer{login}}'
 읽기|timeout 30 gh api repos/t/x/actions/runs/5
+읽기|gh api repos/t/x/contents/a%20b.txt
 CC60CRD
 check "60c: 읽기 철자는 막히지 않는다" "$cc60c_rd" ""
 # 재실행이 아닌 POST 는 일치 행이 있으면 배포트리거 신고에서도 열린다 — 갈래가 다른 POST 로

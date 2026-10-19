@@ -43,6 +43,30 @@ if [ "$probe" != "1" ]; then
   # 받는 `gh api graphql` 이다. 취소 철자는 여기서 보지 않는다.
   rerun_hit=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk '
     function base(s,   n, p) { n = split(s, p, "/"); return p[n] }
+    function hexv(h,   d) {
+      d = "0123456789abcdef"; h = tolower(h)
+      return (index(d, substr(h, 1, 1)) - 1) * 16 + index(d, substr(h, 2, 1)) - 1
+    }
+    function pdec(s,   o, i, h) {
+      o = ""
+      while ((i = index(s, "%")) > 0) {
+        h = substr(s, i + 1, 2)
+        if (h ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) { o = o substr(s, 1, i - 1) sprintf("%c", hexv(h)); s = substr(s, i + 3) }
+        else { o = o substr(s, 1, i); s = substr(s, i + 1) }
+      }
+      return o s
+    }
+    function pnorm(s,   n, p, q, d, i, o) {
+      n = split(s, p, "/"); d = 0
+      for (i = 1; i <= n; i++) {
+        if (p[i] == "" || p[i] == ".") continue
+        if (p[i] == "..") { if (d > 0) d--; continue }
+        q[++d] = p[i]
+      }
+      o = ""
+      for (i = 1; i <= d; i++) o = o (i > 1 ? "/" : "") q[i]
+      return o
+    }
     {
       n = NF; i = 1
       while (i <= n) {
@@ -109,15 +133,24 @@ if [ "$probe" != "1" ]; then
       }
       if (m >= 2 && r[1] == "run" && r[2] == "rerun") { print "run rerun"; exit }
       gql = 0; outside = 0
-      # gh 가 요청 줄에서 떼는 query 와 fragment, 절대 URL 의 스킴과 호스트, 선두 `/` 와 끝 `/` 하나를 떼고 본다 — 모두 같은 엔드포인트에 닿는 철자다.
+      # gh 가 요청 줄에서 떼는 query 와 fragment 를 떼고, `%xx` 를 풀고, 소문자로 접고,
+      # 절대 URL 의 스킴과 호스트를 떼고, 빈 조각·`.` 조각을 지우고 `..` 를 앞 조각과
+      # 상쇄해 본다 — 모두 같은 엔드포인트에 닿는 철자다. `repos/` 경로에 gh 가 채우는
+      # `{owner}`·`{repo}` 밖의 자리표시자(`{branch}`)가 남으면 채워진 값이 재실행 경로가
+      # 될 수 있으므로 닫는다.
       for (k = 1; k <= m; k++) {
         w = r[k]; sub(/[?#].*$/, "", w)
+        w = tolower(pdec(w))
         if (w ~ /^https?:\/\//) { sub(/^https?:\/\/[^\/]*/, "", w) }
-        sub(/^\/+/, "", w); sub(/\/$/, "", w)
+        w = pnorm(w)
         if (w ~ /(^|\/)actions\/runs\/[^\/]+\/rerun(-failed-jobs)?$/ ||
             w ~ /(^|\/)actions\/jobs\/[^\/]+\/rerun$/ ||
             w ~ /(^|\/)check-(suites|runs)\/[^\/]+\/rerequest$/) { print "rest " w; exit }
-        if (w == "graphql" || w == "api/graphql") gql = 1
+        if (w ~ /^repos\//) {
+          p = w; gsub(/\{owner\}|\{repo\}/, "", p)
+          if (index(p, "{")) { print "rest " w; exit }
+        }
+        if (w ~ /(^|\/)graphql$/) gql = 1
         if (index(r[k], "query=@") || r[k] == "--input" || r[k] ~ /^--input=/) outside = 1
       }
       if (gql && (index(tolower($0), "rerequestchecksuite") || outside)) print "graphql"
