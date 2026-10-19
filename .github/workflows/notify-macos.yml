@@ -9,6 +9,7 @@ on:
       - 'plugins/cc-cmds/hooks/active-notify-*.sh'
       - 'plugins/cc-cmds/hooks/session-return-dismiss.sh'
       - 'plugins/cc-cmds/hooks/hooks.json'
+      - 'plugins/cc-cmds/hooks/target-hook-probe.sh'
       - 'scripts/test-active-notify-*.sh'
       - 'scripts/lint-bash-portability.sh'
       - 'scripts/test-lint-bash-portability.sh'
@@ -36,6 +37,7 @@ on:
       - 'scripts/test-gate.sh'
       - 'scripts/test-liveness-agreement.sh'
       - 'scripts/run-fixture.sh'
+      - 'scripts/target-guard-fixtures.sh'
       # Every suite on this leg runs under the per-suite wrapper, the make step
       # is armed by the sourced step guard, and the wrapper's own suite checks
       # both on the host they were written for. The step guard is sourced from
@@ -54,6 +56,13 @@ on:
     branches:
       - master
     paths: *notify_macos_paths
+
+# Naming one permission sets every unnamed one to `none`, so both are written:
+# `contents` for the checkout and `actions` for the duration signal to read the
+# master runs' baseline artifacts.
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   lint-and-test-macos:
@@ -101,6 +110,11 @@ jobs:
       - name: yq sanity check
         run: yq --version
 
+      # The duration signal measures the test step alone; the brew install
+      # above is not what a pull request changes.
+      - name: Record the test start
+        run: echo "CC_TEST_T0=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Run darwin-only tests
         # Only the suites whose assertions check something on this host that
         # they do not check on ubuntu. The list, and the reason for each entry,
@@ -110,3 +124,18 @@ jobs:
         run: |
           . scripts/ci-step-guard.sh
           make -j"$(sysctl -n hw.ncpu)" test-darwin-narrow
+
+      # Not a make line: the scope lint reads this workflow's single
+      # `run: make <target>` as the leg's whole scope. The token is this
+      # step's alone, so the suites above run without one.
+      - name: Duration signal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-duration.sh check --key notify-macos --seconds "$(( $(date +%s) - CC_TEST_T0 ))" --window-out "$RUNNER_TEMP/ci-duration-notify-macos"
+
+      - name: Upload the duration window
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-duration-notify-macos
+          path: ${{ runner.temp }}/ci-duration-notify-macos/

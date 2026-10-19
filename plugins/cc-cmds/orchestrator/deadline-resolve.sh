@@ -4,9 +4,9 @@
 #
 # The kickoff resolves a deadline answer such as `+8h` or `다음 날 09:00` once,
 # against the moment it resolves it, into an absolute wall-clock time with a
-# `±HH:MM` offset. A successor run's deadline is that resolved length again,
-# added to the moment the successor was claimed. Both sides must use one
-# arithmetic, so it lives here and both source it.
+# `±HH:MM` offset, and freezes the resolved length beside it. Every later
+# reader of that deadline or that length must use the same arithmetic, so it
+# lives here and each of them sources it.
 #
 # SOURCE ONLY. Sourcing defines functions and one constant and does nothing
 # else: no file is read, no environment variable other than TZ is consulted,

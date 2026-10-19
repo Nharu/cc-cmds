@@ -83,7 +83,10 @@ for fixture in "$fixtures"/*/; do
   # The intact tree is the only fixture that reaches every check, so it is the
   # only one whose count is meaningful.
   if [[ "$fixture_name" == "T-TIER-OK-1" ]]; then
-    if printf '%s\n' "$out" | grep -qF -- "$OK1_EXPECTED_CHECKS check(s) intact"; then
+    if grep -qF -- "$OK1_EXPECTED_CHECKS check(s) intact" <<EOF
+$out
+EOF
+    then
       passed=$((passed + 1))
       echo "PASS: $fixture_name banner (checks=$OK1_EXPECTED_CHECKS)"
     else

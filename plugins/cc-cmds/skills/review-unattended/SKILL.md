@@ -222,6 +222,18 @@ Collect exactly what the base skill collects — repository slug, PR metadata, p
 
 **A supplied `--base-sha` is verified before it is used, and its failure is a fallback rather than a halt.** Run `git merge-base --is-ancestor <supplied base> <target head>`, where `<target head>` is this review's target named explicitly — the branch, or the PR's head — and never the bare `HEAD` of whatever directory the command happens to run in. On success, take the diff against that value — `git diff <supplied base>...<target head>`, `git log <supplied base>..<target head> --oneline` — **in place of the base derivation only**; a PR target still collects its metadata and comments the way it already does, and what is replaced is which two commits the diff spans. Binding to the ambient `HEAD` would make the guard depend on the caller's working directory, which is the same class of failure the flag exists to close: an interactive caller sitting in another checkout would verify a base against a tree the review is not about. that substitution is the whole reason the flag exists, since the driver resolved this base when it created the segment and re-deriving it here only re-answers a settled question. **On failure, fall back to the derivation this step already describes and record one line in the report overview naming the rejected value and the base actually used.** The failure mode being bought off is silent: a base that is not an ancestor of `<target head>` yields a diff of a tree nobody wrote, so the reviewers produce real findings about the wrong change and the report reads exactly as it would have. Halting instead would be the wrong trade for the same reason the unknown-flag bullet gives — the segment's review is the run's only `P0 + P1` signal, and a base the driver got wrong is recoverable by deriving one, while a parked segment is not recoverable by anything this arm can do.
 
+**A target with no commits over its base is not reviewed — it halts in a shape the seat can answer (`등급 2`).** Once both ends of the diff are fixed — the supplied `--base-sha` verified, or the derivation it fell back to — count the commits between them: `git rev-list --count <base>..<target head>`, the target head named explicitly as above. A count of 0 means the implementation that preceded this review left nothing to read, and a review of it would report `P0 + P1 == 0` about a change nobody made. Do not review: write the halt record with `**스텝**: Step 1b 빈 대상` and `**분류**: gate-unanswerable`; a `**질문 문면**` that names the target and the base and says the target has no commits over the base; a `**관측 상세**` carrying the target, the base, the command as it ran and its value; and exactly these options, verbatim:
+
+```
+**선택지**:
+- `구현 재파견` — 같은 계획으로 이 세그먼트의 구현 스테이지를 다시 보내 커밋을 만든 뒤 리뷰를 다시 받습니다
+- `세그먼트 park` — 이 세그먼트를 이 런에서 내려놓고 아침 보고서에 남깁니다
+**추천**: `구현 재파견` — 리뷰할 커밋이 없으므로 구현을 다시 보내야 리뷰할 대상이 생깁니다
+**추천 근거**: 기기 사실:git rev-list --count <base>..<target head> → 0
+```
+
+The recommendation follows the writer rules of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 (the bullet on `**추천**`): the count is a fact of this machine, the run can carry out a re-dispatch, and neither description carries a word the gate reads as accepting risk. `gate-unanswerable` and not `precondition-failed` is what lets the seat answer it without a person, and the routing shift answers `구현 재파견` with an implementation dispatch rather than by re-attaching this session, which cannot make a commit. A target that does not resolve at all is still the `precondition-failed` halt of 1a — an empty target is a resolved one.
+
 #### 1b′: Delta eligibility — every failure degrades to a full review, none halts
 
 A delta review reads only the files changed since this segment's last full cycle for new findings and re-adjudicates that cycle's P0/P1. It is attempted only when the driver supplied all three basis flags, and it holds only when every check below passes. **Every failure is a degradation to a full review, never a halt** — the same reasoning as the `--base-sha` fallback: the segment's review is the run's only `P0 + P1` signal, a wrong basis is recovered by reading everything, and a parked segment is not recoverable by anything this arm can do.
@@ -316,6 +328,7 @@ The slice scope changes what is **counted**, never what is **read**: the whole c
 | Draft PR | proceed; mark draft status in the report header |
 | Closed / merged PR | **halt** (`precondition-failed`) — in a pipeline run the PR was created moments ago, so this state means something else moved it |
 | Multiple PRs on one branch | **halt**, listing them |
+| Empty target (0 commits from base to target head) | **halt** (`gate-unanswerable`, `Step 1b 빈 대상`) — the fixed shape of 1b, recommending `구현 재파견` |
 | Fork PR | `gh pr view` handles it normally |
 | No GitHub remote | switch to local diff mode |
 | gh missing or unauthenticated | **halt** (`precondition-failed`) |

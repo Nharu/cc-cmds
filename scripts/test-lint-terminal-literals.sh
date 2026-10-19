@@ -149,7 +149,9 @@ run_case() {
   ec=$?
   [[ "$ec" == "$want" ]] || ok=0
   for needle in "$@"; do
-    printf '%s\n' "$out" | grep -qF -- "$needle" || { ok=0; echo "  missing in output: $needle" >&2; }
+    grep -qF -- "$needle" <<EOF || { ok=0; echo "  missing in output: $needle" >&2; }
+$out
+EOF
   done
   if [[ "$ok" == "1" ]]; then
     passed=$((passed + 1))
@@ -257,14 +259,21 @@ run_case "FAIL-2-run-sh-absent" 2 "$WORK/src-absent" "run.sh"
 lint_recipe=$(MAKEFLAGS= MAKELEVEL= make -n -C "$repo_root" --no-print-directory lint 2>/dev/null)
 lint_tests=$(awk '/^LINT_TESTS :=/ { f = 1 } f { print; if ($0 !~ /\\$/) exit }' "$repo_root/Makefile" \
   | sed -e 's/^LINT_TESTS :=//' -e 's/\\$//')
-if printf '%s\n' "$lint_recipe" | grep -qxF 'bash scripts/lint-terminal-literals.sh'; then
+if grep -qxF 'bash scripts/lint-terminal-literals.sh' <<EOF
+$lint_recipe
+EOF
+then
   passed=$((passed + 1))
   echo "PASS: registered-in-make-lint"
 else
   failures=$((failures + 1))
   echo "FAIL: registered-in-make-lint — make lint 레시피에 bash scripts/lint-terminal-literals.sh 가 없다" >&2
 fi
-if printf '%s\n' "$lint_tests" | tr ' \t' '\n\n' | grep -qxF 'scripts/test-lint-terminal-literals.sh'; then
+lint_test_words=$(printf '%s\n' "$lint_tests" | tr ' \t' '\n\n')
+if grep -qxF 'scripts/test-lint-terminal-literals.sh' <<EOF
+$lint_test_words
+EOF
+then
   passed=$((passed + 1))
   echo "PASS: registered-in-LINT_TESTS"
 else

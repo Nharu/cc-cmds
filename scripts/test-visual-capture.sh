@@ -109,7 +109,7 @@ prof=$(sed -nE 's/^arg=--user-data-dir=(.*)$/\1/p' "$LOG")
 cap hang ref "$T/site/screen.html" --out "$T/out" --timeout 1
 [ "$RC" = 1 ] && grep -q '^비교 안 함 — Chrome 이 1초 안에 끝나지 않아 멈췄다' "$T/cap.out" \
   && pass "제한 시간을 넘으면 비교 안 함" || fail "timeout = ${RC} $(cat "$T/cap.out")"
-hp=$(sed -nE 's/^pid=([0-9]+)$/\1/p' "$LOG" | head -n 1)
+hp=$(sed -nE 's/^pid=([0-9]+)$/\1/p' "$LOG" | sed -n '1p')
 if [ -n "$hp" ] && kill -0 "$hp" 2>/dev/null; then
   fail "제한 시간을 넘은 브라우저가 살아 있다 (pid ${hp})"
   kill -KILL "$hp" 2>/dev/null || true

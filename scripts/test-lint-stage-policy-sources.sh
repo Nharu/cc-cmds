@@ -360,7 +360,11 @@ store_modes_ok() {
 }
 
 no_store() { [[ ! -e "$ACK_STORE" ]]; }
-out_has() { printf '%s\n' "$ACK_OUT" | grep -Fxq -- "$1"; }
+out_has() {
+  grep -Fxq -- "$1" <<EOF
+$ACK_OUT
+EOF
+}
 
 # an excluded row is compared by its anchor alone
 ack_case
@@ -457,7 +461,11 @@ ack_expect local-skill-changed 1 'mismatch 1' 'changed user-scope epsilon'
 rm -rf "$ACK_DIR"
 
 acks_sum() { shasum -a 256 "$ACK_STORE/acks.tsv" | cut -d' ' -f1; }
-no_non_unique() { ! printf '%s\n' "$ACK_OUT" | grep -q '^non-unique '; }
+no_non_unique() {
+  ! grep -q '^non-unique ' <<EOF
+$ACK_OUT
+EOF
+}
 
 # --ack-added counts every candidate item, not only the added ones: a prefix
 # that also matches an item a host-local row already resolves is refused, so
@@ -562,7 +570,13 @@ printf 'plugin\tskills/rule.md:- ending:\t%s\tpolicy:Artifacts\t\n' \
   0000000000000000000000000000000000000000000000000000000000000000 >> "$ACK_DIR/stage-policy.sources.tsv"
 ack_run --plugin-root "$ACK_DIR/plugin" --ack
 ack_expect plugin-not-ackable 1 'mismatch 1' 'changed plugin skills/rule.md:- ending:'
-no_plugin_row() { ! awk -F'\t' 'NR > 1 && $1 == "plugin"' "$ACK_STORE/acks.tsv" | grep -q .; }
+no_plugin_row() {
+  local rows
+  rows=$(awk -F'\t' 'NR > 1 && $1 == "plugin"' "$ACK_STORE/acks.tsv") || true
+  ! grep -q . <<EOF
+$rows
+EOF
+}
 ack_assert plugin-not-ackable-no-row no_plugin_row
 rm -rf "$ACK_DIR"
 
@@ -620,7 +634,13 @@ ws_run() {
   set -e
 }
 
-ws_ok() { [[ "$WS_EC" == "$1" ]] && { [[ -z "$2" ]] || printf '%s\n' "$WS_ERR" | grep -Fq -- "$2"; }; }
+ws_ok() {
+  [[ "$WS_EC" == "$1" ]] || return 1
+  [[ -z "$2" ]] && return 0
+  grep -Fq -- "$2" <<EOF
+$WS_ERR
+EOF
+}
 ws_silent() { [[ "$WS_EC" == 1 && -z "$WS_ERR" ]]; }
 
 ws_case

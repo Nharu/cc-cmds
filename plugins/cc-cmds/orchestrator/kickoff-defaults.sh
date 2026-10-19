@@ -52,7 +52,7 @@
 #   kickoff-defaults.sh --check-deadline <ISO8601> [--now <epoch>]
 #   kickoff-defaults.sh --resolve-deadline <5e answer> [--now <epoch>]
 #   kickoff-defaults.sh --carry <previous manifest> --kickoff-at <ISO8601>
-#                       --expect-sha256 <hex> [--now <epoch>]
+#                       --expect-sha256 <hex> [--now <epoch>] [--auto]
 #   kickoff-defaults.sh --apply-probe-sha <manifest draft>
 #
 # Output (main mode) is TAB-separated, the first line `cc-kickoff-defaults v1`:
@@ -85,9 +85,14 @@
 #   차이          <범위>  <키>  <이전 값>  <파일 값>  <출처>
 #   빈칸          <범위>  <키>  <파일 값>  <출처>  <확대 0|1>  <효과 한 줄>
 #   권한          <범위>  <키>  <이어받는 값 축자>  <확대 0|1>  <효과 한 줄>
-#   마감          ok  <새 절대 마감>  <간격 초>
+#   마감          ok  <새 절대 마감>  <간격 초>  [출처=길이]
 #   마감          <사유 토큰>  <사유 문면>
 #   이어받지 않음  <범위>  <키>  <사유 토큰>  <사유 문면>
+#
+# `--auto` goes only with `--carry` and is the seat's link: where the previous
+# interval cannot be carried, the deadline falls back to `--kickoff-at` plus the
+# `길이` of the previous manifest's `재킥오프` row, and the `ok` line carries
+# `출처=길이`. Without that row, or without `--auto`, the failure line stands.
 #
 # Every key of the key table yields, per scope it lives in, an `적용` row, a
 # `빈칸` row or an `이어받지 않음` row. The previous manifest is copied once to a
@@ -163,7 +168,7 @@ KD_AA_GIVEN=0; KD_AA=''
 KD_NOW=''
 KD_CHECK_GIVEN=0; KD_CHECK=''
 KD_RESOLVE_GIVEN=0; KD_RESOLVE=''
-KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''
+KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''; KD_AUTO=0
 KD_APS_GIVEN=0; KD_APS=''
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -208,6 +213,8 @@ while [ $# -gt 0 ]; do
     --apply-probe-sha)
       [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--apply-probe-sha 에 값이 없습니다"
       KD_APS_GIVEN=1; KD_APS="$2"; shift 2 ;;
+    --auto)
+      KD_AUTO=1; shift ;;
     *) kd_usage "모르는 인자: '$1'" ;;
   esac
 done
@@ -222,6 +229,9 @@ if [ "$KD_CHECK_GIVEN" = "1" ] && [ "$KD_RESOLVE_GIVEN" = "1" ]; then
 fi
 if [ "$KD_CARRY_GIVEN" = "1" ] && [ "$KD_RESOLVE_GIVEN" = "1" ]; then
   kd_usage "--carry 와 --resolve-deadline 은 함께 쓰지 않습니다"
+fi
+if [ "$KD_AUTO" = "1" ] && [ "$KD_CARRY_GIVEN" = "0" ]; then
+  kd_usage "--auto 는 --carry 와 함께만 씁니다"
 fi
 if [ "$KD_CARRY_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
@@ -251,8 +261,8 @@ if [ -z "$KD_NOW" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Time — the resolver is sourced, never copied, so a successor run's deadline
-# is computed with the arithmetic the kickoff used.
+# Time — the resolver is sourced, never copied, so a carried deadline is
+# computed with the arithmetic the kickoff used.
 # ---------------------------------------------------------------------------
 [ -r "$KD_DIR/deadline-resolve.sh" ] || kd_refuse "deadline-resolve.sh 를 읽을 수 없습니다: $KD_DIR/deadline-resolve.sh"
 # shellcheck disable=SC1091
@@ -344,7 +354,7 @@ kd_wide_instant() {
   deadline_instant "$s"
 }
 if [ "$KD_CARRY_GIVEN" = "1" ]; then
-  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere; do
+  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows; do
     command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
   done
   KD_KAT_E=$(kd_wide_instant "$KD_KAT")
@@ -1384,6 +1394,27 @@ EOF
       fi
     fi
   fi
+  # `--auto` (the seat's link): an interval that cannot be carried falls back
+  # to this kickoff plus the `길이` of the previous run's `재킥오프` row, written
+  # with the host offset like the carried one, and marked `출처=길이`. A source
+  # without that row, or a fallback that is not after now, keeps the failure.
+  case "$kd_dl" in
+    ok"	"*) ;;
+    *)
+      if [ "$KD_AUTO" = "1" ]; then
+        kd_rk=$(manifest_rekick_rows | head -n 1)
+        kd_len=''; [ -z "$kd_rk" ] || kd_len=$(manifest_row_fields "$kd_rk" '길이' | head -n 1)
+        if [ -n "$kd_len" ]; then
+          kd_kh=$(jq -nr --argjson e "$KD_KAT_E" --argjson now "$KD_NOW" "$DR_JQ_TIME"' render($e)' 2>/dev/null) || kd_kh=''
+          kd_fb=''; [ -z "$kd_kh" ] || kd_fb=$(dr_add_duration "$kd_kh" "$kd_len" "${kd_kh: -6}") || kd_fb=''
+          kd_fbe=''; [ -z "$kd_fb" ] || kd_fbe=$(deadline_instant "$kd_fb")
+          case "$kd_fbe" in
+            ''|*[!0-9]*) ;;
+            *) [ "$kd_fbe" -le "$KD_NOW" ] || kd_dl="ok	${kd_fb}	$((kd_fbe - KD_KAT_E))	출처=길이" ;;
+          esac
+        fi
+      fi ;;
+  esac
   printf '마감\t%s\n' "$(printf '%s' "$kd_dl" | LC_ALL=C tr '\001-\010\012-\037\177' ' ')"
   exit 0
 fi

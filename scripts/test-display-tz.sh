@@ -24,7 +24,12 @@ passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
-like() { if printf '%s' "$2" | grep -qE -- "$3"; then ok "$1"; else bad "$1" "'$2' 이 /$3/ 에 맞지 않음"; fi; }
+like() {
+  if grep -qE -- "$3" <<EOF
+$2
+EOF
+  then ok "$1"; else bad "$1" "'$2' 이 /$3/ 에 맞지 않음"; fi
+}
 
 # dtz <value|-> <shell body> — run the body after sourcing the helper and
 # loading, with the variable set to <value>, or unset for `-`.

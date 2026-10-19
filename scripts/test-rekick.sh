@@ -283,10 +283,11 @@ detect_case() {
 # ---------------------------------------------------------------------------
 # 10. 거절 — 런 안에서는 어느 모드도 읽지 않는다
 # ---------------------------------------------------------------------------
-for var in CC_PIPELINE_RUN_ID CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID; do
-  for mode in 'detect --arg x' 'verify --prev X --base /x' 'graph --prev X --base /x' \
-              'render-manifest --prev X --base /x' 'render-interview --prev X --base /x' \
-              'verify-subset a b'; do
+for var in CC_PIPELINE_RUN_ID CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY; do
+  for mode in 'detect --arg x' 'judge --prev X --base /x' 'verify --prev X --base /x' 'graph --prev X --base /x' \
+              'render-manifest --prev X --base /x' 'render-manifest --auto --prev X --base /x' \
+              'render-interview --prev X --base /x' \
+              'verify-subset a b' 'verify-subset --auto a b'; do
     # shellcheck disable=SC2086
     out=$(cd "$WORK" && env "$var=x" "$BASH" "$RK" $mode 2>"$WORK/rk.err"); rc=$?
     check "10: $var 가 있으면 ${mode%% *} 는 3 으로 거부한다" "$rc" "3"
@@ -319,7 +320,7 @@ for a in '' '다시' '다시 해줘' 'Resume.' "$INTENT"; do
   out=$(rk_as s-RKA detect --arg "$a")
   check "1: 인자 '$a' 는 재킥오프다" "$(col "$out" 판정)" "재킥오프"
 done
-check "1: 출력 머리는 cc-rekick v1 이다" "$(printf '%s\n' "$out" | head -n 1)" "cc-rekick v1"
+check "1: 출력 머리는 cc-rekick v1 이다" "$(printf '%s\n' "$out" | sed -n '1p')" "cc-rekick v1"
 check "1: 재킥오프 판정 행이 원천 id 를 싣는다" "$(col "$out" 판정 3)" "RKA"
 out=$(rk_as s-RKA detect --arg '전혀 다른 일을 한다')
 check "1: 다른 문장은 새 런이다" "$(col "$out" 판정)" "새 런"
@@ -1304,6 +1305,378 @@ out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN8 --kickoff-at
         --expect-sha256 "$OLDBASESHA" --expect-grant-sha256 "$PGSHA" 2>/dev/null); rc=$?
 check "7: 검증한 해시와 다른 원천에서 render-manifest 는 1 이고 출력이 없다" "$rc/$out" "1/"
 [ "$rc" = "1" ] || tail -2 "$WORK/rk.err" >&2
+
+# ---------------------------------------------------------------------------
+# 12. 좌석 — judge 의 금지선과 기다림, --auto 렌더·검증, 연쇄 계수
+# ---------------------------------------------------------------------------
+# A source the seat may carry on: the consent row, a progress row, an end row
+# whose token is in E, `done`. Every case below starts from it and breaks one
+# thing, so each prohibition line is shown firing on its own.
+SEAT_ROW='- `재킥오프` | 연쇄 상한=3 | 길이=PT48H0M0S | 사유=픽스처'
+HEXA=$(printf 'a' | shasum -a 256 | cut -d' ' -f1)
+# seat_end <token> [종료 부류] — progress (unless SEAT_NOPROG), the end row, done.
+seat_end() {
+  [ -n "${SEAT_NOPROG:-}" ] || fx_row 'cycle' "id=1" "상태=완료"
+  if [ -n "${2:-}" ]; then
+    fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=픽스처" "재킥 원인=$1" "종료 부류=$2" "근거=픽스처"
+  else
+    fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=픽스처" "재킥 원인=$1" "근거=픽스처"
+  fi
+  fx_done
+}
+# mk_seat <id> <token> [종료 부류] — P_EXTRA replaces the consent row when set
+# (empty: no row).
+mk_seat() {
+  P_EXTRA="${P_EXTRA-$SEAT_ROW}" mk_prev "$1"
+  seat_end "$2" "${3:-}"
+}
+# prov7 <src> <k> <root> <cause> — a seven-field provenance row (hashes are fixture values).
+prov7() { printf -- '- `사전 인가` | 이어받은 런=%s | 매니페스트 sha256=%s | 인가 기록 sha256=%s | 좌석 연쇄=%s | 뿌리 런=%s | 원인=%s' "$1" "$HEXA" "$HEXA" "$2" "$3" "$4"; }
+jdg() { local id="$1"; shift; rk_as "s-$id" judge --prev "$id" --base "$BASE" "$@"; }
+fired() { printf '%s\n' "$1" | awk -F'\t' '$1 == "금지선" { printf "%s ", $2 }'; }
+fact() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == "사실" && $2 == k { print $3; exit }'; }
+
+n=0
+for tok in 마감 천장 무진전; do
+  n=$((n + 1))
+  mk_seat "RKJ-E$n" "$tok"
+  before=$(src_sum "RKJ-E$n")
+  out=$(jdg "RKJ-E$n"); rc=$?
+  check "12: E 의 $tok 로 끝난 원천은 허용이다" "$rc/$(printf '%s\n' "$out" | head -n 1)/$(col "$out" 판정)/$(fired "$out")" "0/cc-rekick v1/허용/"
+  [ "$(col "$out" 판정)" = "허용" ] || { printf '%s\n' "$out"; tail -2 "$WORK/rk.err"; } >&2
+  check "12: judge 는 원천 파일·런 디렉터리·색인을 바꾸지 않는다 ($tok)" "$(src_sum "RKJ-E$n")" "$before"
+done
+check "12: 허용의 사실 줄 — 종료 토큰·연쇄·진전·종료 절" \
+  "$(fact "$out" '종료 토큰')/$(fact "$out" 연쇄)/$(fact "$out" 진전)/$(fact "$out" '종료 절')" "무진전/1/3/1/0/1"
+check "12: 사람 경로의 원천(출처 행 없음)은 링크 1 부터 센다 — 허용에 대기 줄이 없다" "$(cnt "$out" 대기)" "0"
+
+# Each prohibition line, in the table's order.
+mk_seat RKJ-L14 마감
+out=$(rk_as s-OTHER judge --prev RKJ-L14 --base "$BASE")
+check "12: L14 — 계보에 없는 세션은 금지" "$(col "$out" 판정)/$(fired "$out")" "금지/L14 "
+
+mk_prev RKJ-L1; fx_row 'cycle' "id=1" "상태=완료"
+out=$(jdg RKJ-L1)
+has "12: L1 — 끝나지 않은 원천은 금지" "$(col "$out" 판정)/$(fired "$out")" "금지/L1 "
+
+mk_seat RKJ-L2 마감; fx_row '종료 절' "id=C1" "상태=충족" "근거=픽스처"
+out=$(jdg RKJ-L2)
+has "12: L2 — 종료 절을 모두 채운 원천은 금지" "$(fired "$out")" "L2 "
+P_EXTRA="$SEAT_ROW" mk_prev RKJ-L2B; fx_row 'cycle' "id=1" "상태=완료"
+fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=픽스처" "재킥 원인=해당없음" "종료 부류=완료" "근거=픽스처"; fx_done
+out=$(jdg RKJ-L2B)
+check "12: L2 — 해당없음 + 종료 부류=완료 는 L2 하나로만 금지 (L11 은 겹치지 않는다)" "$(fired "$out")" "L2 "
+
+n=0
+for k in 포기 이어받음; do
+  n=$((n + 1))
+  mk_seat "RKJ-L3$n" 해당없음 "$k"
+  out=$(jdg "RKJ-L3$n")
+  has "12: L3 — 종료 부류 $k 는 금지" "$(fired "$out")" "L3 "
+done
+
+mk_seat RKJ-L5 마감; fx_approval AP-9 대기
+out=$(jdg RKJ-L5)
+check "12: L5 — 열린 승인이 있으면 금지" "$(col "$out" 판정)/$(fired "$out")/$(fact "$out" '열린 승인')" "금지/L5 /1"
+
+P_EXTRA="$SEAT_ROW
+$(prov7 RKJROOT0 3 RKJROOT 마감)" mk_seat RKJ-L6 마감
+out=$(jdg RKJ-L6)
+check "12: L6 — 좌석 연쇄 3 인 원천의 후속(k=4)은 상한 3 을 넘어 금지" "$(fact "$out" 연쇄)" "4/3"
+has "12: L6 줄이 발화한다" "$(fired "$out")" "L6 "
+P_EXTRA="$SEAT_ROW
+$(prov7 RKJROOT0 0 RKJROOT 마감)" mk_seat RKJ-L6X 마감
+out=$(jdg RKJ-L6X)
+has "12: L6 — 출처 행이 어긋나 k 를 낼 수 없어도 금지" "$(fired "$out")" "L6 "
+
+P_EXTRA= mk_seat RKJ-L7 마감
+out=$(jdg RKJ-L7)
+has "12: L7 — 동의 행이 없으면 금지" "$(fired "$out")" "L7 "
+
+SEAT_NOPROG=1 mk_seat RKJ-L9 천장
+out=$(jdg RKJ-L9)
+check "12: L9 — E 로 끝났지만 진전 행이 없으면 금지" "$(fired "$out")/$(fact "$out" 진전)" "L9 /0"
+
+P_EXTRA="$SEAT_ROW
+$(prov7 RKJROOT0 1 RKJROOT 무진전)" mk_seat RKJ-L15 무진전
+out=$(jdg RKJ-L15)
+has "12: L15 — 좌석 연쇄 안에서 무진전 두 번 연속은 금지" "$(fired "$out")" "L15 "
+P_EXTRA="$SEAT_ROW
+$(prov7 RKJROOT0 1 RKJROOT 마감)" mk_seat RKJ-L15X 무진전
+out=$(jdg RKJ-L15X)
+check "12: L15 — 앞 링크가 마감이면 무진전 한 번은 허용" "$(col "$out" 판정)/$(fired "$out")" "허용/"
+
+mk_seat RKJ-L10 마감; fx_blocked '강제 표면 이동' 무효화
+out=$(jdg RKJ-L10)
+has "12: L10 — 무효화 갈래는 금지" "$(fired "$out")" "L10 "
+
+# Every end token outside E, read from the gate's own list so a token added
+# later is covered too; `표면이동` meets L10 first.
+GATE_CAUSES=$(CC_GATE_SOURCE_ONLY=1 bash -c '. "$1" >/dev/null 2>&1; printf "%s" "$GATE_REKICK_CAUSES"' _ "$GATE_SH" 2>/dev/null)
+check "12: 게이트의 끝 원인 목록을 읽었다" "$( [ -n "$GATE_CAUSES" ] && echo ok)" "ok"
+n=0
+for tok in $GATE_CAUSES 죽은토큰; do
+  case "$tok" in 마감|천장|무진전) continue ;; esac
+  n=$((n + 1))
+  mk_seat "RKJ-T$n" "$tok"
+  out=$(jdg "RKJ-T$n")
+  if [ "$tok" = "표면이동" ]; then
+    check "12: L10 — 끝 원인 $tok 는 L10 하나로 금지" "$(fired "$out")" "L10 "
+  else
+    has "12: L11 — E 밖 끝 원인 $tok 는 금지" "$(col "$out" 판정)/$(fired "$out")" "금지/"
+    has "12: L11 줄이 발화한다 ($tok)" "$(fired "$out")" "L11 "
+  fi
+done
+
+mk_seat RKJ-L12 마감
+printf 'x' >> "$BASE/docs/pipeline-run/RKJ-L12.interview.md"
+out=$(jdg RKJ-L12)
+has "12: L12 — verify 가 실패하는 원천은 금지" "$(fired "$out")" "L12 "
+
+# L13 — a successor manifest under this base that names the source.
+mk_seat RKJ-L13S 마감
+{ printf '# 후속\n'; prov7 RKJ-L13S 1 RKJ-L13S 마감; printf '\n'; } > "$BASE/docs/pipeline-run/RKJ-L13S-next.plan.md"
+out=$(jdg RKJ-L13S)
+has "12: L13 — 좌석 경로 후속(일곱 필드)이 있는 원천은 금지" "$(fired "$out")" "L13 "
+mk_seat RKJ-L13H 마감
+printf -- '- `사전 인가` | 이어받은 런=RKJ-L13H | 매니페스트 sha256=%s | 인가 기록 sha256=%s\n' "$HEXA" "$HEXA" > "$BASE/docs/pipeline-run/RKJ-L13H-next.plan.md"
+out=$(jdg RKJ-L13H)
+has "12: L13 — 사람 경로 후속(네 필드)이 있는 원천은 금지" "$(fired "$out")" "L13 "
+mk_seat RKJ-L13O 마감
+mkdir -p "$WORK/other-base/docs/pipeline-run"
+printf -- '- `사전 인가` | 이어받은 런=RKJ-L13O | 매니페스트 sha256=%s | 인가 기록 sha256=%s\n' "$HEXA" "$HEXA" > "$WORK/other-base/docs/pipeline-run/RKJ-L13O-next.plan.md"
+out=$(jdg RKJ-L13O)
+check "12: L13 — 다른 베이스의 후속은 보지 못한다 (밝힌 한계)" "$(col "$out" 판정)/$(fired "$out")" "허용/"
+printf -- '- `사전 인가` | 이어받은 런=RKJ-L13OX | 매니페스트 sha256=%s | 인가 기록 sha256=%s\n' "$HEXA" "$HEXA" > "$BASE/docs/pipeline-run/RKJ-L13PFX.plan.md"
+out=$(jdg RKJ-L13O)
+check "12: L13 — 원천 id 를 접두로만 가진 출처 행은 그 원천이 아니다" "$(fired "$out")" ""
+
+# Waits — only the two question lines of verify, cleared by their keys.
+P_EXTRA="$SEAT_ROW
+- \`베이스 설계\` | 문서=docs/rk-base.md | sha256=$OLDBASESHA | 티켓=T1" P_AUTOADOPT='설계-골격' mk_seat RKJ-W 마감
+out=$(jdg RKJ-W)
+check "12: 두 기다림이 함께인 원천은 대기이고 줄이 둘이다" "$(col "$out" 판정)/$(cnt "$out" 대기)" "대기/2"
+check "12: 베이스설계 기다림의 키는 7.8 이다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "대기" && $2 == "베이스설계" { print $3 }')" "7.8"
+check "12: 어휘 기다림의 키는 7.7 자동채택 이다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "대기" && $2 == "어휘" { print $3 }')" "7.7 자동채택"
+printf '7.8\t묶는다\n' > "$WORK/asked-w1"
+out=$(jdg RKJ-W --asked "$WORK/asked-w1")
+check "12: 하나만 답하면 대기이고 남은 줄은 어휘다" "$(col "$out" 판정)/$(cnt "$out" 대기)/$(col "$out" 대기)" "대기/1/어휘"
+printf '7.8\t묶는다\n7.7 자동채택\t빼고 간다\n' > "$WORK/asked-w2"
+out=$(jdg RKJ-W --asked "$WORK/asked-w2")
+check "12: 둘 다 답하면 허용이다" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+fx_approval AP-W 대기
+out=$(jdg RKJ-W --asked "$WORK/asked-w2")
+check "12: 금지선이 있으면 답해도 금지다" "$(col "$out" 판정)" "금지"
+hasnt "12: 마감에 관한 금지선은 없다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "금지선"')" "마감을"
+
+# detect and judge agree on whether a run ended, fixture by fixture.
+agree() {  # agree <label> <id> — detect's 재킥오프 iff judge fires neither L1 nor L2
+  local d j
+  d=$(col "$(rk_as "s-$2" detect --arg '')" 판정)
+  j=$(fired "$(jdg "$2")")
+  case "$j" in *"L1 "*|*"L2 "*) j=막힘 ;; *) j=열림 ;; esac
+  case "$d" in 재킥오프) d=열림 ;; *) d=막힘 ;; esac
+  check "12: detect 와 judge 가 끝남을 같게 읽는다 ($1)" "$j" "$d"
+}
+agree "게이트 종료" RKJ-E1
+agree "끝나지 않음" RKJ-L1
+agree "완료" RKJ-L2
+agree "무효화" RKJ-L10
+agree "열린 승인" RKJ-L5
+mk_prev RKJ-LIVE; fx_stage_live I1; fx_done
+agree "살아 있음" RKJ-LIVE
+mk_seat RKJ-HALT 마감
+mkdir -p "$FX_RUN_DIR/halt"; printf '# 중단\n\n**분류**: gate-unanswerable\n' > "$FX_RUN_DIR/halt/I1#1.md"
+agree "답 없는 중단" RKJ-HALT
+out=$(jdg RKJ-HALT)
+check "12: 답 없는 중단 기록은 L5 로 셈한다" "$(fact "$out" '미답 중단')" "1"
+
+# ---------------------------------------------------------------------------
+# 12. render-manifest --auto · verify-subset --auto — 좌석 경로 끝까지
+# ---------------------------------------------------------------------------
+# seat_link <src> <new> [render args…] — items 2, 5 and 7.1–7.5 of the seat's
+# path; SL_AUTO empty takes the person's path instead. Sets SL_RC (render),
+# SL_VS (verify-subset verdict), SL_OUT (the draft, written only on 0).
+seat_link() {
+  local src="$1" new="$2" auto="${SL_AUTO---auto}" v c conf; shift 2
+  local pm="$BASE/docs/pipeline-run/$src.plan.md"
+  v=$(rk verify --prev "$src" --base "$BASE")
+  SL_PMS=$(printf '%s\n' "$v" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+  SL_PGS=$(printf '%s\n' "$v" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+  SL_KAT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # shellcheck disable=SC2086
+  c=$("$BASH" "$KD" --carry "$pm" --kickoff-at "$SL_KAT" --expect-sha256 "$SL_PMS" $auto 2>/dev/null)
+  SL_DL=$(printf '%s\n' "$c" | awk -F'\t' '$1 == "마감" && $2 == "ok" { print $3 }')
+  [ -f "${SL_ASKED:-}" ] || { SL_ASKED="$WORK/asked-seat"; : > "$SL_ASKED"; }
+  SL_OUT="$BASE/docs/pipeline-run/$new.plan.md"; SL_VS=""
+  # shellcheck disable=SC2086
+  rk render-manifest $auto --prev "$src" --base "$BASE" --run-id "$new" --kickoff-at "$SL_KAT" --deadline "$SL_DL" \
+     --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$SL_ASKED" "$@" > "$WORK/sl.draft"; SL_RC=$?
+  [ "$SL_RC" = 0 ] && [ -s "$WORK/sl.draft" ] || return 0
+  cp "$WORK/sl.draft" "$SL_OUT"
+  if grep -q '^- `사전 인가` | 인터뷰 기록=' "$SL_OUT"; then
+    rk render-interview --prev "$src" --base "$BASE" --expect-sha256 "$SL_PMS" > "$BASE/docs/pipeline-run/$new.interview.md"
+  fi
+  conf=$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$SL_OUT")
+  grant_block "$new" 머지 '픽스처가 끝나면' "$conf" "$DOCSHA" > "$WORK/sl.block"
+  # shellcheck disable=SC2086
+  SL_VS=$(col "$(rk verify-subset "$SL_OUT" "$pm" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" \
+            --asked "$SL_ASKED" --grant "$WORK/sl.block" $auto)" 판정)
+  write_grant "$new" "$DOC" "$WORK/sl.block"
+}
+# adopt_run <id> — the run directory, ledger, lineage and index of a run whose
+# manifest and grant already exist, so it can be judged as a source.
+adopt_run() {
+  fx_mkrun "$1"; rm -f "$FX_LEDGER"
+  FX_LEDGER="$BASE/docs/pipeline-run/$1.md"; : > "$FX_LEDGER"; export FX_LEDGER
+  fx_ledger_path
+  printf '%s\n' "s-$1" > "$FX_RUN_DIR/session-lineage"
+  fx_session_index "s-$1" "$1"
+}
+prov_of() { grep -E '^- `사전 인가` \| 이어받은 런=' "$1"; }
+
+# Link 0 (a person's kickoff) → links 1, 2, 3 by the seat; the fourth is refused.
+mk_seat RKS0 마감
+SL_ASKED=""; seat_link RKS0 RKS1
+check "12: 링크 1 — render-manifest --auto 는 0 이고 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "12: 링크 1 의 출처 행은 일곱 필드이고 좌석 연쇄=1 · 뿌리 런=원천 · 원인=끝 토큰이다" "$(prov_of "$SL_OUT")" \
+  "- \`사전 인가\` | 이어받은 런=RKS0 | 매니페스트 sha256=$SL_PMS | 인가 기록 sha256=$SL_PGS | 좌석 연쇄=1 | 뿌리 런=RKS0 | 원인=마감"
+check "12: 승인 문면은 좌석 재킥오프 로 고정된다" "$(awk -F': ' '$1 == "**승인 문면**" { print $2 }' "$SL_OUT")" "좌석 재킥오프"
+check "12: 사용자 확인 문면은 좌석 재킥오프 <원천 id> 다" "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$SL_OUT")" "좌석 재킥오프 RKS0"
+check "12: 재킥오프 행을 원천과 바이트로 같게 옮긴다" "$(grep -c '^- `재킥오프` | ' "$SL_OUT")/$(grep -cxF -- "$SEAT_ROW" "$SL_OUT")" "1/1"
+mf_check "$SL_OUT"; rc=$?
+check "12: 링크 1 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+GPLAN0=$(col "$(rk graph --prev RKS0 --base "$BASE")" 계획)
+check "12: 그린 계획의 단계 id 는 원천 계획의 부분집합이다" \
+  "$(jq -n --argjson g "$GPLAN0" --argjson p "$(drv "$BASE/docs/pipeline-run/RKS0.plan.md" manifest_plan_json)" '([$g.steps[].id] - [$p.steps[].id]) | length')" "0"
+check "12: 초안의 계획이 graph 가 그린 계획이다" "$(drv "$SL_OUT" manifest_plan_json | jq -c .)" "$(printf '%s' "$GPLAN0" | jq -c .)"
+L1DRAFT="$WORK/link1.md"; cp "$SL_OUT" "$L1DRAFT"; L1PMS=$SL_PMS; L1PGS=$SL_PGS
+# A kickoff default is not applied on the seat's path: `--carry --auto` may
+# show `빈칸` rows, but the seat passes no `--set`, so the draft keeps the
+# source's empty fields and still passes.
+printf 'cost-ceiling = 12\n[t/rk]\ndeploy-triggers = branch:release\n' > "$WORK/defaults-seat"
+cout=$(CC_CMDS_AUTOPILOT_DEFAULTS_FILE="$WORK/defaults-seat" "$BASH" "$KD" --carry "$BASE/docs/pipeline-run/RKS0.plan.md" \
+         --kickoff-at "$SL_KAT" --expect-sha256 "$L1PMS" --auto 2>/dev/null)
+check "12: 기본값 파일이 있으면 --carry --auto 도 빈칸 행을 보인다 (다음 단언이 공허하지 않다)" "$(cnt "$cout" 빈칸)" "2"
+check "12: 좌석 초안에는 기본값 파일의 값이 들어가지 않는다" "$(grep -cE 'branch:release|cost-ceiling|비용 천장\*\*: 12' "$L1DRAFT")" "0"
+out=$(jdg RKS0)
+has "12: 링크 1 이 생긴 뒤 같은 원천의 judge 는 L13 으로 금지" "$(fired "$out")" "L13 "
+
+adopt_run RKS1; seat_end 마감
+out=$(jdg RKS1)
+check "12: 링크 1 을 원천으로 한 judge 는 허용 · 연쇄 2/3" "$(col "$out" 판정)/$(fact "$out" 연쇄)" "허용/2/3"
+[ "$(col "$out" 판정)" = 허용 ] || printf '%s\n' "$out" >&2
+seat_link RKS1 RKS2
+check "12: 링크 2 의 출처 행은 좌석 연쇄=2 · 뿌리 런=RKS0" "$SL_RC/$SL_VS/$(prov_of "$SL_OUT" | sed 's/.*| 좌석 연쇄=/좌석 연쇄=/')" "0/통과/좌석 연쇄=2 | 뿌리 런=RKS0 | 원인=마감"
+mf_check "$SL_OUT"; rc=$?
+check "12: 링크 2 초안도 check_manifest 를 통과한다" "$rc" "0"
+adopt_run RKS2; seat_end 천장
+out=$(jdg RKS2)
+check "12: 링크 2 를 원천으로 한 judge 는 허용 · 연쇄 3/3" "$(col "$out" 판정)/$(fact "$out" 연쇄)" "허용/3/3"
+[ "$(col "$out" 판정)" = 허용 ] || printf '%s\n' "$out" >&2
+seat_link RKS2 RKS3
+check "12: 링크 3 의 출처 행은 좌석 연쇄=3 · 원인=천장" "$SL_RC/$SL_VS/$(prov_of "$SL_OUT" | sed 's/.*| 좌석 연쇄=/좌석 연쇄=/')" "0/통과/좌석 연쇄=3 | 뿌리 런=RKS0 | 원인=천장"
+mf_check "$SL_OUT"; rc=$?
+check "12: 링크 3 초안도 check_manifest 를 통과한다" "$rc" "0"
+sed 's/| 좌석 연쇄=3 |/| 좌석 연쇄=1 |/' "$SL_OUT" > "$WORK/rkc3-low.md"
+VS_PREV="$BASE/docs/pipeline-run/RKS2.plan.md"; VS_PMSHA="$SL_PMS"; VS_PGSHA="$SL_PGS"
+vs "링크 3 초안의 좌석 연쇄를 3 에서 1 로 낮추면 --auto 검사 3 이 실패한다" 실패 "$WORK/rkc3-low.md" "$SL_ASKED" 출처 --auto
+mf_check "$WORK/rkc3-low.md"; rc=$?
+check "12: 얼린 매니페스트에서 좌석 연쇄를 고치면 check_manifest 가 거부한다" "$( [ "$rc" != 0 ] && echo 거부)" "거부"
+adopt_run RKS3; seat_end 마감
+out=$(jdg RKS3)
+check "12: 링크 3 을 원천으로 한 judge 는 L6 으로 금지 · 연쇄 4/3" "$(fired "$out")/$(fact "$out" 연쇄)" "L6 /4/3"
+seat_link RKS3 RKS4
+check "12: 링크 3 을 원천으로 render-manifest --auto 는 3 이고 초안이 없다" "$SL_RC/$( [ -s "$WORK/sl.draft" ] && echo 있음 || echo 없음)/$( [ -f "$BASE/docs/pipeline-run/RKS4.plan.md" ] && echo 있음 || echo 없음)" "3/없음/없음"
+has "12: 그 거부는 상한을 짚는다" "$(cat "$WORK/rk.err")" "연쇄 상한 3"
+
+# A person's re-kickoff in the middle starts the count again.
+SL_AUTO= seat_link RKS1 RKH2
+check "12: 사람 경로 링크는 네 필드 출처 행을 쓴다" "$SL_RC/$SL_VS/$(prov_of "$SL_OUT" | awk -F' [|] ' '{ print NF }')" "0/통과/4"
+adopt_run RKH2; seat_end 마감
+seat_link RKH2 RKH3
+check "12: 사람 링크 뒤 --auto 링크의 출처 행은 좌석 연쇄=1 · 뿌리 런=사람 링크" "$SL_RC/$(prov_of "$SL_OUT" | sed 's/.*| 좌석 연쇄=/좌석 연쇄=/')" "0/좌석 연쇄=1 | 뿌리 런=RKH2 | 원인=마감"
+adopt_run RKH3; seat_end 마감
+out=$(jdg RKH3)
+check "12: 그 링크를 원천으로 한 judge 는 L6 없이 허용 · 연쇄 2/3" "$(col "$out" 판정)/$(fact "$out" 연쇄)" "허용/2/3"
+
+# verify-subset --auto check 3 — five drafts against the seat source RKS0.
+VS_PREV="$BASE/docs/pipeline-run/RKS0.plan.md"; VS_PMSHA="$L1PMS"; VS_PGSHA="$L1PGS"
+: > "$WORK/asked-seat0"
+vs "--auto 가 만든 일곱 필드 초안은 --auto 에서 통과한다" 통과 "$L1DRAFT" "$WORK/asked-seat0" "" --auto
+vs "같은 일곱 필드 초안은 --auto 없이 실패한다" 실패 "$L1DRAFT" "$WORK/asked-seat0" 출처
+sed 's/ | 좌석 연쇄=1 | 뿌리 런=RKS0 | 원인=마감$//' "$L1DRAFT" > "$WORK/v-p4.md"
+vs "세 필드를 지운 네 필드 초안은 --auto 에서 실패한다" 실패 "$WORK/v-p4.md" "$WORK/asked-seat0" 출처 --auto
+sed 's/| 원인=마감$/| 원인=마감 | 덧=1/' "$L1DRAFT" > "$WORK/v-p8.md"
+vs "필드가 하나 더 붙은 출처 행은 --auto 에서 실패한다" 실패 "$WORK/v-p8.md" "$WORK/asked-seat0" 출처 --auto
+sed 's/| 원인=마감$/| 원인=결함/' "$L1DRAFT" > "$WORK/v-pc.md"
+vs "원인이 원천의 끝 토큰과 다른 출처 행은 --auto 에서 실패한다" 실패 "$WORK/v-pc.md" "$WORK/asked-seat0" 출처 --auto
+sed 's/| 좌석 연쇄=1 |/| 좌석 연쇄=2 |/' "$L1DRAFT" > "$WORK/v-pk.md"
+vs "좌석 연쇄가 다시 낸 값과 다른 출처 행은 --auto 에서 실패한다" 실패 "$WORK/v-pk.md" "$WORK/asked-seat0" 출처 --auto
+# The consent row stays the source's.
+sed 's/연쇄 상한=3/연쇄 상한=9/' "$L1DRAFT" > "$WORK/v-cap.md"
+vs "연쇄 상한을 넓힌 초안은 --auto 에서 실패한다" 실패 "$WORK/v-cap.md" "$WORK/asked-seat0" 동의 --auto
+sed 's/길이=PT48H0M0S/길이=PT96H0M0S/' "$L1DRAFT" > "$WORK/v-len.md"
+vs "길이를 늘린 초안은 --auto 에서 실패한다" 실패 "$WORK/v-len.md" "$WORK/asked-seat0" 동의 --auto
+# Check 10 — the length fallback, measured from the draft's kickoff.
+L1KAT=$(awk -F': ' '$1 == "**킥오프 일시**" { print $2 }' "$L1DRAFT")
+L1FB=$(jq -rn --arg k "$L1KAT" '($k | fromdateiso8601) + 172800 | todateiso8601')
+sed "s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: $L1FB/" "$L1DRAFT" > "$WORK/v-fb.md"
+vs "킥오프 일시 + 원천 길이 의 마감은 --auto 에서 통과한다" 통과 "$WORK/v-fb.md" "$WORK/asked-seat0" "" --auto
+sed 's/ | 좌석 연쇄=1 | 뿌리 런=RKS0 | 원인=마감$//' "$WORK/v-fb.md" > "$WORK/v-fb4.md"
+vs "같은 마감은 --auto 없이 검사 10 에서 실패한다" 실패 "$WORK/v-fb4.md" "$WORK/asked-seat0" 마감
+L1FBX=$(jq -rn --arg k "$L1KAT" '($k | fromdateiso8601) + 172800 + 3600 | todateiso8601')
+sed "s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: $L1FBX/" "$L1DRAFT" > "$WORK/v-fbx.md"
+vs "킥오프 일시가 아닌 다른 순간에 길이를 붙인 마감은 --auto 에서도 실패한다" 실패 "$WORK/v-fbx.md" "$WORK/asked-seat0" 마감 --auto
+
+# A graph `graph` calls changed: no draft on the seat's path.
+P_PLAN='{ "design_required": true, "entry_skill": "design", "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": ["D1", "X9"] } ] }' \
+  mk_seat RKCG 마감
+check "12: 빼고 난 계획의 의존이 끊긴 원천은 graph 가 바뀜 이다" "$(col "$(rk graph --prev RKCG --base "$BASE")" 그래프)" "바뀜"
+SL_ASKED=""; seat_link RKCG RKCG1
+check "12: 그 원천에서 render-manifest --auto 는 3 이고 초안이 없다" "$SL_RC/$( [ -s "$WORK/sl.draft" ] && echo 있음 || echo 없음)" "3/없음"
+L1DL=$(awk -F': ' '$1 == "**벽시계 마감**" { print $2 }' "$L1DRAFT")
+out=$(rk render-manifest --auto --accepted extra --prev RKS0 --base "$BASE" --run-id RKSA --kickoff-at "$L1KAT" --deadline "$L1DL" \
+        --expect-sha256 "$L1PMS" --expect-grant-sha256 "$L1PGS" --asked "$WORK/asked-seat0" 2>/dev/null); rc=$?
+check "12: --auto 에 --accepted 는 용법 오류다" "$rc/$out" "2/"
+
+# An answered base-design wait reaches the draft and verify-subset --auto.
+P_EXTRA="$SEAT_ROW
+- \`베이스 설계\` | 문서=docs/rk-base.md | sha256=$OLDBASESHA | 티켓=T1" mk_seat RKCB 마감
+out=$(jdg RKCB)
+check "12: 베이스 설계가 바뀐 원천의 judge 는 대기 · 베이스설계 · 7.8" \
+  "$(col "$out" 판정)/$(col "$out" 대기)/$(col "$out" 대기 3)" "대기/베이스설계/7.8"
+printf '7.8\t묶는다\n' > "$WORK/asked-cb"
+out=$(jdg RKCB --asked "$WORK/asked-cb")
+check "12: 7.8 을 답한 judge 는 허용이고 기다림 줄이 없다" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+SL_ASKED="$WORK/asked-cb"; seat_link RKCB RKCB1 --bind-base "$NOWBASE"
+check "12: 답한 7.8 과 --bind-base 로 그린 초안이 verify-subset --auto 를 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "12: 그 초안의 사용자 확인 문면은 좌석 재킥오프 <원천> / 묶는다" \
+  "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$SL_OUT")" "좌석 재킥오프 RKCB / 묶는다"
+
+# An answered target confirmation, with and without --targets.
+mk_seat RKCT 마감
+sed 's/| 원격 슬러그=t\/rk |/| 원격 슬러그=t\/rk-moved |/' "$BASE/docs/pipeline-run/RKCT.plan.md" | grep -E '^- `target`' > "$WORK/targets-ct"
+printf '대상확인 rk\t원격 슬러그는 t/rk-moved 다\n' > "$WORK/asked-ct"
+SL_ASKED="$WORK/asked-ct"; seat_link RKCT RKCT1 --targets "$WORK/targets-ct"
+check "12: 답한 대상 확인과 --targets 로 그린 초안이 verify-subset --auto 를 통과한다" "$SL_RC/$SL_VS" "0/통과"
+SL_ASKED="$WORK/asked-ct"; seat_link RKCT RKCT2
+check "12: --targets 없이 그리면 원천 대상 행이 그대로 옮겨진다" \
+  "$(grep -E '^- `target`' "$SL_OUT")" "$(grep -E '^- `target`' "$BASE/docs/pipeline-run/RKCT.plan.md")"
+SL_ASKED=""
+
+# The seat's wording that no helper prints: the stub's reason line and the
+# notice for a failure on the immediate path.
+SEATDOC="$repo_root/plugins/cc-cmds/skills/autopilot/references/act2-seat.md"
+has "12: 좌석 문서 — 리포트 스텁에 좌석의 근거 한 줄이 들어간다" "$(cat "$SEATDOC")" "「좌석 재킥오프 근거: <근거>」"
+has "12: 좌석 문서 — 즉시 경로 실패 고지는 새 런 id 와 매니페스트 경로를 적는다" "$(cat "$SEATDOC")" "The notice names the new run id and its manifest path"
+has "12: 좌석 문서 — 첫 snapshot 전이면 즉시 경로를 다시 수행한다" "$(cat "$SEATDOC")" "before the first \`snapshot\`, perform Step 7's immediate path again for the new run"
+has "12: 좌석 문서 — 그 뒤면 빈 인자 진행 중 뒤 재개한다" "$(cat "$SEATDOC")" "shows the run as \`진행 중\` and it continues by 「Resuming after a break」"
+has "12: 좌석 문서 — 원천을 다시 재킥오프하지 말라고 적는다" "$(cat "$SEATDOC")" "It also says not to re-kick the source"
+has "12: 좌석 문서 — L13 의 다른 베이스 한계를 적는다" "$(cat "$SEATDOC")" "**L13 sees only this base.**"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

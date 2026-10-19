@@ -1,0 +1,1 @@
+stale:sample.sh:clock-margin

@@ -534,7 +534,7 @@ check "--check-deadline 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" 
 
 # ---------------------------------------------------------------------------
 # 상대 마감 해석기 — deadline-resolve.sh 로 뽑아낸 뒤에도 같은 절대값을 내고, 길이는
-# 「풀린 마감 − 푼 순간」이다. 파생기가 같은 산식으로 후속 런의 마감을 쓴다.
+# 「풀린 마감 − 푼 순간」이다. 매니페스트 검사가 같은 산식으로 얼린 길이를 읽는다.
 # ---------------------------------------------------------------------------
 RESOLVER="$ORCH/deadline-resolve.sh"
 rd() { TZ="${2:-Asia/Seoul}" kd --resolve-deadline "$1" --now "${3:-$NOW}"; }
@@ -576,7 +576,7 @@ check "dr_add_duration 은 그 오프셋 표기로 되돌린다" "$(dr dr_add_du
 check "dr_add_duration 은 TZ 와 무관하다" "$(TZ=America/New_York dr dr_add_duration 2026-09-21T14:13:20Z PT8H0M0S +09:00)" "2026-09-22T07:13:20+09:00"
 check "dr_add_duration 음의 오프셋" "$(dr dr_add_duration 2026-10-30T16:00:00Z PT1H0M0S -04:00)" "2026-10-30T13:00:00-04:00"
 check "dr_add_duration 은 오프셋 형태가 틀리면 1" "$(dr dr_add_duration 2026-09-21T14:13:20Z PT8H0M0S Z >/dev/null 2>&1; echo $?)" "1"
-# 해석기는 기본값을 열지 않는다 — 파생기가 이 파일을 소싱해도 린트 규칙 1 에 걸리지 않는다.
+# 해석기는 기본값을 열지 않는다 — run.sh 가 이 파일을 소싱해도 린트 규칙 1 에 걸리지 않는다.
 check "해석기가 기본값 이름을 담지 않는다" "$(grep -cE 'autopilot-defaults|kickoff-defaults\.sh|CC_CMDS_AUTOPILOT_DEFAULT' "$RESOLVER" || true)" "0"
 check "해석기를 소싱해도 아무것도 출력하지 않는다" "$(bash -c '. "$1"' _ "$RESOLVER" 2>&1)" ""
 
@@ -1043,6 +1043,29 @@ check "다시 잡은 마감이 지났으면 사유 토큰" "$r" "과거 시각"
 CW_DL='없음'
 check "이전 마감 없음은 사유 토큰" "$(dl_row | cut -d'|' -f1)" "마감 없음"
 CW_DL='2026-10-09T12:00:00Z'
+
+# --carry --auto — 이전 간격을 옮길 수 없으면 재킥오프 행의 길이로 물러선다.
+dl_auto() { cw_write "$CW"; kc '' "$@" | awk -F'\t' '$1=="마감" { print $2"|"$3"|"$4"|"$5 }'; }
+CW_ROWS_SAVE="$CW_ROWS"
+CW_ROWS="$CW_ROWS
+- \`재킥오프\` | 연쇄 상한=3 | 길이=PT48H0M0S | 사유=밤새 이어 간다"
+CW_DL='2026-10-09T21:00:00'
+r=$(dl_auto --auto)
+check "--carry --auto: 간격을 못 옮기면 길이로 물러서 ok 를 낸다" "${r%%|*}" "ok"
+check "--carry --auto: 물러선 줄은 출처=길이 를 싣는다" "${r##*|}" "출처=길이"
+check "--carry --auto: 물러선 마감은 킥오프 일시 + 길이의 순간이다" "$(dl_inst "$(printf '%s' "$r" | cut -d'|' -f2)")" "$((KAT_E + 172800))"
+check "--carry --auto: 물러선 줄의 간격 칸은 길이의 초다" "$(printf '%s' "$r" | cut -d'|' -f3)" "172800"
+check "--carry --auto: 물러선 마감은 ±HH:MM 오프셋으로 쓴다" \
+  "$(printf '%s' "$r" | cut -d'|' -f2 | grep -cE '[+-][0-9]{2}:[0-9]{2}$')" "1"
+check "--auto 없는 --carry 는 같은 원천에서 기존 사유 토큰을 낸다" "$(dl_auto | cut -d'|' -f1)" "영역 없음"
+CW_DL='2026-10-09T12:00:00Z'
+r=$(dl_auto --auto)
+check "--carry --auto: 간격을 옮길 수 있으면 이전 간격이고 출처 칸이 없다" "$(printf '%s' "$r" | cut -d'|' -f3)|$(printf '%s' "$r" | cut -d'|' -f4)" "32400|"
+CW_ROWS="$CW_ROWS_SAVE"
+CW_DL='2026-10-09T21:00:00'
+check "--carry --auto: 재킥오프 행이 없는 원천은 물러서지 않는다" "$(dl_auto --auto | cut -d'|' -f1)" "영역 없음"
+CW_DL='2026-10-09T12:00:00Z'
+check "--auto 는 --carry 와 함께만 쓴다" "$(kd $T --auto >/dev/null 2>&1; echo $?)" "2"
 
 # 해시 — 틀린 해시는 아무것도 내지 않고, 사본을 뜬 뒤 원천이 바뀌어도 사본의 값을 낸다.
 cw_write "$CW"
