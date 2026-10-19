@@ -3030,9 +3030,9 @@ check "TK1: 게이트의 넘어가는 이유 목록이 다섯이다" "$tk1_fall"
 tk1_stay="lease-table-corrupt borrow-record-corrupt lent-seat-unrouted inventory-corrupt own-lease-corrupt"
 tk1_src=$( { sed -n '/^def rt_decide(/,/rt_resume(\$p)$/p' "$TR_ROUTE"; sed -n '/^def rt_resume(/,/^def rt_waitpick(/p' "$TR_ROUTE"; } )
 tk1_seen=$( { printf '%s\n' "$tk1_src" | grep -oE 'rt_park\("[a-z-]+"' | sed 's/^rt_park("//; s/"$//'
-              printf '%s\n' "$tk1_src" | grep -q 'rt_park_deadline(' && printf 'deadline\n'
-              printf '%s\n' "$tk1_src" | grep -q 'rt_park_borrow_corrupt' && printf 'borrow-record-corrupt\n'
-              printf '%s\n' "$tk1_src" | grep -q 'rt_park_unrouted' && printf 'lent-seat-unrouted\n'; } | LC_ALL=C sort -u)
+              case "$tk1_src" in (*'rt_park_deadline('*) printf 'deadline\n' ;; esac
+              case "$tk1_src" in (*rt_park_borrow_corrupt*) printf 'borrow-record-corrupt\n' ;; esac
+              case "$tk1_src" in (*rt_park_unrouted*) printf 'lent-seat-unrouted\n' ;; esac; } | LC_ALL=C sort -u)
 check "TK1: 판정 앞단과 rt_resume 에서 뽑은 PARK 이유가 열 개다 (공허하지 않다)" "$(printf '%s\n' "$tk1_seen" | grep -c .)" "10"
 tk1_miss=""
 for tk1_r in $tk1_seen; do

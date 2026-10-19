@@ -37844,7 +37844,7 @@ check "93: TH1 마감 전의 이월 인계는 받고 런을 끝내지 않는다"
   "0|1|open|0"
 lsr93_l=$(lsr93_dfx th1p)
 check "93: TH1 마감 뒤의 이월 인계는 받고 그 자리에서 런을 마감으로 끝낸다" \
-  "$(lsr93_hand "$lsr93_l" "$lsr93_mfp" 이월 '다음 런의 답' | head -1 | cut -d'|' -f1)|$( [ -s "${lsr93_l%/*}/done" ] && printf done || printf open)|$(lsr93_end_rows "$lsr93_l")|$(lsr93_n "$lsr93_l" '남은 중단 답을 다음 런으로 넘긴 런이다')" \
+  "$(lsr93_hand "$lsr93_l" "$lsr93_mfp" 이월 '다음 런의 답' | sed -n '1{s/|.*//;p;}')|$( [ -s "${lsr93_l%/*}/done" ] && printf done || printf open)|$(lsr93_end_rows "$lsr93_l")|$(lsr93_n "$lsr93_l" '남은 중단 답을 다음 런으로 넘긴 런이다')" \
   "0|done|1|1"
 
 # TH3 — 남은 것이 이월된 답뿐인 런에서 중단 인계는 사람에게 같은 결정을 다시 묻는다.
@@ -37899,7 +37899,7 @@ lsr93_t7a=$(lsr93_sh "$lsr93_l" S5); lsr93_t7b=$(lsr93_sh "$lsr93_m" S3)
 case "$lsr93_t7a/$lsr93_t7b" in
   *"다음 런으로 넘겼습니다"*) bad "93 TH7 대조" "$lsr93_t7a / $lsr93_t7b" ;;
   *) check "93: TH7 대조 — 이월 없는 세그먼트의 교대 정지는 이월 없는 원장과 같은 rc 다" \
-       "$(printf '%s' "$lsr93_t7a" | head -1 | cut -d'|' -f1)" "$(printf '%s' "$lsr93_t7b" | head -1 | cut -d'|' -f1)" ;;
+       "${lsr93_t7a%%[|$'\n']*}" "${lsr93_t7b%%[|$'\n']*}" ;;
 esac
 
 # TH4 — 이월로 넘긴 런을 마감 뒤에 끝내는 판정. 진전 축이 있는 런에서는 남은 종료
