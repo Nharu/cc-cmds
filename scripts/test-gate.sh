@@ -11707,7 +11707,7 @@ rm -f "$WT/$DOC15ER"
 
 # ---------------------------------------------------------------------------
 # 15e-3. A person's `골격 재검토` on a design stage's residual ladder re-converges on the design step's key
-# --- section: 15e-3 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-3: 동결 전 입구의 - reconverge 파견 plan 이 통과한다, 15e-3: 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다, 15e-3: 좌석 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다,15e-3: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-3: 설계 단계가 아직 받지 않은 동결 전 답으로는 재수렴하지 않는다, 15e-3: 마지막 답이 골격 재검토가 아니면 재수렴하지 않는다, 15e-3: 범위가 다른 프롬프트는 거부된다, 15e-3: 같은 기록의 두 번째 재수렴은 거부된다, 15e-3: 감사 재수렴과 설계 입구가 함께 서면 거부된다, 15e-3: 재수렴 행이 세그먼트=- · 스테이지=D1 · 종류=reconverge 다, 15e-3: 재수렴 행이 설계 단계의 중단 답을 소비한다, 15e-3: 설계 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-3: 설계 재수렴 뒤 조건 1 이 감사 단계를 든다, 15e-3: 설계 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-3: 새 감사 뒤 계획은 재수렴 때문에 거부되지 않는다 ---
+# --- section: 15e-3 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-3: 동결 전 입구의 - reconverge 파견 plan 이 통과한다, 15e-3: 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다, 15e-3: 좌석 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다,15e-3: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-3: 설계 단계가 아직 받지 않은 동결 전 답으로는 재수렴하지 않는다, 15e-3: 마지막 답이 골격 재검토가 아니면 재수렴하지 않는다, 15e-3: 범위가 다른 프롬프트는 거부된다, 15e-3: 같은 기록의 두 번째 재수렴은 거부된다, 15e-3: 감사 재수렴과 설계 입구가 함께 서면 거부된다, 15e-3: 재수렴 행이 세그먼트=- · 스테이지=D1 · 종류=reconverge 다, 15e-3: 재수렴 행이 설계 단계의 중단 답을 소비한다, 15e-3: 설계 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-3: 설계 재수렴 뒤 조건 1 이 감사 단계를 든다, 15e-3: 설계 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-3: 새 감사 뒤 계획은 재수렴 때문에 거부되지 않는다, 15e-3: 설계 시도가 살아 있는 동안 사람의 골격 재검토는 거부된다 ---
 #
 # A design stage whose residual ladder left items open writes a
 # `/ ladder-unsettled` record and parks. A person who answers it
@@ -11904,6 +11904,23 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 gateL act --manifest "$WORK/plan-R15ES.md" --ki
       --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(au15_H R15ES)" --rationale x \
       -- "중단 기록=$RD15ES/halt/D1#1.md" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$RD15ES/halt/D1#1.answer.md"
 check "15e-3 픽스처의 좌석 동결 답이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
+# While the design re-attached on that freeze is still running, a person's
+# `골격 재검토` is refused: the running attempt's `정상 완료` would take it up
+# together with the seat's answer, and no review would open.
+fx_rd15es="$FX_RUN_DIR"; FX_RUN_DIR="$RD15ES"
+fx_stage_live D1
+FX_RUN_DIR="$fx_rd15es"
+dl15_answer R15ES '골격 재검토'
+check "15e-3: 설계 시도가 살아 있는 동안 사람의 골격 재검토는 거부된다" "$rc" "3"
+case "$msg" in
+  *"살아 있는 시도가 있는 동안에는"*) ok "15e-3: 그 거부는 살아 있는 시도를 든다" ;;
+  *) bad "15e-3 살아 있는 시도 중 골격 재검토 문면" "$msg" ;;
+esac
+check "15e-3: 그 거부는 중단 답 행을 남기지 않는다" \
+  "$(au15_rows R15ES '| 선택지=골격 재검토 |' | grep -c . || true)" "0"
+kill "$FX_LAST_PID" 2>/dev/null || true
+wait "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$RD15ES/D1.pid" "$RD15ES/D1.start"
 dl15_resume_design R15ES
 au15_wait R15ES D1
 check "15e-3 좌석 동결 픽스처의 설계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15ES D1 design)" "정상 완료"
@@ -29098,6 +29115,24 @@ check "34n: skeleton 답의 근거 종류는 기록이 이름 댄 둘이고 도�
   "$(row_field "$(sln_last)" '근거 종류')/$(row_field "$(sln_last)" '잔여 판정')" "인터뷰 기록/상시 지침/"
 check "34n: 네 양성이 행 넷을 남긴다" "$(sln_ha)" "$((sln_ha0 + 4))"
 
+# A DOCUMENT OF REAL SIZE. The item readers run under the gate's `pipefail`;
+# a reader that stopped reading at the next heading would die of SIGPIPE on a
+# remainder larger than the pipe buffer and refuse an accepted shape, and only
+# on some runs. The items the `구현 후` and W3 checks read are followed by far
+# more than one buffer, and the same answer is given three times.
+sln_doc '1:구현 필요:-:0:0' '2:검증 차단:사람-환경:1:0' '3:검증 차단:외부-준비:0:1'
+{ printf '## 참고\n\n'; seq 1 4000 | sed 's/$/ 픽스처 나머지 줄 — 파이프 버퍼보다 큰 나머지를 만든다/'; } >> "$SLN_DOC"
+check "34n: 큰 문서 픽스처가 파이프 버퍼의 두 배를 넘는다 (아래가 공허하지 않다)" \
+  "$([ "$(wc -c < "$SLN_DOC" | tr -d ' ')" -gt 131072 ] && printf ok || printf small)" "ok"
+for SLN_K in LB1 LB2 LB3; do
+  sln_sr "$SLN_K" 1
+  sln_f="$CAP_DIR/halt/$SLN_K#1.md"
+  sln_rec "$sln_f" design-discuss-unattended "$SLN_K#1" 'Step 7U / ladder-unsettled' gate-unanswerable \
+    "$SLN_REC_LINE" "$(sln_basis R1=코드-부재 R2=사람-환경)" '**잔여 판정**: 코드-부재: R1 / 사람-환경: R2'
+  sln_seat "$SLN_K" "$sln_f"
+  check "34n: 큰 문서의 구현 후·W3 생략 기록에 좌석이 답한다 ($SLN_K)" "$rc" "0"
+done
+
 # THE REFUSALS. One key, a fresh record per reason, none leaves a row.
 sln_sr J1 1
 sln_hn=$(sln_ha)
@@ -37382,6 +37417,11 @@ do
   case "$fc67c_i8" in *"$lit"*) fc67c_n8=$((fc67c_n8 + 1)) ;; esac
 done
 check "67c: 라우터 항목 8 이 파견 모양을 싣는다" "$fc67c_n8" "4"
+check "67c: 라우터 항목 8 이 감사 단계 없는 계획을 세그먼트 계획으로 보낸다" \
+  "$(printf '%s\n' "$fc67c_i8" | { grep -cF '**A plan with no audit step** — a `solo` plan'"'"'s graph has none — has no audit to dispatch' || true; })" "1"
+check "67c: 좌석 문면이 살아 있는 설계 동안 골격 재검토를 미룬다" \
+  "$(fc67c_lits "$fc67c_sk/autopilot/references/act2-seat.md" \
+      'while the record'"'"'s key is in the snapshot'"'"'s `live_stages[]` the gate refuses that row with exit 3')" "1"
 
 # The scope word as the sidecar defines it, the router dispatches it and the
 # gate checks it: one spelling, compared byte for byte.

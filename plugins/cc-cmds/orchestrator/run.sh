@@ -1934,14 +1934,20 @@ implement_slice_count() {
 # gate's check of a seat answer to a `/ ladder-unsettled` halt record. Every
 # key is read in the tolerant spelling `^(- )?(\*\*<key>\*\*|<key>): <value>$`.
 #
+# Every reader here reads its input to the end and stops printing instead of
+# calling `exit`: the gate runs under `set -o pipefail`, and a reader that left
+# early would kill `defenced` with SIGPIPE on a document whose remainder is
+# larger than the pipe buffer, turning a match into status 141.
+#
 # residual_item_lines <doc> <R<n>> — the item's body, heading excluded.
 residual_item_lines() {
   defenced "$1" | RIL_LABEL="$2" awk '
-    /^## / { if (inr) exit }
+    done { next }
+    /^## / { if (inr) { done = 1; next } }
     $0 == "## 구현 시 검증 항목" { inr = 1; next }
     !inr { next }
     /^### / {
-      if (inb) exit
+      if (inb) { done = 1; next }
       if (match($0, /^### R[0-9]+/) && substr($0, 5, RLENGTH - 4) == ENVIRON["RIL_LABEL"]) inb = 1
       next
     }
@@ -1953,13 +1959,14 @@ residual_item_lines() {
 # blanks trimmed; nothing when the item or the key is absent.
 residual_item_value() {
   residual_item_lines "$1" "$2" | RIV_KEY="$3" awk '
+    found { next }
     {
       k = ENVIRON["RIV_KEY"]; s = $0
       sub(/^- /, "", s)
       if (index(s, "**" k "**: ") == 1) s = substr(s, length(k) + 7)
       else if (index(s, k ": ") == 1) s = substr(s, length(k) + 3)
       else next
-      sub(/[ \t\r]+$/, "", s); print s; exit
+      sub(/[ \t\r]+$/, "", s); print s; found = 1
     }
   '
 }
@@ -1968,7 +1975,8 @@ residual_item_value() {
 # still reads `구현 시 검증`, one per line, in document order.
 residual_items_pending() {
   defenced "$1" | awk '
-    /^## / { if (inr) exit }
+    done { next }
+    /^## / { if (inr) { done = 1; next } }
     $0 == "## 구현 시 검증 항목" { inr = 1; next }
     !inr { next }
     /^### / { label = ""; if (match($0, /^### R[0-9]+/)) label = substr($0, 5, RLENGTH - 4); next }
@@ -1996,15 +2004,18 @@ residual_item_block_class() {
 # residual_item_w3_marked <doc> <R<n>> — 0 when the item's `필요한 것` line is
 # the W3 form `**필요한 것**: 저장소 <경로> · 프로필 <이름> — 존재 확인 <date>`.
 residual_item_w3_marked() {
-  residual_item_lines "$1" "$2" \
-    | grep -qE '^(- )?(\*\*필요한 것\*\*|필요한 것): 저장소 [^ ]+ · 프로필 [^ ]+ — 존재 확인 [0-9]{4}-[0-9]{2}-[0-9]{2}$'
+  local body
+  body=$(residual_item_lines "$1" "$2") || return 1
+  grep -qE '^(- )?(\*\*필요한 것\*\*|필요한 것): 저장소 [^ ]+ · 프로필 [^ ]+ — 존재 확인 [0-9]{4}-[0-9]{2}-[0-9]{2}$' <<<"$body"
 }
 
 # residual_item_after_explicit <doc> <R<n>> — 0 when the item states
 # `검증 시점: 구현 후` on a line of its own: the same anchored line
 # residual_share_missing excuses.
 residual_item_after_explicit() {
-  residual_item_lines "$1" "$2" | grep -qE '^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 후[ \t]*$'
+  local body
+  body=$(residual_item_lines "$1" "$2") || return 1
+  grep -qE '^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 후[ \t]*$' <<<"$body"
 }
 
 # ---------------------------------------------------------------------------

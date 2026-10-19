@@ -26704,6 +26704,21 @@ EOF
         fi
         hpre="자동 채택(구속-이탈) — "
       fi
+      # A PERSON'S `골격 재검토` ON A RESIDUAL LADDER WAITS FOR THE KEY TO GO
+      # QUIET. A row written while an attempt of the key is running — the
+      # design stage re-attached on the seat's `잔여로 두고 동결` — is taken up
+      # by that attempt's `정상 완료` together with the seat's answer, and the
+      # design key's re-convergence then sees an answer a stage already took,
+      # whose previous answer is not a freeze: the person's review would be
+      # spent with nothing opened. Refused here, it is written again once the
+      # freeze row stands, and the after-the-freeze entry opens.
+      if [ "$hby" = "사람" ] && [ "$hopt" = "골격 재검토" ] && gate_stage_live_attempt "$seg"; then
+        case "$(sed -n 's/^\*\*스텝\*\*: //p' "$hrec" | sed -n '1p')" in
+          *'/ ladder-unsettled'*)
+            warn "단계($seg)에 살아 있는 시도가 있는 동안에는 잔여 사다리 기록에 사람의 「골격 재검토」 를 쓰지 않습니다 — 그 시도가 끝나 행이 선 뒤 다시 쓰세요: $hrec"
+            return "$GATE_EXIT_RULE" ;;
+        esac
+      fi
       if [ "$hby" != "사람" ]; then
         gate_halt_auto_answer_admit "$seg" "$hrec" "$hopt" || return "$?"
         gate_halt_auto_answer_current "$seg" "$hrec" || return "$?"
