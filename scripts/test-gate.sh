@@ -35940,8 +35940,8 @@ CB60_PREV_RO="${CC_GATE_TOKEN_RO:-}"
 export CC_GATE_TOKEN_RO=cb60-ro-fixture
 # 확인 고리의 잠은 함수로 지운다. 게이트의 상수는 소싱한 쪽에만 있어 이 셸에서 바꿀 수
 # 없다. 내보내지 않은 함수라 게이트가 띄우는 자식 프로세스에는 닿지 않고, 횟수
-# (`GATE_CI_RERUN_CONFIRM_TRIES`)는 그대로 잰다.
-sleep() { :; }
+# (`GATE_CI_RERUN_CONFIRM_TRIES`)는 그대로 잰다. 실제 명령을 가리는 함수는 헬퍼 안에서
+# 정의하고 절 끝에서 `unset -f` 로 되돌린다.
 CB60_ROOT="$WORK/cb60"; rm -rf "$CB60_ROOT"; mkdir -p "$CB60_ROOT"
 CB60_STUB="$CB60_ROOT/gh"
 cat > "$CB60_STUB" <<'CB60EOF'
@@ -35987,8 +35987,12 @@ CB60EOF
 chmod +x "$CB60_STUB"
 # 대역 경로도 내보낸다. 게이트 쪽은 내보내지 않은 변수를 지운 뒤 함수 본문을 펼친다.
 export CB60_STUB
-gh() { "$CB60_STUB" "$@"; }
-export -f gh
+cb60_shadow() {
+  sleep() { :; }
+  gh() { "$CB60_STUB" "$@"; }
+  export -f gh
+}
+cb60_shadow
 export CB60_S="$CB60_ROOT/s0"
 # 기본 브랜치와 세그먼트 tip 에 같이 두는 워크플로. `on` 아래에 기본 브랜치의 파일로
 # 발화하는 사건 키가 없고, 환경 키도 재사용 워크플로 참조도 없다.
@@ -36312,13 +36316,13 @@ for cb60_case in post500 post403 attempt screen; do
   cb60_na=$(cb60_n '자율 승인'); cb60_l0=$(grep -c . "$SA_LEDGER" || true)
   cb60_park 재실행요청실패 "gate:777" "받지 않은 요청 $cb60_case" performer
   cb60_cl=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -2)
-  cb60_got="$(printf '%s\n' "$cb60_cl" | head -1 | tr '|' '\n' | sed -n 's/^ *상태=//p' | tr -d ' ')>$(sa_field "$(printf '%s\n' "$cb60_cl" | tail -1)" 상태):$(sa_field "$(printf '%s\n' "$cb60_cl" | tail -1)" 응답)"
+  cb60_got="$(printf '%s\n' "$cb60_cl" | sed -n '1p' | tr '|' '\n' | sed -n 's/^ *상태=//p' | tr -d ' ')>$(sa_field "$(printf '%s\n' "$cb60_cl" | tail -1)" 상태):$(sa_field "$(printf '%s\n' "$cb60_cl" | tail -1)" 응답)"
   case "$cb60_got" in "요청>실패:"*"$cb60_want"*) ;; *) cb60_fail_post="$cb60_fail_post[$cb60_case $cb60_got]" ;; esac
   check "60b: 받지 않은 요청 뒤 다음은 CI 재실행 이다 ($cb60_case)" "$(cb60_next)" "CI 재실행"
   if [ "$cb60_case" = post500 ]; then
     # 수행자 park 의 원장 순서 — 행위 전 자율 승인, 요청, 실패, blocked, 행위 뒤 자율 승인.
     # 창은 첫 행위 직전의 원장 끝에서 연다 — 둘째 같은 행위는 행을 쓰지 않는다.
-    cb60_seq=$( sed -n "$((cb60_l0 + 1)),\$p" "$SA_LEDGER" | grep '^- `' | head -5 | sed -E 's/^- `([^`]*)` .*상태=([^ |]*).*$/\1:\2/; s/^- `([^`]*)` .*$/\1/' | tr '\n' ' ')
+    cb60_seq=$( sed -n "$((cb60_l0 + 1)),\$p" "$SA_LEDGER" | grep '^- `' | awk 'NR<=5' | sed -E 's/^- `([^`]*)` .*상태=([^ |]*).*$/\1:\2/; s/^- `([^`]*)` .*$/\1/' | tr '\n' ' ')
     check "60b: POST 500 의 원장 순서가 자율 승인·요청·실패·blocked·자율 승인 이다" \
       "$cb60_seq" "자율 승인 CI 처분:요청 CI 처분:실패 blocked 자율 승인 "
     case "$(cb60_last '자율 승인')" in *'rc=11'*) ok "60b: 행위 뒤 자율 승인이 rc=11 을 근거로 싣는다" ;;
@@ -36471,8 +36475,11 @@ pre_reach
 CC60C_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC60C_LOG="$WORK/cc60c-gh.log"; : > "$CC60C_LOG"
 export CC60C_LOG
-gh() { printf '%s\n' "$*" >> "$CC60C_LOG"; printf '{}\n'; return 0; }
-export -f gh
+cc60c_shadow() {
+  gh() { printf '%s\n' "$*" >> "$CC60C_LOG"; printf '{}\n'; return 0; }
+  export -f gh
+}
+cc60c_shadow
 # `timeout`·`gtimeout` 처럼 함수 대역을 거치지 않는 철자는 PATH 의 실제 gh 를 실행한다.
 # 그 gh 가 사람의 자격 증명을 싣고 나가지 않도록, 스위트의 오프라인 가드
 # (GH_HOST=invalid.invalid) 아래에서 이 절 동안 게이트의 읽기 토큰은 픽스처 값이다 — 비어
