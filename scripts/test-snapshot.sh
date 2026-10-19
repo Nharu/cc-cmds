@@ -2568,9 +2568,16 @@ rm -rf "$SHR_DIR"
 # ---------------------------------------------------------------------------
 RC_SKILL="$repo_root/plugins/cc-cmds/skills/design-reconverge/SKILL.md"
 AU_SKILL="$repo_root/plugins/cc-cmds/skills/design-audit-unattended/SKILL.md"
+# The audit's answer handling lives in the sidecar's §4.1: the skill's own
+# bytes count toward its lead's pre-dispatch read ceiling.
+AU_ANS="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
 SEAT_REF="$AP_REFS/act2-seat.md"
 has(){ if grep -qF -- "$2" "$1"; then echo 예; else echo 아니오; fi; }
-for f in "$RC_SKILL" "$AU_SKILL"; do
+check "design-audit-unattended: 재개와 운반 재진입은 사이드카 4.1 을 읽는다" \
+  "$(has "$AU_SKILL" "or started with \`CC_PIPELINE_HALT_ANSWER\` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), Reads \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 before anything else")" 예
+check "design-audit-unattended: 종합 정지 전에 사이드카 4.1 의 조정 처분을 쓴다" \
+  "$(has "$AU_SKILL" "Read \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 and write its \`## 조정 처분\` block into the report")" 예
+for f in "$RC_SKILL" "$AU_ANS"; do
   b=$(basename "$(dirname "$f")")
   check "$b: 재진입 때 계산한 질문이 다르면 새 정지 기록을 쓴다" \
     "$(has "$f" "do not apply the answer: write a new halt record for the question computed now, with the card's path in its \`관측 상세\`.")" 예
@@ -2584,9 +2591,9 @@ check "design-reconverge: 기준선은 디스크가 아니라 기록에서 읽�
 check "design-reconverge: 정지 기록이 범위와 두 기준선을 싣는다" \
   "$(has "$RC_SKILL" "- \`범위=<the scope as handed>\` — for an \`R<n>\` scope exactly \`범위=R<n>\`.")" 예
 check "design-audit-unattended: 1–5단계 건너뛰기는 문서 sha256 에 묶인 처분에서만" \
-  "$(has "$AU_SKILL" "**Skip Steps 1–5 only on a disposition bound to the document's bytes.**")" 예
+  "$(has "$AU_ANS" "**Skip Steps 1–5 only on a disposition bound to the document's bytes.**")" 예
 check "design-audit-unattended: 종합 정지 전에 조정 처분과 조정 뒤 sha256 을 쓴다" \
-  "$(has "$AU_SKILL" "then \`**조정 뒤 문서 sha256**: <64 hex>\`")" 예
+  "$(has "$AU_ANS" "then \`**조정 뒤 문서 sha256**: <64 hex>\`")" 예
 check "교대 계약: 정지 답은 운반 act 로 낸다" \
   "$(has "$RS_SKILL" "--carry-answer <line> \\")" 예
 check "교대 계약: --resume 재부착은 19 뒤에만" \
