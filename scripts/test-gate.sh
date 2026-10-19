@@ -2507,9 +2507,11 @@ STUBAUHEOF
 #!/usr/bin/env bash
 mkdir -p "$CC_PIPELINE_RUN_DIR/halt"
 printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=$CC_PIPELINE_RUN_ID -->" \
-  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — 종합 질문' \
-  '**분류**: precondition-failed' '**질문 문면**: 함께 함의하는 요구를 어떻게 처리할까요?' '**선택지**:' \
+  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 함께 함의하는 요구를 어떻게 처리할까요?' '**선택지**:' \
   '- `adopt as a requirement` — 요구로 채택한다' '- `reject` — 기각한다' \
+  '**추천**: `adopt as a requirement` — 함께 함의하는 요구가 인터뷰 기록의 목표에 든다' \
+  '**추천 근거**: 기기 사실:픽스처의 감사가 종합 요구를 냈다' \
   '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-park","num_turns":1,"result":"종합 질문에서 멈춥니다."}\n'
 exit 0
@@ -11143,7 +11145,7 @@ cont3_15d=$(awk '/^#### Continuing a stage that ended its turn in prose$/ { f = 
                  f && /^3\. \*\*Exit 3 is the gate declining\.\*\*/ { print; exit }' \
             "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
 case "$cont3_15d" in
-  *"the design step has no \`segment\` row, so that form is refused for it"*"stops the design instead"*)
+  *"a segment takes the crash arm's \`blocked\` form"*"for the design step, item 1 of 「Dispatching the design stage」 stops the design instead"*)
     ok "15d: 교대 사본 계속 절 item 3 이 막힘 행을 세그먼트로 한정하고 설계 단계를 설계 중단으로 보낸다" ;;
   *) bad "15d 교대 사본 계속 절 item 3" "${cont3_15d:-(절을 찾지 못했다)}" ;;
 esac
@@ -11591,7 +11593,7 @@ rm -f "$WT/$DOC15EN"
 
 # ---------------------------------------------------------------------------
 # 15e-2. An adopted composed requirement re-converges on the run-scope audit's key
-# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-2: 설계 단계 없는 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15e-2: 그 줄만 남으면 처분은 무효화다, 15e-2: 재수렴 뒤의 감사 단계는 닫힌 것으로 읽히지 않는다 ---
+# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-2: 설계 단계 없는 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15e-2: 그 줄만 남으면 처분은 무효화다, 15e-2: 재수렴 뒤의 감사 단계는 닫힌 것으로 읽히지 않는다, 15e-2: 라우팅 막힘은 같은 키의 뒤 시도로 풀리지 않는다 ---
 #
 # An audit with no segment asks a person whether to adopt the requirement its
 # findings compose, and parks on purpose. When the person adopts it, the router
@@ -11704,6 +11706,104 @@ er15_resume sau-park
 check "15e-2: 감사 세션을 잇는 --resume 재수렴은 거부된다" "$rc" "3"
 plan15er audit "$audit15er"
 check "15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다" "$rc" "0"
+
+# THE SAME SYNTHESIS PARKED AGAIN GOES TO A PERSON. The key already ran a
+# re-convergence, so the seat's automatic adoption would loop the same repair:
+# the gate refuses it, the record stays a question, and a person's adoption
+# routes like the first.
+au15_dispatch R15ER "$STUB_AU_PARK" audit "$audit15er"
+au15_wait R15ER A1
+check "15e-2 픽스처의 새 감사도 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15ER A1 audit)" "의도된 park"
+er15_rec3="$RD15ER/halt/A1#3.md"
+er15_led="$WT/docs/pipeline-run/R15ER.md"
+check "15e-2: 새 감사의 기록이 A1#3 에 선다 (아래가 공허하지 않다)" "$( [ -f "$er15_rec3" ] && printf yes || printf no)" "yes"
+er15_ans() {  # er15_ans <답한 주체> [argv…] — an answer to A1#3
+  local by="$1"; shift
+  gateL act --manifest "$M15ER" --kind halt-answer --target infra --segment A1 --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H R15ER)" --rationale x -- "중단 기록=$er15_rec3" "답한 주체=$by" "$@"
+}
+er15_prev_ar="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+printf '%s\n' '추천 근거 인용: 픽스처의 인용 (픽스처.md:1)' '되돌리는 법: 다른 선택지로 다시 답한다' > "$RD15ER/halt/A1#3.answer.md"
+er15_ans 좌석 '근거=기록의 추천을 고름' "첨부=$RD15ER/halt/A1#3.answer.md"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$er15_prev_ar"
+check "15e-2: 재수렴을 돌린 감사 키의 두 번째 자동 채택은 rc 3 이다" "$rc" "3"
+case "$msg" in
+  *"같은 감사 키를 두 번 재수렴하려면 사람의 답이 필요합니다 — A1 는 이미 재수렴을 돌렸습니다"*)
+    ok "15e-2: 그 거부는 감사 키 상한의 고정 문면을 든다" ;;
+  *) bad "15e-2 감사 키 상한 문면" "$msg" ;;
+esac
+check "15e-2: 거절된 자동 채택 뒤 그 기록은 답 없는 기록이다" "$(cc_unanswered_halts "$RD15ER" "$er15_led")" "1"
+er15_ans 사람 '선택지=adopt as a requirement' '근거=사람이 요구로 다시 채택'
+check "15e-2: 같은 키의 사람 채택은 통과한다" "$rc" "0"
+check "15e-2: 스냅숏이 그 답의 route 를 감사-재수렴으로 내놓는다" \
+  "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -r '[.answered_halts[] | .route] | last // ""')" "감사-재수렴"
+plan15er reconverge "$reconv15er"
+check "15e-2: 그 사람 채택을 실행할 두 번째 - reconverge 파견의 plan 이 통과한다" "$rc" "0"
+
+# A RUN-SCOPE STEP ANCHORS THE ROUTING BLOCK. The shift could not carry the
+# adoption out and hands it back; the step has no segment row, and the cone is
+# the step itself.
+er15_ln=$(grep -n '^- `중단 답` ' "$er15_led" | tail -1 | cut -d: -f1)
+er15_why='중단 답 라우팅 — A1#3.md — 재수렴을 띄울 수 없다'
+er15_blk() {  # er15_blk <argv…> — a `blocked` act on the fixture run
+  gateL act --manifest "$M15ER" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H R15ER)" --rationale x -- "$@"
+}
+er15_fold() { cc_unresolved_blocked "$er15_led" | { grep -c . || true; }; }
+er15_f0=$(er15_fold)
+er15_blk 스코프=cone 원인=막힘 '앵커 세그먼트=ZZ9' "사유=$er15_why" "근거=중단 답 줄 $er15_ln"
+check "15e-2: 계획에 없는 앵커의 cone 은 rc 2 이다" "$rc" "2"
+er15_blk 스코프=cone 원인=막힘 '앵커 세그먼트=A1' "사유=$er15_why" "근거=중단 답 줄 $er15_ln"
+er15_brow=$( { grep -F '`blocked`' "$er15_led" || true; } | tail -1)
+er15_field() { printf '%s' "$er15_brow" | tr '|' '\n' | sed -n "s/^ *$1=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+check "15e-2: 감사 단계에 앵커한 라우팅 막힘이 서고 막힌 답 줄이 찍힌다" \
+  "$rc/$(er15_field '막힌 답 줄')/$(er15_field '의존 세그먼트')" "0/$er15_ln/A1"
+check "15e-2: 감사 단계 앵커의 막힘을 막힘 접기가 하나 더 센다" "$(er15_fold)" "$((er15_f0 + 1))"
+check "15e-2: 되돌려진 기록은 답 없는 기록으로 다시 센다" "$(cc_unanswered_halts "$RD15ER" "$er15_led")" "1"
+check "15e-2: 스냅숏의 returned_halts 가 그 기록을 내놓는다" \
+  "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -r '[.returned_halts[] | .record] | last // ""')" "$er15_rec3"
+er15_ans 사람 '선택지=reject' '근거=사람이 기각으로 바꿈'
+check "15e-2: 되돌려진 기록에 쓴 사람의 새 답이 선다" "$rc" "0"
+# A later attempt of the step does not release the routing block: its row
+# carries no lineage, so only the release row below does. A copy of the ledger
+# takes the later attempt, beside a deadline-park-shaped row whose own lineage
+# that attempt does release, so the first assertion is not vacuous.
+er15_lin="$RD15ER/er15-lineage.md"
+cp "$er15_led" "$er15_lin"
+printf -- '- `blocked` | 교대=1 | 대상=infra | 스코프=cone | 원인=막힘 | 앵커 세그먼트=A1 | 사유=마감 초과 — 대조 | 근거=계보=B:A1#9 대조 | prev=x\n' >> "$er15_lin"
+printf -- '- `stage-result` | 교대=1 | 세그먼트=- | 스테이지=A1 | 종류=audit | 실행 버전=10 | 계보=B:A1#10 | 종단 부류=정상 완료 | prev=x\n' >> "$er15_lin"
+check "15e-2: 계보를 실은 마감 park 모양 행은 같은 키의 뒤 시도가 푼다" \
+  "$(cc_unresolved_blocked "$er15_lin" | { grep -cF '마감 초과 — 대조' || true; })" "0"
+check "15e-2: 라우팅 막힘은 같은 키의 뒤 시도로 풀리지 않는다" \
+  "$(cc_unresolved_blocked "$er15_lin" | { grep -cF "$er15_why" || true; })" "1"
+rm -f "$er15_lin"
+er15_blk 스코프=run 원인=해소 "사유=$er15_why" '근거=사람이 새 답을 남겼다'
+check "15e-2: 같은 사유의 스코프=run 원인=해소 가 감사 단계 앵커의 막힘을 푼다" "$rc" "0"
+check "15e-2: 새 답 뒤에는 답 없는 기록이 없다" "$(cc_unanswered_halts "$RD15ER" "$er15_led")" "0"
+check "15e-2: 해소 뒤 막힘 접기가 막힘 전의 수로 돌아온다" "$(er15_fold)" "$er15_f0"
+check "15e-2: 해소 행은 도장을 받지 않아 사람의 새 답이 answered_halts 에 남고 returned_halts 는 빈다" \
+  "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -r '"\([.answered_halts[] | select(.record | endswith("A1#3.md")) | .option] | last // "")/\(.returned_halts | length)"')" "reject/0"
+
+# THE AUDIT STEP'S DEADLINE PARK IS A CONE ROW. The anchor check used to accept
+# only the design step, so an audit key fell back to an act-scope row.
+er15_dl=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$1" >/dev/null 2>&1 || exit 9
+  set +e
+  unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+  MANIFEST=$2; RUN_ID=$3; RUN_DIR=$4; LEDGER=$5; GRANT=""
+  gate_wait_deadline_park infra - A1 B:A1#9 2026-01-01T00:00:00Z 픽스처 "" "다시 파견" 2>&1
+' _ "$GATE" "$M15ER" R15ER "$RD15ER" "$er15_led")
+er15_dlrow=$( { grep -F '`blocked`' "$er15_led" || true; } | { grep -F '사유=마감 초과 — A1 ' || true; } | tail -1)
+case "$er15_dlrow" in
+  *"스코프=cone"*"앵커 세그먼트=A1 "*) ok "15e-2: 감사 단계의 마감 park 는 그 단계에 앵커한 cone 행이다" ;;
+  *) bad "15e-2 감사 단계 마감 park 행" "행: $er15_dlrow / 출력: $er15_dl" ;;
+esac
+case "$er15_dl" in
+  *"an act-scope row stands in"*) bad "15e-2 감사 단계 마감 park 의 act 스코프 대체" "$er15_dl" ;;
+  *) ok "15e-2: 그 마감 park 는 act 스코프 행으로 대체되지 않는다" ;;
+esac
+check "15e-2: 감사 단계의 마감 park 를 막힘 접기가 센다" "$(er15_fold)" "$((er15_f0 + 1))"
 ( cd "$WT" && git worktree remove --force "$WT-run-R15ER-A1" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 rm -f "$WT/$DOC15ER"
@@ -13430,6 +13530,30 @@ case "$msg" in
   *"사이클 예산이 소진됐습니다"*"cycle 행 2개"*"상한 2"*) ok "15h: 그 거부는 cycle 행 수와 상한을 든다" ;;
   *) bad "15h 사이클 상한 문면" "$msg" ;;
 esac
+# The answer `구현 재파견` to an empty-target review stop is carried out by that
+# dispatch, so the gate refuses to record it on the same budget the dispatch
+# was just refused on; `세그먼트 park` still routes.
+mkdir -p "$RD15H/halt"
+h15_rec="$RD15H/halt/S2#9.md"
+{ printf '<!-- cc-pipeline-halt v1; writer=review-unattended; reader=orchestrator; stage=S2#9; run=R15HA -->\n'
+  printf '**스킬**: review-unattended\n**스텝**: Step 1b 빈 대상\n**분류**: gate-unanswerable\n'
+  printf '**질문 문면**: 리뷰할 커밋이 없습니다\n**선택지**:\n'
+  printf '%s\n' '- `구현 재파견` — 같은 계획으로 이 세그먼트의 구현 스테이지를 다시 보내 커밋을 만든 뒤 리뷰를 다시 받습니다' \
+    '- `세그먼트 park` — 이 세그먼트를 이 런에서 내려놓고 아침 보고서에 남깁니다'
+  printf '**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+} > "$h15_rec"
+h15_ans() {  # h15_ans <선택지> — a person's answer to that record
+  h15_act halt-answer "중단 기록=$h15_rec" "선택지=$1" '답한 주체=사람' '근거=사람이 고름'
+}
+h15_ans '구현 재파견'
+check "15h: 사이클 예산이 소진된 세그먼트의 구현 재파견 답은 rc 3 이다" "$rc" "3"
+case "$msg" in
+  *"라우팅 불가 — 세그먼트 S2 의 사이클 예산이 소진돼(cycle 행 2개, 상한 2) 구현 재파견이 거절됩니다"*"실행할 수 있는 선택지: 세그먼트 park"*)
+    ok "15h: 그 거부는 파견 거부와 같은 cycle 행 수와 상한을 든다" ;;
+  *) bad "15h 구현 재파견 답 문면" "$msg" ;;
+esac
+h15_ans '세그먼트 park'
+check "15h: 같은 기록의 세그먼트 park 답은 통과한다" "$rc" "0"
 h15_plan lead-fix "/cc-cmds:review-unattended seg/R15HA-S2 --report-path $WORK/rv15h.md --lead-fix $WORK/rv15h-2.md \"설계는 $BRIEF15H\""
 check "15h: 상한은 구현 파견에만 걸리고 리드 수정 파견은 통과한다" "$rc" "0"
 h15_plan lead-fix "/cc-cmds:review-unattended seg/R15HA-S2 --lead-fix $WORK/rv15h-2.md \"설계는 $WT/docs/other-design.md\""
@@ -29538,6 +29662,298 @@ do
 done
 check "34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다" "$seb_lits" "6"
 
+# --- 34n. 답의 라우팅 — 갈래가 없는 답은 누구의 것이든 기록되지 않고, 교대가 되돌린 답은 다시 질문이 된다 ---
+# --- section: 34n | group: cone | covers: act, snapshot | anchors: 34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다, 34n: 같은 감사 키의 두 번째 자동 채택은 거절된다, 34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다, 34n: 되돌려진 기록의 좌석 자동 답은 거절된다 ---
+#
+# AN ANSWER NO BRANCH OF THE SHIFT CAN CARRY OUT IS NOT RECORDED. Recorded, it
+# sat in `answered_halts[]` as answered while the shift could only stop on it,
+# so every reader that counts unanswered records passed over a question a
+# person still had to answer. The gate now asks the shift's route for every
+# writer, a person included, and refuses with the reason and the labels that do
+# route. One route per case below, each with the pair that passes.
+#
+# AN ANSWER THE SHIFT RETURNS IS A QUESTION AGAIN. What moves between the
+# answer and its dispatch — the stream the shift reads before `--resume` — is
+# refused only when the shift acts, so the shift writes a routing block and the
+# gate stamps it with the answer's line: the answer is spent, the record lists
+# in `returned_halts[]`, and only a person answers it again.
+RRT_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+RRT_RID=RRT1
+cap_fx_new "$RRT_RID"
+mkdir -p "$CAP_DIR/halt/shift"
+RRT_SEAT="8e8e8e8e-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RRT_SEAT.jsonl"
+rrt_seg() {  # rrt_seg <id> <상태> — a segment row the seat writes
+  cap_gate "$RRT_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$1" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RRT_SEAT" '')" \
+           --rationale x -- 워크트리="$CONE_A" "상태=$2" 선행=없음
+}
+rrt_sr() {  # rrt_sr <키> <종류> <실행 버전> <종단 부류> [세션 id]
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=%s | 실행 버전=%s | 세션 id=%s | 종단 부류=%s | prev=x\n' \
+    "$1" "$1" "$2" "$3" "${5:-s-$1-$3}" "$4" >> "$CAP_LEDGER"
+}
+rrt_rec() {  # rrt_rec <파일> <stage> <스킬> <스텝> [선택지·추천 줄…] — a stage's halt record
+  local f="$1" st="$2" sk="$3" step="$4"; shift 4
+  { printf '<!-- cc-pipeline-halt v1; writer=%s; reader=orchestrator; stage=%s; run=%s -->\n' "$sk" "$st" "$RRT_RID"
+    printf '**중단 시각**: 2026-10-18T00:00:00Z\n**스킬**: %s\n**스텝**: %s\n' "$sk" "$step"
+    printf '**분류**: gate-unanswerable\n**질문 문면**: 픽스처의 질문\n**선택지**:\n'
+    printf '%s\n' "$@"
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$f"
+}
+rrt_person() {  # rrt_person <키> <기록> <선택지>
+  cap_gate "$RRT_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$1" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RRT_SEAT" '')" \
+           --rationale "픽스처 — 사람의 답" -- "중단 기록=$2" "선택지=$3" '답한 주체=사람' '근거=사람이 고름'
+}
+rrt_seat() {  # rrt_seat <키> <기록> — the seat's automatic answer, attachment beside it
+  local att="${2%.md}.answer.md"
+  printf '%s\n' '추천 근거 인용: 픽스처의 인용 (픽스처.md:1)' '되돌리는 법: 다른 선택지로 다시 답한다' > "$att"
+  cap_gate "$RRT_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$1" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RRT_SEAT" '')" \
+           --rationale "픽스처 — 좌석의 자동 답" \
+           -- "중단 기록=$2" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$att"
+}
+rrt_ha() { { cap_rows '중단 답' | grep -c . || true; } | tr -d ' '; }
+rrt_route() {  # rrt_route <기록> — that record's answered_halts element as route|route_refusal, or nothing
+  cap_snap "$RRT_SEAT" '' | jq -r --arg r "$1" \
+    '[.answered_halts[] | select(.record == $r) | "\(.route)|\(.route_refusal)"] | last // ""'
+}
+rrt_has() {  # rrt_has <이름> <문면> — the last refusal's text carries that text
+  case "$msg" in
+    *"$2"*) ok "34n: $1" ;;
+    *) bad "34n: $1" "$msg" ;;
+  esac
+}
+RRT_OPTS_IMPL='- `재시도` — 같은 세션을 다시 붙여 이어 간다'
+RRT_OPTS_HOLD='- `보류` — 사람이 처분을 정한다'
+
+# 재부착 — the key's last settled attempt left no session to resume.
+rrt_seg RT1 실행중; rrt_s1=$rc
+rrt_sr RT1 implement 1 '의도된 park' 미상
+RRT_R1="$CAP_DIR/halt/RT1#1.md"
+rrt_rec "$RRT_R1" 'RT1#1' implement-unattended 'Step 3 — 픽스처의 정지' "$RRT_OPTS_IMPL" "$RRT_OPTS_HOLD"
+rrt_h0=$(rrt_ha)
+rrt_person RT1 "$RRT_R1" '보류'
+check "34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다" "$rrt_s1/$rc/$(rrt_ha)" "0/3/$rrt_h0"
+rrt_has "그 거절은 이유를 든다" "라우팅 불가 — RT1 의 마지막 정산 stage-result 행에 세션 id 가 없어(세션 id=미상)"
+rrt_has "그 거절은 실행할 수 있는 선택지가 없다고 말한다" "실행할 수 있는 선택지: 없음"
+rrt_sr RT1 implement 2 '의도된 park'
+RRT_R1B="$CAP_DIR/halt/RT1#2.md"
+rrt_rec "$RRT_R1B" 'RT1#2' implement-unattended 'Step 3 — 픽스처의 정지' "$RRT_OPTS_IMPL" "$RRT_OPTS_HOLD"
+rrt_person RT1 "$RRT_R1B" '보류'
+check "34n: 세션 id 가 있는 키의 사람 답은 선다" "$rc/$(rrt_ha)" "0/$((rrt_h0 + 1))"
+check "34n: 스냅숏이 그 답의 route 를 재부착으로 내놓는다" "$(rrt_route "$RRT_R1B")" "재부착|"
+
+# 구속-재수렴 — the answer passes while the segment runs, the snapshot reads the
+# path closing when the segment parks, and a person's second `재수렴` is refused
+# while `보류` still re-attaches.
+rrt_seg RT2 실행중
+rrt_sr RT2 implement 1 '의도된 park'
+RRT_R2="$CAP_DIR/halt/RT2#1.md"
+rrt_rec "$RRT_R2" 'RT2#1' implement-unattended 'Step 3 CFI-U3 BT-STOP — 구속 티어와 충돌' \
+  '- `재수렴` — 같은 런의 교대가 설계 문서를 재수렴한다' "$RRT_OPTS_HOLD"
+rrt_person RT2 "$RRT_R2" '재수렴'
+check "34n: 실행 중인 세그먼트의 재수렴 답이 선다" "$rc" "0"
+check "34n: 스냅숏이 그 답의 route 를 구속-재수렴으로 내놓는다" "$(rrt_route "$RRT_R2")" "구속-재수렴|"
+rrt_seg RT2 park
+check "34n: 답 뒤에 세그먼트가 종단이 되면 route 는 비고 route_refusal 이 이유를 든다" \
+  "$rc/$(rrt_route "$RRT_R2")" "0/|세그먼트 RT2 가 이미 종단(상태=park)이라 교대가 이 답을 실행할 갈래가 없습니다"
+rrt_h0=$(rrt_ha)
+rrt_person RT2 "$RRT_R2" '재수렴'
+check "34n: 종단 세그먼트의 사람 재수렴 답은 라우팅 불가로 거절된다" "$rc/$(rrt_ha)" "3/$rrt_h0"
+rrt_has "그 거절은 재부착 갈래의 선택지만 남긴다" "실행할 수 있는 선택지: 보류"
+rrt_person RT2 "$RRT_R2" '보류'
+check "34n: 같은 기록의 보류 답은 선다" "$rc/$(rrt_route "$RRT_R2")" "0/재부착|"
+
+# 빈-대상 — an option outside the two the branch carries out.
+rrt_seg RT3 실행중
+rrt_sr RT3 review 1 '의도된 park'
+RRT_R3="$CAP_DIR/halt/RT3#1.md"
+rrt_rec "$RRT_R3" 'RT3#1' review-unattended 'Step 1b 빈 대상' \
+  '- `구현 재파견` — 같은 계획으로 이 세그먼트의 구현 스테이지를 다시 보내 커밋을 만든 뒤 리뷰를 다시 받습니다' \
+  '- `세그먼트 park` — 이 세그먼트를 이 런에서 내려놓고 아침 보고서에 남깁니다' "$RRT_OPTS_HOLD"
+rrt_h0=$(rrt_ha)
+rrt_person RT3 "$RRT_R3" '보류'
+check "34n: 빈 대상 리뷰 정지의 갈래 밖 답은 거절된다" "$rc/$(rrt_ha)" "3/$rrt_h0"
+rrt_has "그 거절은 갈래 둘을 든다" "빈 대상 리뷰 정지에는 \`보류\` 를 실행할 갈래가 없습니다"
+rrt_has "그 거절은 실행할 수 있는 선택지 둘을 든다" "실행할 수 있는 선택지: 구현 재파견, 세그먼트 park"
+rrt_person RT3 "$RRT_R3" '세그먼트 park'
+check "34n: 같은 기록의 세그먼트 park 답은 선다" "$rc/$(rrt_route "$RRT_R3")" "0/빈-대상|"
+
+# 감사-재수렴 on a segment key, and the automatic adoption once per key. A
+# re-convergence that ran took up the first adoption; the audit parked on the
+# synthesis again, and a second automatic adoption would loop the same repair.
+RRT_AUDIT_OPTS=('- `adopt as a requirement` — 요구로 채택한다' '- `record in the unresolved-issues section` — 미해결 이슈로 남긴다' \
+  '- `reject` — 기각한다' '**추천**: `adopt as a requirement` — 함께 함의하는 요구가 인터뷰 기록의 목표에 든다' \
+  '**추천 근거**: 기기 사실:픽스처의 감사가 종합 요구를 냈다')
+rrt_seg RT4 실행중
+rrt_sr RT4 audit 1 '의도된 park'
+RRT_R4="$CAP_DIR/halt/RT4#1.md"
+rrt_rec "$RRT_R4" 'RT4#1' design-audit-unattended 'Step 6 조정 패스 — CFI-3b 종합 질문' "${RRT_AUDIT_OPTS[@]}"
+rrt_seat RT4 "$RRT_R4"
+check "34n: 감사 종합 질문의 첫 자동 채택이 선다" "$rc/$(rrt_route "$RRT_R4")" "0/감사-재수렴|"
+rrt_sr RT4 reconverge 2 '정상 완료'
+rrt_sr RT4 audit 3 '의도된 park'
+RRT_R4B="$CAP_DIR/halt/RT4#3.md"
+rrt_rec "$RRT_R4B" 'RT4#3' design-audit-unattended 'Step 6 조정 패스 — CFI-3b 종합 질문' "${RRT_AUDIT_OPTS[@]}"
+rrt_h0=$(rrt_ha)
+rrt_seat RT4 "$RRT_R4B"
+check "34n: 같은 감사 키의 두 번째 자동 채택은 거절된다" "$rc/$(rrt_ha)" "3/$rrt_h0"
+rrt_has "그 거절은 고정 문면을 든다" "같은 감사 키를 두 번 재수렴하려면 사람의 답이 필요합니다 — RT4 는 이미 재수렴을 돌렸습니다(실행 버전 2, 종단 부류=정상 완료)"
+rrt_person RT4 "$RRT_R4B" 'adopt as a requirement'
+check "34n: 같은 키의 사람 채택은 상한을 받지 않고 감사-재수렴으로 간다" "$rc/$(rrt_route "$RRT_R4B")" "0/감사-재수렴|"
+# A re-convergence that crashed did nothing with the answer and is not counted.
+rrt_seg RT5 실행중
+rrt_sr RT5 audit 1 '의도된 park'
+rrt_sr RT5 reconverge 2 '크래시'
+rrt_sr RT5 audit 3 '의도된 park'
+RRT_R5="$CAP_DIR/halt/RT5#3.md"
+rrt_rec "$RRT_R5" 'RT5#3' design-audit-unattended 'Step 6 조정 패스 — CFI-3b 종합 질문' "${RRT_AUDIT_OPTS[@]}"
+rrt_seat RT5 "$RRT_R5"
+check "34n: 크래시로 끝난 재수렴은 감사 키의 자동 채택을 쓰지 않는다" "$rc" "0"
+# The same audit record without the literal is answered by re-attaching.
+rrt_seg RT7 실행중
+rrt_sr RT7 audit 1 '의도된 park'
+RRT_R7="$CAP_DIR/halt/RT7#1.md"
+rrt_rec "$RRT_R7" 'RT7#1' design-audit-unattended 'Step 6 조정 패스 — 종합 질문' "${RRT_AUDIT_OPTS[@]}"
+rrt_person RT7 "$RRT_R7" 'adopt as a requirement'
+check "34n: CFI-3b 문자열이 없는 감사 기록의 채택은 재부착으로 간다" "$rc/$(rrt_route "$RRT_R7")" "0/재부착|"
+
+# 교대-정지 — the next shift carries the answer out on the segment, so a key
+# with no segment row has nothing to carry it out on; a terminal segment does,
+# since two of the shift's stop sites arise after the segment's `머지됨` row.
+cap_gate "$RRT_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RRT_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34n: 픽스처의 교대 기동이 섰다" "$rc" "0"
+RRT_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RRT_SHIFT.jsonl"
+printf -- '- `segment` | 교대=0 | id=MG1 | 워크트리=%s | 상태=머지됨 | 선행=없음 | prev=x\n' "$CONE_A" >> "$CAP_LEDGER"
+cap_gate "$RRT_SHIFT" "$RRT_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment MG1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RRT_SHIFT" "$RRT_RID#1")" \
+         --rationale "픽스처 — 교대 정지" -- '자리=종료 조건 11 판독 불가' '질문=가지 끝을 다시 읽는가?' '관측=종료 조건 11 을 읽지 못했다'
+RRT_MG="$CAP_DIR/halt/shift/MG1#1.md"
+check "34n: 머지된 세그먼트의 교대 정지가 선다" "$rc/$( [ -f "$RRT_MG" ] && printf yes || printf no)" "0/yes"
+rrt_person MG1 "$RRT_MG" '재시도'
+check "34n: 머지된 세그먼트의 교대 기록에 쓴 사람의 재시도 답이 선다" "$rc/$(rrt_route "$RRT_MG")" "0/교대-정지|"
+rrt_person MG1 "$RRT_MG" '세그먼트 park'
+check "34n: 같은 기록에 다시 쓴 사람의 세그먼트 park 답도 선다" "$rc" "0"
+RRT_NS="$CAP_DIR/halt/shift/NS1#1.md"
+sed "s/stage=MG1#1;/stage=NS1#1;/" "$RRT_MG" > "$RRT_NS"
+printf -- '- `blocked` | 교대=0 | 대상=infra | 스코프=cone | 원인=막힘 | 앵커 세그먼트=NS1 | 사유=x | 근거=x | 중단 기록=%s | 기록 다이제스트=%s | prev=x\n' \
+  "$RRT_NS" "$(shasum -a 256 "$RRT_NS" | cut -d' ' -f1)" >> "$CAP_LEDGER"
+rrt_h0=$(rrt_ha)
+rrt_person NS1 "$RRT_NS" '재시도'
+check "34n: segment 행이 없는 키의 교대 기록에 쓴 답은 거절된다" "$rc/$(rrt_ha)" "3/$rrt_h0"
+rrt_has "그 거절은 segment 행이 없다고 말한다" "라우팅 불가 — NS1 에 segment 행이 없어"
+
+# The routing block. A person answered, the shift found the stream had not
+# shown the session started, and handed the record back.
+rrt_seg RT6 실행중
+rrt_sr RT6 implement 1 '의도된 park'
+RRT_R6="$CAP_DIR/halt/RT6#1.md"
+rrt_rec "$RRT_R6" 'RT6#1' implement-unattended 'Step 3 — 픽스처의 정지' "$RRT_OPTS_IMPL" "$RRT_OPTS_HOLD" \
+  '**추천**: `재시도` — 같은 세션이 이어 가면 된다' '**추천 근거**: 기기 사실:픽스처의 측정'
+rrt_person RT6 "$RRT_R6" '보류'
+check "34n: 되돌림 픽스처의 사람 답이 선다 (아래가 공허하지 않다)" "$rc" "0"
+rrt_ln=$(grep -n '^- `중단 답` ' "$CAP_LEDGER" | tail -1 | cut -d: -f1)
+rrt_un0=$(cc_unanswered_halts "$CAP_DIR" "$CAP_LEDGER")
+rrt_block() {  # rrt_block <앵커> <사유> [argv…] — the shift's cone row
+  local a="$1" why="$2"; shift 2
+  cap_gate "$RRT_SHIFT" "$RRT_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RRT_SHIFT" "$RRT_RID#1")" \
+           --rationale "픽스처 — 라우팅 막힘" -- 스코프=cone 원인=막힘 "앵커 세그먼트=$a" "사유=$why" "$@"
+}
+rrt_block RT6 '중단 답 라우팅 — RT6#1.md — 스트림이 세션 시작을 보이지 않는다' "근거=중단 답 줄 $rrt_ln" "막힌 답 줄=$rrt_ln"
+check "34n: 막힌 답 줄을 인자로 넘긴 blocked 는 거절된다" "$rc" "2"
+rrt_block RT6 '중단 답 라우팅 — RT6#1.md — 스트림이 세션 시작을 보이지 않는다' "근거=중단 답 줄 $rrt_ln"
+rrt_brow=$(cap_rows 'blocked' | tail -1)
+check "34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다" "$rc/$(row_field "$rrt_brow" '막힌 답 줄')" "0/$rrt_ln"
+check "34n: 막힌 답은 answered_halts 에서 빠진다" "$(rrt_route "$RRT_R6")" ""
+check "34n: 스냅숏의 returned_halts 가 되돌려진 기록을 선택지·이유와 함께 내놓는다" \
+  "$(cap_snap "$RRT_SEAT" '' | jq -r --arg r "$RRT_R6" '[.returned_halts[] | select(.record == $r) | "\(.option)|\(.answered_by)|\(.answer_line)|\(.reason)"] | last // ""')" \
+  "보류|사람|$rrt_ln|스트림이 세션 시작을 보이지 않는다"
+check "34n: 되돌려진 기록은 답 없는 기록으로 다시 센다" "$(cc_unanswered_halts "$CAP_DIR" "$CAP_LEDGER")" "$((rrt_un0 + 1))"
+rrt_h0=$(rrt_ha)
+rrt_seat RT6 "$RRT_R6"
+check "34n: 되돌려진 기록의 좌석 자동 답은 거절된다" "$rc/$(rrt_ha)" "3/$rrt_h0"
+rrt_has "그 거절은 고정 문면을 든다" "교대가 이 기록의 답을 사람에게 되돌렸습니다"
+rrt_block RT6 '중단 답 라우팅 — RT6#1.md — 다시 막혔다' "근거=x"
+check "34n: 열린 답이 없는 기록을 든 라우팅 막힘 행은 서되 도장이 없다" \
+  "$rc/$(row_field "$(cap_rows 'blocked' | tail -1)" '막힌 답 줄')" "0/"
+cap_gate "$RRT_SHIFT" "$RRT_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RRT_SHIFT" "$RRT_RID#1")" \
+         --rationale "픽스처 — 세그먼트 앵커의 해소" -- 스코프=cone 원인=해소 '앵커 세그먼트=RT6' '사유=x' '근거=x'
+check "34n: 세그먼트 앵커 cone 의 원인=해소 는 거절된다" "$rc" "2"
+rrt_person RT6 "$RRT_R6" '재시도'
+check "34n: 되돌려진 기록에 쓴 사람의 새 답이 선다" "$rc/$(rrt_route "$RRT_R6")" "0/재부착|"
+check "34n: 새 답이 서면 returned_halts 에서 빠진다" \
+  "$(cap_snap "$RRT_SEAT" '' | jq -r --arg r "$RRT_R6" '[.returned_halts[] | select(.record == $r)] | length')" "0"
+check "34n: 새 답이 서면 답 없는 기록 수가 돌아온다" "$(cc_unanswered_halts "$CAP_DIR" "$CAP_LEDGER")" "$rrt_un0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$RRT_PREV_AR"
+
+# --- 34o. 답 라우팅의 문면 — 게이트의 경로 id 와 기록의 고정 문자열이 읽는 쪽 문서에 있다 ---
+# --- section: 34o | group: base | covers: act | anchors: 34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다, 34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다, 34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다, 34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다, 34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다 ---
+#
+# THE GATE DECIDES THE ROUTE, AND THREE DOCUMENTS HAVE TO AGREE WITH IT. The
+# shift maps each route id to its item, the stage skills write the literal the
+# gate keys the route on, and the seat reads the refusal's two lines. Each half
+# changes without the other failing anywhere else: a route the shift stops
+# naming leaves its answers on no item, a step line without the literal sends
+# an adoption to re-attachment, and the once-per-key and once-per-record
+# sentences the gate now enforces would tell the shift to refuse a person's
+# second answer the gate routes.
+RP_SKILLS="$repo_root/plugins/cc-cmds/skills"
+RP_SHIFT="$RP_SKILLS/autopilot-router-shift/SKILL.md"
+RP_LEAD="$RP_SKILLS/autopilot/references/router-lead-copy.md"
+RP_SEAT="$RP_SKILLS/autopilot/references/act2-seat.md"
+rp_ids=$(sed -n "s/^readonly GATE_HALT_ROUTES='\(.*\)'\$/\1/p" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh")
+rp_n=0; rp_miss=''
+for rp_id in $rp_ids; do
+  rp_n=$((rp_n + 1))
+  grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
+done
+check "34o: 게이트 선언에서 경로 id 다섯을 읽는다 (아래가 공허하지 않다)" "$rp_n" "5"
+check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
+rp_lits=0
+grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
+grep -qF -- 'CFI-U3 BT-STOP' "$RP_SKILLS/implement-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
+grep -qF -- '`**스텝**: Step 1b 빈 대상`' "$RP_SKILLS/review-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
+check "34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다" "$rp_lits" "3"
+rp_gate_lits=0
+for rp_lit in 'CFI-3b' 'CFI-U3 BT-STOP' 'Step 1b 빈 대상'; do
+  grep -qF -- "$rp_lit" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" && rp_gate_lits=$((rp_gate_lits + 1))
+done
+check "34o: 게이트의 경로 판정이 같은 세 문자열을 읽는다" "$rp_gate_lits" "3"
+check "34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다" \
+  "$(cat "$RP_SHIFT" "$RP_LEAD" | grep -cF -e '**Once per key.**' -e '**Once per record.**' || true)" "0"
+rp_seat=0
+for rp_lit in '`라우팅 불가 — <reason>`' '`실행할 수 있는 선택지: 없음`'; do
+  grep -qF -- "$rp_lit" "$RP_SEAT" && rp_seat=$((rp_seat + 1))
+done
+check "34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다" "$rp_seat" "2"
+rp_gate=0
+for rp_lit in 'warn "라우팅 불가 — ' 'warn "실행할 수 있는 선택지: ' \
+  'warn "같은 감사 키를 두 번 재수렴하려면 사람의 답이 필요합니다 — ' 'warn "교대가 이 기록의 답을 사람에게 되돌렸습니다 — '; do
+  grep -qF -- "$rp_lit" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" && rp_gate=$((rp_gate + 1))
+done
+check "34o: 게이트가 좌석이 읽는 거절 문면 넷을 그대로 낸다" "$rp_gate" "4"
+# A routing block carries no lineage, so no reader may be told that a later
+# dispatch of the step releases it. The counts below pass vacuously on a moved
+# file, so each file must be non-empty first.
+rp_files=0
+for rp_f in "$RP_SHIFT" "$RP_LEAD"; do [ -s "$rp_f" ] && rp_files=$((rp_files + 1)); done
+check "34o: 교대 스킬과 리드 사본이 비어 있지 않다 (아래가 공허하지 않다)" "$rp_files" "2"
+check "34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다" \
+  "$(grep -cF 'A later dispatch of the step releases the block as well' "$RP_SHIFT" || true)" "0"
+check "34o: 교대 스킬과 리드 사본에 뒤 시도나 해소 행이 단계 cone 을 푼다는 문장이 없다" \
+  "$(cat "$RP_SHIFT" "$RP_LEAD" | grep -cF 'until a later attempt of the step or a `원인=해소` row' || true)" "0"
+check "34o: 교대 스킬이 사람의 새 답을 넘기기 전에 런 범위 라우팅 막힘을 푼다고 적는다" \
+  "$(grep -cF '**Release a run-scope routing block first.**' "$RP_SHIFT" || true)" "1"
+
 # --- 34k. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
 # --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다 ---
 #
@@ -38367,9 +38783,10 @@ BSX_RESUME="$bsx_sid" bsx_launch RB1F "$WORK/bin/bsx-audit" audit \
 check "76:고정 문장으로 감사 세션을 재부착하는 --resume 파견은 기동한다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
 check "76:그 재부착이 감사 행을 하나 더 남긴다" \
   "$(bsx_rows RB1F '| 세그먼트=- | 스테이지=A1 | 종류=audit ' | grep -c . || true)" "2"
-# A person adopts the audit's composed requirement: the answer is keyed on the
-# audit step, the re-convergence rides on that key as `--segment -`, and its row
-# spends the answer.
+# A person adopts the audit's composed requirement on an audit that ended
+# `정상 완료`. The re-convergence that answer needs is keyed on an audit that
+# parked on purpose, so no path of this run carries it out: the gate refuses the
+# answer when it is written, a person's included, and writes nothing.
 mkdir -p "$BSX_STATE/cc-cmds/run/RB1F/halt"
 BSX_HALTREC="$BSX_STATE/cc-cmds/run/RB1F/halt/A1#1.md"
 printf '%s\n' '<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=design-audit-unattended; run=RB1F -->' \
@@ -38380,12 +38797,17 @@ printf '%s\n' '<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=
 gateB act --manifest "$WORK/bsx-RB1F.md" --kind halt-answer --target infra --segment A1 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(bsx_H "$WORK/bsx-RB1F.md")" --rationale "픽스처 — 좌석의 답" \
   -- "중단 기록=$BSX_HALTREC" '선택지=adopt as a requirement' '답한 주체=사람' '근거=사람이 요구로 채택'
-check "76:감사 단계 키의 중단 답을 좌석이 쓴다" "$rc" "0"
-check "76:스냅숏이 그 답을 감사 단계 키로 내놓는다" \
-  "$(bsx_snap "$WORK/bsx-RB1F.md" | jq -c '[.answered_halts[]? | .segment]')" '["A1"]'
-# The answer alone does not open a re-convergence: this audit ended `정상 완료`,
-# which is not the state a composed requirement is asked in, so the dispatch
-# still meets the segment-row refusal.
+check "76:정상 완료 감사 키에 쓴 사람의 채택은 기록 시점에 거절된다" "$rc" "3"
+case "$msg" in
+  *"라우팅 불가 — 감사 단계 A1 의 마지막 행이 의도된 park 로 끝난 감사가 아니어서"*"실행할 수 있는 선택지: reject"*)
+    ok "76:그 거절은 라우팅 불가 이유와 실행할 수 있는 선택지를 든다" ;;
+  *) bad "76:그 거절은 라우팅 불가 이유와 실행할 수 있는 선택지를 든다" "$msg" ;;
+esac
+check "76:거절된 채택은 스냅숏에 오르지 않는다" \
+  "$(bsx_snap "$WORK/bsx-RB1F.md" | jq -c '[.answered_halts[]? | .segment]')" '[]'
+# Nor does the dispatch open a re-convergence: this audit ended `정상 완료`,
+# which is not the state a composed requirement is asked in, so it still meets
+# the segment-row refusal.
 gateB plan --manifest "$WORK/bsx-RB1F.md" --kind skill --target infra --segment - --cutpoint 커밋 \
   --surface 워크트리쓰기 -- reconverge -p "$(bsx_p RB1F "/cc-cmds:design-reconverge @DOC@ 감사 종합 요구 $BSX_HALTREC")"
 check "76:정상 완료로 끝난 감사 뒤의 런 범위 재수렴은 거부된다" "$rc" "3"
@@ -40333,6 +40755,15 @@ case "$msg" in
   *"열린 중단 답"*) bad "85: 쓰인 답은 경고도 내지 않는다" "$msg" ;;
   *) ok "85: 쓰인 답은 경고도 내지 않는다" ;;
 esac
+
+# The earlier run's shift could not carry the answer out and handed it back to
+# a person with a routing block the gate stamped: the answer is spent there,
+# and the record waits on a person, not on this run.
+src85k_ledger '재수렴' '사람이 재수렴을 골랐다'
+printf -- '- `blocked` | 교대=1 | 대상=infra | 스코프=cone | 원인=막힘 | 앵커 세그먼트=S9 | 사유=중단 답 라우팅 — S9#1.md — 재수렴을 띄울 수 없다 | 근거=중단 답 줄 5 | 막힌 답 줄=5 | prev=x\n' >> "$LEDGER85"
+run85 R85M "$ROW85K"
+g15_plan act R85M SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 출처 런의 라우팅 막힘이 되돌린 답은 들여오지 않는다" "$rc/$(carried85 R85M)" "0/0"
 
 src85k_ledger '재수렴' '사람이 재수렴을 골랐다'
 printf '# 픽스처 출처 런 매니페스트\n\n## 요소\n**설계 문서**: docs/other-85.md\n' > "$SMAN85"

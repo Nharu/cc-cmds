@@ -998,6 +998,22 @@ fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/shift/S1#1.md" "답=재시�
 check "유휴 G′ — 그 교대 기록을 원장의 중단 답 행이 가리키면 유휴다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
 
+# AN ANSWER THE SHIFT HANDED BACK IS A QUESTION AGAIN. The routing shift could
+# not carry it out and wrote a block the gate stamped with the answer's line;
+# until a new answer names the record, the run waits on a person.
+id_mkrun 20261012-00000011 90000
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/S1#1.md"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/S1#1.md" "선택지=재수렴"
+id_ret_ln=$(grep -n '^- `중단 답` ' "$FX_LEDGER" | tail -1 | cut -d: -f1)
+fx_row 'blocked' "스코프=cone" "원인=막힘" "앵커 세그먼트=S1" "사유=중단 답 라우팅 — S1#1.md — 갈래 없음" \
+  "근거=중단 답 줄 $id_ret_ln" "막힌 답 줄=$id_ret_ln"
+check "유휴 H — 되돌려진 기록이 기다리는 동안 유휴 종료하지 않는다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/S1#1.md" "선택지=보류"
+check "유휴 H′ — 그 기록에 사람의 새 답이 서면 유휴다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+
 id_mkrun 20261012-0000000c 90000
 fx_approval A1 대기
 check "유휴 C — 대기 중인 승인이 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"

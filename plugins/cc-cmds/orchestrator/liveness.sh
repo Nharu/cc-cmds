@@ -1697,9 +1697,63 @@ cc_run_state() {
 # assignment also overwrites whatever a caller's environment carried.
 CC_RUN_IDLE_EXIT_SECONDS=86400
 
+cc__halt_answer_state() {
+  # cc__halt_answer_state <ledger> <tail> — `없음` when no `중단 답` row names
+  # the record whose `중단 기록=` ends in <tail>, `되돌림` when its last such row
+  # is named by a later block's `막힌 답 줄`, and `답함` otherwise.
+  #
+  # Fields are matched whole between ` | ` separators, the record on its tail
+  # for the reason `cc_unanswered_halts` gives.
+  [ -n "$1" ] && [ -f "$1" ] || { printf '없음'; return 0; }
+  awk -v t="$2" '
+    { nf = split($0, f, / \| /) }
+    index($0, "- `중단 답` | ") == 1 {
+      for (i = 2; i <= nf; i++) {
+        if (index(f[i], "중단 기록=") != 1) continue
+        v = substr(f[i], length("중단 기록=") + 1)
+        sub(/[[:space:]]+$/, "", v)
+        if (length(v) >= length(t) && substr(v, length(v) - length(t) + 1) == t) last = NR
+      }
+    }
+    index($0, "- `blocked` | ") == 1 {
+      for (i = 2; i <= nf; i++) {
+        s = f[i]; sub(/[[:space:]]+$/, "", s)
+        if (index(s, "막힌 답 줄=") == 1) stamped[substr(s, length("막힌 답 줄=") + 1)] = 1
+      }
+    }
+    END {
+      if (!last) { printf "없음"; exit }
+      if (stamped[last ""]) { printf "되돌림"; exit }
+      printf "답함"
+    }' "$1" 2>/dev/null || printf '없음'
+}
+
+cc_halt_returned() {
+  # cc_halt_returned <ledger> <tail> — succeeds when the record's answer was
+  # returned to a person: its last `중단 답` row is the one a later routing
+  # block names by `막힌 답 줄`, and no `중단 답` naming the record follows.
+  #
+  # A RETURNED RECORD IS UNANSWERED AGAIN. The shift could not carry the answer
+  # out and wrote a block saying so; the gate stamped that block with the
+  # answer's line. Every reader of "is this record still waiting for a person"
+  # — this file's count, rekick's list, the snapshot's `returned_halts[]` and
+  # the automatic-answer bound — asks this one function, so none of them can
+  # read the record as answered while another reads it as waiting. A person's
+  # new `중단 답` ends the state, because the new row is the last one and no
+  # block names it.
+  [ "$(cc__halt_answer_state "$1" "$2")" = "되돌림" ]
+}
+
+cc_halt_answered() {
+  # cc_halt_answered <ledger> <tail> — succeeds when a `중단 답` row names the
+  # record and its answer was not returned (`cc_halt_returned`).
+  [ "$(cc__halt_answer_state "$1" "$2")" = "답함" ]
+}
+
 cc_unanswered_halts() {
   # cc_unanswered_halts <run-dir> <ledger> — count of halt records under
-  # `<run-dir>/halt/` that no `중단 답` row names.
+  # `<run-dir>/halt/` that no `중단 답` row names, or whose answer was returned
+  # to a person (`cc_halt_returned`).
   #
   # A HALT RECORD IS A QUESTION TO A PERSON, and until a row answers it the run
   # is waiting rather than idle. The answer attachment the seat writes beside a
@@ -1726,17 +1780,7 @@ cc_unanswered_halts() {
       "$run_dir"/halt/shift/*) tail="/${run_dir##*/}/halt/shift/$name" ;;
       *) tail="/${run_dir##*/}/halt/$name" ;;
     esac
-    if [ -n "$ledger" ] && [ -f "$ledger" ] && awk -v t="$tail" '
-         index($0, "- `중단 답` | ") == 1 {
-           n = split($0, f, / \| /)
-           for (i = 2; i <= n; i++) {
-             if (index(f[i], "중단 기록=") != 1) continue
-             v = substr(f[i], length("중단 기록=") + 1)
-             sub(/[[:space:]]+$/, "", v)
-             if (length(v) >= length(t) && substr(v, length(v) - length(t) + 1) == t) { hit = 1; exit }
-           }
-         }
-         END { exit hit ? 0 : 1 }' "$ledger" 2>/dev/null; then
+    if [ -n "$ledger" ] && cc_halt_answered "$ledger" "$tail"; then
       continue
     fi
     n=$((n + 1))
