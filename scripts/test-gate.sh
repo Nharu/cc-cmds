@@ -36601,13 +36601,17 @@ ck60_plan
 check "60b: 라우팅 런의 머지 plan 은 회차 0 의 실패에서 rc 3 이다" "$rc" "3"
 
 # C3 — 부적격 실행은 POST 없이 park 한다 ----------------------------------------------
-cb60_fail_inel=""; cb60_fail_dup=""; cb60_fail_post=""
+cb60_fail_inel=""; cb60_fail_dup=""; cb60_fail_post=""; cb60_seen=""
 cb60_park() {
   # cb60_park <칸> <관측 조각> <라벨> [performer] — 픽스처는 이미 사례의 답으로 고쳐져 있다.
-  # 예보·행위·같은 행위를 차례로 내고 정해진 칸의 blocked 행 하나를 단언한다.
-  local cell="$1" ob="$2" lb="$3" kind="${4:-dispatch}" nb nr np row f=""
+  # 예보·행위·같은 행위를 차례로 내고 정해진 칸의 blocked 행 하나를 단언한다. 예보는 행위와
+  # 같은 판정 코드로 답하고, 되풀이는 행위 다이제스트를 이미 쓴 park 행과 대조할 뿐 사례의
+  # 변형과 무관하므로, 둘은 칸과 종류마다 처음 사례에서만 낸다 — 변형이 가르는 것은 행위가
+  # 쓰는 칸과 관측이다.
+  local cell="$1" ob="$2" lb="$3" kind="${4:-dispatch}" nb nr np row f="" first=0
+  case "$cb60_seen" in *"[$cell/$kind]"*) ;; *) first=1; cb60_seen="$cb60_seen[$cell/$kind]" ;; esac
   nb=$(cb60_n blocked); nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
-  if [ "$kind" = dispatch ]; then
+  if [ "$kind" = dispatch ] && [ "$first" = 1 ]; then
     cb60_plan
     case "$rc|$msg" in "11|"*"park 예상: 도달 판정=$cell"*) ;; *) f="$f[plan rc=$rc]" ;; esac
   fi
@@ -36622,9 +36626,11 @@ cb60_park() {
     [ "$(cb60_posts)" = "$np" ] || f="$f[POST]"
     [ "$(cb60_n 'CI 처분')" = "$nr" ] || f="$f[CI 처분 행]"
   fi
-  cb60_act
-  case "$rc|$raw" in "11|"*'already parked'*) ;; *) cb60_fail_dup="$cb60_fail_dup[$lb rc=$rc]" ;; esac
-  [ "$(cb60_n blocked)" = "$((nb + 1))" ] || cb60_fail_dup="$cb60_fail_dup[$lb 행 $(cb60_n blocked)]"
+  if [ "$first" = 1 ]; then
+    cb60_act
+    case "$rc|$raw" in "11|"*'already parked'*) ;; *) cb60_fail_dup="$cb60_fail_dup[$lb rc=$rc]" ;; esac
+    [ "$(cb60_n blocked)" = "$((nb + 1))" ] || cb60_fail_dup="$cb60_fail_dup[$lb 행 $(cb60_n blocked)]"
+  fi
   if [ -n "$f" ]; then
     bad "60b: park — $lb" "$f ${msg:-}"
     if [ "$kind" = dispatch ]; then cb60_fail_inel="$cb60_fail_inel[$lb]"; else cb60_fail_post="$cb60_fail_post[$lb]"; fi
@@ -36881,8 +36887,10 @@ unset CB60_S CB60_STUB
 #
 # 재실행은 게이트의 행위(`act --kind ci-rerun`)로만 일어나야 하므로, 그 밖의 재실행·재요청
 # 철자는 사전 인가 행이 있어도, 어떤 도달을 신고해도 규칙에서 멈춰야 한다. 행렬은 철자
-# 전부를 행 없는 매니페스트의 front3 에서 두 모드로 돌리고, 도달·매니페스트·대상의 변형은
-# 대표 철자 둘(`gh run rerun`·REST POST)로 돈다. 행위는 `exec` 로 실제로 내고, `gh` 는 부른
+# 전부를 행 없는 매니페스트의 front3 에서 돌리고, 도달·매니페스트·대상의 변형은 대표 철자
+# 둘(`gh run rerun`·REST POST)로 돈다. 사람이 있는 모드는 행이 있거나 규칙을 끄려는
+# 매니페스트에서만 돈다 — 행이 없으면 목록 밖 승인 대기도 같은 rc 5 를 내므로 그 칸은 아무것도
+# 가리지 않는다. 행위는 `exec` 로 실제로 내고, `gh` 는 부른
 # argv 를 적기만 하는 함수 대역이다 — 막히지 않은 철자는 그 기록으로 드러난다. 거부가 이
 # 규칙의 것인지는 문면의 `act --kind ci-rerun` 안내로 가린다. 다른 검사의 rc 3 이 같은
 # 숫자를 내도 통과로 세지 않기 위해서다.
@@ -36906,10 +36914,16 @@ check "60c: 이 절은 스위트의 오프라인 가드 아래에서 돈다" "${
 printf 'mutation{rerequestCheckSuite(input:{checkSuiteId:"X",repositoryId:"Y"}){checkSuite{id}}}\n' > "$WT/q.graphql"
 cc60c_x() {
   # cc60c_x <모드 1|0> <대상> <도달> <절단점> -- <argv...>
-  local m="$1" tg="$2" rr="$3" cut="$4"; shift 5
-  CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$m" pj_gate exec --manifest "$RX_M" --target "$tg" --segment S3 \
-    --cutpoint "$cut" --surface 외부상태변경 --reach "$rr" --snapshot-digest "$(rx_H "$RX_M")" \
-    --rationale t -- "$@"
+  # 다이제스트는 매니페스트마다 한 번 재 두고, 그 사이 스냅숏이 움직여 낡음(rc 4)으로 답하면
+  # 새로 재어 한 번 더 낸다 — 칸마다 새로 재던 때와 같은 입력이다.
+  local m="$1" tg="$2" rr="$3" cut="$4" try; shift 5
+  for try in 1 2; do
+    CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$m" pj_gate exec --manifest "$RX_M" --target "$tg" --segment S3 \
+      --cutpoint "$cut" --surface 외부상태변경 --reach "$rr" --snapshot-digest "$CC60C_H" \
+      --rationale t -- "$@"
+    [ "$rc" = 4 ] || break
+    CC60C_H=$(rx_H "$RX_M")
+  done
 }
 cc60c_fail3=""; cc60c_fail5=""; cc60c_called=""
 cc60c_cell() {
@@ -36924,10 +36938,12 @@ cc60c_cell() {
     "3|"*'act --kind ci-rerun'*) ;; *) cc60c_fail3="$cc60c_fail3[$lb · $tg · $rr: rc=$rc]" ;; esac
   cc60c_nb=$( { grep -c '^- `blocked` ' "$led" 2>/dev/null || true; } )
   [ "${cc60c_nb:-0}" = "$nb0" ] || cc60c_fail3="$cc60c_fail3[$lb · $tg · $rr: blocked]"
-  cc60c_x 0 "$tg" "$rr" "$cut" -- "$@"
-  # 등급표에 없는 래퍼(이 기기의 `genv`·`gtimeout`)는 사람이 있는 모드에서 승인 전에 등급
-  # 미상(rc 2)으로 멈춘다 — 행위가 나가지 않는 것은 같고, 그 rc 는 문면으로 가린다.
-  case "$rc|$msg" in 5\|*|2\|*'등급 미상'*) ;; *) cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;; esac
+  if [ "$CC60C_BOTH" = 1 ]; then
+    cc60c_x 0 "$tg" "$rr" "$cut" -- "$@"
+    # 등급표에 없는 래퍼(이 기기의 `genv`·`gtimeout`)는 사람이 있는 모드에서 승인 전에 등급
+    # 미상(rc 2)으로 멈춘다 — 행위가 나가지 않는 것은 같고, 그 rc 는 문면으로 가린다.
+    case "$rc|$msg" in 5\|*|2\|*'등급 미상'*) ;; *) cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;; esac
+  fi
   [ "$(grep -c . "$CC60C_LOG" || true)" = "$n0" ] || cc60c_called="$cc60c_called[$lb · $tg · $rr]"
 }
 cc60c_m() {
@@ -36935,6 +36951,8 @@ cc60c_m() {
   # 리뷰-후-머지 가 같은 rc 3 으로 함께 거절하므로, 그 룰을 끈 매니페스트로 잰다.
   rx_manifest R60C "$1"
   printf '\n## 룰 설정\n**리뷰-후-머지**: 끔\n%s' "${2:-}" >> "$RX_M"; refresh_bd "$RX_M"
+  CC60C_H=$(rx_H "$RX_M")
+  CC60C_BOTH=0; [ -z "$1${2:-}" ] || CC60C_BOTH=1
 }
 cc60c_m ''
 # 모든 철자 — 행 없는 매니페스트, front3, 도달 협업.
