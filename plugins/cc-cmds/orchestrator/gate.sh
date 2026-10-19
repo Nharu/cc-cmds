@@ -18363,12 +18363,18 @@ EOF
   fi
   # THE ANSWER'S PRE-SESSION DEATHS. An attempt that died before its session
   # started never read the card, so it did not spend the answer; three of them
-  # mean the dispatch itself is what fails.
+  # mean the dispatch itself is what fails. Such a death is either a crash with
+  # `세션 id=미상` or a waiter whose supervisor vanished before the spawn
+  # (`관측=스폰 전 대기 중`, written with `세션 id=-` by the waiter settlement).
   n=0
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     [ "$(gate_row_field "$r" '답 운반')" = "$ln" ] || continue
-    [ "$(gate_row_field "$r" '세션 id')" = "미상" ] && n=$((n + 1))
+    if [ "$(gate_row_field "$r" '세션 id')" = "미상" ]; then
+      n=$((n + 1))
+    else
+      case "$(gate_row_field "$r" '관측')" in '스폰 전 대기 중'*) n=$((n + 1)) ;; esac
+    fi
   done <<EOF
 $( { gate_stage_result_rows_of "$key" || true; } )
 EOF
@@ -18494,11 +18500,12 @@ gate_run_scope_reconverge_admitted() {
   # answer (GATE_CARRY_ANSWER).
   #
   # A CARRY LOOKS PAST THE DEATHS OF ITS OWN ANSWER. An attempt that carried
-  # this answer and died before its session started (`세션 id=미상`) never read
-  # the card, so the key still stands where the park left it; the carry check
-  # counts those deaths against its cap, and this reading must not refuse the
-  # very retry the cap is counting. Only rows carrying the same answer are
-  # passed over — any other row after the park still decides.
+  # this answer and died before its session started (`세션 id=미상`, or a
+  # waiter settled with `관측=스폰 전 대기 중` after its supervisor vanished)
+  # never read the card, so the key still stands where the park left it; the
+  # carry check counts those deaths against its cap, and this reading must not
+  # refuse the very retry the cap is counting. Only rows carrying the same
+  # answer are passed over — any other row after the park still decides.
   local last
   [ -z "$(gate_segment_field "$1" '상태')" ] || return 1
   if [ -n "${GATE_CARRY_ANSWER:-}" ]; then
@@ -18514,7 +18521,8 @@ gate_run_scope_reconverge_admitted() {
       NF { r[++n] = $0 }
       END {
         for (i = n; i >= 1; i--) {
-          if (fld(r[i], "답 운반") == ln && fld(r[i], "세션 id") == "미상") continue
+          if (fld(r[i], "답 운반") == ln \
+              && (fld(r[i], "세션 id") == "미상" || index(fld(r[i], "관측"), "스폰 전 대기 중") == 1)) continue
           print r[i]; exit
         }
       }')

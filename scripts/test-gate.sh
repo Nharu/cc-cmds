@@ -37663,6 +37663,21 @@ lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=S8" "스테이지=S8"
 check "93: TE3 세 번째 세션 전 사망 뒤의 운반은 exit 18 이다" "$(lsr93_capgo te3 "$lsr93_ln")" "18"
 check "93: TE3 그 상한 행이 사유와 답 줄을 싣는다" \
   "$(lsr93_n "$lsr93_l" "사유=중단 답 라우팅 — 세션 전에 세 번 죽었다 | 중단 답 줄=$lsr93_ln |")" "1"
+# TE3 대기자 — 스폰 전에 감독자를 잃은 대기자의 정산 행(`세션 id=-`, `관측=스폰 전
+# 대기 중`)도 같은 답의 세션 전 사망으로 센다.
+lsr93_l=$(lsr75_new te3w)
+lsr93_park "$lsr93_l" S8 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" S8 "${lsr93_l%/*}/halt/S8#1.md" design-reconverge 적용)
+lsr93_te3w() {  # lsr93_te3w <원장> <실행 버전> <답 운반 줄> — 대기자 정산 모양의 사망 행 하나
+  lsr93_in "$1" gate_append stage-result "세그먼트=S8" "스테이지=S8" "종류=reconverge" \
+    "종료 코드=-" "실행 버전=$2" "세션 id=-" "부모=-" "기록자=게이트" "종단 부류=외부 종료" \
+    "관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 2026-10-20T00:00:00Z" "답 운반=$3" >/dev/null 2>&1
+}
+lsr93_te3w "$lsr93_l" 2 "$lsr93_ln"
+lsr93_te3w "$lsr93_l" 3 "$lsr93_ln"
+check "93: TE3 대기자 정산 사망 둘 뒤에는 운반한다" "$(lsr93_capgo te3w "$lsr93_ln")" "0"
+lsr93_te3w "$lsr93_l" 4 "$lsr93_ln"
+check "93: TE3 세 번째 대기자 정산 사망 뒤의 운반은 exit 18 이다" "$(lsr93_capgo te3w "$lsr93_ln")" "18"
 
 # R8 — 재수렴의 범위. 기록을 가진 두 모양은 키의 원장을 뒤로 걸어 운반 시도들을
 # 지난 첫 소비된 비-재수렴 답의 기록과 대조하고, R<n> 은 운반 블록의 대기와 기록의
@@ -37729,6 +37744,23 @@ lsr93_rsd() {  # lsr93_rsd <이름> <사망 행의 답 운반 오프셋> <세션
 check "93: R8 답을 실은 시도가 세션 전에 죽은 뒤의 런 스코프 재수렴 운반은 받는다" "$(lsr93_rsd rw4 0 미상)" "yes|no"
 check "93: R8 대조 — 다른 답을 실은 사망 행 뒤에는 받지 않는다" "$(lsr93_rsd rw5 1 미상)" "no|no"
 check "93: R8 대조 — 세션이 있던 크래시 행 뒤에는 받지 않는다" "$(lsr93_rsd rw6 0 "$lsr93_sid")" "no|no"
+# 스폰 전 대기자 사망 — 대기 감독자가 스폰 전에 사라지면 정산이 `세션 id=-` 와
+# `관측=스폰 전 대기 중` 으로 같은 답 운반을 싣는 행을 쓴다. 이 행도 세션 전 사망이다.
+lsr93_rsw() {  # lsr93_rsw <이름> <사망 행의 답 운반 오프셋> — 런 스코프 재수렴 park 뒤 대기자 정산 행 하나를 둔 원장의 「운반|비운반」
+  local l r ln
+  l=$(lsr75_new "$1")
+  r="${l%/*}/halt"
+  lsr93_park "$l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
+  lsr93_ans "$l" A1 "$r/A1#1.md" design-audit-unattended 'adopt as a requirement' >/dev/null
+  LSR93_SCOPE="감사 종합 요구 $r/A1#1.md" lsr93_park "$l" A1 2 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+  ln=$(lsr93_ans "$l" A1 "$r/A1#2.md" design-reconverge 적용)
+  lsr93_in "$l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=-" \
+    "실행 버전=3" "세션 id=-" "부모=-" "기록자=게이트" "종단 부류=외부 종료" \
+    "관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 2026-10-20T00:00:00Z" "답 운반=$((ln + $2))" >/dev/null 2>&1
+  printf '%s|%s' "$(lsr93_rsa "$l" "$ln")" "$(lsr93_rsa "$l" "")"
+}
+check "93: R8 답을 실은 대기자가 스폰 전에 사라진 뒤의 런 스코프 재수렴 운반은 받는다" "$(lsr93_rsw rw7 0)" "yes|no"
+check "93: R8 대조 — 다른 답을 실은 대기자 정산 행 뒤에는 받지 않는다" "$(lsr93_rsw rw8 1)" "no|no"
 
 lsr93_l=$(lsr75_new rn1)
 lsr93_park "$lsr93_l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
