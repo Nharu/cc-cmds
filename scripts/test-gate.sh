@@ -1546,7 +1546,12 @@ canon_rp() {
   led=${CANON_LEDGER:-$WT/docs/pipeline-run/$run.md}
   base=${CANON_BASE:-$WORK_ROOT}
   n=$( { grep '^- `cycle` ' "$led" 2>/dev/null || true; } \
-        | awk -v s="$seg" '{ for (i = 1; i <= NF; i++) if ($i == "세그먼트=" s) { c++; break } } END { print c + 1 }')
+        | awk -v s="$seg" '{
+            # By field, as the gate reads it: a sibling row whose free text says
+            # `세그먼트=<seg>` is not a row of <seg>.
+            n = split($0, p, / \| /)
+            for (i = 2; i <= n; i++) { v = p[i]; sub(/[ \t]+$/, "", v); if (v == "세그먼트=" s) { c++; break } }
+          } END { print c + 1 }')
   printf '%s/docs/reviews/seg-%s-%s-cycle%s%s.md' "$base" "$run" "$seg" "$n" "${k:+-r$k}"
 }
 # canon_put <run> <segment> <source report> [k] — copies the report to that
@@ -6605,7 +6610,8 @@ gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SD --
      -- 상태=계획됨 워크트리="$WT" 선행=없음
 check "SD 의 segment 행이 디스패치 전에 기록된다" "$rc" "0"
 
-gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 \
+     --trigger '첫 리뷰' -- review -p "$(rv_x R1 SD)"
 check "그럼에도 스킬 디스패치는 통과한다 (argv0 표에 묻지 않는다)" "$rc" "0"
 case "$msg" in
   *"축2=워크트리쓰기"*) ok "스킬 디스패치는 워크트리 쓰기로 등급된다" ;;
@@ -9055,7 +9061,8 @@ gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SD --
 check "SD 의 segment 행이 마감 프로브 전에 기록된다" "$rc" "0"
 past_dl '2020-01-01T00:00:00Z'
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
-gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 \
+     --trigger '첫 리뷰' -- review -p "$(rv_x R1 SD)"
 check "마감이 지나면 스테이지 디스패치가 거부된다" "$rc" "3"
 case "$msg" in
   # 이 픽스처는 진전 축 경계를 하나도 선언하지 않으므로 시계가 유일한 경계이고,
@@ -9094,7 +9101,8 @@ cp "$WORK/ledger-14k.bak" "$FX_LEDGER"
 rm -f "$RD_K/done"
 past_dl '2030-01-01T00:00:00Z'
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
-gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 \
+     --trigger '첫 리뷰' -- review -p "$(rv_x R1 SD)"
 check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
@@ -12923,7 +12931,7 @@ check "15g: PR 절단점으로 착지한 선행을 들여와 다음 슬라이스
   "$rc/$(seg_field "$(g15_row R15GJ5 SA)" '상태')/$(seg_field "$(g15_row R15GJ5 SA)" '머지 커밋')/$(seg_field "$(g15_row R15GJ5 SB)" '상태')" \
   "0/완료/$c15gk/계획됨"
 gateL plan --manifest "$WORK/plan-R15GJ5.md" --kind skill --target infra --segment SB --cutpoint 커밋 \
-  --surface 워크트리쓰기 -- review
+  --surface 워크트리쓰기 --trigger '첫 리뷰' -- review -p "$(rv_x R15GJ5 SB "$CANON_TOP")"
 case "$msg" in
   *"is not merged"*|*"has not landed yet"*) bad "15g 머지된 PR 로 들인 선행 위 디스패치" "rc=$rc $msg" ;;
   *) ok "15g: 머지된 PR 로 들인 선행은 디스패치 바닥을 넘는다" ;;
@@ -12964,7 +12972,7 @@ g15_mkwt R15GJ2 SB
 g15_plan act R15GJ2 SB 상태=계획됨 "워크트리=$(g15_wt R15GJ2 SB)"
 [ "$rc" = "0" ] || bad "15g R15GJ2 의 SB 계획" "rc=$rc $msg"
 gateL plan --manifest "$WORK/plan-R15GJ2.md" --kind skill --target infra --segment SB --cutpoint 커밋 \
-  --surface 워크트리쓰기 -- review
+  --surface 워크트리쓰기 --trigger '첫 리뷰' -- review -p "$(rv_x R15GJ2 SB "$CANON_TOP")"
 case "$rc/$msg" in
   "3/"*"is not merged"*) ok "15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다" ;;
   *) bad "15g 열린 PR 로 들인 선행 위 디스패치" "rc=$rc $msg" ;;
@@ -13437,7 +13445,7 @@ g15_samerun() {  # g15_samerun <run id> <문서> <SA 의 필드들...> — SA an
     shift
   done
   gateL plan --manifest "$WORK/plan-$r.md" --kind skill --target infra --segment SB --cutpoint 커밋 \
-    --surface 워크트리쓰기 -- review
+    --surface 워크트리쓰기 --trigger '첫 리뷰' -- review -p "$(rv_x "$r" SB "$CANON_TOP")"
 }
 g15_landed() {  # g15_landed <run id> — the snapshot's `착지` of SA
   au15_snap "$WORK/plan-$1.md" | jq -r '.segments[] | select(.id == "SA") | .["착지"]' 2>/dev/null
@@ -21455,7 +21463,8 @@ case "$msg" in
 esac
 hwg plan --manifest "$CAP_NM" --kind replan --target infra --segment S3 --cutpoint 커밋 --surface 읽기 -- 재수렴=S2#1
 check "31ax: 세워진 세그먼트의 재계획은 거부된다" "$rc" "3"
-hwg plan --manifest "$CAP_NM" --kind skill --target infra --segment S2 --cutpoint 커밋 -- review
+hwg plan --manifest "$CAP_NM" --kind skill --target infra --segment S2 --cutpoint 커밋 \
+  --trigger '첫 리뷰' -- review -p "$(CANON_LEDGER="$CAP_LEDGER" rv_x R1114 S2 "$CANON_TOP")"
 check "31ax: 세워지지 않은 세그먼트의 파견은 통과한다" "$rc" "0"
 hw_done2() { gate_done_conditions 2>/dev/null | grep '^2 ' || true; }
 check "31ax: 열린 사람-결정이 종료 조건 2 를 막는다" "$(hw_in hw_done2)" "2 대기 중인 사람-결정 판단 승인이 2건 있습니다"
@@ -32354,7 +32363,11 @@ esac
 # 리포트가 없으면 전제 3.
 sb_apply_new '12 리포트' 'exit 0' 'true'
 sb_reviewed_landing SB12Q
-rm -f "$SA_ROOT/review-SB12Q.md"
+# The cycle row names the canonical copy `sb_cycle` made, not its source.
+sb12q_rp=$( { grep -F '`cycle`' "$SA_LEDGER" || true; } | { grep -F '세그먼트=SB12Q ' || true; } | tail -1 \
+  | tr '|' '\n' | sed -n 's/^ *리포트 경로=//p' | sed 's/[[:space:]]*$//' | tail -1)
+[ -n "$sb12q_rp" ] || bad "12: SB12Q 의 cycle 행이 리포트 경로를 싣는다" "(없음)"
+rm -f "$SA_ROOT/review-SB12Q.md" ${sb12q_rp:+"$sb12q_rp"}
 sb12_base=$(sa_base)
 sb_apply SB12Q
 sb_refused_clean "12: 리포트가 없으면 전제 3 에서 거부된다" 3 "$sb12_base" SB12Q
@@ -43085,6 +43098,7 @@ check "88b: 해소 커밋이 선 HEAD 의 다음은 해소 리뷰 다" "$(q88b "
 check "88b: 리뷰 HEAD 를 지나간 HEAD 의 base-check 는 rc 3 이다" "$(c88b "$L88B")/$(nb88b "$L88B")" "3/3"
 
 rp88b() {  # rp88b <파일> <리뷰 모드 줄> — 0/0 리포트에 리뷰 모드 줄을 얹는다
+  mkdir -p "${1%/*}"
   lsr_rp_report "$1" 0 0 차단 >/dev/null
   printf '%s\n' "- **리뷰 모드**: $2" >> "$1"
   printf '%s' "$1"
@@ -43109,8 +43123,10 @@ check "88b: 게이트가 본 적 없는 베이스를 적은 해소 행은 rc 2 �
   "$(cy88b 2 "$(rp88b "$D88B/c2b.md" "해소 (기준 사이클 1, 기준 리뷰 HEAD \`$R88B\`, 베이스 \`$T388B\`)")" 모드=해소 '기준 사이클=1')" "2"
 check "88b: 리포트가 해소라 말하는데 모드가 없는 행은 rc 2 다" \
   "$(cy88b 2 "$(rp88b "$D88B/c2c.md" "$GOOD88B")")" "2"
+# The refusals above come before the canonical-report check; the row that is
+# written has to name this cycle's canonical report.
 check "88b: 해소 사이클 행이 기록된다" \
-  "$(cy88b 2 "$(rp88b "$D88B/c2.md" "$GOOD88B")" 모드=해소 '기준 사이클=1')" "0"
+  "$(cy88b 2 "$(rp88b "$(q88b "$L88B" gate_review_report_path S)" "$GOOD88B")" 모드=해소 '기준 사이클=1')" "0"
 check "88b: 해소 사이클은 리뷰 사이클 수에 들지 않고 기준 행은 여전히 사이클 1 이다" \
   "$(q88b "$L88B" gate_segment_cycle_count S)|$(q88b "$L88B" gate_base_resolve_basis_row S | tr '|' '\n' | sed -n 's/^ 사이클=\(.*\) $/\1/p')" "1|1"
 check "88b: 해소 사이클 뒤의 다음은 머지 이고 베이스 판정은 일치 다" \

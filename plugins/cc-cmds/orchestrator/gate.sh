@@ -19088,7 +19088,7 @@ gate_cycle_trigger_facts() {
   #                condition is how near it comes to "this segment's shift".
   #
   # Never refuses and writes nothing; `라우터 판단` is never in F.
-  local seg=$1 p p0 p1 pcyc pend phead al wt wh
+  local seg=$1 p p0='' p1='' pcyc='' pend='' phead='' al wt wh
   p=$(gate_segment_last_cycle_row "$seg")
   al=$(gate_segment_target_alias "$seg")
   if [ -n "$p" ]; then
@@ -33778,18 +33778,18 @@ EOF
     # measured before any row). The declared trigger rides beside the path; a
     # `라우터 판단` trigger's reason opens `근거`, so the one clip below takes
     # both and the reason is never clipped apart from the rationale.
-    local _act_free _act_fx=() _act_why=$rationale
+    local _act_free _act_fx=() actwhy=$rationale
     [ -z "$rv_rp" ] || _act_fx+=("리포트 경로=$rv_rp")
     [ -z "$rv_trig" ] || _act_fx+=("계기=$rv_trig")
     [ -z "$GATE_RECOVERY" ] || _act_fx+=("복구=$GATE_RECOVERY")
-    [ "$rv_trig" != "라우터 판단" ] || _act_why="계기 사유: $GATE_TRIGGER_REASON; $rationale"
+    [ "$rv_trig" != "라우터 판단" ] || actwhy="계기 사유: $GATE_TRIGGER_REASON; $rationale"
     _act_free=$(gate_free_budget "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
       "축2=$graded" "자격=$credmode" "행위자=$actor" ${_act_fx[@]+"${_act_fx[@]}"})
     gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
       "축2=$graded" "자격=$credmode" "행위자=$actor" ${_act_fx[@]+"${_act_fx[@]}"} \
-      "근거=$(gate_row_safe "$_act_why" "$_act_free")"
+      "근거=$(gate_row_safe "$actwhy" "$_act_free")"
   fi
   log "게이트 통과 — $verb $GATE_ACT_EFFECTIVE ($alias)"
 
