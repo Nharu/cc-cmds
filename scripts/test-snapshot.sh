@@ -2590,14 +2590,26 @@ check "design-reconverge: 기준선은 디스크가 아니라 기록에서 읽�
   "$(has "$RC_SKILL" "**Take the baselines from the record, never from the disk.**")" 예
 check "design-reconverge: 정지 기록이 범위와 두 기준선을 싣는다" \
   "$(has "$RC_SKILL" "- \`범위=<the scope as handed>\` — for an \`R<n>\` scope exactly \`범위=R<n>\`.")" 예
+# 사전 구속 표면 다이제스트는 스테이지가 손으로 거르는 값이 아니라 게이트가 드라이버의 계산으로
+# 내는 값이다 — 1단계가 쓰기 전에 그 명령으로 재고, 4단계의 사후 쪽도 같은 명령으로 잰다.
+check "design-reconverge: 1단계가 쓰기 전에 게이트 binding-digest 로 사전 다이제스트를 잰다" \
+  "$(has "$RC_SKILL" "record \`사전 sha256\` (\`shasum -a 256\`) and \`사전 구속 표면 다이제스트\` — the one line \`<gate absolute path> binding-digest --manifest \"\$CC_PIPELINE_MANIFEST\" -- <document path>\` prints")" 예
+check "design-reconverge: 4단계 사후 다이제스트도 같은 명령이다" \
+  "$(has "$RC_SKILL" "and the after side is what \`<gate absolute path> binding-digest --manifest \"\$CC_PIPELINE_MANIFEST\" -- <document path>\` prints after the last edit")" 예
+check "design-reconverge: 정지 기록의 사전 다이제스트는 1단계 값이다" \
+  "$(has "$RC_SKILL" "- \`사전 구속 표면 다이제스트=<64 hex>\` — Step 1's \`사전 구속 표면 다이제스트\`: the gate's \`binding-digest\` output")" 예
 check "design-audit-unattended: 1–5단계 건너뛰기는 문서 sha256 에 묶인 처분에서만" \
   "$(has "$AU_ANS" "**Skip Steps 1–5 only on a disposition bound to the document's bytes.**")" 예
 check "design-audit-unattended: 종합 정지 전에 조정 처분과 조정 뒤 sha256 을 쓴다" \
   "$(has "$AU_ANS" "then \`**조정 뒤 문서 sha256**: <64 hex>\`")" 예
 check "교대 계약: 정지 답은 운반 act 로 낸다" \
   "$(has "$RS_SKILL" "--carry-answer <line> \\")" 예
-check "교대 계약: --resume 재부착은 19 뒤에만" \
-  "$(has "$RS_SKILL" "**Re-attach with \`--resume\` only after exit 19.**")" 예
+check "교대 계약: --resume 재부착은 19 뒤와 좌석 실행 답에만" \
+  "$(has "$RS_SKILL" "**Re-attach with \`--resume\` only after exit 19, or for a \`좌석 실행\` answer item 2 sent here.**")" 예
+check "교대 계약: 좌석 실행 답은 운반 act 없이 --resume 으로 간다" \
+  "$(has "$RS_SKILL" "When \`option\` is \`좌석 실행\` and \`answered_by\` is \`좌석\`, the seat ran the record's commands or recipes and the halted session is the one that reads their results: do not issue the carry act, which refuses this answer with exit 3 — re-attach the halted session with item 3's \`--resume\` form directly")" 예
+check "교대 계약: 좌석 실행 답 갈래가 운반 act 로 넘기는 문장보다 앞선다" \
+  "$(awk '/When `option` is `좌석 실행` and `answered_by` is `좌석`, the seat ran/{a=NR} /Every other answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_SKILL")" 예
 check "교대 계약: 운반 act 의 16 은 이월이고 종료 행이 있으면 종단" \
   "$(has "$RS_SKILL" "end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
 check "교대 계약: 종료 코드 표에 18 행이 있다" "$(grep -c '^| `18` | a carry act' "$RS_SKILL")" 1
