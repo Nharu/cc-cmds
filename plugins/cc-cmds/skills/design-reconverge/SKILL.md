@@ -60,6 +60,27 @@ The grades are a marking, not a proof. Nothing here checks that a point marked
 `등급 1` deserved it; `scripts/lint-judgment-grade.sh` counts marks and matches
 dispositions, and says so.
 
+### A halt carries the scope and the Step 1 baselines
+
+Every halt record this skill writes after Step 1 carries, in its `**관측 상세**`, the scope it was handed and the baselines Step 1 took — the record is what a fresh session given a person's answer starts from, and it cannot recompute them once this attempt has edited the document:
+
+- `범위=<the scope as handed>` — for an `R<n>` scope exactly `범위=R<n>`. The gate compares a carried answer's `R<n>` with this value and hands the answer on only when they are equal.
+- `사전 sha256=<64 hex>` — Step 1's `사전 sha256`.
+- `사전 구속 표면 다이제스트=<64 hex>` — the binding-surface digest of Step 4, computed over the document as Step 1 read it.
+- `지금 sha256=<64 hex>` — when this attempt already wrote to the document before halting, the document's `shasum -a 256` after that write.
+
+A record without both baselines is one the gate does not hand to a fresh session: the answer then goes back only to this attempt's own session.
+
+### Re-entered with a carried answer
+
+A fresh session can be handed a person's answer to an earlier attempt's halt: the routing shift's carry act writes an answer card and the stage starts with `CC_PIPELINE_HALT_ANSWER` set to its path. When it is set, at Step 1:
+
+1. **Read the card and check the digest.** Its `**중단 기록**` is the earlier attempt's halt record and `**기록 다이제스트**` that record's sha256. Compute `shasum -a 256` of the record and compare; a difference is a halt with `분류: precondition-failed` naming both values — the answer was given to other bytes.
+2. **Take the baselines from the record, never from the disk.** `사전 sha256` and `사전 구속 표면 다이제스트` in the record's `관측 상세` are this pass's Step 1 baselines, and the verdict compares against them: the earlier attempt may already have edited the document, and a hash taken now would measure that edit as the starting point. Then compare the document's `shasum -a 256` now with the record's `지금 sha256`, or with its `사전 sha256` when the record carries no `지금 sha256`. A difference means the document moved after the halt: do not apply the answer — write a new halt record naming both values, with the card's path in its `관측 상세`.
+3. **Enter at the step the record names**, from what is on disk, and apply the card's option there as the answer to the record's `**질문 문면**`. Do not ask that question again.
+4. **If the question computed there is not the record's**, do not apply the answer: write a new halt record for the question computed now, with the card's path in its `관측 상세`.
+5. **Never rewrite the carried record** — the card's `**중단 기록**` belongs to the earlier attempt, and the answer is bound to its digest.
+
 ## Control-Flow Invariants
 
 These rules govern termination and MUST stay near the top of this file. Post-compaction reattaches only the first ~5K tokens with priority, and the model's default behaviour when handed a design defect is to keep improving the design — so a summarized-away rule here does not degrade quality, it **removes the stop**.

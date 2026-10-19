@@ -2555,5 +2555,54 @@ printf -- '- `stage-result` | 교대=2 | 세그먼트=S5 | 스테이지=S5 | 종
 check "그 키의 stage-result 도 교대 기록의 답을 소비한다" "$(shr_read)" '[["S6","reject"]]'
 rm -rf "$SHR_DIR"
 
+# ---------------------------------------------------------------------------
+# 12. A carried halt answer — the sentences no fixture can execute
+#
+# A stand-in CLI cannot recompute a halt's question, so what a re-entered
+# skill does when the question it computes differs from the card's is held
+# here as text, and its behaviour is left to the deployed run. The same holds
+# for the routing copies that tell a shift which exit of the carry act sends
+# it where, and for the seat and lead copies that keep an answer carried over
+# to the next run from being asked again: each sentence is the only carrier of
+# its rule, and a rewrite that drops one leaves nothing failing.
+# ---------------------------------------------------------------------------
+RC_SKILL="$repo_root/plugins/cc-cmds/skills/design-reconverge/SKILL.md"
+AU_SKILL="$repo_root/plugins/cc-cmds/skills/design-audit-unattended/SKILL.md"
+SEAT_REF="$AP_REFS/act2-seat.md"
+has(){ if grep -qF -- "$2" "$1"; then echo 예; else echo 아니오; fi; }
+for f in "$RC_SKILL" "$AU_SKILL"; do
+  b=$(basename "$(dirname "$f")")
+  check "$b: 재진입 때 계산한 질문이 다르면 새 정지 기록을 쓴다" \
+    "$(has "$f" "do not apply the answer: write a new halt record for the question computed now, with the card's path in its \`관측 상세\`.")" 예
+  check "$b: 운반된 기록은 다시 쓰지 않는다" \
+    "$(has "$f" "**Never rewrite the carried record**")" 예
+  check "$b: 카드의 기록 다이제스트를 대조한다" \
+    "$(has "$f" "**Read the card and check the digest.**")" 예
+done
+check "design-reconverge: 기준선은 디스크가 아니라 기록에서 읽는다" \
+  "$(has "$RC_SKILL" "**Take the baselines from the record, never from the disk.**")" 예
+check "design-reconverge: 정지 기록이 범위와 두 기준선을 싣는다" \
+  "$(has "$RC_SKILL" "- \`범위=<the scope as handed>\` — for an \`R<n>\` scope exactly \`범위=R<n>\`.")" 예
+check "design-audit-unattended: 1–5단계 건너뛰기는 문서 sha256 에 묶인 처분에서만" \
+  "$(has "$AU_SKILL" "**Skip Steps 1–5 only on a disposition bound to the document's bytes.**")" 예
+check "design-audit-unattended: 종합 정지 전에 조정 처분과 조정 뒤 sha256 을 쓴다" \
+  "$(has "$AU_SKILL" "then \`**조정 뒤 문서 sha256**: <64 hex>\`")" 예
+check "교대 계약: 정지 답은 운반 act 로 낸다" \
+  "$(has "$RS_SKILL" "--carry-answer <line> \\")" 예
+check "교대 계약: --resume 재부착은 19 뒤에만" \
+  "$(has "$RS_SKILL" "**Re-attach with \`--resume\` only after exit 19.**")" 예
+check "교대 계약: 운반 act 의 16 은 이월이고 종료 행이 있으면 종단" \
+  "$(has "$RS_SKILL" "end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
+check "교대 계약: 종료 코드 표에 18 행이 있다" "$(grep -c '^| `18` | a carry act' "$RS_SKILL")" 1
+check "교대 계약: 종료 코드 표에 19 행이 있다" "$(grep -c '^| `19` | a carry act' "$RS_SKILL")" 1
+check "좌석 사본: 종료 코드 표에 18 행이 있다" "$(grep -c '^| 18 | a carry act' "$SEAT_REF")" 1
+check "좌석 사본: 종료 코드 표에 19 행이 있다" "$(grep -c '^| 19 | a carry act' "$SEAT_REF")" 1
+check "좌석 사본: 이월된 답은 다시 묻지 않는다" \
+  "$(has "$SEAT_REF" "**A record already answered is not asked again because its answer was carried over**")" 예
+for f in "$RS_SKILL" "$AP_ROUTER"; do
+  check "$(basename "$(dirname "$f")"): 설계 단계 정지에서 이월 답은 다시 묻지 않는다" \
+    "$(has "$f" "**An answer already carried over is not asked again**: when the element naming the step reads \`state\` \`이월\`")" 예
+done
+
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

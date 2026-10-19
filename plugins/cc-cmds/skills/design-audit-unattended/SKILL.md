@@ -74,6 +74,16 @@ per grade, not one blanket rule.
 
 A stage of this arm that halted can be resumed in the same session with a prompt naming its own halt record and one of the record's options verbatim (`_common/pipeline-sidecar.md` §4). The option is the answer to the question the record asked, and the pass goes on from the step the record names — the readers are not spawned again, collected witnesses are not re-collected, and the dispositions already applied stand. At the synthesis question: `record in the unresolved-issues section` writes the composed requirement into the report's unresolved section and goes on to Step 7; `reject` records the rejection in the report, with the answer's option as its basis, and goes on to Step 7. `adopt as a requirement` does not come back this way — the routing shift takes it to `design-reconverge` and a fresh audit, because the requirement changes what the run is trying to reach. At `Step 7 / 골격급 재발`: `미해결 이슈로 두고 계속` takes Step 7's disposition 4; `재수렴` goes the way `adopt as a requirement` does. Do not rewrite the halt record, and do not halt a second time on the question it already carries.
 
+### Re-entered with a carried answer
+
+A fresh session can be handed a person's answer to an earlier attempt's synthesis halt (CFI-3b) — `record in the unresolved-issues section` or `reject`; `adopt as a requirement` still goes to `design-reconverge`. The routing shift's carry act writes an answer card and the stage starts with `CC_PIPELINE_HALT_ANSWER` set to its path. When it is set, before Step 1:
+
+1. **Read the card and check the digest.** Its `**중단 기록**` is the earlier attempt's halt record and `**기록 다이제스트**` that record's sha256. Compute `shasum -a 256` of the record and compare; a difference is a halt with `분류: precondition-failed` naming both values — the answer was given to other bytes.
+2. **Skip Steps 1–5 only on a disposition bound to the document's bytes.** The report at `<base>/docs/design-audit/{slug}.md` holds the evidence only when it carries the `## 조정 처분` block Step 6 writes before that halt and the block's `**조정 뒤 문서 sha256**` equals the design document's `shasum -a 256` now. Then the dispositions there stand, the report's `## 감사 개시` values are this pass's freeze, and the pass enters Step 6 at the synthesis question. Otherwise run Steps 1–5 again from a new freeze and Step 6 from its start: a report on disk does not vouch for the bytes it was made from, and only that sha256 binds it to them.
+3. **Apply the card's option at the synthesis question** as the answer to the record's `**질문 문면**`, as `### Resumed with a person's answer` above describes, and go on to Step 7. Do not ask that question again.
+4. **If the question computed there is not the record's** — a pass run again from Step 1 can compose a different requirement — do not apply the answer: write a new halt record for the question computed now, with the card's path in its `관측 상세`.
+5. **Never rewrite the carried record** — the card's `**중단 기록**` belongs to the earlier attempt, and the answer is bound to its digest.
+
 The grades are a marking, not a proof: `scripts/lint-judgment-grade.sh` counts
 marks and matches dispositions, and nothing checks that a point marked `등급 1`
 deserved it.
@@ -268,6 +278,8 @@ Severity is re-assigned here, by one labeller, in one pass. It is **never** aggr
 **This pass edits the design document, so it takes the document lock.** Wrap each write in `/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock" <command>` (absolute path; `-k` and `-t 0` both required). `EX_TEMPFAIL` (75) means another writer holds the document, which is a planning violation rather than a queue: do not wait, do not retry — halt with `분류: precondition-failed` naming both writers.
 
 **`골격급` judgment.** After routing, the same labeller grades each unique defect and CFI-3b candidate `골격급` or `비골격` (binary, severity-independent): `골격급` iff you can name the decision sentence it overturns (verbatim, with its heading) and its replacement. Routing owners are unchanged: a `골격급` defect goes to the `## 미해결 이슈` owner, its item marked `골격급: 예`. Never shorten it to 「골격」, a discussion-skill word.
+
+**Before a CFI-3b halt, leave the dispositions where a fresh session can take them.** Write a `## 조정 처분` block into the report at `<base>/docs/design-audit/{slug}.md`: one line per unique defect naming its severity and its owner (the document section, the carrier block or `## 미해결 이슈`), then `**조정 뒤 문서 sha256**: <64 hex>` — the design document's `shasum -a 256` after the last edit of this pass. Write it after the pass's own document edits and before the halt record. A session handed the person's answer to that halt skips Steps 1–5 only on this block (「Re-entered with a carried answer」); without it, or with a sha256 the document no longer has, the next session audits again from a new freeze.
 
 ### Step 7: Residual disclosure + HARD STOP
 

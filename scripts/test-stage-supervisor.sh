@@ -853,6 +853,53 @@ cost_seat N '(미상)'
 check "(12) 계정 (미상) 인 시도도 종단 행을 쓴다" "$(rows_of N)" "1"
 check "(12) 계정 (미상) 인 시도는 비용 표본을 남기지 않는다" "$(costs_n)" "2"
 
+# THE ANSWER CARD. A dispatch that carried a halt answer leaves its card under
+# the attempt's name before the token; the supervisor names it to the stage in
+# CC_PIPELINE_HALT_ANSWER and the attempt's row carries the answer's line. An
+# attempt with no card gets no variable and no field.
+STUB_HA="$WORK/claude-stub-ha"
+cat > "$STUB_HA" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s|%s\n' "${CC_PIPELINE_HALT_ANSWER-unset}" "${CLAUDE_CONFIG_DIR-unset}" > "${CC_STUB_HA_OUT:-/dev/null}"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"num_turns":1,"session_id":"stub-session"}'
+exit 0
+STUBEOF
+chmod +x "$STUB_HA"
+ha_seat() {  # ha_seat <segment> <card line or ""> — a hand-written routed token, run to its end
+  seg "$1"
+  printf '1\n' > "$RD/$1.attempt"
+  if [ -n "$2" ]; then
+    mkdir -p "$RD/halt-answer" && chmod 700 "$RD/halt-answer"
+    printf '<!-- cc-halt-answer v1; stage=%s#1 -->\n**중단 답 줄**: %s\n<!-- /cc-halt-answer v1 -->\n' "$1" "$2" \
+      > "$RD/halt-answer/$1#1.md"
+  fi
+  printf 'n%s\n\n\nB:%s#1\n-\n-\n%s\n' "$1" "$1" "$R12_CFG" > "$RD/$1.launch"
+  CC_CLAUDE_BIN="$STUB_HA" CC_STUB_HA_OUT="$WORK/ha-$1" g supervise-stage --manifest "$MANIFEST" --target repo \
+    --segment "$1" --nonce "n$1" -- review -p x >/dev/null
+}
+# The run's pinned copy is taken from whatever tree the pin resolves to, which
+# need not be this checkout, so for these two dispatches the copy's gate and
+# driver are this checkout's — swapped and restored by `mv`, as above.
+cp -p "$PINNED_GATE" "$WORK/ha-pinned-gate.sh"
+cp -p "$RD/plugin/cc-cmds/orchestrator/run.sh" "$WORK/ha-pinned-run.sh"
+cp -p "$GATE" "$WORK/ha-gate.sh" && mv "$WORK/ha-gate.sh" "$PINNED_GATE"
+cp -p "$ORCH/run.sh" "$WORK/ha-run.sh" && mv "$WORK/ha-run.sh" "$RD/plugin/cc-cmds/orchestrator/run.sh"
+ha_seat HA 7
+check "(12) 카드를 받은 시도의 스테이지 환경이 카드 경로와 부여된 디렉터리를 싣는다" \
+  "$(cat "$WORK/ha-HA" 2>/dev/null)" "$RD/halt-answer/HA#1.md|$R12_CFG"
+case "$( { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -F '세그먼트=HA ' || true; } | tail -1)" in
+  *"| 답 운반=7 |"*|*"| 답 운반=7") ok "(12) 그 시도의 종단 행이 답 운반=7 을 싣는다" ;;
+  *) bad "(12) 답 운반 종단 행" "$(grep -F '세그먼트=HA ' "$LEDGER" | tail -1)" ;;
+esac
+ha_seat HB ""
+check "(12) 카드 없는 시도의 환경에는 변수가 없다" "$(cut -d'|' -f1 "$WORK/ha-HB" 2>/dev/null)" "unset"
+check "(12) 카드 없는 시도의 종단 행에는 답 운반이 없다" \
+  "$( { grep -F '세그먼트=HB ' "$LEDGER" || true; } | { grep -F '`stage-result`' || true; } | { grep -c '답 운반=' || true; })" "0"
+mv "$WORK/ha-pinned-gate.sh" "$PINNED_GATE"
+mv "$WORK/ha-pinned-run.sh" "$RD/plugin/cc-cmds/orchestrator/run.sh"
+check "(12) 답 카드 시험 뒤 고정 사본이 원래 바이트로 돌아왔다" \
+  "$(cmp -s "$PINNED_GATE" "$WORK/pinned-gate.sh" && printf yes || printf no)" "yes"
+
 # The routing record is compared with the baseline before anything else: a
 # record that is neither absent nor `1` beside a regular baseline is a pair no
 # entry writes, and the dispatch stops with the routing exit code and an
