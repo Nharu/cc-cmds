@@ -874,7 +874,7 @@ def rt_park_borrow_corrupt:
 def rt_park_unrouted:
   rt_park("lent-seat-unrouted"; "대여 좌석에 고정된 런을 라우팅할 수 없다(인벤토리 무효 또는 고정 계정 없음) — cc-lane account check 로 인벤토리를 확인한다");
 def rt_park_deadline($until):
-  {verdict: "PARK", reason: "deadline", ready_at: $until, recovery: "마감 안에 끝낼 수 없다 — 마감을 늘리거나 ready_at 뒤에 다시 시작한다"};
+  {verdict: "PARK", reason: "deadline", ready_at: $until, recovery: "마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다"};
 # 대기 봉투의 `cost` 는 그 대기를 정한 입장 판정의 창별 비용이고, 그런 판정이 없는
 # 대기(FIFO 양보·미상 동시성·후보 없음·거래 실패)는 null 이다.
 def rt_wait_c($g; $acct; $until; $reason; $cost):

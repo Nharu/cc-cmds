@@ -8176,7 +8176,7 @@ wait_request_deadline() {
 # waiting process, and readers in `liveness.sh` treat a key whose holder lives
 # as not to be dispatched again.
 # ---------------------------------------------------------------------------
-readonly WAIT_LOOP_DEADLINE_RECOVERY="마감 안에 끝낼 수 없다 — 마감을 늘리거나 ready_at 뒤에 다시 시작한다"
+readonly WAIT_LOOP_DEADLINE_RECOVERY="마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다"
 
 wait_epoch_iso() {
   # wait_epoch_iso <epoch> — the instant in `now_iso`'s byte shape, `-` for none.

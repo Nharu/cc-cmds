@@ -37094,6 +37094,32 @@ check "75: 게이트의 런 개시 호출이 좌석 디렉터리를 --config-dir
   "$( { grep -cF 'pd_dirs+=(--config-dir "$seat_dir")' "$GATE" || true; } )/$( { grep -cF '${pd_dirs[@]+"${pd_dirs[@]}"}' "$GATE" || true; } )" "1/1"
 
 # ---------------------------------------------------------------------------
+# 92. 마감 park 의 복구 문면 — 라우터와 대기 루프가 같은 바이트를 싣는다
+# --- section: 92 | group: ledger_series | covers: act, gate_wait_deadline_park | needs: 75 | anchors: 92: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다, 92: 옛 복구 문구가 플러그인 어디에도 없다, 92: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다 ---
+#
+# 마감 park 는 이 런에서 기동하지 않는다는 판정이고, 그 뒤의 길은 다음 런이다. 라우터
+# 봉투의 `recovery` 와 게이트의 대체값(대기 루프 상수)이 따로 적혀 있으므로 둘이
+# 갈라지면 같은 판정이 행마다 다른 길을 가리킨다. 대체값 경로는 라우터가 `recovery`
+# 를 비운 봉투로 돈다 — 절 75 의 픽스처 원장에는 세그먼트 행이 없어 cone 행이
+# 거절되므로, act 스코프 대체 행에 실린 문면을 읽는다.
+# ---------------------------------------------------------------------------
+lsr92_want='마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다'
+lsr92_route=$(sed -n '/^def rt_park_deadline(/,/};$/s/.*recovery: "\([^"]*\)".*/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/route.sh")
+lsr92_loop=$(sed -n 's/^readonly WAIT_LOOP_DEADLINE_RECOVERY="\([^"]*\)"$/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
+check "92: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다" \
+  "$lsr92_route|$lsr92_loop" "$lsr92_want|$lsr92_want"
+check "92: 옛 복구 문구가 플러그인 어디에도 없다" \
+  "$( { grep -rnF '마감을 늘리' "$repo_root/plugins" || true; } | wc -l | tr -d ' ')" "0"
+lsr92_l=$(lsr75_new dl92)
+check "92: 복구를 비운 마감 PARK 도 exit 16 이다" \
+  "$(lsr75_rc "$lsr92_l" '{"verdict":"PARK","reason":"deadline","ready_at":1900000000,"recovery":""}' '' SW92)" "16"
+case "$( { grep '^- `blocked`' "$lsr92_l" || true; } | tail -1)" in
+  *"스코프=act"*"세그먼트=SW92"*"근거=계보=B:SW92#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') ($lsr92_want) |"*)
+    ok "92: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다" ;;
+  *) bad "92 대체값 행" "$(tail -1 "$lsr92_l")" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다
 # --- section: 61a | group: sa | covers: snapshot | anchors: 61a: 미추적 파일만 있는 베이스는 추적 변경 없음·미추적 파일 있음 이다, 61a: 추적 파일을 고친 베이스는 추적 변경 있음 이다, 61a: 두 베이스의 run 행 값이 다르다, 61a: 옛 베이스 청결 필드는 run 행에 없다 ---
 #
