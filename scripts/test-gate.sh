@@ -1579,6 +1579,20 @@ rv_x() {
   printf '/cc-cmds:review-unattended x --report-path %s' \
     "$(CANON_BASE=${3:-${CANON_BASE:-$WORK_ROOT}} canon_rp "$1" "$2")"
 }
+# rv_trig <segment> — the first trigger the R1 ledger stands behind right now for
+# that segment's next review, asked of the gate's own fact function. For a
+# fixture whose review dispatch is there to reach some other check: which
+# trigger is true depends on which sections ran before it — a whole run has
+# another section's `cycle` rows for the same segment, a shard does not — and a
+# fixed token is refused in one of the two.
+rv_trig() {
+  local f
+  f=$( ( gate_seam_enter
+         MANIFEST="$FX_MANIFEST"; LEDGER="$FX_LEDGER"; RUN_ID=R1
+         RUN_DIR="$XDG_STATE_HOME/cc-cmds/run/R1"
+         gate_cycle_trigger_facts "$1" ) 2>/dev/null )
+  printf '%s' "${f%%$'\n'*}"
+}
 
 # ---------------------------------------------------------------------------
 # The in-process seam — `gate_seam_init`, `gate_seam_enter`, `gate_inproc`
@@ -6611,7 +6625,7 @@ gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SD --
 check "SD 의 segment 행이 디스패치 전에 기록된다" "$rc" "0"
 
 gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 \
-     --trigger '첫 리뷰' -- review -p "$(rv_x R1 SD)"
+     --trigger "$(rv_trig SD)" -- review -p "$(rv_x R1 SD)"
 check "그럼에도 스킬 디스패치는 통과한다 (argv0 표에 묻지 않는다)" "$rc" "0"
 case "$msg" in
   *"축2=워크트리쓰기"*) ok "스킬 디스패치는 워크트리 쓰기로 등급된다" ;;
@@ -9062,7 +9076,7 @@ check "SD 의 segment 행이 마감 프로브 전에 기록된다" "$rc" "0"
 past_dl '2020-01-01T00:00:00Z'
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 \
-     --trigger '첫 리뷰' -- review -p "$(rv_x R1 SD)"
+     --trigger "$(rv_trig SD)" -- review -p "$(rv_x R1 SD)"
 check "마감이 지나면 스테이지 디스패치가 거부된다" "$rc" "3"
 case "$msg" in
   # 이 픽스처는 진전 축 경계를 하나도 선언하지 않으므로 시계가 유일한 경계이고,
@@ -9102,7 +9116,7 @@ rm -f "$RD_K/done"
 past_dl '2030-01-01T00:00:00Z'
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 \
-     --trigger '첫 리뷰' -- review -p "$(rv_x R1 SD)"
+     --trigger "$(rv_trig SD)" -- review -p "$(rv_x R1 SD)"
 check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
