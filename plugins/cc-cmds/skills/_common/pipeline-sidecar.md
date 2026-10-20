@@ -154,7 +154,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `사전 인가` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>     ← 설계 요구사항 인터뷰가 있었을 때만
 - `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>     ← 팀 티어 설계 스테이지가 있을 때만, 한 팀원 한 행
 - `베이스 발행` | 트래커=github | 대상=<owner>/<name>     ← design_scope 가 base 일 때만, 정확히 한 행. 대상은 선언된 대상의 원격 슬러그
-- `베이스 발행` | 트래커=clickup | 대상=<목록 id>
+- `베이스 발행` | 트래커=clickup | 대상=<목록 id>[ | 원 티켓=<task id>]     ← 원 티켓 은 clickup 행에만 두는 선택 필드 — 이 베이스가 떼어 내는 기존 티켓
 - `베이스 발행` | 트래커=없음 | 대상=-
 - `사전 인가` | 형태=gh issue create | 사유=<…>     ← 트래커=github 일 때
 - `사전 인가` | 형태=gh issue edit | 사유=<…>       ← 트래커=github 일 때 — 재개 시 관계 보충
@@ -588,7 +588,9 @@ never compared.
     nothing after it, `design_required=true`, `design_tier=team-4`, and exactly
     one `베이스 발행` row whose tracker is `github`, `clickup` or `없음` — a
     `github` target equal to a declared target's `원격 슬러그`, a non-empty
-    `clickup` target, a `-` target for `없음`. `single` forbids a `split` step and
+    `clickup` target, a `-` target for `없음`, and an optional trailing
+    ` | 원 티켓=<task id>` only on a `clickup` row, with an id of letters,
+    digits, `_` and `-`. `single` forbids a `split` step and
     any `베이스 발행` row. A `베이스 설계` row may appear at most once and must
     match its form; its `sha256` is not compared against the file here. Each
     violation is a **hard stop**.

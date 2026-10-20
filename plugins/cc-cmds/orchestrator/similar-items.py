@@ -3,6 +3,7 @@
 
     similar-items.py github  [--repo OWNER/NAME] (--issue N | --title T --body-file F) [common]
     similar-items.py clickup (--task ID|URL | --list ID --title T --body-file F) [common]
+    similar-items.py clickup --lexical-only --list-fields LIST [--task-fields ID ...] --log FILE
     similar-items.py file    --corpus FILE.json   (--issue N | --title T --body-file F) [common]
     common: [--format text|json] [--lexical-only] [--replay-log FILE [--replay-tag-prefix P]]
             [--question measured|generic] [--log PATH] [--patient]
@@ -19,6 +20,19 @@ registration or the start of work that called it.
 Exit codes: 0 for every lookup outcome (semantic, partial, lexical,
 unavailable), 2 for a usage error, 1 for an internal error. A lookup that could
 not run is `status=unavailable` with exit 0, so the caller carries on.
+
+Field mode (`clickup --list-fields`) is not a similarity lookup. It reads every
+page of one list's open tickets, subtasks included, and each `--task-fields`
+ticket one by one, and writes a field document to the `--log` path: here
+`--log` is the path of that document, not a judgment log. A dependency of a
+`--task-fields` ticket whose other end is in neither read - a closed ticket, or
+one in another list - is read one by one too, once, so the caller can tell such
+an end from an id nobody read. The document's first
+key is `"kind": "fields"`; a read stopped by the 2000-ticket limit, the 60 s
+budget, a failed page or a failed ticket read, or one that could not start,
+carries `"partial": true` and the reason. It runs no judgment step and calls no
+model. Stdout carries one summary line; the exit code is 0 for a full and a
+partial document alike, so the caller decides by reading `partial`.
 
 Run it by path, with no interpreter in front: the gate grades the basename,
 and an interpreter prefix is graded as an opaque worktree write.
@@ -121,6 +135,10 @@ def build_parser():
     cu.add_argument("--list")
     cu.add_argument("--title")
     cu.add_argument("--body-file")
+    cu.add_argument("--list-fields", metavar="LIST",
+                    help="field mode: write the list's ticket fields to the --log path")
+    cu.add_argument("--task-fields", metavar="ID", action="append",
+                    help="field mode: also read this ticket by itself (repeatable)")
     fl = sub.add_parser("file", parents=[query, common], allow_abbrev=False)
     fl.add_argument("--corpus", required=True)
     return parser, {"github": gh, "clickup": cu, "file": fl}
@@ -129,6 +147,16 @@ def build_parser():
 def check_args(args, subparsers):
     sp = subparsers[args.adapter]
     draft = args.title is not None or args.body_file is not None
+    if args.adapter == "clickup" and (args.list_fields is not None or args.task_fields):
+        if args.list_fields is None:
+            sp.error("--task-fields needs --list-fields")
+        if not args.lexical_only or args.log is None:
+            sp.error("--list-fields needs --lexical-only and --log FILE")
+        if (args.task is not None or args.list is not None or draft or args.replay_log is not None
+                or args.replay_tag_prefix is not None or args.question is not None):
+            sp.error("--list-fields cannot be combined with --task/--list/--title/--body-file/"
+                     "--replay-log/--question")
+        return
     if args.adapter == "clickup":
         if args.task is not None and (draft or args.list is not None):
             sp.error("--task cannot be combined with --list/--title/--body-file")
@@ -348,6 +376,162 @@ def clickup_corpus(args):
 
 
 # ---------------------------------------------------------------------------
+# Field mode
+# ---------------------------------------------------------------------------
+
+def opt_str(value):
+    return None if value is None or value == "" else str(value)
+
+
+def priority_of(x):
+    """The priority as an integer 1-4, or None.
+
+    The response carries an object whose `id` is the number as a string; any
+    other shape is taken as unset rather than guessed.
+    """
+    ref = x.get("priority")
+    ident = ref.get("id") if isinstance(ref, dict) else None
+    try:
+        n = int(str(ident))
+    except ValueError:
+        return None
+    return n if 1 <= n <= 4 else None
+
+
+def assignees_of(x):
+    out = []
+    for a in x.get("assignees") or []:
+        ident = a.get("id") if isinstance(a, dict) else None
+        try:
+            out.append(int(str(ident)))
+        except ValueError:
+            continue
+    return out
+
+
+def dependencies_of(x):
+    """Each dependency as the `task_id`/`depends_on` pair the response gives."""
+    out = []
+    for d in x.get("dependencies") or []:
+        if not isinstance(d, dict):
+            continue
+        t, p = opt_str(d.get("task_id")), opt_str(d.get("depends_on"))
+        if t is not None and p is not None:
+            out.append({"task_id": t, "depends_on": p})
+    return out
+
+
+def fields_of(x):
+    """One ticket's fields as the field document carries them.
+
+    Dates stay the millisecond strings the response gives. A `*_date_time`
+    flag is copied only when the response has the key: the API documentation
+    shows none, and a flag that is not there is not guessed.
+    """
+    rec = {"id": str(x.get("id")), "name": x.get("name") or "", "parent": opt_str(x.get("parent")),
+           "list_id": ref_of(x, "list"), "assignees": assignees_of(x),
+           "tags": [t.get("name") for t in x.get("tags") or [] if isinstance(t, dict) and t.get("name")],
+           "priority": priority_of(x), "start_date": opt_str(x.get("start_date")),
+           "due_date": opt_str(x.get("due_date"))}
+    for key in ("start_date_time", "due_date_time"):
+        if key in x:
+            rec[key] = x[key]
+    rec["dependencies"] = dependencies_of(x)
+    return rec
+
+
+def write_atomic(path, text):
+    d = os.path.dirname(os.path.abspath(path))
+    tmp = os.path.join(d, ".%s.%d.tmp" % (os.path.basename(path), os.getpid()))
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise cc_tracker.UsageError("cannot write %s (%s)" % (path, type(e).__name__))
+
+
+def read_failure(err, otherwise):
+    return "budget" if str(err) == "timeout" else otherwise
+
+
+def list_fields(args):
+    """The field document of one list, partial when a read stopped it."""
+    doc = {"kind": "fields", "list": args.list_fields, "partial": False, "reason": None,
+           "tasks": [], "task_fields": []}
+    token, why = cc_tracker.read_clickup_token()
+    if token is None:
+        doc["partial"], doc["reason"] = True, why
+        return doc
+    cu = ClickUp(token)
+    del token
+    page = 0
+    try:
+        while True:
+            data = cu.get("/list/%s/task?subtasks=true&include_closed=false&page=%d"
+                          % (q(args.list_fields), page))
+            tasks = data.get("tasks")
+            if not isinstance(tasks, list):
+                raise cc_tracker.TrackerError("json")
+            doc["tasks"].extend(fields_of(x) for x in tasks if isinstance(x, dict))
+            if len(doc["tasks"]) >= cc_tracker.CLICKUP_LIMIT:
+                doc["tasks"] = doc["tasks"][:cc_tracker.CLICKUP_LIMIT]
+                doc["partial"], doc["reason"] = True, "limit"
+                return doc
+            if not tasks or data.get("last_page"):
+                break
+            page += 1
+    except cc_tracker.TrackerError as e:
+        doc["partial"], doc["reason"] = True, read_failure(e, "page-failed")
+        return doc
+    for ident in args.task_fields or []:
+        if not read_task(cu, task_id_of(ident), doc):
+            return doc
+    # The other end of a requested ticket's dependency, when neither read has
+    # it: the list read leaves out closed tickets and other lists, and the plan
+    # refuses an end it cannot see. One pass, not followed further.
+    seen = set(r["id"] for r in doc["tasks"] + doc["task_fields"])
+    linked = []
+    for r in list(doc["task_fields"]):
+        for d in r["dependencies"]:
+            for ident in (d["task_id"], d["depends_on"]):
+                if ident not in seen:
+                    seen.add(ident)
+                    linked.append(ident)
+    for ident in linked:
+        if not read_task(cu, ident, doc):
+            return doc
+    return doc
+
+
+def read_task(cu, ident, doc):
+    """Append one ticket read by itself; False once the document is partial."""
+    try:
+        t = cu.get("/task/%s" % q(ident))
+    except cc_tracker.TrackerError as e:
+        doc["partial"], doc["reason"] = True, read_failure(e, "task-failed")
+        return False
+    if t.get("id") is None:
+        doc["partial"], doc["reason"] = True, "task-failed"
+        return False
+    doc["task_fields"].append(fields_of(t))
+    return True
+
+
+def run_fields(args):
+    cc_tracker.clickup_base()
+    doc = list_fields(args)
+    write_atomic(args.log, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
+    return "similar-items: fields list=%s tasks=%d task_fields=%d partial=%s\n" % (
+        one_line(args.list_fields), len(doc["tasks"]), len(doc["task_fields"]),
+        "true" if doc["partial"] else "false")
+
+
+# ---------------------------------------------------------------------------
 # Lookup
 # ---------------------------------------------------------------------------
 
@@ -497,6 +681,18 @@ def main(argv=None):
     parser, subparsers = build_parser()
     args = parser.parse_args(argv)
     check_args(args, subparsers)
+    if args.adapter == "clickup" and args.list_fields is not None:
+        try:
+            line = run_fields(args)
+        except cc_tracker.UsageError as e:
+            sys.stderr.write("similar-items.py: %s\n" % e)
+            return 2
+        except Exception as e:  # never echo a value that might carry a credential
+            sys.stderr.write("similar-items.py: internal error (%s)\n" % type(e).__name__)
+            return 1
+        sys.stdout.buffer.write(line.encode("utf-8"))
+        sys.stdout.flush()
+        return 0
     try:
         cc_tracker.judge_url()
         if args.adapter == "clickup":

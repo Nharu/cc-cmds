@@ -15,12 +15,17 @@
 #   - the detached-process fences       (from plugins/cc-cmds/orchestrator/test-run.sh, 28·28b)
 #   - the router-copy sections          (from scripts/test-snapshot.sh, 6d–6e-4)
 #
-# ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 4. The census selects every suite
+# ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 14. The census selects every suite
 # that invokes the gate family and asserts two exports for each. This file
 # carries its recognition corpus, so it selects this file too, and
 # scripts/test-local-bundle.sh runs test-gate.sh on its mirror, so it selects
 # that one as well: two suites the source census did not see, two assertions
-# each. Every other assertion here is one a source suite used to make.
+# each. The fix-cycle block (6e-3a) adds ten: the two pieces in the driver's
+# two assignments and in the common file's start condition, the set of files
+# pointing at that file, its missing question and notification surfaces, its
+# missing copies, the phase sentence, and the start disposition and end
+# obligation with their two spellings. Every other assertion here is one a
+# source suite used to make.
 #
 # Usage: bash scripts/test-meta-invariants.sh
 
@@ -1129,6 +1134,62 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   fi
 done
 check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "$fix_prompt_rs" "$fix_prompt"
+
+# ---------------------------------------------------------------------------
+# 6e-3a. The fix cycle reads the same two pieces every producer writes
+#
+# An implementation stage knows it is a fix cycle only by two pieces of its
+# prompt, `수정 대상: ` and ` 의 P0·P1`. The router copies above write them,
+# and so do the driver's two `fix_target` assignments; the common fix-cycle
+# file is the one reader. A piece reworded on any side switches the start
+# condition off without an error, so every side is pinned here. The common
+# file is pointed at by the two unattended skills alone, carries no question
+# or notification surface, and holds no copy of the passages its checker
+# prompt names. The implementation skill carries the phase sentence, the
+# start disposition and the end obligation, with the two spellings one writes
+# and the other reads.
+# ---------------------------------------------------------------------------
+FC="$PLUGIN_ROOT/skills/_common/fix-cycle.md"
+IU="$PLUGIN_ROOT/skills/implement-unattended/SKILL.md"
+check "수정 대상 조각: run.sh 의 fix_target 대입 두 줄이 두 조각을 모두 싣는다" \
+  "$(grep -cE -- 'fix_target=" · 수정 대상: \$[a-z_]+ 의 P0·P1"' "$DRIVER" || true)" "2"
+fc_start=$(awk '/^## Start condition$/{on=1; next} on && /^## /{exit} on' "$FC" 2>/dev/null)
+check "수정 대상 조각: 공통 파일의 시작 조건이 두 조각을 모두 싣는다" \
+  "$(printf '%s\n' "$fc_start" | grep -F -- '수정 대상: ' | grep -cF -- ' 의 P0·P1' || true)" "2"
+check "공통 fix-cycle 파일을 가리키는 파일은 두 무인 스킬뿐이다" \
+  "$(cd "$repo_root" && grep -rl 'fix-cycle' plugins/cc-cmds/skills | LC_ALL=C sort | tr '\n' ' ')" \
+  "plugins/cc-cmds/skills/implement-unattended/SKILL.md plugins/cc-cmds/skills/review-unattended/SKILL.md "
+check "공통 fix-cycle 파일에 질문 면과 알림 면 문자열이 없다" \
+  "$(grep -cE -- 'AskUserQuestion|question_form|EnterPlanMode|ExitPlanMode|PushNotification|notify\.sh|terminal-notifier' "$FC" 2>/dev/null || true)" "0"
+fc_copies=0
+for lit in \
+  'There is no human-question surface.' \
+  'Research is open: `WebFetch`' \
+  '같은 커밋이 두 번 리뷰됐다' \
+  '같은 파일 집합이 세 리뷰 연속 P0/P1 발견을 지녔다' \
+  '발견의 파일 집합이 네 리뷰에 걸쳐 번갈아 나왔다' \
+  '발견의 사례가 아니라 그 부류를 고친다'
+do
+  n=$(grep -cF -- "$lit" "$FC" 2>/dev/null || true)
+  fc_copies=$((fc_copies + ${n:-0}))
+done
+check "공통 fix-cycle 파일에 질문 면 부재 불변식·조사 문단·정체 지시 문구의 사본이 없다" \
+  "$([ -f "$FC" ] && echo "$fc_copies" || echo 없음)" "0"
+IFS= read -r fix_phase_s <<'EOF'
+A dispatch whose scope directive carries `수정 대상:` is process B whenever a plan row that has not been voided exists, even when that plan's `Scope:` line names a different report.
+EOF
+check "구현 무인 스킬의 국면 판정에 수정 파견의 프로세스 B 문장이 한 줄 있다" \
+  "$(grep -cF -- "$fix_phase_s" "$IU" || true)" "1"
+iu_start=$(grep -F -- '**Start disposition — what an earlier turn left in the worktree.**' "$IU" || true)
+iu_end=$(grep -F -- '**End obligation — process B leaves none of its files in `git status --short`.**' "$IU" || true)
+check "구현 무인 스킬에 시작 처분과 끝 의무 문장이 있다" \
+  "$([ -n "$iu_start" ] && echo 시작)/$([ -n "$iu_end" ] && echo 끝)" "시작/끝"
+check "끝 의무가 보존 경로= 조각을 쓰고 시작 처분이 그것을 읽는다" \
+  "$(printf '%s\n' "$iu_end" | grep -cF -- '`보존 경로=<path>,<path>`' || true)/$(grep -cF -- 'the `보존 경로=` piece of its `**관측 상세**`' "$IU" || true)" "1/1"
+check "프로세스 A 가 물려받은 변경: 줄을 쓰고 프로세스 B 가 그것을 읽는다" \
+  "$(grep -cF -- 'one `물려받은 변경:` line' "$IU" || true)/$(grep -cF -- 'the plan'"'"'s `물려받은 변경:` line marks `되돌림`' "$IU" || true)" "1/1"
+check "보존 경로= 와 물려받은 변경: 은 구현 무인 스킬에서 한 꼴로만 쓰인다" \
+  "$(grep -cE -- '보존경로|보존 경로 ?:|보존 경로 =|물려받은변경|물려받은 변경 ?=' "$IU" || true)" "0"
 
 # ---------------------------------------------------------------------------
 # 6e-3b. Routing after an implementation is carried by BOTH router copies
