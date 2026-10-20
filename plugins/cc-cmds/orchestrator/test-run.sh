@@ -11805,7 +11805,7 @@ check "35: 첫 리뷰는 --slice 를 고른 값으로, 복구 리뷰는 그대�
   "$(printf '%s\n' "$r35_sc" | grep -cF 'slice_flag=$(review_slice_flag "$seg")' || true)/$(printf '%s\n' "$r35_sc" | grep -cF -- '--report-path $rp$slice_flag$rscope' || true)/$(grep -c 'review-unattended .*--recover.*\$(review_slice_flag "\$seg")' "$DRIVER" || true)" \
   "1/1/1"
 check "35: 수정 대상 지시는 사이클 2 부터, 앞 사이클 리포트가 있을 때만 구현 지시에 붙는다" \
-  "$(printf '%s\n' "$r35_sc" | grep -cF '[ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '선언 파일: $files$fix_target' || true)" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF '[ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)" \
   "1/1"
 
 # --- 사이클 루프: 마지막 사이클의 수렴, 다른 슬라이스 몫 거절, 복구 리포트의 리뷰 HEAD ---
