@@ -1373,7 +1373,7 @@ EOF
   # it names. A `single` run carries neither a split step nor that row, so
   # neither can come into force by accident. A plan frozen before the field
   # existed has no key and is `single`.
-  local scope bp_rows bp_n bp_trk bp_tgt bp_ok
+  local scope bp_rows bp_n bp_trk bp_tgt bp_org_seg bp_org bp_ok
   scope=$(manifest_design_scope)
   bp_rows=$(manifest_base_publish_rows)
   bp_n=$(printf '%s' "$bp_rows" | grep -c . || true)
@@ -1393,8 +1393,16 @@ EOF
     ' >/dev/null 2>&1 \
       || die "design_scope 가 base 인 런의 단계 그래프는 design → design-audit(설계에 의존) → split(설계·감사에 의존) 세 단계뿐이어야 합니다"
     [ "$bp_n" = "1" ] || die "design_scope 가 base 인데 「베이스 발행」 행이 ${bp_n}개입니다 — 정확히 하나여야 합니다"
-    bp_trk=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)$/\1/p')
-    bp_tgt=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)$/\2/p')
+    # The optional ` | 원 티켓=<task id>` names the ClickUp ticket the base splits
+    # off; it follows the target, and only on a clickup row.
+    bp_trk=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)\( | 원 티켓=[^ ]*\)\{0,1\}$/\1/p')
+    bp_tgt=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)\( | 원 티켓=[^ ]*\)\{0,1\}$/\2/p')
+    bp_org_seg=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=[^ |]* | 대상=[^ ]*\( | 원 티켓=[^ ]*\)$/\1/p')
+    if [ -n "$bp_org_seg" ]; then
+      bp_org=${bp_org_seg# | 원 티켓=}
+      [ "$bp_trk" = "clickup" ] || die "「베이스 발행」 행의 원 티켓 은 clickup 행에만 둡니다 (트래커=$bp_trk)"
+      case "$bp_org" in ''|*[!A-Za-z0-9_-]*) bp_trk= ;; esac
+    fi
     case "$bp_trk" in
       github)
         bp_ok=0
@@ -1407,7 +1415,7 @@ EOF
       없음)
         [ "$bp_tgt" = "-" ] || die "「베이스 발행」 행의 트래커가 없음인데 대상이 - 가 아닙니다: $bp_tgt" ;;
       *)
-        die "「베이스 발행」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>\` 입니다" ;;
+        die "「베이스 발행」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>[ | 원 티켓=<task id>]\` 입니다 (원 티켓 은 clickup 행에만, 영문·숫자·_·- 로)" ;;
     esac
   else
     if manifest_plan_json | jq -e '[.steps[]? | if type == "object" then .skill else . end] | index("split") != null' >/dev/null 2>&1; then
@@ -1945,6 +1953,95 @@ implement_slice_count() {
     [ "$(slice_field "$1" "$id" '스킬')" = "implement" ] && n=$((n + 1))
   done
   printf '%s' "$n"
+}
+
+# ---------------------------------------------------------------------------
+# Readers of one `### R<n>.` item of `## 구현 시 검증 항목`, shared with the
+# gate's check of a seat answer to a `/ ladder-unsettled` halt record. Every
+# key is read in the tolerant spelling `^(- )?(\*\*<key>\*\*|<key>): <value>$`.
+#
+# Every reader here reads its input to the end and stops printing instead of
+# calling `exit`: the gate runs under `set -o pipefail`, and a reader that left
+# early would kill `defenced` with SIGPIPE on a document whose remainder is
+# larger than the pipe buffer, turning a match into status 141.
+#
+# residual_item_lines <doc> <R<n>> — the item's body, heading excluded.
+residual_item_lines() {
+  defenced "$1" | RIL_LABEL="$2" awk '
+    done { next }
+    /^## / { if (inr) { done = 1; next } }
+    $0 == "## 구현 시 검증 항목" { inr = 1; next }
+    !inr { next }
+    /^### / {
+      if (inb) { done = 1; next }
+      if (match($0, /^### R[0-9]+/) && substr($0, 5, RLENGTH - 4) == ENVIRON["RIL_LABEL"]) inb = 1
+      next
+    }
+    inb { print }
+  '
+}
+
+# residual_item_value <doc> <R<n>> <key> — the first value of <key>, trailing
+# blanks trimmed; nothing when the item or the key is absent.
+residual_item_value() {
+  residual_item_lines "$1" "$2" | RIV_KEY="$3" awk '
+    found { next }
+    {
+      k = ENVIRON["RIV_KEY"]; s = $0
+      sub(/^- /, "", s)
+      if (index(s, "**" k "**: ") == 1) s = substr(s, length(k) + 7)
+      else if (index(s, k ": ") == 1) s = substr(s, length(k) + 3)
+      else next
+      sub(/[ \t\r]+$/, "", s); print s; found = 1
+    }
+  '
+}
+
+# residual_items_pending <doc> — the label (R<n>) of every item whose grade
+# still reads `구현 시 검증`, one per line, in document order.
+residual_items_pending() {
+  defenced "$1" | awk '
+    done { next }
+    /^## / { if (inr) { done = 1; next } }
+    $0 == "## 구현 시 검증 항목" { inr = 1; next }
+    !inr { next }
+    /^### / { label = ""; if (match($0, /^### R[0-9]+/)) label = substr($0, 5, RLENGTH - 4); next }
+    label != "" && /^(- )?(\*\*검증 등급\*\*|검증 등급): 구현 시 검증$/ { print label }
+  '
+}
+
+# residual_item_block_class <doc> <R<n>> — the item's block class. A
+# `차단 부류` of `코드-부재` pairs only with `잔여 사유: 구현 필요`, and
+# `사람-환경`/`외부-준비` only with `잔여 사유: 검증 차단`; a `구현 필요` item
+# without the field reads `코드-부재`. Anything else — no field on another
+# reason, a value outside the three, a mismatched pair — reads `미분류`.
+residual_item_block_class() {
+  local cls reason
+  cls=$(residual_item_value "$1" "$2" '차단 부류')
+  reason=$(residual_item_value "$1" "$2" '잔여 사유')
+  case "$cls" in
+    '') [ "$reason" = "구현 필요" ] && { printf '코드-부재'; return 0; } ;;
+    코드-부재) [ "$reason" = "구현 필요" ] && { printf '%s' "$cls"; return 0; } ;;
+    사람-환경|외부-준비) [ "$reason" = "검증 차단" ] && { printf '%s' "$cls"; return 0; } ;;
+  esac
+  printf '미분류'
+}
+
+# residual_item_w3_marked <doc> <R<n>> — 0 when the item's `필요한 것` line is
+# the W3 form `**필요한 것**: 저장소 <경로> · 프로필 <이름> — 존재 확인 <date>`.
+residual_item_w3_marked() {
+  local body
+  body=$(residual_item_lines "$1" "$2") || return 1
+  grep -qE '^(- )?(\*\*필요한 것\*\*|필요한 것): 저장소 [^ ]+ · 프로필 [^ ]+ — 존재 확인 [0-9]{4}-[0-9]{2}-[0-9]{2}$' <<<"$body"
+}
+
+# residual_item_after_explicit <doc> <R<n>> — 0 when the item states
+# `검증 시점: 구현 후` on a line of its own: the same anchored line
+# residual_share_missing excuses.
+residual_item_after_explicit() {
+  local body
+  body=$(residual_item_lines "$1" "$2") || return 1
+  grep -qE '^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 후[ \t]*$' <<<"$body"
 }
 
 # ---------------------------------------------------------------------------
@@ -7281,8 +7378,8 @@ CYCLE_BUNDLE_SCRIPT='
   printf "요약=%s\nP0=%s\nP1=%s\n리뷰 HEAD=%s\n" "$sm" "$p0" "$p1" "$rh"
   if [ "$sm" = "정규" ] && [ -n "$rh" ]; then
     rc=0
-    lb=$(gate_row_projected_bytes "cycle" "세그먼트=$s" "사이클=$c" "P0=$p0" "P1=$p1" \
-        "리뷰 HEAD=$rh" "리포트 경로=$r" "lane 결정=$l" "발견 지문=000000000000")
+    lb=$(gate_cycle_row_projected_bytes "$s" "사이클=$c" "P0=$p0" "P1=$p1" \
+        "리뷰 HEAD=$rh" "리포트 경로=$r" "lane 결정=$l")
     if [ "${lb:-0}" -gt "$GATE_ROW_MAX" ]; then
       ro=$( ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
           "리포트 경로=$r" ) 2>&1 ) || rc=$?
@@ -7316,7 +7413,8 @@ cycle_gate_bundle() {
   #
   # TWO STEPS OF DEGRADATION AT THE CAP, AND THIS ONE COMES FIRST. `lane 결정`
   # grows by about 50 bytes per triage finding and nothing bounds the count, so
-  # the row is projected with it and a 12-character `발견 지문` stand-in; over
+  # the row is projected with it by the gate's own `gate_cycle_row_projected_bytes`,
+  # which adds every field the gate writes at its widest value; over
   # `GATE_ROW_MAX`, the key is left off with no marker — a `cycle` row without
   # it is already the routed path's ordinary row — and the bundle prints
   # `lane 생략=<projected bytes>` for the caller to log. Nothing in the tree
@@ -9968,7 +10066,7 @@ segment_cycle() {
       fileset_escape "$seg" "$files" "$wt" || return 1
       stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
-      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")\""
+      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\""
       case "$(terminal_route_class "$class")" in
         '정상 완료') : ;;
         '의도된 park')
@@ -10030,7 +10128,7 @@ segment_cycle() {
           # crash.
           log "$seg: $class — 1회만 재시도"
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")\"" \
+               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\"" \
                crash-retry "크래시 2회" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -10050,7 +10148,7 @@ segment_cycle() {
           # `limit-reclaim` is what leaves the exhausted account out; any other
           # event would sit this lineage back on the account the reap ran from.
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")\"" \
+               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\"" \
                limit-reclaim "한도-형상 회수 후 재파견" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -10072,7 +10170,11 @@ segment_cycle() {
     fi
 
     # --- S5 REVIEW ---------------------------------------------------------
-    local rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle.md"
+    # The report path is the gate's canonical one — the path its `cycle` arm
+    # refuses every other against, numbered by the segment's `cycle` rows.
+    local rp
+    rp=$(run_gate_call gate_review_report_path "$seg" 2>/dev/null) && [ -n "$rp" ] \
+      || { park "$seg" cone 무효화 "게이트 park" "정본 리뷰 리포트 경로를 게이트에서 얻지 못했다"; return 1; }
     mkdir -p "$(dirname "$rp")"
     sid="S5:$seg:$cycle"
     # THE REVIEW'S SCOPE TRAVELS ON THE DISPATCH LINE, the same way the
@@ -10208,7 +10310,8 @@ segment_cycle() {
       [ -z "$redo" ] || break
       redo=$(review_redo_reason "$bundle" "$recovered" "$slice_flag")
       [ -n "$redo" ] || break
-      rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle-r2.md"
+      rp=$(run_gate_call gate_review_report_path "$seg" 2 2>/dev/null) && [ -n "$rp" ] \
+        || { park "$seg" cone 무효화 "게이트 park" "정본 리뷰 리포트 경로(-r2)를 게이트에서 얻지 못했다"; return 1; }
       log "$seg: $redo — 사이클 $cycle 의 리뷰를 한 번 더 파견한다 ($rp)"
     done
     p0=$(bundle_val "$bundle" 'P0'); p1=$(bundle_val "$bundle" 'P1')
