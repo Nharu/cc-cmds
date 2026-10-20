@@ -27712,7 +27712,7 @@ EOF
           *) warn "\`선택지=좌석 실행\` answers only a \`Step 3 잔여 검증 좌석 실행\` or \`Step 3 게이트 도달 좌석 실행\` halt — this record's step is \`${hrstep:-(none)}\`: $hrec"
              return "$GATE_EXIT_RULE" ;;
         esac
-        if ! gate_halt_option_labels "$hrec" | grep -qxF '좌석 실행'; then
+        if ! gate_halt_option_labels "$hrec" | grep -xF '좌석 실행' >/dev/null; then
           warn "this halt record offers no \`좌석 실행\` option line, so the seat has nothing it was asked to run: $hrec"
           return "$GATE_EXIT_RULE"
         fi
@@ -27903,7 +27903,7 @@ EOF
       # The label is one of the `**선택지**:` block's, whole: a line elsewhere in
       # the record that starts the same way — a command line, a quoted line —
       # is not an option, and a label is not the prefix of a longer one.
-      if ! gate_halt_option_labels "$hread" | grep -qxF -- "$hopt"; then
+      if ! gate_halt_option_labels "$hread" | grep -xF -- "$hopt" >/dev/null; then
         warn "\`선택지\` is not one of the options this halt record lists verbatim: $hopt"
         # A record with no option line at all is the writer's fault, not the
         # answer's: options run inline after `**선택지**:` are read by no one, so

@@ -629,8 +629,8 @@ else
 fi
 # 소싱 줄이 `hook_suffix_verdict` 의 정의보다 앞에 있어야, 어느 호출도 분류기 없이
 # 돌지 않는다. `hook_self` 에 기대지 않는다는 것도 같은 줄에서 본다.
-es_src_ln=$(grep -nE '^\. .*/enforcement-surfaces\.sh"' "$HOOK" | head -1 | cut -d: -f1)
-es_fn_ln=$(grep -n '^hook_suffix_verdict()' "$HOOK" | head -1 | cut -d: -f1)
+es_src_ln=$(awk '/^\. .*\/enforcement-surfaces\.sh"/ { print NR; exit }' "$HOOK")
+es_fn_ln=$(awk '/^hook_suffix_verdict\(\)/ { print NR; exit }' "$HOOK")
 if [ -n "$es_src_ln" ] && [ -n "$es_fn_ln" ] && [ "$es_src_ln" -lt "$es_fn_ln" ] \
    && ! sed -n "${es_src_ln}p" "$HOOK" | grep_all_q 'hook_self'; then
   ok "분류기 소싱이 판정 함수보다 앞이고 hook_self 에 기대지 않는다"
@@ -806,7 +806,6 @@ check "스테이지 id 가 없는 호출자의 halt/S2.md 는 예전처럼 거�
 # 강제 표면 탐지 — 스테이지는 고정 사본의 스크립트를 띄울 수 없으므로 게이트의 읽기
 # 동사로 탐지 도구에 닿는다. 피연산자가 강제 표면 경로여도 아무것도 쓰지 않는 읽기라
 # 거부되지 않는다.
-bash_json() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$1" '$c')"; }
 decide_stage 'S2#4' "$(bash_json "$GATE surface-screen --manifest $MANIFEST -- CLAUDE.md .claude/settings.json plugins/cc-cmds/orchestrator/rules/r.sh")"
 check "스테이지의 surface-screen 호출은 강제 표면 피연산자가 있어도 허용된다" "$dec" "allow"
 
