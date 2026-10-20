@@ -5748,6 +5748,7 @@ esac
 # prunes the directory the run ledger lives in, and every assertion after this
 # point then reads a ledger that is not there. The bug it caused looked like a
 # gate defect and was a fixture defect.
+br8=$(cd "$WT" && git symbolic-ref --short HEAD 2>/dev/null) || br8=''
 ( cd "$WT" && git checkout -q --orphan sideline && git reset -q \
   && echo x > c.txt && git add c.txt && git commit -qm sideline ) >/dev/null 2>&1
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
@@ -5758,6 +5759,13 @@ case "$msg" in
   *"is not an ancestor"*) ok "낡음 등급이 「무관/베이스 이동」으로 보고된다" ;;
   *) bad "낡음 등급 보고" "'$msg'" ;;
 esac
+# Back onto the branch the fixture was on. A later section adds its segment
+# worktrees at this repository's HEAD, and on the unrelated root they share no
+# history with the base, which the enforcement-surface provenance check refuses.
+# `-f`, because the `git reset` above left that branch's files untracked and a
+# plain checkout refuses to overwrite them.
+[ -z "$br8" ] || ( cd "$WT" && git checkout -q -f "$br8" ) >/dev/null 2>&1
+check "8: 픽스처가 원래 브랜치로 돌아왔다" "$(cd "$WT" && git symbolic-ref --short HEAD 2>/dev/null)" "$br8"
 
 # ---------------------------------------------------------------------------
 # 8b. Implementation and review must be separate sessions
@@ -30124,6 +30132,280 @@ sap_ans "$CAP_DIR/halt/SAQ#5.md" 좌석
 saq_refused "park 뒤의 승계" 'was parked'
 check "34q: park 뒤에는 승계되지 않는다" "$rc" "3"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAQ_PREV_AR"
+
+# --- 34r. 강제 표면의 출처 — 좌석 적용 밖에서 바뀐 분류 경로는 리뷰와 머지에 닿지 못한다 ---
+# --- section: 34r | group: cone | covers: act, snapshot, surface-class | anchors: 34r: 사람의 좌석 커밋은 통과한다, 34r: 승계된 좌석 커밋도 통과한다, 34r: 베이스만 바꾼 경로는 통과한다, 34r: 베이스를 머지한 커밋은 통과한다, 34r: 리베이스한 브랜치의 규칙 파일이 좌석 바이트다, 34r: 출처가 깨진 세그먼트의 리뷰가 blocked 행으로 막힌다, 34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다, 34r: 재리뷰 뒤의 머지는 통과한다, 34r: 출처가 깨진 머지는 거절된다, 34r: review-line 이 좌석 커밋을 나열한다, 34r: 스냅숏이 강제 표면과 좌석 적용 커밋을 낸다, 34r: 스테이지의 규칙 파일 cp 는 exec 에서 거절된다, 34r: HEAD 가 추적하지 않는 CLAUDE.md 는 exec 거절에서 빠진다 ---
+#
+# WHAT LANDS IS THE BRANCH, SO THE BRANCH IS WHAT IS EXAMINED. A stage reaches
+# a classified path through `cp`, a script body or `git checkout <rev> -- p`,
+# and no argv check sees the last two; the provenance check reads the segment
+# HEAD, the merge base and the base end instead, and every classified path HEAD
+# changed has to stand as the base end has it or as this run's last seat commit
+# of the segment left it. The base end is `origin/main` of the fixture
+# repository, moved onto the fixture's base commit for this section and put back
+# at its end. Each case resets the segment branch, so no case reads another's
+# commit.
+SPV_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+sap_fx RSPV1 SPV "6b6b6b6b-1111-2222-3333-444444444444"
+check "34r: 픽스처의 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+# The cone manifest is copied from the shared one, which section 9 leaves with
+# `리뷰-후-머지` off; the merge cases below need it on, and the copy carries no
+# binding digest for the edit to move.
+sed -i.bak '/^\*\*리뷰-후-머지\*\*: 끔$/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+SPV_ORIGIN0=$(cd "$REPO" && git rev-parse refs/remotes/origin/main)
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SAP_BASE" )
+SPV_SUBJ='**좌석 적용 커밋 제목**: fix(rules): 픽스처 규칙을 고친다'
+spv_pv() { cap_gate "$SAP_SEAT" '' surface-provenance --manifest "$CAP_NM" --segment SPV --target infra; }
+spv_reset() { ( cd "$SAP_WT" && git reset -q --hard "$1" ) >/dev/null 2>&1; }
+spv_commit() {  # spv_commit <메시지> <셸 편집…> — one commit on the segment branch as a stage makes it
+  local m="$1"; shift
+  ( cd "$SAP_WT" && eval "$*" && git add -A && git commit -qm "$m" ) >/dev/null 2>&1
+}
+spv_base_commit() {  # spv_base_commit <부모> <경로> <내용> — a base commit made without touching the worktree
+  local idx="$WORK/spv-index.$$"
+  ( cd "$SAP_WT" && rm -f "$idx" && GIT_INDEX_FILE="$idx" git read-tree "$1" \
+    && b=$(printf '%s' "$3" | git hash-object -w --stdin) \
+    && GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "100644,$b,$2" \
+    && t=$(GIT_INDEX_FILE="$idx" git write-tree) && rm -f "$idx" \
+    && git commit-tree "$t" -p "$1" -m spv-base-change )
+}
+spv_refused() {  # spv_refused <이름> <경로> <문면 조각>
+  check "34r: $1" "$rc" "3"
+  case "$(cat "$CAP_OUT")" in
+    *"$2"$'\t'*"$3"*) ok "34r: $1 — 그 경로와 이유를 댄다" ;;
+    *) bad "34r: $1 — 그 경로와 이유를 댄다" "$(cat "$CAP_OUT")" ;;
+  esac
+}
+spv_seat() {  # spv_seat <실행 버전> <경로> <부류> <새 내용> [답한 주체] — a seat apply on the branch HEAD
+  local f="$CAP_DIR/halt/SPV#$1.md" hd bl
+  hd=$(sap_head)
+  bl=$( (cd "$SAP_WT" && git rev-parse --verify --quiet "HEAD:$2") || printf '없음')
+  sap_sr "$1"
+  sap_rec "$f" "SPV#$1" apply "**좌석 적용 기준**: $hd" '**좌석 적용 파일**:' \
+    "$(sap_line "$2" "$3" "$bl" 100644 "$(sap_b64 "$4")")" "$SPV_SUBJ"
+  if [ "${5:-사람}" = 사람 ]; then sap_ask "$f" "$2" 1; fi
+  sap_ans "$f" "${5:-사람}"
+}
+
+spv_pv
+check "34r: 아무것도 바꾸지 않은 브랜치는 통과한다" "$rc/$(cat "$CAP_OUT")" "0/"
+spv_commit 'a 를 고친다' "printf 'two\n' > a.txt"
+spv_pv
+check "34r: 분류되지 않는 경로만 바꾼 브랜치는 통과한다" "$rc" "0"
+
+# THE STAGE'S OWN WRITES, each the shape an argv check would miss once it is
+# spelled through a script: the bytes, the mode alone, and a deletion.
+spv_reset "$SAP_BASE"
+spv_commit '규칙을 고친다' "printf 'rule stage\n' > '$SAP_RULE'"
+spv_pv
+spv_refused "좌석 적용 커밋 없이 바뀐 규칙 파일은 거절된다" "$SAP_RULE" '좌석 적용 커밋 없이 바뀜'
+spv_reset "$SAP_BASE"
+spv_commit '규칙을 실행 파일로 만든다' "chmod +x '$SAP_RULE'"
+spv_pv
+spv_refused "모드만 바꾼 규칙 파일은 거절된다" "$SAP_RULE" '좌석 적용 커밋 없이 바뀜'
+spv_reset "$SAP_BASE"
+spv_commit '규칙을 지운다' "git rm -q '$SAP_RULE'"
+spv_pv
+spv_refused "좌석이 아닌 삭제는 거절된다" "$SAP_RULE" '좌석 적용 커밋 없이 바뀜'
+
+# THE SEAT'S COMMIT, a person's first and an inherited one after it, and what
+# breaks each: a stage edit over the seat bytes, a commit that looks like a seat
+# commit with no row, a row whose commit is gone, a row carried from another run.
+spv_reset "$SAP_BASE"
+spv_seat 1 "$SAP_RULE" 규칙카탈로그 'rule two\n'
+SPV_S1=$(sap_head)
+spv_pv
+check "34r: 사람의 좌석 커밋은 통과한다" "$rc/$(row_field "$(sap_last)" '좌석 커밋')" "0/$SPV_S1"
+spv_commit '규칙을 다시 고친다' "printf 'rule three\n' > '$SAP_RULE'"
+spv_pv
+spv_refused "좌석 커밋 위의 스테이지 편집은 거절된다" "$SAP_RULE" "마지막 좌석 커밋 $SPV_S1 과 다름"
+spv_reset "$SPV_S1"
+spv_commit 'fix(rules): 픽스처 규칙을 고친다' "printf '# root stage\n' > CLAUDE.md"
+spv_pv
+spv_refused "원장 행 없는 커밋은 거절된다" CLAUDE.md '좌석 적용 커밋 없이 바뀜'
+SPV_ROWLESS=$(sap_head)
+cp "$CAP_LEDGER" "$WORK/spv-ledger.bak"
+printf -- '- `중단 답` | 세그먼트=SPV | 선택지=좌석 적용 | 답한 주체=사람 | 좌석 커밋=%s | 출처 런=R0 | prev=x\n' "$SPV_ROWLESS" >> "$CAP_LEDGER"
+spv_pv
+spv_refused "다른 런에서 들여온 행의 좌석 커밋은 세지 않는다" CLAUDE.md '좌석 적용 커밋 없이 바뀜'
+printf -- '- `중단 답` | 세그먼트=SPV | 선택지=좌석 적용 | 답한 주체=사람 | 좌석 커밋=%s | prev=x\n' "$(printf 'd%.0s' $(seq 1 40))" >> "$CAP_LEDGER"
+spv_pv
+spv_refused "찾을 수 없는 좌석 커밋은 거절된다" CLAUDE.md '을 찾을 수 없음'
+cp "$WORK/spv-ledger.bak" "$CAP_LEDGER"
+spv_reset "$SPV_S1"
+spv_seat 2 CLAUDE.md 지침파일 '# root two\n' 좌석
+SPV_S2=$(sap_head)
+spv_pv
+check "34r: 승계된 좌석 커밋도 통과한다" "$rc/$(row_field "$(sap_last)" '근거 종류')/$(row_field "$(sap_last)" '좌석 커밋')" "0/좌석 적용 승계/$SPV_S2"
+
+# THE BASE MOVES. A path only the base changed is not the segment's; a merge of
+# the base into the branch — the gate's own `meta-merge` commit is this shape —
+# carries the base's entry; and a path both changed goes to a person whether or
+# not the branch was rebased, because a rebase that replays the seat bytes still
+# leaves HEAD equal to the seat commit.
+SPV_B1=$(spv_base_commit "$SAP_BASE" plugins/x/orchestrator/rules/b.sh 'base rule
+')
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SPV_B1" )
+spv_pv
+check "34r: 베이스만 바꾼 경로는 통과한다" "$rc/$(cat "$CAP_OUT")" "0/"
+( cd "$SAP_WT" && git merge -q --no-edit "$SPV_B1" ) >/dev/null 2>&1
+spv_pv
+check "34r: 베이스를 머지한 커밋은 통과한다" "$rc/$(cd "$SAP_WT" && git rev-list --parents -1 HEAD | wc -w | tr -d ' ')" "0/3"
+spv_reset "$SPV_S2"
+SPV_B2=$(spv_base_commit "$SAP_BASE" "$SAP_RULE" 'rule base
+')
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SPV_B2" )
+spv_pv
+spv_refused "리베이스하지 않은 양쪽 변경은 거절된다" "$SAP_RULE" '베이스와 세그먼트 양쪽에서 바뀜'
+( cd "$SAP_WT" && git rebase -q -X theirs "$SPV_B2" ) >/dev/null 2>&1
+check "34r: 리베이스한 브랜치의 규칙 파일이 좌석 바이트다" \
+  "$(cd "$SAP_WT" && git merge-base HEAD "$SPV_B2")/$(cd "$SAP_WT" && git show "HEAD:$SAP_RULE")" "$SPV_B2/rule two"
+spv_pv
+spv_refused "리베이스한 양쪽 변경도 거절된다" "$SAP_RULE" '베이스와 세그먼트 양쪽에서 바뀜'
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SAP_BASE" )
+spv_reset "$SPV_S2"
+
+# THE THREE READERS: the cone seed holds the review on a broken branch with one
+# `blocked` row, the merge act refuses it after the review rule, and the review
+# line and the snapshot name the seat commits a stage did not write.
+printf -- '- `segment` | id=SPV | 상태=실행중 | 워크트리=%s | 브랜치=sap-RSPV1 | 선행=없음 | prev=x\n' "$SAP_WT" >> "$CAP_LEDGER"
+cap_gate "$SAP_SEAT" '' review-line --manifest "$CAP_NM" --segment SPV
+case "$msg" in
+  *"--seat-commits \"$SPV_S1 ($SAP_RULE); $SPV_S2 (CLAUDE.md)\""*) ok "34r: review-line 이 좌석 커밋을 나열한다" ;;
+  *) bad "34r: review-line 이 좌석 커밋을 나열한다" "$msg" ;;
+esac
+spv_snap=$(cap_snap "$SAP_SEAT" '')
+check "34r: 스냅숏이 강제 표면과 좌석 적용 커밋을 낸다" \
+  "$(printf '%s' "$spv_snap" | jq -r '.segments[] | select(.id == "SPV") | "\(.["강제 표면"])|\(.["좌석 적용 커밋"])"')" \
+  "plugins/x/orchestrator/rules/ (규칙카탈로그), CLAUDE.md (지침파일), ign/CLAUDE.md (지침파일), new/CLAUDE.md (지침파일), sym/orchestrator/rules/ (규칙카탈로그), .claude/settings.json (프로젝트설정)|$SPV_S1 ($SAP_RULE); $SPV_S2 (CLAUDE.md)"
+check "34r: 좌석 적용 답은 재부착 갈래로 스냅숏에 오른다" \
+  "$(printf '%s' "$spv_snap" | jq -r '[.answered_halts[] | select(.segment == "SPV") | "\(.option)/\(.route)"] | last // ""')" "좌석 적용/재부착"
+check "34r: 출처가 맞는 세그먼트에는 출처 blocked 행이 없다" \
+  "$( { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' "$CAP_LEDGER" || true; } | grep -c . || true)" "0"
+# THE SIGNPOST: a stage's exec naming a classified path is refused before it
+# runs and told where the edit belongs. Text with blanks is not a path, and a
+# CLAUDE.md the segment HEAD does not track is not the seat's to commit, so
+# both pass this guard; the one under the configuration home reaches the
+# machine-global cell and parks.
+spv_reset "$SPV_S2"
+printf 'stage bytes\n' > "$WORK/spv-src.txt"
+spv_stage() {  # spv_stage <표면> [--reach <칸>] -- <argv…>
+  local sf="$1"; shift
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+    CLAUDE_CODE_SESSION_ID="s-SPV-9" CC_CLAUDE_BIN="$CAP_STUB" \
+    CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='SPV#9' CC_PIPELINE_SEGMENT=SPV \
+    bash "$GATE" exec --manifest "$CAP_NM" --target infra --segment SPV --cutpoint 커밋 \
+      --surface "$sf" --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x "$@" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
+  msg=$( { grep -h -vE '\[run\] ' "$CAP_OUT" "$CAP_ERR" || true; } | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+spv_stage 워크트리쓰기 -- cp "$WORK/spv-src.txt" "$SAP_WT/$SAP_RULE"
+check "34r: 스테이지의 규칙 파일 cp 는 exec 에서 거절된다" "$rc/$(cat "$SAP_WT/$SAP_RULE")" "3/rule two"
+case "$msg" in
+  *'Step 3 강제 표면 좌석 적용'*) ok "34r: 그 거절이 좌석 적용 기록을 알려 준다" ;;
+  *) bad "34r: 그 거절이 좌석 적용 기록을 알려 준다" "$msg" ;;
+esac
+# A review row bound to the proposal's bytes, so what decides the two CLAUDE.md
+# cases below is this guard and the reach cell, not `리뷰-후-적용` missing one.
+mkdir -p "$CAP_DIR/claudemd"; cp "$WORK/spv-src.txt" "$CAP_DIR/claudemd/root.proposed.md"
+printf -- '- `cycle` | 세그먼트=SPV | 사이클=0 | P0=0 | P1=0 | 리뷰 HEAD=%s | 적용 대상=%s | prev=x\n' \
+  "$SPV_S2" "$(shasum -a 256 "$CAP_DIR/claudemd/root.proposed.md" | cut -d' ' -f1)" >> "$CAP_LEDGER"
+spv_stage 워크트리쓰기 -- cp "$WORK/spv-src.txt" "$SAP_WT/CLAUDE.md"
+check "34r: 추적되는 CLAUDE.md 의 cp 도 거절된다" "$rc/$(cat "$SAP_WT/CLAUDE.md")" "3/# root two"
+case "$msg" in
+  *'Step 3 강제 표면 좌석 적용'*) ok "34r: 추적되는 CLAUDE.md 의 거절이 exec 거절이다" ;;
+  *) bad "34r: 추적되는 CLAUDE.md 의 거절이 exec 거절이다" "$msg" ;;
+esac
+mkdir -p "$SAP_WT/new"
+spv_stage 워크트리쓰기 -- cp "$WORK/spv-src.txt" "$SAP_WT/new/CLAUDE.md"
+spv_got="$rc/$(cat "$SAP_WT/new/CLAUDE.md" 2>/dev/null)"
+if [ "$spv_got" = "0/stage bytes" ]; then ok "34r: HEAD 가 추적하지 않는 CLAUDE.md 는 exec 거절에서 빠진다"
+else bad "34r: HEAD 가 추적하지 않는 CLAUDE.md 는 exec 거절에서 빠진다" "got '$spv_got' — $msg"; fi
+rm -rf "$SAP_WT/new"
+mkdir -p "$WORK/spv dir"
+spv_stage 트리밖쓰기 --reach 런로컬 -- cp "$WORK/spv-src.txt" "$WORK/spv dir/about $SAP_RULE"
+case "$msg" in
+  *'Step 3 강제 표면 좌석 적용'*) bad "34r: 공백을 품은 인자는 경로로 읽지 않는다" "$msg" ;;
+  *) ok "34r: 공백을 품은 인자는 경로로 읽지 않는다" ;;
+esac
+# A CLAUDE.md outside the worktree is not a branch path, so the exec guard has
+# nothing to say about it; what happens to it is the review rule's and the reach
+# table's.
+rm -f "$NCFG/CLAUDE.md"
+spv_stage 트리밖쓰기 --reach 기기전역 -- cp "$WORK/spv-src.txt" "$NCFG/CLAUDE.md"
+case "$msg" in
+  *'Step 3 강제 표면 좌석 적용'*) bad "34r: 설정 홈 CLAUDE.md 의 cp 는 exec 거절이 아니다" "$msg" ;;
+  *) ok "34r: 설정 홈 CLAUDE.md 의 cp 는 exec 거절이 아니다" ;;
+esac
+cap_gate "$SAP_SEAT" '' surface-screen --manifest "$CAP_NM" --tokens -- "cp /tmp/x $NCFG/CLAUDE.md"
+case "$(cat "$CAP_OUT")" in
+  *"CLAUDE.md"*) ok "34r: 그 cp 를 좌석 실행 명령으로 적으면 토큰 검사가 분류한다" ;;
+  *) bad "34r: 그 cp 를 좌석 실행 명령으로 적으면 토큰 검사가 분류한다" "rc=$rc $(cat "$CAP_OUT")" ;;
+esac
+
+# THE MERGE: the review rule refuses until a review covers the seat commit's
+# HEAD, the provenance check refuses a stage edit the review did cover, and the
+# cone seed holds the review of that branch with one row. The passing merge is
+# last, because what it performs is the act.
+SPV_GH="$WORK/spv-bin"; mkdir -p "$SPV_GH"
+printf '#!/bin/sh\nexit 0\n' > "$SPV_GH/gh"; chmod +x "$SPV_GH/gh"
+spv_merge() {
+  PATH="$SPV_GH:$PATH" cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind merge --target infra --segment SPV \
+    --cutpoint 머지 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+    -- gh api -X PUT repos/t/infra/pulls/1/merge -f "sha=$(sap_head)"
+}
+spv_cycle() {  # spv_cycle <사이클> <리뷰 HEAD>
+  printf '# 코드 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$WORK/spv-review-$1.md"
+  printf -- '- `cycle` | 세그먼트=SPV | 사이클=%s | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+    "$1" "$2" "$WORK/spv-review-$1.md" >> "$CAP_LEDGER"
+}
+spv_reset "$SPV_S2"
+spv_cycle 1 "$SPV_S1"
+spv_merge
+case "$msg" in
+  *"rule refused: 리뷰-후-머지"*) ok "34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다" ;;
+  *) bad "34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다" "rc=$rc $msg" ;;
+esac
+spv_commit '규칙을 고친다' "printf 'rule stage\n' > '$SAP_RULE'"
+cap_gate "$SAP_SEAT" '' review-line --manifest "$CAP_NM" --segment SPV
+spv_line=$msg
+spv_review() {  # spv_review <plan|act>
+  cap_gate "$SAP_SEAT" '' "$1" --manifest "$CAP_NM" --kind skill --target infra --segment SPV \
+    --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+    -- review -p "$spv_line"
+}
+spv_review plan
+check "34r: 출처가 깨진 브랜치의 리뷰 예측은 3 이고 행을 쓰지 않는다" \
+  "$rc/$( { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' "$CAP_LEDGER" || true; } | grep -c . || true)" "3/0"
+spv_review act
+spv_review act
+check "34r: 출처가 깨진 브랜치의 리뷰 파견은 3 이다" "$rc" "3"
+spv_bl=$( { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' "$CAP_LEDGER" || true; } )
+check "34r: 출처가 깨진 세그먼트의 리뷰가 blocked 행으로 막힌다" \
+  "$(printf '%s\n' "$spv_bl" | grep -c . || true)/$(row_field "$spv_bl" '앵커 세그먼트')/$(row_field "$spv_bl" '스코프')" "1/SPV/cone"
+case "$(row_field "$spv_bl" '근거')" in
+  *"$SAP_RULE"*) ok "34r: 그 blocked 행의 근거가 경로를 댄다" ;;
+  *) bad "34r: 그 blocked 행의 근거가 경로를 댄다" "$spv_bl" ;;
+esac
+spv_cycle 2 "$(sap_head)"
+spv_merge
+check "34r: 출처가 깨진 머지는 거절된다" "$rc" "3"
+case "$msg" in
+  *"changed an enforcement surface"*"$SAP_RULE"*) ok "34r: 출처가 깨진 머지의 거절이 경로를 댄다" ;;
+  *) bad "34r: 출처가 깨진 머지의 거절이 경로를 댄다" "$msg" ;;
+esac
+check "34r: 드라이버가 머지 직전에 같은 판정을 읽는다" \
+  "$(grep -c 'run_gate_call gate_surface_provenance' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")" "1"
+spv_reset "$SPV_S2"
+printf -- '- `segment` | id=SPV | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$SAP_WT" >> "$CAP_LEDGER"
+spv_cycle 3 "$SPV_S2"
+spv_merge
+case "$rc|$msg" in
+  *"rule refused"*|*"enforcement surface"*) bad "34r: 재리뷰 뒤의 머지는 통과한다" "rc=$rc $msg" ;;
+  *) ok "34r: 재리뷰 뒤의 머지는 통과한다" ;;
+esac
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SPV_ORIGIN0" )
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SPV_PREV_AR"
 
 # --- 34n. 답의 라우팅 — 갈래가 없는 답은 누구의 것이든 기록되지 않고, 교대가 되돌린 답은 다시 질문이 된다 ---
 # --- section: 34n | group: cone | covers: act, snapshot | anchors: 34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다, 34n: 같은 감사 키의 두 번째 자동 채택은 거절된다, 34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다, 34n: 되돌려진 기록의 좌석 자동 답은 거절된다 ---

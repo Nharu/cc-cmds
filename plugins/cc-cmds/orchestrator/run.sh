@@ -7896,6 +7896,18 @@ merge_gate() {
       "gh -R $slug pr merge $pr"
     return 2
   fi
+  # THE ENFORCEMENT-SURFACE PROVENANCE, THE GATE'S OWN FUNCTION. This merge does
+  # not go through the gate's merge act, so the check that act makes is called
+  # here, right before the one call that lands the branch.
+  local sp_out sp_rc=0
+  sp_out=$(run_gate_call gate_surface_provenance "$seg" "$al" 2>/dev/null) || sp_rc=$?
+  if [ "$sp_rc" != "0" ]; then
+    sp_out=$(printf '%s' "${sp_out:-(판정 불가 rc=$sp_rc)}" | tr '\t\n' ' ;')
+    park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+      "좌석 적용 밖에서 바뀐 강제 표면 — ${sp_out:0:300}" \
+      "gh -R $slug pr merge $pr"
+    return 2
+  fi
   gh_q "$slug" pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null || {
     park "$seg" act 막힘 "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr merge $pr"
     return 2
@@ -9658,6 +9670,21 @@ merge_head_is_reviewed() {
   [ -n "$ht" ] && [ "$ht" = "$rt" ]
 }
 
+dispatch_surface_note() {
+  # dispatch_surface_note <segment> — ` · 강제 표면: <경로> (<분류>), …` and
+  # ` · 좌석 적용 커밋: <sha> (<경로>, …); …` for an implement dispatch line,
+  # each left out when its value is `없음`. The gate's two functions compute
+  # them, the same ones its snapshot prints for a routing shift to copy, so a
+  # fresh session learns which declared paths only a seat apply commits and
+  # which commits on its branch the gate made.
+  local sp sc out=''
+  sp=$(run_gate_call gate_segment_surface_paths "$1" 2>/dev/null) || sp=''
+  case "$sp" in ''|'없음') : ;; *) out=" · 강제 표면: $sp" ;; esac
+  sc=$(run_gate_call gate_segment_seat_commits "$1" 2>/dev/null) || sc=''
+  case "$sc" in ''|'없음') : ;; *) out="$out · 좌석 적용 커밋: $sc" ;; esac
+  printf '%s' "$out"
+}
+
 segment_cycle() {
   local seg="$1" files="$2"
   local branch="seg/$SLUG-$seg" wt pre_head cap cycle=0 al seg_repo prev_rp="" converged=0
@@ -9833,7 +9860,7 @@ segment_cycle() {
       local fix_target=""
       [ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"
       [ -z "$cap_rp" ] || fix_target=" · 수정 대상: $cap_rp 의 P0·P1"
-      prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$fix_target\""
+      prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\""
       STAGE_RESUME=""
       # THE KEY A JUDGMENT THIS DISPATCH EMITS IS FILED UNDER. The dispatch id,
       # so the open-judgment check in `continue_or_park` sees this stage's
@@ -9941,7 +9968,7 @@ segment_cycle() {
       fileset_escape "$seg" "$files" "$wt" || return 1
       stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
-      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
+      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")\""
       case "$(terminal_route_class "$class")" in
         '정상 완료') : ;;
         '의도된 park')
@@ -10003,7 +10030,7 @@ segment_cycle() {
           # crash.
           log "$seg: $class — 1회만 재시도"
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" \
+               "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")\"" \
                crash-retry "크래시 2회" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -10023,7 +10050,7 @@ segment_cycle() {
           # `limit-reclaim` is what leaves the exhausted account out; any other
           # event would sit this lineage back on the account the reap ran from.
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\"" \
+               "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")\"" \
                limit-reclaim "한도-형상 회수 후 재파견" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
