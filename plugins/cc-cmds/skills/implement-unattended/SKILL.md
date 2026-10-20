@@ -126,7 +126,7 @@ marks and matches dispositions, and does not check that a `등급 1` mark was de
 
 - **A path outside the segment's declared file set is a CFI-U3 BT-STOP**, not this halt: the declaration is the binding tier's, and the gate refuses an apply outside it.
 - **Commit every other change of the phase first.** The record's base is the segment HEAD after this stage's last commit, and the gate applies only on a clean tree at that HEAD.
-- **One record holds every surface edit of the phase.** Write each new file content to a file made by `mktemp` (a name no suffix arm matches) and take its encoding with `gate.sh exec … --surface 읽기 … -- openssl base64 -A -in <that file>`; the base blob is `git rev-parse <base>:<path>` (`없음` for a path the base lacks); a deletion writes `삭제` for both mode and content. A `프로젝트설정` file, an ignored path and an untracked `CLAUDE.md` go under `**사람 몫 파일**` with a one-line reason instead — the last one stays the gate's `CLAUDE.md` route through `gate.sh exec` as before, when the plan writes it.
+- **One record holds every surface edit of the phase.** Write each new file content to a file made by `mktemp` (a name no suffix arm matches) and take its encoding with `gate.sh exec … --surface 읽기 … -- openssl base64 -A -in <that file>`; the base blob is `git rev-parse <base>:<path>` (`없음` for a path the base lacks); a deletion writes `삭제` for both mode and content. A `프로젝트설정` file, a `트랜스크립트` file and an ignored path go under `**사람 몫 파일**` with a one-line reason instead. A `CLAUDE.md` that `**좌석 적용 기준**` does not track goes in neither list: write it through `gate.sh exec`, the gate's `CLAUDE.md` route, and leave it out of the record.
 - **Halt with the fields `_common/pipeline-sidecar.md` §4 fixes for this form**: `**분류**: gate-unanswerable`, `**스텝**` beginning with the literal `Step 3 강제 표면 좌석 적용`, `**질문 문면**` naming each file and why the design needs it, then `**좌석 적용 기준**`, `**좌석 적용 파일**`, `**사람 몫 파일**` (when there is one) and `**좌석 적용 커밋 제목**` (`type(scope): 한국어 제목`, one line of at most 100 characters, no trailer), each file line beginning with `- 파일 `. The options are `좌석 적용` and `보류`, or `사람 몫으로 넘김` and `보류` when nothing is applied, verbatim as that section gives them, and the record carries no `**추천**`.
 - **A `좌석 실행` halt never names a classified operand.** The seat refuses to run it and the gate refuses its answer; a planned surface edit goes into this record instead.
 
@@ -134,7 +134,7 @@ marks and matches dispositions, and does not check that a `등급 1` mark was de
 
 - `좌석 적용` → check that HEAD is exactly the named `좌석 커밋`, one commit ahead of `**좌석 적용 기준**`; neither revert nor amend it, and continue from the step the record named to this stage's own `stage-result`. The plan stays valid: its phase is read from the ledger's `plan_sha256` rows, not from HEAD. When HEAD is not that commit, halt again with `분류: gate-unanswerable`, naming both in `**질문 문면**`.
 - `사람 몫으로 넘김` → continue without the edit, and list each such file under the PR body's 사람 몫 with the record's reason.
-- `보류` → the segment parks; take no further step.
+- `보류` → the segment parks; take no further step. The shift writes that park and does not re-attach this session, so reaching this line means the answer was routed some other way: end without a gate act.
 
 The PR body lists each `좌석 커밋` this segment holds with its files, and every 사람 몫 file — `없음` when there is none.
 

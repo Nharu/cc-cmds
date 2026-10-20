@@ -17652,9 +17652,19 @@ gate_halt_answer_consumer() {
   # shift carries it out by writing the segment's `상태=park` row and dispatches
   # nothing, so no `stage-result` would ever spend it; the first such `segment`
   # row of the key on a later line is a candidate beside the `stage-result` one,
-  # and the earlier of the two is the consumer. Every other option is spent the
-  # way it was.
-  local sr st pk
+  # and the earlier of the two is the consumer. An answer `보류` to a
+  # `Step 3 강제 표면 좌석 적용` record is carried out the same way (route
+  # `적용-보류`) and spent the same way. Every other option is spent the way it
+  # was.
+  local sr st pk arow aopt
+  arow=$(sed -n "${3}p" "$1" 2>/dev/null)
+  aopt=$(gate_row_field "$arow" '선택지')
+  if [ "$aopt" = '보류' ] \
+     && [ "$(gate_row_field "$arow" '스킬')" = 'implement-unattended' ]; then
+    case "$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "$arow" '중단 기록')" 2>/dev/null | sed -n '1p')" in
+      'Step 3 강제 표면 좌석 적용'*) aopt='세그먼트 park' ;;
+    esac
+  fi
   sr=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
@@ -17686,7 +17696,7 @@ gate_halt_answer_consumer() {
   if [ -n "$bk" ] && { [ -z "$sr" ] || [ "${bk%%:*}" -lt "${sr%%:*}" ]; }; then
     sr=$bk
   fi
-  if [ "$(gate_row_field "$(sed -n "${3}p" "$1" 2>/dev/null)" '선택지')" = '세그먼트 park' ]; then
+  if [ "$aopt" = '세그먼트 park' ]; then
     pk=$(LC_ALL=C awk -v l="$3" -v k="$2" '
       NR > l && !p && index($0, "- `segment` ") == 1 && index($0, "| id=" k " |") \
         && index($0, "| 상태=park |") { print NR ":" $0; p = 1 }' "$1" 2>/dev/null)
@@ -18674,7 +18684,7 @@ EOF
 # 「Handing on a person's answer to a halt」 in the routing shift's skill. The
 # skill maps each id to its item; `scripts/test-gate.sh` reads the ids from
 # this line and fails when the skill stops naming one.
-readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상'
+readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 적용-보류'
 
 gate_audit_reconverge_keyable() {
   # gate_audit_reconverge_keyable <audit step id> [<resumed session>] — whether
@@ -18810,6 +18820,16 @@ gate_halt_answer_route() {
         fi ;;
       *) why="빈 대상 리뷰 정지에는 \`$opt\` 를 실행할 갈래가 없습니다 — 갈래는 \`구현 재파견\` 과 \`세그먼트 park\` 뿐입니다" ;;
     esac
+  elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "보류" ] \
+       && [ "${step#Step 3 강제 표면 좌석 적용}" != "$step" ]; then
+    # A HELD SEAT APPLY PARKS THE SEGMENT, IT DOES NOT RE-ATTACH. The halted
+    # session has nothing left to do with `보류`: re-attached, it ends without
+    # a record under its new attempt's path, so its end reads `정상 완료` or
+    # `공허한 성공` and the segment goes on to review or is resumed again. The
+    # shift writes the segment's `park` row instead, and that row spends the
+    # answer (`gate_halt_answer_consumer`).
+    id=적용-보류
+    ! gate_segment_terminal "$key" || why=$terminal
   else
     # Every other answer, `좌석 실행` included, re-attaches the key's last
     # session; the shift reads the stream before `--resume` as well.

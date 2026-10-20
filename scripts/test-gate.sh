@@ -30006,6 +30006,17 @@ case "$(cat "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
   *'다음 파일의 편집은 적용되지 않았습니다 — 사람이 런 밖에서 합니다: <paths>.'*'seat-apply-preview'*) ok "34p: 교대의 재부착 문면이 그 파일을 스테이지에 알린다" ;;
   *) bad "34p: 교대의 재부착 문면이 그 파일을 스테이지에 알린다" "autopilot-router-shift/SKILL.md" ;;
 esac
+# A CLAUDE.md THE BASE DOES NOT TRACK IS NOT A PERSON'S FILE. The stage writes it
+# through exec; listing it as a person's file would stop the run on a person
+# for an edit the gate takes unattended, and block the inheritance.
+sap_iu=$(grep -F -- '- **One record holds every surface edit of the phase.**' \
+  "$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md" || true)
+case "$sap_iu" in
+  *'an untracked `CLAUDE.md` go under'*) bad "34p: 스테이지가 추적되지 않는 CLAUDE.md 를 사람 몫에 넣지 않는다" "$sap_iu" ;;
+  *'A `프로젝트설정` file, a `트랜스크립트` file and an ignored path go under `**사람 몫 파일**`'*'goes in neither list: write it through `gate.sh exec`'*)
+    ok "34p: 스테이지가 추적되지 않는 CLAUDE.md 를 사람 몫에 넣지 않는다" ;;
+  *) bad "34p: 스테이지가 추적되지 않는 CLAUDE.md 를 사람 몫에 넣지 않는다" "${sap_iu:-(줄 없음)}" ;;
+esac
 
 # A COMMAND THE SEAT RUNS NAMES NO ENFORCEMENT SURFACE, AND NEITHER DOES THE
 # OPTION A RECOMMENDATION PICKS. Both would have the seat write a surface with
@@ -30601,6 +30612,27 @@ rrt_has "그 거절은 실행할 수 있는 선택지 둘을 든다" "실행할 
 rrt_person RT3 "$RRT_R3" '세그먼트 park'
 check "34n: 같은 기록의 세그먼트 park 답은 선다" "$rc/$(rrt_route "$RRT_R3")" "0/빈-대상|"
 
+# 적용-보류 — a person's `보류` to a seat-apply record parks the segment rather
+# than re-attaching the stage, which would end with no record under its new
+# attempt and send the segment on to review. The park row spends the answer.
+rrt_seg RT6 실행중
+rrt_sr RT6 implement 1 '의도된 park'
+RRT_R6="$CAP_DIR/halt/RT6#1.md"
+rrt_rec "$RRT_R6" 'RT6#1' implement-unattended 'Step 3 강제 표면 좌석 적용 — 규칙 카탈로그 편집' \
+  '- `좌석 적용` — 게이트가 이 기록의 파일을 기준 커밋 위에 커밋한다' \
+  '- `보류` — 아무것도 적용하지 않고 세그먼트는 보류 큐로 간다'
+rrt_person RT6 "$RRT_R6" '보류'
+check "34n: 좌석 적용 기록의 사람 보류 답은 적용-보류 갈래로 선다" "$rc/$(rrt_route "$RRT_R6")" "0/적용-보류|"
+rrt_seg RT6 park
+check "34n: 그 세그먼트의 park 행이 답을 소비해 answered_halts 에서 빠진다" "$rc/$(rrt_route "$RRT_R6")" "0/"
+rrt_seg RT7 실행중
+rrt_sr RT7 implement 1 '의도된 park'
+RRT_R7="$CAP_DIR/halt/RT7#1.md"
+rrt_rec "$RRT_R7" 'RT7#1' implement-unattended 'Step 3 — 픽스처의 정지' "$RRT_OPTS_IMPL" "$RRT_OPTS_HOLD"
+rrt_person RT7 "$RRT_R7" '보류'
+rrt_seg RT7 park
+check "34n: 좌석 적용이 아닌 기록의 보류 답은 park 행이 소비하지 않는다" "$rc/$(rrt_route "$RRT_R7")" "0/재부착|"
+
 # 감사-재수렴 on a segment key, and the automatic adoption once per key. A
 # re-convergence that ran took up the first adoption; the audit parked on the
 # synthesis again, and a second automatic adoption would loop the same repair.
@@ -30735,7 +30767,7 @@ for rp_id in $rp_ids; do
   rp_n=$((rp_n + 1))
   grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
 done
-check "34o: 게이트 선언에서 경로 id 다섯을 읽는다 (아래가 공허하지 않다)" "$rp_n" "5"
+check "34o: 게이트 선언에서 경로 id 여섯을 읽는다 (아래가 공허하지 않다)" "$rp_n" "6"
 check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
 rp_lits=0
 grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
