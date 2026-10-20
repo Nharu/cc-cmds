@@ -3025,6 +3025,22 @@ pre_cone() {
   }
   sap_rows() { { cap_rows '중단 답' | grep -c . || true; } | tr -d ' '; }
   sap_last() { cap_rows '중단 답' | tail -1; }
+  # A seat-run halt and the seat's answer to it (34p 토큰 검사 · 34r CLAUDE.md cp).
+  sap_cmd_rec() {  # sap_cmd_rec <파일> <stage> <명령>
+    { printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=%s; run=%s -->\n' "$2" "$(basename "$CAP_DIR")"
+      printf '**스킬**: implement-unattended\n**스텝**: Step 3 게이트 도달 좌석 실행 — 픽스처\n**분류**: gate-unanswerable\n'
+      printf '**질문 문면**: 게이트가 세운 명령을 좌석이 실행해 주세요\n**좌석 실행 명령**:\n'
+      printf -- '- `%s` — `%s`\n' "$SAP_WT" "$3"
+      printf '**선택지**:\n- `좌석 실행` — 좌석이 이 호스트에서 명령을 순서대로 실행하고 이 세션을 결과와 함께 다시 붙입니다\n'
+      printf '**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+    } > "$1"
+  }
+  sap_seat_run() {  # sap_seat_run <기록>
+    printf '%s\n' '명령 1: 종료 0' > "${1%.md}.answer.md"
+    cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$SAP_SEG" \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+             -- "중단 기록=$1" '답한 주체=좌석' '근거=좌석이 실행했다' '선택지=좌석 실행' "첨부=${1%.md}.answer.md"
+  }
 
   # THE HUMAN-WAIT FIXTURES (31aw 형제 재계획 · 31ax 사람-결정 · 31ay cone 가시성)
   # stand on one isolated run each, made by `cap_fx_new`, and on the shape of
@@ -29947,6 +29963,12 @@ check "34p: base64 를 푼 바이트가 기록한 내용과 같다" \
   "$(printf '\001\377\000bin\n' | od -An -c | tr -s ' ')"
 check "34p: 실행 모드가 기록대로 실린다" \
   "$(cd "$SAP_WT" && git ls-tree HEAD -- plugins/x/orchestrator/rules/fixture-rule-with-a-long-descriptive-name-02.sh | cut -c1-6)" "100755"
+# The stage's own spelling, `openssl base64 -A -in <file>`, on content longer
+# than one wrapped base64 line: one line with no newline, decoding to the file.
+printf 'w%.0s' $(seq 1 120) > "$WORK/sap-b64-in"; printf '\n\001\377' >> "$WORK/sap-b64-in"
+sap_enc=$(openssl base64 -A -in "$WORK/sap-b64-in"; printf x)
+check "34p: 스테이지의 base64 는 줄바꿈 없는 한 줄이고 원본으로 풀린다" \
+  "$(printf '%s' "${sap_enc%x}" | wc -l | tr -d ' ')/$(printf '%s' "${sap_enc%x}" | openssl base64 -d -A | cmp -s - "$WORK/sap-b64-in" && echo 같음 || echo 다름)" "0/같음"
 sap_long=$(printf 'd%.0s' $(seq 1 200))
 mkdir -p "$CAP_DIR/halt/$sap_long/$sap_long"
 SAP_OV="$CAP_DIR/halt/$sap_long/$sap_long/$sap_long.md"
@@ -29970,25 +29992,24 @@ sap_ans "$SAP_HU" 사람 '사람 몫으로 넘김'
 check "34p: 사람 몫으로 넘김 답은 커밋 없이 행을 남긴다" \
   "$rc/$(sap_rows)/$(sap_head)/$(row_field "$(sap_last)" '사람 몫')/$(row_field "$(sap_last)" '좌석 커밋')" \
   "0/$((sap_n0 + 1))/$sap_h0/1/"
+# The stage hears that the edit was not applied: the answer re-attaches it, and
+# the shift that writes the re-attach prompt reads the files it names from the
+# preview, which a shift may call.
+check "34p: 사람 몫으로 넘김 답은 재부착 갈래로 스냅숏에 오른다" \
+  "$(cap_snap "$SAP_SEAT" '' | jq -r '[.answered_halts[] | select(.segment == "SAP") | "\(.option)/\(.route)"] | last // ""')" "사람 몫으로 넘김/재부착"
+cap_gate "$SAP_SEAT" 'SH-SAP' seat-apply-preview --manifest "$CAP_NM" --record "$SAP_HU" --target infra
+case "$rc|$(cat "$CAP_OUT")" in
+  0\|*'사람 몫 파일:'*'- .claude/settings.json (프로젝트설정)'*) ok "34p: 교대가 읽는 미리보기가 적용되지 않은 파일을 이름 짓는다" ;;
+  *) bad "34p: 교대가 읽는 미리보기가 적용되지 않은 파일을 이름 짓는다" "rc=$rc $(cat "$CAP_OUT") $msg" ;;
+esac
+case "$(cat "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")" in
+  *'다음 파일의 편집은 적용되지 않았습니다 — 사람이 런 밖에서 합니다: <paths>.'*'seat-apply-preview'*) ok "34p: 교대의 재부착 문면이 그 파일을 스테이지에 알린다" ;;
+  *) bad "34p: 교대의 재부착 문면이 그 파일을 스테이지에 알린다" "autopilot-router-shift/SKILL.md" ;;
+esac
 
 # A COMMAND THE SEAT RUNS NAMES NO ENFORCEMENT SURFACE, AND NEITHER DOES THE
 # OPTION A RECOMMENDATION PICKS. Both would have the seat write a surface with
 # no person. A command naming none goes through.
-sap_cmd_rec() {  # sap_cmd_rec <파일> <stage> <명령>
-  { printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=%s; run=RSAP1 -->\n' "$2"
-    printf '**스킬**: implement-unattended\n**스텝**: Step 3 게이트 도달 좌석 실행 — 픽스처\n**분류**: gate-unanswerable\n'
-    printf '**질문 문면**: 게이트가 세운 명령을 좌석이 실행해 주세요\n**좌석 실행 명령**:\n'
-    printf -- '- `%s` — `%s`\n' "$SAP_WT" "$3"
-    printf '**선택지**:\n- `좌석 실행` — 좌석이 이 호스트에서 명령을 순서대로 실행하고 이 세션을 결과와 함께 다시 붙입니다\n'
-    printf '**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
-  } > "$1"
-}
-sap_seat_run() {  # sap_seat_run <기록>
-  printf '%s\n' '명령 1: 종료 0' > "${1%.md}.answer.md"
-  cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SAP \
-           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
-           -- "중단 기록=$1" '답한 주체=좌석' '근거=좌석이 실행했다' '선택지=좌석 실행' "첨부=${1%.md}.answer.md"
-}
 sap_sr 2
 sap_cmd_rec "$CAP_DIR/halt/SAP#2.md" 'SAP#2' 'cp /tmp/x CLAUDE.md'
 sap_mark
@@ -30134,7 +30155,7 @@ check "34q: park 뒤에는 승계되지 않는다" "$rc" "3"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAQ_PREV_AR"
 
 # --- 34r. 강제 표면의 출처 — 좌석 적용 밖에서 바뀐 분류 경로는 리뷰와 머지에 닿지 못한다 ---
-# --- section: 34r | group: cone | covers: act, snapshot, surface-class | anchors: 34r: 사람의 좌석 커밋은 통과한다, 34r: 승계된 좌석 커밋도 통과한다, 34r: 베이스만 바꾼 경로는 통과한다, 34r: 베이스를 머지한 커밋은 통과한다, 34r: 리베이스한 브랜치의 규칙 파일이 좌석 바이트다, 34r: 출처가 깨진 세그먼트의 리뷰가 blocked 행으로 막힌다, 34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다, 34r: 재리뷰 뒤의 머지는 통과한다, 34r: 출처가 깨진 머지는 거절된다, 34r: review-line 이 좌석 커밋을 나열한다, 34r: 스냅숏이 강제 표면과 좌석 적용 커밋을 낸다, 34r: 스테이지의 규칙 파일 cp 는 exec 에서 거절된다, 34r: HEAD 가 추적하지 않는 CLAUDE.md 는 exec 거절에서 빠진다 ---
+# --- section: 34r | group: cone | covers: act, snapshot, surface-class | anchors: 34r: 사람의 좌석 커밋은 통과한다, 34r: 승계된 좌석 커밋도 통과한다, 34r: 베이스만 바꾼 경로는 통과한다, 34r: 베이스를 머지한 커밋은 통과한다, 34r: 리베이스한 브랜치의 규칙 파일이 좌석 바이트다, 34r: 출처가 깨진 세그먼트의 리뷰가 blocked 행으로 막힌다, 34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다, 34r: 재리뷰 뒤의 머지는 통과한다, 34r: 출처가 깨진 머지는 거절된다, 34r: review-line 이 좌석 커밋을 나열한다, 34r: 스냅숏이 강제 표면과 좌석 적용 커밋을 낸다, 34r: 스테이지의 규칙 파일 cp 는 exec 에서 거절된다, 34r: HEAD 가 추적하지 않는 CLAUDE.md 는 exec 거절에서 빠진다, 34r: 바이트에 묶인 리뷰 행이 있으면 인가 행 없이도 park 없이 설정 홈 CLAUDE.md 를 쓴다, 34r: 그 cp 를 적은 좌석 실행 기록의 좌석 답은 거절되고 행을 남기지 않는다, 34r: 드라이버는 그 거절에서 머지하지 않고 park 한다 ---
 #
 # WHAT LANDS IS THE BRANCH, SO THE BRANCH IS WHAT IS EXAMINED. A stage reaches
 # a classified path through `cp`, a script body or `git checkout <rev> -- p`,
@@ -30208,15 +30229,32 @@ spv_reset "$SAP_BASE"
 spv_commit '규칙을 지운다' "git rm -q '$SAP_RULE'"
 spv_pv
 spv_refused "좌석이 아닌 삭제는 거절된다" "$SAP_RULE" '좌석 적용 커밋 없이 바뀜'
+spv_reset "$SAP_BASE"
+printf '#!/bin/sh\nprintf "rule script\\n" > "%s"\n' "$SAP_RULE" > "$WORK/spv-write.sh"
+spv_commit '스크립트로 규칙을 고친다' "sh '$WORK/spv-write.sh'"
+spv_pv
+spv_refused "스크립트 본문이 쓴 규칙 파일은 거절된다" "$SAP_RULE" '좌석 적용 커밋 없이 바뀜'
+SPV_OTHER=$(sap_head)
+spv_reset "$SAP_BASE"
+spv_commit '다른 커밋의 규칙을 가져온다' "git checkout '$SPV_OTHER' -- '$SAP_RULE'"
+spv_pv
+spv_refused "git checkout 으로 가져온 규칙 파일은 거절된다" "$SAP_RULE" '좌석 적용 커밋 없이 바뀜'
 
 # THE SEAT'S COMMIT, a person's first and an inherited one after it, and what
 # breaks each: a stage edit over the seat bytes, a commit that looks like a seat
 # commit with no row, a row whose commit is gone, a row carried from another run.
 spv_reset "$SAP_BASE"
+# The implement stage that halted had its plan admitted, so a `plan_sha256` row
+# stands before the apply; the re-attached stage reads its phase from that row
+# and the rows after it, and the apply adds none that voids a plan.
+printf -- '- `stage-result` | 교대=0 | 세그먼트=SPV | 스테이지=SPV | 종류=implement | 실행 버전=0 | 세션 id=s-SPV-0 | 종단 부류=정상 완료 | plan_sha256=%s | prev=x\n' \
+  "$(printf 'a%.0s' $(seq 1 64))" >> "$CAP_LEDGER"
 spv_seat 1 "$SAP_RULE" 규칙카탈로그 'rule two\n'
 SPV_S1=$(sap_head)
 spv_pv
 check "34r: 사람의 좌석 커밋은 통과한다" "$rc/$(row_field "$(sap_last)" '좌석 커밋')" "0/$SPV_S1"
+check "34r: 좌석 적용 뒤에도 계획 행이 서 있어 다시 붙은 스테이지는 Process B 다" \
+  "$(awk '/^- `stage-result` \| / && /\| 세그먼트=SPV \|/ && /plan_sha256=/ { p = NR } /^- `stage-result` \| / && /\| 세그먼트=SPV \|/ && /종류=reconverge/ { v = NR } /^- `재계획` \| / && /세그먼트=SPV/ { v = NR } END { print ((p > v) ? "B" : "A") }' "$CAP_LEDGER")/$(cd "$SAP_WT" && git rev-list --count "$SAP_BASE..HEAD")" "B/1"
 spv_commit '규칙을 다시 고친다' "printf 'rule three\n' > '$SAP_RULE'"
 spv_pv
 spv_refused "좌석 커밋 위의 스테이지 편집은 거절된다" "$SAP_RULE" "마지막 좌석 커밋 $SPV_S1 과 다름"
@@ -30286,8 +30324,8 @@ check "34r: 출처가 맞는 세그먼트에는 출처 blocked 행이 없다" \
 # THE SIGNPOST: a stage's exec naming a classified path is refused before it
 # runs and told where the edit belongs. Text with blanks is not a path, and a
 # CLAUDE.md the segment HEAD does not track is not the seat's to commit, so
-# both pass this guard; the one under the configuration home reaches the
-# machine-global cell and parks.
+# both pass this guard; the one under the configuration home is left to the
+# review rule.
 spv_reset "$SPV_S2"
 printf 'stage bytes\n' > "$WORK/spv-src.txt"
 spv_stage() {  # spv_stage <표면> [--reach <칸>] -- <argv…>
@@ -30306,7 +30344,7 @@ case "$msg" in
   *) bad "34r: 그 거절이 좌석 적용 기록을 알려 준다" "$msg" ;;
 esac
 # A review row bound to the proposal's bytes, so what decides the two CLAUDE.md
-# cases below is this guard and the reach cell, not `리뷰-후-적용` missing one.
+# cases below is this guard, not `리뷰-후-적용` missing one.
 mkdir -p "$CAP_DIR/claudemd"; cp "$WORK/spv-src.txt" "$CAP_DIR/claudemd/root.proposed.md"
 printf -- '- `cycle` | 세그먼트=SPV | 사이클=0 | P0=0 | P1=0 | 리뷰 HEAD=%s | 적용 대상=%s | prev=x\n' \
   "$SPV_S2" "$(shasum -a 256 "$CAP_DIR/claudemd/root.proposed.md" | cut -d' ' -f1)" >> "$CAP_LEDGER"
@@ -30329,18 +30367,48 @@ case "$msg" in
   *) ok "34r: 공백을 품은 인자는 경로로 읽지 않는다" ;;
 esac
 # A CLAUDE.md outside the worktree is not a branch path, so the exec guard has
-# nothing to say about it; what happens to it is the review rule's and the reach
-# table's.
+# nothing to say about it. The review rule decides it alone: a review row bound
+# to the proposal's bytes lets the copy through without reaching the reach cell,
+# even declared machine-global with no authorization row, and a row bound to
+# other bytes refuses it. The one route left for a seat to run that copy with no
+# person, a seat-run halt naming it, is closed by the token check. The copy
+# reads the proposal's bytes from outside the run directory: a stage's write
+# act naming a run-directory path is refused by the run-directory rule first,
+# and that is not the refusal measured here.
+SPV_PROP="$WORK/spv-src.txt"
+spv_blocked() { { cap_rows blocked | grep -c . || true; } | tr -d ' '; }
 rm -f "$NCFG/CLAUDE.md"
-spv_stage 트리밖쓰기 --reach 기기전역 -- cp "$WORK/spv-src.txt" "$NCFG/CLAUDE.md"
+spv_bl0=$(spv_blocked)
+spv_stage 트리밖쓰기 --reach 기기전역 -- cp "$SPV_PROP" "$NCFG/CLAUDE.md"
 case "$msg" in
   *'Step 3 강제 표면 좌석 적용'*) bad "34r: 설정 홈 CLAUDE.md 의 cp 는 exec 거절이 아니다" "$msg" ;;
   *) ok "34r: 설정 홈 CLAUDE.md 의 cp 는 exec 거절이 아니다" ;;
+esac
+check "34r: 바이트에 묶인 리뷰 행이 있으면 인가 행 없이도 park 없이 설정 홈 CLAUDE.md 를 쓴다" \
+  "$rc/$(cat "$NCFG/CLAUDE.md" 2>/dev/null)/$(spv_blocked)" "0/stage bytes/$spv_bl0"
+rm -f "$NCFG/CLAUDE.md"
+printf -- '- `cycle` | 세그먼트=SPV | 사이클=0 | P0=0 | P1=0 | 리뷰 HEAD=%s | 적용 대상=%s | prev=x\n' \
+  "$SPV_S2" "$(printf 'e%.0s' $(seq 1 64))" >> "$CAP_LEDGER"
+spv_stage 트리밖쓰기 --reach 기기전역 -- cp "$SPV_PROP" "$NCFG/CLAUDE.md"
+check "34r: 다른 바이트에 묶인 리뷰 행이면 설정 홈 CLAUDE.md 의 cp 는 거절된다" \
+  "$rc/$(test -e "$NCFG/CLAUDE.md" && echo 있음 || echo 없음)" "3/없음"
+case "$msg" in
+  *'리뷰-후-적용'*) ok "34r: 그 거절은 리뷰-후-적용 규칙의 것이다" ;;
+  *) bad "34r: 그 거절은 리뷰-후-적용 규칙의 것이다" "$msg" ;;
 esac
 cap_gate "$SAP_SEAT" '' surface-screen --manifest "$CAP_NM" --tokens -- "cp /tmp/x $NCFG/CLAUDE.md"
 case "$(cat "$CAP_OUT")" in
   *"CLAUDE.md"*) ok "34r: 그 cp 를 좌석 실행 명령으로 적으면 토큰 검사가 분류한다" ;;
   *) bad "34r: 그 cp 를 좌석 실행 명령으로 적으면 토큰 검사가 분류한다" "rc=$rc $(cat "$CAP_OUT")" ;;
+esac
+sap_sr 3
+sap_cmd_rec "$CAP_DIR/halt/SPV#3.md" 'SPV#3' "cp $SPV_PROP $NCFG/CLAUDE.md"
+spv_n0=$(sap_rows)
+sap_seat_run "$CAP_DIR/halt/SPV#3.md"
+check "34r: 그 cp 를 적은 좌석 실행 기록의 좌석 답은 거절되고 행을 남기지 않는다" "$rc/$(sap_rows)" "3/$spv_n0"
+case "$msg" in
+  *'names an enforcement surface'*) ok "34r: 그 거절은 토큰 검사의 것이다" ;;
+  *) bad "34r: 그 거절은 토큰 검사의 것이다" "$msg" ;;
 esac
 
 # THE MERGE: the review rule refuses until a review covers the seat commit's
@@ -30396,6 +30464,12 @@ case "$msg" in
 esac
 check "34r: 드라이버가 머지 직전에 같은 판정을 읽는다" \
   "$(grep -c 'run_gate_call gate_surface_provenance' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")" "1"
+# The driver calls the function the read verb calls, so the verb's answer on
+# this branch is the driver's; a refusal there parks instead of merging.
+spv_pv
+spv_refused "드라이버가 부르는 판정도 출처가 깨진 머지를 거절한다" "$SAP_RULE" "마지막 좌석 커밋 $SPV_S1 과 다름"
+check "34r: 드라이버는 그 거절에서 머지하지 않고 park 한다" \
+  "$(grep -c 'park "$seg" act 막힘 "머지 직전 강제 표면 출처"' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")" "1"
 spv_reset "$SPV_S2"
 printf -- '- `segment` | id=SPV | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$SAP_WT" >> "$CAP_LEDGER"
 spv_cycle 3 "$SPV_S2"
