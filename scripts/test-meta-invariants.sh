@@ -15,12 +15,17 @@
 #   - the detached-process fences       (from plugins/cc-cmds/orchestrator/test-run.sh, 28·28b)
 #   - the router-copy sections          (from scripts/test-snapshot.sh, 6d–6e-4)
 #
-# ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 4. The census selects every suite
+# ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 14. The census selects every suite
 # that invokes the gate family and asserts two exports for each. This file
 # carries its recognition corpus, so it selects this file too, and
 # scripts/test-local-bundle.sh runs test-gate.sh on its mirror, so it selects
 # that one as well: two suites the source census did not see, two assertions
-# each. Every other assertion here is one a source suite used to make.
+# each. The fix-cycle block (6e-3a) adds ten: the two pieces in the driver's
+# two assignments and in the common file's start condition, the set of files
+# pointing at that file, its missing question and notification surfaces, its
+# missing copies, the phase sentence, and the start disposition and end
+# obligation with their two spellings. Every other assertion here is one a
+# source suite used to make.
 #
 # Usage: bash scripts/test-meta-invariants.sh
 
@@ -1065,6 +1070,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     "#### Branching on \`다음\` after a review|-- lead-fix -p '/cc-cmds:review-unattended <브랜치> --lead-fix <리포트 경로> \"설계는 <문서 인자>\"'" \
     '#### Spelling a review dispatch|`gate.sh review-line --manifest <매니페스트> --segment <seg> [-- <flag>…]`' \
     '#### Spelling a review dispatch|Do not rebuild these arguments from an earlier stage'"'"'s stream log or from memory' \
+    '#### Spelling a review dispatch|the gate refuses a review dispatch naming any other (exit 2)' \
+    '#### Spelling a review dispatch|**Declare why the review goes** with `--trigger '"'"'<토큰>'"'"'` before `--`, on the `act` and on its `plan` alike' \
+    '#### Spelling a review dispatch|`라우터 판단` together with `--trigger-reason '"'"'<사유>'"'"'` only when none of those holds' \
+    '#### Spelling a review dispatch|`첫 리뷰`, `리뷰 P0`, `리뷰 P1`, `CI 실패`, `베이스 충돌`, `버전 경합`, `리베이스`, `해소 리뷰`, `중단 답`, `중단 인계`' \
     '#### Branching on `다음` after a review|with `--recheck <리포트 경로>` added to the prompt' \
     '#### Branching on `다음` after a review|`gate.sh residual-body --manifest <매니페스트> --segment <seg>`' \
     "#### Branching on \`다음\` after a review|\`'사유=리뷰 잔여'\`" \
@@ -1125,6 +1134,62 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   fi
 done
 check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "$fix_prompt_rs" "$fix_prompt"
+
+# ---------------------------------------------------------------------------
+# 6e-3a. The fix cycle reads the same two pieces every producer writes
+#
+# An implementation stage knows it is a fix cycle only by two pieces of its
+# prompt, `수정 대상: ` and ` 의 P0·P1`. The router copies above write them,
+# and so do the driver's two `fix_target` assignments; the common fix-cycle
+# file is the one reader. A piece reworded on any side switches the start
+# condition off without an error, so every side is pinned here. The common
+# file is pointed at by the two unattended skills alone, carries no question
+# or notification surface, and holds no copy of the passages its checker
+# prompt names. The implementation skill carries the phase sentence, the
+# start disposition and the end obligation, with the two spellings one writes
+# and the other reads.
+# ---------------------------------------------------------------------------
+FC="$PLUGIN_ROOT/skills/_common/fix-cycle.md"
+IU="$PLUGIN_ROOT/skills/implement-unattended/SKILL.md"
+check "수정 대상 조각: run.sh 의 fix_target 대입 두 줄이 두 조각을 모두 싣는다" \
+  "$(grep -cE -- 'fix_target=" · 수정 대상: \$[a-z_]+ 의 P0·P1"' "$DRIVER" || true)" "2"
+fc_start=$(awk '/^## Start condition$/{on=1; next} on && /^## /{exit} on' "$FC" 2>/dev/null)
+check "수정 대상 조각: 공통 파일의 시작 조건이 두 조각을 모두 싣는다" \
+  "$(printf '%s\n' "$fc_start" | grep -F -- '수정 대상: ' | grep -cF -- ' 의 P0·P1' || true)" "2"
+check "공통 fix-cycle 파일을 가리키는 파일은 두 무인 스킬뿐이다" \
+  "$(cd "$repo_root" && grep -rl 'fix-cycle' plugins/cc-cmds/skills | LC_ALL=C sort | tr '\n' ' ')" \
+  "plugins/cc-cmds/skills/implement-unattended/SKILL.md plugins/cc-cmds/skills/review-unattended/SKILL.md "
+check "공통 fix-cycle 파일에 질문 면과 알림 면 문자열이 없다" \
+  "$(grep -cE -- 'AskUserQuestion|question_form|EnterPlanMode|ExitPlanMode|PushNotification|notify\.sh|terminal-notifier' "$FC" 2>/dev/null || true)" "0"
+fc_copies=0
+for lit in \
+  'There is no human-question surface.' \
+  'Research is open: `WebFetch`' \
+  '같은 커밋이 두 번 리뷰됐다' \
+  '같은 파일 집합이 세 리뷰 연속 P0/P1 발견을 지녔다' \
+  '발견의 파일 집합이 네 리뷰에 걸쳐 번갈아 나왔다' \
+  '발견의 사례가 아니라 그 부류를 고친다'
+do
+  n=$(grep -cF -- "$lit" "$FC" 2>/dev/null || true)
+  fc_copies=$((fc_copies + ${n:-0}))
+done
+check "공통 fix-cycle 파일에 질문 면 부재 불변식·조사 문단·정체 지시 문구의 사본이 없다" \
+  "$([ -f "$FC" ] && echo "$fc_copies" || echo 없음)" "0"
+IFS= read -r fix_phase_s <<'EOF'
+A dispatch whose scope directive carries `수정 대상:` is process B whenever a plan row that has not been voided exists, even when that plan's `Scope:` line names a different report.
+EOF
+check "구현 무인 스킬의 국면 판정에 수정 파견의 프로세스 B 문장이 한 줄 있다" \
+  "$(grep -cF -- "$fix_phase_s" "$IU" || true)" "1"
+iu_start=$(grep -F -- '**Start disposition — what an earlier turn left in the worktree.**' "$IU" || true)
+iu_end=$(grep -F -- '**End obligation — process B leaves none of its files in `git status --short`.**' "$IU" || true)
+check "구현 무인 스킬에 시작 처분과 끝 의무 문장이 있다" \
+  "$([ -n "$iu_start" ] && echo 시작)/$([ -n "$iu_end" ] && echo 끝)" "시작/끝"
+check "끝 의무가 보존 경로= 조각을 쓰고 시작 처분이 그것을 읽는다" \
+  "$(printf '%s\n' "$iu_end" | grep -cF -- '`보존 경로=<path>,<path>`' || true)/$(grep -cF -- 'the `보존 경로=` piece of its `**관측 상세**`' "$IU" || true)" "1/1"
+check "프로세스 A 가 물려받은 변경: 줄을 쓰고 프로세스 B 가 그것을 읽는다" \
+  "$(grep -cF -- 'one `물려받은 변경:` line' "$IU" || true)/$(grep -cF -- 'the plan'"'"'s `물려받은 변경:` line marks `되돌림`' "$IU" || true)" "1/1"
+check "보존 경로= 와 물려받은 변경: 은 구현 무인 스킬에서 한 꼴로만 쓰인다" \
+  "$(grep -cE -- '보존경로|보존 경로 ?:|보존 경로 =|물려받은변경|물려받은 변경 ?=' "$IU" || true)" "0"
 
 # ---------------------------------------------------------------------------
 # 6e-3b. Routing after an implementation is carried by BOTH router copies
@@ -1264,6 +1329,43 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   check "$who 사본에 계획 순서 거부를 새 런으로 보내던 옛 문장이 없다" \
     "$(mo_count "$(cat "$file")" "$mo_old")" "0"
 done
+
+# ---------------------------------------------------------------------------
+# 6e-5. The review stage checks its own report with `report-check`
+#
+# The gate records a report's shape on the `cycle` row and refuses nothing on
+# it, so the only place a malformed report is repaired is the review stage
+# that wrote it. The sentences below are that loop, in the ordinary Step 5 and
+# in the recovery arm: the verb and its spelling, the two-round cap, the gate
+# failure that ends without editing, and the two edits that are never made — a
+# summary bent to the items, and a review HEAD line invented for a recovery.
+# The verb's verdict line is quoted from the gate, so a rewording of either
+# side fails here.
+# ---------------------------------------------------------------------------
+RU_SKILL="$PLUGIN_ROOT/skills/review-unattended/SKILL.md"
+RU_RECOVER="$PLUGIN_ROOT/skills/review-unattended/references/recovery-arm.md"
+rc_verdict='report-check: 불일치 <n>'
+check "게이트가 report-check 의 판정 줄을 낸다" \
+  "$(mo_count "$(cat "$GATE")" "printf 'report-check: 불일치 %s")" "1"
+for pair in "Step 5:$RU_SKILL" "복구 팔:$RU_RECOVER"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for lit in \
+    'gate.sh report-check --manifest "$CC_PIPELINE_MANIFEST" --report <' \
+    "$rc_verdict" \
+    'at most two rewrites, then' \
+    'Never edit the summary counts to match the items' \
+    'Nothing here halts.'
+  do
+    case "$who:$lit" in
+      'Step 5:Never edit the summary counts to match the items') lit='Never edit the `발견 요약` counts to match the items' ;;
+    esac
+    check "$who 의 report-check 고리가 「${lit:0:50}」 을 싣는다" "$(mo_count "$(cat "$file")" "$lit")" "1"
+  done
+done
+check "Step 5 의 report-check 고리는 게이트 실패를 고치지 않고 끝낸다" \
+  "$(mo_count "$(cat "$RU_SKILL")" 'is the gate failing, not the report: end the stage without editing')" "1"
+check "복구 팔은 복구 리포트에 리뷰 HEAD 줄을 지어 넣지 않는다" \
+  "$(mo_count "$(cat "$RU_RECOVER")" 'never write a `리뷰 HEAD` line into a recovered report')" "1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
