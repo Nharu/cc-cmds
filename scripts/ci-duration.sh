@@ -224,7 +224,7 @@ EOF
     mkdir -p "$(dirname "$out")"
     printf '%s\n' "$line" > "$out"
   fi
-  [ -z "$notes" ] || printf '::notice::ci-duration wall: %s — 읽지 못한 값은 - 로 적었습니다\n' "$notes"
+  [ -z "$notes" ] || printf '::notice::ci-duration wall: %s — 적지 않은 값은 - 로 적었습니다\n' "$notes"
   if [ "$raw" != "-" ] && [ "$raw" -gt 900 ]; then
     printf '::warning::gate 벽시계 raw %s초가 900초를 넘습니다 (path %s초, queued %s초, overlap %s)\n' "$raw" "$path" "$queued" "$overlap"
   fi
@@ -495,14 +495,14 @@ STUB
     fi
     printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
     # S3 started before the window closed and is still running; S4 is queued
-    # and has no start time; S5 ran in the window and was rerun afterwards, so
+    # and has not started; S5 ran in the window and was rerun afterwards, so
     # the list gives its latest attempt's start, 17:40:00. All three count.
     printf '{"workflow_runs":[%s,\n%s,\n%s,\n%s]}\n' "$quiet" \
       '{"head_sha":"S3","created_at":"2026-10-21T17:00:00Z","run_started_at":"2026-10-21T17:00:05Z","status":"in_progress","updated_at":"2026-10-21T17:30:00Z"}' \
-      '{"head_sha":"S4","created_at":"2026-10-21T17:03:00Z","run_started_at":null,"status":"queued","updated_at":"2026-10-21T17:03:00Z"}' \
+      '{"head_sha":"S4","created_at":"2026-10-21T17:03:00Z","run_started_at":"2026-10-21T17:03:00Z","status":"queued","updated_at":"2026-10-21T17:03:00Z"}' \
       '{"head_sha":"S5","created_at":"2026-10-21T17:02:00Z","run_started_at":"2026-10-21T17:40:00Z","status":"in_progress","updated_at":"2026-10-21T17:41:00Z"}' > "$T/stub/allruns.json"
     out=$(wall 2>&1)
-    if printf '%s\n' "$out" | grep -q ' overlap=3 '; then ok "창 안에 시작한 진행 중 실행, 시작 시각이 없는 대기 실행, 창 뒤에 다시 돌린 실행은 센다"; else bad "겹침 3" "$out"; fi
+    if printf '%s\n' "$out" | grep -q ' overlap=3 '; then ok "창 안에 시작한 진행 중 실행, 아직 시작하지 않은 대기 실행, 창 뒤에 다시 돌린 실행은 센다"; else bad "겹침 3" "$out"; fi
     rm -f "$W/t/timing-7.tsv"
     out=$(wall 2>&1)
     if printf '%s\n' "$out" | grep -q ' rows=12/13 '; then ok "행 하나의 timing 파일이 없으면 rows=12/13"; else bad "빠진 행" "$out"; fi
