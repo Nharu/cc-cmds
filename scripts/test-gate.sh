@@ -1267,9 +1267,13 @@ export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
 # what a launch injects and make a fixture pass or fail by host. The sections
 # that test the map name their own fixture map on the call, which wins over this.
 export CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map"
-# The identity judgment reads the host's acknowledgement store the same way, so
-# it is pointed at a store that does not exist.
-export CC_GATE_STAGE_POLICY_ACK="$WORK/no-such-ack-store"
+# The personal rules snapshot reads the seat's CLAUDE.md the same way, and a
+# person who has tagged theirs would change every synthesized file, so the
+# source is a fixture with no tag: every run of this suite takes the legacy
+# branch unless a section names its own source. The seam outranks the `HOME`
+# and `CLAUDE_CONFIG_DIR` overrides sections export further down.
+printf -- '- an untagged fixture rule\n' > "$WORK/personal-untagged.md"
+export CC_GATE_PERSONAL_RULES_SOURCE="$WORK/personal-untagged.md"
 
 # THE METRICS ROUND IS INERT FOR THIS WHOLE PROCESS, for the same two reasons.
 # Every verb but `plan` runs the collector from the prelude once the stamp is
@@ -8208,7 +8212,9 @@ esac
 # gate's synthesized instructions appended in its place; the stub's recorded
 # argv and environment are the evidence, and the file the argv names is read
 # back. Every assertion here is on what reached the CLI, not on the gate's text.
-SI_POLICY="$repo_root/plugins/cc-cmds/orchestrator/stage-policy.md"
+# The suite's personal rules source carries no tag, so this run's stages are
+# synthesized from the frozen v6 policy; the tagged branch has its own cases.
+SI_POLICY="$repo_root/plugins/cc-cmds/orchestrator/legacy/stage-policy.v6.md"
 SI_F=$(si_argv_value "$WORK/stub-argv.txt" --append-system-prompt-file)
 SI_SUB=$(si_argv_value "$WORK/stub-argv.txt" --append-subagent-system-prompt-file)
 # The members file is the one the pointer beside the lead file names: the lead
@@ -8356,122 +8362,112 @@ printf 'workspace\t%s/anc/real/CLAUDE.md\n' "$WORKP" > "$WORK/map-physanc"
 si_out=$(si_synth "$WORK/plan-symroot.md" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-physanc" 2>/dev/null); si_rc=$?
 check "심링크를 거친 메인 워크트리의 체인도 물리 철자의 맵 줄에 맞는다" "$(grep -c 'SI-SYMANC-CANARY-8R' "$si_out" 2>/dev/null || true)" "0"
 
-# IDENTITY WITHOUT A MAP: an ancestor no map line names is left out when every
-# section of it matches a workspace row of the stage policy manifest. A gate
-# copy of its own carries a manifest of two workspace rows for the ancestor
-# below, hashed through the checker's own extraction, so the real manifest's
-# rows are not what is measured. The ancestor file is restored afterwards.
-SI_IDG="$WORK/gate-ident"
-rm -rf "$SI_IDG"; cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$SI_IDG"
-si_gate_hooks
-cp "$WORK/CLAUDE.md" "$WORK/CLAUDE.md.keep"
-printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
-si_idh() {
-  ( . "$SI_IDG/stage-policy-drift.sh"; drift_entries workspace "$WORK/CLAUDE.md" ) \
-    | awk -F'\t' -v a="$1" '$1 == a { print $2 }'
-}
-{
-  printf 'source\tanchor\tsha256\tdisposition\tnote\n'
-  printf 'workspace\t# Ident top\t%s\texcluded:workspace-local\t\n' "$(si_idh '# Ident top')"
-  printf 'workspace\t## Ident rules\t%s\tpolicy:Citations in documents\t\n' "$(si_idh '## Ident rules')"
-} > "$SI_IDG/stage-policy.sources.tsv"
-si_idsynth() {
-  si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra SI_GATE_DIR="$SI_IDG" "$@" 2>"$WORK/si-err.txt"); si_rc=$?
-}
-si_idsynth
-check "정체 판정: 모든 절이 매니페스트와 맞으면 합성이 성공한다" "$si_rc" "0"
-check "그 조상 파일이 리드 파일에서 빠진다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "0"
-check "팀원 파일에서도 빠진다" "$(grep -c 'SI-IDENT-CANARY-6W' "$(head -n 1 "${si_out%.md}.member")" 2>/dev/null || true)" "0"
-case "$(cat "$WORK/si-err.txt")" in
-  *"excluding $WORKP/CLAUDE.md — every section matches the stage policy manifest"*) ok "정체 판정의 제외가 log 한 줄로 남는다" ;;
-  *) bad "정체 판정 제외 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
-esac
-# The host map still wins: a map line names the same file and the log says so.
-si_idsynth CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-anc"
-case "$(cat "$WORK/si-err.txt")" in
-  *"excluding $WORKP/CLAUDE.md by the host map"*) ok "맵 줄이 있으면 정체 판정보다 맵이 먼저다" ;;
-  *) bad "맵 우선" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
-esac
-# A `keep` line includes the file whole, without asking the checker.
+# A `keep` line names a file the chain carries anyway, and the log says so.
 printf 'keep\t%s/CLAUDE.md\n' "$WORKP" > "$WORK/map-keep"
-si_idsynth CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-keep"
-check "keep 줄이 지목한 조상은 판정이 맞아도 통째로 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-keep" 2>"$WORK/si-err.txt"); si_rc=$?
+check "keep 줄이 지목한 조상은 통째로 들어간다" "$(grep -c 'SI-ANCESTOR-CANARY-3K' "$si_out" 2>/dev/null || true)" "1"
 case "$(cat "$WORK/si-err.txt")" in
   *"keeping $WORKP/CLAUDE.md by the host map"*) ok "keep 은 log 한 줄로 남는다" ;;
   *) bad "keep log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
 esac
-# A body edit under an excluded row breaks identity: included, one log line
-# naming the section.
-printf '# Ident top\nSI-IDENT-CANARY-6W edited\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
-si_idsynth
-check "본문이 바뀐 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
-check "깨진 절마다 keeping log 한 줄이다" \
-  "$(grep -c -F "keeping $WORKP/CLAUDE.md — stage-policy-drift: identity broken: " "$WORK/si-err.txt" || true)" "1"
-case "$(cat "$WORK/si-err.txt")" in
-  *"identity broken: "*"# Ident top: manifest "*) ok "그 log 는 깨진 절의 표제를 지목한다" ;;
-  *) bad "깨짐 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
-esac
-# The same edit acknowledged in the store passes again: the checker reads
-# `CC_GATE_STAGE_POLICY_ACK` as the gate passes it.
-mkdir -p "$WORK/si-ackstore"
-{
-  printf 'source\tanchor\tsha256\tdisposition\tacked-at\n'
-  printf 'workspace\t# Ident top\t%s\texcluded:workspace-local\t2026-01-01T00:00:00Z\n' "$(si_idh '# Ident top')"
-} > "$WORK/si-ackstore/acks.tsv"
-si_ack_ok=$(cd "$WORK" && env -u CC_PIPELINE_RUN_ID bash "$SI_IDG/stage-policy-drift.sh" \
-  --identity "$WORK/CLAUDE.md" --ack-store "$WORK/si-ackstore" >/dev/null 2>&1 && printf 0 || printf 1)
-if [ "$si_ack_ok" = 0 ]; then
-  si_idsynth CC_GATE_STAGE_POLICY_ACK="$WORK/si-ackstore"
-  check "확인 저장소에 든 excluded 행의 새 해시는 다시 제외된다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "0"
-else
-  bad "확인 저장소 픽스처" "검사기가 손으로 쓴 저장소를 받지 않았다 — 저장소 형식을 다시 볼 것"
-fi
-# An added section breaks identity.
-printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n## Ident extra\nmore\n' > "$WORK/CLAUDE.md"
-si_idsynth
-check "절이 하나 늘어난 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
-case "$(cat "$WORK/si-err.txt")" in
-  *"## Ident extra: added section"*) ok "늘어난 절이 log 에 지목된다" ;;
-  *) bad "추가 절 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
-esac
-# Text before the first heading belongs to no row.
-printf 'loose line\n# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
-si_idsynth
-check "첫 표제 앞에 본문이 있는 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
-case "$(cat "$WORK/si-err.txt")" in
-  *"(before the first heading)"*) ok "첫 표제 앞 본문이 log 에 지목된다" ;;
-  *) bad "첫 표제 앞 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
-esac
-# An ancestor no workspace row names is included silently.
-printf '# Unrelated\nSI-IDENT-CANARY-6W\n' > "$WORK/CLAUDE.md"
-si_idsynth
-check "어느 행에도 맞지 않는 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
-check "그때는 keeping log 가 없다" "$(grep -c -F "keeping $WORKP/CLAUDE.md" "$WORK/si-err.txt" || true)" "0"
-# The sizes after the change, on a chain shaped like this host's: this
-# repository's own CLAUDE.md as the root file and an identified ancestor that
-# the judgment leaves out. Printed, not asserted — the measurement is the output.
-# That file is not tracked: a linked worktree reads the main worktree's copy,
-# and a fresh checkout without one (CI) skips the measurement.
-si_host_claude="$repo_root/CLAUDE.md"
-if [[ ! -s "$si_host_claude" ]]; then
-  si_common=$(cd "$repo_root" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-  [[ -n "$si_common" ]] && si_host_claude="$(dirname "$si_common")/CLAUDE.md"
-fi
-if [[ -s "$si_host_claude" ]]; then
-  cp "$WT/CLAUDE.md" "$WORK/root-claude.keep"; cp "$si_host_claude" "$WT/CLAUDE.md"
-  printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
-  si_idsynth
-  check "호스트 모양 픽스처의 합성도 성공한다" "$si_rc" "0"
-  printf '  정보: 호스트 모양 픽스처(레포 CLAUDE.md 루트, 식별된 조상 제외)의 리드 파일 %s 바이트, 팀원 파일 %s 바이트, 레포 CLAUDE.md %s 바이트\n' \
-    "$(wc -c < "$si_out" | tr -d ' ')" "$(wc -c < "$(head -n 1 "${si_out%.md}.member")" | tr -d ' ')" \
-    "$(wc -c < "$si_host_claude" | tr -d ' ')"
-  cp "$WORK/root-claude.keep" "$WT/CLAUDE.md"; rm -f "$WORK/root-claude.keep"
-else
-  printf '  정보: 레포 CLAUDE.md 가 없어 호스트 모양 측정을 건너뛴다 (추적되지 않는 파일)\n'
-fi
-unset si_host_claude si_common
-cp "$WORK/CLAUDE.md.keep" "$WORK/CLAUDE.md"; rm -f "$WORK/CLAUDE.md.keep"
-unset -f si_idh si_idsynth
+
+# THE PERSONAL RULES BRANCHES, on a fixture of their own whose bytes carry no
+# path: one target whose chain is its root CLAUDE.md alone (a scratch directory
+# of its own, outside $WORK, whose `CLAUDE.md` would join the chain), no host
+# map, and each case in a fresh run directory so each takes its own snapshot.
+# `si_pr <case> [VAR=value ...]` synthesizes and sets PR_F (lead), PR_M
+# (members) and PR_RC.
+PR=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-pr.XXXXXX")
+mkdir -p "$PR/wt"
+printf '# Fixture root rules\n\n- R7-ROOT-CANARY root rule\n' > "$PR/wt/CLAUDE.md"
+printf -- '- `target` | 별칭=infra | 메인 워크트리=%s/wt | 원격 슬러그=t/infra\n' "$PR" > "$PR/plan.md"
+printf -- '- an untagged fixture rule\n' > "$PR/untagged.md"
+printf -- '- [무인] R7-PERSONAL-CANARY rule\n- [대화형] R7-INTERACTIVE-CANARY rule\n- an untagged fixture rule\n' > "$PR/tagged.md"
+PR_ROOT="$(cd "$PR/wt" && pwd -P)/CLAUDE.md"
+si_pr() {
+  local c="$1"; shift
+  mkdir -p "$PR/rd-$c"
+  PR_F=$(cd "$PR/wt" && env CC_GATE_STAGE_POLICY_SOURCES="$PR/no-map" "$@" bash -c '
+      CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+      MANIFEST="$2"; RUN_DIR="$3"
+      gate_stage_instructions infra' _ "$GATE" "$PR/plan.md" "$PR/rd-$c" 2>"$PR/err-$c.txt"); PR_RC=$?
+  PR_M=$(head -n 1 "${PR_F%.md}.member" 2>/dev/null)
+}
+pr_sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
+pr_msha() { sed "s#$PR_ROOT#<ROOT>/CLAUDE.md#" "$1" | shasum -a 256 | cut -d' ' -f1; }
+# starts_with <file> <head file> — whether <file> begins with the bytes of <head file>.
+pr_starts() { head -c "$(wc -c < "$2" | tr -d ' ')" "$1" | cmp -s - "$2" && printf yes || printf no; }
+
+# An untagged source synthesizes exactly what the plugin before the tags did.
+# The constants are the lead sha256 and the members sha256 (root path replaced
+# by <ROOT>) the a2514ee3 gate produced from this same fixture.
+si_pr untagged CC_GATE_PERSONAL_RULES_SOURCE="$PR/untagged.md"
+check "무태그 원천: 합성이 성공한다" "$PR_RC" "0"
+check "무태그 원천: 리드 파일 sha 가 태그 이전 합성과 같다" "$(pr_sha "$PR_F")" \
+  "5548632d00c28c8ef1a44b1c09f96662077ca227d56bd533fcedbe144a3191d1"
+check "무태그 원천: 팀원 파일 sha 가 태그 이전 합성과 같다" "$(pr_msha "$PR_M")" \
+  "f700569135abf8f235e03b32883f5e9ae2f8703abfc0d67b0caff5d79277c216"
+check "무태그 원천: 포인터는 legacy untagged 다" "$(cat "$PR/rd-untagged/instructions/personal/current" 2>/dev/null)" "legacy untagged"
+check "무태그 원천: 개인 블록이 없다" "$(grep -c -x -F '# Personal rules' "$PR_F" 2>/dev/null || true)" "0"
+
+# A tagged source: the v7 policy, then the block, then the chain.
+SI_POLICY7="$repo_root/plugins/cc-cmds/orchestrator/stage-policy.md"
+si_pr tagged CC_GATE_PERSONAL_RULES_SOURCE="$PR/tagged.md"
+check "태그 원천: 합성이 성공한다" "$PR_RC" "0"
+check "태그 원천: 리드 파일 sha 가 무태그와 다르다" \
+  "$( [ "$(pr_sha "$PR_F")" != 5548632d00c28c8ef1a44b1c09f96662077ca227d56bd533fcedbe144a3191d1 ] && printf differ || printf same )" "differ"
+check "태그 원천: 리드 파일은 v7 정책 바이트로 시작한다" "$(pr_starts "$PR_F" "$SI_POLICY7")" "yes"
+check "태그 원천: 팀원 파일도 v7 정책 바이트로 시작한다" "$(pr_starts "$PR_M" "$SI_POLICY7")" "yes"
+pr_after=$(printf '\n# Personal rules\n\n- R7-PERSONAL-CANARY rule\n\n# Repository instructions\n')
+for pr_file in "$PR_F" "$PR_M"; do
+  check "태그 원천: 정책 바로 뒤에 개인 블록, 그 뒤에 사슬이 온다 ($(basename "$pr_file"))" \
+    "$(dd if="$pr_file" bs=1 skip="$(( $(wc -c < "$SI_POLICY7") ))" count="${#pr_after}" 2>/dev/null)" "$pr_after"
+done
+check "태그 원천: 대화형 불릿은 들어가지 않는다" "$(grep -c 'R7-INTERACTIVE-CANARY' "$PR_F" || true)" "0"
+pr_ptr=$(cat "$PR/rd-tagged/instructions/personal/current" 2>/dev/null)
+check "태그 원천: 포인터는 <sha> <원천 경로> 다" "${pr_ptr#* }" "$PR/tagged.md"
+check "태그 원천: 개인 블록에도 런 id·세그먼트·시도가 없다" \
+  "$(grep -cE 'R1|SL#|세그먼트|attempt' "$PR/rd-tagged/instructions/personal/${pr_ptr%% *}.md" 2>/dev/null || true)" "0"
+# The snapshot is fixed: editing the source after it is taken changes nothing.
+cp "$PR/tagged.md" "$PR/tagged.keep"
+printf -- '- [무인] R7-LATE-EDIT-CANARY rule\n' >> "$PR/tagged.md"
+pr_first="$PR_F"
+si_pr tagged CC_GATE_PERSONAL_RULES_SOURCE="$PR/tagged.md"
+check "태그 원천: 스냅숏 뒤 원천 편집은 같은 런의 합성을 바꾸지 않는다" "$PR_F" "$pr_first"
+mv "$PR/tagged.keep" "$PR/tagged.md"
+
+# A run opened before the snapshot existed: the first synthesis takes it late,
+# and the seam outranks exported HOME and CLAUDE_CONFIG_DIR that name a tagged
+# file — the suite's own exports must never reach a person's file.
+mkdir -p "$PR/cfg" "$PR/home/.claude"
+printf -- '- [무인] R7-CONFIG-CANARY rule\n' > "$PR/cfg/CLAUDE.md"
+cp "$PR/cfg/CLAUDE.md" "$PR/home/.claude/CLAUDE.md"
+si_pr late CC_GATE_PERSONAL_RULES_SOURCE="$PR/untagged.md" HOME="$PR/home" CLAUDE_CONFIG_DIR="$PR/cfg"
+check "늦은 추출: 포인터 없는 런의 첫 합성이 포인터를 만든다" "$(cat "$PR/rd-late/instructions/personal/current" 2>/dev/null)" "legacy untagged"
+check "늦은 추출: 시임이 HOME·CLAUDE_CONFIG_DIR 보다 먼저다" "$(grep -c 'R7-CONFIG-CANARY' "$PR_F" || true)" "0"
+check "늦은 추출: 잠금 디렉터리가 남지 않는다" "$( [ -e "$PR/rd-late/instructions/personal.lock" ] && printf left || printf gone )" "gone"
+# Without the seam the source is this process's config dir (no seat record).
+si_pr cfg CC_GATE_PERSONAL_RULES_SOURCE= CLAUDE_CONFIG_DIR="$PR/cfg"
+check "늦은 추출: 시임이 없고 좌석 기록도 없으면 CLAUDE_CONFIG_DIR 의 파일을 쓴다" "$(grep -c 'R7-CONFIG-CANARY' "$PR_F" || true)" "1"
+
+# A failed check at run open falls back to the frozen v6 policy, and a pointer
+# already there is never re-extracted.
+mkdir -p "$PR/rd-failed/instructions/personal"
+printf 'failed rc=138\n' > "$PR/rd-failed/instructions/personal/current"
+si_pr failed CC_GATE_PERSONAL_RULES_SOURCE="$PR/tagged.md"
+check "실패 포인터: 합성은 거부하지 않는다" "$PR_RC" "0"
+check "실패 포인터: 리드 파일이 무태그 합성과 같다 (v6, 개인 블록 없음)" "$(pr_sha "$PR_F")" \
+  "5548632d00c28c8ef1a44b1c09f96662077ca227d56bd533fcedbe144a3191d1"
+check "실패 포인터: 포인터는 그대로다" "$(cat "$PR/rd-failed/instructions/personal/current")" "failed rc=138"
+# A pointer in neither form is read as a failure, and the log says so.
+mkdir -p "$PR/rd-junk/instructions/personal"
+printf 'garbage\n' > "$PR/rd-junk/instructions/personal/current"
+si_pr junk CC_GATE_PERSONAL_RULES_SOURCE="$PR/tagged.md"
+check "읽을 수 없는 포인터: 합성은 v6 로 간다" "$(pr_sha "$PR_F")" \
+  "5548632d00c28c8ef1a44b1c09f96662077ca227d56bd533fcedbe144a3191d1"
+check "읽을 수 없는 포인터: log 한 줄이 남는다" "$(grep -c -F "personal rules pointer unreadable ('garbage')" "$PR/err-junk.txt" || true)" "1"
+rm -rf "$PR"
+unset -f si_pr pr_sha pr_msha pr_starts
 
 # Refusals, each restoring the fixture afterwards.
 mkdir -p "$WORK/.claude/rules"
@@ -23297,15 +23293,23 @@ RULE3="$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-적용.sh"
 R3W=$(mktemp -d "${TMPDIR:-/tmp}/cc-rule3.XXXXXX")
 R3L="$R3W/ledger.md"
 
+# The proposal every case below applies unless it names its own: untagged, so
+# its stage rules block is the legacy line, the same as the absent slot
+# `/x/CLAUDE.md` reads as.
+R3P0="$R3W/base.proposed.md"
+printf -- '- an untagged rule\n' > "$R3P0"
+
 r3() {
-  # r3 <slot> <digest> ; ledger already staged. Echoes the exit code. The rule
-  # reads the segment's last `cycle` row from the gate rather than the ledger;
-  # every row of this fixture is segment `seg-1`'s, so the last one is that row.
+  # r3 <slot> <digest> [<proposal>] ; ledger already staged. Echoes the exit
+  # code; the refusal text is left in $R3W/err. The rule reads the segment's
+  # last `cycle` row from the gate rather than the ledger; every row of this
+  # fixture is segment `seg-1`'s, so the last one is that row. An empty third
+  # argument is passed on empty, as a gate that found no proposal would.
   local rc=0
-  GATE_CLAUDEMD_SLOT="$1" GATE_CLAUDEMD_DIGEST="$2" \
+  GATE_CLAUDEMD_SLOT="$1" GATE_CLAUDEMD_DIGEST="$2" GATE_CLAUDEMD_PROPOSAL="${3-$R3P0}" \
     GATE_SEGMENT="seg-1" GATE_LEDGER="$R3L" GATE_ACT="커밋" \
     GATE_SEGMENT_LAST_CYCLE="$( { grep '^- `cycle` ' "$R3L" || true; } | tail -1)" \
-    /bin/sh "$RULE3" >/dev/null 2>&1 || rc=$?
+    /bin/sh "$RULE3" >/dev/null 2>"$R3W/err" || rc=$?
   printf '%s' "$rc"
 }
 
@@ -23329,7 +23333,98 @@ check "층3: 리뷰 행에 「적용 대상」이 없으면 거부한다" "$(r3 
 printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
 check "층3: 슬롯을 지목하지 못한 세탁 형태는 거부한다" "$(r3 '(세탁됨)' 'deadbeef')" "1"
 check "층3: 게이트가 다이제스트를 넘기지 않으면 거부한다" "$(r3 '/x/CLAUDE.md' '')" "1"
-rm -rf "$R3W"
+
+# THE UNATTENDED BLOCK IS COMPARED AFTER THE REVIEW PASSES. Every case below
+# stands on a cycle row that would let the apply through, and changes only the
+# proposal: what is asserted is the comparison of the stage rules block, not
+# the review. The slot files are real files so that the comparison reads both
+# sides.
+r3_slot() { printf '%b' "$2" > "$R3W/$1/CLAUDE.md"; printf '%s' "$R3W/$1/CLAUDE.md"; }
+r3_prop() { printf '%b' "$2" > "$R3W/claudemd/$1.proposed.md"; printf '%s' "$R3W/claudemd/$1.proposed.md"; }
+mkdir -p "$R3W/tagged" "$R3W/untagged" "$R3W/only" "$R3W/claudemd"
+r3_T=$(r3_slot tagged '- [무인] keep the ledger\n- [대화형] ask before pushing\n- a plain rule\n')
+r3_U=$(r3_slot untagged '- a plain rule\n- another plain rule\n')
+r3_O=$(r3_slot only '- [대화형] ask before pushing\n- a plain rule\n')
+r3_p_addu=$(r3_prop addu '- [무인] keep the ledger\n- [대화형] ask before pushing\n- [무인] a plain rule\n')
+r3_p_editu=$(r3_prop editu '- [무인] keep the ledger always\n- [대화형] ask before pushing\n- a plain rule\n')
+r3_p_editi=$(r3_prop editi '- [무인] keep the ledger\n- [대화형] ask twice before pushing\n- a plain rule\n')
+r3_p_newplain=$(r3_prop newplain '- [무인] keep the ledger\n- [대화형] ask before pushing\n- a plain rule\n- a new plain rule\n')
+r3_p_tagi=$(r3_prop tagi '- [무인] keep the ledger\n- [대화형] ask before pushing\n- [대화형] a plain rule\n')
+r3_p_firsti=$(r3_prop firsti '- [대화형] a plain rule\n- another plain rule\n')
+r3_p_untagi=$(r3_prop untagi '- ask before pushing\n- a plain rule\n')
+
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 태그 모드 슬롯의 불릿에 [무인] 을 더한 제안본은 거부한다" "$(r3 "$r3_T" deadbeef "$r3_p_addu")" "1"
+case "$(cat "$R3W/err")" in
+  *"$r3_T"*"waits for a person"*) ok "층3: 무인 블록 거부 문구가 슬롯을 이름으로 대고 사람을 기다린다고 말한다" ;;
+  *) bad "층3: 무인 블록 거부 문구가 슬롯을 이름으로 대고 사람을 기다린다고 말한다" "$(cat "$R3W/err")" ;;
+esac
+check "층3: [무인] 불릿 본문을 고친 제안본은 거부한다" "$(r3 "$r3_T" deadbeef "$r3_p_editu")" "1"
+check "층3: 무태그 슬롯에 [대화형] 하나를 단 제안본은 거부한다" "$(r3 "$r3_U" deadbeef "$r3_p_firsti")" "1"
+check "층3: 하나뿐인 [대화형] 태그를 지우는 제안본은 거부한다" "$(r3 "$r3_O" deadbeef "$r3_p_untagi")" "1"
+check "층3: 태그 모드 슬롯의 [대화형] 불릿을 고친 제안본은 통과한다" "$(r3 "$r3_T" deadbeef "$r3_p_editi")" "0"
+check "층3: 새 태그 없는 불릿을 더한 제안본은 통과한다" "$(r3 "$r3_T" deadbeef "$r3_p_newplain")" "0"
+check "층3: 태그 없는 불릿에 [대화형] 을 단 제안본은 통과한다" "$(r3 "$r3_T" deadbeef "$r3_p_tagi")" "0"
+check "층3: 슬롯 파일이 없으면 빈 원천으로 읽어 무태그 제안본은 통과한다" "$(r3 "$R3W/none/CLAUDE.md" deadbeef "$R3P0")" "0"
+check "층3: 슬롯 파일이 없을 때 태그 모드 제안본은 거부한다" "$(r3 "$R3W/none/CLAUDE.md" deadbeef "$r3_p_editi")" "1"
+check "층3: 게이트가 제안본을 찾지 못하면 거부한다" "$(r3 "$r3_T" deadbeef '')" "1"
+case "$(cat "$R3W/err")" in
+  *'$RUN_DIR/claudemd/'*'.proposed.md'*) ok "층3: 제안본 부재 거부 문구가 제안본을 둘 자리를 말한다" ;;
+  *) bad "층3: 제안본 부재 거부 문구가 제안본을 둘 자리를 말한다" "$(cat "$R3W/err")" ;;
+esac
+check "층3: 이름 댄 제안본 파일이 없으면 거부한다" "$(r3 "$r3_T" deadbeef "$R3W/claudemd/gone.proposed.md")" "1"
+# The review still decides first: the [대화형] edit that passes above is
+# refused when the review left a P1 open.
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=1 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: [대화형] 편집 제안본도 P1 이 남은 리뷰 위에서는 거부한다" "$(r3 "$r3_T" deadbeef "$r3_p_editi")" "1"
+# The checker finds the extractor beside the rules directory. A copy of the
+# rule with no stage-rules.sh one level up refuses rather than allowing.
+mkdir -p "$R3W/lone/rules"
+cp "$RULE3" "$R3W/lone/rules/"
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+r3_lone_rc=0
+GATE_CLAUDEMD_SLOT="$r3_T" GATE_CLAUDEMD_DIGEST=deadbeef GATE_CLAUDEMD_PROPOSAL="$r3_p_editi" \
+  GATE_SEGMENT="seg-1" GATE_LEDGER="$R3L" GATE_ACT="커밋" \
+  GATE_SEGMENT_LAST_CYCLE="$(tail -1 "$R3L")" \
+  /bin/sh "$R3W/lone/rules/리뷰-후-적용.sh" >/dev/null 2>&1 || r3_lone_rc=$?
+check "층3: 룰 옆에 stage-rules.sh 가 없으면 거부한다" "$r3_lone_rc" "1"
+r3_left=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'review-apply.*' -newer "$R3P0" 2>/dev/null | grep -c . || true)
+check "층3: 대조용 임시 디렉터리가 남지 않는다" "$r3_left" "0"
+
+# The slot under a home's Claude configuration directory is judged the same
+# way: a reviewed [대화형] edit passes and the same edit over an open P1 does
+# not. What the review opens is the slot alone — a machine-global act on any
+# other file under that home, the ack store for one, still parks without a
+# frozen row, however the stage declares it.
+R6H=$(mktemp -d "${TMPDIR:-/tmp}/cc-r6home.XXXXXX")
+mkdir -p "$R6H/.claude-cc" "$R6H/.config/cc-cmds/stage-policy-ack"
+printf -- '- [무인] keep the ledger\n- [대화형] ask before pushing\n- a plain rule\n' > "$R6H/.claude-cc/CLAUDE.md"
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 홈 아래 슬롯의 [대화형] 편집 제안본은 리뷰 위에서 통과한다" "$(r3 "$R6H/.claude-cc/CLAUDE.md" deadbeef "$r3_p_editi")" "0"
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=1 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 홈 아래 슬롯의 같은 편집도 P1 이 남으면 거부한다" "$(r3 "$R6H/.claude-cc/CLAUDE.md" deadbeef "$r3_p_editi")" "1"
+printf 'x\n' > "$R6H/src.tsv"
+HOME="$R6H" gate exec --manifest "$FX_MANIFEST" --target front --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale "층3 — 확인 저장소 쓰기" -- cp "$R6H/src.tsv" "$R6H/.config/cc-cmds/stage-policy-ack/acks.tsv"
+# This fixture runs with auto-resolution off, so the machine-global cell is
+# issued as an approval (rc 5) rather than judged; either way the act waits.
+case "$rc" in
+  5) ok "층3: 확인 저장소를 바꾸는 act 는 런로컬로 신고해도 승인을 기다린다" ;;
+  *) bad "층3: 확인 저장소를 바꾸는 act 는 런로컬로 신고해도 승인을 기다린다" "rc=$rc $(tail -c 600 "$WORK/last-output.txt")" ;;
+esac
+case "$(cat "$WORK/last-output.txt")" in
+  *"reach judgment '기기전역'"*) ok "층3: 그 act 의 도달은 신고와 달리 기기전역으로 유도된다" ;;
+  *) bad "층3: 그 act 의 도달은 신고와 달리 기기전역으로 유도된다" "$(tail -c 600 "$WORK/last-output.txt")" ;;
+esac
+check "층3: 승인을 기다리는 확인 저장소 쓰기는 파일을 만들지 않는다" \
+  "$([ -e "$R6H/.config/cc-cmds/stage-policy-ack/acks.tsv" ] && echo made || echo absent)" "absent"
+# Resolve the approval it issued, as the fixture does above, so the sections
+# after this one see no pending wait.
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+rm -rf "$R6H" "$R3W"
 
 # The trap, asserted statically as well: the sibling idiom must not be in this
 # checker. The dynamic assertion above catches it too, but only while the
@@ -23355,8 +23450,8 @@ fi
 # Layer 2 publishes what layer 3 fires on. A guard that catches the act and
 # returns without exporting leaves layer 3 asleep, and that failure reads as
 # success from every direction.
-if grep -q 'export GATE_CLAUDEMD_SLOT GATE_CLAUDEMD_DIGEST' "$GATE"; then
-  ok "층2 가 GATE_CLAUDEMD_SLOT·GATE_CLAUDEMD_DIGEST 를 export 한다"
+if grep -q 'export GATE_CLAUDEMD_SLOT GATE_CLAUDEMD_DIGEST GATE_CLAUDEMD_PROPOSAL' "$GATE"; then
+  ok "층2 가 GATE_CLAUDEMD_SLOT·GATE_CLAUDEMD_DIGEST·GATE_CLAUDEMD_PROPOSAL 을 export 한다"
 else
   bad "층2 export" "층3 이 발동할 근거를 받지 못한다"
 fi
@@ -39294,16 +39389,23 @@ lsr75_note() {  # lsr75_note <CLAUDE_CONFIG_DIR 값> — 놓침 log 줄 수
 check "75: 호출자 환경에 디렉터리가 있으면 놓침 log 는 없다" "$(lsr75_note "$lsr75_tc")" "0"
 check "75: 없으면 첫 놓침은 log 한 줄, 둘째는 없다" "$(lsr75_note '')/$(lsr75_note '')" "1/0"
 
-# 런 개시 드리프트 검사 — 이름 붙인 디렉터리마다 비교하고, CLAUDE.md 가 없는
-# 디렉터리는 발견으로 센다.
-lsr75_dr="$lsr75/drift"; mkdir -p "$lsr75_dr/a" "$lsr75_dr/b" "$lsr75_dr/store"
-lsr75_dout=$(bash "$repo_root/plugins/cc-cmds/orchestrator/stage-policy-drift.sh" --sources-map "$lsr75_dr/none" \
-  --ack-store "$lsr75_dr/store" --config-dir "$lsr75_dr/a" --config-dir "$lsr75_dr/b" 2>/dev/null || true)
-check "75: 드리프트 검사가 이름 붙인 디렉터리를 차례로 적는다" \
-  "$(printf '%s\n' "$lsr75_dout" | { grep -E '^(config-dir|missing user-scope) ' || true; } | tr '\n' '|')" \
-  "config-dir $lsr75_dr/a|missing user-scope $lsr75_dr/a/CLAUDE.md|config-dir $lsr75_dr/b|missing user-scope $lsr75_dr/b/CLAUDE.md|"
-check "75: 게이트의 런 개시 호출이 좌석 디렉터리를 --config-dir 로 넘긴다" \
-  "$( { grep -cF 'pd_dirs+=(--config-dir "$seat_dir")' "$GATE" || true; } )/$( { grep -cF '${pd_dirs[@]+"${pd_dirs[@]}"}' "$GATE" || true; } )" "1/1"
+# 런 개시 개인 규칙 추출 — 시임이 없으면 원천은 이 프로세스의 설정 디렉터리가
+# 아니라 런 디렉터리의 좌석 기록이 가리키는 디렉터리의 CLAUDE.md 다.
+lsr75_pr=$(lsr75_new pr75)
+lsr75_seat="${lsr75_pr%/*}/seat"; mkdir -p "$lsr75_seat"
+printf -- '- [무인] LSR75-SEAT-CANARY rule\n' > "$lsr75_seat/CLAUDE.md"
+lsr75_in "$lsr75_pr" '' '' write_run_record "${lsr75_pr%/*}/config-dir" "$lsr75_seat" >/dev/null 2>&1
+check "75: 시임이 없으면 개인 규칙 원천은 좌석 기록의 CLAUDE.md 다" \
+  "$( (unset CC_GATE_PERSONAL_RULES_SOURCE; CLAUDE_CONFIG_DIR="$lsr75_tc" lsr75_in "$lsr75_pr" '' '' gate_personal_rules_source 2>/dev/null) )" \
+  "$lsr75_seat/CLAUDE.md"
+lsr75_pout=$( (unset CC_GATE_PERSONAL_RULES_SOURCE; CLAUDE_CONFIG_DIR="$lsr75_tc" lsr75_in "$lsr75_pr" '' '' gate_personal_rules_extract 2>&1) )
+check "75: 런 개시 추출이 상태 줄을 log 한다" \
+  "$( { grep -c 'stage rules: ok unattended=1 ' <<< "$lsr75_pout" || true; } )" "1"
+check "75: 포인터가 좌석 파일을 원천으로 적는다" \
+  "$(cut -d' ' -f2- "${lsr75_pr%/*}/instructions/personal/current" 2>/dev/null)" "$lsr75_seat/CLAUDE.md"
+check "75: 스냅숏이 좌석 파일의 무인 불릿을 담는다" \
+  "$(cat "${lsr75_pr%/*}/instructions/personal/$(cut -d' ' -f1 "${lsr75_pr%/*}/instructions/personal/current" 2>/dev/null).md" 2>/dev/null)" \
+  "- LSR75-SEAT-CANARY rule"
 
 # ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다
@@ -40097,6 +40199,16 @@ graded_as '등급 미상'    '79:PATH 가 찾지 못하는 맨 이름의 base-sp
 # Through a symlink and back with `..`: as text the path is the gate's own copy,
 # but the kernel follows the link first and runs the planted file.
 graded_as '등급 미상'    '79:심볼릭 링크 뒤 .. 로 접은 base-split.py 는 등급 미상이다' -- "$(dotdot_spelling 79 base-split.py)" check d.md
+# The stage rules helper: `status` is the only spelling a stage may run, by the
+# path of the gate's own copy.
+graded_as '읽기'         '79:stage-rules.sh status 는 읽기다'              -- "$CC_ORCH/stage-rules.sh" status
+graded_as '읽기'         '79:원천을 준 stage-rules.sh status 도 읽기다'    -- "$CC_ORCH/stage-rules.sh" status --source d.md
+graded_as '등급 미상'    '79:stage-rules.sh extract 는 등급 미상이다'      -- "$CC_ORCH/stage-rules.sh" extract --source d.md --out-dir /tmp/x
+graded_as '등급 미상'    '79:stage-rules.sh migrate 는 등급 미상이다'      -- "$CC_ORCH/stage-rules.sh" migrate --source d.md
+graded_as '등급 미상'    '79:하위 명령 없는 stage-rules.sh 는 등급 미상이다' -- "$CC_ORCH/stage-rules.sh"
+graded_as '등급 미상'    '79:이름만 같은 다른 경로의 stage-rules.sh 는 등급 미상이다' -- /x/scripts/stage-rules.sh status
+graded_as '등급 미상'    '79:맨 이름의 stage-rules.sh 는 등급 미상이다'    -- stage-rules.sh status
+graded_as '등급 미상'    '79:심볼릭 링크 뒤 .. 로 접은 stage-rules.sh 는 등급 미상이다' -- "$(dotdot_spelling 79sr stage-rules.sh)" status
 
 # ---------------------------------------------------------------------------
 # 80. The design scope and the rows only a base run may carry
@@ -44568,7 +44680,7 @@ check "90: 새 필드는 계정 자리와 기록자 사이에 온다" \
 
 # ---------------------------------------------------------------------------
 # 91. 이탈 점검의 디렉터리 집합에 대여 등록 행이 든다
-# --- section: 91 | covers: gate_stage_policy_inventory_dirs, stage-policy-drift | anchors: 91: 대여 등록된 cc 행의 홈이 집합에 든다, 91: 등록 아닌 cc 행은 집합에 들지 않는다, 91: enabled·draining 선택은 그대로다 ---
+# --- section: 91 | covers: gate_stage_policy_inventory_dirs, gate_personal_rules_lease_notice | anchors: 91: 대여 등록된 cc 행의 홈이 집합에 든다, 91: 등록 아닌 cc 행은 집합에 들지 않는다, 91: enabled·draining 선택은 그대로다 ---
 #
 # 런 개시의 이탈 점검은 인벤토리에서 좌석으로 쓰일 수 있는 행의 설정 디렉터리를
 # 모아 그 홈의 CLAUDE.md 를 본다. 대여에 등록된 cc 행(대여 auto·예약·무인 꺼짐)은
@@ -44603,6 +44715,91 @@ check "91: 읽을 수 없는 인벤토리는 빈 집합이고 실패하지 않�
 # 런 개시가 실제로 이 도우미로 집합을 만든다(옛 인라인 선택이 남아 있지 않다).
 check "91: 런 개시의 이탈 점검이 도우미를 부른다" \
   "$(grep -cF 'gate_stage_policy_inventory_dirs "$RUN_DIR/inventory.json"' "$GATE")/$(grep -cF "'.accounts[]? | select(.unattended == \"enabled\" or .unattended == \"draining\") | .config_dir" "$GATE")" "1/0"
+# 임대 해시 알림 — 라우팅 런에서 CLAUDE.md 가 좌석 것과 다른 적격 임대 디렉터리를
+# 한 줄로 이름 댄다. 좌석 기록이 없는 런 디렉터리라 좌석은 CLAUDE_CONFIG_DIR 이다.
+mkdir -p "$d91/rd" "$d91/seat" "$d91/claude-cc" "$d91/claude-u1" "$d91/claude-u2"
+cp "$d91/auto.json" "$d91/rd/inventory.json"
+printf -- '- [무인] seat rule\n' > "$d91/seat/CLAUDE.md"
+cp "$d91/seat/CLAUDE.md" "$d91/claude-u1/CLAUDE.md"
+printf -- '- [무인] lease rule\n' > "$d91/claude-u2/CLAUDE.md"
+n91() {
+  CLAUDE_CONFIG_DIR="$d91/seat" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+    RUN_DIR="$2"; run_routed() { return '"$1"'; }; route_inventory_check() { return 0; }
+    gate_personal_rules_lease_notice' _ "$GATE" "$d91/rd" 2>&1 \
+    | { grep 'stage rules: lease' || true; } | sed -e "s|$d91/||g" -e 's/^.*stage rules: lease/stage rules: lease/'
+}
+check "91: 임대 해시 알림이 좌석과 다른 디렉터리만 이름 댄다" "$(n91 0)" \
+  "stage rules: lease CLAUDE.md differs from the seat's, stages there still get the seat's snapshot: claude-cc claude-u2"
+check "91: 라우팅 아닌 런에는 임대 해시 알림이 없다" "$(n91 1)" ""
+
+# ---------------------------------------------------------------------------
+# 93. 런 개시 추출이 죽으면 판정 대신 검사 실패와 stderr·종료 코드가 남는다
+# --- section: 93 | group: sa | covers: gate_personal_rules_extract | anchors: 93: 신호로 죽은 추출은 검사 실패 줄과 종료 코드를 남긴다, 93: 정상 추출은 상태 줄만 남긴다, 93: 문법에 맞지 않는 줄은 종료 코드 0 이어도 검사 실패다 ---
+#
+# 추출 자리에 스텁을 끼워(`CC_GATE_STAGE_RULES_BIN`) 진짜 런 개시를 돌린다. 상태
+# 줄은 종료 코드 0 이고 stdout 마지막 줄이 두 문법 중 하나일 때만 log 에 오르고,
+# 그 밖에는 검사 실패 줄과 stderr 첫 줄이 오르며 stderr 파일이 런 디렉터리에 남고
+# 포인터가 `failed rc=<n>` 이 되어 합성이 동결 v6 정책으로 간다.
+# ---------------------------------------------------------------------------
+d93="$WORK/d93"; mkdir -p "$d93"
+printf '#!/usr/bin/env bash\nprintf '"'"'stub93 stderr first line\\n'"'"' >&2\nprintf '"'"'stage rules: ok unattended=1 bytes=1\\n'"'"'\nkill -BUS $$\n' > "$d93/bus.sh"
+printf '#!/usr/bin/env bash\nprintf '"'"'stage rules: ok unattended=2 bytes=30 tokens~14 interactive=1 untagged=0 malformed=0\\n'"'"'\n' > "$d93/ok.sh"
+printf '#!/usr/bin/env bash\nprintf '"'"'stage rules: ok unattended=2 bytes=30000 tokens~13800 interactive=1 untagged=0 malformed=0\\n'"'"'\n' > "$d93/big.sh"
+printf '#!/usr/bin/env bash\nprintf '"'"'stage rules: looks fine\\n'"'"'\n' > "$d93/bad.sh"
+# o93 <스텁> — 그 스텁을 추출 자리에 둔 새 런을 열고 run 개시의 원문 출력을 raw 에 남긴다.
+o93() {
+  sa_new "93 $1"
+  export CC_GATE_STAGE_RULES_BIN="$d93/$1.sh"
+  sag snapshot --manifest "$SA_MANIFEST"
+  unset CC_GATE_STAGE_RULES_BIN
+}
+p93() { cat "$SA_RUN/instructions/personal/current" 2>/dev/null; }
+
+bus93=$((128 + $(kill -l BUS)))
+o93 bus
+case "$raw" in
+  *"[run] stage rules: 검사 실패 rc=$bus93 — stub93 stderr first line"*) ok "93: 신호로 죽은 추출은 검사 실패 줄과 종료 코드를 남긴다" ;;
+  *) bad "93: 신호로 죽은 추출은 검사 실패 줄과 종료 코드를 남긴다" "$raw" ;;
+esac
+case "$raw" in
+  *"[run] stage rules: ok"*) bad "93: 죽은 추출의 상태 줄 비슷한 stdout 은 log 에 오르지 않는다" "$raw" ;;
+  *) ok "93: 죽은 추출의 상태 줄 비슷한 stdout 은 log 에 오르지 않는다" ;;
+esac
+check "93: stderr 파일이 런 디렉터리에 남는다" "$(cat "$SA_RUN/instructions/personal/extract.err" 2>/dev/null)" "stub93 stderr first line"
+check "93: 포인터는 failed rc=<n> 이다" "$(p93)" "failed rc=$bus93"
+s93=$( (cd "$SA_WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+    MANIFEST="$2"; RUN_DIR="$3"; gate_stage_instructions main' _ "$GATE" "$SA_MANIFEST" "$SA_RUN" 2>/dev/null) )
+v6_93="$repo_root/plugins/cc-cmds/orchestrator/legacy/stage-policy.v6.md"
+check "93: 그 런의 합성은 동결 v6 정책으로 시작하고 개인 블록이 없다" \
+  "$(head -c "$(wc -c < "$v6_93" | tr -d ' ')" "$s93" 2>/dev/null | cmp -s - "$v6_93" && printf v6 || printf other)/$(grep -c -x -F '# Personal rules' "$s93" 2>/dev/null || true)" "v6/0"
+
+o93 ok
+case "$raw" in
+  *"[run] stage rules: ok unattended=2 bytes=30 tokens~14 interactive=1 untagged=0 malformed=0"*) ok "93: 정상 추출은 상태 줄만 남긴다" ;;
+  *) bad "93: 정상 추출은 상태 줄만 남긴다" "$raw" ;;
+esac
+case "$raw" in
+  *"검사 실패"*|*"24576-byte alert"*) bad "93: 정상 추출에는 검사 실패 줄도 알림 줄도 없다" "$raw" ;;
+  *) ok "93: 정상 추출에는 검사 실패 줄도 알림 줄도 없다" ;;
+esac
+
+o93 big
+case "$raw" in
+  *"[run] stage rules: the personal rules block is 30000 bytes, over the 24576-byte alert line"*) ok "93: 24576 바이트를 넘는 블록은 알림 한 줄을 더 남긴다" ;;
+  *) bad "93: 24576 바이트를 넘는 블록은 알림 한 줄을 더 남긴다" "$raw" ;;
+esac
+
+o93 bad
+case "$raw" in
+  *"[run] stage rules: 검사 실패 rc=0"*) ok "93: 문법에 맞지 않는 줄은 종료 코드 0 이어도 검사 실패다" ;;
+  *) bad "93: 문법에 맞지 않는 줄은 종료 코드 0 이어도 검사 실패다" "$raw" ;;
+esac
+case "$raw" in
+  *"[run] stage rules: looks fine"*) bad "93: 문법 위반 줄 자체는 log 에 오르지 않는다" "$raw" ;;
+  *) ok "93: 문법 위반 줄 자체는 log 에 오르지 않는다" ;;
+esac
+check "93: 문법 위반의 포인터도 failed rc=0 이다" "$(p93)" "failed rc=0"
+unset -f o93 p93
 
 # ---------------------------------------------------------------------------
 # 92. 리뷰 사이클의 원인 기록 — 정본 리포트, 파견 계기, cycle 행의 원인 필드, report-check

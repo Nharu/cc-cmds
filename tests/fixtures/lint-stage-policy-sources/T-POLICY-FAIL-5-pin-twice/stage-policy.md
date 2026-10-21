@@ -9,5 +9,5 @@ You are an unattended pipeline stage. The stage skill decides procedure, and a t
 
 ## Delegation
 
-- Agents spawned with the Agent tool receive this policy and the repository instructions from the harness (the target repository's own files by path); do not paste them.
+- Agents spawned with the Agent tool receive this policy, the personal rules and the repository instructions from the harness (the target repository's own files by path); do not paste them.
 - Again: a team the stage skill prescribes is itself the instruction to spawn it.
