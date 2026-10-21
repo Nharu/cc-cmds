@@ -2641,9 +2641,13 @@ check "사이드카: 좌석 실행 정지는 사람이 답해도 --resume 으로
 check "교대 계약: 운반 act 의 16 은 답이 이월일 때 이월이고 종료 행이 있으면 종단" \
   "$(has "$RS_SKILL" "\`이월\`: when the run has no run-scope end row, end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
 # 게이트는 이월 행 없이도 운반 act 를 16 으로 돌려준다 — 설정 park, stage-wait 행 기록 거부,
-# 마감 아닌 새 PARK, 정체 임계를 못 읽는 대기. 그래서 세 사본 모두 16 을 답의 state 로 가른다.
+# 마감 아닌 새 PARK, 어긋난 라우팅 가드 기록, 정체 임계를 못 읽는 대기. 그래서 세 사본 모두 16 을 답의 state 로 가른다.
 check "교대 계약: 운반 act 의 16 은 답이 열림이면 이월 행 없는 park 이고 중단으로 끝낸다" \
-  "$(has "$RS_SKILL" "\`열림\`: dispatch nothing on the key and do not carry the answer again in this run; end with \`handoff 사유=중단\` once nothing else is dispatchable, naming the record and the park row's \`사유\` in \`막힌 지점\`")" 예
+  "$(has "$RS_SKILL" "\`열림\`: dispatch nothing on the key and do not carry the answer again in this shift; end with \`handoff 사유=중단\` once nothing else is dispatchable, naming the record and the park row's \`사유\` in \`막힌 지점\`")" 예
+check "교대 계약: 열림 답은 뒤 교대가 다시 운반한다" \
+  "$(has "$RS_SKILL" "The element stays \`열림\` in \`answered_halts[]\`, so a later shift carries it again")" 예
+check "교대 계약: 운반 시도의 대기 감독자가 낸 16 도 답의 state 로 가른다" \
+  "$(has "$RS_SKILL" "when the attempt carried a halt answer, tell it apart by the answer's \`state\` as a carry act's \`16\` is")" 예
 check "교대 계약: 열림 답의 중단 인계는 재질문 가드에 걸리지 않는다" \
   "$(has "$RS_SKILL" "do not refuse it, because this answer is \`열림\`, not carried over")" 예
 check "교대 계약: 종료 코드 표의 16 행도 운반 act 의 16 을 답의 state 로 가른다" \
@@ -2653,13 +2657,22 @@ check "좌석 사본: 운반 act 의 16 을 답의 state 로 가른다" \
 check "좌석 사본: 열림 답의 16 은 이월 행 없는 park 이다" \
   "$(has "$SEAT_REF" "\`state\` \`열림\` → it is that park: the gate wrote no \`이월\` row")" 예
 # 운반 상한(18)에 걸린 기록은 답이 있어 좌석의 질문 목록에 들지 않고, 다시 물어 받은 새 답도
-# 같은 런에서는 다시 18 이다 — 사람에게 상한을 알리는 것은 이 문단뿐이다.
+# 같은 런에서는 다시 18 이다 — 사람에게 상한을 알리는 것은 이 문단뿐이다. 상한 행과 park 행은
+# act 범위라 스냅숏 blocked[] 에 실리지 않으므로, 좌석은 교대가 막힌 지점에 적은 사유로 읽는다.
 check "좌석 사본: 18 행은 상한을 묻지 않고 알린다" \
   "$(has "$SEAT_REF" "do not carry that answer again; the seat neither asks the record again nor answers it with the seat, and tells the person of the cap")" 예
-check "좌석 사본: 운반 상한은 사람에게 알리고 묻지 않는다" \
-  "$(has "$SEAT_REF" "**A carry the gate capped is told to the person, not asked.**")" 예
-check "좌석 사본: 상한 고지는 두 상한 사유로 행을 고른다" \
-  "$(has "$SEAT_REF" "whose \`사유\` begins \`중단 답 라우팅 — 세션 전에 세 번 죽었다\` or \`중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\`")" 예
+check "좌석 사본: 열림 16 도 사람에게 알린다" \
+  "$(has "$SEAT_REF" "and tells the person of the park as 「A carry the gate parked or capped」 below says")" 예
+check "좌석 사본: 운반 park·상한은 사람에게 알리고 묻지 않는다" \
+  "$(has "$SEAT_REF" "**A carry the gate parked or capped is told to the person, not asked.**")" 예
+check "좌석 사본: 고지는 스냅숏 blocked[] 가 아니라 막힌 지점에서 사유를 읽는다" \
+  "$(has "$SEAT_REF" "the seat reads it there, because the snapshot's \`blocked[]\` carries no act-scope row")" 예
+check "교대 계약: 18 은 상한 행의 사유를 막힌 지점에 적는다" \
+  "$(has "$RS_SKILL" "naming the record and the cap row's \`사유\` in \`막힌 지점\` — the seat reads the cap from that field")/$(has "$RS_SKILL" "naming the halt record and the cap row's \`사유\` in \`막힌 지점\`")" "예/예"
+check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
+  "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg)) step = 1')" 예
+check "좌석 사본: 상한 고지는 두 상한 사유로 고른다" \
+  "$(has "$SEAT_REF" "When that \`사유\` begins \`중단 답 라우팅 — 세션 전에 세 번 죽었다\` or \`중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\`, it is the carry's cap")" 예
 check "좌석 사본: 상한 고지는 새 답도 같은 상한에 걸린다고 말한다" \
   "$(has "$SEAT_REF" "asking again and taking a new answer meets the same cap")" 예
 check "좌석 사본: 상한 사유는 게이트가 쓰는 두 문면과 같다" \
