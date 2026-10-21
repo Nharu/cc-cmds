@@ -6445,7 +6445,112 @@ reap_orphan() {
 # `DOC_BASE` and not `BASE`: the audit sidecar sits beside the DOCUMENT, and for
 # a document outside every repository those two directories differ. Reading the
 # run's base reported absence for artifacts that were present.
-predicate_audit()       { [ -n "$DOC_SLUG" ] && grep -qF "$LIT_AUDIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; }
+#
+# The audit report carries a skeletal-grade fence — one begin line, its field
+# lines, one end line. The report holds it only when each marker line occurs
+# exactly once and the begin comes first; zero, two or a reversed pair read as
+# no fence, so a report a later audit appended to cannot be read for either.
+readonly LIT_AUDIT_SKELETAL_BEGIN='<!-- cc-design-audit-skeletal v1 begin -->'
+readonly LIT_AUDIT_SKELETAL_END='<!-- /cc-design-audit-skeletal v1 end -->'
+
+audit_report_path() {
+  # audit_report_path — the audit report beside the document: empty when the
+  # run names no document.
+  [ -n "$DOC_SLUG" ] || return 1
+  printf '%s/docs/design-audit/%s.md' "$DOC_BASE" "$DOC_SLUG"
+}
+
+audit_skeleton_fence_body() {
+  # audit_skeleton_fence_body — prints the lines between the fence's two marker
+  # lines and returns 0 when the report carries exactly one pair; returns 1
+  # otherwise.
+  local rp
+  rp=$(audit_report_path) || return 1
+  [ -f "$rp" ] || return 1
+  awk -v b="$LIT_AUDIT_SKELETAL_BEGIN" -v e="$LIT_AUDIT_SKELETAL_END" '
+    { sub(/\r$/, "") }
+    $0 == b { nb++; if (nb == 1 && ne == 0) inside = 1; next }
+    $0 == e { ne++; if (inside) { inside = 0; closed = 1 }; next }
+    inside  { body = body $0 "\n" }
+    END     { if (nb != 1 || ne != 1 || !closed) exit 1; printf "%s", body }' "$rp"
+}
+
+audit_skeleton_fence_field() {
+  # audit_skeleton_fence_field <field> — the value of the fence's
+  # `**<field>**: <value>` line, or empty when the report has no single fence or
+  # the fence has no such line. The gate's skeletal count and the driver's
+  # reading of a report from before the run both go through here.
+  local body
+  body=$(audit_skeleton_fence_body) || return 0
+  printf '%s\n' "$body" | awk -v k="**$1**: " 'index($0, k) == 1 { v = substr($0, length(k) + 1); sub(/[ \t]+$/, "", v); print v; exit }'
+}
+
+audit_skeleton_fence_skeletal() {
+  # audit_skeleton_fence_skeletal — `골격급 수` plus `합성 요구 골격급 수` from
+  # the fence, or empty when the fence is absent or either count is not a
+  # number.
+  local a b
+  a=$(audit_skeleton_fence_field '골격급 수')
+  b=$(audit_skeleton_fence_field '합성 요구 골격급 수')
+  case "$a" in ''|*[!0-9]*) return 0 ;; esac
+  case "$b" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$(( a + b ))"
+}
+
+audit_artifact_complete() {
+  # audit_artifact_complete <stream> — the audit's artifact: the terminal
+  # phrase in the stage's stream, a reader report beside the document, and
+  # exactly one skeletal-grade fence in the audit report. The driver's predicate
+  # and the gate's classification of an audit's normal end both read this.
+  [ -n "$DOC_SLUG" ] \
+    && grep -qF "$LIT_AUDIT_TERMINAL" "$1" 2>/dev/null \
+    && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1 \
+    && audit_skeleton_fence_body >/dev/null
+}
+
+audit_key_reconverge_rows() {
+  # audit_key_reconverge_rows <audit step id> <ledger> — the run-scope
+  # re-convergences the audit's key carries, in either writer's shape and in
+  # ledger order, each prefixed with its line number: the router's
+  # (`세그먼트=- | 스테이지=<id> | 종류=reconverge`) and the driver's, which
+  # writes its skeletal re-convergence as `스테이지=S1'` under dispatch id `S2R`.
+  # A re-convergence still waiting to spawn edited nothing and is left out.
+  local id="$1" lg="$2"
+  [ -f "$lg" ] || return 0
+  { grep -n -F -e "세그먼트=- | 스테이지=$id | 종류=reconverge " \
+               -e "세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge " "$lg" 2>/dev/null || true; } \
+    | { grep "^[0-9]*:- \`stage-result\` " || true; } \
+    | { grep -vF '| 관측=스폰 전 대기 중' || true; }
+}
+
+audit_row_request() {
+  # audit_row_request <skeletal> <terminal class> <audit step id> — the audit
+  # row's `재수렴 요청`: `예` when an audit that ended `정상 완료` counted at
+  # least one skeleton-grade item and the audit's key has had no
+  # re-convergence in this run yet, `아니오` otherwise. A re-audit reports what
+  # remains and parks itself instead of asking again. Both writers of an audit
+  # row call this.
+  case "$1" in ''|*[!0-9]*) printf '아니오'; return 0 ;; esac
+  if [ "$1" -ge 1 ] && [ "$2" = '정상 완료' ] \
+     && [ -z "$(audit_key_reconverge_rows "$3" "${LEDGER:-}")" ]; then
+    printf '예'
+  else
+    printf '아니오'
+  fi
+}
+
+audit_pass_of() {
+  # audit_pass_of <audit step id> — `reaudit` when this run's ledger carries a
+  # re-convergence on the audit's key, `first` otherwise. The audit reads it
+  # from `CC_PIPELINE_AUDIT_PASS` to fill the fence's `회차`.
+  if [ -n "$(audit_key_reconverge_rows "$1" "${LEDGER:-}")" ]; then
+    printf 'reaudit'
+  else
+    printf 'first'
+  fi
+}
+
+predicate_audit()      { audit_artifact_complete "$(stage_log_path "$1")"; }
 predicate_review()      { local rp="$1"; [ -f "$rp" ] && grep -qE '^- \*\*발견 요약\*\*: 🔴 P0 [0-9]+건 \| 🟠 P1 [0-9]+건 \| 🟡 P2 [0-9]+건 \| 🟢 P3 [0-9]+건' "$rp"; }
 
 lead_fix_record_path() {
@@ -10640,6 +10745,11 @@ continue_attempt() {
   [ "${1:-}" = "--" ] && shift
   CONTINUE_PRED=1
   rm -f "$RUN_DIR/$did.rc"
+  # An audit's continuation carries the pass marker its first dispatch did.
+  if [ "$rkind" = "S2" ]; then
+    local -x CC_PIPELINE_AUDIT_PASS
+    CC_PIPELINE_AUDIT_PASS=$(audit_pass_of S2)
+  fi
   quiet_window_begin
   dispatch_stage "$did" "$cwd" "$prompt" || drc=$?
   STAGE_RESUME=""
@@ -10672,13 +10782,21 @@ continue_attempt() {
     || clue=$(residual_share_missing "${DOC:-}" "$rseg" "$RUN_DIR/halt" "$RUN_DIR/$rseg.plan.md" 2>/dev/null || true)
   local om ro re
   om=$(stage_org_moves_of "$did"); ro=$(stage_reattach_org_of "$did"); re=$(stage_reattach_ctx_of "$did")
-  ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" "종료 코드=$rc" \
+  # An audit's row carries its kind and its skeletal fields, as the first
+  # dispatch's row does (`s2_audit_attempt`).
+  local akind="" ask="" arq=""
+  if [ "$rkind" = "S2" ]; then
+    akind=audit
+    ask=$(audit_skeleton_fence_skeletal); ask=${ask:-미상}
+    arq=$(audit_row_request "$ask" "$CONTINUE_CLASS" S2)
+  fi
+  ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" ${akind:+"종류=$akind"} "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$did")" \
     "세션 id=$(stage_session_id "$did")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} \
     ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$did")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$did")")" \
-    ${psha:+"plan_sha256=$psha"} "종단 부류=$CONTINUE_CLASS" \
+    ${psha:+"plan_sha256=$psha"} ${ask:+"골격급=$ask"} ${arq:+"재수렴 요청=$arq"} "종단 부류=$CONTINUE_CLASS" \
     "실패 서명=$(row_signature "$did" "$skind" "$CONTINUE_CLASS" "$wtp" - "$clue")"
   absorb_stage_judgment "$did" "$jkey" "$alias"
   if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
@@ -11483,6 +11601,156 @@ main_loop() {
   run_end_record || true
 }
 
+s2_audit_attempt() {
+  # s2_audit_attempt <audit command> — one S2 audit dispatch and its row, with
+  # the continuation a hollow success earns. The pass marker rides on the
+  # launch (`audit_pass_of`). Returns 0 when the audit ended `정상 완료`, 1
+  # when the run parked.
+  local audit_cmd2="$1"
+  quiet_window_begin
+  local src2=0
+  CC_PIPELINE_AUDIT_PASS="$(audit_pass_of S2)" \
+    dispatch_stage S2 "$(alias_root "$(home_alias)")" "$audit_cmd2" || src2=$?
+  # `S2.rc` is absent after a declined launch, and the line below reads that as
+  # 1 — a crash. The router's answer is not a crash.
+  if [ "$src2" = "$STAGE_SPAWN_PARK_RC" ]; then
+    quiet_window_end
+    park_router "S2" "S2" run
+    return 1
+  fi
+  [ "$src2" = "0" ] || (exit "$src2")
+  quiet_window_end
+  local rc2 pred2 class2 acct2 sk2 rq2
+  rc2=$(cat "$RUN_DIR/S2.rc" 2>/dev/null || printf '1')
+  if predicate_audit S2; then pred2=0; else pred2=1; fi
+  class2=$(classify_termination S2 "$rc2" "$pred2")
+  acct2=$(stage_account_of S2)
+  # `골격급` and `재수렴 요청` by the helpers the gate's own audit row uses, so
+  # the two writers file one audit alike.
+  sk2=$(audit_skeleton_fence_skeletal); sk2=${sk2:-미상}
+  rq2=$(audit_row_request "$sk2" "$class2" S2)
+  local om2 ro2 re2
+  om2=$(stage_org_moves_of S2); ro2=$(stage_reattach_org_of S2); re2=$(stage_reattach_ctx_of S2)
+  ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종류=audit" "종료 코드=$rc2" \
+    "아티팩트 술어 결과=$pred2" "실행 버전=$(stage_attempt_pinned S2)" \
+      "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" ${acct2:+"계정=$acct2"} \
+      ${om2:+"조직 이동=$om2"} ${ro2:+"재부착 조직=$ro2"} ${re2:+"재기록 추정=$re2"} "기록자=드라이버" \
+      "effort=$(stage_effort_rec_of S2)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2)")" \
+      "골격급=$sk2" "재수렴 요청=$rq2" \
+      "종단 부류=$class2" "실패 서명=$(row_signature S2 audit "$class2" - -)"
+  absorb_stage_judgment S2 S2 "$(home_alias)"
+  # Keyed on the stage for the reason the design stage's absorber is.
+  case "$class2" in
+    '정상 완료') : ;;
+    '의도된 park') RUN_END_HALT_STAGE=S2; park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 1 ;;
+    '공허한 성공')
+      if continue_or_park S2 S2 - S2 "$(alias_root "$(home_alias)")" \
+           "$audit_cmd2" \
+           "감사 리더 리포트와 종단 문면도 정지 기록도 없다" "$(home_alias)" -- predicate_audit; then
+        :
+      else
+        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "S2" "S2" run "$CONTINUE_PARK_REASON"; return 1; }
+        [ -z "$CONTINUE_BLOCKED" ] || { park "S2" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+        park "S2" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+      fi ;;
+    *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 1 ;;
+  esac
+  spawn_lineage_release S2
+  return 0
+}
+
+s2_last_audit_field() {
+  # s2_last_audit_field <field> — that field of this run's last driver audit
+  # row (`스테이지=S2`), the first attempt's or a continuation's.
+  run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
+    | tr '|' '\n' | sed -n "s/^ *$1=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+s2_skeleton_reconverge() {
+  # s2_skeleton_reconverge — the re-convergence an audit that counted
+  # skeleton-grade items asks for, under stage and dispatch id `S2R`. The same
+  # on a resumed run, so one that already ended normally is known by its row
+  # and not dispatched again; any other earlier ending parks the run. Returns 0
+  # when the document has been re-converged, 1 when the run parked.
+  local sid=S2R prior pclass src rclass
+  prior=$( { run_section_rows 'stage-result' || true; } | { grep -F "| 파견 id=$sid |" || true; } | tail -1)
+  if [ -n "$prior" ]; then
+    pclass=$(manifest_row_fields "$prior" '종단 부류')
+    if [ "$pclass" = "정상 완료" ]; then
+      log "S2 — $sid 는 이 런에서 이미 정상 종단했다 — 다시 띄우지 않는다"
+      return 0
+    fi
+    RUN_END_HALT_STAGE="$sid"
+    park "$sid" run 무효화 "게이트 park" \
+      "이 런의 골격급 재수렴이 이미 종단 부류 ${pclass:-미상} 로 끝났다 — 다시 띄우지 않는다" \
+      "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
+    return 1
+  fi
+  src=0
+  CC_SPAWN_PARK_TARGET="$sid" stage_spawn "$sid" "$(alias_root "$(home_alias)")" \
+    "/cc-cmds:design-reconverge $(doc_arg) 감사 골격급" || src=$?
+  if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+    park_router "$sid" "$sid" run; return 1
+  fi
+  [ "$src" = "0" ] || (exit "$src")
+  stage_wait_all "$sid"
+  spawn_lineage_release "$sid"
+  if predicate_reconverge "$sid"; then
+    rclass=$(classify_termination "$sid" "$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')" 0)
+  else
+    rclass=$(classify_termination "$sid" "$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')" 1)
+    [ "$rclass" != "정상 완료" ] || rclass='공허한 성공'
+  fi
+  reconverge_row - "$sid" "$rclass"
+  if [ "$rclass" != "정상 완료" ]; then
+    RUN_END_HALT_STAGE="$sid"
+    park "$sid" run 무효화 "게이트 park" "골격급 재수렴이 종단 부류 $rclass 로 끝났다" \
+      "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
+    return 1
+  fi
+  report_append "재수렴" "S2 — 감사가 센 골격급 항목으로 문서를 다시 수렴했다 ($sid)"
+  return 0
+}
+
+s2_audit_run() {
+  # s2_audit_run <audit command> <first act: audit|reconverge> — the audit and
+  # the skeletal re-convergence it may ask for. An audit that ends `정상 완료`
+  # with `재수렴 요청=예` is followed by `s2_skeleton_reconverge` and a re-audit
+  # under the same stage id; a re-audit never asks again, so the loop turns at
+  # most once. Returns 0 when the audit has concluded, 1 when the run parked.
+  local cmd="$1" next="${2:-audit}"
+  while :; do
+    if [ "$next" = "reconverge" ]; then
+      s2_skeleton_reconverge || return 1
+    fi
+    s2_audit_attempt "$cmd" || return 1
+    [ "$(s2_last_audit_field '재수렴 요청')" = '예' ] || return 0
+    log "S2 — 감사가 골격급 $(s2_last_audit_field '골격급')건을 세고 재수렴을 요청했다"
+    next=reconverge
+  done
+}
+
+s2_audit_next_from_fence() {
+  # s2_audit_next_from_fence — for a document whose audit report predates this
+  # run (no audit row here): `reconverge` when the report's single fence is a
+  # first pass that counted skeleton-grade items over the document's present
+  # bytes, `audit` when it counted them over other bytes, nothing otherwise —
+  # the report then stands as today and the audit is skipped.
+  local n round sha cur
+  n=$(audit_skeleton_fence_skeletal)
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -ge 1 ] || return 0
+  round=$(audit_skeleton_fence_field '회차')
+  sha=$(audit_skeleton_fence_field '문서 sha256')
+  cur=$(whole_digest 2>/dev/null || true)
+  if [ "$sha" != "$cur" ]; then
+    printf 'audit'
+  elif [ "$round" = "최초" ]; then
+    printf 'reconverge'
+  fi
+}
+
 main_loop_body() {
   log "런 시작 run-id=$RUN_ID doc=$DOC slug=$SLUG base=$BASE"
   # The two the morning reads. They describe the TARGET BASE — its HEAD at
@@ -11549,6 +11817,7 @@ main_loop_body() {
   # plan does not read the status line, so a document left unfrozen — a stage
   # that wrote it and died before the freeze edit — would go straight to
   # implementation. Parked instead, neither audited nor implemented.
+  local s2_next=""
   if [ "$(manifest_design_tier)" = "solo" ] && [ "$(manifest_plan_field '.design_required')" = "true" ]; then
     if doc_is_frozen "$DOC"; then
       log "S2 감사 건너뜀 — solo 티어 런이 설계한 동결 문서다 ($DOC_KEY)"
@@ -11565,70 +11834,51 @@ main_loop_body() {
       "되돌리는 법=매니페스트에 설계 문서를 적고 런을 다시 킥오프한다" \
       "근거=앵커 종류 $ANCHOR_KIND · 앵커 키 $ANCHOR_KEY"
   elif [ "$(manifest_design_scope)" = "base" ] \
-       && [ "$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
-              | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)" = "정상 완료" ]; then
+       && [ "$(s2_last_audit_field '종단 부류')" = "정상 완료" ]; then
     # A BASE RUN SKIPS ONLY AN AUDIT IT RAN ITSELF. A reader report on disk
     # names the slug, not the bytes it read, and a base run publishes tickets
     # after this — so a report left by an earlier run over an earlier revision
     # would send a document nobody audited to the tracker. The run's own
     # finished audit row is the evidence instead, and the split checks it again.
-    log "S2 감사 건너뜀 — 이 런의 감사가 이미 완주했다 ($DOC_KEY)"
+    #
+    # AND ONLY ONE THAT CONCLUDED (`gate_audit_concluded`): an audit that asked
+    # for its skeletal re-convergence goes on to it, and one a re-convergence
+    # came after is audited again.
+    case "$(run_gate_call gate_audit_wait_of S2 2>/dev/null || true)" in
+      '')     log "S2 감사 건너뜀 — 이 런의 감사가 이미 완주했다 ($DOC_KEY)" ;;
+      골격급) s2_next=reconverge ;;
+      *)      s2_next=audit ;;
+    esac
   elif [ "$(manifest_design_scope)" != "base" ] && [ -n "$DOC_SLUG" ] \
        && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
-    log "S2 감사 건너뜀 — 이 문서의 감사 리포트가 이미 있다 ($DOC_SLUG)"
-    ledger_row '자율 승인' "kind=audit-composition" "결정=감사 스테이지를 띄우지 않는다" \
-      "기각된 대안=다시 감사한다" "등급=1" "기준=이 문서 슬러그의 리더 리포트가 이미 존재한다" \
-      "되돌리는 법=그 리포트를 옮기고 런을 다시 킥오프한다" \
-      "근거=$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-*.md"
+    # A READER REPORT SKIPS THE AUDIT ONLY WHEN NOTHING SAYS IT OWES MORE. With
+    # an audit row in this run, the rows decide as on the base path; without
+    # one, the report's own fence does (`s2_audit_next_from_fence`).
+    if [ -n "$(s2_last_audit_field '종단 부류')" ]; then
+      case "$(run_gate_call gate_audit_wait_of S2 2>/dev/null || true)" in
+        '')     ;;
+        골격급) s2_next=reconverge ;;
+        *)      s2_next=audit ;;
+      esac
+    else
+      s2_next=$(s2_audit_next_from_fence)
+    fi
+    if [ -z "$s2_next" ]; then
+      log "S2 감사 건너뜀 — 이 문서의 감사 리포트가 이미 있다 ($DOC_SLUG)"
+      ledger_row '자율 승인' "kind=audit-composition" "결정=감사 스테이지를 띄우지 않는다" \
+        "기각된 대안=다시 감사한다" "등급=1" "기준=이 문서 슬러그의 리더 리포트가 이미 존재한다" \
+        "되돌리는 법=그 리포트를 옮기고 런을 다시 킥오프한다" \
+        "근거=$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-*.md"
+    fi
   else
-  # A base document is audited as one: `--base` tells the audit to read the
-  # base grammar, and only a base run carries it.
-  local audit_cmd2="/cc-cmds:design-audit-unattended $DOC"
-  [ "$(manifest_design_scope)" = "base" ] && audit_cmd2="$audit_cmd2 --base"
-  quiet_window_begin
-  local src2=0
-  dispatch_stage S2 "$(alias_root "$(home_alias)")" "$audit_cmd2" || src2=$?
-  # `S2.rc` is absent after a declined launch, and the line below reads that as
-  # 1 — a crash. The router's answer is not a crash.
-  if [ "$src2" = "$STAGE_SPAWN_PARK_RC" ]; then
-    quiet_window_end
-    park_router "S2" "S2" run
-    return 0
+    s2_next=audit
   fi
-  [ "$src2" = "0" ] || (exit "$src2")
-  quiet_window_end
-  local rc2 pred2 class2 acct2
-  rc2=$(cat "$RUN_DIR/S2.rc" 2>/dev/null || printf '1')
-  if predicate_audit S2; then pred2=0; else pred2=1; fi
-  class2=$(classify_termination S2 "$rc2" "$pred2")
-  acct2=$(stage_account_of S2)
-  local om2 ro2 re2
-  om2=$(stage_org_moves_of S2); ro2=$(stage_reattach_org_of S2); re2=$(stage_reattach_ctx_of S2)
-  ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
-    "아티팩트 술어 결과=$pred2" "실행 버전=$(stage_attempt_pinned S2)" \
-      "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" ${acct2:+"계정=$acct2"} \
-      ${om2:+"조직 이동=$om2"} ${ro2:+"재부착 조직=$ro2"} ${re2:+"재기록 추정=$re2"} "기록자=드라이버" \
-      "effort=$(stage_effort_rec_of S2)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2)")" \
-      "종단 부류=$class2" "실패 서명=$(row_signature S2 audit "$class2" - -)"
-  absorb_stage_judgment S2 S2 "$(home_alias)"
-  # Keyed on the stage for the reason the design stage's absorber is.
-  case "$class2" in
-    '정상 완료') : ;;
-    '의도된 park') RUN_END_HALT_STAGE=S2; park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
-    '공허한 성공')
-      if continue_or_park S2 S2 - S2 "$(alias_root "$(home_alias)")" \
-           "$audit_cmd2" \
-           "감사 리더 리포트와 종단 문면도 정지 기록도 없다" "$(home_alias)" -- predicate_audit; then
-        :
-      else
-        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "S2" "S2" run "$CONTINUE_PARK_REASON"; return 0; }
-        [ -z "$CONTINUE_BLOCKED" ] || { park "S2" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 0; }
-        park "S2" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 0
-      fi ;;
-    *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 0 ;;
-  esac
-  spawn_lineage_release S2
+  if [ -n "$s2_next" ]; then
+    # A base document is audited as one: `--base` tells the audit to read the
+    # base grammar, and only a base run carries it.
+    local audit_cmd2="/cc-cmds:design-audit-unattended $DOC"
+    [ "$(manifest_design_scope)" = "base" ] && audit_cmd2="$audit_cmd2 --base"
+    s2_audit_run "$audit_cmd2" "$s2_next" || return 0
   fi
 
   # A BASE RUN ENDS AT THE SPLIT. Its graph has no segment: each ticket is
