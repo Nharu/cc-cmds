@@ -1713,7 +1713,12 @@ rk_graph_compute() {
   fi
 
   # The audit: a normal completion of that step, and the latest document hash
-  # recorded before the last such completion equal to the document now. Only
+  # recorded before the last such completion equal to the document now. That
+  # last completion must have concluded — one that asked for its skeletal
+  # re-convergence (`재수렴 요청=예`), or one a re-convergence on the key came
+  # after, leaves the step in, as the gate reads it before it plans segments.
+  # An audit row that ended another way after it changes nothing. This file
+  # does not source the gate, so the conditions are spelled here. Only
   # after the design is out — an audit of a design that runs again proves
   # nothing about the document that design will write.
   if [ -n "$aid" ]; then
@@ -1731,9 +1736,18 @@ rk_graph_compute() {
           }
           return v
         }
-        /^- `stage-result`/ && fld($0, "스테이지") == aid && fld($0, "종류") == "audit" && fld($0, "종단 부류") == "정상 완료" { last = NR }
-        END { if (last) print last }' "$RK_PL" 2>/dev/null)
-      if [ -z "$lastn" ]; then
+        /^- `stage-result`/ && fld($0, "스테이지") == aid && fld($0, "관측") != "스폰 전 대기 중" {
+          k = fld($0, "종류")
+          if (k == "reconverge") last = "-"
+          if (k == "audit" && fld($0, "종단 부류") == "정상 완료") {
+            seen = 1
+            last = (fld($0, "재수렴 요청") != "예") ? NR : "-"
+          }
+        }
+        END { if (seen) print last }' "$RK_PL" 2>/dev/null)
+      if [ "$lastn" = "-" ]; then
+        G_AUDIT_NOTE="남음${TAB}감사 단계 $aid 의 마지막 행이 결론 난 감사가 아닙니다 (재수렴 요청 또는 그 뒤 재수렴)"
+      elif [ -z "$lastn" ]; then
         G_AUDIT_NOTE="남음${TAB}감사 단계 $aid 의 정상 완료 행이 없습니다"
       else
         hashrow=$(awk -v aid="$aid 이후" -v lim="$lastn" '

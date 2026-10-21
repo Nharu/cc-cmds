@@ -853,6 +853,58 @@ check "implement_next 의 값이 움직여도 H 는 그대로다" \
   "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null ) )" "$hi0"
 
 # ---------------------------------------------------------------------------
+# 6e-2. `audit_skeleton_due` — the audit that asked for its skeletal re-convergence
+#
+# An audit that ended `정상 완료` and counted skeleton-grade items is not done:
+# the gate names it in `audit_skeleton_due`, and both router copies read that
+# key before planning past the audit. A plan without an audit step has nothing
+# to wait on, so the key is `null` there. The gate's own section 15e-4 drives the
+# object form on a live run; what is pinned here is the key, and the text each
+# reader carries.
+# ---------------------------------------------------------------------------
+SNAP_K="$WORK/skeleton-due.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_K"
+check "스냅숏이 audit_skeleton_due 키를 싣는다" "$(jq -r 'has("audit_skeleton_due")' "$SNAP_K")" "true"
+check "감사 단계 없는 계획의 audit_skeleton_due 는 null 이다" "$(jq -c '.audit_skeleton_due' "$SNAP_K")" "null"
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; f=${pair#*:}
+  for lit in \
+    '#### Routing a skeleton-grade audit to re-convergence' \
+    "and that the snapshot's \`audit_skeleton_due\` is \`null\`" \
+    '`audit_skeleton_due` not `null` → 「Routing a skeleton-grade audit to re-convergence」 below.' \
+    '{"step": "<audit step id>", "skeletal": <n>}' \
+    "--rationale '감사 골격급 재수렴'" \
+    '-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> 감사 골격급"' \
+    '`사유=골격급 재수렴 종단 술어 거짓`'; do
+    if grep -qF -- "$lit" "$f"; then
+      ok "$who 사본이 골격급 재수렴 리터럴을 싣는다: $lit"
+    else
+      bad "$who 사본의 골격급 재수렴 리터럴" "없다: $lit"
+    fi
+  done
+done
+for lit in \
+  '| `골격급-재수렴` | 10 |' \
+  '감사 골격급 <record>"' \
+  "Item 4's 'After it ends' names this same act for this shape; there is one act."; do
+  if grep -qF -- "$lit" "$RS_SKILL"; then
+    ok "교대 스킬이 골격급 재발 답의 갈래를 싣는다: $lit"
+  else
+    bad "교대 스킬의 골격급 재발 갈래" "없다: $lit"
+  fi
+done
+AU_SKILL="$repo_root/plugins/cc-cmds/skills/design-audit-unattended/SKILL.md"
+check "감사 스킬이 합성 요구를 사람 판단 보류로 적는다" \
+  "$(grep -cF '사유: 감사 합성 요구 — 사람 판단' "$AU_SKILL" || true)" "1"
+check "감사 스킬에 합성 요구에서 무조건 멈춘다는 문장이 없다" \
+  "$(grep -cF 'halts, unconditionally' "$AU_SKILL" || true)" "0"
+if grep -qF 'Step 7 / 골격급 재발' "$AU_SKILL"; then
+  ok "감사 스킬이 골격급 재발 멈춤의 스텝 문자열을 싣는다"
+else
+  bad "감사 스킬이 골격급 재발 멈춤의 스텝 문자열을 싣는다" "없다"
+fi
+
+# ---------------------------------------------------------------------------
 # 6f. The stall classifier — `stall-class.awk` and the `stalls` key
 #
 # Every ledger here is synthetic and written to its own file under $WORK; the

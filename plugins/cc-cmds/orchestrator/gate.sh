@@ -10197,8 +10197,10 @@ gate_run_scope_rows() {
   # gate_run_scope_rows <step id> <row kind> — every `stage-result` row of a
   # run-scope step in ledger order, in either writer's shape: the router's
   # (`세그먼트=- | 스테이지=<id> | 종류=<k>`) or the driver's, which names its stage
-  # `S2` (audit, no `종류`) or `S2split` (`종류=split`). The driver's names are read
-  # only when the plan's id has no row of its own.
+  # `S2` (audit: `종류=audit`, or no `종류` on a row written before the driver
+  # stamped it) or `S2split` (`종류=split`). Any other `종류` on an `S2` row is not
+  # an audit. The driver's names are read only when the plan's id has no row of
+  # its own.
   local id="$1" k="$2" rows
   rows=$( { gate_rows 'stage-result' || true; } \
           | { grep -F "세그먼트=- | 스테이지=$id | 종류=$k " || true; })
@@ -10207,7 +10209,7 @@ gate_run_scope_rows() {
       audit)
         rows=$( { gate_rows 'stage-result' || true; } \
                 | { grep -F '세그먼트=- | 스테이지=S2 |' || true; } \
-                | { grep -v -F '| 종류=' || true; }) ;;
+                | awk 'index($0, "| 종류=audit ") || !index($0, "| 종류=")') ;;
       split)
         rows=$( { gate_rows 'stage-result' || true; } \
                 | { grep -F '세그먼트=- | 스테이지=S2split |' || true; } \
@@ -10572,6 +10574,72 @@ gate_audit_result_rows_of() {
   gate_run_scope_rows "$1" audit
 }
 
+gate_audit_skeleton_count() {
+  # gate_audit_skeleton_count — the audit report fence's skeletal count
+  # (`골격급 수` plus `합성 요구 골격급 수`), or `미상` when the report carries
+  # no single fence.
+  local n
+  n=$(audit_skeleton_fence_skeletal)
+  printf '%s' "${n:-미상}"
+}
+
+gate_audit_concluded() {
+  # gate_audit_concluded <audit step id> — 0 when what the audit's key says last
+  # is an audit that ended `정상 완료` without asking for a re-convergence: the
+  # key's last row is an audit row (not a re-convergence on that key), its
+  # class is `정상 완료`, and its `재수렴 요청` is not `예`. 1 otherwise, with
+  # GATE_AUDIT_WAIT naming what the key waits for — `없음` (no audit row in this
+  # run), `재수렴` (a re-convergence came after the last audit, so a fresh audit
+  # comes next), `골격급` (the last audit asked for a re-convergence) or `부류`
+  # (the last audit ended another way) — and GATE_AUDIT_WHY the reason line.
+  # Every place that asks whether the audit has concluded asks here.
+  local astep="$1" arow al rl cls
+  GATE_AUDIT_WAIT=''; GATE_AUDIT_WHY=''
+  arow=$(gate_audit_result_rows_of "$astep" | tail -1)
+  if [ -z "$arow" ]; then
+    GATE_AUDIT_WAIT='없음'; GATE_AUDIT_WHY='이 런에 감사 행이 없습니다'
+    return 1
+  fi
+  al=$( { grep -n -F -x -- "$arow" "$LEDGER" 2>/dev/null || true; } | tail -1 | cut -d: -f1)
+  rl=$(audit_key_reconverge_rows "$astep" "$LEDGER" | tail -1 | cut -d: -f1)
+  if [ -n "$rl" ] && { [ -z "$al" ] || [ "$rl" -gt "$al" ]; }; then
+    GATE_AUDIT_WAIT='재수렴'; GATE_AUDIT_WHY='재수렴 뒤 새 감사를 기다립니다'
+    return 1
+  fi
+  cls=$(gate_row_field "$arow" '종단 부류')
+  if [ "$cls" != '정상 완료' ]; then
+    GATE_AUDIT_WAIT='부류'; GATE_AUDIT_WHY="마지막 결과가 ${cls:-미상} 입니다"
+    return 1
+  fi
+  if [ "$(gate_row_field "$arow" '재수렴 요청')" = '예' ]; then
+    GATE_AUDIT_WAIT='골격급'; GATE_AUDIT_WHY='골격급 재수렴을 기다립니다'
+    return 1
+  fi
+  return 0
+}
+
+gate_audit_skeleton_due_json() {
+  # gate_audit_skeleton_due_json — `{"step": "<audit step id>", "skeletal": <n>}`
+  # when the run-scope audit step waits on its skeletal re-convergence, `null`
+  # otherwise. `skeletal` is the last audit row's `골격급`.
+  local astep n
+  if astep=$(gate_run_scope_step audit 2>/dev/null) \
+     && ! gate_audit_concluded "$astep" && [ "$GATE_AUDIT_WAIT" = '골격급' ]; then
+    n=$(gate_row_field "$(gate_audit_result_rows_of "$astep" | tail -1)" '골격급')
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    jq -cn --arg s "$astep" --argjson k "$n" '{step: $s, skeletal: $k}'
+  else
+    printf 'null'
+  fi
+}
+
+gate_audit_wait_of() {
+  # gate_audit_wait_of <audit step id> — prints what `gate_audit_concluded`
+  # found the key waiting for, or nothing when the audit has concluded; for a
+  # caller in another process, which cannot read the variables.
+  gate_audit_concluded "$1" || printf '%s' "$GATE_AUDIT_WAIT"
+}
+
 gate_design_reconverge_after_audit() {
   # gate_design_reconverge_after_audit <audit step id> — 0 when the design
   # step's key carries a re-convergence on a later ledger line than the audit
@@ -10709,18 +10777,18 @@ gate_design_next_undispatched_step() {
   # `stage-result` row, else (no audit step, or an audit that ended `정상 완료`)
   # the plan's first implement step. Prints it and returns 0, or returns 1. The
   # caller asks only while no `segment` row exists, so an implement step named
-  # here has no segment yet. An audit that ended any other way names nothing.
-  # A design-key re-convergence after the audit's last row names the audit
-  # again: the document it audited has changed.
-  local astep arows alast istep
+  # here has no segment yet. An audit that has not concluded
+  # (`gate_audit_concluded`) names nothing — one waiting on its skeletal
+  # re-convergence included. A design-key re-convergence after the audit's last
+  # row names the audit again: the document it audited has changed.
+  local astep arows istep
   if astep=$(gate_run_scope_step audit); then
     arows=$(gate_audit_result_rows_of "$astep")
     if [ -z "$arows" ] || gate_design_reconverge_after_audit "$astep"; then
       printf '%s' "$astep"
       return 0
     fi
-    alast=$(gate_row_field "$(printf '%s\n' "$arows" | tail -1)" '종단 부류')
-    [ "$alast" = '정상 완료' ] || return 1
+    gate_audit_concluded "$astep" || return 1
   fi
   istep=$(manifest_plan_json 2>/dev/null \
             | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id // empty | select(. != "")][0] // empty' 2>/dev/null \
@@ -12161,10 +12229,17 @@ gate_from_declaration() {
 
   # THE AUDIT HAS ENDED. Planning reads the document the audit is still free to
   # edit, and both hold the same lock, so the order is the gate's to keep.
+  # An audit that ended `정상 완료` but asked for a skeletal re-convergence, or
+  # one a re-convergence on its key came after, has not concluded either.
   if astep=$(gate_run_scope_step audit); then
-    alast=$(gate_row_field "$(gate_audit_result_rows_of "$astep" | tail -1)" '종단 부류')
-    if [ "$alast" != "정상 완료" ]; then
-      warn "세그먼트 계획은 감사 단계($astep)의 마지막 결과가 정상 완료일 때만 씁니다 — 지금은 ${alast:-결과 행 없음} 입니다"
+    if ! gate_audit_concluded "$astep"; then
+      case "$GATE_AUDIT_WAIT" in
+        재수렴|골격급)
+          warn "세그먼트 계획은 감사 단계($astep)의 마지막 결과가 정상 완료일 때만 씁니다 — 감사 단계($astep)가 $GATE_AUDIT_WHY" ;;
+        *)
+          alast=$(gate_row_field "$(gate_audit_result_rows_of "$astep" | tail -1)" '종단 부류')
+          warn "세그먼트 계획은 감사 단계($astep)의 마지막 결과가 정상 완료일 때만 씁니다 — 지금은 ${alast:-결과 행 없음} 입니다" ;;
+      esac
       return "$GATE_EXIT_RULE"
     fi
     if gate_stage_live_attempt "$astep"; then
@@ -13963,6 +14038,11 @@ gate_snapshot() {
   printf '  "replan_due": [\n'
   gate_replan_due_json
   printf '  ],\n'
+  # THE AUDIT THAT ASKED FOR ITS SKELETAL RE-CONVERGENCE, or null. The same
+  # evaluation the segment plan, the split and condition 1 make
+  # (`gate_audit_concluded`), so a router that dispatches on it is acting on the
+  # gate's own answer. Outside the default projection and `H`; always emitted.
+  printf '  "audit_skeleton_due": %s,\n' "$(gate_audit_skeleton_due_json)"
   printf '  "cycles": [\n'
   gate_snapshot_cycles_json
   printf '  ],\n'
@@ -19400,7 +19480,7 @@ gate_carry_scope_ok() {
 # 「Handing on a person's answer to a halt」 in the routing shift's skill. The
 # skill maps each id to its item; `scripts/test-gate.sh` reads the ids from
 # this line and fails when the skill stops naming one.
-readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 설계-재수렴'
+readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 설계-재수렴 골격급-재수렴'
 
 gate_row_is_pre_session_death() {
   # gate_row_is_pre_session_death <stage-result row> — whether the row settles
@@ -19476,6 +19556,23 @@ gate_audit_reconverge_keyable() {
       ;;
   esac
   return 1
+}
+
+gate_audit_skeleton_reconverge_keyable() {
+  # gate_audit_skeleton_reconverge_keyable <audit step id> — whether the audit
+  # step's key waits on its skeletal re-convergence: no `segment` row, and the
+  # key's last `stage-result` row is an audit that ended `정상 완료` with
+  # `재수렴 요청=예`. GATE_AUDIT_RECONVERGE_LAST holds that last row. Kept apart
+  # from `gate_audit_reconverge_keyable`, which a halt answer's route shares:
+  # a skeletal re-convergence is not an answer to a halt.
+  local k="$1" last
+  GATE_AUDIT_RECONVERGE_LAST=''
+  [ -z "$(gate_segment_field "$k" '상태')" ] || return 1
+  last=$( { gate_stage_result_rows_of "$k" || true; } | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1)
+  GATE_AUDIT_RECONVERGE_LAST=$last
+  [ "$(gate_row_field "$last" '종류')" = "audit" ] \
+    && [ "$(gate_row_field "$last" '종단 부류')" = "정상 완료" ] \
+    && [ "$(gate_row_field "$last" '재수렴 요청')" = "예" ]
 }
 
 gate_implement_cycle_admissible() {
@@ -19567,6 +19664,15 @@ gate_halt_answer_route() {
         || why="감사 단계 $key 의 마지막 행이 의도된 park 로 끝난 감사가 아니어서(종류=$(gate_row_field "$GATE_AUDIT_RECONVERGE_LAST" '종류') · 종단 부류=$(gate_row_field "$GATE_AUDIT_RECONVERGE_LAST" '종단 부류')) 교대가 - reconverge 를 띄울 수 없습니다"
     elif gate_segment_terminal "$key"; then
       why=$terminal
+    fi
+  elif [ "$skill" = "design-audit-unattended" ] && [ "${step#Step 7 / 골격급 재발}" != "$step" ] \
+       && [ "$opt" = "재수렴" ]; then
+    # A re-audit that still found skeleton-grade items parks; a person's
+    # `재수렴` sends the document through one more re-convergence on the audit's
+    # key, admitted on the same test as the dispatch that carries it out.
+    id=골격급-재수렴
+    if ! gate_audit_reconverge_keyable "$key"; then
+      why="감사 단계 $key 의 마지막 행이 의도된 park 로 끝난 감사가 아니어서(종류=$(gate_row_field "$GATE_AUDIT_RECONVERGE_LAST" '종류') · 종단 부류=$(gate_row_field "$GATE_AUDIT_RECONVERGE_LAST" '종단 부류')) 교대가 - reconverge 를 띄울 수 없습니다"
     fi
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
        && [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ]; then
@@ -33479,6 +33585,22 @@ gate_verb_act() {
     if rs_astep=$(gate_run_scope_step audit); then
       gate_audit_reconverge_keyable "$rs_astep" "${GATE_RESUME:-}" && rs_aok=1
       rs_alast=$GATE_AUDIT_RECONVERGE_LAST
+      # AN AUDIT THAT ASKED FOR ITS SKELETAL RE-CONVERGENCE takes one too, and
+      # only with that scope: the prompt names the document and then exactly
+      # `감사 골격급`, optionally followed by the report it read. Once that
+      # re-convergence has a row the key's last row is a re-convergence, so a
+      # second one is refused until a fresh audit stands.
+      if [ -z "$rs_aok" ] && [ -z "${GATE_RESUME:-}" ] \
+         && gate_audit_skeleton_reconverge_keyable "$rs_astep"; then
+        local rs_sp rs_srest
+        rs_sp=$(gate_skill_prompt_of "$@")
+        rs_srest=${rs_sp#'/cc-cmds:design-reconverge '}
+        rs_srest=${rs_srest#* }
+        case "$rs_srest" in
+          '감사 골격급'|'감사 골격급 '*.md) rs_aok=1 ;;
+          *) warn "골격급 재수렴의 프롬프트는 /cc-cmds:design-reconverge <design_doc> 감사 골격급 이어야 합니다 — 지금 범위는 「${rs_srest}」 입니다" ;;
+        esac
+      fi
     fi
     if rs_dstep=$(gate_run_scope_step design) \
        && [ -z "$(gate_segment_field "$rs_dstep" '상태')" ]; then
@@ -33497,7 +33619,7 @@ gate_verb_act() {
     elif [ -n "$rs_dok" ]; then
       rs_table=design
     else
-      warn "- reconverge 는 감사 단계(${rs_astep:-없음})의 마지막 행이 의도된 park 로 끝난 감사이거나, --resume 이 그 마지막 재수렴 행의 세션일 때만 받습니다 — 지금 마지막 행은 종류=$(gate_row_field "$rs_alast" '종류') · 종단 부류=$(gate_row_field "$rs_alast" '종단 부류') 입니다"
+      warn "- reconverge 는 감사 단계(${rs_astep:-없음})의 마지막 행이 의도된 park 로 끝난 감사이거나, 재수렴 요청=예 로 정상 완료된 감사에 범위 감사 골격급 을 실었거나, --resume 이 그 마지막 재수렴 행의 세션일 때만 받습니다 — 지금 마지막 행은 종류=$(gate_row_field "$rs_alast" '종류') · 종단 부류=$(gate_row_field "$rs_alast" '종단 부류') 입니다"
       [ -z "$rs_dwhy" ] || warn "설계 단계의 잔여 동결 재검토로도 받지 않습니다 — $rs_dwhy"
     fi
   fi
@@ -33753,6 +33875,14 @@ gate_verb_act() {
       rs_last=$(gate_run_scope_last_row "$rs_dep" "$rs_dk")
       if [ "$(gate_row_field "$rs_last" '종단 부류')" != '정상 완료' ]; then
         warn "${rs_kind} 단계 ${stage_key} 의 선행 ${rs_dep} 가 아직 정상 완료로 끝나지 않았습니다 (마지막 행 종단 부류=$(gate_row_field "$rs_last" '종단 부류'))"
+        warn "선행이 정상 완료로 끝난 뒤에 다시 디스패치하세요"
+        exit "$GATE_EXIT_RULE"
+      fi
+      # An audit predecessor has ended only when it has concluded: one that
+      # asked for a skeletal re-convergence, or one a re-convergence came after,
+      # still has an audit to run.
+      if [ "$rs_dk" = "audit" ] && ! gate_audit_concluded "$rs_dep"; then
+        warn "${rs_kind} 단계 ${stage_key} 의 선행 ${rs_dep} 가 아직 정상 완료로 끝나지 않았습니다 — 감사 단계(${rs_dep})가 $GATE_AUDIT_WHY"
         warn "선행이 정상 완료로 끝난 뒤에 다시 디스패치하세요"
         exit "$GATE_EXIT_RULE"
       fi
@@ -38519,6 +38649,14 @@ gate_verb_supervise_stage() {
     fi
     [ -z "$rcfg" ] || reattach_org_note "$seg" "$rcfg" "$resume"
   fi
+  # THE AUDIT'S PASS MARKER, on an audit stage only: `reaudit` once the audit's
+  # key has had a re-convergence in this run, `first` otherwise. The audit
+  # writes it into its report fence and never counts passes itself. A fresh
+  # dispatch and a `--resume` launch here alike, so both carry it.
+  if [ "$kind" = "audit" ]; then
+    local -x CC_PIPELINE_AUDIT_PASS
+    CC_PIPELINE_AUDIT_PASS=$(audit_pass_of "$seg")
+  fi
   # THE ANSWER CARD, when the dispatch wrote one for this attempt. Its path
   # follows from `seg#attempt`, so the launch token carries nothing new; an
   # attempt with no card gets no variable, whatever this process inherited.
@@ -39763,6 +39901,12 @@ gate_record_stage_outcome() {
   elif [ "$kind" = "split" ] \
        && ! { grep -qF "$LIT_SPLIT_TERMINAL" "$out" 2>/dev/null && split_registry_complete "${DOC:-}"; }; then
     klass='공허한 성공'
+  # An audit stage is asked for its artifact by the driver's predicate: the
+  # terminal phrase, a reader report, and exactly one skeletal-grade fence in
+  # the audit report. Without the fence nobody can say whether the document
+  # still needs a re-convergence, so the audit has not produced what it owes.
+  elif [ "$kind" = "audit" ] && ! audit_artifact_complete "$out"; then
+    klass='공허한 성공'
   # AN IMPLEMENT PROCESS B is asked for its own residual result lines. Its rows
   # prove it acted, not that it wrote the W1 flip or the W2 note of every
   # `### R<n>` that is its share — and nothing else reads those lines before the
@@ -39900,6 +40044,16 @@ gate_record_stage_outcome() {
   # `재수렴 판정`, on a re-convergence's row only — the field a sibling's re-plan
   # cites and `replan_due[]` reads, so no router reads the verdict off a stream.
   [ "$kind" != "reconverge" ] || rv=$(gate_reconverge_verdict "$out")
+  # `골격급` and `재수렴 요청`, on an audit's row only. The count is the audit
+  # report fence's, `미상` without a single fence. The request is `예` when an
+  # audit that ended `정상 완료` counted at least one skeleton-grade item and
+  # its key has had no re-convergence in this run yet — a re-audit reports what
+  # remains and parks itself instead of asking again.
+  local sk="" rq=""
+  if [ "$kind" = "audit" ]; then
+    sk=$(gate_audit_skeleton_count)
+    rq=$(audit_row_request "$sk" "$klass" "$seg")
+  fi
   # The re-attachment's measured fields, when the dispatch left a base record.
   # They sit before `종단 부류` and after `세션 id`, the order the router's
   # cut count reads a row in.
@@ -39918,7 +40072,8 @@ gate_record_stage_outcome() {
       "effort=$effort" "서빙 모델=$served" \
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
-      "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
+      "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
@@ -39929,7 +40084,8 @@ gate_record_stage_outcome() {
       "effort=$effort" "서빙 모델=$served" \
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
-      ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
+      "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}
   fi
   # A re-convergence row voids the segment's plan; the file goes too, or the
@@ -40938,6 +41094,10 @@ gate_audit_first_unmet() {
       return 0 ;;
   esac
   alast=$(gate_row_field "$(printf '%s\n' "$arows" | tail -1)" '종단 부류')
+  if [ "$alast" = '정상 완료' ] && ! gate_audit_concluded "$astep" && [ "$GATE_AUDIT_WAIT" = '골격급' ]; then
+    printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 골격급 재수렴을 기다립니다\n' "$astep"
+    return 0
+  fi
   if [ "$alast" = '정상 완료' ]; then
     istep=$(manifest_plan_json 2>/dev/null \
               | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id // empty | select(. != "")][0] // empty' 2>/dev/null \
@@ -41070,16 +41230,19 @@ gate_done_conditions() {
   #
   # AND A PLAN THAT ENDS AT THE DESIGN HAS NO STEP TO NAME. When every step of
   # the plan is the design or its audit (`gate_plan_ends_at_design`), a design
-  # that ended `정상 완료` — with its audit, when the plan has one, ended
-  # `정상 완료` too — is the run's work done, provided the document is still
-  # frozen when this reads it. The condition then holds and prints nothing, as
-  # the audit-first arm does, and condition 10 measures the clauses the person
-  # authorized. Read as `종단 행 있음`, the run closed as invalidated with every
-  # clause settled satisfied. A document no longer frozen prints the dropped
-  # line with its own reason; a re-convergence on the audit's key that came
-  # after its last audit row waits on a fresh audit, with the audit-first arm's
-  # line; an audit that ended any other way keeps `종단 행 있음`.
-  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep dwait dmet alastrow
+  # that ended `정상 완료` — with its audit, when the plan has one, concluded
+  # (`gate_audit_concluded`) — is the run's work done, provided the document is
+  # still frozen when this reads it. The condition then holds and prints
+  # nothing, as the audit-first arm does, and condition 10 measures the clauses
+  # the person authorized. Read as `종단 행 있음`, the run closed as invalidated
+  # with every clause settled satisfied. A document no longer frozen prints the
+  # dropped line with its own reason; an audit that ended any other way keeps
+  # `종단 행 있음`.
+  #
+  # AN AUDIT WAITING ON ITS SKELETAL RE-CONVERGENCE, OR ON THE FRESH AUDIT AFTER
+  # A RE-CONVERGENCE ON ITS KEY, waits whatever follows it in the plan: the line
+  # is the audit-first arm's, which the disposition does not drop.
+  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep dwait dmet
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
     dwhy=""; dnext=""; dwait=""; dmet=""
@@ -41119,21 +41282,26 @@ gate_done_conditions() {
         dwhy='종단 행 있음'
         if [ "$dlast" = '정상 완료' ]; then
           dnext=$(gate_design_next_undispatched_step) || dnext=""
+          # An audit waiting on its skeletal re-convergence, or on the fresh
+          # audit after one, is the run's next work whatever follows the audit
+          # in the plan: the line names the wait, as the audit-first arm does,
+          # and is not a head the disposition drops.
           if [ -z "$dnext" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+             && astep=$(gate_run_scope_step audit) \
+             && ! gate_audit_concluded "$astep"; then
+            case "$GATE_AUDIT_WAIT" in
+              골격급|재수렴)
+                dwait=$(printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 %s' "$astep" "$GATE_AUDIT_WHY")
+                dwhy="" ;;
+            esac
+          fi
+          if [ -z "$dnext" ] && [ -z "$dwait" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
              && gate_plan_ends_at_design; then
             if astep=$(gate_run_scope_step audit); then
-              alastrow=$( { gate_stage_result_rows_of "$astep" || true; } \
-                          | { grep -F -- '- `stage-result`' || true; } | tail -1)
-              case "$alastrow" in
-                *'| 종류=reconverge '*)
-                  dwait=$(printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 재수렴 뒤 새 감사를 기다립니다' "$astep")
-                  dwhy="" ;;
-                *)
-                  if [ "$(gate_row_field "$(gate_audit_result_rows_of "$astep" | tail -1)" '종단 부류')" = '정상 완료' ]; then
-                    if doc_is_frozen "${DOC:-}"; then dwhy=""; dmet=1
-                    else dwhy='설계 문서가 동결돼 있지 않음'; fi
-                  fi ;;
-              esac
+              if gate_audit_concluded "$astep"; then
+                if doc_is_frozen "${DOC:-}"; then dwhy=""; dmet=1
+                else dwhy='설계 문서가 동결돼 있지 않음'; fi
+              fi
             elif doc_is_frozen "${DOC:-}"; then
               dwhy=""; dmet=1
             else

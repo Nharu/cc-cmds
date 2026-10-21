@@ -881,6 +881,22 @@ check "6: 해시가 다르면 A1 이 남는다" "$(col "$out" 감사)" "남음"
 check "6: 남은 A1 의 depends_on 은 비어 있다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "남음" && $2 == "A1" { print $4 }')" "-"
 check "6: 판정할 수 없어 남긴 것은 바뀜이 아니다" "$(col "$out" 그래프)" "순수"
 
+# An audit that asked for its skeletal re-convergence has not concluded, even
+# over the same document bytes; a fresh audit after that re-convergence has.
+P_KAT='2026-10-01T00:00:00Z' mk_prev RKGS; fx_done
+fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "골격급=2" "재수렴 요청=예" "종단 부류=정상 완료"
+out=$(rk graph --prev RKGS --base "$BASE")
+check "6: 재수렴 요청=예 로 끝난 감사는 해시가 같아도 A1 이 남는다" "$(col "$out" 감사)" "남음"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=reconverge" "종단 부류=정상 완료"
+out=$(rk graph --prev RKGS --base "$BASE")
+check "6: 골격급 재수렴 뒤 새 감사가 없으면 A1 이 남는다" "$(col "$out" 감사)" "남음"
+fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "골격급=1" "재수렴 요청=아니오" "종단 부류=정상 완료"
+out=$(rk graph --prev RKGS --base "$BASE")
+check "6: 재수렴 뒤 재감사가 정상 완료하면 A1 이 빠진다" "$(col "$out" 감사)" "뺌"
+
 P_PLAN="$PLANBASE" mk_prev RKGB; fx_done
 fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
 fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
