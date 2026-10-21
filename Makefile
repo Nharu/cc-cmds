@@ -280,31 +280,13 @@ run-check-gate-selftest:
 	[ -e "$$t/ran" ] || fail "경우 H: 무인 런에서 지명한 스위트 명령이 돌지 않았다"; \
 	echo "run-check-gate-selftest: 여덟 경우 통과"
 
-# The source half of the stage-policy drift check: does the policy the gate
-# injects into unattended stages still say what the user-scope CLAUDE.md and
-# the workspace instruction file say? Deliberately NOT part of `lint` — those
-# sources are a person's global files, and editing them must not turn an
-# unrelated unattended stage's `make check` red. Run by hand, at autopilot
-# kickoff, and logged at run open. `--explain` puts the diff of each changed
-# item under its finding, which is what a person needs to judge an `--ack`.
-# Every `CLAUDE.md` above this repository that a `workspace` anchor identifies
-# is checked again with `--workspace`: without a host map line the gate leaves
-# such a file out of a stage only while every section of it still matches, and
-# that form is the one that compares the bodies of its `excluded:*` rows.
+# What the next run's stages will read as `# Personal rules`: the counts and
+# bytes per tag of the user-scope CLAUDE.md, its untagged and malformed bullets,
+# the host map and the next steps. Deliberately NOT part of `lint` — the source
+# is a person's global file, and editing it must not turn an unrelated
+# unattended stage's `make check` red. Run by hand and at autopilot kickoff.
 policy-drift:
-	@rc=0; bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh --explain || rc=$$?; \
-	d=$$(cd .. && pwd -P); \
-	while :; do \
-	  f="$$d/CLAUDE.md"; \
-	  if [ -f "$$f" ] && awk -F'\t' 'FNR == NR { if (FNR > 1 && $$1 == "workspace") a[$$2] = 1; next } ($$0 in a) { f = 1; exit } END { exit !f }' \
-	       plugins/cc-cmds/orchestrator/stage-policy.sources.tsv "$$f"; then \
-	    echo "workspace $$f"; \
-	    bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh --explain --workspace "$$f" || rc=$$?; \
-	  fi; \
-	  [ "$$d" != / ] || break; \
-	  d=$$(dirname "$$d"); \
-	done; \
-	exit $$rc
+	@bash plugins/cc-cmds/orchestrator/stage-rules.sh status
 
 # Each suite is a LIST of scripts rather than a block of recipe lines, so that
 # the scripts become prerequisites and `make -j` can run them at once. As recipe
@@ -385,7 +367,8 @@ ORCH_TESTS := \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
 	scripts/test-notify-focus.sh \
-	scripts/test-stage-policy-edit-hook.sh \
+	scripts/test-stage-rules-edit-hook.sh \
+	scripts/test-stage-rules.sh \
 	scripts/test-watch.sh \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \

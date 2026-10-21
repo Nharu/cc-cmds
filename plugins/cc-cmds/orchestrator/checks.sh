@@ -189,29 +189,59 @@ row_field() {
 }
 
 # ---------------------------------------------------------------------------
-# The memory table: `<PR>\t<head sha>\t<상태>`, one pair per line, last wins.
+# The memory table: `<PR>\t<head sha>\t<재실행 회차>\t<state>`, one key per
+# line, last wins. The state is `<상태>/<1 when checks are still running, else 0>`.
 #
 # WHY TRANSITIONS ARE JUDGED HERE AND NOT IN THE DRAIN. A transition is a
 # property of two CONSECUTIVE observations, and the drain does not observe — it
 # runs on gate acts, which are rare and irregular. Judging there would mean a
-# reverse scan of the whole ledger for the last row of this `(PR, head sha)` on
-# every act path. The loop already holds the previous state in memory, so here it
-# is O(1). Writing every poll instead would leave forty identical `대기` rows for
-# one forty-minute wait, which is the churn the design's exclusion list names.
+# reverse scan of the whole ledger for the last row of this key on every act
+# path. The loop already holds the previous state in memory, so here it is O(1).
+# Writing every poll instead would leave forty identical `대기` rows for one
+# forty-minute wait, which is the churn the design's exclusion list names.
+#
+# THE ROUND IS PART OF THE KEY, AND IT IS READ FROM THE LEDGER EVERY PASS. The
+# table is seeded once at startup, so a `실패` after a rerun is the same `(PR,
+# sha)` state as the `실패` before it and was never written: the re-failure that
+# sends a segment back to implementation stayed invisible. The rerun round of a
+# `(segment, sha)` comes from `cc_ci_round`, and it rises only once a rerun was
+# ACCEPTED — so the pass between the gate's `요청` row and its `수락` row still
+# keys the earlier round and writes nothing new for the unchanged old failure. A
+# new round's key is made by the pass that first reads the risen round, and it
+# inherits no `prev` from the round before it: its first observation is always
+# a line. `진행 중` is in the state because `gh pr checks` ends in failure when a
+# failed check and a pending one are mixed, so `실패` with checks still running
+# and the settled `실패` that follows it are two states.
 # ---------------------------------------------------------------------------
 STATE_TBL=""
 SEEDED=0
 
+tbl_key_re() {
+  printf '%s' "$1" | sed 's/[][\.*^$\/&]/\\&/g'
+}
+
 tbl_get() {
-  # tbl_get <pr> <sha> — the last recorded state for that pair, or empty.
-  printf '%s' "$STATE_TBL" | sed -n "s/^$(printf '%s' "$1" | sed 's/[][\.*^$\/&]/\\&/g')$TAB$(printf '%s' "$2" | sed 's/[][\.*^$\/&]/\\&/g')$TAB//p" | tail -1
+  # tbl_get <pr> <sha> <g> — the last recorded state for that key, or empty.
+  printf '%s' "$STATE_TBL" | sed -n "s/^$(tbl_key_re "$1")$TAB$(tbl_key_re "$2")$TAB$(tbl_key_re "$3")$TAB//p" | tail -1
 }
 
 tbl_put() {
-  # tbl_put <pr> <sha> <state> — append; `tbl_get` takes the last line, so an
+  # tbl_put <pr> <sha> <g> <state> — append; `tbl_get` takes the last line, so an
   # append is an update and the table never has to be rewritten.
-  STATE_TBL="${STATE_TBL}$1$TAB$2$TAB$3
+  STATE_TBL="${STATE_TBL}$1$TAB$2$TAB$3$TAB$4
 "
+}
+
+tbl_state() {
+  # tbl_state <상태> <진행 중> — the transition value of one observation.
+  case "$2" in
+    ''|*[!0-9]*|0) printf '%s/0' "$1" ;;
+    *) printf '%s/1' "$1" ;;
+  esac
+}
+
+num_or_zero() {
+  case "$1" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac
 }
 
 seed_table() {
@@ -234,7 +264,10 @@ seed_table() {
   # being lost — the gate's own sweep of those files is what does that, and it
   # has to, because seeding here is precisely what stops this poller from
   # re-emitting them.
-  local row f line ts seg pr sha st req fail
+  #
+  # A ROW OR LINE WITHOUT THE ROUND COLUMNS seeds round 0 with nothing running:
+  # it was written before the round existed, and round 0 is what it observed.
+  local row f line ts seg pr sha st req fail g pend
   [ "$SEEDED" = "0" ] || return 0
   SEEDED=1
   while IFS= read -r row; do
@@ -243,8 +276,10 @@ seed_table() {
     pr=$(row_field "$row" 'PR')
     sha=$(row_field "$row" 'head sha')
     st=$(row_field "$row" '상태')
+    g=$(num_or_zero "$(row_field "$row" '재실행 회차')")
+    pend=$(num_or_zero "$(row_field "$row" '진행 중')")
     [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || continue
-    tbl_put "$pr" "$sha" "$st"
+    tbl_put "$pr" "$sha" "$g" "$(tbl_state "$st" "$pend")"
   done <<EOF
 $( { grep '^- `checks`' "$LEDGER" 2>/dev/null || true; } )
 EOF
@@ -253,9 +288,20 @@ EOF
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ -f "$f" ] || continue
-    while IFS="$TAB" read -r ts seg pr sha st req fail; do
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      g=0; pend=0
+      if [ "$(printf '%s' "$line" | awk -F'\t' '{ print (NF >= 9 && $6 ~ /^[0-9]+$/ && $7 ~ /^[0-9]+$/) ? 1 : 0 }')" = "1" ]; then
+        IFS="$TAB" read -r ts seg pr sha st g pend req fail <<LINE
+$line
+LINE
+      else
+        IFS="$TAB" read -r ts seg pr sha st req fail <<LINE
+$line
+LINE
+      fi
       [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || continue
-      tbl_put "$pr" "$sha" "$st"
+      tbl_put "$pr" "$sha" "$g" "$(tbl_state "$st" "$pend")"
     done < "$f"
   done <<EOF
 $( { ls -tr "$RUN_DIR"/checks.observed.draining.* 2>/dev/null || true; } )
@@ -353,24 +399,31 @@ no_checks_reply() {
 }
 
 poll_status() {
-  # poll_status <slug> <pr-number> — prints `<상태>\t<실패 체크>`.
-  local slug="$1" n="$2" out err rc fails
+  # poll_status <slug> <pr-number> — prints `<상태>\t<진행 중>\t<실패 체크>`.
+  #
+  # `진행 중` IS COUNTED ONLY ON THE FAILURE ANSWER. `gh pr checks` ends in
+  # failure as soon as one check failed, whatever else is still pending, so a
+  # quickly failing shard beside running ones answers rc=1 like a settled
+  # failure. The `pending` rows of that same output are what tell the two apart;
+  # every other answer carries 0.
+  local slug="$1" n="$2" out err rc fails pend
   err=$(mktemp)
   out=$(gh -R "$slug" pr checks "$n" 2>"$err"); rc=$?
   case "$rc" in
-    0) printf '통과\t-'; rm -f "$err"; return 0 ;;
-    8) printf '대기\t-'; rm -f "$err"; return 0 ;;
+    0) printf '통과\t0\t-'; rm -f "$err"; return 0 ;;
+    8) printf '대기\t0\t-'; rm -f "$err"; return 0 ;;
   esac
   if [ "$rc" = "1" ]; then
     fails=$(printf '%s' "$out" | awk -F'\t' '$2 == "fail" { printf "%s%s", sep, $1; sep = ", " }')
     if [ -n "$fails" ]; then
-      printf '실패\t%s' "$fails"; rm -f "$err"; return 0
+      pend=$(printf '%s\n' "$out" | awk -F'\t' '$2 == "pending" { c++ } END { print c + 0 }')
+      printf '실패\t%s\t%s' "${pend:-0}" "$fails"; rm -f "$err"; return 0
     fi
     if no_checks_reply "$(cat "$err" 2>/dev/null || true)"; then
-      printf '미등록\t-'; rm -f "$err"; return 0
+      printf '미등록\t0\t-'; rm -f "$err"; return 0
     fi
   fi
-  printf '판정 불가\t-'
+  printf '판정 불가\t0\t-'
   rm -f "$err"
   return 0
 }
@@ -402,7 +455,7 @@ poll_required() {
 }
 
 pass_once() {
-  local seg row st wt branch slug listed n sha status fails req prev line
+  local seg row st wt branch slug listed n sha status fails req prev line g pend cur
   # The poller's own pid, so a person can tell a live poller from a finished
   # run's. NO `.start`/`.pgid` SIBLING IS WRITTEN, and that is what exempts this
   # file from the live-stage census structurally — that predicate requires the
@@ -444,13 +497,22 @@ pass_once() {
       *) sha="미상" ;;
     esac
 
+    # The round is read again on every pass, and BEFORE the checks: the gate
+    # writes the `수락` row at any moment, so the first observation under a new
+    # key must be a `gh pr checks` answer asked after that row was read. Read
+    # the other way round, a pass straddling the row files the screen from
+    # before the rerun — its `실패` — as round g's first line.
+    g=$(num_or_zero "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$sha")" g)")
     line=$(poll_status "$slug" "$n")
     status=${line%%"$TAB"*}
+    line=${line#*"$TAB"}
+    pend=$(num_or_zero "${line%%"$TAB"*}")
     fails=${line#*"$TAB"}
     req=$(poll_required "$slug" "$n")
 
-    prev=$(tbl_get "$slug#$n" "$sha")
-    [ "$prev" = "$status" ] && continue
+    cur=$(tbl_state "$status" "$pend")
+    prev=$(tbl_get "$slug#$n" "$sha" "$g")
+    [ "$prev" = "$cur" ] && continue
     # A `실패` IS COMMITTED ONLY WITH A SETTLED `필수 집합`. The two columns come
     # from two different `gh` calls, and the transition key is `상태` alone — so a
     # `실패` whose second call broke once was written as `필수 집합=판정 불가`,
@@ -475,12 +537,13 @@ pass_once() {
       printf 'checks: %s 의 필수 집합 조회가 깨져 실패 전이를 다음 패스로 미룹니다\n' "$slug#$n" >&2
       continue
     fi
-    tbl_put "$slug#$n" "$sha" "$status"
+    tbl_put "$slug#$n" "$sha" "$g" "$cur"
     # ONE LINE, ONE `>>`. The free-text columns go last and the longer of the two
     # goes last of all, because `read -r a b c` piles every remaining tab into
-    # the final variable — the same property `stall` relies on.
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(now_iso)" "${seg:--}" "$slug#$n" "$sha" "$status" \
+    # the final variable — the same property `stall` relies on. The two number
+    # columns sit before them for the same reason.
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(now_iso)" "${seg:--}" "$slug#$n" "$sha" "$status" "$g" "$pend" \
       "$(field_safe "$req" "$REQ_MAX")" "$(field_safe "$fails" "$FAIL_MAX")" >> "$OBSERVED"
   done
   return 0
