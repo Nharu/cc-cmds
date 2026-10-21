@@ -38846,6 +38846,16 @@ for lsr93_r in inventory-corrupt lent-seat-unrouted own-lease-corrupt; do
     *) bad "93 설정 park 행 $lsr93_r" "$(grep '^- `blocked` ' "$lsr_root/t16-$lsr93_r/ledger.md")" ;;
   esac
 done
+# 같은 exit 16 이라도 이월 행 없는 park 는 답을 열어 둔다 — 교대와 좌석은 운반 act 의 16 을
+# 스냅숏의 이 state 로 가르므로, 이월 행을 쓴 16 의 대조와 함께 잰다.
+lsr93_ahs() {  # lsr93_ahs <이름> — 그 원장 스냅숏의 answered_halts 「세그먼트:state」
+  lsr93_in "$lsr_root/$1/ledger.md" eval 'printf "[%s]" "$(gate_answered_halts_json)"' 2>/dev/null \
+    | jq -r '[.[] | "\(.segment):\(.state)"] | join(",")'
+}
+check "93: 이월 행을 쓴 16 뒤의 답은 스냅숏에서 이월 이다" "$(lsr93_ahs t12)" "S9:이월"
+for lsr93_r in t15 t16-inventory-corrupt t16-own-lease-corrupt; do
+  check "93: 이월 행 없는 16($lsr93_r) 뒤의 답은 스냅숏에서 열림 이다" "$(lsr93_ahs "$lsr93_r")" "S9:열림"
+done
 
 # 실측 1·2 — 묶인 계정 u1 의 주간 창이 마감 뒤에 열리고 다른 계정에 여유가 있는
 # 배치를 사본의 실제 라우터에 묻는다. 설계 문서의 재현과 같은 상수다.

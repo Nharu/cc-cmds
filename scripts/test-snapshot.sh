@@ -2638,8 +2638,32 @@ check "교대 계약: 좌석 실행 답 갈래가 운반 act 로 넘기는 문�
   "$(awk '/When the step begins with `Step 3 잔여 검증 좌석 실행`/{a=NR} /Every other `재부착` answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_SKILL")" 예
 check "사이드카: 좌석 실행 정지는 사람이 답해도 --resume 으로 재부착한다" \
   "$(has "$AU_ANS" "whether the seat ran the record or a person answered it: the carry act refuses an answer to it on its step alone")" 예
-check "교대 계약: 운반 act 의 16 은 이월이고 종료 행이 있으면 종단" \
-  "$(has "$RS_SKILL" "end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
+check "교대 계약: 운반 act 의 16 은 답이 이월일 때 이월이고 종료 행이 있으면 종단" \
+  "$(has "$RS_SKILL" "\`이월\`: when the run has no run-scope end row, end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
+# 게이트는 이월 행 없이도 운반 act 를 16 으로 돌려준다 — 설정 park, stage-wait 행 기록 거부,
+# 마감 아닌 새 PARK, 정체 임계를 못 읽는 대기. 그래서 세 사본 모두 16 을 답의 state 로 가른다.
+check "교대 계약: 운반 act 의 16 은 답이 열림이면 이월 행 없는 park 이고 중단으로 끝낸다" \
+  "$(has "$RS_SKILL" "\`열림\`: dispatch nothing on the key and do not carry the answer again in this run; end with \`handoff 사유=중단\` once nothing else is dispatchable, naming the record and the park row's \`사유\` in \`막힌 지점\`")" 예
+check "교대 계약: 열림 답의 중단 인계는 재질문 가드에 걸리지 않는다" \
+  "$(has "$RS_SKILL" "do not refuse it, because this answer is \`열림\`, not carried over")" 예
+check "교대 계약: 종료 코드 표의 16 행도 운반 act 의 16 을 답의 state 로 가른다" \
+  "$(has "$RS_SKILL" "**A \`16\` from a carry act (\`--carry-answer\`) is told apart by the answer's state**: read the snapshot again and take the \`answered_halts[]\` element by its \`line\`.")" 예
+check "좌석 사본: 운반 act 의 16 을 답의 state 로 가른다" \
+  "$(has "$SEAT_REF" "**A 16 from a carry act (\`--carry-answer\`) is told apart by the answer's state** in the snapshot's \`answered_halts[]\`.")" 예
+check "좌석 사본: 열림 답의 16 은 이월 행 없는 park 이다" \
+  "$(has "$SEAT_REF" "\`state\` \`열림\` → it is that park: the gate wrote no \`이월\` row")" 예
+# 운반 상한(18)에 걸린 기록은 답이 있어 좌석의 질문 목록에 들지 않고, 다시 물어 받은 새 답도
+# 같은 런에서는 다시 18 이다 — 사람에게 상한을 알리는 것은 이 문단뿐이다.
+check "좌석 사본: 18 행은 상한을 묻지 않고 알린다" \
+  "$(has "$SEAT_REF" "do not carry that answer again; the seat neither asks the record again nor answers it with the seat, and tells the person of the cap")" 예
+check "좌석 사본: 운반 상한은 사람에게 알리고 묻지 않는다" \
+  "$(has "$SEAT_REF" "**A carry the gate capped is told to the person, not asked.**")" 예
+check "좌석 사본: 상한 고지는 두 상한 사유로 행을 고른다" \
+  "$(has "$SEAT_REF" "whose \`사유\` begins \`중단 답 라우팅 — 세션 전에 세 번 죽었다\` or \`중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\`")" 예
+check "좌석 사본: 상한 고지는 새 답도 같은 상한에 걸린다고 말한다" \
+  "$(has "$SEAT_REF" "asking again and taking a new answer meets the same cap")" 예
+check "좌석 사본: 상한 사유는 게이트가 쓰는 두 문면과 같다" \
+  "$(has "$GATE" "\"중단 답 라우팅 — 세션 전에 세 번 죽었다\"")/$(has "$GATE" "\"중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\"")" "예/예"
 # 마감 뒤의 이월 인계는 그 act 에서 런을 끝낼 때만 받아지고, 받아지지 않으면 교대가 붙드는 것을
 # 이름 짓는 사유로 인계한다 — 그 갈래를 싣는 것은 이 문장뿐이다.
 check "교대 계약: 마감 뒤 이월은 끝맺을 때만 받고 그 act 에서 끝낸다" \
