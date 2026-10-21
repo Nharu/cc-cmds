@@ -3584,6 +3584,61 @@ SAPEOF
     esac
     check "$1 — 원격 베이스가 그대로다" "$(sp_rbase)" "$3"
   }
+
+  # The CI-check sections (60, 60b) share these. Section 60 measures the
+  # transcription and the merge refusals with them, and 60b drains its rerun
+  # observations and forecasts its merges through the same two.
+  ck60_drain() {
+    # 관측을 행으로 만드는 유일한 길 — 값싼 act 하나. 전사는 `snapshot` 이 아니라
+    # act 경로에서 일어난다(원장을 쓰는 것은 이 동사뿐이다).
+    sag act --manifest "$SA_MANIFEST" --kind x --target main --segment CK --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 관측 전사" -- true
+  }
+  ck60_line() {
+    # ck60_line <상태> <필수 집합> <head sha> <실패 체크> — 폴러가 쓰는 모양의 관측 한 줄.
+    # 일곱 열, 탭 구분, 순서는 `관측·세그먼트·PR·head sha·상태·필수 집합·실패 체크`.
+    mkdir -p "$SA_RUN"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      '2026-09-01T00:00:00Z' CK "t/$SA_ID#1" "$3" "$1" "$2" "$4" >> "$SA_RUN/checks.observed"
+  }
+  ck60_obs() { ck60_line "$@"; ck60_drain; }
+  ck60_plan() {
+    # 같은 머지를 `plan` 으로. 예보는 아무것도 쓰지 않으므로 아홉 갈래를 한 픽스처
+    # 위에서 차례로 태울 수 있고, 갈래마다 원격을 실제로 움직이지 않는다.
+    sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment CK \
+        --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+        -- git push origin "$SA_SEGBR:$SA_BASE"
+  }
+  ck60_pd() {
+    # 진전 해시. `SAH` 의 H 와는 다른 값이고, 경계(B1)가 보는 것이 이쪽이다.
+    ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" --render 2>/dev/null ) \
+      | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'
+  }
+  ck60_checks() { { grep -cF '`checks`' "$SA_LEDGER" || true; }; }
+  ck60_bytes() {
+    # 관측 파일에 남은 바이트. 전사는 파일을 비우는 것이 아니라 옆으로 옮겨 지우므로,
+    # 「비었다」와 「없다」가 같은 답이어야 한다.
+    if [ -f "$SA_RUN/checks.observed" ]; then wc -c < "$SA_RUN/checks.observed" | tr -d ' '; else printf 0; fi
+  }
+  ck60_new() {
+    # ck60_new <리뷰 정책> — 그 정책 하나를 위한 픽스처. 상한은 어휘의 가장 느슨한
+    # 값으로 두어 세 정책이 전부 선언 가능하게 하고, 룰은 켠 채로 둔다 — 끄면 아래
+    # 아홉 갈래가 전부 「룰이 검사하지 않아서 통과」와 구별되지 않는다.
+    sa_new "CI 체크 ($1)" 리뷰없음
+    CK60_SHA=$(sa_commit '작업')
+    sa_seg_row CK "$1"
+    # `선리뷰후머지` 만 머지 앞에 기록을 요구한다. 없으면 머지가 룰 루프에서 먼저
+    # 거절되고, 그 거절은 이 절이 재려는 CI 거절과 구별되지 않는다.
+    if [ "$1" = "선리뷰후머지" ]; then
+      sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
+          --snapshot-digest "$(SAH)" --rationale x \
+          -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$CK60_SHA" "리포트 경로=$(sa_canon CK "$FXREPORT")"
+      {
+        printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n'
+        printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S5 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-rev | 부모=router-1 | 종단 부류=정상 완료\n'
+      } >> "$SA_LEDGER"
+    fi
+  }
 }
 
 # `review` — the head of section 37: the `SH_*` run derived from the clean
@@ -36929,58 +36984,6 @@ rm -f "$S70_GRANT" "$S70_LEDGER" "$WORK_ROOT/docs/reviews/seg-$S70_RID-"*
 # 빌렸다면 이 절은 그 두 이름이 어느 절에서 어떤 런을 가리키게 됐는지에 매여 있었을
 # 것이다.
 # ---------------------------------------------------------------------------
-ck60_drain() {
-  # 관측을 행으로 만드는 유일한 길 — 값싼 act 하나. 전사는 `snapshot` 이 아니라
-  # act 경로에서 일어난다(원장을 쓰는 것은 이 동사뿐이다).
-  sag act --manifest "$SA_MANIFEST" --kind x --target main --segment CK --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 관측 전사" -- true
-}
-ck60_line() {
-  # ck60_line <상태> <필수 집합> <head sha> <실패 체크> — 폴러가 쓰는 모양의 관측 한 줄.
-  # 일곱 열, 탭 구분, 순서는 `관측·세그먼트·PR·head sha·상태·필수 집합·실패 체크`.
-  mkdir -p "$SA_RUN"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    '2026-09-01T00:00:00Z' CK "t/$SA_ID#1" "$3" "$1" "$2" "$4" >> "$SA_RUN/checks.observed"
-}
-ck60_obs() { ck60_line "$@"; ck60_drain; }
-ck60_plan() {
-  # 같은 머지를 `plan` 으로. 예보는 아무것도 쓰지 않으므로 아홉 갈래를 한 픽스처
-  # 위에서 차례로 태울 수 있고, 갈래마다 원격을 실제로 움직이지 않는다.
-  sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment CK \
-      --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
-      -- git push origin "$SA_SEGBR:$SA_BASE"
-}
-ck60_pd() {
-  # 진전 해시. `SAH` 의 H 와는 다른 값이고, 경계(B1)가 보는 것이 이쪽이다.
-  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" --render 2>/dev/null ) \
-    | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'
-}
-ck60_checks() { { grep -cF '`checks`' "$SA_LEDGER" || true; }; }
-ck60_bytes() {
-  # 관측 파일에 남은 바이트. 전사는 파일을 비우는 것이 아니라 옆으로 옮겨 지우므로,
-  # 「비었다」와 「없다」가 같은 답이어야 한다.
-  if [ -f "$SA_RUN/checks.observed" ]; then wc -c < "$SA_RUN/checks.observed" | tr -d ' '; else printf 0; fi
-}
-ck60_new() {
-  # ck60_new <리뷰 정책> — 그 정책 하나를 위한 픽스처. 상한은 어휘의 가장 느슨한
-  # 값으로 두어 세 정책이 전부 선언 가능하게 하고, 룰은 켠 채로 둔다 — 끄면 아래
-  # 아홉 갈래가 전부 「룰이 검사하지 않아서 통과」와 구별되지 않는다.
-  sa_new "CI 체크 ($1)" 리뷰없음
-  CK60_SHA=$(sa_commit '작업')
-  sa_seg_row CK "$1"
-  # `선리뷰후머지` 만 머지 앞에 기록을 요구한다. 없으면 머지가 룰 루프에서 먼저
-  # 거절되고, 그 거절은 이 절이 재려는 CI 거절과 구별되지 않는다.
-  if [ "$1" = "선리뷰후머지" ]; then
-    sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
-        --snapshot-digest "$(SAH)" --rationale x \
-        -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$CK60_SHA" "리포트 경로=$(sa_canon CK "$FXREPORT")"
-    {
-      printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n'
-      printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S5 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-rev | 부모=router-1 | 종단 부류=정상 완료\n'
-    } >> "$SA_LEDGER"
-  fi
-}
-
 # (1) 전사 — 관측 N 줄이 checks 행 N 개가 되고, 어휘 밖 줄은 전사되지 않는다 --------
 ck60_new 선머지후리뷰
 ck60_n0=$(ck60_checks)
@@ -37315,9 +37318,9 @@ esac
 
 # ---------------------------------------------------------------------------
 # 60b. 리뷰가 깨끗한 세그먼트의 CI 실패 — 재실행 행위, 회차, 구현 되돌림
-# --- section: 60b | group: sa | covers: act, plan, snapshot | needs: 60 | anchors: 60b: 라우팅 런의 실패 행에서 다음은 CI 재실행 이다, 60b: 재실행 act 는 요청 행 뒤에 POST 를 하나 내고 수락 행을 쓴다, 60b: 재실행 뒤 통과 전의 머지는 다음을 가리키는 rc 3 이다, 60b: 회차 1 의 통과 뒤 머지가 된다, 60b: 회차 1 의 실패 뒤 다음은 CI 수정 이다, 60b: CI 수정 파견은 상한에서도 통과한다, 60b: 부적격 실행은 POST 없이 park 한다, 60b: POST 실패는 재실행요청실패 로 park 한다, 60b: 같은 재실행 act 의 둘째 park 는 행을 더 쓰지 않는다, 60b: 적격 판정 없는 재실행 수행은 POST 없이 rc 3 이다, 60b: h1 통과 표지 없는 재실행 행위는 규칙을 지나지 않는다 ---
+# --- section: 60b | group: sa | covers: act, plan, snapshot | anchors: 60b: 라우팅 런의 실패 행에서 다음은 CI 재실행 이다, 60b: 재실행 act 는 요청 행 뒤에 POST 를 하나 내고 수락 행을 쓴다, 60b: 재실행 뒤 통과 전의 머지는 다음을 가리키는 rc 3 이다, 60b: 회차 1 의 통과 뒤 머지가 된다, 60b: 회차 1 의 실패 뒤 다음은 CI 수정 이다, 60b: CI 수정 파견은 상한에서도 통과한다, 60b: 부적격 실행은 POST 없이 park 한다, 60b: POST 실패는 재실행요청실패 로 park 한다, 60b: 같은 재실행 act 의 둘째 park 는 행을 더 쓰지 않는다, 60b: 적격 판정 없는 재실행 수행은 POST 없이 rc 3 이다, 60b: h1 통과 표지 없는 재실행 행위는 규칙을 지나지 않는다 ---
 #
-# section 60 의 픽스처(`ck60_line`·`ck60_drain`) 위에 라우팅 기록을 두고, 리뷰가 깨끗한
+# `pre_sa` 의 CI 체크 헬퍼(`ck60_drain`·`ck60_plan`) 위에 라우팅 기록을 두고, 리뷰가 깨끗한
 # 세그먼트의 회차 0 실패에서 시작해 재실행 행위와 그 뒤의 두 갈래를 끝까지 잰다. GitHub
 # 은 내보낸 `gh` 함수 대역이 대신한다 — 행위의 `gh` 는 `gate_run_readonly` 안에서
 # 함수로 불리므로 대역에 닿고, run.sh 가 시스템 디렉터리를 PATH 앞에 붙이므로 실행 파일
@@ -37866,7 +37869,7 @@ unset CB60_S CB60_STUB
 
 # ---------------------------------------------------------------------------
 # 60c. 재실행·재요청 실행 철자 — 두 모드에서 도달·행과 무관하게 막힌다
-# --- section: 60c | group: sa | covers: plan, exec | needs: 60 | anchors: 60c: 무인 모드에서 재실행 철자는 도달·행과 무관하게 rc 3 이다, 60c: 사람이 있는 모드에서 재실행 철자는 행이 있어도 승인 rc 5 다, 60c: 재실행 철자는 가짜 gh 를 부르지 않는다, 60c: 읽기 철자는 막히지 않는다 ---
+# --- section: 60c | group: sa | covers: plan, exec | anchors: 60c: 무인 모드에서 재실행 철자는 도달·행과 무관하게 rc 3 이다, 60c: 사람이 있는 모드에서 재실행 철자는 행이 있어도 승인 rc 5 다, 60c: 재실행 철자는 가짜 gh 를 부르지 않는다, 60c: 읽기 철자는 막히지 않는다 ---
 #
 # 재실행은 게이트의 행위(`act --kind ci-rerun`)로만 일어나야 하므로, 그 밖의 재실행·재요청
 # 철자는 사전 인가 행이 있어도, 어떤 도달을 신고해도 규칙에서 멈춰야 한다. 행렬은 철자
