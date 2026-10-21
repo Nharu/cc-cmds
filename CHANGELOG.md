@@ -5,6 +5,43 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.95.0] - 2026-10-21
+
+무인 스테이지가 받는 개인 규칙을 저장소의 원천 표가 아니라 사람이 전역 CLAUDE.md 불릿에 단 태그로 정한다(#1351, #1361). `[무인] ` 을 단 불릿은 모든 무인 스테이지에 닿고, `[대화형] ` 을 단 불릿과 태그 없는 불릿은 닿지 않는다. 런 개시에 그 블록을 한 번 스냅숏으로 떠서 런의 모든 스테이지 지침이 같은 블록을 받는다. 태그가 하나도 없는 호스트는 오늘과 바이트 같은 동결 v6 정책을 받는다.
+
+### Added
+
+- **`orchestrator/stage-rules.sh`** — `extract`(런 개시 스냅숏과 포인터), `status`(태그별 개수·바이트·토큰 추정, 태그 없는·형식이 틀린 불릿 목록, 24576 바이트 경보, 무인 블록 안 자격 증명 모양 문자열 경고, 호스트 맵, 다음 할 일), `migrate`(동결 원천 표와 호스트 확인 저장소에서 태그 단 제안본을 `--out` 에 쓴다. 원천은 쓰지 않고 런 안에서는 거부한다).
+- **개인 규칙 블록 합성** — 리드·팀원 지침 파일이 플러그인 정책 v7 바로 뒤에 `# Personal rules` 블록을 싣는다. 런 개시 추출이 죽거나 상태 줄 문법을 어기면 판정 대신 검사 실패 줄·stderr·종료 코드를 남기고 포인터를 `failed` 로 둔다.
+- **`orchestrator/legacy/`** — 태그 없는 호스트용 동결 v6 정책과 옛 원천 표.
+- **편집 훅 `hooks/stage-rules-edit.sh`** — 전역 CLAUDE.md 편집 뒤 `status` 출력을 문맥으로 넣는다.
+- **시험** — `scripts/test-stage-rules.sh`, `scripts/test-stage-rules-edit-hook.sh`, test-gate 14h(합성 갈래와 무태그 바이트 동일성), 75·91·92, 79(등급표), 12d 의 리뷰-후-적용 사례.
+
+### Changed
+
+- **플러그인 정책 v7** — 개인 규칙에서 온 줄을 걷어 낸 영문 정책. 린트가 v7 과 동결 v6 사본을 함께 8192 바이트 상한과 ASCII·고정 문면 검사로 잰다.
+- **`리뷰-후-적용` 룰** — 리뷰를 통과한 적용도 제안본과 슬롯의 무인 블록이 바이트로 다르면 거부하고 사람을 기다린다. 슬롯 가드가 적용 행위의 제안본 피연산자(`$RUN_DIR/claudemd/<name>.proposed.md`)를 `GATE_CLAUDEMD_PROPOSAL` 로 넘긴다. 대화형 불릿 편집과 태그 없는 불릿 추가는 통과한다.
+- **등급표** — 게이트 옆 `stage-rules.sh status` 를 읽기로 두고, 다른 하위 명령·다른 경로·맨 이름은 등급 미상으로 둔다.
+
+### Removed
+
+- **`orchestrator/stage-policy-drift.sh`** 와 편집 훅 `stage-policy-edit-drift.sh`, 원천 표 대조 시험과 그 픽스처. 런 개시 판정은 더 이상 확인 저장소를 읽지 않는다.
+
+### Why
+
+원천 표 대조는 사람이 CLAUDE.md 를 고칠 때마다 저장소의 표와 호스트 확인 저장소를 함께 맞춰야 했다. 태그는 불릿 자체에 처분을 적으므로 다른 곳을 고칠 일이 없고, 태그 없는 불릿은 기본으로 닿지 않는다.
+
+### Post-install notes
+
+태그를 달기 전까지는 동결 v6 정책이 그대로 실리므로 설치만으로 스테이지 지침은 바뀌지 않는다. 이관은 ClickUp 슬라이스가 머지된 뒤에 시작한다. 그 전에 이관하면 ClickUp 불릿이 그 도구보다 먼저 스테이지에 닿는다.
+
+1. `bash <플러그인 루트>/orchestrator/stage-rules.sh migrate --source "$HOME/.claude-cc/CLAUDE.md" --legacy-table <플러그인 루트>/orchestrator/legacy/stage-policy.sources.v6.tsv --ack-store "$HOME/.config/cc-cmds/stage-policy-ack" --out "$HOME/.config/cc-cmds/stage-rules.proposed.md"`
+2. 원천과 `--out` 을 `diff` 로 보고, 알림 배너 불릿의 추천을 정한다.
+3. `--out` 을 원천 위에 손으로 복사한다.
+4. `~/.config/cc-cmds/stage-policy-sources` 에 작업공간 지침 파일을 빼는 줄 `workspace<TAB><절대 경로>` 를 더한다.
+5. `stage-rules.sh status` 로 태그별 개수(태그 없음 0)와 호스트 맵 항목을 확인한다.
+6. 확인 저장소 디렉터리 `~/.config/cc-cmds/stage-policy-ack` 를 `stage-policy-ack.retired` 로 이름을 바꾼다. 4 의 맵 줄을 더한 뒤에 한다.
+
 ## [2.94.1] - 2026-10-20
 
 머지한 뒤 park 된 슬라이스를 착지하지 않은 것으로 읽던 결함을 고친다(#1358, #1293). 지금까지 착지 판정은 그 id 의 마지막 `segment` 행만 보아서, 적용 갈래의 park 나 사람의 세그먼트 park 답처럼 `머지됨` 뒤에 `park` 가 오면 베이스에 이미 있는 작업을 후속 런이 다시 하고, 같은 런의 후행 세그먼트는 디스패치 바닥에서 막혔다. 런이 park 로 끝난 뒤 사람이 그 PR 을 머지한 슬라이스도 들여올 길이 없었다.
