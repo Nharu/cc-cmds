@@ -175,7 +175,7 @@ dur_wall() {
   local repo="${GITHUB_REPOSITORY:-}" rid="${GITHUB_RUN_ID:-}" att="${GITHUB_RUN_ATTEMPT:-}"
   local now="${CI_DURATION_NOW:-$(date +%s)}"
   local start="" sha="" jobs="" jobs_ok=0 raw="-" path="-" queued="-" overlap="-" notes=""
-  local pd sm rs ls carried wend f executed=0 cands cid catt ccr k alive
+  local pd sm rs ls carried wend f executed=0 cands cid catt ccr k alive why
   case "$rid" in *[!0-9]*) rid="" ;; esac
   if [ -z "$repo" ] || [ -z "$rid" ] || [ -z "$att" ]; then
     notes="GITHUB_REPOSITORY·GITHUB_RUN_ID·GITHUB_RUN_ATTEMPT 가운데 빈 값이 있어 API 를 읽지 않았습니다"
@@ -218,11 +218,11 @@ EOF
       # and only the earlier attempts can say whether the run was alive in it.
       if cands=$(gh api "repos/$repo/actions/runs?per_page=100" \
           --jq ".workflow_runs[] | select(.id != $rid) | select(.head_sha != \"$sha\") | select((.created_at | fromdate) < $wend) | if ((.run_attempt // 1) > 1 and (((.run_started_at // .created_at) | fromdate) >= $wend)) then \"\\(.id) \\(.run_attempt) \\(.created_at | fromdate)\" elif (.status != \"completed\" or ((.updated_at | fromdate) > $start)) then \"live\" else empty end" 2>/dev/null); then
-        overlap=0
+        overlap=0; why="다시 돈 실행의 앞 시도 API 를 읽지 못했습니다"
         while read -r cid catt ccr; do
           [ -n "$cid" ] || continue
           if [ "$cid" = "live" ]; then overlap=$((overlap + 1)); continue; fi
-          case "$cid$catt$ccr" in *[!0-9]*) overlap=""; break ;; esac
+          case "$cid$catt$ccr" in *[!0-9]*) overlap=""; why="실행 목록 API 가 숫자가 아닌 실행 id·시도 번호·생성 시각을 주었습니다"; break ;; esac
           k=1; alive=0
           while [ "$k" -lt "$catt" ]; do
             alive=$(gh api "repos/$repo/actions/runs/$cid/attempts/$k" \
@@ -238,7 +238,7 @@ EOF
         done <<EOF
 $cands
 EOF
-        case "$overlap" in ''|*[!0-9]*) overlap="-"; notes="${notes:+$notes · }다시 돈 실행의 앞 시도 API 를 읽지 못했습니다" ;; esac
+        case "$overlap" in ''|*[!0-9]*) overlap="-"; notes="${notes:+$notes · }$why" ;; esac
       else
         overlap="-"; notes="${notes:+$notes · }실행 목록 API 를 읽지 못했습니다"
       fi
@@ -558,6 +558,19 @@ STUB
     else
       bad "앞 시도 API 실패" "rc=$rc $out"
     fi
+    # S7 has three attempts: attempt 1 finished before the window, attempt 2
+    # began at 17:05:00, inside it, and attempt 3 began after it. S8's attempt
+    # 1 was created at 17:03:00, queued through the window and started at
+    # 17:30:00, then was rerun at 17:40:00. Both count, through attempt 2's own
+    # start and through the run's creation.
+    printf '{"id":39650000007,"run_attempt":1,"created_at":"2026-10-21T16:00:00Z","run_started_at":"2026-10-21T16:00:00Z","status":"completed","updated_at":"2026-10-21T16:20:00Z"}\n' > "$T/stub/attempt-39650000007-1.json"
+    printf '{"id":39650000007,"run_attempt":2,"created_at":"2026-10-21T16:00:00Z","run_started_at":"2026-10-21T17:05:00Z","status":"completed","updated_at":"2026-10-21T17:25:00Z"}\n' > "$T/stub/attempt-39650000007-2.json"
+    printf '{"id":39650000008,"run_attempt":1,"created_at":"2026-10-21T17:03:00Z","run_started_at":"2026-10-21T17:30:00Z","status":"completed","updated_at":"2026-10-21T17:35:00Z"}\n' > "$T/stub/attempt-39650000008-1.json"
+    printf '{"workflow_runs":[%s,\n%s,\n%s,\n%s]}\n' "$quiet" "$live3" \
+      '{"id":39650000007,"run_attempt":3,"head_sha":"S7","created_at":"2026-10-21T16:00:00Z","run_started_at":"2026-10-21T17:40:00Z","status":"in_progress","updated_at":"2026-10-21T17:41:00Z"}' \
+      '{"id":39650000008,"run_attempt":2,"head_sha":"S8","created_at":"2026-10-21T17:03:00Z","run_started_at":"2026-10-21T17:40:00Z","status":"in_progress","updated_at":"2026-10-21T17:41:00Z"}' > "$T/stub/allruns.json"
+    out=$(wall 2>&1)
+    if printf '%s\n' "$out" | grep -q ' overlap=5 '; then ok "두 번째 시도가 창 안에 시작한 실행과 첫 시도가 창 안에 대기한 실행은 센다"; else bad "앞 시도 여럿·대기 첫 시도" "$out"; fi
     printf '{"workflow_runs":[%s,\n%s]}\n' "$quiet" "$live3" > "$T/stub/allruns.json"
     rm -f "$W/t/timing-7.tsv"
     out=$(wall 2>&1)
@@ -595,8 +608,8 @@ STUB
   rm -rf "$T"
   printf 'ci-duration self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 25 ]; then
-    printf 'ci-duration self-test: 통과 수 %d 가 하한 25 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 26 ]; then
+    printf 'ci-duration self-test: 통과 수 %d 가 하한 26 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
