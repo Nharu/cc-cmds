@@ -38,8 +38,12 @@
 #   migrate   Writes a tagged proposal of the source to `--out` from the frozen
 #             v6 sources table and the host acknowledgement store, reports
 #             every bullet, and recommends `[대화형]` for the notification
-#             banner bullet. The source is never written. Refused while
-#             `CC_PIPELINE_RUN_ID` is set: the disposition is the person's.
+#             banner bullet. The proposal is the source with a tag added to
+#             the first line of some untagged bullets and no other byte
+#             changed, so copying it over the source loses nothing. The
+#             source is never written, and an `--out` that is the source
+#             itself is refused. Refused while `CC_PIPELINE_RUN_ID` is set:
+#             the disposition is the person's.
 #
 # Tag grammar. A top-level bullet is a line starting `- ` at column 0 together
 # with every following line up to the next such line, the end of the file, or
@@ -288,7 +292,7 @@ cmd_status() {
 
 cmd_migrate() {
   local source="" table="" store="" out="" acks k rule tag text anchor disp
-  local n_u=0 n_i=0 n_n=0 b_u=0 b_i=0 tmp banner=""
+  local n_u=0 n_i=0 n_n=0 b_u=0 b_i=0 tmp banner="" line eol open outside
   while [ $# -gt 0 ]; do
     case "$1" in
       --source) [ $# -ge 2 ] || die_usage "--source needs a file"; source="$2"; shift 2 ;;
@@ -305,10 +309,14 @@ cmd_migrate() {
     || die_usage "migrate: --source, --legacy-table, --ack-store and --out are all required"
   [ -f "$source" ] || die_usage "migrate: source not found: $source"
   [ -f "$table" ] || die_usage "migrate: legacy table not found: $table"
+  if [ -e "$out" ] && [ "$source" -ef "$out" ]; then
+    die_usage "migrate: --out is the source itself: $out — the source is never written"
+  fi
   acks="$store/acks.tsv"
   parse "$source"
   tmp=$(mktemp "$(dirname "$out")/.stage-rules-proposed.XXXXXX") \
     || die_usage "migrate: cannot write beside $out"
+  NEW_TAG=()
   k=0
   while [ "$k" -lt "${#B_LINE[@]}" ]; do
     text="${B_TEXT[$k]}"
@@ -341,11 +349,12 @@ cmd_migrate() {
         rule="no row"
       fi
     fi
-    if [ -n "$tag" ]; then
-      printf '%s' "- $tag ${B_BODY[$k]#- }" >> "$tmp"
-    else
-      printf '%s' "${B_RAW[$k]}" >> "$tmp"
-    fi
+    # Only a bullet that had no tag gets one written; every other bullet stays
+    # as written.
+    case "${B_TAG[$k]}" in
+      n) NEW_TAG[$k]="$tag" ;;
+      *) NEW_TAG[$k]="" ;;
+    esac
     case "$tag" in
       "$TAG_U") n_u=$((n_u + 1)); b_u=$((b_u + ${#B_BODY[$k]})) ;;
       "$TAG_I") n_i=$((n_i + 1)); b_i=$((b_i + ${#B_BODY[$k]})) ;;
@@ -357,6 +366,27 @@ cmd_migrate() {
     fi
     k=$((k + 1))
   done
+  # The proposal is the source byte for byte except the first line of each
+  # bullet tagged above: headings, paragraphs and every other line outside a
+  # bullet are copied in place, and so is a last line without a newline.
+  k=-1; open=0; outside=0
+  while :; do
+    if IFS= read -r line; then eol=$'\n'
+    elif [ -n "$line" ]; then eol=''
+    else break
+    fi
+    case "$line" in
+      "- "*)
+        k=$((k + 1)); open=1
+        if [ -n "${NEW_TAG[$k]}" ]; then line="- ${NEW_TAG[$k]} ${line#- }"; fi ;;
+      ''|[[:space:]]*) [ "$open" = 1 ] || [ -z "$line" ] || outside=$((outside + 1)) ;;
+      *) open=0; outside=$((outside + 1)) ;;
+    esac
+    printf '%s%s' "$line" "$eol" >> "$tmp"
+  done < "$source"
+  if [ "$outside" -gt 0 ]; then
+    printf 'outside: %s line(s) outside every bullet, kept in the proposal as written and never extracted\n' "$outside"
+  fi
   if [ -n "$banner" ]; then
     printf 'recommend line %s: %s — the plugin policy already bans every notification, and the stages do not need this bullet\n' "$banner" "$TAG_I"
   fi

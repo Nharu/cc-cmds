@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`orchestrator/stage-rules.sh`** — `extract`(런 개시 스냅숏과 포인터), `status`(태그별 개수·바이트·토큰 추정, 태그 없는·형식이 틀린 불릿 목록, 24576 바이트 경보, 무인 블록 안 자격 증명 모양 문자열 경고, 호스트 맵, 다음 할 일), `migrate`(동결 원천 표와 호스트 확인 저장소에서 태그 단 제안본을 `--out` 에 쓴다. 원천은 쓰지 않고 런 안에서는 거부한다).
+- **`orchestrator/stage-rules.sh`** — `extract`(런 개시 스냅숏과 포인터), `status`(태그별 개수·바이트·토큰 추정, 태그 없는·형식이 틀린 불릿 목록, 24576 바이트 경보, 무인 블록 안 자격 증명 모양 문자열 경고, 호스트 맵, 다음 할 일), `migrate`(동결 원천 표와 호스트 확인 저장소에서 태그 단 제안본을 `--out` 에 쓴다. 제안본은 원천에서 태그 없는 불릿 첫 줄에 태그를 더한 것 말고는 바이트가 같아서 제목·문단 같은 불릿 밖 줄도 그대로 남는다. 원천은 쓰지 않고, 원천과 같은 파일을 `--out` 으로 주거나 런 안에서 부르면 거부한다).
 - **개인 규칙 블록 합성** — 리드·팀원 지침 파일이 플러그인 정책 v7 바로 뒤에 `# Personal rules` 블록을 싣는다. 런 개시 추출이 죽거나 상태 줄 문법을 어기면 판정 대신 검사 실패 줄·stderr·종료 코드를 남기고 포인터를 `failed` 로 둔다.
 - **`orchestrator/legacy/`** — 태그 없는 호스트용 동결 v6 정책과 옛 원천 표.
 - **편집 훅 `hooks/stage-rules-edit.sh`** — 전역 CLAUDE.md 편집 뒤 `status` 출력을 문맥으로 넣는다.
@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 태그를 달기 전까지는 동결 v6 정책이 그대로 실리므로 설치만으로 스테이지 지침은 바뀌지 않는다. 이관은 ClickUp 슬라이스가 머지된 뒤에 시작한다. 그 전에 이관하면 ClickUp 불릿이 그 도구보다 먼저 스테이지에 닿는다.
 
 1. `bash <플러그인 루트>/orchestrator/stage-rules.sh migrate --source "$HOME/.claude-cc/CLAUDE.md" --legacy-table <플러그인 루트>/orchestrator/legacy/stage-policy.sources.v6.tsv --ack-store "$HOME/.config/cc-cmds/stage-policy-ack" --out "$HOME/.config/cc-cmds/stage-rules.proposed.md"`
-2. 원천과 `--out` 을 `diff` 로 보고, 알림 배너 불릿의 추천을 정한다.
+2. 원천과 `--out` 을 `diff` 로 보고(바뀐 줄은 태그를 단 불릿 첫 줄뿐이다), 알림 배너 불릿의 추천을 정한다.
 3. `--out` 을 원천 위에 손으로 복사한다.
 4. `~/.config/cc-cmds/stage-policy-sources` 에 작업공간 지침 파일을 빼는 줄 `workspace<TAB><절대 경로>` 를 더한다.
 5. `stage-rules.sh status` 로 태그별 개수(태그 없음 0)와 호스트 맵 항목을 확인한다.

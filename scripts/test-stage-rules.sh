@@ -250,6 +250,60 @@ printf '%s' '- 이 파일이 사용자에게 알림 배너를 띄우는 규칙
 sr migrate --source "$MSRC2" --legacy-table "$TABLE" --ack-store "$STORE" --out "$WORK/proposed2.md"
 has "migrate: 옮긴 알림 배너 불릿도 앵커로 찾는다" "$OUT" "recommend line 1: [대화형]"
 
+# the proposal is the source plus tags: headings, paragraphs, a column-0 line
+# after a bullet and a last line without a newline all stay in place
+MSRC3="$WORK/migrate-src3.md"
+printf '%s' '# Personal instructions
+
+An intro paragraph before the first bullet.
+
+## Section one
+
+- pol anchor rule
+column-0 line after a bullet
+- [대화형] already interactive
+  - sub bullet kept
+
+## Section two
+
+- none anchor rule
+- excl anchor rule
+A closing paragraph without a newline' > "$MSRC3"
+MSRC3_SHA=$(sha_of "$MSRC3")
+MOUT3="$WORK/proposed-mixed.md"
+sr migrate --source "$MSRC3" --legacy-table "$TABLE" --ack-store "$STORE" --out "$MOUT3"
+check "migrate 혼합 원천: rc 0" "$RC" "0"
+check "migrate 혼합 원천: 제안본은 원천에 태그만 더한 것" "$(sha_of "$MOUT3")" \
+  "$(printf '%s' '# Personal instructions
+
+An intro paragraph before the first bullet.
+
+## Section one
+
+- [무인] pol anchor rule
+column-0 line after a bullet
+- [대화형] already interactive
+  - sub bullet kept
+
+## Section two
+
+- none anchor rule
+- [대화형] excl anchor rule
+A closing paragraph without a newline' | shasum -a 256 | cut -d' ' -f1)"
+check "migrate 혼합 원천: 바뀐 줄은 태그를 단 첫 줄 둘뿐" \
+  "$(diff "$MSRC3" "$MOUT3" | grep -c '^[<>]' || true)" "4"
+has "migrate 혼합 원천: 불릿 밖 줄 수 보고" "$OUT" "outside: 6 line(s) outside every bullet, kept in the proposal as written"
+check "migrate 혼합 원천: 원천 sha 불변" "$(sha_of "$MSRC3")" "$MSRC3_SHA"
+
+# --out that is the source itself, by the same path or through a link
+sr migrate --source "$MSRC3" --legacy-table "$TABLE" --ack-store "$STORE" --out "$MSRC3"
+check "migrate: --out 이 원천이면 rc 2" "$RC" "2"
+has "migrate: 같은 경로 거부 문구" "$(cat "$ERRF")" "--out is the source itself"
+ln -s "$MSRC3" "$WORK/src-link.md"
+sr migrate --source "$MSRC3" --legacy-table "$TABLE" --ack-store "$STORE" --out "$WORK/src-link.md"
+check "migrate: 원천을 가리키는 링크도 rc 2" "$RC" "2"
+check "migrate: 거부되면 원천 sha 불변" "$(sha_of "$MSRC3")" "$MSRC3_SHA"
+
 # an absent store reads as empty: host-only rows give no tag
 sr migrate --source "$MSRC" --legacy-table "$TABLE" --ack-store "$WORK/no-store" --out "$WORK/proposed3.md"
 check "migrate: 확인 저장소 없음 rc 0" "$RC" "0"
