@@ -3340,6 +3340,7 @@ skd_fence() {
 check "최초 회차 울타리가 지금 문서에 골격급을 세면 재수렴부터 한다" "$(skd_fence 2 최초 현재)" "reconverge"
 check "다른 바이트를 센 울타리면 다시 감사한다" "$(skd_fence 2 최초 다름)" "audit"
 check "재감사 회차 울타리는 보고서를 그대로 둔다" "$(skd_fence 2 재감사 현재)" ""
+check "재감사 회차 울타리는 문서가 바뀌어도 다시 감사하지 않는다" "$(skd_fence 2 재감사 다름)" ""
 check "골격급 0건 울타리는 보고서를 그대로 둔다" "$(skd_fence 0 최초 현재)" ""
 
 # --- 21c-c solo 티어 — 스킬을 고르는 한 함수, 감사를 건너뛰는 갈래, 진입 판정 검사 ---
@@ -10803,6 +10804,7 @@ S5F:seg:3|lead-fix
 S1':seg:1:path|reconverge
 S1':seg:1:plugins-cc-cmds-skills-design-SKILL.md|reconverge
 S0R:seg:reconverge|reconverge
+S2R|reconverge
 S4:review-fix:1|implement
 S5:design-seg:2|review
 Sx|generic

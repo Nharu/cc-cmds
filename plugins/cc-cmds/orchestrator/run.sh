@@ -5921,7 +5921,7 @@ stage_kind_of() {
     S4)       printf 'implement'; return 0 ;;
     S5|S5R)   printf 'review'; return 0 ;;
     S5F)      printf 'lead-fix'; return 0 ;;
-    "S1'"|S0R) printf 'reconverge'; return 0 ;;
+    "S1'"|S0R|S2R) printf 'reconverge'; return 0 ;;
   esac
   case "$stage" in
     *split*)                printf 'split' ;;
@@ -11736,17 +11736,20 @@ s2_audit_next_from_fence() {
   # run (no audit row here): `reconverge` when the report's single fence is a
   # first pass that counted skeleton-grade items over the document's present
   # bytes, `audit` when it counted them over other bytes, nothing otherwise —
-  # the report then stands as today and the audit is skipped.
+  # the report then stands as today and the audit is skipped. The round is read
+  # before the digest: a re-audit's skeleton-grade items are a person's to
+  # settle, so a `재감사` fence is skipped whether or not the document moved.
   local n round sha cur
   n=$(audit_skeleton_fence_skeletal)
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
   [ "$n" -ge 1 ] || return 0
   round=$(audit_skeleton_fence_field '회차')
+  [ "$round" = "최초" ] || return 0
   sha=$(audit_skeleton_fence_field '문서 sha256')
   cur=$(whole_digest 2>/dev/null || true)
   if [ "$sha" != "$cur" ]; then
     printf 'audit'
-  elif [ "$round" = "최초" ]; then
+  else
     printf 'reconverge'
   fi
 }
