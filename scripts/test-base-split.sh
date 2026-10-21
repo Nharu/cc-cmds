@@ -592,6 +592,65 @@ refused "registry recorded against other document bytes" "$DOCS/ok.md" --row "$G
 CU_ROW='- `베이스 발행` | 트래커=clickup | 대상=901234'
 gen ok && cp "$DOCS/ok.md" "$DOCS/cu.md"
 
+# `fx.py <variant> <path>` writes one field document as
+# `similar-items.py clickup --list-fields 901234` would. `empty` is a list with
+# no ticket, so every field stays unset and no argv gains a field option.
+cat > "$WORK/fx.py" <<'PYEOF'
+import json, sys
+
+variant, out = sys.argv[1], sys.argv[2]
+
+def t(i, parent=None, assignees=(), tags=(), priority=None, start=None, due=None, deps=(), **extra):
+    r = {"id": i, "name": i, "parent": parent, "list_id": "901234", "assignees": list(assignees),
+         "tags": list(tags), "priority": priority, "start_date": start, "due_date": due}
+    r.update(extra)
+    r["dependencies"] = [{"task_id": a, "depends_on": b} for a, b in deps]
+    return r
+
+origin_deps = [("O", "w1"), ("s1", "O")]
+doc = {"kind": "fields", "list": "901234", "partial": False, "reason": None, "tasks": [], "task_fields": []}
+if variant == "rules":
+    # Four top-level tickets in the denominator; the subtask, the origin and
+    # the tickets outside the list's open set do not count.
+    doc["tasks"] = [t("a1", assignees=[1], tags=["x"], priority=2, start="1000", due="5000"),
+                    t("a2", assignees=[1, 2], tags=["x"], priority=2, start="2000"),
+                    t("a3", priority=3),
+                    t("a4", assignees=[1], tags=["y"]),
+                    t("sub", parent="a1", assignees=[9], priority=1, start="1", due="1"),
+                    t("O", assignees=[], tags=["x"])]
+    doc["task_fields"] = [t("O", tags=["x"], start="7000", due="9000", deps=origin_deps),
+                          t("w1", due="8000"), t("s1", start="20000")]
+elif variant == "dates":
+    doc["tasks"] = [t("b1", assignees=[5], start="1", due="2"), t("b2", assignees=[5], start="3", due="4")]
+    doc["task_fields"] = [t("O", assignees=[7], priority=1, start="7000", due="9000", due_date_time=True,
+                            deps=origin_deps),
+                          t("w1", due="8000", due_date_time=False), t("s1", start="20000")]
+elif variant == "foreign":
+    # The list read holds neither end: w1 is closed in this list, x9 lives in
+    # another one; the tool read both alone because the origin names them.
+    doc["task_fields"] = [t("O", deps=[("O", "w1"), ("x9", "O")]), t("w1", due="8000"),
+                          t("x9", list_id="777", start="1")]
+elif variant == "tie":
+    doc["tasks"] = [t("c1", priority=1), t("c2", priority=2)]
+elif variant == "runnode":
+    doc["tasks"] = [t("d1", assignees=[4]), t("abc")]
+    doc["task_fields"] = [t("O", assignees=[4])]
+elif variant == "limit":
+    doc["partial"], doc["reason"] = True, "limit"
+elif variant == "budget":
+    doc["partial"], doc["reason"] = True, "budget"
+elif variant == "nokind":
+    del doc["kind"]
+elif variant == "otherlist":
+    doc["list"] = "5"
+elif variant != "empty":
+    raise SystemExit("unknown variant " + variant)
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(doc, f, ensure_ascii=False)
+PYEOF
+fx() { python3 "$WORK/fx.py" "$1" "$WORK/fields-$1.json"; printf '%s' "$WORK/fields-$1.json"; }
+FX_EMPTY=$(fx empty)
+
 # The installed ClickUp tools decide whether a ClickUp plan may exist at all:
 # `plan` emits an argv only when every tool it names is there and its own
 # parser lists every option the argv passes.
@@ -603,12 +662,14 @@ if [ "$real_ready" = 1 ]; then
   grep -qE -- '--depends-on' <<EOF || real_ready=0
 $relate_help
 EOF
-  grep -qE -- '--parent' <<EOF || real_ready=0
+  for o in --parent --assignee --priority --start-date-time --due-date-time; do
+    grep -qE -- "$o" <<EOF || real_ready=0
 $create_help
 EOF
+  done
 fi
 printf 'stale\n' > "$OUT/plan.jsonl"
-run_bs plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+run_bs plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$FX_EMPTY"
 if [ "$real_ready" = 1 ]; then
   check "plan clickup (installed tools ready): exits 0" "$rc" "0"
 else
@@ -630,7 +691,13 @@ stub_tool() {  # <name> <option...>
   {
     printf '#!/usr/bin/env python3\nimport argparse, sys\n'
     printf 'p = argparse.ArgumentParser(prog="%s", allow_abbrev=False)\n' "$name"
-    for o in "$@"; do printf 'p.add_argument("%s")\n' "$o"; done
+    for o in "$@"; do
+      case "$o" in
+        *-time) printf 'p.add_argument("%s", action="store_true")\n' "$o" ;;
+        --assignee) printf 'p.add_argument("%s", action="append")\n' "$o" ;;
+        *) printf 'p.add_argument("%s")\n' "$o" ;;
+      esac
+    done
     printf 'p.parse_args()\n'
   } > "$STUB_DIR/$name"
   chmod +x "$STUB_DIR/$name"
@@ -641,21 +708,30 @@ run_stub() {
   if [ "$1" = plan ] && [ "$rc" = 0 ]; then cat "$OUT/plan.jsonl" >> "$WORK/cu-all.jsonl"; fi
 }
 
+CU_CREATE_OPTS="--list --name --description-file --parent --assignee --priority --start-date --start-date-time --due-date --due-date-time"
 stub_tool clickup-create.py --list --name --description-file
 stub_tool clickup-relate.py --task --depends-on
-refused_stub() {  # <label>
+refused_stub() {  # <label> [plan args...]
+  local label=$1; shift
   printf 'stale\n' > "$OUT/plan.jsonl"
-  run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
-  check "plan clickup refuses: $1 (exit)" "$rc" "3"
-  check "plan clickup refuses: $1 (no command)" "$(wc -c < "$OUT/plan.jsonl" | tr -d ' ')" "0"
+  if [ "$#" -eq 0 ]; then set -- "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$FX_EMPTY"; fi
+  run_stub plan "$@"
+  check "plan clickup refuses: $label (exit)" "$rc" "3"
+  check "plan clickup refuses: $label (no command)" "$(wc -c < "$OUT/plan.jsonl" | tr -d ' ')" "0"
 }
 refused_stub "create tool without --parent"
 stub_tool clickup-create.py --list --name --description-file --parent
+refused_stub "create tool without the field options"
+has "plan clickup refuses: names the missing field options" "$out" "--assignee, --priority"
+# shellcheck disable=SC2086
+stub_tool clickup-create.py $CU_CREATE_OPTS
 rm -f "$STUB_DIR/clickup-relate.py"
 refused_stub "relate tool missing"
 stub_tool clickup-relate.py --task --depends-on
+refused_stub "no field document" "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+has "plan clickup refuses: says --fields is needed" "$out" "--fields"
 
-run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$FX_EMPTY"
 check "plan clickup: exits 0" "$rc" "0"
 base_argv=$(argv_of base)
 case "$base_argv" in
@@ -665,15 +741,15 @@ esac
 run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc
 check "record clickup: 발행됨 without a node id is refused" "$rc" "3"
 run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc --node-id abc
-run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$FX_EMPTY"
 check "plan clickup: child carries --parent node" "$(argv_of T2)" \
   "$STUB_DIR/clickup-create.py --list 901234 --name 조각 2 구현 --description-file $OUT/body-T2.md --parent abc"
 has "plan clickup: dependency waits for its ticket" "$(entries)" "rel:선행:T3:T2:wait"
 run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/t2 --node-id t2
 run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry T1 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/t1 --node-id t1
-run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$FX_EMPTY"
 run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry T3 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/t3 --node-id t3
-run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$FX_EMPTY"
 check "plan clickup: the dependency is its own relate call" "$(argv_of rel:선행:T3:T2)" \
   "$STUB_DIR/clickup-relate.py --task t3 --depends-on t2"
 
@@ -695,12 +771,174 @@ cat > "$CUREG" <<EOF
 - \`관계\` | 종류=선행 | 원=T3 | 대상=T2 | 상태=대기
 <!-- cc-design-base-tickets: end -->
 EOF
-run_stub plan "$DOCS/cur.md" --row "$CU_ROW" --out "$OUT"
+run_stub plan "$DOCS/cur.md" --row "$CU_ROW" --out "$OUT" --fields "$FX_EMPTY"
 has "plan clickup resume: the in-flight ticket is resolved" "$(entries)" "T2:resolve"
 run_stub record "$DOCS/cur.md" --row "$CU_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/t2 --node-id t2
 check "record clickup: a resolve to 발행됨 exits 0" "$rc" "0"
 has "record clickup: a resolve to 발행됨 ties the child relation" "$(cat "$CUREG")" \
   '- `관계` | 종류=하위 | 원=T2 | 대상=베이스 | 상태=걸림'
+
+# ---------------------------------------------------------------------------
+# plan — ClickUp fields, the origin ticket and external relations
+# ---------------------------------------------------------------------------
+CUO_ROW='- `베이스 발행` | 트래커=clickup | 대상=901234 | 원 티켓=O'
+pick() {  # <entry id> <python expression over e> — one value of a plan entry
+  python3 -c 'import json,sys
+for l in open(sys.argv[1], encoding="utf-8"):
+    e = json.loads(l)
+    if e["entry"] == sys.argv[2]: print(json.dumps(eval(sys.argv[3]), ensure_ascii=False, sort_keys=True))' \
+    "$OUT/plan.jsonl" "$1" "$2"
+}
+
+# The row: the origin field is optional, follows the target, and only on clickup.
+run_stub plan "$DOCS/cu.md" --row "$CUO_ROW" --out "$OUT" --fields "$(fx rules)"
+check "row: a clickup row with 원 티켓 is read" "$rc" "0"
+refused_stub "원 티켓 on a github row" "$DOCS/cu.md" --row '- `베이스 발행` | 트래커=github | 대상=o/r | 원 티켓=O' --out "$OUT"
+has "row: 원 티켓 on a github row names the rule" "$out" "원 티켓 은 clickup 행에만 둡니다"
+refused_stub "원 티켓 on a 없음 row" "$DOCS/cu.md" --row '- `베이스 발행` | 트래커=없음 | 대상=- | 원 티켓=O' --out "$OUT"
+refused_stub "an empty 원 티켓" "$DOCS/cu.md" --row '- `베이스 발행` | 트래커=clickup | 대상=901234 | 원 티켓=' --out "$OUT" --fields "$(fx rules)"
+refused_stub "a 원 티켓 out of order" "$DOCS/cu.md" --row '- `베이스 발행` | 트래커=clickup | 원 티켓=O | 대상=901234' --out "$OUT" --fields "$(fx rules)"
+
+# Strict majority over the open top-level tickets other than the origin: three
+# of four set assignees and a priority (in use), two of four a start date
+# (exactly half, empty), one a due date (empty). The subtask's values never count.
+gen ok && cp "$DOCS/ok.md" "$DOCS/fr.md"
+run_stub plan "$DOCS/fr.md" --row "$CUO_ROW" --out "$OUT" --fields "$(fx rules)"
+check "fields: plan exits 0" "$rc" "0"
+check "fields: base argv carries the decided fields only" "$(argv_of base)" \
+  "$STUB_DIR/clickup-create.py --list 901234 --name 상태 파일 도입 --description-file $OUT/body-base.md --assignee 1 --priority 2"
+check "fields: assignee is the tag-sharing tickets' common one, priority the mode" \
+  "$(pick base 'e["fields"]["values"]')" '{"assignees": [1], "priority": 2}'
+check "fields: exactly half and below leave the field empty" \
+  "$(pick base 'e["fields"]["empty"]')" '{"due_date": "리스트가 쓰지 않음", "start_date": "리스트가 쓰지 않음"}'
+check "fields: no date set reads 미상(생략)" "$(pick base 'e["date_format"]')" '"미상(생략)"'
+[ -f "$OUT/fields-plan.json" ] && ok "fields: plan writes fields-plan.json" || bad "fields: plan writes fields-plan.json"
+cp "$OUT/fields-plan.json" "$WORK/fp1.json"
+run_stub plan "$DOCS/fr.md" --row "$CUO_ROW" --out "$OUT" --fields "$WORK/fields-rules.json"
+cmp -s "$OUT/fields-plan.json" "$WORK/fp1.json" && ok "fields: the same input writes the same fields-plan bytes" \
+  || bad "fields: the same input writes the same fields-plan bytes"
+check "fields: the origin's waits-on precede every root, its waiters follow every leaf" \
+  "$(python3 -c 'import json,sys
+t = json.load(open(sys.argv[1]))["tickets"]
+print(" ".join("%s:%s/%s" % (k, ",".join(t[k]["external_pred"]), ",".join(t[k]["external_succ"])) for k in ("T1", "T2", "T3")))' "$OUT/fields-plan.json")" \
+  "T1:w1/s1 T2:w1/ T3:/s1"
+
+# Dates in use come from the reference tickets: a predecessor's due date as the
+# start, a successor's start as the due date, else the origin's. A flag is
+# copied only when the reference record carries the key.
+gen ok && cp "$DOCS/ok.md" "$DOCS/fd.md"
+run_stub plan "$DOCS/fd.md" --row "$CUO_ROW" --out "$OUT" --fields "$(fx dates)"
+check "dates: base takes the origin's dates and its due flag" "$(argv_of base)" \
+  "$STUB_DIR/clickup-create.py --list 901234 --name 상태 파일 도입 --description-file $OUT/body-base.md --assignee 7 --start-date 7000 --due-date 9000 --due-date-time"
+check "dates: a flag missing from one reference reads 미상(생략)" "$(pick base 'e["date_format"]')" '"미상(생략)"'
+run_stub record "$DOCS/fd.md" --row "$CUO_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/nb --node-id nb
+run_stub plan "$DOCS/fd.md" --row "$CUO_ROW" --out "$OUT" --fields "$WORK/fields-dates.json"
+check "dates: a root takes its predecessor's due date, copying a false flag as none" "$(argv_of T2)" \
+  "$STUB_DIR/clickup-create.py --list 901234 --name 조각 2 구현 --description-file $OUT/body-T2.md --parent nb --assignee 7 --start-date 8000 --due-date 9000 --due-date-time"
+check "dates: every date copied with its flag reads 복사" "$(pick T2 'e["date_format"]')" '"복사"'
+check "dates: priority unused by the list stays empty" "$(pick T2 'e["fields"]["empty"]')" '{"priority": "리스트가 쓰지 않음"}'
+has "dates: an external relation waits for its ticket" "$(entries)" "rel:외부선행:T2:w1:wait"
+for t in T1 T2 T3; do
+  run_stub record "$DOCS/fd.md" --row "$CUO_ROW" --entry "$t" --plan "$OUT/plan.jsonl" --state 발행됨 \
+    --ref "https://app.clickup.com/t/n${t#T}" --node-id "n${t#T}"
+  run_stub plan "$DOCS/fd.md" --row "$CUO_ROW" --out "$OUT" --fields "$WORK/fields-dates.json"
+done
+check "relations: an external predecessor is waited on by the new ticket" "$(argv_of rel:외부선행:T2:w1)" \
+  "$STUB_DIR/clickup-relate.py --task n2 --depends-on w1"
+check "relations: an external successor waits on the new ticket" "$(argv_of rel:외부후행:T3:s1)" \
+  "$STUB_DIR/clickup-relate.py --task s1 --depends-on n3"
+run_stub record "$DOCS/fd.md" --row "$CUO_ROW" --entry rel:외부후행:T3:s1 --plan "$OUT/plan.jsonl" --state 발행됨 --ref -
+check "relations: an external relation records" "$rc" "0"
+has "relations: the registry carries the external relation" "$(cat "$DOCS/design-base/fd.tickets.md")" \
+  '- `관계` | 종류=외부후행 | 원=T3 | 대상=s1 | 상태=걸림'
+run_stub plan "$DOCS/fd.md" --row "$CUO_ROW" --out "$OUT" --fields "$WORK/fields-dates.json"
+hasnt "relations: a recorded external relation is not planned again" "$(entries)" "rel:외부후행:T3:s1"
+cp "$OUT/fields-plan.json" "$WORK/fp-dates.json"
+
+# check --observed: the re-read is compared with the fields plan; dates by
+# their millisecond value only.
+python3 - "$WORK/fp-dates.json" "$WORK/obs-ok.json" "$WORK/obs-bad.json" <<'PYEOF'
+import json, sys
+plan = json.load(open(sys.argv[1]))["tickets"]
+nodes = {"베이스": "nb", "T1": "n1", "T2": "n2", "T3": "n3"}
+def rec(key, deps):
+    f = plan[key]["fields"]
+    return {"id": nodes[key], "name": key, "parent": None if key == "베이스" else "nb", "list_id": "901234",
+            "assignees": f.get("assignees", []), "tags": [], "priority": f.get("priority"),
+            # A leading zero is the same millisecond value.
+            "start_date": "0" + f["start_date"] if "start_date" in f else None,
+            "due_date": f.get("due_date"), "dependencies": deps}
+deps = [{"task_id": "n3", "depends_on": "n2"}, {"task_id": "n1", "depends_on": "w1"},
+        {"task_id": "n2", "depends_on": "w1"}, {"task_id": "s1", "depends_on": "n1"},
+        {"task_id": "s1", "depends_on": "n3"}]
+ok = {"kind": "fields", "list": "901234", "partial": False, "reason": None, "tasks": [],
+      "task_fields": [rec(k, deps) for k in nodes]}
+json.dump(ok, open(sys.argv[2], "w"))
+ok["task_fields"][2]["priority"] = 4
+for r in ok["task_fields"]:
+    r["dependencies"] = [d for d in deps if d != {"task_id": "n2", "depends_on": "w1"}]
+json.dump(ok, open(sys.argv[3], "w"))
+PYEOF
+run_stub check "$DOCS/fd.md" --observed "$WORK/obs-ok.json" --plan "$WORK/fp-dates.json" --row "$CUO_ROW"
+check "check --observed: a matching re-read exits 0" "$rc" "0"
+check "check --observed: a matching re-read prints nothing" "$out" ""
+run_stub check "$DOCS/fd.md" --observed "$WORK/obs-bad.json" --plan "$WORK/fp-dates.json" --row "$CUO_ROW"
+check "check --observed: a differing re-read exits 1" "$rc" "1"
+has "check --observed: names the differing field" "$out" "observed T2 priority - 4"
+has "check --observed: names the missing relation" "$out" "observed T2 외부선행 w1 없음"
+run_stub check "$DOCS/fd.md" --observed "$WORK/obs-ok.json" --row "$CUO_ROW"
+check "check --observed: needs --plan and --row with it" "$rc" "2"
+
+# A tie for the most common priority leaves it empty; the plan says why.
+gen ok && cp "$DOCS/ok.md" "$DOCS/ft.md"
+run_stub plan "$DOCS/ft.md" --row "$CU_ROW" --out "$OUT" --fields "$(fx tie)"
+check "fields: a tied mode is no value" "$(pick base 'e["fields"]["empty"]["priority"]')" '"참조 값 없음"'
+
+# This split's own tickets leave the denominator once the registry names them.
+gen ok && cp "$DOCS/ok.md" "$DOCS/fn.md"
+run_stub plan "$DOCS/fn.md" --row "$CUO_ROW" --out "$OUT" --fields "$(fx runnode)"
+hasnt "fields: half the list without assignees leaves them empty" "$(argv_of base)" "--assignee"
+run_stub record "$DOCS/fn.md" --row "$CUO_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc --node-id abc
+run_stub plan "$DOCS/fn.md" --row "$CUO_ROW" --out "$OUT" --fields "$WORK/fields-runnode.json"
+has "fields: the run's own ticket leaves the denominator" "$(argv_of T1)" "--assignee 4"
+
+# The document's own external fields add relations; an id outside the
+# snapshot, a partial or foreign document, and a missing origin are refused.
+gen ok && sed -e '/^### 티켓 T1 /,/^\*\*범위\*\*/s/^\*\*공유 파일\*\*: 없음$/**공유 파일**: 없음\
+**외부 선행**: s1/' "$DOCS/ok.md" > "$DOCS/fx.md"
+run_stub check "$DOCS/fx.md"
+check "check: an 외부 선행 field passes the predicates" "$rc" "0"
+run_stub plan "$DOCS/fx.md" --row "$CU_ROW" --out "$OUT" --fields "$WORK/fields-rules.json"
+check "fields: an 외부 선행 the snapshot holds is planned" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tickets"]["T1"]["external_pred"])' "$OUT/fields-plan.json")" "['s1']"
+refused_stub "an external id outside the snapshot" "$DOCS/fx.md" --row "$CU_ROW" --out "$OUT" --fields "$FX_EMPTY"
+has "refusal names the id outside the snapshot" "$out" "스냅숏에 없는 티켓 id s1"
+refused_stub "external fields on a github row" "$DOCS/fx.md" --row "$GH_ROW" --out "$OUT"
+refused_stub "--fields on a github row" "$DOCS/ok.md" --row "$GH_ROW" --out "$OUT" --fields "$FX_EMPTY"
+refused_stub "a partial field document" "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$(fx budget)"
+refused_stub "a field document cut by the limit" "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$(fx limit)"
+has "refusal says the list is over 2000" "$out" "2000"
+refused_stub "a document without kind" "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$(fx nokind)"
+refused_stub "a field document of another list" "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT" --fields "$(fx otherlist)"
+refused_stub "an origin the document did not read alone" "$DOCS/cu.md" --row "$CUO_ROW" --out "$OUT" --fields "$FX_EMPTY"
+
+# The origin's dependency on a closed ticket of the list stays a relation; one
+# on a ticket the document shows in another list is left out, with the reason,
+# instead of refusing the whole plan.
+gen ok && cp "$DOCS/ok.md" "$DOCS/ff.md"
+run_stub plan "$DOCS/ff.md" --row "$CUO_ROW" --out "$OUT" --fields "$(fx foreign)"
+check "foreign: plan exits 0" "$rc" "0"
+check "foreign: the closed ticket stays, the other list's ticket leaves the relations" \
+  "$(python3 -c 'import json,sys
+t = json.load(open(sys.argv[1]))["tickets"]
+print(" ".join("%s:%s/%s" % (k, ",".join(t[k]["external_pred"]), ",".join(t[k]["external_succ"])) for k in ("T1", "T2", "T3")))' "$OUT/fields-plan.json")" \
+  "T1:w1/ T2:w1/ T3:/"
+check "foreign: the plan names the left-out ticket on every leaf" \
+  "$(python3 -c 'import json,sys
+t = json.load(open(sys.argv[1]))["tickets"]
+print(json.dumps([t[k]["external_skipped"] for k in ("T1", "T2", "T3")], ensure_ascii=False, sort_keys=True))' "$OUT/fields-plan.json")" \
+  '[[{"direction": "후행", "id": "x9", "reason": "다른 리스트 777"}], [], [{"direction": "후행", "id": "x9", "reason": "다른 리스트 777"}]]'
+hasnt "foreign: no relation is planned with the other list's ticket" "$(entries)" "x9"
 
 # Every argv the ClickUp plans emitted parses against its tool.
 python3 - "$WORK/cu-all.jsonl" <<'PYEOF' && ok "plan clickup: every emitted argv parses against its tool" || bad "plan clickup: every emitted argv parses against its tool"

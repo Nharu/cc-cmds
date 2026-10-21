@@ -3014,6 +3014,35 @@ sed 's/{ "steps": \["audit", "implement"\] }/{ "design_required": true, "design_
 check "베이스 팔 픽스처가 실제로 design_scope=base 를 얻었다 (아래가 공허하지 않다)" \
   "$(MANIFEST="$MFB"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_scope)" "base"
 
+# 「베이스 발행」 행의 선택 필드 ` | 원 티켓=<task id>` — 대상 뒤에, clickup 행에만,
+# 영문·숫자·_·- 로. 그 밖은 행 형식 오류이거나 clickup 행 전용이라는 거부다.
+bp_check() {   # bp_check <행> — 「rc 마지막줄」
+  local m="$ARMB/bp.md" out rc
+  cp "$MFB" "$m"; printf '%s\n' "$1" >> "$m"
+  out=$( ( MANIFEST="$m"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 ); rc=$?
+  printf '%s %s' "$rc" "$(printf '%s\n' "$out" | tail -1)"
+}
+bp_r=$(bp_check '- `베이스 발행` | 트래커=clickup | 대상=900')
+case "$bp_r" in 0\ *) ok "원 티켓 없는 clickup 행이 통과한다 (아래가 공허하지 않다)" ;; *) bad "원 티켓 없는 clickup 행" "$bp_r" ;; esac
+bp_r=$(bp_check '- `베이스 발행` | 트래커=clickup | 대상=900 | 원 티켓=86ab_c-1')
+case "$bp_r" in 0\ *) ok "원 티켓을 단 clickup 행이 통과한다" ;; *) bad "원 티켓을 단 clickup 행" "$bp_r" ;; esac
+for bp_row in '- `베이스 발행` | 트래커=github | 대상=Nharu/cc-cmds | 원 티켓=86ab' '- `베이스 발행` | 트래커=없음 | 대상=- | 원 티켓=86ab'; do
+  bp_r=$(bp_check "$bp_row")
+  case "$bp_r" in
+    0\ *) bad "clickup 이 아닌 행의 원 티켓" "통과했다: $bp_row" ;;
+    *"원 티켓 은 clickup 행에만 둡니다"*) ok "clickup 이 아닌 행의 원 티켓은 거부된다 (${bp_row#*트래커=})" ;;
+    *) bad "clickup 이 아닌 행의 원 티켓" "$bp_r" ;;
+  esac
+done
+for bp_row in '- `베이스 발행` | 트래커=clickup | 대상=900 | 원 티켓=' '- `베이스 발행` | 트래커=clickup | 원 티켓=86ab | 대상=900'; do
+  bp_r=$(bp_check "$bp_row")
+  case "$bp_r" in
+    0\ *) bad "원 티켓 형식 오류" "통과했다: $bp_row" ;;
+    *"「베이스 발행」 행의 형식이 어긋났습니다"*"원 티켓=<task id>"*) ok "원 티켓 형식 오류는 행 형식 오류다 (${bp_row#*트래커=})" ;;
+    *) bad "원 티켓 형식 오류" "$bp_r" ;;
+  esac
+done
+
 armb_case() {
   # armb_case <라벨> <리더 리포트: 있음|없음> <감사 종단 부류> <분할 종단 부류> <분할 술어 0|1> [앞선 감사 행의 종단 부류]
   # 분할 종단 부류는 쉼표로 이어 시도마다 하나씩 준다(마지막 값이 이후 시도에 반복된다).
@@ -4302,8 +4331,8 @@ DOC="$WORK/base/docs/x.md"
 check "문서가 있으면 접근자는 그 문서를 낸다" "$(doc_arg)" "$WORK/base/docs/x.md"
 DOC=""
 # 접근자가 있어도 호출부가 `$DOC` 를 그대로 끼우면 아무것도 달라지지 않는다.
-check "구현 스테이지 두 자리가 접근자를 쓴다" \
-  "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "2"
+check "구현 스테이지 네 자리(첫 파견·새 프로세스 재시도·크래시 재시도·한도-형상 회수 뒤 재파견)가 접근자를 쓴다" \
+  "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )/$( { grep -cF 'implement-unattended $DOC' "$DRIVER" || true; } )" "4/0"
 check "리뷰 스테이지 세 자리(리뷰·복구 리뷰·리드 수정)가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "3"
 check "재수렴 스테이지 세 자리(항목 사다리·설계 수준 잔여·상한 P0 잔여)가 접근자를 쓴다" \
@@ -11294,7 +11323,10 @@ for r35fn in classify_termination stage_attempt_pinned stage_session_id stage_pa
 done
 R35="$WORK/r35"; mkdir -p "$R35/run/log" "$R35/run/halt"
 H35=$(cd "$MF_REPO" && git rev-parse HEAD)
-M35="$R35/manifest.md"; M35D="$R35/manifest-nodoc.md"
+# 매니페스트는 <베이스>/docs/pipeline-run 아래에 둔다 — 게이트가 정본 리뷰 리포트 경로를
+# 그 두 단 위(여기서는 $R35)에서 풀므로, 리포트가 이 절의 작업 디렉터리 안에 남는다.
+mkdir -p "$R35/docs/pipeline-run"
+M35="$R35/docs/pipeline-run/manifest.md"; M35D="$R35/manifest-nodoc.md"
 write_manifest "$M35" "" "" main "docs/r35.md"
 write_manifest "$M35D"
 for r35m in "$M35" "$M35D"; do
@@ -11392,6 +11424,13 @@ r35_in() {
     gh() { printf '%s\n' "$*" >> "$R35/gh-unstubbed.log"; return 1; }
     export -f gh; export R35
     "$@" )
+}
+# r35_canon <원장> <리포트> [k] — 그 원장에서 S2 가 받을 정본 리뷰 리포트 경로에 리포트를
+# 복사하고 그 경로를 낸다. 게이트의 cycle 갈래는 다른 경로의 행을 받지 않는다.
+r35_canon() {
+  local p
+  p=$(r35_in "$1" "$M35" run_gate_call gate_review_report_path S2 ${3:+"$3"} 2>/dev/null)
+  mkdir -p "$(dirname "$p")"; cp "$2" "$p"; printf '%s' "$p"
 }
 r35_elem_next() {  # r35_elem_next <원장> <매니페스트> — 스냅숏 원소의 다음, 원소가 없으면 리뷰 없음
   local v
@@ -11639,11 +11678,11 @@ check "35: 이월 실패의 잔여 park 는 근거를 이월 실패 로 시작�
   "$(r35_resck "$L35F")/$(r35_resrow "$L35F" | grep -cF '근거=이월 실패' || true)" "1/1/0/0/1"
 
 # --- R4·R13: 자식 셸에서 부르는 게이트의 행 조립 함수 ---
-L35R4=$(r35_led r4)
+L35R4=$(r35_led r4); R35CL4=$(r35_canon "$L35R4" "$R35CL")
 r35_rc4=0; r35_in "$L35R4" "$M35" run_gate_call gate_cycle_row home S2 사이클=1 P0=0 P1=0 \
-  "리뷰 HEAD=$H35" "리포트 경로=$R35CL" "lane 결정=[]" >/dev/null 2>&1 || r35_rc4=$?
+  "리뷰 HEAD=$H35" "리포트 경로=$R35CL4" "lane 결정=[]" >/dev/null 2>&1 || r35_rc4=$?
 r35_rc4b=0; r35_in "$L35R4" "$M35" run_gate_call gate_cycle_row home S2 사이클=2 P0=0 P1=0 \
-  "리뷰 HEAD=not-a-sha" "리포트 경로=$R35CL" "lane 결정=[]" >/dev/null 2>&1 || r35_rc4b=$?
+  "리뷰 HEAD=not-a-sha" "리포트 경로=$(r35_canon "$L35R4" "$R35CL")" "lane 결정=[]" >/dev/null 2>&1 || r35_rc4b=$?
 check "35: cycle 조립 함수는 행 하나를 쓰고 0, 잘못된 리뷰 HEAD 는 행 없이 0 아닌 코드다 (R4)" \
   "$r35_rc4/$([ "$r35_rc4b" != 0 ] && printf 거절 || printf 통과)/$(grep -c '^- `cycle`' "$L35R4" || true)" "0/거절/1"
 r35_vocab=$(r35_in "$L35R4" "$M35" run_gate_call eval 'printf %s "$GATE_EXIT_VOCAB"' 2>/dev/null)
@@ -11657,27 +11696,74 @@ check "35: 워크트리 없는 머지됨 행은 어휘 거절이고 워크트리
 
 # --- cycle 행 기록 ---
 L35R3S=$(r35_led r3s)
-r35_bun=$(r35_in "$L35R3S" "$M35" cycle_gate_bundle S2 home 1 "$R35CL" '[{"id":"F-1","lane":"fast"}]' 2>/dev/null)
+r35_bun=$(r35_in "$L35R3S" "$M35" cycle_gate_bundle S2 home 1 "$(r35_canon "$L35R3S" "$R35CL")" '[{"id":"F-1","lane":"fast"}]' 2>/dev/null)
 check "35: cycle 행은 lane 결정 을 그대로 싣고 다음 을 함께 낸다" \
   "$(bundle_val "$r35_bun" '행')/$(grep -cF 'lane 결정=[{"id":"F-1","lane":"fast"}]' "$L35R3S" || true)/$(bundle_val "$r35_bun" '다음')" \
   "0/1/머지"
 
 # --- R3: 상한을 넘는 cycle 행은 lane 결정 을 먼저 빼고 기록된다 ---
-# 발견 하나가 lane 결정 에 약 50 B 를 더하므로 k=40 은 상한을 넘고 k=10 은 넘지 않는다.
+# 발견 하나가 lane 결정 에 약 50 B 를 더하므로 k=40 은 상한을 넘고 k=5 는 넘지 않는다.
+# 투영은 게이트가 덧붙이는 필드를 모두 가장 넓은 값으로 넣어 재므로 k=10 은 이제 넘는다.
 r35_lk() { jq -cn --argjson k "$1" '[range(0;$k) | {id: ("F-\(.)-0123456789abcdef"), lane: "reconcile"}]'; }
 r35_body() { { grep '^- `cycle`' "$1" || true; } | sed -n '1p' | sed 's/ | prev=[^|]*$//'; }
 L35K40=$(r35_led k40); r35_lk40=$(r35_lk 40)
-r35_bun=$(r35_in "$L35K40" "$M35" cycle_gate_bundle S2 home 1 "$R35CL" "$r35_lk40" 2>/dev/null)
+r35_bun=$(r35_in "$L35K40" "$M35" cycle_gate_bundle S2 home 1 "$(r35_canon "$L35K40" "$R35CL")" "$r35_lk40" 2>/dev/null)
 r35_b40=$(run_row_bytes_of_body "$(r35_body "$L35K40")")
 r35_w40=$(lane_dropped_warn S2 1 "$r35_lk40" "$(bundle_val "$r35_bun" 'lane 생략')" 2>&1 >/dev/null | grep -c '「lane 결정」 을 빼고' || true)
 check "35: 상한을 넘는 cycle 행은 lane 결정 없이 상한 안에 기록되고 경고가 한 줄 남는다 (R3, k=40)" \
   "$(bundle_val "$r35_bun" '행')/$(grep -c '^- `cycle`' "$L35K40" || true)/$(grep -c 'lane 결정=' "$L35K40" || true)/$([ "$r35_b40" -le 1024 ] && printf 상한안 || printf "상한밖($r35_b40)")/$([ -n "$(bundle_val "$r35_bun" 'lane 생략')" ] && printf 생략 || printf 없음)/$r35_w40" \
   "0/1/0/상한안/생략/1"
-L35K10=$(r35_led k10); r35_lk10=$(r35_lk 10)
-r35_bun=$(r35_in "$L35K10" "$M35" cycle_gate_bundle S2 home 1 "$R35CL" "$r35_lk10" 2>/dev/null)
-check "35: 상한 안의 cycle 행은 lane 결정 을 바이트 그대로 싣고 생략하지 않는다 (R3, k=10)" \
+L35K10=$(r35_led k10); r35_lk10=$(r35_lk 5)
+r35_bun=$(r35_in "$L35K10" "$M35" cycle_gate_bundle S2 home 1 "$(r35_canon "$L35K10" "$R35CL")" "$r35_lk10" 2>/dev/null)
+check "35: 상한 안의 cycle 행은 lane 결정 을 바이트 그대로 싣고 생략하지 않는다 (R3, k=5)" \
   "$(bundle_val "$r35_bun" '행')/$(grep -cF "lane 결정=$r35_lk10 |" "$L35K10" || true)/$([ -n "$(bundle_val "$r35_bun" 'lane 생략')" ] && printf 생략 || printf 없음)/$(lane_dropped_warn S2 1 "$r35_lk10" "$(bundle_val "$r35_bun" 'lane 생략')" 2>&1 | grep -c . || true)" \
   "0/1/없음/0"
+# 공용 투영을 통과한 행은 게이트에서 lane 결정 외에 아무것도 잃지 않고, 넘친 행은 lane
+# 결정만 빠진다 — 두 행 모두 게이트의 원인 필드 열한 개와 발견 지문·리뷰 종결을 싣는다.
+r35_keys() {  # r35_keys <원장> — 첫 cycle 행이 실은 게이트 필드 수
+  local b k n=0
+  b=$(r35_body "$1")
+  for k in 계기 '수정 경로' '앞 HEAD' '리뷰 HEAD 고정' '리포트 형식' 항목 비불릿 '앵커 없음' '태그 밖' 요약 'HEAD 줄' '발견 지문' '리뷰 종결'; do
+    case "$b" in *" | $k="*) n=$((n + 1)) ;; esac
+  done
+  printf '%s' "$n"
+}
+check "35: 투영을 통과한 행은 게이트에서 lane 결정 외에 아무것도 잃지 않는다 (R1)" \
+  "$(r35_keys "$L35K10")/$(grep -cF "lane 결정=$r35_lk10 |" "$L35K10" || true)" "13/1"
+check "35: 투영이 넘치는 행은 lane 결정만 빠진다 (R1)" \
+  "$(r35_keys "$L35K40")/$(grep -c 'lane 결정=' "$L35K40" || true)" "13/0"
+r35_k_proj=$(r35_in "$L35K10" "$M35" run_gate_call gate_cycle_row_projected_bytes S2 사이클=1 P0=0 P1=0 \
+  "리뷰 HEAD=$H35" "리포트 경로=$R35CL4" "lane 결정=$r35_lk10" 2>/dev/null)
+check "35: 공용 투영은 게이트가 실제로 쓴 cycle 행보다 짧게 재지 않는다 (R1)" \
+  "$([ "${r35_k_proj:-0}" -ge "$(run_row_bytes_of_body "$(r35_body "$L35K10")")" ] && printf 이상 || printf "미만($r35_k_proj)")" "이상"
+
+# --- 드라이버 경로의 계기와 -r2 재파견 (R2) ---
+# 드라이버는 계기를 넘기지 않으므로 게이트가 원장 사실에서 도출한다: 사이클 1 은 첫 리뷰,
+# 앞 사이클의 P1 이 남았으면 리뷰 P1, 그 사이에 checks 실패가 있으면 CI 실패. 정상 사이클이
+# (미상) 을 내면 도출이 빠진 것이다. 한 번 더 파견한 리뷰의 -r2 경로는 정본 대조를 통과한다.
+r35_trig() {  # r35_trig <원장> [k] — 그 원장에 드라이버 번들로 쓴 cycle 행의 행 코드/계기
+  local rp b
+  rp=$(r35_canon "$1" "$R35CL" ${2:+"$2"})
+  b=$(r35_in "$1" "$M35" cycle_gate_bundle S2 home 9 "$rp" '[]' 2>/dev/null)
+  printf '%s/%s' "$(bundle_val "$b" '행')" \
+    "$( { grep '^- `cycle`' "$1" || true; } | tail -1 | sed -n 's/.* | 계기=\([^|]*\) | .*/\1/p')"
+}
+L35T1=$(r35_led t1)
+L35T2=$(r35_led t2 "1:0:1:$R35P1")
+L35T3=$(r35_led t3 1:0:0 "- \`checks\` | 세그먼트=S2 | 상태=실패")
+L35T4=$(r35_led t4 1:0:0)
+check "35: 드라이버 cycle 행의 계기는 첫 리뷰·리뷰 P1·CI 실패로 도출되고 (미상) 이 아니다 (R2)" \
+  "$(r35_trig "$L35T1")|$(r35_trig "$L35T2")|$(r35_trig "$L35T3")" "0/첫 리뷰|0/리뷰 P1|0/CI 실패"
+r35_r2=$(r35_trig "$L35T4" 2 | cut -d/ -f1)
+case "$( { grep '^- `cycle`' "$L35T4" || true; } | tail -1 | sed -n 's/.* | 리포트 경로=\([^|]*\) | .*/\1/p')" in
+  */docs/reviews/seg-*-S2-cycle[0-9]*-r2.md) r35_r2="$r35_r2/-r2 경로" ;;
+  *) r35_r2="$r35_r2/다른 경로" ;;
+esac
+check "35: -r2 재파견의 cycle 행이 리포트 경로=…/docs/reviews/seg-<런>-<세그먼트>-cycle<n>-r2.md 로 기록되고 정본 대조를 통과한다 (R2)" \
+  "$r35_r2" "0/-r2 경로"
+check "35: 서수가 다른 리포트 경로의 cycle 행은 정본 대조에서 거절된다 (R2)" \
+  "$(r35_in "$L35T4" "$M35" cycle_gate_bundle S2 home 9 "$R35CL" '[]' 2>/dev/null | bundle_val "$(cat)" '행')" \
+  "$r35_vocab"
 
 # --- 리포트 집계와 트리아지 대조 ---
 L35AG=$(r35_led ag)
@@ -11770,7 +11856,13 @@ check "35: 첫 리뷰는 --slice 를 고른 값으로, 복구 리뷰는 그대�
   "1/1/1"
 check "35: 수정 대상 지시는 사이클 2 부터, 앞 사이클 리포트가 있을 때만 구현 지시에 붙는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '[ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '선언 파일: $files$fix_target' || true)" \
-  "1/1"
+  "1/4"
+check "35: 새 프로세스 재시도와 크래시 재시도도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files\"' || true)" \
+  "2/0"
+check "35: 한도-형상 회수 뒤 재파견도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files\"' || true)" \
+  "1/0"
 
 # --- 사이클 루프: 마지막 사이클의 수렴, 다른 슬라이스 몫 거절, 복구 리포트의 리뷰 HEAD ---
 # 진짜 segment_cycle 을 돌린다. 스텁은 스테이지·판단·워크트리·머지 게이트와 cycle 번들뿐이고,
@@ -11894,7 +11986,7 @@ r35_loop_in() {
 r35_loop() {
   local name=$1 cap=$2 dispo="" i=0 b; shift 2
   while [ "$1" != -- ]; do dispo="$dispo $1"; shift; done; shift
-  rm -f "$R35"/bq-* "$R35/crashed" "$R35/nx-n" "$R35/lf-dirty" "$R35/decl-n" "$R35"/*.lead-fix.md "$R35"/loop/docs/reviews/*.lead-fix.md
+  rm -f "$R35"/bq-* "$R35/crashed" "$R35/nx-n" "$R35/lf-dirty" "$R35/decl-n" "$R35"/*.lead-fix.md "$R35"/loop/docs/reviews/*.lead-fix.md "$R35"/docs/reviews/*.lead-fix.md
   : > "$R35/spawn.log"; : > "$R35/cwd.log"; : > "$R35/lf-rows.log"
   for b in "$@"; do i=$((i + 1)); printf '%b' "$b" > "$R35/bq-$i"; done
   R35RUN="$R35/run-loop-$name"; mkdir -p "$R35RUN/log" "$R35RUN/halt"
@@ -11968,10 +12060,10 @@ check "35: 상한 회차 뒤 같은 프로세스의 다음 회차가 S5F 와 확
 r35_lrc=$(R35_NX="리뷰_없음 재수렴" r35_loop rcv-same 1 11 0 -- "$R35BOK" "$R35BOK")
 r35_s1r=$(grep '^S1R:S2:2 ' "$R35/spawn.log" | sed -n 1p)
 check "35: 재수렴 회차는 마지막 리포트를 설계 수준 잔여 범위로 S1R 에 넘긴다" \
-  "$(r35_n '^S1R:S2:2 ')/$(printf '%s' "$r35_s1r" | grep -c '/cc-cmds:design-reconverge .*"설계 수준 잔여 /.*-c1\.md"' || true)/$(r35_n '^reconverge_row S2 S1R:S2:2$')" \
+  "$(r35_n '^S1R:S2:2 ')/$(printf '%s' "$r35_s1r" | grep -c '/cc-cmds:design-reconverge .*"설계 수준 잔여 /.*-cycle1\.md"' || true)/$(r35_n '^reconverge_row S2 S1R:S2:2$')" \
   "1/1/1"
 check "35: 슬라이스 선언이 그대로인 재수렴 뒤에는 같은 회차가 재구현·확인 리뷰를 띄우고 머지로 간다" \
-  "$r35_lrc/$(r35_n '^S4:S2:2 ')/$(grep '^S4:S2:2 ' "$R35/spawn.log" | grep -c '수정 대상: /.*-c1\.md 의 P0·P1' || true)/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')/$(r35_n '^park')" \
+  "$r35_lrc/$(r35_n '^S4:S2:2 ')/$(grep '^S4:S2:2 ' "$R35/spawn.log" | grep -c '수정 대상: /.*-cycle1\.md 의 P0·P1' || true)/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')/$(r35_n '^park')" \
   "0/1/1/1/1/0"
 r35_lrc=$(R35_DECLMOVE=1 R35_NX="리뷰_없음 재수렴" r35_loop rcv-moved 1 11 0 -- "$R35BOK" "$R35BOK")
 check "35: 재수렴이 슬라이스 선언을 옮기면 재계획(2)으로 가고 구현을 띄우지 않는다" \
@@ -11999,12 +12091,12 @@ check "35: 종단 리터럴 없이 끝난 재수렴은 공허한 성공 행을 �
   "0/1/0/1/1/1"
 r35_lrc=$(R35_NX="리뷰_없음 재구현" r35_loop reimpl 1 11 0 -- "$R35BOK" "$R35BOK")
 check "35: 재구현 회차는 S1R·S5F 없이 S4 를 마지막 리포트와 함께 띄우고 확인 리뷰로 간다" \
-  "$r35_lrc/$(r35_n '^S1R:')/$(r35_n '^S5F:')/$(grep '^S4:S2:2 ' "$R35/spawn.log" | grep -c '수정 대상: /.*-c1\.md 의 P0·P1' || true)/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')" \
+  "$r35_lrc/$(r35_n '^S1R:')/$(r35_n '^S5F:')/$(grep '^S4:S2:2 ' "$R35/spawn.log" | grep -c '수정 대상: /.*-cycle1\.md 의 P0·P1' || true)/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')" \
   "0/0/0/1/1/1"
 
 r35_lrc=$(R35DOC="$R35SLI" r35_loop slice 1 0 -- "$R35BSL" "$R35BOK")
 check "35: 다른 슬라이스 몫 거절은 --slice 없는 리뷰 한 번으로 받고, 그 리포트로 머지까지 간다" \
-  "$r35_lrc/$(r35_n '^S5:S2:1 ')/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 1p | grep -c -- '--slice S2' || true)/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 2p | grep -c -- '--slice' || true)/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 2p | grep -c -- '-c1-r2\.md' || true)/$(r35_n '^bundle .*-c1-r2\.md')/$(r35_n '^merge S2')/$(r35_n '^park')" \
+  "$r35_lrc/$(r35_n '^S5:S2:1 ')/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 1p | grep -c -- '--slice S2' || true)/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 2p | grep -c -- '--slice' || true)/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 2p | grep -c -- '-cycle1-r2\.md' || true)/$(r35_n '^bundle .*-cycle1-r2\.md')/$(r35_n '^merge S2')/$(r35_n '^park')" \
   "0/2/1/0/1/1/1/0"
 r35_lrc=$(R35DOC="$R35SLI" r35_loop slice2 1 0 -- "$R35BSL" "$R35BSL")
 check "35: 다시 파견한 리뷰도 몫 거절이면 세 번째를 보내지 않고 park 한다" \
@@ -12015,7 +12107,7 @@ check "35: --slice 를 싣지 않은 리뷰의 거절은 다시 파견하지 않
 
 r35_lrc=$(R35_CRASH=1 r35_loop recov 1 0 -- "$R35BNH" "$R35BOK")
 check "35: 깨끗한 복구 리포트에 리뷰 HEAD 가 없으면 리뷰를 한 번 다시 파견하고 그 리포트로 머지까지 간다" \
-  "$r35_lrc/$(r35_n '^recover ')/$(r35_n '^S5:S2:1 ')/$(r35_n '^bundle .*-c1-r2\.md')/$(r35_n '리뷰 리포트 집계 부재')/$(r35_n '^merge S2')" \
+  "$r35_lrc/$(r35_n '^recover ')/$(r35_n '^S5:S2:1 ')/$(r35_n '^bundle .*-cycle1-r2\.md')/$(r35_n '리뷰 리포트 집계 부재')/$(r35_n '^merge S2')" \
   "0/1/2/1/0/1"
 r35_lrc=$(R35_CRASH=1 r35_loop recov2 1 0 -- "$R35BNH" "$R35BNH")
 check "35: 다시 파견한 리뷰에도 리뷰 HEAD 가 없으면 집계 부재로 park 한다" \
