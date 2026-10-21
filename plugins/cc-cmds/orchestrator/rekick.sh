@@ -1255,12 +1255,14 @@ rk_wait_cause() {
 }
 
 # rk_last_handoff_waited <ledger> — succeeds when the ledger's last `handoff`
-# carries `사유=대기` as a whole field.
+# carries `사유=대기` or `사유=이월` as a whole field. `이월` waits too: the
+# seat call's relay holds it until one second past the deadline, and the shift
+# it then launches ends the run.
 rk_last_handoff_waited() {
   awk '
     index($0, "- `handoff` | ") == 1 {
       w = 0; n = split($0, f, / \| /)
-      for (i = 2; i <= n; i++) { s = f[i]; sub(/[[:space:]]+$/, "", s); if (s == "사유=대기") w = 1 }
+      for (i = 2; i <= n; i++) { s = f[i]; sub(/[[:space:]]+$/, "", s); if (s == "사유=대기" || s == "사유=이월") w = 1 }
     }
     END { exit !w }' "$1" 2>/dev/null
 }

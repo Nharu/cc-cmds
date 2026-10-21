@@ -3174,6 +3174,33 @@ for tok in \
   if grep -F "\"${tok#* }\"" "$TR_ROUTE" >/dev/null; then :; else bad "부류 포괄: ${tok#* } 가 route.sh 에 없다"; fi
 done
 
+# TK1 분류 완전성: `event=resume` 의 판정이 낼 수 있는 PARK 이유는 모두 게이트 운반 act 의
+# 두 부류 중 하나에 든다 — 새 요청으로 넘어가는 다섯(게이트의 닫힌 목록)이거나, 오늘처럼
+# park 하는 런 전체·설정 이유다. 이유는 판정 앞단(`rt_resume` 를 부르기 전까지의
+# `rt_decide`)과 `rt_resume` 본문에서 철자로 뽑고, 이름 붙은 PARK 생성기는 그 이유로
+# 읽는다. 라우터에 새 이유가 생기면 어느 부류에도 없어 여기서 먼저 빨개진다.
+tk1_fall=$(sed -n '/^gate_launch_route_carry() {/,/^}/s/^ *\(deadline|resume-[a-z|-]*\)) bcls=fall ;;$/\1/p' "$TR_ORCH/gate.sh" \
+  | tr '|' '\n' | LC_ALL=C sort | tr '\n' ' ')
+check "TK1: 게이트의 넘어가는 이유 목록이 다섯이다" "$tk1_fall" \
+  "deadline resume-bound-ineligible resume-bound-unknown-account resume-logged-out resume-unbound "
+tk1_stay="lease-table-corrupt borrow-record-corrupt lent-seat-unrouted inventory-corrupt own-lease-corrupt"
+tk1_src=$( { sed -n '/^def rt_decide(/,/rt_resume(\$p)$/p' "$TR_ROUTE"; sed -n '/^def rt_resume(/,/^def rt_waitpick(/p' "$TR_ROUTE"; } )
+tk1_seen=$( { printf '%s\n' "$tk1_src" | grep -oE 'rt_park\("[a-z-]+"' | sed 's/^rt_park("//; s/"$//'
+              case "$tk1_src" in (*'rt_park_deadline('*) printf 'deadline\n' ;; esac
+              case "$tk1_src" in (*rt_park_borrow_corrupt*) printf 'borrow-record-corrupt\n' ;; esac
+              case "$tk1_src" in (*rt_park_unrouted*) printf 'lent-seat-unrouted\n' ;; esac; } | LC_ALL=C sort -u)
+check "TK1: 판정 앞단과 rt_resume 에서 뽑은 PARK 이유가 열 개다 (공허하지 않다)" "$(printf '%s\n' "$tk1_seen" | grep -c .)" "10"
+tk1_miss=""
+for tk1_r in $tk1_seen; do
+  case " $tk1_fall $tk1_stay " in *" $tk1_r "*) ;; *) tk1_miss="$tk1_miss $tk1_r" ;; esac
+done
+check "TK1: event=resume 의 모든 PARK 이유가 두 부류 중 하나에 든다" "${tk1_miss:-없음}" "없음"
+tk1_both=""
+for tk1_r in $tk1_stay; do
+  case " $tk1_fall " in *" $tk1_r "*) tk1_both="$tk1_both $tk1_r" ;; esac
+done
+check "TK1: 두 부류는 겹치지 않는다" "${tk1_both:-없음}" "없음"
+
 passed=$(count_results PASS)
 failed=$(count_results FAIL)
 assertions=$((passed + failed))

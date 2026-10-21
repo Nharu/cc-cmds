@@ -141,6 +141,11 @@
 #                    `--` (`--no-slice` drops `--slice` instead), then the
 #                    `설계는 <문서>` directive; writes nothing.
 #                    Refused (3) when the segment has no row naming a branch
+#   gate.sh binding-digest --manifest <path> -- <design document path>
+#                    prints the document's binding-surface digest — the one the
+#                    driver compares a segment plan against — on one line;
+#                    writes nothing. Refused (2) for a path that is not a
+#                    readable file
 #   gate.sh report-check --manifest <path> --report <absolute path>
 #                    checks the item shape of a review report's P0 and P1
 #                    sections — the summary line, items against the summary,
@@ -663,6 +668,22 @@ readonly GATE_EXIT_ROUTE=16
 # router, and repeating the dispatch later is wrong while the first one lives.
 # Not 3: no argv or rule needs changing. Wait on the key instead.
 readonly GATE_EXIT_INFLIGHT=17
+
+# A CARRY OF A HALT ANSWER REFUSED BY ITS CAP. `act --kind skill --carry-answer`
+# refuses to carry an answer once attempts that carried the same answer died
+# before a session three times, or once an attempt that carried an answer halted
+# again on the same step and the same question. Both write an act-scope
+# `blocked` row with `사유=중단 답 라우팅 — …` before this exit. NOT 3: 3 is the
+# carry's refusal that writes no row and leaves the answer for the shift's
+# `중단` hand-off; this one wrote its cause, and the next thing is a person.
+readonly GATE_EXIT_CARRY_CAP=18
+
+# A CARRY WHOSE (skill, step) PAIR IS NOT IN THE RE-ENTRY TABLE. The halt's
+# answer cannot be handed to a fresh session, so no row is written and the
+# shift re-attaches the halted session with `--resume` as before. NOT 3: 3
+# sends the shift to `handoff 사유=중단`, and this is the one code that sends it
+# to `--resume` instead.
+readonly GATE_EXIT_CARRY_UNTABLED=19
 
 # The head of a gate-dispatched lineage. The driver's dispatch ids begin with
 # `S4:`, `S5:`, `S5R:`, `S1':`, `S1design` or `S2`, and the router strips only
@@ -12578,13 +12599,15 @@ EOF
 }
 
 gate_stage_wait_row() {
-  # gate_stage_wait_row <파견 id> <봉투 json> [<구속 토큰>] — one `stage-wait` row
-  # from a `WAIT` envelope, built the way `gate_stage_lease_row` builds its row.
-  # The envelope carries no dispatch id, so the caller passes it and `계보` is
-  # derived from it. `까지` is `floor|todate`, the byte shape of `now_iso`. A
-  # `resume-bound-*` reason needs the binding the same way a `resume-bound`
-  # grant does.
-  local did="${1:-}" env="${2:-}" bind="${3:-}" verdict vals lineage grp acct upto cost csrc reason
+  # gate_stage_wait_row <파견 id> <봉투 json> [<구속 토큰>] [<중단 답 줄>] — one
+  # `stage-wait` row from a `WAIT` envelope, built the way `gate_stage_lease_row`
+  # builds its row. The envelope carries no dispatch id, so the caller passes it
+  # and `계보` is derived from it. `까지` is `floor|todate`, the byte shape of
+  # `now_iso`. A `resume-bound-*` reason needs the binding the same way a
+  # `resume-bound` grant does. An attempt that waits with a halt answer's card
+  # names the answer's ledger line in `답 운반`, so the ledger tells a wait that
+  # holds an answer from one that does not.
+  local did="${1:-}" env="${2:-}" bind="${3:-}" carry="${4:-}" verdict vals lineage grp acct upto cost csrc reason
   verdict=$(printf '%s' "$env" | jq -r 'if type == "object" then (.verdict // "") else "" end' 2>/dev/null) || return 2
   [ "$verdict" = "WAIT" ] || return 2
   vals=$(printf '%s' "$env" | jq -r "$(gate_route_bp_jq)"'
@@ -12606,7 +12629,7 @@ EOF
       gate_resume_grant_ok "$bind" "$env" || return 2 ;;
   esac
   gate_append 'stage-wait' "계보=$lineage" "그룹=$grp" "계정=$acct" "까지=$upto" \
-    "비용=$cost" "비용 출처=$csrc" "근거=$reason"
+    "비용=$cost" "비용 출처=$csrc" "근거=$reason" ${carry:+"답 운반=$carry"}
 }
 
 gate_lease_of() {
@@ -16867,6 +16890,9 @@ gate_main() {
   # The recovery marker of a review re-dispatch, the same way: only the argv
   # flag sets it, and only `act --kind skill` of a review takes it.
   GATE_RECOVERY=""
+  # The ledger line of the `중단 답` row a carry act hands on, the same way: only
+  # the argv flag sets it, and only `act --kind skill` takes it.
+  GATE_CARRY_ANSWER=""
   # The trigger a review dispatch declares and the reason a `라우터 판단` one
   # gives, the same way: only the argv flags set them, and only `act`/`plan
   # --kind skill` of a review takes them.
@@ -16933,7 +16959,8 @@ gate_main() {
       --void)            void=1; shift ;;
       --reject)          reject=1; shift ;;
       --resume)          GATE_RESUME="$2"; shift 2 ;;
-      --site)            GATE_SHIFT_HALT_SITE="$2"; shift 2 ;;
+      --carry-answer)    GATE_CARRY_ANSWER="$2"; shift 2 ;;
+      --site)           GATE_SHIFT_HALT_SITE="$2"; shift 2 ;;
       --from-declaration) GATE_FROM_DECLARATION=1; shift ;;
       --recovery)        GATE_RECOVERY="$2"; shift 2 ;;
       --trigger)         GATE_TRIGGER="$2"; GATE_TRIGGER_SEEN=1; shift 2 ;;
@@ -16981,6 +17008,24 @@ gate_main() {
     if [ "$GATE_RECOVERY" != "전송 단절" ]; then
       printf 'gate: --recovery takes one value, 전송 단절 (received: %s)\n' "$GATE_RECOVERY" >&2
       exit 2
+    fi
+  fi
+  # `--carry-answer` names the `중단 답` row a stage dispatch hands on. Whether
+  # the halted session is re-attached is the gate's decision, so a caller that
+  # also names the session to resume is refused with no row (exit 3), the same
+  # way the carry's other refusals end.
+  if [ -n "$GATE_CARRY_ANSWER" ]; then
+    if [ "$verb:$kind" != "act:skill" ]; then
+      printf 'gate: --carry-answer is used only with act --kind skill (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
+      exit 2
+    fi
+    case "$GATE_CARRY_ANSWER" in
+      *[!0-9]*|0*) printf 'gate: --carry-answer takes the ledger line number of a 중단 답 row (received: %s)\n' "$GATE_CARRY_ANSWER" >&2
+                   exit 2 ;;
+    esac
+    if [ -n "$GATE_RESUME" ]; then
+      printf 'gate: --carry-answer and --resume together — the gate decides whether the halted session is re-attached; pass --carry-answer alone\n' >&2
+      exit 3
     fi
   fi
   # `--trigger` and `--trigger-reason` declare why a review is dispatched; on
@@ -17676,6 +17721,18 @@ gate_main() {
       # with the flags after `--` in it. No ledger row — the dispatch is the act.
       gate_review_line "$segment" "$@"
       ;;
+    binding-digest)
+      # Reading, not acting: the driver's own `binding_digest` over the document
+      # named after `--`, so a re-convergence stage takes its before and after
+      # baselines with the same computation the plan admission compares. No
+      # ledger row. The document is named rather than taken from the manifest
+      # because a base-scope run re-converges a child document too.
+      [ $# -eq 1 ] || { printf 'gate: binding-digest needs exactly one document path after --\n' >&2; exit 2; }
+      { [ -f "$1" ] && [ -r "$1" ]; } \
+        || { printf 'gate: binding-digest: 읽을 수 있는 파일이 아닙니다: %s\n' "$1" >&2; exit 2; }
+      DOC="$1"
+      binding_digest; printf '\n'
+      ;;
     report-check)
       # Reading, not acting: the review stage's own check of the report it
       # wrote, before it ends. No ledger row, no edit to the report.
@@ -17906,7 +17963,10 @@ gate_answered_halts_json() {
     # string for an answer given in this run, and the earlier run's id for one
     # the adopted segment's planning act carried over (`gate_adoption_halt_carry`).
     # `answered_by` is `사람`, `좌석` or `교대` (`gate_halt_answered_by`), so the
-    # shift's re-attach message can say who chose the option. `route` is the
+    # shift's re-attach message can say who chose the option. `state` is `이월`
+    # when an `이월` row of this run names the line — a carry found no room
+    # before the deadline and the next run takes the answer up, so this run does
+    # not carry it again — and `열림` otherwise. `route` is the
     # route id `gate_halt_answer_route` gives the answer now and
     # `route_refusal` its reason when it gives none — the same verdict
     # `halt-answer` gave when it recorded the row, read again because the
@@ -17924,7 +17984,7 @@ gate_answered_halts_json() {
         rwhy=$GATE_HALT_ROUTE_REASON
       fi
     fi
-    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "attachment": "%s", "origin_run": "%s", "route": "%s", "route_refusal": "%s", "line": %s}' \
+    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "attachment": "%s", "origin_run": "%s", "route": "%s", "route_refusal": "%s", "line": %s, "state": "%s"}' \
       "$(gate_json_escape "$key")" \
       "$(gate_json_escape "$rrec")" \
       "$(gate_json_escape "$(gate_row_field "$row" '스킬')")" \
@@ -17934,7 +17994,8 @@ gate_answered_halts_json() {
       "$(gate_json_escape "$(gate_row_field "$row" '출처 런')")" \
       "$(gate_json_escape "$rroute")" \
       "$(gate_json_escape "$rwhy")" \
-      "$ln"
+      "$ln" \
+      "$(if gate_halt_answer_deferred "$LEDGER" "$ln"; then printf '이월'; else printf '열림'; fi)"
   done
   [ "$first" = "1" ] || printf '\n'
 }
@@ -18026,11 +18087,17 @@ gate_halt_answer_consumer() {
   # row of the key on a later line is a candidate beside the `stage-result` one,
   # and the earlier of the two is the consumer. Every other option is spent the
   # way it was.
+  #
+  # AN ATTEMPT THAT CARRIED THE ANSWER AND DIED BEFORE ITS SESSION does not take
+  # it up either: its row carries `답 운반` and `세션 id=미상`, the card was never
+  # read, and the answer is still the one to carry. The two filters below are
+  # `gate_row_is_pre_session_death` spelled for a line-numbered stream, so the
+  # routing that reads the key's last row sees the same rows passed over.
   local sr st pk
   sr=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
-    | awk -F: -v l="$3" '$1 > l && !p { print; p = 1 }')
+    | awk -F: -v l="$3" '$1 > l && !p && !(index($0, "| 세션 id=미상 |") && index($0, "| 답 운반=")) { print; p = 1 }')
   if [ "$1" = "${LEDGER:-}" ] \
      && [ -n "$(gate_shift_halt_row_of "$(gate_row_field "$(sed -n "${3}p" "$1" 2>/dev/null)" '중단 기록')")" ]; then
     st=$(LC_ALL=C awk -v l="$3" -v k="$2" '
@@ -18594,6 +18661,40 @@ gate_halt_auto_answer_current() {
       warn "no \`shift-halt\` row of this run wrote this record, so it is not a question this run asked: $rec"
       return "$GATE_EXIT_RULE" ;;
   esac
+  local lp
+  gate_halt_record_of_last_park "$LEDGER" "$RUN_DIR" "$key" "$rec"
+  lp=$?
+  cls=$GATE_LAST_PARK_CLASS; want=$GATE_LAST_PARK_STAGE
+  case "$lp" in
+    0) return 0 ;;
+    2) warn "$key's last settled attempt did not halt (\`종단 부류=${cls:-미상}\`), so this record is not the question the key is stopped on — an automatic answer goes only to the key's latest halt: $rec"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+  warn "this record is not the halt of $key's last settled attempt ($want, \`halt/$want.md\`) — an automatic answer goes only to the key's latest halt, and an older one goes to a person: $rec"
+  return "$GATE_EXIT_RULE"
+}
+
+gate_halt_record_of_last_park() {
+  # gate_halt_record_of_last_park <ledger> <run dir> <key> <record> — 0 when
+  # <record> is the halt of the attempt the key last settled in <ledger>, and
+  # that attempt ended `의도된 park`; 2 when the key's last settled attempt did
+  # not halt; 1 when it halted on another record. GATE_LAST_PARK_CLASS holds
+  # that attempt's `종단 부류`, GATE_LAST_PARK_STAGE its `<스테이지>#<실행 버전>`
+  # and GATE_LAST_PARK_ROW its whole `stage-result` row.
+  #
+  # ONE DEFINITION FOR THE TWO ANSWERS THAT NEED IT. An automatic answer goes
+  # only to the key's latest halt (`gate_halt_auto_answer_current`), and a carry
+  # act hands an answer on only when its record is that halt: a fresh session
+  # given an answer to an older question would apply a decision the key already
+  # moved past. The ledger is an argument so an answer brought over from an
+  # earlier run is judged against the run whose attempt halted on it.
+  #
+  # The record is that attempt's when it is `<run dir>/halt/<스테이지>#<실행
+  # 버전>.md`, or when its header names that stage id. An attempt that never
+  # spawned (`관측=스폰 전 대기 중`) or ended `크래시`, `한도 종료` or `외부
+  # 종료` halted nowhere and is passed over.
+  local LEDGER="$1" rd="$2" key="$3" rec="$4" row last='' ver stg hst
+  GATE_LAST_PARK_CLASS=''; GATE_LAST_PARK_STAGE=''; GATE_LAST_PARK_ROW=''
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     case "$row" in *'| 관측=스폰 전 대기 중'*) continue ;; esac
@@ -18604,19 +18705,695 @@ gate_halt_auto_answer_current() {
   done <<EOF
 $( { gate_stage_result_rows_of "$key" || true; } )
 EOF
-  cls=$(gate_row_field "$last" '종단 부류')
+  GATE_LAST_PARK_ROW=$last
+  GATE_LAST_PARK_CLASS=$(gate_row_field "$last" '종단 부류')
   ver=$(gate_row_field "$last" '실행 버전')
   stg=$(gate_row_field "$last" '스테이지')
-  if [ "$cls" != "의도된 park" ] || [ -z "$ver" ] || [ -z "$stg" ]; then
-    warn "$key's last settled attempt did not halt (\`종단 부류=${cls:-미상}\`), so this record is not the question the key is stopped on — an automatic answer goes only to the key's latest halt: $rec"
+  [ -z "$stg" ] || [ -z "$ver" ] || GATE_LAST_PARK_STAGE="$stg#$ver"
+  if [ "$GATE_LAST_PARK_CLASS" != "의도된 park" ] || [ -z "$GATE_LAST_PARK_STAGE" ]; then
+    return 2
+  fi
+  [ "$rec" = "$rd/halt/$GATE_LAST_PARK_STAGE.md" ] && return 0
+  hst=$(sed -n '1s/^<!-- cc-pipeline-halt v1;.* stage=\([^;]*\);.*/\1/p' "$rec" 2>/dev/null)
+  [ "$hst" = "$GATE_LAST_PARK_STAGE" ] && return 0
+  return 1
+}
+
+# HOW MANY ATTEMPTS THAT CARRIED ONE HALT ANSWER MAY DIE BEFORE A SESSION. The
+# next carry of that answer is refused with GATE_EXIT_CARRY_CAP. No count of
+# this kind existed: the driver's REDISPATCH_MAX bounds re-attachments that
+# carry an approval's answer, at 2, and is a different count.
+readonly GATE_CARRY_DEATH_MAX=3
+
+# THE PROMPT A CARRY'S RE-ATTACHMENT RECEIVES in place of the dispatch form. The
+# halted session holds the question in its own transcript; the answer is in the
+# card its environment names.
+readonly GATE_CARRY_RESUME_MESSAGE='멈췄던 스텝의 사람 답이 CC_PIPELINE_HALT_ANSWER 의 답 카드에 있다. 카드를 읽고 기록 다이제스트를 대조한 뒤, 멈췄던 스텝에서 그 답을 적용해 이어 간다. 같은 질문을 다시 묻지 않는다.'
+
+gate_reentry_table() {
+  # gate_reentry_table — the closed table of the halts whose answer a fresh
+  # session can take up, one row per line:
+  # `<스킬>|<**스텝** pattern>|<stage kind>|<dispatch form>`.
+  #
+  # The form is a fixed frame with named slots. `<문서>` is the document
+  # argument the run's own dispatches of that kind carry, and `<범위>` is a
+  # re-convergence scope that names a halt record or an `R<n>`. A halt the
+  # table does not hold is answered by re-attaching its own session
+  # (GATE_EXIT_CARRY_UNTABLED), as before the table existed.
+  #
+  # A review's halts are not here, and neither are the re-convergence scopes the
+  # gate cannot check — a problem identity, `설계 수준 잔여` and `상한 P0 잔여`.
+  printf '%s\n' \
+    'design-audit-unattended|Step 6*CFI-3b*|audit|/cc-cmds:design-audit-unattended <문서>' \
+    'design-reconverge|Step 3*|reconverge|/cc-cmds:design-reconverge <문서> <범위>'
+}
+
+gate_halt_record_step() {
+  # gate_halt_record_step <record> — the record's first `**스텝**` value.
+  sed -n 's/^\*\*스텝\*\*: //p' "$1" 2>/dev/null | sed -n '1p'
+}
+
+gate_halt_record_question() {
+  # gate_halt_record_question <record> — the record's `**질문 문면**`, from its
+  # field line to the next field line, with every run of white space (line
+  # breaks included) made one space and the ends trimmed. Two records ask the
+  # same question when these are equal: a record's path changes with every
+  # attempt, so the path cannot tell a repeated question.
+  LC_ALL=C awk '
+    !q && index($0, "**질문 문면**:") == 1 { q = 1; s = substr($0, length("**질문 문면**:") + 1); next }
+    q && (/^\*\*[^*][^*]*\*\*:/ || index($0, "<!-- /cc-pipeline-halt") == 1) { q = 0; done = 1 }
+    q && !done { s = s " " $0 }
+    END { gsub(/[ \t\r]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); print s }' "$1" 2>/dev/null
+}
+
+gate_halt_card_path() {
+  # gate_halt_card_path <key#attempt> — where the answer card of that attempt
+  # lives. Not under `halt/`: every reader of that directory takes a file there
+  # for a record. Not under `answer/`: that is the approval answers' store.
+  printf '%s/halt-answer/%s.md' "$RUN_DIR" "$1"
+}
+
+gate_halt_card_line() {
+  # gate_halt_card_line <key#attempt> — the `중단 답` ledger line the attempt's
+  # card carries, or nothing when the attempt was given no card.
+  local c
+  c=$(gate_halt_card_path "$1")
+  [ -f "$c" ] || return 0
+  sed -n 's/^\*\*중단 답 줄\*\*: //p' "$c" 2>/dev/null | sed -n '1p'
+}
+
+gate_halt_card_write() {
+  # gate_halt_card_write <key#attempt> <line> — write the answer card of the
+  # `중단 답` row at ledger <line> for that attempt: the row's line, the record
+  # and its digest, the option line as the record wrote it, who answered, the
+  # reason and the attachment. The directory is 700 and the file 600, and the
+  # file lands by rename so the stage never reads half a card. Written before
+  # the launch token, so a stage that starts finds it.
+  local stage="$1" ln="$2" row rec opt line att d tmp
+  row=$(sed -n "${ln}p" "$LEDGER" 2>/dev/null)
+  case "$row" in
+    '- `중단 답` '*) ;;
+    *) warn "ledger line $ln is not a \`중단 답\` row — no answer card for $stage"; return 1 ;;
+  esac
+  rec=$(gate_row_field "$row" '중단 기록')
+  opt=$(gate_row_field "$row" '선택지')
+  line=$( { grep -F -- "- \`$opt\`" "$rec" 2>/dev/null || true; } \
+          | LC_ALL=C awk -v l="- \`$opt\`" '$0 == l || index($0, l " — ") == 1 { print; exit }')
+  [ -n "$line" ] || line="- \`$opt\`"
+  att=$(gate_row_field "$row" '첨부')
+  d="$RUN_DIR/halt-answer"
+  mkdir -p "$d" && chmod 700 "$d" || { warn "could not make the answer card directory: $d"; return 1; }
+  tmp=$(mktemp "$d/.card.XXXXXX") || { warn "could not write the answer card ($stage)"; return 1; }
+  chmod 600 "$tmp"
+  {
+    printf '<!-- cc-halt-answer v1; stage=%s -->\n' "$stage"
+    printf '**중단 답 줄**: %s\n' "$ln"
+    printf '**중단 기록**: %s\n' "$rec"
+    printf '**기록 다이제스트**: %s\n' "$(gate_row_field "$row" '기록 다이제스트')"
+    printf '**선택지**:\n%s\n' "$line"
+    printf '**답한 주체**: %s\n' "$(gate_halt_answered_by "$row")"
+    printf '**근거**: %s\n' "$(gate_row_field "$row" '근거')"
+    printf '**첨부**: %s\n' "${att:-(없음)}"
+    printf '<!-- /cc-halt-answer v1 -->\n'
+  } > "$tmp" && mv -f "$tmp" "$(gate_halt_card_path "$stage")" \
+    || { rm -f "$tmp"; warn "could not write the answer card ($stage)"; return 1; }
+}
+
+gate_halt_card_crash_line() {
+  # gate_halt_card_crash_line <key> — the `중단 답` line to hand again when the
+  # key's last attempt carried an answer and ended `크래시`, `한도 종료` or
+  # `외부 종료`: that attempt may have died holding the answer, so the next
+  # dispatch of the key — a re-attachment or a fresh one — gets the same card
+  # under its own attempt. Nothing otherwise.
+  local last c
+  last=$( { gate_stage_result_rows_of "$1" || true; } | tail -1)
+  c=$(gate_row_field "$last" '답 운반')
+  [ -n "$c" ] || return 0
+  case "$(gate_row_field "$last" '종단 부류')" in
+    크래시|'한도 종료'|'외부 종료') printf '%s' "$c" ;;
+  esac
+}
+
+gate_halt_answer_deferred() {
+  # gate_halt_answer_deferred <ledger> <line> — true when <ledger> holds an
+  # `이월` row naming the `중단 답` row at <line>: the answer found no room
+  # before the deadline, and the next run takes it up. Found by `사유` and
+  # `중단 답 줄`, whatever the row's scope.
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    case "$(gate_row_field "$r" '사유')" in '중단 답 이월 — '*) ;; *) continue ;; esac
+    [ "$(gate_row_field "$r" '중단 답 줄')" = "$2" ] && return 0
+  done <<EOF
+$( { grep "^- \`blocked\` " "$1" 2>/dev/null || true; } | { grep -F '| 사유=중단 답 이월 — ' || true; })
+EOF
+  return 1
+}
+
+gate_halt_answers_by_state() {
+  # gate_halt_answers_by_state <이월|열림> — `<line>\t<key>\t<record>`, one line
+  # per key, for the answers `answered_halts[]` lists with that `state`: each
+  # key's last `중단 답` row no stage has taken up, named by an `이월` row of
+  # this run (`이월`) or not (`열림`). The same selection the snapshot makes, so
+  # the hand-off checks and the snapshot never disagree on what is carried over.
+  local LC_CTYPE=C; export LC_CTYPE
+  local want="$1" lines ln row key keys st
+  # The completion conditions ask this on every snapshot; a ledger with no
+  # `이월` row has nothing carried over, and the walk below is skipped.
+  if [ "$want" = "이월" ] && ! grep -qF '| 사유=중단 답 이월 — ' "$LEDGER" 2>/dev/null; then
+    return 0
+  fi
+  lines=$(grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true)
+  [ -n "$lines" ] || return 0
+  keys=$(printf '%s\n' "$lines" | while IFS= read -r row; do
+           gate_row_field "${row#*:}" '세그먼트'
+         done | awk 'NF && !seen[$0]++')
+  for key in $keys; do
+    row=$( { printf '%s\n' "$lines" | grep -F "| 세그먼트=$key |" || true; } | tail -1)
+    [ -n "$row" ] || continue
+    ln=${row%%:*}
+    row=${row#*:}
+    if gate_halt_answer_spent "$LEDGER" "$key" "$ln"; then continue; fi
+    if gate_halt_answer_deferred "$LEDGER" "$ln"; then st='이월'; else st='열림'; fi
+    [ "$st" = "$want" ] || continue
+    printf '%s\t%s\t%s\n' "$ln" "$key" "$(gate_row_field "$row" '중단 기록')"
+  done
+}
+
+gate_key_deferred_answer() {
+  # gate_key_deferred_answer <key> — the `중단 답` line of the key's answer that
+  # is carried over to the next run (`gate_halt_answers_by_state 이월`), or
+  # nothing.
+  gate_halt_answers_by_state '이월' | awk -F '\t' -v k="$1" '$2 == k { print $1 }'
+}
+
+gate_defer_handoff_unmet() {
+  # gate_defer_handoff_unmet — the first reason a `handoff 사유=이월` cannot be
+  # taken now, or nothing when it can. The hand-off's own `CI 대기` field is
+  # the fifth condition and the caller's to check; the other four are the
+  # run's: no live stage or supervisor (they are still what the run waits on),
+  # no halt record no row answers (that is a question to a person, so the
+  # shift hands off `중단`), at least one answer carried over (otherwise there
+  # is nothing to hand to the next run), and no ending (a run that has ended
+  # hands off `종단`).
+  if [ -n "$(cc_relay_wait_stages "$RUN_DIR")" ]; then
+    printf '살아 있는 스테이지나 감독자가 있습니다 — 기다릴 것이 있으면 사유=대기 입니다'; return 0
+  fi
+  if [ "$(cc_unanswered_halts "$RUN_DIR" "$LEDGER")" != "0" ]; then
+    printf '답 없는 정지 기록이 있습니다 — 사람에게 묻는 것이므로 사유=중단 입니다'; return 0
+  fi
+  if [ -z "$(gate_halt_answers_by_state '이월')" ]; then
+    printf '다음 런으로 넘긴 중단 답이 없습니다'; return 0
+  fi
+  if [ -s "$RUN_DIR/done" ] || [ -n "$(gate_end_token)" ]; then
+    printf '런이 이미 끝났습니다 — 사유=종단 입니다'; return 0
+  fi
+}
+
+gate_defer_only_left() {
+  # gate_defer_only_left — succeeds when nothing but answers carried over to
+  # the next run holds the run. The ending of such a run past its deadline
+  # (`gate_defer_end_ready`) and re-ask guard 1 of the `중단` hand-off read
+  # this one judgment: were they two, a run past its deadline whose ending
+  # does not hold would refuse its `이월` hand-off and its `중단` alike.
+  #
+  # All of: no live stage or supervisor; no halt record no row answers; at
+  # least one answer carried over (`이월`) and none still open (`열림`); no
+  # pending act approval and no pending `사람-결정` question — any other
+  # question is an input the next run consumes, the same reason termination
+  # condition 2 leaves it out; no run-holding `blocked` row left unresolved but
+  # the `이월` rows themselves (a run-scope halt writes no halt record, and a
+  # carry's cap writes a `blocked` row on a key whose answer was already
+  # given); and every segment terminal and not waiting to be applied, or
+  # waiting on its own carried-over answer. A segment waiting on CI or left to
+  # merge is not terminal, so a run that can still do that past its deadline
+  # without a stage is not one the next run takes over by its answers.
+  local cause why sid st
+  [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ] || return 1
+  [ "$(cc_unanswered_halts "$RUN_DIR" "$LEDGER")" = "0" ] || return 1
+  [ -n "$(gate_halt_answers_by_state '이월')" ] || return 1
+  [ -z "$(gate_halt_answers_by_state '열림')" ] || return 1
+  [ -z "$(gate_pending_approval_ids act)" ] || return 1
+  [ -z "$(gate_pending_approval_ids 사람)" ] || return 1
+  while IFS="$(printf '\t')" read -r cause why; do
+    [ -n "$why" ] || continue
+    case "$why" in '중단 답 이월 — '*) continue ;; esac
+    return 1
+  done <<EOF
+$(cc_unresolved_blocked "$LEDGER" 2>/dev/null)
+EOF
+  for sid in $(gate_segment_ids); do
+    [ -n "$sid" ] || continue
+    gate_step_deferred_line "$sid" >/dev/null && continue
+    gate_segment_apply_pending "$sid" && return 1
+    st=$(gate_segment_field "$sid" '상태')
+    case " $TERMINAL_SEGMENT_STATES " in
+      *" $st "*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+gate_text_names_file() {
+  # gate_text_names_file <text> <name> — true when <name> appears in <text> at a
+  # token boundary: the bytes on either side are not a letter, a digit or one of
+  # `. _ # -`. A record's file name in a sentence is followed by a particle
+  # (`A#1.md를`) or punctuation, and neither is part of the name; a name that is
+  # only part of a longer token (`A#1.md.bak`, `xA#1.md`) is not that file.
+  T="$1" N="$2" LC_ALL=C awk 'BEGIN {
+    t = ENVIRON["T"]; n = ENVIRON["N"]; off = 0
+    if (n == "") exit 1
+    while ((i = index(substr(t, off + 1), n)) > 0) {
+      p = off + i
+      pre = (p > 1) ? substr(t, p - 1, 1) : ""
+      post = substr(t, p + length(n), 1)
+      if (pre !~ /[A-Za-z0-9._#-]/ && post !~ /[A-Za-z0-9._#-]/) exit 0
+      off = p
+    }
+    exit 1
+  }'
+}
+
+gate_text_names_deferred() {
+  # gate_text_names_deferred <text> — the first record carried over to the next
+  # run that <text> names, by its path or by its file name at a token boundary
+  # (`gate_text_names_file`), or nothing. The file name's stem counts too when
+  # it carries the attempt mark `#`, which no ordinary word does; a bare stem
+  # such as a one-letter segment id is not looked for, so a sentence that uses
+  # the letter as a word is not taken for the record.
+  local ln key rec b stem
+  while IFS="$(printf '\t')" read -r ln key rec; do
+    [ -n "$rec" ] || continue
+    case "$1" in *"$rec"*) printf '%s' "$rec"; return 0 ;; esac
+    b=${rec##*/}
+    if gate_text_names_file "$1" "$b"; then printf '%s' "$rec"; return 0; fi
+    stem=${b%.md}
+    case "$stem" in
+      *'#'*) if gate_text_names_file "$1" "$stem"; then printf '%s' "$rec"; return 0; fi ;;
+    esac
+  done <<EOF
+$(gate_halt_answers_by_state '이월')
+EOF
+}
+
+gate_carry_cap_row() {
+  # gate_carry_cap_row <alias> <key> <stage kind> <사유> <line> <basis> — the
+  # act-scope row a carry refused by its cap leaves before GATE_EXIT_CARRY_CAP.
+  # The answer stays where it is; a person reads this row and the record.
+  #
+  # ONE ROW PER ANSWER AND CAUSE. The cap counts what is already on the
+  # ledger, so a later shift that carries the same answer again is refused
+  # again on the same count; it writes no second row for it.
+  local rowseg
+  if [ -n "$( { grep '^- `blocked` ' "$LEDGER" 2>/dev/null || true; } \
+              | { grep -F "| 스코프=act | 원인=막힘 | 사유=$4 | 중단 답 줄=$5 | " || true; })" ]; then
+    warn "$4 — $2 는 파견하지 않습니다 (상한 행은 이미 있습니다)"
+    return 0
+  fi
+  rowseg=$(gate_stage_row_segment "$2" "$3")
+  gate_append 'blocked' "대상=$1" "스코프=act" "원인=막힘" "사유=$4" "중단 답 줄=$5" \
+    "세그먼트=$rowseg" "스테이지=$2" "근거=$(gate_row_safe "$6" 300)" "관측=$(now_iso)" \
+    "재개 명령=사람이 이 정지 기록과 답을 다시 본다 — 운반을 되풀이하지 않는다" \
+    || warn "could not write the carry cap row ($2)"
+  warn "$4 — $2 는 파견하지 않습니다"
+}
+
+gate_carry_defer_row() {
+  # gate_carry_defer_row <alias> <row segment> <key> <lineage> <line> <observed>
+  # — the `이월` row: a carry that found no room before the deadline keeps its
+  # answer for the next run instead of writing the ordinary deadline row. The
+  # shape is the deadline park's cone row with four fields of its own; a cone
+  # the gate refuses (a run-scope key with no `segment` row) falls back to the
+  # act scope with the same four fields, so every reader finds it by `사유` and
+  # `중단 답 줄` and never by its scope.
+  local alias="$1" rowseg="$2" key="$3" lin="$4" ln="$5" obs="$6" rc=0
+  local why='중단 답 이월 — 마감 안에 자리 없음'
+  local redo='다음 런이 이 답을 이어받는다 — 다시 묻지 않는다'
+  gate_record_cone "$alias" "스코프=cone" "원인=막힘" "사유=$why" "중단 답 줄=$ln" \
+    "앵커 세그먼트=$key" "세그먼트=$rowseg" "스테이지=$key" \
+    "근거=계보=$lin" "관측=$(gate_row_safe "$obs" 300)" \
+    "재개 명령=$(gate_row_safe "$redo" 360)" || rc=$?
+  if [ "$rc" != "0" ]; then
+    warn "the carry-over cone row was refused (rc=$rc) — an act-scope row stands in ($key)"
+    gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=$why" "중단 답 줄=$ln" \
+      "세그먼트=$rowseg" "스테이지=$key" "근거=계보=$lin" "관측=$(gate_row_safe "$obs" 300)" \
+      "재개 명령=$(gate_row_safe "$redo" 360)" \
+      || warn "could not write the carry-over row ($key)"
+  fi
+  warn "중단 답 이월 — $key 는 마감 안에 자리가 없어 원장 ${ln} 번째 줄의 답을 다음 런으로 넘깁니다"
+}
+
+gate_carry_check() {
+  # gate_carry_check <alias> <key> <stage kind> <prompt> — the checks a carry
+  # act (`--carry-answer <line>`) passes before anything about the dispatch is
+  # written. On success GATE_HA_LINE holds the line and GATE_HA_BOUND the session
+  # of the key's halted attempt in this run, or nothing when there is none to
+  # re-attach. Every refusal but two writes no row: GATE_EXIT_RULE for an answer
+  # that is not this dispatch's to carry, and GATE_EXIT_CARRY_UNTABLED for a
+  # halt the re-entry table does not hold. The two cap refusals write their row
+  # and end GATE_EXIT_CARRY_CAP.
+  #
+  # AN ANSWER ANOTHER ITEM OF THE SHIFT CONTRACT ROUTES IS NOT CARRIED, so a
+  # shift that picks the wrong branch cannot hand it to a fresh session: an
+  # audit's adopted requirement and a binding-tier stop's `재수렴` go to
+  # re-convergence, a review's empty-target halt and a shift's own record are
+  # carried out by the shift, and a `좌석 실행` halt by the seat.
+  #
+  # THE RECORD IS THE KEY'S LATEST HALT, judged by the same helper the automatic
+  # answers use. An answer brought over from an earlier run is judged against
+  # that run's ledger, where its attempt halted.
+  local alias="$1" key="$2" skind="$3" prompt="$4" ln="$GATE_CARRY_ANSWER"
+  local row rec skill opt step s1 dig cur src lp lpl lprd lprec skey adrow
+  local tskill tglob tkind frame found=0 doc head scope pm prec n r
+  GATE_HA_LINE=''; GATE_HA_BOUND=''; GATE_HA_SCOPE=''
+  row=$(sed -n "${ln}p" "$LEDGER" 2>/dev/null)
+  case "$row" in
+    '- `중단 답` '*) ;;
+    *) warn "원장 ${ln} 번째 줄은 중단 답 행이 아닙니다 — --carry-answer 는 스냅숏 answered_halts[] 의 line 값을 받습니다"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+  if [ "$(gate_row_field "$row" '세그먼트')" != "$key" ]; then
+    warn "원장 ${ln} 번째 줄의 답은 키 $(gate_row_field "$row" '세그먼트') 의 것이라 $key 파견에 싣지 않습니다"
     return "$GATE_EXIT_RULE"
   fi
-  want="$stg#$ver"
-  [ "$rec" = "$RUN_DIR/halt/$want.md" ] && return 0
-  hst=$(sed -n '1s/^<!-- cc-pipeline-halt v1;.* stage=\([^;]*\);.*/\1/p' "$rec")
-  [ "$hst" = "$want" ] && return 0
-  warn "this record is not the halt of $key's last settled attempt ($want, \`halt/$want.md\`) — an automatic answer goes only to the key's latest halt, and an older one goes to a person: $rec"
-  return "$GATE_EXIT_RULE"
+  rec=$(gate_row_field "$row" '중단 기록')
+  skill=$(gate_row_field "$row" '스킬')
+  opt=$(gate_row_field "$row" '선택지')
+  if [ -z "$rec" ] || [ ! -f "$rec" ]; then
+    warn "답한 중단 기록이 없습니다 — 운반하지 않습니다: ${rec:-(없음)}"
+    return "$GATE_EXIT_RULE"
+  fi
+  step=$(gate_halt_record_step "$rec")
+  s1="${step%% — *}"
+  case "$rec" in
+    "$RUN_DIR"/halt/shift/*)
+      warn "교대 정지 기록의 답은 교대가 그 선택지를 스스로 수행합니다 — 운반하지 않습니다: $rec"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  case "$step" in
+    'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)
+      warn "좌석 실행 정지는 좌석이 실행한 뒤 그 세션에 재부착합니다 — 운반하지 않습니다: $rec"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  if [ "$skill" = "design-audit-unattended" ] && [ "${step#*CFI-3b}" != "$step" ] \
+     && [ "$opt" = "adopt as a requirement" ]; then
+    warn "감사 종합 요구를 채택한 답은 재수렴으로 갑니다 — 운반하지 않습니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$skill" = "implement-unattended" ] && [ "${s1#*CFI-U3 BT-STOP}" != "$s1" ] \
+     && [ "$opt" = "재수렴" ]; then
+    warn "구속 티어 이탈 정지의 재수렴 답은 재수렴으로 갑니다 — 운반하지 않습니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$skill" = "review-unattended" ]; then
+    case "$step" in
+      'Step 1b 빈 대상'*)
+        warn "리뷰의 빈 대상 정지 답은 교대가 그 선택지대로 처리합니다 — 운반하지 않습니다: $rec"
+        return "$GATE_EXIT_RULE" ;;
+    esac
+  fi
+  if gate_halt_answer_spent "$LEDGER" "$key" "$ln"; then
+    warn "원장 ${ln} 번째 줄의 답은 이미 스테이지가 받았습니다 — 다시 운반하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$(LC_ALL=C awk -v l="$ln" -v k="| 세그먼트=$key |" 'NR > l && index($0, "- `중단 답` ") == 1 && index($0, k) { print NR }' "$LEDGER" 2>/dev/null)" ]; then
+    warn "$key 에는 원장 ${ln} 번째 줄 뒤에 쓴 답이 있습니다 — 나중 답을 운반하세요"
+    return "$GATE_EXIT_RULE"
+  fi
+  if gate_halt_answer_deferred "$LEDGER" "$ln"; then
+    warn "원장 ${ln} 번째 줄의 답은 이 런에서 이미 이월됐습니다 — 다음 런이 이어받으며, 이 런에서는 다시 운반하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  dig=$(gate_row_field "$row" '기록 다이제스트')
+  cur=$( { shasum -a 256 "$rec" 2>/dev/null || true; } | cut -d' ' -f1)
+  if [ -z "$dig" ] || [ "$cur" != "$dig" ]; then
+    warn "중단 기록이 답한 뒤에 바뀌었습니다 (기록 다이제스트 ${dig:-없음}, 지금 ${cur:-읽을 수 없음}) — 운반하지 않습니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  src=$(gate_row_field "$row" '출처 런')
+  if [ -n "$src" ]; then
+    lpl="$(dirname "$LEDGER")/$src.md"; lprd="$(dirname "$RUN_DIR")/$src"
+    lprec=$(gate_row_field "$row" '출처 기록')
+    skey=$key
+    if adrow=$(gate_adoption_row "$key" 2>/dev/null); then skey=$(gate_adoption_source_key "$adrow"); fi
+    if [ ! -f "$lpl" ] || [ -z "$lprec" ] \
+       || [ "$( { shasum -a 256 "$lprec" 2>/dev/null || true; } | cut -d' ' -f1)" != "$dig" ]; then
+      warn "출처 런 ${src} 의 기록이 사본과 같지 않거나 읽을 수 없습니다 — 운반하지 않습니다: ${lprec:-(없음)}"
+      return "$GATE_EXIT_RULE"
+    fi
+  else
+    lpl=$LEDGER; lprd=$RUN_DIR; lprec=$rec; skey=$key
+  fi
+  lp=0
+  gate_halt_record_of_last_park "$lpl" "$lprd" "$skey" "$lprec" || lp=$?
+  if [ "$lp" != "0" ]; then
+    warn "이 기록은 $key 의 마지막 의도된 park 시도(${GATE_LAST_PARK_STAGE:-없음}, 종단 부류=${GATE_LAST_PARK_CLASS:-미상})의 기록이 아닙니다 — 운반하지 않습니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  while IFS='|' read -r tskill tglob tkind frame; do
+    [ -n "$tskill" ] || continue
+    [ "$tskill" = "$skill" ] || continue
+    # shellcheck disable=SC2254
+    case "$step" in $tglob) found=1; break ;; esac
+  done <<EOF
+$(gate_reentry_table)
+EOF
+  if [ "$found" != "1" ]; then
+    warn "재진입 표에 없는 정지입니다 (스킬 ${skill:-미상}, 스텝 ${step:-없음}) — 멈춘 세션을 --resume 으로 재부착하세요"
+    return "$GATE_EXIT_CARRY_UNTABLED"
+  fi
+  if [ "$tkind" != "$skind" ]; then
+    warn "이 정지의 답은 ${tkind} 파견으로 운반합니다 — 받은 스테이지 종류는 ${skind:-없음} 입니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$tkind" in
+    reconverge) doc=$(gate_doc_arg_path) ;;
+    *) doc=${DOC:-} ;;
+  esac
+  # The frame is filled by splitting, never by `${var/pat/rep}`: a document path
+  # with `&` in it would be rewritten by the replacement under newer shells.
+  head="${frame%%<문서>*}$doc${frame#*<문서>}"
+  if [ "${frame%<범위>}" = "$frame" ]; then
+    if [ "$prompt" != "$head" ]; then
+      warn "운반 act 의 프롬프트는 재진입 표의 틀 그대로여야 합니다 — 「${head}」"
+      return "$GATE_EXIT_RULE"
+    fi
+  else
+    head=${head% <범위>}
+    case "$prompt" in
+      "$head "?*) scope=${prompt#"$head "} ;;
+      *) warn "운반 act 의 프롬프트는 재진입 표의 틀 그대로여야 합니다 — 「${head} <범위>」"
+         return "$GATE_EXIT_RULE" ;;
+    esac
+    case "$scope" in
+      *$'\n'*) warn "운반 act 의 범위는 한 줄입니다"; return "$GATE_EXIT_RULE" ;;
+    esac
+    if ! gate_carry_scope_ok "$skey" "$scope" "$lpl" "$lprd" "$rec" "$ln"; then
+      return "$GATE_EXIT_CARRY_UNTABLED"
+    fi
+    GATE_HA_SCOPE=$scope
+  fi
+  # THE SAME QUESTION AGAIN. The attempt that halted on this record carried an
+  # answer itself, and it stopped on the same step with the same question —
+  # handing the new answer on would go round the same loop with no person.
+  pm=$(gate_row_field "$GATE_LAST_PARK_ROW" '답 운반')
+  if [ -n "$pm" ]; then
+    prec=$(gate_row_field "$(sed -n "${pm}p" "$lpl" 2>/dev/null)" '중단 기록')
+    if [ -n "$prec" ] && [ -f "$prec" ] && [ "$(gate_halt_record_step "$prec")" = "$step" ] \
+       && [ "$(gate_halt_record_question "$prec")" = "$(gate_halt_record_question "$rec")" ]; then
+      gate_carry_cap_row "$alias" "$key" "$skind" "중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다" "$ln" \
+        "원장 ${pm} 번째 줄의 답을 받은 시도 ${GATE_LAST_PARK_STAGE} 가 같은 스텝과 같은 질문 문면으로 다시 멈췄다: $rec"
+      return "$GATE_EXIT_CARRY_CAP"
+    fi
+  fi
+  # THE ANSWER'S PRE-SESSION DEATHS. An attempt that died before its session
+  # started never read the card, so it did not spend the answer; three of them
+  # mean the dispatch itself is what fails. Such a death is either a crash with
+  # `세션 id=미상` or a waiter whose supervisor vanished before the spawn
+  # (`관측=스폰 전 대기 중`, written with `세션 id=-` by the waiter settlement).
+  n=0
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '답 운반')" = "$ln" ] || continue
+    gate_row_is_pre_session_death "$r" && n=$((n + 1))
+  done <<EOF
+$( { gate_stage_result_rows_of "$key" || true; } )
+EOF
+  if [ "$n" -ge "$GATE_CARRY_DEATH_MAX" ]; then
+    gate_carry_cap_row "$alias" "$key" "$skind" "중단 답 라우팅 — 세션 전에 세 번 죽었다" "$ln" \
+      "원장 ${ln} 번째 줄의 답을 실은 시도가 세션이 생기기 전에 ${n} 번 죽었다: $rec"
+    return "$GATE_EXIT_CARRY_CAP"
+  fi
+  if [ -z "$src" ]; then
+    r=$(gate_row_field "$GATE_LAST_PARK_ROW" '세션 id')
+    if run_session_id_shape_ok "$r"; then GATE_HA_BOUND=$r; fi
+  fi
+  GATE_HA_LINE=$ln
+  return 0
+}
+
+gate_halt_record_detail() {
+  # gate_halt_record_detail <record> — the record's `**관측 상세**` value, its
+  # continuation lines joined with single spaces, the way the question is read.
+  awk '
+    !q && index($0, "**관측 상세**:") == 1 { q = 1; s = substr($0, length("**관측 상세**:") + 1); next }
+    q && (/^\*\*[^*][^*]*\*\*:/ || index($0, "<!-- /cc-pipeline-halt") == 1) { q = 0; done = 1 }
+    q && !done { s = s " " $0 }
+    END { gsub(/[ \t\r]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); print s }' "$1" 2>/dev/null
+}
+
+gate_detail_hex() {
+  # gate_detail_hex <관측 상세> <name> — the 64-hex value of `<name>=` in that
+  # detail, where the name starts the detail or follows a space or `·`, or
+  # nothing.
+  printf '%s\n' "$1" | sed 's/·/ /g' | LC_ALL=C awk -v n=" $2=" '
+    {
+      s = " " $0 " "
+      while ((i = index(s, n)) > 0) {
+        v = substr(s, i + length(n), 64)
+        if (v ~ /^[0-9a-f]+$/ && length(v) == 64 && substr(s, i + length(n) + 64, 1) == " ") { print v; exit }
+        s = substr(s, i + length(n))
+      }
+    }'
+}
+
+gate_doc_key_of() {
+  # gate_doc_key_of <document> — the document key of `_common/sidecar.md`
+  # §1.1: the path relative to the repository root found from the document's
+  # own directory, or the absolute path without its leading `/` when no root
+  # holds it.
+  local doc="$1" dir top phys
+  dir=$(dirname "$doc")
+  phys="$(cd "$dir" 2>/dev/null && pwd -P)/$(basename "$doc")"
+  top=$(cd "$dir" 2>/dev/null && git --no-optional-locks rev-parse --show-toplevel 2>/dev/null) || top=""
+  case "$phys" in
+    "$top"/*) [ -n "$top" ] && { printf '%s' "${phys#"$top"/}"; return 0; } ;;
+  esac
+  printf '%s' "${doc#/}"
+}
+
+gate_reconverge_carrier_path() {
+  # gate_reconverge_carrier_path <document> — `<base>/docs/design-reconverge/
+  # {slug}.md` for that document, by `_common/sidecar.md` §1.1: `<base>` is
+  # the main worktree root of the repository holding the document, or the
+  # document's own directory when none does.
+  local doc="$1" dir key base cg slug
+  dir=$(dirname "$doc")
+  key=$(gate_doc_key_of "$doc")
+  base=$dir
+  if [ "$key" != "${doc#/}" ]; then
+    cg=$(cd "$dir" 2>/dev/null && git --no-optional-locks rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || cg=""
+    [ -z "$cg" ] || base=$(dirname "$cg")
+  fi
+  slug=${key%.md}
+  slug=$(printf '%s' "$slug" | tr '/' '-')
+  printf '%s/docs/design-reconverge/%s.md' "$base" "$slug"
+}
+
+gate_reconverge_block_waiting() {
+  # gate_reconverge_block_waiting <document> <R<n>> — true when the document's
+  # re-convergence carrier is whole (its last non-empty line outside a fence is
+  # the terminator), belongs to that document (`owner-doc=` on its second line
+  # is the document key) and holds a `## 회차` block whose `대상 항목` names
+  # that item and whose `상태` is `대기`. Fence-aware: inside an open fence no
+  # line is a heading or a field.
+  local f key
+  f=$(gate_reconverge_carrier_path "$1")
+  key=$(gate_doc_key_of "$1")
+  [ -f "$f" ] || return 1
+  case "$(sed -n '2p' "$f" 2>/dev/null)" in *"owner-doc=$key;"*) ;; *) return 1 ;; esac
+  LC_ALL=C awk -v item="§구현 시 검증 항목 $2 — " '
+    function close_block() { if (inb && st == "대기" && it) found = 1 }
+    /^[[:space:]]*```/ { fence = !fence; if (!fence) last = $0; next }
+    fence { next }
+    /^[[:space:]]*$/ { next }
+    { last = $0 }
+    /^## 회차 [0-9]+[[:space:]]*$/ { close_block(); inb = 1; st = ""; it = 0; next }
+    inb && index($0, "**상태**: ") == 1 { st = substr($0, length("**상태**: ") + 1); sub(/[[:space:]]+$/, "", st) }
+    inb && index($0, "**대상 항목**: " item) == 1 { it = 1 }
+    END { close_block(); exit !(found && !fence && last == "<!-- cc-design-reconverge: end -->") }' "$f"
+}
+
+gate_carry_scope_answer() {
+  # gate_carry_scope_answer <ledger> <key> <before line> — the answer a
+  # re-convergence on <key> took its scope from: walking <ledger> back from
+  # <before line>, past the answers handed to re-convergence attempts, the
+  # first `중단 답` row of the key whose `스킬` is not `design-reconverge` and
+  # which a stage took up. Printed as `<스킬><TAB><중단 기록>`, or nothing.
+  local l row
+  for l in $(LC_ALL=C awk -v lim="$3" -v k="| 세그먼트=$2 |" \
+               'NR < lim && index($0, "- `중단 답` ") == 1 && index($0, k) { print NR }' "$1" 2>/dev/null | sort -rn); do
+    row=$(sed -n "${l}p" "$1" 2>/dev/null)
+    [ "$(gate_row_field "$row" '스킬')" != design-reconverge ] || continue
+    gate_halt_answer_spent "$1" "$2" "$l" || continue
+    printf '%s\t%s' "$(gate_row_field "$row" '스킬')" "$(gate_row_field "$row" '중단 기록')"
+    return 0
+  done
+  return 1
+}
+
+gate_carry_scope_ok() {
+  # gate_carry_scope_ok <key> <scope> <ledger> <run dir> <record> <answer line>
+  # — whether a re-convergence carry's `<범위>` slot names the scope the halted
+  # attempt worked on, measured where the gate can measure it. <ledger> is the
+  # one the halted attempt ran in (an adopted answer's `출처 런` ledger), and
+  # <answer line> bounds the walk in this run's own ledger.
+  #
+  # THE RECORD CARRIES THE STEP 1 BASELINES. The fresh session compares against
+  # `사전 sha256` and `사전 구속 표면 다이제스트` from the record rather than a
+  # hash taken now, because the halted attempt may already have edited the
+  # document; a record without both is outside the table.
+  #
+  # THE TWO SHAPES WITH A RECORD are checked against the ledger: walking back
+  # past the answers handed to re-convergence attempts, the first answer a stage
+  # took up whose skill is not `design-reconverge` is the one that started this
+  # re-convergence, and its record is the scope's record. `감사 종합 요구` is an
+  # audit's answer and `구속 티어 이탈` an implement stage's.
+  #
+  # `R<n>` is checked against the carrier and the record: the block naming the
+  # item is still `대기` (a finished re-convergence closes it), and the record
+  # says it worked on that item (`범위=R<n>`). A problem identity, `설계 수준
+  # 잔여` and `상한 P0 잔여` are outside the table — nothing the gate can read
+  # says which scope the halted attempt had.
+  local key="$1" scope="$2" led="$3" rec="$5" ln="$6" det lim got want
+  det=$(gate_halt_record_detail "$rec")
+  if [ -z "$(gate_detail_hex "$det" '사전 sha256')" ] || [ -z "$(gate_detail_hex "$det" '사전 구속 표면 다이제스트')" ]; then
+    warn "재수렴 정지 기록의 관측 상세에 사전 sha256 과 사전 구속 표면 다이제스트가 모두 있어야 새 세션에 운반합니다 — 멈춘 세션을 --resume 으로 재부착하세요: $rec"
+    return 1
+  fi
+  case "$scope" in
+    '감사 종합 요구 /'*|'구속 티어 이탈 /'*)
+      case "$scope" in
+        '감사 종합 요구 '*) want=design-audit-unattended ;;
+        *) want=implement-unattended ;;
+      esac
+      lim=999999999
+      [ "$led" != "${LEDGER:-}" ] || lim=$ln
+      got=$(gate_carry_scope_answer "$led" "$key" "$lim") || got=""
+      if [ "$got" != "$want"$'\t'"${scope#* * * }" ]; then
+        warn "재수렴 범위가 이 키를 재수렴으로 보낸 답과 다릅니다 (범위 「${scope}」, 원장의 답 「$(printf '%s' "${got:-없음}" | tr '\t' ' ')」) — 멈춘 세션을 --resume 으로 재부착하세요"
+        return 1
+      fi
+      ;;
+    R[0-9]*)
+      case "${scope#R}" in
+        *[!0-9]*) warn "재진입 표가 검사할 수 없는 재수렴 범위입니다 — 멈춘 세션을 --resume 으로 재부착하세요: $scope"; return 1 ;;
+      esac
+      case " $(printf '%s' "$det" | sed 's/·/ /g') " in
+        *" 범위=$scope "*) ;;
+        *) warn "재수렴 정지 기록의 관측 상세가 범위=$scope 를 싣지 않습니다 — 멈춘 세션을 --resume 으로 재부착하세요: $rec"
+           return 1 ;;
+      esac
+      if ! gate_reconverge_block_waiting "$(gate_doc_arg_path)" "$scope"; then
+        warn "재수렴 운반 블록에 대기 중인 $scope 블록이 없습니다 — 멈춘 세션을 --resume 으로 재부착하세요: $(gate_reconverge_carrier_path "$(gate_doc_arg_path)")"
+        return 1
+      fi
+      ;;
+    *) warn "재진입 표가 검사할 수 없는 재수렴 범위입니다 — 멈춘 세션을 --resume 으로 재부착하세요: $scope"
+       return 1 ;;
+  esac
+  return 0
 }
 
 # The routes a shift hands an answered halt on by, one id per branch of
@@ -18625,32 +19402,79 @@ EOF
 # this line and fails when the skill stops naming one.
 readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 설계-재수렴'
 
+gate_row_is_pre_session_death() {
+  # gate_row_is_pre_session_death <stage-result row> — whether the row settles
+  # an attempt that died before its session started: one that carried an
+  # answer (`답 운반`) and reads `세션 id=미상`, or a waiter settled with
+  # `관측=스폰 전 대기 중` after its supervisor vanished. Such an attempt never
+  # read a card or a prompt, so it moved nothing. Which answer it carried does
+  # not matter: a person may answer the record again after it. A crash with a
+  # real session still counts as the key's state.
+  #
+  # ONE TEST FOR EVERY READER THAT LOOKS PAST THESE ROWS — the routing of an
+  # answer, the run-scope re-convergence admission, the carried-over reading
+  # and the consumer. The death cap counts the same rows of one answer. Two
+  # spellings let one reader see a dead attempt as the key's state while
+  # another passes over it, and the answer the consumer keeps open is then the
+  # one the routing refuses.
+  if [ -n "$(gate_row_field "$1" '답 운반')" ] \
+     && [ "$(gate_row_field "$1" '세션 id')" = '미상' ]; then
+    return 0
+  fi
+  case "$(gate_row_field "$1" '관측')" in '스폰 전 대기 중'*) return 0 ;; esac
+  return 1
+}
+
+gate_stage_last_settled_row() {
+  # gate_stage_last_settled_row <key> — the key's last `stage-result` row that
+  # is not a pre-session death (`gate_row_is_pre_session_death`), or nothing.
+  local r last=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    gate_row_is_pre_session_death "$r" && continue
+    last=$r
+  done <<EOF
+$( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
+EOF
+  printf '%s' "$last"
+}
+
 gate_audit_reconverge_keyable() {
   # gate_audit_reconverge_keyable <audit step id> [<resumed session>] — whether
   # a `- reconverge` dispatch is admitted on the run-scope audit step: the step
   # has no `segment` row, and its last `stage-result` row is an audit that
-  # parked on purpose, or — under `--resume` — a re-convergence whose session
-  # is the one being resumed. GATE_AUDIT_RECONVERGE_LAST holds that last row
-  # for the caller's refusal text.
+  # parked on purpose, a re-convergence whose session is the one being resumed
+  # (under `--resume`), or a re-convergence that parked on purpose when the act
+  # carries a halt answer (GATE_CARRY_ANSWER). GATE_AUDIT_RECONVERGE_LAST holds
+  # that last row for the caller's refusal text.
   #
   # ONE DEFINITION FOR THE DISPATCH AND THE ANSWER. The dispatch refuses a
   # `- reconverge` on this test, and `gate_halt_answer_route` refuses an answer
   # the shift would carry out by that dispatch on the same test, so an answer
   # recorded is one the dispatch takes.
+  #
+  # THE LAST ROW IS READ PAST PRE-SESSION DEATHS, carry or not
+  # (`gate_stage_last_settled_row`). Such an attempt never read the card, so
+  # the key still stands where the park left it; the carry check counts those
+  # deaths against its cap, and this reading must not refuse the very retry
+  # the cap is counting, nor the re-convergence a person's new `adopt as a
+  # requirement` dispatches without a carry after one.
   local k="$1" res="${2:-}" last
   GATE_AUDIT_RECONVERGE_LAST=''
   [ -z "$(gate_segment_field "$k" '상태')" ] || return 1
-  last=$( { gate_stage_result_rows_of "$k" || true; } | tail -1)
+  last=$(gate_stage_last_settled_row "$k")
   GATE_AUDIT_RECONVERGE_LAST=$last
-  if [ "$(gate_row_field "$last" '종류')" = "audit" ] \
-     && [ "$(gate_row_field "$last" '종단 부류')" = "의도된 park" ]; then
-    return 0
-  fi
-  if [ -n "$res" ] \
-     && [ "$(gate_row_field "$last" '종류')" = "reconverge" ] \
-     && [ "$(gate_row_field "$last" '세션 id')" = "$res" ]; then
-    return 0
-  fi
+  case "$(gate_row_field "$last" '종류')|$(gate_row_field "$last" '종단 부류')" in
+    'audit|의도된 park') return 0 ;;
+    'reconverge|'*)
+      if [ -n "$res" ] && [ "$(gate_row_field "$last" '세션 id')" = "$res" ]; then
+        return 0
+      fi
+      if [ -n "${GATE_CARRY_ANSWER:-}" ] && [ "$(gate_row_field "$last" '종단 부류')" = "의도된 park" ]; then
+        return 0
+      fi
+      ;;
+  esac
   return 1
 }
 
@@ -18763,7 +19587,7 @@ gate_halt_answer_route() {
        && { [ "$skill" = "design-discuss-unattended" ] || [ "$skill" = "design-solo-unattended" ] \
             || [ "$skill" = "design-base-unattended" ]; } \
        && [ "$(gate_run_scope_kind_of_key "$key" 2>/dev/null)" = "design" ] \
-       && last=$( { gate_stage_result_rows_of "$key" || true; } | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1) \
+       && last=$(gate_stage_last_settled_row "$key") \
        && [ "$(gate_row_field "$last" '종류')" = "design" ] \
        && [ "$(gate_row_field "$last" '종단 부류')" = "정상 완료" ]; then
     # A `골격 재검토` that arrives after the design froze on an earlier
@@ -18775,9 +19599,11 @@ gate_halt_answer_route() {
     id=설계-재수렴
   else
     # Every other answer, `좌석 실행` included, re-attaches the key's last
-    # session; the shift reads the stream before `--resume` as well.
+    # session; the shift reads the stream before `--resume` as well. A carry
+    # that died before its session is passed over: the session to re-attach
+    # is still the halted one, and the consumer keeps the answer open.
     id=재부착
-    last=$( { gate_stage_result_rows_of "$key" || true; } | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1)
+    last=$(gate_stage_last_settled_row "$key")
     sid=$(gate_row_field "$last" '세션 id')
     case "$sid" in
       ''|미상) why="$key 의 마지막 정산 stage-result 행에 세션 id 가 없어(세션 id=${sid:-빈 값}) 교대가 재부착할 세션이 없습니다" ;;
@@ -27615,8 +28441,8 @@ EOF
       hn=$(gate_field_of '교대' "$@")
       hwhy=$(gate_field_of '사유' "$@")
       case "$hwhy" in
-        상한|승인|종단|중단|대기) : ;;
-        *) warn "the \`사유\` of a handoff row is out of vocabulary: ${hwhy:-(none)} — \`상한\` \`승인\` \`종단\` \`중단\` \`대기\`"
+        상한|승인|종단|중단|대기|이월) : ;;
+        *) warn "the \`사유\` of a handoff row is out of vocabulary: ${hwhy:-(none)} — \`상한\` \`승인\` \`종단\` \`중단\` \`대기\` \`이월\`"
            return "$GATE_EXIT_VOCAB" ;;
       esac
       # `CI 대기` IS A LIST OF SEGMENT IDS, comma-joined, and it is never narrowed
@@ -27688,6 +28514,58 @@ EOF
         warn "종료 제안 없이 종단 인계를 쓸 수 없습니다 — the run has neither \`done\` nor an ending row; propose termination first, or hand off with \`사유=중단\`"
         return "$GATE_EXIT_RULE"
       fi
+      # `이월` SAYS THE RUN WAITS FOR ITS NEXT RUN, NOT FOR A PERSON: what is
+      # left is answers a carry found no room for before the deadline, kept in
+      # `이월` rows. Taken only when that is all that is left. A `CI 대기`
+      # segment is refused here because the relay reads that field from a `대기`
+      # hand-off alone, so a CI finishing before the deadline would wake nobody;
+      # `리셋 대기` is already refused above for every reason but `대기`.
+      local hdu
+      if [ "$hwhy" = "이월" ]; then
+        if [ -n "$hci" ]; then
+          warn "\`CI 대기\` 세그먼트($hci)가 있는 인계는 사유=대기 입니다 — 이월 인계를 쓰지 않습니다"
+          return "$GATE_EXIT_RULE"
+        fi
+        hdu=$(gate_defer_handoff_unmet)
+        if [ -n "$hdu" ]; then
+          warn "이월 인계를 쓸 수 없습니다 — $hdu"
+          return "$GATE_EXIT_RULE"
+        fi
+        # PAST THE DEADLINE THE HAND-OFF IS TAKEN ONLY WHERE IT ENDS THE RUN.
+        # The relay wakes `이월` at the deadline plus one second, a time already
+        # behind us, so a hand-off taken without the ending would stay the
+        # latest hand-off of a run that never ends, and each successor shift
+        # would hand off `이월` again. With this hand-off read as the latest,
+        # the ending (`gate_defer_end_ready`) must hold; when it does not,
+        # something besides the carried answers still holds the run, and the
+        # hand-off names it — guard 1 below then takes `중단`, since it reads
+        # the same judgment.
+        if gate_past_deadline && ! gate_defer_end_ready; then
+          warn "이월 답 말고 런을 붙드는 것이 있습니다 — 마감이 지나 이월 인계는 그 자리에서 런을 끝낼 때만 받습니다; 그것을 이름 짓는 사유(살아 있는 스테이지·감독자나 CI 대기면 사유=대기, 그 밖이면 사유=중단)로 인계하세요"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
+      # `중단` ASKS A PERSON, SO IT IS NOT TAKEN WHEN NOTHING IS LEFT TO ASK. An
+      # answer carried over is a person's answer already given, and handing off
+      # `중단` for it puts the same decision before them again. Two checks: the
+      # state — every condition of `이월` holds and nothing but the carried
+      # answers holds the run (`gate_defer_only_left`, the judgment the ending
+      # past the deadline reads too) — and the raw `막힌 지점`, before it is
+      # narrowed below, naming a carried-over record. The text is free, so the
+      # second check backs the first rather than replacing it.
+      local hdrec
+      if [ "$hwhy" = "중단" ]; then
+        if [ -z "$hci" ] && [ -z "$(gate_defer_handoff_unmet)" ] \
+           && gate_defer_only_left; then
+          warn "막는 것이 다음 런으로 넘긴 중단 답뿐입니다 — 사람에게 다시 묻지 않습니다; 사유=이월 로 인계하세요"
+          return "$GATE_EXIT_RULE"
+        fi
+        hdrec=$(gate_text_names_deferred "$(gate_field_of '막힌 지점' "$@")")
+        if [ -n "$hdrec" ]; then
+          warn "막힌 지점이 다음 런으로 넘긴 중단 기록을 가리킵니다($hdrec) — 그 답은 다시 묻지 않습니다; 남은 것이 그것뿐이면 사유=이월 로 인계하세요"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
       case "$hn" in
         ''|*[!0-9]*)
            warn "a handoff row needs \`교대=<정수>\` — the \`적용 이후 교대 수\` of the morning report stands on this scale"
@@ -27726,6 +28604,12 @@ EOF
         ${hrs:+"리셋 대기=$hrs"} \
         "대상=$alias" "기록 시각=$(now_iso)"
       log "교대 $hn 기록 — 사유 $hwhy"
+      # PAST THE DEADLINE THERE IS NOTHING FOR THE RELAY TO WAKE FOR, so the
+      # same act ends the run: a run with a progress axis that carried an answer
+      # over after its deadline would otherwise never end.
+      if [ "$hwhy" = "이월" ] && gate_defer_end_due; then
+        gate_end_run 마감 "$(gate_defer_end_why)" 마감 || true
+      fi
       ;;
     limit-cleared)
       # THE SEAT'S ONE WAY TO SAY "THE LIMIT HAS CLEARED". A person at the seat
@@ -28185,6 +29069,14 @@ EOF
       [ -n "$(gate_segment_field "$seg" '상태')" ] || {
         warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
         return "$GATE_EXIT_VOCAB"; }
+      # A SEGMENT WHOSE ANSWER IS CARRIED OVER IS NOT STOPPED AGAIN. The person
+      # already answered its halt and the next run takes the answer up; a shift
+      # record here would put a second question about the same stop before them.
+      sline=$(gate_key_deferred_answer "$seg")
+      if [ -n "$sline" ]; then
+        warn "$seg 의 중단 답(원장 ${sline} 번째 줄)은 다음 런으로 넘겼습니다 — 이 세그먼트에 교대 정지 기록을 쓰지 않습니다"
+        return "$GATE_EXIT_RULE"
+      fi
       srec=$(gate_field_of '추천' "$@")
       sgr=$(gate_field_of '추천 근거' "$@")
       sinfo=$(printf '%s' "$srow" | cut -d'|' -f3)
@@ -29540,6 +30432,50 @@ gate_fleet_busy_state() {
   printf 'none'
 }
 
+gate_defer_end_due() {
+  # gate_defer_end_due — true when a run that carried its answers over should
+  # end now with `마감`: the deadline has passed, the latest `handoff` says
+  # `사유=이월`, and the ending holds (`gate_defer_end_ready`). The clock end
+  # of the acting path, `gate_verb_end_overdue` and the `이월` hand-off past
+  # the deadline all ask this one helper.
+  local last
+  gate_past_deadline || return 1
+  # Read from the file rather than `gate_rows`: the hand-off arm asks this
+  # right after appending its row, and a warmed memo would not hold it.
+  last=$( { grep "^- \`handoff\` " "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = "이월" ] || return 1
+  gate_defer_end_ready
+}
+
+gate_defer_end_ready() {
+  # gate_defer_end_ready — the ending's own conditions, the latest hand-off
+  # aside: no stage or supervisor is alive, and — on a run with a progress
+  # axis, which the clock does not otherwise end — nothing but the carried
+  # answers holds the run (`gate_defer_only_left`). The `이월` hand-off past
+  # the deadline asks this before it writes its row, reading itself as the
+  # latest hand-off.
+  #
+  # WHY THE COMPLETION CONDITIONS ARE NOT READ. They measure whether the run
+  # did the work it set out to do, and a run with a progress axis that handed
+  # work to the next run always keeps lines for it — an unsettled closing
+  # clause, an open obligation, an unmet review obligation. Those need a stage
+  # to clear, and past the deadline the router parks every request, so no run
+  # past its deadline clears them. Reading them kept the ending from ever
+  # holding on such a run. What is read instead is what this run can still do
+  # without a stage — merge a segment, wait on CI, take an answer to an
+  # approval, clear a `blocked` row — and what it still has to ask a person.
+  # `마감` is not `충족`, so those lines stay in the completion read after the
+  # ending row and in the morning report.
+  [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ] || return 1
+  gate_progress_axes_unbounded && return 0
+  gate_defer_only_left
+}
+
+gate_defer_end_why() {
+  printf '벽시계 마감 경과 (%s) — 남은 중단 답을 다음 런으로 넘긴 런이다' \
+    "$(manifest_field '인가' '벽시계 마감')"
+}
+
 gate_verb_end_overdue() {
   # gate_verb_end_overdue — close a run that passed its deadline with no end
   # token, once.
@@ -29566,6 +30502,13 @@ gate_verb_end_overdue() {
   gate_end_token >/dev/null 2>&1 && return 0
   gate_past_deadline || return 0
   local fleet why
+  # A RUN THAT HANDED ITS LAST ANSWERS TO THE NEXT RUN stopped by design, not
+  # unclassified: it takes `마감`, so the successor derivation picks the
+  # automatic branch and the carried answers reach the next run.
+  if gate_defer_end_due; then
+    gate_end_run 마감 "$(gate_defer_end_why)" 마감
+    return 0
+  fi
   fleet=$(gate_fleet_busy_state)
   why="벽시계 마감이 지났고 종료 토큰이 없다"
   case "$fleet" in
@@ -29718,6 +30661,17 @@ gate_run_ended_ok() {
     # function too, and a dry run writes nothing — so the ending row is written
     # under `act` and `exec` alone. After it, `done` exists and the first arm
     # above answers every later call with the same refusal this arm gives.
+    case "$verb" in
+      act|exec) gate_end_run 마감 "$mark" 마감 || true ;;
+    esac
+  elif gate_defer_end_due; then
+    # THE ONE CLOCK ENDING A RUN WITH A PROGRESS AXIS GETS. Such a run is ended
+    # by its axis, and the clock arm above never reaches it — but a run whose
+    # last hand-off gave its remaining answers to the next run has nothing left
+    # for an axis to measure, and without this it would sit past its deadline
+    # with no ending, so no successor would ever take the answers up. Written
+    # under an acting verb only, for the reason the arm above gives.
+    mark=$(gate_defer_end_why)
     case "$verb" in
       act|exec) gate_end_run 마감 "$mark" 마감 || true ;;
     esac
@@ -32504,6 +33458,12 @@ gate_verb_act() {
   # admitted when the key's last row is a re-convergence whose session is the
   # one being resumed — the last attempt, and no older session on the key.
   #
+  # A CARRY OF A HALTED RE-CONVERGENCE'S ANSWER IS THE THIRD. A re-convergence
+  # that parked on purpose leaves its own row last on the key, and the person's
+  # answer goes to a fresh session; the carry act's scope check
+  # (`gate_carry_scope_ok`) runs below, before any row about this act, so a
+  # carry this branch admits and that check refuses leaves nothing behind.
+  #
   # AND ON THE DESIGN STEP'S KEY, THE REVIEW A PERSON OPENS ON ITS LADDER. A
   # person who answers a design stage's residual-ladder record `골격 재검토`
   # sends the frozen document back through re-convergence, scoped to the
@@ -33133,6 +34093,18 @@ gate_verb_act() {
     fi
   fi
 
+  # A CARRY ACT HANDS A PERSON'S HALT ANSWER TO THE KEY'S NEXT ATTEMPT. Its
+  # checks come after the in-flight refusal, so a key still running is refused
+  # the way every dispatch is, and before every row about this act, so a refused
+  # carry leaves the answer where it was. The dispatch form itself has already
+  # met the prompt-head and document-argument checks a fresh dispatch meets.
+  GATE_HA_LINE=''; GATE_HA_BOUND=''; GATE_HA_SCOPE=''
+  if [ -n "$GATE_CARRY_ANSWER" ]; then
+    local ha_rc=0
+    gate_carry_check "$alias" "$stage_key" "${1:-}" "$(gate_skill_prompt_of "$@")" || ha_rc=$?
+    [ "$ha_rc" = "0" ] || exit "$ha_rc"
+  fi
+
   # WHERE THIS ACT WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
   # worktree that is not this target's would send the act to the target's own
   # tree instead — which is exactly how every stage ended up in the shared main
@@ -33448,8 +34420,25 @@ gate_verb_act() {
   # flight runs to completion and is classified normally, and the run may still
   # record, close and propose. Checking only at entry would be half — a deadline
   # that was in the future when the run started is the normal case.
+  #
+  # A CARRY ACT THE ENDED RUN REFUSES KEEPS ITS ANSWER. The person answered, and
+  # a plain refusal would leave the answer with no session and no record that
+  # the next run should take it up — so, under `act`, the carry writes its
+  # `이월` row after the ending row this check wrote, and ends as a carry that
+  # found no room does. Its own checks already passed: an answer that is not
+  # this dispatch's to carry was refused before this point, and leaves no row.
   if [ "$verb" != "grade" ]; then
-    gate_run_ended_ok "$kind" "$GATE_ACT_EFFECTIVE" "$verb" || exit $?
+    local re_rc=0
+    gate_run_ended_ok "$kind" "$GATE_ACT_EFFECTIVE" "$verb" || re_rc=$?
+    if [ "$re_rc" != "0" ]; then
+      if [ -n "$GATE_HA_LINE" ] && [ "$kind" = "skill" ] && [ "$verb" = "act" ]; then
+        gate_carry_defer_row "$alias" "$(gate_stage_row_segment "$stage_key" "${1:-}")" \
+          "$stage_key" - "$GATE_HA_LINE" \
+          "$(if gate_past_deadline; then printf '마감 경과'; else printf '런 종료 경과'; fi)"
+        exit "$GATE_EXIT_ROUTE"
+      fi
+      exit "$re_rc"
+    fi
   fi
 
   # THE PUSH RUNG IS RE-DERIVED HERE, and here is the earliest it can be: the
@@ -36537,6 +37526,12 @@ gate_launch_route() {
     return "$GATE_EXIT_RULE"
   fi
   GATE_ROUTE_LINEAGE="$GATE_ROUTE_LINEAGE_HEAD$seg#$GATE_ROUTE_ATTEMPT"
+  # A CARRY ASKS TWICE AND PICKS ONE, in a function of its own, so every other
+  # dispatch below asks exactly as it did.
+  if [ -n "${GATE_HA_LINE:-}" ] && [ -n "${GATE_CARRY_ANSWER:-}" ]; then
+    gate_launch_route_carry "$alias" "$seg" "$kind" "$rowseg"
+    return $?
+  fi
   if [ -n "${GATE_RESUME:-}" ]; then
     event=resume
     GATE_ROUTE_BIND=$(gate_resume_binding_of "$seg" "$GATE_RESUME" 2>/dev/null) || GATE_ROUTE_BIND=""
@@ -36606,6 +37601,201 @@ gate_launch_route() {
   return 0
 }
 
+gate_launch_route_ask() {
+  # gate_launch_route_ask <segment> <stage-kind> <event> <bound account or ""> —
+  # one router question for this dispatch's lineage, the request built the way
+  # `gate_launch_route` builds it. Prints the envelope.
+  local seg="$1" kind="$2" event="$3" bound="$4" req
+  req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
+          --arg kind "$kind" --arg bound "$bound" --argjson pid "$$" \
+          --argjson dl "$(wait_request_deadline "$kind")" \
+          '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
+            bound_account: (if $bound == "" then null else $bound end)}
+           + (if $dl == null then {} else {deadline: $dl} end)') \
+    || { warn "could not build the router request ($seg)"; return 1; }
+  route_resolve "$req" || { warn "the account resolver stopped — $seg is not launched"; return 1; }
+}
+
+gate_launch_route_take() {
+  # gate_launch_route_take <envelope> <prior nonce> — set the grant's globals
+  # from <envelope>, the way `gate_launch_route` sets them after a grant.
+  GATE_ROUTE_ENV=$1
+  GATE_ROUTE_NONCE=$(printf '%s' "$1" | jq -r '.nonce // empty')
+  GATE_ROUTE_ACCOUNT=$(printf '%s' "$1" | jq -r '.account // "-"')
+  GATE_ROUTE_CFG=$(printf '%s' "$1" | jq -r '.config_dir // empty')
+  GATE_ROUTE_MINTED=0
+  if [ -n "$GATE_ROUTE_NONCE" ] && [ "$GATE_ROUTE_NONCE" != "$2" ]; then GATE_ROUTE_MINTED=1; fi
+}
+
+gate_launch_route_why() {
+  # gate_launch_route_why <envelope> — the `라우터 판정 …` text of a verdict.
+  printf '%s' "$1" | jq -r '"라우터 판정 \(.verdict) \(.reason // "-")"
+        + (if (.recovery // "") != "" then " — \(.recovery)" else "" end)' 2>/dev/null \
+    || printf '라우터 판정 %s' "$(printf '%s' "$1" | jq -r '.verdict // ""' 2>/dev/null)"
+}
+
+gate_launch_route_carry() {
+  # gate_launch_route_carry <alias> <segment> <stage-kind> <row segment> — the
+  # routing of a carry act, after the attempt is claimed. Leaves the same
+  # globals `gate_launch_route` leaves, with GATE_RESUME set to the halted
+  # session when the bound side is picked and emptied when the fresh side is.
+  #
+  # THE QUERY HALF asks the bound question when the key's halted attempt has a
+  # session, and the fresh one (`event=first`) whenever the bound answer is not a
+  # grant the binding allows. A bound grant the binding refuses (`재부착 구속
+  # 불일치`, `휴면 구속`) hands its lease back here, before the fresh question —
+  # put off, the minted lease would outlive the dispatch. A bound PARK for one of
+  # the reasons only a bound resume can meet (`deadline`, `resume-unbound`,
+  # `resume-bound-unknown-account`, `resume-bound-ineligible`,
+  # `resume-logged-out`) goes on to the fresh question; any other bound PARK —
+  # a run-wide or a configuration verdict — parks as today. A bound
+  # `resume-bound-exhausted` WAIT whose `until` plus the stage's expected
+  # duration lies past the run's deadline is read as a bound deadline PARK: it
+  # is the one WAIT the router does not hold to the deadline.
+  #
+  # THE PICK takes the first of: the bound grant, a fresh grant (a seat grant
+  # included), a bound WAIT with an `until`, a fresh WAIT with one, a bound WAIT
+  # with none, a fresh WAIT with none — and with nothing left, when the fresh
+  # side parked on the deadline, the `이월` row. A fresh PARK on any other reason
+  # is a configuration a person fixes and parks as today. Every WAIT envelope
+  # leaves no router state, and a fresh grant is always picked, so no envelope
+  # left unpicked leaves a lease behind.
+  #
+  # THE COMMIT HALF sets the picked side's event, binding and envelope, and only
+  # then writes the deadline or `stage-wait` row the picked verdict calls for.
+  local alias="$1" seg="$2" kind="$3" rowseg="$4" bound="${GATE_HA_BOUND:-}"
+  local bind="" reqbind="" benv="" bv="" bcls="none" bwhy="" breason="" buntil=""
+  local fenv="" fv="" fcls="" freason="" funtil="" prior dormant pick obs
+  if [ -n "$bound" ]; then
+    bind=$(gate_resume_binding_of "$seg" "$bound" 2>/dev/null) || bind=""
+    case "$bind" in ''|-) ;; *) reqbind=$bind ;; esac
+    prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
+             | { jq -r '.nonce // empty' 2>/dev/null || true; })
+    benv=$(gate_launch_route_ask "$seg" "$kind" resume "$reqbind") || return 1
+    bv=$(printf '%s' "$benv" | jq -r '.verdict // ""' 2>/dev/null || true)
+    breason=$(printf '%s' "$benv" | jq -r '.reason // ""' 2>/dev/null || true)
+    bwhy=$(gate_launch_route_why "$benv")
+    case "$bv" in
+      GRANT)
+        gate_launch_route_take "$benv" "$prior"
+        if [ -z "$GATE_ROUTE_CFG" ]; then
+          warn "the grant names no config directory — $seg is not launched"
+          gate_launch_route_drop
+          return 1
+        fi
+        if gate_resume_grant_ok "$bind" "$benv"; then
+          bcls=grant
+        else
+          dormant=$(printf '%s' "$benv" | jq -r 'if .dormant == true then "1" else "0" end')
+          if [ "$dormant" = "1" ] && [ -n "$bind" ] && [ "$bind" != "-" ]; then
+            bwhy="휴면 구속 — 세션 $bound 은 계정 $bind 에 구속돼 있으나 라우터가 휴면 봉투를 냈다"
+          else
+            bwhy="재부착 구속 불일치 — 구속 ${bind:-(없음)}, 봉투 계정 $GATE_ROUTE_ACCOUNT"
+          fi
+          gate_launch_route_drop
+          bcls=fall
+        fi ;;
+      WAIT)
+        buntil=$(printf '%s' "$benv" | jq -r '.until_epoch | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)
+        # Held to the deadline the way the router holds every other WAIT
+        # (`rt_past_deadline`): a release that cannot finish its expected
+        # duration before the deadline does not fit, however early it opens.
+        if [ "$breason" = "resume-bound-exhausted" ] && [ -n "$buntil" ] \
+           && wait_past_deadline "$buntil" "$(stage_expected_duration "$kind")"; then
+          bcls=fall
+          bwhy="$bwhy — 마감 뒤에 열리는 묶인 대기라 마감 PARK 로 다룬다"
+        elif [ -n "$buntil" ]; then
+          bcls=wait-until
+        else
+          bcls=wait-open
+        fi ;;
+      PARK)
+        case "$breason" in
+          deadline|resume-unbound|resume-bound-unknown-account|resume-bound-ineligible|resume-logged-out) bcls=fall ;;
+          *) bcls=stop ;;
+        esac ;;
+      *) warn "the router answered without a verdict — $seg is not launched"; return 1 ;;
+    esac
+  else
+    bwhy="재부착할 세션 없음"
+  fi
+  if [ "$bcls" = "grant" ]; then
+    GATE_RESUME=$bound; GATE_ROUTE_EVENT=resume; GATE_ROUTE_BIND=$bind
+    GATE_ROUTE_VERDICT=GRANT; GATE_ROUTE_WHY=$bwhy
+    log "중단 답 운반 — $seg ← 묶인 세션 $bound 재부착"
+    return 0
+  fi
+  if [ "$bcls" = "stop" ]; then
+    GATE_ROUTE_EVENT=resume; GATE_ROUTE_BIND=$bind; GATE_ROUTE_ENV=$benv
+    GATE_ROUTE_VERDICT=PARK; GATE_ROUTE_WHY=$bwhy
+    gate_launch_route_park "$alias" "$rowseg" "$seg" "$bwhy"
+    return "$GATE_EXIT_ROUTE"
+  fi
+  prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
+           | { jq -r '.nonce // empty' 2>/dev/null || true; })
+  fenv=$(gate_launch_route_ask "$seg" "$kind" first "") || return 1
+  fv=$(printf '%s' "$fenv" | jq -r '.verdict // ""' 2>/dev/null || true)
+  freason=$(printf '%s' "$fenv" | jq -r '.reason // ""' 2>/dev/null || true)
+  case "$fv" in
+    GRANT) fcls=grant ;;
+    WAIT)
+      funtil=$(printf '%s' "$fenv" | jq -r '.until_epoch | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)
+      if [ -n "$funtil" ]; then fcls=wait-until; else fcls=wait-open; fi ;;
+    PARK)
+      if [ "$freason" = "deadline" ]; then fcls=fall; else fcls=stop; fi ;;
+    *) warn "the router answered without a verdict — $seg is not launched"; return 1 ;;
+  esac
+  if [ "$fcls" = "grant" ]; then pick=fresh
+  elif [ "$bcls" = "wait-until" ]; then pick=bound
+  elif [ "$fcls" = "wait-until" ]; then pick=fresh
+  elif [ "$bcls" = "wait-open" ]; then pick=bound
+  elif [ "$fcls" = "wait-open" ]; then pick=fresh
+  elif [ "$fcls" = "fall" ]; then pick=defer
+  else pick=stop
+  fi
+  case "$pick" in
+    bound)
+      GATE_RESUME=$bound; GATE_ROUTE_EVENT=resume; GATE_ROUTE_BIND=$bind; GATE_ROUTE_ENV=$benv
+      GATE_ROUTE_VERDICT=WAIT; GATE_ROUTE_WHY=$bwhy
+      if ! gate_stage_wait_row "$GATE_ROUTE_LINEAGE" "$benv" "$bind" "$GATE_HA_LINE"; then
+        gate_launch_route_park "$alias" "$rowseg" "$seg" "$bwhy (stage-wait 행 기록 거부)"
+        return "$GATE_EXIT_ROUTE"
+      fi
+      log "중단 답 운반 — $seg 는 묶인 세션 $bound 의 계정을 기다린다"
+      return 0 ;;
+    fresh)
+      GATE_RESUME=""; GATE_ROUTE_EVENT=first; GATE_ROUTE_BIND=-
+      GATE_ROUTE_VERDICT=$fv; GATE_ROUTE_WHY=$(gate_launch_route_why "$fenv")
+      if [ "$fv" = "GRANT" ]; then
+        gate_launch_route_take "$fenv" "$prior"
+        if [ -z "$GATE_ROUTE_CFG" ]; then
+          warn "the grant names no config directory — $seg is not launched"
+          gate_launch_route_drop
+          return 1
+        fi
+        log "중단 답 운반 — $seg 를 새 세션으로 파견한다 ($bwhy)"
+        return 0
+      fi
+      GATE_ROUTE_ENV=$fenv
+      if ! gate_stage_wait_row "$GATE_ROUTE_LINEAGE" "$fenv" "-" "$GATE_HA_LINE"; then
+        gate_launch_route_park "$alias" "$rowseg" "$seg" "$GATE_ROUTE_WHY (stage-wait 행 기록 거부)"
+        return "$GATE_EXIT_ROUTE"
+      fi
+      log "중단 답 운반 — $seg 는 새 세션의 계정을 기다린다 ($bwhy)"
+      return 0 ;;
+    defer)
+      GATE_ROUTE_EVENT=first; GATE_ROUTE_BIND=-; GATE_ROUTE_ENV=$fenv
+      GATE_ROUTE_VERDICT=PARK; GATE_ROUTE_WHY=$(gate_launch_route_why "$fenv")
+      obs="묶인 판정: ${bv:-없음} ${breason:--} ($bwhy) · 새 판정: PARK deadline ready_at $(wait_epoch_iso "$(printf '%s' "$fenv" | jq -r '.ready_at | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)")"
+      gate_carry_defer_row "$alias" "$rowseg" "$seg" "$GATE_ROUTE_LINEAGE" "$GATE_HA_LINE" "$obs"
+      return "$GATE_EXIT_ROUTE" ;;
+  esac
+  GATE_ROUTE_EVENT=first; GATE_ROUTE_BIND=-; GATE_ROUTE_ENV=$fenv
+  GATE_ROUTE_VERDICT=$fv; GATE_ROUTE_WHY=$(gate_launch_route_why "$fenv")
+  gate_launch_route_park "$alias" "$rowseg" "$seg" "$GATE_ROUTE_WHY"
+  return "$GATE_EXIT_ROUTE"
+}
+
 gate_launch_wait() {
   # gate_launch_wait <alias> <key> <stage-kind> <cli args...> — the dispatch
   # half of a routed launch the router answered WAIT. The first `stage-wait`
@@ -36634,6 +37824,10 @@ gate_launch_wait() {
     [ -z "$GATE_CONTINUED" ] || set -- "${GATE_CONTINUE_ARGV[@]}"
   fi
   attempt=$(gate_pin_attempt "$seg" "$GATE_ROUTE_ATTEMPT")
+  if [ -n "${GATE_HA_CARD_LINE:-}" ] && ! gate_halt_card_write "$seg#$attempt" "$GATE_HA_CARD_LINE"; then
+    warn "the answer card could not be written — $seg does not wait and is not launched"
+    return "$GATE_EXIT_RULE"
+  fi
   out=$(stage_log_path "$seg")
   suplog="${out%.json}.sup.log"
   mkdir -p "$RUN_DIR/log"
@@ -36692,11 +37886,19 @@ gate_launch_wait() {
 # The waiting supervisor's four callbacks for `stage_wait_loop`. They read the
 # dispatch they belong to from GATE_SUP_* globals the supervisor sets.
 gate_sup_wait_heartbeat() {
-  gate_stage_wait_row "$GATE_SUP_LINEAGE" "$1" "$GATE_SUP_BIND"
+  gate_stage_wait_row "$GATE_SUP_LINEAGE" "$1" "$GATE_SUP_BIND" "${GATE_SUP_CARRY:-}"
 }
 
 gate_sup_wait_deadline() {
   # <ready-at iso> <basis> <recovery>
+  #
+  # An attempt that waited holding a person's answer keeps the answer for the
+  # next run: the `이월` row with the card's line, not the deadline row.
+  if [ -n "${GATE_SUP_CARRY:-}" ]; then
+    gate_carry_defer_row "$GATE_SUP_ALIAS" "$GATE_SUP_ROWSEG" "$GATE_SUP_KEY" "$GATE_SUP_LINEAGE" \
+      "$GATE_SUP_CARRY" "$(gate_row_safe "$2" 200) ready_at=$1"
+    return 0
+  fi
   gate_wait_deadline_park "$GATE_SUP_ALIAS" "$GATE_SUP_ROWSEG" "$GATE_SUP_KEY" "$GATE_SUP_LINEAGE" \
     "$1" "$2" "$3" "$(cc_waiting_field "$GATE_SUP_MARKER" '재파견')"
 }
@@ -36842,9 +38044,29 @@ gate_launch_stage() {
     gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" "$gwhy"
     return "$GATE_EXIT_ROUTE"
   fi
+  # THE ANSWER CARD THIS ATTEMPT GETS: the carried answer's, or — when the key's
+  # last attempt carried one and crashed, ran into a limit or was ended from
+  # outside — that answer's again, since the attempt may have died holding it.
+  GATE_HA_CARD_LINE=${GATE_HA_LINE:-}
+  [ -n "$GATE_HA_CARD_LINE" ] || GATE_HA_CARD_LINE=$(gate_halt_card_crash_line "$seg")
   if run_routed; then
     routed=1
     gate_launch_route "$alias" "$seg" "$kind" "$@" || return $?
+    # A CARRY THAT PICKED THE HALTED SESSION re-attaches it with the fixed resume
+    # sentence, not the dispatch form, and a waiting one wakes up with the same:
+    # the session already holds its question, and the card holds the answer.
+    if [ -n "${GATE_HA_LINE:-}" ] && [ -n "${GATE_RESUME:-}" ]; then
+      local ha_argv=() ha_p=0
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+          ha_argv+=(-p "$GATE_CARRY_RESUME_MESSAGE"); shift 2; ha_p=1
+        else
+          ha_argv+=("$1"); shift
+        fi
+      done
+      [ "$ha_p" = "1" ] || ha_argv+=(-p "$GATE_CARRY_RESUME_MESSAGE")
+      set -- "${ha_argv[@]}"
+    fi
     # A WAIT IS NOT A STOP: the dispatch half pins, starts a supervisor that
     # waits for an account before it spawns, and returns.
     if [ "$GATE_ROUTE_VERDICT" = "WAIT" ]; then
@@ -36877,6 +38099,11 @@ gate_launch_stage() {
     attempt=$(gate_pin_attempt "$seg" "$GATE_ROUTE_ATTEMPT")
   else
     attempt=$(gate_pin_attempt "$seg")
+  fi
+  if [ -n "$GATE_HA_CARD_LINE" ] && ! gate_halt_card_write "$seg#$attempt" "$GATE_HA_CARD_LINE"; then
+    warn "the answer card could not be written — $seg is not launched"
+    [ "$routed" = "0" ] || gate_launch_route_drop
+    return "$GATE_EXIT_RULE"
   fi
   if [ "$routed" = "1" ]; then
     # ONE ROW PER GRANT, A SEAT OR DORMANT GRANT INCLUDED, after every step
@@ -37092,6 +38319,7 @@ gate_verb_supervise_stage() {
     fi
     GATE_SUP_ALIAS=$alias GATE_SUP_KEY=$seg GATE_SUP_LINEAGE=$r_lineage GATE_SUP_BIND=$r_bound GATE_SUP_MARKER=$wm
     GATE_SUP_ROWSEG=$(gate_stage_row_segment "$seg" "$kind")
+    GATE_SUP_CARRY=$(gate_halt_card_line "$seg#$attempt")
     stage_wait_loop "$seg" "$kind" "$wm" "$r_event" "$r_bound" \
       gate_sup_wait_heartbeat gate_sup_wait_deadline gate_sup_wait_stop gate_sup_wait_ended || wrc=$?
     if [ "$wrc" != "0" ]; then
@@ -37290,6 +38518,15 @@ gate_verb_supervise_stage() {
       rcfg=$(resolve_account 2>/dev/null) || rcfg=""
     fi
     [ -z "$rcfg" ] || reattach_org_note "$seg" "$rcfg" "$resume"
+  fi
+  # THE ANSWER CARD, when the dispatch wrote one for this attempt. Its path
+  # follows from `seg#attempt`, so the launch token carries nothing new; an
+  # attempt with no card gets no variable, whatever this process inherited.
+  if [ -f "$(gate_halt_card_path "$seg#$attempt")" ]; then
+    local -x CC_PIPELINE_HALT_ANSWER
+    CC_PIPELINE_HALT_ANSWER=$(gate_halt_card_path "$seg#$attempt")
+  else
+    unset CC_PIPELINE_HALT_ANSWER
   fi
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
@@ -37500,6 +38737,8 @@ gate_settle_lost_dispatches() {
       # `(미상)`; the served model is in the stream's first frame if the stage
       # got that far.
       gate_reattach_anchor_fields "$seg"
+      local hacarry
+      hacarry=$(gate_halt_card_line "$seg#$attempt")
       gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$seg" "${kind:-}")" "스테이지=$seg" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$attempt" "세션 id=${sid:-미상}" "부모=-" \
         "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} \
@@ -37508,7 +38747,8 @@ gate_settle_lost_dispatches() {
         ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
         ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
         "종단 부류=외부 종료" "실패 서명=$(failure_signature "${kind:-미상}" '외부 종료' - -)" \
-        "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)"
+        "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)" \
+        ${hacarry:+"답 운반=$hacarry"}
       log "잃어버린 파견 정산 — $seg#$attempt (외부 종료)"
     else
       log "잃어버린 파견 정리 — $seg#$attempt (행은 이미 있음)"
@@ -37586,7 +38826,7 @@ gate_settle_dead_waiters() {
   # THE ROW NAMES NO ACCOUNT. This attempt never held a lease, and the
   # segment's `.window` may still name an earlier attempt's account.
   # Driver-written markers are the driver's to clear.
-  local own="${1:-}" f key me took m pid fp kind att lin nonce
+  local own="${1:-}" f key me took m pid fp kind att lin nonce hacarry
   me=$(exec sh -c 'echo $PPID')
   for f in "$RUN_DIR"/*.waiting; do
     [ -f "$f" ] || continue
@@ -37623,10 +38863,12 @@ gate_settle_dead_waiters() {
     if [ -n "$att" ] \
        && [ -z "$(gate_stage_result_rows_of "$key" | { grep -F "실행 버전=$att " || true; } )" ] \
        && { [ -z "$lin" ] || [ -z "$( { gate_rows 'blocked' || true; } | cc_rows_naming_lineage "$lin")" ]; }; then
+      hacarry=$(gate_halt_card_line "$key#$att")
       gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$key" "${kind:-}")" "스테이지=$key" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$att" "세션 id=-" "부모=-" "기록자=게이트" \
         "종단 부류=외부 종료" "실패 서명=$(failure_signature "${kind:-미상}" '외부 종료' - -)" \
-        "관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 $(now_iso)"
+        "관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 $(now_iso)" \
+        ${hacarry:+"답 운반=$hacarry"}
       log "스폰 전 대기자 정산 — $key#$att (외부 종료)"
       GATE_SETTLED_SEGMENTS="${GATE_SETTLED_SEGMENTS:-} $key"
     else
@@ -38662,6 +39904,11 @@ gate_record_stage_outcome() {
   # They sit before `종단 부류` and after `세션 id`, the order the router's
   # cut count reads a row in.
   gate_reattach_anchor_fields "$seg"
+  # `답 운반`, when the dispatch gave this attempt an answer card: the row that
+  # takes the answer up names it, and a row of an attempt that died before its
+  # session is told apart by it from a stage that read the answer.
+  local hacarry
+  hacarry=$(gate_halt_card_line "$seg#$attempt")
   if [ -n "$psha" ]; then
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -38671,7 +39918,8 @@ gate_record_stage_outcome() {
       "effort=$effort" "서빙 모델=$served" \
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
-      "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig"
+      "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${hacarry:+"답 운반=$hacarry"}
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -38681,7 +39929,8 @@ gate_record_stage_outcome() {
       "effort=$effort" "서빙 모델=$served" \
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
-      ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig"
+      ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${hacarry:+"답 운반=$hacarry"}
   fi
   # A re-convergence row voids the segment's plan; the file goes too, or the
   # plan-file fallback above would put the void digest back on the next row.
@@ -39603,6 +40852,26 @@ gate_unmet_numbers() {
   printf '%s\n' "$1" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' | sort -un
 }
 
+gate_step_deferred_line() {
+  # gate_step_deferred_line <key> — print condition 1's `답 이월 대기` line and
+  # return 0 when the key's last `stage-result` is `의도된 park` and its answer
+  # is carried over to the next run (`gate_key_deferred_answer`); return 1
+  # otherwise. Such a key is neither closed nor void: the next run dispatches it
+  # again with the person's answer. The head `1 답 이월 대기 — ` is fixed;
+  # `gate_defer_only_left` reads the return value, not the line.
+  #
+  # The last row is read past pre-session deaths
+  # (`gate_stage_last_settled_row`), the test the consumer, the routing and the
+  # run-scope admission use: such an attempt never read the card, so the key
+  # still stands where the park left it.
+  local ln last
+  ln=$(gate_key_deferred_answer "$1")
+  [ -n "$ln" ] || return 1
+  last=$(gate_stage_last_settled_row "$1")
+  [ "$(gate_row_field "$last" '종단 부류')" = '의도된 park' ] || return 1
+  printf '1 답 이월 대기 — %s 의 중단 답(원장 %s 번째 줄)을 다음 런이 이어받습니다\n' "$1" "$ln"
+}
+
 gate_base_step_closed() {
   # gate_base_step_closed <step id> <row kind> — prints why a base run's audit or
   # split step will not be dispatched again and returns 0, or returns 1. The
@@ -39621,6 +40890,9 @@ gate_base_step_closed() {
   case "$last" in
     '정상 완료' | '외부 종료') return 1 ;;
   esac
+  # A park whose answer the next run takes up is not closed: that run
+  # dispatches the step again with the answer (`gate_step_deferred_line`).
+  gate_step_deferred_line "$id" >/dev/null && return 1
   if [ "$last" = '공허한 성공' ] || [ "$(terminal_route_class "$last")" = '크래시' ]; then
     if [ "$last" != '공허한 성공' ] \
        && gate_design_row_has_limit_envelope "$(gate_row_field "$lastrow" '스테이지')" "$lastrow"; then
@@ -39650,6 +40922,9 @@ gate_audit_first_unmet() {
   # came after its last audit row is waiting on a fresh audit, so that state
   # is not read as closed.
   local astep="$1" arows alast lastrow istep why
+  if gate_step_deferred_line "$astep"; then
+    return 0
+  fi
   arows=$(gate_audit_result_rows_of "$astep")
   if [ -z "$arows" ]; then
     printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 아직 끝나지 않았습니다\n' "$astep"
@@ -39908,7 +41183,21 @@ gate_done_conditions() {
         fi
       fi
     fi
-    if [ -n "$dnext" ]; then
+    # A RUN-SCOPE STEP WHOSE PARK'S ANSWER IS CARRIED OVER comes first, before
+    # every other reading of the design, the audit, the re-convergence or the
+    # split on the same key: the step is neither closed nor void, and is not
+    # waiting on anything this run can do — the next run dispatches it again
+    # with the answer.
+    local dfer="" dk
+    for dk in "$dstep" "$(gate_run_scope_step audit 2>/dev/null || true)" \
+              "$(gate_run_scope_step split 2>/dev/null || true)"; do
+      [ -n "$dk" ] || continue
+      dfer=$(gate_step_deferred_line "$dk") && break
+      dfer=""
+    done
+    if [ -n "$dfer" ]; then
+      printf '%s\n' "$dfer"
+    elif [ -n "$dnext" ]; then
       printf '1 설계가 동결됐으나 다음 단계(%s)가 아직 파견되지 않았습니다\n' "$dnext"
     elif [ -n "$dwait" ]; then
       # A plan that ends at its audit, waiting on the fresh audit after a
@@ -39948,6 +41237,9 @@ gate_done_conditions() {
       printf '1 세그먼트 %s 의 적용이 남았습니다 (머지됨 · 적용=대기)\n' "$sid"
       continue
     fi
+    # A segment whose park's answer is carried over waits for the next run,
+    # whatever state its row reads.
+    gate_step_deferred_line "$sid" && continue
     case " $TERMINAL_SEGMENT_STATES " in
       *" $st "*) ;;
       *) printf '1 세그먼트 %s 의 상태가 종단이 아닙니다 (%s)\n' "$sid" "${st:-미상}" ;;
@@ -41829,10 +43121,12 @@ gate_relay_reentry_allowed() {
   # no clock, or one further than the horizon, it stays refused.
   local st n at
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
+  # `이월` waits too: for the deadline, after which the successor ends the run
+  # (`gate_relay_defer_clock`).
   st=$(LC_ALL=C awk '
     /^- `handoff` / {
       w = "x"
-      if (index($0, " | 사유=대기 | ") > 0) w = "w"
+      if (index($0, " | 사유=대기 | ") > 0 || index($0, " | 사유=이월 | ") > 0) w = "w"
       else if (index($0, " | 사유=무기록 | ") > 0) w = "u"
     }
     /^- `교대 기동` / { w = "x" }
@@ -41951,6 +43245,43 @@ gate_relay_reset_set() {
   printf '%s' "$out"
 }
 
+gate_deadline_epoch() {
+  # gate_deadline_epoch — the manifest's `벽시계 마감` as epoch seconds, or
+  # nothing when it is absent or does not read. The stamp's first 19
+  # characters are converted as UTC and its `±HH:MM` offset is taken off.
+  local dl ep off h m s
+  [ -n "${MANIFEST:-}" ] || return 0
+  dl=$(manifest_field '인가' '벽시계 마감')
+  case "$dl" in ''|없음|'(없음)') return 0 ;; esac
+  ep=$(cc_iso_to_epoch "$(printf '%s' "$dl" | cut -c1-19)Z")
+  case "$ep" in ''|*[!0-9]*) return 0 ;; esac
+  off=$(printf '%s' "$dl" | cut -c20-)
+  case "$off" in
+    Z|'') s=0 ;;
+    [+-][0-9][0-9]:[0-9][0-9])
+      h=$(printf '%s' "$off" | cut -c2-3); m=$(printf '%s' "$off" | cut -c5-6)
+      s=$(( (10#$h * 3600) + (10#$m * 60) ))
+      case "$off" in +*) s=$((0 - s)) ;; esac ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$((ep + s))"
+}
+
+gate_relay_defer_clock() {
+  # gate_relay_defer_clock — the `이월` member of the relay's wait set: the
+  # epoch one second past the deadline when the latest `handoff` is `이월`, or
+  # empty. Derived again from the reference row on every call, like the reset
+  # member. The reset horizon does not apply: the relay hands back after its
+  # hold as it always does, and the seat issues the same call again.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  local last dl
+  last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = "이월" ] || return 0
+  dl=$(gate_deadline_epoch)
+  [ -n "$dl" ] || return 0
+  printf '%s' "$((dl + 1))"
+}
+
 gate_cut_reset_within() {
   # gate_cut_reset_within <epoch> — the clock is close enough to wait on: no
   # further than one five_hour window plus the grace from now. A relay has no
@@ -41972,12 +43303,17 @@ gate_relay_write() {
   # `ci=`: `cc_relay_field` returns the last matching line only. Every caller
   # passes it, the per-poll refresh and the hand-back included — this file is
   # rewritten whole, so a line written once would be gone after the first poll.
-  local t="$RUN_DIR/relay.live.tmp.$$"
+  #
+  # `defer=` IS DERIVED HERE, not passed: it is the `이월` member's clock
+  # (`gate_relay_defer_clock`), and computing it inside keeps every caller —
+  # the hand-back included — writing it without one more argument each.
+  local t="$RUN_DIR/relay.live.tmp.$$" defer
   [ -n "$GATE_RELAY_FP" ] || GATE_RELAY_FP=$(cc_proc_fingerprint "$$")
+  defer=$(gate_relay_defer_clock)
   {
     printf '%s\n%s\n' "$$" "$GATE_RELAY_FP"
-    printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\nreset=%s\n' \
-      "$(date -u +%s)" "$GATE_RELAY_STARTED" "${1:--}" "${2:--}" "${3:--}"
+    printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\nreset=%s\ndefer=%s\n' \
+      "$(date -u +%s)" "$GATE_RELAY_STARTED" "${1:--}" "${2:--}" "${3:--}" "${defer:--}"
     [ -z "${4:-}" ] || printf 'handback=%s\n' "$4"
   } > "$t" 2>/dev/null && mv -f "$t" "$RUN_DIR/relay.live" 2>/dev/null || {
     rm -f "$t" 2>/dev/null
@@ -42039,14 +43375,20 @@ gate_relay_wait() {
   # until `cc_relay_wake_keys` says the reset plus the grace has passed or a
   # `한도 해제` row stands. Its keys are read again from the reference row here,
   # not carried over from the shift that named them.
-  local stages ci reset hold now
+  #
+  # `이월` IS THE FOURTH. A hand-off that carried its answers over waits for
+  # the deadline, so the set is not empty though nothing else is in it, and
+  # the relay wakes one second past the deadline (`cc_relay_wake_keys`) to
+  # launch the successor whose first act ends the run.
+  local stages ci reset defer hold now
   stages=$(cc_relay_wait_stages "$RUN_DIR")
   ci=$(gate_relay_ci_segments)
   reset=$(gate_relay_reset_set)
+  defer=$(gate_relay_defer_clock)
   [ -n "$GATE_RELAY_STARTED" ] || GATE_RELAY_STARTED=$(date -u +%s)
   gate_relay_write "$stages" "$ci" "$reset"
   hold=$(gate_relay_hold)
-  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--}"
+  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--}"
   while :; do
     now=$(date -u +%s)
     if [ -e "$RUN_DIR/done" ]; then
@@ -42061,7 +43403,7 @@ gate_relay_wait() {
       gate_relay_hand_back "$stages" "$ci" "$reset" "CI 를 기다리는데 checks 폴러가 살아 있지 않다"
       return 1
     fi
-    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ]; then
+    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ]; then
       log "교대 대기 끝 — 기다리던 것이 이미 끝났다"
       return 0
     fi

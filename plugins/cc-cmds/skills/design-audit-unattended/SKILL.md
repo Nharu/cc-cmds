@@ -71,7 +71,7 @@ per grade, not one blanket rule.
 
 ### Resumed with a person's answer
 
-A stage of this arm that halted can be resumed in the same session with a prompt naming its own halt record and one of the record's options verbatim (`_common/pipeline-sidecar.md` §4). The option is the answer to the question the record asked, and the pass goes on from the step the record names — the readers are not spawned again, collected witnesses are not re-collected, and the dispositions already applied stand. At the synthesis question: `record in the unresolved-issues section` writes the composed requirement into the report's unresolved section and goes on to Step 7; `reject` records the rejection in the report, with the answer's option as its basis, and goes on to Step 7. `adopt as a requirement` does not come back this way — the routing shift takes it to `design-reconverge` and a fresh audit, because the requirement changes what the run is trying to reach. At `Step 7 / 골격급 재발`: `미해결 이슈로 두고 계속` takes Step 7's disposition 4; `재수렴` goes the way `adopt as a requirement` does. Do not rewrite the halt record, and do not halt a second time on the question it already carries.
+A stage of this arm resumed in the same session with an answer to its own halt record, or started with `CC_PIPELINE_HALT_ANSWER` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), Reads `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.1 before anything else and follows it.
 
 The grades are a marking, not a proof: `scripts/lint-judgment-grade.sh` counts
 marks and matches dispositions, and nothing checks that a point marked `등급 1`
@@ -192,6 +192,7 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 | 트리거:중단 | 공통 | `_common/agent-team-protocol.md` | `## Teardown & abort` | 절 |
 | 트리거:정지기록 | 공통 | `_common/pipeline-sidecar.md` | `` ## 4. `cc-pipeline-halt v1` — the halt record (not a sidecar) `` | 절 |
 | 트리거:정지기록 | 공통 | `_common/sidecar.md` | `### 1.3 Atomic write` | 절 |
+| 트리거:답 | 공통 | `_common/pipeline-sidecar.md` | `### 4.1 The audit's answer — resumed or re-entered` | 절 |
 
 ## Workflow
 
@@ -267,6 +268,8 @@ Severity is re-assigned here, by one labeller, in one pass. It is **never** aggr
 **This pass edits the design document, so it takes the document lock.** Wrap each write in `/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock" <command>` (absolute path; `-k` and `-t 0` both required). `EX_TEMPFAIL` (75) means another writer holds the document, which is a planning violation rather than a queue: do not wait, do not retry — halt with `분류: precondition-failed` naming both writers.
 
 **`골격급` judgment.** After routing, the same labeller grades each unique defect and CFI-3b candidate `골격급` or `비골격` (binary, severity-independent): `골격급` iff you can name the decision sentence it overturns (verbatim, with its heading) and its replacement. Routing owners are unchanged: a `골격급` defect goes to the `## 미해결 이슈` owner, its item marked `골격급: 예`. Never shorten it to 「골격」, a discussion-skill word.
+
+**Before a CFI-3b halt, leave the dispositions where a fresh session can take them**: Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.1 and write its `## 조정 처분` block into the report, after the pass's own document edits and before the halt record.
 
 ### Step 7: Residual disclosure + HARD STOP
 
