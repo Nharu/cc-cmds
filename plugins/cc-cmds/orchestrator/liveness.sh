@@ -377,44 +377,163 @@ cc_relay_wait_stages() {
   printf '%s' "$keys"
 }
 
+cc_ci_round() {
+  # cc_ci_round <ledger> <segment> <head sha> — the rerun round of that
+  # `(segment, head sha)`, as `키=값` lines:
+  #
+  #   u=<n>      `CI 처분 처분=재실행 상태=요청` rows of the pair — the budget spent
+  #   a=<state>  the state of the pair's highest `회차`: 없음 (u=0) · 열림 · 수락 · 실패
+  #   g=<n>      the highest `회차` of the pair's `상태=수락` rows, 0 when none
+  #   f=<n>      the distinct `head sha` values of the segment's `처분=수정` rows
+  #   fix=<0|1>  whether the pair itself carries a `처분=수정` row
+  #   base=<v>   `기본 브랜치` of the `요청` row of round g, empty when none
+  #
+  # ONE READER FOR FOUR CONSUMERS — the gate's CI layer, the merge check, the
+  # poller's key and the relay's verdict reader — so none of them counts rounds
+  # of its own and the four cannot derive different rounds from one ledger.
+  #
+  # THE ROUND RISES ON `수락` ONLY. A `요청` row opens a round and is written
+  # before the POST, so a round GitHub never accepted — a gate that died after the
+  # row, or a POST or confirmation that closed `실패` — keeps g where it was, and
+  # what the poller sees in that window stays an observation of the earlier round
+  # rather than reading as a re-failure. `요청` alone is what u counts, so one
+  # rerun is never counted twice and a death after the row still spends it.
+  local ledger="$1" seg="$2" sha="$3"
+  if [ -z "$ledger" ] || [ ! -f "$ledger" ] || [ -z "$seg" ]; then
+    printf 'u=0\na=없음\ng=0\nf=0\nfix=0\nbase=\n'
+    return 0
+  fi
+  LC_ALL=C awk -F'|' -v seg="$seg" -v sha="$sha" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function val(n,   i, f) {
+      for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, n "=") == 1) return substr(f, length(n) + 2) }
+      return ""
+    }
+    /^- `CI 처분` / {
+      if (val("세그먼트") != seg) next
+      d = val("처분"); s = val("상태"); h = val("head sha"); k = val("회차")
+      if (d == "수정") {
+        if (h != "" && !(h in fixsha)) { fixsha[h] = 1; f++ }
+        if (h == sha) fix = 1
+        next
+      }
+      if (d != "재실행" || h != sha) next
+      if (k !~ /^[0-9]+$/) next
+      k = k + 0
+      if (s == "요청") {
+        u++
+        if (!(k in st)) st[k] = "열림"
+        req_base[k] = val("기본 브랜치")
+        if (k > top) top = k
+      } else if (s == "수락") {
+        st[k] = "수락"
+        if (k > g) g = k
+        if (k > top) top = k
+      } else if (s == "실패") {
+        st[k] = "실패"
+        if (k > top) top = k
+      }
+    }
+    END {
+      a = (u + 0 == 0) ? "없음" : st[top]
+      if (a == "") a = "없음"
+      printf "u=%d\na=%s\ng=%d\nf=%d\nfix=%d\nbase=%s\n", u, a, g, f, fix, req_base[g]
+    }
+  ' "$ledger" 2>/dev/null || printf 'u=0\na=없음\ng=0\nf=0\nfix=0\nbase=\n'
+}
+
+cc_ci_round_get() {
+  # cc_ci_round_get <cc_ci_round output> <key> — one value of it.
+  printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
+}
+
 cc_ci_latest_verdict() {
   # cc_ci_latest_verdict <run-dir> <ledger> <segment> — `<상태>\t<관측>` of the
-  # newest `checks` verdict for that segment, or nothing when there is none.
+  # newest `checks` verdict of that segment's CURRENT ROUND, or nothing when the
+  # segment has no verdict at all.
   #
   # THE THREE SOURCES IN THE POLLER'S OWN ORDER: the ledger's `checks` rows, then
   # every `checks.observed.draining.*` oldest first, then `checks.observed`. A
   # later source holds a later observation, so the last verdict found is the
   # newest. READ ONLY: no drain, no row, no `gh` — the relay and the watcher both
   # read through here, and the drain keeps its single caller on the act path.
-  local run_dir="$1" ledger="$2" seg="$3" out="" v f
+  #
+  # THE HEAD IS THE NEWEST VERDICT'S OWN SHA. This reader takes a segment id and
+  # knows no worktree tip, so the pair whose round it reads is the one the newest
+  # verdict was observed on, and g comes from `cc_ci_round` for that pair. Only
+  # that `(segment, sha, g)` is counted: right after a rerun the earlier round's
+  # `실패` does not wake the relay, and once a fix moves the head the new head's
+  # first observation moves the pair, so the old head's rounds filter nothing on
+  # it. A `실패` with checks still running reads `대기`, and so does a pair whose
+  # current round has no verdict yet.
+  local run_dir="$1" ledger="$2" seg="$3" recs="" f last sha g pick st pend ob tab
   [ -n "$seg" ] || return 0
+  tab=$(printf '\t')
   if [ -n "$ledger" ] && [ -f "$ledger" ]; then
-    out=$(LC_ALL=C awk -F'|' -v seg="$seg" '
+    recs=$(LC_ALL=C awk -F'|' -v seg="$seg" '
       function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
       /^- `checks` / {
-        hit = 0; st = ""; ob = ""
+        hit = 0; st = ""; ob = ""; sh = ""; g = "0"; pd = "0"
         for (i = 2; i <= NF; i++) {
           f = trim($i)
           if (f == "세그먼트=" seg) hit = 1
           else if (index(f, "상태=") == 1) st = substr(f, length("상태=") + 1)
           else if (index(f, "관측=") == 1) ob = substr(f, length("관측=") + 1)
+          else if (index(f, "head sha=") == 1) sh = substr(f, length("head sha=") + 1)
+          else if (index(f, "재실행 회차=") == 1) g = substr(f, length("재실행 회차=") + 1)
+          else if (index(f, "진행 중=") == 1) pd = substr(f, length("진행 중=") + 1)
         }
-        if (hit && st != "") last = st "\t" ob
+        if (g !~ /^[0-9]+$/) g = "0"
+        if (pd !~ /^[0-9]+$/) pd = "0"
+        if (hit && st != "") printf "%s\t%d\t%d\t%s\t%s\n", sh, g, pd, st, ob
       }
-      END { printf "%s", last }
     ' "$ledger" 2>/dev/null || true)
   fi
-  [ -n "$run_dir" ] || { printf '%s' "$out"; return 0; }
-  while IFS= read -r f; do
-    [ -n "$f" ] && [ -f "$f" ] || continue
-    v=$(cc_ci_observed_verdict "$f" "$seg")
-    [ -z "$v" ] || out=$v
-  done <<EOF
+  if [ -n "$run_dir" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] && [ -f "$f" ] || continue
+      recs="$recs
+$(cc_ci_observed_records "$f" "$seg")"
+    done <<EOF
 $( { ls -tr "$run_dir"/checks.observed.draining.* 2>/dev/null || true; } )
 EOF
-  v=$(cc_ci_observed_verdict "$run_dir/checks.observed" "$seg")
-  [ -z "$v" ] || out=$v
-  printf '%s' "$out"
+    recs="$recs
+$(cc_ci_observed_records "$run_dir/checks.observed" "$seg")"
+  fi
+  last=$(printf '%s\n' "$recs" | awk 'NF > 0' | tail -1)
+  [ -n "$last" ] || return 0
+  sha=${last%%"$tab"*}
+  g=$(cc_ci_round_get "$(cc_ci_round "$ledger" "$seg" "$sha")" g)
+  pick=$(printf '%s\n' "$recs" | LC_ALL=C awk -F'\t' -v sha="$sha" -v g="${g:-0}" \
+    'NF > 0 && $1 == sha && $2 == g { p = $0 } END { printf "%s", p }')
+  ob=$(printf '%s' "$last" | cut -f5)
+  if [ -z "$pick" ]; then
+    printf '대기\t%s' "$ob"
+    return 0
+  fi
+  pend=$(printf '%s' "$pick" | cut -f3)
+  st=$(printf '%s' "$pick" | cut -f4)
+  ob=$(printf '%s' "$pick" | cut -f5)
+  if [ "$st" = "실패" ] && [ "${pend:-0}" -gt 0 ] 2>/dev/null; then
+    st="대기"
+  fi
+  printf '%s\t%s' "$st" "$ob"
+}
+
+cc_ci_observed_records() {
+  # cc_ci_observed_records <file> <segment> — every verdict of that segment in
+  # one poller file as `<sha>\t<g>\t<진행 중>\t<상태>\t<관측>` lines, oldest
+  # first. A status outside the poller's vocabulary is skipped, the way the drain
+  # skips it. A line of the earlier seven-column shape (time, segment, PR, sha,
+  # 상태, 필수 집합, 실패 체크) reads as round 0 with nothing running.
+  [ -f "$1" ] || return 0
+  LC_ALL=C awk -F'\t' -v seg="$2" '
+    $2 == seg && ($5 == "대기" || $5 == "통과" || $5 == "실패" || $5 == "미등록" || $5 == "판정 불가") {
+      g = 0; pd = 0
+      if (NF >= 9 && $6 ~ /^[0-9]+$/ && $7 ~ /^[0-9]+$/) { g = $6 + 0; pd = $7 + 0 }
+      printf "%s\t%d\t%d\t%s\t%s\n", $4, g, pd, $5, $1
+    }
+  ' "$1" 2>/dev/null || true
 }
 
 cc_ci_observed_verdict() {

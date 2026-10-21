@@ -3050,6 +3050,17 @@ gate_park_repair_line() {
       msg="repair: the gate in the tree this merge would land grades the argv named above as empty or '등급 미상' where the base's gate knew it — fix the grading table and push a new head" ;;
     등급회귀판정불가/*)
       msg="repair: the grade-regression probe could not decide for this merge — a person checks the landing tree's gate and merges it" ;;
+    # NONE OF THE THREE RERUN CELLS IS OPENED BY A ROW. Whether a rerun can
+    # start a deploy, or whether the run is this head's, is a fact of the
+    # repository and of GitHub, and a `사전 인가` row would only hide it.
+    재실행배포트리거/*)
+      msg="repair: a rerun of this run may start a deploy (a deploy-trigger identifier, a base-branch workflow triggered by workflow_run/check_suite/check_run/status, or an environment or reusable workflow in the run's file) — a person reruns it on GitHub, or a new commit moves the head; the poller then observes that head's checks" ;;
+    재실행대상미상/*)
+      msg="repair: the failing run could not be proved to be this pull request's own run at this head (or reading it failed) — a person checks the run on GitHub and reruns it there, or a new commit moves the head" ;;
+    재실행요청실패/open)
+      msg="repair: a rerun of this head was requested and its closing row never came — check that run's attempt on GitHub, then move the head with a new commit or put the segment down; the gate does not close the request row without a person" ;;
+    재실행요청실패/*)
+      msg="repair: GitHub did not take the rerun (the POST or its confirmation failed) and the gate does not try again — a person reruns the run on GitHub, and the poller observes that result on the round-0 key; answering with a retry and no rerun parks here again" ;;
     *) return 0 ;;
   esac
   # A ROW THAT CANNOT NAME THE ACT WORD FOR WORD IS NOT PRINTED. An argument
@@ -14250,6 +14261,7 @@ gate_on_exit() {
   set +e
   gate_dispatch_lock_release
   gate_settings_lock_release
+  gate_ci_rerun_lock_release
   gate_emit_digest_body
   set -e
   return "$__rc"
@@ -16873,6 +16885,10 @@ gate_main() {
   # below, and by nothing a caller can set.
   unset GATE_META_RESOLVED_HEAD
   GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
+  # The rerun act's marker, verdict and runs are set by this process's own
+  # precondition and eligibility checks and by nothing a caller exports: a
+  # verdict inherited from the environment would send a POST no check chose.
+  unset GATE_CI_RERUN_PRE GATE_CI_RERUN_VERDICT GATE_CI_RERUN_RUNS GATE_PARK_OBS
   # The emit path travels to `gate_verb_act` as a global rather than as an
   # eleventh positional argument, the same way `GATE_RESUME`, `GATE_ACT_CWD` and
   # `GATE_SURFACE` already do. Adding a position would mean fixing the call site
@@ -16993,6 +17009,14 @@ gate_main() {
     case "$verb" in
       act|plan) ;;
       *) printf 'gate: --kind apply is used only with act/plan (verb received: %s)\n' "$verb" >&2
+         exit 2 ;;
+    esac
+  fi
+  # `ci-rerun` the same way: the gate performs the rerun, and a forecast of it.
+  if [ "$kind" = "ci-rerun" ]; then
+    case "$verb" in
+      act|plan) ;;
+      *) printf 'gate: --kind ci-rerun is used only with act/plan (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -19886,18 +19910,131 @@ gate_cycle_review_closure() {
 
 gate_segment_review_next() {
   # gate_segment_review_next <segment> — `다음`: the review table below, and on a
-  # routed run the base overlay on top of its two merging values.
+  # routed run the base overlay and the CI layer on top of its two merging
+  # values.
   #
-  # THE OVERLAY STANDS ONLY ON A ROUTED RUN. The fixed-graph driver rebases onto
-  # its base and parks a conflict of its own, and it never calls `base-check`,
-  # so the values the overlay adds would reach a loop that has no branch for
-  # them.
+  # THE OVERLAYS STAND ONLY ON A ROUTED RUN. The fixed-graph driver rebases onto
+  # its base and parks a conflict of its own, and it never calls `base-check` or
+  # the rerun act, so the values the overlays add would reach a loop that has no
+  # branch for them.
   local seg=$1 nx
   nx=$(gate_segment_review_next_table "$seg")
   case "$nx" in
-    머지|'이월 머지') run_routed && { gate_base_next "$seg" "$nx"; return 0; } ;;
+    머지|'이월 머지') run_routed && { gate_ci_next "$seg" "$nx"; return 0; } ;;
   esac
   printf '%s' "$nx"
+}
+
+# ---------------------------------------------------------------------------
+# The CI layer — what `다음` reads from the poller's verdicts and the
+# `CI 처분` series, on a segment whose review lets a merge through.
+#
+# A REVIEWED SEGMENT WHOSE CHECK FAILED HAD NO WAY BACK. The merge check refused
+# it with `CI실패` and nothing routed the segment to a rerun or to the stage that
+# could fix the failure, so one flaky check stopped the run on a person. The
+# layer sends the current round's failure to the rerun act, waits out a rerun in
+# flight, and sends a second failure on the same head back to the implement
+# stage — once per segment, apart from the re-implementation cap.
+#
+# IT READS THE LEDGER AND NOTHING ELSE. `review_next[]` calls this on every
+# snapshot, so a network read here would be a call per segment per snapshot; the
+# act asks the network inside its own lock and re-derives this value there.
+CI_RERUN_CAP=1
+CI_FIX_CAP=1
+
+gate_ci_verdict_row() {
+  # gate_ci_verdict_row <segment> <head sha> <round> — V: the newest `checks` row
+  # of that segment and head whose `재실행 회차` is <round>. A row written before
+  # the field existed is round 0, so a run that began on the older poller keeps
+  # its verdicts.
+  gate_rows 'checks' | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_eq 'head sha' "$2" \
+    | GATE_CIV_G="$3" awk '
+      { g = 0; n = split($0, f, "|")
+        for (i = 2; i <= n; i++) {
+          s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
+          if (index(s, "재실행 회차=") == 1) g = substr(s, length("재실행 회차=") + 1)
+        }
+        if (g + 0 == ENVIRON["GATE_CIV_G"] + 0) r = $0 }
+      END { if (r != "") print r }'
+}
+
+gate_ci_fix_after_last_cycle() {
+  # gate_ci_fix_after_last_cycle <segment> — true when a `CI 처분 처분=수정` row of
+  # the segment was written after its last `cycle` row: the fix has not been
+  # reviewed yet.
+  local seg=$1 last
+  last=$(gate_segment_last_cycle_row "$seg")
+  [ -n "$last" ] || return 1
+  [ -n "$(gate_ledger_rows_after "$last" | { grep -E '^- `CI 처분`' || true; } \
+    | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_eq '처분' '수정')" ]
+}
+
+gate_ci_next() {
+  # gate_ci_next <segment> <다음 of the table> — the base overlay, then the CI
+  # layer. H is the worktree tip, R the last cycle's `리뷰 HEAD`, u·a·g·f the
+  # round of (segment, H) as `cc_ci_round` reads it, and V the verdict row of
+  # round g. "Settled" is V = 실패 with nothing still running. The first row that
+  # holds wins:
+  #   L0  a fix row after the last cycle, H ≠ R, H's tree ≠ R's    CI 리뷰
+  #   B   the base overlay changes the value                     that value
+  #   L1  a = 열림                                                CI 재실행
+  #   L2  g = 0, and no V or V ∈ {통과, 미등록, 판정 불가}           the table's
+  #   L3  V = 대기, or V = 실패 with 진행 중 > 0                     CI 대기
+  #   L4  g ≥ 1, and no V or V ∈ {미등록, 판정 불가}                 CI 대기
+  #   L5  g ≥ 1, V = 통과                                         the table's
+  #   L6  settled, u < CI_RERUN_CAP                               CI 재실행
+  #   L6b settled, a = 실패                                        CI 재실행
+  #   L7  settled, a = 수락, the round's request saw the base fail  CI 기존 실패
+  #   L8  settled, a = 수락, f < CI_FIX_CAP or (segment, H) has
+  #       a fix row                                               CI 수정
+  #   L9  otherwise                                               CI 수정 한도
+  # L0 stands before the base overlay because that overlay sends a head that
+  # moved past R to `해소 리뷰`, which would read the CI fix as a base
+  # resolution. L1 sends a round whose closing row never came to the act, which
+  # finds the open request inside its lock and parks it, rather than letting the
+  # spent budget read the old failure as a re-failure. L6b sends a round that
+  # closed `실패` — nothing reran on GitHub, so V is still round 0's — to the act,
+  # which parks it again instead of spending the fix budget on an API failure.
+  # A worktree whose tip does not resolve leaves the base overlay's value: the
+  # merge rule reads the same HEAD and refuses on its own.
+  local seg=$1 nx=$2 b wt h r rd u a g f fix base v vst vpend
+  wt=$(gate_segment_worktree "$seg")
+  h=$(gate_worktree_tip "$wt") || { gate_base_next "$seg" "$nx"; return 0; }
+  if gate_ci_fix_after_last_cycle "$seg"; then
+    r=$(gate_commit_in "$wt" "$(gate_row_field "$(gate_segment_last_cycle_row "$seg")" '리뷰 HEAD')" || true)
+    if [ -n "$r" ] && [ "$h" != "$r" ] \
+       && [ "$(gate_iso_git "$wt" rev-parse "$h^{tree}" 2>/dev/null || true)" != "$(gate_iso_git "$wt" rev-parse "$r^{tree}" 2>/dev/null || true)" ]; then
+      printf 'CI 리뷰'; return 0
+    fi
+  fi
+  b=$(gate_base_next "$seg" "$nx")
+  [ "$b" = "$nx" ] || { printf '%s' "$b"; return 0; }
+  rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
+  u=$(cc_ci_round_get "$rd" u); a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g)
+  f=$(cc_ci_round_get "$rd" f); fix=$(cc_ci_round_get "$rd" fix); base=$(cc_ci_round_get "$rd" base)
+  [ "$a" = "열림" ] && { printf 'CI 재실행'; return 0; }
+  v=$(gate_ci_verdict_row "$seg" "$h" "${g:-0}")
+  vst=""; vpend=0
+  if [ -n "$v" ]; then
+    vst=$(gate_row_field "$v" '상태')
+    vpend=$(gate_row_field "$v" '진행 중')
+    case "$vpend" in ''|*[!0-9]*) vpend=0 ;; esac
+  fi
+  if [ "${g:-0}" -eq 0 ]; then
+    case "$vst" in ''|통과|미등록|'판정 불가') printf '%s' "$nx"; return 0 ;; esac
+  fi
+  if [ "$vst" = "대기" ] || { [ "$vst" = "실패" ] && [ "$vpend" -gt 0 ]; }; then
+    printf 'CI 대기'; return 0
+  fi
+  case "$vst" in ''|미등록|'판정 불가') printf 'CI 대기'; return 0 ;; 통과) printf '%s' "$nx"; return 0 ;; esac
+  # Only a settled failure is left: the poller writes no other value.
+  [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
+  [ "$a" = "실패" ] && { printf 'CI 재실행'; return 0; }
+  if [ "$a" = "수락" ]; then
+    [ "$base" = "실패" ] && { printf 'CI 기존 실패'; return 0; }
+    if [ "${f:-0}" -lt "$CI_FIX_CAP" ] || [ "$fix" = "1" ]; then printf 'CI 수정'; return 0; fi
+  fi
+  printf 'CI 수정 한도'
 }
 
 # ---------------------------------------------------------------------------
@@ -28798,9 +28935,27 @@ gate_drain_checks_file() {
   # rows. Split out of its caller because TWO sources feed it and they must be
   # transcribed identically: the file this act renamed aside, and any file a
   # previous drain left behind when it died before its `rm`.
-  local src="$1" ts seg pr sha st req fail
+  #
+  # TWO LINE SHAPES. The poller writes `ts seg pr sha st g pend req fail`; a line
+  # of the earlier seven-column shape, left in a file from before the round
+  # column existed, has `필수 집합` where `g` now sits. A line is the new shape
+  # only when both of those columns are whole numbers and it has nine columns;
+  # anything else is read the old way, as round 0 with nothing running.
+  local src="$1" ts seg pr sha st req fail g pend line tab
   [ -f "$src" ] || return 0
-  while IFS="$(printf '\t')" read -r ts seg pr sha st req fail; do
+  tab=$(printf '\t')
+  while IFS= read -r line; do
+    g=0; pend=0
+    case "$(printf '%s' "$line" | awk -F'\t' '{ print (NF >= 9 && $6 ~ /^[0-9]+$/ && $7 ~ /^[0-9]+$/) ? "new" : "old" }')" in
+      new) IFS="$tab" read -r ts seg pr sha st g pend req fail <<EOF
+$line
+EOF
+           ;;
+      *)   IFS="$tab" read -r ts seg pr sha st req fail <<EOF
+$line
+EOF
+           ;;
+    esac
     [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || {
       warn "a line of \`checks.observed\` is missing required columns and is not transcribed: '${ts:-}'"
       continue
@@ -28817,7 +28972,7 @@ gate_drain_checks_file() {
     gate_append 'checks' "PR=$pr" "head sha=$sha" "상태=$st" \
       "필수 집합=$(gate_row_safe "$req" "$GATE_CHECKS_REQ_MAX")" \
       "실패 체크=$(gate_row_safe "$fail" "$GATE_CHECKS_FAIL_MAX")" \
-      "관측=$ts" "세그먼트=${seg:--}"
+      "관측=$ts" "세그먼트=${seg:--}" "재실행 회차=$g" "진행 중=$pend"
   done < "$src"
 }
 
@@ -30653,6 +30808,504 @@ gate_perform_apply() {
   return "$GATE_EXIT_PARK"
 }
 
+gate_park_record() {
+  # gate_park_record <칸> <원인> <관측> <argv...> — the `blocked` row of a reach
+  # park and its repair line. It reads `alias`, `segment`, `graded` and
+  # `rationale` from `gate_verb_act`, its only caller's scope.
+  #
+  # TWO CALLERS, ONE ROW. The dispatch parks before the act; the rerun performer
+  # parks after its POST, past the dispatch's seat, and the row a person reads in
+  # the morning must not depend on which of the two wrote it. The digest is the
+  # argv's either way, so the same act at the same head meets the dispatch's
+  # "already parked" next time.
+  local cell="$1" cause="$2" obs="$3"; shift 3
+  local _ad; _ad=$(printf '%s' "$*" | shasum -a 256 | cut -d' ' -f1)
+  # THE THREE FREE-TEXT FIELDS ARE SIZED FROM WHAT IS LEFT, not from three
+  # constants. A row that exceeds the cap is not a truncated row — `gate_append`
+  # refuses it and the process ends, so the park verdict this block exists to
+  # record would vanish exactly when it is most needed. The fixed part is
+  # measured here rather than assumed: an alias, a segment id and a stage id
+  # are caller-shaped and nothing bounds their length.
+  local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"
+  local _fixed _free _rb _jb=0 _ob _cb _jl='' _jfix='' _jx=()
+  # A JUDGMENT'S VERDICT RIDES IN FIELDS OF ITS OWN, never inside `근거=`: that
+  # field is the stage's rationale, and a verdict folded into it could not be
+  # told apart from what the stage claimed. Absent a judgment the row is the
+  # row it always was.
+  if [ "${GATE_PREAUTH_JUDGE:--}" != "-" ]; then
+    _jl=$(gate_preauth_judge_label "$GATE_PREAUTH_JUDGE")
+    _jfix="사전 인가 판단=$_jl | 판단 이유= | "
+  fi
+  _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | %s근거= | 관측= | 재개 명령= | prev=%064d\n' \
+            "$alias" "$cell" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" "$_jfix" 0 \
+          | wc -c | tr -d ' ')
+  _free=$(( GATE_ROW_MAX - _fixed - 8 ))
+  [ "$_free" -lt 0 ] && _free=0
+  # The rationale first — it is the one a person reads in the morning — then the
+  # judgment's reason, then the act excerpt, then the re-invocation line, each
+  # capped at its own ceiling.
+  _rb=$(( _free / 2 )); [ "$_rb" -gt 160 ] && _rb=160
+  _free=$(( _free - _rb ))
+  if [ -n "$_jl" ]; then
+    _jb=$(( _free / 2 )); [ "$_jb" -gt 400 ] && _jb=400
+    _free=$(( _free - _jb ))
+    _jx=("사전 인가 판단=$_jl" "판단 이유=$(gate_row_safe "$(gate_preauth_judge_reason "$GATE_PREAUTH_JUDGE")" "$_jb")")
+  fi
+  _ob=$(( _free / 3 )); [ "$_ob" -gt 60 ] && _ob=60
+  _free=$(( _free - _ob ))
+  _cb="$_free"; [ "$_cb" -gt 240 ] && _cb=240
+  gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
+    "도달 판정=$cell" "세그먼트=$_seg55" \
+    "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
+    "행위 다이제스트=$_ad" ${_jx[@]+"${_jx[@]}"} "근거=$(gate_row_safe "$rationale" "$_rb")" \
+    "관측=$(gate_row_safe "$obs" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
+  gate_park_repair_line "$cell" "$cause"
+}
+
+# ---------------------------------------------------------------------------
+# The rerun act — `act --kind ci-rerun -- 재실행 <head sha>`.
+#
+# ONE ACT, THREE SEATS. The spelling and the routed-run/tip refusals stand at the
+# preconditions, ahead of the drain, so they read neither the ledger nor GitHub;
+# the lock, `다음` and the eligibility of every failing run stand just ahead of
+# the merge check, after the drain and the rule loop; the POST and its
+# confirmation are the performer's. The lock taken at the second seat is held to
+# the end of the gate process, so everything from `다음` to the closing row runs
+# under it.
+#
+# EVERY CHECK ERRS TOWARDS A PARK. A rerun that cannot be proved harmless — it
+# may start a deploy, or the run cannot be proved this pull request's own — is
+# left to a person, and all of the failing runs are rerun or none is.
+# ---------------------------------------------------------------------------
+GATE_CI_RERUN_CONFIRM_TRIES=10
+GATE_CI_RERUN_CONFIRM_SLEEP=3
+
+gate_ci_rerun_preconditions() {
+  # gate_ci_rerun_preconditions <segment> <sha> — the refusals that need neither
+  # the ledger nor GitHub: a run the routing shift does not drive, or an argv
+  # sha that is not the worktree's tip. Passing sets the marker the rule branch
+  # opens on, exported because the rule files run as processes of their own.
+  local seg="$1" sha="$2" tip
+  if ! run_routed; then
+    warn "the rerun act runs only on a routed run — this run has no routing record"
+    return "$GATE_EXIT_RULE"
+  fi
+  tip=$(gate_segment_tip "$seg") || tip=""
+  if [ -z "$tip" ] || [ "$tip" != "$sha" ]; then
+    warn "the rerun names head $sha, but the segment worktree's tip is ${tip:-(unresolved)} — read 다음 again"
+    return "$GATE_EXIT_RULE"
+  fi
+  GATE_CI_RERUN_PRE=1
+  export GATE_CI_RERUN_PRE
+}
+
+gate_ci_rerun_lock_release() {
+  [ -n "${GATE_CI_RERUN_LOCK:-}" ] || return 0
+  rm -rf "$GATE_CI_RERUN_LOCK" 2>/dev/null || true
+  GATE_CI_RERUN_LOCK=""
+}
+
+gate_ci_rerun_lock() {
+  # gate_ci_rerun_lock <segment> — the segment's rerun mutex, or 1 at once.
+  #
+  # IT DOES NOT WAIT AND IS NEVER TAKEN BY AGE. A second act on the same head
+  # while one is live is refused, not queued, and the lock is taken over only
+  # when its owner's pid is gone: the POST and the confirmation reads can last
+  # longer than any age bound would, and taking a live lock would send a second
+  # rerun to the same head.
+  local seg="$1" dir owner opid
+  dir="$RUN_DIR/ci-rerun.$seg.lock"
+  if ! mkdir "$dir" 2>/dev/null; then
+    owner=$(cat "$dir/owner" 2>/dev/null || true)
+    opid=$(printf '%s' "$owner" | sed -n 's/^\([0-9][0-9]*\)[[:space:]].*$/\1/p')
+    if [ -n "$opid" ] && ! cc_pid_exists "$opid"; then
+      rm -rf "$dir" 2>/dev/null || true
+      mkdir "$dir" 2>/dev/null || return 1
+    else
+      return 1
+    fi
+  fi
+  # A FORECAST ONLY ASKS. `plan` installs no EXIT trap, and a lock it kept would
+  # refuse the act it forecasts.
+  if [ "${verb:-}" = "plan" ]; then
+    rm -rf "$dir" 2>/dev/null || true
+    return 0
+  fi
+  # `BASHPID`, not `$$`: in a subshell `$$` is the parent's pid, which outlives
+  # the gate that took the lock.
+  printf '%s %s\n' "${BASHPID:-$$}" "$(date -u +%s)" > "$dir/owner" 2>/dev/null || true
+  # Released by `gate_on_exit`: a shell keeps one EXIT trap, and the verb's
+  # trap is already that one.
+  GATE_CI_RERUN_LOCK="$dir"
+  return 0
+}
+
+gate_ci_rerun_gh() {
+  # gate_ci_rerun_gh <args...> — `gh` under the read-scoped runner, with the
+  # repository named on the command line alone. The two variables are unset in
+  # a subshell rather than through `env -u`: `env` would look `gh` up on PATH,
+  # where run.sh has put the system directories first, and the program it found
+  # would not be the one every other act of the gate runs.
+  ( unset GH_REPO GH_HOST; gate_run_readonly gh "$@" )
+}
+
+gate_ci_rerun_on_hit() {
+  # gate_ci_rerun_on_hit <file> — 0 when the workflow file's top-level `on` key
+  # names one of the four events that fire from the base branch's files
+  # (workflow_run, check_suite, check_run, status), or cannot be read. The key
+  # is matched quoted, and as YAML 1.1's `true`; a block mapping is read by its
+  # direct keys, a scalar, flow list or flow mapping by its words.
+  # The awk exits 0 for "park" and 1 for "clear", so an awk that fails to run
+  # at all reads as neither and the caller's `||` parks on it too.
+  LC_ALL=C awk -v q="'" '
+    function hit(s) { return s ~ /(^|[^A-Za-z0-9_])(workflow_run|check_suite|check_run|status)([^A-Za-z0-9_]|$)/ }
+    function unq(s) { gsub(/"/, "", s); gsub(q, "", s); return s }
+    !found {
+      k = $0; sub(/[ \t]*:.*$/, "", k)
+      if ($0 ~ /^[^ \t#][^:]*:/ && (k == "on" || k == "\"on\"" || k == q "on" q || k == "true")) {
+        found = 1; v = $0; sub(/^[^:]*:[ \t]*/, "", v)
+        if (v ~ /^#/) v = ""; sub(/[ \t]+#.*$/, "", v)
+        if (v != "") { scalar = 1; exit }
+        inblk = 1
+      }
+      next
+    }
+    inblk {
+      if ($0 ~ /^[ \t]*(#.*)?$/) next
+      if ($0 !~ /^[ \t]/) { inblk = 0; next }
+      ind = match($0, /[^ \t]/) - 1
+      if (minind == "" || ind < minind) minind = ind
+      line[++n] = $0; lind[n] = ind
+    }
+    END {
+      if (!found) exit 0
+      if (scalar) {
+        if (hit(v)) exit 0
+        # A plain word, a flow list or a flow mapping is read by its words;
+        # anything else is a form this reader does not know.
+        if (v ~ /^[A-Za-z_]/ || v ~ /^\[.*\]$/ || v ~ /^\{.*\}$/) exit 1
+        exit 0
+      }
+      if (n == 0) exit 0
+      for (i = 1; i <= n; i++) {
+        if (lind[i] != minind) continue
+        k = line[i]; sub(/^[ \t]*/, "", k); sub(/^-[ \t]*/, "", k)
+        sub(/[ \t]+#.*$/, "", k); sub(/[ \t]*:.*$/, "", k)
+        if (hit(unq(k))) exit 0
+      }
+      exit 1
+    }' "$1"
+}
+
+gate_ci_rerun_x5_hit() {
+  # gate_ci_rerun_x5_hit <file> — 0 when the run's own workflow file carries an
+  # `environment` key in any spelling or names a file under .github/workflows/.
+  # Read as text, never as YAML: a comment or a paths filter that matches counts
+  # towards the park, which is the direction every check here may err in.
+  LC_ALL=C grep -Eq '(^|[^A-Za-z0-9_])environment["'"'"']?[[:space:]]*:|\.github/workflows/' "$1"
+}
+
+gate_ci_rerun_checks_tsv() {
+  # gate_ci_rerun_checks_tsv <json> — `<bucket>\t<name>\t<link>` per check of a
+  # `gh pr checks --json` answer, or 1 when the answer is not a list.
+  printf '%s' "$1" | jq -r 'if type == "array" then .[] | [(.bucket // ""), (.name // ""), (.link // "")] | join("\t") else error("not a list") end' 2>/dev/null
+}
+
+gate_ci_rerun_run_tsv() {
+  # gate_ci_rerun_run_tsv <slug> <run id> — one tab-separated line of the run's
+  # fields the eligibility reads, or 1 when the read fails:
+  #   status event head_sha head_branch repository head_repository name path
+  #   workflow_id run_attempt
+  local out
+  out=$(gate_ci_rerun_gh api "repos/$1/actions/runs/$2" 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -er '[(.status // ""), (.event // ""), (.head_sha // ""), (.head_branch // ""),
+      (.repository.full_name // ""), (.head_repository.full_name // ""), (.name // ""),
+      (.path // ""), (.workflow_id // "" | tostring), (.run_attempt // "" | tostring)] | join("\t")' 2>/dev/null
+}
+
+gate_check_ci_rerun() {
+  # gate_check_ci_rerun <kind> — the lock, `다음` and the eligibility of every
+  # failing run, for the rerun act and nothing else. Refusal exits 3 with no
+  # row; a park sets the park cell for the dispatch below it to write; an
+  # eligible set leaves `GATE_CI_RERUN_VERDICT=eligible` and the runs for the
+  # performer.
+  [ "$1" = "ci-rerun" ] || return 0
+  local seg="$segment" al="$alias" wt h nx rd a slug br prs n pnum phead pref
+  local checks fails pend runs="" r rj st wf_name wf_path wf_id ev hsha hbr rfull hfull
+  local basebr obs="" unk="" bad="" tmpd ids id kind val f bn rc _b name link
+  wt=$(gate_segment_worktree "$seg")
+  h=$(gate_worktree_tip "$wt") || { warn "the segment worktree's tip does not resolve"; exit "$GATE_EXIT_RULE"; }
+  if ! gate_ci_rerun_lock "$seg"; then
+    warn "another rerun act of segment $seg holds its lock — not queued, read 다음 again"
+    exit "$GATE_EXIT_RULE"
+  fi
+  # `다음` AGAIN, from the gate's own ledger after this act's drain — never the
+  # value the router read.
+  nx=$(gate_segment_review_next "$seg")
+  if [ "$nx" != "CI 재실행" ]; then
+    warn "다음 of segment $seg is '$nx', not 'CI 재실행' — the rerun act is refused"
+    exit "$GATE_EXIT_RULE"
+  fi
+  rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
+  a=$(cc_ci_round_get "$rd" a)
+  if [ "$a" = "열림" ] || [ "$a" = "실패" ]; then
+    GATE_PARK_CELL='재실행요청실패'
+    if [ "$a" = "열림" ]; then GATE_PARK_CAUSE='open'; else GATE_PARK_CAUSE='closed'; fi
+    GATE_PARK_OBS="회차:$a"
+    export GATE_PARK_CELL GATE_PARK_CAUSE GATE_PARK_OBS
+    return 0
+  fi
+  slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+  br=$( { cd "$wt" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+  if [ -z "$slug" ] || [ -z "$br" ]; then
+    gate_ci_rerun_park '재실행대상미상' "PR 결속 불가 (슬러그 ${slug:-없음}, 브랜치 ${br:-없음})"; return 0
+  fi
+  # THE PULL REQUEST IS THE BRANCH'S ONE OPEN PR AT THIS HEAD.
+  if ! prs=$(gate_ci_rerun_gh pr list -R "$slug" --head "$br" --state open --json number,headRefOid,headRefName 2>/dev/null) \
+     || ! prs=$(printf '%s' "$prs" | jq -r '.[] | [(.number|tostring), .headRefOid, .headRefName] | join(" ")' 2>/dev/null); then
+    gate_ci_rerun_park '재실행대상미상' "PR 조회 실패 ($br)"; return 0
+  fi
+  n=$(printf '%s\n' "$prs" | grep -c . || true)
+  read -r pnum phead pref <<EOF
+$prs
+EOF
+  if [ "$n" != "1" ] || [ "$phead" != "$h" ]; then
+    warn "the branch $br has $n open pull request(s), head ${phead:-(none)} against tip $h — the head moved; read 다음 again"
+    exit "$GATE_EXIT_RULE"
+  fi
+  # THE FAILING SET, FROM THE CHECKS SCREEN AS IT IS NOW.
+  # `gh pr checks` exits 8 while any check is pending, and its output is still
+  # the list, so the status is not the verdict — the parse is.
+  local raw
+  raw=$(gate_ci_rerun_gh pr checks "$pnum" -R "$slug" --json name,bucket,link,workflow,event 2>/dev/null || true)
+  if ! checks=$(gate_ci_rerun_checks_tsv "$raw"); then
+    gate_ci_rerun_park '재실행대상미상' "체크 조회 실패 (PR $pnum)"; return 0
+  fi
+  pend=$(printf '%s\n' "$checks" | awk -F'\t' '$1 == "pending" { n++ } END { print n + 0 }')
+  if [ "$pend" -gt 0 ]; then
+    warn "$pend check(s) of PR $pnum are still pending — the rerun waits for the set to settle"
+    exit "$GATE_EXIT_RULE"
+  fi
+  fails=$(printf '%s\n' "$checks" | awk -F'\t' '$1 == "fail"')
+  basebr=$(gate_base_remote_tip "$al" "$wt" 2>/dev/null) || basebr=""
+  if [ -z "$basebr" ] || ! ( cd "$wt" && git cat-file -e "$basebr^{commit}" ) 2>/dev/null; then
+    warn "the base branch's tip ${basebr:-(unknown)} is not a local object — fetch the base first"
+    exit "$GATE_EXIT_RULE"
+  fi
+  if [ -z "$fails" ]; then
+    warn "PR $pnum shows no failing check now — nothing to rerun"
+    exit "$GATE_EXIT_RULE"
+  fi
+  # X1 on each link, and the distinct run ids. A failing check with no details
+  # link (a commit status posted without a target URL) cannot be judged, so it
+  # is unknown like any other non-Actions link — skipping it would rerun the
+  # rest, or leave nothing to rerun and no park.
+  while IFS="$(printf '\t')" read -r _b name link; do
+    [ -n "$_b$name$link" ] || continue
+    case "$link" in
+      "https://github.com/$slug/actions/runs/"*)
+        r=${link#"https://github.com/$slug/actions/runs/"}; r=${r%%/*}
+        case "$r" in ''|*[!0-9]*) unk="${unk:-$name:-}" ;; *)
+          case " $runs " in *" $r "*) ;; *) runs="${runs:+$runs }$r" ;; esac
+          [ -n "$obs" ] || obs="$name:$r" ;;
+        esac ;;
+      *) unk="${unk:-$name:-}" ;;
+    esac
+  done <<EOF
+$fails
+EOF
+  if [ -n "$unk" ]; then gate_ci_rerun_park '재실행대상미상' "$unk"; return 0; fi
+  [ -n "$runs" ] || { warn "no Actions run behind PR $pnum's failing checks"; exit "$GATE_EXIT_RULE"; }
+  # EVERY RUN IS READ BEFORE ANY IS JUDGED: a read failure parks ahead of a run
+  # still in progress, and that ahead of eligibility.
+  local readfail="" running="" line atts="" wfs="" x
+  local -a rl=()
+  for r in $runs; do
+    if line=$(gate_ci_rerun_run_tsv "$slug" "$r"); then
+      rl+=("${r}	${line}")
+    else
+      readfail="${readfail:-$r}"
+    fi
+  done
+  if [ -n "$readfail" ]; then gate_ci_rerun_park '재실행대상미상' "실행 읽기 실패:$readfail"; return 0; fi
+  for line in "${rl[@]}"; do
+    [ "$(printf '%s' "$line" | cut -f2)" = "completed" ] || running="${running:-$(printf '%s' "$line" | cut -f1)}"
+  done
+  if [ -n "$running" ]; then
+    warn "run $running of PR $pnum has not completed — the rerun waits for it"
+    exit "$GATE_EXIT_RULE"
+  fi
+  ids=$(target_field "$al" '배포트리거 식별자' 2>/dev/null || true)
+  tmpd=$(mktemp -d "${TMPDIR:-/tmp}/gate-ci-rerun.XXXXXX") || exit "$GATE_EXIT_RULE"
+  for line in "${rl[@]}"; do
+    # `cut`, never `read`: a tab is whitespace to `read`, so an empty field
+    # would shift every field after it.
+    r=$(printf '%s' "$line" | cut -f1);       ev=$(printf '%s' "$line" | cut -f3)
+    hsha=$(printf '%s' "$line" | cut -f4);    hbr=$(printf '%s' "$line" | cut -f5)
+    rfull=$(printf '%s' "$line" | cut -f6);   hfull=$(printf '%s' "$line" | cut -f7)
+    wf_name=$(printf '%s' "$line" | cut -f8); wf_path=$(printf '%s' "$line" | cut -f9)
+    wf_id=$(printf '%s' "$line" | cut -f10);  x=$(printf '%s' "$line" | cut -f11)
+    # X2 — this pull request's own run, at this head, from this repository.
+    if [ "$ev" != "pull_request" ] || [ "$hsha" != "$h" ] || [ "$rfull" != "$slug" ] \
+       || [ "$hfull" != "$slug" ] || [ "$hbr" != "$pref" ]; then
+      rm -rf "$tmpd"; gate_ci_rerun_park '재실행대상미상' "실행:$r event=${ev:-?}"; return 0
+    fi
+    wf_path=${wf_path%%@*}; bn=${wf_path##*/}
+    # X3 — every kind of identifier on its own field. A `workflow:` value
+    # matches the run's name, its file's basename with or without the
+    # extension, and the workflow id.
+    while IFS= read -r id; do
+      kind="${id%%:*}"; val="${id#*:}"
+      [ -n "$id" ] && [ -n "$val" ] || continue
+      case "$kind" in
+        workflow)
+          case "$val" in
+            "$wf_name"|"$bn"|"${bn%.*}"|"${bn%.*}.yml"|"${bn%.*}.yaml"|"$wf_id") bad="workflow:$val" ;;
+          esac ;;
+        branch) [ "$val" = "$hbr" ] && bad="branch:$val" ;;
+        argv)
+          case "gh api -X POST -i repos/$slug/actions/runs/$r/rerun-failed-jobs" in *"$val"*) bad="argv:$val" ;; esac ;;
+      esac
+      [ -z "$bad" ] || break
+    done <<EOF
+$(printf '%s' "$ids" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+EOF
+    if [ -n "$bad" ]; then rm -rf "$tmpd"; gate_ci_rerun_park '재실행배포트리거' "$bad:$r"; return 0; fi
+    # X5 — the run's own file at this head. Only a clean "no match" clears it.
+    rc=1
+    if [ -n "$wf_path" ] && ( cd "$wt" && git show "$h:$wf_path" ) > "$tmpd/wf.$r" 2>/dev/null; then
+      gate_ci_rerun_x5_hit "$tmpd/wf.$r" && rc=0 || rc=$?
+      [ "$rc" = "1" ] || rc=0
+    else
+      rc=0
+    fi
+    if [ "$rc" = "0" ]; then rm -rf "$tmpd"; gate_ci_rerun_park '재실행배포트리거' "${bn:-워크플로}:$r"; return 0; fi
+    atts="${atts:+$atts }$r:$x"
+    wfs="${wfs:+$wfs,}${wf_name:--}"
+  done
+  # X4 — the base branch's workflow files, once for the whole set. None found
+  # is not "none declared": the tree could not be read.
+  local wfl
+  wfl=$( { cd "$wt" && git ls-tree -r --name-only "$basebr" -- .github/workflows; } 2>/dev/null) || wfl=""
+  while IFS= read -r f; do
+    case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
+    rc=0
+    if ( cd "$wt" && git show "$basebr:$f" ) > "$tmpd/base.wf" 2>/dev/null; then
+      gate_ci_rerun_on_hit "$tmpd/base.wf" && rc=0 || rc=$?
+    fi
+    if [ "$rc" != "1" ]; then rm -rf "$tmpd"; gate_ci_rerun_park '재실행배포트리거' "기본 브랜치 ${f##*/}"; return 0; fi
+  done <<EOF
+$wfl
+EOF
+  rm -rf "$tmpd"
+  GATE_CI_RERUN_VERDICT=eligible
+  GATE_CI_RERUN_RUNS="$runs"
+  GATE_CI_RERUN_PR="$pnum"; GATE_CI_RERUN_SLUG="$slug"; GATE_CI_RERUN_HEAD="$h"
+  GATE_CI_RERUN_BASE="$basebr"; GATE_CI_RERUN_FAILS="$fails"; GATE_CI_RERUN_U=$(cc_ci_round_get "$rd" u)
+  GATE_CI_RERUN_OBS="$obs"; GATE_CI_RERUN_ATTS="$atts"; GATE_CI_RERUN_WFS="$wfs"
+  return 0
+}
+
+gate_ci_rerun_park() {
+  # gate_ci_rerun_park <칸> <관측> — set the park cell for the dispatch.
+  GATE_PARK_CELL="$1"; GATE_PARK_CAUSE='-'; GATE_PARK_OBS="$2"
+  GATE_CI_RERUN_VERDICT=""
+  export GATE_PARK_CELL GATE_PARK_CAUSE GATE_PARK_OBS
+}
+
+gate_ci_rerun_base_evidence() {
+  # gate_ci_rerun_base_evidence — the base branch's newest result for the
+  # failing names: 실패 · 통과 · 없음 · 판정 불가. A read failure is 판정 불가 and
+  # parks nothing: it only decides whether a second failure is the base's own.
+  local out names
+  names=$(printf '%s\n' "$GATE_CI_RERUN_FAILS" | awk -F'\t' 'NF >= 2 { print $2 }')
+  out=$(gate_ci_rerun_gh api "repos/$GATE_CI_RERUN_SLUG/commits/$GATE_CI_RERUN_BASE/check-runs?per_page=100" \
+        --jq '.check_runs[] | [.name, (.conclusion // "")] | join("\t")' 2>/dev/null) || { printf '판정 불가'; return 0; }
+  printf '%s\n' "$out" | GATE_CIB_NAMES="$names" awk -F'\t' '
+    BEGIN { n = split(ENVIRON["GATE_CIB_NAMES"], w, "\n"); for (i = 1; i <= n; i++) if (w[i] != "") want[w[i]] = 1 }
+    ($1 in want) && !($1 in seen) { seen[$1] = 1
+      if ($2 == "failure" || $2 == "timed_out" || $2 == "cancelled" || $2 == "action_required") f = 1
+      else if ($2 == "success" || $2 == "neutral" || $2 == "skipped") p = 1 }
+    END { if (f) print "실패"; else if (p) print "통과"; else print "없음" }'
+}
+
+gate_perform_ci_rerun() {
+  # gate_perform_ci_rerun <alias> <segment> <argv...> — the request row, one POST
+  # per run, the confirmation, and the closing row. No retry: a POST that did
+  # not take is a person's, and a second POST after an unknown outcome would be
+  # a second rerun.
+  local al="$1" seg="$2"; shift 2
+  if [ "${GATE_CI_RERUN_VERDICT:-}" != "eligible" ] || [ -z "${GATE_CI_RERUN_RUNS:-}" ]; then
+    warn "the rerun act reached its performer without an eligibility verdict — nothing was requested"
+    return "$GATE_EXIT_RULE"
+  fi
+  local slug="$GATE_CI_RERUN_SLUG" h="$GATE_CI_RERUN_HEAD" pr="$GATE_CI_RERUN_PR"
+  local k base r code codes="" failed="" tries new wfs="${GATE_CI_RERUN_WFS:--}" fc screen=""
+  k=$(( ${GATE_CI_RERUN_U:-0} + 1 ))
+  base=$(gate_ci_rerun_base_evidence)
+  fc=$(printf '%s\n' "$GATE_CI_RERUN_FAILS" | awk -F'\t' 'NF >= 2 { printf "%s%s", (n++ ? "," : ""), $2 }')
+  local -a common=("세그먼트=$seg" "PR=$pr" "head sha=$h" "처분=재실행")
+  local runs_f; runs_f=$(printf '%s' "$GATE_CI_RERUN_RUNS" | tr ' ' ',')
+  # THE ROW BEFORE THE POST: a gate that dies between the two leaves a request a
+  # person can see, never a rerun nobody recorded.
+  gate_append 'CI 처분' "${common[@]}" "상태=요청" "회차=$k" "실행=$runs_f" \
+    "워크플로=$(gate_row_safe "${wfs:--}" 200)" "실패 체크=$(gate_row_safe "${fc:--}" "$GATE_CHECKS_FAIL_MAX")" \
+    "기본 브랜치=$base" "응답=-" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return $?
+  for r in $GATE_CI_RERUN_RUNS; do
+    code=$(gate_ci_rerun_gh api -X POST -i "repos/$slug/actions/runs/$r/rerun-failed-jobs" 2>/dev/null \
+           | awk 'NR == 1 && /^HTTP\// { print $2; exit }' || true)
+    [ -n "$code" ] || code=000
+    codes="${codes:+$codes,}$code"
+    case "$code" in 2??) ;; *) failed=1 ;; esac
+  done
+  if [ -z "$failed" ]; then
+    # THE ATTEMPT ROSE, THEN THE SCREEN MOVED: a `수락` whose checks screen still
+    # shows the old failing job would have the poller read that job as the new
+    # round's failure.
+    local e rid want ok
+    for e in ${GATE_CI_RERUN_ATTS:-}; do
+      rid=${e%%:*}; want=${e#*:}
+      case "$want" in ''|*[!0-9]*) failed=1; codes="$codes,attempt"; break ;; esac
+      want=$(( want + 1 )); ok=""
+      tries=0
+      while [ "$tries" -lt "$GATE_CI_RERUN_CONFIRM_TRIES" ]; do
+        new=$(gate_ci_rerun_run_tsv "$slug" "$rid" | cut -f10 || true)
+        [ "$new" = "$want" ] && { ok=1; break; }
+        tries=$(( tries + 1 )); sleep "$GATE_CI_RERUN_CONFIRM_SLEEP"
+      done
+      [ -n "$ok" ] || { failed=1; codes="$codes,attempt"; break; }
+    done
+    if [ -z "$failed" ]; then
+      tries=0; ok=""
+      while [ "$tries" -lt "$GATE_CI_RERUN_CONFIRM_TRIES" ]; do
+        screen=$(gate_ci_rerun_checks_tsv "$(gate_ci_rerun_gh pr checks "$pr" -R "$slug" --json name,bucket,link 2>/dev/null || true)" || true)
+        if [ -n "$screen" ] && printf '%s\n' "$GATE_CI_RERUN_FAILS" | GATE_CIS_NOW="$screen" awk -F'\t' '
+             BEGIN { n = split(ENVIRON["GATE_CIS_NOW"], l, "\n")
+                     for (i = 1; i <= n; i++) { split(l[i], c, "\t"); key[c[2] "\t" c[3]] = c[1] } }
+             NF >= 3 { k = $2 "\t" $3; if ((k in key) && key[k] == "fail") stale = 1 }
+             END { exit stale ? 1 : 0 }'; then
+          ok=1; break
+        fi
+        tries=$(( tries + 1 )); sleep "$GATE_CI_RERUN_CONFIRM_SLEEP"
+      done
+      [ -n "$ok" ] || { failed=1; codes="화면"; }
+    fi
+  fi
+  if [ -z "$failed" ]; then
+    gate_append 'CI 처분' "${common[@]}" "상태=수락" "회차=$k" "실행=$runs_f" \
+      "워크플로=$(gate_row_safe "${wfs:--}" 200)" "실패 체크=$(gate_row_safe "${fc:--}" "$GATE_CHECKS_FAIL_MAX")" \
+      "기본 브랜치=$base" "응답=$codes" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return $?
+    log "$seg: 재실행 수락 — 회차 $k, 실행 $runs_f"
+    return 0
+  fi
+  gate_append 'CI 처분' "${common[@]}" "상태=실패" "회차=$k" "실행=$runs_f" \
+    "워크플로=$(gate_row_safe "${wfs:--}" 200)" "실패 체크=$(gate_row_safe "${fc:--}" "$GATE_CHECKS_FAIL_MAX")" \
+    "기본 브랜치=$base" "응답=$(gate_row_safe "$codes" 120)" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return $?
+  warn "reach park — judgment '재실행요청실패'. GitHub did not take the rerun (응답=$codes) and the gate does not try again"
+  gate_park_record '재실행요청실패' 'closed' "${GATE_CI_RERUN_OBS:-$codes}" "$@"
+  return "$GATE_EXIT_PARK"
+}
+
 gate_kind_is_bookkeeping() {
   # gate_kind_is_bookkeeping <kind> — the row kinds an `act` performs by
   # APPENDING A ROW and doing nothing else. Every one of them grades `읽기`.
@@ -31487,6 +32140,20 @@ gate_verb_act() {
     { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
       || { warn "act --kind apply 는 --segment <구현 세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
   fi
+  # THE RERUN ACT HAS ONE SPELLING TOO: the token `재실행` and the 40-character
+  # head it reruns, at the `PR` rung, for one segment. The runs it reruns are
+  # the gate's choice, so any further word would be one the router chose. The
+  # head rides in the argv so that the park digest is per head: without it the
+  # first park would park every later head's rerun as well.
+  if [ "$kind" = "ci-rerun" ]; then
+    if [ $# -ne 2 ] || [ "$1" != "재실행" ] || ! printf '%s' "$2" | grep -Eq '^[0-9a-f]{40}$'; then
+      warn "act --kind ci-rerun 의 argv 는 「재실행 <40자리 워크트리 HEAD>」 하나입니다 — 다시 돌릴 실행은 게이트가 고릅니다"
+      exit "$GATE_EXIT_VOCAB"
+    fi
+    [ "$cutpoint" = "PR" ] || { warn "act --kind ci-rerun 은 --cutpoint PR 로만 냅니다 (받은 값: ${cutpoint})"; exit "$GATE_EXIT_VOCAB"; }
+    { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
+      || { warn "act --kind ci-rerun 은 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
+  fi
 
   # ---- the argv ladder, derived and compared against the declaration --------
   #
@@ -31508,7 +32175,7 @@ gate_verb_act() {
   # would be a guess rather than a fact.
   GATE_ACT_DERIVED=""
   case "$kind" in
-    propose-done|skill|router-shift|apply) : ;;
+    propose-done|skill|router-shift|apply|ci-rerun) : ;;
     *) gate_kind_is_bookkeeping "$kind" \
          || GATE_ACT_DERIVED=$(ladder_of_argv0 "$@") ;;
   esac
@@ -31706,6 +32373,12 @@ gate_verb_act() {
     fi
     GATE_SUBJECT_HEAD="$GATE_APPLY_SUBJECT"
     export GATE_SUBJECT_HEAD GATE_APPLY_COMMAND
+  fi
+  # THE RERUN ACT'S TWO PRECONDITIONS, at the same seat and for the same reason.
+  # They read neither the ledger nor GitHub — the drain has not run yet — so the
+  # eligibility waits for its own seat beside the merge check.
+  if [ "$kind" = "ci-rerun" ]; then
+    gate_ci_rerun_preconditions "$segment" "$2" || exit $?
   fi
 
   case " $(target_aliases | tr '\n' ' ') " in
@@ -32210,7 +32883,49 @@ gate_verb_act() {
         exit "$GATE_EXIT_RULE"
       fi
     elif [ "${1:-}" = "implement" ]; then
-      if ! gate_implement_cycle_admissible "$segment"; then
+      local ci_dir ci_ok=""
+      # A CI FIX IS AN IMPLEMENT DISPATCH WHOSE PROMPT CARRIES `CI 수정: <sha>`.
+      # It is let in only while `다음` reads `CI 수정` and only onto the head that
+      # failed twice, and it spends the CI fix allowance rather than the cycle
+      # budget — a segment whose review passed has usually used that budget up.
+      # The row that spends the allowance is written by `act` alone and once per
+      # (segment, head): a forecast, a dispatch refused further on and a stage
+      # that died before its commit leave the head as it was, and the same head
+      # is dispatched again rather than counted again.
+      # The sha is the hex run after the colon: the prompt quotes the whole
+      # directive, so the closing quote follows the sha with no space between.
+      ci_dir=$(printf '%s\n' "$(gate_skill_prompt_of "$@")" | awk '
+        !got && /CI 수정:/ { s = $0; sub(/.*CI 수정:[ \t]*/, "", s); t = ""
+                            if (match(s, /^[0-9a-fA-F]+/)) t = substr(s, 1, RLENGTH)
+                            print "T:" t; got = 1 }')
+      if [ -n "$ci_dir" ]; then
+        local ci_next ci_h ci_t ci_v
+        ci_next=$(gate_segment_review_next "$segment")
+        ci_h=$(gate_worktree_tip "$(gate_act_worktree "$alias" "$segment")" || true)
+        ci_t=${ci_dir#T:}
+        if [ "$ci_next" != "CI 수정" ]; then
+          warn "세그먼트 ${segment} 의 다음 처분은 「${ci_next}」 입니다 — CI 수정은 「다음」 이 「CI 수정」 일 때만 파견합니다"
+          warn "스냅숏의 review_next[] 의 「다음」 을 읽고 그 처분으로 가세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+        if [ -z "$ci_h" ] || [ "$ci_t" != "$ci_h" ]; then
+          warn "CI 수정 파견의 sha (${ci_t:-없음}) 가 세그먼트 ${segment} 의 워크트리 HEAD (${ci_h:-없음}) 가 아닙니다"
+          warn "스냅숏의 review_next[] 의 「head sha」 값을 그대로 「CI 수정:」 뒤에 실어 다시 파견하세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+        ci_ok=1
+        if [ "$verb" = "act" ] && [ "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$segment" "$ci_h")" fix)" != "1" ]; then
+          ci_v=$(gate_ci_verdict_row "$segment" "$ci_h" \
+            "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$segment" "$ci_h")" g)")
+          gate_append 'CI 처분' "세그먼트=$segment" "PR=$(gate_row_field "$ci_v" 'PR')" \
+            "head sha=$ci_h" "처분=수정" "상태=-" "회차=-" "실행=-" "워크플로=-" \
+            "실패 체크=$(gate_row_safe "$(gate_row_field "$ci_v" '실패 체크')" "$GATE_CHECKS_FAIL_MAX")" \
+            "기본 브랜치=-" "응답=-" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        fi
+      fi
+      # A CI fix let in above is exempt from the cycle budget, on top of the
+      # exemptions `gate_implement_cycle_admissible` holds.
+      if ! gate_implement_cycle_admissible "$segment" && [ -z "$ci_ok" ]; then
         warn "세그먼트 ${segment} 의 사이클 예산이 소진됐습니다 — cycle 행 ${GATE_IMPL_CYCLE_N}개, 상한 ${GATE_IMPL_CYCLE_CAP}"
         warn "구현을 다시 파견하지 말고 스냅숏의 review_next[] 의 「다음」 을 읽으세요 — 상한에서는 「리드 수정」 이나 끝내는 값입니다"
         exit "$GATE_EXIT_RULE"
@@ -32566,6 +33281,10 @@ gate_verb_act() {
       # what the act performs is the frozen apply command, which changes state
       # outside the tree by definition.
       graded="외부상태변경" ;;
+    ci-rerun)
+      # The same: `재실행 <sha>` is a token, and what the act performs is the
+      # gate's own POST to GitHub, a change of state outside the tree.
+      graded="외부상태변경" ;;
     *)
       if gate_kind_is_bookkeeping "$kind"; then
         # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
@@ -32823,7 +33542,7 @@ gate_verb_act() {
   # has no answer, and 0 is the honest one: no history is being integrated.
   GATE_HISTORY_INTEGRATION=0
   case "$kind" in
-    propose-done|skill|router-shift|apply) : ;;
+    propose-done|skill|router-shift|apply|ci-rerun) : ;;
     *) gate_kind_is_bookkeeping "$kind" \
          || GATE_HISTORY_INTEGRATION=$(gate_history_integration "$@") ;;
   esac
@@ -32973,7 +33692,7 @@ gate_verb_act() {
      && [ -n "$segment" ] && [ "$segment" != '-' ] \
      && [ -n "$(gate_segment_field "$segment" '상태')" ]; then
     case "$kind" in
-      propose-done|skill|router-shift|apply) : ;;
+      propose-done|skill|router-shift|apply|ci-rerun) : ;;
       *)
         [ "$(gate_merge_binding_of_argv0 "$@")" = '해당없음' ] || _mo_land=1
         if [ "$_mo_land" = 0 ]; then
@@ -33097,6 +33816,11 @@ gate_verb_act() {
   # putting the seam upstream: `GATE_ACT` arrives already corrected, so not one
   # line of the catalog changes and no checker acquires a second copy of the
   # ladder.
+  # A rule that answers differently with no person present reads the mode from
+  # here: the rule files run as processes of their own and cannot call the
+  # gate's function.
+  if gate_auto_resolve_enabled; then GATE_AUTO_RESOLVE=1; else GATE_AUTO_RESOLVE=0; fi
+  export GATE_AUTO_RESOLVE
   gate_run_rules "$GATE_ACT_EFFECTIVE" "$alias" "$segment" "$argv" \
     "$(gate_preauth_argv "$alias" "$@")" || rules_rc=$?
 
@@ -33664,6 +34388,10 @@ EOF
   # merges is the surface and history-integration values set above, so a stage
   # launch or a read labelled `머지` is let through on what it does rather than
   # on what it is called.
+  # THE RERUN ACT'S OWN VERDICT stands right ahead of it, on the same seat and
+  # for the same reasons: past the drain and the rule loop, ahead of every
+  # append, and above the forecast. Every other kind returns from it at once.
+  gate_check_ci_rerun "$kind"
   gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
   # THE LANDING TREE'S OWN GATE, asked before it lands. Same seat as the CI
   # verdict above and for the same three reasons; it does nothing when that
@@ -33693,47 +34421,8 @@ EOF
       warn "this act is already parked (act digest=$_ad) — re-declaring does not change the disposition"
       exit "$GATE_EXIT_PARK"
     fi
-    # THE THREE FREE-TEXT FIELDS ARE SIZED FROM WHAT IS LEFT, not from three
-    # constants. A row that exceeds the cap is not a truncated row — `gate_append`
-    # refuses it and the process ends, so the park verdict this block exists to
-    # record would vanish exactly when it is most needed. The fixed part is
-    # measured here rather than assumed: an alias, a segment id and a stage id
-    # are caller-shaped and nothing bounds their length.
-    local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"
-    local _fixed _free _rb _jb=0 _ob _cb _jl='' _jfix='' _jx=()
-    # A JUDGMENT'S VERDICT RIDES IN FIELDS OF ITS OWN, never inside `근거=`: that
-    # field is the stage's rationale, and a verdict folded into it could not be
-    # told apart from what the stage claimed. Absent a judgment the row is the
-    # row it always was.
-    if [ "${GATE_PREAUTH_JUDGE:--}" != "-" ]; then
-      _jl=$(gate_preauth_judge_label "$GATE_PREAUTH_JUDGE")
-      _jfix="사전 인가 판단=$_jl | 판단 이유= | "
-    fi
-    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | %s근거= | 관측= | 재개 명령= | prev=%064d\n' \
-              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" "$_jfix" 0 \
-            | wc -c | tr -d ' ')
-    _free=$(( GATE_ROW_MAX - _fixed - 8 ))
-    [ "$_free" -lt 0 ] && _free=0
-    # The rationale first — it is the one a person reads in the morning — then the
-    # judgment's reason, then the act excerpt, then the re-invocation line, each
-    # capped at its own ceiling.
-    _rb=$(( _free / 2 )); [ "$_rb" -gt 160 ] && _rb=160
-    _free=$(( _free - _rb ))
-    if [ -n "$_jl" ]; then
-      _jb=$(( _free / 2 )); [ "$_jb" -gt 400 ] && _jb=400
-      _free=$(( _free - _jb ))
-      _jx=("사전 인가 판단=$_jl" "판단 이유=$(gate_row_safe "$(gate_preauth_judge_reason "$GATE_PREAUTH_JUDGE")" "$_jb")")
-    fi
-    _ob=$(( _free / 3 )); [ "$_ob" -gt 60 ] && _ob=60
-    _free=$(( _free - _ob ))
-    _cb="$_free"; [ "$_cb" -gt 240 ] && _cb=240
-    gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
-      "도달 판정=$GATE_PARK_CELL" "세그먼트=$_seg55" \
-      "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
-      "행위 다이제스트=$_ad" ${_jx[@]+"${_jx[@]}"} "근거=$(gate_row_safe "$rationale" "$_rb")" \
-      "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
     warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed, and retrying or re-declaring with a different reach gets the same judgment. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
-    gate_park_repair_line "$GATE_PARK_CELL" "${GATE_PARK_CAUSE:--}"
+    gate_park_record "$GATE_PARK_CELL" "${GATE_PARK_CAUSE:--}" "${GATE_PARK_OBS:-$1}" "$@"
     exit "$GATE_EXIT_PARK"
   fi
 
@@ -34030,6 +34719,9 @@ EOF
         router-shift) gate_relay_route "$alias" "$@" || rc=$? ;;
         # The frozen command at the proved merge commit, never the argv.
         apply) gate_perform_apply "$alias" "$segment" || rc=$? ;;
+        # The POST and its confirmation, never the argv: `재실행 <sha>` run as a
+        # command would skip the performer's guard.
+        ci-rerun) gate_perform_ci_rerun "$alias" "$segment" "$@" || rc=$? ;;
         *)     gate_run_readonly "$@" || rc=$? ;;
       esac
       ;;
@@ -34796,7 +35488,9 @@ gate_check_merge_checks() {
   # A STALE `통과` ROW CANNOT CAUSE A BAD MERGE: all it can do is fail to refuse,
   # which is the behaviour of a run with no poller at all. The only stale value
   # that could matter is `실패`, and the poller writes a new row on the
-  # `실패 → 통과` transition while this reads the LAST row of the pair.
+  # `실패 → 통과` transition while this reads the newest row of the round. After
+  # a rerun the polarity turns: the round's own `통과` is required, not merely
+  # the absence of a failure.
   local seg="$1" cut="$2" row tip st req
   [ "$cut" = "머지" ] || return 0
   [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
@@ -34827,35 +35521,52 @@ gate_check_merge_checks() {
     return 0
   fi
 
-  # The trailing space is not cosmetic: without it segment `D` also matches a row
-  # written for `D2`, and the merge of one segment would be refused by another's
-  # CI failure. `세그먼트` is the last field this series writes, so `gate_append`'s
-  # own ` | prev=` guarantees the space is there.
-  # BOTH GREPS CARRY `|| true`, and the second one is the load-bearing half. This
-  # file runs under `set -e` with `pipefail`, so a pipeline whose last failing
-  # stage is an unmatched `grep` makes the assignment itself fail and the process
-  # ends at exit 1 with nothing printed. The state that reaches it is the ordinary
-  # one: a run with no poller has no `checks` row at all, so the match is empty and
-  # EVERY merge on such a run died — the exact opposite of the co-existence this
-  # function is built to have. Measured on the first merge of a fresh fixture.
-  row=$( { grep '^- `checks`' "$LEDGER" 2>/dev/null || true; } \
-         | { grep -F "세그먼트=$seg " || true; } | tail -1)
-  # NOTHING RECORDED IS NOT A VERDICT. The gate has nothing to say, so it says
-  # nothing — that is what makes the poller optional rather than a new dependency.
-  [ -n "$row" ] || return 0
-
   tip=$(gate_segment_tip "$seg") || tip=""
   [ -n "$tip" ] || return 0
-  [ "$(gate_row_field "$row" 'head sha')" = "$tip" ] || return 0
-
+  # THE ROW IS THE ONE THE CI LAYER READS. The round of (segment, tip) comes from
+  # `cc_ci_round`, and the verdict is the newest `checks` row of that segment
+  # and head whose `재실행 회차` is the round, so a row of another head written
+  # later does not hide this head's verdict, and a failure of a round a rerun
+  # already superseded is not read as the current one. Taking the last row of
+  # the segment whatever its head returned silently whenever another head's row
+  # came last.
+  local rd a g why
+  rd=$(cc_ci_round "$LEDGER" "$seg" "$tip")
+  a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g)
+  row=$(gate_ci_verdict_row "$seg" "$tip" "${g:-0}")
   st=$(gate_row_field "$row" '상태')
-  case "$st" in 실패) : ;; *) return 0 ;; esac
   req=$(gate_row_field "$row" '필수 집합')
-  # A BROKEN QUESTION IS NOT READ AS AN ANSWER — that is the whole reason
-  # `판정 불가` exists as a value of its own on both fields.
-  [ "$req" = "판정 불가" ] && return 0
+  if [ "$a" = "열림" ]; then
+    # A rerun was requested and never closed: what GitHub is running is unknown.
+    why="a rerun of this head ($tip) was requested and has no closing row"
+  elif [ "${g:-0}" -ge 1 ]; then
+    # AFTER A RERUN ONLY A PASS OF THAT ROUND MERGES. The round's first verdict
+    # comes after the rerun began, so anything short of `통과` — no row yet, a
+    # pending or unreadable answer, a second failure — is not a green check.
+    [ "$st" = "통과" ] && return 0
+    why="rerun round $g of this head ($tip) has not passed — 상태 '${st:-(관측 없음)}'"
+  else
+    # NOTHING RECORDED IS NOT A VERDICT. The gate has nothing to say, so it says
+    # nothing — that is what makes the poller optional rather than a new dependency.
+    [ -n "$row" ] || return 0
+    case "$st" in 실패) : ;; *) return 0 ;; esac
+    # A BROKEN QUESTION IS NOT READ AS AN ANSWER — that is the whole reason
+    # `판정 불가` exists as a value of its own on both fields.
+    [ "$req" = "판정 불가" ] && return 0
+    why="CI failed at this very head ($tip) — 필수 집합 '$req', 실패 체크 '$(gate_row_field "$row" '실패 체크')'"
+  fi
 
-  warn "CI on the PR of segment '$seg' failed at this very head ($tip) — 필수 집합 '$req', 실패 체크 '$(gate_row_field "$row" '실패 체크')'"
+  # A ROUTED RUN HAS A WAY ON, SO THE REFUSAL POINTS AT IT. `다음` reads the
+  # same round and sends the segment to the rerun act, to the wait, or back to
+  # the implement stage; a park cell here would stop on a person a segment the
+  # router can move. A run with no routing record, and the fixed-graph driver,
+  # have no branch for those values and keep today's park.
+  if run_routed; then
+    warn "the merge of segment '$seg' is refused: $why"
+    warn "다음=$(gate_segment_review_next "$seg") — read review_next[] in the snapshot and take that disposition instead of merging"
+    exit "$GATE_EXIT_RULE"
+  fi
+  warn "CI on the PR of segment '$seg': $why"
   warn "an unattended run parks on a failing check whether or not it is required; fix the failing check and push a new head, and the poller opens a new lifecycle for it"
   # NO NEW EXIT CODE. The refusal leaves through the park dispatch immediately
   # below, so it becomes an act-scope `blocked` row like every other reach park
@@ -40183,6 +40894,24 @@ gate_snapshot_cycles_json() {
   printf '%s\n' "${out%,}"
 }
 
+gate_snapshot_ci_keys_json() {
+  # gate_snapshot_ci_keys_json <segment> — the keys a CI value adds to its
+  # `review_next[]` element: what `CI 수정: <sha>` names, the PR and the failing
+  # checks a person reads at a park, and the round and base evidence the value
+  # was decided on. The same ledger reads `gate_ci_next` makes.
+  local s=$1 h rd g v
+  h=$(gate_segment_tip "$s" || true)
+  rd=$(cc_ci_round "$LEDGER" "$s" "$h")
+  g=$(cc_ci_round_get "$rd" g)
+  v=$(gate_ci_verdict_row "$s" "$h" "${g:-0}")
+  printf ', "head sha": "%s", "PR": "%s", "실패 체크": "%s", "재실행 회차": "%s", "기본 브랜치": "%s"' \
+    "$(gate_json_escape "$h")" \
+    "$(gate_json_escape "$(gate_row_field "$v" 'PR')")" \
+    "$(gate_json_escape "$(gate_row_field "$v" '실패 체크')")" \
+    "$(gate_json_escape "${g:-0}")" \
+    "$(gate_json_escape "$(cc_ci_round_get "$rd" base)")"
+}
+
 gate_snapshot_review_next_json() {
   # One element per segment that has a `cycle` row and has not merged:
   # `다음` and the last cycle's `사이클`, `리뷰 HEAD` and `리포트 경로` — what a
@@ -40193,7 +40922,8 @@ gate_snapshot_review_next_json() {
   # At the three base values the element also carries what the resolution and
   # its review name: the basis cycle and its `리뷰 HEAD` (the segment's last
   # cycle that is not a resolution), and the base, the conflicted files and
-  # the class of the latest `베이스 판정` row.
+  # the class of the latest `베이스 판정` row. At the six CI values it carries
+  # the keys `gate_snapshot_ci_keys_json` names.
   local out s row nx brow bcy
   out=$(gate_segment_ids | while IFS= read -r s; do
           [ -n "$s" ] || continue
@@ -40217,6 +40947,10 @@ gate_snapshot_review_next_json() {
                 "$(gate_json_escape "$(gate_row_field "$brow" '베이스')")" \
                 "$(gate_json_escape "$(gate_row_field "$brow" '충돌 파일')")" \
                 "$(gate_json_escape "$(gate_row_field "$brow" '부류')")"
+          fi
+          if [ "$nx" = 'CI 재실행' ] || [ "$nx" = 'CI 대기' ] || [ "$nx" = 'CI 수정' ] \
+             || [ "$nx" = 'CI 리뷰' ] || [ "$nx" = 'CI 기존 실패' ] || [ "$nx" = 'CI 수정 한도' ]; then
+              gate_snapshot_ci_keys_json "$s"
           fi
           printf '},\n'
         done )
