@@ -915,7 +915,9 @@ EOF
 printf 'argv:%s\n' "$*" >> "@T@/gh.log"
 case "$*" in
   *" --json jobs "*) cat "@T@/gh-jobs" ;;
-  *" --log"*) cat "@T@/gh-log" ;;
+  *" --log"*)
+    if [ -f "@T@/gh-log-fail" ]; then cat "@T@/gh-log-fail" >&2; exit 1; fi
+    cat "@T@/gh-log" ;;
   "api "*) cat "@T@/gh-tree" ;;
   *) exit 9 ;;
 esac
@@ -1306,6 +1308,17 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
   esac
   hasnt "F25 lint-and-test-macos 에 repro 줄이 없다" "$out" "repro"
 
+  # A run still in progress: gh refuses the log of even a finished job with one
+  # line and exit 1, so ci-base ends at the log read without a value line.
+  printf '11\tgate-shards (11)\tfailure\n' > "$T/gh-jobs"
+  printf 'run 39287256162 is still in progress; logs will be available when it is complete\n' > "$T/gh-log-fail"
+  out=$(cib)
+  rc=$?
+  check "F9 진행 중인 런의 로그 거절 → 2" "$rc" "2"
+  hasnt "F9 진행 중인 런에 ci-base: run= 줄이 없다" "$out" "ci-base: run="
+  hasnt "F9 진행 중인 런에 repro 줄이 없다" "$out" "bash scripts/test-tree.sh repro"
+  rm -f "$T/gh-log-fail"
+
   # --- F28 repro side ---------------------------------------------------------
   out=$(find "$T/tmp" -maxdepth 1 -name 'cc-test-tree.*' | wc -l | tr -d ' ')
   check "F28 repro(판정, 5, 6)와 라이브러리 뒤 TMPDIR 에 cc-test-tree.* 가 없다" "$out" "0"
@@ -1313,8 +1326,8 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 97 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 97 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 100 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 100 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
