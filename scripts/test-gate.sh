@@ -18815,6 +18815,26 @@ if grep -qE '^[[:space:]]*designdoc\.lock\)' "$GATE" \
 else
   bad "가드·훅 불일치" "설계 문서 락 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
+# 답 카드 디렉터리. 게이트가 운반 act 에서 `halt-answer/<key>#<attempt>.md` 를 쓰고 스테이지는
+# 읽기만 한다 — 스테이지가 그 카드를 고치면 사람이 고르지 않은 답이 세션에 닿는다. 두 가드
+# 모두 예외 팔 없이 `*/*` 거부로 떨어지며, 이름이 `halt` 로 시작해도 `halt/*` 팔에 걸리지
+# 않는다는 것을 스테이지 id 를 단 호출로 잰다.
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt-answer/S2#4.md"
+check "스테이지의 halt-answer/ 쓰기는 거절된다" "$rc" "3"
+case "$msg" in
+  *"rule refused: run directory write — the only paths a stage is declared to write are "*) ok "그 거절이 런 디렉터리 쓰기 가드의 문면이다" ;;
+  *) bad "halt-answer/ 거절 문면" "$msg" ;;
+esac
+check "거절된 카드 파일이 만들어지지 않았다" "$( [ -e "$RD3/halt-answer/S2#4.md" ] && printf yes || printf no )" "no"
+hook_card_out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$RD3/halt-answer/S2#4.md" \
+  | CC_PIPELINE_STAGE_ID='S2#4' bash "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" --run-dir "$RD3" \
+      --gate "$GATE" --ledger "$LEDGER2" --grant "$CONE_GRANT" --manifest "$NM" 2>/dev/null)
+case "$(printf '%s' "$hook_card_out" | jq -r '.hookSpecificOutput.permissionDecision + " " + .hookSpecificOutput.permissionDecisionReason' 2>/dev/null)" in
+  "deny gate: the only paths in the run directory a stage is declared to write are "*) ok "훅도 halt-answer/ 쓰기를 같은 런 디렉터리 문면으로 거부한다" ;;
+  *) bad "훅의 halt-answer/ 판정" "$hook_card_out" ;;
+esac
 
 # 정지 기록 이름은 쓰는 쪽에서 막는다. 시도 4 의 스테이지가 세그먼트 이름만으로
 # `halt/S2.md` 를 썼고, 두 독자는 시도 번호를 단 이름만 찾으므로 그 턴을 `정상 완료` 로
@@ -38271,8 +38291,9 @@ for lsr61_f in "$repo_root"/plugins/cc-cmds/orchestrator/*.sh; do
   lsr61_wcalls=$(( lsr61_wcalls + $(sed 's/#.*//' "$lsr61_f" | { grep -cE "$lsr61_wre" || true; }) ))
 done
 # lease: 파견 시점의 부여, 대기 뒤 감독자의 부여, 드라이버의 부여. wait: 게이트
-# 파견 반쪽의 첫 행, 감독자의 심장박동, 드라이버 대기의 첫 행과 심장박동.
-check "61: 래퍼를 부르는 자리는 lease 셋·wait 넷이다" "$lsr61_lcalls/$lsr61_wcalls" "3/4"
+# 파견 반쪽의 첫 행, 중단 답 운반이 묶인 세션의 계정을 기다리는 첫 행과 새 세션의
+# 자리를 기다리는 첫 행, 감독자의 심장박동, 드라이버 대기의 첫 행과 심장박동.
+check "61: 래퍼를 부르는 자리는 lease 셋·wait 여섯이다" "$lsr61_lcalls/$lsr61_wcalls" "3/6"
 check "61: 두 래퍼의 정의는 있다 (0 이 이름이 바뀐 탓이 아니다)" \
   "$( { grep -cE '^gate_stage_(lease|wait)_row\(\) \{' "$GATE" || true; } )" "2"
 check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
@@ -39406,6 +39427,1254 @@ check "75: 포인터가 좌석 파일을 원천으로 적는다" \
 check "75: 스냅숏이 좌석 파일의 무인 불릿을 담는다" \
   "$(cat "${lsr75_pr%/*}/instructions/personal/$(cut -d' ' -f1 "${lsr75_pr%/*}/instructions/personal/current" 2>/dev/null).md" 2>/dev/null)" \
   "- LSR75-SEAT-CANARY rule"
+
+# ---------------------------------------------------------------------------
+# 94. 마감 park 의 복구 문면 — 라우터와 대기 루프가 같은 바이트를 싣는다
+# --- section: 94 | group: ledger_series | covers: act, gate_wait_deadline_park | needs: 75 | anchors: 94: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다, 94: 옛 복구 문구가 플러그인 어디에도 없다, 94: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다 ---
+#
+# 마감 park 는 이 런에서 기동하지 않는다는 판정이고, 그 뒤의 길은 다음 런이다. 라우터
+# 봉투의 `recovery` 와 게이트의 대체값(대기 루프 상수)이 따로 적혀 있으므로 둘이
+# 갈라지면 같은 판정이 행마다 다른 길을 가리킨다. 대체값 경로는 라우터가 `recovery`
+# 를 비운 봉투로 돈다 — 절 75 의 픽스처 원장에는 세그먼트 행이 없어 cone 행이
+# 거절되므로, act 스코프 대체 행에 실린 문면을 읽는다.
+# ---------------------------------------------------------------------------
+lsr92_want='마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다'
+lsr92_route=$(sed -n '/^def rt_park_deadline(/,/};$/s/.*recovery: "\([^"]*\)".*/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/route.sh")
+lsr92_loop=$(sed -n 's/^readonly WAIT_LOOP_DEADLINE_RECOVERY="\([^"]*\)"$/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
+check "94: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다" \
+  "$lsr92_route|$lsr92_loop" "$lsr92_want|$lsr92_want"
+check "94: 옛 복구 문구가 플러그인 어디에도 없다" \
+  "$( { grep -rnF '마감을 늘리' "$repo_root/plugins" || true; } | wc -l | tr -d ' ')" "0"
+lsr92_l=$(lsr75_new dl92)
+check "94: 복구를 비운 마감 PARK 도 exit 16 이다" \
+  "$(lsr75_rc "$lsr92_l" '{"verdict":"PARK","reason":"deadline","ready_at":1900000000,"recovery":""}' '' SW92)" "16"
+case "$( { grep '^- `blocked`' "$lsr92_l" || true; } | tail -1)" in
+  *"스코프=act"*"세그먼트=SW92"*"근거=계보=B:SW92#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') ($lsr92_want) |"*)
+    ok "94: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다" ;;
+  *) bad "94 대체값 행" "$(tail -1 "$lsr92_l")" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 95. 중단 답 운반 — 두 질문과 고르는 순서, 거절 조항, 상한, 답 카드
+# --- section: 95 | group: ledger_series | covers: act, gate_carry_check, gate_launch_route_carry, gate_halt_card_write, handoff, shift-halt, gate_defer_end_due, relay, gate_done_conditions, binding-digest | needs: 75 | anchors: 95: 묶인 GRANT 는 멈춘 세션을 재부착한다, 95: 둘 다 마감 PARK 면 이월 행 하나와 exit 16 이다, 95: 실측 1 — 감사 키의 답이 새 계정 u7 의 세션에 카드로 닿는다, 95: 같은 스텝과 문면으로 다시 멈춘 운반 뒤의 운반은 exit 18 이다, 95: TH1 마감 뒤의 이월 인계는 받고 그 자리에서 런을 마감으로 끝낸다, 95: TN5 진전 축 없는 런의 마감 뒤 운반 act 는 exit 16 이다, 95: TH2 마감 전 이월만 남은 대기는 붙듦 상한에서 좌석에 돌려준다, 95: TD2 이월된 세그먼트는 답 이월 대기이고 대조 세그먼트는 오늘의 줄이다 ---
+#
+# 운반 act 는 멈춘 시도의 세션에 묶인 질문과 새 세션의 질문을 둘 다 묻고 하나를
+# 고른다. 절 75 의 사본과 같은 방식으로 게이트를 소싱한 자식에서 운반 검사와 파견
+# 반쪽을 직접 부르되, 라우터 대역은 묻는 사건(`resume`·`first`)마다 다른 봉투를 낸다.
+# 판정표는 봉투를 고정해 재고, 실측 1·2 는 설계 문서의 계정 배치를 문맥으로 사본의
+# 실제 `route.sh decide` 에 묻는다. 감독자 띄우기는 그 argv 를 적는 대역으로 바꾼다 —
+# 카드가 스테이지 환경에 실리는 것은 감독자 스위트가 잰다.
+# ---------------------------------------------------------------------------
+lsr93_sid=0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d
+lsr93_sid2=1c2d3e4f-5061-4b7c-8d9e-0f1a2b3c4d5e
+lsr93_doc="$lsr75/doc93.md"
+printf '# 설계\n' > "$lsr93_doc"
+
+lsr93_in() {
+  # lsr93_in <원장> <명령…> — 사본을 소싱한 자식에서 한 명령. 라우터 대역은 요청을
+  # 원장 옆 `requests` 에 한 줄씩 적고, 사건이 `resume` 이면 LSR93_BENV 를, 아니면
+  # LSR93_FENV 를 낸다. 값이 `decide:<문맥 파일>` 이면 그 문맥에 요청을 얹어 사본의
+  # route.sh decide 가 답한다. 마감은 LSR93_DL, 감사 스텝의 런 스코프 id 는 A1 이다.
+  local l="$1"; shift
+  LSR93_REQ="${l%/*}/requests" LSR93_REL="${l%/*}/released" LSR93_MF="$FX_MANIFEST" \
+  LSR93_ROUTE="$lsr75/cc-cmds/orchestrator/route.sh" LSR93_DOCP="$lsr93_doc" \
+  bash -c '
+    g=$1; l=$2; shift 2
+    lsr93_argv=("$@"); set --
+    CC_GATE_SOURCE_ONLY=1 . "$g" >/dev/null 2>&1 || exit 97
+    set +e
+    unset CC_GATE_SOURCE_ONLY CC_PIPELINE_SHIFT_ID
+    MANIFEST=$LSR93_MF; LEDGER=$l; RUN_DIR=${l%/*}; RUN_ID=LS; CLI_BIN=/usr/bin/true; DOC=$LSR93_DOCP
+    route_resolve() {
+      local e
+      printf "%s\n" "$1" >> "$LSR93_REQ"
+      case "$(printf "%s" "$1" | jq -r .event)" in
+        resume) e=${LSR93_BENV:-} ;;
+        *) e=${LSR93_FENV:-} ;;
+      esac
+      case "$e" in
+        decide:*) jq -c --argjson r "$1" ".request = (\$r | del(.deadline)) | .deadline = \$r.deadline" "${e#decide:}" \
+                    | bash "$LSR93_ROUTE" decide ;;
+        *) printf "%s" "$e" ;;
+      esac
+    }
+    route_lease_of() { :; }
+    route_lease_release() { printf "%s %s\n" "$3" "$4" >> "$LSR93_REL"; }
+    route_lease_hold() { :; }
+    deadline_epoch() { printf "%s" "${LSR93_DL:-}"; }
+    gate_run_scope_step() { [ "$1" = audit ] && printf A1; }
+    gate_stage_instructions_for_launch() { :; }
+    cc_detach_exec() {
+      shift 2
+      printf "%s\n" "$@" > "$RUN_DIR/argv"
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = --segment ]; then : > "$RUN_DIR/$2.pid"; fi
+        shift
+      done
+      printf 424242
+    }
+    lsr93_say() {
+      printf "%s|%s|%s|%s|%s|%s" "$r" "${GATE_ROUTE_VERDICT:-}" "${GATE_ROUTE_EVENT:-}" \
+        "${GATE_RESUME:+bound}" "${GATE_ROUTE_ACCOUNT:-}" "${GATE_ROUTE_CFG:-}"
+    }
+    "${lsr93_argv[@]}"
+  ' _ "$lsr75/cc-cmds/orchestrator/gate.sh" "$l" "$@"
+}
+lsr93_h1=$(printf '사전 문서' | shasum -a 256 | cut -d' ' -f1)
+lsr93_h2=$(printf '사전 구속 표면' | shasum -a 256 | cut -d' ' -f1)
+lsr93_park() {
+  # lsr93_park <원장> <키> <시도> <세션> <스텝> <종류> [<종단 부류>] — 그 시도가 계정
+  # u1 의 세션으로 멈춘 `stage-result` 행과 그 정지 기록, 그리고 그 시도가 남긴 핀과
+  # 선점. 질문 문면은 LSR93_Q(없으면 키의 질문), 답 운반은 LSR93_CARRY 다. 감사 키
+  # A1 의 행은 런 스코프 모양이다. 재수렴의 기록은 쓰는 쪽 의무대로 `관측 상세` 에
+  # 범위와 두 기준선을 싣는다 — 범위는 LSR93_SCOPE(없으면 R2), 줄 전체는
+  # LSR93_DETAIL 이 있으면 그 값(빈 값이면 줄이 없다)이다.
+  local l="$1" key="$2" att="$3" rec seg
+  local det="범위=${LSR93_SCOPE:-R2} · 사전 sha256=$lsr93_h1 · 사전 구속 표면 다이제스트=$lsr93_h2"
+  rec="${l%/*}/halt/$key#$att.md"
+  mkdir -p "${l%/*}/halt"
+  printf '%s\n' "$att" > "${l%/*}/$key.attempt"
+  : > "${l%/*}/$key.attempt.$att"
+  [ "$6" = reconverge ] || det=""
+  [ -z "${LSR93_DETAIL+x}" ] || det=$LSR93_DETAIL
+  { printf '<!-- cc-pipeline-halt v1; kind=gate-unanswerable; stage=%s#%s; run=LS -->\n' "$key" "$att"
+    printf '**분류**: gate-unanswerable\n**스텝**: %s\n**질문 문면**: %s\n' "$5" "${LSR93_Q:-$key 의 질문}"
+    printf '**선택지**:\n- `적용` — 그대로 적용한다\n- `세그먼트 park` — 여기서 멈춘다\n'
+    [ -z "$det" ] || printf '**관측 상세**: %s\n' "$det"
+    printf '<!-- /cc-pipeline-halt v1 -->\n'; } > "$rec"
+  seg=$key; [ "$key" != A1 ] || seg=-
+  lsr93_in "$l" gate_append stage-result "세그먼트=$seg" "스테이지=$key" "종류=$6" "종료 코드=0" \
+    "실행 버전=$att" "세션 id=$4" "계정=u1" "부모=-" "기록자=게이트" "종단 부류=${7:-의도된 park}" \
+    ${LSR93_CARRY:+"답 운반=$LSR93_CARRY"} >/dev/null 2>&1
+}
+lsr93_ans() {
+  # lsr93_ans <원장> <키> <기록> <스킬> <선택지> — 사람이 그 기록에 답한 `중단 답`
+  # 행. 그 행의 원장 줄 번호를 낸다.
+  lsr93_in "$1" gate_append '중단 답' "세그먼트=$2" "중단 기록=$3" "스킬=$4" "선택지=$5" \
+    "답한 주체=사람" "근거=시험 픽스처의 답" "기록 다이제스트=$(shasum -a 256 "$3" | cut -d' ' -f1)" \
+    "레인=~/.claude-u1" "기록 시각=2026-10-19T00:00:00Z" >/dev/null 2>&1
+  { grep -n '^- `중단 답` ' "$1" || true; } | tail -1 | cut -d: -f1
+}
+lsr93_n() {  # lsr93_n <파일> <고정 문자열> — 그 문자열을 든 줄 수
+  [ -f "$1" ] || { printf 0; return 0; }
+  { grep -cF -- "$2" "$1" || true; } | tr -d ' '
+}
+lsr93_rel() {  # lsr93_rel <원장> — 반납된 난스들, 없으면 -
+  if [ -s "${1%/*}/released" ]; then cut -d' ' -f2 "${1%/*}/released" | paste -sd, -; else printf -- -; fi
+}
+lsr93_events() {  # lsr93_events <원장> — 라우터에 물은 사건들
+  if [ -s "${1%/*}/requests" ]; then jq -r .event "${1%/*}/requests" | paste -sd, -; else printf -- -; fi
+}
+# 운반 검사를 지난 뒤의 상태를 그대로 놓고 라우팅만 한 번 — 판정표의 행들.
+lsr93_route_eval='GATE_CARRY_ANSWER=$LSR93_LN; GATE_HA_LINE=$LSR93_LN; GATE_HA_BOUND=$LSR93_SID; r=0
+  gate_launch_route infra S9 reconverge >/dev/null 2>&1 || r=$?
+  lsr93_say'
+lsr93_row() {
+  # lsr93_row <이름> <묶인 봉투> <새 봉투> [nosid] — 키 S9 의 시도 1 이 u1 의 세션으로
+  # 멈추고 답을 받은 새 원장에서 운반 라우팅 한 번.
+  # 「rc|판정|사건|재부착|계정|디렉터리|물은 사건|이월 행|stage-wait 행|blocked 행|반납」
+  local l ln sid=$lsr93_sid
+  l=$(lsr75_new "$1")
+  lsr93_park "$l" S9 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+  ln=$(lsr93_ans "$l" S9 "${l%/*}/halt/S9#1.md" design-reconverge 적용)
+  [ "${4:-}" != nosid ] || sid=""
+  printf '%s|%s|%s|%s|%s|%s' \
+    "$(LSR93_BENV=$2 LSR93_FENV=$3 LSR93_DL=1900000000 LSR93_LN=$ln LSR93_SID=$sid \
+         lsr93_in "$l" eval "$lsr93_route_eval" 2>/dev/null)" \
+    "$(lsr93_events "$l")" "$(lsr93_n "$l" '사유=중단 답 이월 — ')" \
+    "$(lsr93_n "$l" '- `stage-wait` ')" "$(lsr93_n "$l" '- `blocked` ')" "$(lsr93_rel "$l")"
+}
+lsr93_go() {
+  # lsr93_go <원장> <답 줄> <키> <종류> <프롬프트> [route|launch] — 운반 검사, 그것이
+  # 지나면 라우팅(route) 또는 파견 반쪽 전부(launch). 「rc|판정|사건|재부착|계정|디렉터리」.
+  LSR93_LN=$2 LSR93_KEY=$3 LSR93_KIND=$4 LSR93_P=$5 LSR93_MODE=${6:-route} lsr93_in "$1" eval '
+    GATE_CARRY_ANSWER=$LSR93_LN; r=0
+    gate_carry_check infra "$LSR93_KEY" "$LSR93_KIND" "$LSR93_P" >/dev/null 2>&1 || r=$?
+    if [ "$r" = 0 ]; then
+      if [ "$LSR93_MODE" = launch ]; then
+        gate_launch_stage infra "$LSR93_KEY" "$LSR93_KIND" -p "$LSR93_P" >/dev/null 2>&1 || r=$?
+      else
+        gate_launch_route infra "$LSR93_KEY" "$LSR93_KIND" >/dev/null 2>&1 || r=$?
+      fi
+    fi
+    lsr93_say' 2>/dev/null
+}
+lsr93_carrier() {
+  # lsr93_carrier <상태> — doc93 의 재수렴 운반 파일을 다시 쓴다. R2 블록 하나가 그
+  # 상태이고, 울타리 안에 R7 블록 모양의 바이트가 있다(블록이 아니다).
+  local f key
+  f=$(lsr93_in "$lsr75/c93/ledger.md" gate_reconverge_carrier_path "$lsr93_doc" 2>/dev/null)
+  key=$(lsr93_in "$lsr75/c93/ledger.md" gate_doc_key_of "$lsr93_doc" 2>/dev/null)
+  mkdir -p "${f%/*}"
+  { printf '# 설계 재수렴 요청 — 시험\n'
+    printf '<!-- cc-design-reconverge v1; writer=implement; reader=design; owner-doc=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$key"
+    printf '## 회차 1\n**상태**: %s\n**사용자 라우팅**: 설계 재수렴\n**대상 항목**: §구현 시 검증 항목 R2 — 시험 항목\n' "$1"
+    printf '**관측 결과**:\n```text\n## 회차 2\n**상태**: 대기\n**대상 항목**: §구현 시 검증 항목 R7 — 울타리 안\n```\n\n'
+    printf '<!-- cc-design-reconverge: end -->\n'; } > "$f"
+}
+lsr93_carrier 대기
+
+lsr93_BG='{"verdict":"GRANT","basis":"resume-bound","account":"u1","config_dir":"/h/.claude-u1","nonce":"n1","dormant":false,"observed":"none"}'
+lsr93_FG='{"verdict":"GRANT","basis":"first","account":"u2","config_dir":"/h/.claude-u2","nonce":"n2","dormant":false,"observed":"none"}'
+lsr93_SEAT='{"verdict":"GRANT","basis":"single-seat","account":null,"config_dir":"/seat","nonce":null,"dormant":false}'
+lsr93_BWU='{"verdict":"WAIT","reason":"resume-bound-exhausted","group":null,"account":"u1","until_epoch":1890000000}'
+lsr93_BWX='{"verdict":"WAIT","reason":"resume-bound-exhausted","group":null,"account":"u1","until_epoch":1950000000}'
+lsr93_BWR='{"verdict":"WAIT","reason":"resume-bound-no-room","group":null,"account":"u1","until_epoch":null,"reserve":{"pass_id":"p1","kind":"five_hour","account":"u1"}}'
+lsr93_FWU='{"verdict":"WAIT","reason":"group-exhausted","group":null,"account":null,"until_epoch":1880000000}'
+lsr93_FWO='{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null}'
+lsr93_PD='{"verdict":"PARK","reason":"deadline","ready_at":1950000000,"recovery":"다음 런"}'
+lsr93_park_of() { printf '{"verdict":"PARK","reason":"%s","recovery":"고친다"}' "$1"; }
+lsr93_MIS='{"verdict":"GRANT","basis":"resume-bound","account":"u3","config_dir":"/h/.claude-u3","nonce":"n3","dormant":false,"observed":"none"}'
+lsr93_DOR='{"verdict":"GRANT","basis":"dormant","account":null,"config_dir":"/h/d","nonce":"nd","dormant":true,"observed":"none"}'
+
+# TA3-r — 판정표. 묶인 쪽이 부여면 새 질문은 묻지 않는다.
+check "95: 묶인 GRANT 는 멈춘 세션을 재부착한다" \
+  "$(lsr93_row t1 "$lsr93_BG" "$lsr93_FG")" "0|GRANT|resume|bound|u1|/h/.claude-u1|resume|0|0|0|-"
+check "95: 기다리는 묶인 WAIT 와 새 GRANT 면 새 세션이다" \
+  "$(lsr93_row t2 "$lsr93_BWU" "$lsr93_FG")" "0|GRANT|first||u2|/h/.claude-u2|resume,first|0|0|0|-"
+check "95: 예비 묶인 WAIT 와 새 GRANT 면 새 세션이다" \
+  "$(lsr93_row t3 "$lsr93_BWR" "$lsr93_FG")" "0|GRANT|first||u2|/h/.claude-u2|resume,first|0|0|0|-"
+check "95: 묶인 마감 PARK 와 좌석 GRANT 면 좌석의 새 세션이다" \
+  "$(lsr93_row t4 "$lsr93_PD" "$lsr93_SEAT")" "0|GRANT|first||-|/seat|resume,first|0|0|0|-"
+check "95: 기다리는 묶인 WAIT 와 새 WAIT 면 묶인 대기다" \
+  "$(lsr93_row t5 "$lsr93_BWU" "$lsr93_FWU")" "0|WAIT|resume|bound|-||resume,first|0|1|0|-"
+lsr93_t5=$( { grep '^- `stage-wait` ' "$lsr_root/t5/ledger.md" || true; } )
+case "$lsr93_t5" in
+  *"| 계보=B:S9#2 | 그룹=- | 계정=u1 | "*"| 근거=resume-bound-exhausted | 답 운반="[0-9]*) ok "95: 묶인 대기의 stage-wait 행이 묶인 계정과 답 운반을 싣는다" ;;
+  *) bad "95 묶인 대기 행" "$lsr93_t5" ;;
+esac
+# 묶인 소진 대기의 마감 대조는 예상 소요를 더한다 — 라우터가 다른 WAIT 를 마감에 견주는
+# 방식(rt_past_deadline)과 같다. 마감 1 초 전에 열려도 예상 소요 안에 못 끝나면 마감 PARK
+# 로 다뤄 맞는 새 대기를 고르고, 예상 소요까지 들어가는 묶인 대기는 오늘처럼 고른다.
+lsr93_E=$(lsr93_in "$lsr75/c93/ledger.md" eval 'stage_expected_duration reconverge' 2>/dev/null)
+check "95: 묶인 대기 경계 픽스처 — 예상 소요가 양의 정수다" "$(printf '%s' "$lsr93_E" | grep -c '^[1-9][0-9]*$')" "1"
+lsr93_bw_at() { printf '{"verdict":"WAIT","reason":"resume-bound-exhausted","group":null,"account":"u1","until_epoch":%s}' "$1"; }
+check "95: 마감 1 초 전에 열리는 묶인 소진 대기는 예상 소요 때문에 마감 PARK 이고 새 대기를 고른다" \
+  "$(lsr93_row t5e1 "$(lsr93_bw_at $((1900000000 - 1)))" "$lsr93_FWU")" "0|WAIT|first||-||resume,first|0|1|0|-"
+check "95: 마감 − 예상 소요 − 1 초에 열리는 묶인 소진 대기는 묶인 대기다" \
+  "$(lsr93_row t5e2 "$(lsr93_bw_at $((1900000000 - lsr93_E - 1)))" "$lsr93_FWU")" "0|WAIT|resume|bound|-||resume,first|0|1|0|-"
+# 재수렴 스테이지가 기준선을 재는 binding-digest 동사는 드라이버의 binding_digest 를 그대로
+# 낸다 — 검증 등급 줄과 뒤 공백만 다른 문서는 같은 값, 구속 문장이 다른 문서는 다른 값이다.
+lsr93_bd="$lsr75/bd93"; mkdir -p "$lsr93_bd"
+printf '# 설계\n\n## 합의된 아키텍처\n\n결정 A.\n\n## 구현 시 검증 항목\n\n- **검증 등급**: 구현 시 검증\n' > "$lsr93_bd/a.md"
+printf '# 설계\n\n## 합의된 아키텍처\n\n결정 A.   \n\n\n## 구현 시 검증 항목\n\n- **검증 등급**: 검증됨(통과)\n' > "$lsr93_bd/b.md"
+printf '# 설계\n\n## 합의된 아키텍처\n\n결정 B.\n\n## 구현 시 검증 항목\n\n- **검증 등급**: 구현 시 검증\n' > "$lsr93_bd/c.md"
+lsr93_bdv() { ( cd "$WT" && gate_inproc binding-digest --manifest "$FX_MANIFEST" -- "$1" 2>/dev/null ); }
+lsr93_bda=$(lsr93_bdv "$lsr93_bd/a.md")
+check "95: binding-digest 동사는 드라이버의 binding_digest 와 같은 값이다" \
+  "$lsr93_bda" "$(lsr93_in "$lsr75/c93/ledger.md" eval "DOC='$lsr93_bd/a.md'; binding_digest" 2>/dev/null)"
+check "95: binding-digest 는 64 자 16진 한 줄이다" "$(printf '%s' "$lsr93_bda" | grep -c '^[0-9a-f]\{64\}$')" "1"
+check "95: binding-digest 는 검증 등급 줄과 공백만 다른 문서에 같은 값이다" "$(lsr93_bdv "$lsr93_bd/b.md")" "$lsr93_bda"
+check "95: binding-digest 는 구속 문장이 다른 문서에 다른 값이다" \
+  "$( [ "$(lsr93_bdv "$lsr93_bd/c.md")" = "$lsr93_bda" ] && printf 같음 || printf 다름 )" "다름"
+lsr93_bdrc=0
+( cd "$WT" && gate_inproc binding-digest --manifest "$FX_MANIFEST" -- "$lsr93_bd/없음.md" ) >/dev/null 2>&1 || lsr93_bdrc=$?
+check "95: binding-digest 는 없는 문서를 exit 2 로 거부한다" "$lsr93_bdrc" "2"
+check "95: 예비 묶인 WAIT 와 언제인지 아는 새 WAIT 면 새 대기다" \
+  "$(lsr93_row t6 "$lsr93_BWR" "$lsr93_FWU")" "0|WAIT|first||-||resume,first|0|1|0|-"
+case "$( { grep '^- `stage-wait` ' "$lsr_root/t6/ledger.md" || true; } )" in
+  *"| 계정=- | "*"| 근거=group-exhausted | 답 운반="[0-9]*) ok "95: 새 대기의 stage-wait 행도 답 운반을 싣는다" ;;
+  *) bad "95 새 대기 행" "$(grep '^- `stage-wait` ' "$lsr_root/t6/ledger.md")" ;;
+esac
+check "95: 묶인 마감 PARK 와 예비 새 WAIT 면 새 예비 대기다" \
+  "$(lsr93_row t7 "$lsr93_PD" "$lsr93_FWO")" "0|WAIT|first||-||resume,first|0|1|0|-"
+for lsr93_r in resume-bound-ineligible resume-logged-out resume-unbound resume-bound-unknown-account; do
+  check "95: 묶인 쪽만 만나는 PARK($lsr93_r)와 새 GRANT 면 새 세션이다" \
+    "$(lsr93_row "t8-$lsr93_r" "$(lsr93_park_of "$lsr93_r")" "$lsr93_FG")" "0|GRANT|first||u2|/h/.claude-u2|resume,first|0|0|0|-"
+done
+check "95: 구속 불일치 GRANT 뒤의 새 GRANT 는 묶인 임대를 한 번 반납한다" \
+  "$(lsr93_row t9a "$lsr93_MIS" "$lsr93_FG")" "0|GRANT|first||u2|/h/.claude-u2|resume,first|0|0|0|n3"
+check "95: 휴면 GRANT 뒤의 새 GRANT 도 묶인 임대를 한 번 반납한다" \
+  "$(lsr93_row t9b "$lsr93_DOR" "$lsr93_FG")" "0|GRANT|first||u2|/h/.claude-u2|resume,first|0|0|0|nd"
+check "95: 재부착할 세션이 없으면 묶인 질문 없이 새 질문만 묻는다" \
+  "$(lsr93_row t10 "$lsr93_BG" "$lsr93_FG" nosid)" "0|GRANT|first||u2|/h/.claude-u2|first|0|0|0|-"
+check "95: 묶인 마감 PARK 와 언제인지 아는 새 WAIT 면 새 대기다" \
+  "$(lsr93_row t11 "$lsr93_PD" "$lsr93_FWU")" "0|WAIT|first||-||resume,first|0|1|0|-"
+check "95: 둘 다 마감 PARK 면 이월 행 하나와 exit 16 이다" \
+  "$(lsr93_row t12 "$lsr93_PD" "$lsr93_PD")" "16|PARK|first||-||resume,first|1|0|1|-"
+lsr93_t12=$( { grep '^- `blocked` ' "$lsr_root/t12/ledger.md" || true; } )
+case "$lsr93_t12" in
+  *"| 사유=중단 답 이월 — 마감 안에 자리 없음 | 중단 답 줄="[0-9]*" | 스테이지=S9 | 근거=계보=B:S9#2 | 관측=묶인 판정: PARK deadline "*"새 판정: PARK deadline ready_at "*"| 재개 명령=다음 런이 이 답을 이어받는다 — 다시 묻지 않는다"*)
+    ok "95: 이월 행이 답 줄·계보·두 판정을 싣는다" ;;
+  *) bad "95 이월 행" "$lsr93_t12" ;;
+esac
+check "95: 이월은 일반 마감 행을 쓰지 않는다" "$(lsr93_n "$lsr_root/t12/ledger.md" '마감 초과')" "0"
+check "95: 마감 뒤에 열리는 묶인 대기는 마감 PARK 로 읽혀 새 대기로 간다" \
+  "$(lsr93_row t13 "$lsr93_BWX" "$lsr93_FWU")" "0|WAIT|first||-||resume,first|0|1|0|-"
+check "95: 마감 뒤에 열리는 묶인 대기와 새 마감 PARK 면 이월이다" \
+  "$(lsr93_row t14 "$lsr93_BWX" "$lsr93_PD")" "16|PARK|first||-||resume,first|1|0|1|-"
+check "95: 런 전체 PARK(lease-table-corrupt)는 새 질문 없이 오늘의 park 다" \
+  "$(lsr93_row t15 "$(lsr93_park_of lease-table-corrupt)" "$lsr93_FG")" "16|PARK|resume||-||resume|0|0|1|-"
+case "$( { grep '^- `blocked` ' "$lsr_root/t15/ledger.md" || true; } )" in
+  *"| 스코프=act | "*"| 사유=라우터 판정 | "*"근거=라우터 판정 PARK lease-table-corrupt — 고친다 |"*) ok "95: 그 park 는 라우터의 사유를 실은 act 행이다" ;;
+  *) bad "95 런 전체 park 행" "$(grep '^- `blocked` ' "$lsr_root/t15/ledger.md")" ;;
+esac
+for lsr93_r in inventory-corrupt lent-seat-unrouted own-lease-corrupt; do
+  check "95: 묶인 마감 PARK 와 새 쪽 설정 PARK($lsr93_r)는 이월 없는 오늘의 park 다" \
+    "$(lsr93_row "t16-$lsr93_r" "$lsr93_PD" "$(lsr93_park_of "$lsr93_r")")" "16|PARK|first||-||resume,first|0|0|1|-"
+  case "$( { grep '^- `blocked` ' "$lsr_root/t16-$lsr93_r/ledger.md" || true; } )" in
+    *"| 스코프=act | "*"근거=라우터 판정 PARK $lsr93_r — 고친다 |"*) ok "95: 그 park 행이 새 쪽의 사유 $lsr93_r 를 싣는다" ;;
+    *) bad "95 설정 park 행 $lsr93_r" "$(grep '^- `blocked` ' "$lsr_root/t16-$lsr93_r/ledger.md")" ;;
+  esac
+done
+# 같은 exit 16 이라도 이월 행 없는 park 는 답을 열어 둔다 — 교대와 좌석은 운반 act 의 16 을
+# 스냅숏의 이 state 로 가르므로, 이월 행을 쓴 16 의 대조와 함께 잰다.
+lsr93_ahs() {  # lsr93_ahs <이름> — 그 원장 스냅숏의 answered_halts 「세그먼트:state」
+  lsr93_in "$lsr_root/$1/ledger.md" eval 'printf "[%s]" "$(gate_answered_halts_json)"' 2>/dev/null \
+    | jq -r '[.[] | "\(.segment):\(.state)"] | join(",")'
+}
+check "95: 이월 행을 쓴 16 뒤의 답은 스냅숏에서 이월 이다" "$(lsr93_ahs t12)" "S9:이월"
+for lsr93_r in t15 t16-inventory-corrupt t16-own-lease-corrupt; do
+  check "95: 이월 행 없는 16($lsr93_r) 뒤의 답은 스냅숏에서 열림 이다" "$(lsr93_ahs "$lsr93_r")" "S9:열림"
+done
+
+# 실측 1·2 — 묶인 계정 u1 의 주간 창이 마감 뒤에 열리고 다른 계정에 여유가 있는
+# 배치를 사본의 실제 라우터에 묻는다. 설계 문서의 재현과 같은 상수다.
+lsr93_jq='
+def A($id): {id: $id, config_dir: ("/h/.claude-" + $id), label: $id, interactive_reserved: false, unattended: "enabled", added_at: 0};
+def UX($id; $u5; $r5; $u7; $r7):
+  {id: $id, config_dir: ("/h/.claude-" + $id), login: "ok", status: "allowed",
+   windows: {five_hour: {utilization: $u5, resets_at_epoch: $r5, observed_at_epoch: ($now - 60), source: "tracker"},
+             seven_day: {utilization: $u7, resets_at_epoch: $r7, observed_at_epoch: ($now - 60), source: "tracker"}}};
+def base:
+  {now: $now, request: {},
+   inventory: {state: "valid", accounts: []},
+   usage: {state: "valid", written_at_epoch: $now, publish_interval_s: 300, fresh: true, accounts: []},
+   frames: [], leases: {state: "valid", items: [], corrupt: [], stale_corrupt: []}, sticky: [],
+   seat: {config_dir: "/seat"},
+   config: {k: {default: {five_hour: 1, seven_day: 3}, shift: {five_hour: 1, seven_day: 1}},
+            c: {five_hour: {default: 0.3, by_kind: {}, by_group: {}}, seven_day: {default: 0.08, by_kind: {}, by_group: {}}},
+            cap_bp: 8000, ttl_s: {"stage-log": 1800, tracker: 1800}, file_stale_factor: 3},
+   borrow_path: "/nonexistent/borrow.json",
+   phase: {state: "valid", phase: "burst", until_epoch: ($now + 3600), burst_length_s: 28800}};
+def ACCTS($xs): .usage.accounts = $xs | .inventory.accounts = [$xs[] | A(.id)];
+def OTHERS($u7):
+  UX("u2"; 0.10; $now + 3*3600; 0.20; $now + 4*86400), UX("u3"; 0.15; $now + 3*3600; 0.30; $now + 4*86400),
+  UX("u4"; 0.20; $now + 3*3600; 0.40; $now + 4*86400), UX("u6"; 0.10; $now + 3*3600; 0.45; $now + 4*86400),
+  UX("u7"; 0.05; $now + 3*3600; $u7; $now + 4*86400);
+'
+lsr93_dl=$((1800000000 + 6 * 3600))
+jq -cn --argjson now 1800000000 \
+  "$lsr93_jq base | ACCTS([UX(\"u1\"; 0.19; \$now + 3*3600; 1.0; $((lsr93_dl + 15 * 3600 + 1800))), OTHERS(0.30)])" \
+  > "$lsr75/ctx93-1.json"
+jq -cn --argjson now 1800000000 \
+  "$lsr93_jq base | ACCTS([UX(\"u1\"; 0.19; \$now + 3*3600; 0.99; $((lsr93_dl + 35 * 3600))), OTHERS(0.97)])" \
+  > "$lsr75/ctx93-2.json"
+
+# 실측 1 — 감사 스텝(런 스코프 키 A1)의 종합 요구 질문에 사람이 답했다.
+# 새 질문은 5시간 부하가 가장 낮은 u7 을 받는다 — 라우터의 정렬이 주간 키보다
+# load5 를 먼저 보기 때문이고, 묶인 u1 이 아닌 계정이라는 것이 이 단언의 요점이다.
+lsr93_a=$(lsr75_new real93a)
+lsr93_park "$lsr93_a" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
+lsr93_aln=$(lsr93_ans "$lsr93_a" A1 "${lsr93_a%/*}/halt/A1#1.md" design-audit-unattended 적용)
+check "95: 실측 1 — 감사 키의 답이 새 계정 u7 의 세션에 카드로 닿는다" \
+  "$(LSR93_BENV="decide:$lsr75/ctx93-1.json" LSR93_FENV="decide:$lsr75/ctx93-1.json" LSR93_DL=$lsr93_dl \
+     lsr93_go "$lsr93_a" "$lsr93_aln" A1 audit "/cc-cmds:design-audit-unattended $lsr93_doc" launch)" \
+  "0|GRANT|first||u7|/h/.claude-u7"
+check "95: 실측 1 — 묶인 질문이 먼저, 새 질문이 그다음이다" \
+  "$(lsr93_events "$lsr93_a")|$(jq -r '.bound_account // "-"' "${lsr93_a%/*}/requests" | paste -sd, -)" "resume,first|u1,-"
+check "95: 실측 1 — 감독자 argv 가 새 파견 형식의 프롬프트를 그대로 싣는다" \
+  "$(sed -n '/^--$/,$p' "${lsr93_a%/*}/argv" | sed -n '2,4p' | paste -sd'|' -)" \
+  "audit|-p|/cc-cmds:design-audit-unattended $lsr93_doc"
+lsr93_atk=$(cat "${lsr93_a%/*}/A1.launch" 2>/dev/null)
+check "95: 실측 1 — 시동 토큰이 재부착 id 없이 계정 u7 의 디렉터리를 넘긴다" \
+  "$(printf '%s\n' "$lsr93_atk" | sed -n '2p')|$(printf '%s\n' "$lsr93_atk" | sed -n '6,7p' | paste -sd'|' -)" "|u7|/h/.claude-u7"
+check "95: 실측 1 — 임대 행 하나, 반납 없음" \
+  "$(lsr93_n "$lsr93_a" '- `stage-lease` ')|$(lsr93_rel "$lsr93_a")" "1|-"
+lsr93_card="${lsr93_a%/*}/halt-answer/A1#2.md"
+check "95: 실측 1 — 카드가 그 시도의 이름으로 놓이고 답 줄을 싣는다" \
+  "$(sed -n 's/^\*\*중단 답 줄\*\*: //p' "$lsr93_card" 2>/dev/null)" "$lsr93_aln"
+
+# TC1 — 카드의 필드와 권한.
+check "95: TC1 카드의 머리·기록·다이제스트·선택지·답한 주체·첨부" \
+  "$(sed -n '1p' "$lsr93_card")|$(sed -n 's/^\*\*중단 기록\*\*: //p' "$lsr93_card")|$(sed -n 's/^\*\*기록 다이제스트\*\*: //p' "$lsr93_card")|$(sed -n '/^\*\*선택지\*\*:$/{n;p;}' "$lsr93_card")|$(sed -n 's/^\*\*답한 주체\*\*: //p' "$lsr93_card")|$(sed -n 's/^\*\*첨부\*\*: //p' "$lsr93_card")|$(tail -1 "$lsr93_card")" \
+  "<!-- cc-halt-answer v1; stage=A1#2 -->|${lsr93_a%/*}/halt/A1#1.md|$(shasum -a 256 "${lsr93_a%/*}/halt/A1#1.md" | cut -d' ' -f1)|- \`적용\` — 그대로 적용한다|사람|(없음)|<!-- /cc-halt-answer v1 -->"
+check "95: TC1 카드 디렉터리는 700, 카드는 600 이다" \
+  "$(find "${lsr93_a%/*}/halt-answer" -prune -perm 700 | wc -l | tr -d ' ')/$(find "$lsr93_card" -perm 600 | wc -l | tr -d ' ')" "1/1"
+
+# TC2 — `halt/` 의 세 판독기는 카드를 보지 않는다. 같은 바이트를 `halt/` 에 둔
+# 대조에서는 셋 다 본다(공허 방지).
+lsr93_rk=$(sed -n '/^rk_unanswered_halt_names() {/,/^}/p' "$lsr75/cc-cmds/orchestrator/rekick.sh")
+lsr93_halts() {  # lsr93_halts <원장> — 「halt/ 목록|재킥오프 미답 수|감시자 미답 수」
+  local rd="${1%/*}"
+  printf '%s|%s|%s' "$(ls "$rd/halt" | paste -sd, -)" \
+    "$(eval "$lsr93_rk"; rk_unanswered_halt_names "$rd" "$1"; printf '%s' "$RK_HALT_N")" \
+    "$( . "$lsr75/cc-cmds/orchestrator/liveness.sh"; cc_unanswered_halts "$rd" "$1")"
+}
+check "95: TC2 카드를 쓴 뒤에도 halt/ 와 두 미답 수가 그대로다" "$(lsr93_halts "$lsr93_a")" "A1#1.md|0|0"
+cp "$lsr93_card" "${lsr93_a%/*}/halt/A1#2.md"
+check "95: TC2 대조 — 같은 파일이 halt/ 에 있으면 세 판독기가 모두 본다" \
+  "$(lsr93_halts "$lsr93_a")" "A1#1.md,A1#2.md|1|1"
+rm -f "${lsr93_a%/*}/halt/A1#2.md"
+
+# 실측 2 — 구현의 구속 티어 정지에 재수렴으로 답했고, 그 재수렴(같은 키 S2 의 시도
+# 2)이 다시 멈춰 사람이 답했다. 운반은 재수렴 키의 틀로 그 답을 싣는다.
+lsr93_b=$(lsr75_new real93b)
+lsr93_park "$lsr93_b" S2 1 "$lsr93_sid" 'Step 3 CFI-U3 BT-STOP — 구속 티어 충돌' implement
+lsr93_ans "$lsr93_b" S2 "${lsr93_b%/*}/halt/S2#1.md" implement-unattended 재수렴 >/dev/null
+lsr93_park "$lsr93_b" S2 2 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+lsr93_bln=$(lsr93_ans "$lsr93_b" S2 "${lsr93_b%/*}/halt/S2#2.md" design-reconverge 적용)
+lsr93_bp="/cc-cmds:design-reconverge $lsr93_doc 구속 티어 이탈 ${lsr93_b%/*}/halt/S2#1.md"
+check "95: 실측 2 — 재수렴 키의 답이 새 계정 u2 의 세션에 카드로 닿는다" \
+  "$(LSR93_BENV="decide:$lsr75/ctx93-2.json" LSR93_FENV="decide:$lsr75/ctx93-2.json" LSR93_DL=$lsr93_dl \
+     lsr93_go "$lsr93_b" "$lsr93_bln" S2 reconverge "$lsr93_bp" launch)" "0|GRANT|first||u2|/h/.claude-u2"
+check "95: 실측 2 — 프롬프트·임대 행·카드의 답 줄" \
+  "$(sed -n '/^--$/,$p' "${lsr93_b%/*}/argv" | sed -n '4p')|$(lsr93_n "$lsr93_b" '- `stage-lease` ')|$(sed -n 's/^\*\*중단 답 줄\*\*: //p' "${lsr93_b%/*}/halt-answer/S2#3.md" 2>/dev/null)" \
+  "$lsr93_bp|1|$lsr93_bln"
+
+# 묶인 GRANT 의 파견 반쪽 — `-p` 가 고정 재개 문장으로 바뀌고 토큰이 세션을 싣는다.
+lsr93_c=$(lsr75_new res93)
+lsr93_park "$lsr93_c" S4 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_cln=$(lsr93_ans "$lsr93_c" S4 "${lsr93_c%/*}/halt/S4#1.md" design-reconverge 적용)
+check "95: 묶인 GRANT 의 파견이 멈춘 세션에 재부착한다" \
+  "$(LSR93_BENV=$lsr93_BG LSR93_DL=1900000000 \
+     lsr93_go "$lsr93_c" "$lsr93_cln" S4 reconverge "/cc-cmds:design-reconverge $lsr93_doc R2" launch)" \
+  "0|GRANT|resume|bound|u1|/h/.claude-u1"
+check "95: 그 argv 의 프롬프트는 고정 재개 문장이고 새 파견 형식은 없다" \
+  "$(sed -n '/^--$/,$p' "${lsr93_c%/*}/argv" | sed -n '4p')|$(lsr93_n "${lsr93_c%/*}/argv" '/cc-cmds:design-reconverge')" \
+  "$(lsr93_in "$lsr93_c" eval 'printf "%s" "$GATE_CARRY_RESUME_MESSAGE"' 2>/dev/null)|0"
+check "95: 그 토큰 둘째 줄이 멈춘 세션이다" "$(sed -n '2p' "${lsr93_c%/*}/S4.launch")" "$lsr93_sid"
+
+# TC3 — 운반 없는 시동에는 카드가 없다.
+lsr93_d=$(lsr75_new plain93)
+check "95: TC3 운반 없는 시동은 성공한다" \
+  "$(LSR93_FENV=$lsr93_FG lsr93_in "$lsr93_d" eval 'r=0; gate_launch_stage infra S5 implement -p x >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)" "0"
+check "95: TC3 그 시동은 카드 디렉터리를 만들지 않는다" \
+  "$( [ -e "${lsr93_d%/*}/halt-answer" ] && printf yes || printf no)" "no"
+
+# TC5 — 답을 실은 시도가 크래시로 끝나면 키의 다음 파견이 같은 답 줄의 카드를 받는다.
+lsr93_e=$(lsr75_new crash93)
+lsr93_park "$lsr93_e" S6 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_eln=$(lsr93_ans "$lsr93_e" S6 "${lsr93_e%/*}/halt/S6#1.md" design-reconverge 적용)
+LSR93_CARRY=$lsr93_eln lsr93_park "$lsr93_e" S6 2 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge 크래시
+check "95: TC5 크래시한 운반 시도 뒤의 판독이 그 답 줄을 낸다" \
+  "$(lsr93_in "$lsr93_e" gate_halt_card_crash_line S6 2>/dev/null)" "$lsr93_eln"
+check "95: TC5 다음 파견이 시도 3 의 카드로 같은 답 줄을 받는다" \
+  "$(LSR93_FENV=$lsr93_FG lsr93_in "$lsr93_e" eval 'r=0; gate_launch_stage infra S6 reconverge -p x >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)|$(sed -n 's/^\*\*중단 답 줄\*\*: //p' "${lsr93_e%/*}/halt-answer/S6#3.md" 2>/dev/null)" \
+  "0|$lsr93_eln"
+check "95: TC5 의도된 park 로 끝난 시도 뒤에는 그 판독이 비어 있다" \
+  "$(lsr93_in "$lsr93_c" gate_halt_card_crash_line S4 2>/dev/null)" ""
+
+# TE1/TE2 — 세션 전에 죽은 운반 시도는 답을 쓰지 않고, 세션이 선 뒤 죽은 시도는 쓴다.
+lsr93_f=$(lsr75_new death93)
+lsr93_park "$lsr93_f" S7 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_fln=$(lsr93_ans "$lsr93_f" S7 "${lsr93_f%/*}/halt/S7#1.md" design-reconverge 적용)
+LSR93_CARRY=$lsr93_fln lsr93_park "$lsr93_f" S7 2 미상 'Step 3 재수렴 — 질문' reconverge 크래시
+check "95: TE1 세션 전에 죽은 운반 시도는 답을 쓰지 않는다" \
+  "$(lsr93_in "$lsr93_f" eval "gate_halt_answer_spent \"\$LEDGER\" S7 $lsr93_fln && printf spent || printf open" 2>/dev/null)" "open"
+LSR93_CARRY=$lsr93_fln lsr93_park "$lsr93_f" S7 3 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge 크래시
+check "95: TE2 세션이 선 뒤 죽은 운반 시도는 답을 쓴다" \
+  "$(lsr93_in "$lsr93_f" eval "gate_halt_answer_spent \"\$LEDGER\" S7 $lsr93_fln && printf spent || printf open" 2>/dev/null)" "spent"
+
+# TA4 — 운반 검사의 거절 조항. 어느 것도 행을 쓰지 않고, 시도 번호를 선점하지
+# 않으며, 답을 남긴다. 같은 픽스처의 통과 대조가 먼저다.
+lsr93_rp="/cc-cmds:design-reconverge $lsr93_doc R2"
+lsr93_base() {  # lsr93_base <이름> [<스킬> <스텝> <선택지> <종류>] — S3 의 멈춤과 답. 답 줄을 낸다.
+  local l
+  l=$(lsr75_new "$1")
+  lsr93_park "$l" S3 1 "$lsr93_sid" "${3:-Step 3 재수렴 — 질문}" "${5:-reconverge}"
+  lsr93_ans "$l" S3 "${l%/*}/halt/S3#1.md" "${2:-design-reconverge}" "${4:-적용}"
+}
+lsr93_refused() {  # lsr93_refused <이름> <답 줄> <프롬프트> [<종류>] — 「rc|원장 그대로|새 선점 수」
+  local l="$lsr_root/$1/ledger.md" sha n0
+  sha=$(lsr_sha "$l")
+  n0=$(ls "${l%/*}" | { grep -c '^S3\.attempt\.' || true; })
+  printf '%s|%s|%s' "$(LSR93_BENV=$lsr93_BG LSR93_FENV=$lsr93_FG lsr93_go "$l" "$2" S3 "${4:-reconverge}" "$3" | cut -d'|' -f1)" \
+    "$( [ "$(lsr_sha "$l")" = "$sha" ] && printf same || printf changed)" \
+    "$(( $(ls "${l%/*}" | { grep -c '^S3\.attempt\.' || true; }) - n0 ))"
+}
+lsr93_ln=$(lsr93_base ta0)
+check "95: TA4 대조 — 같은 픽스처의 운반은 통과한다" "$(lsr93_refused ta0 "$lsr93_ln" "$lsr93_rp" | cut -d'|' -f1,3)" "0|1"
+lsr93_ln=$(lsr93_base ta1)
+lsr93_in "$lsr_root/ta1/ledger.md" gate_append stage-result "세그먼트=S3" "스테이지=S3" "종류=reconverge" "종료 코드=0" \
+  "실행 버전=2" "세션 id=$lsr93_sid2" "계정=u1" "부모=-" "기록자=게이트" "종단 부류=정상 완료" >/dev/null 2>&1
+check "95: TA4 이미 소비된 답은 exit 3·행 없음·선점 없음" "$(lsr93_refused ta1 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_l=$(lsr75_new ta2)
+lsr93_park "$lsr93_l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_park "$lsr93_l" S3 2 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/S3#1.md" design-reconverge 적용)
+check "95: TA4 키의 마지막 시도가 아닌 기록의 답은 exit 3·행 없음" "$(lsr93_refused ta2 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_ln=$(lsr93_base ta3)
+check "95: TA4 중단 답 행이 아닌 줄은 exit 3·행 없음" "$(lsr93_refused ta3 1 "$lsr93_rp")" "3|same|0"
+check "95: TA4 틀과 다른 프롬프트는 exit 3·행 없음" \
+  "$(lsr93_refused ta3 "$lsr93_ln" "/cc-cmds:design-reconverge /other/doc.md R2")" "3|same|0"
+check "95: TA4 표의 종류와 다른 파견은 exit 3·행 없음" \
+  "$(lsr93_refused ta3 "$lsr93_ln" "$lsr93_rp" implement)" "3|same|0"
+printf '덧붙인 줄\n' >> "$lsr_root/ta3/halt/S3#1.md"
+check "95: TA4 답한 뒤 바뀐 기록은 exit 3·행 없음" "$(lsr93_refused ta3 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_ln=$(lsr93_base ta4 design-audit-unattended 'Step 6 CFI-3b — 종합 요구' 'adopt as a requirement' audit)
+check "95: TA4 감사 종합 요구를 채택한 답은 exit 3·행 없음" \
+  "$(lsr93_refused ta4 "$lsr93_ln" "/cc-cmds:design-audit-unattended $lsr93_doc" audit)" "3|same|0"
+lsr93_ln=$(lsr93_base ta5 implement-unattended 'Step 3 CFI-U3 BT-STOP — 충돌' 재수렴 implement)
+check "95: TA4 구속 티어 정지의 재수렴 답은 exit 3·행 없음" "$(lsr93_refused ta5 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_ln=$(lsr93_base ta6 implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' implement)
+check "95: TA4 좌석 실행 정지의 답은 exit 3·행 없음" "$(lsr93_refused ta6 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_ln=$(lsr93_base ta7 review-unattended 'Step 1b 빈 대상 — 리뷰할 것이 없다' 적용 review)
+check "95: TA4 리뷰의 빈 대상 정지 답은 exit 3·행 없음" "$(lsr93_refused ta7 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_l=$(lsr75_new ta8)
+mkdir -p "${lsr93_l%/*}/halt/shift"
+printf '<!-- cc-pipeline-halt v1; kind=shift; stage=shift-1; run=LS -->\n**스텝**: Step 3 재수렴 — 교대\n<!-- /cc-pipeline-halt v1 -->\n' \
+  > "${lsr93_l%/*}/halt/shift/S3-1.md"
+lsr93_ln=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/shift/S3-1.md" design-reconverge 적용)
+check "95: TA4 교대 정지 기록의 답은 exit 3·행 없음" "$(lsr93_refused ta8 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_ln=$(lsr93_base ta9)
+lsr93_in "$lsr_root/ta9/ledger.md" gate_carry_defer_row infra S3 S3 B:S3#2 "$lsr93_ln" '앞선 이월' >/dev/null 2>&1
+check "95: TA4 이 런에서 이미 이월된 답은 exit 3·행 없음" "$(lsr93_refused ta9 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_g="$lsr75/cc-cmds/orchestrator/gate.sh"
+rc=0; bash "$lsr93_g" act --manifest "$FX_MANIFEST" --kind skill --carry-answer 5 --resume "$lsr93_sid" -- reconverge -p x >/dev/null 2>&1 </dev/null || rc=$?
+check "95: TA4 --carry-answer 와 --resume 을 함께 주면 exit 3 이다" "$rc" "3"
+rc=0; bash "$lsr93_g" act --manifest "$FX_MANIFEST" --kind skill --carry-answer 0 -- reconverge -p x >/dev/null 2>&1 </dev/null || rc=$?
+check "95: TA4 줄 번호가 아닌 --carry-answer 는 exit 2 이다" "$rc" "2"
+rc=0; bash "$lsr93_g" act --manifest "$FX_MANIFEST" --kind segment --carry-answer 5 -- x >/dev/null 2>&1 </dev/null || rc=$?
+check "95: TA4 skill 이 아닌 act 의 --carry-answer 는 exit 2 이다" "$rc" "2"
+
+# TO1 — 재진입 표에 없는 정지는 19 이고 행이 없다. 같은 쌍을 --resume 으로 내면
+# 오늘의 일반 마감 행과 exit 16 이며 이월 행은 없다.
+lsr93_ln=$(lsr93_base to1 implement-unattended 'Step 2 계획 — 질문' 적용 implement)
+check "95: TO1 표 밖 정지의 운반은 exit 19·행 없음" \
+  "$(lsr93_refused to1 "$lsr93_ln" "$lsr93_rp" implement)" "19|same|0"
+check "95: TO1 같은 쌍의 --resume 은 오늘의 마감 park 다" \
+  "$(LSR93_BENV=$lsr93_PD LSR93_DL=1900000000 lsr93_in "$lsr_root/to1/ledger.md" eval \
+      "GATE_RESUME=$lsr93_sid; r=0; gate_launch_route infra S3 implement >/dev/null 2>&1 || r=\$?; printf %s \"\$r\"" 2>/dev/null)|$(lsr93_n "$lsr_root/to1/ledger.md" '마감 초과')|$(lsr93_n "$lsr_root/to1/ledger.md" '사유=중단 답 이월')" \
+  "16|1|0"
+
+# R5 — 운반 상한. TB1: 앞 운반 시도가 다른 경로의 기록에서 같은 스텝·문면으로 다시
+# 멈췄다. TB2: 문면이 다르다. TB3: 운반 시도가 크래시로 끝났다. TB4: 다른 키다.
+lsr93_cap() {  # lsr93_cap <이름> <둘째 시도 문면> <둘째 시도 종단 부류> — 둘째 답의 줄
+  local l l1
+  l=$(lsr75_new "$1")
+  lsr93_park "$l" S8 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+  l1=$(lsr93_ans "$l" S8 "${l%/*}/halt/S8#1.md" design-reconverge 적용)
+  LSR93_CARRY=$l1 LSR93_Q=$2 lsr93_park "$l" S8 2 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge "$3"
+  if [ "$3" = 크래시 ]; then
+    lsr93_park "$l" S8 3 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge
+    lsr93_ans "$l" S8 "${l%/*}/halt/S8#3.md" design-reconverge 적용
+  else
+    lsr93_ans "$l" S8 "${l%/*}/halt/S8#2.md" design-reconverge 적용
+  fi
+}
+lsr93_capgo() {  # lsr93_capgo <이름> <답 줄> — 운반 검사의 rc
+  LSR93_LN=$2 lsr93_in "$lsr_root/$1/ledger.md" eval \
+    'GATE_CARRY_ANSWER=$LSR93_LN; r=0; gate_carry_check infra S8 reconverge "/cc-cmds:design-reconverge $DOC R2" >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null
+}
+lsr93_ln=$(lsr93_cap tb1 'S8 의 질문' '의도된 park')
+check "95: 같은 스텝과 문면으로 다시 멈춘 운반 뒤의 운반은 exit 18 이다" "$(lsr93_capgo tb1 "$lsr93_ln")" "18"
+case "$( { grep '^- `blocked` ' "$lsr_root/tb1/ledger.md" || true; } )" in
+  *"| 스코프=act | 원인=막힘 | 사유=중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다 | 중단 답 줄=$lsr93_ln | 세그먼트=S8 | 스테이지=S8 | "*"| 재개 명령=사람이 이 정지 기록과 답을 다시 본다 — 운반을 되풀이하지 않는다"*)
+    ok "95: TB1 상한 행이 답 줄과 재개 명령을 싣는다" ;;
+  *) bad "95 TB1 상한 행" "$(grep '^- `blocked` ' "$lsr_root/tb1/ledger.md")" ;;
+esac
+check "95: TB5 상한 거절 뒤에도 handoff 사유=중단 이 받아들여진다" \
+  "$(lsr93_in "$lsr_root/tb1/ledger.md" eval "r=0; gate_record_row handoff - infra 교대=0 사유=중단 '버린 선택지=-' '막힌 지점=중단 답 라우팅 상한' '다음 후보=-' >/dev/null 2>&1 || r=\$?; printf %s \"\$r\"" 2>/dev/null)|$(lsr93_n "$lsr_root/tb1/ledger.md" '- `handoff` ')" "0|1"
+lsr93_ln=$(lsr93_cap tb2 '다르게 물은 질문' '의도된 park')
+check "95: TB2 문면이 다르면 운반한다" "$(lsr93_capgo tb2 "$lsr93_ln")" "0"
+lsr93_ln=$(lsr93_cap tb3 'S8 의 질문' 크래시)
+check "95: TB3 크래시로 끝난 운반 시도는 세지 않는다" "$(lsr93_capgo tb3 "$lsr93_ln")" "0"
+lsr93_park "$lsr_root/tb1/ledger.md" S9 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ln=$(lsr93_ans "$lsr_root/tb1/ledger.md" S9 "$lsr_root/tb1/halt/S9#1.md" design-reconverge 적용)
+check "95: TB4 다른 키의 답은 운반한다" \
+  "$(LSR93_LN=$lsr93_ln lsr93_in "$lsr_root/tb1/ledger.md" eval \
+      'GATE_CARRY_ANSWER=$LSR93_LN; r=0; gate_carry_check infra S9 reconverge "/cc-cmds:design-reconverge $DOC R2" >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)" "0"
+
+# TE3 — 같은 답의 세션 전 사망. 둘까지는 운반하고 셋째 뒤에는 18 이다.
+lsr93_l=$(lsr75_new te3)
+lsr93_park "$lsr93_l" S8 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" S8 "${lsr93_l%/*}/halt/S8#1.md" design-reconverge 적용)
+lsr93_rt() {  # lsr93_rt <원장> <키> — 스냅숏의 그 키 원소 「route|route_refusal|state」
+  lsr93_in "$1" eval 'printf "[%s]" "$(gate_answered_halts_json)"' 2>/dev/null \
+    | jq -r --arg k "$2" '[.[] | select(.segment == $k) | "\(.route)|\(.route_refusal)|\(.state)"] | join(",")'
+}
+lsr93_te3r=''
+for lsr93_i in 2 3; do
+  LSR93_CARRY=$lsr93_ln lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=S8" "스테이지=S8" "종류=reconverge" \
+    "종료 코드=-" "실행 버전=$lsr93_i" "세션 id=미상" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_ln" >/dev/null 2>&1
+  lsr93_te3r="$lsr93_te3r/$(lsr93_rt "$lsr93_l" S8)"
+done
+check "95: TE3 세션 전 사망 둘 뒤에는 운반한다" "$(lsr93_capgo te3 "$lsr93_ln")" "0"
+# 사망 행은 라우팅의 「마지막 정산 행」도 아니다 — 스냅숏 원소는 사망 한 번 뒤에도 두 번
+# 뒤에도 재부착으로 열려 있어, 교대가 그것을 라우팅 원뿔로 보내 소진하지 않는다.
+check "95: TE3 세션 전 사망 한 번·두 번 뒤의 스냅숏 원소는 재부착이고 거절 사유가 없다" \
+  "$lsr93_te3r" "/재부착||열림/재부착||열림"
+lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=S8" "스테이지=S8" "종류=reconverge" \
+  "종료 코드=-" "실행 버전=4" "세션 id=미상" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_ln" >/dev/null 2>&1
+check "95: TE3 세 번째 세션 전 사망 뒤의 운반은 exit 18 이다" "$(lsr93_capgo te3 "$lsr93_ln")" "18"
+check "95: TE3 그 상한 행이 사유와 답 줄을 싣는다" \
+  "$(lsr93_n "$lsr93_l" "사유=중단 답 라우팅 — 세션 전에 세 번 죽었다 | 중단 답 줄=$lsr93_ln |")" "1"
+# 뒤 교대가 같은 답을 다시 운반해도 같은 셈으로 다시 18 이고, 상한 행은 두 번 쓰지 않는다.
+check "95: TE3 상한에 닿은 답을 다시 운반하면 다시 18 이고 상한 행은 하나로 남는다" \
+  "$(lsr93_capgo te3 "$lsr93_ln")|$(lsr93_n "$lsr93_l" "사유=중단 답 라우팅 — 세션 전에 세 번 죽었다 | 중단 답 줄=$lsr93_ln |")" "18|1"
+# TE3 대기자 — 스폰 전에 감독자를 잃은 대기자의 정산 행(`세션 id=-`, `관측=스폰 전
+# 대기 중`)도 같은 답의 세션 전 사망으로 센다.
+lsr93_l=$(lsr75_new te3w)
+lsr93_park "$lsr93_l" S8 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" S8 "${lsr93_l%/*}/halt/S8#1.md" design-reconverge 적용)
+lsr93_te3w() {  # lsr93_te3w <원장> <실행 버전> <답 운반 줄> — 대기자 정산 모양의 사망 행 하나
+  lsr93_in "$1" gate_append stage-result "세그먼트=S8" "스테이지=S8" "종류=reconverge" \
+    "종료 코드=-" "실행 버전=$2" "세션 id=-" "부모=-" "기록자=게이트" "종단 부류=외부 종료" \
+    "관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 2026-10-20T00:00:00Z" "답 운반=$3" >/dev/null 2>&1
+}
+lsr93_te3w "$lsr93_l" 2 "$lsr93_ln"
+lsr93_te3w "$lsr93_l" 3 "$lsr93_ln"
+check "95: TE3 대기자 정산 사망 둘 뒤에는 운반한다" "$(lsr93_capgo te3w "$lsr93_ln")" "0"
+check "95: TE3 대기자 정산 사망 둘 뒤의 스냅숏 원소는 재부착이다" "$(lsr93_rt "$lsr93_l" S8)" "재부착||열림"
+lsr93_te3w "$lsr93_l" 4 "$lsr93_ln"
+check "95: TE3 세 번째 대기자 정산 사망 뒤의 운반은 exit 18 이다" "$(lsr93_capgo te3w "$lsr93_ln")" "18"
+
+# R8 — 재수렴의 범위. 기록을 가진 두 모양은 키의 원장을 뒤로 걸어 운반 시도들을
+# 지난 첫 소비된 비-재수렴 답의 기록과 대조하고, R<n> 은 운반 블록의 대기와 기록의
+# 범위로 대조한다. 기준선이 없는 기록과 표 밖 모양은 19 이고 행이 없다.
+lsr93_sc() {  # lsr93_sc <원장> <답 줄> <키> <프롬프트> — 「운반 검사의 rc|원장 그대로」
+  local sha r
+  sha=$(lsr_sha "$1")
+  r=$(LSR93_LN=$2 LSR93_K=$3 LSR93_P=$4 lsr93_in "$1" eval \
+      'GATE_CARRY_ANSWER=$LSR93_LN; r=0; gate_carry_check infra "$LSR93_K" reconverge "$LSR93_P" >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)
+  printf '%s|%s' "$r" "$( [ "$(lsr_sha "$1")" = "$sha" ] && printf same || printf changed)"
+}
+lsr93_l=$(lsr75_new rw1)
+lsr93_r="${lsr93_l%/*}/halt"
+lsr93_park "$lsr93_l" S2 1 "$lsr93_sid" 'Step 3 CFI-U3 BT-STOP — 구속 티어 충돌' implement
+lsr93_ans "$lsr93_l" S2 "$lsr93_r/S2#1.md" implement-unattended 재수렴 >/dev/null
+lsr93_bs="구속 티어 이탈 $lsr93_r/S2#1.md"
+LSR93_SCOPE=$lsr93_bs lsr93_park "$lsr93_l" S2 2 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+lsr93_x=$(lsr93_ans "$lsr93_l" S2 "$lsr93_r/S2#2.md" design-reconverge 적용)
+LSR93_CARRY=$lsr93_x LSR93_Q='둘째 질문' LSR93_SCOPE=$lsr93_bs lsr93_park "$lsr93_l" S2 3 "$lsr93_sid" 'Step 3 재수렴 — 결정' reconverge
+lsr93_x=$(lsr93_ans "$lsr93_l" S2 "$lsr93_r/S2#3.md" design-reconverge 적용)
+LSR93_CARRY=$lsr93_x LSR93_Q='셋째 질문' LSR93_SCOPE=$lsr93_bs lsr93_park "$lsr93_l" S2 4 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" S2 "$lsr93_r/S2#4.md" design-reconverge 적용)
+check "95: R8 운반 시도 둘을 지난 걷기가 구속 티어 정지의 답에 닿는다" \
+  "$(lsr93_sc "$lsr93_l" "$lsr93_ln" S2 "/cc-cmds:design-reconverge $lsr93_doc $lsr93_bs")" "0|same"
+check "95: R8 걷기가 닿은 답과 다른 기록을 범위로 대면 exit 19·행 없음" \
+  "$(lsr93_sc "$lsr93_l" "$lsr93_ln" S2 "/cc-cmds:design-reconverge $lsr93_doc 구속 티어 이탈 $lsr93_r/S2#2.md")" "19|same"
+check "95: R8 모양의 이름이 닿은 답의 스킬과 다르면 exit 19·행 없음" \
+  "$(lsr93_sc "$lsr93_l" "$lsr93_ln" S2 "/cc-cmds:design-reconverge $lsr93_doc 감사 종합 요구 $lsr93_r/S2#1.md")" "19|same"
+lsr93_l=$(lsr75_new rw2)
+lsr93_r="${lsr93_l%/*}/halt"
+lsr93_park "$lsr93_l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
+lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#1.md" design-audit-unattended 'adopt as a requirement' >/dev/null
+lsr93_as="감사 종합 요구 $lsr93_r/A1#1.md"
+LSR93_SCOPE=$lsr93_as lsr93_park "$lsr93_l" A1 2 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#2.md" design-reconverge 적용)
+check "95: R8 런 스코프 감사 키의 걷기가 종합 요구의 답에 닿는다" \
+  "$(lsr93_sc "$lsr93_l" "$lsr93_ln" A1 "/cc-cmds:design-reconverge $lsr93_doc $lsr93_as")" "0|same"
+lsr93_rsa() {  # lsr93_rsa <원장> <운반 줄 또는 빈 값> — 런 스코프 재수렴 새 파견을 받는지
+  LSR93_LN=$2 lsr93_in "$1" eval 'GATE_CARRY_ANSWER=$LSR93_LN; GATE_RESUME=; gate_audit_reconverge_keyable A1 "$GATE_RESUME" && printf yes || printf no' 2>/dev/null
+}
+check "95: R8 의도된 park 로 끝난 재수렴 뒤의 런 스코프 재수렴은 운반이면 받고 아니면 받지 않는다" \
+  "$(lsr93_rsa "$lsr93_l" "$lsr93_ln")|$(lsr93_rsa "$lsr93_l" "")" "yes|no"
+lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=0" \
+  "실행 버전=3" "세션 id=$lsr93_sid" "계정=u1" "부모=-" "기록자=게이트" "종단 부류=정상 완료" >/dev/null 2>&1
+check "95: R8 정상 완료로 끝난 재수렴 뒤의 런 스코프 재수렴은 운반이어도 받지 않는다" \
+  "$(lsr93_rsa "$lsr93_l" "$lsr93_ln")" "no"
+lsr93_l=$(lsr75_new rw3)
+lsr93_park "$lsr93_l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
+check "95: R8 대조 — 의도된 park 로 끝난 감사 뒤에는 운반이 아니어도 받는다" "$(lsr93_rsa "$lsr93_l" "")" "yes"
+# 감사의 「요구로 채택」 답 — 그 답을 실은 시도가 세션 전에 죽어도 감사 키의 마지막 정산 행은
+# 의도된 park 로 끝난 감사이므로, 스냅숏 원소는 감사-재수렴으로 열려 있다.
+printf '**스킬**: design-audit-unattended\n' >> "${lsr93_l%/*}/halt/A1#1.md"
+lsr93_x=$(lsr93_ans "$lsr93_l" A1 "${lsr93_l%/*}/halt/A1#1.md" design-audit-unattended 'adopt as a requirement')
+lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=-" \
+  "실행 버전=2" "세션 id=미상" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_x" >/dev/null 2>&1
+check "95: R8 요구 채택 답을 실은 시도가 세션 전에 죽은 뒤의 스냅숏 원소는 감사-재수렴이다" \
+  "$(lsr93_rt "$lsr93_l" A1)" "감사-재수렴||열림"
+# 세션 전 사망 — 답을 실은 시도가 세션 전에 죽으면 그 시도는 카드를 읽지 않았으므로
+# 어느 답을 실었든 건너뛴다(사람이 그 뒤에 다시 답할 수 있다). 세션이 있던 크래시 행은 건너뛰지 않는다.
+lsr93_rsd() {  # lsr93_rsd <이름> <사망 행의 답 운반 오프셋> <세션 id> — 런 스코프 재수렴 park 뒤 사망 행 하나를 둔 원장의 「운반|비운반」
+  local l r ln
+  l=$(lsr75_new "$1")
+  r="${l%/*}/halt"
+  lsr93_park "$l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
+  lsr93_ans "$l" A1 "$r/A1#1.md" design-audit-unattended 'adopt as a requirement' >/dev/null
+  LSR93_SCOPE="감사 종합 요구 $r/A1#1.md" lsr93_park "$l" A1 2 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+  ln=$(lsr93_ans "$l" A1 "$r/A1#2.md" design-reconverge 적용)
+  lsr93_in "$l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=1" \
+    "실행 버전=3" "세션 id=$3" "계정=u2" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$((ln + $2))" >/dev/null 2>&1
+  printf '%s|%s' "$(lsr93_rsa "$l" "$ln")" "$(lsr93_rsa "$l" "")"
+}
+check "95: R8 답을 실은 시도가 세션 전에 죽은 뒤의 런 스코프 재수렴 운반은 받는다" "$(lsr93_rsd rw4 0 미상)" "yes|no"
+check "95: R8 다른 답을 실은 사망 행 뒤에도 운반은 받는다" "$(lsr93_rsd rw5 1 미상)" "yes|no"
+check "95: R8 대조 — 세션이 있던 크래시 행 뒤에는 받지 않는다" "$(lsr93_rsd rw6 0 "$lsr93_sid")" "no|no"
+# 스폰 전 대기자 사망 — 대기 감독자가 스폰 전에 사라지면 정산이 `세션 id=-` 와
+# `관측=스폰 전 대기 중` 으로 같은 답 운반을 싣는 행을 쓴다. 이 행도 세션 전 사망이다.
+lsr93_rsw() {  # lsr93_rsw <이름> <사망 행의 답 운반 오프셋> — 런 스코프 재수렴 park 뒤 대기자 정산 행 하나를 둔 원장의 「운반|비운반」
+  local l r ln
+  l=$(lsr75_new "$1")
+  r="${l%/*}/halt"
+  lsr93_park "$l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
+  lsr93_ans "$l" A1 "$r/A1#1.md" design-audit-unattended 'adopt as a requirement' >/dev/null
+  LSR93_SCOPE="감사 종합 요구 $r/A1#1.md" lsr93_park "$l" A1 2 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+  ln=$(lsr93_ans "$l" A1 "$r/A1#2.md" design-reconverge 적용)
+  lsr93_in "$l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=-" \
+    "실행 버전=3" "세션 id=-" "부모=-" "기록자=게이트" "종단 부류=외부 종료" \
+    "관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 2026-10-20T00:00:00Z" "답 운반=$((ln + $2))" >/dev/null 2>&1
+  printf '%s|%s' "$(lsr93_rsa "$l" "$ln")" "$(lsr93_rsa "$l" "")"
+}
+check "95: R8 답을 실은 대기자가 스폰 전에 사라진 뒤의 런 스코프 재수렴 운반은 받는다" "$(lsr93_rsw rw7 0)" "yes|no"
+check "95: R8 다른 답을 실은 대기자 정산 행 뒤에도 운반은 받는다" "$(lsr93_rsw rw8 1)" "yes|no"
+# 재답 — 첫 답 L1 의 운반이 세션 전에 죽은 뒤 사람이 같은 기록에 다른 선택지로 다시 답하면
+# L2 의 운반을 받는다. L1 사망 행이 판정을 정하지 않는다.
+lsr93_l=$(lsr75_new rw9)
+lsr93_r="${lsr93_l%/*}/halt"
+lsr93_park "$lsr93_l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
+lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#1.md" design-audit-unattended 'adopt as a requirement' >/dev/null
+LSR93_SCOPE="감사 종합 요구 $lsr93_r/A1#1.md" lsr93_park "$lsr93_l" A1 2 "$lsr93_sid2" 'Step 3 재수렴 — 결정' reconverge
+lsr93_x=$(lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#2.md" design-reconverge 적용)
+lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=1" \
+  "실행 버전=3" "세션 id=미상" "계정=u2" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_x" >/dev/null 2>&1
+# L2 는 좌석이 쓰는 실제 `halt-answer` 동사로 쓴다 — 그 동사는 라우팅 불가인 답을 쓰지
+# 않으므로, 사망 행이 라우팅을 막으면 여기서 L2 가 생기지 않는다.
+lsr93_har=$(LSR93_REC="$lsr93_r/A1#2.md" lsr93_in "$lsr93_l" eval \
+  'r=0; gate_record_row halt-answer A1 infra "중단 기록=$LSR93_REC" "선택지=세그먼트 park" "답한 주체=사람" "근거=사람이 다시 고름" >/dev/null 2>"$RUN_DIR/ha.err" || r=$?; printf %s "$r"' 2>/dev/null)
+lsr93_ln=$( { grep -n '^- `중단 답` ' "$lsr93_l" || true; } | tail -1 | cut -d: -f1)
+check "95: R8 L1 이 세션 전에 죽은 뒤 사람의 재답 L2 를 halt-answer 가 받는다" \
+  "$lsr93_har|$( [ "$lsr93_ln" != "$lsr93_x" ] && printf new || printf same)|$(lsr93_rt "$lsr93_l" A1)" "0|new|재부착||열림"
+check "95: R8 L1 이 세션 전에 죽은 뒤 사람이 다시 답한 L2 의 런 스코프 운반을 받는다" \
+  "$( [ "$lsr93_ln" != "$lsr93_x" ] && lsr93_rsa "$lsr93_l" "$lsr93_ln")" "yes"
+
+lsr93_l=$(lsr75_new rn1)
+lsr93_park "$lsr93_l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/S3#1.md" design-reconverge 적용)
+check "95: R8 R<n> 블록이 대기이고 기록의 범위가 같으면 운반한다" "$(lsr93_sc "$lsr93_l" "$lsr93_ln" S3 "$lsr93_rp")" "0|same"
+check "95: R8 기록의 범위와 다른 R<n> 은 exit 19·행 없음" \
+  "$(lsr93_sc "$lsr93_l" "$lsr93_ln" S3 "/cc-cmds:design-reconverge $lsr93_doc R3")" "19|same"
+lsr93_carrier 처리됨
+check "95: R8 R<n> 블록이 처리됨이면 exit 19·행 없음" "$(lsr93_sc "$lsr93_l" "$lsr93_ln" S3 "$lsr93_rp")" "19|same"
+lsr93_carrier 대기
+lsr93_l=$(lsr75_new rn2)
+LSR93_SCOPE=R7 lsr93_park "$lsr93_l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/S3#1.md" design-reconverge 적용)
+check "95: R8 울타리 안의 블록 모양은 블록이 아니다 — exit 19·행 없음" \
+  "$(lsr93_sc "$lsr93_l" "$lsr93_ln" S3 "/cc-cmds:design-reconverge $lsr93_doc R7")" "19|same"
+lsr93_rdet() {  # lsr93_rdet <이름> <관측 상세> <프롬프트> — 그 상세를 실은 기록의 운반
+  local l ln
+  l=$(lsr75_new "$1")
+  LSR93_DETAIL=$2 lsr93_park "$l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+  ln=$(lsr93_ans "$l" S3 "${l%/*}/halt/S3#1.md" design-reconverge 적용)
+  lsr93_sc "$l" "$ln" S3 "$3"
+}
+check "95: R8 기록에 범위가 없으면 R<n> 운반은 exit 19·행 없음" \
+  "$(lsr93_rdet rd1 "사전 sha256=$lsr93_h1 · 사전 구속 표면 다이제스트=$lsr93_h2" "$lsr93_rp")" "19|same"
+check "95: R8 기록에 사전 sha256 이 없으면 exit 19·행 없음" \
+  "$(lsr93_rdet rd2 "범위=R2 · 사전 구속 표면 다이제스트=$lsr93_h2" "$lsr93_rp")" "19|same"
+check "95: R8 기록에 사전 구속 표면 다이제스트가 없으면 exit 19·행 없음" \
+  "$(lsr93_rdet rd3 "범위=R2 · 사전 sha256=$lsr93_h1" "$lsr93_rp")" "19|same"
+check "95: R8 관측 상세가 없는 기록은 exit 19·행 없음" "$(lsr93_rdet rd4 "" "$lsr93_rp")" "19|same"
+lsr93_l=$(lsr75_new rx1)
+lsr93_park "$lsr93_l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ln=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/S3#1.md" design-reconverge 적용)
+check "95: R8 표 밖 세 모양(설계 수준 잔여·상한 P0 잔여·문제 정체성)은 exit 19·행 없음" \
+  "$(lsr93_sc "$lsr93_l" "$lsr93_ln" S3 "/cc-cmds:design-reconverge $lsr93_doc 설계 수준 잔여 /r/review.md")/$(lsr93_sc "$lsr93_l" "$lsr93_ln" S3 "/cc-cmds:design-reconverge $lsr93_doc 상한 P0 잔여 /r/review.md")/$(lsr93_sc "$lsr93_l" "$lsr93_ln" S3 "/cc-cmds:design-reconverge $lsr93_doc P-17 로그인이 두 번 뜬다")" \
+  "19|same/19|same/19|same"
+
+# TC6 —새 필드는 필드표에 있고 린트가 초록이다.
+rc=0
+bash "$repo_root/scripts/lint-sidecar-field-table.sh" >/dev/null 2>&1 || rc=$?
+check "95: TC6 필드표 린트가 답 운반·중단 답 줄과 함께 통과한다" "$rc" "0"
+lsr93_wck() {  # lsr93_wck [<덧붙일 인자> [<둘째>]] — stage-wait 계열 검사의 rc
+  LSR93_W1=${1:-} LSR93_W2=${2:-} lsr93_in "$lsr_root/t5/ledger.md" eval '
+    set --; [ -z "$LSR93_W1" ] || set -- "$LSR93_W1"; [ -z "$LSR93_W2" ] || set -- "$@" "$LSR93_W2"
+    r=0; run_ledger_series_check stage-wait 계보=B:S9#3 그룹=- 계정=- 까지=- 비용=- "비용 출처=-" 근거=no-room "$@" >/dev/null 2>&1 || r=$?
+    printf %s "$r"' 2>/dev/null
+}
+check "95: TC6 stage-wait 계열 검사는 끝의 답 운반만 받고 줄 번호가 아닌 값은 거부한다" \
+  "$(lsr93_wck)|$(lsr93_wck '답 운반=12')|$(lsr93_wck '답 운반=0')|$(lsr93_wck '답 운반=x')|$(lsr93_wck '답 운반=12' '관측=-')" "0|0|2|2|2"
+check "95: TC6 필드표의 세 행이 새 필드를 싣는다" \
+  "$( { grep -E '^\| `(stage-result|stage-wait)` \|' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md" || true; } | { grep -c '`답 운반`(' || true; })/$( { grep -E '^\| `blocked` \|' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md" || true; } | { grep -c '`중단 답 줄`(' || true; })" "2/1"
+
+# 자리 없음의 런 쪽 — 이월된 답은 다음 런의 몫이다. 이월 행이 선 원장에서 스냅숏의
+# 상태, 교대의 인계(이월 받기·중단 거절), 교대 정지 거절, 마감 뒤의 런 종료, 대기
+# 릴레이의 깨움, 종료 조건 1 의 줄을 잰다. 마감은 매니페스트 사본 둘로 바꾼다 —
+# 지난 마감(진전 축 없음)과 지난 마감에 비용 천장을 더한 것.
+lsr93_mfp="$lsr75/mf93-past.md"; lsr93_mfb="$lsr75/mf93-bounded.md"
+sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2020-01-01T00:00:00Z/' "$FX_MANIFEST" > "$lsr93_mfp"
+awk '/^\*\*벽시계 마감\*\*: / { print "**벽시계 마감**: 2020-01-01T00:00:00Z"; print "**비용 천장**: 100"; next } { print }' \
+  "$FX_MANIFEST" > "$lsr93_mfb"
+lsr93_axes() {  # lsr93_axes <매니페스트> — 「지난 마감|진전 축 없음」
+  FX_MANIFEST=$1 lsr93_in "$lsr75/c93/ledger.md" eval \
+    'gate_past_deadline && printf y || printf n; printf "|"; gate_progress_axes_unbounded && printf y || printf n' 2>/dev/null
+}
+# 픽스처가 빗나가면 아래의 「끝난다/안 끝난다」가 반대 이유로 맞는다 — 먼저 본다.
+check "95: 이월 픽스처 — 원본은 마감 전·축 없음, 사본은 지난 마감·축 없음, 지난 마감·천장" \
+  "$(lsr93_axes "$FX_MANIFEST")/$(lsr93_axes "$lsr93_mfp")/$(lsr93_axes "$lsr93_mfb")" "n|y/y|y/y|n"
+lsr93_dfx() {
+  # lsr93_dfx <이름> [<키>] — 그 키의 시도 1 이 의도된 park 로 멈추고 사람이 답했으며,
+  # 그 답의 운반이 마감 안에 자리를 못 찾아 이 런에서 이월된 원장.
+  local l k=${2:-S3} ln rs
+  l=$(lsr75_new "$1")
+  lsr93_park "$l" "$k" 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+  ln=$(lsr93_ans "$l" "$k" "${l%/*}/halt/$k#1.md" design-reconverge 적용)
+  rs=$k; [ "$k" != A1 ] || rs=-
+  lsr93_in "$l" gate_carry_defer_row infra "$rs" "$k" "B:$k#2" "$ln" '마감 경과' >/dev/null 2>&1
+  printf '%s' "$l"
+}
+lsr93_hand() {
+  # lsr93_hand <원장> <매니페스트> <사유> <막힌 지점> [<덧붙일 필드>] — 교대 인계 기록의
+  # 「rc|경고」. LSR93_LIVE 가 있으면 그 키가 살아 있는 스테이지로 읽힌다.
+  LSR93_HW=$3 LSR93_HB=$4 LSR93_HX=${5:-} FX_MANIFEST=$2 lsr93_in "$1" eval '
+    [ -z "${LSR93_LIVE:-}" ] || cc_relay_wait_stages() { printf "%s" "$LSR93_LIVE"; }
+    set -- 교대=1 "사유=$LSR93_HW" "버린 선택지=-" "막힌 지점=$LSR93_HB" "다음 후보=-"
+    [ -z "$LSR93_HX" ] || set -- "$@" "$LSR93_HX"
+    r=0; w=$(gate_record_row handoff - infra "$@" 2>&1 >/dev/null) || r=$?
+    printf "%s|%s" "$r" "$w"' 2>/dev/null
+}
+lsr93_end_rows() {  # lsr93_end_rows <원장> — 재킥 원인=마감 인 종료 행 수
+  { grep -F '`자율 승인`' "$1" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } \
+    | { grep -cF '| 재킥 원인=마감 |' || true; } | tr -d ' '
+}
+
+# TN1·R10 — 가장 긴 계정 id 와 두 판정의 조합에서도 이월 행의 관측과 재개 명령이
+# 잘리지 않는다. 묶인 쪽은 마감 뒤에 열리는 대기, 새 쪽은 마감 PARK 다.
+lsr93_acct=$(printf 'acct-%059d' 0)
+lsr93_BWL=$(printf '{"verdict":"WAIT","reason":"resume-bound-exhausted","group":null,"account":"%s","until_epoch":1950000000}' "$lsr93_acct")
+check "95: TN1 긴 계정의 묶인 대기와 새 마감 PARK 면 이월 행 하나와 exit 16 이다" \
+  "$(lsr93_row t12l "$lsr93_BWL" "$lsr93_PD")" "16|PARK|first||-||resume,first|1|0|1|-"
+lsr93_t12l=$( { grep -F '| 사유=중단 답 이월 — ' "$lsr_root/t12l/ledger.md" || true; } )
+case "$lsr93_t12l" in
+  *"| 관측=묶인 판정: WAIT resume-bound-exhausted ("*") · 새 판정: PARK deadline ready_at "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z" | 재개 명령=다음 런이 이 답을 이어받는다 — 다시 묻지 않는다 | "*)
+    ok "95: TN1 긴 계정 id 의 조합에서도 이월 행의 관측과 재개 명령이 잘리지 않는다" ;;
+  *) bad "95 TN1 이월 행 잘림" "$lsr93_t12l" ;;
+esac
+check "95: TN1 그 이월 행은 원장 행 상한 안이다" \
+  "$(( $(printf '%s\n' "$lsr93_t12l" | wc -c) <= 1024 ))" "1"
+
+# TN2 — 스냅숏의 answered_halts[] 가 이월된 답과 열린 답을 state 로 가른다.
+lsr93_l=$(lsr93_dfx tn2)
+lsr93_park "$lsr93_l" S4 1 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ans "$lsr93_l" S4 "${lsr93_l%/*}/halt/S4#1.md" design-reconverge 적용 >/dev/null
+check "95: TN2 answered_halts 의 state 가 이월과 열림을 가른다" \
+  "$(lsr93_in "$lsr93_l" eval 'printf "[%s]" "$(gate_answered_halts_json)"' 2>/dev/null | jq -r '[.[] | "\(.segment):\(.state)"] | join(",")')" \
+  "S3:이월,S4:열림"
+check "95: TN2 인계 검사의 판독이 스냅숏과 같은 답을 고른다" \
+  "$(lsr93_in "$lsr93_l" eval 'gate_halt_answers_by_state 이월 | cut -f2; gate_halt_answers_by_state 열림 | cut -f2' 2>/dev/null | paste -sd, -)" "S3,S4"
+check "95: TN2 이월 행이 없는 원장의 이월 판독은 비어 있다" \
+  "$(lsr93_in "$lsr_root/rn1/ledger.md" eval 'gate_halt_answers_by_state 이월' 2>/dev/null)|$(lsr93_in "$lsr_root/rn1/ledger.md" eval 'gate_halt_answers_by_state 열림 | cut -f2' 2>/dev/null)" "|S3"
+
+# TN5 — 마감 뒤에 낸 운반 act. 운반 함수가 아니라 act 동사 전체(`gate_verb_act`)를
+# 지나게 해, 시계 종료의 거절과 이월 행이 그 동사 안에서 어떤 순서로 서는지 잰다.
+# 시동 대역은 argv 파일을, 라우터 대역은 requests 파일을 남기므로 둘이 없으면
+# 불리지 않은 것이다.
+lsr93_act() {
+  # lsr93_act <원장> <매니페스트> <답 줄> <프롬프트> — 키 S3 의 재수렴 운반 act 의 rc.
+  # 봉투는 LSR93_BENV·LSR93_FENV 다. 게이트의 경고는 원장 옆 act.err 에 남는다.
+  # 동사 앞의 전역은 gate_main 이 인자를 읽기 전에 비우는 그 값들이다.
+  LSR93_LN=$3 LSR93_P=$4 FX_MANIFEST=$2 LSR93_DL=1900000000 lsr93_in "$1" eval '
+    GATE_RESUME=""; GATE_FROM_DECLARATION=""; GATE_RECOVERY=""; GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
+    GATE_EMIT_DIGEST_TO=""; GATE_SHIFT_HALT_SITE=""; GATE_SHIFT_HALT_WRITING=""; GATE_ADMIT=""
+    GATE_REACH=""; GATE_DESTRUCTIVE=0; GATE_SETTLED_SEGMENTS=""; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+    GATE_TRIGGER=""; GATE_TRIGGER_SEEN=""; GATE_TRIGGER_REASON=""
+    GATE_CARRY_ANSWER=$LSR93_LN; r=0
+    ( gate_verb_act act skill infra S3 커밋 워크트리쓰기 "$(gate_snapshot_digest)" "운반 시험" "" \
+        reconverge -p "$LSR93_P" ) >/dev/null 2>"$RUN_DIR/act.err" || r=$?
+    printf %s "$r"' 2>/dev/null
+}
+lsr93_line() {  # lsr93_line <원장> <고정 문자열> — 그 문자열을 든 첫 줄의 번호, 없으면 0
+  { grep -nF -- "$2" "$1" || true; } | sed -n '1s/:.*//p' | grep . || printf 0
+}
+lsr93_tn5() {
+  # lsr93_tn5 <원장> — 「이월 행 수|마감 종료 행 수|종료 행이 이월 행보다 앞|일반 마감 행 수|
+  # 물은 사건|시동」
+  local d=${1%/*} e v
+  e=$( { grep -nF '| 결정=종료 |' "$1" || true; } | { grep -F '| 재킥 원인=마감 |' || true; } | sed -n '1s/:.*//p')
+  v=$(lsr93_line "$1" '| 사유=중단 답 이월 — ')
+  printf '%s|%s|%s|%s|%s|%s' "$(lsr93_n "$1" '| 사유=중단 답 이월 — ')" "$(lsr93_end_rows "$1")" \
+    "$( [ -n "$e" ] && [ "$v" != 0 ] && [ "$e" -lt "$v" ] && printf 앞 || printf -- -)" \
+    "$(lsr93_n "$1" '마감 초과')" "$(lsr93_events "$1")" "$( [ -e "$d/argv" ] && printf 시동 || printf -- -)"
+}
+lsr93_tn5f() {  # lsr93_tn5f <이름> [<lsr93_base 인자…>] — S3 의 segment 행까지 든 멈춤과 답. 답 줄을 낸다.
+  local n=$1 ln; shift
+  ln=$(lsr93_base "$n" "$@")
+  lsr93_in "$lsr_root/$n/ledger.md" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+  printf '%s' "$ln"
+}
+lsr93_ln=$(lsr93_tn5f tn5p)
+lsr93_l="$lsr_root/tn5p/ledger.md"
+check "95: TN5 진전 축 없는 런의 마감 뒤 운반 act 는 exit 16 이다" \
+  "$(LSR93_BENV=$lsr93_BG LSR93_FENV=$lsr93_FG lsr93_act "$lsr93_l" "$lsr93_mfp" "$lsr93_ln" "$lsr93_rp")" "16"
+check "95: TN5 그 act 는 이월 행 하나와 마감 종료 행을 남기고, 종료 행이 먼저이며 라우터도 시동도 부르지 않는다" \
+  "$(lsr93_tn5 "$lsr93_l")" "1|1|앞|0|-|-"
+case "$( { grep -F '| 사유=중단 답 이월 — ' "$lsr93_l" || true; } )" in
+  *"| 중단 답 줄=$lsr93_ln | "*"| 스테이지=S3 | "*"| 관측=마감 경과 | 재개 명령=다음 런이 이 답을 이어받는다 — 다시 묻지 않는다"*)
+    ok "95: TN5 그 이월 행이 답 줄과 관측 마감 경과 를 싣는다" ;;
+  *) bad "95 TN5 이월 행" "$(grep -F '| 사유=중단 답 이월 — ' "$lsr93_l"; cat "$lsr_root/tn5p/act.err")" ;;
+esac
+check "95: TN5 이월된 답은 스냅숏에서 이월 이다" \
+  "$(lsr93_in "$lsr93_l" eval 'printf "[%s]" "$(gate_answered_halts_json)"' 2>/dev/null | jq -r '[.[] | "\(.segment):\(.state)"] | join(",")')" "S3:이월"
+lsr93_ln=$(lsr93_tn5f tn5b)
+lsr93_l="$lsr_root/tn5b/ledger.md"
+check "95: TN5 진전 축 있는 런에서 두 쪽 마감 PARK 의 운반 act 는 exit 16 이다" \
+  "$(LSR93_BENV=$lsr93_PD LSR93_FENV=$lsr93_PD lsr93_act "$lsr93_l" "$lsr93_mfb" "$lsr93_ln" "$lsr93_rp")" "16"
+check "95: TN5 그 act 는 선택 순서로 두 쪽을 묻고 이월 행 하나를 남기며 런을 끝내지 않는다" \
+  "$(lsr93_tn5 "$lsr93_l")" "1|0|-|0|resume,first|-"
+case "$( { grep -F '| 사유=중단 답 이월 — ' "$lsr93_l" || true; } )" in
+  *"| 중단 답 줄=$lsr93_ln | "*"| 관측=묶인 판정: PARK deadline "*"새 판정: PARK deadline ready_at "*)
+    ok "95: TN5 그 이월 행이 두 판정을 싣는다" ;;
+  *) bad "95 TN5 진전 축 이월 행" "$(grep -F '| 사유=중단 답 이월 — ' "$lsr93_l"; cat "$lsr_root/tn5b/act.err")" ;;
+esac
+# 대조 — 운반 검사에 걸리는 답은 마감 뒤에도 이월되지 않는다. 라우팅 예외(좌석 실행
+# 정지)와 표 밖 쌍이 각각 그 검사의 코드로 끝나고 원장은 그대로다.
+lsr93_tn5c() {  # lsr93_tn5c <이름> <답 줄> — 지난 마감 매니페스트로 낸 운반 act 의 「rc|원장 그대로|이월 행 수」
+  local l="$lsr_root/$1/ledger.md" sha
+  sha=$(lsr_sha "$l")
+  printf '%s|%s|%s' "$(LSR93_BENV=$lsr93_BG LSR93_FENV=$lsr93_FG lsr93_act "$l" "$lsr93_mfp" "$2" "$lsr93_rp")" \
+    "$( [ "$(lsr_sha "$l")" = "$sha" ] && printf same || printf changed)" "$(lsr93_n "$l" '| 사유=중단 답 이월 — ')"
+}
+lsr93_ln=$(lsr93_tn5f tn5s implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' implement)
+check "95: TN5 대조 — 마감 뒤에도 좌석 실행 정지의 답은 exit 3·원장 그대로·이월 없음" \
+  "$(lsr93_tn5c tn5s "$lsr93_ln")" "3|same|0"
+lsr93_ln=$(lsr93_tn5f tn5u implement-unattended 'Step 2 계획 — 질문' 적용 implement)
+check "95: TN5 대조 — 마감 뒤에도 표 밖 정지의 답은 exit 19·원장 그대로·이월 없음" \
+  "$(lsr93_tn5c tn5u "$lsr93_ln")" "19|same|0"
+
+# TH1 — 이월 인계는 남은 것이 다음 런의 답뿐일 때만 받는다.
+lsr93_l=$(lsr93_dfx th1)
+case "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답' 'CI 대기=S5')" in
+  "3|"*"이월 인계를 쓰지 않습니다"*) ok "95: TH1 CI 대기 세그먼트가 있는 이월 인계는 exit 3 이다" ;;
+  *) bad "95 TH1 CI 대기" "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답' 'CI 대기=S5')" ;;
+esac
+check "95: TH1 리셋 대기를 실은 이월 인계는 exit 2 다" \
+  "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답' '리셋 대기=S3' | cut -d'|' -f1)" "2"
+case "$(LSR93_LIVE=S9 lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" in
+  "3|"*"이월 인계를 쓸 수 없습니다 — 살아 있는 스테이지나 감독자가 있습니다"*) ok "95: TH1 살아 있는 스테이지가 있으면 이월 인계는 exit 3 이다" ;;
+  *) bad "95 TH1 살아 있는 스테이지" "$(LSR93_LIVE=S9 lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" ;;
+esac
+case "$(lsr93_hand "$lsr_root/rn1/ledger.md" "$FX_MANIFEST" 이월 '다음 런의 답')" in
+  "3|"*"이월 인계를 쓸 수 없습니다 — 다음 런으로 넘긴 중단 답이 없습니다"*) ok "95: TH1 이월된 답이 없으면 이월 인계는 exit 3 이다" ;;
+  *) bad "95 TH1 이월된 답 없음" "$(lsr93_hand "$lsr_root/rn1/ledger.md" "$FX_MANIFEST" 이월 '다음 런의 답')" ;;
+esac
+lsr93_l=$(lsr93_dfx th1u)
+lsr93_park "$lsr93_l" S4 1 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge
+case "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" in
+  "3|"*"이월 인계를 쓸 수 없습니다 — 답 없는 정지 기록이 있습니다"*) ok "95: TH1 답 없는 정지 기록이 있으면 이월 인계는 exit 3 이다" ;;
+  *) bad "95 TH1 답 없는 기록" "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" ;;
+esac
+lsr93_l=$(lsr93_dfx th1d)
+printf 'x 종단\n' > "${lsr93_l%/*}/done"
+case "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" in
+  "3|"*"이월 인계를 쓸 수 없습니다 — 런이 이미 끝났습니다"*) ok "95: TH1 끝난 런의 이월 인계는 exit 3 이다" ;;
+  *) bad "95 TH1 끝난 런" "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" ;;
+esac
+# 대기 인계의 거절 문면은 그대로다 — 이월이 생겨도 기다릴 것 없는 대기는 같은 말로 선다.
+case "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" in
+  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"*)
+    ok "95: TH1 기다릴 것 없는 대기 인계의 거절 문면은 바뀌지 않았다" ;;
+  *) bad "95 TH1 대기 문면" "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" ;;
+esac
+check "95: TH1 거절들은 handoff 행을 쓰지 않는다" "$(lsr93_n "$lsr_root/th1/ledger.md" '- `handoff` ')" "0"
+check "95: TH1 마감 전의 이월 인계는 받고 런을 끝내지 않는다" \
+  "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 이월 '다음 런의 답' | cut -d'|' -f1)|$(lsr93_n "$lsr_root/th1/ledger.md" '| 사유=이월 |')|$( [ -e "$lsr_root/th1/done" ] && printf done || printf open)|$(lsr93_end_rows "$lsr_root/th1/ledger.md")" \
+  "0|1|open|0"
+lsr93_l=$(lsr93_dfx th1p)
+check "95: TH1 마감 뒤의 이월 인계는 받고 그 자리에서 런을 마감으로 끝낸다" \
+  "$(lsr93_hand "$lsr93_l" "$lsr93_mfp" 이월 '다음 런의 답' | sed -n '1{s/|.*//;p;}')|$( [ -s "${lsr93_l%/*}/done" ] && printf done || printf open)|$(lsr93_end_rows "$lsr93_l")|$(lsr93_n "$lsr93_l" '남은 중단 답을 다음 런으로 넘긴 런이다')" \
+  "0|done|1|1"
+
+# TH3 — 남은 것이 이월된 답뿐인 런에서 중단 인계는 사람에게 같은 결정을 다시 묻는다.
+lsr93_l=$(lsr93_dfx th3a)
+check "95: TH3 막는 것이 이월된 답뿐이면 중단 인계는 exit 3·행 없음" \
+  "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 중단 '무언가' | cut -d'|' -f1)|$(lsr93_n "$lsr93_l" '- `handoff` ')" \
+  "3|0"
+case "$(lsr93_hand "$lsr_root/th3a/ledger.md" "$FX_MANIFEST" 중단 '무언가')" in
+  *"막는 것이 다음 런으로 넘긴 중단 답뿐입니다"*) ok "95: TH3 그 거절이 이월 인계로 가라고 말한다" ;;
+  *) bad "95 TH3 거절 문면" "$(lsr93_hand "$lsr_root/th3a/ledger.md" "$FX_MANIFEST" 중단 '무언가')" ;;
+esac
+# 혼합 원장 — 이월 답 말고도 런을 막는 것이 남았으면 중단 인계는 사람에게 묻는 정당한
+# 인계다. 미해소 런 범위 blocked 와 종단이 아닌 세그먼트가 그 둘이다. 대조로, 해소된
+# 런 범위 blocked 와 종단 세그먼트는 「뿐」 판정을 바꾸지 않는다.
+lsr93_l=$(lsr93_dfx th3m1)
+lsr93_in "$lsr93_l" gate_append blocked '스코프=run' '원인=막힘' '사유=시험 런 범위 막힘' '근거=시험' >/dev/null 2>&1
+lsr93_m=$(lsr93_dfx th3m2)
+lsr93_in "$lsr93_m" gate_append segment 'id=S5' '상태=실행중' >/dev/null 2>&1
+check "95: TH3 미해소 런 범위 blocked 나 종단 아닌 세그먼트가 남은 런의 중단 인계는 받는다" \
+  "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 중단 '런 범위 막힘' | cut -d'|' -f1)/$(lsr93_hand "$lsr93_m" "$FX_MANIFEST" 중단 'S5 가 막혔다' | cut -d'|' -f1)" "0/0"
+lsr93_l=$(lsr93_dfx th3m3)
+lsr93_in "$lsr93_l" gate_append blocked '스코프=run' '원인=막힘' '사유=시험 런 범위 막힘' '근거=시험' >/dev/null 2>&1
+lsr93_in "$lsr93_l" gate_append blocked '스코프=run' '원인=해소' '사유=시험 런 범위 막힘' '근거=시험' >/dev/null 2>&1
+lsr93_in "$lsr93_l" gate_append segment 'id=S5' '상태=머지됨' >/dev/null 2>&1
+check "95: TH3 대조 — 해소된 런 범위 blocked 와 종단 세그먼트만 더한 원장의 중단 인계는 여전히 exit 3" \
+  "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 중단 '무언가' | cut -d'|' -f1)/$(lsr93_n "$lsr93_l" '사유=시험 런 범위 막힘')" "3/2"
+# 승인은 끝맺음과 같은 판정으로 센다 — 대기 중인 행위 승인과 사람-결정 판단 승인은 런을
+# 붙들어 중단 인계를 받고, 그 밖의 판단 승인은 다음 런의 입력이라 「뿐」 을 바꾸지 않는다.
+lsr93_th3p() {  # lsr93_th3p <이름> <승인 id> <절단점> [<판단 부류>] — 그 승인이 대기인 원장의 중단 인계 rc
+  local l
+  l=$(lsr93_dfx "$1")
+  lsr93_in "$l" gate_append '승인' "승인 id=$2" '상태=대기' '대상=infra' "절단점=$3" \
+    ${4:+"판단 부류=$4"} '질문 문면=시험' >/dev/null 2>&1
+  lsr93_hand "$l" "$FX_MANIFEST" 중단 '승인 대기' | cut -d'|' -f1
+}
+check "95: TH3 행위 승인·사람-결정 판단 승인이 대기인 런의 중단 인계는 받는다" \
+  "$(lsr93_th3p th3p J-0093d001 커밋)/$(lsr93_th3p th3q J-0093e001 판단 사람-결정)" "0/0"
+check "95: TH3 사람-결정 이 아닌 판단 승인만 대기인 런의 중단 인계는 exit 3 이다" \
+  "$(lsr93_th3p th3j J-0093f001 판단 되돌림가능)" "3"
+# 열린 답이 하나 더 있으면 상태 검사는 지나가고, 막힌 지점의 문면이 이월된 기록을
+# 가리키는지만 남는다.
+lsr93_th3() {  # lsr93_th3 <이름> <키> <막힌 지점> — 그 키가 이월되고 S4 의 답이 열린 원장의 중단 인계 rc
+  local l
+  l=$(lsr93_dfx "$1" "$2")
+  lsr93_park "$l" S4 1 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge
+  lsr93_ans "$l" S4 "${l%/*}/halt/S4#1.md" design-reconverge 적용 >/dev/null
+  lsr93_hand "$l" "$FX_MANIFEST" 중단 "$3" | cut -d'|' -f1
+}
+check "95: TH3 막힌 지점이 이월된 기록의 경로·파일 이름·시도 표지 줄기를 대면 exit 3 이다" \
+  "$(lsr93_th3 th3b S3 "$lsr_root/th3b/halt/S3#1.md 의 질문")/$(lsr93_th3 th3c S3 'S3#1.md를 다시 본다')/$(lsr93_th3 th3d S3 '(S3#1) 에 묶였다')" "3/3/3"
+check "95: TH3 다른 기록·더 긴 토큰·세그먼트 이름만 대면 중단 인계를 받는다" \
+  "$(lsr93_th3 th3e S3 'S4#1.md 의 질문')/$(lsr93_th3 th3f S3 'S3#1.md.bak 을 지웠다')/$(lsr93_th3 th3g S3 'S3 의 선행이 막혔다')" "0/0/0"
+check "95: TH3 한 글자 키의 이월에서 그 글자를 낱말로 쓴 막힌 지점은 받고 기록 이름은 거절한다" \
+  "$(lsr93_th3 th3h A 'plan A 를 버렸다')/$(lsr93_th3 th3i A 'A#1 의 답')" "0/3"
+
+# TH7 — 답이 이월된 세그먼트에는 교대 정지 기록을 쓰지 않는다. 대조 세그먼트는 그대로다.
+lsr93_sh() {  # lsr93_sh <원장> <세그먼트> — 교대 정지의 「rc|경고」
+  LSR93_SEG=$2 lsr93_in "$1" eval '
+    unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID; CC_PIPELINE_SHIFT_ID=1; export CC_PIPELINE_SHIFT_ID
+    GATE_SHIFT_HALT_SITE=""
+    r=0; w=$(gate_record_row shift-halt "$LSR93_SEG" infra "자리=도달 거부" "질문=닿아도 되는가" "관측=도달 거부" 2>&1 >/dev/null) || r=$?
+    printf "%s|%s" "$r" "$w"' 2>/dev/null
+}
+lsr93_l=$(lsr93_dfx th7)
+lsr93_in "$lsr93_l" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+lsr93_in "$lsr93_l" gate_append 'segment' 'id=S5' '상태=실행중' >/dev/null 2>&1
+case "$(lsr93_sh "$lsr93_l" S3)" in
+  "3|"*"S3 의 중단 답(원장 "*" 번째 줄)은 다음 런으로 넘겼습니다"*) ok "95: TH7 이월된 세그먼트의 교대 정지는 exit 3 이다" ;;
+  *) bad "95 TH7 이월 세그먼트" "$(lsr93_sh "$lsr93_l" S3)" ;;
+esac
+check "95: TH7 그 거절은 정지 기록을 쓰지 않는다" "$(ls "${lsr93_l%/*}/halt/shift" 2>/dev/null | wc -l | tr -d ' ')" "0"
+# 대조는 이월 행만 뺀 같은 원장이다 — 그 정지가 다른 검사에서 어떻게 서든, 이월이
+# 없는 세그먼트는 이월이 없던 때와 같은 rc 로 서고 이월 거절 문면을 내지 않는다.
+lsr93_m=$(lsr75_new th7b)
+lsr93_park "$lsr93_m" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ans "$lsr93_m" S3 "${lsr93_m%/*}/halt/S3#1.md" design-reconverge 적용 >/dev/null
+lsr93_in "$lsr93_m" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+lsr93_in "$lsr93_m" gate_append 'segment' 'id=S5' '상태=실행중' >/dev/null 2>&1
+lsr93_t7a=$(lsr93_sh "$lsr93_l" S5); lsr93_t7b=$(lsr93_sh "$lsr93_m" S3)
+case "$lsr93_t7a/$lsr93_t7b" in
+  *"다음 런으로 넘겼습니다"*) bad "95 TH7 대조" "$lsr93_t7a / $lsr93_t7b" ;;
+  *) check "95: TH7 대조 — 이월 없는 세그먼트의 교대 정지는 이월 없는 원장과 같은 rc 다" \
+       "${lsr93_t7a%%[|$'\n']*}" "${lsr93_t7b%%[|$'\n']*}" ;;
+esac
+
+# TH4 — 이월로 넘긴 런을 마감 뒤에 끝내는 판정. 완료 조건 판독을 대역으로 바꾸지 않고
+# 실제 원장으로 돈다. 진전 축이 있는 런은 「이월 답만 남음」 이 설 때만 끝나고, 그
+# 판정은 완료 조건의 줄을 읽지 않는다 — 다음 런으로 넘긴 일의 종료 절 줄은 늘 남는다.
+# 진전 축 매니페스트에 종료 절 하나를 둔 사본이 그 줄을 만든다.
+lsr93_mfc="$lsr75/mf93-clause.md"
+{ grep -v '^- `종료 절`' "$lsr93_mfb" || true
+  printf -- '- `종료 절` | id=K93 | 문면=다음 런으로 넘긴 일 (K93)\n'; } > "$lsr93_mfc"
+lsr93_due() {
+  # lsr93_due <원장> <매니페스트> — gate_defer_end_due 의 y/n. LSR93_LIVE 는 lsr93_hand 와 같다.
+  FX_MANIFEST=$2 lsr93_in "$1" eval '
+    [ -z "${LSR93_LIVE:-}" ] || cc_relay_wait_stages() { printf "%s" "$LSR93_LIVE"; }
+    gate_defer_end_due && printf y || printf n' 2>/dev/null
+}
+lsr93_hrow() {  # lsr93_hrow <원장> <사유> [<CI 대기>] — 검사 없이 그 사유의 handoff 행
+  lsr93_in "$1" gate_append handoff 교대=1 "사유=$2" '버린 선택지=-' '막힌 지점=-' '다음 후보=-' "CI 대기=${3:--}" \
+    '대상=infra' '기록 시각=2026-10-19T00:00:00Z' >/dev/null 2>&1
+}
+lsr93_l=$(lsr93_dfx th4 A1)
+lsr93_hrow "$lsr93_l" 이월
+lsr93_dl1="1 답 이월 대기 — A1 의 중단 답(원장 $(lsr93_in "$lsr93_l" gate_key_deferred_answer A1 2>/dev/null) 번째 줄)을 다음 런이 이어받습니다"
+check "95: TH4 픽스처의 A1 답이 이월돼 있다" "$(lsr93_in "$lsr93_l" gate_key_deferred_answer A1 2>/dev/null | grep -c '^[0-9][0-9]*$')" "1"
+# 공허 방지 — 종료 절 사본이 진전 축 런이고, 그 원장의 완료 조건 판독에 미정산 종료
+# 절 줄이 실제로 나온다. 이 줄이 없으면 아래의 「끝난다」 는 줄을 읽어도 섰을 것이다.
+check "95: TH4 종료 절 사본은 지난 마감·진전 축 있음이다" "$(lsr93_axes "$lsr93_mfc")" "y|n"
+check "95: TH4 그 원장의 완료 조건 판독에 미정산 종료 절 줄이 나온다" \
+  "$(FX_MANIFEST=$lsr93_mfc lsr93_in "$lsr93_l" gate_done_conditions 2>/dev/null | { grep -cxF '10 종료 절 K93 미정산' || true; } | tr -d ' ')" "1"
+check "95: TH4 진전 축 런은 미정산 종료 절이 남아도 이월 답만 남았으면 끝난다" \
+  "$(lsr93_due "$lsr93_l" "$lsr93_mfc")" "y"
+check "95: TH4 진전 축 없는 런은 지난 마감·마지막 인계 이월·산 것 없음이면 끝난다" \
+  "$(lsr93_due "$lsr93_l" "$lsr93_mfp")" "y"
+check "95: TH4 마감 전이면 끝나지 않는다" "$(lsr93_due "$lsr93_l" "$FX_MANIFEST")" "n"
+check "95: TH4 살아 있는 스테이지가 있으면 끝나지 않는다" \
+  "$(LSR93_LIVE=S9 lsr93_due "$lsr93_l" "$lsr93_mfp")/$(LSR93_LIVE=S9 lsr93_due "$lsr93_l" "$lsr93_mfc")" "n/n"
+# 「이월 답만 남음」 의 조건마다 대조 하나. 각 원장은 A1 이 이월된 원장에 하나를 더하고,
+# 마지막 인계를 이월로 둔다. 더하는 것은 콜백 함수가 그 원장에 쓴다.
+lsr93_th4c() {  # lsr93_th4c <이름> <콜백> — 콜백이 더한 뒤 진전 축 런의 끝맺음 y/n
+  local l
+  l=$(lsr93_dfx "$1" A1)
+  "$2" "$l"
+  lsr93_hrow "$l" 이월
+  lsr93_due "$l" "$lsr93_mfc"
+}
+lsr93_c_run() { lsr93_in "$1" gate_append segment 'id=S5' '상태=실행중' >/dev/null 2>&1; }
+lsr93_c_ci() { lsr93_c_run "$1"; lsr93_hrow "$1" 대기 S5; }
+lsr93_c_apply() { lsr93_in "$1" gate_append segment 'id=S5' '상태=머지됨' '적용=대기' >/dev/null 2>&1; }
+lsr93_c_act() {
+  lsr93_in "$1" gate_append '승인' '승인 id=J-0093a001' '상태=대기' '대상=infra' '절단점=커밋' '질문 문면=시험' >/dev/null 2>&1
+}
+lsr93_c_person() {
+  lsr93_in "$1" gate_append '승인' '승인 id=J-0093b001' '상태=대기' '대상=infra' '절단점=판단' \
+    "판단 부류=사람-결정" '질문 문면=시험' >/dev/null 2>&1
+}
+lsr93_c_judg() {
+  lsr93_in "$1" gate_append '승인' '승인 id=J-0093c001' '상태=대기' '대상=infra' '절단점=판단' \
+    '판단 부류=되돌림가능' '질문 문면=시험' >/dev/null 2>&1
+}
+lsr93_c_open() {
+  lsr93_park "$1" S4 1 "$lsr93_sid2" 'Step 3 재수렴 — 질문' reconverge
+  lsr93_ans "$1" S4 "${1%/*}/halt/S4#1.md" design-reconverge 적용 >/dev/null
+}
+lsr93_c_blk() {
+  lsr93_in "$1" gate_append blocked '스코프=run' '원인=막힘' '사유=시험 런 범위 막힘' '근거=시험' >/dev/null 2>&1
+}
+lsr93_c_none() { :; }
+check "95: TH4 대조 — 종단 아닌 세그먼트·CI 대기 세그먼트·적용 대기 세그먼트가 남으면 끝나지 않는다" \
+  "$(lsr93_th4c th4s lsr93_c_run)/$(lsr93_th4c th4i lsr93_c_ci)/$(lsr93_th4c th4a lsr93_c_apply)" "n/n/n"
+check "95: TH4 대조 — 대기 중인 행위 승인·사람-결정 판단 승인이 남으면 끝나지 않는다" \
+  "$(lsr93_th4c th4p lsr93_c_act)/$(lsr93_th4c th4q lsr93_c_person)" "n/n"
+check "95: TH4 대조 — 열림 답·이월 행이 아닌 미해소 런 범위 blocked 가 남으면 끝나지 않는다" \
+  "$(lsr93_th4c th4o lsr93_c_open)/$(lsr93_th4c th4b lsr93_c_blk)" "n/n"
+check "95: TH4 사람-결정 이 아닌 판단 승인만 남은 런은 끝난다" \
+  "$(lsr93_th4c th4j lsr93_c_judg)/$(lsr93_th4c th4n lsr93_c_none)" "y/y"
+# 쓰이지 않은 이월 답이 없는 원장 — 답이 열린 채이고 이월 행이 없다.
+lsr93_l=$(lsr75_new th4z)
+lsr93_park "$lsr93_l" A1 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_ans "$lsr93_l" A1 "${lsr93_l%/*}/halt/A1#1.md" design-reconverge 적용 >/dev/null
+lsr93_hrow "$lsr93_l" 이월
+check "95: TH4 쓰이지 않은 이월 답이 없으면 진전 축 런은 끝나지 않는다" "$(lsr93_due "$lsr93_l" "$lsr93_mfc")" "n"
+lsr93_l="$lsr_root/th4/ledger.md"
+lsr93_hrow "$lsr93_l" 대기
+check "95: TH4 마지막 인계가 이월이 아니면 끝나지 않는다" \
+  "$(lsr93_due "$lsr93_l" "$lsr93_mfp")/$(lsr93_due "$lsr93_l" "$lsr93_mfc")" "n/n"
+# end-overdue 의 갈래 — 이월로 넘긴 조용한 런은 해당없음이 아니라 마감으로 끝난다.
+lsr93_eo() {  # lsr93_eo <이름> <마지막 인계 사유> — end-overdue 뒤의 「종료 행의 재킥 원인|근거에 이월 문면」
+  local l
+  l=$(lsr93_dfx "$1")
+  lsr93_hrow "$l" "$2"
+  FX_MANIFEST=$lsr93_mfp lsr93_in "$l" gate_verb_end_overdue >/dev/null 2>&1
+  printf '%s|%s' "$( { grep -F '| 결정=종료 |' "$l" || true; } | sed -n 's/.*| 재킥 원인=\([^|]*\) |.*/\1/p')" \
+    "$(lsr93_n "$l" '남은 중단 답을 다음 런으로 넘긴 런이다')"
+}
+check "95: TH4 end-overdue 는 이월로 넘긴 런을 재킥 원인 마감으로 끝낸다" "$(lsr93_eo th4e 이월)" "마감|1"
+check "95: TH4 대조 — 중단으로 넘긴 조용한 런은 오늘처럼 해당없음이다" "$(lsr93_eo th4f 중단)" "해당없음|0"
+
+# TH2 — 대기 릴레이는 이월 인계를 받고, 마감 1초 뒤를 깨움 시계로 싣는다.
+lsr93_rel2() {  # lsr93_rel2 <원장> <매니페스트> — 「재진입|defer 줄|깨움 키」
+  FX_MANIFEST=$2 lsr93_in "$1" eval '
+    gate_relay_reentry_allowed && printf y || printf n
+    GATE_RELAY_FP=fp; GATE_RELAY_STARTED=1; gate_relay_write "" "" ""
+    printf "|%s|" "$(cc_relay_field "$RUN_DIR" defer)"
+    cc_relay_wake_keys "$RUN_DIR" "$LEDGER" | { grep "^dl:" || true; } | tr "\t" " "' 2>/dev/null
+}
+lsr93_l=$(lsr93_dfx th2)
+lsr93_hrow "$lsr93_l" 이월
+check "95: TH2 이월 인계 뒤의 릴레이는 재진입하고 지난 마감의 1초 뒤에 깬다" \
+  "$(lsr93_rel2 "$lsr93_l" "$lsr93_mfp")" "y|1577836801|dl:이월 1577836801"
+check "95: TH2 마감 전에는 같은 시계를 싣되 아직 깨지 않는다" \
+  "$(lsr93_rel2 "$lsr93_l" "$FX_MANIFEST")" "y|1893456001|"
+lsr93_hrow "$lsr93_l" 중단
+check "95: TH2 대조 — 중단 인계 뒤에는 재진입도 시계도 없다" "$(lsr93_rel2 "$lsr93_l" "$lsr93_mfp")" "n|-|"
+# 이월만 남은 대기는 빈 집합 갈래로 곧장 돌아오지 않는다. 깨울 시각(마감 1초 뒤)이
+# 붙듦 상한보다 멀면 상한에서 좌석에 돌려준다. 상한은 시험 훅으로 2초로 줄이고, 줄이지
+# 않은 상한이 3000 초이며 훅이 그것을 늘리지 못한다는 것을 따로 본다.
+lsr93_rwait() {  # lsr93_rwait <원장> <매니페스트> — 「rc|2초 이상 걸림|좌석에 돌려준 사유」
+  FX_MANIFEST=$2 CC_GATE_RELAY_HOLD_TEST_SECONDS=2 lsr93_in "$1" eval '
+    GATE_RELAY_FP=fp; GATE_RELAY_STARTED=""; GATE_RELAY_SEAT_START=$(date -u +%s); s=$GATE_RELAY_SEAT_START
+    r=0; o=$(gate_relay_wait 2>/dev/null) || r=$?
+    printf "%s|%s|%s" "$r" "$( [ $(( $(date -u +%s) - s )) -ge 2 ] && printf y || printf n)" \
+      "$(printf "%s\n" "$o" | sed -n "s/.*\[relay\] 대기가 이어진다 — \(.*\) · 같은 호출을 대기 로 다시 낸다\$/\1/p")"' 2>/dev/null
+}
+check "95: TH2 줄이지 않은 붙듦 상한은 3000 초이고 시험 훅은 그것을 늘리지 못한다" \
+  "$(sed -n 's/^readonly GATE_RELAY_HOLD_SECONDS=\([0-9][0-9]*\)$/\1/p' "$lsr75/cc-cmds/orchestrator/gate.sh")|$(lsr93_in "$lsr93_l" eval 'unset CC_GATE_RELAY_HOLD_TEST_SECONDS; gate_relay_hold; printf "|"; CC_GATE_RELAY_HOLD_TEST_SECONDS=5000 gate_relay_hold' 2>/dev/null)" \
+  "3000|3000|3000"
+lsr93_l=$(lsr93_dfx th2h)
+lsr93_hrow "$lsr93_l" 이월
+check "95: TH2 마감 전 이월만 남은 대기는 붙듦 상한에서 좌석에 돌려준다" \
+  "$(lsr93_rwait "$lsr93_l" "$FX_MANIFEST")" "1|y|좌석 호출의 대기 상한 2초가 지났다"
+check "95: TH2 대조 — 지난 마감의 이월 대기는 깨움 조건으로 곧장 끝난다" \
+  "$(lsr93_rwait "$lsr93_l" "$lsr93_mfp")" "0|n|"
+lsr93_hrow "$lsr93_l" 중단
+check "95: TH2 대조 — 이월이 빠진 대기는 빈 집합으로 곧장 끝난다" \
+  "$(lsr93_rwait "$lsr93_l" "$FX_MANIFEST")" "0|n|"
+
+# TH9 — 마감 뒤의 이월 인계는 끝맺음이 설 때만 받는다. 서지 않으면 행 없이 거절되고,
+# 같은 원장의 중단 인계는 재질문 가드 1 을 지난다. 그래서 지난 깨울 시각을 단 이월
+# 인계가 끝나지 않은 런의 가장 최근 인계로 남지 않는다. 진전 축 런은 TH4 의 종료 절
+# 사본으로 돈다.
+lsr93_l=$(lsr93_dfx th9a A1)
+lsr93_c_act "$lsr93_l"
+case "$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 이월 '다음 런의 답')" in
+  "3|"*"이월 답 말고 런을 붙드는 것이 있습니다"*"사유=중단"*) ok "95: TH9 끝맺음이 서지 않는 마감 뒤 이월 인계는 exit 3 이고 붙드는 것을 이름 짓는 사유로 가라고 한다" ;;
+  *) bad "95 TH9 이월 거절" "$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 이월 '다음 런의 답')" ;;
+esac
+check "95: TH9 그 거절은 handoff 행도 종료 행도 쓰지 않고, 같은 원장의 중단 인계는 받는다" \
+  "$(lsr93_n "$lsr93_l" '- `handoff` ')|$(lsr93_end_rows "$lsr93_l")|$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 중단 '행위 승인 대기' | cut -d'|' -f1)|$(lsr93_n "$lsr93_l" '| 사유=중단 |')" \
+  "0|0|0|1"
+lsr93_l=$(lsr93_dfx th9b A1)
+lsr93_t9=$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 이월 '다음 런의 답' | sed -n '1{s/|.*//;p;}')
+lsr93_t9h=$(lsr93_line "$lsr93_l" '| 사유=이월 |')
+lsr93_t9e=$(lsr93_line "$lsr93_l" '| 결정=종료 |')
+check "95: TH9 끝맺음이 서는 진전 축 런의 마감 뒤 이월 인계는 받고 인계 행 뒤에 마감 종료 행이 같은 act 에서 쓰인다" \
+  "$lsr93_t9|$( [ -s "${lsr93_l%/*}/done" ] && printf done || printf open)|$(lsr93_end_rows "$lsr93_l")|$( [ "$lsr93_t9h" -gt 0 ] && [ "$lsr93_t9h" -lt "$lsr93_t9e" ] && printf 뒤 || printf -)" \
+  "0|done|1|뒤"
+# 마감 전에 받은 이월 인계 뒤 깨어난 후속 교대가 끝맺지 못하는 원장 — 그 사이에 행위
+# 승인이 하나 남았다. 둘째 이월 인계는 거절되고, 교대가 중단으로 인계하면 릴레이는
+# 지난 시계로 다시 깨지 않는다.
+lsr93_l=$(lsr93_dfx th9c A1)
+check "95: TH9 마감 전의 첫 이월 인계는 받고 런을 끝내지 않는다" \
+  "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답' | cut -d'|' -f1)|$(lsr93_end_rows "$lsr93_l")" "0|0"
+lsr93_c_act "$lsr93_l"
+check "95: TH9 깨어난 후속 교대는 끝맺지 못하고, 릴레이 판정은 첫 이월 인계로 아직 재진입을 받는다" \
+  "$(lsr93_due "$lsr93_l" "$lsr93_mfc")|$(lsr93_rel2 "$lsr93_l" "$lsr93_mfc" | cut -c1)" "n|y"
+check "95: TH9 그 교대의 둘째 이월 인계는 exit 3·행 없음이고 중단 인계는 받는다" \
+  "$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 이월 '다음 런의 답' | cut -d'|' -f1)|$(lsr93_n "$lsr93_l" '| 사유=이월 |')|$(lsr93_hand "$lsr93_l" "$lsr93_mfc" 중단 '행위 승인 대기' | cut -d'|' -f1)" \
+  "3|1|0"
+check "95: TH9 중단 인계 뒤 릴레이 상태 판정은 다시 깨지 않는다" \
+  "$(lsr93_rel2 "$lsr93_l" "$lsr93_mfc" | cut -c1)" "n"
+
+# TD1·TD2 —종료 조건 1 이 이월된 키를 「답 이월 대기」로 적는다: 런 스코프 감사
+# 키는 다른 판독보다 먼저, 세그먼트는 그 행의 상태와 무관하게.
+check "95: TD1 런 스코프 키의 이월은 종료 조건 1 의 첫 줄이다" \
+  "$(FX_MANIFEST=$lsr93_mfb lsr93_in "$lsr_root/th4/ledger.md" gate_done_conditions 2>/dev/null | { grep '^1 ' || true; } | paste -sd'#' -)" \
+  "$lsr93_dl1"
+lsr93_l=$(lsr93_dfx td2)
+lsr93_in "$lsr93_l" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+lsr93_in "$lsr93_l" gate_append 'segment' 'id=S5' '상태=실행중' >/dev/null 2>&1
+check "95: TD2 이월된 세그먼트는 답 이월 대기이고 대조 세그먼트는 오늘의 줄이다" \
+  "$(lsr93_in "$lsr93_l" gate_done_conditions 2>/dev/null | { grep '^1 ' || true; } | paste -sd'#' -)" \
+  "1 답 이월 대기 — S3 의 중단 답(원장 $(lsr93_in "$lsr93_l" gate_key_deferred_answer S3 2>/dev/null) 번째 줄)을 다음 런이 이어받습니다#1 세그먼트 S5 의 상태가 종단이 아닙니다 (실행중)"
+# TD3 — park 와 이월 사이에 그 답을 실은 시도가 세션 전에 죽었어도 키는 답 이월 대기다.
+# 세션 전 사망(`세션 id=미상` 크래시, 스폰 전 대기자 정산)은 카드를 읽지 않았으므로
+# 어느 답을 실었든 park 가 키의 마지막 행으로 남는다. 세션이 생긴 뒤의 크래시는
+# 여전히 결정한다. 세그먼트를 실행중으로 두어, 건너뛰지 못하면 끝맺음이 서지 않게 한다.
+lsr93_dfd() {
+  # lsr93_dfd <이름> <세션 id> <종단 부류> <관측|-> <답 운반 줄 차이> — park·답 뒤에 사망 행
+  # 하나를 두고 이월한 S3 원장. 차이가 0 이 아니면 사망 행은 다른 줄을 싣는다.
+  local l ln obs=$4
+  l=$(lsr75_new "$1")
+  lsr93_park "$l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+  ln=$(lsr93_ans "$l" S3 "${l%/*}/halt/S3#1.md" design-reconverge 적용)
+  set -- stage-result "세그먼트=S3" "스테이지=S3" "종류=reconverge" "종료 코드=-" "실행 버전=2" \
+    "세션 id=$2" "부모=-" "기록자=게이트" "종단 부류=$3" "답 운반=$((ln + $5))"
+  [ "$obs" = - ] || set -- "${@:1:10}" "$obs" "${11}"
+  lsr93_in "$l" gate_append "$@" >/dev/null 2>&1
+  lsr93_in "$l" gate_carry_defer_row infra S3 S3 "B:S3#3" "$ln" '마감 경과' >/dev/null 2>&1
+  lsr93_in "$l" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+  lsr93_hrow "$l" 이월
+  printf '%s' "$l"
+}
+lsr93_tdd() {  # lsr93_tdd <원장> — 「종료 조건 1 이 답 이월 대기 줄을 싣는가|진전 축 런의 끝맺음」
+  printf '%s|%s' \
+    "$(lsr93_in "$1" gate_done_conditions 2>/dev/null | { grep -c '^1 답 이월 대기 — S3 ' || true; } | tr -d ' ')" \
+    "$(lsr93_due "$1" "$lsr93_mfc")"
+}
+lsr93_wobs='관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 2026-10-20T00:00:00Z'
+check "95: TD3 같은 답의 세션 전 사망(미상 크래시·스폰 전 대기자) 뒤에 이월된 키는 답 이월 대기이고 런이 끝난다" \
+  "$(lsr93_tdd "$(lsr93_dfd td3a 미상 크래시 - 0)")/$(lsr93_tdd "$(lsr93_dfd td3b - '외부 종료' "$lsr93_wobs" 0)")" "1|y/1|y"
+check "95: TD3 다른 답을 실은 세션 전 사망 뒤에 이월된 키도 답 이월 대기이고 런이 끝난다" \
+  "$(lsr93_tdd "$(lsr93_dfd td3c 미상 크래시 - 1000)")" "1|y"
+check "95: TD3 대조 — 세션이 생긴 뒤의 크래시는 키를 답 이월 대기로 두지 않는다" \
+  "$(lsr93_tdd "$(lsr93_dfd td3d "$lsr93_sid2" 크래시 - 0)")" "0|n"
+# 재답 — 첫 답 L1 의 운반이 세션 전에 죽은 뒤 사람이 같은 기록에 다른 선택지로 다시 답하고
+# 그 L2 가 이월되면, L1 사망 행이 아니라 park 가 키의 마지막 행이다.
+lsr93_l=$(lsr75_new td3e)
+lsr93_park "$lsr93_l" S3 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+lsr93_x=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/S3#1.md" design-reconverge 적용)
+lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=S3" "스테이지=S3" "종류=reconverge" "종료 코드=-" "실행 버전=2" \
+  "세션 id=미상" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_x" >/dev/null 2>&1
+lsr93_ln=$(lsr93_ans "$lsr93_l" S3 "${lsr93_l%/*}/halt/S3#1.md" design-reconverge 기각)
+lsr93_in "$lsr93_l" gate_carry_defer_row infra S3 S3 "B:S3#3" "$lsr93_ln" '마감 경과' >/dev/null 2>&1
+lsr93_in "$lsr93_l" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+lsr93_hrow "$lsr93_l" 이월
+check "95: TD3 L1 이 세션 전에 죽은 뒤 사람이 다시 답한 L2 가 이월된 키는 답 이월 대기이고 런이 끝난다" \
+  "$( [ "$lsr93_ln" != "$lsr93_x" ] && lsr93_in "$lsr93_l" gate_key_deferred_answer S3 2>/dev/null)|$(lsr93_tdd "$lsr93_l")" "$lsr93_ln|1|y"
 
 # ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다

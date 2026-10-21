@@ -570,9 +570,10 @@ cc_relay_result_after_ref() {
   local anyref=0
   [ -n "$1" ] && [ -f "$1" ] || return 1
   case ",$(cc_relay_field "${2:-}" reset)," in *,교대#*) anyref=1 ;; esac
+  # `사유=이월` is a reference row too: the relay waits after it as after `대기`.
   LC_ALL=C awk -v anyref="$anyref" '
     /^- `handoff` / {
-      if (anyref == 1 || index($0, " | 사유=대기 | ") > 0) { ref = 1; after = 0 }
+      if (anyref == 1 || index($0, " | 사유=대기 | ") > 0 || index($0, " | 사유=이월 | ") > 0) { ref = 1; after = 0 }
     }
     /^- `stage-result` / { if (ref) after = 1 }
     END { exit(after ? 0 : 1) }
@@ -636,6 +637,8 @@ cc_relay_wake_keys() {
   #   rl:<key>\t<ep>  a cut's reset plus the grace has passed (clock: that sum)
   #   lc:<key>\t<ep>  a `한도 해제` row stands below the cut row (clock: its
   #                   `기록 시각`)
+  #   dl:이월\t<ep>   the `이월` hand-off's clock — the deadline plus one second —
+  #                   has passed (clock: that time, the `defer=` line)
   #
   # ONE READER FOR THE RELAY AND THE WATCHER. The relay wakes when this prints
   # anything; the watcher asks how long each line has stood. A segment with no
@@ -658,6 +661,11 @@ cc_relay_wake_keys() {
     at=$(cc_relay_cut_cleared_at "$ledger" "$k")
     [ -z "$at" ] || printf 'lc:%s\t%s\n' "$k" "$at"
   done
+  ep=$(cc_relay_field "$run_dir" defer)
+  case "$ep" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$now" -lt "$ep" ] || printf 'dl:이월\t%s\n' "$ep" ;;
+  esac
   for k in $(cc_relay_field "$run_dir" stages | tr ',' ' '); do
     [ "$k" != "-" ] || continue
     if ! cc_stage_is_live "$run_dir" "$k" && ! cc_supervisor_is_live "$run_dir" "$k"; then
