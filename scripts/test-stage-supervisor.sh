@@ -1124,10 +1124,7 @@ jq -cn --argjson now "$W13_NOW" --arg d "$R12_CFG" \
                      reserve: {five_hour: 0, seven_day: 0.99}}}]}' > "$W13_USAGE"
 # The margin covers opening the run: once a release now could not finish in time
 # the router itself parks the dispatch, and this case is about the waiting loop.
-# Opening the run, the stall record, the segment and the dispatch are four gate
-# calls of a few seconds each, measured at 25 seconds on a loaded host, so the
-# margin is 60 and the wait for the supervisor's own park below outlasts it.
-W13_DL=$(( W13_NOW + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 60 ))
+W13_DL=$(( W13_NOW + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 20 ))
 mk_run SUPRV '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
 w13_stall
 seg RV
@@ -1145,7 +1142,7 @@ case "$wait_rv" in
 esac
 SUP_RV=$( { cat "$RD/RV.sup" 2>/dev/null || true; } | tr -d '[:space:]')
 n=0
-while [ "$(alive "$SUP_RV")" = "alive" ] && [ "$n" -lt 900 ]; do sleep 0.1; n=$((n + 1)); done
+while [ "$(alive "$SUP_RV")" = "alive" ] && [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done
 check "(13) 리셋권이 눌리지 않으면 감독자가 마감에 스스로 끝난다" "$(alive "$SUP_RV")" "dead"
 row_rv=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '사유=마감 초과 — RV ' || true; } )
 check "(13) 예비 공급 대기의 마감 파킹은 cone 행 하나다" "$(printf '%s' "$row_rv" | { grep -c . || true; })" "1"
