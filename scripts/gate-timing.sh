@@ -19,12 +19,23 @@
 # taken over with the run id that measured it; an id the source carried that
 # `--list` no longer has is dropped, so a removed section does not weigh the
 # median forever. A prelude takes the mean over the shards that ran it, and an
-# unmeasured prelude is taken over the same way. Values are the latest ones,
-# never smoothed: one source line says where every weight came from.
+# unmeasured prelude is taken over the same way. A merged value is this run's
+# latest one: the file a master push uploads says which run measured each row.
+#
+# THE PLAN IS WEIGHED WITH A MEDIAN OF RUNS, NOT WITH ONE RUN. A section's time
+# moves from run to run on the same code, and one heavy run taken as the source
+# skews the next partition by exactly that much. `median` reads the timing files
+# of the latest master runs (up to three, newest first) and gives every id the
+# median of the values it has: the middle one of three, the mean of two rounded
+# up, the one value of one. `@pre-<group>` rows follow the same rule. The `run`
+# column lists the runs whose rows went into the value.
 #
 # Usage:
 #   bash scripts/gate-timing.sh merge --list F --run ID --sha SHA --out F
 #                                     [--source F] SHARD_FILE...
+#   bash scripts/gate-timing.sh median --out F FILE...
+#       one to three timing files, newest first; section rows in the order they
+#       first appear, then the prelude rows sorted by id
 #   bash scripts/gate-timing.sh report --table F --dir D
 #       reads D/timing-<K>.tsv for each row K of the partition table, writes a
 #       Markdown table to $GITHUB_STEP_SUMMARY (stdout when unset), warns past a
@@ -37,7 +48,7 @@
 set -uo pipefail
 
 timing_usage() {
-  printf 'gate-timing: 사용법 — merge --list F --run ID --sha SHA --out F [--source F] <샤드 표지 파일>... / report --table F --dir D / --self-test\n' >&2
+  printf 'gate-timing: 사용법 — merge --list F --run ID --sha SHA --out F [--source F] <샤드 표지 파일>... / median --out F <timing 파일 1~3개> / report --table F --dir D / --self-test\n' >&2
   exit 2
 }
 
@@ -131,6 +142,65 @@ timing_merge() {
   return 0
 }
 
+timing_median() {
+  local out="" f
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --out) [ "$#" -ge 2 ] || timing_usage; out="$2"; shift 2 ;;
+      --) shift; break ;;
+      -*) printf 'gate-timing: 모르는 인자입니다: %s\n' "$1" >&2; timing_usage ;;
+      *) break ;;
+    esac
+  done
+  [ -n "$out" ] && [ "$#" -ge 1 ] && [ "$#" -le 3 ] || timing_usage
+  local files=()
+  for f in "$@"; do [ -f "$f" ] && files+=("$f"); done
+  if [ "${#files[@]}" -eq 0 ]; then printf 'gate-timing: 읽을 timing 파일이 없습니다: %s\n' "$*" >&2; return 3; fi
+  local tmp
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-timing-median.XXXXXX")
+  LC_ALL=C awk -F '\t' -v NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    FILENAME != cur { cur = FILENAME; fno++ }
+    FNR == 1 {
+      if ($0 ~ /^# gate-timing v1 — source: /) {
+        s = $0; sub(/^# gate-timing v1 — source: /, "", s); sub(/[ \t].*$/, "", s)
+        if (s != "") srcs = srcs (srcs == "" ? "" : " ") s
+      }
+    }
+    /^#/ || $0 == "" { next }
+    $1 == "id" || $2 !~ /^[0-9]+$/ { next }
+    ((fno SUBSEP $1) in seen) { next }
+    {
+      seen[fno, $1] = 1
+      if (!($1 in n)) {
+        n[$1] = 0
+        if ($1 ~ /^@pre-/) pres[++np] = $1; else if ($1 !~ /^@/) ids[++nid] = $1
+      }
+      n[$1]++; v[$1, n[$1]] = $2 + 0
+      r = ($3 != "") ? $3 : "-"
+      if (!(($1 SUBSEP r) in rs)) { rs[$1, r] = 1; runs[$1] = runs[$1] (runs[$1] == "" ? "" : ",") r }
+    }
+    function med(id,   a, b, c, t) {
+      if (n[id] == 1) return v[id, 1]
+      if (n[id] == 2) return int((v[id, 1] + v[id, 2] + 1) / 2)
+      a = v[id, 1]; b = v[id, 2]; c = v[id, 3]
+      if (a > b) { t = a; a = b; b = t }
+      if (b > c) { t = b; b = c; c = t }
+      if (a > b) { t = a; a = b; b = t }
+      return b
+    }
+    END {
+      printf "# gate-timing v1 — source: median of %s generated: %s\n", (srcs == "" ? "-" : srcs), NOW
+      print "id\tms\trun"
+      for (i = 1; i <= nid; i++) print ids[i] "\t" med(ids[i]) "\t" runs[ids[i]]
+      for (i = 2; i <= np; i++) { p = pres[i]; j = i - 1; while (j >= 1 && pres[j] > p) { pres[j + 1] = pres[j]; j-- } pres[j + 1] = p }
+      for (i = 1; i <= np; i++) print pres[i] "\t" med(pres[i]) "\t" runs[pres[i]]
+    }
+  ' "${files[@]}" > "$tmp/out"
+  mv "$tmp/out" "$out"
+  rm -rf "$tmp"
+  return 0
+}
+
 timing_report() {
   local table="" dir=""
   while [ "$#" -gt 0 ]; do
@@ -194,7 +264,7 @@ timing_report() {
 # --- self-test ---------------------------------------------------------------
 
 timing_self_test() {
-  local passed=0 failed=0 T out sum
+  local passed=0 failed=0 T out sum rc
   ok()  { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
   bad() { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
   T=$(mktemp -d "${TMPDIR:-/tmp}/gate-timing-selftest.XXXXXX")
@@ -243,11 +313,31 @@ timing_self_test() {
   out=$(GITHUB_STEP_SUMMARY="$T/summary2" bash "$0" report --table "$T/table" --dir "$T/rep")
   if ! printf '%s\n' "$out" | grep -q '^::warning::'; then ok "1.5 이하면 경고하지 않는다"; else bad "균형 경고 오발" "「${out}」"; fi
 
+  # median: x is in all three files, y in two, z in one; the newest file is m1.
+  { printf '# gate-timing v1 — source: 103 c3 generated: 2026-01-03T00:00:00Z\n'; printf 'id\tms\trun\n'
+    printf 'x\t10\t103\ny\t10\t103\n@pre-g\t5\t103\n@pre-h\t3\t103\nbad\tx\t103\n'; } > "$T/m1"
+  { printf '# gate-timing v1 — source: 102 c2 generated: 2026-01-02T00:00:00Z\n'; printf 'id\tms\trun\n'
+    printf 'z\t7\t90\nx\t30\t102\ny\t15\t102\n@pre-g\t9\t102\n@pre-h\t4\t102\n'; } > "$T/m2"
+  { printf '# gate-timing v1 — source: 101 c1 generated: 2026-01-01T00:00:00Z\n'; printf 'id\tms\trun\n'
+    printf 'x\t20\t101\n@pre-g\t1\t101\n'; } > "$T/m3"
+  bash "$0" median --out "$T/med.tsv" "$T/m1" "$T/m2" "$T/m3" 2>/dev/null
+  out="$T/med.tsv"
+  if head -1 "$out" | grep -q '^# gate-timing v1 — source: median of 103 102 101 generated: '; then ok "median 의 머리 주석에 입력 실행들이 있다"; else bad "median 머리 주석" "$(head -1 "$out")"; fi
+  if [ "$(row x "$out")" = "$(printf '20\t103,102,101')" ]; then ok "세 파일에 있는 id 는 가운데 값이다"; else bad "세 값의 중앙값" "$(row x "$out")"; fi
+  if [ "$(row y "$out")" = "$(printf '13\t103,102')" ]; then ok "두 파일에 있는 id 는 평균을 올림한다"; else bad "두 값의 평균 올림" "$(row y "$out")"; fi
+  if [ "$(row z "$out")" = "$(printf '7\t90')" ]; then ok "한 파일에만 있는 id 는 그 값이다"; else bad "한 값" "$(row z "$out")"; fi
+  if [ "$(row @pre-g "$out")" = "$(printf '5\t103,102,101')" ] && [ "$(row @pre-h "$out")" = "$(printf '4\t103,102')" ]; then ok "프렐류드 행도 같은 규칙이다"; else bad "프렐류드 중앙값" "$(row @pre-g "$out") / $(row @pre-h "$out")"; fi
+  if [ "$(awk -F '\t' 'NR > 2' "$out" | cut -f1 | tr '\n' ' ')" = "x y z @pre-g @pre-h " ]; then ok "절 행은 처음 나온 순서, 프렐류드 행은 그 뒤에 id 순이다"; else bad "median 행 순서" "$(cat "$out")"; fi
+  bash "$0" median --out "$T/none.tsv" "$T/absent1" "$T/absent2" > /dev/null 2>&1; rc=$?
+  if [ "$rc" = "3" ] && [ ! -e "$T/none.tsv" ]; then ok "읽을 파일이 없으면 종료 3 이고 출력이 없다"; else bad "median 입력 없음" "rc=$rc"; fi
+  bash "$0" median --out "$T/none.tsv" > /dev/null 2>&1; rc=$?
+  if [ "$rc" = "2" ]; then ok "median 에 파일이 없으면 사용법 오류다"; else bad "median 사용법" "rc=$rc"; fi
+
   rm -rf "$T"
   printf 'gate-timing self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 17 ]; then
-    printf 'gate-timing self-test: 통과 수 %d 가 하한 17 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 25 ]; then
+    printf 'gate-timing self-test: 통과 수 %d 가 하한 25 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -259,6 +349,7 @@ timing_self_test() {
 cmd="$1"; shift
 case "$cmd" in
   merge)       timing_merge "$@"; exit $? ;;
+  median)      timing_median "$@"; exit $? ;;
   report)      timing_report "$@"; exit $? ;;
   --self-test) timing_self_test; exit $? ;;
   *) printf 'gate-timing: 모르는 하위명령입니다: %s\n' "$cmd" >&2; timing_usage ;;
