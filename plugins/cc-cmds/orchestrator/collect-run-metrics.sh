@@ -6,7 +6,9 @@
 # 집계(캐시 적중률 · 요청당 컨텍스트 · 압축 횟수와 버린 토큰 · 스테이지 비용 · P0 와
 # 벽시계)를 `(종류, 종단 부류, 레인)` 층으로 낸다. 트리거 일곱은 이 회차에 처음
 # 수집된 런의 행에만 걸고, 그 결과를 저널 한 줄로 낸다 — 게이트가 그 줄을 읽어 이슈를
-# 등록·코멘트·닫기 한다. 이 스크립트 자신은 `gh` 를 부르지 않는다.
+# 등록·코멘트·닫기 한다. 이 스크립트 자신은 `gh` 를 부르지 않는다. 런별 기록에는 설계
+# 경로와 감사 공시(`design`)도 싣고, 요약의 `design_paths` 가 그것을 `<경로>|<감사 판>`
+# 키로 모은다 — 트리거는 그것을 읽지 않는다.
 #
 # 입력.
 #   --ledger-dir <dir>        런 원장 디렉터리(필수). 이름이 `<8자리>-<8hex>.md` 인
@@ -234,6 +236,52 @@ cm_window_int() {
 
 cm_window_source() {
   printf '%s' "$1" | sed -n 's/^[0-9][0-9]*(\(.*\))$/\1/p'
+}
+
+cm_design_json() {
+  # cm_design_json <원장> — 이 런의 설계 경로와 감사 공시를 JSON 한 줄로. 경로·티어·범위·
+  # 스킬은 마지막 `설계 티어` 행에서, 감사는 `감사 공시` 행마다 하나, 재수렴은
+  # `종류=reconverge` 인 `stage-result` 행에서 읽는다. `설계 티어` 행이 없으면 넷이 null
+  # 이고, `경로` 키가 없는 옛 행이면 경로만 null 이다. 셈 칸의 `미상` 은 0 이 아니라 null 이다.
+  local row tier_row="" audits="" verdicts="" v
+  tier_row=$(cm_ledger_rows "$1" '설계 티어' | tail -1)
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    audits="$audits$(jq -cn --arg st "$(cm_field "$row" '스테이지')" --arg ver "$(cm_field "$row" '실행 버전')" \
+      --arg path "$(cm_field "$row" '경로')" --arg pass "$(cm_field "$row" '회차')" \
+      --arg ed "$(cm_field "$row" '감사 판')" --arg plugin "$(cm_field "$row" '플러그인')" \
+      --arg raw "$(cm_field "$row" '원시')" --arg uniq "$(cm_field "$row" '고유')" \
+      --arg unr "$(cm_field "$row" '미보강')" --arg bytes "$(cm_field "$row" '바이트')" \
+      --arg skel "$(cm_field "$row" '골격급')" --arg cand "$(cm_field "$row" '합성 후보')" \
+      --arg cskel "$(cm_field "$row" '합성 골격급')" '
+      def num: if test("^[0-9]+$") then tonumber else null end;
+      {stage: $st, attempt: ($ver | num), path: $path, pass: $pass, edition: $ed, plugin: $plugin,
+       raw: ($raw | num), unique: ($uniq | num), unreinforced: ($unr | num), bytes: ($bytes | num),
+       skeletal: ($skel | num), synth_candidates: ($cand | num), synth_skeletal: ($cskel | num)}')
+"
+  done <<ROWS
+$(cm_ledger_rows "$1" '감사 공시')
+ROWS
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(cm_field "$row" '종류')" = "reconverge" ] || continue
+    # 판정 칸이 없는 옛 행도 재수렴이 돌았다는 관측이라 `-` 로 남긴다.
+    v=$(cm_field "$row" '재수렴 판정'); [ -n "$v" ] || v="-"
+    verdicts="$verdicts$v
+"
+  done <<ROWS
+$(cm_ledger_rows "$1" 'stage-result')
+ROWS
+  jq -cn --arg tier_row "$tier_row" --arg audits "$audits" --arg verdicts "$verdicts" \
+    --arg path "$(cm_field "$tier_row" '경로')" --argjson has_path "$(cm_has_field "$tier_row" '경로' && printf true || printf false)" \
+    --arg tier "$(cm_field "$tier_row" '확정')" --arg scope "$(cm_field "$tier_row" '범위')" \
+    --arg skill "$(cm_field "$tier_row" '설계 스킬')" '
+    def opt: if $tier_row == "" then null else . end;
+    {path: (if $tier_row == "" or ($has_path | not) then null else $path end),
+     tier: ($tier | opt), scope: ($scope | opt), skill: ($skill | opt),
+     audits: ($audits | split("\n") | map(select(length > 0) | fromjson)),
+     reconverge: (($verdicts | split("\n") | map(select(length > 0))) as $v
+                  | {fired: ($v | length > 0), verdicts: $v})}'
 }
 
 # --- 스트림 로그 ---------------------------------------------------------------
@@ -620,10 +668,12 @@ $(cm_ledger_rows "$ledger" '교대 기동')
 ROWS
 
   mkdir -p "$(dirname "$out")" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+  cm_design_json "$ledger" > "$tmp/design.json" 2>/dev/null || { rm -rf "$tmp"; return 1; }
   jq -Sn --arg rid "$rid" --arg state "$state" --argjson rejected "$rejected" \
      --argjson unemp "$unemp" --argjson unk "$unk" --arg mism "$mism" \
+     --slurpfile design "$tmp/design.json" \
      --slurpfile stages "$tmp/stages.jsonl" --slurpfile shifts "$tmp/shifts.jsonl" '
-     {run_id: $rid, state: $state, stages: $stages, shifts: $shifts,
+     {run_id: $rid, state: $state, stages: $stages, shifts: $shifts, design: $design[0],
       rejected_window: $rejected,
       unattributed: {empty: $unemp, unknown: $unk},
       window_mismatch_sessions: ($mism | split(" ") | map(select(length > 0))),
@@ -700,6 +750,31 @@ cm_aggregate() {
                   unattributed_empty: ([.[].unattributed.empty] | add // 0),
                   unattributed_unknown: ([.[].unattributed.unknown] | add // 0),
                   incomplete: ([$all[] | select((.complete | not) or .truncated)] | length)},
+       # 설계 경로의 효용은 같은 감사 판끼리만 비교한다 — 키는 `<경로>|<감사 판>` 이다. 최초
+       # 감사가 본 모집단이고 재감사는 같은 키 아래 `reaudit` 에 따로 둔다: 재수렴 뒤의 감사는
+       # 이미 고친 문서를 읽으므로 최초 감사와 섞으면 두 경로의 분포가 함께 낮아진다. 셈이
+       # `미상` 인 감사는 그 칸의 분포에서만 빠진다. 재수렴 비율은 그 키의 최초 감사 가운데
+       # 그 런에서 재수렴이 돈 것의 비율이다. 설계 기록이 없는 옛 런 기록은 들지 않는다.
+       # `last_run` 은 그 키에 감사를 남긴 런 id 의 최댓값이다 — 런 id 가 날짜로 시작하므로
+       # 인쇄기가 가장 최근의 판을 이것으로 고른다.
+       design_paths: ([.[] | .run_id as $r | (.design // null) | select(. != null) | .reconverge.fired as $f
+                       | .audits[] | . + {fired: $f, run_id: $r}]
+         | def side: {n: length,
+                      bytes: ([.[].bytes | select(. != null)] | dist),
+                      unique: ([.[].unique | select(. != null)] | dist),
+                      unreinforced: ([.[].unreinforced | select(. != null)] | dist),
+                      skeletal: ([.[].skeletal | select(. != null)] | dist),
+                      synth_candidates: ([.[].synth_candidates | select(. != null)] | dist),
+                      unique_per_kb_median: ([.[] | select(.unique != null and .bytes != null and .bytes > 0)
+                                              | .unique / (.bytes / 1024)] | median),
+                      reconverge_rate: (if length == 0 then null
+                                        else (([.[] | select(.fired)] | length) / length) end)};
+           group_by(.path + "|" + .edition)
+         | map({key: (.[0].path + "|" + .[0].edition),
+                value: ({path: .[0].path, edition: .[0].edition, last_run: ([.[].run_id] | max)}
+                        + ([.[] | select(.pass != "재감사")] | side)
+                        + {reaudit: ([.[] | select(.pass == "재감사")] | side | del(.reconverge_rate))})})
+         | from_entries),
        switch_window_s: $sws,
        switch_events: ([$all[] | select(.switch_event == true)] | length),
        unattributed: {empty: ([.[].unattributed.empty] | add // 0), unknown: ([.[].unattributed.unknown] | add // 0)},

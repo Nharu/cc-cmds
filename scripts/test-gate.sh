@@ -4361,6 +4361,21 @@ pre_tier() {
   TIER_PLAN_SOLOREASON="{ \"design_required\": true, \"design_tier_judged\": \"solo\", \"design_tier\": \"solo\", \"design_heavy_reasons\": [\"세 레포의 계약을 함께 바꾼다\"], \"estimated_files\": 2, $TIER_STEPS_SOLO }"
   # 키가 생기기 전에 얼린 계획 — 검사기도 행도 건드리지 않는다.
   TIER_PLAN_OLD="{ \"design_required\": true, \"design_tier\": \"team-2\", $TIER_STEPS_TEAM4 }"
+  # 설계 경로 — team-4 단일 설계의 두 경로. 키 없는 TIER_PLAN_TEAM4 가 키 이전 계획의 대조군이다.
+  TIER_TEAM4_HEAD='"design_required": true, "design_tier_judged": "team-4", "design_tier": "team-4", "design_heavy_reasons": ["세 레포의 계약을 함께 바꾼다"], "estimated_files": 14, "design_tier_rationale": "레포 경계를 넘는 계약", "design_scope": "single"'
+  TIER_PLAN_SOLOPATH="{ $TIER_TEAM4_HEAD, \"design_path\": \"solo-audit\", $TIER_STEPS_TEAM4 }"
+  TIER_PLAN_DISCPATH="{ $TIER_TEAM4_HEAD, \"design_path\": \"discuss-audit\", $TIER_STEPS_TEAM4 }"
+  # 단언 (d) 가 거부해야 하는 넷 — 모르는 값, 쓰는 이가 없는 team-4 단일 설계, 경로를 가진
+  # solo 계획, 감사 없는 solo-audit 그래프.
+  TIER_PLAN_PATHBAD="{ $TIER_TEAM4_HEAD, \"design_path\": \"solo\", $TIER_STEPS_TEAM4 }"
+  TIER_PLAN_PATHNONE="{ $TIER_TEAM4_HEAD, \"design_path\": \"none\", $TIER_STEPS_TEAM4 }"
+  TIER_PLAN_PATHSOLO="{ \"design_required\": true, \"design_tier_judged\": \"solo\", \"design_tier\": \"solo\", \"design_heavy_reasons\": [], \"estimated_files\": 2, \"design_path\": \"solo-audit\", $TIER_STEPS_SOLO }"
+  TIER_PLAN_PATHNOAUDIT="{ $TIER_TEAM4_HEAD, \"design_path\": \"solo-audit\", $TIER_STEPS_SOLO }"
+  # 재킥오프의 후속 계획 — 동결된 설계와 끝난 감사를 떨구고 키는 그대로 둔다.
+  TIER_PLAN_REKICK="{ \"design_required\": false, \"design_tier_judged\": \"team-4\", \"design_tier\": \"team-4\", \"design_heavy_reasons\": [\"세 레포의 계약을 함께 바꾼다\"], \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"steps\": [ { \"id\": \"I1\", \"skill\": \"implement\", \"summary\": \"구현\", \"depends_on\": [] } ] }"
+  TIER_P_AUDIT='/cc-cmds:design-audit-unattended @DOC@'
+  # 설계 로스터 행 하나 — 토론 경로에서만 승인되는 행.
+  TIER_ROSTER_ROW='- `설계 로스터` | 역할=x | 범위=y | 모델=opus'
   TIER_P_SOLO='/cc-cmds:design-solo-unattended @DOC@ "테스트"'
   TIER_P_DISCUSS='/cc-cmds:design-discuss-unattended @DOC@ "테스트"'
   TIER_P_UNKNOWN='/cc-cmds:design-unknown-unattended @DOC@ "테스트"'
@@ -4375,8 +4390,17 @@ pre_tier() {
   # tier_fresh <run id> <계획 json> — 단일 설계 런의 매니페스트와 인가. 경로는
   # bsx_launch·bsx_p 가 읽는 자리(`bsx-<run id>.md`)다.
   tier_fresh() {
-    bsx_write "$WORK/bsx-$1.md" "$1" "$2" "docs/bsxd-$1.md" ""
+    bsx_write "$WORK/bsx-$1.md" "$1" "$2" "docs/bsxd-$1.md" "${3:-}"
     bsx_grant "$1" "docs/bsxd-$1.md"
+  }
+  # tier_disc_rows <run id> — 그 런 원장의 `감사 공시` 행.
+  tier_disc_rows() { { grep -F -e '- `감사 공시` |' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; }; }
+  # tier_row_field <행> <필드> — 한 행의 필드 값.
+  tier_row_field() { printf '%s\n' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'; }
+  # tier_gate_fn <run dir> <gate dir> <함수> [인자...] — 게이트를 소싱하고 그 함수 하나를 부른다.
+  # 게이트 디렉터리를 바꿔 끼우면 감사 판이 읽는 플러그인 사본이 바뀐다.
+  tier_gate_fn() {
+    bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; GATE_DIR="$3"; shift 3; "$@"' _ "$GATE" "$@"
   }
   # tier_rows <run id> — 그 런 원장의 `설계 티어` 행.
   tier_rows() { { grep -F -e '- `설계 티어` |' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; }; }
@@ -45998,7 +46022,7 @@ done
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
-# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan | anchors: 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
+# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan, audit_disclosure | anchors: 89: 검사기가 solo-audit 계획을 통과시킨다, 89: solo-audit 계획의 solo 설계 명령은 통과한다, 89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다, 89: 감사 하나가 감사 공시 행 하나를 쓴다, 89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다, 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
 #
 # 진입 판정은 킥오프 모델 자신의 행위라 CI 가 그 선택을 결정적으로 돌릴 수 없다. 이
 # 절은 그 대신 판정이 놓인 뒤의 사슬 — 검사기, 매니페스트 검사, 런 개시의 행, 스냅숏,
@@ -46049,6 +46073,25 @@ case "$TIER_RC/$TIER_OUT" in
   *"계획이 JSON 객체가 아닙니다"*) ok "89: 검사기가 객체가 아닌 계획을 거부한다" ;;
   *) bad "89: 검사기가 객체가 아닌 계획을 거부한다" "$TIER_OUT" ;;
 esac
+# 단언 (d) — 설계 경로 키. 키가 있을 때만 단언하고, 키 없는 team-4 계획은 위에서 이미 통과했다.
+tier_check "$TIER_PLAN_SOLOPATH"
+check "89: 검사기가 solo-audit 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TIER_PLAN_DISCPATH"
+check "89: 검사기가 discuss-audit 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TIER_PLAN_REKICK"
+check "89: 검사기가 키를 지닌 재킥오프 후속 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+for tier_d in "PATHBAD|(d) design_path 가 solo-audit · discuss-audit · none 중 하나가 아닙니다" \
+              "PATHNONE|(d) team-4 단일 설계 계획의 design_path 가 none 입니다" \
+              "PATHSOLO|(d) team-4 단일 설계가 아닌 계획의 design_path 가 solo-audit 입니다" \
+              "PATHNOAUDIT|(d) solo-audit 계획의 design-audit 단계가 0개입니다"; do
+  eval "tier_plan=\$TIER_PLAN_${tier_d%%|*}"
+  tier_check "$tier_plan"
+  case "$TIER_RC/$TIER_OUT" in
+    0/*) bad "89: 검사기가 ${tier_d%%|*} 계획을 (d) 로 거부한다" "통과했다" ;;
+    *"${tier_d#*|}"*) ok "89: 검사기가 ${tier_d%%|*} 계획을 (d) 로 거부한다" ;;
+    *) bad "89: 검사기가 ${tier_d%%|*} 계획을 (d) 로 거부한다" "$TIER_OUT" ;;
+  esac
+done
 
 # 매니페스트 검사 — 게이트의 첫 진입이 검사기를 돌리고, 나쁜 계획은 런이 열리기 전에
 # 죽어 행을 남기지 않는다.
@@ -46135,7 +46178,7 @@ tier_plan_rc RTS "$TIER_P_SOLO_QUOTING"
 check "89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다" "$rc" "0"
 tier_plan_rc RTT "$TIER_P_SOLO_QUOTING"
 case "$rc/$msg" in
-  3/*"/cc-cmds:design-solo-unattended 는 solo 티어 계획에서만"*) ok "89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다" ;;
+  3/*"/cc-cmds:design-solo-unattended 는 선택 함수가 design-solo-unattended 를 고른 계획에서만"*) ok "89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다" ;;
   *) bad "89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다" "$rc/$msg" ;;
 esac
 
@@ -46155,6 +46198,120 @@ check "89: solo 런의 동결 뒤 다음 스텝은 구현이다" \
 check "89: team-4 대조군의 설계 뒤 다음 스텝은 감사다" \
   "$(bsx_snap "$WORK/bsx-RTT.md" | jq -c '[.steps[] | select(.depends_on == ["D1"]) | .skill]')" '["design-audit"]'
 check "89: 진입이 거듭돼도 solo 런의 설계 티어 행은 하나다" "$(tier_rows RTS | grep -c . || true)" "1"
+
+# 설계 경로 — team-4 단일 설계를 누가 쓰는가. 선택 함수가 범위·티어·경로를 스킬 하나로
+# 바꾸고, 설계 파견의 강제는 그 값과 명령을 견준다. 키 없는 RTT 가 키 이전 계획의 대조군이다.
+check "89: solo 런의 설계 티어 행의 경로는 해당 없음 이다" "$(tier_field RTS 경로)" "해당 없음"
+check "89: 키 없는 team-4 런의 경로는 discuss-audit 로 읽힌다" "$(tier_field RTT 경로)" "discuss-audit"
+tier_fresh RTSP "$TIER_PLAN_SOLOPATH"
+gateB snapshot --manifest "$WORK/bsx-RTSP.md"
+check "89: solo-audit 계획의 매니페스트가 검사를 통과한다" "$rc" "0"
+check "89: solo-audit 런의 설계 티어 행이 경로·스킬·감사를 싣는다" \
+  "$(tier_field RTSP 확정)/$(tier_field RTSP 경로)/$(tier_field RTSP '설계 스킬')/$(tier_field RTSP 감사)" \
+  "team-4/solo-audit/design-solo-unattended/있음"
+check "89: solo-audit 계획의 스냅숏 design_skill 은 design-solo-unattended 다" \
+  "$(bsx_snap "$WORK/bsx-RTSP.md" | jq -r .design_skill)" "design-solo-unattended"
+tier_fresh RTDP "$TIER_PLAN_DISCPATH"
+gateB snapshot --manifest "$WORK/bsx-RTDP.md"
+check "89: discuss-audit 런의 설계 티어 행이 경로와 토론 스킬을 싣는다" \
+  "$rc/$(tier_field RTDP 경로)/$(tier_field RTDP '설계 스킬')" "0/discuss-audit/design-discuss-unattended"
+bsx_doc_frozen RTSP
+bsx_doc_frozen RTDP
+tier_plan_rc RTSP "$TIER_P_SOLO"
+check "89: solo-audit 계획의 solo 설계 명령은 통과한다" "$rc" "0"
+tier_plan_rc RTSP "$TIER_P_DISCUSS"
+check "89: solo-audit 계획의 팀 설계 명령은 룰 거절이다" "$rc" "3"
+tier_plan_rc RTDP "$TIER_P_DISCUSS"
+check "89: discuss-audit 계획의 팀 설계 명령은 통과한다" "$rc" "0"
+tier_plan_rc RTDP "$TIER_P_SOLO"
+case "$rc/$msg" in
+  3/*"/cc-cmds:design-solo-unattended 는 선택 함수가 design-solo-unattended 를 고른 계획에서만"*"design-discuss-unattended"*)
+    ok "89: discuss-audit 계획의 solo 설계 명령은 룰 거절이고 그 계획의 스킬을 든다" ;;
+  *) bad "89: discuss-audit 계획의 solo 설계 명령은 룰 거절이고 그 계획의 스킬을 든다" "$rc/$msg" ;;
+esac
+tier_plan_rc RTT "$TIER_P_DISCUSS"
+check "89: 키 없는 team-4 계획은 토론 명령을 그대로 받는다" "$rc" "0"
+
+# 리드 단독 경로에는 로스터가 없다 — 로스터 행을 지닌 solo-audit 매니페스트는 런이 열리기 전에 죽는다.
+tier_fresh RTSR "$TIER_PLAN_SOLOPATH" "$TIER_ROSTER_ROW"
+gateB snapshot --manifest "$WORK/bsx-RTSR.md"
+case "$rc/$msg" in
+  0/*) bad "89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다" "통과했다" ;;
+  *"solo-audit 계획에 「설계 로스터」 행이 있습니다"*) ok "89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다" ;;
+  *) bad "89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다" "$msg" ;;
+esac
+check "89: 거부된 로스터 런에는 설계 티어 행이 없다" "$(tier_rows RTSR | grep -c . || true)" "0"
+tier_fresh RTDR "$TIER_PLAN_DISCPATH" "$TIER_ROSTER_ROW"
+gateB snapshot --manifest "$WORK/bsx-RTDR.md"
+check "89: 같은 로스터 행을 지닌 discuss-audit 계획은 통과한다 (대조군)" "$rc" "0"
+
+# 감사 공시 — 감사 하나가 끝날 때마다 행 하나. 스텁 보고서에는 골격급 울타리만 있으므로
+# 공시 울타리의 넷은 미상이고, 플러그인 핀이 없는 런의 감사 판과 플러그인도 미상이다.
+bsx_launch RTSP "$WORK/bin/bsx-design" design "$TIER_P_SOLO" D1
+printf '1\n' > "$BSX_STATE/cc-cmds/run/RTSP/stub-au-composed"
+bsx_launch RTSP "$WORK/bin/bsx-audit" audit "$TIER_P_AUDIT" A1
+check "89: solo-audit 런의 감사가 정상 완료한다" \
+  "$BSX_ACT_RC/$BSX_WAIT_RC/$(bsx_class RTSP '| 스테이지=A1 | 종류=audit ')" "0/0/정상 완료"
+check "89: solo-audit 런은 단독 설계 뒤 감사, 감사 뒤 구현이다" \
+  "$(bsx_class RTSP '| 스테이지=D1 | 종류=design ')/$(bsx_snap "$WORK/bsx-RTSP.md" | jq -c '[.steps[] | select(.depends_on == ["D1"]) | .skill] + [.steps[] | select(.depends_on == ["D1", "A1"]) | .skill]')" \
+  '정상 완료/["design-audit","implement"]'
+tier_disc=$(tier_disc_rows RTSP)
+check "89: 감사 하나가 감사 공시 행 하나를 쓴다" "$(printf '%s' "$tier_disc" | grep -c . || true)" "1"
+check "89: 그 행이 스테이지·실행 버전·경로·회차를 싣는다" \
+  "$(tier_row_field "$tier_disc" 스테이지)/$(tier_row_field "$tier_disc" '실행 버전')/$(tier_row_field "$tier_disc" 경로)/$(tier_row_field "$tier_disc" 회차)" \
+  "A1/1/solo-audit/최초"
+check "89: 핀 없는 런의 감사 판과 플러그인은 미상이다" \
+  "$(tier_row_field "$tier_disc" '감사 판')/$(tier_row_field "$tier_disc" 플러그인)" "미상/미상"
+check "89: 공시 울타리가 없는 보고서의 넷은 미상이다" \
+  "$(tier_row_field "$tier_disc" 원시)/$(tier_row_field "$tier_disc" 고유)/$(tier_row_field "$tier_disc" 미보강)/$(tier_row_field "$tier_disc" 바이트)" \
+  "미상/미상/미상/미상"
+check "89: 골격급 울타리의 셋은 수로 읽힌다" \
+  "$(tier_row_field "$tier_disc" 골격급)/$(tier_row_field "$tier_disc" '합성 후보')/$(tier_row_field "$tier_disc" '합성 골격급')" "0/1/0"
+tier_disc_bytes=$(printf '%s' "$tier_disc" | wc -c | tr -d ' ')
+if [ "$tier_disc_bytes" -lt 450 ]; then ok "89: 미상투성이 감사 공시 행도 450 바이트 아래다"
+else bad "89: 미상투성이 감사 공시 행도 450 바이트 아래다" "$tier_disc_bytes 바이트"; fi
+
+# 공시 울타리를 읽는 규칙과 회차 — 게이트의 그 함수를 직접 부른다.
+tier_rd="$WORK/tier-rd"
+mkdir -p "$tier_rd"
+tier_fence_doc="$WORK/tier-fence/docs/design-audit"
+mkdir -p "$tier_fence_doc"
+printf '%s\n' '# 감사 보고서' '<!-- cc-design-audit-disclosure v1 begin -->' '**원시 발견 수**: 9' '**고유 결함 수**: 4' \
+  '**미보강 잔여 수**: 1' '**동결 문서 바이트**: 20480' '<!-- /cc-design-audit-disclosure v1 end -->' > "$tier_fence_doc/k.md"
+tier_fence_read() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; DOC_BASE="$2"; DOC_SLUG=k; for s in "원시 발견 수" "고유 결함 수" "미보강 잔여 수" "동결 문서 바이트"; do printf "%s/" "$(gate_audit_disclosure_field "$s")"; done' _ "$GATE" "$WORK/tier-fence"
+}
+check "89: 공시 울타리 한 쌍의 넷을 수로 읽는다" "$(tier_fence_read)" "9/4/1/20480/"
+printf '%s\n' '<!-- cc-design-audit-disclosure v1 begin -->' '**고유 결함 수**: 7' '<!-- /cc-design-audit-disclosure v1 end -->' >> "$tier_fence_doc/k.md"
+check "89: 울타리가 두 쌍이면 넷 모두 미상이다" "$(tier_fence_read)" "미상/미상/미상/미상/"
+check "89: 재수렴이 있었던 감사 키의 공시 행은 재감사 다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; audit_pass_of() { printf reaudit; }; gate_append() { shift; printf "%s\n" "$@"; }; gate_record_audit_disclosure A1 2' _ "$GATE" | sed -n 's/^회차=//p')" "재감사"
+
+# 감사 판 — 감사 지침 파일의 바이트에 묶이고, 플러그인 핀이 없으면 미상이다.
+tier_plug="$WORK/tier-plug"
+for tier_f in skills/design-audit-unattended/SKILL.md skills/design-audit/references/01-reader-prompt.md \
+    skills/design-audit/references/02-deterministic-checks.md skills/design-audit/references/03-adjustment-pass.md \
+    skills/design-audit/references/04-disclosure-block.md skills/_common/team-model-tier.md; do
+  mkdir -p "$tier_plug/$(dirname "$tier_f")"
+  cp "$repo_root/plugins/cc-cmds/$tier_f" "$tier_plug/$tier_f"
+done
+mkdir -p "$tier_plug/orchestrator"
+check "89: 핀 없는 런의 감사 판은 미상이다" "$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_version)" "미상"
+printf 'version\t9.9.9\ncommit\t0123456789abcdef0123\n' > "$tier_rd/plugin-pin"
+tier_ed_repo=$(tier_gate_fn "$tier_rd" "$repo_root/plugins/cc-cmds/orchestrator" gate_audit_version)
+tier_ed_copy=$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_version)
+case "$tier_ed_repo" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ok "89: 핀이 있는 런의 감사 판은 16진 12자다" ;;
+  *) bad "89: 핀이 있는 런의 감사 판은 16진 12자다" "$tier_ed_repo" ;;
+esac
+check "89: 같은 지침 바이트의 사본은 같은 감사 판을 낸다" "$tier_ed_copy" "$tier_ed_repo"
+printf '\n조정\n' >> "$tier_plug/skills/design-audit/references/03-adjustment-pass.md"
+tier_ed_moved=$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_version)
+if [ -n "$tier_ed_moved" ] && [ "$tier_ed_moved" != "$tier_ed_repo" ] && [ "$tier_ed_moved" != 미상 ]; then
+  ok "89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다"
+else bad "89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다" "$tier_ed_moved"; fi
+check "89: 플러그인 단어는 판@커밋 12자다" \
+  "$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_plugin_word)" "9.9.9@0123456789ab"
 
 # ---------------------------------------------------------------------------
 # 90. 세션 기록의 조직 이동과 재부착 조직 대조

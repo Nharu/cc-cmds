@@ -953,5 +953,55 @@ check "13: 인벤토리가 깨졌으면 .claude-cci 아래 전사는 찾지 못�
 check "13: 인벤토리가 깨졌어도 .claude-cc 아래 전사는 찾는다" "$(jrec 20260913-aaaaaa05 '.stages[0].requests')" "3"
 check "13: 인벤토리가 깨졌으면 stderr 에 진단 한 줄" "$(diag13)" "1"
 
+# --- 14. 설계 경로와 감사 공시 — 런별 `design` 과 요약의 `design_paths` ------------------------
+# 두 경로의 효용은 같은 감사 판끼리만 비교되므로 키는 `<경로>|<감사 판>` 이다. 재감사는 이미
+# 고친 문서를 읽으니 최초 감사와 섞이지 않고, `미상` 셈은 0 이 아니라 분포에서 빠진다.
+tier_row() {
+  # tier_row <경로|__none__> — `설계 티어` 행. __none__ 은 `경로` 키가 생기기 전의 행이다.
+  local p=""
+  [ "$1" = "__none__" ] || p=" | 경로=$1"
+  printf -- '- `설계 티어` | 판정=team-4 | 확정=team-4 | 범위=single%s | 설계 스킬=design-solo-unattended | 감사=있음 | 추정 파일=3 | 사유=x | 근거=y | 교대=0 | prev=abc' "$p"
+}
+disc_row() {
+  # disc_row <실행 버전> <경로> <회차> <감사 판> <고유> <바이트> <골격급>
+  printf -- '- `감사 공시` | 세그먼트=- | 스테이지=A1 | 실행 버전=%s | 경로=%s | 회차=%s | 감사 판=%s | 플러그인=1.0.0@abcdefabcdef | 원시=9 | 고유=%s | 미보강=1 | 바이트=%s | 골격급=%s | 합성 후보=0 | 합성 골격급=0 | 교대=0 | prev=abc' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+}
+d14_run() {
+  # d14_run <run-id> <행…> — 레인 기록을 가진 감사 스테이지 행 하나 뒤에 주어진 행들.
+  local rid="$1"; shift
+  mk_rundir "$rid"; mk_stream "$STATE/run/$rid/log/A1#1.json" 1
+  mk_ledger "$rid" "$(sr_row - A1 audit 1 "sid-$rid" '정상 완료' '300000(argv)' '~/.claude')" "$@"
+}
+reset_all
+R14A=20261001-dddddd01; R14B=20261001-dddddd02; R14C=20261001-dddddd03; R14D=20261001-dddddd04
+d14_run "$R14A" "$(tier_row solo-audit)" "$(disc_row 1 solo-audit 최초 e1e1e1e1e1e1 4 2048 1)" \
+  '- `stage-result` | 세그먼트=- | 스테이지=D1 | 종류=reconverge | 종료 코드=0 | 실행 버전=1 | 세션 id=sid-r14 | 부모=- | 기록자=게이트 | 종단 부류=정상 완료 | 재수렴 판정=불필요 | 레인=~/.claude | 교대=0 | prev=abc' \
+  "$(disc_row 2 solo-audit 재감사 e1e1e1e1e1e1 1 2100 0)"
+d14_run "$R14B" "$(tier_row discuss-audit)" "$(disc_row 1 discuss-audit 최초 e1e1e1e1e1e1 6 4096 0)"
+d14_run "$R14C" "$(tier_row solo-audit)" "$(disc_row 1 solo-audit 최초 e2e2e2e2e2e2 미상 1024 0)"
+d14_run "$R14D" "$(tier_row __none__)"
+collect
+check "14: 수집기는 exit 0 이다" "$rc" "0"
+check "14: 런별 기록이 설계 경로를 싣는다" "$(jrec "$R14A" '.design.path')" "solo-audit"
+check "14: 감사 공시 행마다 감사 하나" "$(jrec "$R14A" '.design.audits | length')" "2"
+check "14: 감사의 셈은 수다" "$(jrec "$R14A" '.design.audits[0].unique + .design.audits[0].skeletal')" "5"
+check "14: 재수렴 행이 있으면 발동이다" "$(jrec "$R14A" '.design.reconverge.fired')" "true"
+check "14: 재수렴 판정을 옮겨 싣는다" "$(jrec "$R14A" '.design.reconverge.verdicts | join(",")')" "불필요"
+check "14: 재수렴 행이 없으면 발동이 아니다" "$(jrec "$R14B" '.design.reconverge.fired')" "false"
+check "14: 미상 셈은 0 이 아니라 null 이다" "$(jrec "$R14C" '.design.audits[0].unique')" "null"
+check "14: 경로 키 없는 옛 행의 경로는 null 이고 티어는 읽는다" "$(jrec "$R14D" '[.design.path, .design.tier] | map(tostring) | join(",")')" "null,team-4"
+check "14: 키는 경로와 감사 판의 쌍이다" "$(jsum '.design_paths | keys | join(",")')" "discuss-audit|e1e1e1e1e1e1,solo-audit|e1e1e1e1e1e1,solo-audit|e2e2e2e2e2e2"
+check "14: 최초 감사가 본 모집단이다" "$(jsum '.design_paths["solo-audit|e1e1e1e1e1e1"] | [.n, .unique.median] | map(tostring) | join(",")')" "1,4"
+check "14: 재감사는 따로 모인다" "$(jsum '.design_paths["solo-audit|e1e1e1e1e1e1"].reaudit | [.n, .unique.median] | map(tostring) | join(",")')" "1,1"
+check "14: KB 당 고유 결함의 중앙값" "$(jsum '[.design_paths["solo-audit|e1e1e1e1e1e1"].unique_per_kb_median, .design_paths["discuss-audit|e1e1e1e1e1e1"].unique_per_kb_median] | map(tostring) | join(",")')" "2,1.5"
+check "14: 재수렴 비율은 키의 최초 감사 가운데 재수렴이 돈 런의 비율이다" "$(jsum '[.design_paths["solo-audit|e1e1e1e1e1e1"].reconverge_rate, .design_paths["discuss-audit|e1e1e1e1e1e1"].reconverge_rate] | map(tostring) | join(",")')" "1,0"
+check "14: 미상 셈은 분포에서만 빠진다" "$(jsum '.design_paths["solo-audit|e2e2e2e2e2e2"] | [.n, .unique.median] | map(tostring) | join(",")')" "1,null"
+check "14: 키마다 감사를 남긴 가장 최근 런을 싣는다" "$(jsum '.design_paths["solo-audit|e1e1e1e1e1e1"].last_run')" "$R14A"
+check "14: 바이트 분포를 싣는다" "$(jsum '.design_paths["discuss-audit|e1e1e1e1e1e1"].bytes.median')" "4096"
+# 인쇄기는 이 요약을 그대로 읽는다 — 집계를 다시 하지 않으므로 두 판의 표가 그대로 난다.
+DP_OUT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/design-path-report.sh" --ledger-dir "$LEDGER_DIR" 2>/dev/null)
+check "14: 인쇄기가 요약의 감사 판마다 표 하나를 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c '^## 감사 판 ' || true)" "2"
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
