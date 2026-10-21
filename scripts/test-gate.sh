@@ -37287,9 +37287,7 @@ cb60_new() {
   ( cd "$SA_SEGWT" && git merge -q --ff-only main ) >/dev/null 2>&1
   CK60_SHA=$(sa_commit '작업')
   sa_seg_row CK 선리뷰후머지
-  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
-      --snapshot-digest "$(SAH)" --rationale x \
-      -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$CK60_SHA" "리포트 경로=$FXREPORT"
+  sa_cycle CK 1 0 0 "$CK60_SHA"
   {
     printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n'
     printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S5 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-rev | 부모=router-1 | 종단 부류=정상 완료\n'
@@ -37409,9 +37407,7 @@ cb60_act
 check "60b: CI 수정 자리의 둘째 재실행은 rc 3 이고 POST·행이 없다" "$rc|$(cb60_posts)|$(cb60_n 'CI 처분')" "3|$cb60_np|$cb60_nr"
 # 사이클 상한(2)에 닿게 깨끗한 사이클 하나를 더 쓴다. 판정표는 여전히 머지 를 내므로
 # 층의 값은 그대로 CI 수정 이다.
-sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x \
-    -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$CK60_SHA" "리포트 경로=$FXREPORT"
+sa_cycle CK 2 0 0 "$CK60_SHA"
 check "60b: 둘째 깨끗한 사이클 뒤에도 다음은 CI 수정 이다" "$rc|$(cb60_next)" "0|CI 수정"
 cb60_impl() {
   # cb60_impl <plan|act> <프롬프트> — 세그먼트 CK 의 구현 파견.
@@ -37510,9 +37506,7 @@ cb60_wf_tip() {
   # 맞추어 판정표가 머지 를 내게 둔다. 내용이 같아도 커밋은 오른다.
   ( cd "$SA_SEGWT" && printf '%s\n' "$1" > .github/workflows/gate.yml && git commit -qam wf-tip --allow-empty ) >/dev/null 2>&1
   CK60_SHA=$(cd "$SA_SEGWT" && git rev-parse HEAD)
-  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
-      --snapshot-digest "$(SAH)" --rationale x \
-      -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$CK60_SHA" "리포트 경로=$FXREPORT"
+  sa_cycle CK 2 0 0 "$CK60_SHA"
   printf '[{"number":1,"headRefOid":"%s","headRefName":"%s"}]\n' "$CK60_SHA" "$SA_SEGBR" > "$CB60_S/prlist"
   cb60_run 777; cb60_run 777 post
   cb60_line 실패 0 0
@@ -37565,8 +37559,7 @@ done
 cb60_new "CI 재실행 — 섞인 집합"
 ( cd "$SA_SEGWT" && printf '%s\n    environment: prod\n' "$CB60_WF" > .github/workflows/deploy.yml && git add -A && git commit -qm deploy ) >/dev/null 2>&1
 CK60_SHA=$(cd "$SA_SEGWT" && git rev-parse HEAD)
-sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$CK60_SHA" "리포트 경로=$FXREPORT"
+sa_cycle CK 2 0 0 "$CK60_SHA"
 printf '[{"number":1,"headRefOid":"%s","headRefName":"%s"}]\n' "$CK60_SHA" "$SA_SEGBR" > "$CB60_S/prlist"
 printf '[{"name":"gate","bucket":"fail","link":"https://github.com/%s/actions/runs/777/job/1"},{"name":"deploy","bucket":"fail","link":"https://github.com/%s/actions/runs/778/job/1"}]\n' \
   "$CB60_SLUG" "$CB60_SLUG" > "$CB60_S/checks.pre"
