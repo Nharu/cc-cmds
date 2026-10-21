@@ -8337,7 +8337,7 @@ check "태그 원천: 팀원 파일도 v7 정책 바이트로 시작한다" "$(p
 pr_after=$(printf '\n# Personal rules\n\n- R7-PERSONAL-CANARY rule\n\n# Repository instructions\n')
 for pr_file in "$PR_F" "$PR_M"; do
   check "태그 원천: 정책 바로 뒤에 개인 블록, 그 뒤에 사슬이 온다 ($(basename "$pr_file"))" \
-    "$(tail -c +"$(( $(wc -c < "$SI_POLICY7" | tr -d ' ') + 1 ))" "$pr_file" | head -c "${#pr_after}")" "$pr_after"
+    "$(dd if="$pr_file" bs=1 skip="$(( $(wc -c < "$SI_POLICY7") ))" count="${#pr_after}" 2>/dev/null)" "$pr_after"
 done
 check "태그 원천: 대화형 불릿은 들어가지 않는다" "$(grep -c 'R7-INTERACTIVE-CANARY' "$PR_F" || true)" "0"
 pr_ptr=$(cat "$PR/rd-tagged/instructions/personal/current" 2>/dev/null)
