@@ -2171,13 +2171,13 @@ case "$(tail -1 "$LEDGER")" in
   *) bad "설계 스텝 마감 파킹" "$(tail -1 "$LEDGER")" ;;
 esac
 check "마감 파킹은 이미 파킹함을 남긴다" "$(cat "$TI_DIR/already" 2>/dev/null)" "1"
-# 라우터 파킹은 모두 도우미를 지난다 — 열다섯 자리, 그리고 그 중 실패 id 자리는
+# 라우터 파킹은 모두 도우미를 지난다 — 열여섯 자리, 그리고 그 중 실패 id 자리는
 # 대상이 실패 id 이고 앵커가 세그먼트다. S4 의 계속·거절·크래시·한도-형상 회수
 # 갈래는 `s4_park_unfinished` 한 자리를 함께 쓴다. 리드 수정(S5F)이 기동 파킹과
-# 계속 경로 파킹 두 자리를 갖고, 설계 수준 잔여의 재수렴(S1R)과 P0 잔존 후속
-# 런의 첫 단계 재수렴(S0R)이 기동 파킹 한 자리씩을 갖는다.
-check "드라이버의 라우터 파킹 자리는 열다섯 곳이다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "15"
+# 계속 경로 파킹 두 자리를 갖고, 설계 수준 잔여의 재수렴(S1R), P0 잔존 후속
+# 런의 첫 단계 재수렴(S0R), 감사 골격급 재수렴(S2R)이 기동 파킹 한 자리씩을 갖는다.
+check "드라이버의 라우터 파킹 자리는 열여섯 곳이다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "16"
 check "실패 id 자리는 대상과 앵커를 나눠 싣는다" \
   "$(grep -c 'park_router "\$fid" "\$seg" cone' "$DRIVER" || true)" "1"
 # 계속 경로의 여섯 자리(구현은 `s4_park_unfinished` 하나, 그 밖에 공허한 성공
@@ -2705,11 +2705,33 @@ RUN_DIR="$WORK/audit-pred"
 mkdir -p "$RUN_DIR/log" "$BASE/docs/design-audit" "$DOC_BASE/docs/design-audit"
 printf '%s\n' "$LIT_AUDIT_TERMINAL" > "$RUN_DIR/log/S2.json"
 : > "$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
+# 감사 보고서의 골격급 울타리도 산출물의 일부다 — 없으면 술어가 서지 않는다.
+printf '%s\n' '# 감사 보고서' "$LIT_AUDIT_SKELETAL_BEGIN" '**골격급 수**: 0' '**합성 요구 후보 수**: 0' \
+  '**합성 요구 골격급 수**: 0' '**회차**: 최초' "**문서 sha256**: $(printf '%064d' 0)" "$LIT_AUDIT_SKELETAL_END" \
+  > "$DOC_BASE/docs/design-audit/$DOC_SLUG.md"
 if predicate_audit S2; then
   ok "감사 산출물이 문서 슬러그에 있으면 매니페스트 런의 술어가 통과한다"
 else
   bad "감사 술어" "문서 슬러그의 리더 리포트를 찾지 못했다 — 런 id 로 보고 있다"
 fi
+# 울타리가 없거나 둘이면 리더 리포트와 종단 문면이 있어도 술어가 서지 않는다.
+au_rep="$DOC_BASE/docs/design-audit/$DOC_SLUG.md"
+cp "$au_rep" "$au_rep.keep"
+printf '# 감사 보고서\n' > "$au_rep"
+if predicate_audit S2; then
+  bad "감사 술어" "골격급 울타리 없는 보고서로 통과했다"
+else
+  ok "골격급 울타리가 없는 감사 보고서로는 술어가 서지 않는다"
+fi
+cat "$au_rep.keep" "$au_rep.keep" > "$au_rep"
+if predicate_audit S2; then
+  bad "감사 술어" "울타리가 둘인 보고서로 통과했다"
+else
+  ok "울타리가 둘인 감사 보고서로는 술어가 서지 않는다"
+fi
+check "울타리가 둘이면 골격급 수를 읽지 않는다" "$(audit_skeleton_fence_skeletal)" ""
+mv "$au_rep.keep" "$au_rep"
+check "울타리 하나의 골격급 수는 두 골격급 필드의 합이다" "$(audit_skeleton_fence_skeletal)" "0"
 # And the same run must NOT pass by looking at the run id.
 : > "$DOC_BASE/docs/design-audit/$RUN_ID.reader-1.md"
 rm -f "$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
@@ -3055,7 +3077,7 @@ armb_case() {
     DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; DOC_SLUG=x; DOC_BASE="$d"
     ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG=x; BASE="$d"
     : > "$LEDGER"
-    [ -z "${6:-}" ] || printf -- '- `stage-result` | 스테이지=S2 | 종단 부류=%s |\n' "$6" > "$LEDGER"
+    [ -z "${6:-}" ] || printf -- '- `stage-result` | 세그먼트=- | 스테이지=S2 | 파견 id=S2 | 종류=audit | 재수렴 요청=아니오 | 종단 부류=%s |\n' "$6" > "$LEDGER"
     printf '# 설계\n\n**상태**: 동결됨\n' > "$DOC"
     if [ "$2" = "있음" ]; then
       mkdir -p "$d/docs/design-audit"; : > "$d/docs/design-audit/x.reader-1.md"
@@ -3119,8 +3141,10 @@ check "분할은 그 문서로 --split 을 띄운다" \
   "$(grep -c -x -F "S2split$(printf '\t')/cc-cmds:design-base-unattended --split $ARMB/full/docs/x.md" "$ARMB/full/dispatched" || true)" "1"
 check "분할 행이 스테이지=S2split · 종류=split 이다" \
   "$(armb_row full '| 세그먼트=- | 스테이지=S2split | 파견 id=S2split | 종류=split |')" "1"
-check "감사 행은 종류 없이 스테이지=S2 다" \
-  "$(armb_row full '| 스테이지=S2 |')/$( { grep -F '| 스테이지=S2 |' "$ARMB/full/ledger.md" || true; } | { grep -c -F '| 종류=' || true; })" "1/0"
+check "감사 행이 스테이지=S2 · 파견 id=S2 · 종류=audit 이다" \
+  "$(armb_row full '| 세그먼트=- | 스테이지=S2 | 파견 id=S2 | 종류=audit |')" "1"
+check "감사 행이 골격급 과 재수렴 요청 을 싣는다" \
+  "$( { grep -F '| 스테이지=S2 |' "$ARMB/full/ledger.md" || true; } | { grep -c -F '| 골격급=미상 | 재수렴 요청=아니오 | 종단 부류=정상 완료 |' || true; })" "1"
 check "분할이 끝나면 보고서가 레지스트리 경로를 든다" \
   "$(grep -c "베이스 분할 완료 — $ARMB/full/docs/design-base/x.tickets.md" "$ARMB/full/report" 2>/dev/null || true)" "1"
 check "정상 완료한 분할은 park 하지 않는다" "$(grep -c . "$ARMB/full/parked" 2>/dev/null || printf 0)" "0"
@@ -3208,6 +3232,115 @@ check "레지스트리 — 끝 줄이 없으면 미완결이다" "$(regb_rc)" "1
 regb_write 없음 문서만 문서만
 printf '바뀐 줄\n' >> "$REGB/docs/b.md"
 check "레지스트리 — 첫 줄의 sha256 이 문서와 다르면 미완결이다" "$(regb_rc)" "1"
+
+# --- 21c-b2 골격급 재수렴 — 감사가 센 골격급이 한 번의 재수렴과 재감사를 부른다 ---
+# 감사 보고서 울타리의 골격급 수가 1 이상이고 이 런에서 감사 키가 아직 재수렴하지
+# 않았으면 감사 행이 `재수렴 요청=예` 를 싣고, 드라이버는 `S2R` 재수렴 뒤 같은
+# 스테이지 id 로 다시 감사한다. 재감사는 다시 요청하지 않으므로 고리는 한 번만 돈다.
+SKD="$WORK/skeletal-arm"
+skd_case() {
+  # skd_case <라벨> <감사 시도별 골격급, 쉼표> [재수렴 술어 0|1] [앞선 원장 행]
+  local d="$SKD/$1"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/docs/design-audit"
+  SKD_SEQ="$2"; SKD_RPRED="${3:-0}"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=skdrun
+    MANIFEST="$MFB"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; DOC_SLUG=docs-x; DOC_BASE="$d"
+    ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG=x; BASE="$d"
+    : > "$LEDGER"
+    [ -z "${4:-}" ] || printf '%s\n' "$4" > "$LEDGER"
+    printf '# 설계\n\n**상태**: 동결됨\n' > "$DOC"
+    CLI_BIN=true
+    skd_n() { { grep -c "^$1$(printf '\t')" "$d/dispatched" 2>/dev/null || true; }; }
+    dispatch_stage() {
+      local n k
+      printf '%s\t%s\t%s\n' "$1" "$3" "${CC_PIPELINE_AUDIT_PASS-unset}" >> "$d/dispatched"
+      printf '0' > "$RUN_DIR/$1.rc"
+      n=$(skd_n S2)
+      k=$(printf '%s' "$SKD_SEQ" | tr ',' '\n' | sed -n "${n}p")
+      [ -n "$k" ] || k=$(printf '%s' "$SKD_SEQ" | tr ',' '\n' | tail -1)
+      : > "$d/docs/design-audit/docs-x.reader-1.md"
+      printf '%s\n' '# 감사 보고서' "$LIT_AUDIT_SKELETAL_BEGIN" "**골격급 수**: $k" '**합성 요구 후보 수**: 0' \
+        '**합성 요구 골격급 수**: 0' '**회차**: 최초' "**문서 sha256**: $(printf '%064d' 0)" "$LIT_AUDIT_SKELETAL_END" \
+        > "$d/docs/design-audit/docs-x.md"
+    }
+    stage_spawn() { printf '%s\t%s\t-\n' "$1" "$3" >> "$d/dispatched"; printf '0' > "$RUN_DIR/$1.rc"; }
+    stage_wait_all() { :; }
+    predicate_audit() { return 0; }
+    predicate_reconverge() { return "$SKD_RPRED"; }
+    classify_termination() { [ "$3" = 0 ] && printf '정상 완료' || printf '공허한 성공'; }
+    reconverge_row() {
+      printf -- "- \`stage-result\` | 세그먼트=- | 스테이지=S1' | 파견 id=%s | 종류=reconverge | 종단 부류=%s |\n" "$2" "$3" >> "$LEDGER"
+    }
+    stage_session_id() { printf 'sid'; }
+    stage_parent_id() { printf 'parent'; }
+    report_append() { printf '%s\n' "$*" >> "$d/report"; }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    park_router() { printf 'router %s\n' "$*" >> "$d/parked"; }
+    absorb_stage_judgment() { :; }
+    spawn_lineage_release() { :; }
+    quiet_window_begin() { :; }
+    quiet_window_end() { :; }
+    continue_or_park() { CONTINUE_BLOCKED=""; CONTINUE_PARK_REASON="계속 없음"; return 1; }
+    s2_audit_run "/cc-cmds:design-audit-unattended $DOC" "${SKD_FIRST:-audit}"; printf 'rc=%s\n' "$?"
+  ) > "$d/out" 2>/dev/null
+}
+skd_disp() { { cut -f1 "$SKD/$1/dispatched" 2>/dev/null || true; } | tr '\n' ' ' | sed 's/ $//'; }
+skd_pass() { { awk -F'\t' '$1 == "S2" { print $3 }' "$SKD/$1/dispatched" 2>/dev/null || true; } | tr '\n' ' ' | sed 's/ $//'; }
+skd_req()  {
+  { grep -F '| 스테이지=S2 |' "$SKD/$1/ledger.md" 2>/dev/null || true; } \
+    | sed -n 's/.*| 골격급=\([^ |]*\) | 재수렴 요청=\([^ |]*\) |.*/\1:\2/p' | tr '\n' ' ' | sed 's/ $//'
+}
+skd_rc()   { sed -n 's/^rc=//p' "$SKD/$1/out"; }
+
+skd_case two-zero '2,0'
+check "골격급 2건 감사는 재수렴과 재감사를 한 번 부른다" \
+  "$(skd_disp two-zero)/$(skd_rc two-zero)" "S2 S2R S2/0"
+check "재수렴 스테이지는 감사 골격급 범위로 뜬다" \
+  "$(awk -F'\t' '$1 == "S2R" { print $2 }' "$SKD/two-zero/dispatched")" "/cc-cmds:design-reconverge $SKD/two-zero/docs/x.md 감사 골격급"
+check "감사 행 둘이 골격급과 재수렴 요청을 싣는다" "$(skd_req two-zero)" "2:예 0:아니오"
+check "감사 스테이지가 최초와 재감사 회차를 받는다" "$(skd_pass two-zero)" "first reaudit"
+check "골격급 재수렴이 보고서에 남는다" \
+  "$(grep -c '감사가 센 골격급 항목으로 문서를 다시 수렴했다 (S2R)' "$SKD/two-zero/report" 2>/dev/null || true)" "1"
+
+skd_case one-one '1,1'
+check "재감사가 골격급을 남겨도 고리는 한 번만 돈다" \
+  "$(skd_disp one-one)/$(skd_req one-one)/$(skd_rc one-one)" "S2 S2R S2/1:예 1:아니오/0"
+
+skd_case zero '0'
+check "골격급 0건 감사는 재수렴 없이 끝난다" \
+  "$(skd_disp zero)/$(skd_req zero)/$(skd_pass zero)" "S2/0:아니오/first"
+
+skd_case reconv-hollow '2' 1
+check "공허한 골격급 재수렴은 재감사 없이 park 한다" \
+  "$(skd_disp reconv-hollow)/$(skd_rc reconv-hollow)/$(grep -c '^S2R run 무효화 게이트 park 골격급 재수렴이 종단 부류 공허한 성공 로 끝났다' "$SKD/reconv-hollow/parked" 2>/dev/null || true)" "S2 S2R/1/1"
+
+SKD_FIRST=reconverge skd_case resumed '0' 0 "- \`stage-result\` | 세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge | 종단 부류=정상 완료 |"
+check "이미 정상 종단한 S2R 은 다시 띄우지 않고 재감사한다" \
+  "$(skd_disp resumed)/$(skd_pass resumed)/$(skd_rc resumed)" "S2/reaudit/0"
+
+SKD_FIRST=reconverge skd_case resumed-bad '0' 0 "- \`stage-result\` | 세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge | 종단 부류=크래시 |"
+check "다르게 끝난 S2R 이 있으면 다시 띄우지 않고 park 한다" \
+  "$(skd_disp resumed-bad)/$(skd_rc resumed-bad)/$(grep -c '이 런의 골격급 재수렴이 이미 종단 부류 크래시 로 끝났다' "$SKD/resumed-bad/parked" 2>/dev/null || true)" "/1/1"
+
+# 이 런에 감사 행이 없을 때 보고서 울타리가 다음 행위를 정한다.
+skd_fence() {
+  # skd_fence <골격급 수> <회차> <sha: 현재|다름>
+  local d="$SKD/fence" sha
+  mkdir -p "$d/docs/design-audit"
+  printf '# 설계\n' > "$d/docs/x.md"
+  sha=$(printf '%064d' 0)
+  [ "$3" = 현재 ] && sha=$(shasum -a 256 "$d/docs/x.md" | cut -d' ' -f1)
+  printf '%s\n' "$LIT_AUDIT_SKELETAL_BEGIN" "**골격급 수**: $1" '**합성 요구 후보 수**: 0' \
+    '**합성 요구 골격급 수**: 0' "**회차**: $2" "**문서 sha256**: $sha" "$LIT_AUDIT_SKELETAL_END" \
+    > "$d/docs/design-audit/docs-x.md"
+  ( DOC="$d/docs/x.md"; DOC_SLUG=docs-x; DOC_BASE="$d"; s2_audit_next_from_fence )
+}
+check "최초 회차 울타리가 지금 문서에 골격급을 세면 재수렴부터 한다" "$(skd_fence 2 최초 현재)" "reconverge"
+check "다른 바이트를 센 울타리면 다시 감사한다" "$(skd_fence 2 최초 다름)" "audit"
+check "재감사 회차 울타리는 보고서를 그대로 둔다" "$(skd_fence 2 재감사 현재)" ""
+check "골격급 0건 울타리는 보고서를 그대로 둔다" "$(skd_fence 0 최초 현재)" ""
 
 # --- 21c-c solo 티어 — 스킬을 고르는 한 함수, 감사를 건너뛰는 갈래, 진입 판정 검사 ---
 # 계획의 `design_tier` 가 설계 스킬을 정한다. `solo` 계획은 리드 단독 스킬로 설계하고
@@ -4019,8 +4152,8 @@ re_case h-s0r 'RUN_END_HALT_STAGE="S0R:A:reconverge"
   printf "**분류**: precondition-failed\n" > "$RUN_DIR/halt/S0R:A:reconverge.md"; run_end_record'
 check "S0 재수렴의 precondition-failed 정지는 결함 과 reconverge 지문으로 끝난다" \
   "$(re_end_field "$RE24/h-s0r" '재킥 원인')/$(re_end_field "$RE24/h-s0r" '재킥 지문')" "결함/reconverge/S0R:A:reconverge/pin0123"
-check "S0 재수렴의 비정상 종단 두 자리(이번 종단·재개 때 앞 종단)가 정지 스테이지를 그 id 로 둔다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'RUN_END_HALT_STAGE="\$sid"' || true)" "2"
+check "S0 재수렴과 감사 골격급 재수렴의 비정상 종단 두 자리씩(이번 종단·재개 때 앞 종단)이 정지 스테이지를 그 id 로 둔다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'RUN_END_HALT_STAGE="\$sid"' || true)" "4"
 check "freeze-mismatch · 분류 없는 기록 · 기록 없음은 모두 해당없음 이다" \
   "$(re_end_field "$RE24/h-freeze" '재킥 원인')/$(re_end_field "$RE24/h-nofield" '재킥 원인')/$(re_end_field "$RE24/h-norecord" '재킥 원인')" \
   "해당없음/해당없음/해당없음"
@@ -4335,8 +4468,8 @@ check "구현 스테이지 네 자리(첫 파견·새 프로세스 재시도·�
   "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )/$( { grep -cF 'implement-unattended $DOC' "$DRIVER" || true; } )" "4/0"
 check "리뷰 스테이지 세 자리(리뷰·복구 리뷰·리드 수정)가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "3"
-check "재수렴 스테이지 세 자리(항목 사다리·설계 수준 잔여·상한 P0 잔여)가 접근자를 쓴다" \
-  "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "3"
+check "재수렴 스테이지 네 자리(항목 사다리·설계 수준 잔여·상한 P0 잔여·감사 골격급)가 접근자를 쓴다" \
+  "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "4"
 check "리드 수정 스테이지가 접근자를 쓴다" \
   "$( { grep -cF -- '--lead-fix $crp \"설계는 $(doc_arg)\"' "$DRIVER" || true; } )" "1"
 # 설계·감사·계획, 세 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞

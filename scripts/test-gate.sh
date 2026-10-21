@@ -2561,9 +2561,46 @@ bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_P
   --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
   --rationale "픽스처 — 감사 스테이지 자신의 게이트 호출" -- pwd >> "$CC_PIPELINE_RUN_DIR/stub-au-pwd.txt" 2>/dev/null
 printf '%s|%s\n' "$CC_PIPELINE_SEGMENT" "$CC_PIPELINE_STAGE_ID" >> "$CC_PIPELINE_RUN_DIR/stub-au-env.txt"
+printf '%s\n' "${CC_PIPELINE_AUDIT_PASS-unset}" >> "$CC_PIPELINE_RUN_DIR/stub-au-pass.txt"
+bash "$(dirname "$0")/claude-stub-au-artifact" "$@"
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-audit","num_turns":1,"result":"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."}\n'
 exit 0
 STUBAUAEOF
+  # The audit's artifact beside the document: one reader report and an audit
+  # report carrying exactly one skeletal-grade fence, rewritten whole on every
+  # audit so a re-audit never leaves two fences. The run directory's
+  # `stub-au-skeletal` and `stub-au-composed` files set the fence's skeletal and
+  # composed-candidate counts (0 when absent); `stub-au-skeletal` reading `none`
+  # writes the report with no fence.
+  cat > "$WORK/bin/claude-stub-au-artifact" <<'STUBAUXEOF'
+#!/usr/bin/env bash
+p=""; prev=""
+for a in "$@"; do [ "$prev" = "-p" ] && p="$a"; prev="$a"; done
+d=""
+for t in $p; do case "$t" in *.md) d="$t"; break ;; esac; done
+[ -n "$d" ] && [ -f "$d" ] || exit 0
+dd=$(dirname "$d")
+root=$dd
+top=$(cd "$dd" && git rev-parse --show-toplevel 2>/dev/null) || top=""
+case "$d" in
+  "$top"/*) root=$(dirname "$(cd "$top" && git rev-parse --path-format=absolute --git-common-dir)") ;;
+esac
+key=${d#"$root"/}
+slug=$(printf '%s' "${key%.md}" | tr '/' '-')
+ad="$root/docs/design-audit"
+mkdir -p "$ad"
+printf '# 판독자 1\n' > "$ad/$slug.reader-1.md"
+sk=$(cat "$CC_PIPELINE_RUN_DIR/stub-au-skeletal" 2>/dev/null) || sk=0
+comp=$(cat "$CC_PIPELINE_RUN_DIR/stub-au-composed" 2>/dev/null) || comp=0
+if [ "$sk" = none ]; then
+  printf '# 감사 보고서\n' > "$ad/$slug.md"
+  exit 0
+fi
+pass='최초'; [ "${CC_PIPELINE_AUDIT_PASS:-}" = reaudit ] && pass='재감사'
+printf '%s\n' '# 감사 보고서' '' '<!-- cc-design-audit-skeletal v1 begin -->' "**골격급 수**: ${sk:-0}" \
+  "**합성 요구 후보 수**: ${comp:-0}" '**합성 요구 골격급 수**: 0' "**회차**: $pass" \
+  "**문서 sha256**: $(shasum -a 256 "$d" | cut -c1-64)" '<!-- /cc-design-audit-skeletal v1 end -->' > "$ad/$slug.md"
+STUBAUXEOF
   STUB_AU_HOLLOW="$WORK/bin/claude-stub-au-hollow"
   cat > "$STUB_AU_HOLLOW" <<'STUBAUHEOF'
 #!/usr/bin/env bash
@@ -2589,6 +2626,22 @@ printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-park","num_turns":1,"result":"종합 질문에서 멈춥니다."}\n'
 exit 0
 STUBAUPEOF
+  # A re-audit that still finds skeleton-grade items parks at Step 7 with the
+  # two options a person chooses between, and recommends neither.
+  STUB_AU_SKPARK="$WORK/bin/claude-stub-au-skpark"
+  cat > "$STUB_AU_SKPARK" <<'STUBAUKEOF'
+#!/usr/bin/env bash
+printf '%s\n' "${CC_PIPELINE_AUDIT_PASS-unset}" >> "$CC_PIPELINE_RUN_DIR/stub-au-pass.txt"
+mkdir -p "$CC_PIPELINE_RUN_DIR/halt"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=$CC_PIPELINE_RUN_ID -->" \
+  '**스킬**: design-audit-unattended' '**스텝**: Step 7 / 골격급 재발 — 재감사가 골격급 1건을 남겼다' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 재수렴 뒤에도 골격급 결함이 남았습니다. 어떻게 할까요?' '**선택지**:' \
+  '- `재수렴` — 한 번 더 재수렴하고 다시 감사한다' '- `미해결 이슈로 두고 계속` — 남은 항목을 미해결 이슈로 두고 감사를 마친다' \
+  '**추천**: (없음) — 골격을 두 번째로 바꿀지는 사람만 정한다' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-skpark","num_turns":1,"result":"골격급 재발에서 멈춥니다."}\n'
+exit 0
+STUBAUKEOF
   STUB_AU_RECONV="$WORK/bin/claude-stub-au-reconv"
   cat > "$STUB_AU_RECONV" <<'STUBAUREOF'
 #!/usr/bin/env bash
@@ -2599,7 +2652,8 @@ bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_P
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-reconv","num_turns":1,"result":"재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."}\n'
 exit 0
 STUBAUREOF
-  chmod +x "$STUB_AU_DESIGN" "$STUB_AU_AUDIT" "$STUB_AU_HOLLOW" "$STUB_AU_PARK" "$STUB_AU_RECONV"
+  chmod +x "$STUB_AU_DESIGN" "$STUB_AU_AUDIT" "$STUB_AU_HOLLOW" "$STUB_AU_PARK" "$STUB_AU_RECONV" \
+    "$STUB_AU_SKPARK" "$WORK/bin/claude-stub-au-artifact"
 }
 pre_base
 
@@ -4232,7 +4286,7 @@ BSXSTUBEOF
   }
   BSX_HALT='mkdir -p "$CC_PIPELINE_RUN_DIR/halt"; printf "# 중단 기록\n\n픽스처\n\n<!-- /cc-pipeline-halt v1 -->\n" > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"'
   bsx_stub "$WORK/bin/bsx-design" "$BSX_LIT_DESIGN"
-  bsx_stub "$WORK/bin/bsx-audit" "$BSX_LIT_AUDIT"
+  bsx_stub "$WORK/bin/bsx-audit" "$BSX_LIT_AUDIT" 'bash "$(dirname "$0")/claude-stub-au-artifact" "$@"'
   bsx_stub "$WORK/bin/bsx-split" "$BSX_LIT_SPLIT"
   bsx_stub "$WORK/bin/bsx-halt" "멈춘다" "$BSX_HALT"
 
@@ -12141,6 +12195,231 @@ check "15e-3 픽스처의 좌석 동결 뒤 골격 재검토 답이 기록된다
 dl15_plan R15ES "$reconv15es"
 check "15e-3: 좌석 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다" "$rc" "0"
 rm -f "$WT/$DOC15ES"
+
+# ---------------------------------------------------------------------------
+# 15e-4. An audit that counts skeleton-grade items asks for one re-convergence on its key
+# --- section: 15e-4 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-4: 골격급 2건 감사 행이 골격급=2 · 재수렴 요청=예 로 정상 완료다, 15e-4: 골격급 0건 감사 행은 재수렴 요청=아니오 다, 15e-4: 울타리 없는 감사 보고서는 공허한 성공이다, 15e-4: 재수렴 요청=예 뒤 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다, 15e-4: 범위 감사 골격급 을 실은 - reconverge 의 plan 이 통과한다, 15e-4: 다른 범위의 골격급 재수렴은 거부된다, 15e-4: 재수렴 요청=아니오 인 감사 뒤 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 뒤 계획은 새 감사를 기다린다며 거부된다, 15e-4: 감사 스테이지가 최초와 재감사 회차를 받는다, 15e-4: 재수렴을 돌린 키의 재감사는 골격급이 남아도 재수렴 요청=아니오 다, 15e-4: 재감사 뒤 계획은 감사 때문에 거부되지 않는다, 15e-4: 스냅숏 audit_skeleton_due 가 대기 중엔 객체 · 재수렴 뒤엔 null 이다, 15e-4: 골격급 재발 park 의 사람 재수렴 답은 골격급-재수렴 route 다, 15e-4: 그 답을 실행할 감사 골격급 재수렴 plan 이 통과한다, 15e-4: 합성 요구 후보만 있는 감사는 멈추지 않고 정상 완료다, 15e-4: 드라이버 모양의 S2 감사 행을 감사 행으로 읽고 재수렴 행은 세지 않는다, 15e-4: 골격급 필드를 실은 감사 행이 행 길이 상한 안에 든다 ---
+#
+# The audit report's skeletal-grade fence is the audit's artifact: without it
+# the audit is a hollow success. An audit that ended `정상 완료` and counted a
+# skeleton-grade item asks for one re-convergence on its key (`재수렴 요청=예`)
+# instead of halting, and nothing plans past it until that re-convergence and a
+# fresh audit stand. The re-audit fills the fence's `회차` from the pass the
+# supervisor exports, and a key that already re-converged never asks again: a
+# re-audit that still finds skeleton-grade items parks for a person instead.
+# ---------------------------------------------------------------------------
+k15_doc() { printf 'docs/fixture-design-15e4-%s.md' "$1"; }
+k15_setup() {  # k15_setup <run id> [<skeletal> [<composed>]] — run, frozen doc and the stub's counts
+  local d rd
+  d=$(k15_doc "$1")
+  au15_run "$1" "$d" '{ "design_required": false, "steps": [ { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["A1"] } ] }'
+  au15_freeze "$d"
+  rd="$STATE_LATE/cc-cmds/run/$1"
+  mkdir -p "$rd"
+  printf '%s\n' "${2:-0}" > "$rd/stub-au-skeletal"
+  printf '%s\n' "${3:-0}" > "$rd/stub-au-composed"
+}
+k15_audit() {  # k15_audit <run id> [<stub>] — dispatch the audit step and wait
+  au15_dispatch "$1" "${2:-$STUB_AU_AUDIT}" audit "/cc-cmds:design-audit-unattended $WT/$(k15_doc "$1")"
+  au15_wait "$1" A1
+}
+k15_reconv() {  # k15_reconv <run id> <verb plan|act> <scope…> — a - reconverge on the audit key
+  local r="$1" v="$2" p
+  shift 2
+  p="/cc-cmds:design-reconverge $WT/$(k15_doc "$r") $*"
+  if [ "$v" = act ]; then
+    au15_dispatch "$r" "$STUB_AU_RECONV" reconverge "$p"
+  else
+    gateL plan --manifest "$WORK/plan-$r.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+         --surface 워크트리쓰기 -- reconverge -p "$p"
+  fi
+}
+k15_field() {  # k15_field <run id> <종류> <field> — that field of the key's last row of the kind
+  au15_rows "$1" "| 세그먼트=- | 스테이지=A1 | 종류=$2 |" | tail -1 \
+    | tr '|' '\n' | sed -n "s/^ *$3=//p" | sed 's/[[:space:]]*$//'
+}
+k15_segplan() {  # k15_segplan <run id> — the segment plan of S2, as plan; sets rc, msg
+  gateL plan --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment S2 --cutpoint 커밋 --surface 읽기 \
+        --from-declaration -- 상태=계획됨 "워크트리=$(dirname "$WT")/$(basename "$WT")-run-$1-S2"
+}
+k15_due() { au15_snap "$WORK/plan-$1.md" | jq -c '.audit_skeleton_due'; }
+k15_cleanup() {  # k15_cleanup <run id> — the audit worktree, the document and its audit artifact
+  local s
+  s=$(printf '%s' "$(k15_doc "$1")" | sed 's/\.md$//' | tr '/' '-')
+  ( cd "$WT" && git worktree remove --force "$WT-run-$1-A1" ) >/dev/null 2>&1 || true
+  rm -f "$WT/$(k15_doc "$1")" "$WT/docs/design-audit/$s.md" "$WT/docs/design-audit/$s.reader-1.md"
+}
+
+# --- 골격급 2건: 요청, 대기, 재수렴, 재감사 -------------------------------------
+k15_setup R15K2 2
+check "15e-4: 감사 전의 audit_skeleton_due 는 null 이다" "$(k15_due R15K2)" "null"
+k15_audit R15K2
+check "15e-4 픽스처의 감사가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15K2 A1 audit)" "정상 완료"
+check "15e-4: 골격급 2건 감사 행이 골격급=2 · 재수렴 요청=예 로 정상 완료다" \
+  "$(k15_field R15K2 audit 골격급)/$(k15_field R15K2 audit '재수렴 요청')" "2/예"
+k15_row=$(au15_rows R15K2 '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | tail -1)
+case "$k15_row" in
+  *"| 골격급=2 | 재수렴 요청=예 | 종단 부류=정상 완료 |"*) ok "15e-4: 두 필드는 종단 부류 바로 앞에 선다" ;;
+  *) bad "15e-4 감사 행의 필드 순서" "$k15_row" ;;
+esac
+k15_n=$(printf '%s\n' "$k15_row" | wc -c | tr -d ' ')
+if [ "${k15_n:-0}" -gt 0 ] && [ "${k15_n:-0}" -le 1024 ]; then
+  ok "15e-4: 골격급 필드를 실은 감사 행이 행 길이 상한 안에 든다 (${k15_n} 바이트)"
+else
+  bad "15e-4: 골격급 필드를 실은 감사 행이 행 길이 상한 안에 든다" "${k15_n:-0} 바이트"
+fi
+check "15e-4: 스냅숏 audit_skeleton_due 가 대기 중엔 객체 · 재수렴 뒤엔 null 이다 (대기 중)" \
+  "$(k15_due R15K2)" '{"step":"A1","skeletal":2}'
+check "15e-4: 골격급 대기 중에는 멈춤 기록이 없다" \
+  "$( [ -e "$STATE_LATE/cc-cmds/run/R15K2/halt/A1#1.md" ] && printf 있음 || printf 없음)" "없음"
+k15_segplan R15K2
+check "15e-4: 재수렴 요청=예 뒤 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다" "$rc" "3"
+case "$msg" in
+  *"감사 단계(A1)가 골격급 재수렴을 기다립니다"*) ok "15e-4: 그 거부는 골격급 재수렴 대기를 든다" ;;
+  *) bad "15e-4 골격급 대기 계획 문면" "$msg" ;;
+esac
+case "$(au15_c1 "$WORK/plan-R15K2.md")" in
+  *"감사 단계(A1)가 골격급 재수렴을 기다립니다"*) ok "15e-4: 조건 1 이 골격급 재수렴 대기를 든다" ;;
+  *) bad "15e-4: 조건 1 이 골격급 재수렴 대기를 든다" "$(au15_c1 "$WORK/plan-R15K2.md")" ;;
+esac
+k15_reconv R15K2 plan 감사 종합 요구
+check "15e-4: 다른 범위의 골격급 재수렴은 거부된다" "$rc" "3"
+case "$msg" in
+  *"골격급 재수렴의 프롬프트는"*"감사 골격급"*) ok "15e-4: 그 거부는 고정 범위를 든다" ;;
+  *) bad "15e-4 골격급 재수렴 범위 문면" "$msg" ;;
+esac
+k15_reconv R15K2 plan 감사 골격급
+check "15e-4: 범위 감사 골격급 을 실은 - reconverge 의 plan 이 통과한다" "$rc" "0"
+k15_rep="$WT/docs/design-audit/docs-fixture-design-15e4-R15K2.md"
+k15_reconv R15K2 plan 감사 골격급 "$k15_rep"
+check "15e-4: 읽은 보고서를 덧붙인 감사 골격급 재수렴의 plan 도 통과한다" "$rc" "0"
+k15_reconv R15K2 act 감사 골격급
+check "15e-4: 그 골격급 재수렴이 기동한다" "$rc" "0"
+au15_wait R15K2 A1
+check "15e-4 픽스처의 골격급 재수렴이 정상 완료다 (아래가 공허하지 않다)" \
+  "$(au15_class R15K2 A1 reconverge)" "정상 완료"
+check "15e-4: 스냅숏 audit_skeleton_due 가 대기 중엔 객체 · 재수렴 뒤엔 null 이다" "$(k15_due R15K2)" "null"
+k15_reconv R15K2 plan 감사 골격급
+check "15e-4: 골격급 재수렴 직후의 두 번째 - reconverge 는 거부된다" "$rc" "3"
+case "$msg" in
+  *"지금 마지막 행은 종류=reconverge"*) ok "15e-4: 그 거부는 감사 단계의 마지막 행을 든다" ;;
+  *) bad "15e-4 두 번째 골격급 재수렴 문면" "$msg" ;;
+esac
+k15_segplan R15K2
+check "15e-4: 골격급 재수렴 뒤 계획은 새 감사를 기다린다며 거부된다" "$rc" "3"
+case "$msg" in
+  *"재수렴 뒤 새 감사를 기다립니다"*) ok "15e-4: 그 거부는 새 감사 대기를 든다" ;;
+  *) bad "15e-4 골격급 재수렴 뒤 계획 문면" "$msg" ;;
+esac
+# The re-audit still counts one item: a stub that ends `정상 완료` with it shows
+# the request is withheld because the key already re-converged, not because the
+# count is zero.
+printf '1\n' > "$STATE_LATE/cc-cmds/run/R15K2/stub-au-skeletal"
+k15_audit R15K2
+check "15e-4 픽스처의 재감사가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15K2 A1 audit)" "정상 완료"
+check "15e-4: 재수렴을 돌린 키의 재감사는 골격급이 남아도 재수렴 요청=아니오 다" \
+  "$(k15_field R15K2 audit 골격급)/$(k15_field R15K2 audit '재수렴 요청')" "1/아니오"
+check "15e-4: 감사 스테이지가 최초와 재감사 회차를 받는다" \
+  "$(tr '\n' ' ' < "$STATE_LATE/cc-cmds/run/R15K2/stub-au-pass.txt")" "first reaudit "
+case "$(cat "$k15_rep")" in
+  *"**회차**: 재감사"*) ok "15e-4: 재감사의 울타리가 회차 재감사 를 싣는다" ;;
+  *) bad "15e-4 재감사 울타리 회차" "$(cat "$k15_rep")" ;;
+esac
+check "15e-4: 재감사 뒤 audit_skeleton_due 는 null 이다" "$(k15_due R15K2)" "null"
+k15_segplan R15K2
+case "$msg" in
+  *"감사 단계(A1)"*) bad "15e-4: 재감사 뒤 계획은 감사 때문에 거부되지 않는다" "$msg" ;;
+  *) ok "15e-4: 재감사 뒤 계획은 감사 때문에 거부되지 않는다" ;;
+esac
+k15_cleanup R15K2
+
+# --- 골격급 0건, 울타리 없음 ------------------------------------------------------
+k15_setup R15K0 0
+k15_audit R15K0
+check "15e-4: 골격급 0건 감사 행은 재수렴 요청=아니오 다" \
+  "$(au15_class R15K0 A1 audit)/$(k15_field R15K0 audit 골격급)/$(k15_field R15K0 audit '재수렴 요청')" "정상 완료/0/아니오"
+check "15e-4: 골격급 0건 감사 뒤 audit_skeleton_due 는 null 이다" "$(k15_due R15K0)" "null"
+k15_reconv R15K0 plan 감사 골격급
+check "15e-4: 재수렴 요청=아니오 인 감사 뒤 - reconverge 는 거부된다" "$rc" "3"
+k15_segplan R15K0
+case "$msg" in
+  *"감사 단계(A1)"*) bad "15e-4: 골격급 0건 감사 뒤 계획은 감사 때문에 거부되지 않는다" "$msg" ;;
+  *) ok "15e-4: 골격급 0건 감사 뒤 계획은 감사 때문에 거부되지 않는다" ;;
+esac
+k15_cleanup R15K0
+
+k15_setup R15KN none
+k15_audit R15KN
+check "15e-4: 울타리 없는 감사 보고서는 공허한 성공이다" "$(au15_class R15KN A1 audit)" "공허한 성공"
+check "15e-4: 울타리 없는 감사 행의 골격급은 미상 · 재수렴 요청=아니오 다" \
+  "$(k15_field R15KN audit 골격급)/$(k15_field R15KN audit '재수렴 요청')" "미상/아니오"
+k15_cleanup R15KN
+
+# --- 합성 요구 후보만 ----------------------------------------------------------------
+k15_setup R15KC 0 1
+k15_audit R15KC
+check "15e-4: 합성 요구 후보만 있는 감사는 멈추지 않고 정상 완료다" \
+  "$(au15_class R15KC A1 audit)/$(k15_field R15KC audit '재수렴 요청')" "정상 완료/아니오"
+check "15e-4: 합성 요구 후보만 있는 감사는 멈춤 기록을 남기지 않는다" \
+  "$( [ -e "$STATE_LATE/cc-cmds/run/R15KC/halt/A1#1.md" ] && printf 있음 || printf 없음)" "없음"
+k15_segplan R15KC
+case "$msg" in
+  *"감사 단계(A1)"*) bad "15e-4: 합성 요구 후보만 있는 감사 뒤 계획은 감사 때문에 거부되지 않는다" "$msg" ;;
+  *) ok "15e-4: 합성 요구 후보만 있는 감사 뒤 계획은 감사 때문에 거부되지 않는다" ;;
+esac
+k15_cleanup R15KC
+
+# --- 골격급 재발 park 와 사람의 재수렴 답 ------------------------------------------
+k15_setup R15KP 1
+k15_audit R15KP
+check "15e-4 재발 픽스처의 첫 감사가 재수렴을 요청한다 (아래가 공허하지 않다)" \
+  "$(k15_field R15KP audit '재수렴 요청')" "예"
+k15_reconv R15KP act 감사 골격급
+au15_wait R15KP A1
+check "15e-4 재발 픽스처의 골격급 재수렴이 정상 완료다 (아래가 공허하지 않다)" \
+  "$(au15_class R15KP A1 reconverge)" "정상 완료"
+k15_audit R15KP "$STUB_AU_SKPARK"
+check "15e-4 재발 픽스처의 재감사가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15KP A1 audit)" "의도된 park"
+check "15e-4: 재발 park 의 재감사도 재감사 회차를 받는다" \
+  "$(tr '\n' ' ' < "$STATE_LATE/cc-cmds/run/R15KP/stub-au-pass.txt")" "first reaudit "
+k15_rec="$STATE_LATE/cc-cmds/run/R15KP/halt/A1#3.md"
+check "15e-4: 재발 park 의 기록이 A1#3 에 선다 (아래가 공허하지 않다)" \
+  "$( [ -f "$k15_rec" ] && printf yes || printf no)" "yes"
+gateL act --manifest "$WORK/plan-R15KP.md" --kind halt-answer --target infra --segment A1 --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(au15_H R15KP)" --rationale x \
+      -- "중단 기록=$k15_rec" '선택지=재수렴' '답한 주체=사람' '근거=사람이 한 번 더 재수렴하기로 함'
+check "15e-4: 골격급 재발 park 의 사람 재수렴 답이 기록된다" "$rc" "0"
+check "15e-4: 골격급 재발 park 의 사람 재수렴 답은 골격급-재수렴 route 다" \
+  "$(au15_snap "$WORK/plan-R15KP.md" | jq -r '[.answered_halts[] | .route] | last // ""')" "골격급-재수렴"
+k15_reconv R15KP plan 감사 골격급 "$k15_rec"
+check "15e-4: 그 답을 실행할 감사 골격급 재수렴 plan 이 통과한다" "$rc" "0"
+k15_reconv R15KP act 감사 골격급 "$k15_rec"
+check "15e-4: 그 재수렴이 기동한다" "$rc" "0"
+au15_wait R15KP A1
+check "15e-4: 그 재수렴 행이 중단 답을 소비한다" \
+  "$(au15_snap "$WORK/plan-R15KP.md" | jq -c '[.answered_halts[] | .segment]')" '[]'
+k15_cleanup R15KP
+
+# --- 드라이버 모양의 감사 행 ------------------------------------------------------------
+# The driver names its audit stage `S2` and its skeletal re-convergence `S1'`
+# under dispatch id `S2R`. The gate's own readers take the `S2` audit row as the
+# audit's and never count the re-convergence as one.
+k15_led="$WORK/k15-driver-ledger.md"
+{
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=- | 스테이지=S2 | 파견 id=S2 | 종류=audit | 실행 버전=1 | 골격급=2 | 재수렴 요청=예 | 종단 부류=정상 완료 | prev=x\n'
+  printf -- "- \`stage-result\` | 교대=1 | 세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge | 실행 버전=1 | 종단 부류=정상 완료 | prev=x\n"
+} > "$k15_led"
+k15_seam() {  # k15_seam <ledger> — rows read as audit rows / the audit key's wait
+  ( gate_seam_init >/dev/null 2>&1 || exit 1
+    gate_seam_enter
+    LEDGER=$1
+    printf '%s/' "$(gate_run_scope_rows A1 audit | grep -c . || true)"
+    gate_audit_concluded A1 && printf 끝남 || printf '%s' "$GATE_AUDIT_WAIT" )
+}
+check "15e-4: 드라이버 모양의 S2 감사 행을 감사 행으로 읽고 재수렴 행은 세지 않는다" "$(k15_seam "$k15_led")" "1/재수렴"
+head -1 "$k15_led" > "$k15_led.tmp" && mv "$k15_led.tmp" "$k15_led"
+check "15e-4: 재수렴 전의 드라이버 감사 행은 골격급 재수렴을 기다린다" "$(k15_seam "$k15_led")" "1/골격급"
+rm -f "$k15_led"
 
 # ---------------------------------------------------------------------------
 # 15f. A frozen design with a step not yet started keeps the run open
@@ -30834,18 +31113,19 @@ for rp_id in $rp_ids; do
   rp_n=$((rp_n + 1))
   grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
 done
-check "34o: 게이트 선언에서 경로 id 여섯을 읽는다 (아래가 공허하지 않다)" "$rp_n" "6"
+check "34o: 게이트 선언에서 경로 id 일곱을 읽는다 (아래가 공허하지 않다)" "$rp_n" "7"
 check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
 rp_lits=0
 grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
 grep -qF -- 'CFI-U3 BT-STOP' "$RP_SKILLS/implement-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
 grep -qF -- '`**스텝**: Step 1b 빈 대상`' "$RP_SKILLS/review-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
-check "34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다" "$rp_lits" "3"
+grep -qF -- 'Step 7 / 골격급 재발' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
+check "34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다" "$rp_lits" "4"
 rp_gate_lits=0
-for rp_lit in 'CFI-3b' 'CFI-U3 BT-STOP' 'Step 1b 빈 대상'; do
+for rp_lit in 'CFI-3b' 'CFI-U3 BT-STOP' 'Step 1b 빈 대상' 'Step 7 / 골격급 재발'; do
   grep -qF -- "$rp_lit" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" && rp_gate_lits=$((rp_gate_lits + 1))
 done
-check "34o: 게이트의 경로 판정이 같은 세 문자열을 읽는다" "$rp_gate_lits" "3"
+check "34o: 게이트의 경로 판정이 같은 네 문자열을 읽는다" "$rp_gate_lits" "4"
 check "34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다" \
   "$(cat "$RP_SHIFT" "$RP_LEAD" | grep -cF -e '**Once per key.**' -e '**Once per record.**' || true)" "0"
 rp_seat=0
