@@ -37065,7 +37065,8 @@ esac
 # 대역은 리눅스 러너에서 실물 `gh` 에 진다. 대역은 사례마다 고른 답을 상태 디렉터리의
 # 파일에서 읽고, 받은 argv 를 `gh.log` 에 남긴다. 슬러그 URL 은 저장소 설정의
 # `insteadOf` 가 베어 원격으로 돌려 기본 브랜치 tip 질문이 기기를 떠나지 않는다.
-# 부적격 사례는 같은 argv 의 park 가 한 번만 행을 쓰므로 사례마다 픽스처를 새로 만든다.
+# 부적격 사례는 같은 argv 의 park 가 한 번만 행을 쓰므로, 같은 꼴의 변형은 픽스처 하나를
+# 이어 쓰되 변형마다 tip 에 커밋을 올려 argv 를 바꾼다(`cb60_again`).
 # ---------------------------------------------------------------------------
 # 자동 해소는 하니스 기본값(끔) 그대로 둔다 — 켜면 `act` 로 내는 머지가 `--reach` 를
 # 요구하는데 `act` 는 그 플래그를 받지 않는다. 두 모드의 차이는 60c 가 잰다.
@@ -37362,8 +37363,8 @@ cb60_tgt() {
 }
 cb60_wf_tip() {
   # cb60_wf_tip <내용> — 세그먼트 tip 의 워크플로를 바꾼다. 리뷰 HEAD 를 그 tip 으로 다시
-  # 맞추어 판정표가 머지 를 내게 둔다.
-  ( cd "$SA_SEGWT" && printf '%s\n' "$1" > .github/workflows/gate.yml && git commit -qam wf-tip ) >/dev/null 2>&1
+  # 맞추어 판정표가 머지 를 내게 둔다. 내용이 같아도 커밋은 오른다.
+  ( cd "$SA_SEGWT" && printf '%s\n' "$1" > .github/workflows/gate.yml && git commit -qam wf-tip --allow-empty ) >/dev/null 2>&1
   CK60_SHA=$(cd "$SA_SEGWT" && git rev-parse HEAD)
   sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
       --snapshot-digest "$(SAH)" --rationale x \
@@ -37373,36 +37374,47 @@ cb60_wf_tip() {
   cb60_line 실패 0 0
 }
 cb60_wf_base() {
-  # cb60_wf_base <파일 이름> <내용> — 기본 브랜치 tip 에 워크플로 파일 하나를 더한다.
-  ( cd "$SA_REPO" && printf '%s\n' "$2" > ".github/workflows/$1" && git add -A && git commit -qm "base $1" \
+  # cb60_wf_base <파일 이름> <내용> — 기본 브랜치 tip 의 워크플로를 gate.yml 과 이 파일
+  # 하나로 둔다. 앞 변형이 더한 파일은 지운다.
+  ( cd "$SA_REPO" && for f in .github/workflows/*; do [ "$f" = .github/workflows/gate.yml ] || git rm -q "$f"; done \
+    && printf '%s\n' "$2" > ".github/workflows/$1" && git add -A && git commit -qm "base $1" \
     && git push -q origin main ) >/dev/null 2>&1
 }
+cb60_again() {
+  # cb60_again — 같은 픽스처에서 다음 변형을 연다. park 의 되풀이 판정은 argv 의
+  # 다이제스트로 하므로, tip 에 커밋을 하나 올려 재실행 argv 의 head sha 를 바꾸고 체크
+  # 화면을 적격한 기본으로 되돌린다. 변형마다 픽스처를 새로 만들던 때와 같은 판정을 받는다.
+  cb60_checks pre fail 777 1; cb60_checks post pending 777 2
+  cb60_wf_tip "${1:-$CB60_WF}"
+}
+cb60_new "CI 재실행 — 식별자"
 for cb60_id in workflow:gate workflow:gate.yml workflow:4242 "branch:SEGBR" argv:rerun-failed-jobs; do
-  cb60_new "CI 재실행 — 식별자 $cb60_id"
   cb60_v=$cb60_id; [ "$cb60_id" = "branch:SEGBR" ] && cb60_v="branch:$SA_SEGBR"
   cb60_tgt "배포트리거 식별자=$cb60_v"
+  cb60_again
   cb60_park 재실행배포트리거 ":777" "식별자 $cb60_id"
 done
+cb60_new "CI 재실행 — 기본 브랜치 워크플로"
 for cb60_ev in workflow_run check_suite check_run status; do
-  cb60_new "CI 재실행 — 기본 브랜치 $cb60_ev"
   cb60_wf_base "x-$cb60_ev.yml" "$(printf 'on:\n  %s:\n    types: [completed]\njobs: {}' "$cb60_ev")"
+  cb60_again
   cb60_park 재실행배포트리거 "x-$cb60_ev.yml" "기본 브랜치 on 아래 $cb60_ev"
 done
 cb60_i=0
 for cb60_on in 'on: workflow_run' 'on: [pull_request, workflow_run]' $'"on":\n  workflow_run:\n    workflows: [x]' \
                $'true:\n  check_suite:\n    types: [completed]' 'on: !!str pull_request'; do
   cb60_i=$((cb60_i + 1))
-  cb60_new "CI 재실행 — on 의 꼴 $cb60_i"
   cb60_wf_base "y-$cb60_i.yml" "$cb60_on"
+  cb60_again
   cb60_park 재실행배포트리거 "y-$cb60_i.yml" "기본 브랜치 on 의 꼴 $cb60_i"
 done
 cb60_i=0
+cb60_new "CI 재실행 — tip 워크플로"
 for cb60_tipwf in "$CB60_WF"$'\n    environment: prod' "$CB60_WF"$'\n  u:\n    uses: ./.github/workflows/x.yml' \
                   "$CB60_WF"$'\n    "environment": prod' "$CB60_WF"$'\n    with: {environment: prod}' \
                   "$CB60_WF"$'\n  u:\n    uses: "./.github/workflows/x.yml"'; do
   cb60_i=$((cb60_i + 1))
-  cb60_new "CI 재실행 — tip 워크플로 $cb60_i"
-  cb60_wf_tip "$cb60_tipwf"
+  cb60_again "$cb60_tipwf"
   cb60_park 재실행배포트리거 "gate.yml:777" "tip 워크플로의 환경·재사용 $cb60_i"
 done
 # 섞인 집합 — 실행 777 은 적격, 778 의 워크플로에 환경 키. 하나라도 걸리면 POST 는 없다.
@@ -37419,26 +37431,27 @@ cb60_line 실패 0 0 gate,deploy
 cb60_park 재실행배포트리거 "deploy.yml:778" "섞인 집합"
 # 이 PR 의 실행이라고 증명되지 않는 실행.
 cb60_i=0
+cb60_new "CI 재실행 — 남의 실행"
 for cb60_fix in '.event = "push"' '.event = "pull_request_target"' '.head_repository.full_name = "fork/x"' \
                 '.head_sha = "1111111111111111111111111111111111111111"' '.head_branch = "other"'; do
   cb60_i=$((cb60_i + 1))
-  cb60_new "CI 재실행 — 남의 실행 $cb60_i"
+  cb60_again
   cb60_run 777 '' "$cb60_fix"
   cb60_park 재실행대상미상 "실행:777" "이 PR 의 실행이 아님 $cb60_i"
 done
-cb60_new "CI 재실행 — Actions 아닌 링크"
+cb60_again
 printf '[{"name":"ext","bucket":"fail","link":"https://ci.example.invalid/build/9"}]\n' > "$CB60_S/checks.pre"
 cb60_park 재실행대상미상 "ext:" "Actions 아닌 링크"
 # 링크 없는 실패(target URL 없이 올린 커밋 상태) — 그것만 있어도, Actions 실패와 섞여도
 # 판정할 수 없는 체크이므로 POST 없이 park 한다.
-cb60_new "CI 재실행 — 링크 없는 실패뿐"
+cb60_again
 printf '[{"name":"nolink","bucket":"fail","link":""}]\n' > "$CB60_S/checks.pre"
 cb60_park 재실행대상미상 "nolink:" "링크 없는 실패뿐"
-cb60_new "CI 재실행 — 링크 없는 실패와 Actions 실패"
+cb60_again
 printf '[{"name":"gate","bucket":"fail","link":"https://github.com/%s/actions/runs/777/job/1"},{"name":"nolink","bucket":"fail"}]\n' \
   "$CB60_SLUG" > "$CB60_S/checks.pre"
 cb60_park 재실행대상미상 "nolink:" "링크 없는 실패와 Actions 실패"
-cb60_new "CI 재실행 — 실행 읽기 실패"
+cb60_again
 rm -f "$CB60_S/run.777"
 cb60_park 재실행대상미상 "777" "실행 읽기 실패"
 check "60b: 부적격 실행은 POST 없이 park 한다" "$cb60_fail_inel" ""
@@ -37499,32 +37512,32 @@ check "60b: 그 자리의 라우팅 머지는 rc 3 이다" "$rc" "3"
 
 # 거부 — rc 3, 행 없음, POST 없음 ------------------------------------------------------
 cb60_refuse() {
-  # cb60_refuse <라벨> [sha] — 이미 고친 픽스처에서 행위 하나가 rc 3 으로 거부된다.
+  # cb60_refuse <라벨> <거부 문면 조각> [sha] — 이미 고친 픽스처에서 행위 하나가 rc 3 으로
+  # 거부된다. 거부는 행을 남기지 않으므로 사례들이 픽스처 하나를 이어 쓰고, 문면 조각이
+  # 앞 사례의 고침이 남아 대신 거부한 것이 아님을 가린다.
   local nr nb np; nr=$(cb60_n 'CI 처분'); nb=$(cb60_n blocked); np=$(cb60_posts)
-  cb60_act "${2:-}"
+  cb60_act "${3:-}"
+  case "$msg" in *"$2"*) ;; *) bad "60b: 거부 — $1" "문면에 「$2」 가 없다: $msg"; return ;; esac
   check "60b: 거부 — $1" "$rc|$(cb60_n 'CI 처분')|$(cb60_n blocked)|$(cb60_posts)" "3|$nr|$nb|$np"
 }
-cb60_new "CI 재실행 — 대기 중 체크"
-cb60_checks pre pending 777 1; cb60_refuse "대기 중인 체크"
-cb60_new "CI 재실행 — 진행 중 실행"
-cb60_run 777 '' '.status = "in_progress"'; cb60_refuse "진행 중인 고른 실행"
-cb60_new "CI 재실행 — 실패 없는 화면"
-cb60_checks pre pass 777 1; cb60_refuse "살아 있는 실패 집합이 빔"
-cb60_new "CI 재실행 — 취소뿐인 화면"
-cb60_checks pre cancel 777 1; cb60_refuse "취소 버킷뿐인 화면"
-cb60_new "CI 재실행 — tip 아닌 sha"
-cb60_refuse "tip 이 아닌 argv sha" 1111111111111111111111111111111111111111
-cb60_new "CI 재실행 — 라우팅 기록 없음 거부"
-rm -f "$SA_RUN/routing-guard"; cb60_refuse "라우팅 기록 없는 런"
-cb60_new "CI 재실행 — 바쁜 잠금"
+cb60_new "CI 재실행 — 거부"
+cb60_checks pre pending 777 1; cb60_refuse "대기 중인 체크" "still pending"
+cb60_checks pre fail 777 1
+cb60_run 777 '' '.status = "in_progress"'; cb60_refuse "진행 중인 고른 실행" "has not completed"
+cb60_run 777
+cb60_checks pre pass 777 1; cb60_refuse "살아 있는 실패 집합이 빔" "no failing check"
+cb60_checks pre cancel 777 1; cb60_refuse "취소 버킷뿐인 화면" "no failing check"
+cb60_checks pre fail 777 1
+cb60_refuse "tip 이 아닌 argv sha" "worktree's tip is" 1111111111111111111111111111111111111111
+rm -f "$SA_RUN/routing-guard"; cb60_refuse "라우팅 기록 없는 런" "no routing record"
+printf '1\n' > "$SA_RUN/routing-guard"
 mkdir -p "$SA_RUN/ci-rerun.CK.lock"; printf '%s %s\n' "$$" "$(date -u +%s)" > "$SA_RUN/ci-rerun.CK.lock/owner"
-cb60_refuse "바쁜 잠금"
+cb60_refuse "바쁜 잠금" "holds its lock"
 rm -rf "$SA_RUN/ci-rerun.CK.lock"
-cb60_new "CI 재실행 — 빠진 기본 브랜치 객체"
 ( cd "$WORK" && rm -rf "cb60-up-$SA_N" && git clone -q -b main "$SA_REMOTE" "cb60-up-$SA_N" && cd "cb60-up-$SA_N" \
   && git config user.email t@example.invalid && git config user.name T \
   && echo up > up.txt && git add -A && git commit -qm up && git push -q origin HEAD:main ) >/dev/null 2>&1
-cb60_refuse "빠진 기본 브랜치 tip 객체"
+cb60_refuse "빠진 기본 브랜치 tip 객체" "not a local object"
 
 # 가드 — 판정을 남기지 않는 h3 의 게이트 사본. 행위 안의 게이트 함수는 바꿀 수 없으므로
 # 플러그인을 베껴 그 함수의 머리만 고치고 새 프로세스로 부른다.
