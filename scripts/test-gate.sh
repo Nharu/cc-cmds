@@ -12589,6 +12589,53 @@ check "15f: 설계와 감사만 있는 계획의 종료 절을 충족으로 정�
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 rm -f "$WT/$DOC15FE"
 
+# A design whose audit asked for its skeletal re-convergence waits on it, and
+# then on the fresh audit, whatever follows the audit in the plan: neither wait
+# is read as a design that will not be dispatched again, and a plan that ends
+# at the audit does not hold condition 1 while one of them stands.
+f15_skel() {  # f15_skel <run id> <doc> [<plan>] — design, then an audit counting two skeleton-grade items
+  au15_run "$1" "$2" ${3:+"$3"}
+  au15_freeze "$2"
+  mkdir -p "$STATE_LATE/cc-cmds/run/$1"
+  printf '2\n' > "$STATE_LATE/cc-cmds/run/$1/stub-au-skeletal"
+  au15_dispatch "$1" "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$2 \"테스트\""
+  au15_wait "$1" D1
+  au15_dispatch "$1" "$STUB_AU_AUDIT" audit "/cc-cmds:design-audit-unattended $WT/$2"
+  au15_wait "$1" A1
+}
+f15_skel_req() {  # f15_skel_req <run id> — the class and `재수렴 요청` of the key's last audit row
+  au15_rows "$1" '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | tail -1 \
+    | tr '|' '\n' | sed -n -e 's/^ *종단 부류=\(.*[^ ]\) *$/\1/p' -e 's/^ *재수렴 요청=\(.*[^ ]\) *$/\1/p' \
+    | tr '\n' '/' | sed 's|/$||'
+}
+DOC15FK='docs/fixture-design-15f-skeletal.md'
+f15_skel R15FK "$DOC15FK" "$plan15da"
+check "15f 골격급 픽스처의 감사가 재수렴을 요청한다 (아래가 공허하지 않다)" \
+  "$(au15_class R15FK D1 design)/$(f15_skel_req R15FK)" "정상 완료/예/정상 완료"
+check "15f: 설계와 감사만 있는 계획의 골격급 감사 뒤 조건 1 은 골격급 재수렴을 기다린다" \
+  "$(au15_c1 "$WORK/plan-R15FK.md")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 골격급 재수렴을 기다립니다"
+au15_dispatch R15FK "$STUB_AU_RECONV" reconverge "/cc-cmds:design-reconverge $WT/$DOC15FK 감사 골격급"
+au15_wait R15FK A1
+check "15f 골격급 픽스처의 재수렴이 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15FK A1 reconverge)" "정상 완료"
+check "15f: 그 골격급 재수렴 뒤 조건 1 은 새 감사를 기다린다" \
+  "$(au15_c1 "$WORK/plan-R15FK.md")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 재수렴 뒤 새 감사를 기다립니다"
+au15_dispatch R15FK "$STUB_AU_AUDIT" audit "/cc-cmds:design-audit-unattended $WT/$DOC15FK"
+au15_wait R15FK A1
+check "15f 골격급 픽스처의 재감사가 재수렴 없이 정상 완료다 (아래가 공허하지 않다)" "$(f15_skel_req R15FK)" "아니오/정상 완료"
+check "15f: 그 재감사가 정상 완료하면 조건 1 이 선다" "$(au15_c1 "$WORK/plan-R15FK.md")" ""
+( cd "$WT" && git worktree remove --force "$WT-run-R15FK-A1" ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC15FK"
+
+DOC15FL='docs/fixture-design-15f-skeletal-impl.md'
+f15_skel R15FL "$DOC15FL"
+check "15f 골격급 구현 픽스처의 감사가 재수렴을 요청한다 (아래가 공허하지 않다)" \
+  "$(au15_class R15FL D1 design)/$(f15_skel_req R15FL)" "정상 완료/예/정상 완료"
+check "15f: 구현 단계가 남은 계획의 골격급 감사 뒤 조건 1 은 골격급 재수렴을 기다린다" \
+  "$(au15_c1 "$WORK/plan-R15FL.md")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 골격급 재수렴을 기다립니다"
+( cd "$WT" && git worktree remove --force "$WT-run-R15FL-A1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC15FL"
+
 # A design that stopped on purpose is not dispatched again: the plan ending at
 # the design does not change that, and the run still ends as invalidated.
 DOC15FP='docs/fixture-design-15f-designpark.md'

@@ -39955,16 +39955,19 @@ gate_done_conditions() {
   #
   # AND A PLAN THAT ENDS AT THE DESIGN HAS NO STEP TO NAME. When every step of
   # the plan is the design or its audit (`gate_plan_ends_at_design`), a design
-  # that ended `정상 완료` — with its audit, when the plan has one, ended
-  # `정상 완료` too — is the run's work done, provided the document is still
-  # frozen when this reads it. The condition then holds and prints nothing, as
-  # the audit-first arm does, and condition 10 measures the clauses the person
-  # authorized. Read as `종단 행 있음`, the run closed as invalidated with every
-  # clause settled satisfied. A document no longer frozen prints the dropped
-  # line with its own reason; a re-convergence on the audit's key that came
-  # after its last audit row waits on a fresh audit, with the audit-first arm's
-  # line; an audit that ended any other way keeps `종단 행 있음`.
-  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep dwait dmet alastrow
+  # that ended `정상 완료` — with its audit, when the plan has one, concluded
+  # (`gate_audit_concluded`) — is the run's work done, provided the document is
+  # still frozen when this reads it. The condition then holds and prints
+  # nothing, as the audit-first arm does, and condition 10 measures the clauses
+  # the person authorized. Read as `종단 행 있음`, the run closed as invalidated
+  # with every clause settled satisfied. A document no longer frozen prints the
+  # dropped line with its own reason; an audit that ended any other way keeps
+  # `종단 행 있음`.
+  #
+  # AN AUDIT WAITING ON ITS SKELETAL RE-CONVERGENCE, OR ON THE FRESH AUDIT AFTER
+  # A RE-CONVERGENCE ON ITS KEY, waits whatever follows it in the plan: the line
+  # is the audit-first arm's, which the disposition does not drop.
+  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep dwait dmet
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
     dwhy=""; dnext=""; dwait=""; dmet=""
@@ -40004,21 +40007,26 @@ gate_done_conditions() {
         dwhy='종단 행 있음'
         if [ "$dlast" = '정상 완료' ]; then
           dnext=$(gate_design_next_undispatched_step) || dnext=""
+          # An audit waiting on its skeletal re-convergence, or on the fresh
+          # audit after one, is the run's next work whatever follows the audit
+          # in the plan: the line names the wait, as the audit-first arm does,
+          # and is not a head the disposition drops.
           if [ -z "$dnext" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+             && astep=$(gate_run_scope_step audit) \
+             && ! gate_audit_concluded "$astep"; then
+            case "$GATE_AUDIT_WAIT" in
+              골격급|재수렴)
+                dwait=$(printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 %s' "$astep" "$GATE_AUDIT_WHY")
+                dwhy="" ;;
+            esac
+          fi
+          if [ -z "$dnext" ] && [ -z "$dwait" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
              && gate_plan_ends_at_design; then
             if astep=$(gate_run_scope_step audit); then
-              alastrow=$( { gate_stage_result_rows_of "$astep" || true; } \
-                          | { grep -F -- '- `stage-result`' || true; } | tail -1)
-              case "$alastrow" in
-                *'| 종류=reconverge '*)
-                  dwait=$(printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 재수렴 뒤 새 감사를 기다립니다' "$astep")
-                  dwhy="" ;;
-                *)
-                  if [ "$(gate_row_field "$(gate_audit_result_rows_of "$astep" | tail -1)" '종단 부류')" = '정상 완료' ]; then
-                    if doc_is_frozen "${DOC:-}"; then dwhy=""; dmet=1
-                    else dwhy='설계 문서가 동결돼 있지 않음'; fi
-                  fi ;;
-              esac
+              if gate_audit_concluded "$astep"; then
+                if doc_is_frozen "${DOC:-}"; then dwhy=""; dmet=1
+                else dwhy='설계 문서가 동결돼 있지 않음'; fi
+              fi
             elif doc_is_frozen "${DOC:-}"; then
               dwhy=""; dmet=1
             else
