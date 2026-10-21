@@ -18077,7 +18077,9 @@ gate_halt_answer_consumer() {
   #
   # AN ATTEMPT THAT CARRIED THE ANSWER AND DIED BEFORE ITS SESSION does not take
   # it up either: its row carries `답 운반` and `세션 id=미상`, the card was never
-  # read, and the answer is still the one to carry.
+  # read, and the answer is still the one to carry. The two filters below are
+  # `gate_row_is_pre_session_death` spelled for a line-numbered stream, so the
+  # routing that reads the key's last row sees the same rows passed over.
   local sr st pk
   sr=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
@@ -18986,7 +18988,16 @@ gate_carry_cap_row() {
   # gate_carry_cap_row <alias> <key> <stage kind> <사유> <line> <basis> — the
   # act-scope row a carry refused by its cap leaves before GATE_EXIT_CARRY_CAP.
   # The answer stays where it is; a person reads this row and the record.
+  #
+  # ONE ROW PER ANSWER AND CAUSE. The cap counts what is already on the
+  # ledger, so a later shift that carries the same answer again is refused
+  # again on the same count; it writes no second row for it.
   local rowseg
+  if { grep '^- `blocked` ' "$LEDGER" 2>/dev/null || true; } \
+       | grep -qF "| 스코프=act | 원인=막힘 | 사유=$4 | 중단 답 줄=$5 | "; then
+    warn "$4 — $2 는 파견하지 않습니다 (상한 행은 이미 있습니다)"
+    return 0
+  fi
   rowseg=$(gate_stage_row_segment "$2" "$3")
   gate_append 'blocked' "대상=$1" "스코프=act" "원인=막힘" "사유=$4" "중단 답 줄=$5" \
     "세그먼트=$rowseg" "스테이지=$2" "근거=$(gate_row_safe "$6" 300)" "관측=$(now_iso)" \
@@ -19192,11 +19203,7 @@ EOF
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     [ "$(gate_row_field "$r" '답 운반')" = "$ln" ] || continue
-    if [ "$(gate_row_field "$r" '세션 id')" = "미상" ]; then
-      n=$((n + 1))
-    else
-      case "$(gate_row_field "$r" '관측')" in '스폰 전 대기 중'*) n=$((n + 1)) ;; esac
-    fi
+    gate_row_is_pre_session_death "$r" && n=$((n + 1))
   done <<EOF
 $( { gate_stage_result_rows_of "$key" || true; } )
 EOF
@@ -19382,6 +19389,43 @@ gate_carry_scope_ok() {
 # this line and fails when the skill stops naming one.
 readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 설계-재수렴'
 
+gate_row_is_pre_session_death() {
+  # gate_row_is_pre_session_death <stage-result row> — whether the row settles
+  # an attempt that died before its session started: one that carried an
+  # answer (`답 운반`) and reads `세션 id=미상`, or a waiter settled with
+  # `관측=스폰 전 대기 중` after its supervisor vanished. Such an attempt never
+  # read a card or a prompt, so it moved nothing. Which answer it carried does
+  # not matter: a person may answer the record again after it. A crash with a
+  # real session still counts as the key's state.
+  #
+  # ONE TEST FOR EVERY READER THAT LOOKS PAST THESE ROWS — the routing of an
+  # answer, the run-scope re-convergence admission, the carried-over reading
+  # and the consumer. The death cap counts the same rows of one answer. Two
+  # spellings let one reader see a dead attempt as the key's state while
+  # another passes over it, and the answer the consumer keeps open is then the
+  # one the routing refuses.
+  if [ -n "$(gate_row_field "$1" '답 운반')" ] \
+     && [ "$(gate_row_field "$1" '세션 id')" = '미상' ]; then
+    return 0
+  fi
+  case "$(gate_row_field "$1" '관측')" in '스폰 전 대기 중'*) return 0 ;; esac
+  return 1
+}
+
+gate_stage_last_settled_row() {
+  # gate_stage_last_settled_row <key> — the key's last `stage-result` row that
+  # is not a pre-session death (`gate_row_is_pre_session_death`), or nothing.
+  local r last=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    gate_row_is_pre_session_death "$r" && continue
+    last=$r
+  done <<EOF
+$( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
+EOF
+  printf '%s' "$last"
+}
+
 gate_audit_reconverge_keyable() {
   # gate_audit_reconverge_keyable <audit step id> [<resumed session>] — whether
   # a `- reconverge` dispatch is admitted on the run-scope audit step: the step
@@ -19396,39 +19440,16 @@ gate_audit_reconverge_keyable() {
   # the shift would carry out by that dispatch on the same test, so an answer
   # recorded is one the dispatch takes.
   #
-  # A CARRY LOOKS PAST PRE-SESSION DEATHS. An attempt that carried an answer
-  # and died before its session started (`답 운반` with `세션 id=미상`, or a
-  # waiter settled with `관측=스폰 전 대기 중` after its supervisor vanished)
-  # never read the card, so the key still stands where the park left it; the
-  # carry check counts those deaths against its cap, and this reading must not
-  # refuse the very retry the cap is counting. Which answer the dead attempt
-  # carried does not matter: a person may answer the record again after it,
-  # and the consumer passes over the same rows whatever answer they carry. A
-  # crash with a real session still decides.
+  # THE LAST ROW IS READ PAST PRE-SESSION DEATHS, carry or not
+  # (`gate_stage_last_settled_row`). Such an attempt never read the card, so
+  # the key still stands where the park left it; the carry check counts those
+  # deaths against its cap, and this reading must not refuse the very retry
+  # the cap is counting, nor the re-convergence a person's new `adopt as a
+  # requirement` dispatches without a carry after one.
   local k="$1" res="${2:-}" last
   GATE_AUDIT_RECONVERGE_LAST=''
   [ -z "$(gate_segment_field "$k" '상태')" ] || return 1
-  if [ -n "${GATE_CARRY_ANSWER:-}" ]; then
-    last=$( { gate_stage_result_rows_of "$k" || true; } | LC_ALL=C awk '
-      function fld(line, name,   n, i, a, s, v) {
-        n = split(line, a, /\|/); v = ""
-        for (i = 2; i <= n; i++) {
-          s = a[i]; sub(/^[ \t]+/, "", s)
-          if (index(s, name "=") == 1) { v = substr(s, length(name) + 2); sub(/[ \t]+$/, "", v) }
-        }
-        return v
-      }
-      NF { r[++n] = $0 }
-      END {
-        for (i = n; i >= 1; i--) {
-          if ((fld(r[i], "답 운반") != "" && fld(r[i], "세션 id") == "미상") \
-              || index(fld(r[i], "관측"), "스폰 전 대기 중") == 1) continue
-          print r[i]; exit
-        }
-      }')
-  else
-    last=$( { gate_stage_result_rows_of "$k" || true; } | tail -1)
-  fi
+  last=$(gate_stage_last_settled_row "$k")
   GATE_AUDIT_RECONVERGE_LAST=$last
   case "$(gate_row_field "$last" '종류')|$(gate_row_field "$last" '종단 부류')" in
     'audit|의도된 park') return 0 ;;
@@ -19553,7 +19574,7 @@ gate_halt_answer_route() {
        && { [ "$skill" = "design-discuss-unattended" ] || [ "$skill" = "design-solo-unattended" ] \
             || [ "$skill" = "design-base-unattended" ]; } \
        && [ "$(gate_run_scope_kind_of_key "$key" 2>/dev/null)" = "design" ] \
-       && last=$( { gate_stage_result_rows_of "$key" || true; } | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1) \
+       && last=$(gate_stage_last_settled_row "$key") \
        && [ "$(gate_row_field "$last" '종류')" = "design" ] \
        && [ "$(gate_row_field "$last" '종단 부류')" = "정상 완료" ]; then
     # A `골격 재검토` that arrives after the design froze on an earlier
@@ -19565,9 +19586,11 @@ gate_halt_answer_route() {
     id=설계-재수렴
   else
     # Every other answer, `좌석 실행` included, re-attaches the key's last
-    # session; the shift reads the stream before `--resume` as well.
+    # session; the shift reads the stream before `--resume` as well. A carry
+    # that died before its session is passed over: the session to re-attach
+    # is still the halted one, and the consumer keeps the answer open.
     id=재부착
-    last=$( { gate_stage_result_rows_of "$key" || true; } | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1)
+    last=$(gate_stage_last_settled_row "$key")
     sid=$(gate_row_field "$last" '세션 id')
     case "$sid" in
       ''|미상) why="$key 의 마지막 정산 stage-result 행에 세션 id 가 없어(세션 id=${sid:-빈 값}) 교대가 재부착할 세션이 없습니다" ;;
@@ -39986,27 +40009,14 @@ gate_step_deferred_line() {
   # again with the person's answer. The head `1 답 이월 대기 — ` is fixed;
   # `gate_defer_only_left` reads the return value, not the line.
   #
-  # The last row is read past pre-session deaths — a row carrying any
-  # `답 운반` with `세션 id=미상`, or a waiter settled with `관측=스폰 전 대기
-  # 중` — by the predicate the consumer and the run-scope admission use: such
-  # an attempt never read the card, so the key still stands where the park
-  # left it, whichever answer it carried, since a person may answer the record
-  # again after it. A crash with a real session still decides.
-  local ln last r
+  # The last row is read past pre-session deaths
+  # (`gate_stage_last_settled_row`), the test the consumer, the routing and the
+  # run-scope admission use: such an attempt never read the card, so the key
+  # still stands where the park left it.
+  local ln last
   ln=$(gate_key_deferred_answer "$1")
   [ -n "$ln" ] || return 1
-  last=
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
-    if [ -n "$(gate_row_field "$r" '답 운반')" ] \
-       && [ "$(gate_row_field "$r" '세션 id')" = '미상' ]; then
-      continue
-    fi
-    case "$(gate_row_field "$r" '관측')" in '스폰 전 대기 중'*) continue ;; esac
-    last=$r
-  done <<EOF
-$( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
-EOF
+  last=$(gate_stage_last_settled_row "$1")
   [ "$(gate_row_field "$last" '종단 부류')" = '의도된 park' ] || return 1
   printf '1 답 이월 대기 — %s 의 중단 답(원장 %s 번째 줄)을 다음 런이 이어받습니다\n' "$1" "$ln"
 }

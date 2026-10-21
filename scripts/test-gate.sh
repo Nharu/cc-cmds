@@ -37427,8 +37427,9 @@ for lsr61_f in "$repo_root"/plugins/cc-cmds/orchestrator/*.sh; do
   lsr61_wcalls=$(( lsr61_wcalls + $(sed 's/#.*//' "$lsr61_f" | { grep -cE "$lsr61_wre" || true; }) ))
 done
 # lease: 파견 시점의 부여, 대기 뒤 감독자의 부여, 드라이버의 부여. wait: 게이트
-# 파견 반쪽의 첫 행, 감독자의 심장박동, 드라이버 대기의 첫 행과 심장박동.
-check "61: 래퍼를 부르는 자리는 lease 셋·wait 넷이다" "$lsr61_lcalls/$lsr61_wcalls" "3/4"
+# 파견 반쪽의 첫 행, 중단 답 운반이 묶인 세션의 계정을 기다리는 첫 행과 새 세션의
+# 자리를 기다리는 첫 행, 감독자의 심장박동, 드라이버 대기의 첫 행과 심장박동.
+check "61: 래퍼를 부르는 자리는 lease 셋·wait 여섯이다" "$lsr61_lcalls/$lsr61_wcalls" "3/6"
 check "61: 두 래퍼의 정의는 있다 (0 이 이름이 바뀐 탓이 아니다)" \
   "$( { grep -cE '^gate_stage_(lease|wait)_row\(\) \{' "$GATE" || true; } )" "2"
 check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
@@ -38557,8 +38558,8 @@ check "75: 게이트의 런 개시 호출이 좌석 디렉터리를 --config-dir
   "$( { grep -cF 'pd_dirs+=(--config-dir "$seat_dir")' "$GATE" || true; } )/$( { grep -cF '${pd_dirs[@]+"${pd_dirs[@]}"}' "$GATE" || true; } )" "1/1"
 
 # ---------------------------------------------------------------------------
-# 92. 마감 park 의 복구 문면 — 라우터와 대기 루프가 같은 바이트를 싣는다
-# --- section: 92 | group: ledger_series | covers: act, gate_wait_deadline_park | needs: 75 | anchors: 92: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다, 92: 옛 복구 문구가 플러그인 어디에도 없다, 92: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다 ---
+# 94. 마감 park 의 복구 문면 — 라우터와 대기 루프가 같은 바이트를 싣는다
+# --- section: 94 | group: ledger_series | covers: act, gate_wait_deadline_park | needs: 75 | anchors: 94: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다, 94: 옛 복구 문구가 플러그인 어디에도 없다, 94: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다 ---
 #
 # 마감 park 는 이 런에서 기동하지 않는다는 판정이고, 그 뒤의 길은 다음 런이다. 라우터
 # 봉투의 `recovery` 와 게이트의 대체값(대기 루프 상수)이 따로 적혀 있으므로 둘이
@@ -38569,17 +38570,17 @@ check "75: 게이트의 런 개시 호출이 좌석 디렉터리를 --config-dir
 lsr92_want='마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다'
 lsr92_route=$(sed -n '/^def rt_park_deadline(/,/};$/s/.*recovery: "\([^"]*\)".*/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/route.sh")
 lsr92_loop=$(sed -n 's/^readonly WAIT_LOOP_DEADLINE_RECOVERY="\([^"]*\)"$/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
-check "92: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다" \
+check "94: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다" \
   "$lsr92_route|$lsr92_loop" "$lsr92_want|$lsr92_want"
-check "92: 옛 복구 문구가 플러그인 어디에도 없다" \
+check "94: 옛 복구 문구가 플러그인 어디에도 없다" \
   "$( { grep -rnF '마감을 늘리' "$repo_root/plugins" || true; } | wc -l | tr -d ' ')" "0"
 lsr92_l=$(lsr75_new dl92)
-check "92: 복구를 비운 마감 PARK 도 exit 16 이다" \
+check "94: 복구를 비운 마감 PARK 도 exit 16 이다" \
   "$(lsr75_rc "$lsr92_l" '{"verdict":"PARK","reason":"deadline","ready_at":1900000000,"recovery":""}' '' SW92)" "16"
 case "$( { grep '^- `blocked`' "$lsr92_l" || true; } | tail -1)" in
   *"스코프=act"*"세그먼트=SW92"*"근거=계보=B:SW92#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') ($lsr92_want) |"*)
-    ok "92: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다" ;;
-  *) bad "92 대체값 행" "$(tail -1 "$lsr92_l")" ;;
+    ok "94: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다" ;;
+  *) bad "94 대체값 행" "$(tail -1 "$lsr92_l")" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -39098,16 +39099,29 @@ check "93: TB4 다른 키의 답은 운반한다" \
 lsr93_l=$(lsr75_new te3)
 lsr93_park "$lsr93_l" S8 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
 lsr93_ln=$(lsr93_ans "$lsr93_l" S8 "${lsr93_l%/*}/halt/S8#1.md" design-reconverge 적용)
+lsr93_rt() {  # lsr93_rt <원장> <키> — 스냅숏의 그 키 원소 「route|route_refusal|state」
+  lsr93_in "$1" eval 'printf "[%s]" "$(gate_answered_halts_json)"' 2>/dev/null \
+    | jq -r --arg k "$2" '[.[] | select(.segment == $k) | "\(.route)|\(.route_refusal)|\(.state)"] | join(",")'
+}
+lsr93_te3r=''
 for lsr93_i in 2 3; do
   LSR93_CARRY=$lsr93_ln lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=S8" "스테이지=S8" "종류=reconverge" \
     "종료 코드=-" "실행 버전=$lsr93_i" "세션 id=미상" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_ln" >/dev/null 2>&1
+  lsr93_te3r="$lsr93_te3r/$(lsr93_rt "$lsr93_l" S8)"
 done
 check "93: TE3 세션 전 사망 둘 뒤에는 운반한다" "$(lsr93_capgo te3 "$lsr93_ln")" "0"
+# 사망 행은 라우팅의 「마지막 정산 행」도 아니다 — 스냅숏 원소는 사망 한 번 뒤에도 두 번
+# 뒤에도 재부착으로 열려 있어, 교대가 그것을 라우팅 원뿔로 보내 소진하지 않는다.
+check "93: TE3 세션 전 사망 한 번·두 번 뒤의 스냅숏 원소는 재부착이고 거절 사유가 없다" \
+  "$lsr93_te3r" "/재부착||열림/재부착||열림"
 lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=S8" "스테이지=S8" "종류=reconverge" \
   "종료 코드=-" "실행 버전=4" "세션 id=미상" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_ln" >/dev/null 2>&1
 check "93: TE3 세 번째 세션 전 사망 뒤의 운반은 exit 18 이다" "$(lsr93_capgo te3 "$lsr93_ln")" "18"
 check "93: TE3 그 상한 행이 사유와 답 줄을 싣는다" \
   "$(lsr93_n "$lsr93_l" "사유=중단 답 라우팅 — 세션 전에 세 번 죽었다 | 중단 답 줄=$lsr93_ln |")" "1"
+# 뒤 교대가 같은 답을 다시 운반해도 같은 셈으로 다시 18 이고, 상한 행은 두 번 쓰지 않는다.
+check "93: TE3 상한에 닿은 답을 다시 운반하면 다시 18 이고 상한 행은 하나로 남는다" \
+  "$(lsr93_capgo te3 "$lsr93_ln")|$(lsr93_n "$lsr93_l" "사유=중단 답 라우팅 — 세션 전에 세 번 죽었다 | 중단 답 줄=$lsr93_ln |")" "18|1"
 # TE3 대기자 — 스폰 전에 감독자를 잃은 대기자의 정산 행(`세션 id=-`, `관측=스폰 전
 # 대기 중`)도 같은 답의 세션 전 사망으로 센다.
 lsr93_l=$(lsr75_new te3w)
@@ -39121,6 +39135,7 @@ lsr93_te3w() {  # lsr93_te3w <원장> <실행 버전> <답 운반 줄> — 대�
 lsr93_te3w "$lsr93_l" 2 "$lsr93_ln"
 lsr93_te3w "$lsr93_l" 3 "$lsr93_ln"
 check "93: TE3 대기자 정산 사망 둘 뒤에는 운반한다" "$(lsr93_capgo te3w "$lsr93_ln")" "0"
+check "93: TE3 대기자 정산 사망 둘 뒤의 스냅숏 원소는 재부착이다" "$(lsr93_rt "$lsr93_l" S8)" "재부착||열림"
 lsr93_te3w "$lsr93_l" 4 "$lsr93_ln"
 check "93: TE3 세 번째 대기자 정산 사망 뒤의 운반은 exit 18 이다" "$(lsr93_capgo te3w "$lsr93_ln")" "18"
 
@@ -39161,7 +39176,7 @@ lsr93_ln=$(lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#2.md" design-reconverge 적용)
 check "93: R8 런 스코프 감사 키의 걷기가 종합 요구의 답에 닿는다" \
   "$(lsr93_sc "$lsr93_l" "$lsr93_ln" A1 "/cc-cmds:design-reconverge $lsr93_doc $lsr93_as")" "0|same"
 lsr93_rsa() {  # lsr93_rsa <원장> <운반 줄 또는 빈 값> — 런 스코프 재수렴 새 파견을 받는지
-  LSR93_LN=$2 lsr93_in "$1" eval 'GATE_CARRY_ANSWER=$LSR93_LN; gate_audit_reconverge_keyable A1 "${GATE_RESUME:-}" && printf yes || printf no' 2>/dev/null
+  LSR93_LN=$2 lsr93_in "$1" eval 'GATE_CARRY_ANSWER=$LSR93_LN; GATE_RESUME=; gate_audit_reconverge_keyable A1 "$GATE_RESUME" && printf yes || printf no' 2>/dev/null
 }
 check "93: R8 의도된 park 로 끝난 재수렴 뒤의 런 스코프 재수렴은 운반이면 받고 아니면 받지 않는다" \
   "$(lsr93_rsa "$lsr93_l" "$lsr93_ln")|$(lsr93_rsa "$lsr93_l" "")" "yes|no"
@@ -39172,6 +39187,14 @@ check "93: R8 정상 완료로 끝난 재수렴 뒤의 런 스코프 재수렴�
 lsr93_l=$(lsr75_new rw3)
 lsr93_park "$lsr93_l" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
 check "93: R8 대조 — 의도된 park 로 끝난 감사 뒤에는 운반이 아니어도 받는다" "$(lsr93_rsa "$lsr93_l" "")" "yes"
+# 감사의 「요구로 채택」 답 — 그 답을 실은 시도가 세션 전에 죽어도 감사 키의 마지막 정산 행은
+# 의도된 park 로 끝난 감사이므로, 스냅숏 원소는 감사-재수렴으로 열려 있다.
+printf '**스킬**: design-audit-unattended\n' >> "${lsr93_l%/*}/halt/A1#1.md"
+lsr93_x=$(lsr93_ans "$lsr93_l" A1 "${lsr93_l%/*}/halt/A1#1.md" design-audit-unattended 'adopt as a requirement')
+lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=-" \
+  "실행 버전=2" "세션 id=미상" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_x" >/dev/null 2>&1
+check "93: R8 요구 채택 답을 실은 시도가 세션 전에 죽은 뒤의 스냅숏 원소는 감사-재수렴이다" \
+  "$(lsr93_rt "$lsr93_l" A1)" "감사-재수렴||열림"
 # 세션 전 사망 — 답을 실은 시도가 세션 전에 죽으면 그 시도는 카드를 읽지 않았으므로
 # 어느 답을 실었든 건너뛴다(사람이 그 뒤에 다시 답할 수 있다). 세션이 있던 크래시 행은 건너뛰지 않는다.
 lsr93_rsd() {  # lsr93_rsd <이름> <사망 행의 답 운반 오프셋> <세션 id> — 런 스코프 재수렴 park 뒤 사망 행 하나를 둔 원장의 「운반|비운반」
@@ -39216,7 +39239,13 @@ LSR93_SCOPE="감사 종합 요구 $lsr93_r/A1#1.md" lsr93_park "$lsr93_l" A1 2 "
 lsr93_x=$(lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#2.md" design-reconverge 적용)
 lsr93_in "$lsr93_l" gate_append stage-result "세그먼트=-" "스테이지=A1" "종류=reconverge" "종료 코드=1" \
   "실행 버전=3" "세션 id=미상" "계정=u2" "부모=-" "기록자=게이트" "종단 부류=크래시" "답 운반=$lsr93_x" >/dev/null 2>&1
-lsr93_ln=$(lsr93_ans "$lsr93_l" A1 "$lsr93_r/A1#2.md" design-reconverge 기각)
+# L2 는 좌석이 쓰는 실제 `halt-answer` 동사로 쓴다 — 그 동사는 라우팅 불가인 답을 쓰지
+# 않으므로, 사망 행이 라우팅을 막으면 여기서 L2 가 생기지 않는다.
+lsr93_har=$(LSR93_REC="$lsr93_r/A1#2.md" lsr93_in "$lsr93_l" eval \
+  'r=0; gate_record_row halt-answer A1 infra "중단 기록=$LSR93_REC" "선택지=세그먼트 park" "답한 주체=사람" "근거=사람이 다시 고름" >/dev/null 2>"$RUN_DIR/ha.err" || r=$?; printf %s "$r"' 2>/dev/null)
+lsr93_ln=$( { grep -n '^- `중단 답` ' "$lsr93_l" || true; } | tail -1 | cut -d: -f1)
+check "93: R8 L1 이 세션 전에 죽은 뒤 사람의 재답 L2 를 halt-answer 가 받는다" \
+  "$lsr93_har|$( [ "$lsr93_ln" != "$lsr93_x" ] && printf new || printf same)|$(lsr93_rt "$lsr93_l" A1)" "0|new|재부착||열림"
 check "93: R8 L1 이 세션 전에 죽은 뒤 사람이 다시 답한 L2 의 런 스코프 운반을 받는다" \
   "$( [ "$lsr93_ln" != "$lsr93_x" ] && lsr93_rsa "$lsr93_l" "$lsr93_ln")" "yes"
 
@@ -39351,6 +39380,7 @@ lsr93_act() {
     GATE_EMIT_DIGEST_TO=""; GATE_SHIFT_HALT_SITE=""; GATE_SHIFT_HALT_WRITING=""; GATE_ADMIT=""
     GATE_REACH=""; GATE_DESTRUCTIVE=0; GATE_SETTLED_SEGMENTS=""; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
     GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+    GATE_TRIGGER=""; GATE_TRIGGER_SEEN=""; GATE_TRIGGER_REASON=""
     GATE_CARRY_ANSWER=$LSR93_LN; r=0
     ( gate_verb_act act skill infra S3 커밋 워크트리쓰기 "$(gate_snapshot_digest)" "운반 시험" "" \
         reconverge -p "$LSR93_P" ) >/dev/null 2>"$RUN_DIR/act.err" || r=$?
