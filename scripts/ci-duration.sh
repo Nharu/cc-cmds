@@ -132,10 +132,16 @@ EOF
 # `overlap` counts the runs of this repository with a different head sha that
 # were alive in the assignment window [attempt start, start of the last
 # `gate-shards` job, or now when none started]: created before the window ends,
-# and not finished or finished after it began. The start bound is `created_at`
-# and not the listed `run_started_at`, which is the start of a run's latest
-# attempt: a neighbour that ran in the window and was rerun before this report
-# would otherwise drop out. This run itself (by id) and the runs of its own head
+# and not finished or finished after it began. The run list describes a run by
+# its latest attempt: `run_started_at`, `status` and `updated_at` are that
+# attempt's. So a neighbour whose latest attempt began after the window is
+# judged by its earlier attempts, read one by one from the attempt endpoint —
+# counted when one of them began before the window ended (the first from the
+# run's `created_at`, so a run queued in the window counts) and had not finished
+# or finished after the window began. A neighbour that ran in the window and was
+# rerun before this report counts; one that had finished before the window and
+# was rerun after it does not. A failed read of such an earlier attempt writes
+# overlap `-` with a notice. This run itself (by id) and the runs of its own head
 # sha (lint, notify) are not counted — the head sha is the attempt's, which on a
 # pull request is the head and not the merge commit in GITHUB_SHA — and neither
 # is a run created after the window, which could not have made this one wait.
@@ -169,7 +175,7 @@ dur_wall() {
   local repo="${GITHUB_REPOSITORY:-}" rid="${GITHUB_RUN_ID:-}" att="${GITHUB_RUN_ATTEMPT:-}"
   local now="${CI_DURATION_NOW:-$(date +%s)}"
   local start="" sha="" jobs="" jobs_ok=0 raw="-" path="-" queued="-" overlap="-" notes=""
-  local pd sm rs ls carried wend f executed=0
+  local pd sm rs ls carried wend f executed=0 cands cid catt ccr k alive
   case "$rid" in *[!0-9]*) rid="" ;; esac
   if [ -z "$repo" ] || [ -z "$rid" ] || [ -z "$att" ]; then
     notes="GITHUB_REPOSITORY·GITHUB_RUN_ID·GITHUB_RUN_ATTEMPT 가운데 빈 값이 있어 API 를 읽지 않았습니다"
@@ -207,9 +213,35 @@ EOF
       notes="${notes:+$notes · }시도 API 가 head_sha 를 주지 않아 overlap 을 세지 않았습니다"
     elif [ -n "$start" ]; then
       wend="$now"; [ "$ls" = "-" ] || wend="$ls"
-      overlap=$(gh api "repos/$repo/actions/runs?per_page=100" \
-        --jq "[.workflow_runs[] | select(.id != $rid) | select(.head_sha != \"$sha\") | select((.created_at | fromdate) < $wend) | select(.status != \"completed\" or ((.updated_at | fromdate) > $start))] | length" 2>/dev/null) || overlap=""
-      case "$overlap" in ''|*[!0-9]*) overlap="-"; notes="${notes:+$notes · }실행 목록 API 를 읽지 못했습니다" ;; esac
+      # One line per candidate: `live` when the listed (latest) attempt decides
+      # it, `<id> <attempts> <created>` when that attempt began after the window
+      # and only the earlier attempts can say whether the run was alive in it.
+      if cands=$(gh api "repos/$repo/actions/runs?per_page=100" \
+          --jq ".workflow_runs[] | select(.id != $rid) | select(.head_sha != \"$sha\") | select((.created_at | fromdate) < $wend) | if ((.run_attempt // 1) > 1 and (((.run_started_at // .created_at) | fromdate) >= $wend)) then \"\\(.id) \\(.run_attempt) \\(.created_at | fromdate)\" elif (.status != \"completed\" or ((.updated_at | fromdate) > $start)) then \"live\" else empty end" 2>/dev/null); then
+        overlap=0
+        while read -r cid catt ccr; do
+          [ -n "$cid" ] || continue
+          if [ "$cid" = "live" ]; then overlap=$((overlap + 1)); continue; fi
+          case "$cid$catt$ccr" in *[!0-9]*) overlap=""; break ;; esac
+          k=1; alive=0
+          while [ "$k" -lt "$catt" ]; do
+            alive=$(gh api "repos/$repo/actions/runs/$cid/attempts/$k" \
+              --jq "if ((if $k == 1 then $ccr else (.run_started_at | fromdate) end) < $wend) and (.status != \"completed\" or ((.updated_at | fromdate) > $start)) then 1 else 0 end" 2>/dev/null) || alive=""
+            [ "$alive" = "0" ] || break
+            k=$((k + 1))
+          done
+          case "$alive" in
+            1) overlap=$((overlap + 1)) ;;
+            0) ;;
+            *) overlap=""; break ;;
+          esac
+        done <<EOF
+$cands
+EOF
+        case "$overlap" in ''|*[!0-9]*) overlap="-"; notes="${notes:+$notes · }다시 돈 실행의 앞 시도 API 를 읽지 못했습니다" ;; esac
+      else
+        overlap="-"; notes="${notes:+$notes · }실행 목록 API 를 읽지 못했습니다"
+      fi
     fi
   fi
   if [ "$raw" != "-" ] && [ "$path" != "-" ]; then queued=$(( raw - path )); fi
@@ -347,7 +379,8 @@ dur_self_test() {
   # under STUB_DIR, and `run download` copies the stub's window into -D. The
   # attempt, jobs and run-list endpoints of `wall` answer from JSON files run
   # through the caller's own --jq expression, so the expressions are tested; a
-  # missing file is an API failure.
+  # missing file is an API failure. The attempt endpoint answers attempt.json
+  # for this run (GITHUB_RUN_ID) and attempt-<id>-<k>.json for another run.
   mkdir -p "$T/bin" "$T/stub"
   cat > "$T/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -357,7 +390,10 @@ case "$1 $2" in
   "api repos/"*"/workflows/"*) [ -f "$STUB_DIR/runs" ] && cat "$STUB_DIR/runs"; exit 0 ;;
   "api repos/"*"/artifacts"*) [ -f "$STUB_DIR/window" ] && echo 1 || echo 0; exit 0 ;;
   "api repos/"*"/attempts/"*"/jobs"*) emit "$STUB_DIR/jobs.json" ;;
-  "api repos/"*"/attempts/"*) emit "$STUB_DIR/attempt.json" ;;
+  "api repos/"*"/attempts/"*)
+    r=${2#*/runs/}
+    if [ "${r%%/*}" = "$GITHUB_RUN_ID" ]; then emit "$STUB_DIR/attempt.json"; fi
+    emit "$STUB_DIR/attempt-${r%%/*}-${r##*/}.json" ;;
   "api repos/"*"/actions/runs?"*) emit "$STUB_DIR/allruns.json" ;;
   "run download")
     while [ "$#" -gt 0 ]; do [ "$1" = "-D" ] && d="$2"; [ "$1" = "-n" ] && n="$2"; shift; done
@@ -496,13 +532,33 @@ STUB
     printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
     # S3 started before the window closed and is still running; S4 is queued
     # and has not started; S5 ran in the window and was rerun afterwards, so
-    # the list gives its latest attempt's start, 17:40:00. All three count.
-    printf '{"workflow_runs":[%s,\n%s,\n%s,\n%s]}\n' "$quiet" \
-      '{"head_sha":"S3","created_at":"2026-10-21T17:00:00Z","run_started_at":"2026-10-21T17:00:05Z","status":"in_progress","updated_at":"2026-10-21T17:30:00Z"}' \
-      '{"head_sha":"S4","created_at":"2026-10-21T17:03:00Z","run_started_at":"2026-10-21T17:03:00Z","status":"queued","updated_at":"2026-10-21T17:03:00Z"}' \
-      '{"head_sha":"S5","created_at":"2026-10-21T17:02:00Z","run_started_at":"2026-10-21T17:40:00Z","status":"in_progress","updated_at":"2026-10-21T17:41:00Z"}' > "$T/stub/allruns.json"
+    # the list gives its latest attempt's start, 17:40:00, and its attempt 1
+    # says it ran 17:02:05 to 17:20:00. All three count.
+    local live3
+    live3='{"head_sha":"S3","created_at":"2026-10-21T17:00:00Z","run_started_at":"2026-10-21T17:00:05Z","status":"in_progress","updated_at":"2026-10-21T17:30:00Z"},
+{"head_sha":"S4","created_at":"2026-10-21T17:03:00Z","run_started_at":"2026-10-21T17:03:00Z","status":"queued","updated_at":"2026-10-21T17:03:00Z"},
+{"id":39650000005,"run_attempt":2,"head_sha":"S5","created_at":"2026-10-21T17:02:00Z","run_started_at":"2026-10-21T17:40:00Z","status":"in_progress","updated_at":"2026-10-21T17:41:00Z"}'
+    printf '{"id":39650000005,"run_attempt":1,"created_at":"2026-10-21T17:02:00Z","run_started_at":"2026-10-21T17:02:05Z","status":"completed","updated_at":"2026-10-21T17:20:00Z"}\n' > "$T/stub/attempt-39650000005-1.json"
+    printf '{"workflow_runs":[%s,\n%s]}\n' "$quiet" "$live3" > "$T/stub/allruns.json"
     out=$(wall 2>&1)
     if printf '%s\n' "$out" | grep -q ' overlap=3 '; then ok "창 안에 시작한 진행 중 실행, 아직 시작하지 않은 대기 실행, 창 뒤에 다시 돌린 실행은 센다"; else bad "겹침 3" "$out"; fi
+    # S6 is the shape of lint 39632423148 against gate 39628514969 attempt 2:
+    # its attempt 1 finished at 16:50:00, before the window opened, and its
+    # attempt 2 began at 17:40:00, after the window closed. The list alone
+    # shows it created before the window and still running.
+    printf '{"id":39650000006,"run_attempt":1,"created_at":"2026-10-21T16:30:00Z","run_started_at":"2026-10-21T16:30:00Z","status":"completed","updated_at":"2026-10-21T16:50:00Z"}\n' > "$T/stub/attempt-39650000006-1.json"
+    printf '{"workflow_runs":[%s,\n%s,\n%s]}\n' "$quiet" "$live3" \
+      '{"id":39650000006,"run_attempt":2,"head_sha":"S6","created_at":"2026-10-21T16:30:00Z","run_started_at":"2026-10-21T17:40:00Z","status":"in_progress","updated_at":"2026-10-21T17:41:00Z"}' > "$T/stub/allruns.json"
+    out=$(wall 2>&1)
+    if printf '%s\n' "$out" | grep -q ' overlap=3 '; then ok "창 전에 끝났다가 창 뒤에 다시 돈 실행은 세지 않는다"; else bad "창 전 종료 후 재실행" "$out"; fi
+    rm -f "$T/stub/attempt-39650000006-1.json"
+    out=$(wall 2>&1); rc=$?
+    if [ "$rc" = "0" ] && printf '%s\n' "$out" | grep -q ' overlap=- ' && printf '%s\n' "$out" | grep -q '^::notice::.*앞 시도 API'; then
+      ok "다시 돈 실행의 앞 시도를 읽지 못하면 overlap 을 - 로 적고 종료 0"
+    else
+      bad "앞 시도 API 실패" "rc=$rc $out"
+    fi
+    printf '{"workflow_runs":[%s,\n%s]}\n' "$quiet" "$live3" > "$T/stub/allruns.json"
     rm -f "$W/t/timing-7.tsv"
     out=$(wall 2>&1)
     if printf '%s\n' "$out" | grep -q ' rows=12/13 '; then ok "행 하나의 timing 파일이 없으면 rows=12/13"; else bad "빠진 행" "$out"; fi
@@ -539,8 +595,8 @@ STUB
   rm -rf "$T"
   printf 'ci-duration self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 23 ]; then
-    printf 'ci-duration self-test: 통과 수 %d 가 하한 23 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 25 ]; then
+    printf 'ci-duration self-test: 통과 수 %d 가 하한 25 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
