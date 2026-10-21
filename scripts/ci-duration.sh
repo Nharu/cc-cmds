@@ -133,8 +133,10 @@ EOF
 # were alive in the assignment window [attempt start, start of the last
 # `gate-shards` job, or now when none started]: created before the window ends,
 # started before it ends or not started, and not finished or finished after it
-# began. The runs of this push's own sha (lint, notify) are not counted, and
-# neither is a run that started after the window, which could not have made
+# began. This run itself (by id) and the runs of its own head sha (lint, notify)
+# are not counted — the head sha is the attempt's, which on a pull request is
+# the head and not the merge commit in GITHUB_SHA — and neither is a run that
+# started after the window, which could not have made
 # this one wait. Jobs of other repositories on the same account are not visible
 # through this API, and the line says so. `rows` is the number of row timing
 # files in D that reached their `@end` line, over S: a shard that died uploads
@@ -158,15 +160,22 @@ dur_wall() {
     case "$v" in ''|*[!0-9]*) dur_usage ;; esac
   done
   [ "$slots" -ge 1 ] && [ -n "$tdir" ] || dur_usage
-  local repo="${GITHUB_REPOSITORY:-}" rid="${GITHUB_RUN_ID:-}" att="${GITHUB_RUN_ATTEMPT:-}" sha="${GITHUB_SHA:-}"
+  local repo="${GITHUB_REPOSITORY:-}" rid="${GITHUB_RUN_ID:-}" att="${GITHUB_RUN_ATTEMPT:-}"
   local now="${CI_DURATION_NOW:-$(date +%s)}"
-  local start="" jobs="" jobs_ok=0 raw="-" path="-" queued="-" overlap="-" notes=""
+  local start="" sha="" jobs="" jobs_ok=0 raw="-" path="-" queued="-" overlap="-" notes=""
   local pd sm rs ls wend f executed=0
-  if [ -z "$repo" ] || [ -z "$rid" ] || [ -z "$att" ] || [ -z "$sha" ]; then
-    notes="GITHUB_REPOSITORY·GITHUB_RUN_ID·GITHUB_RUN_ATTEMPT·GITHUB_SHA 가운데 빈 값이 있어 API 를 읽지 않았습니다"
+  case "$rid" in *[!0-9]*) rid="" ;; esac
+  if [ -z "$repo" ] || [ -z "$rid" ] || [ -z "$att" ]; then
+    notes="GITHUB_REPOSITORY·GITHUB_RUN_ID·GITHUB_RUN_ATTEMPT 가운데 빈 값이 있어 API 를 읽지 않았습니다"
   else
-    start=$(gh api "repos/$repo/actions/runs/$rid/attempts/$att" --jq '.run_started_at | fromdate' 2>/dev/null) || start=""
+    # The run's own head sha comes from the attempt, not from GITHUB_SHA: on a
+    # pull request GITHUB_SHA is the merge commit, while every run of that push
+    # (this one, its lint and notify runs) carries the pull request head.
+    read -r start sha <<EOF
+$(gh api "repos/$repo/actions/runs/$rid/attempts/$att" --jq '[(.run_started_at | fromdate), (.head_sha // "")] | @tsv' 2>/dev/null)
+EOF
     case "$start" in ''|*[!0-9]*) start=""; notes="시도 API 를 읽지 못했습니다" ;; esac
+    case "$sha" in ''|*[!0-9A-Za-z]*) sha="" ;; esac
     if jobs=$(gh api "repos/$repo/actions/runs/$rid/attempts/$att/jobs?per_page=100" \
         --jq '.jobs[] | [.name, (if .started_at then (.started_at | fromdate) else "-" end), (if .completed_at then (.completed_at | fromdate) else "-" end)] | @tsv' 2>/dev/null); then
       jobs_ok=1
@@ -184,10 +193,12 @@ $(printf '%s\n' "$jobs" | awk -F '\t' '
   END { print (pd == "" ? "-" : pd), (sm == "" ? "-" : sm), (rs == "" ? "-" : rs), (ls == "" ? "-" : ls) }')
 EOF
     if [ "$pd" != "-" ] && [ "$sm" != "-" ] && [ "$rs" != "-" ]; then path=$(( pd + sm + now - rs )); fi
-    if [ -n "$start" ]; then
+    if [ -n "$start" ] && [ -z "$sha" ]; then
+      notes="${notes:+$notes · }시도 API 가 head_sha 를 주지 않아 overlap 을 세지 않았습니다"
+    elif [ -n "$start" ]; then
       wend="$now"; [ "$ls" = "-" ] || wend="$ls"
       overlap=$(gh api "repos/$repo/actions/runs?per_page=100" \
-        --jq "[.workflow_runs[] | select(.head_sha != \"$sha\") | select((.created_at | fromdate) < $wend) | select(.run_started_at == null or ((.run_started_at | fromdate) < $wend)) | select(.status != \"completed\" or ((.updated_at | fromdate) > $start))] | length" 2>/dev/null) || overlap=""
+        --jq "[.workflow_runs[] | select(.id != $rid) | select(.head_sha != \"$sha\") | select((.created_at | fromdate) < $wend) | select(.run_started_at == null or ((.run_started_at | fromdate) < $wend)) | select(.status != \"completed\" or ((.updated_at | fromdate) > $start))] | length" 2>/dev/null) || overlap=""
       case "$overlap" in ''|*[!0-9]*) overlap="-"; notes="${notes:+$notes · }실행 목록 API 를 읽지 못했습니다" ;; esac
     fi
   fi
@@ -428,7 +439,7 @@ STUB
     local now W="$T/wall"
     now=$(jq -n '"2026-10-21T17:46:54Z" | fromdate')
     mkdir -p "$W/t"
-    printf '{"run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
+    printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
     printf '%s\n' '{"jobs":[' \
       '{"name":"gate-plan","started_at":"2026-10-21T17:04:50Z","completed_at":"2026-10-21T17:04:58Z"},' \
       '{"name":"shard-coverage","started_at":"2026-10-21T17:05:00Z","completed_at":"2026-10-21T17:05:30Z"},' \
@@ -437,13 +448,13 @@ STUB
       '{"name":"gate-report","started_at":"2026-10-21T17:46:43Z","completed_at":null}]}' > "$T/stub/jobs.json"
     # The run itself and its lint run share sha S0; S1 started after the window
     # [17:04:45, 17:05:06] closed; S2 finished before it opened.
-    local quiet='{"head_sha":"S0","created_at":"2026-10-21T17:04:40Z","run_started_at":"2026-10-21T17:04:45Z","status":"in_progress","updated_at":"2026-10-21T17:46:00Z"},
-{"head_sha":"S0","created_at":"2026-10-21T17:04:40Z","run_started_at":"2026-10-21T17:04:46Z","status":"completed","updated_at":"2026-10-21T17:10:00Z"},
-{"head_sha":"S1","created_at":"2026-10-21T17:42:20Z","run_started_at":"2026-10-21T17:42:25Z","status":"in_progress","updated_at":"2026-10-21T17:43:00Z"},
-{"head_sha":"S2","created_at":"2026-10-21T16:00:00Z","run_started_at":"2026-10-21T16:00:05Z","status":"completed","updated_at":"2026-10-21T16:30:00Z"}'
+    local quiet='{"id":39640545294,"head_sha":"S0","created_at":"2026-10-21T17:04:40Z","run_started_at":"2026-10-21T17:04:45Z","status":"in_progress","updated_at":"2026-10-21T17:46:00Z"},
+{"id":39640545131,"head_sha":"S0","created_at":"2026-10-21T17:04:40Z","run_started_at":"2026-10-21T17:04:46Z","status":"completed","updated_at":"2026-10-21T17:10:00Z"},
+{"id":39646172838,"head_sha":"S1","created_at":"2026-10-21T17:42:20Z","run_started_at":"2026-10-21T17:42:25Z","status":"in_progress","updated_at":"2026-10-21T17:43:00Z"},
+{"id":39628514969,"head_sha":"S2","created_at":"2026-10-21T16:00:00Z","run_started_at":"2026-10-21T16:00:05Z","status":"completed","updated_at":"2026-10-21T16:30:00Z"}'
     printf '{"workflow_runs":[%s]}\n' "$quiet" > "$T/stub/allruns.json"
     local k=1; while [ "$k" -le 13 ]; do printf '@start\t1\n@end\t2\n' > "$W/t/timing-$k.tsv"; k=$((k + 1)); done
-    wall() { PATH="$T/bin:$PATH" STUB_DIR="$T/stub" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=39640545294 GITHUB_RUN_ATTEMPT=1 GITHUB_SHA=S0 \
+    wall() { PATH="$T/bin:$PATH" STUB_DIR="$T/stub" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=39640545294 GITHUB_RUN_ATTEMPT=1 GITHUB_SHA="${WALL_SHA:-S0}" \
                CI_DURATION_NOW="${WALL_NOW:-$now}" bash "$0" wall --slots 13 --runners 13 --lanes 1 --timing-dir "$W/t" "$@"; }
     out=$(wall --out "$W/out/gate-wall.txt" 2>&1); rc=$?
     if [ "$rc" = "0" ] && printf '%s\n' "$out" | grep -q '^gate-wall: raw=2529 path=2518 queued=11 overlap=[0-9-]* rows=13/13 attempt=1 slots=13 runners=13 lanes=1 ' \
@@ -456,6 +467,24 @@ STUB
     if [ "$rc" = "0" ] && printf '%s\n' "$out" | grep -q '^::warning::gate 벽시계 raw 2529초가 900초를 넘습니다'; then ok "raw 가 900 을 넘으면 경고만 내고 종료 0"; else bad "900 초과 경고" "rc=$rc $out"; fi
     out=$(WALL_NOW=$((now - 2000)) wall 2>&1)
     if printf '%s\n' "$out" | grep -q '^gate-wall: raw=529 ' && ! printf '%s\n' "$out" | grep -q '::warning::'; then ok "raw 가 900 이하면 경고하지 않는다"; else bad "900 이하 경고 오발" "$out"; fi
+    # A pull request run: GITHUB_SHA is the merge commit M0, while the run, its
+    # lint run and the attempt all carry the head S0.
+    out=$(WALL_SHA=M0 wall 2>&1)
+    if printf '%s\n' "$out" | grep -q ' overlap=0 '; then ok "pull request 실행은 GITHUB_SHA 가 병합 커밋이어도 자기 push 의 실행을 세지 않는다"; else bad "PR 겹침 0" "$out"; fi
+    # The run itself is left out by id even where its listed sha differs.
+    printf '{"workflow_runs":[%s,\n%s]}\n' "$quiet" \
+      '{"id":39640545294,"head_sha":"SX","created_at":"2026-10-21T17:04:40Z","run_started_at":"2026-10-21T17:04:45Z","status":"in_progress","updated_at":"2026-10-21T17:46:00Z"}' > "$T/stub/allruns.json"
+    out=$(wall 2>&1)
+    if printf '%s\n' "$out" | grep -q ' overlap=0 '; then ok "자기 실행은 id 로 빠진다"; else bad "자기 실행 id" "$out"; fi
+    printf '{"id":39640545294,"run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
+    out=$(wall 2>&1); rc=$?
+    if [ "$rc" = "0" ] && printf '%s\n' "$out" | grep -q '^gate-wall: raw=2529 path=2518 queued=11 overlap=- ' && printf '%s\n' "$out" | grep -q '^::notice::.*head_sha'; then
+      ok "시도 응답에 head_sha 가 없으면 overlap 을 - 로 적고 종료 0"
+    else
+      bad "head_sha 없음" "rc=$rc $out"
+    fi
+    printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
+    printf '{"workflow_runs":[%s]}\n' "$quiet" > "$T/stub/allruns.json"
     # S3 started before the window closed and is still running; S4 is queued
     # and has no start time. Both count.
     printf '{"workflow_runs":[%s,\n%s,\n%s]}\n' "$quiet" \
@@ -483,8 +512,8 @@ STUB
   rm -rf "$T"
   printf 'ci-duration self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 19 ]; then
-    printf 'ci-duration self-test: 통과 수 %d 가 하한 19 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 22 ]; then
+    printf 'ci-duration self-test: 통과 수 %d 가 하한 22 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
