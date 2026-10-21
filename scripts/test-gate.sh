@@ -3718,6 +3718,239 @@ SAPEOF
       } >> "$SA_LEDGER"
     fi
   }
+
+  # Section 60b runs as three pieces (60b, 60b-2, 60b-3), and each builds its
+  # fixture with these. `cb60_head` fixes the read-only token, writes the GitHub
+  # stand-in, shadows `gh` and `sleep` with functions that reach it and sets the
+  # workflow both tips carry; `cb60_foot` puts back what the head changed.
+  cb60_shadow() {
+    sleep() { :; }
+    gh() { "$CB60_STUB" "$@"; }
+    export -f gh
+  }
+  cb60_head() {
+    # 자동 해소는 하니스 기본값(끔) 그대로 둔다 — 켜면 `act` 로 내는 머지가 `--reach` 를
+    # 요구하는데 `act` 는 그 플래그를 받지 않는다. 두 모드의 차이는 60c 가 잰다.
+    # 읽기 전용 자격은 고정한 픽스처 값이다. 비워 두면 게이트가 이 기기의 키체인을 읽는다.
+    CB60_PREV_RO="${CC_GATE_TOKEN_RO:-}"
+    export CC_GATE_TOKEN_RO=cb60-ro-fixture
+    # 확인 고리의 잠은 함수로 지운다. 게이트의 상수는 소싱한 쪽에만 있어 이 셸에서 바꿀 수
+    # 없다. 내보내지 않은 함수라 게이트가 띄우는 자식 프로세스에는 닿지 않고, 횟수
+    # (`GATE_CI_RERUN_CONFIRM_TRIES`)는 그대로 잰다. 실제 명령을 가리는 함수는 헬퍼 안에서
+    # 정의하고 조각 끝의 `cb60_foot` 이 `unset -f` 로 되돌린다.
+    CB60_ROOT="$WORK/cb60"; rm -rf "$CB60_ROOT"; mkdir -p "$CB60_ROOT"
+    CB60_STUB="$CB60_ROOT/gh"
+    cat > "$CB60_STUB" <<'CB60EOF'
+#!/bin/bash
+# 재실행 행위의 GitHub 대역. 답은 `$CB60_S` 의 파일이 고른다:
+#   prlist · checks.pre · checks.post · run.<id> · run.<id>.post · base · post
+#   att_stale · screen_stale  (POST 뒤 옛 답을 몇 번 더 낼지)
+# 파일이 없으면 그 읽기는 실패(rc 1)로 답한다.
+D=${CB60_S:?}
+printf '%s\n' "$*" >> "$D/gh.log"
+tok=other; [ "${GH_TOKEN:-}" = cb60-ro-fixture ] && tok=fixture
+printf '%s|GH_TOKEN=%s|GITHUB_TOKEN=%s|GH_CONFIG_DIR=%s|GH_REPO=%s|GH_HOST=%s\n' \
+  "$1 $2 $3" "$tok" "${GITHUB_TOKEN-unset}" "${GH_CONFIG_DIR-unset}" "${GH_REPO-unset}" "${GH_HOST-unset}" >> "$D/env.log"
+dec() {
+  local n; n=$(cat "$D/$1" 2>/dev/null || echo 0)
+  [ "$n" -gt 0 ] 2>/dev/null || return 1
+  echo $((n - 1)) > "$D/$1"; return 0
+}
+out() { [ -f "$D/$1" ] || exit 1; cat "$D/$1"; exit 0; }
+case "$1 $2" in
+  "pr list") out prlist ;;
+  "pr checks")
+    if [ -f "$D/posted" ] && ! dec screen_stale; then out checks.post; else out checks.pre; fi ;;
+esac
+if [ "$1" = api ]; then
+  if [ "$2 $3" = "-X POST" ]; then
+    touch "$D/posted"
+    c=$(cat "$D/post" 2>/dev/null || echo 201)
+    printf 'HTTP/2.0 %s X\r\n\r\n' "$c"
+    case "$c" in 2??) exit 0 ;; *) exit 1 ;; esac
+  fi
+  if [ "$2 $3" = "-X PUT" ]; then printf '{"merged":true}\n'; exit 0; fi
+  case "$2" in
+    repos/*/commits/*/check-runs*) out base ;;
+    repos/*/actions/runs/*)
+      id=${2##*/}
+      if [ -f "$D/posted" ] && [ -f "$D/run.$id.post" ] && ! dec att_stale; then out "run.$id.post"; fi
+      out "run.$id" ;;
+  esac
+fi
+exit 1
+CB60EOF
+    chmod +x "$CB60_STUB"
+    # 대역 경로도 내보낸다. 게이트 쪽은 내보내지 않은 변수를 지운 뒤 함수 본문을 펼친다.
+    export CB60_STUB
+    cb60_shadow
+    export CB60_S="$CB60_ROOT/s0"
+    # 기본 브랜치와 세그먼트 tip 에 같이 두는 워크플로. `on` 아래에 기본 브랜치의 파일로
+    # 발화하는 사건 키가 없고, 환경 키도 재사용 워크플로 참조도 없다.
+    CB60_WF=$'name: gate\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true'
+  }
+  cb60_foot() {
+    unset -f gh sleep
+    if [ -n "$CB60_PREV_RO" ]; then CC_GATE_TOKEN_RO="$CB60_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
+    unset CB60_S CB60_STUB
+  }
+  cb60_new() {
+    # cb60_new <라벨> — `선리뷰후머지` 의 깨끗한 사이클 하나를 가진 세그먼트 CK, 라우팅
+    # 기록, 베어 원격으로 도는 슬러그 URL, 두 tip 의 워크플로, 그리고 회차 0 의 실패.
+    # 대역의 답은 적격한 실행 777 하나로 둔다 — 사례는 그 파일을 고쳐 갈래를 고른다.
+    sa_new "$1" 리뷰없음
+    ( cd "$SA_REPO" && git config "url.$SA_REMOTE.insteadOf" "https://github.com/t/$SA_ID.git" \
+      && mkdir -p .github/workflows && printf '%s\n' "$CB60_WF" > .github/workflows/gate.yml \
+      && git add -A && git commit -qm wf && git push -q origin main ) >/dev/null 2>&1
+    ( cd "$SA_SEGWT" && git merge -q --ff-only main ) >/dev/null 2>&1
+    CK60_SHA=$(sa_commit '작업')
+    sa_seg_row CK 선리뷰후머지
+    sa_cycle CK 1 0 0 "$CK60_SHA"
+    {
+      printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n'
+      printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S5 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-rev | 부모=router-1 | 종단 부류=정상 완료\n'
+    } >> "$SA_LEDGER"
+    printf '1\n' > "$SA_RUN/routing-guard"
+    CB60_SLUG="t/$SA_ID"
+    export CB60_S="$CB60_ROOT/s$SA_N"; rm -rf "$CB60_S"; mkdir -p "$CB60_S"; : > "$CB60_S/gh.log"
+    printf '[{"number":1,"headRefOid":"%s","headRefName":"%s"}]\n' "$CK60_SHA" "$SA_SEGBR" > "$CB60_S/prlist"
+    cb60_checks pre fail 777 1
+    cb60_checks post pending 777 2
+    cb60_run 777
+    cb60_run 777 post
+    printf 'gate\tsuccess\n' > "$CB60_S/base"
+    cb60_line 실패 0 0
+  }
+  cb60_checks() {
+    # cb60_checks <pre|post> <버킷> <실행 id> <잡 번호> [이름] — 체크 화면 한 항목.
+    printf '[{"name":"%s","bucket":"%s","link":"https://github.com/%s/actions/runs/%s/job/%s","workflow":"gate","event":"pull_request"}]\n' \
+      "${5:-gate}" "$2" "$CB60_SLUG" "$3" "$4" > "$CB60_S/checks.$1"
+  }
+  cb60_run() {
+    # cb60_run <id> [post] [jq 고침] — 실행 GET 의 답. post 는 POST 뒤의 답(시도 2, 진행 중).
+    local f="$CB60_S/run.$1" st=completed at=1 fix="${3:-.}"
+    if [ "${2:-}" = post ]; then f="$f.post"; st=in_progress; at=2; fi
+    jq -n --arg st "$st" --arg h "$CK60_SHA" --arg b "$SA_SEGBR" --arg s "$CB60_SLUG" --argjson at "$at" \
+      '{status: $st, event: "pull_request", head_sha: $h, head_branch: $b, repository: {full_name: $s},
+        head_repository: {full_name: $s}, name: "gate", path: ".github/workflows/gate.yml", workflow_id: 4242,
+        run_attempt: $at}' | jq -c "$fix" > "$f"
+  }
+  cb60_line() {
+    # cb60_line <상태> <회차> <진행 중> [실패 체크] — 폴러의 새 꼴 관측 한 줄을 쓰고 드레인한다.
+    mkdir -p "$SA_RUN"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' '2026-10-18T00:00:00Z' CK "$CB60_SLUG#1" "$CK60_SHA" \
+      "$1" "$2" "$3" 없음 "${4:-gate}" >> "$SA_RUN/checks.observed"
+    ck60_drain
+  }
+  cb60_act() {
+    sag act --manifest "$SA_MANIFEST" --kind ci-rerun --target main --segment CK --cutpoint PR \
+        --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale "픽스처 — 재실행" -- 재실행 "${1:-$CK60_SHA}"
+  }
+  cb60_plan() {
+    sag plan --manifest "$SA_MANIFEST" --kind ci-rerun --target main --segment CK --cutpoint PR \
+        --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale "픽스처 — 재실행" -- 재실행 "${1:-$CK60_SHA}"
+  }
+  cb60_next() {
+    ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+      | jq -r '.review_next[] | select(.["세그먼트"] == "CK") | .["다음"]'
+  }
+  cb60_n() { { grep -c "^- \`$1\` " "$SA_LEDGER" || true; }; }
+  cb60_posts() { { grep -c -- '-X POST' "$CB60_S/gh.log" || true; }; }
+  cb60_last() { { grep "^- \`$1\` " "$SA_LEDGER" || true; } | tail -1; }
+  cb60_impl() {
+    # cb60_impl <plan|act> <프롬프트> — 세그먼트 CK 의 구현 파견.
+    sag "$1" --manifest "$SA_MANIFEST" --kind skill --target main --segment CK --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x -- implement -p "$2"
+  }
+  # 통과는 게이트의 통과 줄로 잰다. 픽스처에는 라우팅 스냅숏이 없어 게이트를 지난 뒤의
+  # 기동이 라우팅 가드에서 멈추므로, 행위의 rc 는 게이트의 처분이 아니다.
+  cb60_pass() { case "$raw" in *'게이트 통과 — act'*) printf '통과' ;; *) printf 'rc=%s' "$rc" ;; esac; }
+  cb60_park() {
+    # cb60_park <칸> <관측 조각> <라벨> [performer] — 픽스처는 이미 사례의 답으로 고쳐져 있다.
+    # 예보·행위·같은 행위를 차례로 내고 정해진 칸의 blocked 행 하나를 단언한다. 예보는 행위와
+    # 같은 판정 코드로 답하고, 되풀이는 행위 다이제스트를 이미 쓴 park 행과 대조할 뿐 사례의
+    # 변형과 무관하므로, 둘은 칸과 종류마다 처음 사례에서만 낸다 — 변형이 가르는 것은 행위가
+    # 쓰는 칸과 관측이다.
+    local cell="$1" ob="$2" lb="$3" kind="${4:-dispatch}" nb nr np row f="" first=0
+    case "$cb60_seen" in *"[$cell/$kind]"*) ;; *) first=1; cb60_seen="$cb60_seen[$cell/$kind]" ;; esac
+    nb=$(cb60_n blocked); nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
+    if [ "$kind" = dispatch ] && [ "$first" = 1 ]; then
+      cb60_plan
+      case "$rc|$msg" in "11|"*"park 예상: 도달 판정=$cell"*) ;; *) f="$f[plan rc=$rc]" ;; esac
+    fi
+    cb60_act
+    [ "$rc" = 11 ] || f="$f[act rc=$rc]"
+    row=$(cb60_last blocked)
+    [ "$(cb60_n blocked)" = "$((nb + 1))" ] || f="$f[blocked $(cb60_n blocked)-$nb]"
+    [ "$(sa_field "$row" '도달 판정')" = "$cell" ] || f="$f[칸 $(sa_field "$row" '도달 판정')]"
+    case "$(sa_field "$row" 관측)" in *"$ob"*) ;; *) f="$f[관측 $(sa_field "$row" 관측)]" ;; esac
+    case "$raw" in *'사전 인가'*) f="$f[수리 안내가 사전 인가를 든다]" ;; esac
+    if [ "$kind" = dispatch ]; then
+      [ "$(cb60_posts)" = "$np" ] || f="$f[POST]"
+      [ "$(cb60_n 'CI 처분')" = "$nr" ] || f="$f[CI 처분 행]"
+    fi
+    if [ "$first" = 1 ]; then
+      cb60_act
+      case "$rc|$raw" in "11|"*'already parked'*) ;; *) cb60_fail_dup="$cb60_fail_dup[$lb rc=$rc]" ;; esac
+      [ "$(cb60_n blocked)" = "$((nb + 1))" ] || cb60_fail_dup="$cb60_fail_dup[$lb 행 $(cb60_n blocked)]"
+    fi
+    if [ -n "$f" ]; then
+      bad "60b: park — $lb" "$f ${msg:-}"
+      if [ "$kind" = dispatch ]; then cb60_fail_inel="$cb60_fail_inel[$lb]"; else cb60_fail_post="$cb60_fail_post[$lb]"; fi
+    else
+      ok "60b: park — $lb ($cell)"
+    fi
+  }
+  cb60_tgt() {
+    # cb60_tgt <대상 행 필드> — 대상 행에 필드를 더한 매니페스트로 다시 쓴다.
+    SA_TARGET_EXTRA="$1"; sa_manifest 리뷰없음
+  }
+  cb60_wf_tip() {
+    # cb60_wf_tip <내용> — 세그먼트 tip 의 워크플로를 바꾼다. 리뷰 HEAD 를 그 tip 으로 다시
+    # 맞추어 판정표가 머지 를 내게 둔다. 내용이 같아도 커밋은 오른다.
+    ( cd "$SA_SEGWT" && printf '%s\n' "$1" > .github/workflows/gate.yml && git commit -qam wf-tip --allow-empty ) >/dev/null 2>&1
+    CK60_SHA=$(cd "$SA_SEGWT" && git rev-parse HEAD)
+    sa_cycle CK 2 0 0 "$CK60_SHA"
+    printf '[{"number":1,"headRefOid":"%s","headRefName":"%s"}]\n' "$CK60_SHA" "$SA_SEGBR" > "$CB60_S/prlist"
+    cb60_run 777; cb60_run 777 post
+    cb60_line 실패 0 0
+  }
+  cb60_wf_base() {
+    # cb60_wf_base <파일 이름> <내용> — 기본 브랜치 tip 의 워크플로를 gate.yml 과 이 파일
+    # 하나로 둔다. 앞 변형이 더한 파일은 지운다.
+    ( cd "$SA_REPO" && for f in .github/workflows/*; do [ "$f" = .github/workflows/gate.yml ] || git rm -q "$f"; done \
+      && printf '%s\n' "$2" > ".github/workflows/$1" && git add -A && git commit -qm "base $1" \
+      && git push -q origin main ) >/dev/null 2>&1
+  }
+  cb60_again() {
+    # cb60_again — 같은 픽스처에서 다음 변형을 연다. park 의 되풀이 판정은 argv 의
+    # 다이제스트로 하므로, tip 에 커밋을 하나 올려 재실행 argv 의 head sha 를 바꾸고 체크
+    # 화면을 적격한 기본으로 되돌린다. 변형마다 픽스처를 새로 만들던 때와 같은 판정을 받는다.
+    cb60_checks pre fail 777 1; cb60_checks post pending 777 2
+    cb60_wf_tip "${1:-$CB60_WF}"
+  }
+  cb60_refuse() {
+    # cb60_refuse <라벨> <거부 문면 조각> [sha] — 이미 고친 픽스처에서 행위 하나가 rc 3 으로
+    # 거부된다. 거부는 행을 남기지 않으므로 사례들이 픽스처 하나를 이어 쓰고, 문면 조각이
+    # 앞 사례의 고침이 남아 대신 거부한 것이 아님을 가린다.
+    local nr nb np; nr=$(cb60_n 'CI 처분'); nb=$(cb60_n blocked); np=$(cb60_posts)
+    cb60_act "${3:-}"
+    case "$msg" in *"$2"*) ;; *) bad "60b: 거부 — $1" "문면에 「$2」 가 없다: $msg"; return ;; esac
+    check "60b: 거부 — $1" "$rc|$(cb60_n 'CI 처분')|$(cb60_n blocked)|$(cb60_posts)" "3|$nr|$nb|$np"
+  }
+  cb60_copy_act() {
+    local out
+    out=$(cd "$SA_WT" && bash "$CB60_COPY/cc-cmds/orchestrator/gate.sh" act --manifest "$SA_MANIFEST" --kind ci-rerun \
+          --target main --segment CK --cutpoint PR --surface 외부상태변경 --snapshot-digest "$(SAH)" \
+          --rationale x -- 재실행 "$CK60_SHA" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ')
+  }
+  cb60_spell() {
+    local lb="$1" nr np; shift
+    nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
+    sag act --manifest "$SA_MANIFEST" --kind ci-rerun --target main "$@" --snapshot-digest "$(SAH)" --rationale x
+    check "60b: 철자 — $lb" "$rc|$(cb60_n 'CI 처분')|$(cb60_posts)" "2|$nr|$np"
+  }
 }
 
 # `review` — the head of section 37: the `SH_*` run derived from the clean
@@ -37363,7 +37596,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 60b. 리뷰가 깨끗한 세그먼트의 CI 실패 — 재실행 행위, 회차, 구현 되돌림
-# --- section: 60b | group: sa | covers: act, plan, snapshot | anchors: 60b: 라우팅 런의 실패 행에서 다음은 CI 재실행 이다, 60b: 재실행 act 는 요청 행 뒤에 POST 를 하나 내고 수락 행을 쓴다, 60b: 재실행 뒤 통과 전의 머지는 다음을 가리키는 rc 3 이다, 60b: 회차 1 의 통과 뒤 머지가 된다, 60b: 회차 1 의 실패 뒤 다음은 CI 수정 이다, 60b: CI 수정 파견은 상한에서도 통과한다, 60b: 부적격 실행은 POST 없이 park 한다, 60b: POST 실패는 재실행요청실패 로 park 한다, 60b: 같은 재실행 act 의 둘째 park 는 행을 더 쓰지 않는다, 60b: 적격 판정 없는 재실행 수행은 POST 없이 rc 3 이다, 60b: h1 통과 표지 없는 재실행 행위는 규칙을 지나지 않는다 ---
+# --- section: 60b | group: sa | covers: act, plan, snapshot | anchors: 60b: 라우팅 런의 실패 행에서 다음은 CI 재실행 이다, 60b: 재실행 act 는 요청 행 뒤에 POST 를 하나 내고 수락 행을 쓴다, 60b: 재실행 뒤 통과 전의 머지는 다음을 가리키는 rc 3 이다, 60b: 회차 1 의 통과 뒤 머지가 된다, 60b: 회차 1 의 실패 뒤 다음은 CI 수정 이다, 60b: CI 수정 파견은 상한에서도 통과한다 ---
 #
 # `pre_sa` 의 CI 체크 헬퍼(`ck60_drain`·`ck60_plan`) 위에 라우팅 기록을 두고, 리뷰가 깨끗한
 # 세그먼트의 회차 0 실패에서 시작해 재실행 행위와 그 뒤의 두 갈래를 끝까지 잰다. GitHub
@@ -37374,134 +37607,12 @@ esac
 # `insteadOf` 가 베어 원격으로 돌려 기본 브랜치 tip 질문이 기기를 떠나지 않는다.
 # 부적격 사례는 같은 argv 의 park 가 한 번만 행을 쓰므로, 같은 꼴의 변형은 픽스처 하나를
 # 이어 쓰되 변형마다 tip 에 커밋을 올려 argv 를 바꾼다(`cb60_again`).
+# 절은 세 조각으로 돈다 — 이 절이 재실행과 그 뒤의 두 갈래를, 60b-2 가 부적격 실행의
+# park 를, 60b-3 이 받지 않은 요청·거부·판정 없는 수행·철자·자격 증명 환경을 잰다. 조각마다
+# `cb60_head` 로 대역을 새로 세우고 끝에서 `cb60_foot` 으로 되돌리며, 픽스처 헬퍼는 모두
+# `pre_sa` 에 있다.
 # ---------------------------------------------------------------------------
-# 자동 해소는 하니스 기본값(끔) 그대로 둔다 — 켜면 `act` 로 내는 머지가 `--reach` 를
-# 요구하는데 `act` 는 그 플래그를 받지 않는다. 두 모드의 차이는 60c 가 잰다.
-# 읽기 전용 자격은 고정한 픽스처 값이다. 비워 두면 게이트가 이 기기의 키체인을 읽는다.
-CB60_PREV_RO="${CC_GATE_TOKEN_RO:-}"
-export CC_GATE_TOKEN_RO=cb60-ro-fixture
-# 확인 고리의 잠은 함수로 지운다. 게이트의 상수는 소싱한 쪽에만 있어 이 셸에서 바꿀 수
-# 없다. 내보내지 않은 함수라 게이트가 띄우는 자식 프로세스에는 닿지 않고, 횟수
-# (`GATE_CI_RERUN_CONFIRM_TRIES`)는 그대로 잰다. 실제 명령을 가리는 함수는 헬퍼 안에서
-# 정의하고 절 끝에서 `unset -f` 로 되돌린다.
-CB60_ROOT="$WORK/cb60"; rm -rf "$CB60_ROOT"; mkdir -p "$CB60_ROOT"
-CB60_STUB="$CB60_ROOT/gh"
-cat > "$CB60_STUB" <<'CB60EOF'
-#!/bin/bash
-# 재실행 행위의 GitHub 대역. 답은 `$CB60_S` 의 파일이 고른다:
-#   prlist · checks.pre · checks.post · run.<id> · run.<id>.post · base · post
-#   att_stale · screen_stale  (POST 뒤 옛 답을 몇 번 더 낼지)
-# 파일이 없으면 그 읽기는 실패(rc 1)로 답한다.
-D=${CB60_S:?}
-printf '%s\n' "$*" >> "$D/gh.log"
-tok=other; [ "${GH_TOKEN:-}" = cb60-ro-fixture ] && tok=fixture
-printf '%s|GH_TOKEN=%s|GITHUB_TOKEN=%s|GH_CONFIG_DIR=%s|GH_REPO=%s|GH_HOST=%s\n' \
-  "$1 $2 $3" "$tok" "${GITHUB_TOKEN-unset}" "${GH_CONFIG_DIR-unset}" "${GH_REPO-unset}" "${GH_HOST-unset}" >> "$D/env.log"
-dec() {
-  local n; n=$(cat "$D/$1" 2>/dev/null || echo 0)
-  [ "$n" -gt 0 ] 2>/dev/null || return 1
-  echo $((n - 1)) > "$D/$1"; return 0
-}
-out() { [ -f "$D/$1" ] || exit 1; cat "$D/$1"; exit 0; }
-case "$1 $2" in
-  "pr list") out prlist ;;
-  "pr checks")
-    if [ -f "$D/posted" ] && ! dec screen_stale; then out checks.post; else out checks.pre; fi ;;
-esac
-if [ "$1" = api ]; then
-  if [ "$2 $3" = "-X POST" ]; then
-    touch "$D/posted"
-    c=$(cat "$D/post" 2>/dev/null || echo 201)
-    printf 'HTTP/2.0 %s X\r\n\r\n' "$c"
-    case "$c" in 2??) exit 0 ;; *) exit 1 ;; esac
-  fi
-  if [ "$2 $3" = "-X PUT" ]; then printf '{"merged":true}\n'; exit 0; fi
-  case "$2" in
-    repos/*/commits/*/check-runs*) out base ;;
-    repos/*/actions/runs/*)
-      id=${2##*/}
-      if [ -f "$D/posted" ] && [ -f "$D/run.$id.post" ] && ! dec att_stale; then out "run.$id.post"; fi
-      out "run.$id" ;;
-  esac
-fi
-exit 1
-CB60EOF
-chmod +x "$CB60_STUB"
-# 대역 경로도 내보낸다. 게이트 쪽은 내보내지 않은 변수를 지운 뒤 함수 본문을 펼친다.
-export CB60_STUB
-cb60_shadow() {
-  sleep() { :; }
-  gh() { "$CB60_STUB" "$@"; }
-  export -f gh
-}
-cb60_shadow
-export CB60_S="$CB60_ROOT/s0"
-# 기본 브랜치와 세그먼트 tip 에 같이 두는 워크플로. `on` 아래에 기본 브랜치의 파일로
-# 발화하는 사건 키가 없고, 환경 키도 재사용 워크플로 참조도 없다.
-CB60_WF=$'name: gate\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true'
-cb60_new() {
-  # cb60_new <라벨> — `선리뷰후머지` 의 깨끗한 사이클 하나를 가진 세그먼트 CK, 라우팅
-  # 기록, 베어 원격으로 도는 슬러그 URL, 두 tip 의 워크플로, 그리고 회차 0 의 실패.
-  # 대역의 답은 적격한 실행 777 하나로 둔다 — 사례는 그 파일을 고쳐 갈래를 고른다.
-  sa_new "$1" 리뷰없음
-  ( cd "$SA_REPO" && git config "url.$SA_REMOTE.insteadOf" "https://github.com/t/$SA_ID.git" \
-    && mkdir -p .github/workflows && printf '%s\n' "$CB60_WF" > .github/workflows/gate.yml \
-    && git add -A && git commit -qm wf && git push -q origin main ) >/dev/null 2>&1
-  ( cd "$SA_SEGWT" && git merge -q --ff-only main ) >/dev/null 2>&1
-  CK60_SHA=$(sa_commit '작업')
-  sa_seg_row CK 선리뷰후머지
-  sa_cycle CK 1 0 0 "$CK60_SHA"
-  {
-    printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n'
-    printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S5 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-rev | 부모=router-1 | 종단 부류=정상 완료\n'
-  } >> "$SA_LEDGER"
-  printf '1\n' > "$SA_RUN/routing-guard"
-  CB60_SLUG="t/$SA_ID"
-  export CB60_S="$CB60_ROOT/s$SA_N"; rm -rf "$CB60_S"; mkdir -p "$CB60_S"; : > "$CB60_S/gh.log"
-  printf '[{"number":1,"headRefOid":"%s","headRefName":"%s"}]\n' "$CK60_SHA" "$SA_SEGBR" > "$CB60_S/prlist"
-  cb60_checks pre fail 777 1
-  cb60_checks post pending 777 2
-  cb60_run 777
-  cb60_run 777 post
-  printf 'gate\tsuccess\n' > "$CB60_S/base"
-  cb60_line 실패 0 0
-}
-cb60_checks() {
-  # cb60_checks <pre|post> <버킷> <실행 id> <잡 번호> [이름] — 체크 화면 한 항목.
-  printf '[{"name":"%s","bucket":"%s","link":"https://github.com/%s/actions/runs/%s/job/%s","workflow":"gate","event":"pull_request"}]\n' \
-    "${5:-gate}" "$2" "$CB60_SLUG" "$3" "$4" > "$CB60_S/checks.$1"
-}
-cb60_run() {
-  # cb60_run <id> [post] [jq 고침] — 실행 GET 의 답. post 는 POST 뒤의 답(시도 2, 진행 중).
-  local f="$CB60_S/run.$1" st=completed at=1 fix="${3:-.}"
-  if [ "${2:-}" = post ]; then f="$f.post"; st=in_progress; at=2; fi
-  jq -n --arg st "$st" --arg h "$CK60_SHA" --arg b "$SA_SEGBR" --arg s "$CB60_SLUG" --argjson at "$at" \
-    '{status: $st, event: "pull_request", head_sha: $h, head_branch: $b, repository: {full_name: $s},
-      head_repository: {full_name: $s}, name: "gate", path: ".github/workflows/gate.yml", workflow_id: 4242,
-      run_attempt: $at}' | jq -c "$fix" > "$f"
-}
-cb60_line() {
-  # cb60_line <상태> <회차> <진행 중> [실패 체크] — 폴러의 새 꼴 관측 한 줄을 쓰고 드레인한다.
-  mkdir -p "$SA_RUN"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' '2026-10-18T00:00:00Z' CK "$CB60_SLUG#1" "$CK60_SHA" \
-    "$1" "$2" "$3" 없음 "${4:-gate}" >> "$SA_RUN/checks.observed"
-  ck60_drain
-}
-cb60_act() {
-  sag act --manifest "$SA_MANIFEST" --kind ci-rerun --target main --segment CK --cutpoint PR \
-      --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale "픽스처 — 재실행" -- 재실행 "${1:-$CK60_SHA}"
-}
-cb60_plan() {
-  sag plan --manifest "$SA_MANIFEST" --kind ci-rerun --target main --segment CK --cutpoint PR \
-      --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale "픽스처 — 재실행" -- 재실행 "${1:-$CK60_SHA}"
-}
-cb60_next() {
-  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
-    | jq -r '.review_next[] | select(.["세그먼트"] == "CK") | .["다음"]'
-}
-cb60_n() { { grep -c "^- \`$1\` " "$SA_LEDGER" || true; }; }
-cb60_posts() { { grep -c -- '-X POST' "$CB60_S/gh.log" || true; }; }
-cb60_last() { { grep "^- \`$1\` " "$SA_LEDGER" || true; } | tail -1; }
+cb60_head
 
 # C1 — 간헐 실패: 재실행, 통과, 사람 없는 머지 ------------------------------------------
 cb60_new "CI 재실행 — 간헐 실패"
@@ -37572,11 +37683,6 @@ check "60b: CI 수정 자리의 둘째 재실행은 rc 3 이고 POST·행이 없
 # 층의 값은 그대로 CI 수정 이다.
 sa_cycle CK 2 0 0 "$CK60_SHA"
 check "60b: 둘째 깨끗한 사이클 뒤에도 다음은 CI 수정 이다" "$rc|$(cb60_next)" "0|CI 수정"
-cb60_impl() {
-  # cb60_impl <plan|act> <프롬프트> — 세그먼트 CK 의 구현 파견.
-  sag "$1" --manifest "$SA_MANIFEST" --kind skill --target main --segment CK --cutpoint 커밋 \
-      --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x -- implement -p "$2"
-}
 cb60_nr=$(cb60_n 'CI 처분')
 cb60_impl plan "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""
 cb60_r1=$rc
@@ -37585,9 +37691,6 @@ cb60_r2=$rc
 cb60_impl plan "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: 1111111111111111111111111111111111111111\""
 cb60_r3=$rc
 check "60b: CI 수정 파견은 상한에서도 통과한다" "$cb60_r1|$cb60_r2|$cb60_r3|$(cb60_n 'CI 처분')" "0|3|3|$cb60_nr"
-# 통과는 게이트의 통과 줄로 잰다. 픽스처에는 라우팅 스냅숏이 없어 게이트를 지난 뒤의
-# 기동이 라우팅 가드에서 멈추므로, 행위의 rc 는 게이트의 처분이 아니다.
-cb60_pass() { case "$raw" in *'게이트 통과 — act'*) printf '통과' ;; *) printf 'rc=%s' "$rc" ;; esac; }
 cb60_impl act "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""
 cb60_a1=$(cb60_pass)
 cb60_impl act "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""
@@ -37621,73 +37724,19 @@ check "60b: 라우팅 기록 없는 런의 재실행은 rc 3 이고 POST 가 없
 printf '1\n' > "$SA_RUN/routing-guard"
 ck60_plan
 check "60b: 라우팅 런의 머지 plan 은 회차 0 의 실패에서 rc 3 이다" "$rc" "3"
+cb60_foot
 
+# ---------------------------------------------------------------------------
+# 60b-2. 리뷰가 깨끗한 세그먼트의 CI 실패 — 부적격 실행의 park
+# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다 ---
+#
+# 60b 의 둘째 조각. 픽스처는 `cb60_head` 로 새로 세운다. 같은 argv 의 둘째 park 가 행을
+# 더 쓰지 않는지는 칸과 종류마다 처음 사례에서 `cb60_park` 이 모으고 그 단언은 60b-3
+# 이 내므로, 이 조각이 모은 실패는 같은 문면의 실패 줄로만 드러낸다.
+# ---------------------------------------------------------------------------
+cb60_head
 # C3 — 부적격 실행은 POST 없이 park 한다 ----------------------------------------------
 cb60_fail_inel=""; cb60_fail_dup=""; cb60_fail_post=""; cb60_seen=""
-cb60_park() {
-  # cb60_park <칸> <관측 조각> <라벨> [performer] — 픽스처는 이미 사례의 답으로 고쳐져 있다.
-  # 예보·행위·같은 행위를 차례로 내고 정해진 칸의 blocked 행 하나를 단언한다. 예보는 행위와
-  # 같은 판정 코드로 답하고, 되풀이는 행위 다이제스트를 이미 쓴 park 행과 대조할 뿐 사례의
-  # 변형과 무관하므로, 둘은 칸과 종류마다 처음 사례에서만 낸다 — 변형이 가르는 것은 행위가
-  # 쓰는 칸과 관측이다.
-  local cell="$1" ob="$2" lb="$3" kind="${4:-dispatch}" nb nr np row f="" first=0
-  case "$cb60_seen" in *"[$cell/$kind]"*) ;; *) first=1; cb60_seen="$cb60_seen[$cell/$kind]" ;; esac
-  nb=$(cb60_n blocked); nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
-  if [ "$kind" = dispatch ] && [ "$first" = 1 ]; then
-    cb60_plan
-    case "$rc|$msg" in "11|"*"park 예상: 도달 판정=$cell"*) ;; *) f="$f[plan rc=$rc]" ;; esac
-  fi
-  cb60_act
-  [ "$rc" = 11 ] || f="$f[act rc=$rc]"
-  row=$(cb60_last blocked)
-  [ "$(cb60_n blocked)" = "$((nb + 1))" ] || f="$f[blocked $(cb60_n blocked)-$nb]"
-  [ "$(sa_field "$row" '도달 판정')" = "$cell" ] || f="$f[칸 $(sa_field "$row" '도달 판정')]"
-  case "$(sa_field "$row" 관측)" in *"$ob"*) ;; *) f="$f[관측 $(sa_field "$row" 관측)]" ;; esac
-  case "$raw" in *'사전 인가'*) f="$f[수리 안내가 사전 인가를 든다]" ;; esac
-  if [ "$kind" = dispatch ]; then
-    [ "$(cb60_posts)" = "$np" ] || f="$f[POST]"
-    [ "$(cb60_n 'CI 처분')" = "$nr" ] || f="$f[CI 처분 행]"
-  fi
-  if [ "$first" = 1 ]; then
-    cb60_act
-    case "$rc|$raw" in "11|"*'already parked'*) ;; *) cb60_fail_dup="$cb60_fail_dup[$lb rc=$rc]" ;; esac
-    [ "$(cb60_n blocked)" = "$((nb + 1))" ] || cb60_fail_dup="$cb60_fail_dup[$lb 행 $(cb60_n blocked)]"
-  fi
-  if [ -n "$f" ]; then
-    bad "60b: park — $lb" "$f ${msg:-}"
-    if [ "$kind" = dispatch ]; then cb60_fail_inel="$cb60_fail_inel[$lb]"; else cb60_fail_post="$cb60_fail_post[$lb]"; fi
-  else
-    ok "60b: park — $lb ($cell)"
-  fi
-}
-cb60_tgt() {
-  # cb60_tgt <대상 행 필드> — 대상 행에 필드를 더한 매니페스트로 다시 쓴다.
-  SA_TARGET_EXTRA="$1"; sa_manifest 리뷰없음
-}
-cb60_wf_tip() {
-  # cb60_wf_tip <내용> — 세그먼트 tip 의 워크플로를 바꾼다. 리뷰 HEAD 를 그 tip 으로 다시
-  # 맞추어 판정표가 머지 를 내게 둔다. 내용이 같아도 커밋은 오른다.
-  ( cd "$SA_SEGWT" && printf '%s\n' "$1" > .github/workflows/gate.yml && git commit -qam wf-tip --allow-empty ) >/dev/null 2>&1
-  CK60_SHA=$(cd "$SA_SEGWT" && git rev-parse HEAD)
-  sa_cycle CK 2 0 0 "$CK60_SHA"
-  printf '[{"number":1,"headRefOid":"%s","headRefName":"%s"}]\n' "$CK60_SHA" "$SA_SEGBR" > "$CB60_S/prlist"
-  cb60_run 777; cb60_run 777 post
-  cb60_line 실패 0 0
-}
-cb60_wf_base() {
-  # cb60_wf_base <파일 이름> <내용> — 기본 브랜치 tip 의 워크플로를 gate.yml 과 이 파일
-  # 하나로 둔다. 앞 변형이 더한 파일은 지운다.
-  ( cd "$SA_REPO" && for f in .github/workflows/*; do [ "$f" = .github/workflows/gate.yml ] || git rm -q "$f"; done \
-    && printf '%s\n' "$2" > ".github/workflows/$1" && git add -A && git commit -qm "base $1" \
-    && git push -q origin main ) >/dev/null 2>&1
-}
-cb60_again() {
-  # cb60_again — 같은 픽스처에서 다음 변형을 연다. park 의 되풀이 판정은 argv 의
-  # 다이제스트로 하므로, tip 에 커밋을 하나 올려 재실행 argv 의 head sha 를 바꾸고 체크
-  # 화면을 적격한 기본으로 되돌린다. 변형마다 픽스처를 새로 만들던 때와 같은 판정을 받는다.
-  cb60_checks pre fail 777 1; cb60_checks post pending 777 2
-  cb60_wf_tip "${1:-$CB60_WF}"
-}
 cb60_new "CI 재실행 — 식별자"
 for cb60_id in workflow:gate workflow:gate.yml workflow:4242 "branch:SEGBR" argv:rerun-failed-jobs; do
   cb60_v=$cb60_id; [ "$cb60_id" = "branch:SEGBR" ] && cb60_v="branch:$SA_SEGBR"
@@ -37755,7 +37804,18 @@ cb60_again
 rm -f "$CB60_S/run.777"
 cb60_park 재실행대상미상 "777" "실행 읽기 실패"
 check "60b: 부적격 실행은 POST 없이 park 한다" "$cb60_fail_inel" ""
+[ -z "$cb60_fail_dup" ] || bad "60b: 같은 재실행 act 의 둘째 park 는 행을 더 쓰지 않는다" "$cb60_fail_dup"
+cb60_foot
 
+# ---------------------------------------------------------------------------
+# 60b-3. 리뷰가 깨끗한 세그먼트의 CI 실패 — 받지 않은 요청, 거부, 판정 없는 수행, 철자
+# --- section: 60b-3 | group: sa | covers: act, plan, snapshot | anchors: 60b: POST 실패는 재실행요청실패 로 park 한다, 60b: 같은 재실행 act 의 둘째 park 는 행을 더 쓰지 않는다, 60b: 적격 판정 없는 재실행 수행은 POST 없이 rc 3 이다, 60b: h1 통과 표지 없는 재실행 행위는 규칙을 지나지 않는다 ---
+#
+# 60b 의 셋째 조각. 픽스처는 `cb60_head` 로 새로 세우고, park 의 처음 사례 표지와 실패
+# 모음도 새로 시작한다 — 이 조각의 park 는 칸이 `재실행요청실패` 라 앞 조각과 겹치지 않는다.
+# ---------------------------------------------------------------------------
+cb60_head
+cb60_fail_inel=""; cb60_fail_dup=""; cb60_fail_post=""; cb60_seen=""
 # POST 가 받아들여지지 않은 사례 — 수행자가 요청 행 뒤에 닫는 실패 행을 쓰고 park 한다.
 cb60_i=0
 for cb60_case in post500 post403 attempt screen; do
@@ -37811,15 +37871,6 @@ sa_merge CK
 check "60b: 그 자리의 라우팅 머지는 rc 3 이다" "$rc" "3"
 
 # 거부 — rc 3, 행 없음, POST 없음 ------------------------------------------------------
-cb60_refuse() {
-  # cb60_refuse <라벨> <거부 문면 조각> [sha] — 이미 고친 픽스처에서 행위 하나가 rc 3 으로
-  # 거부된다. 거부는 행을 남기지 않으므로 사례들이 픽스처 하나를 이어 쓰고, 문면 조각이
-  # 앞 사례의 고침이 남아 대신 거부한 것이 아님을 가린다.
-  local nr nb np; nr=$(cb60_n 'CI 처분'); nb=$(cb60_n blocked); np=$(cb60_posts)
-  cb60_act "${3:-}"
-  case "$msg" in *"$2"*) ;; *) bad "60b: 거부 — $1" "문면에 「$2」 가 없다: $msg"; return ;; esac
-  check "60b: 거부 — $1" "$rc|$(cb60_n 'CI 처분')|$(cb60_n blocked)|$(cb60_posts)" "3|$nr|$nb|$np"
-}
 cb60_new "CI 재실행 — 거부"
 cb60_checks pre pending 777 1; cb60_refuse "대기 중인 체크" "still pending"
 cb60_checks pre fail 777 1
@@ -37846,13 +37897,6 @@ CB60_COPY="$CB60_ROOT/copy"; rm -rf "$CB60_COPY"; mkdir -p "$CB60_COPY"
 cp -R "$repo_root/plugins/cc-cmds" "$CB60_COPY/"
 awk '{ print } /^gate_check_ci_rerun\(\) \{$/ { print "  return 0" }' "$CB60_COPY/cc-cmds/orchestrator/gate.sh" \
   > "$CB60_COPY/gate.new" && mv "$CB60_COPY/gate.new" "$CB60_COPY/cc-cmds/orchestrator/gate.sh"
-cb60_copy_act() {
-  local out
-  out=$(cd "$SA_WT" && bash "$CB60_COPY/cc-cmds/orchestrator/gate.sh" act --manifest "$SA_MANIFEST" --kind ci-rerun \
-        --target main --segment CK --cutpoint PR --surface 외부상태변경 --snapshot-digest "$(SAH)" \
-        --rationale x -- 재실행 "$CK60_SHA" 2>&1); rc=$?
-  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ')
-}
 cb60_nr=$(cb60_n 'CI 처분'); cb60_np=$(cb60_posts)
 cb60_copy_act
 cb60_g1="$rc|$(( $(cb60_n 'CI 처분') - cb60_nr ))|$(( $(cb60_posts) - cb60_np ))"
@@ -37871,12 +37915,6 @@ esac
 
 # 철자 — rc 2, 행 없음, POST 없음.
 cb60_new "CI 재실행 — 철자"
-cb60_spell() {
-  local lb="$1" nr np; shift
-  nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
-  sag act --manifest "$SA_MANIFEST" --kind ci-rerun --target main "$@" --snapshot-digest "$(SAH)" --rationale x
-  check "60b: 철자 — $lb" "$rc|$(cb60_n 'CI 처분')|$(cb60_posts)" "2|$nr|$np"
-}
 cb60_spell "절단점 머지" --segment CK --cutpoint 머지 --surface 외부상태변경 -- 재실행 "$CK60_SHA"
 cb60_spell "argv 낱말 하나 더" --segment CK --cutpoint PR --surface 외부상태변경 -- 재실행 "$CK60_SHA" 777
 cb60_spell "40자리 hex 가 아닌 sha" --segment CK --cutpoint PR --surface 외부상태변경 -- 재실행 "${CK60_SHA%?}"
@@ -37907,10 +37945,7 @@ check "60b: 재실행 POST 의 자격 증명 환경이 읽기 전용이고 GH_RE
 check "60b: 머지 PUT 의 자격 증명 환경이 재실행 POST 와 같다" "$cb60_eput" "${cb60_epost%%|GH_REPO=*}"
 check "60b: 재실행 POST 의 argv 가 대상 슬러그를 명시한다" \
   "$( { grep -c "^api -X POST -i repos/$CB60_SLUG/actions/runs/777/rerun-failed-jobs\$" "$CB60_S/gh.log" || true; } )" "1"
-
-unset -f gh sleep
-if [ -n "$CB60_PREV_RO" ]; then CC_GATE_TOKEN_RO="$CB60_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
-unset CB60_S CB60_STUB
+cb60_foot
 
 # ---------------------------------------------------------------------------
 # 60c. 재실행·재요청 실행 철자 — 두 모드에서 도달·행과 무관하게 막힌다
