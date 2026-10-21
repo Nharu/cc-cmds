@@ -3065,7 +3065,9 @@ run_ledger_series_check() {
     fi
     keys="${keys:+$keys|}$k"
   done
-  if [ "$keys" != "$want" ]; then
+  # A WAIT THAT HOLDS A HALT ANSWER'S CARD ends its row with `답 운반`, the
+  # answer's ledger line; every other wait row is the fixed list above.
+  if [ "$keys" != "$want" ] && ! { [ "$series" = "stage-wait" ] && [ "$keys" = "$want|답 운반" ]; }; then
     printf '%s [run][거부] %s: 키 목록이 「%s」 와 글자 그대로·같은 순서로 같아야 한다\n' "$(now_iso)" "$series" "$want" >&2
     return 2
   fi
@@ -3128,6 +3130,10 @@ run_ledger_series_check() {
       stage-wait:근거)
         basis="$v"
         case "$wait_reason" in *" $v "*) ;; *) run_ledger_refuse "$series" "$k" '닫힌 어휘'; return 2 ;; esac ;;
+      'stage-wait:답 운반')
+        case "$v" in
+          ''|*[!0-9]*|0*) run_ledger_refuse "$series" "$k" '원장 줄 번호'; return 2 ;;
+        esac ;;
     esac
   done
   # THE PAIRING RULES. A seat grant is the one grant without an account, and an
@@ -8379,7 +8385,7 @@ wait_request_deadline() {
 # waiting process, and readers in `liveness.sh` treat a key whose holder lives
 # as not to be dispatched again.
 # ---------------------------------------------------------------------------
-readonly WAIT_LOOP_DEADLINE_RECOVERY="마감 안에 끝낼 수 없다 — 마감을 늘리거나 ready_at 뒤에 다시 시작한다"
+readonly WAIT_LOOP_DEADLINE_RECOVERY="마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다"
 
 wait_epoch_iso() {
   # wait_epoch_iso <epoch> — the instant in `now_iso`'s byte shape, `-` for none.

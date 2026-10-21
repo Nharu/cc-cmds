@@ -276,9 +276,9 @@ check "boundaries.md 가 도우미 호출 철자를 한 번 담는다" \
 check "boundaries.md 가 「절단점이 정해진 직후」 를 한 번 담는다" "$(grep -cF '절단점이 정해진 직후' "$BOUNDARIES")" "1"
 check "SKILL.md 가 경계 질문지에 싣지 않는 절단점 질문을 한 번 담는다" "$(grep -cF "**The hook check's cutpoint question**" "$SKILL")" "1"
 check "SKILL.md 가 재킥오프 경로의 훅 검사 문장을 한 번 담는다" "$(grep -cF '**The hook check runs on this path too.**' "$SKILL")" "1"
-# 재킥오프의 「여덟 질문」 밖에서 묻는다는 예외와, 낮춘 칸을 초안에 싣는 두 쓰기(키 줄과 --targets)
+# 재킥오프의 「아홉 질문」 밖에서 묻는다는 예외와, 낮춘 칸을 초안에 싣는 두 쓰기(키 줄과 --targets)
 rk_line=$(grep -F '**The hook check runs on this path too.**' "$SKILL")
-for frag in '**This question is asked on top of the eight of item 6 in `references/rekickoff.md`**' \
+for frag in '**This question is asked on top of the nine of item 6 in `references/rekickoff.md`**' \
             '`7.7 절단점 <별칭>`' 'add `--targets <파일>` to 7.1' '`닿는 칸 없음`, nothing is asked and no target is dropped' \
             'call `bash <plugin root>/orchestrator/kickoff-hook-probe.sh`'; do
   case "$rk_line" in

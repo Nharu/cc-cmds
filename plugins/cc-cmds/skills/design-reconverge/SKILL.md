@@ -60,6 +60,27 @@ The grades are a marking, not a proof. Nothing here checks that a point marked
 `등급 1` deserved it; `scripts/lint-judgment-grade.sh` counts marks and matches
 dispositions, and says so.
 
+### A halt carries the scope and the Step 1 baselines
+
+Every halt record this skill writes after Step 1 carries, in its `**관측 상세**`, the scope it was handed and the baselines Step 1 took — the record is what a fresh session given a person's answer starts from, and it cannot recompute them once this attempt has edited the document:
+
+- `범위=<the scope as handed>` — for an `R<n>` scope exactly `범위=R<n>`. The gate compares a carried answer's `R<n>` with this value and hands the answer on only when they are equal.
+- `사전 sha256=<64 hex>` — Step 1's `사전 sha256`.
+- `사전 구속 표면 다이제스트=<64 hex>` — Step 1's `사전 구속 표면 다이제스트`: the gate's `binding-digest` output over the document as Step 1 read it.
+- `지금 sha256=<64 hex>` — when this attempt already wrote to the document before halting, the document's `shasum -a 256` after that write.
+
+A record without both baselines is one the gate does not hand to a fresh session: the answer then goes back only to this attempt's own session.
+
+### Re-entered with a carried answer
+
+A fresh session can be handed a person's answer to an earlier attempt's halt: the routing shift's carry act writes an answer card and the stage starts with `CC_PIPELINE_HALT_ANSWER` set to its path. When it is set, at Step 1:
+
+1. **Read the card and check the digest.** Its `**중단 기록**` is the earlier attempt's halt record and `**기록 다이제스트**` that record's sha256. Compute `shasum -a 256` of the record and compare; a difference is a halt with `분류: precondition-failed` naming both values — the answer was given to other bytes.
+2. **Take the baselines from the record, never from the disk.** `사전 sha256` and `사전 구속 표면 다이제스트` in the record's `관측 상세` are this pass's Step 1 baselines, and the verdict compares against them: the earlier attempt may already have edited the document, and a hash taken now would measure that edit as the starting point. The record's digest came from the gate's `binding-digest`, and Step 4 computes the after side with the same command, so the two compare like for like. Then compare the document's `shasum -a 256` now with the record's `지금 sha256`, or with its `사전 sha256` when the record carries no `지금 sha256`. A difference means the document moved after the halt: do not apply the answer — write a new halt record naming both values, with the card's path in its `관측 상세`.
+3. **Enter at the step the record names**, from what is on disk, and apply the card's option there as the answer to the record's `**질문 문면**`. Do not ask that question again.
+4. **If the question computed there is not the record's**, do not apply the answer: write a new halt record for the question computed now, with the card's path in its `관측 상세`.
+5. **Never rewrite the carried record** — the card's `**중단 기록**` belongs to the earlier attempt, and the answer is bound to its digest.
+
 ## Control-Flow Invariants
 
 These rules govern termination and MUST stay near the top of this file. Post-compaction reattaches only the first ~5K tokens with priority, and the model's default behaviour when handed a design defect is to keep improving the design — so a summarized-away rule here does not degrade quality, it **removes the stop**.
@@ -117,7 +138,7 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 1. **Parse** `$ARGUMENTS`: the first `.md` token is the document path (used as given — the driver and the routing shift pass a main-worktree absolute path because `docs/` may be untracked and absent from a segment worktree, which is where a shift-dispatched stage runs); the remainder is the scope. A missing document, a non-`.md` target, an unreadable or empty document, or an empty scope is a **halt** with `분류: precondition-failed`.
 2. **Read `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 1` and `## 2`** — `## 1` for path/slug derivation, the provenance guard, and the atomic compare-and-swap; `## 2` for the carrier's block grammar, its nineteen fields, its frozen tail, its two write forms and their diff gates, and its file terminator. Derive `{slug}` and the document key **from the document's own directory**, never the cwd.
-3. **Read the whole design document** and record `사전 sha256` (`shasum -a 256`).
+3. **Read the whole design document** and record `사전 sha256` (`shasum -a 256`) and `사전 구속 표면 다이제스트` — the one line `<gate absolute path> binding-digest --manifest "$CC_PIPELINE_MANIFEST" -- <document path>` prints, run as a command of its own with the document path as Step 1.1 parsed it. Take both before any write to the document: Step 4's verdict and every halt record's baselines stand on these two values, and no later step can recompute them.
 4. **Read `${CLAUDE_SKILL_DIR}/../_common/verification.md`** for the binding-tier partition and the frozen verification vocabulary — this skill rewrites binding-tier material, so it must know exactly which sections that is.
 
 ### Step 2: Locate the scope, and take the carrier's request block if there is one
@@ -161,7 +182,7 @@ Compute the two-value verdict (CFI-4):
 - **`재설계 필요`** — the edit moved the document's **binding surface**: a `## 합의된 아키텍처` statement, a decision sentence, a resolved trade-off entry, or a verification item. The segment plan was derived from that surface, so it is now stale.
 - **`불필요`** — nothing binding moved. The edit clarified rationale, corrected an example, or the scope turned out not to falsify anything.
 
-The distinction is measurable rather than asserted: compute it over the **binding-surface digest** — the document with `검증 등급:` and `구현 시 검증 기록:` lines filtered out, section-scoped, tolerant on both diff sides — and compare before and after. That digest is invariant to the implementation arm's own two write forms by construction, so a verdict computed on it is not perturbed by them.
+The distinction is measurable rather than asserted: compute it over the **binding-surface digest** — the document with `검증 등급:` and `구현 시 검증 기록:` lines filtered out, section-scoped, tolerant on both diff sides — and compare before and after. Both sides come from the same command: the before side is Step 1's `사전 구속 표면 다이제스트` (or the carried record's, on re-entry), and the after side is what `<gate absolute path> binding-digest --manifest "$CC_PIPELINE_MANIFEST" -- <document path>` prints after the last edit. Never compute either side by hand — a hand-filtered hash that differs from the gate's by one blank line reads as a moved binding surface. That digest is invariant to the implementation arm's own two write forms by construction, so a verdict computed on it is not perturbed by them.
 
 **Close the carrier block** where Step 2 took one, using `## 2`'s **close** write form and nothing else: flip `상태` to `처리됨` and insert **exactly one** `처리 기록` line at field position 2, immediately after that block's `상태` line, with every other block byte-unchanged. Its value grammar is fixed here:
 
