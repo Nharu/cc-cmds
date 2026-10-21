@@ -18993,8 +18993,8 @@ gate_carry_cap_row() {
   # ledger, so a later shift that carries the same answer again is refused
   # again on the same count; it writes no second row for it.
   local rowseg
-  if { grep '^- `blocked` ' "$LEDGER" 2>/dev/null || true; } \
-       | grep -qF "| 스코프=act | 원인=막힘 | 사유=$4 | 중단 답 줄=$5 | "; then
+  if [ -n "$( { grep '^- `blocked` ' "$LEDGER" 2>/dev/null || true; } \
+              | { grep -F "| 스코프=act | 원인=막힘 | 사유=$4 | 중단 답 줄=$5 | " || true; })" ]; then
     warn "$4 — $2 는 파견하지 않습니다 (상한 행은 이미 있습니다)"
     return 0
   fi
