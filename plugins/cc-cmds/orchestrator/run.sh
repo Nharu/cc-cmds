@@ -7366,8 +7366,8 @@ CYCLE_BUNDLE_SCRIPT='
   printf "요약=%s\nP0=%s\nP1=%s\n리뷰 HEAD=%s\n" "$sm" "$p0" "$p1" "$rh"
   if [ "$sm" = "정규" ] && [ -n "$rh" ]; then
     rc=0
-    lb=$(gate_row_projected_bytes "cycle" "세그먼트=$s" "사이클=$c" "P0=$p0" "P1=$p1" \
-        "리뷰 HEAD=$rh" "리포트 경로=$r" "lane 결정=$l" "발견 지문=000000000000")
+    lb=$(gate_cycle_row_projected_bytes "$s" "사이클=$c" "P0=$p0" "P1=$p1" \
+        "리뷰 HEAD=$rh" "리포트 경로=$r" "lane 결정=$l")
     if [ "${lb:-0}" -gt "$GATE_ROW_MAX" ]; then
       ro=$( ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
           "리포트 경로=$r" ) 2>&1 ) || rc=$?
@@ -7401,7 +7401,8 @@ cycle_gate_bundle() {
   #
   # TWO STEPS OF DEGRADATION AT THE CAP, AND THIS ONE COMES FIRST. `lane 결정`
   # grows by about 50 bytes per triage finding and nothing bounds the count, so
-  # the row is projected with it and a 12-character `발견 지문` stand-in; over
+  # the row is projected with it by the gate's own `gate_cycle_row_projected_bytes`,
+  # which adds every field the gate writes at its widest value; over
   # `GATE_ROW_MAX`, the key is left off with no marker — a `cycle` row without
   # it is already the routed path's ordinary row — and the bundle prints
   # `lane 생략=<projected bytes>` for the caller to log. Nothing in the tree
@@ -10112,7 +10113,11 @@ segment_cycle() {
     fi
 
     # --- S5 REVIEW ---------------------------------------------------------
-    local rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle.md"
+    # The report path is the gate's canonical one — the path its `cycle` arm
+    # refuses every other against, numbered by the segment's `cycle` rows.
+    local rp
+    rp=$(run_gate_call gate_review_report_path "$seg" 2>/dev/null) && [ -n "$rp" ] \
+      || { park "$seg" cone 무효화 "게이트 park" "정본 리뷰 리포트 경로를 게이트에서 얻지 못했다"; return 1; }
     mkdir -p "$(dirname "$rp")"
     sid="S5:$seg:$cycle"
     # THE REVIEW'S SCOPE TRAVELS ON THE DISPATCH LINE, the same way the
@@ -10248,7 +10253,8 @@ segment_cycle() {
       [ -z "$redo" ] || break
       redo=$(review_redo_reason "$bundle" "$recovered" "$slice_flag")
       [ -n "$redo" ] || break
-      rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle-r2.md"
+      rp=$(run_gate_call gate_review_report_path "$seg" 2 2>/dev/null) && [ -n "$rp" ] \
+        || { park "$seg" cone 무효화 "게이트 park" "정본 리뷰 리포트 경로(-r2)를 게이트에서 얻지 못했다"; return 1; }
       log "$seg: $redo — 사이클 $cycle 의 리뷰를 한 번 더 파견한다 ($rp)"
     done
     p0=$(bundle_val "$bundle" 'P0'); p1=$(bundle_val "$bundle" 'P1')
