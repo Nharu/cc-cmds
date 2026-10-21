@@ -6,16 +6,20 @@ name: gate
 # possibly move a gate section, and pulling the suite along with them (about
 # 170 shard-minutes) is what this split removes.
 #
-# THE PARTITION IS WEIGHED WITH WHAT THE LAST MASTER RUN MEASURED. Every shard
-# writes a marker line in front of each section it runs, `gate-report` turns
-# those into per-section times, and a push to master uploads them as the
-# `gate-timing` artifact. The next run's `gate-plan` job downloads the newest
-# such artifact a master push run still has, makes the partition table from it
-# once, and every shard and the coverage check read that one table — no job
-# partitions on its own, so no two jobs can see different inputs. With no
-# artifact the committed seed `scripts/gate-timing.tsv` is used if there is one,
-# and the census weight model if not, each with a warning; no person has to
-# regenerate anything for the weights to stay current.
+# THE PARTITION IS WEIGHED WITH WHAT THE LAST THREE MASTER RUNS MEASURED. Every
+# shard writes a marker line in front of each section it runs, `gate-report`
+# turns those into per-section times, and a push to master uploads them as the
+# `gate-timing` artifact. The next run's `gate-plan` job downloads that artifact
+# from the newest three master push runs that still have it, takes each
+# section's median over them (one run's noise no longer moves the partition by
+# itself), makes the partition table from it once, and every shard and the
+# coverage check read that one table — no job partitions on its own, so no two
+# jobs can see different inputs. A section none of them measured is weighed by
+# its length in suite lines, or the median of the measured sections when that
+# is larger. With no artifact the committed seed `scripts/gate-timing.tsv` is
+# used if there is one, and the census weight model if not, each with a
+# warning; no person has to regenerate anything for the weights to stay
+# current.
 #
 # THE TEST TIME IS A SIGNAL OF ITS OWN. `gate-report` sums the thirteen shard
 # times and hands them to `scripts/ci-duration.sh`, which fails a pull request
@@ -54,8 +58,11 @@ permissions:
 
 jobs:
   # The one place the partition is made. The source is said in the summary —
-  # `artifact <run id>`, `seed` or `census` — with its age and the sections it
-  # did not measure, which are weighed at the median of the measured ones.
+  # `artifact <run id> ...` (every run the median was taken over, newest
+  # first), `seed` or `census` — with the age of the newest run and the
+  # sections none of them measured, which are weighed by their length or at
+  # the median of the measured ones, whichever is larger; `table.err` in the
+  # `gate-plan` artifact has one line per such section with its estimate.
   # Only master push runs of this repository are read, so an artifact of the
   # same name uploaded by a fork's pull request never becomes the source.
   gate-plan:
@@ -68,12 +75,20 @@ jobs:
       - name: Find the timing source
         run: |
           plan="$RUNNER_TEMP/plan"; mkdir -p "$plan" "$RUNNER_TEMP/src"
-          if got=$(bash scripts/ci-duration.sh fetch-base --name gate-timing --workflow gate.yml --out "$RUNNER_TEMP/src") \
-             && [ -f "$RUNNER_TEMP/src/gate-timing.tsv" ]; then
-            cp "$RUNNER_TEMP/src/gate-timing.tsv" "$plan/gate-timing.tsv"
-            set -- $got
-            echo "artifact $1" > "$plan/source"
-            created="$2"
+          # One `<run id> <created_at>` line per run, newest first; the median
+          # takes the files in that order.
+          set --; runs=""; created=""
+          if got=$(bash scripts/ci-duration.sh fetch-base --name gate-timing --workflow gate.yml --count 3 --out "$RUNNER_TEMP/src"); then
+            while read -r id c; do
+              [ -n "$id" ] || continue
+              [ -n "$created" ] || created="$c"
+              [ -f "$RUNNER_TEMP/src/$id/gate-timing.tsv" ] || continue
+              set -- "$@" "$RUNNER_TEMP/src/$id/gate-timing.tsv"
+              runs="$runs $id"
+            done < <(printf '%s\n' "$got")
+          fi
+          if [ "$#" -ge 1 ] && bash scripts/gate-timing.sh median --out "$plan/gate-timing.tsv" "$@"; then
+            echo "artifact$runs" > "$plan/source"
           elif [ -f scripts/gate-timing.tsv ]; then
             echo "::warning::gate-timing 아티팩트를 가진 master push 실행을 찾지 못해 커밋된 시드 scripts/gate-timing.tsv 로 분할합니다"
             cp scripts/gate-timing.tsv "$plan/gate-timing.tsv"
@@ -267,6 +282,22 @@ jobs:
         with:
           name: ci-duration-gate
           path: ${{ runner.temp }}/ci-duration-gate/
+
+      # What a pull request actually waited, measured last so it covers the
+      # whole attempt. The artifact carries the attempt number, so a re-run
+      # attempt leaves its own line beside the first one. It never fails the
+      # job: past 900 s raw it warns.
+      - name: Wall clock
+        if: always()
+        run: bash scripts/ci-duration.sh wall --slots "$(make -s print-gate-shards)" --runners "$(make -s print-gate-shards)" --lanes 1 --timing-dir "$RUNNER_TEMP/shards" --out "$RUNNER_TEMP/wall/gate-wall.txt"
+
+      - name: Upload the wall clock
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-wall-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wall/gate-wall.txt
+          if-no-files-found: ignore
 
   # Set-based, never count-based: one section regressing while another is fixed
   # leaves a count flat and hides exactly the thing being watched. Sections the

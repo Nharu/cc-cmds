@@ -36,15 +36,27 @@
 # <run id> <sha> generated: <UTC>` comment, a `id<TAB>ms<TAB>run` header, one row
 # per section and one `@pre-<group>` row per prelude). A marker interval is the
 # section's own share, not the whole invocation, so nothing is subtracted: a
-# section weighs its ms (at least 1), a component weighs the sum of its members
-# plus each distinct group's `@pre-<group>` ms once, and the table's load column
-# is in ms. A section the file does not carry — added since, or on a shard that
-# died before reaching it — weighs the MEDIAN of the measured sections: the
-# census maximum was the pessimistic guess, and a guess heavier than most of
-# what it stands beside skews the balance it exists to protect. Components,
-# LPT and every tie rule are the same in both modes. A path that does not exist
-# falls back to the census model, so the committed seed's absence costs balance
-# and nothing else.
+# section weighs its ms (at least 1), and the table's load column is in ms.
+#
+# A SECTION THE FILE DOES NOT CARRY IS WEIGHED BY ITS LENGTH. Added since, or on
+# a shard that died before reaching it, it has no ms of its own. Its span is the
+# number of suite lines from its banner to the next banner or to the
+# `# --- epilogue-begin ---` line, whichever comes first, and the measured
+# sections give a rate in ms per span line; the 90th percentile of those rates
+# (the ascending rate at rank ⌈0.9 n⌉) times the span is its estimate, and it
+# weighs that estimate or the MEDIAN of the measured sections, whichever is
+# larger. The median alone was too light for a long new section, which is the
+# kind whose weight the balance depends on; the census maximum was too heavy for
+# most. Each such section is reported on its own line with its span and
+# estimate.
+#
+# A PRELUDE IS PAID ONCE PER SHARD AND GROUP. A component's weight for ordering
+# and for the budget is the sum of its members plus each distinct group's
+# `@pre-<group>` ms once. Placing it adds its members and the prelude of each of
+# its groups the shard does not run yet, because a shard runs a group's prelude
+# once however many of its components land there. Components, LPT and every tie
+# rule are the same in both modes. A path that does not exist falls back to the
+# census model, so the committed seed's absence costs balance and nothing else.
 #
 # A COMPONENT OVER BUDGET IS PLACED WHOLE AND REPORTED. The budget is 0.6/N of
 # the total weight. It does not mean "split here" — splitting a component is the
@@ -93,9 +105,15 @@ shard_sha256() {
 
 # The banner fields are read with the selector's own rules: the id is what
 # precedes the first `|`, and a field is `| <key>: <value>` up to the next `|`
-# or the closing `---`. Only `group:` and `needs:` are wanted here.
+# or the closing `---`. Only `group:` and `needs:` are wanted here. The fourth
+# column is the span: the line distance from the banner to the next banner or
+# to the first whole-line `# --- epilogue-begin ---` after it, whichever is
+# nearer, or to one past the last line when neither follows. The end marker is
+# matched as the whole line, because a comment in the suite starts with the
+# same words.
 shard_banners() {
   awk '
+    $0 == "# --- epilogue-begin ---" { ne++; el[ne] = NR }
     /^# --- section: / {
       id = $0
       sub(/^# --- section:[ \t]*/, "", id); sub(/[ \t]*\|.*$/, "", id); sub(/[ \t]*---[ \t]*$/, "", id)
@@ -111,7 +129,17 @@ shard_banners() {
         sub(/[ \t]*---[ \t]*$/, "", ned); sub(/^.*\|[ \t]*needs:[ \t]*/, "", ned); sub(/[ \t]*\|.*$/, "", ned); gsub(/[ \t]/, "", ned)
         if (ned == "") ned = "-"
       }
-      printf "%s\t%s\t%s\n", id, grp, ned
+      nb++; bl[nb] = NR; bid[nb] = id; bg[nb] = grp; bn[nb] = ned
+    }
+    END {
+      e = 1
+      for (i = 1; i <= nb; i++) {
+        while (e <= ne && el[e] <= bl[i]) e++
+        nx = NR + 1
+        if (i < nb) nx = bl[i + 1]
+        if (e <= ne && el[e] < nx) nx = el[e]
+        printf "%s\t%s\t%s\t%d\n", bid[i], bg[i], bn[i], nx - bl[i]
+      }
     }
   ' "$1"
 }
@@ -155,7 +183,7 @@ shard_partition() {
     }
     BEGIN {
       while ((getline line < IDS) > 0) { if (line != "" && !(line in known)) { nid++; ids[nid] = line; known[line] = 1 } }
-      while ((getline line < BAN) > 0) { split(line, f, "\t"); bgrp[f[1]] = f[2]; bned[f[1]] = f[3] }
+      while ((getline line < BAN) > 0) { split(line, f, "\t"); bgrp[f[1]] = f[2]; bned[f[1]] = f[3]; if (f[4] ~ /^[0-9]+$/ && f[4] > 0) bspan[f[1]] = f[4] + 0 }
       while ((getline line < CEN) > 0) {
         if (line ~ /^#/ || line == "") continue
         nf = split(line, f, "\t")
@@ -201,13 +229,28 @@ shard_partition() {
         med = 1
         if (nm > 0) med = (nm % 2) ? mv[(nm + 1) / 2] : int((mv[nm / 2] + mv[nm / 2 + 1]) / 2)
         if (med < 1) med = 1
-        un = 0; uids = ""
+        # The 90th percentile of ms per span line over the measured sections
+        # of this list that have a span, at rank ceil(0.9 n) in integers.
+        nr = 0
         for (i = 1; i <= nid; i++) {
           id = ids[i]
-          if (id in tw) { w[id] = (tw[id] < 1) ? 1 : tw[id] }
-          else { w[id] = med; un++; uids = uids (un > 1 ? "," : "") id }
+          if (!(id in tw) || !(id in bspan)) continue
+          v = ((tw[id] < 1) ? 1 : tw[id]) / bspan[id]
+          j = nr; while (j >= 1 && rv[j] > v) { rv[j + 1] = rv[j]; j-- }
+          rv[j + 1] = v; nr++
         }
-        print "U\t실측 없는 절 " un "개 — 실측 절 " nm "개의 중앙값 " med " ms 로 적재합니다" (un ? ": " uids : "")
+        rate = (nr > 0) ? rv[int((9 * nr + 9) / 10)] : 0
+        un = 0; uids = ""; nul = 0
+        for (i = 1; i <= nid; i++) {
+          id = ids[i]
+          if (id in tw) { w[id] = (tw[id] < 1) ? 1 : tw[id]; continue }
+          est = "-"; w[id] = med
+          if ((id in bspan) && nr > 0) { est = int(bspan[id] * rate + 0.5); if (est > w[id]) w[id] = est }
+          un++; uids = uids (un > 1 ? "," : "") id
+          ul[++nul] = "U\t미측정 절 " id " — 범위 " ((id in bspan) ? bspan[id] : "-") "줄, 추정 " est " ms, 적재 " w[id] " ms"
+        }
+        print "U\t실측 없는 절 " un "개 — 실측 절 " nm "개의 중앙값 " med " ms 와 본문 길이 추정(줄당 p90 " sprintf("%.1f", rate) " ms) 가운데 큰 값으로 적재합니다" (un ? ": " uids : "")
+        for (i = 1; i <= nul; i++) print ul[i]
       }
       for (i = 1; i <= nid; i++) {
         id = ids[i]
@@ -223,8 +266,11 @@ shard_partition() {
         cn[c]++
         cmem[c, cn[c]] = id
         if (tm) {
-          cwt[c] += w[id]
-          if (!((c SUBSEP grp[id]) in cg)) { cg[c, grp[id]] = 1; if (grp[id] in pre) cwt[c] += pre[grp[id]] }
+          cwt[c] += w[id]; cms[c] += w[id]
+          if (!((c SUBSEP grp[id]) in cg)) {
+            cg[c, grp[id]] = 1; cng[c]++; cgl[c, cng[c]] = grp[id]
+            if (grp[id] in pre) cwt[c] += pre[grp[id]]
+          }
           continue
         }
         f0 = (grp[id] in fl) ? fl[grp[id]] : 0
@@ -244,7 +290,17 @@ shard_partition() {
       for (i = 1; i <= nc; i++) {
         c = ord[i]; best = 1
         for (k = 2; k <= N; k++) if (load[k] < load[best]) best = k
-        load[best] += cwt[c]
+        if (tm) {
+          # A prelude is paid once per shard and group, not once per component.
+          add = cms[c]
+          for (m = 1; m <= cng[c]; m++) {
+            g = cgl[c, m]
+            if ((best SUBSEP g) in sg) continue
+            sg[best, g] = 1
+            if (g in pre) add += pre[g]
+          }
+          load[best] += add
+        } else load[best] += cwt[c]
         for (m = 1; m <= cn[c]; m++) { sn[best]++; smem[best, sn[best]] = cmem[c, m] }
         if (cwt[c] * N * 10 > total * 6) {
           print "B\t덩어리 " cid[c] " — 무게 " cwt[c] ", 절 " cn[c] "개, 샤드 예산 " int(total * 6 / (N * 10)) " (총무게 " total " 의 0.6/" N ") 을 넘어 쪼개지 않고 샤드 " best " 에 넣었습니다"
@@ -310,6 +366,8 @@ shard_self_test() {
 
   # A fake suite: `--list` answers from a heredoc and the banners sit below the
   # exit, where nothing executes them but the partitioner's reader sees them.
+  # A spec is `id|group|needs`, or `id|group|needs|L` to put L comment lines
+  # after the banner; without L the banners are consecutive and every span is 1.
   mk_suite() {
     local f="$1"; shift
     {
@@ -320,12 +378,14 @@ shard_self_test() {
       printf '  exit 0\nfi\nexit 1\n'
       for s in "$@"; do
         local id="${s%%|*}" rest="${s#*|}"
-        local g="${rest%%|*}" n="${rest#*|}"
+        local g="${rest%%|*}" n="${rest#*|}" body=0 l
+        case "$n" in *'|'*) body="${n#*|}"; n="${n%%|*}" ;; esac
         if [ "$n" = "-" ]; then
           printf '# --- section: %s | group: %s | covers: - | anchors: x ---\n' "$id" "$g"
         else
           printf '# --- section: %s | group: %s | covers: - | needs: %s | anchors: x ---\n' "$id" "$g" "$n"
         fi
+        l=0; while [ "$l" -lt "$body" ]; do printf '# body of %s\n' "$id"; l=$((l + 1)); done
       done
     } > "$f"
   }
@@ -423,14 +483,25 @@ shard_self_test() {
   want=$(printf '1\t47\tz\n2\t35\tx,y')
   if [ "$out" = "$want" ]; then ok "(i) 덩어리 무게는 절 ms 합에 그룹당 프렐류드 ms 한 번"; else bad "(i) 덩어리 무게는 절 ms 합에 그룹당 프렐류드 ms 한 번" "「${out}」"; fi
 
-  # (j) an unmeasured section weighs the median of the measured ones (20 of
-  # 10, 20, 30), so one shard carries 10 + 30 + 20 + 20.
+  # (j) an unmeasured section weighs the larger of the median of the measured
+  # ones (20 of 10, 20, 30) and its span times the p90 rate. Every span is 1, so
+  # the rates are 10, 20, 30, the p90 is 30 and one shard carries
+  # 10 + 30 + 20 + 30; `gone` is not in the list and adds no rate.
   mk_suite "$T/s8.sh" 'a|g|-' 'b|g|-' 'c|g|-' 'n|g|-'
   mk_timing "$T/t8.tsv" "a	10" "b	30" "c	20" "gone	99"
   out=$(bash "$0" --suite "$T/s8.sh" --census "$T/none.tsv" --timing "$T/t8.tsv" --shards 1 --table 2>/dev/null)
-  if [ "$out" = "$(printf '1\t80\ta,b,c,n')" ]; then ok "(j) 실측 없는 절은 실측 절 ms 의 중앙값으로 적재된다"; else bad "(j) 실측 없는 절은 실측 절 ms 의 중앙값으로 적재된다" "「${out}」"; fi
+  if [ "$out" = "$(printf '1\t90\ta,b,c,n')" ]; then ok "(j) 실측 없는 절은 중앙값과 본문 길이 추정 가운데 큰 값으로 적재된다"; else bad "(j) 실측 없는 절은 중앙값과 본문 길이 추정 가운데 큰 값으로 적재된다" "「${out}」"; fi
   err=$(bash "$0" --suite "$T/s8.sh" --census "$T/none.tsv" --timing "$T/t8.tsv" --shards 1 --table 2>&1 >/dev/null)
-  if printf '%s' "$err" | grep -q '실측 없는 절 1개.*중앙값 20 ms.*: n$'; then ok "(j) 실측 없는 절의 수와 id 를 보고한다"; else bad "(j) 실측 없는 절의 수와 id 를 보고한다" "$err"; fi
+  if printf '%s' "$err" | grep -q '^gate-shard: 실측 없는 절 1개.*중앙값 20 ms.*줄당 p90 30\.0 ms.*: n$'; then ok "(j) 실측 없는 절의 수와 id 를 보고한다"; else bad "(j) 실측 없는 절의 수와 id 를 보고한다" "$err"; fi
+  # Each unmeasured id has its own line, and none of them starts the way the
+  # head line does: the workflow takes every line starting that way into the
+  # job summary.
+  if printf '%s\n' "$err" | grep -q '^gate-shard: 미측정 절 n — 범위 1줄, 추정 30 ms, 적재 30 ms$' \
+     && [ "$(printf '%s\n' "$err" | grep -c '^gate-shard: 실측 없는 절 ')" = "1" ]; then
+    ok "(j) 미측정 id 별 줄은 실측 없는 절 머리 줄과 다르게 시작한다"
+  else
+    bad "(j) 미측정 id 별 줄은 실측 없는 절 머리 줄과 다르게 시작한다" "$err"
+  fi
   out=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --timing "$T/absent.tsv" --shards 2 --table 2>/dev/null)
   out2=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 2 --table 2>/dev/null)
   if [ -n "$out" ] && [ "$out" = "$out2" ]; then ok "(j) 없는 실측 파일은 센서스 모델로 돌아간다"; else bad "(j) 없는 실측 파일은 센서스 모델로 돌아간다" "「${out}」 대 「${out2}」"; fi
@@ -442,11 +513,40 @@ shard_self_test() {
   bash "$0" --suite "$T/s6.sh" --shards 2 --shard 2 --from-table "$T/plan.tsv" > /dev/null 2>&1; rc=$?
   if [ "$rc" = "4" ]; then ok "(k) --from-table 의 빈 행은 exit 4"; else bad "(k) --from-table 의 빈 행은 exit 4" "rc=$rc"; fi
 
+  # (l) a long unmeasured section is weighed by its span: big's banner is
+  # followed by 50 lines, so its span is 51 and at 10 ms a line it weighs 510
+  # where the median would have given it 10 — it takes a shard alone.
+  mk_suite "$T/s9.sh" 'a|g|-' 'b|g|-' 'c|g|-' 'd|g|-' 'big|g|-|50'
+  mk_timing "$T/t9.tsv" "a	10" "b	10" "c	10" "d	10"
+  out=$(bash "$0" --suite "$T/s9.sh" --census "$T/none.tsv" --timing "$T/t9.tsv" --shards 3 --table 2>/dev/null)
+  if [ "$out" = "$(printf '1\t510\tbig\n2\t20\ta,c\n3\t20\tb,d')" ]; then ok "(l) 본문이 긴 미측정 절은 본문 길이로 적재되어 한 행에 혼자 놓인다"; else bad "(l) 본문이 긴 미측정 절은 본문 길이로 적재되어 한 행에 혼자 놓인다" "「${out}」"; fi
+
+  # (m) a short unmeasured section stays at the median: the rates are 10, 20
+  # and 30 ms a line over spans of 10, so s (span 1) is estimated at 30 and
+  # weighs the median 200.
+  mk_suite "$T/s10.sh" 'a|g|-|9' 'b|g|-|9' 'c|g|-|9' 's|g|-'
+  mk_timing "$T/t10.tsv" "a	100" "b	200" "c	300"
+  err=$(bash "$0" --suite "$T/s10.sh" --census "$T/none.tsv" --timing "$T/t10.tsv" --shards 1 --table 2>&1 >/dev/null)
+  out=$(bash "$0" --suite "$T/s10.sh" --census "$T/none.tsv" --timing "$T/t10.tsv" --shards 1 --table 2>/dev/null)
+  if [ "$out" = "$(printf '1\t800\ta,b,c,s')" ] && printf '%s\n' "$err" | grep -q '^gate-shard: 미측정 절 s — 범위 1줄, 추정 30 ms, 적재 200 ms$'; then
+    ok "(m) 본문이 짧은 미측정 절은 중앙값 무게에 머문다"
+  else
+    bad "(m) 본문이 짧은 미측정 절은 중앙값 무게에 머문다" "out=${out} err=${err}"
+  fi
+
+  # (n) a prelude is added once per shard and group: p lands alone on shard 1
+  # with g's 5 ms; q and r both land on shard 2, which pays g's prelude once,
+  # so it carries 30 + 20 + 5 and not 30 + 5 + 20 + 5.
+  mk_suite "$T/s11.sh" 'p|g|-' 'q|g|-' 'r|g|-'
+  mk_timing "$T/t11.tsv" "p	50" "q	30" "r	20" "@pre-g	5"
+  out=$(bash "$0" --suite "$T/s11.sh" --census "$T/none.tsv" --timing "$T/t11.tsv" --shards 2 --table 2>/dev/null)
+  if [ "$out" = "$(printf '1\t55\tp\n2\t55\tq,r')" ]; then ok "(n) 프렐류드는 행마다 그룹당 한 번 더해진다"; else bad "(n) 프렐류드는 행마다 그룹당 한 번 더해진다" "「${out}」"; fi
+
   rm -rf "$T"
   printf 'gate-shard self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 20 ]; then
-    printf 'gate-shard self-test: 통과 수 %d 가 하한 20 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 24 ]; then
+    printf 'gate-shard self-test: 통과 수 %d 가 하한 24 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
