@@ -173,10 +173,22 @@ seg() {
     --surface 읽기 --snapshot-digest "$(HH)" --rationale "픽스처 세그먼트" \
     -- 워크트리="$WT" 상태=실행중 선행=없음 >/dev/null
 }
+# rv_prompt <segment> — the smallest review prompt the gate lets through for
+# that segment's review: the canonical `--report-path`, under the base two
+# levels above the manifest's directory, numbered `cycle1` because this suite
+# writes no `cycle` row. Counted here and not asked of `gate.sh review-line`,
+# which refuses a segment row with no `브랜치` and `seg` writes none. Every
+# review dispatch below carries it and `--trigger '첫 리뷰'` beside it, the one
+# trigger a segment with no `cycle` row stands behind, so the refusal or the
+# wait a fixture means to reach is the one it reaches.
+rv_prompt() {
+  printf '/cc-cmds:review-unattended x --report-path %s/docs/reviews/seg-%s-%s-cycle1.md' \
+    "$(cd "$(dirname "$MANIFEST")/../.." && pwd)" "$RUN" "$1"
+}
 dispatch() {
   g act --manifest "$MANIFEST" --kind skill --target repo --segment "$1" --cutpoint 커밋 \
     --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale "픽스처 파견" \
-    -- review -p "/cc-cmds:review-unattended x"
+    --trigger '첫 리뷰' -- review -p "$(rv_prompt "$1")"
 }
 rows_of() { { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -cF "세그먼트=$1 " || true; }; }
 wait_file() {  # wait_file <path> <tenths> — poll until the file exists
@@ -207,18 +219,18 @@ seg A
 LAUNCH="$WORK/launcher.sh"
 cat > "$LAUNCH" <<'LEOF'
 #!/usr/bin/env bash
-# launcher.sh <worktree> <gate> <manifest> <segment> <digest> <out>
+# launcher.sh <worktree> <gate> <manifest> <segment> <digest> <out> <prompt>
 cd "$1" || exit 1
 t0=$(date +%s)
 bash "$2" act --manifest "$3" --kind skill --target repo --segment "$4" --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$5" --rationale "픽스처 파견" \
-  -- review -p "/cc-cmds:review-unattended x" > "$6" 2>&1
+  --trigger '첫 리뷰' -- review -p "$7" > "$6" 2>&1
 rc=$?
 t1=$(date +%s)
 printf '%s %s\n' "$rc" "$((t1 - t0))" > "$6.done"
 sleep 120
 LEOF
-CC_STUB_SLEEP=10 bash "$LAUNCH" "$WT" "$GATE" "$MANIFEST" A "$(HH)" "$WORK/launch-A.out" &
+CC_STUB_SLEEP=10 bash "$LAUNCH" "$WT" "$GATE" "$MANIFEST" A "$(HH)" "$WORK/launch-A.out" "$(rv_prompt A)" &
 LA=$!; KILL_LIST="$KILL_LIST $LA"
 if ! wait_file "$WORK/launch-A.out.done" 200; then
   bad "(1) 파견 반환" "20초 안에 파견 act 가 돌아오지 않았다: $(cat "$WORK/launch-A.out" 2>/dev/null)"
@@ -1422,7 +1434,7 @@ no_wait_rows() { { grep -vF '`stage-wait`' "$LEDGER" || true; } | shasum -a 256;
 k_sha=$(no_wait_rows)
 g plan --manifest "$MANIFEST" --kind skill --target repo --segment K --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale "픽스처 예상" \
-  -- review -p "/cc-cmds:review-unattended x" >/dev/null; rc_kp=$?
+  --trigger '첫 리뷰' -- review -p "$(rv_prompt K)" >/dev/null; rc_kp=$?
 check "(14) plan 도 그 키의 파견을 17 로 예상한다" "$rc_kp" "17"
 check "(14) 그 plan 은 원장에 쓰지 않는다" "$(no_wait_rows)" "$k_sha"
 check "(14) 스냅숏의 waiting_stages 에 그 키 하나가 있다" \
