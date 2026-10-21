@@ -136,9 +136,9 @@ EOF
 # began. This run itself (by id) and the runs of its own head sha (lint, notify)
 # are not counted — the head sha is the attempt's, which on a pull request is
 # the head and not the merge commit in GITHUB_SHA — and neither is a run that
-# started after the window, which could not have made
-# this one wait. Jobs of other repositories on the same account are not visible
-# through this API, and the line says so. `rows` is the number of row timing
+# started after the window, which could not have made this one wait. Jobs of
+# other repositories on the same account are not visible through this API, and
+# the line says so. `rows` is the number of row timing
 # files in D that reached their `@end` line, over S: a shard that died uploads
 # a partial file, and the count is never filled in from the runner and lane
 # numbers it was given. Nothing here fails the job: past 900 s raw it warns,
@@ -484,7 +484,6 @@ STUB
       bad "head_sha 없음" "rc=$rc $out"
     fi
     printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
-    printf '{"workflow_runs":[%s]}\n' "$quiet" > "$T/stub/allruns.json"
     # S3 started before the window closed and is still running; S4 is queued
     # and has no start time. Both count.
     printf '{"workflow_runs":[%s,\n%s,\n%s]}\n' "$quiet" \
