@@ -5748,6 +5748,12 @@ surface_of_argv0() {
   case "$cmd" in
     clickup-create.py|clickup-relate.py|base-split.py|similar-items.py)
       gate_own_helper "$1" || { printf '등급 미상'; return 0; } ;;
+    # The stage rules helper is reached by its path only. A bare name is
+    # whatever the act's PATH puts first, and nothing tells the person who runs
+    # `status` to put this directory there.
+    stage-rules.sh)
+      case "$1" in */*) ;; *) printf '등급 미상'; return 0 ;; esac
+      gate_own_helper "$1" || { printf '등급 미상'; return 0; } ;;
   esac
   shift
   case "$cmd" in
@@ -5883,6 +5889,15 @@ surface_of_argv0() {
         check)  printf '읽기' ;;
         plan)   printf '트리밖쓰기' ;;
         *)      printf '워크트리쓰기' ;;
+      esac ;;
+    # The stage rules helper. `status` only reads the instruction file it is
+    # given and prints counts. `extract --out-dir` writes the run's snapshot and
+    # `migrate` writes a proposal, and neither is a stage's act, so every other
+    # spelling takes the unknown grade and its refusal.
+    stage-rules.sh)
+      case "${1:-}" in
+        status) printf '읽기' ;;
+        *)      printf '등급 미상' ;;
       esac ;;
     # The note above says `openssl` may not sit in the digest row because one
     # name would cover both hashing and opening a socket. That reasoning holds
@@ -13687,6 +13702,7 @@ gate_run_rules() {
     [ "$name" = "사전-인가-대조" ] && cargv="$pargv"
     GATE_ACT="$act" GATE_ALIAS="$alias" GATE_SEGMENT="$seg" GATE_ARGV="$cargv" \
       GATE_LEDGER="$LEDGER" GATE_MANIFEST="$MANIFEST" GATE_GRANT="$GRANT" \
+      GATE_CLAUDEMD_PROPOSAL="${GATE_CLAUDEMD_PROPOSAL:-}" \
       /bin/sh "$checker" || rc=$?
     [ "$rc" = "0" ] && continue
     # A checker may ask for an approval instead of refusing. Folding that into a
@@ -17463,40 +17479,13 @@ gate_main() {
       "판본 다이제스트=$rr_pin_digest" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
     gate_record_design_tier
-    # THE STAGE-POLICY DRIFT VERDICT, AS A LOG LINE AND NOTHING MORE. The policy
-    # the gate injects into every stage was distilled from files a person edits
-    # by hand, and the checker beside this file reports whether they still
-    # agree. It is advisory: nobody reads it at runtime, and a ledger field
-    # would widen the sidecar contract for a signal the morning reads from the
-    # log anyway. Exit status ignored, no refusal, no row — a drifted source is
-    # a reason to update the policy, never a reason to stop a run.
-    #
-    # THE DIRECTORIES ARE NAMED, NOT LEFT TO THE CHECKER'S ENVIRONMENT. The
-    # stages read the run's seat, not whatever this process inherited, so the
-    # seat is always passed; with routing on and an inventory the eligible lease
-    # directories are passed too, because a routed stage reads its grant's. The
-    # checker's last line summarizes every directory, so `tail -1` still holds
-    # all of them.
-    local pd seat_dir d
-    local -a pd_dirs=()
-    seat_dir=$( { lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 config-dir" "-" >/dev/null 2>&1 \
-                  && printf '%s' "$LANE_RECORD"; } || true)
-    [ -z "$seat_dir" ] || pd_dirs+=(--config-dir "$seat_dir")
-    # The eligible set is the router's own: `unattended` is one of the strings
-    # `enabled`/`draining`/`disabled`, a new grant goes to `enabled` and a held
-    # one keeps `draining`, so those two are the directories a stage can read —
-    # and a row enrolled for lending, whose grants are lent stages.
-    if run_routed && [ -f "$RUN_DIR/inventory.json" ] \
-       && route_inventory_check "$RUN_DIR/inventory.json" >/dev/null 2>&1; then
-      while IFS= read -r d; do
-        [ -n "$d" ] && [ "$d" != "$seat_dir" ] || continue
-        pd_dirs+=(--config-dir "$d")
-      done <<GATE_DRIFT_DIRS
-$(gate_stage_policy_inventory_dirs "$RUN_DIR/inventory.json")
-GATE_DRIFT_DIRS
-    fi
-    pd=$( { bash "$GATE_DIR/stage-policy-drift.sh" --sources-map "$(gate_stage_policy_sources_map)" ${pd_dirs[@]+"${pd_dirs[@]}"} 2>/dev/null || true; } | tail -1)
-    log "stage policy sources: ${pd:-skipped}"
+    # THE PERSONAL RULES SNAPSHOT, ONCE PER RUN. Every stage of this run gets
+    # the same `# Personal rules` block, copied here from the seat's CLAUDE.md;
+    # an edit of that file during the night reaches the next run, not tonight's
+    # stages. A failed extract is a log line and a pointer, never a refusal:
+    # the stages then run on the frozen v6 policy.
+    gate_personal_rules_extract || true
+    gate_personal_rules_lease_notice || true
     # AFTER the `run` row, and only here. Before it, a reap that died would leave
     # the run without so much as its own opening row; and this is the one branch
     # that runs once per run rather than once per gate entry.
@@ -22598,7 +22587,7 @@ gate_claudemd_digest() {
 gate_claudemd_slot_guard() {
   # gate_claudemd_slot_guard <graded-surface> <argv...>
   #
-  # LAYER 2, AND IT REFUSES NOTHING. Its whole output is two exported values;
+  # LAYER 2, AND IT REFUSES NOTHING. Its whole output is three exported values;
   # the decision belongs to the `리뷰-후-적용` rule, which is layer 3. Written as
   # a guard beside `gate_manifest_write_guard` because it needs the same thing
   # that one needs — the argv as it actually is, before an interpreter hides the
@@ -22618,9 +22607,17 @@ gate_claudemd_slot_guard() {
   # the sibling guard is kept verbatim in shape: a command graded `읽기` from
   # argv0 alone can still write through `-exec` or a wrapper, and those two axes
   # are the ones that decide.
+  #
+  # THE PROPOSAL OPERAND IS THE THIRD VALUE. The digest covers every proposal in
+  # the run's `claudemd/` directory at once, so it cannot tell the rule which
+  # file is about to become the slot — and the rule compares the stage rules
+  # block of exactly that file with the slot's. Only an operand that sits in
+  # this run's `claudemd/` directory is published; one anywhere else leaves the
+  # value empty and the rule refuses.
   GATE_CLAUDEMD_SLOT=""
   GATE_CLAUDEMD_DIGEST=""
-  export GATE_CLAUDEMD_SLOT GATE_CLAUDEMD_DIGEST
+  GATE_CLAUDEMD_PROPOSAL=""
+  export GATE_CLAUDEMD_SLOT GATE_CLAUDEMD_DIGEST GATE_CLAUDEMD_PROPOSAL
   local graded="$1"; shift
   [ "$#" -ge 1 ] || return 0
   case "$graded" in
@@ -22636,7 +22633,7 @@ gate_claudemd_slot_guard() {
       esac ;;
   esac
 
-  local a argv0 joined slot=""
+  local a argv0 joined slot="" proposal="" p cdir
   # ARM 1 — the act names its target as an argv element, which is the shape the
   # sanctioned apply has (`cp <제안본> <슬롯>`). This is the only arm that yields
   # a slot path, and the slot path is what the ledger row and the morning report
@@ -22644,6 +22641,7 @@ gate_claudemd_slot_guard() {
   for a in "$@"; do
     case "${a##*/}" in
       CLAUDE.md|CLAUDE.local.md) slot="$a" ;;
+      *.proposed.md) proposal="$a" ;;
     esac
   done
 
@@ -22651,6 +22649,11 @@ gate_claudemd_slot_guard() {
     GATE_CLAUDEMD_SLOT=$(gate_physical_path "$slot")
     [ -n "$GATE_CLAUDEMD_SLOT" ] || GATE_CLAUDEMD_SLOT="$slot"
     GATE_CLAUDEMD_DIGEST=$(gate_claudemd_digest)
+    if [ -n "$proposal" ] && [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/claudemd" ]; then
+      p=$(gate_physical_path "$proposal")
+      cdir=$(cd -P -- "$RUN_DIR/claudemd" && pwd -P)
+      [ -n "$cdir" ] && [ "${p%/*}" = "$cdir" ] && GATE_CLAUDEMD_PROPOSAL="$p"
+    fi
     return 0
   fi
 
@@ -29645,6 +29648,129 @@ gate_stage_policy_inventory_dirs() {
     | .config_dir // empty' "$1" 2>/dev/null || true
 }
 
+gate_personal_rules_seat_dir() {
+  # The config dir the run was opened from, as the run directory records it;
+  # nothing when the record cannot be read.
+  { lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 config-dir" "-" >/dev/null 2>&1 \
+      && printf '%s' "$LANE_RECORD"; } || true
+}
+
+gate_personal_rules_source() {
+  # The file the personal rules block is copied from. The SEAT's, never this
+  # process's: a routed stage is synthesized under its lease directory, and a
+  # block read from there would differ per stage. Falls back to this process's
+  # config dir only when the seat record cannot be read.
+  # `CC_GATE_PERSONAL_RULES_SOURCE` is the test seam; it outranks the seat
+  # record and every `HOME`/`CLAUDE_CONFIG_DIR` override, so a suite that
+  # exports either still never reads a person's file.
+  local seat
+  if [ -n "${CC_GATE_PERSONAL_RULES_SOURCE:-}" ]; then
+    printf '%s' "$CC_GATE_PERSONAL_RULES_SOURCE"
+    return 0
+  fi
+  seat=$(gate_personal_rules_seat_dir)
+  if [ -n "$seat" ]; then
+    printf '%s/CLAUDE.md' "$seat"
+  else
+    printf '%s/CLAUDE.md' "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
+  fi
+}
+
+gate_stage_rules_status_ok() {
+  # gate_stage_rules_status_ok <line> — whether <line> is one of the two status
+  # lines `stage-rules.sh extract` ends with. Anything else is a failed check,
+  # whatever the exit code said.
+  case "$1" in
+    'stage rules: untagged — legacy v6 policy') return 0 ;;
+  esac
+  grep -q -E '^stage rules: ok unattended=[0-9]+ bytes=[0-9]+ tokens~[0-9]+(\.[0-9]+)? interactive=[0-9]+ untagged=[0-9]+ malformed=[0-9]+$' <<< "$1"
+}
+
+gate_personal_rules_extract() {
+  # gate_personal_rules_extract — write this run's personal rules snapshot under
+  # `instructions/personal/`: the block as `<sha256>.md` and the pointer
+  # `current` naming it, or `legacy untagged`. Called at run open and, for a
+  # run opened before this snapshot existed, by the first synthesis that finds
+  # no pointer. Never fails the caller.
+  #
+  # THE FAILURE IS RECORDED, NOT SWALLOWED. stdout, stderr and the exit code
+  # are kept apart: only exit 0 with a status line as the last stdout line
+  # logs that line. Anything else — a crash, a signal, a line in neither
+  # grammar — logs `stage rules: 검사 실패 rc=<n>` with the first stderr line,
+  # leaves `extract.err` on disk for the morning, and points `current` at
+  # `failed rc=<n>` unless a pointer is already there, so the stages fall back
+  # to the frozen v6 policy instead of running without the person's rules.
+  #
+  # ONE WRITER AT A TIME. Run open and a late extract from two launches can
+  # meet; `personal.lock` (a directory, taken with `mkdir`) orders them, the
+  # wait is bounded, and the lock is released on every way out of the
+  # subshell. A pointer found under the lock is the winner's and is kept.
+  # `CC_GATE_STAGE_RULES_BIN` is the test seam for the helper.
+  local bin src pdir
+  bin="${CC_GATE_STAGE_RULES_BIN:-$GATE_DIR/stage-rules.sh}"
+  src=$(gate_personal_rules_source)
+  pdir="$RUN_DIR/instructions/personal"
+  (
+    umask 077
+    mkdir -p "$pdir" || exit 0
+    lock="$RUN_DIR/instructions/personal.lock"
+    got=0 i=0
+    while [ "$i" -lt 50 ]; do
+      if mkdir "$lock" 2>/dev/null; then got=1; break; fi
+      i=$((i + 1))
+      sleep 0.2
+    done
+    if [ "$got" = 1 ]; then
+      trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+    else
+      log "stage rules: $lock was not released within 10s — extracting without it"
+    fi
+    [ ! -f "$pdir/current" ] || exit 0
+    rc=0
+    bash "$bin" extract --source "$src" --out-dir "$pdir" \
+      > "$pdir/extract.out" 2> "$pdir/extract.err" || rc=$?
+    line=$(tail -n 1 "$pdir/extract.out" 2>/dev/null || true)
+    if [ "$rc" = 0 ] && gate_stage_rules_status_ok "$line"; then
+      log "$line"
+      bytes=$(sed -n 's/.* bytes=\([0-9][0-9]*\) .*/\1/p' <<< "$line")
+      if [ -n "$bytes" ] && [ "$bytes" -gt 24576 ]; then
+        log "stage rules: the personal rules block is $bytes bytes, over the 24576-byte alert line — every stage carries it; run stage-rules.sh status after the run"
+      fi
+    else
+      first=$(head -n 1 "$pdir/extract.err" 2>/dev/null || true)
+      first=$(cut -b 1-200 <<< "$first")
+      log "stage rules: 검사 실패 rc=$rc${first:+ — $first}"
+      if [ ! -f "$pdir/current" ]; then
+        ptmp=$(mktemp "$pdir/.current.XXXXXX") || exit 0
+        printf 'failed rc=%s\n' "$rc" > "$ptmp"
+        mv -n "$ptmp" "$pdir/current" 2>/dev/null || true
+        [ ! -e "$ptmp" ] || rm -f "$ptmp"
+      fi
+    fi
+  )
+}
+
+gate_personal_rules_lease_notice() {
+  # gate_personal_rules_lease_notice — on a routed run, one log line naming the
+  # eligible lease directories whose CLAUDE.md differs from the seat's. The
+  # snapshot is the seat's alone, so a stage granted such a directory runs on
+  # rules its own CLAUDE.md does not say; this line is how the morning learns.
+  local seat seat_sha d dsha differ=""
+  run_routed && [ -f "$RUN_DIR/inventory.json" ] \
+    && route_inventory_check "$RUN_DIR/inventory.json" >/dev/null 2>&1 || return 0
+  seat=$(gate_personal_rules_seat_dir)
+  [ -n "$seat" ] || seat="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
+  seat_sha=$(shasum -a 256 "$seat/CLAUDE.md" 2>/dev/null | cut -d' ' -f1 || true)
+  while IFS= read -r d; do
+    [ -n "$d" ] && [ "$d" != "$seat" ] || continue
+    dsha=$(shasum -a 256 "$d/CLAUDE.md" 2>/dev/null | cut -d' ' -f1 || true)
+    [ "$dsha" = "$seat_sha" ] || differ="$differ $d"
+  done <<GATE_LEASE_DIRS
+$(gate_stage_policy_inventory_dirs "$RUN_DIR/inventory.json")
+GATE_LEASE_DIRS
+  [ -z "$differ" ] || log "stage rules: lease CLAUDE.md differs from the seat's, stages there still get the seat's snapshot:$differ"
+}
+
 gate_stage_instructions() {
   # gate_stage_instructions <alias> — synthesize the instruction file a stage of
   # this target is launched with; print its absolute path, or `warn` and return
@@ -29655,9 +29781,9 @@ gate_stage_instructions() {
   # would have loaded on its own reaches it; this file is the whole of what it
   # gets. Its team members get a second file through the subagent append (THE
   # MEMBERS FILE, below). The lead file is `stage-policy.md` (the English stage
-  # policy, byte-identical for every
-  # target, kind and segment — the cache-stable head), then the target's
-  # instruction chain: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` of
+  # policy) and the run's `# Personal rules` block, both byte-identical for
+  # every target, kind and segment of one run — the cache-stable head — then
+  # the target's instruction chain: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` of
   # every ancestor of the target's MAIN worktree, root first, whichever exist.
   #
   # THE MAIN WORKTREE, NOT THE STAGE'S. The launchers never `cd` into a stage
@@ -29708,21 +29834,21 @@ gate_stage_instructions() {
   # comparison is between PHYSICAL paths on both sides: with one side left as
   # spelled, a symlinked spelling (`/var` vs `/private/var`) would judge a real
   # ancestor as "outside the chain" and the exclusion would vanish silently.
-  # A line whose source id is `keep` is the opposite: the file joins the keep
-  # set, goes into the chain verbatim, and the identity judgment below is
-  # skipped for it — the one-line way a person switches the exclusion off.
+  # A line whose source id is `keep` names a file the chain carries anyway and
+  # logs that it was kept. Without a map line an ancestor goes into the chain
+  # verbatim: the map is the only way to leave one out.
   #
-  # WITHOUT A MAP LINE, AN ANCESTOR OUTSIDE THE REPOSITORY ROOT IS JUDGED BY
-  # IDENTITY. `stage-policy-drift.sh --identity` answers whether the policy and
-  # the manifest already account for every section of the file, body hashes
-  # included — a section an `excluded:*` disposition recorded on this host with
-  # `--ack-added` accounts for is held to the body hash recorded for it as
-  # well; exit 0 leaves it out, anything else keeps it verbatim. An
-  # identified workspace file that fails names the breaking sections, and those
-  # lines go to this log; a file that is not the workspace source fails
-  # silently. An edit therefore brings the file back rather than dropping a
-  # rule. `CC_GATE_STAGE_POLICY_ACK` is the test seam for the acknowledgement
-  # store the judgment reads, as `CC_GATE_STAGE_POLICY_SOURCES` is for the map.
+  # THE PERSONAL RULES BLOCK. The policy is followed by `# Personal rules`, the
+  # snapshot this run took at open (`gate_personal_rules_extract`), read
+  # through the pointer `instructions/personal/current` and never from a
+  # config dir at synthesis time: a routed launch synthesizes under its lease
+  # directory, and its own CLAUDE.md must not leak into the block. A pointer
+  # that reads `legacy untagged` or `failed rc=<n>` swaps the policy for the
+  # frozen v6 copy (`legacy/stage-policy.v6.md`) with no personal block — the
+  # rules a stage got before the tags existed. No pointer means a run opened
+  # before this release; the snapshot is taken then, under the same lock. No
+  # branch of this refuses for the state of the tags: a shift launch calls this
+  # same synthesis and passes its refusal on.
   #
   # THE MEMBERS FILE. Beside the lead file the same inputs make a second one,
   # for the Agent-tool members, who are read-only: the same policy, a header
@@ -29736,7 +29862,7 @@ gate_stage_instructions() {
   # carries one — finds the members file, and a resume that follows the lead
   # file follows its members file too.
   local alias="$1" root slug policy rootp cfgdir cfgp map excl=$'\n' keep=$'\n' n line id p pp
-  local d f name label fence_hit i tmp sha dst mtmp msha mdst ptmp idrc idlog ackstore
+  local d f name label fence_hit i tmp sha dst mtmp msha mdst ptmp pdir pline psha psnap
   local chain_files=() labels=() roots=()
   root=$(target_field "$alias" '메인 워크트리')
   if [ -z "$root" ] || [ ! -d "$root" ]; then
@@ -29752,6 +29878,25 @@ gate_stage_instructions() {
   if [ ! -f "$policy" ]; then
     warn "stage instructions: stage policy not found: $policy — refusing to launch; automatic CLAUDE.md loading is not a fallback"
     return 127
+  fi
+  pdir="$RUN_DIR/instructions/personal"
+  [ -f "$pdir/current" ] || gate_personal_rules_extract || true
+  pline=$(head -n 1 "$pdir/current" 2>/dev/null || true)
+  psha="${pline%% *}"
+  psnap=""
+  if [ "$psha" != "$pline" ] && [ "${#psha}" = 64 ] && [ -z "${psha//[0-9a-f]/}" ] \
+     && [ -f "$pdir/$psha.md" ]; then
+    psnap="$pdir/$psha.md"
+  else
+    case "$pline" in
+      'legacy untagged'|'failed rc='*) : ;;
+      *) log "stage instructions: personal rules pointer unreadable ('${pline:-none}') — using the frozen v6 policy" ;;
+    esac
+    policy="$GATE_DIR/legacy/stage-policy.v6.md"
+    if [ ! -f "$policy" ]; then
+      warn "stage instructions: frozen v6 policy not found: $policy — refusing to launch; automatic CLAUDE.md loading is not a fallback"
+      return 127
+    fi
   fi
   rootp=$(cd "$root" && pwd -P)
   cfgdir="${CLAUDE_CONFIG_DIR:-}"
@@ -29817,19 +29962,6 @@ gate_stage_instructions() {
       if [ "$d" != "$rootp" ]; then
         case "$keep" in
           *$'\n'"$pp"$'\n'*) log "stage instructions: keeping $pp by the host map" ;;
-          *)
-            ackstore="${CC_GATE_STAGE_POLICY_ACK:-${HOME:-}/.config/cc-cmds/stage-policy-ack}"
-            idrc=0
-            idlog=$(bash "$GATE_DIR/stage-policy-drift.sh" --identity "$f" --ack-store "$ackstore" 2>&1 >/dev/null) || idrc=$?
-            if [ "$idrc" = 0 ]; then
-              log "stage instructions: excluding $pp — every section matches the stage policy manifest"
-              continue
-            fi
-            if [ -n "$idlog" ]; then
-              while IFS= read -r line; do
-                [ -n "$line" ] && log "stage instructions: keeping $pp — $line"
-              done <<< "$idlog"
-            fi ;;
         esac
       fi
       # An `@import` line outside a fenced block: verbatim injection does not
@@ -29870,6 +30002,10 @@ gate_stage_instructions() {
     tmp=$(mktemp "$RUN_DIR/instructions/.stage.XXXXXX") || exit 1
     {
       cat "$policy"
+      if [ -n "$psnap" ]; then
+        printf '\n# Personal rules\n\n'
+        cat "$psnap"
+      fi
       printf '\n# Repository instructions\n\nThe files below are the instruction chain of the target repository, root first. Each begins with a heading naming its file.\n'
       i=0
       while [ "$i" -lt "${#chain_files[@]}" ]; do
@@ -29895,6 +30031,10 @@ gate_stage_instructions() {
     mtmp=$(mktemp "$RUN_DIR/instructions/.member.XXXXXX") || exit 1
     {
       cat "$policy"
+      if [ -n "$psnap" ]; then
+        printf '\n# Personal rules\n\n'
+        cat "$psnap"
+      fi
       printf '\n# Repository instructions\n\nThe files below are the instruction chain of the target repository, root first. Each begins with a heading naming its file; the repository'"'"'s own files are given as paths to read, not as their text.\n'
       i=0
       while [ "$i" -lt "${#chain_files[@]}" ]; do
@@ -32740,7 +32880,7 @@ gate_verb_act() {
     exit "$GATE_EXIT_VOCAB"
   fi
 
-  # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two
+  # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the three
   # values the `리뷰-후-적용` rule reads. Placed after the manifest guard so an
   # act that is refused outright never reaches a rule at all.
   gate_claudemd_slot_guard "$graded" "$@"

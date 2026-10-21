@@ -218,10 +218,11 @@ CLI_BIN="${CC_CLAUDE_BIN:-}"
 #
 # It is unset INSIDE the two branches rather than at the head of this file on
 # purpose. `stage-policy.md` says an agent started some other way (a `claude -p`
-# from a script, a Workflow) receives neither the policy nor the target's
-# CLAUDE.md, and part of why that is true today is this very inheritance. A
-# head-of-file unset would make that sentence false in one direction by letting
-# such a child silently read the target's CLAUDE.md instead.
+# from a script, a Workflow) receives none of the policy, the personal rules
+# and the target's CLAUDE.md, and part of why that is true today is this very
+# inheritance. A head-of-file unset would make that sentence false in one
+# direction by letting such a child silently read the target's CLAUDE.md and
+# the person's global instruction file instead.
 #
 # The window rides on every branch the same way: `${AUTOCOMPACT:+…}` expands to
 # the flag and its value when the gate passed one and to no word at all when it
