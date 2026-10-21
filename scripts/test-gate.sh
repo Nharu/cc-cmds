@@ -2525,6 +2525,85 @@ STUBEOF
   g15_row() {  # g15_row <run id> <segment id> — the last segment row of that id
     { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | tail -1
   }
+
+  # 15g runs as four pieces (15g, 15g-2, 15g-3, 15g-4) so the plan can place
+  # them on different rows, and the helpers more than one piece calls are
+  # definitions here for the same reason as the ones above: a cut of one piece
+  # must not die on a function another piece defined.
+  g15_drop() {  # g15_drop <run id:segment id>... — remove those worktrees and their branches
+    local r15g
+    for r15g in "$@"; do
+      ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15g%%:*}" "${r15g#*:}")" \
+          && git branch -D "seg/${r15g%%:*}-${r15g#*:}" ) >/dev/null 2>&1 || true
+    done
+  }
+  g15_blocks() {  # g15_blocks <run id> <fixed text> — run-scope blocked rows carrying it
+    { grep -F '`blocked`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F '스코프=run' || true; } \
+      | { grep -F "$2" || true; } | grep -c . || true
+  }
+  # The driver's rows for the same document, by the driver's own function with its
+  # writers replaced by printers. Fields joined by `|`, one row per line.
+  # A NEW PROCESS, not a subshell: the in-process gate has already sourced run.sh
+  # here, and a second source dies on its first `readonly`.
+  g15_driver() {
+    bash -s "$1" "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$WORK" 2>"$WORK/g15drv.err" <<'EOF'
+CC_ORCH_SOURCE_ONLY=1 . "$2" >/dev/null
+set +eu
+RUN_DIR=$(mktemp -d "$3/g15drv.XXXXXX")
+ledger_row() { local s="$1"; shift; [ "$s" = "segment" ] || return 0; local IFS='|'; printf '%s\n' "$*"; }
+park() { printf 'PARK|%s\n' "$*"; return 0; }
+binding_digest() { printf x; }; generation_now() { printf 1; }; whole_digest() { printf x; }
+wt_path() { printf 'WT-%s' "$1"; }
+run_segment_ids() { :; }; run_segment_field() { :; }
+plan_from_declaration "$1"
+EOF
+  }
+  g15_fields() {  # g15_fields <row> — the five declared fields and their digest, one `키=값` per line, sorted
+    printf '%s' "$1" | tr '|' '\n' | sed 's/^ *//; s/ *$//' \
+      | grep -E '^(레포|선언 파일 집합|선행|절단점|리뷰 정책|선언 다이제스트)=' | sort
+  }
+  plan15g_rv='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["D1"] }, { "id": "V3", "skill": "review", "summary": "리뷰", "depends_on": ["S2"] } ] }'
+  g15_prior() {  # g15_prior <run id> <설계 문서> <머지 커밋> — an earlier run that planned SA and recorded it merged
+    g15_run "$1" "$2" "$plan15c" 리뷰없음
+    # The `머지됨` row below is refused unless the worktree tip has landed on the
+    # base, so SA is cut from the base itself, never from wherever an earlier
+    # section left the fixture's HEAD.
+    ( cd "$WT" && git worktree add -q -b "seg/$1-SA" "$(g15_wt "$1" SA)" refs/heads/main ) >/dev/null 2>&1
+    g15_plan act "$1" SA 상태=계획됨 "워크트리=$(g15_wt "$1" SA)"
+    [ "$rc" = "0" ] || { bad "15g 이전 런 $1 의 SA 계획" "rc=$rc $msg"; return 0; }
+    gateL act --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment SA --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(au15_H "$1")" --rationale x -- \
+      상태=머지됨 PR=7 "머지 커밋=$3" "워크트리=$(g15_wt "$1" SA)" 선행=없음
+    [ "$rc" = "0" ] || bad "15g 이전 런 $1 의 SA 머지 행" "rc=$rc $msg"
+  }
+  g15_line() {  # g15_line <run id> <segment id> — the ledger line of that id's first segment row
+    { grep -nF '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | sed -n 1p | cut -d: -f1
+  }
+  g15_land() {  # g15_land <run id> <슬라이스> <원격 슬러그> <머지 커밋> — append one `선행 착지` row
+    printf -- '- `선행 착지` | 슬라이스=%s | 원격 슬러그=%s | 머지 커밋=%s\n' "$2" "$3" "$4" >> "$WORK/plan-$1.md"
+  }
+  g15_segs() {  # g15_segs <run id> — how many segment rows that run's ledger holds
+    { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | grep -c . || true
+  }
+  g15_segrows() {  # g15_segrows <run id> <segment id> [상태] — that id's segment rows, of that state when given
+    { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } \
+      | { if [ -n "${3:-}" ]; then grep -F "| 상태=$3 " || true; else cat; fi; } | grep -c . || true
+  }
+  g15_pr() {  # g15_pr <pr view 답 | fail> <g15_plan 인자...> — g15_plan with the stub answering the PR
+    # The stub path rides an exported variable: the in-process gate starts from
+    # a scrubbed shell, and a variable this script did not export is gone there.
+    local a="$1"
+    shift
+    gh() { "$GH15_STUB" "$@"; }
+    export -f gh
+    export GH15_STUB="$WORK/gh15gk/gh" GH15_PR="$a"
+    g15_plan "$@"
+    unset -f gh
+    unset GH15_STUB GH15_PR
+  }
+  g15_raw() {  # g15_raw <run id> <필드들> — append one hand-written segment row to that run's ledger
+    printf -- '- `segment` | %s\n' "$2" >> "$WT/docs/pipeline-run/$1.md"
+  }
   au15_settle() {  # au15_settle <run id> — settle K1 as impossible
     gateL act --manifest "$WORK/plan-$1.md" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
           --snapshot-digest "$(au15_H "$1")" --rationale x -- id=K1 상태=불가능 "근거=설계 문서가 감사되지 않는다"
@@ -12386,7 +12465,7 @@ rm -f "$WT/$DOC15FP"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
-# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 깨진 슬라이스 하나는 그 슬라이스만 슬라이싱 으로 park 한다, 15g: 독립 슬라이스는 같은 런에서 계획된다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다, 15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다, 15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 열린 PR 이나 머지 커밋이 베이스에 없는 PR 의 선행은 들이지 않는다, 15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다, 15g: 머지된 PR 의 head 브랜치나 base 브랜치가 다르면 자기 슬라이스를 들이지 않는다, 15g: head 브랜치가 다른 머지된 PR 의 선행은 들이지 않고 계획이 거부된다, 15g: 머지된 PR 은 head 가 행의 커밋과 달라도 머지 커밋 착지와 브랜치 이름이 맞으면 자기 슬라이스를 들인다, 15g: head 가 움직인 머지된 PR 의 선행을 들여와 다음 슬라이스가 계획된다, 15g: 브랜치가 없거나 세그먼트 브랜치 꼴이 아닌 행은 머지된 PR 로 들이지 않는다, 15g: 선언이 바뀐 슬라이스 자신은 이전 런의 착지를 들이지 않고 다시 계획되며 경고가 선언 불일치를 든다, 15g: 선언이 바뀐 선행은 이전 런에서 들여오지 않는다, 15g: 계획 행이 없는 이전 런 원장의 착지는 들이지 않는다, 15g: 계획 행이 선언 전체의 다이제스트를 싣는다, 15g: 잘린 범위 뒤에 파일을 더한 긴 선언은 이전 런의 착지를 들이지 않고 다시 계획된다, 15g: 바뀌지 않은 긴 선언은 이전 런의 착지를 들인다, 15g: 다이제스트 없는 잘린 계획 행은 전체 파일로 대조하고 읽지 못하면 들이지 않는다, 15g: 다이제스트 없는 잘린 계획 행의 전체가 지금 선언과 같으면 착지를 들인다, 15g: 매니페스트로 들인 착지는 다음 런이 선행으로 들여와 의존 슬라이스가 계획된다, 15g: 선언이 바뀐 문서에서는 매니페스트로 들인 착지를 선행으로 들이지 않는다 ---
+# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 깨진 슬라이스 하나는 그 슬라이스만 슬라이싱 으로 park 한다, 15g: 독립 슬라이스는 같은 런에서 계획된다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 계획 행이 선언 전체의 다이제스트를 싣는다 ---
 #
 # The router used to copy a slice's fields into `act --kind segment` and dropped
 # some of them. Under `--from-declaration` the gate reads them from the frozen
@@ -12397,33 +12476,10 @@ rm -f "$WT/$DOC15FP"
 # makes them leaves the run-scope block the router itself may not write.
 # ---------------------------------------------------------------------------
 # `g15_run`, `g15_wt`, `g15_mkwt`, `g15_plan` and `g15_row` live in the base
-# prelude: the merge-order section plans its own runs with them.
-g15_blocks() {  # g15_blocks <run id> <fixed text> — run-scope blocked rows carrying it
-  { grep -F '`blocked`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F '스코프=run' || true; } \
-    | { grep -F "$2" || true; } | grep -c . || true
-}
-# The driver's rows for the same document, by the driver's own function with its
-# writers replaced by printers. Fields joined by `|`, one row per line.
-# A NEW PROCESS, not a subshell: the in-process gate has already sourced run.sh
-# here, and a second source dies on its first `readonly`.
-g15_driver() {
-  bash -s "$1" "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$WORK" 2>"$WORK/g15drv.err" <<'EOF'
-CC_ORCH_SOURCE_ONLY=1 . "$2" >/dev/null
-set +eu
-RUN_DIR=$(mktemp -d "$3/g15drv.XXXXXX")
-ledger_row() { local s="$1"; shift; [ "$s" = "segment" ] || return 0; local IFS='|'; printf '%s\n' "$*"; }
-park() { printf 'PARK|%s\n' "$*"; return 0; }
-binding_digest() { printf x; }; generation_now() { printf 1; }; whole_digest() { printf x; }
-wt_path() { printf 'WT-%s' "$1"; }
-run_segment_ids() { :; }; run_segment_field() { :; }
-plan_from_declaration "$1"
-EOF
-}
-g15_fields() {  # g15_fields <row> — the five declared fields and their digest, one `키=값` per line, sorted
-  printf '%s' "$1" | tr '|' '\n' | sed 's/^ *//; s/ *$//' \
-    | grep -E '^(레포|선언 파일 집합|선행|절단점|리뷰 정책|선언 다이제스트)=' | sort
-}
-plan15g_rv='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["D1"] }, { "id": "V3", "skill": "review", "summary": "리뷰", "depends_on": ["S2"] } ] }'
+# prelude: the merge-order section plans its own runs with them. So do the
+# helpers the four pieces of 15g share (`g15_blocks`, `g15_driver`, `g15_fields`,
+# `plan15g_rv`, `g15_prior`, `g15_line`, `g15_land`, `g15_segs`, `g15_segrows`,
+# `g15_pr`, `g15_raw`, `g15_drop`); a helper one piece alone calls stays in it.
 
 # --- 선언통치: two slices, `리뷰없음`, a plan with no review step ------------
 DOC15G='docs/fixture-design-15g.md'
@@ -12611,72 +12667,23 @@ sed 's/^\*\*상태\*\*: 초안$/**상태**: 동결됨/' "$WT/$DOC15GE" > "$WT/$D
 g15_plan act R15GE SA 상태=계획됨 "워크트리=$(g15_wt R15GE SA)"
 check "15g: 감사가 정상 완료로 끝나고 동결 줄이 있으면 계획이 받힌다" "$rc" "0"
 
-# --- 홈이 아닌 레포: 경로는 슬라이스의 `레포` 가 이름 댄 대상에서 유도한다 -------
-# The driver's `seg_root` reads a `plan.tsv` the gate never writes, so on a router
-# run it would resolve every slice to the home target. A slice declaring the
-# second target gets its worktree beside that target's root, and the apply act
-# refuses a `--target` other than the one the row's `레포` names — the apply
-# worktree is derived from `--target`, so that refusal is what keeps it under the
-# declared repository.
-O15G="$WORK/other15g"
-git init -q -b main "$O15G" >/dev/null 2>&1
-( cd "$O15G" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init ) >/dev/null 2>&1
-O15G=$(cd "$O15G" && git rev-parse --show-toplevel)
-O15G_CG=$(cd "$O15G" && git rev-parse --path-format=absolute --git-common-dir)
-DOC15GO='docs/fixture-design-15go.md'
-two_slice_doc "$WT/$DOC15GO" t/other 머지 '**리뷰 정책**: 리뷰없음'
-ROWS15C="$row15c | 리뷰 정책 상한=리뷰없음
-- \`target\` | 별칭=other | 메인 워크트리=$O15G | 공통 git 디렉터리=$O15G_CG | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/other | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=리뷰없음" \
-  write15c "$WORK/plan-R15GO.md" "$plan15c" "$DOC15GO" R15GO
-grant15c R15GO "$DOC15GO"
-sed '/^\*\*구속 다이제스트\*\*/d' "$WORK/plan-R15GO.md" > "$WORK/plan-R15GO.md.tmp" && mv "$WORK/plan-R15GO.md.tmp" "$WORK/plan-R15GO.md"
-g15o_wt="$(dirname "$O15G")/$(basename "$O15G")-run-R15GO-SA"
-snap15go=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15GO.md" 2>/dev/null )
-check "15g: 홈이 아닌 레포를 선언한 슬라이스의 슬라이싱 대상과 워크트리가 그 레포 기준이다" \
-  "$(printf '%s' "$snap15go" | jq -r '.["슬라이싱"]["세그먼트"][0] | [.["대상"], .["워크트리"]] | join("|")' 2>/dev/null)" \
-  "other|$g15o_wt"
-( cd "$O15G" && git worktree add -q -b seg/R15GO-SA "$g15o_wt" HEAD ) >/dev/null 2>&1
-gateL act --manifest "$WORK/plan-R15GO.md" --kind segment --target other --segment SA --cutpoint 커밋 \
-  --surface 읽기 --snapshot-digest "$(au15_H R15GO)" --rationale x --from-declaration -- 상태=계획됨 "워크트리=$g15o_wt"
-check "15g: 홈이 아닌 레포의 슬라이스가 그 대상으로 계획된다 (아래가 공허하지 않다)" "$rc" "0"
-gateL plan --manifest "$WORK/plan-R15GO.md" --kind apply --target infra --segment SA --cutpoint 배포 \
-  --surface 외부상태변경 -- 적용
-check "15g: 행의 레포 와 다른 --target 의 적용은 거부된다" "$rc" "3"
-case "$msg" in
-  *"레포 t/other 는 대상 other 이고 --target infra 가 아닙니다"*) ok "15g: 그 거부는 레포의 대상과 --target 을 든다" ;;
-  *) bad "15g 적용 대상 불일치 문면" "$msg" ;;
-esac
-gateL plan --manifest "$WORK/plan-R15GO.md" --kind apply --target other --segment SA --cutpoint 배포 \
-  --surface 외부상태변경 -- 적용
-case "$msg" in
-  *"전제 1 불충족"*) ok "15g: 레포 의 대상으로 낸 적용은 그 대조를 지나 전제 1 에 이른다" ;;
-  *) bad "15g 적용 대상 일치 문면" "rc=$rc $msg" ;;
-esac
-( cd "$O15G" && git worktree remove --force "$g15o_wt" && git branch -D seg/R15GO-SA ) >/dev/null 2>&1 || true
-rm -f "$WT/$DOC15GO"
+g15_drop R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA R15GK:SA R15GK:SB
+rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GK"
 
+# ---------------------------------------------------------------------------
+# 15g-2. A slice an earlier run of the same document landed is brought in
+# --- section: 15g-2 | group: base | covers: snapshot, plan, act | anchors: 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다, 15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다, 15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다 ---
+#
+# The second of the four pieces 15g runs as. The slice R15GZ brings in is the
+# one R15GP2 brought in from R15GP1, so the two blocks stay in one piece; the
+# documents are their own, and nothing an earlier piece made is read.
+# ---------------------------------------------------------------------------
 # --- 같은 문서의 이전 런이 머지한 선행 ----------------------------------------
 # One frozen document implemented a slice per run: the earlier run merged SA,
 # and the run planning SB has never seen it on its own ledger. The planning act
 # brings SA in from the earlier ledger when its merge commit is on the base
 # branch, refuses when it is not, and leaves the floor's refusal in place when
 # no earlier run of the document landed it at all.
-g15_prior() {  # g15_prior <run id> <머지 커밋> — an earlier run that planned SA and recorded it merged
-  g15_run "$1" "$2" "$plan15c" 리뷰없음
-  # The `머지됨` row below is refused unless the worktree tip has landed on the
-  # base, so SA is cut from the base itself, never from wherever an earlier
-  # section left the fixture's HEAD.
-  ( cd "$WT" && git worktree add -q -b "seg/$1-SA" "$(g15_wt "$1" SA)" refs/heads/main ) >/dev/null 2>&1
-  g15_plan act "$1" SA 상태=계획됨 "워크트리=$(g15_wt "$1" SA)"
-  [ "$rc" = "0" ] || { bad "15g 이전 런 $1 의 SA 계획" "rc=$rc $msg"; return 0; }
-  gateL act --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment SA --cutpoint 커밋 \
-    --surface 읽기 --snapshot-digest "$(au15_H "$1")" --rationale x -- \
-    상태=머지됨 PR=7 "머지 커밋=$3" "워크트리=$(g15_wt "$1" SA)" 선행=없음
-  [ "$rc" = "0" ] || bad "15g 이전 런 $1 의 SA 머지 행" "rc=$rc $msg"
-}
-g15_line() {  # g15_line <run id> <segment id> — the ledger line of that id's first segment row
-  { grep -nF '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | sed -n 1p | cut -d: -f1
-}
 DOC15GP='docs/fixture-design-15gp.md'
 two_slice_doc "$WT/$DOC15GP" t/infra 머지 '**리뷰 정책**: 리뷰없음'
 m15gp=$(cd "$WT" && git rev-parse refs/heads/main)
@@ -12738,18 +12745,115 @@ case "$msg" in
   *) bad "15g 증거 없는 선행 문면" "$msg" ;;
 esac
 
+# --- 이전 런이 착지시킨 슬라이스 자신 -----------------------------------------
+# A successor run of the same document plans every declared slice again, the
+# one an earlier run already landed included. That slice is brought in as its
+# terminal row and gets no planned row: a `계획됨` written after the imported
+# row would become the slice's last row, and the next run in the chain would
+# read it as not landed. The ledger rows are asserted, not the exit status.
+# R15GP2 brought SA in from R15GP1, so it is the newest run of the document
+# with SA landed, and the row it carries already names R15GP1 as the source.
+g15_run R15GZ "$DOC15GP" "$plan15c" 리뷰없음
+g15_mkwt R15GZ SA
+g15_plan plan R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
+check "15g: 이전 런이 착지시킨 슬라이스 자신의 plan 은 들여오기를 알리고 행을 쓰지 않는다" \
+  "$rc/$(g15_segs R15GZ)" "0/0"
+case "$msg" in
+  *"슬라이스 SA 를 이전 런 R15GP2 의 종단 행(상태=머지됨"*"처분=착지 들여오기"*) ok "15g: 그 plan 은 들일 슬라이스와 가장 최근의 이전 런을 든다" ;;
+  *) bad "15g 자신 들여오기 plan 문면" "$msg" ;;
+esac
+g15_plan act R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
+r15gz=$(g15_row R15GZ SA)
+check "15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다" \
+  "$rc/$(seg_field "$r15gz" '상태')/$(seg_field "$r15gz" '머지 커밋')/$(g15_segrows R15GZ SA 계획됨)" \
+  "0/머지됨/$m15gp/0"
+check "15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다" "$(seg_field "$r15gz" '출처')" "R15GP1"
+g15_plan act R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
+check "15g: 들인 슬라이스를 다시 계획해도 행은 하나이고 계획 행은 없다" \
+  "$rc/$(g15_segrows R15GZ SA)/$(g15_segrows R15GZ SA 계획됨)" "0/1/0"
+
+# The driver's call: `run_gate_call` rebinds the manifest, the run and the
+# ledger in a child shell that sourced the gate, and nothing else, so the
+# document has to be derived there or the walk finds no earlier run.
+g15_run R15GN "$DOC15GP" "$plan15c" 리뷰없음
+au15_H R15GN >/dev/null
+r15gn=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$1" >/dev/null 2>&1 || exit 9
+  set +e
+  unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+  MANIFEST=$2; RUN_ID=$3; RUN_DIR=$4; LEDGER=$5; GRANT=""
+  gate_import_prior_landed act SA self
+' _ "$GATE" "$WORK/plan-R15GN.md" R15GN "$STATE_LATE/cc-cmds/run/R15GN" "$WT/docs/pipeline-run/R15GN.md" >/dev/null 2>&1; printf '%s' "$?")
+r15gnrow=$(g15_row R15GN SA)
+check "15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다" \
+  "$r15gn/$(seg_field "$r15gnrow" '상태')/$(seg_field "$r15gnrow" '출처')" "0/머지됨/R15GP1"
+
+g15_drop R15GP1:SA R15GP2:SB R15GQ1:SA R15GQ2:SB R15GR:SB R15GZ:SA
+rm -f "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR"
+
+# ---------------------------------------------------------------------------
+# 15g-3. A predecessor landed outside a run ledger, at a pull request, or before a park
+# --- section: 15g-3 | group: base | covers: snapshot, plan, act | anchors: 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 열린 PR 이나 머지 커밋이 베이스에 없는 PR 의 선행은 들이지 않는다, 15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다, 15g: 머지된 PR 의 head 브랜치나 base 브랜치가 다르면 자기 슬라이스를 들이지 않는다, 15g: head 브랜치가 다른 머지된 PR 의 선행은 들이지 않고 계획이 거부된다, 15g: 머지된 PR 은 head 가 행의 커밋과 달라도 머지 커밋 착지와 브랜치 이름이 맞으면 자기 슬라이스를 들인다, 15g: head 가 움직인 머지된 PR 의 선행을 들여와 다음 슬라이스가 계획된다, 15g: 브랜치가 없거나 세그먼트 브랜치 꼴이 아닌 행은 머지된 PR 로 들이지 않는다 ---
+#
+# The third of the four pieces 15g runs as. Its rows are held to a merge commit
+# on the base and to one that is not, which 15g-2 takes for its own runs; this
+# piece takes the two again the same way, so it reads nothing 15g-2 left. The
+# two uses of the 15go document path, the other repository's and the PR
+# cutpoint's, stay in this piece and in that order.
+# ---------------------------------------------------------------------------
+m15gp=$(cd "$WT" && git rev-parse refs/heads/main)
+m15gq=$(cd "$WT" && git commit-tree "$(git mktree </dev/null)" -p HEAD -m side15gq)
+
+# --- 홈이 아닌 레포: 경로는 슬라이스의 `레포` 가 이름 댄 대상에서 유도한다 -------
+# The driver's `seg_root` reads a `plan.tsv` the gate never writes, so on a router
+# run it would resolve every slice to the home target. A slice declaring the
+# second target gets its worktree beside that target's root, and the apply act
+# refuses a `--target` other than the one the row's `레포` names — the apply
+# worktree is derived from `--target`, so that refusal is what keeps it under the
+# declared repository.
+O15G="$WORK/other15g"
+git init -q -b main "$O15G" >/dev/null 2>&1
+( cd "$O15G" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init ) >/dev/null 2>&1
+O15G=$(cd "$O15G" && git rev-parse --show-toplevel)
+O15G_CG=$(cd "$O15G" && git rev-parse --path-format=absolute --git-common-dir)
+DOC15GO='docs/fixture-design-15go.md'
+two_slice_doc "$WT/$DOC15GO" t/other 머지 '**리뷰 정책**: 리뷰없음'
+ROWS15C="$row15c | 리뷰 정책 상한=리뷰없음
+- \`target\` | 별칭=other | 메인 워크트리=$O15G | 공통 git 디렉터리=$O15G_CG | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/other | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=리뷰없음" \
+  write15c "$WORK/plan-R15GO.md" "$plan15c" "$DOC15GO" R15GO
+grant15c R15GO "$DOC15GO"
+sed '/^\*\*구속 다이제스트\*\*/d' "$WORK/plan-R15GO.md" > "$WORK/plan-R15GO.md.tmp" && mv "$WORK/plan-R15GO.md.tmp" "$WORK/plan-R15GO.md"
+g15o_wt="$(dirname "$O15G")/$(basename "$O15G")-run-R15GO-SA"
+snap15go=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15GO.md" 2>/dev/null )
+check "15g: 홈이 아닌 레포를 선언한 슬라이스의 슬라이싱 대상과 워크트리가 그 레포 기준이다" \
+  "$(printf '%s' "$snap15go" | jq -r '.["슬라이싱"]["세그먼트"][0] | [.["대상"], .["워크트리"]] | join("|")' 2>/dev/null)" \
+  "other|$g15o_wt"
+( cd "$O15G" && git worktree add -q -b seg/R15GO-SA "$g15o_wt" HEAD ) >/dev/null 2>&1
+gateL act --manifest "$WORK/plan-R15GO.md" --kind segment --target other --segment SA --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(au15_H R15GO)" --rationale x --from-declaration -- 상태=계획됨 "워크트리=$g15o_wt"
+check "15g: 홈이 아닌 레포의 슬라이스가 그 대상으로 계획된다 (아래가 공허하지 않다)" "$rc" "0"
+gateL plan --manifest "$WORK/plan-R15GO.md" --kind apply --target infra --segment SA --cutpoint 배포 \
+  --surface 외부상태변경 -- 적용
+check "15g: 행의 레포 와 다른 --target 의 적용은 거부된다" "$rc" "3"
+case "$msg" in
+  *"레포 t/other 는 대상 other 이고 --target infra 가 아닙니다"*) ok "15g: 그 거부는 레포의 대상과 --target 을 든다" ;;
+  *) bad "15g 적용 대상 불일치 문면" "$msg" ;;
+esac
+gateL plan --manifest "$WORK/plan-R15GO.md" --kind apply --target other --segment SA --cutpoint 배포 \
+  --surface 외부상태변경 -- 적용
+case "$msg" in
+  *"전제 1 불충족"*) ok "15g: 레포 의 대상으로 낸 적용은 그 대조를 지나 전제 1 에 이른다" ;;
+  *) bad "15g 적용 대상 일치 문면" "rc=$rc $msg" ;;
+esac
+( cd "$O15G" && git worktree remove --force "$g15o_wt" && git branch -D seg/R15GO-SA ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC15GO"
+
 # --- 원장 밖에서 착지한 선행: 매니페스트의 선행 착지 행 --------------------
 # No run ledger records SA — the run that delivered it used another id, or SA
 # lives in a repository this run does not target. A person confirmed the merge
 # at kickoff and the manifest carries a `선행 착지` row; the planning act checks
 # the row's slug against the slice's `레포` and its commit against that
 # repository's base branch before bringing SA in.
-g15_land() {  # g15_land <run id> <슬라이스> <원격 슬러그> <머지 커밋> — append one `선행 착지` row
-  printf -- '- `선행 착지` | 슬라이스=%s | 원격 슬러그=%s | 머지 커밋=%s\n' "$2" "$3" "$4" >> "$WORK/plan-$1.md"
-}
-g15_segs() {  # g15_segs <run id> — how many segment rows that run's ledger holds
-  { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | grep -c . || true
-}
 DOC15GS='docs/fixture-design-15gs.md'
 two_slice_doc "$WT/$DOC15GS" t/infra 머지 '**리뷰 정책**: 리뷰없음'
 m15gs=$(cd "$WT" && git rev-parse refs/heads/main)
@@ -12882,53 +12986,6 @@ case "$msg" in
   *) bad "15g 선행 착지 중복 문면" "$msg" ;;
 esac
 
-# --- 이전 런이 착지시킨 슬라이스 자신 -----------------------------------------
-# A successor run of the same document plans every declared slice again, the
-# one an earlier run already landed included. That slice is brought in as its
-# terminal row and gets no planned row: a `계획됨` written after the imported
-# row would become the slice's last row, and the next run in the chain would
-# read it as not landed. The ledger rows are asserted, not the exit status.
-# R15GP2 brought SA in from R15GP1, so it is the newest run of the document
-# with SA landed, and the row it carries already names R15GP1 as the source.
-g15_segrows() {  # g15_segrows <run id> <segment id> [상태] — that id's segment rows, of that state when given
-  { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } \
-    | { if [ -n "${3:-}" ]; then grep -F "| 상태=$3 " || true; else cat; fi; } | grep -c . || true
-}
-g15_run R15GZ "$DOC15GP" "$plan15c" 리뷰없음
-g15_mkwt R15GZ SA
-g15_plan plan R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
-check "15g: 이전 런이 착지시킨 슬라이스 자신의 plan 은 들여오기를 알리고 행을 쓰지 않는다" \
-  "$rc/$(g15_segs R15GZ)" "0/0"
-case "$msg" in
-  *"슬라이스 SA 를 이전 런 R15GP2 의 종단 행(상태=머지됨"*"처분=착지 들여오기"*) ok "15g: 그 plan 은 들일 슬라이스와 가장 최근의 이전 런을 든다" ;;
-  *) bad "15g 자신 들여오기 plan 문면" "$msg" ;;
-esac
-g15_plan act R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
-r15gz=$(g15_row R15GZ SA)
-check "15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다" \
-  "$rc/$(seg_field "$r15gz" '상태')/$(seg_field "$r15gz" '머지 커밋')/$(g15_segrows R15GZ SA 계획됨)" \
-  "0/머지됨/$m15gp/0"
-check "15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다" "$(seg_field "$r15gz" '출처')" "R15GP1"
-g15_plan act R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
-check "15g: 들인 슬라이스를 다시 계획해도 행은 하나이고 계획 행은 없다" \
-  "$rc/$(g15_segrows R15GZ SA)/$(g15_segrows R15GZ SA 계획됨)" "0/1/0"
-
-# The driver's call: `run_gate_call` rebinds the manifest, the run and the
-# ledger in a child shell that sourced the gate, and nothing else, so the
-# document has to be derived there or the walk finds no earlier run.
-g15_run R15GN "$DOC15GP" "$plan15c" 리뷰없음
-au15_H R15GN >/dev/null
-r15gn=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_GATE_SOURCE_ONLY=1 bash -c '
-  . "$1" >/dev/null 2>&1 || exit 9
-  set +e
-  unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
-  MANIFEST=$2; RUN_ID=$3; RUN_DIR=$4; LEDGER=$5; GRANT=""
-  gate_import_prior_landed act SA self
-' _ "$GATE" "$WORK/plan-R15GN.md" R15GN "$STATE_LATE/cc-cmds/run/R15GN" "$WT/docs/pipeline-run/R15GN.md" >/dev/null 2>&1; printf '%s' "$?")
-r15gnrow=$(g15_row R15GN SA)
-check "15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다" \
-  "$r15gn/$(seg_field "$r15gnrow" '상태')/$(seg_field "$r15gnrow" '출처')" "0/머지됨/R15GP1"
-
 # --- PR 절단점으로 착지한 슬라이스 ------------------------------------------
 # A slice declared `절단점: PR` ends as `완료` with a `PR` and the head `커밋`
 # the run left it at. It is brought in while the live pull request is open at
@@ -12946,21 +13003,6 @@ case "$1 $2 $3 $4" in
 esac
 GHSTUB
 chmod +x "$WORK/gh15gk/gh"
-g15_pr() {  # g15_pr <pr view 답 | fail> <g15_plan 인자...> — g15_plan with the stub answering the PR
-  # The stub path rides an exported variable: the in-process gate starts from
-  # a scrubbed shell, and a variable this script did not export is gone there.
-  local a="$1"
-  shift
-  gh() { "$GH15_STUB" "$@"; }
-  export -f gh
-  export GH15_STUB="$WORK/gh15gk/gh" GH15_PR="$a"
-  g15_plan "$@"
-  unset -f gh
-  unset GH15_STUB GH15_PR
-}
-g15_raw() {  # g15_raw <run id> <필드들> — append one hand-written segment row to that run's ledger
-  printf -- '- `segment` | %s\n' "$2" >> "$WT/docs/pipeline-run/$1.md"
-}
 c15gk=$m15gp
 c15gx=1111111111111111111111111111111111111111
 DOC15GJ='docs/fixture-design-15gj.md'
@@ -13140,6 +13182,203 @@ r15gh2="$rc/$(g15_segrows R15GH2 SA)/$(seg_field "$(g15_row R15GH2 SA)" '상태'
 case "$msg" in *"행의 브랜치 feature/R15GH1-SA 가 슬라이스 SA 의 세그먼트 브랜치 꼴"*) r15gh2="$r15gh2/꼴 문면" ;; esac
 check "15g: 브랜치가 없거나 세그먼트 브랜치 꼴이 아닌 행은 머지된 PR 로 들이지 않는다" \
   "$r15gy2|$r15gh2" "0/1/계획됨/브랜치 없음 문면|0/1/계획됨/꼴 문면"
+
+# --- 머지한 뒤 park 한 슬라이스 ---------------------------------------------
+# A segment can merge and then be parked — the apply arm's park, a person's
+# park answer — and the merged work stays on the base. The landing is read
+# behind a trailing `park`: an earlier run's `머지됨` there is brought in, a
+# `계획됨` there (the slice done again after its landing) is not, and a ledger
+# that parked the slice at a pull request a person merged after the run is
+# brought in as that merged request. In one run the dispatch floor and the
+# snapshot's `착지` read the same walk.
+g15_parked() {  # g15_parked <run id> <문서> <SA 의 필드들...> — an earlier run that planned SA, then one hand-written row per argument
+  local r="$1" d="$2"
+  shift 2
+  g15_run "$r" "$d" "$plan15c" 리뷰없음
+  g15_mkwt "$r" SA
+  g15_plan act "$r" SA 상태=계획됨 "워크트리=$(g15_wt "$r" SA)"
+  [ "$rc" = "0" ] || bad "15g 이전 런 $r 의 SA 계획" "rc=$rc $msg"
+  while [ "$#" -gt 0 ]; do
+    g15_raw "$r" "id=SA | $1 | 워크트리=$(g15_wt "$r" SA) | 선행=없음"
+    shift
+  done
+}
+g15_ids() {  # g15_ids <run id> — `gate_prior_landed_ids` in a child shell that sourced the gate, comma-terminated
+  au15_H "$1" >/dev/null
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" >/dev/null 2>&1 || exit 9
+    set +e
+    unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+    MANIFEST=$2; RUN_ID=$3; RUN_DIR=$4; LEDGER=$5; GRANT=""
+    gate_prior_landed_ids
+  ' _ "$GATE" "$WORK/plan-$1.md" "$1" "$STATE_LATE/cc-cmds/run/$1" "$WT/docs/pipeline-run/$1.md" 2>/dev/null ) | tr '\n' ','
+}
+DOC15GPA='docs/fixture-design-15gpa.md'
+two_slice_doc "$WT/$DOC15GPA" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_parked R15GPA1 "$DOC15GPA" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=park"
+g15_run R15GPA2 "$DOC15GPA" "$plan15c" 리뷰없음
+g15_mkwt R15GPA2 SB
+g15_plan act R15GPA2 SB 상태=계획됨 "워크트리=$(g15_wt R15GPA2 SB)"
+r15gpa2=$(g15_row R15GPA2 SA)
+check "15g: 머지한 뒤 park 한 이전 런의 선행을 들여와 다음 슬라이스가 계획된다" \
+  "$rc/$(seg_field "$r15gpa2" '상태')/$(seg_field "$r15gpa2" 'PR')/$(seg_field "$r15gpa2" '머지 커밋')/$(seg_field "$r15gpa2" '출처')/$(g15_segrows R15GPA2 SB 계획됨)" \
+  "0/머지됨/7/$m15gp/R15GPA1/1"
+check "15g: 머지한 뒤 park 한 슬라이스는 이전 런이 착지시킨 id 에 든다" "$(g15_ids R15GPA2)" "SA,"
+DOC15GPB='docs/fixture-design-15gpb.md'
+two_slice_doc "$WT/$DOC15GPB" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_parked R15GPB1 "$DOC15GPB" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=park" "상태=park"
+g15_run R15GPB2 "$DOC15GPB" "$plan15c" 리뷰없음
+g15_mkwt R15GPB2 SA
+g15_plan act R15GPB2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPB2 SA)"
+r15gpb2=$(g15_row R15GPB2 SA)
+check "15g: 머지한 뒤 park 한 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다" \
+  "$rc/$(seg_field "$r15gpb2" '상태')/$(seg_field "$r15gpb2" '머지 커밋')/$(seg_field "$r15gpb2" '출처')/$(g15_segrows R15GPB2 SA 계획됨)" \
+  "0/머지됨/$m15gp/R15GPB1/0"
+
+# Planned again after the merge, then parked: the second round did not land,
+# and the request that merged the first is no evidence for it.
+DOC15GPC='docs/fixture-design-15gpc.md'
+two_slice_doc "$WT/$DOC15GPC" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_parked R15GPC1 "$DOC15GPC" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=계획됨" "상태=park"
+g15_run R15GPC2 "$DOC15GPC" "$plan15c" 리뷰없음
+g15_mkwt R15GPC2 SA
+g15_plan act R15GPC2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPC2 SA)"
+r15gpc2="$rc/$(g15_segrows R15GPC2 SA)/$(seg_field "$(g15_row R15GPC2 SA)" '상태')"
+g15_run R15GPC3 "$DOC15GPC" "$plan15c" 리뷰없음
+g15_mkwt R15GPC3 SB
+g15_plan act R15GPC3 SB 상태=계획됨 "워크트리=$(g15_wt R15GPC3 SB)"
+check "15g: 머지 뒤 다시 계획되고 park 한 슬라이스는 들이지 않는다" \
+  "$r15gpc2|$rc/$(g15_segs R15GPC3)|$(g15_ids R15GPC3)" "0/1/계획됨|2/0|"
+
+# The merge commit behind the park is not on the base: refused, nothing written.
+DOC15GPD='docs/fixture-design-15gpd.md'
+two_slice_doc "$WT/$DOC15GPD" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_parked R15GPD1 "$DOC15GPD" "상태=머지됨 | PR=7 | 머지 커밋=$m15gq" "상태=park"
+g15_run R15GPD2 "$DOC15GPD" "$plan15c" 리뷰없음
+g15_mkwt R15GPD2 SB
+g15_plan act R15GPD2 SB 상태=계획됨 "워크트리=$(g15_wt R15GPD2 SB)"
+r15gpd2="$rc/$(g15_segs R15GPD2)"
+case "$msg" in *"이전 런 R15GPD1 이 남긴 머지 커밋 $m15gq"*) r15gpd2="$r15gpd2/미착지 문면" ;; esac
+check "15g: park 앞 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다" "$r15gpd2" "3/0/미착지 문면"
+
+# Parked at a pull request a person merged after the run: the request the
+# ledger names is the evidence, held to the rules of a merged request. The
+# refusals run first and leave SA planned, so R15GPE1 answers until R15GPE5
+# brings SA in.
+DOC15GPE='docs/fixture-design-15gpe.md'
+two_slice_doc "$WT/$DOC15GPE" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_parked R15GPE1 "$DOC15GPE" "상태=리뷰중 | PR=11 | 브랜치=seg/R15GPE1-SA" "상태=park"
+g15_run R15GPE2 "$DOC15GPE" "$plan15c" 리뷰없음
+g15_mkwt R15GPE2 SA
+g15_pr "OPEN $c15gk - seg/R15GPE1-SA main" act R15GPE2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPE2 SA)"
+r15gpe2="$rc/$(g15_segrows R15GPE2 SA)/$(seg_field "$(g15_row R15GPE2 SA)" '상태')"
+case "$msg" in *"PR #11 이 그 런의 park 뒤에도 열려 있습니다"*) r15gpe2="$r15gpe2/열림 문면" ;; esac
+g15_run R15GPE3 "$DOC15GPE" "$plan15c" 리뷰없음
+g15_mkwt R15GPE3 SA
+g15_pr "MERGED $h15gf $c15gk seg/R15GX-SA main" act R15GPE3 SA 상태=계획됨 "워크트리=$(g15_wt R15GPE3 SA)"
+r15gpe3="$rc/$(g15_segrows R15GPE3 SA)/$(seg_field "$(g15_row R15GPE3 SA)" '상태')"
+case "$msg" in *"head 브랜치 seg/R15GX-SA 가 행의 브랜치 seg/R15GPE1-SA 와 다릅니다"*) r15gpe3="$r15gpe3/브랜치 문면" ;; esac
+check "15g: park 뒤 열린 PR 이나 head 브랜치가 다른 머지된 PR 은 들이지 않고 슬라이스를 다시 계획한다" \
+  "$r15gpe2|$r15gpe3" "0/1/계획됨/열림 문면|0/1/계획됨/브랜치 문면"
+g15_run R15GPE4 "$DOC15GPE" "$plan15c" 리뷰없음
+g15_mkwt R15GPE4 SB
+g15_pr "OPEN $c15gk - seg/R15GPE1-SA main" act R15GPE4 SB 상태=계획됨 "워크트리=$(g15_wt R15GPE4 SB)"
+r15gpe4="$rc/$(g15_segs R15GPE4)"
+case "$msg" in *"런 밖 머지로도 들여오지 않습니다"*) r15gpe4="$r15gpe4/열림 문면" ;; esac
+check "15g: park 뒤 열린 PR 의 선행은 들이지 않고 계획이 거부된다" "$r15gpe4" "2/0/열림 문면"
+g15_run R15GPE5 "$DOC15GPE" "$plan15c" 리뷰없음
+g15_mkwt R15GPE5 SA
+g15_pr "MERGED $h15gf $c15gk seg/R15GPE1-SA main" act R15GPE5 SA 상태=계획됨 "워크트리=$(g15_wt R15GPE5 SA)"
+r15gpe5=$(g15_row R15GPE5 SA)
+check "15g: park 뒤 런 밖에서 머지된 PR 은 머지됨 으로 들인다" \
+  "$rc/$(seg_field "$r15gpe5" '상태')/$(seg_field "$r15gpe5" 'PR')/$(seg_field "$r15gpe5" '머지 커밋')/$(seg_field "$r15gpe5" '커밋')/$(seg_field "$r15gpe5" '브랜치')/$(seg_field "$r15gpe5" '출처')/$(g15_segrows R15GPE5 SA 계획됨)" \
+  "0/머지됨/11/$c15gk//seg/R15GPE1-SA/R15GPE1/0"
+# No request anywhere in the ledger: nothing to check, nothing brought in.
+DOC15GPF='docs/fixture-design-15gpf.md'
+two_slice_doc "$WT/$DOC15GPF" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_parked R15GPF1 "$DOC15GPF" "상태=실행중 | 브랜치=seg/R15GPF1-SA" "상태=park"
+g15_run R15GPF2 "$DOC15GPF" "$plan15c" 리뷰없음
+g15_mkwt R15GPF2 SA
+g15_pr "MERGED $h15gf $c15gk seg/R15GPF1-SA main" act R15GPF2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPF2 SA)"
+r15gpf2="$rc/$(g15_segrows R15GPF2 SA)/$(seg_field "$(g15_row R15GPF2 SA)" '상태')"
+# The request named only by a `원격 판독` row.
+DOC15GPG='docs/fixture-design-15gpg.md'
+two_slice_doc "$WT/$DOC15GPG" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_parked R15GPG1 "$DOC15GPG" "상태=리뷰중 | 브랜치=seg/R15GPG1-SA"
+printf -- '- `원격 판독` | 세그먼트=SA | PR=12\n' >> "$WT/docs/pipeline-run/R15GPG1.md"
+g15_raw R15GPG1 "id=SA | 상태=park | 워크트리=$(g15_wt R15GPG1 SA) | 선행=없음"
+g15_run R15GPG2 "$DOC15GPG" "$plan15c" 리뷰없음
+g15_mkwt R15GPG2 SA
+g15_pr "MERGED $h15gf $c15gk seg/R15GPG1-SA main" act R15GPG2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPG2 SA)"
+r15gpg2="$rc/$(seg_field "$(g15_row R15GPG2 SA)" '상태')/$(seg_field "$(g15_row R15GPG2 SA)" 'PR')"
+check "15g: PR 을 싣지 않은 park 원장은 들이지 않고 원격 판독 행의 PR 은 들인다" \
+  "$r15gpf2|$r15gpg2" "0/1/계획됨|0/머지됨/12"
+
+# One run: SA merged and then parked is a predecessor SB is dispatched onto,
+# and the snapshot says so; SA parked while planned, or merged with the apply
+# this run owes it still to do, is not.
+g15_samerun() {  # g15_samerun <run id> <문서> <SA 의 필드들...> — SA and SB planned, then one hand-written SA row per argument
+  local r="$1" d="$2"
+  shift 2
+  g15_run "$r" "$d" "$plan15c" 리뷰없음
+  g15_mkwt "$r" SA
+  g15_mkwt "$r" SB
+  g15_plan act "$r" SA 상태=계획됨 "워크트리=$(g15_wt "$r" SA)"
+  [ "$rc" = "0" ] || bad "15g $r 의 SA 계획" "rc=$rc $msg"
+  g15_plan act "$r" SB 상태=계획됨 "워크트리=$(g15_wt "$r" SB)"
+  [ "$rc" = "0" ] || bad "15g $r 의 SB 계획" "rc=$rc $msg"
+  while [ "$#" -gt 0 ]; do
+    g15_raw "$r" "id=SA | $1 | 워크트리=$(g15_wt "$r" SA) | 선행=없음"
+    shift
+  done
+  gateL plan --manifest "$WORK/plan-$r.md" --kind skill --target infra --segment SB --cutpoint 커밋 \
+    --surface 워크트리쓰기 --trigger '첫 리뷰' -- review -p "$(rv_x "$r" SB "$CANON_TOP")"
+}
+g15_landed() {  # g15_landed <run id> — the snapshot's `착지` of SA
+  au15_snap "$WORK/plan-$1.md" | jq -r '.segments[] | select(.id == "SA") | .["착지"]' 2>/dev/null
+}
+DOC15GPH='docs/fixture-design-15gph.md'
+two_slice_doc "$WT/$DOC15GPH" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_samerun R15GPH "$DOC15GPH" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=park"
+case "$msg" in
+  *"has not landed yet"*|*"merged but parked"*) bad "15g 머지 뒤 park 한 선행 위 디스패치" "rc=$rc $msg" ;;
+  *) ok "15g: 같은 런에서 머지한 뒤 park 한 선행은 디스패치 바닥을 넘는다" ;;
+esac
+check "15g: 그 선행의 스냅숏 착지 가 참이다" "$(g15_landed R15GPH)" "true"
+# Documents of their own: R15GPH is now an earlier run of DOC15GPH that landed
+# SA, and planning SA would bring that landing in.
+DOC15GPI='docs/fixture-design-15gpi.md'
+two_slice_doc "$WT/$DOC15GPI" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_samerun R15GPI "$DOC15GPI" "상태=park"
+r15gpi="$rc"
+case "$msg" in *"the preceding segment SA has not landed yet (\`상태\`=park)"*) r15gpi="$r15gpi/미착지 문면" ;; esac
+DOC15GPJ='docs/fixture-design-15gpj.md'
+two_slice_doc "$WT/$DOC15GPJ" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_samerun R15GPJ "$DOC15GPJ" "상태=머지됨 | 적용=대기 | PR=7 | 머지 커밋=$m15gp" "상태=park"
+r15gpj="$rc"
+case "$msg" in *"the preceding segment SA was merged but parked before the apply this run owes it was done"*) r15gpj="$r15gpj/적용 문면" ;; esac
+check "15g: 계획된 채 park 했거나 적용이 남은 머지 뒤 park 한 선행 위로는 디스패치되지 않고 착지 가 거짓이다" \
+  "$r15gpi/$(g15_landed R15GPI)|$r15gpj/$(g15_landed R15GPJ)" "3/미착지 문면/false|3/적용 문면/false"
+
+g15_drop R15GS:SB R15GT:SB R15GV:SB R15GU:SB R15GW:SB R15GJ1:SA R15GJ2:SA R15GJ2:SB R15GJ3:SA \
+        R15GJ4:SA R15GJ5:SB R15GO1:SA R15GO2:SB R15GO3:SB R15GM1:SA R15GM2:SA R15GF1:SA R15GF2:SA \
+        R15GF3:SA R15GF4:SB R15GF5:SA R15GF6:SB R15GY1:SA R15GY2:SA R15GH1:SA R15GH2:SA R15GPA1:SA \
+        R15GPA2:SB R15GPB1:SA R15GPB2:SA R15GPC1:SA R15GPC2:SA R15GPC3:SB R15GPD1:SA R15GPD2:SB \
+        R15GPE1:SA R15GPE2:SA R15GPE3:SA R15GPE4:SB R15GPE5:SA R15GPF1:SA R15GPF2:SA R15GPG1:SA \
+        R15GPG2:SA R15GPH:SA R15GPH:SB R15GPI:SA R15GPI:SB R15GPJ:SA R15GPJ:SB
+rm -f "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW" "$WT/$DOC15GJ" "$WT/$DOC15GO" \
+  "$WT/$DOC15GM" "$WT/$DOC15GF" "$WT/$DOC15GY" "$WT/$DOC15GH" "$WT/$DOC15GPA" "$WT/$DOC15GPB" "$WT/$DOC15GPC" \
+  "$WT/$DOC15GPD" "$WT/$DOC15GPE" "$WT/$DOC15GPF" "$WT/$DOC15GPG" "$WT/$DOC15GPH" "$WT/$DOC15GPI" \
+  "$WT/$DOC15GPJ"
+
+# ---------------------------------------------------------------------------
+# 15g-4. The same document path revised: a landing under another declaration
+# --- section: 15g-4 | group: base | covers: snapshot, plan, act | anchors: 15g: 선언이 바뀐 슬라이스 자신은 이전 런의 착지를 들이지 않고 다시 계획되며 경고가 선언 불일치를 든다, 15g: 선언이 바뀐 선행은 이전 런에서 들여오지 않는다, 15g: 계획 행이 없는 이전 런 원장의 착지는 들이지 않는다, 15g: 잘린 범위 뒤에 파일을 더한 긴 선언은 이전 런의 착지를 들이지 않고 다시 계획된다, 15g: 바뀌지 않은 긴 선언은 이전 런의 착지를 들인다, 15g: 다이제스트 없는 잘린 계획 행은 전체 파일로 대조하고 읽지 못하면 들이지 않는다, 15g: 다이제스트 없는 잘린 계획 행의 전체가 지금 선언과 같으면 착지를 들인다, 15g: 매니페스트로 들인 착지는 다음 런이 선행으로 들여와 의존 슬라이스가 계획된다, 15g: 선언이 바뀐 문서에서는 매니페스트로 들인 착지를 선행으로 들이지 않는다 ---
+#
+# The last of the four pieces 15g runs as. Its earlier runs merge at the base's
+# tip, taken again here as 15g-2 takes it for its own runs.
+# ---------------------------------------------------------------------------
+m15gp=$(cd "$WT" && git rev-parse refs/heads/main)
 
 # --- 같은 경로의 개정된 문서 ------------------------------------------------
 # A run that ends with its binding surface moved hands the rest to a kickoff of
@@ -13364,205 +13603,11 @@ case "$msg" in
 esac
 check "15g: 착지 뒤 선언이 바뀐 문서에서는 계획 행과 같아도 그 착지를 들이지 않는다" "$r15grw3" "2/0/0/불일치 문면"
 
-# --- 머지한 뒤 park 한 슬라이스 ---------------------------------------------
-# A segment can merge and then be parked — the apply arm's park, a person's
-# park answer — and the merged work stays on the base. The landing is read
-# behind a trailing `park`: an earlier run's `머지됨` there is brought in, a
-# `계획됨` there (the slice done again after its landing) is not, and a ledger
-# that parked the slice at a pull request a person merged after the run is
-# brought in as that merged request. In one run the dispatch floor and the
-# snapshot's `착지` read the same walk.
-g15_parked() {  # g15_parked <run id> <문서> <SA 의 필드들...> — an earlier run that planned SA, then one hand-written row per argument
-  local r="$1" d="$2"
-  shift 2
-  g15_run "$r" "$d" "$plan15c" 리뷰없음
-  g15_mkwt "$r" SA
-  g15_plan act "$r" SA 상태=계획됨 "워크트리=$(g15_wt "$r" SA)"
-  [ "$rc" = "0" ] || bad "15g 이전 런 $r 의 SA 계획" "rc=$rc $msg"
-  while [ "$#" -gt 0 ]; do
-    g15_raw "$r" "id=SA | $1 | 워크트리=$(g15_wt "$r" SA) | 선행=없음"
-    shift
-  done
-}
-g15_ids() {  # g15_ids <run id> — `gate_prior_landed_ids` in a child shell that sourced the gate, comma-terminated
-  au15_H "$1" >/dev/null
-  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_GATE_SOURCE_ONLY=1 bash -c '
-    . "$1" >/dev/null 2>&1 || exit 9
-    set +e
-    unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
-    MANIFEST=$2; RUN_ID=$3; RUN_DIR=$4; LEDGER=$5; GRANT=""
-    gate_prior_landed_ids
-  ' _ "$GATE" "$WORK/plan-$1.md" "$1" "$STATE_LATE/cc-cmds/run/$1" "$WT/docs/pipeline-run/$1.md" 2>/dev/null ) | tr '\n' ','
-}
-DOC15GPA='docs/fixture-design-15gpa.md'
-two_slice_doc "$WT/$DOC15GPA" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_parked R15GPA1 "$DOC15GPA" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=park"
-g15_run R15GPA2 "$DOC15GPA" "$plan15c" 리뷰없음
-g15_mkwt R15GPA2 SB
-g15_plan act R15GPA2 SB 상태=계획됨 "워크트리=$(g15_wt R15GPA2 SB)"
-r15gpa2=$(g15_row R15GPA2 SA)
-check "15g: 머지한 뒤 park 한 이전 런의 선행을 들여와 다음 슬라이스가 계획된다" \
-  "$rc/$(seg_field "$r15gpa2" '상태')/$(seg_field "$r15gpa2" 'PR')/$(seg_field "$r15gpa2" '머지 커밋')/$(seg_field "$r15gpa2" '출처')/$(g15_segrows R15GPA2 SB 계획됨)" \
-  "0/머지됨/7/$m15gp/R15GPA1/1"
-check "15g: 머지한 뒤 park 한 슬라이스는 이전 런이 착지시킨 id 에 든다" "$(g15_ids R15GPA2)" "SA,"
-DOC15GPB='docs/fixture-design-15gpb.md'
-two_slice_doc "$WT/$DOC15GPB" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_parked R15GPB1 "$DOC15GPB" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=park" "상태=park"
-g15_run R15GPB2 "$DOC15GPB" "$plan15c" 리뷰없음
-g15_mkwt R15GPB2 SA
-g15_plan act R15GPB2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPB2 SA)"
-r15gpb2=$(g15_row R15GPB2 SA)
-check "15g: 머지한 뒤 park 한 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다" \
-  "$rc/$(seg_field "$r15gpb2" '상태')/$(seg_field "$r15gpb2" '머지 커밋')/$(seg_field "$r15gpb2" '출처')/$(g15_segrows R15GPB2 SA 계획됨)" \
-  "0/머지됨/$m15gp/R15GPB1/0"
-
-# Planned again after the merge, then parked: the second round did not land,
-# and the request that merged the first is no evidence for it.
-DOC15GPC='docs/fixture-design-15gpc.md'
-two_slice_doc "$WT/$DOC15GPC" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_parked R15GPC1 "$DOC15GPC" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=계획됨" "상태=park"
-g15_run R15GPC2 "$DOC15GPC" "$plan15c" 리뷰없음
-g15_mkwt R15GPC2 SA
-g15_plan act R15GPC2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPC2 SA)"
-r15gpc2="$rc/$(g15_segrows R15GPC2 SA)/$(seg_field "$(g15_row R15GPC2 SA)" '상태')"
-g15_run R15GPC3 "$DOC15GPC" "$plan15c" 리뷰없음
-g15_mkwt R15GPC3 SB
-g15_plan act R15GPC3 SB 상태=계획됨 "워크트리=$(g15_wt R15GPC3 SB)"
-check "15g: 머지 뒤 다시 계획되고 park 한 슬라이스는 들이지 않는다" \
-  "$r15gpc2|$rc/$(g15_segs R15GPC3)|$(g15_ids R15GPC3)" "0/1/계획됨|2/0|"
-
-# The merge commit behind the park is not on the base: refused, nothing written.
-DOC15GPD='docs/fixture-design-15gpd.md'
-two_slice_doc "$WT/$DOC15GPD" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_parked R15GPD1 "$DOC15GPD" "상태=머지됨 | PR=7 | 머지 커밋=$m15gq" "상태=park"
-g15_run R15GPD2 "$DOC15GPD" "$plan15c" 리뷰없음
-g15_mkwt R15GPD2 SB
-g15_plan act R15GPD2 SB 상태=계획됨 "워크트리=$(g15_wt R15GPD2 SB)"
-r15gpd2="$rc/$(g15_segs R15GPD2)"
-case "$msg" in *"이전 런 R15GPD1 이 남긴 머지 커밋 $m15gq"*) r15gpd2="$r15gpd2/미착지 문면" ;; esac
-check "15g: park 앞 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다" "$r15gpd2" "3/0/미착지 문면"
-
-# Parked at a pull request a person merged after the run: the request the
-# ledger names is the evidence, held to the rules of a merged request. The
-# refusals run first and leave SA planned, so R15GPE1 answers until R15GPE5
-# brings SA in.
-DOC15GPE='docs/fixture-design-15gpe.md'
-two_slice_doc "$WT/$DOC15GPE" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_parked R15GPE1 "$DOC15GPE" "상태=리뷰중 | PR=11 | 브랜치=seg/R15GPE1-SA" "상태=park"
-g15_run R15GPE2 "$DOC15GPE" "$plan15c" 리뷰없음
-g15_mkwt R15GPE2 SA
-g15_pr "OPEN $c15gk - seg/R15GPE1-SA main" act R15GPE2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPE2 SA)"
-r15gpe2="$rc/$(g15_segrows R15GPE2 SA)/$(seg_field "$(g15_row R15GPE2 SA)" '상태')"
-case "$msg" in *"PR #11 이 그 런의 park 뒤에도 열려 있습니다"*) r15gpe2="$r15gpe2/열림 문면" ;; esac
-g15_run R15GPE3 "$DOC15GPE" "$plan15c" 리뷰없음
-g15_mkwt R15GPE3 SA
-g15_pr "MERGED $h15gf $c15gk seg/R15GX-SA main" act R15GPE3 SA 상태=계획됨 "워크트리=$(g15_wt R15GPE3 SA)"
-r15gpe3="$rc/$(g15_segrows R15GPE3 SA)/$(seg_field "$(g15_row R15GPE3 SA)" '상태')"
-case "$msg" in *"head 브랜치 seg/R15GX-SA 가 행의 브랜치 seg/R15GPE1-SA 와 다릅니다"*) r15gpe3="$r15gpe3/브랜치 문면" ;; esac
-check "15g: park 뒤 열린 PR 이나 head 브랜치가 다른 머지된 PR 은 들이지 않고 슬라이스를 다시 계획한다" \
-  "$r15gpe2|$r15gpe3" "0/1/계획됨/열림 문면|0/1/계획됨/브랜치 문면"
-g15_run R15GPE4 "$DOC15GPE" "$plan15c" 리뷰없음
-g15_mkwt R15GPE4 SB
-g15_pr "OPEN $c15gk - seg/R15GPE1-SA main" act R15GPE4 SB 상태=계획됨 "워크트리=$(g15_wt R15GPE4 SB)"
-r15gpe4="$rc/$(g15_segs R15GPE4)"
-case "$msg" in *"런 밖 머지로도 들여오지 않습니다"*) r15gpe4="$r15gpe4/열림 문면" ;; esac
-check "15g: park 뒤 열린 PR 의 선행은 들이지 않고 계획이 거부된다" "$r15gpe4" "2/0/열림 문면"
-g15_run R15GPE5 "$DOC15GPE" "$plan15c" 리뷰없음
-g15_mkwt R15GPE5 SA
-g15_pr "MERGED $h15gf $c15gk seg/R15GPE1-SA main" act R15GPE5 SA 상태=계획됨 "워크트리=$(g15_wt R15GPE5 SA)"
-r15gpe5=$(g15_row R15GPE5 SA)
-check "15g: park 뒤 런 밖에서 머지된 PR 은 머지됨 으로 들인다" \
-  "$rc/$(seg_field "$r15gpe5" '상태')/$(seg_field "$r15gpe5" 'PR')/$(seg_field "$r15gpe5" '머지 커밋')/$(seg_field "$r15gpe5" '커밋')/$(seg_field "$r15gpe5" '브랜치')/$(seg_field "$r15gpe5" '출처')/$(g15_segrows R15GPE5 SA 계획됨)" \
-  "0/머지됨/11/$c15gk//seg/R15GPE1-SA/R15GPE1/0"
-# No request anywhere in the ledger: nothing to check, nothing brought in.
-DOC15GPF='docs/fixture-design-15gpf.md'
-two_slice_doc "$WT/$DOC15GPF" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_parked R15GPF1 "$DOC15GPF" "상태=실행중 | 브랜치=seg/R15GPF1-SA" "상태=park"
-g15_run R15GPF2 "$DOC15GPF" "$plan15c" 리뷰없음
-g15_mkwt R15GPF2 SA
-g15_pr "MERGED $h15gf $c15gk seg/R15GPF1-SA main" act R15GPF2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPF2 SA)"
-r15gpf2="$rc/$(g15_segrows R15GPF2 SA)/$(seg_field "$(g15_row R15GPF2 SA)" '상태')"
-# The request named only by a `원격 판독` row.
-DOC15GPG='docs/fixture-design-15gpg.md'
-two_slice_doc "$WT/$DOC15GPG" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_parked R15GPG1 "$DOC15GPG" "상태=리뷰중 | 브랜치=seg/R15GPG1-SA"
-printf -- '- `원격 판독` | 세그먼트=SA | PR=12\n' >> "$WT/docs/pipeline-run/R15GPG1.md"
-g15_raw R15GPG1 "id=SA | 상태=park | 워크트리=$(g15_wt R15GPG1 SA) | 선행=없음"
-g15_run R15GPG2 "$DOC15GPG" "$plan15c" 리뷰없음
-g15_mkwt R15GPG2 SA
-g15_pr "MERGED $h15gf $c15gk seg/R15GPG1-SA main" act R15GPG2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPG2 SA)"
-r15gpg2="$rc/$(seg_field "$(g15_row R15GPG2 SA)" '상태')/$(seg_field "$(g15_row R15GPG2 SA)" 'PR')"
-check "15g: PR 을 싣지 않은 park 원장은 들이지 않고 원격 판독 행의 PR 은 들인다" \
-  "$r15gpf2|$r15gpg2" "0/1/계획됨|0/머지됨/12"
-
-# One run: SA merged and then parked is a predecessor SB is dispatched onto,
-# and the snapshot says so; SA parked while planned, or merged with the apply
-# this run owes it still to do, is not.
-g15_samerun() {  # g15_samerun <run id> <문서> <SA 의 필드들...> — SA and SB planned, then one hand-written SA row per argument
-  local r="$1" d="$2"
-  shift 2
-  g15_run "$r" "$d" "$plan15c" 리뷰없음
-  g15_mkwt "$r" SA
-  g15_mkwt "$r" SB
-  g15_plan act "$r" SA 상태=계획됨 "워크트리=$(g15_wt "$r" SA)"
-  [ "$rc" = "0" ] || bad "15g $r 의 SA 계획" "rc=$rc $msg"
-  g15_plan act "$r" SB 상태=계획됨 "워크트리=$(g15_wt "$r" SB)"
-  [ "$rc" = "0" ] || bad "15g $r 의 SB 계획" "rc=$rc $msg"
-  while [ "$#" -gt 0 ]; do
-    g15_raw "$r" "id=SA | $1 | 워크트리=$(g15_wt "$r" SA) | 선행=없음"
-    shift
-  done
-  gateL plan --manifest "$WORK/plan-$r.md" --kind skill --target infra --segment SB --cutpoint 커밋 \
-    --surface 워크트리쓰기 --trigger '첫 리뷰' -- review -p "$(rv_x "$r" SB "$CANON_TOP")"
-}
-g15_landed() {  # g15_landed <run id> — the snapshot's `착지` of SA
-  au15_snap "$WORK/plan-$1.md" | jq -r '.segments[] | select(.id == "SA") | .["착지"]' 2>/dev/null
-}
-DOC15GPH='docs/fixture-design-15gph.md'
-two_slice_doc "$WT/$DOC15GPH" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_samerun R15GPH "$DOC15GPH" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=park"
-case "$msg" in
-  *"has not landed yet"*|*"merged but parked"*) bad "15g 머지 뒤 park 한 선행 위 디스패치" "rc=$rc $msg" ;;
-  *) ok "15g: 같은 런에서 머지한 뒤 park 한 선행은 디스패치 바닥을 넘는다" ;;
-esac
-check "15g: 그 선행의 스냅숏 착지 가 참이다" "$(g15_landed R15GPH)" "true"
-# Documents of their own: R15GPH is now an earlier run of DOC15GPH that landed
-# SA, and planning SA would bring that landing in.
-DOC15GPI='docs/fixture-design-15gpi.md'
-two_slice_doc "$WT/$DOC15GPI" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_samerun R15GPI "$DOC15GPI" "상태=park"
-r15gpi="$rc"
-case "$msg" in *"the preceding segment SA has not landed yet (\`상태\`=park)"*) r15gpi="$r15gpi/미착지 문면" ;; esac
-DOC15GPJ='docs/fixture-design-15gpj.md'
-two_slice_doc "$WT/$DOC15GPJ" t/infra 머지 '**리뷰 정책**: 리뷰없음'
-g15_samerun R15GPJ "$DOC15GPJ" "상태=머지됨 | 적용=대기 | PR=7 | 머지 커밋=$m15gp" "상태=park"
-r15gpj="$rc"
-case "$msg" in *"the preceding segment SA was merged but parked before the apply this run owes it was done"*) r15gpj="$r15gpj/적용 문면" ;; esac
-check "15g: 계획된 채 park 했거나 적용이 남은 머지 뒤 park 한 선행 위로는 디스패치되지 않고 착지 가 거짓이다" \
-  "$r15gpi/$(g15_landed R15GPI)|$r15gpj/$(g15_landed R15GPJ)" "3/미착지 문면/false|3/적용 문면/false"
-
-for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA \
-            R15GP1:SA R15GP2:SB R15GQ1:SA R15GQ2:SB R15GR:SB R15GK:SA R15GK:SB \
-            R15GS:SB R15GT:SB R15GV:SB R15GU:SB R15GW:SB \
-            R15GZ:SA R15GJ1:SA R15GJ2:SA R15GJ2:SB R15GJ3:SA R15GJ4:SA R15GJ5:SB R15GO1:SA R15GO2:SB R15GO3:SB \
-            R15GM1:SA R15GM2:SA R15GL1:SA R15GL2:SA R15GL3:SB R15GI2:SA \
-            R15GF1:SA R15GF2:SA R15GF3:SA R15GF4:SB R15GF5:SA R15GF6:SB R15GY1:SA R15GY2:SA R15GH1:SA R15GH2:SA \
-            R15GG1:SA R15GG2:SA R15GS1:SA R15GS2:SA R15GX2:SA R15GX4:SA R15GX6:SA \
-            R15GMA:SB R15GMB:SB R15GMC:SA R15GML2:SB R15GMD:SB \
-            R15GRW1:SA R15GRW2:SB R15GRW3:SB \
-            R15GPA1:SA R15GPA2:SB R15GPB1:SA R15GPB2:SA R15GPC1:SA R15GPC2:SA R15GPC3:SB R15GPD1:SA R15GPD2:SB \
-            R15GPE1:SA R15GPE2:SA R15GPE3:SA R15GPE4:SB R15GPE5:SA R15GPF1:SA R15GPF2:SA R15GPG1:SA R15GPG2:SA \
-            R15GPH:SA R15GPH:SB R15GPI:SA R15GPI:SB R15GPJ:SA R15GPJ:SB; do
-  ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15g%%:*}" "${r15g#*:}")" \
-      && git branch -D "seg/${r15g%%:*}-${r15g#*:}" ) >/dev/null 2>&1 || true
-done
-rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR" \
-  "$WT/$DOC15GK" "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW" "$WT/$DOC15GJ" \
-  "$WT/$DOC15GO" "$WT/$DOC15GM" "$WT/$DOC15GL" "$WT/$DOC15GI" "$WT/$DOC15GF" "$WT/$DOC15GY" "$WT/$DOC15GH" \
-  "$WT/$DOC15GG" "$WT/$DOC15GS2" "$WT/$DOC15GX" "$WT/$DOC15GX3" "$WT/$DOC15GX5" \
-  "$WT/$DOC15GMF" "$WT/$DOC15GML" "$WT/$DOC15GRW" \
-  "$WT/$DOC15GPA" "$WT/$DOC15GPB" "$WT/$DOC15GPC" "$WT/$DOC15GPD" "$WT/$DOC15GPE" "$WT/$DOC15GPF" \
-  "$WT/$DOC15GPG" "$WT/$DOC15GPH" "$WT/$DOC15GPI" "$WT/$DOC15GPJ"
+g15_drop R15GL1:SA R15GL2:SA R15GL3:SB R15GI2:SA R15GG1:SA R15GG2:SA R15GS1:SA R15GS2:SA R15GX2:SA \
+        R15GX4:SA R15GX6:SA R15GMA:SB R15GMB:SB R15GMC:SA R15GML2:SB R15GMD:SB R15GRW1:SA R15GRW2:SB \
+        R15GRW3:SB
+rm -f "$WT/$DOC15GL" "$WT/$DOC15GI" "$WT/$DOC15GG" "$WT/$DOC15GS2" "$WT/$DOC15GX" "$WT/$DOC15GX3" \
+  "$WT/$DOC15GX5" "$WT/$DOC15GMF" "$WT/$DOC15GML" "$WT/$DOC15GRW"
 
 # ---------------------------------------------------------------------------
 # 15m. A merge-order predecessor holds the merge, not the dispatch
