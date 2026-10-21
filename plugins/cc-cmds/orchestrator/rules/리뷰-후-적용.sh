@@ -54,4 +54,48 @@ if [ "$reviewed" != "$now" ]; then
   exit 1
 fi
 
+# 무인 스테이지가 받는 개인 블록은 사람이 정한다. 제안본과 슬롯의 무인 블록을
+# 같은 추출기로 뽑아 바이트로 대조하므로, 태그의 추가·삭제·뒤집기, 무인 불릿
+# 본문 편집, 무태그와 태그 모드 사이의 전환이 모두 잡힌다. 무태그 원천은 빈
+# 블록이 아니라 레거시 줄을 내므로 전환도 바이트 차이로 드러난다. 대화형 불릿
+# 편집과 태그 없는 불릿은 무인 블록을 바꾸지 않아 통과한다.
+proposal="${GATE_CLAUDEMD_PROPOSAL:-}"
+[ -n "$proposal" ] || {
+  echo "리뷰-후-적용: the gate did not name the proposal being applied — put the proposal under \$RUN_DIR/claudemd/ as <name>.proposed.md and pass it as an operand of the apply act" >&2
+  exit 1
+}
+[ -f "$proposal" ] || {
+  echo "리뷰-후-적용: the proposal '$proposal' does not exist — put the proposal under \$RUN_DIR/claudemd/ as <name>.proposed.md and pass it as an operand of the apply act" >&2
+  exit 1
+}
+
+# 게이트는 GATE_DIR 를 넘기지 않으므로 추출기는 이 파일의 자리에서 찾는다.
+rules_dir=$(cd -P -- "$(dirname -- "$0")" && pwd -P)
+extractor="${rules_dir%/*}/stage-rules.sh"
+[ -f "$extractor" ] || {
+  echo "리뷰-후-적용: the stage rules extractor '$extractor' is missing — the unattended block of the proposal cannot be compared with the slot's, and undecidable is not an allow" >&2
+  exit 1
+}
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/review-apply.XXXXXX") || {
+  echo "리뷰-후-적용: cannot create a scratch directory to compare the unattended blocks" >&2
+  exit 1
+}
+trap 'rm -rf "$work"' EXIT
+
+# 슬롯 파일이 없으면 추출기가 빈 원천으로 읽는다 — 그 출력이 레거시 줄이다.
+if ! bash "$extractor" extract --source "$proposal" > "$work/proposal" 2> "$work/err"; then
+  echo "리뷰-후-적용: extracting the unattended block of the proposal failed — $(head -c 200 "$work/err" | head -1)" >&2
+  exit 1
+fi
+if ! bash "$extractor" extract --source "$GATE_CLAUDEMD_SLOT" > "$work/slot" 2> "$work/err"; then
+  echo "리뷰-후-적용: extracting the unattended block of the slot failed — $(head -c 200 "$work/err" | head -1)" >&2
+  exit 1
+fi
+
+if ! cmp -s "$work/proposal" "$work/slot"; then
+  echo "리뷰-후-적용: this proposal changes the unattended block of $GATE_CLAUDEMD_SLOT — which rules reach an unattended stage is the person's to decide, so this change waits for a person" >&2
+  exit 1
+fi
+
 exit 0

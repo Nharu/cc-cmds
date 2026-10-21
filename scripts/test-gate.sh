@@ -23193,15 +23193,23 @@ RULE3="$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-적용.sh"
 R3W=$(mktemp -d "${TMPDIR:-/tmp}/cc-rule3.XXXXXX")
 R3L="$R3W/ledger.md"
 
+# The proposal every case below applies unless it names its own: untagged, so
+# its stage rules block is the legacy line, the same as the absent slot
+# `/x/CLAUDE.md` reads as.
+R3P0="$R3W/base.proposed.md"
+printf -- '- an untagged rule\n' > "$R3P0"
+
 r3() {
-  # r3 <slot> <digest> ; ledger already staged. Echoes the exit code. The rule
-  # reads the segment's last `cycle` row from the gate rather than the ledger;
-  # every row of this fixture is segment `seg-1`'s, so the last one is that row.
+  # r3 <slot> <digest> [<proposal>] ; ledger already staged. Echoes the exit
+  # code; the refusal text is left in $R3W/err. The rule reads the segment's
+  # last `cycle` row from the gate rather than the ledger; every row of this
+  # fixture is segment `seg-1`'s, so the last one is that row. An empty third
+  # argument is passed on empty, as a gate that found no proposal would.
   local rc=0
-  GATE_CLAUDEMD_SLOT="$1" GATE_CLAUDEMD_DIGEST="$2" \
+  GATE_CLAUDEMD_SLOT="$1" GATE_CLAUDEMD_DIGEST="$2" GATE_CLAUDEMD_PROPOSAL="${3-$R3P0}" \
     GATE_SEGMENT="seg-1" GATE_LEDGER="$R3L" GATE_ACT="커밋" \
     GATE_SEGMENT_LAST_CYCLE="$( { grep '^- `cycle` ' "$R3L" || true; } | tail -1)" \
-    /bin/sh "$RULE3" >/dev/null 2>&1 || rc=$?
+    /bin/sh "$RULE3" >/dev/null 2>"$R3W/err" || rc=$?
   printf '%s' "$rc"
 }
 
@@ -23225,7 +23233,98 @@ check "층3: 리뷰 행에 「적용 대상」이 없으면 거부한다" "$(r3 
 printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
 check "층3: 슬롯을 지목하지 못한 세탁 형태는 거부한다" "$(r3 '(세탁됨)' 'deadbeef')" "1"
 check "층3: 게이트가 다이제스트를 넘기지 않으면 거부한다" "$(r3 '/x/CLAUDE.md' '')" "1"
-rm -rf "$R3W"
+
+# THE UNATTENDED BLOCK IS COMPARED AFTER THE REVIEW PASSES. Every case below
+# stands on a cycle row that would let the apply through, and changes only the
+# proposal: what is asserted is the comparison of the stage rules block, not
+# the review. The slot files are real files so that the comparison reads both
+# sides.
+r3_slot() { printf '%b' "$2" > "$R3W/$1/CLAUDE.md"; printf '%s' "$R3W/$1/CLAUDE.md"; }
+r3_prop() { printf '%b' "$2" > "$R3W/claudemd/$1.proposed.md"; printf '%s' "$R3W/claudemd/$1.proposed.md"; }
+mkdir -p "$R3W/tagged" "$R3W/untagged" "$R3W/only" "$R3W/claudemd"
+r3_T=$(r3_slot tagged '- [무인] keep the ledger\n- [대화형] ask before pushing\n- a plain rule\n')
+r3_U=$(r3_slot untagged '- a plain rule\n- another plain rule\n')
+r3_O=$(r3_slot only '- [대화형] ask before pushing\n- a plain rule\n')
+r3_p_addu=$(r3_prop addu '- [무인] keep the ledger\n- [대화형] ask before pushing\n- [무인] a plain rule\n')
+r3_p_editu=$(r3_prop editu '- [무인] keep the ledger always\n- [대화형] ask before pushing\n- a plain rule\n')
+r3_p_editi=$(r3_prop editi '- [무인] keep the ledger\n- [대화형] ask twice before pushing\n- a plain rule\n')
+r3_p_newplain=$(r3_prop newplain '- [무인] keep the ledger\n- [대화형] ask before pushing\n- a plain rule\n- a new plain rule\n')
+r3_p_tagi=$(r3_prop tagi '- [무인] keep the ledger\n- [대화형] ask before pushing\n- [대화형] a plain rule\n')
+r3_p_firsti=$(r3_prop firsti '- [대화형] a plain rule\n- another plain rule\n')
+r3_p_untagi=$(r3_prop untagi '- ask before pushing\n- a plain rule\n')
+
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 태그 모드 슬롯의 불릿에 [무인] 을 더한 제안본은 거부한다" "$(r3 "$r3_T" deadbeef "$r3_p_addu")" "1"
+case "$(cat "$R3W/err")" in
+  *"$r3_T"*"waits for a person"*) ok "층3: 무인 블록 거부 문구가 슬롯을 이름으로 대고 사람을 기다린다고 말한다" ;;
+  *) bad "층3: 무인 블록 거부 문구가 슬롯을 이름으로 대고 사람을 기다린다고 말한다" "$(cat "$R3W/err")" ;;
+esac
+check "층3: [무인] 불릿 본문을 고친 제안본은 거부한다" "$(r3 "$r3_T" deadbeef "$r3_p_editu")" "1"
+check "층3: 무태그 슬롯에 [대화형] 하나를 단 제안본은 거부한다" "$(r3 "$r3_U" deadbeef "$r3_p_firsti")" "1"
+check "층3: 하나뿐인 [대화형] 태그를 지우는 제안본은 거부한다" "$(r3 "$r3_O" deadbeef "$r3_p_untagi")" "1"
+check "층3: 태그 모드 슬롯의 [대화형] 불릿을 고친 제안본은 통과한다" "$(r3 "$r3_T" deadbeef "$r3_p_editi")" "0"
+check "층3: 새 태그 없는 불릿을 더한 제안본은 통과한다" "$(r3 "$r3_T" deadbeef "$r3_p_newplain")" "0"
+check "층3: 태그 없는 불릿에 [대화형] 을 단 제안본은 통과한다" "$(r3 "$r3_T" deadbeef "$r3_p_tagi")" "0"
+check "층3: 슬롯 파일이 없으면 빈 원천으로 읽어 무태그 제안본은 통과한다" "$(r3 "$R3W/none/CLAUDE.md" deadbeef "$R3P0")" "0"
+check "층3: 슬롯 파일이 없을 때 태그 모드 제안본은 거부한다" "$(r3 "$R3W/none/CLAUDE.md" deadbeef "$r3_p_editi")" "1"
+check "층3: 게이트가 제안본을 찾지 못하면 거부한다" "$(r3 "$r3_T" deadbeef '')" "1"
+case "$(cat "$R3W/err")" in
+  *'$RUN_DIR/claudemd/'*'.proposed.md'*) ok "층3: 제안본 부재 거부 문구가 제안본을 둘 자리를 말한다" ;;
+  *) bad "층3: 제안본 부재 거부 문구가 제안본을 둘 자리를 말한다" "$(cat "$R3W/err")" ;;
+esac
+check "층3: 이름 댄 제안본 파일이 없으면 거부한다" "$(r3 "$r3_T" deadbeef "$R3W/claudemd/gone.proposed.md")" "1"
+# The review still decides first: the [대화형] edit that passes above is
+# refused when the review left a P1 open.
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=1 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: [대화형] 편집 제안본도 P1 이 남은 리뷰 위에서는 거부한다" "$(r3 "$r3_T" deadbeef "$r3_p_editi")" "1"
+# The checker finds the extractor beside the rules directory. A copy of the
+# rule with no stage-rules.sh one level up refuses rather than allowing.
+mkdir -p "$R3W/lone/rules"
+cp "$RULE3" "$R3W/lone/rules/"
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+r3_lone_rc=0
+GATE_CLAUDEMD_SLOT="$r3_T" GATE_CLAUDEMD_DIGEST=deadbeef GATE_CLAUDEMD_PROPOSAL="$r3_p_editi" \
+  GATE_SEGMENT="seg-1" GATE_LEDGER="$R3L" GATE_ACT="커밋" \
+  GATE_SEGMENT_LAST_CYCLE="$(tail -1 "$R3L")" \
+  /bin/sh "$R3W/lone/rules/리뷰-후-적용.sh" >/dev/null 2>&1 || r3_lone_rc=$?
+check "층3: 룰 옆에 stage-rules.sh 가 없으면 거부한다" "$r3_lone_rc" "1"
+r3_left=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'review-apply.*' -newer "$R3P0" 2>/dev/null | grep -c . || true)
+check "층3: 대조용 임시 디렉터리가 남지 않는다" "$r3_left" "0"
+
+# The slot under a home's Claude configuration directory is judged the same
+# way: a reviewed [대화형] edit passes and the same edit over an open P1 does
+# not. What the review opens is the slot alone — a machine-global act on any
+# other file under that home, the ack store for one, still parks without a
+# frozen row, however the stage declares it.
+R6H=$(mktemp -d "${TMPDIR:-/tmp}/cc-r6home.XXXXXX")
+mkdir -p "$R6H/.claude-cc" "$R6H/.config/cc-cmds/stage-policy-ack"
+printf -- '- [무인] keep the ledger\n- [대화형] ask before pushing\n- a plain rule\n' > "$R6H/.claude-cc/CLAUDE.md"
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 홈 아래 슬롯의 [대화형] 편집 제안본은 리뷰 위에서 통과한다" "$(r3 "$R6H/.claude-cc/CLAUDE.md" deadbeef "$r3_p_editi")" "0"
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=1 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 홈 아래 슬롯의 같은 편집도 P1 이 남으면 거부한다" "$(r3 "$R6H/.claude-cc/CLAUDE.md" deadbeef "$r3_p_editi")" "1"
+printf 'x\n' > "$R6H/src.tsv"
+HOME="$R6H" gate exec --manifest "$FX_MANIFEST" --target front --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale "층3 — 확인 저장소 쓰기" -- cp "$R6H/src.tsv" "$R6H/.config/cc-cmds/stage-policy-ack/acks.tsv"
+# This fixture runs with auto-resolution off, so the machine-global cell is
+# issued as an approval (rc 5) rather than judged; either way the act waits.
+case "$rc" in
+  5) ok "층3: 확인 저장소를 바꾸는 act 는 런로컬로 신고해도 승인을 기다린다" ;;
+  *) bad "층3: 확인 저장소를 바꾸는 act 는 런로컬로 신고해도 승인을 기다린다" "rc=$rc $(tail -c 600 "$WORK/last-output.txt")" ;;
+esac
+case "$(cat "$WORK/last-output.txt")" in
+  *"reach judgment '기기전역'"*) ok "층3: 그 act 의 도달은 신고와 달리 기기전역으로 유도된다" ;;
+  *) bad "층3: 그 act 의 도달은 신고와 달리 기기전역으로 유도된다" "$(tail -c 600 "$WORK/last-output.txt")" ;;
+esac
+check "층3: 승인을 기다리는 확인 저장소 쓰기는 파일을 만들지 않는다" \
+  "$([ -e "$R6H/.config/cc-cmds/stage-policy-ack/acks.tsv" ] && echo made || echo absent)" "absent"
+# Resolve the approval it issued, as the fixture does above, so the sections
+# after this one see no pending wait.
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+rm -rf "$R6H" "$R3W"
 
 # The trap, asserted statically as well: the sibling idiom must not be in this
 # checker. The dynamic assertion above catches it too, but only while the
