@@ -132,17 +132,23 @@ EOF
 # `overlap` counts the runs of this repository with a different head sha that
 # were alive in the assignment window [attempt start, start of the last
 # `gate-shards` job, or now when none started]: created before the window ends,
-# started before it ends or not started, and not finished or finished after it
-# began. This run itself (by id) and the runs of its own head sha (lint, notify)
-# are not counted — the head sha is the attempt's, which on a pull request is
-# the head and not the merge commit in GITHUB_SHA — and neither is a run that
-# started after the window, which could not have made this one wait. Jobs of
-# other repositories on the same account are not visible through this API, and
-# the line says so. `rows` is the number of row timing
-# files in D that reached their `@end` line, over S: a shard that died uploads
-# a partial file, and the count is never filled in from the runner and lane
-# numbers it was given. Nothing here fails the job: past 900 s raw it warns,
-# and a value an API did not give is written `-` with a notice.
+# and not finished or finished after it began. The start bound is `created_at`
+# and not the listed `run_started_at`, which is the start of a run's latest
+# attempt: a neighbour that ran in the window and was rerun before this report
+# would otherwise drop out. This run itself (by id) and the runs of its own head
+# sha (lint, notify) are not counted — the head sha is the attempt's, which on a
+# pull request is the head and not the merge commit in GITHUB_SHA — and neither
+# is a run created after the window, which could not have made this one wait.
+# Jobs of other repositories on the same account are not visible through this
+# API, and the line says so. An attempt that reran only the failed jobs lists
+# the jobs it carried over with their earlier start times; its raw would cover
+# the rerun shards alone, so raw, path, queued and overlap are written `-` with
+# a notice, and the line is never read as the wall of the whole gate. `rows` is
+# the number of row timing files in D that reached their `@end` line, over S: a
+# shard that died uploads a partial file, and the count is never filled in from
+# the runner and lane numbers it was given. Nothing here fails the job: past
+# 900 s raw it warns, and a value an API did not give is written `-` with a
+# notice.
 dur_wall() {
   local slots="" runners="" lanes="" tdir="" out=""
   while [ "$#" -gt 0 ]; do
@@ -163,7 +169,7 @@ dur_wall() {
   local repo="${GITHUB_REPOSITORY:-}" rid="${GITHUB_RUN_ID:-}" att="${GITHUB_RUN_ATTEMPT:-}"
   local now="${CI_DURATION_NOW:-$(date +%s)}"
   local start="" sha="" jobs="" jobs_ok=0 raw="-" path="-" queued="-" overlap="-" notes=""
-  local pd sm rs ls wend f executed=0
+  local pd sm rs ls carried wend f executed=0
   case "$rid" in *[!0-9]*) rid="" ;; esac
   if [ -z "$repo" ] || [ -z "$rid" ] || [ -z "$att" ]; then
     notes="GITHUB_REPOSITORY·GITHUB_RUN_ID·GITHUB_RUN_ATTEMPT 가운데 빈 값이 있어 API 를 읽지 않았습니다"
@@ -185,20 +191,24 @@ EOF
   fi
   [ -z "$start" ] || raw=$(( now - start ))
   if [ "$jobs_ok" = "1" ]; then
-    read -r pd sm rs ls <<EOF
-$(printf '%s\n' "$jobs" | awk -F '\t' '
+    read -r pd sm rs ls carried <<EOF
+$(printf '%s\n' "$jobs" | awk -F '\t' -v st="$start" '
+  st != "" && $2 != "-" && $2 < st { carried = 1 }
   $1 == "gate-plan" && $2 != "-" && $3 != "-" { pd = $3 - $2 }
   $1 ~ /^gate-shards/ && $2 != "-" { if (ls == "" || $2 > ls) ls = $2; if ($3 != "-" && (sm == "" || $3 - $2 > sm)) sm = $3 - $2 }
   $1 == "gate-report" && $2 != "-" { rs = $2 }
-  END { print (pd == "" ? "-" : pd), (sm == "" ? "-" : sm), (rs == "" ? "-" : rs), (ls == "" ? "-" : ls) }')
+  END { print (pd == "" ? "-" : pd), (sm == "" ? "-" : sm), (rs == "" ? "-" : rs), (ls == "" ? "-" : ls), (carried ? 1 : 0) }')
 EOF
     if [ "$pd" != "-" ] && [ "$sm" != "-" ] && [ "$rs" != "-" ]; then path=$(( pd + sm + now - rs )); fi
-    if [ -n "$start" ] && [ -z "$sha" ]; then
+    if [ "$carried" = "1" ]; then
+      raw="-"; path="-"
+      notes="${notes:+$notes · }실패한 잡만 다시 돌린 시도라(앞 시도에서 넘어온 잡이 있음) raw·path·queued·overlap 을 적지 않았습니다"
+    elif [ -n "$start" ] && [ -z "$sha" ]; then
       notes="${notes:+$notes · }시도 API 가 head_sha 를 주지 않아 overlap 을 세지 않았습니다"
     elif [ -n "$start" ]; then
       wend="$now"; [ "$ls" = "-" ] || wend="$ls"
       overlap=$(gh api "repos/$repo/actions/runs?per_page=100" \
-        --jq "[.workflow_runs[] | select(.id != $rid) | select(.head_sha != \"$sha\") | select((.created_at | fromdate) < $wend) | select(.run_started_at == null or ((.run_started_at | fromdate) < $wend)) | select(.status != \"completed\" or ((.updated_at | fromdate) > $start))] | length" 2>/dev/null) || overlap=""
+        --jq "[.workflow_runs[] | select(.id != $rid) | select(.head_sha != \"$sha\") | select((.created_at | fromdate) < $wend) | select(.status != \"completed\" or ((.updated_at | fromdate) > $start))] | length" 2>/dev/null) || overlap=""
       case "$overlap" in ''|*[!0-9]*) overlap="-"; notes="${notes:+$notes · }실행 목록 API 를 읽지 못했습니다" ;; esac
     fi
   fi
@@ -485,18 +495,36 @@ STUB
     fi
     printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
     # S3 started before the window closed and is still running; S4 is queued
-    # and has no start time. Both count.
-    printf '{"workflow_runs":[%s,\n%s,\n%s]}\n' "$quiet" \
+    # and has no start time; S5 ran in the window and was rerun afterwards, so
+    # the list gives its latest attempt's start, 17:40:00. All three count.
+    printf '{"workflow_runs":[%s,\n%s,\n%s,\n%s]}\n' "$quiet" \
       '{"head_sha":"S3","created_at":"2026-10-21T17:00:00Z","run_started_at":"2026-10-21T17:00:05Z","status":"in_progress","updated_at":"2026-10-21T17:30:00Z"}' \
-      '{"head_sha":"S4","created_at":"2026-10-21T17:03:00Z","run_started_at":null,"status":"queued","updated_at":"2026-10-21T17:03:00Z"}' > "$T/stub/allruns.json"
+      '{"head_sha":"S4","created_at":"2026-10-21T17:03:00Z","run_started_at":null,"status":"queued","updated_at":"2026-10-21T17:03:00Z"}' \
+      '{"head_sha":"S5","created_at":"2026-10-21T17:02:00Z","run_started_at":"2026-10-21T17:40:00Z","status":"in_progress","updated_at":"2026-10-21T17:41:00Z"}' > "$T/stub/allruns.json"
     out=$(wall 2>&1)
-    if printf '%s\n' "$out" | grep -q ' overlap=2 '; then ok "창 안에 시작한 진행 중 실행과 시작 시각이 없는 대기 실행은 센다"; else bad "겹침 2" "$out"; fi
+    if printf '%s\n' "$out" | grep -q ' overlap=3 '; then ok "창 안에 시작한 진행 중 실행, 시작 시각이 없는 대기 실행, 창 뒤에 다시 돌린 실행은 센다"; else bad "겹침 3" "$out"; fi
     rm -f "$W/t/timing-7.tsv"
     out=$(wall 2>&1)
     if printf '%s\n' "$out" | grep -q ' rows=12/13 '; then ok "행 하나의 timing 파일이 없으면 rows=12/13"; else bad "빠진 행" "$out"; fi
     printf '@start\t1\n' > "$W/t/timing-7.tsv"
     out=$(wall 2>&1)
     if printf '%s\n' "$out" | grep -q ' rows=12/13 '; then ok "@end 가 없는 행 파일은 실행된 행으로 세지 않는다"; else bad "@end 없는 행" "$out"; fi
+    # Attempt 2 reran shard 2 alone at 17:30:00: the plan job and shard 1 carry
+    # attempt 1's times, before the attempt's own start.
+    printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:30:00Z"}\n' > "$T/stub/attempt.json"
+    printf '%s\n' '{"jobs":[' \
+      '{"name":"gate-plan","started_at":"2026-10-21T17:04:50Z","completed_at":"2026-10-21T17:04:58Z"},' \
+      '{"name":"gate-shards (1)","started_at":"2026-10-21T17:05:05Z","completed_at":"2026-10-21T17:40:00Z"},' \
+      '{"name":"gate-shards (2)","started_at":"2026-10-21T17:30:05Z","completed_at":"2026-10-21T17:46:00Z"},' \
+      '{"name":"gate-report","started_at":"2026-10-21T17:46:43Z","completed_at":null}]}' > "$T/stub/jobs.json"
+    out=$(GITHUB_RUN_ATTEMPT=2 wall 2>&1); rc=$?
+    if [ "$rc" = "0" ] && printf '%s\n' "$out" | grep -q '^gate-wall: raw=- path=- queued=- overlap=- ' \
+       && printf '%s\n' "$out" | grep -q '^::notice::.*실패한 잡만 다시 돌린 시도' && ! printf '%s\n' "$out" | grep -q '::warning::'; then
+      ok "앞 시도에서 넘어온 잡이 있는 시도는 raw·path·queued·overlap 을 - 로 적고 종료 0"
+    else
+      bad "부분 재실행 시도" "rc=$rc $out"
+    fi
+    printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:04:45Z"}\n' > "$T/stub/attempt.json"
     rm -f "$T/stub/jobs.json"
     out=$(wall 2>&1); rc=$?
     if [ "$rc" = "0" ] && printf '%s\n' "$out" | grep -q '^gate-wall: raw=2529 path=- queued=- overlap=- ' && printf '%s\n' "$out" | grep -q '^::notice::.*jobs API'; then
@@ -511,8 +539,8 @@ STUB
   rm -rf "$T"
   printf 'ci-duration self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 22 ]; then
-    printf 'ci-duration self-test: 통과 수 %d 가 하한 22 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 23 ]; then
+    printf 'ci-duration self-test: 통과 수 %d 가 하한 23 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
