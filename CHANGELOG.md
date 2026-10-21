@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.97.0] - 2026-10-21
+## [2.98.0] - 2026-10-21
 
 무인 스테이지가 받는 개인 규칙을 저장소의 원천 표가 아니라 사람이 전역 CLAUDE.md 불릿에 단 태그로 정한다(#1351, #1361). `[무인] ` 을 단 불릿은 모든 무인 스테이지에 닿고, `[대화형] ` 을 단 불릿과 태그 없는 불릿은 닿지 않는다. 런 개시에 그 블록을 한 번 스냅숏으로 떠서 런의 모든 스테이지 지침이 같은 블록을 받는다. 태그가 하나도 없는 호스트는 오늘과 바이트 같은 동결 v6 정책을 받는다.
 
@@ -41,6 +41,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 4. `~/.config/cc-cmds/stage-policy-sources` 에 작업공간 지침 파일을 빼는 줄 `workspace<TAB><절대 경로>` 를 더한다.
 5. `stage-rules.sh status` 로 태그별 개수(태그 없음 0)와 호스트 맵 항목을 확인한다.
 6. 확인 저장소 디렉터리 `~/.config/cc-cmds/stage-policy-ack` 를 `stage-policy-ack.retired` 로 이름을 바꾼다. 4 의 맵 줄을 더한 뒤에 한다.
+
+## [2.97.0] - 2026-10-20
+
+리뷰 사이클 원인 측정기(`orchestrator/measure-cycle-causes.sh`)가 게이트가 `cycle` 행에 새로 적는 필드를 정본으로 읽는다. 다른 레포 세그먼트의 리뷰 HEAD 도 그 레포에서 찾는다. 옛 리포트의 `### P1-<n>` 머리 항목은 머리마다 한 개로 센다. 새 필드가 없는 옛 원장은 지금까지의 추론 규칙 그대로 읽는다.
+
+### Added
+
+- **`cycle` 행의 새 필드 판독** — `계기`·`수정 경로`·`앞 HEAD`·`리뷰 HEAD 고정`·`리포트 형식`·`항목` 이 있으면 그 값을 정본으로 쓴다. 사이클마다 `trigger_source`·`fix_path_source`(`recorded`·`inferred`)와 `fix_paths`·`prev_head`·`head_pin`·`report_format` 을 싣는다. 레포마다 기록·추론 건수(`sources`)와 `해소 리뷰` 계기를 `앞 HEAD` 값으로 나눈 `resolve_by_prev_head` 를 내고, 표의 계기 절과 교차 절에 그 줄을 보인다.
+- **`--repo <owner/name>=<경로>` 지도** — 세그먼트 행의 `레포` 를 git 조회 위치로 잇는다. 지도에 없는 다른 레포 세그먼트는 객체를 찾지 못한 사유를 `HEAD 없음` 대신 `레포 미지정` 으로 낸다. 키 꼴이 틀리면 종료 코드 2, 경로가 디렉터리가 아니면 3 이다.
+- **판정 불가 사유 `고정 ref 삭제`** — 행이 리뷰 HEAD 를 고정했다고 적었는데 그 객체가 없을 때.
+- **`라우터 판단` 사유** — 리뷰 파견 행 `근거` 머리의 `계기 사유` 를 그 사이클에 `router_reason` 으로 붙인다. 레포마다 `router_reasons` 목록을 내고 표에 「2c. 라우터 판단 사유」 절을 둔다.
+- **리포트 상태 목록 세 키** — `path_reuse`(판독 불가(경로 재사용)), `format_mismatch_recorded`(형식 불일치(기록)), `gate_tool_gap`(gate·도구 판독 차이).
+- **시험** — `scripts/test-measure-cycle-causes.sh` 9–16절(새 필드 행, 옛 행, 머리 셈, 경로 재사용, 레포 지도, 고정 ref 삭제, 라우터 판단 사유, 판독 차이).
+
+### Changed
+
+- **JSON 판 `cc-cycle-causes v2`** — 발견 객체에 `run`·`segment`·`repo` 를 싣는다.
+- **항목 세기** — P0·P1 절에 `### P[01]-<n>` 머리가 있으면 머리마다 한 항목이고, 머리 아래 불릿은 세지 않는다. 머리가 없는 절은 지금처럼 0열 `- **[` 불릿을 센다.
+- **경로 재사용** — `리포트 형식` 이 없는 옛 행끼리, 한 세그먼트에서 같은 리포트 경로가 다른 리뷰 HEAD 로 다시 쓰이면 앞 행의 리포트를 판독 불가로 두고 발견을 내지 않는다.
+
+포함 커밋:
+
+- feat(orchestrator): 측정기가 새 cycle 필드·옛 머리 항목·세그먼트 레포를 읽는다
 
 ## [2.96.0] - 2026-10-20
 
