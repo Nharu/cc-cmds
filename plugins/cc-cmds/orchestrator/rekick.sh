@@ -17,6 +17,14 @@
 # authorization record and interview record is of such a copy — so the bytes it
 # measured are the bytes it reads.
 #
+# `adopt`, `render-manifest` AND `verify-subset` READ THE DISK AND THE REMOTE.
+# Whether an unlanded segment of the previous run may be adopted is read at the
+# call: the segment's worktree and its git state on this machine, and its branch
+# tip and pull request on GitHub, with the credentials of the calling shell.
+# Those reads change nothing either — every git read here is
+# `git --no-optional-locks`, and no gate function that writes a ledger row is
+# called — so the sentence above stays true. `detect` reads no network.
+#
 # ONLY THE KICKOFF AND THE SEAT CALL THIS. Inside a pipeline run
 # (`CC_PIPELINE_RUN_ID`, `CC_PIPELINE_STAGE_ID`, `CC_PIPELINE_SHIFT_ID` or
 # `CC_PIPELINE_REENTRY` set) every mode, `judge` included, refuses with exit 3
@@ -60,7 +68,8 @@
 #                             --deadline <ISO8601> --expect-sha256 <hex> --expect-grant-sha256 <hex>
 #                             [--arg <인자>] [--asked <TSV>] [--visual-marker <값>]
 #                             [--targets <파일>] [--rows <파일>] [--rule <키>=<켬|끔>]…
-#                             [--bind-base <hex>] [--set <범위>:<키>=<값>]… [--auto]
+#                             [--bind-base <hex>] [--set <범위>:<키>=<값>]… [--auto] [--no-adopt]
+#   rekick.sh adopt --prev <id> --base <base> --expect-sha256 <hex> [--targets <파일>] [--auto]
 #   rekick.sh render-interview --prev <id> --base <base> [--expect-sha256 <hex>]
 #   rekick.sh verify-subset <초안> <이전 매니페스트> --expect-sha256 <hex>
 #                           --expect-grant-sha256 <hex> --asked <TSV> [--grant <블록 파일>]
@@ -84,6 +93,22 @@
 # the previous `재킥오프` row byte for byte, and a deadline that keeps either
 # the previous interval or the consent row's `길이` from the draft's kickoff.
 # Without `--auto` nothing of this changes: the four-field row only.
+#
+# `adopt` lists, for each segment of the previous run the gate's landing walk
+# finds unlanded, whether this re-kickoff may adopt it: `입양후보` with the
+# branch, worktree, pull request and head the adoption row will carry, or
+# `입양불가` with the first condition that failed. The conditions are read in a
+# fixed order — the ledger and the frozen document first, then the worktree,
+# the remote tip, the pull request, and the gate's own planning-time adoption
+# and halt-answer checks — and are the same for a person and the seat, except
+# that the seat (`--auto`) does not adopt a segment whose last row is a `park`
+# it never landed from. `render-manifest` writes a `세그먼트 입양` row inside
+# `## 인가` for each candidate a person answered `이어받기` (`--asked` key
+# `입양 <세그먼트>`), or under `--auto` for every candidate; it never copies the
+# previous run's own adoption rows, and `--no-adopt` writes none. `verify-subset`
+# derives the candidates again on the same branch and checks the rows against
+# them (check `입양`). `detect` reads the ledger only and says, per unlanded
+# segment, whether it is a candidate or why it is not.
 #
 # `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
 # is that row's scope (`런`, or a target named by its alias or by the remote
@@ -140,11 +165,24 @@
 #                  그래프  순수 | 바뀜  <사유>
 #   verify-subset  검사  <이름>  통과|실패  <사유>
 #                  판정  통과|실패  [<실패한 검사, …>]
+#   adopt          입양후보  <세그먼트>  <브랜치>  <워크트리>  <PR 번호>  <HEAD 40자>  [<꼬리 칸>…]
+#                  입양불가  <세그먼트>  <PR 번호|->  <사유 토큰>
+#
+# An `입양후보` line's tail cells, each only when it applies and in this order:
+# `마지막행=park` (a person's branch, the segment's last row is `park`), then
+# one `원인=<행 종류>:<원장 줄>` per cause row the ledger holds for that park
+# (`원인=없음` when none), `중단기록=<기록 이름,…>` (the previous run's
+# unanswered halt records of that segment) and `이월=재수렴` (the gate would
+# carry a `재수렴` answer into the new run). The reason tokens: park,
+# 설계재실행, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
+# 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
+# 라이브, 원장없음, 중단답이월불가, and 판정불가 when the gate child could
+# not answer.
 #
 # The `--asked` file lists the questions this re-kickoff actually asked, one
 # `<키><TAB><답 축자>` per line. The keys the checks read: `대상확인 <별칭>`,
 # `대상추가 <별칭>`, `5p`, `5q`, `5e`, `5e 값`, `5l`, `5o <범위>:<키>`,
-# `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`. Any other key covers
+# `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`, `입양 <세그먼트>`. Any other key covers
 # nothing, and every answer, whatever its key, must stand verbatim in the
 # draft's `사용자 확인 문면`. `5e` is the person's answer as given — a relative
 # form such as `+8h` included — and `5e 값` the absolute instant the kickoff
@@ -154,8 +192,9 @@
 # Exit codes: 0 read (a `verify` or `verify-subset` that passed) · 1 a check
 # failed (`verify`, `verify-subset`, `render-interview`, a hash that does not
 # match) · 2 usage · 3 refused (inside a run, or a `render-manifest --auto`
-# link the chain or the graph does not allow) or the driver's vocabulary could not be read. On 2 and 3, and on 1 from `render-manifest`, `render-interview`
-# and `graph`, stdout is empty and stderr carries one line.
+# link the chain or the graph does not allow) or the driver's vocabulary could not be read. On 2 and 3, and on 1 from `render-manifest`, `render-interview`,
+# `graph` and `adopt`, stdout is empty and stderr carries one line. `adopt` exits
+# 0 when it lists no candidate.
 #
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`. Time is
 # computed with jq only.
@@ -184,7 +223,7 @@ RK_MODE="${1:-}"
 RK_ARG=""; RK_ARG_GIVEN=0; RK_PREV=""; RK_BASE=""; RK_XSHA=""; RK_XGSHA=""
 RK_ACCEPTED=""; RK_NEWID=""; RK_KAT=""; RK_DEADLINE=""; RK_ASKED=""
 RK_VISUAL=""; RK_TARGETS=""; RK_ROWS=""; RK_RULES=""; RK_BIND=""; RK_GRANT_BLOCK=""
-RK_POS1=""; RK_POS2=""; RK_SETS=""; RK_BLANKS=""; RK_AUTO=0
+RK_POS1=""; RK_POS2=""; RK_SETS=""; RK_BLANKS=""; RK_AUTO=0; RK_NOADOPT=0
 
 rk_need() { [ $# -ge 2 ] || rk_usage "$1 에 값이 없습니다"; }
 while [ $# -gt 0 ]; do
@@ -213,7 +252,8 @@ while [ $# -gt 0 ]; do
     --grant)               rk_need "$@"; RK_GRANT_BLOCK="$2"; shift 2 ;;
     --blank-rows)          rk_need "$@"; RK_BLANKS="$2"; shift 2 ;;
     --auto)                RK_AUTO=1; shift ;;
-    --set)                 rk_need "$@"
+    --no-adopt)            RK_NOADOPT=1; shift ;;
+    --set)               rk_need "$@"
                            case "$2" in
                              *"$(printf '\t')"*|*'
 '*) rk_usage "--set 값에 탭이나 줄바꿈이 있습니다" ;;
@@ -263,13 +303,17 @@ case "$RK_MODE" in
     rk_hex64 "$RK_XSHA" || rk_usage "--expect-sha256 은 64자리 소문자 16진수입니다"
     rk_hex64 "$RK_XGSHA" || rk_usage "--expect-grant-sha256 은 64자리 소문자 16진수입니다"
     [ -n "$RK_ASKED" ] || rk_usage "verify-subset 에는 --asked 가 필요합니다 (물은 것이 없으면 빈 파일)" ;;
-  '') rk_usage "모드가 없습니다 — detect | judge | verify | graph | render-manifest | render-interview | verify-subset" ;;
+  adopt)
+    rk_need_prev
+    rk_hex64 "$RK_XSHA" || rk_usage "--expect-sha256 은 64자리 소문자 16진수입니다" ;;
+  '') rk_usage "모드가 없습니다 — detect | judge | verify | graph | render-manifest | render-interview | verify-subset | adopt" ;;
   *)  rk_usage "알 수 없는 모드입니다: $RK_MODE" ;;
 esac
+[ "$RK_NOADOPT" = "0" ] || [ "$RK_MODE" = "render-manifest" ] || rk_usage "--no-adopt 는 render-manifest 에만 씁니다"
 if [ "$RK_AUTO" = "1" ]; then
   case "$RK_MODE" in
-    render-manifest|verify-subset) ;;
-    *) rk_usage "--auto 는 render-manifest 와 verify-subset 에만 씁니다" ;;
+    render-manifest|verify-subset|adopt) ;;
+    *) rk_usage "--auto 는 render-manifest·verify-subset·adopt 에만 씁니다" ;;
   esac
   [ -z "$RK_SETS" ] || rk_usage "--auto 에는 --set 을 넘기지 않습니다 — 좌석은 빈칸을 이전 값 그대로 둡니다"
   [ -z "$RK_ACCEPTED" ] || rk_usage "--auto 에는 --accepted 를 넘기지 않습니다 — 좌석은 대상을 더하지 않습니다"
@@ -296,7 +340,7 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
-            dr_duration_seconds manifest_rekick_rows; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
+            dr_duration_seconds manifest_rekick_rows manifest_adoption_rows slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
 done
 
 RK_TMP=$(mktemp -d "${TMPDIR:-/tmp}/cc-rekick.XXXXXX" 2>/dev/null) || rk_refuse "개인 임시 디렉터리를 만들지 못했습니다"
@@ -385,14 +429,37 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# The gate child. rk_gate <ended|grant> <manifest> <run id> <run dir> <ledger>
-# <grant> <stderr file> — prints one fixed token.
+# The gate child. rk_gate <mode> <manifest> <run id> <run dir> <ledger> <grant>
+# <stderr file> [<value>…] — prints one fixed token, or one value of a fixed
+# shape.
+#
+#   ended · grant                     끝남|안끝남 · 통과|실패
+#   landed <seg>                      착지됨|미착지 — the gate's landing walk
+#                                     over the ledger's rows of that id
+#   adopt-check <seg> <alias> <row>   통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨
+#                                     — the planning-time adoption check, its
+#                                     warning mapped to a token
+#   halt-source <seg>                 이월|없음|불가 — the halt-answer carry check
+#   tip-of <dir> <slug> <branch>      <40 hex>|없음|미상
+#   pr-of <dir> <slug> <branch> <head>
+#                                     <번호>\t<OPEN|MERGED>\t<40 hex>, or the
+#                                     three cells all 없음, 불일치 or 미상
+#   pr-view <번호> <slug>             <state>\t<head branch>\t<head 40 hex>\t
+#                                     <true|false>\t<owner>\t<base branch>, or 미상
+#
+# The context is the caller's to choose and the gate functions trust it: for
+# `adopt-check` and `halt-source` the manifest is a private copy holding only
+# the candidate's adoption row, and the run id, run directory, ledger and grant
+# are the previous run's. Nothing outside a mode's tokens or shape passes: a
+# token mode gives 판정불가, a value mode 미상. No mode calls a gate function
+# that writes a ledger row.
 # ---------------------------------------------------------------------------
 rk_gate() {
-  local g="$RK_DIR/gate.sh" out
-  [ -r "$g" ] || { printf '판정불가'; return 0; }
-  out=$(CC_GATE_SOURCE_ONLY=1 bash -c '
+  local g="$RK_DIR/gate.sh" out='' mode="$1" a b c x
+  [ -r "$g" ] && out=$(CC_GATE_SOURCE_ONLY=1 bash -c '
     g=$1; mode=$2; mf=$3; rid=$4; rd=$5; led=$6; gr=$7; err=$8
+    shift 8
+    a1=${1:-}; a2=${2:-}; a3=${3:-}; a4=${4:-}
     set --
     . "$g" >/dev/null 2>&1 || { printf "판정불가"; exit 0; }
     set +e
@@ -409,12 +476,85 @@ rk_gate() {
       grant)
         gate_check_grant 2>"$err" || rc=$?
         if [ "$rc" = "0" ]; then printf "통과"; else printf "실패"; fi ;;
+      landed)
+        if gate_landing_walk gate_adoption_row_landed <<ROWS
+$( { grep -E "^- \`segment\` " "$led" 2>/dev/null || true; } | { grep -F "| id=$a1 |" || true; })
+ROWS
+        then printf "착지됨"; else printf "미착지"; fi ;;
+      adopt-check)
+        gate_adoption_check "$a1" "$a2" "$a3" 2>"$err" || rc=$?
+        if [ "$rc" = "0" ]; then printf "통과"; exit 0; fi
+        w=$(cat "$err" 2>/dev/null)
+        case "$w" in
+          *"의 출처 런 원장이 없습니다"*) printf "원장없음" ;;
+          *"착지한 세그먼트는 입양하지 않습니다"*) printf "착지됨" ;;
+          *"의 스테이지가 아직 살아 있습니다"*) printf "라이브" ;;
+          *"체크아웃된 브랜치가"*) printf "브랜치다름" ;;
+          *"의 워크트리가 없습니다"*|*"의 레포가 아닙니다"*) printf "워크트리없음" ;;
+          *) printf "판정불가" ;;
+        esac ;;
+      halt-source)
+        gate_adoption_halt_source "$a1" 2>"$err" || rc=$?
+        case "$rc" in 0) printf "이월" ;; 1) printf "없음" ;; 2) printf "불가" ;; *) printf "판정불가" ;; esac ;;
+      tip-of)
+        gate_remote_tip_of "$a2" "$a3" "$a1" 2>"$err" ;;
+      pr-of)
+        gate_remote_pr_of "$a2" "$a3" "$a1" "$a4" 2>"$err" ;;
+      pr-view)
+        gh=$(gate_remote_gh)
+        json=$(GH_PROMPT_DISABLED=1 "$gh" pr view "$a1" -R "$a2" \
+                 --json state,headRefName,headRefOid,isCrossRepository,headRepositoryOwner,baseRefName 2>"$err") \
+          || { printf "미상"; exit 0; }
+        printf "%s" "$json" | jq -r "
+          if type != \"object\" then \"미상\" else
+            [ (.state // \"\" | tostring), (.headRefName // \"\" | tostring), (.headRefOid // \"\" | tostring),
+              (.isCrossRepository | tostring),
+              (.headRepositoryOwner | if type == \"object\" then (.login // \"\") else (. // \"\" | tostring) end),
+              (.baseRefName // \"\" | tostring) ] | join(\"\t\")
+          end" 2>/dev/null || printf "미상" ;;
     esac
-  ' _ "$g" "$1" "$2" "$3" "$4" "$5" "$6" "$7" 2>/dev/null)
-  case "$out" in
-    끝남|안끝남|통과|실패) printf '%s' "$out" ;;
-    *) printf '판정불가' ;;
+  ' _ "$g" "$@" 2>/dev/null)
+  case "$mode" in
+    ended|grant)
+      case "$out" in 끝남|안끝남|통과|실패) ;; *) out='판정불가' ;; esac ;;
+    landed)
+      case "$out" in 착지됨|미착지) ;; *) out='판정불가' ;; esac ;;
+    adopt-check)
+      case "$out" in 통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨) ;; *) out='판정불가' ;; esac ;;
+    halt-source)
+      case "$out" in 이월|없음|불가) ;; *) out='판정불가' ;; esac ;;
+    tip-of)
+      case "$out" in 없음|미상) ;; *) rk_sha40 "$out" || out='미상' ;; esac ;;
+    pr-of)
+      IFS="$TAB" read -r a b c x <<EOF
+$out
+EOF
+      if [ -n "$x" ]; then out="미상${TAB}미상${TAB}미상"
+      elif [ "$a" = "$b" ] && [ "$b" = "$c" ] && { [ "$a" = 없음 ] || [ "$a" = 불일치 ] || [ "$a" = 미상 ]; }; then :
+      elif rk_num "$a" && { [ "$b" = OPEN ] || [ "$b" = MERGED ]; } && rk_sha40 "$c"; then :
+      else out="미상${TAB}미상${TAB}미상"; fi ;;
+    pr-view)
+      rk_prview_ok "$out" || out='미상' ;;
+    *) out='판정불가' ;;
   esac
+  printf '%s' "$out"
+}
+
+rk_num() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
+rk_sha40() { case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = "40" ]; }
+# rk_prview_ok <line> — six TAB cells: a state word, a branch, a 40-hex head,
+# true|false, an owner and a base branch, none empty and none with a space.
+rk_prview_ok() {
+  local s br h cr ow bs x
+  case "$1" in *' '*|'') return 1 ;; esac
+  IFS="$TAB" read -r s br h cr ow bs x <<EOF
+$1
+EOF
+  [ -z "$x" ] && [ -n "$bs" ] && [ -n "$br" ] && [ -n "$ow" ] || return 1
+  case "$s" in *[!A-Z]*) return 1 ;; esac
+  rk_sha40 "$h" || return 1
+  case "$cr" in true|false) return 0 ;; esac
+  return 1
 }
 
 # rk_end_mark <stderr file> — the mark between the gate's fixed prefix and fixed
@@ -502,6 +642,270 @@ rk_invalidated() {
 # rk_gate_ended <stderr file> — 끝남 | 안끝남 | 판정불가, the gate's own word.
 rk_gate_ended() {
   rk_gate ended "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$1"
+}
+
+# ---------------------------------------------------------------------------
+# Adoption — which unlanded segments of the previous run (RK_PREV / RK_BASE,
+# MANIFEST its private copy, RK_PL its ledger, RK_PRD its run directory) the new
+# run may adopt. One function decides, for `adopt`, `render-manifest`,
+# `verify-subset` and, through its offline layer only, `detect`.
+# ---------------------------------------------------------------------------
+
+# rk_adopt_row <segment> <branch> <worktree> <PR> — the `세그먼트 입양` row,
+# naming the previous run as its source.
+rk_adopt_row() {
+  printf -- '- `세그먼트 입양` | 세그먼트=%s | 브랜치=%s | 워크트리=%s | 출처 런=%s | PR=%s' "$1" "$2" "$3" "$RK_PREV" "$4"
+}
+
+# rk_adopt_take_label / rk_adopt_redo_label <segment> <PR> [<branch> <head>] —
+# the two answers a person may give to the adoption question.
+rk_adopt_take_label() { printf '이어받기 — %s · PR #%s · %s · %s' "$1" "$2" "$3" "$(printf '%s' "$4" | cut -c1-12)"; }
+rk_adopt_redo_label() { printf '다시 하기 — %s · PR #%s' "$1" "$2"; }
+
+# rk_ledger_seg_rows <key> — the ledger's `segment` rows of that id, in order.
+rk_ledger_seg_rows() {
+  { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| id=$1 |" || true; }
+}
+
+# rk_rows_last_field <rows> <field> — the last non-empty value of that field.
+rk_rows_last_field() {
+  local row v hit=""
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    v=$(manifest_row_fields "$row" "$2" | head -n 1)
+    [ -n "$v" ] && hit=$v
+  done <<EOF
+$1
+EOF
+  printf '%s' "$hit"
+}
+
+# rk_adopt_manifest <row> <out> — the current MANIFEST with every
+# `세그먼트 입양` row removed and this one row written at the end of `## 인가`.
+# A source that adopted the segment itself carries its own adoption row, and
+# the gate reads the first row of a segment only, so the old one must go.
+rk_adopt_manifest() {
+  ( umask 077; RA_ROW="$1" awk '
+      function put() { if (!done && sec == "## 인가") { print ENVIRON["RA_ROW"]; done = 1 } }
+      /^- `세그먼트 입양`/ { next }
+      /^## / { put(); for (i = 1; i <= nb; i++) print ""; nb = 0; sec = $0; print; next }
+      /^$/ { nb++; next }
+      { for (i = 1; i <= nb; i++) print ""; nb = 0; print }
+      END { put(); for (i = 1; i <= nb; i++) print "" }
+    ' "$MANIFEST" > "$2" ) 2>/dev/null || return 1
+  chmod 600 "$2" 2>/dev/null
+}
+
+# rk_adopt_causes <key> — the cause cells of a parked segment: one
+# `원인=<행 종류>:<줄>` per `blocked` row anchored on it, `중단 답` row
+# answering `세그먼트 park` on it, and `자율 승인` row consuming a refusal on
+# it, in ledger order; `원인=없음` when there is none.
+rk_adopt_causes() {
+  local out
+  out=$(RC_K="$1" awk '
+    function fld(name,   n, i, a, s) {
+      n = split($0, a, / \| /)
+      for (i = 2; i <= n; i++) { s = a[i]; sub(/[[:space:]]+$/, "", s); if (s == name) return 1 }
+      return 0
+    }
+    index($0, "- `blocked` | ") == 1 && fld("앵커 세그먼트=" ENVIRON["RC_K"]) { printf "\t원인=blocked:%d", NR }
+    index($0, "- `중단 답` | ") == 1 && fld("세그먼트=" ENVIRON["RC_K"]) && fld("선택지=세그먼트 park") { printf "\t원인=중단 답:%d", NR }
+    index($0, "- `자율 승인` | ") == 1 && fld("세그먼트=" ENVIRON["RC_K"]) && fld("결정=거절 소비") { printf "\t원인=자율 승인:%d", NR }
+  ' "$RK_PL" 2>/dev/null)
+  [ -n "$out" ] || out="${TAB}원인=없음"
+  printf '%s' "$out"
+}
+
+# rk_adopt_halts <key> — the previous run's unanswered halt records whose stage
+# the ledger's `stage-result` rows put on this segment, comma-joined. A record
+# whose stage no row names stays with the run-wide count only.
+rk_adopt_halts() {
+  local name stage seg hits="" rest
+  rk_unanswered_halt_names "$RK_PRD" "$RK_PL"
+  rest="$RK_HALT_LIST"
+  while [ -n "$rest" ]; do
+    name=${rest%%, *}
+    case "$rest" in *', '*) rest=${rest#*, } ;; *) rest='' ;; esac
+    case "$name" in shift/*|'') continue ;; esac
+    stage=${name%.md}; stage=${stage%%#*}
+    seg=$(rk_rows_last_field "$( { grep -E '^- `stage-result` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| 스테이지=$stage |" || true; })" '세그먼트')
+    [ "$seg" = "$1" ] && hits="${hits:+$hits,}$name"
+  done
+  printf '%s' "$hits"
+}
+
+# rk_adopt_candidates <target rows> <full|offline> — one line per segment of the
+# previous ledger the gate's landing walk finds unlanded:
+#   입양후보<TAB><seg><TAB><B><TAB><W><TAB><PR><TAB><HEAD>[<TAB><꼬리>…]
+#   입양불가<TAB><seg><TAB><PR|-><TAB><사유>
+# `offline` reads the ledger only (conditions 3 and 4) and is what `detect`
+# asks; `full` reads the graph values (G_DESIGN_OUT, G_DOC_SHA, G_PLAN, set
+# before), the worktree and the remote too. The first condition that fails
+# names the reason. RK_AUTO selects the seat's branch.
+rk_adopt_candidates() {
+  local trows="$1" layer="$2" key keys rows last W B anchor n h wh rt ph ab slug al row tal
+  local cg tcg tbase cur hd st tip prl pn ps ph2 pv vs vb vh vc vo vbase tail tok mcopy err doc docf dcopy first pre halts
+  keys=$( { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | while IFS= read -r row; do manifest_row_fields "$row" 'id' | head -n 1; printf '\n'; done | awk 'NF && !seen[$0]++')
+  err="$RK_TMP/adopt.err"
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    [ "$(rk_gate landed "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$key")" = "미착지" ] || continue
+    rows=$(rk_ledger_seg_rows "$key")
+    last=$(printf '%s\n' "$rows" | tail -n 1)
+    anchor=$( { grep -E '^- `원격 판독` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| 세그먼트=$key |" || true; } \
+              | { grep -vF '| 원격 팁=미상 |' || true; } | tail -n 1)
+    n=$(manifest_row_fields "$anchor" 'PR' | head -n 1)
+    rk_num "$n" || n=$(rk_rows_last_field "$rows" 'PR')
+    rk_num "$n" || n='-'
+    tok=''
+    # 1 — the seat does not adopt a segment it last parked.
+    if [ "$layer" = "full" ] && [ "$RK_AUTO" = "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
+      tok='park'
+    fi
+    # 2 — the new run plans no design step, and the key is a slice of the frozen
+    # document the graph measured (or the plan's implement step, with no
+    # slicing section).
+    if [ -z "$tok" ] && [ "$layer" = "full" ]; then
+      if [ "$G_DESIGN_OUT" != "1" ]; then tok='설계재실행'
+      else
+        doc=$(manifest_field '요소' '설계 문서'); docf="$RK_BASE/$doc"
+        dcopy=$(rk_copy "$docf" adopt-doc.md) || dcopy=''
+        if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_SHA" ]; then tok='설계재실행'
+        elif grep -qxF '## 구현 슬라이싱' "$dcopy"; then
+          slice_ids "$dcopy" | grep -qxF -- "$key" || tok='슬라이스다름'
+        else
+          first=$(printf '%s' "$G_PLAN" | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id // empty][0] // empty' 2>/dev/null)
+          [ -n "$first" ] && [ "$first" = "$key" ] || tok='슬라이스다름'
+        fi
+      fi
+    fi
+    # 3 — the worktree and branch the segment's rows recorded.
+    W=$(rk_rows_last_field "$rows" '워크트리')
+    B=$(rk_rows_last_field "$rows" '브랜치')
+    ab=$(manifest_row_fields "$anchor" '브랜치' | head -n 1)
+    [ -n "$B" ] || B=$ab
+    [ -n "$tok" ] || [ -n "$W" ] || tok='워크트리없음'
+    # 4 — the anchor: the gate's last readable `원격 판독` row of that key.
+    if [ -z "$tok" ]; then
+      wh=$(manifest_row_fields "$anchor" '워크트리 HEAD' | head -n 1)
+      rt=$(manifest_row_fields "$anchor" '원격 팁' | head -n 1)
+      ph=$(manifest_row_fields "$anchor" 'PR HEAD' | head -n 1)
+      if [ -z "$anchor" ] || ! rk_num "$(manifest_row_fields "$anchor" 'PR' | head -n 1)"; then tok='PR기록없음'
+      elif [ "$(manifest_row_fields "$anchor" 'PR 상태' | head -n 1)" != "OPEN" ]; then tok='PR닫힘'
+      elif ! rk_sha40 "$wh" || [ "$wh" != "$rt" ] || [ "$wh" != "$ph" ]; then tok='HEAD불일치'
+      elif [ "$ab" != "$B" ]; then tok='브랜치다름'
+      fi
+    fi
+    h=$wh
+    if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s\n' "$key" "$n" "$tok"; continue; fi
+    if [ "$layer" != "full" ]; then printf '입양후보\t%s\t%s\t%s\t%s\t%s\n' "$key" "$B" "$W" "$n" "$h"; continue; fi
+
+    # 5 — the worktree belongs to the segment's target and has B checked out.
+    slug=$(rk_rows_last_field "$rows" '레포')
+    al=''; tcg=''; tbase=''
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      [ -n "$slug" ] && [ "$(manifest_row_fields "$row" '원격 슬러그' | head -n 1)" = "$slug" ] || continue
+      al=$(manifest_row_fields "$row" '별칭' | head -n 1)
+      tcg=$(manifest_row_fields "$row" '공통 git 디렉터리' | head -n 1)
+      tbase=$(manifest_row_fields "$row" '베이스 브랜치' | head -n 1)
+      break
+    done <<EOF
+$trows
+EOF
+    cg=''; cur=''; hd=''; st=''
+    if [ -d "$W" ]; then
+      cg=$( { cd "$W" && git --no-optional-locks rev-parse --path-format=absolute --git-common-dir; } 2>/dev/null)
+      cur=$( { cd "$W" && git --no-optional-locks symbolic-ref --quiet --short HEAD; } 2>/dev/null)
+      hd=$( { cd "$W" && git --no-optional-locks rev-parse HEAD; } 2>/dev/null)
+      st=$( { cd "$W" && git --no-optional-locks status --porcelain --untracked-files=all; } 2>/dev/null || printf '읽지 못함')
+    fi
+    if [ -z "$al" ] || [ ! -d "$W" ] || [ -z "$cg" ] || [ "$cg" != "$tcg" ]; then tok='워크트리없음'
+    elif [ "$cur" != "$B" ]; then tok='브랜치다름'
+    # 6 — its HEAD is the anchor's, and nothing is uncommitted.
+    elif [ "$hd" != "$h" ]; then tok='HEAD불일치'
+    elif [ -n "$st" ]; then tok='작업트리변경'
+    fi
+    # 7 — the remote tip of B.
+    if [ -z "$tok" ]; then
+      tip=$(rk_gate tip-of "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$W" "$slug" "$B")
+      case "$tip" in
+        미상) tok='PR판독불가' ;;
+        "$h") ;;
+        *) tok='HEAD불일치' ;;
+      esac
+    fi
+    # 8 — the gate's pull request of B: one open, the anchor's number.
+    if [ -z "$tok" ]; then
+      prl=$(rk_gate pr-of "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$W" "$slug" "$B" "$h")
+      IFS="$TAB" read -r pn ps ph2 <<EOF
+$prl
+EOF
+      case "$pn" in
+        미상) tok='PR판독불가' ;;
+        불일치) tok='PR불일치' ;;
+        없음) tok='PR닫힘' ;;
+        *) if [ "$ps" = "MERGED" ]; then tok='PR닫힘'; elif [ "$pn" != "$n" ]; then tok='PR불일치'; fi ;;
+      esac
+    fi
+    # 9 — the pull request itself: open, from the target's own repository, on
+    # B at h, against the target's base branch.
+    if [ -z "$tok" ]; then
+      pv=$(rk_gate pr-view "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$n" "$slug")
+      if [ "$pv" = "미상" ]; then tok='PR판독불가'
+      else
+        IFS="$TAB" read -r vs vb vh vc vo vbase <<EOF
+$pv
+EOF
+        if [ "$vs" != "OPEN" ]; then tok='PR닫힘'
+        elif [ "$vb" != "$B" ]; then tok='PR불일치'
+        elif [ "$vh" != "$h" ]; then tok='HEAD불일치'
+        elif [ "$vc" != "false" ] || [ "$vo" != "${slug%%/*}" ]; then tok='포크PR'
+        elif [ "$vbase" != "$tbase" ]; then tok='베이스다름'
+        fi
+      fi
+    fi
+    # 10 — the landing walk again, then the gate's planning-time adoption check
+    # on a private copy carrying this one adoption row.
+    row=$(rk_adopt_row "$key" "$B" "$W" "$n")
+    mcopy="$RK_TMP/adopt.$key.plan.md"
+    if [ -z "$tok" ]; then
+      case "$(rk_gate landed "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$key")" in
+        미착지) ;;
+        착지됨) tok='착지됨' ;;
+        *) tok='판정불가' ;;
+      esac
+    fi
+    if [ -z "$tok" ]; then
+      rk_adopt_manifest "$row" "$mcopy" || tok='판정불가'
+    fi
+    if [ -z "$tok" ]; then
+      tal=$(rk_gate adopt-check "$mcopy" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$key" "$al" "$row")
+      [ "$tal" = "통과" ] || tok=$tal
+    fi
+    # 11 — the gate's halt-answer carry check on the same copy.
+    tail=''
+    if [ -z "$tok" ]; then
+      case "$(rk_gate halt-source "$mcopy" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$key")" in
+        불가) tok='중단답이월불가' ;;
+        이월) tail="${TAB}이월=재수렴" ;;
+        없음) ;;
+        *) tok='판정불가' ;;
+      esac
+    fi
+    rm -f "$mcopy"
+    if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s\n' "$key" "$n" "$tok"; continue; fi
+    pre=''
+    if [ "$RK_AUTO" != "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
+      pre="${TAB}마지막행=park$(rk_adopt_causes "$key")"
+    fi
+    halts=$(rk_adopt_halts "$key")
+    [ -z "$halts" ] || pre="${pre}${TAB}중단기록=$halts"
+    printf '입양후보\t%s\t%s\t%s\t%s\t%s%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pre" "$tail"
+  done <<EOF
+$keys
+EOF
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -658,17 +1062,21 @@ EOF
 # rk_detect_tail — the unlanded-work notice and the way out, then exit 0. Every
 # adopting verdict ends with these two lines.
 rk_detect_tail() {
-  # Segments that did not land are done again by the new run.
-  local seg segst segv pr unl=""
-  while IFS="$TAB" read -r seg segst segv; do
-    [ -n "$seg" ] || continue
-    case "$segst" in 머지됨|완료) continue ;; esac
-    pr=$(manifest_row_fields "$(rk_ledger_last "$RK_PL" segment id "$seg")" 'PR' | head -n 1)
-    unl="${unl:+$unl, }$seg${pr:+ PR $pr}"
+  # One line per segment the gate's landing walk finds unlanded, from the
+  # ledger alone: no network is read here, so a segment passing these
+  # conditions is only a candidate the re-kickoff reads again.
+  local kind seg f3 f4 f5 n
+  while IFS="$TAB" read -r kind seg f3 f4 f5 _; do
+    case "$kind" in
+      입양후보)
+        printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 입양 후보입니다 — 재킥오프가 디스크와 원격을 다시 확인합니다\n' "$seg" "$f5" ;;
+      입양불가)
+        n=$f3; [ "$n" != "-" ] || n='없음'
+        printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — 새 런이 그 세그먼트를 다시 하고 옛 PR 은 그대로 둡니다\n' "$seg" "$n" "$f4" ;;
+    esac
   done <<EOF
-$(cc_segment_states "$RK_PL" 2>/dev/null)
+$(rk_adopt_candidates "$(manifest_targets)" offline)
 EOF
-  [ -z "$unl" ] || printf '고지\t이전 런의 머지되지 않은 작업(%s)은 이어받지 않습니다 — 새 런이 그 세그먼트를 다시 합니다\n' "$unl"
   printf '고지\t이어받지 않고 처음부터 묻게 하려면 의도를 적어 다시 부르세요\n'
   exit 0
 }
@@ -1468,7 +1876,7 @@ rk_render() {
   R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
-  R_BIND="$RK_BIND" R_IVPATH="docs/pipeline-run/$newid.interview.md" \
+  R_BIND="$RK_BIND" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" \
   awk '
     function field(line,   p) { p = index(line, "**: "); return substr(line, 3, p - 3) }
     # What a section must still carry is written when it closes, before the
@@ -1481,6 +1889,7 @@ rk_render() {
       }
       if (sec == "## 인가") {
         if (!rows_done && rfile != "") { while ((getline l < rfile) > 0) print l; close(rfile); rows_done = 1 }
+        if (!adopt_done && ENVIRON["R_ADOPT"] != "") { while ((getline l < ENVIRON["R_ADOPT"]) > 0) print l; close(ENVIRON["R_ADOPT"]); adopt_done = 1 }
         if (!prov_done) { print ENVIRON["R_PROV"]; prov_done = 1 }
       }
       if (sec == "## 요소" && ENVIRON["R_DOUT"] == "1" && !docsha_done) {
@@ -1538,6 +1947,10 @@ rk_render() {
     /^$/ { nblank++; next }
     nblank > 0 { flush_blank() }
     /^- `사전 인가` \| 이어받은 런=/ { next }
+    # The adoption rows of the previous run are never carried: an adoption row
+    # of this run is one derived again at this call, written when the section
+    # closes.
+    /^- `세그먼트 입양`/ { next }
     /^- `사전 인가` \| 인터뷰 기록=/ {
       if (ENVIRON["R_DOUT"] == "1") next
       line = $0; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; next
@@ -1740,6 +2153,24 @@ rk_render_manifest() {
     confirm=$(rk_confirm_text)
     approval=$(rk_asked_answer '5l')
     if [ -z "$approval" ]; then approval=$(rk_trim "$RK_ARG"); [ -n "$approval" ] || approval='/cc-cmds:autopilot'; fi
+  fi
+  # The adoption rows, derived again here over the targets the draft carries:
+  # every candidate on the seat's link, and each candidate a person answered
+  # `이어받기` otherwise.
+  if [ "$RK_NOADOPT" != "1" ]; then
+    local trows kind seg cb cw cn ch
+    if [ -n "$RK_TARGETS" ]; then trows=$(grep -E '^- `target`' "$RK_TARGETS" 2>/dev/null || true); else trows=$(manifest_targets); fi
+    RK_ADOPT_ROWS="$RK_TMP/adopt.rows"
+    : > "$RK_ADOPT_ROWS"
+    while IFS="$TAB" read -r kind seg cb cw cn ch _; do
+      [ "$kind" = "입양후보" ] || continue
+      if [ "$RK_AUTO" != "1" ] && [ "$(rk_asked_answer "입양 $seg")" != "$(rk_adopt_take_label "$seg" "$cn" "$cb" "$ch")" ]; then
+        continue
+      fi
+      { rk_adopt_row "$seg" "$cb" "$cw" "$cn"; printf '\n'; } >> "$RK_ADOPT_ROWS"
+    done <<EOF
+$(rk_adopt_candidates "$trows" full)
+EOF
   fi
   rk_render "$RK_TMP/draft.md" "$RK_NEWID" "$RK_KAT" "$RK_DEADLINE" "$confirm" "$approval" "$RK_XSHA" "$RK_XGSHA" \
     || rk_fail "매니페스트 초안을 그리지 못했습니다"
@@ -2132,6 +2563,62 @@ EOF
     vs_check 인가블록 "$why"
   fi
 
+  # 13 — the adoption rows: inside `## 인가`, one per segment, naming the
+  # previous run, and each the row a candidate derived again here, on the same
+  # branch and over the draft's targets, would make. A person answered each
+  # candidate with one of its two labels and the row stands exactly where the
+  # answer took it; the seat asked nothing and wrote a subset of the candidates.
+  local arows ain aout cands akey arow cline cb cw cn ch aans take redo
+  why=""
+  arows=$(MANIFEST="$draft" manifest_adoption_rows)
+  ain=$(awk '/^## / { sec = $0; next } sec == "## 인가" && /^- `세그먼트 입양`/' "$draft")
+  [ "$arows" = "$ain" ] || why="${why:+$why; }## 인가 밖에 세그먼트 입양 행이 있습니다"
+  rk_prev_paths
+  cands=$(MANIFEST="$prev"; rk_graph_compute; rk_adopt_candidates "$(MANIFEST="$draft" manifest_targets)" full)
+  while IFS= read -r arow; do
+    [ -n "$arow" ] || continue
+    akey=$(manifest_row_fields "$arow" '세그먼트' | head -n 1)
+    [ "$(printf '%s\n' "$arows" | { grep -F -- "| 세그먼트=$akey |" || true; } | grep -c .)" = "1" ] \
+      || why="${why:+$why; }세그먼트 $akey 의 입양 행이 하나가 아닙니다"
+    [ "$(manifest_row_fields "$arow" '출처 런' | head -n 1)" = "$pid" ] \
+      || why="${why:+$why; }세그먼트 $akey 의 입양 행이 원천 런 $pid 를 출처로 적지 않습니다"
+    cline=$(printf '%s\n' "$cands" | awk -F '\t' -v k="$akey" '$1 == "입양후보" && $2 == k')
+    if [ -z "$cline" ]; then why="${why:+$why; }세그먼트 $akey 는 지금 다시 유도한 입양 후보가 아닙니다"; continue; fi
+    IFS="$TAB" read -r _ _ cb cw cn ch _ <<EOF
+$cline
+EOF
+    [ "$arow" = "$(RK_PREV=$pid rk_adopt_row "$akey" "$cb" "$cw" "$cn")" ] \
+      || why="${why:+$why; }세그먼트 $akey 의 입양 행이 다시 유도한 행과 다릅니다"
+  done <<EOF
+$arows
+EOF
+  if [ "$RK_AUTO" = "1" ]; then
+    awk -F '\t' '$1 ~ /^입양 / { f = 1 } END { exit !f }' "$RK_ASKED" \
+      && why="${why:+$why; }좌석은 입양을 묻지 않습니다 — --asked 에 입양 키가 있습니다"
+  else
+    while IFS="$TAB" read -r _ akey cb cw cn ch _; do
+      [ -n "$akey" ] || continue
+      take=$(rk_adopt_take_label "$akey" "$cn" "$cb" "$ch"); redo=$(rk_adopt_redo_label "$akey" "$cn")
+      aans=$(rk_asked_answer "입양 $akey")
+      arow=$(printf '%s\n' "$arows" | { grep -F -- "| 세그먼트=$akey |" || true; } | head -n 1)
+      if [ -z "$aans" ]; then why="${why:+$why; }입양 후보 $akey 에 답이 없습니다"
+      elif [ "$aans" = "$take" ]; then [ -n "$arow" ] || why="${why:+$why; }입양 $akey 의 답이 이어받기인데 입양 행이 없습니다"
+      elif [ "$aans" = "$redo" ]; then [ -z "$arow" ] || why="${why:+$why; }입양 $akey 의 답이 다시 하기인데 입양 행이 있습니다"
+      else why="${why:+$why; }입양 $akey 의 답이 두 라벨 어느 것과도 같지 않습니다"
+      fi
+    done <<EOF
+$(printf '%s\n' "$cands" | awk -F '\t' '$1 == "입양후보"')
+EOF
+    while IFS= read -r akey; do
+      [ -n "$akey" ] || continue
+      printf '%s\n' "$cands" | awk -F '\t' -v k="$akey" '$1 == "입양후보" && $2 == k { f = 1 } END { exit !f }' \
+        || why="${why:+$why; }입양 $akey 는 입양 후보가 아닌 세그먼트의 키입니다"
+    done <<EOF
+$(awk -F '\t' '$1 ~ /^입양 / { print substr($1, length("입양 ") + 1) }' "$RK_ASKED" | awk '!seen[$0]++')
+EOF
+  fi
+  vs_check 입양 "$why"
+
   # Last — the previous files measured again, against the provenance row.
   why=""
   [ "$(rk_sha "$RK_POS2")" = "$RK_XSHA" ] || why="${why:+$why; }이전 매니페스트가 바뀌었습니다"
@@ -2143,7 +2630,26 @@ EOF
   exit 1
 }
 
+# ---------------------------------------------------------------------------
+# adopt — the candidate lines, read-only.
+# ---------------------------------------------------------------------------
+rk_adopt() {
+  rk_prev_paths
+  MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_fail "원천 매니페스트를 읽을 수 없습니다: $RK_PM"
+  [ "$(rk_sha "$MANIFEST")" = "$RK_XSHA" ] \
+    || rk_fail "원천 매니페스트가 검증한 해시와 다릅니다 — 검증 뒤에 바뀐 파일은 이어받지 않습니다"
+  rk_graph_compute
+  [ -n "$G_PLAN" ] || rk_fail "원천 매니페스트의 실행 계획을 읽지 못했습니다"
+  local trows
+  if [ -n "$RK_TARGETS" ]; then trows=$(grep -E '^- `target`' "$RK_TARGETS" 2>/dev/null || true); else trows=$(manifest_targets); fi
+  rk_adopt_candidates "$trows" full > "$RK_TMP/adopt.out"
+  printf 'cc-rekick v1\n'
+  cat "$RK_TMP/adopt.out"
+  exit 0
+}
+
 case "$RK_MODE" in
+  adopt)            rk_adopt ;;
   detect)           rk_detect ;;
   judge)            rk_judge ;;
   verify)           rk_verify ;;

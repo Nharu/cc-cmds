@@ -161,7 +161,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `사전 인가` | 형태=clickup-create.py | 사유=<…>   ← 트래커=clickup 일 때
 - `사전 인가` | 형태=clickup-relate.py | 사유=<…>   ← 트래커=clickup 일 때
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
-- `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트나 런 밖에서 사람이 만든 브랜치·PR 을 이어받을 때만(런 밖이면 `출처 런=-`), 세그먼트당 많아야 한 행
+- `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트나 런 밖에서 사람이 만든 브랜치·PR 을 이어받을 때만(런 밖이면 `출처 런=-`), 세그먼트당 많아야 한 행. 재킥오프가 쓰는 행은 사람이 읽어 준 값이 아니라 rekick.sh 가 다시 유도한 값
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 - `적용 프로브 코드` | 불필요=<0–125> | 필요=<0–125> | 프로브 sha256=<64자 소문자 hex>     ← 킥오프 5c 가 기본 0/2 가 아닌 대응을 받았을 때만, 많아야 한 행
 - `재킥오프` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>     ← 킥오프가 묻지 않고 토글 없이 쓰는 한 행
@@ -208,7 +208,9 @@ the base is revised; the design stage re-hashes the file before it spawns anyone
 land** — its branch, its worktree, the run it came from and its pull request. A
 run names its segment branches and worktrees after its own id, so without the
 row a later run could only redo that segment from the base. The row is the
-person's claim, taken at kickoff; the disk is the evidence, read when the segment
+person's claim, taken at kickoff — or, on a re-kickoff, a value `rekick.sh`
+derived again from the source run's ledger, the worktree and the remote, never
+one a person read back; the disk is the evidence, read when the segment
 is planned: the worktree must be the slice target's, carry the declared branch,
 and the earlier run must neither have landed the segment nor still run a stage
 on it. The manifest check reads the row's form only, for the reason it reads the
