@@ -12,9 +12,11 @@
 #
 # The fixture consumers copy the real placement: the sidecar quotes the design
 # literal twice and the audit literal once and does not quote the
-# re-convergence literal, the router shift carries two design copies on one
-# line and the re-convergence literal on another, and the autopilot skill's
-# router reference carries two design copies on one line. The sidecar and both routers also
+# re-convergence literal, the router shift's design-dispatch reference carries
+# two design copies on one line and its refutation-reconverge reference the
+# re-convergence literal, and the autopilot skill's
+# router reference carries two design copies on one line. The sidecar, the
+# shift's split-dispatch reference and the autopilot router reference also
 # carry the base split literal once. `FAIL-consumer-second-copy-same-line`
 # is the case that earns the per-occurrence count its keep: a per-line count
 # stays green when only the second copy on a line changes.
@@ -101,12 +103,13 @@ write_sidecar() {
 
 write_router_shift() {
   # write_router_shift <root> <design-1> <design-2> <reconverge> [<split>]
-  mkdir -p "$1/skills/autopilot-router-shift"
-  {
-    printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3"
-    printf "6. its terminal literal (\`grep -cF '%s' log\`)\n" "$4"
-    printf "7. the split literal \`%s\` in its stream\n" "${5:-$S}"
-  } > "$1/skills/autopilot-router-shift/SKILL.md"
+  # The shift reads each of these branches from its own reference file on
+  # entry, so each literal lives in the file of the branch that matches it.
+  local refs="$1/skills/autopilot-router-shift/references"
+  mkdir -p "$refs"
+  printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3" > "$refs/design-dispatch.md"
+  printf "6. its terminal literal (\`grep -cF '%s' log\`)\n" "$4" > "$refs/refutation-reconverge.md"
+  printf "7. the split literal \`%s\` in its stream\n" "${5:-$S}" > "$refs/split-dispatch.md"
 }
 
 write_autopilot() {
@@ -188,7 +191,7 @@ run_case "FAIL-split-emitter-literal-missing" 1 "$WORK/emit-split-lost" \
 mk_root "$WORK/cons-split-char"
 write_router_shift "$WORK/cons-split-char" "$D" "$D" "$R" "$(one_char "$S")"
 run_case "FAIL-split-consumer-one-char" 1 "$WORK/cons-split-char" \
-  "autopilot-router-shift/SKILL.md" "LIT_SPLIT_TERMINAL"
+  "autopilot-router-shift/references/split-dispatch.md" "LIT_SPLIT_TERMINAL"
 
 # FAIL — an emitter file is gone. Closed failure, not a skip.
 mk_root "$WORK/emit-absent"
@@ -218,9 +221,9 @@ run_case "FAIL-consumer-second-copy-same-line" 1 "$WORK/cons-second" \
 
 # FAIL — a consumer file is gone.
 mk_root "$WORK/cons-absent"
-rm -f "$WORK/cons-absent/skills/autopilot-router-shift/SKILL.md"
+rm -f "$WORK/cons-absent/skills/autopilot-router-shift/references/design-dispatch.md"
 run_case "FAIL-consumer-absent" 1 "$WORK/cons-absent" \
-  "autopilot-router-shift/SKILL.md"
+  "autopilot-router-shift/references/design-dispatch.md"
 
 # FAIL — the source moved and the emitters kept the old text. The consumers
 # follow the new value, so only the emitters are stale: the value the lint
