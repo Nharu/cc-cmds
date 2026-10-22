@@ -229,8 +229,13 @@
 # supplied beyond the option — measured values, a longer instruction. An
 # adopted segment's planning act (`--from-declaration`) writes one more such
 # row itself, carrying `출처 런`/`출처 기록`: the earlier run's open seat answer
-# to an implement-unattended CFI-U3 BT-STOP answered `재수렴`, with the record
-# copied under this run's `halt/` (`gate_adoption_halt_carry`).
+# to an implement-unattended CFI-U3 BT-STOP answered `재수렴`, or an answer the
+# earlier run's ledger names in an `이월` row, with the record copied under this
+# run's `halt/` (`gate_adoption_halt_carry`). A re-kickoff's follow-up run (its
+# manifest's `이어받은 런=` provenance row) brings in the earlier run's `이월`
+# answers of a run-scope step the same way, at the first dispatch of that step
+# (`gate_chain_halt_import`), and refuses that dispatch with 3: the answer goes
+# on through `--carry-answer`.
 #   gate.sh act --kind review-dismiss --target <alias> --segment <id> ... \\
 #               -- 사이클=<n> '리뷰 HEAD=<sha>' 근거=<사람이 한 말의 요약>
 # `review-dismiss` is the seat's alone on the same terms: a person dismisses
@@ -11134,10 +11139,15 @@ gate_adoption_halt_source() {
   # of a session on this run's own `stage-result` rows, the session was born
   # under the earlier run's settings, plugin copy and instruction synthesis,
   # and the plan it would continue lives in the earlier run's directory and
-  # ledger, which this run's stages cannot read. The one answer that needs no
-  # session is an implement stage's binding-tier stop (CFI-U3 BT-STOP) answered
-  # `재수렴`: its route re-converges the document on the record and plans the
-  # segment again from its first process.
+  # ledger, which this run's stages cannot read. Two answers need no session.
+  # An implement stage's binding-tier stop (CFI-U3 BT-STOP) answered `재수렴`:
+  # its route re-converges the document on the record and plans the segment
+  # again from its first process. And an answer the earlier run's ledger names
+  # in an `이월` row (`gate_halt_answer_deferred`): a carry act there found no
+  # room before the deadline and kept the answer for the next run, and only a
+  # halt of the re-entry table is carried that way, so a fresh session of this
+  # run takes it up through this run's own carry act. Any other open answer —
+  # one the earlier run never tried to carry — is warned about and stays.
   #
   # Every guarantee of the seat's own `halt-answer` holds for the copy. The
   # answer must be the seat's — a person's, or the record's recommendation the
@@ -11148,7 +11158,7 @@ gate_adoption_halt_source() {
   # alive on the key, and a record the earlier run already re-converged once
   # does not go to a second re-convergence. The earlier run's document must be
   # this run's, since the record quotes it.
-  local seg="$1" adrow src skey sdir sledger sman lines row ln rec att dig adig opt skill step sdoc doc e
+  local seg="$1" adrow src skey sdir sledger lines row ln rec att opt skill step e
   GATE_CARRY_ROW=''; GATE_CARRY_LINE=''; GATE_CARRY_SRC=''; GATE_CARRY_REC=''; GATE_CARRY_ATT=''; GATE_CARRY_WHY=''
   adrow=$(gate_adoption_row "$seg") || return 1
   src=$(manifest_row_fields "$adrow" '출처 런')
@@ -11175,7 +11185,6 @@ gate_adoption_halt_source() {
   esac
   skill=$(gate_row_field "$row" '스킬')
   opt=$(gate_row_field "$row" '선택지')
-  dig=$(gate_row_field "$row" '기록 다이제스트')
   case "$rec" in
     "$sdir"/halt/*.md) ;;
     *) GATE_CARRY_WHY="중단 기록이 출처 런의 halt 디렉터리 밖에 있습니다: $rec"; return 2 ;;
@@ -11189,49 +11198,18 @@ gate_adoption_halt_source() {
   fi
   step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p')
   step="${step%% — *}"
-  if [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
-     || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; then
-    GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있는 기록에 대한 「재수렴」 답만 세션 없이 이 런에서 수행됩니다"
+  if { [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
+       || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; } \
+     && ! gate_halt_answer_deferred "$sledger" "$ln"; then
+    GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있는 기록에 대한 「재수렴」 답과, 출처 원장의 이월 행이 이름 짓는 답만 이 런으로 이어집니다"
     return 2
   fi
   if cc_stage_is_live "$sdir" "$skey"; then
     GATE_CARRY_WHY="출처 런의 스테이지가 그 키에서 아직 살아 있습니다"
     return 2
   fi
-  local hfirst=''
-  IFS= read -r hfirst < "$rec" || true
-  if [ "${hfirst#<!-- cc-pipeline-halt v1;}" = "$hfirst" ] \
-     || ! grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$rec" \
-     || ! grep -qF -- "- \`$opt\`" "$rec"; then
-    GATE_CARRY_WHY="중단 기록이 완결된 기록이 아니거나 그 선택지를 축자로 싣지 않습니다: $rec"
-    return 2
-  fi
-  case "$dig" in
-    ''|-) GATE_CARRY_WHY="출처 행에 기록 다이제스트가 없어 기록을 대조할 기준이 없습니다"; return 2 ;;
-  esac
-  if [ "$(shasum -a 256 "$rec" | cut -d' ' -f1)" != "$dig" ]; then
-    GATE_CARRY_WHY="중단 기록이 출처 행의 기록 다이제스트와 다릅니다 — 사람이 답한 뒤 기록이 바뀌었습니다: $rec"
-    return 2
-  fi
+  gate_carry_record_whole "$sdir" "$rec" "$row" || return 2
   att=$(gate_row_field "$row" '첨부')
-  if [ -n "$att" ]; then
-    adig=$(gate_row_field "$row" '첨부 다이제스트')
-    case "$att" in
-      "$sdir"/halt/*.md) ;;
-      *) GATE_CARRY_WHY="첨부가 출처 런의 halt 디렉터리 밖에 있습니다: $att"; return 2 ;;
-    esac
-    case "$att" in
-      */../*|*/./*) GATE_CARRY_WHY="첨부 경로에 상대 구간이 있습니다: $att"; return 2 ;;
-    esac
-    if [ ! -s "$att" ] || [ "$(shasum -a 256 "$att" | cut -d' ' -f1)" != "$adig" ]; then
-      GATE_CARRY_WHY="첨부가 없거나 비었거나 출처 행의 첨부 다이제스트와 다릅니다: $att"
-      return 2
-    fi
-    if grep -q '^<!-- cc-pipeline-halt v1' "$att"; then
-      GATE_CARRY_WHY="첨부가 중단 기록 머리를 싣고 있습니다: $att"
-      return 2
-    fi
-  fi
   # ONCE PER RECORD, as the earlier run would have counted it: an earlier
   # `재수렴` answer on the same record followed by a re-convergence of the key.
   for e in $(printf '%s\n' "$lines" | { grep -F "| 중단 기록=$rec |" || true; } \
@@ -11244,15 +11222,72 @@ gate_adoption_halt_source() {
       return 2
     fi
   done
-  sman="$(dirname "$LEDGER")/$src.plan.md"
+  gate_carry_source_doc_same "$src" || return 2
+  GATE_CARRY_ROW=$row; GATE_CARRY_REC=$rec; GATE_CARRY_ATT=$att
+  return 0
+}
+
+gate_carry_record_whole() {
+  # gate_carry_record_whole <earlier run dir> <record> <earlier `중단 답` row> —
+  # whether the record that row answered is still the record the person
+  # answered, and its attachment the one they gave: the record is a complete
+  # halt record listing the row's option verbatim and hashing to the row's
+  # `기록 다이제스트`, and the attachment, when there is one, lies under the
+  # earlier run's `halt/`, is not empty, hashes to `첨부 다이제스트` and is not
+  # itself a record. 1 with the reason in GATE_CARRY_WHY otherwise. The
+  # adoption and the re-kickoff import ask it alike before copying.
+  local sdir="$1" rec="$2" row="$3" opt dig att adig hfirst=''
+  opt=$(gate_row_field "$row" '선택지')
+  dig=$(gate_row_field "$row" '기록 다이제스트')
+  IFS= read -r hfirst < "$rec" || true
+  if [ "${hfirst#<!-- cc-pipeline-halt v1;}" = "$hfirst" ] \
+     || ! grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$rec" \
+     || ! grep -qF -- "- \`$opt\`" "$rec"; then
+    GATE_CARRY_WHY="중단 기록이 완결된 기록이 아니거나 그 선택지를 축자로 싣지 않습니다: $rec"
+    return 1
+  fi
+  case "$dig" in
+    ''|-) GATE_CARRY_WHY="출처 행에 기록 다이제스트가 없어 기록을 대조할 기준이 없습니다"; return 1 ;;
+  esac
+  if [ "$(shasum -a 256 "$rec" | cut -d' ' -f1)" != "$dig" ]; then
+    GATE_CARRY_WHY="중단 기록이 출처 행의 기록 다이제스트와 다릅니다 — 사람이 답한 뒤 기록이 바뀌었습니다: $rec"
+    return 1
+  fi
+  att=$(gate_row_field "$row" '첨부')
+  [ -n "$att" ] || return 0
+  adig=$(gate_row_field "$row" '첨부 다이제스트')
+  case "$att" in
+    "$sdir"/halt/*.md) ;;
+    *) GATE_CARRY_WHY="첨부가 출처 런의 halt 디렉터리 밖에 있습니다: $att"; return 1 ;;
+  esac
+  case "$att" in
+    */../*|*/./*) GATE_CARRY_WHY="첨부 경로에 상대 구간이 있습니다: $att"; return 1 ;;
+  esac
+  if [ ! -s "$att" ] || [ "$(shasum -a 256 "$att" | cut -d' ' -f1)" != "$adig" ]; then
+    GATE_CARRY_WHY="첨부가 없거나 비었거나 출처 행의 첨부 다이제스트와 다릅니다: $att"
+    return 1
+  fi
+  if grep -q '^<!-- cc-pipeline-halt v1' "$att"; then
+    GATE_CARRY_WHY="첨부가 중단 기록 머리를 싣고 있습니다: $att"
+    return 1
+  fi
+  return 0
+}
+
+gate_carry_source_doc_same() {
+  # gate_carry_source_doc_same <earlier run id> — whether the earlier run's
+  # frozen manifest names this run's design document; 1 with the reason in
+  # GATE_CARRY_WHY otherwise. A halt record quotes its own run's document, so
+  # an answer to it means nothing against another one.
+  local sman sdoc doc
+  sman="$(dirname "$LEDGER")/$1.plan.md"
   sdoc=$( [ -f "$sman" ] && awk '$0 == "## 요소" { inb=1; next } inb && /^## / { exit }
             inb && sub(/^\*\*설계 문서\*\*: /, "") { print; exit }' "$sman" )
   doc=$(manifest_field '요소' '설계 문서')
   if [ -z "$sdoc" ] || [ "$sdoc" != "$doc" ]; then
     GATE_CARRY_WHY="출처 런의 설계 문서(${sdoc:-확인 불가})가 이 런의 설계 문서(${doc:-없음})와 다릅니다 — 기록이 인용한 구속 티어가 이 런의 문서에 있다고 볼 수 없습니다"
-    return 2
+    return 1
   fi
-  GATE_CARRY_ROW=$row; GATE_CARRY_REC=$rec; GATE_CARRY_ATT=$att
   return 0
 }
 
@@ -11300,7 +11335,7 @@ gate_adoption_halt_carry() {
   # answer that does not carry leaves the adopted segment where it was before
   # this existed — its first stage a full review — so what does not carry is
   # warned about by name and nothing else happens.
-  local seg="$1" rc=0 dst adst='' adig='' why w=300 len lane at
+  local seg="$1" rc=0 dst adst='' adig=''
   gate_adoption_halt_source "$seg" || rc=$?
   case "$rc" in
     0) ;;
@@ -11322,20 +11357,40 @@ gate_adoption_halt_carry() {
       return 0
     fi
   fi
-  lane=$(gate_row_field "$GATE_CARRY_ROW" '레인')
-  at=$(gate_row_field "$GATE_CARRY_ROW" '기록 시각')
+  if ! gate_carry_import_row "$seg" "$dst" "$adst" "$adig" '입양 이월'; then
+    warn "입양 세그먼트 ${seg} 의 이월 중단 답 행이 행 상한에 들지 않습니다 — 답을 들여오지 않습니다"
+    return 0
+  fi
+  log "중단 답 이월 — $seg ← 출처 런 $GATE_CARRY_SRC ($(gate_row_field "$GATE_CARRY_ROW" '선택지'))"
+}
+
+gate_carry_import_row() {
+  # gate_carry_import_row <key> <record copy> <attachment copy> <attachment
+  # digest> <basis prefix> — write the `중단 답` row of this run that hands on
+  # the earlier run's answer in GATE_CARRY_ROW (its ledger line GATE_CARRY_LINE,
+  # its run GATE_CARRY_SRC, its record GATE_CARRY_REC) under <key>, naming the
+  # copies already made under this run's `halt/`. `근거` is `<basis prefix>(출처
+  # 런 … 원장 N 번째 줄) — <the earlier 근거>`, narrowed until the row fits; 1
+  # with nothing written when even the narrowest does not. The attachment
+  # arguments are empty when the answer had none.
+  #
+  # ONE WRITER FOR THE ADOPTION AND THE RE-KICKOFF IMPORT, so the two copies
+  # carry the same fields and every reader — the snapshot, the carry act's
+  # check against `출처 런`, the once-per-record count — reads them alike.
+  #
   # WHO ANSWERED TRAVELS WITH THE ANSWER. A seat's automatic answer carried in
   # under this run's key is still automatic, so the `구속-이탈` count and the
-  # one-automatic-answer-per-record check here see it for what it is.
-  # The fields are listed one by one, and today only a shift's `재수렴` on a
-  # binding-tier stop is carried; if carrying ever widens to a seat's answer
-  # to a design ladder, its `잔여 판정` stamp has to join this list.
-  local by kinds
+  # one-automatic-answer-per-record check here see it for what it is. The
+  # fields are listed one by one; if carrying ever widens to a seat's answer to
+  # a design ladder, its `잔여 판정` stamp has to join this list.
+  local key="$1" dst="$2" adst="$3" adig="$4" pre="$5" why w=300 len lane at by kinds
+  lane=$(gate_row_field "$GATE_CARRY_ROW" '레인')
+  at=$(gate_row_field "$GATE_CARRY_ROW" '기록 시각')
   by=$(gate_halt_answered_by "$GATE_CARRY_ROW")
   kinds=$(gate_row_field "$GATE_CARRY_ROW" '근거 종류')
   while [ "$w" -ge 40 ]; do
-    why=$(gate_row_safe "입양 이월(출처 런 $GATE_CARRY_SRC 원장 ${GATE_CARRY_LINE} 번째 줄) — $(gate_row_field "$GATE_CARRY_ROW" '근거')" "$w")
-    len=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$dst" \
+    why=$(gate_row_safe "${pre}(출처 런 $GATE_CARRY_SRC 원장 ${GATE_CARRY_LINE} 번째 줄) — $(gate_row_field "$GATE_CARRY_ROW" '근거')" "$w")
+    len=$(gate_row_projected_bytes '중단 답' "세그먼트=$key" "중단 기록=$dst" \
       "스킬=$(gate_row_field "$GATE_CARRY_ROW" '스킬')" "선택지=$(gate_row_field "$GATE_CARRY_ROW" '선택지')" \
       "답한 주체=$by" "근거=$why" ${kinds:+"근거 종류=$kinds"} \
       "기록 다이제스트=$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')" \
@@ -11344,17 +11399,142 @@ gate_adoption_halt_carry() {
     [ "$len" -le "$GATE_ROW_MAX" ] && break
     w=$((w - 40))
   done
-  if [ "$len" -gt "$GATE_ROW_MAX" ]; then
-    warn "입양 세그먼트 ${seg} 의 이월 중단 답 행이 행 상한에 들지 않습니다 — 답을 들여오지 않습니다"
-    return 0
-  fi
-  gate_append '중단 답' "세그먼트=$seg" "중단 기록=$dst" \
+  [ "$len" -le "$GATE_ROW_MAX" ] || return 1
+  gate_append '중단 답' "세그먼트=$key" "중단 기록=$dst" \
     "스킬=$(gate_row_field "$GATE_CARRY_ROW" '스킬')" "선택지=$(gate_row_field "$GATE_CARRY_ROW" '선택지')" \
     "답한 주체=$by" "근거=$why" ${kinds:+"근거 종류=$kinds"} \
     "기록 다이제스트=$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')" \
     ${adst:+"첨부=$adst"} ${adst:+"첨부 다이제스트=$adig"} \
     "출처 런=$GATE_CARRY_SRC" "출처 기록=$GATE_CARRY_REC" "레인=${lane:-미상}" "기록 시각=${at:-미상}"
-  log "중단 답 이월 — $seg ← 출처 런 $GATE_CARRY_SRC ($(gate_row_field "$GATE_CARRY_ROW" '선택지'))"
+}
+
+gate_chain_source_key() {
+  # gate_chain_source_key <earlier ledger> <row kind> — the run-scope step id
+  # the earlier run keyed that kind on: the `스테이지` of its last
+  # `stage-result` row of the router's run-scope shape
+  # (`세그먼트=- | 스테이지=<id> | 종류=<kind>`), or nothing. A re-kickoff's
+  # manifest is planned anew, so its step ids are not taken to be the earlier
+  # run's; the kind is what the two runs share.
+  { grep "^- \`stage-result\` " "$1" 2>/dev/null || true; } \
+    | { grep -F "| 세그먼트=- | " || true; } | { grep -F "| 종류=$2 |" || true; } \
+    | while IFS= read -r r; do gate_row_field "$r" '스테이지'; printf '\n'; done \
+    | awk 'NF { k = $0 } END { if (k != "") print k }'
+}
+
+gate_chain_halt_source() {
+  # gate_chain_halt_source <key> <row kind> <earlier run id> — whether the
+  # earlier run of a re-kickoff left an answer to a halt of the run-scope step
+  # of that kind which it carried over to the next run (an `이월` row of its
+  # ledger names it). 0 when it can be brought in, with GATE_CARRY_ROW,
+  # GATE_CARRY_LINE, GATE_CARRY_SRC, GATE_CARRY_REC and GATE_CARRY_ATT set as
+  # `gate_adoption_halt_source` sets them; 1 when there is none; 2 when there
+  # is one that cannot be brought in, with the reason in GATE_CARRY_WHY.
+  # Writes nothing.
+  #
+  # ONLY AN `이월` ANSWER. An answer the earlier run never tried to carry is
+  # left where it is, as before: the re-kickoff notice lists it and a person
+  # answers it again if it is still the question. An answer some ledger in this
+  # directory already brought in — this run's, or another follow-up's — is not
+  # brought in twice.
+  local key="$1" rk="$2" src="$3" skey sledger sdir row ln rec
+  GATE_CARRY_ROW=''; GATE_CARRY_LINE=''; GATE_CARRY_SRC=''; GATE_CARRY_REC=''; GATE_CARRY_ATT=''; GATE_CARRY_WHY=''
+  sledger="$(dirname "$LEDGER")/$src.md"
+  sdir="$(dirname "$RUN_DIR")/$src"
+  [ -f "$sledger" ] || return 1
+  skey=$(gate_chain_source_key "$sledger" "$rk")
+  [ -n "$skey" ] || return 1
+  row=$( { grep -n "^- \`중단 답\` " "$sledger" 2>/dev/null || true; } \
+         | { grep -F "| 세그먼트=$skey |" || true; } | tail -1)
+  [ -n "$row" ] || return 1
+  ln=${row%%:*}
+  row=${row#*:}
+  if gate_halt_answer_spent "$sledger" "$skey" "$ln"; then return 1; fi
+  gate_halt_answer_deferred "$sledger" "$ln" || return 1
+  rec=$(gate_row_field "$row" '중단 기록')
+  [ -n "$rec" ] || return 1
+  if grep -qlF -- "| 출처 기록=$rec |" "$(dirname "$LEDGER")"/*.md 2>/dev/null; then return 1; fi
+  GATE_CARRY_SRC=$src; GATE_CARRY_LINE=$ln
+  case "$rec" in
+    "$sdir"/halt/*.md) ;;
+    *) GATE_CARRY_WHY="중단 기록이 출처 런의 halt 디렉터리 밖에 있습니다: $rec"; return 2 ;;
+  esac
+  case "$rec" in
+    */../*|*/./*) GATE_CARRY_WHY="중단 기록 경로에 상대 구간이 있습니다: $rec"; return 2 ;;
+  esac
+  if [ ! -f "$rec" ]; then
+    GATE_CARRY_WHY="중단 기록이 없습니다: $rec"
+    return 2
+  fi
+  if cc_stage_is_live "$sdir" "$skey"; then
+    GATE_CARRY_WHY="출처 런의 스테이지가 그 키에서 아직 살아 있습니다"
+    return 2
+  fi
+  gate_carry_record_whole "$sdir" "$rec" "$row" || return 2
+  gate_carry_source_doc_same "$src" || return 2
+  GATE_CARRY_ROW=$row; GATE_CARRY_REC=$rec; GATE_CARRY_ATT=$(gate_row_field "$row" '첨부')
+  return 0
+}
+
+gate_chain_halt_import() {
+  # gate_chain_halt_import <key> <verb> — on a re-kickoff's follow-up run, the
+  # first dispatch of a run-scope step brings in the earlier run's answer
+  # carried over to the next run for the step of the same kind, and is refused.
+  # Returns 0 when nothing was brought in (the dispatch goes on), and
+  # GATE_EXIT_RULE when an answer was brought in — by `act`, which writes the
+  # copy and its row — or would be, by `plan`, which writes nothing.
+  #
+  # THE EARLIER RUN IS THE MANIFEST'S PROVENANCE ROW. A re-kickoff writes one
+  # `사전 인가` row whose first field is `이어받은 런=<id>`, a person's and a
+  # seat's re-kickoff alike, and the row sits inside the binding digest, so the
+  # earlier run cannot change within the run. It is read by the reader the
+  # driver uses (`manifest_provenance_field`); a manifest without it brings in
+  # nothing. A segment brings an answer in through its adoption row instead.
+  #
+  # THE DISPATCH THAT BROUGHT THE ANSWER IN DOES NOT LAUNCH. Its `stage-result`
+  # would land after the new `중단 답` row and spend it by position, with no
+  # card handed to the session — the answer would be gone without anyone asked
+  # again. The refusal names the line for `--carry-answer`, and the shift
+  # dispatches the carry act; this run holds no session of the key, so the carry
+  # asks for a fresh one.
+  local key="$1" verb="$2" src rk rc=0 dst adst='' adig='' ln
+  src=$(manifest_provenance_field '이어받은 런' 2>/dev/null) || return 0
+  [ -n "$src" ] || return 0
+  rk=$(gate_run_scope_kind_of_key "$key" 2>/dev/null) || return 0
+  [ -z "$(gate_stage_result_rows_of "$key" 2>/dev/null)" ] || return 0
+  gate_chain_halt_source "$key" "$rk" "$src" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) return 0 ;;
+    *) warn "${key} 에 이어받은 런 ${GATE_CARRY_SRC} 의 이월 중단 답(그 원장 ${GATE_CARRY_LINE} 번째 줄)이 있지만 이 런으로 들여오지 않습니다 — ${GATE_CARRY_WHY}"
+       return 0 ;;
+  esac
+  if [ "$verb" != "act" ]; then
+    warn "act 는 이어받은 런 ${GATE_CARRY_SRC} 원장 ${GATE_CARRY_LINE} 번째 줄의 이월 중단 답(선택지 $(gate_row_field "$GATE_CARRY_ROW" '선택지'))을 이 런으로 들여오고 이 파견을 거절합니다 — 그 뒤 --carry-answer 로 그 답을 내세요"
+    return "$GATE_EXIT_RULE"
+  fi
+  mkdir -p "$RUN_DIR/halt"
+  dst="$RUN_DIR/halt/$key#chained-$GATE_CARRY_SRC.md"
+  if ! gate_carry_copy "$GATE_CARRY_REC" "$dst" "$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')"; then
+    warn "${key} 의 이어받은 런 중단 기록을 이 런으로 복사하지 못했습니다 — 답을 들여오지 않습니다: $GATE_CARRY_REC"
+    return 0
+  fi
+  if [ -n "$GATE_CARRY_ATT" ]; then
+    adst="$RUN_DIR/halt/$key#chained-$GATE_CARRY_SRC.attach.md"
+    adig=$(gate_row_field "$GATE_CARRY_ROW" '첨부 다이제스트')
+    if ! gate_carry_copy "$GATE_CARRY_ATT" "$adst" "$adig"; then
+      warn "${key} 의 이어받은 런 첨부를 이 런으로 복사하지 못했습니다 — 답을 들여오지 않습니다: $GATE_CARRY_ATT"
+      return 0
+    fi
+  fi
+  if ! gate_carry_import_row "$key" "$dst" "$adst" "$adig" '연쇄 이월'; then
+    warn "${key} 의 연쇄 이월 중단 답 행이 행 상한에 들지 않습니다 — 답을 들여오지 않습니다"
+    return 0
+  fi
+  ln=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+        | { grep -F "| 출처 기록=$GATE_CARRY_REC |" || true; } | tail -1 | cut -d: -f1)
+  log "중단 답 이월 — $key ← 이어받은 런 $GATE_CARRY_SRC ($(gate_row_field "$GATE_CARRY_ROW" '선택지'))"
+  warn "${key} 에 이어받은 런 ${GATE_CARRY_SRC} 의 이월 중단 답을 원장 ${ln:-?} 번째 줄로 들여왔습니다 — 이 파견은 띄우지 않습니다. 그 답은 --carry-answer ${ln:-?} 로 내세요"
+  return "$GATE_EXIT_RULE"
 }
 
 gate_json_id_array() {
@@ -18156,7 +18336,12 @@ gate_answered_halts_json() {
     # person's `근거` is not copied here: the shift points the stage at the row's
     # ledger line, which holds it whole as recorded. `origin_run` is the empty
     # string for an answer given in this run, and the earlier run's id for one
-    # the adopted segment's planning act carried over (`gate_adoption_halt_carry`).
+    # brought over from it: by the adopted segment's planning act
+    # (`gate_adoption_halt_carry`) — a binding-tier stop's `재수렴`, or an answer
+    # the earlier ledger names in an `이월` row — or by a re-kickoff's first
+    # dispatch of a run-scope step (`gate_chain_halt_import`), an `이월` answer
+    # only. An `이월` answer goes on through the carry act; whether the earlier
+    # ledger holds that row is read from `출처 런`, not from this element.
     # `answered_by` is `사람`, `좌석` or `교대` (`gate_halt_answered_by`), so the
     # shift's re-attach message can say who chose the option. `state` is `이월`
     # when an `이월` row of this run names the line — a carry found no room
@@ -18888,6 +19073,12 @@ gate_halt_record_of_last_park() {
   # 버전>.md`, or when its header names that stage id. An attempt that never
   # spawned (`관측=스폰 전 대기 중`) or ended `크래시`, `한도 종료` or `외부
   # 종료` halted nowhere and is passed over.
+  #
+  # AN EARLIER RUN'S LEDGER IS READ BY THE KEY ALONE. This run's plan says
+  # which kinds a run-scope step id carries here (`gate_stage_result_rows_of`),
+  # and a re-kickoff plans its step ids anew, so on another run's ledger every
+  # router-shaped row of that step id is the key's, whatever its `종류`.
+  local own="${LEDGER:-}"
   local LEDGER="$1" rd="$2" key="$3" rec="$4" row last='' ver stg hst
   GATE_LAST_PARK_CLASS=''; GATE_LAST_PARK_STAGE=''; GATE_LAST_PARK_ROW=''
   while IFS= read -r row; do
@@ -18898,7 +19089,12 @@ gate_halt_record_of_last_park() {
     esac
     last=$row
   done <<EOF
-$( { gate_stage_result_rows_of "$key" || true; } )
+$( if [ "$LEDGER" = "$own" ]; then
+     { gate_stage_result_rows_of "$key" || true; }
+   else
+     { grep "^- \`stage-result\` " "$LEDGER" 2>/dev/null || true; } \
+       | { grep -F -e "세그먼트=$key " -e "세그먼트=- | 스테이지=$key | 종류=" || true; }
+   fi )
 EOF
   GATE_LAST_PARK_ROW=$last
   GATE_LAST_PARK_CLASS=$(gate_row_field "$last" '종단 부류')
@@ -19080,6 +19276,53 @@ gate_key_deferred_answer() {
   # is carried over to the next run (`gate_halt_answers_by_state 이월`), or
   # nothing.
   gate_halt_answers_by_state '이월' | awk -F '\t' -v k="$1" '$2 == k { print $1 }'
+}
+
+gate_carry_source_row() {
+  # gate_carry_source_row <earlier ledger> <record> — the earlier run's
+  # `중단 답` row that answered <record>, as `<line>:<row>` (the last such row),
+  # or nothing. A copy brought into this run names that record as `출처 기록`.
+  { grep -n "^- \`중단 답\` " "$1" 2>/dev/null || true; } \
+    | { grep -F "| 중단 기록=$2 |" || true; } | tail -1
+}
+
+gate_carry_source_last_row() {
+  # gate_carry_source_last_row <line> — for the `중단 답` row at <line> of this
+  # run that an earlier run's answer was brought in as (`출처 런`), the last
+  # attempt of the key it answered in the earlier run's ledger that did not die
+  # before or during its session (`gate_halt_record_of_last_park`), or nothing.
+  local row src lpl sr
+  row=$(sed -n "${1}p" "$LEDGER" 2>/dev/null)
+  src=$(gate_row_field "$row" '출처 런')
+  [ -n "$src" ] || return 0
+  lpl="$(dirname "$LEDGER")/$src.md"
+  sr=$(gate_carry_source_row "$lpl" "$(gate_row_field "$row" '출처 기록')")
+  [ -n "$sr" ] || return 0
+  gate_halt_record_of_last_park "$lpl" "$(dirname "$RUN_DIR")/$src" \
+    "$(gate_row_field "${sr#*:}" '세그먼트')" "$(gate_row_field "$row" '출처 기록')" >/dev/null 2>&1 || true
+  printf '%s' "$GATE_LAST_PARK_ROW"
+}
+
+gate_key_imported_deferred_answer() {
+  # gate_key_imported_deferred_answer <key> — the `중단 답` line of this run
+  # holding an answer brought over from an earlier run that the earlier run
+  # carried over to the next run (an `이월` row of its ledger names it), when
+  # no stage of this run has taken it up yet; nothing otherwise. Adopted and
+  # re-kickoff copies alike: the key's last `중단 답` row carries `출처 런` and
+  # `출처 기록`, and the earlier ledger's row for that record is deferred there.
+  local row ln src sr
+  row=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "| 세그먼트=$1 |" || true; } | tail -1)
+  [ -n "$row" ] || return 0
+  ln=${row%%:*}
+  row=${row#*:}
+  src=$(gate_row_field "$row" '출처 런')
+  [ -n "$src" ] || return 0
+  gate_halt_answer_spent "$LEDGER" "$1" "$ln" && return 0
+  sr=$(gate_carry_source_row "$(dirname "$LEDGER")/$src.md" "$(gate_row_field "$row" '출처 기록')")
+  [ -n "$sr" ] || return 0
+  gate_halt_answer_deferred "$(dirname "$LEDGER")/$src.md" "${sr%%:*}" || return 0
+  printf '%s' "$ln"
 }
 
 gate_defer_handoff_unmet() {
@@ -19330,8 +19573,16 @@ gate_carry_check() {
   if [ -n "$src" ]; then
     lpl="$(dirname "$LEDGER")/$src.md"; lprd="$(dirname "$RUN_DIR")/$src"
     lprec=$(gate_row_field "$row" '출처 기록')
+    # The key the earlier run halted on: the adopted segment's earlier key, or,
+    # for a re-kickoff's copy of a run-scope step, the key of the earlier row
+    # that answered the record — the follow-up plans its step ids anew.
     skey=$key
-    if adrow=$(gate_adoption_row "$key" 2>/dev/null); then skey=$(gate_adoption_source_key "$adrow"); fi
+    if adrow=$(gate_adoption_row "$key" 2>/dev/null); then
+      skey=$(gate_adoption_source_key "$adrow")
+    else
+      r=$(gate_carry_source_row "$lpl" "$lprec")
+      [ -z "$r" ] || skey=$(gate_row_field "${r#*:}" '세그먼트')
+    fi
     if [ ! -f "$lpl" ] || [ -z "$lprec" ] \
        || [ "$( { shasum -a 256 "$lprec" 2>/dev/null || true; } | cut -d' ' -f1)" != "$dig" ]; then
       warn "출처 런 ${src} 의 기록이 사본과 같지 않거나 읽을 수 없습니다 — 운반하지 않습니다: ${lprec:-(없음)}"
@@ -19654,10 +19905,21 @@ gate_audit_reconverge_keyable() {
   # deaths against its cap, and this reading must not refuse the very retry
   # the cap is counting, nor the re-convergence a person's new `adopt as a
   # requirement` dispatches without a carry after one.
+  #
+  # AN ANSWER BROUGHT OVER FROM AN EARLIER RUN IS READ WHERE IT HALTED. A
+  # re-kickoff's follow-up holds no row of the key yet when it carries the
+  # earlier run's answer, so the last row is the earlier run's, read from the
+  # carried row's `출처 런` ledger (`gate_carry_source_last_row`) — the carry
+  # act's `--carry-answer` line, or, for the route the snapshot reads before
+  # that act, the key's imported answer still owed (`gate_key_imported_deferred_answer`).
   local k="$1" res="${2:-}" last
   GATE_AUDIT_RECONVERGE_LAST=''
   [ -z "$(gate_segment_field "$k" '상태')" ] || return 1
   last=$(gate_stage_last_settled_row "$k")
+  if [ -z "$last" ]; then
+    local cl=${GATE_CARRY_ANSWER:-$(gate_key_imported_deferred_answer "$k")}
+    [ -z "$cl" ] || last=$(gate_carry_source_last_row "$cl")
+  fi
   GATE_AUDIT_RECONVERGE_LAST=$last
   case "$(gate_row_field "$last" '종류')|$(gate_row_field "$last" '종단 부류')" in
     'audit|의도된 park') return 0 ;;
@@ -34356,6 +34618,21 @@ gate_verb_act() {
     local ha_rc=0
     gate_carry_check "$alias" "$stage_key" "${1:-}" "$(gate_skill_prompt_of "$@")" || ha_rc=$?
     [ "$ha_rc" = "0" ] || exit "$ha_rc"
+  elif [ "$kind" = "skill" ] && { [ "$verb" = "act" ] || [ "$verb" = "plan" ]; }; then
+    # AN ANSWER AN EARLIER RUN CARRIED OVER GOES ON ONLY THROUGH A CARRY ACT.
+    # Any other dispatch of its key would land a `stage-result` that spends the
+    # answer by position with no card in the session's hands. A re-kickoff's
+    # first dispatch of a run-scope step brings such an answer in and is
+    # refused here; a later dispatch, and an adopted segment's first one, finds
+    # it already in and is refused the same way.
+    local ci_rc=0 ci_ln
+    gate_chain_halt_import "$stage_key" "$verb" || ci_rc=$?
+    [ "$ci_rc" = "0" ] || exit "$ci_rc"
+    ci_ln=$(gate_key_imported_deferred_answer "$stage_key")
+    if [ -n "$ci_ln" ]; then
+      warn "${stage_key} 에는 앞선 런이 다음 런으로 넘긴 중단 답(원장 ${ci_ln} 번째 줄)이 아직 쓰이지 않고 있습니다 — 이 파견은 띄우지 않습니다. 그 답은 --carry-answer ${ci_ln} 로 내세요"
+      exit "$GATE_EXIT_RULE"
+    fi
   fi
 
   # WHERE THIS ACT WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
