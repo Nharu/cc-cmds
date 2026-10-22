@@ -2012,6 +2012,10 @@ rk_render() {
     # of this run is one derived again at this call, written when the section
     # closes.
     /^- `세그먼트 입양`/ { next }
+    # The plugin rows of the previous run are never carried either: the person
+    # accepted each one for the work of that run, and the successor stages load
+    # the seed allow-list alone. Dropping a row only narrows the successor.
+    /^- `플러그인 허용`/ { next }
     /^- `사전 인가` \| 인터뷰 기록=/ {
       if (ENVIRON["R_DOUT"] == "1") next
       line = $0; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; next

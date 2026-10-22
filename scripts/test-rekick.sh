@@ -1759,6 +1759,20 @@ check "12: --targets 없이 그리면 원천 대상 행이 그대로 옮겨진�
   "$(grep -E '^- `target`' "$SL_OUT")" "$(grep -E '^- `target`' "$BASE/docs/pipeline-run/RKCT.plan.md")"
 SL_ASKED=""
 
+# A `플러그인 허용` row is the person's answer to 5t at one kickoff and is not
+# carried: the successor is drawn without it and still passes its checks.
+PA_ROW='- `플러그인 허용` | 플러그인=notion@claude-plugins-official | 사유=픽스처'
+P_EXTRA="$SEAT_ROW
+$PA_ROW" mk_seat RKPA 마감
+check "12: 원천 매니페스트에 플러그인 허용 행이 있다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cxF -- "$PA_ROW" "$BASE/docs/pipeline-run/RKPA.plan.md")" "1"
+seat_link RKPA RKPA1
+check "12: 플러그인 허용 행이 있는 원천도 render-manifest --auto 가 0 이고 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "12: 후속 매니페스트에는 플러그인 허용 행이 없다" "$(grep -c '^- `플러그인 허용`' "$SL_OUT" || true)" "0"
+mf_check "$SL_OUT"; rc=$?
+check "12: 플러그인 허용 행을 뺀 후속 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+
 # The seat's wording that no helper prints: the stub's reason line and the
 # notice for a failure on the immediate path.
 SEATDOC="$repo_root/plugins/cc-cmds/skills/autopilot/references/act2-seat.md"

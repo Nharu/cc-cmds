@@ -276,7 +276,12 @@ esac
 # with `대기` and the gate waits in the shell — and the one `wait` left inside a
 # shift is a bounded FOREGROUND call. The assertions at the end of this file
 # hold both.
-SHIFT_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
+# The shift reads its rare branches from references/ on entry, so its text is
+# the body and those files together: a dispatch sentence moved into one of
+# them is still a sentence the shift acts on.
+SHIFT_DIR="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift"
+SHIFT_SKILL="$WORK/router-shift-corpus.md"
+cat "$SHIFT_DIR/SKILL.md" "$SHIFT_DIR/references"/*.md > "$SHIFT_SKILL"
 dispatch_lines() { { grep -n -- '--kind skill' "$SHIFT_SKILL" || true; }; }
 dl=$(dispatch_lines)
 if [ -n "$dl" ]; then
