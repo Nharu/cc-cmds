@@ -11796,14 +11796,15 @@ gate_prior_run_landed() {
   # `park` nor `적용 준비`, because a segment merged and then parked is on the
   # base all the same.
   #
-  # A LEDGER THAT ENDS IN `park` AND NEVER RECORDED A LANDING may still have
-  # landed: a person can merge the pull request after the run is over, and no
-  # row is written for that. Such a ledger is an outside-merge candidate when
-  # one of its rows for the id carries a numeric `PR` — the last `segment` row
-  # that does, else the last `원격 판독` row of `세그먼트=<id>` — and it is
-  # chosen only when no ledger has a landing row. It comes back with
+  # A LEDGER THAT NEVER RECORDED A LANDING may still have landed: a person can
+  # merge the pull request after the run is over, and no row is written for
+  # that. Such a ledger — its last row for the id a `park`, or a non-terminal
+  # row a shift halt left in place — is an outside-merge candidate when one of
+  # its rows for the id carries a numeric `PR` — the last `segment` row that
+  # does, else the last `원격 판독` row of `세그먼트=<id>` — and it is chosen
+  # only when no ledger has a landing row. It comes back with
   # GATE_PRIOR_OUTSIDE=1, GATE_PRIOR_KIND=PR, that number in GATE_PRIOR_PR, the
-  # id's last `브랜치` in GATE_PRIOR_BRANCH and the `park` row in
+  # id's last `브랜치` in GATE_PRIOR_BRANCH and that last row in
   # GATE_PRIOR_ROW; the caller brings it in only as a merged request.
   #
   # A SLICE WHOSE DECLARED CUTPOINT IS PR LANDS AS A PULL REQUEST, and its
@@ -11845,7 +11846,7 @@ gate_prior_run_landed() {
   # candidates with one warning naming the field that differs. The whole-
   # document digest is deliberately not compared: any edit anywhere would make
   # every slice be done again.
-  local seg="$1" dir f rrow rows row ln p br rid cand="" ocand="" best tab dd c
+  local seg="$1" dir f rrow rows row ln p br rid cand="" ocand="" best tab dd c out
   tab=$(printf '\t')
   GATE_PRIOR_RUN=""; GATE_PRIOR_ROW=""; GATE_PRIOR_KIND=""; GATE_PRIOR_DECL_MOVED=""
   GATE_PRIOR_OUTSIDE=""; GATE_PRIOR_PR=""; GATE_PRIOR_BRANCH=""
@@ -11865,6 +11866,7 @@ gate_prior_run_landed() {
     # prefix sits in the row's first field, which no field reader reads.
     rows=$( { grep -nE '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; })
     [ -n "$rows" ] || continue
+    out=""
     rid=$(gate_row_field "$rrow" 'run-id')
     [ -n "$rid" ] || rid=$(basename "$f" .md)
     if gate_landing_walk gate_prior_row_landed <<ROWS
@@ -11874,14 +11876,19 @@ ROWS
       ln=${GATE_WALK_ROW%%:*}
       row=${GATE_WALK_ROW#*:}
     else
-      # A RUN THAT PARKED THE SLICE AND A PERSON WHO MERGED IT AFTERWARDS leave
-      # no landing row: the run was over before the merge, so nothing wrote it.
-      # The pull request the ledger names is the only evidence, and it is held
-      # back as a candidate of its own — a ledger with a landing row beats every
-      # such one — for the import to check against the live request.
+      # A RUN THAT LEFT THE SLICE UNLANDED AND A PERSON WHO MERGED IT AFTERWARDS
+      # leave no landing row: the run was over before the merge, so nothing
+      # wrote it. The pull request the ledger names is the only evidence, and it
+      # is held back as a candidate of its own — a ledger with a landing row
+      # beats every such one — for the import to check against the live request.
+      # The last row need not be a `park`: a shift halt stops the segment with
+      # rows of other kinds and leaves its last `segment` row where it was, at
+      # `계획됨` or `실행중`. Only a terminal last row (`머지됨`, `완료`) that
+      # carries no landing is passed over, since the run already said where the
+      # segment ended.
       row=$(printf '%s\n' "$rows" | tail -1)
       row=${row#*:}
-      [ "$(gate_row_field "$row" '상태')" = "park" ] || continue
+      case "$(gate_row_field "$row" '상태')" in 머지됨|완료) continue ;; esac
       # Only a ledger that never recorded a landing: a `머지됨` the walk passed
       # over because the slice was planned again after it is redone work, and
       # the request that merged the first round is not evidence for the second.
@@ -11897,6 +11904,7 @@ ROWS
       br=$(printf '%s\n' "$rows" | awk -F' [|] ' '{ for (i = 2; i <= NF; i++) if (index($i, "브랜치=") == 1) { v = $i; sub(/^브랜치=/, "", v); r = v } } END { print r }')
       ln=$(printf '%s\n' "$rows" | tail -1)
       ln=${ln%%:*}
+      out=1
     fi
     dd=$(gate_prior_decl_diff "$seg" "$f" "$row")
     if [ -n "$dd" ]; then
@@ -11907,7 +11915,7 @@ ROWS
       case "$dd" in "슬라이스 선언 불일치"*) GATE_PRIOR_DECL_MOVED=1 ;; esac
       continue
     fi
-    if [ "$(gate_row_field "$row" '상태')" = "park" ]; then
+    if [ -n "$out" ]; then
       ocand="$ocand$(gate_row_field "$rrow" '시작')$tab$p$tab$br$tab$ln$tab$rid$tab$f
 "
     else
@@ -12034,8 +12042,9 @@ gate_import_prior_landed() {
   pdg=$(gate_row_field "$GATE_PRIOR_ROW" '선언 다이제스트')
   case "$pdg" in *[!0-9a-f]*) pdg="" ;; esac
   [ "${#pdg}" -eq 64 ] || pdg=""
-  # AN OUTSIDE MERGE IS A `park` ROW AND A REQUEST NUMBER. The request and the
-  # branch come from the walk, not from the `park` row, which carries neither;
+  # AN OUTSIDE MERGE IS AN UNLANDED LAST ROW AND A REQUEST NUMBER — a `park`, or
+  # the `계획됨`/`실행중` row a shift halt left in place. The request and the
+  # branch come from the walk, not from that row, which need carry neither;
   # only a merged request brings it in, and it comes in as `머지됨` with the
   # request's merge commit — the same row a run that merged it would have left.
   if [ "$GATE_PRIOR_OUTSIDE" = "1" ]; then
@@ -12080,7 +12089,7 @@ EOF
       case "$ost" in
         OPEN)
           if [ "$GATE_PRIOR_OUTSIDE" = "1" ]; then
-            why="PR #${ppr} 이 그 런의 park 뒤에도 열려 있습니다 — 머지되지 않은 작업은 들이지 않습니다"
+            why="PR #${ppr} 이 그 런의 ${pst} 뒤에도 열려 있습니다 — 머지되지 않은 작업은 들이지 않습니다"
           else
             [ "$ohd" = "$pc" ] || why="PR #${ppr} 의 head ${ohd:-(없음)} 가 행의 커밋 ${pc} 와 다릅니다"
           fi ;;
@@ -12121,7 +12130,7 @@ EOF
     fi
     if [ -n "$why" ]; then
       if [ "$GATE_PRIOR_OUTSIDE" = "1" ]; then
-        warn "슬라이스 ${seg} 는 이전 런 ${GATE_PRIOR_RUN} 이 park 로 끝냈고 런 밖 머지로도 들여오지 않습니다 — ${why}"
+        warn "슬라이스 ${seg} 는 이전 런 ${GATE_PRIOR_RUN} 이 ${pst} 에서 멈췄고 런 밖 머지로도 들여오지 않습니다 — ${why}"
       else
         warn "슬라이스 ${seg} 의 이전 런 ${GATE_PRIOR_RUN} PR 절단점 종단 행은 들여오지 않습니다 — ${why}"
       fi
@@ -12135,10 +12144,10 @@ EOF
       # run's apply is not the slice's ending.
       if gate_segment_owes_apply "$dal" "$seg"; then
         if [ "$mode" = "self" ]; then
-          warn "슬라이스 ${seg} 는 이전 런 ${GATE_PRIOR_RUN} 이 park 한 뒤 런 밖에서 PR #${ppr} 로 머지됐지만 적용이 남았습니다 — 들여오지 않고 다시 합니다"
+          warn "슬라이스 ${seg} 는 이전 런 ${GATE_PRIOR_RUN} 이 ${pst} 에서 멈춘 뒤 런 밖에서 PR #${ppr} 로 머지됐지만 적용이 남았습니다 — 들여오지 않고 다시 합니다"
           return 1
         fi
-        warn "세그먼트 계획 거부: 선행 ${seg} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 park 한 뒤 런 밖에서 PR #${ppr} 로 머지됐지만 적용이 남았습니다 — 적용이 남은 머지는 들여오지 않습니다"
+        warn "세그먼트 계획 거부: 선행 ${seg} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 ${pst} 에서 멈춘 뒤 런 밖에서 PR #${ppr} 로 머지됐지만 적용이 남았습니다 — 적용이 남은 머지는 들여오지 않습니다"
         return "$GATE_EXIT_RULE"
       fi
       pst="머지됨"

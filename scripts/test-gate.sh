@@ -14006,6 +14006,41 @@ g15_pr "MERGED $h15gf $c15gk seg/R15GPG1-SA main" act R15GPG2 SA 상태=계획�
 r15gpg2="$rc/$(seg_field "$(g15_row R15GPG2 SA)" '상태')/$(seg_field "$(g15_row R15GPG2 SA)" 'PR')"
 check "15g: PR 을 싣지 않은 park 원장은 들이지 않고 원격 판독 행의 PR 은 들인다" \
   "$r15gpf2|$r15gpg2" "0/1/계획됨|0/머지됨/12"
+# Stopped by a shift halt: the halt writes no segment row, so the last one is
+# still `계획됨`, and a person merged the request afterwards. An open request
+# there is still not brought in, and neither is a terminal last row that
+# carries no landing.
+g15_halted() {  # g15_halted <run id> <문서> <PR> [SA 의 마지막 행 필드] — SA planned on its branch, the request named by a `원격 판독` row
+  g15_run "$1" "$2" "$plan15c" 리뷰없음
+  g15_mkwt "$1" SA
+  g15_plan act "$1" SA 상태=계획됨 "워크트리=$(g15_wt "$1" SA)" "브랜치=seg/$1-SA"
+  [ "$rc" = "0" ] || bad "15g 이전 런 $1 의 SA 계획" "rc=$rc $msg"
+  printf -- '- `원격 판독` | 세그먼트=SA | PR=%s\n' "$3" >> "$WT/docs/pipeline-run/$1.md"
+  [ -z "${4:-}" ] || g15_raw "$1" "id=SA | $4 | 워크트리=$(g15_wt "$1" SA) | 선행=없음"
+}
+DOC15GPH='docs/fixture-design-15gph.md'
+two_slice_doc "$WT/$DOC15GPH" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_halted R15GPH1 "$DOC15GPH" 13
+g15_run R15GPH2 "$DOC15GPH" "$plan15c" 리뷰없음
+g15_mkwt R15GPH2 SA
+g15_pr "OPEN $c15gk - seg/R15GPH1-SA main" act R15GPH2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPH2 SA)"
+r15gph2="$rc/$(g15_segrows R15GPH2 SA)/$(seg_field "$(g15_row R15GPH2 SA)" '상태')"
+case "$msg" in *"PR #13 이 그 런의 계획됨 뒤에도 열려 있습니다"*) r15gph2="$r15gph2/열림 문면" ;; esac
+g15_run R15GPH3 "$DOC15GPH" "$plan15c" 리뷰없음
+g15_mkwt R15GPH3 SA
+g15_pr "MERGED $h15gf $c15gk seg/R15GPH1-SA main" act R15GPH3 SA 상태=계획됨 "워크트리=$(g15_wt R15GPH3 SA)"
+r15gph3=$(g15_row R15GPH3 SA)
+check "15g: 교대 정지로 계획됨 에 남은 슬라이스는 열린 PR 이면 다시 계획하고 런 밖에서 머지된 PR 이면 머지됨 으로 들인다" \
+  "$r15gph2|$rc/$(seg_field "$r15gph3" '상태')/$(seg_field "$r15gph3" 'PR')/$(seg_field "$r15gph3" '머지 커밋')/$(seg_field "$r15gph3" '출처')/$(g15_segrows R15GPH3 SA 계획됨)" \
+  "0/1/계획됨/열림 문면|0/머지됨/13/$c15gk/R15GPH1/0"
+DOC15GPI='docs/fixture-design-15gpi.md'
+two_slice_doc "$WT/$DOC15GPI" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_halted R15GPI1 "$DOC15GPI" 14 "상태=완료"
+g15_run R15GPI2 "$DOC15GPI" "$plan15c" 리뷰없음
+g15_mkwt R15GPI2 SA
+g15_pr "MERGED $h15gf $c15gk seg/R15GPI1-SA main" act R15GPI2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPI2 SA)"
+check "15g: 착지 없이 완료 로 끝난 원장은 런 밖 머지로 들이지 않는다" \
+  "$rc/$(g15_segrows R15GPI2 SA)/$(seg_field "$(g15_row R15GPI2 SA)" '상태')" "0/1/계획됨"
 
 # One run: SA merged and then parked is a predecessor SB is dispatched onto,
 # and the snapshot says so; SA parked while planned, or merged with the apply
