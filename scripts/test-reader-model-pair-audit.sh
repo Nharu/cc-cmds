@@ -48,6 +48,9 @@ exit 1
 EOF
 chmod +x "$tmp/bin/claude"
 export PATH="$tmp/bin:$PATH"
+# The gate resolves the CLI from this variable before PATH, and a pipeline
+# stage exports it as the real CLI.
+export CC_CLAUDE_BIN="$tmp/bin/claude"
 
 # ---- the synthetic main repository -------------------------------------------
 
@@ -306,6 +309,59 @@ done
 (( snap == 1 )) && pass "prepare: the branch gates' snapshots exit 0 on all fifteen manifests" || fail "prepare: a branch gate snapshot fails on a manifest"
 (( pinok == 1 )) && pass "prepare: each run's plugin pin is its branch commit" || fail "prepare: a run's plugin pin is not its branch commit"
 
+# ---- the cost ceiling ends a run after its audit stage -------------------------
+#
+# One router-shift call runs the relay, which launches the successor shift as
+# soon as the audit stage ends, so the seat cannot stop a re-convergence
+# between calls. The run's cost ceiling stops it: the gate ends the run at the
+# first gated call after the stage's `cost` row, and an ended run launches no
+# stage. Driven here through the branch's real gate, with no stage launched.
+
+ok=1
+for n in 1 2 3 4 5; do
+  for br in opus-1 sonnet opus-2; do
+    grep -qxF '**비용 천장**: 0.01' "$(bstate "$E1" "$n" "$br" manifest)" || { ok=0; echo "doc $n $br: no cost ceiling 0.01" >&2; }
+  done
+done
+(( ok == 1 )) && pass "ceiling: every audit manifest declares the cost ceiling 0.01" || fail "ceiling: a manifest lacks the cost ceiling"
+
+m=$(bstate "$E1" 1 sonnet manifest); cl=$(bstate "$E1" 1 sonnet clone); rid=$(bstate "$E1" 1 sonnet run)
+g1="$gs/plugins/cc-cmds/orchestrator/gate.sh"
+led="$cl/docs/pipeline-run/$rid.md"
+rdir="$XDG_STATE_HOME/cc-cmds/run/$rid"
+snap_h() { ( cd "$cl" && bash "$g1" snapshot --manifest "$m" --fields H 2>/dev/null ) | tail -n 1; }
+gread() {
+  ( cd "$cl" && bash "$g1" exec --manifest "$m" --target exp --segment - --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(snap_h)" --rationale 'ceiling test read' -- git rev-parse HEAD ) >>"$sc/ceiling.log" 2>&1
+}
+rc=0; gread || rc=$?
+if [[ "$rc" == "0" && ! -e "$rdir/done" ]]; then
+  pass "ceiling: a gated read before any stage is costed leaves the run open"
+else
+  fail "ceiling: the read before any cost gave exit $rc (done: $([[ -e "$rdir/done" ]] && echo yes || echo no))"; cat "$sc/ceiling.log" >&2
+fi
+# The audit stage's cost row, chained the way the gate chains it.
+last=$(grep '^- `' "$led" | tail -n 1)
+printf -- '- `cost` | 누적 usd=12.5000 | 스테이지 수=1 | 관측 시각=2026-10-22T00:00:00Z | prev=%s\n' \
+  "$(printf '%s' "$last" | shasum -a 256 | cut -d' ' -f1)" >> "$led"
+rc=0; gread || rc=$?
+if [[ -s "$rdir/done" ]] && grep -qF 'B4' "$rdir/done"; then
+  pass "ceiling: the first gated call after the audit's cost row ends the run at the cost boundary"
+else
+  fail "ceiling: no B4 ending after the cost row (exit $rc)"; cat "$sc/ceiling.log" >&2
+fi
+# A dispatch whose own entry checks hold — the audit stage's, since no stage
+# row stands — reaches the ended-run refusal.
+rc=0
+( cd "$cl" && bash "$g1" act --manifest "$m" --kind skill --target exp --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(snap_h)" --rationale '감사 스테이지' \
+    -- audit -p "/cc-cmds:design-audit-unattended $cl/docs/c1.md" ) >>"$sc/ceiling.log" 2>&1 || rc=$?
+if [[ "$rc" != "0" && ! -e "$tmp/claude.called" ]] && grep -qF 'no new stage is launched' "$sc/ceiling.log"; then
+  pass "ceiling: the ended run refuses a stage dispatch and launches nothing"
+else
+  fail "ceiling: the dispatch after the end gave exit $rc"; cat "$sc/ceiling.log" >&2
+fi
+
 # The same input gives the same selection.
 scenario dry2
 xp run --dry-run --exp-id 20261022-000000d2 >/dev/null 2>&1 || true
@@ -351,6 +407,24 @@ if [[ "$rc" == "0" ]] && grep -qF 'document 1: 준비됨 · opus-1 준비됨 · 
   pass "status: every document and branch reads 준비됨, verdict pending"
 else
   fail "status: unexpected output (rc=$rc)"; cat "$sc/status" >&2
+fi
+
+# The guard's spent amount: a stage stream with no result line yet counts as
+# the run reserve, a shift stream without one counts nothing, and a finished
+# stream counts its result.
+spent_of() { awk '/spent usd:/ { print $NF }' "$1"; }
+s0=$(spent_of "$sc/status")
+rl="$XDG_STATE_HOME/cc-cmds/run/$(bstate "$E1" 2 opus-1 run)/log"
+mkdir -p "$rl"
+printf '%s\n' '{"type":"system"}' > "$rl/A1.json"
+printf '%s\n' '{"type":"system"}' > "$rl/shift-1.json"
+printf '%s\n' '{"type":"result","total_cost_usd":2.5}' > "$rl/A1.1.json"
+xp status --exp-id "$E1" > "$sc/status2" 2>&1 || true
+s1=$(spent_of "$sc/status2")
+if awk -v a="$s0" -v b="$s1" 'BEGIN { exit !(b - a == 152.5) }'; then
+  pass "status: a running stage counts as the 150 reserve, a running shift as 0, a finished stage as its result"
+else
+  fail "status: spent went from '$s0' to '$s1', not up by 152.5"
 fi
 
 echo "test-reader-model-pair-audit: ${passed} passed, ${failures} failed"

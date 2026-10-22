@@ -20,7 +20,10 @@
 #   4 audit     each audit run, opened through ITS BRANCH CLONE's gate so the
 #               plugin pin is that branch's commit, driven by a script seat
 #               that issues `act --kind router-shift` until the run's first
-#               audit report carries both fences (`수집됨`)
+#               audit report carries both fences (`수집됨`) or the run has
+#               ended; the run's manifest declares a cost ceiling below any
+#               stage's cost, so the gate ends the run once the audit stage
+#               has been costed and launches no further stage in it
 #   5 collect   each first report copied to reports/<n>-<branch>.md, its
 #               validity checked, one docs.tsv row per document
 #   6 verdict   scripts/reader-model-compare.sh pairs → report.md
@@ -38,7 +41,8 @@
 #                 required by `status` and `--rerun-doc`
 #   --budget-usd  required by every call that may start billed work, with no
 #                 default: before each new run, spent + 150 must not exceed
-#                 it, and before resuming an opened run spent must be below it
+#                 it, and before resuming an opened run spent must be below it;
+#                 a stage whose stream has no result line yet counts as 150
 #   --dry-run     select, make the branches, prepare and check the manifests,
 #                 then stop; never calls the gate's act
 #   --rerun-doc   discard one document's state and records and run it again
@@ -68,6 +72,19 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 
 DOCS=5
 RESERVE_RUN=150
+# The `**비용 천장**` of every audit run. One `router-shift` call is not one
+# shift: the gate's relay launches the successor shift inside the same call as
+# soon as the audit stage ends, so a seat that checks between calls cannot stop
+# a skeletal first audit from being carried on to a re-convergence and a
+# re-audit. The ceiling is what stops it. The gate appends the run's `cost` row
+# when a stage ends, its cost boundary ends the run at the next gated act or
+# exec once that row reaches the ceiling, and an ended run launches no stage
+# while the relay launches no further shift. A ceiling below any stage's cost
+# makes that the audit stage itself. The call that ends the run is not refused
+# itself; the router reads the audit's stream through the gate before it routes
+# a re-convergence, and that read is the call. A stage launched anyway is
+# counted by `spent` at the run reserve until its stream has a result line.
+RUN_CEILING_USD=0.01
 DEADLINE_SECONDS=14400
 SEAT_MAX="${READER_EXP_SEAT_MAX:-500}"
 TARGET_ALIAS="exp"
@@ -285,16 +302,24 @@ tier_model() {
 
 # spent — every top-level `result` line of every run this experiment opened.
 # Summing all result lines over-counts a resumed session; for a guard that is
-# the safe direction.
+# the safe direction. A stage stream with no result line is a stage still
+# running (or one that died before its result), and its cost is not on disk
+# yet, so it counts as the whole run reserve. Shift streams (`shift-<n>.json`)
+# count their result lines only: no shift is live when the guard reads.
 spent() {
   {
     if [[ -f "$ST/runs.list" ]]; then
-      local rid f
+      local rid f costs
       while IFS= read -r rid; do
         [[ -n "$rid" ]] || continue
         for f in "$RUN_ROOT/$rid"/log/*.json; do
           [[ -f "$f" ]] || continue
-          jq -R 'fromjson? | select(type == "object" and .type == "result") | (.total_cost_usd // 0)' "$f" 2>/dev/null || true
+          costs=$(jq -R 'fromjson? | select(type == "object" and .type == "result") | (.total_cost_usd // 0)' "$f" 2>/dev/null || true)
+          if [[ -z "$costs" ]]; then
+            case "$(basename "$f")" in shift-*) ;; *) echo "$RESERVE_RUN" ;; esac
+          else
+            printf '%s\n' "$costs"
+          fi
         done
       done < "$ST/runs.list"
     fi
@@ -578,7 +603,7 @@ write_run_files() {
       "$doc" "$docsha"
     printf '## 실행 계획\n**승인 문면**: reader-model-pair-audit 고정 계획\n```json\n%s\n```\n\n' "$plan"
     printf '## 인가\n**구속 다이제스트**: @BD@\n**런 최대 절단점**: 커밋\n**종료 지점**: %s\n**벽시계 마감**: %s\n' "$goal" "$dl"
-    printf '**비용 천장**: 없음\n**무진전 상한**: 없음\n**시각 정합 마커**: 없음\n**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+    printf '**비용 천장**: %s\n**무진전 상한**: 없음\n**시각 정합 마커**: 없음\n**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n' "$RUN_CEILING_USD"
     printf -- '- `종료 절` | id=C1 | 문면=%s\n' "$clause"
   } > "$m.tmp"
   local dg tmd bd
@@ -726,11 +751,6 @@ seat_answer_halts() {
   return "$got"
 }
 
-# run_deadline <manifest> — the run's frozen wall-clock deadline.
-run_deadline() {
-  sed -n 's/^\*\*벽시계 마감\*\*: //p' "$1" | head -n 1
-}
-
 # first_report <clone> <owner-doc> — the path of the clone's first audit of the
 # document, empty when there is none.
 first_report() {
@@ -754,7 +774,8 @@ collected() {
 
 # seat <manifest> <clone> <run id> <log> <owner-doc> — issue `router-shift` as
 # the seat does until the run's first audit report is collected or its done
-# file exists. Returns 0 on either, 5 on an approval for a person, 6 on a shift
+# file exists — the run's cost ceiling writes it once the audit stage is
+# costed, inside the call that ran the stage. Returns 0 on either, 5 on an approval for a person, 6 on a shift
 # that handed off with 중단 and left a halt record no seat answer settles, any
 # other status on a failure. After a 승인 or 중단 handoff the seat does not
 # send 대기 — the gate would refuse it.
@@ -811,7 +832,7 @@ run_seat_or_stop() {
         echo "  This script is the run's seat, and a shell seat cannot close an approval: it closes only from the"
         echo "  answer frame of an AskUserQuestion in a Claude session seat. To start the document over instead, call"
         echo "  the same command with --rerun-doc ${n}."
-        echo "  The run closes at its wall-clock deadline $(run_deadline "$m"); a document resumed after it is invalid."
+        echo "  The run declares a cost ceiling, so its wall-clock deadline does not close it; it stays open until answered."
       } >&2
       exit 3 ;;
     6)
@@ -828,7 +849,7 @@ run_seat_or_stop() {
             "$clone" "$GATE" "$m" "$TARGET_ALIAS" "$(halt_key "$f")" "$GATE" "$m" "$f"
         done < <(unanswered_halts "$RUN_ROOT/$rid" "$clone/docs/pipeline-run/$rid.md")
         echo "  Then call the same command again."
-        echo "  The run closes at its wall-clock deadline $(run_deadline "$m"); a document resumed after it is invalid."
+        echo "  The run declares a cost ceiling, so its wall-clock deadline does not close it; it stays open until answered."
       } >&2
       exit 3 ;;
     *)
@@ -843,7 +864,9 @@ audit_branch() {
   case "$(kv "$bst" status)" in 수집됨|종료됨) return 0 ;; esac
   run_seat_or_stop "$n" "$br"
   clone=$(kv "$bst" clone); doc=$(kv "$ST/doc-$n/doc.state" doc)
-  # A collected run is left open; it closes at its own wall-clock deadline.
+  # A run collected between calls, with its audit stage still running, is left
+  # as it is: no seat call follows, so no further shift is launched, and once
+  # the stage is costed any later gated call on the run ends it at the ceiling.
   if collected "$clone" "$doc"; then kv_set "$bst" status "수집됨"; else kv_set "$bst" status "종료됨"; fi
 }
 
