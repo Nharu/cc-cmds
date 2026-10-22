@@ -1435,13 +1435,14 @@ The report lives at `<base>/docs/pipeline-run/{runId}.md` — the same `<kind>` 
 
 ### 3.6 The metrics summary beside the ledger
 
-The run metrics collector (`orchestrator/collect-run-metrics.sh`) is started by the gate from its prelude — every verb but `plan` and `digest-path`, never from a stage seat, at most once per six hours per state root (stamp `<state root>/metrics.stamp`, one-attempt lock `<state root>/.metrics.lock` with a two-hour expiry). The verb that meets the expired stamp pays only for the stamp, the lock and the launch: the round runs in a detached child (`gate.sh metrics-round`, bound to the lock by a nonce written into it), which cuts the collector after one hour, files, and releases the lock; its output goes to `<RUN_DIR>/log/metrics-round.log`. It is the only writer of the five files below; the gate reads its stdout and nothing else.
+The run metrics collector (`orchestrator/collect-run-metrics.sh`) is started by the gate from its prelude — every verb but `plan` and `digest-path`, never from a stage seat, at most once per six hours per state root (stamp `<state root>/metrics.stamp`, one-attempt lock `<state root>/.metrics.lock` with a two-hour expiry). The verb that meets the expired stamp pays only for the stamp, the lock and the launch: the round runs in a detached child (`gate.sh metrics-round`, bound to the lock by a nonce written into it), which cuts the collector after one hour, files, and releases the lock; its output goes to `<RUN_DIR>/log/metrics-round.log`. It is the only writer of the six files below; the gate reads its stdout and nothing else.
 
 | File | Where | What |
 | --- | --- | --- |
 | summary | `<base>/docs/pipeline-run/metrics.json` | the aggregate over every collected run, keys sorted, **no timestamps** |
 | start marker | `<base>/docs/pipeline-run/metrics.json.pending` | created empty when a round starts, removed after the summary is renamed into place; one left behind is a round that died |
 | per-run record | `<base>/docs/pipeline-run/metrics/<run-id>.json` | one per collected run, written once and not rewritten |
+| per-run member record | `<base>/docs/pipeline-run/metrics/<run-id>.members.json` | the team members' dispatch spans of one run, written beside the per-run record only when that run is newly collected; it is not a per-run record — the summary's strata and the triggers never read it, and only the summary's `members` key is aggregated from these files |
 | unfiled | `<base>/docs/pipeline-run/metrics.unfiled/<issue number>.md` | an issue that was created but could not be added to the Project, with the command that adds it |
 | round journal | `<state root>/metrics/<repo-key>/rounds.jsonl` | append-only, one line per round; `repo-key` is the repo base's absolute path with `/` turned into `-` |
 

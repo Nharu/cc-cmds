@@ -23,7 +23,7 @@ Team communication is English. Everything written for the user — the saved doc
 
 ## What this sibling is, and what it is not
 
-This is the **one unattended arm** of `/cc-cmds:design`, and it has **two dispatchers**. As the seat's **leg**, the seat (the conversation with the human) runs Step 1 and Step 2, dispatches this skill with `claude -p`, and takes back over at Step 5; the boundary is Step 3 + Step 4 through the save, and it is forced rather than chosen — the Step 4 fidelity pass resumes the Step 3 team by `agentId`, and an agent id is addressable only from the session that spawned it, so Step 3 and the pass cannot straddle a session. As the driver's **stage**, nobody takes back over: the human's part was taken at kickoff (intent, cutpoints, roster), so the arm continues past the save to the freeze and hands the frozen document to the driver.
+This is the **one unattended arm** of `/cc-cmds:design`, and it has **two dispatchers**. As the seat's **leg**, the seat (the conversation with the human) runs Step 1 and Step 2, dispatches this skill with `claude -p`, and takes back over at Step 5; the boundary is Step 3 + Step 4 through the save, and it is forced rather than chosen — the Step 3 rounds and the Step 4 fidelity pass dispatch into the same ledger rows, and a same-key resume of a live member (a send-back, a nudge, Case 1 or Case 3) is addressable only from the session that dispatched it, so Step 3 and the pass cannot straddle a session. As the driver's **stage**, nobody takes back over: the human's part was taken at kickoff (intent, cutpoints, roster), so the arm continues past the save to the freeze and hands the frozen document to the driver.
 
 It is a separate file so that "this arm has no human-question surface" is a whole-file predicate `scripts/lint-unattended-surfaces.sh` can check. **One file still carries one arm**; what varies is who dispatched it.
 
@@ -122,7 +122,7 @@ CFI-2 and CFI-3 of the base skill (Step 5 → 6 → 7 and the freeze) are the se
 
 What this lead Reads of other files, and when: a row names a file under `plugins/cc-cmds/skills/` (or a run input `입력:<이름>`), a part of it — a verbatim heading, or the verbatim start of a line — and how far the part reaches: `절` to the next heading of the same or a higher level, `본문만` to the next heading of any level, `항목` the list item with its indented continuation (a paragraph: to the next blank line), `` 끝:`<line start>` `` to the line before that one, `전체` the whole file. `파견전` rows are Read before the first spawn, by the dispatcher in `디스패치` (`공통` is both); each later phase's rows are Read on entering that phase, never before. `팀원:` rows are the parts a member prompt names, not the lead's reads.
 
-**파견전 상한**: 159000 바이트
+**파견전 상한**: 168000 바이트
 
 | 단계 | 디스패치 | 파일 | 부분 | 범위 |
 |---|---|---|---|---|
@@ -154,9 +154,9 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 | 경계 | 공통 | `design/SKILL.md` | `### Observation & verification carve-out (running + experimenting ≠ modifying)` | 절 |
 | 경계 | 공통 | `_common/verification.md` | `## 6. Observation & verification carve-out (running + experimenting ≠ modifying)` | 본문만 |
 | 경계 | 공통 | `_common/verification.md` | `` **A new untracked entry under `docs/` leaves the difference set `` | 항목 |
-| 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `## Multi-round (resume + context re-injection)` | 본문만 |
-| 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `### Resume latency` | 절 |
-| 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `### Resume kinds and witness keys` | 절 |
+| 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `## Multi-round (dispatch + context re-injection)` | 본문만 |
+| 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `### Dispatch latency` | 절 |
+| 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `### Dispatch kinds and witness keys` | 절 |
 | 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `## Convergence` | 절 |
 | 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `## Cross-round happens-before hard gate (no look-ahead)` | 절 |
 | 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `## Witness file (member-written, durable, atomic publish)` | 절 |
@@ -178,9 +178,9 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 | 합성 | 공통 | `_common/verification.md` | `## 8. Transformation move (in-session-unverifiable → R-item)` | 절 |
 | 합성 | 공통 | `_common/verification.md` | `## 10. Pre-save sweep pass conditions (shared predicate)` | 절 |
 | 합성 | 시트 | `_common/team-cleanup.md` | — | 전체 |
-| 합성 | 공통 | `_common/agent-team-protocol.md` | `## Multi-round (resume + context re-injection)` | 본문만 |
-| 합성 | 공통 | `_common/agent-team-protocol.md` | `### Resume latency` | 절 |
-| 합성 | 공통 | `_common/agent-team-protocol.md` | `### Resume kinds and witness keys` | 절 |
+| 합성 | 공통 | `_common/agent-team-protocol.md` | `## Multi-round (dispatch + context re-injection)` | 본문만 |
+| 합성 | 공통 | `_common/agent-team-protocol.md` | `### Dispatch latency` | 절 |
+| 합성 | 공통 | `_common/agent-team-protocol.md` | `### Dispatch kinds and witness keys` | 절 |
 | 합성 | 공통 | `_common/agent-team-protocol.md` | `## Witness file (member-written, durable, atomic publish)` | 절 |
 | 합성 | 공통 | `_common/agent-team-protocol.md` | `` ## Completion predicate `witness_present(member, round/phase)` `` | 절 |
 | 합성 | 공통 | `_common/agent-team-protocol.md` | `## Completion signal (hints only)` | 절 |
@@ -204,16 +204,16 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 | 워크스루 | 드라이버 | `implement-unattended/SKILL.md` | `- **diff gate**` | 항목 |
 | 워크스루 | 드라이버 | `implement-unattended/SKILL.md` | `## W3 — the unattended design arm's write form (defined here, never written by this arm)` | 절 |
 | 워크스루 | 드라이버 | `implement-unattended/SKILL.md` | `## Constraints` | 절 |
-| 정합 | 공통 | `design/SKILL.md` | `**Roster scoping (mandatory, before any resume).**` | 항목 |
+| 정합 | 공통 | `design/SKILL.md` | `**Roster scoping (mandatory, before any dispatch).**` | 항목 |
 | 정합 | 공통 | `design/SKILL.md` | `1. **Re-read the ledger from disk**` | 항목 |
 | 정합 | 공통 | `design/SKILL.md` | `5. **Collect by witness**` | 항목 |
-| 정합 | 공통 | `design/SKILL.md` | `- **Permitted team resumes (closed enumeration).**` | 항목 |
+| 정합 | 공통 | `design/SKILL.md` | `- **Permitted team resumes (same key only).**` | 항목 |
 | 정합 | 공통 | `_common/agent-team-protocol.md` | `## Spawn` | 본문만 |
 | 정합 | 드라이버 | `_common/judgment-grade.md` | `### Emission form — how a stage hands a judgment to the gate` | 절 |
 | 정합 | 드라이버 | `_common/team-cleanup.md` | — | 전체 |
-| 정합 | 공통 | `_common/agent-team-protocol.md` | `## Multi-round (resume + context re-injection)` | 본문만 |
-| 정합 | 공통 | `_common/agent-team-protocol.md` | `### Resume latency` | 절 |
-| 정합 | 공통 | `_common/agent-team-protocol.md` | `### Resume kinds and witness keys` | 절 |
+| 정합 | 공통 | `_common/agent-team-protocol.md` | `## Multi-round (dispatch + context re-injection)` | 본문만 |
+| 정합 | 공통 | `_common/agent-team-protocol.md` | `### Dispatch latency` | 절 |
+| 정합 | 공통 | `_common/agent-team-protocol.md` | `### Dispatch kinds and witness keys` | 절 |
 | 정합 | 공통 | `_common/agent-team-protocol.md` | `## Witness file (member-written, durable, atomic publish)` | 절 |
 | 정합 | 공통 | `_common/agent-team-protocol.md` | `` ## Completion predicate `witness_present(member, round/phase)` `` | 절 |
 | 정합 | 공통 | `_common/agent-team-protocol.md` | `## Completion signal (hints only)` | 절 |
@@ -373,7 +373,7 @@ Step 6U is a **destination** — Step 5U's `재설계` items and Step 4's two es
 
 The jobs below run in this order, then the freeze; the ladder needs final R-items and writes, and nothing follows the freeze (CFI-3c of the base skill).
 
-1. **Coherence pass.** Resume this session's Step 3 team by `agentId` (the base skill's permitted resume #3 — this is the one session that can address them), phase token `coherence`, `epoch` re-stamp and `witnessNonce` per the base skill's Step 7 and the protocol, one round, collect by witness under CFI-U0. Apply each finding directly to the document. **A finding that contradicts a converged decision → halt `step7-coherence-conflict`**, naming the finding and the decision. A finding that the document departs from a recorded interview answer is not such a contradiction: it is listed by the requirement-decision job below as `벗어남 — 문 <n>`. Clear each consumed `[Step 7 정합 점검 대상]` note. Then apply `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`.
+1. **Coherence pass.** Dispatch this session's Step 3 roles afresh into their ledger rows (the base skill's permitted re-convening #2 — a new key, so a fresh dispatch carrying each member's own past witnesses by path), phase token `coherence`, `epoch` re-stamp and `witnessNonce` per the base skill's Step 7 and the protocol, one round, collect by witness under CFI-U0. Apply each finding directly to the document. **A finding that contradicts a converged decision → halt `step7-coherence-conflict`**, naming the finding and the decision. A finding that the document departs from a recorded interview answer is not such a contradiction: it is listed by the requirement-decision job below as `벗어남 — 문 <n>`. Clear each consumed `[Step 7 정합 점검 대상]` note. Then apply `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`.
 2. **Slicing self-check** (only when `## 구현 슬라이싱` is present): the base skill's five rules — declared ⊇ actual, `SKILL.md` implies `README.md`, when the document has a `## 구현 시 검증 항목` section and two or more implement slices, each of those slices declares `**잔여 항목**` (its verbatim residual headings in 「」, or `없음` when it owns none), a block carrying a `**머지 순서**` line gives `**선행 사유**` for a `선행` that is not `없음` and `**머지 순서 사유**` for a `머지 순서` that is not `없음`, and closure disjointness — each slice S's declared files are prefix-disjoint from every slice in M(S) \ P(S), with no exemption for `README.md`, `plugin.json` or `CHANGELOG.md`. Repair the declaration in place; a repair that needs a decision the authors did not make → halt `slicing-unknown`.
 3. **Requirement-decision list.** Re-read the whole document against the interview record and its `## 확인된 요구`, and fill `### 확인된 요구와의 대응`. A requirement-level decision not yet in `## 팀이 정한 요구 결정` is added, whether it came from synthesis, a Step 5U `해결`, a coherence correction or a slicing repair. A requirement-level entry of `## 미해결 이슈 / 트레이드오프` left at `상태: 보류` is listed as `미결 — 보류로 동결`. A decision that departs from a recorded answer is listed as `벗어남 — 문 <n>` and never goes to `step7-coherence-conflict`; the run does not stop for it. This job follows the coherence pass and the slicing repair because it collects what they decided, and precedes the ladder because the ladder follows the last write.
 4. **Residual ladder.** For every `### R<n>` still at `**검증 등급**: 구현 시 검증`, descend until one rung settles it:
@@ -399,14 +399,19 @@ The jobs below run in this order, then the freeze; the ladder needs final R-item
 - **Park answer.** A message of the form *"park 질문 `<자리 id>` 에 대한 사용자의 답은 다음과 같다: …"* resumes the workflow at that site with the answer applied. The neutral wording is the seat's; treat the turn as an artifact turn.
 - **Ladder answer `잔여로 두고 동결`** (to this stage's `/ ladder-unsettled` halt): resume after the ladder — write the `**잔여 동결**` line, then freeze (Step 7U job 5).
 - **Ladder answer `골격 재검토`**: do not redesign here — write the `**잔여 동결**` line with that label, then freeze; design re-convergence redesigns after this freeze. Both end with the freeze literal, path and `sha256`, unchanged.
-- **Coherence pass.** A message carrying the final document's path and the `[Step 7 정합 점검 대상]` notes: re-read the ledger from disk → re-stamp `epoch` on every Step-3 row (`max(disk epoch, 0) + 1`, one Edit per row, one contiguous window), writing each row's `coherence` `witnessNonce` **before** the resume and flipping `round/phase` **after** it → resume this session's Step 3 team by `agentId` (the base skill's permitted resume #3, one round) → collect by witness with Case-1 / Case-2 handling under CFI-U0 → write `$STATE/coherence.md` (header `<!-- cc-design-coherence v1; writer=design-discuss-unattended; reader=design; slug=<slug> -->`, one finding block per item) and end the turn **without editing the document's prose**. **Memoryless-resume watch**: if a resume's tool result carries `(no prior transcript)`, that member was not resumed — treat it as Case-2 and do not count it toward `resumedMessageCount`.
+- **Coherence pass.** A message carrying the final document's path and the `[Step 7 정합 점검 대상]` notes: re-read the ledger from disk → re-stamp `epoch` on every Step-3 row (`max(disk epoch, 0) + 1`, one Edit per row, one contiguous window), writing each row's `coherence` `witnessNonce` **before** the dispatch and flipping the row (`agentId`, `outputFile`, `round/phase`, `state`, `stallMark`) **after** it → dispatch this session's Step 3 roles afresh (the base skill's permitted re-convening #2, one round), each prompt carrying what the protocol's `## Multi-round` lists for a boundary dispatch → collect by witness with Case-1 / Case-2 handling under CFI-U0 → write `$STATE/coherence.md` (header `<!-- cc-design-coherence v1; writer=design-discuss-unattended; reader=design; slug=<slug> -->`, one finding block per item) and end the turn **without editing the document's prose**. **Memoryless-resume watch**: a same-key resume inside this pass (a send-back, a nudge, Case 1 or Case 3) whose tool result carries `(no prior transcript)` did not reach that member — treat it as Case-2 and do not count it toward `resumedMessageCount`.
 
 ## Constraints
 
 - NO code modifications. The observation & verification carve-out of the base skill's `## Constraints` applies verbatim. `design/SKILL.md`'s instruction to Read `_common/verification.md` is served by the parts of `_common/verification.md` in `## Lead read set`; do not Read `_common/verification.md` whole.
 - Inter-agent communication is English.
-- Team members are nameless `Agent` sub-agents (`subagent_type: "claude"`, `run_in_background: true`, no `name`), resumed by `agentId`, self-terminating on return.
-- **Every member prompt carries CFI-U0 verbatim** plus this sentence: a member never emits a banner by any route — not a notification tool, not a script, not by asking someone else to emit one on its behalf — and reports completion and blockage to its spawner by witness file and return value only.
+- Team members are nameless `Agent` sub-agents (`subagent_type: "claude"`, `run_in_background: true`, no `name`), one fresh dispatch per `(role, round/phase)` key, resumed by `agentId` only inside that key, self-terminating on return.
+- **Every member prompt carries CFI-U0 verbatim** plus this sentence: a member never emits a banner by any route — not a notification tool, not a script, not by asking someone else to emit one on its behalf — and reports completion and blockage to its spawner by witness file and return value only. **Every** means every boundary dispatch, not only round 1: CFI-U0 with that sentence, the research paragraph below, and under driver dispatch the interview record's path with its "Read it whole" sentence are carried verbatim in each round's and each phase's dispatch prompt. The role brief file the protocol's `## Spawn` has the lead write once at `${scratchDir}/prompt/{role-slug}.md` holds the role body only and does not stand in for them.
+- **Role brief by path.** A boundary dispatch names the role brief file `${scratchDir}/prompt/{role-slug}.md` (written once at round 1, role body only — no header, witness path, nonce or sentinel line) rather than the durable copy `witness/{role-slug}.prompt.md`: the durable copy is round 1's whole rendered prompt with round 1's header, and handing it over would give the new member two sets of witness path and nonce. The durable copy stays for audit and the Step 7 fallback only.
+- **Re-entry notes.** This skill opts in to the protocol's `### Parameter — re-entry notes (opt-in)`. The clause the base skill's Step 3 appends is the same clause; carry it once per member prompt, verbatim, after the task-assignment header:
+
+**Re-entry notes (MUST)**: directly above your `peer-read:` lines (directly above your sentinel when you have none), put a section that starts with the heading `## Re-entry notes`, at most 20 lines and 2,000 bytes, one entry per line — `path:line — why` for a place you would open first if you came back to this work, or one command you would re-run. No findings and no verdicts in it. The next dispatch of your role reads it as the starting point of its re-exploration.
+
 - Call external commands directly, never inside `bash -c`.
 - **Never reach a notification surface** and **never write a pipeline sidecar** (CFI-L3).
 - **Under driver dispatch every Bash command goes through `gate.sh exec`**, with the `--reach` discipline of `implement-unattended`'s CFI-U7 — declare where an act lands (`런로컬`·`기기전역`·`dev`·`prod`·`협업`·`배포트리거`·`미상`), prefer `미상` to a guess, read pipeline variables by name and never with bare `env`, and on exit 11 neither retry nor re-declare. A local docker act that uses the daemon's store is declared `--reach 기기전역`; a `사전 인가` row that names the act word for word opens it without judgment (`docker build -t <tag> <context>`, `docker image rm <tag>`), and any other machine-global act is opened only when a separate judgment call finds it within one row's `형태` and `사유` — so spell the act exactly as a row names it, call the program by its name on `PATH`, and keep every argument free of whitespace. A tag or image name in a row is a fixed string chosen at kickoff — a tag picked on the day cannot be in a row frozen before it, so no row names that act. An option written with `=` anywhere in a machine-global act — `--output=…`, `--secret=…` — keeps every row from naming it, so spell it with a space. `docker run` is not a read and is declared `트리밖쓰기`; a test command that runs docker inside itself (`bash scripts/test-gate.sh …`) declares `--reach 런로컬`, for what the runner itself does. This includes every member the Step 3 team spawns: the gate hook is inherited by the stage's children, so a member's plain Bash is refused rather than silently unrecorded. Under seat dispatch no gate engages, as stated in the blast-radius paragraph above.
