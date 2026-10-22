@@ -204,9 +204,11 @@ esac
 dry=$(cd "$repo_root" && make -n check-push 2>&1)
 if [ "$(printf '%s\n' "$dry" | grep -cxF 'bash scripts/check-push.sh run' || true)" -ge 1 ]; then ok "make check-push 가 check-push.sh run 을 부른다"; else bad "check-push 타깃" "$dry"; fi
 # The section and goal lists reach the script through the environment make
-# exports a command-line variable into, never through the recipe line.
+# exports a command-line variable into, never through the recipe line. The
+# comparison is exact, so the inner make must not inherit the outer one's
+# jobserver: under `make -j` it warns "jobserver unavailable" into the output.
 for v in CHECK_PUSH_SECTIONS=x CHECK_PUSH_GOALS=x; do
-  dry=$(cd "$repo_root" && make -n check-push "$v" 2>&1)
+  dry=$(cd "$repo_root" && MAKEFLAGS='' MFLAGS='' MAKELEVEL='' make -n check-push "$v" 2>&1)
   if [ "$dry" = "bash scripts/check-push.sh run" ]; then ok "make -n check-push $v 도 정확히 check-push.sh run 을 찍는다"; else bad "check-push 타깃 ($v)" "$dry"; fi
 done
 dry=$(cd "$repo_root" && make -n check-push-verify 2>&1)
