@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.104.1] - 2026-10-22
+## [2.104.2] - 2026-10-22
 
 무인 런이 대상의 표면 가드 체크를 사람 없이 넘길 길을 하나로 묶는다. 킥오프가 대상마다 「이 체크의 실패는 이 라벨로 인정한다」는 `라벨 인정` 행을 얼리고, 슬라이스가 그 체크를 `라벨 인정` 필드로 선언했을 때만 게이트의 `act --kind label-ack` 가 PR 에 라벨을 붙인다. 그 밖의 길로 PR 라벨을 바꾸는 exec 는 이제 모두 거부된다.
 
