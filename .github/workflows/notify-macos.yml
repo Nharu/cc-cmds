@@ -77,16 +77,25 @@ jobs:
     # with a deadline inside this ceiling — the job start plus CC_JOB_BUDGET_S,
     # less a margin for its dump — and every suite under it has a deadline
     # inside that one, so a stall ends as a named failure with the holders
-    # dumped before the runner would cancel the job. The longest successful
-    # run so far took about seven minutes. The click helper's suite adds a
-    # cold Swift compile — 8 to 26 seconds on an idle developer machine, but
-    # 184 seconds was measured under load, so it is budgeted at four minutes —
-    # and seven plus four still fits inside sixteen, so the ceiling stays.
-    # The return-hook suite took 67 seconds on a developer machine; budgeted
-    # at two minutes and counted as if it ran after everything else, seven
-    # plus four plus two is thirteen, which still fits, so the ceiling stays.
-    # When the list grows, recompute the same way. CC_JOB_BUDGET_S below must
-    # equal this ceiling times 60: `timeout-minutes` cannot read `env`, so the
+    # dumped before the runner would cancel the job.
+    #
+    # How the job fits. On the runner's three cores, the last master run
+    # before test-run.sh was split spent 819 seconds in that one suite, while
+    # every other suite took 152 seconds or less and all of them were done
+    # about 370 seconds in; after that test-run.sh ran alone with two cores
+    # idle, and runs of 857 to 861 seconds hit this ceiling. The suite now
+    # runs as two parts side by side, split where its measured time divided
+    # into about 440 and 379 seconds. The target is a job of 720 seconds or
+    # less — a quarter of this ceiling left as margin for runner variance —
+    # with about nine to ten minutes expected. When the list grows, recompute
+    # it the same way: the longest part, plus the remaining suites laid over
+    # the three cores beside it, plus the steps around the test step (checkout,
+    # the brew install and the duration signal: 26 seconds of that run's 847),
+    # plus a margin for variance; if that does not leave a quarter of the
+    # ceiling, split differently before raising the ceiling.
+    #
+    # CC_JOB_BUDGET_S below must equal this ceiling times 60:
+    # `timeout-minutes` cannot read `env`, so the
     # two are tied by a check in scripts/test-suite-guard.sh rather than by a
     # reference. Change both together.
     timeout-minutes: 16
