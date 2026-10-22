@@ -46704,6 +46704,70 @@ for w92 in "$W92S1" "$W92S2" "$W92S3" "$W92S4" "$W92S5"; do
   ( cd "$WT" && git worktree remove --force "$w92" ) >/dev/null 2>&1
 done
 
+# ---------------------------------------------------------------------------
+# 96. gate-shard 레시피의 레인 — 행 배정, 레인별 결과 파일, 종료 코드와 합계 줄 검사
+# --- section: 96 | covers: gate-shard | anchors: 96: 두 레인이 합계 줄을 내면 통과하고 행 k 와 k+N 의 결과 파일을 남긴다, 96: 레인마다 자기 TMPDIR 를 받는다, 96: 레인 출력은 행 순서대로 통째로 찍힌다, 96: 배정 없는 레인은 빈 행으로 끝나 통과한다, 96: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다, 96: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다, 96: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다, 96: 레인 사례를 모두 돌렸다 ---
+#
+# Makefile 과 분할기를 임시 체크아웃에 복사하고 가짜 묶음을 둔 뒤 진짜 `make
+# gate-shard` 레시피를 부른다. 러너 2 개 × 레인 2 개라 표는 4 행이고, 러너 k 는 행
+# k 와 k+2 를 함께 돈다. 가짜 묶음은 `--sections` 의 첫 id 로 동작을 고른다:
+# `fail` 로 시작하면 합계 줄을 내고 종료 1, `nototal` 이면 합계 줄 없이 종료 0,
+# 그 밖에는 합계 줄을 내고 종료 0 이다. 받은 TMPDIR 는 로그 디렉터리에 남긴다.
+# 사례 수를 마지막 단언으로 고정해, 사례 하나를 조용히 건너뛴 고침은 통과하지 못한다.
+# ---------------------------------------------------------------------------
+d96="$WORK/d96"; mkdir -p "$d96/repo/scripts" "$d96/log"
+cp "$repo_root/Makefile" "$d96/repo/Makefile"
+cp "$repo_root/scripts/gate-shard.sh" "$d96/repo/scripts/gate-shard.sh"
+cat > "$d96/repo/scripts/test-gate.sh" <<'EOF96'
+#!/usr/bin/env bash
+ids="$2"
+printf '%s\n' "${TMPDIR:-}" > "$F96_LOG/tmpdir-${ids%%,*}"
+printf 'PASS: fake %s\n' "$ids"
+case "$ids" in
+  fail*)    printf '\ntest-gate: 1 passed, 1 failed\n'; exit 1 ;;
+  nototal*) exit 0 ;;
+  *)        printf '\ntest-gate: 1 passed, 0 failed\n'; exit 0 ;;
+esac
+EOF96
+c96=0
+# m96 <러너> <표> <출력 디렉터리> — 레시피의 종료 코드를 rc96 에, 합친 출력을 o96 에 둔다.
+m96() {
+  c96=$((c96 + 1)); rm -rf "$3"
+  rc96=0
+  o96=$( ( unset MAKEFLAGS MFLAGS MAKELEVEL; cd "$d96/repo" && F96_LOG="$d96/log" make -s --no-print-directory gate-shard \
+      SHARD="$1" GATE_SHARDS=2 GATE_LANES=2 GATE_TABLE="$2" GATE_OUT_DIR="$3" ) 2>&1 ) || rc96=$?
+}
+printf '1\t5\tok1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d96/t-ok.tsv"
+m96 1 "$d96/t-ok.tsv" "$d96/o1"
+check "96: 두 레인이 합계 줄을 내면 통과하고 행 k 와 k+N 의 결과 파일을 남긴다" \
+  "$rc96/$(cat "$d96/o1/result-1.tsv" 2>/dev/null)/$(cat "$d96/o1/result-3.tsv" 2>/dev/null)/$(ls "$d96/o1" | grep -c '^result-')" \
+  "0/$(printf '1\t0\ttest-gate: 1 passed, 0 failed')/$(printf '3\t0\ttest-gate: 1 passed, 0 failed')/2"
+check "96: 레인마다 자기 TMPDIR 를 받는다" \
+  "$(cat "$d96/log/tmpdir-ok1" 2>/dev/null)|$(cat "$d96/log/tmpdir-ok3" 2>/dev/null)" "$d96/o1/lane-1|$d96/o1/lane-3"
+check "96: 레인 출력은 행 순서대로 통째로 찍힌다" \
+  "$(printf '%s\n' "$o96" | grep -E '^(=== gate row|PASS: fake)' | tr '\n' '|')" \
+  "=== gate row 1/4 (runner 1, lanes 2) ===|PASS: fake ok1|=== gate row 3/4 (runner 1, lanes 2) ===|PASS: fake ok3|"
+m96 2 "$d96/t-ok.tsv" "$d96/o2"
+check "96: 배정 없는 레인은 빈 행으로 끝나 통과한다" \
+  "$rc96/$(cat "$d96/o2/result-4.tsv" 2>/dev/null)/$(cut -f2 "$d96/o2/result-2.tsv" 2>/dev/null)" "0/$(printf '4\t0\t빈 행')/0"
+printf '1\t5\tfail1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d96/t-fail.tsv"
+m96 1 "$d96/t-fail.tsv" "$d96/o3"
+case "$rc96/$o96" in
+  0/*) bad "96: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" "rc=$rc96 $o96" ;;
+  *"행 1 의 레인이 종료 코드 1 로 끝났습니다"*) ok "96: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" ;;
+  *) bad "96: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" "rc=$rc96 $o96" ;;
+esac
+printf '1\t5\tnototal1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d96/t-nototal.tsv"
+m96 1 "$d96/t-nototal.tsv" "$d96/o4"
+case "$rc96/$o96" in
+  0/*) bad "96: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" "rc=$rc96 $o96" ;;
+  *"행 1 의 레인 출력에 합계 줄"*) ok "96: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" ;;
+  *) bad "96: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" "rc=$rc96 $o96" ;;
+esac
+check "96: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다" "$(cat "$d96/o4/result-1.tsv" 2>/dev/null)" "$(printf '1\t0\t-')"
+check "96: 레인 사례를 모두 돌렸다" "$c96" "4"
+unset -f m96
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
