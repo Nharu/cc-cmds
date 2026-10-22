@@ -287,7 +287,9 @@ for var in CC_PIPELINE_RUN_ID CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPEL
   for mode in 'detect --arg x' 'judge --prev X --base /x' 'verify --prev X --base /x' 'graph --prev X --base /x' \
               'render-manifest --prev X --base /x' 'render-manifest --auto --prev X --base /x' \
               'render-interview --prev X --base /x' \
-              'verify-subset a b' 'verify-subset --auto a b'; do
+              'verify-subset a b' 'verify-subset --auto a b' \
+              "adopt --prev X --base /x --expect-sha256 $(printf '%064d' 0)" \
+              "adopt --auto --prev X --base /x --expect-sha256 $(printf '%064d' 0)"; do
     # shellcheck disable=SC2086
     out=$(cd "$WORK" && env "$var=x" "$BASH" "$RK" $mode 2>"$WORK/rk.err"); rc=$?
     check "10: $var 가 있으면 ${mode%% *} 는 3 으로 거부한다" "$rc" "3"
@@ -298,6 +300,21 @@ check "10: 거부의 표준 오류는 한 줄이다" "$(grep -c . "$WORK/rk.err"
 out=$(rk 2>/dev/null); rc=$?
 check "모드가 없으면 2" "$rc" "2"
 check "용법 오류의 표준 출력은 비어 있다" "$out" ""
+Z64=$(printf '%064d' 0)
+for mode in 'detect --arg x' 'judge --prev RKX --base /x' 'verify --prev RKX --base /x' 'graph --prev RKX --base /x' \
+            'render-interview --prev RKX --base /x'; do
+  # shellcheck disable=SC2086
+  out=$(rk $mode --auto); rc=$?
+  check "10: ${mode%% *} 의 --auto 는 2 로 거부한다" "$rc" "2"
+  has "10: ${mode%% *} 의 --auto 거부 문면은 쓰는 세 모드를 든다" "$(cat "$WORK/rk.err")" "--auto 는 render-manifest·verify-subset·adopt 에만 씁니다"
+done
+out=$(rk adopt --prev RKX --base /x --expect-sha256 "$Z64" --no-adopt); rc=$?
+check "10: adopt 의 --no-adopt 는 2 로 거부한다" "$rc" "2"
+has "10: --no-adopt 는 render-manifest 에만 쓴다" "$(cat "$WORK/rk.err")" "--no-adopt 는 render-manifest 에만 씁니다"
+out=$(rk adopt --prev RKX --base /x); rc=$?
+check "10: adopt 에 --expect-sha256 이 없으면 2" "$rc" "2"
+out=$(rk adopt --base /x --expect-sha256 "$Z64"); rc=$?
+check "10: adopt 에 --prev 가 없으면 2" "$rc" "2"
 if grep -nE '^[^#]*\. "\$RK_DIR/gate\.sh"' "$RK" >/dev/null; then
   bad "게이트는 도우미 자신의 셸에 들여오지 않는다" "rekick.sh 가 gate.sh 를 직접 들여온다"
 else
@@ -695,7 +712,8 @@ check "3b 신선한 대기 스테이지: 진행 중이다" "$(col "$OUT" 판정)
 
 # An ended source that still holds an open person-decision approval and an
 # unlanded segment: the approval is listed and left waiting, and the unlanded
-# notice is today's, byte for byte.
+# notice names why it is not adopted — this ledger holds no remote reading of
+# the PR — byte for byte.
 mk_prev RKWEND; fx_done
 fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=벽시계 마감" "재킥 원인=마감" "근거=마감 도달"
 fx_row '승인' "승인 id=AP-H1" "상태=대기" "대상=-" "절단점=경계" "판단 부류=사람-결정" "질문 문면=스키마를 둘로 나눌까" "답변 문면=-" "해소 시각=-"
@@ -705,8 +723,8 @@ check "3b 끝난 원천의 열린 승인: 게이트 종료 재킥오프다" "$(c
 has "3b 끝난 원천의 열린 승인: 굵은 줄이 승인의 질문 문면을 싣는다" "$OUT" \
   "굵게${TAB}이전 런 RKWEND 의 열린 승인 1건(스키마를 둘로 나눌까)은 닫거나 옮기지 않습니다"
 has "3b 끝난 원천의 열린 승인: 마감으로 끝난 원천은 한도 문장을 싣는다" "$OUT" "같은 한도가 다시 바닥날 수 있습니다"
-check "3b 끝난 원천의 열린 승인: 머지되지 않은 작업 고지가 지금 문면과 바이트로 같다" \
-  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I1 PR 12)은 이어받지 않습니다 — 새 런이 그 세그먼트를 다시 합니다")" "1"
+check "3b 끝난 원천의 열린 승인: 머지되지 않은 작업 고지가 입양불가 사유를 바이트로 싣는다" \
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I1 PR 12)은 이어받지 않습니다(PR기록없음) — 새 런이 그 세그먼트를 다시 하고 옛 PR 은 그대로 둡니다")" "1"
 check "3b 끝난 원천의 열린 승인: 승인 행은 판별 뒤에도 대기다" \
   "$( { grep -F '| 승인 id=AP-H1 |' "$BASE/docs/pipeline-run/RKWEND.md" || true; } | tail -n 1 | grep -c '| 상태=대기 |')" "1"
 check "3b 끝난 원천의 열린 승인: 세그먼트 입양 행이 없다" "$(grep -c '세그먼트 입양' "$BASE/docs/pipeline-run/RKWEND.md" || true)" "0"
@@ -862,6 +880,22 @@ out=$(rk graph --prev RKGH --base "$BASE")
 check "6: 해시가 다르면 A1 이 남는다" "$(col "$out" 감사)" "남음"
 check "6: 남은 A1 의 depends_on 은 비어 있다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "남음" && $2 == "A1" { print $4 }')" "-"
 check "6: 판정할 수 없어 남긴 것은 바뀜이 아니다" "$(col "$out" 그래프)" "순수"
+
+# An audit that asked for its skeletal re-convergence has not concluded, even
+# over the same document bytes; a fresh audit after that re-convergence has.
+P_KAT='2026-10-01T00:00:00Z' mk_prev RKGS; fx_done
+fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "골격급=2" "재수렴 요청=예" "종단 부류=정상 완료"
+out=$(rk graph --prev RKGS --base "$BASE")
+check "6: 재수렴 요청=예 로 끝난 감사는 해시가 같아도 A1 이 남는다" "$(col "$out" 감사)" "남음"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=reconverge" "종단 부류=정상 완료"
+out=$(rk graph --prev RKGS --base "$BASE")
+check "6: 골격급 재수렴 뒤 새 감사가 없으면 A1 이 남는다" "$(col "$out" 감사)" "남음"
+fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "골격급=1" "재수렴 요청=아니오" "종단 부류=정상 완료"
+out=$(rk graph --prev RKGS --base "$BASE")
+check "6: 재수렴 뒤 재감사가 정상 완료하면 A1 이 빠진다" "$(col "$out" 감사)" "뺌"
 
 P_PLAN="$PLANBASE" mk_prev RKGB; fx_done
 fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
@@ -1517,7 +1551,8 @@ check "12: 답 없는 중단 기록은 L5 로 셈한다" "$(fact "$out" '미답 
 # ---------------------------------------------------------------------------
 # seat_link <src> <new> [render args…] — items 2, 5 and 7.1–7.5 of the seat's
 # path; SL_AUTO empty takes the person's path instead. Sets SL_RC (render),
-# SL_VS (verify-subset verdict), SL_OUT (the draft, written only on 0).
+# SL_VS (verify-subset verdict), SL_OUT (the draft, written only on 0). SL_DOC
+# and SL_DOCSHA name the design document of a source that is not on DOC.
 seat_link() {
   local src="$1" new="$2" auto="${SL_AUTO---auto}" v c conf; shift 2
   local pm="$BASE/docs/pipeline-run/$src.plan.md"
@@ -1539,11 +1574,11 @@ seat_link() {
     rk render-interview --prev "$src" --base "$BASE" --expect-sha256 "$SL_PMS" > "$BASE/docs/pipeline-run/$new.interview.md"
   fi
   conf=$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$SL_OUT")
-  grant_block "$new" 머지 '픽스처가 끝나면' "$conf" "$DOCSHA" > "$WORK/sl.block"
+  grant_block "$new" 머지 '픽스처가 끝나면' "$conf" "${SL_DOCSHA:-$DOCSHA}" > "$WORK/sl.block"
   # shellcheck disable=SC2086
   SL_VS=$(col "$(rk verify-subset "$SL_OUT" "$pm" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" \
             --asked "$SL_ASKED" --grant "$WORK/sl.block" $auto)" 판정)
-  write_grant "$new" "$DOC" "$WORK/sl.block"
+  write_grant "$new" "${SL_DOC:-$DOC}" "$WORK/sl.block"
 }
 # adopt_run <id> — the run directory, ledger, lineage and index of a run whose
 # manifest and grant already exist, so it can be judged as a source.
@@ -1687,6 +1722,20 @@ check "12: --targets 없이 그리면 원천 대상 행이 그대로 옮겨진�
   "$(grep -E '^- `target`' "$SL_OUT")" "$(grep -E '^- `target`' "$BASE/docs/pipeline-run/RKCT.plan.md")"
 SL_ASKED=""
 
+# A `플러그인 허용` row is the person's answer to 5t at one kickoff and is not
+# carried: the successor is drawn without it and still passes its checks.
+PA_ROW='- `플러그인 허용` | 플러그인=notion@claude-plugins-official | 사유=픽스처'
+P_EXTRA="$SEAT_ROW
+$PA_ROW" mk_seat RKPA 마감
+check "12: 원천 매니페스트에 플러그인 허용 행이 있다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cxF -- "$PA_ROW" "$BASE/docs/pipeline-run/RKPA.plan.md")" "1"
+seat_link RKPA RKPA1
+check "12: 플러그인 허용 행이 있는 원천도 render-manifest --auto 가 0 이고 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "12: 후속 매니페스트에는 플러그인 허용 행이 없다" "$(grep -c '^- `플러그인 허용`' "$SL_OUT" || true)" "0"
+mf_check "$SL_OUT"; rc=$?
+check "12: 플러그인 허용 행을 뺀 후속 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+
 # The seat's wording that no helper prints: the stub's reason line and the
 # notice for a failure on the immediate path.
 SEATDOC="$repo_root/plugins/cc-cmds/skills/autopilot/references/act2-seat.md"
@@ -1696,6 +1745,422 @@ has "12: 좌석 문서 — 첫 snapshot 전이면 즉시 경로를 다시 수행
 has "12: 좌석 문서 — 그 뒤면 빈 인자 진행 중 뒤 재개한다" "$(cat "$SEATDOC")" "shows the run as \`진행 중\` and it continues by 「Resuming after a break」"
 has "12: 좌석 문서 — 원천을 다시 재킥오프하지 말라고 적는다" "$(cat "$SEATDOC")" "It also says not to re-kick the source"
 has "12: 좌석 문서 — L13 의 다른 베이스 한계를 적는다" "$(cat "$SEATDOC")" "**L13 sees only this base.**"
+
+# ---------------------------------------------------------------------------
+# 13. 입양 — 이전 런의 착지하지 않은 세그먼트를 새 런이 이어받는가
+# ---------------------------------------------------------------------------
+# A source shaped like a real one: a linked worktree on `seg/<src>-I1` pushed to
+# the bare remote, the gate's planning row and a last `원격 판독` row whose
+# three heads agree, and a pull request only the stub `gh` knows. The remote tip
+# is read with `git ls-remote https://github.com/t/rk.git`, so the fixture
+# repository rewrites that URL to the bare remote and nothing reaches GitHub.
+# Source ids have the shape the manifest check holds an adoption row's `출처 런`
+# to, and the key is I1, the plan's implement step, since the document declares
+# no slicing.
+DOC13='docs/rk-adopt.md'
+printf '# 입양 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n입양 본문\n' > "$BASE/$DOC13"
+DOC13SHA=$(sha "$BASE/$DOC13")
+( cd "$REPO" && git config "url.$WORK/remote.git.insteadOf" https://github.com/t/rk.git )
+GH13="$WORK/gh13"; mkdir -p "$GH13"
+cat > "$WORK/bin/gh" <<GHSTUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$GH13/log"
+rc=\$(cat "$GH13/rc" 2>/dev/null || echo 0)
+[ "\$rc" = 0 ] || exit "\$rc"
+case "\$1 \$2" in
+  'pr list') cat "$GH13/list" ;;
+  'pr view') cat "$GH13/view" ;;
+  *) exit 1 ;;
+esac
+GHSTUB
+chmod +x "$WORK/bin/gh"
+export CC_REMOTE_GH="$WORK/bin/gh"
+
+# mk13 <src> — the source run. K13_REUSE="<worktree> <branch> <head>" names a
+# worktree another source made instead of making one; K13_NOANCHOR leaves out
+# the `원격 판독` row. Leaves S13_W, S13_B, S13_H and S13_RD on this source.
+mk13() {
+  local s="$1" w="$WORK/repo-run-$1-I1" b="seg/$1-I1" h
+  P_DOC="${P_DOC:-$DOC13}" P_EXTRA="${P_EXTRA-$SEAT_ROW}" mk_prev "$s"
+  fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+  fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOC13SHA" "동결값=-" "관측=-"
+  fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
+  if [ -n "${K13_REUSE:-}" ]; then
+    read -r w b h <<EOF
+$K13_REUSE
+EOF
+  else
+    ( cd "$WT" && git worktree add -q -b "$b" "$w" main && cd "$w" && printf '%s\n' "$s" > seg.txt \
+        && git add seg.txt && git commit -qm "$s" && git push -q origin "$b" ) >/dev/null 2>&1
+    h=$(cd "$w" && git rev-parse HEAD)
+  fi
+  fx_row 'segment' "id=I1" "상태=계획됨" "레포=t/rk" "워크트리=$w" "브랜치=$b" "선행=없음"
+  fx_row 'segment' "id=I1" "상태=리뷰중" "워크트리=$w" "PR=41"
+  [ -n "${K13_NOANCHOR:-}" ] || fx_row '원격 판독' "세그먼트=I1" "브랜치=$b" "워크트리 HEAD=$h" "원격 팁=$h" "PR=41" "PR 상태=OPEN" "PR HEAD=$h"
+  seat_end 마감
+  S13_W=$w; S13_B=$b; S13_H=$h; S13_RD=$FX_RUN_DIR
+}
+# gh13 [list json] [view json] — the stub's two answers; the defaults are PR 41
+# open on S13_B at S13_H, from t, against main.
+gh13() {
+  if [ -n "${1:-}" ]; then printf '%s\n' "$1" > "$GH13/list"
+  else printf '[{"number":41,"state":"OPEN","headRefOid":"%s"}]\n' "$S13_H" > "$GH13/list"; fi
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" > "$GH13/view"; else gh13_view > "$GH13/view"; fi
+  printf '0\n' > "$GH13/rc"
+}
+# gh13_view [state] [branch] [head] [cross] [owner] [base]
+gh13_view() {
+  printf '{"state":"%s","headRefName":"%s","headRefOid":"%s","isCrossRepository":%s,"headRepositoryOwner":{"login":"%s"},"baseRefName":"%s"}\n' \
+    "${1:-OPEN}" "${2:-$S13_B}" "${3:-$S13_H}" "${4:-false}" "${5:-t}" "${6:-main}"
+}
+# a13 <src> [args…] — adopt over that source, into A13.
+a13() {
+  local s="$1"; shift
+  A13=$(rk adopt --prev "$s" --base "$BASE" --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$s.plan.md")" "$@")
+}
+# why13 [seg] — `후보` for a candidate line of A13, else its reason token.
+why13() { printf '%s\n' "$A13" | awk -F'\t' -v k="${1:-I1}" '$2 == k { print ($1 == "입양후보") ? "후보" : $4 }'; }
+# tok13 <label> <want> <src> [args…] — one variant, one token.
+tok13() {
+  local label="$1" want="$2"; shift 2
+  a13 "$@"
+  check "13: $label 은 $want 이다" "$(why13)" "$want"
+}
+# use13 <worktree> <branch> <head> — point the stub's defaults at that source.
+use13() { S13_W=$1; S13_B=$2; S13_H=$3; gh13; }
+# lineof13 <text> <src> — that ledger's line number of the last row matching.
+lineof13() { grep -n -F -- "$1" "$BASE/docs/pipeline-run/$2.md" | tail -n 1 | cut -d: -f1; }
+
+S13=20261001-a0000001
+mk13 "$S13"; gh13
+SW=$S13_W; SB=$S13_B; SH=$S13_H; SRD=$S13_RD
+CAND13="입양후보${TAB}I1${TAB}$SB${TAB}$SW${TAB}41${TAB}$SH"
+TAKE13="이어받기 — I1 · PR #41 · $SB · $(printf '%s' "$SH" | cut -c1-12)"
+REDO13="다시 하기 — I1 · PR #41"
+ROW13="- \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$SB | 워크트리=$SW | 출처 런=$S13 | PR=41"
+
+# 1 — detect reads no network. The stub ends 99 so a call would show, and the
+# git trace would show a remote read the stub does not see.
+printf '99\n' > "$GH13/rc"; : > "$GH13/log"
+before=$(src_sum "$S13")
+OUT=$( export GIT_TRACE="$WORK/trace13-detect"; rk_as "s-$S13" detect --arg '' )
+check "13 판별: 앞뒤로 원천 런 파일·런 디렉터리·색인이 같다" "$(src_sum "$S13")" "$before"
+check "13 판별: 가짜 gh 가 한 번도 불리지 않는다" "$(grep -c . "$GH13/log" || true)" "0"
+check "13 판별: git 추적에 ls-remote 가 없다" "$(cat "$WORK/trace13-detect" 2>/dev/null | grep -c 'ls-remote' || true)" "0"
+check "13 판별: 오프라인 조건을 지난 세그먼트는 입양 후보 고지를 낸다" \
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I1 PR 41)은 입양 후보입니다 — 재킥오프가 디스크와 원격을 다시 확인합니다")" "1"
+gh13
+
+# 2 — adopt on the default fixture: one candidate line, nothing written.
+: > "$GH13/log"
+before=$(src_sum "$S13")
+A13=$( export GIT_TRACE="$WORK/trace13-adopt"; rk adopt --prev "$S13" --base "$BASE" --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$S13.plan.md")" ); rc=$?
+check "13: adopt 는 0 으로 끝나고 머리가 cc-rekick v1 이다" "$rc/$(printf '%s\n' "$A13" | sed -n 1p)" "0/cc-rekick v1"
+check "13: adopt 가 기본 픽스처에서 입양후보 한 줄을 낸다" "$(printf '%s\n' "$A13" | sed 1d)" "$CAND13"
+check "13: adopt 앞뒤로 원천 런 파일·런 디렉터리·색인이 같다" "$(src_sum "$S13")" "$before"
+check "13: adopt 의 원격 팁 판독은 git ls-remote 다 (판별 단언이 공허하지 않다)" \
+  "$( [ "$(grep -c 'ls-remote' "$WORK/trace13-adopt" 2>/dev/null || true)" -ge 1 ] && echo 있음)" "있음"
+check "13: 가짜 gh 는 -R t/rk 로 PR 목록과 PR 하나를 읽었다" \
+  "$(grep -c -e '^pr list -R t/rk --head '"$SB"' --state all' "$GH13/log")/$(grep -c -e '^pr view 41 -R t/rk ' "$GH13/log")" "1/1"
+a13 "$S13" --auto
+check "13: 좌석(--auto)도 같은 후보 줄을 낸다" "$(printf '%s\n' "$A13" | sed 1d)" "$CAND13"
+
+# 3 — the reason tokens, one variant each, each put back after.
+printf '1\n' > "$GH13/rc"
+tok13 "가짜 gh 가 0 이 아닌 종료로 끝나면" PR판독불가 "$S13"
+gh13 'oops'
+tok13 "PR 목록이 JSON 이 아니면" PR판독불가 "$S13"
+gh13 '' '{"state":"OPEN"}'
+tok13 "PR 하나의 판독이 여섯 칸을 채우지 못하면" PR판독불가 "$S13"
+gh13 "[{\"number\":41,\"state\":\"CLOSED\",\"headRefOid\":\"$SH\"}]"
+tok13 "브랜치의 PR 이 닫혀 열린 것이 없으면" PR닫힘 "$S13"
+gh13 "[{\"number\":41,\"state\":\"MERGED\",\"headRefOid\":\"$SH\"}]"
+tok13 "브랜치의 PR 이 머리 h 로 머지된 것뿐이면" PR닫힘 "$S13"
+gh13 '' "$(gh13_view CLOSED)"
+tok13 "PR 하나의 판독이 CLOSED 면" PR닫힘 "$S13"
+gh13 "[{\"number\":42,\"state\":\"OPEN\",\"headRefOid\":\"$SH\"}]"
+tok13 "열린 PR 이 다른 번호면" PR불일치 "$S13"
+gh13 "[{\"number\":41,\"state\":\"OPEN\",\"headRefOid\":\"$SH\"},{\"number\":43,\"state\":\"OPEN\",\"headRefOid\":\"$SH\"}]"
+tok13 "열린 PR 이 둘이면" PR불일치 "$S13"
+gh13 '' "$(gh13_view OPEN seg/other)"
+tok13 "PR 의 머리 브랜치가 다르면" PR불일치 "$S13"
+gh13 '' "$(gh13_view OPEN "$SB" "$SH" true)"
+tok13 "isCrossRepository 가 true 면" 포크PR "$S13"
+gh13 '' "$(gh13_view OPEN "$SB" "$SH" false other)"
+tok13 "머리 저장소의 소유자가 다르면" 포크PR "$S13"
+gh13 '' "$(gh13_view OPEN "$SB" "$SH" false t develop)"
+tok13 "PR 의 베이스가 대상의 베이스 브랜치가 아니면" 베이스다름 "$S13"
+HEXA40=$(printf '%040d' 7)
+gh13 '' "$(gh13_view OPEN "$SB" "$HEXA40")"
+tok13 "PR 머리가 h 가 아니면" HEAD불일치 "$S13"
+gh13
+( cd "$SW" && git commit -q --allow-empty -m 더 ) >/dev/null 2>&1
+tok13 "워크트리 HEAD 가 앵커와 다르면" HEAD불일치 "$S13"
+( cd "$SW" && git reset -q --hard "$SH" ) >/dev/null 2>&1
+( cd "$SW" && git push -q origin --delete "$SB" ) >/dev/null 2>&1
+tok13 "원격에서 브랜치를 지워 원격 팁이 없음이면" HEAD불일치 "$S13"
+( cd "$SW" && git push -q origin "$SB" ) >/dev/null 2>&1
+( cd "$REPO" && git config "url.$WORK/remote.git.insteadOf" https://github.com/t/rk.git-off \
+    && git config "url.$WORK/no-such-remote.git.insteadOf" https://github.com/t/rk.git )
+tok13 "insteadOf 가 없는 로컬 경로를 가리켜 원격 팁 판독이 미상이면" PR판독불가 "$S13"
+( cd "$REPO" && git config --unset "url.$WORK/no-such-remote.git.insteadOf" \
+    && git config "url.$WORK/remote.git.insteadOf" https://github.com/t/rk.git )
+printf 'x\n' > "$SW/untracked.txt"
+tok13 "추적되지 않는 파일 하나가 있으면" 작업트리변경 "$S13"
+rm -f "$SW/untracked.txt"
+( cd "$SW" && git checkout -q -b seg/elsewhere ) >/dev/null 2>&1
+tok13 "워크트리에 다른 브랜치가 체크아웃돼 있으면" 브랜치다름 "$S13"
+( cd "$SW" && git checkout -q "$SB" && git branch -q -D seg/elsewhere ) >/dev/null 2>&1
+mv "$SW" "$SW.off"
+tok13 "워크트리가 없으면" 워크트리없음 "$S13"
+mv "$SW.off" "$SW"
+FX_RUN_DIR="$SRD"; fx_stage_live I1; S13PID=$FX_LAST_PID
+tok13 "원천에 그 키의 살아 있는 스테이지가 있으면" 라이브 "$S13"
+kill "$S13PID" 2>/dev/null || true; wait "$S13PID" 2>/dev/null || true
+rm -f "$SRD/I1.pid" "$SRD/I1.start"
+a13 "$S13"
+check "13: 변형을 다 되돌리면 다시 후보다" "$(printf '%s\n' "$A13" | sed 1d)" "$CAND13"
+
+# Variants of the ledger, on a source of their own.
+X13=20261001-a0000006
+mk13 "$X13"; gh13
+fx_row '원격 판독' "세그먼트=I1" "브랜치=$S13_B" "워크트리 HEAD=$S13_H" "원격 팁=$S13_H" "PR=41" "PR 상태=CLOSED" "PR HEAD=$S13_H"
+tok13 "앵커의 PR 상태가 CLOSED 면" PR닫힘 "$X13"
+fx_row '원격 판독' "세그먼트=I1" "브랜치=seg/other" "워크트리 HEAD=$S13_H" "원격 팁=$S13_H" "PR=41" "PR 상태=OPEN" "PR HEAD=$S13_H"
+tok13 "앵커 행의 브랜치가 계획 행과 다르면" 브랜치다름 "$X13"
+fx_row '원격 판독' "세그먼트=I1" "브랜치=$S13_B" "워크트리 HEAD=$S13_H" "원격 팁=$S13_H" "PR=41" "PR 상태=OPEN" "PR HEAD=$S13_H"
+fx_row '원격 판독' "세그먼트=I1" "브랜치=$S13_B" "워크트리 HEAD=$S13_H" "원격 팁=미상" "PR=41" "PR 상태=OPEN" "PR HEAD=$S13_H"
+tok13 "마지막 원격 판독 행의 원격 팁이 미상이면 그 앞 행이 앵커라" 후보 "$X13"
+fx_row 'segment' "id=I9" "상태=계획됨" "워크트리=$S13_W" "브랜치=$S13_B"
+a13 "$X13"
+check "13: 계획의 구현 단계가 아닌 키는 슬라이스다름 이다" "$(why13 I9)" "슬라이스다름"
+fx_row '중단 답' "세그먼트=I1" "중단 기록=$S13_RD/halt/I1#1.md" "스킬=review-unattended" "선택지=다시 하기" "기록 다이제스트=-" "근거=픽스처"
+tok13 "이월할 수 없는 열린 중단 답이 있으면" 중단답이월불가 "$X13"
+
+N13=20261001-a0000005
+K13_NOANCHOR=1 mk13 "$N13"; gh13
+tok13 "원격 판독 행이 없으면" PR기록없음 "$N13"
+D13=20261001-a0000007
+P_DOC="$DOC_OPEN" mk13 "$D13"; gh13
+tok13 "설계 문서가 동결되지 않아 설계를 다시 하면" 설계재실행 "$D13"
+
+# A last row of `park`: the seat leaves it, a person is asked with its cause.
+P13=20261001-a0000002
+mk13 "$P13"; gh13
+fx_row 'blocked' "대상=rk" "스코프=cone" "원인=판정 불가" "사유=픽스처" "앵커 세그먼트=I1"
+P13NR=$(lineof13 '- `blocked` | ' "$P13")
+fx_row 'segment' "id=I1" "상태=park" "워크트리=$S13_W"
+PW=$S13_W; PB=$S13_B; PH=$S13_H
+tok13 "좌석에서 마지막 행이 park 인 세그먼트(원인 행 있음)는" park "$P13" --auto
+a13 "$P13"
+check "13: 사람 갈래에서 마지막 행이 park 인 세그먼트는 후보이고 꼬리 칸에 park 와 원인 행을 싣는다" \
+  "$(printf '%s\n' "$A13" | sed 1d)" "입양후보${TAB}I1${TAB}$PB${TAB}$PW${TAB}41${TAB}$PH${TAB}마지막행=park${TAB}원인=blocked:$P13NR"
+Q13=20261001-a0000003
+mk13 "$Q13"; gh13
+fx_row 'segment' "id=I1" "상태=park" "워크트리=$S13_W"
+tok13 "좌석에서 마지막 행이 park 인 세그먼트(원인 행 없음)는" park "$Q13" --auto
+a13 "$Q13"
+check "13: 원인 행이 없는 park 의 꼬리 칸은 원인=없음 이다" \
+  "$(printf '%s\n' "$A13" | sed 1d | cut -f7-)" "마지막행=park${TAB}원인=없음"
+M13=20261001-a0000004
+mk13 "$M13"; gh13
+fx_row 'segment' "id=I1" "상태=머지됨" "워크트리=$S13_W"
+fx_row 'segment' "id=I1" "상태=park" "워크트리=$S13_W"
+a13 "$M13"
+check "13: 머지됨 뒤 park 인 세그먼트는 adopt 출력에 줄이 없다" "$(printf '%s\n' "$A13" | sed 1d | grep -c . || true)" "0"
+
+# An unanswered halt record on the segment, and an answer the planning act
+# would carry: the binding-tier stop answered `재수렴`.
+H13=20261001-a0000009
+mk13 "$H13"; gh13
+fx_row 'stage-result' "세그먼트=I1" "스테이지=I1" "종류=implement" "종단 부류=정상 완료"
+mkdir -p "$S13_RD/halt"
+{ printf '<!-- cc-pipeline-halt v1; 픽스처 -->\n# 중단\n\n**분류**: gate-unanswerable\n**스텝**: Step 3 CFI-U3 BT-STOP — 픽스처\n'
+  printf '**선택지**:\n- `재수렴` — 구속 티어를 옮긴다\n<!-- /cc-pipeline-halt v1 -->\n'; } > "$S13_RD/halt/I1#1.md"
+fx_row '중단 답' "세그먼트=I1" "중단 기록=$S13_RD/halt/I1#1.md" "스킬=implement-unattended" "선택지=재수렴" \
+  "기록 다이제스트=$(sha "$S13_RD/halt/I1#1.md")" "답한 주체=사람" "근거=픽스처"
+printf '# 중단\n\n**분류**: gate-unanswerable\n' > "$S13_RD/halt/I1#2.md"
+HRD=$S13_RD; HPM="$BASE/docs/pipeline-run/$H13.plan.md"
+HROW="- \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$S13_B | 워크트리=$S13_W | 출처 런=$H13 | PR=41"
+a13 "$H13"
+check "13: 그 세그먼트에 걸린 답 없는 중단 기록은 중단기록 칸, 이월할 답은 이월 칸이 된다" \
+  "$(printf '%s\n' "$A13" | sed 1d | cut -f7-)" "중단기록=I1#2.md${TAB}이월=재수렴"
+
+# 4·5 — the person's path. The default source, answered `이어받기`.
+use13 "$SW" "$SB" "$SH"
+SB_PMS=$(sha "$BASE/docs/pipeline-run/$S13.plan.md"); SB_PGS=$(sha "$BASE/docs/pipeline-grant/$S13.md")
+printf '입양 I1\t%s\n' "$TAKE13" > "$WORK/a13-take"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-take" seat_link "$S13" 20261002-b0000001
+HD13="$WORK/hd13.md"; cp "$SL_OUT" "$HD13"
+check "13 사람: render-manifest 와 verify-subset 이 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "13 사람: 이어받기 답이면 입양 행 한 줄을 ## 인가 안에 쓴다" \
+  "$(awk '/^## / { sec = $0; next } sec == "## 인가" && /^- `세그먼트 입양`/' "$HD13")" "$ROW13"
+check "13 사람: 입양 행은 초안 전체에 한 줄뿐이다" "$(grep -c '^- `세그먼트 입양`' "$HD13")" "1"
+mf_check "$HD13"; rc=$?
+check "13 사람: 입양 행을 실은 초안이 check_manifest 를 통과한다 (검사 17 포함)" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+HD13NEW=20261002-b0000001
+printf '입양 I1\t%s\n' "$REDO13" > "$WORK/a13-redo"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-redo" seat_link "$S13" 20261002-b0000002
+check "13 사람: 다시 하기 답이면 입양 행이 없고 검증을 통과한다" "$SL_RC/$SL_VS/$(grep -c '^- `세그먼트 입양`' "$SL_OUT" || true)" "0/통과/0"
+printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n' "$PB" "$(printf '%s' "$PH" | cut -c1-12)" > "$WORK/a13-ptake"
+use13 "$PW" "$PB" "$PH"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-ptake" seat_link "$P13" 20261002-b0000003
+use13 "$SW" "$SB" "$SH"
+check "13 사람: 마지막 행이 park 인 세그먼트에 이어받기 답이 있으면 행을 쓰고 검증을 통과한다" \
+  "$SL_RC/$SL_VS/$(grep -c "^- \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$PB | 워크트리=$PW | 출처 런=$P13 | PR=41$" "$SL_OUT" || true)" "0/통과/1"
+
+# v13 <label> <want> <draft> <asked> [args…] — verify-subset over the default
+# source; on 실패 the failed list must name 입양.
+v13() {
+  local label="$1" want="$2" d="$3" a="$4" o; shift 4
+  o=$(rk verify-subset "$d" "$BASE/docs/pipeline-run/$S13.plan.md" --expect-sha256 "$SB_PMS" --expect-grant-sha256 "$SB_PGS" --asked "$a" "$@")
+  V13_FAILED=$(col "$o" 판정 3)
+  check "13: $label" "$(col "$o" 판정)" "$want"
+  if [ "$want" = 실패 ]; then has "13: $label — 실패한 검사에 입양 이 있다" "$V13_FAILED" "입양"; fi
+}
+grep -v '^- `세그먼트 입양`' "$HD13" > "$WORK/hd13-norow.md"
+v13 "사람 갈래 초안은 통과한다" 통과 "$HD13" "$WORK/a13-take"
+printf '입양 I1\t이어받기\n' > "$WORK/a13-bare"
+v13 "맨 답 이어받기 는 실패한다" 실패 "$HD13" "$WORK/a13-bare"
+: > "$WORK/a13-none"
+v13 "답 없는 행은 실패한다" 실패 "$HD13" "$WORK/a13-none"
+v13 "행 없는 이어받기 답은 실패한다" 실패 "$WORK/hd13-norow.md" "$WORK/a13-take"
+{ cat "$WORK/a13-take"; printf '입양 I9\t이어받기 — I9 · PR #1\n'; } > "$WORK/a13-extra"
+v13 "후보가 아닌 세그먼트의 키는 실패한다" 실패 "$HD13" "$WORK/a13-extra"
+awk -v r="$ROW13" '{ print } $0 == "## 요소" { print r }' "$WORK/hd13-norow.md" > "$WORK/hd13-out.md"
+v13 "## 인가 밖의 행은 실패한다" 실패 "$WORK/hd13-out.md" "$WORK/a13-take"
+sed "s/| 출처 런=$S13 |/| 출처 런=- |/" "$HD13" > "$WORK/hd13-dash.md"
+v13 "출처 런=- 인 행은 실패한다" 실패 "$WORK/hd13-dash.md" "$WORK/a13-take"
+sed "s/| 출처 런=$S13 |/| 출처 런=$P13 |/" "$HD13" > "$WORK/hd13-other.md"
+v13 "출처 런이 다른 런인 행은 실패한다" 실패 "$WORK/hd13-other.md" "$WORK/a13-take"
+v13 "후보인데 키가 없으면 실패한다" 실패 "$WORK/hd13-norow.md" "$WORK/a13-none"
+gh13 '' "$(gh13_view OPEN "$SB" "$HEXA40")"
+v13 "렌더와 검증 사이에 PR 머리가 바뀌면 실패한다" 실패 "$HD13" "$WORK/a13-take"
+gh13
+
+# 6 — the seat's path: every candidate, nothing asked.
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$S13" 20261002-b0000004
+SD13="$WORK/sd13.md"; cp "$SL_OUT" "$SD13"; SD13NEW=20261002-b0000004
+check "13 좌석: render-manifest --auto 와 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "13 좌석: 행 집합이 통과한 후보 전부와 같다" "$(grep '^- `세그먼트 입양`' "$SD13")" "$ROW13"
+mf_check "$SD13"; rc=$?
+check "13 좌석: 좌석 초안이 check_manifest 를 통과한다" "$rc" "0"
+v13 "좌석 초안은 --auto 에서 통과한다" 통과 "$SD13" "$WORK/a13-none" --auto
+printf '입양 I1\t%s\n' "$TAKE13" > "$WORK/a13-seatkey"
+v13 "좌석에서 --asked 에 입양 키가 있으면 실패한다" 실패 "$SD13" "$WORK/a13-seatkey" --auto
+sed 's/| PR=41$/| PR=42/' "$SD13" > "$WORK/sd13-pr.md"
+v13 "좌석 초안의 행을 바꾸면(다시 유도한 행과 다름) 실패한다" 실패 "$WORK/sd13-pr.md" "$WORK/a13-none" --auto
+use13 "$PW" "$PB" "$PH"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$P13" 20261002-b0000005
+check "13 좌석: 마지막 행이 park 인 세그먼트는 좌석 초안에 행이 없다" "$SL_RC/$SL_VS/$(grep -c '^- `세그먼트 입양`' "$SL_OUT" || true)" "0/통과/0"
+{ cat "$SL_OUT"; printf -- '- `세그먼트 입양` | 세그먼트=I1 | 브랜치=%s | 워크트리=%s | 출처 런=%s | PR=41\n' "$PB" "$PW" "$P13"; } > "$WORK/sd13-park.md"
+o=$(rk verify-subset "$WORK/sd13-park.md" "$BASE/docs/pipeline-run/$P13.plan.md" --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$P13.plan.md")" \
+      --expect-grant-sha256 "$(sha "$BASE/docs/pipeline-grant/$P13.md")" --asked "$WORK/a13-none" --auto)
+has "13 좌석: 사람 갈래가 쓸 park 세그먼트의 행을 더한 좌석 초안은 입양 검사로 실패한다" "$(col "$o" 판정)/$(col "$o" 판정 3)" "실패/"
+has "13 좌석: 그 실패 목록에 입양 이 있다" "$(col "$o" 판정 3)" "입양"
+# A live change after the seat's render: only `입양` fails, and the draft
+# rendered again with --no-adopt passes the check without a flag.
+use13 "$SW" "$SB" "$SH"
+gh13 '' "$(gh13_view OPEN "$SB" "$HEXA40")"
+v13 "렌더 뒤 PR 머리가 바뀐 좌석 초안은 실패한다" 실패 "$SD13" "$WORK/a13-none" --auto
+check "13 좌석: 그 실패는 입양 검사 하나뿐이다" "$V13_FAILED" "입양"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$S13" 20261002-b0000006 --no-adopt
+check "13 좌석: --no-adopt 로 다시 렌더한 초안은 행이 없고 플래그 없는 verify-subset --auto 를 통과한다" \
+  "$SL_RC/$SL_VS/$(grep -c '^- `세그먼트 입양`' "$SL_OUT" || true)" "0/통과/0"
+gh13
+
+# 7 — a chain: the source adopted I1 itself. The row names the source's own id
+# for the segment and the branch of its planning row, the run above it is not
+# carried, and the private copy the gate reads carries the candidate row only —
+# the run above left an open answer the gate would refuse to carry, so a copy
+# that kept the old row (the gate reads a segment's first row) would refuse.
+C1=20261001-a000000a
+mk13 "$C1"; gh13
+fx_row '중단 답' "세그먼트=I1" "중단 기록=$S13_RD/halt/I1#1.md" "스킬=review-unattended" "선택지=다시 하기" "기록 다이제스트=-" "근거=픽스처"
+C1W=$S13_W; C1B=$S13_B; C1H=$S13_H
+tok13 "연쇄의 위 원천 그 자체는(이월할 수 없는 답)" 중단답이월불가 "$C1"
+C2=20261001-a000000b
+P_EXTRA="$SEAT_ROW
+- \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$C1B | 워크트리=$C1W | 출처 런=$C1 | PR=41" K13_REUSE="$C1W $C1B $C1H" mk13 "$C2"
+mf_check "$BASE/docs/pipeline-run/$C2.plan.md"; rc=$?
+check "13 연쇄: 입양 행을 가진 원천 매니페스트가 check_manifest 를 통과한다 (픽스처)" "$rc" "0"
+a13 "$C2"
+check "13 연쇄: 새 후보 줄은 원천 원장의 id 와 그 계획 행의 브랜치를 싣는다" \
+  "$(printf '%s\n' "$A13" | sed 1d)" "입양후보${TAB}I1${TAB}$C1B${TAB}$C1W${TAB}41${TAB}$C1H"
+printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n' "$C1B" "$(printf '%s' "$C1H" | cut -c1-12)" > "$WORK/a13-ctake"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-ctake" seat_link "$C2" 20261002-b0000007
+check "13 연쇄: 새 행의 출처 런은 바로 앞 원천이다" "$SL_RC/$SL_VS/$(grep '^- `세그먼트 입양`' "$SL_OUT")" \
+  "0/통과/- \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$C1B | 워크트리=$C1W | 출처 런=$C2 | PR=41"
+check "13 연쇄: 그 위 원천의 입양 행은 옮겨지지 않는다" "$(grep -c "| 출처 런=$C1 |" "$SL_OUT" || true)" "0"
+
+# 8 — the gate plans the adopted segment from each rendered manifest, and the
+# snapshot names the run it came from and its pull request.
+gate_plan_direct() {  # gate_plan_direct <run id> <worktree> — GP_RC, GP_SNAP
+  local m="$BASE/docs/pipeline-run/$1.plan.md"
+  [ -f "$BASE/docs/pipeline-run/$1.md" ] || : > "$BASE/docs/pipeline-run/$1.md"
+  ( cd "$WT" && bash "$GATE_SH" plan --manifest "$m" --kind segment --target rk --segment I1 --cutpoint 커밋 \
+      --surface 읽기 --from-declaration -- 상태=계획됨 "워크트리=$2" ) > "$WORK/gp.out" 2>&1; GP_RC=$?
+  [ "$GP_RC" = 0 ] || grep -v '\[run\] ' "$WORK/gp.out" | tail -3 >&2
+  GP_SNAP=$( cd "$WT" && bash "$GATE_SH" snapshot --manifest "$m" 2>/dev/null \
+    | jq -r '.["슬라이싱"]["세그먼트"][] | select(.id == "I1") | [.["입양"], .["PR"]] | join("|")' 2>/dev/null )
+}
+use13 "$SW" "$SB" "$SH"
+gate_plan_direct "$HD13NEW" "$SW"
+check "13 계획: 사람 갈래 매니페스트로 입양 세그먼트의 계획 행위가 0 이다" "$GP_RC" "0"
+check "13 계획: 그 스냅샷의 슬라이싱 항목이 입양과 PR 을 싣는다" "$GP_SNAP" "$S13|41"
+gate_plan_direct "$SD13NEW" "$SW"
+check "13 계획: 좌석 갈래 매니페스트로 입양 세그먼트의 계획 행위가 0 이다" "$GP_RC" "0"
+check "13 계획: 그 스냅샷의 슬라이싱 항목이 입양과 PR 을 싣는다 (좌석)" "$GP_SNAP" "$S13|41"
+
+# 9 — the gate child's modes, called through the helper's own definitions: the
+# tokens, the source files' hashes before and after, the stub's arguments, a
+# wrong context, and the shapes a value mode refuses.
+RKG13="$WORK/rk-gate-defs.sh"
+{ printf 'RK_DIR=%q\nTAB=$(printf "\\t")\n' "$ORCH"
+  awk '/^rk_gate\(\) \{/,/^}/' "$RK"
+  awk '/^rk_num\(\) |^rk_sha40\(\) /' "$RK"
+  awk '/^rk_prview_ok\(\) \{/,/^}/' "$RK"
+} > "$RKG13"
+rkg() { ( . "$RKG13"; rk_gate "$@" ) 2>/dev/null; }
+SPM="$BASE/docs/pipeline-run/$S13.plan.md"; SPL="$BASE/docs/pipeline-run/$S13.md"; SPG="$BASE/docs/pipeline-grant/$S13.md"
+{ cat "$SPM"; printf '%s\n' "$ROW13"; } > "$WORK/copy13.md"
+fsum13() { cat "$SPM" "$SPL" "$HPM" "$BASE/docs/pipeline-run/$H13.md" | shasum -a 256 | cut -d' ' -f1; }
+before=$(fsum13); : > "$GH13/log"
+check "13 자식: landed 는 착지하지 않은 세그먼트에 미착지 를 낸다" "$(rkg landed "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" I1)" "미착지"
+check "13 자식: adopt-check 는 사설 사본에서 통과 를 낸다" "$(rkg adopt-check "$WORK/copy13.md" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" I1 rk "$ROW13")" "통과"
+check "13 자식: halt-source 는 열린 답이 없으면 없음 을 낸다" "$(rkg halt-source "$WORK/copy13.md" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" I1)" "없음"
+check "13 자식: tip-of 는 원격 팁 40자를 낸다" "$(rkg tip-of "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" "$SW" t/rk "$SB")" "$SH"
+check "13 자식: pr-of 는 번호·OPEN·머리를 낸다" "$(rkg pr-of "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" "$SW" t/rk "$SB" "$SH")" "41${TAB}OPEN${TAB}$SH"
+check "13 자식: pr-view 는 여섯 칸을 낸다" "$(rkg pr-view "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" 41 t/rk)" \
+  "OPEN${TAB}$SB${TAB}$SH${TAB}false${TAB}t${TAB}main"
+check "13 자식: 가짜 gh 가 받은 인자가 -R t/rk 를 싣는다" "$(grep -c -e '-R t/rk' "$GH13/log")" "2"
+HCOPY="$WORK/hcopy13.md"; { cat "$HPM"; printf '%s\n' "$HROW"; } > "$HCOPY"
+HPL="$BASE/docs/pipeline-run/$H13.md"; HPG="$BASE/docs/pipeline-grant/$H13.md"
+check "13 자식: halt-source 는 이월할 재수렴 답에 이월 을 낸다" "$(rkg halt-source "$HCOPY" "$H13" "$HRD" "$HPL" "$HPG" "$WORK/rkg.err" I1)" "이월"
+mkdir -p "$WORK/elsewhere13"; cp "$SPL" "$WORK/elsewhere13/other.md"
+check "13 자식: LEDGER 를 다른 디렉터리의 원장으로 넘기면 adopt-check 는 통과 가 아니라 원장없음 이다" \
+  "$(rkg adopt-check "$WORK/copy13.md" "$S13" "$SRD" "$WORK/elsewhere13/other.md" "$SPG" "$WORK/rkg.err" I1 rk "$ROW13")" "원장없음"
+check "13 자식: LEDGER 를 다른 원장으로 넘기면 halt-source 는 이월 하지 않는다" \
+  "$(rkg halt-source "$HCOPY" "$H13" "$HRD" "$WORK/elsewhere13/other.md" "$HPG" "$WORK/rkg.err" I1)" "없음"
+check "13 자식: RUN_DIR 을 없는 디렉터리로 넘기면 halt-source 는 이월 하지 않는다" \
+  "$(rkg halt-source "$HCOPY" "$H13" "$WORK/no-such-run/$H13" "$HPL" "$HPG" "$WORK/rkg.err" I1)" "불가"
+check "13 자식: MANIFEST 를 사설 사본이 아닌 원천 매니페스트로 넘기면 halt-source 는 이월 하지 않는다" \
+  "$(rkg halt-source "$HPM" "$H13" "$HRD" "$HPL" "$HPG" "$WORK/rkg.err" I1)" "없음"
+mkdir -p "$WORK/landed13"; cp "$SPL" "$WORK/landed13/$S13.md"
+printf -- '- `segment` | id=I1 | 상태=머지됨 | 워크트리=%s\n' "$SW" >> "$WORK/landed13/$S13.md"
+check "13 자식: 원천 원장 사본에 머지됨 행을 더하면 landed 는 착지됨 이다 (방어 토큰)" \
+  "$(rkg landed "$SPM" "$S13" "$SRD" "$WORK/landed13/$S13.md" "$SPG" "$WORK/rkg.err" I1)" "착지됨"
+check "13 자식: 자식 호출 앞뒤로 원천 원장과 매니페스트의 해시가 같다" "$(fsum13)" "$before"
+gh13 'not a list'
+check "13 자식: pr-of 는 모양 밖의 출력을 미상 세 칸으로 바꾼다" "$(rkg pr-of "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" "$SW" t/rk "$SB" "$SH")" "미상${TAB}미상${TAB}미상"
+gh13 '' '아무 문자열'
+check "13 자식: pr-view 는 모양 밖의 출력을 미상 으로 바꾼다" "$(rkg pr-view "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" 41 t/rk)" "미상"
+gh13 '' "$(gh13_view 'OPEN X')"
+check "13 자식: pr-view 는 칸에 공백이 든 출력을 미상 으로 바꾼다" "$(rkg pr-view "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" 41 t/rk)" "미상"
+gh13
+check "13 자식: 모르는 모드는 판정불가 다" "$(rkg no-such-mode "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err")" "판정불가"
+unset CC_REMOTE_GH
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

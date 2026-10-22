@@ -272,7 +272,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-meta-invariants.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh"
+_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-meta-invariants.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -1366,6 +1366,23 @@ check "Step 5 의 report-check 고리는 게이트 실패를 고치지 않고 �
   "$(mo_count "$(cat "$RU_SKILL")" 'is the gate failing, not the report: end the stage without editing')" "1"
 check "복구 팔은 복구 리포트에 리뷰 HEAD 줄을 지어 넣지 않는다" \
   "$(mo_count "$(cat "$RU_RECOVER")" 'never write a `리뷰 HEAD` line into a recovered report')" "1"
+
+# ---------------------------------------------------------------------------
+# CFI-11 — a re-kickoff carries no ledger row as a permission, with one
+# re-derived exception
+#
+# The clause that keeps the re-kickoff from carrying a ledger row now names the
+# one row it derives again instead, the `세그먼트 입양` row, and says what
+# happens to every segment that fails the derivation. Both halves are pinned in
+# the resident body, so a rewording that keeps the exception and drops the
+# report of what was not adopted fails here.
+# ---------------------------------------------------------------------------
+for lit in \
+  'a ledger row only triggers a question — or, for a `세그먼트 입양` row alone, a re-derivation' \
+  'anything else is not adopted and is reported with its cause'
+do
+  check "CFI-11 이 「${lit:0:50}」 을 싣는다" "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
+done
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

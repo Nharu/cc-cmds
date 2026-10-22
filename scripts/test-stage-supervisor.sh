@@ -173,10 +173,22 @@ seg() {
     --surface 읽기 --snapshot-digest "$(HH)" --rationale "픽스처 세그먼트" \
     -- 워크트리="$WT" 상태=실행중 선행=없음 >/dev/null
 }
+# gate_fn <function> <arg>... — one function of the gate, run in a child bash
+# against this fixture's run. A review dispatch is refused unless it carries the
+# segment's canonical report path and a trigger the ledger stands behind, and
+# both are the gate's to say, so the fixture asks it rather than copying them.
+gate_fn() {
+  ( cd "$WT" && GFX_M="$MANIFEST" GFX_L="$LEDGER" GFX_R="$RUN" GFX_D="$RD" bash -c '
+      CC_GATE_SOURCE_ONLY=1 . "$0" </dev/null; set +e
+      MANIFEST=$GFX_M; LEDGER=$GFX_L; RUN_ID=$GFX_R; RUN_DIR=$GFX_D
+      "$@"' "$GATE" "$@" 2>/dev/null )
+}
+rv_p()    { printf '/cc-cmds:review-unattended x --report-path %s' "$(gate_fn gate_review_report_path "$1")"; }
+rv_trig() { local f; f=$(gate_fn gate_cycle_trigger_facts "$1"); printf '%s' "${f%%$'\n'*}"; }
 dispatch() {
   g act --manifest "$MANIFEST" --kind skill --target repo --segment "$1" --cutpoint 커밋 \
     --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale "픽스처 파견" \
-    -- review -p "/cc-cmds:review-unattended x"
+    --trigger "$(rv_trig "$1")" -- review -p "$(rv_p "$1")"
 }
 rows_of() { { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -cF "세그먼트=$1 " || true; }; }
 wait_file() {  # wait_file <path> <tenths> — poll until the file exists
@@ -207,18 +219,18 @@ seg A
 LAUNCH="$WORK/launcher.sh"
 cat > "$LAUNCH" <<'LEOF'
 #!/usr/bin/env bash
-# launcher.sh <worktree> <gate> <manifest> <segment> <digest> <out>
+# launcher.sh <worktree> <gate> <manifest> <segment> <digest> <out> <trigger> <prompt>
 cd "$1" || exit 1
 t0=$(date +%s)
 bash "$2" act --manifest "$3" --kind skill --target repo --segment "$4" --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$5" --rationale "픽스처 파견" \
-  -- review -p "/cc-cmds:review-unattended x" > "$6" 2>&1
+  --trigger "$7" -- review -p "$8" > "$6" 2>&1
 rc=$?
 t1=$(date +%s)
 printf '%s %s\n' "$rc" "$((t1 - t0))" > "$6.done"
 sleep 120
 LEOF
-CC_STUB_SLEEP=10 bash "$LAUNCH" "$WT" "$GATE" "$MANIFEST" A "$(HH)" "$WORK/launch-A.out" &
+CC_STUB_SLEEP=10 bash "$LAUNCH" "$WT" "$GATE" "$MANIFEST" A "$(HH)" "$WORK/launch-A.out" "$(rv_trig A)" "$(rv_p A)" &
 LA=$!; KILL_LIST="$KILL_LIST $LA"
 if ! wait_file "$WORK/launch-A.out.done" 200; then
   bad "(1) 파견 반환" "20초 안에 파견 act 가 돌아오지 않았다: $(cat "$WORK/launch-A.out" 2>/dev/null)"
@@ -853,6 +865,53 @@ cost_seat N '(미상)'
 check "(12) 계정 (미상) 인 시도도 종단 행을 쓴다" "$(rows_of N)" "1"
 check "(12) 계정 (미상) 인 시도는 비용 표본을 남기지 않는다" "$(costs_n)" "2"
 
+# THE ANSWER CARD. A dispatch that carried a halt answer leaves its card under
+# the attempt's name before the token; the supervisor names it to the stage in
+# CC_PIPELINE_HALT_ANSWER and the attempt's row carries the answer's line. An
+# attempt with no card gets no variable and no field.
+STUB_HA="$WORK/claude-stub-ha"
+cat > "$STUB_HA" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s|%s\n' "${CC_PIPELINE_HALT_ANSWER-unset}" "${CLAUDE_CONFIG_DIR-unset}" > "${CC_STUB_HA_OUT:-/dev/null}"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"num_turns":1,"session_id":"stub-session"}'
+exit 0
+STUBEOF
+chmod +x "$STUB_HA"
+ha_seat() {  # ha_seat <segment> <card line or ""> — a hand-written routed token, run to its end
+  seg "$1"
+  printf '1\n' > "$RD/$1.attempt"
+  if [ -n "$2" ]; then
+    mkdir -p "$RD/halt-answer" && chmod 700 "$RD/halt-answer"
+    printf '<!-- cc-halt-answer v1; stage=%s#1 -->\n**중단 답 줄**: %s\n<!-- /cc-halt-answer v1 -->\n' "$1" "$2" \
+      > "$RD/halt-answer/$1#1.md"
+  fi
+  printf 'n%s\n\n\nB:%s#1\n-\n-\n%s\n' "$1" "$1" "$R12_CFG" > "$RD/$1.launch"
+  CC_CLAUDE_BIN="$STUB_HA" CC_STUB_HA_OUT="$WORK/ha-$1" g supervise-stage --manifest "$MANIFEST" --target repo \
+    --segment "$1" --nonce "n$1" -- review -p x >/dev/null
+}
+# The run's pinned copy is taken from whatever tree the pin resolves to, which
+# need not be this checkout, so for these two dispatches the copy's gate and
+# driver are this checkout's — swapped and restored by `mv`, as above.
+cp -p "$PINNED_GATE" "$WORK/ha-pinned-gate.sh"
+cp -p "$RD/plugin/cc-cmds/orchestrator/run.sh" "$WORK/ha-pinned-run.sh"
+cp -p "$GATE" "$WORK/ha-gate.sh" && mv "$WORK/ha-gate.sh" "$PINNED_GATE"
+cp -p "$ORCH/run.sh" "$WORK/ha-run.sh" && mv "$WORK/ha-run.sh" "$RD/plugin/cc-cmds/orchestrator/run.sh"
+ha_seat HA 7
+check "(12) 카드를 받은 시도의 스테이지 환경이 카드 경로와 부여된 디렉터리를 싣는다" \
+  "$(cat "$WORK/ha-HA" 2>/dev/null)" "$RD/halt-answer/HA#1.md|$R12_CFG"
+case "$( { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -F '세그먼트=HA ' || true; } | tail -1)" in
+  *"| 답 운반=7 |"*|*"| 답 운반=7") ok "(12) 그 시도의 종단 행이 답 운반=7 을 싣는다" ;;
+  *) bad "(12) 답 운반 종단 행" "$(grep -F '세그먼트=HA ' "$LEDGER" | tail -1)" ;;
+esac
+ha_seat HB ""
+check "(12) 카드 없는 시도의 환경에는 변수가 없다" "$(cut -d'|' -f1 "$WORK/ha-HB" 2>/dev/null)" "unset"
+check "(12) 카드 없는 시도의 종단 행에는 답 운반이 없다" \
+  "$( { grep -F '세그먼트=HB ' "$LEDGER" || true; } | { grep -F '`stage-result`' || true; } | { grep -c '답 운반=' || true; })" "0"
+mv "$WORK/ha-pinned-gate.sh" "$PINNED_GATE"
+mv "$WORK/ha-pinned-run.sh" "$RD/plugin/cc-cmds/orchestrator/run.sh"
+check "(12) 답 카드 시험 뒤 고정 사본이 원래 바이트로 돌아왔다" \
+  "$(cmp -s "$PINNED_GATE" "$WORK/pinned-gate.sh" && printf yes || printf no)" "yes"
+
 # The routing record is compared with the baseline before anything else: a
 # record that is neither absent nor `1` beside a regular baseline is a pair no
 # entry writes, and the dispatch stops with the routing exit code and an
@@ -1011,6 +1070,39 @@ check "(13) 마감 파킹은 스테이지를 띄우지 않는다" "$( [ -e "$RD/
 check "(13) 마감 파킹 뒤 대기 표지가 없다" "$( [ -e "$RD/D.waiting" ] && printf yes || printf no)" "no"
 g wait --manifest "$MANIFEST" --segment D --interval 1 --timeout 5 >/dev/null; rc_dw=$?
 check "(13) 마감 파킹된 시도의 wait 은 16 이다" "$rc_dw" "16"
+kill -TERM "$W13_BLOCK" 2>/dev/null || true
+
+# THE SAME DEADLINE, WITH AN ANSWER CARD. The attempt carried a person's halt
+# answer, so a park at the deadline would leave that answer with no session and
+# no record that the next run should take it up: the supervisor writes the
+# `이월` row naming the card's line instead of the ordinary deadline row. The
+# card is planted under the attempt's name before the dispatch claims it; the
+# run's pinned gate is this checkout's, swapped by `mv` as above.
+sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+W13_DL=$(( $(date +%s) + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 4 ))
+mk_run SUPDH '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
+cp -p "$GATE" "$WORK/dh-gate.sh" && mv "$WORK/dh-gate.sh" "$RD/plugin/cc-cmds/orchestrator/gate.sh"
+w13_stall
+w13_block "$W13_BLOCK"
+seg DH
+mkdir -p "$RD/halt-answer" && chmod 700 "$RD/halt-answer"
+printf '<!-- cc-halt-answer v1; stage=DH#1 -->\n**중단 답 줄**: 7\n<!-- /cc-halt-answer v1 -->\n' > "$RD/halt-answer/DH#1.md"
+dispatch DH >/dev/null; rc_dh=$?
+check "(13) 카드를 실은 마감 전 WAIT 파견도 0 으로 반환한다" "$rc_dh" "0"
+SUP_DH=$( { cat "$RD/DH.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+n=0
+while [ "$(alive "$SUP_DH")" = "alive" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 카드를 실은 감독자도 마감에 걸려 스스로 끝난다" "$(alive "$SUP_DH")" "dead"
+row_dh=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '| 사유=중단 답 이월 — ' || true; } )
+check "(13) 카드를 실은 마감 파킹은 이월 행 하나다" "$(printf '%s' "$row_dh" | { grep -c . || true; })" "1"
+case "$row_dh" in
+  *"| 사유=중단 답 이월 — 마감 안에 자리 없음 | 중단 답 줄=7 | "*"스테이지=DH | "*"근거=계보=B:DH#1 | 관측="*"ready_at="*" | 재개 명령=다음 런이 이 답을 이어받는다 — 다시 묻지 않는다"*)
+    ok "(13) 그 이월 행이 카드의 답 줄·계보·라우터 사유와 다음 런의 재개 문면을 싣는다" ;;
+  *) bad "(13) 카드 마감 이월 행" "$row_dh" ;;
+esac
+check "(13) 카드를 실은 마감 파킹은 일반 마감 행을 쓰지 않는다" \
+  "$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -cF '사유=마감 초과 — DH ' || true; } )" "0"
+check "(13) 카드를 실은 마감 파킹도 스테이지를 띄우지 않는다" "$( [ -e "$RD/DH.pid" ] && printf yes || printf no)" "no"
 kill -TERM "$W13_BLOCK" 2>/dev/null || true
 
 # WAIT ON A RESET PASS, then the deadline. Usage written at the supervisor's start
@@ -1342,7 +1434,7 @@ no_wait_rows() { { grep -vF '`stage-wait`' "$LEDGER" || true; } | shasum -a 256;
 k_sha=$(no_wait_rows)
 g plan --manifest "$MANIFEST" --kind skill --target repo --segment K --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale "픽스처 예상" \
-  -- review -p "/cc-cmds:review-unattended x" >/dev/null; rc_kp=$?
+  --trigger "$(rv_trig K)" -- review -p "$(rv_p K)" >/dev/null; rc_kp=$?
 check "(14) plan 도 그 키의 파견을 17 로 예상한다" "$rc_kp" "17"
 check "(14) 그 plan 은 원장에 쓰지 않는다" "$(no_wait_rows)" "$k_sha"
 check "(14) 스냅숏의 waiting_stages 에 그 키 하나가 있다" \

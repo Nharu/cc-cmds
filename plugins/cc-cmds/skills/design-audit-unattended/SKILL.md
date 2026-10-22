@@ -34,7 +34,7 @@ This is the unattended arm of `/cc-cmds:design-audit`. It is a **separate file**
 
 `references/` is **shared with the base skill, not copied** — every reference path below points into `../design-audit/references/`. One file in that tree does route to a question, so what makes sharing safe is a disposition, not an absence. The disposition is stated here, in the form `scripts/lint-unattended-surfaces.sh` reads:
 
-**Inherited question point** — `03-adjustment-pass.md`: its adjustment pass surfaces a composed requirement with at most one question. CFI-U0 resolves that terminus to `park` — the synthesis question of CFI-3b is asked and answered **in writing** inside the pass, and a composed requirement halts, unconditionally — composing findings into a new requirement changes what the run is trying to do, which is `등급 2`. The reference names that question's three options inline, as `adopt as a requirement / record in the unresolved-issues section / reject`; the halt record does not copy that form but writes them as three option lines, `- \`adopt as a requirement\` — …`, `- \`record in the unresolved-issues section\` — …` and `- \`reject\` — …`. Its step line is `**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`: the gate routes an `adopt as a requirement` answer only on `CFI-3b`, and re-attaches this session otherwise.
+**Inherited question point** — `03-adjustment-pass.md`: its adjustment pass surfaces a composed requirement with at most one question. This `등급 2` point never halts; the pass goes on to Step 7. The synthesis question of CFI-3b is asked and answered **in writing**; each composed requirement is recorded, not adopted: a `## 미해결 이슈 / 트레이드오프` item, `상태: 보류`, `사유: 감사 합성 요구 — 사람 판단`, owner `사람`, text verbatim, `Category`/`Surfaced-at` by existing owner rules, under the doc lock, in the report; a skeleton-grade one counts toward K. The reference names the options inline, as `adopt as a requirement / record in the unresolved-issues section / reject`; an earlier run's record carries them as lines `- \`adopt as a requirement\` — …`, `- \`record in the unresolved-issues section\` — …`, `- \`reject\` — …` under `**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`: the gate routes an `adopt as a requirement` answer only on `CFI-3b`, and re-attaches this session otherwise.
 
 ## Input
 
@@ -46,7 +46,7 @@ This is the unattended arm of `/cc-cmds:design-audit`. It is a **separate file**
 
 Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema. Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. **Take `<run-id>` from the driver-exported `CC_PIPELINE_RUN_ID`** and `RUN_DIR` from `CC_PIPELINE_RUN_DIR`; only when they are unset, re-derive `<run-id>` from `<base>/docs/pipeline-grant/{slug}.md`. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`, defaulting to this skill's name. Write it atomically (`sidecar.md` §1.3), record the question and every option **verbatim**, each option on its own `- \`<label>\` — <description>` line under `**선택지**:`, then take no further step and end the turn. **Never write a sidecar** — the driver is the sole writer of the run ledger.
 
-**A halt with options carries a recommendation.** The three halts of this arm that offer options — the CFI-3b composed-requirement halt, the halt the reconcile pass writes for one finding, and Step 7's `Step 7 / 골격급 재발` halt — put a `**추천**` line and a `**추천 근거**` line after the option lines and before `**하네스 오류**`, by the writer rules of `_common/pipeline-sidecar.md` §4 (the bullet on `**추천**`). The seat answers such a halt with the recommended label and no person, so the label is the option this pass would have chosen from the interview record, the manifest's authorization, a fact of this machine or a standing instruction — never one no stage of the run can carry out, never one whose description carries `위험 수용`, `게이트 비활성`, `그대로 진행` or `범위 축소`, and `(없음) — <what only a person knows>` when those four do not settle it. Measured: a reconcile-pass halt with no recommendation stood all night for a person. The `Step 7 / 골격급 재발` halt always writes `(없음)`.
+**A halt with options carries a recommendation.** Both halts of this arm that offer options — the halt the reconcile pass writes for one finding, and Step 7's `Step 7 / 골격급 재발` halt — put a `**추천**` line and a `**추천 근거**` line after the option lines and before `**하네스 오류**`, by the writer rules of `_common/pipeline-sidecar.md` §4 (the bullet on `**추천**`). The seat answers such a halt with the recommended label and no person, so the label is the option this pass would have chosen from the interview record, the manifest's authorization, a fact of this machine or a standing instruction — never one no stage of the run can carry out, never one whose description carries `위험 수용`, `게이트 비활성`, `그대로 진행` or `범위 축소`, and `(없음) — <what only a person knows>` when those four do not settle it. Measured: a reconcile-pass halt with no recommendation stood all night for a person. The `Step 7 / 골격급 재발` halt always writes `(없음)`.
 
 ### Per-grade disposition
 
@@ -71,7 +71,7 @@ per grade, not one blanket rule.
 
 ### Resumed with a person's answer
 
-A stage of this arm that halted can be resumed in the same session with a prompt naming its own halt record and one of the record's options verbatim (`_common/pipeline-sidecar.md` §4). The option is the answer to the question the record asked, and the pass goes on from the step the record names — the readers are not spawned again, collected witnesses are not re-collected, and the dispositions already applied stand. At the synthesis question: `record in the unresolved-issues section` writes the composed requirement into the report's unresolved section and goes on to Step 7; `reject` records the rejection in the report, with the answer's option as its basis, and goes on to Step 7. `adopt as a requirement` does not come back this way — the routing shift takes it to `design-reconverge` and a fresh audit, because the requirement changes what the run is trying to reach. At `Step 7 / 골격급 재발`: `미해결 이슈로 두고 계속` takes Step 7's disposition 4; `재수렴` goes the way `adopt as a requirement` does. Do not rewrite the halt record, and do not halt a second time on the question it already carries.
+A stage of this arm resumed in the same session with an answer to its own halt record, or started with `CC_PIPELINE_HALT_ANSWER` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), Reads `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.1 before anything else and follows it.
 
 The grades are a marking, not a proof: `scripts/lint-judgment-grade.sh` counts
 marks and matches dispositions, and nothing checks that a point marked `등급 1`
@@ -192,6 +192,7 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 | 트리거:중단 | 공통 | `_common/agent-team-protocol.md` | `## Teardown & abort` | 절 |
 | 트리거:정지기록 | 공통 | `_common/pipeline-sidecar.md` | `` ## 4. `cc-pipeline-halt v1` — the halt record (not a sidecar) `` | 절 |
 | 트리거:정지기록 | 공통 | `_common/sidecar.md` | `### 1.3 Atomic write` | 절 |
+| 트리거:답 | 공통 | `_common/pipeline-sidecar.md` | `### 4.1 The audit's answer — resumed or re-entered` | 절 |
 
 ## Workflow
 
@@ -267,6 +268,8 @@ Severity is re-assigned here, by one labeller, in one pass. It is **never** aggr
 **This pass edits the design document, so it takes the document lock.** Wrap each write in `/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock" <command>` (absolute path; `-k` and `-t 0` both required). `EX_TEMPFAIL` (75) means another writer holds the document, which is a planning violation rather than a queue: do not wait, do not retry — halt with `분류: precondition-failed` naming both writers.
 
 **`골격급` judgment.** After routing, the same labeller grades each unique defect and CFI-3b candidate `골격급` or `비골격` (binary, severity-independent): `골격급` iff you can name the decision sentence it overturns (verbatim, with its heading) and its replacement. Routing owners are unchanged: a `골격급` defect goes to the `## 미해결 이슈` owner, its item marked `골격급: 예`. Never shorten it to 「골격」, a discussion-skill word.
+
+**Before a CFI-3b halt, leave the dispositions where a fresh session can take them**: Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.1 and write its `## 조정 처분` block into the report, after the pass's own document edits and before the halt record.
 
 ### Step 7: Residual disclosure + HARD STOP
 

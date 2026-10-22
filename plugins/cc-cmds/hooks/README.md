@@ -14,8 +14,8 @@ anchor rather than a good intention.
 The two banner seats are not the only hooks in this directory.
 `active-notify-pretool.sh` belongs to the `active-notify` skill,
 `session-return-dismiss.sh` closes a session's banners when the person comes
-back to it, and `stage-policy-edit-drift.sh` is the edit-time seat of the
-stage-policy drift check; the last two have their contracts in later sections
+back to it, and `stage-rules-edit.sh` shows the stage rules status after an
+edit of the user-scope `CLAUDE.md`; the last two have their contracts in later sections
 of this file. `autopilot-status.tsx` is not a command hook at all but a plugin
 module, listed under `"modules"`; its section is the last one. None of the four
 raises a session banner, and the
@@ -350,48 +350,32 @@ under that global group, or without a group — are not reached either and stay
 until removed by hand. Of the eight rules above, every one but the seventh
 applies to it unchanged, and rule 5 covers its own switch the same way.
 
-## The edit-time drift hook
+## The stage rules edit hook
 
-`stage-policy-edit-drift.sh` is registered under a top-level `PostToolUse` key
-with the matcher `Edit|Write|MultiEdit` and `"timeout": 10`. It does not raise a
-banner. It exists because `../orchestrator/stage-policy.md` is a distillation of
-two files a person edits by hand, and the session that just made the edit is the
-one that knows what the edit meant.
+`stage-rules-edit.sh` is registered under a top-level `PostToolUse` key with
+the matcher `Edit|Write|MultiEdit` and `"timeout": 10`. It does not raise a
+banner. It exists because the bullets of the user-scope `CLAUDE.md` tagged
+`[무인]` become, at each run's open, the `# Personal rules` block every
+unattended stage reads, and the session that just edited that file is the one
+that can show the person what the edit did to the block.
 
 **When it acts.** Only when `.tool_input.file_path` is the user-scope
-`CLAUDE.md` (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md`), the file the
-host map's `workspace` line names (`~/.config/cc-cmds/stage-policy-sources`),
-or — with no such map line — a `CLAUDE.md` with at least one heading equal to a
-`workspace` anchor of `../orchestrator/stage-policy.sources.tsv`. That last one
-is how the gate identifies the workspace source before it leaves the file out
-of a stage by content identity, so an edit that brings the file back into every
-stage is shown to the person who made it. (A map line names a file the gate
-always leaves out; a map line whose source id is `keep` names one it always
-keeps verbatim and never judges.) Both sides are compared with their directory
-resolved by `pwd -P`, so a path that came in through a linked settings
-directory is the same file. Every other edit ends after one `jq` call.
+`CLAUDE.md` (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md`). Both sides are
+compared with their directory resolved by `pwd -P`, so a path that came in
+through a linked settings directory is the same file. Any other `CLAUDE.md` —
+a repository's, the workspace file — and every other edit ends after one `jq`
+call: the stages read those through the instruction chain, not through tags.
 
-**What it does.** It runs `../orchestrator/stage-policy-drift.sh --explain` —
-with `--workspace <file>` when the file was identified without a map line — and
-when the last line is `mismatch` it writes one object to stdout:
+**What it does.** It runs `../orchestrator/stage-rules.sh status --source
+<file>` and writes one object to stdout:
 `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"…"}}`.
-The context, cut at 6000 bytes, carries the findings and their diffs, the policy
-section to compare each one with, the instruction to run `--ack` once and only
-after the user confirms every pending finding — `--ack` has no per-row form and
-records them all, so a single rejection means it is not run; under `--workspace`
-that includes a `changed` item on an `excluded:*` row, a manifest row or a
-host-local disposition recorded with `--ack-added`, whose record lets stages
-leave the file out again — the rule that an `added` item
-is recorded with `--ack-added` when it is excluded or belongs to a skill and
-needs a repository change when it belongs in the policy, and the prohibition on
-recording anything without that confirmation. The instructions come before the
-findings, so the cap cuts findings and never the prohibition. They also state
-the checker's finding count (from the `mismatch <n>` line) and tell the session
-to run `--explain` itself before any `--ack`. When the findings do not fit, they
-are cut at a line boundary and end in
-`[truncated: the checker reported <n> finding(s); run bash "<checker>" --explain for the full list]`
-(with `--workspace "<file>"` after the checker path in the identified case),
-so a partial list never reads as the whole one.
+The context, cut at 6000 bytes, says the file is the source of the personal
+rules block and that the next run picks the edit up, tells the session to show
+the person the status and leave tagging to them, and carries the status
+itself: counts and bytes per tag, the untagged and malformed bullets, the
+24576-byte alert, the host map, and the next steps. Past the cap the status is
+cut at a line boundary and ends in
+`[truncated: run bash "<helper>" status for the full status]`.
 
 **Why stdout is used here.** The banner seats keep stdout empty because it is
 the harness's control channel. For a `PostToolUse` hook that channel is exactly
@@ -399,14 +383,12 @@ how text reaches the model, so this hook writes to it on the one path that has
 something to say and on no other.
 
 **Unattended runs are left alone.** With `CC_PIPELINE_RUN_ID` set the hook does
-nothing: an acknowledgement is a person's claim, an unattended stage has nobody
-to make it, and the checker refuses `--ack` and `--ack-added` there as well.
+nothing: nobody reads the status there, and a run's block was fixed when it
+opened.
 
 **Every path exits 0 and nothing reaches stderr.** It runs under
-`set -uo pipefail`, never `-e`, because the checker answers `mismatch` with exit
-1 and that is the case the hook exists for. The checker's stderr goes to
-`/dev/null`, and a missing `jq` exits 0 after the same Homebrew PATH prepend the
-banner seats use.
+`set -uo pipefail`, never `-e`. The helper's stderr goes to `/dev/null`, and a
+missing `jq` exits 0 after the same Homebrew PATH prepend the banner seats use.
 
 ## The run-status pane module
 

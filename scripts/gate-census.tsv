@@ -118,9 +118,9 @@ id	group	status	wall_seconds	passed	failed	needs	crash_symbol
 31ap	cone	ok	144	23	0	31z	-
 31at	cone	ok	288	59	0	31ap	-
 31au	cone	ok	49	15	0	-	-
-31aq	cone	ok	181	54	0	31al	-
+31aq	cone	ok	181	54	0	-	-
 31aa	cone	ok	92	8	0	-	-
-31ab-2	cone	ok	331	71	0	31aa,31w,31aq	-
+31ab-2	cone	ok	331	71	0	31aa,31w	-
 12b	base	ok	503	275	0	33	-
 12c	base	ok	45	18	0	-	-
 12d	base	ok	18	21	0	-	-
@@ -169,7 +169,7 @@ id	group	status	wall_seconds	passed	failed	needs	crash_symbol
 37-34	review	ok	43	24	0	9	-
 37-35	review	ok	44	25	0	9	-
 37-36	review	ok	43	23	0	9	-
-34	cone	ok	112	94	0	31al	-
+34	cone	ok	112	94	0	-	-
 38-1	sb	ok	12	8	0	-	-
 38-2	sb	ok	14	13	0	38-1	-
 38-3	sb	ok	18	17	0	38-2	-

@@ -43,6 +43,11 @@
 #      rule) and the retired tier names `lead-solo` and `team-2` are absent, and
 #      the graph rule that a `solo` graph carries no audit step is present —
 #      the producer states the shape the checker's (c) asserts.
+#   7. `entry-plan.schema.json` carries `design_path` in both sets, and its
+#      enum is exactly `solo-audit` / `discuss-audit` / `none`. The key names
+#      who writes a heavy single document, `manifest_design_skill` branches on
+#      it and the checker's (d) asserts on it, so a value cannot appear or
+#      vanish without this lint noticing.
 #
 # Usage:
 #   bash scripts/lint-prompt-schemas.sh
@@ -283,6 +288,33 @@ if [[ -f "$PROMPT" ]]; then
   fi
   if [[ "$prompt_ok" == "1" ]]; then
     echo "OK:   $rel — no closed tier list, no retired tier, solo graph rule stated"
+  else
+    fail=1
+  fi
+fi
+
+# ---------- Rule 7: the design-path key in entry-plan -------------------------
+
+if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
+  rel=${ENTRY#"$repo_root/"}
+  path_ok=1
+  in_props=$(jq -r '(.properties // {}) | has("design_path")' "$ENTRY")
+  in_req=$(jq -r '(.required // []) | index("design_path") != null' "$ENTRY")
+  if [[ "$in_props" != "true" ]]; then
+    echo "FAIL: $rel — 'design_path' is missing from .properties" >&2
+    path_ok=0
+  fi
+  if [[ "$in_req" != "true" ]]; then
+    echo "FAIL: $rel — 'design_path' is missing from .required" >&2
+    path_ok=0
+  fi
+  path_enum=$(jq -c '.properties.design_path.enum // []' "$ENTRY")
+  if [[ "$path_enum" != '["solo-audit","discuss-audit","none"]' ]]; then
+    echo "FAIL: $rel — design_path enum must be exactly [\"solo-audit\",\"discuss-audit\",\"none\"], found $path_enum" >&2
+    path_ok=0
+  fi
+  if [[ "$path_ok" == "1" ]]; then
+    echo "OK:   $rel — design_path present on both sides, enum pinned"
   else
     fail=1
   fi

@@ -1,43 +1,28 @@
 #!/usr/bin/env bash
-# Pin the repository half of the stage-policy drift contract.
+# Pin what the repository controls about the stage policy.
 #
 # `plugins/cc-cmds/orchestrator/stage-policy.md` is the English policy the gate
-# injects into every unattended stage in place of automatic CLAUDE.md loading,
-# and `stage-policy.sources.tsv` beside it is the only link between that policy
-# and the hand-edited files it was distilled from. The source half of the
-# check — whether those files still say what the manifest recorded — is
-# `plugins/cc-cmds/orchestrator/stage-policy-drift.sh`, deliberately NOT run
-# here: a person editing their global CLAUDE.md must not turn an unrelated
-# unattended stage's `make check` red. This lint checks only what the
-# repository itself controls:
+# injects into every unattended stage in place of automatic CLAUDE.md loading.
+# It holds only the rules the plugin owns; the person's own rules reach a
+# stage as the `# Personal rules` block, verbatim from the bullets they tagged
+# in their global instruction file, and nothing in the repository mirrors
+# them. `legacy/stage-policy.v6.md` beside it is the frozen policy a host with
+# no tagged bullet still gets. This lint checks:
 #
-#   (i)    the policy file exists and is ASCII apart from tab and newline —
+#   (i)    both policy files exist and are ASCII apart from tab and newline —
 #          the injected block is the cache-stable head of every stage prompt,
 #          and a stray non-ASCII byte is the kind of edit that goes unnoticed;
-#   (ii)   the policy is at most `MAX_BYTES` (8192) bytes — it rides on every
-#          request of every stage and every team member;
+#   (ii)   both are at most `MAX_BYTES` (8192) bytes — the policy rides on
+#          every request of every stage and every team member;
 #   (iii)  the policy carries no volatile token (a date, a `run-<n>`, a
 #          `/Users/` path) — one would make the bytes differ per host or per
 #          run and break the shared cache head;
 #   (iv)   the two sentences the team-delivery contract rests on each appear
-#          on exactly one line: the harness delivers the policy to Agent-tool
-#          members (so leads must not paste it), and a team the stage skill
-#          prescribes is itself the instruction to spawn it (so the delegation
-#          rule cannot be read as "review alone");
-#   (v)    the manifest is well formed: the exact header, five tab-separated
-#          columns, `source` in {user-scope, workspace, memory, plugin},
-#          `disposition` in the closed vocabulary, and a `plugin` anchor of
-#          the form `<path>:<line prefix>`;
-#   (vi)   every `policy:<heading>` disposition names a `## ` heading that
-#          exists in the policy;
-#   (vii)  every `## ` heading of the policy is named by at least one row —
-#          a section nothing maps to is a rule with no source;
-#   (viii) every `user-scope` anchor and every `plugin` anchor is unique
-#          within the manifest;
-#   (ix)   `memory` rows carry hash `-` and every other row a 64-hex sha256.
-#          An `excluded:*` row keeps the form: the checker's `--identity` and
-#          `--workspace` forms compare its body hash, and the column stays the
-#          shipped baseline that a host's acknowledgement store is read against.
+#          on exactly one line of the current policy: the harness delivers the
+#          policy, the personal rules and the repository instructions to
+#          Agent-tool members (so leads must not paste them), and a team the
+#          stage skill prescribes is itself the instruction to spawn it (so the
+#          delegation rule cannot be read as "review alone").
 #
 # Usage:
 #   bash scripts/lint-stage-policy-sources.sh
@@ -57,50 +42,52 @@ while [[ "$policy_root" == */ && "$policy_root" != "/" ]]; do
 done
 
 POLICY="$policy_root/stage-policy.md"
-MANIFEST="$policy_root/stage-policy.sources.tsv"
+LEGACY="$policy_root/legacy/stage-policy.v6.md"
 # Raised from 8000 when the delegation, re-read and repository-instruction
 # sentences were rewritten for the member prefix: the rule is to measure after
 # an edit and raise the ceiling to 8192 rather than cut a safety sentence to
 # fit, and a policy past 8192 is a stop, not a further raise.
 MAX_BYTES=8192
-PIN_HARNESS='Agents spawned with the Agent tool receive this policy and the repository instructions from the harness (the target repository'"'"'s own files by path); do not paste them.'
+PIN_HARNESS='Agents spawned with the Agent tool receive this policy, the personal rules and the repository instructions from the harness (the target repository'"'"'s own files by path); do not paste them.'
 PIN_TEAM='a team the stage skill prescribes is itself the instruction to spawn it'
-MANIFEST_HEADER=$'source\tanchor\tsha256\tdisposition\tnote'
-DISPOSITION_RE='^(policy:[^	]+|skill:[^	]+|repo:CLAUDE\.md|excluded:(mcp-unavailable|interactive-only|driver-owned|superseded|host-mutation|workspace-local|no-stage-login))$'
 
 fail=0
 checked=0
 
 failf() { echo "FAIL: $*" >&2; fail=1; }
 
-# ---------- (i) policy exists, ASCII only ------------------------------------
+# ---------- (i) both files exist, ASCII only ---------------------------------
 
-checked=$((checked + 1))
-if [[ ! -f "$POLICY" ]]; then
-  failf "stage-policy.md not found: $POLICY"
-fi
-checked=$((checked + 1))
-if [[ ! -f "$MANIFEST" ]]; then
-  failf "stage-policy.sources.tsv not found: $MANIFEST"
-fi
+for f in "$POLICY" "$LEGACY"; do
+  checked=$((checked + 1))
+  if [[ ! -f "$f" ]]; then
+    failf "${f#"$policy_root"/} not found: $f"
+  fi
+done
 if (( fail == 1 )); then
   exit 1
 fi
 
-# CAPTURED, NOT `grep -q`: an early-exiting reader kills the writer with
-# SIGPIPE and `pipefail` then reports the pipeline as failed even on a match.
-non_ascii=$(LC_ALL=C grep -c -a -E '[^	 -~]' "$POLICY" || true)
-if [[ "${non_ascii:-0}" != "0" ]]; then
-  failf "stage-policy.md — $non_ascii line(s) carry a byte outside printable ASCII, tab and newline"
-fi
+for f in "$POLICY" "$LEGACY"; do
+  # CAPTURED, NOT `grep -q`: an early-exiting reader kills the writer with
+  # SIGPIPE and `pipefail` then reports the pipeline as failed even on a match.
+  non_ascii=$(LC_ALL=C grep -c -a -E '[^	 -~]' "$f" || true)
+  if [[ "${non_ascii:-0}" != "0" ]]; then
+    failf "${f#"$policy_root"/} — $non_ascii line(s) carry a byte outside printable ASCII, tab and newline"
+  fi
+done
 
 # ---------- (ii) size --------------------------------------------------------
 
-checked=$((checked + 1))
+for f in "$POLICY" "$LEGACY"; do
+  checked=$((checked + 1))
+  bytes=$(wc -c < "$f" | tr -d ' ')
+  if (( bytes > MAX_BYTES )); then
+    failf "${f#"$policy_root"/} — $bytes bytes exceeds the $MAX_BYTES-byte ceiling"
+  fi
+done
 policy_bytes=$(wc -c < "$POLICY" | tr -d ' ')
-if (( policy_bytes > MAX_BYTES )); then
-  failf "stage-policy.md — $policy_bytes bytes exceeds the $MAX_BYTES-byte ceiling"
-fi
+legacy_bytes=$(wc -c < "$LEGACY" | tr -d ' ')
 
 # ---------- (iii) volatile tokens --------------------------------------------
 
@@ -123,94 +110,8 @@ for pin in "$PIN_HARNESS" "$PIN_TEAM"; do
   fi
 done
 
-# ---------- (v) manifest shape -----------------------------------------------
-
-checked=$((checked + 1))
-header=$(head -n 1 "$MANIFEST")
-if [[ "$header" != "$MANIFEST_HEADER" ]]; then
-  failf "stage-policy.sources.tsv — header must be 'source<TAB>anchor<TAB>sha256<TAB>disposition<TAB>note'"
-fi
-
-bad_cols=$(awk -F'\t' 'NR > 1 && NF != 5 { print NR ": " NF " column(s)" }' "$MANIFEST")
-if [[ -n "$bad_cols" ]]; then
-  while IFS= read -r hit; do
-    [[ -n "$hit" ]] || continue
-    failf "stage-policy.sources.tsv:$hit — expected 5 tab-separated columns"
-  done <<< "$bad_cols"
-fi
-
-policy_headings=$(grep -E '^## ' "$POLICY" | sed -E 's/^## //' || true)
-
-lineno=0
-while IFS= read -r row || [[ -n "$row" ]]; do
-  lineno=$((lineno + 1))
-  (( lineno > 1 )) || continue
-  source=$(printf '%s\n' "$row" | awk -F'\t' '{ print $1 }')
-  anchor=$(printf '%s\n' "$row" | awk -F'\t' '{ print $2 }')
-  sha=$(printf '%s\n' "$row" | awk -F'\t' '{ print $3 }')
-  disp=$(printf '%s\n' "$row" | awk -F'\t' '{ print $4 }')
-
-  checked=$((checked + 1))
-  case "$source" in
-    user-scope|workspace|memory|plugin) : ;;
-    *) failf "stage-policy.sources.tsv:$lineno — source must be user-scope, workspace, memory or plugin: '$source'" ;;
-  esac
-  if [[ -z "$anchor" ]]; then
-    failf "stage-policy.sources.tsv:$lineno — empty anchor"
-  elif [[ "$source" == plugin && ! "$anchor" =~ ^[^/:][^:]*:.+$ ]]; then
-    failf "stage-policy.sources.tsv:$lineno — a plugin anchor is '<path relative to the plugin root>:<line prefix>': '$anchor'"
-  fi
-  if [[ ! "$disp" =~ $DISPOSITION_RE ]]; then
-    failf "stage-policy.sources.tsv:$lineno — disposition outside the closed vocabulary: '$disp'"
-  fi
-
-  # (vi) a policy: disposition names a real heading
-  if [[ "$disp" == policy:* ]]; then
-    named="${disp#policy:}"
-    # CAPTURED, NOT `grep -q` — same SIGPIPE/pipefail reason as above.
-    hits=$(printf '%s\n' "$policy_headings" | grep -Fxc -- "$named" || true)
-    if [[ "${hits:-0}" == "0" ]]; then
-      failf "stage-policy.sources.tsv:$lineno — policy section not found in stage-policy.md: '## $named'"
-    fi
-  fi
-
-  # (ix) hash column
-  if [[ "$source" == memory ]]; then
-    if [[ "$sha" != "-" ]]; then
-      failf "stage-policy.sources.tsv:$lineno — a memory row carries hash '-', found '$sha'"
-    fi
-  elif [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]]; then
-    failf "stage-policy.sources.tsv:$lineno — sha256 must be 64 hex characters, found '$sha'"
-  fi
-done < "$MANIFEST"
-
-# ---------- (vii) every policy heading is named by at least one row ---------
-
-named_headings=$(awk -F'\t' 'NR > 1 && $4 ~ /^policy:/ { sub(/^policy:/, "", $4); print $4 }' "$MANIFEST" | sort -u)
-while IFS= read -r heading; do
-  [[ -n "$heading" ]] || continue
-  checked=$((checked + 1))
-  hits=$(printf '%s\n' "$named_headings" | grep -Fxc -- "$heading" || true)
-  if [[ "${hits:-0}" == "0" ]]; then
-    failf "stage-policy.md — section '## $heading' is named by no row of stage-policy.sources.tsv"
-  fi
-done <<< "$policy_headings"
-
-# ---------- (viii) user-scope and plugin anchors unique within the manifest --
-
-for kind in user-scope plugin; do
-  checked=$((checked + 1))
-  dupes=$(awk -F'\t' -v k="$kind" 'NR > 1 && $1 == k { print $2 }' "$MANIFEST" | sort | uniq -d || true)
-  if [[ -n "$dupes" ]]; then
-    while IFS= read -r d; do
-      [[ -n "$d" ]] || continue
-      failf "stage-policy.sources.tsv — $kind anchor appears more than once: $d"
-    done <<< "$dupes"
-  fi
-done
-
 if (( fail == 0 )); then
-  echo "OK:   stage policy sources — $checked check(s) passed, policy $policy_bytes bytes"
+  echo "OK:   stage policy — $checked check(s) passed, policy $policy_bytes bytes, legacy v6 $legacy_bytes bytes"
 fi
 
 exit "$fail"

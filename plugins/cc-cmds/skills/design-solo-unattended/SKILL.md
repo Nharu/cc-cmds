@@ -1,7 +1,7 @@
 ---
 name: design-solo-unattended
-description: 가벼운 설계의 무인 팔 — autopilot 이 `solo` 티어 런의 설계 단계로 파견하면 리드 혼자 요약을 쓰고 동결한다 (팀 없음, 질문은 정지 기록으로)
-when_to_use: 사람이 직접 부르지 않는다. autopilot 드라이버·게이트가 `solo` 티어이고 `design_required` 인 런의 설계 스테이지로 파견한다
+description: 리드 단독 설계의 무인 팔 — autopilot 이 `solo` 티어 런과 `team-4` 단일 설계의 `solo-audit` 경로 런의 설계 단계로 파견하면 리드 혼자 요약을 쓰고 동결한다 (팀 없음, 질문은 정지 기록으로)
+when_to_use: 사람이 직접 부르지 않는다. autopilot 드라이버·게이트가 선택 함수가 이 스킬을 고른 런 — `solo` 티어이거나 `team-4` 이고 `design_path` 가 `solo-audit` 이며 `design_required` 인 런 — 의 설계 스테이지로 파견한다
 disable-model-invocation: true
 usage: "/cc-cmds:design-solo-unattended <doc-path> [<task-sentence>]"
 options:
@@ -18,10 +18,10 @@ options:
 notes: "팀을 띄우지 않고 5U·6U 를 돌지 않는다. 멈춤 자리는 닫힌 넷(`document-present`·`ledger-missing`·`slicing-unknown`·`ladder-unsettled`)이고, 종단은 동결 문면·문서 경로·sha256 이다."
 ---
 
-Run the light design stage of an autopilot run in a headless session, **without ever asking a human and without a team**. The lead alone reads the interview record and the tree, writes a design summary under the headings implementation already reads, and freezes it; the run then goes to implementation without a design audit.
+Run the light design stage of an autopilot run in a headless session, **without ever asking a human and without a team**. The lead alone reads the interview record and the tree, writes a design summary under the headings implementation already reads, and freezes it; on a `solo` plan the run then goes to implementation without a design audit, and on a `team-4` plan whose `design_path` is `solo-audit` the run's design audit reads it next.
 Everything written for a person — the saved document and a halt record — is Korean.
 
-This file is a separate arm so that "it has no human-question surface" is a whole-file predicate `scripts/lint-unattended-surfaces.sh` can check. It is **dispatched by the driver or the gate only**, for a run whose plan reads `design_tier: solo` with `design_required` true; there is no seat-dispatch branch. **Before Step 0, Read only the parts of `${CLAUDE_SKILL_DIR}/../design-discuss-unattended/SKILL.md` listed below** and follow their driver-dispatch path, with only the steps below replaced. A part named by a heading runs from that heading to the next heading of the same or a higher level; a part named by a list item's text is that item with its indented lines. The rest of that file is the team's and the seat's, and this arm does not Read it: every other mention of the discuss arm below restates what this arm needs from it.
+This file is a separate arm so that "it has no human-question surface" is a whole-file predicate `scripts/lint-unattended-surfaces.sh` can check. It is **dispatched by the driver or the gate only**, for a run whose plan reads `design_required` true and for which the selection function `manifest_design_skill` gives `design-solo-unattended` — `design_tier: solo`, or `design_tier: team-4` with `design_path: solo-audit`; there is no seat-dispatch branch. **Before Step 0, Read only the parts of `${CLAUDE_SKILL_DIR}/../design-discuss-unattended/SKILL.md` listed below** and follow their driver-dispatch path, with only the steps below replaced. A part named by a heading runs from that heading to the next heading of the same or a higher level; a part named by a list item's text is that item with its indented lines. The rest of that file is the team's and the seat's, and this arm does not Read it: every other mention of the discuss arm below restates what this arm needs from it.
 
 Discuss-arm parts this arm reads:
 

@@ -195,6 +195,13 @@ Process A edits nothing, so it writes the disposition into the plan: one `물려
 
 A conflict whose resolution would change behaviour the design document's binding tier fixes is CFI-U3's case, not this one's.
 
+**A `CI 수정: <sha>` line in the prompt is a CI fix, not a scope directive, and it takes neither process.** The router dispatches it when a check of the segment's reviewed HEAD failed, the gate's rerun was accepted, and the same check failed again while the base branch did not fail it; the gate admits it only while the segment's `다음` reads `CI 수정` and `<sha>` is the worktree tip. It plans nothing, emits no plan and edits no design document. The prompt names the failing checks and the pull request beside the line; read the failing jobs' logs through the gate (`gh run view <run id> --log-failed`, a read) and find the cause.
+
+- **The cause is in this segment's change, inside its declared files** → fix only that cause in the segment worktree, run the checks the design document's verification section names for the files the fix touched, commit and push the segment branch the way this stage pushes its implementation, and end. Fix nothing else: the next review reads the whole new HEAD.
+- **The cause is outside this segment's change or its declared files** — a flaky test the change did not touch, the runner, a dependency, another segment's file — → fix nothing. Write the halt record with `분류: precondition-failed`, quoting the failing check names, the run id and the log lines that show the cause in `**질문 문면**`, and stop.
+
+A fix that would change behaviour the design document's binding tier fixes is CFI-U3's case, not this one's.
+
 ---
 
 ### Step 1: Read Design Document

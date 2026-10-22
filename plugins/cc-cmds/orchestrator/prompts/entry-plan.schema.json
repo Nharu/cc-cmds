@@ -14,6 +14,7 @@
     "design_tier_rationale": { "type": "string" },
     "design_scope": { "type": "string", "enum": ["single", "base"] },
     "design_scope_rationale": { "type": "string" },
+    "design_path": { "type": "string", "enum": ["solo-audit", "discuss-audit", "none"] },
     "work_class": { "type": "string", "enum": ["fix", "feat", "docs", "other", "unknown"] },
     "work_class_rationale": { "type": "string" },
     "targets": {
@@ -71,6 +72,6 @@
     },
     "notes": { "type": "string" }
   },
-  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "notes"],
+  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "notes"],
   "additionalProperties": false
 }

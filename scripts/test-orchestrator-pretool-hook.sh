@@ -296,7 +296,7 @@ check "T16 UserPromptSubmit 에 귀환 닫기 항목이 정확히 하나, timeou
 check "T16 PostToolUse 에 AskUserQuestion 매처의 귀환 닫기 항목이 정확히 하나, timeout 5" \
   "$(jq -r '[.hooks.PostToolUse[]? | select(.matcher == "AskUserQuestion") | .hooks[] | select(.command | contains("session-return-dismiss.sh")) | select(.timeout == 5)] | length' "$HOOKS_JSON")" "1"
 check "T16 Edit|Write|MultiEdit 항목이 그대로다" \
-  "$(jq -r '[.hooks.PostToolUse[]? | select(.matcher == "Edit|Write|MultiEdit") | .hooks[] | select(.command | contains("stage-policy-edit-drift.sh")) | select(.timeout == 10)] | length' "$HOOKS_JSON")" "1"
+  "$(jq -r '[.hooks.PostToolUse[]? | select(.matcher == "Edit|Write|MultiEdit") | .hooks[] | select(.command | contains("stage-rules-edit.sh")) | select(.timeout == 10)] | length' "$HOOKS_JSON")" "1"
 check "T16 AskUserQuestion 을 다른 도구와 합친 매처가 없다" \
   "$(jq -r '[.hooks[][]? | select((.matcher? // "") | test("AskUserQuestion\\||\\|AskUserQuestion"))] | length' "$HOOKS_JSON")" "0"
 check "T16 매처 없는 원소가 PostToolUse 배열에 들어가 있지 않다" \

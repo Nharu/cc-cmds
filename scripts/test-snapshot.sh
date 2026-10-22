@@ -756,6 +756,50 @@ check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다
 check "review_carry 가 재구현 사이클 상한과 확인 리뷰 회차 상한을 싣는다" \
   "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2,"RECHECK_ROUND_CAP":2}'
 
+# 6c-3. Both router copies branch on the six CI values of `다음`
+#
+# A value one copy does not name is a value its router meets with no branch, and
+# a rerun spelled by hand is one the gate refuses in every form. The values the
+# CI layer writes, and their element keys, are measured by test-gate.sh's 60b and
+# 88d against the gate itself; what is pinned here is that each copy carries the
+# branch, the dispatch line and the act, and forbids the hand spelling.
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; f=${pair#*:}
+  for lit in \
+    '**`CI 재실행`**' \
+    '**`CI 대기`**' \
+    '**`CI 수정`**' \
+    '**`CI 리뷰`**' \
+    '**`CI 기존 실패`**' \
+    '**`CI 수정 한도`**' \
+    'CI 수정: <head sha>' \
+    'act --kind ci-rerun' \
+    '--kind ci-rerun' \
+    '-- 재실행 <head sha>' \
+    '**Every other exit 3 is one disposition**' \
+    '**Never send `gh run rerun`, a rerun or re-request REST path, or the `rerequestCheckSuite` mutation**'; do
+    if grep -qF -- "$lit" "$f"; then
+      ok "$who 사본이 CI 갈래 리터럴을 싣는다: $lit"
+    else
+      bad "$who 사본의 CI 갈래 리터럴" "없다: $lit"
+    fi
+  done
+done
+
+# Both router copies read the design skill from the snapshot as it stands and
+# name the `solo-audit` branch of the selection function. A copy that kept the
+# two-branch sentence would tell its router a team-4 plan always takes the
+# discussion skill, which the gate now refuses on a `solo-audit` plan.
+sel_new='`design-solo-unattended` when `design_tier` is `team-4` and `design_path` is `solo-audit`, `design-discuss-unattended` otherwise. Do not pick it again from `design_scope`, `design_tier` or `design_path`:'
+sel_old='Do not pick it again from `design_scope` or `design_tier`:'
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; f=${pair#*:}
+  check "$who 사본이 solo-audit 갈래의 선택 문장을 한 번 싣는다" "$(grep -cF -- "$sel_new" "$f" || true)" "1"
+  check "$who 사본에 두 갈래 옛 선택 문장이 없다" "$(grep -cF -- "$sel_old" "$f" || true)" "0"
+done
+check "라우터 두 사본의 설계 스킬 선택 줄이 바이트 동일하다" \
+  "$(grep -F -- "$sel_new" "$RS_SKILL")" "$(grep -F -- "$sel_new" "$AP_ROUTER")"
+
 # ---------------------------------------------------------------------------
 # 6c-3. `implement_next[]` tells a plan emission from a plan execution
 #
@@ -821,6 +865,58 @@ hi0=$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/
 check "세그먼트 워크트리에 커밋이 생기면 원소가 움직인다" "$(inx I2)" "리뷰|B|1|1"
 check "implement_next 의 값이 움직여도 H 는 그대로다" \
   "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null ) )" "$hi0"
+
+# ---------------------------------------------------------------------------
+# 6e-2. `audit_skeleton_due` — the audit that asked for its skeletal re-convergence
+#
+# An audit that ended `정상 완료` and counted skeleton-grade items is not done:
+# the gate names it in `audit_skeleton_due`, and both router copies read that
+# key before planning past the audit. A plan without an audit step has nothing
+# to wait on, so the key is `null` there. The gate's own section 15e-4 drives the
+# object form on a live run; what is pinned here is the key, and the text each
+# reader carries.
+# ---------------------------------------------------------------------------
+SNAP_K="$WORK/skeleton-due.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_K"
+check "스냅숏이 audit_skeleton_due 키를 싣는다" "$(jq -r 'has("audit_skeleton_due")' "$SNAP_K")" "true"
+check "감사 단계 없는 계획의 audit_skeleton_due 는 null 이다" "$(jq -c '.audit_skeleton_due' "$SNAP_K")" "null"
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; f=${pair#*:}
+  for lit in \
+    '#### Routing a skeleton-grade audit to re-convergence' \
+    "and that the snapshot's \`audit_skeleton_due\` is \`null\`" \
+    '`audit_skeleton_due` not `null` → 「Routing a skeleton-grade audit to re-convergence」 below.' \
+    '{"step": "<audit step id>", "skeletal": <n>}' \
+    "--rationale '감사 골격급 재수렴'" \
+    '-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> 감사 골격급"' \
+    '`사유=골격급 재수렴 종단 술어 거짓`'; do
+    if grep -qF -- "$lit" "$f"; then
+      ok "$who 사본이 골격급 재수렴 리터럴을 싣는다: $lit"
+    else
+      bad "$who 사본의 골격급 재수렴 리터럴" "없다: $lit"
+    fi
+  done
+done
+for lit in \
+  '| `골격급-재수렴` | 10 |' \
+  '감사 골격급 <record>"' \
+  "Item 4's 'After it ends' names this same act for this shape; there is one act."; do
+  if grep -qF -- "$lit" "$RS_SKILL"; then
+    ok "교대 스킬이 골격급 재발 답의 갈래를 싣는다: $lit"
+  else
+    bad "교대 스킬의 골격급 재발 갈래" "없다: $lit"
+  fi
+done
+AU_SKILL="$repo_root/plugins/cc-cmds/skills/design-audit-unattended/SKILL.md"
+check "감사 스킬이 합성 요구를 사람 판단 보류로 적는다" \
+  "$(grep -cF '사유: 감사 합성 요구 — 사람 판단' "$AU_SKILL" || true)" "1"
+check "감사 스킬에 합성 요구에서 무조건 멈춘다는 문장이 없다" \
+  "$(grep -cF 'halts, unconditionally' "$AU_SKILL" || true)" "0"
+if grep -qF 'Step 7 / 골격급 재발' "$AU_SKILL"; then
+  ok "감사 스킬이 골격급 재발 멈춤의 스텝 문자열을 싣는다"
+else
+  bad "감사 스킬이 골격급 재발 멈춤의 스텝 문자열을 싣는다" "없다"
+fi
 
 # ---------------------------------------------------------------------------
 # 6f. The stall classifier — `stall-class.awk` and the `stalls` key
@@ -2578,7 +2674,126 @@ check "그 키의 stage-result 도 교대 기록의 답을 소비한다" "$(shr_
 rm -rf "$SHR_DIR"
 
 # ---------------------------------------------------------------------------
-# 12. An answer a routing block stamped leaves answered_halts for returned_halts
+# 12. A carried halt answer — the sentences no fixture can execute
+#
+# A stand-in CLI cannot recompute a halt's question, so what a re-entered
+# skill does when the question it computes differs from the card's is held
+# here as text, and its behaviour is left to the deployed run. The same holds
+# for the routing copies that tell a shift which exit of the carry act sends
+# it where, and for the seat and lead copies that keep an answer carried over
+# to the next run from being asked again: each sentence is the only carrier of
+# its rule, and a rewrite that drops one leaves nothing failing.
+# ---------------------------------------------------------------------------
+RC_SKILL="$repo_root/plugins/cc-cmds/skills/design-reconverge/SKILL.md"
+AU_SKILL="$repo_root/plugins/cc-cmds/skills/design-audit-unattended/SKILL.md"
+# The audit's answer handling lives in the sidecar's §4.1: the skill's own
+# bytes count toward its lead's pre-dispatch read ceiling.
+AU_ANS="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
+SEAT_REF="$AP_REFS/act2-seat.md"
+has(){ if grep -qF -- "$2" "$1"; then echo 예; else echo 아니오; fi; }
+check "design-audit-unattended: 재개와 운반 재진입은 사이드카 4.1 을 읽는다" \
+  "$(has "$AU_SKILL" "or started with \`CC_PIPELINE_HALT_ANSWER\` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), Reads \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 before anything else")" 예
+check "design-audit-unattended: 종합 정지 전에 사이드카 4.1 의 조정 처분을 쓴다" \
+  "$(has "$AU_SKILL" "Read \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 and write its \`## 조정 처분\` block into the report")" 예
+for f in "$RC_SKILL" "$AU_ANS"; do
+  b=$(basename "$(dirname "$f")")
+  check "$b: 재진입 때 계산한 질문이 다르면 새 정지 기록을 쓴다" \
+    "$(has "$f" "do not apply the answer: write a new halt record for the question computed now, with the card's path in its \`관측 상세\`.")" 예
+  check "$b: 운반된 기록은 다시 쓰지 않는다" \
+    "$(has "$f" "**Never rewrite the carried record**")" 예
+  check "$b: 카드의 기록 다이제스트를 대조한다" \
+    "$(has "$f" "**Read the card and check the digest.**")" 예
+done
+check "design-reconverge: 기준선은 디스크가 아니라 기록에서 읽는다" \
+  "$(has "$RC_SKILL" "**Take the baselines from the record, never from the disk.**")" 예
+check "design-reconverge: 정지 기록이 범위와 두 기준선을 싣는다" \
+  "$(has "$RC_SKILL" "- \`범위=<the scope as handed>\` — for an \`R<n>\` scope exactly \`범위=R<n>\`.")" 예
+# 사전 구속 표면 다이제스트는 스테이지가 손으로 거르는 값이 아니라 게이트가 드라이버의 계산으로
+# 내는 값이다 — 1단계가 쓰기 전에 그 명령으로 재고, 4단계의 사후 쪽도 같은 명령으로 잰다.
+check "design-reconverge: 1단계가 쓰기 전에 게이트 binding-digest 로 사전 다이제스트를 잰다" \
+  "$(has "$RC_SKILL" "record \`사전 sha256\` (\`shasum -a 256\`) and \`사전 구속 표면 다이제스트\` — the one line \`<gate absolute path> binding-digest --manifest \"\$CC_PIPELINE_MANIFEST\" -- <document path>\` prints")" 예
+check "design-reconverge: 4단계 사후 다이제스트도 같은 명령이다" \
+  "$(has "$RC_SKILL" "and the after side is what \`<gate absolute path> binding-digest --manifest \"\$CC_PIPELINE_MANIFEST\" -- <document path>\` prints after the last edit")" 예
+check "design-reconverge: 정지 기록의 사전 다이제스트는 1단계 값이다" \
+  "$(has "$RC_SKILL" "- \`사전 구속 표면 다이제스트=<64 hex>\` — Step 1's \`사전 구속 표면 다이제스트\`: the gate's \`binding-digest\` output")" 예
+check "design-audit-unattended: 1–5단계 건너뛰기는 문서 sha256 에 묶인 처분에서만" \
+  "$(has "$AU_ANS" "**Skip Steps 1–5 only on a disposition bound to the document's bytes.**")" 예
+check "design-audit-unattended: 종합 정지 전에 조정 처분과 조정 뒤 sha256 을 쓴다" \
+  "$(has "$AU_ANS" "then \`**조정 뒤 문서 sha256**: <64 hex>\`")" 예
+check "교대 계약: 정지 답은 운반 act 로 낸다" \
+  "$(has "$RS_SKILL" "--carry-answer <line> \\")" 예
+check "교대 계약: --resume 재부착은 19 뒤와 좌석 실행 정지의 답에만" \
+  "$(has "$RS_SKILL" "**Re-attach with \`--resume\` only after exit 19, or for an answer to a \`좌석 실행\` stop item 2 sent here.**")" 예
+# 게이트는 좌석 실행 정지의 운반을 스텝 문면만으로 거절하므로, 계약도 답한 주체나
+# 선택지가 아닌 스텝으로 갈라야 사람이 한 답이 exit 3 으로 빠지지 않는다.
+check "교대 계약: 좌석 실행 정지의 답은 답한 주체와 무관하게 운반 act 없이 --resume 으로 간다" \
+  "$(has "$RS_SKILL" "When the step begins with \`Step 3 잔여 검증 좌석 실행\` or \`Step 3 게이트 도달 좌석 실행\`, whoever answered and whatever the option, the halted session is the one that reads the answer")" 예
+check "교대 계약: 좌석 실행 정지 갈래가 게이트가 거절하는 두 스텝 접두와 같다" \
+  "$(has "$GATE" "'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)")" 예
+check "교대 계약: 좌석 실행 답 갈래가 운반 act 로 넘기는 문장보다 앞선다" \
+  "$(awk '/When the step begins with `Step 3 잔여 검증 좌석 실행`/{a=NR} /Every other `재부착` answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_SKILL")" 예
+check "사이드카: 좌석 실행 정지는 사람이 답해도 --resume 으로 재부착한다" \
+  "$(has "$AU_ANS" "whether the seat ran the record or a person answered it: the carry act refuses an answer to it on its step alone")" 예
+check "교대 계약: 운반 act 의 16 은 답이 이월일 때 이월이고 종료 행이 있으면 종단" \
+  "$(has "$RS_SKILL" "\`이월\`: when the run has no run-scope end row, end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
+# 게이트는 이월 행 없이도 운반 act 를 16 으로 돌려준다 — 설정 park, stage-wait 행 기록 거부,
+# 마감 아닌 새 PARK, 어긋난 라우팅 가드 기록, 정체 임계를 못 읽는 대기. 그래서 세 사본 모두 16 을 답의 state 로 가른다.
+check "교대 계약: 운반 act 의 16 은 답이 열림이면 이월 행 없는 park 이고 중단으로 끝낸다" \
+  "$(has "$RS_SKILL" "\`열림\`: dispatch nothing on the key and do not carry the answer again in this shift; end with \`handoff 사유=중단\` once nothing else is dispatchable, naming the record and the park row's \`사유\` in \`막힌 지점\`")" 예
+check "교대 계약: 열림 답은 뒤 교대가 다시 운반한다" \
+  "$(has "$RS_SKILL" "The element stays \`열림\` in \`answered_halts[]\`, so a later shift carries it again")" 예
+check "교대 계약: 운반 시도의 대기 감독자가 낸 16 도 답의 state 로 가른다" \
+  "$(has "$RS_SKILL" "when the attempt carried a halt answer, tell it apart by the answer's \`state\` as a carry act's \`16\` is")" 예
+check "교대 계약: 열림 답의 중단 인계는 재질문 가드에 걸리지 않는다" \
+  "$(has "$RS_SKILL" "do not refuse it, because this answer is \`열림\`, not carried over")" 예
+check "교대 계약: 종료 코드 표의 16 행도 운반 act 의 16 을 답의 state 로 가른다" \
+  "$(has "$RS_SKILL" "**A \`16\` from a carry act (\`--carry-answer\`) is told apart by the answer's state**: read the snapshot again and take the \`answered_halts[]\` element by its \`line\`.")" 예
+check "좌석 사본: 운반 act 의 16 을 답의 state 로 가른다" \
+  "$(has "$SEAT_REF" "**A 16 from a carry act (\`--carry-answer\`) is told apart by the answer's state** in the snapshot's \`answered_halts[]\`.")" 예
+check "좌석 사본: 열림 답의 16 은 이월 행 없는 park 이다" \
+  "$(has "$SEAT_REF" "\`state\` \`열림\` → it is that park: the gate wrote no \`이월\` row")" 예
+# 운반 상한(18)에 걸린 기록은 답이 있어 좌석의 질문 목록에 들지 않고, 다시 물어 받은 새 답도
+# 같은 런에서는 다시 18 이다 — 사람에게 상한을 알리는 것은 이 문단뿐이다. 상한 행과 park 행은
+# act 범위라 스냅숏 blocked[] 에 실리지 않으므로, 좌석은 교대가 막힌 지점에 적은 사유로 읽는다.
+check "좌석 사본: 18 행은 상한을 묻지 않고 알린다" \
+  "$(has "$SEAT_REF" "do not carry that answer again; the seat neither asks the record again nor answers it with the seat, and tells the person of the cap")" 예
+check "좌석 사본: 열림 16 도 사람에게 알린다" \
+  "$(has "$SEAT_REF" "and tells the person of the park as 「A carry the gate parked or capped」 below says")" 예
+check "좌석 사본: 운반 park·상한은 사람에게 알리고 묻지 않는다" \
+  "$(has "$SEAT_REF" "**A carry the gate parked or capped is told to the person, not asked.**")" 예
+check "좌석 사본: 고지는 스냅숏 blocked[] 가 아니라 막힌 지점에서 사유를 읽는다" \
+  "$(has "$SEAT_REF" "the seat reads it there, because the snapshot's \`blocked[]\` carries no act-scope row")" 예
+check "교대 계약: 18 은 상한 행의 사유를 막힌 지점에 적는다" \
+  "$(has "$RS_SKILL" "naming the record and the cap row's \`사유\` in \`막힌 지점\` — the seat reads the cap from that field")/$(has "$RS_SKILL" "naming the halt record and the cap row's \`사유\` in \`막힌 지점\`")" "예/예"
+check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
+  "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg)) step = 1')" 예
+check "좌석 사본: 상한 고지는 두 상한 사유로 고른다" \
+  "$(has "$SEAT_REF" "When that \`사유\` begins \`중단 답 라우팅 — 세션 전에 세 번 죽었다\` or \`중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\`, it is the carry's cap")" 예
+check "좌석 사본: 상한 고지는 새 답도 같은 상한에 걸린다고 말한다" \
+  "$(has "$SEAT_REF" "asking again and taking a new answer meets the same cap")" 예
+check "좌석 사본: 상한 사유는 게이트가 쓰는 두 문면과 같다" \
+  "$(has "$GATE" "\"중단 답 라우팅 — 세션 전에 세 번 죽었다\"")/$(has "$GATE" "\"중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\"")" "예/예"
+# 마감 뒤의 이월 인계는 그 act 에서 런을 끝낼 때만 받아지고, 받아지지 않으면 교대가 붙드는 것을
+# 이름 짓는 사유로 인계한다 — 그 갈래를 싣는 것은 이 문장뿐이다.
+check "교대 계약: 마감 뒤 이월은 끝맺을 때만 받고 그 act 에서 끝낸다" \
+  "$(has "$RS_SKILL" "**Past the deadline it takes \`이월\` only when nothing but those answers holds the run, and ends the run with \`마감\` in the same act**")" 예
+check "교대 계약: 마감 뒤 이월이 거절되면 붙드는 것을 이름 짓는 사유로 인계한다" \
+  "$(has "$RS_SKILL" "hand off with the reason that names it: \`대기\` for a live stage or supervisor or a CI wait, \`중단\` for anything else, and the gate does not refuse that \`중단\`.")" 예
+check "교대 계약: 재질문 가드 1 은 끝맺음과 같은 판정이다" \
+  "$(has "$RS_SKILL" "the gate refuses \`중단\` when those answers are all that holds the run — the same judgment the ending past the deadline reads —")" 예
+check "교대 계약: 종료 코드 표에 18 행이 있다" "$(grep -c '^| `18` | a carry act' "$RS_SKILL")" 1
+check "교대 계약: 종료 코드 표에 19 행이 있다" "$(grep -c '^| `19` | a carry act' "$RS_SKILL")" 1
+check "좌석 사본: 종료 코드 표에 18 행이 있다" "$(grep -c '^| 18 | a carry act' "$SEAT_REF")" 1
+check "좌석 사본: 종료 코드 표에 19 행이 있다" "$(grep -c '^| 19 | a carry act' "$SEAT_REF")" 1
+check "좌석 사본: 이월된 답은 다시 묻지 않는다" \
+  "$(has "$SEAT_REF" "**A record already answered is not asked again because its answer was carried over**")" 예
+for f in "$RS_SKILL" "$AP_ROUTER"; do
+  check "$(basename "$(dirname "$f")"): 설계 단계 정지에서 이월 답은 다시 묻지 않는다" \
+    "$(has "$f" "**An answer already carried over is not asked again**: when the element naming the step reads \`state\` \`이월\`")" 예
+done
+
+# ---------------------------------------------------------------------------
+# 13. An answer a routing block stamped leaves answered_halts for returned_halts
 #
 # The shift could not carry the answer out and wrote a cone row the gate
 # stamped with the answer's line. The answer is spent, so the shift does not

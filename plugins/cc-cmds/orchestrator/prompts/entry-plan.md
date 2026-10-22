@@ -34,7 +34,7 @@ Set it when the run needs a design document that does not exist yet. Then say pl
 
 ## `design_tier` picks the design path — it is not an entry skill
 
-`design_tier` is a sibling of `design_required`, not a new `entry_skill` value. `entry_skill` names the stage the run enters; the tier is a configuration parameter of one stage, `solo` | `team-4`. Its runtime effect is which unattended stage writes the document: `solo` → the `design-solo-unattended` stage, one headless lead who writes the summary and freezes it with no team and no audit after it; `team-4` → the `design-discuss-unattended` stage, a design discussion team whose roster the kickoff takes from the person before it freezes the run, followed by a design audit.
+`design_tier` is a sibling of `design_required`, not a new `entry_skill` value. `entry_skill` names the stage the run enters; the tier is a configuration parameter of one stage, `solo` | `team-4`. Its runtime effect is whether the graph carries a design audit: `solo` → the `design-solo-unattended` stage, one headless lead who writes the summary and freezes it with no team and no audit after it; `team-4` → a design followed by a design audit, with the writer of that design named by `design_path` below.
 
 **The default is `solo`.** Read this ticket and this tree, and judge `team-4` only when you find a reason particular to this work why it needs a design discussion and an audit. Write each such reason as its own free sentence in `design_heavy_reasons`; a `solo` judgment carries an empty array. There is no list of categories to match against and no number of targets that decides it — a reason is something you can say about this work, not a class it falls into.
 
@@ -54,6 +54,10 @@ Estimate from the tree how many files the work will touch and write it in `estim
 - The step graph is exactly `D1 design` (no prerequisite) → `A1 design-audit` (depends on `D1`) → `S1 split` (depends on `D1`, `A1`), and **nothing comes after it**. A base run ends at the split; designing and implementing each ticket is a later run. `split` is a step skill only — it is never an `entry_skill`.
 
 Write both keys on every judgment; a manifest frozen before this field existed has no such key, and a reader takes it as `single`.
+
+## `design_path` names who writes a heavy single document — it is a deterministic default here
+
+`design_path` is a closed enum — `solo-audit` | `discuss-audit` | `none` — and it is not a judgment of yours. Write it by one rule: **`design_required` is `true`, `design_tier` is `team-4` and `design_scope` is `single` → `solo-audit`; every other plan → `none`.** `solo-audit` sends the design to the `design-solo-unattended` stage, one headless lead, and the audit after it stays; `discuss-audit` sends it to the `design-discuss-unattended` stage, a design discussion team whose roster the kickoff takes from the person. Never write `discuss-audit` yourself: the kickoff asks the person which path a heavy single design takes and rewrites the key with their answer. Write the key even when `design_required` is false — the schema requires it unconditionally. A manifest frozen before this field existed has no such key, and a reader takes it as `discuss-audit` on a `team-4` single-scope design and `none` elsewhere.
 
 ## `work_class` records what kind of change the run lands — it decides nothing here
 
