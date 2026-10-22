@@ -232,13 +232,14 @@ row stage-result '세그먼트=impl' '스테이지=impl' '종류=implement' '실
 halt 'impl#1' gate-unanswerable
 has "halt: an unbound gate-unanswerable is reported with its marker" "$(stops)" "$(ev 'halt/gate-unanswerable/implement' 비의도 - '원인 셀 미결합')"
 
-# The copy `gate_adoption_halt_carry` makes of an earlier run's record, and its
-# attachment, are not this run's halt records.
+# The copy `gate_adoption_halt_carry` makes of an earlier run's record and its
+# attachment, and the answer a seat writes beside a record, are not this run's
+# halt records — even when the answer body quotes a `**분류**` line.
 newcase
 row stage-result '세그먼트=impl' '스테이지=impl' '종류=implement' '실행 버전=1' '종단 부류=정상 완료'
 halt 'impl#adopted-20261001-a1bbfcee' gate-unanswerable
 halt 'impl#adopted-20261001-a1bbfcee.attach' precondition-failed
-halt 'impl#2.attach' precondition-failed
+halt 'impl#2.answer' precondition-failed
 check "halt: an adopted copy and attachments are no event" "$(stops)" ""
 
 # --- cone ---------------------------------------------------------------------

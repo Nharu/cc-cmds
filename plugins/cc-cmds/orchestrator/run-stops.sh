@@ -148,14 +148,15 @@ run_stops_main() {
   # HALT RECORDS: only the file name and the `**분류**` line are read. Two names
   # in that directory are not this run's halt records: the copy an adopted
   # segment carries over from the run that wrote it (`<seg>#adopted-<run>.md`),
-  # which that run reports under its own kind, and an attachment
-  # (`*.attach.md`), which is no halt record at all.
+  # which that run reports under its own kind, and an attachment — the answer
+  # a seat wrote beside a record (`*.answer.md`) or the attachment an adopted
+  # copy carries (`*.attach.md`) — which is no halt record at all.
   halts=""
   if [ -n "$run_dir" ] && [ -d "$run_dir/halt" ]; then
     local f id cls
     for f in "$run_dir"/halt/*.md; do
       [ -f "$f" ] || continue
-      case "${f##*/}" in *'#adopted-'*|*.attach.md) continue ;; esac
+      case "${f##*/}" in *'#adopted-'*|*.answer.md|*.attach.md) continue ;; esac
       id=${f##*/}; id=${id%.md}
       cls=$( { grep -m1 -E '^\*\*분류\*\*: ' "$f" 2>/dev/null || true; } \
              | sed 's/^\*\*분류\*\*: //; s/[[:space:]]*$//')
