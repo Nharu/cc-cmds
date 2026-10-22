@@ -681,7 +681,9 @@ readonly GATE_EXIT_CARRY_CAP=18
 # A CARRY WHOSE (skill, stage kind, step) IS NOT IN THE RE-ENTRY TABLE, or whose
 # ledger-valued slot — a value the gate builds again from the ledger and the
 # frozen manifest, every slot of the frame but `<문서>` and `<범위>` — differs
-# from the value the gate built. The halt's answer is not handed to a fresh
+# from the value the gate built, or an implement stop whose `다음` the base or
+# CI layer sets, which the frame's ordinary form does not spell. The halt's
+# answer is not handed to a fresh
 # session, so no row is written and the shift re-attaches the halted session
 # with `--resume` as before. NOT 3: 3
 # sends the shift to `handoff 사유=중단`, and this is the one code that sends it
@@ -19317,7 +19319,14 @@ gate_carry_ledger_frame() {
   # - `[ … ]`: present only when the key's `다음` is `수정`, its `<리포트>` the
   #   absolute `리포트 경로` of that last `cycle` row;
   # - `<의도>`: the first non-empty line inside the manifest's `## 의도` fence.
-  local frame="$1" doc="$2" key="$3" prompt="$4" cr='' v want bare full opt pat p expect
+  #
+  # AN IMPLEMENT FRAME IS NOT BUILT WHILE THE BASE OR CI LAYER SPEAKS. When the
+  # key's `다음` differs from the review table's own value, the halted attempt
+  # was a base resolution or a CI fix, or a stop that followed one — dispatched
+  # with a `베이스 해소: <sha>` or `CI 수정: <sha>` line this frame cannot hold.
+  # A prompt that matches the frame and the document re-attaches instead of
+  # starting a session in the ordinary mode.
+  local frame="$1" doc="$2" key="$3" prompt="$4" cr='' v want bare full opt pat p expect nx dirv=''
   GATE_CARRY_BUILT=''
   case "$frame" in
     *'['*']'*)
@@ -19328,7 +19337,10 @@ gate_carry_ledger_frame() {
   case "$frame" in *'<사이클>'*|*'<리포트>'*) cr=$(gate_segment_last_cycle_row "$key") ;; esac
   want=$bare
   case "$frame" in
-    *'<리포트>'*) [ "$(gate_segment_review_next "$key")" != 수정 ] || want=$full ;;
+    *'<리포트>'*)
+      nx=$(gate_segment_review_next "$key")
+      [ "$nx" = "$(gate_segment_review_next_table "$key")" ] || dirv=$nx
+      [ "$nx" != 수정 ] || want=$full ;;
   esac
   want=$(gate_fill_slot "$want" '<세그먼트>' "$key")
   case "$want" in
@@ -19340,7 +19352,7 @@ gate_carry_ledger_frame() {
   case "$want" in *'<리포트>'*) want=$(gate_fill_slot "$want" '<리포트>' "$(gate_report_abs "$(gate_row_field "$cr" '리포트 경로')")") ;; esac
   case "$want" in *'<의도>'*) want=$(gate_fill_slot "$want" '<의도>' "$(manifest_intent_line)") ;; esac
   expect=$(gate_fill_slot "$want" '<문서>' "$doc")
-  if [ "$prompt" = "$expect" ]; then
+  if [ -z "$dirv" ] && [ "$prompt" = "$expect" ]; then
     GATE_CARRY_BUILT=$want
     return 0
   fi
@@ -19355,7 +19367,11 @@ gate_carry_ledger_frame() {
     # shellcheck disable=SC2254
     case "$prompt" in
       $pat)
-        warn "운반 act 의 원장 값 칸이 게이트가 지은 값과 다릅니다 — 「${expect}」 — 멈춘 세션을 --resume 으로 재부착하세요"
+        if [ -n "$dirv" ]; then
+          warn "$key 의 다음 처분이 「${dirv}」 라 멈춘 시도는 베이스 해소나 CI 수정 지시 줄로 파견된 구현입니다 — 그 줄은 이 틀에 없으니 멈춘 세션을 --resume 으로 재부착하세요"
+        else
+          warn "운반 act 의 원장 값 칸이 게이트가 지은 값과 다릅니다 — 「${expect}」 — 멈춘 세션을 --resume 으로 재부착하세요"
+        fi
         return "$GATE_EXIT_CARRY_UNTABLED" ;;
     esac
   done

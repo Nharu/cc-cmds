@@ -41112,7 +41112,7 @@ check "95: TD3 L1 이 세션 전에 죽은 뒤 사람이 다시 답한 L2 가 �
 
 # ---------------------------------------------------------------------------
 # 95b. 재진입 표의 구현·토론·단독·분할 행은 원장 값 칸을 게이트가 지어 대조한다
-# --- section: 95b | group: ledger_series | covers: act, gate_carry_check | needs: 95 | anchors: 95b: 재진입 표는 여섯 행이다, 95b: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95b: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95b: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95b: 문서가 다른 구현 운반은 exit 3·행 없음, 95b: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95b: 분할 정지의 운반은 분할 형식이다, 95b: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
+# --- section: 95b | group: ledger_series | covers: act, gate_carry_check | needs: 95 | anchors: 95b: 재진입 표는 여섯 행이다, 95b: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95b: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95b: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95b: 문서가 다른 구현 운반은 exit 3·행 없음, 95b: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95b: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95b: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95b: 분할 정지의 운반은 분할 형식이다, 95b: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
 #
 # 구현·설계 토론·리드 단독 설계·베이스 분할의 정지는 보통 파견과 같은 틀로 운반된다.
 # 그 틀의 칸 중 문서 말고는 모두 원장에서 오므로, 게이트가 같은 원장에서 값을 지어
@@ -41179,6 +41179,30 @@ check "95b: 구현 정지를 다른 종류로 운반하면 exit 3·행 없음" \
 lsr95b_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh')"
 check "95b: 다음 이 머지 인 사이클 2 뒤의 구현 운반은 사이클 2 이고 꼬리가 없다" \
   "$(lsr95b_go im2 "$lsr95b_ln" implement "$lsr95b_p")" "$lsr95b_ok#$lsr95b_p"
+
+# 구현 — 베이스 해소·CI 수정 갈래의 구현은 지시 줄을 지니고 파견되는데 틀에는 그 줄이
+# 없다. 리뷰 표는 머지 인 채 베이스·CI 층이 다음 을 바꾸면, 틀 그대로의 프롬프트도
+# 19 로 재부착에 보낸다. 층의 값은 라우팅된 런과 gate_ci_next 를 대역으로 세워 넣고,
+# 표의 값과 칸 짓기는 사본 그대로다.
+lsr95b_frame() {
+  # lsr95b_frame <이름> <층이 낼 다음> <프롬프트> — 사본의 구현 행 틀을 원장 값으로
+  # 지어 프롬프트와 견준 종료 코드.
+  LSR95B_NX=$2 LSR95B_P=$3 lsr93_in "$lsr_root/$1/ledger.md" eval '
+    run_routed() { return 0; }
+    gate_ci_next() { printf "%s" "$LSR95B_NX"; }
+    f=$(gate_reentry_table | grep "^implement-unattended|" | cut -d"|" -f4)
+    gate_carry_ledger_frame "$f" "$DOC" S3 "$LSR95B_P" 2>/dev/null; printf "%s" "$?"'
+}
+check "95b: 층이 다음 을 바꾸지 않으면 구현 틀은 그대로 맞는다" \
+  "$(lsr95b_frame im2 머지 "$lsr95b_p")" 0
+check "95b: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다" \
+  "$(lsr95b_frame im2 '베이스 해소' "$lsr95b_p")" 19
+check "95b: 다음 이 해소 리뷰 인 구현 정지의 틀 운반은 exit 19 다" \
+  "$(lsr95b_frame im2 '해소 리뷰' "$lsr95b_p")" 19
+check "95b: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다" \
+  "$(lsr95b_frame im2 'CI 수정' "$lsr95b_p")" 19
+check "95b: 다음 이 CI 수정 이어도 문서가 다른 구현 운반은 exit 3 이다" \
+  "$(lsr95b_frame im2 'CI 수정' "/cc-cmds:implement-unattended /other/doc.md $(lsr95b_q '세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh')")" 3
 
 # 설계 토론·리드 단독 — 의도 칸은 매니페스트 의 의도 블록 첫 줄이다.
 lsr95b_ln=$(lsr95b_fx dd0 design-discuss-unattended 'Step 4 토론 — 질문' design)

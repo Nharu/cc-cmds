@@ -2839,6 +2839,8 @@ check "교대 계약: 표 행은 멈춘 시도의 종류로 고른다" \
   "$(has "$RS_SKILL" "on the halted attempt's own stage kind — the \`종류\` of its \`stage-result\` row, never the kind you are about to dispatch")" 예
 check "교대 계약: 구현 행의 틀" \
   "$(has "$RS_SKILL" "is carried as \`implement\` with the prompt the \`구현\` arm of 「Routing a segment after its implementation ends \`정상 완료\`」 would dispatch now: \`-p \"/cc-cmds:implement-unattended <문서 인자> \\\"세그먼트 <seg> (사이클 <n>) · 선언 파일: <files>[ · 수정 대상: <리포트 절대 경로> 의 P0·P1]\\\"\"\`")" 예
+check "교대 계약: 베이스·CI 값의 구현 정지는 19 로 재부착한다" \
+  "$(has "$RS_SKILL" "**While the segment's \`review_next[]\` element reads a base or CI value**")" 예
 check "교대 계약: 토론·단독 설계 행의 틀" \
   "$(has "$RS_SKILL" "are carried as \`design\` with item 4 of 「Dispatching the design stage」's prompt: \`-p \"/cc-cmds:<그 skill> <스냅숏 design_doc> \\\"<## 의도 의 첫 비어 있지 않은 줄>\\\"\"\`")" 예
 check "교대 계약: 분할 행의 틀" \
