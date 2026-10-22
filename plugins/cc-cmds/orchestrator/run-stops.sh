@@ -167,8 +167,10 @@ run_stops_main() {
 
   # SHIFT HALT RECORDS: a routing shift's stop writes its question one level
   # down, `halt/shift/<seg>#<n>.md`, and leaves behind no stage-result, no
-  # approval and no park — only a cone row anchored on the segment, which the
-  # fold drops. The record is the one trace of that wait, so it is read here,
+  # approval and no segment park — only a cone row anchored on the segment,
+  # which the fold drops, and at `도달 거부` the reach park row of the act that
+  # was refused, which binds the record below. The record is the one trace of
+  # that wait, so it is read here,
   # and it is unresolved until a `중단 답` row answers it, judged by the same
   # helper `cc_unanswered_halts` uses: the two readers of "does a person still
   # owe this run an answer" cannot disagree.
