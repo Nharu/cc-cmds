@@ -3805,12 +3805,13 @@ SAPEOF
     cat > "$CB60_STUB" <<'CB60EOF'
 #!/bin/bash
 # 재실행 행위의 GitHub 대역. 답은 `$CB60_S` 의 파일이 고른다:
-#   prlist · checks.pre · checks.post · run.<id> · run.<id>.post · base · post
+#   prlist · checks.pre · checks.post · run.<id> · run.<id>.post · base · post · labels
 #   att_stale · screen_stale  (POST 뒤 옛 답을 몇 번 더 낼지)
 # 파일이 없으면 그 읽기는 실패(rc 1)로 답한다.
 D=${CB60_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
 tok=other; [ "${GH_TOKEN:-}" = cb60-ro-fixture ] && tok=fixture
+[ "${GH_TOKEN:-}" = cb60-rw-fixture ] && tok=write
 printf '%s|GH_TOKEN=%s|GITHUB_TOKEN=%s|GH_CONFIG_DIR=%s|GH_REPO=%s|GH_HOST=%s\n' \
   "$1 $2 $3" "$tok" "${GITHUB_TOKEN-unset}" "${GH_CONFIG_DIR-unset}" "${GH_REPO-unset}" "${GH_HOST-unset}" >> "$D/env.log"
 dec() {
@@ -3821,6 +3822,7 @@ dec() {
 out() { [ -f "$D/$1" ] || exit 1; cat "$D/$1"; exit 0; }
 case "$1 $2" in
   "pr list") out prlist ;;
+  "pr view") out labels ;;
   "pr checks")
     if [ -f "$D/posted" ] && ! dec screen_stale; then out checks.post; else out checks.pre; fi ;;
 esac
@@ -4012,6 +4014,13 @@ CB60EOF
     nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
     sag act --manifest "$SA_MANIFEST" --kind ci-rerun --target main "$@" --snapshot-digest "$(SAH)" --rationale x
     check "60b: 철자 — $lb" "$rc|$(cb60_n 'CI 처분')|$(cb60_posts)" "2|$nr|$np"
+  }
+  # 라벨 인정의 두 절(60d, 60e)이 함께 쓴다.
+  la60_round() { cc_ci_round "$SA_LEDGER" CK "$CK60_SHA" | tr '\n' ' ' | sed 's/ $//'; }
+  la60_row() {
+    # la60_row <상태> <회차> — 세그먼트 CK 의 현재 head 에 손으로 쓴 라벨 회차 행.
+    printf -- '- `CI 처분` | 교대=1 | 세그먼트=CK | PR=%s#1 | head sha=%s | 처분=라벨 | 상태=%s | 회차=%s | 실행=777 | 워크플로=.github/workflows/gate.yml | 실패 체크=gate | 체크=gate | 라벨=api-change | 기본 브랜치=통과 | 응답=- | 관측=- | prev=x\n' \
+      "$CB60_SLUG" "$CK60_SHA" "$1" "$2" >> "$SA_LEDGER"
   }
 }
 
@@ -38767,12 +38776,6 @@ la60_w 1 git push origin HEAD
 check "60d: PR 라벨 쓰기 판정이 형태마다 답한다" "$la60_wfail" ""
 
 cb60_head
-la60_round() { cc_ci_round "$SA_LEDGER" CK "$CK60_SHA" | tr '\n' ' ' | sed 's/ $//'; }
-la60_row() {
-  # la60_row <상태> <회차> — 세그먼트 CK 의 현재 head 에 손으로 쓴 라벨 회차 행.
-  printf -- '- `CI 처분` | 교대=1 | 세그먼트=CK | PR=%s#1 | head sha=%s | 처분=라벨 | 상태=%s | 회차=%s | 실행=777 | 워크플로=.github/workflows/gate.yml | 실패 체크=gate | 체크=gate | 라벨=api-change | 기본 브랜치=통과 | 응답=- | 관측=- | prev=x\n' \
-    "$CB60_SLUG" "$CK60_SHA" "$1" "$2" >> "$SA_LEDGER"
-}
 la60_new() {
   # la60_new <라벨> [<체크 라벨> 줄...] — 60b 의 픽스처에 라벨 인정 행을 얹는다.
   cb60_new "$1"
@@ -38850,6 +38853,198 @@ for la60_a in "재실행 $la60_sha" "라벨 ${la60_sha%?}" "라벨 $la60_sha x" 
   [ "$(la60_rr 1 label-ack "$la60_a")" != 0 ] || la60_open="$la60_open[$la60_a]"
 done
 check "60d: 다른 argv 철자의 라벨 행위는 규칙이 열지 않는다" "$la60_open" ""
+
+# ---------------------------------------------------------------------------
+# 60e. 라벨 인정 — 행위 본문: 수락, park 칸, 받지 않은 요청, 쓰기 자격, 철자
+# --- section: 60e | group: sa | covers: act, snapshot | anchors: 60e: 적격한 라벨 행위가 요청·수락 행을 쓰고 POST 를 한 번 낸다, 60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다, 60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다, 60e: 쓰기 자격 없는 라벨 행위는 행도 POST 도 없이 rc 3 이다, 60e: 사전 인가 행 없는 라벨 행위가 규칙을 지나 수락된다 ---
+#
+# 60b 의 픽스처(`cb60_head`·`cb60_new`) 위에 매니페스트의 `라벨 인정` 행, 그 체크를 이름
+# 짓는 슬라이스 문서, `labeled` 를 받는 워크플로를 얹고 `act --kind label-ack` 를 실제로
+# 낸다. 마지막 사례 하나를 빼고는 매니페스트에 그 행위를 축자로 적은 `사전 인가` 행을
+# 싣는다 — 사전 인가 규칙의 표지 갈래와 무관하게 행위 본문까지 닿게 하려는 것이다. 표지
+# 갈래는 60d 가 규칙 파일을 직접 불러 재고, 마지막 사례가 그 행 없이 끝까지 낸다.
+# 같은 argv 의 둘째 park 는 되풀이로 읽히므로 park 사례마다 tip 에 커밋을 올린다.
+# ---------------------------------------------------------------------------
+cb60_head
+CB60_WF=$'name: gate\non:\n  pull_request:\n    types: [opened, synchronize, labeled]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true'
+LA61_WF="$CB60_WF"
+# 쓰기 자격은 고정한 픽스처 값이다. 비워 두면 게이트가 이 기기의 키체인을 읽는다.
+LA61_PREV_RW="${CC_GATE_TOKEN_RW-}"; LA61_HAD_RW="${CC_GATE_TOKEN_RW+1}"
+export CC_GATE_TOKEN_RW=cb60-rw-fixture
+la61_doc() {
+  # la61_doc <슬라이스 필드 줄|""> — 세그먼트 CK 의 슬라이스 하나를 가진 설계 문서를
+  # 매니페스트의 설계 문서로 두고 매니페스트를 다시 쓴다.
+  printf '# 픽스처\n\n## 구현 슬라이싱\n\n### 슬라이스 CK — 라벨\n\n**스킬**: implement\n**레포**: t/%s\n**선언 파일**: `a.txt`\n**선행**: 없음\n%s' \
+    "$SA_ID" "$1" > "$SA_ROOT/slice-doc.md"
+  SA_OWNER_DOC="${SA_ROOT#/}/slice-doc.md"
+  sa_manifest 리뷰없음
+}
+la61_pre() {
+  # la61_pre — 현재 tip 의 라벨 행위를 축자로 적은 사전 인가 행을 싣는다.
+  SA_PREAUTH_EXTRA="라벨 $CK60_SHA"; sa_manifest 리뷰없음
+}
+la61_new() {
+  # la61_new <라벨> [행 0] — 라벨 인정 행과 슬라이스 필드가 같은 체크 gate 를 이름 짓고 PR 에
+  # 라벨이 아직 없는 픽스처. 둘째 인자가 0 이면 사전 인가 행을 싣지 않는다.
+  cb60_new "$1"
+  SA_LABEL_ACK="gate api-change"
+  [ "${2:-1}" = 0 ] || SA_PREAUTH_EXTRA="라벨 $CK60_SHA"
+  la61_doc $'**라벨 인정**: `gate`\n'
+  : > "$CB60_S/labels"
+}
+la61_again() {
+  # la61_again [tip 워크플로] — 같은 픽스처에서 다음 사례를 새 tip 으로 연다.
+  cb60_again "${1:-$LA61_WF}"
+  la61_pre
+  : > "$CB60_S/labels"
+}
+la61_act() {
+  sag act --manifest "$SA_MANIFEST" --kind label-ack --target main --segment CK --cutpoint PR \
+      --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale "픽스처 — 라벨" -- 라벨 "${1:-$CK60_SHA}"
+}
+la61_post_n() { { grep -c -- "^api -X POST -i repos/$CB60_SLUG/issues/1/labels -f labels\[\]=api-change\$" "$CB60_S/gh.log" || true; }; }
+la61_fail=''
+la61_park() {
+  # la61_park <칸> <관측 조각> <라벨> [원인] — 이미 고친 픽스처에서 라벨 행위 하나가 그 칸의
+  # blocked 행 하나를 쓰고, POST 도 CI 처분 행도 없이 rc 11 로 끝난다.
+  local nb np nr row f=""
+  nb=$(cb60_n blocked); np=$(cb60_posts); nr=$(cb60_n 'CI 처분')
+  la61_act
+  row=$(cb60_last blocked)
+  [ "$rc" = 11 ] || f="$f[rc=$rc]"
+  [ "$(cb60_n blocked)" = "$((nb + 1))" ] || f="$f[blocked $(cb60_n blocked)-$nb]"
+  [ "$(sa_field "$row" '도달 판정')" = "$1" ] || f="$f[칸 $(sa_field "$row" '도달 판정')]"
+  case "$(sa_field "$row" 관측)" in *"$2"*) ;; *) f="$f[관측 $(sa_field "$row" 관측)]" ;; esac
+  if [ -n "${4:-}" ]; then
+    case "$row" in *"원인=$4"*) ;; *) f="$f[원인]" ;; esac
+  fi
+  [ "$(cb60_posts)" = "$np" ] || f="$f[POST]"
+  [ "$(cb60_n 'CI 처분')" = "$nr" ] || f="$f[CI 처분 행]"
+  if [ -n "$f" ]; then
+    bad "60e: park — $3" "$f ${msg:-}"
+    la61_fail="$la61_fail[$3]"
+  else
+    ok "60e: park — $3 ($1)"
+  fi
+}
+
+# 적격한 행위 — 요청 행, POST 하나, 새 실행의 확인, 수락 행 -----------------------------
+la61_new "라벨 인정 — 수락"
+check "60e: 적격한 픽스처의 다음은 CI 라벨 인정 이다" "$(cb60_next)" "CI 라벨 인정"
+la61_nr=$(cb60_n 'CI 처분'); la61_np=$(cb60_posts)
+la61_act
+la61_cl=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -2)
+la61_req=$(printf '%s\n' "$la61_cl" | sed -n 1p); la61_acc=$(printf '%s\n' "$la61_cl" | sed -n 2p)
+la61_got="$rc|$(( $(cb60_n 'CI 처분') - la61_nr ))|$(( $(cb60_posts) - la61_np ))|$(la61_post_n)"
+la61_got="$la61_got|$(sa_field "$la61_req" 상태)>$(sa_field "$la61_acc" 상태)"
+for la61_f in 처분 회차 체크 라벨 '실패 체크' 실행 '기본 브랜치' 응답; do
+  la61_got="$la61_got|$(sa_field "$la61_acc" "$la61_f")"
+done
+check "60e: 적격한 라벨 행위가 요청·수락 행을 쓰고 POST 를 한 번 낸다" "$la61_got" \
+  "0|2|1|1|요청>수락|라벨|1|gate|api-change|gate|777|통과|201"
+la61_epost=$( { grep '^api -X POST|' "$CB60_S/env.log" || true; } | tail -1 | cut -d'|' -f2,3,5,6)
+check "60e: 라벨 POST 는 쓰기 자격으로 나가고 GH_REPO·GH_HOST 가 없다" \
+  "$la61_epost" "GH_TOKEN=write|GITHUB_TOKEN=|GH_REPO=unset|GH_HOST=unset"
+check "60e: 라벨 수락 뒤 다음은 CI 대기 다" "$(cb60_next)" "CI 대기"
+check "60e: 라벨 수락은 회차를 수락·라벨로 연다" "$(la60_round)" \
+  "u=0 a=수락 g=1 f=0 fix=0 base=통과 ad=라벨 ra=없음 lab=1 max=1"
+
+# 부적격 — 각 칸 ---------------------------------------------------------------------
+la61_new "라벨 인정 — park"
+la61_doc ''
+la61_park 라벨인정없음 "gate" "슬라이스 필드 없음"
+la61_again; la61_doc $'**라벨 인정**: 없음\n'
+la61_park 라벨인정없음 "gate" "슬라이스 필드 없음 값"
+la61_again; la61_doc $'**라벨 인정**: `other`\n'
+la61_park 라벨인정없음 "gate" "슬라이스 필드가 다른 체크를 이름 지음"
+la61_again; la61_doc $'**라벨 인정**: `gate`,`other`\n'
+la61_park 라벨인정없음 "gate" "슬라이스 필드가 문법에 맞지 않음"
+la61_again; la61_doc $'**라벨 인정**: `gate`\n'
+la61_park_wf=$'name: gate\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true'
+la61_again "$la61_park_wf"
+la61_park 라벨새실행없음 "gate:.github/workflows/gate.yml:받지않음" "자기 워크플로가 labeled 를 받지 않음"
+la61_again $'name: gate\non:\n  pull_request:\n    types: labeled\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true'
+la61_park 라벨새실행없음 "gate:.github/workflows/gate.yml:읽지못함" "자기 워크플로의 types 를 읽지 못함"
+la61_again "$LA61_WF"$'\n    environment: prod'
+la61_park 라벨배포트리거 "gate.yml" "tip 워크플로의 환경 키"
+la61_again
+cb60_tgt "배포트리거 식별자=branch:$SA_SEGBR"
+la61_park 라벨배포트리거 "branch:$SA_SEGBR" "식별자 branch"
+la61_again
+cb60_tgt "배포트리거 식별자=workflow:gate"
+la61_park 라벨배포트리거 "workflow:gate" "식별자 workflow"
+la61_again
+cb60_tgt "배포트리거 식별자=argv:issues/1/labels"
+la61_park 라벨배포트리거 "argv:issues/1/labels" "식별자 argv"
+cb60_tgt ""
+la61_again
+printf 'api-change\n' > "$CB60_S/labels"
+la61_park 라벨이미있음 "gate:api-change" "라벨이 이미 있음"
+la61_again
+la60_row 요청 1
+la61_park 라벨요청실패 "회차:열림" "닫히지 않은 라벨 요청" open
+la61_again
+la60_row 요청 1; la60_row 실패 1
+la61_park 라벨요청실패 "회차:실패" "실패로 닫힌 라벨 회차" closed
+la61_new "라벨 인정 — 기본 브랜치 워크플로"
+cb60_wf_base x-run.yml $'on:\n  workflow_run:\n    workflows: [gate]\n    types: [completed]\njobs: {}'
+la61_again
+la61_park 라벨배포트리거 "기본 브랜치 x-run.yml" "기본 브랜치의 workflow_run"
+check "60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다" "$la61_fail" ""
+
+# 받지 않은 요청 — 요청 행 뒤의 실패 행, blocked 하나, 다시 내지 않는다 -----------------------
+la61_fail=''
+for la61_case in post422 screen; do
+  la61_new "라벨 인정 — 받지 않은 요청 $la61_case"
+  case "$la61_case" in
+    post422) printf '422\n' > "$CB60_S/post"; la61_want=422 ;;
+    screen)  cb60_checks post fail 777 1; la61_want='201,화면' ;;
+  esac
+  la61_nr=$(cb60_n 'CI 처분'); la61_nb=$(cb60_n blocked)
+  la61_act
+  la61_cl=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -2)
+  la61_row=$(cb60_last blocked)
+  la61_got="$rc|$(( $(cb60_n 'CI 처분') - la61_nr ))|$(( $(cb60_n blocked) - la61_nb ))|$(la61_post_n)"
+  la61_got="$la61_got|$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 1p)" 상태)>$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 2p)" 상태)"
+  la61_got="$la61_got|$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 2p)" 응답)|$(sa_field "$la61_row" '도달 판정')"
+  check "60e: 받지 않은 라벨 요청 ($la61_case)" "$la61_got" "11|2|1|1|요청>실패|$la61_want|라벨요청실패"
+  case "$la61_row" in *'원인=closed'*) ;; *) la61_fail="$la61_fail[$la61_case 원인]" ;; esac
+  check "60e: 받지 않은 라벨 요청 뒤 다음은 CI 라벨 인정 이다 ($la61_case)" "$(cb60_next)" "CI 라벨 인정"
+done
+check "60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다" "$la61_fail" ""
+
+# 쓰기 자격 없음 — 행도 POST 도 없이 rc 3 ---------------------------------------------------
+la61_new "라벨 인정 — 쓰기 자격 없음"
+unset CC_GATE_TOKEN_RW
+security() { return 1; }
+la61_nr=$(cb60_n 'CI 처분'); la61_nb=$(cb60_n blocked); la61_np=$(cb60_posts)
+la61_act
+unset -f security
+export CC_GATE_TOKEN_RW=cb60-rw-fixture
+check "60e: 쓰기 자격 없는 라벨 행위는 행도 POST 도 없이 rc 3 이다" \
+  "$rc|$(( $(cb60_n 'CI 처분') - la61_nr ))|$(( $(cb60_n blocked) - la61_nb ))|$(( $(cb60_posts) - la61_np ))" "3|0|0|0"
+
+# 철자 — rc 2, 행 없음, POST 없음 ----------------------------------------------------------
+la61_spell() {
+  local lb="$1" nr np; shift
+  nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
+  sag act --manifest "$SA_MANIFEST" --kind label-ack --target main "$@" --snapshot-digest "$(SAH)" --rationale x
+  check "60e: 철자 — $lb" "$rc|$(cb60_n 'CI 처분')|$(cb60_posts)" "2|$nr|$np"
+}
+la61_spell "절단점 머지" --segment CK --cutpoint 머지 --surface 외부상태변경 -- 라벨 "$CK60_SHA"
+la61_spell "argv 낱말 하나 더" --segment CK --cutpoint PR --surface 외부상태변경 -- 라벨 "$CK60_SHA" gate
+la61_spell "40자리 hex 가 아닌 sha" --segment CK --cutpoint PR --surface 외부상태변경 -- 라벨 "${CK60_SHA%?}"
+la61_spell "세그먼트 -" --segment - --cutpoint PR --surface 외부상태변경 -- 라벨 "$CK60_SHA"
+
+# 사전 인가 행 없이 — 규칙의 표지 갈래가 행위를 연다 ------------------------------------------
+la61_new "라벨 인정 — 사전 인가 행 없음" 0
+la61_np=$(cb60_posts)
+la61_act
+check "60e: 사전 인가 행 없는 라벨 행위가 규칙을 지나 수락된다" \
+  "$rc|$(( $(cb60_posts) - la61_np ))|$(sa_field "$(cb60_last 'CI 처분')" 상태)" "0|1|수락"
+if [ -n "$LA61_HAD_RW" ]; then export CC_GATE_TOKEN_RW="$LA61_PREV_RW"; else unset CC_GATE_TOKEN_RW; fi
+unset LA61_PREV_RW LA61_HAD_RW
+cb60_foot
 
 # ---------------------------------------------------------------------------
 # 61. 휴면 기동의 원장 바이트
@@ -43561,7 +43756,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83D"
 
 # ---------------------------------------------------------------------------
 # 83e. exec 의 PR 라벨 쓰기 — 사전 인가 형태 행이 있어도 PR라벨쓰기 로 park 한다
-# --- section: 83e | group: reach | covers: plan, reach | anchors: 83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다, 83e: 협업 표면에 남는 라벨 형태는 통과한다 ---
+# --- section: 83e | group: reach | covers: plan, reach | anchors: 83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다, 83e: 협업 표면에 남는 라벨 형태는 통과한다, 83e: 자동 처리를 끈 모드에서 도달 신고 없이도 PR라벨쓰기 로 park 한다 ---
 #
 # 협업 표면이 행 없이 열던 PR 라벨 쓰기를 무인 런은 `act --kind label-ack` 로만 한다. 형태
 # 행 `gh api -X PUT`·`gh pr`·`gh api graphql` 을 실은 매니페스트에서도 뺀 쓰기는 도달을
@@ -43604,6 +43799,18 @@ for t3e_a in "gh issue create --title t --body b --label bug" "gh label create a
 done
 check "83e: 협업 표면에 남는 라벨 형태는 통과한다" "$t3e_fail" ""
 check "83e: PR 라벨 쓰기 판정은 판단을 부르지 않는다" "$(pj_calls)" "0"
+# 자동 처리를 끈 모드에서 도달을 신고하지 않아도 같은 칸이다. 처분 평가기는 그 모드에서
+# 신고가 없으면 돌지 않으므로, 이 칸을 평가기 뒤에 두면 `gh pr` 형태 행이 쓰기를 연다.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=off
+t3e_fail=''
+for t3e_a in "gh pr edit 1 --add-label api-change" "gh api -X POST repos/t/front3/issues/1/labels"; do
+  # shellcheck disable=SC2086
+  pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+    --surface 외부상태변경 --rationale t -- $t3e_a
+  [ "$rc" = 11 ] && [ "$(rx_cell)" = PR라벨쓰기 ] && [ -z "$(rx_row)" ] \
+    || t3e_fail="$t3e_fail[$t3e_a: rc=$rc 칸=$(rx_cell)]"
+done
+check "83e: 자동 처리를 끈 모드에서 도달 신고 없이도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83E"
 
 # ---------------------------------------------------------------------------

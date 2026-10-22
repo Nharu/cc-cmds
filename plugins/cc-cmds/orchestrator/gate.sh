@@ -35700,7 +35700,21 @@ gate_verb_act() {
   # judging it anyway would turn `-` into `도달미상` and issue an approval on
   # every ordinary external act. Measured: a rule switched OFF still refused,
   # because this evaluator answered in its place.
+  #
+  # A LABEL WRITE ON A PULL REQUEST IS THE EXCEPTION, read ahead of that guard.
+  # Its cell refuses whatever reach is declared and whatever row the manifest
+  # holds, so it cannot wait for the switch or a declaration: with the switch
+  # off and no `--reach`, the evaluator below never runs, and a broad form row
+  # would open the write on the ordinary row path. In both modes it parks — the
+  # off mode's approval would let a person open what the row path never may.
+  local _prlabel=0
   if [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
+     && gate_pr_label_write "$@"; then
+    _prlabel=1
+    GATE_PARK_CELL='PR라벨쓰기'
+    rules_rc=0
+  fi
+  if [ "$_prlabel" = "0" ] && [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
      && { gate_auto_resolve_enabled || [ -n "${GATE_REACH:-}" ]; }; then
     # The verdict is `<칸>\t<원인>\t<판단>` on the first line; the facts the
     # repair line reads follow on the second, printed from the same subshell. The

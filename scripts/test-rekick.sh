@@ -1366,14 +1366,22 @@ vs "라벨 인정 행이 원천과 같은 초안은 통과한다" 통과 "$WORK/
 VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 { cat "$NM1"; printf '%s\n' "$LA_ROW"; } > "$WORK/v-la-add.md"
 vs "원천에 없는 라벨 인정 행을 5t 답 없이 더한 초안은 실패한다" 실패 "$WORK/v-la-add.md" "$E" 행
-printf '5t\t대상=rk | 체크=api-surface-guard | 라벨=surface-change | 사유=픽스처\n' > "$WORK/asked-5t"
+# The answers are recorded as the re-kickoff document records them: one key
+# per (target, check) pair and the option label as the answer.
+printf '5t rk api-surface-guard\t인정함\n' > "$WORK/asked-5t"
 vs "대상 추가도 7.7 절단점 답도 없이 5t 가 있으면 실패한다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t" 대상추가
+printf '7.7 절단점 other\t머지\n' >> "$WORK/asked-5t"
+vs "다른 대상의 7.7 절단점 답은 5t 답을 받치지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t" 대상추가
 printf '7.7 절단점 rk\t머지\n' >> "$WORK/asked-5t"
 o=$(rk verify-subset "$WORK/v-la-add.md" "$VS_PREV" --expect-sha256 "$VS_PMSHA" --expect-grant-sha256 "$VS_PGSHA" --asked "$WORK/asked-5t")
-check "7: 5t 답으로 덮인 라벨 인정 행은 행 검사를 지난다" \
+check "7: 그 쌍의 5t 답 「인정함」으로 덮인 라벨 인정 행은 행 검사를 지난다" \
   "$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "행" { print $3 }')" "통과"
-check "7: 7.7 절단점 답과 함께 온 5t 답은 대상추가 검사를 지난다" \
+check "7: 같은 대상의 7.7 절단점 답과 함께 온 5t 답은 대상추가 검사를 지난다" \
   "$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "대상추가" { print $3 }')" "통과"
+printf '5t rk api-surface-guard\t행을 두지 않음 — 그 체크가 실패하면 그 세그먼트는 사람에게 멈춥니다\n7.7 절단점 rk\t머지\n' > "$WORK/asked-5t-no"
+vs "그 쌍의 5t 답이 「행을 두지 않음」이면 라벨 인정 행은 덮이지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t-no" 행
+printf '5t rk other-check\t인정함\n7.7 절단점 rk\t머지\n' > "$WORK/asked-5t-other"
+vs "다른 체크의 5t 답은 라벨 인정 행을 덮지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t-other" 행
 
 # The interview copy.
 out=$(rk render-interview --prev RKIV --base "$BASE" --expect-sha256 "$PMI"); rc=$?

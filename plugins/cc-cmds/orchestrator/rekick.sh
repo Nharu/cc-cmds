@@ -181,7 +181,7 @@
 #
 # The `--asked` file lists the questions this re-kickoff actually asked, one
 # `<키><TAB><답 축자>` per line. The keys the checks read: `대상확인 <별칭>`,
-# `대상추가 <별칭>`, `5p`, `5q`, `5t`, `5e`, `5e 값`, `5l`, `5o <범위>:<키>`,
+# `대상추가 <별칭>`, `5p`, `5q`, `5t <별칭> <체크>`, `5e`, `5e 값`, `5l`, `5o <범위>:<키>`,
 # `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`, `입양 <세그먼트>`. Any other key covers
 # nothing, and every answer, whatever its key, must stand verbatim in the
 # draft's `사용자 확인 문면`. `5e` is the person's answer as given — a relative
@@ -2459,12 +2459,13 @@ EOF
   vs_check 로스터 "$why"
 
   # 7 — `사전 인가`, `자동 채택` and `라벨 인정` rows are the previous ones, or
-  # covered.
-  local prows a5p a5q a5t a77 tail
+  # covered. 5t is one question per (target, check) pair and its answer is the
+  # option label, so a `라벨 인정` row is covered by the last answer recorded
+  # under its own pair key, `5t <별칭> <체크>`, reading 「인정함」.
+  local prows a5p a5q a77 tail la_key
   prows=$( { MANIFEST="$prev" rk_shape_rows; MANIFEST="$prev" manifest_autoadopt_rows_anywhere; MANIFEST="$prev" manifest_label_ack_rows; } )
   a5p=$(awk -F '\t' '$1 == "5p" { print substr($0, 4) }' "$RK_ASKED")
   a5q=$(awk -F '\t' '$1 == "5q" { print substr($0, 4) }' "$RK_ASKED")
-  a5t=$(awk -F '\t' '$1 == "5t" { print substr($0, 4) }' "$RK_ASKED")
   a77=$(awk -F '\t' '$1 == "7.7 자동채택" { print substr($0, length($1) + 2) }' "$RK_ASKED")
   why=""
   while IFS= read -r row; do
@@ -2476,7 +2477,9 @@ EOF
       '- `자동 채택`'*)
         { [ -n "$a5q" ] && case "$a5q" in *"$tail"*) true ;; *) false ;; esac; } && continue
         { [ -n "$a77" ] && case "$a77" in *"$tail"*) true ;; *) false ;; esac; } && continue ;;
-      '- `라벨 인정`'*) [ -n "$a5t" ] && case "$a5t" in *"$tail"*) true ;; *) false ;; esac && continue ;;
+      '- `라벨 인정`'*)
+        la_key="5t $(manifest_row_fields "$row" '대상' | head -n 1) $(manifest_row_fields "$row" '체크' | head -n 1)"
+        [ "$(rk_asked_answer "$la_key")" = "인정함" ] && continue ;;
     esac
     why="${why:+$why; }원천에 없고 답으로 덮이지 않은 행: $row"
   done <<EOF
@@ -2509,9 +2512,16 @@ EOF
     why="5p·5q 답이 있는데 확인된 대상 추가가 없습니다"
   fi
   # A 5t answer is asked again for an added target or for a target whose
-  # cutpoint 7.7 raised to a merge or above, and for nothing else.
-  if [ -n "$a5t" ] && ! awk -F '\t' '$1 ~ /^(대상추가|7\.7 절단점) / { f = 1 } END { exit !f }' "$RK_ASKED"; then
-    why="${why:+$why; }5t 답이 있는데 확인된 대상 추가도 7.7 절단점 답도 없습니다"
+  # cutpoint 7.7 raised to a merge or above, and for nothing else: every
+  # `5t <별칭> <체크>` key needs a `대상추가 <별칭>` or `7.7 절단점 <별칭>` key
+  # for the same alias, compared whole.
+  local la_bare=""
+  [ -n "$RK_ASKED" ] && la_bare=$(awk -F '\t' '
+    $1 ~ /^(대상추가|7\.7 절단점) / { a = $1; sub(/^(대상추가|7\.7 절단점) /, "", a); ok[a] = 1; next }
+    $1 ~ /^5t / { a = substr($1, 4); sub(/ .*/, "", a); n++; t[n] = a }
+    END { for (i = 1; i <= n; i++) if (!(t[i] in ok)) print t[i] }' "$RK_ASKED" | sort -u | tr '\n' ' ')
+  if [ -n "$la_bare" ]; then
+    why="${why:+$why; }5t 답이 있는데 그 대상의 확인된 대상 추가도 7.7 절단점 답도 없습니다: ${la_bare% }"
   fi
   vs_check 대상추가 "$why"
 
