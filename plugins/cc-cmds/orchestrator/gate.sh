@@ -304,6 +304,11 @@ CC_ORCH_SOURCE_ONLY=1
 export CC_ORCH_SOURCE_ONLY
 # shellcheck source=/dev/null
 . "$GATE_DIR/run.sh"
+# The user-plugin key derivation the settings render writes into every variant.
+# Sourced because the kickoff helper lists the same keys as candidates, and two
+# derivations would let the keys it offers differ from the keys the run turns off.
+# shellcheck source=/dev/null
+. "$GATE_DIR/plugin-isolation.sh"
 # The capability half of the boundary. Sourced rather than re-implemented: the
 # gate is the one process that holds the write-scoped credential, and the code
 # that decides which credential a child gets has to be the same code in both
@@ -15942,7 +15947,53 @@ gate_settings_key() {
     # The segment worktrees, sorted so row order cannot move the key.
     gate_segment_worktrees_for_settings | LC_ALL=C sort -u | sed 's/^/segment-worktree\t/'
     printf 'gate\t%s\n' "$(shasum -a 256 "$GATE_DIR/gate.sh" 2>/dev/null | cut -d' ' -f1)"
+    # The `enabledPlugins` inputs: every key the render turns off or on, the
+    # seed's bytes, and the file that derives them. A user key missed here
+    # would leave a plugin the account enabled after the last render loaded
+    # until some other input moved.
+    gate_plugin_user_keys 2>/dev/null | sed 's/^/plugin-off\t/'
+    gate_plugin_allow_keys | sed 's/^/plugin-allow\t/'
+    printf 'plugin-seed\t%s\n' "$(pi_seed_hash "$GATE_DIR/plugin-allow.seed")"
+    printf 'plugin-isolation\t%s\n' "$(shasum -a 256 "$GATE_DIR/plugin-isolation.sh" 2>/dev/null | cut -d' ' -f1)"
   } | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_plugin_account_dirs() {
+  # The account directories a stage of this run can be launched under, one per
+  # line: the directory the run was opened from, and every `config_dir` of the
+  # run's routing inventory when it holds one. The inventory is read without the
+  # router's eligibility filter — a directory listed there but not lendable today
+  # can become lendable during the run, and its keys cost nothing to turn off.
+  {
+    gate_personal_rules_seat_dir
+    printf '\n'
+    if [ -f "$RUN_DIR/inventory.json" ] && [ ! -L "$RUN_DIR/inventory.json" ]; then
+      jq -r '.accounts[]? | .config_dir // empty' "$RUN_DIR/inventory.json" 2>/dev/null || true
+    fi
+  } | sed '/^$/d' | LC_ALL=C sort -u
+}
+
+gate_plugin_user_keys() {
+  # The user-plugin keys every variant names: installed or enabled in any of the
+  # run's account directories. A file that does not parse warns on stderr.
+  local dirs
+  dirs=$(gate_plugin_account_dirs)
+  [ -n "$dirs" ] || return 0
+  # Word splitting on newlines only: a directory name may hold a space.
+  local IFS='
+'
+  # shellcheck disable=SC2086
+  pi_user_keys $dirs
+}
+
+gate_plugin_allow_keys() {
+  # The keys a stage variant turns on: the pinned copy's seed plus the
+  # manifest's `플러그인 허용` rows.
+  local IFS='
+'
+  # shellcheck disable=SC2046
+  pi_allow_keys "$GATE_DIR/plugin-allow.seed" \
+    $(manifest_plugin_allow_rows 2>/dev/null | sed -n 's/^- `플러그인 허용` | 플러그인=\([^ |]*\) |.*/\1/p')
 }
 
 gate_settings_key_record() {
@@ -16131,6 +16182,18 @@ $(gate_segment_worktrees_for_settings)"
     [ "$adir" != "$aprev" ] || break
   done
 
+  # THE USER'S PLUGINS ARE NAMED IN EVERY VARIANT. A session launched with
+  # `--settings` still loads whatever the account's own settings enable, so a
+  # variant that leaves `enabledPlugins` out hands every stage the skill and
+  # command lists of plugins the pipeline never calls. Each user key is written
+  # `false` and each allow key `true` — `true` turns on a plugin the account has
+  # switched off, and on an account where it is not installed it does nothing.
+  # The keys are derived once here and only the shift branch below differs: the
+  # router's shift turns every one of them off, allow keys included.
+  local pl_user pl_allow pl_obj pl_shift
+  pl_user=$(gate_plugin_user_keys)
+  pl_allow=$(gate_plugin_allow_keys)
+
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
     # Every stage variant ALLOWS `WebFetch` / `WebSearch` explicitly (the else
@@ -16180,6 +16243,9 @@ $(gate_segment_worktrees_for_settings)"
     else
       kind_allow="\"WebFetch\", \"WebSearch\"${kind_allow:+, $kind_allow}"
     fi
+    pl_shift=0
+    [ "$k" != "shift" ] || pl_shift=1
+    pl_obj=$(pi_render_enabled "$pl_shift" "$pl_user" "$pl_allow")
     # A VARIANT THAT FAILS TO WRITE FAILS THE FUNCTION. The loop used to swallow
     # the status, so a caller re-baselined and recorded a settled key over files
     # that were never rewritten. Returning here is what makes "both the rewrite
@@ -16203,7 +16269,8 @@ $(gate_segment_worktrees_for_settings)"
         ]
       }
     ]
-  }
+  },
+  "enabledPlugins": ${pl_obj}
 }
 JSON
   done
