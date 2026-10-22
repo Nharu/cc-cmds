@@ -8629,9 +8629,12 @@ fi
 #
 # The boundary sits inside the lane-persistence section, before its hook-decision
 # tests. With it at the head of that section, part 2 was the longer part on the
-# macOS runner (716 seconds against 539), so it moved as far down as it may go:
-# it has to stay above the T17 marker, because the isolation check cuts this
-# file there and runs the head alone, and this end of part 1 with it.
+# macOS runner (716 seconds against 539), so it moved as far down as it may go.
+# It sits right before a section heading or a T marker, since the hook-decision
+# blocks below all use the fixture and helpers defined under the T13~T16 marker;
+# and it stays above the T17 marker, because the isolation check cuts this file
+# there and runs the head alone, this end of part 1 with it. This marker is the
+# last one above T17.
 _trb_d="$TR_SNAP/now"
 rm -rf "$_trb_d"; mkdir -p "$_trb_d/f" "$_trb_d/v"
 # Functions defined after setup are removed; changed bodies are put back.
