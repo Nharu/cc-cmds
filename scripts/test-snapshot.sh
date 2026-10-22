@@ -2777,8 +2777,14 @@ check "교대 계약: 4·5번 뒷부분이 정산= 행을 종단 술어 참인 �
   "$( { grep -cF "**A row carrying \`정산=\` is the gate's settlement of item 3**: it has no stream, its terminal predicate reads as present, and its verdict is the row's \`재수렴 판정\`." "$RS_SKILL" || true; } | tr -d ' ')" 2
 check "교대 계약: 5번의 마지막 중단 답 걷기는 재수렴에 건넨 답을 지난다" \
   "$(has "$RS_SKILL" "and whose last \`중단 답\` row, walking back past the answers whose \`스킬\` is \`design-reconverge\`, names a record matched by item 2 for this item")" 예
-check "좌석 사본: 정산 먼저, 거절될 때만 운반한다" \
-  "$(has "$SEAT_REF" "(\`act --kind halt-settle\`: settle first, and carry the answer only when the gate refuses the settlement;")" 예
+check "좌석 사본: 정산 먼저, 정산 행이 없으면 어느 거절이든 운반한다" \
+  "$(has "$SEAT_REF" "(\`act --kind halt-settle --segment <key>\`, the same \`<key>\` as above and never \`-\`: settle first, and carry the answer whenever the gate writes no settlement row — a refused argument as well as an unmet check;")" 예
+# 런 범위 단계의 답 행은 세그먼트 칸에 스텝 id 를 싣고, 게이트는 `--segment -` 를 행을 읽기 전에
+# exit 2 로 거절한다 — 정산 명령 틀이 `-` 를 허용하면 감사 키의 답은 한 번도 정산되지 않는다.
+check "교대 계약: 정산의 --segment 는 원소의 segment 이고 - 가 아니다" \
+  "$(has "$RS_SKILL" "--kind halt-settle --target <alias> --segment <segment> \\")/$(has "$RS_SKILL" "\`<segment>\` is the element's \`segment\` verbatim — the segment id, or for a run-scope step the step id, never \`-\`")" "예/예"
+check "교대 계약: 정산의 0·3·4 밖 exit 은 3 처럼 운반한다" \
+  "$(has "$RS_SKILL" "Any other exit — a refused argument (\`2\`) included — wrote no row either, so read it as \`3\` and carry the answer below.")" 예
 check "design-reconverge: 기계 정산 줄은 기록을 가진 두 범위에서만 쓴다" \
   "$(has "$RC_SKILL" "- the scope is \`감사 종합 요구 <record>\` or \`구속 티어 이탈 <record>\`. Never for an \`R<n>\` scope")" 예
 check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
