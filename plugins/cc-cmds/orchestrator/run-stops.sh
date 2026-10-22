@@ -126,7 +126,7 @@ run_stops_ceiling() {
 }
 
 run_stops_main() {
-  local ledger="" run_dir="" manifest="" halts ceiling blocked
+  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls tail
   if [ "${1:-}" = "--vocab" ]; then
     run_stops_vocab "${2:-}"; return $?
   fi
@@ -153,7 +153,6 @@ run_stops_main() {
   # copy carries (`*.attach.md`) — which is no halt record at all.
   halts=""
   if [ -n "$run_dir" ] && [ -d "$run_dir/halt" ]; then
-    local f id cls
     for f in "$run_dir"/halt/*.md; do
       [ -f "$f" ] || continue
       case "${f##*/}" in *'#adopted-'*|*.answer.md|*.attach.md) continue ;; esac
@@ -162,6 +161,29 @@ run_stops_main() {
              | sed 's/^\*\*분류\*\*: //; s/[[:space:]]*$//')
       [ -n "$cls" ] || continue
       halts="${halts}$(printf '%s\t%s' "$id" "$cls")
+"
+    done
+  fi
+
+  # SHIFT HALT RECORDS: a routing shift's stop writes its question one level
+  # down, `halt/shift/<seg>#<n>.md`, and leaves behind no stage-result, no
+  # approval and no park — only a cone row anchored on the segment, which the
+  # fold drops. The record is the one trace of that wait, so it is read here,
+  # and it is unresolved until a `중단 답` row answers it, judged by the same
+  # helper `cc_unanswered_halts` uses: the two readers of "does a person still
+  # owe this run an answer" cannot disagree.
+  shalts=""
+  if [ -n "$run_dir" ] && [ -d "$run_dir/halt/shift" ]; then
+    for f in "$run_dir"/halt/shift/*.md; do
+      [ -f "$f" ] || continue
+      case "${f##*/}" in *.answer.md) continue ;; esac
+      tail="${run_dir%/}"; tail="/${tail##*/}/halt/shift/${f##*/}"
+      cc_halt_answered "$ledger" "$tail" && continue
+      id=${f##*/}; id=${id%.md}
+      cls=$( { grep -m1 -E '^\*\*분류\*\*: ' "$f" 2>/dev/null || true; } \
+             | sed 's/^\*\*분류\*\*: //; s/[[:space:]]*$//')
+      [ -n "$cls" ] || continue
+      shalts="${shalts}$(printf '%s\t%s' "$id" "$cls")
 "
     done
   fi
@@ -182,7 +204,7 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
 
   # THROUGH THE ENVIRONMENT, NOT `-v`. The BSD awk this runs under on macOS
   # refuses a `-v` value carrying a newline, and every table here is one.
-  RS_HALTS="$halts" RS_BLOCKED="$blocked" RS_CEILING="$ceiling" \
+  RS_HALTS="$halts" RS_SHALTS="$shalts" RS_BLOCKED="$blocked" RS_CEILING="$ceiling" \
   RS_V_RB="$RUN_STOPS_RUN_BLOCKED" RS_V_ST="$RUN_STOPS_STAGE" \
   RS_V_HA="$RUN_STOPS_HALT" RS_V_KI="$RUN_STOPS_KINDS" \
   RS_V_BO="$RUN_STOPS_BOUNDARY" RS_V_CE="$RUN_STOPS_INTENDED_CELLS" \
@@ -213,7 +235,7 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
       settab("HA", ENVIRON["RS_V_HA"]); settab("KI", ENVIRON["RS_V_KI"])
       settab("BO", ENVIRON["RS_V_BO"]); settab("CE", ENVIRON["RS_V_CE"])
       settab("PA", ENVIRON["RS_V_PA"]); settab("CU", ENVIRON["RS_V_CU"])
-      halts = ENVIRON["RS_HALTS"]; blocked = ENVIRON["RS_BLOCKED"]; ceiling = ENVIRON["RS_CEILING"]
+      halts = ENVIRON["RS_HALTS"]; shalts = ENVIRON["RS_SHALTS"]; blocked = ENVIRON["RS_BLOCKED"]; ceiling = ENVIRON["RS_CEILING"]
       nrc = 0; nsk = 0; lastshift = 0; b4end = 0; lastcost = ""
     }
     {
@@ -301,6 +323,19 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
           else if (inv("CE", PARKCELL[hid])) emit(sig, "의도", "사전 인가 밖")
           else emit(sig, "비의도")
         } else emit(sig, "비의도")
+      }
+      # shift halt: an unanswered one, of the segment it names. A reach park is
+      # keyed on a stage attempt and never on a shift record, so a
+      # gate-unanswerable one is always unbound.
+      n = split(shalts, H, "\n")
+      for (i = 1; i <= n; i++) {
+        if (H[i] == "") continue
+        split(H[i], hp, "\t"); hid = hp[1]; cls = hp[2]
+        seg = hid; sub(/#[0-9]+$/, "", seg)
+        sig = "halt/" (inv("HA", cls) ? cls : "미분류") "/" ((seg in SEGKIND) ? kindof(SEGKIND[seg]) : "미분류")
+        EV[seg] = 1
+        if (cls == "gate-unanswerable") emit(sig, "비의도", "", "원인 셀 미결합")
+        else emit(sig, "비의도")
       }
       # cone: only where no stage or halt event of a segment it names explains it
       for (i = 1; i <= CN; i++) {

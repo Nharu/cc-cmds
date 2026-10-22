@@ -242,6 +242,33 @@ halt 'impl#adopted-20261001-a1bbfcee.attach' precondition-failed
 halt 'impl#2.answer' precondition-failed
 check "halt: an adopted copy and attachments are no event" "$(stops)" ""
 
+# A routing shift's stop, in the shape `act --kind shift-halt` writes: the
+# record under `halt/shift/<seg>#<n>.md` and one cone row anchored on the
+# segment. Nothing else is written, so the record alone carries the wait.
+shalt() {
+  mkdir -p "$RD/halt/shift"
+  printf '<!-- cc-pipeline-halt v1 -->\n**분류**: %s\n**관측 상세**: 자유 문면 precondition-failed 는 읽히지 않는다\n<!-- /cc-pipeline-halt v1 -->\n' "$2" > "$RD/halt/shift/$1.md"
+  row blocked '대상=cc-cmds' '스코프=cone' '원인=막힘' "앵커 세그먼트=${1%%#*}" '사유=교대 정지 — 세그먼트 재개' \
+    '근거=재개할 수 없음' "중단 기록=$RD/halt/shift/$1.md" '기록 다이제스트=0' '자리=세그먼트 재개'
+}
+newcase
+row stage-result '세그먼트=s1' '스테이지=s1' '종류=implement' '실행 버전=1' '종단 부류=정상 완료'
+row segment 'id=s1' '상태=park'
+shalt 's1#1' gate-unanswerable
+shalt 'ghost#1' gate-unanswerable
+printf '답\n' > "$RD/halt/shift/s1#1.md.answer.md"
+out=$(stops)
+has "shift halt: an unanswered record is an unbound gate-unanswerable" "$out" "$(ev 'halt/gate-unanswerable/implement' 비의도 - '원인 셀 미결합')"
+has "shift halt: a segment with no stage folds the kind" "$out" "$(ev 'halt/gate-unanswerable/미분류' 비의도 - '원인 셀 미결합')"
+hasnt "shift halt: the record explains its segment's park" "$out" "segment/park"
+check "shift halt: the seat's answer beside a record is no event" "$(printf '%s\n' "$out" | grep -c '^halt/')" "2"
+row '중단 답' "중단 기록=$RD/halt/shift/s1#1.md" '답=재시도'
+row '중단 답' "중단 기록=$RD/halt/shift/ghost#1.md" '답=세그먼트 park'
+check "shift halt: an answered record is no event" "$(stops | grep -c '^halt/')" "0"
+row blocked '대상=cc-cmds' '스코프=cone' '원인=막힘' '앵커 세그먼트=ghost' \
+  '사유=중단 답 라우팅 — ghost#1.md — 세그먼트 없음' "막힌 답 줄=$(grep -c '' "$LG")"
+has "shift halt: a returned answer waits again" "$(stops)" "$(ev 'halt/gate-unanswerable/미분류' 비의도 - '원인 셀 미결합')"
+
 # --- cone ---------------------------------------------------------------------
 
 # The row `gate_record_undecidable` writes: no anchor, the two segments in
@@ -286,6 +313,12 @@ check "pin: the adoption carry names its copy #adopted-" \
   "$(sed -n '/^gate_adoption_halt_carry() {/,/^}/p' "$GATE" | grep -cF '#adopted-$GATE_CARRY_SRC.md"')" "1"
 check "pin: the adoption carry names its attachment .attach.md" \
   "$(sed -n '/^gate_adoption_halt_carry() {/,/^}/p' "$GATE" | grep -cF '#adopted-$GATE_CARRY_SRC.attach.md"')" "1"
+check "pin: the shift halt record is <seg>#<n>.md under the shift halt directory" \
+  "$( { grep -cF 'sdst="$sdir/$seg#$sn.md"' "$GATE" || true; } )" "1"
+check "pin: the shift halt directory is the run's halt/shift" \
+  "$(sed -n '/^gate_shift_halt_dir() {/,/^}/p' "$GATE" | grep -cF 'local d="$RUN_DIR/halt/shift"')" "1"
+check "pin: the gate stamps a returned answer on a routing cone row" \
+  "$( { grep -cF 'stamp=("막힌 답 줄=$sl")' "$GATE" || true; } )" "1"
 check "pin: the gate writes the refusal end class" \
   "$( { grep -c "klass='거절 종료'" "$GATE" || true; } )" "1"
 
