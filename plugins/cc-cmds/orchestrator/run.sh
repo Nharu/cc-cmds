@@ -1183,10 +1183,11 @@ check_manifest() {
     [ -n "$(manifest_field '요소' '적용 지점')" ] || die "적용 주체가 파이프라인인데 적용 지점이 없습니다"
     [ -n "$(manifest_field '요소' '적용 프로브')" ] || die "적용 주체가 파이프라인인데 적용 프로브가 없습니다"
   fi
-  # 9 (cont.) — the probe's exit-code mapping. Absent, the probe reads 0/2. A
-  # present row that does not parse is a hard stop, never a silent 0/2: the
-  # person froze a meaning, and running the default instead would apply on a
-  # code they said meant something else.
+  # 9 (cont.) — the probe's exit-code mapping. Absent, only 0 is defined (the
+  # apply is not needed) and no code says it is needed. A present row that does
+  # not parse, or carries 1 or 2, is a hard stop, never a silent default: the
+  # person froze a meaning, and running another reading instead would apply on
+  # a code they said meant something else.
   apply_code_row_check
 
   # 11 — the `자동 채택` rows, checked at FREEZE TIME and nowhere else.
@@ -8825,8 +8826,10 @@ EOF
 #   pre = 필요 → anything else  changes still pending after an apply ran — 적용 불명
 #   any other pre              the probe itself failed; refuse before touching anything
 #
-# 불필요 and 필요 are the mapping `apply_probe_codes` reads: 0 and 2 by default,
-# the values of the manifest's `적용 프로브 코드` row when one is frozen.
+# 불필요 and 필요 are the mapping `apply_probe_codes` reads: the values of the
+# manifest's `적용 프로브 코드` row when one is frozen. Without a row only
+# 불필요=0 is defined and there is no 필요 code, so any non-zero pre-probe is a
+# pre-failure — a code no person chose never means "apply needed".
 #
 # The pre-probe is also the "did it even start" discriminator the retry rules
 # needed. There are no retries here: an apply is a terminal act, and a second
@@ -8885,15 +8888,17 @@ apply_probe() {
 # The probe's exit-code mapping, frozen as the `## 인가` row
 # `- \`적용 프로브 코드\` | 불필요=<n> | 필요=<n> | 프로브 sha256=<hex>`.
 #
-# A VALUE IS 0–125, WRITTEN WITHOUT LEADING ZEROS, AND NEVER 1. 1 is what a
+# A VALUE IS 0–125, WRITTEN WITHOUT LEADING ZEROS, AND NEVER 1 OR 2. 1 is what a
 # failed `cd`, a misused builtin under macOS `/bin/sh` and an unreadable file
 # under `git diff --quiet --no-index` all exit with, so either meaning on 1
-# turns a broken probe into an apply or a silent skip. 126 and 127 are "cannot
-# execute" and "no such command", and 128 and up are signals or a tool's own
-# usage error.
+# turns a broken probe into an apply or a silent skip. 2 is what a `sh -c`
+# syntax error, an I/O error of `grep`, `diff` or `cmp` and a misused dash
+# builtin exit with, so 필요=2 reads a broken probe as "apply needed" and
+# 불필요=2 reads it as a silent skip. 126 and 127 are "cannot execute" and "no
+# such command", and 128 and up are signals or a tool's own usage error.
 apply_code_value_ok() {
   case "$1" in ''|*[!0-9]*) return 1 ;; 0) return 0 ;; 0*) return 1 ;; esac
-  [ "${#1}" -le 3 ] && [ "$1" -le 125 ] && [ "$1" != 1 ]
+  [ "${#1}" -le 3 ] && [ "$1" -le 125 ] && [ "$1" != 1 ] && [ "$1" != 2 ]
 }
 
 # The digest of one probe string, as `apply_probe_cmd` returns it: the
@@ -8920,10 +8925,11 @@ apply_code_row_fields() {
   printf '%s %s %s' "$nu" "$ne" "$hx"
 }
 
-# apply_code_row_check — manifest check 9's second half. No row passes (the
-# probe reads 0/2); one well-formed row bound to the manifest's own probe
-# passes; anything else dies, because a broken row read as 0/2 would run the
-# default where a person froze another meaning.
+# apply_code_row_check — manifest check 9's second half. No row passes (only
+# 불필요=0 is defined, and any other pre-probe code refuses the apply); one
+# well-formed row bound to the manifest's own probe passes; anything else dies,
+# because a broken row read as no row would refuse or skip where a person froze
+# another meaning.
 apply_code_row_check() {
   local rows f hx want
   rows=$(manifest_apply_code_rows)
@@ -8931,11 +8937,32 @@ apply_code_row_check() {
   case "$rows" in *"
 "*) die "적용 프로브 코드 행이 둘 이상입니다 — 하나만 받습니다" ;; esac
   f=$(apply_code_row_fields) \
-    || die "적용 프로브 코드 행이 깨졌습니다 — 불필요·필요는 0–125 의 서로 다른 정수이고 1 이 아니며, 프로브 sha256 은 64자 소문자 hex 여야 합니다: $rows"
+    || die "적용 프로브 코드 행이 깨졌습니다 — 불필요·필요는 0–125 의 서로 다른 정수이고 1·2 가 아니며, 프로브 sha256 은 64자 소문자 hex 여야 합니다. 다시 킥오프로 5c 를 다시 답하십시오: $rows"
   hx="${f##* }"
   want=$(apply_probe_sha "$(apply_unquote "$(manifest_field '요소' '적용 프로브')")")
   [ "$hx" = "$want" ] \
     || die "적용 프로브 코드 행의 프로브 sha256 이 매니페스트의 적용 프로브 바이트와 맞지 않습니다 (행 $hx, 프로브 $want)"
+}
+
+# apply_code_row_reask — status 0 when the current MANIFEST's mapping cannot be
+# carried into a re-kickoff and 5c has to be asked again: the pipeline runs the
+# apply, a probe is frozen, and the `적용 프로브 코드` row is absent or carries
+# 2 in either value. Without a row only 불필요=0 is defined, so every needed
+# apply would be refused before it runs; a row carrying 2 is one the manifest
+# check refuses. A second row is left to the manifest check's own refusal.
+apply_code_row_reask() {
+  local rows nu ne probe
+  [ -n "${MANIFEST:-}" ] || return 1
+  [ "$(apply_unquote "$(manifest_field '요소' '적용 주체')")" = "파이프라인" ] || return 1
+  probe=$(apply_unquote "$(manifest_field '요소' '적용 프로브')")
+  case "$probe" in ''|'(없음)'|'없음') return 1 ;; esac
+  rows=$(manifest_apply_code_rows)
+  [ -n "$rows" ] || return 0
+  case "$rows" in *"
+"*) return 1 ;; esac
+  nu=$(manifest_row_fields "$rows" '불필요' 1)
+  ne=$(manifest_row_fields "$rows" '필요' 1)
+  [ "$nu" = 2 ] || [ "$ne" = 2 ]
 }
 
 # apply_probe_codes <probe> — `<불필요> <필요>` for the probe string the apply
@@ -8945,13 +8972,14 @@ apply_code_row_check() {
 # probe whose bytes it was frozen against. A probe that hashes differently — a
 # slice declaration naming another probe — is status 2 with
 # `<행 해시> <프로브 해시>` printed, and the caller refuses before the pre-probe:
-# reading it as 0/2 would flip the verdict of a mapping like 불필요=2·필요=0,
-# skipping an apply that is needed or running one that is not. Only no row
-# reads 0/2. A broken row is status 1, which the manifest check has already
-# turned into a stop.
+# reading it as no row would flip the verdict of a mapping like
+# 불필요=21·필요=0, refusing an apply that is needed or skipping one that is
+# not. No row prints `0 -`: 불필요 is 0 and no 필요 code is defined, so
+# `apply_disposition` can only skip or refuse. A broken row is status 1, which
+# the manifest check has already turned into a stop.
 apply_probe_codes() {
   local probe="$1" f nu ne hx want
-  if [ -z "${MANIFEST:-}" ] || [ -z "$(manifest_apply_code_rows)" ]; then printf '0 2'; return 0; fi
+  if [ -z "${MANIFEST:-}" ] || [ -z "$(manifest_apply_code_rows)" ]; then printf '0 -'; return 0; fi
   f=$(apply_code_row_fields) || return 1
   nu="${f%% *}"; f="${f#* }"; ne="${f%% *}"; hx="${f#* }"
   want=$(apply_probe_sha "$probe")
@@ -8967,11 +8995,12 @@ apply_probe_codes() {
 # and `사전 실패`, the two verdicts that end an apply before the command runs;
 # for a pre-probe of 「필요」 the answer is only final once both later codes are
 # in, and anything short of a command 0 and a post-probe of 「불필요」 is
-# `적용 불명`.
+# `적용 불명`. A 필요 of `-` (no mapping row) is never matched, so a pre-probe
+# other than 불필요 is `사전 실패`.
 apply_disposition() {
   local nu="$1" ne="$2" pre="$3"
   if [ "$pre" = "$nu" ]; then printf '건너뜀'
-  elif [ "$pre" = "$ne" ]; then
+  elif [ "$ne" != "-" ] && [ "$pre" = "$ne" ]; then
     if [ "${4:-}" = "0" ] && [ "${5:-}" = "$nu" ]; then printf '수렴'; else printf '적용 불명'; fi
   else printf '사전 실패'
   fi
@@ -9054,7 +9083,12 @@ apply_stage() {
        # Anything that is not "no changes" or "changes pending" is the probe
        # itself failing. Refuse BEFORE touching anything: an apply whose need
        # could not be established is an apply with no evidence behind it.
-       park "$seg" act 막힘 "게이트 park" "사전 프로브 실패(exit $pre, $map) — 아무것도 건드리기 전에 거부한다" "$cmd"
+       # The segment row gives the driver's ledger the end shape the gate's
+       # apply leaves, so a later run reads a command that never ran as such.
+       local nomap=""
+       [ "$ne" = "-" ] && nomap=" — 적용 프로브 코드 행이 없어 필요 코드가 정의되지 않았다"
+       ledger_row 'segment' "id=$seg" "상태=park" "적용=사전 실패" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT"
+       park "$seg" act 막힘 "게이트 park" "사전 프로브 실패(exit $pre, $map)${nomap} — 아무것도 건드리기 전에 거부한다" "$cmd"
        return 2 ;;
   esac
 
@@ -9080,6 +9114,7 @@ apply_stage() {
     "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
     "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 $pre → 사후 $post ($map)" \
     "실패 서명=$(failure_signature apply '적용 불명' - -)"
+  ledger_row 'segment' "id=$seg" "상태=park" "적용=불명" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT"
   park "$seg" run 불명 "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
   report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
   APPLY_PARKED_RADIUS="$radius"
@@ -9274,10 +9309,16 @@ self_check() {
   # gate moved into its own file, a function's only call site could legitimately
   # live there — and a checker that reads one file would report it as dead and
   # invite its deletion. Widening the scan is more honest than an exemption
-  # list: those functions are wired, just not from here.
+  # list: those functions are wired, just not from here. A sibling is found by
+  # the line that sources this file, not by name, so the kickoff helpers that
+  # source it too — the only callers of the probe-code re-ask predicate — are
+  # read without this file naming them. Test scripts are left out: a call from
+  # a test does not wire a function.
   body=$(sed 's/#.*//' "$self_file")
-  for sib in "$(dirname "$self_file")/gate.sh"; do
-    [ -f "$sib" ] || continue
+  for sib in "$(dirname "$self_file")"/*.sh; do
+    [ -f "$sib" ] && [ "$sib" != "$self_file" ] || continue
+    case "$(basename "$sib")" in test-*) continue ;; esac
+    grep -qE '^[^#]*\. "\$[A-Z_]+/run\.sh"' "$sib" || continue
     body="$body
 $(sed 's/#.*//' "$sib")"
   done
