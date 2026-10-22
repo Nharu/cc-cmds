@@ -31152,6 +31152,25 @@ spv_refused "리베이스한 양쪽 변경도 거절된다" "$SAP_RULE" '베이�
 ( cd "$REPO" && git update-ref refs/remotes/origin/main "$SAP_BASE" )
 spv_reset "$SPV_S2"
 
+# A TIP THAT SHARES NO HISTORY WITH THE BASE END is compared from the empty tree:
+# `merge-base` exits 1 for it, which is no reason to refuse a branch that left
+# every classified path as the base has it, and a classified path it carries
+# differently still needs a seat commit.
+spv_orphan() {  # spv_orphan <트리를 빌릴 커밋> — 부모 없는 커밋으로 세그먼트 브랜치를 옮긴다
+  local o
+  o=$(cd "$SAP_WT" && git commit-tree "$1^{tree}" -m spv-orphan) && spv_reset "$o"
+}
+spv_orphan "$SAP_BASE"
+spv_pv
+check "34r: 공통 조상 없는 팁도 분류 경로가 베이스와 같으면 통과한다" \
+  "$rc/$(cat "$CAP_OUT")/$( (cd "$SAP_WT" && git merge-base HEAD "$SAP_BASE") >/dev/null 2>&1; echo $?)" "0//1"
+SPV_OR=$(spv_base_commit "$SAP_BASE" "$SAP_RULE" 'rule orphan
+')
+spv_orphan "$SPV_OR"
+spv_pv
+spv_refused "공통 조상 없는 팁의 바뀐 규칙 파일은 거절된다" "$SAP_RULE" '바뀜'
+spv_reset "$SPV_S2"
+
 # THE THREE READERS: the cone seed holds the review on a broken branch with one
 # `blocked` row, the merge act refuses it after the review rule, and the review
 # line and the snapshot name the seat commits a stage did not write.
@@ -31303,6 +31322,39 @@ case "$(row_field "$spv_bl" '근거')" in
   *"$SAP_RULE"*) ok "34r: 그 blocked 행의 근거가 경로를 댄다" ;;
   *) bad "34r: 그 blocked 행의 근거가 경로를 댄다" "$spv_bl" ;;
 esac
+# A CHECK THAT CANNOT BE DECIDED refuses under a reason of its own, never as a
+# surface that changed. The base end is made unreadable — a loose ref naming an
+# object the database does not have, and a segment row whose `베이스 sha` is
+# the same — so `merge-base` fails with neither 0 nor 1.
+SPV_BOGUS=$(printf 'd%.0s' $(seq 1 40))
+SPV_REFF="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)/refs/remotes/origin/main"
+cp "$CAP_LEDGER" "$WORK/spv-ledger-und.bak"
+printf -- '- `segment` | id=SPV | 상태=실행중 | 워크트리=%s | 브랜치=sap-RSPV1 | 선행=없음 | 베이스 sha=%s | prev=x\n' "$SAP_WT" "$SPV_BOGUS" >> "$CAP_LEDGER"
+printf '%s\n' "$SPV_BOGUS" > "$SPV_REFF"
+spv_pv
+check "34r: 판정할 수 없는 출처 검사는 2 이고 판정 불가를 말한다" \
+  "$rc/$( { grep -c '판정 불가' "$CAP_OUT" || true; } | tr -d ' ')" "2/1"
+spv_chg0=$( { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' "$CAP_LEDGER" || true; } | grep -c . || true)
+spv_review act
+check "34r: 판정 불가인 세그먼트의 리뷰 파견은 3 이다" "$rc" "3"
+case "$msg" in
+  *'강제 표면 출처를 판정할 수 없습니다'*) ok "34r: 그 거절은 판정 불가를 말한다" ;;
+  *) bad "34r: 그 거절은 판정 불가를 말한다" "$msg" ;;
+esac
+spv_und=$( { grep -F '사유=강제 표면 출처 판정 불가' "$CAP_LEDGER" || true; } )
+check "34r: 판정 불가는 그 사유의 blocked 행을 한 번 쓰고 바뀜 행은 늘리지 않는다" \
+  "$(printf '%s\n' "$spv_und" | grep -c . || true)/$(row_field "$spv_und" '원인')/$( { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' "$CAP_LEDGER" || true; } | grep -c . || true)" \
+  "1/판정 불가/$spv_chg0"
+spv_cycle 9 "$(sap_head)"
+spv_merge
+check "34r: 판정 불가인 머지는 거절된다" "$rc" "3"
+case "$msg" in
+  *'강제 표면 출처 판정 불가'*) ok "34r: 판정 불가인 머지의 거절이 판정 불가를 말한다" ;;
+  *) bad "34r: 판정 불가인 머지의 거절이 판정 불가를 말한다" "$msg" ;;
+esac
+rm -f "$SPV_REFF"
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SAP_BASE" )
+cp "$WORK/spv-ledger-und.bak" "$CAP_LEDGER"
 spv_cycle 2 "$(sap_head)"
 spv_merge
 check "34r: 출처가 깨진 머지는 거절된다" "$rc" "3"
@@ -31316,8 +31368,10 @@ check "34r: 드라이버가 머지 직전에 같은 판정을 읽는다" \
 # this branch is the driver's; a refusal there parks instead of merging.
 spv_pv
 spv_refused "드라이버가 부르는 판정도 출처가 깨진 머지를 거절한다" "$SAP_RULE" "마지막 좌석 커밋 $SPV_S1 과 다름"
+# Two parks: a surface that changed (3) and a check that could not be decided,
+# each under its own reason.
 check "34r: 드라이버는 그 거절에서 머지하지 않고 park 한다" \
-  "$(grep -c 'park "$seg" act 막힘 "머지 직전 강제 표면 출처"' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")" "1"
+  "$(grep -c 'park "$seg" act 막힘 "머지 직전 강제 표면 출처"' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")/$(grep -c '"강제 표면 출처 판정 불가 — ' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")" "2/1"
 spv_reset "$SPV_S2"
 printf -- '- `segment` | id=SPV | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$SAP_WT" >> "$CAP_LEDGER"
 spv_cycle 3 "$SPV_S2"

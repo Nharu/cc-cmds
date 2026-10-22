@@ -7999,11 +7999,19 @@ merge_gate() {
   # here, right before the one call that lands the branch.
   local sp_out sp_rc=0
   sp_out=$(run_gate_call gate_surface_provenance "$seg" "$al" 2>/dev/null) || sp_rc=$?
+  # 3 is a surface that changed outside a seat apply; any other non-zero status
+  # is a check that could not be decided, and the park says which.
   if [ "$sp_rc" != "0" ]; then
     sp_out=$(printf '%s' "${sp_out:-(판정 불가 rc=$sp_rc)}" | tr '\t\n' ' ;')
-    park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
-      "좌석 적용 밖에서 바뀐 강제 표면 — ${sp_out:0:300}" \
-      "gh -R $slug pr merge $pr"
+    if [ "$sp_rc" = "3" ]; then
+      park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+        "좌석 적용 밖에서 바뀐 강제 표면 — ${sp_out:0:300}" \
+        "gh -R $slug pr merge $pr"
+    else
+      park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+        "강제 표면 출처 판정 불가 — ${sp_out:0:300}" \
+        "gh -R $slug pr merge $pr"
+    fi
     return 2
   fi
   gh_q "$slug" pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null || {

@@ -58,7 +58,9 @@
 #      stderr and produces no output from the act; that, not the number, is what
 #      separates the two.
 #   2  vocabulary error — a token outside a closed set. From `surface-screen`
-#      also: the enforcement-surface classifier could not be loaded (판정불가)
+#      also: the enforcement-surface classifier could not be loaded (판정불가).
+#      From `surface-provenance`: the check could not be decided — the
+#      classifier, the merge base or the changed paths could not be read
 #   3  rule refusal — a catalog rule said no. From `seat-apply-preview` also:
 #      the record or the segment worktree fails a check the apply makes. From
 #      `surface-provenance`: the branch changed an enforcement surface outside
@@ -167,7 +169,8 @@
 #                    enforcement surface: one `<path>\t<why>` line per
 #                    classified path the branch changed that neither a seat
 #                    apply of this run nor the base end has as HEAD has it, and
-#                    exit 3; silent and 0 otherwise. Writes nothing
+#                    exit 3; one `-\t<why>` line and exit 2 when the check
+#                    cannot be decided; silent and 0 otherwise. Writes nothing
 #   gate.sh report-check --manifest <path> --report <absolute path>
 #                    checks the item shape of a review report's P0 and P1
 #                    sections — the summary line, items against the summary,
@@ -22445,7 +22448,11 @@ gate_surface_provenance() {
   # gate_surface_provenance <segment> [<alias>] — 0 when every enforcement-surface
   # path the segment branch changed stands as this run's seat applies left it or
   # as the base has it; otherwise one `<path>\t<why>` line per path that does
-  # not, and status 3.
+  # not, and status 3. Status 2, with one `-\t<why>` line, when the check cannot
+  # be decided: the classifier, the merge base or the changed paths could not be
+  # read. Every caller refuses on both, but only 3 says that a surface changed —
+  # a reader that wrote "changed outside a seat apply" for an unreadable branch
+  # would put a false reason on the ledger and hide the one that was true.
   #
   # THIS IS WHAT CLOSES THE GAP, AND THE EXEC REFUSAL IS ONLY A SIGNPOST. A
   # stage can reach a classified path through an interpreter, a script body or
@@ -22474,14 +22481,14 @@ gate_surface_provenance() {
   # cannot be found refuses, because what it covered can no longer be shown.
   # Rows carried in by an adoption (`출처 런`) are not counted — a seat apply of
   # another run is that run's trust, not this one's.
-  local seg="$1" al="${2:-}" wt bref bend mb lst rc=0 out='' line cls p eh eb em s es found ok
+  local seg="$1" al="${2:-}" wt bref bend mb mbrc=0 lst rc=0 out='' line cls p eh eb em s es found ok
   local shas='' r row tch anchored
   wt=$(gate_segment_worktree "$seg")
   case "$wt" in ''|-) return 0 ;; esac
   [ -d "$wt" ] || return 0
   if ! gate_es true; then
     printf '%s\t%s\n' '-' '분류 라이브러리를 읽을 수 없어 판정 불가'
-    return "$GATE_EXIT_RULE"
+    return 2
   fi
   case "$al" in ''|-) al=$(gate_surface_alias_of "$wt") || al='' ;; esac
   bend=''
@@ -22500,18 +22507,32 @@ gate_surface_provenance() {
   # cannot be read: a branch is then compared with where it started.
   [ -n "$bend" ] || bend=$(gate_segment_field "$seg" '베이스 sha')
   [ -n "$bend" ] || return 0
-  if ! mb=$(cd "$wt" && git merge-base "$bend" HEAD 2>/dev/null) || [ -z "$mb" ]; then
-    printf '%s\t%s\n' '-' "베이스 끝 ${bend} 과 HEAD 의 merge-base 를 구할 수 없음"
-    return "$GATE_EXIT_RULE"
+  # A BRANCH WITH NO COMMON HISTORY IS COMPARED FROM THE EMPTY TREE. `merge-base`
+  # exits 1 with nothing printed when the two ends share no ancestor — an orphan
+  # tip, or a root the segment was cut from on purpose. Every path such a branch
+  # carries is one it added, so the empty tree stands in for the merge base and
+  # the same three-tree comparison decides: a classified path the base end does
+  # not have as HEAD has it still needs a seat commit, and one the base has
+  # unchanged passes. Any other failure (an object the database cannot read, a
+  # HEAD that does not resolve) cannot be decided and is status 2.
+  mb=$(cd "$wt" && git merge-base "$bend" HEAD 2>/dev/null) || mbrc=$?
+  if [ "$mbrc" = 1 ] && [ -z "$mb" ]; then
+    mb=$(cd "$wt" && git hash-object -t tree /dev/null 2>/dev/null) || mb=''
+  elif [ "$mbrc" != 0 ]; then
+    mb=''
+  fi
+  if [ -z "$mb" ]; then
+    printf '%s\t%s\n' '-' "베이스 끝 ${bend} 과 HEAD 의 merge-base 를 구할 수 없어 판정 불가 (rc=$mbrc)"
+    return 2
   fi
   lst=$( { cd "$wt" && git -c core.quotePath=false diff --no-renames -z --name-only "$mb" HEAD 2>/dev/null; } \
          | gate_es gate__es_class_z) || rc=$?
   case "$rc" in
     0) : ;;
     2) printf '%s\t%s\n' '-' '분류 라이브러리를 읽을 수 없어 판정 불가'
-       return "$GATE_EXIT_RULE" ;;
-    *) printf '%s\t%s\n' '-' "merge-base ${mb} 와 HEAD 사이의 변경 경로를 읽을 수 없음 (rc=$rc)"
-       return "$GATE_EXIT_RULE" ;;
+       return 2 ;;
+    *) printf '%s\t%s\n' '-' "merge-base ${mb} 와 HEAD 사이의 변경 경로를 읽을 수 없어 판정 불가 (rc=$rc)"
+       return 2 ;;
   esac
   [ -n "$lst" ] || return 0
   while IFS= read -r r; do
@@ -22581,11 +22602,18 @@ EOF
 gate_surface_provenance_hold() {
   # gate_surface_provenance_hold <segment> — 0 when the segment's branch fails
   # the provenance check, after recording a cone-scope `blocked` row anchored on
-  # it once; 1 when it passes. The cone seed calls this, so a review is not
-  # dispatched onto a branch whose enforcement surface nobody approved.
+  # it once; 1 when it passes or the check cannot be decided. The cone seed
+  # calls this, so a review is not dispatched onto a branch whose enforcement
+  # surface nobody approved.
+  #
+  # AN UNDECIDED CHECK IS NOT A SEED. Its row would say a surface changed when
+  # nothing was measured, `gate_has_row` keys on that reason so the false row
+  # would also stand in for a later true one, and seeding first would skip the
+  # ancestry axis, whose own `판정 불가` row is the one that names what could not
+  # be read. The review dispatch and the merge act still refuse on it directly.
   local seg="$1" out rc=0 why='강제 표면이 좌석 적용 밖에서 바뀜'
   out=$(gate_surface_provenance "$seg") || rc=$?
-  [ "$rc" != 0 ] || return 1
+  [ "$rc" = "$GATE_EXIT_RULE" ] || return 1
   if ! gate_has_row 'blocked' "앵커 세그먼트=$seg" "사유=$why"; then
     gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=cone" "원인=막힘" \
       "앵커 세그먼트=$seg" "사유=$why" \
@@ -22613,6 +22641,11 @@ gate_check_surface_provenance() {
   fi
   out=$(gate_surface_provenance "$seg" "$al") || rc=$?
   [ "$rc" != 0 ] || return 0
+  if [ "$rc" != "$GATE_EXIT_RULE" ]; then
+    warn "rule refused: the enforcement-surface provenance of segment $seg could not be decided (강제 표면 출처 판정 불가) — $(printf '%s' "$out" | tr '\t\n' ' ;')"
+    warn "repair the segment worktree, its HEAD or the plugin's classifier library and issue the same merge again"
+    return "$GATE_EXIT_RULE"
+  fi
   warn "rule refused: segment $seg changed an enforcement surface that no seat apply of this run left as it is, and the base does not have it either — $(printf '%s' "$out" | tr '\t\n' ' ;')"
   warn "apply the edit through a \`Step 3 강제 표면 좌석 적용\` halt record a person approves, or revert it on the segment branch; a path both the base and the segment changed goes to a person"
   return "$GATE_EXIT_RULE"
@@ -33423,10 +33456,24 @@ gate_verb_act() {
         # A branch whose enforcement surface changed outside a seat apply is
         # not reviewed: the review would pass bytes nobody approved on to the
         # merge. The hold writes the cone `blocked` row once and says why; a
-        # forecast writes nothing and answers with the same code.
-        if ! rn_pv=$(gate_surface_provenance "$segment" "$alias"); then
+        # forecast writes nothing and answers with the same code. A check that
+        # could not be decided refuses too, under a reason of its own.
+        rn_pvrc=0
+        rn_pv=$(gate_surface_provenance "$segment" "$alias") || rn_pvrc=$?
+        if [ "$rn_pvrc" = "$GATE_EXIT_RULE" ]; then
           [ "$verb" = "plan" ] || gate_surface_provenance_hold "$segment" >/dev/null 2>&1 || true
           warn "세그먼트 ${segment} 의 브랜치에서 강제 표면이 좌석 적용 밖에서 바뀌었습니다 — 리뷰를 파견하지 않습니다: $(printf '%s' "$rn_pv" | tr '\t\n' ' ;')"
+          exit "$GATE_EXIT_RULE"
+        elif [ "$rn_pvrc" != 0 ]; then
+          if [ "$verb" != "plan" ] \
+             && ! gate_has_row 'blocked' "앵커 세그먼트=$segment" '사유=강제 표면 출처 판정 불가'; then
+            gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=cone" "원인=판정 불가" \
+              "앵커 세그먼트=$segment" '사유=강제 표면 출처 판정 불가' \
+              "근거=$(gate_row_safe "$(printf '%s' "$rn_pv" | tr '\t\n' ' ;')" 300)" \
+              "관측=$(now_iso)" \
+              "재개 명령=세그먼트 워크트리와 HEAD, 플러그인의 분류 라이브러리를 복구한 뒤 같은 리뷰를 다시 파견하세요" || true
+          fi
+          warn "세그먼트 ${segment} 의 강제 표면 출처를 판정할 수 없습니다 — 리뷰를 파견하지 않습니다: $(printf '%s' "$rn_pv" | tr '\t\n' ' ;')"
           exit "$GATE_EXIT_RULE"
         fi ;;
     esac
