@@ -41289,6 +41289,17 @@ case "$(cat "$lsr_root/ic4/act.err" 2>/dev/null)" in
   *"재수렴 뒤의 재구현입니다"*) ok "95b: 멈춘 재구현의 운반은 재구현 경고로 재부착에 보낸다" ;;
   *) bad "95b: 멈춘 재구현의 운반에 재구현 경고가 없다 — $(cat "$lsr_root/ic4/act.err" 2>/dev/null)" ;;
 esac
+# 대조 — 리드 수정 행이 없는 세그먼트의 정상 완료 재수렴(구속 티어 이탈 정지의 재수렴)
+# 뒤에 멈춘 구현은 재구현이 아니다. 지은 틀 그대로의 운반은 새 세션으로 간다.
+lsr95b_l=$(lsr75_new ic5)
+lsr93_in "$lsr95b_l" gate_append 'segment' 'id=S3' '상태=실행중' '선언 파일 집합=`a.txt`, `b/c.sh`' >/dev/null 2>&1
+lsr93_in "$lsr95b_l" gate_append 'cycle' '세그먼트=S3' '사이클=1' 'P0=0' 'P1=1' \
+  "리포트 경로=${lsr95b_l%/*}/review-S3-1.md" >/dev/null 2>&1
+lsr93_in "$lsr95b_l" gate_append stage-result "세그먼트=S3" "스테이지=S3" "종류=reconverge" "종료 코드=0" \
+  "실행 버전=1" "세션 id=$lsr93_sid2" "계정=u1" "부모=-" "기록자=게이트" "종단 부류=정상 완료" >/dev/null 2>&1
+lsr93_park "$lsr95b_l" S3 2 "$lsr93_sid" 'Step 3 구현 — 질문' implement
+check "95b: 리드 수정 없는 세그먼트의 재수렴 뒤 구현 정지의 틀 운반은 재구현으로 보지 않고 맞는다" \
+  "$(lsr95b_frame ic5 수정 "/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q "세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh · 수정 대상: $lsr_root/ic5/review-S3-1.md 의 P0·P1")")" 0
 
 # 설계 토론·리드 단독 — 의도 칸은 매니페스트 의 의도 블록 첫 줄이다.
 lsr95b_ln=$(lsr95b_fx dd0 design-discuss-unattended 'Step 4 토론 — 질문' design)

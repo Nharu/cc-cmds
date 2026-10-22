@@ -19333,11 +19333,13 @@ gate_carry_ledger_frame() {
   # after the helper moved the branch. A prompt that matches the frame and the
   # document re-attaches instead of starting a session in the ordinary mode.
   #
-  # NOR WHILE A RE-IMPLEMENTATION IS THE ATTEMPT THAT HALTED. A `정상 완료`
-  # re-convergence after the key's last `cycle` row with no lead-fix row after
-  # that row is the state in which every implement dispatch is the
-  # re-implementation — the same test `gate_implement_cycle_admissible` exempts
-  # it by. That dispatch carried a `수정 대상` tail while `다음` read `재구현`,
+  # NOR WHILE A RE-IMPLEMENTATION IS THE ATTEMPT THAT HALTED. On a key with a
+  # lead-fix row, a `정상 완료` re-convergence after its last `cycle` row with
+  # no lead-fix row after that row is the state in which every implement
+  # dispatch is the re-implementation — the review table's `재구현` row. A
+  # re-convergence on a key with no lead-fix row (a binding-tier stop's) is
+  # not one, and its next implementation is carried as any other. That
+  # dispatch carried a `수정 대상` tail while `다음` read `재구현`,
   # and its own halted row has since turned `다음` to `확인 리뷰`, so the frame
   # built now has no tail: it too re-attaches.
   local frame="$1" doc="$2" key="$3" prompt="$4" cr='' v want bare full opt pat p expect nx dirv='' walk reim=''
@@ -19361,7 +19363,8 @@ gate_carry_ledger_frame() {
       fi
       if [ -z "$dirv" ] && [ -n "$cr" ]; then
         walk=$(gate_segment_review_walk "$key")
-        if [ "$(gate_report_count "$walk" '마지막 뒤 재수렴')" = "정상" ] \
+        if [ "$(gate_report_count "$walk" '리드 수정 있음')" = "1" ] \
+           && [ "$(gate_report_count "$walk" '마지막 뒤 재수렴')" = "정상" ] \
            && [ "$(gate_report_count "$walk" '리드 수정 뒤')" = "0" ]; then
           dirv=$nx; reim=1
         fi
