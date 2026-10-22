@@ -2765,6 +2765,22 @@ check "좌석 사본: 고지는 스냅숏 blocked[] 가 아니라 막힌 지점�
   "$(has "$SEAT_REF" "the seat reads it there, because the snapshot's \`blocked[]\` carries no act-scope row")" 예
 check "교대 계약: 18 은 상한 행의 사유를 막힌 지점에 적는다" \
   "$(has "$RS_SKILL" "naming the record and the cap row's \`사유\` in \`막힌 지점\` — the seat reads the cap from that field")/$(has "$RS_SKILL" "naming the halt record and the cap row's \`사유\` in \`막힌 지점\`")" "예/예"
+# 결과가 정해진 재수렴 정지의 답은 세션 없이 게이트가 정산한다. 교대는 정산을 먼저 내고 거절될
+# 때만 운반하며, 정산 행은 스트림이 없으므로 4·5번의 뒷부분이 그 행을 재수렴 행으로 읽어야 한다.
+check "교대 계약: 기계 정산 줄의 답은 정산 act 를 먼저 낸다" \
+  "$(has "$RS_SKILL" "3. **Settle the answer first when its record already fixed the outcome.**")/$(has "$RS_SKILL" "-- '중단 답 줄=<line>'")" "예/예"
+check "교대 계약: 정산이 3 이면 운반하고 0 이면 운반하지 않는다" \
+  "$(has "$RS_SKILL" "Exit \`3\` → the gate found one of its checks unmet and wrote nothing; the answer is still open, so carry it below.")/$(has "$RS_SKILL" "and that row took the answer up: no session runs, so carry nothing")" "예/예"
+check "교대 계약: 정산 문단이 운반 act 문단보다 앞선다" \
+  "$(awk '/Settle the answer first when its record already fixed the outcome/{a=NR} /Otherwise carry the answer, and let the gate decide whether the halted session takes it/{b=NR} END{print (a && b && a<b) ? "예" : "아니오"}' "$RS_SKILL")" 예
+check "교대 계약: 4·5번 뒷부분이 정산= 행을 종단 술어 참인 재수렴 행으로 읽는다" \
+  "$( { grep -cF "**A row carrying \`정산=\` is the gate's settlement of item 3**: it has no stream, its terminal predicate reads as present, and its verdict is the row's \`재수렴 판정\`." "$RS_SKILL" || true; } | tr -d ' ')" 2
+check "교대 계약: 5번의 마지막 중단 답 걷기는 재수렴에 건넨 답을 지난다" \
+  "$(has "$RS_SKILL" "and whose last \`중단 답\` row, walking back past the answers whose \`스킬\` is \`design-reconverge\`, names a record matched by item 2 for this item")" 예
+check "좌석 사본: 정산 먼저, 거절될 때만 운반한다" \
+  "$(has "$SEAT_REF" "(\`act --kind halt-settle\`: settle first, and carry the answer only when the gate refuses the settlement;")" 예
+check "design-reconverge: 기계 정산 줄은 기록을 가진 두 범위에서만 쓴다" \
+  "$(has "$RC_SKILL" "- the scope is \`감사 종합 요구 <record>\` or \`구속 티어 이탈 <record>\`. Never for an \`R<n>\` scope")" 예
 check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
   "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg)) step = 1')" 예
 check "좌석 사본: 상한 고지는 두 상한 사유로 고른다" \

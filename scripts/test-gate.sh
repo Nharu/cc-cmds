@@ -41111,6 +41111,158 @@ check "95: TD3 L1 이 세션 전에 죽은 뒤 사람이 다시 답한 L2 가 �
   "$( [ "$lsr93_ln" != "$lsr93_x" ] && lsr93_in "$lsr93_l" gate_key_deferred_answer S3 2>/dev/null)|$(lsr93_tdd "$lsr93_l")" "$lsr93_ln|1|y"
 
 # ---------------------------------------------------------------------------
+# 95b. 중단 답 정산 — 결과가 정해진 재수렴 정지의 답은 세션 없이 행 하나로 닫힌다
+# --- section: 95b | group: ledger_series | covers: act, gate_halt_settle, gate_halt_settle_line_parse, gate_halt_detail_scope, gate_carry_scope_ok, gate_kind_is_bookkeeping, replan, void_segment_plan | needs: 75,95 | anchors: 95b: TS1 정산은 행 하나를 쓰고 라우터도 시동도 부르지 않는다, 95b: TS2 불필요 정산도 계획 파일을 치운다, 95b: TS3 마감 뒤의 정산도 받는다, 95b: TS4 닫힌 실패는 exit 3·행 없음·답 열림이다, 95b: TS5 정산 행 뒤의 둘째 정산은 exit 3 이다, 95b: TS6 사이드카의 예시 줄을 게이트 파서가 읽는다, 95b: TS7 형제 재계획이 정산 행을 인용한다 ---
+#
+# 편집을 디스크에 두고 판정을 계산한 뒤 반영 방식만 물으며 멈춘 재수렴 — 그 답의
+# 선택지가 기계 정산 줄이면, 교대는 운반 대신 `act --kind halt-settle` 을 낸다. 절 95 의
+# 사본 소싱 자식에서 act 동사 전체(`gate_verb_act`)를 지나게 하고, 라우터 대역은
+# requests 를, 시동 대역은 argv 를 남기므로 둘이 없으면 불리지 않은 것이다.
+# 키 S3 의 원장은 구현 정지(시도 1) → 그 답 → 구속 티어 이탈 재수렴 정지(시도 2) →
+# 그 답의 순서다.
+# ---------------------------------------------------------------------------
+lsr95b_dsha=$(shasum -a 256 "$lsr93_doc" | cut -d' ' -f1)
+lsr95b_opt() {  # lsr95b_opt [<판정>] — 문서의 지금 값을 실은 기계 정산 줄
+  printf -- '- `반영 확인` — 검사 sha256 %s=%s → 종단 %s' "$lsr93_doc" "$lsr95b_dsha" "${1:-재설계 필요}"
+}
+lsr95b_fx() {
+  # lsr95b_fx <이름> [<선택지 줄>] [<관측 상세>] — 위 순서의 원장을 만들고 재수렴 정지에
+  # 사람이 「반영 확인」 으로 답한 행의 줄 번호를 낸다. 선택지 줄과 관측 상세는 바꿔
+  # 끼울 수 있고, 계획 파일 S3.plan.md 가 놓인다.
+  local l d opt det
+  l=$(lsr75_new "$1"); d=${l%/*}
+  opt=${2:-$(lsr95b_opt)}
+  lsr93_in "$l" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 2>&1
+  lsr93_park "$l" S3 1 "$lsr93_sid" 'Step 3 CFI-U3 BT-STOP — 구속 티어' implement
+  lsr93_ans "$l" S3 "$d/halt/S3#1.md" implement-unattended 적용 >/dev/null
+  det=${3-범위=구속 티어 이탈 $d/halt/S3#1.md · 사전 sha256=$lsr93_h1 · 사전 구속 표면 다이제스트=$lsr93_h2 · 지금 sha256=$lsr95b_dsha}
+  printf '2\n' > "$d/S3.attempt"; : > "$d/S3.attempt.2"
+  { printf '<!-- cc-pipeline-halt v1; kind=gate-unanswerable; stage=S3#2; run=LS -->\n'
+    printf '**분류**: gate-unanswerable\n**스텝**: Step 3 재수렴 — 반영 방식\n**질문 문면**: 편집이 디스크에 있다\n'
+    printf '**선택지**:\n%s\n- `다시 쓰기` — 편집을 되돌리고 다시 쓴다\n' "$opt"
+    printf '**관측 상세**: %s\n<!-- /cc-pipeline-halt v1 -->\n' "$det"; } > "$d/halt/S3#2.md"
+  lsr93_in "$l" gate_append stage-result "세그먼트=S3" "스테이지=S3" "종류=reconverge" "종료 코드=0" \
+    "실행 버전=2" "세션 id=$lsr93_sid2" "계정=u1" "부모=-" "기록자=게이트" "재수렴 판정=없음" \
+    "종단 부류=의도된 park" >/dev/null 2>&1
+  printf '# 계획\n' > "$d/S3.plan.md"
+  lsr93_ans "$l" S3 "$d/halt/S3#2.md" design-reconverge '반영 확인'
+}
+lsr95b_act() {
+  # lsr95b_act <원장> <매니페스트> <argv 하나> [<둘째>] — 키 S3 의 정산 act 의 rc. 경고는
+  # 원장 옆 settle.err 에 남는다. 동사 앞의 전역은 절 95 의 운반 act 가 비우는 그 값들이다.
+  LSR95B_A1=$3 LSR95B_A2=${4:-} FX_MANIFEST=$2 LSR93_DL=1900000000 lsr93_in "$1" eval '
+    GATE_RESUME=""; GATE_FROM_DECLARATION=""; GATE_RECOVERY=""; GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
+    GATE_EMIT_DIGEST_TO=""; GATE_SHIFT_HALT_SITE=""; GATE_SHIFT_HALT_WRITING=""; GATE_ADMIT=""
+    GATE_REACH=""; GATE_DESTRUCTIVE=0; GATE_SETTLED_SEGMENTS=""; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+    GATE_TRIGGER=""; GATE_TRIGGER_SEEN=""; GATE_TRIGGER_REASON=""; GATE_CARRY_ANSWER=""
+    set -- "$LSR95B_A1"; [ -z "$LSR95B_A2" ] || set -- "$@" "$LSR95B_A2"
+    r=0
+    ( gate_verb_act act halt-settle infra S3 커밋 읽기 "$(gate_snapshot_digest)" "정산 시험" "" "$@" ) \
+      >/dev/null 2>"$RUN_DIR/settle.err" || r=$?
+    printf %s "$r"' 2>/dev/null
+}
+lsr95b_hsha() {  # lsr95b_hsha <원장> — halt/ 의 모든 파일 바이트와 이름의 다이제스트
+  (cd "${1%/*}/halt" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do printf '%s\n' "$f"; cat "$f"; done) \
+    | shasum -a 256 | cut -c1-16
+}
+lsr95b_state() {
+  # lsr95b_state <원장> <답 줄> — 「stage-result 행 수|정산 행 수|답이 쓰였는가|물은 사건|시동」
+  printf '%s|%s|%s|%s|%s' "$(lsr93_n "$1" '- `stage-result` ')" "$(lsr93_n "$1" '| 정산=중단 답 줄 ')" \
+    "$(lsr93_in "$1" eval "gate_halt_answer_spent \"\$LEDGER\" S3 $2 && printf 쓰임 || printf 열림" 2>/dev/null)" \
+    "$(lsr93_events "$1")" "$( [ -e "${1%/*}/argv" ] && printf 시동 || printf -- -)"
+}
+
+# TS1 — 이슈 모양. 정산 act 는 행 하나를 쓰고, 라우터·시동을 부르지 않으며, 문서와
+# halt/ 의 바이트를 바꾸지 않는다. 형제 S5 는 TS7 이 인용할 계획을 든다.
+lsr95b_ln=$(lsr95b_fx ts1)
+lsr95b_l="$lsr_root/ts1/ledger.md"
+lsr93_in "$lsr95b_l" gate_append 'segment' 'id=S5' '상태=실행중' >/dev/null 2>&1
+lsr93_in "$lsr95b_l" gate_append stage-result "세그먼트=S5" "스테이지=S5" "종류=implement" "종료 코드=0" \
+  "실행 버전=1" "세션 id=$lsr93_sid" "부모=-" "기록자=게이트" "plan_sha256=$lsr93_h1" "종단 부류=정상 완료" >/dev/null 2>&1
+lsr95b_h0=$(lsr95b_hsha "$lsr95b_l")
+lsr95b_pre=$(lsr95b_state "$lsr95b_l" "$lsr95b_ln")
+check "95b: TS1 정산 전에는 답이 열려 있고 정산 행이 없다" "$lsr95b_pre" "3|0|열림|-|-"
+check "95b: TS1 정산 act 는 exit 0 이다" \
+  "$(lsr95b_act "$lsr95b_l" "$FX_MANIFEST" "중단 답 줄=$lsr95b_ln")" "0"
+check "95b: TS1 정산은 행 하나를 쓰고 라우터도 시동도 부르지 않는다" \
+  "$(lsr95b_state "$lsr95b_l" "$lsr95b_ln")" "4|1|쓰임|-|-"
+case "$( { grep -F '| 정산=중단 답 줄 ' "$lsr95b_l" || true; } )" in
+  *"| 세그먼트=S3 | 스테이지=S3 | 종류=reconverge | 종료 코드=- | 실행 버전=3 | 세션 id=- | 부모=- | 기록자=게이트 | effort=(미상) | 서빙 모델=(미상) | 재수렴 판정=재설계 필요 | 종단 부류=정상 완료 | 실패 서명=reconverge/정상 완료/-/"*" | 정산=중단 답 줄 $lsr95b_ln | 관측=중단 답 정산"*)
+    ok "95b: TS1 정산 행이 게이트 기록자·판정·정산 줄을 싣는다" ;;
+  *) bad "95b TS1 정산 행" "$(grep -F '| 정산=' "$lsr95b_l"; cat "$lsr_root/ts1/settle.err")" ;;
+esac
+check "95b: TS1 문서와 halt/ 의 바이트가 그대로다" \
+  "$(shasum -a 256 "$lsr93_doc" | cut -d' ' -f1)|$(lsr95b_hsha "$lsr95b_l")" "$lsr95b_dsha|$lsr95b_h0"
+check "95b: TS1 정산은 그 세그먼트의 계획 파일을 치운다" \
+  "$( [ -e "$lsr_root/ts1/S3.plan.md" ] && printf 있음 || printf 없음)|$(find "$lsr_root/ts1" -maxdepth 1 -name 'S3.plan.md.void-*' | wc -l | tr -d ' ')" "없음|1"
+
+# TS7 일부 — 형제 재계획의 평가가 정산 행을 인용 가능한 재수렴 행으로 읽는다.
+check "95b: TS7 형제 재계획이 정산 행을 인용한다" \
+  "$(lsr93_in "$lsr95b_l" eval 'gate_replan_eval S5 S3#3 </dev/null >/dev/null 2>&1 && printf 가능 || printf "%s" "$GATE_REPLAN_CLAUSE"' 2>/dev/null)" "가능"
+
+# TS5 — 정산 행이 답을 썼으므로 둘째 정산은 거절되고 행은 그대로 하나다.
+check "95b: TS5 정산 행 뒤의 둘째 정산은 exit 3 이다" \
+  "$(lsr95b_act "$lsr95b_l" "$FX_MANIFEST" "중단 답 줄=$lsr95b_ln")|$(lsr93_n "$lsr95b_l" '| 정산=중단 답 줄 ')" "3|1"
+
+# TS2 — 판정 불필요. 행은 그 판정을 싣고, 계획 파일은 판정과 무관하게 치워진다 — 스트림
+# 경로의 재수렴 행 뒤에 부르는 같은 void_segment_plan 이다.
+lsr95b_ln=$(lsr95b_fx ts2 "$(lsr95b_opt 불필요)")
+lsr95b_l="$lsr_root/ts2/ledger.md"
+check "95b: TS2 불필요 정산도 계획 파일을 치운다" \
+  "$(lsr95b_act "$lsr95b_l" "$FX_MANIFEST" "중단 답 줄=$lsr95b_ln")|$(lsr93_n "$lsr95b_l" '| 재수렴 판정=불필요 | 종단 부류=정상 완료 |')|$( [ -e "$lsr_root/ts2/S3.plan.md" ] && printf 있음 || printf 없음)|$(find "$lsr_root/ts2" -maxdepth 1 -name 'S3.plan.md.void-*' | wc -l | tr -d ' ')" \
+  "0|1|없음|1"
+
+# TS3 — 마감 뒤. 정산은 장부 기록이라 지난 마감 매니페스트에서도 받는다.
+lsr95b_ln=$(lsr95b_fx ts3)
+lsr95b_l="$lsr_root/ts3/ledger.md"
+check "95b: TS3 마감 뒤의 정산도 받는다" \
+  "$(lsr95b_act "$lsr95b_l" "$lsr93_mfp" "중단 답 줄=$lsr95b_ln")|$(lsr95b_state "$lsr95b_l" "$lsr95b_ln")" "0|3|1|쓰임|-|-"
+
+# TS4 — 닫힌 실패. 검사 조항마다 하나, 각각 exit 3 이고 행이 없으며 답은 열린 채다.
+lsr95b_bad=""
+lsr95b_try() {
+  # lsr95b_try <이름> <답 줄> <조항 문자열> — act 의 rc 가 3 이고 stage-result 행 수가 그대로이며 정산 행이
+  # 없고 답이 열린 채이며 거절 문면이 <조항 문자열> 을 싣는 것이 아니면 이름과
+  # 「rc|stage-result|정산|답|문면」 을 모은다. 기록 act 가 남기는 행위 행은 세지 않는다.
+  local l="$lsr_root/$1/ledger.md" n got
+  n=$(lsr93_n "$l" '- `stage-result` ')
+  got="$(lsr95b_act "$l" "$FX_MANIFEST" "중단 답 줄=$2")|$( [ "$(lsr93_n "$l" '- `stage-result` ')" = "$n" ] && printf same || printf changed)|$(lsr95b_state "$l" "$2" | cut -d'|' -f2-3)|$(lsr93_n "$lsr_root/$1/settle.err" "$3")"
+  [ "$got" = "3|same|0|열림|1" ] || lsr95b_bad="$lsr95b_bad $1=$got"
+}
+lsr95b_grammar='기계 정산 줄 문법에 맞지 않습니다'
+lsr95b_try tf1 "$(lsr95b_fx tf1 "$(lsr95b_opt) 덧붙임")" "$lsr95b_grammar"
+lsr95b_try tf2 "$(lsr95b_fx tf2 "$(lsr95b_opt 없음)")" "$lsr95b_grammar"
+lsr95b_try tf3 "$(lsr95b_fx tf3 "- \`반영 확인\` — 검사 sha256 /tmp/other.md=$lsr95b_dsha → 종단 재설계 필요")" '이 런의 설계 문서'
+lsr95b_try tf4 "$(lsr95b_fx tf4 "- \`반영 확인\` — 검사 sha256 $lsr93_doc=$lsr93_h1 → 종단 재설계 필요")" '기계 정산 줄의 값'
+lsr95b_try tf5 "$(lsr95b_fx tf5 "- \`반영 확인\` — 검사 sha256 docs/doc93.md=$lsr95b_dsha → 종단 재설계 필요")" "$lsr95b_grammar"
+lsr95b_x=$(lsr95b_fx tf6); printf '\n' >> "$lsr_root/tf6/halt/S3#2.md"
+lsr95b_try tf6 "$lsr95b_x" '중단 기록이 답한 뒤에 바뀌었습니다'
+lsr95b_x=$(lsr95b_fx tf7 "" "범위=R2 · 사전 sha256=$lsr93_h1 · 사전 구속 표면 다이제스트=$lsr93_h2")
+lsr95b_try tf7 "$lsr95b_x" '기록을 가진 두 범위'
+lsr95b_x=$(lsr95b_fx tf8 "" "범위=P-17 로그인이 두 번 뜬다 · 사전 sha256=$lsr93_h1 · 사전 구속 표면 다이제스트=$lsr93_h2")
+lsr95b_try tf8 "$lsr95b_x" '기록을 가진 두 범위'
+lsr95b_x=$(lsr95b_fx tf9 "" "범위=구속 티어 이탈 /elsewhere/halt/S3#1.md · 사전 sha256=$lsr93_h1 · 사전 구속 표면 다이제스트=$lsr93_h2")
+lsr95b_try tf9 "$lsr95b_x" '원장으로 확인하지 못해'
+lsr95b_x=$(lsr95b_fx tf10); : > "$lsr_root/tf10/S3.pid"
+lsr95b_try tf10 "$lsr95b_x" '시도가 아직 열려 있습니다'
+lsr95b_x=$(lsr95b_fx tf11)
+sed 's/stage=S3#2;/stage=S3#9;/' "$lsr_root/tf11/halt/S3#2.md" > "$lsr_root/tf11/halt/S3#9.md"
+lsr95b_x=$(lsr93_ans "$lsr_root/tf11/ledger.md" S3 "$lsr_root/tf11/halt/S3#9.md" design-reconverge '반영 확인')
+lsr95b_try tf11 "$lsr95b_x" '마지막 의도된 park'
+check "95b: TS4 닫힌 실패는 exit 3·행 없음·답 열림이다" "${lsr95b_bad:-없음}" "없음"
+lsr95b_x=$(lsr95b_fx tf12)
+check "95b: TS4 정산 act 는 중단 답 줄 밖의 argv 를 exit 2 로 거절한다" \
+  "$(lsr95b_act "$lsr_root/tf12/ledger.md" "$FX_MANIFEST" "중단 답 줄=$lsr95b_x" '재수렴 판정=불필요')|$(lsr95b_act "$lsr_root/tf12/ledger.md" "$FX_MANIFEST" '중단 답 줄=x')|$(lsr95b_state "$lsr_root/tf12/ledger.md" "$lsr95b_x" | cut -d'|' -f2-3)" \
+  "2|2|0|열림"
+
+# TS6 — 사이드카의 예시 줄이 게이트 파서의 문법 그대로다.
+lsr95b_ex=$( { grep -E '^- `반영 확인` — 검사 sha256 ' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md" || true; } | head -1)
+check "95b: TS6 사이드카의 예시 줄을 게이트 파서가 읽는다" \
+  "$(LSR95B_EX=$lsr95b_ex lsr93_in "$lsr_root/ts1/ledger.md" eval 'gate_halt_settle_line_parse "$LSR95B_EX" | tr "\t" "|"' 2>/dev/null)" \
+  "/Users/me/repo/docs/feature.md|0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0|재설계 필요"
+
+# ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다
 # --- section: 61a | group: sa | covers: snapshot | anchors: 61a: 미추적 파일만 있는 베이스는 추적 변경 없음·미추적 파일 있음 이다, 61a: 추적 파일을 고친 베이스는 추적 변경 있음 이다, 61a: 두 베이스의 run 행 값이 다르다, 61a: 옛 베이스 청결 필드는 run 행에 없다 ---
 #
