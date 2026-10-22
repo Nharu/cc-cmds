@@ -14,14 +14,17 @@
 #      table, a truncated halt record, a held lock, and the backoff cap.
 #
 # Usage: bash plugins/cc-cmds/orchestrator/test-run.sh            (whole suite)
-#        bash plugins/cc-cmds/orchestrator/test-run.sh --part 1   (head, sections 1-2, setup, section 4 up to the lane-persistence boundary)
-#        bash plugins/cc-cmds/orchestrator/test-run.sh --part 2   (head, setup, boundary barrier, lane-persistence section to the end)
+#        bash plugins/cc-cmds/orchestrator/test-run.sh --part 1   (head, sections 1-2, setup,
+#                                                                   section 4 up to the T13 boundary)
+#        bash plugins/cc-cmds/orchestrator/test-run.sh --part 2   (head, setup, boundary barrier,
+#                                                                   T13 marker to the end)
 #
 # The two parts together run every assertion of the whole suite exactly once;
 # the macOS leg runs them side by side so the job's wall clock is not one
-# suite's length. The boundary barrier runs in all three forms, so a later
-# section that leans on state an earlier section left behind fails here on
-# every leg, not only on the one that runs part 2 alone.
+# suite's length. The boundary barrier runs in the whole suite and in part 2;
+# part 1 ends just before it. So a later section that leans on state an earlier
+# section left behind fails on the leg that runs the whole suite as well, not
+# only on the one that runs part 2 alone.
 
 set -uo pipefail
 
@@ -7309,90 +7312,6 @@ if grep -qF "set -- \"\$@\" \"리뷰 정책=\$_pv\"" "$DRIVER"; then
 else
   bad "carry-forward" "앞 행의 값을 새 행에 적지 않는다 — 두 번째 리더가 생긴다"
 fi
-fi
-
-# --- end of part 1 ----------------------------------------------------------
-if [ "$TR_PART" = 1 ]; then
-  tr_summary
-  exit
-fi
-
-# --- boundary barrier -------------------------------------------------------
-# Every form runs this, the whole suite included: the sections below must stand
-# on setup alone, because part 2 runs them without the sections above. Putting
-# the shell back to the setup snapshot here makes a section below that leans on
-# an earlier section's function fail as `command not found`, and one that leans
-# on an earlier section's variable stop the suite as an unbound variable under
-# `-u` — on every leg, not only on the one that runs part 2. A dependency found
-# that way is settled by moving its definition into setup, not by an exception
-# here. Files the sections above made are not removed: the fresh `WORK` below is
-# what keeps the sections below off them.
-_trb_d="$TR_SNAP/now"
-rm -rf "$_trb_d"; mkdir -p "$_trb_d/f" "$_trb_d/v"
-# Functions defined after setup are removed; changed bodies are put back.
-compgen -A function | LC_ALL=C sort > "$_trb_d/fnames"
-LC_ALL=C comm -13 "$TR_SNAP/fnames" "$_trb_d/fnames" > "$_trb_d/fadded"
-while IFS= read -r _trb_n; do
-  unset -f "$_trb_n"
-done < "$_trb_d/fadded"
-_trb_i=0
-while IFS= read -r _trb_n; do
-  _trb_i=$((_trb_i + 1)); declare -f "$_trb_n" > "$_trb_d/f/$_trb_i" 2>/dev/null
-done < "$TR_SNAP/fnames"
-diff -rq "$TR_SNAP/f" "$_trb_d/f" 2>/dev/null | awk '/^Files / { n = split($2, p, "/"); print p[n] }' > "$_trb_d/fchanged"
-while IFS= read -r _trb_i; do
-  . "$TR_SNAP/f/$_trb_i"
-done < "$_trb_d/fchanged"
-# Variables. Kept as they are: the counters, the paths the exit trap removes,
-# the part selector, this barrier's own names, the shell's own dynamic and
-# special variables, and read-only ones.
-_trb_skip() {
-  case "$1" in
-    passed|failed|IVW|TR_PART|TR_OLD_WORKS|TR_SNAP|TR_SNAP_PWD|_trb_*) return 0 ;;
-    BASH*|PIPESTATUS|LINENO|RANDOM|SRANDOM|SECONDS|EPOCHSECONDS|EPOCHREALTIME) return 0 ;;
-    FUNCNAME|GROUPS|DIRSTACK|PWD|OLDPWD|_|SHLVL|HISTCMD|OPTIND|OPTARG|COMP_*) return 0 ;;
-    PPID|UID|EUID|SHELLOPTS|LINES|COLUMNS) return 0 ;;
-  esac
-  return 1
-}
-_trb_ro() {  # _trb_ro <declare -p file> — true when the recorded variable is read-only
-  local kw fl
-  read -r kw fl _ < "$1" || return 1
-  case "$fl" in -*r*) return 0 ;; esac
-  return 1
-}
-compgen -v | LC_ALL=C sort > "$_trb_d/vnames"
-LC_ALL=C comm -13 "$TR_SNAP/vnames" "$_trb_d/vnames" > "$_trb_d/vadded"
-while IFS= read -r _trb_n; do
-  _trb_skip "$_trb_n" && continue
-  declare -p "$_trb_n" > "$_trb_d/vcur" 2>/dev/null || continue
-  _trb_ro "$_trb_d/vcur" && continue
-  unset "$_trb_n"
-done < "$_trb_d/vadded"
-_trb_i=0
-while IFS= read -r _trb_n; do
-  _trb_i=$((_trb_i + 1))
-  _trb_skip "$_trb_n" || declare -p "$_trb_n" > "$_trb_d/v/$_trb_i" 2>/dev/null
-done < "$TR_SNAP/vnames"
-# A variable unset since setup leaves an empty file, which differs as well.
-diff -rq "$TR_SNAP/v" "$_trb_d/v" 2>/dev/null | awk '/^Files / { n = split($2, p, "/"); print p[n] }' > "$_trb_d/vchanged"
-while IFS= read -r _trb_i; do
-  _trb_ro "$TR_SNAP/v/$_trb_i" && continue
-  _trb_n=$(sed -n "${_trb_i}p" "$TR_SNAP/vnames")
-  unset "$_trb_n" 2>/dev/null
-  . "$TR_SNAP/v/$_trb_i"
-done < "$_trb_d/vchanged"
-unset -f _trb_skip _trb_ro
-# Options, directory and exit trap as setup left them, and a fresh fixture.
-set +e; set -u; set -o pipefail
-cd "$TR_SNAP_PWD" || exit 1
-trap cleanup EXIT
-TR_OLD_WORKS="$TR_OLD_WORKS
-$WORK"
-tr_make_work
-compgen -A function | LC_ALL=C sort > "$_trb_d/fafter"
-check "경계 장벽 뒤 함수 집합이 준비 끝과 같다" \
-  "$(cmp -s "$TR_SNAP/fnames" "$_trb_d/fafter" && printf 같음 || printf 다름)" "같음"
 
 # ---------------------------------------------------------------------------
 # 22. 레인 지속화 — 4단 리졸버, 런 상태 프로브, 형제 레인 훅 구멍
@@ -8688,6 +8607,97 @@ check "프로브 (런, 디렉터리): 모든 줄이 네 필드다" \
   "$(printf '%s\n' "$pp_out" | awk -F'\t' 'NF!=4' | grep -c . || true)" "0"
 kill "$PA" "$PB" "$PC" "$PD" 2>/dev/null
 wait "$PA" "$PB" "$PC" "$PD" 2>/dev/null
+fi
+
+# --- end of part 1 ----------------------------------------------------------
+if [ "$TR_PART" = 1 ]; then
+  tr_summary
+  exit
+fi
+
+# --- boundary barrier -------------------------------------------------------
+# The whole suite and part 2 run this; part 1 ends just above it. The sections
+# below must stand on setup alone, because part 2 runs them without the sections
+# above. Putting the shell back to the setup snapshot here makes a section below
+# that leans on an earlier section's function fail as `command not found`, and
+# one that leans on an earlier section's variable stop the suite as an unbound
+# variable under `-u` — on the leg that runs the whole suite as well, not only on
+# the one that runs part 2. A dependency found that way is settled by moving its
+# definition into setup, not by an exception here. Files the sections above made
+# are not removed: the fresh `WORK` below is what keeps the sections below off
+# them.
+#
+# The boundary sits inside the lane-persistence section, before its hook-decision
+# tests. With it at the head of that section, part 2 was the longer part on the
+# macOS runner (716 seconds against 539), so it moved as far down as it may go:
+# it has to stay above the T17 marker, because the isolation check cuts this
+# file there and runs the head alone, and this end of part 1 with it.
+_trb_d="$TR_SNAP/now"
+rm -rf "$_trb_d"; mkdir -p "$_trb_d/f" "$_trb_d/v"
+# Functions defined after setup are removed; changed bodies are put back.
+compgen -A function | LC_ALL=C sort > "$_trb_d/fnames"
+LC_ALL=C comm -13 "$TR_SNAP/fnames" "$_trb_d/fnames" > "$_trb_d/fadded"
+while IFS= read -r _trb_n; do
+  unset -f "$_trb_n"
+done < "$_trb_d/fadded"
+_trb_i=0
+while IFS= read -r _trb_n; do
+  _trb_i=$((_trb_i + 1)); declare -f "$_trb_n" > "$_trb_d/f/$_trb_i" 2>/dev/null
+done < "$TR_SNAP/fnames"
+diff -rq "$TR_SNAP/f" "$_trb_d/f" 2>/dev/null | awk '/^Files / { n = split($2, p, "/"); print p[n] }' > "$_trb_d/fchanged"
+while IFS= read -r _trb_i; do
+  . "$TR_SNAP/f/$_trb_i"
+done < "$_trb_d/fchanged"
+# Variables. Kept as they are: the counters, the paths the exit trap removes,
+# the part selector, this barrier's own names, the shell's own dynamic and
+# special variables, and read-only ones.
+_trb_skip() {
+  case "$1" in
+    passed|failed|IVW|TR_PART|TR_OLD_WORKS|TR_SNAP|TR_SNAP_PWD|_trb_*) return 0 ;;
+    BASH*|PIPESTATUS|LINENO|RANDOM|SRANDOM|SECONDS|EPOCHSECONDS|EPOCHREALTIME) return 0 ;;
+    FUNCNAME|GROUPS|DIRSTACK|PWD|OLDPWD|_|SHLVL|HISTCMD|OPTIND|OPTARG|COMP_*) return 0 ;;
+    PPID|UID|EUID|SHELLOPTS|LINES|COLUMNS) return 0 ;;
+  esac
+  return 1
+}
+_trb_ro() {  # _trb_ro <declare -p file> — true when the recorded variable is read-only
+  local kw fl
+  read -r kw fl _ < "$1" || return 1
+  case "$fl" in -*r*) return 0 ;; esac
+  return 1
+}
+compgen -v | LC_ALL=C sort > "$_trb_d/vnames"
+LC_ALL=C comm -13 "$TR_SNAP/vnames" "$_trb_d/vnames" > "$_trb_d/vadded"
+while IFS= read -r _trb_n; do
+  _trb_skip "$_trb_n" && continue
+  declare -p "$_trb_n" > "$_trb_d/vcur" 2>/dev/null || continue
+  _trb_ro "$_trb_d/vcur" && continue
+  unset "$_trb_n"
+done < "$_trb_d/vadded"
+_trb_i=0
+while IFS= read -r _trb_n; do
+  _trb_i=$((_trb_i + 1))
+  _trb_skip "$_trb_n" || declare -p "$_trb_n" > "$_trb_d/v/$_trb_i" 2>/dev/null
+done < "$TR_SNAP/vnames"
+# A variable unset since setup leaves an empty file, which differs as well.
+diff -rq "$TR_SNAP/v" "$_trb_d/v" 2>/dev/null | awk '/^Files / { n = split($2, p, "/"); print p[n] }' > "$_trb_d/vchanged"
+while IFS= read -r _trb_i; do
+  _trb_ro "$TR_SNAP/v/$_trb_i" && continue
+  _trb_n=$(sed -n "${_trb_i}p" "$TR_SNAP/vnames")
+  unset "$_trb_n" 2>/dev/null
+  . "$TR_SNAP/v/$_trb_i"
+done < "$_trb_d/vchanged"
+unset -f _trb_skip _trb_ro
+# Options, directory and exit trap as setup left them, and a fresh fixture.
+set +e; set -u; set -o pipefail
+cd "$TR_SNAP_PWD" || exit 1
+trap cleanup EXIT
+TR_OLD_WORKS="$TR_OLD_WORKS
+$WORK"
+tr_make_work
+compgen -A function | LC_ALL=C sort > "$_trb_d/fafter"
+check "경계 장벽 뒤 함수 집합이 준비 끝과 같다" \
+  "$(cmp -s "$TR_SNAP/fnames" "$_trb_d/fafter" && printf 같음 || printf 다름)" "같음"
 
 # --- T13~T16: 형제 레인의 훅 판정 -------------------------------------------
 HOOK="$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"

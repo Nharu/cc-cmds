@@ -84,10 +84,15 @@ jobs:
     # every other suite took 152 seconds or less and all of them were done
     # about 370 seconds in; after that test-run.sh ran alone with two cores
     # idle, and runs of 857 to 861 seconds hit this ceiling. The suite now
-    # runs as two parts side by side, split where its measured time divided
-    # into about 440 and 379 seconds. The target is a job of 720 seconds or
-    # less — a quarter of this ceiling left as margin for runner variance —
-    # with about nine to ten minutes expected. When the list grows, recompute
+    # runs as two parts side by side. Split first at the head of its
+    # lane-persistence section, the PR run took 741 seconds: part 1 539 and
+    # part 2 716, since the later part now shares the cores as well. The
+    # boundary then moved down to the hook-decision tests, the latest place
+    # the isolation check allows, which in that run's log carries about 30
+    # seconds from part 2 to part 1. The target is a job of 720 seconds or
+    # less — a quarter of this ceiling left as margin for runner variance;
+    # the work of all the suites over three cores puts a floor of about 645
+    # seconds under the test step. When the list grows, recompute
     # it the same way: the longest part, plus the remaining suites laid over
     # the three cores beside it, plus the steps around the test step (checkout,
     # the brew install and the duration signal: 26 seconds of that run's 847),
