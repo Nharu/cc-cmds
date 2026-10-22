@@ -47884,60 +47884,60 @@ check "96: 분류되는 경로는 훅이 거부하고 분류되지 않는 경로
 check "96: 훅의 거부가 강제 표면 문면이다 (다른 팔의 거부가 아니다)" "[$w92]" "[]"
 
 # ---------------------------------------------------------------------------
-# 93. 진입 계획의 강제 표면 판정은 모양이 단언된다
-# --- section: 93 | group: tier | covers: tier, enforcement_surface, check_manifest | anchors: 93: 확인됨 판정이 검사기를 통과한다, 93: 없음 판정이 검사기를 통과한다, 93: 판정 키가 없는 계획은 통과한다, 93: 닫힌 넷 밖의 판정은 거부된다, 93: 네 분류 밖의 분류는 거부된다, 93: classes 에 없는 분류를 단 경로는 거부된다, 93: 경로 없는 확인됨은 거부된다, 93: 경로 있는 없음은 거부된다, 93: 키 이전 계획의 판정 키는 단언하지 않는다 ---
+# 97. 진입 계획의 강제 표면 판정은 모양이 단언된다
+# --- section: 97 | group: tier | covers: tier, enforcement_surface, check_manifest | anchors: 97: 확인됨 판정이 검사기를 통과한다, 97: 없음 판정이 검사기를 통과한다, 97: 판정 키가 없는 계획은 통과한다, 97: 닫힌 넷 밖의 판정은 거부된다, 97: 네 분류 밖의 분류는 거부된다, 97: classes 에 없는 분류를 단 경로는 거부된다, 97: 경로 없는 확인됨은 거부된다, 97: 경로 있는 없음은 거부된다, 97: 키 이전 계획의 판정 키는 단언하지 않는다 ---
 #
 # 킥오프가 의도에서 읽은 강제 표면 판정은 계획 JSON 의 `enforcement_surface` 에
-# 얼고, 검사기의 (d) 가 그 모양만 본다 — 판정이 닫힌 넷 중 하나인지, 경로마다 단
+# 얼고, 검사기의 (e) 가 그 모양만 본다 — 판정이 닫힌 넷 중 하나인지, 경로마다 단
 # 분류가 `classes` 에 있는지, 확인됨에 경로가 있고 없음에 경로가 없는지. 경로가
 # 정말 강제 표면인지는 분류기의 몫이라 여기서 묻지 않는다. 89 절과 같은 검사기를
 # 같은 도우미로 돌리고, 판정 키가 없는 계획과 키 이전 계획이 통과하는 대조군을
 # 같은 절에 둔다.
 # ---------------------------------------------------------------------------
 pre_tier
-es93() {  # es93 <enforcement_surface json> — solo 판정 계획에 그 판정 키를 더한다
+es97() {  # es97 <enforcement_surface json> — solo 판정 계획에 그 판정 키를 더한다
   printf '%s' "$TIER_PLAN_SOLO" | jq -c --argjson es "$1" '. + {enforcement_surface: $es}'
 }
-es93_bad() {  # es93_bad <단언 이름 전체> <enforcement_surface json> <위반 줄 고정 문자열>
-  tier_check "$(es93 "$2")"
+es97_bad() {  # es97_bad <단언 이름 전체> <enforcement_surface json> <위반 줄 고정 문자열>
+  tier_check "$(es97 "$2")"
   case "$TIER_RC/$TIER_OUT" in
     0/*) bad "$1" "통과했다" ;;
     *"$3"*) ok "$1" ;;
     *) bad "$1" "$TIER_OUT" ;;
   esac
 }
-ES93_OK='{"judgment":"확인됨","classes":["지침파일"],"paths":[{"path":"CLAUDE.md","class":"지침파일","slice":"S1"}],"source":"의도","rationale":"의도가 CLAUDE.md 를 고친다고 적는다"}'
-tier_check "$(es93 "$ES93_OK")"
-check "93: 확인됨 판정이 검사기를 통과한다" "$TIER_RC/$TIER_OUT" "0/"
-tier_check "$(es93 '{"judgment":"없음","classes":[],"paths":[],"source":"의도","rationale":"x"}')"
-check "93: 없음 판정이 검사기를 통과한다" "$TIER_RC/$TIER_OUT" "0/"
-tier_check "$(es93 '{"judgment":"가능성","classes":["규칙카탈로그"],"paths":[],"source":"의도","rationale":"규칙을 바꿀 수도 있다"}')"
-check "93: 경로 없는 가능성 판정은 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+ES97_OK='{"judgment":"확인됨","classes":["지침파일"],"paths":[{"path":"CLAUDE.md","class":"지침파일","slice":"S1"}],"source":"의도","rationale":"의도가 CLAUDE.md 를 고친다고 적는다"}'
+tier_check "$(es97 "$ES97_OK")"
+check "97: 확인됨 판정이 검사기를 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$(es97 '{"judgment":"없음","classes":[],"paths":[],"source":"의도","rationale":"x"}')"
+check "97: 없음 판정이 검사기를 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$(es97 '{"judgment":"가능성","classes":["규칙카탈로그"],"paths":[],"source":"의도","rationale":"규칙을 바꿀 수도 있다"}')"
+check "97: 경로 없는 가능성 판정은 통과한다" "$TIER_RC/$TIER_OUT" "0/"
 tier_check "$TIER_PLAN_SOLO"
-check "93: 판정 키가 없는 계획은 통과한다" "$TIER_RC/$TIER_OUT" "0/"
-es93_bad "93: 닫힌 넷 밖의 판정은 거부된다" \
+check "97: 판정 키가 없는 계획은 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+es97_bad "97: 닫힌 넷 밖의 판정은 거부된다" \
   '{"judgment":"아마","classes":[],"paths":[],"source":"의도","rationale":"x"}' \
-  "(d) enforcement_surface.judgment 가 확인됨 · 가능성 · 없음 · 판정불가 중 하나가 아닙니다"
-es93_bad "93: 네 분류 밖의 분류는 거부된다" \
+  "(e) enforcement_surface.judgment 가 확인됨 · 가능성 · 없음 · 판정불가 중 하나가 아닙니다"
+es97_bad "97: 네 분류 밖의 분류는 거부된다" \
   '{"judgment":"가능성","classes":["훅"],"paths":[],"source":"의도","rationale":"x"}' \
-  "(d) enforcement_surface.classes 에 네 분류 밖의 값이 있습니다"
-es93_bad "93: classes 에 없는 분류를 단 경로는 거부된다" \
+  "(e) enforcement_surface.classes 에 네 분류 밖의 값이 있습니다"
+es97_bad "97: classes 에 없는 분류를 단 경로는 거부된다" \
   '{"judgment":"확인됨","classes":["지침파일"],"paths":[{"path":".claude/settings.json","class":"프로젝트설정","slice":"S1"}],"source":"의도","rationale":"x"}' \
-  '(d) enforcement_surface.paths 의 ".claude/settings.json" 가 classes 에 없는 분류 "프로젝트설정" 를 답니다'
-es93_bad "93: 경로 없는 확인됨은 거부된다" \
+  '(e) enforcement_surface.paths 의 ".claude/settings.json" 가 classes 에 없는 분류 "프로젝트설정" 를 답니다'
+es97_bad "97: 경로 없는 확인됨은 거부된다" \
   '{"judgment":"확인됨","classes":["지침파일"],"paths":[],"source":"의도","rationale":"x"}' \
-  "(d) enforcement_surface.judgment 가 확인됨인데 paths 가 비어 있습니다"
-es93_bad "93: 경로 있는 없음은 거부된다" \
+  "(e) enforcement_surface.judgment 가 확인됨인데 paths 가 비어 있습니다"
+es97_bad "97: 경로 있는 없음은 거부된다" \
   '{"judgment":"없음","classes":["지침파일"],"paths":[{"path":"CLAUDE.md","class":"지침파일","slice":"S1"}],"source":"의도","rationale":"x"}' \
-  "(d) enforcement_surface.judgment 가 없음인데 paths 가 비어 있지 않습니다"
-es93_bad "93: 객체가 아닌 판정 키는 거부된다" '"확인됨"' "(d) enforcement_surface 가 객체가 아닙니다"
+  "(e) enforcement_surface.judgment 가 없음인데 paths 가 비어 있지 않습니다"
+es97_bad "97: 객체가 아닌 판정 키는 거부된다" '"확인됨"' "(e) enforcement_surface 가 객체가 아닙니다"
 # 키 이전 계획 — `design_tier_judged` 가 없으면 검사기는 아무것도 단언하지 않는다.
 tier_check "$(printf '%s' "$TIER_PLAN_OLD" | jq -c '. + {enforcement_surface: {judgment: "아마"}}')"
-check "93: 키 이전 계획의 판정 키는 단언하지 않는다" "$TIER_RC/$TIER_OUT" "0/"
+check "97: 키 이전 계획의 판정 키는 단언하지 않는다" "$TIER_RC/$TIER_OUT" "0/"
 
 # ---------------------------------------------------------------------------
-# 94. 계획 행의 강제 표면은 세 작성 경로가 같은 분류기로 적는다
-# --- section: 94 | group: base | covers: plan, act, gate_from_declaration, plan_from_declaration, plan_via_planner, run_surface_stamp, gate_surface_stamp | anchors: 94: 게이트가 계획 행에 강제 표면을 분류해 적는다, 94: 드라이버의 plan_from_declaration 이 같은 값을 적는다, 94: 계획기 경로가 선언 파일에서 강제 표면을 적는다, 94: --from-declaration 의 호출자 강제 표면은 거부된다, 94: 일반 세그먼트 행의 호출자 강제 표면은 거부된다, 94: 분류기를 읽지 못하면 판정불가다 ---
+# 98. 계획 행의 강제 표면은 세 작성 경로가 같은 분류기로 적는다
+# --- section: 98 | group: base | covers: plan, act, gate_from_declaration, plan_from_declaration, plan_via_planner, run_surface_stamp, gate_surface_stamp | anchors: 98: 게이트가 계획 행에 강제 표면을 분류해 적는다, 98: 드라이버의 plan_from_declaration 이 같은 값을 적는다, 98: 계획기 경로가 선언 파일에서 강제 표면을 적는다, 98: --from-declaration 의 호출자 강제 표면은 거부된다, 98: 일반 세그먼트 행의 호출자 강제 표면은 거부된다, 98: 분류기를 읽지 못하면 판정불가다 ---
 #
 # 슬라이스의 선언 파일 중 런의 훅이 거부할 것이 있는지는 계획 행의 `강제 표면` 이
 # 말한다. 그 행을 쓰는 길은 셋 — 게이트의 `--from-declaration`, 드라이버의
@@ -47945,44 +47945,44 @@ check "93: 키 이전 계획의 판정 키는 단언하지 않는다" "$TIER_RC/
 # 그 분류기로 도장을 찍어 철자가 갈라지지 않아야 한다. 호출자가 넘긴 값은 두
 # 갈래 모두에서 거부되고, 분류기를 읽지 못하면 `없음` 이 아니라 `판정불가` 다.
 # ---------------------------------------------------------------------------
-DOC94='docs/fixture-design-94.md'
-two_slice_doc "$WT/$DOC94" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+DOC98='docs/fixture-design-98.md'
+two_slice_doc "$WT/$DOC98" t/infra 머지 '**리뷰 정책**: 리뷰없음'
 sed 's#^\*\*선언 파일\*\*: `SA.txt`$#**선언 파일**: `SA.txt`, `CLAUDE.md`, `plugins/x/orchestrator/rules/r.sh`#' \
-  "$WT/$DOC94" > "$WT/$DOC94.tmp" && mv "$WT/$DOC94.tmp" "$WT/$DOC94"
-check "94: 픽스처의 SA 가 강제 표면 둘을 선언한다 (아래가 공허하지 않다)" \
-  "$(grep -c 'CLAUDE.md`, `plugins/x/orchestrator/rules/r.sh' "$WT/$DOC94" || true)" "1"
-g15_run R94 "$DOC94" "$plan15c" 리뷰없음
-g15_mkwt R94 SA
-g15_mkwt R94 SB
-g15_plan act R94 SA 상태=계획됨 "워크트리=$(g15_wt R94 SA)" "강제 표면=없음"
+  "$WT/$DOC98" > "$WT/$DOC98.tmp" && mv "$WT/$DOC98.tmp" "$WT/$DOC98"
+check "98: 픽스처의 SA 가 강제 표면 둘을 선언한다 (아래가 공허하지 않다)" \
+  "$(grep -c 'CLAUDE.md`, `plugins/x/orchestrator/rules/r.sh' "$WT/$DOC98" || true)" "1"
+g15_run R98 "$DOC98" "$plan15c" 리뷰없음
+g15_mkwt R98 SA
+g15_mkwt R98 SB
+g15_plan act R98 SA 상태=계획됨 "워크트리=$(g15_wt R98 SA)" "강제 표면=없음"
 case "$rc/$msg" in
-  2/*"「강제 표면」 를 동결 문서에서 채웁니다"*) ok "94: --from-declaration 의 호출자 강제 표면은 거부된다" ;;
-  *) bad "94: --from-declaration 의 호출자 강제 표면은 거부된다" "rc=$rc $msg" ;;
+  2/*"「강제 표면」 를 동결 문서에서 채웁니다"*) ok "98: --from-declaration 의 호출자 강제 표면은 거부된다" ;;
+  *) bad "98: --from-declaration 의 호출자 강제 표면은 거부된다" "rc=$rc $msg" ;;
 esac
-check "94: 거부된 계획 행위는 segment 행을 쓰지 않는다" "$(g15_row R94 SA | grep -c . || true)" "0"
-g15_plan act R94 SA 상태=계획됨 "워크트리=$(g15_wt R94 SA)"
-check "94: 강제 표면을 선언한 슬라이스의 계획 행위가 받힌다" "$rc" "0"
-g15_plan act R94 SB 상태=계획됨 "워크트리=$(g15_wt R94 SB)"
-check "94: 둘째 슬라이스의 계획 행위가 받힌다" "$rc" "0"
-check "94: 게이트가 계획 행에 강제 표면을 분류해 적는다" \
-  "$(seg_field "$(g15_row R94 SA)" '강제 표면')/$(seg_field "$(g15_row R94 SB)" '강제 표면')" "2건 지침파일,규칙카탈로그/없음"
+check "98: 거부된 계획 행위는 segment 행을 쓰지 않는다" "$(g15_row R98 SA | grep -c . || true)" "0"
+g15_plan act R98 SA 상태=계획됨 "워크트리=$(g15_wt R98 SA)"
+check "98: 강제 표면을 선언한 슬라이스의 계획 행위가 받힌다" "$rc" "0"
+g15_plan act R98 SB 상태=계획됨 "워크트리=$(g15_wt R98 SB)"
+check "98: 둘째 슬라이스의 계획 행위가 받힌다" "$rc" "0"
+check "98: 게이트가 계획 행에 강제 표면을 분류해 적는다" \
+  "$(seg_field "$(g15_row R98 SA)" '강제 표면')/$(seg_field "$(g15_row R98 SB)" '강제 표면')" "2건 지침파일,규칙카탈로그/없음"
 
 # 일반 갈래 — 계획 뒤의 행도 호출자가 그 필드를 실을 수 없다. 빈 값도 같다.
-for v94 in '강제 표면=없음' '강제 표면='; do
-  gateL act --manifest "$WORK/plan-R94.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
-    --surface 읽기 --snapshot-digest "$(au15_H R94)" --rationale x -- 상태=실행중 "워크트리=$(g15_wt R94 SB)" 선행=SA "$v94"
+for v98 in '강제 표면=없음' '강제 표면='; do
+  gateL act --manifest "$WORK/plan-R98.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(au15_H R98)" --rationale x -- 상태=실행중 "워크트리=$(g15_wt R98 SB)" 선행=SA "$v98"
   case "$rc/$msg" in
-    2/*"「강제 표면」은 게이트가 동결 문서의 선언 파일을 분류해 적는 필드입니다"*) ok "94: 일반 세그먼트 행의 호출자 강제 표면은 거부된다 ($v94)" ;;
-    *) bad "94: 일반 세그먼트 행의 호출자 강제 표면은 거부된다 ($v94)" "rc=$rc $msg" ;;
+    2/*"「강제 표면」은 게이트가 동결 문서의 선언 파일을 분류해 적는 필드입니다"*) ok "98: 일반 세그먼트 행의 호출자 강제 표면은 거부된다 ($v98)" ;;
+    *) bad "98: 일반 세그먼트 행의 호출자 강제 표면은 거부된다 ($v98)" "rc=$rc $msg" ;;
   esac
 done
-check "94: 거부된 일반 행위는 SB 의 행을 더하지 않는다" "$(seg_field "$(g15_row R94 SB)" '상태')" "계획됨"
+check "98: 거부된 일반 행위는 SB 의 행을 더하지 않는다" "$(seg_field "$(g15_row R98 SB)" '상태')" "계획됨"
 
 # 드라이버의 두 경로. 15g 의 대조군처럼 새 프로세스에서 run.sh 를 소싱하고 기록자를
 # 출력기로 바꾼다. 계획기 경로는 판단 호출 대신 고정 계획을 돌려준다.
-d94="$WORK/d94"; mkdir -p "$d94"
-drv94() {  # drv94 <run.sh> <declaration|planner> <설계 문서> — 드라이버가 쓸 segment 행, 한 줄에 하나
-  bash -s "$1" "$2" "$3" "$d94" 2>"$d94/drv.err" <<'EOF'
+d98="$WORK/d98"; mkdir -p "$d98"
+drv98() {  # drv98 <run.sh> <declaration|planner> <설계 문서> — 드라이버가 쓸 segment 행, 한 줄에 하나
+  bash -s "$1" "$2" "$3" "$d98" 2>"$d98/drv.err" <<'EOF'
 CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null
 set +eu
 RUN_DIR=$(mktemp -d "$4/drv.XXXXXX")
@@ -48001,69 +48001,69 @@ case "$2" in
 esac
 EOF
 }
-drv94d=$(drv94 "$RUNSH" declaration "$WT/$DOC94")
-check "94: 드라이버 대조군이 두 행을 낸다 (아래가 공허하지 않다)" "$(printf '%s\n' "$drv94d" | grep -c '^id=' || true)" "2"
-check "94: 드라이버의 plan_from_declaration 이 같은 값을 적는다" \
-  "$(seg_field "$(printf '%s\n' "$drv94d" | grep '^id=SA|')" '강제 표면')/$(seg_field "$(printf '%s\n' "$drv94d" | grep '^id=SB|')" '강제 표면')" \
-  "$(seg_field "$(g15_row R94 SA)" '강제 표면')/$(seg_field "$(g15_row R94 SB)" '강제 표면')"
-drv94p=$(drv94 "$RUNSH" planner "$WT/$DOC94")
-check "94: 계획기 경로가 선언 파일에서 강제 표면을 적는다" \
-  "$(seg_field "$(printf '%s\n' "$drv94p" | grep '^id=P1|')" '강제 표면')/$(seg_field "$(printf '%s\n' "$drv94p" | grep '^id=P2|')" '강제 표면')" \
+drv98d=$(drv98 "$RUNSH" declaration "$WT/$DOC98")
+check "98: 드라이버 대조군이 두 행을 낸다 (아래가 공허하지 않다)" "$(printf '%s\n' "$drv98d" | grep -c '^id=' || true)" "2"
+check "98: 드라이버의 plan_from_declaration 이 같은 값을 적는다" \
+  "$(seg_field "$(printf '%s\n' "$drv98d" | grep '^id=SA|')" '강제 표면')/$(seg_field "$(printf '%s\n' "$drv98d" | grep '^id=SB|')" '강제 표면')" \
+  "$(seg_field "$(g15_row R98 SA)" '강제 표면')/$(seg_field "$(g15_row R98 SB)" '강제 표면')"
+drv98p=$(drv98 "$RUNSH" planner "$WT/$DOC98")
+check "98: 계획기 경로가 선언 파일에서 강제 표면을 적는다" \
+  "$(seg_field "$(printf '%s\n' "$drv98p" | grep '^id=P1|')" '강제 표면')/$(seg_field "$(printf '%s\n' "$drv98p" | grep '^id=P2|')" '강제 표면')" \
   "2건 프로젝트설정,지침파일/없음"
-[ "$(printf '%s\n' "$drv94p" | grep -c '^id=' || true)" = "2" ] || bad "94 계획기 경로 stderr" "$(tail -5 "$d94/drv.err" 2>/dev/null)"
+[ "$(printf '%s\n' "$drv98p" | grep -c '^id=' || true)" = "2" ] || bad "98 계획기 경로 stderr" "$(tail -5 "$d98/drv.err" 2>/dev/null)"
 
 # 분류기를 읽지 못하는 사본 — 오케스트레이터 디렉터리만 있고 옆의 hooks 가 없다.
-mkdir -p "$d94/nolib"
-cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$d94/nolib/orchestrator"
-drv94n=$(drv94 "$d94/nolib/orchestrator/run.sh" declaration "$WT/$DOC94")
-check "94: 분류기를 읽지 못하면 판정불가다 (드라이버)" \
-  "$(seg_field "$(printf '%s\n' "$drv94n" | grep '^id=SB|')" '강제 표면')" "판정불가"
+mkdir -p "$d98/nolib"
+cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$d98/nolib/orchestrator"
+drv98n=$(drv98 "$d98/nolib/orchestrator/run.sh" declaration "$WT/$DOC98")
+check "98: 분류기를 읽지 못하면 판정불가다 (드라이버)" \
+  "$(seg_field "$(printf '%s\n' "$drv98n" | grep '^id=SB|')" '강제 표면')" "판정불가"
 # 게이트 쪽은 사본을 새 프로세스로 소싱한다 — 소싱 시점의 `GATE_DIR` 이 그 사본을 가리킨다.
-gs94() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_surface_stamp "$@"' _ "$@" 2>/dev/null; }
-check "94: 분류기를 읽지 못하면 판정불가다 (게이트)" \
-  "$(gs94 "$d94/nolib/orchestrator/gate.sh" SB.txt)/$(gs94 "$GATE" SB.txt CLAUDE.md)" "판정불가/1건 지침파일"
+gs98() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_surface_stamp "$@"' _ "$@" 2>/dev/null; }
+check "98: 분류기를 읽지 못하면 판정불가다 (게이트)" \
+  "$(gs98 "$d98/nolib/orchestrator/gate.sh" SB.txt)/$(gs98 "$GATE" SB.txt CLAUDE.md)" "판정불가/1건 지침파일"
 
 # ---------------------------------------------------------------------------
-# 95. 탐지 도구와 게이트의 읽기 동사는 같은 것을 낸다
-# --- section: 95 | group: base | covers: surface-screen, enforcement-surface-screen | anchors: 95: 도구가 분류되는 경로만 분류와 함께 낸다, 95: 게이트 읽기 동사의 출력이 도구와 같다, 95: 읽기 동사는 원장 행을 쓰지 않는다, 95: 분류기가 없으면 도구와 동사가 모두 2 로 끝난다 ---
+# 99. 탐지 도구와 게이트의 읽기 동사는 같은 것을 낸다
+# --- section: 99 | group: base | covers: surface-screen, enforcement-surface-screen | anchors: 99: 도구가 분류되는 경로만 분류와 함께 낸다, 99: 게이트 읽기 동사의 출력이 도구와 같다, 99: 읽기 동사는 원장 행을 쓰지 않는다, 99: 분류기가 없으면 도구와 동사가 모두 2 로 끝난다 ---
 #
 # 런 안의 스테이지는 고정 사본의 스크립트를 띄울 수 없으므로 `gate.sh
 # surface-screen` 으로 같은 도구에 닿는다. 둘이 같은 인자에 같은 바이트를 내고,
 # 동사는 아무것도 행하지 않으므로 원장 행을 남기지 않으며, 분류기를 읽지 못하면
 # 둘 다 판정하지 않고 2 로 끝나는지를 본다.
 # ---------------------------------------------------------------------------
-ss95="$repo_root/plugins/cc-cmds/orchestrator/enforcement-surface-screen.sh"
-set95=(CLAUDE.md src/a.sh .claude/settings.json plugins/x/orchestrator/rules/r.sh docs/claude.md)
-out95=$(bash "$ss95" -- "${set95[@]}"); rc95=$?
-check "95: 도구가 분류되는 경로만 분류와 함께 낸다" "$rc95|$(printf '%s' "$out95" | tr '\t\n' ':;')" \
+ss99="$repo_root/plugins/cc-cmds/orchestrator/enforcement-surface-screen.sh"
+set99=(CLAUDE.md src/a.sh .claude/settings.json plugins/x/orchestrator/rules/r.sh docs/claude.md)
+out99=$(bash "$ss99" -- "${set99[@]}"); rc99=$?
+check "99: 도구가 분류되는 경로만 분류와 함께 낸다" "$rc99|$(printf '%s' "$out99" | tr '\t\n' ':;')" \
   "0|CLAUDE.md:지침파일;.claude/settings.json:프로젝트설정;plugins/x/orchestrator/rules/r.sh:규칙카탈로그"
-check "95: -z 는 표준 입력의 NUL 목록을 같은 규칙으로 읽는다" \
-  "$(printf 'CLAUDE.md\0src/a.sh\0' | bash "$ss95" -z | tr '\t\n' ':;')" "CLAUDE.md:지침파일;"
-check "95: --tokens 는 명령 줄의 토큰을 분류한다" \
-  "$(bash "$ss95" --tokens -- 'cp x CLAUDE.md' | tr '\t\n' ':;')" "CLAUDE.md:지침파일;"
-check "95: 모르는 옵션과 피연산자 붙은 -z 는 1 이다" \
-  "$(bash "$ss95" --bogus >/dev/null 2>&1; echo $?)/$(bash "$ss95" -z a >/dev/null 2>&1; echo $?)" "1/1"
+check "99: -z 는 표준 입력의 NUL 목록을 같은 규칙으로 읽는다" \
+  "$(printf 'CLAUDE.md\0src/a.sh\0' | bash "$ss99" -z | tr '\t\n' ':;')" "CLAUDE.md:지침파일;"
+check "99: --tokens 는 명령 줄의 토큰을 분류한다" \
+  "$(bash "$ss99" --tokens -- 'cp x CLAUDE.md' | tr '\t\n' ':;')" "CLAUDE.md:지침파일;"
+check "99: 모르는 옵션과 피연산자 붙은 -z 는 1 이다" \
+  "$(bash "$ss99" --bogus >/dev/null 2>&1; echo $?)/$(bash "$ss99" -z a >/dev/null 2>&1; echo $?)" "1/1"
 # 원장은 픽스처 매니페스트의 런 id 를 따라 정해지므로 런 원장 전체의 줄 수를 잰다.
-l95() { cat "$WT"/docs/pipeline-run/*.md 2>/dev/null | grep -c . || true; }
+l99() { cat "$WT"/docs/pipeline-run/*.md 2>/dev/null | grep -c . || true; }
 # 그 상태 홈의 첫 호출이 런을 여는 행을 쓸 수 있으므로 스냅숏을 먼저 한 번 부른다.
 ( HL ) >/dev/null 2>&1 || true
-l95_before=$(l95)
-gateL surface-screen --manifest "$FX_MANIFEST" -- "${set95[@]}"
-check "95: 게이트 읽기 동사의 출력이 도구와 같다" "$rc|$msg" "0|$(printf '%s' "$out95" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+l99_before=$(l99)
+gateL surface-screen --manifest "$FX_MANIFEST" -- "${set99[@]}"
+check "99: 게이트 읽기 동사의 출력이 도구와 같다" "$rc|$msg" "0|$(printf '%s' "$out99" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 gateL surface-screen --manifest "$FX_MANIFEST" --list
-check "95: --list 도 도구와 같다" "$rc|$msg" "0|$(bash "$ss95" --list | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-check "95: 읽기 동사는 원장 행을 쓰지 않는다" "$(l95)" "$l95_before"
+check "99: --list 도 도구와 같다" "$rc|$msg" "0|$(bash "$ss99" --list | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+check "99: 읽기 동사는 원장 행을 쓰지 않는다" "$(l99)" "$l99_before"
 gateL snapshot --manifest "$FX_MANIFEST" --list
-check "95: --list 는 다른 동사에서 거부된다" "$rc" "2"
+check "99: --list 는 다른 동사에서 거부된다" "$rc" "2"
 # 오케스트레이터 디렉터리 전체의 사본이되 옆에 hooks 가 없다 — 동사가 도구에
 # 닿기 전의 길은 그대로이고 분류기만 없다.
-mkdir -p "$WORK/d95"
-cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$WORK/d95/orchestrator"
-nl95=$(bash "$WORK/d95/orchestrator/enforcement-surface-screen.sh" -- CLAUDE.md 2>/dev/null; echo "rc=$?")
+mkdir -p "$WORK/d99"
+cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$WORK/d99/orchestrator"
+nl99=$(bash "$WORK/d99/orchestrator/enforcement-surface-screen.sh" -- CLAUDE.md 2>/dev/null; echo "rc=$?")
 # 동사는 사본 게이트를 새 프로세스로 띄운다 — 시험 셸 안의 게이트는 소싱 때의 디렉터리를 쓴다.
-( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$WORK/d95/orchestrator/gate.sh" surface-screen \
-    --manifest "$FX_MANIFEST" -- CLAUDE.md >/dev/null 2>&1; printf 'rc=%s\n' "$?" ) > "$WORK/d95/verb.out"
-check "95: 분류기가 없으면 도구와 동사가 모두 2 로 끝난다" "$nl95/$(cat "$WORK/d95/verb.out")" "rc=2/rc=2"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$WORK/d99/orchestrator/gate.sh" surface-screen \
+    --manifest "$FX_MANIFEST" -- CLAUDE.md >/dev/null 2>&1; printf 'rc=%s\n' "$?" ) > "$WORK/d99/verb.out"
+check "99: 분류기가 없으면 도구와 동사가 모두 2 로 끝난다" "$nl99/$(cat "$WORK/d99/verb.out")" "rc=2/rc=2"
 
 # ---------------------------------------------------------------------------
 # 92. 리뷰 사이클의 원인 기록 — 정본 리포트, 파견 계기, cycle 행의 원인 필드, report-check
