@@ -5,6 +5,31 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.105.0] - 2026-10-22
+
+팀원은 이제 라운드·페이즈 키가 바뀔 때마다 새로 띄운다. 디스패치 하나는 `(역할, round/phase)` 하나를 위한 것이고, 같은 키 안의 재요청(되돌려 보내기 `P-rev<k>`, Case 1·Case 3 재배정, 증인 재촉, 리뷰 Step 5 명확화 질의)만 같은 `agentId` 를 재개한다. 새로 뜬 팀원은 역할 지시서 파일과 자기 지난 증인, 동료 증인을 경로로 받아 다시 읽는다. 지표 수집기는 팀원 전사를 디스패치 구간으로 나눠 재고, 아무것도 쓰지 않는 기준선 모드를 갖는다.
+
+### Added
+
+- **재진입 메모(선택 매개변수)** — 참여 스킬(design, design-discuss-unattended, design-lite, design-analyze, review, review-unattended, review-lite)의 팀원이 증인의 `peer-read:` 줄 바로 위에 `## Re-entry notes` 절(20줄·2,000바이트 이내, `경로:줄 — 왜` 또는 다시 돌릴 명령 한 줄)을 둔다. 다음 디스패치가 재탐색의 출발점으로 읽는다.
+- **역할 지시서 파일** — 라운드 1 디스패치 때 `${scratchDir}/prompt/{role-slug}.md` 에 한 번 쓰고, 경계 디스패치마다 경로로 넘긴다.
+- **런별 팀원 기록 `metrics/<run-id>.members.json`** — 서브에이전트 전사 파일마다 사용자 메시지의 첫 `cc-witness:` 줄로 구간을 자르고, 구간마다 요청 수, 요청당 컨텍스트 평균·최대, 출력 토큰, 캐시 읽기·쓰기·입력 합, 첫 요청 캐시 생성, 같은 키 재개 구간의 300초 공백 뒤 캐시 다시 쓰기, 재탐색 턴을 싣는다. 런 품질로 세그먼트별 첫 리뷰 회차의 P0·P1 과 감사 공시의 `고유`·`골격급` 을 싣는다.
+- **요약 키 `members`** — `<종류>|<수명주기>|<라운드 부류>` 층과 (종류, 수명주기)별 요청당 평균 컨텍스트.
+- **수집기 `--member-baseline`** — 끝난 런 전부의 팀원 집계를 표준 출력으로만 낸다. 런별 기록·요약·`.pending` 표지·저널을 쓰지 않고, 포함 런 수와 사유별 제외 런 수를 함께 낸다. 서브에이전트 파일은 (종류, 설계 스킬)마다 구간을 낸 파일과 내지 않은 파일로 나눠 세고, 각각에서 증인을 게시한 파일(`mv -n` 을 담은 `Bash` 요청이 있는 파일) 수를 함께 낸다.
+- **린트 픽스처** — 새 디스패치 종류 절의 고정 문구 누락, 재진입 메모 매개변수의 온전한 첨부와 첨부 누락.
+
+### Changed
+
+- **공용 팀 계약** — `## Multi-round (dispatch + context re-injection)`, `### Dispatch latency`, `### Dispatch kinds and witness keys` 로 바뀌었다. 라운드 진행·수렴은 새 디스패치, 라운드 안 되돌려 보내기·재촉은 재개다. 자가 치유는 「P 를 위한 새 디스패치」이고, 경계 디스패치 뒤 원장 행의 `agentId`·`outputFile`·`round/phase`·`state` 를 한 번에 바꾸고 `stallMark` 를 초기화한다. 원장 열 구성은 그대로다.
+- **스킬 문면** — design 의 교차 검토·보강·수렴·충실도·정합 패스, design-lite·design-analyze·review·review-unattended·review-lite 의 라운드 운영, 두 감사 스킬의 예외 문장, 리뷰 참고 파일·복구 갈래·라우터 사본의 라운드 경계 서술을 새 수명주기로 옮겼다.
+- **예산 고정 린트** — 새 절 제목과 고정 문구를 읽고, 재진입 메모 매개변수가 있으면 참여 스킬마다 첨부 문면이 정확히 한 번 실렸는지 본다.
+- **리드 읽기 집합 상한** — design-discuss-unattended 168000 바이트, design-audit-unattended 149000 바이트.
+- **수집기의 전수 재계산** — `metrics/*.members.json` 을 런 기록에서 빼므로 요약의 층과 트리거 T1~T7 의 입력은 바뀌지 않는다.
+
+### Why
+
+팀원을 라운드마다 재개하면 앞 라운드의 탐색 기록이 컨텍스트에 계속 쌓여 요청당 컨텍스트가 커진다. 증인이 이미 라운드의 결과를 디스크에 남기므로, 새로 띄운 팀원이 그 증인과 짧은 메모를 다시 읽는 편이 싸다. 이 주장은 운영 런에서 재야 하므로, 수집기가 팀원 구간을 재고 전환 전 기준선을 쓰기 없이 낼 수 있어야 한다.
+
 ## [2.104.0] - 2026-10-22
 
 무거운 티어(`team-4`)의 단일 설계를 이제 리드 혼자 쓰고 감사가 받친다. 진입 판정에 설계 경로 키 `design_path` 가 생겼고, 기본값 `solo-audit` 는 리드 단독 설계 스킬로 쓴 뒤 감사를 그대로 돈다. 토론 팀이 쓰는 `discuss-audit` 는 킥오프에서 고를 때만 탄다. 감사가 끝날 때마다 원장에 `감사 공시` 행이 남아, 두 경로를 같은 감사 판끼리 견줄 수 있다.
