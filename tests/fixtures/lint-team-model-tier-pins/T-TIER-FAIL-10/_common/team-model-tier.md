@@ -14,4 +14,4 @@
 | `conformance` | conformance to a design document | sonnet |
 | `quality` | code quality, style | sonnet |
 | `portability` | shell and platform portability | sonnet |
-| `audit-reader` | every design-audit reader | opus |
+| `audit-reader` | every design-audit reader | sonnet |
