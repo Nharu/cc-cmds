@@ -41203,6 +41203,12 @@ check "95b: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다"
   "$(lsr95b_frame im2 'CI 수정' "$lsr95b_p")" 19
 check "95b: 다음 이 CI 수정 이어도 문서가 다른 구현 운반은 exit 3 이다" \
   "$(lsr95b_frame im2 'CI 수정' "/cc-cmds:implement-unattended /other/doc.md $(lsr95b_q '세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh')")" 3
+# 릴리스 메타 해소는 게이트의 번호 매김 병합으로 브랜치를 옮긴 뒤 멈추면 다음 이 다시
+# 표의 머지 로 읽힌다. 마지막 cycle 행 뒤의 충돌 판정 행이 그 시도를 지시 줄 파견으로 가린다.
+lsr95b_ln=$(lsr95b_fx im3 implement-unattended 'Step 0 베이스 해소 — 질문' implement 2 0)
+lsr93_in "$lsr_root/im3/ledger.md" gate_append '베이스 판정' '세그먼트=S3' '판정=충돌' '충돌 파일=a.txt' '부류=릴리스 메타' >/dev/null 2>&1
+check "95b: 다음 이 머지 로 돌아와도 마지막 cycle 뒤 충돌 판정이 있으면 구현 틀 운반은 exit 19 다" \
+  "$(lsr95b_frame im3 머지 "$lsr95b_p")" 19
 
 # 설계 토론·리드 단독 — 의도 칸은 매니페스트 의 의도 블록 첫 줄이다.
 lsr95b_ln=$(lsr95b_fx dd0 design-discuss-unattended 'Step 4 토론 — 질문' design)

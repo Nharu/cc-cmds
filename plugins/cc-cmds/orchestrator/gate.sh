@@ -19324,8 +19324,11 @@ gate_carry_ledger_frame() {
   # key's `다음` differs from the review table's own value, the halted attempt
   # was a base resolution or a CI fix, or a stop that followed one — dispatched
   # with a `베이스 해소: <sha>` or `CI 수정: <sha>` line this frame cannot hold.
-  # A prompt that matches the frame and the document re-attaches instead of
-  # starting a session in the ordinary mode.
+  # A `베이스 판정 판정=충돌` or `CI 처분 처분=수정` row after the key's last
+  # `cycle` row says the same while `다음` reads the table's value again — a
+  # `릴리스 메타` resolution whose renumbering merge the gate proves halted
+  # after the helper moved the branch. A prompt that matches the frame and the
+  # document re-attaches instead of starting a session in the ordinary mode.
   local frame="$1" doc="$2" key="$3" prompt="$4" cr='' v want bare full opt pat p expect nx dirv=''
   GATE_CARRY_BUILT=''
   case "$frame" in
@@ -19340,6 +19343,11 @@ gate_carry_ledger_frame() {
     *'<리포트>'*)
       nx=$(gate_segment_review_next "$key")
       [ "$nx" = "$(gate_segment_review_next_table "$key")" ] || dirv=$nx
+      if [ -z "$dirv" ] && [ -n "$cr" ] && { gate_ci_fix_after_last_cycle "$key" \
+           || [ -n "$(gate_ledger_rows_after "$cr" | { grep -E '^- `베이스 판정`' || true; } \
+                 | gate_rows_field_eq '세그먼트' "$key" | gate_rows_field_eq '판정' '충돌')" ]; }; then
+        dirv=$nx
+      fi
       [ "$nx" != 수정 ] || want=$full ;;
   esac
   want=$(gate_fill_slot "$want" '<세그먼트>' "$key")
@@ -19368,7 +19376,7 @@ gate_carry_ledger_frame() {
     case "$prompt" in
       $pat)
         if [ -n "$dirv" ]; then
-          warn "$key 의 다음 처분이 「${dirv}」 라 멈춘 시도는 베이스 해소나 CI 수정 지시 줄로 파견된 구현입니다 — 그 줄은 이 틀에 없으니 멈춘 세션을 --resume 으로 재부착하세요"
+          warn "$key 의 멈춘 시도는 베이스 해소나 CI 수정 지시 줄로 파견된 구현입니다 (다음=${dirv}) — 그 줄은 이 틀에 없으니 멈춘 세션을 --resume 으로 재부착하세요"
         else
           warn "운반 act 의 원장 값 칸이 게이트가 지은 값과 다릅니다 — 「${expect}」 — 멈춘 세션을 --resume 으로 재부착하세요"
         fi
