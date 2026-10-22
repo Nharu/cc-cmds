@@ -110,7 +110,7 @@ run --run-root
 check "0: 값 없는 --run-root 는 exit 2 다" "$rc" "2"
 run --run-root "$WORK/없음" --seat-root "$WORK/없음" --audit-dir "$AD"
 check "0: 말뭉치가 없으면 exit 0 이다" "$rc" "0"
-check "0: 말뭉치가 없어도 머리 줄은 낸다" "$(printf '%s\n' "$OUT" | head -1 | cut -f1-3)" "$(printf '출처\t말뭉치\t슬러그')"
+check "0: 말뭉치가 없어도 머리 줄은 낸다" "$(printf '%s\n' "$OUT" | sed -n '1p' | cut -f1-3)" "$(printf '출처\t말뭉치\t슬러그')"
 check "0: 말뭉치가 없으면 행이 없다" "$(rows)" "0"
 
 # --- 1. the fixture set -------------------------------------------------------------
