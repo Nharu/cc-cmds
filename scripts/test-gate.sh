@@ -30734,6 +30734,18 @@ cap_gate "$SAP_SEAT" '' seat-apply-preview --manifest "$CAP_NM" --record "$SAP_O
 SAP_PV="$WORK/sap-preview.txt"; cp "$CAP_OUT" "$SAP_PV"
 check "34s: 미리보기가 통과한다" "$rc" "0"
 check "34s: 미리보기의 질문 줄이 게이트의 고정 문면이다" "$(sed -n 's/^질문 줄: //p' "$SAP_PV")" "$(sap_q "$SAP_OK" "$SAP_RULE" 1)"
+# The fixture manifest declares two targets (front, infra), so the preview a
+# seat runs without `--target` is the call's own mistake, exit 2 with the flag
+# named — the reason the seat's reference spells `--target <alias>`.
+cap_gate "$SAP_SEAT" '' seat-apply-preview --manifest "$CAP_NM" --record "$SAP_OK"
+check "34s: 대상이 둘인 매니페스트에서 --target 없는 미리보기는 2 이고 질문 줄을 내지 않는다" \
+  "$rc/$( { grep -c '^질문 줄: ' "$CAP_OUT" || true; } | tr -d ' ')" "2/0"
+case "$msg" in
+  *'needs --target'*) ok "34s: 그 거절이 --target 을 이름으로 댄다" ;;
+  *) bad "34s: 그 거절이 --target 을 이름으로 댄다" "$msg" ;;
+esac
+check "34s: 좌석 문면의 미리보기 호출이 --target 을 싣는다" \
+  "$(grep -c 'seat-apply-preview --manifest <path> --record <record path> --target <alias>' "$repo_root/plugins/cc-cmds/skills/autopilot/references/act2-seat.md")" "1"
 check "34s: 미리보기는 행도 커밋도 공통 객체도 남기지 않는다" \
   "$(sap_rows)/$(sap_head)/$( (cd "$SAP_WT" && git cat-file -e "$SAP_NEWBLOB") 2>/dev/null && printf 'present' || printf 'absent')" \
   "$sap_n0/$sap_h0/absent"
