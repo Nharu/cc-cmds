@@ -348,6 +348,7 @@ LINT_TESTS := \
 	tests/fixtures/lint-gate-banner-fields/run.sh \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
+	scripts/test-measure-discussion-passes.sh \
 	scripts/test-solo-audit-experiment.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
