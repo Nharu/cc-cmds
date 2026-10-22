@@ -2,30 +2,55 @@
 # Check the committed tree once before push, and stamp it when it passes.
 #
 # WHAT IS CHECKED IS THE COMMIT, NOT THE WORKING TREE. `run` clones the
-# repository's own object store into a temporary directory, checks the HEAD
-# commit out detached there and runs the repository-wide local checks in that
-# copy: `make lint`, `make readme` followed by a README freshness diff, and
-# `make check-cheap`. An uncommitted edit in the working tree is neither checked
-# nor pushed, so it can neither rescue nor sink the result; `run` only warns
-# about it.
+# repository's own object store into a temporary directory (scripts/test-tree.sh
+# does the cloning and the tree building), checks a commit out detached there
+# and runs the repository-wide local checks in that copy: `make lint`, `make
+# readme` followed by a README freshness diff, and `make check-cheap`, then the
+# sections and goals it was given. An uncommitted edit in the working tree is
+# neither checked nor pushed, so it can neither rescue nor sink the result;
+# `run` only warns about it.
+#
+# WHICH COMMIT. CI tests the merge of the head into the base branch, not the
+# head. In an unattended run (CC_PIPELINE_RUN_ID set) `run` therefore tests that
+# merge, with the base read from the FETCH_HEAD a fetch in this worktree wrote
+# in the last ten minutes; CHECK_PUSH_BASE names the base instead. Otherwise it
+# tests the head, as it always did, and records `합침=안함`.
 #
 # THE STAMP IS KEYED ON THE TREE, NOT THE COMMIT. A commit that only rewrites
-# the message (an amend, a rebase that changes nothing) keeps the tree, and the
-# same tree has already passed. A commit that changes any file has a new tree
-# and no stamp. Stamps live under the common git directory, so every worktree of
-# the repository sees the same ones, and nothing is committed.
+# the message keeps the tree, and the same tree has already passed. Stamps live
+# under the common git directory, so every worktree of the repository sees the
+# same ones, and nothing is committed. A merged run deletes the stamp of its key
+# before it starts, so a tree that passed on an older base and fails on the new
+# one is left with none. A head run never replaces a merged stamp.
 #
 # Usage:
-#   bash scripts/check-push.sh run         check HEAD in a clean clone, stamp on pass
+#   bash scripts/check-push.sh run         check in a clean clone, stamp on pass
 #   bash scripts/check-push.sh verify      0 when HEAD's tree carries a stamp
 #   bash scripts/check-push.sh --self-test
 #
-#   CC_CHECK_PUSH_MAKE   the make to run in the clone (default: make); the
-#                        self-test swaps in doubles through it
+#   CHECK_PUSH_BASE         base commit to merge with (interactive use; an
+#                           unattended verify refuses the stamp it leaves)
+#   CHECK_PUSH_BASE_BRANCH  branch whose FETCH_HEAD line is the base (default
+#                           master)
+#   CHECK_PUSH_SECTIONS     test-gate section ids to run, comma-separated
+#   CHECK_PUSH_GOALS        REST goals to run (`make -s print-rest-goals`),
+#                           comma-separated
+#   CC_CHECK_PUSH_MAKE      the make for lint, readme and check-cheap (default
+#                           make); the self-test swaps in doubles through it,
+#                           as it does through CC_TEST_TREE_GATE,
+#                           CC_TEST_TREE_MAKE and CC_TEST_TREE_GH
 #
-# Exit codes: 0 passed / stamped, 1 a check failed or no stamp, 2 usage.
+# Exit codes: 0 passed / stamped, 1 a check failed or no stamp, 2 usage or a
+# base that is not a commit, 4 no fresh base in FETCH_HEAD.
 
 set -uo pipefail
+
+# shellcheck source=scripts/test-tree.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-tree.sh"
+TT_PREFIX="check-push"
+TT_SECVAR="CHECK_PUSH_SECTIONS"
+TT_GOALVAR="CHECK_PUSH_GOALS"
+CP_TMP_STAMP=""
 
 check_push_usage() {
   printf 'check-push: 사용법 — run / verify / --self-test 중 하나\n' >&2
@@ -39,9 +64,63 @@ check_push_common_dir() {
   (cd "$d" && pwd)
 }
 
+# The field <name> of a stamp file, or nothing.
+check_push_field() {
+  local line
+  while IFS= read -r line; do
+    case "$line" in "$2="*) printf '%s' "${line#"$2="}"; return 0 ;; esac
+  done < "$1"
+  return 0
+}
+
+# The command that runs only the failed step on the head, in the worktree.
+check_push_rerun_line() {
+  local what
+  case "$1" in
+    절=*) what="bash scripts/test-gate.sh --sections ${1#절=}" ;;
+    목표=*) what="make --no-print-directory $(printf '%s' "${1#목표=}" | tr ',' ' ')" ;;
+    readme) what="make readme && git diff --exit-code -- README.md" ;;
+    *) what="make $1" ;;
+  esac
+  printf 'check-push: head 만 다시 돌리기 (워크트리에서) — %s%s\n' "$what" "${2:+ $2}"
+}
+
+# The head rerun line after a merged failure. An item step keeps only what the
+# head's own lists name: an id only the base has would send the head's
+# test-gate into a full run.
+check_push_merged_rerun_line() {
+  local stage="$1" commit="$2" rc secs="" goals=""
+  case "$stage" in
+    절=*) secs="${stage#절=}" ;;
+    목표=*) goals="${stage#목표=}" ;;
+    *) check_push_rerun_line "$stage"; return 0 ;;
+  esac
+  if ! tt_checkout "$commit"; then
+    printf 'check-push: head 만 다시 돌리기 — head 를 꺼낼 수 없어 항목 명령을 찍지 않는다\n'
+    return 0
+  fi
+  tt_head_filter "$secs" "$goals"
+  rc=$?
+  if [ "$rc" = 1 ]; then
+    printf 'check-push: head 만 다시 돌리기 — head 트리에서 항목을 나열할 수 없어 항목 명령을 찍지 않는다\n'
+    return 0
+  fi
+  if [ "$rc" = 6 ]; then
+    printf 'check-push: head 만 다시 돌리기 — head 에 남는 항목이 없어 항목 명령을 찍지 않는다 (헤드에 없는 항목=%s)\n' "$(tt_or_none "$TT_DROPPED")"
+    return 0
+  fi
+  if [ -n "$secs" ]; then
+    check_push_rerun_line "절=$TT_KEEP_SECTIONS" "헤드에 없는 항목=$(tt_or_none "$TT_DROPPED")"
+  else
+    check_push_rerun_line "목표=$TT_KEEP_GOALS" "헤드에 없는 항목=$(tt_or_none "$TT_DROPPED")"
+  fi
+}
+
 check_push_run() {
-  local make_bin commit tree gdir work stamp_dir tmp_stamp
+  local make_bin commit tree gdir stamp_dir stamp mode src base="" fetch="없음" secs goals added="없음" doubles rc stage="" step old
   make_bin="${CC_CHECK_PUSH_MAKE:-make}"
+  secs="${CHECK_PUSH_SECTIONS:-}"
+  goals="${CHECK_PUSH_GOALS:-}"
   commit=$(git rev-parse --verify --quiet HEAD) || {
     printf 'check-push: HEAD 커밋을 읽지 못했다 — git 저장소 안에서 커밋 뒤에 돌린다\n' >&2
     return 1
@@ -54,43 +133,142 @@ check_push_run() {
     printf 'check-push: 공통 git 디렉터리를 읽지 못했다\n' >&2
     return 1
   }
+  stamp_dir="$gdir/cc-cmds-check-push"
+  stamp="$stamp_dir/$tree"
   if ! git diff --quiet HEAD -- 2>/dev/null; then
     printf 'check-push: 경고 — 작업 트리에 커밋되지 않은 추적 변경이 있다. 그 변경은 검사되지도 push 되지도 않는다\n' >&2
   fi
 
-  work=$(mktemp -d "${TMPDIR:-/tmp}/cc-check-push.XXXXXX") || return 1
-  # shellcheck disable=SC2064
-  trap "rm -rf '$work'" EXIT
-  if ! git clone --quiet --shared --no-checkout "$gdir" "$work/tree"; then
-    printf 'check-push: 임시 복제에 실패했다\n' >&2
-    return 1
-  fi
-  if ! (cd "$work/tree" && git checkout --quiet --detach "$commit"); then
-    printf 'check-push: 커밋 %s 을 임시 복제본에 꺼내지 못했다\n' "$commit" >&2
-    return 1
+  if [ -n "${CHECK_PUSH_BASE:-}" ]; then
+    mode="merge"
+    src="지정"
+  elif [ -n "${CC_PIPELINE_RUN_ID:-}" ]; then
+    mode="merge"
+    src="FETCH_HEAD"
+  else
+    mode="head"
+    src="없음"
   fi
 
-  if ! (
-    cd "$work/tree" || exit 1
-    "$make_bin" lint || { printf 'check-push: 실패 — make lint\n' >&2; exit 1; }
-    "$make_bin" readme || { printf 'check-push: 실패 — make readme\n' >&2; exit 1; }
-    git diff --exit-code -- README.md || { printf 'check-push: 실패 — README.md 가 생성 결과와 다르다 (make readme 뒤 커밋한다)\n' >&2; exit 1; }
-    "$make_bin" check-cheap || { printf 'check-push: 실패 — make check-cheap\n' >&2; exit 1; }
-  ); then
+  if [ "$mode" = "merge" ]; then
+    # Whatever this run ends in, an older base's pass no longer speaks for it.
+    rm -f "$stamp"
+    if [ "$src" = "지정" ]; then
+      base=$(git rev-parse --verify --quiet "${CHECK_PUSH_BASE}^{commit}") || {
+        printf 'check-push: CHECK_PUSH_BASE=%s 는 커밋으로 풀리지 않는다\n' "$(printf %q "$CHECK_PUSH_BASE")" >&2
+        return 2
+      }
+    else
+      tt_base_from_fetch_head "${CHECK_PUSH_BASE_BRANCH:-master}"
+      rc=$?
+      [ "$rc" = 0 ] || return "$rc"
+      base="$TT_BASE"
+      fetch="$TT_FETCH"
+    fi
+  fi
+
+  trap 'tt_cleanup; [ -z "$CP_TMP_STAMP" ] || rm -f "$CP_TMP_STAMP"' EXIT
+  tt_clone || return 1
+  if [ "$mode" = "merge" ]; then
+    tt_build "$base" "$commit"
+    rc=$?
+    if [ "$rc" = 4 ]; then
+      printf 'check-push: 객체 없음 — %s 가 이 저장소에 없다. git fetch --no-tags --refmap= origin refs/heads/%s (게이트 --surface 읽기 --reach 협업) 뒤 다시 돌린다\n' "$TT_MISSING_OBJ" "${CHECK_PUSH_BASE_BRANCH:-master}" >&2
+      return 4
+    fi
+    [ "$rc" = 0 ] || { printf 'check-push: 시험할 트리를 만들지 못했다\n' >&2; return 1; }
+    tt_base_added_ids "$base" "$commit"
+    added="$TT_ADDED"
+  else
+    tt_checkout "$commit" || { printf 'check-push: 커밋 %s 을 임시 복제본에 꺼내지 못했다\n' "$commit" >&2; return 1; }
+    TT_OUTCOME="안함"
+    TT_TREE="$tree"
+    TT_CONFLICTS=""
+  fi
+  doubles=$(tt_doubles)
+
+  printf 'check-push: 시험 트리 — 합침=%s base=%s base출처=%s head=%s tree=%s 절=%s 목표=%s 절+베이스=%s fetch=%s 대역=%s\n' \
+    "$TT_OUTCOME" "$(tt_or_none "$base")" "$src" "$commit" "$TT_TREE" "$(tt_or_none "$secs")" "$(tt_or_none "$goals")" "$added" "$fetch" "$doubles"
+  if [ "$TT_OUTCOME" = "충돌" ]; then
+    printf 'check-push: 합침=충돌 %s — 합친 트리는 시험하지 않았다, CI 런 없음\n' "$(tt_or_none "$TT_CONFLICTS")"
+  fi
+
+  tt_check_items "$secs" "$goals"
+  rc=$?
+  if [ "$rc" != 0 ]; then
+    printf '%s\n' "$TT_HINT" >&2
+    return "$rc"
+  fi
+
+  for step in lint readme check-cheap; do
+    if ! (cd "$TT_WORK" && "$make_bin" "$step"); then
+      stage="$step"
+      break
+    fi
+    if [ "$step" = readme ] && ! tt_git diff --exit-code -- README.md; then
+      printf 'check-push: README.md 가 생성 결과와 다르다 (make readme 뒤 커밋한다)\n' >&2
+      stage="readme"
+      break
+    fi
+  done
+  if [ -z "$stage" ] && ! tt_run_items "$TT_SECTIONS" "$TT_GOALS"; then
+    stage="$TT_FAILED"
+  fi
+
+  if [ -n "$stage" ]; then
+    case "$TT_OUTCOME" in
+      합침|조상)
+        printf 'check-push: 합친 트리 실패 — base=%s 단계=%s\n' "$base" "$stage" >&2
+        check_push_merged_rerun_line "$stage" "$commit" >&2
+        case "$stage" in
+          절=*|목표=*)
+            printf 'check-push: 원인 판정 (게이트 --surface 트리밖쓰기 --reach 런로컬) — bash scripts/test-tree.sh repro --base %s --head %s --expect %s%s%s\n' \
+              "$base" "$commit" "$TT_TREE" "${TT_SECTIONS:+ --sections $TT_SECTIONS}" "${TT_GOALS:+ --goals $TT_GOALS}" >&2
+            ;;
+        esac
+        tt_base_status_line "check-push" "$base" >&2
+        ;;
+      *)
+        printf 'check-push: 실패 — 단계=%s\n' "$stage" >&2
+        check_push_rerun_line "$stage" >&2
+        ;;
+    esac
     printf 'check-push: 커밋 %s 검사 실패 — 도장을 찍지 않는다\n' "$commit" >&2
     return 1
   fi
 
-  stamp_dir="$gdir/cc-cmds-check-push"
+  if [ "$mode" = "head" ] && [ -f "$stamp" ]; then
+    old=$(check_push_field "$stamp" "합침")
+    if [ -n "$old" ] && [ "$old" != "안함" ]; then
+      printf 'check-push: 통과 — 트리 %s 에는 합친 트리 도장(합침=%s)이 이미 있어 head 모드 도장으로 바꾸지 않는다\n' "$tree" "$old"
+      return 0
+    fi
+  fi
   mkdir -p "$stamp_dir" || return 1
-  tmp_stamp=$(mktemp "$stamp_dir/.stamp.XXXXXX") || return 1
-  printf 'commit=%s\nat=%s\n' "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp_stamp" || return 1
-  mv -f "$tmp_stamp" "$stamp_dir/$tree" || return 1
+  CP_TMP_STAMP=$(mktemp "$stamp_dir/.stamp.XXXXXX") || return 1
+  {
+    printf 'v=2\n'
+    printf 'commit=%s\n' "$commit"
+    printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'bash=%s\n' "$BASH_VERSION"
+    printf '합침=%s\n' "$TT_OUTCOME"
+    printf 'base=%s\n' "$(tt_or_none "$base")"
+    printf 'base출처=%s\n' "$src"
+    printf 'fetch=%s\n' "$fetch"
+    printf 'tested_tree=%s\n' "$TT_TREE"
+    printf 'sections=%s\n' "$(tt_or_none "$TT_SECTIONS")"
+    printf 'goals=%s\n' "$(tt_or_none "$TT_GOALS")"
+    printf '절+베이스=%s\n' "$added"
+    printf '충돌경로=%s\n' "$(tt_or_none "$TT_CONFLICTS")"
+    printf '대역=%s\n' "$doubles"
+  } > "$CP_TMP_STAMP" || return 1
+  mv -f "$CP_TMP_STAMP" "$stamp" || return 1
+  CP_TMP_STAMP=""
   printf 'check-push: 통과 — 커밋 %s (트리 %s) 에 도장을 찍었다\n' "$commit" "$tree"
 }
 
 check_push_verify() {
-  local tree gdir stamp
+  local tree gdir stamp v f
   tree=$(git rev-parse --verify --quiet 'HEAD^{tree}') || {
     printf 'check-push: HEAD 트리를 읽지 못했다\n' >&2
     return 1
@@ -100,73 +278,326 @@ check_push_verify() {
     return 1
   }
   stamp="$gdir/cc-cmds-check-push/$tree"
-  if [ -f "$stamp" ]; then
+  if [ ! -f "$stamp" ]; then
+    printf 'check-push: 현재 HEAD 트리 %s 의 도장이 없다 — make check-push 를 먼저 돌린다\n' "$tree" >&2
+    return 1
+  fi
+  v=$(check_push_field "$stamp" v)
+  if [ "$v" != 2 ]; then
+    if [ -n "${CC_PIPELINE_RUN_ID:-}" ]; then
+      printf 'check-push: 무인 런은 v1 도장을 받지 않는다 — 트리 %s 는 합친 트리를 시험한 기록이 없다\n' "$tree" >&2
+      return 1
+    fi
     printf 'check-push: 도장 있음 — 트리 %s\n' "$tree"
+    printf 'check-push: 기록 없음(v1 도장)\n'
     return 0
   fi
-  printf 'check-push: 현재 HEAD 트리 %s 의 도장이 없다 — make check-push 를 먼저 돌린다\n' "$tree" >&2
-  return 1
+  printf 'check-push: 도장 있음 — 트리 %s\n' "$tree"
+  printf 'check-push: 시험 트리 — 합침=%s base=%s base출처=%s head=%s tree=%s 절=%s 목표=%s 절+베이스=%s fetch=%s 대역=%s\n' \
+    "$(check_push_field "$stamp" 합침)" "$(check_push_field "$stamp" base)" "$(check_push_field "$stamp" base출처)" \
+    "$(check_push_field "$stamp" commit)" "$(check_push_field "$stamp" tested_tree)" "$(check_push_field "$stamp" sections)" \
+    "$(check_push_field "$stamp" goals)" "$(check_push_field "$stamp" 절+베이스)" "$(check_push_field "$stamp" fetch)" \
+    "$(check_push_field "$stamp" 대역)"
+  if [ -n "${CC_PIPELINE_RUN_ID:-}" ]; then
+    f=$(check_push_field "$stamp" 합침)
+    case "$f" in
+      합침|조상|충돌) ;;
+      *) printf 'check-push: 무인 런은 합친 트리를 시험하지 않은 도장(합침=%s)을 받지 않는다\n' "$f" >&2; return 1 ;;
+    esac
+    f=$(check_push_field "$stamp" base출처)
+    if [ "$f" = "지정" ]; then
+      printf 'check-push: 무인 런은 CHECK_PUSH_BASE 로 base 를 지정한 도장을 받지 않는다\n' >&2
+      return 1
+    fi
+    f=$(check_push_field "$stamp" 대역)
+    if [ "$f" != "없음" ]; then
+      printf 'check-push: 무인 런은 대역으로 돈 도장(대역=%s)을 받지 않는다\n' "$f" >&2
+      return 1
+    fi
+  fi
+  return 0
 }
 
 # --- self-test ---------------------------------------------------------------
 
 check_push_self_test() {
-  local passed=0 failed=0 T self rc out
+  local passed=0 failed=0 T self rc out W sa sb1 sm2 sm3 sh shx th thx tm stamp before
   ok()  { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
   bad() { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
+  check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
+  has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "「$3」 없음: $2" ;; esac; }
+  hasnt() { case "$2" in *"$3"*) bad "$1" "「$3」 있음: $2" ;; *) ok "$1" ;; esac; }
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-  T=$(mktemp -d "${TMPDIR:-/tmp}/check-push-selftest.XXXXXX")
+  tt_st_scrub
+  T=$(mktemp -d "${TMPDIR:-/tmp}/check-push-selftest.XXXXXX") || return 1
+  T=$(cd "$T" && pwd)
+  mkdir -p "$T/tmp" "$T/bin"
+  TMPDIR="$T/tmp"
+  export TMPDIR
+  sgit() { git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c init.defaultBranch=master "$@"; }
 
-  # Two make doubles: one passes every target and logs it, one fails.
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >> "%s/make.log"\nexit 0\n' "$T" > "$T/make-ok"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$T/make-bad"
-  chmod +x "$T/make-ok" "$T/make-bad"
+  # Doubles. All of them append to one order log, so a case can read the order
+  # of the bundle, the section run and the goal run.
+  sed "s|@T@|$T|g" > "$T/bin/bundle" <<'EOF'
+#!/usr/bin/env bash
+printf 'bundle:%s|MAKEFLAGS=%s|MFLAGS=%s|MAKELEVEL=%s\n' "$1" "${MAKEFLAGS-unset}" "${MFLAGS-unset}" "${MAKELEVEL-unset}" >> "@T@/order.log"
+[ ! -f base-only.txt ] || printf 'saw-base-only\n' >> "@T@/seen.log"
+if [ -f breaker.txt ] && [ "$1" = check-cheap ]; then exit 1; fi
+printf 'BUNDLE %s\n' "$1"
+EOF
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$T/bin/bundle-bad"
+  sed "s|@T@|$T|g" > "$T/bin/gate" <<'EOF'
+#!/usr/bin/env bash
+printf 'gate:%s\n' "$*" >> "@T@/order.log"
+ids=$(sed -n 's/^# --- section: \([^ |]*\) |.*$/\1/p' scripts/test-gate.sh)
+case "$1" in
+  --list) for id in $ids; do printf '%s # t\n' "$id"; done ;;
+  --sections)
+    rc=0
+    for id in $ids; do
+      case ",$2," in *",$id,"*) bash "sections/$id.sh" || rc=1 ;; esac
+    done
+    exit "$rc" ;;
+esac
+EOF
+  sed "s|@T@|$T|g" > "$T/bin/make" <<'EOF'
+#!/usr/bin/env bash
+printf 'make:%s\n' "$*" >> "@T@/order.log"
+if [ "$*" = "-s --no-print-directory print-rest-goals" ]; then cat goals.txt; exit 0; fi
+exit 0
+EOF
+  sed "s|@T@|$T|g" > "$T/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf 'gh:%s\n' "$*" >> "@T@/gh.log"
+exit 9
+EOF
+  chmod +x "$T/bin/bundle" "$T/bin/bundle-bad" "$T/bin/gate" "$T/bin/make" "$T/bin/gh"
+  export CC_CHECK_PUSH_MAKE="$T/bin/bundle" CC_TEST_TREE_GATE="$T/bin/gate" CC_TEST_TREE_MAKE="$T/bin/make" CC_TEST_TREE_GH="$T/bin/gh"
 
-  # A scratch repository that no global git setting can reach.
-  sgit() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false "$@"; }
-  mkdir -p "$T/repo"
-  (cd "$T/repo" && sgit init -q && printf 'one\n' > f && sgit add f && sgit commit -q -m first) || {
-    bad "임시 저장소 준비" "git init/commit 실패"
-    rm -rf "$T"; return 1
+  # History. master: A - B1, later moved to M2 (adds section s2 in front of s1)
+  # with M3 (adds a file that breaks check-cheap) on branch m3. Branches from A:
+  # h (the work), hx (conflicts with B1), and review-base/x at B1.
+  W="$T/work"
+  sgit init -q --bare "$T/origin.git"
+  mkdir -p "$T/seed/scripts" "$T/seed/sections"
+  (
+    cd "$T/seed" || exit 1
+    sgit init -q
+    sgit remote add origin "$T/origin.git"
+    printf '#!/usr/bin/env bash\n# fixture\n# --- section: s1 | group: g | covers: x | anchors: y ---\n# f1\n# f2\n# f3\n# f4\n# end\n' > scripts/test-gate.sh
+    printf '[ ! -e rows.txt ]\n' > sections/s1.sh
+    printf 'g1\ng2\n' > goals.txt
+    printf 'readme\n' > README.md
+    sgit add -A && sgit commit -q -m A
+    sgit branch -q a
+    sgit checkout -q -b h
+    printf 'h\n' > h.txt
+    sgit add -A && sgit commit -q -m H
+    sgit checkout -q -b hx a
+    printf 'other\n' > base-only.txt
+    sgit add -A && sgit commit -q -m HX
+    sgit checkout -q master
+    printf 'base\n' > base-only.txt
+    sgit add -A && sgit commit -q -m B1
+    sgit branch -q review-base/x
+    sgit push -q origin master h hx review-base/x
+  ) > /dev/null 2>&1 || { bad "픽스처 준비" "git 실패"; rm -rf "$T"; return 1; }
+  sgit clone -q -b h "$T/origin.git" "$W" > /dev/null 2>&1
+  (
+    cd "$T/seed" || exit 1
+    printf '#!/usr/bin/env bash\n# fixture\n# --- section: s2 | group: g | covers: x | anchors: y ---\n# --- section: s1 | group: g | covers: x | anchors: y ---\n# f1\n# f2\n# f3\n# f4\n# end\n' > scripts/test-gate.sh
+    printf 'printf "r\\n" >> rows.txt\n' > sections/s2.sh
+    sgit add -A && sgit commit -q -m M2
+    sgit checkout -q -b m3
+    printf 'x\n' > breaker.txt
+    sgit add -A && sgit commit -q -m M3
+    sgit push -q origin master m3
+  ) > /dev/null 2>&1 || { bad "픽스처 준비" "git 실패"; rm -rf "$T"; return 1; }
+  (cd "$W" && sgit fetch -q origin refs/heads/m3:refs/remotes/origin/m3 refs/heads/hx:refs/heads/hx) > /dev/null 2>&1
+  sa=$(cd "$T/seed" && git rev-parse a)
+  sb1=$(cd "$T/seed" && git rev-parse review-base/x)
+  sm2=$(cd "$T/seed" && git rev-parse master)
+  sm3=$(cd "$T/seed" && git rev-parse m3)
+  sh=$(cd "$W" && git rev-parse HEAD)
+  shx=$(cd "$W" && git rev-parse hx)
+  th=$(cd "$W" && git rev-parse 'HEAD^{tree}')
+  thx=$(cd "$W" && git rev-parse 'hx^{tree}')
+  tm=$(cd "$W" && git merge-tree --write-tree "$sm2" "$sh")
+  stamp="$W/.git/cc-cmds-check-push/$th"
+
+  cprun() { (cd "$W" && env "$@" bash "$self" run 2>&1); }
+  cvrun() { (cd "$W" && env "$@" bash "$self" verify 2>&1); }
+  stamp_count() { find "$W/.git/cc-cmds-check-push" -type f ! -name '.stamp.*' 2>/dev/null | wc -l | tr -d ' '; }
+  fh_line() { printf '%s\t\tbranch '"'"'%s'"'"' of %s\n' "$1" "${2:-master}" "$T/origin.git" > "$W/.git/FETCH_HEAD"; }
+  hand_stamp() {  # <합침> <base출처> <대역>
+    mkdir -p "$W/.git/cc-cmds-check-push"
+    printf 'v=2\ncommit=%s\nat=t\nbash=x\n합침=%s\nbase=%s\nbase출처=%s\nfetch=t\ntested_tree=%s\nsections=없음\ngoals=없음\n절+베이스=없음\n충돌경로=없음\n대역=%s\n' \
+      "$sh" "$1" "$sm2" "$2" "$tm" "$3" > "$stamp"
   }
-  vrun() { (cd "$T/repo" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 CC_CHECK_PUSH_MAKE="$1" bash "$self" "$2" > /dev/null 2>&1); }
-  stamp_count() { find "$T/repo/.git/cc-cmds-check-push" -type f ! -name '.stamp.*' 2>/dev/null | grep -c .; }
 
-  # (1) no stamp yet -> verify fails
-  vrun "$T/make-ok" verify; rc=$?
-  if [ "$rc" = "1" ]; then ok "(1) 도장이 없으면 verify 는 1"; else bad "(1) 도장이 없으면 verify 는 1" "rc=$rc"; fi
-
-  # (2) a failing make leaves no stamp
-  vrun "$T/make-bad" run; rc=$?
+  # --- the five head-mode cases of v1, kept --------------------------------------
+  out=$(cvrun); rc=$?
+  check "(1) 도장이 없으면 verify 는 1" "$rc" "1"
+  out=$(cprun CC_CHECK_PUSH_MAKE="$T/bin/bundle-bad"); rc=$?
   if [ "$rc" != "0" ] && [ "$(stamp_count)" = "0" ]; then ok "(2) 대역이 실패하면 run 은 0 아닌 값이고 도장이 없다"; else bad "(2) 대역이 실패하면 run 은 0 아닌 값이고 도장이 없다" "rc=$rc stamps=$(stamp_count)"; fi
+  : > "$T/order.log"
+  out=$(cprun); rc=$?
+  if [ "$rc" = "0" ] && [ "$(stamp_count)" = "1" ]; then ok "(3) 통과하면 도장이 하나 생긴다"; else bad "(3) 통과하면 도장이 하나 생긴다" "rc=$rc stamps=$(stamp_count) $out"; fi
+  out=$(cvrun); rc=$?
+  check "(3) 도장 뒤 verify 는 0" "$rc" "0"
+  check "(3) 임시 복제본에서 lint, readme, check-cheap 을 차례로 부른다" "$(sed -n 's/^bundle:\([^|]*\)|.*$/\1/p' "$T/order.log" | tr '\n' ' ')" "lint readme check-cheap "
+  check "F13 무인 런이 아니면 합침=안함 이고 head 트리를 시험한다" "$(check_push_field "$stamp" 합침) $(check_push_field "$stamp" tested_tree) $(check_push_field "$stamp" base출처)" "안함 $th 없음"
+  (cd "$W" && sgit commit -q --amend -m 'H, reworded')
+  out=$(cvrun); rc=$?
+  check "(4) 메시지만 고친 같은 트리 커밋은 verify 통과" "$rc" "0"
+  sh=$(cd "$W" && git rev-parse HEAD)
+  rm -f "$stamp"
 
-  # (3) a passing make stamps the tree, and verify passes
-  vrun "$T/make-ok" run; rc=$?
-  if [ "$rc" = "0" ] && [ "$(stamp_count)" = "1" ]; then ok "(3) 통과하면 도장이 하나 생긴다"; else bad "(3) 통과하면 도장이 하나 생긴다" "rc=$rc stamps=$(stamp_count)"; fi
-  vrun "$T/make-ok" verify; rc=$?
-  if [ "$rc" = "0" ]; then ok "(3) 도장 뒤 verify 는 0"; else bad "(3) 도장 뒤 verify 는 0" "rc=$rc"; fi
-  out=$(tr '\n' ' ' < "$T/make.log" 2>/dev/null)
-  if [ "$out" = "lint readme check-cheap " ]; then ok "(3) 임시 복제본에서 lint, readme, check-cheap 을 차례로 부른다"; else bad "(3) 임시 복제본에서 lint, readme, check-cheap 을 차례로 부른다" "「${out}」"; fi
+  # --- F12 무인 런, 신선한 FETCH_HEAD, 움직인 base ---------------------------------
+  (cd "$W" && sgit fetch -q --no-tags --refmap= origin refs/heads/master) > /dev/null 2>&1
+  check "F12 픽스처: 추적 ref 는 그대로 B1 이다" "$(cd "$W" && git rev-parse refs/remotes/origin/master)" "$sb1"
+  : > "$T/order.log"
+  : > "$T/seen.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F12 통과" "$rc" "0"
+  check "F12 base 는 FETCH_HEAD 의 sha" "$(check_push_field "$stamp" base) $(check_push_field "$stamp" base출처)" "$sm2 FETCH_HEAD"
+  check "F12 tested_tree 가 따로 만든 merge-tree 와 같다" "$(check_push_field "$stamp" tested_tree)" "$tm"
+  has "F12 make 대역이 base 에만 있는 파일을 본다" "$(cat "$T/seen.log")" "saw-base-only"
+  case "$out" in "check-push: 시험 트리 — 합침=합침 base=$sm2 base출처=FETCH_HEAD head=$sh tree=$tm 절=없음 목표=없음 절+베이스=s2 fetch=20"*"BUNDLE lint"*) ok "F12 기록 줄이 검사보다 먼저 나온다" ;; *) bad "F12 기록 줄이 검사보다 먼저 나온다" "$out" ;; esac
+  out=$(sed -n 's/=.*$//p' "$stamp" | tr '\n' ' ')
+  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 "
+  before=$(cksum < "$stamp")
 
-  # (4) a message-only commit keeps the tree, so the stamp still holds
-  (cd "$T/repo" && sgit commit -q --amend -m 'first, reworded')
-  vrun "$T/make-ok" verify; rc=$?
-  if [ "$rc" = "0" ]; then ok "(4) 메시지만 고친 같은 트리 커밋은 verify 통과"; else bad "(4) 메시지만 고친 같은 트리 커밋은 verify 통과" "rc=$rc"; fi
+  # --- F19 head 모드는 합친 도장을 바꾸지 않는다 ------------------------------------
+  out=$(cprun); rc=$?
+  check "F19 head 모드 실행이 같은 트리의 합친 도장을 그대로 둔다" "$rc $(cksum < "$stamp")" "0 $before"
+  has "F19 그 사실을 안내한다" "$out" "head 모드 도장으로 바꾸지 않는다"
 
-  # (5) a commit that changes the tree has no stamp
-  (cd "$T/repo" && printf 'two\n' > f && sgit commit -q -am second)
-  vrun "$T/make-ok" verify; rc=$?
-  if [ "$rc" = "1" ]; then ok "(5) 트리를 바꾼 새 커밋은 verify 실패"; else bad "(5) 트리를 바꾼 새 커밋은 verify 실패" "rc=$rc"; fi
+  # --- F14 합친 트리 실패 -------------------------------------------------------
+  : > "$T/gh.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_SECTIONS=s1,s2); rc=$?
+  check "F14 종료 1, 도장 없음" "$rc $(stamp_count)" "1 0"
+  case "$out" in
+    *"check-push: 합친 트리 실패 — base=$sm2 단계=절=s2,s1"*"head 만 다시 돌리기 (워크트리에서) — bash scripts/test-gate.sh --sections s1 헤드에 없는 항목=s2"*"bash scripts/test-tree.sh repro --base $sm2 --head $sh --expect $tm --sections s2,s1"*"gh run list --repo Nharu/cc-cmds --commit $sm2 --json workflowName,conclusion,databaseId — 워크플로마다, 런 없음 또는 진행 중이면 그 워크플로의 베이스 상태는 모름이다 (초록이 아니다)"*)
+      ok "F14 메시지 넷이 차례로 나온다" ;;
+    *) bad "F14 메시지 넷이 차례로 나온다" "$out" ;;
+  esac
+  hasnt "F14 gh run list 에 --workflow 가 없다" "$out" "--workflow"
+  check "F14 gh 대역은 불리지 않았다" "$(cat "$T/gh.log")" ""
 
-  # The clone is a throwaway: run leaves no temporary directory behind.
-  out=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cc-check-push.*' -newer "$T/make-bad" 2>/dev/null | grep -c .)
-  if [ "$out" = "0" ]; then ok "run 은 임시 복제 디렉터리를 남기지 않는다"; else bad "run 은 임시 복제 디렉터리를 남기지 않는다" "$out 개 남음"; fi
+  # --- F20 순서 ----------------------------------------------------------------
+  : > "$T/order.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_SECTIONS=s1 CHECK_PUSH_GOALS=g2,g1); rc=$?
+  check "F20 통과" "$rc" "0"
+  check "F20 묶음, 이어 절 한 번, 이어 목표 make 한 번" "$(grep -v -e 'gate:--list' -e 'print-rest-goals' "$T/order.log" | sed 's/|.*$//' | tr '\n' ' ')" "bundle:lint bundle:readme bundle:check-cheap gate:--sections s1 make:--no-print-directory g2 g1 "
+  : > "$T/order.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_SECTIONS=s9); rc=$?
+  check "F20 모르는 항목은 lint 전에 실패한다" "$rc $(grep -c '^bundle:' "$T/order.log")" "1 0"
+  has "F20 모르는 항목을 이름 댄다" "$out" "check-push: 모르는 절 s9"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_GOALS=s1); rc=$?
+  has "F20 절을 목표로 주면 CHECK_PUSH_SECTIONS 를 이름 댄다" "$rc $out" "CHECK_PUSH_SECTIONS 로 준다"
+
+  # --- F16 FETCH_HEAD 없음·오래됨 -------------------------------------------------
+  rm -f "$W/.git/FETCH_HEAD"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F16 FETCH_HEAD 없음 → 4, 도장 없음" "$rc $(stamp_count)" "4 0"
+  has "F16 --refmap= fetch 를 이름 댄다" "$out" "git fetch --no-tags --refmap= origin refs/heads/master (게이트 --surface 읽기 --reach 협업)"
+  hasnt "F16 복제 전에 끝난다" "$out" "시험 트리 —"
+  fh_line "$sm2"
+  touch -t 202001010000 "$W/.git/FETCH_HEAD"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F16 오래된 FETCH_HEAD → 4, 도장 없음" "$rc $(stamp_count)" "4 0"
+
+  # --- F26 새 base 에서 실패한 트리에는 도장이 없다 ---------------------------------
+  fh_line "$sb1"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F26 base B1 과 합쳐 통과해 도장을 받는다" "$rc $(stamp_count) $(check_push_field "$stamp" base)" "0 1 $sb1"
+  fh_line "$sm3"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F26 새 base 와 합쳐 실패하면 1 이고 그 열쇠의 도장이 없다" "$rc $(stamp_count)" "1 0"
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F26 그 뒤 verify 1" "$rc" "1"
+  fh_line "$sb1"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  touch -t 202001010000 "$W/.git/FETCH_HEAD"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F26 도장을 둔 뒤 FETCH_HEAD 를 묵히면 4 이고 도장이 없다" "$rc $(stamp_count)" "4 0"
+
+  # --- F21 다른 base 브랜치 ---------------------------------------------------------
+  (cd "$W" && sgit fetch -q --no-tags --refmap= origin refs/heads/review-base/x) > /dev/null 2>&1
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_BASE_BRANCH=review-base/x); rc=$?
+  check "F21 CHECK_PUSH_BASE_BRANCH 의 FETCH_HEAD 줄이 base 다" "$rc $(check_push_field "$stamp" base)" "0 $sb1"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_BASE_BRANCH='a..b'); rc=$?
+  check "F21 형식이 틀린 브랜치 이름 → 2" "$rc" "2"
+
+  # --- F17 지정 base ----------------------------------------------------------------
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_BASE="$sa"); rc=$?
+  check "F17 더 오래된 조상을 지정하면 도장 base출처=지정, 합침=조상" "$rc $(check_push_field "$stamp" base출처) $(check_push_field "$stamp" 합침)" "0 지정 조상"
+  hand_stamp 조상 지정 없음
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F17 base출처=지정 도장에 무인 verify 1" "$rc" "1"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_BASE=no-such-ref); rc=$?
+  check "F17 커밋으로 풀리지 않는 CHECK_PUSH_BASE → 2, 도장 없음" "$rc $(stamp_count)" "2 0"
+
+  # --- F18 / F27 verify ---------------------------------------------------------
+  mkdir -p "$W/.git/cc-cmds-check-push"
+  printf 'commit=%s\nat=t\n' "$sh" > "$stamp"
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F18 무인 런의 v1 → 1" "$rc" "1"
+  out=$(cvrun); rc=$?
+  check "F18 인터랙티브 v1 → 0" "$rc" "0"
+  has "F18 인터랙티브 v1 은 기록 없음을 찍는다" "$out" "check-push: 기록 없음(v1 도장)"
+  hand_stamp 안함 없음 없음
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F18 무인 런의 안함 → 1" "$rc" "1"
+  out=$(cvrun); rc=$?
+  check "F18 인터랙티브 안함 → 0" "$rc" "0"
+  has "F18 v2 도장이면 기록 줄을 찍는다" "$out" "check-push: 시험 트리 — 합침=안함 base=$sm2 base출처=없음 head=$sh tree=$tm"
+  hand_stamp 합침 FETCH_HEAD 없음
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F18 무인 런의 합침·FETCH_HEAD·대역=없음 → 0" "$rc" "0"
+  fh_line "$sm2"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  has "F27 기록 줄에 대역 이름들" "$out" "대역=CC_CHECK_PUSH_MAKE,CC_TEST_TREE_GATE,CC_TEST_TREE_MAKE,CC_TEST_TREE_GH"
+  check "F27 도장에 대역 이름들" "$(check_push_field "$stamp" 대역)" "CC_CHECK_PUSH_MAKE,CC_TEST_TREE_GATE,CC_TEST_TREE_MAKE,CC_TEST_TREE_GH"
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F27 무인 verify 는 대역 도장에 1" "$rc" "1"
+  out=$(cvrun); rc=$?
+  check "F27 인터랙티브 verify 는 대역 도장에 0" "$rc" "0"
+  sed 's/^대역=.*$/대역=없음/' "$stamp" > "$T/stamp.tmp" && mv -f "$T/stamp.tmp" "$stamp"
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F27 그 줄만 대역=없음 으로 바꾸면 무인 verify 0" "$rc" "0"
+  out=$(cvrun); rc=$?
+  check "F27 인터랙티브 verify 도 0" "$rc" "0"
+
+  # --- F15 충돌 ------------------------------------------------------------------
+  (cd "$W" && sgit checkout -q hx) > /dev/null 2>&1
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F15 충돌이면 head 를 시험하고 통과한다" "$rc" "0"
+  has "F15 head 만 시험했고 CI 런이 없다는 줄" "$out" "check-push: 합침=충돌 base-only.txt — 합친 트리는 시험하지 않았다, CI 런 없음"
+  hasnt "F15 합침=합침 줄이 없다" "$out" "합침=합침"
+  check "F15 도장 합침=충돌, 경로, 시험한 트리는 head" "$(check_push_field "$W/.git/cc-cmds-check-push/$thx" 합침) $(check_push_field "$W/.git/cc-cmds-check-push/$thx" 충돌경로) $(check_push_field "$W/.git/cc-cmds-check-push/$thx" tested_tree)" "충돌 base-only.txt $thx"
+  sed 's/^대역=.*$/대역=없음/' "$W/.git/cc-cmds-check-push/$thx" > "$T/stamp.tmp" && mv -f "$T/stamp.tmp" "$W/.git/cc-cmds-check-push/$thx"
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F15 같은 필드에 대역=없음 인 v2 도장에 무인 verify 0" "$rc" "0"
+  (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
+
+  # --- (5) a commit that changes the tree has no stamp ------------------------------
+  (cd "$W" && printf 'two\n' > h.txt && sgit commit -q -am second)
+  out=$(cvrun); rc=$?
+  check "(5) 트리를 바꾼 새 커밋은 verify 실패" "$rc" "1"
+
+  # --- F28 임시 디렉터리 ---------------------------------------------------------------
+  out=$(find "$T/tmp" -maxdepth 1 \( -name 'cc-test-tree.*' -o -name 'cc-check-push.*' \) | wc -l | tr -d ' ')
+  check "F28 run(통과, 실패, 종료 4) 뒤 TMPDIR 에 cc-test-tree.* 와 cc-check-push.* 가 없다" "$out" "0"
+  out=$(find "$W/.git/cc-cmds-check-push" -name '.stamp.*' | wc -l | tr -d ' ')
+  check "F28 도장 임시 파일이 남지 않는다" "$out" "0"
 
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 8 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 8 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 59 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 59 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
