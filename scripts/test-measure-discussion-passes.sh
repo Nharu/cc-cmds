@@ -171,5 +171,26 @@ OUT=$(cd "$L" && bash "$MEASURE" --run-root "$RR" --seat-root "$WORK/없음" 2>/
 check "2: 링크드 워크트리에서도 exit 0 이다" "$rc" "0"
 check "2: 기본 감사 디렉터리는 주 워크트리의 것이라 링크드 워크트리에서도 잇는다" "$(field "$A" '감사 고유')" "7"
 
+# --- 3. witness directories with no *.md --------------------------------------------
+# A design attempt that ended before its first copy leaves an empty `witness/`
+# behind, and the real state home holds such directories. The empty corpus
+# sorts first, so a run that stops on it measures nothing after it.
+R3R="$WORK/run3"
+mkdir -p "$R3R/20261002-bbbbbbb1/design/doc-g/witness"
+H="$R3R/20261002-bbbbbbb2/design/doc-h/witness"
+w "$H/alpha.round-1.md" "제안"
+w "$H/alpha.round-2.md" "round-3: none"
+# An empty subdirectory is a corpus with no *.md, and as the last entry of the
+# directory it is also the last name the off-grammar count meets.
+mkdir -p "$H/zz-empty"
+I="$R3R/20261002-bbbbbbb3/design/doc-i/witness"
+w "$I/alpha.round-1.md" "제안"
+run --run-root "$R3R" --seat-root "$WORK/없음" --audit-dir "$AD"
+check "3: *.md 가 없는 증인 디렉터리가 있어도 exit 0 이다" "$rc" "0"
+check "3: *.md 가 없는 증인 디렉터리와 빈 하위 디렉터리는 행이 없고 뒤의 말뭉치는 측정한다" "$(rows)" "2"
+check "3: 빈 증인 디렉터리 뒤의 말뭉치를 측정한다" "$(field "$I" 팀원)" "1"
+check "3: 빈 하위 디렉터리는 문법 밖 수에 들지 않는다" "$(field "$H" '문법 밖')" "0"
+check "3: stderr 가 비어 있다" "$(cat "$WORK/err")" ""
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

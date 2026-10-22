@@ -79,10 +79,13 @@ fi
 
 select_pass() {
   # select_pass <witness dir> <round/phase> — the chosen witness of each member,
-  # one path per line, sorted.
+  # one path per line, sorted. A directory with no *.md leaves the glob
+  # unexpanded; `|| continue` keeps that from becoming the loop's exit status,
+  # which pipefail would carry out of the pipeline and errexit would end on.
   local d="$1" p="$2" f
   for f in "$d"/*.md; do
-    [ -f "$f" ] && printf '%s\n' "${f##*/}"
+    [ -f "$f" ] || continue
+    printf '%s\n' "${f##*/}"
   done | awk -v p="$p" -v d="$d" '
     { n = substr($0, 1, length($0) - 3); k = 0
       if (match(n, /-rev[0-9]+$/)) { k = substr(n, RSTART + 4) + 0; n = substr(n, 1, RSTART - 1) }
@@ -96,10 +99,12 @@ select_pass() {
 
 off_grammar() {
   # off_grammar <witness dir> — regular files outside the key grammar, with
-  # SWEEP.md and INDEX.md left out.
+  # SWEEP.md and INDEX.md left out. An empty directory, or a subdirectory as
+  # the last entry, skips through `|| continue` as in select_pass.
   local d="$1" f
   for f in "$d"/*; do
-    [ -f "$f" ] && printf '%s\n' "${f##*/}"
+    [ -f "$f" ] || continue
+    printf '%s\n' "${f##*/}"
   done | awk '
     $0 == "SWEEP.md" || $0 == "INDEX.md" { next }
     { n = $0

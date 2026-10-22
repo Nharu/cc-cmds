@@ -10699,10 +10699,13 @@ gate_record_audit_disclosure() {
 # ---------------------------------------------------------------------------
 gate_discussion_pass_select() {
   # gate_discussion_pass_select <witness dir> <round/phase> — the chosen witness
-  # of each member for that round or phase, one path per line, sorted.
+  # of each member for that round or phase, one path per line, sorted. A
+  # directory with no *.md leaves the glob unexpanded; `|| continue` keeps
+  # that from becoming the pipeline's failing status under pipefail.
   local d="$1" p="$2" f
   for f in "$d"/*.md; do
-    [ -f "$f" ] && printf '%s\n' "${f##*/}"
+    [ -f "$f" ] || continue
+    printf '%s\n' "${f##*/}"
   done | awk -v p="$p" -v d="$d" '
     { n = substr($0, 1, length($0) - 3); k = 0
       if (match(n, /-rev[0-9]+$/)) { k = substr(n, RSTART + 4) + 0; n = substr(n, 1, RSTART - 1) }
