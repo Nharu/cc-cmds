@@ -3321,7 +3321,7 @@ surface_of_openssl() {
   # this table does not name include `s_client` and `s_server` — and a grade
   # that guesses low on those is the laundering the whole table exists to stop.
   #
-  # `-out <path>` is checked across every arm, not per subcommand. `rand` and
+  # The writer flags are checked across every arm, not per subcommand. `rand` and
   # `dgst` both accept it, so an arm that graded `rand` as a read on the
   # strength of its name alone would let `openssl rand -out secrets.bin 32`
   # through as one.
@@ -3340,19 +3340,44 @@ surface_of_openssl() {
   # day a subcommand carrying `-outform` is added to the read list below, it
   # would — and the failure would look like an unrelated row's problem. The
   # match below is exact on the name and takes `=` as the only attachment.
+  # `-writerand <file>` (`rand`, `dgst`) writes the generator's seed file and
+  # is one of the same family.
+  #
+  # THE WRITE IS GRADED BY WHERE IT LANDS. The value of each writer flag — the
+  # next argument, or what follows `=` — goes through `surface_of_write_paths`,
+  # so `-out $HOME/.zshrc` is `트리밖쓰기` like `sort -o` to the same path, and
+  # only a write whose every value is inside the tree is `워크트리쓰기`. A
+  # writer flag with no value is graded `트리밖쓰기`: there is no path to show
+  # it lands inside.
+  #
+  # `-provider`, `-provider-path` and `-engine` load a module of the caller's
+  # choosing into the process, which no read subcommand makes harmless, so
+  # any of them is `등급 미상`.
   #
   # `base64` is a read in exactly the form a stage is told to use to encode the
   # content of a seat apply — `base64 -A -in <file>`, optionally with `-e` —
   # and nothing else. Any other argument, `-d` included, makes it a write: with
   # `-d` it decodes chosen bytes, and an output option this row has not learned
   # would turn that into a write of chosen content anywhere.
-  local a
+  local a outs=() want=0
   for a in "$@"; do
+    if [ "$want" = 1 ]; then outs[${#outs[@]}]="$a"; want=0; continue; fi
     case "$a" in
-      -out|--out|-keyout|--keyout|-out=*|--out=*|-keyout=*|--keyout=*)
-        printf '워크트리쓰기'; return 0 ;;
+      -out|--out|-keyout|--keyout|-writerand|--writerand) want=1 ;;
+      -out=*|--out=*|-keyout=*|--keyout=*|-writerand=*|--writerand=*)
+        outs[${#outs[@]}]="${a#*=}" ;;
+      -provider|--provider|-provider=*|--provider=*|-provider-path|--provider-path|-provider-path=*|--provider-path=*|-engine|--engine|-engine=*|--engine=*)
+        printf '등급 미상'; return 0 ;;
     esac
   done
+  if [ "$want" = 1 ]; then printf '트리밖쓰기'; return 0; fi
+  if [ "${#outs[@]}" -gt 0 ]; then
+    for a in "${outs[@]}"; do
+      [ -n "$a" ] || { printf '트리밖쓰기'; return 0; }
+    done
+    surface_of_write_paths "${outs[@]}"
+    return 0
+  fi
   if [ "${1:-}" = base64 ]; then
     shift
     while [ "$#" -gt 0 ]; do
@@ -22511,12 +22536,23 @@ gate_surface_provenance() {
   # exits 1 with nothing printed when the two ends share no ancestor — an orphan
   # tip, or a root the segment was cut from on purpose. Every path such a branch
   # carries is one it added, so the empty tree stands in for the merge base and
-  # the same three-tree comparison decides: a classified path the base end does
-  # not have as HEAD has it still needs a seat commit, and one the base has
-  # unchanged passes. Any other failure (an object the database cannot read, a
-  # HEAD that does not resolve) cannot be decided and is status 2.
+  # the same three-tree comparison decides. A classified path HEAD has exactly
+  # as the base end has it passes. One the base end lacks needs a seat commit,
+  # as on any branch. One the base end has differently is refused as changed on
+  # both sides — the base "added" it too, measured from the empty tree — and no
+  # seat commit lifts that: a person decides it. Any other failure (an object
+  # the database cannot read, a HEAD that does not resolve) cannot be decided
+  # and is status 2.
+  #
+  # A SHALLOW REPOSITORY IS NOT AN ORPHAN. Cut below the fork point, it also
+  # makes `merge-base` exit 1, but the two ends do share history the clone does
+  # not hold — the empty tree would then report every path the base changed as
+  # changed on both sides. Exit 1 in a shallow repository cannot be decided.
   mb=$(cd "$wt" && git merge-base "$bend" HEAD 2>/dev/null) || mbrc=$?
-  if [ "$mbrc" = 1 ] && [ -z "$mb" ]; then
+  if [ "$mbrc" = 1 ] && [ -z "$mb" ] \
+     && [ "$(cd "$wt" && git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+    mb=''; mbrc='1, 얕은 저장소'
+  elif [ "$mbrc" = 1 ] && [ -z "$mb" ]; then
     mb=$(cd "$wt" && git hash-object -t tree /dev/null 2>/dev/null) || mb=''
   elif [ "$mbrc" != 0 ]; then
     mb=''

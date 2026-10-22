@@ -8854,22 +8854,36 @@ graded_as '읽기' 'sha256sum 도 같다'           -- sha256sum /tmp/x
 # arm so a write cannot enter wearing a read's subcommand.
 graded_as '읽기' 'openssl dgst 는 읽기다'              -- openssl dgst -sha256 /tmp/x
 graded_as '읽기' 'openssl rand 도 읽기다'              -- openssl rand -hex 8
-graded_as '워크트리쓰기' 'rand 라도 -out 이면 쓰기다'  -- openssl rand -out /tmp/secrets.bin 32
+graded_as '트리밖쓰기' 'rand 라도 -out 이면 쓰기다'    -- openssl rand -out /tmp/secrets.bin 32
 graded_as '등급 미상' '이름 없는 하위 명령은 거부된다' -- openssl s_client -connect example.com:443
 # A stage encodes a seat apply's content as `openssl base64 -A -in <file>`, a
 # read; the same subcommand writing a file is not.
 graded_as '읽기' 'openssl base64 -A -in 은 읽기다'      -- openssl base64 -A -in /tmp/x
-graded_as '워크트리쓰기' 'base64 라도 -out 이면 쓰기다' -- openssl base64 -A -in /tmp/x -out /tmp/y
+graded_as '트리밖쓰기' 'base64 라도 -out 이면 쓰기다'   -- openssl base64 -A -in /tmp/x -out /tmp/y
 graded_as '읽기' 'openssl base64 -A -e -in 도 읽기다'   -- openssl base64 -A -e -in /tmp/x
 # OpenSSL 3 이상은 출력 옵션을 `--out`, `-out=<p>`, `--out=<p>` 로도 받는다(4.0.3 에서
 # 고른 바이트를 그대로 썼다). 띄어 쓴 `-out` 만 보던 판정은 이 셋을 `읽기` 로
 # 떨어뜨렸고, `base64 -d` 와 묶이면 고른 내용을 어디든 쓰는 길이 되었다.
-graded_as '워크트리쓰기' 'base64 -out= 붙여 씀도 쓰기다'  -- openssl base64 -A -in /tmp/x -out=/tmp/y
-graded_as '워크트리쓰기' 'base64 --out 도 쓰기다'         -- openssl base64 -A -in /tmp/x --out /tmp/y
-graded_as '워크트리쓰기' 'base64 --out= 도 쓰기다'        -- openssl base64 -A -in /tmp/x --out=/tmp/y
-graded_as '워크트리쓰기' 'rand -out= 도 쓰기다'           -- openssl rand -out=/tmp/secrets.bin 32
-graded_as '워크트리쓰기' 'dgst -keyout= 도 쓰기다'        -- openssl dgst -keyout=/tmp/k /tmp/x
-graded_as '워크트리쓰기' 'dgst --keyout 도 쓰기다'        -- openssl dgst --keyout /tmp/k /tmp/x
+graded_as '트리밖쓰기' 'base64 -out= 붙여 씀도 쓰기다'    -- openssl base64 -A -in /tmp/x -out=/tmp/y
+graded_as '트리밖쓰기' 'base64 --out 도 쓰기다'           -- openssl base64 -A -in /tmp/x --out /tmp/y
+graded_as '트리밖쓰기' 'base64 --out= 도 쓰기다'          -- openssl base64 -A -in /tmp/x --out=/tmp/y
+graded_as '트리밖쓰기' 'rand -out= 도 쓰기다'             -- openssl rand -out=/tmp/secrets.bin 32
+graded_as '트리밖쓰기' 'dgst -keyout= 도 쓰기다'          -- openssl dgst -keyout=/tmp/k /tmp/x
+graded_as '트리밖쓰기' 'dgst --keyout 도 쓰기다'          -- openssl dgst --keyout /tmp/k /tmp/x
+graded_as '트리밖쓰기' 'dgst --keyout= 도 쓰기다'         -- openssl dgst --keyout=/tmp/k /tmp/x
+graded_as '트리밖쓰기' 'rand -writerand 도 쓰기다'        -- openssl rand -writerand /tmp/seed 8
+graded_as '트리밖쓰기' '하위 명령 앞의 -out 도 쓰기다'    -- openssl -out /tmp/y base64 -A -in /tmp/x
+# 쓰기는 닿는 곳으로 등급한다. 값이 모두 트리 안이면 `워크트리쓰기`, 하나라도
+# 밖이면 `트리밖쓰기` 다 — 트리 밖 출력이 `워크트리쓰기` 로 떨어지면 도달 선언
+# 요구를 건너뛴다. 값이 없는 출력 옵션은 닿는 곳을 보일 수 없어 `트리밖쓰기` 다.
+graded_as '워크트리쓰기' '트리 안 -out 은 워크트리쓰기다'   -- openssl base64 -A -in a.md -out b.md
+graded_as '워크트리쓰기' '트리 안 -out= 도 워크트리쓰기다'  -- openssl rand -out=b.bin 8
+graded_as '트리밖쓰기' '하나라도 밖이면 트리밖쓰기다'      -- openssl dgst -out b.txt -keyout /tmp/k a.md
+graded_as '트리밖쓰기' '값 없는 -out 은 트리밖쓰기다'      -- openssl rand 8 -out
+graded_as '트리밖쓰기' '빈 -out= 도 트리밖쓰기다'          -- openssl rand -out= 8
+# `-provider`·`-provider-path`·`-engine` 은 호출자가 고른 모듈을 적재한다.
+graded_as '등급 미상' 'rand -provider 는 미상이다'         -- openssl rand -provider-path /tmp/m -provider x 8
+graded_as '등급 미상' 'dgst -engine= 도 미상이다'          -- openssl dgst -engine=x /tmp/x
 # `base64` 의 읽기는 처방된 형태(`-A`, `-e`, `-in <파일>`)뿐이다. `-d` 는 고른
 # 바이트를 풀어 내므로, 그 밖의 인자를 실은 호출은 쓰기로 둔다.
 graded_as '워크트리쓰기' 'base64 -d 는 쓰기다'            -- openssl base64 -d -A -in /tmp/x
@@ -9110,12 +9124,13 @@ graded_as '읽기' '하위 명령 없는 openssl 은 읽기다'    -- openssl
 graded_as '등급 미상' 's_server 도 미상이다'           -- openssl s_server -accept 4433
 # The cross-arm write check: `-out`/`-keyout` are tested on every arm, not per
 # subcommand, so a write cannot enter wearing a read's subcommand.
-graded_as '워크트리쓰기' 'dgst 라도 -out 이면 쓰기다'  -- openssl dgst -sha256 -out /tmp/d.txt /tmp/x
-graded_as '워크트리쓰기' '-keyout 도 쓰기다'           -- openssl req -new -keyout /tmp/k.pem
-# THE BOUNDARY, pinned as it is rather than widened. The arm matches the
-# space-delimited token `" -out "`, so `-outfile` is not caught and the act
-# grades by its subcommand — a read. Widening that is a separate change with its
-# own reasoning; this assertion records where the line sits today.
+graded_as '트리밖쓰기' 'dgst 라도 -out 이면 쓰기다'    -- openssl dgst -sha256 -out /tmp/d.txt /tmp/x
+graded_as '트리밖쓰기' '-keyout 도 쓰기다'             -- openssl req -new -keyout /tmp/k.pem
+# THE BOUNDARY, pinned as it is rather than widened. The arm matches the writer
+# flag names exactly, with `=` as the only attachment, so `-outfile` is not
+# caught and the act grades by its subcommand — a read. Widening that is a
+# separate change with its own reasoning; this assertion records where the line
+# sits today.
 graded_as '읽기' '-outfile 은 -out 이 아니다'          -- openssl rand -outfile /tmp/o.bin 32
 
 # `eas` splits by subcommand for a load-bearing reason rather than a tidy one: a
@@ -31166,8 +31181,9 @@ spv_reset "$SPV_S2"
 
 # A TIP THAT SHARES NO HISTORY WITH THE BASE END is compared from the empty tree:
 # `merge-base` exits 1 for it, which is no reason to refuse a branch that left
-# every classified path as the base has it, and a classified path it carries
-# differently still needs a seat commit.
+# every classified path as the base has it. A classified path it carries
+# differently from the base end is one both sides "added" from the empty tree,
+# so it is refused as changed on both sides, whatever seat commit there is.
 spv_orphan() {  # spv_orphan <트리를 빌릴 커밋> — 부모 없는 커밋으로 세그먼트 브랜치를 옮긴다
   local o
   o=$(cd "$SAP_WT" && git commit-tree "$1^{tree}" -m spv-orphan) && spv_reset "$o"
@@ -31176,11 +31192,20 @@ spv_orphan "$SAP_BASE"
 spv_pv
 check "34r: 공통 조상 없는 팁도 분류 경로가 베이스와 같으면 통과한다" \
   "$rc/$(cat "$CAP_OUT")/$( (cd "$SAP_WT" && git merge-base HEAD "$SAP_BASE") >/dev/null 2>&1; echo $?)" "0//1"
+# A SHALLOW REPOSITORY makes `merge-base` exit 1 as well, though the two ends
+# may share history the clone does not hold, so there it cannot be decided. A
+# `shallow` file in the common git directory is what makes git report one.
+SPV_SHF="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)/shallow"
+( cd "$REPO" && git rev-parse "$SAP_BASE" ) > "$SPV_SHF"
+spv_pv
+check "34r: 얕은 저장소의 merge-base 종료 1 은 고아로 읽지 않고 판정 불가 2 다" \
+  "$rc/$( { grep -c '얕은 저장소' "$CAP_OUT" || true; } | tr -d ' ')/$(cd "$SAP_WT" && git rev-parse --is-shallow-repository)" "2/1/true"
+rm -f "$SPV_SHF"
 SPV_OR=$(spv_base_commit "$SAP_BASE" "$SAP_RULE" 'rule orphan
 ')
 spv_orphan "$SPV_OR"
 spv_pv
-spv_refused "공통 조상 없는 팁의 바뀐 규칙 파일은 거절된다" "$SAP_RULE" '바뀜'
+spv_refused "공통 조상 없는 팁의 바뀐 규칙 파일은 거절된다" "$SAP_RULE" '양쪽에서 바뀜'
 spv_reset "$SPV_S2"
 
 # THE THREE READERS: the cone seed holds the review on a broken branch with one
