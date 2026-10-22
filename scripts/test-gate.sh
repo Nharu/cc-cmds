@@ -43745,7 +43745,7 @@ rm -f "$LEDGER85" "$WT/$DOC85"
 
 # ---------------------------------------------------------------------------
 # 96. 런을 넘는 이월 — 입양과 재킥오프 연쇄가 앞선 런의 이월된 중단 답을 들이고, 운반 act 만 그 답을 낸다
-# --- section: 96 | group: base | covers: act, plan, snapshot, halt-answer, gate_adoption_halt_source, gate_chain_halt_import, gate_key_imported_deferred_answer, gate_carry_check, gate_carry_scope_ok, gate_carry_defer_row | anchors: 96: 이월 행이 없는 답은 연쇄가 들이지 않는다, 96: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다, 96: 그 파견은 시동 대역을 부르지 않는다, 96: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다, 96: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다, 96: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다, 96: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다, 96: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다, 96: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다, 96: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다, 96: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다, 96: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다, 96: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다 ---
+# --- section: 96 | group: base | covers: act, plan, snapshot, halt-answer, gate_adoption_halt_source, gate_chain_halt_import, gate_key_imported_deferred_answer, gate_carry_check, gate_carry_scope_ok, gate_carry_defer_row, gate_carry_import_row, gate_chain_source_key, gate_halt_answer_route, cc_unanswered_halts | anchors: 96: 이월 행이 없는 답은 연쇄가 들이지 않는다, 96: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다, 96: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다, 96: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다, 96: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다,96: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다, 96: 그 파견은 시동 대역을 부르지 않는다, 96: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다, 96: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다, 96: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다, 96: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다, 96: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다, 96: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다, 96: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다, 96: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다, 96: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다, 96: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다 ---
 #
 # 앞선 런이 마감 안에 자리를 찾지 못해 다음 런으로 넘긴 사람의 답(`이월` 행이 이름
 # 짓는 `중단 답`)은 다음 런이 사본으로 들여 그 런의 운반 act 로 낸다. 두 길이 있다.
@@ -43758,7 +43758,9 @@ rm -f "$LEDGER85" "$WT/$DOC85"
 # 사람의 답은 halt-answer act 로, 이월 행은 마감 뒤 운반이 쓰는 작성기
 # (`gate_carry_defer_row`)로 남는다. 입양의 출처 원장은 절 85 처럼 손으로 쓰되 이월
 # 행만은 같은 작성기가 쓴다. 출처 기록의 현재성과 재수렴 범위는 출처 원장에 대고
-# 판정되므로, 운반 act 의 프롬프트는 출처 런의 기록을 범위로 든다.
+# 판정되므로, 운반 act 의 프롬프트는 출처 런의 기록을 범위로 든다. 두 번 이월된 답은
+# 사람이 답한 런을 출처로 싣고, 들인 답의 route 는 출처 런의 세션으로 읽혀 거절되지
+# 않으며, 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다.
 # ---------------------------------------------------------------------------
 DOC96='docs/fixture-design-96.md'
 au15_freeze "$DOC96"
@@ -43782,10 +43784,10 @@ prov96() {  # prov96 <앞선 런 id> — 재킥오프가 쓰는 네 필드 출�
     "$(shasum -a 256 "$WORK/plan-$1.md" | cut -d' ' -f1)" \
     "$(shasum -a 256 "$WT/docs/pipeline-grant/$1.md" | cut -d' ' -f1)"
 }
-ans96() {  # ans96 <run id> <키> <기록> <선택지> — 사람의 중단 답 act. rc, msg 를 둔다
+ans96() {  # ans96 <run id> <키> <기록> <선택지> [첨부=<파일>] — 사람의 중단 답 act. rc, msg 를 둔다
   gateL act --manifest "$WORK/plan-$1.md" --kind halt-answer --target infra --segment "$2" --cutpoint 커밋 \
         --surface 읽기 --snapshot-digest "$(au15_H "$1")" --rationale x \
-        -- "중단 기록=$3" "선택지=$4" '답한 주체=사람' "근거=사람이 $4 를 골랐다"
+        -- "중단 기록=$3" "선택지=$4" '답한 주체=사람' "근거=사람이 $4 를 골랐다" ${5:+"$5"}
 }
 ln96() {  # ln96 <run id> — 그 런 원장의 마지막 `중단 답` 줄 번호
   { grep -n '^- `중단 답` ' "$LED96/$1.md" 2>/dev/null || true; } | tail -1 | cut -d: -f1
@@ -43815,6 +43817,13 @@ halts96() {  # halts96 <run id> — 그 런의 answered_halts 「세그먼트:�
 }
 called96() {  # called96 <run id> — 감사 대역이 그 런에서 불렸는지
   [ -e "$STATE_LATE/cc-cmds/run/$1/stub-au-env.txt" ] && printf 불림 || printf 안불림
+}
+route96() {  # route96 <run id> — 그 런의 answered_halts 「route|route_refusal」
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-$1.md" 2>/dev/null ) \
+    | jq -r '[.answered_halts[] | "\(.route)|\(.route_refusal)"] | join(",")' 2>/dev/null
+}
+unans96() {  # unans96 <run id> — 그 런의 답 없는 정지 기록 수 (인계·종단 판정이 읽는 집계)
+  ( . "$LIVENESS"; cc_unanswered_halts "$STATE_LATE/cc-cmds/run/$1" "$LED96/$1.md" )
 }
 # 재수렴 스테이지가 적용 확인에서 멈추는 대역. 기록은 재진입 표가 운반하는 모양이다 —
 # 스킬 design-reconverge 의 Step 3, 관측 상세에 범위와 두 사전 기준선.
@@ -43891,6 +43900,7 @@ case "$(rf96 "$row96" '근거')" in
   *) bad "96: 들인 행의 근거는 연쇄 이월과 출처 줄을 싣는다" "$row96" ;;
 esac
 check "96: 들인 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다" "$(halts96 R96C)" "A1:적용:$SRC96C"
+check "96: 들인 연쇄 답의 route 는 출처 런의 세션으로 재부착이고 거절 사유가 없다" "$(route96 R96C)" "재부착|"
 
 au15_dispatch R96C "$STUB_AU_AUDIT" audit "$au96"
 check "96: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다" "$rc/$(carried96 R96C)/$(called96 R96C)" "3/1/안불림"
@@ -43925,14 +43935,19 @@ run96 "$SRC96D"
 src96 "$SRC96D"
 au15_dispatch "$SRC96D" "$STUB_AU_PARK" audit "$au96"
 au15_wait "$SRC96D" A1
-ans96 "$SRC96D" A1 "$RDS96D/halt/A1#1.md" reject
-check "96 픽스처: 두 번째 출처 런의 감사 기록에 사람의 답이 선다" "$rc/$(au15_class "$SRC96D" A1 audit)" "0/의도된 park"
+printf '%s\n' '사람이 덧붙인 말: 기각 사유는 범위 밖이다' > "$RDS96D/halt/A1#1.answer.md"
+ans96 "$SRC96D" A1 "$RDS96D/halt/A1#1.md" reject "첨부=$RDS96D/halt/A1#1.answer.md"
+check "96 픽스처: 두 번째 출처 런의 감사 기록에 첨부를 든 사람의 답이 선다" "$rc/$(au15_class "$SRC96D" A1 audit)/$(unans96 "$SRC96D")" "0/의도된 park/0"
 ln96d=$(ln96 "$SRC96D")
 defer96 "$SRC96D" - A1 "$ln96d" '묶인 판정: PARK deadline ready_at 2026-03-01T00:00:00Z · 새 판정: PARK deadline ready_at 2026-03-01T00:00:00Z' >/dev/null
 run96 R96D "$(prov96 "$SRC96D") | 좌석 연쇄=1 | 뿌리 런=$SRC96D | 원인=마감"
 au15_dispatch R96D "$STUB_AU_AUDIT" audit "$au96"
 check "96: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다" "$rc/$(carried96 R96D)/$(called96 R96D)" "3/1/안불림"
 ld96=$(ln96 R96D)
+check "96: 첨부 사본은 기록 사본 옆의 <기록 사본>.answer.md 이다" \
+  "$(rf96 "$(sed -n "${ld96}p" "$LED96/R96D.md")" '첨부')" "$STATE_LATE/cc-cmds/run/R96D/halt/A1#chained-$SRC96D.answer.md"
+check "96: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다" "$(unans96 R96D)" "0"
+check "96: 감사 답을 들인 연쇄 키의 route 도 재부착이고 거절 사유가 없다" "$(route96 R96D)" "재부착|"
 au15_dispatch R96D "$STUB_AU_AUDIT" audit "$au96"
 check "96: 7필드 연쇄에서도 들인 답이 있는 키의 일반 파견은 exit 3 이다" "$rc/$(carried96 R96D)/$(called96 R96D)" "3/1/안불림"
 cp "$RDS96D/halt/A1#1.md" "$RDS96D/halt/A1#1.md.keep"
@@ -43947,6 +43962,47 @@ check "96: 그 감사 행이 답 운반 줄을 싣고 대역이 불렸다" \
   "$(au15_rows R96D '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | tail -1 | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')|$(called96 R96D)" \
   "$ld96|불림"
 check "96: 운반된 감사 답은 answered_halts 에서 빠진다" "$(halts96 R96D)" ""
+
+# 연쇄 3 — 두 번 이월된 답. 사람이 출처 런에서 답했고, 중간 런은 첫 감사 파견에서 그
+# 답을 들였지만 그 파견을 거절한 채 마감 안에 자리를 찾지 못해 다시 이월했다. 그래서
+# 중간 런에는 그 종류의 stage-result 행이 하나도 없다. 마지막 런은 중간 런을 이어받은
+# 런으로 들고, 그 답을 다시 묻지 않고 들여 사람이 답한 런의 원장으로 판정받아 낸다.
+SRC96E='20260301-eeeeeeee'
+RDS96E="$STATE_LATE/cc-cmds/run/$SRC96E"
+run96 "$SRC96E"
+src96 "$SRC96E"
+au15_dispatch "$SRC96E" "$STUB_AU_PARK" audit "$au96"
+au15_wait "$SRC96E" A1
+ans96 "$SRC96E" A1 "$RDS96E/halt/A1#1.md" reject
+ln96e=$(ln96 "$SRC96E")
+defer96 "$SRC96E" - A1 "$ln96e" '마감 경과' >/dev/null
+run96 R96E "$(prov96 "$SRC96E")"
+src96 R96E
+au15_dispatch R96E "$STUB_AU_AUDIT" audit "$au96"
+le96=$(ln96 R96E)
+defer96 R96E - A1 "$le96" '마감 경과' >/dev/null
+check "96 픽스처: 중간 런은 답을 들여 다시 이월했고 그 키의 stage-result 행이 없다" \
+  "$rc/$(carried96 R96E)/$(deferred96 R96E "$le96")/$( { grep -F '`stage-result`' "$LED96/R96E.md" 2>/dev/null || true; } | { grep -cF '| 스테이지=A1 |' || true; } | tr -d ' ')" \
+  "3/1/1/0"
+run96 R96G "$(prov96 R96E)"
+au15_dispatch R96G "$STUB_AU_AUDIT" audit "$au96"
+check "96: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다" "$rc/$(carried96 R96G)/$(called96 R96G)" "3/1/안불림"
+lg96=$(ln96 R96G)
+rowg96=$(sed -n "${lg96}p" "$LED96/R96G.md")
+check "96: 두 번 이월된 행의 출처는 사람이 답한 런이고 경유 기록은 중간 런의 사본이다" \
+  "$(rf96 "$rowg96" '출처 런')|$(rf96 "$rowg96" '출처 기록')|$(rf96 "$rowg96" '경유 기록')" \
+  "$SRC96E|$RDS96E/halt/A1#1.md|$STATE_LATE/cc-cmds/run/R96E/halt/A1#chained-$SRC96E.md"
+check "96: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다" "$(route96 R96G)" "재부착|"
+run96 R96H "$(prov96 R96E)"
+au15_dispatch R96H "$STUB_AU_AUDIT" audit "$au96"
+check "96: 한 후속 런이 들인 중간 런의 사본은 다른 후속 런이 다시 들이지 않는다" "$rc/$(carried96 R96H)" "0/0"
+au15_wait R96H A1
+au15_dispatch R96G "$STUB_AU_AUDIT" audit "$au96" --carry-answer "$lg96"
+check "96: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다" "$rc" "0"
+au15_wait R96G A1
+check "96: 그 감사 행이 두 번 이월된 답의 운반 줄을 싣고 대역이 불렸다" \
+  "$(au15_rows R96G '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | tail -1 | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')|$(called96 R96G)" \
+  "$lg96|불림"
 
 # 대조 — 출처 행이 없는 매니페스트는 앞선 런을 모르므로 아무것도 들이지 않는다.
 run96 R96N
@@ -43979,13 +44035,15 @@ printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-reconverge; reader=orches
   '- `적용` — 고친 문면을 적용한다' \
   "**관측 상세**: 범위=구속 티어 이탈 · 사전 sha256=$(printf '%064d' 0) · 사전 구속 표면 다이제스트=$(printf '%064d' 0)" \
   '<!-- /cc-pipeline-halt v1 -->' > "$REC96A5"
+ATT96A5="$RDS96A/halt/S9#5.answer.md"
+printf '%s\n' '사람이 덧붙인 말: 고친 문면 그대로 적용한다' > "$ATT96A5"
 { printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=리뷰중 | 워크트리=%s | 선행=없음\n' "$WT96A"
   printf -- '- `stage-result` | 교대=0 | 세그먼트=S9 | 스테이지=S9 | 종류=implement | 실행 버전=4 | 세션 id=s-impl-4 | 종단 부류=의도된 park | prev=x\n'
   printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=implement-unattended | 선택지=재수렴 | 답한 주체=사람 | 근거=사람이 재수렴을 골랐다 | 기록 다이제스트=%s | 레인=좌석 | 기록 시각=2026-03-01T01:00:00Z\n' \
     "$REC96A4" "$(shasum -a 256 "$REC96A4" | cut -d' ' -f1)"
   printf -- '- `stage-result` | 교대=1 | 세그먼트=S9 | 스테이지=S9 | 종류=reconverge | 실행 버전=5 | 세션 id=s-rc-5 | 종단 부류=의도된 park | prev=x\n'
-  printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=design-reconverge | 선택지=적용 | 답한 주체=사람 | 근거=사람이 적용을 골랐다 | 기록 다이제스트=%s | 레인=좌석 | 기록 시각=2026-03-01T02:00:00Z\n' \
-    "$REC96A5" "$(shasum -a 256 "$REC96A5" | cut -d' ' -f1)"; } > "$LED96/$SRC96A.md"
+  printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=design-reconverge | 선택지=적용 | 답한 주체=사람 | 근거=사람이 적용을 골랐다 | 기록 다이제스트=%s | 첨부=%s | 첨부 다이제스트=%s | 레인=좌석 | 기록 시각=2026-03-01T02:00:00Z\n' \
+    "$REC96A5" "$(shasum -a 256 "$REC96A5" | cut -d' ' -f1)" "$ATT96A5" "$(shasum -a 256 "$ATT96A5" | cut -d' ' -f1)"; } > "$LED96/$SRC96A.md"
 ln96a=$(ln96 "$SRC96A")
 adopt96() {  # adopt96 <run id> — 입양 행을 든 런을 만들고 SA 를 입양 워크트리로 계획한다. rc, msg 를 둔다
   g15_run "$1" "$DOC96A" "$plan15c" 리뷰없음
@@ -44007,6 +44065,9 @@ rowa96=$(sed -n "${la96}p" "$LED96/R96A.md")
 check "96: 입양으로 들인 행은 이 런의 세그먼트와 출처를 싣는다" \
   "$(rf96 "$rowa96" '세그먼트')|$(rf96 "$rowa96" '출처 런')|$(rf96 "$rowa96" '출처 기록')|$(rf96 "$rowa96" '선택지')" \
   "SA|$SRC96A|$REC96A5|적용"
+check "96: 입양 첨부 사본은 <기록 사본>.answer.md 이고 답 없는 정지 기록으로 세지 않는다" \
+  "$(rf96 "$rowa96" '첨부')|$(unans96 R96A)" "$STATE_LATE/cc-cmds/run/R96A/halt/SA#adopted-$SRC96A.answer.md|0"
+check "96: 입양으로 들인 답의 route 는 출처 런의 세션으로 재부착이고 거절 사유가 없다" "$(route96 R96A)" "재부착|"
 case "$(rf96 "$rowa96" '근거')" in
   "입양 이월(출처 런 $SRC96A 원장 $ln96a 번째 줄) — 사람이 적용을 골랐다") ok "96: 입양으로 들인 행의 근거는 입양 이월과 출처 줄을 싣는다" ;;
   *) bad "96: 입양으로 들인 행의 근거는 입양 이월과 출처 줄을 싣는다" "$rowa96" ;;
@@ -44038,12 +44099,14 @@ check "96: 그 재수렴 행이 답 운반 줄을 싣는다" \
       | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')" "$la96"
 check "96: 운반된 입양 답은 answered_halts 에서 빠진다" "$(halts96 R96A)" ""
 
-for wt96 in "$WT-run-R96C-A1" "$WT-run-R96D-A1" "$WT-run-R96N-A1" "$WT-run-$SRC96C-A1" "$WT-run-$SRC96D-A1"; do
+for wt96 in "$WT-run-R96C-A1" "$WT-run-R96D-A1" "$WT-run-R96N-A1" "$WT-run-$SRC96C-A1" "$WT-run-$SRC96D-A1" \
+            "$WT-run-$SRC96E-A1" "$WT-run-R96E-A1" "$WT-run-R96G-A1" "$WT-run-R96H-A1"; do
   ( cd "$WT" && git worktree remove --force "$wt96" ) >/dev/null 2>&1 || true
 done
 ( cd "$WT" && git worktree remove --force "$WT96A" && git branch -D "seg/$SRC96A-S9" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
-rm -f "$LED96/$SRC96C.plan.md" "$LED96/$SRC96D.plan.md" "$LED96/$SRC96A.plan.md" "$WT/$DOC96" "$WT/$DOC96A"
+rm -f "$LED96/$SRC96C.plan.md" "$LED96/$SRC96D.plan.md" "$LED96/$SRC96A.plan.md" "$LED96/$SRC96E.plan.md" "$LED96/R96E.plan.md" \
+  "$WT/$DOC96" "$WT/$DOC96A"
 
 # ---------------------------------------------------------------------------
 # 86. 런 개시가 대시보드 서버를 하나 띄우고, 띄우지 말아야 할 자리에서는 띄우지 않는다
