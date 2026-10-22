@@ -159,6 +159,18 @@ has "run-blocked: out-of-vocabulary reason folds" "$out" "$(ev 'run-blocked/미�
 has "run-blocked: an untranscribed stall observation counts" "$out" "$(ev 'run-blocked/스테이지 종단 후 라우터 무응답' 비의도)"
 hasnt "run-blocked: a resolved block is no event" "$out" "게이트 park"
 
+# A deadline park on a run-scope step, in the shape `gate_wait_deadline_park`
+# writes: a cone row anchored on the step id. It holds the run, so the fold
+# keeps it — and a deadline end is still no event.
+newcase
+row stage-result '세그먼트=-' '스테이지=design' '종류=design' '실행 버전=1' '종단 부류=정상 완료'
+row blocked '대상=cc-cmds' '스코프=cone' '원인=막힘' '사유=마감 초과 — design' '앵커 세그먼트=design' \
+  '세그먼트=-' '스테이지=design' '근거=계보=B:design#1 마감 안에 끝낼 수 없음' \
+  '관측=2026-10-02T00:00:00Z ready_at=2026-10-02T01:00:00Z' '재개 명령=마감을 늘린 뒤 다시 기동'
+check "run-blocked: the fold holds the step deadline cone" \
+  "$(CC_LG="$LG" bash -c '. "$0"; cc_unresolved_blocked "$CC_LG"' "$LIVENESS" | grep -c '마감 초과 — design')" "1"
+check "run-blocked: a step deadline cone is no event" "$(stops)" ""
+
 # --- stage --------------------------------------------------------------------
 
 newcase
@@ -172,6 +184,16 @@ has "stage: last attempt crashed" "$out" "$(ev 'stage/크래시/implement' 비�
 hasnt "stage: a later successful attempt resolves" "$out" "/review"
 has "stage: unknown kind folds" "$out" "$(ev 'stage/한도 종료/미분류' 비의도)"
 hasnt "stage: an intended park is no stage event" "$out" "/audit"
+
+newcase
+row stage-result '세그먼트=r1' '스테이지=r1' '종류=implement' '실행 버전=1' '종단 부류=거절 종료'
+row stage-result '세그먼트=-' '스테이지=design' '종류=design' '실행 버전=1' '종단 부류=거절 종료'
+row stage-result '세그먼트=r2' '스테이지=r2' '종류=review' '실행 버전=1' '종단 부류=거절 종료'
+row stage-result '세그먼트=r2' '스테이지=r2' '종류=review' '실행 버전=2' '종단 부류=정상 완료'
+out=$(stops)
+has "stage: a refusal end outside the table folds to 미분류" "$out" "$(ev 'stage/미분류/implement' 비의도)"
+has "stage: a refusal end on a run-scope step is a stage event" "$out" "$(ev 'stage/미분류/design' 비의도)"
+hasnt "stage: a refusal followed by a completed attempt resolves" "$out" "/review"
 
 # --- halt ---------------------------------------------------------------------
 
@@ -210,17 +232,61 @@ row stage-result '세그먼트=impl' '스테이지=impl' '종류=implement' '실
 halt 'impl#1' gate-unanswerable
 has "halt: an unbound gate-unanswerable is reported with its marker" "$(stops)" "$(ev 'halt/gate-unanswerable/implement' 비의도 - '원인 셀 미결합')"
 
+# The copy `gate_adoption_halt_carry` makes of an earlier run's record, and its
+# attachment, are not this run's halt records.
+newcase
+row stage-result '세그먼트=impl' '스테이지=impl' '종류=implement' '실행 버전=1' '종단 부류=정상 완료'
+halt 'impl#adopted-20261001-a1bbfcee' gate-unanswerable
+halt 'impl#adopted-20261001-a1bbfcee.attach' precondition-failed
+halt 'impl#2.attach' precondition-failed
+check "halt: an adopted copy and attachments are no event" "$(stops)" ""
+
 # --- cone ---------------------------------------------------------------------
 
+# The row `gate_record_undecidable` writes: no anchor, the two segments in
+# closed fields of their own.
+undecidable() {
+  row blocked '대상=cc-cmds' '스코프=cone' "원인=${3:-판정 불가}" "사유=조상 관계 판정 불가 $1→$2" \
+    "구성원 세그먼트=$1" "후보 세그먼트=$2" "근거=워크트리 $1=/w/$1 · $2=/w/$2" \
+    '관측=2026-10-02T00:00:00Z' '재개 명령=세그먼트 워크트리와 객체 DB 를 복구한 뒤 같은 앵커로 원뿔을 다시 기록하세요'
+}
 newcase
-row blocked '대상=-' '스코프=cone' '원인=판정 불가' '사유=사이클 예산 소진' '앵커 세그먼트=c1'
+undecidable m1 c1
 has "cone: unexplained undecidable cone" "$(stops)" "$(ev 'cone/판정 불가' 비의도)"
 newcase
 row stage-result '세그먼트=c1' '스테이지=c1' '종류=implement' '실행 버전=1' '종단 부류=크래시'
-row blocked '대상=-' '스코프=cone' '원인=판정 불가' '사유=사이클 예산 소진' '앵커 세그먼트=c1'
+undecidable m1 c1
 out=$(stops)
-hasnt "cone: a stage event explains the cone" "$out" "cone/"
+hasnt "cone: a stage event of the candidate explains the cone" "$out" "cone/"
 has "cone: the explaining stage event stands" "$out" "$(ev 'stage/크래시/implement' 비의도)"
+newcase
+halt 'm1#1' precondition-failed
+undecidable m1 c1
+out=$(stops)
+hasnt "cone: a halt of the member explains the cone" "$out" "cone/"
+has "cone: the explaining halt stands" "$out" "$(ev 'halt/precondition-failed/미분류' 비의도)"
+newcase
+undecidable m1 c1
+undecidable m1 c1 해소
+check "cone: a later resolution of the same reason is no event" "$(stops)" ""
+
+# --- writer pins: the fixtures above are the shapes the gate writes -----------
+
+GATE="$ORCH/gate.sh"
+check "pin: the undecidable writer names both segments in closed fields" \
+  "$(sed -n '/^gate_record_undecidable() {/,/^}/p' "$GATE" | grep -cF '"구성원 세그먼트=$m" "후보 세그먼트=$s"')" "1"
+check "pin: the undecidable writer writes no anchor" \
+  "$(sed -n '/^gate_record_undecidable() {/,/^}/p' "$GATE" | grep -c '앵커 세그먼트')" "0"
+check "pin: the deadline park anchors its cone row on the key" \
+  "$(sed -n '/^gate_wait_deadline_park() {/,/^}/p' "$GATE" | grep -cF '"사유=마감 초과 — $key" \')" "1"
+check "pin: the deadline park's anchor field" \
+  "$(sed -n '/^gate_wait_deadline_park() {/,/^}/p' "$GATE" | grep -cF '"앵커 세그먼트=$key"')" "1"
+check "pin: the adoption carry names its copy #adopted-" \
+  "$(sed -n '/^gate_adoption_halt_carry() {/,/^}/p' "$GATE" | grep -cF '#adopted-$GATE_CARRY_SRC.md"')" "1"
+check "pin: the adoption carry names its attachment .attach.md" \
+  "$(sed -n '/^gate_adoption_halt_carry() {/,/^}/p' "$GATE" | grep -cF '#adopted-$GATE_CARRY_SRC.attach.md"')" "1"
+check "pin: the gate writes the refusal end class" \
+  "$( { grep -c "klass='거절 종료'" "$GATE" || true; } )" "1"
 
 # --- run-end ------------------------------------------------------------------
 

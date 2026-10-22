@@ -145,12 +145,17 @@ run_stops_main() {
   # shellcheck source=liveness.sh
   . "$RUN_STOPS_DIR/liveness.sh"
 
-  # HALT RECORDS: only the file name and the `**분류**` line are read.
+  # HALT RECORDS: only the file name and the `**분류**` line are read. Two names
+  # in that directory are not this run's halt records: the copy an adopted
+  # segment carries over from the run that wrote it (`<seg>#adopted-<run>.md`),
+  # which that run reports under its own kind, and an attachment
+  # (`*.attach.md`), which is no halt record at all.
   halts=""
   if [ -n "$run_dir" ] && [ -d "$run_dir/halt" ]; then
     local f id cls
     for f in "$run_dir"/halt/*.md; do
       [ -f "$f" ] || continue
+      case "${f##*/}" in *'#adopted-'*|*.attach.md) continue ;; esac
       id=${f##*/}; id=${id%.md}
       cls=$( { grep -m1 -E '^\*\*분류\*\*: ' "$f" 2>/dev/null || true; } \
              | sed 's/^\*\*분류\*\*: //; s/[[:space:]]*$//')
@@ -161,8 +166,12 @@ run_stops_main() {
   fi
 
   # RUN-SCOPE BLOCKS: the ledger's unresolved ones, by the same fold every other
-  # reader uses, plus the watcher observations not yet transcribed.
-  blocked=$(cc_unresolved_blocked "$ledger" | cut -f2-)
+  # reader uses, plus the watcher observations not yet transcribed. The fold
+  # also keeps cone rows anchored on a run-scope step — a deadline park on the
+  # design step, a carried answer deferred to the next run — because those hold
+  # the run; they are not run-scope rows, and a deadline end is no event, so
+  # only the rows of `스코프=run` are kept here.
+  blocked=$(cc_unresolved_blocked_where "$ledger" | LC_ALL=C awk -F '\t' '$2 == "run" { print $1 }')
   if [ -n "$run_dir" ] && [ -s "$run_dir/stall" ]; then
     blocked="$blocked
 $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
@@ -243,8 +252,13 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
           s = fld("세그먼트"); if (s != "" && s != "-") { ACTR[s] = rs; ACTC[s] = fld("도달 판정") }
           st2 = fld("스테이지")
           if (rs == "도달 park" && st2 != "" && st2 != "-") PARKCELL[st2] = fld("도달 판정")
-        } else if (sc == "cone") {
-          a = fld("앵커 세그먼트"); if (a != "") { if (!(a in CONE)) { CN++; CID[CN] = a }; CONE[a] = fld("원인") }
+        } else if (sc == "cone" && rs != "") {
+          # The last row per 사유 decides, as in every other fold: a later
+          # `원인=해소` row of the same 사유 resolves it. An undecidable ancestry
+          # row has no anchor; it names the two segments it could not measure.
+          if (!(rs in CONE)) { CN++; CID[CN] = rs }
+          CONE[rs] = fld("원인"); CA[rs] = fld("앵커 세그먼트")
+          CM[rs] = fld("구성원 세그먼트"); CS[rs] = fld("후보 세그먼트")
         }
       } else if (series == "segment") {
         s = fld("id"); if (s == "") next
@@ -261,10 +275,13 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         r = trim(B[i]); if (r == "") continue
         emit("run-blocked/" (inv("RB", r) ? r : "미분류"), "비의도")
       }
-      # stage: the last attempt of each segment·stage
+      # stage: the last attempt of each segment·stage. Every end class but the
+      # two that are no event is one; a class outside the table folds to 미분류.
       for (i = 1; i <= SRN; i++) {
         key = SRK[i]; cl = SR[key]
-        if (inv("ST", cl)) { emit("stage/" cl "/" kindof(SRKIND[key]), "비의도"); EV[SRSEG[key]] = 1 }
+        if (cl == "" || cl == "정상 완료" || cl == "의도된 park") continue
+        emit("stage/" (inv("ST", cl) ? cl : "미분류") "/" kindof(SRKIND[key]), "비의도")
+        EV[SRSEG[key]] = 1; split(key, kp, SUBSEP); EV[kp[2]] = 1
       }
       # halt: a record, unless a later attempt of the same stage completed
       n = split(halts, H, "\n")
@@ -277,17 +294,20 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         k = (base in STGKIND) ? kindof(STGKIND[base]) : "미분류"
         sig = "halt/" (inv("HA", cls) ? cls : "미분류") "/" k
         seg = (base in STGSEG) ? STGSEG[base] : base
-        EV[seg] = 1
+        EV[seg] = 1; EV[base] = 1
         if (cls == "gate-unanswerable") {
           if (!(hid in PARKCELL)) emit(sig, "비의도", "", "원인 셀 미결합")
           else if (inv("CE", PARKCELL[hid])) emit(sig, "의도", "사전 인가 밖")
           else emit(sig, "비의도")
         } else emit(sig, "비의도")
       }
-      # cone: only where no stage or halt event explains it
+      # cone: only where no stage or halt event of a segment it names explains it
       for (i = 1; i <= CN; i++) {
-        a = CID[i]
-        if (CONE[a] == "판정 불가" && !(a in EV)) emit("cone/판정 불가", "비의도")
+        rs = CID[i]
+        if (CONE[rs] != "판정 불가") continue
+        if ((CA[rs] != "" && (CA[rs] in EV)) || (CM[rs] != "" && (CM[rs] in EV)) \
+            || (CS[rs] != "" && (CS[rs] in EV))) continue
+        emit("cone/판정 불가", "비의도")
       }
       # run-end
       if ("무효화 종료" in RUNEND) emit("run-end/무효화 종료", "비의도")

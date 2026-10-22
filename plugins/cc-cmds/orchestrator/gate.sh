@@ -22889,12 +22889,14 @@ gate_record_undecidable() {
   # An ancestry probe that came back 2 or higher. The disposition is FAIL-CLOSED
   # — the candidate STAYS in the cone — and the row exists so that what the
   # morning reads is "this could not be measured" rather than "this was measured
-  # and stood up".
+  # and stood up". The two segments ride in closed fields of their own, so the
+  # stop classifier can tell whether a stage or halt event of either already
+  # explains the stop without reading them back out of `사유`.
   local m="$1" s="$2" why
   why="조상 관계 판정 불가 ${m}→${s}"
   gate_has_row 'blocked' "사유=$why" && return 0
   gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=cone" "원인=판정 불가" \
-    "사유=$why" \
+    "사유=$why" "구성원 세그먼트=$m" "후보 세그먼트=$s" \
     "근거=$(gate_row_safe "워크트리 ${m}=$(gate_segment_worktree "$m") · ${s}=$(gate_segment_worktree "$s")" 300)" \
     "관측=$(now_iso)" \
     "재개 명령=세그먼트 워크트리와 객체 DB 를 복구한 뒤 같은 앵커로 원뿔을 다시 기록하세요"
