@@ -786,6 +786,20 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   done
 done
 
+# Both router copies read the design skill from the snapshot as it stands and
+# name the `solo-audit` branch of the selection function. A copy that kept the
+# two-branch sentence would tell its router a team-4 plan always takes the
+# discussion skill, which the gate now refuses on a `solo-audit` plan.
+sel_new='`design-solo-unattended` when `design_tier` is `team-4` and `design_path` is `solo-audit`, `design-discuss-unattended` otherwise. Do not pick it again from `design_scope`, `design_tier` or `design_path`:'
+sel_old='Do not pick it again from `design_scope` or `design_tier`:'
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; f=${pair#*:}
+  check "$who 사본이 solo-audit 갈래의 선택 문장을 한 번 싣는다" "$(grep -cF -- "$sel_new" "$f" || true)" "1"
+  check "$who 사본에 두 갈래 옛 선택 문장이 없다" "$(grep -cF -- "$sel_old" "$f" || true)" "0"
+done
+check "라우터 두 사본의 설계 스킬 선택 줄이 바이트 동일하다" \
+  "$(grep -F -- "$sel_new" "$RS_SKILL")" "$(grep -F -- "$sel_new" "$AP_ROUTER")"
+
 # ---------------------------------------------------------------------------
 # 6c-3. `implement_next[]` tells a plan emission from a plan execution
 #

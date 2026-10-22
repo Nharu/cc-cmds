@@ -11,13 +11,15 @@ Cover, in this order:
 - **설계 티어 대조** — the tier the run was planned on, beside what the reviews then found. It reads the run ledger's `설계 티어` row, the manifest's `## 실행 계획`, and the ledger's `segment`, `cycle` and `리뷰 기각` rows. Render in this form:
 
   ```
-  설계 티어 — 판정 <판정> → 확정 <확정>[ (사람이 올림)] · 감사 <있음|없음> · 추정 파일 <n> · 선언 파일 <m|미통치>
+  설계 티어 — 판정 <판정> → 확정 <확정>[ (사람이 올림)] · 경로 <경로> · 감사 <있음|없음> · 추정 파일 <n> · 선언 파일 <m|미통치>
   근거: <근거 축자>
   무거운 사유: <사유 축자>
+  감사 공시 — <스테이지>#<실행 버전> · 경로 <경로> · <최초|재감사> · 고유 <n> · 미보강 <n> · 골격급 <n> · 합성 후보 <n> · 재수렴 <발동|없음> · 감사 판 <12 hex|미상>
   <세그먼트>: 첫 리뷰 P0 <a>/P1 <b> · 누적 P0 <Σ> · 리뷰 기각 <k>건(기각 P0 <Σ>)
   ```
 
-  - `<판정>`, `<확정>`, `감사` and `추정 파일` come from the row. Add 「 (사람이 올림)」 when `판정` and `확정` differ: the kickoff's judgment is `판정`, and a person's raise is what moves `확정` off it.
+  - `<판정>`, `<확정>`, `경로`, `감사` and `추정 파일` come from the row; a row written before `경로` existed leaves ` · 경로 <경로>` out.
+  - One `감사 공시` line per `감사 공시` row of the ledger, in ledger order, its fields copied as the row spells them, `미상` included. `재수렴` reads `발동` when the ledger holds a `stage-result` row with `종류=reconverge` on the same audit key and `없음` otherwise. A run with no such row has no line: a `solo` plan carries no audit, and a run older than the row writes none. Add 「 (사람이 올림)」 when `판정` and `확정` differ: the kickoff's judgment is `판정`, and a person's raise is what moves `확정` off it.
   - `근거` and `무거운 사유` are read from the manifest's plan — `design_tier_rationale` and `design_heavy_reasons` joined by ` / ` — not from the row, which carries them clipped. Leave the `무거운 사유` line out when the list is empty.
   - `<m>` is the size of the union of the `선언 파일 집합` of this run's `segment` rows — files, not rows, so a file two segments declare counts once. With no `segment` row, write `미통치`: no slice was planned, so nothing governs a count to set beside the estimate. A clipped set — `<clip> (전체: <path>)`, or `(전체: <path>)` alone — is counted from the whole value in that file, never from the clip. When that file is gone or unreadable, write `미상(전체 파일 없음)` and do not set the estimate against it.
   - One line per segment that has a `cycle` row: `첫 리뷰` is the `P0`/`P1` of its first `cycle` row, `누적 P0` the sum of `P0` over all of them, and `리뷰 기각` the number of its `리뷰 기각` rows with the sum of their `기각 P0`. A segment with no `cycle` row gets no line.

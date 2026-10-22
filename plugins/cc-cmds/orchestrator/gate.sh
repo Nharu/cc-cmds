@@ -10583,6 +10583,101 @@ gate_audit_skeleton_count() {
   printf '%s' "${n:-미상}"
 }
 
+# ---------------------------------------------------------------------------
+# The `감사 공시` row — one per audit attempt, the material the design-path
+# collector compares cohorts on.
+#
+# TWO WRITERS, ONE BUILDER. The gate's audit recorder calls it right after an
+# audit's `stage-result` row; the fixed-graph driver calls it through
+# `run_gate_call` after its S2 row and after a continued S2 attempt's row. The
+# reconcile path writes none: its row is not an audit's end.
+#
+# VALUES COME FROM INSIDE THE FENCES ONLY. The counts are read between the
+# disclosure v1 fence pair and the skeletal fence pair of the audit report, by
+# the rule the measurement script follows: a report without exactly one pair
+# reads `미상` for every slot of that fence, and no prose is read as a value.
+# ---------------------------------------------------------------------------
+GATE_AUDIT_DISCLOSURE_BEGIN='<!-- cc-design-audit-disclosure v1 begin -->'
+GATE_AUDIT_DISCLOSURE_END='<!-- /cc-design-audit-disclosure v1 end -->'
+
+gate_audit_disclosure_field() {
+  # gate_audit_disclosure_field <slot> — the value of the disclosure v1 fence's
+  # `**<slot>**: <n>` line when it is a count, `미상` otherwise (no report, not
+  # exactly one fence pair, no such slot, not a number).
+  local rp v
+  rp=$(audit_report_path) || { printf '미상'; return 0; }
+  [ -f "$rp" ] || { printf '미상'; return 0; }
+  v=$(awk -v b="$GATE_AUDIT_DISCLOSURE_BEGIN" -v e="$GATE_AUDIT_DISCLOSURE_END" -v k="**$1**: " '
+    { sub(/\r$/, "") }
+    $0 == b { nb++; if (nb == 1 && ne == 0) inside = 1; next }
+    $0 == e { ne++; if (inside) { inside = 0; closed = 1 }; next }
+    inside && v == "" && index($0, k) == 1 { v = substr($0, length(k) + 1); sub(/[ \t]+$/, "", v) }
+    END { if (nb != 1 || ne != 1 || !closed) exit 1; print v }' "$rp" 2>/dev/null) || v=""
+  case "$v" in ''|*[!0-9]*) printf '미상' ;; *) printf '%s' "$v" ;; esac
+}
+
+gate_audit_skeletal_fence_count() {
+  # gate_audit_skeletal_fence_count <field> — a count line of the skeletal
+  # fence, `미상` when the fence or the line is absent or not a number.
+  local v
+  v=$(audit_skeleton_fence_field "$1")
+  case "$v" in ''|*[!0-9]*) printf '미상' ;; *) printf '%s' "$v" ;; esac
+}
+
+gate_audit_version() {
+  # gate_audit_version — the audit edition: the first 12 hex of the sha256 over
+  # the audit's instruction files, read from the plugin copy this gate runs
+  # from (`$(dirname "$GATE_DIR")`), in this order — the unattended audit
+  # skill, the four shared references 01..04, then the `audit-reader` row of
+  # the team model tier table (chosen by its first cell; left out when absent).
+  # The plugin version moves on every merge, so two audits are compared only
+  # when their instruction bytes are the same. `미상` on a run with no plugin
+  # pin — its copy is not the one its stages read — and when a file is missing.
+  [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/plugin-pin" ] || { printf '미상'; return 0; }
+  local pd f
+  pd=$(dirname "$GATE_DIR")
+  set -- skills/design-audit-unattended/SKILL.md \
+    skills/design-audit/references/01-reader-prompt.md \
+    skills/design-audit/references/02-deterministic-checks.md \
+    skills/design-audit/references/03-adjustment-pass.md \
+    skills/design-audit/references/04-disclosure-block.md
+  for f in "$@"; do
+    [ -f "$pd/$f" ] || { printf '미상'; return 0; }
+  done
+  { for f in "$@"; do cat "$pd/$f"; done
+    awk 'index($0, "| `audit-reader` |") == 1' "$pd/skills/_common/team-model-tier.md" 2>/dev/null || true
+  } | shasum -a 256 | cut -c1-12
+}
+
+gate_audit_plugin_word() {
+  # gate_audit_plugin_word — `<version>@<commit 12>` from the run's plugin pin,
+  # the shape the solo-audit experiment's `pin_of` writes; `미상` without one.
+  local p="${RUN_DIR:-}/plugin-pin" v c
+  [ -n "${RUN_DIR:-}" ] && [ -f "$p" ] || { printf '미상'; return 0; }
+  v=$(awk -F'\t' '$1 == "version" { print $2; exit }' "$p" 2>/dev/null)
+  c=$(awk -F'\t' '$1 == "commit" { print $2; exit }' "$p" 2>/dev/null)
+  printf '%s@%s' "${v:-?}" "$(printf '%s' "$c" | cut -c1-12)"
+}
+
+gate_record_audit_disclosure() {
+  # gate_record_audit_disclosure <audit step id> <attempt> — one `감사 공시` row.
+  # `회차` is `재감사` when the key already carries a re-convergence in this run
+  # (`audit_pass_of`), `최초` otherwise. `경로` uses the `설계 티어` row's words.
+  local astep="$1" att="$2" pass
+  pass=$(audit_pass_of "$astep")
+  gate_append '감사 공시' "세그먼트=-" "스테이지=$astep" "실행 버전=${att:-미상}" \
+    "경로=$(gate_design_path_word)" \
+    "회차=$([ "$pass" = reaudit ] && printf '재감사' || printf '최초')" \
+    "감사 판=$(gate_audit_version)" "플러그인=$(gate_audit_plugin_word)" \
+    "원시=$(gate_audit_disclosure_field '원시 발견 수')" \
+    "고유=$(gate_audit_disclosure_field '고유 결함 수')" \
+    "미보강=$(gate_audit_disclosure_field '미보강 잔여 수')" \
+    "바이트=$(gate_audit_disclosure_field '동결 문서 바이트')" \
+    "골격급=$(gate_audit_skeletal_fence_count '골격급 수')" \
+    "합성 후보=$(gate_audit_skeletal_fence_count '합성 요구 후보 수')" \
+    "합성 골격급=$(gate_audit_skeletal_fence_count '합성 요구 골격급 수')"
+}
+
 gate_audit_concluded() {
   # gate_audit_concluded <audit step id> — 0 when what the audit's key says last
   # is an audit that ended `정상 완료` without asking for a re-convergence: the
@@ -14186,6 +14281,25 @@ gate_snapshot_design_skill_json() {
   fi
 }
 
+gate_design_path_word() {
+  # The `경로` word of the `설계 티어` and `감사 공시` rows: `base` on a base
+  # scope, otherwise `manifest_design_path` with `none` written `해당 없음` — a
+  # run that audits a document with no design step reads that way too. A plan
+  # without the key reads by the contract's absence rule (`discuss-audit` on a
+  # team-4 single-scope design). `미상` only when the plan block itself cannot
+  # be read, so `해당 없음` and `미상` never mix in a collector's key.
+  manifest_plan_json 2>/dev/null | jq -e 'type == "object"' >/dev/null 2>&1 \
+    || { printf '미상'; return 0; }
+  if [ "$(manifest_design_scope)" = "base" ]; then
+    printf 'base'
+    return 0
+  fi
+  case "$(manifest_design_path)" in
+    none) printf '해당 없음' ;;
+    *) manifest_design_path ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # The `설계 티어` row — the entry judgment's tier, as the run opened on it.
 #
@@ -14232,6 +14346,7 @@ gate_record_design_tier() {
     "판정=$(gate_row_safe "$dt_judged" 40)" \
     "확정=$(gate_row_safe "$dt_tier" 40)" \
     "범위=$(manifest_design_scope)" \
+    "경로=$(gate_design_path_word)" \
     "설계 스킬=$dt_skill" \
     "감사=$dt_audit" \
     "추정 파일=$(gate_row_safe "$dt_est" 40)" \
@@ -33788,26 +33903,34 @@ gate_verb_act() {
         *'/cc-cmds:design-base-unattended '*)    dd_cmd='/cc-cmds:design-base-unattended ' ;;
         *'/cc-cmds:design-solo-unattended '*)    dd_cmd='/cc-cmds:design-solo-unattended ' ;;
       esac
-      # THE TIER PICKS THE SKILL, AND A `solo` MISMATCH IS REFUSED BOTH WAYS. A
-      # `solo` plan's design stage is the lead-only skill and nothing else — a
-      # discussion command, or a design command this case does not know, would
-      # run a design the plan did not freeze; and the lead-only skill on a plan
-      # that is not `solo` would drop the discussion and the audit a person
-      # approved. The base and discussion commands keep what they did before,
-      # so no plan frozen before `solo` existed meets a new refusal.
+      # THE SELECTION FUNCTION PICKS THE SKILL, AND A LEAD-ONLY MISMATCH IS
+      # REFUSED BOTH WAYS. The command is compared with `manifest_design_skill`,
+      # which reads scope, tier and path by the contract sentence written on it
+      # in `run.sh` (`design_tier` decides whether the graph carries the audit;
+      # `design_path` records who writes a team-4 single-scope document; a plan
+      # with no `design_path` key reads `discuss-audit` there). When it picks
+      # the lead-only skill — a `solo` plan, or a `team-4` plan on `solo-audit`
+      # — the design stage is that skill and nothing else: a discussion command,
+      # or a design command this case does not know, would run a design the
+      # plan did not freeze. When it picks anything else, the lead-only skill
+      # would drop the discussion a person approved. The base and discussion
+      # commands keep what they did before, so no plan frozen before `solo` or
+      # `design_path` existed meets a new refusal.
       #
       # NOT ON A `--resume`, for the reason given above: a re-attachment carries
       # a fixed sentence and no slash command, so testing it here would refuse
-      # every resume of a `solo` design stage.
+      # every resume of a lead-only design stage.
       if [ -z "${GATE_RESUME:-}" ]; then
-        if [ "$(manifest_design_tier)" = "solo" ] && [ "$dd_cmd" != '/cc-cmds:design-solo-unattended ' ]; then
-          warn "solo 티어 계획의 설계 스테이지는 /cc-cmds:design-solo-unattended 로만 띄웁니다 — 이 프롬프트는 ${dd_cmd:-알려진 설계 명령이 아닌 것}입니다"
-          warn "설계 명령은 스냅숏의 design_skill 값($(manifest_design_skill))을 그대로 쓰세요"
+        local dd_skill
+        dd_skill=$(manifest_design_skill)
+        if [ "$dd_skill" = "design-solo-unattended" ] && [ "$dd_cmd" != '/cc-cmds:design-solo-unattended ' ]; then
+          warn "선택 함수가 design-solo-unattended 를 고른 계획의 설계 스테이지는 /cc-cmds:design-solo-unattended 로만 띄웁니다 — 이 프롬프트는 ${dd_cmd:-알려진 설계 명령이 아닌 것}입니다"
+          warn "설계 명령은 스냅숏의 design_skill 값($dd_skill)을 그대로 쓰세요"
           exit "$GATE_EXIT_RULE"
         fi
-        if [ "$(manifest_design_tier)" != "solo" ] && [ "$dd_cmd" = '/cc-cmds:design-solo-unattended ' ]; then
-          warn "/cc-cmds:design-solo-unattended 는 solo 티어 계획에서만 띄웁니다 — 이 계획의 design_tier 는 $(manifest_design_tier) 입니다"
-          warn "설계 명령은 스냅숏의 design_skill 값($(manifest_design_skill))을 그대로 쓰세요"
+        if [ "$dd_skill" != "design-solo-unattended" ] && [ "$dd_cmd" = '/cc-cmds:design-solo-unattended ' ]; then
+          warn "/cc-cmds:design-solo-unattended 는 선택 함수가 design-solo-unattended 를 고른 계획에서만 띄웁니다 — 이 계획의 design_skill 은 $dd_skill 입니다"
+          warn "설계 명령은 스냅숏의 design_skill 값($dd_skill)을 그대로 쓰세요"
           exit "$GATE_EXIT_RULE"
         fi
       fi
@@ -40088,6 +40211,8 @@ gate_record_stage_outcome() {
       "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}
   fi
+  # Every audit attempt leaves its `감사 공시` row right after its own row.
+  [ "$kind" != "audit" ] || gate_record_audit_disclosure "$seg" "$attempt"
   # A re-convergence row voids the segment's plan; the file goes too, or the
   # plan-file fallback above would put the void digest back on the next row.
   [ "$kind" != "reconverge" ] || void_segment_plan "$rowseg"

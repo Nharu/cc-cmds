@@ -3421,7 +3421,7 @@ check "그 진입은 S1design 을 런 범위 무효화 게이트 park 로 멈춘
 
 # S2 — 주 루프를 태운다. 설계 팔은 통과로 두고 문서의 동결 여부만 바꾼다.
 arms_loop() {
-  # arms_loop <라벨> <매니페스트> <문서: 동결|초안>
+  # arms_loop <라벨> <매니페스트> <문서: 동결|초안> [원장에 미리 둘 행]
   local d="$ARMS/$1"
   rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/docs"
   (
@@ -3430,6 +3430,7 @@ arms_loop() {
     DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; DOC_SLUG=x; DOC_BASE="$d"
     ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG=x; BASE="$d"
     : > "$LEDGER"
+    [ -z "${4:-}" ] || printf '%s\n' "$4" >> "$LEDGER"
     case "$3" in
       동결) printf '# 설계\n\n**상태**: 동결됨\n\n## 문제\n\n본문\n' > "$DOC" ;;
       초안) printf '# 설계\n\n**상태**: 초안\n\n## 문제\n\n본문\n' > "$DOC" ;;
@@ -3489,6 +3490,53 @@ case "$arms_low_rc/$arms_low" in
   *"진입 판정이 검사기를 통과하지 못했습니다"*"보다 낮습니다"*) ok "검사 21 — team-4 판정을 solo 로 내린 계획은 죽는다" ;;
   *) bad "검사 21 — team-4 판정을 solo 로 내린 계획은 죽는다" "$arms_low" ;;
 esac
+
+# 설계 경로 — team-4 단일 설계를 리드 혼자 쓰는 `solo-audit` 는 리드 단독 스킬로 설계하고
+# 감사는 그대로 돈다. 키 없는 team-4 계획은 키 이전 계획이라 토론 경로로 읽힌다.
+ARMS_T4='"design_required": true, "design_tier_judged": "team-4", "design_tier": "team-4", "design_heavy_reasons": ["세 레포의 계약"], "estimated_files": 12, "design_scope": "single"'
+ARMS_T4_STEPS='"steps": [ { "id": "D1", "skill": "design", "summary": "s", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "s", "depends_on": ["D1"] }, { "id": "I1", "skill": "implement", "summary": "s", "depends_on": ["D1", "A1"] } ]'
+MFSPATH="$ARMS/solo-audit.md"; arms_manifest "$MFSPATH" "{ $ARMS_T4, \"design_path\": \"solo-audit\", $ARMS_T4_STEPS }"
+MFT4OLD="$ARMS/team4-nokey.md"; arms_manifest "$MFT4OLD" "{ $ARMS_T4, $ARMS_T4_STEPS }"
+check "선택 함수 — team-4 solo-audit 계획은 리드 단독 스킬이다" \
+  "$(MANIFEST="$MFSPATH"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_path)/$(MANIFEST="$MFSPATH"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_skill)" \
+  "solo-audit/design-solo-unattended"
+check "선택 함수 — 키 없는 team-4 단일 설계 계획은 discuss-audit 로 읽혀 토론 스킬이다" \
+  "$(MANIFEST="$MFT4OLD"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_path)/$(MANIFEST="$MFT4OLD"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_skill)" \
+  "discuss-audit/design-discuss-unattended"
+arms_arm spath "$MFSPATH" 없음 '정상 완료'
+check "solo-audit 계획의 설계 팔은 리드 단독 스킬을 띄운다" \
+  "$( { cut -f2 "$ARMS/spath/dispatched" 2>/dev/null || true; } | { grep -c -F "/cc-cmds:design-solo-unattended $ARMS/spath/docs/x.md " || true; })" "1"
+if ( MANIFEST="$MFSPATH"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) >/dev/null 2>&1; then
+  ok "검사 22 — 로스터 없는 solo-audit 계획은 매니페스트 검사를 통과한다"
+else
+  bad "검사 22" "solo-audit 계획이 거부됐다: $( ( MANIFEST="$MFSPATH"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 | tail -1 )"
+fi
+MFSPATHR="$ARMS/solo-audit-roster.md"; cp "$MFSPATH" "$MFSPATHR"
+printf -- '- `설계 로스터` | 역할=architecture | 범위=구조 | 모델=opus\n' >> "$MFSPATHR"
+arms_ros=$( ( MANIFEST="$MFSPATHR"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 ); arms_ros_rc=$?
+case "$arms_ros_rc/$arms_ros" in
+  0/*) bad "검사 22 — 로스터를 지닌 solo-audit 계획은 죽는다" "통과했다" ;;
+  *"solo-audit 계획에 「설계 로스터」 행이 있습니다"*) ok "검사 22 — 로스터를 지닌 solo-audit 계획은 죽는다" ;;
+  *) bad "검사 22 — 로스터를 지닌 solo-audit 계획은 죽는다" "$arms_ros" ;;
+esac
+
+# 감사 공시 — 드라이버의 S2 행 뒤에 행 하나. 앞선 재수렴 행이 있는 키면 회차는 재감사다.
+arms_loop s2-spath "$MFSPATH" 동결
+arms_disc=$( { grep -F -e '- `감사 공시` |' "$ARMS/s2-spath/ledger.md" 2>/dev/null || true; } )
+check "solo-audit 런은 동결 문서로 감사를 띄우고 세그먼트 계획으로 간다" "$(arms_s2 s2-spath)/$(arms_s3 s2-spath)" "1/도달"
+check "그 감사가 감사 공시 행 하나를 남긴다" "$(printf '%s' "$arms_disc" | grep -c . || true)" "1"
+arms_disc_f() { printf '%s\n' "$arms_disc" | tr '|' '\n' | sed -n "s/^ *$1=//p" | sed 's/[[:space:]]*$//'; }
+if [ "$(arms_disc_f 스테이지)/$(arms_disc_f 경로)/$(arms_disc_f 회차)" = "S2/solo-audit/최초" ]; then
+  ok "그 행은 S2 의 최초 회차이고 경로는 solo-audit 다"
+else
+  bad "그 행은 S2 의 최초 회차이고 경로는 solo-audit 다" "${arms_disc:-행 없음}"
+fi
+check "감사 공시 행은 S2 의 stage-result 행 뒤에 온다" \
+  "$(awk '/`stage-result`/ && /스테이지=S2 / { s = NR } /`감사 공시`/ { c = NR } END { print (s && c > s) ? "뒤" : "아님" }' "$ARMS/s2-spath/ledger.md")" "뒤"
+arms_loop s2-reaudit "$MFSPATH" 동결 \
+  "- \`stage-result\` | 세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge | 종단 부류=정상 완료"
+check "재수렴 행이 앞선 키의 감사 공시 행은 재감사 회차다" \
+  "$( { grep -F -e '- `감사 공시` |' "$ARMS/s2-reaudit/ledger.md" 2>/dev/null || true; } | { grep -c -F '| 회차=재감사 |' || true; })" "1"
 
 # --- 21c-2 라우터 경로가 같은 계획을 읽는 자리 — 스냅숏 직렬화와 설계 단계 id ------
 # 라우터가 구동하는 런에서는 위 팔이 돌지 않고, 교대는 스냅숏 말고 입력이 없다. 그래서
