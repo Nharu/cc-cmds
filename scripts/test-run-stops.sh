@@ -248,8 +248,14 @@ check "halt: an adopted copy and attachments are no event" "$(stops)" ""
 shalt() {
   mkdir -p "$RD/halt/shift"
   printf '<!-- cc-pipeline-halt v1 -->\n**분류**: %s\n**관측 상세**: 자유 문면 precondition-failed 는 읽히지 않는다\n<!-- /cc-pipeline-halt v1 -->\n' "$2" > "$RD/halt/shift/$1.md"
-  row blocked '대상=cc-cmds' '스코프=cone' '원인=막힘' "앵커 세그먼트=${1%%#*}" '사유=교대 정지 — 세그먼트 재개' \
-    '근거=재개할 수 없음' "중단 기록=$RD/halt/shift/$1.md" '기록 다이제스트=0' '자리=세그먼트 재개'
+  local site="${3:-병합 거절}"
+  row blocked '대상=cc-cmds' '스코프=cone' '원인=막힘' "앵커 세그먼트=${1%%#*}" "사유=교대 정지 — $site" \
+    '근거=재개할 수 없음' "중단 기록=$RD/halt/shift/$1.md" '기록 다이제스트=0' "자리=$site" '교대=1'
+}
+# The reach park a shift's own act writes: the gate launches a shift with no
+# stage id, so the row carries `스테이지=-` and the segment acted on.
+shiftpark() {
+  row blocked '대상=cc-cmds' '스코프=act' '원인=막힘' '사유=도달 park' "도달 판정=$2" "세그먼트=$1" '스테이지=-'
 }
 newcase
 row stage-result '세그먼트=s1' '스테이지=s1' '종류=implement' '실행 버전=1' '종단 부류=정상 완료'
@@ -269,6 +275,29 @@ check "shift halt: an answered record is no event" "$(stops | grep -c '^halt/')"
 row blocked '대상=cc-cmds' '스코프=cone' '원인=막힘' '앵커 세그먼트=ghost' \
   '사유=중단 답 라우팅 — ghost#1.md — 세그먼트 없음' "막힌 답 줄=$(grep -c '' "$LG")"
 has "shift halt: a returned answer waits again" "$(stops)" "$(ev 'halt/gate-unanswerable/미분류' 비의도 - '원인 셀 미결합')"
+
+# A shift stopped at `도달 거부` by its own act's reach park: the record is
+# judged by that park's cell, as a stage halt is by its attempt's park.
+newcase
+for sk in s1:implement s2:review s3:audit s4:design s5:generic s6:split; do
+  row stage-result "세그먼트=${sk%%:*}" "스테이지=${sk%%:*}" "종류=${sk#*:}" '실행 버전=1' '종단 부류=정상 완료'
+  row segment "id=${sk%%:*}" '상태=실행중'
+done
+shiftpark s1 prod인가없음;  shalt 's1#1' gate-unanswerable '도달 거부'
+shiftpark s2 신고등급한도;  shalt 's2#1' gate-unanswerable '도달 거부'
+shiftpark s3 prod인가없음;  shalt 's3#1' gate-unanswerable
+row blocked '대상=x' '스코프=act' '원인=막힘' '사유=도달 park' '도달 판정=prod인가없음' '세그먼트=s4' '스테이지=s4#1'
+shalt 's4#1' gate-unanswerable '도달 거부'
+shalt 's5#1' gate-unanswerable '도달 거부'; shiftpark s5 prod인가없음
+shiftpark s6 prod인가없음;  shiftpark s6 신고등급한도;  shalt 's6#1' gate-unanswerable '도달 거부'
+out=$(stops)
+has "shift halt: a four-cell shift park at 도달 거부 is intended" "$out" "$(ev 'halt/gate-unanswerable/implement' 의도 '사전 인가 밖')"
+has "shift halt: another cell at 도달 거부 is reported without the marker" "$out" "$(ev 'halt/gate-unanswerable/review' 비의도)"
+has "shift halt: a reach park binds no record of another site" "$out" "$(ev 'halt/gate-unanswerable/audit' 비의도 - '원인 셀 미결합')"
+has "shift halt: a stage attempt's park binds no shift record" "$out" "$(ev 'halt/gate-unanswerable/design' 비의도 - '원인 셀 미결합')"
+has "shift halt: a park after the stop binds nothing" "$out" "$(ev 'halt/gate-unanswerable/generic' 비의도 - '원인 셀 미결합')"
+has "shift halt: the last shift park before the stop decides" "$out" "$(ev 'halt/gate-unanswerable/split' 비의도)"
+check "shift halt: one line per record of the reach case" "$(printf '%s\n' "$out" | grep -c '^halt/')" "6"
 
 # --- cone ---------------------------------------------------------------------
 
@@ -318,6 +347,16 @@ check "pin: the shift halt record is <seg>#<n>.md under the shift halt directory
   "$( { grep -cF 'sdst="$sdir/$seg#$sn.md"' "$GATE" || true; } )" "1"
 check "pin: the shift halt directory is the run's halt/shift" \
   "$(sed -n '/^gate_shift_halt_dir() {/,/^}/p' "$GATE" | grep -cF 'local d="$RUN_DIR/halt/shift"')" "1"
+check "pin: the shift halt cone row names its record and its site" \
+  "$( { grep -cF '"앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \' "$GATE" || true; } )" "2"
+check "pin: the shift halt cone row carries the site field" \
+  "$( { grep -cF '"기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} || r=$?' "$GATE" || true; } )" "1"
+check "pin: the gate launches a shift with no stage id" \
+  "$( { grep -cxF '  CC_PIPELINE_STAGE_ID= \' "$GATE" || true; } )" "1"
+check "pin: a reach park with no stage id writes 스테이지=-" \
+  "$( { grep -cF 'local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"' "$GATE" || true; } )" "1"
+check "pin: the shift halt site table has the reach refusal site" \
+  "$(sed -n '/^gate_shift_halt_site_table() {/,/^}/p' "$GATE" | grep -c '^도달 거부|')" "1"
 check "pin: the gate stamps a returned answer on a routing cone row" \
   "$( { grep -cF 'stamp=("막힌 답 줄=$sl")' "$GATE" || true; } )" "1"
 check "pin: the gate writes the refusal end class" \

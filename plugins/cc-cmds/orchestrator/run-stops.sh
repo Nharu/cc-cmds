@@ -275,7 +275,18 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
           s = fld("세그먼트"); if (s != "" && s != "-") { ACTR[s] = rs; ACTC[s] = fld("도달 판정") }
           st2 = fld("스테이지")
           if (rs == "도달 park" && st2 != "" && st2 != "-") PARKCELL[st2] = fld("도달 판정")
+          # A routing shift runs with no stage id, so its reach park carries
+          # `스테이지=-` and the segment it acted on.
+          if (rs == "도달 park" && (st2 == "" || st2 == "-") && s != "" && s != "-") SHREACH[s] = fld("도달 판정")
         } else if (sc == "cone" && rs != "") {
+          # A shift stop at `도달 거부` follows the reach park that refused an
+          # act of that shift: the last such park of the anchor segment above
+          # this row binds the record the row names.
+          sr = fld("중단 기록"); sa = fld("앵커 세그먼트")
+          if (sr != "" && fld("자리") == "도달 거부" && (sa in SHREACH)) {
+            sub(/.*\//, "", sr); sub(/\.md$/, "", sr)
+            SHCELL[sr] = SHREACH[sa]
+          }
           # The last row per 사유 decides, as in every other fold: a later
           # `원인=해소` row of the same 사유 resolves it. An undecidable ancestry
           # row has no anchor; it names the two segments it could not measure.
@@ -324,9 +335,9 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
           else emit(sig, "비의도")
         } else emit(sig, "비의도")
       }
-      # shift halt: an unanswered one, of the segment it names. A reach park is
-      # keyed on a stage attempt and never on a shift record, so a
-      # gate-unanswerable one is always unbound.
+      # shift halt: an unanswered one, of the segment it names. A record the
+      # gate wrote at `도달 거부` is bound to the shift reach park before it,
+      # and judged by that cell as a stage halt is; every other one is unbound.
       n = split(shalts, H, "\n")
       for (i = 1; i <= n; i++) {
         if (H[i] == "") continue
@@ -334,8 +345,11 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         seg = hid; sub(/#[0-9]+$/, "", seg)
         sig = "halt/" (inv("HA", cls) ? cls : "미분류") "/" ((seg in SEGKIND) ? kindof(SEGKIND[seg]) : "미분류")
         EV[seg] = 1
-        if (cls == "gate-unanswerable") emit(sig, "비의도", "", "원인 셀 미결합")
-        else emit(sig, "비의도")
+        if (cls == "gate-unanswerable") {
+          if (!(hid in SHCELL)) emit(sig, "비의도", "", "원인 셀 미결합")
+          else if (inv("CE", SHCELL[hid])) emit(sig, "의도", "사전 인가 밖")
+          else emit(sig, "비의도")
+        } else emit(sig, "비의도")
       }
       # cone: only where no stage or halt event of a segment it names explains it
       for (i = 1; i <= CN; i++) {
