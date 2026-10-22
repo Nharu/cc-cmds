@@ -500,18 +500,21 @@ check "8b: 끊긴 등록은 조회 실패 건너뜀 행을 남긴다" "$(field "
 check "8b: 끊긴 등록은 필링 행을 남기지 않는다" "$(nrows "$(file_rows)")" "0"
 
 # --- 8c. 분리 회차 · 기한 · 난스 ------------------------------------------------------------
-# 동사는 회차를 기다리지 않는다. 수집기가 5초 걸려도 동사는 곧바로 돌아오고, 그때 잠금은
-# 아직 회차가 쥐고 있으며, 회차가 끝나면 필링은 동기로 돌던 때와 같다.
+# 동사는 회차를 기다리지 않는다. 수집기가 8초 걸려도 동사는 그보다 먼저 돌아오고, 그때
+# 잠금은 아직 회차가 쥐고 있으며, 회차가 끝나면 필링은 동기로 돌던 때와 같다. 경과의
+# 문턱은 수집기의 멈춤 자체다 — 동사가 회차를 기다렸다면 `SECONDS` 차는 멈춤 이상이
+# 되고, 기다리지 않았다면 동사 자신의 지연만 남는다. 그 지연은 부하가 걸린 러너에서
+# 3초를 넘기도 하므로, 고정된 작은 문턱이 아니라 멈춤과 견준다.
 fresh; round T3/review
 before=$(calls)
-export CC_STUB_SLEEP=5
+export CC_STUB_SLEEP=8
 t0=$SECONDS
 snap_nowait
 el_call=$((SECONDS - t0))
 lock_after=$([ -d "$STATE_ROOT/.metrics.lock" ] && printf 있음 || printf 없음)
 wait_round
+check "8c: 수집기가 오래 걸려도 게이트 동사는 수집기의 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt "$CC_STUB_SLEEP" ] && printf 예 || printf "아니오(${el_call}초)")" "예"
 unset CC_STUB_SLEEP
-check "8c: 수집기가 오래 걸려도 게이트 동사는 곧바로 돌아온다" "$([ "$el_call" -lt 3 ] && printf 예 || printf "아니오(${el_call}초)")" "예"
 check "8c: 동사가 돌아왔을 때 잠금은 아직 회차가 쥐고 있다" "$lock_after" "있음"
 check "8c: 분리 회차가 수집기를 한 번 부른다" "$(( $(calls) - before ))" "1"
 check "8c: 분리 회차가 끝나면 잠금이 풀린다" "$([ -d "$STATE_ROOT/.metrics.lock" ] && printf 있음 || printf 없음)" "없음"
