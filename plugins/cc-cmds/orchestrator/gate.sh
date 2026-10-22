@@ -304,6 +304,11 @@ CC_ORCH_SOURCE_ONLY=1
 export CC_ORCH_SOURCE_ONLY
 # shellcheck source=/dev/null
 . "$GATE_DIR/run.sh"
+# The user-plugin key derivation the settings render writes into every variant.
+# Sourced because the kickoff helper lists the same keys as candidates, and two
+# derivations would let the keys it offers differ from the keys the run turns off.
+# shellcheck source=/dev/null
+. "$GATE_DIR/plugin-isolation.sh"
 # The capability half of the boundary. Sourced rather than re-implemented: the
 # gate is the one process that holds the write-scoped credential, and the code
 # that decides which credential a child gets has to be the same code in both
@@ -11800,14 +11805,15 @@ gate_prior_run_landed() {
   # `park` nor `적용 준비`, because a segment merged and then parked is on the
   # base all the same.
   #
-  # A LEDGER THAT ENDS IN `park` AND NEVER RECORDED A LANDING may still have
-  # landed: a person can merge the pull request after the run is over, and no
-  # row is written for that. Such a ledger is an outside-merge candidate when
-  # one of its rows for the id carries a numeric `PR` — the last `segment` row
-  # that does, else the last `원격 판독` row of `세그먼트=<id>` — and it is
-  # chosen only when no ledger has a landing row. It comes back with
+  # A LEDGER THAT NEVER RECORDED A LANDING may still have landed: a person can
+  # merge the pull request after the run is over, and no row is written for
+  # that. Such a ledger — its last row for the id a `park`, or a non-terminal
+  # row a shift halt left in place — is an outside-merge candidate when one of
+  # its rows for the id carries a numeric `PR` — the last `segment` row that
+  # does, else the last `원격 판독` row of `세그먼트=<id>` — and it is chosen
+  # only when no ledger has a landing row. It comes back with
   # GATE_PRIOR_OUTSIDE=1, GATE_PRIOR_KIND=PR, that number in GATE_PRIOR_PR, the
-  # id's last `브랜치` in GATE_PRIOR_BRANCH and the `park` row in
+  # id's last `브랜치` in GATE_PRIOR_BRANCH and that last row in
   # GATE_PRIOR_ROW; the caller brings it in only as a merged request.
   #
   # A SLICE WHOSE DECLARED CUTPOINT IS PR LANDS AS A PULL REQUEST, and its
@@ -11849,7 +11855,7 @@ gate_prior_run_landed() {
   # candidates with one warning naming the field that differs. The whole-
   # document digest is deliberately not compared: any edit anywhere would make
   # every slice be done again.
-  local seg="$1" dir f rrow rows row ln p br rid cand="" ocand="" best tab dd c
+  local seg="$1" dir f rrow rows row ln p br rid cand="" ocand="" best tab dd c out
   tab=$(printf '\t')
   GATE_PRIOR_RUN=""; GATE_PRIOR_ROW=""; GATE_PRIOR_KIND=""; GATE_PRIOR_DECL_MOVED=""
   GATE_PRIOR_OUTSIDE=""; GATE_PRIOR_PR=""; GATE_PRIOR_BRANCH=""
@@ -11869,6 +11875,7 @@ gate_prior_run_landed() {
     # prefix sits in the row's first field, which no field reader reads.
     rows=$( { grep -nE '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; })
     [ -n "$rows" ] || continue
+    out=""
     rid=$(gate_row_field "$rrow" 'run-id')
     [ -n "$rid" ] || rid=$(basename "$f" .md)
     if gate_landing_walk gate_prior_row_landed <<ROWS
@@ -11878,14 +11885,19 @@ ROWS
       ln=${GATE_WALK_ROW%%:*}
       row=${GATE_WALK_ROW#*:}
     else
-      # A RUN THAT PARKED THE SLICE AND A PERSON WHO MERGED IT AFTERWARDS leave
-      # no landing row: the run was over before the merge, so nothing wrote it.
-      # The pull request the ledger names is the only evidence, and it is held
-      # back as a candidate of its own — a ledger with a landing row beats every
-      # such one — for the import to check against the live request.
+      # A RUN THAT LEFT THE SLICE UNLANDED AND A PERSON WHO MERGED IT AFTERWARDS
+      # leave no landing row: the run was over before the merge, so nothing
+      # wrote it. The pull request the ledger names is the only evidence, and it
+      # is held back as a candidate of its own — a ledger with a landing row
+      # beats every such one — for the import to check against the live request.
+      # The last row need not be a `park`: a shift halt stops the segment with
+      # rows of other kinds and leaves its last `segment` row where it was, at
+      # `계획됨` or `실행중`. Only a terminal last row (`머지됨`, `완료`) that
+      # carries no landing is passed over, since the run already said where the
+      # segment ended.
       row=$(printf '%s\n' "$rows" | tail -1)
       row=${row#*:}
-      [ "$(gate_row_field "$row" '상태')" = "park" ] || continue
+      case "$(gate_row_field "$row" '상태')" in 머지됨|완료) continue ;; esac
       # Only a ledger that never recorded a landing: a `머지됨` the walk passed
       # over because the slice was planned again after it is redone work, and
       # the request that merged the first round is not evidence for the second.
@@ -11901,6 +11913,7 @@ ROWS
       br=$(printf '%s\n' "$rows" | awk -F' [|] ' '{ for (i = 2; i <= NF; i++) if (index($i, "브랜치=") == 1) { v = $i; sub(/^브랜치=/, "", v); r = v } } END { print r }')
       ln=$(printf '%s\n' "$rows" | tail -1)
       ln=${ln%%:*}
+      out=1
     fi
     dd=$(gate_prior_decl_diff "$seg" "$f" "$row")
     if [ -n "$dd" ]; then
@@ -11911,7 +11924,7 @@ ROWS
       case "$dd" in "슬라이스 선언 불일치"*) GATE_PRIOR_DECL_MOVED=1 ;; esac
       continue
     fi
-    if [ "$(gate_row_field "$row" '상태')" = "park" ]; then
+    if [ -n "$out" ]; then
       ocand="$ocand$(gate_row_field "$rrow" '시작')$tab$p$tab$br$tab$ln$tab$rid$tab$f
 "
     else
@@ -12038,8 +12051,9 @@ gate_import_prior_landed() {
   pdg=$(gate_row_field "$GATE_PRIOR_ROW" '선언 다이제스트')
   case "$pdg" in *[!0-9a-f]*) pdg="" ;; esac
   [ "${#pdg}" -eq 64 ] || pdg=""
-  # AN OUTSIDE MERGE IS A `park` ROW AND A REQUEST NUMBER. The request and the
-  # branch come from the walk, not from the `park` row, which carries neither;
+  # AN OUTSIDE MERGE IS AN UNLANDED LAST ROW AND A REQUEST NUMBER — a `park`, or
+  # the `계획됨`/`실행중` row a shift halt left in place. The request and the
+  # branch come from the walk, not from that row, which need carry neither;
   # only a merged request brings it in, and it comes in as `머지됨` with the
   # request's merge commit — the same row a run that merged it would have left.
   if [ "$GATE_PRIOR_OUTSIDE" = "1" ]; then
@@ -12084,7 +12098,7 @@ EOF
       case "$ost" in
         OPEN)
           if [ "$GATE_PRIOR_OUTSIDE" = "1" ]; then
-            why="PR #${ppr} 이 그 런의 park 뒤에도 열려 있습니다 — 머지되지 않은 작업은 들이지 않습니다"
+            why="PR #${ppr} 이 그 런의 ${pst} 뒤에도 열려 있습니다 — 머지되지 않은 작업은 들이지 않습니다"
           else
             [ "$ohd" = "$pc" ] || why="PR #${ppr} 의 head ${ohd:-(없음)} 가 행의 커밋 ${pc} 와 다릅니다"
           fi ;;
@@ -12125,7 +12139,7 @@ EOF
     fi
     if [ -n "$why" ]; then
       if [ "$GATE_PRIOR_OUTSIDE" = "1" ]; then
-        warn "슬라이스 ${seg} 는 이전 런 ${GATE_PRIOR_RUN} 이 park 로 끝냈고 런 밖 머지로도 들여오지 않습니다 — ${why}"
+        warn "슬라이스 ${seg} 는 이전 런 ${GATE_PRIOR_RUN} 이 ${pst} 에서 멈췄고 런 밖 머지로도 들여오지 않습니다 — ${why}"
       else
         warn "슬라이스 ${seg} 의 이전 런 ${GATE_PRIOR_RUN} PR 절단점 종단 행은 들여오지 않습니다 — ${why}"
       fi
@@ -12139,10 +12153,10 @@ EOF
       # run's apply is not the slice's ending.
       if gate_segment_owes_apply "$dal" "$seg"; then
         if [ "$mode" = "self" ]; then
-          warn "슬라이스 ${seg} 는 이전 런 ${GATE_PRIOR_RUN} 이 park 한 뒤 런 밖에서 PR #${ppr} 로 머지됐지만 적용이 남았습니다 — 들여오지 않고 다시 합니다"
+          warn "슬라이스 ${seg} 는 이전 런 ${GATE_PRIOR_RUN} 이 ${pst} 에서 멈춘 뒤 런 밖에서 PR #${ppr} 로 머지됐지만 적용이 남았습니다 — 들여오지 않고 다시 합니다"
           return 1
         fi
-        warn "세그먼트 계획 거부: 선행 ${seg} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 park 한 뒤 런 밖에서 PR #${ppr} 로 머지됐지만 적용이 남았습니다 — 적용이 남은 머지는 들여오지 않습니다"
+        warn "세그먼트 계획 거부: 선행 ${seg} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 ${pst} 에서 멈춘 뒤 런 밖에서 PR #${ppr} 로 머지됐지만 적용이 남았습니다 — 적용이 남은 머지는 들여오지 않습니다"
         return "$GATE_EXIT_RULE"
       fi
       pst="머지됨"
@@ -15951,7 +15965,53 @@ gate_settings_key() {
     # The segment worktrees, sorted so row order cannot move the key.
     gate_segment_worktrees_for_settings | LC_ALL=C sort -u | sed 's/^/segment-worktree\t/'
     printf 'gate\t%s\n' "$(shasum -a 256 "$GATE_DIR/gate.sh" 2>/dev/null | cut -d' ' -f1)"
+    # The `enabledPlugins` inputs: every key the render turns off or on, the
+    # seed's bytes, and the file that derives them. A user key missed here
+    # would leave a plugin the account enabled after the last render loaded
+    # until some other input moved.
+    gate_plugin_user_keys 2>/dev/null | sed 's/^/plugin-off\t/'
+    gate_plugin_allow_keys | sed 's/^/plugin-allow\t/'
+    printf 'plugin-seed\t%s\n' "$(pi_seed_hash "$GATE_DIR/plugin-allow.seed")"
+    printf 'plugin-isolation\t%s\n' "$(shasum -a 256 "$GATE_DIR/plugin-isolation.sh" 2>/dev/null | cut -d' ' -f1)"
   } | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_plugin_account_dirs() {
+  # The account directories a stage of this run can be launched under, one per
+  # line: the directory the run was opened from, and every `config_dir` of the
+  # run's routing inventory when it holds one. The inventory is read without the
+  # router's eligibility filter — a directory listed there but not lendable today
+  # can become lendable during the run, and its keys cost nothing to turn off.
+  {
+    gate_personal_rules_seat_dir
+    printf '\n'
+    if [ -f "$RUN_DIR/inventory.json" ] && [ ! -L "$RUN_DIR/inventory.json" ]; then
+      jq -r '.accounts[]? | .config_dir // empty' "$RUN_DIR/inventory.json" 2>/dev/null || true
+    fi
+  } | sed '/^$/d' | LC_ALL=C sort -u
+}
+
+gate_plugin_user_keys() {
+  # The user-plugin keys every variant names: installed or enabled in any of the
+  # run's account directories. A file that does not parse warns on stderr.
+  local dirs
+  dirs=$(gate_plugin_account_dirs)
+  [ -n "$dirs" ] || return 0
+  # Word splitting on newlines only: a directory name may hold a space.
+  local IFS='
+'
+  # shellcheck disable=SC2086
+  pi_user_keys $dirs
+}
+
+gate_plugin_allow_keys() {
+  # The keys a stage variant turns on: the pinned copy's seed plus the
+  # manifest's `플러그인 허용` rows.
+  local IFS='
+'
+  # shellcheck disable=SC2046
+  pi_allow_keys "$GATE_DIR/plugin-allow.seed" \
+    $(manifest_plugin_allow_rows 2>/dev/null | sed -n 's/^- `플러그인 허용` | 플러그인=\([^ |]*\) |.*/\1/p')
 }
 
 gate_settings_key_record() {
@@ -16140,6 +16200,18 @@ $(gate_segment_worktrees_for_settings)"
     [ "$adir" != "$aprev" ] || break
   done
 
+  # THE USER'S PLUGINS ARE NAMED IN EVERY VARIANT. A session launched with
+  # `--settings` still loads whatever the account's own settings enable, so a
+  # variant that leaves `enabledPlugins` out hands every stage the skill and
+  # command lists of plugins the pipeline never calls. Each user key is written
+  # `false` and each allow key `true` — `true` turns on a plugin the account has
+  # switched off, and on an account where it is not installed it does nothing.
+  # The keys are derived once here and only the shift branch below differs: the
+  # router's shift turns every one of them off, allow keys included.
+  local pl_user pl_allow pl_obj pl_shift
+  pl_user=$(gate_plugin_user_keys)
+  pl_allow=$(gate_plugin_allow_keys)
+
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
     # Every stage variant ALLOWS `WebFetch` / `WebSearch` explicitly (the else
@@ -16189,6 +16261,9 @@ $(gate_segment_worktrees_for_settings)"
     else
       kind_allow="\"WebFetch\", \"WebSearch\"${kind_allow:+, $kind_allow}"
     fi
+    pl_shift=0
+    [ "$k" != "shift" ] || pl_shift=1
+    pl_obj=$(pi_render_enabled "$pl_shift" "$pl_user" "$pl_allow")
     # A VARIANT THAT FAILS TO WRITE FAILS THE FUNCTION. The loop used to swallow
     # the status, so a caller re-baselined and recorded a settled key over files
     # that were never rewritten. Returning here is what makes "both the rewrite
@@ -16212,7 +16287,8 @@ $(gate_segment_worktrees_for_settings)"
         ]
       }
     ]
-  }
+  },
+  "enabledPlugins": ${pl_obj}
 }
 JSON
   done
@@ -26950,6 +27026,69 @@ gate_judgment_fields_ok() {
   return 0
 }
 
+gate_judgment_adoption_row() {
+  # gate_judgment_adoption_row <measure|append> <폭> <키=값>... — the one
+  # definition of a judgment adoption row (`자율 승인` · `kind=judgment`).
+  # `measure` prints the bytes `gate_append` will compare against
+  # `GATE_ROW_MAX`; `append` writes the row. Both assemble it from the same
+  # loop, so the row that was measured is the row that is written.
+  #
+  # ONLY THE THREE FREE-TEXT FIELDS ARE NARROWED. `기준`, `근거` and
+  # `되돌리는 법` are prose a caller or a stage wrote, and they are what makes a
+  # judgment row long; every other field is a fixed token, an id or a class, and
+  # passes through in order and byte for byte. With `<폭>` set to `전체` nothing
+  # is narrowed at all, so a row that already fits is written exactly as given.
+  # Rotated through the positional parameters as `gate_append` does: the
+  # interpreter floor is bash 3.2.
+  local mode="$1" w="$2" f n_args i=0
+  shift 2
+  n_args=$#
+  while [ "$i" -lt "$n_args" ]; do
+    f="$1"; shift; i=$((i + 1))
+    if [ "$w" != "전체" ]; then
+      case "$f" in
+        '기준='*|'근거='*|'되돌리는 법='*) f="${f%%=*}=$(gate_row_safe "${f#*=}" "$w")" ;;
+      esac
+    fi
+    set -- "$@" "$f"
+  done
+  case "$mode" in
+    measure) gate_row_projected_bytes '자율 승인' "$@" ;;
+    append)  gate_append '자율 승인' "$@" ;;
+    *) warn "gate_judgment_adoption_row: unknown mode '$mode'"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+}
+
+gate_judgment_adoption_width() {
+  # gate_judgment_adoption_width <시작 폭> <키=값>... — print the widest width
+  # for the three free-text fields at which the adoption row fits under
+  # `GATE_ROW_MAX`, and return 0; return 1 when even the floor of 40 bytes does
+  # not fit, which means the overflow is in a field this does not narrow.
+  #
+  # A FIXED CUT IS NOT A ROW CAP. Three free-text fields cut to 150 bytes each
+  # still leave the row to whatever the other fields carry — a long segment id,
+  # a long class, a field the caller added — and `gate_append` does not shorten
+  # an over-long row, it ends the process. The width is narrowed by 40 a step and
+  # measured each time, the way the carried `중단 답` row does it, and the last
+  # step lands on 40 exactly whatever the start was. `<시작 폭>` of `전체` first
+  # measures the row unnarrowed and starts the descent at 300 only when that
+  # does not fit; a numeric start is the widest width a caller allows.
+  local w="$1" len
+  shift
+  if [ "$w" = "전체" ]; then
+    len=$(gate_judgment_adoption_row measure 전체 "$@")
+    if [ "$len" -le "$GATE_ROW_MAX" ]; then printf '전체'; return 0; fi
+    w=300
+  fi
+  while :; do
+    len=$(gate_judgment_adoption_row measure "$w" "$@")
+    if [ "$len" -le "$GATE_ROW_MAX" ]; then printf '%s' "$w"; return 0; fi
+    [ "$w" -le 40 ] && return 1
+    w=$((w - 40))
+    [ "$w" -lt 40 ] && w=40
+  done
+}
+
 gate_notify_segment_park() {
   # gate_notify_segment_park <segment>
   #
@@ -28760,8 +28899,23 @@ EOF
          && [ "$(gate_row_field "$(gate_approval_last_row "$GATE_RESOLVED_APPROVAL")" '처분 사유')" = "자유 입력" ]; then
         GATE_JUDGMENT_DECISION="자유 입력 소비"
       fi
-      gate_append '자율 승인' "kind=judgment" "결정=${GATE_JUDGMENT_DECISION:-채택}" "세그먼트=${seg:--}" \
-        "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
+      # THE ROW IS NARROWED TO THE CAP, NOT REFUSED BY IT. The caller's argv
+      # goes on the row as given while it fits. `gate_append` ends the process
+      # on a row past `GATE_ROW_MAX`, and at grade 2 that would come after the
+      # closing `승인` row is committed, leaving an answered question with no
+      # adoption row. So the three free-text fields are narrowed until the row
+      # fits; the approval id was derived
+      # above from the argv as submitted, so narrowing does not change which
+      # answer this row spends. An overflow outside those three fields is a
+      # submission the gate cannot record, and it is refused, not died on.
+      local jw
+      if ! jw=$(gate_judgment_adoption_width 전체 "kind=judgment" "결정=${GATE_JUDGMENT_DECISION:-채택}" \
+                  "세그먼트=${seg:--}" "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"); then
+        warn "the judgment row does not fit the row cap of $GATE_ROW_MAX bytes even with \`기준\`, \`근거\` and \`되돌리는 법\` narrowed to 40 bytes — the overflow is in another field; shorten that field and submit again"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      gate_judgment_adoption_row append "$jw" "kind=judgment" "결정=${GATE_JUDGMENT_DECISION:-채택}" \
+        "세그먼트=${seg:--}" "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
       # The grade is read from the row rather than hard-coded: a grade-2 judgment
       # whose question has been answered lands here too, and a line claiming
       # grade 1 for it would misdescribe the one event the morning most needs to
@@ -40590,10 +40744,21 @@ gate_absorb_issue() {
         warn "the answer to the question of the judgment the stage emitted (approval $aid) was closed by an earlier auto-resolution, so it is not adopted for the class of this emission ($ctx, class ${cls:-(none)})"
         return 0
       fi
-      gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
+      # Narrowed to the cap from 150 bytes down, the widest each free-text
+      # field may be on this row, so a row that fits at 150 is the one written.
+      # A row that fits at no width is not written: this runs while a stage
+      # result is being recorded, and the contract above is to return 0.
+      local aw
+      if ! aw=$(gate_judgment_adoption_width 150 "kind=judgment" "결정=채택" "세그먼트=$seg" \
+                  "판단 부류=$(gate_row_safe "${cls:--}" 60)" "등급=${grade:--}" \
+                  "기준=$std" "되돌리는 법=-" "근거=$why" \
+                  "출처=스테이지 방출" "해소 승인=${GATE_LAST_JUDGMENT_APPROVAL_ID:--}"); then
+        warn "the adoption row for the judgment the stage emitted does not fit the row cap of $GATE_ROW_MAX bytes even with its free-text fields narrowed to 40 bytes — it is not adopted ($ctx, approval ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
+        return 0
+      fi
+      gate_judgment_adoption_row append "$aw" "kind=judgment" "결정=채택" "세그먼트=$seg" \
         "판단 부류=$(gate_row_safe "${cls:--}" 60)" "등급=${grade:--}" \
-        "기준=$(gate_row_safe "$std" 150)" "되돌리는 법=-" \
-        "근거=$(gate_row_safe "$why" 150)" \
+        "기준=$std" "되돌리는 법=-" "근거=$why" \
         "출처=스테이지 방출" "해소 승인=${GATE_LAST_JUDGMENT_APPROVAL_ID:--}"
       log "스테이지가 방출한 판단에 이미 답이 있어 그 답으로 엽니다 — $ctx (승인 ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
       ;;
@@ -40694,11 +40859,21 @@ gate_absorb_emitted_judgment() {
     gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls" "$grade"
     return 0
   fi
-  gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
+  # Narrowed to the cap from 150 bytes down, as the answered branch of
+  # `gate_absorb_issue` is: a row that fits at 150 is the one written, and one
+  # that fits at no width is not written, because this runs while a
+  # stage result is being recorded and must not end the gate.
+  local jw
+  if ! jw=$(gate_judgment_adoption_width 150 "kind=judgment" "결정=채택" "세그먼트=$seg" \
+              "판단 부류=$cls" "등급=$grade" \
+              "기준=${std:-미상}" "되돌리는 법=$revert" "근거=${why:-스테이지 방출}" \
+              "출처=스테이지 방출"); then
+    warn "the adoption row for the judgment the stage emitted does not fit the row cap of $GATE_ROW_MAX bytes even with its free-text fields narrowed to 40 bytes — it is not adopted ($seg, class $cls)"
+    return 0
+  fi
+  gate_judgment_adoption_row append "$jw" "kind=judgment" "결정=채택" "세그먼트=$seg" \
     "판단 부류=$cls" "등급=$grade" \
-    "기준=$(gate_row_safe "${std:-미상}" 150)" \
-    "되돌리는 법=$(gate_row_safe "$revert" 150)" \
-    "근거=$(gate_row_safe "${why:-스테이지 방출}" 150)" \
+    "기준=${std:-미상}" "되돌리는 법=$revert" "근거=${why:-스테이지 방출}" \
     "출처=스테이지 방출"
   log "스테이지가 방출한 판단을 채택했습니다 — $seg 부류 $cls"
 }

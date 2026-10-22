@@ -1329,6 +1329,16 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; 
 # 제 줄로 찍는다.
 skip() { skipped=$((skipped + 1)); printf 'SKIP: %s\n' "$1"; }
 
+# The routing shift's text is its body and the references/ files it reads on
+# entry to a rare branch. A section asserting on the shift's words reads this
+# corpus, so a sentence moved between the body and a reference is still found
+# and an absence assertion still covers the references. Defined in the
+# preamble because 34o and 67c both call it and either may run alone.
+router_shift_corpus() {  # router_shift_corpus <out file>
+  cat "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md" \
+      "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/"*.md > "$1"
+}
+
 # DEFINED HERE, not beside its later uses. Three call sites sit ~130 lines
 # above where this function used to be declared, so the shell reached them
 # first and reported `graded_as: command not found` — the three assertions
@@ -5561,6 +5571,116 @@ if [ -f "$SETTINGS_DIR/shift.json" ]; then
   fi
 else
   bad "교대 변종 웹" "shift.json 이 없다 — 위 예외가 아무것도 면제하지 않았다"
+fi
+
+# ---------------------------------------------------------------------------
+# 1c. Every settings variant names the user's plugins in `enabledPlugins`
+# --- section: 1c | group: base | covers: - | anchors: 교대 변종은 사용자 키와 허용 키를 모두 false 로 쓴다 ---
+#
+# A session launched with `--settings` still loads the plugins the account's
+# own settings enable, so a variant without `enabledPlugins` hands every stage
+# the skill and command lists of plugins the pipeline never calls. Rendered here
+# against fixture account directories, never the person's: the render reads the
+# run directory's `config-dir` record and its inventory, and both point at the
+# fixture.
+# ---------------------------------------------------------------------------
+PI_DIR="$WORK/plugin-isolation"
+PI_A1="$PI_DIR/acct1"; PI_A2="$PI_DIR/acct2"; PI_A3="$PI_DIR/acct3"
+PI_RD="$PI_DIR/run"
+mkdir -p "$PI_A1/plugins" "$PI_A2" "$PI_A3" "$PI_RD"
+printf '{"version":2,"plugins":{"swift-lsp@claude-plugins-official":[{"scope":"user"}],"typesafe@typesafe-ai":[{"scope":"user"}]}}\n' \
+  > "$PI_A1/plugins/installed_plugins.json"
+printf '{"enabledPlugins":{"figma@claude-plugins-official":true,"cc-cmds@inline":true,"cc-plugin-telemetry@builtin":true,"no-marketplace":true}}\n' \
+  > "$PI_A1/settings.json"
+printf '{"enabledPlugins":{"slack@claude-plugins-official":true}}\n' > "$PI_A2/settings.json"
+printf '{"enabledPlugins":' > "$PI_A3/settings.json"
+printf '%s\n' "$PI_A1" > "$PI_RD/config-dir"
+jq -n --arg a "$PI_A2" --arg b "$PI_A3" '{accounts: [{config_dir: $a}, {config_dir: $b}]}' > "$PI_RD/inventory.json"
+# Both manifests sit at ONE path, swapped in place: the hook command line
+# carries the manifest path, so two paths would differ outside `enabledPlugins`.
+PI_MAN="$PI_DIR/manifest.md"
+cp "$FX_MANIFEST" "$PI_DIR/manifest.bare"
+cp "$FX_MANIFEST" "$PI_DIR/manifest.allow"
+printf -- '- `플러그인 허용` | 플러그인=notion@claude-plugins-official | 사유=과제가 노션 문서를 가리킨다\n' >> "$PI_DIR/manifest.allow"
+cp "$PI_DIR/manifest.allow" "$PI_MAN"
+# pi_gate <manifest> <function> [<settings override>] — call one gate function
+# in-process against the fixture run directory.
+pi_gate() {
+  CC_GATE_SETTINGS_OVERRIDE="${3:-}" bash -c '
+    CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+    RUN_DIR="$2"; MANIFEST="$3"; LEDGER="$4"; GRANT="$4"; BASE="$5"
+    DOC=""; DOC_DIR=""; DOC_BASE=""
+    [ -n "$CC_GATE_SETTINGS_OVERRIDE" ] || unset CC_GATE_SETTINGS_OVERRIDE
+    "$6"' _ "$GATE" "$PI_RD" "$1" "$FX_LEDGER" "$WT" "$2"
+}
+PI_OUT="$PI_DIR/out"
+pi_err=$(pi_gate "$PI_MAN" gate_write_settings "$PI_OUT" 2>&1 >/dev/null); pi_rc=$?
+check "픽스처 계정으로 설정 변종을 렌더한다" "$pi_rc" "0"
+pi_keys() { jq -r '.enabledPlugins | to_entries | map(.key + "=" + (.value | tostring)) | join(" ")' "$PI_OUT/$1.json" 2>/dev/null; }
+check "교대 변종은 사용자 키와 허용 키를 모두 false 로 쓴다" "$(pi_keys shift)" \
+  "figma@claude-plugins-official=false notion@claude-plugins-official=false slack@claude-plugins-official=false swift-lsp@claude-plugins-official=false typesafe@typesafe-ai=false"
+pi_stage_bad=0
+for k in design implement review audit reconverge generic split; do
+  v=$(pi_keys "$k")
+  [ "$v" = "figma@claude-plugins-official=false notion@claude-plugins-official=true slack@claude-plugins-official=false swift-lsp@claude-plugins-official=false typesafe@typesafe-ai=true" ] \
+    || { pi_stage_bad=$((pi_stage_bad + 1)); printf '      %s: %s\n' "$k" "$v" >&2; }
+done
+check "교대를 뺀 일곱 변종은 seed 와 플러그인 허용 행의 키만 true 다" "$pi_stage_bad" "0"
+case " $(pi_keys implement) " in
+  *" slack@claude-plugins-official="*) ok "인벤토리 계정 디렉터리의 키도 들어간다" ;;
+  *) bad "인벤토리 계정의 키" "$(pi_keys implement)" ;;
+esac
+case "$(pi_keys implement) $(pi_keys shift)" in
+  *@inline*|*@builtin*|*no-marketplace*) bad "사본·내장·꼴 밖 키" "$(pi_keys implement)" ;;
+  *) ok "@inline·@builtin 키와 이름@마켓 꼴이 아닌 키는 쓰지 않는다" ;;
+esac
+case "$pi_err" in
+  *"JSON 으로 읽히지 않아 건너뜁니다: $PI_A3/settings.json"*) ok "깨진 JSON 파일은 경고 한 줄만 남기고 렌더를 멈추지 않는다" ;;
+  *) bad "깨진 JSON 경고" "$pi_err" ;;
+esac
+pi_tops=$(jq -r 'keys | join(",")' "$PI_OUT/generic.json" 2>/dev/null)
+check "변종의 최상위 키는 enabledPlugins·hooks·permissions 셋이다" "$pi_tops" "enabledPlugins,hooks,permissions"
+pi_gate "$PI_MAN" gate_write_settings "$PI_DIR/out2" >/dev/null 2>&1
+if diff -r -q "$PI_OUT" "$PI_DIR/out2" >/dev/null 2>&1; then
+  ok "같은 입력의 두 렌더는 바이트가 같다"
+else
+  bad "렌더 결정성" "$(diff -r "$PI_OUT" "$PI_DIR/out2" 2>&1 || true)"
+fi
+# The rest of the file does not move: the same run rendered with no plugin
+# input at all differs only in `enabledPlugins`.
+PI_K1=$(pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)
+mv "$PI_RD/config-dir" "$PI_RD/config-dir.off"; mv "$PI_RD/inventory.json" "$PI_RD/inventory.json.off"
+cp "$PI_DIR/manifest.bare" "$PI_MAN"
+pi_gate "$PI_MAN" gate_write_settings "$PI_DIR/out0" >/dev/null 2>&1
+cp "$PI_DIR/manifest.allow" "$PI_MAN"
+check "플러그인 입력이 없는 렌더는 seed 키만 쓴다" \
+  "$(jq -c .enabledPlugins "$PI_DIR/out0/implement.json" 2>/dev/null)/$(jq -c .enabledPlugins "$PI_DIR/out0/shift.json" 2>/dev/null)" \
+  '{"typesafe@typesafe-ai":true}/{"typesafe@typesafe-ai":false}'
+pi_rest_bad=0
+for f in "$PI_OUT"/*.json; do
+  b=$(basename "$f")
+  [ "$(jq -cS 'del(.enabledPlugins)' "$f")" = "$(jq -cS 'del(.enabledPlugins)' "$PI_DIR/out0/$b" 2>/dev/null)" ] \
+    || { pi_rest_bad=$((pi_rest_bad + 1)); printf '      %s\n' "$b" >&2; }
+done
+check "enabledPlugins 를 뺀 나머지는 플러그인 입력이 없는 렌더와 같다" "$pi_rest_bad" "0"
+mv "$PI_RD/config-dir.off" "$PI_RD/config-dir"; mv "$PI_RD/inventory.json.off" "$PI_RD/inventory.json"
+# The re-derivation key moves with every plugin input, so a re-render cannot be
+# skipped over keys the settings do not yet name.
+check "같은 입력의 재유도 키는 같다" "$(pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)" "$PI_K1"
+printf '{"enabledPlugins":{"slack@claude-plugins-official":true,"supabase@claude-plugins-official":false}}\n' > "$PI_A2/settings.json"
+PI_K2=$(pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)
+if [ -n "$PI_K2" ] && [ "$PI_K2" != "$PI_K1" ]; then
+  ok "인벤토리 계정에 사용자 키가 늘면 재유도 키가 바뀐다"
+else
+  bad "사용자 키와 재유도 키" "$PI_K1 → $PI_K2"
+fi
+cp "$PI_DIR/manifest.bare" "$PI_MAN"
+PI_K3=$(pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)
+cp "$PI_DIR/manifest.allow" "$PI_MAN"
+if [ -n "$PI_K3" ] && [ "$PI_K3" != "$PI_K2" ]; then
+  ok "플러그인 허용 행이 빠지면 재유도 키가 바뀐다"
+else
+  bad "허용 키와 재유도 키" "$PI_K2 → $PI_K3"
 fi
 
 # ---------------------------------------------------------------------------
@@ -11624,11 +11744,12 @@ check "15d: 크래시 재개는 계속이 아니다" \
 # the two literals scripts/test-snapshot.sh reads in both copies, so what is
 # asserted here is what now surrounds them: the continuation section is named
 # next to the re-attachment, and the fresh-dispatch clause is scoped past both.
-item1_15d() {  # item1_15d <SKILL.md> — item 1 of 「Dispatching the design stage」
+item1_15d() {  # item1_15d <file> — item 1 of 「Dispatching the design stage」
   awk '/^#### Dispatching the design stage$/ { f = 1; next }
        f && /^1\. \*\*Resume is decided by the ledger\.\*\*/ { print; exit }' "$1"
 }
-RS15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
+# The shift reads both sections from its references/ on entry.
+RS15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/design-dispatch.md")
 # The lead's copy of the router loop sits in the autopilot router reference.
 LD15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md")
 check "15d: 두 라우터 사본에서 설계 단계 item 1 을 찾는다" \
@@ -11672,7 +11793,7 @@ done
 cont3_15d=$(awk '/^#### Continuing a stage that ended its turn in prose$/ { f = 1; next }
                  f && /^#+ / { exit }
                  f && /^3\. \*\*Exit 3 is the gate declining\.\*\*/ { print; exit }' \
-            "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
+            "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/prose-continue.md")
 case "$cont3_15d" in
   *"a segment takes the crash arm's \`blocked\` form"*"for the design step, item 1 of 「Dispatching the design stage」 stops the design instead"*)
     ok "15d: 교대 사본 계속 절 item 3 이 막힘 행을 세그먼트로 한정하고 설계 단계를 설계 중단으로 보낸다" ;;
@@ -13896,6 +14017,41 @@ g15_pr "MERGED $h15gf $c15gk seg/R15GPG1-SA main" act R15GPG2 SA 상태=계획�
 r15gpg2="$rc/$(seg_field "$(g15_row R15GPG2 SA)" '상태')/$(seg_field "$(g15_row R15GPG2 SA)" 'PR')"
 check "15g: PR 을 싣지 않은 park 원장은 들이지 않고 원격 판독 행의 PR 은 들인다" \
   "$r15gpf2|$r15gpg2" "0/1/계획됨|0/머지됨/12"
+# Stopped by a shift halt: the halt writes no segment row, so the last one is
+# still `계획됨`, and a person merged the request afterwards. An open request
+# there is still not brought in, and neither is a terminal last row that
+# carries no landing.
+g15_halted() {  # g15_halted <run id> <문서> <PR> [SA 의 마지막 행 필드] — SA planned on its branch, the request named by a `원격 판독` row
+  g15_run "$1" "$2" "$plan15c" 리뷰없음
+  g15_mkwt "$1" SA
+  g15_plan act "$1" SA 상태=계획됨 "워크트리=$(g15_wt "$1" SA)" "브랜치=seg/$1-SA"
+  [ "$rc" = "0" ] || bad "15g 이전 런 $1 의 SA 계획" "rc=$rc $msg"
+  printf -- '- `원격 판독` | 세그먼트=SA | PR=%s\n' "$3" >> "$WT/docs/pipeline-run/$1.md"
+  [ -z "${4:-}" ] || g15_raw "$1" "id=SA | $4 | 워크트리=$(g15_wt "$1" SA) | 선행=없음"
+}
+DOC15GPH='docs/fixture-design-15gph.md'
+two_slice_doc "$WT/$DOC15GPH" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_halted R15GPH1 "$DOC15GPH" 13
+g15_run R15GPH2 "$DOC15GPH" "$plan15c" 리뷰없음
+g15_mkwt R15GPH2 SA
+g15_pr "OPEN $c15gk - seg/R15GPH1-SA main" act R15GPH2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPH2 SA)"
+r15gph2="$rc/$(g15_segrows R15GPH2 SA)/$(seg_field "$(g15_row R15GPH2 SA)" '상태')"
+case "$msg" in *"PR #13 이 그 런의 계획됨 뒤에도 열려 있습니다"*) r15gph2="$r15gph2/열림 문면" ;; esac
+g15_run R15GPH3 "$DOC15GPH" "$plan15c" 리뷰없음
+g15_mkwt R15GPH3 SA
+g15_pr "MERGED $h15gf $c15gk seg/R15GPH1-SA main" act R15GPH3 SA 상태=계획됨 "워크트리=$(g15_wt R15GPH3 SA)"
+r15gph3=$(g15_row R15GPH3 SA)
+check "15g: 교대 정지로 계획됨 에 남은 슬라이스는 열린 PR 이면 다시 계획하고 런 밖에서 머지된 PR 이면 머지됨 으로 들인다" \
+  "$r15gph2|$rc/$(seg_field "$r15gph3" '상태')/$(seg_field "$r15gph3" 'PR')/$(seg_field "$r15gph3" '머지 커밋')/$(seg_field "$r15gph3" '출처')/$(g15_segrows R15GPH3 SA 계획됨)" \
+  "0/1/계획됨/열림 문면|0/머지됨/13/$c15gk/R15GPH1/0"
+DOC15GPI='docs/fixture-design-15gpi.md'
+two_slice_doc "$WT/$DOC15GPI" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_halted R15GPI1 "$DOC15GPI" 14 "상태=완료"
+g15_run R15GPI2 "$DOC15GPI" "$plan15c" 리뷰없음
+g15_mkwt R15GPI2 SA
+g15_pr "MERGED $h15gf $c15gk seg/R15GPI1-SA main" act R15GPI2 SA 상태=계획됨 "워크트리=$(g15_wt R15GPI2 SA)"
+check "15g: 착지 없이 완료 로 끝난 원장은 런 밖 머지로 들이지 않는다" \
+  "$rc/$(g15_segrows R15GPI2 SA)/$(seg_field "$(g15_row R15GPI2 SA)" '상태')" "0/1/계획됨"
 
 # One run: SA merged and then parked is a predecessor SB is dispatched onto,
 # and the snapshot says so; SA parked while planned, or merged with the apply
@@ -18180,7 +18336,7 @@ sed 's/| 사유=밤새 이어서 돈다$/| 사유=런이 고쳐 썼다/' "$BRK" 
 gate snapshot --manifest "$BRK"
 case "$rc/$msg" in
   0/*) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
-  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·플러그인 허용·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
   *) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
 # The form of each row is refused before anything reads it, fail-closed.
@@ -18201,6 +18357,35 @@ bsq_form "길이가 빈 기간(PT)인 재킥오프 행은 거부된다" \
   '- `재킥오프` | 연쇄 상한=3 | 길이=PT | 사유=x' "「재킥오프」 행의 길이가 ISO 8601 기간으로 읽히지 않습니다"
 bsq_form "재킥오프 행 둘은 거부된다" "$BSQ_RK
 ${BSQ_RK%=3*}=2 | 길이=PT8H0M0S | 사유=둘째" "「재킥오프」 행이 2개입니다"
+
+# THE `플러그인 허용` ROWS ARE IN THE FROZEN SET, ON THE SAME TERMS, AND CHECK 20
+# REFUSES A MALFORMED ONE. Absent rows add no line, so a manifest frozen before
+# the row existed keeps its digest.
+BSQ_PA='- `플러그인 허용` | 플러그인=swift-lsp@claude-plugins-official | 사유=추적 파일에 .swift 가 있다'
+case "$(bsq_bytes "$FX_MANIFEST")" in
+  *"pluginallow	"*) bad "플러그인 허용 행이 없는 매니페스트의 구속 집합" "pluginallow 줄이 생겼다" ;;
+  "") bad "플러그인 허용 행이 없는 매니페스트의 구속 집합" "구속 집합을 계산하지 못했다" ;;
+  *) ok "플러그인 허용 행이 없는 매니페스트의 구속 집합에는 pluginallow 줄이 없다 (다이제스트 불변)" ;;
+esac
+cp "$FX_MANIFEST" "$BRK"
+printf '%s\n' "$BSQ_PA" >> "$BRK"
+case "$(bsq_bytes "$BRK")" in
+  *"pluginallow	$BSQ_PA"*) ok "플러그인 허용 행이 구속 집합에 실린다" ;;
+  *) bad "플러그인 허용 행의 구속 집합" "$(bsq_bytes "$BRK" | grep -E '^pluginallow')" ;;
+esac
+bsq_reseal "$BRK"
+gate snapshot --manifest "$BRK"
+check "플러그인 허용 행을 실어 다시 얼린 사본은 대조를 통과한다 (20번 검사가 받아들인다)" "$rc" "0"
+bsq_form "플러그인 키가 이름@마켓 꼴이 아닌 허용 행은 거부된다" \
+  '- `플러그인 허용` | 플러그인=swift-lsp | 사유=x' "「플러그인 허용」 행의 형식이 어긋났습니다"
+bsq_form "사유가 빈 플러그인 허용 행은 거부된다" \
+  '- `플러그인 허용` | 플러그인=swift-lsp@claude-plugins-official | 사유=' "「플러그인 허용」 행의 형식이 어긋났습니다"
+bsq_form "같은 키의 플러그인 허용 행 둘은 거부된다" "$BSQ_PA
+${BSQ_PA%| 사유=*}| 사유=둘째" "「플러그인 허용」 행이 swift-lsp@claude-plugins-official 에 둘 이상입니다"
+bsq_form "@inline 키의 플러그인 허용 행은 거부된다" \
+  '- `플러그인 허용` | 플러그인=cc-cmds@inline | 사유=x' "@inline·@builtin 키는 허용 행으로 다루지 않습니다"
+bsq_form "@builtin 키의 플러그인 허용 행은 거부된다" \
+  '- `플러그인 허용` | 플러그인=cc-plugin-telemetry@builtin | 사유=x' "@inline·@builtin 키는 허용 행으로 다루지 않습니다"
 
 # THE FLOOR HONOURS ONLY `## 인가`. "Exactly one authorization section" is the
 # uniqueness guarantee arm (a) leans on, and a whole-file scan does not inherit
@@ -18284,6 +18469,150 @@ gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoin
 case "$(last_judgment_approval)" in
   *"(잘림)"*) bad "잘림 표시" "자르지 않은 값에 잘림 도장이 찍혔다" ;;
   *) ok "자르지 않은 값에는 잘림 표시가 붙지 않는다" ;;
+esac
+
+# --- 31s-2. A judgment adoption row is narrowed to the row cap ---------------
+# --- section: 31s-2 | group: cone | covers: act | anchors: 행 상한 실험용 세그먼트 행이 기록된다 ---
+#
+# Three places write the judgment adoption row (`자율 승인` · `kind=judgment`):
+# the judgment arm of the acting verb, and the absorber's answered branch and
+# adopting path. `gate_append` does not shorten an over-long row, it ends the
+# process, and a fixed cut of the free-text fields still leaves the row to what
+# the other fields carry. So each place narrows `기준`, `근거` and `되돌리는 법`
+# until the measured row fits, and a row that fits at no width is refused
+# (acting verb) or skipped with a warning (absorber), never died on.
+rs_seg=SRS1
+seg_row "$rs_seg" "$CONE_C" 상태=실행중 선행=없음
+check "행 상한 실험용 세그먼트 행이 기록된다" "$rc" "0"
+rs_long=$(awk 'BEGIN{ s=""; for (i = 0; i < 30; i++) s = s "채택 행의 기준이 행 상한을 넘도록 길어지는 한국어 문장 "; printf "%s", s }')
+rs_adoptions() {
+  { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F 'kind=judgment' || true; } \
+    | { grep -F '결정=채택' || true; } | { grep -F "세그먼트=$rs_seg " || true; } | grep -c . || true
+}
+
+# The acting verb, grade 1, on the class the fixture manifest pre-declares.
+gateN act --manifest "$NM" --kind judgment --target infra --segment "$rs_seg" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" "기준=첫째 $rs_long" \
+         "되돌리는 법=git checkout -- docs/" "근거=첫째 근거 $rs_long"
+check "상한을 넘는 문면의 등급 1 판단도 채택된다 (게이트가 죽지 않는다)" "$rc" "0"
+rs_row=$(last_adoption_row)
+rs_n=$(printf '%s\n' "$rs_row" | wc -c | tr -d ' ')
+if [ "$(row_field "$rs_row" '세그먼트')" = "$rs_seg" ] && [ "${rs_n:-0}" -le 1024 ]; then
+  ok "그 채택 행이 원장 행 상한 안에 있다 (${rs_n} 바이트)"
+else
+  bad "행위 경로 채택 행" "이 절의 채택 행이 없거나 상한을 넘는다 (${rs_n} 바이트): $rs_row"
+fi
+case "$(row_field "$rs_row" '기준')" in
+  "첫째 "*"(잘림)") ok "좁혀진 기준이 잘렸다고 말한다" ;;
+  *) bad "행위 경로 잘림 표시" "$(row_field "$rs_row" '기준')" ;;
+esac
+check "좁히는 것은 문면 세 필드뿐이다 — 판단 부류는 제출값 그대로다" "$(row_field "$rs_row" '판단 부류')" "문서-신선도"
+check "등급도 제출값 그대로다" "$(row_field "$rs_row" '등급')" "1"
+check "짧은 되돌리는 법은 좁혀도 바뀌지 않는다" "$(row_field "$rs_row" '되돌리는 법')" "git checkout -- docs/"
+
+# A submission that already fits is written as given.
+gateN act --manifest "$NM" --kind judgment --target infra --segment "$rs_seg" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" "기준=상한 안에 드는 짧은 채택 기준" \
+         "되돌리는 법=git checkout -- docs/" "근거=짧은 근거"
+check "상한 안의 판단도 채택된다" "$rc" "0"
+rs_row=$(last_adoption_row)
+check "상한 안에 드는 기준은 좁혀지지 않는다" "$(row_field "$rs_row" '기준')" "상한 안에 드는 짧은 채택 기준"
+case "$rs_row" in
+  *"(잘림)"*) bad "행위 경로 무절단" "상한 안의 행에 잘림 표시가 있다: $rs_row" ;;
+  *) ok "상한 안의 채택 행에는 잘림 표시가 없다" ;;
+esac
+
+# The overflow is in a field the three-field narrowing does not touch.
+rs_before=$(rs_adoptions)
+gateN act --manifest "$NM" --kind judgment --target infra --segment "$rs_seg" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" "기준=문면 밖 필드가 넘치는 판단" \
+         "되돌리는 법=git checkout -- docs/" "근거=메모가 길다" "메모=$(printf '%0900d' 0)"
+check "문면 밖 필드로 넘치는 판단은 정의된 거절로 끝난다 (죽지 않는다)" "$rc" "2"
+case "$msg" in
+  *"the overflow is in another field"*) ok "그 거절이 넘침이 문면 세 필드 밖에 있다고 지목한다" ;;
+  *) bad "문면 밖 넘침 거절 문면" "$msg" ;;
+esac
+check "그 거절은 채택 행을 남기지 않는다" "$(rs_adoptions)" "$rs_before"
+
+# THE ABSORBER, CALLED IN PROCESS. Its two writers run while a stage result is
+# being recorded, and reaching them through a dispatched stage needs another
+# section's stubs. Here gate.sh is sourced and the functions are called
+# directly; `gate_append` is replaced by a reporter printing the bytes the real
+# writer would compare against the cap, measured by the same ruler, and the
+# row's text. The issuer and the auto-adoption floor are replaced so each call
+# reaches the branch under test.
+rs_fn() {
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+    gate_append() { local s="$1"; shift
+      printf "%s\t%s\n" "$(gate_row_projected_bytes "$s" "$@")" "$(gate_row_body "$s" "$@")"; }
+    gate_autoadopt_ok() { return 0; }
+    gate_has_row() { return 1; }
+    gate_issue_judgment_approval() { GATE_LAST_JUDGMENT_APPROVAL_ID=J-rs; return "$GATE_APPROVAL_ANSWERED"; }
+    GATE_AUTO_RESOLVED_APPROVAL=J-rs
+    "$@"' _ "$GATE" "$@" 2>&1 )
+}
+rs_rowof() { printf '%s\n' "$1" | { grep -E '^[0-9]+	' || true; } | tail -1; }
+# A segment argument long enough that the free-text fields at a fixed 150-byte
+# cut still take the row past the cap.
+rs_wseg=$(printf '%0450d' 0 | tr 0 S)
+rs_res=$(jq -cn --arg t "**판단 부류**: 문서-신선도 **판단 등급**: 1 **판단 기준**: 방출 $rs_long **판단 되돌리는 법**: git checkout -- docs/ $rs_long **판단 근거**: 방출 근거 $rs_long" '{result: $t}')
+rs_fixed=$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+  gate_row_projected_bytes "자율 승인" kind=judgment 결정=채택 "세그먼트=$1" "판단 부류=문서-신선도" 등급=1 \
+    "기준=$(gate_row_safe "$2" 150)" "되돌리는 법=$(gate_row_safe "$2" 150)" "근거=$(gate_row_safe "$2" 150)" \
+    "출처=스테이지 방출"' _ "$GATE" "$rs_wseg" "$rs_long")
+if [ "${rs_fixed:-0}" -gt 1024 ]; then
+  ok "그 입력은 150 바이트 고정 절단만으로는 상한을 넘는다 (${rs_fixed} 바이트 — 아래 단언이 공허하지 않다)"
+else
+  bad "흡수기 픽스처" "고정 절단 행이 ${rs_fixed:-?} 바이트로 이미 상한 안이다"
+fi
+
+out=$(rs_fn gate_absorb_emitted_judgment infra "$rs_wseg" "$rs_res"); rc=$?
+check "방출 판단 흡수기가 상한을 넘을 입력에서도 0 으로 끝난다" "$rc" "0"
+rs_r=$(rs_rowof "$out")
+if [ -n "$rs_r" ] && [ "${rs_r%%	*}" -le 1024 ]; then
+  ok "방출 판단 채택 행이 상한 안에 있다 (${rs_r%%	*} 바이트)"
+else
+  bad "방출 판단 채택 행" "행이 없거나 상한을 넘는다: $out"
+fi
+case "$(row_field "${rs_r#*	}" '되돌리는 법')" in
+  "git checkout -- docs/ "*"(잘림)") ok "방출 판단의 되돌리는 법도 좁혀지고 잘렸다고 말한다" ;;
+  *) bad "방출 판단 되돌리는 법" "${rs_r#*	}" ;;
+esac
+check "방출 판단 채택 행은 출처를 싣는다" "$(row_field "${rs_r#*	}" '출처')" "스테이지 방출"
+
+out=$(rs_fn gate_absorb_issue infra "$rs_wseg" "답 $rs_long" "답 근거 $rs_long" 문맥 문서-신선도 2); rc=$?
+check "답있음 흡수기가 상한을 넘을 입력에서도 0 으로 끝난다" "$rc" "0"
+rs_r=$(rs_rowof "$out")
+if [ -n "$rs_r" ] && [ "${rs_r%%	*}" -le 1024 ]; then
+  ok "답있음 채택 행이 상한 안에 있다 (${rs_r%%	*} 바이트)"
+else
+  bad "답있음 채택 행" "행이 없거나 상한을 넘는다: $out"
+fi
+case "$(row_field "${rs_r#*	}" '기준')" in
+  "답 "*"(잘림)") ok "답있음 채택 행의 기준이 잘렸다고 말한다" ;;
+  *) bad "답있음 기준" "${rs_r#*	}" ;;
+esac
+check "답있음 채택 행은 쓴 답을 지목한다" "$(row_field "${rs_r#*	}" '해소 승인')" "J-rs"
+
+# Past the floor: the segment argument alone overflows. Nothing is written and
+# the absorber still returns 0, with a warning naming what was not adopted.
+rs_hseg=$(printf '%01000d' 0 | tr 0 S)
+out=$(rs_fn gate_absorb_emitted_judgment infra "$rs_hseg" "$rs_res"); rc=$?
+check "하한에서도 넘는 방출 판단에서 흡수기가 0 으로 끝난다" "$rc" "0"
+check "그때 방출 판단 채택 행은 쓰이지 않는다" "$(rs_rowof "$out")" ""
+case "$out" in
+  *"it is not adopted"*) ok "쓰지 않았다는 사실이 경고로 남는다 (방출 판단)" ;;
+  *) bad "방출 판단 하한 경고" "$out" ;;
+esac
+out=$(rs_fn gate_absorb_issue infra "$rs_hseg" "답 $rs_long" "답 근거 $rs_long" 문맥 문서-신선도 2); rc=$?
+check "하한에서도 넘는 답있음 판단에서 흡수기가 0 으로 끝난다" "$rc" "0"
+check "그때 답있음 채택 행은 쓰이지 않는다" "$(rs_rowof "$out")" ""
+case "$out" in
+  *"it is not adopted"*) ok "쓰지 않았다는 사실이 경고로 남는다 (답있음)" ;;
+  *) bad "답있음 하한 경고" "$out" ;;
 esac
 
 # --- 31t. A `|` in a field value cannot splice the row ----------------------
@@ -21499,11 +21828,13 @@ fi
 # class that may be adopted, whose adoption row never got written, opened a class
 # that hands risk to the user with nobody asked.
 #
-# THE ADOPTION ROW IS WHERE THE GATE DIES. The judgment arm puts the router's
-# whole field list on that row with no key allowlist and no length cap, so one
-# 900-byte field pushes it past the row cap AFTER auto-resolution has closed the
-# approval in a separate, already-completed append. The ledger is append-only and
-# there is no compensating write, so what survives is "answered and unspent".
+# THE ADOPTION ROW IS WHERE THE SUBMISSION IS REFUSED. The judgment arm puts the
+# router's whole field list on that row with no key allowlist, and narrows only
+# `기준`, `근거` and `되돌리는 법` to the row cap — so one 900-byte field of any
+# other key leaves the row over the cap at every width, and the submission ends
+# with the vocabulary refusal AFTER auto-resolution has closed the approval in a
+# separate, already-completed append. The ledger is append-only and there is no
+# compensating write, so what survives is "answered and unspent".
 #
 # THE MIDDLE ASSERTIONS ARE WHAT KEEP THIS HONEST. Asserting only that the
 # resubmission is refused would stay green under a repair that puts the class
@@ -31528,7 +31859,8 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$RRT_PREV_AR"
 # sentences the gate now enforces would tell the shift to refuse a person's
 # second answer the gate routes.
 RP_SKILLS="$repo_root/plugins/cc-cmds/skills"
-RP_SHIFT="$RP_SKILLS/autopilot-router-shift/SKILL.md"
+RP_SHIFT="$WORK/router-shift-34o.md"
+router_shift_corpus "$RP_SHIFT"
 RP_LEAD="$RP_SKILLS/autopilot/references/router-lead-copy.md"
 RP_SEAT="$RP_SKILLS/autopilot/references/act2-seat.md"
 rp_ids=$(sed -n "s/^readonly GATE_HALT_ROUTES='\(.*\)'\$/\1/p" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh")
@@ -39401,14 +39733,19 @@ esac
 # would match itself. A count spelled in other words is out of reach of a
 # line grep; this guard catches the spellings that went stale before.
 # ---------------------------------------------------------------------------
+# The routing shift's references/ join by glob: each is a branch of the shift's
+# text moved out of its body, and a file added there is the shift's text too.
+fc67b_files="plugins/cc-cmds/orchestrator/gate.sh
+plugins/cc-cmds/skills/_common/pipeline-sidecar.md
+plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md
+$(cd "$repo_root" && printf '%s\n' plugins/cc-cmds/skills/autopilot-router-shift/references/*.md)
+plugins/cc-cmds/skills/autopilot/references/act2-seat.md
+plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md
+scripts/test-gate.sh
+scripts/test-snapshot.sh"
 fc67b_scan() {  # fc67b_scan <root> — prints one line per violation
   local f
-  for f in plugins/cc-cmds/orchestrator/gate.sh \
-    plugins/cc-cmds/skills/_common/pipeline-sidecar.md \
-    plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md \
-    plugins/cc-cmds/skills/autopilot/references/act2-seat.md \
-    plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md \
-    scripts/test-gate.sh scripts/test-snapshot.sh; do
+  for f in $fc67b_files; do
     [ -f "$1/$f" ] || { printf '%s: 없음\n' "$f"; continue; }
     LC_ALL=C awk -v f="$f" '
       BEGIN {
@@ -39434,12 +39771,7 @@ check "67b: 두 부류만 적은 줄이 없다" \
 # The negative control: a copy with one stale phrase put back, and one with a
 # two-class line put back, must each be caught.
 fc67b=$(mktemp -d "$WORK/guard67b.XXXXXX")
-for f in plugins/cc-cmds/orchestrator/gate.sh \
-  plugins/cc-cmds/skills/_common/pipeline-sidecar.md \
-  plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md \
-  plugins/cc-cmds/skills/autopilot/references/act2-seat.md \
-  plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md \
-  scripts/test-gate.sh scripts/test-snapshot.sh; do
+for f in $fc67b_files; do
   mkdir -p "$fc67b/$(dirname "$f")"
   cp "$repo_root/$f" "$fc67b/$f"
 done
@@ -39466,7 +39798,8 @@ check "67b: 두 부류만 적은 줄을 사본에서 잡는다" \
 # its order in the file.
 # ---------------------------------------------------------------------------
 fc67c_sk="$repo_root/plugins/cc-cmds/skills"
-fc67c_rs="$fc67c_sk/autopilot-router-shift/SKILL.md"
+fc67c_rs="$WORK/router-shift-67c.md"
+router_shift_corpus "$fc67c_rs"
 fc67c_lits() {  # fc67c_lits <file> <literal>... — how many of the literals the file carries
   local f="$1" n=0 lit; shift
   for lit in "$@"; do grep -qF -- "$lit" "$f" && n=$((n + 1)); done
@@ -46347,7 +46680,7 @@ done
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
-# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan, audit_disclosure | anchors: 89: 검사기가 solo-audit 계획을 통과시킨다, 89: solo-audit 계획의 solo 설계 명령은 통과한다, 89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다, 89: 감사 하나가 감사 공시 행 하나를 쓴다, 89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다, 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
+# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan, audit_disclosure | anchors: 89: 검사기가 solo-audit 계획을 통과시킨다, 89: solo-audit 계획의 solo 설계 명령은 통과한다, 89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다, 89: 감사 하나가 감사 공시 행 하나를 쓴다, 89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다, 89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다, 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
 #
 # 진입 판정은 킥오프 모델 자신의 행위라 CI 가 그 선택을 결정적으로 돌릴 수 없다. 이
 # 절은 그 대신 판정이 놓인 뒤의 사슬 — 검사기, 매니페스트 검사, 런 개시의 행, 스냅숏,
@@ -46635,6 +46968,14 @@ tier_ed_moved=$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_ver
 if [ -n "$tier_ed_moved" ] && [ "$tier_ed_moved" != "$tier_ed_repo" ] && [ "$tier_ed_moved" != 미상 ]; then
   ok "89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다"
 else bad "89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다" "$tier_ed_moved"; fi
+# 판독자 모델 행의 모델 칸만 바꾼다 — 지침 다섯 파일은 그대로라 바로 앞 값과의 차이는 행 하나의 효과다.
+tier_row_f="$tier_plug/skills/_common/team-model-tier.md"
+awk 'index($0, "| `audit-reader` |") == 1 { n = split($0, c, "|"); c[n-1] = (c[n-1] ~ /opus/) ? " sonnet " : " opus "; s = ""; for (i = 1; i < n; i++) s = s c[i] "|"; print s; next } { print }' \
+  "$tier_row_f" > "$tier_row_f.new" && mv "$tier_row_f.new" "$tier_row_f"
+tier_ed_row=$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_version)
+if [ -n "$tier_ed_row" ] && [ "$tier_ed_row" != "$tier_ed_moved" ] && [ "$tier_ed_row" != 미상 ]; then
+  ok "89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다"
+else bad "89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다" "$tier_ed_row"; fi
 check "89: 플러그인 단어는 판@커밋 12자다" \
   "$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_plugin_word)" "9.9.9@0123456789ab"
 
