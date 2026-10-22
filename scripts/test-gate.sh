@@ -5574,6 +5574,116 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 1c. Every settings variant names the user's plugins in `enabledPlugins`
+# --- section: 1c | group: base | covers: - | anchors: 교대 변종은 사용자 키와 허용 키를 모두 false 로 쓴다 ---
+#
+# A session launched with `--settings` still loads the plugins the account's
+# own settings enable, so a variant without `enabledPlugins` hands every stage
+# the skill and command lists of plugins the pipeline never calls. Rendered here
+# against fixture account directories, never the person's: the render reads the
+# run directory's `config-dir` record and its inventory, and both point at the
+# fixture.
+# ---------------------------------------------------------------------------
+PI_DIR="$WORK/plugin-isolation"
+PI_A1="$PI_DIR/acct1"; PI_A2="$PI_DIR/acct2"; PI_A3="$PI_DIR/acct3"
+PI_RD="$PI_DIR/run"
+mkdir -p "$PI_A1/plugins" "$PI_A2" "$PI_A3" "$PI_RD"
+printf '{"version":2,"plugins":{"swift-lsp@claude-plugins-official":[{"scope":"user"}],"typesafe@typesafe-ai":[{"scope":"user"}]}}\n' \
+  > "$PI_A1/plugins/installed_plugins.json"
+printf '{"enabledPlugins":{"figma@claude-plugins-official":true,"cc-cmds@inline":true,"cc-plugin-telemetry@builtin":true,"no-marketplace":true}}\n' \
+  > "$PI_A1/settings.json"
+printf '{"enabledPlugins":{"slack@claude-plugins-official":true}}\n' > "$PI_A2/settings.json"
+printf '{"enabledPlugins":' > "$PI_A3/settings.json"
+printf '%s\n' "$PI_A1" > "$PI_RD/config-dir"
+jq -n --arg a "$PI_A2" --arg b "$PI_A3" '{accounts: [{config_dir: $a}, {config_dir: $b}]}' > "$PI_RD/inventory.json"
+# Both manifests sit at ONE path, swapped in place: the hook command line
+# carries the manifest path, so two paths would differ outside `enabledPlugins`.
+PI_MAN="$PI_DIR/manifest.md"
+cp "$FX_MANIFEST" "$PI_DIR/manifest.bare"
+cp "$FX_MANIFEST" "$PI_DIR/manifest.allow"
+printf -- '- `플러그인 허용` | 플러그인=notion@claude-plugins-official | 사유=과제가 노션 문서를 가리킨다\n' >> "$PI_DIR/manifest.allow"
+cp "$PI_DIR/manifest.allow" "$PI_MAN"
+# pi_gate <manifest> <function> [<settings override>] — call one gate function
+# in-process against the fixture run directory.
+pi_gate() {
+  CC_GATE_SETTINGS_OVERRIDE="${3:-}" bash -c '
+    CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+    RUN_DIR="$2"; MANIFEST="$3"; LEDGER="$4"; GRANT="$4"; BASE="$5"
+    DOC=""; DOC_DIR=""; DOC_BASE=""
+    [ -n "$CC_GATE_SETTINGS_OVERRIDE" ] || unset CC_GATE_SETTINGS_OVERRIDE
+    "$6"' _ "$GATE" "$PI_RD" "$1" "$FX_LEDGER" "$WT" "$2"
+}
+PI_OUT="$PI_DIR/out"
+pi_err=$(pi_gate "$PI_MAN" gate_write_settings "$PI_OUT" 2>&1 >/dev/null); pi_rc=$?
+check "픽스처 계정으로 설정 변종을 렌더한다" "$pi_rc" "0"
+pi_keys() { jq -r '.enabledPlugins | to_entries | map(.key + "=" + (.value | tostring)) | join(" ")' "$PI_OUT/$1.json" 2>/dev/null; }
+check "교대 변종은 사용자 키와 허용 키를 모두 false 로 쓴다" "$(pi_keys shift)" \
+  "figma@claude-plugins-official=false notion@claude-plugins-official=false slack@claude-plugins-official=false swift-lsp@claude-plugins-official=false typesafe@typesafe-ai=false"
+pi_stage_bad=0
+for k in design implement review audit reconverge generic split; do
+  v=$(pi_keys "$k")
+  [ "$v" = "figma@claude-plugins-official=false notion@claude-plugins-official=true slack@claude-plugins-official=false swift-lsp@claude-plugins-official=false typesafe@typesafe-ai=true" ] \
+    || { pi_stage_bad=$((pi_stage_bad + 1)); printf '      %s: %s\n' "$k" "$v" >&2; }
+done
+check "교대를 뺀 일곱 변종은 seed 와 플러그인 허용 행의 키만 true 다" "$pi_stage_bad" "0"
+case " $(pi_keys implement) " in
+  *" slack@claude-plugins-official="*) ok "인벤토리 계정 디렉터리의 키도 들어간다" ;;
+  *) bad "인벤토리 계정의 키" "$(pi_keys implement)" ;;
+esac
+case "$(pi_keys implement) $(pi_keys shift)" in
+  *@inline*|*@builtin*|*no-marketplace*) bad "사본·내장·꼴 밖 키" "$(pi_keys implement)" ;;
+  *) ok "@inline·@builtin 키와 이름@마켓 꼴이 아닌 키는 쓰지 않는다" ;;
+esac
+case "$pi_err" in
+  *"JSON 으로 읽히지 않아 건너뜁니다: $PI_A3/settings.json"*) ok "깨진 JSON 파일은 경고 한 줄만 남기고 렌더를 멈추지 않는다" ;;
+  *) bad "깨진 JSON 경고" "$pi_err" ;;
+esac
+pi_tops=$(jq -r 'keys | join(",")' "$PI_OUT/generic.json" 2>/dev/null)
+check "변종의 최상위 키는 enabledPlugins·hooks·permissions 셋이다" "$pi_tops" "enabledPlugins,hooks,permissions"
+pi_gate "$PI_MAN" gate_write_settings "$PI_DIR/out2" >/dev/null 2>&1
+if diff -r -q "$PI_OUT" "$PI_DIR/out2" >/dev/null 2>&1; then
+  ok "같은 입력의 두 렌더는 바이트가 같다"
+else
+  bad "렌더 결정성" "$(diff -r "$PI_OUT" "$PI_DIR/out2" 2>&1 || true)"
+fi
+# The rest of the file does not move: the same run rendered with no plugin
+# input at all differs only in `enabledPlugins`.
+PI_K1=$(pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)
+mv "$PI_RD/config-dir" "$PI_RD/config-dir.off"; mv "$PI_RD/inventory.json" "$PI_RD/inventory.json.off"
+cp "$PI_DIR/manifest.bare" "$PI_MAN"
+pi_gate "$PI_MAN" gate_write_settings "$PI_DIR/out0" >/dev/null 2>&1
+cp "$PI_DIR/manifest.allow" "$PI_MAN"
+check "플러그인 입력이 없는 렌더는 seed 키만 쓴다" \
+  "$(jq -c .enabledPlugins "$PI_DIR/out0/implement.json" 2>/dev/null)/$(jq -c .enabledPlugins "$PI_DIR/out0/shift.json" 2>/dev/null)" \
+  '{"typesafe@typesafe-ai":true}/{"typesafe@typesafe-ai":false}'
+pi_rest_bad=0
+for f in "$PI_OUT"/*.json; do
+  b=$(basename "$f")
+  [ "$(jq -cS 'del(.enabledPlugins)' "$f")" = "$(jq -cS 'del(.enabledPlugins)' "$PI_DIR/out0/$b" 2>/dev/null)" ] \
+    || { pi_rest_bad=$((pi_rest_bad + 1)); printf '      %s\n' "$b" >&2; }
+done
+check "enabledPlugins 를 뺀 나머지는 플러그인 입력이 없는 렌더와 같다" "$pi_rest_bad" "0"
+mv "$PI_RD/config-dir.off" "$PI_RD/config-dir"; mv "$PI_RD/inventory.json.off" "$PI_RD/inventory.json"
+# The re-derivation key moves with every plugin input, so a re-render cannot be
+# skipped over keys the settings do not yet name.
+check "같은 입력의 재유도 키는 같다" "$(pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)" "$PI_K1"
+printf '{"enabledPlugins":{"slack@claude-plugins-official":true,"supabase@claude-plugins-official":false}}\n' > "$PI_A2/settings.json"
+PI_K2=$(pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)
+if [ -n "$PI_K2" ] && [ "$PI_K2" != "$PI_K1" ]; then
+  ok "인벤토리 계정에 사용자 키가 늘면 재유도 키가 바뀐다"
+else
+  bad "사용자 키와 재유도 키" "$PI_K1 → $PI_K2"
+fi
+cp "$PI_DIR/manifest.bare" "$PI_MAN"
+PI_K3=$(pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)
+cp "$PI_DIR/manifest.allow" "$PI_MAN"
+if [ -n "$PI_K3" ] && [ "$PI_K3" != "$PI_K2" ]; then
+  ok "플러그인 허용 행이 빠지면 재유도 키가 바뀐다"
+else
+  bad "허용 키와 재유도 키" "$PI_K2 → $PI_K3"
+fi
+
+# ---------------------------------------------------------------------------
 # 2. Vocabulary — closed sets refuse by status, never by `die`
 # --- section: 2 | group: base | covers: act, snapshot | anchors: 어휘 밖 절단점 토큰은 거부된다 ---
 # ---------------------------------------------------------------------------
@@ -18226,7 +18336,7 @@ sed 's/| 사유=밤새 이어서 돈다$/| 사유=런이 고쳐 썼다/' "$BRK" 
 gate snapshot --manifest "$BRK"
 case "$rc/$msg" in
   0/*) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
-  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·플러그인 허용·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
   *) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
 # The form of each row is refused before anything reads it, fail-closed.
@@ -18247,6 +18357,35 @@ bsq_form "길이가 빈 기간(PT)인 재킥오프 행은 거부된다" \
   '- `재킥오프` | 연쇄 상한=3 | 길이=PT | 사유=x' "「재킥오프」 행의 길이가 ISO 8601 기간으로 읽히지 않습니다"
 bsq_form "재킥오프 행 둘은 거부된다" "$BSQ_RK
 ${BSQ_RK%=3*}=2 | 길이=PT8H0M0S | 사유=둘째" "「재킥오프」 행이 2개입니다"
+
+# THE `플러그인 허용` ROWS ARE IN THE FROZEN SET, ON THE SAME TERMS, AND CHECK 20
+# REFUSES A MALFORMED ONE. Absent rows add no line, so a manifest frozen before
+# the row existed keeps its digest.
+BSQ_PA='- `플러그인 허용` | 플러그인=swift-lsp@claude-plugins-official | 사유=추적 파일에 .swift 가 있다'
+case "$(bsq_bytes "$FX_MANIFEST")" in
+  *"pluginallow	"*) bad "플러그인 허용 행이 없는 매니페스트의 구속 집합" "pluginallow 줄이 생겼다" ;;
+  "") bad "플러그인 허용 행이 없는 매니페스트의 구속 집합" "구속 집합을 계산하지 못했다" ;;
+  *) ok "플러그인 허용 행이 없는 매니페스트의 구속 집합에는 pluginallow 줄이 없다 (다이제스트 불변)" ;;
+esac
+cp "$FX_MANIFEST" "$BRK"
+printf '%s\n' "$BSQ_PA" >> "$BRK"
+case "$(bsq_bytes "$BRK")" in
+  *"pluginallow	$BSQ_PA"*) ok "플러그인 허용 행이 구속 집합에 실린다" ;;
+  *) bad "플러그인 허용 행의 구속 집합" "$(bsq_bytes "$BRK" | grep -E '^pluginallow')" ;;
+esac
+bsq_reseal "$BRK"
+gate snapshot --manifest "$BRK"
+check "플러그인 허용 행을 실어 다시 얼린 사본은 대조를 통과한다 (20번 검사가 받아들인다)" "$rc" "0"
+bsq_form "플러그인 키가 이름@마켓 꼴이 아닌 허용 행은 거부된다" \
+  '- `플러그인 허용` | 플러그인=swift-lsp | 사유=x' "「플러그인 허용」 행의 형식이 어긋났습니다"
+bsq_form "사유가 빈 플러그인 허용 행은 거부된다" \
+  '- `플러그인 허용` | 플러그인=swift-lsp@claude-plugins-official | 사유=' "「플러그인 허용」 행의 형식이 어긋났습니다"
+bsq_form "같은 키의 플러그인 허용 행 둘은 거부된다" "$BSQ_PA
+${BSQ_PA%| 사유=*}| 사유=둘째" "「플러그인 허용」 행이 swift-lsp@claude-plugins-official 에 둘 이상입니다"
+bsq_form "@inline 키의 플러그인 허용 행은 거부된다" \
+  '- `플러그인 허용` | 플러그인=cc-cmds@inline | 사유=x' "@inline·@builtin 키는 허용 행으로 다루지 않습니다"
+bsq_form "@builtin 키의 플러그인 허용 행은 거부된다" \
+  '- `플러그인 허용` | 플러그인=cc-plugin-telemetry@builtin | 사유=x' "@inline·@builtin 키는 허용 행으로 다루지 않습니다"
 
 # THE FLOOR HONOURS ONLY `## 인가`. "Exactly one authorization section" is the
 # uniqueness guarantee arm (a) leans on, and a whole-file scan does not inherit
