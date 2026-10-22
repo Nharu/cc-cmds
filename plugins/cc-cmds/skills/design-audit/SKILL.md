@@ -124,6 +124,8 @@ A check whose detection probability is essentially 1 gains nothing from N-fold r
 
 Write the output into the report as `## 결정론적 검사` and hand its path to **all** readers identically so no reader re-does mechanical work. Capture the boundary baselines **after** this write; the freeze window opens here.
 
+**A slice's `**라벨 인정**` field is part of the frozen document the readers audit.** The gate already refuses its grammar and any check name no manifest `라벨 인정` row carries, so the readers do not repeat that comparison; what only they can judge is whether the slice the field sits on really changes the surface that check guards, as the design's own text says it does. A field on a slice whose described edits leave that surface alone is a finding: it would let a label answer a failure the slice gave no reason to expect.
+
 ### Step 3: Fan-out spawn
 
 **Before spawning, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / witness / ledger v3 / reconcile-ladder contract and the task-assignment header, **Read `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md`** for the reader model, and **Read `${CLAUDE_SKILL_DIR}/references/01-reader-prompt.md`** for the reader prompt.

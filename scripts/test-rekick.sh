@@ -1345,6 +1345,36 @@ VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 vs "원천에 없는 적용 프로브 코드 행을 더한 초안은 실패한다" 실패 "$WORK/v-ac-add.md" "$E" 고정값
 check "7: 재킥오프 흐름 전후 원 런의 plugin-pin 과 plugin/cc-cmds 사본이 같다" "$(pin_sum)" "$PIN_BEFORE"
 
+# (g) The label acknowledgement rows are carried in the place the shape rows
+# are, and a row the previous run did not hold passes only under a 5t answer
+# that came with an added target or a cutpoint raised by 7.7.
+LA_ROW="- \`라벨 인정\` | 대상=rk | 체크=api-surface-guard | 라벨=surface-change | 사유=픽스처"
+P_EXTRA="$LA_ROW" mk_prev RKLA; fx_done
+mf_check "$BASE/docs/pipeline-run/RKLA.plan.md"; rc=$?
+check "7: 라벨 인정 행을 가진 원천이 check_manifest 를 통과한다" "$rc" "0"
+vla=$(rk verify --prev RKLA --base "$BASE")
+PML=$(printf '%s\n' "$vla" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGL=$(printf '%s\n' "$vla" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+rk graph --prev RKLA --base "$BASE" --expect-sha256 "$PML" >/dev/null
+rk render-manifest --prev RKLA --base "$BASE" --run-id RKNL --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PML" --expect-grant-sha256 "$PGL" > "$WORK/v-la.md"; rc=$?
+check "7: 라벨 인정 행을 가진 원천의 render-manifest 는 0 으로 끝난다" "$rc" "0"
+check "7: 라벨 인정 행이 초안에 바이트 그대로 하나 옮겨진다" \
+  "$(grep -c '^- `라벨 인정`' "$WORK/v-la.md")/$(grep -cxF -- "$LA_ROW" "$WORK/v-la.md")" "1/1"
+VS_PREV="$BASE/docs/pipeline-run/RKLA.plan.md"; VS_PMSHA="$PML"; VS_PGSHA="$PGL"
+vs "라벨 인정 행이 원천과 같은 초안은 통과한다" 통과 "$WORK/v-la.md" "$E"
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+{ cat "$NM1"; printf '%s\n' "$LA_ROW"; } > "$WORK/v-la-add.md"
+vs "원천에 없는 라벨 인정 행을 5t 답 없이 더한 초안은 실패한다" 실패 "$WORK/v-la-add.md" "$E" 행
+printf '5t\t대상=rk | 체크=api-surface-guard | 라벨=surface-change | 사유=픽스처\n' > "$WORK/asked-5t"
+vs "대상 추가도 7.7 절단점 답도 없이 5t 가 있으면 실패한다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t" 대상추가
+printf '7.7 절단점 rk\t머지\n' >> "$WORK/asked-5t"
+o=$(rk verify-subset "$WORK/v-la-add.md" "$VS_PREV" --expect-sha256 "$VS_PMSHA" --expect-grant-sha256 "$VS_PGSHA" --asked "$WORK/asked-5t")
+check "7: 5t 답으로 덮인 라벨 인정 행은 행 검사를 지난다" \
+  "$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "행" { print $3 }')" "통과"
+check "7: 7.7 절단점 답과 함께 온 5t 답은 대상추가 검사를 지난다" \
+  "$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "대상추가" { print $3 }')" "통과"
+
 # The interview copy.
 out=$(rk render-interview --prev RKIV --base "$BASE" --expect-sha256 "$PMI"); rc=$?
 check "7: render-interview 는 0 으로 끝난다" "$rc" "0"

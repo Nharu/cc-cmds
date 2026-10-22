@@ -1379,6 +1379,53 @@ ac_reject "행 둘" "- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | �
   "- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$AC_SHA"
 write_manifest "$MF"
 
+# 라벨 인정 행 — 사람이 킥오프에서 인정한 (대상, 체크, 라벨) 은 같은 집합에 얼린다.
+# 행이 없으면 바이트를 하나도 내지 않아 기존 매니페스트의 다이제스트가 그대로이고,
+# 있으면 행마다 정확히 한 줄을 낸다. 깨진 행은 런 시작에서 거부된다.
+la_mf() {   # la_mf [<행>...] — 기본 매니페스트에 주어진 행을 얹는다
+  local r
+  write_manifest "$MF"
+  for r in "$@"; do printf '%s\n' "$r" >> "$MF"; done
+}
+LA_ROW="- \`라벨 인정\` | 대상=home | 체크=api-surface-guard | 라벨=surface-change | 사유=의도된 표면 변경"
+la_mf
+bd_nola=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+check "라벨 인정 행이 없으면 다이제스트 입력에 그 줄이 없다" \
+  "$( { binding_set_bytes | grep -c '^labelack' || true; } )" "0"
+la_mf "$LA_ROW"
+check "라벨 인정 행이 있으면 다이제스트 입력에 정확히 한 줄이 든다" \
+  "$( { binding_set_bytes | grep -c '^labelack' || true; } )" "1"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_nola" ]; then
+  bad "구속 집합 감도" "라벨 인정 행을 더했는데 다이제스트가 그대로다 — 런 도중 인정을 넓힐 수 있다"
+else
+  ok "라벨 인정 행이 생기면 구속 다이제스트가 움직인다"
+fi
+MANIFEST="$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "올바른 라벨 인정 행이 매니페스트 검사를 통과한다"
+else
+  bad "라벨 인정 형식" "올바른 행이 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+check "라벨 인정 판독기는 대상 별칭으로 체크를 낸다" "$(manifest_label_ack_checks home)" "api-surface-guard"
+check "라벨 인정 판독기는 다른 별칭에 아무것도 내지 않는다" "$(manifest_label_ack_checks other)" ""
+check "라벨 인정 판독기는 (대상, 체크) 의 라벨을 낸다" "$(manifest_label_ack_label home api-surface-guard)" "surface-change"
+la_reject() {   # la_reject <설명> <행>...
+  local what="$1"; shift
+  la_mf "$@"
+  if ( check_manifest ) >/dev/null 2>&1; then
+    bad "라벨 인정 형식" "$what 이 통과했다"
+  else
+    ok "라벨 인정 행: $what 은 런 시작에서 거부된다"
+  fi
+}
+la_reject "쉼표가 든 체크" "- \`라벨 인정\` | 대상=home | 체크=build (a, b) | 라벨=surface-change | 사유=x"
+la_reject "별칭이 아닌 대상" "- \`라벨 인정\` | 대상=nohome | 체크=api-surface-guard | 라벨=surface-change | 사유=x"
+la_reject "빈 라벨" "- \`라벨 인정\` | 대상=home | 체크=api-surface-guard | 라벨= | 사유=x"
+la_reject "사유 없음" "- \`라벨 인정\` | 대상=home | 체크=api-surface-guard | 라벨=surface-change"
+la_reject "값 앞 공백" "- \`라벨 인정\` | 대상=home | 체크= api-surface-guard | 라벨=surface-change | 사유=x"
+la_reject "중복 쌍" "$LA_ROW" "- \`라벨 인정\` | 대상=home | 체크=api-surface-guard | 라벨=other | 사유=y"
+write_manifest "$MF"
+
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
 write_manifest "$MF"; sed 's/run-id=20260825-deadbeef;//' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then

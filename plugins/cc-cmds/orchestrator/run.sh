@@ -442,6 +442,7 @@ manifest_snapshot_take() {
   #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
   #   RK <row>     every `- \`재킥오프\`` row anywhere, in order
   #   AC <row>     every `- \`적용 프로브 코드\`` row anywhere, in order
+  #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -476,6 +477,7 @@ $(LC_ALL=C awk '
     index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
     index($0, "- `재킥오프`") == 1 { print "RK\t" $0 }
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
+    index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -681,6 +683,83 @@ manifest_apply_code_rows() {
   grep -E '^- `적용 프로브 코드`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_label_ack_rows() {
+  if manifest_memo_on; then manifest_memo_all "LA	"; return 0; fi
+  grep -E '^- `라벨 인정`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_label_ack_checks() {
+  # manifest_label_ack_checks <alias> — the `체크` of every `라벨 인정` row whose
+  # `대상` is <alias>, one per line, in file order. The one reader the gate and
+  # the driver use: no check, label or repository name is written anywhere
+  # else, so a target opts in by its manifest row and by nothing in this code.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(manifest_row_fields "$row" '대상')" = "$1" ] || continue
+    manifest_row_fields "$row" '체크' 1
+  done <<EOF
+$(manifest_label_ack_rows)
+EOF
+}
+
+manifest_label_ack_label() {
+  # manifest_label_ack_label <alias> <check> — the `라벨` of the row naming that
+  # (target, check) pair; nothing when no row does. The pair is unique
+  # (check_manifest), so the first match is the only one.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(manifest_row_fields "$row" '대상')" = "$1" ] || continue
+    [ "$(manifest_row_fields "$row" '체크')" = "$2" ] || continue
+    manifest_row_fields "$row" '라벨' 1
+    return 0
+  done <<EOF
+$(manifest_label_ack_rows)
+EOF
+}
+
+label_ack_row_check() {
+  # Every `라벨 인정` row: `대상` is a declared alias; `체크`·`라벨`·`사유` are
+  # present, non-empty, carry no `|` and no surrounding whitespace; `체크` holds
+  # no comma, because the slice field and the poller's `실패 체크` both join
+  # check names with a comma and a space; and each (target, check) pair is
+  # declared once.
+  local row a k v key seen="" aliases
+  aliases=" $(target_aliases | tr '\n' ' ') "
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    a=$(manifest_row_fields "$row" '대상')
+    case "$aliases" in *" $a "*) [ -n "$a" ] ;; *) false ;; esac \
+      || die "「라벨 인정」 행의 대상이 「## 대상」 별칭이 아닙니다: $row"
+    for key in 체크 라벨 사유; do
+      case "$row" in *"| $key="*|*"|$key="*) ;; *) die "「라벨 인정」 행에 「${key}」가 없습니다: $row" ;; esac
+      v=$(manifest_row_fields "$row" "$key" 1)
+      [ "$(printf '%s\n' "$v" | wc -l | tr -d ' ')" = 1 ] \
+        || die "「라벨 인정」 행의 「${key}」가 둘 이상입니다: $row"
+      [ -n "$v" ] || die "「라벨 인정」 행의 「${key}」가 비었습니다: $row"
+      case "$row" in
+        *"$key=$v |"*|*"$key=$v") ;;
+        *) die "「라벨 인정」 행의 「${key}」 값 앞뒤에 공백이 있거나 「|」가 섞였습니다: $row" ;;
+      esac
+      case "$v" in [[:space:]]*|*[[:space:]]) die "「라벨 인정」 행의 「${key}」 값 앞뒤에 공백이 있습니다: $row" ;; esac
+    done
+    k=$(manifest_row_fields "$row" '체크' 1)
+    case "$k" in *,*) die "「라벨 인정」 행의 체크 이름에 쉼표가 있습니다 — 쉼표가 든 체크는 선언할 수 없습니다: $k" ;; esac
+    case "$seen" in
+      *"
+${a}	${k}
+"*) die "「라벨 인정」 행의 (대상, 체크) 쌍이 둘 이상입니다: $a / $k" ;;
+    esac
+    seen="$seen
+${a}	${k}
+"
+  done <<EOF
+$(manifest_label_ack_rows)
+EOF
+  return 0
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -791,6 +870,13 @@ binding_set_bytes() {
     # digest. Whole-file scan, zero bytes when absent, so a manifest written
     # before this row existed keeps its digest and reads the default 0/2.
     manifest_apply_code_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/applycodes\t/'
+    # THE `라벨 인정` ROWS ARE IN THE FROZEN SET, on the same terms. Each is a
+    # person's kickoff acknowledgement that a target's label-guarded check may be
+    # passed by the run labelling the PR; the label act opens on nothing else. A
+    # row any act could append mid-run would let a stage widen what the run may
+    # label. Whole-file scan, zero bytes when absent, so a manifest written
+    # before this row existed keeps its digest.
+    manifest_label_ack_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/labelack\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1140,7 +1226,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1175,6 +1261,9 @@ check_manifest() {
   # person froze a meaning, and running the default instead would apply on a
   # code they said meant something else.
   apply_code_row_check
+  # 9 (cont.) — the `라벨 인정` rows' shape. A row the gate cannot match exactly
+  # would acknowledge nothing, or the wrong check, so it is refused at kickoff.
+  label_ack_row_check
 
   # 11 — the `자동 채택` rows, checked at FREEZE TIME and nowhere else.
   #
@@ -2333,10 +2422,69 @@ slicing_order_defects() {
   return 0
 }
 
+slice_label_ack_checks() {
+  # slice_label_ack_checks <doc> <id> — the checks the slice's optional
+  # `라벨 인정` field names, one per line, an element's enclosing backticks
+  # gone; nothing for a missing field or `없음`. Returns 1, printing nothing,
+  # when the value breaks the grammar: elements joined by a comma and one
+  # space, none empty, none with whitespace around it, no `|`, and `없음`
+  # never beside a check name.
+  local v rest e out=""
+  v=$(slice_field "$1" "$2" '라벨 인정')
+  [ -n "$v" ] && [ "$v" != "없음" ] || return 0
+  case "$v" in *'|'*) return 1 ;; esac
+  rest="$v, "
+  while [ -n "$rest" ]; do
+    e=${rest%%, *}
+    rest=${rest#*, }
+    case "$e" in *,*) return 1 ;; esac
+    case "$e" in '`'?*'`') e=${e#?}; e=${e%?} ;; esac
+    case "$e" in ''|[[:space:]]*|*[[:space:]]|*'`'*|없음) return 1 ;; esac
+    out="$out$e
+"
+  done
+  printf '%s' "$out"
+}
+
+slicing_label_ack_defects() {
+  # slicing_label_ack_defects <doc> — the slice-owned defects of the `라벨 인정`
+  # field, one line per defect, every slice to the end: a value that breaks the
+  # grammar, and a check the field names that no `라벨 인정` row of the slice's
+  # target names. The target is the one whose `원격 슬러그` is the slice's `레포`;
+  # a slug no target carries has no rows, so every check it names is a defect.
+  # The comparison is exact, element against the row's `체크`.
+  local doc="$1" id cks al rows c
+  for id in $(slice_ids "$doc"); do
+    if ! cks=$(slice_label_ack_checks "$doc" "$id"); then
+      printf "슬라이스 %s: 라벨 인정 값이 문법에 맞지 않음 — '%s'\n" "$id" "$(slice_field "$doc" "$id" '라벨 인정')"
+      continue
+    fi
+    [ -n "$cks" ] || continue
+    al=$(alias_for_slug "$(slice_field "$doc" "$id" '레포' | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" 2>/dev/null) || al=""
+    rows=""
+    [ -z "$al" ] || rows=$(manifest_label_ack_checks "$al")
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      case "
+$rows
+" in
+        *"
+$c
+"*) : ;;
+        *) printf "슬라이스 %s: 라벨 인정 체크가 대상 '%s' 의 「라벨 인정」 행에 없음 — %s\n" "$id" "${al:-?}" "$c" ;;
+      esac
+    done <<EOF
+$cks
+EOF
+  done
+  return 0
+}
+
 slicing_slice_defects() {
   # slicing_slice_defects <doc> — every defect a single slice owns, in the
-  # driver's wording: a missing reason field, then the merge-order defects.
-  # The driver parks the owner and what reaches it, and plans the rest.
+  # driver's wording: a missing reason field, then the `라벨 인정` defects,
+  # then the merge-order defects. The driver parks the owner and what reaches
+  # it, and plans the rest.
   local doc="$1" id f
   for id in $(slice_ids "$doc"); do
     while IFS= read -r f; do
@@ -2346,6 +2494,7 @@ slicing_slice_defects() {
 $(slice_reason_keys "$doc" "$id")
 EOF
   done
+  slicing_label_ack_defects "$doc"
   slicing_order_defects "$doc"
 }
 
@@ -2361,7 +2510,8 @@ EOF
 # apply at all.
 #
 # `slicing_fields_ok <doc> base` leaves out what a single slice owns — the
-# reason fields of a new-grammar block and the merge-order defects — so the
+# reason fields of a new-grammar block, the `라벨 인정` defects and the
+# merge-order defects — so the
 # driver can tell a declaration it cannot read from one with a defective slice
 # it can park on its own.
 slicing_fields_ok() {
@@ -2463,6 +2613,8 @@ EOF
     esac
   done
   if [ "$mode" != "base" ]; then
+    v=$(slicing_label_ack_defects "$doc" | sed -n 1p)
+    [ -z "$v" ] || { warn "$v"; return 1; }
     v=$(slicing_order_defects "$doc" | sed -n 1p)
     [ -z "$v" ] || { warn "$v"; return 1; }
   fi
@@ -2859,9 +3011,11 @@ slice_decl_digest() {
   # line and a block reading `**머지 순서**: 없음` hash to what the five-line
   # function gave the same block, so a frozen document's planned rows still
   # match a later run's import, and only a slice that declares a merge-order
-  # predecessor moves its digest.
-  local doc="$1" id="$2" k dk mo
+  # predecessor moves its digest. `라벨 인정` follows the same rule: a line
+  # only when the field is present and not `없음`.
+  local doc="$1" id="$2" k dk mo la
   mo=$(slice_field "$doc" "$id" '머지 순서' 2>/dev/null || true)
+  la=$(slice_field "$doc" "$id" '라벨 인정' 2>/dev/null || true)
   {
     for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
       dk=$k
@@ -2869,6 +3023,7 @@ slice_decl_digest() {
       printf '%s=%s\n' "$k" "$(decl_norm "$(slice_field "$doc" "$id" "$dk" 2>/dev/null || true)")"
     done
     [ -z "$(dep_tokens "$mo")" ] || printf '%s=%s\n' '머지 순서' "$(decl_norm "$mo")"
+    [ -z "$la" ] || [ "$la" = "없음" ] || printf '%s=%s\n' '라벨 인정' "$(decl_norm "$la")"
   } | shasum -a 256 | cut -d' ' -f1
 }
 

@@ -3482,6 +3482,14 @@ SAGEOF
       printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
       printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
       printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
+      # 라벨 인정 행도 고른 집합만 싣는다(줄마다 `<체크> <라벨>`). 빈 값이면 바이트 그대로다.
+      if [ -n "${SA_LABEL_ACK:-}" ]; then
+        while IFS= read -r extra; do
+          [ -z "$extra" ] || printf -- '- `라벨 인정` | 대상=main | 체크=%s | 라벨=%s | 사유=테스트\n' "${extra% *}" "${extra#* }"
+        done <<SALEOF
+$SA_LABEL_ACK
+SALEOF
+      fi
       # 선택 2행. 기본이 빈 문자열이라 이 블록의 기존 매니페스트는 바이트 그대로
       # 유지된다 — 슬라이스 B 집합만 `gh pr`·`gh api` 를 실어야 하고, 그 집합의
       # argv 는 `gh` 머지라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
@@ -3522,7 +3530,7 @@ SAPEOF
     SA_SEGWT="$SA_ROOT/seg"
     SA_SEGBR="seg-$SA_ID"
     SA_APPLY="(해당 없음)"; SA_APPLY_CMD=""; SA_APPLY_PROBE=""; SA_APPLY_CODES=""
-    SA_PREAUTH_EXTRA=""; SA_TARGET_EXTRA=""; SA_OWNER_DOC=""
+    SA_PREAUTH_EXTRA=""; SA_TARGET_EXTRA=""; SA_OWNER_DOC=""; SA_LABEL_ACK=""
     mkdir -p "$SA_REPO"
     ( cd "$SA_REPO" \
       && git init -q . \
@@ -38684,6 +38692,166 @@ p69_fail_case "실제 수집기 인자 오류" "$repo_root/plugins/cc-cmds/orche
   CC_METRICS_SWITCH_WINDOW_S=abc
 
 # ---------------------------------------------------------------------------
+# 60d. 라벨 인정 — types 판독기, 회차, 다음 값, PR 라벨 쓰기 판정, 규칙 갈래
+# --- section: 60d | group: sa | covers: act, plan, snapshot | anchors: 60d: types 판독기가 모양마다 답한다, 60d: PR 라벨 쓰기 판정이 형태마다 답한다, 60d: 선언된 체크의 정착한 실패에서 다음은 CI 라벨 인정 이다, 60d: 열린 라벨 회차에서 다음은 CI 라벨 인정 이다, 60d: 재실행 act 는 라벨 회차를 자기 열린 요청으로 읽지 않는다, 60d: 라벨 회차 통과 뒤 머지가 된다, 60d: 실패로 닫힌 라벨 회차 뒤 통과는 머지로 간다, 60d: 라벨 수락 뒤의 재실행이 새 회차를 연다, 60d: 선언 밖 체크의 실패는 CI 재실행 이다, 60d: 규칙이 표지 있는 라벨 행위를 연다 ---
+#
+# 60b 의 픽스처(`cb60_head`·`cb60_new`) 위에 매니페스트의 `라벨 인정` 행을 얹는다. 라벨
+# 회차의 `CI 처분` 행은 손으로 쓴다 — 라벨 행위가 POST 까지 가려면 규칙 갈래와 슬라이스
+# 선언이 함께 있어야 하는데, 이 절은 그 행위 없이도 정해지는 다음 값·회차·머지를 잰다.
+# 판독기와 PR 라벨 쓰기 판정은 게이트를 소싱한 이 셸에서 함수로 직접 부른다.
+# ---------------------------------------------------------------------------
+LA60_D="$WORK/la60"; rm -rf "$LA60_D"; mkdir -p "$LA60_D"
+la60_types() {
+  # la60_types <기대> <이벤트> <내용> — 판독기 한 사례. 실패는 모아서 한 줄로 낸다.
+  local f="$LA60_D/wf.$((${LA60_I:-0} + 1)).yml"
+  LA60_I=$((${LA60_I:-0} + 1))
+  printf '%s\n' "$3" > "$f"
+  local got; got=$(gate_label_ack_types "$f" "$2")
+  [ "$got" = "$1" ] || la60_tfail="$la60_tfail[$LA60_I: $got≠$1]"
+}
+la60_tfail=''
+la60_types 받지않음 pull_request 'on: pull_request'
+la60_types 받지않음 pull_request 'on: [pull_request, push]'
+la60_types 받지않음 pull_request $'on:\n  pull_request:\n  push:'
+la60_types 받지않음 pull_request $'on:\n  pull_request:\n    branches: [main]'
+la60_types 받음 pull_request $'on:\n  pull_request:\n    types: [opened, labeled]'
+la60_types 받음 pull_request $'on:\n  pull_request:\n    types:\n      - "labeled"\n      - synchronize'
+la60_types 받지않음 pull_request $'on:\n  pull_request:\n    types: [opened]'
+la60_types 받음 pull_request $'"on":\n  pull_request:\n    types: [\'labeled\']'
+la60_types 받음 pull_request $'true:\n  pull_request:\n    types: [labeled]'
+la60_types 받지않음 pull_request $'on:\n  push:\n    branches: [main]'
+la60_types 받음 pull_request_target $'on:\n  pull_request_target:\n    types: [labeled]'
+la60_types 받지않음 pull_request $'on:\n  pull_request_target:\n    types: [labeled]'
+la60_types 읽지못함 pull_request $'on:\n  pull_request: &a\n    types: [labeled]'
+la60_types 읽지못함 pull_request $'on:\n  pull_request:\n    types: labeled'
+la60_types 읽지못함 pull_request $'on:\n  pull_request:\n    types: [opened]\n---\non: push'
+la60_types 읽지못함 pull_request 'name: x'
+check "60d: types 판독기가 모양마다 답한다" "$la60_tfail" ""
+check "60d: 읽을 수 없는 파일은 읽지못함 이다" "$(gate_label_ack_types "$LA60_D/none.yml" pull_request)" "읽지못함"
+
+la60_wfail=''
+la60_w() {
+  # la60_w <기대 0|1> <argv...> — 0 이면 PR 라벨 쓰기, 1 이면 아님.
+  local want="$1" got=1; shift
+  gate_pr_label_write "$@" && got=0
+  [ "$got" = "$want" ] || la60_wfail="$la60_wfail[$*: $got]"
+}
+la60_w 0 gh pr edit 1 --add-label api-change
+la60_w 0 gh issue edit 3 --remove-label x
+la60_w 0 gh -R o/r pr edit 1 --add-label=x
+la60_w 0 gh pr create --title t --label x
+la60_w 0 gh pr create --title t -l x
+la60_w 0 gh pr create -dlx
+la60_w 0 gh api -X POST repos/o/r/issues/1/labels -f 'labels[]=x'
+la60_w 0 gh api repos/o/r/issues/1/labels -f 'labels[]=x'
+la60_w 0 gh api -X PUT repos/o/r/issues/1/labels -f 'labels[]=x'
+la60_w 0 gh api -X DELETE repos/o/r/issues/1/labels/x
+la60_w 0 gh api -X PATCH repos/o/r/issues/1 -f 'labels[]=x'
+la60_w 0 gh api -X PATCH repos/o/r/pulls/1 --input body.json
+la60_w 0 gh api -X PATCH repos/o/r/issues/1 -F body=@f.txt
+la60_w 0 gh api graphql -f 'query=mutation { addLabelsToLabelable(input: {}) { clientMutationId } }'
+la60_w 0 gh api graphql -f 'query=mutation { updatePullRequest(input: {labelIds: []}) { clientMutationId } }'
+la60_w 0 gh api graphql -F query=@q.graphql
+la60_w 0 gh api graphql -f query=@q.graphql
+la60_w 0 gh api graphql --input q.json
+la60_w 1 gh issue create --title t --label x
+la60_w 1 gh label create x
+la60_w 1 gh api -X POST repos/o/r/labels -f name=x
+la60_w 1 gh api repos/o/r/issues/1/labels
+la60_w 1 gh api -X PATCH repos/o/r/issues/1 -f title=x
+la60_w 1 gh pr edit 1 --title x
+la60_w 1 gh pr create --title t --body b
+la60_w 1 gh pr view 1
+la60_w 1 gh api graphql -f 'query=query { viewer { login } }'
+la60_w 1 git push origin HEAD
+check "60d: PR 라벨 쓰기 판정이 형태마다 답한다" "$la60_wfail" ""
+
+cb60_head
+la60_round() { cc_ci_round "$SA_LEDGER" CK "$CK60_SHA" | tr '\n' ' ' | sed 's/ $//'; }
+la60_row() {
+  # la60_row <상태> <회차> — 세그먼트 CK 의 현재 head 에 손으로 쓴 라벨 회차 행.
+  printf -- '- `CI 처분` | 교대=1 | 세그먼트=CK | PR=%s#1 | head sha=%s | 처분=라벨 | 상태=%s | 회차=%s | 실행=777 | 워크플로=.github/workflows/gate.yml | 실패 체크=gate | 체크=gate | 라벨=api-change | 기본 브랜치=통과 | 응답=- | 관측=- | prev=x\n' \
+    "$CB60_SLUG" "$CK60_SHA" "$1" "$2" >> "$SA_LEDGER"
+}
+la60_new() {
+  # la60_new <라벨> [<체크 라벨> 줄...] — 60b 의 픽스처에 라벨 인정 행을 얹는다.
+  cb60_new "$1"
+  SA_LABEL_ACK="${2-gate api-change}"; sa_manifest 리뷰없음
+}
+
+# 선언된 체크의 정착한 실패 → 열린 라벨 회차 → 수락 → 통과 → 머지 -------------------------
+la60_new "라벨 인정 — 정상 회차"
+la60_snap=$( ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+  | jq -r '.review_next[] | select(.["세그먼트"] == "CK") | [.["다음"], .["head sha"], .["PR"], .["실패 체크"], .["재실행 회차"]] | join("|")')
+check "60d: 선언된 체크의 정착한 실패에서 다음은 CI 라벨 인정 이다" "$la60_snap" "CI 라벨 인정|$CK60_SHA|$CB60_SLUG#1|gate|0"
+la60_row 요청 1
+check "60d: 열린 라벨 회차에서 다음은 CI 라벨 인정 이다" "$(cb60_next)" "CI 라벨 인정"
+check "60d: 열린 라벨 회차는 u 를 올리지 않고 열림·라벨로 읽힌다" "$(la60_round)" \
+  "u=0 a=열림 g=0 f=0 fix=0 base= ad=라벨 ra=없음 lab=1 max=1"
+la60_nb=$(cb60_n blocked); la60_np=$(cb60_posts)
+cb60_act
+check "60d: 재실행 act 는 라벨 회차를 자기 열린 요청으로 읽지 않는다" "$rc|$(cb60_n blocked)|$(cb60_posts)" "3|$la60_nb|$la60_np"
+la60_row 수락 1
+check "60d: 라벨 회차는 u 를 올리지 않고 g 를 올린다" "$(la60_round)" \
+  "u=0 a=수락 g=1 f=0 fix=0 base=통과 ad=라벨 ra=없음 lab=1 max=1"
+check "60d: 라벨 수락 뒤 회차 1 의 판정 전 다음은 CI 대기 다" "$(cb60_next)" "CI 대기"
+cb60_line 통과 1 0 -
+check "60d: 라벨 회차 통과 뒤 다음은 머지 다" "$(cb60_next)" "머지"
+sa_merge CK
+check "60d: 라벨 회차 통과 뒤 머지가 된다" "$rc|$(git --git-dir="$SA_REMOTE" rev-parse "$SA_BASE" 2>/dev/null)" "0|$CK60_SHA"
+
+# 실패로 닫힌 라벨 회차 — 정착한 실패에서는 CI 라벨 인정, 사람이 고친 통과는 머지 ------------
+la60_new "라벨 인정 — 실패로 닫힌 회차"
+la60_row 요청 1
+la60_row 실패 1
+check "60d: 실패로 닫힌 라벨 회차의 정착한 실패에서 다음은 CI 라벨 인정 이다" "$(cb60_next)" "CI 라벨 인정"
+cb60_line 대기 0 1 -
+check "60d: 실패로 닫힌 라벨 회차 뒤 진행 중이면 CI 대기 다" "$(cb60_next)" "CI 대기"
+cb60_line 통과 0 0 -
+check "60d: 실패로 닫힌 라벨 회차 뒤 통과는 머지로 간다" "$(cb60_next)" "머지"
+
+# 라벨 수락 뒤의 실패 — 재실행 한 번의 기회가 남고, 그 재실행은 회차 2 를 연다 ---------------
+la60_new "라벨 인정 — 수락 뒤 재실패"
+la60_row 요청 1
+la60_row 수락 1
+cb60_line 실패 1 0
+check "60d: 라벨 수락 뒤 정착한 실패에서 다음은 CI 재실행 이다" "$(cb60_next)" "CI 재실행"
+cb60_act
+la60_acc=$(cb60_last 'CI 처분')
+check "60d: 라벨 수락 뒤의 재실행이 새 회차를 연다" \
+  "$rc|$(sa_field "$la60_acc" 처분)|$(sa_field "$la60_acc" 상태)|$(sa_field "$la60_acc" 회차)" "0|재실행|수락|2"
+check "60d: 그 뒤 회차는 u=1·g=2·max=2 다" "$(la60_round)" \
+  "u=1 a=수락 g=2 f=0 fix=0 base=통과 ad=재실행 ra=수락 lab=1 max=2"
+
+# 선언 밖 체크 — 행이 이름 짓지 않은 체크의 실패는 재실행으로 간다 ---------------------------
+la60_new "라벨 인정 — 선언 밖 체크" "other api-change"
+check "60d: 선언 밖 체크의 실패는 CI 재실행 이다" "$(cb60_next)" "CI 재실행"
+cb60_foot
+
+# 규칙 갈래 — 사전 인가 대조 규칙이 표지·종류·argv 가 모두 맞는 라벨 행위만 행 없이 연다 ---------
+la60_rule="$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh"
+la60_rr() {
+  # la60_rr <표지 1|""> <종류> <argv> — 규칙의 종료 코드.
+  local r=0
+  ( cd "$SA_WT" && unset GATE_LABEL_ACK_PRE GATE_CI_RERUN_PRE
+    [ -z "$1" ] || export GATE_LABEL_ACK_PRE="$1"
+    GATE_KIND="$2" GATE_ACT=PR GATE_ARGV="$3" GATE_SURFACE=외부상태변경 GATE_MANIFEST="$SA_MANIFEST" \
+      GATE_AUTO_RESOLVE=1 sh "$la60_rule" ) >/dev/null 2>&1 || r=$?
+  printf '%s' "$r"
+}
+la60_sha=0123456789abcdef0123456789abcdef01234567
+check "60d: 규칙이 표지 있는 라벨 행위를 연다" "$(la60_rr 1 label-ack "라벨 $la60_sha")" "0"
+case "$(la60_rr '' label-ack "라벨 $la60_sha")" in
+  0) bad "60d: 표지 없는 라벨 행위는 규칙을 지나지 않는다" "규칙이 exit 0 으로 열었다" ;;
+  *) ok "60d: 표지 없는 라벨 행위는 규칙을 지나지 않는다" ;;
+esac
+la60_open=''
+for la60_a in "재실행 $la60_sha" "라벨 ${la60_sha%?}" "라벨 $la60_sha x" "라벨 0123456789ABCDEF0123456789ABCDEF01234567"; do
+  [ "$(la60_rr 1 label-ack "$la60_a")" != 0 ] || la60_open="$la60_open[$la60_a]"
+done
+check "60d: 다른 argv 철자의 라벨 행위는 규칙이 열지 않는다" "$la60_open" ""
+
+# ---------------------------------------------------------------------------
 # 61. 휴면 기동의 원장 바이트
 # --- section: 61 | group: ledger_series | covers: act, snapshot | needs: 14h | anchors: 61: 휴면 기동은 새 계열 행과 계정= 을 쓰지 않는다 ---
 #
@@ -42576,8 +42744,9 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 # `never`·`external`)도 A 에 넣는다 — 넣지 않으면 문구가 빠진 바꿈을 잡지 못한다.
 # EXEMPT 는 고침이 행이 아닌 칸이다: 「모른다」인 `도달미상`, 결코 열지 않는 `dev파괴`,
 # 처분 밖에서 정해지는 병합 칸 셋(60·61c 절이 묶는다), 그리고 재실행 행위의 칸 셋
-# (60b 가 묶는다 — 고침이 행이 아니라 사람의 판단이고, 문구는 사전 인가를 권하지 않는다).
-t3_exempt=" 도달미상 dev파괴 CI실패 등급회귀 등급회귀판정불가 재실행배포트리거 재실행대상미상 재실행요청실패 "
+# (60b 가 묶는다 — 고침이 행이 아니라 사람의 판단이고, 문구는 사전 인가를 권하지 않는다),
+# 같은 이유의 라벨 인정 행위의 칸 다섯, 그리고 어떤 행도 열지 않는 `PR라벨쓰기`.
+t3_exempt=" 도달미상 dev파괴 CI실패 등급회귀 등급회귀판정불가 재실행배포트리거 재실행대상미상 재실행요청실패 라벨인정없음 라벨새실행없음 라벨배포트리거 라벨이미있음 라벨요청실패 PR라벨쓰기 "
 t3_T=" 기기전역/no-row 기기전역/judged 기기전역/judge-failed 기기전역/argv0-path 기기전역/external 기기전역/never 파괴형태미명시/marked 파괴형태미명시/declared 신고등급한도/opaque 신고등급한도/code 신고등급한도/wrapper 신고등급한도/unlisted prod인가없음/- 배포트리거인가없음/- dev식별자부재/- dev식별자불일치/- dev대조불가/- 비밀출력/- push원격불일치/- 도달모순/- dropped none code spaced never external "
 t3_D=$( { awk '/^gate_reach_disposition\(\) \{/ { on = 1 } on && /^}$/ { on = 0 } on' "$GATE" \
             | grep -o "printf '[^\\\\']*\\\\t" | sed "s/^printf '//; s/\\\\t\$//"
@@ -43389,6 +43558,53 @@ $dk_r3"
   fi
 fi
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83D"
+
+# ---------------------------------------------------------------------------
+# 83e. exec 의 PR 라벨 쓰기 — 사전 인가 형태 행이 있어도 PR라벨쓰기 로 park 한다
+# --- section: 83e | group: reach | covers: plan, reach | anchors: 83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다, 83e: 협업 표면에 남는 라벨 형태는 통과한다 ---
+#
+# 협업 표면이 행 없이 열던 PR 라벨 쓰기를 무인 런은 `act --kind label-ack` 로만 한다. 형태
+# 행 `gh api -X PUT`·`gh pr`·`gh api graphql` 을 실은 매니페스트에서도 뺀 쓰기는 도달을
+# 무엇으로 신고하든 같은 칸에서 멈추고, 문구는 행을 권하지 않는다. 새 이슈의 라벨과 레포의
+# 라벨 정의는 협업 표면에 남는다. 행위를 하지 않는 `plan` 만으로 잰다.
+# ---------------------------------------------------------------------------
+CC_GATE_PREV_AR83E="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+pj_reset; PJ_VERDICT=park
+rx_manifest R83E $'gh api -X PUT\ngh api -X POST\ngh pr\ngh api graphql\ngh issue\ngh label'
+t3e_fail=''
+t3e_park() {
+  # t3e_park <도달> <argv...> — PR라벨쓰기 칸·행 줄 없음·수리 문구. 단계는 argv 가
+  # 오르는 칸보다 낮게 신고하지 않도록 T3E_CP 로 고른다.
+  local rr="$1"; shift
+  pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint "${T3E_CP:-push}" \
+    --surface 외부상태변경 --reach "$rr" --rationale t -- "$@"
+  [ "$rc" = 11 ] && [ "$(rx_cell)" = PR라벨쓰기 ] && [ -z "$(rx_row)" ] \
+    && case "$msg" in *'act --kind label-ack'*) true ;; *) false ;; esac \
+    || t3e_fail="$t3e_fail[$rr $*: rc=$rc 칸=$(rx_cell)]"
+}
+t3e_park 협업 gh api -X PUT repos/t/front3/issues/1/labels -f 'labels[]=api-change'
+t3e_park 협업 gh api -X POST repos/t/front3/issues/1/labels -f 'labels[]=api-change'
+t3e_park 미상 gh api -X POST repos/t/front3/issues/1/labels -f 'labels[]=api-change'
+t3e_park 협업 gh pr edit 1 --add-label api-change
+T3E_CP=PR t3e_park 협업 gh pr create --title t --body b -l api-change
+t3e_park 협업 gh api -X PATCH repos/t/front3/pulls/1 --input body.json
+check "83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
+# 파일에서 읽는 graphql 쿼리는 머지 단계까지 오르고, 그 단계의 규칙이 도달 판정보다
+# 먼저 멈춘다 — 어느 칸에서 멈추든 형태 행만으로 통과하지는 않는다.
+pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint 머지 \
+  --surface 외부상태변경 --reach 협업 --rationale t -- gh api graphql -F query=@q.graphql
+check "83e: 파일 쿼리 graphql 은 형태 행으로 통과하지 않는다" "$([ "$rc" != 0 ] && echo 막힘)" "막힘"
+t3e_fail=''
+for t3e_a in "gh issue create --title t --body b --label bug" "gh label create api-change"; do
+  # shellcheck disable=SC2086
+  pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+    --surface 외부상태변경 --reach 협업 --rationale t -- $t3e_a
+  [ "$rc" = 0 ] || t3e_fail="$t3e_fail[$t3e_a: rc=$rc $(rx_cell)]"
+done
+check "83e: 협업 표면에 남는 라벨 형태는 통과한다" "$t3e_fail" ""
+check "83e: PR 라벨 쓰기 판정은 판단을 부르지 않는다" "$(pj_calls)" "0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83E"
 
 # ---------------------------------------------------------------------------
 # 84. gate_metrics_timed leaves nothing behind in a detached child under make

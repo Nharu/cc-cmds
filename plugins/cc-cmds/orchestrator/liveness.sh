@@ -382,15 +382,26 @@ cc_ci_round() {
   # `(segment, head sha)`, as `키=값` lines:
   #
   #   u=<n>      `CI 처분 처분=재실행 상태=요청` rows of the pair — the budget spent
-  #   a=<state>  the state of the pair's highest `회차`: 없음 (u=0) · 열림 · 수락 · 실패
+  #   a=<state>  the state of the pair's highest `회차`: 없음 (no round) · 열림 · 수락 · 실패
   #   g=<n>      the highest `회차` of the pair's `상태=수락` rows, 0 when none
   #   f=<n>      the distinct `head sha` values of the segment's `처분=수정` rows
   #   fix=<0|1>  whether the pair itself carries a `처분=수정` row
   #   base=<v>   `기본 브랜치` of the `요청` row of round g, empty when none
+  #   ad=<v>     `처분` of the highest `회차` — 재실행 or 라벨, empty when none
+  #   ra=<state> the state of the pair's highest `처분=재실행` round, 없음 when none
+  #   lab=<0|1>  whether the pair carries any `처분=라벨` row
+  #   max=<n>    the highest `회차` of the pair whatever its `처분`, 0 when none
   #
   # ONE READER FOR FOUR CONSUMERS — the gate's CI layer, the merge check, the
   # poller's key and the relay's verdict reader — so none of them counts rounds
   # of its own and the four cannot derive different rounds from one ledger.
+  #
+  # A LABEL ROUND IS A ROUND, NOT A RERUN. `처분=라벨` rows — the label act's —
+  # enter a, g and max exactly as rerun rows do, so a label that started a new
+  # run moves the poller to a new round key and the merge check accepts only that
+  # round's `통과`; they never enter u, the rerun budget. Rounds of both kinds
+  # share one numbering, the next round being max + 1 whatever its kind, so a
+  # rerun after an accepted label round opens a round of its own.
   #
   # THE ROUND RISES ON `수락` ONLY. A `요청` row opens a round and is written
   # before the POST, so a round GitHub never accepted — a gate that died after the
@@ -400,7 +411,7 @@ cc_ci_round() {
   # rerun is never counted twice and a death after the row still spends it.
   local ledger="$1" seg="$2" sha="$3"
   if [ -z "$ledger" ] || [ ! -f "$ledger" ] || [ -z "$seg" ]; then
-    printf 'u=0\na=없음\ng=0\nf=0\nfix=0\nbase=\n'
+    printf 'u=0\na=없음\ng=0\nf=0\nfix=0\nbase=\nad=\nra=없음\nlab=0\nmax=0\n'
     return 0
   fi
   LC_ALL=C awk -F'|' -v seg="$seg" -v sha="$sha" '
@@ -417,29 +428,37 @@ cc_ci_round() {
         if (h == sha) fix = 1
         next
       }
-      if (d != "재실행" || h != sha) next
+      if ((d != "재실행" && d != "라벨") || h != sha) next
+      if (d == "라벨") lab = 1
       if (k !~ /^[0-9]+$/) next
       k = k + 0
       if (s == "요청") {
-        u++
+        if (d == "재실행") { u++; if (k > rtop) rtop = k }
         if (!(k in st)) st[k] = "열림"
+        disp[k] = d
         req_base[k] = val("기본 브랜치")
         if (k > top) top = k
       } else if (s == "수락") {
-        st[k] = "수락"
+        st[k] = "수락"; disp[k] = d
         if (k > g) g = k
         if (k > top) top = k
+        if (d == "재실행" && k > rtop) rtop = k
       } else if (s == "실패") {
-        st[k] = "실패"
+        st[k] = "실패"; disp[k] = d
         if (k > top) top = k
+        if (d == "재실행" && k > rtop) rtop = k
       }
     }
     END {
-      a = (u + 0 == 0) ? "없음" : st[top]
+      ad = (top + 0 > 0) ? disp[top] : ""
+      if (ad == "재실행" && u + 0 == 0) a = "없음"
+      else a = (top + 0 > 0) ? st[top] : ""
       if (a == "") a = "없음"
-      printf "u=%d\na=%s\ng=%d\nf=%d\nfix=%d\nbase=%s\n", u, a, g, f, fix, req_base[g]
+      ra = (u + 0 > 0 && rtop + 0 > 0) ? st[rtop] : ""
+      if (ra == "") ra = "없음"
+      printf "u=%d\na=%s\ng=%d\nf=%d\nfix=%d\nbase=%s\nad=%s\nra=%s\nlab=%d\nmax=%d\n", u, a, g, f, fix, req_base[g], ad, ra, lab, top
     }
-  ' "$ledger" 2>/dev/null || printf 'u=0\na=없음\ng=0\nf=0\nfix=0\nbase=\n'
+  ' "$ledger" 2>/dev/null || printf 'u=0\na=없음\ng=0\nf=0\nfix=0\nbase=\nad=\nra=없음\nlab=0\nmax=0\n'
 }
 
 cc_ci_round_get() {
