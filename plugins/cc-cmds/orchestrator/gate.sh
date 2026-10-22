@@ -273,12 +273,14 @@
 # `재계획` row, so the sibling's next implement dispatch is process A. Refused
 # (3) unless every clause `gate_replan_eval` names holds — the same evaluation
 # the snapshot's `replan_due[]` shows — and after the run has ended.
-#   gate.sh act --kind halt-settle --target <alias> --segment <id> ... \\
+#   gate.sh act --kind halt-settle --target <alias> --segment <key> ... \\
 #               -- 중단 답 줄=<n>
-# `halt-settle` settles a person's answer to a halted re-convergence without a
-# session, when the answered option is a machine settlement line and the design
-# document hashes to its value: one gate-written `stage-result` row carrying the
-# line's `재수렴 판정` and `정산=중단 답 줄 <n>`, and the segment's plan voided.
+# `<key>` is the answer row's `세그먼트` — a segment id, or a run-scope step's
+# id; `-` is refused (2) like every row act. `halt-settle` settles a person's
+# answer to a halted re-convergence without a session, when the answered option
+# is a machine settlement line and the design document hashes to its value: one
+# gate-written `stage-result` row carrying the line's `재수렴 판정` and
+# `정산=중단 답 줄 <n>`, and the segment's plan voided (none for a run-scope step).
 # Refused (3) with nothing written on any check that fails — the answer then
 # stays open for the carry act. Taken after the run's deadline as well.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
