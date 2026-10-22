@@ -9676,10 +9676,14 @@ graded_as '읽기' '하위 명령 없는 openssl 은 읽기다'    -- openssl
 # proves nothing about it. `s_client` above and `s_server` here are the two
 # subcommands a low guess would launder.
 graded_as '등급 미상' 's_server 도 미상이다'           -- openssl s_server -accept 4433
-# The cross-arm write check: `-out`/`-keyout` are tested on every arm, not per
-# subcommand, so a write cannot enter wearing a read's subcommand.
+# The cross-arm write check: `-out`/`-keyout` are tested on every read arm, not
+# per subcommand, so a write cannot enter wearing a read's subcommand. A
+# subcommand outside the read list stays at the top of the range even with a
+# writer flag, because the flag grades only where its output lands.
 graded_as '트리밖쓰기' 'dgst 라도 -out 이면 쓰기다'    -- openssl dgst -sha256 -out /tmp/d.txt /tmp/x
-graded_as '트리밖쓰기' '-keyout 도 쓰기다'             -- openssl req -new -keyout /tmp/k.pem
+graded_as '트리밖쓰기' '하위 명령 앞의 -keyout= 도 쓰기다' -- openssl -keyout=/tmp/k.pem rand 8
+graded_as '등급 미상' '읽기 목록 밖의 req 는 -keyout 이 있어도 미상이다' -- openssl req -new -keyout /tmp/k.pem
+graded_as '등급 미상' '소켓을 여는 ocsp 는 -out= 이 있어도 미상이다' -- openssl ocsp -url http://example.com -out=o.txt
 # THE BOUNDARY, pinned as it is rather than widened. The arm matches the writer
 # flag names exactly, with `=` as the only attachment, so `-outfile` is not
 # caught and the act grades by its subcommand — a read. Widening that is a
@@ -31845,14 +31849,14 @@ case "$(cat "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
   *'다음 파일의 편집은 적용되지 않았습니다 — 사람이 런 밖에서 합니다: <paths>.'*'seat-apply-preview'*) ok "34s: 교대의 재부착 문면이 그 파일을 스테이지에 알린다" ;;
   *) bad "34s: 교대의 재부착 문면이 그 파일을 스테이지에 알린다" "autopilot-router-shift/SKILL.md" ;;
 esac
-# A CLAUDE.md THE BASE DOES NOT TRACK IS NOT A PERSON'S FILE. The stage writes it
-# through exec; listing it as a person's file would stop the run on a person
-# for an edit the gate takes unattended, and block the inheritance.
+# A CLAUDE.md THE BASE DOES NOT TRACK IS NOT A PERSON'S FILE. It is in neither
+# list: the base's CLAUDE.md route decides it, and that route refuses a stage's
+# copy, so the skill must not tell the stage to write it through exec either.
 sap_iu=$(grep -F -- '- **One record holds every surface edit of the phase.**' \
   "$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md" || true)
 case "$sap_iu" in
-  *'an untracked `CLAUDE.md` go under'*) bad "34s: 스테이지가 추적되지 않는 CLAUDE.md 를 사람 몫에 넣지 않는다" "$sap_iu" ;;
-  *'A `프로젝트설정` file, a `트랜스크립트` file and an ignored path go under `**사람 몫 파일**`'*'goes in neither list: write it through `gate.sh exec`'*)
+  *'an untracked `CLAUDE.md` go under'*|*'write it through `gate.sh exec`'*) bad "34s: 스테이지가 추적되지 않는 CLAUDE.md 를 사람 몫에 넣지 않는다" "$sap_iu" ;;
+  *'A `프로젝트설정` file, a `트랜스크립트` file and an ignored path go under `**사람 몫 파일**`'*'goes in neither list and is left out of the record'*'refuses a stage'"'"'s copy with exit 3'*)
     ok "34s: 스테이지가 추적되지 않는 CLAUDE.md 를 사람 몫에 넣지 않는다" ;;
   *) bad "34s: 스테이지가 추적되지 않는 CLAUDE.md 를 사람 몫에 넣지 않는다" "${sap_iu:-(줄 없음)}" ;;
 esac
@@ -32341,6 +32345,18 @@ spv_review() {  # spv_review <plan|act>
 spv_review plan
 check "34r: 출처가 깨진 브랜치의 리뷰 예측은 3 이고 행을 쓰지 않는다" \
   "$rc/$( { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' "$CAP_LEDGER" || true; } | grep -c . || true)" "3/0"
+# A READ VERB WRITES NO ROW. With a shift stop open on another segment, the
+# snapshot derives that cone, whose seed meets SPV's broken provenance: the
+# held list names SPV and the ledger keeps its length.
+cp "$CAP_LEDGER" "$WORK/spv-ledger-snap.bak"
+printf -- '- `segment` | id=SPX | 상태=실행중 | 워크트리=%s | 브랜치=sap-RSPV1 | 선행=없음 | prev=x\n' "$SAP_WT" >> "$CAP_LEDGER"
+printf -- '- `blocked` | 대상=infra | 스코프=cone | 원인=막힘 | 앵커 세그먼트=SPX | 사유=교대 정지 기록 불가 — 병합 | prev=x\n' >> "$CAP_LEDGER"
+spv_n0=$(wc -l < "$CAP_LEDGER" | tr -d ' ')
+spv_snap=$(cap_snap "$SAP_SEAT" '')
+check "34r: 스냅숏의 교대 정지 보류는 출처가 깨진 세그먼트를 담고 원장 행을 쓰지 않는다" \
+  "$(printf '%s' "$spv_snap" | jq -r '[.shift_halts[] | select(.["세그먼트"] == "SPX") | .["보류"][]] | index("SPV") != null')/$(wc -l < "$CAP_LEDGER" | tr -d ' ')" \
+  "true/$spv_n0"
+cp "$WORK/spv-ledger-snap.bak" "$CAP_LEDGER"
 spv_review act
 spv_review act
 check "34r: 출처가 깨진 브랜치의 리뷰 파견은 3 이다" "$rc" "3"
@@ -32687,7 +32703,7 @@ for rp_id in $rp_ids; do
   rp_n=$((rp_n + 1))
   grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
 done
-check "34o: 게이트 선언에서 경로 id 일곱을 읽는다 (아래가 공허하지 않다)" "$rp_n" "7"
+check "34o: 게이트 선언에서 경로 id 여덟을 읽는다 (아래가 공허하지 않다)" "$rp_n" "8"
 check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
 rp_lits=0
 grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))

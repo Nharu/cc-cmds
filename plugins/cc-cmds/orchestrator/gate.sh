@@ -3358,10 +3358,13 @@ surface_of_openssl() {
   # this table does not name include `s_client` and `s_server` — and a grade
   # that guesses low on those is the laundering the whole table exists to stop.
   #
-  # The writer flags are checked across every arm, not per subcommand. `rand` and
-  # `dgst` both accept it, so an arm that graded `rand` as a read on the
-  # strength of its name alone would let `openssl rand -out secrets.bin 32`
-  # through as one.
+  # The writer flags are checked across every read arm, not per subcommand.
+  # `rand` and `dgst` both accept them, so an arm that graded `rand` as a read
+  # on the strength of its name alone would let `openssl rand -out secrets.bin
+  # 32` through as one. A subcommand outside the read list stays `등급 미상`
+  # whatever writer flag it carries: a writer flag grades where the output
+  # lands, not what else the subcommand reaches, and `ocsp -url <host> -out=<f>`
+  # opens a socket.
   #
   # The writer flags come in four spellings, and every one of them writes.
   # LibreSSL takes only `-out <file>`, but OpenSSL 3 and later — the bare
@@ -3372,9 +3375,9 @@ surface_of_openssl() {
   #
   # THIS ROW DOES NOT USE `gate_argv_has_opt`. Its short arm is a prefix match,
   # and openssl has `-outform` sharing the `-out` prefix. That option belongs to
-  # `x509`, `req`, `rsa` and friends, every one of which this row already
-  # refuses with `등급 미상`, so today the prefix would mis-grade nothing. The
-  # day a subcommand carrying `-outform` is added to the read list below, it
+  # `x509`, `req`, `rsa` and friends, every one of which this row refuses with
+  # `등급 미상` before any writer flag is read, so today the prefix would
+  # mis-grade nothing. The day a subcommand carrying `-outform` is added to the read list below, it
   # would — and the failure would look like an unrelated row's problem. The
   # match below is exact on the name and takes `=` as the only attachment.
   # `-writerand <file>` (`rand`, `dgst`) writes the generator's seed file and
@@ -3407,6 +3410,10 @@ surface_of_openssl() {
         printf '등급 미상'; return 0 ;;
     esac
   done
+  case "${1:-}" in
+    rand|dgst|sha256|sha1|base64|version|list|help|''|-*) ;;
+    *) printf '등급 미상'; return 0 ;;
+  esac
   if [ "$want" = 1 ]; then printf '트리밖쓰기'; return 0; fi
   if [ "${#outs[@]}" -gt 0 ]; then
     for a in "${outs[@]}"; do
@@ -18365,7 +18372,7 @@ gate_shift_halts_json() {
     fi
     gate_segment_terminal "$seg" && continue
     held=''
-    for m in $(gate_cone_members "$seg"); do
+    for m in $(GATE_CONE_MEMBERS_ONLY=1 gate_cone_members "$seg"); do
       [ "$m" = "$seg" ] && continue
       held="$held${held:+, }\"$(gate_json_escape "$m")\""
     done
@@ -23896,9 +23903,15 @@ gate_surface_provenance_hold() {
   # would also stand in for a later true one, and seeding first would skip the
   # ancestry axis, whose own `판정 불가` row is the one that names what could not
   # be read. The review dispatch and the merge act still refuse on it directly.
+  #
+  # A READ VERB COMPUTES MEMBERSHIP ONLY. `snapshot` reaches this through the
+  # shift-halt array, and a read that appended a `blocked` row would change the
+  # ledger it reports on; with `GATE_CONE_MEMBERS_ONLY=1` the answer is the same
+  # and nothing is written or warned.
   local seg="$1" out rc=0 why='강제 표면이 좌석 적용 밖에서 바뀜'
   out=$(gate_surface_provenance "$seg") || rc=$?
   [ "$rc" = "$GATE_EXIT_RULE" ] || return 1
+  [ "${GATE_CONE_MEMBERS_ONLY:-0}" = 1 ] && return 0
   if ! gate_has_row 'blocked' "앵커 세그먼트=$seg" "사유=$why"; then
     gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=cone" "원인=막힘" \
       "앵커 세그먼트=$seg" "사유=$why" \
