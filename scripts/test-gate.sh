@@ -34043,7 +34043,7 @@ else ok "15: 행위가 돌아온 때 명령은 아직 끝나지 않았다"; fi
 case "$(sb_seg_last SB15)" in
   *"상태=적용 준비"*"감독 토큰="*)
     sb15_tok=$(sa_field "$(sb_seg_last SB15)" '감독 토큰')
-    if printf '%s' "$sb15_tok" | grep -Eq '^[0-9a-f]{64}$'; then
+    if [[ "$sb15_tok" =~ ^[0-9a-f]{64}$ ]]; then
       ok "15: 적용 행위는 감독자를 띄우고 적용 준비 행에서 돌아온다"
     else
       bad "15: 감독 토큰" "$sb15_tok"

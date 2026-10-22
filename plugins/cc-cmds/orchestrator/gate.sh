@@ -32176,7 +32176,7 @@ gate_apply_preconditions() {
     [ "$GATE_APPLY_RERUN_ANSWER" -gt "$vline" ] \
       || { gate_apply_refuse 1 "원장 ${GATE_APPLY_RERUN_ANSWER} 번째 줄의 재실행 답은 마지막 정산 판정(${vline} 번째 줄)보다 앞섭니다"; return $?; }
     spent=$(gate_apply_seg_rows_n "$seg" | cut -d: -f2- | gate_rows_field_eq '상태' '적용 준비' \
-              | gate_rows_field_eq '재실행 근거' "$GATE_APPLY_RERUN_ANSWER" | head -1)
+              | gate_rows_field_eq '재실행 근거' "$GATE_APPLY_RERUN_ANSWER" | awk 'NR<=1')
     [ -z "$spent" ] \
       || { gate_apply_refuse 1 "원장 ${GATE_APPLY_RERUN_ANSWER} 번째 줄의 재실행 답은 이미 한 번의 재실행에 쓰였습니다 — 답 한 줄은 재실행 한 번입니다"; return $?; }
     m=$(gate_row_field "${vrow#*:}" '고정 커밋')
