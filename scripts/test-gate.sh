@@ -1329,6 +1329,16 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; 
 # 제 줄로 찍는다.
 skip() { skipped=$((skipped + 1)); printf 'SKIP: %s\n' "$1"; }
 
+# The routing shift's text is its body and the references/ files it reads on
+# entry to a rare branch. A section asserting on the shift's words reads this
+# corpus, so a sentence moved between the body and a reference is still found
+# and an absence assertion still covers the references. Defined in the
+# preamble because 34o and 67c both call it and either may run alone.
+router_shift_corpus() {  # router_shift_corpus <out file>
+  cat "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md" \
+      "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/"*.md > "$1"
+}
+
 # DEFINED HERE, not beside its later uses. Three call sites sit ~130 lines
 # above where this function used to be declared, so the shell reached them
 # first and reported `graded_as: command not found` — the three assertions
@@ -11624,11 +11634,12 @@ check "15d: 크래시 재개는 계속이 아니다" \
 # the two literals scripts/test-snapshot.sh reads in both copies, so what is
 # asserted here is what now surrounds them: the continuation section is named
 # next to the re-attachment, and the fresh-dispatch clause is scoped past both.
-item1_15d() {  # item1_15d <SKILL.md> — item 1 of 「Dispatching the design stage」
+item1_15d() {  # item1_15d <file> — item 1 of 「Dispatching the design stage」
   awk '/^#### Dispatching the design stage$/ { f = 1; next }
        f && /^1\. \*\*Resume is decided by the ledger\.\*\*/ { print; exit }' "$1"
 }
-RS15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
+# The shift reads both sections from its references/ on entry.
+RS15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/design-dispatch.md")
 # The lead's copy of the router loop sits in the autopilot router reference.
 LD15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md")
 check "15d: 두 라우터 사본에서 설계 단계 item 1 을 찾는다" \
@@ -11672,7 +11683,7 @@ done
 cont3_15d=$(awk '/^#### Continuing a stage that ended its turn in prose$/ { f = 1; next }
                  f && /^#+ / { exit }
                  f && /^3\. \*\*Exit 3 is the gate declining\.\*\*/ { print; exit }' \
-            "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
+            "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/prose-continue.md")
 case "$cont3_15d" in
   *"a segment takes the crash arm's \`blocked\` form"*"for the design step, item 1 of 「Dispatching the design stage」 stops the design instead"*)
     ok "15d: 교대 사본 계속 절 item 3 이 막힘 행을 세그먼트로 한정하고 설계 단계를 설계 중단으로 보낸다" ;;
@@ -31528,7 +31539,8 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$RRT_PREV_AR"
 # sentences the gate now enforces would tell the shift to refuse a person's
 # second answer the gate routes.
 RP_SKILLS="$repo_root/plugins/cc-cmds/skills"
-RP_SHIFT="$RP_SKILLS/autopilot-router-shift/SKILL.md"
+RP_SHIFT="$WORK/router-shift-34o.md"
+router_shift_corpus "$RP_SHIFT"
 RP_LEAD="$RP_SKILLS/autopilot/references/router-lead-copy.md"
 RP_SEAT="$RP_SKILLS/autopilot/references/act2-seat.md"
 rp_ids=$(sed -n "s/^readonly GATE_HALT_ROUTES='\(.*\)'\$/\1/p" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh")
@@ -39401,14 +39413,19 @@ esac
 # would match itself. A count spelled in other words is out of reach of a
 # line grep; this guard catches the spellings that went stale before.
 # ---------------------------------------------------------------------------
+# The routing shift's references/ join by glob: each is a branch of the shift's
+# text moved out of its body, and a file added there is the shift's text too.
+fc67b_files="plugins/cc-cmds/orchestrator/gate.sh
+plugins/cc-cmds/skills/_common/pipeline-sidecar.md
+plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md
+$(cd "$repo_root" && printf '%s\n' plugins/cc-cmds/skills/autopilot-router-shift/references/*.md)
+plugins/cc-cmds/skills/autopilot/references/act2-seat.md
+plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md
+scripts/test-gate.sh
+scripts/test-snapshot.sh"
 fc67b_scan() {  # fc67b_scan <root> — prints one line per violation
   local f
-  for f in plugins/cc-cmds/orchestrator/gate.sh \
-    plugins/cc-cmds/skills/_common/pipeline-sidecar.md \
-    plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md \
-    plugins/cc-cmds/skills/autopilot/references/act2-seat.md \
-    plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md \
-    scripts/test-gate.sh scripts/test-snapshot.sh; do
+  for f in $fc67b_files; do
     [ -f "$1/$f" ] || { printf '%s: 없음\n' "$f"; continue; }
     LC_ALL=C awk -v f="$f" '
       BEGIN {
@@ -39434,12 +39451,7 @@ check "67b: 두 부류만 적은 줄이 없다" \
 # The negative control: a copy with one stale phrase put back, and one with a
 # two-class line put back, must each be caught.
 fc67b=$(mktemp -d "$WORK/guard67b.XXXXXX")
-for f in plugins/cc-cmds/orchestrator/gate.sh \
-  plugins/cc-cmds/skills/_common/pipeline-sidecar.md \
-  plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md \
-  plugins/cc-cmds/skills/autopilot/references/act2-seat.md \
-  plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md \
-  scripts/test-gate.sh scripts/test-snapshot.sh; do
+for f in $fc67b_files; do
   mkdir -p "$fc67b/$(dirname "$f")"
   cp "$repo_root/$f" "$fc67b/$f"
 done
@@ -39466,7 +39478,8 @@ check "67b: 두 부류만 적은 줄을 사본에서 잡는다" \
 # its order in the file.
 # ---------------------------------------------------------------------------
 fc67c_sk="$repo_root/plugins/cc-cmds/skills"
-fc67c_rs="$fc67c_sk/autopilot-router-shift/SKILL.md"
+fc67c_rs="$WORK/router-shift-67c.md"
+router_shift_corpus "$fc67c_rs"
 fc67c_lits() {  # fc67c_lits <file> <literal>... — how many of the literals the file carries
   local f="$1" n=0 lit; shift
   for lit in "$@"; do grep -qF -- "$lit" "$f" && n=$((n + 1)); done
