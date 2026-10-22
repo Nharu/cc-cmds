@@ -32005,7 +32005,7 @@ check "34q: park 뒤에는 승계되지 않는다" "$rc" "3"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAQ_PREV_AR"
 
 # --- 34r. 강제 표면의 출처 — 좌석 적용 밖에서 바뀐 분류 경로는 리뷰와 머지에 닿지 못한다 ---
-# --- section: 34r | group: cone | covers: act, snapshot, surface-class | anchors: 34r: 사람의 좌석 커밋은 통과한다, 34r: 승계된 좌석 커밋도 통과한다, 34r: 베이스만 바꾼 경로는 통과한다, 34r: 베이스를 머지한 커밋은 통과한다, 34r: 리베이스한 브랜치의 규칙 파일이 좌석 바이트다, 34r: 출처가 깨진 세그먼트의 리뷰가 blocked 행으로 막힌다, 34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다, 34r: 재리뷰 뒤의 머지는 통과한다, 34r: 출처가 깨진 머지는 거절된다, 34r: review-line 이 좌석 커밋을 나열한다, 34r: 스냅숏이 강제 표면과 좌석 적용 커밋을 낸다, 34r: 스테이지의 규칙 파일 cp 는 exec 에서 거절된다, 34r: HEAD 가 추적하지 않는 CLAUDE.md 는 exec 거절에서 빠진다, 34r: 바이트에 묶인 리뷰 행이 있으면 인가 행 없이도 park 없이 설정 홈 CLAUDE.md 를 쓴다, 34r: 그 cp 를 적은 좌석 실행 기록의 좌석 답은 거절되고 행을 남기지 않는다, 34r: 드라이버는 그 거절에서 머지하지 않고 park 한다 ---
+# --- section: 34r | group: cone | covers: act, snapshot, surface-class | anchors: 34r: 사람의 좌석 커밋은 통과한다, 34r: 승계된 좌석 커밋도 통과한다, 34r: 베이스만 바꾼 경로는 통과한다, 34r: 베이스를 머지한 커밋은 통과한다, 34r: 리베이스한 브랜치의 규칙 파일이 좌석 바이트다, 34r: 출처가 깨진 세그먼트의 리뷰가 blocked 행으로 막힌다, 34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다, 34r: 재리뷰 뒤의 머지는 통과한다, 34r: 출처가 깨진 머지는 거절된다, 34r: review-line 이 좌석 커밋을 나열한다, 34r: 스냅숏이 강제 표면과 좌석 적용 커밋을 낸다, 34r: 스테이지의 규칙 파일 cp 는 exec 에서 거절된다, 34r: HEAD 가 추적하지 않는 CLAUDE.md 의 거절은 exec 거절이 아니라 리뷰-후-적용 규칙의 것이다, 34r: 바이트에 묶인 리뷰 행이 있어도 런 디렉터리 밖 사본의 설정 홈 CLAUDE.md cp 는 park 없이 거절된다, 34r: 런 디렉터리 제안본의 설정 홈 CLAUDE.md cp 는 park 없이 거절된다, 34r: 그 cp 를 적은 좌석 실행 기록의 좌석 답은 거절되고 행을 남기지 않는다, 34r: 드라이버는 그 거절에서 머지하지 않고 park 한다 ---
 #
 # WHAT LANDS IS THE BRANCH, SO THE BRANCH IS WHAT IS EXAMINED. A stage reaches
 # a classified path through `cp`, a script body or `git checkout <rev> -- p`,
@@ -32203,8 +32203,9 @@ check "34r: 출처가 맞는 세그먼트에는 출처 blocked 행이 없다" \
 # THE SIGNPOST: a stage's exec naming a classified path is refused before it
 # runs and told where the edit belongs. Text with blanks is not a path, and a
 # CLAUDE.md the segment HEAD does not track is not the seat's to commit, so
-# both pass this guard; the one under the configuration home is left to the
-# review rule.
+# both pass this guard; such a CLAUDE.md and the one under the configuration
+# home are left to the review rule, which refuses a stage's copy because the
+# gate names no proposal for a source outside the run directory.
 spv_reset "$SPV_S2"
 printf 'stage bytes\n' > "$WORK/spv-src.txt"
 spv_stage() {  # spv_stage <표면> [--reach <칸>] -- <argv…>
@@ -32235,9 +32236,13 @@ case "$msg" in
 esac
 mkdir -p "$SAP_WT/new"
 spv_stage 워크트리쓰기 -- cp "$WORK/spv-src.txt" "$SAP_WT/new/CLAUDE.md"
-spv_got="$rc/$(cat "$SAP_WT/new/CLAUDE.md" 2>/dev/null)"
-if [ "$spv_got" = "0/stage bytes" ]; then ok "34r: HEAD 가 추적하지 않는 CLAUDE.md 는 exec 거절에서 빠진다"
-else bad "34r: HEAD 가 추적하지 않는 CLAUDE.md 는 exec 거절에서 빠진다" "got '$spv_got' — $msg"; fi
+check "34r: HEAD 가 추적하지 않는 CLAUDE.md 의 cp 는 거절되고 파일을 쓰지 않는다" \
+  "$rc/$(test -e "$SAP_WT/new/CLAUDE.md" && echo 있음 || echo 없음)" "3/없음"
+case "$msg" in
+  *'Step 3 강제 표면 좌석 적용'*) bad "34r: HEAD 가 추적하지 않는 CLAUDE.md 의 거절은 exec 거절이 아니라 리뷰-후-적용 규칙의 것이다" "$msg" ;;
+  *'리뷰-후-적용'*) ok "34r: HEAD 가 추적하지 않는 CLAUDE.md 의 거절은 exec 거절이 아니라 리뷰-후-적용 규칙의 것이다" ;;
+  *) bad "34r: HEAD 가 추적하지 않는 CLAUDE.md 의 거절은 exec 거절이 아니라 리뷰-후-적용 규칙의 것이다" "$msg" ;;
+esac
 rm -rf "$SAP_WT/new"
 mkdir -p "$WORK/spv dir"
 spv_stage 트리밖쓰기 --reach 런로컬 -- cp "$WORK/spv-src.txt" "$WORK/spv dir/about $SAP_RULE"
@@ -32246,14 +32251,15 @@ case "$msg" in
   *) ok "34r: 공백을 품은 인자는 경로로 읽지 않는다" ;;
 esac
 # A CLAUDE.md outside the worktree is not a branch path, so the exec guard has
-# nothing to say about it. The review rule decides it alone: a review row bound
-# to the proposal's bytes lets the copy through without reaching the reach cell,
-# even declared machine-global with no authorization row, and a row bound to
-# other bytes refuses it. The one route left for a seat to run that copy with no
-# person, a seat-run halt naming it, is closed by the token check. The copy
-# reads the proposal's bytes from outside the run directory: a stage's write
-# act naming a run-directory path is refused by the run-directory rule first,
-# and that is not the refusal measured here.
+# nothing to say about it, and a stage's copy into it never finishes in the run
+# even with a review row bound to the proposal's bytes. Named from a copy
+# outside the run directory, the gate hands the review rule no proposal and the
+# rule refuses; named from the run directory's `claudemd/` proposal, the
+# run-directory rule refuses first. Neither reaches the reach cell, so declaring
+# it machine-global with no authorization row parks nothing. A row bound to
+# other bytes is refused by the review rule as well. The one route left for a
+# seat to run that copy with no person, a seat-run halt naming it, is closed by
+# the token check.
 SPV_PROP="$WORK/spv-src.txt"
 spv_blocked() { { cap_rows blocked | grep -c . || true; } | tr -d ' '; }
 rm -f "$NCFG/CLAUDE.md"
@@ -32263,8 +32269,19 @@ case "$msg" in
   *'Step 3 강제 표면 좌석 적용'*) bad "34r: 설정 홈 CLAUDE.md 의 cp 는 exec 거절이 아니다" "$msg" ;;
   *) ok "34r: 설정 홈 CLAUDE.md 의 cp 는 exec 거절이 아니다" ;;
 esac
-check "34r: 바이트에 묶인 리뷰 행이 있으면 인가 행 없이도 park 없이 설정 홈 CLAUDE.md 를 쓴다" \
-  "$rc/$(cat "$NCFG/CLAUDE.md" 2>/dev/null)/$(spv_blocked)" "0/stage bytes/$spv_bl0"
+check "34r: 바이트에 묶인 리뷰 행이 있어도 런 디렉터리 밖 사본의 설정 홈 CLAUDE.md cp 는 park 없이 거절된다" \
+  "$rc/$(test -e "$NCFG/CLAUDE.md" && echo 있음 || echo 없음)/$(spv_blocked)" "3/없음/$spv_bl0"
+case "$msg" in
+  *'리뷰-후-적용'*) ok "34r: 런 디렉터리 밖 사본의 거절은 리뷰-후-적용 규칙의 것이다" ;;
+  *) bad "34r: 런 디렉터리 밖 사본의 거절은 리뷰-후-적용 규칙의 것이다" "$msg" ;;
+esac
+spv_stage 트리밖쓰기 --reach 기기전역 -- cp "$CAP_DIR/claudemd/root.proposed.md" "$NCFG/CLAUDE.md"
+check "34r: 런 디렉터리 제안본의 설정 홈 CLAUDE.md cp 는 park 없이 거절된다" \
+  "$rc/$(test -e "$NCFG/CLAUDE.md" && echo 있음 || echo 없음)/$(spv_blocked)" "3/없음/$spv_bl0"
+case "$msg" in
+  *'run directory write'*) ok "34r: 런 디렉터리 제안본의 거절은 런 디렉터리 쓰기 규칙의 것이다" ;;
+  *) bad "34r: 런 디렉터리 제안본의 거절은 런 디렉터리 쓰기 규칙의 것이다" "$msg" ;;
+esac
 rm -f "$NCFG/CLAUDE.md"
 printf -- '- `cycle` | 세그먼트=SPV | 사이클=0 | P0=0 | P1=0 | 리뷰 HEAD=%s | 적용 대상=%s | prev=x\n' \
   "$SPV_S2" "$(printf 'e%.0s' $(seq 1 64))" >> "$CAP_LEDGER"
