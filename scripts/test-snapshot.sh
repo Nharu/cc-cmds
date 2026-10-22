@@ -2791,6 +2791,63 @@ for f in "$RS_SKILL" "$AP_ROUTER"; do
   check "$(basename "$(dirname "$f")"): 설계 단계 정지에서 이월 답은 다시 묻지 않는다" \
     "$(has "$f" "**An answer already carried over is not asked again**: when the element naming the step reads \`state\` \`이월\`")" 예
 done
+# 구현·설계 토론·리드 단독 설계·베이스 분할의 정지도 새 세션에 카드로 닿는다. 카드를 받은 세션이
+# 디스크에서 멈춘 자리로 들어가는 규칙과, 저장 뒤 정지의 새 파견을 막는 문서 존재 가드의 면제는
+# 대역 CLI 가 실행할 수 없어 문면으로만 남는다.
+IM_SKILL="$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md"
+DD_SKILL="$repo_root/plugins/cc-cmds/skills/design-discuss-unattended/SKILL.md"
+DS_SKILL="$repo_root/plugins/cc-cmds/skills/design-solo-unattended/SKILL.md"
+DB_SKILL="$repo_root/plugins/cc-cmds/skills/design-base-unattended/SKILL.md"
+for f in "$IM_SKILL" "$DD_SKILL" "$DS_SKILL" "$DB_SKILL"; do
+  b=$(basename "$(dirname "$f")")
+  check "$b: 운반 재진입 문단이 있다" "$(has "$f" "**Re-entered with a carried answer")" 예
+  check "$b: 카드의 기록 다이제스트를 대조한다" "$(has "$f" "**Read the card and check the digest.**")" 예
+  check "$b: 운반된 기록은 다시 쓰지 않는다" "$(has "$f" "**Never rewrite the carried record**")" 예
+done
+for f in "$IM_SKILL" "$DS_SKILL"; do
+  b=$(basename "$(dirname "$f")")
+  check "$b: 재진입 때 계산한 질문이 다르면 새 정지 기록을 쓴다" \
+    "$(has "$f" "do not apply the answer: write a new halt record for the question computed now, with the card's path in its \`관측 상세\`.")" 예
+done
+check "design-discuss-unattended: 재진입 때 계산한 질문이 다르면 카드를 적은 새 정지 기록을 쓴다" \
+  "$(has "$DD_SKILL" "a different computed question gets a new halt record naming the card")" 예
+check "design-base-unattended: 분할 재진입은 처음 실패한 자리가 다르면 새 정지 기록을 쓴다" \
+  "$(has "$DB_SKILL" "do not apply the answer: write a new halt record for the site reached now, with the card's path in its \`관측 상세\`.")" 예
+check "implement-unattended: 재진입은 디스크의 계획 행·워크트리·설계 문서에서 멈춘 스텝으로 들어간다" \
+  "$(has "$IM_SKILL" "from what is on disk — the ledger's plan row that decided the phase above, the segment worktree and the design document — and apply the card's option there")" 예
+check "implement-unattended: 구속 티어 재수렴 답과 좌석 실행 정지는 카드로 오지 않는다" \
+  "$(has "$IM_SKILL" "Two halts of this stage never come back as a card: a \`CFI-U3 BT-STOP\` halt answered \`재수렴\` goes to re-convergence, and a \`좌석 실행\` halt re-attaches the halted session after the seat's run.")" 예
+check "implement-unattended: diff 게이트 단언은 스냅숏에서 아직 구현 시 검증 인 표 행에만" \
+  "$(has "$IM_SKILL" "every R-item the verdict table marked as a flip target, and whose grade line in the snapshot \`\$SNAP\` still reads \`구현 시 검증\`, must appear as a changed line")" 예
+check "design-solo-unattended: 문서 존재 가드는 카드의 문서 사전 sha256 이 같을 때만 면제한다" \
+  "$(has "$DS_SKILL" "**A re-entry is exempt**: when \`CC_PIPELINE_HALT_ANSWER\` names a card and the \`문서 사전 sha256\` in the \`관측 상세\` of the record the card names equals the \`shasum -a 256\` of the document now")" 예
+check "design-discuss-unattended: 문서 존재 가드는 카드의 문서 사전 sha256 이 같을 때만 면제한다" \
+  "$(has "$DD_SKILL" "**A re-entry is exempt**: a card whose record's \`문서 사전 sha256\` equals the document's \`shasum -a 256\` now")" 예
+for f in "$DD_SKILL" "$DS_SKILL"; do
+  b=$(basename "$(dirname "$f")")
+  check "$b: 정지 기록이 문서 사전 sha256 을 싣는다" \
+    "$(has "$f" "writes \`문서 사전 sha256=<값>\` in its \`관측 상세\`**")" 예
+done
+check "design-discuss-unattended: 런 안에서 돌아오지 않는 정지는 고정 그래프 드라이버 한정이다" \
+  "$(has "$DD_SKILL" "**Under the fixed-graph driver a halt does not come back within a run**")" 예
+check "design-base-unattended: 베이스 설계 흐름은 토론 갈래의 면제와 재진입을 받지 않는다" \
+  "$(has "$DB_SKILL" "Its re-entry exemption of the document-present guard and its **Re-entered with a carried answer** do not apply here")" 예
+check "design-base-unattended: 분할 재진입에는 문서 존재 면제가 없다" \
+  "$(has "$DB_SKILL" "There is no document-present exemption: this mode saves no document and has no such guard.")" 예
+check "교대 계약: 재진입 표는 여섯 행이다" "$(has "$RS_SKILL" "The table holds six halts.")" 예
+check "교대 계약: 표 행은 멈춘 시도의 종류로 고른다" \
+  "$(has "$RS_SKILL" "on the halted attempt's own stage kind — the \`종류\` of its \`stage-result\` row, never the kind you are about to dispatch")" 예
+check "교대 계약: 구현 행의 틀" \
+  "$(has "$RS_SKILL" "is carried as \`implement\` with the prompt the \`구현\` arm of 「Routing a segment after its implementation ends \`정상 완료\`」 would dispatch now: \`-p \"/cc-cmds:implement-unattended <문서 인자> \\\"세그먼트 <seg> (사이클 <n>) · 선언 파일: <files>[ · 수정 대상: <리포트 절대 경로> 의 P0·P1]\\\"\"\`")" 예
+check "교대 계약: 토론·단독 설계 행의 틀" \
+  "$(has "$RS_SKILL" "are carried as \`design\` with item 4 of 「Dispatching the design stage」's prompt: \`-p \"/cc-cmds:<그 skill> <스냅숏 design_doc> \\\"<## 의도 의 첫 비어 있지 않은 줄>\\\"\"\`")" 예
+check "교대 계약: 분할 행의 틀" \
+  "$(has "$RS_SKILL" "is carried as \`split\` with 「Dispatching the split stage」's prompt: \`-p \"/cc-cmds:design-base-unattended --split <스냅숏 design_doc>\"\`")" 예
+check "교대 계약: 베이스 설계 정지는 표 밖이다" "$(has "$RS_SKILL" "**The same skill's base-design stop is not in the table**")" 예
+check "교대 계약: 원장 값 칸만 다른 운반은 19 다" \
+  "$(has "$RS_SKILL" "one that differs only in such a ledger-valued slot is exit \`19\`")" 예
+check "사이드카: 재진입 표의 여섯 행" \
+  "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
 
 # ---------------------------------------------------------------------------
 # 13. An answer a routing block stamped leaves answered_halts for returned_halts

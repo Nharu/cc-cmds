@@ -40363,13 +40363,13 @@ rc=0; bash "$lsr93_g" act --manifest "$FX_MANIFEST" --kind segment --carry-answe
 check "95: TA4 skill 이 아닌 act 의 --carry-answer 는 exit 2 이다" "$rc" "2"
 
 # TO1 — 재진입 표에 없는 정지는 19 이고 행이 없다. 같은 쌍을 --resume 으로 내면
-# 오늘의 일반 마감 행과 exit 16 이며 이월 행은 없다.
-lsr93_ln=$(lsr93_base to1 implement-unattended 'Step 2 계획 — 질문' 적용 implement)
+# 오늘의 일반 마감 행과 exit 16 이며 이월 행은 없다. 리뷰의 정지는 표에 없다.
+lsr93_ln=$(lsr93_base to1 review-unattended 'Step 2 리뷰 — 질문' 적용 review)
 check "95: TO1 표 밖 정지의 운반은 exit 19·행 없음" \
-  "$(lsr93_refused to1 "$lsr93_ln" "$lsr93_rp" implement)" "19|same|0"
+  "$(lsr93_refused to1 "$lsr93_ln" "$lsr93_rp" review)" "19|same|0"
 check "95: TO1 같은 쌍의 --resume 은 오늘의 마감 park 다" \
   "$(LSR93_BENV=$lsr93_PD LSR93_DL=1900000000 lsr93_in "$lsr_root/to1/ledger.md" eval \
-      "GATE_RESUME=$lsr93_sid; r=0; gate_launch_route infra S3 implement >/dev/null 2>&1 || r=\$?; printf %s \"\$r\"" 2>/dev/null)|$(lsr93_n "$lsr_root/to1/ledger.md" '마감 초과')|$(lsr93_n "$lsr_root/to1/ledger.md" '사유=중단 답 이월')" \
+      "GATE_RESUME=$lsr93_sid; r=0; gate_launch_route infra S3 review >/dev/null 2>&1 || r=\$?; printf %s \"\$r\"" 2>/dev/null)|$(lsr93_n "$lsr_root/to1/ledger.md" '마감 초과')|$(lsr93_n "$lsr_root/to1/ledger.md" '사유=중단 답 이월')" \
   "16|1|0"
 
 # R5 — 운반 상한. TB1: 앞 운반 시도가 다른 경로의 기록에서 같은 스텝·문면으로 다시
@@ -40755,7 +40755,7 @@ lsr93_tn5c() {  # lsr93_tn5c <이름> <답 줄> — 지난 마감 매니페스�
 lsr93_ln=$(lsr93_tn5f tn5s implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' implement)
 check "95: TN5 대조 — 마감 뒤에도 좌석 실행 정지의 답은 exit 3·원장 그대로·이월 없음" \
   "$(lsr93_tn5c tn5s "$lsr93_ln")" "3|same|0"
-lsr93_ln=$(lsr93_tn5f tn5u implement-unattended 'Step 2 계획 — 질문' 적용 implement)
+lsr93_ln=$(lsr93_tn5f tn5u review-unattended 'Step 2 리뷰 — 질문' 적용 review)
 check "95: TN5 대조 — 마감 뒤에도 표 밖 정지의 답은 exit 19·원장 그대로·이월 없음" \
   "$(lsr93_tn5c tn5u "$lsr93_ln")" "19|same|0"
 
@@ -41109,6 +41109,97 @@ lsr93_in "$lsr93_l" gate_append 'segment' 'id=S3' '상태=실행중' >/dev/null 
 lsr93_hrow "$lsr93_l" 이월
 check "95: TD3 L1 이 세션 전에 죽은 뒤 사람이 다시 답한 L2 가 이월된 키는 답 이월 대기이고 런이 끝난다" \
   "$( [ "$lsr93_ln" != "$lsr93_x" ] && lsr93_in "$lsr93_l" gate_key_deferred_answer S3 2>/dev/null)|$(lsr93_tdd "$lsr93_l")" "$lsr93_ln|1|y"
+
+# ---------------------------------------------------------------------------
+# 95b. 재진입 표의 구현·토론·단독·분할 행은 원장 값 칸을 게이트가 지어 대조한다
+# --- section: 95b | group: ledger_series | covers: act, gate_carry_check | needs: 95 | anchors: 95b: 재진입 표는 여섯 행이다, 95b: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95b: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95b: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95b: 문서가 다른 구현 운반은 exit 3·행 없음, 95b: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95b: 분할 정지의 운반은 분할 형식이다, 95b: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
+#
+# 구현·설계 토론·리드 단독 설계·베이스 분할의 정지는 보통 파견과 같은 틀로 운반된다.
+# 그 틀의 칸 중 문서 말고는 모두 원장에서 오므로, 게이트가 같은 원장에서 값을 지어
+# 프롬프트 전체와 바이트로 견준다. 문서나 고정 문면이 다르면 다른 행과 같이 exit 3,
+# 원장 값 칸만 다르면 상태가 움직였는지 오타인지 가를 수 없어 exit 19 로 재부착에
+# 보낸다. 받은 운반은 파견 반쪽까지 돌려 argv 의 프롬프트가 지은 틀 그대로인지 본다.
+# 절 95 본문의 lsr93_* 헬퍼와 봉투를 쓴다.
+# ---------------------------------------------------------------------------
+lsr95b_fx() {
+  # lsr95b_fx <이름> <스킬> <스텝> <종류> [<사이클> <P0>] — S3 의 segment 행(선언 두
+  # 파일)과, 인자가 있으면 절대 리포트 경로를 든 cycle 행 하나, 그리고 그 종류로 멈춘
+  # 시도와 그 기록의 답. 답 줄을 낸다.
+  local l
+  l=$(lsr75_new "$1")
+  lsr93_in "$l" gate_append 'segment' 'id=S3' '상태=실행중' '선언 파일 집합=`a.txt`, `b/c.sh`' >/dev/null 2>&1
+  [ -z "${5:-}" ] || lsr93_in "$l" gate_append 'cycle' '세그먼트=S3' "사이클=$5" "P0=$6" 'P1=0' \
+    "리포트 경로=${l%/*}/review-S3-$5.md" >/dev/null 2>&1
+  lsr93_park "$l" S3 1 "$lsr93_sid" "$3" "$4"
+  lsr93_ans "$l" S3 "${l%/*}/halt/S3#1.md" "$2" 적용
+}
+lsr95b_go() {
+  # lsr95b_go <이름> <답 줄> <종류> <프롬프트> — 새 세션으로 가는 운반의 파견 반쪽
+  # 전부. 「rc|판정|사건|재부착|계정|디렉터리#argv 의 프롬프트」.
+  local l="$lsr_root/$1/ledger.md"
+  printf '%s#%s' "$(LSR93_BENV=$lsr93_PD LSR93_FENV=$lsr93_FG LSR93_DL=1900000000 \
+      lsr93_go "$l" "$2" S3 "$3" "$4" launch)" \
+    "$(sed -n '/^--$/,$p' "${l%/*}/argv" 2>/dev/null | sed -n '4p')"
+}
+lsr95b_ok='0|GRANT|first||u2|/h/.claude-u2'
+lsr95b_q() { printf '"%s"' "$1"; }
+
+check "95b: 재진입 표는 여섯 행이다" \
+  "$(lsr93_in "$lsr_root/ta0/ledger.md" gate_reentry_table 2>/dev/null | cut -d'|' -f1,3 | paste -sd, -)" \
+  "design-audit-unattended|audit,design-reconverge|reconverge,implement-unattended|implement,design-discuss-unattended|design,design-solo-unattended|design,design-base-unattended|split"
+check "95b: 픽스처 매니페스트의 의도 첫 줄" \
+  "$(lsr93_in "$lsr_root/ta0/ledger.md" manifest_intent_line 2>/dev/null)" "테스트"
+
+# 구현 — 사이클 행이 없으면 사이클 1 이고 수정 대상 꼬리가 없다.
+lsr95b_ln=$(lsr95b_fx im0 implement-unattended 'Step 2 계획 — 질문' implement)
+lsr95b_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh')"
+check "95b: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다" \
+  "$(lsr95b_go im0 "$lsr95b_ln" implement "$lsr95b_p")" "$lsr95b_ok#$lsr95b_p"
+
+# 구현 — 마지막 사이클의 다음 이 수정 이면 그 리포트의 절대 경로가 꼬리로 붙는다.
+lsr95b_ln=$(lsr95b_fx im1 implement-unattended 'Step 3 구현 — 질문' implement 1 1)
+lsr95b_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q "세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh · 수정 대상: $lsr_root/im1/review-S3-1.md 의 P0·P1")"
+check "95b: 다음 이 수정 인데 꼬리 없는 구현 운반은 exit 19·행 없음" \
+  "$(lsr93_refused im1 "$lsr95b_ln" "/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh')" implement)" "19|same|0"
+check "95b: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다" \
+  "$(lsr95b_go im1 "$lsr95b_ln" implement "$lsr95b_p")" "$lsr95b_ok#$lsr95b_p"
+
+# 구현 — 다음 이 머지 인 사이클 2 뒤. 칸 하나만 다르면 19, 문서가 다르면 3 이다.
+lsr95b_ln=$(lsr95b_fx im2 implement-unattended 'Step 3 구현 — 질문' implement 2 0)
+check "95b: 사이클 칸이 다른 구현 운반은 exit 19·행 없음" \
+  "$(lsr93_refused im2 "$lsr95b_ln" "/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '세그먼트 S3 (사이클 9) · 선언 파일: a.txt, b/c.sh')" implement)" "19|same|0"
+check "95b: 선언 파일 칸이 다른 구현 운반은 exit 19·행 없음" \
+  "$(lsr93_refused im2 "$lsr95b_ln" "/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '세그먼트 S3 (사이클 2) · 선언 파일: a.txt')" implement)" "19|same|0"
+check "95b: 문서가 다른 구현 운반은 exit 3·행 없음" \
+  "$(lsr93_refused im2 "$lsr95b_ln" "/cc-cmds:implement-unattended /other/doc.md $(lsr95b_q '세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh')" implement)" "3|same|0"
+check "95b: 고정 문면이 다른 구현 운반은 exit 3·행 없음" \
+  "$(lsr93_refused im2 "$lsr95b_ln" "/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '구간 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh')" implement)" "3|same|0"
+check "95b: 구현 정지를 다른 종류로 운반하면 exit 3·행 없음" \
+  "$(lsr93_refused im2 "$lsr95b_ln" "/cc-cmds:design-discuss-unattended $lsr93_doc $(lsr95b_q 테스트)" design)" "3|same|0"
+lsr95b_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh')"
+check "95b: 다음 이 머지 인 사이클 2 뒤의 구현 운반은 사이클 2 이고 꼬리가 없다" \
+  "$(lsr95b_go im2 "$lsr95b_ln" implement "$lsr95b_p")" "$lsr95b_ok#$lsr95b_p"
+
+# 설계 토론·리드 단독 — 의도 칸은 매니페스트 의 의도 블록 첫 줄이다.
+lsr95b_ln=$(lsr95b_fx dd0 design-discuss-unattended 'Step 4 토론 — 질문' design)
+check "95b: 의도 칸이 다른 토론 설계 운반은 exit 19·행 없음" \
+  "$(lsr93_refused dd0 "$lsr95b_ln" "/cc-cmds:design-discuss-unattended $lsr93_doc $(lsr95b_q '다른 의도')" design)" "19|same|0"
+lsr95b_p="/cc-cmds:design-discuss-unattended $lsr93_doc $(lsr95b_q 테스트)"
+check "95b: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다" \
+  "$(lsr95b_go dd0 "$lsr95b_ln" design "$lsr95b_p")" "$lsr95b_ok#$lsr95b_p"
+lsr95b_ln=$(lsr95b_fx ds0 design-solo-unattended 'Step 2 단독 설계 — 질문' design)
+lsr95b_p="/cc-cmds:design-solo-unattended $lsr93_doc $(lsr95b_q 테스트)"
+check "95b: 리드 단독 설계 정지의 운반은 매니페스트 의도를 싣는다" \
+  "$(lsr95b_go ds0 "$lsr95b_ln" design "$lsr95b_p")" "$lsr95b_ok#$lsr95b_p"
+
+# 베이스 분할 — 원장 값 칸이 없는 틀이다. 같은 스킬의 베이스 설계 모드 정지는 표 밖이다.
+lsr95b_ln=$(lsr95b_fx sp0 design-base-unattended 'Step 3 분할 — 질문' split)
+lsr95b_p="/cc-cmds:design-base-unattended --split $lsr93_doc"
+check "95b: 분할 정지의 운반은 분할 형식이다" \
+  "$(lsr95b_go sp0 "$lsr95b_ln" split "$lsr95b_p")" "$lsr95b_ok#$lsr95b_p"
+lsr95b_ln=$(lsr95b_fx bd0 design-base-unattended 'Step 2 베이스 설계 — 질문' design)
+check "95b: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다" \
+  "$(lsr93_refused bd0 "$lsr95b_ln" "/cc-cmds:design-base-unattended $lsr93_doc" design)" "19|same|0"
 
 # ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다
