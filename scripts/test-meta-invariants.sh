@@ -1421,5 +1421,14 @@ for p in "$RS_REFS"/*.md; do
   fi
 done
 
+# A re-convergence a halt answer sent for the design or audit step leaves that
+# step's last row reading `종류=reconverge`: the answer element has already left
+# `answered_halts[]`, the last row is no park, and the refutation row is keyed on
+# segments. Only this condition opens the halt-answer files there, whose
+# after-the-re-convergence dispositions decide between a fresh audit and a stop.
+rs_halt_row=$(printf '%s\n' "$rs_index" | grep -E '^\| `halt-answer-1\.md`, `halt-answer-2\.md` \|')
+check "교대 색인의 할트 답 행이 설계·감사 스텝의 재수렴 뒤 진입 조건을 싣는다" \
+  "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of the design step or of the audit step reads `종류=reconverge`')" "1"
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
