@@ -15,7 +15,8 @@
 #   - the detached-process fences       (from plugins/cc-cmds/orchestrator/test-run.sh, 28·28b)
 #   - the router-copy sections          (from scripts/test-snapshot.sh, 6d–6e-4)
 #
-# ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 14. The census selects every suite
+# ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 14, plus the shift's branch index
+# block (6e-6), which adds 3 + 3n for the shift's n reference files. The census selects every suite
 # that invokes the gate family and asserts two exports for each. This file
 # carries its recognition corpus, so it selects this file too, and
 # scripts/test-local-bundle.sh runs test-gate.sh on its mirror, so it selects
@@ -53,10 +54,18 @@ AP_REFS="$PLUGIN_ROOT/skills/autopilot/references"
 AP_ROUTER="$AP_REFS/router-lead-copy.md"
 AP_SEAT="$AP_REFS/act2-seat.md"
 ap_all() { cat "$AP_SKILL" "$AP_REFS"/*.md; }
+# The shift's copy is read the same way: its rare branch procedures sit in
+# `references/`, read only on their entry condition, so every pin on the shift
+# reads `RS_CORPUS` — the body followed by every reference in glob order — and a
+# section split across two files is still cut out as one by `router_section`.
 RS_SKILL="$PLUGIN_ROOT/skills/autopilot-router-shift/SKILL.md"
+RS_REFS="$PLUGIN_ROOT/skills/autopilot-router-shift/references"
+rs_all() { cat "$RS_SKILL" "$RS_REFS"/*.md; }
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-meta-invariants.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
+RS_CORPUS="$WORK/router-shift-corpus.md"
+rs_all > "$RS_CORPUS"
 
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
@@ -272,7 +281,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-meta-invariants.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
+_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-meta-invariants.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -633,7 +642,7 @@ design_section() {
 }
 design_sel=""
 design_sel_rs=""
-for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}
   sec=$(design_section "${pair#*:}")
   if [ -n "$sec" ]; then
@@ -717,7 +726,7 @@ reattach_section() {
 }
 reattach_prompt=""
 reattach_prompt_rs=""
-for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}
   sec=$(reattach_section "${pair#*:}")
   if [ -n "$sec" ]; then
@@ -761,19 +770,19 @@ check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$rea
 # gate-routed reads. Each copy is read whole, so the section extraction above
 # keeps its own range.
 for pair in \
-  "교대:$RS_SKILL:상한·승인·종단·중단·대기에서 인수인계 행을 남기고 끝난다" \
-  "교대:$RS_SKILL:**The gate-routed reads this skill names are input too**" \
-  "교대:$RS_SKILL:Five reasons end a shift:" \
-  "교대:$RS_SKILL:**\`무기록\` is the gate's value and never yours**" \
-  "교대:$RS_SKILL:**A \`handoff\` entry is what that shift observed at its own \`기록 시각\`, not what holds now.**" \
-  "교대:$RS_SKILL:or you are ending on \`중단\` (the gate answered exit 7, or no act is left to dispatch)" \
-  "교대:$RS_SKILL:**A live stage holds back none of the other four.**" \
-  "교대:$RS_SKILL:or you are ending on \`대기\` (all that is left is a live stage's result, a pending CI verdict or the reset of a cut stage's limit)" \
-  "교대:$RS_SKILL:end the shift with \`사유=대기\` and \`'리셋 대기=<key>[,<key>…]'\` naming the cut keys" \
+  "교대:$RS_CORPUS:상한·승인·종단·중단·대기에서 인수인계 행을 남기고 끝난다" \
+  "교대:$RS_CORPUS:**The gate-routed reads this skill names are input too**" \
+  "교대:$RS_CORPUS:Five reasons end a shift:" \
+  "교대:$RS_CORPUS:**\`무기록\` is the gate's value and never yours**" \
+  "교대:$RS_CORPUS:**A \`handoff\` entry is what that shift observed at its own \`기록 시각\`, not what holds now.**" \
+  "교대:$RS_CORPUS:or you are ending on \`중단\` (the gate answered exit 7, or no act is left to dispatch)" \
+  "교대:$RS_CORPUS:**A live stage holds back none of the other four.**" \
+  "교대:$RS_CORPUS:or you are ending on \`대기\` (all that is left is a live stage's result, a pending CI verdict or the reset of a cut stage's limit)" \
+  "교대:$RS_CORPUS:end the shift with \`사유=대기\` and \`'리셋 대기=<key>[,<key>…]'\` naming the cut keys" \
   "리드:$AP_SEAT:issue the same call again at once with \`대기\` as its reason" \
   "리드:$AP_SEAT:**The same holds when the latest \`handoff\` is the gate's \`무기록\` for a shift that died of the limit and the gate took your \`대기\` on it**" \
-  "교대:$RS_SKILL:CFI-S1 still holds: the snapshot and the gate-routed reads this skill prescribes are the input" \
-  "교대:$RS_SKILL:CFI-S1 still holds: whether to dispatch was decided from the snapshot" \
+  "교대:$RS_CORPUS:CFI-S1 still holds: the snapshot and the gate-routed reads this skill prescribes are the input" \
+  "교대:$RS_CORPUS:CFI-S1 still holds: whether to dispatch was decided from the snapshot" \
   "리드:$AP_SEAT:**Five reasons end a shift, and a live stage holds back none of them but \`대기\`.**" \
   "리드:$AP_SEAT:When the returned call's latest \`handoff\` is \`대기\` and no \`교대 기동\` follows it" \
   "리드:$AP_SEAT:**\`무기록\` is the gate's alone**" \
@@ -806,7 +815,7 @@ done
 router_section() {
   awk -v h="$2" '$0 == h { f = 1; next } f && /^#+ / { exit } f' "$1"
 }
-for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Dispatching the audit stage|.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty' \
@@ -953,7 +962,7 @@ done
 # say where a stage session starts — the dispatcher's directory, not the
 # segment worktree — because the hook that judges its Bash is that root's.
 # ---------------------------------------------------------------------------
-for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Pushing and opening a pull request|`원격 단계`' \
@@ -993,17 +1002,17 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     bad "$who 사본의 리드 수정 기동" "「${lit}」이 없다"
   fi
 done
-if grep -qF -- '| `대상 훅 거절` |' "$RS_SKILL"; then
+if grep -qF -- '| `대상 훅 거절` |' "$RS_CORPUS"; then
   ok "교대 사본의 정지 자리 표가 「대상 훅 거절」을 싣는다"
 else
   bad "교대 사본의 정지 자리 표" "「대상 훅 거절」 행이 없다"
 fi
-if grep -qF -- 'the refused act for `대상 훅 거절`' "$RS_SKILL"; then
+if grep -qF -- 'the refused act for `대상 훅 거절`' "$RS_CORPUS"; then
   ok "교대 사본의 재시도 목록이 「대상 훅 거절」의 거절된 행위를 싣는다"
 else
   bad "교대 사본의 재시도 목록" "「대상 훅 거절」이 없다"
 fi
-if grep -qF -- 'so the project hooks it loads are that directory'"'"'s repository'"'"'s' "$RS_SKILL"; then
+if grep -qF -- 'so the project hooks it loads are that directory'"'"'s repository'"'"'s' "$RS_CORPUS"; then
   ok "교대 사본이 스테이지가 디스패처의 디렉터리에서 시작한다고 적는다"
 else
   bad "교대 사본의 스테이지 시작 디렉터리" "문장이 없다"
@@ -1036,7 +1045,7 @@ fi
 # ---------------------------------------------------------------------------
 fix_prompt=""
 fix_prompt_rs=""
-for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Merging and applying a segment|**Below the `머지` cutpoint nothing is merged.**' \
@@ -1205,7 +1214,7 @@ check "보존 경로= 와 물려받은 변경: 은 구현 무인 스킬에서 �
 # ---------------------------------------------------------------------------
 in_head='#### Routing a segment after its implementation ends `정상 완료`'
 in_sec_ap=""; in_sec_rs=""
-for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
   check "$who 사본에 구현 뒤 라우팅 절 표제가 한 줄 있다" \
     "$(grep -cxF -- "$in_head" "$file" || true)" "1"
@@ -1233,7 +1242,7 @@ done
 check "두 사본의 구현 뒤 라우팅 절이 바이트 동일하다" "$in_sec_rs" "$in_sec_ap"
 check "리드 사본의 키 표가 implement_next[] 행을 싣는다" \
   "$(grep -c -- '^| `implement_next\[\]` |' "$AP_ROUTER" || true)" "1"
-ha_sec=$(router_section "$RS_SKILL" "#### Handing on a person's answer to a halt")
+ha_sec=$(router_section "$RS_CORPUS" "#### Handing on a person's answer to a halt")
 for lit in \
   '| `빈-대상` | 7 |' \
   '7. **A review that stopped on an empty target is answered by an implementation or a park — no session is re-attached.**' \
@@ -1272,7 +1281,7 @@ done
 mo_count() {  # mo_count <text> <literal> — occurrences, not lines
   printf '%s\n' "$1" | grep -oF -- "$2" | wc -l | tr -d ' '
 }
-for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '|The **dependency** condition reads `선행` alone — implementation precedence, a predecessor that has not landed. A predecessor named only in `머지 순서` does not hold back the dispatch; it holds back the merge alone (see 「Merging and applying a segment」).' \
@@ -1310,10 +1319,10 @@ mo_wait='When nothing is dispatchable or mergeable and two or more segment stage
 mo_pick='on the earliest-declared live segment among those named in some segment'"'"'s `머지 대기`; if none is named, on the earliest-declared live segment.'
 mo_none='When nothing is dispatchable or mergeable and two or more segment stages are live, end with the same single `대기`: you do not pick a segment to wait on.'
 check "리드 사본에 대기할 세그먼트를 고르는 문장이 한 번 실린다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_pick")" "1"
-check "교대 사본에는 대기할 세그먼트를 고르는 문장이 없다" "$(mo_count "$(cat "$RS_SKILL")" "$mo_pick")" "0"
+check "교대 사본에는 대기할 세그먼트를 고르는 문장이 없다" "$(mo_count "$(cat "$RS_CORPUS")" "$mo_pick")" "0"
 check "교대 사본의 「Waiting on a stage」 절에 고르지 않고 대기로 끝낸다는 문장이 한 번 실린다" \
-  "$(mo_count "$(router_section "$RS_SKILL" '### Waiting on a stage')" "$mo_none")" "1"
-check "교대 사본에는 포그라운드 스테이지 대기 문장 전체가 없다" "$(mo_count "$(cat "$RS_SKILL")" "$mo_wait")" "0"
+  "$(mo_count "$(router_section "$RS_CORPUS" '### Waiting on a stage')" "$mo_none")" "1"
+check "교대 사본에는 포그라운드 스테이지 대기 문장 전체가 없다" "$(mo_count "$(cat "$RS_CORPUS")" "$mo_wait")" "0"
 check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_wait")" "0"
 # The planning-order refusal is consumed by the router, not only written by the
 # gate: the copies quote the gate's own words, so a gate rewording that leaves
@@ -1322,7 +1331,7 @@ check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo
 mo_defer='is declared in the frozen document and has no segment row on this ledger yet'
 check "게이트가 계획 순서 거부 문면을 낸다" "$(mo_count "$(cat "$GATE")" "$mo_defer")" "1"
 mo_old='A refusal with exit 2 naming a predecessor that no ledger shows landed is the same ending: a run cannot gain a `선행 착지` row after its kickoff, so say in the handoff that a new run with that row is what plans the slice.'
-for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
   check "$who 사본의 계획 절이 게이트의 계획 순서 거부 문면을 인용한다" \
     "$(mo_count "$(router_section "$file" '#### Planning the segments')" "$mo_defer")" "1"
@@ -1383,6 +1392,47 @@ for lit in \
 do
   check "CFI-11 이 「${lit:0:50}」 을 싣는다" "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
 done
+
+# ---------------------------------------------------------------------------
+# 6e-6. The shift's branch index and its reference files agree
+#
+# The shift reads a reference file only through the table of
+# `## Branch procedures read on entry` in its body. A file the table names and
+# the directory lacks is a branch the shift is told to read and cannot; a file
+# the table does not name is a branch no entry condition ever opens; and a file
+# over 24000 bytes comes back from a gate-routed read as a saved path rather
+# than inline, which the shift's settings give it no way to open.
+# ---------------------------------------------------------------------------
+rs_index=$(router_section "$RS_SKILL" '## Branch procedures read on entry')
+rs_named=$(printf '%s\n' "$rs_index" | grep -E '^\| `[a-z0-9-]+\.md`' \
+           | grep -oE '`[a-z0-9-]+\.md`' | tr -d '`' | sort -u)
+check "교대 색인 표가 references 파일을 적는다" "$([ -n "$rs_named" ] && echo 예 || echo 아니오)" "예"
+for f in $rs_named; do
+  check "교대 색인이 적은 ${f} 가 references 에 있다" "$([ -f "$RS_REFS/$f" ] && echo 예 || echo 아니오)" "예"
+done
+for p in "$RS_REFS"/*.md; do
+  f=${p##*/}
+  check "교대 references 의 ${f} 가 색인 표에 있다" "$(printf '%s\n' "$rs_named" | grep -cxF -- "$f")" "1"
+  sz=$(wc -c < "$p" | tr -d ' ')
+  if [ "$sz" -le 24000 ]; then
+    ok "교대 references 의 ${f} 가 24000바이트 이하다 (${sz})"
+  else
+    bad "교대 references 의 ${f} 크기" "${sz}바이트 — 게이트 경유 읽기가 인라인으로 돌아오지 않는다"
+  fi
+done
+
+# A re-convergence a halt answer sent for the design or audit step leaves that
+# step's last row reading `종류=reconverge`: the answer element has already left
+# `answered_halts[]`, the last row is no park, and the refutation row is keyed on
+# segments. Only this condition opens the halt-answer files there, whose
+# after-the-re-convergence dispositions decide between a fresh audit and a stop.
+# The design-dispatch file opens on the same state and sends the step to the
+# audit, so the row also says which of the two decides the step's next act.
+rs_halt_row=$(printf '%s\n' "$rs_index" | grep -E '^\| `halt-answer-1\.md`, `halt-answer-2\.md` \|')
+check "교대 색인의 할트 답 행이 설계·감사 스텝의 재수렴 뒤 진입 조건을 싣는다" \
+  "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of the design step or of the audit step reads `종류=reconverge`')" "1"
+check "교대 색인의 할트 답 행이 그 상태에서 설계 파견 절보다 할트 답 절의 처분을 앞세운다" \
+  "$(printf '%s\n' "$rs_halt_row" | grep -cF -- '**After it ends** disposition of 「Handing on a person'"'"'s answer to a halt」, not `design-dispatch.md` opened beside it, sets that step'"'"'s next act')" "1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

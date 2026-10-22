@@ -214,7 +214,9 @@ REFERENCE_TREES=(
   # The visual arm reads `visual/references/` (the shared contract), which
   # holds no question point; the attended arm's questions live in its SKILL.md.
   "visual-unattended|visual"
-  # The router shard shares nobody's tree and has none of its own.
+  # The router shard shares nobody's tree. Its own `references/` holds the
+  # rare branches it reads on entry; none of them may hold a question point,
+  # and Rules 1 and 2 scan them as the arm's own text.
   "autopilot-router-shift|autopilot-router-shift"
 )
 
