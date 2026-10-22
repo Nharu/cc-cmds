@@ -688,7 +688,8 @@ readonly GATE_EXIT_CARRY_CAP=18
 # still end here, since the implement dispatch's budget refusal waits for the
 # carry check on a carry act. The halt's answer is not handed to a fresh
 # session, so no row is written and the shift re-attaches the halted session
-# with `--resume` as before. NOT 3: 3
+# with `--resume` as before; over the budget that re-attachment is let in
+# because it names the key's halted implementation. NOT 3: 3
 # sends the shift to `handoff 사유=중단`, and this is the one code that sends it
 # to `--resume` instead.
 readonly GATE_EXIT_CARRY_UNTABLED=19
@@ -19893,12 +19894,31 @@ gate_implement_cycle_admissible() {
   # `gate_audit_reconverge_keyable` is: the exemption moves with later rows,
   # and a second copy of it would let an answer be recorded that the dispatch
   # then refuses.
-  local seg="$1" n cap rn walk
+  #
+  # A RE-ATTACHMENT OF THE KEY'S HALTED IMPLEMENTATION IS EXEMPT. When
+  # `--resume` names the session of the key's last settled attempt, and that
+  # attempt is an implementation that ended `의도된 park`, the dispatch hands a
+  # halt answer to a session already let in, and it adds no `cycle` row. This
+  # is the re-attachment a carry act sends to with exit 19 — a base resolution,
+  # a CI fix or a re-implementation that halted — whose prompt carries no
+  # `베이스 해소:` or `CI 수정:` line and whose own halted row has ended the
+  # re-implementation's exemption. A `--resume` naming any other session is
+  # judged by the budget as before.
+  local seg="$1" n cap rn walk lp
   n=$(gate_segment_cycle_count "$seg")
   cap=$(gate_segment_cycle_cap "$seg")
   GATE_IMPL_CYCLE_N=${n:-0}
   GATE_IMPL_CYCLE_CAP=$cap
   [ "${n:-0}" -ge "$cap" ] || return 0
+  if [ -n "${GATE_RESUME:-}" ]; then
+    lp=0
+    gate_halt_record_of_last_park "$LEDGER" "$RUN_DIR" "$seg" '' || lp=$?
+    if [ "$lp" != "2" ] \
+       && [ "$(gate_row_field "$GATE_LAST_PARK_ROW" '종류')" = "implement" ] \
+       && [ "$(gate_row_field "$GATE_LAST_PARK_ROW" '세션 id')" = "$GATE_RESUME" ]; then
+      return 0
+    fi
+  fi
   rn=$(gate_segment_review_next "$seg")
   [ "$rn" = "재구현" ] && return 0
   if [ "$rn" = "확인 리뷰" ]; then

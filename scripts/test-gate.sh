@@ -41289,6 +41289,36 @@ case "$(cat "$lsr_root/ic4/act.err" 2>/dev/null)" in
   *"재수렴 뒤의 재구현입니다"*) ok "95b: 멈춘 재구현의 운반은 재구현 경고로 재부착에 보낸다" ;;
   *) bad "95b: 멈춘 재구현의 운반에 재구현 경고가 없다 — $(cat "$lsr_root/ic4/act.err" 2>/dev/null)" ;;
 esac
+# 재부착 — 운반이 19 로 보낸 뒤 교대가 멈춘 세션을 --resume 으로 다시 붙이는 구현 act 는
+# 상한에서도 사이클 예산 거절을 받지 않는다. 다른 세션을 가리킨 --resume 은 예산 거절(3)이다.
+lsr95b_resume() {
+  # lsr95b_resume <이름> <세션> — 키 S3 의 구현 재부착 act 를 동사 그대로 지난 종료 코드.
+  # 게이트의 경고는 원장 옆 act.err 에 남는다.
+  LSR93_SID=$2 LSR93_DL=1900000000 LSR93_BENV=$lsr93_BG LSR93_FENV=$lsr93_FG \
+    lsr93_in "$lsr_root/$1/ledger.md" eval '
+    GATE_RESUME=$LSR93_SID; GATE_FROM_DECLARATION=""; GATE_RECOVERY=""; GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
+    GATE_EMIT_DIGEST_TO=""; GATE_SHIFT_HALT_SITE=""; GATE_SHIFT_HALT_WRITING=""; GATE_ADMIT=""
+    GATE_REACH=""; GATE_DESTRUCTIVE=0; GATE_SETTLED_SEGMENTS=""; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+    GATE_TRIGGER=""; GATE_TRIGGER_SEEN=""; GATE_TRIGGER_REASON=""
+    GATE_CARRY_ANSWER=""; r=0
+    ( gate_verb_act act skill infra S3 커밋 워크트리쓰기 "$(gate_snapshot_digest)" "중단 답 줄" "" \
+        implement -p "중단 기록 의 질문에 사람이 적용 을 골랐습니다." ) >/dev/null 2>"$RUN_DIR/act.err" || r=$?
+    printf %s "$r"' 2>/dev/null
+}
+lsr95b_budget() {  # lsr95b_budget <이름> — act.err 에 사이클 예산 거절이 있으면 예산, 없으면 -
+  case "$(cat "$lsr_root/$1/act.err" 2>/dev/null)" in
+    *"사이클 예산이 소진됐습니다"*) printf 예산 ;;
+    *) printf - ;;
+  esac
+}
+for lsr95b_c in ic1 ic2 ic4; do
+  check "95b: 상한의 $lsr95b_c 에서 다른 세션을 가리킨 구현 --resume 은 사이클 예산 거절 exit 3 이다" \
+    "$(lsr95b_resume "$lsr95b_c" "$lsr93_sid2")|$(lsr95b_budget "$lsr95b_c")" "3|예산"
+  lsr95b_rc=$(lsr95b_resume "$lsr95b_c" "$lsr93_sid")
+  check "95b: 상한의 $lsr95b_c 에서 운반 19 뒤 멈춘 세션의 구현 --resume 은 사이클 예산 거절을 받지 않는다" \
+    "$( [ "$lsr95b_rc" != 3 ] && printf 입장 || printf "거절 $lsr95b_rc")|$(lsr95b_budget "$lsr95b_c")" "입장|-"
+done
 # 대조 — 리드 수정 행이 없는 세그먼트의 정상 완료 재수렴(구속 티어 이탈 정지의 재수렴)
 # 뒤에 멈춘 구현은 재구현이 아니다. 지은 틀 그대로의 운반은 새 세션으로 간다.
 lsr95b_l=$(lsr75_new ic5)
