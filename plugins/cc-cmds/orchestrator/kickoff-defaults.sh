@@ -54,6 +54,7 @@
 #   kickoff-defaults.sh --carry <previous manifest> --kickoff-at <ISO8601>
 #                       --expect-sha256 <hex> [--now <epoch>] [--auto]
 #   kickoff-defaults.sh --apply-probe-sha <manifest draft>
+#   kickoff-defaults.sh --plugin-candidates
 #
 # Output (main mode) is TAB-separated, the first line `cc-kickoff-defaults v1`:
 #
@@ -77,6 +78,19 @@
 # measured as written; `printf '%s' '<probe>'` would strip it. The `행` line is
 # the manifest check's `적용 프로브 코드` half, which the run's first gate call
 # would otherwise be the first to run.
+#
+# `--plugin-candidates` takes no other argument and prints, with no header, the
+# plugin keys the kickoff's 5t proposes from, read from the account directory
+# `CLAUDE_CONFIG_DIR` (else `$HOME/.claude`) and every `config_dir` of the lane
+# inventory `${XDG_CONFIG_HOME:-$HOME/.config}/cc-lane/accounts.json`:
+#
+#   허용  <키>                 a key of the plugin allow seed, on in every run
+#   후보  <키>  <설명 한 줄>    a user key the seed does not hold; the description
+#                              is the first line of the installed plugin's own
+#                              `.description`, or `-`
+#
+# The keys are the ones the gate turns off in every run's settings; a candidate
+# becomes on only through a `플러그인 허용` row the person accepted at 5t.
 #
 # `--carry` reads a previous run's frozen manifest as the answers and the file
 # only as the thing it is compared with. The same header and `원천` row, then:
@@ -170,6 +184,7 @@ KD_CHECK_GIVEN=0; KD_CHECK=''
 KD_RESOLVE_GIVEN=0; KD_RESOLVE=''
 KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''; KD_AUTO=0
 KD_APS_GIVEN=0; KD_APS=''
+KD_PC_GIVEN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
@@ -213,11 +228,58 @@ while [ $# -gt 0 ]; do
     --apply-probe-sha)
       [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--apply-probe-sha 에 값이 없습니다"
       KD_APS_GIVEN=1; KD_APS="$2"; shift 2 ;;
+    --plugin-candidates)
+      KD_PC_GIVEN=1; shift ;;
     --auto)
       KD_AUTO=1; shift ;;
     *) kd_usage "모르는 인자: '$1'" ;;
   esac
 done
+
+if [ "$KD_PC_GIVEN" = "1" ]; then
+  [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
+    && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ "$KD_APS_GIVEN" = "0" ] \
+    && [ -z "$KD_KAT$KD_XSHA$KD_NOW" ] && [ "$KD_AUTO" = "0" ] \
+    || kd_usage "--plugin-candidates 는 다른 인자와 함께 쓰지 않습니다"
+  command -v jq >/dev/null 2>&1 || kd_refuse "jq 가 없어 플러그인 기록을 읽을 수 없습니다"
+  [ -r "$KD_DIR/plugin-isolation.sh" ] || kd_refuse "plugin-isolation.sh 를 읽을 수 없습니다: $KD_DIR/plugin-isolation.sh"
+  # shellcheck disable=SC1091
+  . "$KD_DIR/plugin-isolation.sh"
+  # The account directories the lane can launch a run under: this session's
+  # own, and every account the lane inventory names.
+  KD_PC_DIRS=$(
+    printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    kd_pc_inv="${XDG_CONFIG_HOME:-$HOME/.config}/cc-lane/accounts.json"
+    if [ -f "$kd_pc_inv" ] && [ ! -L "$kd_pc_inv" ]; then
+      jq -r '.accounts[]? | .config_dir // empty' "$kd_pc_inv" 2>/dev/null || true
+    fi
+  )
+  KD_PC_ALLOW=$(pi_allow_keys "$KD_DIR/plugin-allow.seed")
+  KD_PC_USER=$(IFS='
+'; pi_user_keys $KD_PC_DIRS)
+  [ -z "$KD_PC_ALLOW" ] || printf '%s\n' "$KD_PC_ALLOW" | awk '{ print "허용\t" $0 }'
+  # The description is the first line of the plugin's own manifest, read from
+  # the install path the account's install record names; `-` when none reads.
+  printf '%s\n' "$KD_PC_USER" | while IFS= read -r kd_pc_key; do
+    [ -n "$kd_pc_key" ] || continue
+    printf '%s\n' "$KD_PC_ALLOW" | grep -qxF -- "$kd_pc_key" && continue
+    kd_pc_desc=''
+    kd_pc_ifs=$IFS; IFS='
+'
+    for kd_pc_d in $KD_PC_DIRS; do
+      [ -z "$kd_pc_desc" ] || break
+      kd_pc_path=$(jq -r --arg k "$kd_pc_key" \
+        '.plugins[$k] // empty | if type == "array" then .[0].installPath else .installPath end // empty' \
+        "$kd_pc_d/plugins/installed_plugins.json" 2>/dev/null) || kd_pc_path=''
+      [ -n "$kd_pc_path" ] || continue
+      kd_pc_desc=$(jq -r '.description // empty' "$kd_pc_path/.claude-plugin/plugin.json" 2>/dev/null \
+        | head -n 1 | tr '\t' ' ') || kd_pc_desc=''
+    done
+    IFS=$kd_pc_ifs
+    printf '후보\t%s\t%s\n' "$kd_pc_key" "${kd_pc_desc:--}"
+  done
+  exit 0
+fi
 
 if [ "$KD_APS_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
