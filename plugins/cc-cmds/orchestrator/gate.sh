@@ -2715,11 +2715,8 @@ gate_reach_disposition() {
   # 1 — a credential on stdout is not undone by anything the morning can do.
   [ "$S" = "1" ] && { printf '비밀출력\t-\t-'; return 0; }
 
-  # 1b — a label write on a pull request, whatever reach is declared. It stands
-  # ahead of every cell a `사전 인가` row can lift, so no row, a form row
-  # included, opens it: the only label an unattended run puts on a pull request
-  # is the one `act --kind label-ack` puts on (see `gate_pr_label_write`).
-  gate_pr_label_write "$@" && { printf 'PR라벨쓰기\t-\t-'; return 0; }
+  # A label write on a pull request never reaches this table: the caller parks
+  # it as `PR라벨쓰기` ahead of it, in either auto-resolution mode.
 
   local _rfull _rd _ro _rt=''
   _rfull=$(gate_reach_derived_full "$alias" "$@")

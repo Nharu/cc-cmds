@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **exec 의 PR 라벨 쓰기** — `gh pr edit --add-label`, 라벨을 싣는 REST·GraphQL 쓰기, 본문을 읽을 수 없는 이슈·PR 쓰기를 협업 표면에서 빼고 새 칸 `PR라벨쓰기` 로 거부한다. `사전 인가` 형태 행으로도 열리지 않는다. 새 이슈의 라벨과 레포 라벨 정의는 협업 표면에 남는다.
+- **exec 의 PR 라벨 쓰기** — `gh pr edit --add-label`, 라벨을 싣는 REST·GraphQL 쓰기, 본문을 읽을 수 없는 이슈·PR 쓰기를 협업 표면에서 빼고 새 칸 `PR라벨쓰기` 로 거부한다. `사전 인가` 형태 행으로도 열리지 않고, 자동 처리를 끈 모드에서도 승인 요청이 아니라 park 다. 새 이슈의 라벨과 레포 라벨 정의는 협업 표면에 남는다.
 - **회차 번호** — 재실행 회차를 `u + 1` 대신 (세그먼트, head)의 가장 큰 회차 + 1 로 매긴다. 다른 처분의 회차 뒤에 온 재실행이 이미 닫힌 회차 번호를 다시 쓰지 않는다.
 
 ### Changed

@@ -38905,8 +38905,9 @@ la61_act() {
 la61_post_n() { { grep -c -- "^api -X POST -i repos/$CB60_SLUG/issues/1/labels -f labels\[\]=api-change\$" "$CB60_S/gh.log" || true; }; }
 la61_fail=''
 la61_park() {
-  # la61_park <칸> <관측 조각> <라벨> [원인] — 이미 고친 픽스처에서 라벨 행위 하나가 그 칸의
-  # blocked 행 하나를 쓰고, POST 도 CI 처분 행도 없이 rc 11 로 끝난다.
+  # la61_park <칸> <관측 조각> <라벨> [수리 문구 조각] — 이미 고친 픽스처에서 라벨 행위 하나가
+  # 그 칸의 blocked 행 하나를 쓰고, POST 도 CI 처분 행도 없이 rc 11 로 끝난다. 칸의 원인
+  # (open·closed)은 행이 아니라 수리 문구가 가르므로 넷째 인자는 그 문구에서 찾는다.
   local nb np nr row f=""
   nb=$(cb60_n blocked); np=$(cb60_posts); nr=$(cb60_n 'CI 처분')
   la61_act
@@ -38916,7 +38917,7 @@ la61_park() {
   [ "$(sa_field "$row" '도달 판정')" = "$1" ] || f="$f[칸 $(sa_field "$row" '도달 판정')]"
   case "$(sa_field "$row" 관측)" in *"$2"*) ;; *) f="$f[관측 $(sa_field "$row" 관측)]" ;; esac
   if [ -n "${4:-}" ]; then
-    case "$row" in *"원인=$4"*) ;; *) f="$f[원인]" ;; esac
+    case "$raw" in *"$4"*) ;; *) f="$f[수리 문구]" ;; esac
   fi
   [ "$(cb60_posts)" = "$np" ] || f="$f[POST]"
   [ "$(cb60_n 'CI 처분')" = "$nr" ] || f="$f[CI 처분 행]"
@@ -38982,10 +38983,10 @@ printf 'api-change\n' > "$CB60_S/labels"
 la61_park 라벨이미있음 "gate:api-change" "라벨이 이미 있음"
 la61_again
 la60_row 요청 1
-la61_park 라벨요청실패 "회차:열림" "닫히지 않은 라벨 요청" open
+la61_park 라벨요청실패 "회차:열림" "닫히지 않은 라벨 요청" "its closing row never came"
 la61_again
 la60_row 요청 1; la60_row 실패 1
-la61_park 라벨요청실패 "회차:실패" "실패로 닫힌 라벨 회차" closed
+la61_park 라벨요청실패 "회차:실패" "실패로 닫힌 라벨 회차" "does not label again"
 la61_new "라벨 인정 — 기본 브랜치 워크플로"
 cb60_wf_base x-run.yml $'on:\n  workflow_run:\n    workflows: [gate]\n    types: [completed]\njobs: {}'
 la61_again
@@ -39008,7 +39009,7 @@ for la61_case in post422 screen; do
   la61_got="$la61_got|$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 1p)" 상태)>$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 2p)" 상태)"
   la61_got="$la61_got|$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 2p)" 응답)|$(sa_field "$la61_row" '도달 판정')"
   check "60e: 받지 않은 라벨 요청 ($la61_case)" "$la61_got" "11|2|1|1|요청>실패|$la61_want|라벨요청실패"
-  case "$la61_row" in *'원인=closed'*) ;; *) la61_fail="$la61_fail[$la61_case 원인]" ;; esac
+  case "$raw" in *'does not label again'*) ;; *) la61_fail="$la61_fail[$la61_case 수리 문구]" ;; esac
   check "60e: 받지 않은 라벨 요청 뒤 다음은 CI 라벨 인정 이다 ($la61_case)" "$(cb60_next)" "CI 라벨 인정"
 done
 check "60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다" "$la61_fail" ""
@@ -43808,6 +43809,7 @@ for t3e_a in "gh pr edit 1 --add-label api-change" "gh api -X POST repos/t/front
   pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
     --surface 외부상태변경 --rationale t -- $t3e_a
   [ "$rc" = 11 ] && [ "$(rx_cell)" = PR라벨쓰기 ] && [ -z "$(rx_row)" ] \
+    && case "$msg" in *'act --kind label-ack'*) true ;; *) false ;; esac \
     || t3e_fail="$t3e_fail[$t3e_a: rc=$rc 칸=$(rx_cell)]"
 done
 check "83e: 자동 처리를 끈 모드에서 도달 신고 없이도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
