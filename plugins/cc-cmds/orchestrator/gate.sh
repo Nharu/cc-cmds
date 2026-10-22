@@ -26957,6 +26957,69 @@ gate_judgment_fields_ok() {
   return 0
 }
 
+gate_judgment_adoption_row() {
+  # gate_judgment_adoption_row <measure|append> <폭> <키=값>... — the one
+  # definition of a judgment adoption row (`자율 승인` · `kind=judgment`).
+  # `measure` prints the bytes `gate_append` will compare against
+  # `GATE_ROW_MAX`; `append` writes the row. Both assemble it from the same
+  # loop, so the row that was measured is the row that is written.
+  #
+  # ONLY THE THREE FREE-TEXT FIELDS ARE NARROWED. `기준`, `근거` and
+  # `되돌리는 법` are prose a caller or a stage wrote, and they are what makes a
+  # judgment row long; every other field is a fixed token, an id or a class, and
+  # passes through in order and byte for byte. With `<폭>` set to `전체` nothing
+  # is narrowed at all, so a row that already fits is written exactly as given.
+  # Rotated through the positional parameters as `gate_append` does: the
+  # interpreter floor is bash 3.2.
+  local mode="$1" w="$2" f n_args i=0
+  shift 2
+  n_args=$#
+  while [ "$i" -lt "$n_args" ]; do
+    f="$1"; shift; i=$((i + 1))
+    if [ "$w" != "전체" ]; then
+      case "$f" in
+        '기준='*|'근거='*|'되돌리는 법='*) f="${f%%=*}=$(gate_row_safe "${f#*=}" "$w")" ;;
+      esac
+    fi
+    set -- "$@" "$f"
+  done
+  case "$mode" in
+    measure) gate_row_projected_bytes '자율 승인' "$@" ;;
+    append)  gate_append '자율 승인' "$@" ;;
+    *) warn "gate_judgment_adoption_row: unknown mode '$mode'"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+}
+
+gate_judgment_adoption_width() {
+  # gate_judgment_adoption_width <시작 폭> <키=값>... — print the widest width
+  # for the three free-text fields at which the adoption row fits under
+  # `GATE_ROW_MAX`, and return 0; return 1 when even the floor of 40 bytes does
+  # not fit, which means the overflow is in a field this does not narrow.
+  #
+  # A FIXED CUT IS NOT A ROW CAP. Three free-text fields cut to 150 bytes each
+  # still leave the row to whatever the other fields carry — a long segment id,
+  # a long class, a field the caller added — and `gate_append` does not shorten
+  # an over-long row, it ends the process. The width is narrowed by 40 a step and
+  # measured each time, the way the carried `중단 답` row does it, and the last
+  # step lands on 40 exactly whatever the start was. `<시작 폭>` of `전체` first
+  # measures the row unnarrowed and starts the descent at 300 only when that
+  # does not fit; a numeric start is the widest width a caller allows.
+  local w="$1" len
+  shift
+  if [ "$w" = "전체" ]; then
+    len=$(gate_judgment_adoption_row measure 전체 "$@")
+    if [ "$len" -le "$GATE_ROW_MAX" ]; then printf '전체'; return 0; fi
+    w=300
+  fi
+  while :; do
+    len=$(gate_judgment_adoption_row measure "$w" "$@")
+    if [ "$len" -le "$GATE_ROW_MAX" ]; then printf '%s' "$w"; return 0; fi
+    [ "$w" -le 40 ] && return 1
+    w=$((w - 40))
+    [ "$w" -lt 40 ] && w=40
+  done
+}
+
 gate_notify_segment_park() {
   # gate_notify_segment_park <segment>
   #
@@ -28767,8 +28830,23 @@ EOF
          && [ "$(gate_row_field "$(gate_approval_last_row "$GATE_RESOLVED_APPROVAL")" '처분 사유')" = "자유 입력" ]; then
         GATE_JUDGMENT_DECISION="자유 입력 소비"
       fi
-      gate_append '자율 승인' "kind=judgment" "결정=${GATE_JUDGMENT_DECISION:-채택}" "세그먼트=${seg:--}" \
-        "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
+      # THE ROW IS NARROWED TO THE CAP, NOT REFUSED BY IT. The caller's argv
+      # goes on the row as given while it fits. `gate_append` ends the process
+      # on a row past `GATE_ROW_MAX`, and at grade 2 that would come after the
+      # closing `승인` row is committed, leaving an answered question with no
+      # adoption row. So the three free-text fields are narrowed until the row
+      # fits; the approval id was derived
+      # above from the argv as submitted, so narrowing does not change which
+      # answer this row spends. An overflow outside those three fields is a
+      # submission the gate cannot record, and it is refused, not died on.
+      local jw
+      if ! jw=$(gate_judgment_adoption_width 전체 "kind=judgment" "결정=${GATE_JUDGMENT_DECISION:-채택}" \
+                  "세그먼트=${seg:--}" "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"); then
+        warn "the judgment row does not fit the row cap of $GATE_ROW_MAX bytes even with \`기준\`, \`근거\` and \`되돌리는 법\` narrowed to 40 bytes — the overflow is in another field; shorten that field and submit again"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      gate_judgment_adoption_row append "$jw" "kind=judgment" "결정=${GATE_JUDGMENT_DECISION:-채택}" \
+        "세그먼트=${seg:--}" "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
       # The grade is read from the row rather than hard-coded: a grade-2 judgment
       # whose question has been answered lands here too, and a line claiming
       # grade 1 for it would misdescribe the one event the morning most needs to
@@ -40588,10 +40666,21 @@ gate_absorb_issue() {
         warn "the answer to the question of the judgment the stage emitted (approval $aid) was closed by an earlier auto-resolution, so it is not adopted for the class of this emission ($ctx, class ${cls:-(none)})"
         return 0
       fi
-      gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
+      # Narrowed to the cap from 150 bytes down, the widest each free-text
+      # field may be on this row, so a row that fits at 150 is the one written.
+      # A row that fits at no width is not written: this runs while a stage
+      # result is being recorded, and the contract above is to return 0.
+      local aw
+      if ! aw=$(gate_judgment_adoption_width 150 "kind=judgment" "결정=채택" "세그먼트=$seg" \
+                  "판단 부류=$(gate_row_safe "${cls:--}" 60)" "등급=${grade:--}" \
+                  "기준=$std" "되돌리는 법=-" "근거=$why" \
+                  "출처=스테이지 방출" "해소 승인=${GATE_LAST_JUDGMENT_APPROVAL_ID:--}"); then
+        warn "the adoption row for the judgment the stage emitted does not fit the row cap of $GATE_ROW_MAX bytes even with its free-text fields narrowed to 40 bytes — it is not adopted ($ctx, approval ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
+        return 0
+      fi
+      gate_judgment_adoption_row append "$aw" "kind=judgment" "결정=채택" "세그먼트=$seg" \
         "판단 부류=$(gate_row_safe "${cls:--}" 60)" "등급=${grade:--}" \
-        "기준=$(gate_row_safe "$std" 150)" "되돌리는 법=-" \
-        "근거=$(gate_row_safe "$why" 150)" \
+        "기준=$std" "되돌리는 법=-" "근거=$why" \
         "출처=스테이지 방출" "해소 승인=${GATE_LAST_JUDGMENT_APPROVAL_ID:--}"
       log "스테이지가 방출한 판단에 이미 답이 있어 그 답으로 엽니다 — $ctx (승인 ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
       ;;
@@ -40692,11 +40781,21 @@ gate_absorb_emitted_judgment() {
     gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls" "$grade"
     return 0
   fi
-  gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
+  # Narrowed to the cap from 150 bytes down, as the answered branch of
+  # `gate_absorb_issue` is: a row that fits at 150 is the one written, and one
+  # that fits at no width is not written, because this runs while a
+  # stage result is being recorded and must not end the gate.
+  local jw
+  if ! jw=$(gate_judgment_adoption_width 150 "kind=judgment" "결정=채택" "세그먼트=$seg" \
+              "판단 부류=$cls" "등급=$grade" \
+              "기준=${std:-미상}" "되돌리는 법=$revert" "근거=${why:-스테이지 방출}" \
+              "출처=스테이지 방출"); then
+    warn "the adoption row for the judgment the stage emitted does not fit the row cap of $GATE_ROW_MAX bytes even with its free-text fields narrowed to 40 bytes — it is not adopted ($seg, class $cls)"
+    return 0
+  fi
+  gate_judgment_adoption_row append "$jw" "kind=judgment" "결정=채택" "세그먼트=$seg" \
     "판단 부류=$cls" "등급=$grade" \
-    "기준=$(gate_row_safe "${std:-미상}" 150)" \
-    "되돌리는 법=$(gate_row_safe "$revert" 150)" \
-    "근거=$(gate_row_safe "${why:-스테이지 방출}" 150)" \
+    "기준=${std:-미상}" "되돌리는 법=$revert" "근거=${why:-스테이지 방출}" \
     "출처=스테이지 방출"
   log "스테이지가 방출한 판단을 채택했습니다 — $seg 부류 $cls"
 }

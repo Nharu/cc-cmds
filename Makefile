@@ -350,6 +350,8 @@ LINT_TESTS := \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-measure-discussion-passes.sh \
 	scripts/test-solo-audit-experiment.sh \
+	scripts/test-reader-model-compare.sh \
+	scripts/test-reader-model-pair-audit.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
 	scripts/test-lint-stage-policy-sources.sh \

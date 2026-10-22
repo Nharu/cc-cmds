@@ -18471,6 +18471,150 @@ case "$(last_judgment_approval)" in
   *) ok "자르지 않은 값에는 잘림 표시가 붙지 않는다" ;;
 esac
 
+# --- 31s-2. A judgment adoption row is narrowed to the row cap ---------------
+# --- section: 31s-2 | group: cone | covers: act | anchors: 행 상한 실험용 세그먼트 행이 기록된다 ---
+#
+# Three places write the judgment adoption row (`자율 승인` · `kind=judgment`):
+# the judgment arm of the acting verb, and the absorber's answered branch and
+# adopting path. `gate_append` does not shorten an over-long row, it ends the
+# process, and a fixed cut of the free-text fields still leaves the row to what
+# the other fields carry. So each place narrows `기준`, `근거` and `되돌리는 법`
+# until the measured row fits, and a row that fits at no width is refused
+# (acting verb) or skipped with a warning (absorber), never died on.
+rs_seg=SRS1
+seg_row "$rs_seg" "$CONE_C" 상태=실행중 선행=없음
+check "행 상한 실험용 세그먼트 행이 기록된다" "$rc" "0"
+rs_long=$(awk 'BEGIN{ s=""; for (i = 0; i < 30; i++) s = s "채택 행의 기준이 행 상한을 넘도록 길어지는 한국어 문장 "; printf "%s", s }')
+rs_adoptions() {
+  { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F 'kind=judgment' || true; } \
+    | { grep -F '결정=채택' || true; } | { grep -F "세그먼트=$rs_seg " || true; } | grep -c . || true
+}
+
+# The acting verb, grade 1, on the class the fixture manifest pre-declares.
+gateN act --manifest "$NM" --kind judgment --target infra --segment "$rs_seg" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" "기준=첫째 $rs_long" \
+         "되돌리는 법=git checkout -- docs/" "근거=첫째 근거 $rs_long"
+check "상한을 넘는 문면의 등급 1 판단도 채택된다 (게이트가 죽지 않는다)" "$rc" "0"
+rs_row=$(last_adoption_row)
+rs_n=$(printf '%s\n' "$rs_row" | wc -c | tr -d ' ')
+if [ "$(row_field "$rs_row" '세그먼트')" = "$rs_seg" ] && [ "${rs_n:-0}" -le 1024 ]; then
+  ok "그 채택 행이 원장 행 상한 안에 있다 (${rs_n} 바이트)"
+else
+  bad "행위 경로 채택 행" "이 절의 채택 행이 없거나 상한을 넘는다 (${rs_n} 바이트): $rs_row"
+fi
+case "$(row_field "$rs_row" '기준')" in
+  "첫째 "*"(잘림)") ok "좁혀진 기준이 잘렸다고 말한다" ;;
+  *) bad "행위 경로 잘림 표시" "$(row_field "$rs_row" '기준')" ;;
+esac
+check "좁히는 것은 문면 세 필드뿐이다 — 판단 부류는 제출값 그대로다" "$(row_field "$rs_row" '판단 부류')" "문서-신선도"
+check "등급도 제출값 그대로다" "$(row_field "$rs_row" '등급')" "1"
+check "짧은 되돌리는 법은 좁혀도 바뀌지 않는다" "$(row_field "$rs_row" '되돌리는 법')" "git checkout -- docs/"
+
+# A submission that already fits is written as given.
+gateN act --manifest "$NM" --kind judgment --target infra --segment "$rs_seg" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" "기준=상한 안에 드는 짧은 채택 기준" \
+         "되돌리는 법=git checkout -- docs/" "근거=짧은 근거"
+check "상한 안의 판단도 채택된다" "$rc" "0"
+rs_row=$(last_adoption_row)
+check "상한 안에 드는 기준은 좁혀지지 않는다" "$(row_field "$rs_row" '기준')" "상한 안에 드는 짧은 채택 기준"
+case "$rs_row" in
+  *"(잘림)"*) bad "행위 경로 무절단" "상한 안의 행에 잘림 표시가 있다: $rs_row" ;;
+  *) ok "상한 안의 채택 행에는 잘림 표시가 없다" ;;
+esac
+
+# The overflow is in a field the three-field narrowing does not touch.
+rs_before=$(rs_adoptions)
+gateN act --manifest "$NM" --kind judgment --target infra --segment "$rs_seg" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" "기준=문면 밖 필드가 넘치는 판단" \
+         "되돌리는 법=git checkout -- docs/" "근거=메모가 길다" "메모=$(printf '%0900d' 0)"
+check "문면 밖 필드로 넘치는 판단은 정의된 거절로 끝난다 (죽지 않는다)" "$rc" "2"
+case "$msg" in
+  *"the overflow is in another field"*) ok "그 거절이 넘침이 문면 세 필드 밖에 있다고 지목한다" ;;
+  *) bad "문면 밖 넘침 거절 문면" "$msg" ;;
+esac
+check "그 거절은 채택 행을 남기지 않는다" "$(rs_adoptions)" "$rs_before"
+
+# THE ABSORBER, CALLED IN PROCESS. Its two writers run while a stage result is
+# being recorded, and reaching them through a dispatched stage needs another
+# section's stubs. Here gate.sh is sourced and the functions are called
+# directly; `gate_append` is replaced by a reporter printing the bytes the real
+# writer would compare against the cap, measured by the same ruler, and the
+# row's text. The issuer and the auto-adoption floor are replaced so each call
+# reaches the branch under test.
+rs_fn() {
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+    gate_append() { local s="$1"; shift
+      printf "%s\t%s\n" "$(gate_row_projected_bytes "$s" "$@")" "$(gate_row_body "$s" "$@")"; }
+    gate_autoadopt_ok() { return 0; }
+    gate_has_row() { return 1; }
+    gate_issue_judgment_approval() { GATE_LAST_JUDGMENT_APPROVAL_ID=J-rs; return "$GATE_APPROVAL_ANSWERED"; }
+    GATE_AUTO_RESOLVED_APPROVAL=J-rs
+    "$@"' _ "$GATE" "$@" 2>&1 )
+}
+rs_rowof() { printf '%s\n' "$1" | { grep -E '^[0-9]+	' || true; } | tail -1; }
+# A segment argument long enough that the free-text fields at a fixed 150-byte
+# cut still take the row past the cap.
+rs_wseg=$(printf '%0450d' 0 | tr 0 S)
+rs_res=$(jq -cn --arg t "**판단 부류**: 문서-신선도 **판단 등급**: 1 **판단 기준**: 방출 $rs_long **판단 되돌리는 법**: git checkout -- docs/ $rs_long **판단 근거**: 방출 근거 $rs_long" '{result: $t}')
+rs_fixed=$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+  gate_row_projected_bytes "자율 승인" kind=judgment 결정=채택 "세그먼트=$1" "판단 부류=문서-신선도" 등급=1 \
+    "기준=$(gate_row_safe "$2" 150)" "되돌리는 법=$(gate_row_safe "$2" 150)" "근거=$(gate_row_safe "$2" 150)" \
+    "출처=스테이지 방출"' _ "$GATE" "$rs_wseg" "$rs_long")
+if [ "${rs_fixed:-0}" -gt 1024 ]; then
+  ok "그 입력은 150 바이트 고정 절단만으로는 상한을 넘는다 (${rs_fixed} 바이트 — 아래 단언이 공허하지 않다)"
+else
+  bad "흡수기 픽스처" "고정 절단 행이 ${rs_fixed:-?} 바이트로 이미 상한 안이다"
+fi
+
+out=$(rs_fn gate_absorb_emitted_judgment infra "$rs_wseg" "$rs_res"); rc=$?
+check "방출 판단 흡수기가 상한을 넘을 입력에서도 0 으로 끝난다" "$rc" "0"
+rs_r=$(rs_rowof "$out")
+if [ -n "$rs_r" ] && [ "${rs_r%%	*}" -le 1024 ]; then
+  ok "방출 판단 채택 행이 상한 안에 있다 (${rs_r%%	*} 바이트)"
+else
+  bad "방출 판단 채택 행" "행이 없거나 상한을 넘는다: $out"
+fi
+case "$(row_field "${rs_r#*	}" '되돌리는 법')" in
+  "git checkout -- docs/ "*"(잘림)") ok "방출 판단의 되돌리는 법도 좁혀지고 잘렸다고 말한다" ;;
+  *) bad "방출 판단 되돌리는 법" "${rs_r#*	}" ;;
+esac
+check "방출 판단 채택 행은 출처를 싣는다" "$(row_field "${rs_r#*	}" '출처')" "스테이지 방출"
+
+out=$(rs_fn gate_absorb_issue infra "$rs_wseg" "답 $rs_long" "답 근거 $rs_long" 문맥 문서-신선도 2); rc=$?
+check "답있음 흡수기가 상한을 넘을 입력에서도 0 으로 끝난다" "$rc" "0"
+rs_r=$(rs_rowof "$out")
+if [ -n "$rs_r" ] && [ "${rs_r%%	*}" -le 1024 ]; then
+  ok "답있음 채택 행이 상한 안에 있다 (${rs_r%%	*} 바이트)"
+else
+  bad "답있음 채택 행" "행이 없거나 상한을 넘는다: $out"
+fi
+case "$(row_field "${rs_r#*	}" '기준')" in
+  "답 "*"(잘림)") ok "답있음 채택 행의 기준이 잘렸다고 말한다" ;;
+  *) bad "답있음 기준" "${rs_r#*	}" ;;
+esac
+check "답있음 채택 행은 쓴 답을 지목한다" "$(row_field "${rs_r#*	}" '해소 승인')" "J-rs"
+
+# Past the floor: the segment argument alone overflows. Nothing is written and
+# the absorber still returns 0, with a warning naming what was not adopted.
+rs_hseg=$(printf '%01000d' 0 | tr 0 S)
+out=$(rs_fn gate_absorb_emitted_judgment infra "$rs_hseg" "$rs_res"); rc=$?
+check "하한에서도 넘는 방출 판단에서 흡수기가 0 으로 끝난다" "$rc" "0"
+check "그때 방출 판단 채택 행은 쓰이지 않는다" "$(rs_rowof "$out")" ""
+case "$out" in
+  *"it is not adopted"*) ok "쓰지 않았다는 사실이 경고로 남는다 (방출 판단)" ;;
+  *) bad "방출 판단 하한 경고" "$out" ;;
+esac
+out=$(rs_fn gate_absorb_issue infra "$rs_hseg" "답 $rs_long" "답 근거 $rs_long" 문맥 문서-신선도 2); rc=$?
+check "하한에서도 넘는 답있음 판단에서 흡수기가 0 으로 끝난다" "$rc" "0"
+check "그때 답있음 채택 행은 쓰이지 않는다" "$(rs_rowof "$out")" ""
+case "$out" in
+  *"it is not adopted"*) ok "쓰지 않았다는 사실이 경고로 남는다 (답있음)" ;;
+  *) bad "답있음 하한 경고" "$out" ;;
+esac
+
 # --- 31t. A `|` in a field value cannot splice the row ----------------------
 # --- section: 31t | group: cone | covers: - | anchors: 필드 값 안의 파이프가 새 필드를 만들지 못한다 ---
 #
@@ -21684,11 +21828,13 @@ fi
 # class that may be adopted, whose adoption row never got written, opened a class
 # that hands risk to the user with nobody asked.
 #
-# THE ADOPTION ROW IS WHERE THE GATE DIES. The judgment arm puts the router's
-# whole field list on that row with no key allowlist and no length cap, so one
-# 900-byte field pushes it past the row cap AFTER auto-resolution has closed the
-# approval in a separate, already-completed append. The ledger is append-only and
-# there is no compensating write, so what survives is "answered and unspent".
+# THE ADOPTION ROW IS WHERE THE SUBMISSION IS REFUSED. The judgment arm puts the
+# router's whole field list on that row with no key allowlist, and narrows only
+# `기준`, `근거` and `되돌리는 법` to the row cap — so one 900-byte field of any
+# other key leaves the row over the cap at every width, and the submission ends
+# with the vocabulary refusal AFTER auto-resolution has closed the approval in a
+# separate, already-completed append. The ledger is append-only and there is no
+# compensating write, so what survives is "answered and unspent".
 #
 # THE MIDDLE ASSERTIONS ARE WHAT KEEP THIS HONEST. Asserting only that the
 # resubmission is refused would stay green under a repair that puts the class
@@ -46292,7 +46438,7 @@ done
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
-# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan, audit_disclosure | anchors: 89: 검사기가 solo-audit 계획을 통과시킨다, 89: solo-audit 계획의 solo 설계 명령은 통과한다, 89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다, 89: 감사 하나가 감사 공시 행 하나를 쓴다, 89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다, 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
+# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan, audit_disclosure | anchors: 89: 검사기가 solo-audit 계획을 통과시킨다, 89: solo-audit 계획의 solo 설계 명령은 통과한다, 89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다, 89: 감사 하나가 감사 공시 행 하나를 쓴다, 89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다, 89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다, 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
 #
 # 진입 판정은 킥오프 모델 자신의 행위라 CI 가 그 선택을 결정적으로 돌릴 수 없다. 이
 # 절은 그 대신 판정이 놓인 뒤의 사슬 — 검사기, 매니페스트 검사, 런 개시의 행, 스냅숏,
@@ -46580,6 +46726,14 @@ tier_ed_moved=$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_ver
 if [ -n "$tier_ed_moved" ] && [ "$tier_ed_moved" != "$tier_ed_repo" ] && [ "$tier_ed_moved" != 미상 ]; then
   ok "89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다"
 else bad "89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다" "$tier_ed_moved"; fi
+# 판독자 모델 행의 모델 칸만 바꾼다 — 지침 다섯 파일은 그대로라 바로 앞 값과의 차이는 행 하나의 효과다.
+tier_row_f="$tier_plug/skills/_common/team-model-tier.md"
+awk 'index($0, "| `audit-reader` |") == 1 { n = split($0, c, "|"); c[n-1] = (c[n-1] ~ /opus/) ? " sonnet " : " opus "; s = ""; for (i = 1; i < n; i++) s = s c[i] "|"; print s; next } { print }' \
+  "$tier_row_f" > "$tier_row_f.new" && mv "$tier_row_f.new" "$tier_row_f"
+tier_ed_row=$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_version)
+if [ -n "$tier_ed_row" ] && [ "$tier_ed_row" != "$tier_ed_moved" ] && [ "$tier_ed_row" != 미상 ]; then
+  ok "89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다"
+else bad "89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다" "$tier_ed_row"; fi
 check "89: 플러그인 단어는 판@커밋 12자다" \
   "$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_plugin_word)" "9.9.9@0123456789ab"
 
