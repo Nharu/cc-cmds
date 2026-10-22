@@ -42,7 +42,8 @@
 #   --budget-usd  required by every call that may start billed work, with no
 #                 default: before each new run, spent + 150 must not exceed
 #                 it, and before resuming an opened run spent must be below it;
-#                 a stage whose stream has no result line yet counts as 150
+#                 a stage whose stream has no result line yet counts as 150,
+#                 and one that died before writing it keeps counting so
 #   --dry-run     select, make the branches, prepare and check the manifests,
 #                 then stop; never calls the gate's act
 #   --rerun-doc   discard one document's state and records and run it again
@@ -77,14 +78,18 @@ RESERVE_RUN=150
 # soon as the audit stage ends, so a seat that checks between calls cannot stop
 # a skeletal first audit from being carried on to a re-convergence and a
 # re-audit. The ceiling is what stops it. The gate appends the run's `cost` row
-# when a stage ends, its cost boundary ends the run at the next gated act or
-# exec once that row reaches the ceiling, and an ended run launches no stage
-# while the relay launches no further shift. A ceiling below any stage's cost
-# makes that the audit stage itself. The call that ends the run is not refused
-# itself; the router reads the audit's stream through the gate before it routes
-# a re-convergence, and that read is the call. A stage launched anyway is
-# counted by `spent` at the run reserve until its stream has a result line.
+# when a stage ends, before the relay launches the successor shift; that shift
+# still runs, and its first gated act or exec finds the row at the ceiling and
+# ends the run. From then on the run launches no stage and the relay no further
+# shift. A ceiling below any stage's cost makes the audit stage the one that
+# ends it, whether it wrote its report or halted or stopped at its limit. The
+# call that ends the run is not refused itself, so this relies on the router
+# reading the audit's stream through the gate before it routes a
+# re-convergence, which its skill requires; a stage launched anyway is counted
+# by `spent` at the run reserve until its stream has a result line.
 RUN_CEILING_USD=0.01
+# A run that declares a cost ceiling is not closed by its wall-clock deadline;
+# the manifest still carries one because the field is required.
 DEADLINE_SECONDS=14400
 SEAT_MAX="${READER_EXP_SEAT_MAX:-500}"
 TARGET_ALIAS="exp"
@@ -775,7 +780,8 @@ collected() {
 # seat <manifest> <clone> <run id> <log> <owner-doc> — issue `router-shift` as
 # the seat does until the run's first audit report is collected or its done
 # file exists — the run's cost ceiling writes it once the audit stage is
-# costed, inside the call that ran the stage. Returns 0 on either, 5 on an approval for a person, 6 on a shift
+# costed, inside the call that ran the stage, at the successor shift's first
+# gated call. Returns 0 on either, 5 on an approval for a person, 6 on a shift
 # that handed off with 중단 and left a halt record no seat answer settles, any
 # other status on a failure. After a 승인 or 중단 handoff the seat does not
 # send 대기 — the gate would refuse it.
@@ -833,6 +839,7 @@ run_seat_or_stop() {
         echo "  answer frame of an AskUserQuestion in a Claude session seat. To start the document over instead, call"
         echo "  the same command with --rerun-doc ${n}."
         echo "  The run declares a cost ceiling, so its wall-clock deadline does not close it; it stays open until answered."
+        echo "  Once a stage of the run has been costed the ceiling ends the run, and answering does not resume it."
       } >&2
       exit 3 ;;
     6)
@@ -849,7 +856,8 @@ run_seat_or_stop() {
             "$clone" "$GATE" "$m" "$TARGET_ALIAS" "$(halt_key "$f")" "$GATE" "$m" "$f"
         done < <(unanswered_halts "$RUN_ROOT/$rid" "$clone/docs/pipeline-run/$rid.md")
         echo "  Then call the same command again."
-        echo "  The run declares a cost ceiling, so its wall-clock deadline does not close it; it stays open until answered."
+        echo "  The stage that halted was costed, so the run's cost ceiling ends the run at its next gated call; once it"
+        echo "  has ended, answering does not resume it, and --rerun-doc ${n} starts the document over."
       } >&2
       exit 3 ;;
     *)
@@ -865,8 +873,10 @@ audit_branch() {
   run_seat_or_stop "$n" "$br"
   clone=$(kv "$bst" clone); doc=$(kv "$ST/doc-$n/doc.state" doc)
   # A run collected between calls, with its audit stage still running, is left
-  # as it is: no seat call follows, so no further shift is launched, and once
-  # the stage is costed any later gated call on the run ends it at the ceiling.
+  # as it is: no seat call follows, so no further shift is launched, and with no
+  # later gated call the run stays open. A run that ended without a collected
+  # report — its audit halted or stopped at its limit, and the ceiling ended the
+  # run — is 종료됨; --rerun-doc starts the document over.
   if collected "$clone" "$doc"; then kv_set "$bst" status "수집됨"; else kv_set "$bst" status "종료됨"; fi
 }
 

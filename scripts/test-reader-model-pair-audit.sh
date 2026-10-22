@@ -416,9 +416,9 @@ spent_of() { awk '/spent usd:/ { print $NF }' "$1"; }
 s0=$(spent_of "$sc/status")
 rl="$XDG_STATE_HOME/cc-cmds/run/$(bstate "$E1" 2 opus-1 run)/log"
 mkdir -p "$rl"
-printf '%s\n' '{"type":"system"}' > "$rl/A1.json"
+printf '%s\n' '{"type":"system"}' > "$rl/A1#2.json"
 printf '%s\n' '{"type":"system"}' > "$rl/shift-1.json"
-printf '%s\n' '{"type":"result","total_cost_usd":2.5}' > "$rl/A1.1.json"
+printf '%s\n' '{"type":"result","total_cost_usd":2.5}' > "$rl/A1#1.json"
 xp status --exp-id "$E1" > "$sc/status2" 2>&1 || true
 s1=$(spent_of "$sc/status2")
 if awk -v a="$s0" -v b="$s1" 'BEGIN { exit !(b - a == 152.5) }'; then
