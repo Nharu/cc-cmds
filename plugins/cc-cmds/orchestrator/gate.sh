@@ -41484,10 +41484,16 @@ gate_step_deferred_line() {
   # (`gate_stage_last_settled_row`), the test the consumer, the routing and the
   # run-scope admission use: such an attempt never read the card, so the key
   # still stands where the park left it.
+  #
+  # AN ANSWER BROUGHT IN AND CARRIED OVER AGAIN HALTED IN THE EARLIER RUN. This
+  # run refused the key's dispatch when it brought the answer in, so it holds
+  # no attempt of the key; the last row is then the earlier run's, read the
+  # way the routing reads it (`gate_carry_source_last_row`).
   local ln last
   ln=$(gate_key_deferred_answer "$1")
   [ -n "$ln" ] || return 1
   last=$(gate_stage_last_settled_row "$1")
+  [ -n "$last" ] || last=$(gate_carry_source_last_row "$ln")
   [ "$(gate_row_field "$last" '종단 부류')" = '의도된 park' ] || return 1
   printf '1 답 이월 대기 — %s 의 중단 답(원장 %s 번째 줄)을 다음 런이 이어받습니다\n' "$1" "$ln"
 }
