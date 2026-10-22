@@ -4229,9 +4229,31 @@ pre_sb() {
   }
 
   sb_apply() {
-    # sb_apply <세그먼트> — 적용 행위. argv 는 고정 토큰 하나다.
+    # sb_apply <세그먼트> [재실행 답 줄] — 적용 행위. argv 는 고정 토큰 하나다. 행위는
+    # 적용 준비 행을 쓰고 분리 감독자를 띄운 뒤 돌아오므로, 감독자가 종단 행을 쓰고
+    # 끝날 때까지 기다린 다음 그 출력을 raw·msg 뒤에 붙인다. rc 는 행위의 것이다.
     sag act --manifest "$SA_MANIFEST" --kind apply --target main --segment "$1" --cutpoint 배포 \
-        --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x -- 적용
+        --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x \
+        ${2:+--rerun-answer "$2"} -- 적용
+    [ "$rc" = "0" ] || return 0
+    case "$(sb_seg_last "$1")" in *"상태=적용 준비"*) sb_apply_wait "$1" ;; esac
+  }
+
+  sb_apply_wait() {
+    # sb_apply_wait <세그먼트> — 그 세그먼트의 분리 감독자가 끝날 때까지(최대 30초)
+    # 기다린다. 끝은 기동 토큰도 감독자 자기 기록도 없고 마지막 행이 적용 준비 가
+    # 아닌 때다. 감독자의 stdout·stderr 를 raw·msg 뒤에 붙인다.
+    local d="$SA_RUN/apply" i=0 sout
+    while [ "$i" -lt 150 ]; do
+      if [ ! -e "$d/$1.launch" ] && [ ! -e "$d/$1.sup.self" ]; then
+        case "$(sb_seg_last "$1")" in *"상태=적용 준비"*) ;; *) break ;; esac
+      fi
+      sleep 0.2; i=$((i + 1))
+    done
+    [ "$i" -lt 150 ] || bad "적용 감독자 대기 ($1)" "30초 안에 끝나지 않았다: $(sb_seg_last "$1")"
+    sout=$(cat "$SA_RUN/log/apply-$1.sup.out" "$SA_RUN/log/apply-$1.sup.err" 2>/dev/null || true)
+    raw="$raw $(printf '%s' "$sout" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    msg="$msg $(printf '%s' "$sout" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   }
 
   sb_seg_last() { { grep -E '^- `segment`' "$SA_LEDGER" 2>/dev/null || true; } | grep -F "id=$1 " | tail -1; }
@@ -4279,6 +4301,74 @@ pre_sb() {
     # sb_run_state — 공유 런 상태 술어의 토큰. 새 프로세스에서 liveness.sh 만 싣는다.
     bash -c '. "$1" >/dev/null 2>&1; cc_run_state "$2" "$3"' _ \
       "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh" "$SA_RUN" "$SA_LEDGER"
+  }
+
+  # ---- 적용 정산(38-15 ~ 38-19)의 픽스처 -----------------------------------
+  sb_in() {
+    # sb_in <명령…> — 게이트를 소싱한 새 프로세스에서 한 명령. 이 픽스처의 매니페스트·
+    # 원장·런 디렉터리·런 id 를 세운다. 교대만 쓰는 행은 CC_PIPELINE_SHIFT_ID 를 앞에
+    # 붙여 부른다.
+    ( cd "$SA_WT" && bash -c '
+        g=$1; m=$2; l=$3; d=$4; i=$5; shift 5
+        CC_GATE_SOURCE_ONLY=1 . "$g" </dev/null >/dev/null 2>&1 || exit 97
+        set +e
+        unset CC_GATE_SOURCE_ONLY
+        MANIFEST=$m; LEDGER=$l; RUN_DIR=$d; RUN_ID=$i
+        "$@"' _ "$GATE" "$SA_MANIFEST" "$SA_LEDGER" "$SA_RUN" "$SA_ID" "$@" )
+  }
+  sb_row_put() {
+    # sb_row_put <행 계열> <필드…> — 게이트의 저수준 기록기로 행 하나를 쓴다. 게이트가
+    # 그 행을 스스로 쓰는 경로(끊긴 감독자, 이전 셸의 정산)를 거치지 않고 원장 모양만
+    # 세운다.
+    sb_in gate_append "$@" >/dev/null 2>&1
+  }
+  sb_seg_put() {
+    # sb_seg_put <세그먼트> <필드…> — 적용 팔의 기록기로 segment 행 하나를 쓴다. 감독자가
+    # 끊긴 자리(적용 준비 로 끝난 원장)나 대응 행 없이 남은 park 적용=불명 처럼 실제
+    # 흐름이 이 픽스처에서 만들지 않는 모양을 세운다. 적용 준비 행은 비종단이라 그
+    # 워크트리가 실재해야 하므로, 적용 행위처럼 고정 커밋에 분리 워크트리를 먼저 둔다.
+    local s="$1" out f st="" wt="" m=""
+    shift
+    for f in "$@"; do
+      case "$f" in 상태=*) st=${f#상태=} ;; 워크트리=*) wt=${f#워크트리=} ;; '고정 커밋='*) m=${f#고정 커밋=} ;; esac
+    done
+    if [ "$st" = '적용 준비' ] && [ -n "$wt" ] && [ -n "$m" ] && [ ! -e "$wt" ]; then
+      ( cd "$SA_REPO" && git worktree add --detach "$wt" "$m" ) >/dev/null 2>&1 \
+        || bad "sb_seg_put $s" "적용 워크트리를 $m 에 두지 못했다: $wt"
+    fi
+    out=$(sb_in gate_apply_segment_row main "$s" "$@" 2>&1) \
+      || bad "sb_seg_put $s" "$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ')"
+  }
+  sb_settle() {
+    # sb_settle <plan|act> <세그먼트> [--answer <줄>] — 정산 행위.
+    local v="$1" s="$2"; shift 2
+    sag "$v" --manifest "$SA_MANIFEST" --kind apply-settle --target main --segment "$s" --cutpoint 배포 \
+        --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x "$@" -- 정산
+  }
+  sb_dispatch() {
+    # sb_dispatch <세그먼트> — 그 세그먼트의 구현 파견 예보. 디스패치 바닥을 지나면
+    # 선행 문면이 없다.
+    sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment "$1" --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x -- implement -p x
+  }
+  sb_floor() {
+    # sb_floor — 직전 sb_dispatch 의 디스패치 바닥 처분: 통과 · 적용 미종료 · 미착지.
+    case "$msg" in
+      *"apply has not ended (적용이 끝나지 않았다"*) printf '적용 미종료' ;;
+      *"has not landed yet"*|*"brought in from an earlier run at a pull request"*) printf '미착지' ;;
+      *) printf '통과' ;;
+    esac
+  }
+  sb_blocked_open() {
+    # sb_blocked_open <고정 문면> — 미해소 blocked 가운데 그 문면을 실은 것의 수.
+    bash -c '. "$1" >/dev/null 2>&1; cc_unresolved_blocked "$2"' _ \
+      "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh" "$SA_LEDGER" 2>/dev/null \
+      | { grep -cF "$1" || true; }
+  }
+  sb_snap_list() {
+    # sb_snap_list <키> — 스냅숏의 그 목록, 쉼표로 이은 세그먼트 id.
+    ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+      | jq -r --arg k "$1" '[.[$k][]? | if type == "object" then (.["세그먼트"] // .id // .segment) else . end] | join(",")'
   }
 }
 
@@ -14080,7 +14170,7 @@ DOC15GPH='docs/fixture-design-15gph.md'
 two_slice_doc "$WT/$DOC15GPH" t/infra 머지 '**리뷰 정책**: 리뷰없음'
 g15_samerun R15GPH "$DOC15GPH" "상태=머지됨 | PR=7 | 머지 커밋=$m15gp" "상태=park"
 case "$msg" in
-  *"has not landed yet"*|*"merged but parked"*) bad "15g 머지 뒤 park 한 선행 위 디스패치" "rc=$rc $msg" ;;
+  *"has not landed yet"*|*"apply has not ended"*) bad "15g 머지 뒤 park 한 선행 위 디스패치" "rc=$rc $msg" ;;
   *) ok "15g: 같은 런에서 머지한 뒤 park 한 선행은 디스패치 바닥을 넘는다" ;;
 esac
 check "15g: 그 선행의 스냅숏 착지 가 참이다" "$(g15_landed R15GPH)" "true"
@@ -14095,7 +14185,7 @@ DOC15GPJ='docs/fixture-design-15gpj.md'
 two_slice_doc "$WT/$DOC15GPJ" t/infra 머지 '**리뷰 정책**: 리뷰없음'
 g15_samerun R15GPJ "$DOC15GPJ" "상태=머지됨 | 적용=대기 | PR=7 | 머지 커밋=$m15gp" "상태=park"
 r15gpj="$rc"
-case "$msg" in *"the preceding segment SA was merged but parked before the apply this run owes it was done"*) r15gpj="$r15gpj/적용 문면" ;; esac
+case "$msg" in *"the preceding segment SA was merged but its apply has not ended (적용이 끝나지 않았다"*) r15gpj="$r15gpj/적용 문면" ;; esac
 check "15g: 계획된 채 park 했거나 적용이 남은 머지 뒤 park 한 선행 위로는 디스패치되지 않고 착지 가 거짓이다" \
   "$r15gpi/$(g15_landed R15GPI)|$r15gpj/$(g15_landed R15GPJ)" "3/미착지 문면/false|3/적용 문면/false"
 
@@ -14347,6 +14437,188 @@ g15_drop R15GL1:SA R15GL2:SA R15GL3:SB R15GI2:SA R15GG1:SA R15GG2:SA R15GS1:SA R
         R15GRW3:SB
 rm -f "$WT/$DOC15GL" "$WT/$DOC15GI" "$WT/$DOC15GG" "$WT/$DOC15GS2" "$WT/$DOC15GX" "$WT/$DOC15GX3" \
   "$WT/$DOC15GX5" "$WT/$DOC15GMF" "$WT/$DOC15GML" "$WT/$DOC15GRW"
+
+# ---------------------------------------------------------------------------
+# 15g-5. An earlier run whose apply did not end
+# --- section: 15g-5 | group: base | covers: snapshot, plan, act, apply, liveness | anchors: 15g-5: 정산 완료로 끝난 이전 런의 착지는 완료 행으로 들여오고 후속이 바닥을 지난다, 15g-5: 옛 수렴 완료의 고정 커밋은 머지 커밋으로 들여오고 후속이 바닥을 지난다, 15g-5: 끝이 적용 준비인 이전 런은 미정산으로 들여오고 슬라이스를 다시 계획하지 않으며 후속을 막는다, 15g-5: 끝이 적용 불명 park 인 이전 런도 미정산으로 들여온다, 15g-5: 명령이 돌지 않은 이전 런은 들여오지 않고 다시 계획한다, 15g-5: 드라이버의 자기 들여오기는 미정산 행을 쓰지 않고 1 로 끝난다, 15g-5: 드라이버 S9 의 사전 실패 원장은 다시 계획된다, 15g-5: 드라이버 S9 의 적용 불명 원장은 미정산으로 들여온다, 15g-5: 사슬의 미정산 행은 첫 런의 출처와 바로 앞 런을 함께 싣는다, 15g-5: 들여온 미정산 세그먼트는 스냅숏의 apply_imported 에만 든다, 15g-5: 적용 단계 술어가 다섯 단계를 가른다 ---
+#
+# A slice an earlier run merged while it owed the apply is on the base all the
+# same; what its ledger says after the merge decides what the next run of the
+# document does with it. An ending that settled or converged is a landing like
+# any other. An ending that started the command and never said how it ended —
+# `적용 준비` last, or `park 적용=불명` — comes in as `머지됨 적용=미정산` for a
+# person to settle, so the slice is not planned again and its dependent waits.
+# An ending whose command never ran is done again. The rows after the merge are
+# written by hand, in the shapes the apply arm and the driver's S9 leave; the
+# plan row before them is the gate's, so the declaration evidence is real.
+# ---------------------------------------------------------------------------
+m15ga=$(cd "$WT" && git rev-parse refs/heads/main)
+tok15ga=$(printf '%064d' 0)
+# The pipeline as the apply actor admits no `리뷰없음` ceiling, so these slices
+# take the default policy, the target row carries no ceiling, and the plan
+# carries the review step that policy needs.
+g15a_doc() {  # g15a_doc <문서> — two slices cut at 배포
+  two_slice_doc "$WT/$1" t/infra 배포
+}
+g15a_run() {  # g15a_run <run id> <문서> — g15_run with the pipeline as the apply actor
+  g15_run "$1" "$2" "$plan15g_rv" -
+  awk '/^\*\*적용 주체\*\*: / { print "**적용 주체**: 파이프라인"; print "**적용 지점**: `true`"; print "**적용 프로브**: `exit 0`"; next } { print }' \
+    "$WORK/plan-$1.md" > "$WORK/plan-$1.md.tmp" && mv "$WORK/plan-$1.md.tmp" "$WORK/plan-$1.md"
+}
+g15a_led() { printf '%s/docs/pipeline-run/%s.md' "$WT" "$1"; }
+g15a_prep() {  # g15a_prep <run id> — the `적용 준비` row the apply arm writes before the supervisor
+  printf 'id=SA | 상태=적용 준비 | 워크트리=%s-apply | 고정 커밋=%s | 적용 명령=true | 감독 토큰=%s | 선행=없음' \
+    "$(g15_wt "$1" SA)" "$m15ga" "$tok15ga"
+}
+g15a_prior() {  # g15a_prior <run id> <문서> <꼬리 행>... — planned SA, merged it owing the apply, then those rows
+  local r="$1" d="$2" t
+  shift 2
+  g15a_run "$r" "$d"
+  ( cd "$WT" && git worktree add -q -b "seg/$r-SA" "$(g15_wt "$r" SA)" refs/heads/main ) >/dev/null 2>&1
+  g15_plan act "$r" SA 상태=계획됨 "워크트리=$(g15_wt "$r" SA)"
+  [ "$rc" = "0" ] || { bad "15g-5 이전 런 $r 의 SA 계획" "rc=$rc $msg"; return 0; }
+  g15_raw "$r" "id=SA | 상태=머지됨 | PR=7 | 머지 커밋=$m15ga | 워크트리=$(g15_wt "$r" SA) | 선행=없음 | 적용=대기"
+  for t in "$@"; do g15_raw "$r" "$t"; done
+}
+g15a_blocked() {  # g15a_blocked <run id> <스코프> <사유> — a blocked row the driver's S9 leaves beside its park
+  printf -- '- `blocked` | 대상=infra | 스코프=%s | 원인=막힘 | 사유=%s | 관측=심은 행\n' "$2" "$3" >> "$(g15a_led "$1")"
+}
+g15a_floor() {  # g15a_floor <run id> — the dispatch floor's disposition for SB's implement dispatch
+  gateL plan --manifest "$WORK/plan-$1.md" --kind skill --target infra --segment SB --cutpoint 커밋 \
+    --surface 워크트리쓰기 --rationale x -- implement -p x
+  case "$msg" in
+    *"apply has not ended (적용이 끝나지 않았다"*) printf '적용 미종료' ;;
+    *"has not landed yet"*) printf '미착지' ;;
+    *) printf '통과' ;;
+  esac
+}
+g15a_this() {  # g15a_this <run id> <문서> — this run plans SA, then SB on it; one summary line
+  local a am b f row
+  g15a_run "$1" "$2"
+  g15_mkwt "$1" SA
+  g15_plan act "$1" SA 상태=계획됨 "워크트리=$(g15_wt "$1" SA)"
+  a=$rc; am=$msg
+  g15_mkwt "$1" SB
+  g15_plan act "$1" SB 상태=계획됨 "워크트리=$(g15_wt "$1" SB)"
+  b=$rc
+  f=$(g15a_floor "$1")
+  row=$(g15_row "$1" SA)
+  case "$am" in *"들여오지 않고 다시 합니다"*) am=다시 ;; *) am=- ;; esac
+  printf '%s/%s/%s/%s/%s/%s/%s/계획됨=%s/%s/%s' "$a" "$(seg_field "$row" '상태')" "$(seg_field "$row" '적용')" \
+    "$(seg_field "$row" '머지 커밋')" "$(seg_field "$row" '출처')" "$(seg_field "$row" '이전 런')" "$am" \
+    "$(g15_segrows "$1" SA 계획됨)" "$b" "$f"
+}
+g15a_self() {  # g15a_self <run id> — the fixed-graph driver's self import of SA; prints `<rc>/<word>`
+  local out rc=0
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash -c '
+      CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1 || exit 97
+      set +eu
+      MANIFEST=$2; RUN_ID=$3; RUN_DIR=$4
+      derive_paths_from_manifest >/dev/null 2>&1
+      run_gate_call gate_import_self_landed act SA 2>/dev/null' _ \
+      "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$WORK/plan-$1.md" "$1" "$STATE_LATE/cc-cmds/run/$1") || rc=$?
+  printf '%s/%s' "$rc" "$out"
+}
+g15a_phase() {  # g15a_phase <원장> — cc_segment_apply_phase of SA there
+  bash -c '. "$1" >/dev/null 2>&1; cc_segment_apply_phase "$2" SA' _ \
+    "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh" "$1" 2>/dev/null
+}
+
+# 정산 완료 — the gate's settlement wrote `완료 적용=정산` on the merge commit.
+DOC15GA1='docs/fixture-design-15ga1.md'
+g15a_doc "$DOC15GA1"
+g15a_prior R15GA1 "$DOC15GA1" "$(g15a_prep R15GA1)" \
+  "id=SA | 상태=완료 | 워크트리=$(g15_wt R15GA1 SA)-apply | 고정 커밋=$m15ga | 머지 커밋=$m15ga | 적용=정산 | 정산 주체=게이트 | 정산 근거=프로브 exit 0 | 선행=없음"
+check "15g-5: 정산 완료로 끝난 이전 런의 착지는 완료 행으로 들여오고 후속이 바닥을 지난다" \
+  "$(g15a_this R15GA1N "$DOC15GA1")" "0/완료//$m15ga/R15GA1//-/계획됨=0/0/통과"
+
+# 옛 수렴 완료 — before the settlement, a converged apply wrote `완료` on its
+# pinned commit and no merge commit.
+DOC15GA2='docs/fixture-design-15ga2.md'
+g15a_doc "$DOC15GA2"
+g15a_prior R15GA2 "$DOC15GA2" "$(g15a_prep R15GA2)" \
+  "id=SA | 상태=완료 | 워크트리=$(g15_wt R15GA2 SA)-apply | 고정 커밋=$m15ga | 적용=수렴 | 선행=없음"
+check "15g-5: 옛 수렴 완료의 고정 커밋은 머지 커밋으로 들여오고 후속이 바닥을 지난다" \
+  "$(g15a_this R15GA2N "$DOC15GA2")" "0/완료//$m15ga/R15GA2//-/계획됨=0/0/통과"
+
+# 끝이 적용 준비 — the supervisor was cut off before it wrote its ending.
+DOC15GA3='docs/fixture-design-15ga3.md'
+g15a_doc "$DOC15GA3"
+g15a_prior R15GA3 "$DOC15GA3" "$(g15a_prep R15GA3)"
+check "15g-5: 끝이 적용 준비인 이전 런은 미정산으로 들여오고 슬라이스를 다시 계획하지 않으며 후속을 막는다" \
+  "$(g15a_this R15GA3N "$DOC15GA3")" "0/머지됨/미정산/$m15ga/R15GA3/R15GA3/-/계획됨=0/0/적용 미종료"
+r15ga3s=$(au15_snap "$WORK/plan-R15GA3N.md")
+check "15g-5: 들여온 미정산 세그먼트는 스냅숏의 apply_imported 에만 든다" \
+  "$(printf '%s' "$r15ga3s" | jq -r '[(.apply_imported // [] | join(" ")), (.apply_unsettled // [] | join(" "))] | join("/")')" "SA/"
+# The driver has no person to settle with: the same ledger is done again, and
+# nothing is written for it.
+g15a_run R15GA3D "$DOC15GA3"
+au15_H R15GA3D >/dev/null
+check "15g-5: 드라이버의 자기 들여오기는 미정산 행을 쓰지 않고 1 로 끝난다" \
+  "$(g15a_self R15GA3D)/$(g15_segrows R15GA3D SA)" "1//0"
+
+# 끝이 적용 불명 park — the probe after the command left the target unknown.
+DOC15GA4='docs/fixture-design-15ga4.md'
+g15a_doc "$DOC15GA4"
+g15a_prior R15GA4 "$DOC15GA4" "$(g15a_prep R15GA4)" \
+  "id=SA | 상태=park | 워크트리=$(g15_wt R15GA4 SA)-apply | 고정 커밋=$m15ga | 적용=불명 | 선행=없음"
+g15a_blocked R15GA4 run '적용 불명 SA'
+check "15g-5: 끝이 적용 불명 park 인 이전 런도 미정산으로 들여온다" \
+  "$(g15a_this R15GA4N "$DOC15GA4")" "0/머지됨/미정산/$m15ga/R15GA4/R15GA4/-/계획됨=0/0/적용 미종료"
+
+# 명령이 돌지 않은 원장 — the pre-probe failed, so the command never ran and
+# nothing about the target is unknown.
+DOC15GA5='docs/fixture-design-15ga5.md'
+g15a_doc "$DOC15GA5"
+g15a_prior R15GA5 "$DOC15GA5" "$(g15a_prep R15GA5)" \
+  "id=SA | 상태=park | 워크트리=$(g15_wt R15GA5 SA)-apply | 고정 커밋=$m15ga | 적용=사전 실패 | 선행=없음"
+check "15g-5: 명령이 돌지 않은 이전 런은 들여오지 않고 다시 계획한다" \
+  "$(g15a_this R15GA5N "$DOC15GA5")" "0/계획됨/////다시/계획됨=1/0/미착지"
+
+# The driver's S9 leaves the same endings with its own blocked rows beside them.
+DOC15GA6='docs/fixture-design-15ga6.md'
+g15a_doc "$DOC15GA6"
+g15a_prior R15GA6 "$DOC15GA6" "$(g15a_prep R15GA6)" \
+  "id=SA | 상태=park | 워크트리=$(g15_wt R15GA6 SA)-apply | 고정 커밋=$m15ga | 적용=사전 실패 | 선행=없음"
+g15a_blocked R15GA6 act '적용 사전 실패(exit 1)'
+check "15g-5: 드라이버 S9 의 사전 실패 원장은 다시 계획된다" \
+  "$(g15a_this R15GA6N "$DOC15GA6")" "0/계획됨/////다시/계획됨=1/0/미착지"
+DOC15GA7='docs/fixture-design-15ga7.md'
+g15a_doc "$DOC15GA7"
+g15a_prior R15GA7 "$DOC15GA7" "$(g15a_prep R15GA7)" \
+  "id=SA | 상태=park | 워크트리=$(g15_wt R15GA7 SA)-apply | 고정 커밋=$m15ga | 적용=불명 | 선행=없음"
+g15a_blocked R15GA7 run '적용 불명 SA'
+check "15g-5: 드라이버 S9 의 적용 불명 원장은 미정산으로 들여온다" \
+  "$(g15a_this R15GA7N "$DOC15GA7")" "0/머지됨/미정산/$m15ga/R15GA7/R15GA7/-/계획됨=0/0/적용 미종료"
+
+# 사슬 — a run brought the merge in unsettled and a person's `세그먼트 park`
+# answer parked it. The next run follows `출처` to the run that planned the
+# slice and names the run just before it. The second run opens a second later,
+# so the most recent `시작` is its own.
+DOC15GA8='docs/fixture-design-15ga8.md'
+g15a_doc "$DOC15GA8"
+g15a_prior R15GA8 "$DOC15GA8" "$(g15a_prep R15GA8)" \
+  "id=SA | 상태=park | 워크트리=$(g15_wt R15GA8 SA)-apply | 고정 커밋=$m15ga | 적용=불명 | 선행=없음"
+sleep 1
+g15a_run R15GA8B "$DOC15GA8"
+au15_H R15GA8B >/dev/null
+g15_raw R15GA8B "id=SA | 상태=머지됨 | 적용=미정산 | PR=7 | 머지 커밋=$m15ga | 워크트리=$(g15_wt R15GA8 SA) | 선행=없음 | 출처=R15GA8 | 이전 런=R15GA8"
+g15_raw R15GA8B "id=SA | 상태=park | 워크트리=- | 선행=없음"
+check "15g-5: 사슬의 미정산 행은 첫 런의 출처와 바로 앞 런을 함께 싣는다" \
+  "$(g15a_this R15GA8N "$DOC15GA8")" "0/머지됨/미정산/$m15ga/R15GA8/R15GA8B/-/계획됨=0/0/적용 미종료"
+
+# One predicate reads all of these: the five words, from the ledgers above and
+# one that stops at the merge.
+printf -- '- `segment` | id=SA | 상태=머지됨 | 머지 커밋=%s | 워크트리=- | 선행=없음 | 적용=대기\n' "$m15ga" > "$WORK/g15a-wait.md"
+check "15g-5: 적용 단계 술어가 다섯 단계를 가른다" \
+  "$(g15a_phase "$WORK/g15a-wait.md")|$(g15a_phase "$(g15a_led R15GA3N)")|$(g15a_phase "$(g15a_led R15GA3)")|$(g15a_phase "$(g15a_led R15GA4)")|$(g15a_phase "$(g15a_led R15GA5)")|$(g15a_phase "$(g15a_led R15GA1)")" \
+  "대기|미정산|진행|불명|멈춤|"
+
+g15_drop R15GA1:SA R15GA1N:SA R15GA1N:SB R15GA2:SA R15GA2N:SA R15GA2N:SB R15GA3:SA R15GA3N:SA R15GA3N:SB \
+        R15GA4:SA R15GA4N:SA R15GA4N:SB R15GA5:SA R15GA5N:SA R15GA5N:SB R15GA6:SA R15GA6N:SA R15GA6N:SB \
+        R15GA7:SA R15GA7N:SA R15GA7N:SB R15GA8:SA R15GA8N:SA R15GA8N:SB
+rm -f "$WT/$DOC15GA1" "$WT/$DOC15GA2" "$WT/$DOC15GA3" "$WT/$DOC15GA4" "$WT/$DOC15GA5" "$WT/$DOC15GA6" \
+  "$WT/$DOC15GA7" "$WT/$DOC15GA8" "$WORK/g15a-wait.md"
 
 # ---------------------------------------------------------------------------
 # 15m. A merge-order predecessor holds the merge, not the dispatch
@@ -29411,7 +29683,7 @@ check "34b A4: H 는 여전히 마지막 키다" \
   "$(cap_snap "$CAPB_SID" '' | jq -r 'keys_unsorted | last')" "H"
 check "34b A4: --fields 의 기본 투영이 그대로다" \
   "$(cap_snap "$CAPB_SID" '' --fields | jq -r 'keys_unsorted | join(",")')" \
-  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,live_applies,apply_unsettled,apply_imported,shift,pace"
 
 # A5. THE LAUNCH ROW CARRIES THE OUTGOING SHIFT'S CONTEXT.
 cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind segment --target infra --segment CB1 \
@@ -33268,7 +33540,7 @@ sb_silent 'terraform plan 은 침묵한다' -- terraform plan
 sb_silent 'gh api 의 GET 은 침묵한다'  -- gh api repos/o/r/pulls/1/merge
 
 # --- 38-12. 적용 행위의 다섯 전제 ------------------------------------------------
-# --- section: 38-12 | group: sb | covers: act, apply, gate_segment_apply_state, snapshot | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 기본 대응 0/2 로 읽고 문면에 싣는다, 12: 적용 명령이 없으면 적용 불필요 로 rc 0 이다, 12: 절단점이 배포 가 아니면 적용 불필요 로 rc 0 이다, 12: 빚지지 않은 세그먼트는 M^2 가 리뷰 HEAD 와 달라도 전제 4 앞에서 적용 불필요 로 끝난다, 12: 두 번째 적용 행위는 적용 불필요 로 끝난다 ---
+# --- section: 38-12 | group: sb | covers: act, apply, gate_segment_apply_state, snapshot | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 불필요=0 만 정의하고 문면에 싣는다, 12: 적용 명령이 없으면 적용 불필요 로 rc 0 이다, 12: 절단점이 배포 가 아니면 적용 불필요 로 rc 0 이다, 12: 빚지지 않은 세그먼트는 M^2 가 리뷰 HEAD 와 달라도 전제 4 앞에서 적용 불필요 로 끝난다, 12: 두 번째 적용 행위는 적용 불필요 로 끝난다 ---
 #
 # 다섯 전제는 규칙 카탈로그 앞에 있고 끌 수 없다. 거부마다 원장 행 수와 적용
 # 워크트리 부재를 함께 잰다 — 코드만 재면 행을 쓰고 거부하는 구현도 초록이다.
@@ -33330,7 +33602,7 @@ case "$(sb_seg_last SB12)" in
 esac
 [ -e "$WORK/sb12-should-not" ] && bad "12: 건너뜀" "명령이 실행됐다"
 case "$raw" in
-  *"적용 건너뜀 — SB12 (사전 프로브 0, 대응 불필요=0·필요=2)"*) ok "12: 대응 행이 없으면 기본 대응 0/2 로 읽고 문면에 싣는다" ;;
+  *"적용 건너뜀 — SB12 (사전 프로브 0, 대응 불필요=0·필요=-)"*) ok "12: 대응 행이 없으면 불필요=0 만 정의하고 문면에 싣는다" ;;
   *) bad "12: 기본 대응 문면" "$raw" ;;
 esac
 # R12 의 다른 절반 — 같은 명령 문자열을 exec 으로 내면 여전히 거부된다.
@@ -33461,10 +33733,10 @@ for ap12 in "$ap12_shift" "$ap12_lead"; do
 done
 
 # --- 38-13. 적용의 처분과 종료 조건 ----------------------------------------------
-# --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 2 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다, 13: 해시 불일치 거부 문면이 두 해시를 싣는다, 13: 해시 불일치에서 사전 프로브도 적용 명령도 돌지 않는다, 13: 불필요=2·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 2 는 완료 로 끝난다 ---
+# --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 21 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다, 13: 해시 불일치 거부 문면이 두 해시를 싣는다, 13: 해시 불일치에서 사전 프로브도 적용 명령도 돌지 않는다, 13: 불필요=22·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 22 는 완료 로 끝난다 ---
 #
-# 수렴: 사전 프로브는 표지 파일이 없으면 2, 있으면 0 이고 명령이 표지를 만든다.
-sb_apply_new '13 수렴' "if [ -f $WORK/sb13-applied ]; then exit 0; else exit 2; fi" "touch $WORK/sb13-applied"
+# 수렴: 사전 프로브는 표지 파일이 없으면 21, 있으면 0 이고 명령이 표지를 만든다.
+SB_CODES='0 21' sb_apply_new '13 수렴' "if [ -f $WORK/sb13-applied ]; then exit 0; else exit 21; fi" "touch $WORK/sb13-applied"
 sb_reviewed_landing SB13
 case "$(sb_seg_last SB13)" in
   *"상태=머지됨"*"적용=대기"*) ok "13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다" ;;
@@ -33495,7 +33767,7 @@ check "13: 호출자의 적용= 필드는 거부된다" "$rc" "2"
 check "13: 그 거부들은 원장에 행을 남기지 않는다" "$(sa_rows)" "$sb13_base"
 
 sb_apply SB13
-check "13: 사전 2 → 사후 0 은 완료 로 끝난다" "$rc" "0"
+check "13: 사전 21 → 사후 0 은 완료 로 끝난다" "$rc" "0"
 case "$(sb_seg_last SB13)" in
   *"상태=완료"*"적용=수렴"*) ok "13: 그 완료 행은 적용 팔이 쓴 수렴 이다" ;;
   *) bad "13: 수렴 행" "$(sb_seg_last SB13)" ;;
@@ -33526,7 +33798,7 @@ esac
 sb_apply_new '13 사전 실패' 'exit 1' "touch $WORK/sb13-prefail"
 sb_reviewed_landing SB13F
 sb_apply SB13F
-check "13: 사전 프로브 실패는 park 코드로 끝난다" "$rc" "11"
+check "13: 사전 프로브 실패도 디스패치는 0 으로 끝나고 감독자가 park 한다" "$rc" "0"
 [ -e "$WORK/sb13-prefail" ] && bad "13: 사전 실패" "명령이 실행됐다"
 case "$(sb_seg_last SB13F)" in
   *"상태=park"*"적용=사전 실패"*) ok "13: 사전 실패는 세그먼트를 park 한다" ;;
@@ -33538,11 +33810,15 @@ case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
 esac
 [ -e "$(sb_apply_wt SB13F)" ] && bad "13: 사전 실패 뒤 워크트리" "남았다"
 
-# 적용 불명 — 사전 2, 명령 성공, 사후 2. park 와 런 범위 막힘, 워크트리 보존.
-sb_apply_new '13 불명' 'exit 2' 'true'
+# 적용 불명 — 사전 21, 명령 성공, 사후 21. park 와 런 범위 막힘, 워크트리 보존.
+SB_CODES='0 21' sb_apply_new '13 불명' 'exit 21' 'true'
 sb_reviewed_landing SB13U
 sb_apply SB13U
-check "13: 적용 불명 은 park 코드로 끝난다" "$rc" "11"
+check "13: 적용 불명 도 디스패치는 0 으로 끝나고 감독자가 park 한다" "$rc" "0"
+case "$(sb_seg_last SB13U)" in
+  *"상태=park"*"적용=불명"*) ok "13: 적용 불명 은 세그먼트를 park 한다" ;;
+  *) bad "13: 적용 불명 park" "$(sb_seg_last SB13U)" ;;
+esac
 case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
   *"스코프=run"*"사유=적용 불명 SB13U"*) ok "13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다" ;;
   *) bad "13: 적용 불명 막힘" "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" ;;
@@ -33572,7 +33848,7 @@ esac
 SB_CODES='0 21' sb_apply_new '13 대응 사전 실패' 'exit 3' "touch $WORK/sb13-map3"
 sb_reviewed_landing SB13X
 sb_apply SB13X
-check "13: 필요=21 대응에서 사전 3 은 park 코드로 끝난다" "$rc" "11"
+check "13: 필요=21 대응에서 사전 3 도 디스패치는 0 으로 끝난다" "$rc" "0"
 [ -e "$WORK/sb13-map3" ] && bad "13: 대응 사전 실패" "명령이 실행됐다"
 case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
   *"사유=적용 사전 실패(exit 3)"*"대응 불필요=0·필요=21"*) ok "13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다" ;;
@@ -33586,7 +33862,7 @@ esac
 SB_CODES='0 21' sb_apply_new '13 대응 사전 2' 'exit 2' "touch $WORK/sb13-map2"
 sb_reviewed_landing SB13W
 sb_apply SB13W
-check "13: 필요=21 대응에서 사전 2 는 사전 실패 다" "$rc" "11"
+check "13: 필요=21 대응에서 사전 2 도 디스패치는 0 으로 끝난다" "$rc" "0"
 [ -e "$WORK/sb13-map2" ] && bad "13: 대응 사전 2" "명령이 실행됐다"
 case "$(sb_seg_last SB13W)" in
   *"상태=park"*"적용=사전 실패"*) ok "13: 필요=21 대응의 사전 2 는 세그먼트를 park 한다" ;;
@@ -33607,11 +33883,12 @@ case "$raw" in
   *) bad "13: 대응 건너뜀 문면" "$raw" ;;
 esac
 
-# 해시 불일치 — 매니페스트 프로브 A 에 얼린 뒤집힌 대응(불필요=2·필요=0)이 있고 설계
-# 문서 슬라이스가 프로브 B 를 선언하면, 0/2 로 떨어지지 않고 사전 프로브 전에 거부한다.
+# 해시 불일치 — 매니페스트 프로브 A 에 얼린 뒤집힌 대응(불필요=22·필요=0)이 있고 설계
+# 문서 슬라이스가 프로브 B 를 선언하면, 대응 행 없음으로 떨어지지 않고 사전 프로브 전에
+# 거부한다.
 sb13z_a="touch $WORK/sb13z-probe-a; exit 0"
 sb13z_b="touch $WORK/sb13z-probe-b; exit 0"
-SB_CODES='2 0' SB_SLICE="SB13Z $sb13z_b" sb_apply_new '13 해시 불일치' "$sb13z_a" "touch $WORK/sb13z-cmd"
+SB_CODES='22 0' SB_SLICE="SB13Z $sb13z_b" sb_apply_new '13 해시 불일치' "$sb13z_a" "touch $WORK/sb13z-cmd"
 sb_reviewed_landing SB13Z
 rm -f "$WORK/sb13z-probe-a" "$WORK/sb13z-probe-b" "$WORK/sb13z-cmd"
 sb13z_base=$(sb_count 'id=SB13Z | 상태=')
@@ -33634,11 +33911,11 @@ if [ -e "$(sb_apply_wt SB13Z)" ]; then bad "13: 해시 불일치 워크트리" "
 else ok "13: 해시 불일치는 적용 워크트리를 만들지 않는다"; fi
 
 # 같은 뒤집힌 대응에 프로브 A 가 돌면 대응대로 처분된다 — 사전 0 은 「필요」 이고
-# 명령 뒤 사후 2 는 「불필요」 라 수렴이다.
-SB_CODES='2 0' sb_apply_new '13 뒤집힌 대응' "if [ -f $WORK/sb13v-applied ]; then exit 2; else exit 0; fi" "touch $WORK/sb13v-applied"
+# 명령 뒤 사후 22 는 「불필요」 라 수렴이다.
+SB_CODES='22 0' sb_apply_new '13 뒤집힌 대응' "if [ -f $WORK/sb13v-applied ]; then exit 22; else exit 0; fi" "touch $WORK/sb13v-applied"
 sb_reviewed_landing SB13V
 sb_apply SB13V
-check "13: 불필요=2·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 2 는 완료 로 끝난다" "$rc" "0"
+check "13: 불필요=22·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 22 는 완료 로 끝난다" "$rc" "0"
 [ -e "$WORK/sb13v-applied" ] || bad "13: 뒤집힌 대응 수렴" "사전 0 에서 명령이 실행되지 않았다"
 case "$(sb_seg_last SB13V)" in
   *"상태=완료"*"적용=수렴"*) ok "13: 뒤집힌 대응의 완료 행은 수렴 이다" ;;
@@ -33646,7 +33923,7 @@ case "$(sb_seg_last SB13V)" in
 esac
 
 # R21 — 슬라이스가 둘인 레포에서 적용 팔의 행이 계획 행의 선행 을 다시 싣는다.
-sb_apply_new '13 두 세그먼트' "if [ -f $WORK/sb13-two ]; then exit 0; else exit 2; fi" "touch $WORK/sb13-two"
+SB_CODES='0 21' sb_apply_new '13 두 세그먼트' "if [ -f $WORK/sb13-two ]; then exit 0; else exit 21; fi" "touch $WORK/sb13-two"
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment SB13A --cutpoint 커밋 \
     --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$SA_SEGWT" 선행=없음
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment SB13B --cutpoint 커밋 \
@@ -33672,7 +33949,7 @@ check "13: 적용 팔의 적용 준비·완료 행은 전부 선행 을 다시 �
 # --- section: 38-14 | group: sb | covers: act, apply, exec | anchors: 14: 구현 워크트리가 지워져도 적용은 게이트의 대상 HEAD 로 통과한다, 14: 적용 준비 뒤 같은 세그먼트의 배포 exec 은 여전히 거부된다, 14: 물려준 GATE_META_RESOLVED_HEAD 로도 리뷰 뒤 커밋의 머지는 거부된다 ---
 #
 # 구현 워크트리가 남아 있으면 규칙은 변수 없이도 통과한다 — 규칙을 직접 부른다.
-sb_apply_new '14 바인딩' "if [ -f $WORK/sb14-applied ]; then exit 0; else exit 2; fi" "touch $WORK/sb14-applied"
+SB_CODES='0 21' sb_apply_new '14 바인딩' "if [ -f $WORK/sb14-applied ]; then exit 0; else exit 21; fi" "touch $WORK/sb14-applied"
 sb_reviewed_landing SB14
 # 규칙은 원장을 읽지 않고 게이트가 필드 동등으로 고른 마지막 cycle·segment 행을
 # 받는다. 직접 부르는 이 자리도 그 두 행을 게이트의 같은 선택 함수로 골라 넘긴다.
@@ -33703,10 +33980,13 @@ check "14: 구현 워크트리가 지워져도 적용은 게이트의 대상 HEA
 # 적용 준비 뒤 같은 세그먼트의 배포 exec — 적용 불명으로 적용 워크트리가 남은
 # 경우. 리뷰 뒤 구현 워크트리에 커밋이 하나 더 있으므로, exec 이 물려받은
 # GATE_SUBJECT_HEAD 를 규칙이 읽었다면 통과했을 행위다.
-sb_apply_new '14 적용 뒤 exec' 'exit 2' 'true'
+SB_CODES='0 21' sb_apply_new '14 적용 뒤 exec' 'exit 21' 'true'
 sb_reviewed_landing SB14U
 sb_apply SB14U
-check "14: 적용 불명 픽스처" "$rc" "11"
+case "$rc:$(sb_seg_last SB14U)" in
+  0:*"상태=park"*"적용=불명"*) ok "14: 적용 불명 픽스처" ;;
+  *) bad "14: 적용 불명 픽스처" "rc=$rc $(sb_seg_last SB14U)" ;;
+esac
 sa_commit '적용 뒤 작업' >/dev/null
 sb14u_remote=$( cd "$SA_REPO" && git rev-parse refs/remotes/origin/main )
 GATE_SUBJECT_HEAD="$SB_TIP" sa_merge SB14U
@@ -33737,6 +34017,483 @@ esac
 case "$( cd "$SA_REPO" && git worktree list --porcelain )" in
   *"worktree $(sb_apply_wt SB14U)"*) ok "13: 그 적용 워크트리가 선언 레포의 워크트리 목록에 있다" ;;
   *) bad "13: 적용 워크트리 목록" "$( cd "$SA_REPO" && git worktree list --porcelain )" ;;
+esac
+
+# --- 38-15. 분리 감독자 -----------------------------------------------------------
+# --- section: 38-15 | group: sb | covers: act, apply, supervise-apply | anchors: 15: 적용 행위는 감독자를 띄우고 적용 준비 행에서 돌아온다, 15: 행위를 부른 프로세스 트리를 모두 죽여도 감독자가 수렴 행을 쓴다 ---
+#
+# 행위를 부른 쪽은 라우팅 교대의 도구 호출이다. 그 호출이 시간 상한으로 잘리거나 세션이
+# 닫혀도 명령은 끝까지 돌고 종단 행은 감독자가 쓴다 — 행위를 백그라운드 서브셸에서
+# 부르고, 행위가 돌아온 뒤 그 서브셸의 프로세스 트리를 뿌리부터 kill -9 로 모두 죽인다.
+sb15_mark="$WORK/sb15-applied"
+rm -f "$sb15_mark"
+SB_CODES='0 21' sb_apply_new '15 분리 감독자' "test -e $sb15_mark && exit 0 || exit 21" "sleep 3; touch $sb15_mark"
+sb_reviewed_landing SB15
+sb15_out="$SA_ROOT/sb15.out"; sb15_rc="$SA_ROOT/sb15.rc"
+rm -f "$sb15_out" "$sb15_rc"
+( cd "$SA_WT" && gate_inproc act --manifest "$SA_MANIFEST" --kind apply --target main --segment SB15 \
+    --cutpoint 배포 --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x -- 적용 \
+    > "$sb15_out" 2>&1; echo $? > "$sb15_rc"; sleep 120 ) &
+sb15_root=$!
+sb15_i=0
+while [ ! -s "$sb15_rc" ] && [ "$sb15_i" -lt 600 ]; do sleep 0.2; sb15_i=$((sb15_i + 1)); done
+check "15: 적용 행위가 2분 안에 돌아온다" "$(tr -d '[:space:]' < "$sb15_rc" 2>/dev/null)" "0"
+if [ -e "$sb15_mark" ]; then bad "15: 행위 반환 시점" "명령이 이미 끝나 표지가 있다"
+else ok "15: 행위가 돌아온 때 명령은 아직 끝나지 않았다"; fi
+case "$(sb_seg_last SB15)" in
+  *"상태=적용 준비"*"감독 토큰="*)
+    sb15_tok=$(sa_field "$(sb_seg_last SB15)" '감독 토큰')
+    if printf '%s' "$sb15_tok" | grep -Eq '^[0-9a-f]{64}$'; then
+      ok "15: 적용 행위는 감독자를 띄우고 적용 준비 행에서 돌아온다"
+    else
+      bad "15: 감독 토큰" "$sb15_tok"
+    fi ;;
+  *) bad "15: 반환 시점의 마지막 행" "$(sb_seg_last SB15)" ;;
+esac
+sb15_tree() {  # sb15_tree <pid> — 그 pid 와 그 아래 모든 자손
+  local c
+  printf '%s\n' "$1"
+  for c in $(pgrep -P "$1" 2>/dev/null || true); do sb15_tree "$c"; done
+}
+sb15_pids=$(sb15_tree "$sb15_root")
+# shellcheck disable=SC2086
+kill -9 $sb15_pids 2>/dev/null || true
+wait "$sb15_root" 2>/dev/null || true
+# 부모를 잃은 자손은 init 이 거둘 때까지 잠깐 좀비로 남아 kill -0 에 답한다.
+sb15_i=0
+while [ "$sb15_i" -lt 25 ]; do
+  sb15_alive=0
+  for p in $sb15_pids; do kill -0 "$p" 2>/dev/null && sb15_alive=$((sb15_alive + 1)); done
+  [ "$sb15_alive" = "0" ] && break
+  sleep 0.2; sb15_i=$((sb15_i + 1))
+done
+check "15: 행위를 부른 프로세스 트리가 모두 죽었다" "$sb15_alive" "0"
+sb15_i=0
+while [ "$sb15_i" -lt 150 ]; do
+  if [ ! -e "$SA_RUN/apply/SB15.sup.self" ]; then
+    case "$(sb_seg_last SB15)" in *"상태=적용 준비"*) ;; *) break ;; esac
+  fi
+  sleep 0.2; sb15_i=$((sb15_i + 1))
+done
+[ "$sb15_i" -lt 150 ] || bad "15: 감독자 대기" "30초 안에 끝나지 않았다: $(sb_seg_last SB15)"
+if [ -e "$sb15_mark" ]; then ok "15: 트리를 죽인 뒤에도 명령이 끝까지 돌았다"
+else bad "15: 표지" "명령이 끝나지 않았다"; fi
+case "$(sb_seg_last SB15)" in
+  *"상태=완료"*"머지 커밋=$SB_M"*"적용=수렴"*) ok "15: 행위를 부른 프로세스 트리를 모두 죽여도 감독자가 수렴 행을 쓴다" ;;
+  *) bad "15: 감독자의 종단 행" "$(sb_seg_last SB15)" ;;
+esac
+if [ -e "$SA_RUN/apply/SB15.sup" ] || [ -e "$SA_RUN/apply/SB15.sup.self" ]; then
+  bad "15: 감독자 기록" "끝난 뒤에도 남았다"
+else
+  ok "15: 끝난 감독자는 자기 기록을 남기지 않는다"
+fi
+
+# --- 38-16. 릴레이가 분리 감독자를 기다린다 -------------------------------------
+# --- section: 38-16 | group: sb | covers: liveness, relay, defer | anchors: 16: 살아 있는 분리 감독자가 릴레이 대기 집합에 apply 키로 든다, 16: 살아 있는 분리 감독자가 있으면 이월 인계가 미충족이다, 16: 감독자가 사는 동안 릴레이는 그 키로 깨지 않는다, 16: 감독자가 끝나면 릴레이가 그 키로 깬다 ---
+#
+# 감독자 기록은 `apply/` 아래에 있어 스테이지 술어가 보지 않는다. 살아 있는 프로세스
+# 하나를 감독자로 적어 두고 릴레이·이월·스테이지 수·고아 판독이 각각 무엇을 읽는지 잰다.
+sb_new '16 릴레이 대기'
+mkdir -p "$SA_RUN/apply"
+sb16_lv() {  # sb16_lv <함수> <인자…> — liveness.sh 만 실은 새 프로세스에서 한 술어
+  bash -c '. "$1" >/dev/null 2>&1; shift; "$@"' _ \
+    "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh" "$@" 2>/dev/null
+}
+sleep 300 &
+sb16_pid=$!
+printf '%s\n' "$sb16_pid" > "$SA_RUN/apply/SB16.sup"
+cc_proc_fingerprint "$sb16_pid" > "$SA_RUN/apply/SB16.sup.start"
+case ",$(sb16_lv cc_relay_wait_stages "$SA_RUN")," in
+  *,apply:SB16,*) ok "16: 살아 있는 분리 감독자가 릴레이 대기 집합에 apply 키로 든다" ;;
+  *) bad "16: 대기 집합" "$(sb16_lv cc_relay_wait_stages "$SA_RUN")" ;;
+esac
+case "$(sb_in gate_defer_handoff_unmet 2>/dev/null)" in
+  "살아 있는 스테이지나 감독자가 있습니다"*) ok "16: 살아 있는 분리 감독자가 있으면 이월 인계가 미충족이다" ;;
+  *) bad "16: 이월 미충족 사유" "$(sb_in gate_defer_handoff_unmet 2>&1)" ;;
+esac
+check "16: 분리 감독자는 살아 있는 스테이지 수에 들지 않는다" "$(sb16_lv cc_live_stages "$SA_RUN")" "0"
+check "16: 분리 감독자는 고아 스테이지 판독에 들지 않는다" "$(sb16_lv cc_orphan_stages "$SA_RUN")" ""
+printf '%s\n%s\nstages=apply:SB16\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/relay.live"
+case "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" in
+  *"st:apply:SB16"*) bad "16: 감독자 생존 중 깨움" "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" ;;
+  *) ok "16: 감독자가 사는 동안 릴레이는 그 키로 깨지 않는다" ;;
+esac
+kill -9 "$sb16_pid" 2>/dev/null || true
+wait "$sb16_pid" 2>/dev/null || true
+case "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" in
+  *"st:apply:SB16"*) ok "16: 감독자가 끝나면 릴레이가 그 키로 깬다" ;;
+  *) bad "16: 감독자 종료 뒤 깨움" "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" ;;
+esac
+check "16: 끝난 감독자는 대기 집합에서 빠진다" "$(sb16_lv cc_relay_wait_stages "$SA_RUN")" ""
+# 감독자가 토큰을 받기 전의 창 — 소비되지 않은 기동 토큰만 있어도 기다린다.
+rm -f "$SA_RUN/apply/SB16.sup" "$SA_RUN/apply/SB16.sup.start"
+printf 'x\n' > "$SA_RUN/apply/SB16.launch"
+check "16: 막 쓴 기동 토큰만 있어도 대기 집합에 든다" "$(sb16_lv cc_relay_wait_stages "$SA_RUN")" "apply:SB16"
+rm -f "$SA_RUN/apply/SB16.launch" "$SA_RUN/relay.live"
+
+# --- 38-17. 프로브 종료 코드 2 -----------------------------------------------------
+# --- section: 38-17 | group: sb | covers: act, apply, apply-settle, manifest | anchors: 17: 대응 행이 없으면 사전 2 는 명령 없이 사전 실패로 park 한다, 17: 사전 실패의 막힘이 대응 행 부재를 싣는다, 17: 값 2 를 실은 대응 행은 매니페스트 검사가 거부한다, 17: 대응 행 없는 정산의 프로브 2 는 측정 실패다 ---
+#
+# 셸은 문법 오류와 내장 명령 오용에 2 를 낸다. 그 값이 「필요」로 읽히면 깨진 프로브가
+# 명령을 부르므로, 대응 행이 없을 때 2 는 어떤 판정에서도 「필요」가 아니고, 2 를 값으로
+# 고른 대응 행은 매니페스트 단계에서 막힌다.
+sb17_mark="$WORK/sb17-applied"
+rm -f "$sb17_mark"
+sb_apply_new '17 사전 2' 'exit 2' "touch $sb17_mark"
+sb_reviewed_landing SB17
+sb_apply SB17
+check "17: 대응 행 없는 사전 2 도 디스패치는 0 으로 끝난다" "$rc" "0"
+if [ -e "$sb17_mark" ]; then bad "17: 사전 2" "명령이 실행됐다"
+else
+  case "$(sb_seg_last SB17)" in
+    *"상태=park"*"적용=사전 실패"*) ok "17: 대응 행이 없으면 사전 2 는 명령 없이 사전 실패로 park 한다" ;;
+    *) bad "17: 사전 2 park" "$(sb_seg_last SB17)" ;;
+  esac
+fi
+case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
+  *"사유=적용 사전 실패(exit 2)"*"적용 프로브 코드 행이 없어 필요 코드가 정의되지 않았다"*)
+    ok "17: 사전 실패의 막힘이 대응 행 부재를 싣는다" ;;
+  *) bad "17: 사전 2 막힘" "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" ;;
+esac
+
+sb17_refused=0
+for sb17_codes in '0 2' '2 0'; do
+  SB_CODES="$sb17_codes" sb_apply_new "17 값 2 ($sb17_codes)" 'exit 0' 'true'
+  sag snapshot --manifest "$SA_MANIFEST"
+  case "$rc:$msg" in
+    0:*) bad "17: 값 2 대응 행 ($sb17_codes)" "스냅숏이 통과했다" ;;
+    *"적용 프로브 코드 행이 깨졌습니다"*"1·2 가 아니며"*) sb17_refused=$((sb17_refused + 1)) ;;
+    *) bad "17: 값 2 대응 행 문면 ($sb17_codes)" "rc=$rc $msg" ;;
+  esac
+done
+check "17: 값 2 를 실은 대응 행은 매니페스트 검사가 거부한다" "$sb17_refused" "2"
+
+# 정산 — 대응 행이 없는 매니페스트에서 park 적용=불명 으로 남은 세그먼트를 잰다. 실제
+# 흐름은 대응 행 없이 불명에 닿지 않으므로(필요 코드가 없으면 사전 실패다) 행을 심는다.
+sb_apply_new '17 정산 2' 'exit 2' 'true'
+sb_reviewed_landing SB17S
+sb_seg_put SB17S "상태=적용 준비" "워크트리=$(sb_apply_wt SB17S)" "고정 커밋=$SB_M" "적용 명령=true" \
+  "감독 토큰=$(printf '%064d' 0)"
+sb_seg_put SB17S "상태=park" "워크트리=$(sb_apply_wt SB17S)" "고정 커밋=$SB_M" "적용=불명"
+sb_row_put blocked "대상=-" "스코프=run" "원인=막힘" "사유=적용 불명 SB17S" "관측=심은 행"
+case "$(sb_seg_last SB17S)" in
+  *"상태=park"*"적용=불명"*) ok "17: 대응 행 없는 불명 픽스처" ;;
+  *) bad "17: 대응 행 없는 불명 픽스처" "$(sb_seg_last SB17S)" ;;
+esac
+sb_settle act SB17S
+check "17: 대응 행 없는 정산의 프로브 2 는 park 로 끝난다" "$rc" "11"
+case "$(sb_seg_last SB17S)" in
+  *"상태=park"*"적용=불명"*"정산 판정=측정 실패"*"프로브 exit 2"*"필요 코드가 정의되지 않았다"*)
+    ok "17: 대응 행 없는 정산의 프로브 2 는 측정 실패다" ;;
+  *) bad "17: 정산 프로브 2" "$(sb_seg_last SB17S)" ;;
+esac
+check "17: 측정 실패는 열린 적용 불명 막힘에 막힘을 더하지 않는다" "$(sb_blocked_open '적용 불명 SB17S')" "1"
+
+# --- 38-18. 끝을 말하지 못한 적용의 정산 -------------------------------------------
+# --- section: 38-18 | group: sb | covers: act, plan, apply-settle, dispatch, liveness | anchors: 18: 적용=대기 인 선행은 디스패치 바닥을 지난다, 18: 적용 준비 로 끝난 선행은 적용 미종료 로 디스패치를 막는다, 18: 살아 있는 감독자가 있으면 정산은 거부된다, 18: 막 쓴 기동 토큰이 있으면 정산은 거부된다, 18: 입구 a 의 불필요 코드는 게이트 정산 완료다, 18: 정산 완료 뒤 의존 세그먼트가 디스패치 바닥을 지난다, 18: 입구 b 의 불필요 코드는 게이트 정산 완료이고 막힘을 해소한다, 18: 입구 b 의 필요 코드는 정산 판정=필요 로 park 한다, 18: 판정을 가진 park 는 재시도 답 없이 다시 재지 않는다, 18: 리뷰 기록이 없으면 정산은 거부된다 ---
+#
+# 감독자가 끊긴 원장(마지막 행이 적용 준비)과 결과를 모르는 park(적용=불명)를, 명령을
+# 다시 돌리지 않고 얼린 프로브 한 번으로 잰다. 의존 세그먼트(선행=그 세그먼트)의 구현
+# 파견은 정산이 끝날 때까지 디스패치 바닥에서 막힌다.
+sb18_dep() {  # sb18_dep <의존 세그먼트> <선행> — 의존 세그먼트의 계획 행
+  sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$SA_SEGWT" "선행=$2"
+}
+sb18_floor() {  # sb18_floor <의존 세그먼트> — 그 세그먼트의 디스패치 바닥 처분과 rc
+  sb_dispatch "$1"
+  printf '%s:%s' "$(sb_floor)" "$rc"
+}
+
+# 입구 a — 감독자가 종단 행을 쓰기 전에 끊겼다. 명령은 끝까지 돌아 표지를 남겼다.
+sb18_mark="$WORK/sb18-applied"
+rm -f "$sb18_mark"
+SB_CODES='0 21' sb_apply_new '18 입구 a' "test -e $sb18_mark && exit 0 || exit 21" "touch $sb18_mark"
+sb_reviewed_landing SB18
+sb18_dep SB18D SB18
+check "18: 의존 세그먼트의 계획 행이 받힌다" "$rc" "0"
+case "$(sb18_floor SB18D)" in
+  통과:0) ok "18: 적용=대기 인 선행은 디스패치 바닥을 지난다" ;;
+  *) bad "18: 적용 대기 선행" "rc=$rc $msg" ;;
+esac
+sb_seg_put SB18 "상태=적용 준비" "워크트리=$(sb_apply_wt SB18)" "고정 커밋=$SB_M" "적용 명령=touch" \
+  "감독 토큰=$(printf '%064d' 0)"
+case "$(sb_seg_last SB18)" in
+  *"상태=적용 준비"*) ok "18: 끊긴 감독자 픽스처" ;;
+  *) bad "18: 끊긴 감독자 픽스처" "$(sb_seg_last SB18)" ;;
+esac
+case "$(sb18_floor SB18D)" in
+  "적용 미종료:3") ok "18: 적용 준비 로 끝난 선행은 적용 미종료 로 디스패치를 막는다" ;;
+  *) bad "18: 적용 준비 선행" "rc=$rc $msg" ;;
+esac
+touch "$sb18_mark"
+sb18_base=$(sa_rows)
+# 살아 있는 감독자 — 정산은 적용이 아직 바꾸는 대상을 재지 않는다.
+mkdir -p "$SA_RUN/apply"
+sleep 300 &
+sb18_live=$!
+printf '%s\n' "$sb18_live" > "$SA_RUN/apply/SB18.sup"
+cc_proc_fingerprint "$sb18_live" > "$SA_RUN/apply/SB18.sup.start"
+sb_settle act SB18
+case "$rc:$msg" in
+  3:*"적용 정산 거부 — 적용이 아직 돈다"*) ok "18: 살아 있는 감독자가 있으면 정산은 거부된다" ;;
+  *) bad "18: 살아 있는 감독자" "rc=$rc $msg" ;;
+esac
+kill -9 "$sb18_live" 2>/dev/null || true
+wait "$sb18_live" 2>/dev/null || true
+rm -f "$SA_RUN/apply/SB18.sup" "$SA_RUN/apply/SB18.sup.start"
+printf '%s\n' "$(printf '%064d' 0)" > "$SA_RUN/apply/SB18.launch"
+sb_settle act SB18
+case "$rc:$msg" in
+  3:*"적용 정산 거부 — 적용이 막 시작됐다"*) ok "18: 막 쓴 기동 토큰이 있으면 정산은 거부된다" ;;
+  *) bad "18: 막 쓴 기동 토큰" "rc=$rc $msg" ;;
+esac
+rm -f "$SA_RUN/apply/SB18.launch"
+check "18: 거부된 정산은 원장에 행을 남기지 않는다" "$(sa_rows)" "$sb18_base"
+# 구현 워크트리가 지워져도 정산은 리뷰 기록이 증명한 HEAD 로 규칙을 지난다.
+( cd "$SA_REPO" && git worktree remove --force "$SA_SEGWT" ) >/dev/null 2>&1
+# 게이트가 대상 HEAD 로 세우는 값은 머지 커밋 M 이 아니라 그 둘째 부모(리뷰한 head)다.
+# 규칙에 M 을 넘기면 거부되므로, 아래 정산의 통과는 그 값을 바로 세웠다는 증거다.
+sb18_rule() {
+  ( cd "$SA_WT" && env -u GATE_SUBJECT_HEAD "$@" GATE_ACT_INDEX=9 GATE_MERGE_INDEX=1 \
+      GATE_SURFACE=외부상태변경 GATE_HISTORY_INTEGRATION=0 GATE_REVIEW_POLICY_INDEX=0 \
+      GATE_LEDGER="$SA_LEDGER" GATE_MANIFEST="$SA_MANIFEST" GATE_SEGMENT=SB18 \
+      GATE_SEGMENT_LAST_CYCLE="$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; LEDGER="$2"; MANIFEST="$3"; gate_segment_last_cycle_row SB18' _ "$GATE" "$SA_LEDGER" "$SA_MANIFEST" 2>/dev/null)" \
+      GATE_SEGMENT_LAST_SEGMENT="$(sb_seg_last SB18)" \
+      /bin/sh "$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-머지.sh" ) >/dev/null 2>&1
+}
+check "18: 고정 커밋의 둘째 부모가 리뷰한 head 다" "$(cd "$SA_REPO" && git rev-parse "$SB_M^2")" "$SB_TIP"
+if sb18_rule GATE_SUBJECT_HEAD="$SB_M"; then bad "18: 대상 HEAD=M" "머지 커밋을 대상 HEAD 로 넘겼는데 규칙이 통과했다"
+else ok "18: 대상 HEAD 를 머지 커밋으로 세우면 리뷰-후-머지 가 거부한다"; fi
+if sb18_rule GATE_SUBJECT_HEAD="$SB_TIP"; then ok "18: 대상 HEAD 를 둘째 부모로 세우면 리뷰-후-머지 를 지난다"
+else bad "18: 대상 HEAD=M^2" "규칙이 거부했다"; fi
+sb_settle act SB18
+check "18: 입구 a 의 정산 행위가 rc 0 으로 끝난다" "$rc" "0"
+case "$(sb_seg_last SB18)" in
+  *"상태=완료"*"고정 커밋=$SB_M"*"머지 커밋=$SB_M"*"적용=정산"*"정산 주체=게이트"*"정산 근거=프로브 exit 0(대응 불필요=0·필요=21)·입구 a"*)
+    ok "18: 입구 a 의 불필요 코드는 게이트 정산 완료다" ;;
+  *) bad "18: 입구 a 정산 행" "$(sb_seg_last SB18)" ;;
+esac
+case "$(sb18_floor SB18D)" in
+  통과:0) ok "18: 정산 완료 뒤 의존 세그먼트가 디스패치 바닥을 지난다" ;;
+  *) bad "18: 정산 뒤 의존 세그먼트" "rc=$rc $msg" ;;
+esac
+if [ -e "$SA_WT-run-$SA_ID-SB18-settle" ]; then
+  bad "18: 정산 워크트리" "남았다"
+else
+  ok "18: 정산 워크트리는 잰 뒤 지워진다"
+fi
+
+# 입구 b — 사전 21, 명령 0, 사후 21 로 불명. 그 뒤 대상이 맞춰졌다.
+sb18b_mark="$WORK/sb18b-applied"
+rm -f "$sb18b_mark"
+SB_CODES='0 21' sb_apply_new '18 입구 b 완료' "test -e $sb18b_mark && exit 0 || exit 21" 'true'
+sb_reviewed_landing SB18B
+sb18_dep SB18BD SB18B
+sb_apply SB18B
+case "$(sb_seg_last SB18B)" in
+  *"상태=park"*"적용=불명"*) ok "18: 입구 b 픽스처 — 적용 불명" ;;
+  *) bad "18: 입구 b 픽스처" "$(sb_seg_last SB18B)" ;;
+esac
+check "18: 적용 불명 동안 런 범위 막힘이 열려 있다" "$(sb_blocked_open '적용 불명 SB18B')" "1"
+case "$(sb18_floor SB18BD)" in
+  "적용 미종료:3") ok "18: 적용 불명 인 선행은 적용 미종료 로 디스패치를 막는다" ;;
+  *) bad "18: 적용 불명 선행" "rc=$rc $msg" ;;
+esac
+touch "$sb18b_mark"
+sb_settle act SB18B
+check "18: 입구 b 의 정산 행위가 rc 0 으로 끝난다" "$rc" "0"
+case "$(sb_seg_last SB18B):$(sb_blocked_open '적용 불명 SB18B')" in
+  *"상태=완료"*"적용=정산"*"정산 주체=게이트"*"·입구 b"*:0) ok "18: 입구 b 의 불필요 코드는 게이트 정산 완료이고 막힘을 해소한다" ;;
+  *) bad "18: 입구 b 정산" "$(sb_seg_last SB18B) 열린 막힘=$(sb_blocked_open '적용 불명 SB18B')" ;;
+esac
+if [ -e "$(sb_apply_wt SB18B)" ]; then bad "18: 입구 b 정산 뒤 적용 워크트리" "남았다"
+else ok "18: 정산 완료는 보존했던 적용 워크트리를 지운다"; fi
+case "$(sb18_floor SB18BD)" in
+  통과:0) ok "18: 입구 b 정산 뒤 의존 세그먼트가 디스패치 바닥을 지난다" ;;
+  *) bad "18: 입구 b 정산 뒤 의존 세그먼트" "rc=$rc $msg" ;;
+esac
+
+# 입구 b — 대상이 여전히 적용을 필요로 한다.
+SB_CODES='0 21' sb_apply_new '18 입구 b 필요' 'exit 21' 'true'
+sb_reviewed_landing SB18N
+sb18_dep SB18ND SB18N
+sb_apply SB18N
+sb_settle act SB18N
+check "18: 필요 코드의 정산은 park 로 끝난다" "$rc" "11"
+case "$(sb_seg_last SB18N)" in
+  *"상태=park"*"적용=불명"*"정산 판정=필요"*"정산 근거=프로브 exit 21(대응 불필요=0·필요=21)·입구 b"*)
+    ok "18: 입구 b 의 필요 코드는 정산 판정=필요 로 park 한다" ;;
+  *) bad "18: 필요 정산 행" "$(sb_seg_last SB18N)" ;;
+esac
+check "18: 필요 판정은 이미 열린 막힘에 막힘을 더하지 않는다" "$(sb_blocked_open '적용 불명 SB18N')" "1"
+case "$(sb18_floor SB18ND)" in
+  "적용 미종료:3") ok "18: 필요 판정 뒤에도 의존 세그먼트는 막힌다" ;;
+  *) bad "18: 필요 판정 뒤 의존 세그먼트" "rc=$rc $msg" ;;
+esac
+sb18n_base=$(sa_rows)
+sb_settle act SB18N
+case "$rc:$msg" in
+  3:*"이미 정산 판정(필요)으로 park 했습니다"*) ok "18: 판정을 가진 park 는 재시도 답 없이 다시 재지 않는다" ;;
+  *) bad "18: 두 번째 정산" "rc=$rc $msg" ;;
+esac
+check "18: 두 번째 정산은 원장에 행을 남기지 않는다" "$(sa_rows)" "$sb18n_base"
+sb_settle plan SB18N
+check "18: 같은 거부를 예보도 낸다" "$rc" "3"
+
+# 리뷰 기록 없음 — 이 런의 cycle 행이 없으면 리뷰 HEAD 를 증명할 길이 없어, 정산은
+# 프로브를 돌리지 않고 측정 실패로 park 한다. 완료 행은 생기지 않는다.
+SB_CODES='0 21' sb_apply_new '18 리뷰 기록 없음' 'exit 0' 'true'
+sb_reviewed_landing SB18R
+sb_seg_put SB18R "상태=적용 준비" "워크트리=$(sb_apply_wt SB18R)" "고정 커밋=$SB_M" "적용 명령=true" \
+  "감독 토큰=$(printf '%064d' 0)"
+awk '!/^- `cycle` / || index($0, "세그먼트=SB18R ") == 0' "$SA_LEDGER" > "$SA_LEDGER.c" && mv "$SA_LEDGER.c" "$SA_LEDGER"
+check "18: cycle 행을 지운 픽스처" "$( { grep -c '^- `cycle` ' "$SA_LEDGER" || true; } )" "0"
+( cd "$SA_REPO" && git worktree remove --force "$SA_SEGWT" ) >/dev/null 2>&1
+sb18r_base=$(sa_rows)
+sb_settle act SB18R
+case "$rc:$(sb_seg_last SB18R)" in
+  11:*"상태=park"*"적용=불명"*"정산 판정=측정 실패"*"리뷰 HEAD 증명 실패"*"·입구 a"*) ok "18: 리뷰 기록이 없으면 정산은 거부된다" ;;
+  *) bad "18: 리뷰 기록 없음" "rc=$rc $msg $(sb_seg_last SB18R)" ;;
+esac
+check "18: 그 거부는 원장에 segment 행을 남기지 않는다" "$(sb_count 'id=SB18R | 상태=완료')" "0"
+
+# --- 38-19. 사람의 답으로 끝내는 적용 -----------------------------------------------
+# --- section: 38-19 | group: sb | covers: act, apply, apply-settle, apply-settle-confirm, halt-answer | anchors: 19: 사람이 아닌 재실행 답은 거부된다, 19: 사람의 재실행 답은 번호 붙은 새 워크트리로 한 번 다시 돈다, 19: 재실행이 수렴하면 막힘을 해소하고 적용 워크트리를 모두 지운다, 19: 답 한 줄로 두 번째 재실행은 하지 않는다, 19: 사람 확인 정산은 사람 주체 완료로 끝난다, 19: 세그먼트 park 답의 park 행이 막힘을 해소한다, 19: 들여온 세그먼트는 재실행도 게이트 정산도 하지 않는다, 19: 들여온 적용은 cycle 행 없이 사람 확인으로 완료된다, 19: 새 중단 뒤에는 앞선 답으로 확인하지 않는다 ---
+#
+# 정산이 「필요」로 park 한 세그먼트에 교대가 적용 정산 자리의 중단 기록을 쓰고, 사람이
+# 답한다. 교대의 cone 막힘 행과 중단 답 행은 원장에 직접 심는다 — 답의 판독은 원장 행만
+# 읽고, 이 절이 재는 것은 그 판독이다.
+sb19_cone() {  # sb19_cone <세그먼트> <자리> <이름> — 교대의 중단 기록과 그 cone 행. 기록 경로를 찍는다.
+  local rec="$SA_RUN/halt/shift/$3.md"
+  mkdir -p "$SA_RUN/halt/shift"
+  printf '# 중단 기록 %s\n' "$3" > "$rec"
+  printf -- '- `blocked` | 교대=1 | 대상=%s | 스코프=cone | 원인=막힘 | 사유=교대 중단 | 자리=%s | 앵커 세그먼트=%s | 중단 기록=%s | 기록 다이제스트=%s | prev=x\n' \
+    "$1" "$2" "$1" "$rec" "$(shasum -a 256 < "$rec" | cut -d' ' -f1)" >> "$SA_LEDGER"
+  printf '%s' "$rec"
+}
+sb19_ans() {  # sb19_ans <세그먼트> <기록> <선택지> [답한 주체|-] — 중단 답 행 하나. 그 줄 번호를 찍는다.
+  local by=""
+  [ "${4:--}" = "-" ] || by=" | 답한 주체=$4"
+  printf -- '- `중단 답` | 교대=0 | 세그먼트=%s | 중단 기록=%s | 선택지=%s%s | 근거=x | prev=x\n' \
+    "$1" "$2" "$3" "$by" >> "$SA_LEDGER"
+  grep -c '' "$SA_LEDGER"
+}
+sb19_needed() {  # sb19_needed <라벨> <세그먼트> <표지> <허가 파일> — 불명 → 정산 필요 park 까지
+  SB_CODES='0 21' sb_apply_new "$1" "test -e $3 && exit 0 || exit 21" "test -e $4 && touch $3 || true"
+  sb_reviewed_landing "$2"
+  sb_apply "$2"
+  sb_settle act "$2"
+  case "$(sb_seg_last "$2")" in
+    *"상태=park"*"적용=불명"*"정산 판정=필요"*) ok "19: $2 픽스처 — 정산 판정=필요" ;;
+    *) bad "19: $2 픽스처" "$(sb_seg_last "$2")" ;;
+  esac
+}
+
+sb19_mark="$WORK/sb19-applied"; sb19_go="$WORK/sb19-go"
+rm -f "$sb19_mark" "$sb19_go"
+sb19_needed '19 재실행' SB19 "$sb19_mark" "$sb19_go"
+sb19_rec=$(sb19_cone SB19 '적용 정산' SB19-1)
+sb19_refused=0
+for sb19_by in 좌석 교대 -; do
+  sb19_l=$(sb19_ans SB19 "$sb19_rec" 재실행 "$sb19_by")
+  sb19_base=$(sa_rows)
+  sb_apply SB19 "$sb19_l"
+  case "$rc:$msg" in
+    3:*"적용 행위 전제 1 불충족"*"재실행 답(원장 ${sb19_l} 번째 줄)이 확인되지 않습니다"*)
+      [ "$(sa_rows)" = "$sb19_base" ] && sb19_refused=$((sb19_refused + 1)) ;;
+    *) bad "19: 답한 주체=$sb19_by 재실행" "rc=$rc $msg" ;;
+  esac
+done
+check "19: 사람이 아닌 재실행 답은 거부된다" "$sb19_refused" "3"
+touch "$sb19_go"
+sb19_l=$(sb19_ans SB19 "$sb19_rec" 재실행 사람)
+sb_apply SB19 "$sb19_l"
+check "19: 사람의 재실행 답이 받힌다" "$rc" "0"
+case "$( { grep -F 'id=SB19 | 상태=적용 준비' "$SA_LEDGER" || true; } | tail -1 )" in
+  *"워크트리=$(sb_apply_wt SB19).1 "*"재실행 근거=$sb19_l"*) ok "19: 사람의 재실행 답은 번호 붙은 새 워크트리로 한 번 다시 돈다" ;;
+  *) bad "19: 재실행 적용 준비" "$( { grep -F 'id=SB19 | 상태=적용 준비' "$SA_LEDGER" || true; } | tail -1 )" ;;
+esac
+case "$(sb_seg_last SB19):$(sb_blocked_open '적용 불명 SB19')" in
+  *"상태=완료"*"적용=수렴"*:0)
+    if [ -e "$(sb_apply_wt SB19)" ] || [ -e "$(sb_apply_wt SB19).1" ]; then
+      bad "19: 재실행 수렴 뒤 워크트리" "남았다"
+    else
+      ok "19: 재실행이 수렴하면 막힘을 해소하고 적용 워크트리를 모두 지운다"
+    fi ;;
+  *) bad "19: 재실행 수렴" "$(sb_seg_last SB19) 열린 막힘=$(sb_blocked_open '적용 불명 SB19')" ;;
+esac
+sb_apply SB19 "$sb19_l"
+case "$rc:$msg" in
+  3:*"적용 행위 전제 1 불충족"*) ok "19: 답 한 줄로 두 번째 재실행은 하지 않는다" ;;
+  *) bad "19: 두 번째 재실행" "rc=$rc $msg" ;;
+esac
+
+# 사람 확인 정산 — 사람이 대상을 보고 끝났다고 답했다. 다시 재지 않는다.
+sb19h_mark="$WORK/sb19h-applied"
+rm -f "$sb19h_mark"
+sb19_needed '19 사람 확인' SB19H "$sb19h_mark" "$WORK/sb19h-never"
+sb19h_rec=$(sb19_cone SB19H '적용 정산' SB19H-1)
+sb19h_l=$(sb19_ans SB19H "$sb19h_rec" '사람 확인 정산' 좌석)
+sb_settle act SB19H --answer "$sb19h_l"
+case "$rc:$msg" in
+  3:*"답한 주체=좌석 입니다"*) ok "19: 좌석의 사람 확인 정산 답은 거부된다" ;;
+  *) bad "19: 좌석 사람 확인" "rc=$rc $msg" ;;
+esac
+sb19h_l=$(sb19_ans SB19H "$sb19h_rec" '사람 확인 정산' 사람)
+sb_settle act SB19H --answer "$sb19h_l"
+case "$rc:$(sb_seg_last SB19H):$(sb_blocked_open '적용 불명 SB19H')" in
+  0:*"상태=완료"*"워크트리=$(sb_apply_wt SB19H) "*"적용=정산"*"정산 주체=사람"*"정산 근거=중단 답 ${sb19h_l}·입구 b"*:0)
+    ok "19: 사람 확인 정산은 사람 주체 완료로 끝난다" ;;
+  *) bad "19: 사람 확인 정산" "rc=$rc $(sb_seg_last SB19H) 열린 막힘=$(sb_blocked_open '적용 불명 SB19H')" ;;
+esac
+if [ -e "$sb19h_mark" ]; then bad "19: 사람 확인 정산" "명령이나 프로브가 대상을 바꿨다"; fi
+
+# 세그먼트 park — 사람이 이 세그먼트를 내려놓았다. 라우터의 park 행이 그 답을 집행한다.
+sb19_needed '19 세그먼트 park' SB19P "$WORK/sb19p-applied" "$WORK/sb19p-never"
+sb19p_rec=$(sb19_cone SB19P '적용 정산' SB19P-1)
+sb19_ans SB19P "$sb19p_rec" '세그먼트 park' 사람 >/dev/null
+check "19: park 답 전에는 막힘이 열려 있다" "$(sb_blocked_open '적용 불명 SB19P')" "1"
+sa_seg_state SB19P park
+check "19: 라우터의 park 행이 받힌다" "$rc" "0"
+check "19: 세그먼트 park 답의 park 행이 막힘을 해소한다" "$(sb_blocked_open '적용 불명 SB19P')" "0"
+
+# 들여온 세그먼트 — 이전 런이 머지했고 적용이 정산되지 않았다. 이 런에는 cycle 행이 없다.
+SB_CODES='0 21' sb_apply_new '19 들여옴' 'exit 21' 'true'
+sb_reviewed_landing SB19X
+sb19i_m=$SB_M
+SAH >/dev/null
+printf -- '- `segment` | 교대=0 | id=SB19I | 상태=머지됨 | PR=1 | 워크트리=- | 선행=없음 | 머지 커밋=%s | 적용=미정산 | 출처=RAOLD | 이전 런=RAOLD | prev=x\n' \
+  "$sb19i_m" >> "$SA_LEDGER"
+check "19: 들여온 세그먼트에 cycle 행이 없다" "$( { grep '^- `cycle` ' "$SA_LEDGER" || true; } | { grep -cF '세그먼트=SB19I ' || true; } )" "0"
+sb19i_base=$(sa_rows)
+sb_apply SB19I
+sb19i_a="$rc:$msg"
+sb_settle act SB19I
+case "$sb19i_a|$rc:$msg" in
+  3:*"들여온"*"|3:"*"이전 런에서 들여온 세그먼트입니다"*)
+    [ "$(sa_rows)" = "$sb19i_base" ] && ok "19: 들여온 세그먼트는 재실행도 게이트 정산도 하지 않는다" \
+      || bad "19: 들여온 세그먼트 거부" "원장에 행이 늘었다" ;;
+  *) bad "19: 들여온 세그먼트 거부" "적용 $sb19i_a / 정산 rc=$rc $msg" ;;
+esac
+sb19i_rec=$(sb19_cone SB19I '들여온 적용 정산' SB19I-1)
+sb19i_l=$(sb19_ans SB19I "$sb19i_rec" '사람 확인 정산' 사람)
+sb19_confirm() {
+  sag act --manifest "$SA_MANIFEST" --kind apply-settle-confirm --target main --segment SB19I --cutpoint 배포 \
+      --surface 읽기 --snapshot-digest "$(SAH)" --rationale x -- "중단 답=$1"
+}
+# 새 중단이 앞선 답 뒤에 오면 그 답은 그 중단의 답이 아니다.
+sb19_cone SB19I '들여온 적용 정산' SB19I-2 >/dev/null
+sb19_confirm "$sb19i_l"
+case "$rc:$msg" in
+  3:*"마지막 들여온 적용 정산 중단"*"보다 뒤가 아닙니다"*) ok "19: 새 중단 뒤에는 앞선 답으로 확인하지 않는다" ;;
+  *) bad "19: 새 중단 뒤 앞선 답" "rc=$rc $msg" ;;
+esac
+sb19i_l=$(sb19_ans SB19I "$SA_RUN/halt/shift/SB19I-2.md" '사람 확인 정산' 사람)
+sb19_confirm "$sb19i_l"
+case "$rc:$(sb_seg_last SB19I)" in
+  0:*"상태=완료"*"고정 커밋=$sb19i_m"*"머지 커밋=$sb19i_m"*"적용=정산"*"정산 주체=사람"*"입구 c"*"출처=RAOLD"*"이전 런=RAOLD"*)
+    ok "19: 들여온 적용은 cycle 행 없이 사람 확인으로 완료된다" ;;
+  *) bad "19: 들여온 적용 확인" "rc=$rc $msg $(sb_seg_last SB19I)" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -36861,7 +37618,7 @@ check "59: 그 값은 스냅숏의 H 와 같다" "$p59_hf" "$(p59_h)"
 check "59: 필드 하나는 JSON 이 아니라 날값이다" "$(printf '%s' "$p59_hf" | grep -c '"' || true)" "0"
 check "59: 맨 --fields 는 기본 목록을 그 순서대로 낸다" \
   "$(p59_snap --fields | jq -r 'keys_unsorted | join(",")')" \
-  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,live_applies,apply_unsettled,apply_imported,shift,pace"
 check "59: 필드 둘 이상은 요청한 순서의 JSON 객체다" \
   "$(p59_snap --fields pace,H | jq -r 'keys_unsorted | join(",")')" "pace,H"
 check "59: 그 객체의 pace 는 스냅숏과 같은 값이다 (부재면 null)" \

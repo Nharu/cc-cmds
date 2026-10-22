@@ -148,7 +148,7 @@ mf_check() {
 
 # write_manifest <path> <id> — the previous run's manifest. Knobs (all optional):
 #   P_KAT P_DL P_PLAN P_DOC P_CUT P_AXES P_RULES P_EXTRA P_NOIV P_INTENT P_PROBE
-#   P_AUTOADOPT (the auto-adoption row's class)
+#   P_AA (the apply actor, with an apply point beside it) P_AUTOADOPT (the auto-adoption row's class)
 write_manifest() {
   local m="$1" id="$2" doc="${P_DOC:-$DOC}" cut="${P_CUT:-머지}" ivsha
   ivsha=$(sha "$BASE/docs/pipeline-run/$id.interview.md")
@@ -165,7 +165,8 @@ write_manifest() {
     printf -- '- `target` | 별칭=rk | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/rk | 절단점=%s | 말단 행위 상한=없음\n\n' "$WT" "$CG" "$cut"
     printf '## 요소\n**설계 문서**: %s\n' "$doc"
     [ -z "${P_PROBE:-}" ] || printf '**적용 프로브**: %s\n' "$P_PROBE"
-    printf '**적용 주체**: (해당 없음)\n\n'
+    [ -z "${P_AA:-}" ] || printf '**적용 지점**: 픽스처 배포\n'
+    printf '**적용 주체**: %s\n\n' "${P_AA:-(해당 없음)}"
     printf '## 실행 계획\n**승인 문면**: 진행\n```json\n%s\n```\n\n' "${P_PLAN:-$PLAN4}"
     if [ -n "${P_RULES:-}" ]; then printf '## 룰 설정\n%s\n\n' "$P_RULES"; fi
     printf '## 인가\n**구속 다이제스트**: @BD@\n**런 최대 절단점**: %s\n**종료 지점**: 픽스처가 끝나면\n' "$cut"
@@ -1344,6 +1345,63 @@ VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 { cat "$NM1"; printf '%s\n' "$AC_ROW"; } > "$WORK/v-ac-add.md"
 vs "원천에 없는 적용 프로브 코드 행을 더한 초안은 실패한다" 실패 "$WORK/v-ac-add.md" "$E" 고정값
 check "7: 재킥오프 흐름 전후 원 런의 plugin-pin 과 plugin/cc-cmds 사본이 같다" "$(pin_sum)" "$PIN_BEFORE"
+
+# (g) Where the pipeline runs the probe and the source has no mapping row, or
+# one carrying 2, the row is not carried: the draft drops it, and a mapping 5o
+# confirmed is written as a new row bound to the probe bytes and compared.
+AC_SHA=$(printf '%s' 'make probe' | shasum -a 256 | cut -d' ' -f1)
+printf '5o 런:apply-probe-codes\t이대로\n' > "$WORK/asked-ac"
+blanks "$WORK/blanks-ac" "런${TAB}apply-probe-codes${TAB}0/21"
+for ac_case in RKAR0:없음 RKAR2:0/2 RKAR3:2/0; do
+  ac_id=${ac_case%%:*}; ac_v=${ac_case#*:}; ac_x=""
+  [ "$ac_v" = 없음 ] || ac_x="- \`적용 프로브 코드\` | 불필요=${ac_v%%/*} | 필요=${ac_v#*/} | 프로브 sha256=$AC_SHA"
+  P_PROBE='`make probe`' P_AA=파이프라인 P_CUT=배포 P_GCUT=배포 P_EXTRA="$ac_x" mk_prev "$ac_id"; fx_done
+  if [ "$ac_v" = 없음 ]; then
+    mf_check "$BASE/docs/pipeline-run/$ac_id.plan.md"; rc=$?
+    check "7: 대응 행 없는 파이프라인 원천이 check_manifest 를 통과한다" "$rc" "0"
+  fi
+  vac=$(rk verify --prev "$ac_id" --base "$BASE")
+  PMA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+  PGA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+  VS_PREV="$BASE/docs/pipeline-run/$ac_id.plan.md"; VS_PMSHA="$PMA"; VS_PGSHA="$PGA"
+  rk render-manifest --prev "$ac_id" --base "$BASE" --run-id "${ac_id}N" --kickoff-at "$KAT1" --deadline "$DL1" \
+     --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" > "$WORK/v-ar.md"; rc=$?
+  check "7: 대응 행 $ac_v 인 파이프라인 원천의 render-manifest 는 0 으로 끝난다" "$rc" "0"
+  check "7: 대응 행 $ac_v 인 파이프라인 원천의 초안에는 적용 프로브 코드 행이 없다" \
+    "$(grep -c '^- `적용 프로브 코드`' "$WORK/v-ar.md")" "0"
+  vs "대응 행 $ac_v 인 파이프라인 원천에서 행을 뺀 초안은 통과한다" 통과 "$WORK/v-ar.md" "$E"
+  rk render-manifest --prev "$ac_id" --base "$BASE" --run-id "${ac_id}N" --kickoff-at "$KAT1" --deadline "$DL1" \
+     --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$WORK/asked-ac" \
+     --set '런:apply-probe-codes=0/21' > "$WORK/v-ars.md"; rc=$?
+  check "7: 대응 행 $ac_v 원천에 --set 런:apply-probe-codes 를 준 render-manifest 는 0 으로 끝난다" "$rc" "0"
+  check "7: 그 --set 이 지금 적용 프로브 바이트에 묶은 새 행을 하나 쓴다 ($ac_v)" \
+    "$(grep -c '^- `적용 프로브 코드`' "$WORK/v-ars.md")/$(grep -cxF -- "$AC_ROW" "$WORK/v-ars.md")" "1/1"
+  mf_check "$WORK/v-ars.md"; rc=$?
+  check "7: 새 대응 행을 실은 초안이 check_manifest 를 통과한다 ($ac_v)" "$rc" "0"
+  vs "확인한 대응을 실은 초안은 같은 --set 으로 통과한다 ($ac_v)" 통과 "$WORK/v-ars.md" "$WORK/asked-ac" "" \
+    --set '런:apply-probe-codes=0/21' --blank-rows "$WORK/blanks-ac"
+  sed 's/| 필요=21 |/| 필요=22 |/' "$WORK/v-ars.md" > "$WORK/v-ars-ch.md"
+  vs "확인한 대응과 다른 행을 실은 초안은 실패한다 ($ac_v)" 실패 "$WORK/v-ars-ch.md" "$WORK/asked-ac" 고정값 \
+    --set '런:apply-probe-codes=0/21' --blank-rows "$WORK/blanks-ac"
+  out=$(rk render-manifest --prev "$ac_id" --base "$BASE" --run-id "${ac_id}N" --kickoff-at "$KAT1" --deadline "$DL1" \
+          --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set '런:apply-probe-codes=0/2' 2>/dev/null); rc=$?
+  check "7: 2 를 담은 --set 런:apply-probe-codes 는 render-manifest 가 1 로 거절한다 ($ac_v)" "$rc/$out" "1/"
+done
+P_PROBE='`make probe`' P_AA=파이프라인 P_CUT=배포 P_GCUT=배포 P_EXTRA="$AC_ROW" mk_prev RKARK; fx_done
+vac=$(rk verify --prev RKARK --base "$BASE")
+PMA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+VS_PREV="$BASE/docs/pipeline-run/RKARK.plan.md"; VS_PMSHA="$PMA"; VS_PGSHA="$PGA"
+rk render-manifest --prev RKARK --base "$BASE" --run-id RKARKN --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" > "$WORK/v-ark.md"; rc=$?
+check "7: 2 없는 대응 행의 파이프라인 원천은 행을 바이트 그대로 옮긴다" \
+  "$rc/$(grep -cxF -- "$AC_ROW" "$WORK/v-ark.md")" "0/1"
+out=$(rk render-manifest --prev RKARK --base "$BASE" --run-id RKARKN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set '런:apply-probe-codes=3/0' 2>/dev/null); rc=$?
+check "7: 이어받는 대응 행이 있으면 --set 런:apply-probe-codes 는 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+grep -vF -- "$AC_ROW" "$WORK/v-ark.md" > "$WORK/v-ark-drop.md"
+vs "이어받는 대응 행을 뺀 초안은 실패한다" 실패 "$WORK/v-ark-drop.md" "$E" 고정값
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 
 # The interview copy.
 out=$(rk render-interview --prev RKIV --base "$BASE" --expect-sha256 "$PMI"); rc=$?
