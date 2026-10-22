@@ -8860,6 +8860,20 @@ graded_as '등급 미상' '이름 없는 하위 명령은 거부된다' -- opens
 # read; the same subcommand writing a file is not.
 graded_as '읽기' 'openssl base64 -A -in 은 읽기다'      -- openssl base64 -A -in /tmp/x
 graded_as '워크트리쓰기' 'base64 라도 -out 이면 쓰기다' -- openssl base64 -A -in /tmp/x -out /tmp/y
+graded_as '읽기' 'openssl base64 -A -e -in 도 읽기다'   -- openssl base64 -A -e -in /tmp/x
+# OpenSSL 3 이상은 출력 옵션을 `--out`, `-out=<p>`, `--out=<p>` 로도 받는다(4.0.3 에서
+# 고른 바이트를 그대로 썼다). 띄어 쓴 `-out` 만 보던 판정은 이 셋을 `읽기` 로
+# 떨어뜨렸고, `base64 -d` 와 묶이면 고른 내용을 어디든 쓰는 길이 되었다.
+graded_as '워크트리쓰기' 'base64 -out= 붙여 씀도 쓰기다'  -- openssl base64 -A -in /tmp/x -out=/tmp/y
+graded_as '워크트리쓰기' 'base64 --out 도 쓰기다'         -- openssl base64 -A -in /tmp/x --out /tmp/y
+graded_as '워크트리쓰기' 'base64 --out= 도 쓰기다'        -- openssl base64 -A -in /tmp/x --out=/tmp/y
+graded_as '워크트리쓰기' 'rand -out= 도 쓰기다'           -- openssl rand -out=/tmp/secrets.bin 32
+graded_as '워크트리쓰기' 'dgst -keyout= 도 쓰기다'        -- openssl dgst -keyout=/tmp/k /tmp/x
+graded_as '워크트리쓰기' 'dgst --keyout 도 쓰기다'        -- openssl dgst --keyout /tmp/k /tmp/x
+# `base64` 의 읽기는 처방된 형태(`-A`, `-e`, `-in <파일>`)뿐이다. `-d` 는 고른
+# 바이트를 풀어 내므로, 그 밖의 인자를 실은 호출은 쓰기로 둔다.
+graded_as '워크트리쓰기' 'base64 -d 는 쓰기다'            -- openssl base64 -d -A -in /tmp/x
+graded_as '워크트리쓰기' '-in 값이 없는 base64 는 쓰기다' -- openssl base64 -A -in
 
 # 붙여 쓴 출력 옵션. 이 표의 여러 행이 공백으로 구분된 리터럴만 맞춰, 붙여 쓴
 # 철자가 전부 `읽기` 로 떨어졌다. 방향이 나쁜 쪽이다 — 쓰기를 읽기로 세탁하면

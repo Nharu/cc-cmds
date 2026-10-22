@@ -3323,24 +3323,47 @@ surface_of_openssl() {
   # strength of its name alone would let `openssl rand -out secrets.bin 32`
   # through as one.
   #
-  # THIS ROW KEEPS THE LITERAL MATCH AND DOES NOT USE `gate_argv_has_opt`.
-  # Nothing is lost by staying literal: openssl spells its writer flag as
-  # `-out <file>` and accepts no attached form, so there is no attached spelling
-  # here to miss.
+  # The writer flags come in four spellings, and every one of them writes.
+  # LibreSSL takes only `-out <file>`, but OpenSSL 3 and later — the bare
+  # `openssl` on a Linux runner, and Homebrew's on macOS — also take `--out`,
+  # and both with the value attached as `-out=<file>` / `--out=<file>`. The
+  # same holds for `-keyout`. So an argument that IS one of the four names, or
+  # STARTS WITH one of them followed by `=`, is a write.
   #
-  # AND THE HELPER WOULD BE A TRAP HERE LATER. Its short arm is a prefix match,
+  # THIS ROW DOES NOT USE `gate_argv_has_opt`. Its short arm is a prefix match,
   # and openssl has `-outform` sharing the `-out` prefix. That option belongs to
   # `x509`, `req`, `rsa` and friends, every one of which this row already
   # refuses with `등급 미상`, so today the prefix would mis-grade nothing. The
   # day a subcommand carrying `-outform` is added to the read list below, it
-  # would — and the failure would look like an unrelated row's problem.
+  # would — and the failure would look like an unrelated row's problem. The
+  # match below is exact on the name and takes `=` as the only attachment.
   #
-  # `base64` is a read for the same reason `dgst` is: without `-out` it only
-  # prints an encoding of its `-in` file. A stage encodes the content of a seat
-  # apply this way, and `-out` still raises it above by the check below.
-  case " $* " in *" -out "*|*" -keyout "*) printf '워크트리쓰기'; return 0 ;; esac
+  # `base64` is a read in exactly the form a stage is told to use to encode the
+  # content of a seat apply — `base64 -A -in <file>`, optionally with `-e` —
+  # and nothing else. Any other argument, `-d` included, makes it a write: with
+  # `-d` it decodes chosen bytes, and an output option this row has not learned
+  # would turn that into a write of chosen content anywhere.
+  local a
+  for a in "$@"; do
+    case "$a" in
+      -out|--out|-keyout|--keyout|-out=*|--out=*|-keyout=*|--keyout=*)
+        printf '워크트리쓰기'; return 0 ;;
+    esac
+  done
+  if [ "${1:-}" = base64 ]; then
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -A|-e) shift ;;
+        -in) [ "$#" -ge 2 ] || { printf '워크트리쓰기'; return 0; }; shift 2 ;;
+        *) printf '워크트리쓰기'; return 0 ;;
+      esac
+    done
+    printf '읽기'
+    return 0
+  fi
   case "${1:-}" in
-    rand|dgst|sha256|sha1|base64|version|list|help) printf '읽기' ;;
+    rand|dgst|sha256|sha1|version|list|help) printf '읽기' ;;
     '') printf '읽기' ;;
     *) printf '등급 미상' ;;
   esac
