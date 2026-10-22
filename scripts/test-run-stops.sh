@@ -256,12 +256,13 @@ row stage-result '세그먼트=s1' '스테이지=s1' '종류=implement' '실행 
 row segment 'id=s1' '상태=park'
 shalt 's1#1' gate-unanswerable
 shalt 'ghost#1' gate-unanswerable
-printf '답\n' > "$RD/halt/shift/s1#1.md.answer.md"
+printf '**분류**: freeze-mismatch\n' > "$RD/halt/shift/s1#1.md.answer.md"
 out=$(stops)
 has "shift halt: an unanswered record is an unbound gate-unanswerable" "$out" "$(ev 'halt/gate-unanswerable/implement' 비의도 - '원인 셀 미결합')"
 has "shift halt: a segment with no stage folds the kind" "$out" "$(ev 'halt/gate-unanswerable/미분류' 비의도 - '원인 셀 미결합')"
 hasnt "shift halt: the record explains its segment's park" "$out" "segment/park"
-check "shift halt: the seat's answer beside a record is no event" "$(printf '%s\n' "$out" | grep -c '^halt/')" "2"
+hasnt "shift halt: the seat's answer beside a record is no event" "$out" "freeze-mismatch"
+check "shift halt: one line per unanswered record" "$(printf '%s\n' "$out" | grep -c '^halt/')" "2"
 row '중단 답' "중단 기록=$RD/halt/shift/s1#1.md" '답=재시도'
 row '중단 답' "중단 기록=$RD/halt/shift/ghost#1.md" '답=세그먼트 park'
 check "shift halt: an answered record is no event" "$(stops | grep -c '^halt/')" "0"
