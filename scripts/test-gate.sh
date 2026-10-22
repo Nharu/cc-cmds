@@ -41257,7 +41257,7 @@ check "95b: TS4 정산 act 는 중단 답 줄 밖의 argv 를 exit 2 로 거절�
   "2|2|0|열림"
 
 # TS6 — 사이드카의 예시 줄이 게이트 파서의 문법 그대로다.
-lsr95b_ex=$( { grep -E '^- `반영 확인` — 검사 sha256 ' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md" || true; } | head -1)
+lsr95b_ex=$(grep -m 1 -E '^- `반영 확인` — 검사 sha256 ' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md" || true)
 check "95b: TS6 사이드카의 예시 줄을 게이트 파서가 읽는다" \
   "$(LSR95B_EX=$lsr95b_ex lsr93_in "$lsr_root/ts1/ledger.md" eval 'gate_halt_settle_line_parse "$LSR95B_EX" | tr "\t" "|"' 2>/dev/null)" \
   "/Users/me/repo/docs/feature.md|0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0|재설계 필요"
