@@ -9179,7 +9179,7 @@ $(sed 's/#.*//' "$sib")"
   # tree every run loads is a MERGE, and that is what the permission cutpoint
   # governs. So the assertions below are that the two mechanisms still have the
   # shape this exception was registered against, not that the files are covered.
-  local orch_ex=0 gate_file hook_file es_file n_all n_rules n_rec
+  local orch_ex=0 gate_file hook_file es_file n_all
   gate_file="$ORCH_DIR/gate.sh"
   hook_file="$(dirname "$ORCH_DIR")/hooks/gate-pretool.sh"
   es_file="$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh"
@@ -9196,6 +9196,21 @@ $(sed 's/#.*//' "$sib")"
     printf 'FAIL 게이트 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$gate_file"
     orch_ex=$((orch_ex + 1))
   fi
+  self_check_surface_mentions "$hook_file" "$es_file" || orch_ex=$((orch_ex + $?))
+  fails=$((fails + orch_ex))
+
+  if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
+  printf 'self-check: %s FAIL\n' "$fails"; return 1
+}
+
+self_check_surface_mentions() {
+  # self_check_surface_mentions <hook file> <classifier file> — the self-check's
+  # assertions on where the orchestrator is mentioned in the hook and the
+  # enforcement-surface classifier. Prints one `ok`/`FAIL` line per assertion
+  # and returns the number of FAIL lines. A function of its own so a test can
+  # point it at a mutated pair without running the whole self-check once per
+  # mutation.
+  local hook_file="$1" es_file="$2" orch_ex=0 n_all n_rules n_rec
   if [ -f "$hook_file" ] && [ -f "$es_file" ]; then
     # Every mention of the orchestrator in the hook's deny list must BE the
     # rule-catalog arm. A count comparison rather than a pattern match: it fails
@@ -9253,10 +9268,7 @@ $(sed 's/#.*//' "$sib")"
     printf 'FAIL 훅 파일이나 분류기 파일이 없어 등재된 예외를 확인할 수 없다: %s %s\n' "$hook_file" "$es_file"
     orch_ex=$((orch_ex + 1))
   fi
-  fails=$((fails + orch_ex))
-
-  if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
-  printf 'self-check: %s FAIL\n' "$fails"; return 1
+  return "$orch_ex"
 }
 
 # ---------------------------------------------------------------------------
