@@ -41210,6 +41210,86 @@ lsr93_in "$lsr_root/im3/ledger.md" gate_append '베이스 판정' '세그먼트=
 check "95b: 다음 이 머지 로 돌아와도 마지막 cycle 뒤 충돌 판정이 있으면 구현 틀 운반은 exit 19 다" \
   "$(lsr95b_frame im3 머지 "$lsr95b_p")" 19
 
+# 구현 — 사이클 상한(cycle 행 2개)에 이른 세그먼트. 운반 act 는 동사를 끝까지 지나며,
+# 사이클 예산 거절은 운반 검사 뒤에 선다. 지시 줄 파견과 재구현의 정지는 19 로 재부착에
+# 가고, 새 세션으로 갈 평범한 구현 운반만 예산 거절(3)을 받는다.
+lsr95b_cfx() {
+  # lsr95b_cfx <이름> <스텝> <P1> [<행 종류> <필드…>] — 사이클 1·2 의 cycle 행 둘을 든
+  # S3 와, 인자가 더 있으면 그 뒤의 행 하나, 그리고 그 뒤에 멈춘 구현 시도와 그 기록의
+  # 답. 답 줄을 낸다.
+  local l n="$1" st="$2" p1="$3" c
+  shift 3
+  l=$(lsr75_new "$n")
+  lsr93_in "$l" gate_append 'segment' 'id=S3' '상태=실행중' '선언 파일 집합=`a.txt`, `b/c.sh`' >/dev/null 2>&1
+  for c in 1 2; do
+    lsr93_in "$l" gate_append 'cycle' '세그먼트=S3' "사이클=$c" 'P0=0' "P1=$p1" \
+      "리포트 경로=${l%/*}/review-S3-$c.md" >/dev/null 2>&1
+  done
+  [ "$#" -eq 0 ] || lsr93_in "$l" gate_append "$@" >/dev/null 2>&1
+  lsr93_park "$l" S3 1 "$lsr93_sid" "$st" implement
+  lsr93_ans "$l" S3 "${l%/*}/halt/S3#1.md" implement-unattended 적용
+}
+lsr95b_act() {
+  # lsr95b_act <이름> <답 줄> <프롬프트> — 키 S3 의 구현 운반 act 를 동사 그대로 지난
+  # 「rc|원장 그대로」. 게이트의 경고는 원장 옆 act.err 에 남는다.
+  local l="$lsr_root/$1/ledger.md" sha rc
+  sha=$(lsr_sha "$l")
+  rc=$(LSR93_LN=$2 LSR93_P=$3 LSR93_DL=1900000000 LSR93_BENV=$lsr93_BG LSR93_FENV=$lsr93_FG lsr93_in "$l" eval '
+    GATE_RESUME=""; GATE_FROM_DECLARATION=""; GATE_RECOVERY=""; GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
+    GATE_EMIT_DIGEST_TO=""; GATE_SHIFT_HALT_SITE=""; GATE_SHIFT_HALT_WRITING=""; GATE_ADMIT=""
+    GATE_REACH=""; GATE_DESTRUCTIVE=0; GATE_SETTLED_SEGMENTS=""; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+    GATE_TRIGGER=""; GATE_TRIGGER_SEEN=""; GATE_TRIGGER_REASON=""
+    GATE_CARRY_ANSWER=$LSR93_LN; r=0
+    ( gate_verb_act act skill infra S3 커밋 워크트리쓰기 "$(gate_snapshot_digest)" "운반 시험" "" \
+        implement -p "$LSR93_P" ) >/dev/null 2>"$RUN_DIR/act.err" || r=$?
+    printf %s "$r"' 2>/dev/null)
+  printf '%s|%s' "$rc" "$( [ "$(lsr_sha "$l")" = "$sha" ] && printf same || printf changed)"
+}
+lsr95b_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh')"
+lsr95b_ln=$(lsr95b_cfx ic1 'Step 0 베이스 해소 — 질문' 0 '베이스 판정' '세그먼트=S3' '판정=충돌' '충돌 파일=a.txt' '부류=릴리스 메타')
+check "95b: 상한에 이른 세그먼트의 베이스 해소 정지 운반 act 는 예산 거절이 아니라 exit 19·행 없음이다" \
+  "$(lsr95b_act ic1 "$lsr95b_ln" "$lsr95b_p")" "19|same"
+case "$(cat "$lsr_root/ic1/act.err" 2>/dev/null)" in
+  *"사이클 예산이 소진됐습니다"*) bad "95b: 상한의 베이스 해소 정지 운반이 사이클 예산 거절을 냈다" ;;
+  *"베이스 해소나 CI 수정 지시 줄로 파견된 구현입니다"*) ok "95b: 상한의 베이스 해소 정지 운반은 지시 줄 경고로 재부착에 보낸다" ;;
+  *) bad "95b: 상한의 베이스 해소 정지 운반의 경고가 없다 — $(cat "$lsr_root/ic1/act.err" 2>/dev/null)" ;;
+esac
+lsr95b_ln=$(lsr95b_cfx ic2 'Step 3 CI 수정 — 질문' 0 'CI 처분' '세그먼트=S3' 'head sha=abc1234' '처분=수정')
+check "95b: 상한에 이른 세그먼트의 CI 수정 정지 운반 act 는 exit 19·행 없음이다" \
+  "$(lsr95b_act ic2 "$lsr95b_ln" "$lsr95b_p")" "19|same"
+lsr95b_ln=$(lsr95b_cfx ic3 'Step 3 구현 — 질문' 1)
+check "95b: 상한에 이른 세그먼트의 평범한 구현 정지 운반 act 는 여전히 예산 거절 exit 3·행 없음이다" \
+  "$(lsr95b_act ic3 "$lsr95b_ln" "$lsr95b_p")" "3|same"
+case "$(cat "$lsr_root/ic3/act.err" 2>/dev/null)" in
+  *"사이클 예산이 소진됐습니다"*"cycle 행 2개"*"상한 2"*) ok "95b: 상한의 평범한 구현 운반의 거절은 사이클 예산 거절이다" ;;
+  *) bad "95b: 상한의 평범한 구현 운반의 거절이 사이클 예산 거절이 아니다 — $(cat "$lsr_root/ic3/act.err" 2>/dev/null)" ;;
+esac
+# 재구현 — 리드 수정과 확인 리뷰(사이클 3) 뒤 정상 완료 재수렴, 그 뒤 멈춘 재구현. 정지한
+# 시도의 행 때문에 다음 은 확인 리뷰 가 되어 지금 지은 틀에는 수정 대상 꼬리가 없다.
+lsr95b_l=$(lsr75_new ic4)
+lsr93_in "$lsr95b_l" gate_append 'segment' 'id=S3' '상태=실행중' '선언 파일 집합=`a.txt`, `b/c.sh`' >/dev/null 2>&1
+for lsr95b_c in 1 2; do
+  lsr93_in "$lsr95b_l" gate_append 'cycle' '세그먼트=S3' "사이클=$lsr95b_c" 'P0=0' 'P1=1' \
+    "리포트 경로=${lsr95b_l%/*}/review-S3-$lsr95b_c.md" >/dev/null 2>&1
+done
+lsr93_in "$lsr95b_l" gate_append stage-result "세그먼트=S3" "스테이지=S3" "종류=lead-fix" "종료 코드=0" \
+  "실행 버전=1" "세션 id=$lsr93_sid2" "계정=u1" "부모=-" "기록자=게이트" "종단 부류=정상 완료" >/dev/null 2>&1
+lsr93_in "$lsr95b_l" gate_append 'cycle' '세그먼트=S3' '사이클=3' 'P0=0' 'P1=1' \
+  "리포트 경로=${lsr95b_l%/*}/review-S3-3.md" >/dev/null 2>&1
+lsr93_in "$lsr95b_l" gate_append stage-result "세그먼트=S3" "스테이지=S3" "종류=reconverge" "종료 코드=0" \
+  "실행 버전=2" "세션 id=$lsr93_sid2" "계정=u1" "부모=-" "기록자=게이트" "종단 부류=정상 완료" >/dev/null 2>&1
+lsr93_park "$lsr95b_l" S3 3 "$lsr93_sid" 'Step 3 구현 — 질문' implement
+lsr95b_ln=$(lsr93_ans "$lsr95b_l" S3 "${lsr95b_l%/*}/halt/S3#3.md" implement-unattended 적용)
+check "95b: 재수렴 뒤 멈춘 재구현의 다음 은 확인 리뷰 다" \
+  "$(lsr93_in "$lsr95b_l" gate_segment_review_next S3 2>/dev/null)" "확인 리뷰"
+check "95b: 재수렴 뒤 멈춘 재구현의 틀 운반 act 는 exit 19·행 없음이다" \
+  "$(lsr95b_act ic4 "$lsr95b_ln" "/cc-cmds:implement-unattended $lsr93_doc $(lsr95b_q '세그먼트 S3 (사이클 3) · 선언 파일: a.txt, b/c.sh')")" "19|same"
+case "$(cat "$lsr_root/ic4/act.err" 2>/dev/null)" in
+  *"재수렴 뒤의 재구현입니다"*) ok "95b: 멈춘 재구현의 운반은 재구현 경고로 재부착에 보낸다" ;;
+  *) bad "95b: 멈춘 재구현의 운반에 재구현 경고가 없다 — $(cat "$lsr_root/ic4/act.err" 2>/dev/null)" ;;
+esac
+
 # 설계 토론·리드 단독 — 의도 칸은 매니페스트 의 의도 블록 첫 줄이다.
 lsr95b_ln=$(lsr95b_fx dd0 design-discuss-unattended 'Step 4 토론 — 질문' design)
 check "95b: 의도 칸이 다른 토론 설계 운반은 exit 19·행 없음" \

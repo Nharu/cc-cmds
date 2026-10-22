@@ -681,9 +681,12 @@ readonly GATE_EXIT_CARRY_CAP=18
 # A CARRY WHOSE (skill, stage kind, step) IS NOT IN THE RE-ENTRY TABLE, or whose
 # ledger-valued slot — a value the gate builds again from the ledger and the
 # frozen manifest, every slot of the frame but `<문서>` and `<범위>` — differs
-# from the value the gate built, or an implement stop whose `다음` the base or
-# CI layer sets, which the frame's ordinary form does not spell. The halt's
-# answer is not handed to a fresh
+# from the value the gate built, or an implement stop the frame's ordinary form
+# does not spell: one whose `다음` the base or CI layer sets, one followed by a
+# `베이스 판정 판정=충돌` or `CI 처분 처분=수정` row after the last `cycle` row,
+# or a re-implementation after a re-convergence. Over the cycle budget these
+# still end here, since the implement dispatch's budget refusal waits for the
+# carry check on a carry act. The halt's answer is not handed to a fresh
 # session, so no row is written and the shift re-attaches the halted session
 # with `--resume` as before. NOT 3: 3
 # sends the shift to `handoff 사유=중단`, and this is the one code that sends it
@@ -19329,7 +19332,15 @@ gate_carry_ledger_frame() {
   # `릴리스 메타` resolution whose renumbering merge the gate proves halted
   # after the helper moved the branch. A prompt that matches the frame and the
   # document re-attaches instead of starting a session in the ordinary mode.
-  local frame="$1" doc="$2" key="$3" prompt="$4" cr='' v want bare full opt pat p expect nx dirv=''
+  #
+  # NOR WHILE A RE-IMPLEMENTATION IS THE ATTEMPT THAT HALTED. A `정상 완료`
+  # re-convergence after the key's last `cycle` row with no lead-fix row after
+  # that row is the state in which every implement dispatch is the
+  # re-implementation — the same test `gate_implement_cycle_admissible` exempts
+  # it by. That dispatch carried a `수정 대상` tail while `다음` read `재구현`,
+  # and its own halted row has since turned `다음` to `확인 리뷰`, so the frame
+  # built now has no tail: it too re-attaches.
+  local frame="$1" doc="$2" key="$3" prompt="$4" cr='' v want bare full opt pat p expect nx dirv='' walk reim=''
   GATE_CARRY_BUILT=''
   case "$frame" in
     *'['*']'*)
@@ -19347,6 +19358,13 @@ gate_carry_ledger_frame() {
            || [ -n "$(gate_ledger_rows_after "$cr" | { grep -E '^- `베이스 판정`' || true; } \
                  | gate_rows_field_eq '세그먼트' "$key" | gate_rows_field_eq '판정' '충돌')" ]; }; then
         dirv=$nx
+      fi
+      if [ -z "$dirv" ] && [ -n "$cr" ]; then
+        walk=$(gate_segment_review_walk "$key")
+        if [ "$(gate_report_count "$walk" '마지막 뒤 재수렴')" = "정상" ] \
+           && [ "$(gate_report_count "$walk" '리드 수정 뒤')" = "0" ]; then
+          dirv=$nx; reim=1
+        fi
       fi
       [ "$nx" != 수정 ] || want=$full ;;
   esac
@@ -19375,7 +19393,9 @@ gate_carry_ledger_frame() {
     # shellcheck disable=SC2254
     case "$prompt" in
       $pat)
-        if [ -n "$dirv" ]; then
+        if [ -n "$reim" ]; then
+          warn "$key 의 멈춘 시도는 재수렴 뒤의 재구현입니다 (다음=${dirv}) — 그 파견의 수정 대상 꼬리는 이 틀에 없으니 멈춘 세션을 --resume 으로 재부착하세요"
+        elif [ -n "$dirv" ]; then
           warn "$key 의 멈춘 시도는 베이스 해소나 CI 수정 지시 줄로 파견된 구현입니다 (다음=${dirv}) — 그 줄은 이 틀에 없으니 멈춘 세션을 --resume 으로 재부착하세요"
         else
           warn "운반 act 의 원장 값 칸이 게이트가 지은 값과 다릅니다 — 「${expect}」 — 멈춘 세션을 --resume 으로 재부착하세요"
@@ -19888,6 +19908,16 @@ gate_implement_cycle_admissible() {
     fi
   fi
   return 1
+}
+
+gate_implement_budget_refuse() {
+  # gate_implement_budget_refuse <segment> — the implement dispatch's cycle
+  # budget refusal: its warning and GATE_EXIT_RULE. The counts are read again,
+  # since a carry act reaches it after the carry check.
+  gate_implement_cycle_admissible "$1" || true
+  warn "세그먼트 ${1} 의 사이클 예산이 소진됐습니다 — cycle 행 ${GATE_IMPL_CYCLE_N}개, 상한 ${GATE_IMPL_CYCLE_CAP}"
+  warn "구현을 다시 파견하지 말고 스냅숏의 review_next[] 의 「다음」 을 읽으세요 — 상한에서는 「리드 수정」 이나 끝내는 값입니다"
+  exit "$GATE_EXIT_RULE"
 }
 
 gate_halt_answer_route() {
@@ -33411,7 +33441,7 @@ gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
   shift 9
-  local argv="$*"
+  local argv="$*" impl_budget_out=''
 
   [ -n "$alias" ]    || { printf 'gate: --target is required\n' >&2; exit 2; }
   [ -n "$cutpoint" ] || { printf 'gate: --cutpoint is required\n' >&2; exit 2; }
@@ -34289,10 +34319,20 @@ gate_verb_act() {
       fi
       # A CI fix let in above is exempt from the cycle budget, on top of the
       # exemptions `gate_implement_cycle_admissible` holds.
+      #
+      # A CARRY ACT OVER THE BUDGET IS JUDGED BY THE CARRY CHECK FIRST. Its frame
+      # has no `베이스 해소:` or `CI 수정:` line, so the exemptions those lines
+      # buy are off, and the halted re-implementation's own row has ended its
+      # exemption — refusing here would turn every such stop into the shift's
+      # `중단` hand-off. The refusal waits for `gate_carry_check`: a stop it sends
+      # to `--resume` ends 19 there, and only a carry it would hand to a fresh
+      # session is refused for the budget.
       if ! gate_implement_cycle_admissible "$segment" && [ -z "$ci_ok" ]; then
-        warn "세그먼트 ${segment} 의 사이클 예산이 소진됐습니다 — cycle 행 ${GATE_IMPL_CYCLE_N}개, 상한 ${GATE_IMPL_CYCLE_CAP}"
-        warn "구현을 다시 파견하지 말고 스냅숏의 review_next[] 의 「다음」 을 읽으세요 — 상한에서는 「리드 수정」 이나 끝내는 값입니다"
-        exit "$GATE_EXIT_RULE"
+        if [ -n "$GATE_CARRY_ANSWER" ]; then
+          impl_budget_out=1
+        else
+          gate_implement_budget_refuse "$segment"
+        fi
       fi
     fi
     # `다음` HOLDS THE LEAD FIX AND THE REVIEW AFTER IT. The lead fix is
@@ -34507,6 +34547,7 @@ gate_verb_act() {
     local ha_rc=0
     gate_carry_check "$alias" "$stage_key" "${1:-}" "$(gate_skill_prompt_of "$@")" || ha_rc=$?
     [ "$ha_rc" = "0" ] || exit "$ha_rc"
+    [ -z "$impl_budget_out" ] || gate_implement_budget_refuse "$segment"
   fi
 
   # WHERE THIS ACT WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
