@@ -2014,6 +2014,17 @@ refresh_bd
 # `FX_MANIFEST` names by the time it runs.
 MBAK="$WORK/manifest.bak"; cp "$FX_MANIFEST" "$MBAK"
 
+# fx_rid_copy <from-id> <to-id> <src> <dst> — another run's copy of a fixture
+# record. Only the run-id TOKENS move: the id before `;` or `.` and the id that
+# ends a line. The records also carry `$WT` and `$WORK` paths, and those sit
+# under a `mktemp` name whose random suffix can hold the id's two characters
+# (measured on CI: `cc-gate-test.djpR2m`); a bare `s/<id>/<to>/g` rewrites that
+# path, and every gate entry on the copy then refuses the manifest as another
+# repository's.
+fx_rid_copy() {
+  sed -e "s/$1\([;.]\)/$2\1/g" -e "s/$1\$/$2/" "$3" > "$4"
+}
+
 gate snapshot --manifest "$FX_MANIFEST"
 check "구속 다이제스트가 있는 매니페스트가 통과한다" "$rc" "0"
 case "$msg" in
@@ -2899,7 +2910,7 @@ pre_cone() {
   # digest for a loose match to corrupt. What made this line dangerous was never
   # the pattern — it was reading and writing one path, which the guard above now
   # makes unreachable.
-  sed "s/$prev_run_id/$CONE_RUN_ID/g" "$FX_GRANT" > "$CONE_GRANT"
+  fx_rid_copy "$prev_run_id" "$CONE_RUN_ID" "$FX_GRANT" "$CONE_GRANT"
   {
     printf '# 파이프라인 런 보고서 — %s\n\n' "$CONE_RUN_ID"
     printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$CONE_RUN_ID"
@@ -3119,7 +3130,7 @@ pre_cone() {
     sed -e "s/run-id=$CONE_RUN_ID;/run-id=$rid;/" \
         -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $rid/" "$NM" > "$CAP_NM"
     CAP_GRANT="$WT/docs/pipeline-grant/$rid.md"
-    sed "s/$CONE_RUN_ID/$rid/g" "$CONE_GRANT" > "$CAP_GRANT"
+    fx_rid_copy "$CONE_RUN_ID" "$rid" "$CONE_GRANT" "$CAP_GRANT"
     CAP_LEDGER="$WT/docs/pipeline-run/$rid.md"
     {
       printf '# 파이프라인 런 보고서 — %s\n\n' "$rid"
@@ -4056,7 +4067,7 @@ pre_review() {
   # here the way the run directory does.
   rm -rf "$XDG_STATE_HOME/cc-cmds/run/$SH_ID"
   rm -f "$SH_LEDGER"
-  sed "s/R1/$SH_ID/g" "$WORK/manifest-clean.md" > "$SH_MANIFEST"
+  fx_rid_copy R1 "$SH_ID" "$WORK/manifest-clean.md" "$SH_MANIFEST"
   awk '/^- `target`/ { print $0 " | 리뷰 정책 상한=선머지후리뷰"; next } { print }' \
       "$SH_MANIFEST" > "$SH_MANIFEST.t" && mv "$SH_MANIFEST.t" "$SH_MANIFEST"
   sh_td=$( { grep -E '^- `target`' "$SH_MANIFEST" || true; } \
@@ -16483,8 +16494,8 @@ fx_reap
 # is the boundary working rather than a defect. Only the run id changes: the
 # manifest's two digests cover the goal, the clauses, the targets, the rule
 # settings, the pre-authorizations and the deadline — not the id.
-sed 's/R1/R2/g' "$FX_MANIFEST" > "$WT/plan2.md"
-sed 's/R1/R2/g' "$GBAK" > "$WT/docs/pipeline-grant/R2.md"
+fx_rid_copy R1 R2 "$FX_MANIFEST" "$WT/plan2.md"
+fx_rid_copy R1 R2 "$GBAK" "$WT/docs/pipeline-grant/R2.md"
 FX_MANIFEST="$WT/plan2.md"
 FX_LEDGER="$WT/docs/pipeline-run/R2.md"
 FX_GRANT="$WT/docs/pipeline-grant/R2.md"
@@ -16662,8 +16673,8 @@ b_newrun() {
   # branch and runs exactly one reap cycle. Only the id changes, the same way the
   # R2 copy above changes it.
   local rid="$1"
-  sed "s/R1/$rid/g" "$GBAK" > "$WT/docs/pipeline-grant/$rid.md"
-  sed "s/R2/$rid/g" "$B_MANIFEST_SAVE" > "$WT/plan-$rid.md"
+  fx_rid_copy R1 "$rid" "$GBAK" "$WT/docs/pipeline-grant/$rid.md"
+  fx_rid_copy R2 "$rid" "$B_MANIFEST_SAVE" "$WT/plan-$rid.md"
   FX_MANIFEST="$WT/plan-$rid.md"
   FX_LEDGER="$WT/docs/pipeline-run/$rid.md"
   FX_GRANT="$WT/docs/pipeline-grant/$rid.md"
@@ -20494,7 +20505,7 @@ NM4="$WORK/done-plan.md"
 sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE_RUN_ID/" "$NM" > "$NM4"
 DONE_GRANT="$WT/docs/pipeline-grant/$DONE_RUN_ID.md"
-sed "s/$CONE_RUN_ID/$DONE_RUN_ID/g" "$CONE_GRANT" > "$DONE_GRANT"
+fx_rid_copy "$CONE_RUN_ID" "$DONE_RUN_ID" "$CONE_GRANT" "$DONE_GRANT"
 LEDGER4="$WT/docs/pipeline-run/$DONE_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE_RUN_ID"
@@ -20890,7 +20901,7 @@ fi
 NM5="$WORK/done5-plan.md"
 sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE5_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE5_RUN_ID/" "$NM" > "$NM5"
-sed "s/$CONE_RUN_ID/$DONE5_RUN_ID/g" "$CONE_GRANT" > "$WT/docs/pipeline-grant/$DONE5_RUN_ID.md"
+fx_rid_copy "$CONE_RUN_ID" "$DONE5_RUN_ID" "$CONE_GRANT" "$WT/docs/pipeline-grant/$DONE5_RUN_ID.md"
 LEDGER5="$WT/docs/pipeline-run/$DONE5_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE5_RUN_ID"
@@ -20975,7 +20986,7 @@ fi
 NM6="$WORK/done6-plan.md"
 sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE6_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE6_RUN_ID/" "$NM" > "$NM6"
-sed "s/$CONE_RUN_ID/$DONE6_RUN_ID/g" "$CONE_GRANT" > "$WT/docs/pipeline-grant/$DONE6_RUN_ID.md"
+fx_rid_copy "$CONE_RUN_ID" "$DONE6_RUN_ID" "$CONE_GRANT" "$WT/docs/pipeline-grant/$DONE6_RUN_ID.md"
 LEDGER6="$WT/docs/pipeline-run/$DONE6_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE6_RUN_ID"
@@ -21973,7 +21984,7 @@ if [ -d "$EWT" ]; then
   done < "$NM5"
   mv "$NM5.tmp" "$NM5"
   EWT_GRANT="$WT/docs/pipeline-grant/$EWT_RUN_ID.md"
-  sed "s/$CONE_RUN_ID/$EWT_RUN_ID/g" "$CONE_GRANT" > "$EWT_GRANT"
+  fx_rid_copy "$CONE_RUN_ID" "$EWT_RUN_ID" "$CONE_GRANT" "$EWT_GRANT"
   LEDGER5="$WT/docs/pipeline-run/$EWT_RUN_ID.md"
   {
     printf '# 파이프라인 런 보고서 — %s\n\n' "$EWT_RUN_ID"
@@ -28774,7 +28785,7 @@ NM5="$WORK/shift-plan.md"
 sed -e "s/run-id=$CONE_RUN_ID;/run-id=$SHIFT_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $SHIFT_RUN_ID/" "$NM" > "$NM5"
 SHIFT_GRANT="$WT/docs/pipeline-grant/$SHIFT_RUN_ID.md"
-sed "s/$CONE_RUN_ID/$SHIFT_RUN_ID/g" "$CONE_GRANT" > "$SHIFT_GRANT"
+fx_rid_copy "$CONE_RUN_ID" "$SHIFT_RUN_ID" "$CONE_GRANT" "$SHIFT_GRANT"
 LEDGER5="$WT/docs/pipeline-run/$SHIFT_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$SHIFT_RUN_ID"
@@ -35840,7 +35851,7 @@ p57_fixture() {
   sed -e "s/run-id=$P57_PREV;/run-id=$rid;/" \
       -e "s/^\*\*런 id\*\*: $P57_PREV\$/**런 id**: $rid/" "$FX_MANIFEST" > "$P57_MAN"
   sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$P57_MAN" && rm -f "$P57_MAN.bak"
-  sed "s/R1/$rid/g" "$GBAK" > "$P57_GRANT"
+  fx_rid_copy R1 "$rid" "$GBAK" "$P57_GRANT"
   {
     printf '# 파이프라인 런 보고서 — %s\n\n' "$rid"
     printf '런 id %s · 판본 고정 픽스처\n' "$rid"
@@ -36925,7 +36936,7 @@ fi
 sed -e "s/run-id=$P59_PREV;/run-id=$P59_RID;/" \
     -e "s/^\*\*런 id\*\*: $P59_PREV\$/**런 id**: $P59_RID/" "$FX_MANIFEST" \
   | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P59_MAN"
-sed "s/R1/$P59_RID/g" "$GBAK" > "$P59_GRANT"
+fx_rid_copy R1 "$P59_RID" "$GBAK" "$P59_GRANT"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$P59_RID"
   printf '런 id %s · 페이싱 이음매 픽스처\n' "$P59_RID"
@@ -37467,7 +37478,7 @@ S71_STATE="$S71ROOT/state"
 sed -e "s/run-id=$S71_PREV;/run-id=$S71_RID;/" \
     -e "s/^\*\*런 id\*\*: $S71_PREV\$/**런 id**: $S71_RID/" "$FX_MANIFEST" \
   | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$S71_MAN"
-sed "s/R1/$S71_RID/g" "$GBAK" > "$S71_GRANT"
+fx_rid_copy R1 "$S71_RID" "$GBAK" "$S71_GRANT"
 s71_reset() {
   # A fresh ledger and state home — the twins below each start from this.
   printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · 정체 라벨 픽스처\n' "$S71_RID" "$S71_RID" > "$S71_LEDGER"
@@ -37719,7 +37730,7 @@ S70_STATE="$S70ROOT/state"
 sed -e "s/run-id=$S70_PREV;/run-id=$S70_RID;/" \
     -e "s/^\*\*런 id\*\*: $S70_PREV\$/**런 id**: $S70_RID/" "$FX_MANIFEST" \
   | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$S70_MAN"
-sed "s/R1/$S70_RID/g" "$GBAK" > "$S70_GRANT"
+fx_rid_copy R1 "$S70_RID" "$GBAK" "$S70_GRANT"
 printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · 발견 지문 픽스처\n' "$S70_RID" "$S70_RID" > "$S70_LEDGER"
 mkdir -p "$S70_STATE"
 s70_gate() {
@@ -38891,7 +38902,7 @@ P69_CONF="$P69ROOT/metrics-filing"
 sed -e "s/run-id=$P69_PREV;/run-id=$P69_RID;/" \
     -e "s/^\*\*런 id\*\*: $P69_PREV\$/**런 id**: $P69_RID/" "$FX_MANIFEST" \
   | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P69_MAN"
-sed "s/R1/$P69_RID/g" "$GBAK" > "$P69_GRANT"
+fx_rid_copy R1 "$P69_RID" "$GBAK" "$P69_GRANT"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$P69_RID"
   printf '런 id %s · 계측 필링 관문 픽스처\n' "$P69_RID"
@@ -44275,8 +44286,8 @@ rm -f "$SMAN85"
 rm -f "$LEDGER85" "$WT/$DOC85"
 
 # ---------------------------------------------------------------------------
-# 96. 런을 넘는 이월 — 입양과 재킥오프 연쇄가 앞선 런의 이월된 중단 답을 들이고, 운반 act 만 그 답을 낸다
-# --- section: 96 | group: base | covers: act, plan, snapshot, halt-answer, gate_adoption_halt_source, gate_chain_halt_import, gate_key_imported_deferred_answer, gate_carry_check, gate_carry_scope_ok, gate_carry_defer_row, gate_carry_import_row, gate_chain_source_key, gate_halt_answer_route, cc_unanswered_halts | anchors: 96: 이월 행이 없는 답은 연쇄가 들이지 않는다, 96: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다, 96: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다, 96: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다, 96: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다, 96: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다, 96: 그 파견은 시동 대역을 부르지 않는다, 96: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다, 96: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다, 96: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다, 96: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다, 96: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다, 96: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다, 96: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다, 96: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다, 96: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다, 96: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다 ---
+# 95d. 런을 넘는 이월 — 입양과 재킥오프 연쇄가 앞선 런의 이월된 중단 답을 들이고, 운반 act 만 그 답을 낸다
+# --- section: 95d | group: base | covers: act, plan, snapshot, halt-answer, gate_adoption_halt_source, gate_chain_halt_import, gate_key_imported_deferred_answer, gate_carry_check, gate_carry_scope_ok, gate_carry_defer_row, gate_carry_import_row, gate_chain_source_key, gate_halt_answer_route, cc_unanswered_halts | anchors: 95d: 이월 행이 없는 답은 연쇄가 들이지 않는다, 95d: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다, 95d: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다, 95d: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다, 95d: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다, 95d: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다, 95d: 그 파견은 시동 대역을 부르지 않는다, 95d: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다, 95d: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다, 95d: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다, 95d: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다, 95d: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다, 95d: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다, 95d: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다, 95d: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다 ---
 #
 # 앞선 런이 마감 안에 자리를 찾지 못해 다음 런으로 넘긴 사람의 답(`이월` 행이 이름
 # 짓는 `중단 답`)은 다음 런이 사본으로 들여 그 런의 운반 act 로 낸다. 두 길이 있다.
@@ -44384,79 +44395,79 @@ run96 "$SRC96C"
 src96 "$SRC96C"
 au15_dispatch "$SRC96C" "$STUB_AU_PARK" audit "$au96"
 au15_wait "$SRC96C" A1
-check "96 픽스처: 출처 런의 감사가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class "$SRC96C" A1 audit)" "의도된 park"
+check "95d 픽스처: 출처 런의 감사가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class "$SRC96C" A1 audit)" "의도된 park"
 ans96 "$SRC96C" A1 "$RDS96C/halt/A1#1.md" 'adopt as a requirement'
 rcp96c="/cc-cmds:design-reconverge $WT/$DOC96 감사 종합 요구 $RDS96C/halt/A1#1.md"
 au15_dispatch "$SRC96C" "$STUB96_RCPARK" reconverge "$rcp96c"
 au15_wait "$SRC96C" A1
-check "96 픽스처: 출처 런의 재수렴이 적용 확인에서 의도된 park 다 (아래가 공허하지 않다)" \
+check "95d 픽스처: 출처 런의 재수렴이 적용 확인에서 의도된 park 다 (아래가 공허하지 않다)" \
   "$(au15_class "$SRC96C" A1 reconverge)" "의도된 park"
 ans96 "$SRC96C" A1 "$RDS96C/halt/A1#2.md" 적용
-check "96 픽스처: 재수렴 기록에 사람의 답이 선다" "$rc" "0"
+check "95d 픽스처: 재수렴 기록에 사람의 답이 선다" "$rc" "0"
 ln96c=$(ln96 "$SRC96C")
 
 run96 R96C "$(prov96 "$SRC96C")"
 RD96C="$STATE_LATE/cc-cmds/run/R96C"
 gateL plan --manifest "$WORK/plan-R96C.md" --kind skill --target infra --segment - --cutpoint 커밋 \
       --surface 워크트리쓰기 -- audit -p "$au96"
-check "96: 이월 행이 없는 답은 연쇄가 들이지 않는다" "$rc/$(carried96 R96C)" "0/0"
+check "95d: 이월 행이 없는 답은 연쇄가 들이지 않는다" "$rc/$(carried96 R96C)" "0/0"
 
 defer96 "$SRC96C" - A1 "$ln96c" '마감 경과' >/dev/null
-check "96 픽스처: 출처 원장에 그 답을 이름 짓는 이월 행이 하나 선다" "$(deferred96 "$SRC96C" "$ln96c")" "1"
+check "95d 픽스처: 출처 원장에 그 답을 이름 짓는 이월 행이 하나 선다" "$(deferred96 "$SRC96C" "$ln96c")" "1"
 gateL plan --manifest "$WORK/plan-R96C.md" --kind skill --target infra --segment - --cutpoint 커밋 \
       --surface 워크트리쓰기 -- audit -p "$au96"
 case "$rc/$msg" in
   3/*"act 는 이어받은 런 $SRC96C 원장 $ln96c 번째 줄의 이월 중단 답(선택지 적용)을 이 런으로 들여오고 이 파견을 거절합니다"*)
-    ok "96: 연쇄 계획 미리보기는 들일 답을 이름 대고 exit 3 이다" ;;
-  *) bad "96: 연쇄 계획 미리보기는 들일 답을 이름 대고 exit 3 이다" "$rc/$msg" ;;
+    ok "95d: 연쇄 계획 미리보기는 들일 답을 이름 대고 exit 3 이다" ;;
+  *) bad "95d: 연쇄 계획 미리보기는 들일 답을 이름 대고 exit 3 이다" "$rc/$msg" ;;
 esac
-check "96: 미리보기는 답을 들이지 않는다" "$(carried96 R96C)" "0"
+check "95d: 미리보기는 답을 들이지 않는다" "$(carried96 R96C)" "0"
 au15_dispatch R96C "$STUB_AU_AUDIT" audit "$au96"
-check "96: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다" "$rc/$(carried96 R96C)" "3/1"
-check "96: 그 파견은 시동 대역을 부르지 않는다" "$(called96 R96C)" "안불림"
+check "95d: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다" "$rc/$(carried96 R96C)" "3/1"
+check "95d: 그 파견은 시동 대역을 부르지 않는다" "$(called96 R96C)" "안불림"
 lc96=$(ln96 R96C)
 case "$out" in
-  *"원장 $lc96 번째 줄로 들여왔습니다"*"--carry-answer $lc96 로 내세요"*) ok "96: 그 거절은 들인 줄을 --carry-answer 로 내라고 이름 댄다" ;;
-  *) bad "96: 그 거절은 들인 줄을 --carry-answer 로 내라고 이름 댄다" "$out" ;;
+  *"원장 $lc96 번째 줄로 들여왔습니다"*"--carry-answer $lc96 로 내세요"*) ok "95d: 그 거절은 들인 줄을 --carry-answer 로 내라고 이름 댄다" ;;
+  *) bad "95d: 그 거절은 들인 줄을 --carry-answer 로 내라고 이름 댄다" "$out" ;;
 esac
 row96=$(sed -n "${lc96}p" "$LED96/R96C.md")
 cp96c="$RD96C/halt/A1#chained-$SRC96C.md"
-check "96: 들인 행은 키·출처 런·출처 기록·사본을 싣는다" \
+check "95d: 들인 행은 키·출처 런·출처 기록·사본을 싣는다" \
   "$(rf96 "$row96" '세그먼트')|$(rf96 "$row96" '출처 런')|$(rf96 "$row96" '출처 기록')|$(rf96 "$row96" '중단 기록')|$(rf96 "$row96" '선택지')" \
   "A1|$SRC96C|$RDS96C/halt/A1#2.md|$cp96c|적용"
-check "96: 기록 사본은 출처 행의 다이제스트와 같다" \
+check "95d: 기록 사본은 출처 행의 다이제스트와 같다" \
   "$(shasum -a 256 "$cp96c" 2>/dev/null | cut -d' ' -f1)" "$(rf96 "$row96" '기록 다이제스트')"
 case "$(rf96 "$row96" '근거')" in
-  "연쇄 이월(출처 런 $SRC96C 원장 $ln96c 번째 줄) — 사람이 적용 를 골랐다") ok "96: 들인 행의 근거는 연쇄 이월과 출처 줄을 싣는다" ;;
-  *) bad "96: 들인 행의 근거는 연쇄 이월과 출처 줄을 싣는다" "$row96" ;;
+  "연쇄 이월(출처 런 $SRC96C 원장 $ln96c 번째 줄) — 사람이 적용 를 골랐다") ok "95d: 들인 행의 근거는 연쇄 이월과 출처 줄을 싣는다" ;;
+  *) bad "95d: 들인 행의 근거는 연쇄 이월과 출처 줄을 싣는다" "$row96" ;;
 esac
-check "96: 들인 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다" "$(halts96 R96C)" "A1:적용:$SRC96C"
-check "96: 들인 연쇄 답의 route 는 출처 런의 세션으로 재부착이고 거절 사유가 없다" "$(route96 R96C)" "재부착|"
+check "95d: 들인 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다" "$(halts96 R96C)" "A1:적용:$SRC96C"
+check "95d: 들인 연쇄 답의 route 는 출처 런의 세션으로 재부착이고 거절 사유가 없다" "$(route96 R96C)" "재부착|"
 
 au15_dispatch R96C "$STUB_AU_AUDIT" audit "$au96"
-check "96: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다" "$rc/$(carried96 R96C)/$(called96 R96C)" "3/1/안불림"
+check "95d: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다" "$rc/$(carried96 R96C)/$(called96 R96C)" "3/1/안불림"
 case "$out" in
   *"앞선 런이 다음 런으로 넘긴 중단 답(원장 $lc96 번째 줄)이 아직 쓰이지 않고 있습니다"*"--carry-answer $lc96 로 내세요"*)
-    ok "96: 그 거절은 쓰이지 않은 들인 답의 줄을 이름 댄다" ;;
-  *) bad "96: 그 거절은 쓰이지 않은 들인 답의 줄을 이름 댄다" "$out" ;;
+    ok "95d: 그 거절은 쓰이지 않은 들인 답의 줄을 이름 댄다" ;;
+  *) bad "95d: 그 거절은 쓰이지 않은 들인 답의 줄을 이름 댄다" "$out" ;;
 esac
 
 cp "$RDS96C/halt/A1#2.md" "$RDS96C/halt/A1#2.md.keep"
 printf '\n' >> "$RDS96C/halt/A1#2.md"
 au15_dispatch R96C "$STUB_AU_RECONV" reconverge "$rcp96c" --carry-answer "$lc96"
-check "96: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다" "$rc" "3"
+check "95d: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다" "$rc" "3"
 case "$out" in
-  *"출처 런 $SRC96C 의 기록이 사본과 같지 않거나 읽을 수 없습니다"*) ok "96: 그 거절은 출처 런의 기록을 든다" ;;
-  *) bad "96: 그 거절은 출처 런의 기록을 든다" "$out" ;;
+  *"출처 런 $SRC96C 의 기록이 사본과 같지 않거나 읽을 수 없습니다"*) ok "95d: 그 거절은 출처 런의 기록을 든다" ;;
+  *) bad "95d: 그 거절은 출처 런의 기록을 든다" "$out" ;;
 esac
 mv "$RDS96C/halt/A1#2.md.keep" "$RDS96C/halt/A1#2.md"
 au15_dispatch R96C "$STUB_AU_RECONV" reconverge "$rcp96c" --carry-answer "$lc96"
-check "96: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다" "$rc" "0"
+check "95d: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다" "$rc" "0"
 au15_wait R96C A1
-check "96: 그 재수렴 행이 답 운반 줄을 싣고 정상 완료다" \
+check "95d: 그 재수렴 행이 답 운반 줄을 싣고 정상 완료다" \
   "$(au15_rows R96C '| 세그먼트=- | 스테이지=A1 | 종류=reconverge |' | tail -1 | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')|$(au15_class R96C A1 reconverge)" \
   "$lc96|정상 완료"
-check "96: 운반된 들인 답은 answered_halts 에서 빠진다" "$(halts96 R96C)" ""
+check "95d: 운반된 들인 답은 answered_halts 에서 빠진다" "$(halts96 R96C)" ""
 
 # 연쇄 2 — 감사의 종합 질문에 사람이 기각으로 답했고 그 운반이 이월됐다. 후속 런은
 # 좌석의 자동 재킥오프가 쓰는 일곱 필드 출처 행을 든다.
@@ -44468,31 +44479,31 @@ au15_dispatch "$SRC96D" "$STUB_AU_PARK" audit "$au96"
 au15_wait "$SRC96D" A1
 printf '%s\n' '사람이 덧붙인 말: 기각 사유는 범위 밖이다' > "$RDS96D/halt/A1#1.answer.md"
 ans96 "$SRC96D" A1 "$RDS96D/halt/A1#1.md" reject "첨부=$RDS96D/halt/A1#1.answer.md"
-check "96 픽스처: 두 번째 출처 런의 감사 기록에 첨부를 든 사람의 답이 선다" "$rc/$(au15_class "$SRC96D" A1 audit)/$(unans96 "$SRC96D")" "0/의도된 park/0"
+check "95d 픽스처: 두 번째 출처 런의 감사 기록에 첨부를 든 사람의 답이 선다" "$rc/$(au15_class "$SRC96D" A1 audit)/$(unans96 "$SRC96D")" "0/의도된 park/0"
 ln96d=$(ln96 "$SRC96D")
 defer96 "$SRC96D" - A1 "$ln96d" '묶인 판정: PARK deadline ready_at 2026-03-01T00:00:00Z · 새 판정: PARK deadline ready_at 2026-03-01T00:00:00Z' >/dev/null
 run96 R96D "$(prov96 "$SRC96D") | 좌석 연쇄=1 | 뿌리 런=$SRC96D | 원인=마감"
 au15_dispatch R96D "$STUB_AU_AUDIT" audit "$au96"
-check "96: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다" "$rc/$(carried96 R96D)/$(called96 R96D)" "3/1/안불림"
+check "95d: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다" "$rc/$(carried96 R96D)/$(called96 R96D)" "3/1/안불림"
 ld96=$(ln96 R96D)
-check "96: 첨부 사본은 기록 사본 옆의 <기록 사본>.answer.md 이다" \
+check "95d: 첨부 사본은 기록 사본 옆의 <기록 사본>.answer.md 이다" \
   "$(rf96 "$(sed -n "${ld96}p" "$LED96/R96D.md")" '첨부')" "$STATE_LATE/cc-cmds/run/R96D/halt/A1#chained-$SRC96D.answer.md"
-check "96: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다" "$(unans96 R96D)" "0"
-check "96: 감사 답을 들인 연쇄 키의 route 도 재부착이고 거절 사유가 없다" "$(route96 R96D)" "재부착|"
+check "95d: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다" "$(unans96 R96D)" "0"
+check "95d: 감사 답을 들인 연쇄 키의 route 도 재부착이고 거절 사유가 없다" "$(route96 R96D)" "재부착|"
 au15_dispatch R96D "$STUB_AU_AUDIT" audit "$au96"
-check "96: 7필드 연쇄에서도 들인 답이 있는 키의 일반 파견은 exit 3 이다" "$rc/$(carried96 R96D)/$(called96 R96D)" "3/1/안불림"
+check "95d: 7필드 연쇄에서도 들인 답이 있는 키의 일반 파견은 exit 3 이다" "$rc/$(carried96 R96D)/$(called96 R96D)" "3/1/안불림"
 cp "$RDS96D/halt/A1#1.md" "$RDS96D/halt/A1#1.md.keep"
 printf '\n' >> "$RDS96D/halt/A1#1.md"
 au15_dispatch R96D "$STUB_AU_AUDIT" audit "$au96" --carry-answer "$ld96"
-check "96: 출처 기록 다이제스트가 다르면 감사 답의 운반 act 도 exit 3 이다" "$rc/$(called96 R96D)" "3/안불림"
+check "95d: 출처 기록 다이제스트가 다르면 감사 답의 운반 act 도 exit 3 이다" "$rc/$(called96 R96D)" "3/안불림"
 mv "$RDS96D/halt/A1#1.md.keep" "$RDS96D/halt/A1#1.md"
 au15_dispatch R96D "$STUB_AU_AUDIT" audit "$au96" --carry-answer "$ld96"
-check "96: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다" "$rc" "0"
+check "95d: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다" "$rc" "0"
 au15_wait R96D A1
-check "96: 그 감사 행이 답 운반 줄을 싣고 대역이 불렸다" \
+check "95d: 그 감사 행이 답 운반 줄을 싣고 대역이 불렸다" \
   "$(au15_rows R96D '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | tail -1 | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')|$(called96 R96D)" \
   "$ld96|불림"
-check "96: 운반된 감사 답은 answered_halts 에서 빠진다" "$(halts96 R96D)" ""
+check "95d: 운반된 감사 답은 answered_halts 에서 빠진다" "$(halts96 R96D)" ""
 
 # 연쇄 3 — 두 번 이월된 답. 사람이 출처 런에서 답했고, 중간 런은 첫 감사 파견에서 그
 # 답을 들였지만 그 파견을 거절한 채 마감 안에 자리를 찾지 못해 다시 이월했다. 그래서
@@ -44512,33 +44523,33 @@ src96 R96E
 au15_dispatch R96E "$STUB_AU_AUDIT" audit "$au96"
 le96=$(ln96 R96E)
 defer96 R96E - A1 "$le96" '마감 경과' >/dev/null
-check "96 픽스처: 중간 런은 답을 들여 다시 이월했고 그 키의 stage-result 행이 없다" \
+check "95d 픽스처: 중간 런은 답을 들여 다시 이월했고 그 키의 stage-result 행이 없다" \
   "$rc/$(carried96 R96E)/$(deferred96 R96E "$le96")/$( { grep -F '`stage-result`' "$LED96/R96E.md" 2>/dev/null || true; } | { grep -cF '| 스테이지=A1 |' || true; } | tr -d ' ')" \
   "3/1/1/0"
 run96 R96G "$(prov96 R96E)"
 au15_dispatch R96G "$STUB_AU_AUDIT" audit "$au96"
-check "96: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다" "$rc/$(carried96 R96G)/$(called96 R96G)" "3/1/안불림"
+check "95d: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다" "$rc/$(carried96 R96G)/$(called96 R96G)" "3/1/안불림"
 lg96=$(ln96 R96G)
 rowg96=$(sed -n "${lg96}p" "$LED96/R96G.md")
-check "96: 두 번 이월된 행의 출처는 사람이 답한 런이고 경유 기록은 중간 런의 사본이다" \
+check "95d: 두 번 이월된 행의 출처는 사람이 답한 런이고 경유 기록은 중간 런의 사본이다" \
   "$(rf96 "$rowg96" '출처 런')|$(rf96 "$rowg96" '출처 기록')|$(rf96 "$rowg96" '경유 기록')" \
   "$SRC96E|$RDS96E/halt/A1#1.md|$STATE_LATE/cc-cmds/run/R96E/halt/A1#chained-$SRC96E.md"
-check "96: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다" "$(route96 R96G)" "재부착|"
+check "95d: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다" "$(route96 R96G)" "재부착|"
 run96 R96H "$(prov96 R96E)"
 au15_dispatch R96H "$STUB_AU_AUDIT" audit "$au96"
-check "96: 한 후속 런이 들인 중간 런의 사본은 다른 후속 런이 다시 들이지 않는다" "$rc/$(carried96 R96H)" "0/0"
+check "95d: 한 후속 런이 들인 중간 런의 사본은 다른 후속 런이 다시 들이지 않는다" "$rc/$(carried96 R96H)" "0/0"
 au15_wait R96H A1
 au15_dispatch R96G "$STUB_AU_AUDIT" audit "$au96" --carry-answer "$lg96"
-check "96: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다" "$rc" "0"
+check "95d: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다" "$rc" "0"
 au15_wait R96G A1
-check "96: 그 감사 행이 두 번 이월된 답의 운반 줄을 싣고 대역이 불렸다" \
+check "95d: 그 감사 행이 두 번 이월된 답의 운반 줄을 싣고 대역이 불렸다" \
   "$(au15_rows R96G '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | tail -1 | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')|$(called96 R96G)" \
   "$lg96|불림"
 
 # 대조 — 출처 행이 없는 매니페스트는 앞선 런을 모르므로 아무것도 들이지 않는다.
 run96 R96N
 au15_dispatch R96N "$STUB_AU_AUDIT" audit "$au96"
-check "96: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다" "$rc/$(carried96 R96N)" "0/0"
+check "95d: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다" "$rc/$(carried96 R96N)" "0/0"
 au15_wait R96N A1
 
 # 입양 — 앞선 런이 S9 로 부른 세그먼트를 이 런이 SA 로 입양한다. 구현이 구속 티어
@@ -44582,26 +44593,26 @@ adopt96() {  # adopt96 <run id> — 입양 행을 든 런을 만들고 SA 를 �
   g15_plan act "$1" SA 상태=계획됨 "워크트리=$WT96A"
 }
 adopt96 R96B
-check "96: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다" "$rc/$(carried96 R96B)" "0/0"
+check "95d: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다" "$rc/$(carried96 R96B)" "0/0"
 case "$msg" in
-  *"출처 런 $SRC96A 의 열린 중단 답"*"이어지지 않습니다"*"이월 행도 없습니다"*) ok "96: 그 경고는 이월 행이 없다는 것을 든다" ;;
-  *) bad "96: 그 경고는 이월 행이 없다는 것을 든다" "$msg" ;;
+  *"출처 런 $SRC96A 의 열린 중단 답"*"이어지지 않습니다"*"이월 행도 없습니다"*) ok "95d: 그 경고는 이월 행이 없다는 것을 든다" ;;
+  *) bad "95d: 그 경고는 이월 행이 없다는 것을 든다" "$msg" ;;
 esac
 defer96 "$SRC96A" S9 S9 "$ln96a" '마감 경과' >/dev/null
-check "96 픽스처: 입양 출처 원장에 이월 행이 하나 선다" "$(deferred96 "$SRC96A" "$ln96a")" "1"
+check "95d 픽스처: 입양 출처 원장에 이월 행이 하나 선다" "$(deferred96 "$SRC96A" "$ln96a")" "1"
 adopt96 R96A
-check "96: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다" "$rc/$(carried96 R96A)" "0/1"
+check "95d: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다" "$rc/$(carried96 R96A)" "0/1"
 la96=$(ln96 R96A)
 rowa96=$(sed -n "${la96}p" "$LED96/R96A.md")
-check "96: 입양으로 들인 행은 이 런의 세그먼트와 출처를 싣는다" \
+check "95d: 입양으로 들인 행은 이 런의 세그먼트와 출처를 싣는다" \
   "$(rf96 "$rowa96" '세그먼트')|$(rf96 "$rowa96" '출처 런')|$(rf96 "$rowa96" '출처 기록')|$(rf96 "$rowa96" '선택지')" \
   "SA|$SRC96A|$REC96A5|적용"
-check "96: 입양 첨부 사본은 <기록 사본>.answer.md 이고 답 없는 정지 기록으로 세지 않는다" \
+check "95d: 입양 첨부 사본은 <기록 사본>.answer.md 이고 답 없는 정지 기록으로 세지 않는다" \
   "$(rf96 "$rowa96" '첨부')|$(unans96 R96A)" "$STATE_LATE/cc-cmds/run/R96A/halt/SA#adopted-$SRC96A.answer.md|0"
-check "96: 입양으로 들인 답의 route 는 출처 런의 세션으로 재부착이고 거절 사유가 없다" "$(route96 R96A)" "재부착|"
+check "95d: 입양으로 들인 답의 route 는 출처 런의 세션으로 재부착이고 거절 사유가 없다" "$(route96 R96A)" "재부착|"
 case "$(rf96 "$rowa96" '근거')" in
-  "입양 이월(출처 런 $SRC96A 원장 $ln96a 번째 줄) — 사람이 적용을 골랐다") ok "96: 입양으로 들인 행의 근거는 입양 이월과 출처 줄을 싣는다" ;;
-  *) bad "96: 입양으로 들인 행의 근거는 입양 이월과 출처 줄을 싣는다" "$rowa96" ;;
+  "입양 이월(출처 런 $SRC96A 원장 $ln96a 번째 줄) — 사람이 적용을 골랐다") ok "95d: 입양으로 들인 행의 근거는 입양 이월과 출처 줄을 싣는다" ;;
+  *) bad "95d: 입양으로 들인 행의 근거는 입양 이월과 출처 줄을 싣는다" "$rowa96" ;;
 esac
 rcp96a="/cc-cmds:design-reconverge $WT/$DOC96A 구속 티어 이탈 $REC96A4"
 disp96a() {  # disp96a <stub> <stage kind> <prompt> [act flags…] — R96A 의 SA 파견. rc, out 을 둔다
@@ -44612,23 +44623,23 @@ disp96a() {  # disp96a <stub> <stage kind> <prompt> [act flags…] — R96A 의 
     --surface 워크트리쓰기 --snapshot-digest "$(au15_H R96A)" --rationale x "$@" -- "$k" -p "$p" 2>&1); rc=$?
 }
 disp96a "$STUB_AU_RECONV" reconverge "$rcp96a"
-check "96: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다" "$rc/$(carried96 R96A)" "3/1"
+check "95d: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다" "$rc/$(carried96 R96A)" "3/1"
 case "$out" in
-  *"SA 에는 앞선 런이 다음 런으로 넘긴 중단 답(원장 $la96 번째 줄)이 아직 쓰이지 않고 있습니다"*) ok "96: 입양 키의 그 거절도 들인 답의 줄을 이름 댄다" ;;
-  *) bad "96: 입양 키의 그 거절도 들인 답의 줄을 이름 댄다" "$out" ;;
+  *"SA 에는 앞선 런이 다음 런으로 넘긴 중단 답(원장 $la96 번째 줄)이 아직 쓰이지 않고 있습니다"*) ok "95d: 입양 키의 그 거절도 들인 답의 줄을 이름 댄다" ;;
+  *) bad "95d: 입양 키의 그 거절도 들인 답의 줄을 이름 댄다" "$out" ;;
 esac
 cp "$REC96A5" "$REC96A5.keep"
 printf '\n' >> "$REC96A5"
 disp96a "$STUB_AU_RECONV" reconverge "$rcp96a" --carry-answer "$la96"
-check "96: 출처 기록 다이제스트가 다르면 입양 운반 act 는 exit 3 이다" "$rc" "3"
+check "95d: 출처 기록 다이제스트가 다르면 입양 운반 act 는 exit 3 이다" "$rc" "3"
 mv "$REC96A5.keep" "$REC96A5"
 disp96a "$STUB_AU_RECONV" reconverge "$rcp96a" --carry-answer "$la96"
-check "96: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다" "$rc" "0"
+check "95d: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다" "$rc" "0"
 au15_wait R96A SA
-check "96: 그 재수렴 행이 답 운반 줄을 싣는다" \
+check "95d: 그 재수렴 행이 답 운반 줄을 싣는다" \
   "$( { grep -F '`stage-result`' "$LED96/R96A.md" 2>/dev/null || true; } | { grep -F '| 세그먼트=SA |' || true; } | tail -1 \
       | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')" "$la96"
-check "96: 운반된 입양 답은 answered_halts 에서 빠진다" "$(halts96 R96A)" ""
+check "95d: 운반된 입양 답은 answered_halts 에서 빠진다" "$(halts96 R96A)" ""
 
 for wt96 in "$WT-run-R96C-A1" "$WT-run-R96D-A1" "$WT-run-R96N-A1" "$WT-run-$SRC96C-A1" "$WT-run-$SRC96D-A1" \
             "$WT-run-$SRC96E-A1" "$WT-run-R96E-A1" "$WT-run-R96G-A1" "$WT-run-R96H-A1"; do
@@ -45313,7 +45324,15 @@ h87_act() {  # h87_act <세그먼트> <종류> <필드…>
   gateL act --manifest "$WORK/plan-R87.md" --kind "$k" --target infra --segment "$s" --cutpoint 커밋 \
        --surface 읽기 --snapshot-digest "$(h87_H)" --rationale x -- "$@"
 }
-head87=$(cd "$WT" && git rev-parse HEAD)
+# 세그먼트 S2·S3·S8 의 트리는 이 절이 베이스 끝에 직접 세운다. 아래 무커밋 구현
+# 한도의 판정은 세그먼트 트리가 베이스보다 앞서지 않는다는 데에 기대는데, 공유
+# 체크아웃 `$WT` 는 앞 절이 옮겨 둔 브랜치에 있을 수 있다 — 8 절은 그것을 베이스에서
+# 닿지 않는 고아 브랜치에 두고 끝나고, 그 뒤에 이 절이 돌면 앞선 커밋이 1 이 된다.
+W87="$WORK/wt87"
+( cd "$WT" && git worktree add -q --detach "$W87" refs/heads/main ) >/dev/null 2>&1
+check "87b 전제 — 세그먼트 트리가 베이스보다 앞서지 않는다" \
+  "$(cd "$W87" 2>/dev/null && git rev-list --count HEAD --not refs/heads/main refs/remotes/origin/main 2>/dev/null)" "0"
+head87=$(cd "$W87" && git rev-parse HEAD)
 rp87() {  # rp87 <파일> <P0> <P1> <몫 줄 수|-> [배정…]
   local f=$1 p0=$2 p1=$3 ns=$4 a; shift 4
   {
@@ -45333,9 +45352,9 @@ cy87() {  # cy87 <세그먼트> <사이클> <P0> <P1> <리포트>
   cy87_rp=$(CANON_BASE="$CANON_TOP" canon_put R87 "$1" "$5")
   h87_act "$1" cycle "사이클=$2" "P0=$3" "P1=$4" "리뷰 HEAD=$head87" "리포트 경로=$cy87_rp"
 }
-h87_act S2 segment 상태=실행중 "워크트리=$WT" 선행=없음 '선언 파일 집합=a.txt'
+h87_act S2 segment 상태=실행중 "워크트리=$W87" 선행=없음 '선언 파일 집합=a.txt'
 r87a=$rc
-h87_act S3 segment 상태=실행중 "워크트리=$WT" 선행=없음 '선언 파일 집합=b.txt'
+h87_act S3 segment 상태=실행중 "워크트리=$W87" 선행=없음 '선언 파일 집합=b.txt'
 check "87b: 픽스처 세그먼트 행 둘이 기록된다 (아래가 공허하지 않다)" "$r87a/$rc" "0/0"
 printf -- '- `segment` | 교대=1 | id=S4 | 상태=머지됨 | 워크트리=- | prev=x\n' >> "$L87A"
 printf -- '- `segment` | 교대=1 | id=S5 | 상태=완료 | 워크트리=- | prev=x\n' >> "$L87A"
@@ -45621,8 +45640,8 @@ doc87=$(printf '%s' "$snap87" | jq -r '.["문서 인자"]')
 sl87=""; [ "$(printf '%s' "$snap87" | jq -r '.["슬라이싱"]["분기"]')" != "선언통치" ] || sl87=" --slice S8"
 base87=$(cd "$WORK/../.." && pwd)
 rl87() { gateL review-line --manifest "$WORK/plan-R87.md" --segment "$@"; }
-printf -- '- `segment` | 교대=1 | id=S8 | 상태=계획됨 | 선언 파일 집합=`a.txt`, `b c.txt` | 선행=없음 | 워크트리=%s | 브랜치=seg/R87-S8 | prev=x\n' "$WT" >> "$L87A"
-printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$WT" >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=계획됨 | 선언 파일 집합=`a.txt`, `b c.txt` | 선행=없음 | 워크트리=%s | 브랜치=seg/R87-S8 | prev=x\n' "$W87" >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$W87" >> "$L87A"
 rl87 S8 -- --recheck /x/c1.md
 check "87b: review-line 은 마지막으로 실린 브랜치·선언 집합과 다음 사이클 리포트로 프롬프트를 낸다" "$rc|$msg" \
   "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle1.md$sl87 --declared-files \"a.txt, b c.txt\" --recheck /x/c1.md \"설계는 $doc87\""
@@ -45631,14 +45650,13 @@ check "87b: review-line 의 --no-slice 는 --slice 를 빼고 프롬프트에 �
   "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle1.md --declared-files \"a.txt, b c.txt\" \"설계는 $doc87\""
 printf -- '- `cycle` | 교대=1 | 세그먼트=S8 | 사이클=1 | P0=0 | P1=1 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/seg-R87-S8-cycle1.md | prev=x\n' "$head87" >> "$L87A"
 printf 'a.txt, b c.txt, d.txt\n' > "$WORK/declared87.S8"
-printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 선언 파일 집합=a.txt, b c.txt (전체: %s) | 워크트리=%s | prev=x\n' "$WORK/declared87.S8" "$WT" >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 선언 파일 집합=a.txt, b c.txt (전체: %s) | 워크트리=%s | prev=x\n' "$WORK/declared87.S8" "$W87" >> "$L87A"
 rl87 S8
 check "87b: review-line 은 사이클 행 뒤의 리포트 번호를 올리고 잘린 집합을 곁파일에서 읽는다" "$rc|$msg" \
   "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle2.md$sl87 --declared-files \"a.txt, b c.txt, d.txt\" \"설계는 $doc87\""
-# `-a` 가 아니라 명시적으로 담는다 — 8 절이 이 저장소를 a.txt 를 추적하지 않는 고아
-# 브랜치에 두고 끝나므로, 둘이 한 실행에 묶이면 `-a` 로는 커밋이 생기지 않아 HEAD 가
-# 사이클 행의 리뷰 HEAD 에 머물고 아래 파견이 「같은 HEAD 재리뷰」로 거절된다.
-( cd "$WT" && printf 'S8\n' >> a.txt && git add a.txt && git commit -qm s8 ) >/dev/null 2>&1
+# S8 의 트리를 사이클 행의 리뷰 HEAD 에서 한 커밋 옮긴다. 옮기지 않으면 아래 파견이
+# 「같은 HEAD 재리뷰」로 거절된다.
+( cd "$W87" && printf 'S8\n' >> a.txt && git add a.txt && git commit -qm s8 ) >/dev/null 2>&1
 rl87 S8; line87=$msg
 h87_plan S8 review "$line87" '리뷰 P1'
 check "87b: review-line 이 낸 프롬프트의 리뷰 파견은 게이트를 지난다" "$rc" "0"
@@ -45648,6 +45666,7 @@ case "$msg" in
   *"names a branch"*) ok "87b: 그 거절은 브랜치가 없다는 것을 든다" ;;
   *) bad "87b review-line 브랜치 없음 문면" "$msg" ;;
 esac
+( cd "$WT" && git worktree remove --force "$W87" ) >/dev/null 2>&1
 
 # The `tguard` family's helpers are `pre_tguard` in the head, called here so a
 # full run defines them at the family's own position.
