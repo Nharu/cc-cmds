@@ -281,6 +281,16 @@
 # `재계획` row, so the sibling's next implement dispatch is process A. Refused
 # (3) unless every clause `gate_replan_eval` names holds — the same evaluation
 # the snapshot's `replan_due[]` shows — and after the run has ended.
+#   gate.sh act --kind halt-settle --target <alias> --segment <key> ... \\
+#               -- 중단 답 줄=<n>
+# `<key>` is the answer row's `세그먼트` — a segment id, or a run-scope step's
+# id; `-` is refused (2) like every row act. `halt-settle` settles a person's
+# answer to a halted re-convergence without a session, when the answered option
+# is a machine settlement line and the design document hashes to its value: one
+# gate-written `stage-result` row carrying the line's `재수렴 판정` and
+# `정산=중단 답 줄 <n>`, and the segment's plan voided (none for a run-scope step).
+# Refused (3) with nothing written on any check that fails — the answer then
+# stays open for the carry act. Taken after the run's deadline as well.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -19774,6 +19784,219 @@ gate_carry_scope_ok() {
   return 0
 }
 
+gate_halt_settle_line_parse() {
+  # gate_halt_settle_line_parse <option line> — the machine settlement line of a
+  # re-convergence halt, read strictly. On success prints `<path><TAB><64 hex>
+  # <TAB><verdict>` and returns 0; any other line returns 1 with nothing printed.
+  #
+  #   - `<label>` — 검사 sha256 <absolute document path>=<64 hex> → 종단 재설계 필요|불필요
+  #
+  # THE WHOLE OPTION LINE IS THE GRAMMAR. A re-convergence that prepared its
+  # edit and computed its verdict before stopping already knows what the answer
+  # leads to: the document has to hash to one value, and the verdict is fixed.
+  # Nothing else may ride on the line — a trailing word, a relative path, a
+  # verdict outside the two, a value that is not 64 lowercase hex — because the
+  # gate writes the verdict into a row without a session to read it again.
+  local line="$1" rest label body left hex path verd
+  case "$line" in
+    '- `'*) ;;
+    *) return 1 ;;
+  esac
+  rest=${line#'- `'}
+  case "$rest" in
+    *'` — '*) ;;
+    *) return 1 ;;
+  esac
+  label=${rest%%'` — '*}
+  body=${rest#*'` — '}
+  case "$label" in ''|*'`'*) return 1 ;; esac
+  case "$body" in
+    '검사 sha256 '*) body=${body#'검사 sha256 '} ;;
+    *) return 1 ;;
+  esac
+  case "$body" in
+    *' → 종단 '*' → 종단 '*) return 1 ;;
+    *' → 종단 '*) ;;
+    *) return 1 ;;
+  esac
+  left=${body%%' → 종단 '*}
+  verd=${body#*' → 종단 '}
+  case "$verd" in '재설계 필요'|'불필요') ;; *) return 1 ;; esac
+  case "$left" in *=*) ;; *) return 1 ;; esac
+  hex=${left##*=}
+  path=${left%=*}
+  case "$hex" in *[!0-9a-f]*) return 1 ;; esac
+  [ "${#hex}" -eq 64 ] || return 1
+  case "$path" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$path" in *[[:space:]]*|*'`'*) return 1 ;; esac
+  printf '%s\t%s\t%s' "$path" "$hex" "$verd"
+}
+
+gate_halt_detail_scope() {
+  # gate_halt_detail_scope <관측 상세> — the scope a re-convergence halt says it
+  # was handed (`범위=<scope>`), or nothing. The two shapes with a record are
+  # three words and the record's path; anything else is its first token, which
+  # is enough for a caller that refuses every other shape.
+  printf '%s\n' "$1" | sed 's/·/ /g' | LC_ALL=C awk '
+    {
+      s = " " $0 " "
+      i = index(s, " 범위=")
+      if (!i) exit
+      v = substr(s, i + length(" 범위="))
+      n = split(v, w, " ")
+      if (n >= 4 && ((w[1] == "구속" && w[2] == "티어" && w[3] == "이탈") \
+                     || (w[1] == "감사" && w[2] == "종합" && w[3] == "요구"))) {
+        print w[1] " " w[2] " " w[3] " " w[4]; exit
+      }
+      if (n >= 1) print w[1]
+    }'
+}
+
+gate_halt_settle() {
+  # gate_halt_settle <key> <answer line> — settle a person's answer to a halted
+  # re-convergence without a session, when the answer's outcome is already
+  # fixed: its option carries the machine settlement line, the document hashes
+  # to the line's value, and the verdict is the line's. 0 with the row written;
+  # GATE_EXIT_RULE with no row, and the answer left open for the carry act.
+  #
+  # WHY IT EXISTS. A re-convergence that prepared its edit and computed its
+  # verdict sometimes stops only to ask how the edit is to land. Once a person
+  # answered and the edit is on disk, what the resumed session would do is hash
+  # the document and end with the verdict it already wrote down — measured: that
+  # resumption was refused at the deadline because the session's account opened
+  # after it, and the answer reached nothing in the run. The row this writes is
+  # the row that session would have ended with.
+  #
+  # EVERY CHECK FAILS CLOSED, and a failure writes nothing: the answer is still
+  # the key's open answer, and the shift carries it instead. An `R<n>` scope is
+  # never settled — its carrier block outlives the run and only a session closes
+  # it — and neither is an adopted answer, whose attempt halted in another run.
+  local key="$1" ln="$2" row rec skill opt dig cur oline parsed spath shex sverd now det scope lp
+  row=$(sed -n "${ln}p" "$LEDGER" 2>/dev/null)
+  case "$row" in
+    '- `중단 답` '*) ;;
+    *) warn "원장 ${ln} 번째 줄은 중단 답 행이 아닙니다 — 정산하지 않습니다"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+  if [ "$(gate_row_field "$row" '세그먼트')" != "$key" ]; then
+    warn "원장 ${ln} 번째 줄의 답은 키 $(gate_row_field "$row" '세그먼트') 의 것이라 $key 로 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  skill=$(gate_row_field "$row" '스킬')
+  if [ "$skill" != "design-reconverge" ]; then
+    warn "정산은 재수렴 정지의 답만 받습니다 (이 답의 스킬은 ${skill:-미상}) — 운반 act 로 넘기세요"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$(gate_row_field "$row" '출처 런')" ]; then
+    warn "다음 런에 들인 답은 그 시도가 이 런에 없어 정산하지 않습니다 — 운반 act 로 넘기세요"
+    return "$GATE_EXIT_RULE"
+  fi
+  rec=$(gate_row_field "$row" '중단 기록')
+  opt=$(gate_row_field "$row" '선택지')
+  if [ -z "$rec" ] || [ ! -f "$rec" ]; then
+    warn "답한 중단 기록이 없습니다 — 정산하지 않습니다: ${rec:-(없음)}"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$rec" in
+    "$RUN_DIR"/halt/shift/*)
+      warn "교대 정지 기록의 답은 정산하지 않습니다: $rec"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  oline=$(LC_ALL=C awk -v p="- \`$opt\` — " 'index($0, p) == 1 { print; exit }' "$rec" 2>/dev/null)
+  if ! parsed=$(gate_halt_settle_line_parse "$oline"); then
+    warn "답한 선택지 「${opt}」 의 줄이 기계 정산 줄 문법에 맞지 않습니다 — 운반 act 로 넘기세요: ${oline:-(그 선택지 줄 없음)}"
+    return "$GATE_EXIT_RULE"
+  fi
+  spath=${parsed%%$'\t'*}
+  shex=${parsed#*$'\t'}; shex=${shex%%$'\t'*}
+  sverd=${parsed##*$'\t'}
+  if [ "$spath" != "$(gate_doc_arg_path)" ]; then
+    warn "기계 정산 줄의 문서 ${spath} 는 이 런의 설계 문서 $(gate_doc_arg_path) 가 아닙니다 — 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  now=$( { shasum -a 256 "$spath" 2>/dev/null || true; } | cut -d' ' -f1)
+  if [ "$now" != "$shex" ]; then
+    warn "설계 문서의 지금 sha256 ${now:-읽을 수 없음} 이 기계 정산 줄의 값 ${shex} 와 다릅니다 — 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  dig=$(gate_row_field "$row" '기록 다이제스트')
+  cur=$( { shasum -a 256 "$rec" 2>/dev/null || true; } | cut -d' ' -f1)
+  if [ -z "$dig" ] || [ "$cur" != "$dig" ]; then
+    warn "중단 기록이 답한 뒤에 바뀌었습니다 (기록 다이제스트 ${dig:-없음}, 지금 ${cur:-읽을 수 없음}) — 정산하지 않습니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  lp=0
+  gate_halt_record_of_last_park "$LEDGER" "$RUN_DIR" "$key" "$rec" || lp=$?
+  if [ "$lp" != "0" ]; then
+    warn "이 기록은 $key 의 마지막 의도된 park 시도(${GATE_LAST_PARK_STAGE:-없음}, 종단 부류=${GATE_LAST_PARK_CLASS:-미상})의 기록이 아닙니다 — 정산하지 않습니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  det=$(gate_halt_record_detail "$rec")
+  scope=$(gate_halt_detail_scope "$det")
+  case "$scope" in
+    '감사 종합 요구 /'*|'구속 티어 이탈 /'*) ;;
+    *) warn "정산은 기록을 가진 두 범위(감사 종합 요구, 구속 티어 이탈)의 재수렴만 받습니다 (기록의 범위 ${scope:-없음}) — 운반 act 로 넘기세요: $rec"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+  if ! gate_carry_scope_ok "$key" "$scope" "$LEDGER" "$RUN_DIR" "$rec" "$ln"; then
+    warn "재수렴 범위를 원장으로 확인하지 못해 정산하지 않습니다 — 운반 act 로 넘기세요: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  local f
+  for f in "$RUN_DIR/$key.pid" "$RUN_DIR/$key.pid.settling."*; do
+    [ -e "$f" ] || continue
+    warn "$key 의 시도가 아직 열려 있습니다 (파견 기록 $f) — 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  done
+  if gate_key_in_flight "$key"; then
+    warn "$key 에 살아 있거나 기다리는 시도가 있습니다 — 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if gate_halt_answer_spent "$LEDGER" "$key" "$ln"; then
+    warn "원장 ${ln} 번째 줄의 답은 이미 쓰였습니다 — 다시 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$(LC_ALL=C awk -v l="$ln" -v k="| 세그먼트=$key |" 'NR > l && index($0, "- `중단 답` ") == 1 && index($0, k) { print NR }' "$LEDGER" 2>/dev/null)" ]; then
+    warn "$key 에는 원장 ${ln} 번째 줄 뒤에 쓴 답이 있습니다 — 그 답을 넘기세요"
+    return "$GATE_EXIT_RULE"
+  fi
+  if gate_halt_answer_deferred "$LEDGER" "$ln"; then
+    warn "원장 ${ln} 번째 줄의 답은 이 런에서 이미 이월됐습니다 — 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  # A NUMBER OF ITS OWN, CLAIMED THE WAY A ROUTED DISPATCH CLAIMS ONE. A sibling's
+  # re-plan cites a re-convergence by `<스테이지>#<실행 버전>` and refuses a key
+  # that names two rows, so the row needs a number no attempt of the key holds.
+  # The dispatch lock keeps a dispatch of the key from deriving the same number
+  # in between.
+  local attempt rowseg
+  if ! gate_dispatch_lock_take "$key"; then
+    warn "$key 를 다른 act 가 파견하고 있습니다 — 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  attempt=$(gate_derive_attempt "$key")
+  if ! ( set -C; : > "$RUN_DIR/$key.attempt.$attempt" ) 2>/dev/null; then
+    gate_dispatch_lock_release
+    warn "시도 번호 $attempt 를 다른 파견이 이미 청구했습니다 — 정산하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  rowseg=$(gate_stage_row_segment "$key" reconverge)
+  gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$key" "종류=reconverge" \
+    "종료 코드=-" "실행 버전=$attempt" "세션 id=-" "부모=-" "기록자=게이트" \
+    "effort=(미상)" "서빙 모델=(미상)" "재수렴 판정=$sverd" "종단 부류=정상 완료" \
+    "실패 서명=$(failure_signature reconverge '정상 완료' - "$(stage_progress_of reconverge - -)")" \
+    "정산=중단 답 줄 $ln" "관측=중단 답 정산"
+  gate_dispatch_lock_release
+  # The same void the stream path makes after a re-convergence row, so the
+  # segment's next implement dispatch plans again.
+  void_segment_plan "$rowseg"
+  log "중단 답 정산 — $key#$attempt (원장 ${ln} 번째 줄, 재수렴 판정 $sverd)"
+  return 0
+}
+
 # The routes a shift hands an answered halt on by, one id per branch of
 # 「Handing on a person's answer to a halt」 in the routing shift's skill. The
 # skill maps each id to its item; `scripts/test-gate.sh` reads the ids from
@@ -29754,6 +29977,34 @@ EOF
         "근거=$dwhy" "레인=$dlane" "기록 시각=$dat"
       log "리뷰 기각 기록 — $seg 사이클 $dcyc (P0=${dp0:-0} P1=${dp1:-0})"
       ;;
+    halt-settle)
+      # A PERSON'S ANSWER TO A RE-CONVERGENCE HALT, SETTLED WITHOUT A SESSION.
+      # The shift tries it before carrying such an answer, and on a refusal
+      # carries the answer as before. It launches nothing, asks no router and
+      # writes nothing in a tree — so it is bookkeeping, and a run past its
+      # deadline still takes it: what it records is an answer a person gave.
+      #
+      # ARGV IS THE ANSWER'S LINE AND NOTHING ELSE. The key is --segment, and
+      # the verdict and the document's value come from the record the answer
+      # names, never from the caller.
+      if cc_caller_is_stage; then
+        warn "\`halt-settle\` is the routing shift's act — a stage does not settle an answer to a halt"
+        return "$GATE_EXIT_RULE"
+      fi
+      local hsf hsk hsl
+      for hsf in "$@"; do
+        hsk="${hsf%%=*}"
+        [ "$hsk" = "중단 답 줄" ] && continue
+        warn "\`halt-settle\` takes \`중단 답 줄=<n>\` from argv and nothing else: ${hsk} — the key is --segment and the verdict is the record's"
+        return "$GATE_EXIT_VOCAB"
+      done
+      hsl=$(gate_field_of '중단 답 줄' "$@")
+      case "$hsl" in
+        ''|*[!0-9]*|0*) warn "\`halt-settle\` needs \`중단 답 줄=<n>\`, a ledger line number"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      gate_halt_settle "$seg" "$hsl" || return "$?"
+      ;;
     replan)
       # A SIBLING'S PLAN, VOIDED BY ANOTHER SEGMENT'S RE-CONVERGENCE. The
       # re-convergence moved the binding surface, and a plan derived before it
@@ -31937,7 +32188,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry|shift-halt|base-check|remote-check|replan)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry|shift-halt|base-check|remote-check|replan|halt-settle)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -32809,6 +33060,9 @@ gate_kind_is_bookkeeping() {
   # an object directory it removes again, and writes one row. `remote-check`
   # reads the remote and writes rows only. `replan` moves one plan file under
   # the run directory aside and writes one row, and enters no tree.
+  # `halt-settle` writes one row, claims an attempt number and moves one plan
+  # file under the run directory, and enters no tree — and the answer it
+  # records arrives whenever a person gives it, deadline or not.
   # `reentry` is here for the seat cap's sake: a boot-time re-entry carries no
   # session id under launchd, so the context reading falls back to the lane's
   # newest transcript, and a large one would refuse the row the reboot-class
@@ -32816,7 +33070,7 @@ gate_kind_is_bookkeeping() {
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
     obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry) return 0 ;;
-    shift-halt|base-check|remote-check|replan) return 0 ;;
+    shift-halt|base-check|remote-check|replan|halt-settle) return 0 ;;
   esac
   return 1
 }
