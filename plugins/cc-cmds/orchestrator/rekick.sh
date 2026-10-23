@@ -144,8 +144,9 @@
 # `--rows` may add rows for the plugin defaults 5o confirmed for a blank,
 # `- \`플러그인 허용\` | 플러그인=<키> | 사유=킥오프 기본값`, written before the
 # provenance row; a row of another shape, any such row under `--auto`, and a
-# key given twice or already carried are refused. A `--rows` that holds plugin
-# rows alone leaves the previous shape and auto-adoption rows as they are.
+# key given twice or already carried are refused. Any `--rows` still replaces
+# every previous shape and auto-adoption row with its own, so a file that holds
+# plugin rows alone drops them: it carries the previous rows it keeps.
 # `verify-subset` checks them as `플러그인`: a person's draft holds every
 # previous row whose key is on or cannot be judged now, and each other row is a
 # confirmed default — that row shape, a `빈칸` row of `--blank-rows` for the
@@ -2034,9 +2035,8 @@ rk_render() {
   fi
   prov="- \`사전 인가\` | 이어받은 런=$RK_PREV | 매니페스트 sha256=$pmsha | 인가 기록 sha256=$pgsha${RK_PROV_SEAT:-}"
   printf '%s' "$trows" > "$RK_TMP/targets.rows"
-  # The shape and auto-adoption rows of `--rows` replace the previous ones only
-  # when there are some: a `--rows` that holds plugin rows alone leaves them.
-  : > "$RK_TMP/shape.rows"
+  # Whenever `--rows` is given, its shape and auto-adoption rows replace the
+  # previous ones, none included: the file is the whole set the person kept.
   if [ -n "$RK_ROWS" ]; then
     grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$RK_ROWS" > "$RK_TMP/shape.rows" 2>/dev/null || : > "$RK_TMP/shape.rows"
   fi
@@ -2048,7 +2048,7 @@ rk_render() {
   R_SETS="$RK_TMP/sets.tsv" R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
   R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
-  R_RFILE="$( [ -s "$RK_TMP/shape.rows" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
+  R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
   R_PADROP="$RK_TMP/plugin.drop" R_PFILE="$( [ -s "$RK_TMP/plugin.rows" ] && printf '%s' "$RK_TMP/plugin.rows")" \
   R_BIND="$RK_BIND" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" \
   awk '

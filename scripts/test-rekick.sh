@@ -1438,7 +1438,10 @@ vs "키가 켬인 앞선 행을 뺀 사람 초안은 실패한다" 실패 "$WORK
 sed '/^- `플러그인 허용`/s/| 사유=픽스처$/| 사유=바뀜/' "$WORK/v-pa0.md" > "$WORK/v-pa0-ch.md"
 vs "앞선 행과 바이트가 다른 플러그인 행의 사람 초안은 실패한다" 실패 "$WORK/v-pa0-ch.md" "$E" 플러그인
 
-printf '%s\n' "$PA_DEF" > "$WORK/rows-pa"
+# The --rows file is the whole set of shape and auto-adoption rows: with no
+# question asked about them, the source's rows are copied into it verbatim.
+PH_SHAPE=$(grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$BASE/docs/pipeline-run/RKPH.plan.md")
+{ printf '%s\n' "$PH_SHAPE"; printf '%s\n' "$PA_DEF"; } > "$WORK/rows-pa"
 printf '5o 런:plugin-allow=%s\t런:plugin-allow=%s\n' "$PA_O" "$PA_O" > "$WORK/asked-pa"
 blanks "$WORK/blanks-pa" "런${TAB}plugin-allow${TAB}$PA_O"
 ph_render "$WORK/v-pa1.md" --asked "$WORK/asked-pa" --rows "$WORK/rows-pa"; rc=$?
@@ -1448,9 +1451,23 @@ check "7: 덧붙인 행은 이어 쓴 행 뒤, 출처 행 앞에 온다" \
   "$(grep -E '^- `(플러그인 허용` |사전 인가` \| 이어받은 런=)' "$WORK/v-pa1.md" | awk -F' [|] ' '{ print $2 }' | paste -sd/ -)" \
   "플러그인=$PA_N/플러그인=$PA_O/이어받은 런=RKPH"
 has "7: 사용자 확인 문면이 5o 의 플러그인 답을 적는다" "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$WORK/v-pa1.md")" " / 런:plugin-allow=$PA_O"
-check "7: 플러그인 행만 든 --rows 는 앞선 형태·자동 채택 행을 지우지 않는다" \
-  "$(grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$WORK/v-pa1.md")" \
-  "$(grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$BASE/docs/pipeline-run/RKPH.plan.md")"
+check "7: 원천에는 사전 인가 형태 행과 자동 채택 행이 하나씩 있다" \
+  "$(printf '%s\n' "$PH_SHAPE" | grep -c '^- `사전 인가` | 형태=')/$(printf '%s\n' "$PH_SHAPE" | grep -c '^- `자동 채택`')" "1/1"
+check "7: 앞선 형태·자동 채택 행을 옮겨 적은 --rows 는 그 행을 바이트 그대로 잇는다" \
+  "$(grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$WORK/v-pa1.md")" "$PH_SHAPE"
+# A person who declined the carried rows (6.2's re-asked 5p and 5q answered
+# with no rows) and confirmed one plugin default passes a --rows file holding
+# the plugin row alone; the declined rows must not survive into the draft.
+printf '%s\n' "$PA_DEF" > "$WORK/rows-pa-only"
+ph_render "$WORK/v-pa2.md" --asked "$WORK/asked-pa" --rows "$WORK/rows-pa-only"; rc=$?
+check "7: 플러그인 행만 든 --rows 의 render-manifest 는 0 이고 덧붙인 행을 지닌다" \
+  "$rc/$(grep -cxF -- "$PA_DEF" "$WORK/v-pa2.md")" "0/1"
+check "7: 플러그인 행만 든 --rows 는 앞선 형태·자동 채택 행을 남기지 않는다" \
+  "$(grep -cE '^- `(사전 인가` \| 형태=|자동 채택`)' "$WORK/v-pa2.md")" "0"
+: > "$WORK/rows-none"
+ph_render "$WORK/v-pa3.md" --asked "$E" --rows "$WORK/rows-none"; rc=$?
+check "7: 빈 --rows 는 앞선 형태·자동 채택 행을 남기지 않는다" \
+  "$rc/$(grep -cE '^- `(사전 인가` \| 형태=|자동 채택`)' "$WORK/v-pa3.md")" "0/0"
 mf_check "$WORK/v-pa1.md"; rc=$?
 check "7: 기본값 행을 덧붙인 초안이 check_manifest 를 통과한다" "$rc" "0"
 vs "5o 확정 기본값을 덧붙인 초안은 --set 없이 --blank-rows 를 적재해 통과한다" 통과 "$WORK/v-pa1.md" "$WORK/asked-pa" "" \
