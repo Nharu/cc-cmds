@@ -26,6 +26,7 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `unmet_conditions[]` | the numbered termination conditions that do NOT hold, as rendered lines. **Capped**, and the lines that grow with the night take the front of it |
 | `unmet_conditions_total` | how many there actually are. Greater than the array's length means the array lost its tail |
 | `unmet_condition_numbers[]` | the same causes as condition numbers — deduplicated, ascending, at most eleven, and never truncated. This is the one to read when the two above disagree |
+| `clauses[]` | `id`, `문면`, `상태`, `근거`, `요청` — one object per termination clause of the manifest. `상태` is `미정산` while the gate reads the clause as unsettled and the last `종료 절` row's `상태` (`충족`, `불가능` or `보류`) otherwise; `근거` is that row's `근거`, empty with no row; `요청` is the shift's evidence request on the clause whose answer no act has carried out yet, empty without one. The wording is here because a router reads the manifest through nothing else |
 | `disposition` | `충족`, `무효화` or `미충족` — what a `propose-done` would be recorded as right now. `무효화` means the run may record its end but only as invalid |
 | `design_required` | `true`, `false` or `null` — the frozen plan's own value, never folded (`null` when the plan does not declare it). With `steps[]` it is how a shift learns the run has a design step to dispatch, which no `segments[]` entry can say |
 | `design_scope` | `single` or `base` — the frozen plan's design scope, read as `single` when the plan does not declare it. `base` means the graph is the base run's three steps (design → audit → split) and nothing after them, which decides the audit's `--base` and whether a split step is dispatched at all |
@@ -144,6 +145,19 @@ Not every decision is an act. For those, the question is **"may I choose this wi
 ### Proposing that the run is done
 
 `act --kind propose-done` carries the goal digest, the termination point decomposed into checkable clauses each with **evidence**, and the residual. **Evidence is a ledger reference or an observable artifact, never prose** — a proposal citing prose is the exact shape of "the check passes and the property fails", while one citing a merge commit is confirmed in the morning with one command.
+
+**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, and no `shift_halts[]` element holds a segment. A plan with no implementation step and a design that stopped follow the same order.
+
+1. Read the snapshot's `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.
+2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for — ledger rows, the run directory, a merge commit's `git show --stat` or `git diff`, `gh pr view`, each through `exec … --surface 읽기` — and when you find it, write `act --kind clause`.
+3. A clause whose evidence no read of this run can produce — its `문면` asks for a paid or credentialed call, a local launch, a device, or a person's confirmation — is not settled `불가능` without a question. A routing shift asks for it with `shift-halt` at site `종료 절 근거` (the shift's copy gives the form), and the seat puts that record to a person.
+4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.
+
+**The evidence a clause row carries depends on its state.**
+
+- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit's full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks only that `근거` is not empty, so keeping to this is yours.
+- **`불가능` cites what decided it** — a residual issue URL, a design step's `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer.
+- **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.
 
 The disagreement runs both ways, and only one direction is obvious:
 
