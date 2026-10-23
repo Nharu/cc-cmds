@@ -540,6 +540,16 @@ case "$reason" in
   *'/digest/gate-digest-'*) ok "거부 문면이 방출 파일 경로를 지목한다" ;;
   *) bad "거부 문면이 방출 파일 경로를 지목한다" "격리 경로가 문면에 없다" ;;
 esac
+# AND THE LINE COMES FIRST. The gate prints the value as the last line of the
+# call's own output, which costs the stage no request; a message that sent it
+# to the file first would keep the read the line exists to remove.
+dl_before_line=${reason%%'[gate-digest]'*}
+dl_before_file=${reason%%/digest/gate-digest-*}
+if [ "$dl_before_line" != "$reason" ] && [ "${#dl_before_line}" -lt "${#dl_before_file}" ]; then
+  ok "거부 문면이 [gate-digest] 줄을 방출 파일보다 먼저 첫째 출처로 이름한다"
+else
+  bad "거부 문면이 [gate-digest] 줄을 방출 파일보다 먼저 첫째 출처로 이름한다" "줄이 없거나 파일 뒤에 있다"
+fi
 if [ "$n_shapes" -ge 2 ]; then
   ok "거부 문면이 게이트로 시작하는 명령을 둘 이상 제시한다 ($n_shapes)"
 else

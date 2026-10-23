@@ -187,13 +187,18 @@
 # caller names one,
 # whose `H` is the value the NEXT acting call passes to `--snapshot-digest`, and
 # whose `actor` is the emitting stage id verbatim (`router` when there is none)
-# so a reader can tell a foreign emission from a stale one. It
+# so a reader can tell a foreign emission from a stale one. The same `H` and
+# `actor` also go to stderr as this call's last line,
+# `[gate-digest] H=<H> actor=<actor>`, whether or not the file write succeeded,
+# so a caller copies the value from the output it already holds. A caller picks
+# the value in this order: that line from the immediately preceding call's
+# output; the file (checking `actor`) when the line is not visible — a
+# truncated output, after compaction, or a gate older than the line; and
+# `gate.sh snapshot … --fields H` when the file is absent or foreign. It
 # removes the read-back `snapshot` call, not the flag: the binding is unchanged
 # and the digest is still compared against live state. `plan` emits nothing (it
-# writes no row and performs nothing), and a caller that finds no file — an
-# emission that failed, or a gate older than this flag — falls back to
-# `gate.sh snapshot … --fields H`. The flag is not passed unconditionally for
-# that second reason: a gate that predates it exits 2 on the unknown argument.
+# writes no row and performs nothing). The flag is not passed unconditionally
+# because a gate that predates it exits 2 on the unknown argument.
 #
 # `act --kind skill` also takes `--resume <session-id>` to RE-ATTACH a stage that
 # was cut mid-flight instead of running it again. The id must appear on a
@@ -14842,6 +14847,22 @@ EOF
 # fixed number would have to be opened by the hook, the test suite and the stage
 # wrapper — three call sites frozen as literal lines.
 #
+# AND A LINE ON STDERR BESIDES THE FILE. A model caller that has to open the
+# file spends one more request per act on reading back a value that was
+# already in this call's output, so `H` and `actor` are also printed as the
+# last stderr line, `[gate-digest] H=<H> actor=<actor>`. Stderr is where the
+# `log`/`warn` diagnostics go, and a run log reader could once mistake a bare
+# hash there for a diagnostic; three things keep that from happening now. The
+# line carries a fixed `[gate-digest]` tag no diagnostic uses; only a call
+# given `--emit-digest` prints it, and only model callers pass that flag, so
+# the driver's own logs never see it; and the exit 4 refusal already prints
+# the live `H` on stderr, so a hash appearing there is not a new exposure.
+# Stdout is not used because `exec` hands the wrapped command's stdout through
+# untouched. The line is the value the file gets, computed once before the
+# file is written, so the freshness comparison the next call makes is the same
+# whichever of the two the caller copied from. The file stays: a caller whose
+# output was truncated, or that was compacted, has no line to read.
+#
 # WHY THE TWO TOTALS COME ALONG. A caller reading this file is reading it
 # INSTEAD of a `snapshot` round trip, and those two counts are the other things
 # it would have gone there for. The key names match `snapshot`'s exactly so no
@@ -15011,13 +15032,14 @@ gate_emit_digest_body() {
   # the redirection would land wherever the link points, outside every check the
   # target path passed. `mktemp` in the same directory keeps the rename atomic
   # and takes the name out of the attacker's hands.
-  local tmp
-  tmp=$(mktemp "$(dirname "$GATE_EMIT_DIGEST_TO")/.gate-digest.XXXXXX" 2>/dev/null) || {
-    warn "could not create the digest temp file: $GATE_EMIT_DIGEST_TO — the consumer falls back to snapshot"
-    return 0
-  }
-  # Same directory as the target by construction, so the rename is atomic and a
-  # reader never sees a half-written object.
+  #
+  # H AND THE ACTOR ARE COMPUTED BEFORE THE TEMP FILE, because the stderr line
+  # carries them whether or not the file can be written, a failed `mktemp`
+  # included. The line is
+  # the same value the file gets, printed once at the single exit below, after
+  # every warning, so it is the last line of the call's output.
+  local tmp h actor
+  h=$(gate_snapshot_digest)
   # THE EMITTING ACTOR TRAVELS WITH THE VALUE. The file name separates actors by
   # convention, and a convention is exactly what a caller can get wrong — so the
   # object also says who wrote it, and a consumer that finds an id other than
@@ -15032,16 +15054,21 @@ gate_emit_digest_body() {
   # the gate, `S5:<segment>:<cycle>` from the driver — so a verbatim comparison
   # reported every stage's own file as someone else's. Only the two characters
   # that would break the JSON string are replaced.
-  if printf '{"H":"%s","obligations_total":%s,"pending_approvals_total":%s,"actor":"%s"}\n' \
-       "$(gate_snapshot_digest)" \
-       "$(gate_open_obligations | gate_count)" \
-       "$(gate_pending_approval_ids | gate_count)" \
-       "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -d '\000-\037' | tr '"\\' '__')" >"$tmp" 2>/dev/null \
-     && mv "$tmp" "$GATE_EMIT_DIGEST_TO" 2>/dev/null; then
-    return 0
+  actor=$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -d '\000-\037' | tr '"\\' '__')
+  # Same directory as the target by construction, so the rename is atomic and a
+  # reader never sees a half-written object.
+  if ! tmp=$(mktemp "$(dirname "$GATE_EMIT_DIGEST_TO")/.gate-digest.XXXXXX" 2>/dev/null); then
+    warn "could not create the digest temp file: $GATE_EMIT_DIGEST_TO — the consumer falls back to snapshot"
+  elif ! { printf '{"H":"%s","obligations_total":%s,"pending_approvals_total":%s,"actor":"%s"}\n' \
+             "$h" \
+             "$(gate_open_obligations | gate_count)" \
+             "$(gate_pending_approval_ids | gate_count)" \
+             "$actor" >"$tmp" 2>/dev/null \
+           && mv "$tmp" "$GATE_EMIT_DIGEST_TO" 2>/dev/null; }; then
+    rm -f "$tmp" 2>/dev/null || true
+    warn "could not emit the digest: $GATE_EMIT_DIGEST_TO — the consumer falls back to snapshot"
   fi
-  rm -f "$tmp" 2>/dev/null || true
-  warn "could not emit the digest: $GATE_EMIT_DIGEST_TO — the consumer falls back to snapshot"
+  [ -n "$h" ] && printf '[gate-digest] H=%s actor=%s\n' "$h" "$actor" >&2
   return 0
 }
 
