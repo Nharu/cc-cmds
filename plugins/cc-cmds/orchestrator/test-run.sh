@@ -6064,9 +6064,10 @@ GHSTUB
     tail -1 "$CR_OB" | LC_ALL=C awk -F'\t' '{ print $5 "|" $6 "|" $7 }'
   }
   cr_round_row() {
-    # cr_round_row <상태> <회차> — one `CI 처분 처분=재실행` row of S1 on the stub's head.
+    # cr_round_row <상태> <회차> [<sha>] — one `CI 처분 처분=재실행` row of S1,
+    # on the stub's head unless a sha is given.
     printf -- '- `CI 처분` | 교대=0 | 세그먼트=S1 | PR=Nharu/cc-cmds#7 | head sha=%s | 처분=재실행 | 상태=%s | 회차=%s | prev=dddd\n' \
-      "$CR_SHA" "$1" "$2" >> "$CR_LG"
+      "${3:-$CR_SHA}" "$1" "$2" >> "$CR_LG"
   }
 
   # (T-P1) fail → pending → pass on one sha: three transitions, three lines.
@@ -6169,37 +6170,49 @@ GHSTUB
     *) ok "취소 버킷만 낸 답(rc=1)의 오늘 판정: ${cr_cancel:-줄 없음} — 실패가 아니다" ;;
   esac
 
-  # (T-L1) The relay's verdict reader counts the current round only.
+  # (T-L1) The relay's verdict reader counts the current round only, on the
+  # head the segment's worktree is at. The observations are stamped now, so the
+  # wait cap stands nowhere below.
   # shellcheck source=/dev/null
   . "$(dirname "$DRIVER")/liveness.sh"
   cr_reset
+  cr_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  cr_h0=$(cd "$CR_WT" && git rev-parse HEAD)
   printf '%s\n%s\nci=S1\n' "$$" "rec" > "$CR_RD/relay.live"
-  printf '2026-10-17T00:00:00Z\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t0\t없음\tlint\n' "$CR_SHA" > "$CR_OB"
-  cr_v=$(cc_ci_latest_verdict "$CR_RD" "$CR_LG" S1)
-  if [ "${cr_v%%"$(printf '\t')"*}" = "실패" ]; then
-    ok "T-L1: 재실행이 없으면 회차 0 의 실패가 그대로 판정이다 (양성 대조)"
-  else
-    bad "폴러 회차" "T-L1: 회차 0 의 실패를 판정으로 읽지 못했다: $cr_v"
-  fi
-  cr_round_row 요청 1
-  cr_round_row 수락 1
+  printf '%s\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t0\t없음\tlint\n' "$cr_now" "$cr_h0" > "$CR_OB"
   cr_v=$(cc_ci_latest_verdict "$CR_RD" "$CR_LG" S1)
   cr_keys=$( { cc_relay_wake_keys "$CR_RD" "$CR_LG" | grep -c '^ci:S1' || true; } | tr -d ' ')
-  if [ "${cr_v%%"$(printf '\t')"*}" = "대기" ] && [ "$cr_keys" = "0" ]; then
+  if [ "${cr_v%%"$(printf '\t')"*}" = "실패" ] && [ "$cr_keys" = "1" ]; then
+    ok "T-L1: 재실행이 없으면 회차 0 의 실패가 그대로 판정이고 깨우기 키다 (양성 대조)"
+  else
+    bad "폴러 회차" "T-L1: 회차 0 의 실패를 판정으로 읽지 못했다 (판정=$cr_v, 키 수=$cr_keys)"
+  fi
+  cr_round_row 요청 1 "$cr_h0"
+  cr_round_row 수락 1 "$cr_h0"
+  cr_keys=$( { cc_relay_wake_keys "$CR_RD" "$CR_LG" | grep -c '^ci:S1' || true; } | tr -d ' ')
+  if [ "$cr_keys" = "0" ]; then
     ok "T-L1: 수락 행 뒤의 회차 0 실패는 CI 대기=<id> 의 깨우기 키가 아니다"
   else
-    bad "폴러 회차" "T-L1: 옛 회차의 실패가 릴레이를 깨운다 (판정=$cr_v, 키 수=$cr_keys)"
+    bad "폴러 회차" "T-L1: 옛 회차의 실패가 릴레이를 깨운다 (키 수=$cr_keys)"
   fi
-  printf '2026-10-17T00:01:00Z\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t0\t없음\tlint\n' \
+  printf '%s\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t0\t없음\tlint\n' "$cr_now" \
     fedcba9876543210fedcba9876543210fedcba98 >> "$CR_OB"
+  cr_keys=$( { cc_relay_wake_keys "$CR_RD" "$CR_LG" | grep -c '^ci:S1' || true; } | tr -d ' ')
+  if [ "$cr_keys" = "0" ]; then
+    ok "T-L1: 워크트리 head 가 아닌 sha 의 실패는 깨우기 키가 아니다"
+  else
+    bad "폴러 회차" "T-L1: 워크트리에 없는 head 의 실패가 릴레이를 깨운다"
+  fi
+  ( cd "$CR_WT" && git commit -q --allow-empty -m 'y' ) >/dev/null 2>&1
+  cr_h1=$(cd "$CR_WT" && git rev-parse HEAD)
+  printf '%s\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t0\t없음\tlint\n' "$cr_now" "$cr_h1" >> "$CR_OB"
   cr_keys=$( { cc_relay_wake_keys "$CR_RD" "$CR_LG" | grep -c '^ci:S1' || true; } | tr -d ' ')
   if [ "$cr_keys" = "1" ]; then
     ok "T-L1: head 가 바뀌면 옛 head 의 수락 회차가 새 head 의 회차 0 관측을 거르지 않는다"
   else
     bad "폴러 회차" "T-L1: 새 head 의 회차 0 실패가 깨우기 키가 아니다 — 옛 head 의 회차가 새 head 를 걸렀다"
   fi
-  printf '2026-10-17T00:02:00Z\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t2\t없음\tlint\n' \
-    fedcba9876543210fedcba9876543210fedcba98 >> "$CR_OB"
+  printf '%s\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t2\t없음\tlint\n' "$cr_now" "$cr_h1" >> "$CR_OB"
   cr_keys=$( { cc_relay_wake_keys "$CR_RD" "$CR_LG" | grep -c '^ci:S1' || true; } | tr -d ' ')
   if [ "$cr_keys" = "0" ]; then
     ok "T-L1: 체크가 아직 도는 실패(진행 중=2)는 대기로 읽혀 깨우지 않는다"
