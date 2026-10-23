@@ -2877,6 +2877,10 @@ check "교대 계약: 분할 행의 틀" \
 check "교대 계약: 베이스 설계 정지는 표 밖이다" "$(has "$RS_CORPUS" "**The same skill's base-design stop is not in the table**")" 예
 check "교대 계약: 원장 값 칸만 다른 운반은 19 다" \
   "$(has "$RS_CORPUS" "one that differs only in such a ledger-valued slot is exit \`19\`")" 예
+check "교대 계약: 출처 런에서 들인 답의 19 는 재부착하지 않고 중단으로 끝낸다" \
+  "$(has "$RS_CORPUS" "**An element whose \`origin_run\` is not empty has no halted session in this run**, so do not \`--resume\`: end the shift with \`사유=중단\`")" 예
+check "사이드카: 출처 런에서 들인 답의 원장 값 칸은 출처 원장에서 짓는다" \
+  "$(has "$AU_ANS" "For an answer a later run brought in (\`출처 런\`) the ledger is the earlier run's, where its attempt halted")" 예
 check "사이드카: 재진입 표의 여섯 행" \
   "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
 

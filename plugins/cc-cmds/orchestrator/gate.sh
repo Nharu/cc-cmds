@@ -19388,8 +19388,42 @@ gate_fill_slot() {
   printf '%s' "$out$rest"
 }
 
+gate_carry_frame_reads() {
+  # gate_carry_frame_reads <ledger> <run dir> <key> <frame> — the values of a
+  # re-entry frame that come from a ledger's rows, read from <ledger> and
+  # <run dir> under <key>: GATE_CF_CR the key's last `cycle` row (only when the
+  # frame has `<사이클>` or `<리포트>`), GATE_CF_NX its `다음`, GATE_CF_DIRV that
+  # value when the halted attempt was a directive-line or re-implementation
+  # dispatch the frame cannot hold, and GATE_CF_REIM `1` for the
+  # re-implementation. Every helper below reads the global LEDGER and RUN_DIR,
+  # so both are made local here; the read memo of `gate_rows` is consulted only
+  # while LEDGER is the path it was filled from, so another ledger is grepped.
+  local LEDGER="$1" RUN_DIR="$2" key="$3" frame="$4" walk
+  GATE_CF_CR=''; GATE_CF_NX=''; GATE_CF_DIRV=''; GATE_CF_REIM=''
+  case "$frame" in *'<사이클>'*|*'<리포트>'*) GATE_CF_CR=$(gate_segment_last_cycle_row "$key") ;; esac
+  case "$frame" in
+    *'<리포트>'*)
+      GATE_CF_NX=$(gate_segment_review_next "$key")
+      [ "$GATE_CF_NX" = "$(gate_segment_review_next_table "$key")" ] || GATE_CF_DIRV=$GATE_CF_NX
+      if [ -z "$GATE_CF_DIRV" ] && [ -n "$GATE_CF_CR" ] && { gate_ci_fix_after_last_cycle "$key" \
+           || [ -n "$(gate_ledger_rows_after "$GATE_CF_CR" | { grep -E '^- `베이스 판정`' || true; } \
+                 | gate_rows_field_eq '세그먼트' "$key" | gate_rows_field_eq '판정' '충돌')" ]; }; then
+        GATE_CF_DIRV=$GATE_CF_NX
+      fi
+      if [ -z "$GATE_CF_DIRV" ] && [ -n "$GATE_CF_CR" ]; then
+        walk=$(gate_segment_review_walk "$key")
+        if [ "$(gate_report_count "$walk" '리드 수정 있음')" = "1" ] \
+           && [ "$(gate_report_count "$walk" '마지막 뒤 재수렴')" = "정상" ] \
+           && [ "$(gate_report_count "$walk" '리드 수정 뒤')" = "0" ]; then
+          GATE_CF_DIRV=$GATE_CF_NX; GATE_CF_REIM=1
+        fi
+      fi ;;
+  esac
+}
+
 gate_carry_ledger_frame() {
-  # gate_carry_ledger_frame <frame> <document> <key> <prompt> — fill a re-entry
+  # gate_carry_ledger_frame <frame> <document> <key> <prompt> [<ledger> <run dir>
+  # <ledger key> <source run>] — fill a re-entry
   # frame's ledger-valued slots with the values the run's ordinary dispatch of
   # the same kind takes, and compare <prompt> with the whole result. 0 when they
   # are equal, with GATE_CARRY_BUILT holding the frame filled but for `<문서>`.
@@ -19429,7 +19463,21 @@ gate_carry_ledger_frame() {
   # dispatch carried a `수정 대상` tail while `다음` read `재구현`,
   # and its own halted row has since turned `다음` to `확인 리뷰`, so the frame
   # built now has no tail: it too re-attaches.
-  local frame="$1" doc="$2" key="$3" prompt="$4" cr='' v want bare full opt pat p expect nx dirv='' walk reim=''
+  #
+  # AN ANSWER BROUGHT OVER FROM AN EARLIER RUN reads those values where its
+  # attempt halted. Its copy row is the only row of it in this ledger — the
+  # adoption copies the `중단 답` row alone, never the `cycle`, `CI 처분` or
+  # `베이스 판정` rows — so this ledger would build `(사이클 1)` and no tail,
+  # and a halted fix cycle would come back as an ordinary implementation. The
+  # carry check passes the earlier run's ledger, run directory and key (the
+  # ones it judges the halt against), and the source run's id; nothing ran on
+  # the key in that run after the halted attempt either, since the run ended
+  # after keeping the answer. `<세그먼트>` stays the carry act's key and
+  # `<선언 파일>` this run's segment row, which the review line reads too. No
+  # session of this run halted there, so a slot that differs is answered by
+  # ending the shift, not by a re-attachment.
+  local frame="$1" doc="$2" key="$3" prompt="$4" lpl="${5:-$LEDGER}" lprd="${6:-$RUN_DIR}"
+  local lkey="${7:-$3}" src="${8:-}" cr v want bare full opt pat p expect nx dirv reim after
   GATE_CARRY_BUILT=''
   case "$frame" in
     *'['*']'*)
@@ -19437,27 +19485,10 @@ gate_carry_ledger_frame() {
       bare="${frame%%\[*}${frame#*\]}"; full="${frame%%\[*}$opt${frame#*\]}" ;;
     *) bare=$frame; full=$frame ;;
   esac
-  case "$frame" in *'<사이클>'*|*'<리포트>'*) cr=$(gate_segment_last_cycle_row "$key") ;; esac
+  gate_carry_frame_reads "$lpl" "$lprd" "$lkey" "$frame"
+  cr=$GATE_CF_CR; nx=$GATE_CF_NX; dirv=$GATE_CF_DIRV; reim=$GATE_CF_REIM
   want=$bare
-  case "$frame" in
-    *'<리포트>'*)
-      nx=$(gate_segment_review_next "$key")
-      [ "$nx" = "$(gate_segment_review_next_table "$key")" ] || dirv=$nx
-      if [ -z "$dirv" ] && [ -n "$cr" ] && { gate_ci_fix_after_last_cycle "$key" \
-           || [ -n "$(gate_ledger_rows_after "$cr" | { grep -E '^- `베이스 판정`' || true; } \
-                 | gate_rows_field_eq '세그먼트' "$key" | gate_rows_field_eq '판정' '충돌')" ]; }; then
-        dirv=$nx
-      fi
-      if [ -z "$dirv" ] && [ -n "$cr" ]; then
-        walk=$(gate_segment_review_walk "$key")
-        if [ "$(gate_report_count "$walk" '리드 수정 있음')" = "1" ] \
-           && [ "$(gate_report_count "$walk" '마지막 뒤 재수렴')" = "정상" ] \
-           && [ "$(gate_report_count "$walk" '리드 수정 뒤')" = "0" ]; then
-          dirv=$nx; reim=1
-        fi
-      fi
-      [ "$nx" != 수정 ] || want=$full ;;
-  esac
+  case "$frame" in *'<리포트>'*) [ "$nx" != 수정 ] || want=$full ;; esac
   want=$(gate_fill_slot "$want" '<세그먼트>' "$key")
   case "$want" in
     *'<사이클>'*)
@@ -19474,6 +19505,8 @@ gate_carry_ledger_frame() {
   fi
   # Whether the frame and the document match is read with every other slot as
   # `*`, in both spellings of the bracketed part.
+  after='멈춘 세션을 --resume 으로 재부착하세요'
+  [ -z "$src" ] || after="이 답은 출처 런 ${src} 원장으로 지은 값이고 이 런에는 멈춘 세션이 없어 재부착할 수 없습니다 — 교대는 handoff 사유=중단 으로 끝냅니다"
   for p in "$bare" "$full"; do
     p=$(gate_fill_slot "$p" '<문서>' $'\002')
     for v in '<세그먼트>' '<사이클>' '<선언 파일>' '<리포트>' '<의도>'; do p=$(gate_fill_slot "$p" "$v" $'\001'); done
@@ -19484,11 +19517,11 @@ gate_carry_ledger_frame() {
     case "$prompt" in
       $pat)
         if [ -n "$reim" ]; then
-          warn "$key 의 멈춘 시도는 재수렴 뒤의 재구현입니다 (다음=${dirv}) — 그 파견의 수정 대상 꼬리는 이 틀에 없으니 멈춘 세션을 --resume 으로 재부착하세요"
+          warn "$key 의 멈춘 시도는 재수렴 뒤의 재구현입니다 (다음=${dirv}) — 그 파견의 수정 대상 꼬리는 이 틀에 없으니 $after"
         elif [ -n "$dirv" ]; then
-          warn "$key 의 멈춘 시도는 베이스 해소나 CI 수정 지시 줄로 파견된 구현입니다 (다음=${dirv}) — 그 줄은 이 틀에 없으니 멈춘 세션을 --resume 으로 재부착하세요"
+          warn "$key 의 멈춘 시도는 베이스 해소나 CI 수정 지시 줄로 파견된 구현입니다 (다음=${dirv}) — 그 줄은 이 틀에 없으니 $after"
         else
-          warn "운반 act 의 원장 값 칸이 게이트가 지은 값과 다릅니다 — 「${expect}」 — 멈춘 세션을 --resume 으로 재부착하세요"
+          warn "운반 act 의 원장 값 칸이 게이트가 지은 값과 다릅니다 — 「${expect}」 — $after"
         fi
         return "$GATE_EXIT_CARRY_UNTABLED" ;;
     esac
@@ -19631,7 +19664,7 @@ EOF
   esac
   case "$frame" in
     *'<세그먼트>'*|*'<사이클>'*|*'<선언 파일>'*|*'<리포트>'*|*'<의도>'*)
-      gate_carry_ledger_frame "$frame" "$doc" "$key" "$prompt" || return $?
+      gate_carry_ledger_frame "$frame" "$doc" "$key" "$prompt" "$lpl" "$lprd" "$skey" "$src" || return $?
       frame=$GATE_CARRY_BUILT ;;
   esac
   # The frame is filled by splitting, never by `${var/pat/rep}`: a document path

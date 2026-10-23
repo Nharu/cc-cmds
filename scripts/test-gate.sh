@@ -41630,7 +41630,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 95c. 재진입 표의 구현·토론·단독·분할 행은 원장 값 칸을 게이트가 지어 대조한다
-# --- section: 95c | group: ledger_series | covers: act, gate_carry_check | needs: 95 | anchors: 95c: 재진입 표는 여섯 행이다, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
+# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_carry_ledger_frame, gate_carry_frame_reads | needs: 95 | anchors: 95c: 재진입 표는 여섯 행이다, 95c: 다음 런에 들인 구현 정지의 운반은 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 exit 19·행 없음, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
 #
 # 구현·설계 토론·리드 단독 설계·베이스 분할의 정지는 보통 파견과 같은 틀로 운반된다.
 # 그 틀의 칸 중 문서 말고는 모두 원장에서 오므로, 게이트가 같은 원장에서 값을 지어
@@ -41848,6 +41848,35 @@ lsr93_in "$lsr95c_l" gate_append stage-result "세그먼트=S3" "스테이지=S3
 lsr93_park "$lsr95c_l" S3 2 "$lsr93_sid" 'Step 3 구현 — 질문' implement
 check "95c: 리드 수정 없는 세그먼트의 재수렴 뒤 구현 정지의 틀 운반은 재구현으로 보지 않고 맞는다" \
   "$(lsr95c_frame ic5 수정 "/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q "세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh · 수정 대상: $lsr_root/ic5/review-S3-1.md 의 P0·P1")")" 0
+
+# 다음 런에 들인 구현 정지 — 출처 런 OR95C 의 원장에는 사이클 2(다음=수정)의 cycle 행과 멈춘
+# 수정 사이클 구현 시도가 있다. 이 런의 원장에는 세그먼트 행과, 입양이 쓰는 모양의 중단 답 사본
+# 행(출처 런·출처 기록)뿐이고 cycle 행이 없다. 원장 값 칸은 멈춘 시도가 받은 출처 원장의 값이라,
+# 이 런 원장으로 지은 사이클 1·꼬리 없음 의 운반은 맞지 않는다. 출처 원장은 이 런 원장 옆의
+# <출처 런>.md, 출처 런 디렉터리는 이 런 디렉터리 옆의 <출처 런> 이다.
+lsr95c_fx OR95C implement-unattended 'Step 3 구현 — 질문' implement 2 1 >/dev/null
+lsr95c_l=$(lsr75_new oc0)
+lsr93_in "$lsr95c_l" gate_append 'segment' 'id=S3' '상태=실행중' '선언 파일 집합=`a.txt`, `b/c.sh`' >/dev/null 2>&1
+cp "$lsr_root/OR95C/ledger.md" "$lsr_root/oc0/OR95C.md"
+mkdir -p "$lsr_root/oc0/halt"
+cp "$lsr_root/OR95C/halt/S3#1.md" "$lsr_root/oc0/halt/S3#adopted-OR95C.md"
+lsr93_in "$lsr95c_l" gate_append '중단 답' "세그먼트=S3" "중단 기록=$lsr_root/oc0/halt/S3#adopted-OR95C.md" \
+  "스킬=implement-unattended" "선택지=적용" "답한 주체=사람" "근거=입양 이월(출처 런 OR95C 원장 5 번째 줄) — 시험 픽스처의 답" \
+  "기록 다이제스트=$(shasum -a 256 "$lsr_root/OR95C/halt/S3#1.md" | cut -d' ' -f1)" \
+  "출처 런=OR95C" "출처 기록=$lsr_root/OR95C/halt/S3#1.md" "레인=~/.claude-u1" "기록 시각=2026-10-19T00:00:00Z" >/dev/null 2>&1
+lsr95c_ln=$( { grep -n '^- `중단 답` ' "$lsr95c_l" || true; } | tail -1 | cut -d: -f1)
+check "95c: 다음 런 픽스처의 이 런 원장에는 cycle 행이 없다" \
+  "$(lsr93_n "$lsr95c_l" '- `cycle` ')|$(lsr93_n "$lsr_root/oc0/OR95C.md" '- `cycle` ')" "0|1"
+check "95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 exit 19·행 없음" \
+  "$(lsr93_refused oc0 "$lsr95c_ln" "/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q '세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh')" implement)" "19|same|0"
+case "$(LSR93_LN=$lsr95c_ln LSR93_P="/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q '세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh')" \
+    lsr93_in "$lsr95c_l" eval 'GATE_CARRY_ANSWER=$LSR93_LN; gate_carry_check infra S3 implement "$LSR93_P" 2>&1 >/dev/null' 2>/dev/null)" in
+  *"출처 런 OR95C 원장으로 지은 값"*"재부착할 수 없습니다"*) ok "95c: 다음 런에 들인 구현 정지의 19 경고는 재부착이 아니라 중단을 말한다" ;;
+  *) bad "95c: 다음 런에 들인 구현 정지의 19 경고가 출처 런을 말하지 않는다" ;;
+esac
+lsr95c_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q "세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh · 수정 대상: $lsr_root/OR95C/review-S3-2.md 의 P0·P1")"
+check "95c: 다음 런에 들인 구현 정지의 운반은 출처 원장의 사이클과 수정 대상을 싣는다" \
+  "$(lsr95c_go oc0 "$lsr95c_ln" implement "$lsr95c_p")" "$lsr95c_ok#$lsr95c_p"
 
 # 설계 토론·리드 단독 — 의도 칸은 매니페스트 의 의도 블록 첫 줄이다.
 lsr95c_ln=$(lsr95c_fx dd0 design-discuss-unattended 'Step 4 토론 — 질문' design)
