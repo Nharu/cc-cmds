@@ -585,6 +585,43 @@ check "3b 사람 대기: 대조하는 수가 비어 있지 않다" "$(unanswered
 hasnt "3b 사람 대기: 사람 대기에는 한도 문장이 없다" "$OUT" "같은 한도"
 adopt_case "3b 사람 대기" RKW1281 '사람 대기'
 
+# TP6 · TP7 — an answer the source carried over to the next run (an `이월` row
+# names its `중단 답` line) is listed as coming over, and it is an answered
+# record: it neither makes the run wait on a person nor counts as unanswered.
+mk_prev RKWCARRY
+fx_row 'handoff' "교대=1" "사유=중단" "버린 선택지=-"
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/I1#1.md"
+fx_row '중단 답' "세그먼트=I1" "중단 기록=$FX_RUN_DIR/halt/I1#1.md" "선택지=재수렴"
+rk_def_ln=$(grep -n '^- `중단 답` ' "$FX_LEDGER" | tail -1 | cut -d: -f1)
+fx_row 'blocked' "스코프=cone" "원인=막힘" "앵커 세그먼트=I1" "사유=중단 답 이월 — I1#1.md — 마감 전 자리 없음" \
+  "근거=중단 답 줄 $rk_def_ln" "중단 답 줄=$rk_def_ln"
+detect_case "TP6 이월 답 대기" RKWCARRY 다시
+has "TP6 이월 답 대기: 이월된 답을 기록과 선택지로 나열한다" "$OUT" \
+  "고지${TAB}이전 런 RKWCARRY 의 이월된 중단 답 1건(I1#1.md: 재수렴)은 이 새 런이 같은 스텝을 처음 파견할 때 운반으로 이어받습니다 — 다시 묻지 않습니다"
+check "TP7 이월 답 대기: 원인은 사람 대기가 아니다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/멈춤"
+hasnt "TP7 이월 답 대기: 답 없는 정지 기록으로 나열하지 않는다" "$OUT" "답 없는 정지 기록"
+check "TP7 이월 답 대기: cc_unanswered_halts 도 세지 않는다" "$(unanswered RKWCARRY)" "0"
+detect_case "TP6 이월 답 재개" RKWCARRY 재개
+has "TP6 이월 답 재개: 붙든 판별도 이월된 답을 나열한다" "$OUT" "이월된 중단 답 1건(I1#1.md: 재수렴)"
+check "TP7 이월 답 재개: 붙든 판별의 원인도 사람 대기가 아니다" "$(col "$OUT" '대기 원인')" "멈춤"
+
+# An ended source: the carried-over answer is named as coming over, and its
+# `이월` block is not among the parks that do not.
+mk_prev RKWCEND; fx_done
+fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=벽시계 마감" "재킥 원인=마감" "근거=마감 도달"
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/A1#2.md"
+fx_row '중단 답' "세그먼트=A1" "중단 기록=$FX_RUN_DIR/halt/A1#2.md" "선택지=adopt as a requirement"
+rk_def_ln=$(grep -n '^- `중단 답` ' "$FX_LEDGER" | tail -1 | cut -d: -f1)
+fx_row 'blocked' "스코프=cone" "원인=막힘" "앵커 세그먼트=A1" "사유=중단 답 이월 — A1#2.md — 관측=마감 경과" \
+  "근거=중단 답 줄 $rk_def_ln" "중단 답 줄=$rk_def_ln"
+detect_case "TP6 끝난 원천의 이월 답" RKWCEND
+check "TP6 끝난 원천의 이월 답: 게이트 종료 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 갈래)" "재킥오프/게이트 종료"
+has "TP6 끝난 원천의 이월 답: 이월된 답을 나열한다" "$OUT" \
+  "이전 런 RKWCEND 의 이월된 중단 답 1건(A1#2.md: adopt as a requirement)은 이 새 런이 같은 스텝을 처음 파견할 때 운반으로 이어받습니다"
+hasnt "TP6 끝난 원천의 이월 답: 이월 행은 넘어오지 않는 정박에 들지 않는다" "$OUT" "중단 답 이월 — A1#2.md"
+
 # A record whose last answer the routing shift handed back waits on a person
 # again: the block the gate stamped with that answer's line names it, so the
 # record is listed though a `중단 답` row names it. A person's new answer ends it.
@@ -1346,7 +1383,7 @@ vs "원천에 없는 적용 프로브 코드 행을 더한 초안은 실패한�
 check "7: 재킥오프 흐름 전후 원 런의 plugin-pin 과 plugin/cc-cmds 사본이 같다" "$(pin_sum)" "$PIN_BEFORE"
 
 # (g) The label acknowledgement rows are carried in the place the shape rows
-# are, and a row the previous run did not hold passes only under a 5t answer
+# are, and a row the previous run did not hold passes only under a 5u answer
 # that came with an added target or a cutpoint raised by 7.7.
 LA_ROW="- \`라벨 인정\` | 대상=rk | 체크=api-surface-guard | 라벨=surface-change | 사유=픽스처"
 P_EXTRA="$LA_ROW" mk_prev RKLA; fx_done
@@ -1381,23 +1418,23 @@ check "7: 라벨 인정 행이 없는 --rows 는 원천의 라벨 인정 행을 
   "$rc/$(grep -c '^- `라벨 인정`' "$WORK/v-la-norows.md")" "0/0"
 VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 { cat "$NM1"; printf '%s\n' "$LA_ROW"; } > "$WORK/v-la-add.md"
-vs "원천에 없는 라벨 인정 행을 5t 답 없이 더한 초안은 실패한다" 실패 "$WORK/v-la-add.md" "$E" 행
+vs "원천에 없는 라벨 인정 행을 5u 답 없이 더한 초안은 실패한다" 실패 "$WORK/v-la-add.md" "$E" 행
 # The answers are recorded as the re-kickoff document records them: one key
 # per (target, check) pair and the option label as the answer.
-printf '5t rk api-surface-guard\t인정함\n' > "$WORK/asked-5t"
-vs "대상 추가도 7.7 절단점 답도 없이 5t 가 있으면 실패한다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t" 대상추가
-printf '7.7 절단점 other\t머지\n' >> "$WORK/asked-5t"
-vs "다른 대상의 7.7 절단점 답은 5t 답을 받치지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t" 대상추가
-printf '7.7 절단점 rk\t머지\n' >> "$WORK/asked-5t"
-o=$(rk verify-subset "$WORK/v-la-add.md" "$VS_PREV" --expect-sha256 "$VS_PMSHA" --expect-grant-sha256 "$VS_PGSHA" --asked "$WORK/asked-5t")
-check "7: 그 쌍의 5t 답 「인정함」으로 덮인 라벨 인정 행은 행 검사를 지난다" \
+printf '5u rk api-surface-guard\t인정함\n' > "$WORK/asked-5u"
+vs "대상 추가도 7.7 절단점 답도 없이 5u 가 있으면 실패한다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5u" 대상추가
+printf '7.7 절단점 other\t머지\n' >> "$WORK/asked-5u"
+vs "다른 대상의 7.7 절단점 답은 5u 답을 받치지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5u" 대상추가
+printf '7.7 절단점 rk\t머지\n' >> "$WORK/asked-5u"
+o=$(rk verify-subset "$WORK/v-la-add.md" "$VS_PREV" --expect-sha256 "$VS_PMSHA" --expect-grant-sha256 "$VS_PGSHA" --asked "$WORK/asked-5u")
+check "7: 그 쌍의 5u 답 「인정함」으로 덮인 라벨 인정 행은 행 검사를 지난다" \
   "$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "행" { print $3 }')" "통과"
-check "7: 같은 대상의 7.7 절단점 답과 함께 온 5t 답은 대상추가 검사를 지난다" \
+check "7: 같은 대상의 7.7 절단점 답과 함께 온 5u 답은 대상추가 검사를 지난다" \
   "$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "대상추가" { print $3 }')" "통과"
-printf '5t rk api-surface-guard\t행을 두지 않음 — 그 체크가 실패하면 그 세그먼트는 사람에게 멈춥니다\n7.7 절단점 rk\t머지\n' > "$WORK/asked-5t-no"
-vs "그 쌍의 5t 답이 「행을 두지 않음」이면 라벨 인정 행은 덮이지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t-no" 행
-printf '5t rk other-check\t인정함\n7.7 절단점 rk\t머지\n' > "$WORK/asked-5t-other"
-vs "다른 체크의 5t 답은 라벨 인정 행을 덮지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5t-other" 행
+printf '5u rk api-surface-guard\t행을 두지 않음 — 그 체크가 실패하면 그 세그먼트는 사람에게 멈춥니다\n7.7 절단점 rk\t머지\n' > "$WORK/asked-5u-no"
+vs "그 쌍의 5u 답이 「행을 두지 않음」이면 라벨 인정 행은 덮이지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5u-no" 행
+printf '5u rk other-check\t인정함\n7.7 절단점 rk\t머지\n' > "$WORK/asked-5u-other"
+vs "다른 체크의 5u 답은 라벨 인정 행을 덮지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5u-other" 행
 
 # The interview copy.
 out=$(rk render-interview --prev RKIV --base "$BASE" --expect-sha256 "$PMI"); rc=$?
@@ -1775,6 +1812,20 @@ SL_ASKED="$WORK/asked-ct"; seat_link RKCT RKCT2
 check "12: --targets 없이 그리면 원천 대상 행이 그대로 옮겨진다" \
   "$(grep -E '^- `target`' "$SL_OUT")" "$(grep -E '^- `target`' "$BASE/docs/pipeline-run/RKCT.plan.md")"
 SL_ASKED=""
+
+# A `플러그인 허용` row is the person's answer to 5t at one kickoff and is not
+# carried: the successor is drawn without it and still passes its checks.
+PA_ROW='- `플러그인 허용` | 플러그인=notion@claude-plugins-official | 사유=픽스처'
+P_EXTRA="$SEAT_ROW
+$PA_ROW" mk_seat RKPA 마감
+check "12: 원천 매니페스트에 플러그인 허용 행이 있다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cxF -- "$PA_ROW" "$BASE/docs/pipeline-run/RKPA.plan.md")" "1"
+seat_link RKPA RKPA1
+check "12: 플러그인 허용 행이 있는 원천도 render-manifest --auto 가 0 이고 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "12: 후속 매니페스트에는 플러그인 허용 행이 없다" "$(grep -c '^- `플러그인 허용`' "$SL_OUT" || true)" "0"
+mf_check "$SL_OUT"; rc=$?
+check "12: 플러그인 허용 행을 뺀 후속 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
 
 # The seat's wording that no helper prints: the stub's reason line and the
 # notice for a failure on the immediate path.

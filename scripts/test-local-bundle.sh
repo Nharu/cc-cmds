@@ -203,6 +203,14 @@ esac
 # --- the push-side wiring ----------------------------------------------------
 dry=$(cd "$repo_root" && make -n check-push 2>&1)
 if [ "$(printf '%s\n' "$dry" | grep -cxF 'bash scripts/check-push.sh run' || true)" -ge 1 ]; then ok "make check-push 가 check-push.sh run 을 부른다"; else bad "check-push 타깃" "$dry"; fi
+# The section and goal lists reach the script through the environment make
+# exports a command-line variable into, never through the recipe line. The
+# comparison is exact, so the inner make must not inherit the outer one's
+# jobserver: under `make -j` it warns "jobserver unavailable" into the output.
+for v in CHECK_PUSH_SECTIONS=x CHECK_PUSH_GOALS=x; do
+  dry=$(cd "$repo_root" && MAKEFLAGS='' MFLAGS='' MAKELEVEL='' make -n check-push "$v" 2>&1)
+  if [ "$dry" = "bash scripts/check-push.sh run" ]; then ok "make -n check-push $v 도 정확히 check-push.sh run 을 찍는다"; else bad "check-push 타깃 ($v)" "$dry"; fi
+done
 dry=$(cd "$repo_root" && make -n check-push-verify 2>&1)
 if [ "$(printf '%s\n' "$dry" | grep -cxF 'bash scripts/check-push.sh verify' || true)" -ge 1 ]; then ok "make check-push-verify 가 check-push.sh verify 를 부른다"; else bad "check-push-verify 타깃" "$dry"; fi
 # The prerequisites are read from make's own database rather than the file: a
@@ -214,6 +222,10 @@ for t in test test-rest; do
   case "$tline" in
     *run-check-push-selftest*) ok "$t 가 check-push 자가 시험을 선행으로 둔다" ;;
     *) bad "$t 선행" "run-check-push-selftest 가 없다: $tline" ;;
+  esac
+  case "$tline" in
+    *run-test-tree-selftest*) ok "$t 가 test-tree 자가 시험을 선행으로 둔다" ;;
+    *) bad "$t 선행" "run-test-tree-selftest 가 없다: $tline" ;;
   esac
 done
 

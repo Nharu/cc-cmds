@@ -69,9 +69,9 @@ design-base-unattended/SKILL.md LIT_SPLIT_TERMINAL"
 CONSUMERS="_common/pipeline-sidecar.md LIT_DESIGN_TERMINAL 2
 _common/pipeline-sidecar.md LIT_AUDIT_TERMINAL 1
 _common/pipeline-sidecar.md LIT_SPLIT_TERMINAL 1
-autopilot-router-shift/SKILL.md LIT_DESIGN_TERMINAL 2
-autopilot-router-shift/SKILL.md LIT_RECONVERGE_TERMINAL 1
-autopilot-router-shift/SKILL.md LIT_SPLIT_TERMINAL 1
+autopilot-router-shift/references/design-dispatch.md LIT_DESIGN_TERMINAL 2
+autopilot-router-shift/references/refutation-reconverge.md LIT_RECONVERGE_TERMINAL 1
+autopilot-router-shift/references/split-dispatch.md LIT_SPLIT_TERMINAL 1
 autopilot/references/router-lead-copy.md LIT_DESIGN_TERMINAL 2
 autopilot/references/router-lead-copy.md LIT_SPLIT_TERMINAL 1"
 

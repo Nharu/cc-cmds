@@ -181,7 +181,7 @@
 #
 # The `--asked` file lists the questions this re-kickoff actually asked, one
 # `<키><TAB><답 축자>` per line. The keys the checks read: `대상확인 <별칭>`,
-# `대상추가 <별칭>`, `5p`, `5q`, `5t <별칭> <체크>`, `5e`, `5e 값`, `5l`, `5o <범위>:<키>`,
+# `대상추가 <별칭>`, `5p`, `5q`, `5u <별칭> <체크>`, `5e`, `5e 값`, `5l`, `5o <범위>:<키>`,
 # `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`, `입양 <세그먼트>`. Any other key covers
 # nothing, and every answer, whatever its key, must stand verbatim in the
 # draft's `사용자 확인 문면`. `5e` is the person's answer as given — a relative
@@ -1022,8 +1022,12 @@ EOF
     rk_open_approvals "$RK_PL"
     [ "$RK_AP_N" -eq 0 ] || printf '굵게\t이전 런 %s 의 열린 승인 %s건(%s)은 닫거나 옮기지 않습니다 — 그 답은 원천 런에 남고, 이 새 런이 같은 자리에 이르면 다시 묻습니다\n' \
       "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
+    rk_deferred_halt_names "$RK_PL"
+    rk_deferred_line 고지
+    # An `이월` row is a block too, but what it holds comes over: it is named
+    # above, never among the parks that do not.
     local parks np=0 why reasons=""
-    parks=$(printf '%s\n' "$ub" | awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }')
+    parks=$(printf '%s\n' "$ub" | awk -F '\t' 'NF >= 2 && $2 != "" && index($2, "중단 답 이월 — ") != 1 { print $2 }')
     while IFS= read -r why; do
       [ -n "$why" ] || continue
       np=$((np + 1)); reasons="${reasons:+$reasons, }$why"
@@ -1118,6 +1122,9 @@ rk_detect_held() {
     "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
   [ "$RK_HALT_N" -eq 0 ] || printf '고지\t이전 런 %s 의 답 없는 정지 기록 %s건(%s)에 답하면 그 런이 이어집니다\n' \
     "$RK_PREV" "$RK_HALT_N" "$RK_HALT_LIST"
+  # The carried-over answers are named for the adoption the way out offers.
+  rk_deferred_halt_names "$RK_PL"
+  rk_deferred_line 고지
   rk_resume_quotes
   exit 0
 }
@@ -1151,6 +1158,8 @@ rk_detect_wait() {
     "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
   [ "$RK_HALT_N" -eq 0 ] || printf '굵게\t이전 런 %s 의 답 없는 정지 기록 %s건(%s)은 옮기지 않습니다 — 그 기록은 원천 런에 남고, 이 새 런이 같은 자리에 이르면 다시 묻습니다\n' \
     "$RK_PREV" "$RK_HALT_N" "$RK_HALT_LIST"
+  rk_deferred_halt_names "$RK_PL"
+  rk_deferred_line 고지
   rk_clause_lines "$1"
   rk_resume_quotes
   rk_detect_tail
@@ -1220,6 +1229,42 @@ rk_unanswered_halt_names() {
     RK_HALT_LIST="${RK_HALT_LIST:+$RK_HALT_LIST, }$rel"
   done
   return 0
+}
+
+# rk_deferred_halt_names <ledger> — sets RK_DEF_N and RK_DEF_LIST: the answers
+# the source carried over to the next run, one per `중단 답` line an `이월` row
+# (`blocked` with `사유=중단 답 이월 — …`) names, as `<record under halt/>:
+# <option>`. These are answered records, so `rk_unanswered_halt_names` does not
+# count them and the wait cause never reads them as waiting on a person: the
+# follow-up run brings each one in the first time it dispatches that step, and
+# its routing shift hands it on with a carry act instead of asking again.
+rk_deferred_halt_names() {
+  local led="$1" r ln row rec opt seen=" "
+  RK_DEF_N=0; RK_DEF_LIST=""
+  [ -f "$led" ] || return 0
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    ln=$(manifest_row_fields "$r" '중단 답 줄' | tail -n 1)
+    rk_num "$ln" || continue
+    case "$seen" in *" $ln "*) continue ;; esac
+    seen="$seen$ln "
+    row=$(sed -n "${ln}p" "$led")
+    case "$row" in '- `중단 답` '*) ;; *) continue ;; esac
+    rec=$(manifest_row_fields "$row" '중단 기록' | tail -n 1)
+    opt=$(manifest_row_fields "$row" '선택지' | tail -n 1)
+    RK_DEF_N=$((RK_DEF_N + 1))
+    RK_DEF_LIST="${RK_DEF_LIST:+$RK_DEF_LIST, }${rec##*/halt/}: ${opt:--}"
+  done <<EOF
+$( { grep '^- `blocked` ' "$led" 2>/dev/null || true; } | { grep -F '| 사유=중단 답 이월 — ' || true; })
+EOF
+  return 0
+}
+
+# rk_deferred_line <kind> — the line naming the source's carried-over answers,
+# after `rk_deferred_halt_names`; nothing when there are none.
+rk_deferred_line() {
+  [ "$RK_DEF_N" -eq 0 ] || printf '%s\t이전 런 %s 의 이월된 중단 답 %s건(%s)은 이 새 런이 같은 스텝을 처음 파견할 때 운반으로 이어받습니다 — 다시 묻지 않습니다\n' \
+    "$1" "$RK_PREV" "$RK_DEF_N" "$RK_DEF_LIST"
 }
 
 # rk_wait_cause <ledger> — what an un-ended quiet run waits on, the first that
@@ -1967,6 +2012,10 @@ rk_render() {
     # of this run is one derived again at this call, written when the section
     # closes.
     /^- `세그먼트 입양`/ { next }
+    # The plugin rows of the previous run are never carried either: the person
+    # accepted each one for the work of that run, and the successor stages load
+    # the seed allow-list alone. Dropping a row only narrows the successor.
+    /^- `플러그인 허용`/ { next }
     /^- `사전 인가` \| 인터뷰 기록=/ {
       if (ENVIRON["R_DOUT"] == "1") next
       line = $0; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; next
@@ -2459,9 +2508,9 @@ EOF
   vs_check 로스터 "$why"
 
   # 7 — `사전 인가`, `자동 채택` and `라벨 인정` rows are the previous ones, or
-  # covered. 5t is one question per (target, check) pair and its answer is the
+  # covered. 5u is one question per (target, check) pair and its answer is the
   # option label, so a `라벨 인정` row is covered by the last answer recorded
-  # under its own pair key, `5t <별칭> <체크>`, reading 「인정함」.
+  # under its own pair key, `5u <별칭> <체크>`, reading 「인정함」.
   local prows a5p a5q a77 tail la_key
   prows=$( { MANIFEST="$prev" rk_shape_rows; MANIFEST="$prev" manifest_autoadopt_rows_anywhere; MANIFEST="$prev" manifest_label_ack_rows; } )
   a5p=$(awk -F '\t' '$1 == "5p" { print substr($0, 4) }' "$RK_ASKED")
@@ -2478,7 +2527,7 @@ EOF
         { [ -n "$a5q" ] && case "$a5q" in *"$tail"*) true ;; *) false ;; esac; } && continue
         { [ -n "$a77" ] && case "$a77" in *"$tail"*) true ;; *) false ;; esac; } && continue ;;
       '- `라벨 인정`'*)
-        la_key="5t $(manifest_row_fields "$row" '대상' | head -n 1) $(manifest_row_fields "$row" '체크' | head -n 1)"
+        la_key="5u $(manifest_row_fields "$row" '대상' | head -n 1) $(manifest_row_fields "$row" '체크' | head -n 1)"
         [ "$(rk_asked_answer "$la_key")" = "인정함" ] && continue ;;
     esac
     why="${why:+$why; }원천에 없고 답으로 덮이지 않은 행: $row"
@@ -2511,17 +2560,17 @@ EOF
   if [ -n "$a5p$a5q" ] && ! awk -F '\t' '$1 ~ /^대상추가 / { f = 1 } END { exit !f }' "$RK_ASKED"; then
     why="5p·5q 답이 있는데 확인된 대상 추가가 없습니다"
   fi
-  # A 5t answer is asked again for an added target or for a target whose
+  # A 5u answer is asked again for an added target or for a target whose
   # cutpoint 7.7 raised to a merge or above, and for nothing else: every
-  # `5t <별칭> <체크>` key needs a `대상추가 <별칭>` or `7.7 절단점 <별칭>` key
+  # `5u <별칭> <체크>` key needs a `대상추가 <별칭>` or `7.7 절단점 <별칭>` key
   # for the same alias, compared whole.
   local la_bare=""
   [ -n "$RK_ASKED" ] && la_bare=$(awk -F '\t' '
     $1 ~ /^(대상추가|7\.7 절단점) / { a = $1; sub(/^(대상추가|7\.7 절단점) /, "", a); ok[a] = 1; next }
-    $1 ~ /^5t / { a = substr($1, 4); sub(/ .*/, "", a); n++; t[n] = a }
+    $1 ~ /^5u / { a = substr($1, 4); sub(/ .*/, "", a); n++; t[n] = a }
     END { for (i = 1; i <= n; i++) if (!(t[i] in ok)) print t[i] }' "$RK_ASKED" | sort -u | tr '\n' ' ')
   if [ -n "$la_bare" ]; then
-    why="${why:+$why; }5t 답이 있는데 그 대상의 확인된 대상 추가도 7.7 절단점 답도 없습니다: ${la_bare% }"
+    why="${why:+$why; }5u 답이 있는데 그 대상의 확인된 대상 추가도 7.7 절단점 답도 없습니다: ${la_bare% }"
   fi
   vs_check 대상추가 "$why"
 

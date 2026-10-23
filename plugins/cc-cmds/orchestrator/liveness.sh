@@ -485,40 +485,14 @@ cc_ci_latest_verdict() {
   # first observation moves the pair, so the old head's rounds filter nothing on
   # it. A `실패` with checks still running reads `대기`, and so does a pair whose
   # current round has no verdict yet.
-  local run_dir="$1" ledger="$2" seg="$3" recs="" f last sha g pick st pend ob tab
+  #
+  # THE RELAY'S WAKE DOES NOT READ ITS HEAD HERE. `cc_ci_relay_condition` takes
+  # the head from the segment worktree and judges that head's round; this reader
+  # stays for the callers that hold no worktree.
+  local run_dir="$1" ledger="$2" seg="$3" recs="" last sha g pick st pend ob tab
   [ -n "$seg" ] || return 0
   tab=$(printf '\t')
-  if [ -n "$ledger" ] && [ -f "$ledger" ]; then
-    recs=$(LC_ALL=C awk -F'|' -v seg="$seg" '
-      function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-      /^- `checks` / {
-        hit = 0; st = ""; ob = ""; sh = ""; g = "0"; pd = "0"
-        for (i = 2; i <= NF; i++) {
-          f = trim($i)
-          if (f == "세그먼트=" seg) hit = 1
-          else if (index(f, "상태=") == 1) st = substr(f, length("상태=") + 1)
-          else if (index(f, "관측=") == 1) ob = substr(f, length("관측=") + 1)
-          else if (index(f, "head sha=") == 1) sh = substr(f, length("head sha=") + 1)
-          else if (index(f, "재실행 회차=") == 1) g = substr(f, length("재실행 회차=") + 1)
-          else if (index(f, "진행 중=") == 1) pd = substr(f, length("진행 중=") + 1)
-        }
-        if (g !~ /^[0-9]+$/) g = "0"
-        if (pd !~ /^[0-9]+$/) pd = "0"
-        if (hit && st != "") printf "%s\t%d\t%d\t%s\t%s\n", sh, g, pd, st, ob
-      }
-    ' "$ledger" 2>/dev/null || true)
-  fi
-  if [ -n "$run_dir" ]; then
-    while IFS= read -r f; do
-      [ -n "$f" ] && [ -f "$f" ] || continue
-      recs="$recs
-$(cc_ci_observed_records "$f" "$seg")"
-    done <<EOF
-$( { ls -tr "$run_dir"/checks.observed.draining.* 2>/dev/null || true; } )
-EOF
-    recs="$recs
-$(cc_ci_observed_records "$run_dir/checks.observed" "$seg")"
-  fi
+  recs=$(cc_ci_records "$run_dir" "$ledger" "$seg")
   last=$(printf '%s\n' "$recs" | awk 'NF > 0' | tail -1)
   [ -n "$last" ] || return 0
   sha=${last%%"$tab"*}
@@ -537,6 +511,51 @@ $(cc_ci_observed_records "$run_dir/checks.observed" "$seg")"
     st="대기"
   fi
   printf '%s\t%s' "$st" "$ob"
+}
+
+cc_ci_records() {
+  # cc_ci_records <run-dir> <ledger> <segment> — every verdict of that segment
+  # from the three sources, oldest first, as
+  # `<sha>\t<g>\t<진행 중>\t<상태>\t<관측>\t<원장 줄>` lines. The last column is
+  # the ledger line number of a `checks` row, and `-` for an observation still
+  # in a poller file: the relay's wake consumption compares a verdict's place in
+  # the ledger with the last `교대 기동` row, and an observation not yet
+  # transcribed has no place there.
+  #
+  # THE THREE SOURCES IN THE POLLER'S OWN ORDER: the ledger's `checks` rows, then
+  # every `checks.observed.draining.*` oldest first, then `checks.observed`. An
+  # empty <run-dir> reads the ledger alone, which is what the gate reads.
+  local run_dir="$1" ledger="$2" seg="$3" f
+  [ -n "$seg" ] || return 0
+  if [ -n "$ledger" ] && [ -f "$ledger" ]; then
+    LC_ALL=C awk -F'|' -v seg="$seg" '
+      function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+      /^- `checks` / {
+        hit = 0; st = ""; ob = ""; sh = ""; g = "0"; pd = "0"
+        for (i = 2; i <= NF; i++) {
+          f = trim($i)
+          if (f == "세그먼트=" seg) hit = 1
+          else if (index(f, "상태=") == 1) st = substr(f, length("상태=") + 1)
+          else if (index(f, "관측=") == 1) ob = substr(f, length("관측=") + 1)
+          else if (index(f, "head sha=") == 1) sh = substr(f, length("head sha=") + 1)
+          else if (index(f, "재실행 회차=") == 1) g = substr(f, length("재실행 회차=") + 1)
+          else if (index(f, "진행 중=") == 1) pd = substr(f, length("진행 중=") + 1)
+        }
+        if (g !~ /^[0-9]+$/) g = "0"
+        if (pd !~ /^[0-9]+$/) pd = "0"
+        if (hit && st != "") printf "%s\t%d\t%d\t%s\t%s\t%d\n", sh, g, pd, st, ob, NR
+      }
+    ' "$ledger" 2>/dev/null || true
+  fi
+  [ -n "$run_dir" ] || return 0
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    cc_ci_observed_records "$f" "$seg" | awk 'NF > 0 { print $0 "\t-" }'
+  done <<EOF
+$( { ls -tr "$run_dir"/checks.observed.draining.* 2>/dev/null || true; } )
+EOF
+  cc_ci_observed_records "$run_dir/checks.observed" "$seg" | awk 'NF > 0 { print $0 "\t-" }'
+  return 0
 }
 
 cc_ci_observed_records() {
@@ -645,6 +664,287 @@ cc_relay_cut_cleared_at() {
   cc_iso_to_epoch "$at"
 }
 
+# THE CI WAIT'S TWO CLOCKS, declared once and read by the gate, the relay and
+# the watcher alike. On a CI join target (a routed run's segment whose cutpoint
+# is `PR`, `머지` or `배포`):
+#   - a round-0 verdict V reading `미등록` counts as "no CI" once its `관측` is
+#     `CC_CI_UNREGISTERED_GRACE_SECONDS` old. The poller writes one row per
+#     transition, so an unbroken `미등록` is one row and its `관측` is the first
+#     sighting; a round that went `미등록` → `판정 불가` → `미등록` restarts the
+#     grace at the last transition.
+#   - every other wait for a verdict ends `CC_CI_WAIT_CAP_SECONDS` after the wait
+#     clock (`cc_ci_wait_clock`), whatever its reason — no row, `대기`, a failure
+#     still running, `판정 불가`, `미등록` — and `다음` then reads `CI 대기 한도`.
+# The grace measured against one sample: CI started 33 seconds after the commit
+# and the 60-second poller saw `대기` at 84, so 300 leaves three times that. The
+# cap is three times a 25-40 minute CI, so a healthy one never reaches it.
+CC_CI_UNREGISTERED_GRACE_SECONDS=300
+CC_CI_WAIT_CAP_SECONDS=7200
+
+cc_ci_segment_row_field() {
+  # cc_ci_segment_row_field <ledger> <segment> <key> — <key> of the segment's
+  # last `segment` row, the one whose `id` field equals <segment>, or empty.
+  # The same row the gate's `gate_segment_field` reads.
+  [ -n "$1" ] && [ -f "$1" ] && [ -n "$2" ] || return 0
+  LC_ALL=C awk -F'|' -v seg="$2" -v key="$3" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^- `segment` / {
+      hit = 0; v = ""
+      for (i = 2; i <= NF; i++) {
+        f = trim($i)
+        if (f == "id=" seg) hit = 1
+        else if (index(f, key "=") == 1) v = substr(f, length(key) + 2)
+      }
+      if (hit) last = v
+    }
+    END { printf "%s", last }
+  ' "$1" 2>/dev/null || true
+}
+
+cc_ci_worktree_head() {
+  # cc_ci_worktree_head <worktree> — the commit that worktree's HEAD names, or
+  # empty. A local read: no fetch, no network.
+  [ -n "$1" ] && [ -d "$1" ] || return 0
+  ( cd "$1" 2>/dev/null && git --no-optional-locks rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null ) || true
+}
+
+cc_ci_wait_clock() {
+  # cc_ci_wait_clock <run-dir> <ledger> <segment> <head sha> <round> <worktree>
+  # — `<UTC time>\t<evidence line>`: when the wait for round <round> of
+  # (segment, head) began, and the ledger line of the row it was read from.
+  # The sources, first that parses wins:
+  #   1. the earliest verdict of that (segment, head, round) — its `관측`;
+  #   2. on a round ≥ 1, the newest `CI 처분 처분=재실행 상태=수락` row of
+  #      (segment, head) — its `관측`, which the gate stamps in UTC;
+  #   3. the head's commit time, read in UTC, whatever the round.
+  # The evidence line is `-` for a verdict still in a poller file and empty for
+  # the commit time, which no row carries.
+  #
+  # THE EARLIEST ROW, NOT THE NEWEST: a round whose verdict goes back and forth
+  # is measured from its first sighting, so the clock never moves back. A round
+  # ≥ 1 opens on its acceptance rather than on the failure before it, so a rerun
+  # accepted late does not start its round already past the cap.
+  #
+  # A SOURCE THAT DOES NOT PARSE IS ABSENT, and the commit time stands behind
+  # every one, so on a head that resolves the clock is always set and one badly
+  # written row cannot make the cap disappear. The commit time is read with
+  # `format-local` under `TZ=UTC`: `cc_iso_to_epoch` drops any offset, and a
+  # `%cI` of `+09:00` would shift the clock by nine hours.
+  local run_dir="$1" ledger="$2" seg="$3" sha="$4" g="${5:-0}" wt="$6" r ob
+  [ -n "$seg" ] && [ -n "$sha" ] || return 0
+  r=$(cc_ci_records "$run_dir" "$ledger" "$seg" \
+      | LC_ALL=C awk -F'\t' -v sha="$sha" -v g="$g" 'NF > 0 && $1 == sha && $2 == g { print; exit }')
+  if [ -n "$r" ]; then
+    ob=$(printf '%s' "$r" | cut -f5)
+    if [ -n "$(cc_iso_to_epoch "$ob")" ]; then
+      printf '%s\t%s' "$ob" "$(printf '%s' "$r" | cut -f6)"
+      return 0
+    fi
+  fi
+  if [ "$g" -ge 1 ] 2>/dev/null && [ -n "$ledger" ] && [ -f "$ledger" ]; then
+    r=$(LC_ALL=C awk -F'|' -v seg="$seg" -v sha="$sha" '
+      function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+      function val(n,   i, f) {
+        for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, n "=") == 1) return substr(f, length(n) + 2) }
+        return ""
+      }
+      /^- `CI 처분` / {
+        if (val("세그먼트") == seg && val("처분") == "재실행" && val("상태") == "수락" && val("head sha") == sha)
+          p = val("관측") "\t" NR
+      }
+      END { printf "%s", p }
+    ' "$ledger" 2>/dev/null || true)
+    ob=$(printf '%s' "$r" | cut -f1)
+    if [ -n "$r" ] && [ -n "$(cc_iso_to_epoch "$ob")" ]; then
+      printf '%s' "$r"
+      return 0
+    fi
+  fi
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  ob=$( ( cd "$wt" 2>/dev/null && TZ=UTC git --no-optional-locks log -1 \
+          --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd "$sha" 2>/dev/null ) || true)
+  [ -n "$(cc_iso_to_epoch "$ob")" ] || return 0
+  printf '%s\t' "$ob"
+}
+
+cc_ci_unregistered_expired() {
+  # cc_ci_unregistered_expired <상태> <round> <관측> [<now>] — succeeds when a
+  # verdict is round 0's `미등록` and its `관측` is at least the grace old.
+  local ep now="${4:-}"
+  [ "$1" = "미등록" ] && [ "${2:-0}" = "0" ] || return 1
+  ep=$(cc_iso_to_epoch "$3")
+  [ -n "$ep" ] || return 1
+  [ -n "$now" ] || now=$(date -u +%s)
+  [ $((ep + CC_CI_UNREGISTERED_GRACE_SECONDS)) -le "$now" ]
+}
+
+cc_ci_wait_capped() {
+  # cc_ci_wait_capped <wait clock time> [<now>] — succeeds when the cap has
+  # passed since that clock.
+  local ep now="${2:-}"
+  ep=$(cc_iso_to_epoch "$1")
+  [ -n "$ep" ] || return 1
+  [ -n "$now" ] || now=$(date -u +%s)
+  [ $((ep + CC_CI_WAIT_CAP_SECONDS)) -le "$now" ]
+}
+
+cc_ci_rerun_parked() {
+  # cc_ci_rerun_parked <ledger> <segment> <head sha> — succeeds when a rerun
+  # `도달 park` row of the segment stands below the first `checks` row of
+  # (segment, head). The park row carries no head, so the head is tied to it by
+  # line order: an older head's park sits above the new head's first verdict. A
+  # head with no `checks` row in the ledger has no park of its own yet.
+  [ -n "$1" ] && [ -f "$1" ] && [ -n "$2" ] && [ -n "$3" ] || return 1
+  LC_ALL=C awk -F'|' -v seg="$2" -v sha="$3" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function val(n,   i, f) {
+      for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, n "=") == 1) return substr(f, length(n) + 2) }
+      return ""
+    }
+    /^- `checks` / { if (!first && val("세그먼트") == seg && val("head sha") == sha) first = NR; next }
+    /^- `blocked` / {
+      if (!first) next
+      d = val("도달 판정")
+      if (val("사유") == "도달 park" && val("세그먼트") == seg && (d == "재실행대상미상" || d == "재실행배포트리거")) hit = 1
+    }
+    END { exit(hit ? 0 : 1) }
+  ' "$1" 2>/dev/null
+}
+
+cc_ci_relay_condition() {
+  # cc_ci_relay_condition <run-dir> <ledger> <segment> [<now>] — the wake
+  # conditions of a segment the relay waits on for CI, one
+  # `<wake epoch>\t<evidence line>` line each in the order they stand, or
+  # nothing when there is none:
+  #   `통과`, or a failure with nothing running   wake at the verdict's `관측`
+  #   round 0's `미등록` past the grace            wake at `관측 + grace`
+  #   the wait cap reached                        wake at `wait clock + cap`
+  # No verdict, `대기`, a failure still running, `판정 불가` and `미등록`
+  # inside the grace do not wake before the cap.
+  #
+  # AN EXPIRED `미등록` IS FOLLOWED BY THE CAP. A shift that woke on the expiry
+  # and still ended waiting on CI consumed that condition, and the same verdict
+  # row still stands; the cap is then the wait's end, so its line comes after
+  # and the caller takes the first one not consumed.
+  #
+  # THE HEAD IS THE SEGMENT WORKTREE'S TIP, read from the `워크트리` of the
+  # segment's last `segment` row, so a verdict of another head never wakes. A
+  # worktree that does not resolve falls back to the newest verdict's own sha.
+  local run_dir="$1" ledger="$2" seg="$3" now="${4:-}" tab recs last wt h g v st pend ob ln ep clk
+  [ -n "$seg" ] || return 0
+  tab=$(printf '\t')
+  [ -n "$now" ] || now=$(date -u +%s)
+  recs=$(cc_ci_records "$run_dir" "$ledger" "$seg")
+  wt=$(cc_ci_segment_row_field "$ledger" "$seg" '워크트리')
+  h=$(cc_ci_worktree_head "$wt")
+  if [ -z "$h" ]; then
+    last=$(printf '%s\n' "$recs" | awk 'NF > 0' | tail -1)
+    [ -n "$last" ] || return 0
+    h=${last%%"$tab"*}
+  fi
+  g=$(cc_ci_round_get "$(cc_ci_round "$ledger" "$seg" "$h")" g)
+  g=${g:-0}
+  v=$(printf '%s\n' "$recs" | LC_ALL=C awk -F'\t' -v sha="$h" -v g="$g" \
+    'NF > 0 && $1 == sha && $2 == g { p = $0 } END { printf "%s", p }')
+  if [ -n "$v" ]; then
+    pend=$(printf '%s' "$v" | cut -f3); st=$(printf '%s' "$v" | cut -f4)
+    ob=$(printf '%s' "$v" | cut -f5); ln=$(printf '%s' "$v" | cut -f6)
+    if [ "$st" = "통과" ] || { [ "$st" = "실패" ] && [ "${pend:-0}" -eq 0 ] 2>/dev/null; }; then
+      printf '%s\t%s\n' "$(cc_iso_to_epoch "$ob")" "$ln"
+      return 0
+    fi
+    if cc_ci_unregistered_expired "$st" "$g" "$ob" "$now"; then
+      printf '%s\t%s\n' "$(( $(cc_iso_to_epoch "$ob") + CC_CI_UNREGISTERED_GRACE_SECONDS ))" "$ln"
+    fi
+  fi
+  clk=$(cc_ci_wait_clock "$run_dir" "$ledger" "$seg" "$h" "$g" "$wt")
+  [ -n "$clk" ] || return 0
+  cc_ci_wait_capped "${clk%%"$tab"*}" "$now" || return 0
+  ep=$(cc_iso_to_epoch "${clk%%"$tab"*}")
+  printf '%s\t%s\n' "$((ep + CC_CI_WAIT_CAP_SECONDS))" "${clk#*"$tab"}"
+}
+
+cc_ci_early_condition() {
+  # cc_ci_early_condition <run-dir> <ledger> <segment> — the relay's reading of
+  # the early rerun predicate E, as `<wake epoch>\t<evidence line>`, or nothing:
+  # a routed run (`<run-dir>/routing-guard` reads `1`), the segment neither
+  # `머지됨` nor `park`, a live review stage on it, its worktree tip resolves,
+  # no rerun spent on that head, round 0's verdict a failure with nothing
+  # running, and no rerun `도달 park` row below the head's first `checks` row.
+  # The wake is that verdict's `관측`.
+  #
+  # THE CUTPOINT IS NOT READ. This file opens no manifest, and it need not: a
+  # `checks` row exists only where a pull request does, and the router opens
+  # one only at a cutpoint of `PR` or above, so a segment the rest of E holds
+  # for is a CI join target.
+  local run_dir="$1" ledger="$2" seg="$3" st wt h u recs v
+  [ -n "$run_dir" ] && [ -n "$seg" ] || return 0
+  [ "$( { sed -n '1p' "$run_dir/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')" = "1" ] || return 0
+  st=$(cc_ci_segment_row_field "$ledger" "$seg" '상태')
+  case "$st" in 머지됨|park) return 0 ;; esac
+  cc_stage_is_live "$run_dir" "$seg" || return 0
+  [ "$(cc_stage_kind "$run_dir" "$ledger" "$seg")" = "review" ] || return 0
+  wt=$(cc_ci_segment_row_field "$ledger" "$seg" '워크트리')
+  h=$(cc_ci_worktree_head "$wt")
+  [ -n "$h" ] || return 0
+  u=$(cc_ci_round_get "$(cc_ci_round "$ledger" "$seg" "$h")" u)
+  [ "${u:-0}" = "0" ] || return 0
+  recs=$(cc_ci_records "$run_dir" "$ledger" "$seg")
+  v=$(printf '%s\n' "$recs" | LC_ALL=C awk -F'\t' -v sha="$h" \
+    'NF > 0 && $1 == sha && $2 == 0 { p = $0 } END { printf "%s", p }')
+  [ -n "$v" ] || return 0
+  [ "$(printf '%s' "$v" | cut -f4)" = "실패" ] || return 0
+  [ "$(printf '%s' "$v" | cut -f3)" = "0" ] || return 0
+  if cc_ci_rerun_parked "$ledger" "$seg" "$h"; then return 0; fi
+  printf '%s\t%s\n' "$(cc_iso_to_epoch "$(printf '%s' "$v" | cut -f5)")" "$(printf '%s' "$v" | cut -f6)"
+}
+
+cc_relay_last_shift_launch() {
+  # cc_relay_last_shift_launch <ledger> — `<line>\t<기록 시각 epoch>` of the
+  # ledger's last `교대 기동` row, or nothing.
+  local r tab
+  [ -n "$1" ] && [ -f "$1" ] || return 0
+  tab=$(printf '\t')
+  r=$(LC_ALL=C awk -F'|' '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^- `교대 기동` / {
+      at = ""
+      for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, "기록 시각=") == 1) at = substr(f, length("기록 시각=") + 1) }
+      p = NR "\t" at
+    }
+    END { printf "%s", p }
+  ' "$1" 2>/dev/null || true)
+  [ -n "$r" ] || return 0
+  printf '%s\t%s' "${r%%"$tab"*}" "$(cc_iso_to_epoch "${r#*"$tab"}")"
+}
+
+cc_relay_condition_consumed() {
+  # cc_relay_condition_consumed <last launch line> <last launch epoch> <wake
+  # epoch> <evidence line> — succeeds when the last `교대 기동` row stands below
+  # the condition's evidence row (no such clause when the evidence is no row)
+  # and was written at or after the wake time. Evidence still in a poller file
+  # (`-`) is never consumed.
+  #
+  # THE PAIR THIS KEEPS. The relay waits only while a shift ended `대기` and
+  # launches the next one when it wakes, so the last `교대 기동` belongs to the
+  # shift that just waited. That shift's snapshot held every row above its
+  # launch row, and a condition true at its launch stayed true for it, so it
+  # acted on the condition, recorded that it could not, or chose to wait —
+  # waking it again on the same evidence repeats the same turn. A row
+  # transcribed below the launch row was not consumed and wakes once more.
+  local sl="$1" se="$2" wake="$3" ev="$4"
+  case "$sl" in ''|*[!0-9]*) return 1 ;; esac
+  case "$ev" in
+    -) return 1 ;;
+    '') : ;;
+    *[!0-9]*) return 1 ;;
+    *) [ "$sl" -gt "$ev" ] || return 1 ;;
+  esac
+  [ -n "$wake" ] || return 0
+  case "$se" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$se" -ge "$wake" ]
+}
+
 cc_relay_wake_keys() {
   # cc_relay_wake_keys <run-dir> <ledger> — one line per wake condition standing
   # now for the relay `relay.live` records: `<key>\t<epoch of its own clock>`,
@@ -652,7 +952,13 @@ cc_relay_wake_keys() {
   #
   #   sr\t            a `stage-result` row after the reference row
   #   st:<key>\t      a stage or supervisor of the wait set is no longer live
-  #   ci:<seg>\t<ep>  the segment's newest verdict is not `대기` (clock: `관측`)
+  #   ci:<seg>\t<ep>  the CI wait of the segment's worktree tip ended: `통과` or
+  #                   a settled failure (clock: `관측`), round 0's `미등록` past
+  #                   the grace (clock: `관측 + grace`), or the wait cap
+  #                   (clock: `wait clock + cap`) — `cc_ci_relay_condition`
+  #   ce:<seg>\t<ep>  a live review stage's segment whose round-0 failure has
+  #                   settled with no rerun spent — the early rerun predicate
+  #                   (clock: that verdict's `관측`) — `cc_ci_early_condition`
   #   rl:<key>\t<ep>  a cut's reset plus the grace has passed (clock: that sum)
   #   lc:<key>\t<ep>  a `한도 해제` row stands below the cut row (clock: its
   #                   `기록 시각`)
@@ -663,7 +969,14 @@ cc_relay_wake_keys() {
   # anything; the watcher asks how long each line has stood. A segment with no
   # verdict yet does not wake. The two reset keys carry their own clock, so the
   # watcher ages them by it and not by the pass that first saw them.
-  local run_dir="$1" ledger="$2" k v st ob tab now grace ep at
+  #
+  # A CI KEY STANDS ONCE PER CONDITION. A `ci:` or `ce:` condition is consumed
+  # once the last `교대 기동` row stands below its evidence row and was written
+  # at or after its wake time (`cc_relay_condition_consumed`): the shift that
+  # launched on it has seen it, so the same evidence does not launch the same
+  # shift again. Evidence still in a poller file is never consumed — the launch
+  # drains it into the ledger above its own row, so the next shift sees it.
+  local run_dir="$1" ledger="$2" k v tab now grace ep at sl se c
   [ -f "$run_dir/relay.live" ] || return 0
   tab=$(printf '\t')
   if cc_relay_result_after_ref "$ledger" "$run_dir"; then printf 'sr\t\n'; fi
@@ -691,12 +1004,28 @@ cc_relay_wake_keys() {
       printf 'st:%s\t\n' "$k"
     fi
   done
+  c=$(cc_relay_last_shift_launch "$ledger")
+  sl=${c%%"$tab"*}; se=""
+  [ -z "$c" ] || se=${c#*"$tab"}
   for k in $(cc_relay_field "$run_dir" ci | tr ',' ' '); do
     [ "$k" != "-" ] || continue
-    v=$(cc_ci_latest_verdict "$run_dir" "$ledger" "$k")
-    st=${v%%"$tab"*}; ob=${v#*"$tab"}
-    case "$st" in ''|대기) continue ;; esac
-    printf 'ci:%s\t%s\n' "$k" "$(cc_iso_to_epoch "$ob")"
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      ep=${c%%"$tab"*}
+      if cc_relay_condition_consumed "$sl" "$se" "$ep" "${c#*"$tab"}"; then continue; fi
+      printf 'ci:%s\t%s\n' "$k" "$ep"
+      break
+    done <<EOF
+$(cc_ci_relay_condition "$run_dir" "$ledger" "$k" "$now")
+EOF
+  done
+  for k in $(cc_relay_field "$run_dir" stages | tr ',' ' '); do
+    [ "$k" != "-" ] || continue
+    c=$(cc_ci_early_condition "$run_dir" "$ledger" "$k")
+    [ -n "$c" ] || continue
+    ep=${c%%"$tab"*}
+    if cc_relay_condition_consumed "$sl" "$se" "$ep" "${c#*"$tab"}"; then continue; fi
+    printf 'ce:%s\t%s\n' "$k" "$ep"
   done
   return 0
 }
@@ -1556,6 +1885,64 @@ cc_run_settle_stuck() {
   ! cc_shift_is_live "$run_dir"
 }
 
+cc_run_idle_seconds() {
+  # cc_run_idle_seconds <run-dir> <ledger> [now] — seconds since the ledger last
+  # grew, clamped at zero, or empty when there is no clock at all.
+  #
+  # ONE IDLE FOR EVERY JUDGE. `cc_run_state` crosses into 버려짐 on this value and
+  # `cc_run_settled_for_report` settles a run on it; two subtractions would let
+  # one run be abandoned to the status line and still unsettled to the reporter.
+  #
+  # Clamped, because a ledger mtime in the future is not hypothetical — one run
+  # on this host measured 28 seconds ahead. A negative idle would otherwise read
+  # as the freshest run on the screen.
+  local run_dir="$1" ledger="${2:-}" now="${3:-}" grew idle
+  grew=$(cc_ledger_growth_at "$run_dir" "$ledger")
+  [ -n "$grew" ] || return 0
+  [ -n "$now" ] || now=$(date -u +%s)
+  idle=$((now - grew))
+  [ "$idle" -lt 0 ] && idle=0
+  printf '%s' "$idle"
+}
+
+cc_run_settled_for_report() {
+  # cc_run_settled_for_report <run-dir> <ledger> [abandon-seconds] — succeeds
+  # when the run has settled, i.e. whatever is still unresolved in it is not
+  # going to resolve on its own.
+  #
+  #   settled ⟺ state = 종단   ∧ idle ≥ 600
+  #           ∨ state = 버려짐
+  #           ∨ state = 승인대기 ∧ idle ≥ abandon
+  #
+  # THE THIRD ARM IS WHY THIS IS NOT `cc_run_state = 버려짐`. That function returns
+  # 승인대기 before it looks at the clock, so a run holding an approval nobody
+  # answers would never settle and its wait would never be reported.
+  #
+  # NO NEW TOKEN. This is a predicate over the existing ones (정산중, a run still
+  # settling its exit clauses, is not settled here), so `cc_run_grade` and
+  # the render's arms stay exactly as they are. `abandon` is inherited from
+  # `cc_run_state`'s declaration when the caller passes none.
+  #
+  # 600 SECONDS AFTER 종단, because a finished run's log is still being written
+  # for a while after `done` and a report taken inside that window reads a
+  # ledger that is about to change.
+  local run_dir="$1" ledger="$2" abandon="${3:-}" s idle
+  if [ -n "$abandon" ]; then
+    s=$(cc_run_state "$run_dir" "$ledger" "" "$abandon")
+  else
+    s=$(cc_run_state "$run_dir" "$ledger")
+    abandon=3600
+  fi
+  idle=$(cc_run_idle_seconds "$run_dir" "$ledger")
+  # No clock reads as infinitely idle, the same reading `cc_run_state` gives it.
+  case "$s" in
+    버려짐) return 0 ;;
+    종단)     [ -z "$idle" ] && return 0; [ "$idle" -ge 600 ] 2>/dev/null ;;
+    승인대기) [ -z "$idle" ] && return 0; [ "$idle" -ge "$abandon" ] 2>/dev/null ;;
+    *)        return 1 ;;
+  esac
+}
+
 cc_run_grade() {
   # cc_run_grade <token> — the selection rank of a state token, 1 (best) to 9.
   #
@@ -1649,7 +2036,7 @@ cc_run_state() {
   # when the exit clauses are settled, so there `done` (with no live shift) is
   # the definition, and the ledger-derived conjunction reads as 정산중.
   local run_dir="$1" ledger="$2" stall="${3:-180}" abandon="${4:-3600}"
-  local live pend nonterm n_seg blocked_n grew now idle settle=0
+  local live pend nonterm n_seg blocked_n idle settle=0
 
   # A FRESH WAITER IS FOLDED INTO THE LIVE COUNT, never given a token of its
   # own: every token this function can return needs an arm in the status line,
@@ -1689,17 +2076,11 @@ cc_run_state() {
 
   [ "${pend:-0}" -gt 0 ] 2>/dev/null && { printf '승인대기'; return 0; }
 
-  grew=$(cc_ledger_growth_at "$run_dir" "$ledger")
+  idle=$(cc_run_idle_seconds "$run_dir" "$ledger")
   # NO CLOCK AT ALL IS THE STRONGEST IDLE SIGNAL, not the weakest. Neither the
   # watcher's field nor a ledger file means nothing has ever been recorded about
   # this run, and the honest reading of that is 버려짐 rather than 진행중.
-  [ -n "$grew" ] || { printf '버려짐'; return 0; }
-  now=$(date -u +%s)
-  idle=$((now - grew))
-  # Clamped, because a ledger mtime in the future is not hypothetical — one run
-  # on this host measured 28 seconds ahead. A negative idle would otherwise read
-  # as the freshest run on the screen.
-  [ "$idle" -lt 0 ] && idle=0
+  [ -n "$idle" ] || { printf '버려짐'; return 0; }
   [ "$idle" -ge "$abandon" ] 2>/dev/null && { printf '버려짐'; return 0; }
   [ "$idle" -ge "$stall" ] 2>/dev/null && { printf '정지경고'; return 0; }
 
