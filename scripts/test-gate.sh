@@ -22238,6 +22238,15 @@ else
   else
     bad "31ab: 구조 행이 B1 결속값(진전 다이제스트)을 움직인다" "전 '$b31ab_d0' 후 '$b31ab_d1'"
   fi
+  # 철회는 런 계보의 전사에서 다이얼로그 취소를 보면 「사람이 있었다」로 읽고 거부한다.
+  # 31am 이 그 취소 프레임을 계보에 든 세션의 전사에 남기고, 전량 실행에서는 사이의
+  # 31aq 가 같은 파일을 비워 우연히 지나갔다 — 31am 이 들고 31aq 가 빠진 샤드에서는
+  # 철회가 거부돼 아래 두 단언이 `대기` 로 실패했다. 이 절의 전제는 「사람이 있었다는
+  # 증거가 없다」이므로, 앞 절이 남긴 취소 프레임을 여기서 비워 스스로 세운다.
+  for b31ab_tx in "$NTX"/*.jsonl; do
+    [ -f "$b31ab_tx" ] || continue
+    if grep -qF "The tool use was rejected." "$b31ab_tx"; then : > "$b31ab_tx"; fi
+  done
   # 그리고 다음 행위 — 이 호출의 `gate_boundaries` 가 낡은 승인을 철회하고, 목록을
   # 다시 열거하고, 그 뒤에 유예를 센다.
   gateNT exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 읽기 \
