@@ -34318,6 +34318,10 @@ sb16_settled() {
 }
 check "16: 감독자가 살아 있어도 런 상태 토큰은 그대로다" "$(sb16_lv cc_run_state "$sb16_rd" "$sb16_rd/ledger.md")" "버려짐"
 check "16: 살아 있는 분리 감독자가 있으면 원장이 오래 조용해도 중단 리포트 정착이 아니다" "$(sb16_settled)" "미정착"
+# 디스패치가 자기 쌍을 쓰기 전에 죽으면 감독자 자신의 쌍만 남는다.
+mv "$sb16_rd/apply/SB16.sup" "$sb16_rd/apply/SB16.sup.self"
+mv "$sb16_rd/apply/SB16.sup.start" "$sb16_rd/apply/SB16.sup.self.start"
+check "16: 감독자 자신의 기록만 있어도 중단 리포트 정착이 아니다" "$(sb16_settled)" "미정착"
 printf '%s\n%s\nstages=apply:SB16\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/relay.live"
 case "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" in
   *"st:apply:SB16"*) bad "16: 감독자 생존 중 깨움" "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" ;;

@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`act --kind apply-settle`** — 감독자 없는 `적용 준비` 와 `park 적용=불명` 세그먼트를 정산 워크트리에서 프로브로 잰다. 불필요 코드면 `완료 적용=정산 정산 주체=게이트` 를 쓰고 런 스코프 `적용 불명` 막힘을 푼다. 필요 코드면 `park 적용=불명 정산 판정=필요` 로, 잴 수 없으면 `정산 판정=측정 실패` 로 남긴다.
 - **사람 경로** — 교대 정지 자리 `적용 정산`·`들여온 적용 정산`. 사람의 `재실행` 답은 `act --kind apply --rerun-answer` 로 한 번만 받히고, `사람 확인 정산` 답은 `apply-settle --answer`·`apply-settle-confirm` 으로 집행된다. 좌석·교대의 답은 두 선택지 모두 거부된다.
 - **스냅숏** — `live_applies`·`apply_unsettled`·`apply_imported` 와 세그먼트의 적용 값 `미정산`.
-- **liveness 술어** — `cc_apply_supervisor_is_live`. 릴레이 대기 집합이 `apply:<세그먼트>` 를 싣고, 이월 판정이 살아 있는 감독자를 사유로 돌려준다. 감독자는 스테이지로 세지 않는다.
+- **liveness 술어** — `cc_apply_supervisor_is_live`. 릴레이 대기 집합이 `apply:<세그먼트>` 를 싣고, 이월 판정이 살아 있는 감독자를 사유로 돌려준다. 중단 리포트의 정착 술어는 살아 있는 감독자가 있는 런을 원장이 오래 조용해도 정착으로 보지 않는다. 감독자는 스테이지로 세지 않는다.
 
 ### Changed
 
