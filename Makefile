@@ -652,7 +652,14 @@ test-darwin: test-active-notify test-orchestrator \
 #
 #   test-run.sh                   the bash 3.2 floor actually exercised, the
 #                                 boot clock, and the data-volume spelling of
-#                                 a path, which ubuntu skips with a note.
+#                                 a path, which ubuntu skips with a note. It
+#                                 runs here as its two parts (`--part 1`,
+#                                 `--part 2`) side by side: whole, it was one
+#                                 suite running alone on the runner's three
+#                                 cores for most of the job's wall clock. The
+#                                 two parts together run every assertion of the
+#                                 whole suite exactly once, so nothing is left
+#                                 out of the bash 3.2 run.
 #   test-gate-chain-equiv.sh      the enumerated divergences of the frozen
 #                                 reference, which classify differently here.
 #   test-lint-bash-portability.sh the multibyte-space case.
@@ -694,15 +701,27 @@ test-darwin: test-active-notify test-orchestrator \
 # checks both directions.
 DARWIN_GATE_SECTIONS := 18,31ai,84
 
-.PHONY: run-gate-darwin-sections
+.PHONY: run-gate-darwin-sections run-test-run-part1 run-test-run-part2
 
 run-gate-darwin-sections:
 	bash scripts/suite-guard.sh scripts/test-gate.sh --sections $(DARWIN_GATE_SECTIONS)
 
-test-darwin-narrow: test-active-notify \
-	run/plugins/cc-cmds/orchestrator/test-run.sh \
-	run/scripts/test-gate-chain-equiv.sh \
-	run/scripts/test-lint-bash-portability.sh \
+run-test-run-part1:
+	bash scripts/suite-guard.sh plugins/cc-cmds/orchestrator/test-run.sh --part 1
+
+run-test-run-part2:
+	bash scripts/suite-guard.sh plugins/cc-cmds/orchestrator/test-run.sh --part 2
+
+# The heaviest go first, so `make -j` starts them before the short ones; the two
+# test-run.sh parts are by far the longest. `$(DARWIN_TESTS)` stays at the end so
+# a suite added to it is still run here — make runs a prerequisite named twice
+# once.
+test-darwin-narrow: run-test-run-part1 run-test-run-part2 \
+	test-active-notify \
+	run-gate-darwin-sections \
+	run/scripts/test-notify-focus-ax.sh \
 	run/scripts/test-liveness-agreement.sh \
-	$(DARWIN_TESTS:%=run/%) \
-	run-gate-darwin-sections
+	run/scripts/test-gate-chain-equiv.sh \
+	run/scripts/test-suite-guard.sh \
+	run/scripts/test-lint-bash-portability.sh \
+	$(DARWIN_TESTS:%=run/%)
