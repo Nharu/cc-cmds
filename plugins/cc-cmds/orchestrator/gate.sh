@@ -34698,8 +34698,8 @@ gate_verb_act() {
     GATE_SUBJECT_HEAD="$GATE_SETTLE_SUBJECT"
     # The catalog sees this marker only on a settlement whose own entry checks
     # passed, the way it sees `GATE_CI_RERUN_PRE` only on a checked rerun. The
-    # preauthorization rule carries no settlement clause yet, so an
-    # `외부상태변경` settlement still meets its approval wait.
+    # preauthorization rule opens the `정산` act on this marker alone, so a
+    # settlement whose entry checks failed still meets its approval wait.
     GATE_SETTLE_PRE=1
     export GATE_SUBJECT_HEAD GATE_SETTLE_PRE
   fi

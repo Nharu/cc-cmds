@@ -34196,8 +34196,12 @@ check "17: 측정 실패는 열린 적용 불명 막힘에 막힘을 더하지 �
 # 다시 돌리지 않고 얼린 프로브 한 번으로 잰다. 의존 세그먼트(선행=그 세그먼트)의 구현
 # 파견은 정산이 끝날 때까지 디스패치 바닥에서 막힌다.
 sb18_dep() {  # sb18_dep <의존 세그먼트> <선행> — 의존 세그먼트의 계획 행
+  # 의존 세그먼트는 제 워크트리를 따로 쓴다. 선행이 완료되면 선행의 구현 워크트리가
+  # 지워지므로, 같이 쓰면 의존 세그먼트의 파견이 바닥이 아니라 워크트리 부재로 거부된다.
+  local wt="$SA_ROOT/seg-$1"
+  [ -d "$wt" ] || ( cd "$SA_REPO" && git worktree add -q --detach "$wt" main ) >/dev/null 2>&1
   sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$1" --cutpoint 커밋 \
-      --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$SA_SEGWT" "선행=$2"
+      --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$wt" "선행=$2"
 }
 sb18_floor() {  # sb18_floor <의존 세그먼트> — 그 세그먼트의 디스패치 바닥 처분과 rc
   sb_dispatch "$1"
@@ -34273,9 +34277,10 @@ case "$(sb_seg_last SB18)" in
     ok "18: 입구 a 의 불필요 코드는 게이트 정산 완료다" ;;
   *) bad "18: 입구 a 정산 행" "$(sb_seg_last SB18)" ;;
 esac
-case "$(sb18_floor SB18D)" in
+sb_dispatch SB18D
+case "$(sb_floor):$rc" in
   통과:0) ok "18: 정산 완료 뒤 의존 세그먼트가 디스패치 바닥을 지난다" ;;
-  *) bad "18: 정산 뒤 의존 세그먼트" "rc=$rc $msg" ;;
+  *) bad "18: 정산 뒤 의존 세그먼트" "$(sb_floor):$rc $msg" ;;
 esac
 if [ -e "$SA_WT-run-$SA_ID-SB18-settle" ]; then
   bad "18: 정산 워크트리" "남았다"
