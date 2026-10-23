@@ -2820,6 +2820,23 @@ for pair in "autopilot-router-shift:$RS_CORPUS" "references:$AP_ROUTER"; do
   check "${pair%%:*}: 설계 단계 정지에서 이월 답은 다시 묻지 않는다" \
     "$(has "$f" "**An answer already carried over is not asked again**: when the element naming the step reads \`state\` \`이월\`")" 예
 done
+# 앞선 런이 이월한 답은 다음 런(입양·재킥오프 후속)이 운반 act 로 이어받는다 — 사람에게 다시
+# 묻지 않는다는 약속은 이 문장들이 싣고, 아침 보고의 새 절이 그 답을 사람에게 보인다.
+for pair in "autopilot-router-shift:$RS_CORPUS" "references:$AP_ROUTER"; do
+  f=${pair#*:}
+  check "${pair%%:*}: 입양은 이월 행이 이름 짓는 답도 들인다" \
+    "$(has "$f" "or one an \`이월\` row of that ledger names (a carry act of that run found no account with room before its deadline and kept the answer for the next run)")" 예
+done
+check "교대 계약: 이월된 답은 거절된 첫 파견으로 도착하고 운반 act 로 넘긴다" \
+  "$(has "$RS_CORPUS" "**An answer the earlier run carried over arrives through a refused first dispatch.**")" 예
+check "교대 계약: 그 3 은 표의 것이 아니고 평범한 파견을 다시 내지 않는다" \
+  "$(has "$RS_CORPUS" "That \`3\` is not the table's")/$(has "$RS_CORPUS" "never retry the plain dispatch")" "예/예"
+check "좌석 사본: 재킥오프 후속 런도 이월 답을 운반으로 이어받는다" \
+  "$(has "$SEAT_REF" "a re-kickoff's follow-up run carries such an \`이월\` answer of a run-scope step")" 예
+check "아침 보고: 답했으나 전달하지 못한 중단 답 절이 있다" \
+  "$(has "$AP_REFS/act3-report.md" "**답했으나 전달하지 못한 중단 답**")/$(has "$AP_REFS/act3-report.md" "a carry issued after the deadline, whose \`관측\` reads \`마감 경과\`")" "예/예"
+check "아침 보고: 이월 절은 게이트가 쓰는 사유 머리와 같다" \
+  "$(has "$GATE" "'중단 답 이월 — 마감 안에 자리 없음'")" 예
 
 # ---------------------------------------------------------------------------
 # 13. An answer a routing block stamped leaves answered_halts for returned_halts
