@@ -24676,10 +24676,7 @@ gate_chrome_headless_screenshot() {
   # the binary at `등급 미상`. The listed flags size the page, quiet Chrome's
   # own background traffic, point the proxy at the closed local port, or put
   # the profile in scratch space.
-  local a v headless=0 shot=0 target=0 root tmp
-  root=$(gate_tree_root)
-  tmp=${TMPDIR:-/tmp}
-  while [ "$tmp" != "/" ] && [ "${tmp%/}" != "$tmp" ]; do tmp=${tmp%/}; done
+  local a v headless=0 shot=0 target=0
   for a in "$@"; do
     case "$a" in
       */../*|*/..) return 1 ;;
@@ -24687,12 +24684,10 @@ gate_chrome_headless_screenshot() {
     case "$a" in
       --headless|--headless=*) headless=1 ;;
       --screenshot=/?*)
-        v=${a#--screenshot=}
-        gate_path_is_at_or_under "$v" "$root" && return 1
+        gate_chrome_path_ok shot "${a#--screenshot=}" || return 1
         shot=$((shot + 1)) ;;
       --user-data-dir=/?*)
-        v=${a#--user-data-dir=}
-        gate_path_is_at_or_under "$v" "$tmp" || gate_path_is_at_or_under "$v" /tmp || return 1 ;;
+        gate_chrome_path_ok profile "${a#--user-data-dir=}" || return 1 ;;
       --window-size=?*)
         v=${a#--window-size=}
         case "$v" in *[!0-9,]*) return 1 ;; esac ;;
@@ -24704,11 +24699,69 @@ gate_chrome_headless_screenshot() {
         case "$v" in *[!0-9a-fA-F]*) return 1 ;; esac ;;
       --proxy-server=127.0.0.1:9) ;;
       --hide-scrollbars|--disable-gpu|--no-first-run|--disable-background-networking|--disable-component-update|--disable-sync) ;;
-      file:///?*) target=$((target + 1)) ;;
+      file:///?*)
+        v=${a#file://}
+        v=${v%%[?#]*}
+        case "$v" in *%*) return 1 ;; esac
+        gate_chrome_path_ok page "$v" || return 1
+        target=$((target + 1)) ;;
       *) return 1 ;;
     esac
   done
   [ "$headless" = 1 ] && [ "$shot" = 1 ] && [ "$target" = 1 ]
+}
+
+gate_chrome_path_ok() {
+  # gate_chrome_path_ok <shot|profile|page> <absolute path> — 0 when every
+  # spelling of the path stays where the Chrome row lets that operand point.
+  # The spellings are the path as written, with its existing ancestors resolved
+  # and with a symlinked last component followed, so a link under scratch space
+  # that lands in the tree or in a configuration home is judged where it lands.
+  #   shot    — outside the tree and outside the configuration homes;
+  #   profile — under the temp directory, and outside the tree;
+  #   page    — outside the configuration homes, so a key or token file is not
+  #             rendered into an image.
+  # The configuration homes are the dot-directories directly under `$HOME`
+  # (`.ssh`, `.config`, `.claude*`, …) and `CLAUDE_CONFIG_DIR` when it is set.
+  local kind="$1" p="$2" wp wl sp r t under homes root rootp tmp tmpp
+  wp=$(gate_path_spelling "$(gate_real_prefix "$p")")
+  wl=$(gate_leaf_spelling "$wp") || return 1
+  root=$(gate_tree_root)
+  rootp=$(gate_path_spelling "$(gate_real_prefix "$root")")
+  tmp=${TMPDIR:-/tmp}
+  while [ "$tmp" != "/" ] && [ "${tmp%/}" != "$tmp" ]; do tmp=${tmp%/}; done
+  tmpp=$(gate_path_spelling "$(gate_real_prefix "$tmp")")
+  homes=''
+  if [ -n "${HOME:-}" ] && [ "$HOME" != "/" ]; then
+    homes="${HOME%/}"$'\n'"$(gate_path_spelling "$(gate_real_prefix "${HOME%/}")")"
+  fi
+  for sp in "$p" "$wp" "$wl"; do
+    [ -n "$sp" ] || continue
+    if [ "$kind" != page ]; then
+      for r in "$root" "$rootp"; do
+        [ -n "$r" ] || continue
+        gate_nocase_at_or_under "$sp" "$r" && return 1
+        gate_path_is_at_or_under "$sp" "$r" && return 1
+      done
+    fi
+    if [ "$kind" != profile ]; then
+      while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        case "$sp" in "$r"/.*) return 1 ;; esac
+      done <<< "$homes"
+      if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+        gate_path_is_at_or_under "$sp" "${CLAUDE_CONFIG_DIR%/}" && return 1
+      fi
+    else
+      under=0
+      for t in "$tmp" "$tmpp" /tmp "$(gate_path_spelling "$(gate_real_prefix /tmp)")"; do
+        [ -n "$t" ] && [ "$t" != "/" ] || continue
+        if gate_path_is_at_or_under "$sp" "$t"; then under=1; break; fi
+      done
+      [ "$under" = 1 ] || return 1
+    fi
+  done
+  return 0
 }
 
 gate_path_spelling() {

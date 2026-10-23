@@ -43073,6 +43073,16 @@ graded_as '등급 미상'    '79v:상대 경로의 스크린숏은 등급 미상
 graded_as '등급 미상'    '79v:트리 안 경로의 스크린숏은 등급 미상이다'          -- chromium --headless "--screenshot=$WT/a.png" file:///tmp/a.html
 graded_as '등급 미상'    '79v:.. 로 빠져나가는 스크린숏 경로는 등급 미상이다'   -- chromium --headless --screenshot=/tmp/../x/a.png file:///tmp/a.html
 graded_as '등급 미상'    '79v:임시 디렉터리 밖의 프로필은 등급 미상이다'        -- chromium --headless --screenshot=/tmp/x/a.png --user-data-dir=/x/profile file:///tmp/a.html
+graded_as '트리밖쓰기'   '79v:TMPDIR 아래 프로필의 스크린숏은 트리 밖 쓰기다'   -- chromium --headless --screenshot=/tmp/x/a.png "--user-data-dir=${TMPDIR:-/tmp}/zz-79v-profile" file:///tmp/a.html
+# A link under scratch space is judged where it lands, and a screenshot or page
+# in a configuration home is not this row's write.
+ln -sfn "$WT" "$WORK/zz-79v-link"
+graded_as '등급 미상'    '79v:트리를 가리키는 링크를 거친 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=$WORK/zz-79v-link/a.png" file:///tmp/a.html
+graded_as '등급 미상'    '79v:트리를 가리키는 링크를 거친 프로필은 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png "--user-data-dir=$WORK/zz-79v-link/p" file:///tmp/a.html
+rm -f "$WORK/zz-79v-link"
+graded_as '등급 미상'    '79v:설정 홈 안의 스크린숏은 등급 미상이다'            -- chromium --headless "--screenshot=$HOME/.claude/zz-79v.png" file:///tmp/a.html
+graded_as '등급 미상'    '79v:설정 홈 안의 페이지를 찍는 스크린숏은 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png "file://$HOME/.ssh/id_ed25519"
+graded_as '등급 미상'    '79v:퍼센트 부호화한 페이지 경로는 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png file:///tmp/%2e%2e/a.html
 
 # The router reads the approval predicate through `gate.sh exec … --surface 읽기`
 # with the helper as argv0. That spelling is graded by its subcommand, so the
@@ -43085,16 +43095,21 @@ for w79v_ar in 0 1; do
   gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
        --snapshot-digest "$(HH)" --rationale x \
        -- "$CC_ORCH/visual-check.sh" approval docs/zz-79v-none.md
-  case "$rc:$msg" in
-    6:*|*under-declar*) bad "79v:경로를 argv0 으로 둔 승인 술어 읽기는 스위치 $w79v_ar 에서 통과한다" "rc=$rc '$msg'" ;;
-    *) ok "79v:경로를 argv0 으로 둔 승인 술어 읽기는 스위치 $w79v_ar 에서 통과한다" ;;
-  esac
+  if grep -qF '게이트 통과' "$WORK/last-output.txt"; then
+    ok "79v:경로를 argv0 으로 둔 승인 술어 읽기는 스위치 $w79v_ar 에서 통과한다"
+  else
+    bad "79v:경로를 argv0 으로 둔 승인 술어 읽기는 스위치 $w79v_ar 에서 통과한다" "rc=$rc '$msg'"
+  fi
 done
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$(HH)" --rationale x \
      -- bash "$CC_ORCH/visual-check.sh" approval docs/zz-79v-none.md
 check "79v:bash 뒤의 승인 술어 읽기는 스위치 0 에서 거부된다" "$rc" "6"
+case "$msg" in
+  *under-declar*) ok "79v:그 거부는 과소 선언 거부다" ;;
+  *) bad "79v:그 거부는 과소 선언 거부다" "got '$msg'" ;;
+esac
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=$w79v_prev_ar
 
 # ---------------------------------------------------------------------------
