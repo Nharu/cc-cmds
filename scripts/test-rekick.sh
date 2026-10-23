@@ -586,6 +586,43 @@ check "3b 사람 대기: 대조하는 수가 비어 있지 않다" "$(unanswered
 hasnt "3b 사람 대기: 사람 대기에는 한도 문장이 없다" "$OUT" "같은 한도"
 adopt_case "3b 사람 대기" RKW1281 '사람 대기'
 
+# TP6 · TP7 — an answer the source carried over to the next run (an `이월` row
+# names its `중단 답` line) is listed as coming over, and it is an answered
+# record: it neither makes the run wait on a person nor counts as unanswered.
+mk_prev RKWCARRY
+fx_row 'handoff' "교대=1" "사유=중단" "버린 선택지=-"
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/I1#1.md"
+fx_row '중단 답' "세그먼트=I1" "중단 기록=$FX_RUN_DIR/halt/I1#1.md" "선택지=재수렴"
+rk_def_ln=$(grep -n '^- `중단 답` ' "$FX_LEDGER" | tail -1 | cut -d: -f1)
+fx_row 'blocked' "스코프=cone" "원인=막힘" "앵커 세그먼트=I1" "사유=중단 답 이월 — I1#1.md — 마감 전 자리 없음" \
+  "근거=중단 답 줄 $rk_def_ln" "중단 답 줄=$rk_def_ln"
+detect_case "TP6 이월 답 대기" RKWCARRY 다시
+has "TP6 이월 답 대기: 이월된 답을 기록과 선택지로 나열한다" "$OUT" \
+  "고지${TAB}이전 런 RKWCARRY 의 이월된 중단 답 1건(I1#1.md: 재수렴)은 이 새 런이 같은 스텝을 처음 파견할 때 운반으로 이어받습니다 — 다시 묻지 않습니다"
+check "TP7 이월 답 대기: 원인은 사람 대기가 아니다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/멈춤"
+hasnt "TP7 이월 답 대기: 답 없는 정지 기록으로 나열하지 않는다" "$OUT" "답 없는 정지 기록"
+check "TP7 이월 답 대기: cc_unanswered_halts 도 세지 않는다" "$(unanswered RKWCARRY)" "0"
+detect_case "TP6 이월 답 재개" RKWCARRY 재개
+has "TP6 이월 답 재개: 붙든 판별도 이월된 답을 나열한다" "$OUT" "이월된 중단 답 1건(I1#1.md: 재수렴)"
+check "TP7 이월 답 재개: 붙든 판별의 원인도 사람 대기가 아니다" "$(col "$OUT" '대기 원인')" "멈춤"
+
+# An ended source: the carried-over answer is named as coming over, and its
+# `이월` block is not among the parks that do not.
+mk_prev RKWCEND; fx_done
+fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=벽시계 마감" "재킥 원인=마감" "근거=마감 도달"
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/A1#2.md"
+fx_row '중단 답' "세그먼트=A1" "중단 기록=$FX_RUN_DIR/halt/A1#2.md" "선택지=adopt as a requirement"
+rk_def_ln=$(grep -n '^- `중단 답` ' "$FX_LEDGER" | tail -1 | cut -d: -f1)
+fx_row 'blocked' "스코프=cone" "원인=막힘" "앵커 세그먼트=A1" "사유=중단 답 이월 — A1#2.md — 관측=마감 경과" \
+  "근거=중단 답 줄 $rk_def_ln" "중단 답 줄=$rk_def_ln"
+detect_case "TP6 끝난 원천의 이월 답" RKWCEND
+check "TP6 끝난 원천의 이월 답: 게이트 종료 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 갈래)" "재킥오프/게이트 종료"
+has "TP6 끝난 원천의 이월 답: 이월된 답을 나열한다" "$OUT" \
+  "이전 런 RKWCEND 의 이월된 중단 답 1건(A1#2.md: adopt as a requirement)은 이 새 런이 같은 스텝을 처음 파견할 때 운반으로 이어받습니다"
+hasnt "TP6 끝난 원천의 이월 답: 이월 행은 넘어오지 않는 정박에 들지 않는다" "$OUT" "중단 답 이월 — A1#2.md"
+
 # A record whose last answer the routing shift handed back waits on a person
 # again: the block the gate stamped with that answer's line names it, so the
 # record is listed though a `중단 답` row names it. A person's new answer ends it.
