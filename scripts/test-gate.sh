@@ -22481,11 +22481,22 @@ fi
 # 무는 §34 는 이 배선을 통과하지 않으므로 그 구멍을 덮지 못한다.
 #
 # 바로 위 절이 B1 승인 하나를 열어 둔 채 끝나므로 그 상태를 물려받는다.
+#
+# 전사 홈은 이 절의 것이다. 철회는 런 계보 전체에서 다이얼로그 취소를 찾고, 31am 은
+# 취소 프레임을 `$NTX` 에 쓰고 그 세션을 계보에 남긴다. 그래서 공유 홈을 읽으면 31am 이
+# 같은 실행에 들어온 때에만 철회가 거절되고, 샤드 구성에 따라 이 절이 실패했다. 계보에
+# 오른 파일을 같은 이름의 빈 파일로 두어, 찾을 수는 있고 사람이 있었다는 증거는 없는
+# 런을 이 절이 스스로 세운다.
+B31AB_CFG="$WORK/ncfg-31ab"; mkdir -p "$B31AB_CFG/projects/proj"
+for b31ab_f in "$NTX"/*.jsonl; do
+  [ -e "$b31ab_f" ] || continue
+  : > "$B31AB_CFG/projects/proj/${b31ab_f##*/}"
+done
 gateNT() {
   # gateN 과 같되 전사 디렉터리를 보인다. 철회의 「사람이 있었는가」 판정이 전사를
   # 읽고, 판독할 수 없으면 보류하므로, 이 절에서는 그것이 픽스처의 전제다.
   local out
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$B31AB_CFG" \
         gate_inproc "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
