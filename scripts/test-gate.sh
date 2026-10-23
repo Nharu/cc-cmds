@@ -13285,8 +13285,9 @@ case "$rc/$msg" in
   3/*"시각-승인 판단 승인 A-15wref 을 거부 로 닫았습니다"*) ok "15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다" ;;
   *) bad "15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다" "rc=$rc $msg" ;;
 esac
-w15_dispatch R15WA SC
-check "15w: 다른 세그먼트의 시각-승인 거부는 화면 없음 슬라이스를 막지 않는다" "$rc" "0"
+w15_dispatch R15WA SB
+check "15w: 다른 세그먼트의 시각-승인 거부는 승인된 화면 슬라이스를 막지 않는다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15w 다른 세그먼트 거부 뒤 파견 문면" "$msg"
 
 # The shape rule reaches the gate's defect lines, which call the driver's
 # checker in its base mode. They are read from the snapshot, under the run's

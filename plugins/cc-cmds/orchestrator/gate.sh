@@ -1289,7 +1289,8 @@ gate_reach_derived_full() {
   esac
   # Absolute paths into the user's own configuration, wherever they sit in argv.
   # EVERY MATCH IS COLLECTED, not the first: each is a word the row must carry.
-  local pfx
+  local pfx gpfx
+  gpfx=$(gate_reach_global_prefixes)
   for a in "$@" ${gpaths[@]+"${gpaths[@]}"}; do
     case "$a" in
       "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*)
@@ -1297,14 +1298,14 @@ gate_reach_derived_full() {
 "
         continue ;;
     esac
-    for pfx in $(gate_reach_global_prefixes); do
+    while IFS= read -r pfx; do
       case "$a" in
         "$pfx"/*)
           paths="$paths$a
 "
           break ;;
       esac
-    done
+    done <<< "$gpfx"
   done
   [ -n "$paths" ] && { printf '기기전역\tpath\n%s' "$paths"; return 0; }
   # A deploy trigger the manifest named for this target.
@@ -24775,7 +24776,8 @@ gate_chrome_path_ok() {
   # path behind `--screenshot=`, so the floor never sees it; without this arm a
   # screenshot over `/opt/homebrew/bin/<tool>` kept a declared `런로컬` while
   # `cp` to the same path stops at `기기전역`.
-  local kind="$1" p="$2" wp wl sp r t under homes root rootp tmp tmpp
+  local kind="$1" p="$2" wp wl sp r t under homes root rootp tmp tmpp gpfx
+  gpfx=$(gate_reach_global_prefixes)
   wp=$(gate_path_spelling "$(gate_real_prefix "$p")")
   wl=$(gate_leaf_spelling "$wp") || return 1
   root=$(gate_tree_root)
@@ -24795,10 +24797,10 @@ gate_chrome_path_ok() {
         gate_nocase_at_or_under "$sp" "$r" && return 1
         gate_path_is_at_or_under "$sp" "$r" && return 1
       done
-      for r in $(gate_reach_global_prefixes); do
+      while IFS= read -r r; do
         gate_nocase_at_or_under "$sp" "$r" && return 1
         gate_path_is_at_or_under "$sp" "$r" && return 1
-      done
+      done <<< "$gpfx"
     fi
     if [ "$kind" != profile ]; then
       while IFS= read -r r; do
