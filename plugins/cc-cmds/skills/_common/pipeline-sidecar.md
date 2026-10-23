@@ -163,7 +163,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
 - `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트나 런 밖에서 사람이 만든 브랜치·PR 을 이어받을 때만(런 밖이면 `출처 런=-`), 세그먼트당 많아야 한 행. 재킥오프가 쓰는 행은 사람이 읽어 준 값이 아니라 rekick.sh 가 다시 유도한 값
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
-- `플러그인 허용` | 플러그인=<이름@마켓> | 사유=<한 줄>     ← 킥오프 5t 에서 사람이 고른 플러그인마다 한 행, 키마다 많아야 한 행
+- `플러그인 허용` | 플러그인=<이름@마켓> | 사유=<한 줄>     ← 킥오프 5t 에서 사람이 고르거나 5o 에서 확정한 플러그인마다 한 행(5o 확정 행의 사유는 `킥오프 기본값`), 키마다 많아야 한 행
 - `적용 프로브 코드` | 불필요=<0–125> | 필요=<0–125> | 프로브 sha256=<64자 소문자 hex>     ← 킥오프 5c 가 기본 0/2 가 아닌 대응을 받았을 때만, 많아야 한 행
 - `재킥오프` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>     ← 킥오프가 묻지 않고 토글 없이 쓰는 한 행
 
@@ -251,15 +251,19 @@ planning act checks the rest, at the moment it brings the predecessor in (see
 
 **A `플러그인 허용` row turns one user plugin on for this run's stages**, one row
 per plugin a person picked at kickoff 5t, its `사유` naming the evidence that
-pointed at it. Every settings file the gate renders for the run names each
+pointed at it, and one per `plugin-allow` default a person confirmed at 5o or
+picked at 5t after releasing it there, its `사유` the fixed text `킥오프 기본값`.
+Every settings file the gate renders for the run names each
 plugin key of the run's account directories in `enabledPlugins`: the keys of the
 allow seed `orchestrator/plugin-allow.seed` and of these rows are `true` in every
 stage's settings, every other key is `false`, and the shift's settings write
 every key `false`. The key is `<이름@마켓>` and nothing else; the manifest check
 refuses a malformed row, an empty `사유`, an `@inline` or `@builtin` key — those
 are the run's own plugin copy and the harness's plugins, which the settings never
-name — and a second row for one key. A re-kickoff does not carry the rows: the
-successor's stages load the seed alone, which is never wider than the source.
+name — and a second row for one key. A re-kickoff carries the rows byte for
+byte, except a row whose key is now a seed key or one no account of the kickoff
+has; a row whose key cannot be judged because an account file did not read is
+carried as it was. `rekick.sh` makes that judgment again at each call.
 
 **The `재킥오프` row is the person's consent that an ending run may be followed
 by a successor**, written by the kickoff on every run, unasked and with no
