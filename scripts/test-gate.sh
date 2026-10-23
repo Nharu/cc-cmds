@@ -38384,9 +38384,9 @@ cc60c_cell() {
     # 그대로 따른다.
     case "$rc|$msg" in 5\|*|2\|*'등급 미상'*) ;;
       11\|*)
-        { grep '^- `blocked` ' "$led" 2>/dev/null || true; } | grep -F "행위 다이제스트=$cc60c_ad" \
-          | grep -qE '도달 판정=PR라벨쓰기( |$)' \
-          || cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;;
+        cc60c_hit=$( { grep '^- `blocked` ' "$led" 2>/dev/null || true; } | { grep -F "행위 다이제스트=$cc60c_ad" || true; } \
+          | { grep -E '도달 판정=PR라벨쓰기( |$)' || true; } )
+        [ -n "$cc60c_hit" ] || cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;;
       *) cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;; esac
   fi
   [ "$(grep -c . "$CC60C_LOG" || true)" = "$n0" ] || cc60c_called="$cc60c_called[$lb · $tg · $rr]"
