@@ -22210,22 +22210,22 @@ fi
 #
 # 바로 위 절이 B1 승인 하나를 열어 둔 채 끝나므로 그 상태를 물려받는다.
 #
-# 전사는 물려받지 않고 이 절이 만든다. 철회의 「사람이 있었는가」 판정은 이 런의
-# 세션 계보에 든 전사 전부에서 다이얼로그 취소를 찾는데, 31am 은 취소 프레임을
-# 일부러 남기고 그 세션을 계보에 올린다. 그래서 31am 과 같은 프로세스에서 돌면 철회가
-# 거부되어 B1 이 대기에 머물렀다. 이 절의 전제는 「판독 가능한 전사가 있고, 사람이
-# 있었다는 증거는 없다」이므로, 깨끗한 전사 하나만 든 설정 디렉터리와 그 전사의 세션
-# id 로 부른다.
+# 전사 홈은 이 절의 것이다. 철회는 런 계보 전체에서 다이얼로그 취소를 찾고, 31am 은
+# 취소 프레임을 `$NTX` 에 쓰고 그 세션을 계보에 남긴다. 그래서 공유 홈을 읽으면 31am 이
+# 같은 실행에 들어온 때에만 철회가 거절되고, 샤드 구성에 따라 이 절이 실패했다. 계보에
+# 오른 파일을 같은 이름의 빈 파일로 두어, 찾을 수는 있고 사람이 있었다는 증거는 없는
+# 런을 이 절이 스스로 세운다.
 B31AB_CFG="$WORK/ncfg-31ab"; mkdir -p "$B31AB_CFG/projects/proj"
-B31AB_SID="31ab3131-0000-4000-8000-000000000001"
-printf '%s\n' '{"type":"user","uuid":"u","message":{"role":"user","content":"31ab 픽스처"}}' \
-  > "$B31AB_CFG/projects/proj/$B31AB_SID.jsonl"
+for b31ab_f in "$NTX"/*.jsonl; do
+  [ -e "$b31ab_f" ] || continue
+  : > "$B31AB_CFG/projects/proj/${b31ab_f##*/}"
+done
 gateNT() {
-  # gateN 과 같되 위의 전사 디렉터리를 보인다. 철회의 판정이 전사를 읽고, 판독할 수
-  # 없으면 보류하므로, 이 절에서는 그것이 픽스처의 전제다.
+  # gateN 과 같되 전사 디렉터리를 보인다. 철회의 「사람이 있었는가」 판정이 전사를
+  # 읽고, 판독할 수 없으면 보류하므로, 이 절에서는 그것이 픽스처의 전제다.
   local out
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$B31AB_CFG" \
-        CLAUDE_CODE_SESSION_ID="$B31AB_SID" gate_inproc "$@" 2>&1); rc=$?
+        gate_inproc "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
 b31ab_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '구속 튜플=B1/' | tail -1)
@@ -47336,6 +47336,174 @@ if [ -n "$tier_ed_row" ] && [ "$tier_ed_row" != "$tier_ed_moved" ] && [ "$tier_e
 else bad "89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다" "$tier_ed_row"; fi
 check "89: 플러그인 단어는 판@커밋 12자다" \
   "$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_plugin_word)" "9.9.9@0123456789ab"
+
+# ---------------------------------------------------------------------------
+# 89t. 토론 패스 — 설계 시도 하나가 끝날 때마다 증인 말뭉치를 세어 행 하나
+# --- section: 89t | group: tier | covers: discussion_passes, gate_record_stage_outcome, gate_append | anchors: 89t: 말뭉치가 없으면 행이 없다, 89t: round-1 증인이 없으면 행이 없다, 89t: 닫힘이고 측정 지명이 있으면 지명 미개방 이다, 89t: 스윕 반박만 있는 닫힘은 해당 없음 이다, 89t: 열림이고 측정 지명이 있으면 측정 지명 이다, 89t: 선언 없는 R2 증인이 있는 열림은 미상 이다, 89t: 모두 none 인 열림은 선언 없음 이다, 89t: 가장 큰 rev 판 하나만 증인이다, 89t: 좌석이 0 이면 발견과 재개는 미상이다, 89t: findings 줄이 없는 좌석이 있으면 발견은 미상이다, 89t: 설계 행 바로 뒤에 토론 패스 행이 선다, 89t: 최악 값의 토론 패스 행도 1024 바이트 이하다 ---
+#
+# 빌더 `gate_record_discussion_passes` 는 `$RUN_DIR/design/$DOC_SLUG/witness/` 를
+# 세어 원장에 행 하나를 쓴다. 단위 사례는 게이트를 올린 서브셸에서 빌더를 직접
+# 부르고 진짜 `gate_append` 가 쓴 행을 읽는다. `R3 사유` 의 다섯 줄은 위에서부터
+# 처음 맞는 하나로 정해지므로 줄마다 사례 하나를 둔다. 마지막 두 사례는 게이트의
+# 스테이지 결과 기록기가 설계 행 뒤에 빌더를 부르는지와, 모든 필드를 가장 긴 값으로
+# 채운 행의 길이를 잰다.
+# ---------------------------------------------------------------------------
+pre_tier
+dp_root="$WORK/dp"
+dp_led="$dp_root/ledger.md"
+dp_wd="$dp_root/design/dp/witness"
+# dp_reset — 빈 원장과 빈 말뭉치.
+dp_reset() {
+  rm -rf "$dp_root"; mkdir -p "$dp_wd"
+  printf '# 원장 픽스처\n\n## 실행 DP\n\n' > "$dp_led"
+}
+# dp_w <파일 이름> <줄…> — 말뭉치에 파일 하나.
+dp_w() { local n="$1"; shift; printf '%s\n' "$@" > "$dp_wd/$n"; }
+# dp_build [<스텝> <시도>] — 게이트를 올린 서브셸에서 빌더를 부른다. 경로 낱말은 DP_PATH.
+dp_build() {
+  ( unset CC_PIPELINE_SHIFT_ID
+    bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+      LEDGER="$2"; RUN_DIR="$3"; RUN_ID=DP; DOC_SLUG=dp; DP_WORD="$4"
+      gate_design_path_word() { printf "%s" "$DP_WORD"; }
+      gate_record_discussion_passes "$5" "$6"' _ "$GATE" "$dp_led" "$dp_root" \
+      "${DP_PATH:-discuss-audit}" "${1:-D1}" "${2:-1}" ) >/dev/null 2>&1
+}
+dp_rows() { { grep -F -e '- `토론 패스` |' "$dp_led" 2>/dev/null || true; }; }
+# dp_f <필드…> — 마지막 토론 패스 행의 필드 값들을 / 로 잇는다.
+dp_f() {
+  local row k out=""
+  row=$(dp_rows | tail -1)
+  for k in "$@"; do
+    out="$out$(printf '%s\n' "$row" | tr '|' '\n' | sed -n "s/^ *$k=//p" | sed 's/[[:space:]]*$//')/"
+  done
+  printf '%s' "${out%/}"
+}
+# dp_team <R2 선언…> — 팀원마다 round-1 과 round-2 증인. 선언은 none·measure·- (없음).
+dp_team() {
+  local i=0 d
+  for d in "$@"; do
+    i=$((i + 1))
+    dp_w "m$i.round-1.md" "제안" '<!-- witness end -->'
+    case "$d" in
+      none) dp_w "m$i.round-2.md" "입장" 'round-3: none' '<!-- witness end -->' ;;
+      measure) dp_w "m$i.round-2.md" "입장" 'round-3: measure — 왕복 시간을 잰다; 주장 X' '<!-- witness end -->' ;;
+      *) dp_w "m$i.round-2.md" "입장" '<!-- witness end -->' ;;
+    esac
+  done
+}
+
+dp_reset; rmdir "$dp_wd"
+dp_build
+check "89t: 말뭉치가 없으면 행이 없다" "$(dp_rows | grep -c . || true)" "0"
+dp_reset; dp_w INDEX.md '| m1 | round-2 |'; dp_w m1.round-2.md 'round-3: none'
+dp_build
+check "89t: round-1 증인이 없으면 행이 없다" "$(dp_rows | grep -c . || true)" "0"
+
+# (1) 닫힘 ∧ 측정 지명 ≥ 1.
+dp_reset; dp_team measure none none; dp_w SWEEP.md 'round-3: sweep — 주장 A' 'round-3: sweep — 주장 B'
+dp_build
+check "89t: 닫힘이고 측정 지명이 있으면 지명 미개방 이다" \
+  "$(dp_f 세그먼트 스테이지 '실행 버전' 경로 팀원 R3 '측정 지명' '스윕 반박' 'R3 사유' 'R3 분')" \
+  "-/D1/1/discuss-audit/3/닫힘/1/2/지명 미개방/미상"
+# (2) 그 밖의 닫힘 — 스윕 반박만 있어도 해당 없음이고 스윕 반박이 따로 보인다.
+dp_reset; dp_team none none; dp_w SWEEP.md 'round-3: sweep — 주장 A'
+dp_build
+check "89t: 스윕 반박만 있는 닫힘은 해당 없음 이다" "$(dp_f R3 '측정 지명' '스윕 반박' 'R3 사유')" "닫힘/0/1/해당 없음"
+dp_reset; dp_team none none
+dp_build
+check "89t: SWEEP.md 가 없으면 스윕 반박은 미상이다" "$(dp_f '스윕 반박' 'R3 사유')" "미상/해당 없음"
+# (3) 열림 ∧ 측정 지명 ≥ 1 — R3 분은 마지막 R2 와 마지막 R3 의 수정 시각 차를 분으로 내린다.
+dp_reset; dp_team measure none
+dp_w m1.round-3.md '최종' '<!-- witness end -->'; dp_w m2.round-3.md '최종' '<!-- witness end -->'
+touch -t 202601010000.00 "$dp_wd/m1.round-2.md"; touch -t 202601010010.00 "$dp_wd/m2.round-2.md"
+touch -t 202601010100.00 "$dp_wd/m1.round-3.md"; touch -t 202601010135.59 "$dp_wd/m2.round-3.md"
+dp_build
+check "89t: 열림이고 측정 지명이 있으면 측정 지명 이다" "$(dp_f R3 '측정 지명' 'R3 사유' 'R3 분')" "열림/1/측정 지명/85"
+# (4) 열림이고 선언 없는 R2 증인이 있으면 미상 — 측정 지명이 0 이면 그 필드도 미상이다.
+dp_reset; dp_team none -; dp_w m1.round-3.md '최종'
+dp_build
+check "89t: 선언 없는 R2 증인이 있는 열림은 미상 이다" "$(dp_f R3 '측정 지명' 'R3 사유')" "열림/미상/미상"
+# (5) 남는 개방 — 모든 R2 증인이 none.
+dp_reset; dp_team none none; dp_w m2.round-3.md '최종'
+dp_build
+check "89t: 모두 none 인 열림은 선언 없음 이다" "$(dp_f R3 '측정 지명' 'R3 사유')" "열림/0/선언 없음"
+
+# 선언은 두 형식을 가로지른 마지막 줄 하나다.
+dp_reset; dp_team none
+dp_w m1.round-2.md 'round-3: measure — 잰다; 주장' '고침' 'round-3: none'
+dp_build
+check "89t: measure 뒤에 none 이 오면 선언은 none 이다" "$(dp_f '측정 지명' 'R3 사유')" "0/해당 없음"
+dp_w m1.round-2.md 'round-3: none' 'round-3: measure — 잰다; 주장'
+dp_build
+check "89t: none 뒤에 measure 가 오면 선언은 measure 다" "$(dp_f '측정 지명' 'R3 사유')" "1/지명 미개방"
+
+# 개정 키 — (팀원, 단계)마다 k 가 가장 큰 판 하나, 원본과 함께 세지 않는다. k 는 수로 비교한다.
+dp_reset; dp_team measure
+dp_w m1.round-2-rev2.md 'round-3: none'
+dp_w m1.round-2-rev10.md 'round-3: measure — 잰다; 주장'
+dp_w m1.fidelity.md 'findings: 5' '- type: decision-reopen' '- type: decision-reopen'
+dp_w m1.fidelity-rev1.md '- type: decision-reopen' 'findings: 1'
+dp_w m2.fidelity.md 'Fidelity confirmed — all my contributions accounted for.' 'findings: 0'
+dp_w m1.fidelity.prompt.md 'findings: 70'
+dp_w m1.coherence.md 'findings: 3'
+dp_w m1.coherence.epoch-6.md 'findings: 40'
+dp_build
+check "89t: 가장 큰 rev 판 하나만 증인이다" \
+  "$(dp_f 팀원 '측정 지명' '충실도 좌석' '충실도 발견' '충실도 재개' '정합 좌석' '정합 발견')" "1/1/2/1/1/1/3"
+
+# 좌석이 0 이면 합이 아니라 미상, 개수 줄이 없는 좌석이 하나라도 있으면 미상.
+dp_reset; dp_team none
+dp_build
+check "89t: 좌석이 0 이면 발견과 재개는 미상이다" \
+  "$(dp_f '충실도 좌석' '충실도 발견' '충실도 재개' '정합 좌석' '정합 발견')" "0/미상/미상/0/미상"
+dp_w m1.coherence.md 'findings: 4'
+dp_w m2.coherence.md '- 발견 하나'
+dp_w m1.fidelity.md 'Fidelity confirmed — all my contributions accounted for.'
+dp_build
+check "89t: findings 줄이 없는 좌석이 있으면 발견은 미상이다" \
+  "$(dp_f '충실도 좌석' '충실도 발견' '충실도 재개' '정합 좌석' '정합 발견')" "1/미상/0/2/미상"
+
+# 게이트의 스테이지 결과 기록기 — 설계 시도의 행 바로 뒤에 토론 패스 행 하나. 말뭉치는
+# 스텁 스테이지가 제 런 디렉터리에 쓴다(무인 토론 갈래가 완료 전환 구간에서 하듯).
+bsx_stub "$WORK/bin/bsx-dpdesign" "$BSX_LIT_DESIGN" \
+  'w="$CC_PIPELINE_RUN_DIR/design/docs-bsxd-RTDP/witness"; mkdir -p "$w"; for m in a b; do printf "x\nround-3: none\n" > "$w/$m.round-2.md"; printf "x\n" > "$w/$m.round-1.md"; done'
+tier_fresh RTDP "$TIER_PLAN_DISCPATH"
+bsx_launch RTDP "$WORK/bin/bsx-dpdesign" design "$TIER_P_DISCUSS" D1
+dp_after=$(awk 'hit { print; exit }
+  index($0, "- `stage-result` |") == 1 && index($0, "| 스테이지=D1 | 종류=design ") { hit = 1 }' \
+  "$WT/docs/pipeline-run/RTDP.md" 2>/dev/null)
+check "89t: 설계 행 바로 뒤에 토론 패스 행이 선다" \
+  "$(printf '%s\n' "$dp_after" | sed -n 's/^- `\(토론 패스\)` | .*스테이지=\([^ |]*\) | 실행 버전=\([^ |]*\) | 경로=\([^ |]*\) | 팀원=\([^ |]*\) .*$/\1\/\2\/\3\/\4\/\5/p')" \
+  "토론 패스/D1/1/discuss-audit/2"
+
+# 최악 길이 — 필드마다 가장 긴 값: 경로는 가장 긴 낱말(discuss-audit, 13 바이트), R3 사유는
+# 다섯 값 가운데 가장 긴 지명 미개방(닫힘이라 R3 분은 수보다 긴 미상), 스테이지는 드라이버의
+# S1design, 실행 버전과 개수 필드는 다섯 자리. 교대 번호가 붙는 자리이므로 교대 id 를 둔다.
+dp_reset
+( cd "$dp_wd" && awk 'BEGIN {
+    for (i = 10000; i < 20000; i++) {
+      m = "m" i
+      print "제안" > (m ".round-1.md"); close(m ".round-1.md")
+      print "round-3: measure — 잰다; 주장" > (m ".round-2.md"); close(m ".round-2.md")
+      f = m ".fidelity.md"; print "- type: decision-reopen" > f; print "findings: 9" > f; close(f)
+      c = m ".coherence.md"; print "findings: 9" > c; close(c)
+      print "round-3: sweep — 주장 " i > "SWEEP.md"
+    } }' )
+( unset CC_PIPELINE_SHIFT_ID
+  CC_PIPELINE_SHIFT_ID=S99999-shift; export CC_PIPELINE_SHIFT_ID
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+    LEDGER="$2"; RUN_DIR="$3"; RUN_ID=DP; DOC_SLUG=dp
+    gate_design_path_word() { printf "discuss-audit"; }
+    gate_record_discussion_passes S1design 99999' _ "$GATE" "$dp_led" "$dp_root" ) >/dev/null 2>&1
+check "89t: 최악 값 픽스처의 필드가 모두 가장 긴 값이다" \
+  "$(dp_f 스테이지 '실행 버전' 경로 팀원 R3 '측정 지명' '스윕 반박' 'R3 사유' 'R3 분' '충실도 좌석' '충실도 발견' '충실도 재개' '정합 좌석' '정합 발견')" \
+  "S1design/99999/discuss-audit/10000/닫힘/10000/10000/지명 미개방/미상/10000/90000/10000/10000/90000"
+dp_worst=$(dp_rows | tail -1)
+dp_worst_bytes=$(printf '%s\n' "$dp_worst" | wc -c | tr -d ' ')
+printf '  89t: 최악 값 토론 패스 행 %s 바이트\n' "$dp_worst_bytes"
+if [ -n "$dp_worst" ] && [ "$dp_worst_bytes" -le 1024 ]; then ok "89t: 최악 값의 토론 패스 행도 1024 바이트 이하다"
+else bad "89t: 최악 값의 토론 패스 행도 1024 바이트 이하다" "${dp_worst_bytes} 바이트"; fi
+rm -rf "$dp_root"
 
 # ---------------------------------------------------------------------------
 # 90. 세션 기록의 조직 이동과 재부착 조직 대조

@@ -341,8 +341,8 @@ check "pin: the deadline park's anchor field" \
   "$(sed -n '/^gate_wait_deadline_park() {/,/^}/p' "$GATE" | grep -cF '"앵커 세그먼트=$key"')" "1"
 check "pin: the adoption carry names its copy #adopted-" \
   "$(sed -n '/^gate_adoption_halt_carry() {/,/^}/p' "$GATE" | grep -cF '#adopted-$GATE_CARRY_SRC.md"')" "1"
-check "pin: the adoption carry names its attachment .attach.md" \
-  "$(sed -n '/^gate_adoption_halt_carry() {/,/^}/p' "$GATE" | grep -cF '#adopted-$GATE_CARRY_SRC.attach.md"')" "1"
+check "pin: the adoption carry names its attachment .answer.md" \
+  "$(sed -n '/^gate_adoption_halt_carry() {/,/^}/p' "$GATE" | grep -cF 'adst="${dst%.md}.answer.md"')" "1"
 check "pin: the shift halt record is <seg>#<n>.md under the shift halt directory" \
   "$( { grep -cF 'sdst="$sdir/$seg#$sn.md"' "$GATE" || true; } )" "1"
 check "pin: the shift halt directory is the run's halt/shift" \
