@@ -18,12 +18,18 @@
 # 수를 최근 판의 수로 읽지 않게 하려는 것이다. 표의 수는 최초 감사의 것이고, 재감사 수는 따로
 # 한 칸에 둔다. 값이 없는 칸은 `-` 다.
 #
+# 그 뒤 두 덩어리가 더 붙는다. 「토론 패스」는 요약의 `discussion_passes` 를 경로마다 한 줄로
+# 낸다 — 릴리스 전후를 가르지 않으므로 판정에 쓰지 않는다. 「판정」은 감사 판마다 기준선과
+# 릴리스 뒤의 n·중앙값·문턱 대비·R3 개방률·판정 상태를 낸다. 판정 덩어리는 경계 버전을 받아
+# `collect-run-metrics.sh --verdict` 가 이미 있는 런별 기록에서 계산한다(그쪽도 아무것도 쓰지
+# 않는다). 경계를 주지 않으면 그 스크립트의 기본값을 쓴다.
+#
 # Usage:
-#   design-path-report.sh --ledger-dir <dir>
+#   design-path-report.sh --ledger-dir <dir> [--release-boundary <version>]
 #
 # Exit codes:
 #   0 — 출력함 (요약이 없어도 그 사실을 낸다)
-#   2 — 인자 오류 (--ledger-dir 없음 · 모르는 인자)
+#   2 — 인자 오류 (--ledger-dir 없음 · 모르는 인자 · 숫자 버전이 아닌 경계)
 #   3 — 원장 디렉터리 없음
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no mapfile. 수치 계산과
@@ -32,15 +38,20 @@
 set -euo pipefail
 
 dp_diag() { printf 'design-path-report: %s\n' "$1" >&2; }
-dp_usage() { dp_diag "usage: design-path-report.sh --ledger-dir <dir>"; }
+dp_usage() { dp_diag "usage: design-path-report.sh --ledger-dir <dir> [--release-boundary <version>]"; }
 
 LEDGER_DIR=""
+BOUNDARY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --ledger-dir) [ $# -ge 2 ] || { dp_usage; exit 2; }; LEDGER_DIR="$2"; shift 2 ;;
+    --release-boundary) [ $# -ge 2 ] || { dp_usage; exit 2; }; BOUNDARY="$2"; shift 2 ;;
     *) dp_usage; exit 2 ;;
   esac
 done
+if [ -n "$BOUNDARY" ] && ! printf '%s' "$BOUNDARY" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+  dp_diag "--release-boundary 는 점으로 나눈 숫자 버전이어야 합니다: $BOUNDARY"; exit 2
+fi
 [ -n "$LEDGER_DIR" ] || { dp_usage; exit 2; }
 [ -d "$LEDGER_DIR" ] || { dp_diag "원장 디렉터리가 없습니다: $LEDGER_DIR"; exit 3; }
 
@@ -85,3 +96,46 @@ jq -r '
                 | "| \(.path) | \(.edition) | \(.n) | \(.unique.median | cell) | \(.unreinforced.median | cell) | \(.skeletal.median | cell) | \(.reconverge_rate | rate) |" )
             end )
     end' "$SUMMARY"
+
+jq -r '
+  def cell: if . == null then "-" elif type == "number" then (. * 100 | round / 100 | tostring) else tostring end;
+  def dist: to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "-" else . end;
+  (.discussion_passes // {}) as $dp
+  | "",
+    "# 토론 패스 — 경로별",
+    "",
+    "(런, 설계 스텝)마다 마지막 행 하나를 셉니다. 릴리스 전후를 가르지 않으므로 판정에는 쓰지 않습니다.",
+    "",
+    ( if ($dp | length) == 0 then "토론 패스 행이 있는 런이 없습니다."
+      else
+        "| 경로 | n | R3 개방 | R3 사유 | R3 분 중앙값 | 충실도 발견 중앙값 | 정합 발견 중앙값 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        ( $dp | to_entries | sort_by(.key)[] | .key as $p | .value
+          | "| \($p) | \(.n) | \(.r3_open) | \(.reasons | dist) | \(.r3_minutes_median | cell) | \(.fidelity_findings_median | cell) | \(.coherence_findings_median | cell) |" )
+      end )' "$SUMMARY"
+
+script_dir=$(cd "$(dirname "$0")" && pwd)
+set -- --ledger-dir "$LEDGER_DIR" --verdict
+[ -z "$BOUNDARY" ] || set -- "$@" --release-boundary "$BOUNDARY"
+if ! VERDICT=$(bash "$script_dir/collect-run-metrics.sh" "$@" 2>/dev/null) \
+   || ! printf '%s' "$VERDICT" | jq -e 'type == "object" and has("editions")' >/dev/null 2>&1; then
+  printf '\n# 판정 — 감사 판별\n\n판정 덩어리를 계산하지 못했습니다(collect-run-metrics.sh --verdict).\n'
+  exit 0
+fi
+printf '%s' "$VERDICT" | jq -r '
+  def cell: if . == null then "-" elif type == "number" then (. * 100 | round / 100 | tostring) else tostring end;
+  def rate: if . == null then "-" else ((. * 100 | round | tostring) + "%") end;
+  def judged: if .status != "판정" then "-" elif .revert then "되돌림" else "유지" end;
+  def cut: if .status != "판정" or .time_reduction == null then "-" elif .time_reduction then "성립" else "미성립" end;
+  "",
+  "# 판정 — 감사 판별",
+  "",
+  "경계 버전 \(if .boundary == "" then "(없음 — 모두 기준선)" else .boundary end) · 문턱 \(.threshold)배 · 한쪽 \(.min_n)건 이상 · R3 개방률 \(.r3_open_max | rate) 이하면 시간 감축.",
+  "",
+  ( if (.editions | length) == 0 then "판정에 드는 감사 공시 행이 없습니다."
+    else
+      "| 감사 판 | 기준선 n | 릴리스 뒤 n | 상태 | 되돌림 | 기준선 고유 중앙값 | 뒤 고유 중앙값 | 기준선 고유/KB | 뒤 고유/KB | 고유 대비 | 고유/KB 대비 | 기준선 R3 개방률 | 뒤 R3 개방률 | 시간 감축 |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      ( .editions | to_entries | sort_by(.key)[] | .value
+        | "| \(.edition) | \(.baseline.n) | \(.after.n) | \(.status) | \(judged) | \(.baseline.unique_median | cell) | \(.after.unique_median | cell) | \(.baseline.unique_per_kb_median | cell) | \(.after.unique_per_kb_median | cell) | \(.ratio.unique | cell) | \(.ratio.unique_per_kb | cell) | \(.baseline.r3_open_rate | rate) | \(.after.r3_open_rate | rate) | \(cut) |" )
+    end )'
