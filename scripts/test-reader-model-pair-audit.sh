@@ -493,7 +493,8 @@ export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=policy
 xr run --exp-id "$EP" --budget-usd 1000
 pha=$(grep -c -- '--kind halt-answer' "$STUB_GATE_LOG" || true)
 if [[ "$rc" == "0" && "$pha" == "15" ]] && all_valid "$EP" \
-   && grep -- '--kind halt-answer' "$STUB_GATE_LOG" | awk 'NR == 1' | grep -qF '선택지=record in the unresolved-issues section 답한 주체=사람 근거=실험 고정 정책 — ' \
+   && awk -v w='선택지=record in the unresolved-issues section 답한 주체=사람 근거=실험 고정 정책 — ' \
+        'index($0, "--kind halt-answer") { hit = index($0, w) > 0; exit } END { exit !hit }' "$STUB_GATE_LOG" \
    && case "$(verdict7 "$EP")" in "# verdict: "*) true ;; *) false ;; esac; then
   pass "unattended: every run's CFI-3b halt is answered by the policy as 사람, all three branches collected, verdict written"
 else

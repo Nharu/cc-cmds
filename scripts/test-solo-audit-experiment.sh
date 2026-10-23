@@ -667,7 +667,7 @@ scenario ladder
 export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=ladder
 xr run --exp-id 20261017-000000aa --budget-usd 1000
 okl=1; for n in 1 2 3 4 5; do [[ "$(ptsv 20261017-000000aa "$n" status)" == "유효" ]] || okl=0; done
-[[ "$rc" == "0" && "$(answers)" == "5" && "$okl" == "1" ]] && grep -- '--kind halt-answer' "$STUB_GATE_LOG" | grep -q -- '--segment D1 .*선택지=잔여로 두고 동결 답한 주체=사람 ' \
+[[ "$rc" == "0" && "$(answers)" == "5" && "$okl" == "1" ]] && grep -q -- '--kind halt-answer.*--segment D1 .*선택지=잔여로 두고 동결 답한 주체=사람 ' "$STUB_GATE_LOG" \
   && pass "policy: every design run's ladder halt is answered with 잔여로 두고 동결 and the pairs are valid" || { fail "policy: ladder gave exit $rc with $(answers) answers"; cat "$sc/out" >&2; }
 
 # A run the wall-clock deadline closed is not a finished run.
