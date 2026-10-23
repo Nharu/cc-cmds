@@ -623,7 +623,7 @@ check "대기 승인 항목이 절단점을 싣는다" \
   "$(jq -r '.pending_approvals[0].cutpoint' "$SNAP_U")" "판단"
 check "대기 승인 항목이 질문 문면을 싣는다" \
   "$(jq -r '.pending_approvals[0].question' "$SNAP_U")" "q"
-# The class is what tells the router a 사람-결정 wait from an ordinary one, and a
+# The class is what tells the router a person-set wait (사람-결정, 시각-승인) from an ordinary one, and a
 # question raised without one still carries the key, as `-`.
 check "대기 승인 항목이 판단 부류를 싣고, 부류 없는 질문은 - 다" \
   "$(jq -r '.pending_approvals[0].class' "$SNAP_U")" "-"
@@ -2574,6 +2574,23 @@ check "부류 없는 판단의 거부는 여전히 배열에 오르지 않는다
   "$(qj_ids | { grep -xF QJ-REFUSED || true; } | gate_count)" "0"
 check "드라이버는 사람-결정 거부를 그 스테이지에 답으로 다시 붙이지 않는다" \
   "$(answered_judgment_stage QW S4 2>/dev/null)" ""
+# `시각-승인` is the other member of the person set, so its refusal is listed the
+# same way and its open wait carries its class; the row's new value is read by
+# the same field and mixed with neither `사람-결정` nor the classless questions.
+gate_append '승인' "승인 id=QJ-VISUAL" "상태=대기" "대상=repo" "절단점=판단" "막는 세그먼트=S4:QV:1" \
+  "질문 문면=화면이 승인되었는가" "판단 부류=시각-승인"
+qv_pj=$(gate_pending_approvals_json 2>/dev/null || true)
+case "$qv_pj" in '['*) ;; *) qv_pj="[$qv_pj]" ;; esac
+check "열린 시각-승인 은 대기 배열에 그 부류를 싣는다" \
+  "$(printf '%s' "$qv_pj" | jq -r '.[] | select(.id == "QJ-VISUAL") | .class' 2>/dev/null)" "시각-승인"
+qj_close QJ-VISUAL 거부 "화면이 승인되었는가" "화면을 짓지 않는다"
+: > "$RUN_DIR/log/S4:QV:1.json"
+check "시각-승인 판단의 거부는 답이 온 판단 배열에 state 거부로 오른다" \
+  "$(printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[] | select(.id == "QJ-VISUAL") | .state' 2>/dev/null)" "거부"
+check "사람-결정 거부의 원소는 시각-승인 행이 더해져도 그대로다" \
+  "$(printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[] | select(.id == "QJ-PERSON") | .state' 2>/dev/null)" "거부"
+check "드라이버는 시각-승인 거부를 그 스테이지에 답으로 다시 붙이지 않는다" \
+  "$(answered_judgment_stage QV S4 2>/dev/null)" ""
 
 LEDGER="$LEDGER_SAVE"
 RUN_DIR="$RUN_DIR_SAVE"

@@ -580,6 +580,50 @@ rs_full "$RSD/v-tail.md" '「### R1. 첫 항목」 그리고 나머지'
 case "$(rs_sfo "$RSD/v-tail.md")" in 1:*'잔여 항목이'*) ok "검증기: 마지막 」 뒤 덧붙임 글은 거절된다" ;; *) bad "덧붙임 글 거절" "$(rs_sfo "$RSD/v-tail.md")" ;; esac
 rs_full "$RSD/v-gone.md" '「### R9. 없는 항목」'
 case "$(rs_sfo "$RSD/v-gone.md")" in 1:*'구현 시 검증 항목'*'없음'*) ok "검증기: 잔여 절에 없는 표제는 거절된다" ;; *) bad "없는 표제 거절" "$(rs_sfo "$RSD/v-gone.md")" ;; esac
+# `**화면**` — 문법을 소유한 설계 스킬의 예시 줄을 직접 읽어 검증기에 넣는다. 예시가
+# 없으면 실패한다: 문법과 검증기를 잇는 것이 이 단언이라, 건너뛰면 아무것도 재지 않는다.
+SCR_SKILLS="$(dirname "$DRIVER")/../skills"
+SCR_EX=$(sed -nE 's/^[[:space:]]*(\*\*화면\*\*: .*)$/\1/p' "$SCR_SKILLS/design/SKILL.md")
+scr_doc() {  # scr_doc <file> <A 의 화면 줄, 빈 값이면 줄 없음>
+  {
+    printf '# 문서\n\n## 구현 슬라이싱\n\n'
+    printf '### 슬라이스 A\n**스킬**: implement\n**레포**: `o/r`\n**선언 파일**: `a.txt`\n**선행**: 없음\n**절단점**: 커밋\n'
+    [ -z "$2" ] || printf '%s\n' "$2"
+    printf '\n'
+  } > "$1"
+}
+check "화면: 설계 스킬의 문법 예시는 두 모양(없음, 화면 id 목록) 두 줄이다" \
+  "$(printf '%s\n' "$SCR_EX" | grep -c . | tr -d ' '):$(printf '%s\n' "$SCR_EX" | grep -c '^\*\*화면\*\*: 없음$' | tr -d ' ')" "2:1"
+scr_n=0
+while IFS= read -r scr_line; do
+  [ -n "$scr_line" ] || continue
+  scr_n=$((scr_n + 1))
+  scr_doc "$RSD/scr-ex$scr_n.md" "$scr_line"
+  check "화면: 문법 예시 「${scr_line}」 는 검증기를 통과한다" "$(rs_sfo "$RSD/scr-ex$scr_n.md")" "0:"
+done <<EOF
+$SCR_EX
+EOF
+scr_doc "$RSD/scr-absent.md" ""
+check "화면: 필드가 없는 슬라이스는 거절되지 않는다 (선택 필드)" "$(rs_sfo "$RSD/scr-absent.md")" "0:"
+for scr_bad in 'Order-List' 'order-list,order-detail' 'order-list, ' '모두' 'order_list'; do
+  scr_doc "$RSD/scr-bad.md" "**화면**: $scr_bad"
+  case "$(rs_sfo "$RSD/scr-bad.md")" in
+    1:*'화면이'*) ok "화면: 모양이 틀린 값 「${scr_bad}」 는 거절된다" ;;
+    *) bad "화면 모양 거절 「${scr_bad}」" "$(rs_sfo "$RSD/scr-bad.md")" ;;
+  esac
+done
+check "화면: 모양 규칙은 base 모드에서도 선다 (게이트의 슬라이싱 검사가 그 모드로 부른다)" \
+  "$(slicing_fields_ok "$RSD/scr-bad.md" base >/dev/null 2>&1 && printf 통과 || printf 거절)" "거절"
+# 두 모양의 낱말은 구현 쪽 스킬이 읽는 문장과 같다.
+case "$(cat "$SCR_SKILLS/implement/SKILL.md")" in
+  *'a slice whose `**화면**` field is `없음`'*'a slice that lists screen ids covers those screens only'*)
+    case "$(cat "$SCR_SKILLS/design/SKILL.md")" in
+      *'A slice whose `**화면**` field is `없음`'*'a slice that lists screen ids covers those screens only'*)
+        ok "화면: 두 모양의 낱말이 설계 스킬의 문법과 구현 스킬의 문장에서 같다" ;;
+      *) bad "화면 낱말 일치" "design/SKILL.md 에 구현 스킬과 같은 두 모양 문장이 없다" ;;
+    esac ;;
+  *) bad "화면 낱말 일치" "implement/SKILL.md 의 두 모양 문장이 없다" ;;
+esac
 check "잔여 이어가기 문면은 빠진 표제를 축자로 싣는다" \
   "$(residual_unmet_message "$(printf '### R1. 첫 항목\n### R6. 외부 항목')")" \
   "자기 몫 잔여 검증 항목의 결과 줄(W1 뒤집기·W2 메모)이 없다 — 「### R1. 첫 항목」, 「### R6. 외부 항목」"
@@ -2136,6 +2180,12 @@ case "$(tail -1 "$LEDGER")" in
   *"| 재개 명령=재호출 | 앵커 세그먼트=K | 근거=계보=B:K#1"*) ok "일곱째·여덟째 인자가 앵커와 근거로 실린다" ;;
   *) bad "앵커·근거" "$(tail -1 "$LEDGER")" ;;
 esac
+park K cone 막힘 "시각 승인 대기" "관측문" "" K "" "" "" 시각승인대기
+case "$(tail -1 "$LEDGER")" in
+  *"| 사유=시각 승인 대기 | 관측=관측문 | 재개 명령=(없음) | 앵커 세그먼트=K | 재킥 원인=시각승인대기"*)
+    ok "열한째 인자가 재킥 원인으로 실리고 빈 인자는 필드를 남기지 않는다" ;;
+  *) bad "재킥 원인 인자" "$(tail -1 "$LEDGER")" ;;
+esac
 
 # 라우터 파킹 도우미 — 마감 판정은 사이트의 스코프와 무관하게 앵커의 cone 이고,
 # 그 밖의 판정은 사이트의 스코프를 지킨다. 어느 쪽이든 라우터의 회복과 ready_at 을 싣는다.
@@ -3640,12 +3690,12 @@ AB21_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   pend { cont = ($0 ~ /\\$/) }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "파견 팔의 stage-result 행 자리가 아홉이다 — 계속 시도 하나, 베이스 분할 하나, 재수렴 하나, 리드 수정 하나 포함 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "9"
+check "파견 팔의 stage-result 행 자리가 열이다 — 계속 시도 하나, 베이스 분할 하나, 시각 단계 하나, 재수렴 하나, 리드 수정 하나 포함 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "10"
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
-# 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 재수렴 하나, 리드 수정 하나를 포함해 열셋)가 압축
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 시각 단계 하나, 재수렴 하나, 리드 수정 하나를 포함해 열넷)가 압축
 # 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
 WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
@@ -3653,13 +3703,13 @@ WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "드라이버의 stage-result 호출부가 열셋이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "13"
-check "열셋 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+check "드라이버의 stage-result 호출부가 열넷이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "14"
+check "열넷 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
   "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
 # 대기 표지도 같은 문면의 키를 싣는다 — 그 줄은 보유자의 지문과 함께 쓰이므로 뺀다.
 check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
-  "$(grep '"기록자=드라이버"' "$DRIVER" | grep -vc '"지문=' || true)" "13"
+  "$(grep '"기록자=드라이버"' "$DRIVER" | grep -vc '"지문=' || true)" "14"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -4219,10 +4269,15 @@ re_case p-target 'printf -- "- \`blocked\` | 대상=other | 스코프=act | 원�
   RUN_END_LOOP_DONE=1; run_end_record'
 re_case p-slice 'printf -- "- \`blocked\` | 대상=home | 세그먼트=B | 스코프=act | 원인=막힘 | 사유=선언 불완전 | 재킥 원인=슬라이싱\n" >> "$LEDGER"
   RUN_END_LOOP_DONE=1; run_end_record'
+re_case p-visual 'park B cone 막힘 "시각 승인 대기" "화면 슬라이스의 화면이 구현 승인되지 않았다" "" B "" "" "" 시각승인대기
+  RUN_END_LOOP_DONE=1; run_end_record'
 re_case landed 'RUN_END_LOOP_DONE=1; RUN_END_ALL_LANDED=1; run_end_record'
 re_case loop-plain 'RUN_END_LOOP_DONE=1; run_end_record'
 check "슬라이스 park 만 남긴 주 루프는 그 park 의 토큰으로 끝난다 (대상미선언 · 슬라이싱)" \
   "$(re_end_field "$RE24/p-target" '재킥 원인')/$(re_end_field "$RE24/p-slice" '재킥 원인')" "대상미선언/슬라이싱"
+check "시각 대기 park 로 끝난 주 루프는 시각승인대기 로 끝나고 종료 행 사유가 그 park 원인을 담는다" \
+  "$(re_end_field "$RE24/p-visual" '재킥 원인')/$(re_end_field "$RE24/p-visual" '근거')" \
+  "시각승인대기/디스패치할 슬라이스 없이 끝났다 — 슬라이스 park 의 원인 시각승인대기"
 check "모두 착지한 주 루프는 해당없음 과 종료 부류=완료 를 쓴다" \
   "$(re_end_rows "$RE24/landed")/$(re_end_field "$RE24/landed" '재킥 원인')/$(re_end_field "$RE24/landed" '종료 부류')" \
   "1/해당없음/완료"
@@ -10853,6 +10908,9 @@ S1':seg:1:path|reconverge
 S1':seg:1:plugins-cc-cmds-skills-design-SKILL.md|reconverge
 S0R:seg:reconverge|reconverge
 S2R|reconverge
+S2V|visual
+S2V.retry|visual
+visual-design|visual
 S4:review-fix:1|implement
 S5:design-seg:2|review
 Sx|generic
@@ -10886,6 +10944,7 @@ reconverge|high
 audit|high
 implement|medium
 review|medium
+visual|medium
 shift|medium
 generic|medium
 triage|medium
@@ -11023,7 +11082,7 @@ env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARG
   bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
            RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli"; judgment_call triage "$jc_root/input"' \
   _ "$DRIVER" "$JCD" >/dev/null 2>"$JCD/log.txt"
-if grep_all_q -F -- '--strict-mcp-config --effort medium --model opus' "$JCD/argv.txt"; then
+if grep_all_q -F -- '--strict-mcp-config --disallowedTools DesignSync Artifact ArtifactComments ArtifactData --effort medium --model opus' "$JCD/argv.txt"; then
   ok "판단 호출의 CLI argv 가 --effort medium --model opus 를 싣는다"
 else
   bad "판단 호출 argv" "$(tr '\n' ' ' < "$JCD/argv.txt" 2>/dev/null | tail -c 200)"
@@ -11061,12 +11120,27 @@ check "사전 인가 판단 호출은 준 출력 파일에 쓰고 그 경로를 
   "$(cat "$JCD/pj-stdout.txt" 2>/dev/null)|$([ -s "$JCD/run/log/judge-preauth-judge.json" ] && echo 기본에도씀 || echo 기본없음)" \
   "$JCD/pj-out.json|기본없음"
 
-# 드라이버 stage-result 호출부 — S9 적용 행을 뺀 여덟(계속 시도 행, 베이스 분할 행과
-# 리드 수정 행 포함)이 effort 와 서빙 모델을 싣는다.
-check "드라이버 stage-result 호출부 여덟이 effort 를 싣는다" \
-  "$(grep -c '"effort=$(stage_effort_rec_of ' "$DRIVER" || true)" "8"
-check "그 여덟이 서빙 모델도 싣는다" \
-  "$(grep -c '"서빙 모델=$(stage_served_model_of ' "$DRIVER" || true)" "8"
+# 다섯 판단 이름 모두의 실제 argv 에 Claude Design 네 도구의 거부가 실린다 — `--tools ""`
+# 를 받는 두 이름에서도 함께다. 판단 호출은 `--settings` 없이 뜨므로 스테이지 설정의
+# 거부 목록이 닿지 않는다.
+for jc_name in $JUDGMENTS; do
+  rm -f "$JCD/argv-$jc_name.txt"
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv-$jc_name.txt" \
+    bash -c 'jc_drv="$1"; jc_root="$2"; jc_n="$3"; set --; . "$jc_drv"; set +e
+             RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli-words"
+             judgment_call "$jc_n" "$jc_root/input" "$jc_root/out-$jc_n.json"' \
+    _ "$DRIVER" "$JCD" "$jc_name" >/dev/null 2>&1
+  check "판단 호출 $jc_name 의 argv 가 --disallowedTools 뒤에 네 이름을 싣는다" \
+    "$(awk 'p && n < 4 { printf "%s ", $0; n++ } $0 == "--disallowedTools" { p = 1 }' "$JCD/argv-$jc_name.txt" 2>/dev/null)" \
+    "DesignSync Artifact ArtifactComments ArtifactData "
+done
+
+# 드라이버 stage-result 호출부 — S9 적용 행을 뺀 아홉(계속 시도 행, 베이스 분할 행,
+# 시각 단계 행과 리드 수정 행 포함)이 effort 와 서빙 모델을 싣는다.
+check "드라이버 stage-result 호출부 아홉이 effort 를 싣는다" \
+  "$(grep -c '"effort=$(stage_effort_rec_of ' "$DRIVER" || true)" "9"
+check "그 아홉이 서빙 모델도 싣는다" \
+  "$(grep -c '"서빙 모델=$(stage_served_model_of ' "$DRIVER" || true)" "9"
 
 # ---------------------------------------------------------------------------
 # 33. 라우팅 가드 — 런 기록과 스냅숏의 비교, 그리고 라우팅된 런의 기동이 임대를
@@ -11670,10 +11744,11 @@ m34_main() {  # m34_main <이름> <plan.tsv 본문> [실패할 세그먼트] [�
   (
     RUN_DIR="$d/run"; LEDGER="$d/$1.md"; LEDGER_SCOPE=파일; RUN_ID="$1"; GRANT="$R34/grant.md"
     MANIFEST="$d/manifest.md"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
-    DOC="$R34DOC"; DOC_KEY="$R34KEY"; DOC_SLUG="$1"; DOC_BASE="$d"
+    DOC="${M34DOC:-$R34DOC}"; DOC_KEY="$R34KEY"; DOC_SLUG="$1"; DOC_BASE="$d"
     ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG="$1"; BASE="$d"
     M34FAIL="${3:-}"; M34DEF="${4:-}"
     : > "$LEDGER"
+    [ -z "${M34APPROVED:-}" ] || visual_approval_why() { return 0; }
     design_arm() { return 0; }
     dispatch_stage() { printf '0' > "$RUN_DIR/$1.rc"; }
     slicing_branch() { printf '선언통치'; }
@@ -11713,6 +11788,27 @@ m34_main m34old "$M34PLAN" SA
 check "34m: 다섯째 열이 없는 계획은 선행 만으로 전과 같이 돈다" \
   "$(m34_seq m34old cycled)|$( { grep -F 'SB cone' "$R34MO/m34old/parked" 2>/dev/null || true; } | grep -cF '선행 슬라이스가 완료되지 않음: 구현 선행 SA' || true)" \
   "SA SC|1"
+
+# 화면 슬라이스 — 승인 술어가 서지 않는 화면 슬라이스는 segment_cycle 이 브랜치를
+# 자르기 전에 `재킥 원인=시각승인대기` 로 park 되고, 그 후행은 의존 가드에 걸리며,
+# `**화면**: 없음` 인 슬라이스는 평소대로 돈다. 술어는 진짜 visual-check.sh 가 답한다
+# — 이 문서에는 시각 사이드카가 없어 서지 않는다.
+M34VDOC="$R34MO/doc/screen.md"
+{
+  printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: 3\n'
+  for m34v in 'VA:order-list' 'VB:없음' 'VC:없음'; do
+    printf '\n### 슬라이스 %s — 픽스처\n\n**스킬**: implement\n**레포**: Nharu/cc-cmds\n**선언 파일**: `%s.txt`\n**선행**: 없음\n**화면**: %s\n**절단점**: 머지\n**리뷰 정책**: 선리뷰후머지\n' \
+      "${m34v%%:*}" "${m34v%%:*}" "${m34v#*:}"
+  done
+} > "$M34VDOC"
+M34PLAN='VA\t-\t-\t-\t-\nVB\t-\t-\t-\t-\nVC\t-\t-\tVA\t-\n'
+M34DOC="$M34VDOC" m34_main m34vwait "$M34PLAN"
+check "34m: 승인 없는 화면 슬라이스는 브랜치 전에 시각승인대기 로 park 되고 화면 없는 슬라이스만 돈다" \
+  "$(m34_seq m34vwait cycled)|$( { grep -F 'VA cone 막힘 시각 승인 대기 ' "$R34MO/m34vwait/parked" 2>/dev/null || true; } | grep -c ' 시각승인대기$' || true)|$( { grep -F 'VC cone' "$R34MO/m34vwait/parked" 2>/dev/null || true; } | grep -cF '선행 슬라이스가 완료되지 않음: 구현 선행 VA' || true)" \
+  "VB|1|1"
+M34APPROVED=1 M34DOC="$M34VDOC" m34_main m34vok "$M34PLAN"
+check "34m: 승인 술어가 서면 화면 슬라이스도 평소대로 돈다" \
+  "$(m34_seq m34vok cycled)|$( { cat "$R34MO/m34vok/parked" 2>/dev/null || true; } | grep -c . || true)" "VA VB VC|0"
 
 # cross_repo_deps 는 머지 순서 간선으로만 걸린 후행도 레포 간 의존으로 적는다.
 m34_xr=$(sed -n '/^cross_repo_deps()/,/^}/p' "$DRIVER")
