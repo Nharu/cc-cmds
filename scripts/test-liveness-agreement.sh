@@ -708,6 +708,16 @@ else
   fx_row 'stage-wait' "교대=1" "계보=B:STEP1#1" "그룹=-" "근거=fifo-yield"
   fx_heartbeat 0 5
   st_case "같은 시도는 스텝 cone 을 풀지 않는다" "진행중"
+  # A termination clause's evidence request anchors its cone on `clause-<id>`,
+  # which names no segment and no step: it waits on a person for one clause,
+  # and the run is held by that unsettled clause, not by the fold.
+  fx_mkrun st-cone-clause; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=불명" "사유=교대 정지 — 종료 절 근거" \
+    "앵커 세그먼트=clause-C2" "중단 기록=$FX_RUN_DIR/halt/shift/clause-C2#1.md"
+  fx_heartbeat 0 5
+  check "절 키 cone 막힘은 cc_unresolved_blocked 에 나오지 않는다" \
+    "$(cc_unresolved_blocked "$FX_LEDGER")" ""
+  st_case "절 키 cone 막힘은 종단을 막지 않는다" "종단"
   fx_mkrun st-scope-quoted; fx_segment S1 머지됨
   fx_row 'blocked' "대상=-" "스코프=act" "원인=불명" "사유=인용" "근거='스코프=run'"
   st_case "다른 필드 안의 스코프=run 은 범위가 아니다" "종단"

@@ -14574,6 +14574,10 @@ gate_snapshot() {
   printf '  "shift_halts": [\n'
   gate_shift_halts_json
   printf '  ],\n'
+  # Each termination clause with its wording, state and open evidence request.
+  printf '  "clauses": [\n'
+  gate_clauses_json
+  printf '  ],\n'
   # The refusals of a target's own hook, the last row of each key, each with
   # whether its condition still holds — `같음` means the same act meets the
   # same refusal, so a shift does not issue it again.
@@ -19043,7 +19047,10 @@ gate_halt_answer_consumer() {
   # segment row — so the first of these on a later line spends it as well: a
   # `stage-result` of the key, a `segment` row of the key, an act a shift took
   # on the key, or a resolution of a block anchored on it. Whichever comes
-  # first is the consumer.
+  # first is the consumer. A termination clause's evidence request
+  # (`clause-<id>`) has no segment to act on: the shift carries its answer out
+  # by writing that clause's `종료 절` row, or by asking again on the same key
+  # when the attachment falls short, so either of those spends it too.
   #
   # AN ANSWER `세그먼트 park` TO A STAGE'S RECORD IS TAKEN UP BY THE PARK. The
   # shift carries it out by writing the segment's `상태=park` row and dispatches
@@ -19081,8 +19088,11 @@ gate_halt_answer_consumer() {
                 && index($0, "| 세그먼트=" k " |") && index($0, "| 결정=act |") \
                 && index($0, "| 행위자=교대 |")) \
             || (index($0, "- `blocked` ") == 1 && index($0, "| 앵커 세그먼트=" k " |") \
-                && index($0, "| 원인=해소 |"))) { print NR ":" $0; p = 1 }
-      }' "$1" 2>/dev/null)
+                && index($0, "| 원인=해소 |")) \
+            || (cid != "" && index($0, "- `종료 절` ") == 1 && index($0, "| id=" cid " |")) \
+            || (cid != "" && index($0, "- `blocked` ") == 1 && index($0, "| 앵커 세그먼트=" k " |") \
+                && index($0, "| 중단 기록="))) { print NR ":" $0; p = 1 }
+      }' cid="$(gate_clause_key_id "$2" 2>/dev/null || true)" "$1" 2>/dev/null)
     if [ -n "$st" ] && { [ -z "$sr" ] || [ "${st%%:*}" -lt "${sr%%:*}" ]; }; then
       sr=$st
     fi
@@ -21434,7 +21444,17 @@ gate_halt_answer_route() {
     # No terminal condition: two of the shift's stop sites arise on a segment
     # that already has its `머지됨` row, and their `재시도` writes a second one.
     id=교대-정지
-    [ -n "$st" ] || why="$key 에 segment 행이 없어 교대가 교대 정지 기록의 답을 실행할 세그먼트가 없습니다"
+    if cl=$(gate_clause_key_id "$key"); then
+      # A clause's evidence request has no segment row; the shift carries the
+      # answer out by settling that clause, which it can do only while the
+      # clause is still unsettled.
+      case "$(gate_clause_last_state "$cl")" in
+        충족|불가능)
+          why="종료 절 $cl 이 이미 $(gate_clause_last_state "$cl") 로 정산돼 교대가 이 답을 실행할 갈래가 없습니다" ;;
+      esac
+    else
+      [ -n "$st" ] || why="$key 에 segment 행이 없어 교대가 교대 정지 기록의 답을 실행할 세그먼트가 없습니다"
+    fi
   elif [ "$skill" = "design-audit-unattended" ] && [ "${step#*CFI-3b}" != "$step" ] \
        && [ "$opt" = "adopt as a requirement" ]; then
     id=감사-재수렴
@@ -21573,6 +21593,7 @@ push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남�
 워크트리 기록 없음|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 세그먼트 행의 워크트리를 다시 읽고 이 세그먼트를 다시 시도한다
 종료 조건 11 판독 불가|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 이 세그먼트의 가지 끝을 다시 읽고 종료 조건 11 판정을 다시 시도한다
 대상 훅 거절|없음|대상 저장소의 훅 규칙이 그 행위를 왜 막는지, 규칙과 행위 중 어느 쪽을 바꿀지는 그 저장소를 맡은 사람만 정한다|사람이 대상 저장소의 훅이나 그 행위를 고친 뒤, 이 답이 거절 조건을 옮기므로 다음 교대가 이 세그먼트의 막힌 행위를 다시 시도한다
+종료 절 근거|없음|그 절이 요구하는 실행과 그 결과는 이 런의 읽기로 만들 수 없고, 실행할지는 사람이 정한다|-
 EOF
 }
 
@@ -21590,9 +21611,90 @@ gate_shift_halt_options() {
   # each `- \`<라벨>\` — <설명>`, the form the seat's answer is matched against.
   local row retry
   row=$(gate_shift_halt_site_row "$1") || return 1
+  # A clause's evidence request settles a termination clause, not a segment,
+  # so neither `재시도` nor `세그먼트 park` names anything a shift could do.
+  if [ "$1" = "종료 절 근거" ]; then
+    printf '%s\n' "- \`근거 제출\` — 좌석이나 사람이 질문이 요구하는 실행·확인을 하고 그 결과를 첨부로 남기면, 다음 교대가 첨부를 읽어 이 절을 충족으로 정산하거나, 모자라면 다시 요청한다"
+    printf '%s\n' "- \`불가능으로 정산\` — 다음 교대가 이 답을 근거로 이 절을 불가능으로 정산한다. 런은 무효화로 끝난다"
+    return 0
+  fi
   retry=$(printf '%s' "$row" | cut -d'|' -f4)
   printf '%s\n' "- \`재시도\` — $retry"
   printf '%s\n' "- \`세그먼트 park\` — 다음 교대가 이 세그먼트를 park 로 기록하고, 이 세그먼트에 기대는 세그먼트를 빼고 나머지로 계속한다"
+}
+
+gate_clause_key_id() {
+  # gate_clause_key_id <key> — the termination clause id a `clause-<id>` key
+  # names, or nothing (exit 1) when the key has another shape or the manifest
+  # declares no such clause. The gate makes these keys itself, so a key that
+  # resolves here is never a segment id.
+  local id
+  case "$1" in clause-?*) id="${1#clause-}" ;; *) return 1 ;; esac
+  case " $(gate_clause_ids | tr '\n' ' ') " in
+    *" $id "*) printf '%s' "$id" ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_clause_last_state() {
+  # gate_clause_last_state <id> — the `상태` of the last `종료 절` row naming
+  # that clause, or nothing when no row names it.
+  local row last=""
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(gate_row_field "$row" 'id')" = "$1" ] && last=$(gate_row_field "$row" '상태')
+  done <<EOF
+$(gate_rows '종료 절')
+EOF
+  printf '%s' "$last"
+}
+
+gate_clause_open_request() {
+  # gate_clause_open_request <id> — the record of that clause's evidence
+  # request whose answer no shift has carried out yet, or nothing. A request
+  # is closed by a later `종료 절` row of the same id; a later request on the
+  # same key takes its place.
+  local key="clause-$1" r rec=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    case "$r" in
+      '- `blocked`'*)
+        [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$key" ] || continue
+        [ -n "$(gate_row_field "$r" '중단 기록')" ] && rec=$(gate_row_field "$r" '중단 기록') ;;
+      '- `종료 절`'*)
+        [ "$(gate_row_field "$r" 'id')" = "$1" ] && rec='' ;;
+    esac
+  done <<EOF
+$( { grep -E '^- `(blocked|종료 절)`' "${LEDGER:-/dev/null}" 2>/dev/null || true; } )
+EOF
+  printf '%s' "$rec"
+}
+
+gate_clauses_json() {
+  # The snapshot's `clauses[]`: one element per termination clause of the
+  # manifest, with its wording, the state `gate_clause_settled` reads
+  # (`미정산` when that says unsettled, the last row's `상태` otherwise), that
+  # row's `근거`, and the evidence request still open on it. The wording is
+  # here because a shift reads the manifest through nothing else, and without
+  # it cannot tell what evidence a clause asks for.
+  local first=1 id row st why req
+  for id in $(gate_clause_ids); do
+    row=$( { manifest_clause_rows_raw | grep -F "id=$id " || true; } | sed -n '1p')
+    if gate_clause_settled "$id"; then
+      st=$(gate_clause_last_state "$id")
+    else
+      st=미정산
+    fi
+    why=$( { gate_rows '종료 절' | grep -F "id=$id " || true; } | tail -1)
+    why=$(gate_row_field "$why" '근거')
+    req=$(gate_clause_open_request "$id")
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"id": "%s", "문면": "%s", "상태": "%s", "근거": "%s", "요청": "%s"}' \
+      "$(gate_json_escape "$id")" "$(gate_json_escape "$(gate_row_field "$row" '문면')")" \
+      "$(gate_json_escape "$st")" "$(gate_json_escape "$why")" "$(gate_json_escape "$req")"
+  done
+  [ "$first" = "1" ] || printf '\n'
 }
 
 gate_shift_halt_dir() {
@@ -24990,6 +25092,12 @@ gate_cone_members() {
     for m in $members; do printf '%s\n' "$m"; done
     return 0
   fi
+  # A termination clause's key stands in front of no segment, so its cone is
+  # the key alone.
+  if gate_clause_key_id "$anchor" >/dev/null; then
+    printf '%s\n' "$anchor"
+    return 0
+  fi
 
   # THE FIELD TERMINATOR IS PART OF THE MATCH. A trailing space alone ends the
   # value only when the next character is the separator, so `동일성=로그인 실패 `
@@ -25078,8 +25186,11 @@ gate_record_cone() {
   # A run-scope step — design, audit or split — is the one anchor that has no
   # segment row: a stage of it that cannot finish inside the deadline, or an
   # answer to its halt the shift cannot carry out, holds every segment.
+  # A termination clause's `clause-<id>` key has none either: its evidence
+  # request holds that clause alone.
   if [ -z "$(gate_segment_field "$anchor" '상태')" ] \
-     && ! gate_run_scope_kind_of_key "$anchor" >/dev/null 2>&1; then
+     && ! gate_run_scope_kind_of_key "$anchor" >/dev/null 2>&1 \
+     && ! gate_clause_key_id "$anchor" >/dev/null; then
     warn "there is no segment row for the anchor segment: $anchor — a cone is not stood up on an anchor the ledger does not resolve"
     return "$GATE_EXIT_VOCAB"
   fi
@@ -29263,10 +29374,14 @@ gate_record_row() {
   # against. `limit-cleared` is a statement about the run's account window, not
   # about a part of the run, so it is exempt on the ground `blocked` is.
   # `reentry` is a boot of the machine the whole run was cut by, so it is too.
+  # `shift-halt` checks its own key: a clause's evidence request takes
+  # `--segment -` and the arm builds the key, and every other site still
+  # refuses a key with no segment row.
   if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
      && [ "$kind" != "obligation" ] && [ "$kind" != "handoff" ] \
      && [ "$kind" != "obligation-done" ] && [ "$kind" != "obligation-drop" ] \
      && [ "$kind" != "limit-cleared" ] && [ "$kind" != "reentry" ] \
+     && [ "$kind" != "shift-halt" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "a $kind row needs --segment"
     return "$GATE_EXIT_VOCAB"
@@ -31589,6 +31704,15 @@ EOF
         fi
         hattdig=$(shasum -a 256 "$hatt" | cut -d' ' -f1)
       fi
+      # `근거 제출` TO A CLAUSE'S EVIDENCE REQUEST IS THE ATTACHMENT. The next
+      # shift settles the clause on what the seat ran and saw, and the option
+      # label carries none of that, so the answer is refused without the file
+      # beside the record that holds it.
+      if [ -n "$hsrow" ] && gate_clause_key_id "$seg" >/dev/null && [ "$hopt" = "근거 제출" ] \
+         && [ "$hatt" != "${hrec%.md}.answer.md" ]; then
+        warn "\`근거 제출\` carries \`첨부=${hrec%.md}.answer.md\` — what was run for the clause, on which commit, its exit status, the values observed and who ran it"
+        return "$GATE_EXIT_RULE"
+      fi
       hskill=$(sed -n 's/^\*\*스킬\*\*: //p' "$hrec" | sed -n '1p' | sed 's/[[:space:]]*$//')
       if [ -n "$hshift" ]; then
         # The shift's exception, in full. The step is read up to its first
@@ -31744,8 +31868,8 @@ EOF
       local sw=300 slen sline sexp
       for sf in "$@"; do
         sk="${sf%%=*}"
-        case "$sk" in 자리|질문|관측|추천|추천\ 근거) continue ;; esac
-        warn "\`shift-halt\` takes \`자리\`, \`질문\`, \`관측\`, an optional \`추천\` and an optional \`추천 근거\` from argv and nothing else: ${sk} — the rest is the gate's"
+        case "$sk" in 자리|질문|관측|추천|추천\ 근거|절) continue ;; esac
+        warn "\`shift-halt\` takes \`자리\`, \`질문\`, \`관측\`, an optional \`추천\`, an optional \`추천 근거\` and, at \`종료 절 근거\` only, \`절\` from argv and nothing else: ${sk} — the rest is the gate's"
         return "$GATE_EXIT_VOCAB"
       done
       ssite=$(gate_field_of '자리' "$@")
@@ -31762,9 +31886,49 @@ EOF
       [ -n "$sq" ] && [ -n "$sobs" ] || {
         warn "\`shift-halt\` needs \`질문\` (what a person is asked) and \`관측\` (what the shift saw)"
         return "$GATE_EXIT_VOCAB"; }
-      [ -n "$(gate_segment_field "$seg" '상태')" ] || {
-        warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
-        return "$GATE_EXIT_VOCAB"; }
+      local sclause
+      sclause=$(gate_field_of '절' "$@")
+      if [ "$ssite" = "종료 절 근거" ]; then
+        # A CLAUSE'S EVIDENCE REQUEST STOPS NO SEGMENT. The key is the gate's
+        # own `clause-<id>`, so a shift cannot misspell it into a segment id,
+        # and the cone stands on that one key.
+        case "$seg" in ''|-) ;; *)
+          warn "\`종료 절 근거\` stops no segment — call it with \`--segment -\` and name the clause in \`절\`"
+          return "$GATE_EXIT_VOCAB" ;;
+        esac
+        [ -n "$sclause" ] || {
+          warn "\`종료 절 근거\` needs \`절=<id>\` — the termination clause whose evidence is asked for"
+          return "$GATE_EXIT_VOCAB"; }
+        gate_clause_key_id "clause-$sclause" >/dev/null || {
+          warn "the manifest declares no termination clause $sclause"
+          return "$GATE_EXIT_RULE"; }
+        case "$(gate_clause_last_state "$sclause")" in
+          충족|불가능)
+            warn "termination clause $sclause is already settled as $(gate_clause_last_state "$sclause") — no evidence is asked for it"
+            return "$GATE_EXIT_RULE" ;;
+        esac
+        seg="clause-$sclause"
+        # One open request per clause, except the one the shift writes when an
+        # answer's attachment fell short: that request carries the answer out,
+        # so an answered request does not refuse its successor.
+        local cl_open cl_ans
+        cl_open=$(gate_clause_open_request "$sclause")
+        if [ -n "$cl_open" ]; then
+          cl_ans=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+                    | { grep -F "| 중단 기록=$cl_open |" || true; } | tail -1)
+          if [ -z "$cl_ans" ] || [ "$(gate_row_field "${cl_ans#*:}" '선택지')" != "근거 제출" ]; then
+            warn "an evidence request for termination clause $sclause is still waiting for its answer to be carried out: $cl_open"
+            return "$GATE_EXIT_RULE"
+          fi
+        fi
+      else
+        [ -z "$sclause" ] || {
+          warn "\`절\` rides only at \`종료 절 근거\`: $ssite"
+          return "$GATE_EXIT_VOCAB"; }
+        [ -n "$(gate_segment_field "$seg" '상태')" ] || {
+          warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
+          return "$GATE_EXIT_VOCAB"; }
+      fi
       # A SEGMENT WHOSE ANSWER IS CARRIED OVER IS NOT STOPPED AGAIN. The person
       # already answered its halt and the next run takes the answer up; a shift
       # record here would put a second question about the same stop before them.
