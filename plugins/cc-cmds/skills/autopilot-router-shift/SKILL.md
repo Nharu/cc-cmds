@@ -99,7 +99,7 @@ The read answers only when its output carries `게이트 통과`. Exit 4 means r
 snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat)
 ```
 
-**The decision IS the argv.** You do not write a plan document; you assemble one gate command line, and the gate's argument parser is the schema check. Every acting call carries `--snapshot-digest <H>` copied from the snapshot you just read.
+**The decision IS the argv.** You do not write a plan document; you assemble one gate command line, and the gate's argument parser is the schema check. Every acting call carries `--snapshot-digest <H>` copied from the snapshot you just read — or from the last `[gate-digest] H=<H> actor=<actor>` stderr line of an acting call in the immediately preceding response's tool result, when that line's `actor` is yours and that response made exactly one `--emit-digest` call.
 
 **The loop does not stop to ask.** A stage just finished, a review came back with findings, the next step is large — none of those is a question. Where a decision is genuinely yours, the judgment grades decide it: grade 0 you take, grade 1 you take and record, grade 2 you escalate through the gate so the stop is a row rather than a silence.
 
