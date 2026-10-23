@@ -1751,6 +1751,35 @@ if [ "$(slice_decl_digest "$SLI/prefix.md" B)" != "$(slice_decl_digest "$SLI/pre
 else
   bad "앞부분이 겹치는 id" "B 와 B0 의 선언 다이제스트가 같다"
 fi
+
+# id 바로 뒤에 다중 바이트 글자가 오거나 줄이 id 로 끝나는 헤딩 — macOS awk 가
+# 잘라 낸 UTF-8 선두 바이트에서 죽지 않고, `slice_ids` 와 같은 id 로 읽는다.
+cat > "$SLI/mbtail.md" <<'FIXM'
+## 구현 슬라이싱
+
+**슬라이스 수**: 4
+
+### 슬라이스 C—제목
+
+**선언 파일**: `c.txt`
+
+### 슬라이스 D·E
+
+**선언 파일**: `d.txt`
+
+### 슬라이스 F가
+
+**선언 파일**: `f.txt`
+
+### 슬라이스 G
+
+**선언 파일**: `g.txt`
+FIXM
+check "다중 바이트 후행 글자: id 열거" "$(slice_ids "$SLI/mbtail.md" | tr '\n' ' ')" "C D F G "
+check "다중 바이트 후행 글자: — 뒤" "$(slice_field "$SLI/mbtail.md" C '선언 파일')" '`c.txt`'
+check "다중 바이트 후행 글자: · 뒤" "$(slice_field "$SLI/mbtail.md" D '선언 파일')" '`d.txt`'
+check "다중 바이트 후행 글자: 한글 뒤" "$(slice_field "$SLI/mbtail.md" F '선언 파일')" '`f.txt`'
+check "id 로 끝나는 헤딩" "$(slice_field "$SLI/mbtail.md" G '선언 파일')" '`g.txt`'
 check "체크섬은 PR 이상 블록 수에서 파생된다" "$(slicing_pr_count "$SLI/tilde.md")" "1"
 sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`|' "$SLI/tilde.md" > "$SLI/skillonly.md"
 check "SKILL.md 만 선언하면 필드 검사 실패" "$(slicing_branch "$SLI/skillonly.md" 2>/dev/null)" "선언불완전"
