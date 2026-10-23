@@ -203,7 +203,7 @@ disp() { awk -F'\t' -v r="$1" '$1 == r { print $7 "|" $8 }' "$sel"; }
 got=$(awk -F'\t' '$7 ~ /^선정 / { print $7 "=" $1 }' "$sel" | LC_ALL=C sort | tr '\n' ' ')
 [[ "$got" == "선정 1=docs-c1.md 선정 2=docs-c2.md 선정 3=docs-c4.md 선정 4=docs-c5.md 선정 5=docs-c6.md " ]] \
   && pass "selection: quantile ranks 0 1 3 4 5 of six candidates" || fail "selection: picked '$got'"
-[[ "$(disp docs-c3.md)" == "후보|-" ]] && pass "selection: the unpicked candidate stays a 후보" || fail "selection: c3 is '$(disp docs-c3.md)'"
+[[ "$(disp docs-c3.md)" == "예비 2-1|-" ]] && pass "selection: the unpicked candidate is the reserve of its nearer, smaller slot" || fail "selection: c3 is '$(disp docs-c3.md)'"
 # want_disp <report> <disposition|reason pattern> <what> — a trailing `*` in the
 # pattern matches the rest of the reason.
 want_disp() {
@@ -426,6 +426,152 @@ if awk -v a="$s0" -v b="$s1" 'BEGIN { exit !(b - a == 152.5) }'; then
 else
   fail "status: spent went from '$s0' to '$s1', not up by 152.5"
 fi
+
+# ---- unattended runs through a stub gate -----------------------------------------
+#
+# READER_EXP_GATE puts tests/fixtures/reader-model-pair-audit/gate-stub.sh in
+# place of every branch gate, so `run --budget-usd` seats real manifests with
+# no stage launched. A seventh candidate (unique 14) makes seven: the picks are
+# ranks 0 2 3 5 6 (c1 c3 c4 c6 c7), c2 is `예비 1-1` and c5 `예비 3-1`, and
+# slots 2, 4 and 5 have no reserve.
+
+main7="$tmp/main7"
+cp -R "$main" "$main7"
+rm -rf "$main7/docs/reader-model-pair-audit"
+main_keep="$main"; main="$main7"
+mk_doc docs/c7.md "$base"; mk_run 20261011-00000c71 docs/c7.md 2026-10-11T00:00:00Z "$base"
+mk_report "$main7/docs/design-audit/docs-c7.md" docs/c7.md 2026-10-13T00:00:00Z 14
+main="$main_keep"
+
+export READER_EXP_GATE="$repo_root/tests/fixtures/reader-model-pair-audit/gate-stub.sh"
+saw3=0
+: > "$tmp/all.out"
+# stub_sc <name> — scenario plus a fresh stub gate log and no stub mode.
+stub_sc() {
+  scenario "$1"
+  export STUB_GATE_LOG="$sc/gate.log"
+  : > "$STUB_GATE_LOG"
+  unset STUB_GATE_MODE STUB_HANDOFF STUB_HALT STUB_HALT_ANSWER_RC STUB_ONLY_DOC STUB_UNIQUE STUB_RUN_COST CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+}
+# xr <args> — one call on main7: rc, $sc/out, exit 3 remembered.
+xr() {
+  rc=0; bash "$runner" --repo "$main7" "$@" > "$sc/out" 2>&1 || rc=$?
+  cat "$sc/out" >> "$tmp/all.out"
+  [[ "$rc" != "3" ]] || saw3=1
+}
+x7() { printf '%s' "$main7/docs/reader-model-pair-audit/$1"; }
+# dcol <exp id> <n> <column> — one column of document n's docs.tsv row.
+dcol() { awk -F'\t' -v n="$2" -v c="$3" 'NR > 1 && $1 == n { print $c; exit }' "$(x7 "$1")/docs.tsv" 2>/dev/null || true; }
+# att <exp id> <n> <column> — one column of slot n's first attempts.tsv line
+# (1 n, 2 attempt, 3 sample, 4 owner-doc, 5 reason, 6 kept path).
+att() { awk -F'\t' -v n="$2" -v c="$3" '$1 == n { print $c; exit }' "$(x7 "$1")/attempts.tsv" 2>/dev/null || true; }
+verdict7() { tail -n 1 "$(x7 "$1")/report.md" 2>/dev/null || true; }
+gacts() { grep -c '^act ' "$STUB_GATE_LOG" || true; }
+all_valid() {
+  local n
+  for n in 1 2 3 4 5; do [[ "$(dcol "$1" "$n" 4)$(dcol "$1" "$n" 5)$(dcol "$1" "$n" 6)" == "유효유효유효" ]] || return 1; done
+}
+
+# 1. Reserves in the selection.
+stub_sc u-sel
+EU=20261022-000000a1
+xr run --exp-id "$EU" --budget-usd 1000
+s7="$(x7 "$EU")/selection.tsv"
+got=$(awk -F'\t' '$7 ~ /^(선정|예비) / { print $7 "=" $1 }' "$s7" | LC_ALL=C sort | tr '\n' ' ')
+[[ "$got" == "선정 1=docs-c1.md 선정 2=docs-c3.md 선정 3=docs-c4.md 선정 4=docs-c6.md 선정 5=docs-c7.md 예비 1-1=docs-c2.md 예비 3-1=docs-c5.md " ]] \
+  && pass "unattended: seven candidates give five picks and the reserves 예비 1-1 and 예비 3-1" || fail "unattended: selection is '$got'"
+if [[ "$rc" == "0" ]] && all_valid "$EU" && [[ "$(gacts)" == "30" ]] && case "$(verdict7 "$EU")" in "# verdict: "*) true ;; *) false ;; esac; then
+  pass "unattended: with nothing to stop on, fifteen runs are collected and a verdict is written"
+else
+  fail "unattended: plain run gave exit $rc with $(gacts) acts / $(verdict7 "$EU")"; cat "$sc/out" >&2
+fi
+
+# 2. The fixed policy answers a CFI-3b halt as 사람.
+stub_sc u-policy
+EP=20261022-000000a2
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=policy
+xr run --exp-id "$EP" --budget-usd 1000
+pha=$(grep -c -- '--kind halt-answer' "$STUB_GATE_LOG" || true)
+if [[ "$rc" == "0" && "$pha" == "15" ]] && all_valid "$EP" \
+   && grep -- '--kind halt-answer' "$STUB_GATE_LOG" | awk 'NR == 1' | grep -qF '선택지=record in the unresolved-issues section 답한 주체=사람 근거=실험 고정 정책 — ' \
+   && case "$(verdict7 "$EP")" in "# verdict: "*) true ;; *) false ;; esac; then
+  pass "unattended: every run's CFI-3b halt is answered by the policy as 사람, all three branches collected, verdict written"
+else
+  fail "unattended: policy gave exit $rc with $pha answers"; cat "$sc/out" >&2
+fi
+
+# 3. A halt outside the table: the slot's remaining branches do not run, and
+# the reserve runs all three.
+stub_sc u-norec
+EN=20261022-000000a3
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=norec STUB_ONLY_DOC=docs/c1.md
+xr run --exp-id "$EN" --budget-usd 1000
+t1="$READER_EXP_STATE_ROOT/$EN/doc-1.try1"
+skipped=0
+for br in sonnet opus-2; do
+  r=$(awk -F'\t' '$1 == "run" { print $2 }' "$t1/$br.state" 2>/dev/null || true)
+  [[ -n "$r" ]] && ! grep -qF "$r" "$STUB_GATE_LOG" || skipped=1
+done
+case "$(att "$EN" 1 5)" in
+  "opus-1: 추천 없는 중단 — 고정 정책 밖 (- / -); sonnet: 돌리지 않음; opus-2: 돌리지 않음") areason=1 ;;
+  *) areason=0 ;;
+esac
+if [[ "$rc" == "0" && "$skipped" == "0" && "$areason" == "1" && "$(att "$EN" 1 3)" == "선정 1" && "$(att "$EN" 1 6)" == "$t1" && -d "$t1" ]] \
+   && all_valid "$EN" && [[ "$(dcol "$EN" 1 2)" == "docs/c2.md" ]]; then
+  pass "unattended: a halt outside the table stops the slot's other branches, is kept as an attempt, and 예비 1-1 runs all three"
+else
+  fail "unattended: replacement gave exit $rc (skipped ${skipped}, attempt '$(att "$EN" 1 5)', doc 1 '$(dcol "$EN" 1 2)')"; cat "$sc/out" >&2
+fi
+
+# 4. An approval is replaced the same way.
+stub_sc u-wait
+EW=20261022-000000a4
+export STUB_GATE_MODE=wait STUB_ONLY_DOC=docs/c4.md
+xr run --exp-id "$EW" --budget-usd 1000
+case "$(att "$EW" 3 5)" in "opus-1: 승인 대기; "*) wreason=1 ;; *) wreason=0 ;; esac
+if [[ "$rc" == "0" && "$wreason" == "1" && "$(dcol "$EW" 3 2)" == "docs/c5.md" ]] && all_valid "$EW"; then
+  pass "unattended: an approval makes the branch invalid (승인 대기) and 예비 3-1 replaces the document"
+else
+  fail "unattended: approval gave exit $rc, attempt '$(att "$EW" 3 5)'"; cat "$sc/out" >&2
+fi
+
+# 5. A slot with no reserve stays invalid and the verdict is 판정 불가.
+stub_sc u-exhaust
+EX=20261022-000000a5
+export STUB_GATE_MODE=wait STUB_ONLY_DOC=docs/c3.md
+xr run --exp-id "$EX" --budget-usd 1000
+case "$(dcol "$EX" 2 7)" in "opus-1: 승인 대기; "*" — 예비 소진") xreason=1 ;; *) xreason=0 ;; esac
+if [[ "$rc" == "0" && "$xreason" == "1" && "$(dcol "$EX" 2 4)" == "무효" && "$(verdict7 "$EX")" == "# verdict: 판정 불가" ]]; then
+  pass "unattended: a slot with no reserve keeps its invalid row (예비 소진), 판정 불가, exit 0"
+else
+  fail "unattended: exhausted slot gave exit $rc, row '$(dcol "$EX" 2 7)', $(verdict7 "$EX")"; cat "$sc/out" >&2
+fi
+
+# 6. The budget closes with a verdict, and a larger budget carries on.
+stub_sc u-budget
+EB=20261022-000000a6
+xr run --exp-id "$EB" --budget-usd 159
+case "$(dcol "$EB" 2 7)$(dcol "$EB" 5 7)" in "예산 상한 — budget guard — "*"예산 상한 — budget guard — "*) breason=1 ;; *) breason=0 ;; esac
+if [[ "$rc" == "4" && -f "$(x7 "$EB")/report.md" && "$breason" == "1" && "$(dcol "$EB" 1 4)" == "유효" && "$(dcol "$EB" 2 6)" == "무효" ]]; then
+  pass "unattended: spent 10 + 150 > 159 closes with exit 4, a report, and 예산 상한 rows for the unfinished documents"
+else
+  fail "unattended: budget gave exit $rc, rows '$(dcol "$EB" 2 7)' / '$(dcol "$EB" 5 7)'"; cat "$sc/out" >&2
+fi
+xr run --exp-id "$EB" --budget-usd 1000
+if [[ "$rc" == "0" && "$(gacts)" == "30" ]] && all_valid "$EB"; then
+  pass "unattended: a larger budget restores the closed documents and finishes them without rerunning a collected branch"
+else
+  fail "unattended: resume after the budget gave exit $rc with $(gacts) acts"; cat "$sc/out" >&2
+fi
+
+# 7. Nothing billed and nothing waits on a person.
+if [[ ! -e "$tmp/claude.called" ]] && (( saw3 == 0 )) && ! grep -qF '사람 대기' "$tmp/all.out" \
+   && ! grep -qF "'답한 주체=사람' '근거=<why>'" "$tmp/all.out"; then
+  pass "unattended: the claude stand-in was never called, no call exited 3, nothing was left for a person"
+else
+  fail "unattended: claude called or a call waited on a person (exit 3 seen: ${saw3})"
+fi
+unset READER_EXP_GATE
 
 echo "test-reader-model-pair-audit: ${passed} passed, ${failures} failed"
 (( failures == 0 ))
