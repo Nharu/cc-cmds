@@ -702,8 +702,11 @@ readonly GATE_EXIT_INFLIGHT=17
 # A CARRY OF A HALT ANSWER REFUSED BY ITS CAP. `act --kind skill --carry-answer`
 # refuses to carry an answer once attempts that carried the same answer died
 # before a session three times, or once an attempt that carried an answer halted
-# again on the same step and the same question. Both write an act-scope
-# `blocked` row with `사유=중단 답 라우팅 — …` before this exit. NOT 3: 3 is the
+# again on the same step and the same question, or when an answer brought over
+# from an earlier run meets a refusal that would end GATE_EXIT_CARRY_UNTABLED
+# for an answer of this run — no session of this run halted on it to
+# re-attach. Each writes an act-scope `blocked` row with
+# `사유=중단 답 라우팅 — …` before this exit. NOT 3: 3 is the
 # carry's refusal that writes no row and leaves the answer for the shift's
 # `중단` hand-off; this one wrote its cause, and the next thing is a person.
 readonly GATE_EXIT_CARRY_CAP=18
@@ -721,7 +724,9 @@ readonly GATE_EXIT_CARRY_CAP=18
 # with `--resume` as before; over the budget that re-attachment is let in
 # because it names the key's halted implementation. NOT 3: 3
 # sends the shift to `handoff 사유=중단`, and this is the one code that sends it
-# to `--resume` instead.
+# to `--resume` instead. Only an answer of this run ends here: an answer brought
+# over from an earlier run (`출처 런`) ends GATE_EXIT_CARRY_CAP at each of
+# these refusals.
 readonly GATE_EXIT_CARRY_UNTABLED=19
 
 # The head of a gate-dispatched lineage. The driver's dispatch ids begin with
