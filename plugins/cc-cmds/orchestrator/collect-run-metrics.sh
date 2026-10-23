@@ -10,6 +10,9 @@
 # 경로와 감사 공시(`design`)도 싣고, 요약의 `design_paths` 가 그것을 `<경로>|<감사 판>`
 # 키로 모은다 — 트리거는 그것을 읽지 않는다. `토론 패스` 행은 `discussion_passes`(경로별
 # 집계)와 `discussion_verdict`(감사 판별 전후 판정)가 읽고, 트리거는 이것도 읽지 않는다.
+# 런별 기록의 `synthesis` 는 설계 합성 구간 표지(`design/*/synthesis-marks.txt`)를 구간마다
+# 하나씩 싣고, 요약의 `synthesis` 가 그것을 `종류` 로 층을 나눠 센다 — 이것도 트리거는 읽지
+# 않는다.
 #
 # 입력.
 #   --ledger-dir <dir>        런 원장 디렉터리(필수). 이름이 `<8자리>-<8hex>.md` 인
@@ -347,6 +350,116 @@ ROWS
      discussion: ($passes | split("\n") | map(select(length > 0) | fromjson)),
      reconverge: (($verdicts | split("\n") | map(select(length > 0))) as $v
                   | {fired: ($v | length > 0), verdicts: $v})}'
+}
+
+# --- 합성 구간 표지 -------------------------------------------------------------
+
+cm_synthesis_json() {
+  # cm_synthesis_json <원장> <런 디렉터리> — 설계 합성 구간 표지를 구간마다 객체 하나로 묶은
+  # JSON 배열. 표지는 `<런 디렉터리>/design/*/synthesis-marks.txt` 의 `<사건> <UTC 시각>
+  # <스테이지 id>` 줄이다. 스테이지 id 의 `#` 앞은 `stage-result` 행의 스테이지(비면 세그먼트),
+  # 뒤는 그 행의 실행 버전에 맞추고, 맞춘 행의 세션 id 가 같은 줄들이 한 구간이다 — 재부착된
+  # 시도는 세션 id 를 공유하므로 한 구간으로 합쳐지고, 세션이 바뀐 재파견은 다른 구간이 된다.
+  # 맞는 행이 없거나 세션 id 가 비었거나 미상인 줄은 스테이지 id 마다 따로 묶여 marks_ok 가
+  # false 다. 요청 수는 그 세션의 본 전사와 `subagents/` 아래 전사를 따로 읽어, 구간 안에
+  # 시각이 든 요청만 센다. 구간의 사건 시각은 그 사건의 마지막 줄(파일 순서)이다.
+  local ledger="$1" rd="$2" tmp f row st sid path oldifs lead member
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-syn.XXXXXX") || return 1
+  : > "$tmp/marks.tsv"; : > "$tmp/rows.tsv"; : > "$tmp/reqs.jsonl"
+  for f in "$rd"/design/*/synthesis-marks.txt; do
+    [ -f "$f" ] || continue
+    awk 'NF >= 3 { printf "%s\t%s\t%s\n", $1, $2, $3 }' "$f" >> "$tmp/marks.tsv" || { rm -rf "$tmp"; return 1; }
+  done
+  if [ ! -s "$tmp/marks.tsv" ]; then
+    rm -rf "$tmp"; printf '[]'; return 0
+  fi
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    st=$(cm_field "$row" '스테이지'); [ -n "$st" ] || st=$(cm_field "$row" '세그먼트')
+    printf '%s\t%s\t%s\t%s\n' "$st" "$(cm_field "$row" '실행 버전')" "$(cm_field "$row" '세션 id')" \
+      "$(cm_field "$row" '종류')" >> "$tmp/rows.tsv"
+  done <<ROWS
+$(cm_ledger_rows "$ledger" 'stage-result')
+ROWS
+  # 1단 — 줄을 행에 맞춰 구간으로 묶는다. 수는 아직 세지 않는다.
+  jq -n --rawfile marks "$tmp/marks.tsv" --rawfile rows "$tmp/rows.tsv" '
+    def tsv: split("\n") | map(select(length > 0) | split("\t"));
+    ($rows | tsv | map({st: .[0], ver: (.[1] // ""), sid: (.[2] // ""), kind: (.[3] // "")})) as $R
+    | [$marks | tsv[] | {ev: .[0], t: .[1], id: .[2]}
+       | . as $m
+       | ($m.id | index("#")) as $i
+       | (if $i == null then {stage: $m.id, att: null} else {stage: $m.id[:$i], att: $m.id[($i + 1):]} end) as $p
+       | (if $p.att == null then null else ([$R[] | select(.st == $p.stage and .ver == $p.att)] | last) end) as $row
+       | (($row != null) and $row.sid != "" and $row.sid != "미상") as $ok
+       | $m + {stage: $p.stage, att: $p.att, row: $row,
+               sid: (if $ok then $row.sid else null end),
+               key: (if $ok then ("S\t" + $p.stage + "\t" + $row.sid) else ("X\t" + $m.id) end)}]
+    | group_by(.key)
+    | map({stage: .[0].stage, sid: .[0].sid,
+           attempts: ([.[].att | select(. != null and test("^[0-9]+$")) | tonumber] | unique),
+           kind: ([.[] | .row | select(. != null) | .kind | select(. != "")] | last),
+           enter: ([.[] | select(.ev == "enter") | .t] | last),
+           draft: ([.[] | select(.ev == "draft") | .t] | last),
+           save: ([.[] | select(.ev == "save") | .t] | last)})' > "$tmp/groups.json" 2>/dev/null \
+    || { rm -rf "$tmp"; return 1; }
+  # 2단 — 구간이 가리키는 세션마다 본 전사와 하위 에이전트 전사의 요청 시각을 따로 읽는다.
+  while IFS= read -r sid; do
+    [ -n "$sid" ] || continue
+    : > "$tmp/main.list"; : > "$tmp/sub.list"
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      case "$path" in
+        */subagents/*) printf '%s\n' "$path" >> "$tmp/sub.list" ;;
+        *) printf '%s\n' "$path" >> "$tmp/main.list" ;;
+      esac
+    done <<FILES
+$(cm_transcripts "$sid")
+FILES
+    lead='[]'; member='[]'
+    oldifs=$IFS; set -f; IFS='
+'
+    if [ -s "$tmp/main.list" ]; then
+      # shellcheck disable=SC2046
+      lead=$(cm_scan_session $(cat "$tmp/main.list") 2>/dev/null | jq -c '[.r[].ts]' 2>/dev/null) || lead='[]'
+    fi
+    if [ -s "$tmp/sub.list" ]; then
+      # shellcheck disable=SC2046
+      member=$(cm_scan_session $(cat "$tmp/sub.list") 2>/dev/null | jq -c '[.r[].ts]' 2>/dev/null) || member='[]'
+    fi
+    IFS=$oldifs; set +f
+    [ -n "$lead" ] || lead='[]'
+    [ -n "$member" ] || member='[]'
+    jq -cn --arg sid "$sid" --argjson main "$([ -s "$tmp/main.list" ] && printf true || printf false)" \
+      --argjson lead "$lead" --argjson member "$member" \
+      '{sid: $sid, main: $main, lead: $lead, member: $member}' >> "$tmp/reqs.jsonl" 2>/dev/null \
+      || { rm -rf "$tmp"; return 1; }
+  done <<SIDS
+$(jq -r '[.[].sid | select(. != null)] | unique | .[]' "$tmp/groups.json" 2>/dev/null)
+SIDS
+  # 3단 — 구간마다 판정과 수. 판정이 거짓이면 수 칸은 모두 null 이다.
+  jq -c --slurpfile reqs "$tmp/reqs.jsonl" '
+    def ep: if . == null then null else (sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch null) end;
+    def cnt($a; $b; $xs): [$xs[] | ep | select(. != null and . >= $a and . <= $b)] | length;
+    ($reqs | map({key: .sid, value: .}) | from_entries) as $T
+    | map(. as $g
+      | ($g.enter | ep) as $e | ($g.draft | ep) as $d | ($g.save | ep) as $s
+      | (if $g.sid == null then null else ($T[$g.sid] // null) end) as $tr
+      | (($g.enter != null and $e == null) or ($g.draft != null and $d == null)
+         or ($g.save != null and $s == null)) as $bad_time
+      | ($g.sid != null and $g.stage != "-" and $e != null and $s != null and ($bad_time | not)
+         and $e <= $s and ($d == null or ($e <= $d and $d <= $s))
+         and $tr != null and $tr.main) as $ok
+      | {stage: $g.stage, attempts: $g.attempts, reattached: (($g.attempts | length) >= 2),
+         kind: $g.kind, enter: $g.enter, draft: $g.draft, save: $g.save,
+         window_ms: (if $ok then (($s - $e) * 1000) else null end),
+         draft_ms: (if $ok and $d != null then (($d - $e) * 1000) else null end),
+         lead_requests: (if $ok then cnt($e; $s; $tr.lead) else null end),
+         lead_requests_draft: (if $ok and $d != null then cnt($e; $d; $tr.lead) else null end),
+         member_requests: (if $ok then cnt($e; $s; $tr.member) else null end),
+         marks_ok: $ok})' "$tmp/groups.json" > "$tmp/out.json" 2>/dev/null \
+    || { rm -rf "$tmp"; return 1; }
+  cat "$tmp/out.json"
+  rm -rf "$tmp"
 }
 
 # --- 스트림 로그 ---------------------------------------------------------------
@@ -734,11 +847,15 @@ ROWS
 
   mkdir -p "$(dirname "$out")" 2>/dev/null || { rm -rf "$tmp"; return 1; }
   cm_design_json "$ledger" > "$tmp/design.json" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+  # 표지는 게이트가 아니라 계측이다 — 판독이 실패하면 빈 배열로 두고 기록은 그대로 만든다.
+  cm_synthesis_json "$ledger" "$rd" > "$tmp/synthesis.json" 2>/dev/null || printf '[]' > "$tmp/synthesis.json"
+  jq -e 'type == "array"' "$tmp/synthesis.json" >/dev/null 2>&1 || printf '[]' > "$tmp/synthesis.json"
   jq -Sn --arg rid "$rid" --arg state "$state" --argjson rejected "$rejected" \
      --argjson unemp "$unemp" --argjson unk "$unk" --arg mism "$mism" \
-     --slurpfile design "$tmp/design.json" \
+     --slurpfile design "$tmp/design.json" --slurpfile synthesis "$tmp/synthesis.json" \
      --slurpfile stages "$tmp/stages.jsonl" --slurpfile shifts "$tmp/shifts.jsonl" '
      {run_id: $rid, state: $state, stages: $stages, shifts: $shifts, design: $design[0],
+      synthesis: $synthesis[0],
       rejected_window: $rejected,
       unattributed: {empty: $unemp, unknown: $unk},
       window_mismatch_sessions: ($mism | split(" ") | map(select(length > 0))),
@@ -1136,6 +1253,19 @@ cm_aggregate() {
                         coherence_findings_median: ([.[].coherence_findings | select(. != null)] | median)}})
          | from_entries),
        discussion_verdict: discussion_verdict($boundary),
+       # 합성 구간. 판정이 참인 구간만 세고, 중앙값은 재부착되지 않은 구간만으로 낸다 — 재부착
+       # 구간은 사이에 낀 파킹·답 대기가 창에 섞일 수 있다. 토론 설계와 베이스 설계의 합성은
+       # 모양이 달라 `종류` 로 층을 나누고, 종류가 없는 구간은 `-` 에 둔다. 이 키가 없는 옛
+       # 기록은 빈 배열로 읽어 요약 전체가 무너지지 않게 한다.
+       synthesis: ([.[] | (.synthesis // [])[]] | map(select(.marks_ok == true))
+         | {count: length,
+            reattached: ([.[] | select(.reattached == true)] | length),
+            by_kind: (map(select(.reattached != true)) | group_by(.kind // "-")
+              | map({key: (.[0].kind // "-"),
+                     value: {count: length,
+                             window_ms_median: ([.[].window_ms | select(. != null)] | median),
+                             lead_requests_median: ([.[].lead_requests | select(. != null)] | median)}})
+              | from_entries)}),
        switch_window_s: $sws,
        switch_events: ([$all[] | select(.switch_event == true)] | length),
        unattributed: {empty: ([.[].unattributed.empty] | add // 0), unknown: ([.[].unattributed.unknown] | add // 0)},
