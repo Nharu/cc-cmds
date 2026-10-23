@@ -1003,7 +1003,74 @@ check "14: 바이트 분포를 싣는다" "$(jsum '.design_paths["discuss-audit|
 DP_OUT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/design-path-report.sh" --ledger-dir "$LEDGER_DIR" 2>/dev/null)
 check "14: 인쇄기가 요약의 감사 판마다 표 하나를 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c '^## 감사 판 ' || true)" "2"
 
-# --- 15. 팀원 — 구간·수명주기·라운드 부류·품질·기준선 모드 ------------------------------------
+# --- 15. 토론 패스와 판정 덩어리 — `discussion_passes` 와 `discussion_verdict` ------------------
+# 같은 토론의 계속 시도는 행을 하나 더 쓰므로 (런, 설계 스텝)마다 마지막 행만 센다. 판정은
+# 최초 감사이고 경로가 discuss-audit 나 base 인 행을 감사 판마다 경계 버전으로 가르고, 버전은
+# 자리마다 수로 비교한다 — 문자열로는 2.99.0 이 2.100.0 보다 뒤다.
+tp_row() {
+  # tp_row <실행 버전> <R3> <R3 사유> <충실도 발견> <정합 발견> [경로]
+  printf -- '- `토론 패스` | 세그먼트=- | 스테이지=D1 | 실행 버전=%s | 경로=%s | 팀원=3 | R3=%s | 측정 지명=0 | 스윕 반박=0 | R3 사유=%s | R3 분=미상 | 충실도 좌석=3 | 충실도 발견=%s | 충실도 재개=0 | 정합 좌석=3 | 정합 발견=%s | 교대=0 | prev=abc' \
+    "$1" "${6:-discuss-audit}" "$2" "$3" "$4" "$5"
+}
+ad_row() {
+  # ad_row <경로> <회차> <감사 판> <플러그인 버전|미상> <고유> <바이트>
+  local pl="$4@abcdefabcdef"
+  [ "$4" != "미상" ] || pl="미상"
+  printf -- '- `감사 공시` | 세그먼트=- | 스테이지=A1 | 실행 버전=1 | 경로=%s | 회차=%s | 감사 판=%s | 플러그인=%s | 원시=9 | 고유=%s | 미보강=1 | 바이트=%s | 골격급=0 | 합성 후보=0 | 합성 골격급=0 | 교대=0 | prev=abc' \
+    "$1" "$2" "$3" "$pl" "$5" "$6"
+}
+reset_all
+R15=20261002-eeeeee00
+d14_run "$R15" "$(tier_row discuss-audit)" "$(tp_row 1 열림 '측정 지명' 4 6)" "$(tp_row 2 닫힘 '해당 없음' 2 3)" \
+  "$(ad_row discuss-audit 최초 e5e5e5e5e5e5 2.99.0 10 10000)"
+i=1
+while [ "$i" -le 4 ]; do
+  d14_run "20261002-eeeeee0$i" "$(tier_row discuss-audit)" "$(tp_row 1 닫힘 '해당 없음' 1 1)" \
+    "$(ad_row discuss-audit 최초 e5e5e5e5e5e5 2.99.0 10 10000)"
+  i=$((i + 1))
+done
+i=1
+while [ "$i" -le 5 ]; do
+  r3=닫힘; why='해당 없음'
+  [ "$i" -ne 1 ] || { r3=열림; why='측정 지명'; }
+  d14_run "20261002-eeeeee1$i" "$(tier_row base)" "$(tp_row 1 "$r3" "$why" 1 1 base)" \
+    "$(ad_row base 최초 e5e5e5e5e5e5 2.104.1 20 10000)"
+  i=$((i + 1))
+done
+# 거름 밖: 재감사, solo-audit, 미상 플러그인, 미상 감사 판. 판이 갈린 행 하나.
+d14_run 20261002-eeeeee21 "$(ad_row discuss-audit 재감사 e5e5e5e5e5e5 2.104.1 99 10000)"
+d14_run 20261002-eeeeee22 "$(ad_row solo-audit 최초 e5e5e5e5e5e5 2.104.1 99 10000)"
+d14_run 20261002-eeeeee23 "$(ad_row discuss-audit 최초 e5e5e5e5e5e5 미상 99 10000)"
+d14_run 20261002-eeeeee24 "$(ad_row discuss-audit 최초 미상 2.104.1 99 10000)"
+d14_run 20261002-eeeeee25 "$(ad_row discuss-audit 최초 e6e6e6e6e6e6 2.104.1 7 1000)"
+collect --release-boundary 2.100.0
+check "15: 수집기는 exit 0 이다" "$rc" "0"
+check "15: 런별 기록이 토론 패스 행마다 하나를 싣는다" "$(jrec "$R15" '.design.discussion | length')" "2"
+check "15: 토론 패스의 미상 셈은 null 이다" "$(jrec "$R15" '.design.discussion[0].r3_minutes')" "null"
+check "15: 한 스텝이 두 시도 행을 남기면 마지막 행만 센다" "$(jsum '.discussion_passes["discuss-audit"] | [.n, .r3_open, .reasons["해당 없음"], (.reasons["측정 지명"] // 0)] | map(tostring) | join(",")')" "5,0,5,0"
+check "15: 발견 수의 중앙값은 마지막 행의 값으로 낸다" "$(jsum '.discussion_passes["discuss-audit"] | [.fidelity_findings_median, .coherence_findings_median] | map(tostring) | join(",")')" "1,1"
+check "15: 경로마다 따로 모은다" "$(jsum '.discussion_passes["base"] | [.n, .r3_open] | map(tostring) | join(",")')" "5,1"
+V='.discussion_verdict.editions["e5e5e5e5e5e5"]'
+check "15: 같은 판의 전후 행이 경계 버전으로 갈린다 (2.99.0 은 2.100.0 앞)" "$(jsum "$V | [.baseline.n, .after.n] | map(tostring) | join(\",\")")" "5,5"
+check "15: 고유 결함과 고유/KB(1000 바이트) 중앙값" "$(jsum "$V | [.baseline.unique_median, .baseline.unique_per_kb_median, .after.unique_median, .after.unique_per_kb_median] | map(tostring) | join(\",\")")" "10,1,20,2"
+check "15: 문턱 대비는 릴리스 뒤 중앙값을 기준선 중앙값으로 나눈 값이다" "$(jsum "$V | [.ratio.unique, .ratio.unique_per_kb] | map(tostring) | join(\",\")")" "2,2"
+check "15: 두 쪽이 5건이면 판정하고 1.5 를 넘으면 되돌린다" "$(jsum "$V | [.status, .revert] | map(tostring) | join(\",\")")" "판정,true"
+check "15: R3 개방률과 사유 분포는 같은 런의 토론 패스 행에서 낸다" "$(jsum "$V | [.after.r3_open_rate, .after.reasons[\"측정 지명\"], .baseline.r3_open_rate] | map(tostring) | join(\",\")")" "0.2,1,0"
+check "15: R3 개방률이 25% 이하면 시간 감축이 성립한다" "$(jsum "$V.time_reduction")" "true"
+check "15: 판이 갈린 행은 그 판의 덩어리에만 들고 기준선이 모자라면 기준선 부족이다" "$(jsum '.discussion_verdict.editions["e6e6e6e6e6e6"] | [.baseline.n, .after.n, .status, .revert] | map(tostring) | join(",")')" "0,1,기준선 부족,null"
+check "15: 미상 감사 판·재감사·solo-audit 행은 판정에 들지 않는다" "$(jsum '.discussion_verdict.editions | keys | join(",")')" "e5e5e5e5e5e5,e6e6e6e6e6e6"
+check "15: 경계와 문턱을 함께 싣는다" "$(jsum '.discussion_verdict | [.boundary, .threshold, .min_n, .r3_open_max] | map(tostring) | join(",")')" "2.100.0,1.5,5,0.25"
+OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>"$WORK/err"); rc=$?
+check "15: --verdict 는 exit 0 이다" "$rc" "0"
+check "15: 경계가 없으면 모든 행이 기준선이다" "$(jline '.editions["e5e5e5e5e5e5"] | [.baseline.n, .after.n, .status] | map(tostring) | join(",")')" "10,0,판정 보류"
+check "15: --verdict 는 요약을 다시 쓰지 않는다" "$(jsum '.discussion_verdict.boundary')" "2.100.0"
+OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict --release-boundary 2.x 2>"$WORK/err"); rc=$?
+check "15: 숫자 버전이 아닌 경계는 인자 오류다" "$rc" "2"
+DP_OUT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/design-path-report.sh" --ledger-dir "$LEDGER_DIR" --release-boundary 2.100.0 2>/dev/null)
+check "15: 인쇄기가 토론 패스 집계를 경로마다 한 줄 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c -F -e '| discuss-audit | 5 | 0 | 해당 없음 5 |' -e '| base | 5 | 1 | 측정 지명 1, 해당 없음 4 |' || true)" "2"
+check "15: 인쇄기가 판정 덩어리를 감사 판마다 한 줄 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c '^| e5e5e5e5e5e5 | 5 | 5 | 판정 | 되돌림 |\|^| e6e6e6e6e6e6 | 0 | 1 | 기준선 부족 |' || true)" "2"
+
+# --- 16. 팀원 — 구간·수명주기·라운드 부류·품질·기준선 모드 ------------------------------------
 # 팀원의 역할과 키는 사용자 메시지 안의 첫 센티널 줄에서만 읽는다. 기저 토큰이 둘인 파일만
 # `재개` 이고, `P`·`P-rev1` 은 기저 토큰이 하나라 `재생성` 이다. 팀원 기록은 요약의 층과
 # 트리거의 입력에 들지 않고, 기준선 모드는 아무것도 쓰지 않는다.
@@ -1025,8 +1092,8 @@ tl_turn() {
                          else [{type: "tool_use", id: "u", name: $tool, input: (if $tool == "Bash" then {command: $cmd} else {file_path: "/x"} end)}] end)}}'
 }
 sentinel() { printf '**Role**: %s. 마지막 줄은 `<!-- cc-witness: %s %s complete %s:ab12 -->` 이다.' "$1" "$1" "$2" "$2"; }
-m15_session() {
-  # m15_session <sid> — 리드 전사(팀원 아님)와 팀원 파일 넷.
+m16_session() {
+  # m16_session <sid> — 리드 전사(팀원 아님)와 팀원 파일 넷.
   local sid="$1"
   tl_user 0 "$(sentinel lead round-1)" | mk_transcript "$HOME_A" -repo "$sid"
   {
@@ -1055,73 +1122,73 @@ m15_session() {
   } | mk_transcript "$HOME_A" -repo "$sid" c.jsonl
   { tl_user 0 "도우미 과제"; tl_turn 1 d1 10 10 10 1 Bash 'mv -n a b'; } | mk_transcript "$HOME_A" -repo "$sid" deeper/d.jsonl
 }
-m15_run() {
-  # m15_run <run-id> <sid> — 설계 스테이지 하나와 사이클 행 셋.
+m16_run() {
+  # m16_run <run-id> <sid> — 설계 스테이지 하나와 사이클 행 셋.
   mk_rundir "$1"; mk_stream "$STATE/run/$1/log/S1#1.json" 1
   mk_ledger "$1" "$(sr_row S1 S1 design 1 "$2" '정상 완료' '300000(argv)' '~/.claude')" \
     "$(cycle_row S1 2 5)" \
     '- `cycle` | 세그먼트=S1 | 사이클=1 | 리포트 경로=r.md | 리뷰 HEAD=abc | P0=1 | P1=2 | 교대=0 | prev=abc' \
     '- `cycle` | 세그먼트=S2 | 사이클=1 | 리포트 경로=r.md | 리뷰 HEAD=abc | P0=0 | 교대=0 | prev=abc'
-  m15_session "$2"
+  m16_session "$2"
 }
 jmem() { jq -r "$2" "$LEDGER_DIR/metrics/$1.members.json"; }
 mfile() { printf '.stages[0].files[] | select(.file == "%s")' "$1"; }
 reset_all
-R15=20261002-eeeeee01
-m15_run "$R15" sid-m15
+R16=20261002-eeeeee01
+m16_run "$R16" sid-m16
 collect
-check "15: 수집기는 exit 0 이다" "$rc" "0"
-check "15: 새로 수집한 런에 팀원 기록이 생긴다" "$([ -f "$LEDGER_DIR/metrics/$R15.members.json" ] && echo yes)" "yes"
-check "15: 리드 전사는 팀원 파일이 아니고 서브에이전트 파일만 열린다" "$(jmem "$R15" '.stages[0].files | length')" "4"
-check "15: 센티널 줄이 없는 파일은 팀원이 아니다" "$(jmem "$R15" "[.stages[0].files[] | select(.member | not) | .file] | join(\",\")")" "deeper/d.jsonl"
-check "15: 기저 토큰이 둘인 파일은 재개다" "$(jmem "$R15" "$(mfile a.jsonl) | .lifecycle")" "재개"
-check "15: 재개형 파일의 구간과 라운드 부류" "$(jmem "$R15" "$(mfile a.jsonl) | [.spans[].round_class] | join(\",\")")" "round-1,round-2+"
-check "15: 도구 결과 안의 센티널은 구간을 열지 않는다" "$(jmem "$R15" "$(mfile a.jsonl) | [.spans[].role] | join(\",\")")" "arch,arch"
-check "15: 출력 토큰은 같은 message.id 의 최댓값을 합한다" "$(jmem "$R15" "$(mfile a.jsonl) | [.spans[].output] | add")" "95"
-check "15: 구간마다 요청을 message.id 로 한 번 센다" "$(jmem "$R15" "$(mfile a.jsonl) | [.spans[].requests] | join(\",\")")" "3,1"
-check "15: 재탐색 턴은 첫 증인 쓰기 앞의 읽기 요청만 센다(게이트 읽기 포함)" "$(jmem "$R15" "$(mfile a.jsonl) | .spans[0].reexplore")" "2"
-check "15: 새 디스패치 구간의 첫 요청 캐시 생성" "$(jmem "$R15" "$(mfile a.jsonl) | .spans[1].first_creation")" "2000"
-check "15: 새 디스패치 구간은 공백 뒤 다시 쓰기를 재지 않는다" "$(jmem "$R15" "$(mfile a.jsonl) | .spans[1].rewrite_after_gap")" "null"
-check "15: P 와 P-rev1 만 담은 파일은 재생성이다" "$(jmem "$R15" "$(mfile b.jsonl) | .lifecycle")" "재생성"
-check "15: 개정 구간은 기저 토큰의 라운드 부류에 든다" "$(jmem "$R15" "$(mfile b.jsonl) | [.spans[] | .base + \"/\" + .round_class] | join(\",\")")" "round-2/round-2+,round-2/round-2+"
-check "15: 같은 키 재개 구간은 300초 공백 뒤 캐시 다시 쓰기를 잰다" "$(jmem "$R15" "$(mfile b.jsonl) | [.spans[].rewrite_after_gap] | map(tostring) | join(\",\")")" "null,5000"
-check "15: 인용된 동료 센티널은 역할을 바꾸지 않는다" "$(jmem "$R15" "$(mfile c.jsonl) | [.spans[] | .role + \"/\" + .token + \"/\" + .round_class] | join(\",\")")" "sec/convergence/phase"
-check "15: 센티널 없는 재촉 메시지는 앞 구간에 붙는다" "$(jmem "$R15" "$(mfile c.jsonl) | [(.spans | length), .spans[0].requests] | join(\",\")")" "1,2"
-check "15: 증인 게시는 파일 단위로 mv -n 요청에서 읽는다(mktemp 만으로는 게시가 아니다, 첫 구간 앞도 본다)" "$(jmem "$R15" '[.stages[0].files[] | .file + "=" + (.published | tostring)] | sort | join(",")')" "a.jsonl=false,b.jsonl=true,c.jsonl=false,deeper/d.jsonl=true"
-check "15: (역할, 기저 토큰)마다 구간 수를 낸다" "$(jmem "$R15" '[.stages[0].span_counts[] | select(.spans >= 2) | .role + "/" + .base + "=" + (.spans | tostring)] | join(",")')" "crit/round-2=2"
-check "15: 세그먼트의 첫 리뷰 회차만 잡힌다" "$(jmem "$R15" '.quality.first_cycles[] | select(.segment == "S1") | [.cycle, .p0, .p1] | join(",")')" "1,1,2"
-check "15: P1 이 없는 첫 회차는 unknown 이다" "$(jmem "$R15" '.quality.first_cycles[] | select(.segment == "S2") | .p1')" "unknown"
-check "15: 요약의 members 키는 종류·수명주기·라운드 부류다" "$(jsum '.members | keys | join(",")')" "design|재개|round-1,design|재개|round-2+,design|재생성|phase,design|재생성|round-2+"
-check "15: (종류, 수명주기)마다 요청당 평균 컨텍스트" "$(jsum '.members["design|재생성|phase"].lifecycle_ctx_avg')" "1440"
-check "15: 층의 요청당 평균 컨텍스트는 요청 수 가중이다" "$(jsum '.members["design|재생성|round-2+"].ctx_avg')" "2850"
+check "16: 수집기는 exit 0 이다" "$rc" "0"
+check "16: 새로 수집한 런에 팀원 기록이 생긴다" "$([ -f "$LEDGER_DIR/metrics/$R16.members.json" ] && echo yes)" "yes"
+check "16: 리드 전사는 팀원 파일이 아니고 서브에이전트 파일만 열린다" "$(jmem "$R16" '.stages[0].files | length')" "4"
+check "16: 센티널 줄이 없는 파일은 팀원이 아니다" "$(jmem "$R16" "[.stages[0].files[] | select(.member | not) | .file] | join(\",\")")" "deeper/d.jsonl"
+check "16: 기저 토큰이 둘인 파일은 재개다" "$(jmem "$R16" "$(mfile a.jsonl) | .lifecycle")" "재개"
+check "16: 재개형 파일의 구간과 라운드 부류" "$(jmem "$R16" "$(mfile a.jsonl) | [.spans[].round_class] | join(\",\")")" "round-1,round-2+"
+check "16: 도구 결과 안의 센티널은 구간을 열지 않는다" "$(jmem "$R16" "$(mfile a.jsonl) | [.spans[].role] | join(\",\")")" "arch,arch"
+check "16: 출력 토큰은 같은 message.id 의 최댓값을 합한다" "$(jmem "$R16" "$(mfile a.jsonl) | [.spans[].output] | add")" "95"
+check "16: 구간마다 요청을 message.id 로 한 번 센다" "$(jmem "$R16" "$(mfile a.jsonl) | [.spans[].requests] | join(\",\")")" "3,1"
+check "16: 재탐색 턴은 첫 증인 쓰기 앞의 읽기 요청만 센다(게이트 읽기 포함)" "$(jmem "$R16" "$(mfile a.jsonl) | .spans[0].reexplore")" "2"
+check "16: 새 디스패치 구간의 첫 요청 캐시 생성" "$(jmem "$R16" "$(mfile a.jsonl) | .spans[1].first_creation")" "2000"
+check "16: 새 디스패치 구간은 공백 뒤 다시 쓰기를 재지 않는다" "$(jmem "$R16" "$(mfile a.jsonl) | .spans[1].rewrite_after_gap")" "null"
+check "16: P 와 P-rev1 만 담은 파일은 재생성이다" "$(jmem "$R16" "$(mfile b.jsonl) | .lifecycle")" "재생성"
+check "16: 개정 구간은 기저 토큰의 라운드 부류에 든다" "$(jmem "$R16" "$(mfile b.jsonl) | [.spans[] | .base + \"/\" + .round_class] | join(\",\")")" "round-2/round-2+,round-2/round-2+"
+check "16: 같은 키 재개 구간은 300초 공백 뒤 캐시 다시 쓰기를 잰다" "$(jmem "$R16" "$(mfile b.jsonl) | [.spans[].rewrite_after_gap] | map(tostring) | join(\",\")")" "null,5000"
+check "16: 인용된 동료 센티널은 역할을 바꾸지 않는다" "$(jmem "$R16" "$(mfile c.jsonl) | [.spans[] | .role + \"/\" + .token + \"/\" + .round_class] | join(\",\")")" "sec/convergence/phase"
+check "16: 센티널 없는 재촉 메시지는 앞 구간에 붙는다" "$(jmem "$R16" "$(mfile c.jsonl) | [(.spans | length), .spans[0].requests] | join(\",\")")" "1,2"
+check "16: 증인 게시는 파일 단위로 mv -n 요청에서 읽는다(mktemp 만으로는 게시가 아니다, 첫 구간 앞도 본다)" "$(jmem "$R16" '[.stages[0].files[] | .file + "=" + (.published | tostring)] | sort | join(",")')" "a.jsonl=false,b.jsonl=true,c.jsonl=false,deeper/d.jsonl=true"
+check "16: (역할, 기저 토큰)마다 구간 수를 낸다" "$(jmem "$R16" '[.stages[0].span_counts[] | select(.spans >= 2) | .role + "/" + .base + "=" + (.spans | tostring)] | join(",")')" "crit/round-2=2"
+check "16: 세그먼트의 첫 리뷰 회차만 잡힌다" "$(jmem "$R16" '.quality.first_cycles[] | select(.segment == "S1") | [.cycle, .p0, .p1] | join(",")')" "1,1,2"
+check "16: P1 이 없는 첫 회차는 unknown 이다" "$(jmem "$R16" '.quality.first_cycles[] | select(.segment == "S2") | .p1')" "unknown"
+check "16: 요약의 members 키는 종류·수명주기·라운드 부류다" "$(jsum '.members | keys | join(",")')" "design|재개|round-1,design|재개|round-2+,design|재생성|phase,design|재생성|round-2+"
+check "16: (종류, 수명주기)마다 요청당 평균 컨텍스트" "$(jsum '.members["design|재생성|phase"].lifecycle_ctx_avg')" "1440"
+check "16: 층의 요청당 평균 컨텍스트는 요청 수 가중이다" "$(jsum '.members["design|재생성|round-2+"].ctx_avg')" "2850"
 STRATA_A=$(jsum '.strata | tojson')
-cp "$LEDGER_DIR/metrics/$R15.members.json" "$LEDGER_DIR/metrics/20990101-ffffffff.members.json"
+cp "$LEDGER_DIR/metrics/$R16.members.json" "$LEDGER_DIR/metrics/20990101-ffffffff.members.json"
 collect
-check "15: 팀원 파일이 늘어도 요약의 층은 바이트가 같다" "$(jsum '.strata | tojson')" "$STRATA_A"
-check "15: 팀원 파일은 런 기록으로 델타에 들지 않는다" "$(jline '.new_runs | length')" "0"
-check "15: 팀원 파일은 요약의 members 로만 모인다" "$(jsum '.members["design|재개|round-1"].spans')" "2"
-check "15: 팀원 파일은 런 기록 수를 바꾸지 않는다" "$(jsum '.counts["수집됨"]')" "1"
+check "16: 팀원 파일이 늘어도 요약의 층은 바이트가 같다" "$(jsum '.strata | tojson')" "$STRATA_A"
+check "16: 팀원 파일은 런 기록으로 델타에 들지 않는다" "$(jline '.new_runs | length')" "0"
+check "16: 팀원 파일은 요약의 members 로만 모인다" "$(jsum '.members["design|재개|round-1"].spans')" "2"
+check "16: 팀원 파일은 런 기록 수를 바꾸지 않는다" "$(jsum '.counts["수집됨"]')" "1"
 # 기준선 모드 — 원장 디렉터리에는 아무것도 생기지 않는다.
 reset_all
-R15B=20261002-eeeeee02; R15C=20261002-eeeeee03
-m15_run "$R15" sid-m15
-mk_rundir "$R15B"
-mk_ledger "$R15B" '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=design | 종료 코드=0 | 실행 버전=1 | 세션 id=sid-old | 종단 부류=정상 완료 | 교대=0 | prev=abc'
-mk_rundir "$R15C"
-mk_ledger "$R15C" "$(sr_row S1 S1 review 1 sid-gone '정상 완료' '300000(argv)' '~/.claude')"
+R16B=20261002-eeeeee02; R16C=20261002-eeeeee03
+m16_run "$R16" sid-m16
+mk_rundir "$R16B"
+mk_ledger "$R16B" '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=design | 종료 코드=0 | 실행 버전=1 | 세션 id=sid-old | 종단 부류=정상 완료 | 교대=0 | prev=abc'
+mk_rundir "$R16C"
+mk_ledger "$R16C" "$(sr_row S1 S1 review 1 sid-gone '정상 완료' '300000(argv)' '~/.claude')"
 collect --member-baseline
-check "15: 기준선 모드는 exit 0 이다" "$rc" "0"
-check "15: 기준선 모드는 원장 디렉터리에 아무것도 쓰지 않는다(.pending 포함)" "$(find "$LEDGER_DIR" -mindepth 1 ! -name '*.md' | wc -l | tr -d ' ')" "0"
-check "15: 기준선 모드는 저널을 쓰지 않는다" "$([ -e "$JOURNAL" ] && echo yes || echo no)" "no"
-check "15: 기준선은 포함 런 수를 낸다" "$(jline '.included')" "1"
-check "15: 기준선은 사유별 제외 런 수를 낸다" "$(jline '[.excluded["사라짐"], .excluded["전사 삭제"]] | join(",")')" "1,1"
-check "15: 기준선은 종류마다 팀원 파일과 아닌 파일을 센다" "$(jline '.files.design | [.member, .non_member] | join(",")')" "3,1"
-check "15: 기준선은 설계 파일을 설계 스킬로 다시 나눈다(설계 티어 행이 없으면 미상)" "$(jline '.design_files["(미상)"] | [.member, .non_member] | join(",")')" "3,1"
-check "15: 기준선은 (종류, 설계 스킬)마다 구간·게시 파일을 센다" "$(jline '.kind_skill_files | keys | join(",")')" "design|(미상)"
-check "15: (종류, 설계 스킬) 셈은 구간을 낸 파일·아닌 파일 각각의 게시 파일 수를 낸다" "$(jline '.kind_skill_files["design|(미상)"] | [.member, .member_published, .non_member, .non_member_published] | join(",")')" "3,1,1,1"
-check "15: 종류별 파일 셈에도 게시 파일 수가 붙는다" "$(jline '.files.design | [.member_published, .non_member_published] | join(",")')" "1,1"
-check "15: 기준선의 members 는 요약과 같은 층이다" "$(jline '.members["design|재개|round-2+"].requests')" "1"
-check "15: 기준선은 첫 회차 품질을 모은다" "$(jline '.quality | [.segments, .p0.median, .p1_unknown] | join(",")')" "2,0.5,1"
+check "16: 기준선 모드는 exit 0 이다" "$rc" "0"
+check "16: 기준선 모드는 원장 디렉터리에 아무것도 쓰지 않는다(.pending 포함)" "$(find "$LEDGER_DIR" -mindepth 1 ! -name '*.md' | wc -l | tr -d ' ')" "0"
+check "16: 기준선 모드는 저널을 쓰지 않는다" "$([ -e "$JOURNAL" ] && echo yes || echo no)" "no"
+check "16: 기준선은 포함 런 수를 낸다" "$(jline '.included')" "1"
+check "16: 기준선은 사유별 제외 런 수를 낸다" "$(jline '[.excluded["사라짐"], .excluded["전사 삭제"]] | join(",")')" "1,1"
+check "16: 기준선은 종류마다 팀원 파일과 아닌 파일을 센다" "$(jline '.files.design | [.member, .non_member] | join(",")')" "3,1"
+check "16: 기준선은 설계 파일을 설계 스킬로 다시 나눈다(설계 티어 행이 없으면 미상)" "$(jline '.design_files["(미상)"] | [.member, .non_member] | join(",")')" "3,1"
+check "16: 기준선은 (종류, 설계 스킬)마다 구간·게시 파일을 센다" "$(jline '.kind_skill_files | keys | join(",")')" "design|(미상)"
+check "16: (종류, 설계 스킬) 셈은 구간을 낸 파일·아닌 파일 각각의 게시 파일 수를 낸다" "$(jline '.kind_skill_files["design|(미상)"] | [.member, .member_published, .non_member, .non_member_published] | join(",")')" "3,1,1,1"
+check "16: 종류별 파일 셈에도 게시 파일 수가 붙는다" "$(jline '.files.design | [.member_published, .non_member_published] | join(",")')" "1,1"
+check "16: 기준선의 members 는 요약과 같은 층이다" "$(jline '.members["design|재개|round-2+"].requests')" "1"
+check "16: 기준선은 첫 회차 품질을 모은다" "$(jline '.quality | [.segments, .p0.median, .p1_unknown] | join(",")')" "2,0.5,1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

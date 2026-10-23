@@ -20,9 +20,11 @@ Not knowing which class a seat belongs to is not a licence to run it cheaper —
 | `conformance` | conformance to a design document | sonnet |
 | `quality` | code quality, documentation, style, release hygiene, lint tooling | sonnet |
 | `portability` | shell and platform portability | sonnet |
-| `audit-reader` | every design-audit reader, identically | opus |
+| `audit-reader` | every design-audit reader, identically | sonnet |
 
 The `opus` classes are the ones where a miss is a P0 no later layer catches and where the finding needs multi-file causal reasoning. The `sonnet` classes check against a stated standard — a design document, a test oracle, a portability list — or are the code-quality perspective a lighter roster already delegates. `logic` is the class most often promoted: where the logic under review *is* the authorization machine, the triggers below keep its seat on `opus`.
+
+`audit-reader` is a measured exception to the `opus` criterion: the `opus` lead's reconciliation filters its interchangeable readers' findings but cannot recover a miss, a loss `scripts/reader-model-compare.sh` measures. Past its threshold a person reverts the row and lint pin; no script edits it.
 
 ## Promotion triggers (closed set)
 
@@ -64,5 +66,7 @@ The `리뷰 팀 구성` parenthesis holds one bare lowercase alias and nothing e
 One key in `## 감사 개시`, directly after `reader-count`:
 
 ```
-reader-model: opus
+reader-model: <model on the audit-reader row>
 ```
+
+It is the readers' `Agent()` model, never a literal.

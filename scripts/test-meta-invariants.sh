@@ -16,7 +16,7 @@
 #   - the router-copy sections          (from scripts/test-snapshot.sh, 6d–6e-4)
 #
 # ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 14, plus the shift's branch index
-# block (6e-6), which adds 3 + 3n for the shift's n reference files. The census selects every suite
+# block (6e-6), which adds 5 + 3n for the shift's n reference files. The census selects every suite
 # that invokes the gate family and asserts two exports for each. This file
 # carries its recognition corpus, so it selects this file too, and
 # scripts/test-local-bundle.sh runs test-gate.sh on its mirror, so it selects
@@ -281,7 +281,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-meta-invariants.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
+_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-meta-invariants.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -1433,6 +1433,16 @@ check "교대 색인의 할트 답 행이 설계·감사 스텝의 재수렴 뒤
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of the design step or of the audit step reads `종류=reconverge`')" "1"
 check "교대 색인의 할트 답 행이 그 상태에서 설계 파견 절보다 할트 답 절의 처분을 앞세운다" \
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- '**After it ends** disposition of 「Handing on a person'"'"'s answer to a halt」, not `design-dispatch.md` opened beside it, sets that step'"'"'s next act')" "1"
+# A settled answer on a segment key, or a re-convergence a binding-tier answer
+# dispatched, leaves the segment's last row reading `종류=reconverge` after the
+# answer has left `answered_halts[]`. A shift that starts then has nothing else
+# that opens the files holding the dispositions that read that row, and the
+# refutation file's item 6 hands such a row to them rather than calling it a
+# failed re-convergence.
+check "교대 색인의 할트 답 행이 세그먼트의 재수렴 행 진입 조건을 싣는다" \
+  "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of a segment reads `종류=reconverge` — a settled row carrying `정산=` and a re-convergence dispatched for a binding-tier answer alike')" "1"
+check "반증 재수렴 6번이 정산= 행을 할트 답 절의 몫으로 넘긴다" \
+  "$(grep -cF -- 'So is a re-convergence row carrying `정산=`: the gate wrote it when item 3 of that subsection settled an answer' "$RS_REFS/refutation-reconverge.md")" "1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

@@ -8,7 +8,8 @@
 # 수집된 런의 행에만 걸고, 그 결과를 저널 한 줄로 낸다 — 게이트가 그 줄을 읽어 이슈를
 # 등록·코멘트·닫기 한다. 이 스크립트 자신은 `gh` 를 부르지 않는다. 런별 기록에는 설계
 # 경로와 감사 공시(`design`)도 싣고, 요약의 `design_paths` 가 그것을 `<경로>|<감사 판>`
-# 키로 모은다 — 트리거는 그것을 읽지 않는다.
+# 키로 모은다 — 트리거는 그것을 읽지 않는다. `토론 패스` 행은 `discussion_passes`(경로별
+# 집계)와 `discussion_verdict`(감사 판별 전후 판정)가 읽고, 트리거는 이것도 읽지 않는다.
 #
 # 입력.
 #   --ledger-dir <dir>        런 원장 디렉터리(필수). 이름이 `<8자리>-<8hex>.md` 인
@@ -52,6 +53,13 @@
 #                             나누어 적체를 여러 회차에 걸쳐 전진시키려는 것이다. 회차의 첫 새 수집은
 #                             상한·예산과 무관하게 시도하므로(0 이면 회차당 한 런) 적체가 있어도
 #                             회차마다 전진한다. 예산은 모집단 판독이 끝난 뒤부터 잰다.
+#   --release-boundary <ver>  요약의 `discussion_verdict` 가 `감사 공시` 행을 기준선과 릴리스
+#                             뒤로 가르는 경계 버전(기본 `CM_RELEASE_BOUNDARY_DEFAULT`, 지금은
+#                             빈 값 — 모든 행이 기준선이다). `플러그인` 의 버전이 이 값보다
+#                             앞서면 기준선이다.
+#   --verdict                 판정 덩어리 하나만 이미 있는 런별 기록에서 계산해 stdout 으로 낸다.
+#                             수집·요약·저널 어느 것도 쓰지 않는다 — `design-path-report.sh`
+#                             가 경계를 바꿔 볼 때 부른다.
 #
 # 출력.
 #   <ledger-dir>/metrics.json              요약(`jq -S`, 시각 없음 — 같은 입력이면 같은 바이트)
@@ -116,7 +124,7 @@ if [ -r "$script_dir/route.sh" ] && . "$script_dir/route.sh" 2>/dev/null \
 fi
 
 cm_usage() {
-  printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect] [--max-new <n>] [--budget <초>] [--member-baseline]\n' >&2
+  printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect] [--max-new <n>] [--budget <초>] [--release-boundary <version>] [--verdict] [--member-baseline]\n' >&2
 }
 
 cm_diag() { printf 'collect-run-metrics: %s\n' "$*" >&2; }
@@ -173,6 +181,10 @@ CM_RECOLLECT=0
 CM_MAX_NEW="${CC_METRICS_ROUND_MAX:-20}"
 CM_BUDGET="${CC_METRICS_ROUND_BUDGET_S:-20}"
 CM_MEMBER_BASELINE=0
+# 판정 덩어리의 경계 버전 기본값. 비어 있으면 모든 행이 기준선(릴리스 전)이다.
+CM_RELEASE_BOUNDARY_DEFAULT=""
+CM_RELEASE_BOUNDARY="$CM_RELEASE_BOUNDARY_DEFAULT"
+CM_VERDICT_ONLY=0
 
 cm_args() {
   while [ $# -gt 0 ]; do
@@ -188,6 +200,8 @@ $2"; shift 2 ;;
       --member-baseline) CM_MEMBER_BASELINE=1; shift ;;
       --max-new)       [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_MAX_NEW="$2"; shift 2 ;;
       --budget)        [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_BUDGET="$2"; shift 2 ;;
+      --release-boundary) [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_RELEASE_BOUNDARY="$2"; shift 2 ;;
+      --verdict)       CM_VERDICT_ONLY=1; shift ;;
       -h|--help)       cm_usage; exit 2 ;;
       *) cm_diag "알 수 없는 인자: $1"; cm_usage; exit 2 ;;
     esac
@@ -202,6 +216,9 @@ $2"; shift 2 ;;
   case "$CM_BUDGET" in
     ''|*[!0-9]*) cm_diag "--budget 은 초 단위 정수여야 한다: '$CM_BUDGET'"; exit 2 ;;
   esac
+  if [ -n "$CM_RELEASE_BOUNDARY" ] && ! printf '%s' "$CM_RELEASE_BOUNDARY" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+    cm_diag "--release-boundary 는 점으로 나눈 숫자 버전이어야 한다: '$CM_RELEASE_BOUNDARY'"; exit 2
+  fi
   if [ -n "$CM_NOW" ]; then
     case "$CM_NOW" in
       *[!0-9]*) cm_diag "--now 는 epoch 초여야 한다: '$CM_NOW'"; exit 2 ;;
@@ -265,11 +282,12 @@ cm_window_source() {
 }
 
 cm_design_json() {
-  # cm_design_json <원장> — 이 런의 설계 경로와 감사 공시를 JSON 한 줄로. 경로·티어·범위·
-  # 스킬은 마지막 `설계 티어` 행에서, 감사는 `감사 공시` 행마다 하나, 재수렴은
+  # cm_design_json <원장> — 이 런의 설계 경로와 감사 공시·토론 패스를 JSON 한 줄로. 경로·티어·범위·
+  # 스킬은 마지막 `설계 티어` 행에서, 감사는 `감사 공시` 행마다 하나, 토론은 `토론 패스` 행마다
+  # 하나, 재수렴은
   # `종류=reconverge` 인 `stage-result` 행에서 읽는다. `설계 티어` 행이 없으면 넷이 null
   # 이고, `경로` 키가 없는 옛 행이면 경로만 null 이다. 셈 칸의 `미상` 은 0 이 아니라 null 이다.
-  local row tier_row="" audits="" verdicts="" v
+  local row tier_row="" audits="" verdicts="" passes="" v
   tier_row=$(cm_ledger_rows "$1" '설계 티어' | tail -1)
   while IFS= read -r row; do
     [ -n "$row" ] || continue
@@ -298,7 +316,27 @@ ROWS
   done <<ROWS
 $(cm_ledger_rows "$1" 'stage-result')
 ROWS
-  jq -cn --arg tier_row "$tier_row" --arg audits "$audits" --arg verdicts "$verdicts" \
+  # `토론 패스` 는 행마다 하나, 원장 순서대로 — (런, 설계 스텝)마다 마지막 행을 고르는 일은
+  # 집계가 한다.
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    passes="$passes$(jq -cn --arg st "$(cm_field "$row" '스테이지')" --arg ver "$(cm_field "$row" '실행 버전')" \
+      --arg path "$(cm_field "$row" '경로')" --arg team "$(cm_field "$row" '팀원')" \
+      --arg r3 "$(cm_field "$row" 'R3')" --arg named "$(cm_field "$row" '측정 지명')" \
+      --arg sweep "$(cm_field "$row" '스윕 반박')" --arg why "$(cm_field "$row" 'R3 사유')" \
+      --arg mins "$(cm_field "$row" 'R3 분')" --arg fs "$(cm_field "$row" '충실도 좌석')" \
+      --arg ff "$(cm_field "$row" '충실도 발견')" --arg fr "$(cm_field "$row" '충실도 재개')" \
+      --arg cs "$(cm_field "$row" '정합 좌석')" --arg cf "$(cm_field "$row" '정합 발견')" '
+      def num: if test("^[0-9]+$") then tonumber else null end;
+      {stage: $st, attempt: ($ver | num), path: $path, members: ($team | num), r3_open: ($r3 == "열림"),
+       named: ($named | num), sweep: ($sweep | num), reason: $why, r3_minutes: ($mins | num),
+       fidelity_seats: ($fs | num), fidelity_findings: ($ff | num), fidelity_reopens: ($fr | num),
+       coherence_seats: ($cs | num), coherence_findings: ($cf | num)}')
+"
+  done <<ROWS
+$(cm_ledger_rows "$1" '토론 패스')
+ROWS
+  jq -cn --arg tier_row "$tier_row" --arg audits "$audits" --arg verdicts "$verdicts" --arg passes "$passes" \
     --arg path "$(cm_field "$tier_row" '경로')" --argjson has_path "$(cm_has_field "$tier_row" '경로' && printf true || printf false)" \
     --arg tier "$(cm_field "$tier_row" '확정')" --arg scope "$(cm_field "$tier_row" '범위')" \
     --arg skill "$(cm_field "$tier_row" '설계 스킬')" '
@@ -306,6 +344,7 @@ ROWS
     {path: (if $tier_row == "" or ($has_path | not) then null else $path end),
      tier: ($tier | opt), scope: ($scope | opt), skill: ($skill | opt),
      audits: ($audits | split("\n") | map(select(length > 0) | fromjson)),
+     discussion: ($passes | split("\n") | map(select(length > 0) | fromjson)),
      reconverge: (($verdicts | split("\n") | map(select(length > 0))) as $v
                   | {fired: ($v | length > 0), verdicts: $v})}'
 }
@@ -975,11 +1014,57 @@ def cutoff($w): ([$w, 1000000] | min) - 33000;
 def p0sum: if any(. == "unknown") then "unknown" else (add // 0) end;
 def rows: [.[] | (.stages[], .shifts[])];
 def included_rows: rows | map(select(.complete and (.truncated | not)));
+def last_per_step: group_by(.run_id + "|" + .stage) | map(last);
+def discussion_rows: [.[] | .run_id as $r | (.design.discussion // [])[] | . + {run_id: $r}] | last_per_step;
+def reason_dist: group_by(.reason) | map({key: .[0].reason, value: length}) | from_entries;
+def version_of: if type != "string" or . == "" then null
+  else (split("@")[0] // "" | split(".") | map(tonumber? // null)) as $v
+       | if ($v | length) == 0 or ($v | any(. == null)) then null else $v end end;
+def ratio($a; $b): if $a == null or $b == null or $b == 0 then null else $a / $b end;
+# 판정 덩어리. 최초 감사이고 경로가 discuss-audit 이나 base 인 `감사 공시` 행을 (런, 감사
+# 스텝)마다 마지막 행 하나로 줄이고, `플러그인`·`감사 판` 이 `미상` 인 행을 뺀 뒤, 플러그인
+# 버전이 경계보다 앞서면 기준선, 아니면 릴리스 뒤로 가른다. 버전은 점으로 나눈 자리마다 수로
+# 비교한다 — 문자열로 비교하면 2.104.1 이 2.99.0 보다 앞선다. 경계가 비어 있으면 모두
+# 기준선이다. 고유/KB 의 KB 는 1000 바이트다(`design_paths` 의 1024 와 다르다). 같은 런의
+# `토론 패스` 행과 런 id 로 이어 R3 개방률과 `R3 사유` 분포를 낸다. 감사 판마다 한쪽이라도
+# 5건에 못 미치면 되돌림을 판정하지 않는다.
+def discussion_verdict($b):
+  (discussion_rows) as $disc
+  | ($b | version_of) as $bv
+  | [.[] | .run_id as $r | (.design.audits // [])[] | . + {run_id: $r}]
+  | map(select(.pass == "최초" and (.path == "discuss-audit" or .path == "base")))
+  | last_per_step
+  | map(select(.plugin != "미상" and .edition != "미상" and .plugin != "" and .edition != "")
+        | . + {version: (.plugin | version_of)} | select(.version != null)
+        | . + {side: (if $bv == null or .version < $bv then "baseline" else "after" end)})
+  | def side: ([.[].run_id] | unique) as $runs
+              | [$disc[] | select(.run_id as $r | $runs | index($r) != null)] as $d
+              | {n: length,
+                 unique_median: ([.[].unique | select(. != null)] | median),
+                 unique_per_kb_median: ([.[] | select(.unique != null and .bytes != null and .bytes > 0)
+                                         | .unique / (.bytes / 1000)] | median),
+                 discussion_n: ($d | length),
+                 r3_open_rate: (if ($d | length) == 0 then null else (([$d[] | select(.r3_open)] | length) / ($d | length)) end),
+                 reasons: ($d | reason_dist)};
+    {boundary: $b, threshold: 1.5, min_n: 5, r3_open_max: 0.25,
+     editions: (group_by(.edition)
+       | map(([.[] | select(.side == "baseline")] | side) as $base
+             | ([.[] | select(.side == "after")] | side) as $after
+             | {unique_per_kb: ratio($after.unique_per_kb_median; $base.unique_per_kb_median),
+                unique: ratio($after.unique_median; $base.unique_median)} as $ratio
+             | (if $base.n < 5 then "기준선 부족" elif $after.n < 5 then "판정 보류" else "판정" end) as $status
+             | {key: .[0].edition,
+                value: {edition: .[0].edition, baseline: $base, after: $after, ratio: $ratio, status: $status,
+                        revert: (if $status != "판정" then null
+                                 else (($ratio.unique_per_kb // 0) > 1.5 or ($ratio.unique // 0) > 1.5) end),
+                        time_reduction: (if $status != "판정" or $after.r3_open_rate == null then null
+                                         else $after.r3_open_rate <= 0.25 end)}})
+       | from_entries)};
 '
 
 cm_aggregate() {
   # cm_aggregate <기록 배열 파일> — 요약의 strata 와 제외 수. 전수 재계산이고 시각이 없다.
-  jq -S --argjson sws "$CM_SWITCH_WINDOW" "$CM_JQ_DEFS"'
+  jq -S --argjson sws "$CM_SWITCH_WINDOW" --arg boundary "$CM_RELEASE_BOUNDARY" "$CM_JQ_DEFS"'
     (rows) as $all
     | (included_rows) as $inc
     | {strata: ($inc | group_by(.kind + "|" + .class + "|" + .lane)
@@ -1039,6 +1124,18 @@ cm_aggregate() {
                         + ([.[] | select(.pass != "재감사")] | side)
                         + {reaudit: ([.[] | select(.pass == "재감사")] | side | del(.reconverge_rate))})})
          | from_entries),
+       # 토론 패스는 경로마다 — (런, 설계 스텝)마다 원장 순서상 마지막 행 하나만 센다. 이
+       # 집계는 릴리스 전후를 가르지 않으므로 판정에 쓰지 않는다. 판정은 아래 덩어리가 한다.
+       discussion_passes: (discussion_rows | group_by(.path)
+         | map({key: .[0].path,
+                value: {n: length,
+                        r3_open: ([.[] | select(.r3_open)] | length),
+                        reasons: reason_dist,
+                        r3_minutes_median: ([.[].r3_minutes | select(. != null)] | median),
+                        fidelity_findings_median: ([.[].fidelity_findings | select(. != null)] | median),
+                        coherence_findings_median: ([.[].coherence_findings | select(. != null)] | median)}})
+         | from_entries),
+       discussion_verdict: discussion_verdict($boundary),
        switch_window_s: $sws,
        switch_events: ([$all[] | select(.switch_event == true)] | length),
        unattributed: {empty: ([.[].unattributed.empty] | add // 0), unknown: ([.[].unattributed.unknown] | add // 0)},
@@ -1233,6 +1330,28 @@ cm_main() {
   cm_args "$@"
   # 기준선 모드는 회차가 아니다 — 표지도 기록도 저널도 만들지 않는다.
   [ "$CM_MEMBER_BASELINE" = "0" ] || cm_member_baseline
+  if [ "$CM_VERDICT_ONLY" = "1" ]; then
+    # 판정 덩어리만 — 이미 있는 런별 기록에서 계산해 stdout 으로 내고 아무것도 쓰지 않는다.
+    # 팀원 기록(`*.members.json`)은 런 기록이 아니므로 전수 재계산과 같이 뺀다.
+    set --
+    if [ -d "$CM_LEDGER_DIR/metrics" ]; then
+      for rec in "$CM_LEDGER_DIR"/metrics/*.json; do
+        [ -f "$rec" ] || continue
+        case "$rec" in
+          *.members.json) ;;
+          *) set -- "$@" "$rec" ;;
+        esac
+      done
+    fi
+    if [ $# -gt 0 ]; then
+      all_f=$(jq -s '.' "$@" 2>/dev/null) || all_f='[]'
+    else
+      all_f='[]'
+    fi
+    printf '%s' "$all_f" | jq -e 'type == "array"' >/dev/null 2>&1 || all_f='[]'
+    printf '%s' "$all_f" | jq -S --arg boundary "$CM_RELEASE_BOUNDARY" "$CM_JQ_DEFS"'discussion_verdict($boundary)'
+    exit $?
+  fi
   : > "$CM_LEDGER_DIR/metrics.json.pending"
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics.XXXXXX") || exit 1
   all_f="$tmp/all.json"; delta_f="$tmp/delta.json"; prior_f="$tmp/prior.json"

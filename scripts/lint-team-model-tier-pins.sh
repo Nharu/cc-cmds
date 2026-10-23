@@ -83,7 +83,7 @@ CLASS_ROWS=(
   'conformance sonnet'
   'quality sonnet'
   'portability sonnet'
-  'audit-reader opus'
+  'audit-reader sonnet'
 )
 
 # The sentences the tier replaced. Each one told a lead to pick the model on
