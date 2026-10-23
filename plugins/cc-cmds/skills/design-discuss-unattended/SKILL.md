@@ -279,6 +279,8 @@ Under **driver dispatch there is no brief**: `$ARGUMENTS` is the design-document
 **The interview record, when this run has one.** The kickoff freezes the person's interview answers verbatim; this stage is its reader. Resolve it by **path convention** — `$(dirname "$CC_PIPELINE_MANIFEST")/${CC_PIPELINE_RUN_ID}.interview.md`, the same `<base>/docs/pipeline-run/` directory the manifest sits in — and not from the row, so that the resolution does not depend on the very row it is about to be checked against. Then:
 
 - **File present** — read the version token on its header comment and read it whole, and take the content sections its version lists below as the requirement input in place of the task sentence. `없음` is a value in each of them and an omitted section is not. `## 로스터` is **not** read here — the roster was instantiated at Step 0 from the manifest, and reading a second source for it is how a stage starts composing a team. Measure the file with `shasum -a 256` and compare it against the manifest `## 인가` row `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>`.
+    - Version 3 (`cc-run-interview v3`): `## 과제`, `## 요구사항 문답`, `## 확인된 요구`, `## 배포 형상`, `## 탐색 결과`, `## 재현 근거`, `## 검증 선결`, `## 골격 사전 판정`, `## 시각 방향`.
+    - A version 3 record holding only the visual direction section is what the kickoff writes with no interview: take the requirement input as with no record, and read only that section.
     - Version 2 (`cc-run-interview v2`): `## 과제`, `## 요구사항 문답`, `## 확인된 요구`, `## 배포 형상`, `## 탐색 결과`, `## 재현 근거`, `## 검증 선결`, `## 골격 사전 판정`.
     - Version 1 (`cc-run-interview v1`): `## 과제`, `## 요구사항 문답`, `## 배포 형상`, `## 재현 근거`, `## 검증 선결`, `## 골격 사전 판정`.
 - **Any other version token, or none** → **halt before spawning**, `자리 id: ledger-missing`, `분류: precondition-failed`, with the resolved path and the token observed in `관측 상세`. A format this stage does not know is not read as "no record": filling it from the task sentence would bring back the silent shallowness the record exists to prevent.
@@ -290,6 +292,7 @@ Under **driver dispatch there is no brief**: `$ARGUMENTS` is the design-document
 - An answer is read against its question's `**선택지**`. An answer equal in normal form to an offered label means that label and its description.
 - `## 확인된 요구` is the requirement baseline. Where its `완료 기준` differs from the manifest's `종료 절`, the `종료 절` wins the baseline — it is what the person answered last, in the kickoff's boundary questions — and the matching line of `### 확인된 요구와의 대응` reads `해석 — 매니페스트 종료 절`.
 - `없음` is a value.
+- `## 시각 방향` is not a requirement of the design's content: it says whether screens come out of this run. When it is not `없음 — …`, write `**화면**` on every slice of `## 구현 슬라이싱` (the `design` skill's slice field grammar), `없음` on a slice that touches no screen.
 - A section that is missing, or a value that does not fit its section, becomes a requirement-decision list entry `기록 형식 — <빠진 절 또는 어긋난 값>`, not a halt.
 - `## 탐색 결과` and `## 재현 근거` are claims observed at the record's commit. The Step 3 team re-checks against the current tree every one the design rests on, and reads the tree for the rest, so that a kickoff's exploration never becomes design input unchecked.
 
