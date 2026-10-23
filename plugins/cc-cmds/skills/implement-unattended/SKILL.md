@@ -157,6 +157,8 @@ Arguments: $ARGUMENTS
 
 When the scope directive or the admitted plan meets the start condition of `${CLAUDE_SKILL_DIR}/../_common/fix-cycle.md`, this turn is a fix cycle: read that file and follow it — the fix brief before the first edit, the fix check and its tests after the last fix commit, Rule D, and the `**수정 항목**` and `**자체 점검**` lines beside `**시험 범위**`. Its branch-1 checker's prompt carries this skill's `CFI-U1` and the paragraph that begins `Research is open:` under CFI-U7, verbatim. A Rule D stop is a CFI-U3 BT-STOP.
 
+**A `CI 합류: <sha>` piece beside `수정 대상:` is not a mode of its own.** It adds one fix target to the process B fix cycle — the CI failure that survived its rerun on the reviewed HEAD, `CI-1` in that file's fix brief — and process A or B is resolved as for any `수정 대상:` dispatch. That file says how `CI-1` is read, recorded and excepted from Rule D; unlike `CI 수정:` below, a cause outside the declared files is recorded, not halted on.
+
 ## Workflow
 
 Execute strictly in this order: **Step 0 → Step 1 → Step 1.5 → Step 2 → Step 3**. Step 1.5 is conditional on the document carrying a `## 구현 시 검증 항목` section; its presence makes it non-skippable before Step 2. There is no Step 1.6 — the visual gate is unattended-ineligible (CFI-U5).

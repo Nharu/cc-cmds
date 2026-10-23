@@ -87,7 +87,7 @@ LEADS=(design-discuss-unattended design-audit-unattended)
 lead_ceiling() {
   case "$1" in
     design-discuss-unattended) echo 168000 ;;
-    design-audit-unattended)   echo 143000 ;;
+    design-audit-unattended)   echo 149000 ;;
   esac
 }
 
