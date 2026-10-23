@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.115.2] - 2026-10-24
+## [2.116.1] - 2026-10-24
 
 게이트가 `--emit-digest` 를 받은 호출의 표준 오류 마지막 줄로 `[gate-digest] H=<H> actor=<actor>` 를 낸다. 같은 순간 방출 파일에 쓰는 것과 같은 값이라, 모델 호출자는 행위마다 방출 파일을 따로 여는 요청 없이 직전 도구 결과에서 다음 호출의 `--snapshot-digest` 값을 옮겨 쓸 수 있다. 플래그를 주지 않는 드라이버의 로그에는 줄이 생기지 않는다.
 
@@ -19,6 +19,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 무인 스테이지와 라우터는 게이트 호출마다 다음 호출의 다이제스트를 얻으려고 방출 파일을 한 번 더 읽었고, 그 요청이 감사 리드 한 명에게서 3~25회 쌓여 턴과 컨텍스트 비용이 되었다. 게이트의 표준 오류는 스테이지의 Bash 도구 결과에 종료 코드와 상관없이 보이므로, 같은 값을 그 자리에 실으면 그 요청이 사라진다.
+
+## [2.116.0] - 2026-10-24
+
+무인 구현 스테이지가 로컬 시험을 다시 돌리는 데 쓰는 시간을 줄인다. 좁힌 test-gate 실행이 실패한 절과 그 절만 다시 돌릴 명령을 찍고, 스테이지 안에서만 나던 시험 실패의 통로(물려받은 파이프라인 변수)를 접두어로 막고, 무인 런이 거절당할 `make check` 에 lint 시간을 쓰지 않게 하며, 시험 몫을 재는 도구를 더한다.
+
+### Added
+
+- **좁힌 test-gate 의 실패 절 보고** — `--sections`·`--run-one` 실행에 실패가 있으면 판정 줄 바로 앞에 `test-gate: 실패한 절 — <id>,…`(처음 실패한 순서, 중복 없이)와 `test-gate: 실패한 절만 다시 — bash scripts/test-gate.sh --sections <id>,…` 두 줄을 stderr 로 찍는다. 실패가 머리·프렐류드·에필로그에 붙었으면 다시 돌릴 집합은 원래 선택 전체다. 전량 실행·오라클 단독 호출·중첩 호출은 바뀌지 않는다.
+- **`scripts/measure-test-share.sh`** — 런 원장과 스테이지 세션 기록에서 cc-cmds 구현 스테이지마다 시험 명령에 쓴 시간과 스테이지 시간을 TSV 로 내고, 합한 시험 몫과 판정(달성·미달·표본 부족)을 낸다. `--ledger-dir`·`--lane-root` 는 필수이고, `--since`·`--until`(날짜 또는 `…Z` 시각)·`--first`·`--session` 으로 창을 정한다. `make test` 는 합성 픽스처(`scripts/test-measure-test-share.sh`)로만 돌린다.
+
+### Changed
+
+- **시험 스위트의 파이프라인 변수 걷기** — 게이트 계열을 부르는 스위트가 이름 목록 대신 `CC_PIPELINE_` 접두어로 물려받은 변수를 모두 지운다. 메타 스위트의 누출 센서스는 게이트 훅을 부르거나 게이트 계열을 소싱하거나 `-c` 셸에 넘기는 스위트까지 고르고, 고른 스위트마다 그 줄이 있는지, 라이브러리로도 소싱되는 파일에서는 그 줄이 직접 실행 가드 안에 있는지 단언한다.
+- **`make check` 의 무인 거절 시점** — 무인 런에서 기본 GATE_SUITE_CMD 로 게이트 스위트 전량에 닿을 트리면 lint·readme 앞에서 같은 문면으로 거절한다.
+- **`make check-push` 의 절 지명 요구** — 무인 런에서 head 가 베이스 대비 `plugins/cc-cmds/orchestrator/gate.sh` 를 바꿨는데 `CHECK_PUSH_SECTIONS` 가 비었으면 복제 전에 exit 2 로 거절하고 도장을 찍지 않는다.
+
+### Why
+
+근거 런의 구현 스테이지는 평균 46% 의 시간을 로컬 시험에 썼고, 그 대부분은 같은 입력으로 같은 절·묶음을 다시 띄운 것이었다. 어느 절이 실패했는지 모르면 묶음 전체를 다시 돌릴 수밖에 없고, 스테이지 안에서만 나는 실패는 고칠 것이 없는데도 재실행을 불렀다.
+
+### Post-install notes
+
+시험 몫 판정은 이 릴리스와 레포 지침의 재실행 규율 반영이 모두 끝난 뒤 시작한 런의 cc-cmds 구현 스테이지 세션 첫 10개로 하고, 시험 몫 합이 30% 미만이면 달성이다. 명령은 메인 체크아웃에서 `bash scripts/measure-test-share.sh --ledger-dir docs/pipeline-run --lane-root "$HOME" --since <기준 시각> --first 10` 이다. 기준 시각은 릴리스 시각과 지침 반영 시각 가운데 늦은 쪽을 UTC `YYYY-MM-DDTHH:MM:SSZ` 로 준다. 릴리스 시각은 이 버전을 올린 `chore(release): v2.116.0` 커밋의 커미터 시각을 UTC 로 읽은 값이다(`git log -1 --format=%cI <커밋>`) — CHANGELOG 표제는 날짜만 가지기 때문이다. 지침 반영 시각은 반영한 사람이 정해 넣는다. 기록이 있는 세션이 10개에 못 미치면 도구가 `표본 부족` 을 낸다.
 
 ## [2.115.1] - 2026-10-24
 
