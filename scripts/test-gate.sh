@@ -34283,7 +34283,7 @@ else
 fi
 
 # --- 38-16. 릴레이가 분리 감독자를 기다린다 -------------------------------------
-# --- section: 38-16 | group: sb | covers: liveness, relay, defer | anchors: 16: 살아 있는 분리 감독자가 릴레이 대기 집합에 apply 키로 든다, 16: 살아 있는 분리 감독자가 있으면 이월 인계가 미충족이다, 16: 감독자가 사는 동안 릴레이는 그 키로 깨지 않는다, 16: 감독자가 끝나면 릴레이가 그 키로 깬다 ---
+# --- section: 38-16 | group: sb | covers: liveness, relay, defer, cc_run_settled_for_report | anchors: 16: 살아 있는 분리 감독자가 릴레이 대기 집합에 apply 키로 든다, 16: 살아 있는 분리 감독자가 있으면 이월 인계가 미충족이다, 16: 살아 있는 분리 감독자가 있으면 원장이 오래 조용해도 중단 리포트 정착이 아니다, 16: 감독자가 끝난 런은 중단 리포트 정착으로 읽힌다, 16: 감독자가 사는 동안 릴레이는 그 키로 깨지 않는다, 16: 감독자가 끝나면 릴레이가 그 키로 깬다 ---
 #
 # 감독자 기록은 `apply/` 아래에 있어 스테이지 술어가 보지 않는다. 살아 있는 프로세스
 # 하나를 감독자로 적어 두고 릴레이·이월·스테이지 수·고아 판독이 각각 무엇을 읽는지 잰다.
@@ -34307,6 +34307,17 @@ case "$(sb_in gate_defer_handoff_unmet 2>/dev/null)" in
 esac
 check "16: 분리 감독자는 살아 있는 스테이지 수에 들지 않는다" "$(sb16_lv cc_live_stages "$SA_RUN")" "0"
 check "16: 분리 감독자는 고아 스테이지 판독에 들지 않는다" "$(sb16_lv cc_orphan_stages "$SA_RUN")" ""
+# 원장이 포기 한도보다 오래 조용한 런 — 감독자는 명령이 끝날 때까지 원장에 쓰지 않는다.
+sb16_rd="$WORK/sb16-report-run"
+mkdir -p "$sb16_rd/apply"
+printf -- '- `segment` | id=SB16 | 상태=적용 준비 | prev=0\n' > "$sb16_rd/ledger.md"
+printf '마지막성장=%s\n' "$(( $(date -u +%s) - 7200 ))" > "$sb16_rd/watch.heartbeat"
+cp "$SA_RUN/apply/SB16.sup" "$SA_RUN/apply/SB16.sup.start" "$sb16_rd/apply/"
+sb16_settled() {
+  if sb16_lv cc_run_settled_for_report "$sb16_rd" "$sb16_rd/ledger.md"; then printf 정착; else printf 미정착; fi
+}
+check "16: 감독자가 살아 있어도 런 상태 토큰은 그대로다" "$(sb16_lv cc_run_state "$sb16_rd" "$sb16_rd/ledger.md")" "버려짐"
+check "16: 살아 있는 분리 감독자가 있으면 원장이 오래 조용해도 중단 리포트 정착이 아니다" "$(sb16_settled)" "미정착"
 printf '%s\n%s\nstages=apply:SB16\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/relay.live"
 case "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" in
   *"st:apply:SB16"*) bad "16: 감독자 생존 중 깨움" "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" ;;
@@ -34319,6 +34330,8 @@ case "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" in
   *) bad "16: 감독자 종료 뒤 깨움" "$(sb16_lv cc_relay_wake_keys "$SA_RUN" "$SA_LEDGER")" ;;
 esac
 check "16: 끝난 감독자는 대기 집합에서 빠진다" "$(sb16_lv cc_relay_wait_stages "$SA_RUN")" ""
+check "16: 감독자가 끝난 런은 중단 리포트 정착으로 읽힌다" "$(sb16_settled)" "정착"
+rm -rf "$sb16_rd"
 # 감독자가 토큰을 받기 전의 창 — 소비되지 않은 기동 토큰만 있어도 기다린다.
 rm -f "$SA_RUN/apply/SB16.sup" "$SA_RUN/apply/SB16.sup.start"
 printf 'x\n' > "$SA_RUN/apply/SB16.launch"

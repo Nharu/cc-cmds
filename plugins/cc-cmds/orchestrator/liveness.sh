@@ -2029,7 +2029,18 @@ cc_run_settled_for_report() {
   # 600 SECONDS AFTER 종단, because a finished run's log is still being written
   # for a while after `done` and a report taken inside that window reads a
   # ledger that is about to change.
+  #
+  # A LIVE DETACHED APPLY IS NEVER SETTLED, whatever the state says. Its records
+  # sit under `apply/`, which `cc_run_state` does not read, and the supervisor
+  # writes nothing until its command ends — an apply that runs for hours leaves
+  # the ledger quiet past `abandon` and reads 버려짐 there, while the row it is
+  # about to write (`park 적용=불명` and its run-scope block) is exactly what a
+  # report taken now would miss for good. The keys come from
+  # `cc_relay_wait_stages`, the one enumeration of `apply/` records; it is read
+  # here and not in `cc_run_state`, so the status line's tokens stay as they are.
+  # A supervisor that died leaves no live key, and its run settles as before.
   local run_dir="$1" ledger="$2" abandon="${3:-}" s idle
+  case ",$(cc_relay_wait_stages "$run_dir")," in *,apply:*) return 1 ;; esac
   if [ -n "$abandon" ]; then
     s=$(cc_run_state "$run_dir" "$ledger" "" "$abandon")
   else
