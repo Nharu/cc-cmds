@@ -33415,7 +33415,7 @@ gate_perform_apply() {
   # back off rather than leave a record of a process that is gone.
   printf '%s\n' "$sup" > "$d/$seg.sup"
   cc_proc_fingerprint "$sup" > "$d/$seg.sup.start"
-  kill -0 "$sup" 2>/dev/null || rm -f "$d/$seg.sup" "$d/$seg.sup.start"
+  cc_pid_exists "$sup" || rm -f "$d/$seg.sup" "$d/$seg.sup.start"
   log "적용 실행 중 — 분리 감독자 pid $sup"
   return 0
 }
