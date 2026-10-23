@@ -1185,6 +1185,16 @@ gate_reach_runlocal_proof() {
   [ "$n" -ge 1 ]
 }
 
+gate_reach_global_prefixes() {
+  # gate_reach_global_prefixes — the package-manager prefixes the reach floor
+  # raises to `기기전역`, one per line. The Chrome row's path check
+  # (`gate_chrome_path_ok`) refuses the same list, so a destination the floor
+  # cannot see inside `--screenshot=<path>` is held where the floor would have
+  # held it. A function and not a top-level array: the in-process test seam
+  # reached the grader with such an array unset.
+  printf '%s\n' /usr/local /opt/homebrew
+}
+
 gate_reach_derived_full() {
   # gate_reach_derived_full <alias> <argv...> — the same floor, with where it came
   # from. The first line is `<도달>\t<유래>`, the origin being `cmd` (a command
@@ -1279,12 +1289,22 @@ gate_reach_derived_full() {
   esac
   # Absolute paths into the user's own configuration, wherever they sit in argv.
   # EVERY MATCH IS COLLECTED, not the first: each is a word the row must carry.
+  local pfx
   for a in "$@" ${gpaths[@]+"${gpaths[@]}"}; do
     case "$a" in
-      "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*|/usr/local/*|/opt/homebrew/*)
+      "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*)
         paths="$paths$a
-" ;;
+"
+        continue ;;
     esac
+    for pfx in $(gate_reach_global_prefixes); do
+      case "$a" in
+        "$pfx"/*)
+          paths="$paths$a
+"
+          break ;;
+      esac
+    done
   done
   [ -n "$paths" ] && { printf '기기전역\tpath\n%s' "$paths"; return 0; }
   # A deploy trigger the manifest named for this target.
@@ -24352,6 +24372,29 @@ gate_segment_person_hold() {
   return 0
 }
 
+gate_segment_visual_refusal() {
+  # gate_segment_visual_refusal <segment> — the id of a `시각-승인` question of
+  # this run that names the segment in `막는 세그먼트` and that a person closed
+  # `거부` or `무효`, consumed or not; nothing when there is none.
+  #
+  # A CONSUMED REFUSAL STILL SAYS NO. Consuming it (`결정=거절 소비`) takes it
+  # out of the hold above, and the resubmission that consumes it ends on exit 0
+  # like an adoption does; the sidecar's implementation approval is not touched
+  # by the person's `거부`. So the predicate alone would let the screens the
+  # person refused be implemented by a router that read that exit 0 as an
+  # adoption.
+  local seg="$1" id
+  for id in $( { gate_rows '승인' || true; } | { grep -F '| 판단 부류=시각-승인 |' || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    [ "$(gate_approval_field "$id" '막는 세그먼트')" = "$seg" ] || continue
+    case "$(gate_approval_state "$id")" in
+      거부|무효) printf '%s' "$id"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
 gate_person_hold_ids() {
   # gate_person_hold_ids — the person-set approvals (`사람-결정`, `시각-승인`)
   # that hold their segment:
@@ -24717,13 +24760,21 @@ gate_chrome_path_ok() {
   # The spellings are the path as written, with its existing ancestors resolved
   # and with a symlinked last component followed, so a link under scratch space
   # that lands in the tree or in a configuration home is judged where it lands.
-  #   shot    — outside the tree and outside the configuration homes;
-  #   profile — under the temp directory, and outside the tree;
+  #   shot    — outside the tree, the machine-global prefixes and the
+  #             configuration homes;
+  #   profile — under the temp directory, and outside the tree and the
+  #             machine-global prefixes;
   #   page    — outside the configuration homes, so a key or token file is not
   #             rendered into an image.
   # The configuration homes are the dot-directories directly under `$HOME`
   # (`.ssh`, `.config`, `.claude*`, …), matched without regard to case
   # (`gate_chrome_in_home_dot`), and `CLAUDE_CONFIG_DIR` when it is set.
+  #
+  # THE MACHINE-GLOBAL PREFIXES ARE THE REACH FLOOR'S OWN. The floor compares
+  # whole argv words, and Chrome's destination is always one word with the
+  # path behind `--screenshot=`, so the floor never sees it; without this arm a
+  # screenshot over `/opt/homebrew/bin/<tool>` kept a declared `런로컬` while
+  # `cp` to the same path stops at `기기전역`.
   local kind="$1" p="$2" wp wl sp r t under homes root rootp tmp tmpp
   wp=$(gate_path_spelling "$(gate_real_prefix "$p")")
   wl=$(gate_leaf_spelling "$wp") || return 1
@@ -24741,6 +24792,10 @@ gate_chrome_path_ok() {
     if [ "$kind" != page ]; then
       for r in "$root" "$rootp"; do
         [ -n "$r" ] || continue
+        gate_nocase_at_or_under "$sp" "$r" && return 1
+        gate_path_is_at_or_under "$sp" "$r" && return 1
+      done
+      for r in $(gate_reach_global_prefixes); do
         gate_nocase_at_or_under "$sp" "$r" && return 1
         gate_path_is_at_or_under "$sp" "$r" && return 1
       done
@@ -35227,10 +35282,18 @@ gate_verb_act() {
   # run waits, an open `시각-승인` holds the segment above; this refusal is the
   # predicate's own defence for the case the hold does not cover — an approval
   # adopted and the sidecar's implementation-approval line removed or voided
-  # afterwards.
+  # afterwards — and a person's `거부` or `무효` on the segment's `시각-승인`
+  # refuses it for the rest of the run, consumed or not, whatever the sidecar
+  # says (`gate_segment_visual_refusal`).
   if [ "$kind" = "skill" ] && [ "${1:-}" = "implement" ] && [ "$segment" != "-" ] \
      && gate_segment_screen_slice "$segment"; then
-    local ss_why
+    local ss_why ss_ref
+    ss_ref=$(gate_segment_visual_refusal "$segment")
+    if [ -n "$ss_ref" ]; then
+      warn "세그먼트 ${segment} 는 화면 슬라이스인데 사람이 시각-승인 판단 승인 ${ss_ref} 을 $(gate_approval_state "$ss_ref") 로 닫았습니다 — 이 런에서는 그 화면의 구현을 보내지 않습니다"
+      warn "그 세그먼트는 park 로 두고, 그 화면이 필요한 조항은 그 답을 근거로 불가능으로 정산하세요"
+      exit "$GATE_EXIT_RULE"
+    fi
     if ! ss_why=$(gate_visual_approval_holds); then
       warn "세그먼트 ${segment} 는 화면 슬라이스인데 설계 문서의 구현 승인이 서지 않습니다 (${ss_why}) — 화면이 승인되기 전에는 구현을 보내지 않습니다"
       warn "고정 좌석에서 /cc-cmds:visual 로 화면을 승인해 사이드카에 구현 승인 줄을 다시 쓴 뒤 디스패치하세요"

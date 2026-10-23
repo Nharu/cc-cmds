@@ -13185,7 +13185,7 @@ rm -f "$WORK/plan15v-shape.md"
 
 # ---------------------------------------------------------------------------
 # 15w. A screen slice is not dispatched before its screens are approved
-# --- section: 15w | group: base | covers: act, plan, snapshot | anchors: 15w: 설계 스킬의 화면 문법 예시 두 줄이 선언통치 분기를 낸다, 15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다, 15w: 승인 없는 화면 id 목록 슬라이스의 구현 파견은 거부된다, 15w: 화면 필드가 없는 슬라이스도 사이드카가 있으면 기다린다, 15w: 화면이 없음 인 슬라이스는 승인 없이 파견된다, 15w: 선언 없는 런의 구현 파견은 승인 없이 통과한다, 15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다 ---
+# --- section: 15w | group: base | covers: act, plan, snapshot | anchors: 15w: 설계 스킬의 화면 문법 예시 두 줄이 선언통치 분기를 낸다, 15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다, 15w: 승인 없는 화면 id 목록 슬라이스의 구현 파견은 거부된다, 15w: 화면 필드가 없는 슬라이스도 사이드카가 있으면 기다린다, 15w: 화면이 없음 인 슬라이스는 승인 없이 파견된다, 15w: 선언 없는 런의 구현 파견은 승인 없이 통과한다, 15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다, 15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다 ---
 #
 # A declared run's segment id is its slice id, and a slice whose `**화면**`
 # lists screen ids — or omits the field while the document has a visual
@@ -13272,6 +13272,21 @@ check "15w 픽스처: 구현 승인 줄 뒤 술어가 선다" \
 w15_dispatch R15WA SA
 check "15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다" "$rc" "0"
 [ "$rc" = 0 ] || bad "15w 승인 뒤 파견 문면" "$msg"
+
+# A person's `거부` on the slice's `시각-승인` still says no once it is consumed:
+# the consumption lifts the person hold and the sidecar's approval line is left
+# standing, so only the refusal check turns the same dispatch away.
+w15_led="$WT/docs/pipeline-run/R15WA.md"
+printf -- '- `승인` | 승인 id=A-15wref | 판단 부류=시각-승인 | 막는 세그먼트=SA | 상태=대기 | prev=x\n' >> "$w15_led"
+printf -- '- `승인` | 승인 id=A-15wref | 상태=거부 | prev=x\n' >> "$w15_led"
+printf -- '- `자율 승인` | kind=judgment | 결정=거절 소비 | 해소 승인=A-15wref | 세그먼트=SA | prev=x\n' >> "$w15_led"
+w15_dispatch R15WA SA
+case "$rc/$msg" in
+  3/*"시각-승인 판단 승인 A-15wref 을 거부 로 닫았습니다"*) ok "15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다" ;;
+  *) bad "15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다" "rc=$rc $msg" ;;
+esac
+w15_dispatch R15WA SC
+check "15w: 다른 세그먼트의 시각-승인 거부는 화면 없음 슬라이스를 막지 않는다" "$rc" "0"
 
 # The shape rule reaches the gate's defect lines, which call the driver's
 # checker in its base mode. They are read from the snapshot, under the run's
@@ -43028,7 +43043,7 @@ graded_as '등급 미상'    '79:심볼릭 링크 뒤 .. 로 접은 stage-rules.
 
 # ---------------------------------------------------------------------------
 # 79v. The three visual helpers and the headless Chrome screenshot
-# --- section: 79v | group: bsplit | covers: grade, exec | anchors: 79v:visual-capture.sh ref 는 트리 밖 쓰기다, 79v:visual-config.sh snapshot 은 읽기다, 79v:모르는 visual-check.sh 하위 명령은 등급 미상이다, 79v:헤드리스 스크린숏 형태의 chromium 은 트리 밖 쓰기다, 79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다, 79v:원격 페이지를 찍는 스크린숏은 등급 미상이다, 79v:다른 프로그램을 띄우는 런처 스위치는 등급 미상이다, 79v:bash 뒤의 승인 술어 읽기는 스위치 0 에서 거부된다 ---
+# --- section: 79v | group: bsplit | covers: grade, exec | anchors: 79v:visual-capture.sh ref 는 트리 밖 쓰기다, 79v:visual-config.sh snapshot 은 읽기다, 79v:모르는 visual-check.sh 하위 명령은 등급 미상이다, 79v:헤드리스 스크린숏 형태의 chromium 은 트리 밖 쓰기다, 79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다, 79v:원격 페이지를 찍는 스크린숏은 등급 미상이다, 79v:다른 프로그램을 띄우는 런처 스위치는 등급 미상이다, 79v:bash 뒤의 승인 술어 읽기는 스위치 0 에서 거부된다, 79v:/opt/homebrew 아래의 스크린숏은 등급 미상이다 ---
 #
 # The helpers are graded by their subcommand and trusted by where they are:
 # what a stage may run reads or writes one output directory outside the tree,
@@ -43091,6 +43106,17 @@ graded_as '등급 미상'    '79v:대소문자를 바꾼 설정 홈 안의 페�
 # only the inode comparison refuses it.
 if [ -d "/System/Volumes/Data$HOME" ]; then
   graded_as '등급 미상'  '79v:펌링크 표기의 설정 홈 안 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=/System/Volumes/Data$HOME/.zz-79v.png" file:///tmp/a.html
+fi
+# The reach floor raises a write under the package-manager prefixes to
+# `기기전역`, but it compares whole argv words and never sees the path inside
+# `--screenshot=`; the row refuses those prefixes itself, case folded.
+graded_as '등급 미상'    '79v:/opt/homebrew 아래의 스크린숏은 등급 미상이다'    -- chromium --headless --screenshot=/opt/homebrew/zz-79v.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:/usr/local 아래의 스크린숏은 등급 미상이다'       -- chromium --headless --screenshot=/usr/local/zz-79v.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:대소문자를 바꾼 /opt/homebrew 아래의 스크린숏은 등급 미상이다' -- chromium --headless --screenshot=/OPT/Homebrew/zz-79v.png file:///tmp/a.html
+if [ -d /usr/local ]; then
+  ln -sfn /usr/local "$WORK/zz-79v-glink"
+  graded_as '등급 미상'  '79v:/usr/local 을 가리키는 링크를 거친 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=$WORK/zz-79v-glink/zz-79v.png" file:///tmp/a.html
+  rm -f "$WORK/zz-79v-glink"
 fi
 graded_as '등급 미상'    '79v:퍼센트 부호화한 페이지 경로는 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png file:///tmp/%2e%2e/a.html
 

@@ -715,7 +715,10 @@ check "두 사본의 설계 단계 id 선택식이 바이트 동일하다" "$des
 # refuses that dispatch, but the run then ends on a refusal instead of a wait the
 # seat can answer. The literals below are what the section needs to dispatch the
 # stage, to tell a screen slice from one that never waits, to submit the one
-# fixed question, and to take a visual-wait park back up once it is approved.
+# fixed question, and to take a visual-wait park back up once it is approved —
+# and only then: a resubmission that consumes a person's refusal also ends on
+# exit 0, so each copy has to say that adoption is the `결정=채택` row and that
+# a consumed refusal leaves the segment parked.
 # ---------------------------------------------------------------------------
 visual_section() {
   # visual_section <skill file> — the visual-dispatch subsection body, read up
@@ -742,7 +745,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'write `상태=실행중` with the plan row'"'"'s `선행` and dispatch its implementation as any planned slice' \
     'A `park` the fixed-graph driver wrote is not taken over' \
     'leave the slice at `park`' \
-    '`결정=거절 소비`'
+    '`결정=거절 소비`' \
+    'the approval is adopted only when that row carries `결정=채택`' \
+    'go to item 5 whatever the predicate says' \
+    'A consumed refusal does not make the segment `실행중` again'
   do
     nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
     if [ "${nlit:-0}" != "0" ]; then
