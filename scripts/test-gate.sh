@@ -22209,12 +22209,23 @@ fi
 # 무는 §34 는 이 배선을 통과하지 않으므로 그 구멍을 덮지 못한다.
 #
 # 바로 위 절이 B1 승인 하나를 열어 둔 채 끝나므로 그 상태를 물려받는다.
+#
+# 전사는 물려받지 않고 이 절이 만든다. 철회의 「사람이 있었는가」 판정은 이 런의
+# 세션 계보에 든 전사 전부에서 다이얼로그 취소를 찾는데, 31am 은 취소 프레임을
+# 일부러 남기고 그 세션을 계보에 올린다. 그래서 31am 과 같은 프로세스에서 돌면 철회가
+# 거부되어 B1 이 대기에 머물렀다. 이 절의 전제는 「판독 가능한 전사가 있고, 사람이
+# 있었다는 증거는 없다」이므로, 깨끗한 전사 하나만 든 설정 디렉터리와 그 전사의 세션
+# id 로 부른다.
+B31AB_CFG="$WORK/ncfg-31ab"; mkdir -p "$B31AB_CFG/projects/proj"
+B31AB_SID="31ab3131-0000-4000-8000-000000000001"
+printf '%s\n' '{"type":"user","uuid":"u","message":{"role":"user","content":"31ab 픽스처"}}' \
+  > "$B31AB_CFG/projects/proj/$B31AB_SID.jsonl"
 gateNT() {
-  # gateN 과 같되 전사 디렉터리를 보인다. 철회의 「사람이 있었는가」 판정이 전사를
-  # 읽고, 판독할 수 없으면 보류하므로, 이 절에서는 그것이 픽스처의 전제다.
+  # gateN 과 같되 위의 전사 디렉터리를 보인다. 철회의 판정이 전사를 읽고, 판독할 수
+  # 없으면 보류하므로, 이 절에서는 그것이 픽스처의 전제다.
   local out
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        gate_inproc "$@" 2>&1); rc=$?
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$B31AB_CFG" \
+        CLAUDE_CODE_SESSION_ID="$B31AB_SID" gate_inproc "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
 b31ab_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '구속 튜플=B1/' | tail -1)
