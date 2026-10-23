@@ -13,7 +13,18 @@
 #      teardown guard's refusal arms, the hollow-success row of the termination
 #      table, a truncated halt record, a held lock, and the backoff cap.
 #
-# Usage: bash plugins/cc-cmds/orchestrator/test-run.sh
+# Usage: bash plugins/cc-cmds/orchestrator/test-run.sh            (whole suite)
+#        bash plugins/cc-cmds/orchestrator/test-run.sh --part 1   (head, sections 1-2, setup,
+#                                                                   section 4 up to the T13 boundary)
+#        bash plugins/cc-cmds/orchestrator/test-run.sh --part 2   (head, setup, boundary barrier,
+#                                                                   T13 marker to the end)
+#
+# The two parts together run every assertion of the whole suite exactly once;
+# the macOS leg runs them side by side so the job's wall clock is not one
+# suite's length. The boundary barrier runs in the whole suite and in part 2;
+# part 1 ends just before it. So a later section that leans on state an earlier
+# section left behind fails on the leg that runs the whole suite as well, not
+# only on the one that runs part 2 alone.
 
 set -uo pipefail
 
@@ -47,6 +58,13 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
 
+# Which part of the suite this process runs: 0 is the whole suite.
+case "$#:${1:-}:${2:-}" in
+  0::)        TR_PART=0 ;;
+  2:--part:1) TR_PART=1 ;;
+  2:--part:2) TR_PART=2 ;;
+  *) printf 'usage: bash %s [--part 1|--part 2]\n' "$0" >&2; exit 2 ;;
+esac
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/../../.." && pwd)
@@ -83,7 +101,13 @@ passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
+# The closing summary, shared by the end of the file and the end of part 1.
+tr_summary() {
+  printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
+  [ "$failed" = "0" ]
+}
 
+if [ "$TR_PART" != 2 ]; then
 # ---------------------------------------------------------------------------
 # 1. Parse and self-check on the sanitized interpreter
 # ---------------------------------------------------------------------------
@@ -144,6 +168,7 @@ if [ -n "$guard_line" ] && [ "$guard_line" = "$first_exec" ]; then
 else
   bad "가드 위치" "first executable line=$first_exec, guard=$guard_line"
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Load the definitions without running a pipeline
@@ -162,8 +187,12 @@ export CC_CMDS_ORCH_HOST_OS
 # instead of failing one line. That is how a Linux leg lost 30 assertions to a
 # single missing sysctl key.
 set +e
+# Setup runs in both parts, its assertions in one: the two parts together count
+# each assertion of the whole suite once.
+if [ "$TR_PART" != 2 ]; then
 ok "소싱 시임으로 정의만 로드된다"
 ok "하네스가 드라이버의 set -e 를 물려받지 않는다"
+fi
 
 # Native-kernel seam for the harness itself. Sourcing the driver normalizes
 # PATH, so a stubbed `uname` earlier in PATH stops being visible from here —
@@ -184,6 +213,7 @@ printf 'locale(driver): LC_CTYPE=%s LC_COLLATE=%s %s=%s (locale -a 후보 %s개)
 # 호스트에서 한국어 어휘 비교가 성립하지 않는다는 뜻이고, 아래 프로브가 그것을
 # 확인한다 — 선택이 조용히 아무것도 하지 않은 경우와 통한 경우를 가르려고
 # 출처를 함께 찍는다.
+if [ "$TR_PART" != 2 ]; then
 if [ -n "${ORCH_UTF8_LOCALE:-}" ]; then
   ok "UTF-8 LC_CTYPE 이 선다 (${ORCH_LOCALE_SOURCE})"
 else
@@ -206,26 +236,130 @@ if [ -z "$EARLY" ]; then
 else
   bad "pipefail 함정" "$(printf '%s' "$EARLY" | awk 'NR<=3' | tr '\n' ' ')"
 fi
+fi
 printf 'awk(harness): %s\n' "$(awk --version 2>&1 | awk 'NR<=1' || printf unknown)"
+if [ "$TR_PART" != 2 ]; then
 if printf '한글\n' | awk '/^한글$/{print "hit"}' | grep_all_q hit \
    && [ "$(printf '한글\n' | awk -v k=한글 '$0==k{print "hit"}')" = "hit" ]; then
   ok "러너의 awk 가 멀티바이트 정규식과 -v 대입을 모두 처리한다"
 else
   bad "awk 멀티바이트" "이 러너에서 한국어 어휘 비교가 조용히 실패한다 — 아래 실패들의 원인일 수 있다"
 fi
+fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test.XXXXXX")
+# The fixture the sections after setup start from. Setup builds it here and the
+# boundary barrier builds a fresh one, so a section past the boundary never
+# reads files an earlier section left in the old one. Every old `WORK` is kept
+# on `TR_OLD_WORKS`, one per line, for the exit trap to remove.
+#
+# The manifest fixture repository lives in it as well: `write_manifest` names
+# that repository in its target row, and sections on both sides of the boundary
+# write manifests.
+#
+# The target row points at a fixture repository. This suite's green must not
+# depend on which branches the surrounding clone has — the default shallow
+# single-ref checkout of `actions/checkout` has neither `refs/heads/master` nor
+# `refs/remotes/origin/master`, and a target row pointing at the real checkout
+# breaks this suite on CI. The sibling snapshot fixtures pin their branch for
+# the same reason and the same way.
+#
+# `origin-worktree=` has to be the running repository (it is compared with the
+# current common git directory), so the header keeps `$HERE` and only the target
+# row is moved off it.
+#
+# The remote-tracking ref is made by hand. The base-branch check accepts only a
+# shape `base_sha` can consume — `refs/remotes/origin/…` — so a fixture with only
+# a local head would not pass it.
+TR_OLD_WORKS=""
+HERE=$(git rev-parse --show-toplevel)
+tr_make_work() {
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test.XXXXXX")
+  RUN_ID="testrun"
+  RUN_DIR="$WORK/rundir"; mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log"
+  LEDGER="$WORK/ledger.md"; : > "$LEDGER"
+  BASE="$WORK/base"; mkdir -p "$BASE/docs"
+  DOC_KEY="docs/x.md"; SLUG="docs-x"
+  SC_OUT="$WORK/selfcheck.out"
+  MF_REPO="$WORK/manifest-repo"; mkdir -p "$MF_REPO"
+  ( cd "$MF_REPO" \
+    && git init -q . \
+    && git config user.email t@example.invalid \
+    && git config user.name  T \
+    && git commit -q --allow-empty --no-gpg-sign -m init \
+    && git branch -M main \
+    && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
+  MF_CG=$(cd "$MF_REPO" && git rev-parse --path-format=absolute --git-common-dir)
+}
+tr_make_work
 # Replaces the earlier trap rather than adding to it — a bare `trap ... EXIT`
-# overwrites, so both directories are named here or the first one leaks.
-cleanup() { rm -rf "$WORK" "$WORK_EARLY" "${IVW:-}"; }
+# overwrites, so every directory is named here or the first one leaks.
+cleanup() {
+  local w
+  rm -rf "$WORK" "$WORK_EARLY" "${IVW:-}" "${TR_SNAP:-}"
+  while IFS= read -r w; do
+    [ -z "$w" ] || rm -rf "$w"
+  done <<TR_OLD
+$TR_OLD_WORKS
+TR_OLD
+}
 trap cleanup EXIT
 
-RUN_ID="testrun"
-RUN_DIR="$WORK/rundir"; mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log"
-LEDGER="$WORK/ledger.md"; : > "$LEDGER"
-BASE="$WORK/base"; mkdir -p "$BASE/docs"
-DOC_KEY="docs/x.md"; SLUG="docs-x"
+write_manifest() {   # write_manifest <출력> [대상맵다이제스트override] [계획다이제스트override] [베이스브랜치] [설계문서]
+  # 넷째 인자는 베이스 브랜치를 갈아 끼운다. 기본값은 픽스처 레포에 고정해 둔 이름이라
+  # 기존 호출은 넷을 세지 않은 채 그대로 성립하고, 해소되지 않는 값을 넣어야만 하는
+  # 절만 명시한다. 다섯째는 헤더의 `owner-doc=` 과 본문의 「설계 문서」를 함께 움직인다
+  # — 프리플라이트가 그 둘을 대조하므로 한쪽만 바꾸면 검사가 그 불일치에서 멈춘다.
+  # 여섯째는 대상 행 끝에 선택 필드를 덧붙인다 — `dev 식별자`·`배포트리거 식별자`
+  # 처럼 부재가 기본인 필드를 시험하려면 행 자체가 달라져야 하고, 그 행이 두
+  # 다이제스트의 입력이라 여기서 함께 만들어야 값이 맞는다.
+  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}" extra="${6:-}"
+  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음${extra}"
+  local plan='{ "steps": ["audit", "implement"] }'
+  [ -n "$tdig" ] || tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+  # An empty third argument means "omit the binding digest"; a non-empty one is
+  # written verbatim so a WRONG value can be exercised.
+  {
+    printf '# 파이프라인 런 매니페스트 — 20260825-deadbeef\n'
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=20260825-deadbeef;\n'
+    printf '     anchor-kind=repo; anchor-key=Nharu/cc-cmds;\n'
+    printf '     owner-doc=%s; origin-worktree=%s;\n' "$doc" "$HERE"
+    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+    printf '## 런 정체\n**킥오프 일시**: 2026-08-25T00:00:00Z\n**런 id**: 20260825-deadbeef\n'
+    printf '**앵커 종류**: repo\n**앵커 키**: Nharu/cc-cmds\n**사용자 확인 문면**: 돌려라\n\n'
+    printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$tdig" "$trow"
+    printf '## 요소\n**설계 문서**: %s\n**적용 주체**: (해당 없음)\n\n' "$doc"
+    printf '## 실행 계획\n**승인 문면**: 진행\n'
+    printf '```json\n%s\n```\n\n' "$plan"
+    printf '## 인가\n**런 최대 절단점**: 머지\n**종료 지점**: 전부 머지\n'
+    printf '**벽시계 마감**: 2026-08-26T09:00:00Z\n**시각 정합 마커**: 없음\n'
+    printf '**사다리 가용 단 수**: 2\n**미선언 상황 처분**: park\n'
+    [ -n "$pdig" ] && printf '**구속 다이제스트**: %s\n' "$pdig"
+    printf -- '- `종료 절` | id=C1 | 문면=네 슬라이스가 전부 머지됐다\n'
+  } > "$out"
+}
 
+# --- snapshot at the end of setup -------------------------------------------
+# The boundary barrier puts the shell back to exactly this state: the function
+# set and bodies, the variables, the options, the directory and the exit trap.
+# It is top-level code, not a function, because bash 3.2 has no `declare -g`:
+# a `declare` run inside a function makes a local, so a restore from inside one
+# would restore nothing. Names starting `_trb_` are this code's own and are not
+# recorded.
+TR_SNAP=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test-snap.XXXXXX")
+mkdir -p "$TR_SNAP/f" "$TR_SNAP/v"
+TR_SNAP_PWD=$PWD
+compgen -A function | LC_ALL=C sort > "$TR_SNAP/fnames"
+_trb_i=0
+while IFS= read -r _trb_n; do
+  _trb_i=$((_trb_i + 1)); declare -f "$_trb_n" > "$TR_SNAP/f/$_trb_i"
+done < "$TR_SNAP/fnames"
+compgen -v | LC_ALL=C sort > "$TR_SNAP/vnames"
+_trb_i=0
+while IFS= read -r _trb_n; do
+  _trb_i=$((_trb_i + 1)); declare -p "$_trb_n" > "$TR_SNAP/v/$_trb_i" 2>/dev/null
+done < "$TR_SNAP/vnames"
+
+if [ "$TR_PART" != 2 ]; then
 # ---------------------------------------------------------------------------
 # 4. Permission cutpoint is ordered, and the order is the authorization
 # ---------------------------------------------------------------------------
@@ -1038,68 +1172,14 @@ fi
 # 않는다」이며, 그것이 이 파이프라인에서 반복해 나온 부류다.
 MF_DIR="$WORK/manifest"; mkdir -p "$MF_DIR"
 MF="$MF_DIR/plan.md"
-HERE=$(git rev-parse --show-toplevel)
 CG=$(cd "$HERE" && git rev-parse --path-format=absolute --git-common-dir)
 
-# 대상 행이 가리키는 레포는 픽스처다. 이 스위트의 초록을 주변 클론에 어떤 이름의
-# 브랜치가 있는지에 묶으면 안 된다 — `actions/checkout` 의 기본 얕은 단일 ref
-# 체크아웃에는 `refs/heads/master` 도 `refs/remotes/origin/master` 도 없고, 그 위에서
-# 대상 행이 실제 체크아웃을 가리키면 CI 가 이 스위트에서 깨진다. 형제 스냅숏 픽스처가
-# 브랜치를 고정하는 것과 같은 이유이며, 같은 방식으로 고정한다.
-#
-# `origin-worktree=` 는 실행 중인 레포여야 한다(그 자리는 현재 공통 git 디렉터리와
-# 대조된다). 그래서 헤더는 `$HERE` 로 두고 대상 행만 떼어 낸다.
-#
-# 원격 추적 ref 를 손으로 만들어 둔다. 베이스 브랜치 검사는 `base_sha` 가 소비할 수
-# 있는 형태 — `refs/remotes/origin/…` — 만 받으므로, 로컬 헤드만 있는 픽스처는 검사를
-# 통과하지 못한다.
-MF_REPO="$WORK/manifest-repo"; mkdir -p "$MF_REPO"
-( cd "$MF_REPO" \
-  && git init -q . \
-  && git config user.email t@example.invalid \
-  && git config user.name  T \
-  && git commit -q --allow-empty --no-gpg-sign -m init \
-  && git branch -M main \
-  && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
-MF_CG=$(cd "$MF_REPO" && git rev-parse --path-format=absolute --git-common-dir)
-# 핀이 실패해도 조용하다 — 위 체인은 출력을 버리고 종료 상태를 아무도 읽지 않는다.
-# 그래서 핀을 반증 가능하게 만드는 단언을 여기 둔다.
+# 매니페스트 픽스처 레포(`MF_REPO`)와 `write_manifest` 는 준비 구간의 `tr_make_work`
+# 와 그 뒤에 있다 — 경계 양쪽의 절이 매니페스트를 쓰기 때문이다. 핀이 실패해도
+# 조용하다 — 그 체인은 출력을 버리고 종료 상태를 아무도 읽지 않는다. 그래서 핀을
+# 반증 가능하게 만드는 단언을 여기 둔다.
 check "매니페스트 픽스처 레포의 베이스 브랜치가 고정됐다" \
   "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )" "main"
-
-write_manifest() {   # write_manifest <출력> [대상맵다이제스트override] [계획다이제스트override] [베이스브랜치] [설계문서]
-  # 넷째 인자는 베이스 브랜치를 갈아 끼운다. 기본값은 픽스처 레포에 고정해 둔 이름이라
-  # 기존 호출은 넷을 세지 않은 채 그대로 성립하고, 해소되지 않는 값을 넣어야만 하는
-  # 절만 명시한다. 다섯째는 헤더의 `owner-doc=` 과 본문의 「설계 문서」를 함께 움직인다
-  # — 프리플라이트가 그 둘을 대조하므로 한쪽만 바꾸면 검사가 그 불일치에서 멈춘다.
-  # 여섯째는 대상 행 끝에 선택 필드를 덧붙인다 — `dev 식별자`·`배포트리거 식별자`
-  # 처럼 부재가 기본인 필드를 시험하려면 행 자체가 달라져야 하고, 그 행이 두
-  # 다이제스트의 입력이라 여기서 함께 만들어야 값이 맞는다.
-  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}" extra="${6:-}"
-  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음${extra}"
-  local plan='{ "steps": ["audit", "implement"] }'
-  [ -n "$tdig" ] || tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
-  # An empty third argument means "omit the binding digest"; a non-empty one is
-  # written verbatim so a WRONG value can be exercised.
-  {
-    printf '# 파이프라인 런 매니페스트 — 20260825-deadbeef\n'
-    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=20260825-deadbeef;\n'
-    printf '     anchor-kind=repo; anchor-key=Nharu/cc-cmds;\n'
-    printf '     owner-doc=%s; origin-worktree=%s;\n' "$doc" "$HERE"
-    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
-    printf '## 런 정체\n**킥오프 일시**: 2026-08-25T00:00:00Z\n**런 id**: 20260825-deadbeef\n'
-    printf '**앵커 종류**: repo\n**앵커 키**: Nharu/cc-cmds\n**사용자 확인 문면**: 돌려라\n\n'
-    printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$tdig" "$trow"
-    printf '## 요소\n**설계 문서**: %s\n**적용 주체**: (해당 없음)\n\n' "$doc"
-    printf '## 실행 계획\n**승인 문면**: 진행\n'
-    printf '```json\n%s\n```\n\n' "$plan"
-    printf '## 인가\n**런 최대 절단점**: 머지\n**종료 지점**: 전부 머지\n'
-    printf '**벽시계 마감**: 2026-08-26T09:00:00Z\n**시각 정합 마커**: 없음\n'
-    printf '**사다리 가용 단 수**: 2\n**미선언 상황 처분**: park\n'
-    [ -n "$pdig" ] && printf '**구속 다이제스트**: %s\n' "$pdig"
-    printf -- '- `종료 절` | id=C1 | 문면=네 슬라이스가 전부 머지됐다\n'
-  } > "$out"
-}
 
 MANIFEST="$MF"; write_manifest "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then
@@ -2633,8 +2713,8 @@ else
   bad "계획기 프롬프트" "웨이브 어휘와 함께 규칙의 실질까지 사라졌다"
 fi
 
-# 탐지기 — 자기 자신에 대해 통과해야 하고, 결함을 심으면 실패해야 한다.
-SC_OUT="$WORK/selfcheck.out"
+# 탐지기 — 자기 자신에 대해 통과해야 하고, 결함을 심으면 실패해야 한다. 출력
+# 파일 `SC_OUT` 은 T17 도 쓰므로 준비 구간의 `tr_make_work` 가 정한다.
 env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin bash "$DRIVER" --self-check > "$SC_OUT" 2>&1
 if grep -q '선언된 것에 전부 독자·호출부·비교자가 있다' "$SC_OUT"; then
   ok "미배선 탐지기가 이 드라이버에 대해 통과한다"
@@ -8553,6 +8633,100 @@ check "프로브 (런, 디렉터리): 모든 줄이 네 필드다" \
   "$(printf '%s\n' "$pp_out" | awk -F'\t' 'NF!=4' | grep -c . || true)" "0"
 kill "$PA" "$PB" "$PC" "$PD" 2>/dev/null
 wait "$PA" "$PB" "$PC" "$PD" 2>/dev/null
+fi
+
+# --- end of part 1 ----------------------------------------------------------
+if [ "$TR_PART" = 1 ]; then
+  tr_summary
+  exit
+fi
+
+# --- boundary barrier -------------------------------------------------------
+# The whole suite and part 2 run this; part 1 ends just above it. The sections
+# below must stand on setup alone, because part 2 runs them without the sections
+# above. Putting the shell back to the setup snapshot here makes a section below
+# that leans on an earlier section's function fail as `command not found`, and
+# one that leans on an earlier section's variable stop the suite as an unbound
+# variable under `-u` — on the leg that runs the whole suite as well, not only on
+# the one that runs part 2. A dependency found that way is settled by moving its
+# definition into setup, not by an exception here. Files the sections above made
+# are not removed: the fresh `WORK` below is what keeps the sections below off
+# them.
+#
+# The boundary sits inside the lane-persistence section, before its hook-decision
+# tests. With it at the head of that section, part 2 was the longer part on the
+# macOS runner (716 seconds against 539), so it moved as far down as it may go.
+# It sits right before a section heading or a T marker, since the hook-decision
+# blocks below all use the fixture and helpers defined under the T13~T16 marker;
+# and it stays above the T17 marker, because the isolation check cuts this file
+# there and runs the head alone, this end of part 1 with it. This marker is the
+# last one above T17.
+_trb_d="$TR_SNAP/now"
+rm -rf "$_trb_d"; mkdir -p "$_trb_d/f" "$_trb_d/v"
+# Functions defined after setup are removed; changed bodies are put back.
+compgen -A function | LC_ALL=C sort > "$_trb_d/fnames"
+LC_ALL=C comm -13 "$TR_SNAP/fnames" "$_trb_d/fnames" > "$_trb_d/fadded"
+while IFS= read -r _trb_n; do
+  unset -f "$_trb_n"
+done < "$_trb_d/fadded"
+_trb_i=0
+while IFS= read -r _trb_n; do
+  _trb_i=$((_trb_i + 1)); declare -f "$_trb_n" > "$_trb_d/f/$_trb_i" 2>/dev/null
+done < "$TR_SNAP/fnames"
+diff -rq "$TR_SNAP/f" "$_trb_d/f" 2>/dev/null | awk '/^Files / { n = split($2, p, "/"); print p[n] }' > "$_trb_d/fchanged"
+while IFS= read -r _trb_i; do
+  . "$TR_SNAP/f/$_trb_i"
+done < "$_trb_d/fchanged"
+# Variables. Kept as they are: the counters, the paths the exit trap removes,
+# the part selector, this barrier's own names, the shell's own dynamic and
+# special variables, and read-only ones.
+_trb_skip() {
+  case "$1" in
+    passed|failed|IVW|TR_PART|TR_OLD_WORKS|TR_SNAP|TR_SNAP_PWD|_trb_*) return 0 ;;
+    BASH*|PIPESTATUS|LINENO|RANDOM|SRANDOM|SECONDS|EPOCHSECONDS|EPOCHREALTIME) return 0 ;;
+    FUNCNAME|GROUPS|DIRSTACK|PWD|OLDPWD|_|SHLVL|HISTCMD|OPTIND|OPTARG|COMP_*) return 0 ;;
+    PPID|UID|EUID|SHELLOPTS|LINES|COLUMNS) return 0 ;;
+  esac
+  return 1
+}
+_trb_ro() {  # _trb_ro <declare -p file> — true when the recorded variable is read-only
+  local kw fl
+  read -r kw fl _ < "$1" || return 1
+  case "$fl" in -*r*) return 0 ;; esac
+  return 1
+}
+compgen -v | LC_ALL=C sort > "$_trb_d/vnames"
+LC_ALL=C comm -13 "$TR_SNAP/vnames" "$_trb_d/vnames" > "$_trb_d/vadded"
+while IFS= read -r _trb_n; do
+  _trb_skip "$_trb_n" && continue
+  declare -p "$_trb_n" > "$_trb_d/vcur" 2>/dev/null || continue
+  _trb_ro "$_trb_d/vcur" && continue
+  unset "$_trb_n"
+done < "$_trb_d/vadded"
+_trb_i=0
+while IFS= read -r _trb_n; do
+  _trb_i=$((_trb_i + 1))
+  _trb_skip "$_trb_n" || declare -p "$_trb_n" > "$_trb_d/v/$_trb_i" 2>/dev/null
+done < "$TR_SNAP/vnames"
+# A variable unset since setup leaves an empty file, which differs as well.
+diff -rq "$TR_SNAP/v" "$_trb_d/v" 2>/dev/null | awk '/^Files / { n = split($2, p, "/"); print p[n] }' > "$_trb_d/vchanged"
+while IFS= read -r _trb_i; do
+  _trb_ro "$TR_SNAP/v/$_trb_i" && continue
+  _trb_n=$(sed -n "${_trb_i}p" "$TR_SNAP/vnames")
+  unset "$_trb_n" 2>/dev/null
+  . "$TR_SNAP/v/$_trb_i"
+done < "$_trb_d/vchanged"
+unset -f _trb_skip _trb_ro
+# Options, directory and exit trap as setup left them, and a fresh fixture.
+set +e; set -u; set -o pipefail
+cd "$TR_SNAP_PWD" || exit 1
+trap cleanup EXIT
+TR_OLD_WORKS="$TR_OLD_WORKS
+$WORK"
+tr_make_work
+compgen -A function | LC_ALL=C sort > "$_trb_d/fafter"
+check "경계 장벽 뒤 함수 집합이 준비 끝과 같다" \
+  "$(cmp -s "$TR_SNAP/fnames" "$_trb_d/fafter" && printf 같음 || printf 다름)" "같음"
 
 # --- T13~T16: 형제 레인의 훅 판정 -------------------------------------------
 HOOK="$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"
@@ -12782,5 +12956,4 @@ check "36: main_loop_body 가 s0_arm 을 design_arm 바로 앞에서 부른다" 
 check "36: 설계 스테이지의 첫 파견·계속·거절 재부착 셋이 design_stage_cmd 를 지나고 직접 철자가 남지 않는다" \
   "$(grep -c '"$(design_stage_cmd "$skill1")"' "$DRIVER" || true)/$(grep -c '"/cc-cmds:$skill1 $DOC ' "$DRIVER" || true)" "3/0"
 
-printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
-[ "$failed" = "0" ]
+tr_summary
