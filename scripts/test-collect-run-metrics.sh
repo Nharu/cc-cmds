@@ -1003,5 +1003,72 @@ check "14: 바이트 분포를 싣는다" "$(jsum '.design_paths["discuss-audit|
 DP_OUT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/design-path-report.sh" --ledger-dir "$LEDGER_DIR" 2>/dev/null)
 check "14: 인쇄기가 요약의 감사 판마다 표 하나를 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c '^## 감사 판 ' || true)" "2"
 
+# --- 15. 토론 패스와 판정 덩어리 — `discussion_passes` 와 `discussion_verdict` ------------------
+# 같은 토론의 계속 시도는 행을 하나 더 쓰므로 (런, 설계 스텝)마다 마지막 행만 센다. 판정은
+# 최초 감사이고 경로가 discuss-audit 나 base 인 행을 감사 판마다 경계 버전으로 가르고, 버전은
+# 자리마다 수로 비교한다 — 문자열로는 2.99.0 이 2.100.0 보다 뒤다.
+tp_row() {
+  # tp_row <실행 버전> <R3> <R3 사유> <충실도 발견> <정합 발견> [경로]
+  printf -- '- `토론 패스` | 세그먼트=- | 스테이지=D1 | 실행 버전=%s | 경로=%s | 팀원=3 | R3=%s | 측정 지명=0 | 스윕 반박=0 | R3 사유=%s | R3 분=미상 | 충실도 좌석=3 | 충실도 발견=%s | 충실도 재개=0 | 정합 좌석=3 | 정합 발견=%s | 교대=0 | prev=abc' \
+    "$1" "${6:-discuss-audit}" "$2" "$3" "$4" "$5"
+}
+ad_row() {
+  # ad_row <경로> <회차> <감사 판> <플러그인 버전|미상> <고유> <바이트>
+  local pl="$4@abcdefabcdef"
+  [ "$4" != "미상" ] || pl="미상"
+  printf -- '- `감사 공시` | 세그먼트=- | 스테이지=A1 | 실행 버전=1 | 경로=%s | 회차=%s | 감사 판=%s | 플러그인=%s | 원시=9 | 고유=%s | 미보강=1 | 바이트=%s | 골격급=0 | 합성 후보=0 | 합성 골격급=0 | 교대=0 | prev=abc' \
+    "$1" "$2" "$3" "$pl" "$5" "$6"
+}
+reset_all
+R15=20261002-eeeeee00
+d14_run "$R15" "$(tier_row discuss-audit)" "$(tp_row 1 열림 '측정 지명' 4 6)" "$(tp_row 2 닫힘 '해당 없음' 2 3)" \
+  "$(ad_row discuss-audit 최초 e5e5e5e5e5e5 2.99.0 10 10000)"
+i=1
+while [ "$i" -le 4 ]; do
+  d14_run "20261002-eeeeee0$i" "$(tier_row discuss-audit)" "$(tp_row 1 닫힘 '해당 없음' 1 1)" \
+    "$(ad_row discuss-audit 최초 e5e5e5e5e5e5 2.99.0 10 10000)"
+  i=$((i + 1))
+done
+i=1
+while [ "$i" -le 5 ]; do
+  r3=닫힘; why='해당 없음'
+  [ "$i" -ne 1 ] || { r3=열림; why='측정 지명'; }
+  d14_run "20261002-eeeeee1$i" "$(tier_row base)" "$(tp_row 1 "$r3" "$why" 1 1 base)" \
+    "$(ad_row base 최초 e5e5e5e5e5e5 2.104.1 20 10000)"
+  i=$((i + 1))
+done
+# 거름 밖: 재감사, solo-audit, 미상 플러그인, 미상 감사 판. 판이 갈린 행 하나.
+d14_run 20261002-eeeeee21 "$(ad_row discuss-audit 재감사 e5e5e5e5e5e5 2.104.1 99 10000)"
+d14_run 20261002-eeeeee22 "$(ad_row solo-audit 최초 e5e5e5e5e5e5 2.104.1 99 10000)"
+d14_run 20261002-eeeeee23 "$(ad_row discuss-audit 최초 e5e5e5e5e5e5 미상 99 10000)"
+d14_run 20261002-eeeeee24 "$(ad_row discuss-audit 최초 미상 2.104.1 99 10000)"
+d14_run 20261002-eeeeee25 "$(ad_row discuss-audit 최초 e6e6e6e6e6e6 2.104.1 7 1000)"
+collect --release-boundary 2.100.0
+check "15: 수집기는 exit 0 이다" "$rc" "0"
+check "15: 런별 기록이 토론 패스 행마다 하나를 싣는다" "$(jrec "$R15" '.design.discussion | length')" "2"
+check "15: 토론 패스의 미상 셈은 null 이다" "$(jrec "$R15" '.design.discussion[0].r3_minutes')" "null"
+check "15: 한 스텝이 두 시도 행을 남기면 마지막 행만 센다" "$(jsum '.discussion_passes["discuss-audit"] | [.n, .r3_open, .reasons["해당 없음"], (.reasons["측정 지명"] // 0)] | map(tostring) | join(",")')" "5,0,5,0"
+check "15: 발견 수의 중앙값은 마지막 행의 값으로 낸다" "$(jsum '.discussion_passes["discuss-audit"] | [.fidelity_findings_median, .coherence_findings_median] | map(tostring) | join(",")')" "1,1"
+check "15: 경로마다 따로 모은다" "$(jsum '.discussion_passes["base"] | [.n, .r3_open] | map(tostring) | join(",")')" "5,1"
+V='.discussion_verdict.editions["e5e5e5e5e5e5"]'
+check "15: 같은 판의 전후 행이 경계 버전으로 갈린다 (2.99.0 은 2.100.0 앞)" "$(jsum "$V | [.baseline.n, .after.n] | map(tostring) | join(\",\")")" "5,5"
+check "15: 고유 결함과 고유/KB(1000 바이트) 중앙값" "$(jsum "$V | [.baseline.unique_median, .baseline.unique_per_kb_median, .after.unique_median, .after.unique_per_kb_median] | map(tostring) | join(\",\")")" "10,1,20,2"
+check "15: 문턱 대비는 릴리스 뒤 중앙값을 기준선 중앙값으로 나눈 값이다" "$(jsum "$V | [.ratio.unique, .ratio.unique_per_kb] | map(tostring) | join(\",\")")" "2,2"
+check "15: 두 쪽이 5건이면 판정하고 1.5 를 넘으면 되돌린다" "$(jsum "$V | [.status, .revert] | map(tostring) | join(\",\")")" "판정,true"
+check "15: R3 개방률과 사유 분포는 같은 런의 토론 패스 행에서 낸다" "$(jsum "$V | [.after.r3_open_rate, .after.reasons[\"측정 지명\"], .baseline.r3_open_rate] | map(tostring) | join(\",\")")" "0.2,1,0"
+check "15: R3 개방률이 25% 이하면 시간 감축이 성립한다" "$(jsum "$V.time_reduction")" "true"
+check "15: 판이 갈린 행은 그 판의 덩어리에만 들고 기준선이 모자라면 기준선 부족이다" "$(jsum '.discussion_verdict.editions["e6e6e6e6e6e6"] | [.baseline.n, .after.n, .status, .revert] | map(tostring) | join(",")')" "0,1,기준선 부족,null"
+check "15: 미상 감사 판·재감사·solo-audit 행은 판정에 들지 않는다" "$(jsum '.discussion_verdict.editions | keys | join(",")')" "e5e5e5e5e5e5,e6e6e6e6e6e6"
+check "15: 경계와 문턱을 함께 싣는다" "$(jsum '.discussion_verdict | [.boundary, .threshold, .min_n, .r3_open_max] | map(tostring) | join(",")')" "2.100.0,1.5,5,0.25"
+OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>"$WORK/err"); rc=$?
+check "15: --verdict 는 exit 0 이다" "$rc" "0"
+check "15: 경계가 없으면 모든 행이 기준선이다" "$(jline '.editions["e5e5e5e5e5e5"] | [.baseline.n, .after.n, .status] | map(tostring) | join(",")')" "10,0,판정 보류"
+check "15: --verdict 는 요약을 다시 쓰지 않는다" "$(jsum '.discussion_verdict.boundary')" "2.100.0"
+OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict --release-boundary 2.x 2>"$WORK/err"); rc=$?
+check "15: 숫자 버전이 아닌 경계는 인자 오류다" "$rc" "2"
+DP_OUT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/design-path-report.sh" --ledger-dir "$LEDGER_DIR" --release-boundary 2.100.0 2>/dev/null)
+check "15: 인쇄기가 토론 패스 집계를 경로마다 한 줄 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c -F -e '| discuss-audit | 5 | 0 | 해당 없음 5 |' -e '| base | 5 | 1 | 측정 지명 1, 해당 없음 4 |' || true)" "2"
+check "15: 인쇄기가 판정 덩어리를 감사 판마다 한 줄 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c '^| e5e5e5e5e5e5 | 5 | 5 | 판정 | 되돌림 |\|^| e6e6e6e6e6e6 | 0 | 1 | 기준선 부족 |' || true)" "2"
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
