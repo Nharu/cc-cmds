@@ -23113,7 +23113,7 @@ HW_SID=""; VZ_AR=0
 
 # ---------------------------------------------------------------------------
 # 31ba. A visual-wait park is taken up again once the screens are approved
-# --- section: 31ba | group: cone | covers: act, close, snapshot, exec | anchors: 31ba: 열린 시각-승인 아래 런 상태 토큰은 승인대기다, 31ba: 열린 시각-승인 아래 그 세그먼트의 구현 파견은 거부된다, 31ba: 열린 시각-승인 아래 종료 조건 2 가 런을 열어 둔다, 31ba: 채택 뒤 park 에서 실행중 으로 옮기는 행이 받힌다, 31ba: 채택 뒤 그 세그먼트의 구현 파견이 받힌다, 31ba: 술어가 지워진 뒤 다시 park 하는 행이 받힌다 ---
+# --- section: 31ba | group: cone | covers: act, close, snapshot, exec | anchors: 31ba: 표지 없는 런은 판단 전 park 뒤 종단이다, 31ba: 표지 있는 런은 판단 전 park 뒤 종단이 아니라 정산중이다, 31ba: 표지 있는 런은 done 이 있어도 교대가 살아 있으면 정산중이다, 31ba: 열린 시각-승인 아래 런 상태 토큰은 승인대기다, 31ba: 열린 시각-승인 아래 그 세그먼트의 구현 파견은 거부된다, 31ba: 열린 시각-승인 아래 종료 조건 2 가 런을 열어 둔다, 31ba: 시각 대기 밤 끝의 감시자 한 번은 정체 관측도 blocked 행도 남기지 않는다, 31ba: 시각 대기 밤 끝의 감시자 한 번 뒤 done 이 없다, 31ba: 시각 대기 밤 끝의 감시자 한 번 뒤 런 상태 토큰은 승인대기다, 31ba: 대조 — 물음이 닫히고 화면 슬라이스가 계획됨이면 같은 감시자가 라이브니스 침묵을 남긴다, 31ba: 드라이버 종료 행 뒤 같은 파견은 룰 거부 코드로 거절된다, 31ba: 채택 뒤 park 에서 실행중 으로 옮기는 행이 받힌다, 31ba: 채택 뒤 그 세그먼트의 구현 파견이 받힌다, 31ba: 술어가 지워진 뒤 다시 park 하는 행이 받힌다 ---
 #
 # The router parks a screen slice before its branch is cut, with the reason
 # `시각 승인 대기`, and asks the fixed-wording question on that segment. The
@@ -23148,6 +23148,25 @@ vz_g act --manifest "$CAP_NM" --kind blocked --target infra --cutpoint 커밋 --
     -- 스코프=cone 원인=막힘 "앵커 세그먼트=S3" "사유=시각 승인 대기" \
        "근거=S3 의 화면이 고정 좌석에서 구현 승인되지 않았다" "재개 명령=승인이 채택되면 S3 을 실행중 으로 옮겨 다시 디스패치"
 check "31ba 픽스처: 시각 승인 대기 cone 행이 받힌다" "$rc" "0"
+# Before the question is raised the run reads by its `ends-on-done` marker. The
+# router path always carries it (the gate writes it when the seat launches a
+# shift), and there the derived conjunction only opens the settlement window;
+# the driver path carries none and reads 종단, which is where the driver ends
+# the run after the park. A `done` whose shift is still alive is the done-tail.
+# The marker, `done` and `shift.live` are put back as they were afterwards.
+vba_keep=""
+for f in ends-on-done done shift.live; do
+  [ -e "$CAP_DIR/$f" ] && { cp -p "$CAP_DIR/$f" "$CAP_DIR/$f.31ba-keep"; vba_keep="$vba_keep $f"; }
+done
+rm -f "$CAP_DIR/ends-on-done" "$CAP_DIR/done" "$CAP_DIR/shift.live"
+check "31ba: 표지 없는 런은 판단 전 park 뒤 종단이다" "$(vba_state)" "종단"
+printf '1\n' > "$CAP_DIR/ends-on-done"
+check "31ba: 표지 있는 런은 판단 전 park 뒤 종단이 아니라 정산중이다" "$(vba_state)" "정산중"
+printf '종단 — 31ba 픽스처\n' > "$CAP_DIR/done"
+printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$CAP_DIR/shift.live"
+check "31ba: 표지 있는 런은 done 이 있어도 교대가 살아 있으면 정산중이다" "$(vba_state)" "정산중"
+rm -f "$CAP_DIR/ends-on-done" "$CAP_DIR/done" "$CAP_DIR/shift.live"
+for f in $vba_keep; do mv "$CAP_DIR/$f.31ba-keep" "$CAP_DIR/$f"; done
 vz_ask S3 "31ba — S3 화면 승인"
 vba_q=$(vz_id S3)
 check "31ba 픽스처: 술어가 서지 않은 물음은 대기로 열린다" "$rc/$(row_field "$(vz_last "$vba_q")" '상태')" "5/대기"
@@ -23156,6 +23175,44 @@ vba_dispatch S3
 check "31ba: 열린 시각-승인 아래 그 세그먼트의 구현 파견은 거부된다" "$rc" "3"
 check "31ba: 열린 시각-승인 아래 종료 조건 2 가 런을 열어 둔다" "$(hw_in vz_done2)" \
   "2 대기 중인 사람 판단 승인(사람-결정·시각-승인)이 1건 있습니다"
+
+# The night's end on the router path: two merged slices, the parked screen
+# slice, the open question and no live stage. One watcher pass with the ledger
+# and the gate's last entry aged past every threshold writes no stall
+# observation and no `done`, and the run still reads 승인대기. The contrast is
+# the same aged pass over a copy whose question is closed and whose screen
+# slice is still planned: there the watcher records `라이브니스 침묵`, so the
+# silence above is the open question's doing and not a pass that judged nothing.
+VBA_WATCH="$(dirname "$GATE")/watch.sh"
+vba_watch() {  # vba_watch <run-dir> <ledger> — one watcher pass, idle aged to 5000 s
+  local rd="$1" lg="$2" now
+  now=$(date -u +%s)
+  printf '%s\n%s\n%s\n' "$( . "$LIVENESS"; cc_ledger_size "$lg" )" "$((now - 5000))" "$lg" > "$rd/watch.state"
+  printf '%s\n' "$((now - 5000))" > "$rd/started-at"
+  ( export XDG_STATE_HOME="$STATE_CONE"
+    bash "$VBA_WATCH" --run-dir "$rd" --ledger "$lg" --once \
+      --stall 60 --silence 60 --after-stage 60 --run-open 60 ) >/dev/null 2>&1
+}
+vba_blocked_n() { { grep -cE '^- `blocked`' "$CAP_LEDGER" || true; } | tr -d ' '; }
+vba_stall_n() { local n; n=$( { grep -c . "$CAP_DIR/stall" 2>/dev/null || true; } | tr -d ' '); printf '%s' "${n:-0}"; }
+vba_b0=$(vba_blocked_n)
+vba_s0=$(vba_stall_n)
+vba_watch "$CAP_DIR" "$CAP_LEDGER"
+check "31ba: 시각 대기 밤 끝의 감시자 한 번은 정체 관측도 blocked 행도 남기지 않는다" \
+  "$(vba_stall_n)/$(vba_blocked_n)" "$vba_s0/$vba_b0"
+check "31ba: 시각 대기 밤 끝의 감시자 한 번 뒤 done 이 없다" \
+  "$( [ -e "$CAP_DIR/done" ] && printf 있음 || printf 없음)" "없음"
+check "31ba: 시각 대기 밤 끝의 감시자 한 번 뒤 런 상태 토큰은 승인대기다" "$(vba_state)" "승인대기"
+rm -f "$CAP_DIR"/watch.* "$CAP_DIR"/.watch.stall.*
+vba_cd="$WORK/31ba-watch-contrast"
+rm -rf "$vba_cd"; mkdir -p "$vba_cd"
+cp "$CAP_LEDGER" "$vba_cd/ledger.md"
+printf -- '- `승인` | 승인 id=%s | 상태=무효 | prev=x\n' "$vba_q" >> "$vba_cd/ledger.md"
+printf -- '- `segment` | 교대=0 | id=S3 | 워크트리=%s | 상태=계획됨 | 선행=없음 | prev=x\n' "$CONE_D" >> "$vba_cd/ledger.md"
+vba_watch "$vba_cd" "$vba_cd/ledger.md"
+check "31ba: 대조 — 물음이 닫히고 화면 슬라이스가 계획됨이면 같은 감시자가 라이브니스 침묵을 남긴다" \
+  "$( { grep -cF '라이브니스 침묵' "$vba_cd/stall" 2>/dev/null || true; } | tr -d ' ')" "1"
+rm -rf "$vba_cd"
 
 vz_approve
 vz_close "$vba_q" 승인
@@ -23169,6 +23226,16 @@ check "31ba: 채택 뒤 park 에서 실행중 으로 옮기는 행이 받힌다"
 vba_dispatch S3
 check "31ba: 채택 뒤 그 세그먼트의 구현 파견이 받힌다" "$rc" "0"
 [ "$rc" = 0 ] || bad "31ba 파견 문면" "$msg"
+
+# The driver's ending row turns the same dispatch away: on the driver path the
+# park ends the run, and the slice is taken up by a new run, not by this one.
+hw_in gate_end_run "주 루프 종료" "디스패치할 슬라이스 없이 끝났다 — 슬라이스 park 의 원인 시각 승인 대기" >/dev/null 2>&1
+vba_dispatch S3
+check "31ba: 드라이버 종료 행 뒤 같은 파견은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"already terminated"*) ok "31ba: 그 거절은 런이 이미 종단했음을 든다" ;;
+  *) bad "31ba: 그 거절은 런이 이미 종단했음을 든다" "$msg" ;;
+esac
 
 vz_unapprove
 vba_seg S3 "$CONE_D" 상태=park 선행=없음
