@@ -3564,6 +3564,32 @@ arms_loop s2-reaudit "$MFSPATH" 동결 \
 check "재수렴 행이 앞선 키의 감사 공시 행은 재감사 회차다" \
   "$( { grep -F -e '- `감사 공시` |' "$ARMS/s2-reaudit/ledger.md" 2>/dev/null || true; } | { grep -c -F '| 회차=재감사 |' || true; })" "1"
 
+# 토론 패스 — 드라이버의 S1design 행 뒤에 행 하나. 그 행에는 `종류=` 가 없으므로 자리는
+# 스테이지 id 로 고르고, 행의 `스테이지` 도 S1design 이다. 말뭉치가 없으면 행이 없다.
+arms_dp_arm() {
+  # arms_dp_arm <라벨> <말뭉치: 있음|없음> — 토론 계획의 설계 팔을 한 번 태운다.
+  local d="$ARMS/$1" w
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/docs"; : > "$d/ledger.md"
+  if [ "$2" = "있음" ]; then
+    w="$d/run/design/x/witness"; mkdir -p "$w"
+    for m in arch risk; do
+      printf '제안\n' > "$w/$m.round-1.md"
+      printf '입장\nround-3: none\n' > "$w/$m.round-2.md"
+    done
+  fi
+  ( DOC_SLUG=x; arms_arm "$1" "$MFTEAM2" 없음 '정상 완료' 이어 )
+}
+arms_dp_arm dp-corpus 있음
+check "토론 계획의 설계 팔이 토론 패스 행 하나를 남긴다" \
+  "$( { grep -F -e '- `토론 패스` |' "$ARMS/dp-corpus/ledger.md" 2>/dev/null || true; } | grep -c . || true)" "1"
+check "그 행은 S1design 의 stage-result 행 바로 뒤에 오고 스테이지·팀원·R3 사유를 싣는다" \
+  "$(awk 'hit { print; exit } /`stage-result`/ && /스테이지=S1design / { hit = 1 }' "$ARMS/dp-corpus/ledger.md" \
+     | tr '|' '\n' | sed -n -e 's/^ *스테이지=//p' -e 's/^ *팀원=//p' -e 's/^ *R3 사유=//p' | sed 's/[[:space:]]*$//' | paste -s -d / -)" \
+  "S1design/2/해당 없음"
+arms_dp_arm dp-none 없음
+check "말뭉치가 없는 설계 팔은 토론 패스 행을 남기지 않는다" \
+  "$( { grep -F -e '- `토론 패스` |' "$ARMS/dp-none/ledger.md" 2>/dev/null || true; } | grep -c . || true)" "0"
+
 # --- 21c-2 라우터 경로가 같은 계획을 읽는 자리 — 스냅숏 직렬화와 설계 단계 id ------
 # 라우터가 구동하는 런에서는 위 팔이 돌지 않고, 교대는 스냅숏 말고 입력이 없다. 그래서
 # 드라이버가 `manifest_plan_field` 로 읽는 같은 얼린 계획을 게이트가 스냅숏의
