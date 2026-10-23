@@ -3176,7 +3176,7 @@ pre_cone() {
     { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
   }
 
-  # THE SEAT-APPLY FIXTURES (34s 첫 답 · 34q 승계) SHARE THESE, so that each of
+  # THE SEAT-APPLY FIXTURES (34s 첫 답 · 34t 승계) SHARE THESE, so that each of
   # the two cuts alone stands. Each section takes an isolated run of its own by
   # `cap_fx_new`, a worktree of `$REPO` whose base tracks a rule file, a root
   # CLAUDE.md, a CLAUDE.md under an ignored directory and one the declaration
@@ -32256,8 +32256,8 @@ cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target inf
 sap_refused "강제 표면을 이름 대는 추천 선택지" 'names an enforcement surface'
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAP_PREV_AR"
 
-# --- 34q. 좌석 적용 승계 — 한 세그먼트에서 사람은 한 번 답한다 -----------------------
-# --- section: 34q | group: cone | covers: act, snapshot, surface-class | anchors: 34q: 스위치가 꺼져도 승계된 좌석 적용 답이 사람 없이 커밋된다, 34q: 사람의 답 뒤에 넓어진 선언의 경로는 승계되지 않는다, 34q: park 뒤에는 승계되지 않는다 ---
+# --- 34t. 좌석 적용 승계 — 한 세그먼트에서 사람은 한 번 답한다 -----------------------
+# --- section: 34t | group: cone | covers: act, snapshot, surface-class | anchors: 34t: 스위치가 꺼져도 승계된 좌석 적용 답이 사람 없이 커밋된다, 34t: 사람의 답 뒤에 넓어진 선언의 경로는 승계되지 않는다, 34t: park 뒤에는 승계되지 않는다 ---
 #
 # THE PERSON SAW THE APPLY SCOPE IN THE QUESTION, AND THE SEAT ANSWERS THE
 # SEGMENT'S LATER RECORDS INSIDE IT. A review fix that edits the same rule file
@@ -32269,7 +32269,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAP_PREV_AR"
 SAQ_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 sap_fx RSAQ1 SAQ "5b5b5b5b-1111-2222-3333-444444444444"
-check "34q: 픽스처의 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+check "34t: 픽스처의 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
 SAP_SUBJ='**좌석 적용 커밋 제목**: fix(rules): 리뷰 수정을 규칙 파일에 적용한다'
 saq_rec() {  # saq_rec <실행 버전> <기준> <파일 줄…> — the attempt's record, at the path the gate takes as current
   local v="$1" b="$2"; shift 2
@@ -32277,9 +32277,9 @@ saq_rec() {  # saq_rec <실행 버전> <기준> <파일 줄…> — the attempt'
 }
 saq_mark() { saq_n0=$(sap_rows); saq_h0=$(sap_head); }
 saq_refused() {  # saq_refused <이름> <문면 조각>
-  check "34q: $1 은 거절된다" "$rc" "3"
-  case "$msg" in *"$2"*) ok "34q: $1 의 거절이 이유를 댄다" ;; *) bad "34q: $1 의 거절이 이유를 댄다" "$msg" ;; esac
-  check "34q: $1 은 행도 커밋도 남기지 않는다" "$(sap_rows)/$(sap_head)" "$saq_n0/$saq_h0"
+  check "34t: $1 은 거절된다" "$rc" "3"
+  case "$msg" in *"$2"*) ok "34t: $1 의 거절이 이유를 댄다" ;; *) bad "34t: $1 의 거절이 이유를 댄다" "$msg" ;; esac
+  check "34t: $1 은 행도 커밋도 남기지 않는다" "$(sap_rows)/$(sap_head)" "$saq_n0/$saq_h0"
 }
 sap_sr 1
 saq_rec 1 "$SAP_BASE" "$(sap_line "$SAP_RULE" 규칙카탈로그 "$(sap_blob "$SAP_RULE")" 100644 "$(sap_b64 'rule two\n')")"
@@ -32287,7 +32287,7 @@ sap_ask "$CAP_DIR/halt/SAQ#1.md" "$SAP_RULE" 1
 SAQ_TID=$SAP_TID
 sap_ans "$CAP_DIR/halt/SAQ#1.md" 사람
 SAQ_T1=$(sap_head)
-check "34q: 사람의 첫 좌석 적용이 커밋된다" "$rc/$(cd "$SAP_WT" && git rev-parse HEAD^)" "0/$SAP_BASE"
+check "34t: 사람의 첫 좌석 적용이 커밋된다" "$rc/$(cd "$SAP_WT" && git rev-parse HEAD^)" "0/$SAP_BASE"
 
 # The stage was re-attached, committed on, and stopped again on the same file.
 (cd "$SAP_WT" && printf 'x\n' > note.txt && git add note.txt && git commit -qm note)
@@ -32296,10 +32296,10 @@ sap_sr 2
 saq_rec 2 "$SAQ_T2" "$(sap_line "$SAP_RULE" 규칙카탈로그 "$(sap_blob "$SAP_RULE")" 100644 "$(sap_b64 'rule three\n')")"
 saq_mark
 sap_ans "$CAP_DIR/halt/SAQ#2.md" 좌석
-check "34q: 스위치가 꺼져도 승계된 좌석 적용 답이 사람 없이 커밋된다" \
+check "34t: 스위치가 꺼져도 승계된 좌석 적용 답이 사람 없이 커밋된다" \
   "$rc/$(cd "$SAP_WT" && git rev-parse HEAD^)/$(cd "$SAP_WT" && git show "HEAD:$SAP_RULE")" "0/$SAQ_T2/rule three"
 saq_r=$(sap_last)
-check "34q: 승계 행이 좌석과 승계 근거를 싣는다" \
+check "34t: 승계 행이 좌석과 승계 근거를 싣는다" \
   "$(row_field "$saq_r" '답한 주체')/$(row_field "$saq_r" '근거 종류')/$(row_field "$saq_r" '승계 프레임')/$(row_field "$saq_r" '승계 원본')/$(row_field "$saq_r" '좌석 커밋')" \
   "좌석/좌석 적용 승계/$SAQ_TID/$CAP_DIR/halt/SAQ#1.md/$(sap_head)"
 SAQ_T3=$(sap_head)
@@ -32340,17 +32340,17 @@ cp "$WORK/saq-ledger.bak" "$CAP_LEDGER"
 cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment SAQ \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
          -- "워크트리=$SAP_WT" 상태=실행중 선행=없음 "선언 파일 집합=$SAP_DECL, extra/CLAUDE.md"
-check "34q: 선언을 넓힌 세그먼트 행이 선다" "$rc" "0"
+check "34t: 선언을 넓힌 세그먼트 행이 선다" "$rc" "0"
 saq_rec 3 "$SAQ_T3" "$(sap_line extra/CLAUDE.md 지침파일 "$(sap_blob extra/CLAUDE.md)" 100644 "$(sap_b64 '# extra two\n')")"
 saq_mark
 sap_ans "$CAP_DIR/halt/SAQ#3.md" 좌석
 saq_refused "넓어진 선언의 경로 승계" 'is outside the scope the person approved'
-check "34q: 사람의 답 뒤에 넓어진 선언의 경로는 승계되지 않는다" "$rc" "3"
+check "34t: 사람의 답 뒤에 넓어진 선언의 경로는 승계되지 않는다" "$rc" "3"
 
 # Inside the scope, the inheritance still stands across the re-planned row.
 saq_rec 3 "$SAQ_T3" "$(sap_line CLAUDE.md 지침파일 "$(sap_blob CLAUDE.md)" 100644 "$(sap_b64 '# root two\n')")"
 sap_ans "$CAP_DIR/halt/SAQ#3.md" 좌석
-check "34q: 범위 안의 경로는 뒤의 세그먼트 행을 지나도 승계된다" "$rc/$(cat "$SAP_WT/CLAUDE.md")" "0/# root two"
+check "34t: 범위 안의 경로는 뒤의 세그먼트 행을 지나도 승계된다" "$rc/$(cat "$SAP_WT/CLAUDE.md")" "0/# root two"
 SAQ_T4=$(sap_head)
 
 # A PARK ENDS IT for good: the segment running again is a new judgement.
@@ -32365,7 +32365,7 @@ saq_rec 5 "$SAQ_T4" "$(sap_line "$SAP_RULE" 규칙카탈로그 "$(sap_blob "$SAP
 saq_mark
 sap_ans "$CAP_DIR/halt/SAQ#5.md" 좌석
 saq_refused "park 뒤의 승계" 'was parked'
-check "34q: park 뒤에는 승계되지 않는다" "$rc" "3"
+check "34t: park 뒤에는 승계되지 않는다" "$rc" "3"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAQ_PREV_AR"
 
 # --- 34r. 강제 표면의 출처 — 좌석 적용 밖에서 바뀐 분류 경로는 리뷰와 머지에 닿지 못한다 ---
