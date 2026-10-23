@@ -21,8 +21,14 @@ name: gate
 # warning; no person has to regenerate anything for the weights to stay
 # current.
 #
-# THE TEST TIME IS A SIGNAL OF ITS OWN. `gate-report` sums the thirteen shard
-# times and hands them to `scripts/ci-duration.sh`, which fails a pull request
+# EACH RUNNER RUNS TWO ROWS AT ONCE. The partition has S = N × L rows (the
+# Makefile's GATE_SLOTS); the matrix has N runners, and runner k runs rows k and
+# k + N side by side, each lane with its own temporary directory, marker file
+# and result file. A lane is judged on its own exit code and total line, and
+# `gate-report` checks that every non-empty row of the table printed its total.
+#
+# THE TEST TIME IS A SIGNAL OF ITS OWN. `gate-report` sums the row times and
+# hands them to `scripts/ci-duration.sh`, which fails a pull request
 # whose increment over the master baseline is past the tolerance without a
 # matching budget raise, and warns whenever the absolute level is over budget.
 # How even the shards actually were is in the report job's summary, with a
@@ -110,7 +116,7 @@ jobs:
           plan="$RUNNER_TEMP/plan"
           if [ -f "$plan/gate-timing.tsv" ]; then set -- --timing "$plan/gate-timing.tsv"; else set --; fi
           rc=0
-          bash scripts/gate-shard.sh --shards "$(make -s print-gate-shards)" "$@" --table \
+          bash scripts/gate-shard.sh --shards "$(make -s print-gate-slots)" "$@" --table \
             > "$plan/table.tsv" 2> "$plan/table.err" || rc=$?
           cat "$plan/table.err" >&2
           [ "$rc" = "0" ] || exit "$rc"
@@ -122,7 +128,7 @@ jobs:
             echo "- ${un:-실측 없는 절: 센서스 무게 모델이라 해당 없음}"
             sed -n 's/^gate-shard: 예산 초과 덩어리 — /- 예산 초과 덩어리: /p' "$plan/table.err"
             echo ""
-            echo "| 샤드 | 예측 적재 | 절 수 |"
+            echo "| 행 | 예측 적재 | 절 수 |"
             echo "| --- | --- | --- |"
             awk -F '\t' '{ n = split($3, a, ","); print "| " $1 " | " $2 " | " (($3 == "") ? 0 : n) " |" }' "$plan/table.tsv"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -134,8 +140,10 @@ jobs:
 
   # `fail-fast: false` because a red shard must not cancel the other twelve. The
   # first thing anyone asks of a sharded failure is whether it is one section or
-  # the whole suite, and a cancelled run cannot answer it. The marker file is
-  # uploaded even from a red shard: the sections it finished were measured.
+  # the whole suite, and a cancelled run cannot answer it. The marker and result
+  # files are uploaded even from a red shard: the sections it finished were
+  # measured, and the report job needs every row's result to say which row did
+  # not print its total.
   gate-shards:
     needs: gate-plan
     runs-on: ubuntu-latest
@@ -156,14 +164,22 @@ jobs:
           path: ${{ runner.temp }}/plan
 
       - name: Run shard ${{ matrix.shard }}
-        run: make gate-shard SHARD=${{ matrix.shard }} GATE_TABLE="$RUNNER_TEMP/plan/table.tsv" GATE_TIMING_OUT="$RUNNER_TEMP/timing-${{ matrix.shard }}.tsv"
+        run: make gate-shard SHARD=${{ matrix.shard }} GATE_TABLE="$RUNNER_TEMP/plan/table.tsv" GATE_OUT_DIR="$RUNNER_TEMP/out"
 
       - name: Upload the section markers
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-timing-shard-${{ matrix.shard }}
-          path: ${{ runner.temp }}/timing-${{ matrix.shard }}.tsv
+          path: ${{ runner.temp }}/out/timing-*.tsv
+          if-no-files-found: ignore
+
+      - name: Upload the lane results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-result-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out/result-*.tsv
           if-no-files-found: ignore
 
   # NOT CHAINED BEHIND THE SHARDS AND NOT CHAINED BEHIND THE RATCHET. This is
@@ -207,8 +223,10 @@ jobs:
           fi
           echo "샤드 $want 개"
 
-      - name: Union of the shards is the whole section list
-        run: bash scripts/gate-shard.sh --shards "$(make -s print-gate-shards)" --check --from-table "$RUNNER_TEMP/plan/table.tsv"
+      # The table has S rows, not N: the check counts the rows the plan job cut
+      # and that their ids are exactly 1..S.
+      - name: Union of the rows is the whole section list
+        run: bash scripts/gate-shard.sh --shards "$(make -s print-gate-slots)" --check --from-table "$RUNNER_TEMP/plan/table.tsv"
 
   # Runs whatever the shards did, so a red run still uploads what it measured.
   # The increment check is skipped when a shard failed: its time was cut short,
@@ -234,6 +252,13 @@ jobs:
         with:
           pattern: gate-timing-shard-*
           path: ${{ runner.temp }}/shards
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: gate-result-shard-*
+          path: ${{ runner.temp }}/results
           merge-multiple: true
 
       - name: Merge the measured times
@@ -289,7 +314,7 @@ jobs:
       # job: past 900 s raw it warns.
       - name: Wall clock
         if: always()
-        run: bash scripts/ci-duration.sh wall --slots "$(make -s print-gate-shards)" --runners "$(make -s print-gate-shards)" --lanes 1 --timing-dir "$RUNNER_TEMP/shards" --out "$RUNNER_TEMP/wall/gate-wall.txt"
+        run: bash scripts/ci-duration.sh wall --slots "$(make -s print-gate-slots)" --runners "$(make -s print-gate-shards)" --lanes "$(make -s print-gate-lanes)" --timing-dir "$RUNNER_TEMP/shards" --result-dir "$RUNNER_TEMP/results" --out "$RUNNER_TEMP/wall/gate-wall.txt"
 
       - name: Upload the wall clock
         if: always()
@@ -298,6 +323,15 @@ jobs:
           name: gate-wall-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wall/gate-wall.txt
           if-no-files-found: ignore
+
+      # A row that ran is a row that printed its total. Every non-empty row of
+      # the table must have one, and no other row may — a runner that never
+      # started a lane, or a lane that died before its tail, shows up here by
+      # row id even when the matrix job's own verdict was lost. It is last so a
+      # red verdict here never skips the uploads above.
+      - name: Every row printed its total
+        if: always()
+        run: bash scripts/gate-timing.sh rows --table "$RUNNER_TEMP/plan/table.tsv" --dir "$RUNNER_TEMP/results" --slots "$(make -s print-gate-slots)"
 
   # Set-based, never count-based: one section regressing while another is fixed
   # leaves a count flat and hides exactly the thing being watched. Sections the

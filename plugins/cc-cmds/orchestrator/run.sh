@@ -442,6 +442,7 @@ manifest_snapshot_take() {
   #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
   #   RK <row>     every `- \`재킥오프\`` row anywhere, in order
   #   AC <row>     every `- \`적용 프로브 코드\`` row anywhere, in order
+  #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -476,6 +477,7 @@ $(LC_ALL=C awk '
     index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
     index($0, "- `재킥오프`") == 1 { print "RK\t" $0 }
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
+    index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -681,6 +683,11 @@ manifest_apply_code_rows() {
   grep -E '^- `적용 프로브 코드`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_plugin_allow_rows() {
+  if manifest_memo_on; then manifest_memo_all "PA	"; return 0; fi
+  grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -791,6 +798,12 @@ binding_set_bytes() {
     # digest. Whole-file scan, zero bytes when absent, so a manifest written
     # before this row existed keeps its digest and reads the default 0/2.
     manifest_apply_code_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/applycodes\t/'
+    # THE `플러그인 허용` ROWS ARE IN THE FROZEN SET, on the same terms. Each one
+    # turns a user plugin on in every stage's settings, and the gate renders
+    # those settings from these rows; a row any act could append mid-run would
+    # load a plugin no person accepted at kickoff. Whole-file scan, zero bytes
+    # when absent, so a manifest written before this row existed keeps its digest.
+    manifest_plugin_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/pluginallow\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1140,7 +1153,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·플러그인 허용·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1495,6 +1508,30 @@ EOF
 $rk_rows
 EOF
   [ "$rk_n" -le 1 ] || die "「재킥오프」 행이 ${rk_n}개입니다 — 많아야 하나입니다"
+
+  # 20 — `플러그인 허용` rows: a user plugin a person accepted at kickoff to turn
+  # on in this run's stages. The gate renders every stage's `enabledPlugins`
+  # from them, so the form is checked here and not guessed at by the renderer.
+  # One row per key: a second row adds nothing and leaves two reasons for one
+  # decision. `@inline` and `@builtin` are refused — those are the pipeline's
+  # own `--plugin-dir` copy and the harness's plugins, which no row turns on.
+  local pa_rows pa_row pa_key pa_keys=" "
+  pa_rows=$(manifest_plugin_allow_rows)
+  while IFS= read -r pa_row; do
+    [ -n "$pa_row" ] || continue
+    grep -qE '^- `플러그인 허용` \| 플러그인=[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+ \| 사유=[^|]*[^ |]$' <<<"$pa_row" \
+      || die "「플러그인 허용」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`플러그인 허용\` | 플러그인=<이름@마켓> | 사유=<한 줄>\` 입니다: $pa_row"
+    pa_key=$(printf '%s' "$pa_row" | sed -n 's/^- `플러그인 허용` | 플러그인=\([^ |]*\) |.*/\1/p')
+    case "$pa_key" in
+      *@inline|*@builtin) die "「플러그인 허용」 행이 ${pa_key} 를 켭니다 — @inline·@builtin 키는 허용 행으로 다루지 않습니다: $pa_row" ;;
+    esac
+    case "$pa_keys" in
+      *" $pa_key "*) die "「플러그인 허용」 행이 ${pa_key} 에 둘 이상입니다 — 키마다 많아야 하나입니다" ;;
+    esac
+    pa_keys="$pa_keys$pa_key "
+  done <<EOF
+$pa_rows
+EOF
 
   # 21 — the entry judgment's structure, for a plan that carries one. The
   # checker beside the entry prompt asserts it: a reason for every `team-4`
@@ -10854,6 +10891,8 @@ continue_attempt() {
   # A continued audit attempt is an audit attempt too, and leaves its own
   # `감사 공시` row after its row.
   [ "$rkind" != "S2" ] || run_gate_call gate_record_audit_disclosure S2 "$(stage_attempt_pinned "$did")" || true
+  # A continued design attempt leaves its own `토론 패스` row after its row.
+  [ "$rkind" != "S1design" ] || run_gate_call gate_record_discussion_passes S1design "$(stage_attempt_pinned "$did")" || true
   if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
     CONTINUE_PARK_REASON="중단 기록"
     CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$did")" 2>/dev/null || true)
@@ -11486,6 +11525,9 @@ design_arm() {
   # The absorber above keys on the stage, not on the run-scope `-`: a `-` key is
   # every run-scope stage's at once, and the open-judgment check could not tell
   # this stage's question from another's.
+  # The design row carries no `종류`, so the `토론 패스` row is placed by the
+  # stage id rather than by the kind the gate's recorder reads.
+  run_gate_call gate_record_discussion_passes S1design "$(stage_attempt_pinned S1design)" || true
   # An unfrozen document does not go on to the audit or the segment plan —
   # both read the freeze as a precondition.
   case "$class1" in

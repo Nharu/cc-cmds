@@ -71,6 +71,22 @@ Every halt record this skill writes after Step 1 carries, in its `**관측 상�
 
 A record without both baselines is one the gate does not hand to a fresh session: the answer then goes back only to this attempt's own session.
 
+### An option whose outcome is already fixed carries the machine settlement line
+
+Sometimes this pass stops with its edit already written and its verdict already known, only to ask a person how that edit is to land. Once a person answers with that option, what a resumed session would do is hash the document and end with the verdict it already had — so the gate settles such an answer by itself, without a session, when the option says exactly what the outcome is. Write an option's description in the machine settlement grammar of `_common/pipeline-sidecar.md` (the paragraph on settling a halted re-convergence), as the whole line,
+
+```
+- `<label>` — 검사 sha256 <document>=<64 hex> → 종단 재설계 필요
+```
+
+or `… → 종단 불필요`, with nothing after the verdict, **only when all of these hold**:
+
+- the scope is `감사 종합 요구 <record>` or `구속 티어 이탈 <record>`. Never for an `R<n>` scope — its carrier block is closed only by a session — and never for any other scope;
+- the edit that option leads to is already on disk, so the answer adds no write to the document;
+- the verdict is computed now, the way Step 4 computes it: Step 1's `사전 구속 표면 다이제스트` against what `<gate absolute path> binding-digest --manifest "$CC_PIPELINE_MANIFEST" -- <document path>` prints over the document as it stands.
+
+`<document>` is the main-worktree absolute path the scope was dispatched with, and `<64 hex>` the document's `shasum -a 256` as it stands — the value the record's `지금 sha256` carries. The gate settles the answer only while the document still hashes to that value; any other answer, and a settlement the gate refuses, is handed on to a session as before. Every other option keeps its ordinary description.
+
 ### Re-entered with a carried answer
 
 A fresh session can be handed a person's answer to an earlier attempt's halt: the routing shift's carry act writes an answer card and the stage starts with `CC_PIPELINE_HALT_ANSWER` set to its path. When it is set, at Step 1:
