@@ -38373,20 +38373,19 @@ cc60c_cell() {
   cc60c_nb=$( { grep -c '^- `blocked` ' "$led" 2>/dev/null || true; } )
   [ "${cc60c_nb:-0}" = "$nb0" ] || cc60c_fail3="$cc60c_fail3[$lb · $tg · $rr: blocked]"
   if [ "$CC60C_BOTH" = 1 ]; then
-    nb0=$( { grep -c '^- `blocked` ' "$led" 2>/dev/null || true; } ); nb0=${nb0:-0}
     cc60c_x 0 "$tg" "$rr" "$cut" -- "$@"
-    cc60c_nb=$( { grep -c '^- `blocked` ' "$led" 2>/dev/null || true; } )
-    cc60c_brow=$( { grep '^- `blocked` ' "$led" 2>/dev/null || true; } | tail -n 1)
+    cc60c_ad=$(printf '%s' "$*" | shasum -a 256 | cut -d' ' -f1)
     # 등급표에 없는 래퍼(이 기기의 `genv`·`gtimeout`)는 사람이 있는 모드에서 승인 전에 등급
     # 미상(rc 2)으로 멈춘다 — 행위가 나가지 않는 것은 같고, 그 rc 는 문면으로 가린다.
     # 질의를 파일에서 읽는 graphql 철자는 게이트가 본문을 읽지 못해 PR 라벨 쓰기로 보고, 그
     # 쓰기는 사람이 있는 모드에서도 승인이 아니라 `PR라벨쓰기` park(rc 11)다 — 승인은 행 경로가
-    # 끝내 열지 않는 쓰기를 사람이 열게 하므로. 그 칸은 이 행위가 새로 쓴 blocked 행의
-    # `도달 판정` 으로 가린다.
+    # 끝내 열지 않는 쓰기를 사람이 열게 하므로. 그 칸은 이 행위의 다이제스트를 실은 blocked
+    # 행의 `도달 판정` 으로 가린다 — 같은 행위의 park 는 한 번만 기록되고, 다시 내면 그 행을
+    # 그대로 따른다.
     case "$rc|$msg" in 5\|*|2\|*'등급 미상'*) ;;
       11\|*)
-        { [ "${cc60c_nb:-0}" = "$((nb0 + 1))" ] \
-            && case "$cc60c_brow" in *'도달 판정=PR라벨쓰기 '*|*'도달 판정=PR라벨쓰기') true ;; *) false ;; esac; } \
+        { grep '^- `blocked` ' "$led" 2>/dev/null || true; } | grep -F "행위 다이제스트=$cc60c_ad" \
+          | grep -qE '도달 판정=PR라벨쓰기( |$)' \
           || cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;;
       *) cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;; esac
   fi
