@@ -353,7 +353,10 @@ def _blocked_fold(lines):
             continue
         if scope == "run":
             step = False
-        elif scope == "cone" and anchor != "" and anchor not in seg:
+        elif (scope == "cone" and anchor != "" and anchor not in seg
+              and not anchor.startswith("clause-")):
+            # A `clause-<id>` anchor is a termination clause's evidence
+            # request: it holds that clause alone, not the run.
             step = True
         else:
             continue

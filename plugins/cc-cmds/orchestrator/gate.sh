@@ -10794,6 +10794,141 @@ gate_record_audit_disclosure() {
     "합성 골격급=$(gate_audit_skeletal_fence_count '합성 요구 골격급 수')"
 }
 
+# ---------------------------------------------------------------------------
+# The `토론 패스` row — what the design team's late passes did, read from the
+# durable witness corpus `$RUN_DIR/design/$DOC_SLUG/witness/` once the design
+# attempt has ended. No stop condition reads it; the metrics collector and the
+# design path report are its only readers.
+#
+# ONE WITNESS PER (MEMBER, ROUND/PHASE). A re-instruction inside the same round
+# or phase is published as `{role-slug}.<P>-rev<k>.md` and replaces `<P>` whole,
+# so the file with the largest k is chosen, the original only when no revision
+# exists, and the two are never counted together. A name outside that grammar
+# (`INDEX.md`, `SWEEP.md`, `*.prompt.md`, `*.coherence.epoch-6.md`) is not a
+# witness. `scripts/measure-discussion-passes.sh` reads the same corpus by the
+# same rules.
+# ---------------------------------------------------------------------------
+gate_discussion_pass_select() {
+  # gate_discussion_pass_select <witness dir> <round/phase> — the chosen witness
+  # of each member for that round or phase, one path per line, sorted. A
+  # directory with no *.md leaves the glob unexpanded; `|| continue` keeps
+  # that from becoming the pipeline's failing status under pipefail.
+  local d="$1" p="$2" f
+  for f in "$d"/*.md; do
+    [ -f "$f" ] || continue
+    printf '%s\n' "${f##*/}"
+  done | awk -v p="$p" -v d="$d" '
+    { n = substr($0, 1, length($0) - 3); k = 0
+      if (match(n, /-rev[0-9]+$/)) { k = substr(n, RSTART + 4) + 0; n = substr(n, 1, RSTART - 1) }
+      s = "." p
+      if (length(n) <= length(s) || substr(n, length(n) - length(s) + 1) != s) next
+      r = substr(n, 1, length(n) - length(s))
+      if (r !~ /^[A-Za-z0-9_-]+$/) next
+      if (!(r in best) || k > best[r]) { best[r] = k; file[r] = $0 } }
+    END { for (r in file) print d "/" file[r] }' | LC_ALL=C sort
+}
+
+gate_discussion_read() {
+  # gate_discussion_read <what> — reads the witness paths on stdin, one per
+  # line, in one awk process however many there are, and prints:
+  #   declarations — `<measure> <undeclared>`: how many witnesses declare
+  #     `measure` and how many declare nothing. A witness's declaration is the
+  #     last line that is exactly `round-3: none` or starts
+  #     `round-3: measure — `, chosen across both forms.
+  #   findings — the sum of each witness's last line that is exactly
+  #     `findings: <n>`; `미상` with no witness or when any witness lacks the
+  #     line, because a partial sum reads like a number.
+  #   reopens — the number of `- type: decision-reopen` lines; `미상` with no
+  #     witness.
+  awk -v what="$1" '
+    $0 == "" { next }
+    { f = $0; n++; d = ""; v = ""
+      while ((getline line < f) > 0) {
+        sub(/\r$/, "", line)
+        if (line == "round-3: none") d = "none"
+        else if (index(line, "round-3: measure — ") == 1) d = "measure"
+        if (line ~ /^findings: [0-9]+$/) v = substr(line, 11)
+        s = line; sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s)
+        if (s == "- type: decision-reopen") reopen++
+      }
+      close(f)
+      if (d == "measure") measure++; else if (d == "") undeclared++
+      if (v == "") missing++; else sum += v }
+    END {
+      if (what == "declarations") printf "%d %d", measure, undeclared
+      else if (n == 0) printf "미상"
+      else if (what == "reopens") printf "%d", reopen
+      else if (missing) printf "미상"
+      else printf "%d", sum }'
+}
+
+gate_discussion_last_mtime() {
+  # gate_discussion_last_mtime — the latest modification time, in epoch
+  # seconds, of the witness paths on stdin; empty when none can be read.
+  local f t m=''
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    t=$(gate_mtime "$f")
+    case "$t" in ''|*[!0-9]*) continue ;; esac
+    { [ -z "$m" ] || [ "$t" -gt "$m" ]; } && m=$t
+  done
+  printf '%s' "$m"
+}
+
+gate_record_discussion_passes() {
+  # gate_record_discussion_passes <design step id> <attempt> — one `토론 패스`
+  # row, or none when the corpus is absent or holds no `*.round-1.md`: the solo
+  # design branch has no team. `R3 사유` is the first of five lines that holds —
+  # closed with a measurement named `지명 미개방`, any other closed `해당 없음`,
+  # open with a measurement named `측정 지명`, an R2 witness without a
+  # declaration `미상`, and what is left `선언 없음`. Sweep rebuttals are not an
+  # entry to R3 and stay out of the rule; `스윕 반박` carries them.
+  local step="$1" att="$2" wd r1 r2 r3 fid coh
+  [ -n "${RUN_DIR:-}" ] && [ -n "${DOC_SLUG:-}" ] || return 0
+  wd="$RUN_DIR/design/$DOC_SLUG/witness"
+  [ -d "$wd" ] || return 0
+  r1=$(gate_discussion_pass_select "$wd" round-1)
+  [ -n "$r1" ] || return 0
+  r2=$(gate_discussion_pass_select "$wd" round-2)
+  r3=$(gate_discussion_pass_select "$wd" round-3)
+  fid=$(gate_discussion_pass_select "$wd" fidelity)
+  coh=$(gate_discussion_pass_select "$wd" coherence)
+  local open=0 m u named sweep why mins='미상' t2 t3
+  [ -n "$r3" ] && open=1
+  read -r m u <<EOF
+$(printf '%s\n' "$r2" | gate_discussion_read declarations)
+EOF
+  named=$m
+  [ "$m" -eq 0 ] && [ "$u" -gt 0 ] && named='미상'
+  if [ -f "$wd/SWEEP.md" ]; then
+    sweep=$(awk '{ sub(/\r$/, "") } index($0, "round-3: sweep — ") == 1 { c++ } END { printf "%d", c }' "$wd/SWEEP.md" 2>/dev/null) || sweep='미상'
+  else
+    sweep='미상'
+  fi
+  if [ "$open" -eq 0 ] && [ "$m" -ge 1 ]; then why='지명 미개방'
+  elif [ "$open" -eq 0 ]; then why='해당 없음'
+  elif [ "$m" -ge 1 ]; then why='측정 지명'
+  elif [ "$u" -gt 0 ]; then why='미상'
+  else why='선언 없음'
+  fi
+  if [ "$open" -eq 1 ] && [ -n "$r2" ]; then
+    t2=$(printf '%s\n' "$r2" | gate_discussion_last_mtime)
+    t3=$(printf '%s\n' "$r3" | gate_discussion_last_mtime)
+    if [ -n "$t2" ] && [ -n "$t3" ] && [ "$t3" -ge "$t2" ]; then
+      mins=$(( (t3 - t2) / 60 ))
+    fi
+  fi
+  gate_append '토론 패스' "세그먼트=-" "스테이지=$step" "실행 버전=${att:-미상}" \
+    "경로=$(gate_design_path_word)" "팀원=$(printf '%s\n' "$r1" | grep -c .)" \
+    "R3=$([ "$open" -eq 1 ] && printf '열림' || printf '닫힘')" \
+    "측정 지명=$named" "스윕 반박=$sweep" "R3 사유=$why" "R3 분=$mins" \
+    "충실도 좌석=$(printf '%s\n' "$fid" | grep -c . || true)" \
+    "충실도 발견=$(printf '%s\n' "$fid" | gate_discussion_read findings)" \
+    "충실도 재개=$(printf '%s\n' "$fid" | gate_discussion_read reopens)" \
+    "정합 좌석=$(printf '%s\n' "$coh" | grep -c . || true)" \
+    "정합 발견=$(printf '%s\n' "$coh" | gate_discussion_read findings)"
+}
+
 gate_audit_concluded() {
   # gate_audit_concluded <audit step id> — 0 when what the audit's key says last
   # is an audit that ended `정상 완료` without asking for a re-convergence: the
@@ -14371,6 +14506,10 @@ gate_snapshot() {
   printf '  "shift_halts": [\n'
   gate_shift_halts_json
   printf '  ],\n'
+  # Each termination clause with its wording, state and open evidence request.
+  printf '  "clauses": [\n'
+  gate_clauses_json
+  printf '  ],\n'
   # The refusals of a target's own hook, the last row of each key, each with
   # whether its condition still holds — `같음` means the same act meets the
   # same refusal, so a shift does not issue it again.
@@ -14506,6 +14645,15 @@ gate_snapshot() {
   printf '  "review_carry": {"REIMPL_CYCLE_CAP": %s, "RECHECK_ROUND_CAP": %s},\n' "$REIMPL_CYCLE_CAP" "$RECHECK_ROUND_CAP"
   printf '  "review_next": [\n'
   gate_snapshot_review_next_json
+  printf '  ],\n'
+  # THE SEGMENTS WHOSE RERUN MAY GO OUT WHILE THEIR REVIEW STILL RUNS
+  # (`gate_ci_early`), each with the head, the PR and the failing checks the act
+  # names. A review stage holds `다음` back until it ends, so without this a
+  # flaky check waited out the whole review before its one rerun. Always
+  # emitted, empty included; outside the default `--fields` projection and
+  # outside `H`.
+  printf '  "ci_early": [\n'
+  gate_snapshot_ci_early_json
   printf '  ],\n'
   # `다음` PER SEGMENT WHOSE IMPLEMENTATION JUST ENDED `정상 완료`, the one value
   # the routers branch on there: whether that run only emitted a plan or left
@@ -18799,7 +18947,10 @@ gate_halt_answer_consumer() {
   # segment row — so the first of these on a later line spends it as well: a
   # `stage-result` of the key, a `segment` row of the key, an act a shift took
   # on the key, or a resolution of a block anchored on it. Whichever comes
-  # first is the consumer.
+  # first is the consumer. A termination clause's evidence request
+  # (`clause-<id>`) has no segment to act on: the shift carries its answer out
+  # by writing that clause's `종료 절` row, or by asking again on the same key
+  # when the attachment falls short, so either of those spends it too.
   #
   # AN ANSWER `세그먼트 park` TO A STAGE'S RECORD IS TAKEN UP BY THE PARK. The
   # shift carries it out by writing the segment's `상태=park` row and dispatches
@@ -18827,8 +18978,11 @@ gate_halt_answer_consumer() {
                 && index($0, "| 세그먼트=" k " |") && index($0, "| 결정=act |") \
                 && index($0, "| 행위자=교대 |")) \
             || (index($0, "- `blocked` ") == 1 && index($0, "| 앵커 세그먼트=" k " |") \
-                && index($0, "| 원인=해소 |"))) { print NR ":" $0; p = 1 }
-      }' "$1" 2>/dev/null)
+                && index($0, "| 원인=해소 |")) \
+            || (cid != "" && index($0, "- `종료 절` ") == 1 && index($0, "| id=" cid " |")) \
+            || (cid != "" && index($0, "- `blocked` ") == 1 && index($0, "| 앵커 세그먼트=" k " |") \
+                && index($0, "| 중단 기록="))) { print NR ":" $0; p = 1 }
+      }' cid="$(gate_clause_key_id "$2" 2>/dev/null || true)" "$1" 2>/dev/null)
     if [ -n "$st" ] && { [ -z "$sr" ] || [ "${st%%:*}" -lt "${sr%%:*}" ]; }; then
       sr=$st
     fi
@@ -20587,7 +20741,17 @@ gate_halt_answer_route() {
     # No terminal condition: two of the shift's stop sites arise on a segment
     # that already has its `머지됨` row, and their `재시도` writes a second one.
     id=교대-정지
-    [ -n "$st" ] || why="$key 에 segment 행이 없어 교대가 교대 정지 기록의 답을 실행할 세그먼트가 없습니다"
+    if cl=$(gate_clause_key_id "$key"); then
+      # A clause's evidence request has no segment row; the shift carries the
+      # answer out by settling that clause, which it can do only while the
+      # clause is still unsettled.
+      case "$(gate_clause_last_state "$cl")" in
+        충족|불가능)
+          why="종료 절 $cl 이 이미 $(gate_clause_last_state "$cl") 로 정산돼 교대가 이 답을 실행할 갈래가 없습니다" ;;
+      esac
+    else
+      [ -n "$st" ] || why="$key 에 segment 행이 없어 교대가 교대 정지 기록의 답을 실행할 세그먼트가 없습니다"
+    fi
   elif [ "$skill" = "design-audit-unattended" ] && [ "${step#*CFI-3b}" != "$step" ] \
        && [ "$opt" = "adopt as a requirement" ]; then
     id=감사-재수렴
@@ -20720,6 +20884,7 @@ push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남�
 워크트리 기록 없음|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 세그먼트 행의 워크트리를 다시 읽고 이 세그먼트를 다시 시도한다
 종료 조건 11 판독 불가|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 이 세그먼트의 가지 끝을 다시 읽고 종료 조건 11 판정을 다시 시도한다
 대상 훅 거절|없음|대상 저장소의 훅 규칙이 그 행위를 왜 막는지, 규칙과 행위 중 어느 쪽을 바꿀지는 그 저장소를 맡은 사람만 정한다|사람이 대상 저장소의 훅이나 그 행위를 고친 뒤, 이 답이 거절 조건을 옮기므로 다음 교대가 이 세그먼트의 막힌 행위를 다시 시도한다
+종료 절 근거|없음|그 절이 요구하는 실행과 그 결과는 이 런의 읽기로 만들 수 없고, 실행할지는 사람이 정한다|-
 EOF
 }
 
@@ -20737,9 +20902,90 @@ gate_shift_halt_options() {
   # each `- \`<라벨>\` — <설명>`, the form the seat's answer is matched against.
   local row retry
   row=$(gate_shift_halt_site_row "$1") || return 1
+  # A clause's evidence request settles a termination clause, not a segment,
+  # so neither `재시도` nor `세그먼트 park` names anything a shift could do.
+  if [ "$1" = "종료 절 근거" ]; then
+    printf '%s\n' "- \`근거 제출\` — 좌석이나 사람이 질문이 요구하는 실행·확인을 하고 그 결과를 첨부로 남기면, 다음 교대가 첨부를 읽어 이 절을 충족으로 정산하거나, 모자라면 다시 요청한다"
+    printf '%s\n' "- \`불가능으로 정산\` — 다음 교대가 이 답을 근거로 이 절을 불가능으로 정산한다. 런은 무효화로 끝난다"
+    return 0
+  fi
   retry=$(printf '%s' "$row" | cut -d'|' -f4)
   printf '%s\n' "- \`재시도\` — $retry"
   printf '%s\n' "- \`세그먼트 park\` — 다음 교대가 이 세그먼트를 park 로 기록하고, 이 세그먼트에 기대는 세그먼트를 빼고 나머지로 계속한다"
+}
+
+gate_clause_key_id() {
+  # gate_clause_key_id <key> — the termination clause id a `clause-<id>` key
+  # names, or nothing (exit 1) when the key has another shape or the manifest
+  # declares no such clause. The gate makes these keys itself, so a key that
+  # resolves here is never a segment id.
+  local id
+  case "$1" in clause-?*) id="${1#clause-}" ;; *) return 1 ;; esac
+  case " $(gate_clause_ids | tr '\n' ' ') " in
+    *" $id "*) printf '%s' "$id" ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_clause_last_state() {
+  # gate_clause_last_state <id> — the `상태` of the last `종료 절` row naming
+  # that clause, or nothing when no row names it.
+  local row last=""
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(gate_row_field "$row" 'id')" = "$1" ] && last=$(gate_row_field "$row" '상태')
+  done <<EOF
+$(gate_rows '종료 절')
+EOF
+  printf '%s' "$last"
+}
+
+gate_clause_open_request() {
+  # gate_clause_open_request <id> — the record of that clause's evidence
+  # request whose answer no shift has carried out yet, or nothing. A request
+  # is closed by a later `종료 절` row of the same id; a later request on the
+  # same key takes its place.
+  local key="clause-$1" r rec=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    case "$r" in
+      '- `blocked`'*)
+        [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$key" ] || continue
+        [ -n "$(gate_row_field "$r" '중단 기록')" ] && rec=$(gate_row_field "$r" '중단 기록') ;;
+      '- `종료 절`'*)
+        [ "$(gate_row_field "$r" 'id')" = "$1" ] && rec='' ;;
+    esac
+  done <<EOF
+$( { grep -E '^- `(blocked|종료 절)`' "${LEDGER:-/dev/null}" 2>/dev/null || true; } )
+EOF
+  printf '%s' "$rec"
+}
+
+gate_clauses_json() {
+  # The snapshot's `clauses[]`: one element per termination clause of the
+  # manifest, with its wording, the state `gate_clause_settled` reads
+  # (`미정산` when that says unsettled, the last row's `상태` otherwise), that
+  # row's `근거`, and the evidence request still open on it. The wording is
+  # here because a shift reads the manifest through nothing else, and without
+  # it cannot tell what evidence a clause asks for.
+  local first=1 id row st why req
+  for id in $(gate_clause_ids); do
+    row=$( { manifest_clause_rows_raw | grep -F "id=$id " || true; } | sed -n '1p')
+    if gate_clause_settled "$id"; then
+      st=$(gate_clause_last_state "$id")
+    else
+      st=미정산
+    fi
+    why=$( { gate_rows '종료 절' | grep -F "id=$id " || true; } | tail -1)
+    why=$(gate_row_field "$why" '근거')
+    req=$(gate_clause_open_request "$id")
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"id": "%s", "문면": "%s", "상태": "%s", "근거": "%s", "요청": "%s"}' \
+      "$(gate_json_escape "$id")" "$(gate_json_escape "$(gate_row_field "$row" '문면')")" \
+      "$(gate_json_escape "$st")" "$(gate_json_escape "$why")" "$(gate_json_escape "$req")"
+  done
+  [ "$first" = "1" ] || printf '\n'
 }
 
 gate_shift_halt_dir() {
@@ -21790,12 +22036,119 @@ gate_segment_review_next() {
   # its base and parks a conflict of its own, and it never calls `base-check` or
   # the rerun act, so the values the overlays add would reach a loop that has no
   # branch for them.
+  #
+  # A `수정` OF A CI JOIN TARGET CARRIES THE CI JOIN LAYER (`gate_ci_fix_next`),
+  # so a review's findings and a CI failure that survived its rerun go back to
+  # the implement stage in one dispatch. `리드 수정` is a review stage's own fix
+  # and has no place for the failure, so it keeps the table's value.
   local seg=$1 nx
   nx=$(gate_segment_review_next_table "$seg")
   case "$nx" in
     머지|'이월 머지') run_routed && { gate_ci_next "$seg" "$nx"; return 0; } ;;
+    수정) gate_ci_join_target "$seg" && { gate_ci_fix_next "$seg"; return 0; } ;;
   esac
   printf '%s' "$nx"
+}
+
+gate_ci_join_target() {
+  # gate_ci_join_target <segment> — a CI join target: a routed run, and a
+  # segment whose cutpoint is `PR`, `머지` or `배포`. Every changed CI reading
+  # stands on this predicate alone — the merge rule, the two layers of `다음`,
+  # the snapshot and the rerun act — so none judges one segment two ways.
+  #
+  # THE ALIAS COMES FROM `gate_segment_target_alias`, whatever the caller holds.
+  # A segment whose alias is empty or whose cutpoint does not resolve is not a
+  # target and keeps today's behaviour. Below `PR` no pull request is opened,
+  # so no `checks` row ever comes, and a wait for one would never end.
+  local seg=$1 al
+  run_routed || return 1
+  al=$(gate_segment_target_alias "$seg")
+  [ -n "$al" ] || return 1
+  case "$(gate_segment_cutpoint "$al" "$seg")" in PR|머지|배포) return 0 ;; esac
+  return 1
+}
+
+gate_ci_wait_clock() {
+  # gate_ci_wait_clock <segment> <head sha> <round> — the wait clock of that
+  # round as a UTC time, read from the ledger alone (`cc_ci_wait_clock`).
+  local t tab
+  tab=$(printf '\t')
+  t=$(cc_ci_wait_clock "" "$LEDGER" "$1" "$2" "$3" "$(gate_segment_worktree "$1")")
+  printf '%s' "${t%%"$tab"*}"
+}
+
+gate_ci_wait_capped() {
+  # gate_ci_wait_capped <segment> <head sha> <round> — the wait cap has passed.
+  cc_ci_wait_capped "$(gate_ci_wait_clock "$1" "$2" "$3")"
+}
+
+gate_ci_fix_next() {
+  # gate_ci_fix_next <segment> — the CI join layer over a table `수정` of a CI
+  # join target. H, u·a·g, V and "settled" read as in `gate_ci_next`. The first
+  # row that holds wins:
+  #   M1  a = 열림 or a = 실패                                      수정
+  #   MW  the wait cap, where M2 would wait                       CI 대기 한도
+  #   M2  no V, V = 대기, V = 실패 with 진행 중 > 0, V = 판정 불가,
+  #       or V = 미등록 not past the grace                         CI 대기
+  #   M3  V = 통과, or round 0's 미등록 past the grace               수정
+  #   M4  settled, u < CI_RERUN_CAP                               CI 재실행
+  #   M5  settled, a = 수락, the round's request saw the base fail  수정
+  #   M6  otherwise (settled, a = 수락)                            CI 합류 수정
+  # M2 waits for the verdict when the review ends first; M4 keeps the one rerun
+  # before a failure goes back to the implement stage. M1 and M5 carry no
+  # evidence that the segment's change can fix the failure, and the fix makes a
+  # new head whose CI starts again at round 0. A tip that does not resolve
+  # leaves `수정`.
+  local seg=$1 wt h rd u a g base v vst vpend
+  wt=$(gate_segment_worktree "$seg")
+  h=$(gate_worktree_tip "$wt") || { printf '수정'; return 0; }
+  rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
+  u=$(cc_ci_round_get "$rd" u); a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g)
+  base=$(cc_ci_round_get "$rd" base)
+  case "$a" in 열림|실패) printf '수정'; return 0 ;; esac
+  v=$(gate_ci_verdict_row "$seg" "$h" "${g:-0}")
+  vst=""; vpend=0
+  if [ -n "$v" ]; then
+    vst=$(gate_row_field "$v" '상태')
+    vpend=$(gate_row_field "$v" '진행 중')
+    case "$vpend" in ''|*[!0-9]*) vpend=0 ;; esac
+  fi
+  if [ "$vst" = "통과" ] || cc_ci_unregistered_expired "$vst" "${g:-0}" "$(gate_row_field "$v" '관측')"; then
+    printf '수정'; return 0
+  fi
+  if [ "$vst" != "실패" ] || [ "$vpend" -gt 0 ]; then
+    if gate_ci_wait_capped "$seg" "$h" "${g:-0}"; then printf 'CI 대기 한도'; else printf 'CI 대기'; fi
+    return 0
+  fi
+  [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
+  [ "$base" = "실패" ] && { printf '수정'; return 0; }
+  printf 'CI 합류 수정'
+}
+
+gate_ci_early() {
+  # gate_ci_early <segment> — E, the early rerun predicate: a CI join target
+  # neither `머지됨` nor `park`, a live stage on it that is a review, its tip
+  # resolves, no rerun spent on that head, round 0's V a settled failure, and
+  # no rerun `도달 park` row below the head's first `checks` row. While a review
+  # runs, the rerun goes out now rather than after it. A live implement or lead
+  # fix is about to make a new head, so rerunning the old one buys nothing.
+  #
+  # THE PARK CLAUSE IS WHAT ENDS IT. A rerun act that parks does so before its
+  # `요청` row, so u stays 0; without the clause E would stay true and the same
+  # refused act would go out every shift. The relay reads the same predicate
+  # (`cc_ci_early_condition`) over the poller files too.
+  local seg=$1 h v
+  gate_ci_join_target "$seg" || return 1
+  case "$(gate_segment_field "$seg" '상태')" in 머지됨|park) return 1 ;; esac
+  cc_stage_is_live "$RUN_DIR" "$seg" || return 1
+  [ "$(cc_stage_kind "$RUN_DIR" "$LEDGER" "$seg")" = "review" ] || return 1
+  h=$(gate_segment_tip "$seg") || return 1
+  [ "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$h")" u)" = "0" ] || return 1
+  v=$(gate_ci_verdict_row "$seg" "$h" 0)
+  [ "$(gate_row_field "$v" '상태')" = "실패" ] || return 1
+  case "$(gate_row_field "$v" '진행 중')" in ''|0) : ;; *) return 1 ;; esac
+  if cc_ci_rerun_parked "$LEDGER" "$seg" "$h"; then return 1; fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -21852,8 +22205,14 @@ gate_ci_next() {
   #   B   the base overlay changes the value                     that value
   #   L1  a = 열림                                                CI 재실행
   #   L2  g = 0, and no V or V ∈ {통과, 미등록, 판정 불가}           the table's
+  #       — on a CI join target: g = 0, and V = 통과 or 미등록
+  #         past the grace                                       the table's
+  #   LW  a CI join target past the wait cap, where L3 or L4
+  #       would wait                                             CI 대기 한도
   #   L3  V = 대기, or V = 실패 with 진행 중 > 0                     CI 대기
   #   L4  g ≥ 1, and no V or V ∈ {미등록, 판정 불가}                 CI 대기
+  #       — on a CI join target, any round: no V, V = 판정 불가,
+  #         or V = 미등록 not past the grace                      CI 대기
   #   L5  g ≥ 1, V = 통과                                         the table's
   #   L6  settled, u < CI_RERUN_CAP                               CI 재실행
   #   L6b settled, a = 실패                                        CI 재실행
@@ -21870,7 +22229,14 @@ gate_ci_next() {
   # which parks it again instead of spending the fix budget on an API failure.
   # A worktree whose tip does not resolve leaves the base overlay's value: the
   # merge rule reads the same HEAD and refuses on its own.
-  local seg=$1 nx=$2 b wt h r rd u a g f fix base v vst vpend
+  #
+  # ON A CI JOIN TARGET NOTHING RECORDED IS A WAIT, NOT A PASS. The merge rule
+  # refuses the same head (`gate_check_merge_checks`), so a review that ends
+  # before CI waits for the verdict, and every such wait ends: in a verdict, in
+  # "no CI" once round 0's `미등록` is past the grace, or at the wait cap in
+  # `CI 대기 한도`, which the router parks. Off a join target the layer reads as
+  # before.
+  local seg=$1 nx=$2 b wt h r rd u a g f fix base v vst vpend join=0
   wt=$(gate_segment_worktree "$seg")
   h=$(gate_worktree_tip "$wt") || { gate_base_next "$seg" "$nx"; return 0; }
   if gate_ci_fix_after_last_cycle "$seg"; then
@@ -21893,13 +22259,24 @@ gate_ci_next() {
     vpend=$(gate_row_field "$v" '진행 중')
     case "$vpend" in ''|*[!0-9]*) vpend=0 ;; esac
   fi
+  if gate_ci_join_target "$seg"; then join=1; fi
   if [ "${g:-0}" -eq 0 ]; then
-    case "$vst" in ''|통과|미등록|'판정 불가') printf '%s' "$nx"; return 0 ;; esac
+    if [ "$join" = 1 ]; then
+      if [ "$vst" = "통과" ] || cc_ci_unregistered_expired "$vst" 0 "$(gate_row_field "$v" '관측')"; then
+        printf '%s' "$nx"; return 0
+      fi
+    else
+      case "$vst" in ''|통과|미등록|'판정 불가') printf '%s' "$nx"; return 0 ;; esac
+    fi
   fi
-  if [ "$vst" = "대기" ] || { [ "$vst" = "실패" ] && [ "$vpend" -gt 0 ]; }; then
+  if [ "$vst" = "대기" ] || { [ "$vst" = "실패" ] && [ "$vpend" -gt 0 ]; } \
+     || [ -z "$vst" ] || [ "$vst" = "미등록" ] || [ "$vst" = "판정 불가" ]; then
+    if [ "$join" = 1 ] && gate_ci_wait_capped "$seg" "$h" "${g:-0}"; then
+      printf 'CI 대기 한도'; return 0
+    fi
     printf 'CI 대기'; return 0
   fi
-  case "$vst" in ''|미등록|'판정 불가') printf 'CI 대기'; return 0 ;; 통과) printf '%s' "$nx"; return 0 ;; esac
+  [ "$vst" = "통과" ] && { printf '%s' "$nx"; return 0; }
   # Only a settled failure is left: the poller writes no other value.
   [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
   [ "$a" = "실패" ] && { printf 'CI 재실행'; return 0; }
@@ -23705,6 +24082,12 @@ gate_cone_members() {
     for m in $members; do printf '%s\n' "$m"; done
     return 0
   fi
+  # A termination clause's key stands in front of no segment, so its cone is
+  # the key alone.
+  if gate_clause_key_id "$anchor" >/dev/null; then
+    printf '%s\n' "$anchor"
+    return 0
+  fi
 
   # THE FIELD TERMINATOR IS PART OF THE MATCH. A trailing space alone ends the
   # value only when the next character is the separator, so `동일성=로그인 실패 `
@@ -23789,8 +24172,11 @@ gate_record_cone() {
   # A run-scope step — design, audit, split or visual — is the one anchor that has no
   # segment row: a stage of it that cannot finish inside the deadline, or an
   # answer to its halt the shift cannot carry out, holds every segment.
+  # A termination clause's `clause-<id>` key has none either: its evidence
+  # request holds that clause alone.
   if [ -z "$(gate_segment_field "$anchor" '상태')" ] \
-     && ! gate_run_scope_kind_of_key "$anchor" >/dev/null 2>&1; then
+     && ! gate_run_scope_kind_of_key "$anchor" >/dev/null 2>&1 \
+     && ! gate_clause_key_id "$anchor" >/dev/null; then
     warn "there is no segment row for the anchor segment: $anchor — a cone is not stood up on an anchor the ledger does not resolve"
     return "$GATE_EXIT_VOCAB"
   fi
@@ -28150,10 +28536,14 @@ gate_record_row() {
   # against. `limit-cleared` is a statement about the run's account window, not
   # about a part of the run, so it is exempt on the ground `blocked` is.
   # `reentry` is a boot of the machine the whole run was cut by, so it is too.
+  # `shift-halt` checks its own key: a clause's evidence request takes
+  # `--segment -` and the arm builds the key, and every other site still
+  # refuses a key with no segment row.
   if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
      && [ "$kind" != "obligation" ] && [ "$kind" != "handoff" ] \
      && [ "$kind" != "obligation-done" ] && [ "$kind" != "obligation-drop" ] \
      && [ "$kind" != "limit-cleared" ] && [ "$kind" != "reentry" ] \
+     && [ "$kind" != "shift-halt" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "a $kind row needs --segment"
     return "$GATE_EXIT_VOCAB"
@@ -30370,6 +30760,15 @@ EOF
         fi
         hattdig=$(shasum -a 256 "$hatt" | cut -d' ' -f1)
       fi
+      # `근거 제출` TO A CLAUSE'S EVIDENCE REQUEST IS THE ATTACHMENT. The next
+      # shift settles the clause on what the seat ran and saw, and the option
+      # label carries none of that, so the answer is refused without the file
+      # beside the record that holds it.
+      if [ -n "$hsrow" ] && gate_clause_key_id "$seg" >/dev/null && [ "$hopt" = "근거 제출" ] \
+         && [ "$hatt" != "${hrec%.md}.answer.md" ]; then
+        warn "\`근거 제출\` carries \`첨부=${hrec%.md}.answer.md\` — what was run for the clause, on which commit, its exit status, the values observed and who ran it"
+        return "$GATE_EXIT_RULE"
+      fi
       hskill=$(sed -n 's/^\*\*스킬\*\*: //p' "$hrec" | sed -n '1p' | sed 's/[[:space:]]*$//')
       if [ -n "$hshift" ]; then
         # The shift's exception, in full. The step is read up to its first
@@ -30482,8 +30881,8 @@ EOF
       local sw=300 slen sline sexp
       for sf in "$@"; do
         sk="${sf%%=*}"
-        case "$sk" in 자리|질문|관측|추천|추천\ 근거) continue ;; esac
-        warn "\`shift-halt\` takes \`자리\`, \`질문\`, \`관측\`, an optional \`추천\` and an optional \`추천 근거\` from argv and nothing else: ${sk} — the rest is the gate's"
+        case "$sk" in 자리|질문|관측|추천|추천\ 근거|절) continue ;; esac
+        warn "\`shift-halt\` takes \`자리\`, \`질문\`, \`관측\`, an optional \`추천\`, an optional \`추천 근거\` and, at \`종료 절 근거\` only, \`절\` from argv and nothing else: ${sk} — the rest is the gate's"
         return "$GATE_EXIT_VOCAB"
       done
       ssite=$(gate_field_of '자리' "$@")
@@ -30500,9 +30899,49 @@ EOF
       [ -n "$sq" ] && [ -n "$sobs" ] || {
         warn "\`shift-halt\` needs \`질문\` (what a person is asked) and \`관측\` (what the shift saw)"
         return "$GATE_EXIT_VOCAB"; }
-      [ -n "$(gate_segment_field "$seg" '상태')" ] || {
-        warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
-        return "$GATE_EXIT_VOCAB"; }
+      local sclause
+      sclause=$(gate_field_of '절' "$@")
+      if [ "$ssite" = "종료 절 근거" ]; then
+        # A CLAUSE'S EVIDENCE REQUEST STOPS NO SEGMENT. The key is the gate's
+        # own `clause-<id>`, so a shift cannot misspell it into a segment id,
+        # and the cone stands on that one key.
+        case "$seg" in ''|-) ;; *)
+          warn "\`종료 절 근거\` stops no segment — call it with \`--segment -\` and name the clause in \`절\`"
+          return "$GATE_EXIT_VOCAB" ;;
+        esac
+        [ -n "$sclause" ] || {
+          warn "\`종료 절 근거\` needs \`절=<id>\` — the termination clause whose evidence is asked for"
+          return "$GATE_EXIT_VOCAB"; }
+        gate_clause_key_id "clause-$sclause" >/dev/null || {
+          warn "the manifest declares no termination clause $sclause"
+          return "$GATE_EXIT_RULE"; }
+        case "$(gate_clause_last_state "$sclause")" in
+          충족|불가능)
+            warn "termination clause $sclause is already settled as $(gate_clause_last_state "$sclause") — no evidence is asked for it"
+            return "$GATE_EXIT_RULE" ;;
+        esac
+        seg="clause-$sclause"
+        # One open request per clause, except the one the shift writes when an
+        # answer's attachment fell short: that request carries the answer out,
+        # so an answered request does not refuse its successor.
+        local cl_open cl_ans
+        cl_open=$(gate_clause_open_request "$sclause")
+        if [ -n "$cl_open" ]; then
+          cl_ans=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+                    | { grep -F "| 중단 기록=$cl_open |" || true; } | tail -1)
+          if [ -z "$cl_ans" ] || [ "$(gate_row_field "${cl_ans#*:}" '선택지')" != "근거 제출" ]; then
+            warn "an evidence request for termination clause $sclause is still waiting for its answer to be carried out: $cl_open"
+            return "$GATE_EXIT_RULE"
+          fi
+        fi
+      else
+        [ -z "$sclause" ] || {
+          warn "\`절\` rides only at \`종료 절 근거\`: $ssite"
+          return "$GATE_EXIT_VOCAB"; }
+        [ -n "$(gate_segment_field "$seg" '상태')" ] || {
+          warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
+          return "$GATE_EXIT_VOCAB"; }
+      fi
       # A SEGMENT WHOSE ANSWER IS CARRIED OVER IS NOT STOPPED AGAIN. The person
       # already answered its halt and the next run takes the answer up; a shift
       # record here would put a second question about the same stop before them.
@@ -33456,10 +33895,12 @@ gate_check_ci_rerun() {
     exit "$GATE_EXIT_RULE"
   fi
   # `다음` AGAIN, from the gate's own ledger after this act's drain — never the
-  # value the router read.
+  # value the router read. A rerun while the segment's review still runs is
+  # taken on the early rerun predicate instead (`gate_ci_early`): `다음` stays
+  # the table's until that review ends, so it cannot say `CI 재실행` yet.
   nx=$(gate_segment_review_next "$seg")
-  if [ "$nx" != "CI 재실행" ]; then
-    warn "다음 of segment $seg is '$nx', not 'CI 재실행' — the rerun act is refused"
+  if [ "$nx" != "CI 재실행" ] && ! gate_ci_early "$seg"; then
+    warn "다음 of segment $seg is '$nx', not 'CI 재실행', and no early rerun stands on it — the rerun act is refused"
     exit "$GATE_EXIT_RULE"
   fi
   rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
@@ -35404,6 +35845,61 @@ gate_verb_act() {
             "실패 체크=$(gate_row_safe "$(gate_row_field "$ci_v" '실패 체크')" "$GATE_CHECKS_FAIL_MAX")" \
             "기본 브랜치=-" "응답=-" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         fi
+      fi
+      # A CI JOIN IS A REVIEW FIX DISPATCH WHOSE PROMPT ALSO CARRIES
+      # `CI 합류: <sha>`: the review's findings and the CI failure that survived
+      # its rerun go to one implement stage. It is let in only while `다음` reads
+      # `CI 합류 수정` and only onto the head that failed, and while `다음` reads
+      # that value a review fix dispatch without the line is refused — sent
+      # without it, the failure is dropped and the new head fails again. A
+      # `--resume` dispatch continues a stage that already got its prompt and is
+      # left alone. While `다음` waits on CI or on its rerun, a review fix dispatch
+      # is refused too: the verdict decides whether the failure joins the fix.
+      # Unlike a CI fix, a join spends the cycle budget as a review fix does.
+      local cj_dir cj_next cj_h cj_t cj_v cj_prompt
+      cj_prompt=$(gate_skill_prompt_of "$@")
+      cj_dir=$(printf '%s\n' "$cj_prompt" | awk '
+        !got && /CI 합류:/ { s = $0; sub(/.*CI 합류:[ \t]*/, "", s); t = ""
+                            if (match(s, /^[0-9a-fA-F]+/)) t = substr(s, 1, RLENGTH)
+                            print "T:" t; got = 1 }')
+      cj_next=$(gate_segment_review_next "$segment")
+      if [ -n "$cj_dir" ]; then
+        cj_h=$(gate_worktree_tip "$(gate_act_worktree "$alias" "$segment")" || true)
+        cj_t=${cj_dir#T:}
+        if [ "$cj_next" != "CI 합류 수정" ]; then
+          warn "세그먼트 ${segment} 의 다음 처분은 「${cj_next}」 입니다 — CI 합류는 「다음」 이 「CI 합류 수정」 일 때만 파견합니다"
+          warn "스냅숏의 review_next[] 의 「다음」 을 읽고 그 처분으로 가세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+        if [ -z "$cj_h" ] || [ "$cj_t" != "$cj_h" ]; then
+          warn "CI 합류 파견의 sha (${cj_t:-없음}) 가 세그먼트 ${segment} 의 워크트리 HEAD (${cj_h:-없음}) 가 아닙니다"
+          warn "스냅숏의 review_next[] 의 「head sha」 값을 그대로 「CI 합류:」 뒤에 실어 다시 파견하세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+        if [ "$verb" = "act" ] && [ -z "$(gate_rows 'CI 처분' | gate_rows_field_eq '세그먼트' "$segment" \
+             | gate_rows_field_eq 'head sha' "$cj_h" | gate_rows_field_eq '처분' '합류')" ]; then
+          cj_v=$(gate_ci_verdict_row "$segment" "$cj_h" \
+            "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$segment" "$cj_h")" g)")
+          gate_append 'CI 처분' "세그먼트=$segment" "PR=$(gate_row_field "$cj_v" 'PR')" \
+            "head sha=$cj_h" "처분=합류" "상태=-" "회차=-" "실행=-" "워크플로=-" \
+            "실패 체크=$(gate_row_safe "$(gate_row_field "$cj_v" '실패 체크')" "$GATE_CHECKS_FAIL_MAX")" \
+            "기본 브랜치=-" "응답=-" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        fi
+      elif [ "$cj_next" = "CI 합류 수정" ] && [ -z "${GATE_RESUME:-}" ]; then
+        warn "세그먼트 ${segment} 의 다음 처분은 「CI 합류 수정」 입니다 — 리뷰 지적과 함께 「CI 합류: <head sha>」 줄을 실어 파견합니다"
+        warn "스냅숏의 review_next[] 의 「head sha」 값을 그대로 「CI 합류:」 뒤에 실어 다시 파견하세요"
+        exit "$GATE_EXIT_RULE"
+      fi
+      if [ -z "$cj_dir" ] && [ -z "$ci_dir" ]; then
+        case "$cj_prompt" in
+          *'수정 대상: '*' 의 P0·P1'*|*' 의 P0·P1'*'수정 대상: '*)
+            case "$cj_next" in
+              'CI 대기'|'CI 재실행'|'CI 대기 한도')
+                warn "세그먼트 ${segment} 의 다음 처분은 「${cj_next}」 입니다 — CI 판정이 서기 전에는 리뷰 지적 수정을 파견하지 않습니다"
+                warn "스냅숏의 review_next[] 의 「다음」 을 읽고 그 처분으로 가세요"
+                exit "$GATE_EXIT_RULE" ;;
+            esac ;;
+        esac
       fi
       # A CI fix let in above is exempt from the cycle budget, on top of the
       # exemptions `gate_implement_cycle_admissible` holds.
@@ -38072,9 +38568,21 @@ gate_check_merge_checks() {
     # pending or unreadable answer, a second failure — is not a green check.
     [ "$st" = "통과" ] && return 0
     why="rerun round $g of this head ($tip) has not passed — 상태 '${st:-(관측 없음)}'"
+  elif gate_ci_join_target "$seg" && [ -n "$(gate_segment_last_cycle_row "$seg")" ]; then
+    # ON A REVIEWED CI JOIN TARGET ONLY A VERDICT MERGES. Round 0's `통과`, or
+    # its `미등록` past the grace — "this head has no CI" — and nothing else: no
+    # row yet, a pending or unreadable answer, a failure with or without a
+    # required set, and a wait past its cap are refused, and `다음` names the wait
+    # or the way back. A review that ended before CI used to merge a head whose
+    # verdict had not come.
+    if [ "$st" = "통과" ] || cc_ci_unregistered_expired "$st" 0 "$(gate_row_field "$row" '관측')"; then
+      return 0
+    fi
+    why="round 0 of this head ($tip) has no passing verdict — 상태 '${st:-(관측 없음)}'"
   else
-    # NOTHING RECORDED IS NOT A VERDICT. The gate has nothing to say, so it says
-    # nothing — that is what makes the poller optional rather than a new dependency.
+    # OFF A CI JOIN TARGET NOTHING RECORDED IS NOT A VERDICT. The gate has nothing
+    # to say, so it says nothing — that is what makes the poller optional rather
+    # than a new dependency there.
     [ -n "$row" ] || return 0
     case "$st" in 실패) : ;; *) return 0 ;; esac
     # A BROKEN QUESTION IS NOT READ AS AN ANSWER — that is the whole reason
@@ -39735,6 +40243,34 @@ gate_launch_stage() {
   return 0
 }
 
+gate_sup_halt_hold_put() {
+  # gate_sup_halt_hold_put <segment> <attempt> <lineage> <account> <config dir>
+  #
+  # THE HOLD RECORD OF A STAGE THAT STOPPED ON A QUESTION, written by the
+  # supervisor after the terminal row and before the lease goes back. Once the
+  # lease is gone the session's binding lives only in the ledger row, which
+  # cc-lane does not read, and a borrow tick a few seconds later would take the
+  # account as an idle donor. The record beside the lease table is what pushes
+  # that group to the back of the donor ranking until the same key's next
+  # attempt is spawned or the run ends.
+  #
+  # It is written only for this attempt's own `의도된 park` row, on an account
+  # and a session id the ledger accepts. Always rc 0: a failed write warns, and
+  # the caller's release goes on.
+  local seg="$1" attempt="$2" lineage="$3" acct="$4" cfg="$5" row sid rc=0
+  row=$( gate_stage_result_rows_of "$seg" | { grep -F "실행 버전=$attempt " || true; } | tail -1 ) || row=""
+  [ -n "$row" ] || return 0
+  [ "$(gate_row_field "$row" '종단 부류')" = "의도된 park" ] || return 0
+  run_ledger_account_ok "$acct" || return 0
+  sid=$(gate_row_field "$row" '세션 id')
+  run_session_id_shape_ok "$sid" || return 0
+  route_halt_hold_put --table "$(run_pace_root)/leases" --run-id "$RUN_ID" --key "$seg" \
+    --lineage "$lineage" --account "$acct" --config-dir "$cfg" --session-id "$sid" \
+    --run-dir "$RUN_DIR" --halted-at "$(date -u +%s)" || rc=$?
+  [ "$rc" = "0" ] || warn "the hold record of the stopped stage was not written (rc=$rc, $seg#$attempt) — the lease is released all the same"
+  return 0
+}
+
 gate_verb_supervise_stage() {
   # gate_verb_supervise_stage <alias> <segment> <nonce> <stage-kind> <cli args...>
   #
@@ -40121,6 +40657,11 @@ gate_verb_supervise_stage() {
   # THE MARKER GOES ONLY NOW that all three records exist: in between the key
   # reads as a live stage, never as nothing at all.
   [ -z "$wm" ] || wait_drop "$wm"
+  # THE HOLD RECORD GOES ONLY NOW, after the three records above: the key's next
+  # attempt is a stage process, and a routed one holds its own grant, which the
+  # lease table already shows. An absent record is a successful no-op.
+  route_halt_hold_drop --table "$(run_pace_root)/leases" --run-id "$RUN_ID" --key "$seg" \
+    || warn "the hold record of an earlier attempt was not removed ($seg#$attempt)"
   # `.window` IS A RECORD, NOT A LIVENESS INPUT. Two lines — the effective
   # window and the lane — kept beside the three above so a settlement that runs
   # after this process is gone can still put them on the row. No reader makes
@@ -40187,6 +40728,9 @@ gate_verb_supervise_stage() {
   # leaves the lease to the run's end, so a stage with no row never also loses
   # the reservation that row would have closed.
   if [ "$routed" = "1" ] && [ -n "$r_nonce" ] && [ "$rec_rc" = "0" ]; then
+    # A STAGE THAT STOPPED ON A QUESTION KEEPS ITS ACCOUNT VISIBLE, written BEFORE
+    # the release (`gate_sup_halt_hold_put`). It never stops the release.
+    gate_sup_halt_hold_put "$seg" "$attempt" "$r_lineage" "$r_acct" "$r_cfg"
     hrc=0
     route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" || hrc=$?
     [ "$hrc" = "0" ] || warn "the lease release ended rc=$hrc ($r_lineage)"
@@ -42128,6 +42672,8 @@ gate_record_stage_outcome() {
   fi
   # Every audit attempt leaves its `감사 공시` row right after its own row.
   [ "$kind" != "audit" ] || gate_record_audit_disclosure "$seg" "$attempt"
+  # Every design attempt leaves its `토론 패스` row right after its own row.
+  [ "$kind" != "design" ] || gate_record_discussion_passes "$seg" "$attempt"
   # A re-convergence row voids the segment's plan; the file goes too, or the
   # plan-file fallback above would put the void digest back on the next row.
   [ "$kind" != "reconverge" ] || void_segment_plan "$rowseg"
@@ -44442,8 +44988,10 @@ gate_snapshot_ci_keys_json() {
   # gate_snapshot_ci_keys_json <segment> — the keys a CI value adds to its
   # `review_next[]` element: what `CI 수정: <sha>` names, the PR and the failing
   # checks a person reads at a park, and the round and base evidence the value
-  # was decided on. The same ledger reads `gate_ci_next` makes.
-  local s=$1 h rd g v
+  # was decided on. The same ledger reads `gate_ci_next` makes. At
+  # `CI 대기 한도` <nx> it also carries the round's `상태` (`관측 없음` when no
+  # verdict came) and its `대기 시계`, which the park's evidence quotes.
+  local s=$1 nx=${2:-} h rd g v st
   h=$(gate_segment_tip "$s" || true)
   rd=$(cc_ci_round "$LEDGER" "$s" "$h")
   g=$(cc_ci_round_get "$rd" g)
@@ -44454,6 +45002,30 @@ gate_snapshot_ci_keys_json() {
     "$(gate_json_escape "$(gate_row_field "$v" '실패 체크')")" \
     "$(gate_json_escape "${g:-0}")" \
     "$(gate_json_escape "$(cc_ci_round_get "$rd" base)")"
+  if [ "$nx" = 'CI 대기 한도' ]; then
+    st=$(gate_row_field "$v" '상태')
+    printf ', "상태": "%s", "대기 시계": "%s"' \
+      "$(gate_json_escape "${st:-관측 없음}")" \
+      "$(gate_json_escape "$(gate_ci_wait_clock "$s" "$h" "${g:-0}")")"
+  fi
+}
+
+gate_snapshot_ci_early_json() {
+  # One element per unmerged segment where `gate_ci_early` holds: `세그먼트`,
+  # `head sha`, and the `PR` and `실패 체크` of round 0's verdict.
+  local out s h v
+  out=$(gate_segment_ids | while IFS= read -r s; do
+          [ -n "$s" ] || continue
+          gate_ci_early "$s" || continue
+          h=$(gate_segment_tip "$s" || true)
+          v=$(gate_ci_verdict_row "$s" "$h" 0)
+          printf '    {"세그먼트": "%s", "head sha": "%s", "PR": "%s", "실패 체크": "%s"},\n' \
+            "$(gate_json_escape "$s")" "$(gate_json_escape "$h")" \
+            "$(gate_json_escape "$(gate_row_field "$v" 'PR')")" \
+            "$(gate_json_escape "$(gate_row_field "$v" '실패 체크')")"
+        done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
 }
 
 gate_snapshot_review_next_json() {
@@ -44466,8 +45038,10 @@ gate_snapshot_review_next_json() {
   # At the three base values the element also carries what the resolution and
   # its review name: the basis cycle and its `리뷰 HEAD` (the segment's last
   # cycle that is not a resolution), and the base, the conflicted files and
-  # the class of the latest `베이스 판정` row. At the six CI values it carries
-  # the keys `gate_snapshot_ci_keys_json` names.
+  # the class of the latest `베이스 판정` row. At the eight CI values — `CI 재실행`,
+  # `CI 대기`, `CI 대기 한도`, `CI 수정`, `CI 합류 수정`, `CI 리뷰`,
+  # `CI 기존 실패`, `CI 수정 한도` — it carries the keys
+  # `gate_snapshot_ci_keys_json` names.
   local out s row nx brow bcy
   out=$(gate_segment_ids | while IFS= read -r s; do
           [ -n "$s" ] || continue
@@ -44493,8 +45067,9 @@ gate_snapshot_review_next_json() {
                 "$(gate_json_escape "$(gate_row_field "$brow" '부류')")"
           fi
           if [ "$nx" = 'CI 재실행' ] || [ "$nx" = 'CI 대기' ] || [ "$nx" = 'CI 수정' ] \
-             || [ "$nx" = 'CI 리뷰' ] || [ "$nx" = 'CI 기존 실패' ] || [ "$nx" = 'CI 수정 한도' ]; then
-              gate_snapshot_ci_keys_json "$s"
+             || [ "$nx" = 'CI 리뷰' ] || [ "$nx" = 'CI 기존 실패' ] || [ "$nx" = 'CI 수정 한도' ] \
+             || [ "$nx" = 'CI 합류 수정' ] || [ "$nx" = 'CI 대기 한도' ]; then
+              gate_snapshot_ci_keys_json "$s" "$nx"
           fi
           printf '},\n'
         done )
@@ -44916,8 +45491,9 @@ gate_launch_shift() {
   # or nothing — a shift that has to find that out by trying is a shift that
   # meets a target hook's refusal it could have read. A failed read is `미상`
   # and never holds the launch. A launch from inside the relay loop skips it:
-  # the relay is read-only on the ledger and calls no `gh`, so its successor
-  # reads the rows the last read left, and a stale one reads `미상`.
+  # the relay's wait and its reads only read the ledger and call no `gh`, so its
+  # successor reads the rows the last read left, and a stale one reads `미상`.
+  # The launch the loop calls appends the CI drain and the `교대 기동` row.
   if [ -z "$GATE_RELAY_INNER" ]; then
     gate_remote_state_refresh "$alias" || true
   fi
@@ -45165,6 +45741,11 @@ gate_launch_shift() {
     prev_ctx=$(gate_shift_context_of "$((n - 1))")
     som=$(gate_shift_org_moves_of "$((n - 1))" || true)
   fi
+  # THE POLLER'S VERDICTS ENTER THE LEDGER BEFORE THE SUCCESSOR STARTS, inside
+  # or outside the relay loop. A relay woken by a CI verdict hands the shift a
+  # snapshot that already carries it, rather than the `CI 대기` the last drain
+  # left; the drain appends under its own lock and is done before the row below.
+  gate_drain_checks
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
     "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
     "컨텍스트=${prev_ctx:--}" "effort=${effort:--}" "모델=${model:--}" \
@@ -45295,11 +45876,13 @@ gate_shift_return_banner() {
 # outlives the relay on purpose: its `handback` line is the watcher's base time
 # for the seat turn that follows a hand-back.
 #
-# READ-ONLY ON THE LEDGER. The relay never drains `checks.observed`, never
-# appends a row and never calls `gh` — it reads the three sources the poller and
-# the drain already keep, through `cc_ci_latest_verdict`, which the watcher
-# reads too. A drain here would append rows inside the seat's open call and
-# stale every sibling digest.
+# THE WAIT AND THE READS ONLY READ THE LEDGER. While it waits the relay never
+# drains `checks.observed`, never appends a row and never calls `gh` — it reads
+# the three sources the poller and the drain already keep, through
+# `cc_ci_records`, which the watcher reads too. A drain in the wait would append
+# rows inside the seat's open call and stale every sibling digest. The shift
+# launch the loop calls is the one writer: it appends the CI drain and the
+# `교대 기동` row.
 
 GATE_RELAY_SEAT_START=""
 GATE_RELAY_INNER=""

@@ -22558,11 +22558,22 @@ fi
 # 무는 §34 는 이 배선을 통과하지 않으므로 그 구멍을 덮지 못한다.
 #
 # 바로 위 절이 B1 승인 하나를 열어 둔 채 끝나므로 그 상태를 물려받는다.
+#
+# 전사 홈은 이 절의 것이다. 철회는 런 계보 전체에서 다이얼로그 취소를 찾고, 31am 은
+# 취소 프레임을 `$NTX` 에 쓰고 그 세션을 계보에 남긴다. 그래서 공유 홈을 읽으면 31am 이
+# 같은 실행에 들어온 때에만 철회가 거절되고, 샤드 구성에 따라 이 절이 실패했다. 계보에
+# 오른 파일을 같은 이름의 빈 파일로 두어, 찾을 수는 있고 사람이 있었다는 증거는 없는
+# 런을 이 절이 스스로 세운다.
+B31AB_CFG="$WORK/ncfg-31ab"; mkdir -p "$B31AB_CFG/projects/proj"
+for b31ab_f in "$NTX"/*.jsonl; do
+  [ -e "$b31ab_f" ] || continue
+  : > "$B31AB_CFG/projects/proj/${b31ab_f##*/}"
+done
 gateNT() {
   # gateN 과 같되 전사 디렉터리를 보인다. 철회의 「사람이 있었는가」 판정이 전사를
   # 읽고, 판독할 수 없으면 보류하므로, 이 절에서는 그것이 픽스처의 전제다.
   local out
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$B31AB_CFG" \
         gate_inproc "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
@@ -31510,8 +31521,10 @@ check "34e: (1) 루프가 다시 띄운 교대의 기동 행은 사유=대기 �
   "$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유'):$(rl_launches)" "대기:$((rl_n0 + 2))"
 
 # (2) A CI WAIT ON A LIVE POLLER. No stage; `대기` lines written while it waits
-# do not wake it, and neither the relay nor anything else turns them into rows.
-# A `통과` line wakes it within a poll.
+# do not wake it, and nothing turns them into rows while it waits. A `통과` line
+# wakes it within a poll, and the successor's launch drains the lines into
+# `checks` rows above its own `교대 기동` row, so its first snapshot reads the
+# verdict the relay woke on.
 sleep 300 & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
 printf '%s\n' "$RL_POLL" > "$CAP_DIR/checks.pid"
 rl_case ci wait plain
@@ -31529,25 +31542,36 @@ rl_until 15 rl_has start.2
 rl_join
 check "34e: (2) 통과 줄 뒤 10초 안에 후임이 뜬다" \
   "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
-check "34e: (2) 릴레이는 폴러의 줄을 배수하지 않는다 (checks 행 불변, 줄은 파일에 남음)" \
-  "$( { cap_rows checks | grep -c . || true; } | tr -d ' '):$( { grep -c "$(printf '\t')통과$(printf '\t')" "$CAP_DIR/checks.observed" || true; } | tr -d ' ')" \
-  "$rl_c0:1"
+check "34e: (2) 후임의 기동이 폴러의 줄을 교대 기동 행 앞의 checks 행으로 배수한다" \
+  "$( { cat "$CAP_DIR/checks.observed" 2>/dev/null || true; } | { grep -c "$(printf '\t')통과$(printf '\t')" || true; } | tr -d ' '):$(awk '
+      /^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC1( \||$)/ { c = NR }
+      /^- `교대 기동` / { l = NR }
+      END { print (c && l && c < l) ? "before" : "no" }' "$CAP_LEDGER")" \
+  "0:before"
 
-# (3) A TRANSITION THE HANDOFF ACT DRAINED. The `통과` is already in
-# `checks.observed` when the shift is launched, so a gate act moves it into a
-# `checks` row before the `대기` handoff exists; the relay reads the ledger too.
+# (3) A TRANSITION THE LAUNCH DRAINED. The `통과` is already in
+# `checks.observed` when the shift is launched, so the launch moves it into a
+# `checks` row above its own `교대 기동` row. That shift saw it and chose to
+# wait, so the relay does not wake on it again; a verdict observed after the
+# launch is new evidence and wakes it within a poll.
 rl_observe RLC2 통과
 rl_case drained wait plain
-RL_CI=RLC2 rl_call 상한
+RL_CI=RLC2 RL_HOLD=60 rl_call 상한
 rl_until 60 rl_has end.1
-rl_until 15 rl_has start.2
-rl_join
+rl_until 15 rl_relay_waiting || bad "34e 배수된 전이" "릴레이가 대기에 들지 않았다"
+rl_sample 6
 check "34e: (3) 배수된 통과는 대기 인계보다 앞의 checks 행이다" \
   "$(awk '/^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC2( \||$)/ { c = NR }
           /^- `handoff` / && /\| 사유=대기 \|/ && /\| CI 대기=RLC2 \|/ { h = NR }
           END { print (c && h && c < h) ? "before" : "no" }' "$CAP_LEDGER")" "before"
-check "34e: (3) 배수된 전이에도 10초 안에 후임이 뜬다" \
-  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - $(cat "$RL_O/end.1") )) -le 10 ] && printf in || printf out)" "in"
+check "34e: (3) 기동 앞에 배수된 통과는 그 교대가 소비해 다시 깨우지 않는다" \
+  "$(rl_has start.2 && printf woke || printf held)" "held"
+rl_t=$(date +%s)
+rl_observe RLC2 통과
+rl_until 15 rl_has start.2
+rl_join
+check "34e: (3) 기동 뒤에 관측된 판정은 10초 안에 후임을 띄운다" \
+  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
 
 # (4) A DEAD POLLER UNDER A CI WAIT HANDS THE TURN BACK: rc 0, the line, a
 # `handback`, and nothing launched or written.
@@ -32121,6 +32145,159 @@ shh_runrec "$SHH_SR4" 'SR4#1' 'Step 3 게이트 도달 좌석 실행 — 도구 
 shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
 shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
+
+# --- 34q. 종료 절 근거 요청 — 절 키 원뿔은 세그먼트를 잡지 않는다 ---
+# --- section: 34q | group: cone | covers: act, snapshot, shift-halt, gate_record_cone, gate_cone_members, gate_done_conditions | anchors: 34q: 종료 절 근거 기록이 halt/shift/clause-C2#1.md 에 선다, 34q: 절 키 원뿔의 의존 세그먼트에 세그먼트가 없다, 34q: 절 키 원소의 보류는 비어 있다, 34q: 절 키 원뿔은 종료 조건 5 에 세지 않고 10 은 남는다 ---
+#
+# A CLAUSE NO READ OF THE RUN CAN SETTLE IS ASKED OF A PERSON, NOT HELD. The
+# shift stops at `종료 절 근거` with `--segment -` and `절=<id>`; the gate makes
+# the key `clause-<id>`, writes the record under `halt/shift/` and a cone row
+# anchored on that key. Every segment here has merged, so the only thing the
+# run still waits on is the clause — condition 10 holds it, and the request
+# must not add a run-holding block to condition 5 besides.
+CLQ_RID=RCLQ1
+cap_fx_new "$CLQ_RID"
+mkdir -p "$CAP_DIR/halt/shift"
+sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+# The shared fixture carries its own clause; this one declares exactly three.
+sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+printf -- '- `종료 절` | id=C1 | 문면=첫째 절\n- `종료 절` | id=C2 | 문면=둘째 절\n- `종료 절` | id=C3 | 문면=셋째 절\n' >> "$CAP_NM"
+CLQ_SEAT="6e6e6e6e-5555-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$CLQ_SEAT.jsonl"
+for clq_s in Q1 Q2; do
+  cap_gate "$CLQ_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$clq_s" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SEAT" '')" \
+           --rationale x -- 워크트리="$CONE_C" 상태=실행중 선행=없음
+done
+cap_gate "$CLQ_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CLQ_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34q: 픽스처의 교대 기동이 섰다" "$rc" "0"
+CLQ_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$CLQ_SHIFT.jsonl"
+hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment - \
+         --site '종료 절 근거' --cutpoint 커밋 --surface 읽기 \
+         --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 근거 요청" \
+         -- '절=C2' '질문=C2 가 요구하는 실측을 돌려 결과를 남기는가?' '관측=그 실측은 이 런의 읽기로 만들 수 없다'
+check "34q: 종료 절 근거의 shift-halt 가 통과한다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34q: %s\n' "$msg"
+CLQ_REC="$CAP_DIR/halt/shift/clause-C2#1.md"
+check "34q: 종료 절 근거 기록이 halt/shift/clause-C2#1.md 에 선다" \
+  "$( [ -f "$CLQ_REC" ] && printf yes || printf no)" "yes"
+clq_row=$(cap_rows 'blocked' | tail -1)
+clq_dep=$(row_field "$clq_row" '의존 세그먼트')
+case ",$clq_dep," in
+  *,Q1,*|*,Q2,*) bad "34q: 절 키 원뿔의 의존 세그먼트에 세그먼트가 없다" "$clq_dep" ;;
+  *) ok "34q: 절 키 원뿔의 의존 세그먼트에 세그먼트가 없다" ;;
+esac
+clq_snap=$(cap_snap "$CLQ_SEAT" '')
+check "34q: 절 키 원소의 보류는 비어 있다" \
+  "$(printf '%s' "$clq_snap" | jq -r '[.shift_halts[] | select(.["세그먼트"] == "clause-C2") | (.["보류"] | length | tostring)] | join(",")')" "0"
+clq_unmet=$(printf '%s' "$clq_snap" | jq -c '.unmet_condition_numbers')
+case "$clq_unmet" in
+  *'"5"'*|*'[5,'*|*',5,'*|*',5]'*|'[5]') bad "34q: 절 키 원뿔은 종료 조건 5 에 세지 않고 10 은 남는다" "$clq_unmet" ;;
+  *10*) ok "34q: 절 키 원뿔은 종료 조건 5 에 세지 않고 10 은 남는다" ;;
+  *) bad "34q: 절 키 원뿔은 종료 조건 5 에 세지 않고 10 은 남는다" "$clq_unmet" ;;
+esac
+check "34q: 절 키 원뿔은 차단 접기의 런 막힘이 아니다" \
+  "$( . "$LIVENESS"; cc_unresolved_blocked "$CAP_LEDGER" | { grep -F '종료 절 근거' || true; } )" ""
+clq_rec_body=$(cat "$CLQ_REC" 2>/dev/null)
+check "34q: 기록은 근거 제출·불가능으로 정산 두 선택지와 (없음) 추천을 싣는다" \
+  "$(case "$clq_rec_body" in (*'- `근거 제출` — '*) printf a ;; esac
+     case "$clq_rec_body" in (*'- `불가능으로 정산` — '*) printf b ;; esac
+     case "$clq_rec_body" in (*'- `재시도`'*|*'- `세그먼트 park`'*) printf X ;; esac
+     case "$clq_rec_body" in (*'**추천**: (없음)'*) printf c ;; esac)" "abc"
+clq_clause() {  # clq_clause <id> <field> — one field of that clause's `clauses[]` element
+  cap_snap "$CLQ_SEAT" '' | jq -r --arg i "$1" --arg f "$2" '[.clauses[] | select(.id == $i) | .[$f]] | first // "부재"'
+}
+check "34q: clauses[] 가 종료 절 셋을 문면과 함께 낸다" \
+  "$(cap_snap "$CLQ_SEAT" '' | jq -r '[.clauses[] | .id + "=" + .["문면"]] | join(",")')" "C1=첫째 절,C2=둘째 절,C3=셋째 절"
+check "34q: 요청이 열린 절의 clauses[] 원소는 미정산이고 요청 기록을 이름 댄다" \
+  "$(clq_clause C2 '상태')|$(clq_clause C2 '요청')" "미정산|$CLQ_REC"
+clq_halt() {  # clq_halt <segment> <site> <fields…> — the shift's evidence request
+  local s="$1" site="$2"; shift 2
+  cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment "$s" \
+           --site "$site" --cutpoint 커밋 --surface 읽기 \
+           --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 근거 요청" -- "$@"
+}
+clq_nblk() { cap_rows 'blocked' | grep -c . || true; }
+clq_b0=$(clq_nblk)
+clq_halt - '종료 절 근거' '절=C2' '질문=다시?' '관측=x'
+check "34q: 소비되지 않은 요청이 있는 절의 두 번째 요청은 거절된다" "$rc/$(clq_nblk)" "3/$clq_b0"
+clq_halt - '종료 절 근거' '절=C9' '질문=없는 절?' '관측=x'
+check "34q: 매니페스트에 없는 절의 요청은 거절된다" "$rc/$(clq_nblk)" "3/$clq_b0"
+clq_halt Q1 '종료 절 근거' '절=C1' '질문=세그먼트에?' '관측=x'
+check "34q: 세그먼트를 단 종료 절 근거 요청은 거절된다" "$rc/$(clq_nblk)" "2/$clq_b0"
+clq_halt Q1 '병합 거절' '절=C1' '질문=다른 자리에 절?' '관측=x'
+check "34q: 다른 자리의 절 필드는 거절된다" "$rc/$(clq_nblk)" "2/$clq_b0"
+
+# THE ANSWER CARRIES THE EVIDENCE, AND THE SETTLING ROW SPENDS IT. `근거 제출`
+# without the attachment beside the record is refused; with it the answer
+# routes to the shift, and the clause row the next shift writes on that
+# attachment takes the answer up.
+clq_ans() {  # clq_ans <기록> <선택지> [첨부] — a person's answer at the seat
+  local att=()
+  [ -z "${3:-}" ] || att=("첨부=$3")
+  cap_gate "$CLQ_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "clause-${4:-C2}" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SEAT" '')" \
+           --rationale "픽스처 — 절 근거 요청의 답" \
+           -- "중단 기록=$1" "선택지=$2" '답한 주체=사람' '근거=사람이 실측을 돌려 결과를 남김' ${att[@]+"${att[@]}"}
+}
+clq_nans() { cap_rows '중단 답' | grep -c . || true; }
+clq_a0=$(clq_nans)
+clq_ans "$CLQ_REC" '근거 제출'
+check "34q: 첨부 없는 근거 제출 답은 exit 3 으로 거절된다" "$rc/$(clq_nans)" "3/$clq_a0"
+CLQ_ATT="$CAP_DIR/halt/shift/clause-C2#1.answer.md"
+printf '%s\n' '절 C2 · 커밋 abc1234 · bash probe.sh → 0 · 관측 값 42 · 실행 주체 사람' > "$CLQ_ATT"
+clq_ans "$CLQ_REC" '근거 제출' "$CLQ_ATT"
+check "34q: 첨부를 단 근거 제출 답이 선다" "$rc" "0"
+clq_line=$(grep -n '^- `중단 답` ' "$CAP_LEDGER" | tail -1 | cut -d: -f1)
+clq_ah() {  # clq_ah <기록> <field> — that record's `answered_halts[]` element field
+  cap_snap "$CLQ_SEAT" '' | jq -r --arg r "$1" --arg f "$2" '[.answered_halts[] | select(.record == $r) | .[$f]] | last // "부재"'
+}
+check "34q: 근거 제출 답은 교대-정지 로 라우팅된다" "$(clq_ah "$CLQ_REC" route)" "교대-정지"
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 정산" \
+         -- id=C2 상태=충족 "근거=중단 답 줄 $clq_line · 첨부 $CLQ_ATT"
+check "34q: 첨부를 근거로 한 종료 절 행이 선다" "$rc" "0"
+check "34q: 같은 id 의 뒤 종료 절 행이 근거 제출 답을 소비한다" "$(clq_ah "$CLQ_REC" route)" "부재"
+check "34q: 정산 뒤 clauses[] 원소는 충족이고 요청은 비고 근거는 행의 것이다" \
+  "$(clq_clause C2 '상태')|$(clq_clause C2 '요청')|$(clq_clause C2 '근거')" "충족||중단 답 줄 $clq_line · 첨부 $CLQ_ATT"
+clq_halt - '종료 절 근거' '절=C2' '질문=정산된 절?' '관측=x'
+check "34q: 이미 정산된 절의 요청은 거절된다" "$rc" "3"
+
+# `불가능으로 정산` takes no attachment and is spent the same way.
+clq_halt - '종료 절 근거' '절=C3' '질문=C3 의 실측을 돌릴 수 있는가?' '관측=자격이 필요하다'
+check "34q: 두 번째 절의 요청이 선다" "$rc" "0"
+CLQ_REC3="$CAP_DIR/halt/shift/clause-C3#1.md"
+clq_ans "$CLQ_REC3" '불가능으로 정산' '' C3
+check "34q: 불가능으로 정산 답은 첨부 없이 선다" "$rc/$(clq_ah "$CLQ_REC3" route)" "0/교대-정지"
+clq_line3=$(grep -n '^- `중단 답` ' "$CAP_LEDGER" | tail -1 | cut -d: -f1)
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 정산" \
+         -- id=C3 상태=불가능 "근거=중단 답 줄 $clq_line3"
+check "34q: 불가능 정산 행이 그 답을 소비한다" "$rc/$(clq_ah "$CLQ_REC3" route)" "0/부재"
+check "34q: 불가능 정산 뒤 clauses[] 원소는 불가능이다" "$(clq_clause C3 '상태')" "불가능"
+
+# Every segment merged and every clause settled: the run may propose done.
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 정산" \
+         -- id=C1 상태=충족 "근거=$CAP_LEDGER 의 Q1·Q2 머지됨 행"
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 정산" \
+         -- id=C3 상태=충족 "근거=$CAP_LEDGER 의 Q2 머지됨 행"
+check "34q: 모든 절이 정산되면 clauses[] 에 미정산이 없다" \
+  "$(cap_snap "$CLQ_SEAT" '' | jq -r '[.clauses[] | select(.["상태"] == "미정산")] | length')" "0"
+check "34q: 모든 절이 정산된 런에는 종료 조건 5 도 10 도 남지 않는다" \
+  "$(cap_snap "$CLQ_SEAT" '' | jq -r '[.unmet_condition_numbers[] | select(. == 5 or . == 10)] | length')" "0"
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind propose-done --target infra --segment - \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" \
+         --rationale "픽스처 — 종료 제안" -- 절=C1,C2,C3 "근거=$CAP_LEDGER"
+check "34q: 모든 절이 정산된 뒤 propose-done 이 받아들여진다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34q: %s\n' "$msg"
 
 # --- 34m. 빈 대상 리뷰 정지 — 좌석은 구현 재파견으로 답하고, park 답은 park 행이 소비한다 ---
 # --- section: 34m | group: cone | covers: snapshot, act | anchors: 34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다, 34m: 뒤의 park 행이 세그먼트 park 답을 소비한다, 34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다 ---
@@ -35754,8 +35931,15 @@ rm -f "$RD40/S41P.pid" "$RD40/S41P.start" "$RD40/S41P.attempt" "$RD40/S41P.kind"
 # itself wrote, which is why it stayed green while its neighbours were spelling
 # the path by hand. The two lines that used to prepare a run directory here were
 # read by nothing and are gone rather than corrected.
+#
+# The review dispatch's report path carries the run id, and the gate refuses a
+# path that is not the segment's canonical one. Section 33 leaves the fixture
+# manifest on R2, so the id is read from the manifest in force rather than
+# written as R1 — with R1 spelled here, a cut that runs 33 before this section
+# had both dispatches refused, and each `wait` then found no dispatch (exit 11).
 # ---------------------------------------------------------------------------
 HL >/dev/null
+rid42=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | sed -n 1p)
 STUB42A="$WORK/bin/claude-stub-42a"
 cat > "$STUB42A" <<'STUB42AEOF'
 #!/usr/bin/env bash
@@ -35785,7 +35969,7 @@ check "42 실험용 세그먼트 행 (A) 이 기록된다" "$rc" "0"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42A" \
   bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42A --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
-  --trigger '첫 리뷰' -- review -p "$(rv_x R1 S42A)" ) >/dev/null 2>&1
+  --trigger '첫 리뷰' -- review -p "$(rv_x "$rid42" S42A)" ) >/dev/null 2>&1
 # THE ROUTER'S OWN ABOVE-READ ACT, after the dispatch row and before the stage
 # ends. Under the old count this alone made the stage `정상 완료`.
 gateL exec --manifest "$FX_MANIFEST" --target infra --segment S42A --cutpoint 커밋 \
@@ -35809,7 +35993,7 @@ check "42 실험용 세그먼트 행 (B) 이 기록된다" "$rc" "0"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
   bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42B --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
-  --trigger '첫 리뷰' -- review -p "$(rv_x R1 S42B)" ) >/dev/null 2>&1
+  --trigger '첫 리뷰' -- review -p "$(rv_x "$rid42" S42B)" ) >/dev/null 2>&1
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
   bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42B --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
 check "42 (B) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0"
@@ -47307,6 +47491,12 @@ printf '1\n' > "${L88B%/*}/routing-guard"
 printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88b | 선행=없음 | prev=x\n' "$W88B" >> "$L88B"
 printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
   "$R88B" "$(lsr_rp_report "$D88B/c1.md" 0 0 차단)" >> "$L88B"
+# 라우팅 런의 머지 갈래는 회차 0 의 판정을 기다리므로, 판정 HEAD 마다 통과 checks 행을 둔다.
+pass88b() {  # pass88b <head sha> — 그 head 의 회차 0 통과 checks 행 하나
+  printf -- '- `checks` | 교대=1 | PR=o/r#5 | head sha=%s | 상태=통과 | 필수 집합=- | 실패 체크=- | 관측=%s | 세그먼트=S | 재실행 회차=0 | 진행 중=0 | prev=x\n' \
+    "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$L88B"
+}
+pass88b "$R88B"
 q88b() { local l=$1; shift; lsr_in Linux "$l" - lsr_rp_in "$M88B" "$@" 2>/dev/null; }
 c88b() {  # c88b <원장> — base-check 를 부르고 rc 를 낸다
   local rc88b=0
@@ -47392,6 +47582,7 @@ check "88b: 해소 사이클 행이 기록된다" \
   "$(cy88b 2 "$(rp88b "$(q88b "$L88B" gate_review_report_path S)" "$GOOD88B")" 모드=해소 '기준 사이클=1')" "0"
 check "88b: 해소 사이클은 리뷰 사이클 수에 들지 않고 기준 행은 여전히 사이클 1 이다" \
   "$(q88b "$L88B" gate_segment_cycle_count S)|$(q88b "$L88B" gate_base_resolve_basis_row S | tr '|' '\n' | sed -n 's/^ 사이클=\(.*\) $/\1/p')" "1|1"
+pass88b "$M288B"
 check "88b: 해소 사이클 뒤의 다음은 머지 이고 베이스 판정은 일치 다" \
   "$(q88b "$L88B" gate_segment_review_next S)|$(c88b "$L88B")|$(lsr_last_fields "$L88B" '베이스 판정' 리뷰\ HEAD 판정)" \
   "머지|0|$M288B|일치"
@@ -47400,7 +47591,7 @@ check "88b: 다음이 해소 리뷰 가 아닌 세그먼트의 해소 사이클 
 
 # ---------------------------------------------------------------------------
 # 88d. 리뷰가 깨끗한 세그먼트의 CI 층 — 원장만으로 정한 다음, 머지 검사, 추가 키
-# --- section: 88d | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json | anchors: 88d: CI 수정 뒤 HEAD 의 다음은 CI 리뷰 다, 88d: 베이스 충돌이 CI 실패보다 앞선다, 88d: 회차 0 의 대기 행은 CI 대기 다, 88d: 행이 없으면 다음은 머지 다, 88d: 라우팅 기록이 없는 런은 실패에도 다음이 머지 다, 88d: CI 값에서만 추가 키가 실린다 ---
+# --- section: 88d | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json | anchors: 88d: CI 수정 뒤 HEAD 의 다음은 CI 리뷰 다, 88d: 베이스 충돌이 CI 실패보다 앞선다, 88d: 회차 0 의 대기 행은 CI 대기 다, 88d: 행이 없으면 다음은 CI 대기 다, 88d: 라우팅 기록이 없는 런은 실패에도 다음이 머지 다, 88d: CI 값에서만 추가 키가 실린다 ---
 #
 # 판정표가 머지 를 내는 세그먼트(깨끗한 사이클 하나) 위에 `checks` 행과 `CI 처분` 행을
 # 손으로 붙여 층의 각 행을 잰다. 층은 원장만 읽으므로 원격도 gh 대역도 두지 않는다.
@@ -47429,13 +47620,14 @@ l88d() {  # l88d <이름> [unrouted] — 바탕 원장을 베낀 새 원장, 둘
   [ "${2:-}" = unrouted ] || printf '1\n' > "${l%/*}/routing-guard"
   printf '%s' "$l"
 }
-ck88d() {  # ck88d <원장> <상태> <회차> <진행 중> [head sha] — checks 행 하나
-  printf -- '- `checks` | 교대=1 | PR=o/r#5 | head sha=%s | 상태=%s | 필수 집합=- | 실패 체크=gate | 관측=2026-10-18T00:00:00Z | 세그먼트=S | 재실행 회차=%s | 진행 중=%s | prev=x\n' \
-    "${5:-$R88D}" "$2" "$3" "$4" >> "$1"
+# 관측은 따로 주지 않으면 실행 시각이다 — 대기 한도(가장 이른 관측에서 7200초) 안에 둔다.
+ck88d() {  # ck88d <원장> <상태> <회차> <진행 중> [head sha] [관측] — checks 행 하나
+  printf -- '- `checks` | 교대=1 | PR=o/r#5 | head sha=%s | 상태=%s | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=S | 재실행 회차=%s | 진행 중=%s | prev=x\n' \
+    "${5:-$R88D}" "$2" "${6:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" "$3" "$4" >> "$1"
 }
 cd88d() {  # cd88d <원장> <처분> <상태> <회차> [기본 브랜치] [head sha] — CI 처분 행 하나
-  printf -- '- `CI 처분` | 교대=1 | 세그먼트=S | PR=o/r#5 | head sha=%s | 처분=%s | 상태=%s | 회차=%s | 실행=777 | 워크플로=gate | 실패 체크=gate | 기본 브랜치=%s | 응답=- | 관측=- | prev=x\n' \
-    "${6:-$R88D}" "$2" "$3" "$4" "${5:-없음}" >> "$1"
+  printf -- '- `CI 처분` | 교대=1 | 세그먼트=S | PR=o/r#5 | head sha=%s | 처분=%s | 상태=%s | 회차=%s | 실행=777 | 워크플로=gate | 실패 체크=gate | 기본 브랜치=%s | 응답=- | 관측=%s | prev=x\n' \
+    "${6:-$R88D}" "$2" "$3" "$4" "${5:-없음}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$1"
 }
 n88d() { lsr_in Linux "$1" - lsr_rp_in "$M88D" gate_segment_review_next S 2>/dev/null; }
 mc88d_in() { GATE_SURFACE=외부상태변경; gate_check_merge_checks S 머지; printf '%s' "${GATE_PARK_CELL:--}"; }
@@ -47447,14 +47639,14 @@ mc88d() {  # mc88d <원장> — 머지 검사의 `rc|park 칸`
 sn88d() { lsr_in Linux "$1" - lsr_rp_in "$M88D" gate_snapshot_review_next_json 2>/dev/null; }
 
 L88D0=$(l88d none)
-check "88d: 행이 없으면 다음은 머지 다" "$(n88d "$L88D0")|$(mc88d "$L88D0")" "머지|0|-"
+check "88d: 행이 없으면 다음은 CI 대기 다" "$(n88d "$L88D0")|$(mc88d "$L88D0")" "CI 대기|3|-"
 L88DW=$(l88d wait); ck88d "$L88DW" 대기 0 0
 check "88d: 회차 0 의 대기 행은 CI 대기 다" "$(n88d "$L88DW")" "CI 대기"
 L88DWU=$(l88d wait-u unrouted); ck88d "$L88DWU" 대기 0 0
 check "88d: 라우팅 기록이 없는 런은 대기에도 다음이 머지 다" "$(n88d "$L88DWU")" "머지"
 L88DPS=$(l88d pass); ck88d "$L88DPS" 실패 0 0; ck88d "$L88DPS" 통과 0 0
-L88DUR=$(l88d unreg); ck88d "$L88DUR" 미등록 0 0
-check "88d: 회차 0 의 통과·미등록 은 판정표 값이다" "$(n88d "$L88DPS")|$(n88d "$L88DUR")" "머지|머지"
+L88DUR=$(l88d unreg); ck88d "$L88DUR" 미등록 0 0 '' 2026-10-18T00:00:00Z
+check "88d: 회차 0 의 통과·유예가 지난 미등록 은 판정표 값이다" "$(n88d "$L88DPS")|$(n88d "$L88DUR")" "머지|머지"
 
 L88DF=$(l88d fail); ck88d "$L88DF" 실패 0 2
 o88d=$(n88d "$L88DF"); ck88d "$L88DF" 실패 0 0
@@ -47506,7 +47698,7 @@ check "88d: 베이스 충돌이 CI 실패보다 앞선다" "$(n88d "$L88DBC")" "
 
 s88d_keys() { printf '%s' "$1" | grep -c '"재실행 회차"' || true; }
 check "88d: CI 값에서만 추가 키가 실린다" \
-  "$(s88d_keys "$(sn88d "$L88D0")")|$(s88d_keys "$(sn88d "$L88DF")")|$(sn88d "$L88DF" | grep -c "\"head sha\": \"$R88D\", \"PR\": \"o/r#5\", \"실패 체크\": \"gate\", \"재실행 회차\": \"0\", \"기본 브랜치\": \"\"" || true)" "0|1|1"
+  "$(s88d_keys "$(sn88d "$L88DPS")")|$(s88d_keys "$(sn88d "$L88DF")")|$(sn88d "$L88DF" | grep -c "\"head sha\": \"$R88D\", \"PR\": \"o/r#5\", \"실패 체크\": \"gate\", \"재실행 회차\": \"0\", \"기본 브랜치\": \"\"" || true)" "0|1|1"
 
 # L0 — 워크트리에 CI 수정 커밋을 더한다. 다른 계열의 `처분=수정` 낱말은 L0 을 세우지 않는다.
 L88DL=$(l88d l0); ck88d "$L88DL" 실패 0 0; cd88d "$L88DL" 재실행 요청 1; cd88d "$L88DL" 재실행 수락 1
@@ -47570,6 +47762,9 @@ check "88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 �
   "0|$T88C|충돌|CHANGELOG.md|릴리스 메타|베이스 해소"
 
 MM88C=$(q88c "$L88C" gate_meta_merge S)
+# 라우팅 런의 머지 갈래는 회차 0 의 판정을 기다리므로, 메타 해소 HEAD 에 통과 checks 행을 둔다.
+printf -- '- `checks` | 교대=1 | PR=o/r#5 | head sha=%s | 상태=통과 | 필수 집합=- | 실패 체크=- | 관측=%s | 세그먼트=S | 재실행 회차=0 | 진행 중=0 | prev=x\n' \
+  "$MM88C" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$L88C"
 check "88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다" \
   "$(cd "$W88C" && git rev-parse HEAD)|$(cd "$W88C" && git rev-list --parents -n 1 HEAD | cut -d' ' -f2-)|$(cd "$W88C" && sed -n 's/^  "version": "\(.*\)",$/\1/p' "$PJ88C")|$(cd "$W88C" && grep '^## \[' CHANGELOG.md | tr '\n' ';')" \
   "$MM88C|$R88C $T88C|1.2.0|## [1.2.0] - 2026-10-14;## [1.1.0] - 2026-10-13;## [1.0.0] - 2026-10-01;"
@@ -47711,6 +47906,354 @@ for bad88c in "$LB88C" "$LS88C"; do
     *) bad "88c: 증명되지 않는 둘째 부모의 착지" "$ap88c_out" ;;
   esac
 done
+
+# ---------------------------------------------------------------------------
+# 88e. CI 판정의 리뷰 사이클 합류 — 판정 전 머지 금지, 수정 갈래의 CI 층, 대기 한도, 선재실행 술어, 중계 깨움
+# --- section: 88e | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json, gate_ci_early, relay | anchors: 88e: 회차 0 의 행 없음·유예 안 미등록·대기·진행 중 실패·판정 불가는 CI 대기 이고 머지 검사가 거절한다, 88e: 400초 전의 회차 0 미등록 은 머지 이고 머지 검사를 지난다, 88e: 수정 표에서 회차 0 정착 실패는 CI 재실행, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다, 88e: 처분=합류 행은 CI 수정 예산 f 를 세지 않는다, 88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 두 표에서 CI 대기 한도 이고 머지 검사가 거절한다, 88e: CI 대기 한도 원소는 상태 와 대기 시계 를 싣는다, 88e: 절단점 push 세그먼트는 행 없음에서 머지·수정 이고 머지 검사를 지난다, 88e: 대상 별칭이 비는 세그먼트는 행 없음에서 머지 이고 머지 검사를 지난다, 88e: 살아 있는 리뷰 스테이지와 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 유예 안 미등록·판정 불가·다른 head 의 판정은 ci 키를 세우지 않는다, 88e: 통과의 ci 키는 교대 기동 행 뒤에 다시 서지 않고 그 뒤 줄에 전사된 판정은 한 번 더 세운다, 88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다 ---
+#
+# 라우팅 런의 CI 합류 대상(절단점 PR·머지·배포)에서 리뷰가 CI 판정보다 먼저 끝나면 판정을
+# 기다리고, 그 기다림이 늘 끝나는지를 원장만으로 잰다. 시각은 `관측` 과 픽스처 커밋의 커밋
+# 시각을 과거로 써서 만들고 잠들지 않는다. 오래된 head 의 커밋 시각은 +0900 오프셋으로
+# 쓴다 — 오프셋을 버리는 판독은 시계를 아홉 시간 뒤로 밀어 한도를 세우지 못한다.
+# 워크트리 둘: W88E 는 지금 만든 head, WO88E 는 세 시간 전에 만든 head 다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88E="$lsr_root/s88e"; rm -rf "$D88E"; mkdir -p "$D88E"
+G88E="$D88E/repo"; W88E="$D88E/seg"; WO88E="$D88E/old"
+NOW88E=$(date -u +%s)
+iso88e() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+T088E=$(iso88e "$NOW88E"); T40088E=$(iso88e $((NOW88E - 400))); T3H88E=$(iso88e $((NOW88E - 10800)))
+( git init -q "$G88E" && cd "$G88E" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && printf 'a\n' > a.txt && git add -A && git commit -qm one && git branch -M main \
+  && git worktree add -q -b seg-88e "$W88E" main && git worktree add -q -b old-88e "$WO88E" main ) >/dev/null 2>&1
+R88E=$( ( cd "$W88E" && printf 'A\n' > a.txt && git commit -qam seg && git rev-parse HEAD ) 2>/dev/null)
+RO88E=$( ( cd "$WO88E" && printf 'O\n' > a.txt \
+           && GIT_COMMITTER_DATE="$((NOW88E - 10800)) +0900" GIT_AUTHOR_DATE="$((NOW88E - 10800)) +0900" git commit -qam old \
+           && git rev-parse HEAD ) 2>/dev/null)
+M88E="$D88E/manifest.md"
+printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88E" > "$M88E"
+M288E="$D88E/manifest-two.md"
+printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n- `target` | 별칭=u | 메인 워크트리=%s | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=o/u | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88E" "$G88E" > "$M288E"
+l88e() {  # l88e <이름> <워크트리> <리뷰 HEAD> <P1|none> [unrouted|-] [segment 행 추가 필드] — 원장 하나
+  local l; l=$(lsr_ledger "w88e-$1")
+  printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=x | 선행=없음%s | prev=x\n' "$2" "${6:+ | $6}" >> "$l"
+  [ "$4" = none ] || printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=%s | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+    "$4" "$3" "$(lsr_rp_report "$D88E/c-$1.md" 0 "$4" 차단)" >> "$l"
+  [ "${5:-}" = unrouted ] || printf '1\n' > "${l%/*}/routing-guard"
+  printf '%s' "$l"
+}
+ck88e() {  # ck88e <원장> <상태> <회차> <진행 중> <관측> [head sha] — checks 행 하나
+  printf -- '- `checks` | 교대=1 | PR=o/r#5 | head sha=%s | 상태=%s | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=S | 재실행 회차=%s | 진행 중=%s | prev=x\n' \
+    "${6:-$R88E}" "$2" "$5" "$3" "$4" >> "$1"
+}
+cd88e() {  # cd88e <원장> <처분> <상태> <회차> <관측> [기본 브랜치] [head sha] — CI 처분 행 하나
+  printf -- '- `CI 처분` | 교대=1 | 세그먼트=S | PR=o/r#5 | head sha=%s | 처분=%s | 상태=%s | 회차=%s | 실행=777 | 워크플로=gate | 실패 체크=gate | 기본 브랜치=%s | 응답=- | 관측=%s | prev=x\n' \
+    "${7:-$R88E}" "$2" "$3" "$4" "${6:-없음}" "$5" >> "$1"
+}
+acc88e() {  # acc88e <원장> <수락 관측> [기본 브랜치] [head sha] — 회차 1 을 여는 요청·수락 행
+  cd88e "$1" 재실행 요청 1 "$2" "${3:-없음}" "${4:-}"; cd88e "$1" 재실행 수락 1 "$2" 없음 "${4:-}"
+}
+n88e() { lsr_in Linux "$1" - lsr_rp_in "${2:-$M88E}" gate_segment_review_next S 2>/dev/null; }
+mc88e_in() { GATE_SURFACE=외부상태변경; gate_check_merge_checks S 머지; }
+mc88e() {  # mc88e <원장> [매니페스트] — 머지 검사의 rc
+  local rc=0
+  lsr_in Linux "$1" - lsr_rp_in "${2:-$M88E}" mc88e_in >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+nm88e() { printf '%s|%s' "$(n88e "$@")" "$(mc88e "$@")"; }
+sn88e() { lsr_in Linux "$1" - lsr_rp_in "$M88E" gate_snapshot_review_next_json 2>/dev/null; }
+ce88e() { lsr_in Linux "$1" - lsr_rp_in "$M88E" gate_snapshot_ci_early_json 2>/dev/null; }
+E40088E=$((NOW88E - 400)); E3H88E=$((NOW88E - 10800))
+P88E=""
+launch88e() {  # launch88e <원장> <기록 시각> — 교대 기동 행 하나
+  printf -- '- `교대 기동` | 교대=1 | 서수=1 | 사유=대기 | 대상=t | 기록 시각=%s | prev=x\n' "$2" >> "$1"
+}
+park88e() {  # park88e <원장> — 재실행 행위가 대상 판단에서 멈출 때의 도달 park 행
+  printf -- '- `blocked` | 교대=1 | 대상=t | 스코프=act | 원인=막힘 | 사유=도달 park | 세그먼트=S | 도달 판정=재실행대상미상 | prev=x\n' >> "$1"
+}
+CO88E=$(cd "$WO88E" && TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd HEAD)
+
+# 1 — 머지 표의 회차 0. 판정이 서기 전에는 기다리고 머지 검사도 거절한다.
+o88e=""
+for c88e in none 미등록 대기 진행중실패 판정불가; do
+  L88E=$(l88e "l-$c88e" "$W88E" "$R88E" 0)
+  case "$c88e" in
+    none) : ;;
+    진행중실패) ck88e "$L88E" 실패 0 2 "$T088E" ;;
+    판정불가) ck88e "$L88E" '판정 불가' 0 0 "$T088E" ;;
+    *) ck88e "$L88E" "$c88e" 0 0 "$T088E" ;;
+  esac
+  o88e="$o88e$c88e=$(nm88e "$L88E");"
+done
+check "88e: 회차 0 의 행 없음·유예 안 미등록·대기·진행 중 실패·판정 불가는 CI 대기 이고 머지 검사가 거절한다" "$o88e" \
+  "none=CI 대기|3;미등록=CI 대기|3;대기=CI 대기|3;진행중실패=CI 대기|3;판정불가=CI 대기|3;"
+L88E=$(l88e unreg-old "$W88E" "$R88E" 0); ck88e "$L88E" 미등록 0 0 "$T40088E"
+check "88e: 400초 전의 회차 0 미등록 은 머지 이고 머지 검사를 지난다" "$(nm88e "$L88E")" "머지|0"
+L88E=$(l88e pass "$W88E" "$R88E" 0); ck88e "$L88E" 통과 0 0 "$T088E"
+check "88e: 회차 0 의 통과 는 머지 이고 머지 검사를 지난다" "$(nm88e "$L88E")" "머지|0"
+
+# 2 — 수정 표의 CI 합류 층.
+L88EF=$(l88e fix "$W88E" "$R88E" 1)
+o88e="$(n88e "$L88EF")"
+ck88e "$L88EF" 실패 0 0 "$T088E"; o88e="$o88e|$(n88e "$L88EF")"
+acc88e "$L88EF" "$T088E"; o88e="$o88e|$(n88e "$L88EF")"
+ck88e "$L88EF" 실패 1 0 "$T088E"; o88e="$o88e|$(n88e "$L88EF")"
+check "88e: 수정 표에서 회차 0 정착 실패는 CI 재실행, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다" \
+  "$o88e" "CI 대기|CI 재실행|CI 대기|CI 합류 수정"
+cd88e "$L88EF" 합류 - - "$T088E"
+check "88e: 처분=합류 행은 CI 수정 예산 f 를 세지 않는다" \
+  "$(n88e "$L88EF")|$(lsr_in Linux "$L88EF" - cc_ci_round "$L88EF" S "$R88E" | sed -n 's/^f=//p')" "CI 합류 수정|0"
+L88E=$(l88e fix-pass "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 2 "$T088E"
+o88e=$(n88e "$L88E"); ck88e "$L88E" 통과 0 0 "$T088E"
+check "88e: 수정 표의 진행 중 실패는 CI 대기 이고 통과 는 수정 이다 (M2, M3)" "$o88e|$(n88e "$L88E")" "CI 대기|수정"
+L88E=$(l88e fix-open "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"; cd88e "$L88E" 재실행 요청 1 "$T088E"
+L88E2=$(l88e fix-closed "$W88E" "$R88E" 1); ck88e "$L88E2" 실패 0 0 "$T088E"
+cd88e "$L88E2" 재실행 요청 1 "$T088E"; cd88e "$L88E2" 재실행 실패 1 "$T088E"
+check "88e: 열린 요청과 닫는 실패 회차의 수정 표는 수정 이다 (M1)" "$(n88e "$L88E")|$(n88e "$L88E2")" "수정|수정"
+L88E=$(l88e fix-base "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"
+acc88e "$L88E" "$T088E" 실패; ck88e "$L88E" 실패 1 0 "$T088E"
+check "88e: 회차의 요청이 기본 브랜치 실패를 보았으면 수정 표는 수정 이다 (M5)" "$(n88e "$L88E")" "수정"
+L88E=$(l88e lead "$W88E" "$R88E" 0)
+printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=2 | P0=0 | P1=1 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+  "$R88E" "$(lsr_rp_report "$D88E/c-lead2.md" 0 1 차단)" >> "$L88E"
+ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
+check "88e: 표가 리드 수정 이면 정착 실패에서도 리드 수정 이다" "$(n88e "$L88E")" "리드 수정"
+L88E=$(l88e fix-cap "$W88E" "$R88E" 1); ck88e "$L88E" 대기 0 0 "$T3H88E"
+check "88e: 수정 표의 대기 한도는 CI 대기 한도 다 (MW)" "$(n88e "$L88E")" "CI 대기 한도"
+
+# 7 — 대기 한도. 커밋 시각·가장 이른 관측·수락 관측이 시계다.
+L88EO=$(l88e old "$WO88E" "$RO88E" 0); L88EOF=$(l88e old-fix "$WO88E" "$RO88E" 1)
+check "88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 두 표에서 CI 대기 한도 이고 머지 검사가 거절한다" \
+  "$(nm88e "$L88EO")|$(n88e "$L88EOF")" "CI 대기 한도|3|CI 대기 한도"
+check "88e: 대기 시계는 커밋 시각을 UTC 로 읽는다 (+0900 커밋)" \
+  "$(lsr_in Linux "$L88EO" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$RO88E" 0 2>/dev/null)|$CO88E" "$(iso88e $((NOW88E - 10800)))|$(iso88e $((NOW88E - 10800)))"
+check "88e: CI 대기 한도 원소는 상태 와 대기 시계 를 싣는다" \
+  "$(sn88e "$L88EO" | grep -c "\"다음\": \"CI 대기 한도\".*\"재실행 회차\": \"0\".*\"상태\": \"관측 없음\", \"대기 시계\": \"$CO88E\"" || true)" "1"
+o88e=""
+for c88e in 판정불가 대기 오감; do
+  L88E=$(l88e "cap-$c88e" "$W88E" "$R88E" 0)
+  case "$c88e" in
+    판정불가) ck88e "$L88E" '판정 불가' 0 0 "$T3H88E" ;;
+    대기) ck88e "$L88E" 대기 0 0 "$T3H88E" ;;
+    오감) ck88e "$L88E" '판정 불가' 0 0 "$T3H88E"; ck88e "$L88E" 대기 0 0 "$T088E"; ck88e "$L88E" '판정 불가' 0 0 "$T088E" ;;
+  esac
+  o88e="$o88e$c88e=$(nm88e "$L88E");"
+done
+check "88e: 가장 이른 관측이 7200초 넘게 지난 판정 불가·대기 는 오가도 CI 대기 한도 다" "$o88e" \
+  "판정불가=CI 대기 한도|3;대기=CI 대기 한도|3;오감=CI 대기 한도|3;"
+L88E=$(l88e cap-r1 "$W88E" "$R88E" 0); ck88e "$L88E" 실패 0 0 "$T3H88E"; acc88e "$L88E" "$T3H88E"; ck88e "$L88E" 미등록 1 0 "$T3H88E"
+L88E2=$(l88e cap-r1-fix "$W88E" "$R88E" 1); ck88e "$L88E2" 실패 0 0 "$T3H88E"; acc88e "$L88E2" "$T3H88E"; ck88e "$L88E2" 미등록 1 0 "$T3H88E"
+check "88e: 회차 1 의 오래된 미등록 은 두 표에서 CI 대기 한도 이고 머지 검사가 거절한다" \
+  "$(nm88e "$L88E")|$(n88e "$L88E2")" "CI 대기 한도|3|CI 대기 한도"
+L88E=$(l88e r1-clock "$W88E" "$R88E" 0); ck88e "$L88E" 실패 0 0 "$T3H88E"; acc88e "$L88E" "$T088E"
+L88E2=$(l88e r1-clock-fix "$W88E" "$R88E" 1); ck88e "$L88E2" 실패 0 0 "$T3H88E"; acc88e "$L88E2" "$T088E"
+check "88e: 회차 1 의 시계는 수락 행에서 열려 판정 없는 회차 1 은 두 표에서 CI 대기 다" "$(n88e "$L88E")|$(n88e "$L88E2")" "CI 대기|CI 대기"
+L88E=$(l88e both "$W88E" "$R88E" 0); ck88e "$L88E" 미등록 0 0 "$T3H88E"
+check "88e: 미등록 만료와 대기 한도가 함께 참인 회차 0 미등록 은 머지 다" "$(nm88e "$L88E")" "머지|0"
+L88EOA=$(l88e old-acc-dash "$WO88E" "$RO88E" 0); ck88e "$L88EOA" 실패 0 0 "$T3H88E" "$RO88E"; acc88e "$L88EOA" - 없음 "$RO88E"
+check "88e: 수락 관측이 - 이고 회차 1 행이 없으면 시계는 커밋 시각이라 CI 대기 한도 다" \
+  "$(n88e "$L88EOA")|$(lsr_in Linux "$L88EOA" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$RO88E" 1 2>/dev/null)" "CI 대기 한도|$CO88E"
+
+# 6 — CI 합류 대상의 경계.
+L88E=$(l88e push "$W88E" "$R88E" 0 - '절단점=push'); L88E2=$(l88e push-fix "$W88E" "$R88E" 1 - '절단점=push')
+check "88e: 절단점 push 세그먼트는 행 없음에서 머지·수정 이고 머지 검사를 지난다" "$(nm88e "$L88E")|$(n88e "$L88E2")" "머지|0|수정"
+L88E=$(l88e pr "$W88E" "$R88E" 0 - '절단점=PR'); L88E2=$(l88e pr-old "$WO88E" "$RO88E" 0 - '절단점=PR')
+L88E3=$(l88e pr-pass "$W88E" "$R88E" 0 - '절단점=PR'); ck88e "$L88E3" 통과 0 0 "$T088E"
+check "88e: 절단점 PR 세그먼트는 CI 합류 대상이라 행 없음은 CI 대기, 한도는 CI 대기 한도, 통과는 머지 다" \
+  "$(n88e "$L88E")|$(n88e "$L88E2")|$(n88e "$L88E3")" "CI 대기|CI 대기 한도|머지"
+L88E=$(l88e nocycle "$W88E" "$R88E" none)
+check "88e: cycle 행 없는 리뷰없음 세그먼트는 행 없음에서 머지 검사를 지난다" "$(mc88e "$L88E")" "0"
+L88E=$(l88e noalias "$W88E" "$R88E" 0)
+check "88e: 대상 별칭이 비는 세그먼트는 행 없음에서 머지 이고 머지 검사를 지난다" "$(nm88e "$L88E" "$M288E")" "머지|0"
+
+# 3 — 선재실행 술어 E. 살아 있는 스테이지는 원장 디렉터리(런 디렉터리)의 pid 파일이다.
+ls88e() {  # ls88e <원장> <종류> — 그 런 디렉터리에 세그먼트 S 의 살아 있는 스테이지
+  local save="${FX_RUN_DIR:-}"
+  FX_RUN_DIR="${1%/*}"; fx_stage_live S; FX_RUN_DIR="$save"; P88E="$P88E$FX_LAST_PID "
+  printf '%s\n' "$2" > "${1%/*}/S.kind"
+}
+L88EE=$(l88e early "$W88E" "$R88E" none); ck88e "$L88EE" 실패 0 0 "$T40088E"; ls88e "$L88EE" review
+check "88e: 살아 있는 리뷰 스테이지와 회차 0 정착 실패에서 ci_early 원소가 선다" \
+  "$(ce88e "$L88EE" | grep -c "\"세그먼트\": \"S\", \"head sha\": \"$R88E\", \"PR\": \"o/r#5\", \"실패 체크\": \"gate\"" || true)" "1"
+L88E=$(l88e early-impl "$W88E" "$R88E" none); ck88e "$L88E" 실패 0 0 "$T40088E"; ls88e "$L88E" implement
+L88E2=$(l88e early-push "$W88E" "$R88E" none - '절단점=push'); ck88e "$L88E2" 실패 0 0 "$T40088E"; ls88e "$L88E2" review
+L88E3=$(l88e early-acc "$W88E" "$R88E" none); ck88e "$L88E3" 실패 0 0 "$T40088E"; ls88e "$L88E3" review; acc88e "$L88E3" "$T088E"
+L88E4=$(l88e early-run "$W88E" "$R88E" none); ck88e "$L88E4" 실패 0 2 "$T40088E"; ls88e "$L88E4" review
+check "88e: 구현 스테이지·절단점 push·재실행 수락 뒤·진행 중 실패에는 ci_early 원소가 서지 않는다" \
+  "$(ce88e "$L88E" | grep -c . || true)|$(ce88e "$L88E2" | grep -c . || true)|$(ce88e "$L88E3" | grep -c . || true)|$(ce88e "$L88E4" | grep -c . || true)" "0|0|0|0"
+L88E=$(l88e early-park "$W88E" "$R88E" none); ck88e "$L88E" 실패 0 0 "$T40088E"; ls88e "$L88E" review; park88e "$L88E"
+L88E2=$(l88e early-oldpark "$W88E" "$R88E" none); ck88e "$L88E2" 실패 0 0 "$T3H88E" 1111111111111111111111111111111111111111
+park88e "$L88E2"; ck88e "$L88E2" 실패 0 0 "$T40088E"; ls88e "$L88E2" review
+check "88e: 재실행 도달 park 뒤 ci_early 원소가 사라지고 옛 head 의 park 는 새 head 의 원소를 막지 않는다" \
+  "$(ce88e "$L88E" | grep -c . || true)|$(ce88e "$L88E2" | grep -c '"세그먼트": "S"' || true)" "0|1"
+
+# 4 — 중계 깨움 키. relay.live 의 ci·stages 줄이 깨움 집합이고 키는 ci:·ce: 만 본다.
+wk88e_in() { cc_relay_wake_keys "$RUN_DIR" "$LEDGER" | { grep -E '^c[ie]:' || true; } | tr '\t' ' '; }
+wk88e() {  # wk88e <원장> <ci 목록> <stages 목록> — 지금 서는 ci:·ce: 키
+  printf '1\nx\nci=%s\nstages=%s\n' "$2" "$3" > "${1%/*}/relay.live"
+  lsr_in Linux "$1" - wk88e_in 2>/dev/null
+}
+L88E=$(l88e rk-unreg "$W88E" "$R88E" 0); ck88e "$L88E" 미등록 0 0 "$T088E"
+L88E2=$(l88e rk-indet "$W88E" "$R88E" 0); ck88e "$L88E2" '판정 불가' 0 0 "$T40088E"
+L88E3=$(l88e rk-other "$W88E" "$R88E" 0); ck88e "$L88E3" 통과 0 0 "$T40088E" 1111111111111111111111111111111111111111
+check "88e: 유예 안 미등록·판정 불가·다른 head 의 판정은 ci 키를 세우지 않는다" \
+  "[$(wk88e "$L88E" S -)][$(wk88e "$L88E2" S -)][$(wk88e "$L88E3" S -)]" "[][][]"
+L88E=$(l88e rk-expired "$W88E" "$R88E" 0); ck88e "$L88E" 미등록 0 0 "$T40088E"
+check "88e: 유예가 지난 미등록은 관측 + 유예 를 시계로 ci 키를 세운다" "$(wk88e "$L88E" S -)" "ci:S $((E40088E + 300))"
+L88E=$(l88e rk-pass "$W88E" "$R88E" 0); ck88e "$L88E" 통과 0 0 "$T40088E"
+o88e="[$(wk88e "$L88E" S -)]"; launch88e "$L88E" "$T088E"; o88e="$o88e[$(wk88e "$L88E" S -)]"
+ck88e "$L88E" 실패 0 0 "$T40088E"; o88e="$o88e[$(wk88e "$L88E" S -)]"; launch88e "$L88E" "$T088E"; o88e="$o88e[$(wk88e "$L88E" S -)]"
+check "88e: 통과의 ci 키는 교대 기동 행 뒤에 다시 서지 않고 그 뒤 줄에 전사된 판정은 한 번 더 세운다" "$o88e" \
+  "[ci:S $E40088E][][ci:S $E40088E][]"
+L88E=$(l88e rk-file "$W88E" "$R88E" 0); launch88e "$L88E" "$T088E"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$T40088E" S 'o/r#5' "$R88E" 통과 0 0 없음 - > "${L88E%/*}/checks.observed"
+check "88e: 관측 파일에만 있는 판정은 교대 기동 뒤에도 소비되지 않는다" "$(wk88e "$L88E" S -)" "ci:S $E40088E"
+L88E=$(l88e rk-cap "$WO88E" "$RO88E" 0); L88E2=$(l88e rk-nocap "$W88E" "$R88E" 0)
+o88e="[$(wk88e "$L88E" S -)][$(wk88e "$L88E2" S -)]"; launch88e "$L88E" "$T088E"
+check "88e: 대기 한도의 ci 키는 대기 시계 + 상한 을 시계로 서고 한도 전에는 서지 않으며 교대 기동이 소비한다" \
+  "$o88e[$(wk88e "$L88E" S -)]" "[ci:S $((E3H88E + 7200))][][]"
+L88E=$(l88e rk-ocap "$WO88E" "$RO88E" 0); ck88e "$L88E" 실패 0 0 "$T3H88E" "$RO88E"; acc88e "$L88E" - 없음 "$RO88E"
+check "88e: 수락 관측이 - 인 회차 1 은 커밋 시각의 한도로 ci 키가 선다" "$(wk88e "$L88E" S -)" "ci:S $((E3H88E + 7200))"
+# 미등록 만료로 깬 교대가 기다리며 끝나면 같은 만료로는 다시 서지 않고, 한도의 시각에 선다 —
+# 그 시각은 미래이므로 깨움 조건을 그 시각의 지금으로 읽어 두 줄의 차례와 소비를 잰다.
+L88E=$(l88e rk-unreg-cap "$W88E" "$R88E" 0); ck88e "$L88E" 미등록 0 0 "$T40088E"; launch88e "$L88E" "$T088E"
+ln88e=$(grep -n '^- `checks` ' "$L88E" | cut -d: -f1)
+cnd88e_in() { cc_ci_relay_condition "$RUN_DIR" "$LEDGER" S "$1" | tr '\t' ' ' | tr '\n' ';'; }
+sm88e_in() {
+  local c tab; tab=$(printf '\t'); c=$(cc_relay_last_shift_launch "$LEDGER")
+  cc_relay_condition_consumed "${c%%"$tab"*}" "${c#*"$tab"}" "$1" "$2" && printf consumed || printf open
+}
+check "88e: 미등록 만료가 소비된 뒤에는 대기 한도의 시각에 ci 키가 선다" \
+  "[$(wk88e "$L88E" S -)]$(lsr_in Linux "$L88E" - cnd88e_in $((NOW88E + 7200)))$(lsr_in Linux "$L88E" - sm88e_in $((E40088E + 300)) "$ln88e")/$(lsr_in Linux "$L88E" - sm88e_in $((E40088E + 7200)) "$ln88e")" \
+  "[]$((E40088E + 300)) $ln88e;$((E40088E + 7200)) $ln88e;consumed/open"
+L88E=$(l88e rk-early "$W88E" "$R88E" none); ck88e "$L88E" 실패 0 0 "$T40088E"; ls88e "$L88E" review
+o88e="[$(wk88e "$L88E" - S)]"; launch88e "$L88E" "$T088E"; o88e="$o88e[$(wk88e "$L88E" - S)]"
+L88E2=$(l88e rk-early-park "$W88E" "$R88E" none); ck88e "$L88E2" 실패 0 0 "$T40088E"; ls88e "$L88E2" review; park88e "$L88E2"
+check "88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다" \
+  "$o88e[$(wk88e "$L88E2" - S)]" "[ce:S $E40088E][][]"
+for p88e in $P88E; do kill "$p88e" 2>/dev/null || true; done
+
+# ---------------------------------------------------------------------------
+# 88e-2. CI 판정의 리뷰 사이클 합류 — 구현 파견의 세 거절과 합류 행, 리뷰 중 선재실행 행위
+# --- section: 88e-2 | group: sa | covers: act, plan, snapshot, gate_check_ci_rerun | anchors: 88e: 첫 리뷰 도중의 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 선재실행 행위가 받아지고 수락 뒤 원소가 사라진다, 88e: 살아 있는 스테이지가 구현이면 선재실행 행위는 rc 3 이다, 88e: 선재실행의 park 뒤 원소가 사라지고 리뷰 뒤 CI 재실행 의 같은 행위는 새 행 없이 rc 11 이다, 88e: CI 합류 수정 에서 줄 없는 파견과 다른 sha 는 거절되고 head 의 CI 합류 파견은 받아진다, 88e: 같은 head 의 CI 합류 act 둘은 처분=합류 행 하나를 남기고 f 는 0 이다 ---
+#
+# 60b 의 재실행 대역(`cb60_head`) 위에서 행위 경로를 잰다. 픽스처는 `cb60_new` 와 같되
+# cycle 행을 두지 않거나(첫 리뷰 도중) P1 하나의 사이클(표가 수정)로 둔다. 살아 있는
+# 스테이지는 런 디렉터리의 pid 파일과 종류 파일이다. 대역의 관측 줄은 고정된 과거 시각이라
+# 회차 1 의 미등록 은 대기 한도에 닿아 있다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+cb60_head
+P88E2=""
+cj88e_new() {  # cj88e_new <라벨> <none|fix> — cb60_new 의 픽스처, cycle 행만 다르다
+  sa_new "$1" 리뷰없음
+  ( cd "$SA_REPO" && git config "url.$SA_REMOTE.insteadOf" "https://github.com/t/$SA_ID.git" \
+    && mkdir -p .github/workflows && printf '%s\n' "$CB60_WF" > .github/workflows/gate.yml \
+    && git add -A && git commit -qm wf && git push -q origin main ) >/dev/null 2>&1
+  ( cd "$SA_SEGWT" && git merge -q --ff-only main ) >/dev/null 2>&1
+  CK60_SHA=$(sa_commit '작업')
+  sa_seg_row CK 선리뷰후머지
+  RP88E2="$SA_ROOT/c1.md"
+  if [ "$2" = fix ]; then
+    printf -- '- `cycle` | 세그먼트=CK | 사이클=1 | P0=0 | P1=1 | 리뷰 HEAD=%s | 리포트 경로=%s\n' \
+      "$CK60_SHA" "$(lsr_rp_report "$RP88E2" 0 1 차단)" >> "$SA_LEDGER"
+  fi
+  printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n' >> "$SA_LEDGER"
+  printf '1\n' > "$SA_RUN/routing-guard"
+  CB60_SLUG="t/$SA_ID"
+  export CB60_S="$CB60_ROOT/s88e-$SA_N"; rm -rf "$CB60_S"; mkdir -p "$CB60_S"; : > "$CB60_S/gh.log"
+  printf '[{"number":1,"headRefOid":"%s","headRefName":"%s"}]\n' "$CK60_SHA" "$SA_SEGBR" > "$CB60_S/prlist"
+  cb60_checks pre fail 777 1
+  cb60_checks post pending 777 2
+  cb60_run 777
+  cb60_run 777 post
+  printf 'gate\tsuccess\n' > "$CB60_S/base"
+  cb60_line 실패 0 0
+}
+cj88e_live() {
+  # cj88e_live <종류> — 세그먼트 CK 의 살아 있는 스테이지. `fx_stage_live` 를 쓰지 않는다 —
+  # `cb60_head` 가 `sleep` 을 함수로 가려 그 `sleep 120 &` 는 곧바로 끝난다.
+  local pid
+  mkdir -p "$SA_RUN"
+  command sleep 120 & pid=$!
+  printf '%s' "$pid" > "$SA_RUN/CK.pid"
+  LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null \
+    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$SA_RUN/CK.start"
+  P88E2="$P88E2$pid "; FX_PIDS="${FX_PIDS:-}$pid "
+  printf '%s\n' "$1" > "$SA_RUN/CK.kind"
+}
+cj88e_end() {  # cj88e_end — 살아 있는 스테이지를 내리고 종류 파일을 지운다
+  kill "$(cat "$SA_RUN/CK.pid")" 2>/dev/null || true; rm -f "$SA_RUN/CK.kind"
+}
+cj88e_early() {
+  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+    | jq -r '.ci_early[] | select(.["세그먼트"] == "CK") | [.["head sha"], .["PR"], .["실패 체크"]] | join("|")'
+}
+cj88e_fix() {  # cj88e_fix <plan|act> [덧붙일 조각] — 리포트의 P0·P1 을 고치는 구현 파견의 rc
+  cb60_impl "$1" "/cc-cmds:implement-unattended $SA_RUN/anchor-brief.md \"세그먼트 CK · 수정 대상: $RP88E2 의 P0·P1${2:-}\""
+  printf '%s' "$rc"
+}
+
+# 선재실행 — 첫 리뷰 도중 회차 0 실패가 정착하면 재실행을 그때 보낸다.
+cj88e_new "선재실행 — 첫 리뷰 도중" none
+cj88e_live review
+check "88e: 첫 리뷰 도중의 회차 0 정착 실패에서 ci_early 원소가 선다" "$(cj88e_early)|$(cb60_next)" "$CK60_SHA|$CB60_SLUG#1|gate|"
+cb60_act
+check "88e: 선재실행 행위가 받아지고 수락 뒤 원소가 사라진다" \
+  "$rc|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(cb60_posts)|$(cj88e_early)" "0|수락|1|"
+cj88e_end
+cj88e_new "선재실행 — 구현 스테이지" none
+cj88e_live implement
+cb60_np=$(cb60_posts)
+cb60_act
+check "88e: 살아 있는 스테이지가 구현이면 선재실행 행위는 rc 3 이다" "$(cj88e_early)|$rc|$(cb60_posts)" "|3|$cb60_np"
+cj88e_end
+cj88e_new "선재실행 — 대상 판단의 park" none
+cj88e_live review
+printf '[{"name":"ext","bucket":"fail","link":"https://ci.example.invalid/build/9"}]\n' > "$CB60_S/checks.pre"
+cb60_act
+cb60_r1=$rc; cb60_nb=$(cb60_n blocked); cb60_e1=$(cj88e_early)
+# park 뒤에는 E 가 거짓이라 리뷰 도중의 같은 행위는 거절(rc 3)이고 행을 더하지 않는다.
+cb60_act
+cb60_r2=$rc
+cj88e_end
+printf -- '- `cycle` | 세그먼트=CK | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' \
+  "$CK60_SHA" "$(lsr_rp_report "$SA_ROOT/c1.md" 0 0 차단)" >> "$SA_LEDGER"
+cb60_n3=$(cb60_next)
+cb60_act
+check "88e: 선재실행의 park 뒤 원소가 사라지고 리뷰 뒤 CI 재실행 의 같은 행위는 새 행 없이 rc 11 이다" \
+  "$cb60_r1|$(sa_field "$(cb60_last blocked)" '도달 판정')|$cb60_e1|$cb60_r2|$cb60_n3|$rc|$(cb60_n blocked)|$(cb60_posts)" \
+  "11|재실행대상미상||3|CI 재실행|11|$cb60_nb|0"
+
+# 수정 표의 CI 합류 — 판정이 서기 전에는 수정 대상 파견을 받지 않고, 재실행 뒤에도 실패한
+# head 는 CI 합류 줄을 실어 리뷰 지적과 함께 구현으로 돌아간다.
+cj88e_new "CI 합류 — 수정 표" fix
+check "88e: 수정 표의 회차 0 정착 실패는 CI 재실행 이고 수정 대상 파견은 거절된다" "$(cb60_next)|$(cj88e_fix plan)" "CI 재실행|3"
+cb60_act
+check "88e: 재실행 수락 뒤 CI 대기 에서 수정 대상 파견은 거절된다" "$rc|$(cb60_next)|$(cj88e_fix plan)" "0|CI 대기|3"
+cb60_line 미등록 1 0
+check "88e: 회차 1 의 오래된 미등록 은 CI 대기 한도 이고 수정 대상 파견은 거절된다" "$(cb60_next)|$(cj88e_fix plan)" "CI 대기 한도|3"
+cb60_line 실패 1 0
+CJ88E2=" · CI 합류: $CK60_SHA · 실패 체크: gate · PR: $CB60_SLUG#1"
+cj88e_nr=$(cb60_n 'CI 처분')
+cb60_impl plan "/cc-cmds:implement-unattended $SA_RUN/anchor-brief.md \"세그먼트 CK (사이클 2)\""
+cj88e_bare=$rc
+check "88e: CI 합류 수정 에서 줄 없는 파견과 다른 sha 는 거절되고 head 의 CI 합류 파견은 받아진다" \
+  "$(cb60_next)|$(cj88e_fix plan)|$cj88e_bare|$(cj88e_fix plan ' · CI 합류: 1111111111111111111111111111111111111111')|$(cj88e_fix plan "$CJ88E2")|$(cb60_n 'CI 처분')" \
+  "CI 합류 수정|3|3|3|0|$cj88e_nr"
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment CK --cutpoint 커밋 \
+    --surface 워크트리쓰기 --resume sess-impl --snapshot-digest "$(SAH)" --rationale x -- implement -p "이어서 진행하세요"
+check "88e: CI 합류 수정 에서 재부착 구현 파견은 두 줄이 없어도 받아진다" "$rc" "0"
+cj88e_fix act "$CJ88E2" >/dev/null; cb60_a1=$(cb60_pass)
+cj88e_fix act "$CJ88E2" >/dev/null
+check "88e: 같은 head 의 CI 합류 act 둘은 처분=합류 행 하나를 남기고 f 는 0 이다" \
+  "$cb60_a1|$(cb60_pass)|$( { grep -c '^- `CI 처분` .*처분=합류' "$SA_LEDGER" || true; } )|$( ( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_ci_round "$SA_LEDGER" CK "$CK60_SHA" ) | sed -n 's/^f=//p')|$(cb60_next)" \
+  "통과|통과|1|0|CI 합류 수정"
+cb60_line 통과 1 0
+check "88e: 회차 1 의 통과 뒤 수정 표는 수정 이고 수정 대상 파견이 받아진다" "$(cb60_next)|$(cj88e_fix plan)" "수정|0"
+for p88e in $P88E2; do kill "$p88e" 2>/dev/null || true; done
+cb60_foot
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
@@ -48012,6 +48555,174 @@ if [ -n "$tier_ed_row" ] && [ "$tier_ed_row" != "$tier_ed_moved" ] && [ "$tier_e
 else bad "89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다" "$tier_ed_row"; fi
 check "89: 플러그인 단어는 판@커밋 12자다" \
   "$(tier_gate_fn "$tier_rd" "$tier_plug/orchestrator" gate_audit_plugin_word)" "9.9.9@0123456789ab"
+
+# ---------------------------------------------------------------------------
+# 89t. 토론 패스 — 설계 시도 하나가 끝날 때마다 증인 말뭉치를 세어 행 하나
+# --- section: 89t | group: tier | covers: discussion_passes, gate_record_stage_outcome, gate_append | anchors: 89t: 말뭉치가 없으면 행이 없다, 89t: round-1 증인이 없으면 행이 없다, 89t: 닫힘이고 측정 지명이 있으면 지명 미개방 이다, 89t: 스윕 반박만 있는 닫힘은 해당 없음 이다, 89t: 열림이고 측정 지명이 있으면 측정 지명 이다, 89t: 선언 없는 R2 증인이 있는 열림은 미상 이다, 89t: 모두 none 인 열림은 선언 없음 이다, 89t: 가장 큰 rev 판 하나만 증인이다, 89t: 좌석이 0 이면 발견과 재개는 미상이다, 89t: findings 줄이 없는 좌석이 있으면 발견은 미상이다, 89t: 설계 행 바로 뒤에 토론 패스 행이 선다, 89t: 최악 값의 토론 패스 행도 1024 바이트 이하다 ---
+#
+# 빌더 `gate_record_discussion_passes` 는 `$RUN_DIR/design/$DOC_SLUG/witness/` 를
+# 세어 원장에 행 하나를 쓴다. 단위 사례는 게이트를 올린 서브셸에서 빌더를 직접
+# 부르고 진짜 `gate_append` 가 쓴 행을 읽는다. `R3 사유` 의 다섯 줄은 위에서부터
+# 처음 맞는 하나로 정해지므로 줄마다 사례 하나를 둔다. 마지막 두 사례는 게이트의
+# 스테이지 결과 기록기가 설계 행 뒤에 빌더를 부르는지와, 모든 필드를 가장 긴 값으로
+# 채운 행의 길이를 잰다.
+# ---------------------------------------------------------------------------
+pre_tier
+dp_root="$WORK/dp"
+dp_led="$dp_root/ledger.md"
+dp_wd="$dp_root/design/dp/witness"
+# dp_reset — 빈 원장과 빈 말뭉치.
+dp_reset() {
+  rm -rf "$dp_root"; mkdir -p "$dp_wd"
+  printf '# 원장 픽스처\n\n## 실행 DP\n\n' > "$dp_led"
+}
+# dp_w <파일 이름> <줄…> — 말뭉치에 파일 하나.
+dp_w() { local n="$1"; shift; printf '%s\n' "$@" > "$dp_wd/$n"; }
+# dp_build [<스텝> <시도>] — 게이트를 올린 서브셸에서 빌더를 부른다. 경로 낱말은 DP_PATH.
+dp_build() {
+  ( unset CC_PIPELINE_SHIFT_ID
+    bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+      LEDGER="$2"; RUN_DIR="$3"; RUN_ID=DP; DOC_SLUG=dp; DP_WORD="$4"
+      gate_design_path_word() { printf "%s" "$DP_WORD"; }
+      gate_record_discussion_passes "$5" "$6"' _ "$GATE" "$dp_led" "$dp_root" \
+      "${DP_PATH:-discuss-audit}" "${1:-D1}" "${2:-1}" ) >/dev/null 2>&1
+}
+dp_rows() { { grep -F -e '- `토론 패스` |' "$dp_led" 2>/dev/null || true; }; }
+# dp_f <필드…> — 마지막 토론 패스 행의 필드 값들을 / 로 잇는다.
+dp_f() {
+  local row k out=""
+  row=$(dp_rows | tail -1)
+  for k in "$@"; do
+    out="$out$(printf '%s\n' "$row" | tr '|' '\n' | sed -n "s/^ *$k=//p" | sed 's/[[:space:]]*$//')/"
+  done
+  printf '%s' "${out%/}"
+}
+# dp_team <R2 선언…> — 팀원마다 round-1 과 round-2 증인. 선언은 none·measure·- (없음).
+dp_team() {
+  local i=0 d
+  for d in "$@"; do
+    i=$((i + 1))
+    dp_w "m$i.round-1.md" "제안" '<!-- witness end -->'
+    case "$d" in
+      none) dp_w "m$i.round-2.md" "입장" 'round-3: none' '<!-- witness end -->' ;;
+      measure) dp_w "m$i.round-2.md" "입장" 'round-3: measure — 왕복 시간을 잰다; 주장 X' '<!-- witness end -->' ;;
+      *) dp_w "m$i.round-2.md" "입장" '<!-- witness end -->' ;;
+    esac
+  done
+}
+
+dp_reset; rmdir "$dp_wd"
+dp_build
+check "89t: 말뭉치가 없으면 행이 없다" "$(dp_rows | grep -c . || true)" "0"
+dp_reset; dp_w INDEX.md '| m1 | round-2 |'; dp_w m1.round-2.md 'round-3: none'
+dp_build
+check "89t: round-1 증인이 없으면 행이 없다" "$(dp_rows | grep -c . || true)" "0"
+
+# (1) 닫힘 ∧ 측정 지명 ≥ 1.
+dp_reset; dp_team measure none none; dp_w SWEEP.md 'round-3: sweep — 주장 A' 'round-3: sweep — 주장 B'
+dp_build
+check "89t: 닫힘이고 측정 지명이 있으면 지명 미개방 이다" \
+  "$(dp_f 세그먼트 스테이지 '실행 버전' 경로 팀원 R3 '측정 지명' '스윕 반박' 'R3 사유' 'R3 분')" \
+  "-/D1/1/discuss-audit/3/닫힘/1/2/지명 미개방/미상"
+# (2) 그 밖의 닫힘 — 스윕 반박만 있어도 해당 없음이고 스윕 반박이 따로 보인다.
+dp_reset; dp_team none none; dp_w SWEEP.md 'round-3: sweep — 주장 A'
+dp_build
+check "89t: 스윕 반박만 있는 닫힘은 해당 없음 이다" "$(dp_f R3 '측정 지명' '스윕 반박' 'R3 사유')" "닫힘/0/1/해당 없음"
+dp_reset; dp_team none none
+dp_build
+check "89t: SWEEP.md 가 없으면 스윕 반박은 미상이다" "$(dp_f '스윕 반박' 'R3 사유')" "미상/해당 없음"
+# (3) 열림 ∧ 측정 지명 ≥ 1 — R3 분은 마지막 R2 와 마지막 R3 의 수정 시각 차를 분으로 내린다.
+dp_reset; dp_team measure none
+dp_w m1.round-3.md '최종' '<!-- witness end -->'; dp_w m2.round-3.md '최종' '<!-- witness end -->'
+touch -t 202601010000.00 "$dp_wd/m1.round-2.md"; touch -t 202601010010.00 "$dp_wd/m2.round-2.md"
+touch -t 202601010100.00 "$dp_wd/m1.round-3.md"; touch -t 202601010135.59 "$dp_wd/m2.round-3.md"
+dp_build
+check "89t: 열림이고 측정 지명이 있으면 측정 지명 이다" "$(dp_f R3 '측정 지명' 'R3 사유' 'R3 분')" "열림/1/측정 지명/85"
+# (4) 열림이고 선언 없는 R2 증인이 있으면 미상 — 측정 지명이 0 이면 그 필드도 미상이다.
+dp_reset; dp_team none -; dp_w m1.round-3.md '최종'
+dp_build
+check "89t: 선언 없는 R2 증인이 있는 열림은 미상 이다" "$(dp_f R3 '측정 지명' 'R3 사유')" "열림/미상/미상"
+# (5) 남는 개방 — 모든 R2 증인이 none.
+dp_reset; dp_team none none; dp_w m2.round-3.md '최종'
+dp_build
+check "89t: 모두 none 인 열림은 선언 없음 이다" "$(dp_f R3 '측정 지명' 'R3 사유')" "열림/0/선언 없음"
+
+# 선언은 두 형식을 가로지른 마지막 줄 하나다.
+dp_reset; dp_team none
+dp_w m1.round-2.md 'round-3: measure — 잰다; 주장' '고침' 'round-3: none'
+dp_build
+check "89t: measure 뒤에 none 이 오면 선언은 none 이다" "$(dp_f '측정 지명' 'R3 사유')" "0/해당 없음"
+dp_w m1.round-2.md 'round-3: none' 'round-3: measure — 잰다; 주장'
+dp_build
+check "89t: none 뒤에 measure 가 오면 선언은 measure 다" "$(dp_f '측정 지명' 'R3 사유')" "1/지명 미개방"
+
+# 개정 키 — (팀원, 단계)마다 k 가 가장 큰 판 하나, 원본과 함께 세지 않는다. k 는 수로 비교한다.
+dp_reset; dp_team measure
+dp_w m1.round-2-rev2.md 'round-3: none'
+dp_w m1.round-2-rev10.md 'round-3: measure — 잰다; 주장'
+dp_w m1.fidelity.md 'findings: 5' '- type: decision-reopen' '- type: decision-reopen'
+dp_w m1.fidelity-rev1.md '- type: decision-reopen' 'findings: 1'
+dp_w m2.fidelity.md 'Fidelity confirmed — all my contributions accounted for.' 'findings: 0'
+dp_w m1.fidelity.prompt.md 'findings: 70'
+dp_w m1.coherence.md 'findings: 3'
+dp_w m1.coherence.epoch-6.md 'findings: 40'
+dp_build
+check "89t: 가장 큰 rev 판 하나만 증인이다" \
+  "$(dp_f 팀원 '측정 지명' '충실도 좌석' '충실도 발견' '충실도 재개' '정합 좌석' '정합 발견')" "1/1/2/1/1/1/3"
+
+# 좌석이 0 이면 합이 아니라 미상, 개수 줄이 없는 좌석이 하나라도 있으면 미상.
+dp_reset; dp_team none
+dp_build
+check "89t: 좌석이 0 이면 발견과 재개는 미상이다" \
+  "$(dp_f '충실도 좌석' '충실도 발견' '충실도 재개' '정합 좌석' '정합 발견')" "0/미상/미상/0/미상"
+dp_w m1.coherence.md 'findings: 4'
+dp_w m2.coherence.md '- 발견 하나'
+dp_w m1.fidelity.md 'Fidelity confirmed — all my contributions accounted for.'
+dp_build
+check "89t: findings 줄이 없는 좌석이 있으면 발견은 미상이다" \
+  "$(dp_f '충실도 좌석' '충실도 발견' '충실도 재개' '정합 좌석' '정합 발견')" "1/미상/0/2/미상"
+
+# 게이트의 스테이지 결과 기록기 — 설계 시도의 행 바로 뒤에 토론 패스 행 하나. 말뭉치는
+# 스텁 스테이지가 제 런 디렉터리에 쓴다(무인 토론 갈래가 완료 전환 구간에서 하듯).
+bsx_stub "$WORK/bin/bsx-dpdesign" "$BSX_LIT_DESIGN" \
+  'w="$CC_PIPELINE_RUN_DIR/design/docs-bsxd-RTDP/witness"; mkdir -p "$w"; for m in a b; do printf "x\nround-3: none\n" > "$w/$m.round-2.md"; printf "x\n" > "$w/$m.round-1.md"; done'
+tier_fresh RTDP "$TIER_PLAN_DISCPATH"
+bsx_launch RTDP "$WORK/bin/bsx-dpdesign" design "$TIER_P_DISCUSS" D1
+dp_after=$(awk 'hit { print; exit }
+  index($0, "- `stage-result` |") == 1 && index($0, "| 스테이지=D1 | 종류=design ") { hit = 1 }' \
+  "$WT/docs/pipeline-run/RTDP.md" 2>/dev/null)
+check "89t: 설계 행 바로 뒤에 토론 패스 행이 선다" \
+  "$(printf '%s\n' "$dp_after" | sed -n 's/^- `\(토론 패스\)` | .*스테이지=\([^ |]*\) | 실행 버전=\([^ |]*\) | 경로=\([^ |]*\) | 팀원=\([^ |]*\) .*$/\1\/\2\/\3\/\4\/\5/p')" \
+  "토론 패스/D1/1/discuss-audit/2"
+
+# 최악 길이 — 필드마다 가장 긴 값: 경로는 가장 긴 낱말(discuss-audit, 13 바이트), R3 사유는
+# 다섯 값 가운데 가장 긴 지명 미개방(닫힘이라 R3 분은 수보다 긴 미상), 스테이지는 드라이버의
+# S1design, 실행 버전과 개수 필드는 다섯 자리. 교대 번호가 붙는 자리이므로 교대 id 를 둔다.
+dp_reset
+( cd "$dp_wd" && awk 'BEGIN {
+    for (i = 10000; i < 20000; i++) {
+      m = "m" i
+      print "제안" > (m ".round-1.md"); close(m ".round-1.md")
+      print "round-3: measure — 잰다; 주장" > (m ".round-2.md"); close(m ".round-2.md")
+      f = m ".fidelity.md"; print "- type: decision-reopen" > f; print "findings: 9" > f; close(f)
+      c = m ".coherence.md"; print "findings: 9" > c; close(c)
+      print "round-3: sweep — 주장 " i > "SWEEP.md"
+    } }' )
+( unset CC_PIPELINE_SHIFT_ID
+  CC_PIPELINE_SHIFT_ID=S99999-shift; export CC_PIPELINE_SHIFT_ID
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+    LEDGER="$2"; RUN_DIR="$3"; RUN_ID=DP; DOC_SLUG=dp
+    gate_design_path_word() { printf "discuss-audit"; }
+    gate_record_discussion_passes S1design 99999' _ "$GATE" "$dp_led" "$dp_root" ) >/dev/null 2>&1
+check "89t: 최악 값 픽스처의 필드가 모두 가장 긴 값이다" \
+  "$(dp_f 스테이지 '실행 버전' 경로 팀원 R3 '측정 지명' '스윕 반박' 'R3 사유' 'R3 분' '충실도 좌석' '충실도 발견' '충실도 재개' '정합 좌석' '정합 발견')" \
+  "S1design/99999/discuss-audit/10000/닫힘/10000/10000/지명 미개방/미상/10000/90000/10000/10000/90000"
+dp_worst=$(dp_rows | tail -1)
+dp_worst_bytes=$(printf '%s\n' "$dp_worst" | wc -c | tr -d ' ')
+printf '  89t: 최악 값 토론 패스 행 %s 바이트\n' "$dp_worst_bytes"
+if [ -n "$dp_worst" ] && [ "$dp_worst_bytes" -le 1024 ]; then ok "89t: 최악 값의 토론 패스 행도 1024 바이트 이하다"
+else bad "89t: 최악 값의 토론 패스 행도 1024 바이트 이하다" "${dp_worst_bytes} 바이트"; fi
+rm -rf "$dp_root"
 
 # ---------------------------------------------------------------------------
 # 90. 세션 기록의 조직 이동과 재부착 조직 대조
@@ -48479,8 +49190,8 @@ for w92 in "$W92S1" "$W92S2" "$W92S3" "$W92S4" "$W92S5"; do
 done
 
 # ---------------------------------------------------------------------------
-# 96. 중단 리포트 관문 — 런별 기록·케이던스·잠금·좌석·정리·백로그 기준선·어휘 핀
-# --- section: 96 | group: base | covers: snapshot, plan, digest-path | anchors: 96: 런 개시가 런별 기록을 연다, 96: 재진입은 종결 기록을 바이트 하나 바꾸지 않는다, 96: 첫 진입은 회차를 돈다, 96: 스탬프 안의 재진입은 회차를 돌지 않는다, 96: 잠금이 살아 있으면 회차를 돌지 않는다, 96: 스테이지 좌석은 회차를 돌지 않는다, 96: plan 은 회차를 돌지 않는다, 96: digest-path 는 회차를 돌지 않는다, 96: 기록이 없는 원장은 다루지 않는다, 96: 30일 지난 종결 기록은 지워진다, 96: fleet.seen 이 없으면 기준선만 쓴다, 96: 분류기의 런 막힘 사유는 모두 사이드카 blocked.사유 어휘에 있다 ---
+# 96b. 중단 리포트 관문 — 런별 기록·케이던스·잠금·좌석·정리·백로그 기준선·어휘 핀
+# --- section: 96b | group: base | covers: snapshot, plan, digest-path | anchors: 96: 런 개시가 런별 기록을 연다, 96: 재진입은 종결 기록을 바이트 하나 바꾸지 않는다, 96: 첫 진입은 회차를 돈다, 96: 스탬프 안의 재진입은 회차를 돌지 않는다, 96: 잠금이 살아 있으면 회차를 돌지 않는다, 96: 스테이지 좌석은 회차를 돌지 않는다, 96: plan 은 회차를 돌지 않는다, 96: digest-path 는 회차를 돌지 않는다, 96: 기록이 없는 원장은 다루지 않는다, 96: 30일 지난 종결 기록은 지워진다, 96: fleet.seen 이 없으면 기준선만 쓴다, 96: 분류기의 런 막힘 사유는 모두 사이드카 blocked.사유 어휘에 있다 ---
 #
 # 게이트가 런을 열 때 런별 기록을 만들고, 프렐류드가 중단 리포트 회차를 언제 띄우고
 # 언제 띄우지 않는지를 잰다. 등록·코멘트·담기처럼 gh 를 부르는 갈래는
@@ -48807,6 +49518,209 @@ check "97: (선행) 긴 문면의 발행 행이 연 자리=reconverge 로 쓰였
 n97=$(printf '%s' "$row97" | LC_ALL=C wc -c | tr -d ' ')
 check "97: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다" \
   "$([ "${n97:-0}" -gt 0 ] && [ "${n97:-0}" -le 1024 ] && printf 예 || printf "아니오(${n97}바이트)")" "예"
+
+# ---------------------------------------------------------------------------
+# 98b. 멈춘 스테이지의 보호 기록 — 감독자의 쓰기·지우기, 차용 중 재개 대기
+# --- section: 98b | group: ledger_series | covers: gate_sup_halt_hold_put, gate_verb_supervise_stage, gate_launch_route_carry, gate_launch_wait, gate_stage_wait_row, run_ledger_series_check | needs: 75,95 | anchors: 98: 의도된 park 의 시도는 보호 기록 하나를 남긴다, 98: 정상 완료로 끝난 시도는 보호 기록을 남기지 않는다, 98: 보호 디렉터리에 쓸 수 없어도 rc 0 이고 경고 한 줄이다, 98: 감독자는 종단 행 뒤 반납 앞에서 보호 기록을 한 번 쓴다, 98: 감독자는 세 기록 뒤 스폰 대기 앞에서 보호 기록을 지운다, 98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다, 98: 차용 중 재개 대기는 계정=- 로는 거부된다, 98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다, 98: 차용된 묶인 대기와 새 GRANT 면 새 세션이다, 98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다 ---
+#
+# 보호 기록은 라우팅된 시도가 질문으로 멈춘 뒤 임대가 반납되는 순간에도 그 계정이 cc 레인의
+# 차용 기증자 순위 맨 뒤로 가도록 남기는 표다. 감독자 전체를 띄우는 대신 감독자가 부르는
+# 쓰기 도우미를 절 75 의 사본 자식에서 직접 부르고(임대 표 루트는 픽스처 아래로 돌린다),
+# 감독자 본문 안의 자리는 함수 본문의 줄 순서로 잰다. 차용 중 재개 대기는 원장 행 검사,
+# 절 95 의 운반 판정표, 그리고 대기 반쪽까지 간 파견으로 잰다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+h98_in() {  # h98_in <pace 루트> <원장> <명령…> — 임대 표 루트를 돌린 사본 게이트 자식에서 한 명령
+  local p="$1" l="$2"; shift 2
+  RUN_PACE_ROOT="$p" lsr75_in "$l" '' '' "$@"
+}
+h98_row() {  # h98_row <원장> <키> <시도> <세션 id> <계정> <종단 부류> — 그 시도의 stage-result 행
+  h98_in "$lsr_root/pace98-rows" "$1" gate_append stage-result "세그먼트=$2" "스테이지=$2" "종류=implement" \
+    "종료 코드=0" "실행 버전=$3" "세션 id=$4" "계정=$5" "부모=-" "기록자=게이트" "종단 부류=$6" >/dev/null 2>&1
+}
+h98_holds() {  # h98_holds <pace 루트> — 보호 기록 수
+  ls -A "$1/holds" 2>/dev/null | { grep -c '\.hold$' || true; } | tr -d ' '
+}
+h98_put() {  # h98_put <pace 루트> <원장> <키> <시도> <계정> — 감독자가 반납 앞에서 하는 호출 그대로
+  h98_in "$1" "$2" gate_sup_halt_hold_put "$3" "$4" "B:$3#$4" "$5" "/h/.claude-$5"
+}
+
+h98_pa="$lsr_root/pace98-a"; rm -rf "$h98_pa"
+h98_la=$(lsr75_new hh98a)
+h98_row "$h98_la" SH1 1 "$lsr93_sid" u1 '의도된 park'
+h98_put "$h98_pa" "$h98_la" SH1 1 u1 >/dev/null 2>&1
+check "98: 의도된 park 의 시도는 보호 기록 하나를 남긴다" "$(h98_holds "$h98_pa")" "1"
+check "98: 그 기록은 키·계보·계정·디렉터리·세션·런 디렉터리를 싣는다" \
+  "$(jq -c '[.schema, .run_id, .key, .lineage, .account, .config_dir, .session_id, .run_dir]' "$h98_pa"/holds/*.hold 2>/dev/null)" \
+  "$(jq -cn --arg s "$lsr93_sid" --arg d "${h98_la%/*}" '["cc-cmds-hold v1", "LS", "SH1", "B:SH1#1", "u1", "/h/.claude-u1", $s, $d]')"
+check "98: 보호 기록은 임대 표 옆에 서고 임대 표 안에는 아무것도 쓰지 않는다" \
+  "$( [ -d "$h98_pa/holds" ] && printf holds || printf -- -)/$( [ -e "$h98_pa/leases" ] && printf leases || printf -- -)" "holds/-"
+h98_in "$h98_pa" "$h98_la" route_halt_hold_drop --table "$h98_pa/leases" --run-id LS --key SH1 >/dev/null 2>&1
+check "98: 같은 키의 지우기가 그 기록을 치운다" "$(h98_holds "$h98_pa")" "0"
+
+h98_pb="$lsr_root/pace98-b"; rm -rf "$h98_pb"
+h98_lb=$(lsr75_new hh98b)
+h98_row "$h98_lb" SH2 1 "$lsr93_sid" u1 '정상 완료'
+h98_row "$h98_lb" SH3 1 "$lsr93_sid" '-' '의도된 park'
+h98_row "$h98_lb" SH4 1 '미상' u1 '의도된 park'
+h98_row "$h98_lb" SH5 1 "$lsr93_sid" u1 '의도된 park'
+h98_put "$h98_pb" "$h98_lb" SH2 1 u1 >/dev/null 2>&1
+check "98: 정상 완료로 끝난 시도는 보호 기록을 남기지 않는다" "$(h98_holds "$h98_pb")" "0"
+h98_put "$h98_pb" "$h98_lb" SH3 1 - >/dev/null 2>&1
+check "98: 좌석 계정의 멈춤은 보호 기록을 남기지 않는다" "$(h98_holds "$h98_pb")" "0"
+h98_put "$h98_pb" "$h98_lb" SH4 1 u1 >/dev/null 2>&1
+check "98: 세션 id 꼴이 아닌 행의 멈춤은 보호 기록을 남기지 않는다" "$(h98_holds "$h98_pb")" "0"
+h98_put "$h98_pb" "$h98_lb" SH5 2 u1 >/dev/null 2>&1
+check "98: 다른 시도의 행은 이 시도의 보호 기록을 세우지 않는다" "$(h98_holds "$h98_pb")" "0"
+
+h98_pc="$lsr_root/pace98-c"; rm -rf "$h98_pc"; mkdir -p "$h98_pc"
+printf 'x\n' > "$h98_pc/holds"
+h98_lc=$(lsr75_new hh98c)
+h98_row "$h98_lc" SH6 1 "$lsr93_sid" u1 '의도된 park'
+h98_cout=$(h98_put "$h98_pc" "$h98_lc" SH6 1 u1 2>&1; printf '|rc=%s' "$?")
+check "98: 보호 디렉터리에 쓸 수 없어도 rc 0 이고 경고 한 줄이다" \
+  "$(printf '%s' "$h98_cout" | { grep -c 'the hold record of the stopped stage was not written (rc=4, SH6#1)' || true; })|${h98_cout##*|}" "1|rc=0"
+
+# 감독자 본문 안의 자리. 쓰기는 종단 행 뒤, 그 시도의 반납 앞에 한 번만 있고, 기동 준비
+# 거절의 반납(스폰보다 앞)에는 없다. 지우기는 `.pid`·`.kind`·`.start` 세 기록 뒤, 스테이지를
+# 기다리기 앞이다.
+h98_gate="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+h98_at() {  # h98_at <고정 문자열> — 감독자 본문에서 처음 나오는 줄 번호, 없으면 0
+  awk -v s="$1" '
+    /^gate_verb_supervise_stage\(\) \{/ { in_fn = 1 }
+    in_fn && index($0, s) { print NR; found = 1; exit }
+    in_fn && /^}/ { exit }
+    END { if (!found) print 0 }' "$h98_gate"
+}
+h98_count() {  # h98_count <고정 문자열> — 감독자 본문에서 그 문자열을 든 줄 수
+  awk -v s="$1" '
+    /^gate_verb_supervise_stage\(\) \{/ { in_fn = 1 }
+    in_fn && index($0, s) { n++ }
+    in_fn && /^}/ { exit }
+    END { print n + 0 }' "$h98_gate"
+}
+h98_put_at=$(h98_at 'gate_sup_halt_hold_put "$seg"')
+h98_rec_at=$(h98_at 'gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" "${effort:--}" "$r_acct"')
+h98_rel_at=$(h98_at 'route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" || hrc=$?')
+h98_wait_at=$(h98_at 'wait "$spid" || rc=$?')
+check "98: 감독자는 종단 행 뒤 반납 앞에서 보호 기록을 한 번 쓴다" \
+  "$(h98_count 'gate_sup_halt_hold_put "$seg"')/$( [ "$h98_wait_at" -gt 0 ] && [ "$h98_rec_at" -gt "$h98_wait_at" ] \
+      && [ "$h98_put_at" -gt "$h98_rec_at" ] && [ "$h98_rel_at" -gt "$h98_put_at" ] && printf 순서 || printf 어긋남)" "1/순서"
+h98_drop_at=$(h98_at 'route_halt_hold_drop --table "$(run_pace_root)/leases" --run-id "$RUN_ID" --key "$seg"')
+h98_start_at=$(h98_at 'cc_proc_fingerprint "$spid" > "$RUN_DIR/$seg.start"')
+check "98: 감독자는 세 기록 뒤 스폰 대기 앞에서 보호 기록을 지운다" \
+  "$(h98_count 'route_halt_hold_drop --table')/$( [ "$h98_start_at" -gt 0 ] && [ "$h98_drop_at" -gt "$h98_start_at" ] \
+      && [ "$h98_wait_at" -gt "$h98_drop_at" ] && printf 순서 || printf 어긋남)" "1/순서"
+
+# 원장 행 검사 — 게이트와 드라이버 두 기록자 모두.
+h98_lv=$(lsr_ledger v98)
+h98_wr() {  # h98_wr <기록자> <계정> — 차용 중 재개 대기 행 하나를 서브셸에서 쓰고 rc 를 낸다
+  local rc=0
+  ( lsr_in - "$h98_lv" - "$1" stage-wait '계보=S2-impl-1' '그룹=org:0123456789abcdef' "계정=$2" \
+      '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-borrowed' ) >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+check "98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다" \
+  "$(h98_wr gate_append acct-a)/$(h98_wr ledger_row acct-a)" "0/0"
+check "98: 차용 중 재개 대기는 계정=- 로는 거부된다" \
+  "$(h98_wr gate_append - | sed 's/^[1-9][0-9]*$/거부/')/$(h98_wr ledger_row - | sed 's/^[1-9][0-9]*$/거부/')" "거부/거부"
+check "98: 받은 두 행만 원장에 있다" \
+  "$( { grep -c '| 근거=resume-bound-borrowed' "$h98_lv" || true; } )/$( { grep -c '| 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=resume-bound-borrowed' "$h98_lv" || true; } )" "2/0"
+
+# 운반 판정표 — 차용된 묶인 대기에는 `until` 이 없다(열린 대기).
+h98_BRW='{"verdict":"WAIT","reason":"resume-bound-borrowed","group":"org:0123456789abcdef","account":"u1","until_epoch":null}'
+check "98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다" \
+  "$(lsr93_row t98a "$h98_BRW" "$lsr93_FWO")" "0|WAIT|resume|bound|-||resume,first|0|1|0|-"
+case "$( { grep '^- `stage-wait` ' "$lsr_root/t98a/ledger.md" || true; } )" in
+  *"| 계보=B:S9#2 | 그룹=org:0123456789abcdef | 계정=u1 | 까지=- | 비용=- | 비용 출처=- | 근거=resume-bound-borrowed | 답 운반="[0-9]*)
+    ok "98: 그 stage-wait 행이 기증자 그룹·묶인 계정·답 운반을 싣는다" ;;
+  *) bad "98 차용 묶인 대기 행" "$( { grep '^- `stage-wait` ' "$lsr_root/t98a/ledger.md" || true; } )" ;;
+esac
+check "98: 차용된 묶인 대기와 새 GRANT 면 새 세션이다" \
+  "$(lsr93_row t98b "$h98_BRW" "$lsr93_FG")" "0|GRANT|first||u2|/h/.claude-u2|resume,first|0|0|0|-"
+
+# 대기 반쪽까지 — FIFO 넣기는 인자를 적는 대역으로 바꾼다.
+h98_pw="$lsr_root/pace98-w"; rm -rf "$h98_pw"
+h98_lw=$(lsr75_new wl98)
+lsr93_park "$h98_lw" S98 1 "$lsr93_sid" 'Step 3 재수렴 — 질문' reconverge
+h98_wln=$(lsr93_ans "$h98_lw" S98 "${h98_lw%/*}/halt/S98#1.md" design-reconverge 적용)
+h98_wout=$(RUN_PACE_ROOT="$h98_pw" LSR93_BENV=$h98_BRW LSR93_FENV=$lsr93_FWO LSR93_DL=1900000000 LSR93_LN=$h98_wln \
+  LSR93_P98="/cc-cmds:design-reconverge $lsr93_doc R2" lsr93_in "$h98_lw" eval '
+    route_lease_wait_put() { printf "%s\n" "$*" > "$RUN_DIR/wait-put"; printf "{\"nonce\":\"w98\"}"; }
+    GATE_CARRY_ANSWER=$LSR93_LN; r=0
+    gate_carry_check infra S98 reconverge "$LSR93_P98" >/dev/null 2>&1 || r=$?
+    [ "$r" != 0 ] || gate_launch_stage infra S98 reconverge -p "$LSR93_P98" >/dev/null 2>&1 || r=$?
+    lsr93_say' 2>/dev/null)
+h98_wd="${h98_lw%/*}"
+check "98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다" \
+  "${h98_wout%%|-*}|$(sed -n '4p;6p;7p' "$h98_wd/S98.launch" 2>/dev/null | paste -sd, -)|$(cat "$h98_wd/S98.sup" 2>/dev/null)|$(lsr93_n "$h98_wd/wait-put" '--group org:0123456789abcdef')$(lsr93_n "$h98_wd/wait-put" '--holder 424242')|$(lsr93_n "$h98_wd/S98.waiting" '그룹=org:0123456789abcdef')$(lsr93_n "$h98_wd/S98.waiting" '논스=w98')" \
+  "0|WAIT|resume|bound|wait,resume,u1|424242|11|11"
+check "98: 그 파견의 stage-wait 행은 하나이고 차용 중 재개 대기다" \
+  "$(lsr93_n "$h98_lw" '- `stage-wait` ')/$(lsr93_n "$h98_lw" '| 근거=resume-bound-borrowed |')" "1/1"
+
+# ---------------------------------------------------------------------------
+# 98. gate-shard 레시피의 레인 — 행 배정, 레인별 결과 파일, 종료 코드와 합계 줄 검사
+# --- section: 98 | covers: gate-shard | anchors: 98: 두 레인이 합계 줄을 내면 통과하고 행 k 와 k+N 의 결과 파일을 남긴다, 98: 레인마다 자기 TMPDIR 를 받는다, 98: 레인 출력은 행 순서대로 통째로 찍힌다, 98: 배정 없는 레인은 빈 행으로 끝나 통과한다, 98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다, 98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다, 98: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다, 98: 레인 사례를 모두 돌렸다 ---
+#
+# Makefile 과 분할기를 임시 체크아웃에 복사하고 가짜 묶음을 둔 뒤 진짜 `make
+# gate-shard` 레시피를 부른다. 러너 2 개 × 레인 2 개라 표는 4 행이고, 러너 k 는 행
+# k 와 k+2 를 함께 돈다. 가짜 묶음은 `--sections` 의 첫 id 로 동작을 고른다:
+# `fail` 로 시작하면 합계 줄을 내고 종료 1, `nototal` 이면 합계 줄 없이 종료 0,
+# 그 밖에는 합계 줄을 내고 종료 0 이다. 받은 TMPDIR 는 로그 디렉터리에 남긴다.
+# 사례 수를 마지막 단언으로 고정해, 사례 하나를 조용히 건너뛴 고침은 통과하지 못한다.
+# ---------------------------------------------------------------------------
+d98="$WORK/d98"; mkdir -p "$d98/repo/scripts" "$d98/log"
+cp "$repo_root/Makefile" "$d98/repo/Makefile"
+cp "$repo_root/scripts/gate-shard.sh" "$d98/repo/scripts/gate-shard.sh"
+cat > "$d98/repo/scripts/test-gate.sh" <<'EOF98'
+#!/usr/bin/env bash
+ids="$2"
+printf '%s\n' "${TMPDIR:-}" > "$F98_LOG/tmpdir-${ids%%,*}"
+printf 'PASS: fake %s\n' "$ids"
+case "$ids" in
+  fail*)    printf '\ntest-gate: 1 passed, 1 failed\n'; exit 1 ;;
+  nototal*) exit 0 ;;
+  *)        printf '\ntest-gate: 1 passed, 0 failed\n'; exit 0 ;;
+esac
+EOF98
+c98=0
+# m98 <러너> <표> <출력 디렉터리> — 레시피의 종료 코드를 rc98 에, 합친 출력을 o98 에 둔다.
+m98() {
+  c98=$((c98 + 1)); rm -rf "$3"
+  rc98=0
+  o98=$( ( unset MAKEFLAGS MFLAGS MAKELEVEL; cd "$d98/repo" && F98_LOG="$d98/log" make -s --no-print-directory gate-shard \
+      SHARD="$1" GATE_SHARDS=2 GATE_LANES=2 GATE_TABLE="$2" GATE_OUT_DIR="$3" ) 2>&1 ) || rc98=$?
+}
+printf '1\t5\tok1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d98/t-ok.tsv"
+m98 1 "$d98/t-ok.tsv" "$d98/o1"
+check "98: 두 레인이 합계 줄을 내면 통과하고 행 k 와 k+N 의 결과 파일을 남긴다" \
+  "$rc98/$(cat "$d98/o1/result-1.tsv" 2>/dev/null)/$(cat "$d98/o1/result-3.tsv" 2>/dev/null)/$(ls "$d98/o1" | grep -c '^result-')" \
+  "0/$(printf '1\t0\ttest-gate: 1 passed, 0 failed')/$(printf '3\t0\ttest-gate: 1 passed, 0 failed')/2"
+check "98: 레인마다 자기 TMPDIR 를 받는다" \
+  "$(cat "$d98/log/tmpdir-ok1" 2>/dev/null)|$(cat "$d98/log/tmpdir-ok3" 2>/dev/null)" "$d98/o1/lane-1|$d98/o1/lane-3"
+check "98: 레인 출력은 행 순서대로 통째로 찍힌다" \
+  "$(printf '%s\n' "$o98" | grep -E '^(=== gate row|PASS: fake)' | tr '\n' '|')" \
+  "=== gate row 1/4 (runner 1, lanes 2) ===|PASS: fake ok1|=== gate row 3/4 (runner 1, lanes 2) ===|PASS: fake ok3|"
+m98 2 "$d98/t-ok.tsv" "$d98/o2"
+check "98: 배정 없는 레인은 빈 행으로 끝나 통과한다" \
+  "$rc98/$(cat "$d98/o2/result-4.tsv" 2>/dev/null)/$(cut -f2 "$d98/o2/result-2.tsv" 2>/dev/null)" "0/$(printf '4\t0\t빈 행')/0"
+printf '1\t5\tfail1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d98/t-fail.tsv"
+m98 1 "$d98/t-fail.tsv" "$d98/o3"
+case "$rc98/$o98" in
+  0/*) bad "98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" "rc=$rc98 $o98" ;;
+  *"행 1 의 레인이 종료 코드 1 로 끝났습니다"*) ok "98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" ;;
+  *) bad "98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" "rc=$rc98 $o98" ;;
+esac
+printf '1\t5\tnototal1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d98/t-nototal.tsv"
+m98 1 "$d98/t-nototal.tsv" "$d98/o4"
+case "$rc98/$o98" in
+  0/*) bad "98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" "rc=$rc98 $o98" ;;
+  *"행 1 의 레인 출력에 합계 줄"*) ok "98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" ;;
+  *) bad "98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" "rc=$rc98 $o98" ;;
+esac
+check "98: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다" "$(cat "$d98/o4/result-1.tsv" 2>/dev/null)" "$(printf '1\t0\t-')"
+check "98: 레인 사례를 모두 돌렸다" "$c98" "4"
+unset -f m98
 
 # --- epilogue-begin ---
 #

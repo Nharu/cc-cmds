@@ -86,8 +86,8 @@ LEADS=(design-discuss-unattended design-audit-unattended)
 # Measured sum + at most 5%, rounded up to the next 1,000.
 lead_ceiling() {
   case "$1" in
-    design-discuss-unattended) echo 159000 ;;
-    design-audit-unattended)   echo 143000 ;;
+    design-discuss-unattended) echo 178000 ;;
+    design-audit-unattended)   echo 149000 ;;
   esac
 }
 

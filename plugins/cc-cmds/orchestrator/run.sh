@@ -2029,8 +2029,19 @@ slice_ids() { slicing_body "$1" | sed -n 's/^### 슬라이스 \([A-Za-z0-9][A-Za
 
 slice_field() {
   # slice_field <doc> <id> <key>
+  # The id must end where the heading's id ends: a bare prefix match lets
+  # `### 슬라이스 B` open the block of an earlier `### 슬라이스 B0 — …`.
+  # The character after the id is tested with index(), not a regex: macOS awk
+  # counts substr() in bytes but matches regexes on wide characters, so a lone
+  # UTF-8 lead byte cut off before `—`, `·` or a Hangul syllable aborts it.
+  # An empty next character (the line ends with the id) is tested on its own,
+  # since awks disagree on what index() returns for an empty needle.
   slicing_body "$1" | awk -v id="### 슬라이스 $2" -v key="$3" '
-    index($0, id) == 1 { inb = 1; next }
+    BEGIN { idch = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" }
+    index($0, id) == 1 {
+      c = substr($0, length(id) + 1, 1)
+      if (c == "" || index(idch, c) == 0) { inb = 1; next }
+    }
     inb && /^### /     { exit }
     inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
   '
@@ -3185,7 +3196,7 @@ run_ledger_series_check() {
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
-  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
+  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
   case "$series" in
@@ -3281,7 +3292,7 @@ run_ledger_series_check() {
   # holds on the row without leaning on how the router happens to behave today.
   case "$series:$basis" in
     stage-lease:single-seat|stage-lease:shift-seat-fallback) seat=1 ;;
-    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room) bound=1 ;;
+    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room|stage-wait:resume-bound-borrowed) bound=1 ;;
   esac
   if [ "$series" = "stage-lease" ]; then
     if { [ "$seat" = "1" ] && [ "$acct" != "-" ]; } || { [ "$seat" = "0" ] && [ "$acct" = "-" ]; }; then
@@ -10989,6 +11000,8 @@ continue_attempt() {
   # A continued audit attempt is an audit attempt too, and leaves its own
   # `감사 공시` row after its row.
   [ "$rkind" != "S2" ] || run_gate_call gate_record_audit_disclosure S2 "$(stage_attempt_pinned "$did")" || true
+  # A continued design attempt leaves its own `토론 패스` row after its row.
+  [ "$rkind" != "S1design" ] || run_gate_call gate_record_discussion_passes S1design "$(stage_attempt_pinned "$did")" || true
   if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
     CONTINUE_PARK_REASON="중단 기록"
     CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$did")" 2>/dev/null || true)
@@ -11621,6 +11634,9 @@ design_arm() {
   # The absorber above keys on the stage, not on the run-scope `-`: a `-` key is
   # every run-scope stage's at once, and the open-judgment check could not tell
   # this stage's question from another's.
+  # The design row carries no `종류`, so the `토론 패스` row is placed by the
+  # stage id rather than by the kind the gate's recorder reads.
+  run_gate_call gate_record_discussion_passes S1design "$(stage_attempt_pinned S1design)" || true
   # An unfrozen document does not go on to the audit or the segment plan —
   # both read the freeze as a precondition.
   case "$class1" in
