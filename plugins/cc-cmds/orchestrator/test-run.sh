@@ -1640,6 +1640,37 @@ check "필드 불완전 → 선언불완전" "$(slicing_branch "$SLI/incomplete.
 # 필드 접근과 합성 규칙.
 check "필드 조회" "$(slice_field "$SLI/tilde.md" A '레포')" '`o/r`'
 check "슬라이스 id 열거" "$(slice_ids "$SLI/tilde.md" | tr '\n' ' ')" "A "
+
+# 한 id 가 다른 id 의 앞부분일 때 — `B` 는 앞에 선언된 `B0` 의 블록을 읽지 않는다.
+cat > "$SLI/prefix.md" <<'FIXP'
+## 구현 슬라이싱
+
+**슬라이스 수**: 2
+
+### 슬라이스 B0 — 입력 먼저
+
+**스킬**: implement
+**레포**: `o/r`
+**선언 파일**: `b0.txt`
+**선행**: 없음
+**절단점**: 머지
+
+### 슬라이스 B — 배포
+
+**스킬**: implement
+**레포**: `o/r`
+**선언 파일**: `b.txt`
+**선행**: B0
+**절단점**: 머지
+FIXP
+check "앞부분이 겹치는 id: B 의 필드는 B 블록에서 읽는다" "$(slice_field "$SLI/prefix.md" B '선언 파일')" '`b.txt`'
+check "앞부분이 겹치는 id: B 의 선행" "$(slice_field "$SLI/prefix.md" B '선행')" "B0"
+check "앞부분이 겹치는 id: B0 는 그대로" "$(slice_field "$SLI/prefix.md" B0 '선언 파일')" '`b0.txt`'
+if [ "$(slice_decl_digest "$SLI/prefix.md" B)" != "$(slice_decl_digest "$SLI/prefix.md" B0)" ]; then
+  ok "앞부분이 겹치는 id: 두 슬라이스의 선언 다이제스트가 다르다"
+else
+  bad "앞부분이 겹치는 id" "B 와 B0 의 선언 다이제스트가 같다"
+fi
 check "체크섬은 PR 이상 블록 수에서 파생된다" "$(slicing_pr_count "$SLI/tilde.md")" "1"
 sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`|' "$SLI/tilde.md" > "$SLI/skillonly.md"
 check "SKILL.md 만 선언하면 필드 검사 실패" "$(slicing_branch "$SLI/skillonly.md" 2>/dev/null)" "선언불완전"

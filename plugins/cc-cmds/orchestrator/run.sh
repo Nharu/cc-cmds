@@ -1986,8 +1986,10 @@ slice_ids() { slicing_body "$1" | sed -n 's/^### 슬라이스 \([A-Za-z0-9][A-Za
 
 slice_field() {
   # slice_field <doc> <id> <key>
+  # The id must end where the heading's id ends: a bare prefix match lets
+  # `### 슬라이스 B` open the block of an earlier `### 슬라이스 B0 — …`.
   slicing_body "$1" | awk -v id="### 슬라이스 $2" -v key="$3" '
-    index($0, id) == 1 { inb = 1; next }
+    index($0, id) == 1 && substr($0, length(id) + 1, 1) !~ /[A-Za-z0-9]/ { inb = 1; next }
     inb && /^### /     { exit }
     inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
   '
