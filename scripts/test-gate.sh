@@ -41654,7 +41654,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 95c. 재진입 표의 구현·토론·단독·분할 행은 원장 값 칸을 게이트가 지어 대조한다
-# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_carry_ledger_frame, gate_carry_frame_reads | needs: 95 | anchors: 95c: 재진입 표는 여섯 행이다, 95c: 다음 런에 들인 구현 정지의 운반은 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 exit 19·행 없음, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
+# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_carry_ledger_frame, gate_carry_frame_reads, gate_carry_slot_values, gate_carry_source, gate_answered_halts_json | needs: 95 | anchors: 95c: 재진입 표는 여섯 행이다, 95c: 다음 런에 들인 구현 정지의 운반은 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지의 스냅숏 원소는 출처 원장의 사이클과 수정 대상 리포트를 싣는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 exit 19·행 없음, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
 #
 # 구현·설계 토론·리드 단독 설계·베이스 분할의 정지는 보통 파견과 같은 틀로 운반된다.
 # 그 틀의 칸 중 문서 말고는 모두 원장에서 오므로, 게이트가 같은 원장에서 값을 지어
@@ -41898,7 +41898,23 @@ case "$(LSR93_LN=$lsr95c_ln LSR93_P="/cc-cmds:implement-unattended $lsr93_doc $(
   *"출처 런 OR95C 원장으로 지은 값"*"재부착할 수 없습니다"*) ok "95c: 다음 런에 들인 구현 정지의 19 경고는 재부착이 아니라 중단을 말한다" ;;
   *) bad "95c: 다음 런에 들인 구현 정지의 19 경고가 출처 런을 말하지 않는다" ;;
 esac
-lsr95c_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q "세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh · 수정 대상: $lsr_root/OR95C/review-S3-2.md 의 P0·P1")"
+# 교대는 들인 답의 칸을 이 런의 cycle 행이 아니라 스냅숏 원소의 origin_cycle·origin_fix_report
+# 로 채운다. 그 두 값이 출처 원장의 값이고, 그 값으로 지은 운반이 게이트가 지은 틀과 맞아야
+# 계약대로 쓴 운반이 19 로 끝나지 않는다. 이 런에서 준 답의 원소는 두 칸이 비어 있다.
+lsr95c_oh() {
+  # lsr95c_oh <이름> — 그 픽스처 스냅숏의 S3 answered_halts 원소의 「origin_cycle|origin_fix_report」.
+  lsr93_in "$lsr_root/$1/ledger.md" gate_answered_halts_json 2>/dev/null \
+    | { printf '['; cat; printf ']'; } \
+    | jq -r '.[] | select(.segment == "S3") | "\(.origin_cycle)|\(.origin_fix_report)"' 2>/dev/null
+}
+lsr95c_oc=$(lsr95c_oh oc0)
+check "95c: 다음 런에 들인 구현 정지의 스냅숏 원소는 출처 원장의 사이클과 수정 대상 리포트를 싣는다" \
+  "$lsr95c_oc" "2|$lsr_root/OR95C/review-S3-2.md"
+check "95c: 이 런에서 준 구현 정지 답의 스냅숏 원소는 출처 칸이 비어 있다" "$(lsr95c_oh im3)" "|"
+lsr95c_t=${lsr95c_oc#*|}
+lsr95c_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q "세그먼트 S3 (사이클 ${lsr95c_oc%%|*}) · 선언 파일: a.txt, b/c.sh${lsr95c_t:+ · 수정 대상: $lsr95c_t 의 P0·P1}")"
+check "95c: 스냅숏 원소로 채운 들인 구현 정지의 운반 프롬프트는 출처 원장의 틀이다" \
+  "$lsr95c_p" "/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q "세그먼트 S3 (사이클 2) · 선언 파일: a.txt, b/c.sh · 수정 대상: $lsr_root/OR95C/review-S3-2.md 의 P0·P1")"
 check "95c: 다음 런에 들인 구현 정지의 운반은 출처 원장의 사이클과 수정 대상을 싣는다" \
   "$(lsr95c_go oc0 "$lsr95c_ln" implement "$lsr95c_p")" "$lsr95c_ok#$lsr95c_p"
 

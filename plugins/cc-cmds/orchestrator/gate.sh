@@ -18742,7 +18742,16 @@ gate_answered_halts_json() {
     # refused one back to a person. Both are empty when the record file is
     # gone, since there is nothing to read the branch from. Neither enters the
     # digest H or the default `--fields` projection.
-    local rrec rby rroute='' rwhy=''
+    #
+    # `origin_cycle` and `origin_fix_report` are the `<사이클>` and `<리포트>`
+    # values of an implement answer brought over from an earlier run, read from
+    # that run's ledger under the key it halted on (`gate_carry_slot_values`,
+    # the reading the carry act compares against): the copy row is the only row
+    # of the answer in this ledger, so this run's last `cycle` row and
+    # `review_next[]` say nothing about the attempt that halted. Both are empty
+    # for an answer given in this run and for any other skill's answer, and
+    # `origin_fix_report` is empty too when that attempt was not a fix cycle.
+    local rrec rby rroute='' rwhy='' rocy='' rorep=''
     rrec=$(gate_row_field "$row" '중단 기록')
     rby=$(gate_halt_answered_by "$row")
     if [ -f "$rrec" ]; then
@@ -18752,7 +18761,14 @@ gate_answered_halts_json() {
         rwhy=$GATE_HALT_ROUTE_REASON
       fi
     fi
-    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "attachment": "%s", "origin_run": "%s", "route": "%s", "route_refusal": "%s", "line": %s, "state": "%s"}' \
+    if [ -n "$(gate_row_field "$row" '출처 런')" ] && [ "$(gate_row_field "$row" '스킬')" = implement-unattended ]; then
+      gate_carry_source "$row" "$key"
+      if [ -f "$GATE_CS_LEDGER" ]; then
+        gate_carry_slot_values "$GATE_CS_LEDGER" "$GATE_CS_RUN_DIR" "$GATE_CS_KEY" '<사이클>[<리포트>]'
+        rocy=$GATE_CS_CYCLE; rorep=$GATE_CS_REPORT
+      fi
+    fi
+    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "attachment": "%s", "origin_run": "%s", "origin_cycle": "%s", "origin_fix_report": "%s", "route": "%s", "route_refusal": "%s", "line": %s, "state": "%s"}' \
       "$(gate_json_escape "$key")" \
       "$(gate_json_escape "$rrec")" \
       "$(gate_json_escape "$(gate_row_field "$row" '스킬')")" \
@@ -18760,6 +18776,8 @@ gate_answered_halts_json() {
       "$(gate_json_escape "$rby")" \
       "$(gate_json_escape "$(gate_row_field "$row" '첨부')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '출처 런')")" \
+      "$(gate_json_escape "$rocy")" \
+      "$(gate_json_escape "$rorep")" \
       "$(gate_json_escape "$rroute")" \
       "$(gate_json_escape "$rwhy")" \
       "$ln" \
@@ -19965,6 +19983,52 @@ gate_carry_frame_reads() {
   esac
 }
 
+gate_carry_slot_values() {
+  # gate_carry_slot_values <ledger> <run dir> <key> <frame> — the values the
+  # `<사이클>` and `<리포트>` slots of <frame> take, read as
+  # `gate_carry_frame_reads` reads them (its GATE_CF_* are left set too):
+  # GATE_CS_CYCLE the `사이클` of the key's last `cycle` row, `1` when it has
+  # none; GATE_CS_REPORT the absolute `리포트 경로` of that row when the key's
+  # `다음` is `수정`, empty otherwise. One reading for the frame the carry act
+  # compares and for the `origin_cycle` / `origin_fix_report` the snapshot
+  # hands the shift, so the shift spells an answer brought over from an
+  # earlier run with the values the gate compares it against.
+  gate_carry_frame_reads "$@"
+  GATE_CS_CYCLE=$(gate_row_field "$GATE_CF_CR" '사이클')
+  [ -n "$GATE_CS_CYCLE" ] || GATE_CS_CYCLE=1
+  GATE_CS_REPORT=''
+  [ "$GATE_CF_NX" != 수정 ] || GATE_CS_REPORT=$(gate_report_abs "$(gate_row_field "$GATE_CF_CR" '리포트 경로')")
+}
+
+gate_carry_source() {
+  # gate_carry_source <answer row> <key> — where the attempt a `중단 답` row
+  # answered halted: GATE_CS_LEDGER, GATE_CS_RUN_DIR, GATE_CS_KEY and
+  # GATE_CS_RECORD. This run's ledger, run directory, <key> and the row's
+  # `중단 기록` for an answer given in this run; for one brought over from an
+  # earlier run (`출처 런`), that run's ledger and run directory, its
+  # `출처 기록`, and the key it halted on — the key of the earlier row that
+  # answered the record (a re-kickoff plans its step ids anew, and an answer
+  # carried over twice names the run the person answered in, not the run the
+  # segment was adopted from) or, without that row, the adopted segment's
+  # earlier key.
+  local src r adrow
+  src=$(gate_row_field "$1" '출처 런')
+  GATE_CS_KEY=$2
+  if [ -z "$src" ]; then
+    GATE_CS_LEDGER=$LEDGER; GATE_CS_RUN_DIR=$RUN_DIR
+    GATE_CS_RECORD=$(gate_row_field "$1" '중단 기록')
+    return 0
+  fi
+  GATE_CS_LEDGER="$(dirname "$LEDGER")/$src.md"; GATE_CS_RUN_DIR="$(dirname "$RUN_DIR")/$src"
+  GATE_CS_RECORD=$(gate_row_field "$1" '출처 기록')
+  r=$(gate_carry_source_row "$GATE_CS_LEDGER" "$GATE_CS_RECORD")
+  if [ -n "$r" ]; then
+    GATE_CS_KEY=$(gate_row_field "${r#*:}" '세그먼트')
+  elif adrow=$(gate_adoption_row "$2" 2>/dev/null); then
+    GATE_CS_KEY=$(gate_adoption_source_key "$adrow")
+  fi
+}
+
 gate_carry_ledger_frame() {
   # gate_carry_ledger_frame <frame> <document> <key> <prompt> [<ledger> <run dir>
   # <ledger key> <source run>] — fill a re-entry
@@ -20017,11 +20081,14 @@ gate_carry_ledger_frame() {
   # ones it judges the halt against), and the source run's id; nothing ran on
   # the key in that run after the halted attempt either, since the run ended
   # after keeping the answer. `<세그먼트>` stays the carry act's key and
-  # `<선언 파일>` this run's segment row, which the review line reads too. No
-  # session of this run halted there, so a slot that differs is answered by
+  # `<선언 파일>` this run's segment row, which the review line reads too. The
+  # snapshot hands the shift the `<사이클>` and `<리포트>` values read the same
+  # way, as the `answered_halts[]` element's `origin_cycle` and
+  # `origin_fix_report`, so a carry spelled from them is the frame built here.
+  # No session of this run halted there, so a slot that differs is answered by
   # ending the shift, not by a re-attachment.
   local frame="$1" doc="$2" key="$3" prompt="$4" lpl="${5:-$LEDGER}" lprd="${6:-$RUN_DIR}"
-  local lkey="${7:-$3}" src="${8:-}" cr v want bare full opt pat p expect nx dirv reim after
+  local lkey="${7:-$3}" src="${8:-}" v want bare full opt pat p expect nx dirv reim after
   GATE_CARRY_BUILT=''
   case "$frame" in
     *'['*']'*)
@@ -20029,18 +20096,14 @@ gate_carry_ledger_frame() {
       bare="${frame%%\[*}${frame#*\]}"; full="${frame%%\[*}$opt${frame#*\]}" ;;
     *) bare=$frame; full=$frame ;;
   esac
-  gate_carry_frame_reads "$lpl" "$lprd" "$lkey" "$frame"
-  cr=$GATE_CF_CR; nx=$GATE_CF_NX; dirv=$GATE_CF_DIRV; reim=$GATE_CF_REIM
+  gate_carry_slot_values "$lpl" "$lprd" "$lkey" "$frame"
+  nx=$GATE_CF_NX; dirv=$GATE_CF_DIRV; reim=$GATE_CF_REIM
   want=$bare
   case "$frame" in *'<리포트>'*) [ "$nx" != 수정 ] || want=$full ;; esac
   want=$(gate_fill_slot "$want" '<세그먼트>' "$key")
-  case "$want" in
-    *'<사이클>'*)
-      v=$(gate_row_field "$cr" '사이클'); [ -n "$v" ] || v=1
-      want=$(gate_fill_slot "$want" '<사이클>' "$v") ;;
-  esac
+  case "$want" in *'<사이클>'*) want=$(gate_fill_slot "$want" '<사이클>' "$GATE_CS_CYCLE") ;; esac
   case "$want" in *'<선언 파일>'*) want=$(gate_fill_slot "$want" '<선언 파일>' "$(gate_segment_decl_whole "$key")") ;; esac
-  case "$want" in *'<리포트>'*) want=$(gate_fill_slot "$want" '<리포트>' "$(gate_report_abs "$(gate_row_field "$cr" '리포트 경로')")") ;; esac
+  case "$want" in *'<리포트>'*) want=$(gate_fill_slot "$want" '<리포트>' "$GATE_CS_REPORT") ;; esac
   case "$want" in *'<의도>'*) want=$(gate_fill_slot "$want" '<의도>' "$(manifest_intent_line)") ;; esac
   expect=$(gate_fill_slot "$want" '<문서>' "$doc")
   if [ -z "$dirv" ] && [ "$prompt" = "$expect" ]; then
@@ -20095,7 +20158,7 @@ gate_carry_check() {
   # answers use. An answer brought over from an earlier run is judged against
   # that run's ledger, where its attempt halted.
   local alias="$1" key="$2" skind="$3" prompt="$4" ln="$GATE_CARRY_ANSWER"
-  local row rec skill opt step s1 dig cur src lp lpl lprd lprec skey adrow
+  local row rec skill opt step s1 dig cur src lp lpl lprd lprec skey
   local tskill tglob tkind frame found=0 doc head scope pm prec n r pkind
   GATE_HA_LINE=''; GATE_HA_BOUND=''; GATE_HA_SCOPE=''
   row=$(sed -n "${ln}p" "$LEDGER" 2>/dev/null)
@@ -20163,28 +20226,14 @@ gate_carry_check() {
     return "$GATE_EXIT_RULE"
   fi
   src=$(gate_row_field "$row" '출처 런')
+  gate_carry_source "$row" "$key"
+  lpl=$GATE_CS_LEDGER; lprd=$GATE_CS_RUN_DIR; lprec=$GATE_CS_RECORD; skey=$GATE_CS_KEY
   if [ -n "$src" ]; then
-    lpl="$(dirname "$LEDGER")/$src.md"; lprd="$(dirname "$RUN_DIR")/$src"
-    lprec=$(gate_row_field "$row" '출처 기록')
-    # The key the earlier run halted on: the key of the earlier row that
-    # answered the record — a re-kickoff plans its step ids anew, and an answer
-    # carried over twice names the run the person answered in, not the run the
-    # segment was adopted from — or, without that row, the adopted segment's
-    # earlier key.
-    skey=$key
-    r=$(gate_carry_source_row "$lpl" "$lprec")
-    if [ -n "$r" ]; then
-      skey=$(gate_row_field "${r#*:}" '세그먼트')
-    elif adrow=$(gate_adoption_row "$key" 2>/dev/null); then
-      skey=$(gate_adoption_source_key "$adrow")
-    fi
     if [ ! -f "$lpl" ] || [ -z "$lprec" ] \
        || [ "$( { shasum -a 256 "$lprec" 2>/dev/null || true; } | cut -d' ' -f1)" != "$dig" ]; then
       warn "출처 런 ${src} 의 기록이 사본과 같지 않거나 읽을 수 없습니다 — 운반하지 않습니다: ${lprec:-(없음)}"
       return "$GATE_EXIT_RULE"
     fi
-  else
-    lpl=$LEDGER; lprd=$RUN_DIR; lprec=$rec; skey=$key
   fi
   lp=0
   gate_halt_record_of_last_park "$lpl" "$lprd" "$skey" "$lprec" || lp=$?
