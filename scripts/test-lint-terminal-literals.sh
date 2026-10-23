@@ -17,7 +17,8 @@
 # re-convergence literal, and the autopilot skill's
 # router reference carries two design copies on one line. The sidecar, the
 # shift's split-dispatch reference and the autopilot router reference also
-# carry the base split literal once. `FAIL-consumer-second-copy-same-line`
+# carry the base split literal once, and the shift's visual-dispatch reference
+# and the autopilot router reference the visual literal once. `FAIL-consumer-second-copy-same-line`
 # is the case that earns the per-occurrence count its keep: a per-line count
 # stays green when only the second copy on a line changes.
 #
@@ -45,8 +46,9 @@ D=$(real_value LIT_DESIGN_TERMINAL)
 A=$(real_value LIT_AUDIT_TERMINAL)
 R=$(real_value LIT_RECONVERGE_TERMINAL)
 S=$(real_value LIT_SPLIT_TERMINAL)
-if [[ -z "$D" || -z "$A" || -z "$R" || -z "$S" ]]; then
-  echo "FAIL: $REAL_RUN_SH 에서 종단 리터럴 네 값을 읽지 못했다" >&2
+V=$(real_value LIT_VISUAL_TERMINAL)
+if [[ -z "$D" || -z "$A" || -z "$R" || -z "$S" || -z "$V" ]]; then
+  echo "FAIL: $REAL_RUN_SH 에서 종단 리터럴 다섯 값을 읽지 못했다" >&2
   exit 2
 fi
 
@@ -61,7 +63,7 @@ passed=0
 failures=0
 
 write_source() {
-  # write_source <root> <design> <audit> <reconverge> [<split>]
+  # write_source <root> <design> <audit> <reconverge> [<split>] [<visual>]
   local root="$1"
   mkdir -p "$root/orch"
   {
@@ -70,6 +72,7 @@ write_source() {
     printf "readonly LIT_RECONVERGE_TERMINAL='%s'\n" "$4"
     printf "readonly LIT_DESIGN_TERMINAL='%s'\n" "$2"
     printf "readonly LIT_SPLIT_TERMINAL='%s'\n" "${5:-$S}"
+    printf "readonly LIT_VISUAL_TERMINAL='%s'\n" "${6:-$V}"
   } > "$root/orch/run.sh"
 }
 
@@ -88,6 +91,7 @@ write_emitters() {
   write_emitter "$1" design-reconverge "$4"
   write_emitter "$1" design-audit-unattended "$3"
   write_emitter "$1" design-base-unattended "${5:-$S}"
+  write_emitter "$1" visual-unattended "$V"
 }
 
 write_sidecar() {
@@ -102,7 +106,7 @@ write_sidecar() {
 }
 
 write_router_shift() {
-  # write_router_shift <root> <design-1> <design-2> <reconverge> [<split>]
+  # write_router_shift <root> <design-1> <design-2> <reconverge> [<split>] [<visual>]
   # The shift reads each of these branches from its own reference file on
   # entry, so each literal lives in the file of the branch that matches it.
   local refs="$1/skills/autopilot-router-shift/references"
@@ -110,16 +114,18 @@ write_router_shift() {
   printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3" > "$refs/design-dispatch.md"
   printf "6. its terminal literal (\`grep -cF '%s' log\`)\n" "$4" > "$refs/refutation-reconverge.md"
   printf "7. the split literal \`%s\` in its stream\n" "${5:-$S}" > "$refs/split-dispatch.md"
+  printf "8. the visual literal\n\n%s\n" "${6:-$V}" > "$refs/visual-dispatch.md"
 }
 
 write_autopilot() {
-  # write_autopilot <root> <design-1> <design-2> [<split>]
+  # write_autopilot <root> <design-1> <design-2> [<split>] [<visual>]
   # The lead's copy of the router loop lives in a reference file, not in the
   # skill's resident body.
   mkdir -p "$1/skills/autopilot/references"
   {
     printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3"
     printf "7. the split literal \`%s\` in its stream\n" "${4:-$S}"
+    printf "8. the visual literal\n\n%s\n" "${5:-$V}"
   } > "$1/skills/autopilot/references/router-lead-copy.md"
 }
 
@@ -192,6 +198,20 @@ mk_root "$WORK/cons-split-char"
 write_router_shift "$WORK/cons-split-char" "$D" "$D" "$R" "$(one_char "$S")"
 run_case "FAIL-split-consumer-one-char" 1 "$WORK/cons-split-char" \
   "autopilot-router-shift/references/split-dispatch.md" "LIT_SPLIT_TERMINAL"
+
+# FAIL — the visual emitter lost its literal. Without it every visual stage ends
+# as a vacuous success, and the screen slices wait on a stage that did finish.
+mk_root "$WORK/emit-visual-lost"
+printf '# visual-unattended\n\nstop.\n' > "$WORK/emit-visual-lost/skills/visual-unattended/SKILL.md"
+run_case "FAIL-visual-emitter-literal-missing" 1 "$WORK/emit-visual-lost" \
+  "visual-unattended/SKILL.md" "LIT_VISUAL_TERMINAL"
+
+# FAIL — the visual copy in the shift's visual-dispatch reference changed by one
+# character.
+mk_root "$WORK/cons-visual-char"
+write_router_shift "$WORK/cons-visual-char" "$D" "$D" "$R" "$S" "$(one_char "$V")"
+run_case "FAIL-visual-consumer-one-char" 1 "$WORK/cons-visual-char" \
+  "autopilot-router-shift/references/visual-dispatch.md" "LIT_VISUAL_TERMINAL"
 
 # FAIL — an emitter file is gone. Closed failure, not a skip.
 mk_root "$WORK/emit-absent"
