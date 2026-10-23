@@ -19,7 +19,7 @@ A fix cycle that runs as process A — its plan was voided by a re-convergence o
 
 Before the first edit, read four things.
 
-- **(가) Every P0 and P1 item of the target report.** Number them in report order as `P0-<k>` and `P1-<k>`, and check the count against the report's `발견 요약`. Items under `## 다른 슬라이스 몫 (집계 제외)` are not part of (가) and get no number. A count that does not match is a halt with `분류: precondition-failed` naming both counts: an item dropped here is a known finding nobody fixes and nobody records.
+- **(가) Every P0 and P1 item of the target report.** Number them in report order as `P0-<k>` and `P1-<k>`, and check the count against the report's `발견 요약`. Items under `## 다른 슬라이스 몫 (집계 제외)` are not part of (가) and get no number. A count that does not match is a halt with `분류: precondition-failed` naming both counts: an item dropped here is a known finding nobody fixes and nobody records. **Each `CI 합류: <sha>` piece in the scope directive adds one more target, `CI-1`** — the pull request's check that failed again after its rerun on that head. It is numbered apart from `P0-<k>` and `P1-<k>` and is not counted against `발견 요약`. Find its cause from the failed jobs' logs, read through the gate (`gh run view <run id> --log-failed`, a read), with the `실패 체크` and `PR` the directive names beside it.
 - **(나) Items of another severity in the same report that point at the same file or the same function.** They are not targets. Read them as facts the fix rests on.
 - **(다) Items of this segment's earlier reports that point at the same file, with their `기준 사이클 재판정` verdicts.** The earlier reports are the `리포트 경로` values of this segment's `cycle` rows in the run ledger. A host that has no view of the ledger does not read (다); its own section says so.
 - **(라) A `💡 수정 제안` is a hypothesis.** Write down every fact the suggestion rests on — a rule of another section or another file, the behaviour of an external tool — and confirm each before applying it. A premise that cannot be confirmed is not applied, and the item is recorded as `수정 불가 — <reason>`.
@@ -79,13 +79,13 @@ The commits stay, so no uncommitted path is left behind. This branch creates no 
 
 ## Rule D — a root cause outside the declared files
 
-When an item's root cause lies outside the declared files, do not fix around it inside them. An implementation stage first fixes and commits the other items and finishes the fix check and the tests, then stops on that item with a CFI-U3 BT-STOP, naming the file and the evidence in `**질문 문면**`. A lead fix records the item as `수정 불가 — 근본 원인이 선언 파일 밖 <file>`.
+When an item's root cause lies outside the declared files, do not fix around it inside them. An implementation stage first fixes and commits the other items and finishes the fix check and the tests, then stops on that item with a CFI-U3 BT-STOP, naming the file and the evidence in `**질문 문면**`. A lead fix records the item as `수정 불가 — 근본 원인이 선언 파일 밖 <file>`. **`CI-1` is the exception**: a CI failure whose cause lies outside the declared files is not fixed and not a stop — record it as `CI-1 수정 불가 — 원인이 선언 파일 밖 <file>` and go on with the review's items, which keep this rule.
 
 ## End-of-turn lines
 
 Every terminal message of a fix cycle — a normal end and a halt alike — carries two lines of their own beside `**시험 범위**`.
 
-- `**수정 항목**` — per item, one of `P?-<k> 수정됨`, `P?-<k> 수정됨 — <the out-of-tree artefact fixed>` or `P?-<k> 수정 불가 — <reason>`; and, per hunk that touches no item, `범위 밖: <file:range> — <why>`. A hunk that makes the same fix on another copy of a changed rule counts as touching that item.
+- `**수정 항목**` — per item, one of `P?-<k> 수정됨`, `P?-<k> 수정됨 — <the out-of-tree artefact fixed>` or `P?-<k> 수정 불가 — <reason>`; and, per hunk that touches no item, `범위 밖: <file:range> — <why>`. A hunk that makes the same fix on another copy of a changed rule counts as touching that item. `CI-1` reads `CI-1 수정됨` or `CI-1 수정 불가 — 원인이 선언 파일 밖 <file>`, and a hunk that fixes it touches an item, so it is not `범위 밖:`.
 - `**자체 점검**` — the branch run, what was fixed, what was not (`선언 밖` included) and `grep 초과`.
 
 The three marks are different things: `범위 밖:` is a fix hunk that touches no item, `선언 밖` is a check finding not fixed because it lies outside the declared files, and `grep 초과` is a place past the thirty-entry list. The driver and the gate read no value from either line. The lead fix's `.lead-fix.md` record keeps its shape.

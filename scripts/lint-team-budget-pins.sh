@@ -14,8 +14,11 @@
 #   (ii)  the sentences that carry the budgets' meaning rather than their
 #         numbers — the coordinator-class carve-out, the narrowed third-round
 #         trigger, the cost-reason ban, the risk-over-size precedence, and
-#         the `MERGE`-Coordinator prohibition. Each of those can be deleted
-#         during an unrelated rewrite with every other check still green.
+#         the `MERGE`-Coordinator prohibition, and the design discussion's two
+#         sentences relating it to the shared protocol (the convergence dispatch
+#         folded into Round 2, a sweep refutation kept out of Round 3). Each of
+#         those can be deleted during an unrelated rewrite with every other
+#         check still green.
 #   (iii) a NEGATIVE fence: budget-stating phrasings must not reappear in a
 #         SKILL.md or a reference file, because that is how the numbers got
 #         scattered in the first place.
@@ -76,6 +79,7 @@ MERGE_HEADING='### `MERGE` (two roles → one, both parents replaced)'
 GATE_HEADING='#### Small-work gate (evaluated once on entering this step)'
 LITE_HEADING='#### Round structure (fixed — round hard-cap = 2)'
 DISPATCH_HEADING='#### Leg dispatch (after approval — the seat launches the discussion leg)'
+DISCUSSION_HEADING='#### Discussion Protocol (rounds per the shared Round budget)'
 
 if [[ ! -f "$PROTOCOL" ]]; then
   echo "SKIP: _common/agent-team-protocol.md not found under $skills_root"
@@ -233,6 +237,28 @@ if has_heading "$DESIGN" "$GATE_HEADING"; then
   # The floor, without which the small row could be read as "no team at all".
   assert_once_in_file '**Floor.** This gate selects among composed rows that each carry at least two roster rows' "$DESIGN" \
     "design/SKILL.md (small-work gate)"
+fi
+
+# ---------- design discussion — relation to the shared protocol (skip-if-absent)
+
+# The design discussion departs from the shared protocol in two places without
+# changing any number of `### Round budget`: it folds the separate convergence
+# dispatch of `## Convergence` into the Round 2 dispatch, and it carries the second
+# entry path to Round 3 (a pre-save sweep refutation) as Step 4's author-only
+# re-convergence instead. Each sentence is what makes that departure legible as
+# intent; deleting one leaves a procedure that reads as drift from the protocol
+# with every other check still green. Skip-if-absent at heading granularity: a
+# tree without the discussion heading is not checked, and a file-existence gate
+# would turn the fixtures that carry a `design/SKILL.md` without it red.
+if has_heading "$DESIGN" "$DISCUSSION_HEADING"; then
+  discussion_body=$(extract_section "$DESIGN" "$DISCUSSION_HEADING")
+  DISCUSSION_PINS=(
+    '**The shared convergence dispatch is folded into Round 2.**'
+    '**A sweep refutation does not open Round 3 in this procedure.**'
+  )
+  for lit in "${DISCUSSION_PINS[@]}"; do
+    assert_once_in_section "$lit" "$discussion_body" "design/SKILL.md ($DISCUSSION_HEADING)"
+  done
 fi
 
 # ---------- leg dispatch — pinned launch-line literals (gated on FILE existence) ----------
