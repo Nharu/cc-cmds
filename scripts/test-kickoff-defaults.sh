@@ -52,8 +52,15 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'";
 for v in $(compgen -e | grep -E '^(CC_CMDS_AUTOPILOT_DEFAULT|CC_PIPELINE_)' || true); do
   unset "$v"
 done
+# The pipeline names again, in the one spelling the meta suite's leak census
+# looks for in every suite that runs or sources the gate family — this one
+# sources the gate and the driver in child shells.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The gate's run-open branch starts the dashboard server; nothing here stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 HOME="$WORK/home"; mkdir -p "$HOME"
 export HOME
 unset XDG_CONFIG_HOME

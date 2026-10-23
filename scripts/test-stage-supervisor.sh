@@ -36,10 +36,9 @@ CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
 # THIS SUITE IS OFTEN RUN FROM INSIDE A PIPELINE STAGE, and the gate reads the
 # seat markers from the environment: an inherited stage id would make every
-# fixture call below a stage's call.
-unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER \
-      CC_PIPELINE_GRANT CC_PIPELINE_GATE CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT \
-      CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION
+# fixture call below a stage's call. Cleared by prefix, so a name the gate
+# starts exporting later goes too.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 # The compaction-window kill switch would turn the `(argv)` assertions below
 # into a property of the caller's shell rather than of the gate, and the effort
 # and model switches would do the same to every launch argv.

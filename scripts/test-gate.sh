@@ -76,16 +76,19 @@ export CC_CMDS_SESSION_NOTIFY
 # dashboard section turns it back on inside its own subshells only.
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
-# THE WHOLE PIPELINE ENVIRONMENT IS CLEARED FOR THE WHOLE PROCESS — all eleven
-# `CC_PIPELINE_*` names, here and nowhere later. This suite runs from whatever
-# process starts it, including a pipeline stage, which exports every one of them.
+# THE WHOLE PIPELINE ENVIRONMENT IS CLEARED FOR THE WHOLE PROCESS — every
+# inherited `CC_PIPELINE_*` name, by prefix, here and nowhere later. This suite
+# runs from whatever process starts it, including a pipeline stage, which
+# exports a set of these names that grows with the gate.
 #
 # The name that moves ledger writes today is `CC_PIPELINE_MANIFEST`: the pre-tool
 # hook the fixtures drive passes it to `gate.sh digest-path --manifest`, so an
 # inherited value opened the REAL manifest's ledger and appended fixture rows to
-# the run that was executing this suite. The other ten are cleared as well
+# the run that was executing this suite. Every other name is cleared as well
 # because which of them a gate path starts reading tomorrow is not something this
-# file can know, and the cost is one line.
+# file can know. A list of names was used here and missed three the gate began
+# exporting after it was written; the prefix cannot fall behind that way, and the
+# meta suite's leak census demands this exact line of every gate-family suite.
 #
 # The seat markers are the older reason. The stagnation boundaries are evaluated
 # only on a ROUTER's judgment, read off `CC_PIPELINE_SEGMENT` /
@@ -110,10 +113,8 @@ export CC_CMDS_DASHBOARD
 # `git pull --ff-only` every apply in this tree uses. The value is captured
 # first so a failure can say what was inherited.
 GATE_ACT_CWD_INHERITED="${GATE_ACT_CWD:-}"
-unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
-      CC_PIPELINE_RUN_DIR CC_PIPELINE_GRANT CC_PIPELINE_GATE \
-      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+unset GATE_ACT_CWD
 # The tmux location goes as well. Every `plan`/`act`/`exec` by the router passes
 # the emitter's seat record, so a suite run from a tmux pane would otherwise
 # write that pane into each fixture run directory and give the banners there a
