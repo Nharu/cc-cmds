@@ -5990,9 +5990,11 @@ surface_of_argv0() {
     # A HEADLESS CHROME SCREENSHOT, AND NOTHING ELSE CHROME DOES. Rendering a
     # local page to an image file is how an unattended review compares a screen,
     # and with no row the binary fell to `등급 미상`. The row is narrow on
-    # purpose: only the headless screenshot form — `--headless` and a
-    # `--screenshot=` path both present — writes one file outside the tree; any
-    # other spelling may open a profile, sync or browse, and keeps the unknown
+    # purpose: only the headless screenshot form — `--headless`, one
+    # `--screenshot=` path outside the tree, one local `file:///` target and
+    # no flag outside a short allow-list (`gate_chrome_headless_screenshot`) —
+    # writes one file outside the tree; any other spelling may open a remote
+    # page, sync, serve a port or launch another program, and keeps the unknown
     # grade. The names are the ones the capture helper searches for, and the
     # macOS bundle binary's own name.
     google-chrome|chromium|chromium-browser|chrome|'Google Chrome')
@@ -24661,18 +24663,52 @@ gate_own_helper() {
 
 gate_chrome_headless_screenshot() {
   # gate_chrome_headless_screenshot <chrome argv after argv0> — 0 when the
-  # argv is the headless screenshot form: `--headless` (bare or `=<mode>`) and
-  # a `--screenshot=<path>` both present. Either alone is not that form — a
-  # headless run without a screenshot can dump the DOM or serve a debugging
-  # port, and a screenshot flag without headless opens a window.
-  local a headless=0 shot=0
+  # argv is the headless screenshot form and nothing else: `--headless` (bare
+  # or `=<mode>`), one `--screenshot=<absolute path outside the tree>`, exactly
+  # one local `file:///` target, and otherwise only the flags listed below.
+  #
+  # AN ALLOW-LIST, NOT A PRESENCE CHECK. Requiring the two flags alone admitted
+  # a remote page (`--screenshot=x https://…`, the spelling Chrome's own
+  # documentation shows), a DOM dump or debugging port beside the screenshot,
+  # and launcher switches such as `--renderer-cmd-prefix=<program>` that make
+  # Chrome run another program — all as a write outside the tree, which needs
+  # no pre-authorization row. Any flag or operand this list does not name keeps
+  # the binary at `등급 미상`. The listed flags size the page, quiet Chrome's
+  # own background traffic, point the proxy at the closed local port, or put
+  # the profile in scratch space.
+  local a v headless=0 shot=0 target=0 root tmp
+  root=$(gate_tree_root)
+  tmp=${TMPDIR:-/tmp}
+  while [ "$tmp" != "/" ] && [ "${tmp%/}" != "$tmp" ]; do tmp=${tmp%/}; done
   for a in "$@"; do
     case "$a" in
+      */../*|*/..) return 1 ;;
+    esac
+    case "$a" in
       --headless|--headless=*) headless=1 ;;
-      --screenshot=?*) shot=1 ;;
+      --screenshot=/?*)
+        v=${a#--screenshot=}
+        gate_path_is_at_or_under "$v" "$root" && return 1
+        shot=$((shot + 1)) ;;
+      --user-data-dir=/?*)
+        v=${a#--user-data-dir=}
+        gate_path_is_at_or_under "$v" "$tmp" || gate_path_is_at_or_under "$v" /tmp || return 1 ;;
+      --window-size=?*)
+        v=${a#--window-size=}
+        case "$v" in *[!0-9,]*) return 1 ;; esac ;;
+      --force-device-scale-factor=?*|--virtual-time-budget=?*)
+        v=${a#*=}
+        case "$v" in *[!0-9.]*) return 1 ;; esac ;;
+      --default-background-color=?*)
+        v=${a#*=}
+        case "$v" in *[!0-9a-fA-F]*) return 1 ;; esac ;;
+      --proxy-server=127.0.0.1:9) ;;
+      --hide-scrollbars|--disable-gpu|--no-first-run|--disable-background-networking|--disable-component-update|--disable-sync) ;;
+      file:///?*) target=$((target + 1)) ;;
+      *) return 1 ;;
     esac
   done
-  [ "$headless" = 1 ] && [ "$shot" = 1 ]
+  [ "$headless" = 1 ] && [ "$shot" = 1 ] && [ "$target" = 1 ]
 }
 
 gate_path_spelling() {

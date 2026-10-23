@@ -43028,13 +43028,14 @@ graded_as '등급 미상'    '79:심볼릭 링크 뒤 .. 로 접은 stage-rules.
 
 # ---------------------------------------------------------------------------
 # 79v. The three visual helpers and the headless Chrome screenshot
-# --- section: 79v | group: bsplit | covers: grade | anchors: 79v:visual-capture.sh ref 는 트리 밖 쓰기다, 79v:visual-config.sh snapshot 은 읽기다, 79v:모르는 visual-check.sh 하위 명령은 등급 미상이다, 79v:헤드리스 스크린숏 형태의 chromium 은 트리 밖 쓰기다, 79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다 ---
+# --- section: 79v | group: bsplit | covers: grade, exec | anchors: 79v:visual-capture.sh ref 는 트리 밖 쓰기다, 79v:visual-config.sh snapshot 은 읽기다, 79v:모르는 visual-check.sh 하위 명령은 등급 미상이다, 79v:헤드리스 스크린숏 형태의 chromium 은 트리 밖 쓰기다, 79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다, 79v:원격 페이지를 찍는 스크린숏은 등급 미상이다, 79v:다른 프로그램을 띄우는 런처 스위치는 등급 미상이다, 79v:bash 뒤의 승인 술어 읽기는 스위치 0 에서 거부된다 ---
 #
 # The helpers are graded by their subcommand and trusted by where they are:
 # what a stage may run reads or writes one output directory outside the tree,
 # and what writes the settings home or the sidecar is the seat's and refused.
 # The Chrome row admits the headless screenshot form alone — the same argv with
-# either flag missing is the binary the table has no row for.
+# either flag missing, or with any flag, target or screenshot path outside the
+# row's allow-list, is the binary the table has no row for.
 # ---------------------------------------------------------------------------
 graded_as '읽기'         '79v:visual-config.sh snapshot 은 읽기다'            -- "$CC_ORCH/visual-config.sh" snapshot --part models
 for w79v in account models bans seed append; do
@@ -43056,6 +43057,45 @@ graded_as '트리밖쓰기'   '79v:macOS 번들 실행 파일의 스크린숏도
 graded_as '등급 미상'    '79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다' -- chromium --headless --dump-dom file:///tmp/a.html
 graded_as '등급 미상'    '79v:헤드리스 없는 스크린숏 chromium 은 등급 미상이다' -- chromium --screenshot=/tmp/x/a.png file:///tmp/a.html
 graded_as '등급 미상'    '79v:빈 경로의 스크린숏 플래그는 그 형태가 아니다'     -- chrome --headless --screenshot= file:///tmp/a.html
+# The row is an allow-list. The two flags being present is not enough: a remote
+# page, a DOM dump or debugging port beside the screenshot, a launcher switch
+# that runs another program, a second target, and a screenshot path in the tree
+# or relative to it all keep the unknown grade.
+graded_as '트리밖쓰기'   '79v:캡처 도우미와 같은 플래그 묶음의 스크린숏은 트리 밖 쓰기다' -- chromium --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 --window-size=480,320 --proxy-server=127.0.0.1:9 --no-first-run --disable-background-networking --disable-component-update --disable-sync --user-data-dir=/tmp/x/profile --screenshot=/tmp/x/a.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:원격 페이지를 찍는 스크린숏은 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png https://example.com/
+graded_as '등급 미상'    '79v:호스트가 붙은 file 대상은 등급 미상이다'          -- chromium --headless --screenshot=/tmp/x/a.png file://host/a.html
+graded_as '등급 미상'    '79v:스크린숏 곁의 --dump-dom 은 등급 미상이다'        -- chromium --headless --screenshot=/tmp/x/a.png --dump-dom file:///tmp/a.html
+graded_as '등급 미상'    '79v:스크린숏 곁의 디버그 포트는 등급 미상이다'        -- chromium --headless --screenshot=/tmp/x/a.png --remote-debugging-port=9222 file:///tmp/a.html
+graded_as '등급 미상'    '79v:다른 프로그램을 띄우는 런처 스위치는 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png --renderer-cmd-prefix=/tmp/x/run file:///tmp/a.html
+graded_as '등급 미상'    '79v:대상이 둘인 스크린숏은 등급 미상이다'            -- chromium --headless --screenshot=/tmp/x/a.png file:///tmp/a.html file:///tmp/b.html
+graded_as '등급 미상'    '79v:원격 프록시를 쓰는 스크린숏은 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png --proxy-server=203.0.113.1:8080 file:///tmp/a.html
+graded_as '등급 미상'    '79v:상대 경로의 스크린숏은 등급 미상이다'            -- chromium --headless --screenshot=a.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:트리 안 경로의 스크린숏은 등급 미상이다'          -- chromium --headless "--screenshot=$WT/a.png" file:///tmp/a.html
+graded_as '등급 미상'    '79v:.. 로 빠져나가는 스크린숏 경로는 등급 미상이다'   -- chromium --headless --screenshot=/tmp/../x/a.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:임시 디렉터리 밖의 프로필은 등급 미상이다'        -- chromium --headless --screenshot=/tmp/x/a.png --user-data-dir=/x/profile file:///tmp/a.html
+
+# The router reads the approval predicate through `gate.sh exec … --surface 읽기`
+# with the helper as argv0. That spelling is graded by its subcommand, so the
+# read is admitted with the auto-resolve switch off as well as on; behind `bash`
+# the helper is an opaque script and, with the switch off, the read declaration
+# is refused as an under-declaration.
+w79v_prev_ar=$CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+for w79v_ar in 0 1; do
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE=$w79v_ar
+  gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale x \
+       -- "$CC_ORCH/visual-check.sh" approval docs/zz-79v-none.md
+  case "$rc:$msg" in
+    6:*|*under-declar*) bad "79v:경로를 argv0 으로 둔 승인 술어 읽기는 스위치 $w79v_ar 에서 통과한다" "rc=$rc '$msg'" ;;
+    *) ok "79v:경로를 argv0 으로 둔 승인 술어 읽기는 스위치 $w79v_ar 에서 통과한다" ;;
+  esac
+done
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     -- bash "$CC_ORCH/visual-check.sh" approval docs/zz-79v-none.md
+check "79v:bash 뒤의 승인 술어 읽기는 스위치 0 에서 거부된다" "$rc" "6"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=$w79v_prev_ar
 
 # ---------------------------------------------------------------------------
 # 80. The design scope and the rows only a base run may carry

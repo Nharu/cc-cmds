@@ -735,7 +735,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '시각 디자인을 검토 통과로 확정했습니다.' \
     '**상태**: 검토 통과' \
     'A slice whose `**화면**` reads `없음` never waits.' \
-    'bash <plugin root>/orchestrator/visual-check.sh approval <스냅숏 design_doc>' \
+    '--surface 읽기 -- <plugin root>/orchestrator/visual-check.sh approval <스냅숏 design_doc>' \
     "-- 등급=2 '판단 부류=시각-승인' '기준=시각 승인 대기' '근거=<화면 세그먼트> 의 화면이 고정 좌석에서 구현 승인되었는가'" \
     "\`'사유=시각 승인 대기'\`" \
     'before any branch or worktree is cut for them' \
@@ -751,6 +751,15 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
       bad "$who 사본의 시각 파견 절" "「${lit}」이 없다"
     fi
   done
+  # The predicate read names the helper as argv0. Behind `bash` the gate grades
+  # an opaque script, and with the auto-resolve switch off the read declaration
+  # is refused, so the approved screen slice would never be dispatched.
+  nbash=$(printf '%s\n' "$sec" | grep -cF -- 'bash <plugin root>/orchestrator/visual-check.sh' || true)
+  if [ "${nbash:-0}" = "0" ]; then
+    ok "$who 사본의 승인 술어 읽기는 bash 뒤에 두지 않는다"
+  else
+    bad "$who 사본의 승인 술어 읽기" "bash 뒤에 도우미를 둔 표기가 남았다"
+  fi
 done
 
 # ---------------------------------------------------------------------------
