@@ -2346,8 +2346,11 @@ LEDGER="$LEDGER_SAVE"
 # ---------------------------------------------------------------------------
 J_MANIFEST="$WT/plan-r2.md"
 J_LEDGER="$WT/docs/pipeline-run/R2.md"
-sed 's/R1/R2/g' "$FIX_MANIFEST" > "$J_MANIFEST"
-sed 's/R1/R2/g' "$WT/docs/pipeline-grant/R1.md" > "$WT/docs/pipeline-grant/R2.md"
+# Only the run-id tokens move — the id before `;` or `.` and the id that ends a
+# line. The records also carry `$WT`, which sits under a `mktemp` name whose
+# random suffix can hold `R1`; a bare `s/R1/R2/g` would rewrite that path too.
+sed -e 's/R1\([;.]\)/R2\1/g' -e 's/R1$/R2/' "$FIX_MANIFEST" > "$J_MANIFEST"
+sed -e 's/R1\([;.]\)/R2\1/g' -e 's/R1$/R2/' "$WT/docs/pipeline-grant/R1.md" > "$WT/docs/pipeline-grant/R2.md"
 jH() { ( cd "$WT" && bash "$GATE" snapshot --manifest "$J_MANIFEST" 2>/dev/null ) | jq -r .H; }
 jact() {
   ( cd "$WT" && bash "$GATE" act --manifest "$J_MANIFEST" --kind judgment --target repo \

@@ -10974,6 +10974,8 @@ continue_attempt() {
   # A continued audit attempt is an audit attempt too, and leaves its own
   # `감사 공시` row after its row.
   [ "$rkind" != "S2" ] || run_gate_call gate_record_audit_disclosure S2 "$(stage_attempt_pinned "$did")" || true
+  # A continued design attempt leaves its own `토론 패스` row after its row.
+  [ "$rkind" != "S1design" ] || run_gate_call gate_record_discussion_passes S1design "$(stage_attempt_pinned "$did")" || true
   if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
     CONTINUE_PARK_REASON="중단 기록"
     CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$did")" 2>/dev/null || true)
@@ -11606,6 +11608,9 @@ design_arm() {
   # The absorber above keys on the stage, not on the run-scope `-`: a `-` key is
   # every run-scope stage's at once, and the open-judgment check could not tell
   # this stage's question from another's.
+  # The design row carries no `종류`, so the `토론 패스` row is placed by the
+  # stage id rather than by the kind the gate's recorder reads.
+  run_gate_call gate_record_discussion_passes S1design "$(stage_attempt_pinned S1design)" || true
   # An unfrozen document does not go on to the audit or the segment plan —
   # both read the freeze as a precondition.
   case "$class1" in
