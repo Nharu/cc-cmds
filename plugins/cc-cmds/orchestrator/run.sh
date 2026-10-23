@@ -3128,7 +3128,7 @@ run_ledger_series_check() {
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
-  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
+  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
   case "$series" in
@@ -3224,7 +3224,7 @@ run_ledger_series_check() {
   # holds on the row without leaning on how the router happens to behave today.
   case "$series:$basis" in
     stage-lease:single-seat|stage-lease:shift-seat-fallback) seat=1 ;;
-    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room) bound=1 ;;
+    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room|stage-wait:resume-bound-borrowed) bound=1 ;;
   esac
   if [ "$series" = "stage-lease" ]; then
     if { [ "$seat" = "1" ] && [ "$acct" != "-" ]; } || { [ "$seat" = "0" ] && [ "$acct" = "-" ]; }; then

@@ -39847,6 +39847,34 @@ gate_launch_stage() {
   return 0
 }
 
+gate_sup_halt_hold_put() {
+  # gate_sup_halt_hold_put <segment> <attempt> <lineage> <account> <config dir>
+  #
+  # THE HOLD RECORD OF A STAGE THAT STOPPED ON A QUESTION, written by the
+  # supervisor after the terminal row and before the lease goes back. Once the
+  # lease is gone the session's binding lives only in the ledger row, which
+  # cc-lane does not read, and a borrow tick a few seconds later would take the
+  # account as an idle donor. The record beside the lease table is what pushes
+  # that group to the back of the donor ranking until the same key's next
+  # attempt is spawned or the run ends.
+  #
+  # It is written only for this attempt's own `의도된 park` row, on an account
+  # and a session id the ledger accepts. Always rc 0: a failed write warns, and
+  # the caller's release goes on.
+  local seg="$1" attempt="$2" lineage="$3" acct="$4" cfg="$5" row sid rc=0
+  row=$( gate_stage_result_rows_of "$seg" | { grep -F "실행 버전=$attempt " || true; } | tail -1 ) || row=""
+  [ -n "$row" ] || return 0
+  [ "$(gate_row_field "$row" '종단 부류')" = "의도된 park" ] || return 0
+  run_ledger_account_ok "$acct" || return 0
+  sid=$(gate_row_field "$row" '세션 id')
+  run_session_id_shape_ok "$sid" || return 0
+  route_halt_hold_put --table "$(run_pace_root)/leases" --run-id "$RUN_ID" --key "$seg" \
+    --lineage "$lineage" --account "$acct" --config-dir "$cfg" --session-id "$sid" \
+    --run-dir "$RUN_DIR" --halted-at "$(date -u +%s)" || rc=$?
+  [ "$rc" = "0" ] || warn "the hold record of the stopped stage was not written (rc=$rc, $seg#$attempt) — the lease is released all the same"
+  return 0
+}
+
 gate_verb_supervise_stage() {
   # gate_verb_supervise_stage <alias> <segment> <nonce> <stage-kind> <cli args...>
   #
@@ -40233,6 +40261,11 @@ gate_verb_supervise_stage() {
   # THE MARKER GOES ONLY NOW that all three records exist: in between the key
   # reads as a live stage, never as nothing at all.
   [ -z "$wm" ] || wait_drop "$wm"
+  # THE HOLD RECORD GOES ONLY NOW, after the three records above: the key's next
+  # attempt is a stage process, and a routed one holds its own grant, which the
+  # lease table already shows. An absent record is a successful no-op.
+  route_halt_hold_drop --table "$(run_pace_root)/leases" --run-id "$RUN_ID" --key "$seg" \
+    || warn "the hold record of an earlier attempt was not removed ($seg#$attempt)"
   # `.window` IS A RECORD, NOT A LIVENESS INPUT. Two lines — the effective
   # window and the lane — kept beside the three above so a settlement that runs
   # after this process is gone can still put them on the row. No reader makes
@@ -40299,6 +40332,9 @@ gate_verb_supervise_stage() {
   # leaves the lease to the run's end, so a stage with no row never also loses
   # the reservation that row would have closed.
   if [ "$routed" = "1" ] && [ -n "$r_nonce" ] && [ "$rec_rc" = "0" ]; then
+    # A STAGE THAT STOPPED ON A QUESTION KEEPS ITS ACCOUNT VISIBLE, written BEFORE
+    # the release (`gate_sup_halt_hold_put`). It never stops the release.
+    gate_sup_halt_hold_put "$seg" "$attempt" "$r_lineage" "$r_acct" "$r_cfg"
     hrc=0
     route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" || hrc=$?
     [ "$hrc" = "0" ] || warn "the lease release ended rc=$hrc ($r_lineage)"
