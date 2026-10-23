@@ -43087,6 +43087,11 @@ graded_as '등급 미상'    '79v:설정 홈 안의 페이지를 찍는 스크�
 h79v_up=$(printf '%s' "$HOME" | tr '[:lower:]' '[:upper:]')
 graded_as '등급 미상'    '79v:대소문자를 바꾼 설정 홈 안의 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=$h79v_up/.zz-79v.png" file:///tmp/a.html
 graded_as '등급 미상'    '79v:대소문자를 바꾼 설정 홈 안의 페이지는 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png "file://$h79v_up/.ssh/id_ed25519"
+# The macOS firmlink spelling of the home shares no text prefix with it, so
+# only the inode comparison refuses it.
+if [ -d "/System/Volumes/Data$HOME" ]; then
+  graded_as '등급 미상'  '79v:펌링크 표기의 설정 홈 안 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=/System/Volumes/Data$HOME/.zz-79v.png" file:///tmp/a.html
+fi
 graded_as '등급 미상'    '79v:퍼센트 부호화한 페이지 경로는 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png file:///tmp/%2e%2e/a.html
 
 # The router reads the approval predicate through `gate.sh exec … --surface 읽기`

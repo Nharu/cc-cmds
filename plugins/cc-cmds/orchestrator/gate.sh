@@ -24770,11 +24770,11 @@ gate_chrome_in_home_dot() {
   # dot-entry directly under the home or lies inside one, compared as text
   # without regard to case and then by device+inode of the home.
   #
-  # A BYTE GLOB DID NOT HOLD. APFS is case-insensitive by default and
-  # `pwd -P` keeps the case the caller wrote, so `/USERS/<user>/.ssh/…` named
-  # the real key directory, matched no arm, and the screenshot or page was
-  # graded as this row's write with no pre-authorization row. The identity
-  # walk also answers a spelling that reaches the home through a link.
+  # CASE IS NOT IDENTITY ON THIS PLATFORM. APFS is case-insensitive by default
+  # and `pwd -P` keeps the case the caller wrote, so `/USERS/<user>/.ssh/…`
+  # names the real key directory; the text arm folds case for that. The
+  # identity walk answers what text cannot fold — the firmlink spelling
+  # `/System/Volumes/Data/Users/<user>/…` and a link that reaches the home.
   local rc=1 had=0 p c
   if shopt -q nocasematch; then had=1; fi
   shopt -s nocasematch
