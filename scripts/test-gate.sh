@@ -35191,8 +35191,15 @@ rm -f "$RD40/S41P.pid" "$RD40/S41P.start" "$RD40/S41P.attempt" "$RD40/S41P.kind"
 # itself wrote, which is why it stayed green while its neighbours were spelling
 # the path by hand. The two lines that used to prepare a run directory here were
 # read by nothing and are gone rather than corrected.
+#
+# The review dispatch's report path carries the run id, and the gate refuses a
+# path that is not the segment's canonical one. Section 33 leaves the fixture
+# manifest on R2, so the id is read from the manifest in force rather than
+# written as R1 — with R1 spelled here, a cut that runs 33 before this section
+# had both dispatches refused, and each `wait` then found no dispatch (exit 11).
 # ---------------------------------------------------------------------------
 HL >/dev/null
+rid42=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | sed -n 1p)
 STUB42A="$WORK/bin/claude-stub-42a"
 cat > "$STUB42A" <<'STUB42AEOF'
 #!/usr/bin/env bash
@@ -35222,7 +35229,7 @@ check "42 실험용 세그먼트 행 (A) 이 기록된다" "$rc" "0"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42A" \
   bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42A --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
-  --trigger '첫 리뷰' -- review -p "$(rv_x R1 S42A)" ) >/dev/null 2>&1
+  --trigger '첫 리뷰' -- review -p "$(rv_x "$rid42" S42A)" ) >/dev/null 2>&1
 # THE ROUTER'S OWN ABOVE-READ ACT, after the dispatch row and before the stage
 # ends. Under the old count this alone made the stage `정상 완료`.
 gateL exec --manifest "$FX_MANIFEST" --target infra --segment S42A --cutpoint 커밋 \
@@ -35246,7 +35253,7 @@ check "42 실험용 세그먼트 행 (B) 이 기록된다" "$rc" "0"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
   bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42B --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
-  --trigger '첫 리뷰' -- review -p "$(rv_x R1 S42B)" ) >/dev/null 2>&1
+  --trigger '첫 리뷰' -- review -p "$(rv_x "$rid42" S42B)" ) >/dev/null 2>&1
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
   bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42B --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
 check "42 (B) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0"
