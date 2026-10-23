@@ -41,14 +41,27 @@
 #       Markdown table to $GITHUB_STEP_SUMMARY (stdout when unset), warns past a
 #       max/median of 1.5 and prints the sum of the shard times in seconds on
 #       stdout, alone on its last line
+#   bash scripts/gate-timing.sh rows --table F --dir D [--slots S]
+#       the run-row check: the rows of the table that carry ids are exactly the
+#       distinct row ids of D/result-*.tsv whose summary column is a suite total
+#       line; prints the missing and the extra rows and exits 1 when they differ.
+#       With --slots the table's own row ids must be exactly 1..S as well
 #   bash scripts/gate-timing.sh --self-test
 #
-# Exit codes: 0 done, 2 usage, 3 an input could not be read.
+# A ROW THAT RAN IS A ROW THAT PRINTED ITS TOTAL. `make gate-shard` writes one
+# `result-<K>.tsv` per lane: `<K><TAB><exit code><TAB><summary>`, the summary
+# being the suite's `test-gate: <n> passed, <n> failed` line, `빈 행` for a row
+# the table left empty, or `-` when the suite printed no total. A lane that died
+# before its total, or whose file never got uploaded, is a row that did not run,
+# whatever its exit code said. An empty row may stay empty; nothing else may.
+#
+# Exit codes: 0 done, 1 the run-row check failed, 2 usage, 3 an input could not
+# be read.
 
 set -uo pipefail
 
 timing_usage() {
-  printf 'gate-timing: 사용법 — merge --list F --run ID --sha SHA --out F [--source F] <샤드 표지 파일>... / median --out F <timing 파일 1~3개> / report --table F --dir D / --self-test\n' >&2
+  printf 'gate-timing: 사용법 — merge --list F --run ID --sha SHA --out F [--source F] <샤드 표지 파일>... / median --out F <timing 파일 1~3개> / report --table F --dir D / rows --table F --dir D [--slots S] / --self-test\n' >&2
   exit 2
 }
 
@@ -261,6 +274,50 @@ timing_report() {
   return 0
 }
 
+timing_rows() {
+  local table="" dir="" slots=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --table) [ "$#" -ge 2 ] || timing_usage; table="$2"; shift 2 ;;
+      --dir)   [ "$#" -ge 2 ] || timing_usage; dir="$2"; shift 2 ;;
+      --slots) [ "$#" -ge 2 ] || timing_usage; slots="$2"; shift 2 ;;
+      *) printf 'gate-timing: 모르는 인자입니다: %s\n' "$1" >&2; timing_usage ;;
+    esac
+  done
+  [ -n "$table" ] && [ -n "$dir" ] || timing_usage
+  case "$slots" in ''|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;; *) timing_usage ;; esac
+  if [ ! -f "$table" ]; then printf 'gate-timing: 분할표가 없습니다: %s\n' "$table" >&2; return 3; fi
+  local tmp rc=0 f
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-timing-rows.XXXXXX")
+  awk -F '\t' '$3 != "" { print $1 }' "$table" | LC_ALL=C sort -u > "$tmp/want"
+  : > "$tmp/ran"
+  for f in "$dir"/result-*.tsv; do
+    [ -f "$f" ] || continue
+    awk -F '\t' '$3 ~ /^test-gate: [0-9]+ passed, [0-9]+ failed$/ { print $1 }' "$f" >> "$tmp/ran"
+  done
+  LC_ALL=C sort -u "$tmp/ran" -o "$tmp/ran"
+  LC_ALL=C comm -23 "$tmp/want" "$tmp/ran" > "$tmp/missing"
+  LC_ALL=C comm -13 "$tmp/want" "$tmp/ran" > "$tmp/extra"
+  if [ -s "$tmp/missing" ]; then
+    rc=1; printf 'gate-timing: 합계 줄을 내지 않은 행 — %s\n' "$(sort -n "$tmp/missing" | tr '\n' ' ')" >&2
+  fi
+  if [ -s "$tmp/extra" ]; then
+    rc=1; printf 'gate-timing: 표에서 비었거나 없는 행이 합계 줄을 냈음 — %s\n' "$(sort -n "$tmp/extra" | tr '\n' ' ')" >&2
+  fi
+  if [ -n "$slots" ]; then
+    awk -F '\t' '{ print $1 }' "$table" | LC_ALL=C sort > "$tmp/rows"
+    seq 1 "$slots" | LC_ALL=C sort > "$tmp/rows-want"
+    if ! cmp -s "$tmp/rows" "$tmp/rows-want"; then
+      rc=1; printf 'gate-timing: 표의 행 id 가 1..%s 와 다름 — 표 [%s]\n' "$slots" "$(sort -n "$tmp/rows" | tr '\n' ' ')" >&2
+    fi
+  fi
+  if [ "$rc" = "0" ]; then
+    printf 'gate-timing: 실행 행 일치 — 비지 않은 행 %s개가 모두 합계 줄을 냈다\n' "$(grep -c . "$tmp/want")"
+  fi
+  rm -rf "$tmp"
+  return "$rc"
+}
+
 # --- self-test ---------------------------------------------------------------
 
 timing_self_test() {
@@ -333,11 +390,29 @@ timing_self_test() {
   bash "$0" median --out "$T/none.tsv" > /dev/null 2>&1; rc=$?
   if [ "$rc" = "2" ]; then ok "median 에 파일이 없으면 사용법 오류다"; else bad "median 사용법" "rc=$rc"; fi
 
+  # rows: rows 1..3 carry ids and row 4 is empty. Every non-empty row printed
+  # its total and the empty one says so — the check passes. Row 2 then loses
+  # its total (exit code 0 notwithstanding) and the check fails on it. A table
+  # whose row ids are not 1..S fails under --slots S.
+  mkdir -p "$T/res"
+  printf '1\t50\ta\n2\t50\tb\n3\t50\tc\n4\t0\t\n' > "$T/rtable"
+  printf '1\t0\ttest-gate: 3 passed, 0 failed\n' > "$T/res/result-1.tsv"
+  printf '2\t0\ttest-gate: 2 passed, 0 failed\n' > "$T/res/result-2.tsv"
+  printf '3\t1\ttest-gate: 4 passed, 1 failed\n' > "$T/res/result-3.tsv"
+  printf '4\t0\t빈 행\n' > "$T/res/result-4.tsv"
+  if bash "$0" rows --table "$T/rtable" --dir "$T/res" --slots 4 > /dev/null 2>&1; then ok "rows: 비지 않은 행이 모두 합계 줄을 내고 빈 행은 비어 있으면 통과한다"; else bad "rows 통과" "비영 종료"; fi
+  printf '2\t0\t-\n' > "$T/res/result-2.tsv"
+  out=$(bash "$0" rows --table "$T/rtable" --dir "$T/res" --slots 4 2>&1 >/dev/null); rc=$?
+  if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q '합계 줄을 내지 않은 행 — 2 $'; then ok "rows: 비지 않은 행이 합계 줄을 내지 않으면 실패한다"; else bad "rows 빠진 행" "rc=$rc 「${out}」"; fi
+  printf '2\t0\ttest-gate: 2 passed, 0 failed\n' > "$T/res/result-2.tsv"
+  out=$(bash "$0" rows --table "$T/rtable" --dir "$T/res" --slots 6 2>&1 >/dev/null); rc=$?
+  if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q '표의 행 id 가 1..6 와 다름'; then ok "rows: 표의 행 id 집합이 1..S 와 다르면 실패한다"; else bad "rows 행 id 집합" "rc=$rc 「${out}」"; fi
+
   rm -rf "$T"
   printf 'gate-timing self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 25 ]; then
-    printf 'gate-timing self-test: 통과 수 %d 가 하한 25 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 28 ]; then
+    printf 'gate-timing self-test: 통과 수 %d 가 하한 28 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -351,6 +426,7 @@ case "$cmd" in
   merge)       timing_merge "$@"; exit $? ;;
   median)      timing_median "$@"; exit $? ;;
   report)      timing_report "$@"; exit $? ;;
+  rows)        timing_rows "$@"; exit $? ;;
   --self-test) timing_self_test; exit $? ;;
   *) printf 'gate-timing: 모르는 하위명령입니다: %s\n' "$cmd" >&2; timing_usage ;;
 esac
