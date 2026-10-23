@@ -72,27 +72,29 @@ jobs:
     # gate suite, so the old reason for a very long ceiling (that suite slowing
     # down as it runs) no longer applies to this job.
     #
-    # The 16-minute ceiling is the outer safety net, not the thing that tells
+    # The 20-minute ceiling is the outer safety net, not the thing that tells
     # a hang from progress. The make step is armed (scripts/ci-step-guard.sh)
     # with a deadline inside this ceiling — the job start plus CC_JOB_BUDGET_S,
     # less a margin for its dump — and every suite under it has a deadline
     # inside that one, so a stall ends as a named failure with the holders
-    # dumped before the runner would cancel the job. The longest successful
-    # run so far took about seven minutes. The click helper's suite adds a
-    # cold Swift compile — 8 to 26 seconds on an idle developer machine, but
-    # 184 seconds was measured under load, so it is budgeted at four minutes —
-    # and seven plus four still fits inside sixteen, so the ceiling stays.
-    # The return-hook suite took 67 seconds on a developer machine; budgeted
-    # at two minutes and counted as if it ran after everything else, seven
-    # plus four plus two is thirteen, which still fits, so the ceiling stays.
+    # dumped before the runner would cancel the job. The suites run side by
+    # side, so the job is as long as its longest suite, and that is
+    # orchestrator/test-run.sh: on this runner it took 598 and 852 seconds
+    # in two successful runs on master, and five runs were reaped at 856 to
+    # 863 seconds against the old 16-minute ceiling with no assertion
+    # failing. Its time swings with the runner's load by more than the margin
+    # the old ceiling left, so the ceiling went up to twenty, about six
+    # minutes above the longest successful run. The click helper's cold Swift
+    # compile (184 seconds measured under load) and the return-hook suite
+    # (67 seconds) run beside it and stay shorter than it.
     # When the list grows, recompute the same way. CC_JOB_BUDGET_S below must
     # equal this ceiling times 60: `timeout-minutes` cannot read `env`, so the
     # two are tied by a check in scripts/test-suite-guard.sh rather than by a
     # reference. Change both together.
-    timeout-minutes: 16
+    timeout-minutes: 20
     env:
       CC_SUITE_GUARD_STRICT: '1'
-      CC_JOB_BUDGET_S: '960'
+      CC_JOB_BUDGET_S: '1200'
     steps:
       # First, before checkout: the step deadline is measured from here.
       - name: Record job start
