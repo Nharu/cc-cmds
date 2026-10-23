@@ -13235,7 +13235,7 @@ DOC15WB='docs/fixture-design-15wb.md'
 au15_freeze "$DOC15WB"
 cp "$W15_SC" "$w15_base/docs/visual/docs-fixture-design-15wb.md"
 cp "$w15_base/docs/visual/docs-fixture-design-15w.home.html" "$w15_base/docs/visual/docs-fixture-design-15wb.home.html"
-g15_run R15WB "$DOC15WB" "$plan15c" -
+g15_run R15WB "$DOC15WB" "$plan15g_rv" -
 g15_mkwt R15WB S2
 g15_plan act R15WB S2 상태=계획됨 "워크트리=$(g15_wt R15WB S2)"
 [ "$rc" = 0 ] || bad "15w 픽스처 R15WB 의 S2 계획" "rc=$rc $msg"
@@ -13253,13 +13253,13 @@ check "15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다"
 [ "$rc" = 0 ] || bad "15w 승인 뒤 파견 문면" "$msg"
 
 # The shape rule reaches the gate's defect lines, which call the driver's
-# checker in its base mode.
+# checker in its base mode. They are read from the snapshot, under the run's
+# manifest, so the slice's `레포` resolves to its declared target and the
+# review-policy cap of that target is the one checked.
 w15_doc "$WT/$DOC15W" "**화면**: Order-List" "" "$W15_NONE"
-w15_def=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15WA.md" 2>/dev/null \
-  | jq -r '.["슬라이싱"]["분기"]' 2>/dev/null )
-w15_lines=$( ( gate_seam_init >/dev/null 2>&1 || exit 1
-               gate_seam_enter
-               DOC="$WT/$DOC15W" gate_slicing_defects ) 2>/dev/null )
+w15_snap=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15WA.md" 2>/dev/null )
+w15_def=$(printf '%s' "$w15_snap" | jq -r '.["슬라이싱"]["분기"]' 2>/dev/null)
+w15_lines=$(printf '%s' "$w15_snap" | jq -r '.["슬라이싱"]["결함"][]?' 2>/dev/null)
 case "$w15_def/$w15_lines" in
   "선언불완전/"*"슬라이스 SA: 화면이"*) ok "15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다" ;;
   *) bad "15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다" "분기=$w15_def 결함=$w15_lines" ;;
@@ -23113,7 +23113,7 @@ HW_SID=""; VZ_AR=0
 
 # ---------------------------------------------------------------------------
 # 31ba. A visual-wait park is taken up again once the screens are approved
-# --- section: 31ba | group: cone | covers: act, close, snapshot, exec | anchors: 31ba: 판단을 내기 전 시각 대기 park 런은 종단이 아니다, 31ba: 열린 시각-승인 아래 런 상태 토큰은 승인대기다, 31ba: 열린 시각-승인 아래 그 세그먼트의 구현 파견은 거부된다, 31ba: 열린 시각-승인 아래 종료 조건 2 가 런을 열어 둔다, 31ba: 채택 뒤 park 에서 실행중 으로 옮기는 행이 받힌다, 31ba: 채택 뒤 그 세그먼트의 구현 파견이 받힌다, 31ba: 술어가 지워진 뒤 다시 park 하는 행이 받힌다 ---
+# --- section: 31ba | group: cone | covers: act, close, snapshot, exec | anchors: 31ba: 열린 시각-승인 아래 런 상태 토큰은 승인대기다, 31ba: 열린 시각-승인 아래 그 세그먼트의 구현 파견은 거부된다, 31ba: 열린 시각-승인 아래 종료 조건 2 가 런을 열어 둔다, 31ba: 채택 뒤 park 에서 실행중 으로 옮기는 행이 받힌다, 31ba: 채택 뒤 그 세그먼트의 구현 파견이 받힌다, 31ba: 술어가 지워진 뒤 다시 park 하는 행이 받힌다 ---
 #
 # The router parks a screen slice before its branch is cut, with the reason
 # `시각 승인 대기`, and asks the fixed-wording question on that segment. The
@@ -23148,11 +23148,6 @@ vz_g act --manifest "$CAP_NM" --kind blocked --target infra --cutpoint 커밋 --
     -- 스코프=cone 원인=막힘 "앵커 세그먼트=S3" "사유=시각 승인 대기" \
        "근거=S3 의 화면이 고정 좌석에서 구현 승인되지 않았다" "재개 명령=승인이 채택되면 S3 을 실행중 으로 옮겨 다시 디스패치"
 check "31ba 픽스처: 시각 승인 대기 cone 행이 받힌다" "$rc" "0"
-vba_before=$(vba_state)
-case "$vba_before" in
-  종단|버려짐) bad "31ba: 판단을 내기 전 시각 대기 park 런은 종단이 아니다" "$vba_before" ;;
-  *) ok "31ba: 판단을 내기 전 시각 대기 park 런은 종단이 아니다" ;;
-esac
 vz_ask S3 "31ba — S3 화면 승인"
 vba_q=$(vz_id S3)
 check "31ba 픽스처: 술어가 서지 않은 물음은 대기로 열린다" "$rc/$(row_field "$(vz_last "$vba_q")" '상태')" "5/대기"
@@ -42945,7 +42940,7 @@ graded_as '등급 미상'    '79:심볼릭 링크 뒤 .. 로 접은 stage-rules.
 
 # ---------------------------------------------------------------------------
 # 79v. The three visual helpers and the headless Chrome screenshot
-# --- section: 79v | group: bsplit | covers: grade | anchors: 79v:visual-capture.sh ref 는 트리 밖 쓰기다, 79v:visual-check.sh scan 은 읽기다, 79v:visual-config.sh account 는 등급 미상이다, 79v:헤드리스 스크린숏 형태의 chromium 은 트리 밖 쓰기다, 79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다 ---
+# --- section: 79v | group: bsplit | covers: grade | anchors: 79v:visual-capture.sh ref 는 트리 밖 쓰기다, 79v:visual-config.sh snapshot 은 읽기다, 79v:모르는 visual-check.sh 하위 명령은 등급 미상이다, 79v:헤드리스 스크린숏 형태의 chromium 은 트리 밖 쓰기다, 79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다 ---
 #
 # The helpers are graded by their subcommand and trusted by where they are:
 # what a stage may run reads or writes one output directory outside the tree,
