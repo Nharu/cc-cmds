@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -348,6 +348,7 @@ LINT_TESTS := \
 	tests/fixtures/lint-gate-banner-fields/run.sh \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
+	scripts/test-measure-discussion-passes.sh \
 	scripts/test-solo-audit-experiment.sh \
 	scripts/test-reader-model-compare.sh \
 	scripts/test-reader-model-pair-audit.sh \
@@ -384,6 +385,7 @@ ORCH_TESTS := \
 	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-display-tz.sh \
+	scripts/test-run-stops.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \
@@ -420,15 +422,30 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest
 
-# How many shards the gate suite is cut into. CI reads it so the matrix, the
-# per-shard dispatch and the union check all take their N from one place; a
-# workflow that spelled the number itself would let the matrix and the check
+# How many runners the gate suite runs on (N), and how many rows each runner
+# runs at once (L, its lanes). The partition is cut into S = N × L rows; runner
+# k runs rows k, k + N, … at once. CI reads all three so the matrix, the
+# per-runner dispatch and the union check take their numbers from one place; a
+# workflow that spelled a number itself would let the matrix and the check
 # disagree, and the sections in the gap would belong to nobody.
+#
+# S IS THE NUMBER OF ROWS AND N THE NUMBER OF JOBS. S goes to the partition
+# table (CI's plan job), the union check and the row ids `gate-shard` asks the
+# partitioner for, and to the census. N goes to the matrix and its number check
+# and is the SHARD a `gate-shard` call takes.
 GATE_SHARDS ?= 13
+GATE_LANES ?= 2
+GATE_SLOTS := $(shell echo $$(( $(GATE_SHARDS) * $(GATE_LANES) )))
 
-# So CI can read the number instead of spelling it a second time.
+# So CI can read the numbers instead of spelling them a second time.
 print-gate-shards:
 	@echo $(GATE_SHARDS)
+
+print-gate-lanes:
+	@echo $(GATE_LANES)
+
+print-gate-slots:
+	@echo $(GATE_SLOTS)
 
 # The gate suite's section list, for CI's timing merge. It goes through make so
 # that make stays the one entry point to the suites and its pinned zone applies.
@@ -485,33 +502,98 @@ rest-shard:
 	echo "rest shard $(SHARD)/$(REST_SHARDS): $$goals"; \
 	$(MAKE) --no-print-directory $$goals
 
-# One shard of the gate suite. SHARD is 1-based. An empty assignment is a
-# success and not a failure — the partitioner exits 4 when the requested shard
-# drew nothing, which happens whenever the components outnumber no shard.
+# One runner of the gate suite. SHARD is the runner, 1-based (1..N); lane j
+# (0..L−1) runs row K = SHARD + j × N of the S-row partition, and the lanes run
+# at once. An empty row is a success and not a failure — the partitioner exits
+# 4 when the requested row drew nothing — and ends that lane alone.
 #
-# CI hands every shard the one table its plan job made (GATE_TABLE), so no shard
-# partitions on its own. Without a table the shard partitions here, weighed with
-# the measured times in GATE_TIMING when that file exists and with the census
-# model when it does not. GATE_TIMING_OUT, an absolute path, asks for the
-# section markers: `@start` and `@end` around the whole shard from here, and
-# the selector's own line in front of each section, prelude and the epilogue.
+# CI hands every runner the one table its plan job made (GATE_TABLE), so no
+# runner partitions on its own. Without a table each lane partitions here,
+# weighed with the measured times in GATE_TIMING when that file exists and with
+# the census model when it does not.
+#
+# A LANE IS ISOLATED AND JUDGED ON ITS OWN. GATE_OUT_DIR, an absolute path,
+# receives per row K: `timing-<K>.tsv` (the section markers: `@start` and
+# `@end` around the row from here, and the selector's own line in front of each
+# section, prelude and the epilogue), `lane-<K>.out` (the suite's output) and
+# `result-<K>.tsv` (`<K><TAB><exit code><TAB><summary>`, the summary being the
+# suite's total line, `빈 행` for an empty row, or `-`). Each lane's TMPDIR is
+# its own `lane-<K>` directory there. A lane fails on a non-zero exit code and
+# on a missing total line alike — a suite that died before its total never ran
+# its tail — and the runner fails when any lane did. The outputs reach the log
+# whole and in row order once every lane has ended, so no line of one lane is
+# cut by a line of the other. Without GATE_OUT_DIR the lanes write to a
+# temporary directory removed afterwards.
+#
+# ONE LANE WITHOUT AN OUTPUT DIRECTORY IS THE PLAIN SHARD. With GATE_LANES=1
+# and no GATE_OUT_DIR the suite runs in the foreground with its own output, and
+# GATE_TIMING_OUT, an absolute path, asks for the same markers as above.
 GATE_TIMING ?= scripts/gate-timing.tsv
 GATE_TABLE ?=
 GATE_TIMING_OUT ?=
+GATE_OUT_DIR ?=
 
 gate-shard:
-	@out='$(GATE_TIMING_OUT)'; \
-	mark() { [ -z "$$out" ] || printf '%s\t%s\n' "$$1" "$$(date +%s)" >> "$$out"; }; \
-	mark @start; \
-	if [ -n '$(GATE_TABLE)' ]; then \
-	  ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --shard $(SHARD) --from-table '$(GATE_TABLE)'); rc=$$?; \
-	else \
-	  ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --timing '$(GATE_TIMING)' --shard $(SHARD)); rc=$$?; \
+	@pick() { \
+	  if [ -n '$(GATE_TABLE)' ]; then \
+	    bash scripts/gate-shard.sh --shards $(GATE_SLOTS) --shard "$$1" --from-table '$(GATE_TABLE)'; \
+	  else \
+	    bash scripts/gate-shard.sh --shards $(GATE_SLOTS) --timing '$(GATE_TIMING)' --shard "$$1"; \
+	  fi; }; \
+	case '$(SHARD)' in ''|*[!0-9]*|0) echo "gate-shard: SHARD 는 1..$(GATE_SHARDS) 의 러너 번호입니다: '$(SHARD)'" >&2; exit 2 ;; esac; \
+	[ '$(SHARD)' -le '$(GATE_SHARDS)' ] || { echo "gate-shard: SHARD $(SHARD) 가 러너 수 $(GATE_SHARDS) 를 넘습니다" >&2; exit 2; }; \
+	if [ '$(GATE_LANES)' = 1 ] && [ -z '$(GATE_OUT_DIR)' ]; then \
+	  out='$(GATE_TIMING_OUT)'; \
+	  mark() { [ -z "$$out" ] || printf '%s\t%s\n' "$$1" "$$(date +%s)" >> "$$out"; }; \
+	  mark @start; \
+	  ids=$$(pick '$(SHARD)'); rc=$$?; \
+	  if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SLOTS): 배정된 절이 없습니다"; mark @end; exit 0; fi; \
+	  [ "$$rc" = "0" ] || exit "$$rc"; \
+	  rc=0; CC_GATE_TIMING_OUT="$$out" bash scripts/test-gate.sh --sections "$$ids" || rc=$$?; \
+	  mark @end; exit "$$rc"; \
 	fi; \
-	if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SHARDS): 배정된 절이 없습니다"; mark @end; exit 0; fi; \
-	[ "$$rc" = "0" ] || exit "$$rc"; \
-	rc=0; CC_GATE_TIMING_OUT="$$out" bash scripts/test-gate.sh --sections "$$ids" || rc=$$?; \
-	mark @end; exit "$$rc"
+	od='$(GATE_OUT_DIR)'; tmpod=; \
+	if [ -z "$$od" ]; then od=$$(mktemp -d "$${TMPDIR:-/tmp}/gate-lanes.XXXXXX") || exit 1; tmpod=$$od; fi; \
+	mkdir -p "$$od" || exit 1; \
+	lane() { \
+	  k=$$1; tm="$$od/timing-$$k.tsv"; lo="$$od/lane-$$k.out"; res="$$od/result-$$k.tsv"; \
+	  printf '@start\t%s\n' "$$(date +%s)" >> "$$tm"; \
+	  ids=$$(pick "$$k" 2>"$$lo"); rc=$$?; \
+	  if [ "$$rc" = "4" ]; then \
+	    echo "row $$k/$(GATE_SLOTS): 배정된 절이 없습니다" >> "$$lo"; \
+	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; printf '%s\t0\t빈 행\n' "$$k" > "$$res"; return 0; \
+	  fi; \
+	  if [ "$$rc" != "0" ]; then printf '%s\t%s\t-\n' "$$k" "$$rc" > "$$res"; return "$$rc"; fi; \
+	  mkdir -p "$$od/lane-$$k"; \
+	  rc=0; TMPDIR="$$od/lane-$$k" CC_GATE_TIMING_OUT="$$tm" bash scripts/test-gate.sh --sections "$$ids" >> "$$lo" 2>&1 || rc=$$?; \
+	  printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; \
+	  tot=$$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$$' "$$lo" | tail -n 1); \
+	  printf '%s\t%s\t%s\n' "$$k" "$$rc" "$${tot:--}" > "$$res"; \
+	  return "$$rc"; }; \
+	rows=; pids=; j=0; \
+	while [ "$$j" -lt '$(GATE_LANES)' ]; do \
+	  k=$$(( $(SHARD) + j * $(GATE_SHARDS) )); rows="$$rows $$k"; \
+	  lane "$$k" & pids="$$pids $$!"; j=$$((j + 1)); \
+	done; \
+	set -- $$pids; rcs=; \
+	for k in $$rows; do rc=0; wait "$$1" || rc=$$?; shift; rcs="$$rcs $$k:$$rc"; done; \
+	bad=0; \
+	for k in $$rows; do \
+	  echo "=== gate row $$k/$(GATE_SLOTS) (runner $(SHARD), lanes $(GATE_LANES)) ==="; \
+	  cat "$$od/lane-$$k.out" 2>/dev/null; \
+	done; \
+	for kr in $$rcs; do \
+	  k=$${kr%%:*}; rc=$${kr#*:}; \
+	  sum=$$(cut -f3 "$$od/result-$$k.tsv" 2>/dev/null); \
+	  if [ "$$rc" != "0" ]; then echo "gate-shard: 행 $$k 의 레인이 종료 코드 $$rc 로 끝났습니다" >&2; bad=1; fi; \
+	  case "$$sum" in \
+	    '빈 행') ;; \
+	    'test-gate: '*) ;; \
+	    *) echo "gate-shard: 행 $$k 의 레인 출력에 합계 줄(test-gate: <n> passed, <n> failed)이 없습니다" >&2; bad=1 ;; \
+	  esac; \
+	done; \
+	[ -z "$$tmpod" ] || rm -rf "$$tmpod"; \
+	exit "$$bad"
 
 # The partitioner, the census and the timing and duration scripts are driven by
 # flags, so they cannot sit in the argument-less `bash <script>` lists above;
@@ -539,9 +621,10 @@ run-rest-shard-selftest:
 
 # Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
 # every section alone, the whole suite once and every shard once — about an hour
-# on an idle machine — and what it writes is a file to review and commit.
+# on an idle machine — and what it writes is a file to review and commit. It is
+# given S, the row count of the partition, as its shard count.
 census:
-	bash scripts/gate-census.sh --shards $(GATE_SHARDS) --out scripts/gate-census.tsv
+	bash scripts/gate-census.sh --shards $(GATE_SLOTS) --out scripts/gate-census.tsv
 
 test-active-notify: $(NOTIFY_TESTS:%=run/%)
 

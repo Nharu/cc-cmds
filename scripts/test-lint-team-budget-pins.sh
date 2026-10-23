@@ -20,17 +20,25 @@
 # distinguishes "heading reverted" from "file absent", which is the distinction
 # the lever's skip-if-absent posture rests on.
 #
-# OK-5, FAIL-8 and FAIL-9 cover the by-path relay. OK-5 carries the protocol's
-# `### Resume latency` and `### Resume kinds and witness keys` sections with all
-# eight pinned literals, the two relay sentences, and consumer lines that hand
-# peer witnesses over by path (→ green). FAIL-8 and FAIL-9 are OK-5 with one
-# change each, so they fail only on the defect they target: FAIL-8 puts a
-# verbatim-quote line inside review-lite's `#### Round structure` section, the
-# range the budget fence exempts and the relay fence must not; FAIL-9 drops the
-# no-boundary-batching literal from `### Resume latency`. Every older fixture
-# carries the two relay sentences too, because those checks run whenever the
-# protocol file exists — without them each FAIL case would go red for a reason
-# unrelated to its own defect and rule nothing out.
+# OK-5, FAIL-8, FAIL-9 and FAIL-10 cover the by-path relay and the dispatch
+# ordering. OK-5 carries the protocol's `### Dispatch latency` and
+# `### Dispatch kinds and witness keys` sections with all ten pinned literals,
+# the two relay sentences, and consumer lines that hand peer witnesses over by
+# path (→ green). FAIL-8, FAIL-9 and FAIL-10 are OK-5 with one change each, so
+# they fail only on the defect they target: FAIL-8 puts a verbatim-quote line
+# inside review-lite's `#### Round structure` section, the range the budget
+# fence exempts and the relay fence must not; FAIL-9 drops the
+# no-boundary-batching literal from `### Dispatch latency`; FAIL-10 drops the
+# no-send-in-the-nonce-response literal from `### Dispatch kinds and witness
+# keys`. Every older fixture carries the two relay sentences too, because those
+# checks run whenever the protocol file exists — without them each FAIL case
+# would go red for a reason unrelated to its own defect and rule nothing out.
+#
+# OK-6 and FAIL-11 cover the re-entry notes parameter. OK-6 adds the protocol's
+# `### Parameter — re-entry notes (opt-in)` section with its fenced clause, and
+# each opted-in skill the fixture carries (design-lite, review, review-lite)
+# attaches that clause once (→ green). FAIL-11 is OK-6 with review-lite's
+# attachment removed, so the per-skill count reads 0 (→ red).
 #
 # The test invokes the lint with `SKILLS_ROOT=<fixture-dir>` so the real plugin
 # skills are untouched.

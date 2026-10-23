@@ -30,7 +30,7 @@ report() { OUT=$(bash "$REPORT" "$@" 2>"$WORK/err"); rc=$?; }
 # 줄 수는 grep -c 로 센다 — 조기 종료하는 grep -q 는 왼쪽을 SIGPIPE 로 죽인다.
 count() { printf '%s\n' "$OUT" | grep -cF -- "$1" || true; }
 # section <표제> — 그 표제 줄부터 다음 `## ` 표제 앞까지.
-section() { printf '%s\n' "$OUT" | awk -v h="$1" '$0 == h { on = 1; print; next } on && /^## / { exit } on { print }'; }
+section() { printf '%s\n' "$OUT" | awk -v h="$1" '$0 == h { on = 1; print; next } on && /^##? / { exit } on { print }'; }
 
 # --- 0. 인자와 종료 코드 -------------------------------------------------------------
 report
@@ -87,6 +87,38 @@ check "3: 감사 공시 행이 있는 런이 없다는 줄을 낸다" "$(count '
 
 # --- 4. 쓰지 않는다 ---------------------------------------------------------------------
 check "4: 원장 디렉터리에 새 파일을 쓰지 않는다" "$(find "$LD" -type f | wc -l | tr -d ' ')" "1"
+
+# --- 5. 토론 패스와 판정 — 같은 판의 전후 행, 판이 갈린 행, 기준선 부족 ----------------------
+# 판정 덩어리는 수집기의 `--verdict` 가 런별 기록에서 계산하므로, 입력은 기록 모양을 손으로
+# 쓴 것이다. 계산 규칙은 test-collect-run-metrics.sh 가 잰다 — 여기서는 어느 판의 줄에 무엇이
+# 나오는가를 본다.
+rec() {
+  # rec <run-id> <감사 판> <플러그인 버전> <고유> <R3 열림 true|false>
+  mkdir -p "$LD/metrics"
+  jq -n --arg r "$1" --arg e "$2" --arg v "$3" --argjson u "$4" --argjson o "$5" '
+    {run_id: $r, stages: [], shifts: [],
+     design: {path: "discuss-audit", audits: [{stage: "A1", attempt: 1, path: "discuss-audit", pass: "최초", edition: $e,
+                                              plugin: ($v + "@abcdefabcdef"), unique: $u, bytes: 10000}],
+              discussion: [{stage: "D1", attempt: 1, path: "discuss-audit", r3_open: $o,
+                            reason: (if $o then "측정 지명" else "해당 없음" end)}]}}' > "$LD/metrics/$1.json"
+}
+for i in 1 2 3 4 5; do rec "20261003-aaaaaab$i" ffff11111111 2.99.0 10 false; done
+for i in 1 2 3 4 5; do rec "20261003-aaaaaac$i" ffff11111111 2.104.1 12 false; done
+rec 20261003-aaaaaad1 ffff22222222 2.104.1 30 true
+jq -n '{design_paths: {}, discussion_passes: {"discuss-audit": {n: 11, r3_open: 1, reasons: {"측정 지명": 1, "해당 없음": 10},
+        r3_minutes_median: null, fidelity_findings_median: 2, coherence_findings_median: 3}}}' > "$LD/metrics.json"
+report --ledger-dir "$LD" --release-boundary 2.100.0
+check "5: exit 0 이다" "$rc" "0"
+check "5: 토론 패스 집계를 경로마다 한 줄 낸다" "$(count '| discuss-audit | 11 | 1 | 측정 지명 1, 해당 없음 10 | - | 2 | 3 |')" "1"
+verdict=$(section '# 판정 — 감사 판별')
+check "5: 경계 버전을 적는다" "$(printf '%s\n' "$verdict" | grep -c '^경계 버전 2.100.0 ' || true)" "1"
+check "5: 같은 판의 전후 행이 한 줄에 놓이고 문턱 안이면 유지다" "$(printf '%s\n' "$verdict" | grep -c '^| ffff11111111 | 5 | 5 | 판정 | 유지 | 10 | 12 | 1 | 1.2 | 1.2 | 1.2 | 0% | 0% | 성립 |' || true)" "1"
+check "5: 판이 갈린 행은 그 판의 줄에만 들고 기준선이 모자라면 기준선 부족이다" "$(printf '%s\n' "$verdict" | grep -c '^| ffff22222222 | 0 | 1 | 기준선 부족 | - |' || true)" "1"
+report --ledger-dir "$LD"
+check "5: 경계를 주지 않으면 기본값(빈 값)으로 모두 기준선이다" "$(count '| ffff11111111 | 10 | 0 | 판정 보류 | - |')" "1"
+report --ledger-dir "$LD" --release-boundary v2
+check "5: 숫자 버전이 아닌 경계는 exit 2 다" "$rc" "2"
+check "5: 판정 덩어리를 계산해도 원장 디렉터리에 새 파일을 쓰지 않는다" "$(find "$LD" -type f | wc -l | tr -d ' ')" "12"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
