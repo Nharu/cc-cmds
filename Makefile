@@ -167,10 +167,10 @@ check-push-verify:
 # and skip the suite. An explicit GATE_SUITE_BASE that does not resolve, or no
 # candidate left at all, is the no-base case and runs the suite.
 #
-# The full suite takes about three hours serially — the thirteen CI shards add
-# up to about 177 minutes — so it ends within neither the foreground tool limit
-# nor the two-hour background one, and the full regression is PR CI's job
-# (thirteen shards, about 10 to 22 minutes each). A change whose gate.sh edit
+# The full suite takes about three hours serially — the CI shards add up to
+# about 177 minutes — so it ends within neither the foreground tool limit nor
+# the two-hour background one, and the full regression is PR CI's job
+# (twenty-six shards, about 10 minutes each). A change whose gate.sh edit
 # crosses only some sections narrows the run with
 # GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' — the same
 # section choice the repository's test rules ask for. Interactively the default
@@ -432,8 +432,8 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 # table (CI's plan job), the union check and the row ids `gate-shard` asks the
 # partitioner for, and to the census. N goes to the matrix and its number check
 # and is the SHARD a `gate-shard` call takes.
-GATE_SHARDS ?= 13
-GATE_LANES ?= 2
+GATE_SHARDS ?= 26
+GATE_LANES ?= 1
 GATE_SLOTS := $(shell echo $$(( $(GATE_SHARDS) * $(GATE_LANES) )))
 
 # So CI can read the numbers instead of spelling them a second time.
