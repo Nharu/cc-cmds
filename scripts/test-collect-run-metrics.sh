@@ -1062,13 +1062,26 @@ check "15: 미상 감사 판·재감사·solo-audit 행은 판정에 들지 않�
 check "15: 경계와 문턱을 함께 싣는다" "$(jsum '.discussion_verdict | [.boundary, .threshold, .min_n, .r3_open_max] | map(tostring) | join(",")')" "2.100.0,1.5,5,0.25"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>"$WORK/err"); rc=$?
 check "15: --verdict 는 exit 0 이다" "$rc" "0"
-check "15: 경계가 없으면 모든 행이 기준선이다" "$(jline '.editions["e5e5e5e5e5e5"] | [.baseline.n, .after.n, .status] | map(tostring) | join(",")')" "10,0,판정 보류"
+check "15: 경계 인자가 없으면 기본 경계 2.111.0 으로 가르고 2.104.1 은 그 앞이다" "$(jline '[.boundary, (.editions["e5e5e5e5e5e5"] | .baseline.n, .after.n, .status)] | map(tostring) | join(",")')" "2.111.0,10,0,판정 보류"
 check "15: --verdict 는 요약을 다시 쓰지 않는다" "$(jsum '.discussion_verdict.boundary')" "2.100.0"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict --release-boundary 2.x 2>"$WORK/err"); rc=$?
 check "15: 숫자 버전이 아닌 경계는 인자 오류다" "$rc" "2"
 DP_OUT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/design-path-report.sh" --ledger-dir "$LEDGER_DIR" --release-boundary 2.100.0 2>/dev/null)
 check "15: 인쇄기가 토론 패스 집계를 경로마다 한 줄 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c -F -e '| discuss-audit | 5 | 0 | 해당 없음 5 |' -e '| base | 5 | 1 | 측정 지명 1, 해당 없음 4 |' || true)" "2"
 check "15: 인쇄기가 판정 덩어리를 감사 판마다 한 줄 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c '^| e5e5e5e5e5e5 | 5 | 5 | 판정 | 되돌림 |\|^| e6e6e6e6e6e6 | 0 | 1 | 기준선 부족 |' || true)" "2"
+
+# --- 16. 기본 경계 버전 — 인자 없이 `CM_RELEASE_BOUNDARY_DEFAULT` 로 가른다 ---------------------
+# 기본값은 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전 2.111.0 이다. 바로 아래 판과
+# 자릿수가 다른 판은 기준선이고, 같은 판과 그 뒤는 릴리스 뒤다.
+reset_all
+d14_run 20261003-ffffff01 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.110.9 10 10000)"
+d14_run 20261003-ffffff02 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.99.0 10 10000)"
+d14_run 20261003-ffffff03 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.111.0 10 10000)"
+d14_run 20261003-ffffff04 "$(tier_row base)" "$(ad_row base 최초 e7e7e7e7e7e7 2.112.0 10 10000)"
+collect
+check "16: 수집기는 exit 0 이다" "$rc" "0"
+check "16: 요약은 기본 경계 2.111.0 을 싣는다" "$(jsum '.discussion_verdict.boundary')" "2.111.0"
+check "16: 2.110.9 와 2.99.0 은 기준선, 2.111.0 과 2.112.0 은 릴리스 뒤다" "$(jsum '.discussion_verdict.editions["e7e7e7e7e7e7"] | [.baseline.n, .after.n] | map(tostring) | join(",")')" "2,2"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
