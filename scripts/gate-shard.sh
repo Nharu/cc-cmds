@@ -72,7 +72,8 @@
 #                                                      already made (CI's plan job)
 #   bash scripts/gate-shard.sh --shards N --check [--from-table F]
 #                                                      the shards' union equals the
-#                                                      --list set, and no id twice
+#                                                      --list set, no id twice, and
+#                                                      the row ids are exactly 1..N
 #   bash scripts/gate-shard.sh --self-test
 #
 #   --suite PATH    the suite to partition (default: scripts/test-gate.sh)
@@ -330,10 +331,21 @@ shard_partition() {
 # The coverage check reads the TABLE, not the partition's internals, so a table
 # produced elsewhere (`--from-table`) is held to the same rule. It compares SETS:
 # a count is satisfied by one id twice and another id never.
+#
+# THE ROW IDS ARE CHECKED AS A SET TOO. The table must carry exactly the rows
+# 1..N of the `--shards` it is checked against. A range check alone lets a
+# 13-row table pass under `--shards 26`: rows 14..26 are then simply absent, the
+# run-row check counts only rows that carry ids, and the lane that should run
+# them is skipped in silence.
 shard_check() {
-  local table="$1" ids_f="$2"
+  local table="$1" ids_f="$2" n="$3"
   local tmp rc=0
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard-check.XXXXXX")
+  awk -F '\t' '{ print $1 }' "$table" | LC_ALL=C sort > "$tmp/rows"
+  seq 1 "$n" | LC_ALL=C sort > "$tmp/rows-want"
+  if ! cmp -s "$tmp/rows" "$tmp/rows-want"; then
+    rc=3; printf 'gate-shard: 표의 행 id 가 1..%s 와 다름 — 표 [%s]\n' "$n" "$(sort -n "$tmp/rows" | tr '\n' ' ')" >&2
+  fi
   awk -F '\t' '{ n = split($3, a, ","); for (i = 1; i <= n; i++) if (a[i] != "") print a[i] }' "$table" > "$tmp/all"
   LC_ALL=C sort "$tmp/all" | uniq -d > "$tmp/dup"
   LC_ALL=C sort -u "$tmp/all" > "$tmp/have"
@@ -542,11 +554,33 @@ shard_self_test() {
   out=$(bash "$0" --suite "$T/s11.sh" --census "$T/none.tsv" --timing "$T/t11.tsv" --shards 2 --table 2>/dev/null)
   if [ "$out" = "$(printf '1\t55\tp\n2\t55\tq,r')" ]; then ok "(n) 프렐류드는 행마다 그룹당 한 번 더해진다"; else bad "(n) 프렐류드는 행마다 그룹당 한 번 더해진다" "「${out}」"; fi
 
+  # (o) a slot table: N runners × L lanes are S = N × L rows, and the table and
+  # its check take S. The rows are exactly 1..S; a 13-row table checked under
+  # `--shards 26` fails, though every id it carries is in range; and a row past
+  # the runner count is still a row, not a usage error.
+  out=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 26 --table 2>/dev/null)
+  if [ "$(printf '%s\n' "$out" | awk -F '\t' '{ print $1 }' | tr '\n' ' ')" = "$(seq 1 26 | tr '\n' ' ')" ] \
+     && bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 26 --check > /dev/null 2>&1; then
+    ok "(o) --shards 26 의 표는 행 id 가 정확히 1..26 이고 --check 가 통과한다"
+  else
+    bad "(o) --shards 26 의 표는 행 id 가 정확히 1..26 이고 --check 가 통과한다" "「${out}」"
+  fi
+  bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 13 --table > "$T/t13.tsv" 2>/dev/null
+  err=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 26 --check --from-table "$T/t13.tsv" 2>&1 >/dev/null); rc=$?
+  if [ "$rc" = "3" ] && printf '%s' "$err" | grep -q '표의 행 id 가 1..26 와 다름'; then
+    ok "(o) --shards 26 아래 13행 표는 --check 에서 실패한다"
+  else
+    bad "(o) --shards 26 아래 13행 표는 --check 에서 실패한다" "rc=$rc err=$err"
+  fi
+  seq 1 26 | awk '{ print $1 "\t" ($1 == 14 ? "5\ta,b" : "0\t") }' > "$T/t26.tsv"
+  k1=$(bash "$0" --suite "$T/s6.sh" --shards 26 --shard 14 --from-table "$T/t26.tsv" 2>/dev/null); rc=$?
+  if [ "$rc" = "0" ] && [ "$k1" = "a,b" ]; then ok "(o) --shards 26 --shard 14 --from-table 은 사용법 오류 없이 행을 낸다"; else bad "(o) --shards 26 --shard 14 --from-table 은 사용법 오류 없이 행을 낸다" "rc=$rc 「${k1}」"; fi
+
   rm -rf "$T"
   printf 'gate-shard self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 24 ]; then
-    printf 'gate-shard self-test: 통과 수 %d 가 하한 24 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 27 ]; then
+    printf 'gate-shard self-test: 통과 수 %d 가 하한 27 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -625,9 +659,9 @@ case "$mode" in
     printf '%s\n' "$ids" ;;
   check)
     if [ -n "$from_table" ]; then
-      shard_check "$from_table" "$work/ids"
+      shard_check "$from_table" "$work/ids" "$shards"
     else
-      shard_check "$work/table" "$work/ids"
+      shard_check "$work/table" "$work/ids" "$shards"
     fi
     exit $? ;;
 esac
