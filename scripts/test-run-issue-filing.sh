@@ -25,10 +25,9 @@ export CC_CMDS_DASHBOARD
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
 # 스테이지 안에서 돌리면 좌석 표지가 환경으로 물려온다 — 그러면 모든 픽스처 호출이
-# 스테이지의 호출이 되어 필링 경로가 통째로 꺼진다.
-unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER \
-      CC_PIPELINE_GRANT CC_PIPELINE_GATE CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT \
-      CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION
+# 스테이지의 호출이 되어 필링 경로가 통째로 꺼진다. 이름 목록이 아니라 접두어로
+# 걷으므로 게이트가 나중에 내보내기 시작한 이름도 함께 걷힌다.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 export CC_GATE_PIN_DISABLE=1
 
 script_dir=$(cd "$(dirname "$0")" && pwd)

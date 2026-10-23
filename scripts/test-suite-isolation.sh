@@ -2,13 +2,13 @@
 # Acceptance test: the two orchestrator suites do not write to the ledger of a
 # pipeline run they inherit from their environment.
 #
-# A suite started inside a pipeline stage inherits all eleven `CC_PIPELINE_*`
-# names. The pre-tool hook the hook-decision sections drive reads
-# `CC_PIPELINE_MANIFEST` from the environment and hands it to
+# A suite started inside a pipeline stage inherits every `CC_PIPELINE_*` name
+# the gate exported to that stage. The pre-tool hook the hook-decision sections
+# drive reads `CC_PIPELINE_MANIFEST` from the environment and hands it to
 # `gate.sh digest-path --manifest`, and the gate derives the ledger from that
 # manifest — so fixture `run` rows landed in the live run's ledger. Both suites
-# now clear the eleven names at the top of the file. This test proves the
-# channel is closed rather than asserting the `unset` line exists.
+# now clear every name with that prefix at the top of the file. This test proves
+# the channel is closed rather than asserting the clearing line exists.
 #
 # THE SHAPE, and why each piece is there:
 #
@@ -37,14 +37,24 @@
 #   - The assertion is that the scratch ledger FILE does not exist. That covers
 #     every row family at once — `run`, `blocked` and whatever is added later.
 #
-# WHAT THIS CATCHES, measured by mutating a scratch copy: moving `test-run.sh`'s
-# `unset` behind T13, or dropping `CC_PIPELINE_MANIFEST` from it, makes the
-# `test-run.sh` assertion fail. Dropping `CC_PIPELINE_MANIFEST` from
-# `test-gate.sh`'s `unset` does NOT fail anything today, and no choice of
-# sections changes that: the only place that reads the variable's value is
-# `gate-pretool.sh`, and `test-gate.sh` never runs that hook. Its half of this
-# test is the tripwire for the day a section starts calling the hook or a gate
-# path starts reading the variable.
+# WHAT THIS CATCHES, measured by mutating a scratch copy when the suites still
+# cleared a list of names: moving `test-run.sh`'s clearing line behind T13, or
+# dropping `CC_PIPELINE_MANIFEST` from it, made the `test-run.sh` assertion
+# fail. Dropping `CC_PIPELINE_MANIFEST` from `test-gate.sh`'s clearing did NOT
+# fail anything, and no choice of sections changes that: the only place that
+# reads the variable's value is `gate-pretool.sh`, and `test-gate.sh` never runs
+# that hook. Its half of this test is the tripwire for the day a section starts
+# calling the hook or a gate path starts reading the variable.
+#
+# WHAT THIS DOES NOT PROVE. Three of the names exported below —
+# `CC_PIPELINE_AUDIT_PASS`, `CC_PIPELINE_HALT_ANSWER`, `CC_PIPELINE_REENTRY` —
+# were missing from the old lists, and they are exported here as a regression
+# guard. But the only things observed are the scratch ledger file and the
+# scratch run directory's `admit`, and none of the three reaches either path:
+# an implementation that left them uncleared passes this file all the same. So
+# this is not behavioural proof that clearing by prefix catches names a list
+# lacked. The meta suite's leak census does not prove it either — it checks
+# only that the clearing line is present.
 #
 # Usage: bash scripts/test-suite-isolation.sh
 
@@ -62,6 +72,9 @@ CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
+# What this process inherited goes first; the names it exports below are its
+# own scratch run's.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -148,7 +161,9 @@ else
   exit 1
 fi
 
-# --- the eleven names, pointing at the scratch run ---------------------------
+# --- the pipeline names, pointing at the scratch run -------------------------
+# The eleven the suites once listed, and the three the gate exports that those
+# lists missed (audit pass, halt answer, re-entry).
 export CC_PIPELINE_MANIFEST="$ROOT/manifest.md"
 export CC_PIPELINE_LEDGER="$LEDGER"
 export CC_PIPELINE_RUN_ID="$RID"
@@ -160,6 +175,9 @@ export CC_PIPELINE_SEGMENT=S1
 export CC_PIPELINE_STAGE_ID='S1#1'
 export CC_PIPELINE_SHIFT_ID='S1#1'
 export CC_PIPELINE_PARENT_SESSION=isolation-parent
+export CC_PIPELINE_AUDIT_PASS=1
+export CC_PIPELINE_HALT_ANSWER="$ROOT/rundir/halt-answer.md"
+export CC_PIPELINE_REENTRY=1
 
 # --- test-run.sh through T16 -------------------------------------------------
 TR="$MIRROR/plugins/cc-cmds/orchestrator/test-run.sh"

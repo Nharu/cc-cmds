@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lint-bash-portability: self-skip
-# 런 계측 수집기 — 모집단·판독 규칙·집계·순 효과·트리거 일곱·팀원 구간과 기준선 모드.
+# 런 계측 수집기 — 모집단·판독 규칙·집계·순 효과·트리거 일곱·팀원 구간과 기준선 모드·합성 구간.
 #
 # 이 스위트가 있는 이유. 수집기의 오판은 대부분 오류가 아니라 자신 있는 틀린 수로
 # 나타난다 — 줄 단위로 합한 요청 수, 세션만으로 묶어 역행하는 누적, 폴백 하나에 접힌
@@ -1062,7 +1062,7 @@ check "15: 미상 감사 판·재감사·solo-audit 행은 판정에 들지 않�
 check "15: 경계와 문턱을 함께 싣는다" "$(jsum '.discussion_verdict | [.boundary, .threshold, .min_n, .r3_open_max] | map(tostring) | join(",")')" "2.100.0,1.5,5,0.25"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>"$WORK/err"); rc=$?
 check "15: --verdict 는 exit 0 이다" "$rc" "0"
-check "15: 경계가 없으면 모든 행이 기준선이다" "$(jline '.editions["e5e5e5e5e5e5"] | [.baseline.n, .after.n, .status] | map(tostring) | join(",")')" "10,0,판정 보류"
+check "15: 경계 인자가 없으면 기본 경계 2.114.0 으로 가르고 2.104.1 은 그 앞이다" "$(jline '[.boundary, (.editions["e5e5e5e5e5e5"] | .baseline.n, .after.n, .status)] | map(tostring) | join(",")')" "2.114.0,10,0,판정 보류"
 check "15: --verdict 는 요약을 다시 쓰지 않는다" "$(jsum '.discussion_verdict.boundary')" "2.100.0"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict --release-boundary 2.x 2>"$WORK/err"); rc=$?
 check "15: 숫자 버전이 아닌 경계는 인자 오류다" "$rc" "2"
@@ -1189,6 +1189,128 @@ check "16: (종류, 설계 스킬) 셈은 구간을 낸 파일·아닌 파일 �
 check "16: 종류별 파일 셈에도 게시 파일 수가 붙는다" "$(jline '.files.design | [.member_published, .non_member_published] | join(",")')" "1,1"
 check "16: 기준선의 members 는 요약과 같은 층이다" "$(jline '.members["design|재개|round-2+"].requests')" "1"
 check "16: 기준선은 첫 회차 품질을 모은다" "$(jline '.quality | [.segments, .p0.median, .p1_unknown] | join(",")')" "2,0.5,1"
+
+# --- 17. 합성 구간 표지 — 런별 `synthesis` 와 요약의 `synthesis` ------------------------------
+# 표지 스테이지 id 의 `#` 앞은 설계 스테이지 행의 `스테이지` 칸(세그먼트 칸은 `-`)에, 뒤는
+# `실행 버전` 에 맞고, 같은 세션 id 의 시도들이 한 구간이다. 판정이 거짓인 구간의 수 칸은
+# 0 이 아니라 null 이고, 옛 기록에 키가 없어도 요약은 무너지지 않는다.
+syn_row() {
+  # syn_row <실행 버전> <sid> — 실제 설계 스테이지 행의 모양.
+  sr_row - S1design design "$1" "$2" '정상 완료' '300000(argv)' '~/.claude'
+}
+syn_tr() {
+  # syn_tr <sid> — 본 전사 요청 100·200·300·400·400(같은 id)·500·600·700·800, 하위 에이전트
+  # 전사 요청 550·650·900.
+  local o
+  {
+    for o in 100 200 300 400; do tl_assist "$o" "$1-m$o" 10 10 10; done
+    tl_assist 400 "$1-m400" 10 10 10
+    for o in 500 600 700 800; do tl_assist "$o" "$1-m$o" 10 10 10; done
+  } | mk_transcript "$HOME_A" -repo "$1"
+  { for o in 550 650 900; do tl_assist "$o" "$1-a$o" 10 10 10; done; } | mk_transcript "$HOME_A" -repo "$1" a.jsonl
+}
+syn_marks() {
+  # syn_marks <run-id> <사건 시각오프셋 스테이지id …> — 세 낱말씩 한 줄로 표지 파일에 덧붙인다.
+  local rid="$1" f; shift
+  f="$STATE/run/$rid/design/topic/synthesis-marks.txt"
+  mkdir -p "$(dirname "$f")"
+  while [ "$#" -ge 3 ]; do
+    printf '%s %s %s\n' "$1" "$(ts "$2")" "$3" >> "$f"
+    shift 3
+  done
+}
+syn_run() {
+  # syn_run <run-id> <행…> — 런 디렉터리와 스트림 로그, 그리고 주어진 행들의 원장.
+  local rid="$1"; shift
+  mk_rundir "$rid"; mk_stream "$STATE/run/$rid/log/S1design#1.json" 1
+  mk_ledger "$rid" "$@"
+}
+syn_nums() { printf '%s' '[.marks_ok, .window_ms, .draft_ms, .lead_requests, .lead_requests_draft, .member_requests] | map(tostring) | join(",")'; }
+reset_all
+R17A=20261002-eeeeee01; R17A2=20261002-eeeeee02; R17N=20261002-eeeeee03
+R17C1=20261002-eeeeee11; R17C2=20261002-eeeeee12; R17C3=20261002-eeeeee13; R17C4=20261002-eeeeee14; R17C5=20261002-eeeeee15
+R17B=20261002-eeeeee21; R17OLD=20261002-eeeeee99
+syn_run "$R17A" "$(syn_row 1 sA)"; syn_tr sA
+syn_marks "$R17A" enter 300 'S1design#1' draft 500 'S1design#1' save 700 'S1design#1'
+syn_run "$R17A2" "$(syn_row 1 sA2)"; syn_tr sA2
+syn_marks "$R17A2" enter 300 'S1design#1' draft 400 'S1design#1' save 500 'S1design#1'
+syn_run "$R17N" "$(syn_row 1 sN)"; syn_tr sN
+# 대조군 — 저마다 한 가지만 어긋난다.
+syn_run "$R17C1" "$(syn_row 1 sC1)"; syn_tr sC1
+syn_marks "$R17C1" enter 300 'S1design#1' draft 500 'S1design#1'
+syn_run "$R17C2" "$(syn_row 1 sC2)"; syn_tr sC2
+syn_marks "$R17C2" enter 300 'S1design#1' draft 750 'S1design#1' save 700 'S1design#1'
+syn_run "$R17C3" "$(syn_row 1 sC3)"; syn_tr sC3
+syn_marks "$R17C3" enter 300 - draft 500 - save 700 -
+syn_run "$R17C4" "$(syn_row 1 sC4)"; syn_tr sC4
+syn_marks "$R17C4" enter 300 'S9design#1' draft 500 'S9design#1' save 700 'S9design#1'
+syn_run "$R17C5" "$(syn_row 1 sC5a)" "$(syn_row 2 sC5b)"; syn_tr sC5a; syn_tr sC5b
+syn_marks "$R17C5" enter 300 'S1design#1' draft 500 'S1design#2' save 700 'S1design#2'
+# 옛 기록 — 이 변경 전의 런별 기록에는 `synthesis` 키가 없다. 원장이 없어 다시 만들어지지 않는다.
+mkdir -p "$LEDGER_DIR/metrics"
+jq -n --arg rid "$R17OLD" '{run_id: $rid, state: "종단",
+  stages: [{segment: "-", stage: "S1design", kind: "design", class: "정상 완료", lane: "~/.claude",
+            complete: true, truncated: false, cost_usd: 1, requests: 1, requests_included: 1,
+            ctx: {median: null, p90: null, max: null}, ctx_values: [], cache: {read: 0, creation: 0, input: 0},
+            boundaries: [], probe_fail: false, excluded: {manual: 0, shadow: 0, switch_window: 0},
+            net_token: 0, compaction_ms: 0, auto_count: 0, included_count: 0, pre_auto: [],
+            wall_ms: null, wall_source: "none", switch_wall_ms: 0, window_int: 300000, p0: "unknown"}],
+  shifts: [],
+  design: {path: "solo-audit", tier: "team-4", scope: "single", skill: "x",
+           audits: [{stage: "A1", attempt: 1, path: "solo-audit", pass: "최초", edition: "e9e9e9e9e9e9",
+                     unique: 2, bytes: 1024, unreinforced: 0, skeletal: 0, synth_candidates: 0}],
+           reconverge: {fired: false, verdicts: []}},
+  rejected_window: 0, unattributed: {empty: 0, unknown: 0}, window_mismatch_sessions: [], probe_fail: false}' \
+  > "$LEDGER_DIR/metrics/$R17OLD.json"
+collect
+check "17: 수집기는 exit 0 이다" "$rc" "0"
+check "17: 표지 한 벌은 구간 하나다" "$(jrec "$R17A" '.synthesis | length')" "1"
+check "17: 기본 픽스처의 구간 값" \
+  "$(jrec "$R17A" '.synthesis[0] | [.marks_ok, .reattached, .kind, .window_ms, .draft_ms, .lead_requests, .lead_requests_draft, .member_requests] | map(tostring) | join(",")')" \
+  "true,false,design,400000,200000,5,3,2"
+check "17: 시도 번호를 싣는다" "$(jrec "$R17A" '.synthesis[0] | [.stage, (.attempts | map(tostring) | join("+"))] | join(",")')" "S1design,1"
+check "17: 표지 없는 런의 synthesis 는 빈 배열이다" "$(jrec "$R17N" '.synthesis | tojson')" "[]"
+check "17: 표지는 스테이지 행의 다른 값을 바꾸지 않는다" \
+  "$(jrec "$R17A" '.stages[0] | [.requests, .stage, .kind] | map(tostring) | join(",")')" \
+  "$(jrec "$R17N" '.stages[0] | [.requests, .stage, .kind] | map(tostring) | join(",")')"
+check "17: save 가 없으면 판정이 거짓이고 수는 null 이다" "$(jrec "$R17C1" ".synthesis[0] | $(syn_nums)")" "false,null,null,null,null,null"
+check "17: draft 가 save 보다 늦으면 판정이 거짓이다" "$(jrec "$R17C2" ".synthesis[0] | $(syn_nums)")" "false,null,null,null,null,null"
+check "17: 스테이지 id 가 - 이면 판정이 거짓이다" "$(jrec "$R17C3" ".synthesis[0] | $(syn_nums)")" "false,null,null,null,null,null"
+check "17: 맞는 stage-result 행이 없으면 판정이 거짓이다" "$(jrec "$R17C4" ".synthesis[0] | $(syn_nums)")" "false,null,null,null,null,null"
+check "17: 세션이 바뀐 시도는 다른 구간이 되어 둘 다 거짓이다" \
+  "$(jrec "$R17C5" ".synthesis | map($(syn_nums)) | join(\";\")")" "false,null,null,null,null,null;false,null,null,null,null,null"
+check "17: 요약은 판정이 참인 구간만 센다" "$(jsum '.synthesis | [.count, .reattached] | map(tostring) | join(",")')" "2,0"
+check "17: 종류별 요청 수 중앙값" "$(jsum '.synthesis.by_kind.design | [.count, .lead_requests_median, .window_ms_median] | map(tostring) | join(",")')" "2,4,300000"
+check "17: 옛 기록이 있어도 요약은 빈 객체가 아니다" "$(jsum 'has("strata") and has("design_paths") and has("synthesis")')" "true"
+check "17: 옛 기록도 층 집계에 든다" "$(jsum '.strata["design|정상 완료|~/.claude"].A4.stages')" "9"
+check "17: 옛 기록도 설계 경로 집계에 든다" "$(jsum '.design_paths | has("solo-audit|e9e9e9e9e9e9")')" "true"
+# 재부착 — 같은 세션의 두 시도는 한 구간이고 중앙값에서 빠진다.
+syn_run "$R17B" "$(syn_row 1 sB)" "$(syn_row 2 sB)"; syn_tr sB
+syn_marks "$R17B" enter 300 'S1design#1' draft 500 'S1design#2' save 700 'S1design#2'
+collect
+check "17: 재부착된 시도들은 한 구간이다" \
+  "$(jrec "$R17B" '[(.synthesis | length), (.synthesis[0] | .reattached, (.attempts | map(tostring) | join("+")), .lead_requests, .marks_ok)] | map(tostring) | join(",")')" \
+  "1,true,1+2,5,true"
+check "17: 재부착 구간이 더해지면 수와 재부착 수가 는다" "$(jsum '.synthesis | [.count, .reattached] | map(tostring) | join(",")')" "3,1"
+check "17: 재부착 구간은 중앙값을 바꾸지 않는다" "$(jsum '.synthesis.by_kind.design | [.count, .lead_requests_median] | map(tostring) | join(",")')" "2,4"
+syn_marks "$R17B" enter 350 'S1design#2'
+collect --recollect
+check "17: 다시 온 사건은 마지막 줄을 쓴다" "$(jrec "$R17B" '.synthesis[0] | [.lead_requests, .window_ms] | map(tostring) | join(",")')" "4,350000"
+
+# --- 18. 기본 경계 버전 — 인자 없이 `CM_RELEASE_BOUNDARY_DEFAULT` 로 가른다 ---------------------
+# 기본값은 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전 2.114.0 이다. R3 를 아직
+# 일정으로 여는 바로 앞 두 판 2.112.0·2.113.0 과 그보다 오래된 2.99.0 은 기준선이고, 같은 판과
+# 그 뒤는 릴리스 뒤다.
+reset_all
+d14_run 20261003-ffffff01 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.112.0 10 10000)"
+d14_run 20261003-ffffff02 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.99.0 10 10000)"
+d14_run 20261003-ffffff03 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.114.0 10 10000)"
+d14_run 20261003-ffffff04 "$(tier_row base)" "$(ad_row base 최초 e7e7e7e7e7e7 2.115.0 10 10000)"
+d14_run 20261003-ffffff05 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.113.0 10 10000)"
+collect
+check "18: 수집기는 exit 0 이다" "$rc" "0"
+check "18: 요약은 기본 경계 2.114.0 을 싣는다" "$(jsum '.discussion_verdict.boundary')" "2.114.0"
+check "18: 2.112.0·2.113.0·2.99.0 은 기준선, 2.114.0 과 2.115.0 은 릴리스 뒤다" "$(jsum '.discussion_verdict.editions["e7e7e7e7e7e7"] | [.baseline.n, .after.n] | map(tostring) | join(",")')" "3,2"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
