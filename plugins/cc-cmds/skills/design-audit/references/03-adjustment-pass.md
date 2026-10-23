@@ -39,6 +39,15 @@ Every unique defect goes to exactly one owner. The five counts must sum to the u
 
 **기각 requires a written rationale.** That requirement is what makes triage collapse visible: a run whose rejection count is zero beside a large applied count is the exact signature of the failure that killed this command's predecessor, and the fixed-arity routing lines surface it without any extra instrumentation.
 
+## Applying the pass — compose everything, then land it in one batch
+
+Every request re-reads the whole context, so the pass lands its work in as few responses as it can. The owners above and what each one means are unchanged; this section governs only how their results are written.
+
+1. **Disposition first, then compose.** Decide every unique defect's owner before writing anything, then compose the `old_string` and `new_string` of every fix routed to `조정 패스 적용`.
+2. **One response, several Edits.** Fixes that do not depend on one another land together, as several Edit calls in one response, each anchored on text unique in the document. Only a fix anchored where another fix rewrites waits for the next response.
+3. **Compose from what was already read.** Build each `old_string` from the document body already read; do not Read a section again right before its Edit. Only an Edit refused because its `old_string` is not unique sends you to `grep -n` for its location and a Read of that range to widen it.
+4. **The report's adjustment content is written once.** The severity re-assignments, the routing per owner, the rejection rationales, the synthesis question and its answer, and the `조정 시작` timestamp are composed in full and written in one batch after the document's batch of fixes has landed — never per finding. `조정 시작` and `조정 종료` are the values `date` measured, in the same slots and on the same measurement path: `조정 시작` is still measured as the pass's first act, and only its value waits for this batched write. A halt before the batched write carries the value in the report write made before the halt. The interactive audit does the same with no working copy: it lands the batch of Edits on the document, then writes the report's adjustment content.
+
 ## Synthesis question (mandatory terminal act)
 
 The pass may NOT close by dispositioning items one at a time. Its final act is to ask, once, in writing, and answer in the report:
