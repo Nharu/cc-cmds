@@ -187,7 +187,7 @@ CM_MEMBER_BASELINE=0
 # 판정 덩어리의 경계 버전 기본값 — 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전.
 # 플러그인 버전이 이 값보다 앞서는 행이 기준선(릴리스 전)이다. 그 변경보다 다른 릴리스가
 # 먼저 나가면 `plugin.json` 의 버전과 함께 다시 맞춘다.
-CM_RELEASE_BOUNDARY_DEFAULT="2.113.0"
+CM_RELEASE_BOUNDARY_DEFAULT="2.114.0"
 CM_RELEASE_BOUNDARY="$CM_RELEASE_BOUNDARY_DEFAULT"
 CM_VERDICT_ONLY=0
 
