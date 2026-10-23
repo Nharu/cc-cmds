@@ -1062,7 +1062,7 @@ check "15: 미상 감사 판·재감사·solo-audit 행은 판정에 들지 않�
 check "15: 경계와 문턱을 함께 싣는다" "$(jsum '.discussion_verdict | [.boundary, .threshold, .min_n, .r3_open_max] | map(tostring) | join(",")')" "2.100.0,1.5,5,0.25"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>"$WORK/err"); rc=$?
 check "15: --verdict 는 exit 0 이다" "$rc" "0"
-check "15: 경계가 없으면 모든 행이 기준선이다" "$(jline '.editions["e5e5e5e5e5e5"] | [.baseline.n, .after.n, .status] | map(tostring) | join(",")')" "10,0,판정 보류"
+check "15: 경계 인자가 없으면 기본 경계 2.114.0 으로 가르고 2.104.1 은 그 앞이다" "$(jline '[.boundary, (.editions["e5e5e5e5e5e5"] | .baseline.n, .after.n, .status)] | map(tostring) | join(",")')" "2.114.0,10,0,판정 보류"
 check "15: --verdict 는 요약을 다시 쓰지 않는다" "$(jsum '.discussion_verdict.boundary')" "2.100.0"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict --release-boundary 2.x 2>"$WORK/err"); rc=$?
 check "15: 숫자 버전이 아닌 경계는 인자 오류다" "$rc" "2"
@@ -1296,6 +1296,21 @@ check "17: 재부착 구간은 중앙값을 바꾸지 않는다" "$(jsum '.synth
 syn_marks "$R17B" enter 350 'S1design#2'
 collect --recollect
 check "17: 다시 온 사건은 마지막 줄을 쓴다" "$(jrec "$R17B" '.synthesis[0] | [.lead_requests, .window_ms] | map(tostring) | join(",")')" "4,350000"
+
+# --- 18. 기본 경계 버전 — 인자 없이 `CM_RELEASE_BOUNDARY_DEFAULT` 로 가른다 ---------------------
+# 기본값은 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전 2.114.0 이다. R3 를 아직
+# 일정으로 여는 바로 앞 두 판 2.112.0·2.113.0 과 그보다 오래된 2.99.0 은 기준선이고, 같은 판과
+# 그 뒤는 릴리스 뒤다.
+reset_all
+d14_run 20261003-ffffff01 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.112.0 10 10000)"
+d14_run 20261003-ffffff02 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.99.0 10 10000)"
+d14_run 20261003-ffffff03 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.114.0 10 10000)"
+d14_run 20261003-ffffff04 "$(tier_row base)" "$(ad_row base 최초 e7e7e7e7e7e7 2.115.0 10 10000)"
+d14_run 20261003-ffffff05 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.113.0 10 10000)"
+collect
+check "18: 수집기는 exit 0 이다" "$rc" "0"
+check "18: 요약은 기본 경계 2.114.0 을 싣는다" "$(jsum '.discussion_verdict.boundary')" "2.114.0"
+check "18: 2.112.0·2.113.0·2.99.0 은 기준선, 2.114.0 과 2.115.0 은 릴리스 뒤다" "$(jsum '.discussion_verdict.editions["e7e7e7e7e7e7"] | [.baseline.n, .after.n] | map(tostring) | join(",")')" "3,2"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
