@@ -16,7 +16,8 @@
 #              result is `비교 안 함`
 #   out guard  an --out inside a git tree is a usage error
 #   app        a loopback server is started, the browser fetches index.html
-#              from it, and the port is closed afterwards (lsof)
+#              from it under the same closed proxy and no bypass list, and the
+#              port is closed afterwards (lsof)
 #   no index   --root without index.html is `비교 안 함`
 #   no Chrome  nothing on PATH and no macOS application path is
 #              `비교 안 함 — Chrome 없음`
@@ -130,6 +131,18 @@ cap fetch app --root "$T/site" --out "$T/out" --timeout 20
 port=$(sed -nE 's/^서버 127\.0\.0\.1:([0-9]+)$/\1/p' "$T/cap.out")
 grep -qxF "arg=http://127.0.0.1:${port}/index.html" "$LOG" && pass "app: 루프백 서버의 index.html 을 연다" || fail "app URL = $(tail -n 2 "$LOG")"
 grep -qxF 'status=200' "$LOG" && pass "app: 브라우저가 루프백 서버에서 200 을 받았다" || fail "app 서버 응답 = $(grep status "$LOG" || echo 없음)"
+# app 도 ref 와 같은 닫힌 프록시로 뜨고 루프백 우회 목록을 따로 싣지 않는다 — 실제
+# Chrome 에서 127.0.0.1 은 그 플래그 없이 프록시를 우회해 찍혔고, 루프백이 아닌
+# 호스트로 가는 img·fetch 는 같은 argv 에서 막혔다.
+grep -qxF 'arg=--proxy-server=127.0.0.1:9' "$LOG" && pass "app: argv 에 --proxy-server=127.0.0.1:9" || fail "app argv 에 닫힌 프록시가 없다"
+if grep -q '^arg=--proxy-bypass-list' "$LOG"; then
+  fail "app: argv 에 --proxy-bypass-list 가 있다 — $(grep '^arg=--proxy-bypass-list' "$LOG")"
+else
+  pass "app: argv 에 루프백 우회 목록을 따로 싣지 않는다"
+fi
+for flag in --disable-background-networking --disable-component-update --disable-sync --no-first-run; do
+  grep -qxF "arg=$flag" "$LOG" && pass "app: argv 에 $flag" || fail "app argv 에 $flag 가 없다"
+done
 if [ -n "$port" ] && lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
   fail "app: 끝난 뒤에도 포트 ${port} 가 열려 있다"
 else
