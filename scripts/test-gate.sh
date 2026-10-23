@@ -48114,6 +48114,70 @@ n97=$(printf '%s' "$row97" | LC_ALL=C wc -c | tr -d ' ')
 check "97: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다" \
   "$([ "${n97:-0}" -gt 0 ] && [ "${n97:-0}" -le 1024 ] && printf 예 || printf "아니오(${n97}바이트)")" "예"
 
+# ---------------------------------------------------------------------------
+# 98. gate-shard 레시피의 레인 — 행 배정, 레인별 결과 파일, 종료 코드와 합계 줄 검사
+# --- section: 98 | covers: gate-shard | anchors: 98: 두 레인이 합계 줄을 내면 통과하고 행 k 와 k+N 의 결과 파일을 남긴다, 98: 레인마다 자기 TMPDIR 를 받는다, 98: 레인 출력은 행 순서대로 통째로 찍힌다, 98: 배정 없는 레인은 빈 행으로 끝나 통과한다, 98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다, 98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다, 98: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다, 98: 레인 사례를 모두 돌렸다 ---
+#
+# Makefile 과 분할기를 임시 체크아웃에 복사하고 가짜 묶음을 둔 뒤 진짜 `make
+# gate-shard` 레시피를 부른다. 러너 2 개 × 레인 2 개라 표는 4 행이고, 러너 k 는 행
+# k 와 k+2 를 함께 돈다. 가짜 묶음은 `--sections` 의 첫 id 로 동작을 고른다:
+# `fail` 로 시작하면 합계 줄을 내고 종료 1, `nototal` 이면 합계 줄 없이 종료 0,
+# 그 밖에는 합계 줄을 내고 종료 0 이다. 받은 TMPDIR 는 로그 디렉터리에 남긴다.
+# 사례 수를 마지막 단언으로 고정해, 사례 하나를 조용히 건너뛴 고침은 통과하지 못한다.
+# ---------------------------------------------------------------------------
+d98="$WORK/d98"; mkdir -p "$d98/repo/scripts" "$d98/log"
+cp "$repo_root/Makefile" "$d98/repo/Makefile"
+cp "$repo_root/scripts/gate-shard.sh" "$d98/repo/scripts/gate-shard.sh"
+cat > "$d98/repo/scripts/test-gate.sh" <<'EOF98'
+#!/usr/bin/env bash
+ids="$2"
+printf '%s\n' "${TMPDIR:-}" > "$F98_LOG/tmpdir-${ids%%,*}"
+printf 'PASS: fake %s\n' "$ids"
+case "$ids" in
+  fail*)    printf '\ntest-gate: 1 passed, 1 failed\n'; exit 1 ;;
+  nototal*) exit 0 ;;
+  *)        printf '\ntest-gate: 1 passed, 0 failed\n'; exit 0 ;;
+esac
+EOF98
+c98=0
+# m98 <러너> <표> <출력 디렉터리> — 레시피의 종료 코드를 rc98 에, 합친 출력을 o98 에 둔다.
+m98() {
+  c98=$((c98 + 1)); rm -rf "$3"
+  rc98=0
+  o98=$( ( unset MAKEFLAGS MFLAGS MAKELEVEL; cd "$d98/repo" && F98_LOG="$d98/log" make -s --no-print-directory gate-shard \
+      SHARD="$1" GATE_SHARDS=2 GATE_LANES=2 GATE_TABLE="$2" GATE_OUT_DIR="$3" ) 2>&1 ) || rc98=$?
+}
+printf '1\t5\tok1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d98/t-ok.tsv"
+m98 1 "$d98/t-ok.tsv" "$d98/o1"
+check "98: 두 레인이 합계 줄을 내면 통과하고 행 k 와 k+N 의 결과 파일을 남긴다" \
+  "$rc98/$(cat "$d98/o1/result-1.tsv" 2>/dev/null)/$(cat "$d98/o1/result-3.tsv" 2>/dev/null)/$(ls "$d98/o1" | grep -c '^result-')" \
+  "0/$(printf '1\t0\ttest-gate: 1 passed, 0 failed')/$(printf '3\t0\ttest-gate: 1 passed, 0 failed')/2"
+check "98: 레인마다 자기 TMPDIR 를 받는다" \
+  "$(cat "$d98/log/tmpdir-ok1" 2>/dev/null)|$(cat "$d98/log/tmpdir-ok3" 2>/dev/null)" "$d98/o1/lane-1|$d98/o1/lane-3"
+check "98: 레인 출력은 행 순서대로 통째로 찍힌다" \
+  "$(printf '%s\n' "$o98" | grep -E '^(=== gate row|PASS: fake)' | tr '\n' '|')" \
+  "=== gate row 1/4 (runner 1, lanes 2) ===|PASS: fake ok1|=== gate row 3/4 (runner 1, lanes 2) ===|PASS: fake ok3|"
+m98 2 "$d98/t-ok.tsv" "$d98/o2"
+check "98: 배정 없는 레인은 빈 행으로 끝나 통과한다" \
+  "$rc98/$(cat "$d98/o2/result-4.tsv" 2>/dev/null)/$(cut -f2 "$d98/o2/result-2.tsv" 2>/dev/null)" "0/$(printf '4\t0\t빈 행')/0"
+printf '1\t5\tfail1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d98/t-fail.tsv"
+m98 1 "$d98/t-fail.tsv" "$d98/o3"
+case "$rc98/$o98" in
+  0/*) bad "98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" "rc=$rc98 $o98" ;;
+  *"행 1 의 레인이 종료 코드 1 로 끝났습니다"*) ok "98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" ;;
+  *) bad "98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다" "rc=$rc98 $o98" ;;
+esac
+printf '1\t5\tnototal1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d98/t-nototal.tsv"
+m98 1 "$d98/t-nototal.tsv" "$d98/o4"
+case "$rc98/$o98" in
+  0/*) bad "98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" "rc=$rc98 $o98" ;;
+  *"행 1 의 레인 출력에 합계 줄"*) ok "98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" ;;
+  *) bad "98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" "rc=$rc98 $o98" ;;
+esac
+check "98: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다" "$(cat "$d98/o4/result-1.tsv" 2>/dev/null)" "$(printf '1\t0\t-')"
+check "98: 레인 사례를 모두 돌렸다" "$c98" "4"
+unset -f m98
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its

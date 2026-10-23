@@ -38,7 +38,7 @@
 #       one name do not overwrite each other, and prints one line per run;
 #       exit 0 when it got at least one
 #   bash scripts/ci-duration.sh wall --slots S --runners N --lanes L
-#                                    --timing-dir D [--out F]
+#                                    --timing-dir D [--result-dir R] [--out F]
 #       the wall clock of this run attempt, as one `gate-wall:` line on stdout
 #       and in F (see dur_wall)
 #   bash scripts/ci-duration.sh --self-test
@@ -53,7 +53,7 @@ set -uo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 
 dur_usage() {
-  printf 'ci-duration: 사용법 — check --key K --seconds S [--base-sha SHA] [--window-out DIR] [--root DIR] / fetch-base (--key K | --name N --workflow W) --out DIR [--count K] / wall --slots S --runners N --lanes L --timing-dir D [--out F] / --self-test\n' >&2
+  printf 'ci-duration: 사용법 — check --key K --seconds S [--base-sha SHA] [--window-out DIR] [--root DIR] / fetch-base (--key K | --name N --workflow W) --out DIR [--count K] / wall --slots S --runners N --lanes L --timing-dir D [--result-dir R] [--out F] / --self-test\n' >&2
   exit 2
 }
 
@@ -150,19 +150,24 @@ EOF
 # the jobs it carried over with their earlier start times; its raw would cover
 # the rerun shards alone, so raw, path, queued and overlap are written `-` with
 # a notice, and the line is never read as the wall of the whole gate. `rows` is
-# the number of row timing files in D that reached their `@end` line, over S: a
-# shard that died uploads a partial file, and the count is never filled in from
-# the runner and lane numbers it was given. Nothing here fails the job: past
+# the number of distinct row ids whose `result-<K>.tsv` in the result directory
+# carries a suite total line (`test-gate: <n> passed, <n> failed`), over S. The
+# rule follows the artifact, not the lane count: when the result directory holds
+# no result file at all — a run from before the lanes carried one — it is the
+# number of row timing files in D that reached their `@end` line instead. A row
+# that died uploads a partial file in either form, and the count is never filled
+# in from the runner and lane numbers it was given. Nothing here fails the job: past
 # 900 s raw it warns, and a value an API did not give is written `-` with a
 # notice.
 dur_wall() {
-  local slots="" runners="" lanes="" tdir="" out=""
+  local slots="" runners="" lanes="" tdir="" rdir="" out=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --slots)      [ "$#" -ge 2 ] || dur_usage; slots="$2"; shift 2 ;;
       --runners)    [ "$#" -ge 2 ] || dur_usage; runners="$2"; shift 2 ;;
       --lanes)      [ "$#" -ge 2 ] || dur_usage; lanes="$2"; shift 2 ;;
       --timing-dir) [ "$#" -ge 2 ] || dur_usage; tdir="$2"; shift 2 ;;
+      --result-dir) [ "$#" -ge 2 ] || dur_usage; rdir="$2"; shift 2 ;;
       --out)        [ "$#" -ge 2 ] || dur_usage; out="$2"; shift 2 ;;
       *) printf 'ci-duration: 모르는 인자입니다: %s\n' "$1" >&2; dur_usage ;;
     esac
@@ -245,10 +250,18 @@ EOF
     fi
   fi
   if [ "$raw" != "-" ] && [ "$path" != "-" ]; then queued=$(( raw - path )); fi
-  for f in "$tdir"/timing-*.tsv; do
-    [ -f "$f" ] || continue
-    grep -q '^@end	' "$f" && executed=$((executed + 1))
-  done
+  local results=()
+  if [ -n "$rdir" ]; then
+    for f in "$rdir"/result-*.tsv; do [ -f "$f" ] && results+=("$f"); done
+  fi
+  if [ "${#results[@]}" -ge 1 ]; then
+    executed=$(awk -F '\t' '$3 ~ /^test-gate: [0-9]+ passed, [0-9]+ failed$/ && !($1 in seen) { seen[$1] = 1; n++ } END { print n + 0 }' "${results[@]}")
+  else
+    for f in "$tdir"/timing-*.tsv; do
+      [ -f "$f" ] || continue
+      grep -q '^@end	' "$f" && executed=$((executed + 1))
+    done
+  fi
   local line
   line="gate-wall: raw=$raw path=$path queued=$queued overlap=$overlap rows=$executed/$slots attempt=${att:--} slots=$slots runners=$runners lanes=$lanes (overlap 은 이 저장소의 실행만 셉니다 — 다른 저장소의 잡은 이 API 로 보이지 않습니다)"
   printf '%s\n' "$line"
@@ -578,6 +591,15 @@ STUB
     printf '@start\t1\n' > "$W/t/timing-7.tsv"
     out=$(wall 2>&1)
     if printf '%s\n' "$out" | grep -q ' rows=12/13 '; then ok "@end 가 없는 행 파일은 실행된 행으로 세지 않는다"; else bad "@end 없는 행" "$out"; fi
+    # With the lanes' result files the count is theirs, not the timing files'
+    # (still 12/13 above): 26 rows, row 9 without its total line.
+    mkdir -p "$W/r"
+    for k in $(seq 1 26); do printf '%s\t0\ttest-gate: 3 passed, 0 failed\n' "$k" > "$W/r/result-$k.tsv"; done
+    out=$(wall --slots 26 --lanes 2 --result-dir "$W/r" 2>&1)
+    if printf '%s\n' "$out" | grep -q ' rows=26/26 .* lanes=2 '; then ok "결과 파일이 있으면 rows 는 합계 줄을 낸 행 수다"; else bad "결과 파일 rows" "$out"; fi
+    printf '9\t1\t-\n' > "$W/r/result-9.tsv"
+    out=$(wall --slots 26 --lanes 2 --result-dir "$W/r" 2>&1)
+    if printf '%s\n' "$out" | grep -q ' rows=25/26 '; then ok "합계 줄이 없는 결과 파일의 행은 세지 않는다"; else bad "합계 줄 없는 결과" "$out"; fi
     # Attempt 2 reran shard 2 alone at 17:30:00: the plan job and shard 1 carry
     # attempt 1's times, before the attempt's own start.
     printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:30:00Z"}\n' > "$T/stub/attempt.json"
@@ -608,8 +630,8 @@ STUB
   rm -rf "$T"
   printf 'ci-duration self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 26 ]; then
-    printf 'ci-duration self-test: 통과 수 %d 가 하한 26 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 28 ]; then
+    printf 'ci-duration self-test: 통과 수 %d 가 하한 28 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
