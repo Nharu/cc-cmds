@@ -1363,6 +1363,20 @@ check "7: 라벨 인정 행이 초안에 바이트 그대로 하나 옮겨진다
   "$(grep -c '^- `라벨 인정`' "$WORK/v-la.md")/$(grep -cxF -- "$LA_ROW" "$WORK/v-la.md")" "1/1"
 VS_PREV="$BASE/docs/pipeline-run/RKLA.plan.md"; VS_PMSHA="$PML"; VS_PGSHA="$PGL"
 vs "라벨 인정 행이 원천과 같은 초안은 통과한다" 통과 "$WORK/v-la.md" "$E"
+# A --rows file replaces the source's shape, auto-adoption and label rows, so
+# a re-kickoff that passes one, the seat's included, writes the carried label
+# row into it; a file without that row drops it from the draft.
+printf '%s\n' "$LA_ROW" > "$WORK/rows-la"
+rk render-manifest --prev RKLA --base "$BASE" --run-id RKNL --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PML" --expect-grant-sha256 "$PGL" --rows "$WORK/rows-la" > "$WORK/v-la-rows.md"; rc=$?
+check "7: 원천의 라벨 인정 행을 담은 --rows 로 render-manifest 는 0 이고 그 행이 하나 남는다" \
+  "$rc/$(grep -c '^- `라벨 인정`' "$WORK/v-la-rows.md")/$(grep -cxF -- "$LA_ROW" "$WORK/v-la-rows.md")" "0/1/1"
+vs "원천의 라벨 인정 행을 담은 --rows 의 초안은 통과한다" 통과 "$WORK/v-la-rows.md" "$E"
+: > "$WORK/rows-none"
+rk render-manifest --prev RKLA --base "$BASE" --run-id RKNL --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PML" --expect-grant-sha256 "$PGL" --rows "$WORK/rows-none" > "$WORK/v-la-norows.md"; rc=$?
+check "7: 라벨 인정 행이 없는 --rows 는 원천의 라벨 인정 행을 초안에서 뺀다" \
+  "$rc/$(grep -c '^- `라벨 인정`' "$WORK/v-la-norows.md")" "0/0"
 VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 { cat "$NM1"; printf '%s\n' "$LA_ROW"; } > "$WORK/v-la-add.md"
 vs "원천에 없는 라벨 인정 행을 5t 답 없이 더한 초안은 실패한다" 실패 "$WORK/v-la-add.md" "$E" 행
