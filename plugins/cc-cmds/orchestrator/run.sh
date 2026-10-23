@@ -442,6 +442,7 @@ manifest_snapshot_take() {
   #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
   #   RK <row>     every `- \`재킥오프\`` row anywhere, in order
   #   AC <row>     every `- \`적용 프로브 코드\`` row anywhere, in order
+  #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -476,6 +477,7 @@ $(LC_ALL=C awk '
     index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
     index($0, "- `재킥오프`") == 1 { print "RK\t" $0 }
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
+    index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -681,6 +683,11 @@ manifest_apply_code_rows() {
   grep -E '^- `적용 프로브 코드`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_plugin_allow_rows() {
+  if manifest_memo_on; then manifest_memo_all "PA	"; return 0; fi
+  grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -791,6 +798,12 @@ binding_set_bytes() {
     # digest. Whole-file scan, zero bytes when absent, so a manifest written
     # before this row existed keeps its digest and reads the default 0/2.
     manifest_apply_code_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/applycodes\t/'
+    # THE `플러그인 허용` ROWS ARE IN THE FROZEN SET, on the same terms. Each one
+    # turns a user plugin on in every stage's settings, and the gate renders
+    # those settings from these rows; a row any act could append mid-run would
+    # load a plugin no person accepted at kickoff. Whole-file scan, zero bytes
+    # when absent, so a manifest written before this row existed keeps its digest.
+    manifest_plugin_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/pluginallow\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1140,7 +1153,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·플러그인 허용·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1496,17 +1509,51 @@ $rk_rows
 EOF
   [ "$rk_n" -le 1 ] || die "「재킥오프」 행이 ${rk_n}개입니다 — 많아야 하나입니다"
 
+  # 20 — `플러그인 허용` rows: a user plugin a person accepted at kickoff to turn
+  # on in this run's stages. The gate renders every stage's `enabledPlugins`
+  # from them, so the form is checked here and not guessed at by the renderer.
+  # One row per key: a second row adds nothing and leaves two reasons for one
+  # decision. `@inline` and `@builtin` are refused — those are the pipeline's
+  # own `--plugin-dir` copy and the harness's plugins, which no row turns on.
+  local pa_rows pa_row pa_key pa_keys=" "
+  pa_rows=$(manifest_plugin_allow_rows)
+  while IFS= read -r pa_row; do
+    [ -n "$pa_row" ] || continue
+    grep -qE '^- `플러그인 허용` \| 플러그인=[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+ \| 사유=[^|]*[^ |]$' <<<"$pa_row" \
+      || die "「플러그인 허용」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`플러그인 허용\` | 플러그인=<이름@마켓> | 사유=<한 줄>\` 입니다: $pa_row"
+    pa_key=$(printf '%s' "$pa_row" | sed -n 's/^- `플러그인 허용` | 플러그인=\([^ |]*\) |.*/\1/p')
+    case "$pa_key" in
+      *@inline|*@builtin) die "「플러그인 허용」 행이 ${pa_key} 를 켭니다 — @inline·@builtin 키는 허용 행으로 다루지 않습니다: $pa_row" ;;
+    esac
+    case "$pa_keys" in
+      *" $pa_key "*) die "「플러그인 허용」 행이 ${pa_key} 에 둘 이상입니다 — 키마다 많아야 하나입니다" ;;
+    esac
+    pa_keys="$pa_keys$pa_key "
+  done <<EOF
+$pa_rows
+EOF
+
   # 21 — the entry judgment's structure, for a plan that carries one. The
   # checker beside the entry prompt asserts it: a reason for every `team-4`
   # judgment and none for `solo`, a confirmed tier never below the judged one,
-  # and a `solo` graph with one design step and no audit or split. A plan frozen
-  # before `design_tier_judged` existed has no key and is not asserted at all.
-  # The checker file is required once the key is there: a gate copy without it
-  # cannot say whether the judgment holds, and refuses.
+  # and a `solo` graph with one design step and no audit or split, and (d) a
+  # `design_path` key, when present, inside its enum and matching the plan. A
+  # plan frozen before `design_tier_judged` existed has no key and is not
+  # asserted at all. The checker file is required once the key is there: a gate
+  # copy without it cannot say whether the judgment holds, and refuses.
   if manifest_plan_json | jq -e 'type == "object" and has("design_tier_judged")' >/dev/null 2>&1; then
     local ep_why
     ep_why=$(manifest_plan_json | jq -f "$ORCH_DIR/prompts/entry-plan.check.jq" 2>&1 >/dev/null) \
       || die "진입 판정이 검사기를 통과하지 못했습니다 — $(printf '%s' "${ep_why:-검사기를 돌리지 못했습니다}" | tr '\n' ' ')"
+  fi
+
+  # 22 — a `solo-audit` plan carries no design roster. The roster is the
+  # person's approval of a discussion team, and on the solo path nothing runs
+  # it: a frozen approval that nothing honours would let the person believe a
+  # team designed the document.
+  if [ "$(manifest_design_path)" = "solo-audit" ] \
+     && [ -n "$(manifest_design_roster_rows_anywhere)" ]; then
+    die "solo-audit 계획에 「설계 로스터」 행이 있습니다 — 로스터는 토론 경로(discuss-audit)에서만 승인합니다"
   fi
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
@@ -1535,17 +1582,53 @@ manifest_design_tier() {
   esac
 }
 
+manifest_design_path() {
+  # `solo-audit`, `discuss-audit` or `none` — who writes a team-4 single-scope
+  # document. A value inside the enum is printed as frozen. An absent key, `null`
+  # and an unparsable plan block read by the absence rule of the contract
+  # sentence on `manifest_design_skill`: `discuss-audit` on a team-4
+  # single-scope plan that designs, `none` on every other plan. The absence is
+  # only ever a plan frozen before the key existed, and what that plan approved
+  # is the discussion.
+  local v
+  v=$(manifest_plan_field '.design_path')
+  case "$v" in
+    solo-audit|discuss-audit|none) printf '%s' "$v"; return 0 ;;
+  esac
+  if [ "$(manifest_design_scope)" = "single" ] \
+     && [ "$(manifest_design_tier)" = "team-4" ] \
+     && [ "$(manifest_plan_field '.design_required')" = "true" ]; then
+    printf 'discuss-audit'
+  else
+    printf 'none'
+  fi
+}
+
 manifest_design_skill() {
-  # THE ONE CHOICE OF DESIGN SKILL. `design_arm`, the gate's snapshot field
-  # `design_skill` and the gate's design-dispatch check all read it here, so the
-  # driver, the gate and the routers that send the snapshot's value cannot pick
-  # different skills for one plan. The scope comes first: a base run designs
-  # with the base skill whatever its tier, and the base scope only takes
-  # `team-4`. Everything that is not `solo` — `team-4`, and the `team-2` and
+  # THE ONE CHOICE OF DESIGN SKILL. The contract sentence it rests on:
+  #
+  #   `design_tier` decides whether the graph carries the audit — `solo`: no
+  #   `design-audit` step; `team-4`: exactly one, after the design.
+  #   `design_path` records who writes a team-4 single-scope document —
+  #   `solo-audit`: the lead alone; `discuss-audit`: the discussion team — and
+  #   is `none` on every other plan. A plan with no `design_path` key was frozen
+  #   before the key existed and reads `discuss-audit` where the key would name
+  #   a writer (a team-4 single-scope design) and `none` elsewhere. Only
+  #   `manifest_design_skill` turns scope, tier and path into the design skill.
+  #
+  # `design_arm`, the gate's snapshot field `design_skill` and the gate's
+  # design-dispatch check all read it here, so the driver, the gate and the
+  # routers that send the snapshot's value cannot pick different skills for one
+  # plan. The scope comes first: a base run designs with the base skill whatever
+  # its tier, and the base scope only takes `team-4`. A `solo` tier and a
+  # `team-4` plan on the `solo-audit` path take the solo skill. Everything else —
+  # a `team-4` plan on `discuss-audit` or with no key, and the `team-2` and
   # `null` of a plan frozen before `solo` existed — keeps the discussion skill.
   if [ "$(manifest_design_scope)" = "base" ]; then
     printf 'design-base-unattended'
   elif [ "$(manifest_design_tier)" = "solo" ]; then
+    printf 'design-solo-unattended'
+  elif [ "$(manifest_design_tier)" = "team-4" ] && [ "$(manifest_design_path)" = "solo-audit" ]; then
     printf 'design-solo-unattended'
   else
     printf 'design-discuss-unattended'
@@ -10805,6 +10888,9 @@ continue_attempt() {
     ${psha:+"plan_sha256=$psha"} ${ask:+"골격급=$ask"} ${arq:+"재수렴 요청=$arq"} "종단 부류=$CONTINUE_CLASS" \
     "실패 서명=$(row_signature "$did" "$skind" "$CONTINUE_CLASS" "$wtp" - "$clue")"
   absorb_stage_judgment "$did" "$jkey" "$alias"
+  # A continued audit attempt is an audit attempt too, and leaves its own
+  # `감사 공시` row after its row.
+  [ "$rkind" != "S2" ] || run_gate_call gate_record_audit_disclosure S2 "$(stage_attempt_pinned "$did")" || true
   if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
     CONTINUE_PARK_REASON="중단 기록"
     CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$did")" 2>/dev/null || true)
@@ -11646,6 +11732,9 @@ s2_audit_attempt() {
       "골격급=$sk2" "재수렴 요청=$rq2" \
       "종단 부류=$class2" "실패 서명=$(row_signature S2 audit "$class2" - -)"
   absorb_stage_judgment S2 S2 "$(home_alias)"
+  # Every audit attempt leaves its `감사 공시` row, by the gate's own builder;
+  # a re-audit is dispatched through this same place and gets its row here too.
+  run_gate_call gate_record_audit_disclosure S2 "$(stage_attempt_pinned S2)" || true
   # Keyed on the stage for the reason the design stage's absorber is.
   case "$class2" in
     '정상 완료') : ;;

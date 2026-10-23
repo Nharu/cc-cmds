@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-gate-timing-selftest run-ci-duration-selftest
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -126,7 +126,13 @@ check-cheap:
 	bash scripts/lint-macos-keepset-paths.sh
 
 # Check the committed HEAD once in a clean clone before push, and stamp its tree
-# on a pass; `check-push-verify` answers whether HEAD's tree carries a stamp.
+# on a pass; `check-push-verify` answers whether HEAD's tree carries a stamp. In
+# an unattended run the clone tests the merge CI tests, with the base taken from
+# this worktree's fresh FETCH_HEAD. Variables, all optional:
+#   CHECK_PUSH_BASE         base commit to merge with (interactive use)
+#   CHECK_PUSH_BASE_BRANCH  branch whose FETCH_HEAD line is the base (master)
+#   CHECK_PUSH_SECTIONS     test-gate section ids, comma-separated
+#   CHECK_PUSH_GOALS        REST goals (`make -s print-rest-goals`), comma-separated
 check-push:
 	bash scripts/check-push.sh run
 
@@ -343,6 +349,8 @@ LINT_TESTS := \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-solo-audit-experiment.sh \
+	scripts/test-reader-model-compare.sh \
+	scripts/test-reader-model-pair-audit.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
 	scripts/test-lint-stage-policy-sources.sh \
@@ -376,11 +384,13 @@ ORCH_TESTS := \
 	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-display-tz.sh \
+	scripts/test-run-stops.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \
 	scripts/test-route.sh \
 	scripts/test-collect-run-metrics.sh \
+	scripts/test-design-path-report.sh \
 	scripts/test-measure-cycle-causes.sh \
 	scripts/test-run-issue-filing.sh \
 	scripts/test-visual-config.sh \
@@ -408,7 +418,7 @@ $(TEST_GOALS): run/%:
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
-	run-rest-shard-selftest run-check-push-selftest \
+	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest
 
 # How many runners the gate suite runs on (N), and how many rows each runner
@@ -462,7 +472,7 @@ ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
-	run-rest-shard-selftest run-check-push-selftest \
+	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest
 
 test-rest: $(REST_GOALS)
@@ -601,6 +611,9 @@ run-gate-census-selftest:
 
 run-check-push-selftest:
 	bash scripts/check-push.sh --self-test
+
+run-test-tree-selftest:
+	bash scripts/test-tree.sh --self-test
 
 run-rest-shard-selftest:
 	bash scripts/rest-shard.sh --self-test

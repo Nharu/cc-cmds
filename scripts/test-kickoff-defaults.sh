@@ -1094,6 +1094,34 @@ fi
 check "개인 사본은 끝나면 지워진다" "$(ls "${TMPDIR:-/tmp}" 2>/dev/null | grep -c '^cc-kickoff-carry\.' || true)" "0"
 
 # ---------------------------------------------------------------------------
+# --plugin-candidates — 세션 계정과 레인 인벤토리 계정의 사용자 키를 허용·후보로
+# 나누고, 후보에는 설치된 플러그인의 설명 첫 줄을 붙인다
+# ---------------------------------------------------------------------------
+PC_A="$WORK/pc-acct-a"; PC_B="$WORK/pc-acct-b"; PC_X="$WORK/pc-xdg"
+mkdir -p "$PC_A/plugins" "$PC_B" "$PC_X/cc-lane" "$WORK/pc-inst/figma/.claude-plugin"
+printf '{"description":"Figma 디자인 도구\\n둘째 줄"}\n' > "$WORK/pc-inst/figma/.claude-plugin/plugin.json"
+printf '{"version":2,"plugins":{"figma@claude-plugins-official":[{"scope":"user","installPath":"%s"}],"typesafe@typesafe-ai":[{"scope":"user","installPath":"%s/none"}]}}\n' \
+  "$WORK/pc-inst/figma" "$WORK" > "$PC_A/plugins/installed_plugins.json"
+printf '{"enabledPlugins":{"swift-lsp@claude-plugins-official":true,"cc-cmds@inline":true,"x@builtin":true}}\n' > "$PC_A/settings.json"
+printf '{"enabledPlugins":{"slack@claude-plugins-official":true}}\n' > "$PC_B/settings.json"
+printf '{"accounts":[{"config_dir":"%s"}]}\n' "$PC_B" > "$PC_X/cc-lane/accounts.json"
+pc() { CLAUDE_CONFIG_DIR="$PC_A" XDG_CONFIG_HOME="$PC_X" kd --plugin-candidates "$@"; }
+out=$(pc); rc=$?
+check "--plugin-candidates 는 0 으로 끝난다" "$rc" "0"
+check "--plugin-candidates 의 허용 줄은 seed 키다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="허용" { print $2 }' | paste -sd' ' -)" "typesafe@typesafe-ai"
+check "--plugin-candidates 의 후보는 허용 키·@inline·@builtin 을 뺀 두 계정의 사용자 키다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="후보" { print $2 }' | paste -sd' ' -)" \
+  "figma@claude-plugins-official slack@claude-plugins-official swift-lsp@claude-plugins-official"
+check "--plugin-candidates 의 설명은 설치 경로 plugin.json 의 첫 줄이다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="후보" && $2=="figma@claude-plugins-official" { print $3 }')" "Figma 디자인 도구"
+check "--plugin-candidates 의 설명이 없으면 - 다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="후보" && $2=="slack@claude-plugins-official" { print $3 }')" "-"
+check "--plugin-candidates 는 --target 과 함께 쓰지 않는다" "$(pc $T >/dev/null 2>&1; echo $?)" "2"
+check "--plugin-candidates 는 --now 와 함께 쓰지 않는다" "$(pc --now "$NOW" >/dev/null 2>&1; echo $?)" "2"
+check "--plugin-candidates 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" "$HELPER" --plugin-candidates >/dev/null 2>&1; echo $?)" "3"
+
+# ---------------------------------------------------------------------------
 # SKILL.md 문면 — 호출 철자와 5n 고지
 # ---------------------------------------------------------------------------
 if grep -F 'bash <plugin root>/orchestrator/kickoff-defaults.sh' "$SKILL" >/dev/null; then
