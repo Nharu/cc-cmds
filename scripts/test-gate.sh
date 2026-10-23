@@ -31559,6 +31559,159 @@ shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
 shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
 
+# --- 34q. 종료 절 근거 요청 — 절 키 원뿔은 세그먼트를 잡지 않는다 ---
+# --- section: 34q | group: cone | covers: act, snapshot, shift-halt, gate_record_cone, gate_cone_members, gate_done_conditions | anchors: 34q: 종료 절 근거 기록이 halt/shift/clause-C2#1.md 에 선다, 34q: 절 키 원뿔의 의존 세그먼트에 세그먼트가 없다, 34q: 절 키 원소의 보류는 비어 있다, 34q: 절 키 원뿔은 종료 조건 5 에 세지 않고 10 은 남는다 ---
+#
+# A CLAUSE NO READ OF THE RUN CAN SETTLE IS ASKED OF A PERSON, NOT HELD. The
+# shift stops at `종료 절 근거` with `--segment -` and `절=<id>`; the gate makes
+# the key `clause-<id>`, writes the record under `halt/shift/` and a cone row
+# anchored on that key. Every segment here has merged, so the only thing the
+# run still waits on is the clause — condition 10 holds it, and the request
+# must not add a run-holding block to condition 5 besides.
+CLQ_RID=RCLQ1
+cap_fx_new "$CLQ_RID"
+mkdir -p "$CAP_DIR/halt/shift"
+sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+# The shared fixture carries its own clause; this one declares exactly three.
+sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+printf -- '- `종료 절` | id=C1 | 문면=첫째 절\n- `종료 절` | id=C2 | 문면=둘째 절\n- `종료 절` | id=C3 | 문면=셋째 절\n' >> "$CAP_NM"
+CLQ_SEAT="6e6e6e6e-5555-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$CLQ_SEAT.jsonl"
+for clq_s in Q1 Q2; do
+  cap_gate "$CLQ_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$clq_s" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SEAT" '')" \
+           --rationale x -- 워크트리="$CONE_C" 상태=실행중 선행=없음
+done
+cap_gate "$CLQ_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CLQ_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34q: 픽스처의 교대 기동이 섰다" "$rc" "0"
+CLQ_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$CLQ_SHIFT.jsonl"
+hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment - \
+         --site '종료 절 근거' --cutpoint 커밋 --surface 읽기 \
+         --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 근거 요청" \
+         -- '절=C2' '질문=C2 가 요구하는 실측을 돌려 결과를 남기는가?' '관측=그 실측은 이 런의 읽기로 만들 수 없다'
+check "34q: 종료 절 근거의 shift-halt 가 통과한다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34q: %s\n' "$msg"
+CLQ_REC="$CAP_DIR/halt/shift/clause-C2#1.md"
+check "34q: 종료 절 근거 기록이 halt/shift/clause-C2#1.md 에 선다" \
+  "$( [ -f "$CLQ_REC" ] && printf yes || printf no)" "yes"
+clq_row=$(cap_rows 'blocked' | tail -1)
+clq_dep=$(row_field "$clq_row" '의존 세그먼트')
+case ",$clq_dep," in
+  *,Q1,*|*,Q2,*) bad "34q: 절 키 원뿔의 의존 세그먼트에 세그먼트가 없다" "$clq_dep" ;;
+  *) ok "34q: 절 키 원뿔의 의존 세그먼트에 세그먼트가 없다" ;;
+esac
+clq_snap=$(cap_snap "$CLQ_SEAT" '')
+check "34q: 절 키 원소의 보류는 비어 있다" \
+  "$(printf '%s' "$clq_snap" | jq -r '[.shift_halts[] | select(.["세그먼트"] == "clause-C2") | (.["보류"] | length | tostring)] | join(",")')" "0"
+clq_unmet=$(printf '%s' "$clq_snap" | jq -c '.unmet_condition_numbers')
+case "$clq_unmet" in
+  *'"5"'*|*'[5,'*|*',5,'*|*',5]'*|'[5]') bad "34q: 절 키 원뿔은 종료 조건 5 에 세지 않고 10 은 남는다" "$clq_unmet" ;;
+  *10*) ok "34q: 절 키 원뿔은 종료 조건 5 에 세지 않고 10 은 남는다" ;;
+  *) bad "34q: 절 키 원뿔은 종료 조건 5 에 세지 않고 10 은 남는다" "$clq_unmet" ;;
+esac
+check "34q: 절 키 원뿔은 차단 접기의 런 막힘이 아니다" \
+  "$( . "$LIVENESS"; cc_unresolved_blocked "$CAP_LEDGER" | { grep -F '종료 절 근거' || true; } )" ""
+clq_rec_body=$(cat "$CLQ_REC" 2>/dev/null)
+check "34q: 기록은 근거 제출·불가능으로 정산 두 선택지와 (없음) 추천을 싣는다" \
+  "$(case "$clq_rec_body" in (*'- `근거 제출` — '*) printf a ;; esac
+     case "$clq_rec_body" in (*'- `불가능으로 정산` — '*) printf b ;; esac
+     case "$clq_rec_body" in (*'- `재시도`'*|*'- `세그먼트 park`'*) printf X ;; esac
+     case "$clq_rec_body" in (*'**추천**: (없음)'*) printf c ;; esac)" "abc"
+clq_clause() {  # clq_clause <id> <field> — one field of that clause's `clauses[]` element
+  cap_snap "$CLQ_SEAT" '' | jq -r --arg i "$1" --arg f "$2" '[.clauses[] | select(.id == $i) | .[$f]] | first // "부재"'
+}
+check "34q: clauses[] 가 종료 절 셋을 문면과 함께 낸다" \
+  "$(cap_snap "$CLQ_SEAT" '' | jq -r '[.clauses[] | .id + "=" + .["문면"]] | join(",")')" "C1=첫째 절,C2=둘째 절,C3=셋째 절"
+check "34q: 요청이 열린 절의 clauses[] 원소는 미정산이고 요청 기록을 이름 댄다" \
+  "$(clq_clause C2 '상태')|$(clq_clause C2 '요청')" "미정산|$CLQ_REC"
+clq_halt() {  # clq_halt <segment> <site> <fields…> — the shift's evidence request
+  local s="$1" site="$2"; shift 2
+  cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment "$s" \
+           --site "$site" --cutpoint 커밋 --surface 읽기 \
+           --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 근거 요청" -- "$@"
+}
+clq_nblk() { cap_rows 'blocked' | grep -c . || true; }
+clq_b0=$(clq_nblk)
+clq_halt - '종료 절 근거' '절=C2' '질문=다시?' '관측=x'
+check "34q: 소비되지 않은 요청이 있는 절의 두 번째 요청은 거절된다" "$rc/$(clq_nblk)" "3/$clq_b0"
+clq_halt - '종료 절 근거' '절=C9' '질문=없는 절?' '관측=x'
+check "34q: 매니페스트에 없는 절의 요청은 거절된다" "$rc/$(clq_nblk)" "3/$clq_b0"
+clq_halt Q1 '종료 절 근거' '절=C1' '질문=세그먼트에?' '관측=x'
+check "34q: 세그먼트를 단 종료 절 근거 요청은 거절된다" "$rc/$(clq_nblk)" "2/$clq_b0"
+clq_halt Q1 '병합 거절' '절=C1' '질문=다른 자리에 절?' '관측=x'
+check "34q: 다른 자리의 절 필드는 거절된다" "$rc/$(clq_nblk)" "2/$clq_b0"
+
+# THE ANSWER CARRIES THE EVIDENCE, AND THE SETTLING ROW SPENDS IT. `근거 제출`
+# without the attachment beside the record is refused; with it the answer
+# routes to the shift, and the clause row the next shift writes on that
+# attachment takes the answer up.
+clq_ans() {  # clq_ans <기록> <선택지> [첨부] — a person's answer at the seat
+  local att=()
+  [ -z "${3:-}" ] || att=("첨부=$3")
+  cap_gate "$CLQ_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "clause-${4:-C2}" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SEAT" '')" \
+           --rationale "픽스처 — 절 근거 요청의 답" \
+           -- "중단 기록=$1" "선택지=$2" '답한 주체=사람' '근거=사람이 실측을 돌려 결과를 남김' ${att[@]+"${att[@]}"}
+}
+clq_nans() { cap_rows '중단 답' | grep -c . || true; }
+clq_a0=$(clq_nans)
+clq_ans "$CLQ_REC" '근거 제출'
+check "34q: 첨부 없는 근거 제출 답은 exit 3 으로 거절된다" "$rc/$(clq_nans)" "3/$clq_a0"
+CLQ_ATT="$CAP_DIR/halt/shift/clause-C2#1.answer.md"
+printf '%s\n' '절 C2 · 커밋 abc1234 · bash probe.sh → 0 · 관측 값 42 · 실행 주체 사람' > "$CLQ_ATT"
+clq_ans "$CLQ_REC" '근거 제출' "$CLQ_ATT"
+check "34q: 첨부를 단 근거 제출 답이 선다" "$rc" "0"
+clq_line=$(grep -n '^- `중단 답` ' "$CAP_LEDGER" | tail -1 | cut -d: -f1)
+clq_ah() {  # clq_ah <기록> <field> — that record's `answered_halts[]` element field
+  cap_snap "$CLQ_SEAT" '' | jq -r --arg r "$1" --arg f "$2" '[.answered_halts[] | select(.record == $r) | .[$f]] | last // "부재"'
+}
+check "34q: 근거 제출 답은 교대-정지 로 라우팅된다" "$(clq_ah "$CLQ_REC" route)" "교대-정지"
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 정산" \
+         -- id=C2 상태=충족 "근거=중단 답 줄 $clq_line · 첨부 $CLQ_ATT"
+check "34q: 첨부를 근거로 한 종료 절 행이 선다" "$rc" "0"
+check "34q: 같은 id 의 뒤 종료 절 행이 근거 제출 답을 소비한다" "$(clq_ah "$CLQ_REC" route)" "부재"
+check "34q: 정산 뒤 clauses[] 원소는 충족이고 요청은 비고 근거는 행의 것이다" \
+  "$(clq_clause C2 '상태')|$(clq_clause C2 '요청')|$(clq_clause C2 '근거')" "충족||중단 답 줄 $clq_line · 첨부 $CLQ_ATT"
+clq_halt - '종료 절 근거' '절=C2' '질문=정산된 절?' '관측=x'
+check "34q: 이미 정산된 절의 요청은 거절된다" "$rc" "3"
+
+# `불가능으로 정산` takes no attachment and is spent the same way.
+clq_halt - '종료 절 근거' '절=C3' '질문=C3 의 실측을 돌릴 수 있는가?' '관측=자격이 필요하다'
+check "34q: 두 번째 절의 요청이 선다" "$rc" "0"
+CLQ_REC3="$CAP_DIR/halt/shift/clause-C3#1.md"
+clq_ans "$CLQ_REC3" '불가능으로 정산' '' C3
+check "34q: 불가능으로 정산 답은 첨부 없이 선다" "$rc/$(clq_ah "$CLQ_REC3" route)" "0/교대-정지"
+clq_line3=$(grep -n '^- `중단 답` ' "$CAP_LEDGER" | tail -1 | cut -d: -f1)
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 정산" \
+         -- id=C3 상태=불가능 "근거=중단 답 줄 $clq_line3"
+check "34q: 불가능 정산 행이 그 답을 소비한다" "$rc/$(clq_ah "$CLQ_REC3" route)" "0/부재"
+check "34q: 불가능 정산 뒤 clauses[] 원소는 불가능이다" "$(clq_clause C3 '상태')" "불가능"
+
+# Every segment merged and every clause settled: the run may propose done.
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 정산" \
+         -- id=C1 상태=충족 "근거=$CAP_LEDGER 의 Q1·Q2 머지됨 행"
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" --rationale "픽스처 — 절 정산" \
+         -- id=C3 상태=충족 "근거=$CAP_LEDGER 의 Q2 머지됨 행"
+check "34q: 모든 절이 정산되면 clauses[] 에 미정산이 없다" \
+  "$(cap_snap "$CLQ_SEAT" '' | jq -r '[.clauses[] | select(.["상태"] == "미정산")] | length')" "0"
+check "34q: 모든 절이 정산된 런에는 종료 조건 5 도 10 도 남지 않는다" \
+  "$(cap_snap "$CLQ_SEAT" '' | jq -r '[.unmet_condition_numbers[] | select(. == 5 or . == 10)] | length')" "0"
+cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind propose-done --target infra --segment - \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CLQ_SHIFT" "$CLQ_RID#1")" \
+         --rationale "픽스처 — 종료 제안" -- 절=C1,C2,C3 "근거=$CAP_LEDGER"
+check "34q: 모든 절이 정산된 뒤 propose-done 이 받아들여진다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34q: %s\n' "$msg"
+
 # --- 34m. 빈 대상 리뷰 정지 — 좌석은 구현 재파견으로 답하고, park 답은 park 행이 소비한다 ---
 # --- section: 34m | group: cone | covers: snapshot, act | anchors: 34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다, 34m: 뒤의 park 행이 세그먼트 park 답을 소비한다, 34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다 ---
 #
