@@ -1219,8 +1219,8 @@ printf 'plugin-allow = %s\n[Nharu/cc-cmds]\nplugin-allow = %s\n' "$PA_N" "$PA_F"
 out=$(pe '없음')
 check "PLUGIN_ALLOW=없음: 런 전역 줄을 모두 숨기고 레포 구획은 덮지 않는다" \
   "$(pr "$out" | paste -sd' ' -)" "적용|Nharu/cc-cmds|$PA_F|파일:3"
-for v in "$PA_N," "$PA_N,,$PA_F" ",$PA_N" "$PA_N, ,$PA_F" "$PA_N,없음" 'notion' "$PA_N,x@builtin" "$PA_N	$PA_F" "$PA_N
-$PA_F"; do
+for v in "${PA_N}," "${PA_N},,${PA_F}" ",${PA_N}" "${PA_N}, ,${PA_F}" "${PA_N},없음" 'notion' "${PA_N},x@builtin" "${PA_N}	${PA_F}" "${PA_N}
+${PA_F}"; do
   out=$(pe "$v")
   check "PLUGIN_ALLOW '$(printf '%s' "$v" | tr '\t\n' '~~')' → 변수 형식 오류, 파일 런 전역 줄은 환경변수 무효" \
     "$(pr "$out" | awk -F'|' '$2=="런" { print $1 }' | sort | paste -sd' ' -)" "형식 오류 환경변수 무효"
