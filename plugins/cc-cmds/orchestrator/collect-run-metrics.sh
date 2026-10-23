@@ -36,6 +36,14 @@
 #   --recollect               이미 있는 런별 기록도 다시 만든다(시험용).
 #   --max-new <n>             한 회차에 새로 수집을 시도하는 런 수의 상한(기본 20, 환경변수
 #                             `CC_METRICS_ROUND_MAX`).
+#   --member-baseline         팀원 기준선 모드. 끝난 런 전부의 팀원 집계를 stdout 으로만 내고
+#                             런별 기록·요약·`.pending` 표지·저널 어느 것도 쓰지 않는다.
+#                             `--max-new`·`--budget` 을 걸지 않는다. 레인 기록이 없는 런
+#                             (`사라짐`)과 전사가 하나도 남지 않은 런(`전사 삭제`)은 빼고,
+#                             포함 런 수와 사유별 제외 런 수를 함께 낸다. 서브에이전트 파일
+#                             셈은 (종류, 설계 스킬)마다 구간을 낸 파일과 내지 않은 파일로
+#                             나누고, 각각에서 증인을 게시한 파일(`mv -n` 을 담은 `Bash`
+#                             요청이 있는 파일) 수를 함께 낸다(`kind_skill_files`).
 #   --budget <초>             한 회차의 벽시계 예산(기본 20, 환경변수
 #                             `CC_METRICS_ROUND_BUDGET_S`). 상한이나 예산에 걸린 런은 수집하지
 #                             않고 미수집으로 센다 — 그 회차는 차단되어 판정을 내지 않고, 기록이
@@ -59,10 +67,16 @@
 #   <ledger-dir>/metrics/<run-id>.json     런별 수집 기록(멱등 — 있으면 다시 만들지 않는다).
 #                                          기록이 있다는 것은 수집됐다는 뜻일 뿐 판정됐다는
 #                                          뜻이 아니다 — 델타 소속은 아래 저널이 정한다.
+#   <ledger-dir>/metrics/<run-id>.members.json
+#                                          런별 팀원 기록. 새로 수집하는 런에만 만든다.
+#                                          요약의 층·트리거의 입력이 아니고, 요약의
+#                                          `members` 만 이 파일들에서 나온다.
 #   <저널>                                 회차마다 한 줄 JSON 추가. 회차 수·연속 수·시각은
 #                                          여기에만 있다. 첫 키 `schema` 는 층 값의 단위이고,
 #                                          앞선 단위의 줄은 기준선·연속 계수에서 빠진다.
 #   stdout                                 그 회차의 저널 줄 한 줄. stderr 에는 진단만.
+#                                          `--member-baseline` 이면 기준선 JSON 하나이고
+#                                          위 파일은 하나도 쓰지 않는다.
 #
 # 종료 코드. 0 회차 기록됨 · 2 인자 오류 · 3 입력 디렉터리 없음.
 #
@@ -84,6 +98,16 @@
 # 같은 세션 id 의 행이 여럿이면 전사는 한 번만 연다. `실행 버전` 은 값이 숫자일 때만
 # 시도 번호다. 압축 기록은 줄을 파싱해 판정하고 메타데이터 철자 둘을 모두 안다.
 #
+# 팀원 판독. 스테이지 세션의 `subagents/` 아래 전사 파일마다, 도구 결과가 아닌 사용자
+# 메시지에서 구간을 자른다. 구간의 역할과 라운드 키는 그 메시지 안의 첫
+# `cc-witness: <role-slug> <round/phase> complete` 줄에서만 읽는다 — 뒤에 오는 줄은 동료
+# 증인을 센티널째 인용한 것일 수 있다. 그 줄이 없는 사용자 메시지(재촉·명확화 질의)는 새
+# 구간을 열지 않고 앞 구간에 붙는다. 그 줄이 하나도 없는 파일은 팀원이 아니다. 키에서
+# `-rev<k>` 를 뗀 기저 토큰이 파일 안에 둘 이상이면 수명주기가 `재개`, 아니면 `재생성`
+# 이고, 라운드 부류는 기저 토큰으로 정한다(`round-1` · `round-2+` · 그 밖은 `phase`).
+# 출력 토큰은 같은 `message.id` 줄들 가운데 최댓값이다. 런별 품질은 세그먼트마다 `사이클`
+# 이 가장 작은 `cycle` 행 하나의 P0·P1 과 `감사 공시` 행의 `고유`·`골격급` 이다.
+#
 # 호환. bash 3.2 — 연관 배열·mapfile 없음. 수치 계산은 전부 jq 가 한다.
 
 set -uo pipefail
@@ -100,7 +124,7 @@ if [ -r "$script_dir/route.sh" ] && . "$script_dir/route.sh" 2>/dev/null \
 fi
 
 cm_usage() {
-  printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect] [--max-new <n>] [--budget <초>] [--release-boundary <version>] [--verdict]\n' >&2
+  printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect] [--max-new <n>] [--budget <초>] [--release-boundary <version>] [--verdict] [--member-baseline]\n' >&2
 }
 
 cm_diag() { printf 'collect-run-metrics: %s\n' "$*" >&2; }
@@ -156,10 +180,11 @@ CM_SWITCH_WINDOW="${CC_METRICS_SWITCH_WINDOW_S:-900}"
 CM_RECOLLECT=0
 CM_MAX_NEW="${CC_METRICS_ROUND_MAX:-20}"
 CM_BUDGET="${CC_METRICS_ROUND_BUDGET_S:-20}"
+CM_MEMBER_BASELINE=0
 # 판정 덩어리의 경계 버전 기본값 — 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전.
 # 플러그인 버전이 이 값보다 앞서는 행이 기준선(릴리스 전)이다. 그 변경보다 다른 릴리스가
 # 먼저 나가면 `plugin.json` 의 버전과 함께 다시 맞춘다.
-CM_RELEASE_BOUNDARY_DEFAULT="2.111.0"
+CM_RELEASE_BOUNDARY_DEFAULT="2.112.0"
 CM_RELEASE_BOUNDARY="$CM_RELEASE_BOUNDARY_DEFAULT"
 CM_VERDICT_ONLY=0
 
@@ -174,6 +199,7 @@ $2"; shift 2 ;;
       --now)           [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_NOW="$2"; shift 2 ;;
       --switch-window) [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_SWITCH_WINDOW="$2"; shift 2 ;;
       --recollect)     CM_RECOLLECT=1; shift ;;
+      --member-baseline) CM_MEMBER_BASELINE=1; shift ;;
       --max-new)       [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_MAX_NEW="$2"; shift 2 ;;
       --budget)        [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_BUDGET="$2"; shift 2 ;;
       --release-boundary) [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_RELEASE_BOUNDARY="$2"; shift 2 ;;
@@ -726,6 +752,244 @@ ROWS
   return 0
 }
 
+# --- 팀원 ----------------------------------------------------------------------
+
+# 서브에이전트 전사 파일 하나를 구간으로 나누는 jq 프로그램(입력은 `-Rn` 의 줄들). 구간은
+# 센티널 줄을 가진 사용자 메시지에서만 열린다. 첫 구간 앞의 요청은 어느 구간에도 들지 않고
+# `unspanned_requests` 로만 센다. 재탐색 턴은 구간 안에서 첫 증인 임시 파일 생성(`mktemp`)
+# 이나 게시(`mv -n`) 앞에 놓인 읽기 부류 도구 요청 수다 — `Read`·`Grep`·`Glob`·`LS`, 게이트의
+# `--surface 읽기` 호출, 그리고 읽기 명령으로 시작하는 `Bash`. 300초 이상 공백 뒤 캐시 다시
+# 쓰기는 같은 키 재개 구간(앞 구간과 기저 토큰이 같은 구간)에서만 세고, 그 밖의 구간은 null
+# 이다 — 새 디스패치의 첫 요청은 `first_creation` 으로 따로 잰다. `published` 는 파일 단위
+# 값으로, 첫 구간 앞을 포함해 파일 어디서든 `mv -n` 을 담은 `Bash` 요청이 있으면 참이다 —
+# 구간 판독과 독립인 증인 게시 여부라 기준선의 팀원 파일 분모로 쓴다(`mktemp` 만으로는
+# 게시가 아니다).
+CM_JQ_MEMBER='
+def ep: if . == null then null else (sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch null) end;
+def base: sub("-rev[0-9]+$"; "");
+def rclass: if . == "round-1" then "round-1" elif test("^round-[0-9]+$") then "round-2+" else "phase" end;
+def blocks: (.message.content? // null) | if type == "array" then map(select(type == "object")) else [] end;
+def utext: (.message.content? // null)
+  | if type == "string" then . elif type == "array" then ([.[] | select(type == "object" and .type == "text") | .text | strings] | join("\n")) else "" end;
+def readish: (.name // "") as $n
+  | if ($n == "Read" or $n == "Grep" or $n == "Glob" or $n == "LS") then true
+    elif $n == "Bash" then ((.input.command? // "") | if type == "string" then (test("--surface[ =]읽기") or test("^\\s*(cat|head|tail|grep|rg|ls|find|wc|sed -n)\\b")) else false end)
+    else false end;
+def witness_write: (.name // "") == "Bash" and ((.input.command? // "") | if type == "string" then test("mktemp|mv -n") else false end);
+def publish: (.name // "") == "Bash" and ((.input.command? // "") | if type == "string" then test("mv -n") else false end);
+reduce (inputs | fromjson? | objects) as $l (
+  {spans: [], r: [], seen: {}, loose: 0, pub: false};
+  (if $l.type == "assistant" and (.pub | not) and any(($l | blocks)[] | select(.type == "tool_use"); publish) then .pub = true else . end)
+  | if $l.type == "user" and (($l | blocks | map(select(.type == "tool_result")) | length) == 0) then
+    ([($l | utext) | match("cc-witness: ([A-Za-z0-9._-]+) ([A-Za-z0-9._-]+) complete")] | first // null) as $m
+    | if $m == null then . else
+        .spans += [{role: $m.captures[0].string, token: $m.captures[1].string, wrote: false, reexplore: 0}]
+      end
+  elif $l.type == "assistant" and (($l.message.id? // null) != null) then
+    if (.spans | length) == 0 then
+      (if .seen[$l.message.id] != null then . else .seen[$l.message.id] = -1 | .loose += 1 end)
+    else
+      ((.spans | length) - 1) as $k
+      | ($l.message.usage.output_tokens // 0) as $out
+      | (if .seen[$l.message.id] != null then
+           .seen[$l.message.id] as $i
+           | (if $i >= 0 then .r[$i].output = ([.r[$i].output, $out] | max) else . end)
+         else
+           .seen[$l.message.id] = (.r | length)
+           | .r += [{span: $k, ts: ($l.timestamp // null),
+                     input: ($l.message.usage.input_tokens // 0),
+                     creation: ($l.message.usage.cache_creation_input_tokens // 0),
+                     read: ($l.message.usage.cache_read_input_tokens // 0),
+                     output: $out}]
+         end)
+      | reduce (($l | blocks)[] | select(.type == "tool_use")) as $t (.;
+          if .spans[$k].wrote then .
+          elif ($t | witness_write) then .spans[$k].wrote = true
+          elif ($t | readish) then .spans[$k].reexplore += 1
+          else . end)
+    end
+  else . end)
+| . as $s
+| ($s.r | map(. + {epoch: (.ts | ep)})) as $R
+| ($s.spans | map(. + {base: (.token | base)})) as $S0
+| ([range(0; $S0 | length) as $i | $S0[$i] + {same_key_resume: ($i > 0 and $S0[$i - 1].base == $S0[$i].base)}]) as $S
+| ([range(1; $R | length) as $i
+    | select($R[$i].epoch != null and $R[$i - 1].epoch != null and ($R[$i].epoch - $R[$i - 1].epoch) >= 300
+             and $S[$R[$i].span].same_key_resume)
+    | $R[$i]]) as $gap
+| {member: (($S | length) > 0),
+   published: $s.pub,
+   lifecycle: (if ([$S[].base] | unique | length) >= 2 then "재개" else "재생성" end),
+   unspanned_requests: $s.loose,
+   spans: [range(0; $S | length) as $k
+     | ([$R[] | select(.span == $k)]) as $q
+     | ([$q[] | .input + .creation + .read]) as $c
+     | {role: $S[$k].role, token: $S[$k].token, base: $S[$k].base, round_class: ($S[$k].base | rclass),
+        same_key_resume: $S[$k].same_key_resume,
+        requests: ($q | length),
+        ctx_sum: ($c | add // 0),
+        ctx_avg: (if ($c | length) == 0 then null else (($c | add) / ($c | length)) end),
+        ctx_max: ($c | max),
+        output: ([$q[].output] | add // 0),
+        cache: {read: ([$q[].read] | add // 0), creation: ([$q[].creation] | add // 0), input: ([$q[].input] | add // 0)},
+        first_creation: ($q[0].creation // null),
+        rewrite_after_gap: (if $S[$k].same_key_resume then ([$gap[] | select(.span == $k) | .creation] | add // 0) else null end),
+        reexplore: $S[$k].reexplore}]}'
+
+cm_members_json() {
+  # cm_members_json <run-id> <원장> — 런별 팀원 기록 JSON 을 stdout 으로. 스테이지 행의 세션
+  # id 마다 한 번, 그 세션의 `subagents/` 아래 전사만 연다 — 메인 전사는 리드라 팀원이 아니다.
+  # `<종류>` 는 그 세션이 처음 등장한 `stage-result` 행의 `종류` 다. 실패하면 1.
+  local rid="$1" ledger="$2" tmp row sid kind seg st seen="" f all found cyc p0 p1
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-members.XXXXXX") || return 1
+  : > "$tmp/stages.jsonl"; : > "$tmp/cycles.tsv"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    sid=$(cm_field "$row" '세션 id')
+    case "$sid" in ''|미상) continue ;; esac
+    case "$seen" in *" $sid "*) continue ;; esac
+    seen="$seen $sid "
+    seg=$(cm_field "$row" '세그먼트'); st=$(cm_field "$row" '스테이지'); [ -n "$st" ] || st="$seg"
+    kind=$(cm_field "$row" '종류'); [ -n "$kind" ] || kind="-"
+    all=$(cm_transcripts "$sid")
+    found=false; [ -z "$all" ] || found=true
+    : > "$tmp/files.jsonl"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      case "$f" in */subagents/*) ;; *) continue ;; esac
+      jq -Rn "$CM_JQ_MEMBER" "$f" 2>/dev/null \
+        | jq -c --arg file "${f##*/subagents/}" '. + {file: $file}' >> "$tmp/files.jsonl" 2>/dev/null || true
+    done <<FILES
+$all
+FILES
+    jq -cn --arg seg "$seg" --arg st "$st" --arg kind "$kind" --arg sid "$sid" --argjson found "$found" \
+      --slurpfile files "$tmp/files.jsonl" '
+      {segment: $seg, stage: $st, kind: $kind, session_id: $sid, transcript: $found,
+       files: $files,
+       span_counts: ([$files[] | select(.member) | .spans[] | {role, base}] | group_by(.role + " " + .base)
+                     | map({role: .[0].role, base: .[0].base, spans: length}))}' >> "$tmp/stages.jsonl" \
+      || { rm -rf "$tmp"; return 1; }
+  done <<ROWS
+$(cm_ledger_rows "$ledger" 'stage-result')
+ROWS
+  # 첫 리뷰 회차 — 세그먼트마다 `사이클` 이 가장 작은 행 하나. 필드가 없거나 수가 아니면 unknown.
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    seg=$(cm_field "$row" '세그먼트'); cyc=$(cm_field "$row" '사이클')
+    if cm_has_field "$row" 'P0'; then p0=$(cm_field "$row" 'P0'); else p0=""; fi
+    if cm_has_field "$row" 'P1'; then p1=$(cm_field "$row" 'P1'); else p1=""; fi
+    printf '%s\t%s\t%s\t%s\n' "$seg" "$cyc" "$p0" "$p1" >> "$tmp/cycles.tsv"
+  done <<ROWS
+$(cm_ledger_rows "$ledger" 'cycle')
+ROWS
+  cm_design_json "$ledger" > "$tmp/design.json" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+  jq -Sn --arg rid "$rid" --rawfile cycles "$tmp/cycles.tsv" \
+     --slurpfile stages "$tmp/stages.jsonl" --slurpfile design "$tmp/design.json" '
+    def num: if test("^[0-9]+$") then tonumber else "unknown" end;
+    {run_id: $rid, stages: $stages, design_skill: ($design[0].skill // null),
+     quality: {first_cycles: ($cycles | split("\n") | map(select(length > 0) | split("\t")
+                 | {segment: .[0], cycle: (.[1] | if test("^[0-9]+$") then tonumber else null end), p0: (.[2] | num), p1: (.[3] | num)})
+                 | group_by(.segment) | map(min_by(.cycle // 1e18))),
+               audits: [$design[0].audits[] | {pass, unique, skeletal}]}}' 2>/dev/null \
+    || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+}
+
+cm_collect_members() {
+  # cm_collect_members <run-id> <원장> <출력 파일> — 런별 팀원 기록을 원자적으로 쓴다.
+  local tmp
+  tmp=$(mktemp "$(dirname "$3")/.members.XXXXXX") || return 1
+  if cm_members_json "$1" "$2" > "$tmp" && jq -e . "$tmp" >/dev/null 2>&1; then
+    mv -f "$tmp" "$3" || { rm -f "$tmp"; return 1; }
+  else
+    rm -f "$tmp"; return 1
+  fi
+}
+
+# 팀원 기록 배열을 `<종류>|<수명주기>|<라운드 부류>` 층으로 모은다. 요청당 평균 컨텍스트는
+# 요청 수로 가중한 평균이고, `lifecycle_ctx_avg` 는 같은 (종류, 수명주기)의 모든 라운드
+# 부류를 합친 값이다.
+CM_JQ_MEMBERS_AGG='
+[.[] | .stages[] | .kind as $kd | .files[] | select(.member) | .lifecycle as $lc | .spans[] | . + {kind: $kd, lifecycle: $lc}] as $m
+| ($m | group_by(.kind + "|" + .lifecycle)
+   | map({key: (.[0].kind + "|" + .[0].lifecycle),
+          value: (([.[].requests] | add // 0) as $n | if $n == 0 then null else (([.[].ctx_sum] | add) / $n) end)})
+   | from_entries) as $lcavg
+| $m | group_by(.kind + "|" + .lifecycle + "|" + .round_class)
+| map((.[0].kind + "|" + .[0].lifecycle) as $kl
+      | ([.[].requests] | add // 0) as $n
+      | {key: ($kl + "|" + .[0].round_class),
+         value: {spans: length, requests: $n,
+                 ctx_avg: (if $n == 0 then null else (([.[].ctx_sum] | add) / $n) end),
+                 ctx_max: ([.[].ctx_max | select(. != null)] | max),
+                 output: ([.[].output] | add // 0),
+                 cache: {read: ([.[].cache.read] | add // 0), creation: ([.[].cache.creation] | add // 0), input: ([.[].cache.input] | add // 0)},
+                 first_creation: ([.[].first_creation | select(. != null)] | add // 0),
+                 rewrite_after_gap: ([.[].rewrite_after_gap | select(. != null)] | add // 0),
+                 reexplore: ([.[].reexplore] | add // 0),
+                 lifecycle_ctx_avg: $lcavg[$kl]}})
+| from_entries'
+
+cm_member_baseline() {
+  # cm_member_baseline — `--member-baseline` 의 본체. 임시 디렉터리 밖에는 아무것도 쓰지 않는다.
+  local tmp rid state ledger rd n_inc=0 n_gone=0 n_none=0 n_open=0 n_fail=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-baseline.XXXXXX") || exit 1
+  : > "$tmp/recs.jsonl"
+  cm_population > "$tmp/pop.tsv"
+  while IFS=$'\t' read -r rid state ledger rd; do
+    [ -n "$rid" ] || continue
+    case "$state" in
+      종단|버려짐) ;;
+      *) n_open=$((n_open + 1)); continue ;;
+    esac
+    if ! cm_has_lane_record "$ledger"; then n_gone=$((n_gone + 1)); continue; fi
+    if ! cm_members_json "$rid" "$ledger" > "$tmp/rec.json" 2>/dev/null || ! jq -e . "$tmp/rec.json" >/dev/null 2>&1; then
+      n_fail=$((n_fail + 1)); cm_diag "런 $rid 의 팀원 기록을 만들지 못했다"; continue
+    fi
+    if ! jq -e '[.stages[].transcript] | any' "$tmp/rec.json" >/dev/null 2>&1; then
+      n_none=$((n_none + 1)); continue
+    fi
+    n_inc=$((n_inc + 1))
+    jq -c . "$tmp/rec.json" >> "$tmp/recs.jsonl"
+  done < "$tmp/pop.tsv"
+  jq -s . "$tmp/recs.jsonl" > "$tmp/all.json"
+  jq -S --argjson inc "$n_inc" --argjson gone "$n_gone" --argjson none "$n_none" \
+     --argjson open "$n_open" --argjson fail "$n_fail" "$CM_JQ_DEFS"'
+    # 파일 셈 — 구간을 낸 파일(member)과 내지 않은 파일 각각에서 증인을 게시한 파일 수를 함께 낸다.
+    def fcount: {member: ([.[] | select(.member)] | length),
+                 member_published: ([.[] | select(.member and .published)] | length),
+                 non_member: ([.[] | select(.member | not)] | length),
+                 non_member_published: ([.[] | select((.member | not) and .published)] | length)};
+    . as $all
+    | [$all[] | ((.design_skill // "") | if . == "" then "(미상)" else . end) as $sk
+       | .stages[] | .kind as $kd | .files[]
+       | {kind: $kd, skill: $sk, member, published: (.published // false)}] as $F
+    | {mode: "member-baseline",
+       included: $inc,
+       excluded: {"사라짐": $gone, "전사 삭제": $none, "미종단": $open, "판독 실패": $fail},
+       members: ($all | '"$CM_JQ_MEMBERS_AGG"'),
+       files: ($F | group_by(.kind) | map({key: .[0].kind, value: fcount}) | from_entries),
+       # 종류 design 은 토론·리드 단독·베이스 설계 스킬을 함께 담으므로, 그 런의 `설계 티어` 행이
+       # 적은 설계 스킬마다 다시 나눈다 — 리드 단독 설계의 도우미 서브에이전트는 팀원이 아니다.
+       design_files: ([$F[] | select(.kind == "design")] | group_by(.skill)
+                      | map({key: .[0].skill, value: fcount}) | from_entries),
+       # (종류, 설계 스킬)마다의 파일 셈. 설계 스킬은 런 단위 값이라 종류 review 도 그 런의
+       # 설계 스킬로 나뉜다.
+       kind_skill_files: ($F | group_by(.kind + "|" + .skill)
+                          | map({key: (.[0].kind + "|" + .[0].skill), value: fcount}) | from_entries),
+       span_counts: ([$all[].stages[].span_counts[]] | {keys: length, multi: ([.[] | select(.spans >= 2)] | length)}),
+       quality: ([$all[].quality.first_cycles[]] as $c
+                 | [$all[].quality.audits[] | select(.pass != "재감사")] as $a
+                 | {segments: ($c | length),
+                    p0: ([$c[].p0 | numbers] | dist), p1: ([$c[].p1 | numbers] | dist),
+                    p0_unknown: ([$c[] | select(.p0 == "unknown")] | length),
+                    p1_unknown: ([$c[] | select(.p1 == "unknown")] | length),
+                    audits: ($a | length),
+                    unique: ([$a[].unique | numbers] | dist), skeletal: ([$a[].skeletal | numbers] | dist)})}' "$tmp/all.json"
+  rm -rf "$tmp"
+  exit 0
+}
+
 # --- 모집단 ---------------------------------------------------------------------
 
 cm_population() {
@@ -879,6 +1143,19 @@ cm_aggregate() {
        unattributed: {empty: ([.[].unattributed.empty] | add // 0), unknown: ([.[].unattributed.unknown] | add // 0)},
        rejected_window: ([.[].rejected_window] | add // 0),
        window_mismatch_sessions: ([.[].window_mismatch_sessions[]] | unique)}' "$1"
+}
+
+cm_slurp_list() {
+  # cm_slurp_list <목록 파일> — 목록의 JSON 파일들을 한 배열로(목록이 비면 []). 파일 이름은
+  # 한 줄에 하나다. 하나라도 깨졌으면 jq 가 실패하고 [] 이다 — 글롭 하나로 읽던 때와 같다.
+  local oldifs
+  [ -s "$1" ] || { printf '[]'; return 0; }
+  oldifs=$IFS; set -f; IFS='
+'
+  # shellcheck disable=SC2046
+  set -- $(cat "$1")
+  IFS=$oldifs; set +f
+  jq -s '.' "$@" 2>/dev/null || printf '[]'
 }
 
 cm_journal_tail() {
@@ -1051,12 +1328,25 @@ cm_append_journal() {
 cm_main() {
   local tmp line rid state ledger rd rec input_files=0 confirmed
   local n_collected=0 n_uncollected=0 n_gone=0 n_open=0 n_attempt=0 new_runs="" blocked=false
-  local summary round at body counts journal_line all_f delta_f prior_f t0
+  local summary round at body counts journal_line all_f delta_f prior_f t0 members
   cm_args "$@"
+  # 기준선 모드는 회차가 아니다 — 표지도 기록도 저널도 만들지 않는다.
+  [ "$CM_MEMBER_BASELINE" = "0" ] || cm_member_baseline
   if [ "$CM_VERDICT_ONLY" = "1" ]; then
     # 판정 덩어리만 — 이미 있는 런별 기록에서 계산해 stdout 으로 내고 아무것도 쓰지 않는다.
+    # 팀원 기록(`*.members.json`)은 런 기록이 아니므로 전수 재계산과 같이 뺀다.
+    set --
     if [ -d "$CM_LEDGER_DIR/metrics" ]; then
-      all_f=$(jq -s '.' "$CM_LEDGER_DIR"/metrics/*.json 2>/dev/null) || all_f='[]'
+      for rec in "$CM_LEDGER_DIR"/metrics/*.json; do
+        [ -f "$rec" ] || continue
+        case "$rec" in
+          *.members.json) ;;
+          *) set -- "$@" "$rec" ;;
+        esac
+      done
+    fi
+    if [ $# -gt 0 ]; then
+      all_f=$(jq -s '.' "$@" 2>/dev/null) || all_f='[]'
     else
       all_f='[]'
     fi
@@ -1118,6 +1408,9 @@ $rid
     n_attempt=$((n_attempt + 1))
     if cm_collect_run "$rid" "$ledger" "$rd" "$state" "$rec"; then
       n_collected=$((n_collected + 1))
+      # 팀원 기록은 회차의 판정에 들지 않으므로, 만들지 못해도 진단만 남기고 런은 수집된 것으로 둔다.
+      cm_collect_members "$rid" "$ledger" "$CM_LEDGER_DIR/metrics/$rid.members.json" \
+        || cm_diag "런 $rid 의 팀원 기록을 만들지 못했다"
       printf '%s\n' "$rid" >> "$tmp/delta.list"
       new_runs="$new_runs $rid"
     else
@@ -1127,13 +1420,24 @@ $rid
   done < "$tmp/pop.tsv"
   [ "$n_uncollected" -gt 0 ] && blocked=true
 
-  # 전수 재계산 — 기록 디렉터리의 모든 런별 기록.
+  # 전수 재계산 — 기록 디렉터리의 모든 런별 기록. 팀원 기록(`*.members.json`)은 런 기록이
+  # 아니므로 층과 트리거의 입력에서 빼고, 요약의 `members` 로만 따로 모은다.
+  : > "$tmp/runs.list"; : > "$tmp/members.list"
   if [ -d "$CM_LEDGER_DIR/metrics" ]; then
-    jq -s '.' "$CM_LEDGER_DIR"/metrics/*.json > "$all_f" 2>/dev/null || printf '[]' > "$all_f"
-  else
-    printf '[]' > "$all_f"
+    for rec in "$CM_LEDGER_DIR"/metrics/*.json; do
+      [ -f "$rec" ] || continue
+      case "$rec" in
+        *.members.json) printf '%s\n' "$rec" >> "$tmp/members.list" ;;
+        *) printf '%s\n' "$rec" >> "$tmp/runs.list" ;;
+      esac
+    done
   fi
+  cm_slurp_list "$tmp/runs.list" > "$all_f"
   jq -e 'type == "array"' "$all_f" >/dev/null 2>&1 || printf '[]' > "$all_f"
+  cm_slurp_list "$tmp/members.list" > "$tmp/members.json"
+  jq -e 'type == "array"' "$tmp/members.json" >/dev/null 2>&1 || printf '[]' > "$tmp/members.json"
+  members=$(jq -c "$CM_JQ_MEMBERS_AGG" "$tmp/members.json" 2>/dev/null) || members='{}'
+  [ -n "$members" ] || members='{}'
   jq -Rn '[inputs]' "$tmp/delta.list" > "$tmp/ids.json"
   jq -c --slurpfile ids "$tmp/ids.json" '[.[] | select(.run_id as $r | $ids[0] | index($r) != null)]' "$all_f" > "$delta_f" 2>/dev/null \
     || printf '[]' > "$delta_f"
@@ -1141,7 +1445,8 @@ $rid
 
   counts=$(jq -cn --argjson a "$n_collected" --argjson b "$n_uncollected" --argjson c "$n_gone" --argjson d "$n_open" \
     '{"수집됨": $a, "미수집": $b, "사라짐": $c, "미종단": $d}')
-  summary=$(cm_aggregate "$all_f" | jq -S --argjson counts "$counts" --argjson n "$input_files" '. + {counts: $counts, input_files: $n}')
+  summary=$(cm_aggregate "$all_f" | jq -S --argjson counts "$counts" --argjson n "$input_files" --argjson members "$members" \
+    '. + {counts: $counts, input_files: $n, members: $members}')
   [ -n "$summary" ] || summary='{}'
   cm_write_summary "$summary" || { cm_diag "요약을 쓰지 못했다"; }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lint-bash-portability: self-skip
-# 런 계측 수집기 — 모집단·판독 규칙·집계·순 효과·트리거 일곱.
+# 런 계측 수집기 — 모집단·판독 규칙·집계·순 효과·트리거 일곱·팀원 구간과 기준선 모드.
 #
 # 이 스위트가 있는 이유. 수집기의 오판은 대부분 오류가 아니라 자신 있는 틀린 수로
 # 나타난다 — 줄 단위로 합한 요청 수, 세션만으로 묶어 역행하는 누적, 폴백 하나에 접힌
@@ -1062,7 +1062,7 @@ check "15: 미상 감사 판·재감사·solo-audit 행은 판정에 들지 않�
 check "15: 경계와 문턱을 함께 싣는다" "$(jsum '.discussion_verdict | [.boundary, .threshold, .min_n, .r3_open_max] | map(tostring) | join(",")')" "2.100.0,1.5,5,0.25"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>"$WORK/err"); rc=$?
 check "15: --verdict 는 exit 0 이다" "$rc" "0"
-check "15: 경계 인자가 없으면 기본 경계 2.111.0 으로 가르고 2.104.1 은 그 앞이다" "$(jline '[.boundary, (.editions["e5e5e5e5e5e5"] | .baseline.n, .after.n, .status)] | map(tostring) | join(",")')" "2.111.0,10,0,판정 보류"
+check "15: 경계 인자가 없으면 기본 경계 2.112.0 으로 가르고 2.104.1 은 그 앞이다" "$(jline '[.boundary, (.editions["e5e5e5e5e5e5"] | .baseline.n, .after.n, .status)] | map(tostring) | join(",")')" "2.112.0,10,0,판정 보류"
 check "15: --verdict 는 요약을 다시 쓰지 않는다" "$(jsum '.discussion_verdict.boundary')" "2.100.0"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict --release-boundary 2.x 2>"$WORK/err"); rc=$?
 check "15: 숫자 버전이 아닌 경계는 인자 오류다" "$rc" "2"
@@ -1070,18 +1070,139 @@ DP_OUT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/design-path-report.sh" --
 check "15: 인쇄기가 토론 패스 집계를 경로마다 한 줄 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c -F -e '| discuss-audit | 5 | 0 | 해당 없음 5 |' -e '| base | 5 | 1 | 측정 지명 1, 해당 없음 4 |' || true)" "2"
 check "15: 인쇄기가 판정 덩어리를 감사 판마다 한 줄 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c '^| e5e5e5e5e5e5 | 5 | 5 | 판정 | 되돌림 |\|^| e6e6e6e6e6e6 | 0 | 1 | 기준선 부족 |' || true)" "2"
 
-# --- 16. 기본 경계 버전 — 인자 없이 `CM_RELEASE_BOUNDARY_DEFAULT` 로 가른다 ---------------------
-# 기본값은 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전 2.111.0 이다. 바로 아래 판과
-# 자릿수가 다른 판은 기준선이고, 같은 판과 그 뒤는 릴리스 뒤다.
+# --- 16. 팀원 — 구간·수명주기·라운드 부류·품질·기준선 모드 ------------------------------------
+# 팀원의 역할과 키는 사용자 메시지 안의 첫 센티널 줄에서만 읽는다. 기저 토큰이 둘인 파일만
+# `재개` 이고, `P`·`P-rev1` 은 기저 토큰이 하나라 `재생성` 이다. 팀원 기록은 요약의 층과
+# 트리거의 입력에 들지 않고, 기준선 모드는 아무것도 쓰지 않는다.
+tl_user() {
+  # tl_user <ts-offset> <본문> — 도구 결과가 아닌 사용자 메시지.
+  jq -cn --arg ts "$(ts "$1")" --arg t "$2" '{type: "user", timestamp: $ts, message: {role: "user", content: $t}}'
+}
+tl_result() {
+  # tl_result <ts-offset> <본문> — 도구 결과 사용자 줄. 본문에 센티널이 있어도 구간을 열지 않는다.
+  jq -cn --arg ts "$(ts "$1")" --arg t "$2" '{type: "user", timestamp: $ts, message: {role: "user", content: [{type: "tool_result", tool_use_id: "t", content: $t}]}}'
+}
+tl_turn() {
+  # tl_turn <ts-offset> <message id> <input> <creation> <read> <output> [도구 이름] [Bash 명령]
+  jq -cn --arg ts "$(ts "$1")" --arg id "$2" --argjson i "$3" --argjson c "$4" --argjson r "$5" --argjson o "$6" \
+    --arg tool "${7:-}" --arg cmd "${8:-}" '
+    {type: "assistant", timestamp: $ts,
+     message: {id: $id, usage: {input_tokens: $i, cache_creation_input_tokens: $c, cache_read_input_tokens: $r, output_tokens: $o},
+               content: (if $tool == "" then [{type: "text", text: "x"}]
+                         else [{type: "tool_use", id: "u", name: $tool, input: (if $tool == "Bash" then {command: $cmd} else {file_path: "/x"} end)}] end)}}'
+}
+sentinel() { printf '**Role**: %s. 마지막 줄은 `<!-- cc-witness: %s %s complete %s:ab12 -->` 이다.' "$1" "$1" "$2" "$2"; }
+m16_session() {
+  # m16_session <sid> — 리드 전사(팀원 아님)와 팀원 파일 넷.
+  local sid="$1"
+  tl_user 0 "$(sentinel lead round-1)" | mk_transcript "$HOME_A" -repo "$sid"
+  {
+    tl_user 0 "$(sentinel arch round-1)"
+    tl_turn 1 a1 100 1000 0 10 Read
+    tl_turn 2 a1 100 1000 0 30 Bash 'gate.sh exec --surface 읽기 -- grep -n x f'
+    tl_turn 3 a2 100 0 1000 20 Bash 'T=$(mktemp "$d/.arch.round-1.XXXXXX")'
+    tl_result 4 "$(sentinel crit round-1)"
+    tl_turn 5 a3 100 0 1100 5 Read
+    tl_user 100 "$(sentinel arch round-2)"
+    tl_turn 101 a4 100 2000 0 40
+  } | mk_transcript "$HOME_A" -repo "$sid" a.jsonl
+  {
+    tl_user 0 "$(sentinel crit round-2)"
+    tl_turn 1 b1 100 500 0 7 Bash 'mv -n "$T" "$d/crit.round-2.md"'
+    tl_user 500 "$(sentinel crit round-2-rev1)"
+    tl_turn 900 b2 100 5000 0 8
+  } | mk_transcript "$HOME_A" -repo "$sid" b.jsonl
+  {
+    tl_user 0 "$(sentinel sec convergence)
+동료 증인 인용:
+<!-- cc-witness: arch round-2 complete round-2:cd34 -->"
+    tl_turn 1 c1 10 10 10 1
+    tl_user 2 "증인이 아직 게시되지 않았다 — 지금 게시하라."
+    tl_turn 3 c2 10 10 10 2
+  } | mk_transcript "$HOME_A" -repo "$sid" c.jsonl
+  { tl_user 0 "도우미 과제"; tl_turn 1 d1 10 10 10 1 Bash 'mv -n a b'; } | mk_transcript "$HOME_A" -repo "$sid" deeper/d.jsonl
+}
+m16_run() {
+  # m16_run <run-id> <sid> — 설계 스테이지 하나와 사이클 행 셋.
+  mk_rundir "$1"; mk_stream "$STATE/run/$1/log/S1#1.json" 1
+  mk_ledger "$1" "$(sr_row S1 S1 design 1 "$2" '정상 완료' '300000(argv)' '~/.claude')" \
+    "$(cycle_row S1 2 5)" \
+    '- `cycle` | 세그먼트=S1 | 사이클=1 | 리포트 경로=r.md | 리뷰 HEAD=abc | P0=1 | P1=2 | 교대=0 | prev=abc' \
+    '- `cycle` | 세그먼트=S2 | 사이클=1 | 리포트 경로=r.md | 리뷰 HEAD=abc | P0=0 | 교대=0 | prev=abc'
+  m16_session "$2"
+}
+jmem() { jq -r "$2" "$LEDGER_DIR/metrics/$1.members.json"; }
+mfile() { printf '.stages[0].files[] | select(.file == "%s")' "$1"; }
 reset_all
-d14_run 20261003-ffffff01 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.110.9 10 10000)"
-d14_run 20261003-ffffff02 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.99.0 10 10000)"
-d14_run 20261003-ffffff03 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.111.0 10 10000)"
-d14_run 20261003-ffffff04 "$(tier_row base)" "$(ad_row base 최초 e7e7e7e7e7e7 2.112.0 10 10000)"
+R16=20261002-eeeeee01
+m16_run "$R16" sid-m16
 collect
 check "16: 수집기는 exit 0 이다" "$rc" "0"
-check "16: 요약은 기본 경계 2.111.0 을 싣는다" "$(jsum '.discussion_verdict.boundary')" "2.111.0"
-check "16: 2.110.9 와 2.99.0 은 기준선, 2.111.0 과 2.112.0 은 릴리스 뒤다" "$(jsum '.discussion_verdict.editions["e7e7e7e7e7e7"] | [.baseline.n, .after.n] | map(tostring) | join(",")')" "2,2"
+check "16: 새로 수집한 런에 팀원 기록이 생긴다" "$([ -f "$LEDGER_DIR/metrics/$R16.members.json" ] && echo yes)" "yes"
+check "16: 리드 전사는 팀원 파일이 아니고 서브에이전트 파일만 열린다" "$(jmem "$R16" '.stages[0].files | length')" "4"
+check "16: 센티널 줄이 없는 파일은 팀원이 아니다" "$(jmem "$R16" "[.stages[0].files[] | select(.member | not) | .file] | join(\",\")")" "deeper/d.jsonl"
+check "16: 기저 토큰이 둘인 파일은 재개다" "$(jmem "$R16" "$(mfile a.jsonl) | .lifecycle")" "재개"
+check "16: 재개형 파일의 구간과 라운드 부류" "$(jmem "$R16" "$(mfile a.jsonl) | [.spans[].round_class] | join(\",\")")" "round-1,round-2+"
+check "16: 도구 결과 안의 센티널은 구간을 열지 않는다" "$(jmem "$R16" "$(mfile a.jsonl) | [.spans[].role] | join(\",\")")" "arch,arch"
+check "16: 출력 토큰은 같은 message.id 의 최댓값을 합한다" "$(jmem "$R16" "$(mfile a.jsonl) | [.spans[].output] | add")" "95"
+check "16: 구간마다 요청을 message.id 로 한 번 센다" "$(jmem "$R16" "$(mfile a.jsonl) | [.spans[].requests] | join(\",\")")" "3,1"
+check "16: 재탐색 턴은 첫 증인 쓰기 앞의 읽기 요청만 센다(게이트 읽기 포함)" "$(jmem "$R16" "$(mfile a.jsonl) | .spans[0].reexplore")" "2"
+check "16: 새 디스패치 구간의 첫 요청 캐시 생성" "$(jmem "$R16" "$(mfile a.jsonl) | .spans[1].first_creation")" "2000"
+check "16: 새 디스패치 구간은 공백 뒤 다시 쓰기를 재지 않는다" "$(jmem "$R16" "$(mfile a.jsonl) | .spans[1].rewrite_after_gap")" "null"
+check "16: P 와 P-rev1 만 담은 파일은 재생성이다" "$(jmem "$R16" "$(mfile b.jsonl) | .lifecycle")" "재생성"
+check "16: 개정 구간은 기저 토큰의 라운드 부류에 든다" "$(jmem "$R16" "$(mfile b.jsonl) | [.spans[] | .base + \"/\" + .round_class] | join(\",\")")" "round-2/round-2+,round-2/round-2+"
+check "16: 같은 키 재개 구간은 300초 공백 뒤 캐시 다시 쓰기를 잰다" "$(jmem "$R16" "$(mfile b.jsonl) | [.spans[].rewrite_after_gap] | map(tostring) | join(\",\")")" "null,5000"
+check "16: 인용된 동료 센티널은 역할을 바꾸지 않는다" "$(jmem "$R16" "$(mfile c.jsonl) | [.spans[] | .role + \"/\" + .token + \"/\" + .round_class] | join(\",\")")" "sec/convergence/phase"
+check "16: 센티널 없는 재촉 메시지는 앞 구간에 붙는다" "$(jmem "$R16" "$(mfile c.jsonl) | [(.spans | length), .spans[0].requests] | join(\",\")")" "1,2"
+check "16: 증인 게시는 파일 단위로 mv -n 요청에서 읽는다(mktemp 만으로는 게시가 아니다, 첫 구간 앞도 본다)" "$(jmem "$R16" '[.stages[0].files[] | .file + "=" + (.published | tostring)] | sort | join(",")')" "a.jsonl=false,b.jsonl=true,c.jsonl=false,deeper/d.jsonl=true"
+check "16: (역할, 기저 토큰)마다 구간 수를 낸다" "$(jmem "$R16" '[.stages[0].span_counts[] | select(.spans >= 2) | .role + "/" + .base + "=" + (.spans | tostring)] | join(",")')" "crit/round-2=2"
+check "16: 세그먼트의 첫 리뷰 회차만 잡힌다" "$(jmem "$R16" '.quality.first_cycles[] | select(.segment == "S1") | [.cycle, .p0, .p1] | join(",")')" "1,1,2"
+check "16: P1 이 없는 첫 회차는 unknown 이다" "$(jmem "$R16" '.quality.first_cycles[] | select(.segment == "S2") | .p1')" "unknown"
+check "16: 요약의 members 키는 종류·수명주기·라운드 부류다" "$(jsum '.members | keys | join(",")')" "design|재개|round-1,design|재개|round-2+,design|재생성|phase,design|재생성|round-2+"
+check "16: (종류, 수명주기)마다 요청당 평균 컨텍스트" "$(jsum '.members["design|재생성|phase"].lifecycle_ctx_avg')" "1440"
+check "16: 층의 요청당 평균 컨텍스트는 요청 수 가중이다" "$(jsum '.members["design|재생성|round-2+"].ctx_avg')" "2850"
+STRATA_A=$(jsum '.strata | tojson')
+cp "$LEDGER_DIR/metrics/$R16.members.json" "$LEDGER_DIR/metrics/20990101-ffffffff.members.json"
+collect
+check "16: 팀원 파일이 늘어도 요약의 층은 바이트가 같다" "$(jsum '.strata | tojson')" "$STRATA_A"
+check "16: 팀원 파일은 런 기록으로 델타에 들지 않는다" "$(jline '.new_runs | length')" "0"
+check "16: 팀원 파일은 요약의 members 로만 모인다" "$(jsum '.members["design|재개|round-1"].spans')" "2"
+check "16: 팀원 파일은 런 기록 수를 바꾸지 않는다" "$(jsum '.counts["수집됨"]')" "1"
+# 기준선 모드 — 원장 디렉터리에는 아무것도 생기지 않는다.
+reset_all
+R16B=20261002-eeeeee02; R16C=20261002-eeeeee03
+m16_run "$R16" sid-m16
+mk_rundir "$R16B"
+mk_ledger "$R16B" '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=design | 종료 코드=0 | 실행 버전=1 | 세션 id=sid-old | 종단 부류=정상 완료 | 교대=0 | prev=abc'
+mk_rundir "$R16C"
+mk_ledger "$R16C" "$(sr_row S1 S1 review 1 sid-gone '정상 완료' '300000(argv)' '~/.claude')"
+collect --member-baseline
+check "16: 기준선 모드는 exit 0 이다" "$rc" "0"
+check "16: 기준선 모드는 원장 디렉터리에 아무것도 쓰지 않는다(.pending 포함)" "$(find "$LEDGER_DIR" -mindepth 1 ! -name '*.md' | wc -l | tr -d ' ')" "0"
+check "16: 기준선 모드는 저널을 쓰지 않는다" "$([ -e "$JOURNAL" ] && echo yes || echo no)" "no"
+check "16: 기준선은 포함 런 수를 낸다" "$(jline '.included')" "1"
+check "16: 기준선은 사유별 제외 런 수를 낸다" "$(jline '[.excluded["사라짐"], .excluded["전사 삭제"]] | join(",")')" "1,1"
+check "16: 기준선은 종류마다 팀원 파일과 아닌 파일을 센다" "$(jline '.files.design | [.member, .non_member] | join(",")')" "3,1"
+check "16: 기준선은 설계 파일을 설계 스킬로 다시 나눈다(설계 티어 행이 없으면 미상)" "$(jline '.design_files["(미상)"] | [.member, .non_member] | join(",")')" "3,1"
+check "16: 기준선은 (종류, 설계 스킬)마다 구간·게시 파일을 센다" "$(jline '.kind_skill_files | keys | join(",")')" "design|(미상)"
+check "16: (종류, 설계 스킬) 셈은 구간을 낸 파일·아닌 파일 각각의 게시 파일 수를 낸다" "$(jline '.kind_skill_files["design|(미상)"] | [.member, .member_published, .non_member, .non_member_published] | join(",")')" "3,1,1,1"
+check "16: 종류별 파일 셈에도 게시 파일 수가 붙는다" "$(jline '.files.design | [.member_published, .non_member_published] | join(",")')" "1,1"
+check "16: 기준선의 members 는 요약과 같은 층이다" "$(jline '.members["design|재개|round-2+"].requests')" "1"
+check "16: 기준선은 첫 회차 품질을 모은다" "$(jline '.quality | [.segments, .p0.median, .p1_unknown] | join(",")')" "2,0.5,1"
+
+# --- 17. 기본 경계 버전 — 인자 없이 `CM_RELEASE_BOUNDARY_DEFAULT` 로 가른다 ---------------------
+# 기본값은 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전 2.112.0 이다. 바로 앞 릴리스
+# 2.111.0(R3 를 아직 일정으로 여는 판)과 자릿수가 다른 판은 기준선이고, 같은 판과 그 뒤는
+# 릴리스 뒤다.
+reset_all
+d14_run 20261003-ffffff01 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.111.0 10 10000)"
+d14_run 20261003-ffffff02 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.99.0 10 10000)"
+d14_run 20261003-ffffff03 "$(tier_row discuss-audit)" "$(ad_row discuss-audit 최초 e7e7e7e7e7e7 2.112.0 10 10000)"
+d14_run 20261003-ffffff04 "$(tier_row base)" "$(ad_row base 최초 e7e7e7e7e7e7 2.113.0 10 10000)"
+collect
+check "17: 수집기는 exit 0 이다" "$rc" "0"
+check "17: 요약은 기본 경계 2.112.0 을 싣는다" "$(jsum '.discussion_verdict.boundary')" "2.112.0"
+check "17: 2.111.0 과 2.99.0 은 기준선, 2.112.0 과 2.113.0 은 릴리스 뒤다" "$(jsum '.discussion_verdict.editions["e7e7e7e7e7e7"] | [.baseline.n, .after.n] | map(tostring) | join(",")')" "2,2"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
