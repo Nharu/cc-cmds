@@ -385,6 +385,7 @@ ORCH_TESTS := \
 	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-display-tz.sh \
+	scripts/test-run-stops.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \
