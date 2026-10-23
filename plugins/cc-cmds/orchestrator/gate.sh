@@ -16607,7 +16607,15 @@ $(gate_segment_worktrees_for_settings)"
     # always passed as a read with no cap either. The settings file is not the
     # only enforcement point for these tools: a PreToolUse hook matcher can see
     # them too, so a later cap or check has a place to go.
-    deny_extra=""
+    #
+    # THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY VARIANT, THE SHIFT INCLUDED,
+    # so they sit in the initial value and not in either branch below. A stage
+    # never publishes to or reads from the Design canvas; that belongs to the
+    # seat. Under `CLAUDE_CODE_ARTIFACT=1` the headless tool list carries exactly
+    # `Artifact`, `ArtifactComments` and `ArtifactData` besides `DesignSync`, and
+    # the set matches `CLAUDE_DESIGN_TOOLS` in run.sh, which refuses the same
+    # names on every judgment call's own command line.
+    deny_extra="\"DesignSync\", \"Artifact\", \"ArtifactComments\", \"ArtifactData\", "
 
     # THE SHIFT VARIANT IS NARROWER THAN EVERY STAGE, AND THE NARROWING HAS TO
     # HAPPEN INSIDE THIS LOOP. `extra_dirs` and the read allow-list are computed

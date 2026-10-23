@@ -13028,7 +13028,7 @@ rm -f "$k15_led"
 
 # ---------------------------------------------------------------------------
 # 15v. The run-scope visual step: exempt from the segment row, judged by its sidecar
-# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
+# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각과 교대를 포함한 모든 설정 변종이 Claude Design 네 도구를 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
 #
 # The visual step is the fourth row of the run-scope table. It generates the
 # night's screens from the audited document and builds no segment, so it is
@@ -13047,6 +13047,27 @@ visual15v="/cc-cmds:visual-unattended $WT/$DOC15V"
 RD15V="$STATE_LATE/cc-cmds/run/R15V"
 check "15v 픽스처 매니페스트가 검사를 통과한다 (아래가 공허하지 않다)" \
   "$(au15_snap "$WORK/plan-R15V.md" | jq -r '.run_id' 2>/dev/null)" "R15V"
+# The night's visual step must not reach the Design canvas any more than the
+# other stages do: every settings variant of this run, the visual one and the
+# shift included, refuses the Claude Design tools, and the set is the one run.sh
+# puts on every judgment call's `--disallowedTools`. No file is exempt, so a new
+# kind arriving without the deny is counted.
+design15v_bad=0
+for f in "$RD15V/settings"/*.json; do
+  [ -f "$f" ] || continue
+  if ! jq -e '.permissions.deny // [] | index("DesignSync") != null and index("Artifact") != null
+              and index("ArtifactComments") != null and index("ArtifactData") != null' \
+       "$f" >/dev/null 2>&1; then
+    design15v_bad=$((design15v_bad + 1))
+    printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.deny' "$f")" >&2
+  fi
+done
+check "15v: 거부를 세는 설정에 시각 변종과 교대 변종이 있다 (아래가 공허하지 않다)" \
+  "$( [ -f "$RD15V/settings/visual.json" ] && [ -f "$RD15V/settings/shift.json" ] && printf 있음 || printf 없음)" "있음"
+check "15v: 시각과 교대를 포함한 모든 설정 변종이 Claude Design 네 도구를 거부한다" "$design15v_bad" "0"
+check "15v: Claude Design 거부 이름은 판단 호출의 거부 이름과 같은 집합이다" \
+  "$(grep -E '^readonly CLAUDE_DESIGN_TOOLS=' "$(dirname "$GATE")/run.sh" | cut -d'"' -f2 | tr ' ' '\n' | sort | tr '\n' ' ')" \
+  "Artifact ArtifactComments ArtifactData DesignSync "
 plan15v_visual() {  # plan15v_visual <manifest> [stage kind] — the run-scope dispatch, as plan
   gateL plan --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
        --surface 워크트리쓰기 -- "${2:-visual}" -p "$visual15v"
