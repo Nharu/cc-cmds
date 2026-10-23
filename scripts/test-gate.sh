@@ -38376,7 +38376,12 @@ cc60c_cell() {
     cc60c_x 0 "$tg" "$rr" "$cut" -- "$@"
     # 등급표에 없는 래퍼(이 기기의 `genv`·`gtimeout`)는 사람이 있는 모드에서 승인 전에 등급
     # 미상(rc 2)으로 멈춘다 — 행위가 나가지 않는 것은 같고, 그 rc 는 문면으로 가린다.
-    case "$rc|$msg" in 5\|*|2\|*'등급 미상'*) ;; *) cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;; esac
+    # 질의를 파일에서 읽는 graphql 철자는 게이트가 본문을 읽지 못해 PR 라벨 쓰기로 보고, 그
+    # 쓰기는 사람이 있는 모드에서도 승인이 아니라 `PR라벨쓰기` park(rc 11)다 — 승인은 행 경로가
+    # 끝내 열지 않는 쓰기를 사람이 열게 하므로. 그 칸은 park 의 칸 이름으로 가린다.
+    case "$rc|$msg" in 5\|*|2\|*'등급 미상'*) ;;
+      11\|*) [ "$(rx_cell)" = PR라벨쓰기 ] || cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;;
+      *) cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;; esac
   fi
   [ "$(grep -c . "$CC60C_LOG" || true)" = "$n0" ] || cc60c_called="$cc60c_called[$lb · $tg · $rr]"
 }
