@@ -116,7 +116,7 @@ The freeze is load-bearing: the audit's reproduction rate stays below 1 only whi
 
 Exactly `READER_COUNT` readers, each spawned exactly once, each performing `ROUNDS_PER_READER` round.
 
-**Declared carve-out**: the shared team protocol's multi-round rule — its `### Round budget` together with the ban on a one-shot isolated `Agent()` per round — is **inapplicable here, and this sentence is the explicit exception.** Cross-review IS the reproduction channel this command removes. **No reader is ever resumed**; `SendMessage` is deliberately not loaded in Step 0, so a resume is tool-unavailable rather than merely forbidden. The protocol's same-round respawn on a death verdict is the only re-spawn permitted; it reuses `ROUND_TOKEN`/`PASS_TOKEN` unchanged and is bounded by the protocol's durable escalation counters, whose termini CFI-U0 resolves to `park`.
+**Declared carve-out**: the shared team protocol's multi-round rule — the cross-review of its `### Round budget` — is **inapplicable here, and this sentence is the explicit exception.** Cross-review IS the reproduction channel this command removes. **No reader is ever resumed**; `SendMessage` is deliberately not loaded in Step 0, so a resume is tool-unavailable rather than merely forbidden. The protocol's same-round respawn on a death verdict is the only re-spawn permitted; it reuses `ROUND_TOKEN`/`PASS_TOKEN` unchanged and is bounded by the protocol's durable escalation counters, whose termini CFI-U0 resolves to `park`.
 
 ### CFI-3 — One reconciliation pass, then HARD STOP
 
@@ -148,7 +148,7 @@ None of the following may appear anywhere under this skill: `consecutive_no_majo
 
 What this lead Reads of other files, and when: a row names a file under `plugins/cc-cmds/skills/` (or a run input `입력:<이름>`), a part of it — a verbatim heading, or the verbatim start of a line — and how far the part reaches: `절` to the next heading of the same or a higher level, `본문만` to the next heading of any level, `전체` the whole file. `파견전` rows are Read before the spawn; each later phase's rows are Read on entering that phase, never before.
 
-**파견전 상한**: 143000 바이트
+**파견전 상한**: 149000 바이트
 
 | 단계 | 디스패치 | 파일 | 부분 | 범위 |
 |---|---|---|---|---|
