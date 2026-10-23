@@ -2014,6 +2014,17 @@ refresh_bd
 # `FX_MANIFEST` names by the time it runs.
 MBAK="$WORK/manifest.bak"; cp "$FX_MANIFEST" "$MBAK"
 
+# fx_rid_copy <from-id> <to-id> <src> <dst> — another run's copy of a fixture
+# record. Only the run-id TOKENS move: the id before `;` or `.` and the id that
+# ends a line. The records also carry `$WT` and `$WORK` paths, and those sit
+# under a `mktemp` name whose random suffix can hold the id's two characters
+# (measured on CI: `cc-gate-test.djpR2m`); a bare `s/<id>/<to>/g` rewrites that
+# path, and every gate entry on the copy then refuses the manifest as another
+# repository's.
+fx_rid_copy() {
+  sed -e "s/$1\([;.]\)/$2\1/g" -e "s/$1\$/$2/" "$3" > "$4"
+}
+
 gate snapshot --manifest "$FX_MANIFEST"
 check "구속 다이제스트가 있는 매니페스트가 통과한다" "$rc" "0"
 case "$msg" in
@@ -2899,7 +2910,7 @@ pre_cone() {
   # digest for a loose match to corrupt. What made this line dangerous was never
   # the pattern — it was reading and writing one path, which the guard above now
   # makes unreachable.
-  sed "s/$prev_run_id/$CONE_RUN_ID/g" "$FX_GRANT" > "$CONE_GRANT"
+  fx_rid_copy "$prev_run_id" "$CONE_RUN_ID" "$FX_GRANT" "$CONE_GRANT"
   {
     printf '# 파이프라인 런 보고서 — %s\n\n' "$CONE_RUN_ID"
     printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$CONE_RUN_ID"
@@ -3119,7 +3130,7 @@ pre_cone() {
     sed -e "s/run-id=$CONE_RUN_ID;/run-id=$rid;/" \
         -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $rid/" "$NM" > "$CAP_NM"
     CAP_GRANT="$WT/docs/pipeline-grant/$rid.md"
-    sed "s/$CONE_RUN_ID/$rid/g" "$CONE_GRANT" > "$CAP_GRANT"
+    fx_rid_copy "$CONE_RUN_ID" "$rid" "$CONE_GRANT" "$CAP_GRANT"
     CAP_LEDGER="$WT/docs/pipeline-run/$rid.md"
     {
       printf '# 파이프라인 런 보고서 — %s\n\n' "$rid"
@@ -4056,7 +4067,7 @@ pre_review() {
   # here the way the run directory does.
   rm -rf "$XDG_STATE_HOME/cc-cmds/run/$SH_ID"
   rm -f "$SH_LEDGER"
-  sed "s/R1/$SH_ID/g" "$WORK/manifest-clean.md" > "$SH_MANIFEST"
+  fx_rid_copy R1 "$SH_ID" "$WORK/manifest-clean.md" "$SH_MANIFEST"
   awk '/^- `target`/ { print $0 " | 리뷰 정책 상한=선머지후리뷰"; next } { print }' \
       "$SH_MANIFEST" > "$SH_MANIFEST.t" && mv "$SH_MANIFEST.t" "$SH_MANIFEST"
   sh_td=$( { grep -E '^- `target`' "$SH_MANIFEST" || true; } \
@@ -16483,8 +16494,8 @@ fx_reap
 # is the boundary working rather than a defect. Only the run id changes: the
 # manifest's two digests cover the goal, the clauses, the targets, the rule
 # settings, the pre-authorizations and the deadline — not the id.
-sed 's/R1/R2/g' "$FX_MANIFEST" > "$WT/plan2.md"
-sed 's/R1/R2/g' "$GBAK" > "$WT/docs/pipeline-grant/R2.md"
+fx_rid_copy R1 R2 "$FX_MANIFEST" "$WT/plan2.md"
+fx_rid_copy R1 R2 "$GBAK" "$WT/docs/pipeline-grant/R2.md"
 FX_MANIFEST="$WT/plan2.md"
 FX_LEDGER="$WT/docs/pipeline-run/R2.md"
 FX_GRANT="$WT/docs/pipeline-grant/R2.md"
@@ -16662,8 +16673,8 @@ b_newrun() {
   # branch and runs exactly one reap cycle. Only the id changes, the same way the
   # R2 copy above changes it.
   local rid="$1"
-  sed "s/R1/$rid/g" "$GBAK" > "$WT/docs/pipeline-grant/$rid.md"
-  sed "s/R2/$rid/g" "$B_MANIFEST_SAVE" > "$WT/plan-$rid.md"
+  fx_rid_copy R1 "$rid" "$GBAK" "$WT/docs/pipeline-grant/$rid.md"
+  fx_rid_copy R2 "$rid" "$B_MANIFEST_SAVE" "$WT/plan-$rid.md"
   FX_MANIFEST="$WT/plan-$rid.md"
   FX_LEDGER="$WT/docs/pipeline-run/$rid.md"
   FX_GRANT="$WT/docs/pipeline-grant/$rid.md"
@@ -20494,7 +20505,7 @@ NM4="$WORK/done-plan.md"
 sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE_RUN_ID/" "$NM" > "$NM4"
 DONE_GRANT="$WT/docs/pipeline-grant/$DONE_RUN_ID.md"
-sed "s/$CONE_RUN_ID/$DONE_RUN_ID/g" "$CONE_GRANT" > "$DONE_GRANT"
+fx_rid_copy "$CONE_RUN_ID" "$DONE_RUN_ID" "$CONE_GRANT" "$DONE_GRANT"
 LEDGER4="$WT/docs/pipeline-run/$DONE_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE_RUN_ID"
@@ -20890,7 +20901,7 @@ fi
 NM5="$WORK/done5-plan.md"
 sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE5_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE5_RUN_ID/" "$NM" > "$NM5"
-sed "s/$CONE_RUN_ID/$DONE5_RUN_ID/g" "$CONE_GRANT" > "$WT/docs/pipeline-grant/$DONE5_RUN_ID.md"
+fx_rid_copy "$CONE_RUN_ID" "$DONE5_RUN_ID" "$CONE_GRANT" "$WT/docs/pipeline-grant/$DONE5_RUN_ID.md"
 LEDGER5="$WT/docs/pipeline-run/$DONE5_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE5_RUN_ID"
@@ -20975,7 +20986,7 @@ fi
 NM6="$WORK/done6-plan.md"
 sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE6_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE6_RUN_ID/" "$NM" > "$NM6"
-sed "s/$CONE_RUN_ID/$DONE6_RUN_ID/g" "$CONE_GRANT" > "$WT/docs/pipeline-grant/$DONE6_RUN_ID.md"
+fx_rid_copy "$CONE_RUN_ID" "$DONE6_RUN_ID" "$CONE_GRANT" "$WT/docs/pipeline-grant/$DONE6_RUN_ID.md"
 LEDGER6="$WT/docs/pipeline-run/$DONE6_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE6_RUN_ID"
@@ -21973,7 +21984,7 @@ if [ -d "$EWT" ]; then
   done < "$NM5"
   mv "$NM5.tmp" "$NM5"
   EWT_GRANT="$WT/docs/pipeline-grant/$EWT_RUN_ID.md"
-  sed "s/$CONE_RUN_ID/$EWT_RUN_ID/g" "$CONE_GRANT" > "$EWT_GRANT"
+  fx_rid_copy "$CONE_RUN_ID" "$EWT_RUN_ID" "$CONE_GRANT" "$EWT_GRANT"
   LEDGER5="$WT/docs/pipeline-run/$EWT_RUN_ID.md"
   {
     printf '# 파이프라인 런 보고서 — %s\n\n' "$EWT_RUN_ID"
@@ -28774,7 +28785,7 @@ NM5="$WORK/shift-plan.md"
 sed -e "s/run-id=$CONE_RUN_ID;/run-id=$SHIFT_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $SHIFT_RUN_ID/" "$NM" > "$NM5"
 SHIFT_GRANT="$WT/docs/pipeline-grant/$SHIFT_RUN_ID.md"
-sed "s/$CONE_RUN_ID/$SHIFT_RUN_ID/g" "$CONE_GRANT" > "$SHIFT_GRANT"
+fx_rid_copy "$CONE_RUN_ID" "$SHIFT_RUN_ID" "$CONE_GRANT" "$SHIFT_GRANT"
 LEDGER5="$WT/docs/pipeline-run/$SHIFT_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$SHIFT_RUN_ID"
@@ -35840,7 +35851,7 @@ p57_fixture() {
   sed -e "s/run-id=$P57_PREV;/run-id=$rid;/" \
       -e "s/^\*\*런 id\*\*: $P57_PREV\$/**런 id**: $rid/" "$FX_MANIFEST" > "$P57_MAN"
   sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$P57_MAN" && rm -f "$P57_MAN.bak"
-  sed "s/R1/$rid/g" "$GBAK" > "$P57_GRANT"
+  fx_rid_copy R1 "$rid" "$GBAK" "$P57_GRANT"
   {
     printf '# 파이프라인 런 보고서 — %s\n\n' "$rid"
     printf '런 id %s · 판본 고정 픽스처\n' "$rid"
@@ -36925,7 +36936,7 @@ fi
 sed -e "s/run-id=$P59_PREV;/run-id=$P59_RID;/" \
     -e "s/^\*\*런 id\*\*: $P59_PREV\$/**런 id**: $P59_RID/" "$FX_MANIFEST" \
   | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P59_MAN"
-sed "s/R1/$P59_RID/g" "$GBAK" > "$P59_GRANT"
+fx_rid_copy R1 "$P59_RID" "$GBAK" "$P59_GRANT"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$P59_RID"
   printf '런 id %s · 페이싱 이음매 픽스처\n' "$P59_RID"
@@ -37467,7 +37478,7 @@ S71_STATE="$S71ROOT/state"
 sed -e "s/run-id=$S71_PREV;/run-id=$S71_RID;/" \
     -e "s/^\*\*런 id\*\*: $S71_PREV\$/**런 id**: $S71_RID/" "$FX_MANIFEST" \
   | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$S71_MAN"
-sed "s/R1/$S71_RID/g" "$GBAK" > "$S71_GRANT"
+fx_rid_copy R1 "$S71_RID" "$GBAK" "$S71_GRANT"
 s71_reset() {
   # A fresh ledger and state home — the twins below each start from this.
   printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · 정체 라벨 픽스처\n' "$S71_RID" "$S71_RID" > "$S71_LEDGER"
@@ -37719,7 +37730,7 @@ S70_STATE="$S70ROOT/state"
 sed -e "s/run-id=$S70_PREV;/run-id=$S70_RID;/" \
     -e "s/^\*\*런 id\*\*: $S70_PREV\$/**런 id**: $S70_RID/" "$FX_MANIFEST" \
   | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$S70_MAN"
-sed "s/R1/$S70_RID/g" "$GBAK" > "$S70_GRANT"
+fx_rid_copy R1 "$S70_RID" "$GBAK" "$S70_GRANT"
 printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · 발견 지문 픽스처\n' "$S70_RID" "$S70_RID" > "$S70_LEDGER"
 mkdir -p "$S70_STATE"
 s70_gate() {
@@ -38891,7 +38902,7 @@ P69_CONF="$P69ROOT/metrics-filing"
 sed -e "s/run-id=$P69_PREV;/run-id=$P69_RID;/" \
     -e "s/^\*\*런 id\*\*: $P69_PREV\$/**런 id**: $P69_RID/" "$FX_MANIFEST" \
   | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P69_MAN"
-sed "s/R1/$P69_RID/g" "$GBAK" > "$P69_GRANT"
+fx_rid_copy R1 "$P69_RID" "$GBAK" "$P69_GRANT"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$P69_RID"
   printf '런 id %s · 계측 필링 관문 픽스처\n' "$P69_RID"
@@ -45313,7 +45324,15 @@ h87_act() {  # h87_act <세그먼트> <종류> <필드…>
   gateL act --manifest "$WORK/plan-R87.md" --kind "$k" --target infra --segment "$s" --cutpoint 커밋 \
        --surface 읽기 --snapshot-digest "$(h87_H)" --rationale x -- "$@"
 }
-head87=$(cd "$WT" && git rev-parse HEAD)
+# 세그먼트 S2·S3·S8 의 트리는 이 절이 베이스 끝에 직접 세운다. 아래 무커밋 구현
+# 한도의 판정은 세그먼트 트리가 베이스보다 앞서지 않는다는 데에 기대는데, 공유
+# 체크아웃 `$WT` 는 앞 절이 옮겨 둔 브랜치에 있을 수 있다 — 8 절은 그것을 베이스에서
+# 닿지 않는 고아 브랜치에 두고 끝나고, 그 뒤에 이 절이 돌면 앞선 커밋이 1 이 된다.
+W87="$WORK/wt87"
+( cd "$WT" && git worktree add -q --detach "$W87" refs/heads/main ) >/dev/null 2>&1
+check "87b 전제 — 세그먼트 트리가 베이스보다 앞서지 않는다" \
+  "$(cd "$W87" 2>/dev/null && git rev-list --count HEAD --not refs/heads/main refs/remotes/origin/main 2>/dev/null)" "0"
+head87=$(cd "$W87" && git rev-parse HEAD)
 rp87() {  # rp87 <파일> <P0> <P1> <몫 줄 수|-> [배정…]
   local f=$1 p0=$2 p1=$3 ns=$4 a; shift 4
   {
@@ -45333,9 +45352,9 @@ cy87() {  # cy87 <세그먼트> <사이클> <P0> <P1> <리포트>
   cy87_rp=$(CANON_BASE="$CANON_TOP" canon_put R87 "$1" "$5")
   h87_act "$1" cycle "사이클=$2" "P0=$3" "P1=$4" "리뷰 HEAD=$head87" "리포트 경로=$cy87_rp"
 }
-h87_act S2 segment 상태=실행중 "워크트리=$WT" 선행=없음 '선언 파일 집합=a.txt'
+h87_act S2 segment 상태=실행중 "워크트리=$W87" 선행=없음 '선언 파일 집합=a.txt'
 r87a=$rc
-h87_act S3 segment 상태=실행중 "워크트리=$WT" 선행=없음 '선언 파일 집합=b.txt'
+h87_act S3 segment 상태=실행중 "워크트리=$W87" 선행=없음 '선언 파일 집합=b.txt'
 check "87b: 픽스처 세그먼트 행 둘이 기록된다 (아래가 공허하지 않다)" "$r87a/$rc" "0/0"
 printf -- '- `segment` | 교대=1 | id=S4 | 상태=머지됨 | 워크트리=- | prev=x\n' >> "$L87A"
 printf -- '- `segment` | 교대=1 | id=S5 | 상태=완료 | 워크트리=- | prev=x\n' >> "$L87A"
@@ -45621,8 +45640,8 @@ doc87=$(printf '%s' "$snap87" | jq -r '.["문서 인자"]')
 sl87=""; [ "$(printf '%s' "$snap87" | jq -r '.["슬라이싱"]["분기"]')" != "선언통치" ] || sl87=" --slice S8"
 base87=$(cd "$WORK/../.." && pwd)
 rl87() { gateL review-line --manifest "$WORK/plan-R87.md" --segment "$@"; }
-printf -- '- `segment` | 교대=1 | id=S8 | 상태=계획됨 | 선언 파일 집합=`a.txt`, `b c.txt` | 선행=없음 | 워크트리=%s | 브랜치=seg/R87-S8 | prev=x\n' "$WT" >> "$L87A"
-printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$WT" >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=계획됨 | 선언 파일 집합=`a.txt`, `b c.txt` | 선행=없음 | 워크트리=%s | 브랜치=seg/R87-S8 | prev=x\n' "$W87" >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$W87" >> "$L87A"
 rl87 S8 -- --recheck /x/c1.md
 check "87b: review-line 은 마지막으로 실린 브랜치·선언 집합과 다음 사이클 리포트로 프롬프트를 낸다" "$rc|$msg" \
   "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle1.md$sl87 --declared-files \"a.txt, b c.txt\" --recheck /x/c1.md \"설계는 $doc87\""
@@ -45631,14 +45650,13 @@ check "87b: review-line 의 --no-slice 는 --slice 를 빼고 프롬프트에 �
   "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle1.md --declared-files \"a.txt, b c.txt\" \"설계는 $doc87\""
 printf -- '- `cycle` | 교대=1 | 세그먼트=S8 | 사이클=1 | P0=0 | P1=1 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/seg-R87-S8-cycle1.md | prev=x\n' "$head87" >> "$L87A"
 printf 'a.txt, b c.txt, d.txt\n' > "$WORK/declared87.S8"
-printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 선언 파일 집합=a.txt, b c.txt (전체: %s) | 워크트리=%s | prev=x\n' "$WORK/declared87.S8" "$WT" >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 선언 파일 집합=a.txt, b c.txt (전체: %s) | 워크트리=%s | prev=x\n' "$WORK/declared87.S8" "$W87" >> "$L87A"
 rl87 S8
 check "87b: review-line 은 사이클 행 뒤의 리포트 번호를 올리고 잘린 집합을 곁파일에서 읽는다" "$rc|$msg" \
   "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle2.md$sl87 --declared-files \"a.txt, b c.txt, d.txt\" \"설계는 $doc87\""
-# `-a` 가 아니라 명시적으로 담는다 — 8 절이 이 저장소를 a.txt 를 추적하지 않는 고아
-# 브랜치에 두고 끝나므로, 둘이 한 실행에 묶이면 `-a` 로는 커밋이 생기지 않아 HEAD 가
-# 사이클 행의 리뷰 HEAD 에 머물고 아래 파견이 「같은 HEAD 재리뷰」로 거절된다.
-( cd "$WT" && printf 'S8\n' >> a.txt && git add a.txt && git commit -qm s8 ) >/dev/null 2>&1
+# S8 의 트리를 사이클 행의 리뷰 HEAD 에서 한 커밋 옮긴다. 옮기지 않으면 아래 파견이
+# 「같은 HEAD 재리뷰」로 거절된다.
+( cd "$W87" && printf 'S8\n' >> a.txt && git add a.txt && git commit -qm s8 ) >/dev/null 2>&1
 rl87 S8; line87=$msg
 h87_plan S8 review "$line87" '리뷰 P1'
 check "87b: review-line 이 낸 프롬프트의 리뷰 파견은 게이트를 지난다" "$rc" "0"
@@ -45648,6 +45666,7 @@ case "$msg" in
   *"names a branch"*) ok "87b: 그 거절은 브랜치가 없다는 것을 든다" ;;
   *) bad "87b review-line 브랜치 없음 문면" "$msg" ;;
 esac
+( cd "$WT" && git worktree remove --force "$W87" ) >/dev/null 2>&1
 
 # The `tguard` family's helpers are `pre_tguard` in the head, called here so a
 # full run defines them at the family's own position.
