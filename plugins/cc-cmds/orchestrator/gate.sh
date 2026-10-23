@@ -19388,6 +19388,14 @@ gate_fill_slot() {
   printf '%s' "$out$rest"
 }
 
+gate_carry_origin_no_session() {
+  # gate_carry_origin_no_session <source run> — for an answer brought over from
+  # an earlier run, the line every exit-19 refusal of the carry check adds: no
+  # session of this run halted on the record, so the shift ends instead of
+  # re-attaching. Nothing for an answer of this run.
+  [ -z "${1:-}" ] || warn "이 답은 출처 런 ${1} 에서 들인 답이라 이 런에는 멈춘 세션이 없어 재부착할 수 없습니다 — 교대는 handoff 사유=중단 으로 끝냅니다"
+}
+
 gate_carry_frame_reads() {
   # gate_carry_frame_reads <ledger> <run dir> <key> <frame> — the values of a
   # re-entry frame that come from a ledger's rows, read from <ledger> and
@@ -19652,6 +19660,7 @@ $(gate_reentry_table)
 EOF
   if [ "$found" != "1" ]; then
     warn "재진입 표에 없는 정지입니다 (스킬 ${skill:-미상}, 멈춘 시도의 종류 ${pkind:-미상}, 스텝 ${step:-없음}) — 멈춘 세션을 --resume 으로 재부착하세요"
+    gate_carry_origin_no_session "$src"
     return "$GATE_EXIT_CARRY_UNTABLED"
   fi
   if [ "$tkind" != "$skind" ]; then
@@ -19686,6 +19695,7 @@ EOF
       *$'\n'*) warn "운반 act 의 범위는 한 줄입니다"; return "$GATE_EXIT_RULE" ;;
     esac
     if ! gate_carry_scope_ok "$skey" "$scope" "$lpl" "$lprd" "$rec" "$ln"; then
+      gate_carry_origin_no_session "$src"
       return "$GATE_EXIT_CARRY_UNTABLED"
     fi
     GATE_HA_SCOPE=$scope
