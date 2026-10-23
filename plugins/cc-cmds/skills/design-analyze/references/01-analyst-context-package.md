@@ -39,14 +39,14 @@ When assigning each analyst (Step 4), include the following in the initial messa
 
 **doc-vs-code grounding (문서-코드정합성, grounding ON only):** does the document's stated premise about the existing code match reality. 3 sub-modes of `doc-code-gap`: **직접 모순** (doc claims X, code shows not-X), **오독** (doc misreads existing code/behavior), **stale 가정** (doc's premise was true once but the code has since changed). Always cite both sides: the doc claim (`§anchor`) + the actual code (`path:line`).
 
-## Analysis Protocol (read-only, resumed across rounds)
+## Analysis Protocol (read-only, one dispatch per round)
 
-Each analyst is a nameless background task; the lead drives it across rounds by resuming its `agentId` and collecting its round witness via `witness_present` — never its return text (see `_common/agent-team-protocol.md`).
+Each analyst is a nameless background task dispatched once per round; the lead drives the role across rounds by a fresh dispatch for each new round (its own past witnesses and its peers' named by path) and collects its round witness via `witness_present` — never its return text (see `_common/agent-team-protocol.md`).
 
 1. **Round 1 — Independent analysis**: each analyst analyzes from its lens and publishes the analysis as its witness. A returned analyst has self-terminated; confirm its round witness via `witness_present` and read the witness (never the return) — there is no `[COMPLETE]`/`[IN PROGRESS]` prefix to wait on.
-2. **Quality Gate**: before cross-validation, verify each returned analysis has: specific doc anchors (`§x.y "heading"`) for every finding; when grounded, `path:line` for code claims; severity rationale; checklist coverage (judge by whether items were actually checked, not by finding count — "checked, no issue" is valid). On a miss, resume that analyst (by `agentId`, re-injecting the gap) until QG passes (within the round budget — see **Round budget** below).
-3. **Cross-validation**: resume each analyst, naming the other analysts' witnesses **by path** (`_common/agent-team-protocol.md` `## Multi-round`). Request: validate severity hints, identify gaps in overlapping areas, flag false positives, note findings that interact.
-4. **Convergence Check**: convergence is by **witness collection** (see `_common/agent-team-protocol.md`). Resume each analyst once with a convergence prompt (re-inject current consensus + open conflicts); the analysis has converged when every analyst's round witness is `witness_present` and its witness body says "no further input". Only then proceed to Step 5. Analysts are read-only single-pass per lens, but are still resumed for cross-review convergence — no termination math.
+2. **Quality Gate**: before cross-validation, verify each returned analysis has: specific doc anchors (`§x.y "heading"`) for every finding; when grounded, `path:line` for code claims; severity rationale; checklist coverage (judge by whether items were actually checked, not by finding count — "checked, no issue" is valid). On a miss, resume that analyst inside its round (a same-key send-back by `agentId`, re-injecting the gap) until QG passes (within the round budget — see **Round budget** below).
+3. **Cross-validation**: dispatch each analyst's role afresh, naming its own past witness and the other analysts' witnesses **by path** (`_common/agent-team-protocol.md` `## Multi-round`). Request: validate severity hints, identify gaps in overlapping areas, flag false positives, note findings that interact.
+4. **Convergence Check**: convergence is by **witness collection** (see `_common/agent-team-protocol.md`). Dispatch each analyst's role once afresh with a convergence prompt (current consensus + open conflicts); the analysis has converged when every analyst's round witness is `witness_present` and its witness body says "no further input". Only then proceed to Step 5. Analysts are read-only single-pass per lens, but each role is still dispatched again for cross-review convergence — no termination math.
 
 ## Analysis-specific Facilitator Additions
 
@@ -60,4 +60,4 @@ For a large or multi-domain doc, the lead may give one analyst an added coordina
 - **Round 0**: classify document sections by risk and assign analyst focus areas; included in Round 1 packages.
 - **After Quality Gate**: coverage audit — identify high-risk sections not yet analyzed, request additional analysis.
 - **During cross-validation**: synthesize cross-section issues (inter-module/contract interactions individual analysts miss).
-- This analyst is resumed and its witness collected like any other; included in the witness-collection Convergence Check.
+- This analyst is dispatched each round and its witness collected like any other; included in the witness-collection Convergence Check.

@@ -388,9 +388,9 @@ if (( round_present == 1 )); then
   )
 fi
 
-# ---------- resume latency — boundary ordering (skip-if-absent) ---------------
+# ---------- dispatch latency — boundary ordering (skip-if-absent) -------------
 
-# The two sections that keep resume sends ahead of the lead's other work. Each
+# The two sections that keep dispatch sends ahead of the lead's other work. Each
 # literal carries one clause the ordering rests on: without (1) the new section
 # contradicts the happens-before gate's no-boundary-batching rule, without (6)
 # a send can leave before its nonce is on disk, without (7) a send-back
@@ -399,15 +399,15 @@ fi
 # peers handed a revision's path lose the member's original findings, and
 # without (10) a re-entry between the next round's nonce Edits and its sends
 # empty-passes the dispatch-completeness gate and skips that round.
-LATENCY_HEADING='### Resume latency'
-KINDS_HEADING='### Resume kinds and witness keys'
+LATENCY_HEADING='### Dispatch latency'
+KINDS_HEADING='### Dispatch kinds and witness keys'
 if has_heading "$PROTOCOL" "$LATENCY_HEADING"; then
   latency_body=$(extract_section "$PROTOCOL" "$LATENCY_HEADING")
   LATENCY_PINS=(
-    'no member is resumed into the next round or the convergence phase until every roster member has passed 확인 and 기록'
+    'no member is dispatched into the next round or the convergence phase until every roster member has passed 확인 and 기록'
     '기록 does not touch `witnessNonce`'
-    'repeated with the same nonce before any resume is sent'
-    "Each row's \`round/phase\` flip follows its resume"
+    'repeated with the same nonce before any dispatch is sent'
+    "Each row's \`round/phase\` flip follows its dispatch"
     'Synthesis, drafting and any other lead work come after the sends'
   )
   for lit in "${LATENCY_PINS[@]}"; do
@@ -415,7 +415,7 @@ if has_heading "$PROTOCOL" "$LATENCY_HEADING"; then
   done
   kinds_body=$(extract_section "$PROTOCOL" "$KINDS_HEADING")
   KINDS_PINS=(
-    'No resume goes out in the response that writes its nonce'
+    'No dispatch goes out in the response that writes its nonce'
     'the witness is the new file `{role-slug}.P-rev<k>.md`'
     'does not run 확인 for `P` again'
     'A revision supersedes `P` whole'
@@ -429,7 +429,7 @@ fi
 # ---------- by-path relay — protocol sentences (gated on FILE existence) ------
 
 # DELIBERATE DEPARTURE from this file's posture. These two checks are not keyed
-# on `### Resume latency`: they run whenever the protocol file exists, the same
+# on `### Dispatch latency`: they run whenever the protocol file exists, the same
 # condition as the relay fence below. The protocol sentences, the consumer
 # lines that point at them and the fence land in one slice and revert in one
 # slice, so there is no lever here whose partial revert should read green.
@@ -467,6 +467,62 @@ done < <(
     find "$skills_root" -mindepth 3 -maxdepth 3 -path '*/references/*.md'
   } | sort
 )
+
+# ---------- re-entry notes — parameter and its attachments (skip-if-absent) ----
+
+# A role is dispatched afresh at every new round/phase key, and the parameter
+# below is what tells the next dispatch where to start looking again. Two halves
+# are held: the section's load-bearing sentences, each on exactly one line of
+# the section, and the verbatim attachment of its clause in every opted-in
+# skill. The clause is read out of the section's own fence rather than copied
+# here, so a reworded clause moves the check with it and a skill still carrying
+# the old wording fails. A skill counts its attachment over its SKILL.md and its
+# references, because some skills keep the member prompt in a reference file;
+# exactly one line across them is required — zero is an unattached clause, two
+# is a second copy that can drift from the first. A skill whose SKILL.md is not
+# present (a fixture tree carries only some) is not checked.
+NOTES_HEADING='### Parameter — re-entry notes (opt-in)'
+if has_heading "$PROTOCOL" "$NOTES_HEADING"; then
+  notes_body=$(extract_section "$PROTOCOL" "$NOTES_HEADING")
+  NOTES_PINS=(
+    # the participants, so a skill cannot opt in or out silently
+    '**Opted in by `design`, `design-discuss-unattended`, `design-lite`, `design-analyze`, `review`, `review-unattended` and `review-lite` only**'
+    # the span the caps apply to
+    'ends before the first `peer-read:` line'
+    # without it an over-long note turns a completed witness into a Case 3
+    '**The caps are an instruction to the member, not a conjunct of `witness_present`.**'
+    'the lead does not treat an overflow as Case 3'
+  )
+  for lit in "${NOTES_PINS[@]}"; do
+    assert_once_in_section "$lit" "$notes_body" "agent-team-protocol.md ($NOTES_HEADING)"
+  done
+
+  notes_clause=$(printf '%s\n' "$notes_body" | awk '
+    infence && $0 == "```" { exit }
+    infence { print; exit }
+    $0 == "```" { infence = 1 }
+  ')
+  checked=$((checked + 1))
+  if [[ -z "$notes_clause" ]]; then
+    echo "FAIL: agent-team-protocol.md ($NOTES_HEADING) — no fenced clause text found in the section" >&2
+    fail=1
+  else
+    for skill in design design-discuss-unattended design-lite design-analyze review review-unattended review-lite; do
+      skill_md="$skills_root/$skill/SKILL.md"
+      [[ -f "$skill_md" ]] || continue
+      checked=$((checked + 1))
+      n_att=0
+      for f in "$skill_md" "$skills_root/$skill"/references/*.md; do
+        [[ -f "$f" ]] || continue
+        n_att=$(( n_att + $(count_in_file "$notes_clause" "$f") ))
+      done
+      if [[ "$n_att" != "1" ]]; then
+        echo "FAIL: $skill — the re-entry notes clause must be attached verbatim on exactly 1 line across SKILL.md and references/, found $n_att" >&2
+        fail=1
+      fi
+    done
+  fi
+fi
 
 if (( fail == 0 )); then
   echo "OK:   team budget pins — $checked pinned literal(s) intact, fence clean"
