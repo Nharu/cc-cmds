@@ -72,27 +72,44 @@ jobs:
     # gate suite, so the old reason for a very long ceiling (that suite slowing
     # down as it runs) no longer applies to this job.
     #
-    # The 16-minute ceiling is the outer safety net, not the thing that tells
+    # The 20-minute ceiling is the outer safety net, not the thing that tells
     # a hang from progress. The make step is armed (scripts/ci-step-guard.sh)
     # with a deadline inside this ceiling — the job start plus CC_JOB_BUDGET_S,
     # less a margin for its dump — and every suite under it has a deadline
     # inside that one, so a stall ends as a named failure with the holders
-    # dumped before the runner would cancel the job. The longest successful
-    # run so far took about seven minutes. The click helper's suite adds a
-    # cold Swift compile — 8 to 26 seconds on an idle developer machine, but
-    # 184 seconds was measured under load, so it is budgeted at four minutes —
-    # and seven plus four still fits inside sixteen, so the ceiling stays.
-    # The return-hook suite took 67 seconds on a developer machine; budgeted
-    # at two minutes and counted as if it ran after everything else, seven
-    # plus four plus two is thirteen, which still fits, so the ceiling stays.
-    # When the list grows, recompute the same way. CC_JOB_BUDGET_S below must
-    # equal this ceiling times 60: `timeout-minutes` cannot read `env`, so the
+    # dumped before the runner would cancel the job.
+    #
+    # How the job fits. On the runner's three cores, the last master run
+    # before test-run.sh was split spent 819 seconds in that one suite, while
+    # every other suite took 152 seconds or less and all of them were done
+    # about 370 seconds in; after that test-run.sh ran alone with two cores
+    # idle. Its time swung with the runner's load from 598 to 852 seconds in
+    # successful runs, and runs of 856 to 863 seconds were reaped by the old
+    # 16-minute ceiling with no assertion failing, so the ceiling went up to
+    # twenty. The suite now runs as two parts side by side. Split first at the head of its
+    # lane-persistence section, the PR run took 741 seconds: part 1 539 and
+    # part 2 716, since the later part now shares the cores as well. The
+    # boundary then moved down to the hook-decision tests, the last marker
+    # above the one where the isolation check cuts the suite (T17), which in
+    # that run's log carries about 30 seconds from part 2 to part 1, and the
+    # PR run then took 606 seconds. The target is a job of 720 seconds or
+    # less, which leaves eight of the twenty minutes as margin for runner
+    # variance; the work of all the suites over three cores puts a floor of
+    # about 645 seconds under the test step. When the list grows, recompute
+    # it the same way: the longest part, plus the remaining suites laid over
+    # the three cores beside it, plus the steps around the test step (checkout,
+    # the brew install and the duration signal: 26 seconds of that run's 847),
+    # plus a margin for variance; if that does not leave a quarter of the
+    # ceiling, split differently before raising the ceiling.
+    #
+    # CC_JOB_BUDGET_S below must equal this ceiling times 60:
+    # `timeout-minutes` cannot read `env`, so the
     # two are tied by a check in scripts/test-suite-guard.sh rather than by a
     # reference. Change both together.
-    timeout-minutes: 16
+    timeout-minutes: 20
     env:
       CC_SUITE_GUARD_STRICT: '1'
-      CC_JOB_BUDGET_S: '960'
+      CC_JOB_BUDGET_S: '1200'
     steps:
       # First, before checkout: the step deadline is measured from here.
       - name: Record job start

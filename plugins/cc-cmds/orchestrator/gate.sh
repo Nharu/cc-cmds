@@ -10708,6 +10708,141 @@ gate_record_audit_disclosure() {
     "합성 골격급=$(gate_audit_skeletal_fence_count '합성 요구 골격급 수')"
 }
 
+# ---------------------------------------------------------------------------
+# The `토론 패스` row — what the design team's late passes did, read from the
+# durable witness corpus `$RUN_DIR/design/$DOC_SLUG/witness/` once the design
+# attempt has ended. No stop condition reads it; the metrics collector and the
+# design path report are its only readers.
+#
+# ONE WITNESS PER (MEMBER, ROUND/PHASE). A re-instruction inside the same round
+# or phase is published as `{role-slug}.<P>-rev<k>.md` and replaces `<P>` whole,
+# so the file with the largest k is chosen, the original only when no revision
+# exists, and the two are never counted together. A name outside that grammar
+# (`INDEX.md`, `SWEEP.md`, `*.prompt.md`, `*.coherence.epoch-6.md`) is not a
+# witness. `scripts/measure-discussion-passes.sh` reads the same corpus by the
+# same rules.
+# ---------------------------------------------------------------------------
+gate_discussion_pass_select() {
+  # gate_discussion_pass_select <witness dir> <round/phase> — the chosen witness
+  # of each member for that round or phase, one path per line, sorted. A
+  # directory with no *.md leaves the glob unexpanded; `|| continue` keeps
+  # that from becoming the pipeline's failing status under pipefail.
+  local d="$1" p="$2" f
+  for f in "$d"/*.md; do
+    [ -f "$f" ] || continue
+    printf '%s\n' "${f##*/}"
+  done | awk -v p="$p" -v d="$d" '
+    { n = substr($0, 1, length($0) - 3); k = 0
+      if (match(n, /-rev[0-9]+$/)) { k = substr(n, RSTART + 4) + 0; n = substr(n, 1, RSTART - 1) }
+      s = "." p
+      if (length(n) <= length(s) || substr(n, length(n) - length(s) + 1) != s) next
+      r = substr(n, 1, length(n) - length(s))
+      if (r !~ /^[A-Za-z0-9_-]+$/) next
+      if (!(r in best) || k > best[r]) { best[r] = k; file[r] = $0 } }
+    END { for (r in file) print d "/" file[r] }' | LC_ALL=C sort
+}
+
+gate_discussion_read() {
+  # gate_discussion_read <what> — reads the witness paths on stdin, one per
+  # line, in one awk process however many there are, and prints:
+  #   declarations — `<measure> <undeclared>`: how many witnesses declare
+  #     `measure` and how many declare nothing. A witness's declaration is the
+  #     last line that is exactly `round-3: none` or starts
+  #     `round-3: measure — `, chosen across both forms.
+  #   findings — the sum of each witness's last line that is exactly
+  #     `findings: <n>`; `미상` with no witness or when any witness lacks the
+  #     line, because a partial sum reads like a number.
+  #   reopens — the number of `- type: decision-reopen` lines; `미상` with no
+  #     witness.
+  awk -v what="$1" '
+    $0 == "" { next }
+    { f = $0; n++; d = ""; v = ""
+      while ((getline line < f) > 0) {
+        sub(/\r$/, "", line)
+        if (line == "round-3: none") d = "none"
+        else if (index(line, "round-3: measure — ") == 1) d = "measure"
+        if (line ~ /^findings: [0-9]+$/) v = substr(line, 11)
+        s = line; sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s)
+        if (s == "- type: decision-reopen") reopen++
+      }
+      close(f)
+      if (d == "measure") measure++; else if (d == "") undeclared++
+      if (v == "") missing++; else sum += v }
+    END {
+      if (what == "declarations") printf "%d %d", measure, undeclared
+      else if (n == 0) printf "미상"
+      else if (what == "reopens") printf "%d", reopen
+      else if (missing) printf "미상"
+      else printf "%d", sum }'
+}
+
+gate_discussion_last_mtime() {
+  # gate_discussion_last_mtime — the latest modification time, in epoch
+  # seconds, of the witness paths on stdin; empty when none can be read.
+  local f t m=''
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    t=$(gate_mtime "$f")
+    case "$t" in ''|*[!0-9]*) continue ;; esac
+    { [ -z "$m" ] || [ "$t" -gt "$m" ]; } && m=$t
+  done
+  printf '%s' "$m"
+}
+
+gate_record_discussion_passes() {
+  # gate_record_discussion_passes <design step id> <attempt> — one `토론 패스`
+  # row, or none when the corpus is absent or holds no `*.round-1.md`: the solo
+  # design branch has no team. `R3 사유` is the first of five lines that holds —
+  # closed with a measurement named `지명 미개방`, any other closed `해당 없음`,
+  # open with a measurement named `측정 지명`, an R2 witness without a
+  # declaration `미상`, and what is left `선언 없음`. Sweep rebuttals are not an
+  # entry to R3 and stay out of the rule; `스윕 반박` carries them.
+  local step="$1" att="$2" wd r1 r2 r3 fid coh
+  [ -n "${RUN_DIR:-}" ] && [ -n "${DOC_SLUG:-}" ] || return 0
+  wd="$RUN_DIR/design/$DOC_SLUG/witness"
+  [ -d "$wd" ] || return 0
+  r1=$(gate_discussion_pass_select "$wd" round-1)
+  [ -n "$r1" ] || return 0
+  r2=$(gate_discussion_pass_select "$wd" round-2)
+  r3=$(gate_discussion_pass_select "$wd" round-3)
+  fid=$(gate_discussion_pass_select "$wd" fidelity)
+  coh=$(gate_discussion_pass_select "$wd" coherence)
+  local open=0 m u named sweep why mins='미상' t2 t3
+  [ -n "$r3" ] && open=1
+  read -r m u <<EOF
+$(printf '%s\n' "$r2" | gate_discussion_read declarations)
+EOF
+  named=$m
+  [ "$m" -eq 0 ] && [ "$u" -gt 0 ] && named='미상'
+  if [ -f "$wd/SWEEP.md" ]; then
+    sweep=$(awk '{ sub(/\r$/, "") } index($0, "round-3: sweep — ") == 1 { c++ } END { printf "%d", c }' "$wd/SWEEP.md" 2>/dev/null) || sweep='미상'
+  else
+    sweep='미상'
+  fi
+  if [ "$open" -eq 0 ] && [ "$m" -ge 1 ]; then why='지명 미개방'
+  elif [ "$open" -eq 0 ]; then why='해당 없음'
+  elif [ "$m" -ge 1 ]; then why='측정 지명'
+  elif [ "$u" -gt 0 ]; then why='미상'
+  else why='선언 없음'
+  fi
+  if [ "$open" -eq 1 ] && [ -n "$r2" ]; then
+    t2=$(printf '%s\n' "$r2" | gate_discussion_last_mtime)
+    t3=$(printf '%s\n' "$r3" | gate_discussion_last_mtime)
+    if [ -n "$t2" ] && [ -n "$t3" ] && [ "$t3" -ge "$t2" ]; then
+      mins=$(( (t3 - t2) / 60 ))
+    fi
+  fi
+  gate_append '토론 패스' "세그먼트=-" "스테이지=$step" "실행 버전=${att:-미상}" \
+    "경로=$(gate_design_path_word)" "팀원=$(printf '%s\n' "$r1" | grep -c .)" \
+    "R3=$([ "$open" -eq 1 ] && printf '열림' || printf '닫힘')" \
+    "측정 지명=$named" "스윕 반박=$sweep" "R3 사유=$why" "R3 분=$mins" \
+    "충실도 좌석=$(printf '%s\n' "$fid" | grep -c . || true)" \
+    "충실도 발견=$(printf '%s\n' "$fid" | gate_discussion_read findings)" \
+    "충실도 재개=$(printf '%s\n' "$fid" | gate_discussion_read reopens)" \
+    "정합 좌석=$(printf '%s\n' "$coh" | grep -c . || true)" \
+    "정합 발견=$(printf '%s\n' "$coh" | gate_discussion_read findings)"
+}
+
 gate_audit_concluded() {
   # gate_audit_concluded <audit step id> — 0 when what the audit's key says last
   # is an audit that ended `정상 완료` without asking for a re-convergence: the
@@ -41890,6 +42025,8 @@ gate_record_stage_outcome() {
   fi
   # Every audit attempt leaves its `감사 공시` row right after its own row.
   [ "$kind" != "audit" ] || gate_record_audit_disclosure "$seg" "$attempt"
+  # Every design attempt leaves its `토론 패스` row right after its own row.
+  [ "$kind" != "design" ] || gate_record_discussion_passes "$seg" "$attempt"
   # A re-convergence row voids the segment's plan; the file goes too, or the
   # plan-file fallback above would put the void digest back on the next row.
   [ "$kind" != "reconverge" ] || void_segment_plan "$rowseg"
