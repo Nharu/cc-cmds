@@ -379,14 +379,60 @@ gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --se
 | `워크트리 기록 없음` | 「Merging a segment and recording it」: no recorded worktree, or one the segment did not work in | allowed |
 | `종료 조건 11 판독 불가` | termination condition 11 with the merged tip unreadable | allowed |
 | `대상 훅 거절` | 「Pushing and opening a pull request」: the target's own Bash hook refuses an act the segment cannot do without, and the refusal is not one a commit, a remote read or another spelling moves | never |
+| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence no read of this run can produce | never |
 
-**The gate writes the record, and its options are the table's.** It writes `"$CC_PIPELINE_RUN_DIR/halt/shift/<id>#<n>.md"` with two options, `재시도` and `세그먼트 park`, and a cone `blocked` row anchored on the segment that carries the record's path and digest and lists the segments that depend on it. The gate does not refuse acts on that cone — you hold it, and the snapshot tells every later shift what to hold: `shift_halts[]` has one element per shift stop no answer has reached yet, with its `세그먼트`, `자리`, `기록` and `보류` (the segments its cone holds now). Dispatch, merge or apply nothing on an element's `세그먼트` or on a segment in its `보류` until the answer comes back — the element then leaves `shift_halts[]` and the answer appears in `answered_halts[]` — and route every other segment as usual. Do not write a `park` row or a separate cone block for the same stop — the answer decides between those. A run-scope stop is not in the table: exit 7, a lane or limit wait, the design step's stop and a structural refusal still end the shift with `사유=중단`.
+**The gate writes the record, and its options are the table's.** It writes `"$CC_PIPELINE_RUN_DIR/halt/shift/<id>#<n>.md"` with two options, `재시도` and `세그먼트 park`, and a cone `blocked` row anchored on the segment that carries the record's path and digest and lists the segments that depend on it. The gate does not refuse acts on that cone — you hold it, and the snapshot tells every later shift what to hold: `shift_halts[]` has one element per shift stop no answer has reached yet, with its `세그먼트`, `자리`, `기록` and `보류` (the segments its cone holds now). Dispatch, merge or apply nothing on an element's `세그먼트` or on a segment in its `보류` until the answer comes back — the element then leaves `shift_halts[]` and the answer appears in `answered_halts[]` — and route every other segment as usual. Do not write a `park` row or a separate cone block for the same stop — the answer decides between those. A run-scope stop is not in the table: exit 7, a lane or limit wait, the design step's stop and a structural refusal still end the shift with `사유=중단`. The one exception is `종료 절 근거`, which stops no segment: it asks a person for one termination clause's evidence, and 「Settling the termination clauses and proposing done」 gives its form.
 
 **Recommend only from what a file says.** Pass `추천` with `추천 근거` only when the interview record (`인터뷰 기록`), the manifest's authorization (`매니페스트 인가`) or the target's `CLAUDE.md` (`상시 지침`) settles the choice, each part quoting that file verbatim; the gate looks each quote up with a fixed-string search and refuses the act with exit 3 when one is not there, and it refuses `기기 사실` and any kind it does not know. On that exit 3 call again without the two fields. At a site whose recommendation reads `never`, the gate drops whatever you pass and the record reads `(없음)`. Without a recommendation the seat asks a person.
 
 **When the gate cannot write the record** — exit 3 because `halt/shift` is not a real directory at its place, or because a file already sits at the name — write `act --kind blocked -- 스코프=cone 원인=막힘 '앵커 세그먼트=<id>' '사유=교대 정지 기록 불가 — <자리>' '근거=<게이트 문면>'` and go on: that row is in `shift_halts[]` with an empty `기록`, so it is held as above for the rest of the run, and the seat finds the stop in the ledger. Exit 2 is your argv (an unknown site, a missing `질문` or `관측`, a field the gate writes itself); fix it and call once more. Never pass `중단 기록`, `기록 다이제스트`, `자리` or `교대` on a `blocked` row — those are the gate's, and the row is refused with exit 2.
 
 **End the shift only when nothing is left.** After the act, read the snapshot again and route every other segment as usual. When no act remains to dispatch, end with `사유=중단` and put each record's absolute path in `막힌 지점`. The answer comes back as an `answered_halts[]` element and 「Handing on a person's answer to a halt」 item 6 carries it out.
+
+### Settling the termination clauses and proposing done
+
+The run ends only on an accepted `act --kind propose-done`, and the gate refuses it while any termination clause of the manifest is unsettled. A clause is settled by a row you write. These kinds take FIELDS after `--` rather than a command, because what they perform is the ledger row itself — they are acts, not bookkeeping:
+
+```
+act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>' [브랜치=<세그먼트 브랜치>] ['리뷰 정책=<선리뷰후머지|선머지후리뷰|리뷰없음>']
+act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>' ['모드=전체|델타'] ['기준 사이클=<n>']
+act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
+act --kind judgment   -- 등급=1 '판단 부류=<열두 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
+act --kind clause     -- id=<절 id> 상태=<충족|불가능|보류> 근거=<…>
+act --kind blocked    -- 스코프=run  원인=해소 사유=<선행 막힘의 사유> 근거=<…>
+act --kind blocked    -- 스코프=cone 원인=막힘 사유=<…> 근거=<…> '앵커 세그먼트=<id>' ['의존 세그먼트=<CSV>']
+act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
+act --kind obligation-done -- 동일성=<problem 행의 동일성> 근거=<원장에서 찾을 수 있는 객체를 지목>
+act --kind obligation-drop -- 동일성=<problem 행의 동일성> 근거=<원장에서 찾을 수 있는 객체를 지목>
+```
+
+**The evidence a clause row carries depends on its state.**
+
+- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit's full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks only that `근거` is not empty, so keeping to this is yours.
+- **`불가능` cites what decided it** — a residual issue URL, a design step's `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer. The rules of `references/review-next.md` and `references/design-dispatch.md` for their own `불가능` rows stand as they are.
+- **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.
+
+**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, and no `shift_halts[]` element holds a segment. A plan with no implementation step (「Planning the segments」) and a design that stopped follow the same order.
+
+1. Read the snapshot's `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.
+2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for — ledger rows, the run directory, a merge commit's `git show --stat` or `git diff`, `gh pr view`, each through `exec … --surface 읽기` — and when you find it, write `act --kind clause`.
+3. For each clause whose evidence you cannot produce, write an evidence request (below) — one per such clause, all in this shift.
+4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.
+5. While any evidence request is open, do not propose done: end with `사유=중단` and put each record's absolute path in `막힌 지점`.
+
+**You cannot produce a clause's evidence when its `문면` asks for an execution** — a paid or credentialed call, a local launch, a device, or a person's confirmation — and no ledger row, stage report or answer attachment shows it done. Do not run it yourself, and do not settle such a clause `불가능` without a question.
+
+**Ask for it with `shift-halt` at site `종료 절 근거`**, which stops no segment: pass `--segment -` and name the clause in `절`.
+
+```
+gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --segment - \
+  --cutpoint <token> --surface 읽기 --snapshot-digest <H> --site '종료 절 근거' \
+  -- '절=<절 id>' '질문=<그 절이 요구하는 실행·확인, 한 줄>' '관측=<읽은 것과 왜 근거가 되지 않는가>'
+```
+
+The gate makes the key `clause-<id>` itself, writes `"$CC_PIPELINE_RUN_DIR/halt/shift/clause-<id>#<n>.md"` with the options `근거 제출` and `불가능으로 정산` and a `(없음)` recommendation, and a cone `blocked` row anchored on that key alone — it holds no segment and does not count against termination condition 5, since condition 10 already holds the run. It refuses with exit 3 a clause the manifest does not declare, one whose last `종료 절` row reads `충족` or `불가능`, and a second request on a clause whose earlier request still waits for its answer to be carried out; `절` at any other site, or a segment on this one, is exit 2. The element's `요청` names the open record, and 「Handing on a person's answer to a halt」 item 6 carries out its answer.
+
+**Do not end on `사유=중단` with a clause unsettled unless every unsettled clause has an open evidence request.** A clause left with neither a row nor a request is a question nobody will be asked.
 
 ## Ending your shift
 

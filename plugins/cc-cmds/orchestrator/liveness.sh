@@ -1228,6 +1228,13 @@ cc__blocked_fold() {
   # always has its `segment` row before its first dispatch, so "the field is set
   # and names no segment" is decidable from the ledger alone.
   #
+  # A `clause-<id>` anchor is not a step. The gate makes that key for a
+  # termination clause's evidence request, and the cone stands on that one
+  # clause: it holds no segment and no step, and the run is already held by
+  # the unsettled clause itself. So the row stays out of the set, as a
+  # segment-anchored cone does, and a person's unanswered request shows up as
+  # an unanswered record under `halt/shift/`, not as a run stop.
+  #
   # The fold — last row per `사유` — runs inside that set, so an act-scope row
   # that reuses a run block's `사유` neither hides it nor stands in for it.
   #
@@ -1267,7 +1274,8 @@ cc__blocked_fold() {
         why = bwhy[b]
         if (why == "") continue
         if (bscope[b] == "run") step = 0
-        else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg)) step = 1
+        else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg) \
+                 && index(banchor[b], "clause-") != 1) step = 1
         else continue
         last[why] = bnr[b]; lastcause[why] = bcause[b]; laststep[why] = step
         lastscope[why] = bscope[b]; lastanchor[why] = banchor[b]
