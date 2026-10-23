@@ -7,7 +7,9 @@
 # exists:
 #
 #   1 select    pick five team-design audits from the 2026-10-10..16 window
-#               (quantile sample over unique-defect count) → selection.tsv
+#               (quantile sample over unique-defect count) and put every
+#               other candidate in the bin of its nearest pick as a reserve
+#               (`예비 <n>-<k>`) → selection.tsv
 #   2 prepare   per pair: an independent clone at the original design's base
 #               commit, a solo design-run manifest that binds the original
 #               frozen interview record, an audit-run manifest, the grant
@@ -21,8 +23,15 @@
 #   5 collect   both reports' disclosure-block values and plugin pins
 #   6 classify  one judgment call per report, cross-checked against the
 #               disclosure block; ambiguous defects go to classify/review.tsv
-#               for a person
+#               with a blank judgment, and the verdict reads them as
+#               `판정 불가` until it is filled
 #   7 verdict   scripts/solo-audit-compare.sh → report.md
+#
+# Stages 3 to 6 run slot by slot. A pair that turns invalid — a halt no fixed
+# policy answers, an approval, a deadline, contamination, a failed cross-check
+# — is moved aside as an attempt and its slot runs again on the next reserve
+# of its bin; a slot whose reserves are used up stays invalid. No stage waits
+# on a person.
 #
 # The design skill is not touched and no stage is launched outside the gate:
 # the experiment measures today's production path, nothing else.
@@ -41,7 +50,8 @@
 #                 and before each classification call spent + 3
 #   --dry-run     select, prepare and check the manifests, then stop; never
 #                 calls the gate's act or the CLI
-#   --rerun-pair  discard one pair's state and records and run it again
+#   --rerun-pair  discard one pair's state, attempts and records and run its
+#                 slot again from `선정 <n>`
 #   --repo        the main repository (default: this script's checkout)
 #
 # Environment:
@@ -50,13 +60,16 @@
 #   SOLO_EXP_CLAUDE_BIN   CLI for the classification call (default: claude on PATH)
 #   SOLO_EXP_STATE_ROOT   clones and run state
 #                         (default ${HOME}/.local/state/cc-cmds/solo-audit-exp)
+#   CC_CMDS_AUTOPILOT_AUTO_RESOLVE  0, off, false or no keeps the seat from
+#                         answering a halt record by the fixed policy
 #
 # Exit codes:
 #   0 — a verdict was written (`판정 불가` included), or a dry run finished
 #   1 — failure
 #   2 — usage error
-#   3 — waiting on a person (an ambiguous defect to judge, or an approval)
-#   4 — budget guard: the next billed step would exceed --budget-usd
+#   4 — budget guard: the next billed step would exceed --budget-usd; the
+#       slots not finished are invalid and a verdict was written. The same
+#       command with a larger budget carries them on.
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no mapfile.
 # Non-ASCII literals follow a `${var}` brace, never a bare `$var`.
@@ -165,6 +178,14 @@ kv_set() {
   touch "$f"
   awk -F'\t' -v k="$2" -v v="$3" 'BEGIN { OFS = "\t" } $1 == k { print k, v; done = 1; next } { print } END { if (!done) print k, v }' "$f" > "$tmp"
   mv "$tmp" "$f"
+}
+
+# kv_del <file> <key> — drop one key<TAB>value line.
+kv_del() {
+  [[ -f "$1" ]] || return 0
+  local tmp="$1.tmp.$$"
+  awk -F'\t' -v k="$2" '$1 != k' "$1" > "$tmp"
+  mv "$tmp" "$1"
 }
 
 # fence_get <report> <slot key> — one slot of the v1 disclosure block, read
@@ -301,25 +322,78 @@ spent() {
   } | awk '{ s += $1 } END { printf "%.4f", s + 0 }'
 }
 
-# guard <reserve> <what> — exit 4 before a billed step that could pass the budget.
+# guard <reserve> <what> — before a billed step that could pass the budget,
+# close the experiment on the budget (budget_close, exit 4).
 guard() {
-  local s
+  local s msg
   s=$(spent)
   if awk -v s="$s" -v r="$1" -v b="$budget" 'BEGIN { exit !(s + r > b) }'; then
-    echo "solo-audit-experiment: budget guard — spent ${s} + reserve $1 > budget ${budget}; not starting $2" >&2
-    exit 4
+    msg="budget guard — spent ${s} + reserve $1 > budget ${budget}; not starting $2"
+    echo "solo-audit-experiment: ${msg}" >&2
+    budget_close "$msg"
   fi
 }
 
-# guard_resume <what> — exit 4 before resuming an opened run once the spent
-# amount has reached the budget. Its reserve was taken when it was opened.
+# guard_resume <what> — the same, before resuming an opened run once the
+# spent amount has reached the budget. Its reserve was taken when it was
+# opened.
 guard_resume() {
-  local s
+  local s msg
   s=$(spent)
   if awk -v s="$s" -v b="$budget" 'BEGIN { exit !(s >= b) }'; then
-    echo "solo-audit-experiment: budget guard — spent ${s} ≥ budget ${budget}; not resuming $1" >&2
-    exit 4
+    msg="budget guard — spent ${s} ≥ budget ${budget}; not resuming $1"
+    echo "solo-audit-experiment: ${msg}" >&2
+    budget_close "$msg"
   fi
+}
+
+# slot_done <n> — the slot needs no further work: valid and classified, or
+# invalid with its reserves used up.
+slot_done() {
+  local f="$ST/pair-$1/pair.state"
+  if [[ "$(kv "$f" status)" == "무효" ]]; then [[ "$(kv "$f" exhausted)" == "1" ]]; return; fi
+  [[ "$(kv "$f" classified)" == "1" ]]
+}
+
+# budget_close <refusal> — every slot not finished becomes invalid under
+# `예산 상한 — <refusal>`, remembering what it was in budget_stop*, the verdict
+# is written, and the call ends with exit 4. budget_restore undoes the marks
+# on the next call, so a larger budget carries the slots on.
+budget_close() {
+  local why="예산 상한 — $1" n ps pt
+  for n in $(seq 1 "$PAIRS"); do
+    ps="$ST/pair-$n"; pt="$EXP/pairs/$n/pair.tsv"
+    slot_done "$n" && continue
+    [[ -n "$(kv "$ps/pair.state" budget_stop)" ]] && continue
+    mkdir -p "$ps"
+    kv_set "$ps/pair.state" budget_stop "$(kv "$ps/pair.state" status)"
+    kv_set "$ps/pair.state" budget_stop_why "$(kv "$ps/pair.state" invalid_reason)"
+    if [[ -f "$pt" ]]; then kv_set "$ps/pair.state" budget_stop_tsv "$(kv "$pt" status)"; else kv_set "$ps/pair.state" budget_stop_tsv "-"; fi
+    mark_invalid "$n" "$why"
+  done
+  bash "$COMPARE" --exp "$EXP" || die "solo-audit-compare failed"
+  say "$(tail -n 1 "$EXP/report.md") → $EXP/report.md (closed on the budget; call again with a larger --budget-usd to carry on)"
+  exit 4
+}
+
+# budget_restore — put back every slot budget_close marked.
+budget_restore() {
+  local n ps pt prev why tprev
+  for n in $(seq 1 "$PAIRS"); do
+    ps="$ST/pair-$n"; pt="$EXP/pairs/$n/pair.tsv"
+    prev=$(kv "$ps/pair.state" budget_stop)
+    [[ -n "$prev" ]] || continue
+    why=$(kv "$ps/pair.state" budget_stop_why); tprev=$(kv "$ps/pair.state" budget_stop_tsv)
+    kv_set "$ps/pair.state" status "$prev"
+    if [[ -n "$why" ]]; then kv_set "$ps/pair.state" invalid_reason "$why"; else kv_del "$ps/pair.state" invalid_reason; fi
+    if [[ "$tprev" == "-" || -z "$tprev" ]]; then
+      rm -f "$pt"
+    else
+      kv_set "$pt" status "$tprev"
+      if [[ -n "$why" ]]; then kv_set "$pt" invalid_reason "$why"; else kv_del "$pt" invalid_reason; fi
+    fi
+    kv_del "$ps/pair.state" budget_stop; kv_del "$ps/pair.state" budget_stop_why; kv_del "$ps/pair.state" budget_stop_tsv
+  done
 }
 
 # ---------- stage 1: select --------------------------------------------------
@@ -416,14 +490,27 @@ select_pairs() {
   cands=$(awk -F'\t' 'NR == FNR { k[$1] = 1; next } $7 == "" && ($1 in k) { print $4 "\t" $1 }' "$keep" "$rows" \
     | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2)
   m_=$(printf '%s' "$cands" | grep -c . || true)
+  # picks: name<TAB>disposition. The five quantile positions are `선정 <j+1>`;
+  # every other candidate goes to the bin of its nearest position (a tie goes
+  # to the smaller j) and is `예비 <j+1>-<k>`, k counting up by distance, then
+  # by rank.
   local picks=""
   if (( m_ >= PAIRS )); then
-    for j in $(seq 0 $((PAIRS - 1))); do
-      local i
-      i=$(awk -v m="$m_" -v j="$j" -v p="$PAIRS" 'BEGIN { print int((m - 1) * j / (p - 1) + 0.5) }')
-      picks="${picks}$(printf '%s\n' "$cands" | sed -n "$((i + 1))p" | cut -f2)	$((j + 1))
-"
-    done
+    picks=$(printf '%s\n' "$cands" | awk -F'\t' -v m="$m_" -v p="$PAIRS" '
+      { nm[NR - 1] = $2 }
+      END {
+        for (j = 0; j < p; j++) { pos[j] = int((m - 1) * j / (p - 1) + 0.5); used[pos[j]] = 1; print nm[pos[j]] "\t선정 " (j + 1) }
+        for (i = 0; i < m; i++) {
+          if (i in used) continue
+          bd = -1
+          for (j = 0; j < p; j++) { d = i - pos[j]; if (d < 0) d = -d; if (bd < 0 || d < bd) { bd = d; bin[i] = j } }
+          dist[i] = bd
+        }
+        for (j = 0; j < p; j++) {
+          k = 0
+          for (d = 1; d < m; d++) for (i = 0; i < m; i++) if (!(i in used) && bin[i] == j && dist[i] == d) { k++; print nm[i] "\t예비 " (j + 1) "-" k }
+        }
+      }')
   fi
 
   {
@@ -433,7 +520,7 @@ select_pairs() {
       {
         if ($7 != "") { d = "제외"; w = $7 }
         else if (!($1 in k)) { d = "제외"; w = "같은 owner-doc 의 더 이른 감사가 있다" }
-        else if ($1 in p) { d = "선정 " p[$1]; w = "-" }
+        else if ($1 in p) { d = p[$1]; w = "-" }
         else { d = "후보"; w = "-" }
         print $1, $2, ($3 == "" ? "-" : $3), $4, $5, $6, d, w
       }' "$keep" <(printf '%s' "$picks") "$rows"
@@ -474,8 +561,12 @@ write_short_report() {
 EOF
 }
 
-# selected_row <n> — the selection.tsv row of pair n.
-selected_row() { awk -F'\t' -v d="선정 $1" '$7 == d { print; exit }' "$EXP/selection.tsv"; }
+# sample_row <disposition> — the selection.tsv row whose 처분 is
+# `선정 <n>` or `예비 <n>-<k>`.
+sample_row() { awk -F'\t' -v d="$1" '$7 == d { print; exit }' "$EXP/selection.tsv"; }
+
+# selected_row <n> — the selection.tsv row of pair n's main sample.
+selected_row() { sample_row "선정 ${1}"; }
 
 # ---------- stage 2: prepare -------------------------------------------------
 
@@ -591,11 +682,15 @@ write_run_files() {
   kv_set "$ps/pair.state" "${kind}_manifest" "$m"
 }
 
+# prepare_pair <n> — the slot's sample (pair.state `sample`, `선정 <n>` when
+# unset) prepared from its selection.tsv row.
 prepare_pair() {
-  local n="$1" ps="$ST/pair-$1" row name owner base orig ipath clone
+  local n="$1" ps="$ST/pair-$1" row name owner base orig ipath clone sample
   [[ "$(kv "$ps/pair.state" prepared)" == "1" ]] && return 0
-  row=$(selected_row "$n")
-  [[ -n "$row" ]] || die "pair ${n} is not in selection.tsv"
+  sample=$(kv "$ps/pair.state" sample)
+  [[ -n "$sample" ]] || sample="선정 ${n}"
+  row=$(sample_row "$sample")
+  [[ -n "$row" ]] || die "pair ${n}: ${sample} is not in selection.tsv"
   name=$(printf '%s' "$row" | cut -f1); owner=$(printf '%s' "$row" | cut -f2)
   orig=$(printf '%s' "$row" | cut -f5); base=$(printf '%s' "$row" | cut -f6)
   ipath=$(grep -m 1 -E '^- `사전 인가` \| 인터뷰 기록=' "$repo/docs/pipeline-run/$orig.plan.md" \
@@ -619,6 +714,7 @@ prepare_pair() {
   drid=$(gen_run_id); arid=$(gen_run_id)
   while [[ "$arid" == "$drid" ]]; do arid=$(gen_run_id); done
   printf '%s\n%s\n' "$drid" "$arid" >> "$ST/runs.list"
+  kv_set "$ps/pair.state" sample "$sample"
   kv_set "$ps/pair.state" clone "$clone"
   kv_set "$ps/pair.state" doc "$owner"
   kv_set "$ps/pair.state" team_report "$name"
@@ -632,7 +728,7 @@ prepare_pair() {
   write_run_files audit "$n"
   kv_set "$ps/pair.state" prepared 1
   kv_set "$ps/pair.state" status "준비됨"
-  say "pair ${n}: prepared ${clone} (base ${base:0:12}, design run ${drid}, audit run ${arid})"
+  say "pair ${n}: prepared ${sample} ${owner} in ${clone} (base ${base:0:12}, design run ${drid}, audit run ${arid})"
 }
 
 # ---------- stages 3·4: the script seat --------------------------------------
@@ -668,50 +764,155 @@ halt_key() {
   printf '%s' "${s%%#*}"
 }
 
-# seat_answer_halts <manifest> <clone> <run id> <log> — what the production
-# seat does on a 중단 handoff before asking anyone: each unanswered halt record
-# whose **추천** names an option is answered with that option, as
-# `답한 주체=좌석`, with the record's grounds attached. Whether a record admits
-# a seat answer is the gate's call — the auto-resolve switch, the record's
-# shape, a risk-accepting recommendation, a record that is not its key's latest
-# settled halt — and a refusal leaves the record for a person. Returns 0 when
-# at least one answer was written.
+# halt_policy <record> — the experiment's fixed answer to a halt record with
+# no recommendation: the table row whose skill equals the record's **스킬** and
+# whose step ERE matches its **스텝**, printed as label<TAB>reason when the
+# label stands verbatim as a `- \`<label>\` — ` line under **선택지**. Prints
+# nothing for a record outside the table. Every label keeps what the
+# experiment measures — the frozen document and its first audit — unchanged.
+halt_policy() {
+  local f="$1" skill step sk re label why
+  skill=$(bold_field "$f" '스킬'); step=$(bold_field "$f" '스텝')
+  [[ -n "$skill" && -n "$step" ]] || return 0
+  while IFS='	' read -r sk re label why; do
+    [[ "$skill" == "$sk" ]] || continue
+    grep -qE -- "$re" <<< "$step" || continue
+    awk -v l="- \`${label}\` — " '
+      /^\*\*선택지\*\*/ { on = 1; next }
+      on && /^\*\*/ { exit }
+      on && index($0, l) == 1 { hit = 1; exit }
+      END { exit !hit }' "$f" || return 0
+    printf '%s\t%s\n' "$label" "$why"
+    return 0
+  done <<'EOF'
+design-audit-unattended	^Step 6.*CFI-3b	record in the unresolved-issues section	합성 질문을 미해결 이슈로 적으면 재수렴도 새 감사도 부르지 않아 첫 감사가 그대로다
+design-audit-unattended	^Step 7 / 골격급 재발	미해결 이슈로 두고 계속	골격급 재발은 재감사에서만 나고 이 답은 재수렴을 부르지 않는다
+design-solo-unattended	^Step 7U / ladder-unsettled	잔여로 두고 동결	단독 설계가 쓴 문서를 그대로 동결한다
+EOF
+}
+
+# auto_resolve_on — the auto-resolve switch is not off (0, off, false or no,
+# any case).
+auto_resolve_on() {
+  local v
+  v=$(printf '%s' "${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}" | tr '[:upper:]' '[:lower:]')
+  case "$v" in 0|off|false|no) return 1 ;; esac
+  return 0
+}
+
+# halt_answer_act <manifest> <clone> <key> <log> <field>... — one halt-answer
+# call, sent again while the gate returns 4, at most four times. Returns the
+# gate's status.
+halt_answer_act() {
+  local m="$1" clone="$2" key="$3" log="$4" rc=4 k=0 h
+  shift 4
+  while [[ "$rc" == "4" ]] && (( k < 4 )); do
+    k=$((k + 1)); rc=0
+    h=$(snapshot_h "$m" "$clone" "$log")
+    ( cd "$clone" && bash "$GATE" act --manifest "$m" --kind halt-answer --target "$TARGET_ALIAS" --segment "$key" \
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" -- "$@" ) < /dev/null >> "$log" 2>&1 || rc=$?
+  done
+  return "$rc"
+}
+
+# seat_answer_halts <manifest> <clone> <run id> <log> — what the seat does on
+# a 중단 handoff, never asking anyone. Each unanswered halt record:
+#   - whose **추천** names an option is answered with that option, as
+#     `답한 주체=좌석`, with the record's grounds attached. Whether a record
+#     admits a seat answer is the gate's call, and a refusal is never answered
+#     again by the policy;
+#   - with no recommendation is answered by halt_policy's label, as
+#     `답한 주체=사람` whose 근거 and attachment say it is the experiment's
+#     fixed policy, unless the auto-resolve switch is off.
+# A record left unanswered gets its outcome — `표 밖`, `스위치 꺼짐` or
+# `게이트 거절 rc=<n>` — in the seat log and in $ST/seat/<run id>.tsv, where
+# stop_reason reads it. Returns 0 when at least one answer was written.
 seat_answer_halts() {
-  local m="$1" clone="$2" rid="$3" log="$4" f key gl parts part kinds ans h rc k got=1
+  local m="$1" clone="$2" rid="$3" log="$4" f key gl parts part kinds ans pol label why rc got=1 oc
+  local out="$ST/seat/$rid.tsv"
+  mkdir -p "$ST/seat"
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    grep -qE '^\*\*추천\*\*: `' "$f" || continue
     key=$(halt_key "$f")
-    [[ -n "$key" ]] || continue
-    gl=$(grep -nE '^\*\*추천 근거\*\*: ' "$f" | head -n 1 || true)
     ans="${f%.md}.answer.md"
-    parts="${gl#*: }"; kinds=""
-    {
-      printf '# 좌석 답 — %s\n\n' "$(basename "$f")"
-      printf '중단 기록의 추천을 받았다. 추천 근거 (%s:%s):\n\n' "$f" "${gl%%:*}"
-      while [[ -n "$parts" ]]; do
-        part="${parts%% / *}"
-        printf -- '- %s\n' "$part"
-        kinds="${kinds:+${kinds},}${part%%:*}"
-        [[ "$parts" == *" / "* ]] && parts="${parts#* / }" || parts=""
-      done
-      printf '\n되돌리는 법: 같은 기록에 다른 선택지로 다시 답하거나, 스테이지가 이 답으로 만든 커밋을 되돌린다.\n'
-    } > "$ans"
-    rc=4; k=0
-    while [[ "$rc" == "4" ]] && (( k < 4 )); do
-      k=$((k + 1)); rc=0
-      h=$(snapshot_h "$m" "$clone" "$log")
-      ( cd "$clone" && bash "$GATE" act --manifest "$m" --kind halt-answer --target "$TARGET_ALIAS" --segment "$key" \
-          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
-          -- "중단 기록=${f}" "답한 주체=좌석" "근거=중단 기록의 추천을 받았다 — 근거 종류 ${kinds:-미상}" "첨부=${ans}" ) < /dev/null >> "$log" 2>&1 || rc=$?
-    done
-    if [[ "$rc" == "0" ]]; then
-      got=0; echo "seat: answered $f with its recommendation" >> "$log"
+    rc=0; oc=""
+    if grep -qE '^\*\*추천\*\*: `' "$f"; then
+      [[ -n "$key" ]] || { kv_set "$out" "$f" "게이트 거절 rc=-"; echo "seat: unanswered $f — 게이트 거절 rc=- (no stage key)" >> "$log"; continue; }
+      gl=$(grep -nE '^\*\*추천 근거\*\*: ' "$f" | head -n 1 || true)
+      parts="${gl#*: }"; kinds=""
+      {
+        printf '# 좌석 답 — %s\n\n' "$(basename "$f")"
+        printf '중단 기록의 추천을 받았다. 추천 근거 (%s:%s):\n\n' "$f" "${gl%%:*}"
+        while [[ -n "$parts" ]]; do
+          part="${parts%% / *}"
+          printf -- '- %s\n' "$part"
+          kinds="${kinds:+${kinds},}${part%%:*}"
+          [[ "$parts" == *" / "* ]] && parts="${parts#* / }" || parts=""
+        done
+        printf '\n되돌리는 법: 같은 기록에 다른 선택지로 다시 답하거나, 스테이지가 이 답으로 만든 커밋을 되돌린다.\n'
+      } > "$ans"
+      halt_answer_act "$m" "$clone" "$key" "$log" \
+        "중단 기록=${f}" "답한 주체=좌석" "근거=중단 기록의 추천을 받았다 — 근거 종류 ${kinds:-미상}" "첨부=${ans}" || rc=$?
+      if [[ "$rc" == "0" ]]; then
+        got=0; echo "seat: answered $f with its recommendation" >> "$log"; continue
+      fi
+      oc="게이트 거절 rc=${rc}"
+    elif ! auto_resolve_on; then
+      oc="스위치 꺼짐"
     else
-      rm -f "$ans"; echo "seat: halt-answer for $f ended with status $rc; left for a person" >> "$log"
+      pol=$(halt_policy "$f")
+      if [[ -z "$pol" || -z "$key" ]]; then
+        oc="표 밖"
+      else
+        label="${pol%%	*}"; why="${pol#*	}"
+        {
+          printf '# 정책 답 — %s\n\n' "$(basename "$f")"
+          printf '실험 고정 정책 표의 줄을 적용했다. 사람이 이 기록을 읽고 답한 것이 아니다.\n\n'
+          printf -- '- 스킬: %s\n' "$(bold_field "$f" '스킬')"
+          printf -- '- 스텝: %s\n' "$(bold_field "$f" '스텝')"
+          printf -- '- 라벨: %s\n' "$label"
+          printf -- '- 이유: %s\n' "$why"
+          printf '\n되돌리는 법: 같은 기록에 다른 선택지로 다시 답하거나, 그 짝을 --rerun-pair 로 처음부터 다시 돌린다.\n'
+        } > "$ans"
+        halt_answer_act "$m" "$clone" "$key" "$log" \
+          "중단 기록=${f}" "선택지=${label}" "답한 주체=사람" "근거=실험 고정 정책 — ${why}; 사람이 이 기록을 읽고 답한 것이 아니다" "첨부=${ans}" || rc=$?
+        if [[ "$rc" == "0" ]]; then
+          got=0; echo "seat: answered $f by the fixed policy with ${label}" >> "$log"; continue
+        fi
+        oc="게이트 거절 rc=${rc}"
+      fi
     fi
+    [[ "$oc" == "게이트 거절"* ]] && rm -f "$ans"
+    kv_set "$out" "$f" "$oc"
+    echo "seat: unanswered $f — ${oc}" >> "$log"
   done < <(unanswered_halts "$RUN_ROOT/$rid" "$clone/docs/pipeline-run/$rid.md")
   return "$got"
+}
+
+# stop_reason <clone> <run id> <rc> — the invalid reason for a seat that
+# returned 5 or 6: the approval, the first unanswered halt record's outcome,
+# the deadline park of the run's latest `blocked` row, or a 중단 with nothing
+# to answer.
+stop_reason() {
+  local clone="$1" rid="$2" rc="$3" led f oc sk sp at
+  if [[ "$rc" == "5" ]]; then printf '승인 대기'; return 0; fi
+  led="$clone/docs/pipeline-run/$rid.md"
+  f=$(unanswered_halts "$RUN_ROOT/$rid" "$led" | awk 'NR == 1')
+  if [[ -n "$f" ]]; then
+    oc=$(kv "$ST/seat/$rid.tsv" "$f")
+    sk=$(bold_field "$f" '스킬'); sp=$(bold_field "$f" '스텝')
+    case "$oc" in
+      "스위치 꺼짐") printf '추천 없는 중단 — 자동 답 스위치가 꺼져 있다' ;;
+      "게이트 거절"*) printf '중단 — 게이트가 좌석 답을 거절했다 (%s / %s)' "${sk:--}" "${sp:--}" ;;
+      *) printf '추천 없는 중단 — 고정 정책 밖 (%s / %s)' "${sk:--}" "${sp:--}" ;;
+    esac
+    return 0
+  fi
+  at=""
+  if [[ -f "$led" ]]; then
+    at=$(grep -E '^- `blocked` ' "$led" | awk 'END { print }' | sed -n 's/.*마감 초과 — ready_at \([^ |]*\).*/\1/p' || true)
+  fi
+  if [[ -n "$at" ]]; then printf '마감 초과 — ready_at %s' "$at"; else printf '중단 — 답할 중단 기록이 없다'; fi
 }
 
 # closed_by_deadline <run dir> — the run's done names the wall-clock deadline
@@ -720,18 +921,13 @@ closed_by_deadline() {
   [[ -s "$1/done" ]] && head -n 1 "$1/done" | grep -q '종단 — 경계 마감 '
 }
 
-# run_deadline <manifest> — the run's frozen wall-clock deadline.
-run_deadline() {
-  sed -n 's/^\*\*벽시계 마감\*\*: //p' "$1" | head -n 1
-}
-
 # seat <manifest> <clone> <run id> <log> — issue `router-shift` as the seat does
-# until the run's done file exists. Returns 0 on done, 5 on an approval for a
-# person, 6 on a shift that handed off with 중단 and left a halt record no seat
-# answer settles, any other status on a failure. After a 승인 or 중단 handoff
-# the seat does not send 대기 — the gate would refuse it: a 중단 handoff whose
-# records the seat answered relaunches with 중단, anything else waits on a
-# person.
+# until the run's done file exists. Returns 0 on done, 5 on an approval (a
+# seat cannot close one), 6 on a shift that handed off with 중단 and left
+# nothing seat_answer_halts could answer, any other status on a failure. After
+# a 승인 or 중단 handoff the seat does not send 대기 — the gate would refuse
+# it: a 중단 handoff whose records the seat answered relaunches with 중단,
+# anything else ends the seat with 5 or 6.
 seat() {
   local m="$1" clone="$2" rid="$3" log="$4" rd="$RUN_ROOT/$3" reason="상한" i=0 rc k h
   while :; do
@@ -768,11 +964,15 @@ mark_invalid() {
   mkdir -p "$EXP/pairs/$n"
   kv_set "$EXP/pairs/$n/pair.tsv" status "무효"
   kv_set "$EXP/pairs/$n/pair.tsv" invalid_reason "$why"
-  say "pair ${n}: invalid — ${why} (rerun with --rerun-pair ${n})"
+  say "pair ${n}: invalid — ${why}"
 }
 
 pair_invalid() { [[ "$(kv "$ST/pair-$1/pair.state" status)" == "무효" ]]; }
 
+# run_seat_or_stop <n> <design|audit> — seat the run. An approval or a 중단
+# the seat could not answer makes the pair invalid with stop_reason's text and
+# returns 0, so the slot moves on to its next reserve; a failure of the seat
+# itself stops the experiment.
 run_seat_or_stop() {
   local n="$1" kind="$2" ps="$ST/pair-$1" m clone rid rc=0
   m=$(kv "$ps/pair.state" "${kind}_manifest"); clone=$(kv "$ps/pair.state" clone); rid=$(kv "$ps/pair.state" "${kind}_run")
@@ -785,33 +985,9 @@ run_seat_or_stop() {
   seat "$m" "$clone" "$rid" "$ps/seat-$kind.log" || rc=$?
   case "$rc" in
     0) return 0 ;;
-    5)
-      kv_set "$ps/pair.state" status "사람 대기"
-      {
-        echo "solo-audit-experiment: pair ${n}: the ${kind} run is waiting on an approval for a person."
-        echo "  This script is the run's seat, and a shell seat cannot close an approval: it closes only from the"
-        echo "  answer frame of an AskUserQuestion in a Claude session seat. To start the pair over instead, call"
-        echo "  the same command with --rerun-pair ${n}."
-        echo "  The run closes at its wall-clock deadline $(run_deadline "$m"); a pair resumed after it is invalid."
-      } >&2
-      exit 3 ;;
-    6)
-      kv_set "$ps/pair.state" status "사람 대기"
-      {
-        echo "solo-audit-experiment: pair ${n}: the ${kind} run's shift handed off with 중단, and no halt record it left was settled by a seat answer."
-        echo "  Latest handoff: $clone/docs/pipeline-run/$rid.md"
-        local f
-        while IFS= read -r f; do
-          [[ -n "$f" ]] || continue
-          echo "  Halt record: $f"
-          echo "    answer it with one of its 선택지 labels, verbatim:"
-          printf "    (cd %q && bash %q act --manifest %q --kind halt-answer --target %s --segment %s --cutpoint 커밋 --surface 읽기 --snapshot-digest \"\$(bash %q snapshot --manifest %q | jq -r .H)\" -- '중단 기록=%s' '선택지=<label>' '답한 주체=사람' '근거=<why>')\n" \
-            "$clone" "$GATE" "$m" "$TARGET_ALIAS" "$(halt_key "$f")" "$GATE" "$m" "$f"
-        done < <(unanswered_halts "$RUN_ROOT/$rid" "$clone/docs/pipeline-run/$rid.md")
-        echo "  Then call the same command again."
-        echo "  The run closes at its wall-clock deadline $(run_deadline "$m"); a pair resumed after it is invalid."
-      } >&2
-      exit 3 ;;
+    5|6)
+      mark_invalid "$n" "$(stop_reason "$clone" "$rid" "$rc")"
+      return 0 ;;
     *)
       kv_set "$ps/pair.state" status "실패"
       echo "solo-audit-experiment: pair ${n}: the ${kind} run's seat call ended with status ${rc}; see $ps/seat-$kind.log" >&2
@@ -824,6 +1000,7 @@ design_pair() {
   [[ -n "$(kv "$ps/pair.state" design_done)" ]] && return 0
   pair_invalid "$n" && return 0
   run_seat_or_stop "$n" design
+  pair_invalid "$n" && return 0
   clone=$(kv "$ps/pair.state" clone); doc=$(kv "$ps/pair.state" doc)
   rid=$(kv "$ps/pair.state" design_run); orig=$(kv "$ps/pair.state" orig_run)
   rd="$RUN_ROOT/$rid"
@@ -864,6 +1041,7 @@ audit_pair() {
   [[ -n "$(kv "$ps/pair.state" audit_done)" ]] && return 0
   pair_invalid "$n" && return 0
   run_seat_or_stop "$n" audit
+  pair_invalid "$n" && return 0
   clone=$(kv "$ps/pair.state" clone); doc=$(kv "$ps/pair.state" doc)
   kv_set "$ps/pair.state" audit_done 1
   if closed_by_deadline "$RUN_ROOT/$(kv "$ps/pair.state" audit_run)"; then
@@ -999,7 +1177,8 @@ ${input}" --json-schema "$(cat "$SCHEMA")" --output-format json --strict-mcp-con
     mark_invalid "$n" "분류 교차 검사 실패 (${side} ${label}: ${why})"
     return 1
   fi
-  # Ambiguous defects go to a person. A row a person already judged is kept.
+  # Ambiguous defects get a row with a blank judgment, which the verdict reads
+  # as `판정 불가` until it is filled. A row already judged is kept.
   local rv="$EXP/classify/review.tsv"
   [[ -f "$rv" ]] || printf '표지\tid\t라우팅\t모델 사유\t사람 판정\n' > "$rv"
   jq -r --arg l "$label" '.defects[]? | select(.class == "애매") | [$l, .id, .routing, (.reason | gsub("[\t\n\r]"; " ")), ""] | @tsv' "$out" \
@@ -1010,23 +1189,76 @@ ${input}" --json-schema "$(cat "$SCHEMA")" --output-format json --strict-mcp-con
   return 0
 }
 
-classify_all() {
-  local n
-  for n in $(seq 1 "$PAIRS"); do
-    pair_invalid "$n" && continue
-    [[ "$(kv "$EXP/pairs/$n/pair.tsv" status)" == "유효" ]] || continue
-    classify_report "$n" team || continue
-    classify_report "$n" solo || continue
-  done
-  local rv="$EXP/classify/review.tsv" blank
-  [[ -f "$rv" ]] || return 0
-  blank=$(awk -F'\t' 'NR > 1 && $5 == "" { n++ } END { print n + 0 }' "$rv")
-  if (( blank > 0 )); then
-    echo "solo-audit-experiment: ${blank} ambiguous defect(s) wait on a person." >&2
-    echo "  fill the 사람 판정 column (골격급 or 비골격) in: $rv" >&2
-    echo "  then call again: scripts/solo-audit-experiment.sh run --exp-id ${exp_id} --budget-usd ${budget}" >&2
-    exit 3
+# classify_pair <n> — both reports of a collected pair classified and
+# cross-checked; a disagreement makes the pair invalid. A blank judgment in
+# review.tsv stops nothing.
+classify_pair() {
+  local n="$1"
+  pair_invalid "$n" && return 0
+  [[ "$(kv "$ST/pair-$n/pair.state" classified)" == "1" ]] && return 0
+  [[ "$(kv "$EXP/pairs/$n/pair.tsv" status)" == "유효" ]] || return 0
+  classify_report "$n" team || return 0
+  classify_report "$n" solo || return 0
+  kv_set "$ST/pair-$n/pair.state" classified 1
+}
+
+# ---------- slots and reserves -----------------------------------------------
+
+# drop_review_rows <label> — remove one report's rows from review.tsv.
+drop_review_rows() {
+  local rv="$EXP/classify/review.tsv"
+  [[ -n "$1" && -f "$rv" ]] || return 0
+  awk -F'\t' -v l="$1" 'NR == 1 || $1 != l' "$rv" > "$rv.tmp"
+  mv "$rv.tmp" "$rv"
+}
+
+# replace_slot <n> — move slot n's invalid attempt aside to pair-<n>.try<k>,
+# log it in pairs/<n>/attempts.tsv (attempt, sample, owner-doc, invalid
+# reason, kept path) and prepare the next reserve of the slot's bin. With no
+# reserve left the invalid reason gains ` — 예비 소진`, the slot is final, and
+# it returns 1.
+replace_slot() {
+  local n="$1" ps="$ST/pair-$1" pd="$EXP/pairs/$1" cur next k why doc try=1 l
+  cur=$(kv "$ps/pair.state" sample)
+  [[ -n "$cur" ]] || cur="선정 ${n}"
+  if [[ "$cur" == "선정 "* ]]; then k=1; else k=$(( ${cur##*-} + 1 )); fi
+  next="예비 ${n}-${k}"
+  why=$(kv "$ps/pair.state" invalid_reason)
+  if [[ -z "$(sample_row "$next")" ]]; then
+    mark_invalid "$n" "${why} — 예비 소진"
+    kv_set "$ps/pair.state" exhausted 1
+    return 1
   fi
+  while [[ -e "$ST/pair-$n.try$try" ]]; do try=$((try + 1)); done
+  doc=$(kv "$ps/pair.state" doc)
+  mv "$ps" "$ST/pair-$n.try$try"
+  mkdir -p "$pd"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$try" "$cur" "${doc:--}" "$why" "$ST/pair-$n.try$try" >> "$pd/attempts.tsv"
+  for l in "$(kv "$pd/pair.tsv" team_label)" "$(kv "$pd/pair.tsv" solo_label)"; do drop_review_rows "$l"; done
+  rm -f "$pd/pair.tsv"
+  if [[ -f "$pd/contamination.txt" ]]; then mv "$pd/contamination.txt" "$pd/contamination.try$try.txt"; fi
+  mkdir -p "$ps"
+  kv_set "$ps/pair.state" sample "$next"
+  say "pair ${n}: attempt ${try} (${cur}) kept in $ST/pair-$n.try$try; replacing it with ${next}"
+  prepare_pair "$n"
+}
+
+# run_slot <n> — slot n's stages in order, replacing an invalid attempt with
+# the next reserve, until the slot is valid and classified or invalid with no
+# reserve left.
+run_slot() {
+  local n="$1"
+  while :; do
+    if pair_invalid "$n"; then
+      [[ "$(kv "$ST/pair-$n/pair.state" exhausted)" == "1" ]] && return 0
+      replace_slot "$n" || return 0
+    fi
+    design_pair "$n"
+    audit_pair "$n"
+    collect_pair "$n"
+    classify_pair "$n"
+    pair_invalid "$n" || return 0
+  done
 }
 
 # ---------- status, rerun ----------------------------------------------------
@@ -1050,13 +1282,15 @@ rerun_pair() {
   for l in "$(kv "$pt" team_label)" "$(kv "$pt" solo_label)"; do
     [[ -n "$l" ]] || continue
     rm -f "$EXP/classify/$l.json" "$EXP/classify/$l.stderr"
-    if [[ -f "$EXP/classify/review.tsv" ]]; then
-      awk -F'\t' -v l="$l" 'NR == 1 || $1 != l' "$EXP/classify/review.tsv" > "$EXP/classify/review.tsv.tmp"
-      mv "$EXP/classify/review.tsv.tmp" "$EXP/classify/review.tsv"
-    fi
+    drop_review_rows "$l"
   done
-  # Raw call results are kept: their cost stays in the guard's sum.
-  case "$ST/pair-$n" in "$STATE_ROOT"/*) rm -rf "$ST/pair-$n" ;; esac
+  # Raw call results are kept: their cost stays in the guard's sum. The
+  # slot's attempts go with it, so it starts again from `선정 <n>`.
+  local d
+  for d in "$ST/pair-$n" "$ST/pair-$n".try*; do
+    [[ -e "$d" ]] || continue
+    case "$d" in "$STATE_ROOT"/*) rm -rf "$d" ;; esac
+  done
   case "$EXP/pairs/$n" in "$repo/docs/solo-audit-experiment/"*) rm -rf "$EXP/pairs/$n" ;; esac
   rm -f "$EXP/report.md"
   say "pair ${n}: discarded; running it again"
@@ -1082,6 +1316,7 @@ printf 'call\t%s\t%s\t%s\t%s\t%s\n' "$(now_iso)" "$cmd$( (( dry == 1 )) && print
   "$(cd "$repo" && git rev-parse HEAD)" "$dirty" "${budget:--}" >> "$EXP/meta"
 
 [[ "$cmd" == "rerun" ]] && rerun_pair "$rerun"
+budget_restore
 
 select_pairs
 for n in $(seq 1 "$PAIRS"); do prepare_pair "$n"; done
@@ -1099,12 +1334,14 @@ if [[ "$dirty" == "예" ]]; then
 fi
 [[ -f "$GATE" ]] || die "no gate: $GATE"
 
-for n in $(seq 1 "$PAIRS"); do
-  design_pair "$n"
-  audit_pair "$n"
-  collect_pair "$n"
-done
-classify_all
+for n in $(seq 1 "$PAIRS"); do run_slot "$n"; done
 bash "$COMPARE" --exp "$EXP" || die "solo-audit-compare failed"
 say "$(tail -n 1 "$EXP/report.md") → $EXP/report.md"
+rv="$EXP/classify/review.tsv"
+blank=0
+[[ -f "$rv" ]] && blank=$(awk -F'\t' 'NR > 1 && $5 == "" { n++ } END { print n + 0 }' "$rv")
+if (( blank > 0 )); then
+  say "${blank} ambiguous defect(s) have a blank 사람 판정 (골격급 or 비골격) in $rv"
+  say "\`review.tsv\` 를 채우고 같은 명령을 다시 부르면 새 과금 없이 다시 판정한다"
+fi
 exit 0
