@@ -1455,9 +1455,9 @@ check "7: 원천에는 사전 인가 형태 행과 자동 채택 행이 하나�
   "$(printf '%s\n' "$PH_SHAPE" | grep -c '^- `사전 인가` | 형태=')/$(printf '%s\n' "$PH_SHAPE" | grep -c '^- `자동 채택`')" "1/1"
 check "7: 앞선 형태·자동 채택 행을 옮겨 적은 --rows 는 그 행을 바이트 그대로 잇는다" \
   "$(grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$WORK/v-pa1.md")" "$PH_SHAPE"
-# A person who declined the carried rows (6.2's re-asked 5p and 5q answered
-# with no rows) and confirmed one plugin default passes a --rows file holding
-# the plugin row alone; the declined rows must not survive into the draft.
+# The render alone: a --rows file holding one plugin row and no shape or
+# auto-adoption row — what a person who declined the carried rows and confirmed
+# one plugin default passes — must not let the source's rows survive.
 printf '%s\n' "$PA_DEF" > "$WORK/rows-pa-only"
 ph_render "$WORK/v-pa2.md" --asked "$WORK/asked-pa" --rows "$WORK/rows-pa-only"; rc=$?
 check "7: 플러그인 행만 든 --rows 의 render-manifest 는 0 이고 덧붙인 행을 지닌다" \
