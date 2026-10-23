@@ -24722,7 +24722,8 @@ gate_chrome_path_ok() {
   #   page    — outside the configuration homes, so a key or token file is not
   #             rendered into an image.
   # The configuration homes are the dot-directories directly under `$HOME`
-  # (`.ssh`, `.config`, `.claude*`, …) and `CLAUDE_CONFIG_DIR` when it is set.
+  # (`.ssh`, `.config`, `.claude*`, …), matched without regard to case
+  # (`gate_chrome_in_home_dot`), and `CLAUDE_CONFIG_DIR` when it is set.
   local kind="$1" p="$2" wp wl sp r t under homes root rootp tmp tmpp
   wp=$(gate_path_spelling "$(gate_real_prefix "$p")")
   wl=$(gate_leaf_spelling "$wp") || return 1
@@ -24747,7 +24748,7 @@ gate_chrome_path_ok() {
     if [ "$kind" != profile ]; then
       while IFS= read -r r; do
         [ -n "$r" ] || continue
-        case "$sp" in "$r"/.*) return 1 ;; esac
+        gate_chrome_in_home_dot "$sp" "$r" && return 1
       done <<< "$homes"
       if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
         gate_path_is_at_or_under "$sp" "${CLAUDE_CONFIG_DIR%/}" && return 1
@@ -24762,6 +24763,34 @@ gate_chrome_path_ok() {
     fi
   done
   return 0
+}
+
+gate_chrome_in_home_dot() {
+  # gate_chrome_in_home_dot <absolute path> <home> — rc 0 when the path is a
+  # dot-entry directly under the home or lies inside one, compared as text
+  # without regard to case and then by device+inode of the home.
+  #
+  # A BYTE GLOB DID NOT HOLD. APFS is case-insensitive by default and
+  # `pwd -P` keeps the case the caller wrote, so `/USERS/<user>/.ssh/…` named
+  # the real key directory, matched no arm, and the screenshot or page was
+  # graded as this row's write with no pre-authorization row. The identity
+  # walk also answers a spelling that reaches the home through a link.
+  local rc=1 had=0 p c
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  case "$1" in "$2"/.*) rc=0 ;; esac
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  [ "$rc" = 0 ] && return 0
+  p="$1"
+  while [ -n "$p" ] && [ "$p" != "/" ]; do
+    c=${p##*/}
+    p=${p%/*}
+    [ -n "$p" ] || break
+    case "$c" in
+      .*) if [ "$p" -ef "$2" ]; then return 0; fi ;;
+    esac
+  done
+  return 1
 }
 
 gate_path_spelling() {

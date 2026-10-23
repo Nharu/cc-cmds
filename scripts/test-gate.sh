@@ -43082,6 +43082,11 @@ graded_as '등급 미상'    '79v:트리를 가리키는 링크를 거친 프로
 rm -f "$WORK/zz-79v-link"
 graded_as '등급 미상'    '79v:설정 홈 안의 스크린숏은 등급 미상이다'            -- chromium --headless "--screenshot=$HOME/.claude/zz-79v.png" file:///tmp/a.html
 graded_as '등급 미상'    '79v:설정 홈 안의 페이지를 찍는 스크린숏은 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png "file://$HOME/.ssh/id_ed25519"
+# The home arm folds case: on the default case-insensitive volume an upper-cased
+# home names the same dot-directory.
+h79v_up=$(printf '%s' "$HOME" | tr '[:lower:]' '[:upper:]')
+graded_as '등급 미상'    '79v:대소문자를 바꾼 설정 홈 안의 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=$h79v_up/.zz-79v.png" file:///tmp/a.html
+graded_as '등급 미상'    '79v:대소문자를 바꾼 설정 홈 안의 페이지는 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png "file://$h79v_up/.ssh/id_ed25519"
 graded_as '등급 미상'    '79v:퍼센트 부호화한 페이지 경로는 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png file:///tmp/%2e%2e/a.html
 
 # The router reads the approval predicate through `gate.sh exec … --surface 읽기`
