@@ -57,9 +57,9 @@
 #                             상한·예산과 무관하게 시도하므로(0 이면 회차당 한 런) 적체가 있어도
 #                             회차마다 전진한다. 예산은 모집단 판독이 끝난 뒤부터 잰다.
 #   --release-boundary <ver>  요약의 `discussion_verdict` 가 `감사 공시` 행을 기준선과 릴리스
-#                             뒤로 가르는 경계 버전(기본 `CM_RELEASE_BOUNDARY_DEFAULT`, 지금은
-#                             빈 값 — 모든 행이 기준선이다). `플러그인` 의 버전이 이 값보다
-#                             앞서면 기준선이다.
+#                             뒤로 가르는 경계 버전(기본 `CM_RELEASE_BOUNDARY_DEFAULT` — 설계
+#                             토론의 R3 를 측정 지명으로만 여는 릴리스의 버전). `플러그인` 의
+#                             버전이 이 값보다 앞서면 기준선이다.
 #   --verdict                 판정 덩어리 하나만 이미 있는 런별 기록에서 계산해 stdout 으로 낸다.
 #                             수집·요약·저널 어느 것도 쓰지 않는다 — `design-path-report.sh`
 #                             가 경계를 바꿔 볼 때 부른다.
@@ -184,8 +184,10 @@ CM_RECOLLECT=0
 CM_MAX_NEW="${CC_METRICS_ROUND_MAX:-20}"
 CM_BUDGET="${CC_METRICS_ROUND_BUDGET_S:-20}"
 CM_MEMBER_BASELINE=0
-# 판정 덩어리의 경계 버전 기본값. 비어 있으면 모든 행이 기준선(릴리스 전)이다.
-CM_RELEASE_BOUNDARY_DEFAULT=""
+# 판정 덩어리의 경계 버전 기본값 — 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전.
+# 플러그인 버전이 이 값보다 앞서는 행이 기준선(릴리스 전)이다. 그 변경보다 다른 릴리스가
+# 먼저 나가면 `plugin.json` 의 버전과 함께 다시 맞춘다.
+CM_RELEASE_BOUNDARY_DEFAULT="2.114.0"
 CM_RELEASE_BOUNDARY="$CM_RELEASE_BOUNDARY_DEFAULT"
 CM_VERDICT_ONLY=0
 

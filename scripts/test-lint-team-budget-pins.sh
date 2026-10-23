@@ -40,6 +40,13 @@
 # attaches that clause once (→ green). FAIL-11 is OK-6 with review-lite's
 # attachment removed, so the per-skill count reads 0 (→ red).
 #
+# OK-7 and FAIL-12 are the design discussion's pair. Both are OK-1 with a
+# `design/SKILL.md` added that carries `#### Discussion Protocol` and no
+# small-work gate heading, so no other design block fires. OK-7 carries both
+# sentences relating the discussion to the shared protocol (→ green); FAIL-12
+# drops the sweep-refutation sentence (→ red). OK-4's `design/SKILL.md` has no
+# discussion heading, which is what keeps that block skip-if-absent.
+#
 # The test invokes the lint with `SKILLS_ROOT=<fixture-dir>` so the real plugin
 # skills are untouched.
 
