@@ -40,6 +40,10 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 # starts one, and nothing in this suite stops it.
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
+# A suite started inside a pipeline stage inherits the run's `CC_PIPELINE_*`
+# names, and the gate calls below would read that run's manifest and ledger.
+# Cleared by prefix, so a name the gate starts exporting later goes too.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 # Auto-resolution is off except in the section that tests it, so the approval
 # fixtures above it stay pending the way they are written.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
