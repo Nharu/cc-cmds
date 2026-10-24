@@ -54,6 +54,9 @@ TAB=$(printf '\t')
 for v in $(compgen -e | grep -E '^(CC_PIPELINE_|CC_CMDS_AUTOPILOT_DEFAULT)' || true); do
   unset "$v"
 done
+# The pipeline names again, in the one spelling the meta suite's leak census
+# looks for in every gate-family suite.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 unset CLAUDE_CODE_SESSION_ID
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY

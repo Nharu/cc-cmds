@@ -329,9 +329,11 @@ mk_report "$dar/docs-reader-c1.md" docs/c1.md 2026-10-12T00:00:00Z 1000 0 3 1
 
 # Solo reports the stub gate's audit run drops in. Solo densities against a
 # team density of 1.0: c1 1.0, c2 1.0, c4 1.5, c5 2.0, c6 2.0 → median 1.5 → ≈.
-# c2's solo report carries one ambiguous defect.
+# c2's solo report carries one ambiguous defect. c3, slot 2's reserve, gives
+# 1.0 too, so a slot 2 replaced by it keeps the median and has no blank.
 mk_report "$solo_src/docs-c1.md" docs/c1.md 2026-10-17T01:00:00Z 2000 0 2 1
 mk_report "$solo_src/docs-c2.md" docs/c2.md 2026-10-17T01:00:00Z 4000 0 4 1 1
+mk_report "$solo_src/docs-c3.md" docs/c3.md 2026-10-17T01:00:00Z 6000 0 6 1
 mk_report "$solo_src/docs-c4.md" docs/c4.md 2026-10-17T01:00:00Z 4000 0 6 1
 mk_report "$solo_src/docs-c5.md" docs/c5.md 2026-10-17T01:00:00Z 2000 0 4 1
 mk_report "$solo_src/docs-c6.md" docs/c6.md 2026-10-17T01:00:00Z 2000 0 4 1
@@ -350,12 +352,37 @@ scenario() {
   export XDG_STATE_HOME="$sc/xdg" SOLO_EXP_STATE_ROOT="$sc/state" CLAUDE_CONFIG_DIR="$sc/cfg"
   export STUB_GATE_LOG="$sc/gate.log" STUB_CLI_LOG="$sc/cli.log"
   : > "$STUB_GATE_LOG"; : > "$STUB_CLI_LOG"
-  unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP STUB_HANDOFF STUB_HALT STUB_HALT_ANSWER_RC
+  unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP STUB_HANDOFF STUB_HALT STUB_HALT_ANSWER_RC \
+    STUB_ONLY_DOC STUB_DEADLINE_PARK STUB_RUN_COST CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+}
+# use_sc <name> — the state of an earlier scenario again, its logs kept.
+use_sc() {
+  sc="$tmp/sc-$1"
+  export XDG_STATE_HOME="$sc/xdg" SOLO_EXP_STATE_ROOT="$sc/state" CLAUDE_CONFIG_DIR="$sc/cfg"
+  export STUB_GATE_LOG="$sc/gate.log" STUB_CLI_LOG="$sc/cli.log"
+  unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP STUB_HANDOFF STUB_HALT STUB_HALT_ANSWER_RC \
+    STUB_ONLY_DOC STUB_DEADLINE_PARK STUB_RUN_COST CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 }
 xp() { bash "$exp_sh" --repo "$main" "$@"; }
+# xr <args> — one experiment call: its exit status in rc, its output in
+# $sc/out and appended to $tmp/all.out; an exit 3 anywhere is remembered.
+saw3=0
+: > "$tmp/all.out"
+xr() {
+  rc=0; xp "$@" > "$sc/out" 2>&1 || rc=$?
+  cat "$sc/out" >> "$tmp/all.out"
+  [[ "$rc" != "3" ]] || saw3=1
+}
 acts() { grep -c '^act ' "$STUB_GATE_LOG" || true; }
 calls() { grep -c '^call' "$STUB_CLI_LOG" || true; }
+answers() { grep -c -- '--kind halt-answer' "$STUB_GATE_LOG" || true; }
 pstate() { awk -F'\t' -v k="$3" '$1 == k { print substr($0, length(k) + 2); exit }' "$SOLO_EXP_STATE_ROOT/$1/pair-$2/pair.state"; }
+# ptsv <exp id> <n> <key> — one value of pairs/<n>/pair.tsv.
+ptsv() { awk -F'\t' -v k="$3" '$1 == k { print substr($0, length(k) + 2); exit }' "$main/docs/solo-audit-experiment/$1/pairs/$2/pair.tsv" 2>/dev/null || true; }
+# attempt <exp id> <n> <field> — one field of the slot's first attempt line
+# (1 attempt, 2 sample, 3 owner-doc, 4 reason, 5 kept path).
+attempt() { awk -F'\t' -v f="$3" 'NR == 1 { print $f }' "$main/docs/solo-audit-experiment/$1/pairs/$2/attempts.tsv" 2>/dev/null || true; }
+verdict() { tail -n 1 "$main/docs/solo-audit-experiment/$1/report.md" 2>/dev/null || true; }
 
 # ---- usage and the cost guard ----------------------------------------------
 
@@ -380,7 +407,11 @@ disp() { awk -F'\t' -v r="$1" '$1 == r { print $7 "|" $8 }' "$sel"; }
 got=$(awk -F'\t' '$7 ~ /^선정 / { print $7 "=" $1 }' "$sel" | LC_ALL=C sort | tr '\n' ' ')
 [[ "$got" == "선정 1=docs-c1.md 선정 2=docs-c2.md 선정 3=docs-c4.md 선정 4=docs-c5.md 선정 5=docs-c6.md " ]] \
   && pass "selection: quantile ranks 0 1 3 4 5 of six candidates" || fail "selection: picked '$got'"
-[[ "$(disp docs-c3.prior-0000c3c3.md)" == "후보|-" ]] && pass "selection: the unpicked candidate stays a 후보" || fail "selection: c3 prior is '$(disp docs-c3.prior-0000c3c3.md)'"
+[[ "$(disp docs-c3.prior-0000c3c3.md)" == "예비 2-1|-" ]] \
+  && pass "selection: rank 2, as far from position 1 as from position 3, is the reserve of the smaller slot (예비 2-1)" \
+  || fail "selection: c3 prior is '$(disp docs-c3.prior-0000c3c3.md)'"
+[[ "$(awk -F'\t' '$7 ~ /^예비 / { n++ } END { print n + 0 }' "$sel")" == "1" ]] \
+  && pass "selection: the one unpicked candidate is the only reserve" || fail "selection: reserve rows differ"
 case "$(disp docs-c3.md)" in "제외|같은 owner-doc 의 첫 감사 보고서 docs-c3.prior-0000c3c3.md 가 따로 있다 (재감사)") pass "selection: a re-audit under the plain name is excluded when the first audit was moved to .prior" ;; *) fail "selection: c3 re-audit is '$(disp docs-c3.md)'" ;; esac
 case "$(disp docs-w1.md)" in "제외|창 밖 (UTC 2026-10-09)") pass "window: +09:00 freeze on 10-10 is 10-09 UTC → out" ;; *) fail "window: w1 is '$(disp docs-w1.md)'" ;; esac
 case "$(disp docs-w2.md)" in "제외|창 밖 (UTC 2026-10-17)") pass "window: 10-17 00:30 UTC → out" ;; *) fail "window: w2 is '$(disp docs-w2.md)'" ;; esac
@@ -479,9 +510,13 @@ fi
 
 scenario full
 EF=20261017-000000f1
-rc=0; xp run --exp-id "$EF" --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
+xr run --exp-id "$EF" --budget-usd 1000
 EXPF="$main/docs/solo-audit-experiment/$EF"
-if [[ "$rc" == "3" ]]; then pass "full: stops with exit 3 on an ambiguous defect"; else fail "full: first call gave exit $rc"; cat "$sc/out" >&2; fi
+if [[ "$rc" == "0" && "$(verdict "$EF")" == "# verdict: 판정 불가" ]]; then
+  pass "full: a blank judgment does not stop the call — exit 0 with a 판정 불가 verdict"
+else
+  fail "full: first call gave exit $rc / $(verdict "$EF")"; cat "$sc/out" >&2
+fi
 [[ "$(acts)" == "20" ]] && pass "full: the seat called router-shift until done (2 calls × 10 runs)" || fail "full: $(acts) act calls"
 grep -q -- '--kind router-shift --target exp --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest stub-h -- 상한 -p /cc-cmds:autopilot-router-shift ' "$STUB_GATE_LOG" \
   && pass "full: router-shift in the seat's call form" || fail "full: act argv differs from the seat's form"
@@ -491,8 +526,9 @@ grep -qE '^call .*--output-format json --strict-mcp-config --tools  --no-session
 rv="$EXPF/classify/review.tsv"
 [[ "$(awk -F'\t' 'NR > 1' "$rv" | wc -l | tr -d ' ')" == "1" ]] && awk -F'\t' 'NR == 2 && $2 == "D2" && $5 == "" { f = 1 } END { exit !f }' "$rv" \
   && pass "full: the ambiguous defect lands in review.tsv with a blank judgment" || fail "full: review.tsv wrong"
-grep -qF "fill the 사람 판정 column" "$sc/out" && grep -qF "run --exp-id $EF --budget-usd 1000" "$sc/out" \
-  && pass "full: prints the file to fill and the command to call again" || fail "full: no fill instruction"
+grep -qF "1 ambiguous defect(s) have a blank 사람 판정 (골격급 or 비골격) in $rv" "$sc/out" \
+  && grep -qF '`review.tsv` 를 채우고 같은 명령을 다시 부르면 새 과금 없이 다시 판정한다' "$sc/out" \
+  && pass "full: prints the blank count and that filling review.tsv judges again without billing" || { fail "full: no blank-count guidance"; cat "$sc/out" >&2; }
 p1="$EXPF/pairs/1/pair.tsv"
 [[ "$(awk -F'\t' '$1 == "team_unique" { print $2 }' "$p1")" == "2" ]] && pass "collect: reads the fence, not the prose decoy" || fail "collect: team_unique of pair 1 is not 2"
 [[ "$(awk -F'\t' '$1 == "solo_plugin" { print $2 }' "$p1")" == "9.9.9@0123456789ab" ]] && pass "collect: records the audit run's plugin pin" || fail "collect: solo plugin pin missing"
@@ -500,7 +536,7 @@ in1=$(sed -n 's/^\*\*고유 결함 수\*\*: //p' "$EXPF/classify/$(awk -F'\t' '$
 [[ -z "$in1" ]] && pass "classify: stores the structured output only" || fail "classify: result file carries report text"
 # Fill the judgment and call again: resumes to the verdict, no new run, no new call.
 awk -F'\t' 'BEGIN { OFS = "\t" } NR > 1 && $5 == "" { $5 = "비골격" } { print }' "$rv" > "$rv.t" && mv "$rv.t" "$rv"
-rc=0; xp run --exp-id "$EF" --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
+xr run --exp-id "$EF" --budget-usd 1000
 if [[ "$rc" == "0" && "$(tail -n 1 "$EXPF/report.md")" == "# verdict: ≈" ]]; then
   pass "full: after the judgment, the same command reaches the verdict ≈"
 else
@@ -514,60 +550,77 @@ grep -qF 'pair 5: 수집 완료' "$sc/status" && grep -qF '# verdict: ≈' "$sc/
 # ---- the cost guard ---------------------------------------------------------
 
 scenario budget
-rc=0; xp run --exp-id 20261017-000000b1 --budget-usd 100 >/dev/null 2>&1 || rc=$?
-[[ "$rc" == "4" && "$(acts)" == "0" ]] && pass "budget: 0 + 150 > 100 → exit 4 before any run" || fail "budget: gave exit $rc with $(acts) acts"
+xr run --exp-id 20261017-000000b1 --budget-usd 100
+case "$(ptsv 20261017-000000b1 1 invalid_reason)" in
+  "예산 상한 — budget guard — spent 0.0000 + reserve 150 > budget 100; not starting the design run of pair 1") bud1=1 ;;
+  *) bud1=0 ;;
+esac
+[[ "$rc" == "4" && "$(acts)" == "0" && "$bud1" == "1" && "$(verdict 20261017-000000b1)" == "# verdict: 판정 불가" ]] \
+  && pass "budget: 0 + 150 > 100 → every slot 예산 상한, a 판정 불가 verdict, exit 4, no run" \
+  || { fail "budget: gave exit $rc with $(acts) acts, pair 1 '$(ptsv 20261017-000000b1 1 invalid_reason)'"; cat "$sc/out" >&2; }
 scenario budget2
-rc=0; xp run --exp-id 20261017-000000b2 --budget-usd 153 >/dev/null 2>&1 || rc=$?
+EB=20261017-000000b2
+xr run --exp-id "$EB" --budget-usd 153
 nm=$(sed -n 's/.*--manifest \([^ ]*\) .*/\1/p' "$STUB_GATE_LOG" | sort -u | wc -l | tr -d ' ')
-[[ "$rc" == "4" && "$nm" == "2" ]] && pass "budget: spent 4 + 150 > 153 stops before the third run" || fail "budget: gave exit $rc after $nm runs"
+[[ "$rc" == "4" && "$nm" == "2" && -f "$main/docs/solo-audit-experiment/$EB/report.md" ]] \
+  && pass "budget: spent 4.5 + 150 > 153 closes before the third run and writes the verdict" || fail "budget: gave exit $rc after $nm runs"
+[[ "$(ptsv "$EB" 1 status)" == "유효" ]] && case "$(ptsv "$EB" 2 invalid_reason)$(ptsv "$EB" 5 invalid_reason)" in
+  "예산 상한 — budget guard — "*"예산 상한 — budget guard — "*) true ;; *) false ;; esac \
+  && pass "budget: the finished slot stays valid, the slots not finished are 예산 상한" || fail "budget: slot states after the close are wrong"
+xr run --exp-id "$EB" --budget-usd 1000
+[[ "$rc" == "0" && "$(acts)" == "20" && "$(ptsv "$EB" 2 status)" == "유효" && "$(ptsv "$EB" 5 status)" == "유효" && -z "$(pstate "$EB" 2 budget_stop)" ]] \
+  && case "$(verdict "$EB")" in "# verdict: "*) true ;; *) false ;; esac \
+  && pass "budget: a larger budget restores the closed slots and carries them on to a verdict" \
+  || { fail "budget: resume after the close gave exit $rc with $(acts) acts"; cat "$sc/out" >&2; }
 # An opened run that stopped is resumed only while spent is below the budget.
 scenario budget3
 export STUB_GATE_MODE=failopen STUB_RUN_COST=200
-rc=0; xp run --exp-id 20261017-000000b3 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
+xr run --exp-id 20261017-000000b3 --budget-usd 1000
 unset STUB_GATE_MODE
 [[ "$rc" == "1" && "$(acts)" == "1" ]] || fail "budget: the opened run's first call gave exit $rc with $(acts) acts"
-rc=0; xp run --exp-id 20261017-000000b3 --budget-usd 200 >/dev/null 2>&1 || rc=$?
+xr run --exp-id 20261017-000000b3 --budget-usd 200
 [[ "$rc" == "4" && "$(acts)" == "1" ]] && pass "budget: spent 200 ≥ 200 → exit 4 before resuming an opened run" || fail "budget: resume gave exit $rc with $(acts) acts"
-rc=0; xp run --exp-id 20261017-000000b3 --budget-usd 201 >/dev/null 2>&1 || rc=$?
+xr run --exp-id 20261017-000000b3 --budget-usd 201
 [[ "$rc" == "4" && "$(acts)" == "3" ]] && pass "budget: spent 200 < 201 resumes the opened run, then stops before the next" || fail "budget: resume under budget gave exit $rc with $(acts) acts"
 unset STUB_RUN_COST
 
 # ---- the seat loop's stops --------------------------------------------------
+#
+# Nothing waits on a person: a stop makes the pair invalid, and its slot runs
+# again on the next reserve. Only slot 2 has one (c3), so a stop on every run
+# uses up all five slots after six design runs.
 
 scenario wait
 export STUB_GATE_MODE=wait
-rc=0; xp run --exp-id 20261017-000000a1 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
-[[ "$rc" == "3" && "$(pstate 20261017-000000a1 1 status)" == "사람 대기" && "$(acts)" == "1" ]] \
-  && pass "seat: gate exit 5 → pair 사람 대기, exit 3" || fail "seat: exit 5 gave exit $rc"
+xr run --exp-id 20261017-000000a1 --budget-usd 1000
+[[ "$rc" == "0" && "$(ptsv 20261017-000000a1 1 invalid_reason)" == "승인 대기 — 예비 소진" && "$(acts)" == "6" && "$(verdict 20261017-000000a1)" == "# verdict: 판정 불가" ]] \
+  && pass "seat: gate exit 5 → 승인 대기 invalid, reserves used up, 판정 불가 with exit 0" || { fail "seat: exit 5 gave exit $rc with $(acts) acts"; cat "$sc/out" >&2; }
 scenario failgate
 export STUB_GATE_MODE=fail
-rc=0; xp run --exp-id 20261017-000000a2 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
+xr run --exp-id 20261017-000000a2 --budget-usd 1000
 [[ "$rc" == "1" && "$(pstate 20261017-000000a2 1 status)" == "실패" ]] && pass "seat: other gate exit → pair 실패, exit 1" || fail "seat: exit 7 gave exit $rc"
-# A shift that handed off with 승인 or 중단 waits on a person: the seat sends no
-# 대기 after it.
+# A shift that handed off with 승인 or 중단 and left nothing to answer makes
+# the pair invalid: the seat sends no 대기 after it.
 for h in 승인 중단; do
   scenario "handoff-$h"
   export STUB_GATE_MODE=handoff STUB_HANDOFF="$h"
-  rc=0; xp run --exp-id 20261017-000000a4 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
-  [[ "$rc" == "3" && "$(pstate 20261017-000000a4 1 status)" == "사람 대기" && "$(acts)" == "1" ]] \
-    && pass "seat: a ${h} handoff → pair 사람 대기, exit 3, no 대기 call" || fail "seat: ${h} handoff gave exit $rc with $(acts) acts"
-  grep -q 'wall-clock deadline 20' "$sc/out" \
-    && pass "seat: the ${h} stop prints the run's deadline" || fail "seat: the ${h} stop does not print the deadline"
+  xr run --exp-id 20261017-000000a4 --budget-usd 1000
+  if [[ "$h" == "승인" ]]; then want="승인 대기 — 예비 소진"; else want="중단 — 답할 중단 기록이 없다 — 예비 소진"; fi
+  [[ "$rc" == "0" && "$(ptsv 20261017-000000a4 1 invalid_reason)" == "$want" && "$(acts)" == "6" ]] && ! grep -q -- ' -- 대기 ' "$STUB_GATE_LOG" \
+    && pass "seat: a ${h} handoff → pair invalid (${want}), exit 0, no 대기 call" || fail "seat: ${h} handoff gave exit $rc with $(acts) acts, '$(ptsv 20261017-000000a4 1 invalid_reason)'"
 done
-grep -q 'a shell seat cannot close an approval' "$tmp/sc-handoff-승인/out" \
-  && pass "seat: the 승인 stop says a shell seat cannot close the approval" || fail "seat: the 승인 stop does not say the shell seat cannot close it"
 
 # A 중단 handoff whose halt record carries a recommendation is answered by the
 # seat, which then relaunches with 중단 and carries the run on.
 scenario halt-rec
 export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=rec
-rc=0; xp run --exp-id 20261017-000000a5 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
-ha=$(grep -c -- '--kind halt-answer' "$STUB_GATE_LOG" || true)
+xr run --exp-id 20261017-000000a5 --budget-usd 1000
+ha=$(answers)
 first_ha=$(grep -n -- '--kind halt-answer' "$STUB_GATE_LOG" | sed -n '1p' | cut -d: -f1)
 after=$(sed -n "$((first_ha + 1))p" "$STUB_GATE_LOG")
-# Every run finishes, so the call goes on to classification and stops on its
+# Every run finishes, so the call goes on to classification and ends on its
 # ambiguous defect, as the full scenario's first call does.
-[[ "$rc" == "3" && "$ha" == "10" ]] && grep -q 'ambiguous defect(s) wait on a person' "$sc/out" \
+[[ "$rc" == "0" && "$ha" == "10" ]] && grep -q 'ambiguous defect(s) have a blank' "$sc/out" \
   && pass "seat: a recommended halt is answered on every run and the experiment reaches classification" || { fail "seat: recommended halt gave exit $rc with $ha answers"; cat "$sc/out" >&2; }
 first_ha_line=$(grep -- '--kind halt-answer' "$STUB_GATE_LOG" | sed -n '1p' || true)
 case "$first_ha_line" in
@@ -581,43 +634,122 @@ ans=$(ls "$sc"/xdg/cc-cmds/run/*/halt/D1#1.answer.md 2>/dev/null | sed -n '1p')
 [[ -n "$ans" ]] && grep -q '^- 인터뷰 기록:첫째로 한다$' "$ans" && grep -q '^되돌리는 법: ' "$ans" \
   && pass "seat: the attachment carries each ground and how to take the answer back" || fail "seat: the attachment is missing or incomplete"
 
-# A record with no recommendation, or one the gate refuses a seat answer for,
-# stops on a person with the record and a halt-answer command to run.
+# A record with no recommendation that the fixed policy does not cover is not
+# answered: the pair is invalid, and nothing is offered to a person.
 scenario halt-norec
 export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=norec
-rc=0; xp run --exp-id 20261017-000000a6 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
-[[ "$rc" == "3" && "$(acts)" == "1" ]] && grep -q 'Halt record: .*/halt/D1#1.md$' "$sc/out" && grep -q -- "--kind halt-answer --target exp --segment D1 .* '답한 주체=사람'" "$sc/out" \
-  && pass "seat: a halt with no recommendation stops with the record and a halt-answer command" || { fail "seat: a halt with no recommendation gave exit $rc with $(acts) acts"; cat "$sc/out" >&2; }
-scenario halt-refused
-export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=rec STUB_HALT_ANSWER_RC=3
-rc=0; xp run --exp-id 20261017-000000a7 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
-ls "$sc"/xdg/cc-cmds/run/*/halt/D1#1.answer.md >/dev/null 2>&1 && left=1 || left=0
-[[ "$rc" == "3" && "$(pstate 20261017-000000a7 1 status)" == "사람 대기" && "$left" == "0" ]] && grep -q 'Halt record: .*/halt/D1#1.md$' "$sc/out" \
-  && pass "seat: a refused seat answer leaves the record for a person and no attachment" || fail "seat: a refused seat answer gave exit $rc (attachment left: $left)"
+xr run --exp-id 20261017-000000a6 --budget-usd 1000
+[[ "$rc" == "0" && "$(acts)" == "6" && "$(answers)" == "0" && "$(ptsv 20261017-000000a6 1 invalid_reason)" == "추천 없는 중단 — 고정 정책 밖 (- / -) — 예비 소진" ]] \
+  && ! grep -q 'Halt record: ' "$sc/out" \
+  && pass "seat: a halt outside the policy table → invalid (고정 정책 밖), no answer, exit 0" || { fail "seat: a halt outside the table gave exit $rc with $(acts) acts, '$(ptsv 20261017-000000a6 1 invalid_reason)'"; cat "$sc/out" >&2; }
+
+# The fixed policy answers a record with no recommendation as `사람`, saying
+# in its grounds and attachment that it is the experiment's policy.
+scenario policy
+EP=20261017-000000a9
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=policy
+xr run --exp-id "$EP" --budget-usd 1000
+pha=$(grep -- '--kind halt-answer' "$STUB_GATE_LOG" | awk 'NR == 1')
+case "$pha" in
+  *"--segment A1 "*"선택지=record in the unresolved-issues section 답한 주체=사람 근거=실험 고정 정책 — "*"; 사람이 이 기록을 읽고 답한 것이 아니다 첨부="*"/halt/A1#1.answer.md") pok=1 ;;
+  *) pok=0 ;;
+esac
+[[ "$rc" == "0" && "$(answers)" == "5" && "$pok" == "1" ]] \
+  && pass "policy: every audit run's CFI-3b halt is answered by the policy label as 사람 with the policy's grounds" || { fail "policy: exit $rc, $(answers) answers, first '$pha'"; cat "$sc/out" >&2; }
+pans=$(ls "$sc"/xdg/cc-cmds/run/*/halt/A1#1.answer.md 2>/dev/null | awk 'NR == 1')
+[[ -n "$pans" ]] && grep -qxF -- '- 스킬: design-audit-unattended' "$pans" && grep -qxF -- '- 스텝: Step 6 합성 질문(CFI-3b)' "$pans" \
+  && grep -qxF -- '- 라벨: record in the unresolved-issues section' "$pans" && grep -q '^- 이유: ' "$pans" && grep -q '^되돌리는 법: ' "$pans" \
+  && pass "policy: the attachment quotes the policy row and how to take the answer back" || fail "policy: the attachment is missing or incomplete"
+okp=1; for n in 1 2 3 4 5; do [[ "$(ptsv "$EP" "$n" status)" == "유효" ]] || okp=0; done
+(( okp == 1 )) && case "$(verdict "$EP")" in "# verdict: "*) true ;; *) false ;; esac \
+  && pass "policy: all five pairs valid and a verdict line written" || fail "policy: pairs or verdict wrong"
+scenario ladder
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=ladder
+xr run --exp-id 20261017-000000aa --budget-usd 1000
+okl=1; for n in 1 2 3 4 5; do [[ "$(ptsv 20261017-000000aa "$n" status)" == "유효" ]] || okl=0; done
+[[ "$rc" == "0" && "$(answers)" == "5" && "$okl" == "1" ]] && grep -q -- '--kind halt-answer.*--segment D1 .*선택지=잔여로 두고 동결 답한 주체=사람 ' "$STUB_GATE_LOG" \
+  && pass "policy: every design run's ladder halt is answered with 잔여로 두고 동결 and the pairs are valid" || { fail "policy: ladder gave exit $rc with $(answers) answers"; cat "$sc/out" >&2; }
 
 # A run the wall-clock deadline closed is not a finished run.
 scenario deadline
 export STUB_GATE_MODE=deadline
-rc=0; xp run --exp-id 20261017-000000a8 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
-r8="$main/docs/solo-audit-experiment/20261017-000000a8"
-[[ "$rc" == "0" && "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$r8/pairs/1/pair.tsv")" == "벽시계 마감으로 닫힘" ]] \
+xr run --exp-id 20261017-000000a8 --budget-usd 1000
+[[ "$rc" == "0" && "$(ptsv 20261017-000000a8 1 invalid_reason)" == "벽시계 마감으로 닫힘 — 예비 소진" ]] \
   && pass "seat: a run closed by the deadline makes the pair invalid under that reason" || fail "seat: a deadline-closed run gave exit $rc"
 
 scenario nofreeze
 export STUB_NO_FREEZE=1
-rc=0; xp run --exp-id 20261017-000000a3 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
-r3="$main/docs/solo-audit-experiment/20261017-000000a3"
-[[ "$rc" == "0" && "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$r3/pairs/1/pair.tsv")" == "동결 문서 없음" && "$(tail -n 1 "$r3/report.md")" == "# verdict: 판정 불가" ]] \
+xr run --exp-id 20261017-000000a3 --budget-usd 1000
+[[ "$rc" == "0" && "$(ptsv 20261017-000000a3 1 invalid_reason)" == "동결 문서 없음 — 예비 소진" && "$(verdict 20261017-000000a3)" == "# verdict: 판정 불가" ]] \
   && pass "seat: no 동결됨 line → pair invalid, verdict 판정 불가" || fail "seat: no-freeze gave exit $rc"
-[[ "$(acts)" == "10" ]] && pass "seat: an invalid pair does not start its audit run" || fail "seat: $(acts) acts with every design invalid"
+[[ "$(acts)" == "12" ]] && pass "seat: an invalid pair does not start its audit run" || fail "seat: $(acts) acts with every design invalid"
+
+# ---- replacing one slot -----------------------------------------------------
+#
+# STUB_ONLY_DOC confines the stub's mode to slot 2's main sample, docs/c2.md;
+# its reserve c3 runs clean, so the slot ends valid and the verdict is ≈.
+
+# repl <name> <exp id> — one call with the stub mode on docs/c2.md only.
+repl() {
+  export STUB_ONLY_DOC=docs/c2.md
+  xr run --exp-id "$2" --budget-usd 1000
+}
+# replaced_ok <exp id> <reason> <label> — slot 2's first attempt carries the
+# reason and its kept state, and the reserve made the slot valid.
+replaced_ok() {
+  local e="$1" why="$2" what="$3"
+  if [[ "$rc" == "0" && "$(attempt "$e" 2 1)" == "1" && "$(attempt "$e" 2 2)" == "선정 2" && "$(attempt "$e" 2 3)" == "docs/c2.md" \
+        && "$(attempt "$e" 2 4)" == "$why" && -d "$SOLO_EXP_STATE_ROOT/$e/pair-2.try1/clone" \
+        && "$(pstate "$e" 2 sample)" == "예비 2-1" && "$(ptsv "$e" 2 status)" == "유효" \
+        && "$(basename "$(ptsv "$e" 2 team_report)")" == "docs-c3.prior-0000c3c3.md" && "$(verdict "$e")" == "# verdict: ≈" ]]; then
+    pass "replace: ${what} → slot 2 invalid (${why}), kept as pair-2.try1, replaced by 예비 2-1, verdict ≈ with exit 0"
+  else
+    fail "replace: ${what} gave exit $rc, attempt '$(attempt "$e" 2 4)', slot 2 '$(ptsv "$e" 2 status)', $(verdict "$e")"; cat "$sc/out" >&2
+  fi
+}
+scenario repl-norec
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=norec
+repl repl-norec 20261017-000001a1
+replaced_ok 20261017-000001a1 "추천 없는 중단 — 고정 정책 밖 (- / -)" "a halt outside the policy table"
+[[ "$(acts)" == "21" ]] && pass "replace: only the invalid design run is extra (21 acts)" || fail "replace: $(acts) acts"
+scenario repl-wait
+export STUB_GATE_MODE=wait
+repl repl-wait 20261017-000001a2
+replaced_ok 20261017-000001a2 "승인 대기" "an approval"
+scenario repl-nohalt
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단
+repl repl-nohalt 20261017-000001a3
+replaced_ok 20261017-000001a3 "중단 — 답할 중단 기록이 없다" "a 중단 with no record"
+scenario repl-park
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_DEADLINE_PARK=1
+repl repl-park 20261017-000001a4
+replaced_ok 20261017-000001a4 "마감 초과 — ready_at 2026-10-19T09:00:00Z" "a deadline park"
+scenario repl-refused
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=rec STUB_HALT_ANSWER_RC=3
+repl repl-refused 20261017-000001a5
+replaced_ok 20261017-000001a5 "중단 — 게이트가 좌석 답을 거절했다 (- / -)" "a seat answer the gate refused"
+! grep -q -- '답한 주체=사람' "$STUB_GATE_LOG" && ! ls "$sc"/xdg/cc-cmds/run/*/halt/*.answer.md >/dev/null 2>&1 \
+  && pass "replace: a refused seat answer is not sent again as 사람 and leaves no attachment" || fail "replace: the refused record was answered again or left its attachment"
+scenario repl-switch
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=policy CC_CMDS_AUTOPILOT_AUTO_RESOLVE=Off
+repl repl-switch 20261017-000001a6
+replaced_ok 20261017-000001a6 "추천 없는 중단 — 자동 답 스위치가 꺼져 있다" "the auto-resolve switch off"
+[[ "$(answers)" == "0" ]] && pass "replace: with the switch off the policy answers nothing" || fail "replace: $(answers) answers with the switch off"
+# Slot 4 has no reserve: its stop stays, and the verdict says why.
+scenario exhaust
+export STUB_GATE_MODE=wait STUB_ONLY_DOC=docs/c5.md
+xr run --exp-id 20261017-000001a7 --budget-usd 1000
+[[ "$rc" == "0" && "$(ptsv 20261017-000001a7 4 invalid_reason)" == "승인 대기 — 예비 소진" && "$(verdict 20261017-000001a7)" == "# verdict: 판정 불가" ]] \
+  && grep -qF '짝 4: 무효 — 승인 대기 — 예비 소진' "$main/docs/solo-audit-experiment/20261017-000001a7/report.md" \
+  && pass "replace: a slot with no reserve stays invalid (예비 소진) and the 판정 불가 report says so, exit 0" || { fail "replace: exhausted slot gave exit $rc"; cat "$sc/out" >&2; }
 
 # ---- contamination ----------------------------------------------------------
 
 scenario contam
 export STUB_CONTAM="Read ${main}/docs/c1.md"
-rc=0; xp run --exp-id 20261017-000000c1 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
+xr run --exp-id 20261017-000000c1 --budget-usd 1000
 rc1="$main/docs/solo-audit-experiment/20261017-000000c1"
-[[ "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$rc1/pairs/1/pair.tsv")" == "오염 의심" ]] && grep -qF "docs/c1.md" "$rc1/pairs/1/contamination.txt" \
+[[ "$(ptsv 20261017-000000c1 1 invalid_reason)" == "오염 의심 — 예비 소진" ]] && grep -qF "docs/c1.md" "$rc1/pairs/1/contamination.txt" \
   && pass "contamination: the team document's path → 오염 의심, the hit recorded" || fail "contamination: path not detected"
 [[ "$(awk -F'\t' '$1 == "status" { print $2 }' "$rc1/pairs/2/pair.tsv")" == "유효" ]] \
   && pass "contamination: another pair's document path is not a hit" || fail "contamination: pair 2 was not valid"
@@ -631,23 +763,27 @@ xp run --exp-id 20261017-000000c2 --budget-usd 1000 >/dev/null 2>&1 || true
 
 scenario dropid
 export STUB_CLI_DROP=1
-rc=0; xp run --exp-id 20261017-000000e2 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
-r4="$main/docs/solo-audit-experiment/20261017-000000e2"
-case "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$r4/pairs/1/pair.tsv")" in
-  "분류 교차 검사 실패 (team "*"id 수 1 ≠ 고유 결함 수 2)") pass "classify: id count ≠ fence → pair invalid" ;;
+xr run --exp-id 20261017-000000e2 --budget-usd 1000
+case "$(ptsv 20261017-000000e2 1 invalid_reason)" in
+  "분류 교차 검사 실패 (team "*"id 수 1 ≠ 고유 결함 수 2) — 예비 소진") pass "classify: id count ≠ fence → pair invalid" ;;
   *) fail "classify: id-count mismatch not caught (exit $rc)" ;;
 esac
+# c2's solo report discloses one routing count the defects do not carry: the
+# cross-check fails on slot 2, and its reserve takes the slot.
 scenario route
 alt="$tmp/solo-alt"; rm -rf "$alt"; cp -R "$solo_src" "$alt"
-awk '{ if ($0 == "**라우팅 — 조정 패스 적용**: 1") print "**라우팅 — 조정 패스 적용**: 0"; else if ($0 == "**라우팅 — 미해결 이슈**: 0") print "**라우팅 — 미해결 이슈**: 1"; else print }' \
-  "$solo_src/docs-c1.md" > "$alt/docs-c1.md"
+awk '{ if ($0 == "**라우팅 — 조정 패스 적용**: 3") print "**라우팅 — 조정 패스 적용**: 2"; else if ($0 == "**라우팅 — 미해결 이슈**: 0") print "**라우팅 — 미해결 이슈**: 1"; else print }' \
+  "$solo_src/docs-c2.md" > "$alt/docs-c2.md"
 export STUB_SOLO_REPORTS="$alt"
-xp run --exp-id 20261017-000000e3 --budget-usd 1000 >/dev/null 2>&1 || true
+xr run --exp-id 20261017-000000e3 --budget-usd 1000
 export STUB_SOLO_REPORTS="$solo_src"
-case "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$main/docs/solo-audit-experiment/20261017-000000e3/pairs/1/pair.tsv")" in
-  "분류 교차 검사 실패 (solo "*"라우팅 조정 패스 적용: 1 ≠ 공시 0)") pass "classify: routing count ≠ fence → pair invalid" ;;
-  *) fail "classify: routing mismatch not caught" ;;
+case "$(attempt 20261017-000000e3 2 4)" in
+  "분류 교차 검사 실패 (solo "*"라우팅 조정 패스 적용: 3 ≠ 공시 2)") pass "classify: routing count ≠ fence → slot 2 invalid and kept as an attempt" ;;
+  *) fail "classify: routing mismatch not caught ('$(attempt 20261017-000000e3 2 4)')" ;;
 esac
+[[ "$rc" == "0" && "$(ptsv 20261017-000000e3 2 status)" == "유효" && "$(verdict 20261017-000000e3)" == "# verdict: ≈" ]] \
+  && [[ "$(awk -F'\t' 'NR > 1 && $5 == "" { n++ } END { print n + 0 }' "$main/docs/solo-audit-experiment/20261017-000000e3/classify/review.tsv" 2>/dev/null || echo 0)" == "0" ]] \
+  && pass "classify: the reserve replaces the slot that failed the cross-check, verdict ≈" || { fail "classify: replacement after the cross-check gave exit $rc / $(verdict 20261017-000000e3)"; cat "$sc/out" >&2; }
 
 # ---- the solo side's first audit -------------------------------------------
 
@@ -658,9 +794,9 @@ alt="$tmp/solo-parked"; rm -rf "$alt"; cp -R "$solo_src" "$alt"
 awk -v b="$FB" -v e="$FE" 'index($0, b) == 1 { s = 1; next } index($0, e) == 1 { s = 0; next } !s' "$solo_src/docs-c1.md" > "$alt/docs-c1.md"
 mk_report "$alt/docs-c1.R2.md" docs/c1.md 2026-10-17T02:00:00Z 2000 0 2 1
 export STUB_SOLO_REPORTS="$alt"
-xp run --exp-id 20261017-000000e4 --budget-usd 1000 >/dev/null 2>&1 || true
+xr run --exp-id 20261017-000000e4 --budget-usd 1000
 export STUB_SOLO_REPORTS="$solo_src"
-[[ "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$main/docs/solo-audit-experiment/20261017-000000e4/pairs/1/pair.tsv")" == "첫 감사가 공시 블록 없이 멈춤 (docs-c1.md)" ]] \
+[[ "$(ptsv 20261017-000000e4 1 invalid_reason)" == "첫 감사가 공시 블록 없이 멈춤 (docs-c1.md) — 예비 소진" ]] \
   && pass "solo audit: a first report without the block → pair invalid for that reason" || fail "solo audit: parked first report not reported"
 # The audit run moved its first report to .prior and a re-audit took the plain
 # name: the earlier report is the one compared.
@@ -669,21 +805,38 @@ alt="$tmp/solo-prior"; rm -rf "$alt"; cp -R "$solo_src" "$alt"
 cp "$solo_src/docs-c1.md" "$alt/docs-c1.prior-0000c1c1.md"
 mk_report "$alt/docs-c1.md" docs/c1.md 2026-10-17T02:00:00Z 2000 0 3 1
 export STUB_SOLO_REPORTS="$alt"
-xp run --exp-id 20261017-000000e5 --budget-usd 1000 >/dev/null 2>&1 || true
+xr run --exp-id 20261017-000000e5 --budget-usd 1000
 export STUB_SOLO_REPORTS="$solo_src"
 [[ "$(basename "$(pstate 20261017-000000e5 1 solo_report)")" == "docs-c1.prior-0000c1c1.md" ]] \
   && pass "solo audit: the earlier-frozen .prior report is the solo first audit" || fail "solo audit: solo report is '$(pstate 20261017-000000e5 1 solo_report)'"
 
 # ---- rerun one pair ---------------------------------------------------------
 
-SOLO_EXP_STATE_ROOT="$tmp/sc-contam/state"
-export XDG_STATE_HOME="$tmp/sc-contam/xdg" STUB_GATE_LOG="$tmp/sc-contam/gate.log" STUB_CLI_LOG="$tmp/sc-contam/cli.log"
-export SOLO_EXP_STATE_ROOT
-unset STUB_CONTAM
+use_sc contam
 before=$(acts)
-rc=0; xp --rerun-pair 1 --exp-id 20261017-000000c1 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
-[[ "$(awk -F'\t' '$1 == "status" { print $2 }' "$rc1/pairs/1/pair.tsv")" == "유효" && "$(( $(acts) - before ))" == "4" ]] \
+xr --rerun-pair 1 --exp-id 20261017-000000c1 --budget-usd 1000
+[[ "$(ptsv 20261017-000000c1 1 status)" == "유효" && "$(( $(acts) - before ))" == "4" ]] \
   && pass "rerun: --rerun-pair 1 runs only pair 1 again and it is now valid" || fail "rerun: exit $rc, $(( $(acts) - before )) new acts"
+# A slot that was replaced drops its attempts and starts again from 선정 2.
+use_sc repl-norec
+before=$(acts)
+xr --rerun-pair 2 --exp-id 20261017-000001a1 --budget-usd 1000
+if [[ "$rc" == "0" && "$(pstate 20261017-000001a1 2 sample)" == "선정 2" && "$(ptsv 20261017-000001a1 2 status)" == "유효" && "$(( $(acts) - before ))" == "4" ]] \
+   && ! ls -d "$SOLO_EXP_STATE_ROOT/20261017-000001a1/pair-2.try"* >/dev/null 2>&1 \
+   && [[ ! -e "$main/docs/solo-audit-experiment/20261017-000001a1/pairs/2/attempts.tsv" ]]; then
+  pass "rerun: --rerun-pair 2 removes the slot's attempts and runs it again from 선정 2"
+else
+  fail "rerun: --rerun-pair 2 gave exit $rc, sample '$(pstate 20261017-000001a1 2 sample)', $(( $(acts) - before )) new acts"; cat "$sc/out" >&2
+fi
+
+# ---- nothing waits on a person ---------------------------------------------
+
+if (( saw3 == 0 )) && ! grep -qF '사람 대기' "$tmp/all.out" && ! grep -qF "'답한 주체=사람' '근거=<why>'" "$tmp/all.out" \
+   && [[ -z "$(grep -rlF '사람 대기' "$tmp"/sc-*/state 2>/dev/null || true)" ]]; then
+  pass "no call exited 3, no pair was left 사람 대기, and no halt-answer command was printed for a person"
+else
+  fail "a call waited on a person (exit 3 seen: ${saw3})"
+fi
 
 echo
 echo "test-solo-audit-experiment: ${passed} passed, ${failures} failed"

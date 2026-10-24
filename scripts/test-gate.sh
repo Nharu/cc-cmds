@@ -76,16 +76,19 @@ export CC_CMDS_SESSION_NOTIFY
 # dashboard section turns it back on inside its own subshells only.
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
-# THE WHOLE PIPELINE ENVIRONMENT IS CLEARED FOR THE WHOLE PROCESS — all eleven
-# `CC_PIPELINE_*` names, here and nowhere later. This suite runs from whatever
-# process starts it, including a pipeline stage, which exports every one of them.
+# THE WHOLE PIPELINE ENVIRONMENT IS CLEARED FOR THE WHOLE PROCESS — every
+# inherited `CC_PIPELINE_*` name, by prefix, here and nowhere later. This suite
+# runs from whatever process starts it, including a pipeline stage, which
+# exports a set of these names that grows with the gate.
 #
 # The name that moves ledger writes today is `CC_PIPELINE_MANIFEST`: the pre-tool
 # hook the fixtures drive passes it to `gate.sh digest-path --manifest`, so an
 # inherited value opened the REAL manifest's ledger and appended fixture rows to
-# the run that was executing this suite. The other ten are cleared as well
+# the run that was executing this suite. Every other name is cleared as well
 # because which of them a gate path starts reading tomorrow is not something this
-# file can know, and the cost is one line.
+# file can know. A list of names was used here and missed three the gate began
+# exporting after it was written; the prefix cannot fall behind that way, and the
+# meta suite's leak census demands this exact line of every gate-family suite.
 #
 # The seat markers are the older reason. The stagnation boundaries are evaluated
 # only on a ROUTER's judgment, read off `CC_PIPELINE_SEGMENT` /
@@ -110,10 +113,8 @@ export CC_CMDS_DASHBOARD
 # `git pull --ff-only` every apply in this tree uses. The value is captured
 # first so a failure can say what was inherited.
 GATE_ACT_CWD_INHERITED="${GATE_ACT_CWD:-}"
-unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
-      CC_PIPELINE_RUN_DIR CC_PIPELINE_GRANT CC_PIPELINE_GATE \
-      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+unset GATE_ACT_CWD
 # The tmux location goes as well. Every `plan`/`act`/`exec` by the router passes
 # the emitter's seat record, so a suite run from a tmux pane would otherwise
 # write that pane into each fixture run directory and give the banners there a
@@ -360,6 +361,17 @@ case "$sec_timing_out" in
   /*) ;;
   *) sec_timing_out="" ;;
 esac
+
+# A NARROWED RUN NAMES THE SECTIONS THAT FAILED, AND THE COMMAND THAT RUNS ONLY
+# THOSE. The cut writes the id of the section it is in before each section, and
+# `bad` appends that id to a file whose path is written into the cut as a
+# literal, so the FAIL lines themselves stay exactly as they were. The wrapper
+# reads the file once the child has exited and prints two lines in front of its
+# verdict. Both values are set only by the selector's own wrapped call: a full
+# run, `--oracle-wrap`, `--oracle-judge` and a nested call leave them empty and
+# print nothing.
+tg_report_fail_file=""
+tg_report_sel=""
 
 # ---------------------------------------------------------------------------
 # THE THREE-SIGNAL ORACLE — totals, FAIL reconciliation, noise
@@ -617,6 +629,33 @@ oracle_judge() {
   return "$code"
 }
 
+# The two lines a narrowed run prints in front of its verdict when anything
+# failed: the sections that failed, first failure first and each once, and the
+# command that runs only those. A failure the cut attributed to no section — the
+# head, a prelude insert or the epilogue — has no id to narrow to, so the rerun
+# set is then the selection the caller gave. Rerunning a section alone can still
+# differ from the combination it failed in; the command is for the edit loop,
+# and the final pass is the axis's whole selection.
+oracle_report_failed() {
+  local file="$1" sel="$2" ids="" out=0 id
+  while IFS= read -r id; do
+    case "$id" in
+      ''|-|@*) out=1; id="${id:-프리앰블}" ;;
+    esac
+    case ",$ids," in
+      *",$id,"*) ;;
+      *) ids="${ids:+$ids,}$id" ;;
+    esac
+  done < "$file"
+  if [ "$out" = "1" ]; then
+    sel=$(printf '%s\n' "$sel" | tr ',' '\n' | tr -d ' \t' | sed '/^$/d' | paste -s -d ',' -)
+  else
+    sel="$ids"
+  fi
+  printf 'test-gate: 실패한 절 — %s\n' "$ids" >&2
+  printf 'test-gate: 실패한 절만 다시 — bash scripts/test-gate.sh --sections %s\n' "$sel" >&2
+}
+
 # Run a script through the wrapper and judge what it produced.
 #
 # The child's streams are teed through FIFOs rather than collected into files and
@@ -660,6 +699,9 @@ oracle_run() {
   rm -f "$fo" "$fe"
   printf '%s\n' "$rc" > "$cap/rc"
 
+  if [ -n "$tg_report_fail_file" ] && [ -s "$tg_report_fail_file" ]; then
+    oracle_report_failed "$tg_report_fail_file" "$tg_report_sel"
+  fi
   oracle_judge "$cap" "$script" "$cap/map" "$scope"
   verdict_rc=$?
   return "$verdict_rc"
@@ -1044,6 +1086,31 @@ FRONTEOF
     : > "$sec_map"
     sec_cur="$sec_pre"
     sec_pre_done=" "
+    # THE FAILED-SECTION FILE, for the wrapped call only. A nested call runs the
+    # cut as it did before the wrapper existed, so it gets neither the file nor
+    # the section names below. The path is written into the cut as a literal,
+    # under the timing path's rule: absolute and free of single quotes.
+    sec_fail=""
+    if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
+      sec_fail=$(mktemp "$sec_dir/fail.XXXXXX")
+      case "$sec_fail" in
+        *"'"*) sec_fail="" ;;
+        /*) ;;
+        *) sec_fail="" ;;
+      esac
+    fi
+    if [ -n "$sec_fail" ]; then
+      printf "tg_fail_file='%s'\n" "$sec_fail" >> "$sec_cut"
+      sec_cur=$(( sec_cur + 1 ))
+    fi
+    # One line naming the section the cut is entering, counted like a marker and
+    # attributed to no section. It goes in whether or not timing markers are on,
+    # and in front of the marker when both are.
+    sec_tag() {
+      [ -n "$sec_fail" ] || return 0
+      printf "tg_cur_sec='%s'\n" "$1" >> "$sec_cut"
+      sec_cur=$(( sec_cur + 1 ))
+    }
     # One marker line, when the caller asked for them; counted like a prelude
     # insert and attributed to no section. The single quotes around the epoch
     # expansion are the format's own, written out by this printf.
@@ -1064,6 +1131,7 @@ FRONTEOF
             *)
               sec_pre_done="$sec_pre_done$sec_grp "
               if [ "$(grep -cE "^pre_${sec_grp}\(\) *\{" "$SELF" || true)" != "0" ]; then
+                sec_tag "@pre-$sec_grp"
                 sec_mark "@pre-$sec_grp"
                 printf '\n# --- prelude: %s (inserted by the selector) ---\npre_%s\n' "$sec_grp" "$sec_grp" >> "$sec_cut"
                 sec_cur=$(( sec_cur + 3 ))
@@ -1072,6 +1140,7 @@ FRONTEOF
       esac
       sec_id=$(printf '%s\n' "$sec_idx" \
         | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* .*\$/\1/p")
+      sec_tag "${sec_id:--}"
       sec_mark "${sec_id:--}"
       sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
       printf '%s %s %s %s\n' \
@@ -1081,6 +1150,7 @@ FRONTEOF
     done <<SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
+    sec_tag "@epilogue"
     sec_mark "@epilogue"
     sed -n "${sec_epi},\$p" "$SELF" >> "$sec_cut"
 
@@ -1163,6 +1233,8 @@ SECEOF
       sec_rc=$?
     else
       oracle_child_repo_root="$repo_root"
+      tg_report_fail_file="$sec_fail"
+      tg_report_sel="$sections_want"
       oracle_run "$sec_cut" "$sec_map" "좁힌 실행"
       sec_rc=$?
     fi
@@ -1335,7 +1407,12 @@ grep_all_q() {
 
 passed=0; failed=0; skipped=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
-bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
+# A narrowed cut also names the section it is in, for the failed-section report;
+# both names are read with a default because a full run defines neither.
+bad()  {
+  failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2
+  [ -z "${tg_fail_file:-}" ] || printf '%s\n' "${tg_cur_sec:-}" >> "$tg_fail_file"
+}
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
 # 건너뜀은 통과도 실패도 아니므로 따로 센다. 합계 줄은 바이트 모양이 고정이라
 # (`scripts/gate-census.sh`·`scripts/gate-shard.sh` 가 고정 정규식으로 읽는다) 그 앞에
@@ -5371,6 +5448,75 @@ else
 fi
 rm -rf "$tim_dir"
 
+# A NARROWED RUN THAT FAILS NAMES THE SECTIONS AND THE RERUN COMMAND, right in
+# front of its verdict. The real suite has no section that fails on purpose, so
+# the calls go to a copy whose 0c and 0d (twice) call `bad`, and whose static
+# prelude does too, each only when its own variable is set — one copy, then,
+# also gives the clean control. The selection is typed as `0d,0c` so that the
+# rerun set derived from the failures (`0c,0d`, file order) and the one taken
+# from the caller (`0d,0c`) read differently.
+#
+# This section runs inside the wrapper's cut and inherits its nested-call
+# marker, so every call below that is meant to reach the wrapper drops it; the
+# paired call that keeps it is the nested-call assertion. The copy cannot derive
+# the repository root from where it sits, and the static prelude scans the tree,
+# so the root is handed down the way the selector hands it to its own cut.
+# `TMPDIR` points into the scratch directory because a failing verdict leaves
+# its capture behind.
+tgf_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-failsec.XXXXXX")
+awk '
+  { print }
+  $0 == "  PRE_STATIC_DONE=1" && !p { print "  [ -z \"${TGF_PRE:-}\" ] || bad \"의도된 실패 프렐류드\" x"; p = 1; n++ }
+  $0 == "rm -rf \"$orp_dir\"" && !c { print "[ -z \"${TGF_SEC:-}\" ] || bad \"의도된 실패 0c\" x"; c = 1; n++ }
+  index($0, "check \"비지 않은 --sections 는 가드를 지나간다\"") == 1 && !d {
+    print "[ -z \"${TGF_SEC:-}\" ] || { bad \"의도된 실패 0d 하나\" x; bad \"의도된 실패 0d 둘\" x; }"; d = 1; n++
+  }
+  END { print n > "/dev/stderr" }
+' "$tim_suite" > "$tgf_dir/test-gate.sh" 2> "$tgf_dir/mutations"
+check "실패 절 사본: 고친 자리가 셋이다" "$(cat "$tgf_dir/mutations")" "3"
+tgf_call() {
+  local tag="$1"; shift
+  local rc=0
+  env -u CC_TEST_GATE_ORACLE_INNER TMPDIR="$tgf_dir" CC_TEST_GATE_REPO_ROOT="$repo_root" \
+    "$@" bash "$tgf_dir/test-gate.sh" ${tgf_sel} > "$tgf_dir/$tag.out" 2> "$tgf_dir/$tag.err" || rc=$?
+  printf '%s' "$rc" > "$tgf_dir/$tag.rc"
+}
+# The two lines just above the verdict line, joined by `|`.
+tgf_before() {
+  awk '/^test-gate: 판정=/ { print b2 "|" b1; exit } { b2 = b1; b1 = $0 }' "$tgf_dir/$1.err"
+}
+tgf_n() { grep -c -- "$2" "$tgf_dir/$1.$3" || true; }
+tgf_total() { grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$tgf_dir/$1.out" | tail -n 1; }
+tgf_sel="--sections 0d,0c"
+tgf_call sec TGF_SEC=1 CC_GATE_TIMING_OUT="$tgf_dir/t.tsv"
+tgf_call pre TGF_SEC=1 TGF_PRE=1
+tgf_call clean
+tgf_rc_in=0
+TMPDIR="$tgf_dir" CC_TEST_GATE_REPO_ROOT="$repo_root" CC_TEST_GATE_ORACLE_INNER=1 TGF_SEC=1 \
+  bash "$tgf_dir/test-gate.sh" --sections 0d,0c > "$tgf_dir/in.out" 2> "$tgf_dir/in.err" || tgf_rc_in=$?
+tgf_sel="--run-one 0d"
+tgf_call one TGF_SEC=1
+check "실패한 두 줄이 판정 줄 바로 앞에 처음 실패한 순서로 중복 없이 온다" "$(tgf_before sec)" \
+  "test-gate: 실패한 절 — 0c,0d|test-gate: 실패한 절만 다시 — bash scripts/test-gate.sh --sections 0c,0d"
+check "프렐류드에 붙은 실패는 원래 선택 전체를 다시 돌린다" "$(tgf_before pre)" \
+  "test-gate: 실패한 절 — @pre-static,0c,0d|test-gate: 실패한 절만 다시 — bash scripts/test-gate.sh --sections 0d,0c"
+check "--run-one 의 실패도 같은 두 줄을 낸다" "$(tgf_before one)" \
+  "test-gate: 실패한 절 — 0d|test-gate: 실패한 절만 다시 — bash scripts/test-gate.sh --sections 0d"
+check "실패가 없으면 두 줄이 없고 판정은 통과다" \
+  "$(tgf_n clean '^test-gate: 실패한 절' err)|$(cat "$tgf_dir/clean.rc")|$(tgf_n clean '^test-gate: 판정=pass ' err)" "0|0|1"
+check "중첩 호출은 두 줄도 판정 줄도 찍지 않고 실패는 그대로 센다" \
+  "$(tgf_n in '^test-gate: 실패한 절' err)|$(tgf_n in '^test-gate: 판정=' err)|$(tgf_n in '^FAIL: ' err)|$tgf_rc_in" "0|0|3|1"
+# The FAIL lines and the totals line are what they would be without the report:
+# one FAIL line per `bad`, the totals line counting them, and the same number of
+# passing assertions as the clean control.
+tgf_pass_clean=$(tgf_total clean | sed -E 's/^test-gate: ([0-9]+) passed.*/\1/')
+check "FAIL 줄 수와 합계 줄은 보고가 더해지기 전과 같다" \
+  "$(tgf_n sec '^FAIL: ' err)|$(tgf_total sec)|$(tgf_n pre '^FAIL: ' err)|$(tgf_total pre)" \
+  "3|test-gate: ${tgf_pass_clean:-?} passed, 3 failed|4|test-gate: ${tgf_pass_clean:-?} passed, 4 failed"
+check "실패 절 보고가 켜진 컷의 표지 파일은 그대로다" \
+  "$(cut -f1 "$tgf_dir/t.tsv" 2>/dev/null | tr '\n' ' ')" "@pre-static 0c 0d @epilogue "
+rm -rf "$tgf_dir"
+
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
 # --- section: 1 | group: base | covers: snapshot | anchors: 스냅숏이 유효한 JSON 객체로 나온다 ---
@@ -7685,8 +7831,12 @@ fi
 #   - Writing the digest to stdout corrupts `exec`'s pass-through of the wrapped
 #     command's own output — silently, because a caller parsing that output for
 #     a substring still finds it.
-#   - Writing it to stderr puts it where the run log goes, so a caller reading
-#     the log picks up a hash that looks like a diagnostic.
+#   - Printing it on stderr as anything but the call's LAST line, under a fixed
+#     `[gate-digest]` tag, or carrying a value other than the file's. The line
+#     is how a model caller gets the value without opening the file, so it has
+#     to sit where the caller looks — the end of the tool result — and say the
+#     same thing the file says; the tag is what keeps a run log reader from
+#     taking it for a diagnostic, and a call without the flag prints none.
 #   - Emitting BEFORE the gate's own ledger appends hands back a value that is
 #     stale the moment it arrives, and every acting call after it comes back
 #     exit 4. That failure is loud but it is also total: the run deadlocks on
@@ -7709,6 +7859,22 @@ EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/digest"
 # a stage id is the thing under test.
 unset CC_PIPELINE_STAGE_ID
 EMITFILE="$EMIT/gate-digest-router.json"
+# dl_h <text> — the H the text's LAST line carries when that line is a
+# well-formed digest line, empty otherwise. One reading for every assertion
+# below, so a line that moved up or lost its tag fails all of them alike.
+dl_h() {
+  printf '%s\n' "$1" | tail -n 1 \
+    | sed -n 's/^\[gate-digest\] H=\([0-9a-f]\{64\}-[0-9a-f]\{64\}\) actor=[^ ][^ ]*$/\1/p'
+}
+# gate_dl <argv…> — `gate`'s `rc`, with the whole output in `dl_out`, and the
+# streams redirected ON A SUBSHELL rather than on the function call. A gate run
+# in process that leaves by `exit` has the redirections of the call around it
+# undone before its EXIT trap runs, so under `gate`'s own spelling the line of
+# every refusal and every failed act goes to this suite's stderr and the
+# capture ends one line short. A real `bash gate.sh` has no such frame, and a
+# subshell's own redirections are not undone, so this spelling captures what a
+# caller of the real gate sees.
+gate_dl() { dl_out=$( ( cd "$WT" && gate_inproc "$@" ) 2>&1 ); rc=$?; }
 
 # The directory is deliberately NOT created first: the gate makes the parent of
 # the path it was handed, and a caller naming a fresh run-directory subpath is
@@ -7726,10 +7892,18 @@ H_emit=$(jq -r .H "$EMITFILE" 2>/dev/null || true)
 if [ -z "$H_emit" ] || [ "$H_emit" = "null" ]; then
   bad "다이제스트 방출" "방출 파일에서 H 를 읽지 못했다 — 이하 단언의 전제가 무너진다"
 else
-  case "$errout" in
-    *"$H_emit"*) bad "다이제스트 유출" "방출값이 stderr 로도 나왔다 — 로그를 읽는 소비자가 해시를 진단으로 읽는다" ;;
-    *) ok "다이제스트가 stderr 로 새지 않는다" ;;
-  esac
+  # THE LINE IS THE LAST STDERR LINE, AND IT SAYS WHAT THE FILE SAYS. A caller
+  # copies the value off the end of its tool result instead of opening the
+  # file, so a line that is not last, or that disagrees with the file, sends
+  # the next call back with exit 4.
+  if [ -n "$(dl_h "$errout")" ]; then
+    ok "방출을 켠 호출의 stderr 마지막 줄이 [gate-digest] 줄 형식이다"
+  else
+    bad "방출을 켠 호출의 stderr 마지막 줄이 [gate-digest] 줄 형식이다" "got '$(printf '%s\n' "$errout" | tail -n 1)'"
+  fi
+  check "그 줄의 H 가 방출 파일의 H 와 같다" "$(dl_h "$errout")" "$H_emit"
+  check "그 줄의 actor 가 방출 파일의 actor 와 같다" \
+    "$(printf '%s\n' "$errout" | tail -n 1 | sed -n 's/^.* actor=//p')" "$(jq -r .actor "$EMITFILE")"
   # THE SHAPE IS TWO 64-CHARACTER HALVES JOINED BY A SINGLE `-`, and the join
   # carries weight rather than decorating: the halves are compared differently —
   # the progress vector for exact equality, the chain tip for ancestry — so a
@@ -7778,6 +7952,27 @@ else
   printed=$( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' gate_inproc digest-path \
              --manifest "$FX_MANIFEST" 2>/dev/null | tail -1 )
   check "인쇄한 경로가 실제로 쓴 파일이다" "$printed" "$EMIT/gate-digest-S5-SEG-2.json"
+  # AND ONLY A CALL THAT ASKED FOR IT PRINTS ONE. The driver never passes the
+  # flag, so its logs must stay free of the tag.
+  plain_err=$( ( cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SW \
+                 --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+                 -- ls ) 2>&1 >/dev/null )
+  case "$plain_err" in
+    *'[gate-digest]'*) bad "플래그가 없으면 [gate-digest] 줄이 없다" "got '$plain_err'" ;;
+    *) ok "플래그가 없으면 [gate-digest] 줄이 없다" ;;
+  esac
+  # A WRAPPED COMMAND THAT FAILS still ends the output with the line: the
+  # command's own stderr and the gate's failure warning both come before it.
+  fail_err=$( ( cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SW \
+                --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+                --emit-digest -- ls "$WORK/14c-1-absent" ) 2>&1 >/dev/null ); fail_rc=$?
+  if [ "$fail_rc" -ne 0 ]; then
+    ok "래핑한 명령이 실패한다 (다음 단언의 전제)"
+  else
+    bad "래핑한 명령이 실패한다 (다음 단언의 전제)" "rc=0"
+  fi
+  check "래핑한 명령이 실패해도 줄이 stderr 마지막 줄이고 H 가 파일과 같다" \
+    "$(dl_h "$fail_err")" "$(jq -r .H "$EMITFILE" 2>/dev/null)"
 fi
 
 # `act` is the other acting verb and it is captured with `2>&1` everywhere else
@@ -7790,13 +7985,14 @@ check "act 경로도 방출한다" "$(jq -r .H "$EMITFILE" 2>/dev/null || true)"
 
 # The two-row branch. `gate_record_row` appends after the `자율 승인` row, so an
 # emission taken at that first append is one row behind here and only here.
-( cd "$WT" && gate_inproc act --manifest "$FX_MANIFEST" --kind segment --target infra \
+seg_err=$( ( cd "$WT" && gate_inproc act --manifest "$FX_MANIFEST" --kind segment --target infra \
   --segment SEMIT --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
-  --emit-digest -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
+  --emit-digest -- 상태=실행중 워크트리="$WT" 선행=없음 ) 2>&1 >/dev/null )
 n=$(grep -c '^- `segment` | 교대=[0-9][0-9]* | id=SEMIT ' "$FX_LEDGER" || true)
 check "두 번째 행이 실제로 쓰였다 (판별자의 전제)" "$n" "1"
 check "두 행을 쓰는 갈래에서도 방출값이 최종 다이제스트다" \
   "$(jq -r .H "$EMITFILE" 2>/dev/null || true)" "$(HH)"
+check "두 행을 쓰는 갈래에서도 줄의 H 가 마지막 행 뒤의 값이다" "$(dl_h "$seg_err")" "$(HH)"
 
 # The refusal path. An emission the caller asked for and did not get is the one
 # failure it cannot detect on its own — it just falls back to the round trip
@@ -7832,7 +8028,7 @@ check "그 경로는 격리 디렉터리 안이다" "$(dirname "$EMITFILE")" "$E
 # falls back to the round trip forever — which looks exactly like the flag
 # working and saving nothing.
 rm -f "$EMITFILE"
-gate exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+gate_dl exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest 0000000000000000000000000000000000000000000000000000000000000000 \
      --rationale x --emit-digest -- ls
 check "낡은 다이제스트는 거부된다 (이 단언의 전제)" "$rc" "4"
@@ -7842,6 +8038,8 @@ else
   bad "거부된 호출도 방출한다 (트랩이 덮는 자리)" "파일이 없거나 비었다"
 fi
 check "거부 뒤 방출값이 살아 있는 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
+check "거부(exit 4) 경로에서도 줄의 H 가 파일의 H 와 같다" \
+  "$(dl_h "$dl_out")" "$(jq -r .H "$EMITFILE" 2>/dev/null)"
 
 # AND THE CLASS THE TRAP WAS ACTUALLY WRITTEN FOR: a refusal that APPENDS A ROW
 # and then exits. The stale-digest case above refuses BEFORE any append, so it
@@ -7859,7 +8057,7 @@ check "거부 뒤 방출값이 살아 있는 다이제스트다" "$(jq -r .H "$E
 # premise the assertions below stand on.
 rows_before=$(grep -c . "$FX_LEDGER" 2>/dev/null || printf '0')
 rm -f "$EMITFILE"
-gate exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 외부상태변경 \
+gate_dl exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 외부상태변경 \
      --snapshot-digest "$(HH)" --rationale x --emit-digest -- curl -X POST https://example.invalid/14c-1
 check "사전 인가 밖 행위는 승인을 발행한다 (이 단언의 전제)" "$rc" "5"
 rows_after=$(grep -c . "$FX_LEDGER" 2>/dev/null || printf '0')
@@ -7874,6 +8072,31 @@ else
   bad "행을 덧붙이고 거부한 뒤에도 방출한다" "파일이 없거나 비었다"
 fi
 check "그 방출값은 덧붙인 행 이후의 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
+check "행을 덧붙이고 거부한 뒤에도 줄이 나오고 H 가 파일과 같다" \
+  "$(dl_h "$dl_out")" "$(jq -r .H "$EMITFILE" 2>/dev/null)"
+
+# `admit` is the third verb the trap is installed for. A request it cannot find
+# is refused, and the refusal is enough here: what is under test is the trap,
+# which runs on every exit of the verb.
+admit_err=$( ( cd "$WT" && gate_inproc admit --request last --manifest "$FX_MANIFEST" --target infra \
+  --segment SW --surface 읽기 --reach 미상 --snapshot-digest "$(HH)" --rationale x \
+  --emit-digest ) 2>&1 >/dev/null )
+check "admit 호출도 줄을 내고 H 가 파일과 같다" \
+  "$(dl_h "$admit_err")" "$(jq -r .H "$EMITFILE" 2>/dev/null)"
+
+# A DIRECTORY THE GATE CANNOT WRITE: `mktemp` fails, the file is not written,
+# and the line still comes out, after the warning that says so.
+rm -f "$EMITFILE"
+chmod 555 "$EMIT"
+ro_err=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SW \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+         --emit-digest -- ls 2>&1 >/dev/null)
+chmod 755 "$EMIT"
+case "$ro_err" in
+  *'could not create the digest temp file'*) ok "쓸 수 없는 방출 디렉터리에서 임시 파일 생성이 실패한다 (다음 단언의 전제)" ;;
+  *) bad "쓸 수 없는 방출 디렉터리에서 임시 파일 생성이 실패한다 (다음 단언의 전제)" "got '$ro_err'" ;;
+esac
+check "임시 파일을 만들지 못해도 줄이 나온다" "$(dl_h "$ro_err")" "$(HH)"
 
 # THE ROUND TRIP THIS FLAG EXISTS TO REMOVE, DRIVEN IN BOTH DIRECTIONS. Every
 # assertion above reads the emitted object; none of them fed it back, which is
@@ -7912,7 +8135,7 @@ gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SEMIT
      --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
      -- 상태=실행중 워크트리="$WT" 선행=없음
 check "진전 벡터를 움직인다 (다음 단언의 전제)" "$rc" "0"
-gate exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+gate_dl exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$stale" --rationale x --emit-digest -- ls
 check "진전이 움직인 뒤의 옛 방출값은 진전 축에서는 여전히 거부된다" "$rc" "4"
 
