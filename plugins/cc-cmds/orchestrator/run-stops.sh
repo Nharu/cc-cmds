@@ -64,7 +64,8 @@ audit
 reconverge
 generic
 shift
-split'
+split
+visual'
 RUN_STOPS_BOUNDARY='B1
 B2
 B3
