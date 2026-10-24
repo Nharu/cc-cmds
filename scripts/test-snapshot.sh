@@ -440,9 +440,11 @@ check "pace 블록이 shift 바로 뒤에 온다" \
 check "H 는 스냅숏의 마지막 키다" "$(jq -r 'keys_unsorted | last' "$WORK/s1.json")" "H"
 check "센서가 없는 상태 루트에서 pace 는 null 이다" "$(jq -c .pace "$WORK/s1.json")" "null"
 check "그 부재의 사유가 곁에 실린다" "$(jq -r .pace_absent_reason "$WORK/s1.json")" "센서 미등록"
-check "--fields 의 기본 목록은 라우터가 읽는 여덟 필드를 그 순서로 낸다" \
+check "--fields 의 기본 목록은 라우터가 읽는 열한 필드를 그 순서로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields 2>/dev/null | jq -r 'keys_unsorted | join(",")')" \
-  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,live_applies,apply_unsettled,apply_imported,shift,pace"
+check "적용 감독자도 정산 대상도 없으면 세 적용 목록은 빈 배열이다" \
+  "$(jq -c '[.live_applies, .apply_unsettled, .apply_imported]' "$WORK/s1.json")" "[[],[],[]]"
 check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이다" "$(jq -c .waiting_stages "$WORK/s1.json")" "[]"
 # The target-hook refusals the router reads before a remote act: an array even
 # when no target hook ever refused, so `length` never meets a null.

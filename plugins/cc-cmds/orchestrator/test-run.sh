@@ -1431,7 +1431,7 @@ ac_rc=0; ac_out=$(apply_probe_codes 'make other') || ac_rc=$?
 check "대응 행은 다른 프로브에 0/2 를 주지 않고 상태 2 와 두 해시를 낸다" "$ac_rc/$ac_out" \
   "2/$AC_SHA $(printf '%s' 'make other' | shasum -a 256 | cut -d' ' -f1)"
 ac_mf
-check "대응 행이 없으면 0/2 다" "$(apply_probe_codes 'make probe')" "0 2"
+check "대응 행이 없으면 불필요=0 만 정의되고 필요 코드는 없다" "$(apply_probe_codes 'make probe')" "0 -"
 if ( check_manifest ) >/dev/null 2>&1; then
   ok "적용 프로브 코드 행의 부재는 위반이 아니다"
 else
@@ -2018,13 +2018,38 @@ else
   bad "사전 1" "프로브 실패인데 apply 가 실행됐다"
 fi
 
-# (4) 사전 2 → 사후 0 — 수렴. 유일한 성공이다.
-ap_manifest "sh -c 'echo x >> $AP_CNT; echo 0 > $AP_ST'" "파이프라인"
+# (3b) 대응 행이 없으면 「불필요=0」 만 정의된다 — 사전 2 는 「필요」 가 아니라
+# 사전 실패이고, 명령은 돌지 않으며, 마지막 segment 행이 그 park 를 말한다.
+ap_manifest "sh -c 'echo x >> $AP_CNT'" "파이프라인"
+check "대응 행이 없으면 판독기는 불필요 0 과 정의되지 않은 필요를 낸다" \
+  "$(apply_probe_codes "$(apply_probe_cmd segA)")" "0 -"
 : > "$LEDGER"; : > "$AP_CNT"; printf '2\n' > "$AP_ST"
-if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
-  ok "사전 2 → 사후 0: 수렴, apply 1회 실행"
+if apply_stage segA; then
+  bad "대응 행 없음 사전 2" "정의되지 않은 필요 코드가 적용으로 읽혔다"
 else
-  bad "수렴" "사전 2 → 사후 0 이 성공으로 판정되지 않았다"
+  ok "대응 행 없음: 사전 2 는 사전 실패로 거부된다"
+fi
+check "대응 행 없음: 사전 실패에서 명령은 돌지 않는다" "$(grep -c . "$AP_CNT")" "0"
+check "대응 행 없음: 마지막 segment 행이 park 적용=사전 실패 다" \
+  "$( { grep -F '`segment`' "$LEDGER" || true; } | tail -1 | grep -c '상태=park | 적용=사전 실패' || true)" "1"
+check "대응 행 없음: 사전 실패 사유가 대응 행 부재를 말한다" \
+  "$( { grep -c '적용 프로브 코드 행이 없어 필요 코드가 정의되지 않았다' "$LEDGER" || true; } )" "1"
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+ap_manifest_codes() {   # ap_manifest_codes <적용명령> <불필요> <필요>
+  ap_manifest "$1" "파이프라인"
+  printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=%s | 필요=%s | 프로브 sha256=%s\n' "$2" "$3" \
+    "$(apply_probe_sha "$(apply_probe_cmd segA)")" >> "$MANIFEST"
+}
+
+# (4) 사전 「필요」 → 사후 「불필요」 — 수렴. 유일한 성공이다.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT; echo 0 > $AP_ST'" 0 21
+: > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
+if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
+  ok "사전 21 → 사후 0: 수렴, apply 1회 실행"
+else
+  bad "수렴" "사전 21 → 사후 0 이 성공으로 판정되지 않았다"
 fi
 if grep -q '종단 부류=정상 완료' "$LEDGER"; then
   ok "수렴이 정상 완료로 기록된다"
@@ -2032,15 +2057,17 @@ else
   bad "수렴 기록" "정상 완료 행이 없다"
 fi
 
-# (5) 사전 2 → 사후 2 — 적용 불명. 재시도 0회, 워크트리 보존, 사람 대조 표시.
-ap_manifest "sh -c 'echo x >> $AP_CNT'" "파이프라인"
-: > "$LEDGER"; : > "$AP_CNT"; printf '2\n' > "$AP_ST"
+# (5) 사전 21 → 사후 21 — 적용 불명. 재시도 0회, 워크트리 보존, 사람 대조 표시.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT'" 0 21
+: > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
 if apply_stage segA; then
   bad "적용 불명" "사후에도 변경이 남았는데 성공을 돌려줬다"
 else
-  ok "사전 2 → 사후 2: 적용 불명으로 실패를 돌려준다"
+  ok "사전 21 → 사후 21: 적용 불명으로 실패를 돌려준다"
 fi
 check "적용 불명에도 재시도는 0회 (apply 1회 실행)" "$(grep -c . "$AP_CNT")" "1"
+check "적용 불명: 마지막 segment 행이 park 적용=불명 이다" \
+  "$( { grep -F '`segment`' "$LEDGER" || true; } | tail -1 | grep -c '상태=park | 적용=불명' || true)" "1"
 if grep -q '종단 부류=적용 불명' "$LEDGER"; then
   ok "적용 불명이 자기 종단 부류로 기록된다"
 else
@@ -2066,6 +2093,9 @@ ap_disp() {   # ap_disp <기대> <인자>...
   local want="$1"; shift
   check "apply_disposition $*" "$(apply_disposition "$@")" "$want"
 }
+ap_disp 건너뜀 0 - 0
+ap_disp '사전 실패' 0 - 2
+ap_disp '사전 실패' 0 - 21
 ap_disp 건너뜀 0 2 0
 ap_disp '적용 불명' 0 2 2
 ap_disp 수렴 0 2 2 0 0
@@ -2084,11 +2114,6 @@ ap_disp '적용 불명' 3 21 21 0 0
 
 # (5c) 「필요=21」 을 얼린 매니페스트 — 사전 21 은 적용 필요이고 사전 21·명령 0·사후 0 은
 # 수렴이다. 대응 밖의 코드는 사전 실패이며 그 문면에 실제 코드와 대응이 실린다.
-ap_manifest_codes() {   # ap_manifest_codes <적용명령> <불필요> <필요>
-  ap_manifest "$1" "파이프라인"
-  printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=%s | 필요=%s | 프로브 sha256=%s\n' "$2" "$3" \
-    "$(apply_probe_sha "$(apply_probe_cmd segA)")" >> "$MANIFEST"
-}
 ap_manifest_codes "sh -c 'echo x >> $AP_CNT; echo 0 > $AP_ST'" 0 21
 check "픽스처의 대응 행이 이 프로브에 묶였다 (아래가 공허하지 않다)" "$(apply_probe_codes "$(apply_probe_cmd segA)")" "0 21"
 : > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
@@ -2119,11 +2144,12 @@ apply_stage segA
 check "건너뜀 문면이 실제 코드와 대응을 싣는다" \
   "$( { grep -c '관측=사전 프로브 0 (대응 불필요=0·필요=21) — 적용할 변경 없음' "$LEDGER" || true; } )" "1"
 
-# (5d) 해시 불일치 — 매니페스트 프로브 A 에 얼린 뒤집힌 대응(불필요=2·필요=0)이 있고
-# 설계 문서 슬라이스가 프로브 B 를 선언하면, 0/2 로 떨어지지 않고 사전 프로브 전에
-# park 한다. 0/2 로 읽으면 사전 0 이 「필요」 가 아니라 건너뜀이 되고, 사전 2 에서는
-# 「불필요」 코드에 명령이 돈다. 같은 행에 프로브 A 가 돌면 대응대로 처분된다.
-ap_manifest_codes "sh -c 'echo x >> $AP_CNT; echo 2 > $AP_ST'" 2 0
+# (5d) 해시 불일치 — 매니페스트 프로브 A 에 얼린 뒤집힌 대응(불필요=21·필요=0)이 있고
+# 설계 문서 슬라이스가 프로브 B 를 선언하면, 대응 행이 없는 것으로 떨어지지 않고 사전
+# 프로브 전에 park 한다. 행이 없는 것으로 읽으면 사전 0 이 「필요」 가 아니라 건너뜀이
+# 되고, 사전 21 은 「불필요」 코드인데 사전 실패로 거부된다. 같은 행에 프로브 A 가 돌면
+# 대응대로 처분된다.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT; echo 21 > $AP_ST'" 21 0
 AP_SHA_A=$(apply_probe_sha "$(apply_probe_cmd segA)")
 AP_PROBE_B="touch $AP_DIR/probe-b-ran; exit 0"
 AP_SHA_B=$(apply_probe_sha "$AP_PROBE_B")
@@ -2152,15 +2178,15 @@ check "해시 불일치: 적용 준비 행이 없다" "$( { grep -c '상태=적�
 check "해시 불일치: 적용 워크트리를 만들지 않는다" "$( [ -e "$AP_WT" ] && echo 있다 || echo 없다 )" "없다"
 check "해시 불일치: 건너뜀·정상 완료 행이 없다" "$( { grep -c '종단 부류=정상 완료' "$LEDGER" || true; } )" "0"
 DOC=""
-: > "$LEDGER"; : > "$AP_CNT"; printf '2\n' > "$AP_ST"
+: > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
 if apply_stage segA && [ ! -s "$AP_CNT" ]; then
-  ok "불필요=2·필요=0: 프로브 A 의 사전 2 는 건너뜀이고 명령이 돌지 않는다"
+  ok "불필요=21·필요=0: 프로브 A 의 사전 21 은 건너뜀이고 명령이 돌지 않는다"
 else
-  bad "뒤집힌 대응 건너뜀" "사전 2 가 「불필요」 로 읽히지 않았다"
+  bad "뒤집힌 대응 건너뜀" "사전 21 이 「불필요」 로 읽히지 않았다"
 fi
 : > "$LEDGER"; : > "$AP_CNT"; printf '0\n' > "$AP_ST"
 if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
-  ok "불필요=2·필요=0: 프로브 A 의 사전 0 은 적용 필요이고 명령이 1회 돈다"
+  ok "불필요=21·필요=0: 프로브 A 의 사전 0 은 적용 필요이고 명령이 1회 돈다"
 else
   bad "뒤집힌 대응 수렴" "사전 0 이 「필요」 로 읽히지 않았다"
 fi
