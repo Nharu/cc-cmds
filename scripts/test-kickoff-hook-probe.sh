@@ -44,8 +44,15 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'";
 for v in $(compgen -e | grep -E '^CC_PIPELINE_' || true); do
   unset "$v"
 done
+# The same clearing in the one spelling the meta suite's leak census looks for
+# in every suite that runs or sources the gate family — this one sources the
+# driver in a child shell.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The gate's run-open branch starts the dashboard server; nothing here stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 EMPTY="$WORK/empty-home"; mkdir -p "$EMPTY"
 HOME="$EMPTY"; ZDOTDIR="$EMPTY"
 BASH_PATH=$(command -v bash)

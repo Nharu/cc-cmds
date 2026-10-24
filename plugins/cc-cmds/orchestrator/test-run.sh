@@ -29,17 +29,15 @@
 set -uo pipefail
 
 # THE WHOLE PIPELINE ENVIRONMENT IS CLEARED BEFORE ANYTHING ELSE RUNS. This suite
-# can run inside a pipeline stage, which exports all eleven `CC_PIPELINE_*`
-# names, and the hook-decision sections (T13 onward) call the real pre-tool
-# hook: an inherited `CC_PIPELINE_MANIFEST` reaches it, and the hook opens the
-# real manifest's ledger and appends fixture rows to the run that is executing
-# this suite. All eleven are cleared, not just that one, because which name a
-# gate path reads next is not something this file can know. The top of the file
-# is the only place that covers every section.
-unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
-      CC_PIPELINE_RUN_DIR CC_PIPELINE_GRANT CC_PIPELINE_GATE \
-      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION
+# can run inside a pipeline stage, which exports its `CC_PIPELINE_*` names, and
+# the hook-decision sections (T13 onward) call the real pre-tool hook: an
+# inherited `CC_PIPELINE_MANIFEST` reaches it, and the hook opens the real
+# manifest's ledger and appends fixture rows to the run that is executing this
+# suite. Every name with the prefix is cleared, not just that one and not a list
+# of them, because which name a gate path reads next — or exports next — is not
+# something this file can know. The top of the file is the only place that
+# covers every section.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 
 # THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. The gate, the driver and the
 # watcher all raise real banners, and their fire path prepends the Homebrew
@@ -1720,6 +1718,66 @@ check "필드 불완전 → 선언불완전" "$(slicing_branch "$SLI/incomplete.
 # 필드 접근과 합성 규칙.
 check "필드 조회" "$(slice_field "$SLI/tilde.md" A '레포')" '`o/r`'
 check "슬라이스 id 열거" "$(slice_ids "$SLI/tilde.md" | tr '\n' ' ')" "A "
+
+# 한 id 가 다른 id 의 앞부분일 때 — `B` 는 앞에 선언된 `B0` 의 블록을 읽지 않는다.
+cat > "$SLI/prefix.md" <<'FIXP'
+## 구현 슬라이싱
+
+**슬라이스 수**: 2
+
+### 슬라이스 B0 — 입력 먼저
+
+**스킬**: implement
+**레포**: `o/r`
+**선언 파일**: `b0.txt`
+**선행**: 없음
+**절단점**: 머지
+
+### 슬라이스 B — 배포
+
+**스킬**: implement
+**레포**: `o/r`
+**선언 파일**: `b.txt`
+**선행**: B0
+**절단점**: 머지
+FIXP
+check "앞부분이 겹치는 id: B 의 필드는 B 블록에서 읽는다" "$(slice_field "$SLI/prefix.md" B '선언 파일')" '`b.txt`'
+check "앞부분이 겹치는 id: B 의 선행" "$(slice_field "$SLI/prefix.md" B '선행')" "B0"
+check "앞부분이 겹치는 id: B0 는 그대로" "$(slice_field "$SLI/prefix.md" B0 '선언 파일')" '`b0.txt`'
+if [ "$(slice_decl_digest "$SLI/prefix.md" B)" != "$(slice_decl_digest "$SLI/prefix.md" B0)" ]; then
+  ok "앞부분이 겹치는 id: 두 슬라이스의 선언 다이제스트가 다르다"
+else
+  bad "앞부분이 겹치는 id" "B 와 B0 의 선언 다이제스트가 같다"
+fi
+
+# id 바로 뒤에 다중 바이트 글자가 오거나 줄이 id 로 끝나는 헤딩 — macOS awk 가
+# 잘라 낸 UTF-8 선두 바이트에서 죽지 않고, `slice_ids` 와 같은 id 로 읽는다.
+cat > "$SLI/mbtail.md" <<'FIXM'
+## 구현 슬라이싱
+
+**슬라이스 수**: 4
+
+### 슬라이스 C—제목
+
+**선언 파일**: `c.txt`
+
+### 슬라이스 D·E
+
+**선언 파일**: `d.txt`
+
+### 슬라이스 F가
+
+**선언 파일**: `f.txt`
+
+### 슬라이스 G
+
+**선언 파일**: `g.txt`
+FIXM
+check "다중 바이트 후행 글자: id 열거" "$(slice_ids "$SLI/mbtail.md" | tr '\n' ' ')" "C D F G "
+check "다중 바이트 후행 글자: — 뒤" "$(slice_field "$SLI/mbtail.md" C '선언 파일')" '`c.txt`'
+check "다중 바이트 후행 글자: · 뒤" "$(slice_field "$SLI/mbtail.md" D '선언 파일')" '`d.txt`'
+check "다중 바이트 후행 글자: 한글 뒤" "$(slice_field "$SLI/mbtail.md" F '선언 파일')" '`f.txt`'
+check "id 로 끝나는 헤딩" "$(slice_field "$SLI/mbtail.md" G '선언 파일')" '`g.txt`'
 check "체크섬은 PR 이상 블록 수에서 파생된다" "$(slicing_pr_count "$SLI/tilde.md")" "1"
 sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`|' "$SLI/tilde.md" > "$SLI/skillonly.md"
 check "SKILL.md 만 선언하면 필드 검사 실패" "$(slicing_branch "$SLI/skillonly.md" 2>/dev/null)" "선언불완전"

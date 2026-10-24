@@ -1377,6 +1377,14 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -uo pipefail
+  # Run directly, this file clears what a pipeline stage exported to it, the
+  # same way every gate-family suite does. The line sits inside this guard and
+  # not at the top, because scripts/check-push.sh sources this file and then
+  # reads `CC_PIPELINE_RUN_ID` to choose its unattended merge mode; a top-level
+  # line would clear it the moment the library is sourced. It stays unindented
+  # because the meta suite's leak census matches the whole line, and asserts it
+  # sits after this guard.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
   case "${1:-}" in
     ci-base) shift; tt_cli_ci_base "$@"; exit $? ;;
     repro) shift; tt_cli_repro "$@"; exit $? ;;

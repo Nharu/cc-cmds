@@ -13,17 +13,30 @@
 #           clone's docs/design-audit/
 #     handoff  appends a handoff row with 사유=$STUB_HANDOFF to the run's
 #           ledger in the clone and exits 0 without done; with STUB_HALT set
-#           it also leaves halt/<stage>#1.md under the run directory, carrying
-#           a **추천** line when STUB_HALT=rec. Once a halt-answer was taken,
-#           the next router-shift acts as `ok` does on its second call
+#           it also leaves halt/<stage>#1.md under the run directory:
+#             rec     options `a`·`b` and a **추천** line
+#             norec   options `a`·`b`, no 추천, no 스킬 or 스텝 line
+#             policy  an audit run's design-audit-unattended
+#                     `Step 6 합성 질문(CFI-3b)` record with no 추천; a design
+#                     run acts as `ok`
+#             ladder  a design run's design-solo-unattended
+#                     `Step 7U / ladder-unsettled` record with no 추천; an
+#                     audit run acts as `ok`
+#           with STUB_DEADLINE_PARK=1 and no STUB_HALT it appends a `blocked`
+#           row whose 근거 carries `마감 초과 — ready_at`. Once a halt-answer
+#           was taken, the next router-shift acts as `ok` does on its second
+#           call
 #     deadline  as `ok`, but the run's done names the wall-clock deadline
-#
-#   act --kind halt-answer  exits $STUB_HALT_ANSWER_RC (default 0); on 0 it
-#           appends a 중단 답 row naming the record to the clone's ledger
 #     wait  exits 5 (an approval for a person)
 #     fail  exits 7
 #     failopen  opens the run, writes a result line costing $STUB_RUN_COST,
 #           and exits 7
+#   STUB_ONLY_DOC=<owner-doc> applies $STUB_GATE_MODE to that document's runs
+#   only; every other run acts as `ok`.
+#
+#   act --kind halt-answer  exits $STUB_HALT_ANSWER_RC (default 0); on 0 it
+#           appends a 중단 답 row naming the record, the option and the
+#           answering party it was given to the clone's ledger
 #
 # Every run writes plugin-pin and a result line costing $STUB_RUN_COST
 # (default 2) under ${XDG_STATE_HOME}/cc-cmds/run/<run id>/.
@@ -50,47 +63,81 @@ while (( $# > 0 )); do
 done
 [[ -f "$m" ]] || { echo "gate-stub: no manifest $m" >&2; exit 2; }
 
-case "${STUB_GATE_MODE:-ok}" in
+hdr() { head -n 8 "$m" | grep -oE "$1=[^;]*" | head -n 1 | sed "s/^$1=//"; }
+rid=$(hdr run-id); kind=$(hdr anchor-kind); doc=$(hdr owner-doc)
+
+mode="${STUB_GATE_MODE:-ok}"
+if [[ -n "${STUB_ONLY_DOC:-}" && "$doc" != "$STUB_ONLY_DOC" ]]; then mode=ok; fi
+if [[ "$mode" == "handoff" ]]; then
+  case "${STUB_HALT:-}:$kind" in
+    policy:intent|ladder:doc) mode=ok ;;
+  esac
+fi
+
+case "$mode" in
   wait) exit 5 ;;
   fail) exit 7 ;;
 esac
 
-hdr() { head -n 8 "$m" | grep -oE "$1=[^;]*" | head -n 1 | sed "s/^$1=//"; }
-rid=$(hdr run-id); kind=$(hdr anchor-kind); doc=$(hdr owner-doc)
 clone=$(grep -m 1 -E '^- `target` ' "$m" | tr '|' '\n' | sed -n 's/^ *메인 워크트리=//p' | sed 's/[[:space:]]*$//')
 rd="${XDG_STATE_HOME:?}/cc-cmds/run/$rid"
 mkdir -p "$rd/log"
 if [[ "$akind" == "halt-answer" ]]; then
   rc="${STUB_HALT_ANSWER_RC:-0}"
   (( rc == 0 )) || exit "$rc"
-  rec=""
-  for a in "$@"; do case "$a" in 중단\ 기록=*) rec="${a#*=}" ;; esac; done
-  printf -- '- `중단 답` | 중단 기록=%s | 답한 주체=좌석 | prev=0\n' "$rec" >> "$clone/docs/pipeline-run/$rid.md"
+  rec=""; by=""; opt="-"
+  for a in "$@"; do
+    case "$a" in
+      중단\ 기록=*) rec="${a#*=}" ;;
+      답한\ 주체=*) by="${a#*=}" ;;
+      선택지=*) opt="${a#*=}" ;;
+    esac
+  done
+  printf -- '- `중단 답` | 중단 기록=%s | 선택지=%s | 답한 주체=%s | prev=0\n' "$rec" "$opt" "$by" >> "$clone/docs/pipeline-run/$rid.md"
   touch "$rd/stub-answered"
   exit 0
 fi
-if [[ "${STUB_GATE_MODE:-ok}" == "handoff" ]]; then
+if [[ "$mode" == "handoff" ]]; then
   if [[ -e "$rd/stub-answered" ]]; then
     echo 1 > "$rd/stub-calls"
   else
     mkdir -p "$clone/docs/pipeline-run"
     printf -- '- `handoff` | 교대=1 | 사유=%s | prev=0\n' "${STUB_HANDOFF:?}" >> "$clone/docs/pipeline-run/$rid.md"
+    st=A1; [[ "$kind" == "intent" ]] && st=D1
     if [[ -n "${STUB_HALT:-}" ]]; then
-      st=A1; [[ "$kind" == "intent" ]] && st=D1
       mkdir -p "$rd/halt"
       {
         printf '<!-- cc-pipeline-halt v1; writer=stub; reader=orchestrator; stage=%s#1; run=%s -->\n' "$st" "$rid"
-        printf '**분류**: gate-unanswerable\n**선택지**:\n- `a` — 첫째\n- `b` — 둘째\n'
-        if [[ "$STUB_HALT" == "rec" ]]; then
-          printf '**추천**: `a` — 기록이 정한다\n**추천 근거**: 인터뷰 기록:첫째로 한다 / 상시 지침:되돌릴 수 있는 쪽\n'
-        fi
+        case "$STUB_HALT" in
+          policy)
+            printf '**스킬**: design-audit-unattended\n**스텝**: Step 6 합성 질문(CFI-3b)\n**분류**: gate-unanswerable\n**선택지**:\n'
+            printf -- '- `adopt as a requirement` — 합성 요구로 채택하고 재수렴한다\n'
+            printf -- '- `record in the unresolved-issues section` — 미해결 이슈 절에 적는다\n'
+            printf -- '- `reject` — 기각한다\n'
+            printf '**추천**: (없음) — 기록이 정하지 않는다\n'
+            ;;
+          ladder)
+            printf '**스킬**: design-solo-unattended\n**스텝**: Step 7U / ladder-unsettled\n**분류**: gate-unanswerable\n**선택지**:\n'
+            printf -- '- `잔여로 두고 동결` — 잔여 항목으로 두고 문서를 동결한다\n'
+            printf -- '- `골격 재검토` — 동결 뒤 재수렴한다\n'
+            printf '**추천**: (없음) — 기록이 정하지 않는다\n'
+            ;;
+          *)
+            printf '**분류**: gate-unanswerable\n**선택지**:\n- `a` — 첫째\n- `b` — 둘째\n'
+            if [[ "$STUB_HALT" == "rec" ]]; then
+              printf '**추천**: `a` — 기록이 정한다\n**추천 근거**: 인터뷰 기록:첫째로 한다 / 상시 지침:되돌릴 수 있는 쪽\n'
+            fi
+            ;;
+        esac
         printf '**하네스 오류**: (없음)\n<!-- /cc-pipeline-halt v1 -->\n'
       } > "$rd/halt/$st#1.md"
+    elif [[ "${STUB_DEADLINE_PARK:-0}" == "1" ]]; then
+      printf -- '- `blocked` | 교대=1 | 대상=exp | 근거=계보=B:%s#2 마감 초과 — ready_at 2026-10-19T09:00:00Z (stub) | prev=0\n' "$st" >> "$clone/docs/pipeline-run/$rid.md"
     fi
     exit 0
   fi
 fi
-if [[ "${STUB_GATE_MODE:-ok}" == "failopen" ]]; then
+if [[ "$mode" == "failopen" ]]; then
   printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "${STUB_RUN_COST:-2}" > "$rd/log/open.json"
   exit 7
 fi
@@ -118,7 +165,7 @@ else
   done
   printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "${STUB_RUN_COST:-2}" > "$rd/log/A1#1.json"
 fi
-if [[ "${STUB_GATE_MODE:-ok}" == "deadline" ]]; then
+if [[ "$mode" == "deadline" ]]; then
   echo "2026-10-17T05:00:00Z 종단 — 경계 마감 · 근거 마감 지남" > "$rd/done"
 else
   touch "$rd/done"

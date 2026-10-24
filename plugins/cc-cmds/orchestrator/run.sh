@@ -2004,8 +2004,19 @@ slice_ids() { slicing_body "$1" | sed -n 's/^### 슬라이스 \([A-Za-z0-9][A-Za
 
 slice_field() {
   # slice_field <doc> <id> <key>
+  # The id must end where the heading's id ends: a bare prefix match lets
+  # `### 슬라이스 B` open the block of an earlier `### 슬라이스 B0 — …`.
+  # The character after the id is tested with index(), not a regex: macOS awk
+  # counts substr() in bytes but matches regexes on wide characters, so a lone
+  # UTF-8 lead byte cut off before `—`, `·` or a Hangul syllable aborts it.
+  # An empty next character (the line ends with the id) is tested on its own,
+  # since awks disagree on what index() returns for an empty needle.
   slicing_body "$1" | awk -v id="### 슬라이스 $2" -v key="$3" '
-    index($0, id) == 1 { inb = 1; next }
+    BEGIN { idch = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" }
+    index($0, id) == 1 {
+      c = substr($0, length(id) + 1, 1)
+      if (c == "" || index(idch, c) == 0) { inb = 1; next }
+    }
     inb && /^### /     { exit }
     inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
   '
