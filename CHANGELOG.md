@@ -5,6 +5,38 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-10-24
+
+옛 Claude Design 연계 스킬 넷(`design-system`·`design-prompt`·`design-ingest`·`design-apply`)을 시각 디자인 스킬 쌍(`visual`·`visual-unattended`)으로 갈아 끼운다. 호스트 설정 파일 셋을 읽는 공유 도우미 셋이 들어오고, 디자인 계정이 맞는 고정 좌석에서만 발행하며, autopilot 은 화면을 가진 슬라이스의 구현을 그 화면이 승인될 때까지 기다리게 한다. 스킬 넷과 그 슬래시 커맨드가 사라지므로 major 릴리스다.
+
+### Added
+
+- **시각 디자인 스킬 쌍** — 대화형 `visual`(고정 좌석)과 무인 단계 `visual-unattended`, 둘이 함께 읽는 공유 계약 `skills/visual/references/`. 계약은 사이드카의 `**구현 승인**`·`**다듬기**` 줄과 `### 금지 후보` 절 문법을 정한다.
+- **공유 도우미 셋** — `orchestrator/visual-config.sh`(`account`·`models`·`bans`·`seed`·`append`·`snapshot`), `orchestrator/visual-check.sh`(`scan`·`size`·`approval`·`bundle`), `orchestrator/visual-capture.sh`(`ref`·`app`, 닫힌 로컬 포트 프록시로만 뜬다)와 금지 목록 씨앗 `orchestrator/visual-bans.seed`. 시험 `scripts/test-visual-config.sh`·`scripts/test-visual-check.sh`·`scripts/test-visual-capture.sh` 와 픽스처 `tests/fixtures/visual-check/` 가 함께 들어온다.
+- **autopilot 의 시각 단계와 승인 기다림** — 런 범위 단계 종류 `visual` 과 판단 부류 `시각-승인`. `**화면**` 필드로 화면을 짚는 슬라이스의 구현 파견은 승인 술어가 설 때까지 게이트가 거절한다. 라우터 교대에 시각 파견 형제 절(`autopilot-router-shift/references/visual-dispatch.md`)과 리드 사본이 생기고, 고정 그래프 드라이버는 `visual_arm` 과 화면 슬라이스 `park`(사유 「시각 승인 대기」)를 갖는다. 킥오프 기록 `## 시각 방향` 의 모델값과 금지 목록 사본을 단계에 넘기고, 아침 보고가 시각 대기를 적는다.
+- **게이트 등급 행** — 도우미 셋과, 허용 목록으로 좁힌 Chrome 스크린숏 행. Chrome 행은 경로를 링크까지 풀어 판정하고 Claude 설정 홈을 대소문자와 링크를 가리지 않고 막는다.
+
+### Changed
+
+- **Claude Design 도구 거부** — 모든 스테이지 설정 변형과 판단 호출이 `DesignSync`·`Artifact`·`ArtifactComments`·`ArtifactData` 를 거부한다.
+- **구현 쌍의 승인 소비** — 대화형 `implement` 는 화면 슬라이스의 승인 술어와 기계 검사 결과를 읽고, 무인 `implement-unattended` 는 승인 술어를 읽고 Step 3 꼬리에서 스크린숏 비교를 보고한다.
+- **판단 어휘와 린트** — 판단 어휘가 열셋, 금지 부류가 다섯이 되고 린트와 메타 시험이 그것을 잇는다.
+- **정지 분류** — `stage_kind_of` 가 `visual` 을 `design` 보다 먼저 분류한다.
+
+### Removed
+
+- **`design-system`·`design-prompt`·`design-ingest`·`design-apply` 스킬**과 그 슬래시 커맨드 넷, 공용 파일 `_common/handoff-contract.md`·`_common/parse-handoff.md`.
+
+### Why
+
+옛 흐름은 사람이 claude.ai 의 산출물을 손으로 옮겨 오는 네 단계였다. 무인 런은 화면이 승인되기 전에 그 화면의 구현에 들어갈 수 있었고, 디자인 계정과 다른 계정으로 로그인한 좌석에서도 발행될 수 있었다.
+
+### Post-install notes
+
+- 호스트 설정 디렉터리 `~/.config/cc-cmds/` 에 파일 셋을 둔다. `claude-design` 은 `account = <주소>` 한 줄, `visual-models` 는 `ds-generate`·`screen-generate`·`polish`·`implement-large`·`implement-large-threshold` 의 `key = value` 줄, `visual-bans` 는 처음 `visual-config.sh seed` 가 씨앗으로 심는다. 셋 다 `.env` 파일이 아니고 권한은 644 다. `visual` 은 그 계정으로 로그인한 설정 디렉터리의 고정 좌석에서 돌린다.
+- 옛 `docs/design-system/` 의 토큰은 새 흐름이 읽지 않는다. 계속 쓰려면 새 흐름의 디자인 시스템으로 옮긴다.
+- 옛 `docs/{slug}-fe/impl-design.md` 는 새 흐름이 읽지 않는다.
+
 ## [2.116.2] - 2026-10-24
 
 감사 리드가 조정 구간에서 내는 요청 수를 줄였다. 지금까지 리드는 발견 하나마다 설계 문서 사본과 감사 보고서를 따로 Edit 했고, Edit 직전마다 그 절을 다시 읽었으며, 압축 뒤에는 문서 전체를 다시 읽었다. 요청마다 커진 컨텍스트를 다시 읽으므로 이 반복이 감사 1회 비용의 대부분을 만들었다. 판독자 수·모델·프롬프트, 보고서와 공시 블록 형식, 조정 패스의 처분 종류와 의미는 그대로다.
