@@ -68,7 +68,22 @@ HOME="$WORK/home"; mkdir -p "$HOME"
 XDG_STATE_HOME="$WORK/state"; mkdir -p "$XDG_STATE_HOME"
 XDG_CONFIG_HOME="$WORK/config"; mkdir -p "$XDG_CONFIG_HOME"
 CC_CMDS_AUTOPILOT_DEFAULTS_FILE="$WORK/no-such-defaults"
-export HOME XDG_STATE_HOME XDG_CONFIG_HOME CC_CMDS_AUTOPILOT_DEFAULTS_FILE
+# The account directory the helper judges `플러그인 허용` rows by: a fixture one,
+# so no call reads the host's own configuration directory.
+CLAUDE_CONFIG_DIR="$WORK/claude"; mkdir -p "$CLAUDE_CONFIG_DIR"
+export HOME XDG_STATE_HOME XDG_CONFIG_HOME CC_CMDS_AUTOPILOT_DEFAULTS_FILE CLAUDE_CONFIG_DIR
+PA_N='notion@claude-plugins-official'; PA_O='figma@claude-plugins-official'
+PA_IP="$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+# pa_acct [key…] — the fixture account's installed record holds these keys and
+# `base@fixture`, so the account always reads at least one key.
+pa_acct() {
+  local k body='"base@fixture":[{"scope":"user"}]'
+  for k in "$@"; do body="$body,\"$k\":[{\"scope\":\"user\"}]"; done
+  mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
+  printf '{"version":2,"plugins":{%s}}\n' "$body" > "$PA_IP"
+}
+# pa_broken — the installed record does not parse, so a key not read is `판정 불가`.
+pa_broken() { mkdir -p "$CLAUDE_CONFIG_DIR/plugins"; printf '{' > "$PA_IP"; }
 
 # The gate calls in the dispatch case launch a stage: the stage CLI, the host's
 # stage-policy map and the metrics round are all inert for this process, as in
@@ -1399,6 +1414,103 @@ out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN8 --kickoff-at
 check "7: 검증한 해시와 다른 원천에서 render-manifest 는 1 이고 출력이 없다" "$rc/$out" "1/"
 [ "$rc" = "1" ] || tail -2 "$WORK/rk.err" >&2
 
+# (g) `플러그인 허용` rows on the person's path. The account has notion and
+# figma; the source carries notion's row, and figma is a default 5o confirmed
+# for a blank, appended through --rows with its blank row, its 5o line and its
+# answer in the confirmation line.
+pa_acct "$PA_N" "$PA_O"
+PA_ROW7="- \`플러그인 허용\` | 플러그인=$PA_N | 사유=픽스처"
+PA_DEF="- \`플러그인 허용\` | 플러그인=$PA_O | 사유=킥오프 기본값"
+P_EXTRA="$PA_ROW7" mk_prev RKPH; fx_done
+PMH=$(sha "$BASE/docs/pipeline-run/RKPH.plan.md"); PGH=$(sha "$BASE/docs/pipeline-grant/RKPH.md")
+VS_PREV="$BASE/docs/pipeline-run/RKPH.plan.md"; VS_PMSHA="$PMH"; VS_PGSHA="$PGH"
+# ph_render <out> <args…> — render-manifest from RKPH.
+ph_render() {
+  local o="$1"; shift
+  rk render-manifest --prev RKPH --base "$BASE" --run-id RKNP --kickoff-at "$KAT1" --deadline "$DL1" \
+     --expect-sha256 "$PMH" --expect-grant-sha256 "$PGH" "$@" > "$o"
+}
+ph_render "$WORK/v-pa0.md" --asked "$E"; rc=$?
+check "7: 플러그인 행을 가진 원천의 render-manifest 는 0 이고 그 행을 바이트 그대로 하나 옮긴다" \
+  "$rc/$(grep -c '^- `플러그인 허용`' "$WORK/v-pa0.md")/$(grep -cxF -- "$PA_ROW7" "$WORK/v-pa0.md")" "0/1/1"
+mf_check "$WORK/v-pa0.md"; rc=$?
+check "7: 플러그인 행을 이어 쓴 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "이어 쓴 플러그인 행만 가진 사람 초안은 통과한다" 통과 "$WORK/v-pa0.md" "$E"
+grep -vxF -- "$PA_ROW7" "$WORK/v-pa0.md" > "$WORK/v-pa0-drop.md"
+vs "키가 켬인 앞선 행을 뺀 사람 초안은 실패한다" 실패 "$WORK/v-pa0-drop.md" "$E" 플러그인
+sed '/^- `플러그인 허용`/s/| 사유=픽스처$/| 사유=바뀜/' "$WORK/v-pa0.md" > "$WORK/v-pa0-ch.md"
+vs "앞선 행과 바이트가 다른 플러그인 행의 사람 초안은 실패한다" 실패 "$WORK/v-pa0-ch.md" "$E" 플러그인
+
+# The --rows file is the whole set of shape and auto-adoption rows: with no
+# question asked about them, the source's rows are copied into it verbatim.
+PH_SHAPE=$(grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$BASE/docs/pipeline-run/RKPH.plan.md")
+{ printf '%s\n' "$PH_SHAPE"; printf '%s\n' "$PA_DEF"; } > "$WORK/rows-pa"
+printf '5o 런:plugin-allow=%s\t런:plugin-allow=%s\n' "$PA_O" "$PA_O" > "$WORK/asked-pa"
+blanks "$WORK/blanks-pa" "런${TAB}plugin-allow${TAB}$PA_O"
+ph_render "$WORK/v-pa1.md" --asked "$WORK/asked-pa" --rows "$WORK/rows-pa"; rc=$?
+check "7: --rows 의 플러그인 행을 받은 render-manifest 는 0 이다" "$rc" "0"
+[ "$rc" = 0 ] || tail -2 "$WORK/rk.err" >&2
+check "7: 덧붙인 행은 이어 쓴 행 뒤, 출처 행 앞에 온다" \
+  "$(grep -E '^- `(플러그인 허용` |사전 인가` \| 이어받은 런=)' "$WORK/v-pa1.md" | awk -F' [|] ' '{ print $2 }' | paste -sd/ -)" \
+  "플러그인=$PA_N/플러그인=$PA_O/이어받은 런=RKPH"
+has "7: 사용자 확인 문면이 5o 의 플러그인 답을 적는다" "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$WORK/v-pa1.md")" " / 런:plugin-allow=$PA_O"
+check "7: 원천에는 사전 인가 형태 행과 자동 채택 행이 하나씩 있다" \
+  "$(printf '%s\n' "$PH_SHAPE" | grep -c '^- `사전 인가` | 형태=')/$(printf '%s\n' "$PH_SHAPE" | grep -c '^- `자동 채택`')" "1/1"
+check "7: 앞선 형태·자동 채택 행을 옮겨 적은 --rows 는 그 행을 바이트 그대로 잇는다" \
+  "$(grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$WORK/v-pa1.md")" "$PH_SHAPE"
+# The render alone: a --rows file holding one plugin row and no shape or
+# auto-adoption row — what a person who declined the carried rows and confirmed
+# one plugin default passes — must not let the source's rows survive.
+printf '%s\n' "$PA_DEF" > "$WORK/rows-pa-only"
+ph_render "$WORK/v-pa2.md" --asked "$WORK/asked-pa" --rows "$WORK/rows-pa-only"; rc=$?
+check "7: 플러그인 행만 든 --rows 의 render-manifest 는 0 이고 덧붙인 행을 지닌다" \
+  "$rc/$(grep -cxF -- "$PA_DEF" "$WORK/v-pa2.md")" "0/1"
+check "7: 플러그인 행만 든 --rows 는 앞선 형태·자동 채택 행을 남기지 않는다" \
+  "$(grep -cE '^- `(사전 인가` \| 형태=|자동 채택`)' "$WORK/v-pa2.md")" "0"
+: > "$WORK/rows-none"
+ph_render "$WORK/v-pa3.md" --asked "$E" --rows "$WORK/rows-none"; rc=$?
+check "7: 빈 --rows 는 앞선 형태·자동 채택 행을 남기지 않는다" \
+  "$rc/$(grep -cE '^- `(사전 인가` \| 형태=|자동 채택`)' "$WORK/v-pa3.md")" "0/0"
+mf_check "$WORK/v-pa1.md"; rc=$?
+check "7: 기본값 행을 덧붙인 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "5o 확정 기본값을 덧붙인 초안은 --set 없이 --blank-rows 를 적재해 통과한다" 통과 "$WORK/v-pa1.md" "$WORK/asked-pa" "" \
+  --blank-rows "$WORK/blanks-pa"
+vs "--blank-rows 가 없으면 덧붙인 플러그인 행은 실패한다" 실패 "$WORK/v-pa1.md" "$WORK/asked-pa" 플러그인
+{ printf 'cc-rekick v1\n'; tail -n +2 "$WORK/blanks-pa"; } > "$WORK/blanks-pa-hdr"
+vs "머리가 다른 빈칸 행 파일로는 덧붙인 플러그인 행이 실패한다" 실패 "$WORK/v-pa1.md" "$WORK/asked-pa" 플러그인 \
+  --blank-rows "$WORK/blanks-pa-hdr"
+blanks "$WORK/blanks-pa-other" "런${TAB}cost-ceiling${TAB}12"
+vs "빈칸 행에 없는 키를 덧붙인 초안은 실패한다" 실패 "$WORK/v-pa1.md" "$WORK/asked-pa" 플러그인 \
+  --blank-rows "$WORK/blanks-pa-other"
+vs "5o 줄 없이 덧붙인 플러그인 행은 실패한다" 실패 "$WORK/v-pa1.md" "$E" 플러그인 --blank-rows "$WORK/blanks-pa"
+sed '/^- `플러그인 허용`/s/| 사유=킥오프 기본값$/| 사유=다른 사유/' "$WORK/v-pa1.md" > "$WORK/v-pa1-r.md"
+vs "사유가 킥오프 기본값이 아닌 덧붙임은 실패한다" 실패 "$WORK/v-pa1-r.md" "$WORK/asked-pa" 플러그인 \
+  --blank-rows "$WORK/blanks-pa"
+sed "s| / 런:plugin-allow=$PA_O||" "$WORK/v-pa1.md" > "$WORK/v-pa1-c.md"
+vs "사용자 확인 문면에 플러그인 답이 없는 덧붙임은 실패한다" 실패 "$WORK/v-pa1-c.md" "$WORK/asked-pa" 플러그인 \
+  --blank-rows "$WORK/blanks-pa"
+pa_acct "$PA_N"
+vs "덧붙인 키가 지금 켬이 아니면 실패한다" 실패 "$WORK/v-pa1.md" "$WORK/asked-pa" 플러그인 --blank-rows "$WORK/blanks-pa"
+pa_acct "$PA_N" "$PA_O"
+# Rows --rows may not add.
+printf '%s\n' '- `플러그인 허용` | 플러그인=badkey | 사유=킥오프 기본값' > "$WORK/rows-pa-bad"
+ph_render "$WORK/v-pax.md" --rows "$WORK/rows-pa-bad"; rc=$?
+check "7: 모양이 틀린 --rows 플러그인 행은 render-manifest 가 1 이고 출력이 없다" "$rc/$(cat "$WORK/v-pax.md")" "1/"
+has "7: 그 거절은 형식을 짚는다" "$(cat "$WORK/rk.err")" "플러그인 허용 행 형식이 어긋났습니다"
+printf '%s\n' "- \`플러그인 허용\` | 플러그인=$PA_N | 사유=킥오프 기본값" > "$WORK/rows-pa-dup"
+ph_render "$WORK/v-pax.md" --rows "$WORK/rows-pa-dup"; rc=$?
+check "7: 이어 쓴 키와 같은 키의 --rows 행은 render-manifest 가 1 이고 출력이 없다" "$rc/$(cat "$WORK/v-pax.md")" "1/"
+has "7: 그 거절은 이어 쓰는 행을 짚는다" "$(cat "$WORK/rk.err")" "앞선 런에서 이어 쓰는 행이 이미 있습니다"
+printf '%s\n%s\n' "$PA_DEF" "$PA_DEF" > "$WORK/rows-pa-two"
+ph_render "$WORK/v-pax.md" --rows "$WORK/rows-pa-two"; rc=$?
+check "7: --rows 안에서 같은 키가 두 번이면 render-manifest 가 1 이다" "$rc" "1"
+has "7: 그 거절은 두 행을 짚는다" "$(cat "$WORK/rk.err")" "행이 둘 이상입니다"
+printf '%s\n' '- `플러그인 허용` | 플러그인=cc-cmds@inline | 사유=킥오프 기본값' > "$WORK/rows-pa-inl"
+ph_render "$WORK/v-pax.md" --rows "$WORK/rows-pa-inl"; rc=$?
+check "7: @inline 키의 --rows 행은 render-manifest 가 1 이다" "$rc" "1"
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+rm -rf "$CLAUDE_CONFIG_DIR"; mkdir -p "$CLAUDE_CONFIG_DIR"
+
 # ---------------------------------------------------------------------------
 # 12. 좌석 — judge 의 금지선과 기다림, --auto 렌더·검증, 연쇄 계수
 # ---------------------------------------------------------------------------
@@ -1592,9 +1704,12 @@ check "12: 답 없는 중단 기록은 L5 로 셈한다" "$(fact "$out" '미답 
 # seat_link <src> <new> [render args…] — items 2, 5 and 7.1–7.5 of the seat's
 # path; SL_AUTO empty takes the person's path instead. Sets SL_RC (render),
 # SL_VS (verify-subset verdict), SL_OUT (the draft, written only on 0). SL_DOC
-# and SL_DOCSHA name the design document of a source that is not on DOC.
+# and SL_DOCSHA name the design document of a source that is not on DOC. The
+# stderr of the render and of verify-subset land in sl.rerr and sl.verr; SL_MID
+# names a function run between the two calls.
 seat_link() {
   local src="$1" new="$2" auto="${SL_AUTO---auto}" v c conf; shift 2
+  : > "$WORK/sl.rerr"; : > "$WORK/sl.verr"
   local pm="$BASE/docs/pipeline-run/$src.plan.md"
   v=$(rk verify --prev "$src" --base "$BASE")
   SL_PMS=$(printf '%s\n' "$v" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
@@ -1608,6 +1723,7 @@ seat_link() {
   # shellcheck disable=SC2086
   rk render-manifest $auto --prev "$src" --base "$BASE" --run-id "$new" --kickoff-at "$SL_KAT" --deadline "$SL_DL" \
      --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$SL_ASKED" "$@" > "$WORK/sl.draft"; SL_RC=$?
+  cp "$WORK/rk.err" "$WORK/sl.rerr"
   [ "$SL_RC" = 0 ] && [ -s "$WORK/sl.draft" ] || return 0
   cp "$WORK/sl.draft" "$SL_OUT"
   if grep -q '^- `사전 인가` | 인터뷰 기록=' "$SL_OUT"; then
@@ -1615,9 +1731,11 @@ seat_link() {
   fi
   conf=$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$SL_OUT")
   grant_block "$new" 머지 '픽스처가 끝나면' "$conf" "${SL_DOCSHA:-$DOCSHA}" > "$WORK/sl.block"
+  [ -z "${SL_MID:-}" ] || "$SL_MID"
   # shellcheck disable=SC2086
   SL_VS=$(col "$(rk verify-subset "$SL_OUT" "$pm" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" \
             --asked "$SL_ASKED" --grant "$WORK/sl.block" $auto)" 판정)
+  cp "$WORK/rk.err" "$WORK/sl.verr"
   write_grant "$new" "${SL_DOC:-$DOC}" "$WORK/sl.block"
 }
 # adopt_run <id> — the run directory, ledger, lineage and index of a run whose
@@ -1762,19 +1880,89 @@ check "12: --targets 없이 그리면 원천 대상 행이 그대로 옮겨진�
   "$(grep -E '^- `target`' "$SL_OUT")" "$(grep -E '^- `target`' "$BASE/docs/pipeline-run/RKCT.plan.md")"
 SL_ASKED=""
 
-# A `플러그인 허용` row is the person's answer to 5t at one kickoff and is not
-# carried: the successor is drawn without it and still passes its checks.
-PA_ROW='- `플러그인 허용` | 플러그인=notion@claude-plugins-official | 사유=픽스처'
+# A `플러그인 허용` row whose key an account has now carries byte for byte, and
+# the successor passes its checks.
+PA_ROW="- \`플러그인 허용\` | 플러그인=$PA_N | 사유=픽스처"
+pa_acct "$PA_N"
 P_EXTRA="$SEAT_ROW
 $PA_ROW" mk_seat RKPA 마감
 check "12: 원천 매니페스트에 플러그인 허용 행이 있다 (다음 단언이 공허하지 않다)" \
   "$(grep -cxF -- "$PA_ROW" "$BASE/docs/pipeline-run/RKPA.plan.md")" "1"
 seat_link RKPA RKPA1
 check "12: 플러그인 허용 행이 있는 원천도 render-manifest --auto 가 0 이고 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
-check "12: 후속 매니페스트에는 플러그인 허용 행이 없다" "$(grep -c '^- `플러그인 허용`' "$SL_OUT" || true)" "0"
+check "12: 후속 매니페스트에는 플러그인 허용 행이 바이트 그대로 하나 있다" \
+  "$(grep -c '^- `플러그인 허용`' "$SL_OUT")/$(grep -cxF -- "$PA_ROW" "$SL_OUT")" "1/1"
 mf_check "$SL_OUT"; rc=$?
-check "12: 플러그인 허용 행을 뺀 후속 초안이 check_manifest 를 통과한다" "$rc" "0"
+check "12: 플러그인 허용 행을 이어 쓴 후속 초안이 check_manifest 를 통과한다" "$rc" "0"
 [ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+check "12: 키가 켬인 행만 이으면 렌더와 verify-subset 이 플러그인 알림을 내지 않는다" \
+  "$(cat "$WORK/sl.rerr" "$WORK/sl.verr" | grep -c '^플러그인 알림' || true)" "0"
+printf '%s\n' "- \`플러그인 허용\` | 플러그인=$PA_O | 사유=킥오프 기본값" > "$WORK/rows-seat"
+seat_link RKPA RKPAR --rows "$WORK/rows-seat"
+check "12: --auto 의 --rows 에 플러그인 행이 있으면 render-manifest 가 1 이고 초안이 없다" \
+  "$SL_RC/$( [ -s "$WORK/sl.draft" ] && echo 있음 || echo 없음)" "1/없음"
+has "12: 그 거절은 좌석이 기본값을 확정하지 않는다고 짚는다" "$(cat "$WORK/sl.rerr")" "좌석은 기본값을 확정하지 않습니다"
+
+# The transition table: the key's state at the render, then at verify-subset,
+# made by changing the fixture account between the two calls. 켬 installs the
+# key, 미설치 leaves only another key, 불가 makes the installed record unreadable.
+pa_to() { case "$1" in 켬) pa_acct "$PA_N" ;; 미설치) pa_acct ;; 불가) pa_broken ;; esac; }
+pa_mid() { pa_to "$PA_V"; }
+pn() { grep '^플러그인 알림' "$1" | paste -sd'~' -; }
+PN_UNSURE=$(printf '플러그인 알림\t판정 불가 이월\t%s\t%s' "$PA_N" "$PA_IP")
+PN_LEFT=$(printf '플러그인 알림\t초안에 남은 미설치 행\t%s' "$PA_N")
+PN_ON=$(printf '플러그인 알림\t초안에서 빠진 켬 행\t%s' "$PA_N")
+PN_OUT=$(printf '플러그인 알림\t초안에서 빠진 판정 불가 행\t%s\t%s' "$PA_N" "$PA_IP")
+P_EXTRA="$SEAT_ROW
+$PA_ROW" mk_seat RKPT 마감
+n=0
+for tr in 켬:켬 켬:불가 불가:켬 불가:불가 켬:미설치 불가:미설치 미설치:켬 미설치:불가 미설치:미설치; do
+  n=$((n + 1)); r=${tr%%:*}; PA_V=${tr#*:}
+  case "$r" in 미설치) want_d=0 ;; *) want_d=1 ;; esac
+  case "$r" in 불가) want_r=$PN_UNSURE ;; *) want_r='' ;; esac
+  case "$r:$PA_V" in
+    켬:미설치|불가:미설치) want_v=$PN_LEFT ;;
+    미설치:켬) want_v=$PN_ON ;;
+    미설치:불가) want_v=$PN_OUT ;;
+    *) want_v='' ;;
+  esac
+  pa_to "$r"; SL_MID=pa_mid seat_link RKPT "RKPT$n"
+  check "12: 전이 ${r}→${PA_V} — 렌더 0 · 초안의 행 수 · verify-subset --auto 통과" \
+    "$SL_RC/$(grep -cxF -- "$PA_ROW" "$SL_OUT" || true)/$SL_VS" "0/$want_d/통과"
+  check "12: 전이 ${r}→${PA_V} — 렌더 표준 오류의 플러그인 알림" "$(pn "$WORK/sl.rerr")" "$want_r"
+  check "12: 전이 ${r}→${PA_V} — verify-subset 표준 오류의 플러그인 알림" "$(pn "$WORK/sl.verr")" "$want_v"
+  [ "$r:$PA_V" = 켬:켬 ] && cp "$SL_OUT" "$WORK/pt-on.md"
+done
+PA_SEED=$(grep -E '^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$' "$ORCH/plugin-allow.seed" | sed -n 1p)
+PA_ROW_S="- \`플러그인 허용\` | 플러그인=$PA_SEED | 사유=시드"
+P_EXTRA="$SEAT_ROW
+$PA_ROW_S" mk_seat RKPS 마감
+n=0
+for st in 켬 불가; do
+  n=$((n + 1)); pa_to "$st"; seat_link RKPS "RKPS$n"
+  check "12: 시드 키의 앞선 행은 버린다 (계정 $st) — 렌더 0 · 행 0 · verify-subset --auto 통과 · 알림 없음" \
+    "$SL_RC/$(grep -c '^- `플러그인 허용`' "$SL_OUT" || true)/$SL_VS/$(pn "$WORK/sl.rerr")$(pn "$WORK/sl.verr")" "0/0/통과/"
+done
+
+# Differences no transition explains fail; a row taken out by hand passes with
+# its notice, which the check cannot tell from a state change.
+VS_PREV="$BASE/docs/pipeline-run/RKPT.plan.md"; VS_PMSHA=$(sha "$VS_PREV"); VS_PGSHA=$(sha "$BASE/docs/pipeline-grant/RKPT.md")
+: > "$WORK/asked-pt"
+pa_acct "$PA_N" "$PA_O"
+vs "켬→켬 초안은 다시 검사해도 --auto 에서 통과한다" 통과 "$WORK/pt-on.md" "$WORK/asked-pt" "" --auto
+sed '/^- `플러그인 허용`/s/| 사유=픽스처$/| 사유=바뀜/' "$WORK/pt-on.md" > "$WORK/pt-ch.md"
+vs "앞선 행과 바이트가 다른 플러그인 행은 --auto 에서 실패한다" 실패 "$WORK/pt-ch.md" "$WORK/asked-pt" 플러그인 --auto
+awk -v r="- \`플러그인 허용\` | 플러그인=$PA_O | 사유=킥오프 기본값" '{ print } $0 ~ /^- `플러그인 허용`/ { print r }' "$WORK/pt-on.md" > "$WORK/pt-add.md"
+vs "앞선 런에 없던 플러그인 행은 --auto 에서 실패한다" 실패 "$WORK/pt-add.md" "$WORK/asked-pt" 플러그인 --auto
+awk -v r="$PA_ROW_S" '{ print } $0 ~ /^- `플러그인 허용`/ { print r }' "$WORK/pt-on.md" > "$WORK/pt-seed.md"
+vs "키가 시드인 플러그인 행은 --auto 에서 실패한다" 실패 "$WORK/pt-seed.md" "$WORK/asked-pt" 플러그인 --auto
+grep -vxF -- "$PA_ROW" "$WORK/pt-on.md" > "$WORK/pt-drop.md"
+vs "상태를 바꾸지 않고 켬 행을 뺀 초안은 --auto 에서 통과한다" 통과 "$WORK/pt-drop.md" "$WORK/asked-pt" "" --auto
+check "12: 그 통과는 초안에서 빠진 켬 행 알림 한 줄을 낸다" "$(pn "$WORK/rk.err")" "$PN_ON"
+pa_broken
+vs "상태를 바꾸지 않고 판정 불가 행을 뺀 초안은 --auto 에서 통과한다" 통과 "$WORK/pt-drop.md" "$WORK/asked-pt" "" --auto
+check "12: 그 통과는 초안에서 빠진 판정 불가 행 알림 한 줄을 읽지 못한 경로와 함께 낸다" "$(pn "$WORK/rk.err")" "$PN_OUT"
+rm -rf "$CLAUDE_CONFIG_DIR"; mkdir -p "$CLAUDE_CONFIG_DIR"
 
 # The seat's wording that no helper prints: the stub's reason line and the
 # notice for a failure on the immediate path.

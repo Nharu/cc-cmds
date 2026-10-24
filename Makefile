@@ -182,11 +182,12 @@ check-push-verify:
 # and skip the suite. An explicit GATE_SUITE_BASE that does not resolve, or no
 # candidate left at all, is the no-base case and runs the suite.
 #
-# The full suite takes about three hours serially — the thirteen CI shards add
-# up to about 177 minutes — so it ends within neither the foreground tool limit
-# nor the two-hour background one, and the full regression is PR CI's job
-# (thirteen shards, about 10 to 22 minutes each). A change whose gate.sh edit
-# crosses only some sections narrows the run with
+# The full suite takes about three hours serially — the twenty-six CI shards
+# add up to about 280 minutes, more than that because every shard pays its own
+# prelude — so it ends within neither the foreground tool limit nor the
+# two-hour background one, and the full regression is PR CI's job (twenty-six
+# shards, about 11 minutes each on average and the slowest about 16). A change
+# whose gate.sh edit crosses only some sections narrows the run with
 # GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' — the same
 # section choice the repository's test rules ask for. Interactively the default
 # stays the full suite, and the message before the run says what it costs and
@@ -228,7 +229,7 @@ else \
 fi
 endef
 
-GATE_SUITE_REFUSAL := check-gate-suite: 무인 런에서는 기본값 전량을 시작하지 않는다 — 전량은 직렬 약 3시간(CI 13샤드 소요 합 약 177분)이라 백그라운드 도구 상한 2시간 안에도 끝나지 않는다. GATE_SUITE_CMD 를 지명해 바꾼 축의 절만 돌린다: GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>'. 전량 회귀는 PR CI(13샤드, 샤드당 약 10~22분)가 진다 — PR 이 없는 런에서는 미판정으로 남기고 스테이지 보고에 적는다
+GATE_SUITE_REFUSAL := check-gate-suite: 무인 런에서는 기본값 전량을 시작하지 않는다 — 전량은 직렬 약 3시간(CI 26샤드 소요 합 약 280분)이라 백그라운드 도구 상한 2시간 안에도 끝나지 않는다. GATE_SUITE_CMD 를 지명해 바꾼 축의 절만 돌린다: GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>'. 전량 회귀는 PR CI(26샤드, 샤드당 평균 약 11분, 가장 긴 샤드 약 16분)가 진다 — PR 이 없는 런에서는 미판정으로 남기고 스테이지 보고에 적는다
 
 # The same refusal check-gate-suite makes, decided up front for `check`: an
 # unattended run whose GATE_SUITE_CMD came from this file, on a tree where the
@@ -263,7 +264,7 @@ check-gate-suite:
 	  exit 0; \
 	fi; \
 	echo "check-gate-suite: $(GATE_SUITE_TRIGGER) 가 $$base 대비 바뀌어 게이트 스위트를 돌린다"; \
-	echo "check-gate-suite: 전량은 직렬 약 3시간(CI 13샤드 소요 합 약 177분)이라 포그라운드 도구 상한도, 백그라운드 도구 상한 2시간도 넘는다 — 바꾼 축의 절만 돌리려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' 로 좁힌다 (전량 회귀는 PR CI 가 13샤드로 진다)"; \
+	echo "check-gate-suite: 전량은 직렬 약 3시간(CI 26샤드 소요 합 약 280분)이라 포그라운드 도구 상한도, 백그라운드 도구 상한 2시간도 넘는다 — 바꾼 축의 절만 돌리려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' 로 좁힌다 (전량 회귀는 PR CI 가 26샤드로 진다)"; \
 	run_suite
 
 # Whether check-gate-suite decides anything. `make -n check | grep test-gate`
@@ -494,8 +495,8 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 # table (CI's plan job), the union check and the row ids `gate-shard` asks the
 # partitioner for, and to the census. N goes to the matrix and its number check
 # and is the SHARD a `gate-shard` call takes.
-GATE_SHARDS ?= 13
-GATE_LANES ?= 2
+GATE_SHARDS ?= 26
+GATE_LANES ?= 1
 GATE_SLOTS := $(shell echo $$(( $(GATE_SHARDS) * $(GATE_LANES) )))
 
 # So CI can read the numbers instead of spelling them a second time.

@@ -444,7 +444,9 @@ gate_may_raise_banner() {
 # submitted — so resolving it is adopting that recommendation, but ONLY for a class that
 # may be adopted: one inside the judgment vocabulary and not in
 # `JUDGMENT_CLASSES_FORBIDDEN` (`팀-구성`, `시각-면제` and `설계-골격` hand risk
-# to the user; `사람-결정` is held for a person instead). Everything else is
+# to the user; the person set `JUDGMENT_CLASSES_PERSON` — `사람-결정` and
+# `시각-승인` — is held for a person instead, and `시각-승인` is closed only by
+# its own predicate arm, `gate_visual_approval_resolve`). Everything else is
 # resolved the other way, as a refusal — those risk-handing classes, a class
 # outside the vocabulary, and a judgment carrying no class at all. The run keeps moving without taking
 # the risk on anyone's behalf, and a judgment whose class was lost on the way
@@ -1202,6 +1204,16 @@ gate_reach_runlocal_proof() {
   [ "$n" -ge 1 ]
 }
 
+gate_reach_global_prefixes() {
+  # gate_reach_global_prefixes — the package-manager prefixes the reach floor
+  # raises to `기기전역`, one per line. The Chrome row's path check
+  # (`gate_chrome_path_ok`) refuses the same list, so a destination the floor
+  # cannot see inside `--screenshot=<path>` is held where the floor would have
+  # held it. A function and not a top-level array: the in-process test seam
+  # reached the grader with such an array unset.
+  printf '%s\n' /usr/local /opt/homebrew
+}
+
 gate_reach_derived_full() {
   # gate_reach_derived_full <alias> <argv...> — the same floor, with where it came
   # from. The first line is `<도달>\t<유래>`, the origin being `cmd` (a command
@@ -1296,12 +1308,23 @@ gate_reach_derived_full() {
   esac
   # Absolute paths into the user's own configuration, wherever they sit in argv.
   # EVERY MATCH IS COLLECTED, not the first: each is a word the row must carry.
+  local pfx gpfx
+  gpfx=$(gate_reach_global_prefixes)
   for a in "$@" ${gpaths[@]+"${gpaths[@]}"}; do
     case "$a" in
-      "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*|/usr/local/*|/opt/homebrew/*)
+      "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*)
         paths="$paths$a
-" ;;
+"
+        continue ;;
     esac
+    while IFS= read -r pfx; do
+      case "$a" in
+        "$pfx"/*)
+          paths="$paths$a
+"
+          break ;;
+      esac
+    done <<< "$gpfx"
   done
   [ -n "$paths" ] && { printf '기기전역\tpath\n%s' "$paths"; return 0; }
   # A deploy trigger the manifest named for this target.
@@ -5829,6 +5852,8 @@ surface_of_argv0() {
   case "$cmd" in
     clickup-create.py|clickup-relate.py|base-split.py|similar-items.py)
       gate_own_helper "$1" || { printf '등급 미상'; return 0; } ;;
+    visual-config.sh|visual-check.sh|visual-capture.sh)
+      gate_own_helper "$1" || { printf '등급 미상'; return 0; } ;;
     # The stage rules helper is reached by its path only. A bare name is
     # whatever the act's PATH puts first, and nothing tells the person who runs
     # `status` to put this directory there.
@@ -5980,6 +6005,40 @@ surface_of_argv0() {
         status) printf '읽기' ;;
         *)      printf '등급 미상' ;;
       esac ;;
+    # The three visual helpers, graded by their subcommand. `visual-config.sh
+    # snapshot` reads the run's copy of the visual settings; its other
+    # subcommands write the settings home or the sidecar, which is the seat's
+    # work and never a stage's, so they take the unknown grade and its refusal.
+    # `visual-check.sh` only reads the document, the sidecar and the screens.
+    # `visual-capture.sh` writes its screenshots into an output directory outside
+    # the tree, and `app` serves the build on a loopback port it takes down itself.
+    visual-config.sh)
+      case "${1:-}" in
+        snapshot) printf '읽기' ;;
+        *)        printf '등급 미상' ;;
+      esac ;;
+    visual-check.sh)
+      case "${1:-}" in
+        scan|size|approval|bundle) printf '읽기' ;;
+        *)                         printf '등급 미상' ;;
+      esac ;;
+    visual-capture.sh)
+      case "${1:-}" in
+        ref|app) printf '트리밖쓰기' ;;
+        *)       printf '등급 미상' ;;
+      esac ;;
+    # A HEADLESS CHROME SCREENSHOT, AND NOTHING ELSE CHROME DOES. Rendering a
+    # local page to an image file is how an unattended review compares a screen,
+    # and with no row the binary fell to `등급 미상`. The row is narrow on
+    # purpose: only the headless screenshot form — `--headless`, one
+    # `--screenshot=` path outside the tree, one local `file:///` target and
+    # no flag outside a short allow-list (`gate_chrome_headless_screenshot`) —
+    # writes one file outside the tree; any other spelling may open a remote
+    # page, sync, serve a port or launch another program, and keeps the unknown
+    # grade. The names are the ones the capture helper searches for, and the
+    # macOS bundle binary's own name.
+    google-chrome|chromium|chromium-browser|chrome|'Google Chrome')
+      if gate_chrome_headless_screenshot "$@"; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
     # The note above says `openssl` may not sit in the digest row because one
     # name would cover both hashing and opening a socket. That reasoning holds
     # and is not overturned here — it is the reason this is a subcommand table
@@ -10175,21 +10234,22 @@ gate_plan_skill_step_count() {
 }
 
 gate_run_scope_step() {
-  # gate_run_scope_step <종류> — `design`, `audit` or `split`. Prints the plan's
-  # single step id of that kind and returns 0, or returns 1. A design step exists
-  # only in a plan that requires a design. An audit step is run-scope in that
-  # plan, and in a plan with no design step at all, whose audit reads a document
-  # that was frozen before the run. A split step is run-scope wherever the plan
-  # names exactly one.
+  # gate_run_scope_step <종류> — `design`, `audit`, `split` or `visual`. Prints
+  # the plan's single step id of that kind and returns 0, or returns 1. A design
+  # step exists only in a plan that requires a design. An audit step is
+  # run-scope in that plan, and in a plan with no design step at all, whose
+  # audit reads a document that was frozen before the run. A split step and a
+  # visual step are run-scope wherever the plan names exactly one.
   local skill req ids
   case "${1:-}" in
     design) skill='design' ;;
     audit)  skill='design-audit' ;;
     split)  skill='split' ;;
+    visual) skill='visual' ;;
     *)      return 1 ;;
   esac
   req=$(manifest_plan_json 2>/dev/null | jq -r '.design_required' 2>/dev/null || true)
-  if [ "$skill" != "split" ] && [ "$req" != "true" ]; then
+  if [ "$skill" != "split" ] && [ "$skill" != "visual" ] && [ "$req" != "true" ]; then
     [ "$skill" = "design-audit" ] || return 1
     [ "$(gate_plan_skill_step_count design)" = "0" ] || return 1
   fi
@@ -10208,13 +10268,16 @@ gate_run_scope_step() {
 #   design           | design          | design
 #   audit            | design-audit    | audit
 #   split            | split           | split
+#   visual           | visual          | visual
 #
 # A base run is `design → design-audit → split` and none of the three is a
 # segment, so all three are dispatched with `--segment -` and keyed on their
-# plan step id. Each kind binds to exactly ONE plan step carrying its skill —
+# plan step id. The visual step is the fourth row: it generates the night's
+# screens from the audited document, before any segment is implemented, and
+# builds no segment of its own. Each kind binds to exactly ONE plan step carrying its skill —
 # zero or several is a plan this table does not know how to read, and the
 # dispatch is refused rather than a key being picked. `gate_run_scope_step`
-# above resolves all three, with the design and the audit also held to the
+# above resolves all four, with the design and the audit also held to the
 # plan's `design_required`.
 # ---------------------------------------------------------------------------
 gate_run_scope_skill_of() {
@@ -10223,6 +10286,7 @@ gate_run_scope_skill_of() {
     design) printf 'design' ;;
     audit)  printf 'design-audit' ;;
     split)  printf 'split' ;;
+    visual) printf 'visual' ;;
     *) return 1 ;;
   esac
 }
@@ -10233,7 +10297,7 @@ gate_run_scope_kind_of_key() {
   # `segment` row is a segment, whatever the plan calls it.
   local key="$1" k s
   [ -z "$(gate_segment_field "$key" '상태')" ] || return 1
-  for k in design audit split; do
+  for k in design audit split visual; do
     if s=$(gate_run_scope_step "$k" 2>/dev/null) && [ "$s" = "$key" ]; then
       printf '%s' "$k"
       return 0
@@ -10247,9 +10311,9 @@ gate_run_scope_rows() {
   # run-scope step in ledger order, in either writer's shape: the router's
   # (`세그먼트=- | 스테이지=<id> | 종류=<k>`) or the driver's, which names its stage
   # `S2` (audit: `종류=audit`, or no `종류` on a row written before the driver
-  # stamped it) or `S2split` (`종류=split`). Any other `종류` on an `S2` row is not
-  # an audit. The driver's names are read only when the plan's id has no row of
-  # its own.
+  # stamped it), `S2split` (`종류=split`) or `S2V` (`종류=visual`). Any other `종류`
+  # on an `S2` row is not an audit. The driver's names are read only when the
+  # plan's id has no row of its own.
   local id="$1" k="$2" rows
   rows=$( { gate_rows 'stage-result' || true; } \
           | { grep -F "세그먼트=- | 스테이지=$id | 종류=$k " || true; })
@@ -10263,6 +10327,10 @@ gate_run_scope_rows() {
         rows=$( { gate_rows 'stage-result' || true; } \
                 | { grep -F '세그먼트=- | 스테이지=S2split |' || true; } \
                 | { grep -F '| 종류=split ' || true; }) ;;
+      visual)
+        rows=$( { gate_rows 'stage-result' || true; } \
+                | { grep -F '세그먼트=- | 스테이지=S2V |' || true; } \
+                | { grep -F '| 종류=visual ' || true; }) ;;
     esac
   fi
   printf '%s' "$rows"
@@ -10415,9 +10483,10 @@ gate_replan_eval() {
   #   with `재수렴 판정=재설계 필요` whose `세그먼트` is not the sibling;
   # 5 no earlier `재계획` row pairs the sibling with this cite;
   # 6 the sibling's round is at most two in this run;
-  # 7 no `사람-결정` holds the sibling, directly or through `선행` — an open
-  #   one, or a refusal not yet consumed (`gate_person_hold_ids`).
-  local sib="$1" cite="$2" st at out n4 ok4 plan3 dup5 nrep held
+  # 7 no question of the person set (`사람-결정`, `시각-승인`) holds the
+  #   sibling, directly or through `선행` — an open one, or a refusal not yet
+  #   consumed (`gate_person_hold_ids`).
+  local sib="$1" cite="$2" st at out n4 ok4 plan3 dup5 nrep held held_cls
   GATE_REPLAN_C1=0 GATE_REPLAN_C2=0 GATE_REPLAN_C3=0 GATE_REPLAN_C4=0
   GATE_REPLAN_C5=0 GATE_REPLAN_C6=0 GATE_REPLAN_C7=0
   GATE_REPLAN_CLAUSE="" GATE_REPLAN_WHY="" GATE_REPLAN_ROUND=1
@@ -10460,6 +10529,19 @@ EOF
   held=$(for id in $(gate_person_hold_ids); do gate_approval_field "$id" '막는 세그먼트'; printf ' '; done)
   # shellcheck disable=SC2086
   if [ -z "${held// /}" ] || ! gate_slice_reaches_any "$sib" $held; then GATE_REPLAN_C7=1; fi
+  # The class the clause-7 reason names is the one actually holding: the hold
+  # set is wider than `사람-결정`, and a reason that names a class not open
+  # sends the reader to the wrong question.
+  held_cls=""
+  if [ "$GATE_REPLAN_C7" != 1 ]; then
+    held_cls=$(for id in $(gate_person_hold_ids); do
+      # shellcheck disable=SC2046
+      if gate_slice_reaches_any "$sib" $(gate_approval_field "$id" '막는 세그먼트'); then
+        gate_approval_field "$id" '판단 부류'; printf ' '
+      fi
+    done)
+    held_cls=$(printf '%s\n' $held_cls | awk '!seen[$0]++' | paste -sd '/' -)
+  fi
   export GATE_REPLAN_C1 GATE_REPLAN_C2 GATE_REPLAN_C3 GATE_REPLAN_C4 GATE_REPLAN_C5 \
     GATE_REPLAN_C6 GATE_REPLAN_C7 GATE_REPLAN_ROUND
   local c cv
@@ -10474,7 +10556,7 @@ EOF
       4) GATE_REPLAN_WHY="the cite does not name exactly one gate-written reconverge row with 재수렴 판정=재설계 필요 on another segment (rows found: ${n4:-0})" ;;
       5) GATE_REPLAN_WHY="$sib was already re-planned for $cite" ;;
       6) GATE_REPLAN_WHY="$sib has been re-planned twice in this run — raise a 사람-결정 instead" ;;
-      7) GATE_REPLAN_WHY="an open 사람-결정 holds $sib" ;;
+      7) GATE_REPLAN_WHY="an open ${held_cls:-사람-결정} holds $sib" ;;
     esac
     export GATE_REPLAN_CLAUSE GATE_REPLAN_WHY
     return 1
@@ -10513,6 +10595,10 @@ gate_replan_person_decided() {
   # re-convergence row, has been answered `승인` and spent by a `자율 승인` row
   # that reads `결정=채택` or `결정=자유 입력 소비`.
   #
+  # The class is the literal `사람-결정`, not the person set: this reads how
+  # the re-plan cap's own question was answered, and `시각-승인` is never that
+  # question.
+  #
   # A PERSON WHO DECIDED THE CAPPED SIBLING HAS ANSWERED THE KEY. The `상한`
   # element asks the router for that question, and nothing the approved answer
   # leads to clears the element: a re-dispatch writes no `재계획` row (clause 5)
@@ -10523,7 +10609,7 @@ gate_replan_person_decided() {
   # consumption follows the park, and a parked sibling fails clause 1.
   local sib="$1" cite="$2" st at
   st="${cite%#*}"; at="${cite##*#}"
-  awk -v sib="$sib" -v st="$st" -v at="$at" -v cls="$JUDGMENT_CLASSES_PERSON" '
+  awk -v sib="$sib" -v st="$st" -v at="$at" -v cls="사람-결정" '
     function fld(r, key,   k, i, s, j) {
       k = " | " key "="; i = index(r, k); if (!i) return ""
       s = substr(r, i + length(k)); j = index(s, " | ")
@@ -15131,7 +15217,8 @@ gate_pending_approvals_json() {
     local disp pcls
     disp=$(gate_row_field "$row" '처분 사유'); [ -n "$disp" ] || disp='-'
     # `class` IS WHAT SEPARATES A QUESTION ONLY A PERSON ANSWERS from one the
-    # gate holds for any other reason: a `사람-결정` approval keeps its segment
+    # gate holds for any other reason: a person-set approval (`사람-결정`,
+    # `시각-승인`) keeps its segment
     # held and counts against the run's end, and the router reads that here.
     # Every row the issuer and the free-input close write for a judgment
     # approval carries the class; an act approval, or one issued before the field
@@ -16254,8 +16341,8 @@ gate_reap_cycle() {
 # dispatched with `--segment -`, and that exemption is keyed on the kind; were
 # the split a `generic` stage, every other generic stage would inherit a
 # segment-less dispatch. The variant below writes it exactly as it writes
-# `generic`.
-readonly STAGE_KINDS="design implement review audit reconverge generic shift split"
+# `generic`. `visual` is the fourth run-scope step and takes the same footing.
+readonly STAGE_KINDS="design implement review audit reconverge generic shift split visual"
 
 gate_settings_dir() {
   # The override exists for ONE caller: the re-derivation probe, which needs to
@@ -16732,7 +16819,15 @@ $(gate_segment_worktrees_for_settings)"
     # always passed as a read with no cap either. The settings file is not the
     # only enforcement point for these tools: a PreToolUse hook matcher can see
     # them too, so a later cap or check has a place to go.
-    deny_extra=""
+    #
+    # THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY VARIANT, THE SHIFT INCLUDED,
+    # so they sit in the initial value and not in either branch below. A stage
+    # never publishes to or reads from the Design canvas; that belongs to the
+    # seat. Under `CLAUDE_CODE_ARTIFACT=1` the headless tool list carries exactly
+    # `Artifact`, `ArtifactComments` and `ArtifactData` besides `DesignSync`, and
+    # the set matches `CLAUDE_DESIGN_TOOLS` in run.sh, which refuses the same
+    # names on every judgment call's own command line.
+    deny_extra="\"DesignSync\", \"Artifact\", \"ArtifactComments\", \"ArtifactData\", "
 
     # THE SHIFT VARIANT IS NARROWER THAN EVERY STAGE, AND THE NARROWING HAS TO
     # HAPPEN INSIDE THIS LOOP. `extra_dirs` and the read allow-list are computed
@@ -18629,13 +18724,14 @@ gate_answered_judgments_json() {
     iss=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } \
            | { grep -F '| 절단점=판단 |' || true; } | tail -1)
     [ -n "$iss" ] || continue
-    # A REFUSAL IS AN ANSWER HERE ONLY FOR `사람-결정`. That class's `거부` and
-    # `무효` are what the router parks the segment on, so they are candidates
-    # until the parking resubmission spends them — the same `해소 승인=<id>`
-    # test below, which is why `state` travels on the element: the router must
-    # not read a refusal as a recommendation to carry out. Every other class's
-    # refusal stays a closed question nobody acts on, and is left out as before.
-    if [ "$st" != "승인" ] && [ "$(gate_row_field "$iss" '판단 부류')" != "$JUDGMENT_CLASSES_PERSON" ]; then
+    # A REFUSAL IS AN ANSWER HERE ONLY FOR THE PERSON SET (`사람-결정`,
+    # `시각-승인`). Those classes' `거부` and `무효` are what the router parks the
+    # segment on, so they are candidates until the parking resubmission spends
+    # them — the same `해소 승인=<id>` test below, which is why `state` travels
+    # on the element: the router must not read a refusal as a recommendation to
+    # carry out. Every other class's refusal stays a closed question nobody acts
+    # on, and is left out as before.
+    if [ "$st" != "승인" ] && ! judgment_class_person "$(gate_row_field "$iss" '판단 부류')"; then
       continue
     fi
     if gate_has_row '자율 승인' "| 해소 승인=$id |"; then continue; fi
@@ -19820,7 +19916,7 @@ gate_defer_only_left() {
   #
   # All of: no live stage or supervisor; no halt record no row answers; at
   # least one answer carried over (`이월`) and none still open (`열림`); no
-  # pending act approval and no pending `사람-결정` question — any other
+  # pending act approval and no pending person-set question — any other
   # question is an input the next run consumes, the same reason termination
   # condition 2 leaves it out; no run-holding `blocked` row left unresolved but
   # the `이월` rows themselves (a run-scope halt writes no halt record, and a
@@ -23556,7 +23652,7 @@ gate_answer_servable() {
   # FOUR FACTS: a `승인` row carries the id, its latest `상태` is `승인`, the
   # issuing row has `절단점=판단`, and the sidecar is on disk.
   # `gate_answered_judgments_json` asks the first and third the same way but NOT
-  # the second: it also lists a `사람-결정` question closed `거부` or `무효`,
+  # the second: it also lists a person-set question closed `거부` or `무효`,
   # with that state on the element, because the router parks on such a refusal.
   # Parking needs the state, never the refusal's words, so this door still serves
   # `승인` alone. The STATE test is the one that used to be
@@ -24493,7 +24589,7 @@ gate_record_cone() {
     warn "a cone row needs an \`앵커 세그먼트\` — it is where the derivation starts"
     return "$GATE_EXIT_VOCAB"
   fi
-  # A run-scope step — design, audit or split — is the one anchor that has no
+  # A run-scope step — design, audit, split or visual — is the one anchor that has no
   # segment row: a stage of it that cannot finish inside the deadline, or an
   # answer to its halt the shift cannot carry out, holds every segment.
   # A termination clause's `clause-<id>` key has none either: its evidence
@@ -24965,6 +25061,12 @@ gate_issue_judgment_approval() {
   st=$(gate_approval_state "$id")
   case "$st" in
     대기)
+      # A `시각-승인` question is closed by its sidecar predicate first, switch
+      # or no switch: a resubmission after the approval landed is what closes
+      # the questions of the other screen segments.
+      local vr=0
+      gate_visual_approval_resolve "$id" "$q" "$cls" || vr=$?
+      [ "$vr" = "0" ] || return "$vr"
       # An approval opened before auto-resolution existed, or while it was
       # switched off, is resolved on the resubmission that finds it — unless a
       # person already answered it and no disposition could be derived.
@@ -24989,14 +25091,15 @@ gate_issue_judgment_approval() {
       # nothing to issue.
       return "$GATE_APPROVAL_ANSWERED" ;;
   esac
-  # A `사람-결정` QUESTION IS OPENED ONLY AGAINST A SEGMENT THE LEDGER KNOWS, AND
-  # AT MOST TWICE PER SEGMENT. The approval holds that segment's dispatches until
+  # A PERSON-SET QUESTION (`사람-결정`, `시각-승인`) IS OPENED ONLY AGAINST A
+  # SEGMENT THE LEDGER KNOWS, AND AT MOST TWICE PER SEGMENT AND CLASS. The
+  # approval holds that segment's dispatches until
   # a person answers, so a question naming no segment, or one this run never
   # dispatched, would hold nothing a reader can find and would still count
   # against the run's end. The cap counts distinct ids already issued for the
   # segment in any state: a third question is the router asking the same person
   # again instead of parking, and parking is what the refusal leaves it.
-  if [ "$cls" = "$JUDGMENT_CLASSES_PERSON" ]; then
+  if judgment_class_person "$cls"; then
     local nl=$'\n' pn
     if [ -z "$seg" ] || [ "$seg" = "-" ]; then
       warn "a '$cls' judgment names no segment — it is not opened (pass --segment)"
@@ -25039,6 +25142,9 @@ gate_issue_judgment_approval() {
     "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
     "판단 부류=${cls:--}" \
     "발행 시각=$(now_iso)" "해소 시각=-"
+  local vr=0
+  gate_visual_approval_resolve "$id" "$q" "$cls" || vr=$?
+  [ "$vr" = "0" ] || return "$vr"
   if gate_auto_resolve_enabled; then
     local ar=0
     gate_auto_resolve_judgment "$id" "$q" "$cls" || ar=$?
@@ -25055,12 +25161,12 @@ gate_judgment_class_adoptable() {
   # and the emission absorber's answered branch both decide on it, and two
   # copies of the condition would grow apart.
   local cls="${1:-}"
-  [ "$cls" != "$JUDGMENT_CLASSES_PERSON" ] || return 1
+  ! judgment_class_person "$cls" || return 1
   [ -n "$cls" ] && judgment_class_ok "$cls" && ! judgment_class_forbidden "$cls"
 }
 
 gate_segment_person_hold() {
-  # gate_segment_person_hold <segment> — the id of an open `사람-결정` question
+  # gate_segment_person_hold <segment> — the id of an open person-set question
   # that names this segment in `막는 세그먼트`, or nothing. The first such id is
   # enough: the caller asks whether the segment is held, not by how many.
   local seg="$1" id
@@ -25073,8 +25179,32 @@ gate_segment_person_hold() {
   return 0
 }
 
+gate_segment_visual_refusal() {
+  # gate_segment_visual_refusal <segment> — the id of a `시각-승인` question of
+  # this run that names the segment in `막는 세그먼트` and that a person closed
+  # `거부` or `무효`, consumed or not; nothing when there is none.
+  #
+  # A CONSUMED REFUSAL STILL SAYS NO. Consuming it (`결정=거절 소비`) takes it
+  # out of the hold above, and the resubmission that consumes it ends on exit 0
+  # like an adoption does; the sidecar's implementation approval is not touched
+  # by the person's `거부`. So the predicate alone would let the screens the
+  # person refused be implemented by a router that read that exit 0 as an
+  # adoption.
+  local seg="$1" id
+  for id in $( { gate_rows '승인' || true; } | { grep -F '| 판단 부류=시각-승인 |' || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    [ "$(gate_approval_field "$id" '막는 세그먼트')" = "$seg" ] || continue
+    case "$(gate_approval_state "$id")" in
+      거부|무효) printf '%s' "$id"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
 gate_person_hold_ids() {
-  # gate_person_hold_ids — the `사람-결정` approvals that hold their segment:
+  # gate_person_hold_ids — the person-set approvals (`사람-결정`, `시각-승인`)
+  # that hold their segment:
   # every open one, and every one a person closed `거부` or `무효` that no
   # `자율 승인` row has consumed yet.
   #
@@ -25089,7 +25219,7 @@ gate_person_hold_ids() {
   # is answered, and what it waits for is the router, not a person.
   local id
   gate_pending_approval_ids 사람
-  for id in $( { gate_rows '승인' || true; } | { grep -F '| 판단 부류=사람-결정 |' || true; } \
+  for id in $( { gate_rows '승인' || true; } | { grep -F -e '| 판단 부류=사람-결정 |' -e '| 판단 부류=시각-승인 |' || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
     case "$(gate_approval_state "$id")" in 거부|무효) ;; *) continue ;; esac
@@ -25099,7 +25229,7 @@ gate_person_hold_ids() {
 
 gate_person_refusal_consumable() {
   # gate_person_refusal_consumable <승인 id> — 0 when the approval is a
-  # `사람-결정` question a person closed `거부` or `무효`, no `자율 승인` row
+  # person-set question a person closed `거부` or `무효`, no `자율 승인` row
   # has named it yet, and its segment is parked; 2 when only the park is
   # missing; 1 otherwise.
   #
@@ -25117,7 +25247,7 @@ gate_person_refusal_consumable() {
   # "ended" reads.
   local id="$1" seg
   case "$(gate_approval_state "$id")" in 거부|무효) ;; *) return 1 ;; esac
-  [ "$(gate_approval_field "$id" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ] || return 1
+  judgment_class_person "$(gate_approval_field "$id" '판단 부류')" || return 1
   ! gate_has_row '자율 승인' "| 해소 승인=$id |" || return 1
   seg=$(gate_approval_field "$id" '막는 세그먼트')
   [ "$(gate_segment_field "$seg" '상태')" = "park" ] || return 2
@@ -25137,7 +25267,9 @@ gate_judgment_target_id() {
   # to a new question, issued it, held the segment again and left the real
   # answer unspent. Naming the answered id lets the row keep its own `근거`.
   # The checks are the ones a cited id has to meet to stand for the hash: the
-  # class, a closed state, the segment and the spent test.
+  # class, a closed state, the segment and the spent test. The class is the
+  # literal `사람-결정` and not the person set: `답한 승인` consumes a free-text
+  # answer, and a `시각-승인` question carries none to consume.
   local seg="$1" cited; shift
   cited=$(gate_field_of '답한 승인' "$@")
   if [ -z "$cited" ]; then
@@ -25145,7 +25277,7 @@ gate_judgment_target_id() {
       "$(gate_judgment_question "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")")"
     return 0
   fi
-  if [ "$(gate_approval_field "$cited" '판단 부류')" != "$JUDGMENT_CLASSES_PERSON" ] \
+  if [ "$(gate_approval_field "$cited" '판단 부류')" != "사람-결정" ] \
      || [ "$(gate_approval_field "$cited" '절단점')" != "판단" ]; then
     warn "답한 승인=$cited 은 사람-결정 판단 승인이 아닙니다 — 이 키는 사람-결정의 답을 소비하는 행에만 씁니다"
     return 1
@@ -25186,15 +25318,21 @@ gate_auto_resolve_judgment() {
   # derived from the state that close left — the same three answers the issuer
   # gives for an approval it finds already closed or still open.
   local id="$1" q="$2" cls="${3:-}" st rec rc=0
-  # `사람-결정` IS HELD, NEITHER ADOPTED NOR REFUSED. Refusing it would close the
-  # question nobody was asked, and the router would then park on a refusal no
-  # person gave. The recorded class is read too, so a resubmission that dropped
-  # the class still finds the approval held. The id is not exported: nothing was
-  # resolved by this call.
-  if [ "$cls" = "$JUDGMENT_CLASSES_PERSON" ] \
-     || [ "$(gate_approval_field "$id" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ]; then
+  # THE PERSON SET IS HELD, NEITHER ADOPTED NOR REFUSED. Refusing it would close
+  # the question nobody was asked, and the router would then park on a refusal
+  # no person gave. The recorded class is read too, so a resubmission that
+  # dropped the class still finds the approval held. The id is not exported:
+  # nothing was resolved by this call. A `시각-승인` question reaches here only
+  # after its sidecar predicate failed — the predicate arm runs first.
+  local held=""
+  if judgment_class_person "$cls"; then
+    held="$cls"
+  elif judgment_class_person "$(gate_approval_field "$id" '판단 부류')"; then
+    held="$(gate_approval_field "$id" '판단 부류')"
+  fi
+  if [ -n "$held" ]; then
     GATE_AUTO_RESOLVED_APPROVAL=""; export GATE_AUTO_RESOLVED_APPROVAL
-    warn "judgment approval $id is a '$JUDGMENT_CLASSES_PERSON' question — the gate does not answer it, and it waits for a person"
+    warn "judgment approval $id is a '$held' question — the gate does not answer it, and it waits for a person"
     gate_warn_canon_prompt "$id" "$q"
     return 0
   fi
@@ -25219,6 +25357,91 @@ gate_auto_resolve_judgment() {
   fi
   [ "$st" = "승인" ] && return "$GATE_APPROVAL_ANSWERED"
   return "$GATE_EXIT_RULE"
+}
+
+gate_segment_screen_slice() {
+  # gate_segment_screen_slice <segment> — 0 when the segment carries a screen
+  # slice: one whose implementation waits for the approved screens.
+  #
+  # Only a run governed by a declaration has slices, and there the segment id
+  # IS the slice id. A run with no declaration plans one segment from the
+  # plan's implement step and carries no `**화면**` field, so it does not wait.
+  # In a declared run, `없음` waits for nothing and a screen-id list waits; an
+  # omitted field waits for every screen when the plan has a visual stage or
+  # the document has a visual sidecar, and for nothing otherwise.
+  local seg="$1" v=""
+  [ -n "${DOC:-}" ] && [ -f "${DOC:-}" ] || return 1
+  [ "$(gate_slicing_branch)" = "선언통치" ] || return 1
+  case "
+$(slice_ids "$DOC" 2>/dev/null || true)
+" in
+    *"
+$seg
+"*) : ;;
+    *) return 1 ;;
+  esac
+  v=$(slice_field "$DOC" "$seg" '화면' 2>/dev/null || true)
+  [ "$v" != "없음" ] || return 1
+  [ -z "$v" ] || return 0
+  if [ -n "$( { manifest_plan_json 2>/dev/null \
+                | jq -r '.steps[]? | select(type == "object" and .skill == "visual") | .id' 2>/dev/null \
+                || true; } )" ]; then
+    return 0
+  fi
+  bash "$GATE_DIR/visual-check.sh" bundle "$DOC" >/dev/null 2>&1
+}
+
+gate_visual_approval_holds() {
+  # gate_visual_approval_holds — 0 when the run's design document carries a
+  # valid implementation approval in its visual sidecar, 1 otherwise. Prints
+  # the predicate's own one line either way (`승인 유효 <12 hex>`, or the
+  # reason it does not hold), so every caller quotes the same words.
+  #
+  # ONE PREDICATE, `visual-check.sh approval`. The gate's dispatch refusal, the
+  # predicate arm of a `시각-승인` question and the person's close all ask it,
+  # so none of them can come to hold an approval the others would refuse. A run
+  # with no design document has no sidecar to read, and the predicate does not
+  # hold.
+  local out rc=0
+  if [ -z "${DOC:-}" ]; then
+    printf '승인 없음 — 이 런에 설계 문서가 없다'
+    return 1
+  fi
+  out=$(bash "$GATE_DIR/visual-check.sh" approval "$DOC" 2>&1) || rc=$?
+  printf '%s' "$(printf '%s\n' "$out" | sed -n 1p)"
+  [ "$rc" = "0" ]
+}
+
+gate_visual_approval_resolve() {
+  # gate_visual_approval_resolve <승인 id> <질문 문면> <판단 부류>
+  #
+  # THE PREDICATE ARM. A `시각-승인` question asks whether the screens a slice
+  # implements were approved at the fixed seat, and the sidecar answers that
+  # without a person: when `visual-check.sh approval` holds, the question is
+  # closed `승인` here, with the predicate's digest in the answer text, and the
+  # same act adopts it. It runs only for that class and whatever
+  # `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` says — the switch governs adopting the
+  # router's recommendation, and this is not one.
+  #
+  # Returns `GATE_APPROVAL_ANSWERED` with `GATE_AUTO_RESOLVED_APPROVAL` set to
+  # the id when it closed the question, and 0 with that variable empty when it
+  # did not; on 0 nothing was written, and the caller's existing path follows —
+  # the hold for the person set, so the class never reaches the forbidden
+  # classes' `거부`.
+  #
+  # A QUESTION A PERSON ANSWERED IN WORDS IS NOT CLOSED HERE. Its last row
+  # carries `처분 사유=자유 입력`, the `'대기' 1` transition refuses that row,
+  # and the seat asks the person again for the label.
+  local id="$1" q="$2" cls="${3:-}" why
+  GATE_AUTO_RESOLVED_APPROVAL=""; export GATE_AUTO_RESOLVED_APPROVAL
+  [ -n "$cls" ] || cls=$(gate_approval_field "$id" '판단 부류')
+  [ "$cls" = "시각-승인" ] || return 0
+  [ "$(gate_approval_state "$id")" = "대기" ] || return 0
+  gate_approval_person_answered "$id" && return 0
+  why=$(gate_visual_approval_holds) || return 0
+  gate_auto_close_approval "$id" 승인 "$q" "시각 승인 술어 성립: $why" || return 0
+  GATE_AUTO_RESOLVED_APPROVAL="$id"; export GATE_AUTO_RESOLVED_APPROVAL
+  return "$GATE_APPROVAL_ANSWERED"
 }
 
 gate_revert_surface() {
@@ -25286,6 +25509,151 @@ gate_own_helper() {
   esac
   [ -f "$a0" ] || return 1
   [ "$(gate_physical_path "$a0")" = "$(gate_physical_path "$GATE_DIR/$name")" ]
+}
+
+gate_chrome_headless_screenshot() {
+  # gate_chrome_headless_screenshot <chrome argv after argv0> — 0 when the
+  # argv is the headless screenshot form and nothing else: `--headless` (bare
+  # or `=<mode>`), one `--screenshot=<absolute path outside the tree>`, exactly
+  # one local `file:///` target, and otherwise only the flags listed below.
+  #
+  # AN ALLOW-LIST, NOT A PRESENCE CHECK. Requiring the two flags alone admitted
+  # a remote page (`--screenshot=x https://…`, the spelling Chrome's own
+  # documentation shows), a DOM dump or debugging port beside the screenshot,
+  # and launcher switches such as `--renderer-cmd-prefix=<program>` that make
+  # Chrome run another program — all as a write outside the tree, which needs
+  # no pre-authorization row. Any flag or operand this list does not name keeps
+  # the binary at `등급 미상`. The listed flags size the page, quiet Chrome's
+  # own background traffic, point the proxy at the closed local port, or put
+  # the profile in scratch space.
+  local a v headless=0 shot=0 target=0
+  for a in "$@"; do
+    case "$a" in
+      */../*|*/..) return 1 ;;
+    esac
+    case "$a" in
+      --headless|--headless=*) headless=1 ;;
+      --screenshot=/?*)
+        gate_chrome_path_ok shot "${a#--screenshot=}" || return 1
+        shot=$((shot + 1)) ;;
+      --user-data-dir=/?*)
+        gate_chrome_path_ok profile "${a#--user-data-dir=}" || return 1 ;;
+      --window-size=?*)
+        v=${a#--window-size=}
+        case "$v" in *[!0-9,]*) return 1 ;; esac ;;
+      --force-device-scale-factor=?*|--virtual-time-budget=?*)
+        v=${a#*=}
+        case "$v" in *[!0-9.]*) return 1 ;; esac ;;
+      --default-background-color=?*)
+        v=${a#*=}
+        case "$v" in *[!0-9a-fA-F]*) return 1 ;; esac ;;
+      --proxy-server=127.0.0.1:9) ;;
+      --hide-scrollbars|--disable-gpu|--no-first-run|--disable-background-networking|--disable-component-update|--disable-sync) ;;
+      file:///?*)
+        v=${a#file://}
+        v=${v%%[?#]*}
+        case "$v" in *%*) return 1 ;; esac
+        gate_chrome_path_ok page "$v" || return 1
+        target=$((target + 1)) ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$headless" = 1 ] && [ "$shot" = 1 ] && [ "$target" = 1 ]
+}
+
+gate_chrome_path_ok() {
+  # gate_chrome_path_ok <shot|profile|page> <absolute path> — 0 when every
+  # spelling of the path stays where the Chrome row lets that operand point.
+  # The spellings are the path as written, with its existing ancestors resolved
+  # and with a symlinked last component followed, so a link under scratch space
+  # that lands in the tree or in a configuration home is judged where it lands.
+  #   shot    — outside the tree, the machine-global prefixes and the
+  #             configuration homes;
+  #   profile — under the temp directory, and outside the tree and the
+  #             machine-global prefixes;
+  #   page    — outside the configuration homes, so a key or token file is not
+  #             rendered into an image.
+  # The configuration homes are the dot-directories directly under `$HOME`
+  # (`.ssh`, `.config`, `.claude*`, …), matched without regard to case
+  # (`gate_chrome_in_home_dot`), and `CLAUDE_CONFIG_DIR` when it is set.
+  #
+  # THE MACHINE-GLOBAL PREFIXES ARE THE REACH FLOOR'S OWN. The floor compares
+  # whole argv words, and Chrome's destination is always one word with the
+  # path behind `--screenshot=`, so the floor never sees it; without this arm a
+  # screenshot over `/opt/homebrew/bin/<tool>` kept a declared `런로컬` while
+  # `cp` to the same path stops at `기기전역`.
+  local kind="$1" p="$2" wp wl sp r t under homes root rootp tmp tmpp gpfx
+  gpfx=$(gate_reach_global_prefixes)
+  wp=$(gate_path_spelling "$(gate_real_prefix "$p")")
+  wl=$(gate_leaf_spelling "$wp") || return 1
+  root=$(gate_tree_root)
+  rootp=$(gate_path_spelling "$(gate_real_prefix "$root")")
+  tmp=${TMPDIR:-/tmp}
+  while [ "$tmp" != "/" ] && [ "${tmp%/}" != "$tmp" ]; do tmp=${tmp%/}; done
+  tmpp=$(gate_path_spelling "$(gate_real_prefix "$tmp")")
+  homes=''
+  if [ -n "${HOME:-}" ] && [ "$HOME" != "/" ]; then
+    homes="${HOME%/}"$'\n'"$(gate_path_spelling "$(gate_real_prefix "${HOME%/}")")"
+  fi
+  for sp in "$p" "$wp" "$wl"; do
+    [ -n "$sp" ] || continue
+    if [ "$kind" != page ]; then
+      for r in "$root" "$rootp"; do
+        [ -n "$r" ] || continue
+        gate_nocase_at_or_under "$sp" "$r" && return 1
+        gate_path_is_at_or_under "$sp" "$r" && return 1
+      done
+      while IFS= read -r r; do
+        gate_nocase_at_or_under "$sp" "$r" && return 1
+        gate_path_is_at_or_under "$sp" "$r" && return 1
+      done <<< "$gpfx"
+    fi
+    if [ "$kind" != profile ]; then
+      while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        gate_chrome_in_home_dot "$sp" "$r" && return 1
+      done <<< "$homes"
+      if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+        gate_path_is_at_or_under "$sp" "${CLAUDE_CONFIG_DIR%/}" && return 1
+      fi
+    else
+      under=0
+      for t in "$tmp" "$tmpp" /tmp "$(gate_path_spelling "$(gate_real_prefix /tmp)")"; do
+        [ -n "$t" ] && [ "$t" != "/" ] || continue
+        if gate_path_is_at_or_under "$sp" "$t"; then under=1; break; fi
+      done
+      [ "$under" = 1 ] || return 1
+    fi
+  done
+  return 0
+}
+
+gate_chrome_in_home_dot() {
+  # gate_chrome_in_home_dot <absolute path> <home> — rc 0 when the path is a
+  # dot-entry directly under the home or lies inside one, compared as text
+  # without regard to case and then by device+inode of the home.
+  #
+  # CASE IS NOT IDENTITY ON THIS PLATFORM. APFS is case-insensitive by default
+  # and `pwd -P` keeps the case the caller wrote, so `/USERS/<user>/.ssh/…`
+  # names the real key directory; the text arm folds case for that. The
+  # identity walk answers what text cannot fold — the firmlink spelling
+  # `/System/Volumes/Data/Users/<user>/…` and a link that reaches the home.
+  local rc=1 had=0 p c
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  case "$1" in "$2"/.*) rc=0 ;; esac
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  [ "$rc" = 0 ] && return 0
+  p="$1"
+  while [ -n "$p" ] && [ "$p" != "/" ]; do
+    c=${p##*/}
+    p=${p%/*}
+    [ -n "$p" ] || break
+    case "$c" in
+      .*) if [ "$p" -ef "$2" ]; then return 0; fi ;;
+    esac
+  done
+  return 1
 }
 
 gate_path_spelling() {
@@ -30189,9 +30557,10 @@ EOF
       # own words. That answer closes `승인` like the label does, and the row
       # spending it used to read `채택` — the ledger then said the question's
       # recommendation was carried out when the person had written something
-      # else, a "no, park it" included.
+      # else, a "no, park it" included. The class is the literal `사람-결정`:
+      # only that class closes on free text, so only it has words to spend.
       if [ -z "${GATE_JUDGMENT_DECISION:-}" ] && [ -n "${GATE_RESOLVED_APPROVAL:-}" ] \
-         && [ "$(gate_approval_field "$GATE_RESOLVED_APPROVAL" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ] \
+         && [ "$(gate_approval_field "$GATE_RESOLVED_APPROVAL" '판단 부류')" = "사람-결정" ] \
          && [ "$(gate_row_field "$(gate_approval_last_row "$GATE_RESOLVED_APPROVAL")" '처분 사유')" = "자유 입력" ]; then
         GATE_JUDGMENT_DECISION="자유 입력 소비"
       fi
@@ -30268,7 +30637,7 @@ EOF
         warn "the \`원인\` of a \`blocked\` row has to be \`해소\` — making a block is the work of the gate (observed: ${cause:-(none)})"
         return "$GATE_EXIT_VOCAB"
       fi
-      # A cone row anchored on a run-scope step (design, audit or split) holds
+      # A cone row anchored on a run-scope step (design, audit, split or visual) holds
       # the run just as a run-scope row does, and a driver-written one or a
       # shift's routing block has no lineage a later attempt could release it
       # by — so this form is its way out, and it must find it by `사유`.
@@ -31957,10 +32326,10 @@ gate_done_note() {
   fi
 }
 
-readonly GATE_REKICK_CAUSES="마감 천장 무진전 사이클예산 표면이동 연기마감 결함 판단정지 대상미선언 슬라이싱 말단상한 P0잔존 해당없음"
+readonly GATE_REKICK_CAUSES="마감 천장 무진전 사이클예산 표면이동 연기마감 결함 판단정지 대상미선언 슬라이싱 시각승인대기 말단상한 P0잔존 해당없음"
 
 gate_rekick_cause_ok() {
-  # gate_rekick_cause_ok <토큰> — true when the token is one of the thirteen.
+  # gate_rekick_cause_ok <토큰> — true when the token is one of the fourteen.
   #
   # A CLOSED SET, AND A VALUE OUTSIDE IT IS A CODE DEFECT. Every caller passes
   # a literal or a value chosen from a fixed map, so a stray spelling here is a
@@ -32181,7 +32550,7 @@ gate_end_row() {
   # that reads the token reads the run as still going.
   local std="$1" why="$2" cause="$3" ekind="${4:-}" fp="${5:-}" _why_free _p0
   if ! gate_rekick_cause_ok "$cause"; then
-    warn "rekick cause '$cause' is not one of the thirteen closed tokens — this is a defect in the gate"
+    warn "rekick cause '$cause' is not one of the fourteen closed tokens — this is a defect in the gate"
     return 1
   fi
   # THE ONE SITE THAT WRITES `P0잔존`. Every ending of both executors reaches
@@ -32272,7 +32641,7 @@ gate_end_run() {
   local cause="${3:-}" ekind="${4:-}" fp="${5:-}" line="${6:-}"
   [ -n "$cause" ] || cause=$(gate_end_cause_of "$name")
   if ! gate_rekick_cause_ok "$cause"; then
-    warn "rekick cause '$cause' is not one of the thirteen closed tokens — this is a defect in the gate"
+    warn "rekick cause '$cause' is not one of the fourteen closed tokens — this is a defect in the gate"
     return 1
   fi
   # The `done` line says what the ending row will say. `gate_end_row` turns an
@@ -35475,7 +35844,8 @@ gate_verb_act() {
     fi
   fi
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
-     && { [ "$rs_table" = "design" ] || [ "$rs_table" = "audit" ] || [ "$rs_table" = "split" ]; }; then
+     && { [ "$rs_table" = "design" ] || [ "$rs_table" = "audit" ] || [ "$rs_table" = "split" ] \
+          || [ "$rs_table" = "visual" ]; }; then
     rs_skill=$(gate_run_scope_skill_of "$rs_table")
     if ! stage_key=$(gate_run_scope_step "$rs_table"); then
       case "$rs_table" in
@@ -35685,6 +36055,7 @@ gate_verb_act() {
       case "$rs_kind" in
         audit)      dd_cmd='/cc-cmds:design-audit-unattended ' ;;
         split)      dd_cmd='/cc-cmds:design-base-unattended --split ' ;;
+        visual)     dd_cmd='/cc-cmds:visual-unattended ' ;;
         reconverge) dd_cmd='/cc-cmds:design-reconverge ' ;;
       esac
       case "$dd_prompt" in
@@ -35705,7 +36076,7 @@ gate_verb_act() {
     fi
 
     # PREDECESSORS ARE RUN-SCOPE STEPS, so `선행` of the segment rows cannot say
-    # whether they landed. Each `depends_on` of an audit or a split step must
+    # whether they landed. Each `depends_on` of an audit, split or visual step must
     # have ended its last run-scope row `정상 완료`, and a design predecessor must
     # also have left the document frozen — an audit or a split over an
     # unfinished design reads bytes nobody settled, and the split's tracker
@@ -35716,7 +36087,7 @@ gate_verb_act() {
     # opens the run, and the audit a re-convergence rides on passed this one.
     local rs_dep rs_dk rs_last rs_deps=""
     case "$rs_kind" in
-      audit | split)
+      audit | split | visual)
         rs_deps=$( { manifest_plan_json 2>/dev/null \
                      | jq -r --arg id "$stage_key" '.steps[]? | select(type == "object" and .id == $id) | .depends_on[]? // empty' 2>/dev/null \
                      || true; } ) ;;
@@ -35755,7 +36126,8 @@ gate_verb_act() {
     warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
     exit "$GATE_EXIT_RULE"
   fi
-  # A SEGMENT HELD ON A `사람-결정` QUESTION IS NOT DISPATCHED TO. The question
+  # A SEGMENT HELD ON A PERSON-SET QUESTION (`사람-결정`, `시각-승인`) IS NOT
+  # DISPATCHED TO. The question
   # is open because only a person can say what that segment does next, and a
   # stage or a re-plan sent there meanwhile would be the router answering it.
   # Every other segment is routed as before; the hold is the question's
@@ -35764,8 +36136,30 @@ gate_verb_act() {
     local ph_id
     ph_id=$(gate_segment_person_hold "$segment")
     if [ -n "$ph_id" ]; then
-      warn "세그먼트 ${segment} 는 사람-결정 판단 승인 ${ph_id} 의 답을 기다리고 있습니다 — 답이 오기 전에는 이 세그먼트로 ${kind} 를 보내지 않습니다"
+      warn "세그먼트 ${segment} 는 $(gate_approval_field "$ph_id" '판단 부류') 판단 승인 ${ph_id} 의 답을 기다리고 있습니다 — 답이 오기 전에는 이 세그먼트로 ${kind} 를 보내지 않습니다"
       warn "보류 집합 밖의 세그먼트를 계속 라우팅하세요. 답이 오면 answered_judgments 에 나타납니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+  fi
+  # A SCREEN SLICE IS NOT IMPLEMENTED BEFORE ITS SCREENS ARE APPROVED. While the
+  # run waits, an open `시각-승인` holds the segment above; this refusal is the
+  # predicate's own defence for the case the hold does not cover — an approval
+  # adopted and the sidecar's implementation-approval line removed or voided
+  # afterwards — and a person's `거부` or `무효` on the segment's `시각-승인`
+  # refuses it for the rest of the run, consumed or not, whatever the sidecar
+  # says (`gate_segment_visual_refusal`).
+  if [ "$kind" = "skill" ] && [ "${1:-}" = "implement" ] && [ "$segment" != "-" ] \
+     && gate_segment_screen_slice "$segment"; then
+    local ss_why ss_ref
+    ss_ref=$(gate_segment_visual_refusal "$segment")
+    if [ -n "$ss_ref" ]; then
+      warn "세그먼트 ${segment} 는 화면 슬라이스인데 사람이 시각-승인 판단 승인 ${ss_ref} 을 $(gate_approval_state "$ss_ref") 로 닫았습니다 — 이 런에서는 그 화면의 구현을 보내지 않습니다"
+      warn "그 세그먼트는 park 로 두고, 그 화면이 필요한 조항은 그 답을 근거로 불가능으로 정산하세요"
+      exit "$GATE_EXIT_RULE"
+    fi
+    if ! ss_why=$(gate_visual_approval_holds); then
+      warn "세그먼트 ${segment} 는 화면 슬라이스인데 설계 문서의 구현 승인이 서지 않습니다 (${ss_why}) — 화면이 승인되기 전에는 구현을 보내지 않습니다"
+      warn "고정 좌석에서 /cc-cmds:visual 로 화면을 승인해 사이드카에 구현 승인 줄을 다시 쓴 뒤 디스패치하세요"
       exit "$GATE_EXIT_RULE"
     fi
   fi
@@ -37001,7 +37395,7 @@ EOF
       exit "$GATE_EXIT_RULE"
     fi
     if [ "$ap_cons" = "0" ]; then
-      # A PERSON'S REFUSAL OF A `사람-결정` QUESTION IS SPENT HERE, not refused
+      # A PERSON'S REFUSAL OF A PERSON-SET QUESTION IS SPENT HERE, not refused
       # again: the resubmission is the router saying it parked on that answer,
       # and the row it writes is what retires the answer.
       log "승인 $ap_id 의 거절을 이 판단이 소비합니다 (세그먼트는 park 되어 있습니다)"
@@ -37355,9 +37749,10 @@ EOF
     # the same structural reason, and the morning tells the three apart at a
     # glance.
     #
-    # `사람-결정` IS THE EXCEPTION AND NEVER REACHES THIS ARM OPEN. Termination
-    # condition 2 counts it, because a segment of this run is held on it, so
-    # `unmet` is not empty while one is waiting and the run does not end over it.
+    # THE PERSON SET (`사람-결정`, `시각-승인`) IS THE EXCEPTION AND NEVER
+    # REACHES THIS ARM OPEN. Termination condition 2 counts it, because a
+    # segment of this run is held on it, so `unmet` is not empty while one is
+    # waiting and the run does not end over it.
     gate_done_note "$(gate_satisfied_done_line "$rationale")"
     # Each arm writes its ending row beside `done`, as the invalidated arm does:
     # only the satisfied one is a normal completion, `종료 부류=완료`.
@@ -39489,6 +39884,7 @@ gate_continuation_argv() {
   case "$skind" in
     design) unmet="동결된 설계 문서도 정지 기록도 없다" ;;
     audit)  unmet="판독자 리포트 파일(docs/design-audit/<slug>.reader-*.md)도 감사 종결 문구($LIT_AUDIT_TERMINAL)도 없다" ;;
+    visual) unmet="검토 통과로 확정된 시각 사이드카도 시각 종결 문구($LIT_VISUAL_TERMINAL)도 정지 기록도 없다" ;;
     # An implement attempt filed `공허한 성공` for its residual share names the
     # missing headings verbatim, so the continued session can find each item.
     implement)
@@ -39550,7 +39946,7 @@ gate_wait_deadline_park() {
   # gate_wait_deadline_park <alias> <row segment> <key> <lineage> <ready-at iso>
   #                         <basis> <recovery> <redispatch> — the cone row a
   # stage that cannot finish inside the deadline leaves. Anchored on the key —
-  # the segment id, or a run-scope step id (design, audit or split) — never on
+  # the segment id, or a run-scope step id (design, audit, split or visual) — never on
   # the lineage; the lineage rides in `근거` so this attempt's park can be
   # recognised. On a run-scope step it holds the run (termination condition 5)
   # until a later attempt of the key or a `원인=해소` row releases it.
@@ -42512,6 +42908,12 @@ gate_record_stage_outcome() {
   elif [ "$kind" = "split" ] \
        && ! { grep -qF "$LIT_SPLIT_TERMINAL" "$out" 2>/dev/null && split_registry_complete "${DOC:-}"; }; then
     klass='공허한 성공'
+  # A visual stage too: its terminal literal in the stream and its sidecar at
+  # `검토 통과`. Either alone is a stage that said it finished over screens nobody
+  # reviewed, or reviewed screens whose stage never said it was done.
+  elif [ "$kind" = "visual" ] \
+       && ! { grep -qF "$LIT_VISUAL_TERMINAL" "$out" 2>/dev/null && visual_sidecar_reviewed "${DOC:-}"; }; then
+    klass='공허한 성공'
   # An audit stage is asked for its artifact by the driver's predicate: the
   # terminal phrase, a reader report, and exactly one skeletal-grade fence in
   # the audit report. Without the fence nobody can say whether the document
@@ -43460,6 +43862,19 @@ gate_close() {
       warn "close --reject contradicts the answer — the person chose '$(gate_menu_normalize "$afull")'. A flag can only agree with the answer"
       exit "$GATE_EXIT_RULE"
     fi
+    # A `시각-승인` IS GRANTED BY THE SIDECAR, AND THE LABEL ONLY REPORTS IT. The
+    # person approves the screens at the fixed seat, which writes the sidecar's
+    # implementation approval; a `승인` label chosen while that predicate does
+    # not hold names an approval that does not exist, so it is refused before
+    # anything is written and the question stays `대기`. `거부` and `무효` need
+    # no predicate: declining to build the screens is the person's to say.
+    if [ "$label" = "승인" ] && [ "$(gate_approval_field "$id" '판단 부류')" = "시각-승인" ]; then
+      local vwhy
+      if ! vwhy=$(gate_visual_approval_holds); then
+        warn "approval $id is a '시각-승인' question and the sidecar's implementation approval does not hold ($vwhy) — '승인' is not recorded. Approve the screens at the fixed seat with /cc-cmds:visual first, then answer '승인' again"
+        exit "$GATE_EXIT_RULE"
+      fi
+    fi
     adig=$(printf '%s' "$afull" | shasum -a 256 | cut -d' ' -f1)
     aex=$(gate_row_safe "$afull" "$GATE_A_EXCERPT")
     gate_approval_sidecar_write "$id" answer '답변' "$afull" \
@@ -43522,7 +43937,9 @@ gate_close() {
     # a question already answered. So free text closes it `승인`, the reason
     # field says the answer was free text, and the words go to the answer store
     # where the router reads them (`gate.sh answers`) — never onto the row.
-    if [ "$(gate_approval_field "$id" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ]; then
+    # The literal and not the person set: a `시각-승인` question is closed only
+    # by its sidecar predicate, so free text for it stays an unread `대기`.
+    if [ "$(gate_approval_field "$id" '판단 부류')" = "사람-결정" ]; then
       adig=$(printf '%s' "$afull" | shasum -a 256 | cut -d' ' -f1)
       mkdir -p "$RUN_DIR/answer"
       printf '%s\n' "$afull" > "$RUN_DIR/answer/$id.md"
@@ -44065,14 +44482,14 @@ gate_done_conditions() {
   # while a question was open is the failure this whole design removes.
   n=$(gate_pending_approval_ids act | gate_count)
   [ "$n" = "0" ] || printf '2 대기 중인 행위 승인이 %s건 있습니다\n' "$n"
-  # THE ONE QUESTION THE RUN DOES NOT END AROUND is `사람-결정`. Its answer is
-  # not an input a successor consumes but the decision a segment of THIS run is
-  # held on — the segment cannot reach a terminal state while it is open, and a
-  # run that ended over it would leave the held work with no run to resume it.
-  # So it counts here, as its own line, while every other `판단` approval stays
-  # excluded as above.
+  # THE QUESTIONS THE RUN DOES NOT END AROUND are the person set, `사람-결정`
+  # and `시각-승인`. Their answer is not an input a successor consumes but the
+  # decision a segment of THIS run is held on — the segment cannot reach a
+  # terminal state while one is open, and a run that ended over it would leave
+  # the held work with no run to resume it. So they count here, as their own
+  # line, while every other `판단` approval stays excluded as above.
   n=$(gate_pending_approval_ids 사람 | gate_count)
-  [ "$n" = "0" ] || printf '2 대기 중인 사람-결정 판단 승인이 %s건 있습니다\n' "$n"
+  [ "$n" = "0" ] || printf '2 대기 중인 사람 판단 승인(사람-결정·시각-승인)이 %s건 있습니다\n' "$n"
 
   # 3 — obligations empty, or disposed. THE SUBTRACTION MOVED INTO
   # `gate_open_obligations` and is no longer applied a second time here: three
@@ -44253,8 +44670,8 @@ gate_pending_approval_ids() {
   # condition 2 is what made one open question a run that could never say it was
   # done, which is the defect this design exists to remove.
   #
-  # `사람` NARROWS FURTHER, to the `판단` approvals whose class is `사람-결정`:
-  # the one kind of question the run does not end around. Its answer is not an
+  # `사람` NARROWS FURTHER, to the `판단` approvals whose class is in the person
+  # set: the kind of question the run does not end around. Its answer is not an
   # input a successor consumes but the decision the held segment is waiting on,
   # so termination condition 2 counts these beside the act approvals.
   local want="${1:-}" id st row cut
@@ -44269,7 +44686,7 @@ gate_pending_approval_ids() {
         act)  [ "$cut" = "판단" ] && continue ;;
         판단) [ "$cut" = "판단" ] || continue ;;
         사람) [ "$cut" = "판단" ] || continue
-              [ "$(gate_row_field "$row" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ] || continue ;;
+              judgment_class_person "$(gate_row_field "$row" '판단 부류')" || continue ;;
       esac
     fi
     printf '%s\n' "$id"
@@ -46470,8 +46887,8 @@ gate_boundaries() {
     fi
   fi
   pending=$(printf '%s\n' "$ids" | gate_count)
-  # A `사람-결정` QUESTION SUSPENDS B1..B3 ONLY WHEN NO SHIFT IS LIVE. It is the
-  # one question the run does not end around, so with no shift running the run
+  # A PERSON-SET QUESTION SUSPENDS B1..B3 ONLY WHEN NO SHIFT IS LIVE. It is the
+  # kind of question the run does not end around, so with no shift running the run
   # is genuinely waiting on a person and stagnation is not what is happening. A
   # live shift is still routing the segments the question does not hold, and
   # counting the question there would switch off the very detection the

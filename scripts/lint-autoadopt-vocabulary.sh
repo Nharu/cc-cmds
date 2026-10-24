@@ -404,13 +404,14 @@ numeral_of_count() {
     10) printf '열' ;;
     11) printf '열한' ;;
     12) printf '열두' ;;
+    13) printf '열세' ;;
     *)  return 1 ;;
   esac
 }
 placeholders=0
 expected_numeral=$(numeral_of_count "$ncls" || true)
 if [[ -z "$expected_numeral" ]]; then
-  echo "FAIL: JUDGMENT_CLASSES 토큰이 ${ncls}개인데 이 린트의 수사 표는 1–12 만 안다 — 자리표시자 수사를 대조할 수 없으므로 numeral_of_count 를 넓혀야 한다" >&2
+  echo "FAIL: JUDGMENT_CLASSES 토큰이 ${ncls}개인데 이 린트의 수사 표는 1–13 만 안다 — 자리표시자 수사를 대조할 수 없으므로 numeral_of_count 를 넓혀야 한다" >&2
   fail=1
 else
   while IFS= read -r f; do

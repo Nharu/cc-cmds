@@ -2,11 +2,10 @@
 
 `master` 에 브랜치 보호를 걸 때 required status check 로 지정할 이름의 전수다. **손으로 적은 것이 아니라 아래 이름이 모두 체크 런으로 생겨 끝난 실행에서 채취했다** (실패한 체크가 있으면 채취한 실행 줄에 적는다) — 이름은 워크플로 파일의 잡 키가 아니라 GitHub 이 렌더한 체크 이름이고, matrix 잡은 `<잡 이름> (<값>)` 으로 갈라지므로 파일만 보고 적으면 어긋난다.
 
-- **채취한 실행**: `Nharu/cc-cmds#1338`, head `4810ac3dd531a68da7ac238e48a80003fb94686b`
-  (워크플로 실행 `39145561992` gate · `39145561977` lint · `39145561979` notify-macos, 2026-10-18, 20개 중 19개 success)
-  - 실패: `gate-shards (2)` — base `master` `df3ea9506bb9f9cd3ef51538a35253a10ebc1590` 의 gate 실행 `39137106110` 에서도 같은 이름의 잡이 같은 `FAIL: 59: 그 셋의 예산이 전부 gate_free_budget 에서 온다 — got '4', want '3'` 줄로 실패했다
+- **채취한 실행**: `Nharu/cc-cmds#1414`, head `58c1e7af0fd28edf1de162de1a29f1b3da9f4508`
+  (워크플로 실행 `39953150867` gate · `39953151027` lint · `39953151209` notify-macos, 2026-10-23, 36개 중 36개 success)
 
-## 게이트 소속 (13) — `.github/workflows/gate.yml` 의 샤드 matrix
+## 게이트 소속 (26) — `.github/workflows/gate.yml` 의 샤드 matrix
 
 ```
 gate-shards (1)
@@ -22,19 +21,35 @@ gate-shards (10)
 gate-shards (11)
 gate-shards (12)
 gate-shards (13)
+gate-shards (14)
+gate-shards (15)
+gate-shards (16)
+gate-shards (17)
+gate-shards (18)
+gate-shards (19)
+gate-shards (20)
+gate-shards (21)
+gate-shards (22)
+gate-shards (23)
+gate-shards (24)
+gate-shards (25)
+gate-shards (26)
 ```
 
 샤드 수는 `Makefile` 의 `GATE_SHARDS` 하나가 정한다. 그 값을 바꾸면 이 목록도 함께 바뀌므로, matrix·`--check`·이 파일 셋을 같은 커밋에서 맞춘다.
 
-## 나머지 (7)
+## 나머지 (10)
 
 ```
+gate-plan           .github/workflows/gate.yml
 shard-coverage      .github/workflows/gate.yml
 census-ratchet      .github/workflows/gate.yml
+gate-report         .github/workflows/gate.yml
 lint-and-readme     .github/workflows/lint.yml
 rest-tests (1)      .github/workflows/lint.yml
 rest-tests (2)      .github/workflows/lint.yml
 rest-tests (3)      .github/workflows/lint.yml
+rest-duration       .github/workflows/lint.yml
 lint-and-test-macos .github/workflows/notify-macos.yml
 ```
 
@@ -42,7 +57,7 @@ lint-and-test-macos .github/workflows/notify-macos.yml
 
 ## 이 목록을 그대로 required 로 걸기 전에 읽을 것
 
-**세 워크플로 전부 `pull_request` 에 경로 필터를 달고 있어 「항상 도는」 잡은 하나도 없다.** GitHub 은 경로 필터로 건너뛴 워크플로에 체크 런을 만들지 않고, required 로 지정된 체크가 없으면 그 PR 을 무기한 대기로 둔다. 따라서 위 20개를 그대로 required 로 걸면 **그 경로를 건드리지 않는 PR 은 영원히 머지할 수 없다.**
+**세 워크플로 전부 `pull_request` 에 경로 필터를 달고 있어 「항상 도는」 잡은 하나도 없다.** GitHub 은 경로 필터로 건너뛴 워크플로에 체크 런을 만들지 않고, required 로 지정된 체크가 없으면 그 PR 을 무기한 대기로 둔다. 따라서 위 36개를 그대로 required 로 걸면 **그 경로를 건드리지 않는 PR 은 영원히 머지할 수 없다.**
 
 거는 쪽이 고를 수 있는 것은 둘이다.
 
