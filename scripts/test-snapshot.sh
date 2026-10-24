@@ -249,6 +249,14 @@ check "세션 없는 키의 답은 route_refusal 이 재부착할 세션이 없�
 check "route 판정이 바뀌어도 H 는 움직이지 않는다" "$(snapdigest)" "$rt_h1"
 check "그 H 는 스냅숏이 내는 H 와 같다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)" "$rt_h1"
+# `carry_prompt` is the carry act's `-p` text the gate builds from the ledger
+# the attempt halted in. The element always carries the field; with no parked
+# attempt of the key to build it from it is empty, and it stays out of `H`.
+check "answered_halts 원소는 carry_prompt 를 싣고, 멈춘 시도가 없으면 비어 있다" \
+  "$( (cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null) \
+      | jq -r '[.answered_halts[] | select(.segment == "S9") | (has("carry_prompt") | tostring) + "|" + .carry_prompt] | last // "없음"')" \
+  "true|"
+check "carry_prompt 를 실어도 H 는 움직이지 않는다" "$(snapdigest)" "$rt_h1"
 
 # ---------------------------------------------------------------------------
 # 3. THE REGRESSION — issuing an approval must not move the digest
@@ -2788,7 +2796,7 @@ check "design-audit-unattended: 종합 정지 전에 조정 처분과 조정 뒤
 check "교대 계약: 정지 답은 운반 act 로 낸다" \
   "$(has "$RS_CORPUS" "--carry-answer <line> \\")" 예
 check "교대 계약: --resume 재부착은 19 뒤와 좌석 실행 정지의 답에만" \
-  "$(has "$RS_CORPUS" "**Re-attach with \`--resume\` only after exit 19, or for an answer to a \`좌석 실행\` stop item 2 sent here.**")" 예
+  "$(has "$RS_CORPUS" "**Re-attach with \`--resume\` only after exit 19 on an answer of this run, or for an answer to a \`좌석 실행\` stop item 2 sent here.**")" 예
 # 게이트는 좌석 실행 정지의 운반을 스텝 문면만으로 거절하므로, 계약도 답한 주체나
 # 선택지가 아닌 스텝으로 갈라야 사람이 한 답이 exit 3 으로 빠지지 않는다.
 check "교대 계약: 좌석 실행 정지의 답은 답한 주체와 무관하게 운반 act 없이 --resume 으로 간다" \
@@ -2854,12 +2862,12 @@ check "design-reconverge: 기계 정산 줄은 기록을 가진 두 범위에서
   "$(has "$RC_SKILL" "- the scope is \`감사 종합 요구 <record>\` or \`구속 티어 이탈 <record>\`. Never for an \`R<n>\` scope")" 예
 check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
   "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg) \')/$(has "$(dirname "$GATE")/liveness.sh" '&& index(banchor[b], "clause-") != 1) step = 1')" "예/예"
-check "좌석 사본: 상한 고지는 두 상한 사유로 고른다" \
-  "$(has "$SEAT_REF" "When that \`사유\` begins \`중단 답 라우팅 — 세션 전에 세 번 죽었다\` or \`중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\`, it is the carry's cap")" 예
+check "좌석 사본: 상한 고지는 세 상한 사유로 고른다" \
+  "$(has "$SEAT_REF" "When that \`사유\` begins \`중단 답 라우팅 — 세션 전에 세 번 죽었다\`, \`중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\` or \`중단 답 라우팅 — 들인 답을 이 런에서 운반할 수 없다\`, it is the carry's cap")" 예
 check "좌석 사본: 상한 고지는 새 답도 같은 상한에 걸린다고 말한다" \
   "$(has "$SEAT_REF" "asking again and taking a new answer meets the same cap")" 예
-check "좌석 사본: 상한 사유는 게이트가 쓰는 두 문면과 같다" \
-  "$(has "$GATE" "\"중단 답 라우팅 — 세션 전에 세 번 죽었다\"")/$(has "$GATE" "\"중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\"")" "예/예"
+check "좌석 사본: 상한 사유는 게이트가 쓰는 세 문면과 같다" \
+  "$(has "$GATE" "\"중단 답 라우팅 — 세션 전에 세 번 죽었다\"")/$(has "$GATE" "\"중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\"")/$(has "$GATE" "readonly GATE_CARRY_ORIGIN_CAP_WHY='중단 답 라우팅 — 들인 답을 이 런에서 운반할 수 없다'")" "예/예/예"
 # 마감 뒤의 이월 인계는 그 act 에서 런을 끝낼 때만 받아지고, 받아지지 않으면 교대가 붙드는 것을
 # 이름 짓는 사유로 인계한다 — 그 갈래를 싣는 것은 이 문장뿐이다.
 check "교대 계약: 마감 뒤 이월은 끝맺을 때만 받고 그 act 에서 끝낸다" \
@@ -2869,9 +2877,9 @@ check "교대 계약: 마감 뒤 이월이 거절되면 붙드는 것을 이름 
 check "교대 계약: 재질문 가드 1 은 끝맺음과 같은 판정이다" \
   "$(has "$RS_CORPUS" "the gate refuses \`중단\` when those answers are all that holds the run — the same judgment the ending past the deadline reads —")" 예
 check "교대 계약: 종료 코드 표에 18 행이 있다" "$(grep -c '^| `18` | a carry act' "$RS_CORPUS")" 1
-check "교대 계약: 종료 코드 표에 19 행이 있다" "$(grep -c '^| `19` | a carry act' "$RS_CORPUS")" 1
+check "교대 계약: 종료 코드 표에 19 행이 있다" "$(grep -c '^| `19` | only for an answer of this run' "$RS_CORPUS")" 1
 check "좌석 사본: 종료 코드 표에 18 행이 있다" "$(grep -c '^| 18 | a carry act' "$SEAT_REF")" 1
-check "좌석 사본: 종료 코드 표에 19 행이 있다" "$(grep -c '^| 19 | a carry act' "$SEAT_REF")" 1
+check "좌석 사본: 종료 코드 표에 19 행이 있다" "$(grep -c '^| 19 | only for an answer of this run' "$SEAT_REF")" 1
 check "좌석 사본: 이월된 답은 다시 묻지 않는다" \
   "$(has "$SEAT_REF" "**A record already answered is not asked again because its answer was carried over**")" 예
 for pair in "autopilot-router-shift:$RS_CORPUS" "references:$AP_ROUTER"; do
@@ -2879,6 +2887,77 @@ for pair in "autopilot-router-shift:$RS_CORPUS" "references:$AP_ROUTER"; do
   check "${pair%%:*}: 설계 단계 정지에서 이월 답은 다시 묻지 않는다" \
     "$(has "$f" "**An answer already carried over is not asked again**: when the element naming the step reads \`state\` \`이월\`")" 예
 done
+# 구현·설계 토론·리드 단독 설계·베이스 분할의 정지도 새 세션에 카드로 닿는다. 카드를 받은 세션이
+# 디스크에서 멈춘 자리로 들어가는 규칙과, 저장 뒤 정지의 새 파견을 막는 문서 존재 가드의 면제는
+# 대역 CLI 가 실행할 수 없어 문면으로만 남는다.
+IM_SKILL="$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md"
+DD_SKILL="$repo_root/plugins/cc-cmds/skills/design-discuss-unattended/SKILL.md"
+DS_SKILL="$repo_root/plugins/cc-cmds/skills/design-solo-unattended/SKILL.md"
+DB_SKILL="$repo_root/plugins/cc-cmds/skills/design-base-unattended/SKILL.md"
+for f in "$IM_SKILL" "$DD_SKILL" "$DS_SKILL" "$DB_SKILL"; do
+  b=$(basename "$(dirname "$f")")
+  check "$b: 운반 재진입 문단이 있다" "$(has "$f" "**Re-entered with a carried answer")" 예
+  check "$b: 카드의 기록 다이제스트를 대조한다" "$(has "$f" "**Read the card and check the digest.**")" 예
+  check "$b: 운반된 기록은 다시 쓰지 않는다" "$(has "$f" "**Never rewrite the carried record**")" 예
+done
+for f in "$IM_SKILL" "$DS_SKILL"; do
+  b=$(basename "$(dirname "$f")")
+  check "$b: 재진입 때 계산한 질문이 다르면 새 정지 기록을 쓴다" \
+    "$(has "$f" "do not apply the answer: write a new halt record for the question computed now, with the card's path in its \`관측 상세\`.")" 예
+done
+check "design-discuss-unattended: 재진입 때 계산한 질문이 다르면 카드를 적은 새 정지 기록을 쓴다" \
+  "$(has "$DD_SKILL" "a different computed question gets a new halt record naming the card")" 예
+check "design-base-unattended: 분할 재진입은 처음 실패한 자리가 다르면 새 정지 기록을 쓴다" \
+  "$(has "$DB_SKILL" "do not apply the answer: write a new halt record for the site reached now, with the card's path in its \`관측 상세\`.")" 예
+check "implement-unattended: 재진입은 디스크의 계획 행·워크트리·설계 문서에서 멈춘 스텝으로 들어간다" \
+  "$(has "$IM_SKILL" "from what is on disk — the ledger's plan row that decided the phase above, the segment worktree and the design document — and apply the card's option there")" 예
+check "implement-unattended: 구속 티어 재수렴 답과 좌석 실행 정지는 카드로 오지 않는다" \
+  "$(has "$IM_SKILL" "Two halts of this stage never come back as a card: a \`CFI-U3 BT-STOP\` halt answered \`재수렴\` goes to re-convergence, and a \`좌석 실행\` halt re-attaches the halted session after the seat's run.")" 예
+check "implement-unattended: diff 게이트 단언은 스냅숏에서 아직 구현 시 검증 인 표 행에만" \
+  "$(has "$IM_SKILL" "every R-item the verdict table marked as a flip target, and whose grade line in the snapshot \`\$SNAP\` still reads \`구현 시 검증\`, must appear as a changed line")" 예
+check "design-solo-unattended: 문서 존재 가드는 카드의 문서 사전 sha256 이 같을 때만 면제한다" \
+  "$(has "$DS_SKILL" "**A re-entry is exempt**: when \`CC_PIPELINE_HALT_ANSWER\` names a card and the \`문서 사전 sha256\` in the \`관측 상세\` of the record the card names equals the \`shasum -a 256\` of the document now")" 예
+check "design-discuss-unattended: 문서 존재 가드는 카드의 문서 사전 sha256 이 같을 때만 면제한다" \
+  "$(has "$DD_SKILL" "**A re-entry is exempt**: a card whose record's \`문서 사전 sha256\` equals the document's \`shasum -a 256\` now")" 예
+for f in "$DD_SKILL" "$DS_SKILL"; do
+  b=$(basename "$(dirname "$f")")
+  check "$b: 정지 기록이 문서 사전 sha256 을 싣는다" \
+    "$(has "$f" "writes \`문서 사전 sha256=<값>\` in its \`관측 상세\`**")" 예
+done
+check "design-discuss-unattended: 런 안에서 돌아오지 않는 정지는 고정 그래프 드라이버 한정이다" \
+  "$(has "$DD_SKILL" "**Under the fixed-graph driver a halt does not come back within a run**")" 예
+check "design-base-unattended: 베이스 설계 흐름은 토론 갈래의 면제와 재진입을 받지 않는다" \
+  "$(has "$DB_SKILL" "Its re-entry exemption of the document-present guard and its **Re-entered with a carried answer** do not apply here")" 예
+check "design-base-unattended: 분할 재진입에는 문서 존재 면제가 없다" \
+  "$(has "$DB_SKILL" "There is no document-present exemption: this mode saves no document and has no such guard.")" 예
+check "교대 계약: 재진입 표는 여섯 행이다" "$(has "$RS_CORPUS" "The table holds six halts.")" 예
+check "교대 계약: 표 행은 멈춘 시도의 종류로 고른다" \
+  "$(has "$RS_CORPUS" "on the halted attempt's own stage kind — the \`종류\` of its \`stage-result\` row, never the kind you are about to dispatch")" 예
+check "교대 계약: 구현·토론·단독·분할 행은 종류로 운반한다" \
+  "$(has "$RS_CORPUS" "any step) is carried as \`implement\`.")/$(has "$RS_CORPUS" "any step, are carried as \`design\`.")/$(has "$RS_CORPUS" "any step) is carried as \`split\`.")" "예/예/예"
+check "교대 계약: 네 행은 원소의 carry_prompt 를 바이트 그대로 낸다" \
+  "$(has "$RS_CORPUS" "**In these last four rows send the element's \`carry_prompt\` as \`-p\`, byte for byte.**")/$(has "$RS_CORPUS" "Never build those slots from other snapshot fields.")" "예/예"
+check "교대 계약: 베이스 설계 정지는 표 밖이다" "$(has "$RS_CORPUS" "**The same skill's base-design stop is not in the table**")" 예
+check "교대 계약 사본 일치: halt-answer-1 의 19 행은 이 런의 답 한정이다" \
+  "$(has "$RS_CORPUS" "| \`19\` | for an answer of this run only (\`origin_run\` empty):")" 예
+check "교대 계약 사본 일치: halt-answer-1 의 18 행은 들인 답의 상한을 싣는다" \
+  "$(has "$RS_CORPUS" "or an answer brought over from an earlier run (\`origin_run\` not empty) this run cannot carry, wherever an answer of this run would get \`19\` (\`사유\` \`중단 답 라우팅 — 들인 답을 이 런에서 운반할 수 없다\`)")" 예
+check "교대 계약 사본 일치: SKILL 의 19 행은 이 런의 답 한정이고 들인 답은 18 이다" \
+  "$(has "$RS_CORPUS" "| \`19\` | only for an answer of this run (\`origin_run\` empty):")/$(has "$RS_CORPUS" "An element whose \`origin_run\` is not empty never gets \`19\`")" "예/예"
+check "교대 계약: 들인 답의 19 로 교대를 끝내는 옛 문장이 남지 않는다" \
+  "$(has "$RS_CORPUS" "so do not \`--resume\`: end the shift with \`사유=중단\`")" 아니오
+check "좌석 사본 일치: act2-seat 의 19 행은 이 런의 답 한정이다" \
+  "$(has "$SEAT_REF" "| 19 | only for an answer of this run (\`origin_run\` empty):")" 예
+check "보고: 운반 상한으로 닫힌 들인 답을 근거와 함께 싣는다" \
+  "$(has "$AP_REFS/act3-report.md" "**An answer this run brought over and could not carry lands here too**")" 예
+check "사이드카: 출처 런에서 들인 답의 원장 값 칸은 출처 원장에서 짓는다" \
+  "$(has "$AU_ANS" "For an answer a later run brought in (\`출처 런\`) the ledger is the earlier run's, where its attempt halted")" 예
+check "사이드카: 들인 답은 재부착하지 않고 상한 행과 18 로 닫는다" \
+  "$(has "$AU_ANS" "**such an answer is never re-attached**")" 예
+check "사이드카: answered_halts 원소가 carry_prompt 를 싣는다" \
+  "$(has "$AU_ANS" "and \`carry_prompt\`, the \`-p\` text of the carry act for an implement, design or split halt the re-entry table holds")" 예
+check "사이드카: 재진입 표의 여섯 행" \
+  "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
 # 앞선 런이 이월한 답은 다음 런(입양·재킥오프 후속)이 운반 act 로 이어받는다 — 사람에게 다시
 # 묻지 않는다는 약속은 이 문장들이 싣고, 아침 보고의 새 절이 그 답을 사람에게 보인다.
 for pair in "autopilot-router-shift:$RS_CORPUS" "references:$AP_ROUTER"; do
