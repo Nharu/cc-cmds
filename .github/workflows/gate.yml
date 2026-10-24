@@ -4,7 +4,7 @@ name: gate
 # workflow rather than as another job in `lint` because its path filter is
 # narrower: the lint leg has to run on skill and README edits that cannot
 # possibly move a gate section, and pulling the suite along with them (about
-# 170 shard-minutes) is what this split removes.
+# 280 shard-minutes) is what this split removes.
 #
 # THE PARTITION IS WEIGHED WITH WHAT THE LAST THREE MASTER RUNS MEASURED. Every
 # shard writes a marker line in front of each section it runs, `gate-report`
@@ -26,7 +26,9 @@ name: gate
 # matrix has N runners, and runner k runs rows k, k + N, … side by side, each
 # lane with its own temporary directory, marker file and result file. L is 1
 # now, so every runner runs one row: two rows on one runner stretched each
-# section's time by about a fifth and left the wall clock past fifteen minutes.
+# section's time by about a fifth. One row per runner removes that stretch, but
+# not the floor the heaviest sections that cannot be split set on the slowest
+# row, which still keeps the wall clock near fifteen minutes.
 # A lane is judged on its own exit code and total line, and `gate-report`
 # checks that every non-empty row of the table printed its total.
 #
