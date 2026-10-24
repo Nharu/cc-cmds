@@ -7831,8 +7831,12 @@ fi
 #   - Writing the digest to stdout corrupts `exec`'s pass-through of the wrapped
 #     command's own output — silently, because a caller parsing that output for
 #     a substring still finds it.
-#   - Writing it to stderr puts it where the run log goes, so a caller reading
-#     the log picks up a hash that looks like a diagnostic.
+#   - Printing it on stderr as anything but the call's LAST line, under a fixed
+#     `[gate-digest]` tag, or carrying a value other than the file's. The line
+#     is how a model caller gets the value without opening the file, so it has
+#     to sit where the caller looks — the end of the tool result — and say the
+#     same thing the file says; the tag is what keeps a run log reader from
+#     taking it for a diagnostic, and a call without the flag prints none.
 #   - Emitting BEFORE the gate's own ledger appends hands back a value that is
 #     stale the moment it arrives, and every acting call after it comes back
 #     exit 4. That failure is loud but it is also total: the run deadlocks on
@@ -7855,6 +7859,22 @@ EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/digest"
 # a stage id is the thing under test.
 unset CC_PIPELINE_STAGE_ID
 EMITFILE="$EMIT/gate-digest-router.json"
+# dl_h <text> — the H the text's LAST line carries when that line is a
+# well-formed digest line, empty otherwise. One reading for every assertion
+# below, so a line that moved up or lost its tag fails all of them alike.
+dl_h() {
+  printf '%s\n' "$1" | tail -n 1 \
+    | sed -n 's/^\[gate-digest\] H=\([0-9a-f]\{64\}-[0-9a-f]\{64\}\) actor=[^ ][^ ]*$/\1/p'
+}
+# gate_dl <argv…> — `gate`'s `rc`, with the whole output in `dl_out`, and the
+# streams redirected ON A SUBSHELL rather than on the function call. A gate run
+# in process that leaves by `exit` has the redirections of the call around it
+# undone before its EXIT trap runs, so under `gate`'s own spelling the line of
+# every refusal and every failed act goes to this suite's stderr and the
+# capture ends one line short. A real `bash gate.sh` has no such frame, and a
+# subshell's own redirections are not undone, so this spelling captures what a
+# caller of the real gate sees.
+gate_dl() { dl_out=$( ( cd "$WT" && gate_inproc "$@" ) 2>&1 ); rc=$?; }
 
 # The directory is deliberately NOT created first: the gate makes the parent of
 # the path it was handed, and a caller naming a fresh run-directory subpath is
@@ -7872,10 +7892,18 @@ H_emit=$(jq -r .H "$EMITFILE" 2>/dev/null || true)
 if [ -z "$H_emit" ] || [ "$H_emit" = "null" ]; then
   bad "다이제스트 방출" "방출 파일에서 H 를 읽지 못했다 — 이하 단언의 전제가 무너진다"
 else
-  case "$errout" in
-    *"$H_emit"*) bad "다이제스트 유출" "방출값이 stderr 로도 나왔다 — 로그를 읽는 소비자가 해시를 진단으로 읽는다" ;;
-    *) ok "다이제스트가 stderr 로 새지 않는다" ;;
-  esac
+  # THE LINE IS THE LAST STDERR LINE, AND IT SAYS WHAT THE FILE SAYS. A caller
+  # copies the value off the end of its tool result instead of opening the
+  # file, so a line that is not last, or that disagrees with the file, sends
+  # the next call back with exit 4.
+  if [ -n "$(dl_h "$errout")" ]; then
+    ok "방출을 켠 호출의 stderr 마지막 줄이 [gate-digest] 줄 형식이다"
+  else
+    bad "방출을 켠 호출의 stderr 마지막 줄이 [gate-digest] 줄 형식이다" "got '$(printf '%s\n' "$errout" | tail -n 1)'"
+  fi
+  check "그 줄의 H 가 방출 파일의 H 와 같다" "$(dl_h "$errout")" "$H_emit"
+  check "그 줄의 actor 가 방출 파일의 actor 와 같다" \
+    "$(printf '%s\n' "$errout" | tail -n 1 | sed -n 's/^.* actor=//p')" "$(jq -r .actor "$EMITFILE")"
   # THE SHAPE IS TWO 64-CHARACTER HALVES JOINED BY A SINGLE `-`, and the join
   # carries weight rather than decorating: the halves are compared differently —
   # the progress vector for exact equality, the chain tip for ancestry — so a
@@ -7924,6 +7952,27 @@ else
   printed=$( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' gate_inproc digest-path \
              --manifest "$FX_MANIFEST" 2>/dev/null | tail -1 )
   check "인쇄한 경로가 실제로 쓴 파일이다" "$printed" "$EMIT/gate-digest-S5-SEG-2.json"
+  # AND ONLY A CALL THAT ASKED FOR IT PRINTS ONE. The driver never passes the
+  # flag, so its logs must stay free of the tag.
+  plain_err=$( ( cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SW \
+                 --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+                 -- ls ) 2>&1 >/dev/null )
+  case "$plain_err" in
+    *'[gate-digest]'*) bad "플래그가 없으면 [gate-digest] 줄이 없다" "got '$plain_err'" ;;
+    *) ok "플래그가 없으면 [gate-digest] 줄이 없다" ;;
+  esac
+  # A WRAPPED COMMAND THAT FAILS still ends the output with the line: the
+  # command's own stderr and the gate's failure warning both come before it.
+  fail_err=$( ( cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SW \
+                --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+                --emit-digest -- ls "$WORK/14c-1-absent" ) 2>&1 >/dev/null ); fail_rc=$?
+  if [ "$fail_rc" -ne 0 ]; then
+    ok "래핑한 명령이 실패한다 (다음 단언의 전제)"
+  else
+    bad "래핑한 명령이 실패한다 (다음 단언의 전제)" "rc=0"
+  fi
+  check "래핑한 명령이 실패해도 줄이 stderr 마지막 줄이고 H 가 파일과 같다" \
+    "$(dl_h "$fail_err")" "$(jq -r .H "$EMITFILE" 2>/dev/null)"
 fi
 
 # `act` is the other acting verb and it is captured with `2>&1` everywhere else
@@ -7936,13 +7985,14 @@ check "act 경로도 방출한다" "$(jq -r .H "$EMITFILE" 2>/dev/null || true)"
 
 # The two-row branch. `gate_record_row` appends after the `자율 승인` row, so an
 # emission taken at that first append is one row behind here and only here.
-( cd "$WT" && gate_inproc act --manifest "$FX_MANIFEST" --kind segment --target infra \
+seg_err=$( ( cd "$WT" && gate_inproc act --manifest "$FX_MANIFEST" --kind segment --target infra \
   --segment SEMIT --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
-  --emit-digest -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
+  --emit-digest -- 상태=실행중 워크트리="$WT" 선행=없음 ) 2>&1 >/dev/null )
 n=$(grep -c '^- `segment` | 교대=[0-9][0-9]* | id=SEMIT ' "$FX_LEDGER" || true)
 check "두 번째 행이 실제로 쓰였다 (판별자의 전제)" "$n" "1"
 check "두 행을 쓰는 갈래에서도 방출값이 최종 다이제스트다" \
   "$(jq -r .H "$EMITFILE" 2>/dev/null || true)" "$(HH)"
+check "두 행을 쓰는 갈래에서도 줄의 H 가 마지막 행 뒤의 값이다" "$(dl_h "$seg_err")" "$(HH)"
 
 # The refusal path. An emission the caller asked for and did not get is the one
 # failure it cannot detect on its own — it just falls back to the round trip
@@ -7978,7 +8028,7 @@ check "그 경로는 격리 디렉터리 안이다" "$(dirname "$EMITFILE")" "$E
 # falls back to the round trip forever — which looks exactly like the flag
 # working and saving nothing.
 rm -f "$EMITFILE"
-gate exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+gate_dl exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest 0000000000000000000000000000000000000000000000000000000000000000 \
      --rationale x --emit-digest -- ls
 check "낡은 다이제스트는 거부된다 (이 단언의 전제)" "$rc" "4"
@@ -7988,6 +8038,8 @@ else
   bad "거부된 호출도 방출한다 (트랩이 덮는 자리)" "파일이 없거나 비었다"
 fi
 check "거부 뒤 방출값이 살아 있는 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
+check "거부(exit 4) 경로에서도 줄의 H 가 파일의 H 와 같다" \
+  "$(dl_h "$dl_out")" "$(jq -r .H "$EMITFILE" 2>/dev/null)"
 
 # AND THE CLASS THE TRAP WAS ACTUALLY WRITTEN FOR: a refusal that APPENDS A ROW
 # and then exits. The stale-digest case above refuses BEFORE any append, so it
@@ -8005,7 +8057,7 @@ check "거부 뒤 방출값이 살아 있는 다이제스트다" "$(jq -r .H "$E
 # premise the assertions below stand on.
 rows_before=$(grep -c . "$FX_LEDGER" 2>/dev/null || printf '0')
 rm -f "$EMITFILE"
-gate exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 외부상태변경 \
+gate_dl exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 외부상태변경 \
      --snapshot-digest "$(HH)" --rationale x --emit-digest -- curl -X POST https://example.invalid/14c-1
 check "사전 인가 밖 행위는 승인을 발행한다 (이 단언의 전제)" "$rc" "5"
 rows_after=$(grep -c . "$FX_LEDGER" 2>/dev/null || printf '0')
@@ -8020,6 +8072,31 @@ else
   bad "행을 덧붙이고 거부한 뒤에도 방출한다" "파일이 없거나 비었다"
 fi
 check "그 방출값은 덧붙인 행 이후의 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
+check "행을 덧붙이고 거부한 뒤에도 줄이 나오고 H 가 파일과 같다" \
+  "$(dl_h "$dl_out")" "$(jq -r .H "$EMITFILE" 2>/dev/null)"
+
+# `admit` is the third verb the trap is installed for. A request it cannot find
+# is refused, and the refusal is enough here: what is under test is the trap,
+# which runs on every exit of the verb.
+admit_err=$( ( cd "$WT" && gate_inproc admit --request last --manifest "$FX_MANIFEST" --target infra \
+  --segment SW --surface 읽기 --reach 미상 --snapshot-digest "$(HH)" --rationale x \
+  --emit-digest ) 2>&1 >/dev/null )
+check "admit 호출도 줄을 내고 H 가 파일과 같다" \
+  "$(dl_h "$admit_err")" "$(jq -r .H "$EMITFILE" 2>/dev/null)"
+
+# A DIRECTORY THE GATE CANNOT WRITE: `mktemp` fails, the file is not written,
+# and the line still comes out, after the warning that says so.
+rm -f "$EMITFILE"
+chmod 555 "$EMIT"
+ro_err=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SW \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+         --emit-digest -- ls 2>&1 >/dev/null)
+chmod 755 "$EMIT"
+case "$ro_err" in
+  *'could not create the digest temp file'*) ok "쓸 수 없는 방출 디렉터리에서 임시 파일 생성이 실패한다 (다음 단언의 전제)" ;;
+  *) bad "쓸 수 없는 방출 디렉터리에서 임시 파일 생성이 실패한다 (다음 단언의 전제)" "got '$ro_err'" ;;
+esac
+check "임시 파일을 만들지 못해도 줄이 나온다" "$(dl_h "$ro_err")" "$(HH)"
 
 # THE ROUND TRIP THIS FLAG EXISTS TO REMOVE, DRIVEN IN BOTH DIRECTIONS. Every
 # assertion above reads the emitted object; none of them fed it back, which is
@@ -8058,7 +8135,7 @@ gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SEMIT
      --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
      -- 상태=실행중 워크트리="$WT" 선행=없음
 check "진전 벡터를 움직인다 (다음 단언의 전제)" "$rc" "0"
-gate exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+gate_dl exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$stale" --rationale x --emit-digest -- ls
 check "진전이 움직인 뒤의 옛 방출값은 진전 축에서는 여전히 거부된다" "$rc" "4"
 
