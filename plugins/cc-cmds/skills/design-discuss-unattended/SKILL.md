@@ -122,7 +122,7 @@ CFI-2 and CFI-3 of the base skill (Step 5 → 6 → 7 and the freeze) are the se
 
 What this lead Reads of other files, and when: a row names a file under `plugins/cc-cmds/skills/` (or a run input `입력:<이름>`), a part of it — a verbatim heading, or the verbatim start of a line — and how far the part reaches: `절` to the next heading of the same or a higher level, `본문만` to the next heading of any level, `항목` the list item with its indented continuation (a paragraph: to the next blank line), `` 끝:`<line start>` `` to the line before that one, `전체` the whole file. `파견전` rows are Read before the first spawn, by the dispatcher in `디스패치` (`공통` is both); each later phase's rows are Read on entering that phase, never before. `팀원:` rows are the parts a member prompt names, not the lead's reads.
 
-**파견전 상한**: 168000 바이트
+**파견전 상한**: 178000 바이트
 
 | 단계 | 디스패치 | 파일 | 부분 | 범위 |
 |---|---|---|---|---|
