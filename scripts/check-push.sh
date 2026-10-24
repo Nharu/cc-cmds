@@ -40,8 +40,11 @@
 #                           as it does through CC_TEST_TREE_GATE,
 #                           CC_TEST_TREE_MAKE and CC_TEST_TREE_GH
 #
-# Exit codes: 0 passed / stamped, 1 a check failed or no stamp, 2 usage or a
-# base that is not a commit, 4 no fresh base in FETCH_HEAD.
+# Exit codes: 0 passed / stamped, 1 a check failed or no stamp, 2 usage, a
+# base that is not a commit, or an unattended run whose head changed
+# plugins/cc-cmds/orchestrator/gate.sh against its merge-base with the base
+# while CHECK_PUSH_SECTIONS is empty (refused before the clone, so the tree is
+# left without a stamp), 4 no fresh base in FETCH_HEAD.
 
 set -uo pipefail
 
@@ -51,6 +54,7 @@ TT_PREFIX="check-push"
 TT_SECVAR="CHECK_PUSH_SECTIONS"
 TT_GOALVAR="CHECK_PUSH_GOALS"
 CP_TMP_STAMP=""
+CP_GATE_PATH="plugins/cc-cmds/orchestrator/gate.sh"
 
 check_push_usage() {
   printf 'check-push: 사용법 — run / verify / --self-test 중 하나\n' >&2
@@ -116,6 +120,15 @@ check_push_merged_rerun_line() {
   fi
 }
 
+# 0 when <head> leaves gate.sh as it was at its merge-base with <base>; 1 when
+# it changed it or when either git step fails.
+check_push_gate_unchanged() {
+  local mb changed
+  mb=$(git merge-base "$1" "$2" 2>/dev/null) || return 1
+  changed=$(git diff --name-only "$mb" "$2" -- "$CP_GATE_PATH" 2>/dev/null) || return 1
+  [ -z "$changed" ]
+}
+
 check_push_run() {
   local make_bin commit tree gdir stamp_dir stamp mode src base="" fetch="없음" secs goals added="없음" doubles rc stage="" step old
   make_bin="${CC_CHECK_PUSH_MAKE:-make}"
@@ -165,6 +178,23 @@ check_push_run() {
       base="$TT_BASE"
       fetch="$TT_FETCH"
     fi
+  fi
+
+  # AN UNATTENDED RUN THAT CHANGED gate.sh NAMES ITS SECTIONS. check-push does
+  # not run the gate suite on its own, so a stage whose last check is this one
+  # and names no section would push a gate.sh change no local step tested —
+  # the refusal `make check` makes through check-gate-suite, carried over to
+  # this path. Goals alone do not count: what covers gate.sh is test-gate's
+  # sections. A base object that is not here is left to tt_build, which ends 4
+  # with the fetch to run; a base that is here but whose comparison fails counts
+  # as changed, because reading an undecided comparison as unchanged is the
+  # very gap this closes.
+  if [ -n "${CC_PIPELINE_RUN_ID:-}" ] && [ -z "$secs" ] && [ -n "$base" ] \
+    && git cat-file -e "$base^{commit}" 2>/dev/null \
+    && ! check_push_gate_unchanged "$base" "$commit"; then
+    printf 'check-push: 무인 런에서 %s 를 바꾼 커밋은 시험할 절을 지명해야 한다 — CHECK_PUSH_SECTIONS=<id,...> 로 바꾼 축의 test-gate 절을 지명해 다시 부른다 (CHECK_PUSH_GOALS 만으로는 gate.sh 변경을 덮지 못한다. base %s 대비 변경을 판정하지 못한 경우도 바뀐 것으로 본다)\n' \
+      "$CP_GATE_PATH" "$base" >&2
+    return 2
   fi
 
   trap 'tt_cleanup; [ -z "$CP_TMP_STAMP" ] || rm -f "$CP_TMP_STAMP"' EXIT
@@ -321,7 +351,7 @@ check_push_verify() {
 # --- self-test ---------------------------------------------------------------
 
 check_push_self_test() {
-  local passed=0 failed=0 T self rc out W sa sb1 sm2 sm3 sh shx th thx tm stamp before
+  local passed=0 failed=0 T self rc out W sa sb1 sm2 sm3 sh shx th thx tm tg stamp before
   ok()  { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
   bad() { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
   check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
@@ -582,6 +612,44 @@ EOF
   check "F15 같은 필드에 대역=없음 인 v2 도장에 무인 verify 0" "$rc" "0"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
+  # --- F29 무인 런에서 gate.sh 를 바꾼 head 는 절을 지명한다 -------------------------
+  # The seed history has no gate.sh, so the head that changes it is one more
+  # commit on top of h rather than an edit of the seed: the fixed shas the cases
+  # above read stay where they are. The unattended cases above name no section
+  # and still end as before, because their heads leave gate.sh absent.
+  (
+    cd "$W" || exit 1
+    sgit checkout -q -b hg h && mkdir -p plugins/cc-cmds/orchestrator \
+      && printf 'g\n' > plugins/cc-cmds/orchestrator/gate.sh && sgit add -A && sgit commit -q -m G
+  ) > /dev/null 2>&1 || bad "F29 픽스처" "gate.sh 커밋 실패"
+  tg=$(cd "$W" && git rev-parse 'HEAD^{tree}')
+  fh_line "$sm2"
+  : > "$T/order.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F29 무인, gate.sh 를 바꾼 head, 절 없음 → 2" "$rc" "2"
+  has "F29 거부가 CHECK_PUSH_SECTIONS 로 절을 지명하라고 알린다" "$out" "CHECK_PUSH_SECTIONS=<id,...> 로 바꾼 축의 test-gate 절을 지명해 다시 부른다"
+  hasnt "F29 거부는 복제 전에 끝난다" "$out" "시험 트리 —"
+  check "F29 검사를 부르지 않았고 그 트리에 도장이 없다" "$(grep -c '^bundle:' "$T/order.log") $([ -f "$W/.git/cc-cmds-check-push/$tg" ] && echo 있음 || echo 없음)" "0 없음"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_GOALS=g1); rc=$?
+  check "F29 목표만 준 무인 실행도 → 2" "$rc" "2"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_SECTIONS=s1); rc=$?
+  hasnt "F29 절을 주면 거부 문면이 없다" "$out" "시험할 절을 지명해야 한다"
+  has "F29 절을 주면 검사로 나아간다" "$out" "시험 트리 —"
+  out=$(cprun); rc=$?
+  hasnt "F29 대화형 실행은 거부하지 않는다" "$out" "시험할 절을 지명해야 한다"
+  (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
+  fh_line "$sm2"
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F29 gate.sh 를 바꾸지 않은 head 는 절 없이도 통과한다" "$rc" "0"
+  hasnt "F29 그때 거부 문면이 없다" "$out" "시험할 절을 지명해야 한다"
+  (cd "$W" && sgit checkout -q hg) > /dev/null 2>&1
+  fh_line 0123456789abcdef0123456789abcdef01234567
+  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F29 base 커밋 객체가 없으면 → 4" "$rc" "4"
+  hasnt "F29 그때 거부 문면이 없다 (객체 없음 갈래를 가리지 않는다)" "$out" "시험할 절을 지명해야 한다"
+  has "F29 그때 fetch 를 안내한다" "$out" "객체 없음 — 0123456789abcdef0123456789abcdef01234567"
+  (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
+
   # --- (5) a commit that changes the tree has no stamp ------------------------------
   (cd "$W" && printf 'two\n' > h.txt && sgit commit -q -am second)
   out=$(cvrun); rc=$?
@@ -596,8 +664,8 @@ EOF
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 59 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 59 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 72 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 72 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

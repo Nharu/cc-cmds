@@ -40,11 +40,10 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
 # A suite started inside a pipeline stage inherits the run's names; nothing
-# here belongs to that run.
-unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
-      CC_PIPELINE_RUN_DIR CC_PIPELINE_GRANT CC_PIPELINE_GATE \
-      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
+# here belongs to that run. Cleared by prefix, so a name the gate starts
+# exporting later goes too.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+unset GATE_ACT_CWD
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)

@@ -1986,8 +1986,19 @@ slice_ids() { slicing_body "$1" | sed -n 's/^### 슬라이스 \([A-Za-z0-9][A-Za
 
 slice_field() {
   # slice_field <doc> <id> <key>
+  # The id must end where the heading's id ends: a bare prefix match lets
+  # `### 슬라이스 B` open the block of an earlier `### 슬라이스 B0 — …`.
+  # The character after the id is tested with index(), not a regex: macOS awk
+  # counts substr() in bytes but matches regexes on wide characters, so a lone
+  # UTF-8 lead byte cut off before `—`, `·` or a Hangul syllable aborts it.
+  # An empty next character (the line ends with the id) is tested on its own,
+  # since awks disagree on what index() returns for an empty needle.
   slicing_body "$1" | awk -v id="### 슬라이스 $2" -v key="$3" '
-    index($0, id) == 1 { inb = 1; next }
+    BEGIN { idch = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" }
+    index($0, id) == 1 {
+      c = substr($0, length(id) + 1, 1)
+      if (c == "" || index(idch, c) == 0) { inb = 1; next }
+    }
     inb && /^### /     { exit }
     inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
   '
@@ -3128,7 +3139,7 @@ run_ledger_series_check() {
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
-  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
+  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
   case "$series" in
@@ -3224,7 +3235,7 @@ run_ledger_series_check() {
   # holds on the row without leaning on how the router happens to behave today.
   case "$series:$basis" in
     stage-lease:single-seat|stage-lease:shift-seat-fallback) seat=1 ;;
-    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room) bound=1 ;;
+    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room|stage-wait:resume-bound-borrowed) bound=1 ;;
   esac
   if [ "$series" = "stage-lease" ]; then
     if { [ "$seat" = "1" ] && [ "$acct" != "-" ]; } || { [ "$seat" = "0" ] && [ "$acct" = "-" ]; }; then

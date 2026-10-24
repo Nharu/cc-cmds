@@ -48,6 +48,17 @@
 
 set -uo pipefail
 
+# THIS SUITE SOURCES THE GATE, so the gate's functions run in this process and
+# read every variable it inherited. It clears what a pipeline stage exported to
+# it, keeps banners and the dashboard server off for the whole process, and
+# carries the three lines the meta suite's leak census demands of every
+# gate-family suite.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 FIX="${FIXTURE_ROOT:-$repo_root/tests/fixtures/gate-chain-equiv}"
