@@ -3434,6 +3434,75 @@ pre_cone() {
     row_field "$( { cap_rows '승인' | grep -F '| 판단 부류=사람-결정 |' | grep -F '| 절단점=판단 |' || true; } | tail -1)" '승인 id'
   }
 
+  # THE VISUAL-APPROVAL FIXTURES (31az 시각-승인 · 31ba 시각 대기 park 의 이어받기)
+  # stand on the human-wait run above, with a design document and a published
+  # visual sidecar. `VZ_AR` is the auto-resolve switch: `unset` removes the
+  # variable, any other value is exported as written.
+  VZ_CHECK="$(dirname "$GATE")/visual-check.sh"
+  VZ_AR=0
+  vz_g() {  # vz_g <argv…> — `hwg` with the switch taken from `VZ_AR`
+    local out
+    out=$(cd "$WT" && export XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+            CLAUDE_CODE_SESSION_ID="${HW_SID:-}"
+          if [ "$VZ_AR" = unset ]; then unset CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+          else export CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$VZ_AR"; fi
+          gate_inproc "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  vz_H() {
+    ( cd "$WT" && export XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="${HW_SID:-}"
+      if [ "$VZ_AR" = unset ]; then unset CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+      else export CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$VZ_AR"; fi
+      gate_inproc snapshot --manifest "$CAP_NM" 2>/dev/null ) | jq -r .H
+  }
+  vz_ask() {  # vz_ask <세그먼트> <기준> — raise one `시각-승인` question on that segment
+    vz_g act --manifest "$CAP_NM" --kind judgment --target infra --segment "$1" --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(vz_H)" --rationale x \
+        -- 등급=2 '판단 부류=시각-승인' "기준=$2" "근거=$1 의 화면이 고정 좌석에서 승인되었는가"
+  }
+  vz_id() {  # vz_id <세그먼트> — the last `시각-승인` approval issued on that segment
+    row_field "$( { cap_rows '승인' | grep -F '| 판단 부류=시각-승인 |' | grep -F "| 막는 세그먼트=$1 |" || true; } | tail -1)" '승인 id'
+  }
+  vz_last() {  # vz_last <승인 id> — that approval's last row
+    { cap_rows '승인' | grep -F "| 승인 id=$1 |" || true; } | tail -1
+  }
+  vz_close() {  # vz_close <승인 id> <답> [플래그] — a person's answer through the frame
+    local q
+    q=$(row_field "$(vz_last "$1")" '질문 문면')
+    : > "$NTX/$HW_SID.jsonl"
+    auq_frame "$NTX/$HW_SID.jsonl" "$1" "$q" "$2" >/dev/null
+    vz_g close --manifest "$CAP_NM" --approval "$1" ${3:+"$3"}
+  }
+  vz_fixture() {
+    # vz_fixture <run-id> — the cap run with a design document and a published
+    # visual sidecar with one screen, and no implementation approval yet.
+    local base
+    hw_fx_new "$1"
+    base=$(dirname "$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)")
+    VZ_KEY="docs/fixture-31az-$1.md"
+    VZ_DOC="$base/$VZ_KEY"
+    VZ_SC="$base/docs/visual/docs-fixture-31az-$1.md"
+    sed -e "s|^\*\*설계 문서\*\*: .*|**설계 문서**: $VZ_KEY|" -e "s|owner-doc=(없음)|owner-doc=$VZ_KEY|" "$CAP_NM" > "$CAP_NM.t" && mv "$CAP_NM.t" "$CAP_NM"
+    sed "s|owner-doc=(없음)|owner-doc=$VZ_KEY|" "$CAP_GRANT" > "$CAP_GRANT.t" && mv "$CAP_GRANT.t" "$CAP_GRANT"
+    mkdir -p "$base/docs/visual"
+    printf '# 픽스처 설계\n\n**상태**: 동결\n' > "$VZ_DOC"
+    printf '<div>home</div>\n' > "$base/docs/visual/docs-fixture-31az-$1.home.html"
+    printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n\n### 화면 home\n' "$VZ_KEY" > "$VZ_SC"
+  }
+  vz_approve() {  # vz_approve — write the implementation approval over the current bundle
+    printf '**구현 승인**: 2026-10-23 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음\n' \
+      "$(bash "$VZ_CHECK" bundle "$VZ_DOC")" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" >> "$VZ_SC"
+  }
+  vz_unapprove() {  # vz_unapprove — remove the implementation approval line
+    grep -v '^\*\*구현 승인\*\*:' "$VZ_SC" > "$VZ_SC.t"; mv "$VZ_SC.t" "$VZ_SC"
+  }
+  vz_done2() { gate_done_conditions 2>/dev/null | grep '^2 ' || true; }
+  vz_drop() {  # vz_drop <run-id> — remove that fixture's document, sidecar and screen
+    rm -f "$VZ_DOC" "$VZ_SC" "$(dirname "$VZ_SC")/docs-fixture-31az-$1.home.html"
+    rmdir "$(dirname "$VZ_SC")" 2>/dev/null || true
+  }
+
   # THE RELAY FIXTURE (34e) SHARES THE CAP LEDGER HELPERS AND ADDS ITS OWN
   # SUCCESSOR. The stub is every shift the seat's `router-shift` launches; a plan
   # file holds one mode per launch and the counter in the case's out directory
@@ -13332,6 +13401,286 @@ check "15e-4: 재수렴 전의 드라이버 감사 행은 골격급 재수렴을
 rm -f "$k15_led"
 
 # ---------------------------------------------------------------------------
+# 15v. The run-scope visual step: exempt from the segment row, judged by its sidecar
+# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각과 교대를 포함한 모든 설정 변종이 Claude Design 네 도구를 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
+#
+# The visual step is the fourth row of the run-scope table. It generates the
+# night's screens from the audited document and builds no segment, so it is
+# dispatched with `--segment -` and keyed on the plan's single `visual` step,
+# after its `depends_on` ended `정상 완료`. Its class is not its row count: the
+# stage's terminal literal AND the document's visual sidecar at `검토 통과`
+# make it `정상 완료`, either alone is a hollow success. The plan shape is the
+# manifest check's: at most one visual step, waiting on the audit (the design
+# when there is no audit), with every implement step waiting on it.
+# ---------------------------------------------------------------------------
+DOC15V='docs/fixture-design-15v.md'
+SC15V="$WT/docs/visual/docs-fixture-design-15v.md"
+plan15v='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }'
+au15_run R15V "$DOC15V" "$plan15v"
+visual15v="/cc-cmds:visual-unattended $WT/$DOC15V"
+RD15V="$STATE_LATE/cc-cmds/run/R15V"
+check "15v 픽스처 매니페스트가 검사를 통과한다 (아래가 공허하지 않다)" \
+  "$(au15_snap "$WORK/plan-R15V.md" | jq -r '.run_id' 2>/dev/null)" "R15V"
+# The night's visual step must not reach the Design canvas any more than the
+# other stages do: every settings variant of this run, the visual one and the
+# shift included, refuses the Claude Design tools, and the set is the one run.sh
+# puts on every judgment call's `--disallowedTools`. No file is exempt, so a new
+# kind arriving without the deny is counted.
+design15v_bad=0
+for f in "$RD15V/settings"/*.json; do
+  [ -f "$f" ] || continue
+  if ! jq -e '.permissions.deny // [] | index("DesignSync") != null and index("Artifact") != null
+              and index("ArtifactComments") != null and index("ArtifactData") != null' \
+       "$f" >/dev/null 2>&1; then
+    design15v_bad=$((design15v_bad + 1))
+    printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.deny' "$f")" >&2
+  fi
+done
+check "15v: 거부를 세는 설정에 시각 변종과 교대 변종이 있다 (아래가 공허하지 않다)" \
+  "$( [ -f "$RD15V/settings/visual.json" ] && [ -f "$RD15V/settings/shift.json" ] && printf 있음 || printf 없음)" "있음"
+check "15v: 시각과 교대를 포함한 모든 설정 변종이 Claude Design 네 도구를 거부한다" "$design15v_bad" "0"
+check "15v: Claude Design 거부 이름은 판단 호출의 거부 이름과 같은 집합이다" \
+  "$(grep -E '^readonly CLAUDE_DESIGN_TOOLS=' "$(dirname "$GATE")/run.sh" | cut -d'"' -f2 | tr ' ' '\n' | sort | tr '\n' ' ')" \
+  "Artifact ArtifactComments ArtifactData DesignSync "
+plan15v_visual() {  # plan15v_visual <manifest> [stage kind] — the run-scope dispatch, as plan
+  gateL plan --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
+       --surface 워크트리쓰기 -- "${2:-visual}" -p "$visual15v"
+}
+# The visual stub goes through the gate once, as the audit stub does, and says
+# the terminal literal. Whether the sidecar exists is the fixture's choice.
+STUB_VIS15="$WORK/bin/claude-stub-vis15"
+cat > "$STUB_VIS15" <<'STUBVISEOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 시각 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"svis","num_turns":1,"result":"화면 둘을 만들었습니다.\\n시각 디자인을 검토 통과로 확정했습니다."}\n'
+exit 0
+STUBVISEOF
+chmod +x "$STUB_VIS15"
+
+# Before the audit ended, the visual step has nothing audited to read.
+au15_freeze "$DOC15V"
+au15_dispatch R15V "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$DOC15V \"테스트\""
+au15_wait R15V D1
+check "15v: 동결까지 마친 설계 단계는 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15V D1 design)" "정상 완료"
+plan15v_visual "$WORK/plan-R15V.md"
+check "15v: 감사가 끝나기 전의 시각 파견은 거부된다" "$rc" "3"
+case "$msg" in
+  *"visual 단계 S2V 의 선행 A1 가 아직 정상 완료로 끝나지 않았습니다"*) ok "15v: 그 거부는 시각 단계의 선행 감사를 든다" ;;
+  *) bad "15v 감사 전 시각 문면" "$msg" ;;
+esac
+
+# The plan has to name exactly one visual step.
+M15V_NOVIS="$WORK/plan15v-novisual.md"
+write15c "$M15V_NOVIS" "$plan15e" "$DOC15V" R15V
+plan15v_visual "$M15V_NOVIS"
+check "15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"skill 이 visual 인 단계를 정확히 하나"*) ok "15v: 그 거부는 계획이 시각 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15v 시각 단계 없음 문면" "$msg" ;;
+esac
+
+au15_dispatch R15V "$STUB_AU_AUDIT" audit "/cc-cmds:design-audit-unattended $WT/$DOC15V"
+au15_wait R15V A1
+check "15v: 감사 단계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15V A1 audit)" "정상 완료"
+plan15v_visual "$WORK/plan-R15V.md"
+check "15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다" "$rc" "0"
+gateL plan --manifest "$WORK/plan-R15V.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- visual -p "/cc-cmds:visual-unattended /nonexistent/doc.md"
+check "15v: design_doc 과 다른 문서 인자의 시각 파견은 거부된다" "$rc" "3"
+plan15v_visual "$WORK/plan-R15V.md" implement
+check "15v: - implement 는 여전히 거부된다" "$rc" "3"
+case "$msg" in
+  *"의 segment 행이 없습니다"*) ok "15v: - implement 의 거부는 빠진 segment 행을 든다" ;;
+  *) bad "15v - implement 문면" "$msg" ;;
+esac
+
+# A stage that leaves nothing is hollow, and its continuation names what the
+# visual step owes: the reviewed sidecar and the terminal literal.
+au15_dispatch R15V "$STUB_AU_HOLLOW" visual "$visual15v"
+check "15v: 시각 파견이 기동한다" "$rc" "0"
+au15_wait R15V S2V
+check "15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다" \
+  "$(au15_rows R15V '| 세그먼트=- | 스테이지=S2V | 종류=visual |' | grep -c . || true)" "1"
+check "15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다" "$(au15_class R15V S2V visual)" "공허한 성공"
+au15_dispatch R15V "$STUB_AU_HOLLOW" visual "$visual15v" --resume sau-hollow
+check "15v: 공허한 성공 시각 단계의 첫 계속이 기동한다" "$rc" "0"
+au15_wait R15V S2V
+if grep -qF '검토 통과로 확정된 시각 사이드카도 시각 종결 문구(시각 디자인을 검토 통과로 확정했습니다.)도 정지 기록도 없다' "$RD15V/stub-au-prompt.txt" 2>/dev/null \
+   && ! grep -qF '/cc-cmds:' "$RD15V/stub-au-prompt.txt" 2>/dev/null; then
+  ok "15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다"
+else
+  bad "15v 시각 계속 메시지" "$(cat "$RD15V/stub-au-prompt.txt" 2>/dev/null)"
+fi
+
+# The literal alone is not the artifact.
+rm -f "$SC15V"
+au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
+au15_wait R15V S2V
+check "15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다" "$(au15_class R15V S2V visual)" "공허한 성공"
+# Nor is a sidecar at another state.
+mkdir -p "$(dirname "$SC15V")"
+printf '# 시각 사이드카\n\n**상태**: 초안\n' > "$SC15V"
+au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
+au15_wait R15V S2V
+check "15v: 검토 통과가 아닌 사이드카와 종결 문구는 공허한 성공이다" "$(au15_class R15V S2V visual)" "공허한 성공"
+printf '# 시각 사이드카\n\n**상태**: 검토 통과\n' > "$SC15V"
+au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
+check "15v: 검토 통과 사이드카를 둔 시각 파견이 기동한다" "$rc" "0"
+au15_wait R15V S2V
+check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0"
+check "15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
+check "15v: 시각 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
+  "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15V.md" 2>/dev/null || true; } | grep -c . || true)" "0"
+rm -f "$SC15V" "$WT/$DOC15V"
+
+# The plan shapes the manifest check refuses, each named in its message.
+snap15v_err() {  # snap15v_err <plan json> — the manifest check's stderr for that plan
+  write15c "$WORK/plan15v-shape.md" "$1" "$DOC15V" R15V
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan15v-shape.md" 2>&1 >/dev/null )
+}
+case "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S3V", "skill": "visual", "summary": "시각 2", "depends_on": ["A1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V", "S3V"] } ] }')" in
+  *"skill 이 visual 인 단계가 2개입니다"*) ok "15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다" ;;
+  *) bad "15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다" "$(snap15v_err "$plan15v")" ;;
+esac
+case "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["D1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }')" in
+  *"시각 단계 S2V 의 depends_on 이 감사 단계(A1)를 담지 않습니다"*) ok "15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다" ;;
+  *) bad "15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다" "-" ;;
+esac
+case "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] }, { "id": "S3", "skill": "implement", "summary": "구현 2", "depends_on": ["A1"] } ] }')" in
+  *"구현 단계 S3 이 시각 단계 S2V 에 기대지 않습니다"*) ok "15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다" ;;
+  *) bad "15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다" "-" ;;
+esac
+check "15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다" \
+  "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["D1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' | grep -c '시각 단계' || true)" "0"
+rm -f "$WORK/plan15v-shape.md"
+
+# ---------------------------------------------------------------------------
+# 15w. A screen slice is not dispatched before its screens are approved
+# --- section: 15w | group: base | covers: act, plan, snapshot | anchors: 15w: 설계 스킬의 화면 문법 예시 두 줄이 선언통치 분기를 낸다, 15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다, 15w: 승인 없는 화면 id 목록 슬라이스의 구현 파견은 거부된다, 15w: 화면 필드가 없는 슬라이스도 사이드카가 있으면 기다린다, 15w: 화면이 없음 인 슬라이스는 승인 없이 파견된다, 15w: 선언 없는 런의 구현 파견은 승인 없이 통과한다, 15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다, 15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다 ---
+#
+# A declared run's segment id is its slice id, and a slice whose `**화면**`
+# lists screen ids — or omits the field while the document has a visual
+# sidecar — waits for the sidecar's implementation approval. `없음` waits for
+# nothing, and a run with no declaration does not wait. The `**화면**` lines
+# are read from the design skill's own grammar example, so the grammar and the
+# checker cannot drift apart unseen: with no example the section fails.
+# ---------------------------------------------------------------------------
+W15_EX=$(sed -nE 's/^[[:space:]]*(\*\*화면\*\*: .*)$/\1/p' "$CC_ORCH/../skills/design/SKILL.md")
+W15_SCREEN=$(printf '%s\n' "$W15_EX" | { grep -v -x '\*\*화면\*\*: 없음' || true; } | sed -n 1p)
+W15_NONE=$(printf '%s\n' "$W15_EX" | { grep -x '\*\*화면\*\*: 없음' || true; } | sed -n 1p)
+check "15w: 설계 스킬의 화면 문법 예시가 두 모양을 다 준다 (아래가 공허하지 않다)" \
+  "$([ -n "$W15_SCREEN" ] && [ -n "$W15_NONE" ] && echo 둘 || echo 모자람)" "둘"
+w15_doc() {  # w15_doc <문서> <SA 의 화면 줄> <SB 의 화면 줄> <SC 의 화면 줄> — 빈 값이면 그 줄이 없다
+  local f="$1" id line
+  shift
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: 3\n'
+    for id in SA SB SC; do
+      line="$1"; shift
+      printf '\n### 슬라이스 %s — 픽스처\n\n' "$id"
+      printf '**스킬**: implement\n**레포**: t/infra\n**선언 파일**: `%s.txt`\n**선행**: 없음\n' "$id"
+      printf '**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
+      [ -z "$line" ] || printf '%s\n' "$line"
+    done
+  } > "$f"
+}
+w15_dispatch() {  # w15_dispatch <run id> <segment id> — an implement dispatch through `plan`; sets rc, msg
+  gateL plan --manifest "$WORK/plan-$1.md" --kind skill --target infra --segment "$2" --cutpoint 커밋 \
+    --surface 워크트리쓰기 --rationale x -- implement "/cc-cmds:implement-unattended x"
+}
+w15_screen_refused() {  # 0 when the last call is the screen slice refusal
+  case "$rc/$msg" in 3/*"화면 슬라이스인데 설계 문서의 구현 승인이 서지 않습니다"*) return 0 ;; esac
+  return 1
+}
+
+DOC15W='docs/fixture-design-15w.md'
+w15_doc "$WT/$DOC15W" "$W15_SCREEN" "" "$W15_NONE"
+w15_base=$(dirname "$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)")
+W15_SC="$w15_base/docs/visual/docs-fixture-design-15w.md"
+mkdir -p "$w15_base/docs/visual"
+printf '<div>home</div>\n' > "$w15_base/docs/visual/docs-fixture-design-15w.home.html"
+printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n\n### 화면 home\n' "$DOC15W" > "$W15_SC"
+g15_run R15WA "$DOC15W" "$plan15c" 리뷰없음
+check "15w: 설계 스킬의 화면 문법 예시 두 줄이 선언통치 분기를 낸다" \
+  "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15WA.md" 2>/dev/null \
+      | jq -r '.["슬라이싱"] | [.["분기"], (.["세그먼트"] | map(.id) | join(","))] | join("/")' 2>/dev/null)" "선언통치/SA,SB,SC"
+check "15w 픽스처: 사이드카에 구현 승인이 없어 술어가 서지 않는다" \
+  "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15W" >/dev/null 2>&1; echo $?)" "1"
+for s in SA SB SC; do
+  g15_mkwt R15WA "$s"
+  g15_plan act R15WA "$s" 상태=계획됨 "워크트리=$(g15_wt R15WA "$s")"
+  [ "$rc" = 0 ] || bad "15w 픽스처 R15WA 의 $s 계획" "rc=$rc $msg"
+done
+w15_dispatch R15WA SA
+if w15_screen_refused; then ok "15w: 승인 없는 화면 id 목록 슬라이스의 구현 파견은 거부된다"
+else bad "15w: 승인 없는 화면 id 목록 슬라이스의 구현 파견은 거부된다" "rc=$rc $msg"; fi
+w15_dispatch R15WA SB
+if w15_screen_refused; then ok "15w: 화면 필드가 없는 슬라이스도 사이드카가 있으면 기다린다"
+else bad "15w: 화면 필드가 없는 슬라이스도 사이드카가 있으면 기다린다" "rc=$rc $msg"; fi
+w15_dispatch R15WA SC
+check "15w: 화면이 없음 인 슬라이스는 승인 없이 파견된다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15w 화면 없음 파견 문면" "$msg"
+
+# A run with no declaration plans one segment from the plan's implement step and
+# carries no `**화면**` field, so the same sidecar does not hold it.
+DOC15WB='docs/fixture-design-15wb.md'
+au15_freeze "$DOC15WB"
+cp "$W15_SC" "$w15_base/docs/visual/docs-fixture-design-15wb.md"
+cp "$w15_base/docs/visual/docs-fixture-design-15w.home.html" "$w15_base/docs/visual/docs-fixture-design-15wb.home.html"
+g15_run R15WB "$DOC15WB" "$plan15g_rv" -
+g15_mkwt R15WB S2
+g15_plan act R15WB S2 상태=계획됨 "워크트리=$(g15_wt R15WB S2)"
+[ "$rc" = 0 ] || bad "15w 픽스처 R15WB 의 S2 계획" "rc=$rc $msg"
+w15_dispatch R15WB S2
+check "15w: 선언 없는 런의 구현 파견은 승인 없이 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15w 미통치 파견 문면" "$msg"
+
+# The implementation approval over the current bundle opens the screen slices.
+printf '**구현 승인**: 2026-10-23 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음\n' \
+  "$(bash "$CC_ORCH/visual-check.sh" bundle "$WT/$DOC15W")" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" >> "$W15_SC"
+check "15w 픽스처: 구현 승인 줄 뒤 술어가 선다" \
+  "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15W" >/dev/null 2>&1; echo $?)" "0"
+w15_dispatch R15WA SA
+check "15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15w 승인 뒤 파견 문면" "$msg"
+
+# A person's `거부` on the slice's `시각-승인` still says no once it is consumed:
+# the consumption lifts the person hold and the sidecar's approval line is left
+# standing, so only the refusal check turns the same dispatch away.
+w15_led="$WT/docs/pipeline-run/R15WA.md"
+printf -- '- `승인` | 승인 id=A-15wref | 판단 부류=시각-승인 | 막는 세그먼트=SA | 상태=대기 | prev=x\n' >> "$w15_led"
+printf -- '- `승인` | 승인 id=A-15wref | 상태=거부 | prev=x\n' >> "$w15_led"
+printf -- '- `자율 승인` | kind=judgment | 결정=거절 소비 | 해소 승인=A-15wref | 세그먼트=SA | prev=x\n' >> "$w15_led"
+w15_dispatch R15WA SA
+case "$rc/$msg" in
+  3/*"시각-승인 판단 승인 A-15wref 을 거부 로 닫았습니다"*) ok "15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다" ;;
+  *) bad "15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다" "rc=$rc $msg" ;;
+esac
+w15_dispatch R15WA SB
+check "15w: 다른 세그먼트의 시각-승인 거부는 승인된 화면 슬라이스를 막지 않는다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15w 다른 세그먼트 거부 뒤 파견 문면" "$msg"
+
+# The shape rule reaches the gate's defect lines, which call the driver's
+# checker in its base mode. They are read from the snapshot, under the run's
+# manifest, so the slice's `레포` resolves to its declared target and the
+# review-policy cap of that target is the one checked.
+w15_doc "$WT/$DOC15W" "**화면**: Order-List" "" "$W15_NONE"
+w15_snap=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15WA.md" 2>/dev/null )
+w15_def=$(printf '%s' "$w15_snap" | jq -r '.["슬라이싱"]["분기"]' 2>/dev/null)
+w15_lines=$(printf '%s' "$w15_snap" | jq -r '.["슬라이싱"]["결함"][]?' 2>/dev/null)
+case "$w15_def/$w15_lines" in
+  "선언불완전/"*"슬라이스 SA: 화면이"*) ok "15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다" ;;
+  *) bad "15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다" "분기=$w15_def 결함=$w15_lines" ;;
+esac
+g15_drop R15WA:SA R15WA:SB R15WA:SC R15WB:S2
+rm -f "$WT/$DOC15W" "$WT/$DOC15WB" "$W15_SC" "$w15_base/docs/visual/docs-fixture-design-15wb.md" \
+  "$w15_base/docs/visual/docs-fixture-design-15w.home.html" "$w15_base/docs/visual/docs-fixture-design-15wb.home.html"
+rmdir "$w15_base/docs/visual" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 # 15f. A frozen design with a step not yet started keeps the run open
 # --- section: 15f | group: base | covers: act, close, done-conditions | anchors: 15f: 동결 뒤 감사가 남은 0-세그먼트 런의 종료 처분은 미충족이다, 15f: 감사 뒤 구현 단계가 남은 0-세그먼트 런도 미충족이다, 15f: 감사 단계의 계속은 감사 산출물을 이름 대는 계속 메시지를 싣는다, 15f: 계속 상한에 이른 감사 단계의 셋째 계속은 감사 갈래로 거부된다, 15f: 설계만 있는 계획은 설계가 정상 완료하고 문서가 동결돼 있으면 조건 1 이 선다, 15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다, 15f: 같은 원장을 구현 단계를 단 계획으로 읽으면 다음 단계(S2)를 든다, 15f: 설계만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계와 감사만 있는 계획은 감사 전에 감사 단계를 든다, 15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 계획의 재수렴 뒤 감사 단계는 새 감사를 기다린다, 15f: 그 계획은 새 감사가 정상 완료하면 조건 1 이 선다, 15f: 설계와 감사만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 줄만 남으면 처분은 무효화다 ---
 #
@@ -18470,7 +18819,7 @@ else
 fi
 printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 사유=x\n' > "$LR/plugins/good.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 열두 값 안의 판단 부류는 통과한다"
+  ok "린트 — 열세 값 안의 판단 부류는 통과한다"
 else
   bad "린트" "어휘 안의 값을 위반으로 잡았다"
 fi
@@ -18478,7 +18827,7 @@ printf -- '- `자동 채택` | 판단 부류=없는-부류 | 사유=x\n' > "$LR/
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트" "어휘 밖의 판단 부류를 통과시켰다"
 else
-  ok "린트 — 열두 값 밖의 판단 부류는 실패한다"
+  ok "린트 — 열세 값 밖의 판단 부류는 실패한다"
 fi
 # THE PRODUCER SIDE OF THE EMITTED JUDGMENT, WHICH HAD NO DEFINITION ANYWHERE.
 # The gate parses five markers out of a stage's terminal message and absorbs the
@@ -18501,7 +18850,7 @@ rm -f "$LR/plugins/sentinel.md"
 # 모양으로 건너뛰므로 그 안의 수를 보지 못한다. 그런데 그 수는 라우터에게 향한
 # 진술이라, 어휘가 여덟이라고 읽은 라우터는 아홉 번째를 방출하지 않는다. 손으로
 # 고쳐야 했고 고치지 않아도 아무것도 실패하지 않았던 자리다.
-printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열두 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
+printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열세 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   ok "린트 — 어휘 크기와 맞는 자리표시자 수사는 통과한다"
 else
@@ -22923,7 +23272,7 @@ hwg plan --manifest "$CAP_NM" --kind skill --target infra --segment S2 --cutpoin
   --trigger '첫 리뷰' -- review -p "$(CANON_LEDGER="$CAP_LEDGER" rv_x R1114 S2 "$CANON_TOP")"
 check "31ax: 세워지지 않은 세그먼트의 파견은 통과한다" "$rc" "0"
 hw_done2() { gate_done_conditions 2>/dev/null | grep '^2 ' || true; }
-check "31ax: 열린 사람-결정이 종료 조건 2 를 막는다" "$(hw_in hw_done2)" "2 대기 중인 사람-결정 판단 승인이 2건 있습니다"
+check "31ax: 열린 사람-결정이 종료 조건 2 를 막는다" "$(hw_in hw_done2)" "2 대기 중인 사람 판단 승인(사람-결정·시각-승인)이 2건 있습니다"
 
 # B1 while a shift is live. The progress vector is seeded at its threshold the
 # way 31aa seeds it, with no read in the stretch, so one above-read act is the
@@ -23078,6 +23427,244 @@ check "31ay: park 행 뒤에도 cone 행은 남는다" \
 hw_row segment 교대=0 id=S3 "워크트리=$CONE_D" 상태=실행중 선행=없음
 check "31ay: park 아닌 segment 행 뒤 cone 행은 cone_blocks 에서 빠진다" \
   "$(hw_snap | jq -c '[.cone_blocks[] | select(.subject == "S3")]')" '[]'
+
+# --- 31az. A visual approval is closed by the sidecar, and held like a person's question ---
+# --- section: 31az | group: cone | covers: act, close, snapshot, exec | anchors: 31az: 시각-승인 은 사람 집합의 원소다, 31az: 술어가 서지 않은 시각-승인 은 exit 5 다, 31az: 스위치가 켜져도 술어 없는 시각-승인 은 거부로 닫히지 않는다, 31az: 열린 시각-승인 이 종료 조건 2 를 막는다, 31az: 세워진 세그먼트로의 파견 거부가 시각-승인 을 든다, 31az: 술어 없는 승인 라벨은 거절된다, 31az: 자유 문면 답은 시각-승인 을 닫지 않는다, 31az: 자유 문면으로 답한 물음은 술어가 서도 다시 낸 판단으로 닫히지 않는다, 31az: 술어가 선 승인 라벨이 닫는다, 31az: 닫힌 시각-승인 은 다시 낸 판단으로 한 번 채택된다, 31az: 술어가 선 채 처음 낸 시각-승인 은 그 행위 안에서 채택된다, 31az: 거부 라벨은 술어 없이 받아들여진다, 31az: 답한 승인 인용은 시각-승인 을 받지 않는다 ---
+#
+# `시각-승인` asks whether the screens a slice implements were approved at the
+# fixed seat. The sidecar's implementation approval answers it: the predicate
+# arm closes the question when that holds, whatever the auto-resolve switch says,
+# and `close` refuses a `승인` label while it does not. Until then the question
+# holds its segment and the run's end the way `사람-결정` does, and a free-text
+# answer leaves it waiting. The run is walked twice, the switch written `0` and
+# left unset, because a hold that only the switch reached would pass one and
+# fail the other. The `vz_*` helpers live in the cone preamble: 31ba stands on
+# the same fixture.
+for VZ_AR in 0 unset; do
+  vz_fixture "RVZ${VZ_AR}"
+  if [ "$VZ_AR" = 0 ]; then
+    if hw_in judgment_class_person 시각-승인 && hw_in judgment_class_person 사람-결정 \
+       && ! hw_in judgment_class_person 설계-골격; then
+      ok "31az: 시각-승인 은 사람 집합의 원소다"
+    else
+      bad "31az: 시각-승인 은 사람 집합의 원소다" "judgment_class_person 이 집합을 잘못 판정했다"
+    fi
+    if hw_in gate_judgment_class_adoptable 시각-승인 >/dev/null 2>&1; then
+      bad "31az: 시각-승인 은 채택 가능한 부류가 아니다" "gate_judgment_class_adoptable 이 참을 돌렸다"
+    else
+      ok "31az: 시각-승인 은 채택 가능한 부류가 아니다"
+    fi
+  fi
+  HW_SID="31az0000-1111-2222-3333-44445555$( [ "$VZ_AR" = 0 ] && echo 6660 || echo 6661 )"
+  check "31az 픽스처($VZ_AR): 술어가 서지 않는다" "$(bash "$VZ_CHECK" approval "$VZ_DOC" >/dev/null 2>&1; echo $?)" "1"
+
+  # Not holding: the question waits, held, never refused.
+  vz_ask S3 "31az — S3 화면 승인"
+  check "31az: 술어가 서지 않은 시각-승인 은 exit 5 다 ($VZ_AR)" "$rc" "5"
+  vz_q=$(vz_id S3)
+  check "31az: 발행 행이 판단 부류=시각-승인 을 싣는다 ($VZ_AR)" \
+    "$(row_field "$(vz_last "$vz_q")" '상태')/$(row_field "$(vz_last "$vz_q")" '판단 부류')" "대기/시각-승인"
+  check "31az: 스위치가 켜져도 술어 없는 시각-승인 은 거부로 닫히지 않는다 ($VZ_AR)" \
+    "$( { cap_rows '승인' | grep -F "| 승인 id=$vz_q |" | grep -cE '상태=(거부|무효)|자동 해소' || true; } | tr -d ' ')" "0"
+  check "31az: pending_approvals 가 시각-승인 과 세운 세그먼트를 싣는다 ($VZ_AR)" \
+    "$(hw_snap | jq -c --arg i "$vz_q" '[.pending_approvals[] | select(.id == $i) | {class, blocks}]')" \
+    '[{"class":"시각-승인","blocks":"S3"}]'
+  check "31az: 열린 시각-승인 이 종료 조건 2 를 막는다 ($VZ_AR)" "$(hw_in vz_done2)" \
+    "2 대기 중인 사람 판단 승인(사람-결정·시각-승인)이 1건 있습니다"
+  vz_g plan --manifest "$CAP_NM" --kind skill --target infra --segment S3 --cutpoint 커밋 -- review
+  check "31az: 세워진 세그먼트로의 파견은 거부된다 ($VZ_AR)" "$rc" "3"
+  case "$msg" in
+    *"시각-승인 판단 승인 $vz_q"*) ok "31az: 세워진 세그먼트로의 파견 거부가 시각-승인 을 든다 ($VZ_AR)" ;;
+    *) bad "31az: 세워진 세그먼트로의 파견 거부가 시각-승인 을 든다 ($VZ_AR)" "$msg" ;;
+  esac
+
+  # A `승인` label without the predicate is refused, and the question waits.
+  vz_close "$vz_q" 승인
+  check "31az: 술어 없는 승인 라벨은 거절된다 ($VZ_AR)" "$rc/$(row_field "$(vz_last "$vz_q")" '상태')" "3/대기"
+  case "$msg" in
+    *"구현 승인"*|*"implementation approval"*) ok "31az: 그 거절은 구현 승인이 없음을 든다 ($VZ_AR)" ;;
+    *) bad "31az: 그 거절은 구현 승인이 없음을 든다 ($VZ_AR)" "$msg" ;;
+  esac
+
+  # Free text never closes it, and it does not take the `사람-결정` free-input close.
+  vz_close "$vz_q" "화면은 괜찮아 보인다"
+  check "31az: 자유 문면 답은 시각-승인 을 닫지 않는다 ($VZ_AR)" \
+    "$(row_field "$(vz_last "$vz_q")" '상태')/$(row_field "$(vz_last "$vz_q")" '처분 사유')" "대기/자유 입력"
+  check "31az: 그 자유 문면은 답 저장소에 오르지 않는다 ($VZ_AR)" \
+    "$([ -f "$CAP_DIR/answer/$vz_q.md" ] && echo 있음 || echo 없음)" "없음"
+  vz_approve
+  check "31az 픽스처($VZ_AR): 구현 승인 줄 뒤 술어가 선다" "$(bash "$VZ_CHECK" approval "$VZ_DOC" >/dev/null 2>&1; echo $?)" "0"
+  vz_ask S3 "31az — S3 화면 승인"
+  check "31az: 자유 문면으로 답한 물음은 술어가 서도 다시 낸 판단으로 닫히지 않는다 ($VZ_AR)" \
+    "$(row_field "$(vz_last "$vz_q")" '상태')/$( { cap_rows '자율 승인' | grep -cF "| 해소 승인=$vz_q |" || true; } | tr -d ' ')" "대기/0"
+
+  # The label with the predicate closes it; the resubmission adopts it once.
+  vz_close "$vz_q" 승인
+  check "31az: 술어가 선 승인 라벨이 닫는다 ($VZ_AR)" "$rc/$(row_field "$(vz_last "$vz_q")" '상태')" "0/승인"
+  vz_ask S3 "31az — S3 화면 승인"
+  check "31az: 닫힌 시각-승인 은 다시 낸 판단으로 한 번 채택된다 ($VZ_AR)" \
+    "$rc/$( { cap_rows '자율 승인' | grep -cF "| 해소 승인=$vz_q |" || true; } | tr -d ' ')" "0/1"
+  vz_ask S3 "31az — S3 화면 승인"
+  check "31az: 소진된 시각-승인 답은 두 번 열지 않는다 ($VZ_AR)" "$rc" "3"
+
+  # With the predicate holding, the first issue closes inside the act.
+  vz_ask S4 "31az — S4 화면 승인"
+  vz_p=$(vz_id S4)
+  check "31az: 술어가 선 채 처음 낸 시각-승인 은 그 행위 안에서 채택된다 ($VZ_AR)" \
+    "$rc/$(row_field "$(vz_last "$vz_p")" '상태')/$(row_field "$(vz_last "$vz_p")" '처분 사유')/$( { cap_rows '자율 승인' | grep -cF "| 해소 승인=$vz_p |" || true; } | tr -d ' ')" \
+    "0/승인/자동 해소/1"
+  case "$(row_field "$(vz_last "$vz_p")" '답변 문면')" in
+    *"승인 유효 "*) ok "31az: 자동 해소의 답변 문면이 술어의 다이제스트를 싣는다 ($VZ_AR)" ;;
+    *) bad "31az: 자동 해소의 답변 문면이 술어의 다이제스트를 싣는다 ($VZ_AR)" "$(vz_last "$vz_p")" ;;
+  esac
+
+  # A refusal needs no predicate.
+  vz_unapprove
+  vz_ask S2 "31az — S2 화면 승인"
+  vz_r=$(vz_id S2)
+  check "31az 픽스처($VZ_AR): 술어가 지워진 뒤 S2 의 물음은 대기다" "$rc/$(row_field "$(vz_last "$vz_r")" '상태')" "5/대기"
+  vz_close "$vz_r" 거부 --reject
+  check "31az: 거부 라벨은 술어 없이 받아들여진다 ($VZ_AR)" "$rc/$(row_field "$(vz_last "$vz_r")" '상태')" "0/거부"
+  vz_g act --manifest "$CAP_NM" --kind judgment --target infra --segment S2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(vz_H)" --rationale x \
+      -- 등급=2 '판단 부류=사람-결정' "기준=31az — 인용" "근거=31az — 답에 따라 한 일" "답한 승인=$vz_r"
+  check "31az: 답한 승인 인용은 시각-승인 을 받지 않는다 ($VZ_AR)" "$rc" "3"
+  vz_drop "RVZ${VZ_AR}"
+done
+HW_SID=""; VZ_AR=0
+
+# ---------------------------------------------------------------------------
+# 31ba. A visual-wait park is taken up again once the screens are approved
+# --- section: 31ba | group: cone | covers: act, close, snapshot, exec | anchors: 31ba: 표지 없는 런은 판단 전 park 뒤 종단이다, 31ba: 표지 있는 런은 판단 전 park 뒤 종단이 아니라 정산중이다, 31ba: 표지 있는 런은 done 이 있어도 교대가 살아 있으면 정산중이다, 31ba: 열린 시각-승인 아래 런 상태 토큰은 승인대기다, 31ba: 열린 시각-승인 아래 그 세그먼트의 구현 파견은 거부된다, 31ba: 열린 시각-승인 아래 종료 조건 2 가 런을 열어 둔다, 31ba: 시각 대기 밤 끝의 감시자 한 번은 정체 관측도 blocked 행도 남기지 않는다, 31ba: 시각 대기 밤 끝의 감시자 한 번 뒤 done 이 없다, 31ba: 시각 대기 밤 끝의 감시자 한 번 뒤 런 상태 토큰은 승인대기다, 31ba: 대조 — 물음이 닫히고 화면 슬라이스가 계획됨이면 같은 감시자가 라이브니스 침묵을 남긴다, 31ba: 드라이버 종료 행 뒤 같은 파견은 룰 거부 코드로 거절된다, 31ba: 채택 뒤 park 에서 실행중 으로 옮기는 행이 받힌다, 31ba: 채택 뒤 그 세그먼트의 구현 파견이 받힌다, 31ba: 술어가 지워진 뒤 다시 park 하는 행이 받힌다 ---
+#
+# The router parks a screen slice before its branch is cut, with the reason
+# `시각 승인 대기`, and asks the fixed-wording question on that segment. The
+# question holds the segment and the run open; once the screens are approved
+# and the answer adopted, the router's own park row is taken up again with a
+# `실행중` row and the slice is dispatched. If the approval is removed after the
+# adoption, parking the slice again is still accepted.
+# ---------------------------------------------------------------------------
+VZ_AR=0
+vz_fixture RVZB
+HW_SID="31ba0000-1111-2222-3333-444455556660"
+vba_seg() {  # vba_seg <세그먼트> <워크트리> <필드…> — one `segment` act on the visual run
+  local s="$1" w="$2"
+  shift 2
+  vz_g act --manifest "$CAP_NM" --kind segment --target infra --segment "$s" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(vz_H)" --rationale x -- "워크트리=$w" "$@"
+}
+vba_dispatch() {  # vba_dispatch <세그먼트> — an implement dispatch through `plan`; sets rc, msg
+  vz_g plan --manifest "$CAP_NM" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
+      --surface 워크트리쓰기 --rationale x -- implement "/cc-cmds:implement-unattended x"
+}
+vba_state() {
+  bash -c '. "$1" >/dev/null 2>&1; cc_run_state "$2" "$3"' _ "$LIVENESS" "$CAP_DIR" "$CAP_LEDGER"
+}
+hw_row segment 교대=0 id=S2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+hw_row segment 교대=0 id=S4 "워크트리=$CONE_E" 상태=머지됨 선행=없음
+vba_seg S3 "$CONE_D" 상태=park 선행=없음
+check "31ba 픽스처: 화면 슬라이스 S3 의 park 행이 받힌다" "$rc" "0"
+[ "$rc" = 0 ] || bad "31ba park 문면" "$msg"
+vz_g act --manifest "$CAP_NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(vz_H)" --rationale x \
+    -- 스코프=cone 원인=막힘 "앵커 세그먼트=S3" "사유=시각 승인 대기" \
+       "근거=S3 의 화면이 고정 좌석에서 구현 승인되지 않았다" "재개 명령=승인이 채택되면 S3 을 실행중 으로 옮겨 다시 디스패치"
+check "31ba 픽스처: 시각 승인 대기 cone 행이 받힌다" "$rc" "0"
+# Before the question is raised the run reads by its `ends-on-done` marker. The
+# router path always carries it (the gate writes it when the seat launches a
+# shift), and there the derived conjunction only opens the settlement window;
+# the driver path carries none and reads 종단, which is where the driver ends
+# the run after the park. A `done` whose shift is still alive is the done-tail.
+# The marker, `done` and `shift.live` are put back as they were afterwards.
+vba_keep=""
+for f in ends-on-done done shift.live; do
+  [ -e "$CAP_DIR/$f" ] && { cp -p "$CAP_DIR/$f" "$CAP_DIR/$f.31ba-keep"; vba_keep="$vba_keep $f"; }
+done
+rm -f "$CAP_DIR/ends-on-done" "$CAP_DIR/done" "$CAP_DIR/shift.live"
+check "31ba: 표지 없는 런은 판단 전 park 뒤 종단이다" "$(vba_state)" "종단"
+printf '1\n' > "$CAP_DIR/ends-on-done"
+check "31ba: 표지 있는 런은 판단 전 park 뒤 종단이 아니라 정산중이다" "$(vba_state)" "정산중"
+printf '종단 — 31ba 픽스처\n' > "$CAP_DIR/done"
+printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$CAP_DIR/shift.live"
+check "31ba: 표지 있는 런은 done 이 있어도 교대가 살아 있으면 정산중이다" "$(vba_state)" "정산중"
+rm -f "$CAP_DIR/ends-on-done" "$CAP_DIR/done" "$CAP_DIR/shift.live"
+for f in $vba_keep; do mv "$CAP_DIR/$f.31ba-keep" "$CAP_DIR/$f"; done
+vz_ask S3 "31ba — S3 화면 승인"
+vba_q=$(vz_id S3)
+check "31ba 픽스처: 술어가 서지 않은 물음은 대기로 열린다" "$rc/$(row_field "$(vz_last "$vba_q")" '상태')" "5/대기"
+check "31ba: 열린 시각-승인 아래 런 상태 토큰은 승인대기다" "$(vba_state)" "승인대기"
+vba_dispatch S3
+check "31ba: 열린 시각-승인 아래 그 세그먼트의 구현 파견은 거부된다" "$rc" "3"
+check "31ba: 열린 시각-승인 아래 종료 조건 2 가 런을 열어 둔다" "$(hw_in vz_done2)" \
+  "2 대기 중인 사람 판단 승인(사람-결정·시각-승인)이 1건 있습니다"
+
+# The night's end on the router path: two merged slices, the parked screen
+# slice, the open question and no live stage. One watcher pass with the ledger
+# and the gate's last entry aged past every threshold writes no stall
+# observation and no `done`, and the run still reads 승인대기. The contrast is
+# the same aged pass over a copy whose question is closed and whose screen
+# slice is still planned: there the watcher records `라이브니스 침묵`, so the
+# silence above is the open question's doing and not a pass that judged nothing.
+VBA_WATCH="$(dirname "$GATE")/watch.sh"
+vba_watch() {  # vba_watch <run-dir> <ledger> — one watcher pass, idle aged to 5000 s
+  local rd="$1" lg="$2" now
+  now=$(date -u +%s)
+  printf '%s\n%s\n%s\n' "$( . "$LIVENESS"; cc_ledger_size "$lg" )" "$((now - 5000))" "$lg" > "$rd/watch.state"
+  printf '%s\n' "$((now - 5000))" > "$rd/started-at"
+  ( export XDG_STATE_HOME="$STATE_CONE"
+    bash "$VBA_WATCH" --run-dir "$rd" --ledger "$lg" --once \
+      --stall 60 --silence 60 --after-stage 60 --run-open 60 ) >/dev/null 2>&1
+}
+vba_blocked_n() { { grep -cE '^- `blocked`' "$CAP_LEDGER" || true; } | tr -d ' '; }
+vba_stall_n() { local n; n=$( { grep -c . "$CAP_DIR/stall" 2>/dev/null || true; } | tr -d ' '); printf '%s' "${n:-0}"; }
+vba_b0=$(vba_blocked_n)
+vba_s0=$(vba_stall_n)
+vba_watch "$CAP_DIR" "$CAP_LEDGER"
+check "31ba: 시각 대기 밤 끝의 감시자 한 번은 정체 관측도 blocked 행도 남기지 않는다" \
+  "$(vba_stall_n)/$(vba_blocked_n)" "$vba_s0/$vba_b0"
+check "31ba: 시각 대기 밤 끝의 감시자 한 번 뒤 done 이 없다" \
+  "$( [ -e "$CAP_DIR/done" ] && printf 있음 || printf 없음)" "없음"
+check "31ba: 시각 대기 밤 끝의 감시자 한 번 뒤 런 상태 토큰은 승인대기다" "$(vba_state)" "승인대기"
+rm -f "$CAP_DIR"/watch.* "$CAP_DIR"/.watch.stall.*
+vba_cd="$WORK/31ba-watch-contrast"
+rm -rf "$vba_cd"; mkdir -p "$vba_cd"
+cp "$CAP_LEDGER" "$vba_cd/ledger.md"
+printf -- '- `승인` | 승인 id=%s | 상태=무효 | prev=x\n' "$vba_q" >> "$vba_cd/ledger.md"
+printf -- '- `segment` | 교대=0 | id=S3 | 워크트리=%s | 상태=계획됨 | 선행=없음 | prev=x\n' "$CONE_D" >> "$vba_cd/ledger.md"
+vba_watch "$vba_cd" "$vba_cd/ledger.md"
+check "31ba: 대조 — 물음이 닫히고 화면 슬라이스가 계획됨이면 같은 감시자가 라이브니스 침묵을 남긴다" \
+  "$( { grep -cF '라이브니스 침묵' "$vba_cd/stall" 2>/dev/null || true; } | tr -d ' ')" "1"
+rm -rf "$vba_cd"
+
+vz_approve
+vz_close "$vba_q" 승인
+check "31ba 픽스처: 술어가 선 승인 라벨이 닫는다" "$rc/$(row_field "$(vz_last "$vba_q")" '상태')" "0/승인"
+vz_ask S3 "31ba — S3 화면 승인"
+check "31ba 픽스처: 다시 낸 판단이 답을 채택한다" \
+  "$rc/$( { cap_rows '자율 승인' | grep -cF "| 해소 승인=$vba_q |" || true; } | tr -d ' ')" "0/1"
+vba_seg S3 "$CONE_D" 상태=실행중 선행=없음
+check "31ba: 채택 뒤 park 에서 실행중 으로 옮기는 행이 받힌다" "$rc" "0"
+[ "$rc" = 0 ] || bad "31ba 실행중 문면" "$msg"
+vba_dispatch S3
+check "31ba: 채택 뒤 그 세그먼트의 구현 파견이 받힌다" "$rc" "0"
+[ "$rc" = 0 ] || bad "31ba 파견 문면" "$msg"
+
+# The driver's ending row turns the same dispatch away: on the driver path the
+# park ends the run, and the slice is taken up by a new run, not by this one.
+hw_in gate_end_run "주 루프 종료" "디스패치할 슬라이스 없이 끝났다 — 슬라이스 park 의 원인 시각 승인 대기" >/dev/null 2>&1
+vba_dispatch S3
+check "31ba: 드라이버 종료 행 뒤 같은 파견은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"already terminated"*) ok "31ba: 그 거절은 런이 이미 종단했음을 든다" ;;
+  *) bad "31ba: 그 거절은 런이 이미 종단했음을 든다" "$msg" ;;
+esac
+
+vz_unapprove
+vba_seg S3 "$CONE_D" 상태=park 선행=없음
+check "31ba: 술어가 지워진 뒤 다시 park 하는 행이 받힌다" "$rc" "0"
+[ "$rc" = 0 ] || bad "31ba 다시 park 문면" "$msg"
+vz_drop RVZB
+HW_SID=""
 
 # ---------------------------------------------------------------------------
 # 12b. B3's budget is a WINDOW, and the two halves are asserted separately
@@ -43855,6 +44442,113 @@ graded_as '등급 미상'    '79:하위 명령 없는 stage-rules.sh 는 등급 
 graded_as '등급 미상'    '79:이름만 같은 다른 경로의 stage-rules.sh 는 등급 미상이다' -- /x/scripts/stage-rules.sh status
 graded_as '등급 미상'    '79:맨 이름의 stage-rules.sh 는 등급 미상이다'    -- stage-rules.sh status
 graded_as '등급 미상'    '79:심볼릭 링크 뒤 .. 로 접은 stage-rules.sh 는 등급 미상이다' -- "$(dotdot_spelling 79sr stage-rules.sh)" status
+
+# ---------------------------------------------------------------------------
+# 79v. The three visual helpers and the headless Chrome screenshot
+# --- section: 79v | group: bsplit | covers: grade, exec | anchors: 79v:visual-capture.sh ref 는 트리 밖 쓰기다, 79v:visual-config.sh snapshot 은 읽기다, 79v:모르는 visual-check.sh 하위 명령은 등급 미상이다, 79v:헤드리스 스크린숏 형태의 chromium 은 트리 밖 쓰기다, 79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다, 79v:원격 페이지를 찍는 스크린숏은 등급 미상이다, 79v:다른 프로그램을 띄우는 런처 스위치는 등급 미상이다, 79v:bash 뒤의 승인 술어 읽기는 스위치 0 에서 거부된다, 79v:/opt/homebrew 아래의 스크린숏은 등급 미상이다 ---
+#
+# The helpers are graded by their subcommand and trusted by where they are:
+# what a stage may run reads or writes one output directory outside the tree,
+# and what writes the settings home or the sidecar is the seat's and refused.
+# The Chrome row admits the headless screenshot form alone — the same argv with
+# either flag missing, or with any flag, target or screenshot path outside the
+# row's allow-list, is the binary the table has no row for.
+# ---------------------------------------------------------------------------
+graded_as '읽기'         '79v:visual-config.sh snapshot 은 읽기다'            -- "$CC_ORCH/visual-config.sh" snapshot --part models
+for w79v in account models bans seed append; do
+  graded_as '등급 미상'  "79v:visual-config.sh $w79v 는 등급 미상이다"        -- "$CC_ORCH/visual-config.sh" "$w79v"
+done
+for w79v in scan size approval bundle; do
+  graded_as '읽기'       "79v:visual-check.sh $w79v 은 읽기다"                -- "$CC_ORCH/visual-check.sh" "$w79v" docs/x.md
+done
+graded_as '등급 미상'    '79v:모르는 visual-check.sh 하위 명령은 등급 미상이다' -- "$CC_ORCH/visual-check.sh" frob docs/x.md
+graded_as '트리밖쓰기'   '79v:visual-capture.sh ref 는 트리 밖 쓰기다'          -- "$CC_ORCH/visual-capture.sh" ref docs/visual/x.home.html --out /tmp/x --size 1280x800
+graded_as '트리밖쓰기'   '79v:visual-capture.sh app 은 트리 밖 쓰기다'          -- "$CC_ORCH/visual-capture.sh" app --root dist --out /tmp/x --size 1280x800
+graded_as '등급 미상'    '79v:하위 명령 없는 visual-capture.sh 는 등급 미상이다' -- "$CC_ORCH/visual-capture.sh"
+graded_as '등급 미상'    '79v:이름만 같은 다른 경로의 visual-capture.sh 는 등급 미상이다' -- /x/scripts/visual-capture.sh ref a.html --out /tmp/x
+graded_as '등급 미상'    '79v:맨 이름의 visual-check.sh 는 등급 미상이다'       -- visual-check.sh scan d.md
+graded_as '등급 미상'    '79v:심볼릭 링크 뒤 .. 로 접은 visual-capture.sh 는 등급 미상이다' -- "$(dotdot_spelling 79v visual-capture.sh)" ref a.html --out /tmp/x
+graded_as '트리밖쓰기'   '79v:헤드리스 스크린숏 형태의 chromium 은 트리 밖 쓰기다' -- chromium --headless --screenshot=/tmp/x/a.png --window-size=1280,800 file:///tmp/a.html
+graded_as '트리밖쓰기'   '79v:--headless=new 의 google-chrome 스크린숏도 트리 밖 쓰기다' -- google-chrome --headless=new --screenshot=/tmp/x/a.png file:///tmp/a.html
+graded_as '트리밖쓰기'   '79v:macOS 번들 실행 파일의 스크린숏도 트리 밖 쓰기다' -- '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless --screenshot=/tmp/x/a.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:스크린숏 없는 헤드리스 chromium 은 등급 미상이다' -- chromium --headless --dump-dom file:///tmp/a.html
+graded_as '등급 미상'    '79v:헤드리스 없는 스크린숏 chromium 은 등급 미상이다' -- chromium --screenshot=/tmp/x/a.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:빈 경로의 스크린숏 플래그는 그 형태가 아니다'     -- chrome --headless --screenshot= file:///tmp/a.html
+# The row is an allow-list. The two flags being present is not enough: a remote
+# page, a DOM dump or debugging port beside the screenshot, a launcher switch
+# that runs another program, a second target, and a screenshot path in the tree
+# or relative to it all keep the unknown grade.
+graded_as '트리밖쓰기'   '79v:캡처 도우미와 같은 플래그 묶음의 스크린숏은 트리 밖 쓰기다' -- chromium --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 --window-size=480,320 --proxy-server=127.0.0.1:9 --no-first-run --disable-background-networking --disable-component-update --disable-sync --user-data-dir=/tmp/x/profile --screenshot=/tmp/x/a.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:원격 페이지를 찍는 스크린숏은 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png https://example.com/
+graded_as '등급 미상'    '79v:호스트가 붙은 file 대상은 등급 미상이다'          -- chromium --headless --screenshot=/tmp/x/a.png file://host/a.html
+graded_as '등급 미상'    '79v:스크린숏 곁의 --dump-dom 은 등급 미상이다'        -- chromium --headless --screenshot=/tmp/x/a.png --dump-dom file:///tmp/a.html
+graded_as '등급 미상'    '79v:스크린숏 곁의 디버그 포트는 등급 미상이다'        -- chromium --headless --screenshot=/tmp/x/a.png --remote-debugging-port=9222 file:///tmp/a.html
+graded_as '등급 미상'    '79v:다른 프로그램을 띄우는 런처 스위치는 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png --renderer-cmd-prefix=/tmp/x/run file:///tmp/a.html
+graded_as '등급 미상'    '79v:대상이 둘인 스크린숏은 등급 미상이다'            -- chromium --headless --screenshot=/tmp/x/a.png file:///tmp/a.html file:///tmp/b.html
+graded_as '등급 미상'    '79v:원격 프록시를 쓰는 스크린숏은 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png --proxy-server=203.0.113.1:8080 file:///tmp/a.html
+graded_as '등급 미상'    '79v:상대 경로의 스크린숏은 등급 미상이다'            -- chromium --headless --screenshot=a.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:트리 안 경로의 스크린숏은 등급 미상이다'          -- chromium --headless "--screenshot=$WT/a.png" file:///tmp/a.html
+graded_as '등급 미상'    '79v:.. 로 빠져나가는 스크린숏 경로는 등급 미상이다'   -- chromium --headless --screenshot=/tmp/../x/a.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:임시 디렉터리 밖의 프로필은 등급 미상이다'        -- chromium --headless --screenshot=/tmp/x/a.png --user-data-dir=/x/profile file:///tmp/a.html
+graded_as '트리밖쓰기'   '79v:TMPDIR 아래 프로필의 스크린숏은 트리 밖 쓰기다'   -- chromium --headless --screenshot=/tmp/x/a.png "--user-data-dir=${TMPDIR:-/tmp}/zz-79v-profile" file:///tmp/a.html
+# A link under scratch space is judged where it lands, and a screenshot or page
+# in a configuration home is not this row's write.
+ln -sfn "$WT" "$WORK/zz-79v-link"
+graded_as '등급 미상'    '79v:트리를 가리키는 링크를 거친 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=$WORK/zz-79v-link/a.png" file:///tmp/a.html
+graded_as '등급 미상'    '79v:트리를 가리키는 링크를 거친 프로필은 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png "--user-data-dir=$WORK/zz-79v-link/p" file:///tmp/a.html
+rm -f "$WORK/zz-79v-link"
+graded_as '등급 미상'    '79v:설정 홈 안의 스크린숏은 등급 미상이다'            -- chromium --headless "--screenshot=$HOME/.claude/zz-79v.png" file:///tmp/a.html
+graded_as '등급 미상'    '79v:설정 홈 안의 페이지를 찍는 스크린숏은 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png "file://$HOME/.ssh/id_ed25519"
+# The home arm folds case: on the default case-insensitive volume an upper-cased
+# home names the same dot-directory.
+h79v_up=$(printf '%s' "$HOME" | tr '[:lower:]' '[:upper:]')
+graded_as '등급 미상'    '79v:대소문자를 바꾼 설정 홈 안의 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=$h79v_up/.zz-79v.png" file:///tmp/a.html
+graded_as '등급 미상'    '79v:대소문자를 바꾼 설정 홈 안의 페이지는 등급 미상이다' -- chromium --headless --screenshot=/tmp/x/a.png "file://$h79v_up/.ssh/id_ed25519"
+# The macOS firmlink spelling of the home shares no text prefix with it, so
+# only the inode comparison refuses it.
+if [ -d "/System/Volumes/Data$HOME" ]; then
+  graded_as '등급 미상'  '79v:펌링크 표기의 설정 홈 안 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=/System/Volumes/Data$HOME/.zz-79v.png" file:///tmp/a.html
+fi
+# The reach floor raises a write under the package-manager prefixes to
+# `기기전역`, but it compares whole argv words and never sees the path inside
+# `--screenshot=`; the row refuses those prefixes itself, case folded.
+graded_as '등급 미상'    '79v:/opt/homebrew 아래의 스크린숏은 등급 미상이다'    -- chromium --headless --screenshot=/opt/homebrew/zz-79v.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:/usr/local 아래의 스크린숏은 등급 미상이다'       -- chromium --headless --screenshot=/usr/local/zz-79v.png file:///tmp/a.html
+graded_as '등급 미상'    '79v:대소문자를 바꾼 /opt/homebrew 아래의 스크린숏은 등급 미상이다' -- chromium --headless --screenshot=/OPT/Homebrew/zz-79v.png file:///tmp/a.html
+if [ -d /usr/local ]; then
+  ln -sfn /usr/local "$WORK/zz-79v-glink"
+  graded_as '등급 미상'  '79v:/usr/local 을 가리키는 링크를 거친 스크린숏은 등급 미상이다' -- chromium --headless "--screenshot=$WORK/zz-79v-glink/zz-79v.png" file:///tmp/a.html
+  rm -f "$WORK/zz-79v-glink"
+fi
+graded_as '등급 미상'    '79v:퍼센트 부호화한 페이지 경로는 등급 미상이다'      -- chromium --headless --screenshot=/tmp/x/a.png file:///tmp/%2e%2e/a.html
+
+# The router reads the approval predicate through `gate.sh exec … --surface 읽기`
+# with the helper as argv0. That spelling is graded by its subcommand, so the
+# read is admitted with the auto-resolve switch off as well as on; behind `bash`
+# the helper is an opaque script and, with the switch off, the read declaration
+# is refused as an under-declaration.
+w79v_prev_ar=$CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+for w79v_ar in 0 1; do
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE=$w79v_ar
+  gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale x \
+       -- "$CC_ORCH/visual-check.sh" approval docs/zz-79v-none.md
+  if grep -qF '게이트 통과' "$WORK/last-output.txt"; then
+    ok "79v:경로를 argv0 으로 둔 승인 술어 읽기는 스위치 $w79v_ar 에서 통과한다"
+  else
+    bad "79v:경로를 argv0 으로 둔 승인 술어 읽기는 스위치 $w79v_ar 에서 통과한다" "rc=$rc '$msg'"
+  fi
+done
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     -- bash "$CC_ORCH/visual-check.sh" approval docs/zz-79v-none.md
+check "79v:bash 뒤의 승인 술어 읽기는 스위치 0 에서 거부된다" "$rc" "6"
+case "$msg" in
+  *under-declar*) ok "79v:그 거부는 과소 선언 거부다" ;;
+  *) bad "79v:그 거부는 과소 선언 거부다" "got '$msg'" ;;
+esac
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=$w79v_prev_ar
 
 # ---------------------------------------------------------------------------
 # 80. The design scope and the rows only a base run may carry

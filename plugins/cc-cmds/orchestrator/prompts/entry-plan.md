@@ -59,6 +59,17 @@ Write both keys on every judgment; a manifest frozen before this field existed h
 
 `design_path` is a closed enum — `solo-audit` | `discuss-audit` | `none` — and it is not a judgment of yours. Write it by one rule: **`design_required` is `true`, `design_tier` is `team-4` and `design_scope` is `single` → `solo-audit`; every other plan → `none`.** `solo-audit` sends the design to the `design-solo-unattended` stage, one headless lead, and the audit after it stays; `discuss-audit` sends it to the `design-discuss-unattended` stage, a design discussion team whose roster the kickoff takes from the person. Never write `discuss-audit` yourself: the kickoff asks the person which path a heavy single design takes and rewrites the key with their answer. Write the key even when `design_required` is false — the schema requires it unconditionally. A manifest frozen before this field existed has no such key, and a reader takes it as `discuss-audit` on a `team-4` single-scope design and `none` elsewhere.
 
+## A `visual` step designs the screens before they are built
+
+`visual` is a step skill only, like `split` — it is never an `entry_skill`. Put one in the graph when the work builds or changes screens a person will look at: the `visual-unattended` stage generates the screens locally and reviews them, and every slice that carries screens then waits for a person to approve them at the fixed seat in the morning, while the slices without screens go ahead that night. Work with no screen carries no `visual` step.
+
+- The graph carries **at most one** `visual` step, and its id is always **`S2V`**. That id is the one place the visual step's id is fixed; the driver and the gate read the step by it.
+- It depends on the `design-audit` step, or on the `design` step when the graph has no audit.
+- Every `implement` step depends on it.
+- A `base` graph carries no `visual` step: the base run ends at the split, and each ticket's screens belong to that ticket's own run.
+
+`visual_design_rationale` is its prose reason — why the graph carries a `visual` step, or why it does not. Write it on every judgment; the schema requires it unconditionally.
+
 ## `work_class` records what kind of change the run lands — it decides nothing here
 
 `work_class` is a closed enum — `fix` | `feat` | `docs` | `other` | `unknown` — and `work_class_rationale` is its prose reason, the pair of `design_tier_rationale`. `unknown` needs a reason too.

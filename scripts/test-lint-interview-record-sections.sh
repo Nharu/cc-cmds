@@ -4,7 +4,9 @@
 #
 # Each fixture is a `skills/` root holding the five files the lint compares —
 # the sidecar contract, the shared interview convention, autopilot's resident
-# body and its boundaries reference, and the unattended design stage. The directory name encodes the expectation:
+# body and its boundaries reference, and the unattended design stage — and a
+# sixth, the visual sidecar reference, when the contract carries the visual
+# direction section. The directory name encodes the expectation:
 #   OK-*       → exit 0
 #   FAIL-<n>-* → exit 1, and the output names `[단언 <n>]`
 #
@@ -76,6 +78,48 @@ for fixture in "$fixtures"/*/; do
       ;;
   esac
 done
+
+# Bridge — the lint holds the contract's visual sub-block headings to the visual
+# sidecar reference's record example; this holds that example to the reader.
+# The example is frozen as a record under a scratch manifest, and
+# `visual-config.sh snapshot` must hand back each sub-block line for line.
+bridge_case() {
+  local vsc="$repo_root/plugins/cc-cmds/skills/visual/references/sidecar.md"
+  local helper="$repo_root/plugins/cc-cmds/orchestrator/visual-config.sh"
+  local tmp ex rid=bridge-run part want got ok=1
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/lint-irs-bridge.XXXXXX")
+  ex=$(awk '/^## 6\. / { s = 1; next } s && /^## / && !f { exit }
+            s && /^````/ { f = !f; if (!f) exit; next } s && f { print }' "$vsc")
+  if [[ -z "$ex" ]]; then
+    failures=$((failures + 1))
+    echo "FAIL: bridge-visual-subblocks — 시각 사이드카 참조의 기록 예시를 찾지 못했다" >&2
+    rm -rf "$tmp"
+    return
+  fi
+  git init -q "$tmp/base"
+  mkdir -p "$tmp/base/docs/pipeline-run"
+  printf '%s\n' "$ex" > "$tmp/base/docs/pipeline-run/$rid.interview.md"
+  printf -- '- `사전 인가` | 인터뷰 기록=docs/pipeline-run/%s.interview.md | sha256=%s\n' \
+    "$rid" "$(shasum -a 256 "$tmp/base/docs/pipeline-run/$rid.interview.md" | cut -d' ' -f1)" \
+    > "$tmp/base/docs/pipeline-run/$rid.md"
+  for part in 모델값 '금지 목록'; do
+    want=$(printf '%s\n' "$ex" | awk -v h="### $part" '
+      $0 == h { s = 1; next } s && /^```/ { if (f) exit; f = 1; next } s && f { print }')
+    case "$part" in 모델값) p=models ;; *) p=bans ;; esac
+    got=$(CC_PIPELINE_MANIFEST="$tmp/base/docs/pipeline-run/$rid.md" CC_PIPELINE_RUN_ID="$rid" \
+      bash "$helper" snapshot --part "$p" 2>&1) || ok=0
+    [[ -n "$want" && "$got" == "$want" ]] || ok=0
+  done
+  rm -rf "$tmp"
+  if [[ "$ok" == "1" ]]; then
+    passed=$((passed + 1))
+    echo "PASS: bridge-visual-subblocks"
+  else
+    failures=$((failures + 1))
+    echo "FAIL: bridge-visual-subblocks — visual-config.sh snapshot 이 기록 예시의 하위 블록을 그대로 돌려주지 않는다" >&2
+  fi
+}
+bridge_case
 
 # Registration — asked of make itself, the same way the sibling lint tests do.
 lint_recipe=$(MAKEFLAGS= MAKELEVEL= make -n -C "$repo_root" --no-print-directory lint 2>/dev/null)
