@@ -765,6 +765,68 @@ done
 check "두 사본의 설계 단계 id 선택식이 바이트 동일하다" "$design_sel_rs" "$design_sel"
 
 # ---------------------------------------------------------------------------
+# 6d-v. The visual dispatch and its screen-slice wait are carried by BOTH copies
+#
+# The lead's loop and the shift each carry the visual-stage section for the same
+# reason the design section is duplicated. What the duplication costs here is a
+# screen slice that one path holds back and the other dispatches: the gate still
+# refuses that dispatch, but the run then ends on a refusal instead of a wait the
+# seat can answer. The literals below are what the section needs to dispatch the
+# stage, to tell a screen slice from one that never waits, to submit the one
+# fixed question, and to take a visual-wait park back up once it is approved —
+# and only then: a resubmission that consumes a person's refusal also ends on
+# exit 0, so each copy has to say that adoption is the `결정=채택` row and that
+# a consumed refusal leaves the segment parked.
+# ---------------------------------------------------------------------------
+visual_section() {
+  # visual_section <skill file> — the visual-dispatch subsection body, read up
+  # to the next heading of any level.
+  awk '/^#### Dispatching the visual stage$/ { f = 1; next } f && /^#+ / { exit } f' "$1"
+}
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}
+  sec=$(visual_section "${pair#*:}")
+  if [ -n "$sec" ]; then
+    ok "$who 사본에 시각 파견 절이 있다"
+  else
+    bad "$who 사본의 시각 파견 절" "표제가 없거나 본문이 비었다"
+  fi
+  for lit in \
+    '-- visual -p "/cc-cmds:visual-unattended <스냅숏 design_doc>"' \
+    '시각 디자인을 검토 통과로 확정했습니다.' \
+    '**상태**: 검토 통과' \
+    'A slice whose `**화면**` reads `없음` never waits.' \
+    '--surface 읽기 -- <plugin root>/orchestrator/visual-check.sh approval <스냅숏 design_doc>' \
+    "-- 등급=2 '판단 부류=시각-승인' '기준=시각 승인 대기' '근거=<화면 세그먼트> 의 화면이 고정 좌석에서 구현 승인되었는가'" \
+    "\`'사유=시각 승인 대기'\`" \
+    'before any branch or worktree is cut for them' \
+    'write `상태=실행중` with the plan row'"'"'s `선행` and dispatch its implementation as any planned slice' \
+    'A `park` the fixed-graph driver wrote is not taken over' \
+    'leave the slice at `park`' \
+    '`결정=거절 소비`' \
+    'the approval is adopted only when that row carries `결정=채택`' \
+    'go to item 5 whatever the predicate says' \
+    'A consumed refusal does not make the segment `실행중` again'
+  do
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 시각 파견 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 시각 파견 절" "「${lit}」이 없다"
+    fi
+  done
+  # The predicate read names the helper as argv0. Behind `bash` the gate grades
+  # an opaque script, and with the auto-resolve switch off the read declaration
+  # is refused, so the approved screen slice would never be dispatched.
+  nbash=$(printf '%s\n' "$sec" | grep -cF -- 'bash <plugin root>/orchestrator/visual-check.sh' || true)
+  if [ "${nbash:-0}" = "0" ]; then
+    ok "$who 사본의 승인 술어 읽기는 bash 뒤에 두지 않는다"
+  else
+    bad "$who 사본의 승인 술어 읽기" "bash 뒤에 도우미를 둔 표기가 남았다"
+  fi
+done
+
+# ---------------------------------------------------------------------------
 # 6e. Re-attaching a cut stage is carried by BOTH router copies
 #
 # The gate has accepted `act --kind skill --resume <세션 id>` for a long time,
