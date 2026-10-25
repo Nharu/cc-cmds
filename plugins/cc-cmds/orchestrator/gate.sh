@@ -1587,6 +1587,143 @@ gate_collaboration_surface() {
   return 1
 }
 
+gate_gh_group_verb() {
+  # gate_gh_group_verb <GATE_GH_ARGV...> — sets GATE_GH_CG and GATE_GH_CV to
+  # the group and the verb gh runs, found the way cobra's `stripFlags` finds
+  # them: a two-letter flag or a `--flag` without `=` that the level does not
+  # define as taking no value drops the next word with it, so `gh pr -t x new`
+  # and `gh -t x pr new` run `pr new`, the alias of `pr create`. A word read by
+  # position alone is `x` there, and neither was a create.
+  local w skip=0
+  GATE_GH_CG='' GATE_GH_CV=''
+  for w in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$w" in
+      --) break ;;
+      -h|--help|--*=*|-?=*) ;;
+      --*|-?) skip=1 ;;
+      -*|'') ;;
+      *)
+        if [ -z "$GATE_GH_CG" ]; then GATE_GH_CG="$w"; else GATE_GH_CV="$w"; break; fi ;;
+    esac
+  done
+}
+
+gate_pr_label_write() {
+  # gate_pr_label_write <argv...> — 0 when this act adds, removes or replaces a
+  # label on an existing issue or pull request number, or opens a pull request
+  # with a label on it.
+  #
+  # A LABEL ON A PULL REQUEST CAN START CI. A target whose guard workflow runs
+  # on `labeled` reads the label as a person's acknowledgement of a surface
+  # change, so a label an unattended stage put on through exec would pass that
+  # guard with no `라벨 인정` row, no slice declaration and no park. The one
+  # path an unattended run has to such a label is `act --kind label-ack`, whose
+  # POST runs inside the gate and never through here. Issues and pull requests
+  # share one number space the gate cannot tell apart without reading the
+  # remote, so an issue number's labels are closed the same way. A new issue
+  # created with a label and the repository's label definitions reach no pull
+  # request, and stay on the collaboration surface.
+  #
+  # A BODY THE GATE CANNOT READ IS A LABEL WRITE. `--input`, a typed `@file`
+  # field and a GraphQL query read from a file may carry `labels` or a label
+  # mutation, and nothing in the argv says they do not.
+  [ "${1##*/}" = gh ] || return 1
+  shift
+  gate_gh_strip_repo "$@"
+  [ "$GATE_GH_API_UNREAD" = 0 ] || return 1
+  set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
+  local grp="${1:-}" w edit=0 create=0 j c cg cv
+  # THE GROUP AND THE VERB ARE ALSO FOUND THE WAY gh FINDS THEM, so `gh pr -t x
+  # new -l y` and `gh -t x pr new -l y` are the labelled creates they are (see
+  # `gate_gh_group_verb`). The positional scans below stay as they were.
+  gate_gh_group_verb "$@"
+  cg="$GATE_GH_CG" cv="$GATE_GH_CV"
+  case "$grp" in
+    pr|issue|api) ;;
+    *) case "$cg" in pr|issue) grp="$cg" ;; esac ;;
+  esac
+  case "$grp" in
+    pr|issue)
+      for w in "$@"; do
+        case "$w" in
+          edit) edit=1 ;;
+          create) create=1 ;;
+        esac
+      done
+      if [ "$cg" = "$grp" ]; then
+        case "$cv" in
+          edit) edit=1 ;;
+          create|new) create=1 ;;
+        esac
+      fi
+      if [ "$edit" = 1 ]; then
+        for w in "$@"; do
+          case "$w" in
+            --add-label|--add-label=*|--remove-label|--remove-label=*) return 0 ;;
+          esac
+        done
+      fi
+      # `gh pr create -l` is read the way pflag reads a short run: the boolean
+      # letters of `pr create` may stand ahead of `l`, and a value letter takes
+      # the rest of the word.
+      if [ "$grp" = pr ] && [ "$create" = 1 ]; then
+        for w in "$@"; do
+          case "$w" in
+            --label|--label=*) return 0 ;;
+            --*) ;;
+            -?*)
+              j=1
+              while [ "$j" -lt "${#w}" ]; do
+                c="${w:j:1}"
+                case "$c" in
+                  l) return 0 ;;
+                  d|f|w|e) j=$((j + 1)) ;;
+                  *) break ;;
+                esac
+              done ;;
+          esac
+        done
+      fi
+      return 1 ;;
+    api) ;;
+    *) return 1 ;;
+  esac
+  gate_gh_api_parse "${@:2}"
+  case "$GATE_GHAPI_METHOD" in [Gg][Ee][Tt]|[Hh][Ee][Aa][Dd]) return 1 ;; esac
+  local f
+  if [ "$(gate_gh_api_rest_path)" = graphql ]; then
+    [ "$GATE_GHAPI_OPAQUE" = 1 ] && return 0
+    for f in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+      case "$f" in query=@*) return 0 ;; esac
+    done
+    case " $* " in
+      *addLabelsToLabelable*|*removeLabelsFromLabelable*|*clearLabelsFromLabelable*) return 0 ;;
+    esac
+    case " $* " in
+      *updatePullRequest*|*updateIssue*)
+        case " $* " in *labelIds*) return 0 ;; esac ;;
+    esac
+    return 1
+  fi
+  local p n
+  p="/$(gate_gh_api_rest_path)"
+  case "$p" in
+    */issues/*/labels|*/issues/*/labels/*) return 0 ;;
+  esac
+  case "$p" in
+    */issues/*) n="${p##*/issues/}" ;;
+    */pulls/*) n="${p##*/pulls/}" ;;
+    *) return 1 ;;
+  esac
+  case "$n" in ''|*/*) return 1 ;; esac
+  [ "$GATE_GHAPI_OPAQUE" = 1 ] && return 0
+  for f in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+    case "$f" in labels=*|labels\[*) return 0 ;; esac
+  done
+  return 1
+}
+
 gate_dev_identifier_check() {
   # gate_dev_identifier_check <alias> <argv...> — five values, and the two that
   # park are the ones where the target DID declare what dev looks like and the
@@ -2718,6 +2855,9 @@ gate_reach_disposition() {
   # 1 — a credential on stdout is not undone by anything the morning can do.
   [ "$S" = "1" ] && { printf '비밀출력\t-\t-'; return 0; }
 
+  # A label write on a pull request never reaches this table: the caller parks
+  # it as `PR라벨쓰기` ahead of it, in either auto-resolution mode.
+
   local _rfull _rd _ro _rt=''
   _rfull=$(gate_reach_derived_full "$alias" "$@")
   _rd=${_rfull%%
@@ -3168,6 +3308,10 @@ gate_park_repair_line() {
       msg="repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
     도달모순/*)
       msg="repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+    # NO ROW OPENS A PULL REQUEST LABEL WRITE: the acknowledgement it would
+    # stand for is the label act's to check.
+    PR라벨쓰기/*)
+      msg="repair: an unattended run puts a label on a pull request only through \`act --kind label-ack\` — if that path does not fit, leave it to a person" ;;
     CI실패/*)
       msg="repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
     등급회귀/*)
@@ -3185,6 +3329,21 @@ gate_park_repair_line() {
       msg="repair: a rerun of this head was requested and its closing row never came — check that run's attempt on GitHub, then move the head with a new commit or put the segment down; the gate does not close the request row without a person" ;;
     재실행요청실패/*)
       msg="repair: GitHub did not take the rerun (the POST or its confirmation failed) and the gate does not try again — a person reruns the run on GitHub, and the poller observes that result on the round-0 key; answering with a retry and no rerun parks here again" ;;
+    # NONE OF THE FIVE LABEL CELLS IS OPENED BY A ROW either: the acknowledgement
+    # is the kickoff's `라벨 인정` row and the slice's field, and what a label
+    # event wakes is a fact of the repository.
+    라벨인정없음/*)
+      msg="repair: the failing check has a \`라벨 인정\` row but the segment's slice does not name it in its \`라벨 인정\` field (or the run has no slicing section) — a person decides whether this change was meant to move that check's surface, and labels the pull request or fixes the change" ;;
+    라벨새실행없음/*)
+      msg="repair: the failing check's workflow does not start on a \`labeled\` event (or its trigger could not be read), so a label would start no new run — a person labels and reruns it on GitHub, or the target's workflow is changed to run on labeled events first" ;;
+    라벨배포트리거/*)
+      msg="repair: a label on this pull request may wake a workflow that deploys (a deploy-trigger identifier, a workflow file with an environment or a reusable workflow that a label event starts, or a base-branch workflow triggered by workflow_run/check_suite/check_run/status) — a person labels it on GitHub" ;;
+    라벨이미있음/*)
+      msg="repair: the acknowledged label is already on the pull request and the check still fails, so labelling again starts nothing — a person reads the check's output; the failure is not the one the label answers" ;;
+    라벨요청실패/open)
+      msg="repair: a label of this head was requested and its closing row never came — check the pull request's labels and that check's runs on GitHub, then move the head with a new commit or put the segment down; the gate does not close the request row without a person" ;;
+    라벨요청실패/*)
+      msg="repair: the label POST or the check-screen confirmation failed and the gate does not label again — a person checks whether the label is on the pull request and whether the check ran again; once the new run passes, the poller records the pass on this round and the segment moves on" ;;
     *) return 0 ;;
   esac
   # A ROW THAT CANNOT NAME THE ACT WORD FOR WORD IS NOT PRINTED. An argument
@@ -5931,6 +6090,60 @@ _gp_unesc() {
   return 0
 }
 
+gate_caller_is_visual_publish_stage() {
+  # 0 when this gate call comes from the run-scope visual publish stage: the
+  # launcher hands it `CC_PIPELINE_STAGE_ID=<step>#<attempt>` and the step is
+  # the plan's single `visual-publish` step. The router and the driver carry no
+  # stage id, so they never match.
+  local sid="${CC_PIPELINE_STAGE_ID:-}" step
+  [ -n "$sid" ] || return 1
+  step=$(gate_run_scope_step visual-publish 2>/dev/null) || return 1
+  [ "${sid%#*}" = "$step" ]
+}
+
+gate_ban_line_id() {
+  # gate_ban_line_id <line> — the id a `visual-config.sh append` line adds:
+  # the line in either form the helper takes (a sidecar candidate line
+  # ``- `<id>` | … — <n>회 <screen>`` or a bare `<id> | …`), up to its first
+  # ` | `.
+  local line="$1"
+  case "$line" in
+    '- `'*) line=${line#'- `'}; line=${line/\`/} ;;
+  esac
+  printf '%s' "${line%% | *}" | sed 's/[[:space:]]*$//'
+}
+
+gate_ban_append_answer() {
+  # gate_ban_append_answer <line> — prints the halt record (file name) whose
+  # person's answer opens this `append`, or returns 1. It opens one only from
+  # the publish stage, when the last `중단 답` row of the stage's records was a
+  # person's `승인` to a `금지-후보` record, the record's `**금지 후보**` id is
+  # the line's id, and no `visual-config.sh append` row of this run has
+  # consumed that answer yet (`소비 중단 답=<file name>`). So one answer adds
+  # one line, and only the one the person saw.
+  local line="${1:-}" row last='' f rec cand id
+  gate_caller_is_visual_publish_stage || return 1
+  [ -n "$line" ] && [ -n "${RUN_DIR:-}" ] || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    f=$(gate_row_field "$row" '중단 기록')
+    case "${f##*/}" in S2P#*.md) last=$row ;; esac
+  done <<EOF
+$(run_section_rows '중단 답' 2>/dev/null || true)
+EOF
+  [ -n "$last" ] || return 1
+  [ "$(gate_row_field "$last" '답한 주체')" = "사람" ] || return 1
+  [ "$(gate_row_field "$last" '선택지')" = "승인" ] || return 1
+  f=$(gate_row_field "$last" '중단 기록')
+  rec="$RUN_DIR/halt/${f##*/}"
+  halt_step_has_prefix "$rec" '금지-후보' || return 1
+  cand=$(sed -n 's/^\*\*금지 후보\*\*: //p' "$rec" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*$//')
+  id=$(gate_ban_line_id "$line")
+  [ -n "$cand" ] && [ "$cand" = "$id" ] || return 1
+  ! gate_has_row '자율 승인' "소비 중단 답=${f##*/}" || return 1
+  printf '%s' "${f##*/}"
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   # THE GATE'S OWN HELPERS ARE TRUSTED BY WHERE THEY ARE, NOT BY THEIR NAME.
@@ -6096,15 +6309,23 @@ surface_of_argv0() {
         *)      printf '등급 미상' ;;
       esac ;;
     # The three visual helpers, graded by their subcommand. `visual-config.sh
-    # snapshot` reads the run's copy of the visual settings; its other
-    # subcommands write the settings home or the sidecar, which is the seat's
-    # work and never a stage's, so they take the unknown grade and its refusal.
+    # snapshot` reads the run's copy of the visual settings and `lane` reads the
+    # pinned lane from the host file. `account` records the publishing account
+    # in the host file, which only the visual publish stage does; `append` adds
+    # one forbidden-list line, and only on the person's `승인` to the candidate
+    # the line names (`gate_ban_append_answer`). Anywhere else, and every other
+    # subcommand, writes the settings home or the sidecar, which is the seat's
+    # work, so they take the unknown grade and its refusal.
     # `visual-check.sh` only reads the document, the sidecar and the screens.
     # `visual-capture.sh` writes its screenshots into an output directory outside
     # the tree, and `app` serves the build on a loopback port it takes down itself.
     visual-config.sh)
       case "${1:-}" in
-        snapshot) printf '읽기' ;;
+        snapshot|lane) printf '읽기' ;;
+        account)
+          if gate_caller_is_visual_publish_stage; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
+        append)
+          if [ "$#" -eq 2 ] && gate_ban_append_answer "$2" >/dev/null; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
         *)        printf '등급 미상' ;;
       esac ;;
     visual-check.sh)
@@ -8164,6 +8385,13 @@ gate_gh_strip_repo() {
   # the caller sees it as written. The three readers of gh — the grade, the
   # ladder and the merge binding — share this skip.
   #
+  # A `-R` THAT IS ANOTHER FLAG'S VALUE IS KEPT. cobra drops the word after a
+  # two-letter flag or a `--flag` without `=` as that flag's value (see
+  # `gate_gh_group_verb`), so in `gh pr -t -R new -l x` the `-R` is the title
+  # and gh runs `pr create --title -R --label x`. Taking that `-R` with the
+  # word after it removed the verb, and every reader saw `pr -t -l x`: the
+  # label went on with no `라벨 인정` row and the create took no rung.
+  #
   # `api` IS FOUND THE WAY gh FINDS IT, AND MOVED TO THE FRONT. cobra looks for
   # the command past every flag ahead of it, so `gh --hostname=github.com api
   # -X PUT repos/o/r/pulls/1/merge` merges, and each flag is then parsed
@@ -8176,17 +8404,41 @@ gate_gh_strip_repo() {
   # gh takes its command cannot be told (a `--` or a run of value flags with no
   # command after them), GATE_GH_API_UNREAD is 1 and every reader takes the
   # argv for the unbound merge it may be.
+  #
+  # `pr new` IS WRITTEN `pr create`. gh documents `new` as the alias of `pr
+  # create` and takes the same flags under it, so `gh pr new --label x` opens a
+  # pull request with a label. The label detector and the ladder read the verb
+  # from this array, and with `new` left as written neither took it for a
+  # create: the label went on with no `라벨 인정` row and the act took no rung.
+  # The flag table parses the argv as written and only to find a merge or a
+  # `repo sync`, so it keeps the one `pr create` row.
   GATE_GH_ARGV=()
   GATE_GH_API_UNREAD=0
-  local bare=0
+  local bare=0 grp='' val=0
   while [ "$#" -gt 0 ]; do
     if [ "$bare" -lt 2 ]; then
+      if [ "$val" = 1 ]; then
+        val=0
+        case "$1" in
+          -*|'') GATE_GH_ARGV+=("$1"); shift; continue ;;
+        esac
+      fi
       case "$1" in
         -R|--repo)
           if [ "$#" -ge 2 ]; then shift 2; continue; fi ;;
         --repo=*|-R?*) shift; continue ;;
+        --|-h|--help|--*=*) : ;;
+        --*|-?) val=1 ;;
         -*) : ;;
-        *) bare=$((bare + 1)) ;;
+        *)
+          bare=$((bare + 1))
+          if [ "$bare" = 1 ]; then
+            grp="$1"
+          elif [ "$grp" = pr ] && [ "$1" = new ]; then
+            GATE_GH_ARGV+=(create)
+            shift
+            continue
+          fi ;;
       esac
     fi
     GATE_GH_ARGV+=("$1")
@@ -8287,6 +8539,14 @@ ladder_of_gh() {
   gate_gh_strip_repo "$@"
   [ "$GATE_GH_API_UNREAD" = 0 ] || { printf '머지'; return 0; }
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
+  # A create behind a value flag (`gh pr -t x new`) is found the way gh finds
+  # it (see `gate_gh_group_verb`), so it takes the same rung as `gh pr create`.
+  if [ "${1:-}" != api ]; then
+    gate_gh_group_verb "$@"
+    case "$GATE_GH_CG:$GATE_GH_CV" in
+      pr:create|pr:new) printf 'PR'; return 0 ;;
+    esac
+  fi
   case "${1:-}" in
     api) ladder_of_gh_api "$@" ;;
     pr)
@@ -10324,22 +10584,25 @@ gate_plan_skill_step_count() {
 }
 
 gate_run_scope_step() {
-  # gate_run_scope_step <종류> — `design`, `audit`, `split` or `visual`. Prints
-  # the plan's single step id of that kind and returns 0, or returns 1. A design
-  # step exists only in a plan that requires a design. An audit step is
-  # run-scope in that plan, and in a plan with no design step at all, whose
-  # audit reads a document that was frozen before the run. A split step and a
-  # visual step are run-scope wherever the plan names exactly one.
+  # gate_run_scope_step <종류> — `design`, `audit`, `split`, `visual` or
+  # `visual-publish`. Prints the plan's single step id of that kind and returns
+  # 0, or returns 1. A design step exists only in a plan that requires a design.
+  # An audit step is run-scope in that plan, and in a plan with no design step
+  # at all, whose audit reads a document that was frozen before the run. A split
+  # step, a visual step and a visual publish step are run-scope wherever the
+  # plan names exactly one.
   local skill req ids
   case "${1:-}" in
     design) skill='design' ;;
     audit)  skill='design-audit' ;;
     split)  skill='split' ;;
     visual) skill='visual' ;;
+    visual-publish) skill='visual-publish' ;;
     *)      return 1 ;;
   esac
   req=$(manifest_plan_json 2>/dev/null | jq -r '.design_required' 2>/dev/null || true)
-  if [ "$skill" != "split" ] && [ "$skill" != "visual" ] && [ "$req" != "true" ]; then
+  if [ "$skill" != "split" ] && [ "$skill" != "visual" ] && [ "$skill" != "visual-publish" ] \
+     && [ "$req" != "true" ]; then
     [ "$skill" = "design-audit" ] || return 1
     [ "$(gate_plan_skill_step_count design)" = "0" ] || return 1
   fi
@@ -10359,15 +10622,19 @@ gate_run_scope_step() {
 #   audit            | design-audit    | audit
 #   split            | split           | split
 #   visual           | visual          | visual
+#   visual-publish   | visual-publish  | visual-publish
 #
 # A base run is `design → design-audit → split` and none of the three is a
 # segment, so all three are dispatched with `--segment -` and keyed on their
 # plan step id. The visual step is the fourth row: it generates the night's
 # screens from the audited document, before any segment is implemented, and
-# builds no segment of its own. Each kind binds to exactly ONE plan step carrying its skill —
+# builds no segment of its own. The visual publish step is the fifth row
+# (the driver names it `S2P`): it publishes the screens the visual step left
+# reviewed, on the lane the host file pins, after the visual step it depends
+# on. Each kind binds to exactly ONE plan step carrying its skill —
 # zero or several is a plan this table does not know how to read, and the
 # dispatch is refused rather than a key being picked. `gate_run_scope_step`
-# above resolves all four, with the design and the audit also held to the
+# above resolves all five, with the design and the audit also held to the
 # plan's `design_required`.
 # ---------------------------------------------------------------------------
 gate_run_scope_skill_of() {
@@ -10377,6 +10644,7 @@ gate_run_scope_skill_of() {
     audit)  printf 'design-audit' ;;
     split)  printf 'split' ;;
     visual) printf 'visual' ;;
+    visual-publish) printf 'visual-publish' ;;
     *) return 1 ;;
   esac
 }
@@ -10387,7 +10655,7 @@ gate_run_scope_kind_of_key() {
   # `segment` row is a segment, whatever the plan calls it.
   local key="$1" k s
   [ -z "$(gate_segment_field "$key" '상태')" ] || return 1
-  for k in design audit split visual; do
+  for k in design audit split visual visual-publish; do
     if s=$(gate_run_scope_step "$k" 2>/dev/null) && [ "$s" = "$key" ]; then
       printf '%s' "$k"
       return 0
@@ -10401,7 +10669,8 @@ gate_run_scope_rows() {
   # run-scope step in ledger order, in either writer's shape: the router's
   # (`세그먼트=- | 스테이지=<id> | 종류=<k>`) or the driver's, which names its stage
   # `S2` (audit: `종류=audit`, or no `종류` on a row written before the driver
-  # stamped it), `S2split` (`종류=split`) or `S2V` (`종류=visual`). Any other `종류`
+  # stamped it), `S2split` (`종류=split`), `S2V` (`종류=visual`) or `S2P`
+  # (`종류=visual-publish`). Any other `종류`
   # on an `S2` row is not an audit. The driver's names are read only when the
   # plan's id has no row of its own.
   local id="$1" k="$2" rows
@@ -10421,6 +10690,10 @@ gate_run_scope_rows() {
         rows=$( { gate_rows 'stage-result' || true; } \
                 | { grep -F '세그먼트=- | 스테이지=S2V |' || true; } \
                 | { grep -F '| 종류=visual ' || true; }) ;;
+      visual-publish)
+        rows=$( { gate_rows 'stage-result' || true; } \
+                | { grep -F '세그먼트=- | 스테이지=S2P |' || true; } \
+                | { grep -F '| 종류=visual-publish ' || true; }) ;;
     esac
   fi
   printf '%s' "$rows"
@@ -11298,14 +11571,15 @@ gate_slicing_branch() {
 gate_slicing_defects() {
   # gate_slicing_defects — one line per defect of an incomplete declaration:
   # every missing required field of every slice — the reason fields a
-  # new-grammar block owes included — and every merge-order defect of every
-  # slice, then the driver's own first complaint when something else is wrong.
+  # new-grammar block owes included — every `라벨 인정` defect and every
+  # merge-order defect of every slice, then the driver's own first complaint
+  # when something else is wrong.
   #
   # EVERY SLICE TO THE END, NOT THE FIRST DEFECT. The defect set decides which
   # slices park, so a second defective slice left out of it would be judged
   # clean and planned. The merge-order lines are `slicing_order_defects`' own,
   # which the driver's validator warns with, so the two speak the same bytes.
-  local doc="${DOC:-}" rc=0 id="" f="" n=0 msg="" ord=""
+  local doc="${DOC:-}" rc=0 id="" f="" n=0 msg="" ord="" la=""
   slicing_present "$doc" || rc=$?
   case "$rc" in
     2) printf '「## 구현 슬라이싱」이 펜스 밖에 둘 이상 있습니다\n'; return 0 ;;
@@ -11328,6 +11602,14 @@ gate_slicing_defects() {
 $(slice_reason_keys "$doc" "$id" 2>/dev/null || true)
 EOF
   done
+  # The `라벨 인정` lines count into `n` with the missing fields: `base` mode
+  # leaves them out, so without the count an otherwise clean declaration would
+  # gain the unreadable-declaration line and lose its slice-owned reading.
+  la=$(slicing_label_ack_defects "$doc" 2>/dev/null || true)
+  if [ -n "$la" ]; then
+    printf '%s\n' "$la"
+    n=$((n + $(printf '%s\n' "$la" | wc -l | tr -d ' ')))
+  fi
   ord=$(slicing_order_defects "$doc" 2>/dev/null || true)
   [ -z "$ord" ] || printf '%s\n' "$ord"
   [ "$n" = "0" ] || return 0
@@ -12167,7 +12449,7 @@ gate_decl_defect_slices() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$line" in
-      "슬라이스 "*": 필수 필드 「"*"」 없음"|"슬라이스 "*": 머지 순서 "*)
+      "슬라이스 "*": 필수 필드 「"*"」 없음"|"슬라이스 "*": 머지 순서 "*|"슬라이스 "*": 라벨 인정 "*)
         id=${line#슬라이스 }; id=${id%%:*}
         case " $ids " in *" $id "*) : ;; *) ids="$ids $id" ;; esac ;;
       *) return 0 ;;
@@ -16483,8 +16765,9 @@ gate_reap_cycle() {
 # dispatched with `--segment -`, and that exemption is keyed on the kind; were
 # the split a `generic` stage, every other generic stage would inherit a
 # segment-less dispatch. The variant below writes it exactly as it writes
-# `generic`. `visual` is the fourth run-scope step and takes the same footing.
-readonly STAGE_KINDS="design implement review audit reconverge generic shift split visual"
+# `generic`. `visual` is the fourth run-scope step and takes the same footing,
+# and `visual-publish` the fifth.
+readonly STAGE_KINDS="design implement review audit reconverge generic shift split visual visual-publish"
 
 gate_settings_dir() {
   # The override exists for ONE caller: the re-derivation probe, which needs to
@@ -16962,14 +17245,18 @@ $(gate_segment_worktrees_for_settings)"
     # only enforcement point for these tools: a PreToolUse hook matcher can see
     # them too, so a later cap or check has a place to go.
     #
-    # THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY VARIANT, THE SHIFT INCLUDED,
-    # so they sit in the initial value and not in either branch below. A stage
-    # never publishes to or reads from the Design canvas; that belongs to the
-    # seat. Under `CLAUDE_CODE_ARTIFACT=1` the headless tool list carries exactly
-    # `Artifact`, `ArtifactComments` and `ArtifactData` besides `DesignSync`, and
-    # the set matches `CLAUDE_DESIGN_TOOLS` in run.sh, which refuses the same
-    # names on every judgment call's own command line.
+    # THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY VARIANT BUT ONE, THE SHIFT
+    # INCLUDED. Under `CLAUDE_CODE_ARTIFACT=1` the headless tool list carries
+    # exactly `Artifact`, `ArtifactComments` and `ArtifactData` besides
+    # `DesignSync`, and the set matches `CLAUDE_DESIGN_TOOLS` in run.sh, which
+    # refuses the same names on every judgment call's own command line. The
+    # visual publish stage is the one stage that publishes to and reads from the
+    # Design canvas, so its variant takes the three Artifact tools out of the
+    # deny list and names them in the allow list; `DesignSync` stays refused to
+    # it as to every other variant. Only that kind's launch carries
+    # `CLAUDE_CODE_ARTIFACT=1` (`gate_launch_kind_env`).
     deny_extra="\"DesignSync\", \"Artifact\", \"ArtifactComments\", \"ArtifactData\", "
+    [ "$k" != "visual-publish" ] || deny_extra="\"DesignSync\", "
 
     # THE SHIFT VARIANT IS NARROWER THAN EVERY STAGE, AND THE NARROWING HAS TO
     # HAPPEN INSIDE THIS LOOP. `extra_dirs` and the read allow-list are computed
@@ -17006,6 +17293,9 @@ $(gate_segment_worktrees_for_settings)"
       deny_extra="${deny_extra}\"WebFetch\", \"WebSearch\", \"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
     else
       kind_allow="\"WebFetch\", \"WebSearch\"${kind_allow:+, $kind_allow}"
+    fi
+    if [ "$k" = "visual-publish" ]; then
+      kind_allow="${kind_allow}, \"Artifact\", \"ArtifactComments\", \"ArtifactData\""
     fi
     pl_shift=0
     [ "$k" != "shift" ] || pl_shift=1
@@ -17943,6 +18233,8 @@ gate_main() {
   # precondition and eligibility checks and by nothing a caller exports: a
   # verdict inherited from the environment would send a POST no check chose.
   unset GATE_CI_RERUN_PRE GATE_CI_RERUN_VERDICT GATE_CI_RERUN_RUNS GATE_PARK_OBS
+  # The label act's the same way.
+  unset GATE_LABEL_ACK_PRE GATE_LABEL_ACK_VERDICT
   # The emit path travels to `gate_verb_act` as a global rather than as an
   # eleventh positional argument, the same way `GATE_RESUME`, `GATE_ACT_CWD` and
   # `GATE_SURFACE` already do. Adding a position would mean fixing the call site
@@ -18101,10 +18393,11 @@ gate_main() {
     esac
   fi
   # `ci-rerun` the same way: the gate performs the rerun, and a forecast of it.
-  if [ "$kind" = "ci-rerun" ]; then
+  # `label-ack` likewise: the gate performs the label POST.
+  if [ "$kind" = "ci-rerun" ] || [ "$kind" = "label-ack" ]; then
     case "$verb" in
       act|plan) ;;
-      *) printf 'gate: --kind ci-rerun is used only with act/plan (verb received: %s)\n' "$verb" >&2
+      *) printf 'gate: --kind %s is used only with act/plan (verb received: %s)\n' "$kind" "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -20454,9 +20747,19 @@ gate_reentry_table() {
   #
   # A review's halts are not here, and neither are the re-convergence scopes the
   # gate cannot check — a problem identity, `설계 수준 잔여` and `상한 P0 잔여`.
+  #
+  # The visual publish stage's three person-only questions are here, each as
+  # the bare prefix and the prefix followed by ` — `, the two forms a step
+  # matches a prefix in.
   printf '%s\n' \
     'design-audit-unattended|Step 6*CFI-3b*|audit|/cc-cmds:design-audit-unattended <문서>' \
-    'design-reconverge|Step 3*|reconverge|/cc-cmds:design-reconverge <문서> <범위>'
+    'design-reconverge|Step 3*|reconverge|/cc-cmds:design-reconverge <문서> <범위>' \
+    'visual-publish-unattended|시각-판정|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|시각-판정 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|금지-후보|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|금지-후보 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|발행-실패|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|발행-실패 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>'
 }
 
 gate_halt_record_step() {
@@ -22914,6 +23217,25 @@ gate_ci_wait_capped() {
   cc_ci_wait_capped "$(gate_ci_wait_clock "$1" "$2" "$3")"
 }
 
+gate_ci_ack_failure() {
+  # gate_ci_ack_failure <segment> <V row> — true when one element of V's
+  # `실패 체크`, split on ", " as the poller joins them, is exactly the `체크` of a
+  # `라벨 인정` row of the segment's target. The target is the slice alias, else
+  # the segment's target alias. L5m, M3a and E read this one predicate, so the
+  # three never judge one failure two ways. Whether the pair already carries a
+  # label row is the caller's to read.
+  local seg=$1 v=$2 al acks
+  al=$(gate_slice_alias "$seg" 2>/dev/null) || al=""
+  [ -n "$al" ] || al=$(gate_segment_target_alias "$seg")
+  [ -n "$al" ] || return 1
+  acks=$(manifest_label_ack_checks "$al" 2>/dev/null || true)
+  [ -n "$acks" ] || return 1
+  gate_row_field "$v" '실패 체크' | GATE_CIN_ACKS="$acks" awk '
+    BEGIN { n = split(ENVIRON["GATE_CIN_ACKS"], w, "\n"); for (i = 1; i <= n; i++) if (w[i] != "") ack[w[i]] = 1 }
+    { m = split($0, e, /, /); for (j = 1; j <= m; j++) if (e[j] in ack) hit = 1 }
+    END { exit hit ? 0 : 1 }'
+}
+
 gate_ci_fix_next() {
   # gate_ci_fix_next <segment> — the CI join layer over a table `수정` of a CI
   # join target. H, u·a·g, V and "settled" read as in `gate_ci_next`. The first
@@ -22923,20 +23245,26 @@ gate_ci_fix_next() {
   #   M2  no V, V = 대기, V = 실패 with 진행 중 > 0, V = 판정 불가,
   #       or V = 미등록 not past the grace                         CI 대기
   #   M3  V = 통과, or round 0's 미등록 past the grace               수정
+  #   M3a settled, (segment, H) has no 처분=라벨 row, and one of V's
+  #       `실패 체크` is the `체크` of a `라벨 인정` row of the
+  #       segment's target                                       수정
   #   M4  settled, u < CI_RERUN_CAP                               CI 재실행
   #   M5  settled, a = 수락, the round's request saw the base fail  수정
   #   M6  otherwise (settled, a = 수락)                            CI 합류 수정
   # M2 waits for the verdict when the review ends first; M4 keeps the one rerun
-  # before a failure goes back to the implement stage. M1 and M5 carry no
+  # before a failure goes back to the implement stage. M1, M3a and M5 carry no
   # evidence that the segment's change can fix the failure, and the fix makes a
-  # new head whose CI starts again at round 0. A tip that does not resolve
-  # leaves `수정`.
-  local seg=$1 wt h rd u a g base v vst vpend
+  # new head whose CI starts again at round 0. M3a is L5m's predicate: a
+  # failure the manifest acknowledged is neither rerun nor handed to the
+  # implement stage as a CI fix, and the label path takes it on the new head
+  # once the review lets a merge through. A failed or open label round already
+  # reads `수정` at M1. A tip that does not resolve leaves `수정`.
+  local seg=$1 wt h rd u a g base lab v vst vpend
   wt=$(gate_segment_worktree "$seg")
   h=$(gate_worktree_tip "$wt") || { printf '수정'; return 0; }
   rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
   u=$(cc_ci_round_get "$rd" u); a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g)
-  base=$(cc_ci_round_get "$rd" base)
+  base=$(cc_ci_round_get "$rd" base); lab=$(cc_ci_round_get "$rd" lab)
   case "$a" in 열림|실패) printf '수정'; return 0 ;; esac
   v=$(gate_ci_verdict_row "$seg" "$h" "${g:-0}")
   vst=""; vpend=0
@@ -22952,6 +23280,9 @@ gate_ci_fix_next() {
     if gate_ci_wait_capped "$seg" "$h" "${g:-0}"; then printf 'CI 대기 한도'; else printf 'CI 대기'; fi
     return 0
   fi
+  if [ "$lab" != "1" ] && gate_ci_ack_failure "$seg" "$v"; then
+    printf '수정'; return 0
+  fi
   [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
   [ "$base" = "실패" ] && { printf '수정'; return 0; }
   printf 'CI 합류 수정'
@@ -22960,25 +23291,39 @@ gate_ci_fix_next() {
 gate_ci_early() {
   # gate_ci_early <segment> — E, the early rerun predicate: a CI join target
   # neither `머지됨` nor `park`, a live stage on it that is a review, its tip
-  # resolves, no rerun spent on that head, round 0's V a settled failure, and
-  # no rerun `도달 park` row below the head's first `checks` row. While a review
-  # runs, the rerun goes out now rather than after it. A live implement or lead
-  # fix is about to make a new head, so rerunning the old one buys nothing.
+  # resolves, no round of either kind on that head (max = 0), round 0's V a
+  # settled failure none of whose `실패 체크` a `라벨 인정` row of the target
+  # names, and no rerun `도달 park` row below the head's first `checks` row.
+  # While a review runs, the rerun goes out now rather than after it. A live
+  # implement or lead fix is about to make a new head, so rerunning the old one
+  # buys nothing.
+  #
+  # NO ROUND, NOT NO RERUN. A label round raises g and max and never u, so
+  # reading u = 0 here would read round 0's superseded V after an accepted
+  # label and spend the one rerun a later failure was meant to keep. AN
+  # ACKNOWLEDGED CHECK'S FAILURE IS THE LABEL PATH'S: L5m and M3a read the same
+  # `gate_ci_ack_failure`, and a rerun here would only spend that rerun first.
   #
   # THE PARK CLAUSE IS WHAT ENDS IT. A rerun act that parks does so before its
   # `요청` row, so u stays 0; without the clause E would stay true and the same
   # refused act would go out every shift. The relay reads the same predicate
-  # (`cc_ci_early_condition`) over the poller files too.
+  # (`cc_ci_early_condition`) over the poller files too, without the
+  # acknowledged-check clause, because it opens no manifest: its copy is a
+  # superset of this one. A shift it wakes for an acknowledged check finds
+  # `ci_early[]` empty and takes no act, and the consumption rule wakes it on
+  # that evidence once; the clause only makes E false, so the relay never
+  # misses a wake this copy would give.
   local seg=$1 h v
   gate_ci_join_target "$seg" || return 1
   case "$(gate_segment_field "$seg" '상태')" in 머지됨|park) return 1 ;; esac
   cc_stage_is_live "$RUN_DIR" "$seg" || return 1
   [ "$(cc_stage_kind "$RUN_DIR" "$LEDGER" "$seg")" = "review" ] || return 1
   h=$(gate_segment_tip "$seg") || return 1
-  [ "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$h")" u)" = "0" ] || return 1
+  [ "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$h")" max)" = "0" ] || return 1
   v=$(gate_ci_verdict_row "$seg" "$h" 0)
   [ "$(gate_row_field "$v" '상태')" = "실패" ] || return 1
   case "$(gate_row_field "$v" '진행 중')" in ''|0) : ;; *) return 1 ;; esac
+  if gate_ci_ack_failure "$seg" "$v"; then return 1; fi
   if cc_ci_rerun_parked "$LEDGER" "$seg" "$h"; then return 1; fi
   return 0
 }
@@ -23035,7 +23380,8 @@ gate_ci_next() {
   # holds wins:
   #   L0  a fix row after the last cycle, H ≠ R, H's tree ≠ R's    CI 리뷰
   #   B   the base overlay changes the value                     that value
-  #   L1  a = 열림                                                CI 재실행
+  #   L1  a = 열림, top round's 처분 재실행                          CI 재실행
+  #   L1l a = 열림, top round's 처분 라벨                            CI 라벨 인정
   #   L2  g = 0, and no V or V ∈ {통과, 미등록, 판정 불가}           the table's
   #       — on a CI join target: g = 0, and V = 통과 or 미등록
   #         past the grace                                       the table's
@@ -23046,8 +23392,12 @@ gate_ci_next() {
   #       — on a CI join target, any round: no V, V = 판정 불가,
   #         or V = 미등록 not past the grace                      CI 대기
   #   L5  g ≥ 1, V = 통과                                         the table's
+  #   L5l settled, top round's 처분 라벨 and a = 실패                CI 라벨 인정
+  #   L5m settled, (segment, H) has no 처분=라벨 row, and one of V's
+  #       `실패 체크` is the `체크` of a `라벨 인정` row of the
+  #       segment's target                                       CI 라벨 인정
   #   L6  settled, u < CI_RERUN_CAP                               CI 재실행
-  #   L6b settled, a = 실패                                        CI 재실행
+  #   L6b settled, a = 실패, top round's 처분 재실행                  CI 재실행
   #   L7  settled, a = 수락, the round's request saw the base fail  CI 기존 실패
   #   L8  settled, a = 수락, f < CI_FIX_CAP or (segment, H) has
   #       a fix row                                               CI 수정
@@ -23059,8 +23409,16 @@ gate_ci_next() {
   # spent budget read the old failure as a re-failure. L6b sends a round that
   # closed `실패` — nothing reran on GitHub, so V is still round 0's — to the act,
   # which parks it again instead of spending the fix budget on an API failure.
-  # A worktree whose tip does not resolve leaves the base overlay's value: the
-  # merge rule reads the same HEAD and refuses on its own.
+  # L1l is L1 for a label round. L5l stands after L5 and not at L1, so that a
+  # person who fixes the change after a failed label round has the pass taken
+  # by L2 or L5 rather than having the head held for good. L5m stands ahead of
+  # L6 and so takes a failure of an acknowledged check before a rerun can, at
+  # the cost that a transient failure of that check gets the label rather than
+  # its rerun. The early rerun E and the fix layer's M3a read the same
+  # predicate (`gate_ci_ack_failure`), so neither a review still running nor a
+  # review that asked for a fix reruns that failure first or hands it to the
+  # implement stage. A worktree whose tip does not resolve leaves the base overlay's
+  # value: the merge rule reads the same HEAD and refuses on its own.
   #
   # ON A CI JOIN TARGET NOTHING RECORDED IS A WAIT, NOT A PASS. The merge rule
   # refuses the same head (`gate_check_merge_checks`), so a review that ends
@@ -23068,7 +23426,7 @@ gate_ci_next() {
   # "no CI" once round 0's `미등록` is past the grace, or at the wait cap in
   # `CI 대기 한도`, which the router parks. Off a join target the layer reads as
   # before.
-  local seg=$1 nx=$2 b wt h r rd u a g f fix base v vst vpend join=0
+  local seg=$1 nx=$2 b wt h r rd u a g f fix base v vst vpend ad lab join=0
   wt=$(gate_segment_worktree "$seg")
   h=$(gate_worktree_tip "$wt") || { gate_base_next "$seg" "$nx"; return 0; }
   if gate_ci_fix_after_last_cycle "$seg"; then
@@ -23083,7 +23441,11 @@ gate_ci_next() {
   rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
   u=$(cc_ci_round_get "$rd" u); a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g)
   f=$(cc_ci_round_get "$rd" f); fix=$(cc_ci_round_get "$rd" fix); base=$(cc_ci_round_get "$rd" base)
-  [ "$a" = "열림" ] && { printf 'CI 재실행'; return 0; }
+  ad=$(cc_ci_round_get "$rd" ad); lab=$(cc_ci_round_get "$rd" lab)
+  if [ "$a" = "열림" ]; then
+    if [ "$ad" = "라벨" ]; then printf 'CI 라벨 인정'; else printf 'CI 재실행'; fi
+    return 0
+  fi
   v=$(gate_ci_verdict_row "$seg" "$h" "${g:-0}")
   vst=""; vpend=0
   if [ -n "$v" ]; then
@@ -23110,8 +23472,12 @@ gate_ci_next() {
   fi
   [ "$vst" = "통과" ] && { printf '%s' "$nx"; return 0; }
   # Only a settled failure is left: the poller writes no other value.
+  [ "$ad" = "라벨" ] && [ "$a" = "실패" ] && { printf 'CI 라벨 인정'; return 0; }
+  if [ "$lab" != "1" ] && gate_ci_ack_failure "$seg" "$v"; then
+    printf 'CI 라벨 인정'; return 0
+  fi
   [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
-  [ "$a" = "실패" ] && { printf 'CI 재실행'; return 0; }
+  [ "$a" = "실패" ] && [ "$ad" = "재실행" ] && { printf 'CI 재실행'; return 0; }
   if [ "$a" = "수락" ]; then
     [ "$base" = "실패" ] && { printf 'CI 기존 실패'; return 0; }
     if [ "${f:-0}" -lt "$CI_FIX_CAP" ] || [ "$fix" = "1" ]; then printf 'CI 수정'; return 0; fi
@@ -25306,7 +25672,7 @@ gate_record_cone() {
     warn "a cone row needs an \`앵커 세그먼트\` — it is where the derivation starts"
     return "$GATE_EXIT_VOCAB"
   fi
-  # A run-scope step — design, audit, split or visual — is the one anchor that has no
+  # A run-scope step — design, audit, split, visual or visual publish — is the one anchor that has no
   # segment row: a stage of it that cannot finish inside the deadline, or an
   # answer to its halt the shift cannot carry out, holds every segment.
   # A termination clause's `clause-<id>` key has none either: its evidence
@@ -26119,14 +26485,14 @@ gate_visual_approval_holds() {
   # so none of them can come to hold an approval the others would refuse. A run
   # with no design document has no sidecar to read, and the predicate does not
   # hold.
-  local out rc=0
-  if [ -z "${DOC:-}" ]; then
-    printf '승인 없음 — 이 런에 설계 문서가 없다'
-    return 1
-  fi
-  out=$(bash "$GATE_DIR/visual-check.sh" approval "$DOC" 2>&1) || rc=$?
-  printf '%s' "$(printf '%s\n' "$out" | sed -n 1p)"
-  [ "$rc" = "0" ]
+  #
+  # A RUN WHOSE PLAN HOLDS THE PUBLISH STAGE (`S2P`) TAKES AN APPROVAL ONLY
+  # FROM A PERSON. The line has to carry the tail naming the run's latest
+  # `시각-판정` record, and the ledger has to hold a person's `승인` to it, so a
+  # line the stage wrote on any other footing does not open a screen slice.
+  # The verdict is `visual_approval_verdict`'s, the one the driver's park
+  # reason prints too.
+  visual_approval_verdict "$GATE_DIR"
 }
 
 gate_visual_approval_resolve() {
@@ -26146,19 +26512,76 @@ gate_visual_approval_resolve() {
   # the hold for the person set, so the class never reaches the forbidden
   # classes' `거부`.
   #
-  # A QUESTION A PERSON ANSWERED IN WORDS IS NOT CLOSED HERE. Its last row
-  # carries `처분 사유=자유 입력`, the `'대기' 1` transition refuses that row,
-  # and the seat asks the person again for the label.
+  # A QUESTION A PERSON ANSWERED IN WORDS IS NOT CLOSED `승인` HERE. Its last
+  # row carries `처분 사유=자유 입력`, the `'대기' 1` transition refuses that
+  # row, and the seat asks the person again for the label. A standing refusal
+  # at the publish stage still closes it below, before that check: the
+  # person's no at the halt is a label, and the free text is not.
   local id="$1" q="$2" cls="${3:-}" why
   GATE_AUTO_RESOLVED_APPROVAL=""; export GATE_AUTO_RESOLVED_APPROVAL
   [ -n "$cls" ] || cls=$(gate_approval_field "$id" '판단 부류')
   [ "$cls" = "시각-승인" ] || return 0
   [ "$(gate_approval_state "$id")" = "대기" ] || return 0
-  gate_approval_person_answered "$id" && return 0
+  # A QUESTION SUBMITTED AFTER A PERSON'S NO IS CLOSED BY THAT NO, BEFORE THE
+  # APPROVAL IS LOOKED AT. The person already refused the published screens,
+  # or gave up the publish, at the stage's halt; an approval line still in the
+  # sidecar from an earlier `승인` does not outrank that later answer, and
+  # asking again here would put the same question to them a second time.
+  if gate_visual_halt_linked_close "$id"; then
+    warn "judgment approval $id was closed as '$(gate_approval_state "$id")' by the person's answer to the visual publish stage's halt — the same question is not asked again"
+    return "$GATE_EXIT_RULE"
+  fi
   why=$(gate_visual_approval_holds) || return 0
+  gate_approval_person_answered "$id" && return 0
   gate_auto_close_approval "$id" 승인 "$q" "시각 승인 술어 성립: $why" || return 0
   GATE_AUTO_RESOLVED_APPROVAL="$id"; export GATE_AUTO_RESOLVED_APPROVAL
   return "$GATE_APPROVAL_ANSWERED"
+}
+
+gate_visual_halt_refusal() {
+  # gate_visual_halt_refusal — the run's standing refusal from the visual
+  # publish stage, as `<상태>\t<중단 기록>\t<선택지>`: the last `중단 답` row a
+  # person wrote to a `시각-판정` or `발행-실패` record of `S2P`, when it chose
+  # `거부` (state `거부`) or `발행하지 않음` (state `무효`). Nothing when the
+  # last such answer was anything else, or there is none: a later `승인`
+  # supersedes an earlier refusal. The reader is the driver's
+  # (`visual_publish_standing_refusal`), so the approval verdict both of them
+  # print fails on the same refusal this close stands on.
+  visual_publish_standing_refusal
+}
+
+gate_visual_halt_linked_close() {
+  # gate_visual_halt_linked_close [<승인 id>] — closes the run's open
+  # `시각-승인` questions (or the one named) by the person's refusal at the
+  # visual publish stage (`gate_visual_halt_refusal`): `거부` for a `시각-판정`
+  # answered `거부`, `무효` for a `발행-실패` answered `발행하지 않음`. 0 when
+  # it closed at least one, 1 when there was no refusal or nothing open.
+  #
+  # NOT AN AUTO-RESOLUTION. `gate_auto_close_approval` writes `처분 사유=자동
+  # 해소` and only ever adopts a recommendation; this close carries a person's
+  # answer, so its row names the halt answer it stands on in `답변 문면` and
+  # carries `처분 사유=중단 답 연동`. From there the refusal is consumed the
+  # way any person's refusal of a person-set question is (`결정=거절 소비`).
+  local only="${1:-}" ref st rec opt id n=0 q
+  ref=$(gate_visual_halt_refusal) || return 1
+  st=${ref%%$'\t'*}; ref=${ref#*$'\t'}
+  rec=${ref%%$'\t'*}; opt=${ref#*$'\t'}
+  for id in $( { gate_rows '승인' || true; } | { grep -F '| 판단 부류=시각-승인 |' || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    [ -z "$only" ] || [ "$id" = "$only" ] || continue
+    [ "$(gate_approval_state "$id")" = "대기" ] || continue
+    q=$(gate_approval_field "$id" '질문 문면')
+    gate_append '승인' --transition "$id" '대기' 0 "승인 id=$id" "상태=$st" \
+      "질문 문면=$(gate_row_safe "$q" 400)" \
+      "답변 문면=중단 답 연동(기록 ${rec##*/}, 선택지 $opt)" "해소 시각=$(now_iso)" \
+      "응답 토큰=-" "답변 다이제스트=-" \
+      "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" "처분 사유=중단 답 연동" || continue
+    gate_close_settle "$id"
+    log "시각-승인 $id 을 $st 로 닫음 — 시각 발행 단계 중단 기록 ${rec##*/} 의 사람 답 「$opt」"
+    n=$((n + 1))
+  done
+  [ "$n" -gt 0 ]
 }
 
 gate_revert_surface() {
@@ -26207,6 +26630,63 @@ gate_physical_path() {
     n=$((n + 1))
   done
   printf '%s' "$p"
+}
+
+gate_own_visual_helper() {
+  # gate_own_visual_helper <argv0> — 0 when argv0 is one of the three visual
+  # helpers beside this gate (`gate_own_helper`).
+  case "${1##*/}" in
+    visual-config.sh|visual-check.sh|visual-capture.sh) gate_own_helper "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_argv_visual_helper() {
+  # gate_argv_visual_helper <argv...> — prints the argv0 of the visual helper
+  # this argv runs, wherever that file lives, with the launchers the grade
+  # table sees through (`env`, `timeout`, `nice`, `nohup`, `stdbuf`, `time`,
+  # `command`, `lockf`) peeled first; prints nothing otherwise. A copy that is
+  # not beside this gate is the same program under the same name: its marker
+  # check is all that stands between it and the host forbidden list, so the
+  # declaration path has to refuse it as it refuses the gate's own copy, and
+  # `env CC_PIPELINE_VISUAL_PUBLISH=1 <copy> append` names it one word later.
+  local w="${1:-}"
+  [ -n "$w" ] || return 0
+  shift
+  case "${w##*/}" in
+    visual-config.sh|visual-check.sh|visual-capture.sh) printf '%s' "$w" ;;
+    env) gate_unwrap_env gate_argv_visual_helper '' '' "$@" ;;
+    timeout|nice|nohup|stdbuf) gate_unwrap_wrapper "${w##*/}" gate_argv_visual_helper '' '' "$@" ;;
+    time) gate_unwrap_time gate_argv_visual_helper '' '' "$@" ;;
+    command) gate_unwrap_command gate_argv_visual_helper '' '' "$@" ;;
+    lockf) gate_unwrap_lockf gate_argv_visual_helper '' '' "$@" ;;
+  esac
+}
+
+gate_argv_visual_helper_write() {
+  # gate_argv_visual_helper_write <argv...> — 0 when some word of argv, read
+  # with quotes and shell punctuation turned into blanks, names
+  # `visual-config.sh` and the word after it is `account`, `append` or `seed`,
+  # the subcommands that write the host files. The peel above stops at the
+  # launchers whose operands the table reads; `find -exec`, `xargs`, `sudo`
+  # and an interpreter (`bash <copy> append …`, `sh -c '<copy> append …'`)
+  # run a helper the same way and name it only as a word further in, so this
+  # reads every word instead. Quote-blind on purpose: a false hit refuses an
+  # act that names a helper's writing subcommand, never opens one.
+  (
+    set -f
+    local w t prev=''
+    for w in "$@"; do
+      w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
+      for t in $w; do
+        case "${prev##*/}:$t" in
+          visual-config.sh:account|visual-config.sh:append|visual-config.sh:seed) exit 0 ;;
+        esac
+        prev=$t
+      done
+    done
+    exit 1
+  )
 }
 
 gate_own_helper() {
@@ -31463,7 +31943,7 @@ EOF
         warn "the \`원인\` of a \`blocked\` row has to be \`해소\` — making a block is the work of the gate (observed: ${cause:-(none)})"
         return "$GATE_EXIT_VOCAB"
       fi
-      # A cone row anchored on a run-scope step (design, audit, split or visual) holds
+      # A cone row anchored on a run-scope step (design, audit, split, visual or visual publish) holds
       # the run just as a run-scope row does, and a driver-written one or a
       # shift's routing block has no lineage a later attempt could release it
       # by — so this form is its way out, and it must find it by `사유`.
@@ -32041,6 +32521,16 @@ EOF
       # `잔여 판정` stamp: who froze which residual items on what reading. It is
       # not clipped, so it is counted in the projection below as well as in
       # the append.
+      # THE PUBLISH STAGE'S JUDGMENT QUESTIONS ARE A PERSON'S. Whether the
+      # published screens are right, whether a candidate joins the forbidden
+      # list and whether a failed publish is given up are answered by looking
+      # at the screens, which neither the seat's recommendation nor a shift
+      # has done; the answer is refused before anything else is checked.
+      if [ "$hby" != "사람" ] \
+         && halt_step_is_visual_publish_site "$hrec" '시각-판정' '금지-후보' '발행-실패'; then
+        warn "이 중단 기록은 시각 발행 단계의 사람 전용 질문입니다(시각-판정·금지-후보·발행-실패) — 답한 주체=사람 의 답만 기록합니다: $hrec"
+        return "$GATE_EXIT_RULE"
+      fi
       local hladder=''
       if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && [ -z "$hsa" ]; then
         gate_halt_recommendation "$hrec" || return "$?"
@@ -32243,6 +32733,16 @@ EOF
           "레인=$hlane" "기록 시각=$hat"
       fi
       log "중단 답 기록 — $seg ← $hopt ($hby)"
+      # A PERSON'S NO AT THE PUBLISH STAGE CLOSES THE SCREENS' QUESTION IN THE
+      # SAME ACT: `거부` on a `시각-판정` record closes the run's open
+      # `시각-승인` as `거부`, `발행하지 않음` on a `발행-실패` record closes it
+      # as `무효`. Left open, the question would wait for an answer the person
+      # has already given.
+      if [ "$hby" = "사람" ] \
+         && { { [ "$hopt" = "거부" ] && halt_step_is_visual_publish_site "$hrec" '시각-판정'; } \
+              || { [ "$hopt" = "발행하지 않음" ] && halt_step_is_visual_publish_site "$hrec" '발행-실패'; }; }; then
+        gate_visual_halt_linked_close || true
+      fi
       ;;
     shift-halt)
       # THE SHIFT STOPS ONE SEGMENT, NOT THE RUN. A segment-scope stop used to
@@ -35286,8 +35786,10 @@ gate_check_ci_rerun() {
     warn "다음 of segment $seg is '$nx', not 'CI 재실행', and no early rerun stands on it — the rerun act is refused"
     exit "$GATE_EXIT_RULE"
   fi
+  # ITS OWN ROUNDS ONLY: a label round open or failed on the same head is the
+  # label act's to park, never this act's.
   rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
-  a=$(cc_ci_round_get "$rd" a)
+  a=$(cc_ci_round_get "$rd" ra)
   if [ "$a" = "열림" ] || [ "$a" = "실패" ]; then
     GATE_PARK_CELL='재실행요청실패'
     if [ "$a" = "열림" ]; then GATE_PARK_CAUSE='open'; else GATE_PARK_CAUSE='closed'; fi
@@ -35441,7 +35943,7 @@ EOF
   GATE_CI_RERUN_VERDICT=eligible
   GATE_CI_RERUN_RUNS="$runs"
   GATE_CI_RERUN_PR="$pnum"; GATE_CI_RERUN_SLUG="$slug"; GATE_CI_RERUN_HEAD="$h"
-  GATE_CI_RERUN_BASE="$basebr"; GATE_CI_RERUN_FAILS="$fails"; GATE_CI_RERUN_U=$(cc_ci_round_get "$rd" u)
+  GATE_CI_RERUN_BASE="$basebr"; GATE_CI_RERUN_FAILS="$fails"; GATE_CI_RERUN_MAX=$(cc_ci_round_get "$rd" max)
   GATE_CI_RERUN_OBS="$obs"; GATE_CI_RERUN_ATTS="$atts"; GATE_CI_RERUN_WFS="$wfs"
   return 0
 }
@@ -35481,7 +35983,8 @@ gate_perform_ci_rerun() {
   fi
   local slug="$GATE_CI_RERUN_SLUG" h="$GATE_CI_RERUN_HEAD" pr="$GATE_CI_RERUN_PR"
   local k base r code codes="" failed="" tries new wfs="${GATE_CI_RERUN_WFS:--}" fc screen=""
-  k=$(( ${GATE_CI_RERUN_U:-0} + 1 ))
+  # One numbering for rerun and label rounds: the pair's highest round + 1.
+  k=$(( ${GATE_CI_RERUN_MAX:-0} + 1 ))
   base=$(gate_ci_rerun_base_evidence)
   fc=$(printf '%s\n' "$GATE_CI_RERUN_FAILS" | awk -F'\t' 'NF >= 2 { printf "%s%s", (n++ ? "," : ""), $2 }')
   local -a common=("세그먼트=$seg" "PR=$pr" "head sha=$h" "처분=재실행")
@@ -35543,6 +36046,422 @@ gate_perform_ci_rerun() {
     "기본 브랜치=$base" "응답=$(gate_row_safe "$codes" 120)" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return $?
   warn "reach park — judgment '재실행요청실패'. GitHub did not take the rerun (응답=$codes) and the gate does not try again"
   gate_park_record '재실행요청실패' 'closed' "${GATE_CI_RERUN_OBS:-$codes}" "$@"
+  return "$GATE_EXIT_PARK"
+}
+
+# ---------------------------------------------------------------------------
+# The label act — `act --kind label-ack -- 라벨 <head sha>`.
+#
+# A CHECK THE KICKOFF LET A LABEL ANSWER. Some required checks fail by design
+# until a reviewer labels the pull request — an API-surface guard that passes
+# once the change is labelled as intended. A person decided at kickoff, in a
+# `라벨 인정` row, which (target, check) pairs a label may answer, and the
+# slice's `라벨 인정` field binds that decision to the slice that changes the
+# guarded surface. This act is the run's only way to put a label on a pull
+# request: the exec path refuses every PR label write.
+#
+# THE SAME SEATS AS THE RERUN ACT, AND THE SAME LOCK. The spelling and the
+# routed-run/tip refusals stand at the preconditions; `다음`, the binding, the
+# acknowledgement and every workflow the label event can wake stand at the
+# rerun's eligibility seat; the request row, the POST and the confirmation are
+# the performer's. Every check errs towards a park, and nothing is written
+# before the last one passes.
+# ---------------------------------------------------------------------------
+GATE_LABEL_ACK_CONFIRM_TRIES=10
+GATE_LABEL_ACK_CONFIRM_SLEEP=3
+
+gate_label_ack_preconditions() {
+  # gate_label_ack_preconditions <segment> <sha> — the rerun act's two
+  # refusals, for the label act: a run the routing shift does not drive, or an
+  # argv sha that is not the worktree's tip. Passing sets the marker the rule
+  # branch opens on.
+  local seg="$1" sha="$2" tip
+  if ! run_routed; then
+    warn "the label act runs only on a routed run — this run has no routing record"
+    return "$GATE_EXIT_RULE"
+  fi
+  tip=$(gate_segment_tip "$seg") || tip=""
+  if [ -z "$tip" ] || [ "$tip" != "$sha" ]; then
+    warn "the label act names head $sha, but the segment worktree's tip is ${tip:-(unresolved)} — read 다음 again"
+    return "$GATE_EXIT_RULE"
+  fi
+  GATE_LABEL_ACK_PRE=1
+  export GATE_LABEL_ACK_PRE
+}
+
+gate_label_ack_types() {
+  # gate_label_ack_types <file> <event> — whether a pull request labelled now
+  # starts this workflow for <event> (`pull_request` or `pull_request_target`):
+  # `받음` when its `types` hold `labeled`, `받지않음` when they do not or the
+  # event is not named at all, `읽지못함` for any shape this reader does not
+  # know. The top-level `on` key is read the way `gate_ci_rerun_on_hit` reads
+  # it, quoted and as YAML 1.1's `true` included. An event named with no
+  # `types` takes GitHub's default types, which do not hold `labeled`.
+  # Unknown: an anchor, an alias or a merge key in the `on` block, a second
+  # document, an inline mapping, a `types` of any shape but a flow or block
+  # list, and a file that cannot be read.
+  [ -r "$1" ] || { printf '읽지못함'; return 0; }
+  LC_ALL=C awk -v q="'" -v ev="$2" '
+    function unq(s) { gsub(/"/, "", s); gsub(q, "", s); return s }
+    function trimc(s) { sub(/[ \t]+#.*$/, "", s); sub(/^#.*$/, "", s); sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function flow(s, want,   inner, m, w, j) {
+      inner = substr(s, 2, length(s) - 2); m = split(inner, w, ",")
+      for (j = 1; j <= m; j++) if (unq(trimc(w[j])) == want) return 1
+      return 0
+    }
+    /^(---|\.\.\.)([ \t].*)?$/ { if (content) bad = 1; next }
+    !/^[ \t]*(#.*)?$/ { content = 1 }
+    !found {
+      k = $0; sub(/[ \t]*:.*$/, "", k)
+      if ($0 ~ /^[^ \t#][^:]*:/ && (k == "on" || k == "\"on\"" || k == q "on" q || k == "true")) {
+        found = 1; v = $0; sub(/^[^:]*:/, "", v); v = trimc(v)
+        if (v != "") scalar = 1; else inblk = 1
+      }
+      next
+    }
+    inblk {
+      if ($0 ~ /^[ \t]*(#.*)?$/) next
+      if ($0 !~ /^[ \t]/) { inblk = 0; next }
+      ind = match($0, /[^ \t]/) - 1
+      if (minind == "" || ind < minind) minind = ind
+      line[++n] = $0; lind[n] = ind
+    }
+    END {
+      if (bad || !found) { print "읽지못함"; exit }
+      if (scalar) {
+        if (v ~ /[&*]/) { print "읽지못함"; exit }
+        if (v ~ /^\[.*\]$/) { print "받지않음"; exit }
+        if (unq(v) ~ /^[A-Za-z_]+$/) { print "받지않음"; exit }
+        print "읽지못함"; exit
+      }
+      if (n == 0) { print "읽지못함"; exit }
+      for (i = 1; i <= n; i++) if (line[i] ~ /(^|[ \t:,\[-])[&*][A-Za-z0-9_]/ || line[i] ~ /<</) { print "읽지못함"; exit }
+      ei = 0
+      for (i = 1; i <= n; i++) {
+        if (lind[i] != minind) continue
+        s = line[i]; sub(/^[ \t]*/, "", s)
+        if (s ~ /^-/) { if (unq(trimc(substr(s, 2))) == ev) { print "받지않음"; exit }; continue }
+        k = s; sub(/[ \t]*:.*$/, "", k)
+        if (unq(k) == ev) { ei = i; break }
+      }
+      if (!ei) { print "받지않음"; exit }
+      s = line[ei]; sub(/^[^:]*:/, "", s); s = trimc(s)
+      if (s == "null" || s == "~" || s == "{}") { print "받지않음"; exit }
+      if (s != "") { print "읽지못함"; exit }
+      cmin = ""
+      for (i = ei + 1; i <= n && lind[i] > minind; i++) if (cmin == "" || lind[i] < cmin) cmin = lind[i]
+      ti = 0
+      for (i = ei + 1; i <= n && lind[i] > minind; i++) {
+        if (lind[i] != cmin) continue
+        s = line[i]; sub(/^[ \t]*/, "", s); k = s; sub(/[ \t]*:.*$/, "", k)
+        if (unq(k) == "types") { ti = i; break }
+      }
+      if (!ti) { print "받지않음"; exit }
+      s = line[ti]; sub(/^[^:]*:/, "", s); s = trimc(s)
+      if (s ~ /^\[.*\]$/) { print (flow(s, "labeled") ? "받음" : "받지않음"); exit }
+      if (s != "") { print "읽지못함"; exit }
+      got = 0; any = 0
+      for (i = ti + 1; i <= n; i++) {
+        s = line[i]; sub(/^[ \t]*/, "", s)
+        if (lind[i] < lind[ti]) break
+        if (lind[i] == lind[ti] && s !~ /^-/) break
+        if (s !~ /^-/) { print "읽지못함"; exit }
+        any = 1
+        if (unq(trimc(substr(s, 2))) == "labeled") got = 1
+      }
+      if (!any) { print "읽지못함"; exit }
+      print (got ? "받음" : "받지않음")
+    }' "$1" 2>/dev/null || printf '읽지못함'
+}
+
+gate_label_ack_argv() {
+  # gate_label_ack_argv <slug> <pr> <label> — the POST as the performer spells
+  # it, the string an `argv:` deploy-trigger identifier is compared against.
+  printf 'gh api -X POST -i repos/%s/issues/%s/labels -f labels[]=%s' "$1" "$2" "$3"
+}
+
+gate_label_ack_park() {
+  # gate_label_ack_park <칸> <관측> — set the park cell for the dispatch.
+  GATE_PARK_CELL="$1"; GATE_PARK_CAUSE='-'; GATE_PARK_OBS="$2"
+  GATE_LABEL_ACK_VERDICT=""
+  export GATE_PARK_CELL GATE_PARK_CAUSE GATE_PARK_OBS
+}
+
+gate_check_label_ack() {
+  # gate_check_label_ack <kind> — the lock, `다음`, the pull request, the failing
+  # check, the acknowledgement, the workflows a label event wakes and the
+  # label already on the pull request, for the label act and nothing else.
+  # Refusal exits 3 with no row; a park sets the park cell for the dispatch
+  # below it; an eligible act leaves `GATE_LABEL_ACK_VERDICT=eligible`.
+  [ "$1" = "label-ack" ] || return 0
+  local seg="$segment" al="$alias" wt h nx rd a ad slug br prs n pnum phead pref raw checks
+  local acks sacks fails pend cands="" _b name link check="" clink="" label r line
+  local wf_name="" wf_path="" wf_id="" bn basebr tmpd f src rc t1 t2 x5set="" bad="" ids id kind val labels
+  wt=$(gate_segment_worktree "$seg")
+  h=$(gate_worktree_tip "$wt") || { warn "the segment worktree's tip does not resolve"; exit "$GATE_EXIT_RULE"; }
+  if ! gate_ci_rerun_lock "$seg"; then
+    warn "another CI act of segment $seg holds its lock — not queued, read 다음 again"
+    exit "$GATE_EXIT_RULE"
+  fi
+  # 1 — `다음` again from the gate's own ledger, and an open or failed label
+  # round closed as a park without a POST.
+  nx=$(gate_segment_review_next "$seg")
+  if [ "$nx" != "CI 라벨 인정" ]; then
+    warn "다음 of segment $seg is '$nx', not 'CI 라벨 인정' — the label act is refused"
+    exit "$GATE_EXIT_RULE"
+  fi
+  rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
+  a=$(cc_ci_round_get "$rd" a); ad=$(cc_ci_round_get "$rd" ad)
+  if [ "$ad" = "라벨" ] && { [ "$a" = "열림" ] || [ "$a" = "실패" ]; }; then
+    GATE_PARK_CELL='라벨요청실패'
+    if [ "$a" = "열림" ]; then GATE_PARK_CAUSE='open'; else GATE_PARK_CAUSE='closed'; fi
+    GATE_PARK_OBS="회차:$a"
+    export GATE_PARK_CELL GATE_PARK_CAUSE GATE_PARK_OBS
+    return 0
+  fi
+  # 2 — the branch's one open pull request at this head.
+  slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+  br=$( { cd "$wt" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+  if [ -z "$slug" ] || [ -z "$br" ]; then
+    warn "the label act cannot bind a pull request (slug ${slug:-none}, branch ${br:-none})"
+    exit "$GATE_EXIT_RULE"
+  fi
+  if ! prs=$(gate_ci_rerun_gh pr list -R "$slug" --head "$br" --state open --json number,headRefOid,headRefName 2>/dev/null) \
+     || ! prs=$(printf '%s' "$prs" | jq -r '.[] | [(.number|tostring), .headRefOid, .headRefName] | join(" ")' 2>/dev/null); then
+    warn "reading the open pull requests of $br failed — nothing was labelled"
+    exit "$GATE_EXIT_RULE"
+  fi
+  n=$(printf '%s\n' "$prs" | grep -c . || true)
+  read -r pnum phead pref <<EOF
+$prs
+EOF
+  if [ "$n" != "1" ] || [ "$phead" != "$h" ] || [ "$pref" != "$br" ]; then
+    warn "the branch $br has $n open pull request(s), head ${phead:-(none)} against tip $h — the head moved; read 다음 again"
+    exit "$GATE_EXIT_RULE"
+  fi
+  # 3 — a declared check failing at H on the checks screen as it is now.
+  raw=$(gate_ci_rerun_gh pr checks "$pnum" -R "$slug" --json name,bucket,link 2>/dev/null || true)
+  if ! checks=$(gate_ci_rerun_checks_tsv "$raw"); then
+    warn "reading the checks of PR $pnum failed — nothing was labelled"
+    exit "$GATE_EXIT_RULE"
+  fi
+  pend=$(printf '%s\n' "$checks" | awk -F'\t' '$1 == "pending" { n++ } END { print n + 0 }')
+  if [ "$pend" -gt 0 ]; then
+    warn "$pend check(s) of PR $pnum are still pending — the label act waits for the set to settle"
+    exit "$GATE_EXIT_RULE"
+  fi
+  fails=$(printf '%s\n' "$checks" | awk -F'\t' '$1 == "fail"')
+  acks=$(manifest_label_ack_checks "$al")
+  while IFS="$(printf '\t')" read -r _b name link; do
+    [ -n "$name" ] || continue
+    case "
+$acks
+" in *"
+$name
+"*) cands="${cands}${name}	${link}
+" ;; esac
+  done <<EOF
+$fails
+EOF
+  if [ -z "$cands" ]; then
+    warn "no check a \`라벨 인정\` row of target $al names is failing on PR $pnum now — nothing to label"
+    exit "$GATE_EXIT_RULE"
+  fi
+  # 4 — the slice's own field names the check too. No slicing section, or a
+  # slice without the field, is no acknowledgement.
+  sacks=""
+  if [ -n "${DOC:-}" ] && [ -f "$DOC" ] && slicing_present "$DOC" 2>/dev/null; then
+    sacks=$(slice_label_ack_checks "$DOC" "$seg" 2>/dev/null || true)
+  fi
+  while IFS="$(printf '\t')" read -r name link; do
+    [ -n "$name" ] || continue
+    case "
+$sacks
+" in *"
+$name
+"*) check="$name"; clink="$link"; break ;; esac
+  done <<EOF
+$cands
+EOF
+  if [ -z "$check" ]; then
+    gate_label_ack_park '라벨인정없음' "$(printf '%s' "$cands" | sed -n 1p | cut -f1)"; return 0
+  fi
+  label=$(manifest_label_ack_label "$al" "$check")
+  case "$clink" in
+    "https://github.com/$slug/actions/runs/"*)
+      r=${clink#"https://github.com/$slug/actions/runs/"}; r=${r%%/*}
+      case "$r" in ''|*[!0-9]*) r="" ;; esac ;;
+    *) r="" ;;
+  esac
+  if [ -n "$r" ] && line=$(gate_ci_rerun_run_tsv "$slug" "$r"); then
+    wf_name=$(printf '%s' "$line" | cut -f7); wf_path=$(printf '%s' "$line" | cut -f8)
+    wf_id=$(printf '%s' "$line" | cut -f9); wf_path=${wf_path%%@*}
+  fi
+  # 5 — every workflow a label event can wake, from H's files and the base
+  # branch tip's. The gate does not fetch: a base it does not hold is refused.
+  basebr=$(gate_base_remote_tip "$al" "$wt" 2>/dev/null) || basebr=""
+  if [ -z "$basebr" ] || ! ( cd "$wt" && git cat-file -e "$basebr^{commit}" ) 2>/dev/null; then
+    warn "the base branch's tip ${basebr:-(unknown)} is not a local object — fetch the base first"
+    exit "$GATE_EXIT_RULE"
+  fi
+  tmpd=$(mktemp -d "${TMPDIR:-/tmp}/gate-label-ack.XXXXXX") || exit "$GATE_EXIT_RULE"
+  # (a) the failing check's own workflow at H has to start on `labeled`.
+  t1="읽지못함"
+  if [ -n "$wf_path" ] && ( cd "$wt" && git show "$h:$wf_path" ) > "$tmpd/own.wf" 2>/dev/null; then
+    t1=$(gate_label_ack_types "$tmpd/own.wf" pull_request)
+  fi
+  if [ "$t1" != "받음" ]; then
+    rm -rf "$tmpd"; gate_label_ack_park '라벨새실행없음' "$check:${wf_path:-워크플로 미상}:$t1"; return 0
+  fi
+  # (b) every file either source holds that a label wakes, or that cannot be
+  # read, meets the rerun's file test (X5).
+  for src in "$h" "$basebr"; do
+    while IFS= read -r f; do
+      case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
+      if ! ( cd "$wt" && git show "$src:$f" ) > "$tmpd/wf" 2>/dev/null; then
+        rm -rf "$tmpd"; gate_label_ack_park '라벨배포트리거' "읽기 실패 ${f##*/}"; return 0
+      fi
+      t1=$(gate_label_ack_types "$tmpd/wf" pull_request)
+      t2=$(gate_label_ack_types "$tmpd/wf" pull_request_target)
+      [ "$t1" = "받지않음" ] && [ "$t2" = "받지않음" ] && continue
+      x5set="${x5set}${f##*/}
+"
+      rc=1
+      gate_ci_rerun_x5_hit "$tmpd/wf" && rc=0 || rc=$?
+      if [ "$rc" != "1" ]; then rm -rf "$tmpd"; gate_label_ack_park '라벨배포트리거' "${f##*/}"; return 0; fi
+    done <<EOF
+$( { cd "$wt" && git ls-tree -r --name-only "$src" -- .github/workflows; } 2>/dev/null || true)
+EOF
+  done
+  # (c) the base branch's files that fire on the end of the new run.
+  while IFS= read -r f; do
+    case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
+    rc=0
+    if ( cd "$wt" && git show "$basebr:$f" ) > "$tmpd/base.wf" 2>/dev/null; then
+      gate_ci_rerun_on_hit "$tmpd/base.wf" && rc=0 || rc=$?
+    fi
+    if [ "$rc" != "1" ]; then rm -rf "$tmpd"; gate_label_ack_park '라벨배포트리거' "기본 브랜치 ${f##*/}"; return 0; fi
+  done <<EOF
+$( { cd "$wt" && git ls-tree -r --name-only "$basebr" -- .github/workflows; } 2>/dev/null || true)
+EOF
+  rm -rf "$tmpd"
+  # (d) the target's deploy-trigger identifiers: `workflow:` on the files (b)
+  # tested, `branch:` on the pull request's head branch, `argv:` on the POST.
+  ids=$(target_field "$al" '배포트리거 식별자' 2>/dev/null || true)
+  while IFS= read -r id; do
+    kind="${id%%:*}"; val="${id#*:}"
+    [ -n "$id" ] && [ -n "$val" ] || continue
+    case "$kind" in
+      workflow)
+        [ -n "$wf_name" ] && [ "$val" = "$wf_name" ] && bad="workflow:$val"
+        [ -n "$wf_id" ] && [ "$val" = "$wf_id" ] && bad="workflow:$val"
+        while IFS= read -r bn; do
+          [ -n "$bn" ] || continue
+          case "$val" in "$bn"|"${bn%.*}"|"${bn%.*}.yml"|"${bn%.*}.yaml") bad="workflow:$val" ;; esac
+        done <<EOF
+$x5set
+EOF
+        ;;
+      branch) [ "$val" = "$pref" ] && bad="branch:$val" ;;
+      argv)
+        case "$(gate_label_ack_argv "$slug" "$pnum" "$label")" in *"$val"*) bad="argv:$val" ;; esac ;;
+    esac
+    [ -z "$bad" ] || break
+  done <<EOF
+$(printf '%s' "$ids" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+EOF
+  if [ -n "$bad" ]; then gate_label_ack_park '라벨배포트리거' "$bad"; return 0; fi
+  # 6 — a label already on the pull request starts nothing when put on again.
+  if ! labels=$(gate_ci_rerun_gh pr view "$pnum" -R "$slug" --json labels --jq '.labels[].name' 2>/dev/null); then
+    warn "reading the labels of PR $pnum failed — nothing was labelled"
+    exit "$GATE_EXIT_RULE"
+  fi
+  case "
+$labels
+" in *"
+$label
+"*) gate_label_ack_park '라벨이미있음' "$check:$label"; return 0 ;; esac
+  GATE_LABEL_ACK_VERDICT=eligible
+  GATE_LABEL_ACK_PR="$pnum"; GATE_LABEL_ACK_SLUG="$slug"; GATE_LABEL_ACK_HEAD="$h"
+  GATE_LABEL_ACK_CHECK="$check"; GATE_LABEL_ACK_LINK="$clink"; GATE_LABEL_ACK_LABEL="$label"
+  GATE_LABEL_ACK_RUN="${r:--}"; GATE_LABEL_ACK_WF="${wf_name:--}"; GATE_LABEL_ACK_BASE="$basebr"
+  GATE_LABEL_ACK_K=$(( $(cc_ci_round_get "$rd" max) + 1 ))
+  return 0
+}
+
+gate_label_ack_gh_write() {
+  # gate_label_ack_gh_write <credential lines> <gh args...> — `gh` under the
+  # WRITE-scoped credential the merge uses, exported inside a subshell only and
+  # with the repository named on the command line alone. Never the read-scoped
+  # runner: every stage holds that credential, and a label it could POST would
+  # put a second way to label around this act.
+  local creds="$1" line; shift
+  (
+    unset GH_REPO GH_HOST GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      export "$line"
+    done <<CREDS
+$creds
+CREDS
+    gh "$@"
+  )
+}
+
+gate_perform_label_ack() {
+  # gate_perform_label_ack <alias> <segment> <argv...> — the request row, one
+  # POST, the confirmation and the closing row. No retry, for the rerun's
+  # reason: a second POST after an unknown outcome would be a second event.
+  local al="$1" seg="$2"; shift 2
+  if [ "${GATE_LABEL_ACK_VERDICT:-}" != "eligible" ]; then
+    warn "the label act reached its performer without an eligibility verdict — nothing was requested"
+    return "$GATE_EXIT_RULE"
+  fi
+  local slug="$GATE_LABEL_ACK_SLUG" h="$GATE_LABEL_ACK_HEAD" pr="$GATE_LABEL_ACK_PR"
+  local check="$GATE_LABEL_ACK_CHECK" oldlink="$GATE_LABEL_ACK_LINK" label="$GATE_LABEL_ACK_LABEL"
+  local k="$GATE_LABEL_ACK_K" creds base code tries ok="" screen st
+  # THE WRITE CREDENTIAL BEFORE THE ROW: an act that cannot POST leaves no
+  # request a person would have to close.
+  creds=$(cred_gate_env) || return "$GATE_EXIT_RULE"
+  # `기본 브랜치` measured the way the rerun measures it, for the label check.
+  base=$(GATE_CI_RERUN_FAILS="fail	${check}	${oldlink}" GATE_CI_RERUN_SLUG="$slug" \
+         GATE_CI_RERUN_BASE="$GATE_LABEL_ACK_BASE" gate_ci_rerun_base_evidence)
+  local -a common=("세그먼트=$seg" "PR=$pr" "head sha=$h" "처분=라벨")
+  local -a rest=("실행=$GATE_LABEL_ACK_RUN" "워크플로=$(gate_row_safe "$GATE_LABEL_ACK_WF" 200)"
+    "실패 체크=$(gate_row_safe "$check" "$GATE_CHECKS_FAIL_MAX")" "기본 브랜치=$base")
+  local ckf lbf
+  ckf=$(gate_row_safe "$check" 200); lbf=$(gate_row_safe "$label" 200)
+  gate_append 'CI 처분' "${common[@]}" "상태=요청" "회차=$k" "${rest[@]}" "체크=$ckf" "라벨=$lbf" \
+    "응답=-" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return $?
+  code=$(gate_label_ack_gh_write "$creds" api -X POST -i "repos/$slug/issues/$pr/labels" -f "labels[]=$label" 2>/dev/null \
+         | awk 'NR == 1 && /^HTTP\// { print $2; exit }' || true)
+  [ -n "$code" ] || code=000
+  case "$code" in
+    2??)
+      # THE OLD FAILURE LEFT THE SCREEN AND A NEW RUN OF THE SAME CHECK CAME:
+      # the screen shows one run per name, so a new link under the same name
+      # is the run the label started.
+      tries=0
+      while [ "$tries" -lt "$GATE_LABEL_ACK_CONFIRM_TRIES" ]; do
+        screen=$(gate_ci_rerun_checks_tsv "$(gate_ci_rerun_gh pr checks "$pr" -R "$slug" --json name,bucket,link 2>/dev/null || true)" || true)
+        st=$(printf '%s\n' "$screen" | GATE_LA_NAME="$check" GATE_LA_OLD="$oldlink" awk -F'\t' '
+          $2 == ENVIRON["GATE_LA_NAME"] { if ($3 == ENVIRON["GATE_LA_OLD"]) old = 1; else if ($3 != "") nw = 1 }
+          END { print (nw && !old) ? "ok" : "no" }')
+        [ "$st" = "ok" ] && { ok=1; break; }
+        tries=$(( tries + 1 )); sleep "$GATE_LABEL_ACK_CONFIRM_SLEEP"
+      done
+      [ -n "$ok" ] || code="$code,화면" ;;
+  esac
+  if [ -n "$ok" ]; then
+    gate_append 'CI 처분' "${common[@]}" "상태=수락" "회차=$k" "${rest[@]}" "체크=$ckf" "라벨=$lbf" \
+      "응답=$code" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return $?
+    log "$seg: 라벨 수락 — 회차 $k, 체크 $check, 라벨 $label"
+    return 0
+  fi
+  gate_append 'CI 처분' "${common[@]}" "상태=실패" "회차=$k" "${rest[@]}" "체크=$ckf" "라벨=$lbf" \
+    "응답=$(gate_row_safe "$code" 120)" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return $?
+  warn "reach park — judgment '라벨요청실패'. The label POST or the new run's confirmation failed (응답=$code) and the gate does not try again"
+  gate_park_record '라벨요청실패' 'closed' "$check:$code" "$@"
   return "$GATE_EXIT_PARK"
 }
 
@@ -36397,6 +37316,17 @@ gate_verb_act() {
     { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
       || { warn "act --kind ci-rerun 은 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
   fi
+  # THE LABEL ACT'S ONE SPELLING, in the rerun's shape: the token `라벨` and the
+  # head. The check and the label are the manifest's, never the router's.
+  if [ "$kind" = "label-ack" ]; then
+    if [ $# -ne 2 ] || [ "$1" != "라벨" ] || ! printf '%s' "$2" | grep -Eq '^[0-9a-f]{40}$'; then
+      warn "act --kind label-ack 의 argv 는 「라벨 <40자리 워크트리 HEAD>」 하나입니다 — 체크와 라벨은 게이트가 매니페스트에서 읽습니다"
+      exit "$GATE_EXIT_VOCAB"
+    fi
+    [ "$cutpoint" = "PR" ] || { warn "act --kind label-ack 은 --cutpoint PR 로만 냅니다 (받은 값: ${cutpoint})"; exit "$GATE_EXIT_VOCAB"; }
+    { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
+      || { warn "act --kind label-ack 은 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
+  fi
 
   # ---- the argv ladder, derived and compared against the declaration --------
   #
@@ -36418,7 +37348,7 @@ gate_verb_act() {
   # would be a guess rather than a fact.
   GATE_ACT_DERIVED=""
   case "$kind" in
-    propose-done|skill|router-shift|apply|ci-rerun) : ;;
+    propose-done|skill|router-shift|apply|ci-rerun|label-ack) : ;;
     *) gate_kind_is_bookkeeping "$kind" \
          || GATE_ACT_DERIVED=$(ladder_of_argv0 "$@") ;;
   esac
@@ -36623,6 +37553,9 @@ gate_verb_act() {
   if [ "$kind" = "ci-rerun" ]; then
     gate_ci_rerun_preconditions "$segment" "$2" || exit $?
   fi
+  if [ "$kind" = "label-ack" ]; then
+    gate_label_ack_preconditions "$segment" "$2" || exit $?
+  fi
 
   case " $(target_aliases | tr '\n' ' ') " in
     *" $alias "*) : ;;
@@ -36808,7 +37741,7 @@ gate_verb_act() {
   fi
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
      && { [ "$rs_table" = "design" ] || [ "$rs_table" = "audit" ] || [ "$rs_table" = "split" ] \
-          || [ "$rs_table" = "visual" ]; }; then
+          || [ "$rs_table" = "visual" ] || [ "$rs_table" = "visual-publish" ]; }; then
     rs_skill=$(gate_run_scope_skill_of "$rs_table")
     if ! stage_key=$(gate_run_scope_step "$rs_table"); then
       case "$rs_table" in
@@ -37019,6 +37952,7 @@ gate_verb_act() {
         audit)      dd_cmd='/cc-cmds:design-audit-unattended ' ;;
         split)      dd_cmd='/cc-cmds:design-base-unattended --split ' ;;
         visual)     dd_cmd='/cc-cmds:visual-unattended ' ;;
+        visual-publish) dd_cmd='/cc-cmds:visual-publish-unattended ' ;;
         reconverge) dd_cmd='/cc-cmds:design-reconverge ' ;;
       esac
       case "$dd_prompt" in
@@ -37039,7 +37973,8 @@ gate_verb_act() {
     fi
 
     # PREDECESSORS ARE RUN-SCOPE STEPS, so `선행` of the segment rows cannot say
-    # whether they landed. Each `depends_on` of an audit, split or visual step must
+    # whether they landed. Each `depends_on` of an audit, split, visual or visual
+    # publish step must
     # have ended its last run-scope row `정상 완료`, and a design predecessor must
     # also have left the document frozen — an audit or a split over an
     # unfinished design reads bytes nobody settled, and the split's tracker
@@ -37050,7 +37985,7 @@ gate_verb_act() {
     # opens the run, and the audit a re-convergence rides on passed this one.
     local rs_dep rs_dk rs_last rs_deps=""
     case "$rs_kind" in
-      audit | split | visual)
+      audit | split | visual | visual-publish)
         rs_deps=$( { manifest_plan_json 2>/dev/null \
                      | jq -r --arg id "$stage_key" '.steps[]? | select(type == "object" and .id == $id) | .depends_on[]? // empty' 2>/dev/null \
                      || true; } ) ;;
@@ -37122,7 +38057,7 @@ gate_verb_act() {
     fi
     if ! ss_why=$(gate_visual_approval_holds); then
       warn "세그먼트 ${segment} 는 화면 슬라이스인데 설계 문서의 구현 승인이 서지 않습니다 (${ss_why}) — 화면이 승인되기 전에는 구현을 보내지 않습니다"
-      warn "고정 좌석에서 /cc-cmds:visual 로 화면을 승인해 사이드카에 구현 승인 줄을 다시 쓴 뒤 디스패치하세요"
+      warn "$(visual_approval_route_hint) — 그 뒤 디스패치하세요"
       exit "$GATE_EXIT_RULE"
     fi
   fi
@@ -37692,9 +38627,10 @@ gate_verb_act() {
       # what the act performs is the frozen apply command, which changes state
       # outside the tree by definition.
       graded="외부상태변경" ;;
-    ci-rerun)
-      # The same: `재실행 <sha>` is a token, and what the act performs is the
-      # gate's own POST to GitHub, a change of state outside the tree.
+    ci-rerun|label-ack)
+      # The same: `재실행 <sha>` and `라벨 <sha>` are tokens, and what the act
+      # performs is the gate's own POST to GitHub, a change of state outside
+      # the tree.
       graded="외부상태변경" ;;
     *)
       if gate_kind_is_bookkeeping "$kind"; then
@@ -37796,7 +38732,31 @@ gate_verb_act() {
     # evaluator then judges, and with the switch off there is no evaluator to
     # judge it — so off mode keeps today's refusal rather than admitting a claim
     # nothing will check.
-    GATE_UNKNOWN_DECLARED=1
+    #
+    # NOT FOR THE VISUAL HELPERS, WHEREVER THE FILE LIVES AND HOWEVER IT IS
+    # LAUNCHED. The rows of the gate's own copies grade every spelling the gate
+    # admits, by subcommand and by the ledger (`append` only on a person's
+    # unspent `승인` to that candidate), so their `등급 미상` is the table's
+    # refusal and not a tool it has never seen. Any other copy of the same name
+    # runs the same `append`, and a launcher in front of it (`env` setting the
+    # publish stage's marker, say) does not change what runs. Only argv0 itself
+    # was asked here once, so the run's pinned source checkout, a worktree copy
+    # and an `env`-wrapped spelling all took the declaration path and opened an
+    # `append` no person approved. A launcher the table has no row for
+    # (`xargs`, `sudo`) or one it delegates past its own operands (`find -exec`)
+    # names the helper further in, which the word scan reads.
+    { [ -n "$(gate_argv_visual_helper "$@")" ] || gate_argv_visual_helper_write "$@"; } \
+      || GATE_UNKNOWN_DECLARED=1
+  fi
+  if [ "${GATE_OPAQUE:-0}" = "1" ] && [ "$graded" != "등급 미상" ] && gate_argv_visual_helper_write "$@"; then
+    # AN INTERPRETER RUNNING A VISUAL HELPER'S WRITING SUBCOMMAND. `bash <copy>
+    # append …` and `sh -c '<copy> append …'` grade as the runner, and the
+    # opaque cell opens an out-of-tree run-local declaration, so the copy's
+    # marker check would be all that stands before the host forbidden list —
+    # and the caller sets that environment. The gate's own copy is graded only
+    # when it is called directly, so no interpreter spelling is needed for it.
+    warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
+    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
   if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
     # THE GENERIC MESSAGE COMES FIRST SO THE SPECIFIC ONE IS READ LAST. Both
@@ -37811,8 +38771,20 @@ gate_verb_act() {
     # recognized tool in a form the sub-table could not parse (respell the
     # command). Without the distinction the router sees one refusal and has no
     # way to tell which.
-    warn "axis 2 \`등급 미상\` — an argv0 that is not in the grade table does not fall through to \`읽기\`: $1 (if that tool has never been entered in the table, the table has to be widened; if it is in the table and the shape could not be read, rewrite it so the subcommand is visible)"
-    gate_orchestrator_script_hint "$1"
+    #
+    # The gate's own visual helper is neither: its row is there and read the
+    # subcommand, and the grade is the row's answer for this spelling and this
+    # ledger, so neither repair, nor the version-skew advisory, applies. Nor do
+    # they to another copy, which no row grades, or to a launcher in front of a
+    # helper: a respelling does not change what runs.
+    if gate_own_visual_helper "$1"; then
+      warn "axis 2 \`등급 미상\` — the gate's own visual helper is graded by its subcommand and the run's ledger, and this spelling has no grade there: ${1##*/} ${2:-} (\`append\` is graded only on a person's unspent \`승인\` to that very candidate at the publish stage's halt; every other ungraded subcommand is the seat's)"
+    elif [ -n "$(gate_argv_visual_helper "$@")" ] || gate_argv_visual_helper_write "$@"; then
+      warn "axis 2 \`등급 미상\` — a visual helper that is not the file beside this gate has no grade, and no declaration opens a visual helper the table left ungraded: $(_vh=$(gate_argv_visual_helper "$@"); printf '%s' "${_vh:-$1}")"
+    else
+      warn "axis 2 \`등급 미상\` — an argv0 that is not in the grade table does not fall through to \`읽기\`: $1 (if that tool has never been entered in the table, the table has to be widened; if it is in the table and the shape could not be read, rewrite it so the subcommand is visible)"
+      gate_orchestrator_script_hint "$1"
+    fi
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
 
@@ -37970,7 +38942,7 @@ gate_verb_act() {
   # has no answer, and 0 is the honest one: no history is being integrated.
   GATE_HISTORY_INTEGRATION=0
   case "$kind" in
-    propose-done|skill|router-shift|apply|ci-rerun) : ;;
+    propose-done|skill|router-shift|apply|ci-rerun|label-ack) : ;;
     *) gate_kind_is_bookkeeping "$kind" \
          || GATE_HISTORY_INTEGRATION=$(gate_history_integration "$@") ;;
   esac
@@ -38121,7 +39093,7 @@ gate_verb_act() {
      && [ -n "$segment" ] && [ "$segment" != '-' ] \
      && [ -n "$(gate_segment_field "$segment" '상태')" ]; then
     case "$kind" in
-      propose-done|skill|router-shift|apply|ci-rerun) : ;;
+      propose-done|skill|router-shift|apply|ci-rerun|label-ack) : ;;
       *)
         [ "$(gate_merge_binding_of_argv0 "$@")" = '해당없음' ] || _mo_land=1
         if [ "$_mo_land" = 0 ]; then
@@ -38286,7 +39258,21 @@ gate_verb_act() {
   # judging it anyway would turn `-` into `도달미상` and issue an approval on
   # every ordinary external act. Measured: a rule switched OFF still refused,
   # because this evaluator answered in its place.
+  #
+  # A LABEL WRITE ON A PULL REQUEST IS THE EXCEPTION, read ahead of that guard.
+  # Its cell refuses whatever reach is declared and whatever row the manifest
+  # holds, so it cannot wait for the switch or a declaration: with the switch
+  # off and no `--reach`, the evaluator below never runs, and a broad form row
+  # would open the write on the ordinary row path. In both modes it parks — the
+  # off mode's approval would let a person open what the row path never may.
+  local _prlabel=0
   if [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
+     && gate_pr_label_write "$@"; then
+    _prlabel=1
+    GATE_PARK_CELL='PR라벨쓰기'
+    rules_rc=0
+  fi
+  if [ "$_prlabel" = "0" ] && [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
      && { gate_auto_resolve_enabled || [ -n "${GATE_REACH:-}" ]; }; then
     # The verdict is `<칸>\t<원인>\t<판단>` on the first line; the facts the
     # repair line reads follow on the second, printed from the same subshell. The
@@ -38822,6 +39808,7 @@ EOF
   # for the same reasons: past the drain and the rule loop, ahead of every
   # append, and above the forecast. Every other kind returns from it at once.
   gate_check_ci_rerun "$kind"
+  gate_check_label_ack "$kind"
   gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
   # THE LANDING TREE'S OWN GATE, asked before it lands. Same seat as the CI
   # verdict above and for the same three reasons; it does nothing when that
@@ -39017,8 +40004,17 @@ EOF
     if [ "${GATE_ADMIT:-}" = "1" ]; then
       _adm=("형태=맨" "요청=$GATE_ADMIT_REQ_ID" "티켓=$_admit_tid" "예측=$_admit_pred")
     fi
+    # A forbidden-list append the person's answer opened names that answer's
+    # record, and the field is what spends it (`gate_ban_append_answer`).
+    local _vpc=''
+    if [ "${1##*/}" = "visual-config.sh" ] && [ "${2:-}" = "append" ] && [ "$#" -eq 3 ] \
+       && [ "$graded" = "트리밖쓰기" ]; then
+      _vpc=$(gate_ban_append_answer "$3" 2>/dev/null || true)
+      [ -z "$_vpc" ] || _adm+=("소비 중단 답=$_vpc")
+    fi
     _row_fixed=$(( ${#alias} + ${#segment} + ${#GATE_ACT_EFFECTIVE} + ${#graded} + ${#actor} + 336 ))
-    [ "${#_adm[@]}" -eq 0 ] || _row_fixed=$(( _row_fixed + ${#_adm[0]} + ${#_adm[1]} + ${#_adm[2]} + ${#_adm[3]} + 12 ))
+    [ "${GATE_ADMIT:-}" != "1" ] || _row_fixed=$(( _row_fixed + ${#_adm[0]} + ${#_adm[1]} + ${#_adm[2]} + ${#_adm[3]} + 12 ))
+    [ -z "$_vpc" ] || _row_fixed=$(( _row_fixed + ${#_vpc} + 24 ))
     _argv_budget=$(( 1024 - 16 - _row_fixed ))
     [ "$_argv_budget" -gt 128 ] && _argv_budget=128
     [ "$_argv_budget" -lt 0 ] && _argv_budget=0
@@ -39156,6 +40152,8 @@ EOF
         # The POST and its confirmation, never the argv: `재실행 <sha>` run as a
         # command would skip the performer's guard.
         ci-rerun) gate_perform_ci_rerun "$alias" "$segment" "$@" || rc=$? ;;
+        # The label POST and its confirmation, the same way.
+        label-ack) gate_perform_label_ack "$alias" "$segment" "$@" || rc=$? ;;
         *)     gate_run_readonly "$@" || rc=$? ;;
       esac
       ;;
@@ -39964,21 +40962,26 @@ gate_check_merge_checks() {
   # already superseded is not read as the current one. Taking the last row of
   # the segment whatever its head returned silently whenever another head's row
   # came last.
-  local rd a g why
+  local rd a g why ad
   rd=$(cc_ci_round "$LEDGER" "$seg" "$tip")
-  a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g)
+  a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g); ad=$(cc_ci_round_get "$rd" ad)
   row=$(gate_ci_verdict_row "$seg" "$tip" "${g:-0}")
   st=$(gate_row_field "$row" '상태')
   req=$(gate_row_field "$row" '필수 집합')
   if [ "$a" = "열림" ]; then
-    # A rerun was requested and never closed: what GitHub is running is unknown.
-    why="a rerun of this head ($tip) was requested and has no closing row"
+    # A rerun or a label was requested and never closed: what GitHub is running
+    # is unknown.
+    if [ "$ad" = "라벨" ]; then
+      why="a label of this head ($tip) was requested and has no closing row"
+    else
+      why="a rerun of this head ($tip) was requested and has no closing row"
+    fi
   elif [ "${g:-0}" -ge 1 ]; then
     # AFTER A RERUN ONLY A PASS OF THAT ROUND MERGES. The round's first verdict
     # comes after the rerun began, so anything short of `통과` — no row yet, a
     # pending or unreadable answer, a second failure — is not a green check.
     [ "$st" = "통과" ] && return 0
-    why="rerun round $g of this head ($tip) has not passed — 상태 '${st:-(관측 없음)}'"
+    why="round $g of this head ($tip) has not passed — 상태 '${st:-(관측 없음)}'"
   elif gate_ci_join_target "$seg" && [ -n "$(gate_segment_last_cycle_row "$seg")" ]; then
     # ON A REVIEWED CI JOIN TARGET ONLY A VERDICT MERGES. Round 0's `통과`, or
     # its `미등록` past the grace — "this head has no CI" — and nothing else: no
@@ -40865,6 +41868,7 @@ gate_continuation_argv() {
     design) unmet="동결된 설계 문서도 정지 기록도 없다" ;;
     audit)  unmet="판독자 리포트 파일(docs/design-audit/<slug>.reader-*.md)도 감사 종결 문구($LIT_AUDIT_TERMINAL)도 없다" ;;
     visual) unmet="검토 통과로 확정된 시각 사이드카도 시각 종결 문구($LIT_VISUAL_TERMINAL)도 정지 기록도 없다" ;;
+    visual-publish) unmet="발행 종결 문구($LIT_VISUAL_PUBLISH_TERMINAL)와 함께 발행됨 상태의 시각 사이드카나 사람의 거부·발행하지 않음 답이 없고, 정지 기록도 없다" ;;
     # An implement attempt filed `공허한 성공` for its residual share names the
     # missing headings verbatim, so the continued session can find each item.
     implement)
@@ -40926,7 +41930,7 @@ gate_wait_deadline_park() {
   # gate_wait_deadline_park <alias> <row segment> <key> <lineage> <ready-at iso>
   #                         <basis> <recovery> <redispatch> — the cone row a
   # stage that cannot finish inside the deadline leaves. Anchored on the key —
-  # the segment id, or a run-scope step id (design, audit, split or visual) — never on
+  # the segment id, or a run-scope step id (design, audit, split, visual or visual publish) — never on
   # the lineage; the lineage rides in `근거` so this attempt's park can be
   # recognised. On a run-scope step it holds the run (termination condition 5)
   # until a later attempt of the key or a `원인=해소` row releases it.
@@ -40996,12 +42000,17 @@ gate_launch_route() {
     case "$GATE_ROUTE_BIND" in ''|-) ;; *) reqbind=$GATE_ROUTE_BIND ;; esac
   fi
   GATE_ROUTE_EVENT=$event
+  # THE PIN RIDES HERE AND IN `gate_launch_route_ask` ALIKE: the carry path
+  # asks through that one, and a pin on one builder only would let a resumed
+  # visual publish stage land on a lane its first launch was not pinned to.
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$reqbind" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
+          --arg pin "$(kind_pin_lane_of "$kind" || true)" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
-           + (if $dl == null then {} else {deadline: $dl} end)') \
+           + (if $dl == null then {} else {deadline: $dl} end)
+           + (if $pin == "" then {} else {pin_lane: $pin} end)') \
     || { warn "could not build the router request ($seg)"; return 1; }
   prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
            | { jq -r '.nonce // empty' 2>/dev/null || true; })
@@ -41067,9 +42076,11 @@ gate_launch_route_ask() {
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$bound" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
+          --arg pin "$(kind_pin_lane_of "$kind" || true)" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
-           + (if $dl == null then {} else {deadline: $dl} end)') \
+           + (if $dl == null then {} else {deadline: $dl} end)
+           + (if $pin == "" then {} else {pin_lane: $pin} end)') \
     || { warn "could not build the router request ($seg)"; return 1; }
   route_resolve "$req" || { warn "the account resolver stopped — $seg is not launched"; return 1; }
 }
@@ -41385,6 +42396,23 @@ gate_sup_await_dispatch() {
   return 0
 }
 
+gate_launch_kind_env() {
+  # gate_launch_kind_env <stage-kind> — the two variables only the visual
+  # publish stage is launched with, set in this process's environment for that
+  # kind and removed from it for every other. `CLAUDE_CODE_ARTIFACT=1` is what
+  # makes a headless session load the Artifact tools at all, and
+  # `CC_PIPELINE_VISUAL_PUBLISH=1` is the marker `visual-config.sh` reads to let
+  # `account` and `append` run inside a run. Removed rather than left alone on
+  # every other kind, because the launching process may itself have inherited
+  # either one, and a stage that inherited them would load tools its settings
+  # variant still refuses and lift a refusal no other kind may lift.
+  if [ "${1:-}" = "visual-publish" ]; then
+    export CLAUDE_CODE_ARTIFACT=1 CC_PIPELINE_VISUAL_PUBLISH=1
+  else
+    unset CLAUDE_CODE_ARTIFACT CC_PIPELINE_VISUAL_PUBLISH
+  fi
+}
+
 gate_launch_stage() {
   # gate_launch_stage <alias> <segment> <stage-kind> <cli args...>
   #
@@ -41507,6 +42535,24 @@ gate_launch_stage() {
   # outside — that answer's again, since the attempt may have died holding it.
   GATE_HA_CARD_LINE=${GATE_HA_LINE:-}
   [ -n "$GATE_HA_CARD_LINE" ] || GATE_HA_CARD_LINE=$(gate_halt_card_crash_line "$seg")
+  # THE VISUAL PUBLISH STAGE RUNS ON ITS PINNED LANE OR NOT AT ALL. Routing off
+  # asks nothing and inherits the environment, which is whatever config
+  # directory the dispatching session runs under — not the lane logged in to
+  # the pinned Claude Design account. And with no `lane` in the host file there
+  # is nothing to pin. Both park here, before an attempt is claimed, so the
+  # dispatch can be repeated once a person has fixed the cause.
+  if [ "$kind" = "visual-publish" ]; then
+    if ! run_routed; then
+      gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
+        "라우팅 꺼짐 — 시각 발행 단계는 고정 레인으로만 뜬다. 라우팅을 켠 런에서 다시 파견하세요"
+      return "$GATE_EXIT_ROUTE"
+    fi
+    if ! kind_pin_lane_of "$kind" >/dev/null; then
+      gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
+        "고정 레인 없음 — 호스트 파일 ${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design 에 'lane = <레인 id>' 줄이 없다. 그 줄을 쓴 뒤 다시 파견하세요"
+      return "$GATE_EXIT_ROUTE"
+    fi
+  fi
   if run_routed; then
     routed=1
     gate_launch_route "$alias" "$seg" "$kind" "$@" || return $?
@@ -42013,6 +43059,7 @@ gate_verb_supervise_stage() {
     local -x CC_PIPELINE_AUDIT_PASS
     CC_PIPELINE_AUDIT_PASS=$(audit_pass_of "$seg")
   fi
+  gate_launch_kind_env "$kind"
   # THE ANSWER CARD, when the dispatch wrote one for this attempt. Its path
   # follows from `seg#attempt`, so the launch token carries nothing new; an
   # attempt with no card gets no variable, whatever this process inherited.
@@ -43894,6 +44941,10 @@ gate_record_stage_outcome() {
   elif [ "$kind" = "visual" ] \
        && ! { grep -qF "$LIT_VISUAL_TERMINAL" "$out" 2>/dev/null && visual_sidecar_reviewed "${DOC:-}"; }; then
     klass='공허한 성공'
+  # The visual publish stage: its terminal literal, and either the sidecar at
+  # `발행됨` or a person's `거부`/`발행하지 않음` at one of its halts.
+  elif [ "$kind" = "visual-publish" ] && ! visual_publish_artifact_complete "$out"; then
+    klass='공허한 성공'
   # An audit stage is asked for its artifact by the driver's predicate: the
   # terminal phrase, a reader report, and exactly one skeletal-grade fence in
   # the audit report. Without the fence nobody can say whether the document
@@ -44851,7 +45902,7 @@ gate_close() {
     if [ "$label" = "승인" ] && [ "$(gate_approval_field "$id" '판단 부류')" = "시각-승인" ]; then
       local vwhy
       if ! vwhy=$(gate_visual_approval_holds); then
-        warn "approval $id is a '시각-승인' question and the sidecar's implementation approval does not hold ($vwhy) — '승인' is not recorded. Approve the screens at the fixed seat with /cc-cmds:visual first, then answer '승인' again"
+        warn "approval $id is a '시각-승인' question and the sidecar's implementation approval does not hold ($vwhy) — '승인' is not recorded. $(visual_approval_route_hint), then answer '승인' again"
         exit "$GATE_EXIT_RULE"
       fi
     fi
@@ -46453,9 +47504,9 @@ gate_snapshot_review_next_json() {
   # At the three base values the element also carries what the resolution and
   # its review name: the basis cycle and its `리뷰 HEAD` (the segment's last
   # cycle that is not a resolution), and the base, the conflicted files and
-  # the class of the latest `베이스 판정` row. At the eight CI values — `CI 재실행`,
+  # the class of the latest `베이스 판정` row. At the nine CI values — `CI 재실행`,
   # `CI 대기`, `CI 대기 한도`, `CI 수정`, `CI 합류 수정`, `CI 리뷰`,
-  # `CI 기존 실패`, `CI 수정 한도` — it carries the keys
+  # `CI 기존 실패`, `CI 수정 한도`, `CI 라벨 인정` — it carries the keys
   # `gate_snapshot_ci_keys_json` names.
   local out s row nx brow bcy
   out=$(gate_segment_ids | while IFS= read -r s; do
@@ -46483,7 +47534,8 @@ gate_snapshot_review_next_json() {
           fi
           if [ "$nx" = 'CI 재실행' ] || [ "$nx" = 'CI 대기' ] || [ "$nx" = 'CI 수정' ] \
              || [ "$nx" = 'CI 리뷰' ] || [ "$nx" = 'CI 기존 실패' ] || [ "$nx" = 'CI 수정 한도' ] \
-             || [ "$nx" = 'CI 합류 수정' ] || [ "$nx" = 'CI 대기 한도' ]; then
+             || [ "$nx" = 'CI 합류 수정' ] || [ "$nx" = 'CI 대기 한도' ] \
+             || [ "$nx" = 'CI 라벨 인정' ]; then
               gate_snapshot_ci_keys_json "$s" "$nx"
           fi
           printf '},\n'
@@ -47198,6 +48250,11 @@ gate_launch_shift() {
   # it so that no banner rises from a process with no seat; the shift and its
   # stages are already "not the router" by `CC_PIPELINE_SHIFT_ID`, and a test
   # run inside a stage must not inherit a fourth marker it never set.
+  #
+  # THE VISUAL PUBLISH STAGE'S TWO VARIABLES ARE CLEARED as for every kind but
+  # that one: a shift launched from inside that stage would otherwise load the
+  # Artifact tools and carry the helper marker.
+  gate_launch_kind_env shift
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
