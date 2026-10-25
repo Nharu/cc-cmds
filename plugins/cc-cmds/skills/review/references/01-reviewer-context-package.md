@@ -17,6 +17,8 @@ Item 18 below is conditional on delta mode and is not counted in the heading.
 4. **Role-specific review checklist** (with grep/Read search guidance — see "Role-specific checklists" below).
 5. **Existing PR comments/review summary** + dedup instruction: *"Do not report already-raised issues as new findings. If you confirm an existing issue, reference it as 'confirms existing review by @author' and add only additional analysis."*
 6. **PR metadata** (CI status, draft status, linked issues) — omit for non-PR reviews.
+    - The unattended review leaves out of this item's CI failure priority check area every failing check that the manifest's `라벨 인정` row for the pull request's target names.
+    - **A public-surface change that goes beyond the intent its slice declared is an ordinary finding grounded in the code.** A failing surface guard is not the evidence for it: the reviewer reads the changed surface itself and grades what it finds there like any other finding.
 7. **Fix suggestion rules**: critical/high = mandatory, medium = include when non-obvious, low = include only for non-obvious tech debt, nitpick = omit.
 8. **Search guidance**: Reference the role-specific checklist's grep/Read search items.
 9. **Context size management**: For large diffs, filter to role-relevant file diffs only. Include change stats summary + high-risk file diffs in initial message; point reviewers to `grep`/`Read` — or, under a shared snapshot, to the `blob/<id>` entries of item 2 — for the rest. For many existing PR comments, send summary only.

@@ -766,7 +766,7 @@ check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다
 check "review_carry 가 재구현 사이클 상한과 확인 리뷰 회차 상한을 싣는다" \
   "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2,"RECHECK_ROUND_CAP":2}'
 
-# 6c-3. Both router copies branch on the six CI values of `다음`
+# 6c-3. Both router copies branch on the nine CI values of `다음`
 #
 # A value one copy does not name is a value its router meets with no branch, and
 # a rerun spelled by hand is one the gate refuses in every form. The values the
@@ -782,10 +782,15 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '**`CI 리뷰`**' \
     '**`CI 기존 실패`**' \
     '**`CI 수정 한도`**' \
+    '**`CI 라벨 인정`**' \
     'CI 수정: <head sha>' \
     'act --kind ci-rerun' \
     '--kind ci-rerun' \
     '-- 재실행 <head sha>' \
+    'act --kind label-ack' \
+    '--kind label-ack' \
+    '-- 라벨 <head sha>' \
+    'the nine CI values' \
     '**Every other exit 3 is one disposition**' \
     '**Never send `gh run rerun`, a rerun or re-request REST path, or the `rerequestCheckSuite` mutation**'; do
     if grep -qF -- "$lit" "$f"; then
