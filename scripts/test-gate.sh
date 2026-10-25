@@ -51310,6 +51310,252 @@ for bad88c in "$LB88C" "$LS88C"; do
 done
 
 # ---------------------------------------------------------------------------
+# 88m. 재번호 사슬 — 베이스가 거듭 움직일 때의 메타 해소와 코드 충돌 한도
+# --- section: 88m | group: ledger_series | covers: gate_base_cf_release_only, gate_base_conflict_count, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_segment_review_next, gate_apply_preconditions, gate_apply_subject_proof, gate_cycle_trigger_facts | anchors: 88m: 사슬 머리가 다시 릴리스 파일에서만 충돌하면 부류 릴리스 메타 이고 다음은 베이스 해소 다, 88m: 사슬 머리의 릴리스 메타 충돌 뒤 촉발 사실은 버전 경합 이고 베이스 충돌 이 아니다, 88m: HEAD 가 R 이어도 같은 베이스의 부류는 릴리스 메타 다, 88m: 둘째 도우미 머지는 사슬 머리 위에 한 고리를 쌓고 판을 새 베이스 위로 다시 매긴다, 88m: 둘째 고리 HEAD 의 베이스 판정은 일치 이고 다음은 머지 다, 88m: 같은 베이스로 도우미를 다시 부르면 거부되고 HEAD 는 그대로다, 88m: 판정 HEAD 가 아닌 HEAD 위에는 쌓지 않는다, 88m: R 도 사슬 머리도 아닌 HEAD 위에는 쌓지 않는다, 88m: 이미 그 베이스 위에 있는 HEAD 는 다시 해소하지 않는다, 88m: 거부 뒤 HEAD 는 둘째 고리 그대로다, 88m: 두 고리 사슬은 증명되고 머지 행위는 그 머리를 내보낸다, 88m: 리뷰-후-머지 는 사슬 머리를 받을 때만 통과시킨다, 88m: 아래 고리의 판이 틀린 사슬은 증명되지 않고 사유에 고리 자리가 붙는다, 88m: 아래 고리가 같은 베이스를 다시 쓴 사슬은 증명되지 않는다, 88m: 아래 고리가 머지가 아닌 사슬은 증명되지 않는다, 88m: 릴리스 파일만의 충돌은 부류와 무관하게 세지 않는다, 88m: 코드 충돌 넷이면 베이스 해소 한도 다, 88m: 잘린 칸·빈 칸·키 없는 행은 코드 충돌로 센다, 88m: 한도를 넘은 뒤의 릴리스 메타 충돌도 베이스 해소 한도 다, 88m: 사슬 머리를 둘째 부모로 둔 착지는 적용 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다, 88m: 적용 대상 증명은 사슬 머리의 착지에서 리뷰 HEAD 를 세운다, 88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 일치 다 ---
+#
+# 메타 해소 뒤 베이스가 또 판을 올리면 사슬 머리 M1 이 다시 릴리스 파일에서만 충돌한다.
+# 그 충돌은 여전히 판단이 아니어서 도우미가 M1 위에 한 고리를 더 쌓고, 사슬 전체가
+# 증명되는 동안은 리뷰도 사람도 부르지 않는다. 한도는 릴리스 파일 밖의 경로가 든
+# 충돌만 센다. 픽스처는 88c 와 같은 구성을 새로 만든다 — 88c 의 상태에 기대지 않는다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88M="$lsr_root/s88m"; rm -rf "$D88M"; mkdir -p "$D88M"
+O88M="$D88M/origin.git"; G88M="$D88M/repo"; W88M="$D88M/seg"; U88M="$D88M/up"
+PJ88M='plugins/cc-cmds/.claude-plugin/plugin.json'
+pj88m() { printf '{\n  "name": "cc-cmds",\n  "version": "%s",\n  "description": "x"\n}\n' "$1" > "$PJ88M"; }
+cl88m() {  # cl88m <판> <날짜> <본문> — 맨 위에 항목 하나를 얹는다
+  { sed -n '1,2p' CHANGELOG.md; printf '## [%s] - %s\n\n### Added\n- %s\n\n' "$1" "$2" "$3"; sed '1,2d' CHANGELOG.md; } > CHANGELOG.new
+  mv CHANGELOG.new CHANGELOG.md
+}
+up88m() {  # up88m <판> <날짜> <파일> — 상류가 판을 올려 원격 main 에 밀고 그 sha 를 찍는다
+  ( cd "$U88M" && git checkout -q main && pj88m "$1" && cl88m "$1" "$2" "상류 $1" && echo "$1" > "$3" \
+      && git add -A && git commit -qm "up $1" && git push -q origin HEAD:main && git rev-parse HEAD ) 2>/dev/null
+  ( cd "$G88M" && git fetch -q origin ) >/dev/null 2>&1
+}
+( git init -q --bare "$O88M" && git init -q "$G88M" && cd "$G88M" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && git config "url.$O88M.insteadOf" https://github.com/o/r.git \
+  && mkdir -p plugins/cc-cmds/.claude-plugin && pj88m 1.0.0 \
+  && printf '# Changelog\n\n## [1.0.0] - 2026-10-01\n\n### Added\n- 처음\n' > CHANGELOG.md \
+  && git add -A && git commit -qm one && git branch -M main \
+  && git remote add origin https://github.com/o/r.git && git push -q origin main \
+  && git worktree add -q -b seg-88m "$W88M" main \
+  && git clone -q -b main "$O88M" "$U88M" && cd "$U88M" \
+  && git config user.email t@example.invalid && git config user.name T ) >/dev/null 2>&1
+R88M=$( ( cd "$W88M" && pj88m 1.1.0 && cl88m 1.1.0 2026-10-14 '세그먼트 기능' && echo s > seg.txt \
+          && git add -A && git commit -qm seg && git rev-parse HEAD ) 2>/dev/null)
+T188M=$(up88m 1.1.0 2026-10-13 up1.txt)
+M88M="$D88M/manifest.md"
+printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88M" > "$M88M"
+L88M=$(lsr_ledger w88m)
+printf '1\n' > "${L88M%/*}/routing-guard"
+printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88m | 선행=없음 | prev=x\n' "$W88M" >> "$L88M"
+printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+  "$R88M" "$(lsr_rp_report "$D88M/c1.md" 0 0 차단)" >> "$L88M"
+q88m() { local l=$1; shift; lsr_in Linux "$l" - lsr_rp_in "$M88M" "$@" 2>/dev/null; }
+c88m() {  # c88m [원장] — base-check 한 번의 rc
+  local rc88m=0
+  lsr_in Linux "${1:-$L88M}" - lsr_rp_in "$M88M" gate_record_row base-check S t >/dev/null 2>&1 || rc88m=$?
+  printf '%s' "$rc88m"
+}
+mm88m_in() {  # 도우미 한 번 — 거부면 `규칙|<경고 줄>`, 성공이면 `0|<M>`
+  local rc=0 out
+  out=$(gate_meta_merge S 2>"$D88M/mm.err") || rc=$?
+  [ "$rc" != "$GATE_EXIT_RULE" ] || rc=규칙
+  printf '%s|%s' "$rc" "${out:-$(tr '\n' ' ' < "$D88M/mm.err")}"
+}
+mm88m() { lsr_in Linux "$1" - lsr_rp_in "$M88M" mm88m_in 2>/dev/null; }
+pv88m() { lsr_in Linux "$L88M" - lsr_rp_in "$M88M" pv88m_in "$@" 2>/dev/null; }
+pv88m_in() {  # pv88m <R> <H> <T> — 사슬 증명의 rc 와 사유
+  local rc=0
+  gate_meta_resolved "$W88M" "$1" "$2" "$3" || rc=$?
+  printf '%s|%s' "$rc" "$GATE_META_WHY"
+}
+hd88m() { cd "$W88M" && git rev-parse HEAD; }
+cs88m() {  # cs88m <커밋> — 판과 변경 기록 머리말의 차례
+  printf '%s|%s' "$(cd "$W88M" && git show "$1:$PJ88M" | sed -n 's/^  "version": "\(.*\)",$/\1/p')" \
+    "$(cd "$W88M" && git show "$1:CHANGELOG.md" | grep '^## \[' | tr '\n' ';')"
+}
+
+# 첫 고리 — 88c 와 같은 R 위의 메타 해소 M1.
+c88m >/dev/null
+MM188M=$(mm88m "$L88M"); MM188M=${MM188M#0|}
+c88m >/dev/null
+T288M=$(up88m 1.2.0 2026-10-15 up2.txt)
+check "88m: 사슬 머리가 다시 릴리스 파일에서만 충돌하면 부류 릴리스 메타 이고 다음은 베이스 해소 다" \
+  "$(c88m)|$(lsr_last_fields "$L88M" '베이스 판정' 판정\ HEAD 베이스 판정 충돌\ 파일 부류)|$(q88m "$L88M" gate_segment_review_next S)" \
+  "0|$MM188M|$T288M|충돌|CHANGELOG.md|릴리스 메타|베이스 해소"
+tf88m=$(q88m "$L88M" gate_cycle_trigger_facts S)
+check "88m: 사슬 머리의 릴리스 메타 충돌 뒤 촉발 사실은 버전 경합 이고 베이스 충돌 이 아니다" \
+  "$(printf '%s\n' "$tf88m" | grep -c '^버전 경합$' || true)|$(printf '%s\n' "$tf88m" | grep -c '^베이스 충돌$' || true)" "1|0"
+# 사슬 머리를 판정한 충돌 행이 마지막인 원장 — 아래 거부와 계수의 바탕이다.
+L88M1=$(lsr_ledger w88m-one); cp "$L88M" "$L88M1"; printf '1\n' > "${L88M1%/*}/routing-guard"
+ROW88M=$(grep '^- `베이스 판정` ' "$L88M1" | tail -1)
+
+L88MR=$(lsr_ledger w88m-r); cp "$L88M" "$L88MR"; printf '1\n' > "${L88MR%/*}/routing-guard"
+( cd "$W88M" && git checkout -q --detach "$R88M" ) >/dev/null 2>&1
+check "88m: HEAD 가 R 이어도 같은 베이스의 부류는 릴리스 메타 다" \
+  "$(c88m "$L88MR")|$(lsr_last_fields "$L88MR" '베이스 판정' 판정\ HEAD 판정 부류)" "0|$R88M|충돌|릴리스 메타"
+( cd "$W88M" && git checkout -q seg-88m ) >/dev/null 2>&1
+
+MM288M=$(mm88m "$L88M"); MM288M=${MM288M#0|}
+printf -- '- `checks` | 교대=1 | PR=o/r#5 | head sha=%s | 상태=통과 | 필수 집합=- | 실패 체크=- | 관측=%s | 세그먼트=S | 재실행 회차=0 | 진행 중=0 | prev=x\n' \
+  "$MM288M" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$L88M"
+check "88m: 둘째 도우미 머지는 사슬 머리 위에 한 고리를 쌓고 판을 새 베이스 위로 다시 매긴다" \
+  "$(hd88m)|$(cd "$W88M" && git rev-list --parents -n 1 HEAD | cut -d' ' -f2-)|$(cs88m HEAD)" \
+  "$MM288M|$MM188M $T288M|1.3.0|## [1.3.0] - 2026-10-14;## [1.2.0] - 2026-10-15;## [1.1.0] - 2026-10-13;## [1.0.0] - 2026-10-01;"
+check "88m: 둘째 고리 HEAD 의 베이스 판정은 일치 이고 다음은 머지 다" \
+  "$(c88m)|$(lsr_last_fields "$L88M" '베이스 판정' 판정\ HEAD 판정)|$(q88m "$L88M" gate_segment_review_next S)" \
+  "0|$MM288M|일치|머지"
+
+# 도우미의 거부 — 다시 부른 같은 베이스, 판정 HEAD 가 아닌 HEAD, 사슬 머리가 아닌 HEAD,
+# 이미 그 베이스 위의 HEAD. 끝의 셋은 판정 HEAD 칸만 바꾼 충돌 행으로 세운다.
+rw88m() {  # rw88m <이름> <판정 HEAD> — L88M1 뒤에 판정 HEAD 만 바꾼 충돌 행을 붙인 사본
+  local l
+  l=$(lsr_ledger "w88m-$1"); cp "$L88M1" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf '%s\n' "$ROW88M" | sed "s/판정 HEAD=[^|]*|/판정 HEAD=$2 |/" >> "$l"
+  printf '%s' "$l"
+}
+check "88m: 같은 베이스로 도우미를 다시 부르면 거부되고 HEAD 는 그대로다" \
+  "$(mm88m "$L88M" | cut -d'|' -f1)|$(hd88m)" "규칙|$MM288M"
+case "$(mm88m "$L88M1")" in
+  "규칙|"*"is not the HEAD the latest 베이스 판정 judged"*) ok "88m: 판정 HEAD 가 아닌 HEAD 위에는 쌓지 않는다" ;;
+  *) bad "88m: 판정 HEAD 가 아닌 HEAD 위에는 쌓지 않는다" "$(mm88m "$L88M1")" ;;
+esac
+X88M=$( (cd "$W88M" && git commit-tree "$MM288M^{tree}" -p "$R88M" -m x) 2>/dev/null)
+( cd "$W88M" && git branch -q x-88m "$X88M" && git checkout -q x-88m ) >/dev/null 2>&1
+mmx88m=$(mm88m "$(rw88m x "$X88M")")
+( cd "$W88M" && git checkout -q seg-88m ) >/dev/null 2>&1
+case "$mmx88m" in
+  "규칙|"*"is neither R nor a renumbering chain head of R"*) ok "88m: R 도 사슬 머리도 아닌 HEAD 위에는 쌓지 않는다" ;;
+  *) bad "88m: R 도 사슬 머리도 아닌 HEAD 위에는 쌓지 않는다" "$mmx88m" ;;
+esac
+mma88m=$(mm88m "$(rw88m again "$MM288M")")
+case "$mma88m" in
+  "규칙|"*"is already on that base"*) ok "88m: 이미 그 베이스 위에 있는 HEAD 는 다시 해소하지 않는다" ;;
+  *) bad "88m: 이미 그 베이스 위에 있는 HEAD 는 다시 해소하지 않는다" "$mma88m" ;;
+esac
+check "88m: 거부 뒤 HEAD 는 둘째 고리 그대로다" "$(hd88m)" "$MM288M"
+
+ex88m() {  # ex88m <HEAD> — 머지 행위의 내보내기가 남기는 값
+  unset GATE_META_RESOLVED_HEAD
+  gate_meta_resolved_export S "$1"
+  printf '%s' "${GATE_META_RESOLVED_HEAD:-}"
+}
+check "88m: 두 고리 사슬은 증명되고 머지 행위는 그 머리를 내보낸다" \
+  "$(pv88m "$R88M" "$MM288M" "$T288M")|$(q88m "$L88M" ex88m "$MM288M")|$(q88m "$L88M" ex88m "$X88M")" "0||$MM288M|"
+rl88m() {  # rl88m [env 할당…] — 리뷰-후-머지 규칙을 머지 자리의 입력으로 직접
+  ( cd "$G88M" && env -u GATE_SUBJECT_HEAD -u GATE_META_RESOLVED_HEAD "$@" GATE_ACT_INDEX=9 GATE_MERGE_INDEX=1 \
+      GATE_SURFACE=외부상태변경 GATE_HISTORY_INTEGRATION=0 GATE_REVIEW_POLICY_INDEX=0 \
+      GATE_LEDGER="$L88M" GATE_MANIFEST="$M88M" GATE_SEGMENT=S \
+      GATE_SEGMENT_LAST_CYCLE="$(q88m "$L88M" gate_segment_last_cycle_row S)" \
+      GATE_SEGMENT_LAST_SEGMENT="$(q88m "$L88M" gate_segment_last_segment_row S)" \
+      /bin/sh "$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-머지.sh" ) >/dev/null 2>&1 && printf 0 || printf 1
+}
+check "88m: 리뷰-후-머지 는 사슬 머리를 받을 때만 통과시킨다" \
+  "$(rl88m)|$(rl88m GATE_META_RESOLVED_HEAD="$MM288M")|$(rl88m GATE_META_RESOLVED_HEAD="$MM188M")" "1|0|1"
+
+# 증명되지 않는 사슬 셋 — 윗 고리는 모두 E*(R, T2) 의 트리와 부모 T2 를 갖춘다.
+mkdir -p "$D88M/bad/${PJ88M%/*}"; ( cd "$D88M/bad" && pj88m 1.1.0 )
+LOW88M=$( ( cd "$W88M" && b=$(git hash-object -w "$D88M/bad/$PJ88M") && export GIT_INDEX_FILE="$D88M/bad.index" \
+            && git read-tree "$MM188M" && git update-index --cacheinfo "100644,$b,$PJ88M" \
+            && t=$(git write-tree) && git commit-tree "$t" -p "$R88M" -p "$T188M" -m low ) 2>/dev/null)
+top88m() { (cd "$W88M" && git commit-tree "$MM288M^{tree}" -p "$1" -p "$T288M" -m top) 2>/dev/null; }
+CB188M=$(top88m "$LOW88M")
+CB288M=$( (cd "$W88M" && git commit-tree "$MM188M^{tree}" -p "$MM188M" -p "$T188M" -m same) 2>/dev/null)
+CB388M=$(top88m "$X88M")
+check "88m: 아래 고리의 판이 틀린 사슬은 증명되지 않고 사유에 고리 자리가 붙는다" \
+  "$(pv88m "$R88M" "$CB188M" "$T288M")" "1|H's tree is not the expected release tree — link 2 of the chain"
+check "88m: 아래 고리가 같은 베이스를 다시 쓴 사슬은 증명되지 않는다" \
+  "$(pv88m "$R88M" "$CB288M" "$T288M")" "1|H's second parent is not the base or an ancestor of it — link 2 of the chain"
+check "88m: 아래 고리가 머지가 아닌 사슬은 증명되지 않는다" \
+  "$(pv88m "$R88M" "$CB388M" "$T288M")" "1|H is not a two-parent merge whose first parent is R — link 2 of the chain"
+
+# 계수 — 사슬 머리 MM288M 를 판정한 충돌 행을 덧붙인 원장 사본. 덧붙인 행의 마지막이
+# 지금 HEAD 의 충돌이므로 다음은 베이스 해소 갈래이고, 한도 여부만 갈린다.
+cr88m() {  # cr88m <충돌 파일 칸|없음> <부류> — 판정 HEAD 를 MM288M 로 둔 충돌 행 한 줄
+  local r
+  r=$(printf '%s\n' "$ROW88M" | sed -e "s/판정 HEAD=[^|]*|/판정 HEAD=$MM288M |/" -e "s/부류=[^|]*|/부류=$2 |/")
+  if [ "$1" = 없음 ]; then printf '%s\n' "$r" | sed 's/ | 충돌 파일=[^|]*|/ |/'
+  else printf '%s\n' "$r" | sed "s#충돌 파일=[^|]*|#충돌 파일=$1 |#"; fi
+}
+lc88m() {  # lc88m <이름> <행…> — L88M 뒤에 행들을 붙인 사본
+  local l n=$1; shift
+  l=$(lsr_ledger "w88m-c$n"); cp "$L88M" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf '%s\n' "$@" >> "$l"
+  printf '%s' "$l"
+}
+cn88m() {  # cn88m <원장> — 베이스 판정 행 수(덧붙인 행이 비지 않았는지), 코드 충돌 수, 다음
+  printf '%s|%s|%s' "$(grep -c '^- `베이스 판정` .*| 판정=' "$1" || true)" \
+    "$(q88m "$1" gate_base_conflict_count S)" "$(q88m "$1" gate_segment_review_next S)"
+}
+META88M=$(cr88m CHANGELOG.md '릴리스 메타')
+BOTH88M=$(cr88m "$PJ88M,CHANGELOG.md" '릴리스 메타')
+CODE88M=$(cr88m "seg.txt,CHANGELOG.md" '일반')
+check "88m: 릴리스 파일만의 충돌은 부류와 무관하게 세지 않는다" \
+  "$(cn88m "$(lc88m a "$META88M" "$BOTH88M" "$META88M" "$(cr88m CHANGELOG.md '일반')")")" "8|0|베이스 해소"
+check "88m: 코드 충돌 넷이면 베이스 해소 한도 다" \
+  "$(cn88m "$(lc88m b "$CODE88M" "$CODE88M" "$CODE88M")")|$(cn88m "$(lc88m b4 "$CODE88M" "$CODE88M" "$CODE88M" "$CODE88M")")" \
+  "7|3|베이스 해소|8|4|베이스 해소 한도"
+check "88m: 잘린 칸·빈 칸·키 없는 행은 코드 충돌로 센다" \
+  "$(cn88m "$(lc88m c "$(cr88m "$PJ88M,CHANGELOG.md…(3개)" '일반')" "$(cr88m - '일반')" "$(cr88m 없음 '일반')" "$CODE88M")")" \
+  "8|4|베이스 해소 한도"
+check "88m: 한도를 넘은 뒤의 릴리스 메타 충돌도 베이스 해소 한도 다" \
+  "$(cn88m "$(lc88m d "$CODE88M" "$CODE88M" "$CODE88M" "$CODE88M" "$META88M")")" "9|4|베이스 해소 한도"
+
+# 적용 전제 4 와 적용 대상 증명 — 착지 커밋은 T2 에서 갈라진 착지 브랜치에 사슬 머리를
+# --no-ff 로 머지해 만든다. 마지막 베이스 판정 행의 베이스는 T2 다.
+( cd "$W88M" && git branch -q chainbad-88m "$CB188M" ) >/dev/null 2>&1
+la88m() {  # la88m <브랜치> <둘째 부모> — T2 위의 --no-ff 착지를 밀고 그 sha 를 찍는다
+  ( cd "$U88M" && git checkout -q -b "$1" "$T288M" && git merge -q --no-ff -m "land $1" "$2" \
+      && git push -q origin "$1" && git rev-parse HEAD ) 2>/dev/null
+}
+( cd "$U88M" && git fetch -q "$G88M" seg-88m chainbad-88m ) >/dev/null 2>&1
+LM88M=$(la88m land-88m "$MM288M")
+LB88M=$(la88m landbad-88m "$CB188M")
+( cd "$G88M" && git fetch -q origin ) >/dev/null 2>&1
+MA88M="$D88M/manifest-apply.md"
+sed -e 's/베이스 브랜치=main/베이스 브랜치=land-88m/' -e 's/절단점=머지/절단점=배포/' "$M88M" | awk '
+  { print }
+  /^\*\*설계 문서\*\*: / { print "**적용 주체**: 파이프라인"; print "**적용 지점**: `true`"; print "**적용 프로브**: `exit 0`" }
+' > "$MA88M"
+ap88m_in() {
+  local rc=0
+  gate_apply_preconditions act t S 2>"$D88M/ap.err" >/dev/null || rc=$?
+  [ "$rc" != "$GATE_EXIT_RULE" ] || rc=규칙
+  printf '%s|%s|%s|%s|%s' "$rc" "${GATE_APPLY_NOT_OWED:-}" "${GATE_APPLY_MERGE:-}" "${GATE_APPLY_SUBJECT:-}" \
+    "$(tr '\n' ' ' < "$D88M/ap.err")"
+}
+lap88m() {  # lap88m <이름> <머지 커밋> — L88M 뒤에 적용=대기 머지됨 행 하나를 붙인 원장 사본
+  local l
+  l=$(lsr_ledger "w88m-$1"); cp "$L88M" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf -- '- `segment` | 교대=1 | id=S | 상태=머지됨 | 워크트리=%s | 머지 커밋=%s | 적용=대기 | prev=x\n' "$W88M" "$2" >> "$l"
+  printf '%s' "$l"
+}
+ap88m_out=$(lsr_in Linux "$(lap88m ap-ok "$LM88M")" - lsr_rp_in "$MA88M" ap88m_in 2>/dev/null)
+check "88m: 사슬 머리를 둘째 부모로 둔 착지는 적용 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다" \
+  "$(printf '%s' "$ap88m_out" | cut -d'|' -f1-4)" "0||$LM88M|$R88M"
+ap88m_out=$(lsr_in Linux "$(lap88m ap-bad "$LB88M")" - lsr_rp_in "$MA88M" ap88m_in 2>/dev/null)
+case "$ap88m_out" in
+  "규칙|"*"적용 행위 전제 4 불충족"*"(H's tree is not the expected release tree — link 2 of the chain)"*)
+    ok "88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다" ;;
+  *) bad "88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다" "$ap88m_out" ;;
+esac
+sp88m_in() {  # sp88m <M> — 적용 대상 증명이 세운 리뷰 HEAD, 또는 x:<사유>
+  if gate_apply_subject_proof t S "$1"; then printf '%s' "$GATE_APPLY_PROOF_HEAD"; else printf 'x:%s' "$GATE_APPLY_PROOF_WHY"; fi
+}
+check "88m: 적용 대상 증명은 사슬 머리의 착지에서 리뷰 HEAD 를 세운다" \
+  "$(q88m "$L88M" sp88m_in "$LM88M")|$(q88m "$L88M" sp88m_in "$LB88M" | cut -c1-2)" "$R88M|x:"
+
+# 셋째 고리 — 베이스가 한 번 더 판을 올린다.
+T388M=$(up88m 1.3.0 2026-10-16 up3.txt)
+c88m >/dev/null
+MM388M=$(mm88m "$L88M"); MM388M=${MM388M#0|}
+check "88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 일치 다" \
+  "$(cs88m "$MM388M" | cut -d'|' -f1)|$(pv88m "$R88M" "$MM388M" "$T388M")|$(c88m)|$(lsr_last_fields "$L88M" '베이스 판정' 판정\ HEAD 판정)" \
+  "1.4.0|0||0|$MM388M|일치"
+
+# ---------------------------------------------------------------------------
 # 88e. CI 판정의 리뷰 사이클 합류 — 판정 전 머지 금지, 수정 갈래의 CI 층, 대기 한도, 선재실행 술어, 중계 깨움
 # --- section: 88e | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json, gate_ci_early, relay | anchors: 88e: 회차 0 의 행 없음·유예 안 미등록·대기·진행 중 실패·판정 불가는 CI 대기 이고 머지 검사가 거절한다, 88e: 400초 전의 회차 0 미등록 은 머지 이고 머지 검사를 지난다, 88e: 수정 표에서 회차 0 정착 실패는 CI 재실행, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다, 88e: 처분=합류 행은 CI 수정 예산 f 를 세지 않는다, 88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 두 표에서 CI 대기 한도 이고 머지 검사가 거절한다, 88e: CI 대기 한도 원소는 상태 와 대기 시계 를 싣는다, 88e: 절단점 push 세그먼트는 행 없음에서 머지·수정 이고 머지 검사를 지난다, 88e: 대상 별칭이 비는 세그먼트는 행 없음에서 머지 이고 머지 검사를 지난다, 88e: 살아 있는 리뷰 스테이지와 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 유예 안 미등록·판정 불가·다른 head 의 판정은 ci 키를 세우지 않는다, 88e: 통과의 ci 키는 교대 기동 행 뒤에 다시 서지 않고 그 뒤 줄에 전사된 판정은 한 번 더 세운다, 88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다 ---
 #
