@@ -36,7 +36,12 @@
 #       the document's sidecar is `발행됨`, carries exactly one well-formed
 #       `**구현 승인**` line, and the input bundle measured from the current
 #       files equals the line's value. Otherwise print `승인 없음 — <reason>` or
-#       `승인 무효 — <reason>` and exit 1.
+#       `승인 무효 — <reason>` and exit 1. The line may end in the provenance
+#       tail ` — 사람 답 <file name>`, the name of the halt record under the
+#       run's `halt/` whose person's answer the line was written on
+#       (`[A-Za-z0-9._#-]+\.md`: no path separator, no space). When it does, a
+#       valid approval prints a second line `출처 사람 답 <file name>`; whether
+#       that record and its answer stand is the gate's to check, not this one's.
 #   bundle <design doc> [--lines]
 #       Print the input bundle sha256 (with --lines, the bundle text itself):
 #       `<screen id> <sha256>` per screen in screen-id order, then
@@ -471,7 +476,7 @@ cmd_bundle() {
 
 cmd_approval() {
   [ $# -eq 1 ] || usage
-  local doc=$1 why owner state n line want id now
+  local doc=$1 why owner state n line want id now src
   if ! why=$(locate_sidecar "$doc"); then
     echo "승인 없음 — ${why}"; exit 1
   fi
@@ -488,9 +493,10 @@ cmd_approval() {
   [ "$n" != 0 ] || { echo "승인 없음 — 구현 승인 줄 없음"; exit 1; }
   [ "$n" = 1 ] || { echo "승인 무효 — 구현 승인 줄이 ${n}개다"; exit 1; }
   line=$(grep -E '^\*\*구현 승인\*\*:' "$SIDECAR")
-  printf '%s\n' "$line" | grep -qE '^\*\*구현 승인\*\*: [^[:space:]]+ — 입력 묶음 [0-9a-f]{64} — 금지 목록 [0-9a-f]{64} — 기계 검사 수용 (없음|[a-z0-9-]+(, [a-z0-9-]+)*)[[:space:]]*$' \
+  printf '%s\n' "$line" | grep -qE '^\*\*구현 승인\*\*: [^[:space:]]+ — 입력 묶음 [0-9a-f]{64} — 금지 목록 [0-9a-f]{64} — 기계 검사 수용 (없음|[a-z0-9-]+(, [a-z0-9-]+)*)( — 사람 답 [A-Za-z0-9._#-]+\.md)?[[:space:]]*$' \
     || { echo "승인 무효 — 구현 승인 줄의 형식이 틀렸다"; exit 1; }
   want=$(printf '%s\n' "$line" | sed -E 's/^.* — 입력 묶음 ([0-9a-f]{64}) — .*$/\1/')
+  src=$(printf '%s\n' "$line" | sed -nE 's/^.* — 사람 답 ([A-Za-z0-9._#-]+\.md)[[:space:]]*$/\1/p')
   [ -n "$(screen_ids)" ] || { echo "승인 무효 — 사이드카에 화면이 없다"; exit 1; }
   for id in $(screen_ids); do
     [ -f "$BASE/docs/visual/${SLUG}.${id}.html" ] || { echo "승인 무효 — 화면 파일 없음 (${id})"; exit 1; }
@@ -498,6 +504,7 @@ cmd_approval() {
   now=$(bundle_text | sha256_stdin)
   [ "$now" = "$want" ] || { echo "승인 무효 — 입력 묶음이 달라졌다 (줄 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
   echo "승인 유효 ${now:0:12}"
+  [ -z "$src" ] || echo "출처 사람 답 ${src}"
 }
 
 [ $# -ge 1 ] || usage

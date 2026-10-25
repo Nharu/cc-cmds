@@ -38,7 +38,7 @@ Once a segment has a `cycle` row and has not merged, the snapshot's `review_next
 - **`베이스 해소 한도`** → the segment has conflicted with its base more than three times. Stop the segment at site `베이스 해소 한도` (「Stopping one segment for a person」), with the four `베이스 판정` rows' `베이스` and `충돌 파일` in `관측`, and go on with the other segments.
 - **`판정 불가`** → the last cycle's `P0` or `P1` is empty or not a canonical count. Write a segment `park` row and a `스코프=cone` block with `'사유=리뷰 집계 판정 불가'`.
 
-**The eight CI values come only on a routed run, where the review would otherwise merge or send a fix.** Their elements also carry `head sha`, `PR`, `실패 체크`, `재실행 회차` and `기본 브랜치`, and a `CI 대기 한도` element `상태` and `대기 시계` besides.
+**The nine CI values come only on a routed run, where the review would otherwise merge or send a fix.** Their elements also carry `head sha`, `PR`, `실패 체크`, `재실행 회차` and `기본 브랜치`, and a `CI 대기 한도` element `상태` and `대기 시계` besides.
 
 - **`CI 재실행`** → a check of the HEAD failed, and its rerun budget is not spent or its last request never closed. First issue the pre-authorized `gate.sh exec … -- git fetch` as before the base check, then the rerun act with the element's `head sha` — the gate chooses the runs, checks that none can deploy, and sends the request itself:
 
@@ -49,6 +49,15 @@ Once a segment has a `cycle` row and has not merged, the snapshot's `review_next
   ```
 
   Exit 0 → read `다음` again (usually `CI 대기`). Exit 3 naming a missing base object → fetch once and issue it once more. **Every other exit 3 is one disposition**: the gate folds every refusal — a pending check, a busy lock, a moved head, a run not finished, an empty failure set, a `다음` that is no longer `CI 재실행` — into 3, so the code does not tell you why. Read `다음` again and take that value's branch, and do not issue the act a third time for the same head in this shift. Exit 11 → stop the segment at site `도달 거부` (「Stopping one segment for a person」), never retried by you.
+- **`CI 라벨 인정`** → a check the kickoff let a label answer failed on the HEAD — the manifest's `라벨 인정` row names it for this segment's target — or the label round of this head never closed or closed `실패`. First issue the pre-authorized `gate.sh exec … -- git fetch` as before the base check, then the label act with the element's `head sha` — the gate checks that the slice declared the check, that the label starts a new run and that nothing it wakes can deploy, and puts the label on itself:
+
+  ```
+  gate.sh act --manifest <매니페스트> --kind label-ack --target <alias> --segment <seg> \
+    --cutpoint PR --surface 외부상태변경 --snapshot-digest <H> \
+    --rationale 'CI 라벨 인정 — <seg>' -- 라벨 <head sha>
+  ```
+
+  Exit 0 → read `다음` again (usually `CI 대기`). Exit 3 naming a missing base object → fetch once and issue it once more. Every other exit 3 is the same one disposition as the rerun act's: read `다음` again and take that value's branch, and do not issue the act a third time for the same head in this shift. Exit 11 → stop the segment at site `도달 거부` (「Stopping one segment for a person」), never retried by you.
 - **`CI 대기`** → CI on the HEAD is still running, has not been observed yet, or the rerun's result has not been observed yet. Do nothing for this segment; when nothing else is dispatchable, end with `대기` carrying `'CI 대기=<id>'`. The gate refuses (exit 3) a review fix dispatch while `다음` reads `CI 대기`, `CI 재실행` or `CI 대기 한도`.
 - **`CI 대기 한도`** → the wait on this HEAD's CI passed its two-hour cap with no verdict. Write a segment `park` row (with the plan row's `선행`) and a `스코프=cone` `blocked` row with `원인=막힘` and `'사유=CI 대기 한도'`, whose `근거` names the element's `상태`, `재실행 회차` and `대기 시계`, and go on with the other segments.
 - **`CI 합류 수정`** → the review asked for a fix and a check of the HEAD failed again after its rerun, on a cause the base branch does not share. Dispatch the implementation as 「Re-dispatching the implementation after review findings」 spells it, with ` · CI 합류: <head sha> · 실패 체크: <…> · PR: <…>` added after the fix target from the element's values, so the review's findings and the CI failure go to one stage. The gate refuses (exit 3) a `CI 합류:` line unless `다음` reads `CI 합류 수정` and the sha is the worktree tip, and refuses an implementation without that line while `다음` reads it. Unlike `CI 수정` it spends the cycle budget as `수정` does.
