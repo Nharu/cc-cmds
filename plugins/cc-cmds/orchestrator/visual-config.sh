@@ -52,7 +52,8 @@
 #
 # Inside a run, `account` and `append` run only when the gate launched this
 # process as a visual publish stage, which it marks with
-# `CC_PIPELINE_VISUAL_PUBLISH=1` and sets for that kind alone. The gate grades
+# `CC_PIPELINE_VISUAL_PUBLISH=1` and sets for that kind alone, and only from
+# the copy of this script beside that gate (`CC_PIPELINE_GATE`). The gate grades
 # both of them per act besides (`append` only against a person's approval of
 # that very candidate). `seed` is refused inside every run, that stage included.
 #
@@ -96,8 +97,17 @@ refuse_in_run() {
 
 refuse_in_run_unless_publish() {
   # The visual publish stage's marker lifts the refusal for `account` and
-  # `append` alone; every other caller inside a run is refused as before.
-  [ "${CC_PIPELINE_VISUAL_PUBLISH:-}" = "1" ] && return 0
+  # `append` alone, and only for the copy beside the gate the stage was
+  # launched with (`CC_PIPELINE_GATE`): that is the copy the gate grades
+  # against a person's answer. Any other copy — the run's source checkout, a
+  # worktree — would otherwise write the host files on the marker alone, with
+  # no gate check behind it. Every other caller inside a run is refused as
+  # before.
+  if [ "${CC_PIPELINE_VISUAL_PUBLISH:-}" = "1" ] && [ -n "${CC_PIPELINE_GATE:-}" ]; then
+    local gate_dir
+    gate_dir=$(cd "$(dirname "$CC_PIPELINE_GATE")" 2>/dev/null && pwd -P) || gate_dir=''
+    [ -n "$gate_dir" ] && [ "$gate_dir" = "$script_dir" ] && return 0
+  fi
   refuse_in_run "$1"
 }
 
