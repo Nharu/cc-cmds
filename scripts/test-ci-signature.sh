@@ -335,6 +335,28 @@ check "8 목록의 목표가 모두 시작했으면 단언 정밀도를 지킨�
 out=$(extract 'rest-tests (1)' "$WORK/g14.log")
 check "8 시작 줄이 없는 자가시험 목표도 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 
+# run-check-gate-selftest's recipe starts with `@`, so make echoes no
+# `bash scripts/<x>.sh --self-test` line for it; the line it prints itself,
+# taken from the Makefile, is what says it started. A shard where it passed and
+# a wrapped suite failed keeps assertion precision.
+cg_pass=$(sed -n 's/^.*echo "\(run-check-gate-selftest: [^"]*\)"$/\1/p' "$repo_root/Makefile")
+check "8 run-check-gate-selftest 의 통과 줄을 Makefile 에서 읽었다" \
+  "$(printf '%s' "$cg_pass" | grep -c '^run-check-gate-selftest: ')" "1"
+{
+  printf '%s\n' 'rest shard 1/3: run/scripts/test-a.sh run/scripts/test-b.sh run-check-gate-selftest'
+  printf '%s\n' "$cg_pass"
+  cat "$WORK/g11.log"
+} > "$WORK/g15.log"
+check "8 자기 이름 줄을 찍은 셀프테스트 목표는 시작한 것으로 보고 단언 정밀도를 지킨다" \
+  "$(extract 'rest-tests (1)' "$WORK/g15.log")" "$(extract 'rest-tests (1)' "$WORK/g1.log")"
+{
+  printf '%s\n' 'rest shard 1/3: run/scripts/test-a.sh run/scripts/test-b.sh run-check-gate-selftest'
+  printf '%s\n' 'run-gate-shard-selftest: 다른 목표의 줄'
+  cat "$WORK/g11.log"
+} > "$WORK/g16.log"
+out=$(extract 'rest-tests (1)' "$WORK/g16.log")
+check "8 다른 셀프테스트 이름의 줄은 그 목표의 시작이 아니다" "${out%%$'\n'*}" "정밀도: 단계"
+
 # A FAIL line outside every suite.
 {
   printf '%s\n' 'FAIL: 0 바깥 — x'

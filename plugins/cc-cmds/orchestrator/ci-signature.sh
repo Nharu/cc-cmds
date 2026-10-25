@@ -78,7 +78,10 @@
 #   - when the log names the shard's goals (`rest shard <n>/<m>: <goal>…`) and
 #     a make error line shows make stopped, every listed goal started: a
 #     `run/<suite>` goal by its suite-guard start line, a `run-<x>-selftest`
-#     goal by the `bash scripts/<x>.sh --self-test` line make echoes. The
+#     goal by the `bash scripts/<x>.sh --self-test` line make echoes or by a
+#     line of its own that begins `run-<x>-selftest: ` — the recipe of
+#     `run-check-gate-selftest` starts with `@`, so make echoes nothing for it,
+#     and its pass and fail lines carry its name instead. The
 #     sub-make runs with `-k` and starts every goal after a failure; a goal
 #     that never started still leaves no line at all, and that is what a make
 #     stopped by a signal, or one run without `-k`, leaves behind.
@@ -220,6 +223,11 @@ cs_read_fail_lines() {
       if (line ~ /^bash scripts\/[A-Za-z0-9_.-]+\.sh --self-test$/) {
         g = line; sub(/^bash scripts\//, "", g); sub(/\.sh --self-test$/, "", g)
         self_started["run-" g "-selftest"] = 1
+        next
+      }
+      if (line ~ /^run-[A-Za-z0-9_.-]+-selftest: /) {
+        g = line; sub(/: .*$/, "", g)
+        self_started[g] = 1
         next
       }
       if (line ~ /^g?make(\[[0-9]+\])?: \*\*\* \[/) {

@@ -568,8 +568,11 @@ print-rest-goals:
 # suite-guard prints its end line, in the same held output as its stdout. A make
 # older than 4.0 has no output sync and runs the goals as before; their lines
 # then interleave and the adapter reads the job at step precision. An unwrapped
-# `--self-test` goal's lines come out held the same way but outside every suite,
-# so a FAIL line of one, or its failure, leaves the job at step precision.
+# self-test goal's lines come out held the same way but outside every suite,
+# so a FAIL line of one, or its failure, leaves the job at step precision. The
+# adapter sees such a goal start by make's echo of `bash scripts/<x>.sh
+# --self-test`, or, for `run-check-gate-selftest`, whose recipe make does not
+# echo, by its own `run-check-gate-selftest: ` line.
 #
 # EVERY GOAL OF THE SHARD STARTS. The sub-make runs with `-k`, so a suite that
 # fails does not stop it from starting the goals still waiting. Without it make
