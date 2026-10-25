@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.117.2] - 2026-10-25
+
+`scripts/measure-test-share.sh` 가 백그라운드 시험의 끝 시각을 실제로 전달된 완료 통지에서만 읽는다. 턴 도중에 도착한 통지(`attachment` 레코드의 `queued_command` 첨부)를 읽지 못해 그 기동을 세션 끝까지 돈 것으로 세던 문제와, 어시스턴트 글이나 도구 결과 안에 인용된 통지 문면이 끝 시각을 앞당기던 문제를 함께 고쳤다. 출력 열·행 순서·마지막 두 줄의 문면은 그대로다.
+
+### Fixed
+
+- **턴 도중 통지** — `type` 이 `attachment` 이고 `attachment.type` 이 `queued_command` 인 레코드의 `attachment.prompt` 에서도 통지를 찾는다. `commandMode`·`origin` 의 값은 조건으로 쓰지 않는다.
+- **인용 문면** — 통지는 `type: user` 레코드의 문자열 내용과 위 첨부에서만 찾는다. 어시스턴트 레코드, `type: user` 의 배열 내용(도구 결과 포함), `queue-operation` 레코드, 다른 종류의 첨부에 든 통지 문면은 끝 시각으로 치지 않는다.
+- **여러 통지** — 같은 작업 id 에 통지가 여럿이면 기록 순서가 아니라 가장 이른 시각을 끝으로 친다.
+- **픽스처 시험** — 위 세 규칙과 통지가 없는 기동의 `unclosed` 셈을 네 경우로 고정하고 통과 수 하한을 19 로 올렸다.
+
+### Post-install notes
+
+이미 잰 기준선은 이 판으로 다시 재야 한다. 재는 일은 메인 체크아웃에서 사람이 한다.
+
 ## [2.117.1] - 2026-10-24
 
 무인 런이 강제 표면(훅·게이트·룰·CLAUDE.md·설정처럼 런의 강제력을 정하는 파일)을 고쳐야 할 때, 그 편집이 런 도중에 막히거나 사람 승인 없이 들어가던 결함을 고친다. 지금까지는 훅과 게이트가 강제 표면을 저마다 다른 목록으로 판정했고, 킥오프·세그먼트 계획은 어떤 선언 파일이 강제 표면인지 미리 적지 않았다. 그래서 그 편집은 구현 도중 거부로 처음 드러났고, 좌석이 승인해도 그 승인을 실제 커밋으로 옮길 경로가 없었다.

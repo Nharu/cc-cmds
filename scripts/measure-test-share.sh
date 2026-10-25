@@ -44,8 +44,13 @@
 # How time is counted:
 #   - a foreground test runs from its tool call to the paired tool result;
 #   - a background test runs from its tool call to the task notification that
-#     names the task id its tool result reported. Without one it runs to the
-#     session's last event and is counted as `unclosed`;
+#     names the task id its tool result reported. A notification counts only
+#     when it was delivered: the string content of a `type: user` record, or
+#     the `prompt` of a `queued_command` attachment. Notification text quoted
+#     in assistant text, in a tool result or in any other record does not
+#     count. With several notifications for one task id the earliest is used.
+#     Without one it runs to the session's last event and is counted as
+#     `unclosed`;
 #   - test time is the union of those intervals;
 #   - stage time is the sum of the gaps between consecutive session events,
 #     leaving out every gap longer than 15 minutes unless a test interval spans
@@ -221,33 +226,38 @@ all_sessions=$(
 # B <epoch> <id> <bg> <command>     a Bash tool call
 # M <epoch>                         an Edit/Write tool call
 # R <epoch> <tool_use_id> <task id> a tool result (task id or -)
-# N <epoch> <task id>               a task notification
+# N <epoch> <task id>               a delivered task notification (user string
+#                                   content or queued_command attachment prompt)
 events_of() {
   jq -R -r '
     def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
     def texts: if type == "string" then .
                elif type == "array" then map(if type == "object" then (.text // .content // "" | if type == "string" then . else tostring end) else tostring end) | join(" ")
                else "" end;
+    def notes($t): strings | select(test("<task-notification>"))
+                   | [scan("<task-id>([^<]+)</task-id>")[0]] | .[] | "N\t\($t)\t\(.)";
     fromjson? | select(type == "object") | select(.timestamp != null)
     | (.timestamp | epoch | tostring) as $t
     | "E\t\($t)",
-      ( (.message.content // empty) as $c
-        | if ($c | type) == "array" then
-            ( $c[] | select(type == "object") |
-              if .type == "tool_use" and .name == "Bash" then
-                "B\t\($t)\t\(.id)\t\(if .input.run_in_background == true then 1 else 0 end)\t\(.input.command // "" | gsub("[\t\n\r]"; " "))"
-              elif .type == "tool_use" and (.name == "Edit" or .name == "Write" or .name == "MultiEdit" or .name == "NotebookEdit") then
-                "M\t\($t)"
-              elif .type == "tool_result" then
-                (.content | texts) as $x
-                | "R\t\($t)\t\(.tool_use_id)\t\(($x | capture("with ID: (?<i>[A-Za-z0-9_-]+)") | .i) // "-")"
-              else empty end ),
-            ( $c | texts | select(test("<task-notification>"))
-              | [scan("<task-id>([^<]+)</task-id>")[0]] | .[] | "N\t\($t)\t\(.)" )
-          else
-            ( $c | texts | select(test("<task-notification>"))
-              | [scan("<task-id>([^<]+)</task-id>")[0]] | .[] | "N\t\($t)\t\(.)" )
-          end )
+      ( if .type == "attachment" then
+          ( select((.attachment | type) == "object" and .attachment.type == "queued_command")
+            | .attachment.prompt | notes($t) )
+        else
+          ( (.message.content // empty) as $c
+            | if ($c | type) == "array" then
+                ( $c[] | select(type == "object") |
+                  if .type == "tool_use" and .name == "Bash" then
+                    "B\t\($t)\t\(.id)\t\(if .input.run_in_background == true then 1 else 0 end)\t\(.input.command // "" | gsub("[\t\n\r]"; " "))"
+                  elif .type == "tool_use" and (.name == "Edit" or .name == "Write" or .name == "MultiEdit" or .name == "NotebookEdit") then
+                    "M\t\($t)"
+                  elif .type == "tool_result" then
+                    (.content | texts) as $x
+                    | "R\t\($t)\t\(.tool_use_id)\t\(($x | capture("with ID: (?<i>[A-Za-z0-9_-]+)") | .i) // "-")"
+                  else empty end )
+              elif .type == "user" then
+                ( $c | notes($t) )
+              else empty end )
+        end )
   ' "$1" 2>/dev/null || true
 }
 
@@ -360,7 +370,7 @@ measure_events() {
     $1 == "N" {
       if (!($3 in task)) next
       k = task[$3]
-      if (tend[k] < 0) tend[k] = $2 + 0
+      if (tend[k] < 0 || $2 + 0 < tend[k]) tend[k] = $2 + 0
       next
     }
     END {
