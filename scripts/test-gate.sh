@@ -26,6 +26,12 @@
 # origin-worktree, so nothing here touches the checkout the tests run from.
 #
 # Usage: bash scripts/test-gate.sh [--list | --sections <id>[,<id>...] | --run-one <id>]
+#        bash scripts/test-gate.sh --digests [--from <file>]
+#
+# `--digests` prints `<id><TAB><sha256>` for every addressable section of this
+# file, or of `<file>` — the bytes of each range the selector cuts. It runs no
+# assertion and makes no cut; CI compares two such lists to find the sections a
+# change added or edited.
 #
 # The three-signal oracle below wraps both run forms. Its own entry points exist
 # for `scripts/test-gate-oracle.sh` and run no assertion of this suite:
@@ -290,10 +296,18 @@ sections_given=0
 oracle_mode=""
 oracle_arg1=""
 oracle_arg2=""
+digests_mode=0
+digests_from=""
+digests_from_given=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
       sections_list=1; shift ;;
+    --digests)
+      digests_mode=1; shift ;;
+    --from)
+      digests_from="${2-}"; digests_from_given=1
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --sections)
       sections_want="${2-}"; sections_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
@@ -313,7 +327,7 @@ while [ "$#" -gt 0 ]; do
       oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"
       if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --digests [--from <file>], 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
@@ -361,6 +375,56 @@ case "$sec_timing_out" in
   /*) ;;
   *) sec_timing_out="" ;;
 esac
+
+# THE ISOLATION RECORD FOLLOWS THE SAME RULE, for the same reason. CI's
+# isolation check runs a changed section X in several contexts and compares what
+# X did in each, so a cut can be asked to keep a record of its own:
+#
+#   CC_GATE_ISO_OUT      the record directory, absolute and free of single quotes.
+#                        `rec.tsv` there takes one `<id><TAB><PASS|FAIL|SKIP>
+#                        <TAB><label>` line per assertion and one `<id><TAB>NOISE
+#                        <TAB><sentence>` line per noise line the oracle pins to a
+#                        section; `linemap.tsv` maps the cut's lines back to this
+#                        file's; `meta.tsv` names what the cut held.
+#   CC_GATE_ISO_TRACE    ids whose execution is traced: `trace-<id>.lines` there
+#                        is the set of (file, line) pairs the section ran.
+#   CC_GATE_ISO_OVERLAY  ids laid onto a regular row's cut; their markers, and
+#                        the prelude of a group only they brought in, take the
+#                        `@iso:` prefix so the row's own time leaves them out.
+#   CC_GATE_ISO_SOLO     1 for a cut that runs X alone; every marker it writes
+#                        takes the prefix.
+#
+# All four are read once and dropped here, so a section that calls the selector
+# again records nothing into the outer run's directory. The record goes to a
+# file; the PASS/FAIL stream and the totals are what they were. Tracing needs
+# `BASH_XTRACEFD`, which bash has from 4.1: an older bash asked to trace stops
+# rather than spill the trace onto stderr — where it lands in captured output —
+# or hand back an empty line set that would compare equal to anything.
+sec_iso_out="${CC_GATE_ISO_OUT:-}"
+sec_iso_trace="${CC_GATE_ISO_TRACE:-}"
+sec_iso_overlay="${CC_GATE_ISO_OVERLAY:-}"
+sec_iso_solo="${CC_GATE_ISO_SOLO:-}"
+unset CC_GATE_ISO_OUT CC_GATE_ISO_TRACE CC_GATE_ISO_OVERLAY CC_GATE_ISO_SOLO
+case "$sec_iso_out" in
+  *"'"*)
+    printf 'test-gate: CC_GATE_ISO_OUT 경로에 작은따옴표가 있어 컷에 리터럴로 쓸 수 없습니다: %s\n' "$sec_iso_out" >&2
+    exit 2 ;;
+  /*) ;;
+  *) sec_iso_out="" ;;
+esac
+case "$sec_iso_trace,$sec_iso_overlay" in
+  *[!A-Za-z0-9_,-]*)
+    printf 'test-gate: CC_GATE_ISO_TRACE·CC_GATE_ISO_OVERLAY 는 쉼표로 이은 절 id 입니다 (받은 것: 「%s」 「%s」)\n' "$sec_iso_trace" "$sec_iso_overlay" >&2
+    exit 2 ;;
+esac
+if [ -n "$sec_iso_trace" ] && [ -z "$sec_iso_out" ]; then
+  printf 'test-gate: CC_GATE_ISO_TRACE 는 기록 디렉터리 CC_GATE_ISO_OUT(절대 경로)과 함께 줍니다\n' >&2
+  exit 2
+fi
+if [ -n "$sec_iso_trace" ] && { [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" = 4 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; }; then
+  printf 'test-gate: 절 범위 추적은 BASH_XTRACEFD 가 있는 bash 4.1 이상에서만 돕니다 (이 bash: %s) — 추적 없이 돌지 않고 멈춥니다\n' "$BASH_VERSION" >&2
+  exit 2
+fi
 
 # A NARROWED RUN NAMES THE SECTIONS THAT FAILED, AND THE COMMAND THAT RUNS ONLY
 # THOSE. The cut writes the id of the section it is in before each section, and
@@ -430,6 +494,9 @@ oracle_noise_enforced=" static sb sa review "
 # `CC_TEST_GATE_REPO_ROOT`: the child there is this file at its real path and
 # derives the root from it, which is what the variable's own contract says.
 oracle_child_repo_root=""
+# The isolation record a narrowed call keeps (`CC_GATE_ISO_OUT`). A noise line
+# the judge pins to a section goes there as well, as that section's own line.
+oracle_iso_rec=""
 
 # `LC_ALL` overrides every category, so on a host that sets it the other
 # variables say nothing about what is in effect. Its value is therefore MOVED
@@ -558,6 +625,10 @@ oracle_judge() {
     fi
     if [ -n "$hit" ]; then
       nid=${hit%% *}; ngrp=${hit##* }
+      # The `<script>: line <N>: ` head names the cut's path and a line of the
+      # cut, both of which differ from one context to the next; what follows it
+      # is recorded as it stands.
+      [ -z "$oracle_iso_rec" ] || printf '%s\tNOISE\t%s\n' "$nid" "${nline#"$script: line $num: "}" >> "$oracle_iso_rec"
       case "$oracle_noise_enforced" in
         *" $ngrp "*)
           n_enf=$((n_enf + 1))
@@ -771,6 +842,10 @@ esac
 # A boxed section BEGINS at the rule line that opens its banner box, not at the
 # numbered line inside it, because the box is one comment and cutting it in
 # half would leave a dangling rule at the top of the copy.
+#
+# The file indexed is the argument. Every cut indexes this file (`$SELF`);
+# `--digests --from` indexes another copy of it with the same code, so the
+# section a digest names and the section a cut runs are one range.
 section_index() {
   awk '
     {
@@ -889,12 +964,82 @@ section_index() {
         }
       }
     }
-  ' "$SELF"
+  ' "$1"
 }
+
+# THE DIGEST MODE. One `<id><TAB><sha256>` line per addressable section, over
+# exactly the range a cut would take for it — the rule line above a boxed title
+# through the line before the next boundary — and nothing for a `-` range, which
+# no cut runs by name. A file whose index cannot be read, or whose index carries
+# the rows every pick refuses (an unowned marker, an orphaned assertion, a
+# duplicate id), exits 2 the way a pick would: the caller compares two lists to
+# find the sections a change touched, and a list that is quietly short reads as
+# "nothing changed".
+if [ "$digests_mode" = "1" ] || [ "$digests_from_given" = "1" ]; then
+  if [ "$digests_mode" != "1" ] || [ "$sections_list" = "1" ] || [ -n "$sections_want" ] || [ "$sections_strict" = "1" ] || [ -n "$oracle_mode" ]; then
+    printf 'test-gate: --from 은 --digests 와만, --digests 는 다른 모드 없이 씁니다\n' >&2
+    exit 2
+  fi
+  dig_file="$SELF"
+  if [ "$digests_from_given" = "1" ]; then dig_file="$digests_from"; fi
+  if [ -z "$dig_file" ] || [ ! -f "$dig_file" ]; then
+    printf 'test-gate: --digests 가 읽을 파일이 없습니다: 「%s」\n' "$dig_file" >&2
+    exit 2
+  fi
+  dig_idx=$(section_index "$dig_file")
+  case "$dig_idx" in
+    ERR*)
+      printf 'test-gate: %s 에서 구역 표시를 찾지 못해 다이제스트를 낼 수 없습니다 (`# --- preamble-end ---`, `# --- epilogue-begin ---`)\n' "$dig_file" >&2
+      exit 2 ;;
+  esac
+  dig_bad=$(printf '%s\n' "$dig_idx" | grep -E '^(MKR|ORP) ' | cut -c5- || true)
+  dig_dups=$(printf '%s\n' "$dig_idx" \
+    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) .*$/\1/p' \
+    | sed -n '/^-$/!p' | sort | uniq -d)
+  if [ -n "$dig_bad" ] || [ -n "$dig_dups" ]; then
+    printf 'test-gate: %s 의 색인에 어느 지목도 받지 않는 행이 있어 다이제스트를 내지 않습니다\n' "$dig_file" >&2
+    [ -z "$dig_bad" ] || printf '%s\n' "$dig_bad" | sed 's/^/  /' >&2
+    [ -z "$dig_dups" ] || printf '%s\n' "$dig_dups" | sed 's/^/  중복 id=/' >&2
+    exit 2
+  fi
+  dig_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-digests.XXXXXX")
+  printf '%s\n' "$dig_idx" \
+    | sed -n 's/^SEC \([0-9]*\) \([0-9]*\) \([^ ]*\) .*$/\1 \2 \3/p' \
+    | awk '$3 != "-"' > "$dig_dir/ranges"
+  # One pass splits the file into one body per section; one hashing call reads
+  # them all. The bodies are named by their order in the index, not by id, so no
+  # id reaches a path. The ranges ascend and do not overlap, so one cursor walks
+  # them, and each body is closed when its range ends.
+  awk -v d="$dig_dir" '
+    FNR == NR { n++; s[n] = $1; e[n] = $2; next }
+    FNR == 1 { i = 1 }
+    {
+      while (i <= n && FNR > e[i]) i++
+      if (i <= n && FNR >= s[i]) {
+        print > (d "/b" i)
+        if (FNR == e[i]) close(d "/b" i)
+      }
+    }
+  ' "$dig_dir/ranges" "$dig_file"
+  if command -v sha256sum >/dev/null 2>&1; then dig_sum() { sha256sum "$@"; }; else dig_sum() { shasum -a 256 "$@"; }; fi
+  dig_rc=0
+  dig_n=$(grep -c . "$dig_dir/ranges" || true)
+  if [ "${dig_n:-0}" != "0" ]; then
+    i=1; dig_args=""
+    while [ "$i" -le "$dig_n" ]; do dig_args="$dig_args $dig_dir/b$i"; i=$((i + 1)); done
+    # shellcheck disable=SC2086
+    dig_sum $dig_args > "$dig_dir/sums" || dig_rc=$?
+    awk 'FNR == NR { n++; id[n] = $3; next } { sub(/^.*\/b/, "", $2); print id[$2 + 0] "\t" $1 }' \
+      "$dig_dir/ranges" "$dig_dir/sums" || dig_rc=$?
+  fi
+  rm -rf "$dig_dir"
+  [ "$dig_rc" = "0" ] || { printf 'test-gate: 다이제스트 계산이 실패했습니다\n' >&2; exit 2; }
+  exit 0
+fi
 
 sec_idx=""
 if [ "$sections_list" = "1" ] || [ -n "$sections_want" ]; then
-  sec_idx=$(section_index)
+  sec_idx=$(section_index "$SELF")
   case "$sec_idx" in
     ERR*)
       if [ "$sections_list" = "1" ]; then
@@ -1103,20 +1248,104 @@ FRONTEOF
       printf "tg_fail_file='%s'\n" "$sec_fail" >> "$sec_cut"
       sec_cur=$(( sec_cur + 1 ))
     fi
+    # THE ISOLATION RECORD'S PATHS, as literals under the same rule. `ok`, `bad`
+    # and `skip` append to `tg_iso_rec`; the trace helpers write under
+    # `tg_iso_dir` and name the cut itself `CUT` in the line sets, because its
+    # path differs in every context. `linemap.tsv` maps the cut's lines back to
+    # this file's (`<cut first> <cut last> <original first>` per copied range)
+    # and is written as the copy is built, for the reason the oracle's map is.
+    sec_iso_map=""
+    if [ -n "$sec_iso_out" ]; then
+      mkdir -p "$sec_iso_out" || exit 2
+      : > "$sec_iso_out/rec.tsv"
+      sec_iso_map="$sec_iso_out/linemap.tsv"
+      printf '1\t%s\t1\n' "$sec_pre" > "$sec_iso_map"
+      printf "tg_iso_rec='%s'\ntg_iso_dir='%s'\ntg_iso_cut='%s'\n" \
+        "$sec_iso_out/rec.tsv" "$sec_iso_out" "$sec_cut" >> "$sec_cut"
+      sec_cur=$(( sec_cur + 3 ))
+    fi
     # One line naming the section the cut is entering, counted like a marker and
     # attributed to no section. It goes in whether or not timing markers are on,
     # and in front of the marker when both are.
     sec_tag() {
-      [ -n "$sec_fail" ] || return 0
+      [ -n "$sec_fail" ] || [ -n "$sec_iso_out" ] || return 0
       printf "tg_cur_sec='%s'\n" "$1" >> "$sec_cut"
       sec_cur=$(( sec_cur + 1 ))
     }
     # One marker line, when the caller asked for them; counted like a prelude
     # insert and attributed to no section. The single quotes around the epoch
     # expansion are the format's own, written out by this printf.
+    #
+    # THE HEAD GETS A MARKER OF ITS OWN, written once in front of the cut's first
+    # marker — the first prelude when there is one, the first section otherwise.
+    # The row writes `@start` before the suite starts, so `@start`..`@head` is
+    # what one process pays before any section runs: the head and its fixture,
+    # without a prelude, which keeps its own `@pre-<group>` interval. Every row
+    # and every solo run pays it once, and the planner adds it once per process.
+    #
+    # AN ISOLATION MARKER TAKES THE `@iso:` PREFIX: every marker of a solo cut,
+    # and on a regular row the markers of the laid-on sections and the prelude of
+    # a group only they brought in. The timing report leaves those intervals out
+    # of the row's time, so isolation work neither counts toward the duration
+    # budget nor weighs the next partition.
+    sec_head_done=0
     sec_mark() {
       [ -n "$sec_timing_out" ] || return 0
+      local name="$1" pfx=""
+      if [ "$sec_iso_solo" = "1" ]; then
+        pfx="@iso:"
+      else
+        case "$name" in
+          @pre-*)
+            case " $sec_iso_pregrp " in *" ${name#@pre-} "*) pfx="@iso:" ;; esac ;;
+          @*) ;;
+          *)
+            case ",$sec_iso_overlay," in *",$name,"*) pfx="@iso:" ;; esac ;;
+        esac
+      fi
+      if [ "$sec_head_done" = "0" ]; then
+        sec_head_done=1
+        if [ "$sec_iso_solo" = "1" ]; then sec_mark_line "@iso:@head"; else sec_mark_line "@head"; fi
+      fi
+      sec_mark_line "$pfx$name"
+    }
+    sec_mark_line() {
       printf "printf '%%s\\\\t%%s\\\\n' '%s' \"\${EPOCHREALTIME:-\$(date +%%s)}\" >> '%s'\n" "$1" "$sec_timing_out" >> "$sec_cut"
+      sec_cur=$(( sec_cur + 1 ))
+    }
+    # The groups whose every section in this cut is laid on. Their prelude runs
+    # only because of the overlay, so its marker is an isolation marker too.
+    sec_iso_pregrp=""
+    if [ -n "$sec_iso_overlay" ] && [ "$sec_iso_solo" != "1" ]; then
+      sec_iso_own=" "; sec_iso_lay=" "
+      while read -r sec_a sec_b; do
+        [ -n "$sec_a" ] || continue
+        sec_row=$(printf '%s\n' "$sec_idx" | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* \([^ ]*\) .*\$/\1 \2/p")
+        sec_id=${sec_row%% *}; sec_grp=${sec_row#* }
+        case "$sec_grp" in ''|-) continue ;; esac
+        case ",$sec_iso_overlay," in
+          *",$sec_id,"*) sec_iso_lay="$sec_iso_lay$sec_grp " ;;
+          *) sec_iso_own="$sec_iso_own$sec_grp " ;;
+        esac
+      done <<SECEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+SECEOF
+      for sec_g in $sec_iso_lay; do
+        case "$sec_iso_own" in *" $sec_g "*) ;; *) sec_iso_pregrp="$sec_iso_pregrp $sec_g" ;; esac
+      done
+    fi
+    # The trace brackets one traced section: the helpers are in the head, so
+    # each bracket is one inserted line, counted and attributed to no section.
+    sec_iso_on() {
+      [ -n "$sec_iso_trace" ] || return 0
+      case ",$sec_iso_trace," in *",$1,"*) ;; *) return 0 ;; esac
+      printf "tg_iso_on '%s'\n" "$1" >> "$sec_cut"
+      sec_cur=$(( sec_cur + 1 ))
+    }
+    sec_iso_off() {
+      [ -n "$sec_iso_trace" ] || return 0
+      case ",$sec_iso_trace," in *",$1,"*) ;; *) return 0 ;; esac
+      printf "tg_iso_off '%s'\n" "$1" >> "$sec_cut"
       sec_cur=$(( sec_cur + 1 ))
     }
     while read -r sec_a sec_b; do
@@ -1142,17 +1371,30 @@ FRONTEOF
         | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* .*\$/\1/p")
       sec_tag "${sec_id:--}"
       sec_mark "${sec_id:--}"
+      sec_iso_on "${sec_id:--}"
       sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
       printf '%s %s %s %s\n' \
         "$(( sec_cur + 1 ))" "$(( sec_cur + sec_b - sec_a + 1 ))" \
         "${sec_id:--}" "${sec_grp:--}" >> "$sec_map"
+      [ -z "$sec_iso_map" ] || printf '%s\t%s\t%s\n' \
+        "$(( sec_cur + 1 ))" "$(( sec_cur + sec_b - sec_a + 1 ))" "$sec_a" >> "$sec_iso_map"
       sec_cur=$(( sec_cur + sec_b - sec_a + 1 ))
+      sec_iso_off "${sec_id:--}"
     done <<SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
     sec_tag "@epilogue"
     sec_mark "@epilogue"
     sed -n "${sec_epi},\$p" "$SELF" >> "$sec_cut"
+    if [ -n "$sec_iso_map" ]; then
+      sec_last=$(wc -l < "$SELF" | tr -d ' ')
+      printf '%s\t%s\t%s\n' "$(( sec_cur + 1 ))" "$(( sec_cur + sec_last - sec_epi + 1 ))" "$sec_epi" >> "$sec_iso_map"
+      sec_iso_ids=$(printf '%s\n' "$sec_idx" | awk -v r="$(printf '%s' "$sec_ranges" | sort -n -u | tr '\n' ' ')" '
+        BEGIN { n = split(r, a, " "); for (i = 1; i < n; i += 2) want[a[i] " " a[i + 1]] = 1 }
+        $1 == "SEC" && (($2 " " $3) in want) { printf "%s%s", (c++ ? "," : ""), $4 }')
+      printf 'ids\t%s\nsolo\t%s\ntrace\t%s\noverlay\t%s\n' \
+        "$sec_iso_ids" "${sec_iso_solo:-0}" "$sec_iso_trace" "$sec_iso_overlay" > "$sec_iso_out/meta.tsv"
+    fi
 
     # THE ANCHOR CHECK READS THE CUT, NOT THE TRANSCRIPT, and it runs before the
     # cut does. A count of passing assertions certifies how many ran and never
@@ -1235,6 +1477,7 @@ SECEOF
       oracle_child_repo_root="$repo_root"
       tg_report_fail_file="$sec_fail"
       tg_report_sel="$sections_want"
+      [ -z "$sec_iso_out" ] || oracle_iso_rec="$sec_iso_out/rec.tsv"
       oracle_run "$sec_cut" "$sec_map" "좁힌 실행"
       sec_rc=$?
     fi
@@ -1254,7 +1497,7 @@ fi
 if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
   oracle_full_idx="$sec_idx"
   if [ -z "$oracle_full_idx" ]; then
-    oracle_full_idx=$(section_index)
+    oracle_full_idx=$(section_index "$SELF")
     case "$oracle_full_idx" in ERR*) oracle_full_idx="" ;; esac
   fi
   oracle_full_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-oraclemap.XXXXXX")
@@ -1406,18 +1649,60 @@ grep_all_q() {
 }
 
 passed=0; failed=0; skipped=0
-ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
+# A cut asked for an isolation record (`CC_GATE_ISO_OUT`) also appends one
+# `<section><TAB><verdict><TAB><label>` line per assertion. The section is the
+# one the cut last entered, which is `@pre-<group>` or `@epilogue` outside a
+# section. Tabs and newlines in a label become spaces so a line stays a row.
+tg_iso_put() {
+  local l="$2"
+  l="${l//$'\n'/ }"; l="${l//$'\t'/ }"
+  printf '%s\t%s\t%s\n' "${tg_cur_sec:--}" "$1" "$l" >> "$tg_iso_rec"
+}
+ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; [ -z "${tg_iso_rec:-}" ] || tg_iso_put PASS "$1"; }
 # A narrowed cut also names the section it is in, for the failed-section report;
 # both names are read with a default because a full run defines neither.
 bad()  {
   failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2
   [ -z "${tg_fail_file:-}" ] || printf '%s\n' "${tg_cur_sec:-}" >> "$tg_fail_file"
+  [ -z "${tg_iso_rec:-}" ] || tg_iso_put FAIL "$1"
 }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
 # 건너뜀은 통과도 실패도 아니므로 따로 센다. 합계 줄은 바이트 모양이 고정이라
 # (`scripts/gate-census.sh`·`scripts/gate-shard.sh` 가 고정 정규식으로 읽는다) 그 앞에
 # 제 줄로 찍는다.
-skip() { skipped=$((skipped + 1)); printf 'SKIP: %s\n' "$1"; }
+skip() { skipped=$((skipped + 1)); printf 'SKIP: %s\n' "$1"; [ -z "${tg_iso_rec:-}" ] || tg_iso_put SKIP "$1"; }
+
+# THE SECTION-SCOPED TRACE, for the ids a cut was asked to trace. The selector
+# writes `tg_iso_on <id>` in front of such a section and `tg_iso_off <id>`
+# behind it. The trace goes to its own descriptor through an EXPORTED
+# `BASH_XTRACEFD`: the gate seam's scrub drops every variable that is not
+# exported, and with this one gone the subshell's trace falls onto stderr, where
+# captured output picks it up and assertions change their verdict. The line set
+# keeps each (file, line) once; the cut itself is written `CUT`, because its
+# path differs in every context and `linemap.tsv` maps its lines back.
+tg_iso_on() {
+  exec 79>>"$tg_iso_dir/trace-$1.raw"
+  export BASH_XTRACEFD=79
+  tg_iso_ps4="$PS4"
+  PS4='+${BASH_SOURCE[0]}:${LINENO} '
+  set -x
+}
+tg_iso_off() {
+  set +x
+  unset BASH_XTRACEFD
+  { exec 79>&-; } 2>/dev/null
+  PS4="$tg_iso_ps4"
+  awk -v cut="$tg_iso_cut" '
+    match($0, /^\++[^ ]*:[0-9]+( |$)/) {
+      s = substr($0, RSTART, RLENGTH); sub(/ $/, "", s); sub(/^\++/, "", s)
+      n = s; sub(/^.*:/, "", n); f = substr(s, 1, length(s) - length(n) - 1)
+      if (f == cut) f = "CUT"
+      k = f "\t" n
+      if (!(k in seen)) { seen[k] = 1; print k }
+    }
+  ' "$tg_iso_dir/trace-$1.raw" | LC_ALL=C sort > "$tg_iso_dir/trace-$1.lines"
+  rm -f "$tg_iso_dir/trace-$1.raw"
+}
 
 # The routing shift's text is its body and the references/ files it reads on
 # entry to a rare branch. A section asserting on the shift's words reads this
