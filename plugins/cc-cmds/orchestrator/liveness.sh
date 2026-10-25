@@ -962,8 +962,8 @@ cc_relay_wake_keys() {
   #                   a settled failure (clock: `관측`), round 0's `미등록` past
   #                   the grace (clock: `관측 + grace`), or the wait cap
   #                   (clock: `wait clock + cap`) — `cc_ci_relay_condition`
-  #   ce:<seg>\t<ep>  a live review stage's segment whose round-0 failure has
-  #                   settled with no rerun spent — the early rerun predicate
+  #   ce:<seg>\t<ep>  a live review stage's segment whose failure has settled
+  #                   with no round of either kind — the early rerun predicate
   #                   (clock: that verdict's `관측`) — `cc_ci_early_condition`
   #   rl:<key>\t<ep>  a cut's reset plus the grace has passed (clock: that sum)
   #   lc:<key>\t<ep>  a `한도 해제` row stands below the cut row (clock: its

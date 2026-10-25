@@ -169,7 +169,7 @@ When the result of a stage in `live_stages[]` or `waiting_stages[]` is what your
 
 - a stage it waits on is no longer live, or a `stage-result` row lands after your `대기` row;
 - the CI wait of a segment you named in `CI 대기` ended, on its worktree HEAD: a `통과`, a failure with nothing still running, round 0's `미등록` five minutes past its observation (that head has no CI), or the two-hour wait cap — no verdict yet, `대기`, a failure still running, `판정 불가` and a younger `미등록` wake nothing before the cap;
-- a live review stage's segment has a settled round-0 failure on its HEAD with no rerun spent yet — the snapshot's `ci_early[]` names it (「Branching on `다음` after a review」);
+- a live review stage's segment has a settled failure on its HEAD with no rerun or label round yet — the snapshot's `ci_early[]` names it (「Branching on `다음` after a review」), unless a failed check is one the target's `라벨 인정` row names, which wakes you with `ci_early[]` empty and leaves the failure to the label path;
 - the reset of a key you named in `리셋 대기` is 60 seconds past, or a `한도 해제` row lands on a later line than that key's cut row.
 
 **Each CI wake is spent once.** A CI or early-rerun condition no longer wakes anyone once the ledger's last `교대 기동` row stands below the row that carries its evidence and was written at or after its wake time: the shift that launched on it saw it, so the same evidence does not launch the same shift again. A verdict the poller observed after that launch is new evidence and wakes once more. The gate drains the poller's verdicts into the ledger just before it writes each `교대 기동` row, so the snapshot you start from already carries the verdict that woke you.

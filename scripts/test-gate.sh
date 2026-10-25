@@ -39153,6 +39153,7 @@ la60_w 0 gh pr new --title t --label x
 la60_w 0 gh pr new --title t -l x
 la60_w 0 gh pr new -dl x
 la60_w 0 gh -R o/r pr new --label=x
+la60_w 0 gh pr -R o/r new -l x
 la60_w 0 gh api -X POST repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api -X PUT repos/o/r/issues/1/labels -f 'labels[]=x'
@@ -47634,6 +47635,13 @@ check "88e: 수정 표에서 라벨 인정 체크의 회차 0 정착 실패는 C
 L88E=$(l88e fix-ack-r1 "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
 check "88e: 재실행 뒤 라벨 인정 체크의 정착 실패도 CI 합류 수정 이 아니라 수정 이다 (M3a)" \
   "$(n88e "$L88E" "$MA88E")|$(n88e "$L88E" "$MO88E")" "수정|CI 합류 수정"
+# 라벨 회차가 이미 수락된 head(lab=1)에서 같은 체크가 다시 실패하면 M3a 는 서지 않는다 —
+# 라벨은 한 번만 붙으므로 그 실패는 인정 행이 있어도 재실행 갈래로 간다. 라벨 회차는 u 를
+# 세지 않으므로 그 값은 CI 재실행 이다.
+L88E=$(l88e fix-ack-lab "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"
+cd88e "$L88E" 라벨 요청 1 "$T088E"; cd88e "$L88E" 라벨 수락 1 "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
+check "88e: 수락된 라벨 회차 뒤 라벨 인정 체크의 실패는 M3a 가 아니라 CI 재실행 이다" \
+  "$(n88e "$L88E" "$MA88E")" "CI 재실행"
 
 # 7 — 대기 한도. 커밋 시각·가장 이른 관측·수락 관측이 시계다.
 L88EO=$(l88e old "$WO88E" "$RO88E" 0); L88EOF=$(l88e old-fix "$WO88E" "$RO88E" 1)
