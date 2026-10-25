@@ -20914,6 +20914,12 @@ gate_carry_routed_elsewhere() {
   case "$step" in
     'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)
       printf '좌석 실행 정지는 좌석이 실행한 뒤 그 세션에 재부착합니다 — 운반하지 않습니다: %s' "$rec"; return 0 ;;
+    # A seat-apply stop's `좌석 적용` and `사람 몫으로 넘김` answers re-attach
+    # the halted session, whose resume sentence names the seat commit or the
+    # files left to a person — values no frame and no card carries — and its
+    # `보류` answer parks the segment.
+    'Step 3 강제 표면 좌석 적용'*)
+      printf '강제 표면 좌석 적용 정지의 답은 그 세션에 재부착하거나 세그먼트를 park 합니다 — 운반하지 않습니다: %s' "$rec"; return 0 ;;
   esac
   if [ "$skill" = "design-audit-unattended" ] && [ "${step#*CFI-3b}" != "$step" ] \
      && [ "$opt" = "adopt as a requirement" ]; then
@@ -21213,7 +21219,8 @@ gate_carry_check() {
   # shift that picks the wrong branch cannot hand it to a fresh session: an
   # audit's adopted requirement and a binding-tier stop's `재수렴` go to
   # re-convergence, a review's empty-target halt and a shift's own record are
-  # carried out by the shift, and a `좌석 실행` halt by the seat.
+  # carried out by the shift, a `좌석 실행` halt by the seat, and a seat-apply
+  # halt by re-attaching its session or parking the segment.
   #
   # THE RECORD IS THE KEY'S LATEST HALT, judged by the same helper the automatic
   # answers use. An answer brought over from an earlier run is judged against
@@ -21918,6 +21925,15 @@ gate_implement_budget_refuse() {
   gate_implement_cycle_admissible "$1" || true
   warn "세그먼트 ${1} 의 사이클 예산이 소진됐습니다 — cycle 행 ${GATE_IMPL_CYCLE_N}개, 상한 ${GATE_IMPL_CYCLE_CAP}"
   warn "구현을 다시 파견하지 말고 스냅숏의 review_next[] 의 「다음」 을 읽으세요 — 상한에서는 「리드 수정」 이나 끝내는 값입니다"
+  exit "$GATE_EXIT_RULE"
+}
+
+gate_ci_join_line_refuse() {
+  # gate_ci_join_line_refuse <segment> — the implement dispatch's refusal when
+  # `다음` is `CI 합류 수정` and the prompt has no `CI 합류:` line: its warning
+  # and GATE_EXIT_RULE. A carry act reaches it after the carry check.
+  warn "세그먼트 ${1} 의 다음 처분은 「CI 합류 수정」 입니다 — 리뷰 지적과 함께 「CI 합류: <head sha>」 줄을 실어 파견합니다"
+  warn "스냅숏의 review_next[] 의 「head sha」 값을 그대로 「CI 합류:」 뒤에 실어 다시 파견하세요"
   exit "$GATE_EXIT_RULE"
 }
 
@@ -36719,7 +36735,7 @@ gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
   shift 9
-  local argv="$*" impl_budget_out=''
+  local argv="$*" impl_budget_out='' impl_cj_out=''
 
   [ -n "$alias" ]    || { printf 'gate: --target is required\n' >&2; exit 2; }
   [ -n "$cutpoint" ] || { printf 'gate: --cutpoint is required\n' >&2; exit 2; }
@@ -37660,9 +37676,14 @@ gate_verb_act() {
             "기본 브랜치=-" "응답=-" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         fi
       elif [ "$cj_next" = "CI 합류 수정" ] && [ -z "${GATE_RESUME:-}" ]; then
-        warn "세그먼트 ${segment} 의 다음 처분은 「CI 합류 수정」 입니다 — 리뷰 지적과 함께 「CI 합류: <head sha>」 줄을 실어 파견합니다"
-        warn "스냅숏의 review_next[] 의 「head sha」 값을 그대로 「CI 합류:」 뒤에 실어 다시 파견하세요"
-        exit "$GATE_EXIT_RULE"
+        # A carry act's frame has no `CI 합류:` line, so this refusal waits for
+        # `gate_carry_check` as the budget refusal below does: a stop of a CI
+        # join it sends to `--resume` ends 19 there.
+        if [ -n "$GATE_CARRY_ANSWER" ]; then
+          impl_cj_out=1
+        else
+          gate_ci_join_line_refuse "$segment"
+        fi
       fi
       if [ -z "$cj_dir" ] && [ -z "$ci_dir" ]; then
         case "$cj_prompt" in
@@ -37928,6 +37949,7 @@ gate_verb_act() {
     local ha_rc=0
     gate_carry_check "$alias" "$stage_key" "${1:-}" "$(gate_skill_prompt_of "$@")" || ha_rc=$?
     [ "$ha_rc" = "0" ] || exit "$ha_rc"
+    [ -z "$impl_cj_out" ] || gate_ci_join_line_refuse "$segment"
     [ -z "$impl_budget_out" ] || gate_implement_budget_refuse "$segment"
   elif [ "$kind" = "skill" ] && { [ "$verb" = "act" ] || [ "$verb" = "plan" ]; }; then
     # AN ANSWER AN EARLIER RUN CARRIED OVER GOES ON ONLY THROUGH A CARRY ACT.

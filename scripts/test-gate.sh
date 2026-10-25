@@ -43642,7 +43642,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 95c. 재진입 표의 구현·토론·단독·분할 행은 원장 값 칸을 게이트가 지어 대조한다
-# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_carry_ledger_frame, gate_carry_frame_reads, gate_carry_prompt_of, gate_carry_origin_cap, gate_carry_cap_row, gate_answered_halts_json, gate_adoption_halt_carry, gate_carry_import_row, gate_carry_frame_build, gate_carry_origin, gate_reentry_row_of, gate_carry_doc_of, gate_carry_routed_elsewhere, gate_carry_untabled_after | needs: 95 | anchors: 95c: 재진입 표는 여섯 행이다, 95c: 다음 런에 들인 수정 사이클 구현 정지의 carry_prompt 는 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 베이스 해소 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 표 밖 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 연쇄로 들인 분할 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 같은 런의 표 밖 정지 운반은 여전히 19·행 없음이고 재부착을 시킨다, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
+# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_ci_join_line_refuse,gate_carry_ledger_frame, gate_carry_frame_reads, gate_carry_prompt_of, gate_carry_origin_cap, gate_carry_cap_row, gate_answered_halts_json, gate_adoption_halt_carry, gate_carry_import_row, gate_carry_frame_build, gate_carry_origin, gate_reentry_row_of, gate_carry_doc_of, gate_carry_routed_elsewhere, gate_carry_untabled_after | needs: 95 | anchors: 95c: 재진입 표는 여섯 행이다, 95c: 다음 런에 들인 수정 사이클 구현 정지의 carry_prompt 는 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 베이스 해소 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 표 밖 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 연쇄로 들인 분할 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 같은 런의 표 밖 정지 운반은 여전히 19·행 없음이고 재부착을 시킨다, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
 #
 # 구현·설계 토론·리드 단독 설계·베이스 분할의 정지는 보통 파견과 같은 틀로 운반된다.
 # 그 틀의 칸 중 문서 말고는 모두 원장에서 오므로, 게이트가 같은 원장에서 값을 지어
@@ -43788,6 +43788,32 @@ esac
 lsr95c_ln=$(lsr95c_cfx ic2 'Step 3 CI 수정 — 질문' 0 'CI 처분' '세그먼트=S3' 'head sha=abc1234' '처분=수정')
 check "95c: 상한에 이른 세그먼트의 CI 수정 정지 운반 act 는 exit 19·행 없음이다" \
   "$(lsr95c_act ic2 "$lsr95c_ln" "$lsr95c_p")" "19|same"
+# CI 합류 파견의 구현이 멈춰도 다음 은 CI 합류 수정 으로 남는다. 틀에는 「CI 합류:」 줄이
+# 없으므로, 그 줄 누락 거절은 운반 검사 뒤로 미뤄지고 운반 act 는 지시 줄 판정의 19 로
+# 재부착에 간다. CI 층의 값은 CI 합류 대상 판정과 gate_ci_fix_next 를 대역으로 세운다.
+lsr95c_ln=$(lsr95c_fx cj0 implement-unattended 'Step 3 CI 합류 — 질문' implement 1 1)
+lsr95c_cjp="/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q "세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh · 수정 대상: $lsr_root/cj0/review-S3-1.md 의 P0·P1")"
+lsr95c_rc=$(LSR93_LN=$lsr95c_ln LSR93_P=$lsr95c_cjp LSR93_DL=1900000000 LSR93_BENV=$lsr93_BG LSR93_FENV=$lsr93_FG \
+  lsr93_in "$lsr_root/cj0/ledger.md" eval '
+    gate_ci_join_target() { return 0; }
+    gate_ci_fix_next() { printf "CI 합류 수정"; }
+    GATE_RESUME=""; GATE_FROM_DECLARATION=""; GATE_RECOVERY=""; GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
+    GATE_EMIT_DIGEST_TO=""; GATE_SHIFT_HALT_SITE=""; GATE_SHIFT_HALT_WRITING=""; GATE_ADMIT=""
+    GATE_REACH=""; GATE_DESTRUCTIVE=0; GATE_SETTLED_SEGMENTS=""; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+    GATE_TRIGGER=""; GATE_TRIGGER_SEEN=""; GATE_TRIGGER_REASON=""
+    GATE_CARRY_ANSWER=$LSR93_LN; r=0
+    nx=$(gate_segment_review_next S3)
+    ( gate_verb_act act skill infra S3 커밋 워크트리쓰기 "$(gate_snapshot_digest)" "운반 시험" "" \
+        implement -p "$LSR93_P" ) >/dev/null 2>"$RUN_DIR/act.err" || r=$?
+    printf "%s|%s" "$nx" "$r"' 2>/dev/null)
+check "95c: 다음 이 CI 합류 수정 인 구현 정지의 운반 act 는 줄 누락 거절이 아니라 exit 19 다" \
+  "$lsr95c_rc" "CI 합류 수정|19"
+case "$(cat "$lsr_root/cj0/act.err" 2>/dev/null)" in
+  *"「CI 합류 수정」 입니다"*) bad "95c: 멈춘 CI 합류 구현의 운반이 CI 합류 줄 누락 거절을 냈다" ;;
+  *"베이스 해소나 CI 수정 지시 줄로 파견된 구현입니다"*) ok "95c: 멈춘 CI 합류 구현의 운반은 지시 줄 경고로 재부착에 보낸다" ;;
+  *) bad "95c: 멈춘 CI 합류 구현의 운반의 경고가 없다 — $(cat "$lsr_root/cj0/act.err" 2>/dev/null)" ;;
+esac
 lsr95c_ln=$(lsr95c_cfx ic3 'Step 3 구현 — 질문' 1)
 check "95c: 상한에 이른 세그먼트의 평범한 구현 정지 운반 act 는 여전히 예산 거절 exit 3·행 없음이다" \
   "$(lsr95c_act ic3 "$lsr95c_ln" "$lsr95c_p")" "3|same"
@@ -44082,6 +44108,19 @@ check "95c: 분할 정지의 운반은 분할 형식이다" \
 lsr95c_ln=$(lsr95c_fx bd0 design-base-unattended 'Step 2 베이스 설계 — 질문' design)
 check "95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다" \
   "$(lsr93_refused bd0 "$lsr95c_ln" "/cc-cmds:design-base-unattended $lsr93_doc" design)" "19|same|0"
+
+# 구현 — 강제 표면 좌석 적용 정지는 implement 행의 모든 스텝에 들지만, 그 답은 좌석
+# 커밋이나 사람 몫 파일을 실은 재개 문장으로 멈춘 세션에 재부착하거나 세그먼트를 park
+# 한다. 틀도 카드도 그 값을 싣지 않으므로 운반 act 는 스텝만으로 거절하고 carry_prompt 는
+# 비어 있다. 같은 픽스처의 평범한 구현 정지가 비어 있지 않은 carry_prompt 를 받는 것이
+# 대조군이다.
+lsr95c_p="/cc-cmds:implement-unattended $lsr93_doc $(lsr95c_q '세그먼트 S3 (사이클 1) · 선언 파일: a.txt, b/c.sh')"
+lsr95c_fx sa1 implement-unattended 'Step 3 구현 — 질문' implement >/dev/null
+check "95c: 좌석 적용 대조 — 평범한 구현 정지의 carry_prompt 는 틀 그대로다" "$(lsr95c_cp sa1)" "$lsr95c_p"
+lsr95c_ln=$(lsr95c_fx sa0 implement-unattended 'Step 3 강제 표면 좌석 적용 — 질문' implement)
+check "95c: 강제 표면 좌석 적용 정지의 carry_prompt 는 비어 있다" "$(lsr95c_cp sa0)" ""
+check "95c: 강제 표면 좌석 적용 정지의 틀 그대로 운반은 exit 3·행 없음·선점 없음" \
+  "$(lsr93_refused sa0 "$lsr95c_ln" "$lsr95c_p" implement)" "3|same|0"
 
 # ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다
