@@ -43506,6 +43506,87 @@ check "67c: 아침 보고서가 동결 잔여 목록을 싣는다" \
       '**It is inert** like the queue'"'"'s command lines')" "3"
 
 # ---------------------------------------------------------------------------
+# 67d. 스테이지 정책의 파이프라인 변수 절
+# --- section: 67d | group: static | covers: - | anchors: 67d: 기동부에서 변수 집합을 읽었다, 67d: 정책에 Pipeline variables 절이 하나 있다, 67d: 정책 절이 기동부와 스킬의 변수 이름을 모두 싣는다, 67d: 정책 절이 중단 기록 경로식과 이름 읽기 형태를 싣는다, 67d: 변수를 부르는 무인 스킬이 이름 없는 env 금지를 싣는다, 67d: 이름 하나를 지운 사본에서 이름 단언이 실패한다, 67d: 절을 지운 사본에서 절 단언이 실패한다 ---
+#
+# 무인 스테이지가 자기 런 디렉터리·스테이지 id 를 찾으려고 이름 없는 `env` 를 부르면
+# 환경에 든 파이프라인 토큰이 트랜스크립트로 나가고 게이트가 비밀출력으로 멈춘다. 게이트의
+# 두 기동부(스테이지·교대)가 붙이는 공통 정책이 변수의 이름과 읽는 형태를 진술하면 그럴
+# 이유가 없다. 담아야 할 이름은 손으로 적지 않고 기동부 본문이 값을 넣는 이름과 무인
+# 스킬이 부르는 이름에서 유도한다 — 기동부가 변수를 하나 더하면 이 절이 실패한다.
+# ---------------------------------------------------------------------------
+fc67d_gate="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+fc67d_sk="$repo_root/plugins/cc-cmds/skills"
+# 값을 넣는 대입(`CC_PIPELINE_X="…"`)과 `local -x` 선언만 모은다. 교대가 비우는 빈 대입
+# (`CC_PIPELINE_SEGMENT= \`)은 그 기동부가 넣는 이름이 아니다.
+fc67d_L=$(for fn in gate_verb_supervise_stage gate_launch_shift; do
+    sed -n "/^$fn() {/,/^}/p" "$fc67d_gate"
+  done | { grep -oE '^ +CC_PIPELINE_[A-Z_]+="|local -x CC_PIPELINE_[A-Z_]+' || true; } \
+  | grep -oE 'CC_PIPELINE_[A-Z_]+' | sort -u)
+fc67d_S_files=$(cd "$repo_root" && printf '%s\n' plugins/cc-cmds/skills/*-unattended/SKILL.md \
+  plugins/cc-cmds/skills/design-reconverge/SKILL.md plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md \
+  plugins/cc-cmds/skills/autopilot-router-shift/references/*.md)
+fc67d_S=$(for f in $fc67d_S_files; do cat "$repo_root/$f"; done \
+  | { grep -oE 'CC_PIPELINE_[A-Z_]+' || true; } | sed 's/_*$//' | sort -u)
+fc67d_names=$(printf '%s\n%s\n' "$fc67d_L" "$fc67d_S" | grep . | sort -u)
+# 함수 이름이 바뀌어 sed 가 빈 본문을 내면 아래 포함 단언은 아무것도 배제하지 못한 채
+# 통과한다. 그래서 유도 집합이 실제로 읽혔는지를 먼저 묻는다.
+fc67d_lmiss=''
+# shellcheck disable=SC2086
+fc67d_Lsp=" $(printf '%s ' $fc67d_L)"
+for n in CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_HALT_ANSWER; do
+  case "$fc67d_Lsp" in *" $n "*) ;; *) fc67d_lmiss="$fc67d_lmiss $n" ;; esac
+done
+fc67d_lc=$(printf '%s\n' "$fc67d_L" | grep -c . || true)
+if [ "${fc67d_lc:-0}" -ge 10 ] && [ -z "$fc67d_lmiss" ]; then ok "67d: 기동부에서 변수 집합을 읽었다"
+else bad "67d: 기동부에서 변수 집합을 읽었다" "개수=$fc67d_lc 빠짐=${fc67d_lmiss# }"; fi
+
+fc67d_section() {  # fc67d_section <policy> — the Pipeline variables section, heading to the next `## `
+  LC_ALL=C awk '/^## / { on = ($0 == "## Pipeline variables") } on' "$1"
+}
+fc67d_heads() {  # fc67d_heads <policy> — how many `## Pipeline variables` lines
+  { grep -cxF '## Pipeline variables' "$1" || true; }
+}
+fc67d_missing() {  # fc67d_missing <policy> — names absent from the section in backticks
+  local sec n out=''
+  sec=$(fc67d_section "$1")
+  for n in $fc67d_names; do
+    case "$sec" in *"\`$n\`"*) ;; *) out="$out $n" ;; esac
+  done
+  printf '%s' "${out# }"
+}
+fc67d_pol="$repo_root/plugins/cc-cmds/orchestrator/stage-policy.md"
+check "67d: 정책에 Pipeline variables 절이 하나 있다" "$(fc67d_heads "$fc67d_pol")" "1"
+check "67d: 정책 절이 기동부와 스킬의 변수 이름을 모두 싣는다" "$(fc67d_missing "$fc67d_pol")" ""
+fc67d_sec=$(fc67d_section "$fc67d_pol")
+fc67d_n=0
+for lit in '${CC_PIPELINE_RUN_DIR}/halt/${CC_PIPELINE_STAGE_ID}.md' 'one name per call' \
+  'printenv CC_PIPELINE_' 'Never run `env` or `printenv` with no name'; do
+  case "$fc67d_sec" in *"$lit"*) fc67d_n=$((fc67d_n + 1)) ;; esac
+done
+check "67d: 정책 절이 중단 기록 경로식과 이름 읽기 형태를 싣는다" "$fc67d_n" "4"
+
+# 태그 없는 호스트의 고정 정책과 셸 드라이버 기동은 이 절을 받지 않으므로, 그 경로로 뜬
+# 스테이지는 각 무인 스킬 본문의 금지 문장이 덮는다.
+fc67d_bare=''
+for f in $fc67d_S_files; do
+  case "$f" in */autopilot-router-shift/*) continue ;; esac
+  grep -q 'CC_PIPELINE_[A-Z]' "$repo_root/$f" || continue
+  grep -qF 'bare `env`' "$repo_root/$f" || fc67d_bare="$fc67d_bare $f"
+done
+check "67d: 변수를 부르는 무인 스킬이 이름 없는 env 금지를 싣는다" "${fc67d_bare# }" ""
+
+# 음성 대조 — 같은 단언 함수가 고친 사본에서는 실패해야 한다.
+fc67d_cp=$(mktemp -d "$WORK/guard67d.XXXXXX")
+sed 's/`CC_PIPELINE_STAGE_ID`/the stage id/' "$fc67d_pol" > "$fc67d_cp/no-name.md"
+case " $(fc67d_missing "$fc67d_cp/no-name.md") " in
+  *" CC_PIPELINE_STAGE_ID "*) ok "67d: 이름 하나를 지운 사본에서 이름 단언이 실패한다" ;;
+  *) bad "67d: 이름 하나를 지운 사본에서 이름 단언이 실패한다" "$(fc67d_missing "$fc67d_cp/no-name.md")" ;;
+esac
+LC_ALL=C awk '/^## / { skip = ($0 == "## Pipeline variables") } !skip' "$fc67d_pol" > "$fc67d_cp/no-section.md"
+check "67d: 절을 지운 사본에서 절 단언이 실패한다" "$(fc67d_heads "$fc67d_cp/no-section.md")" "0"
+
+# ---------------------------------------------------------------------------
 # 75. 라우팅된 런의 파견 반쪽 — 라우터 답마다의 처분, 선점, 발행분 반납
 # --- section: 75 | group: ledger_series | covers: act, gate_append | anchors: 75: WAIT 가 계보 B:SW1#1 의 stage-wait 행을 남긴다 ---
 #
@@ -47849,6 +47930,21 @@ t3p front3 읽기 런로컬 -- printenv
 t3_park 25 비밀출력 - 'does not print the secret' 0
 t3p front3 읽기 런로컬 -- printenv PATH
 t3_pass 25
+# 25b — 이름 없는 printenv·env 의 수리 문구는 파이프라인 변수를 이름으로 읽는 형태와
+# 정책 절 이름을 말한다. 다른 비밀출력은 그 안내를 싣지 않는다 — 비밀 저장소를 읽는
+# 행위에 변수 안내는 엉뚱한 처방이다.
+for t3_a0 in printenv env; do
+  t3p front3 읽기 런로컬 -- "$t3_a0"
+  t3_park "25b-$t3_a0" 비밀출력 - 'does not print the secret' 0
+  case "$msg" in *"printenv CC_PIPELINE_RUN_DIR"*) ok "83c: 25b-$t3_a0 — 문구가 변수 하나를 이름으로 읽는 형태를 말한다" ;;
+    *) bad "83c: 25b-$t3_a0 — 문구가 변수 하나를 이름으로 읽는 형태를 말한다" "$msg" ;; esac
+  case "$msg" in *"Pipeline variables"*) ok "83c: 25b-$t3_a0 — 문구가 정책 절 이름을 말한다" ;;
+    *) bad "83c: 25b-$t3_a0 — 문구가 정책 절 이름을 말한다" "$msg" ;; esac
+done
+t3p front3 읽기 런로컬 -- git credential fill
+t3_park 25b-git 비밀출력 - 'does not print the secret' 0
+case "$msg" in *"Pipeline variables"*) bad "83c: 25b-git — 다른 비밀출력의 문구는 변수 안내를 싣지 않는다" "$msg" ;;
+  *) ok "83c: 25b-git — 다른 비밀출력의 문구는 변수 안내를 싣지 않는다" ;; esac
 
 # 26 — 대상의 원격이 아닌 곳으로의 푸시.
 t3p front3 외부상태변경 협업 -- git push https://example.invalid/t/other3.git HEAD

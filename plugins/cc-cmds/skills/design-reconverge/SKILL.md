@@ -247,6 +247,7 @@ The absence is the contract. A further re-convergence is a new invocation driven
 - **The carrier's write form is `## 2`'s close, and nothing else.** This skill never uses the append form: that form belongs to the implementation arm, and its field set is shaped for an observation this skill did not make.
 - **Never reach a notification surface.** No `PushNotification`, no `notify.sh`, no `terminal-notifier` — not from this file and not from any agent it spawns. Notifying a sleeping user is the driver's exclusive job.
 - **Never write a pipeline sidecar.** This skill reads the grant to re-derive `RUN_DIR`; the driver is the sole writer of the run ledger and of the autonomous-decision rows this skill emits.
+- **Read pipeline variables by name** — `printenv CC_PIPELINE_RUN_ID`, one name per call — and never bare `env` or bare `printenv`. This stage's own environment carries the pipeline token, so the whole-environment forms print a credential into the transcript and are parked as `비밀출력`.
 - **No code modifications.** This skill changes the design, never the implementation.
 
 Task: $ARGUMENTS
