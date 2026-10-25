@@ -312,6 +312,8 @@ check "8 그 대조군은 단언 정밀도다" "${out%%$'\n'*}" "정밀도: 단�
 
 # The shard names its goals, and make stopped after test-a failed: test-c and
 # one self-test never started, so their failures are in no line of the log.
+# The rest-shard recipe runs its sub-make with -k and starts every goal; this is
+# the log a make stopped by a signal, or one run without -k, leaves behind.
 {
   printf '%s\n' 'rest shard 1/3: run/scripts/test-a.sh run/scripts/test-b.sh run/scripts/test-c.sh run-gate-shard-selftest run-check-gate-selftest'
   cat "$WORK/g11.log"
