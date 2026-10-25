@@ -1701,6 +1701,8 @@ tg_iso_off() {
       if (!(k in seen)) { seen[k] = 1; print k }
     }
   ' "$tg_iso_dir/trace-$1.raw" | LC_ALL=C sort > "$tg_iso_dir/trace-$1.lines"
+  # How many trace lines the set was reduced from, kept for the cost record.
+  wc -l < "$tg_iso_dir/trace-$1.raw" | tr -d ' ' > "$tg_iso_dir/trace-$1.n"
   rm -f "$tg_iso_dir/trace-$1.raw"
 }
 
