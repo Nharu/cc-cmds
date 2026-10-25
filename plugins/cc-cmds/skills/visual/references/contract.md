@@ -1,6 +1,6 @@
 # 시각 디자인 공유 계약 — 생성, 검토, 모델, 다듬기
 
-`visual`(대화형)과 `visual-unattended`(무인)가 함께 읽는 규칙이다. 화면을 어떻게 만들고, 어떻게 검토해 통과시키며, 어느 모델의 누가 무엇을 돌려주고, 수정 목록을 어떻게 다듬는지를 정한다. 연결 파일의 문법은 같은 디렉터리의 `sidecar.md` 가 소유한다. 이 파일의 규칙은 두 팔에 똑같이 걸리고, 팔마다 다른 것은 각 스킬 본문이 말한다.
+`visual`(대화형), `visual-unattended`(무인 생성)와 `visual-publish-unattended`(무인 발행 — `수정 요청` 을 받아 다시 생성할 때)가 함께 읽는 규칙이다. 화면을 어떻게 만들고, 어떻게 검토해 통과시키며, 어느 모델의 누가 무엇을 돌려주고, 수정 목록을 어떻게 다듬는지를 정한다. 연결 파일의 문법은 같은 디렉터리의 `sidecar.md` 가 소유한다. 이 파일의 규칙은 두 팔에 똑같이 걸리고, 팔마다 다른 것은 각 스킬 본문이 말한다.
 
 ## 1. 디자인 시스템과 토큰
 
@@ -41,7 +41,7 @@
 
 **판정은 구조 규칙이다.** `치명` 이나 `주요` 가 하나라도 있으면 `REJECT`, 없으면 `ACCEPT` 다. 검토자의 전체 의견은 판정을 바꾸지 않는다. 판정을 내지 못한 회차는 통과하지 못한 회차로 센다.
 
-**금지 목록 읽기.** 검토자는 그 팔이 받은 금지 목록(대화형은 `visual-config.sh bans`, 무인은 `visual-config.sh snapshot --part bans`)의 `판단` 항목을 루브릭으로 읽고, 해제된 id 는 건너뛴다. 목록에 없는 새 「AI 티」 패턴을 찾으면 수정 목록이 아니라 금지 후보로 낸다 — 형식은 `sidecar.md` §2 의 `### 금지 후보` 줄이고, id 는 목록에 이미 있는 id 와 겹치지 않는 `[a-z0-9-]+` 다.
+**금지 목록 읽기.** 검토자는 그 팔이 받은 금지 목록(대화형은 `visual-config.sh bans`, 무인 생성은 `visual-config.sh snapshot --part bans`, 무인 발행은 호스트 금지 목록 파일을 읽어 둔 사본)의 `판단` 항목을 루브릭으로 읽고, 해제된 id 는 건너뛴다. 목록에 없는 새 「AI 티」 패턴을 찾으면 수정 목록이 아니라 금지 후보로 낸다 — 형식은 `sidecar.md` §2 의 `### 금지 후보` 줄이고, id 는 목록에 이미 있는 id 와 겹치지 않는 `[a-z0-9-]+` 다.
 
 **렌더.** 검토용 렌더 이미지는 `visual-capture.sh ref <화면> --out <트리 밖 임시 디렉터리>` 로 찍어 검토자에게 넘기고, 회차가 끝나면 지운다. 렌더할 수 없는 머신에서는 HTML 원본만으로 검토하고 사이드카에 `**검토 렌더**: 불가(환경)` 를 적는다. 그것은 선언된 강등이지 정지가 아니다. 렌더 없이 그 사실을 적지 않고 `검토 통과` 를 쓰지 않는다.
 
@@ -61,20 +61,20 @@
 
 - `#` 으로 시작하는 줄은 주석이다. 구분자는 앞뒤 공백을 낀 ` | ` 이고, 셋째 구분자 뒤 전부가 패턴이다.
 - 종류는 셋이다. `마크업` 은 패턴을 `grep -E` 로 화면의 스크립트 밖 문면(주석 뺀)에, `스크립트` 는 스크립트 영역에 건다. `판단` 은 패턴 없이(`-`) 검토자 루브릭이 읽는다.
-- 호스트 파일은 `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/visual-bans` 이고, 씨앗은 플러그인의 `plugins/cc-cmds/orchestrator/visual-bans.seed` 다. 쓰는 것은 사람 좌석의 `visual-config.sh seed`·`append` 뿐이다.
+- 호스트 파일은 `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/visual-bans` 이고, 씨앗은 플러그인의 `plugins/cc-cmds/orchestrator/visual-bans.seed` 다. 쓰는 것은 사람 좌석의 `visual-config.sh seed`·`append`, 그리고 발행 스테이지 `visual-publish-unattended` 가 사람의 `금지-후보` `승인` 답 하나마다 한 번 부르는 `append` 뿐이다.
 
 ## 6. 모델과 저자 하위 에이전트
 
 | 국면 | 키 | 기본값 | 누가 부르나 |
 | --- | --- | --- | --- |
 | 디자인 시스템 생성 | `ds-generate` | `fable` | `visual`·`visual-unattended` |
-| 화면 생성 | `screen-generate` | `opus` | `visual`·`visual-unattended` |
-| 수정 목록 다듬기 | `polish` | `fable` | `visual`·`visual-unattended`(아래 강등 뒤) |
+| 화면 생성 | `screen-generate` | `opus` | `visual`·`visual-unattended`·`visual-publish-unattended`(`수정 요청` 의 다시 생성) |
+| 수정 목록 다듬기 | `polish` | `fable` | `visual`·`visual-unattended`·`visual-publish-unattended`(아래 강등 뒤) |
 | 큰 화면 번역 | `implement-large` | `fable` | `implement`·`implement-unattended` |
 
 `implement-large-threshold`(기본 300)는 큰 화면의 문턱이다 — `visual-check.sh size <화면>` 의 시작 태그 수가 그 이상이면 큰 화면이다.
 
-값의 출처는 팔마다 하나다. 대화형 좌석은 `visual-config.sh models` 의 출력, 무인 팔은 `visual-config.sh snapshot --part models` 의 출력을 읽는다. 둘 다 키마다 `<키> = <값> | <출처>` 이다.
+값의 출처는 팔마다 하나다. 대화형 좌석은 `visual-config.sh models` 의 출력, 무인 팔(생성 스테이지와 발행 스테이지)은 `visual-config.sh snapshot --part models` 의 출력을 읽는다. 발행 스테이지에서 그 명령이 실패하면 위 기본값을 쓰고 그 사실과 사유를 종결 문면에 적는다. 둘 다 키마다 `<키> = <값> | <출처>` 이다.
 
 국면을 맡는 것은 Agent 도구의 `model` 로 띄우는 **읽기 전용 저자** 하위 에이전트다. 파일은 부모(무인 스테이지 또는 대화형 좌석)가 쓴다. 저자가 돌려주는 봉투는 셋뿐이다.
 
