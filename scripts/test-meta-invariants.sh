@@ -1127,6 +1127,16 @@ if grep -qF -- '| `대상 훅 거절` |' "$RS_CORPUS"; then
 else
   bad "교대 사본의 정지 자리 표" "「대상 훅 거절」 행이 없다"
 fi
+if grep -qF -- '| `master 수리 불가` |' "$RS_CORPUS"; then
+  ok "교대 사본의 정지 자리 표가 「master 수리 불가」를 싣는다"
+else
+  bad "교대 사본의 정지 자리 표" "「master 수리 불가」 행이 없다"
+fi
+if grep -qF -- 'and for `master 수리 불가` no act at all' "$RS_CORPUS"; then
+  ok "교대 사본의 재시도 목록이 「master 수리 불가」의 재대조를 싣는다"
+else
+  bad "교대 사본의 재시도 목록" "「master 수리 불가」가 없다"
+fi
 if grep -qF -- 'the refused act for `대상 훅 거절`' "$RS_CORPUS"; then
   ok "교대 사본의 재시도 목록이 「대상 훅 거절」의 거절된 행위를 싣는다"
 else

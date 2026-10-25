@@ -787,7 +787,15 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '--kind ci-rerun' \
     '-- 재실행 <head sha>' \
     '**Every other exit 3 is one disposition**' \
-    '**Never send `gh run rerun`, a rerun or re-request REST path, or the `rerequestCheckSuite` mutation**'; do
+    '**Never send `gh run rerun`, a rerun or re-request REST path, or the `rerequestCheckSuite` mutation**' \
+    '**`CI 대조`**' \
+    '**`master 대기`**' \
+    '**`master 재합류`**' \
+    '**`master 수리 불가`**' \
+    '--kind ci-match' \
+    '-- 대조 <head sha>' \
+    "'master 대기=<id>'" \
+    '부류=master 재합류'; do
     if grep -qF -- "$lit" "$f"; then
       ok "$who 사본이 CI 갈래 리터럴을 싣는다: $lit"
     else
