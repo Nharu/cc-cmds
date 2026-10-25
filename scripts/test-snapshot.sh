@@ -2919,6 +2919,10 @@ check "아침 보고: 답했으나 전달하지 못한 중단 답 절이 있다"
   "$(has "$AP_REFS/act3-report.md" "**답했으나 전달하지 못한 중단 답**")/$(has "$AP_REFS/act3-report.md" "a carry issued after the deadline, whose \`관측\` reads \`마감 경과\`")" "예/예"
 check "아침 보고: 이월 절은 게이트가 쓰는 사유 머리와 같다" \
   "$(has "$GATE" "'중단 답 이월 — 마감 안에 자리 없음'")" 예
+check "아침 보고: S2P 가 있는 런의 시각 승인 지시는 발행 단계의 중단 기록을 가리킨다" \
+  "$(has "$AP_REFS/act3-report.md" "「\`S2P\` 중단 기록 \`<기록 파일>\` 의 캔버스 \`<URL>\` 을 보고 좌석 질문에 \`승인\`·\`수정 요청\`·\`거부\` 로 답하세요」")/$(has "$AP_REFS/act3-report.md" "A closing row reading \`처분 사유=중단 답 연동\` is read as the person's own answer")" "예/예"
+check "좌석 사본: S2P 의 세 자리 기록에는 사람의 답만 받고 좌석은 답하지 않는다" \
+  "$(has "$SEAT_REF" "**The gate takes only a person's answer to these three records: never answer one with \`답한 주체=좌석\`, whatever its \`**추천**\` line says.**")" 예
 
 # ---------------------------------------------------------------------------
 # 13. An answer a routing block stamped leaves answered_halts for returned_halts

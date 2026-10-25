@@ -160,7 +160,9 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 # from the moment its file exists rather than from the moment it is dispatched.
 # `design-solo-unattended` is listed on the same footing: it is the light design
 # stage a `solo` run dispatches, and the selection that names it lands
-# separately from the file.
+# separately from the file. `visual-unattended` and `visual-publish-unattended`
+# are the run's two visual stages, dispatched as `S2V` and `S2P`; the second
+# Reads the attended `visual/SKILL.md` step bodies, so it owes Rule 5 as well.
 UNATTENDED_SKILLS=(
   "implement-unattended"
   "design-audit-unattended"
@@ -170,6 +172,7 @@ UNATTENDED_SKILLS=(
   "design-base-unattended"
   "design-solo-unattended"
   "visual-unattended"
+  "visual-publish-unattended"
   "autopilot-router-shift"
 )
 
@@ -214,6 +217,9 @@ REFERENCE_TREES=(
   # The visual arm reads `visual/references/` (the shared contract), which
   # holds no question point; the attended arm's questions live in its SKILL.md.
   "visual-unattended|visual"
+  # The publish arm reads the same shared contract; the attended questions it
+  # meets live in `visual/SKILL.md`, which Rule 5's sentence dispositions.
+  "visual-publish-unattended|visual"
   # The router shard shares nobody's tree. Its own `references/` holds the
   # rare branches it reads on entry; none of them may hold a question point,
   # and Rules 1 and 2 scan them as the arm's own text.
@@ -241,6 +247,7 @@ U0_PINNED_SKILLS=(
   "design-discuss-unattended"
   "design-base-unattended"
   "design-solo-unattended"
+  "visual-publish-unattended"
 )
 
 fail=0
