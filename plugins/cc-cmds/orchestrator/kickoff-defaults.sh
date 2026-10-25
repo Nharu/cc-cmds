@@ -463,7 +463,7 @@ kd_wide_instant() {
   deadline_instant "$s"
 }
 if [ "$KD_CARRY_GIVEN" = "1" ]; then
-  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows; do
+  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows apply_code_row_reask; do
     command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
   done
   KD_KAT_E=$(kd_wide_instant "$KD_KAT")
@@ -1643,13 +1643,27 @@ EOF
   # The mapping is a `## 인가` row, not a field, and is offered as the
   # `<불필요>/<필요>` the file spells it in. The row itself is carried byte for
   # byte by the re-kickoff renderer; this is the value the kickoff asks with.
-  # No row is never a blank to fill: the renderer has no `--set` for a row
-  # bound to the probe's hash, so the previous run's default mapping stands.
+  #
+  # A ROW THE PIPELINE CANNOT RUN ON IS ASKED AGAIN, NOT CARRIED. When the
+  # pipeline runs the apply and the previous row is absent or carries 2, no row
+  # means only 불필요=0 is defined and a row with 2 is refused by the manifest
+  # check, so the renderer drops it and 5c answers it once more: the file's
+  # value is the `빈칸` row offered as the proposal, and with no file value the
+  # key is named `다시 물음` — the re-kickoff asks 5c on that row, and a seat
+  # re-kickoff, which asks nothing, opens no successor run on it.
   kd_ac=$(manifest_apply_code_rows | head -1)
-  if [ -n "$kd_ac" ]; then
+  if apply_code_row_reask; then
+    if kd_xi=$(kd_file_ok any apply-probe-codes); then
+      kd_v="${E_NORM[kd_xi]}"
+      printf '빈칸\t런\tapply-probe-codes\t%s\t%s\t0\t%s\n' "$(kd_cell "$kd_v")" "${E_SRC[kd_xi]}" \
+        "$(kd_cell "이전 매니페스트의 적용 프로브 코드 행이 없거나 2 를 담아 이어받지 않습니다 — 확인하면 대응(불필요=${kd_v%%/*}·필요=${kd_v#*/})을 지금 적용 프로브 바이트에 묶은 새 행으로 씁니다. 확인하지 않으면 행이 없어 불필요=0 만 정의되고 필요 코드는 정의되지 않습니다")"
+    else
+      kd_out_not run apply-probe-codes '다시 물음' '이전 매니페스트의 적용 프로브 코드 행이 없거나 2 를 담아 이어받지 않습니다 — 행이 없으면 불필요=0 만 정의되고 필요 코드는 정의되지 않으므로, 5c 로 대응을 다시 물어야 합니다'
+    fi
+  elif [ -n "$kd_ac" ]; then
     kd_carry_scalar run apply-probe-codes "$(manifest_row_fields "$kd_ac" '불필요' 1 | head -1)/$(manifest_row_fields "$kd_ac" '필요' 1 | head -1)"
   else
-    kd_out_not run apply-probe-codes '행 없음' '이전 매니페스트에 적용 프로브 코드 행이 없어 기본 대응 0/2 를 그대로 이어받습니다 — 다시 킥오프는 이 행을 새로 쓰지 않습니다'
+    kd_out_not run apply-probe-codes '행 없음' '이전 매니페스트에 적용 프로브 코드 행이 없습니다 — 파이프라인이 실행하는 적용 프로브가 없어 대응을 묻지 않습니다. 행이 없으면 불필요=0 만 정의되고 필요 코드는 정의되지 않습니다'
   fi
   kd_carry_scalar run apply-actor "$(manifest_field '요소' '적용 주체')" auth
 

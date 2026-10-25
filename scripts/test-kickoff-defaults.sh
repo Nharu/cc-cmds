@@ -442,7 +442,10 @@ apply-actor = 사람
 cutpoint = 배포' --target a/one --target b/two)
 check "배포 대상 둘 → 배포 대상 수" "$(st "$out" apply-actor)" "배포 대상 수"
 # apply-probe-codes — `<불필요>/<필요>`, held to the manifest check's own value rule.
-for pc in '0/21:적용' '0/2:적용' '3/0:적용' '125/0:적용' '0/1:형식 오류' '1/0:형식 오류' '0/126:형식 오류' \
+# 2 is refused in both places: it is also a shell syntax error's and an I/O
+# error's exit code.
+for pc in '0/21:적용' '3/0:적용' '125/0:적용' '0/2:형식 오류' '2/0:형식 오류' '2/21:형식 오류' \
+          '0/1:형식 오류' '1/0:형식 오류' '0/126:형식 오류' \
           '0/128:형식 오류' '2/2:형식 오류' '0/021:형식 오류' '0:형식 오류' '0/2/3:형식 오류' '/2:형식 오류' 'x/2:형식 오류'; do
   out=$(kf "[Nharu/cc-cmds]
 cutpoint = 배포
@@ -861,7 +864,7 @@ cw_write() {
     printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
     printf '## 런 정체\n**킥오프 일시**: %s\n**런 id**: 20261001-feedbeef\n\n' "$CW_KO"
     printf '## 대상\n**대상 맵 다이제스트**: -\n'
-    printf -- '- `target` | 별칭=home | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음%s\n\n' "$MF_REPO" "$MF_CG" "$CW_TF"
+    printf -- '- `target` | 별칭=home | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=%s | 말단 행위 상한=없음%s\n\n' "$MF_REPO" "$MF_CG" "${CW_CUT:-머지}" "$CW_TF"
     printf '## 요소\n**설계 문서**: (없음)\n**적용 프로브**: %s\n**적용 주체**: %s\n\n' "$CW_AP" "$CW_AA"
     if [ "$CW_AUTH" = "1" ]; then
       printf '## 인가\n**런 최대 절단점**: 머지\n**종료 지점**: 전부 머지\n'
@@ -939,7 +942,41 @@ CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"
 cw_write "$CW"
 out=$(kc '[Nharu/cc-cmds]
 apply-probe-codes = 0/21')
-check "원천에 행이 없으면 파일 값이 있어도 빈칸이 아니다" "$(cnt "$out" 빈칸 apply-probe-codes)" "0"
+check "적용 주체가 파이프라인이 아닌 원천에 행이 없으면 파일 값이 있어도 빈칸이 아니다" "$(cnt "$out" 빈칸 apply-probe-codes)" "0"
+
+# 파이프라인이 실행하는 적용 프로브의 대응 행이 없거나 2 를 담은 원천은 그 행을
+# 이어받지 않는다. 행이 없으면 불필요=0 만 정의되고, 2 를 담은 행은 매니페스트
+# 검사가 거부한다. 파일 값이 있으면 런 범위의 빈칸 행으로 5c 를 다시 묻고, 없으면
+# 이어받지 않음 행이 다시 물어야 한다고 말한다.
+CW_ROWS_SAVE="$CW_ROWS"; CW_AP_SAVE="$CW_AP"; CW_AA_SAVE="$CW_AA"
+CW_AP='`make probe`'; CW_AA='파이프라인'; CW_CUT='배포'
+AC_SHA=$(printf '%s' 'make probe' | shasum -a 256 | awk '{ print $1 }')
+for ac_case in '없음:' "0/2:- \`적용 프로브 코드\` | 불필요=0 | 필요=2 | 프로브 sha256=$AC_SHA" \
+               "2/0:- \`적용 프로브 코드\` | 불필요=2 | 필요=0 | 프로브 sha256=$AC_SHA"; do
+  ac_lbl=${ac_case%%:*}; ac_row=${ac_case#*:}
+  CW_ROWS="$CW_ROWS_SAVE${ac_row:+
+$ac_row}"
+  cw_write "$CW"
+  out=$(kc '[Nharu/cc-cmds]
+apply-probe-codes = 0/21')
+  check "파이프라인 원천의 대응 행 $ac_lbl → 런 범위의 빈칸 행이 파일 값 0/21 을 싣는다" \
+    "$(printf '%s\n' "$out" | awk -F'\t' '$1=="빈칸" && $3=="apply-probe-codes" { print $2"|"$4 }')" "런|0/21"
+  check "파이프라인 원천의 대응 행 $ac_lbl → 적용·이어받지 않음 행이 없다" \
+    "$(cnt "$out" 적용 apply-probe-codes)$(cnt "$out" '이어받지 않음' apply-probe-codes)" "00"
+  out=$(kc '')
+  check "파이프라인 원천의 대응 행 $ac_lbl, 파일 값 없음 → 이어받지 않음 다시 물음" \
+    "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="apply-probe-codes" { print $4 }')" "다시 물음"
+done
+CW_ROWS="$CW_ROWS_SAVE
+- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$AC_SHA"
+cw_write "$CW"
+out=$(kc '[Nharu/cc-cmds]
+apply-probe-codes = 0/3')
+check "파이프라인 원천의 2 없는 대응 행은 지금처럼 0/21 로 이어받는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="apply-probe-codes" { print $4 }')" "0/21"
+check "파이프라인 원천의 2 없는 대응 행은 빈칸 행이 되지 않는다" "$(cnt "$out" 빈칸 apply-probe-codes)" "0"
+CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"; CW_AA="$CW_AA_SAVE"; CW_CUT=''
+cw_write "$CW"
 
 # ---------------------------------------------------------------------------
 # --apply-probe-sha — 초안의 프로브 해시를 드라이버 함수로 재고, 적용 프로브
@@ -963,11 +1000,22 @@ check "--apply-probe-sha 는 백틱을 벗긴 원래 바이트를 잰다" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="프로브" { print $2 }')" "$APS_SHA"
 check "--apply-probe-sha 행 없는 초안 → 행 없음" "$(aps_row "$out")" "없음"
 CW_ROWS="$CW_ROWS
-- \`적용 프로브 코드\` | 불필요=2 | 필요=0 | 프로브 sha256=$APS_SHA"
+- \`적용 프로브 코드\` | 불필요=21 | 필요=0 | 프로브 sha256=$APS_SHA"
 cw_write "$CW"
 check "--apply-probe-sha 원래 바이트로 얼린 행 → 맞음" "$(aps_row "$(aps "$CW")")" "맞음"
+for ac_row in "불필요=0 | 필요=2" "불필요=2 | 필요=0"; do
+  CW_ROWS="$CW_ROWS_SAVE
+- \`적용 프로브 코드\` | $ac_row | 프로브 sha256=$APS_SHA"
+  cw_write "$CW"
+  out=$(aps "$CW")
+  check "--apply-probe-sha 2 를 담은 행($ac_row) → 거부" "$(aps_row "$out")" "거부"
+  case "$(printf '%s\n' "$out" | awk -F'\t' '$1=="행" { print $3 }')" in
+    *"1·2 가 아니며"*"다시 킥오프로 5c 를 다시 답하십시오"*) ok "--apply-probe-sha 2 거부 문면은 값 규칙과 5c 재답을 싣는다 ($ac_row)" ;;
+    *) bad "--apply-probe-sha 2 거부 문면 ($ac_row)" "$out" ;;
+  esac
+done
 CW_ROWS="$CW_ROWS_SAVE
-- \`적용 프로브 코드\` | 불필요=2 | 필요=0 | 프로브 sha256=$APS_BAD"
+- \`적용 프로브 코드\` | 불필요=21 | 필요=0 | 프로브 sha256=$APS_BAD"
 cw_write "$CW"
 out=$(aps "$CW")
 check "--apply-probe-sha 따옴표를 벗겨 잰 행 → 거부" "$(aps_row "$out")" "거부"

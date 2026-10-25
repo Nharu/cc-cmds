@@ -113,19 +113,27 @@
 # `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
 # is that row's scope (`런`, or a target named by its alias or by the remote
 # slug `--carry` labels it with) and `<키>` its key, one of
-# ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor
-# (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
+# ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor ·
+# apply-probe-codes (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
 # deploy-triggers (a target). The previous manifest must hold no value
 # there; anything else is refused. `render-manifest` writes the value into the
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
 #
-# The `적용 프로브 코드` row of `## 인가` has no `--set` key: it is bound to the
-# probe's hash, so `render-manifest` copies it byte for byte with the rest of
-# the section and `verify-subset` refuses a draft whose row differs from the
-# previous one — added, dropped or changed. A previous run without the row
-# keeps the default mapping. Nothing here writes the previous run's pinned
-# plugin copy or its pin record; the draft is the only file this mode makes.
+# The `적용 프로브 코드` row of `## 인가` is bound to the probe's hash, so
+# `render-manifest` copies it byte for byte with the rest of the section and
+# `verify-subset` refuses a draft whose row differs from the previous one —
+# added, dropped or changed. The one exception is a previous manifest whose
+# pipeline-run probe has no row, or a row carrying 2 (`apply_code_row_reask`):
+# with no row only 불필요=0 is defined and a row with 2 is refused by the
+# manifest check, so 5c is asked again. Then `render-manifest` drops the row,
+# `--set 런:apply-probe-codes=<불필요>/<필요>` writes the confirmed mapping as a
+# new row bound to the draft's probe bytes, and `verify-subset` accepts a row
+# that differs from the previous one only as that `--set` value, and refuses a
+# draft with no such value. The value is a `빈칸` row 5o confirmed, or — when
+# `--carry` had no file value and named the key `다시 물음` — 5c's answer,
+# recorded under `5c`. Nothing here writes the previous run's pinned plugin copy or its
+# pin record; the draft is the only file this mode makes.
 #
 # `--blank-rows` is the `--carry` output 5o showed, saved byte for byte. It is
 # required with `--set` in `verify-subset`: each entry must equal one of its
@@ -2045,6 +2053,20 @@ rk_render() {
   RK_RENDER_WHY=$(rk_plugin_rows "$RK_TMP/plugin.rows") || return 1
   printf '%s' "$RK_RULES" > "$RK_TMP/rules.kv"
   [ -f "$RK_TMP/sets.tsv" ] || : > "$RK_TMP/sets.tsv"
+  # A mapping row that cannot be carried is dropped, and a confirmed mapping is
+  # written as a new row bound to the probe the draft will carry: the confirmed
+  # `apply-probe` when one is set, the previous value otherwise.
+  local acdrop="" acrow="" acv acprobe
+  if apply_code_row_reask; then
+    acdrop=1
+    acv=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$RK_TMP/sets.tsv")
+    if [ -n "$acv" ]; then
+      acprobe=$(awk -F '\t' '$2 == "요소" && $3 == "적용 프로브" { print $4 }' "$RK_TMP/sets.tsv")
+      [ -n "$acprobe" ] || acprobe=$(manifest_field '요소' '적용 프로브')
+      acrow="- \`적용 프로브 코드\` | 불필요=${acv%%/*} | 필요=${acv#*/} | 프로브 sha256=$(apply_probe_sha "$(apply_unquote "$acprobe")")"
+    fi
+  fi
+  R_ACDROP="$acdrop" R_ACROW="$acrow" \
   R_SETS="$RK_TMP/sets.tsv" R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
   R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
@@ -2064,6 +2086,7 @@ rk_render() {
       if (sec == "## 인가") {
         if (!rows_done && rfile != "") { while ((getline l < rfile) > 0) print l; close(rfile); rows_done = 1 }
         if (!adopt_done && ENVIRON["R_ADOPT"] != "") { while ((getline l < ENVIRON["R_ADOPT"]) > 0) print l; close(ENVIRON["R_ADOPT"]); adopt_done = 1 }
+        if (!acrow_done && ENVIRON["R_ACROW"] != "") { print ENVIRON["R_ACROW"]; acrow_done = 1 }
         if (!plugin_done && pfile != "") { while ((getline l < pfile) > 0) print l; close(pfile); plugin_done = 1 }
         if (!prov_done) { print ENVIRON["R_PROV"]; prov_done = 1 }
       }
@@ -2135,6 +2158,9 @@ rk_render() {
       if (match($0, /플러그인=[^ |]*/) && (substr($0, RSTART + length("플러그인="), RLENGTH - length("플러그인=")) in padrop)) next
       print; next
     }
+    # A mapping row the pipeline cannot run on is not carried; 5c answers it
+    # again and the confirmed row is written when the section closes.
+    /^- `적용 프로브 코드`/ { if (ENVIRON["R_ACDROP"] == "1") next; print; next }
     /^- `사전 인가` \| 인터뷰 기록=/ {
       if (ENVIRON["R_DOUT"] == "1") next
       line = $0; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; next
@@ -2277,6 +2303,20 @@ rk_sets_resolve() {
   while IFS= read -r e; do
     [ -n "$e" ] || continue
     sc=${e%%:*}; rest=${e#*:}; k=${rest%%=*}; v=${rest#*=}; rsc=$sc
+    # The mapping is a row, not a field: it is a blank only where the previous
+    # row cannot be carried, and its value is held to the manifest check's rule.
+    if [ "$k" = "apply-probe-codes" ]; then
+      [ "$sc" = "런" ] || { printf '%s' "--set $k 의 범위는 런입니다"; return 1; }
+      apply_code_value_ok "${v%%/*}" && apply_code_value_ok "${v#*/}" && [ "${v%%/*}" != "${v#*/}" ] \
+        && [ "${v%%/*}/${v#*/}" = "$v" ] \
+        || { printf '%s' "--set 런:$k 의 값은 <불필요>/<필요> 이고, 두 값은 0–125 의 서로 다른 정수이며 1·2 가 아닙니다: $v"; return 1; }
+      apply_code_row_reask \
+        || { printf '%s' "--set 런:$k — 원천 매니페스트의 적용 프로브 코드 행을 그대로 이어받으므로 빈칸이 아닙니다"; return 1; }
+      awk -F '\t' -v k="$k" '$5 == k { d = 1 } END { exit !d }' "$out" \
+        && { printf '%s' "--set 런:$k 가 두 번 주어졌습니다"; return 1; }
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$sc" '인가 행' '적용 프로브 코드' "$v" "$k" "$rsc" >> "$out"
+      continue
+    fi
     loc=$(rk_set_field "$k") || { printf '%s' "--set 의 키를 모릅니다: $k"; return 1; }
     sec=${loc%%"$TAB"*}; f=${loc#*"$TAB"}
     if [ "$sec" = "대상" ]; then
@@ -2527,9 +2567,25 @@ EOF
     if [ -z "$pval" ] && vs_set_is 런 "$k" "$dval"; then continue; fi
     why="${why:+$why; }$k 가 원천과 다릅니다"
   done
-  # The apply mapping row has no `--set`: it is the previous row, or none.
-  [ "$(MANIFEST="$prev" manifest_apply_code_rows)" = "$(MANIFEST="$draft" manifest_apply_code_rows)" ] \
-    || why="${why:+$why; }적용 프로브 코드 행이 원천과 다릅니다"
+  # The apply mapping row is the previous row, or none — except where the
+  # previous row cannot be carried, and then the draft's row is 5c's answer,
+  # compared with the confirmed `--set` value. A draft there with no such value
+  # is refused: it would freeze with only 불필요=0 defined, and every needed
+  # apply of the new run would stop before its command.
+  local acset dac
+  if MANIFEST="$prev" apply_code_row_reask; then
+    acset=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$VS_SETS" 2>/dev/null)
+    dac=$(MANIFEST="$draft" manifest_apply_code_rows)
+    if [ -n "$acset" ]; then
+      [ -n "$dac" ] && [ "$(manifest_row_fields "$dac" '불필요' 1 | head -1)/$(manifest_row_fields "$dac" '필요' 1 | head -1)" = "$acset" ] \
+        || why="${why:+$why; }적용 프로브 코드 행이 확인한 대응 $acset 과 다릅니다"
+    else
+      why="${why:+$why; }원천의 적용 프로브 코드 행을 이어받을 수 없어 5c 로 다시 물은 대응(--set 런:apply-probe-codes)이 필요합니다"
+    fi
+  else
+    [ "$(MANIFEST="$prev" manifest_apply_code_rows)" = "$(MANIFEST="$draft" manifest_apply_code_rows)" ] \
+      || why="${why:+$why; }적용 프로브 코드 행이 원천과 다릅니다"
+  fi
   local prules drules rl rk rv
   prules=$(MANIFEST="$prev" manifest_rule_lines | sort); drules=$(MANIFEST="$draft" manifest_rule_lines | sort)
   if [ "$prules" != "$drules" ]; then
@@ -2566,11 +2622,22 @@ EOF
   if [ -z "$why" ]; then
     while IFS="$TAB" read -r ssc ssec sf sv sk srsc; do
       [ -n "$ssc" ] || continue
-      MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
-        || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
-      [ -n "$(rk_asked_answer "5o $srsc:$sk")" ] || why="${why:+$why; }$srsc:$sk 는 5o 에서 묻지 않은 값입니다"
+      # The mapping has a second source: where 5o offered no `빈칸` row for it
+      # (no file value, so `--carry` named the key `다시 물음`) or the person did
+      # not confirm the offered one, 5c is asked and its answer, recorded under
+      # `5c`, is the value — the same one `--set` carries.
+      if [ "$sk" = "apply-probe-codes" ] && [ -n "$(rk_asked_answer '5c')" ]; then
+        [ "$(rk_asked_answer '5c')" = "$sv" ] || why="${why:+$why; }$srsc:$sk 의 확정값이 5c 답과 다릅니다"
+      else
+        MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
+          || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
+        [ -n "$(rk_asked_answer "5o $srsc:$sk")" ] || why="${why:+$why; }$srsc:$sk 는 5o 에서 묻지 않은 값입니다"
+      fi
       case " / $D_CONFIRM / " in *" / $srsc:$sk=$sv / "*) ;; *) why="${why:+$why; }$ssc:$sk 의 확정값이 사용자 확인 문면에 없습니다" ;; esac
       if [ "$ssec" = "대상" ]; then sdv=$(MANIFEST="$draft" target_field "$ssc" "$sf")
+      elif [ "$sk" = "apply-probe-codes" ]; then
+        dac=$(MANIFEST="$draft" manifest_apply_code_rows | head -n 1)
+        sdv="$(manifest_row_fields "$dac" '불필요' 1 | head -1)/$(manifest_row_fields "$dac" '필요' 1 | head -1)"
       else sdv=$(MANIFEST="$draft" manifest_field "$ssec" "$sf"); fi
       [ "$sdv" = "$sv" ] || why="${why:+$why; }초안의 $ssc:$sk 가 확정값이 아닙니다"
     done < "$VS_SETS"
