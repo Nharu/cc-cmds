@@ -3341,8 +3341,15 @@ gate_park_repair_line() {
       msg="repair: kick off again with a manifest that carries this shape as a \`사전 인가\` row — the authorization of this run is frozen"; row=1 ;;
     dev식별자부재/*|dev식별자불일치/*|dev대조불가/*)
       msg="repair: name the identifier of that tool in the argv, or kick off again with a manifest whose \`dev 식별자\` on the target row matches the real value" ;;
+    # A whole-environment dump most often hunts a pipeline variable, so that
+    # repair names the one read form and the policy section listing them all.
     비밀출력/*)
-      msg="repair: rewrite it in a form that does not print the secret (printenv with a name, and so on). If the value is needed, leave it to a person" ;;
+      case "$a0" in
+        env|printenv)
+          msg="repair: rewrite it in a form that does not print the secret — read one pipeline variable per call by name (printenv CC_PIPELINE_RUN_DIR); the stage policy's Pipeline variables section names every one, and a gated command passes \"\$CC_PIPELINE_MANIFEST\" unexpanded. If the value is needed, leave it to a person" ;;
+        *)
+          msg="repair: rewrite it in a form that does not print the secret (printenv with a name, and so on). If the value is needed, leave it to a person" ;;
+      esac ;;
     push원격불일치/*)
       msg="repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
     도달모순/*)
