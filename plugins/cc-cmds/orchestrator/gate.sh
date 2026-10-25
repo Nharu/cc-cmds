@@ -5931,6 +5931,60 @@ _gp_unesc() {
   return 0
 }
 
+gate_caller_is_visual_publish_stage() {
+  # 0 when this gate call comes from the run-scope visual publish stage: the
+  # launcher hands it `CC_PIPELINE_STAGE_ID=<step>#<attempt>` and the step is
+  # the plan's single `visual-publish` step. The router and the driver carry no
+  # stage id, so they never match.
+  local sid="${CC_PIPELINE_STAGE_ID:-}" step
+  [ -n "$sid" ] || return 1
+  step=$(gate_run_scope_step visual-publish 2>/dev/null) || return 1
+  [ "${sid%#*}" = "$step" ]
+}
+
+gate_ban_line_id() {
+  # gate_ban_line_id <line> — the id a `visual-config.sh append` line adds:
+  # the line in either form the helper takes (a sidecar candidate line
+  # ``- `<id>` | … — <n>회 <screen>`` or a bare `<id> | …`), up to its first
+  # ` | `.
+  local line="$1"
+  case "$line" in
+    '- `'*) line=${line#'- `'}; line=${line/\`/} ;;
+  esac
+  printf '%s' "${line%% | *}" | sed 's/[[:space:]]*$//'
+}
+
+gate_ban_append_answer() {
+  # gate_ban_append_answer <line> — prints the halt record (file name) whose
+  # person's answer opens this `append`, or returns 1. It opens one only from
+  # the publish stage, when the last `중단 답` row of the stage's records was a
+  # person's `승인` to a `금지-후보` record, the record's `**금지 후보**` id is
+  # the line's id, and no `visual-config.sh append` row of this run has
+  # consumed that answer yet (`소비 중단 답=<file name>`). So one answer adds
+  # one line, and only the one the person saw.
+  local line="${1:-}" row last='' f rec cand id
+  gate_caller_is_visual_publish_stage || return 1
+  [ -n "$line" ] && [ -n "${RUN_DIR:-}" ] || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    f=$(gate_row_field "$row" '중단 기록')
+    case "${f##*/}" in S2P#*.md) last=$row ;; esac
+  done <<EOF
+$(run_section_rows '중단 답' 2>/dev/null || true)
+EOF
+  [ -n "$last" ] || return 1
+  [ "$(gate_row_field "$last" '답한 주체')" = "사람" ] || return 1
+  [ "$(gate_row_field "$last" '선택지')" = "승인" ] || return 1
+  f=$(gate_row_field "$last" '중단 기록')
+  rec="$RUN_DIR/halt/${f##*/}"
+  halt_step_has_prefix "$rec" '금지-후보' || return 1
+  cand=$(sed -n 's/^\*\*금지 후보\*\*: //p' "$rec" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*$//')
+  id=$(gate_ban_line_id "$line")
+  [ -n "$cand" ] && [ "$cand" = "$id" ] || return 1
+  ! gate_has_row '자율 승인' "소비 중단 답=${f##*/}" || return 1
+  printf '%s' "${f##*/}"
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   # THE GATE'S OWN HELPERS ARE TRUSTED BY WHERE THEY ARE, NOT BY THEIR NAME.
@@ -6096,15 +6150,23 @@ surface_of_argv0() {
         *)      printf '등급 미상' ;;
       esac ;;
     # The three visual helpers, graded by their subcommand. `visual-config.sh
-    # snapshot` reads the run's copy of the visual settings; its other
-    # subcommands write the settings home or the sidecar, which is the seat's
-    # work and never a stage's, so they take the unknown grade and its refusal.
+    # snapshot` reads the run's copy of the visual settings and `lane` reads the
+    # pinned lane from the host file. `account` records the publishing account
+    # in the host file, which only the visual publish stage does; `append` adds
+    # one forbidden-list line, and only on the person's `승인` to the candidate
+    # the line names (`gate_ban_append_answer`). Anywhere else, and every other
+    # subcommand, writes the settings home or the sidecar, which is the seat's
+    # work, so they take the unknown grade and its refusal.
     # `visual-check.sh` only reads the document, the sidecar and the screens.
     # `visual-capture.sh` writes its screenshots into an output directory outside
     # the tree, and `app` serves the build on a loopback port it takes down itself.
     visual-config.sh)
       case "${1:-}" in
-        snapshot) printf '읽기' ;;
+        snapshot|lane) printf '읽기' ;;
+        account)
+          if gate_caller_is_visual_publish_stage; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
+        append)
+          if [ "$#" -eq 2 ] && gate_ban_append_answer "$2" >/dev/null; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
         *)        printf '등급 미상' ;;
       esac ;;
     visual-check.sh)
@@ -10324,22 +10386,25 @@ gate_plan_skill_step_count() {
 }
 
 gate_run_scope_step() {
-  # gate_run_scope_step <종류> — `design`, `audit`, `split` or `visual`. Prints
-  # the plan's single step id of that kind and returns 0, or returns 1. A design
-  # step exists only in a plan that requires a design. An audit step is
-  # run-scope in that plan, and in a plan with no design step at all, whose
-  # audit reads a document that was frozen before the run. A split step and a
-  # visual step are run-scope wherever the plan names exactly one.
+  # gate_run_scope_step <종류> — `design`, `audit`, `split`, `visual` or
+  # `visual-publish`. Prints the plan's single step id of that kind and returns
+  # 0, or returns 1. A design step exists only in a plan that requires a design.
+  # An audit step is run-scope in that plan, and in a plan with no design step
+  # at all, whose audit reads a document that was frozen before the run. A split
+  # step, a visual step and a visual publish step are run-scope wherever the
+  # plan names exactly one.
   local skill req ids
   case "${1:-}" in
     design) skill='design' ;;
     audit)  skill='design-audit' ;;
     split)  skill='split' ;;
     visual) skill='visual' ;;
+    visual-publish) skill='visual-publish' ;;
     *)      return 1 ;;
   esac
   req=$(manifest_plan_json 2>/dev/null | jq -r '.design_required' 2>/dev/null || true)
-  if [ "$skill" != "split" ] && [ "$skill" != "visual" ] && [ "$req" != "true" ]; then
+  if [ "$skill" != "split" ] && [ "$skill" != "visual" ] && [ "$skill" != "visual-publish" ] \
+     && [ "$req" != "true" ]; then
     [ "$skill" = "design-audit" ] || return 1
     [ "$(gate_plan_skill_step_count design)" = "0" ] || return 1
   fi
@@ -10359,15 +10424,19 @@ gate_run_scope_step() {
 #   audit            | design-audit    | audit
 #   split            | split           | split
 #   visual           | visual          | visual
+#   visual-publish   | visual-publish  | visual-publish
 #
 # A base run is `design → design-audit → split` and none of the three is a
 # segment, so all three are dispatched with `--segment -` and keyed on their
 # plan step id. The visual step is the fourth row: it generates the night's
 # screens from the audited document, before any segment is implemented, and
-# builds no segment of its own. Each kind binds to exactly ONE plan step carrying its skill —
+# builds no segment of its own. The visual publish step is the fifth row
+# (the driver names it `S2P`): it publishes the screens the visual step left
+# reviewed, on the lane the host file pins, after the visual step it depends
+# on. Each kind binds to exactly ONE plan step carrying its skill —
 # zero or several is a plan this table does not know how to read, and the
 # dispatch is refused rather than a key being picked. `gate_run_scope_step`
-# above resolves all four, with the design and the audit also held to the
+# above resolves all five, with the design and the audit also held to the
 # plan's `design_required`.
 # ---------------------------------------------------------------------------
 gate_run_scope_skill_of() {
@@ -10377,6 +10446,7 @@ gate_run_scope_skill_of() {
     audit)  printf 'design-audit' ;;
     split)  printf 'split' ;;
     visual) printf 'visual' ;;
+    visual-publish) printf 'visual-publish' ;;
     *) return 1 ;;
   esac
 }
@@ -10387,7 +10457,7 @@ gate_run_scope_kind_of_key() {
   # `segment` row is a segment, whatever the plan calls it.
   local key="$1" k s
   [ -z "$(gate_segment_field "$key" '상태')" ] || return 1
-  for k in design audit split visual; do
+  for k in design audit split visual visual-publish; do
     if s=$(gate_run_scope_step "$k" 2>/dev/null) && [ "$s" = "$key" ]; then
       printf '%s' "$k"
       return 0
@@ -10401,7 +10471,8 @@ gate_run_scope_rows() {
   # run-scope step in ledger order, in either writer's shape: the router's
   # (`세그먼트=- | 스테이지=<id> | 종류=<k>`) or the driver's, which names its stage
   # `S2` (audit: `종류=audit`, or no `종류` on a row written before the driver
-  # stamped it), `S2split` (`종류=split`) or `S2V` (`종류=visual`). Any other `종류`
+  # stamped it), `S2split` (`종류=split`), `S2V` (`종류=visual`) or `S2P`
+  # (`종류=visual-publish`). Any other `종류`
   # on an `S2` row is not an audit. The driver's names are read only when the
   # plan's id has no row of its own.
   local id="$1" k="$2" rows
@@ -10421,6 +10492,10 @@ gate_run_scope_rows() {
         rows=$( { gate_rows 'stage-result' || true; } \
                 | { grep -F '세그먼트=- | 스테이지=S2V |' || true; } \
                 | { grep -F '| 종류=visual ' || true; }) ;;
+      visual-publish)
+        rows=$( { gate_rows 'stage-result' || true; } \
+                | { grep -F '세그먼트=- | 스테이지=S2P |' || true; } \
+                | { grep -F '| 종류=visual-publish ' || true; }) ;;
     esac
   fi
   printf '%s' "$rows"
@@ -16483,8 +16558,9 @@ gate_reap_cycle() {
 # dispatched with `--segment -`, and that exemption is keyed on the kind; were
 # the split a `generic` stage, every other generic stage would inherit a
 # segment-less dispatch. The variant below writes it exactly as it writes
-# `generic`. `visual` is the fourth run-scope step and takes the same footing.
-readonly STAGE_KINDS="design implement review audit reconverge generic shift split visual"
+# `generic`. `visual` is the fourth run-scope step and takes the same footing,
+# and `visual-publish` the fifth.
+readonly STAGE_KINDS="design implement review audit reconverge generic shift split visual visual-publish"
 
 gate_settings_dir() {
   # The override exists for ONE caller: the re-derivation probe, which needs to
@@ -16962,14 +17038,18 @@ $(gate_segment_worktrees_for_settings)"
     # only enforcement point for these tools: a PreToolUse hook matcher can see
     # them too, so a later cap or check has a place to go.
     #
-    # THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY VARIANT, THE SHIFT INCLUDED,
-    # so they sit in the initial value and not in either branch below. A stage
-    # never publishes to or reads from the Design canvas; that belongs to the
-    # seat. Under `CLAUDE_CODE_ARTIFACT=1` the headless tool list carries exactly
-    # `Artifact`, `ArtifactComments` and `ArtifactData` besides `DesignSync`, and
-    # the set matches `CLAUDE_DESIGN_TOOLS` in run.sh, which refuses the same
-    # names on every judgment call's own command line.
+    # THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY VARIANT BUT ONE, THE SHIFT
+    # INCLUDED. Under `CLAUDE_CODE_ARTIFACT=1` the headless tool list carries
+    # exactly `Artifact`, `ArtifactComments` and `ArtifactData` besides
+    # `DesignSync`, and the set matches `CLAUDE_DESIGN_TOOLS` in run.sh, which
+    # refuses the same names on every judgment call's own command line. The
+    # visual publish stage is the one stage that publishes to and reads from the
+    # Design canvas, so its variant takes the three Artifact tools out of the
+    # deny list and names them in the allow list; `DesignSync` stays refused to
+    # it as to every other variant. Only that kind's launch carries
+    # `CLAUDE_CODE_ARTIFACT=1` (`gate_launch_kind_env`).
     deny_extra="\"DesignSync\", \"Artifact\", \"ArtifactComments\", \"ArtifactData\", "
+    [ "$k" != "visual-publish" ] || deny_extra="\"DesignSync\", "
 
     # THE SHIFT VARIANT IS NARROWER THAN EVERY STAGE, AND THE NARROWING HAS TO
     # HAPPEN INSIDE THIS LOOP. `extra_dirs` and the read allow-list are computed
@@ -17006,6 +17086,9 @@ $(gate_segment_worktrees_for_settings)"
       deny_extra="${deny_extra}\"WebFetch\", \"WebSearch\", \"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
     else
       kind_allow="\"WebFetch\", \"WebSearch\"${kind_allow:+, $kind_allow}"
+    fi
+    if [ "$k" = "visual-publish" ]; then
+      kind_allow="${kind_allow}, \"Artifact\", \"ArtifactComments\", \"ArtifactData\""
     fi
     pl_shift=0
     [ "$k" != "shift" ] || pl_shift=1
@@ -20454,9 +20537,19 @@ gate_reentry_table() {
   #
   # A review's halts are not here, and neither are the re-convergence scopes the
   # gate cannot check — a problem identity, `설계 수준 잔여` and `상한 P0 잔여`.
+  #
+  # The visual publish stage's three person-only questions are here, each as
+  # the bare prefix and the prefix followed by ` — `, the two forms a step
+  # matches a prefix in.
   printf '%s\n' \
     'design-audit-unattended|Step 6*CFI-3b*|audit|/cc-cmds:design-audit-unattended <문서>' \
-    'design-reconverge|Step 3*|reconverge|/cc-cmds:design-reconverge <문서> <범위>'
+    'design-reconverge|Step 3*|reconverge|/cc-cmds:design-reconverge <문서> <범위>' \
+    'visual-publish-unattended|시각-판정|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|시각-판정 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|금지-후보|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|금지-후보 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|발행-실패|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|발행-실패 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>'
 }
 
 gate_halt_record_step() {
@@ -25306,7 +25399,7 @@ gate_record_cone() {
     warn "a cone row needs an \`앵커 세그먼트\` — it is where the derivation starts"
     return "$GATE_EXIT_VOCAB"
   fi
-  # A run-scope step — design, audit, split or visual — is the one anchor that has no
+  # A run-scope step — design, audit, split, visual or visual publish — is the one anchor that has no
   # segment row: a stage of it that cannot finish inside the deadline, or an
   # answer to its halt the shift cannot carry out, holds every segment.
   # A termination clause's `clause-<id>` key has none either: its evidence
@@ -26119,14 +26212,14 @@ gate_visual_approval_holds() {
   # so none of them can come to hold an approval the others would refuse. A run
   # with no design document has no sidecar to read, and the predicate does not
   # hold.
-  local out rc=0
-  if [ -z "${DOC:-}" ]; then
-    printf '승인 없음 — 이 런에 설계 문서가 없다'
-    return 1
-  fi
-  out=$(bash "$GATE_DIR/visual-check.sh" approval "$DOC" 2>&1) || rc=$?
-  printf '%s' "$(printf '%s\n' "$out" | sed -n 1p)"
-  [ "$rc" = "0" ]
+  #
+  # A RUN WHOSE PLAN HOLDS THE PUBLISH STAGE (`S2P`) TAKES AN APPROVAL ONLY
+  # FROM A PERSON. The line has to carry the tail naming the run's latest
+  # `시각-판정` record, and the ledger has to hold a person's `승인` to it, so a
+  # line the stage wrote on any other footing does not open a screen slice.
+  # The verdict is `visual_approval_verdict`'s, the one the driver's park
+  # reason prints too.
+  visual_approval_verdict "$GATE_DIR"
 }
 
 gate_visual_approval_resolve() {
@@ -26154,11 +26247,83 @@ gate_visual_approval_resolve() {
   [ -n "$cls" ] || cls=$(gate_approval_field "$id" '판단 부류')
   [ "$cls" = "시각-승인" ] || return 0
   [ "$(gate_approval_state "$id")" = "대기" ] || return 0
+  if ! why=$(gate_visual_approval_holds); then
+    # A QUESTION SUBMITTED AFTER A PERSON'S NO IS CLOSED BY THAT NO. The
+    # person already refused the published screens, or gave up the publish,
+    # at the stage's halt; asking again here would put the same question to
+    # them a second time.
+    if gate_visual_halt_linked_close "$id"; then
+      warn "judgment approval $id was closed as '$(gate_approval_state "$id")' by the person's answer to the visual publish stage's halt — the same question is not asked again"
+      return "$GATE_EXIT_RULE"
+    fi
+    return 0
+  fi
   gate_approval_person_answered "$id" && return 0
-  why=$(gate_visual_approval_holds) || return 0
   gate_auto_close_approval "$id" 승인 "$q" "시각 승인 술어 성립: $why" || return 0
   GATE_AUTO_RESOLVED_APPROVAL="$id"; export GATE_AUTO_RESOLVED_APPROVAL
   return "$GATE_APPROVAL_ANSWERED"
+}
+
+gate_visual_halt_refusal() {
+  # gate_visual_halt_refusal — the run's standing refusal from the visual
+  # publish stage, as `<상태>\t<중단 기록>\t<선택지>`: the last `중단 답` row a
+  # person wrote to a `시각-판정` or `발행-실패` record of `S2P`, when it chose
+  # `거부` (state `거부`) or `발행하지 않음` (state `무효`). Nothing when the
+  # last such answer was anything else, or there is none: a later `승인`
+  # supersedes an earlier refusal.
+  local row f by opt rec st='' out=''
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    f=$(gate_row_field "$row" '중단 기록')
+    case "${f##*/}" in S2P#*.md) ;; *) continue ;; esac
+    by=$(gate_row_field "$row" '답한 주체')
+    [ "$by" = "사람" ] || continue
+    rec="$RUN_DIR/halt/${f##*/}"
+    opt=$(gate_row_field "$row" '선택지')
+    if halt_step_has_prefix "$rec" '시각-판정'; then
+      if [ "$opt" = "거부" ]; then st='거부'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
+    elif halt_step_has_prefix "$rec" '발행-실패'; then
+      if [ "$opt" = "발행하지 않음" ]; then st='무효'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
+    fi
+  done <<EOF
+$(run_section_rows '중단 답' 2>/dev/null || true)
+EOF
+  [ -n "$st" ] || return 1
+  printf '%s\t%s' "$st" "$out"
+}
+
+gate_visual_halt_linked_close() {
+  # gate_visual_halt_linked_close [<승인 id>] — closes the run's open
+  # `시각-승인` questions (or the one named) by the person's refusal at the
+  # visual publish stage (`gate_visual_halt_refusal`): `거부` for a `시각-판정`
+  # answered `거부`, `무효` for a `발행-실패` answered `발행하지 않음`. 0 when
+  # it closed at least one, 1 when there was no refusal or nothing open.
+  #
+  # NOT AN AUTO-RESOLUTION. `gate_auto_close_approval` writes `처분 사유=자동
+  # 해소` and only ever adopts a recommendation; this close carries a person's
+  # answer, so its row names the halt answer it stands on in `답변 문면` and
+  # carries `처분 사유=중단 답 연동`. From there the refusal is consumed the
+  # way any person's refusal of a person-set question is (`결정=거절 소비`).
+  local only="${1:-}" ref st rec opt id n=0 q
+  ref=$(gate_visual_halt_refusal) || return 1
+  st=${ref%%$'\t'*}; ref=${ref#*$'\t'}
+  rec=${ref%%$'\t'*}; opt=${ref#*$'\t'}
+  for id in $( { gate_rows '승인' || true; } | { grep -F '| 판단 부류=시각-승인 |' || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    [ -z "$only" ] || [ "$id" = "$only" ] || continue
+    [ "$(gate_approval_state "$id")" = "대기" ] || continue
+    q=$(gate_approval_field "$id" '질문 문면')
+    gate_append '승인' --transition "$id" '대기' 0 "승인 id=$id" "상태=$st" \
+      "질문 문면=$(gate_row_safe "$q" 400)" \
+      "답변 문면=중단 답 연동(기록 ${rec##*/}, 선택지 $opt)" "해소 시각=$(now_iso)" \
+      "응답 토큰=-" "답변 다이제스트=-" \
+      "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" "처분 사유=중단 답 연동" || continue
+    gate_close_settle "$id"
+    log "시각-승인 $id 을 $st 로 닫음 — 시각 발행 단계 중단 기록 ${rec##*/} 의 사람 답 「$opt」"
+    n=$((n + 1))
+  done
+  [ "$n" -gt 0 ]
 }
 
 gate_revert_surface() {
@@ -31463,7 +31628,7 @@ EOF
         warn "the \`원인\` of a \`blocked\` row has to be \`해소\` — making a block is the work of the gate (observed: ${cause:-(none)})"
         return "$GATE_EXIT_VOCAB"
       fi
-      # A cone row anchored on a run-scope step (design, audit, split or visual) holds
+      # A cone row anchored on a run-scope step (design, audit, split, visual or visual publish) holds
       # the run just as a run-scope row does, and a driver-written one or a
       # shift's routing block has no lineage a later attempt could release it
       # by — so this form is its way out, and it must find it by `사유`.
@@ -32041,6 +32206,16 @@ EOF
       # `잔여 판정` stamp: who froze which residual items on what reading. It is
       # not clipped, so it is counted in the projection below as well as in
       # the append.
+      # THE PUBLISH STAGE'S JUDGMENT QUESTIONS ARE A PERSON'S. Whether the
+      # published screens are right, whether a candidate joins the forbidden
+      # list and whether a failed publish is given up are answered by looking
+      # at the screens, which neither the seat's recommendation nor a shift
+      # has done; the answer is refused before anything else is checked.
+      if [ "$hby" != "사람" ] \
+         && halt_step_is_visual_publish_site "$hrec" '시각-판정' '금지-후보' '발행-실패'; then
+        warn "이 중단 기록은 시각 발행 단계의 사람 전용 질문입니다(시각-판정·금지-후보·발행-실패) — 답한 주체=사람 의 답만 기록합니다: $hrec"
+        return "$GATE_EXIT_RULE"
+      fi
       local hladder=''
       if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && [ -z "$hsa" ]; then
         gate_halt_recommendation "$hrec" || return "$?"
@@ -32243,6 +32418,16 @@ EOF
           "레인=$hlane" "기록 시각=$hat"
       fi
       log "중단 답 기록 — $seg ← $hopt ($hby)"
+      # A PERSON'S NO AT THE PUBLISH STAGE CLOSES THE SCREENS' QUESTION IN THE
+      # SAME ACT: `거부` on a `시각-판정` record closes the run's open
+      # `시각-승인` as `거부`, `발행하지 않음` on a `발행-실패` record closes it
+      # as `무효`. Left open, the question would wait for an answer the person
+      # has already given.
+      if [ "$hby" = "사람" ] \
+         && { { [ "$hopt" = "거부" ] && halt_step_is_visual_publish_site "$hrec" '시각-판정'; } \
+              || { [ "$hopt" = "발행하지 않음" ] && halt_step_is_visual_publish_site "$hrec" '발행-실패'; }; }; then
+        gate_visual_halt_linked_close || true
+      fi
       ;;
     shift-halt)
       # THE SHIFT STOPS ONE SEGMENT, NOT THE RUN. A segment-scope stop used to
@@ -36808,7 +36993,7 @@ gate_verb_act() {
   fi
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
      && { [ "$rs_table" = "design" ] || [ "$rs_table" = "audit" ] || [ "$rs_table" = "split" ] \
-          || [ "$rs_table" = "visual" ]; }; then
+          || [ "$rs_table" = "visual" ] || [ "$rs_table" = "visual-publish" ]; }; then
     rs_skill=$(gate_run_scope_skill_of "$rs_table")
     if ! stage_key=$(gate_run_scope_step "$rs_table"); then
       case "$rs_table" in
@@ -37019,6 +37204,7 @@ gate_verb_act() {
         audit)      dd_cmd='/cc-cmds:design-audit-unattended ' ;;
         split)      dd_cmd='/cc-cmds:design-base-unattended --split ' ;;
         visual)     dd_cmd='/cc-cmds:visual-unattended ' ;;
+        visual-publish) dd_cmd='/cc-cmds:visual-publish-unattended ' ;;
         reconverge) dd_cmd='/cc-cmds:design-reconverge ' ;;
       esac
       case "$dd_prompt" in
@@ -37039,7 +37225,8 @@ gate_verb_act() {
     fi
 
     # PREDECESSORS ARE RUN-SCOPE STEPS, so `선행` of the segment rows cannot say
-    # whether they landed. Each `depends_on` of an audit, split or visual step must
+    # whether they landed. Each `depends_on` of an audit, split, visual or visual
+    # publish step must
     # have ended its last run-scope row `정상 완료`, and a design predecessor must
     # also have left the document frozen — an audit or a split over an
     # unfinished design reads bytes nobody settled, and the split's tracker
@@ -37050,7 +37237,7 @@ gate_verb_act() {
     # opens the run, and the audit a re-convergence rides on passed this one.
     local rs_dep rs_dk rs_last rs_deps=""
     case "$rs_kind" in
-      audit | split | visual)
+      audit | split | visual | visual-publish)
         rs_deps=$( { manifest_plan_json 2>/dev/null \
                      | jq -r --arg id "$stage_key" '.steps[]? | select(type == "object" and .id == $id) | .depends_on[]? // empty' 2>/dev/null \
                      || true; } ) ;;
@@ -37122,7 +37309,7 @@ gate_verb_act() {
     fi
     if ! ss_why=$(gate_visual_approval_holds); then
       warn "세그먼트 ${segment} 는 화면 슬라이스인데 설계 문서의 구현 승인이 서지 않습니다 (${ss_why}) — 화면이 승인되기 전에는 구현을 보내지 않습니다"
-      warn "고정 좌석에서 /cc-cmds:visual 로 화면을 승인해 사이드카에 구현 승인 줄을 다시 쓴 뒤 디스패치하세요"
+      warn "$(visual_approval_route_hint) — 그 뒤 디스패치하세요"
       exit "$GATE_EXIT_RULE"
     fi
   fi
@@ -39017,8 +39204,17 @@ EOF
     if [ "${GATE_ADMIT:-}" = "1" ]; then
       _adm=("형태=맨" "요청=$GATE_ADMIT_REQ_ID" "티켓=$_admit_tid" "예측=$_admit_pred")
     fi
+    # A forbidden-list append the person's answer opened names that answer's
+    # record, and the field is what spends it (`gate_ban_append_answer`).
+    local _vpc=''
+    if [ "${1##*/}" = "visual-config.sh" ] && [ "${2:-}" = "append" ] && [ "$#" -eq 3 ] \
+       && [ "$graded" = "트리밖쓰기" ]; then
+      _vpc=$(gate_ban_append_answer "$3" 2>/dev/null || true)
+      [ -z "$_vpc" ] || _adm+=("소비 중단 답=$_vpc")
+    fi
     _row_fixed=$(( ${#alias} + ${#segment} + ${#GATE_ACT_EFFECTIVE} + ${#graded} + ${#actor} + 336 ))
-    [ "${#_adm[@]}" -eq 0 ] || _row_fixed=$(( _row_fixed + ${#_adm[0]} + ${#_adm[1]} + ${#_adm[2]} + ${#_adm[3]} + 12 ))
+    [ "${GATE_ADMIT:-}" != "1" ] || _row_fixed=$(( _row_fixed + ${#_adm[0]} + ${#_adm[1]} + ${#_adm[2]} + ${#_adm[3]} + 12 ))
+    [ -z "$_vpc" ] || _row_fixed=$(( _row_fixed + ${#_vpc} + 24 ))
     _argv_budget=$(( 1024 - 16 - _row_fixed ))
     [ "$_argv_budget" -gt 128 ] && _argv_budget=128
     [ "$_argv_budget" -lt 0 ] && _argv_budget=0
@@ -40865,6 +41061,7 @@ gate_continuation_argv() {
     design) unmet="동결된 설계 문서도 정지 기록도 없다" ;;
     audit)  unmet="판독자 리포트 파일(docs/design-audit/<slug>.reader-*.md)도 감사 종결 문구($LIT_AUDIT_TERMINAL)도 없다" ;;
     visual) unmet="검토 통과로 확정된 시각 사이드카도 시각 종결 문구($LIT_VISUAL_TERMINAL)도 정지 기록도 없다" ;;
+    visual-publish) unmet="발행 종결 문구($LIT_VISUAL_PUBLISH_TERMINAL)와 함께 발행됨 상태의 시각 사이드카나 사람의 거부·발행하지 않음 답이 없고, 정지 기록도 없다" ;;
     # An implement attempt filed `공허한 성공` for its residual share names the
     # missing headings verbatim, so the continued session can find each item.
     implement)
@@ -40926,7 +41123,7 @@ gate_wait_deadline_park() {
   # gate_wait_deadline_park <alias> <row segment> <key> <lineage> <ready-at iso>
   #                         <basis> <recovery> <redispatch> — the cone row a
   # stage that cannot finish inside the deadline leaves. Anchored on the key —
-  # the segment id, or a run-scope step id (design, audit, split or visual) — never on
+  # the segment id, or a run-scope step id (design, audit, split, visual or visual publish) — never on
   # the lineage; the lineage rides in `근거` so this attempt's park can be
   # recognised. On a run-scope step it holds the run (termination condition 5)
   # until a later attempt of the key or a `원인=해소` row releases it.
@@ -40996,12 +41193,17 @@ gate_launch_route() {
     case "$GATE_ROUTE_BIND" in ''|-) ;; *) reqbind=$GATE_ROUTE_BIND ;; esac
   fi
   GATE_ROUTE_EVENT=$event
+  # THE PIN RIDES HERE AND IN `gate_launch_route_ask` ALIKE: the carry path
+  # asks through that one, and a pin on one builder only would let a resumed
+  # visual publish stage land on a lane its first launch was not pinned to.
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$reqbind" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
+          --arg pin "$(kind_pin_lane_of "$kind" || true)" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
-           + (if $dl == null then {} else {deadline: $dl} end)') \
+           + (if $dl == null then {} else {deadline: $dl} end)
+           + (if $pin == "" then {} else {pin_lane: $pin} end)') \
     || { warn "could not build the router request ($seg)"; return 1; }
   prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
            | { jq -r '.nonce // empty' 2>/dev/null || true; })
@@ -41067,9 +41269,11 @@ gate_launch_route_ask() {
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$bound" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
+          --arg pin "$(kind_pin_lane_of "$kind" || true)" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
-           + (if $dl == null then {} else {deadline: $dl} end)') \
+           + (if $dl == null then {} else {deadline: $dl} end)
+           + (if $pin == "" then {} else {pin_lane: $pin} end)') \
     || { warn "could not build the router request ($seg)"; return 1; }
   route_resolve "$req" || { warn "the account resolver stopped — $seg is not launched"; return 1; }
 }
@@ -41385,6 +41589,23 @@ gate_sup_await_dispatch() {
   return 0
 }
 
+gate_launch_kind_env() {
+  # gate_launch_kind_env <stage-kind> — the two variables only the visual
+  # publish stage is launched with, set in this process's environment for that
+  # kind and removed from it for every other. `CLAUDE_CODE_ARTIFACT=1` is what
+  # makes a headless session load the Artifact tools at all, and
+  # `CC_PIPELINE_VISUAL_PUBLISH=1` is the marker `visual-config.sh` reads to let
+  # `account` and `append` run inside a run. Removed rather than left alone on
+  # every other kind, because the launching process may itself have inherited
+  # either one, and a stage that inherited them would load tools its settings
+  # variant still refuses and lift a refusal no other kind may lift.
+  if [ "${1:-}" = "visual-publish" ]; then
+    export CLAUDE_CODE_ARTIFACT=1 CC_PIPELINE_VISUAL_PUBLISH=1
+  else
+    unset CLAUDE_CODE_ARTIFACT CC_PIPELINE_VISUAL_PUBLISH
+  fi
+}
+
 gate_launch_stage() {
   # gate_launch_stage <alias> <segment> <stage-kind> <cli args...>
   #
@@ -41507,6 +41728,24 @@ gate_launch_stage() {
   # outside — that answer's again, since the attempt may have died holding it.
   GATE_HA_CARD_LINE=${GATE_HA_LINE:-}
   [ -n "$GATE_HA_CARD_LINE" ] || GATE_HA_CARD_LINE=$(gate_halt_card_crash_line "$seg")
+  # THE VISUAL PUBLISH STAGE RUNS ON ITS PINNED LANE OR NOT AT ALL. Routing off
+  # asks nothing and inherits the environment, which is whatever config
+  # directory the dispatching session runs under — not the lane logged in to
+  # the pinned Claude Design account. And with no `lane` in the host file there
+  # is nothing to pin. Both park here, before an attempt is claimed, so the
+  # dispatch can be repeated once a person has fixed the cause.
+  if [ "$kind" = "visual-publish" ]; then
+    if ! run_routed; then
+      gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
+        "라우팅 꺼짐 — 시각 발행 단계는 고정 레인으로만 뜬다. 라우팅을 켠 런에서 다시 파견하세요"
+      return "$GATE_EXIT_ROUTE"
+    fi
+    if ! kind_pin_lane_of "$kind" >/dev/null; then
+      gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
+        "고정 레인 없음 — 호스트 파일 ${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design 에 'lane = <레인 id>' 줄이 없다. 그 줄을 쓴 뒤 다시 파견하세요"
+      return "$GATE_EXIT_ROUTE"
+    fi
+  fi
   if run_routed; then
     routed=1
     gate_launch_route "$alias" "$seg" "$kind" "$@" || return $?
@@ -42013,6 +42252,7 @@ gate_verb_supervise_stage() {
     local -x CC_PIPELINE_AUDIT_PASS
     CC_PIPELINE_AUDIT_PASS=$(audit_pass_of "$seg")
   fi
+  gate_launch_kind_env "$kind"
   # THE ANSWER CARD, when the dispatch wrote one for this attempt. Its path
   # follows from `seg#attempt`, so the launch token carries nothing new; an
   # attempt with no card gets no variable, whatever this process inherited.
@@ -43894,6 +44134,10 @@ gate_record_stage_outcome() {
   elif [ "$kind" = "visual" ] \
        && ! { grep -qF "$LIT_VISUAL_TERMINAL" "$out" 2>/dev/null && visual_sidecar_reviewed "${DOC:-}"; }; then
     klass='공허한 성공'
+  # The visual publish stage: its terminal literal, and either the sidecar at
+  # `발행됨` or a person's `거부`/`발행하지 않음` at one of its halts.
+  elif [ "$kind" = "visual-publish" ] && ! visual_publish_artifact_complete "$out"; then
+    klass='공허한 성공'
   # An audit stage is asked for its artifact by the driver's predicate: the
   # terminal phrase, a reader report, and exactly one skeletal-grade fence in
   # the audit report. Without the fence nobody can say whether the document
@@ -44851,7 +45095,7 @@ gate_close() {
     if [ "$label" = "승인" ] && [ "$(gate_approval_field "$id" '판단 부류')" = "시각-승인" ]; then
       local vwhy
       if ! vwhy=$(gate_visual_approval_holds); then
-        warn "approval $id is a '시각-승인' question and the sidecar's implementation approval does not hold ($vwhy) — '승인' is not recorded. Approve the screens at the fixed seat with /cc-cmds:visual first, then answer '승인' again"
+        warn "approval $id is a '시각-승인' question and the sidecar's implementation approval does not hold ($vwhy) — '승인' is not recorded. $(visual_approval_route_hint), then answer '승인' again"
         exit "$GATE_EXIT_RULE"
       fi
     fi
@@ -47198,6 +47442,11 @@ gate_launch_shift() {
   # it so that no banner rises from a process with no seat; the shift and its
   # stages are already "not the router" by `CC_PIPELINE_SHIFT_ID`, and a test
   # run inside a stage must not inherit a fourth marker it never set.
+  #
+  # THE VISUAL PUBLISH STAGE'S TWO VARIABLES ARE CLEARED as for every kind but
+  # that one: a shift launched from inside that stage would otherwise load the
+  # Artifact tools and carry the helper marker.
+  gate_launch_kind_env shift
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \

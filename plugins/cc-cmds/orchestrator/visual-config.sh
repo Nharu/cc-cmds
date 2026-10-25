@@ -6,8 +6,8 @@
 # Three host files live in the host settings directory, all mode 644 and none
 # named `*.env`:
 #
-#   claude-design   `account = <address>` — written by a person, never seeded,
-#                   never copied into a run
+#   claude-design   `account = <address>` and `lane = <lane id>` — written by a
+#                   person, never seeded, never copied into a run
 #   visual-models   `key = value` lines overriding the skill defaults
 #   visual-bans     `<id> | <kind> | <description> | <pattern or ->` lines,
 #                   seeded from visual-bans.seed beside this script
@@ -22,8 +22,13 @@
 #                      process's own config directory, compare its `email`
 #                      with `account` in claude-design, append one line to the
 #                      host log, print the verdict. 일치 exits 0; 불일치, 미설정
-#                      and 판독실패 exit 1. Refused inside a run.
-#   models             print the resolved model table, `<key> = <value> |
+#                      and 판독실패 exit 1. Refused inside a run, except in the
+#                      visual publish stage (below).
+#   lane               print the `lane` value of claude-design — the lane id
+#                      the gate pins a visual publish stage to. No value (no
+#                      file, no line, an empty value) prints nothing and exits
+#                      1. Read-only, and allowed inside a run.
+#   models            print the resolved model table, `<key> = <value> |
 #                      <기본값|호스트 설정>`, one line per key in a fixed order.
 #                      An unknown key or a value outside the vocabulary keeps
 #                      that key at its default and is reported on stderr.
@@ -37,13 +42,19 @@
 #   append <line>      append one approved ban line after checking its form.
 #                      Takes the ban line itself or a sidecar candidate line
 #                      (`- \`<id>\` | ... — <n>회 <screen id>`). Refused inside
-#                      a run.
+#                      a run, except in the visual publish stage (below).
 #   snapshot [--part models|bans]
 #                      the unattended copy: find the run's interview record by
 #                      path convention, check it against the manifest's
 #                      `사전 인가` row (same file AND same sha256), then print
 #                      the model and ban sub-blocks of its `## 시각 방향`. Any
 #                      mismatch exits 1 with the reason.
+#
+# Inside a run, `account` and `append` run only when the gate launched this
+# process as a visual publish stage, which it marks with
+# `CC_PIPELINE_VISUAL_PUBLISH=1` and sets for that kind alone. The gate grades
+# both of them per act besides (`append` only against a person's approval of
+# that very candidate). `seed` is refused inside every run, that stage included.
 #
 # The log `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/claude-design-account.log`
 # gets one line per account read: time, verdict, the local part read and the
@@ -72,7 +83,7 @@ MODEL_KEYS='ds-generate screen-generate polish implement-large implement-large-t
 MODEL_VOCAB='opus sonnet haiku fable'
 
 usage() {
-  echo "사용법: visual-config.sh account | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
+  echo "사용법: visual-config.sh account | lane | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
   exit 2
 }
 
@@ -81,6 +92,13 @@ refuse_in_run() {
     echo "visual-config.sh $1: 런 안에서는 거절한다 — 사람 좌석에서만 돈다 (CC_PIPELINE_RUN_ID 가 있다)" >&2
     exit 2
   fi
+}
+
+refuse_in_run_unless_publish() {
+  # The visual publish stage's marker lifts the refusal for `account` and
+  # `append` alone; every other caller inside a run is refused as before.
+  [ "${CC_PIPELINE_VISUAL_PUBLISH:-}" = "1" ] && return 0
+  refuse_in_run "$1"
 }
 
 trim() {
@@ -135,7 +153,7 @@ is_model_key() {
 
 # --- account ------------------------------------------------------------------
 cmd_account() {
-  refuse_in_run account
+  refuse_in_run_unless_publish account
   local expected='' read_email='' verdict out rc line
   if [ -f "$ACCOUNT_FILE" ]; then
     line=$(grep -E '^[[:space:]]*account[[:space:]]*=' "$ACCOUNT_FILE" | tail -n 1 || true)
@@ -185,6 +203,17 @@ cmd_account() {
     echo "고칠 길: 고정 계정으로 로그인한 좌석에서 같은 국면을 다시 실행한다"
     exit 1
   fi
+}
+
+# --- lane ---------------------------------------------------------------------
+cmd_lane() {
+  local line val=''
+  if [ -f "$ACCOUNT_FILE" ]; then
+    line=$(grep -E '^[[:space:]]*lane[[:space:]]*=' "$ACCOUNT_FILE" | tail -n 1 || true)
+    [ -z "$line" ] || val=$(trim "${line#*=}")
+  fi
+  [ -n "$val" ] || exit 1
+  printf '%s\n' "$val"
 }
 
 # --- models -------------------------------------------------------------------
@@ -284,7 +313,7 @@ ban_line_check() {
 }
 
 cmd_append() {
-  refuse_in_run append
+  refuse_in_run_unless_publish append
   [ $# -eq 1 ] || usage
   local line=$1 id why t
   # A sidecar candidate line: - `<id>` | ... — <n>회 <screen id>
@@ -410,6 +439,7 @@ sub=$1
 shift
 case "$sub" in
   account) [ $# -eq 0 ] || usage; cmd_account ;;
+  lane) [ $# -eq 0 ] || usage; cmd_lane ;;
   models) [ $# -eq 0 ] || usage; cmd_models ;;
   bans) [ $# -eq 0 ] || usage; cmd_bans ;;
   seed) [ $# -eq 0 ] || usage; cmd_seed ;;

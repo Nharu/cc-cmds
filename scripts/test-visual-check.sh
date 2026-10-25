@@ -344,6 +344,20 @@ BANSHA=$(shasum -a 256 "$SEED" | awk '{print $1}')
 write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${B} — 금지 목록 ${BANSHA} — 기계 검사 수용 token-space, pill-button"
 got=$(approval)
 [ "$got" = "0 승인 유효 ${B:0:12}" ] && pass "approval: 유효" || fail "approval 유효 = ${got}"
+[ "$(wc -l < "$T/ap.out" | tr -d ' ')" = "1" ] && pass "approval: 출처 꼬리 없는 줄은 한 줄만 찍는다" || fail "approval 꼬리 없음 출력 = $(cat "$T/ap.out")"
+# The provenance tail ` — 사람 답 <file name>`: a valid line keeps its first
+# line and prints the record's name on a second.
+APL="**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${B} — 금지 목록 ${BANSHA} — 기계 검사 수용 없음"
+write_sidecar 발행됨 "${APL} — 사람 답 S2P#3.md"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${B:0:12}" ] && pass "approval: 출처 꼬리 달린 줄도 유효" || fail "approval 꼬리 유효 = ${got}"
+[ "$(sed -n 2p "$T/ap.out")" = "출처 사람 답 S2P#3.md" ] && pass "approval: 꼬리가 있으면 둘째 줄에 출처 사람 답" || fail "approval 둘째 줄 = $(sed -n 2p "$T/ap.out")"
+for badtail in ' — 사람 답 S2P #3.md' ' — 사람 답 halt/S2P#3.md' ' — 사람 답 S2P#3' ' — 사람 답 '; do
+  write_sidecar 발행됨 "${APL}${badtail}"
+  got=$(approval)
+  case "$got" in "1 승인 무효 — 구현 승인 줄의 형식이 틀렸다"*) pass "approval: 잘못된 꼬리 「${badtail}」 는 형식 무효" ;; *) fail "approval 잘못된 꼬리 「${badtail}」 = ${got}" ;; esac
+done
+write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${B} — 금지 목록 ${BANSHA} — 기계 검사 수용 token-space, pill-button"
 printf '%s\n' '<!doctype html><p>home!</p>' > "$R/docs/visual/docs-feature.home.html"
 got=$(approval)
 case "$got" in "1 승인 무효 — 입력 묶음이 달라졌다"*) pass "approval: 화면 한 바이트가 바뀌면 다이제스트 불일치" ;; *) fail "approval 다이제스트 불일치 = ${got}" ;; esac
