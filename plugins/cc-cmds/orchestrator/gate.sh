@@ -1514,6 +1514,28 @@ gate_collaboration_surface() {
   return 1
 }
 
+gate_gh_group_verb() {
+  # gate_gh_group_verb <GATE_GH_ARGV...> — sets GATE_GH_CG and GATE_GH_CV to
+  # the group and the verb gh runs, found the way cobra's `stripFlags` finds
+  # them: a two-letter flag or a `--flag` without `=` that the level does not
+  # define as taking no value drops the next word with it, so `gh pr -t x new`
+  # and `gh -t x pr new` run `pr new`, the alias of `pr create`. A word read by
+  # position alone is `x` there, and neither was a create.
+  local w skip=0
+  GATE_GH_CG='' GATE_GH_CV=''
+  for w in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$w" in
+      --) break ;;
+      -h|--help|--*=*|-?=*) ;;
+      --*|-?) skip=1 ;;
+      -*|'') ;;
+      *)
+        if [ -z "$GATE_GH_CG" ]; then GATE_GH_CG="$w"; else GATE_GH_CV="$w"; break; fi ;;
+    esac
+  done
+}
+
 gate_pr_label_write() {
   # gate_pr_label_write <argv...> — 0 when this act adds, removes or replaces a
   # label on an existing issue or pull request number, or opens a pull request
@@ -1538,25 +1560,12 @@ gate_pr_label_write() {
   gate_gh_strip_repo "$@"
   [ "$GATE_GH_API_UNREAD" = 0 ] || return 1
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
-  local grp="${1:-}" w edit=0 create=0 j c skip=0 cg='' cv=''
-  # THE GROUP AND THE VERB ARE ALSO FOUND THE WAY gh FINDS THEM. cobra's
-  # `stripFlags` takes a two-letter flag or a `--flag` without `=` that the
-  # command level does not define as a value and drops the next word with it,
-  # so `gh pr -t x new -l y` and `gh -t x pr new -l y` open a pull request with
-  # a label: the alias `new` is not where `gate_gh_strip_repo` rewrites it, and
-  # in the second the first plain word is `x`. Read by position alone, neither
-  # was a create. The positional scans below stay as they were.
-  for w in "$@"; do
-    if [ "$skip" = 1 ]; then skip=0; continue; fi
-    case "$w" in
-      --) break ;;
-      -h|--help|--*=*|-?=*) ;;
-      --*|-?) skip=1 ;;
-      -*|'') ;;
-      *)
-        if [ -z "$cg" ]; then cg="$w"; else cv="$w"; break; fi ;;
-    esac
-  done
+  local grp="${1:-}" w edit=0 create=0 j c cg cv
+  # THE GROUP AND THE VERB ARE ALSO FOUND THE WAY gh FINDS THEM, so `gh pr -t x
+  # new -l y` and `gh -t x pr new -l y` are the labelled creates they are (see
+  # `gate_gh_group_verb`). The positional scans below stay as they were.
+  gate_gh_group_verb "$@"
+  cg="$GATE_GH_CG" cv="$GATE_GH_CV"
   case "$grp" in
     pr|issue|api) ;;
     *) case "$cg" in pr|issue) grp="$cg" ;; esac ;;
@@ -8285,6 +8294,14 @@ ladder_of_gh() {
   gate_gh_strip_repo "$@"
   [ "$GATE_GH_API_UNREAD" = 0 ] || { printf '머지'; return 0; }
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
+  # A create behind a value flag (`gh pr -t x new`) is found the way gh finds
+  # it (see `gate_gh_group_verb`), so it takes the same rung as `gh pr create`.
+  if [ "${1:-}" != api ]; then
+    gate_gh_group_verb "$@"
+    case "$GATE_GH_CG:$GATE_GH_CV" in
+      pr:create|pr:new) printf 'PR'; return 0 ;;
+    esac
+  fi
   case "${1:-}" in
     api) ladder_of_gh_api "$@" ;;
     pr)

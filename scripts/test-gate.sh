@@ -39160,6 +39160,7 @@ la60_w 0 gh pr -b x new --label y
 la60_w 0 gh pr --title x new -l y
 la60_w 0 gh -t x pr new -l y
 la60_w 0 gh pr -t x create -l y
+la60_w 0 gh -t x issue edit 3 --add-label y
 la60_w 0 gh api -X POST repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api -X PUT repos/o/r/issues/1/labels -f 'labels[]=x'
@@ -39190,6 +39191,9 @@ check "60d: PR 라벨 쓰기 판정이 형태마다 답한다" "$la60_wfail" ""
 # gh 는 `pr new` 를 `pr create` 의 별칭으로 문서화하므로 사다리도 같은 PR 칸을 준다.
 check "60d: gh pr new 는 pr create 와 같은 PR 칸이다" \
   "$(ladder_of_gh pr new --title t)/$(ladder_of_gh -R o/r pr new -l x)/$(ladder_of_gh pr create --title t)" "PR/PR/PR"
+# 동사 앞에 띄어 쓴 값 옵션이 있어도 gh 가 여는 것은 같은 생성이므로 같은 PR 칸이다.
+check "60d: 동사 앞 값 옵션을 둔 생성도 PR 칸이다" \
+  "$(ladder_of_gh pr -t x new)/$(ladder_of_gh -t x pr new)/$(ladder_of_gh pr -t x create)/$(ladder_of_gh pr list --search new)" "PR/PR/PR/"
 
 cb60_head
 la60_new() {
