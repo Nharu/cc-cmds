@@ -290,10 +290,31 @@ sections_given=0
 oracle_mode=""
 oracle_arg1=""
 oracle_arg2=""
+# The estimate mode and the record's own entry points. `--estimate` prints what
+# a narrowed run would take and runs nothing; `--goals` adds the REST goals'
+# recorded times to it; `--record-add` merges `<key><TAB><seconds>` lines into
+# the record and runs nothing; `--timing-table` writes the table the estimate
+# was built from, for a caller that partitions with the same weights.
+est_mode=0
+est_goals=""
+est_goals_given=0
+est_table_out=""
+rec_add_file=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
       sections_list=1; shift ;;
+    --estimate)
+      est_mode=1; shift ;;
+    --goals)
+      est_goals="${2-}"; est_goals_given=1
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --timing-table)
+      est_table_out="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --record-add)
+      rec_add_file="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --sections)
       sections_want="${2-}"; sections_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
@@ -313,7 +334,7 @@ while [ "$#" -gt 0 ]; do
       oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"
       if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --estimate [--goals <목표>[,<목표>...]] [--timing-table <path>], --record-add <file>, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
@@ -361,6 +382,349 @@ case "$sec_timing_out" in
   /*) ;;
   *) sec_timing_out="" ;;
 esac
+
+# THE TIMING RECORD IS READ HERE ONCE AND EVERY CHILD SEES `off`. A narrowed run
+# turns its markers into per-section seconds and merges them into a local
+# record, which the estimate mode reads back. The record is a cache: losing it
+# costs estimates, never a verdict. The value is an absolute path, `off`, or
+# unset — unset means `<git common dir>/cc-cmds-gate-timing.tsv` of this
+# checkout; a path that is not absolute is treated as unset. Exporting `off`
+# keeps a section that calls the selector again, and a nested call, from writing
+# its own fixture timings into the record the outer run is building.
+#
+# A caller that gave `CC_GATE_TIMING_OUT` (a CI shard, a check-push lane) owns
+# its marker file, so its run merges only when this variable is given as well.
+sec_timing_rec="${CC_GATE_TIMING_RECORD:-}"
+CC_GATE_TIMING_RECORD=off
+export CC_GATE_TIMING_RECORD
+case "$sec_timing_rec" in
+  off|/*) ;;
+  *) sec_timing_rec="" ;;
+esac
+# The progress line's interval, in seconds. Read once and dropped, like the two
+# above, so a nested wrapped call keeps the default; a section that asserts the
+# line sets it on its own call.
+tg_progress_secs="${CC_GATE_PROGRESS_SECS:-60}"
+unset CC_GATE_PROGRESS_SECS
+case "$tg_progress_secs" in ''|*[!0-9]*|0) tg_progress_secs=60 ;; esac
+tg_progress_marks=""
+tg_progress_skip=0
+tg_progress_dir=""
+tg_child_t0=""
+
+# The record's path, or a non-zero status when nothing is to be read or written:
+# `off`, or no git repository around the checkout, which is skipped in silence.
+# The common directory is asked for after a `cd` to the repository root.
+tg_record_path() {
+  local gd
+  case "$sec_timing_rec" in
+    off) return 1 ;;
+    /*) printf '%s\n' "$sec_timing_rec"; return 0 ;;
+  esac
+  gd=$(cd "$repo_root" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null) || return 1
+  [ -n "$gd" ] || return 1
+  gd=$(cd "$repo_root" 2>/dev/null && cd "$gd" 2>/dev/null && pwd) || return 1
+  [ -n "$gd" ] || return 1
+  printf '%s/cc-cmds-gate-timing.tsv\n' "$gd"
+}
+
+# THE ONE PLACE THAT WRITES THE RECORD. `<key><TAB><seconds>` lines from the rows
+# file are stamped with the current epoch and appended, and each key keeps its
+# last five rows. The lock is a directory: five seconds without it skips the
+# merge, and a lock older than sixty seconds is a dead writer's and is removed
+# once. The new content is written beside the record and moved over it, so a
+# reader sees the old record or the new one. A failure prints one line and
+# changes neither the exit status nor stdout.
+tg_record_merge() {
+  local rec="$1" rows="$2" lock tries=0 stale=0 tmp now
+  lock="$rec.lock"
+  if [ ! -d "$(dirname "$rec")" ]; then
+    printf 'test-gate: 소요 기록 건너뜀 — 기록 디렉터리가 없다: %s\n' "$(dirname "$rec")" >&2
+    return 1
+  fi
+  until mkdir "$lock" 2>/dev/null; do
+    if [ "$stale" = "0" ] && [ -d "$lock" ] \
+       && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      stale=1
+      rmdir "$lock" 2>/dev/null || rm -rf "$lock"
+      continue
+    fi
+    tries=$((tries + 1))
+    if [ "$tries" -ge 50 ]; then
+      printf 'test-gate: 소요 기록 건너뜀 — 잠금을 5초 안에 얻지 못했다: %s\n' "$lock" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+  now=$(date +%s)
+  if ! tmp=$(mktemp "$rec.XXXXXX" 2>/dev/null); then
+    rmdir "$lock" 2>/dev/null
+    printf 'test-gate: 소요 기록 건너뜀 — 임시 파일을 만들지 못했다: %s\n' "$rec" >&2
+    return 1
+  fi
+  if {
+       if [ -f "$rec" ]; then cat "$rec"; fi
+       LC_ALL=C awk -F '\t' -v now="$now" \
+         'NF >= 2 && $1 != "" && $2 ~ /^[0-9]+(\.[0-9]+)?$/ { print $1 "\t" $2 "\t" now }' "$rows"
+     } | LC_ALL=C awk -F '\t' '
+       NF >= 3 && $1 != "" { n++; k[n] = $1; line[n] = $0; c[$1]++ }
+       END { for (i = 1; i <= n; i++) { seen[k[i]]++; if (c[k[i]] - seen[k[i]] < 5) print line[i] } }
+     ' > "$tmp" && mv "$tmp" "$rec"; then
+    rmdir "$lock" 2>/dev/null
+    return 0
+  fi
+  rm -f "$tmp"
+  rmdir "$lock" 2>/dev/null
+  printf 'test-gate: 소요 기록 건너뜀 — 기록을 바꿔 쓰지 못했다: %s\n' "$rec" >&2
+  return 1
+}
+
+# Marker lines → `<key><TAB><seconds>`, by the interval rule of
+# `scripts/gate-timing.sh`: a line's share runs to the next line, `@pre-<group>`
+# is the prelude's share, and the stretches opened by `@start`, `@end` and
+# `@epilogue` and the one after the last marker are not recorded. `@head` is
+# added here: from the moment before the child was started to the first marker.
+# Lines up to `skip` were in the file before this run and are not this run's.
+tg_marks_rows() {
+  LC_ALL=C awk -F '\t' -v skip="$2" -v t0="$3" '
+    BEGIN { gsub(/,/, ".", t0); t0 = t0 + 0 }
+    NR <= skip { next }
+    { t = $2; gsub(/,/, ".", t)
+      if ($1 == "" || t !~ /^[0-9]+(\.[0-9]+)?$/) next
+      t = t + 0
+      if (!havep) { d = t - t0; if (d < 0) d = 0; printf "@head\t%.3f\n", d }
+      else if (pid !~ /^@(start|end|epilogue)$/ && pid != "-") { d = t - pt; if (d < 0) d = 0; printf "%s\t%.3f\n", pid, d }
+      pid = $1; pt = t; havep = 1 }' "$1"
+}
+
+# `<key><TAB><ms><TAB><출처>` for every key whose share is known without a model:
+# `실측` is the median of the record's rows for the key; `센서스` is a section's
+# census wall time less the census minimum (the head every invocation pays) and
+# less the shares of the sections its `needs:` closure pulls in, taken in the
+# same order, so the closure is counted once; `@head` falls back to that
+# minimum. A section the census lacks and the record lacks is left out here and
+# given its `추정` by the caller. Reads the index on stdin.
+tg_known_shares() {
+  LC_ALL=C awk -v REC="$1" -v CEN="$repo_root/scripts/gate-census.tsv" '
+    function share(id,   v, g, i, qn, x, k, d, sb) {
+      if (id in rs) return rs[id]
+      if (id in memo) return memo[id]
+      if (!(id in cw) || (id in busy)) return 0
+      busy[id] = 1
+      g = ++G; qn = 1; q[g, 1] = id; seen[g, id] = 1
+      for (i = 1; i <= qn; i++) {
+        x = q[g, i]
+        for (k = 1; k <= ndn[x]; k++) { d = nd[x, k]; if (!((g SUBSEP d) in seen)) { seen[g, d] = 1; q[g, ++qn] = d } }
+      }
+      sb = 0
+      for (i = 2; i <= qn; i++) sb += share(q[g, i])
+      v = cw[id] - headmin - sb; if (v < 0) v = 0
+      delete busy[id]; memo[id] = v
+      return v
+    }
+    $1 == "SEC" && $4 != "-" { nid++; ids[nid] = $4 }
+    $1 == "NED" { ndn[$2]++; nd[$2, ndn[$2]] = $3 }
+    END {
+      while (REC != "" && (getline line < REC) > 0) {
+        split(line, f, "\t"); t = f[2]
+        if (f[1] == "" || t !~ /^[0-9]+(\.[0-9]+)?$/) continue
+        if (!(f[1] in rn)) { nk++; rk[nk] = f[1] }
+        rn[f[1]]++; rv[f[1], rn[f[1]]] = int(t * 1000 + 0.5)
+      }
+      for (j = 1; j <= nk; j++) {
+        key = rk[j]; n = rn[key]
+        for (i = 1; i <= n; i++) {
+          v = rv[key, i]; m = i - 1
+          while (m >= 1 && sv[m] > v) { sv[m + 1] = sv[m]; m-- }
+          sv[m + 1] = v
+        }
+        rs[key] = (n % 2) ? sv[(n + 1) / 2] : int((sv[n / 2] + sv[n / 2 + 1]) / 2)
+      }
+      headmin = -1
+      while ((getline line < CEN) > 0) {
+        if (line ~ /^#/ || line == "") continue
+        split(line, f, "\t")
+        if (f[1] == "id" || f[1] ~ /^@/ || f[4] !~ /^[0-9]+$/) continue
+        cw[f[1]] = f[4] * 1000
+        if (headmin < 0 || cw[f[1]] < headmin) headmin = cw[f[1]]
+      }
+      if (headmin < 0) headmin = 0
+      for (i = 1; i <= nid; i++) {
+        id = ids[i]
+        if (id in rs) { print id "\t" rs[id] "\t실측"; done[id] = 1 }
+        else if (id in cw) { print id "\t" share(id) "\t센서스"; done[id] = 1 }
+      }
+      if ("@head" in rs) print "@head\t" rs["@head"] "\t실측"
+      else if (headmin > 0) print "@head\t" headmin "\t센서스"
+      done["@head"] = 1
+      for (j = 1; j <= nk; j++) if (!(rk[j] in done)) print rk[j] "\t" rs[rk[j]] "\t실측"
+    }'
+}
+
+# The whole estimate table into `$2`: the known shares, then a `추정` row for
+# every section they leave out, from the span-rate model of
+# `scripts/gate-shard.sh --weights` fed with the known section shares as a
+# `# gate-timing v1` table — the one model, not a second copy of it. When no
+# section share is known there is nothing to fit the model to, and the table
+# keeps only what it has. `$3`, when given, receives that timing table.
+tg_estimate_table() {
+  local rec="$1" out="$2" tbl_out="${3:-}" tbl
+  tbl=$(mktemp "${TMPDIR:-/tmp}/cc-gate-est.XXXXXX") || return 1
+  printf '%s\n' "$sec_idx" | tg_known_shares "$rec" > "$out"
+  {
+    printf '# gate-timing v1 — source: test-gate estimate generated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'id\tms\trun\n'
+    LC_ALL=C awk -F '\t' '$1 !~ /^(@|make:)/ { print $1 "\t" $2 "\t0" }' "$out"
+  } > "$tbl"
+  if [ -n "$tbl_out" ]; then cp "$tbl" "$tbl_out" 2>/dev/null; fi
+  if [ "$(LC_ALL=C awk -F '\t' '$1 !~ /^(@|make:)/' "$out" | grep -c .)" != "0" ] \
+     && [ -f "$script_dir/gate-shard.sh" ]; then
+    bash "$script_dir/gate-shard.sh" --suite "$SELF" --timing "$tbl" --weights < /dev/null 2>/dev/null \
+      | LC_ALL=C awk -F '\t' '$3 == "추정" { print $1 "\t" $2 "\t추정" }' >> "$out"
+  fi
+  rm -f "$tbl"
+  return 0
+}
+
+# The keys a cut walks, in its order: `@head`, then per section its family
+# prelude (`@pre-<group>`, when the group has one and it is the group's first
+# section in the cut) and its id. Reads `sec_ranges` and the index.
+tg_cut_keys() {
+  local a b grp id done=" "
+  printf '@head\n'
+  while read -r a b; do
+    [ -n "$a" ] || continue
+    grp=$(printf '%s\n' "$sec_idx" | sed -n "s/^SEC $a $b [^ ]* [0-9]* \([^ ]*\) .*\$/\1/p")
+    case "$grp" in
+      ''|-) ;;
+      *)
+        case "$done" in
+          *" $grp "*) ;;
+          *)
+            done="$done$grp "
+            if [ "$(grep -cE "^pre_${grp}\(\) *\{" "$SELF" || true)" != "0" ]; then
+              printf '@pre-%s\n' "$grp"
+            fi ;;
+        esac ;;
+    esac
+    id=$(printf '%s\n' "$sec_idx" | sed -n "s/^SEC $a $b \([^ ]*\) [0-9]* .*\$/\1/p")
+    printf '%s\n' "${id:--}"
+  done <<KEYEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+KEYEOF
+}
+
+# The progress line, every `tg_progress_secs` seconds while the child runs. It
+# writes to the wrapper's own stderr, outside the oracle's tee, and starts with
+# `test-gate:` so the noise check leaves it out. The estimate is computed when
+# the first line is due, so a run shorter than the interval computes nothing.
+# Each second it checks that the wrapper is still there, and the wrapper sends
+# it TERM and reaps it the moment the child ends; its `sleep` holds no stream.
+tg_progress_loop() {
+  local wpid="$1" marks="$2" skip="$3" t0="$4" dir="$5" i rec now src
+  while :; do
+    i=0
+    while [ "$i" -lt "$tg_progress_secs" ]; do
+      sleep 1 < /dev/null > /dev/null 2>&1
+      kill -0 "$wpid" 2>/dev/null || return 0
+      i=$((i + 1))
+    done
+    if [ ! -f "$dir/est" ]; then
+      rec=$(tg_record_path) || rec=""
+      tg_estimate_table "$rec" "$dir/est.tmp" > /dev/null 2>&1 && mv "$dir/est.tmp" "$dir/est"
+      [ -f "$dir/est" ] || : > "$dir/est"
+    fi
+    now="${EPOCHREALTIME:-$(date +%s)}"
+    src="$marks"
+    [ -f "$src" ] || src=/dev/null
+    LC_ALL=C awk -F '\t' -v skip="$skip" -v t0="$t0" -v now="$now" -v EST="$dir/est" -v KEYS="$dir/keys" '
+      function sec(x) { gsub(/,/, ".", x); return x + 0 }
+      function shown(ms) { return int((ms + 500) / 1000) "초" }
+      NR > skip && $1 != "" { key = $1; kt = $2 }
+      END {
+        if (key == "") { key = "@head"; kt = t0 }
+        while ((getline line < EST) > 0) { split(line, f, "\t"); est[f[1]] = f[2]; if (f[1] !~ /^(@|make:)/) known = 1 }
+        tot = 0
+        while ((getline line < KEYS) > 0) if (line in est) tot += est[line]
+        ee = (key in est) ? shown(est[key]) : "없음"
+        et = known ? shown(tot) : "없음"
+        printf "test-gate: 진행 — 절 %s %d초째(예상 %s) · 전체 %d초(예상 %s)\n", key, sec(now) - sec(kt), ee, sec(now) - sec(t0), et
+      }' "$src" >&2
+  done
+}
+
+# The estimate mode's report, on stdout: the closure the cut would run, a
+# `<key><TAB><seconds><TAB><출처>` line per section and then per head and
+# prelude share, the total and the Bash limit to run it under. The limit is
+# twice the total plus five minutes, at least ten minutes and at most the
+# background maximum of two hours; at the maximum a warning says so. With no
+# section share known there is no total, every source reads `없음`, and the
+# limit is the maximum. `--goals` adds `make:<goal>` lines from the record.
+tg_estimate_print() {
+  local rec="$1" dir n_req n_pull g
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-estimate.XXXXXX") || return 1
+  tg_estimate_table "$rec" "$dir/est" "$est_table_out"
+  if [ -n "$sec_ranges" ]; then
+    tg_cut_keys > "$dir/keys"
+    n_req=$(printf '%s\n' "$sections_want" | tr ',' '\n' | grep -c .)
+    n_pull=0
+    if [ -n "$sec_pulled" ]; then n_pull=$(printf '%s\n' "$sec_pulled" | tr ',' '\n' | grep -c .); fi
+    printf 'test-gate: 예상 — 요청한 절 %s개, needs 로 함께 도는 절 %s개%s\n' \
+      "$n_req" "$n_pull" "${sec_pulled:+ ($sec_pulled)}"
+    LC_ALL=C awk -F '\t' -v EST="$dir/est" '
+      BEGIN {
+        while ((getline line < EST) > 0) {
+          split(line, f, "\t"); est[f[1]] = f[2]; src[f[1]] = f[3]
+          if (f[1] !~ /^(@|make:)/ && f[3] != "추정") known = 1
+        }
+      }
+      { k[++n] = $1 }
+      END {
+        for (pass = 1; pass <= 2; pass++)
+          for (i = 1; i <= n; i++) {
+            key = k[i]
+            if ((pass == 1) == (key ~ /^@/)) continue
+            if (known && (key in est)) { printf "%s\t%d\t%s\n", key, int((est[key] + 500) / 1000), src[key]; tot += est[key] }
+            else printf "%s\t-\t없음\n", key
+          }
+        if (!known) { print "test-gate: 예상 합계 — 없음 (실측도 센서스도 없다)"; lim = 7200000; capped = 1 }
+        else {
+          printf "test-gate: 예상 합계 — %d초\n", int((tot + 500) / 1000)
+          lim = 2 * tot + 300000
+          if (lim < 600000) lim = 600000
+          if (lim > 7200000) { lim = 7200000; capped = 1 }
+        }
+        printf "test-gate: 권장 한도 — %dms\n", lim
+        if (capped && known) print "test-gate: 합계가 백그라운드 한도를 넘는다 — 한 번에 끝나지 않을 수 있다"
+      }' "$dir/keys"
+  fi
+  if [ -n "$est_goals" ]; then
+    for g in $(printf '%s\n' "$est_goals" | tr ',' ' '); do
+      LC_ALL=C awk -F '\t' -v key="make:$g" '
+        $1 == key { v = $2; hit = 1 }
+        END { if (hit) printf "%s\t%d\t실측\n", key, int((v + 500) / 1000); else printf "%s\t-\t없음\n", key }' "$dir/est"
+    done
+  fi
+  rm -rf "$dir"
+  return 0
+}
+
+# `--record-add` runs nothing else: the file's `<key><TAB><seconds>` lines go
+# through the one merge above, and the exit status is 0 whatever the merge did.
+if [ -n "$rec_add_file" ]; then
+  if [ ! -r "$rec_add_file" ]; then
+    printf 'test-gate: 소요 기록 건너뜀 — 읽을 수 없는 파일: %s\n' "$rec_add_file" >&2
+    exit 0
+  fi
+  if tg_rec_path=$(tg_record_path); then
+    tg_record_merge "$tg_rec_path" "$rec_add_file" || true
+  fi
+  exit 0
+fi
+if [ "$est_goals_given" = "1" ] && [ "$est_mode" != "1" ]; then
+  printf 'test-gate: --goals 는 --estimate 와 함께만 씁니다\n' >&2
+  exit 2
+fi
 
 # A NARROWED RUN NAMES THE SECTIONS THAT FAILED, AND THE COMMAND THAT RUNS ONLY
 # THOSE. The cut writes the id of the section it is in before each section, and
@@ -667,7 +1031,7 @@ oracle_report_failed() {
 oracle_run() {
   local script="$1" map="$2" scope="$3"
   shift 3
-  local cap fo fe rc tpo tpe verdict_rc
+  local cap fo fe rc tpo tpe tpl verdict_rc
 
   oracle_clean
   oracle_locale
@@ -686,6 +1050,15 @@ oracle_run() {
   tpo=$!
   tee "$cap/err" < "$fe" >&2 &
   tpe=$!
+  # The progress loop is started from here, in the wrapper and outside both
+  # tees, and only for the selector's own wrapped call, which sets the marks.
+  tg_child_t0="${EPOCHREALTIME:-$(date +%s)}"
+  tpl=""
+  if [ -n "$tg_progress_marks" ]; then
+    tg_progress_loop "$$" "$tg_progress_marks" "$tg_progress_skip" "$tg_child_t0" "$tg_progress_dir" \
+      < /dev/null > /dev/null &
+    tpl=$!
+  fi
   if [ -n "$oracle_child_repo_root" ]; then
     CC_TEST_GATE_ORACLE_INNER=1 CC_TEST_GATE_REPO_ROOT="$oracle_child_repo_root" \
       bash "$script" "$@" > "$fo" 2> "$fe"
@@ -694,6 +1067,10 @@ oracle_run() {
       bash "$script" "$@" > "$fo" 2> "$fe"
   fi
   rc=$?
+  if [ -n "$tpl" ]; then
+    kill -TERM "$tpl" 2>/dev/null
+    wait "$tpl" 2>/dev/null || true
+  fi
   wait "$tpo" 2>/dev/null || true
   wait "$tpe" 2>/dev/null || true
   rm -f "$fo" "$fe"
@@ -893,7 +1270,7 @@ section_index() {
 }
 
 sec_idx=""
-if [ "$sections_list" = "1" ] || [ -n "$sections_want" ]; then
+if [ "$sections_list" = "1" ] || [ -n "$sections_want" ] || [ "$est_mode" = "1" ]; then
   sec_idx=$(section_index)
   case "$sec_idx" in
     ERR*)
@@ -953,6 +1330,21 @@ if [ "$sections_list" = "1" ]; then
   printf '%s\n' "$sec_idx" \
     | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) [0-9]* [^ ]* \(.*\)$/\1 \2/p' \
     | sed -n '/^- /!p'
+  exit 0
+fi
+
+# `--estimate` without a selection answers only what it was asked for — the
+# goals, the timing table — and a bare `--estimate` is a usage error: there is
+# no cut to estimate, and estimating the full run is not what anyone asks.
+sec_ranges=""
+sec_pulled=""
+if [ "$est_mode" = "1" ] && [ -z "$sections_want" ]; then
+  if [ -z "$est_goals" ] && [ -z "$est_table_out" ]; then
+    printf 'test-gate: --estimate 는 --sections / --run-one / --goals / --timing-table 가운데 하나와 함께 씁니다\n' >&2
+    exit 2
+  fi
+  tg_rec_path=$(tg_record_path) || tg_rec_path=""
+  tg_estimate_print "$tg_rec_path"
   exit 0
 fi
 
@@ -1054,6 +1446,25 @@ FRONTEOF
     printf 'test-gate: --run-one 에 모르는 절 id 입니다: %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_miss" >&2
     exit 2
   fi
+  # THE ESTIMATE FOLLOWS THE SAME ESCAPE. An unknown id under `--sections`
+  # would run everything, so the estimate says that and gives the maximum
+  # limit rather than estimating a run nobody asked for; `--run-one` stopped
+  # above with its own code.
+  if [ -n "$sec_miss" ] && [ "$est_mode" = "1" ]; then
+    if [ -n "$sec_need_by" ]; then
+      printf 'test-gate: 절 %s 의 needs: 가 모르는 절 id 를 가리킵니다: %s — 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n' "$sec_need_by" "$sec_miss"
+    else
+      printf 'test-gate: 모르는 절 id 입니다: %s — 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n' "$sec_miss"
+    fi
+    printf 'test-gate: 권장 한도 — 7200000ms\n'
+    printf 'test-gate: 합계가 백그라운드 한도를 넘는다 — 한 번에 끝나지 않을 수 있다\n'
+    exit 0
+  fi
+  if [ -z "$sec_miss" ] && [ "$est_mode" = "1" ]; then
+    tg_rec_path=$(tg_record_path) || tg_rec_path=""
+    tg_estimate_print "$tg_rec_path"
+    exit 0
+  fi
   if [ -n "$sec_miss" ]; then
     if [ -n "$sec_need_by" ]; then
       printf 'test-gate: 절 %s 의 needs: 가 모르는 절 id 를 가리킵니다: %s — 전량 실행합니다\n' "$sec_need_by" "$sec_miss" >&2
@@ -1102,6 +1513,25 @@ FRONTEOF
     if [ -n "$sec_fail" ]; then
       printf "tg_fail_file='%s'\n" "$sec_fail" >> "$sec_cut"
       sec_cur=$(( sec_cur + 1 ))
+    fi
+    # THE WRAPPED CALL ALWAYS HAS MARKERS. When the caller gave no marker file
+    # the wrapper makes its own, under the same literal-path rule, so the
+    # progress line and the timing record stand on the mechanism CI already
+    # uses. A nested call is left as it was. A caller's file may already hold
+    # lines; only those this run appends are read.
+    sec_timing_own=0
+    if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ] && [ -z "$sec_timing_out" ]; then
+      sec_timing_out=$(mktemp "$sec_dir/marks.XXXXXX")
+      case "$sec_timing_out" in
+        *"'"*) sec_timing_out="" ;;
+        /*) sec_timing_own=1 ;;
+        *) sec_timing_out="" ;;
+      esac
+    fi
+    tg_progress_skip=0
+    if [ -n "$sec_timing_out" ] && [ -f "$sec_timing_out" ]; then
+      tg_progress_skip=$(grep -c '' "$sec_timing_out" 2>/dev/null || true)
+      tg_progress_skip=${tg_progress_skip:-0}
     fi
     # One line naming the section the cut is entering, counted like a marker and
     # attributed to no section. It goes in whether or not timing markers are on,
@@ -1235,8 +1665,31 @@ SECEOF
       oracle_child_repo_root="$repo_root"
       tg_report_fail_file="$sec_fail"
       tg_report_sel="$sections_want"
+      if [ -n "$sec_timing_out" ]; then
+        tg_progress_marks="$sec_timing_out"
+        tg_progress_dir="$sec_dir"
+        tg_cut_keys > "$sec_dir/keys"
+      fi
       oracle_run "$sec_cut" "$sec_map" "좁힌 실행"
       sec_rc=$?
+      tg_progress_marks=""
+      # The record is written after the verdict, and only by the outermost
+      # wrapped run: its own markers whenever the record is not `off`, a
+      # caller's markers only when the caller named the record as well.
+      tg_rec_on=0
+      if [ -n "$sec_timing_out" ]; then
+        case "$sec_timing_rec" in
+          off) ;;
+          /*) tg_rec_on=1 ;;
+          *) if [ "$sec_timing_own" = "1" ]; then tg_rec_on=1; fi ;;
+        esac
+      fi
+      if [ "$tg_rec_on" = "1" ] && tg_rec_path=$(tg_record_path); then
+        tg_marks_rows "$sec_timing_out" "$tg_progress_skip" "$tg_child_t0" > "$sec_dir/rows" 2>/dev/null
+        if [ -s "$sec_dir/rows" ]; then
+          tg_record_merge "$tg_rec_path" "$sec_dir/rows" || true
+        fi
+      fi
     fi
     rm -rf "$sec_dir"
     exit "$sec_rc"
@@ -1251,6 +1704,11 @@ fi
 # every noise line is unattributed and the whole run takes the strict side, which
 # is correct but says nothing about WHICH section broke. Building it costs one awk
 # pass over this file.
+if [ "$est_mode" = "1" ]; then
+  printf 'test-gate: 절 목록을 만들지 못해 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n'
+  printf 'test-gate: 권장 한도 — 7200000ms\n'
+  exit 0
+fi
 if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
   oracle_full_idx="$sec_idx"
   if [ -z "$oracle_full_idx" ]; then
@@ -5708,6 +6166,127 @@ check "FAIL 줄 수와 합계 줄은 보고가 더해지기 전과 같다" \
 check "실패 절 보고가 켜진 컷의 표지 파일은 그대로다" \
   "$(cut -f1 "$tgf_dir/t.tsv" 2>/dev/null | tr '\n' ' ')" "@pre-static 0c 0d @epilogue "
 rm -rf "$tgf_dir"
+
+# ---------------------------------------------------------------------------
+# 0f. The estimate mode, the timing record and the progress line
+# --- section: 0f | group: static | covers: - | anchors: 예상 모드는 기록을 바꾸지 않는다, 좁힌 실행은 컷의 절·전주·머리 키만 기록한다, 진행 줄은 감싸는 쪽 stderr 에 정해진 모양으로 찍힌다 ---
+# ---------------------------------------------------------------------------
+# A narrowed run records what each section took, the estimate mode reads that
+# record back without running anything, and a wrapped run prints a progress
+# line while the child is silent. Every call names its own record file, because
+# this suite exports `off` to everything it starts. The calls that must reach
+# the wrapper drop the nested-call marker this section inherits, as 0e's do.
+#
+# The progress line is asserted on a copy of this file whose 0d sleeps, so the
+# child is silent longer than the one-second interval the call asks for. The
+# same call is run the way a caller's pipe sees it: the pipe must close within
+# two seconds of the child, and no loop may be left behind.
+est_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-estimate.XXXXXX")
+est_suite="$repo_root/scripts/test-gate.sh"
+printf '0d\t2.000\t1\n0d\t4.000\t2\n0d\t3.000\t3\nmake:g1\t10.000\t4\n' > "$est_dir/rec.tsv"
+est_sum=$(cksum < "$est_dir/rec.tsv")
+est_rc=0
+CC_GATE_TIMING_RECORD="$est_dir/rec.tsv" bash "$est_suite" --estimate --run-one 0d --goals g1,g2 \
+  > "$est_dir/e.out" 2> "$est_dir/e.err" || est_rc=$?
+check "예상 모드는 종료 코드 0 이다" "$est_rc" "0"
+check "예상 모드는 기록을 바꾸지 않는다" "$(cksum < "$est_dir/rec.tsv")" "$est_sum"
+check "실측 출처는 기록 최근값의 중앙값이다" "$(grep -c "^0d	3	실측\$" "$est_dir/e.out" || true)" "1"
+check "목표 줄은 기록이 있으면 실측, 없으면 없음이다" \
+  "$(grep -E '^make:' "$est_dir/e.out" | tr '\t\n' ' |')" "make:g1 10 실측|make:g2 - 없음|"
+check "권장 한도는 10분 아래로 내려가지 않는다" \
+  "$(grep -c '^test-gate: 권장 한도 — 600000ms$' "$est_dir/e.out" || true)" "1"
+# With neither a record nor a census there is no table to fit the model to.
+mkdir -p "$est_dir/bare/scripts"
+cp "$est_suite" "$est_dir/bare/scripts/test-gate.sh"
+CC_TEST_GATE_REPO_ROOT="$est_dir/bare" CC_GATE_TIMING_RECORD="$est_dir/empty.tsv" \
+  bash "$est_dir/bare/scripts/test-gate.sh" --estimate --sections 0d > "$est_dir/b.out" 2>&1 || true
+check "표가 비면 출처는 없음, 합계는 없고 한도는 상한이다" \
+  "$(grep -c -E '^0d	-	없음$|^test-gate: 예상 합계 — 없음|^test-gate: 권장 한도 — 7200000ms$' "$est_dir/b.out" || true)" "3"
+est_rc=0
+bash "$est_suite" --estimate --sections nosuch > "$est_dir/u.out" 2>&1 || est_rc=$?
+check "모르는 id 의 예상은 전량이라고 말하고 상한을 권한다" \
+  "$est_rc|$(grep -c '^test-gate: 권장 한도 — 7200000ms$' "$est_dir/u.out" || true)" "0|1"
+est_rc=0; bash "$est_suite" --goals g1 > /dev/null 2>&1 || est_rc=$?
+check "--estimate 없는 --goals 는 exit 2 다" "$est_rc" "2"
+est_rc=0; bash "$est_suite" --estimate > /dev/null 2>&1 || est_rc=$?
+check "선택 없는 --estimate 는 exit 2 다" "$est_rc" "2"
+
+# The one merge: five rows a key, three columns a row, a dead writer's lock
+# removed, a live one waited out and skipped with the exit status untouched.
+printf 'k\t1\nk\t2\nk\t3\nk\t4\nk\t5\nk\t6\nk\t7\nbad\tx\n' > "$est_dir/add.tsv"
+CC_GATE_TIMING_RECORD="$est_dir/add-rec.tsv" bash "$est_suite" --record-add "$est_dir/add.tsv" > /dev/null 2>&1
+check "--record-add 는 키마다 최근 다섯 줄만 남긴다" "$(cut -f2 "$est_dir/add-rec.tsv" | tr '\n' ' ')" "3 4 5 6 7 "
+check "기록 줄은 키·초·epoch 세 칸이다" "$(awk -F '\t' 'NF != 3' "$est_dir/add-rec.tsv" | grep -c . || true)" "0"
+mkdir "$est_dir/add-rec.tsv.lock"
+touch -t 202001010000 "$est_dir/add-rec.tsv.lock"
+printf 'k\t8\n' > "$est_dir/add2.tsv"
+CC_GATE_TIMING_RECORD="$est_dir/add-rec.tsv" bash "$est_suite" --record-add "$est_dir/add2.tsv" > /dev/null 2>&1
+est_lock=없음; [ -d "$est_dir/add-rec.tsv.lock" ] && est_lock=남음
+check "60초 넘은 잠금은 지우고 합친다" "$(tail -n 1 "$est_dir/add-rec.tsv" | cut -f2)|$est_lock" "8|없음"
+mkdir "$est_dir/add-rec.tsv.lock"
+est_rc=0
+CC_GATE_TIMING_RECORD="$est_dir/add-rec.tsv" bash "$est_suite" --record-add "$est_dir/add2.tsv" \
+  > /dev/null 2> "$est_dir/lock.err" || est_rc=$?
+check "잡힌 잠금은 5초 뒤 건너뛰고 종료 코드는 0 이다" \
+  "$est_rc|$(grep -c '^test-gate: 소요 기록 건너뜀 — 잠금' "$est_dir/lock.err" || true)|$(grep -c . "$est_dir/add-rec.tsv")" "0|1|5"
+rmdir "$est_dir/add-rec.tsv.lock"
+# Unset, the record is the common git directory's file; outside a repository
+# nothing is written and nothing is said. The ceiling keeps git from finding a
+# repository above the scratch directory.
+git init -q "$est_dir/bare" > /dev/null 2>&1
+env -u CC_GATE_TIMING_RECORD CC_TEST_GATE_REPO_ROOT="$est_dir/bare" \
+  bash "$est_dir/bare/scripts/test-gate.sh" --record-add "$est_dir/add2.tsv" > /dev/null 2>&1
+check "기록 변수가 없으면 공통 git 디렉터리의 파일에 쓴다" \
+  "$(cut -f1,2 "$est_dir/bare/.git/cc-cmds-gate-timing.tsv" 2>/dev/null | tr '\t' ' ')" "k 8"
+mkdir -p "$est_dir/nogit/scripts"
+cp "$est_suite" "$est_dir/nogit/scripts/test-gate.sh"
+est_rc=0
+env -u CC_GATE_TIMING_RECORD GIT_CEILING_DIRECTORIES="$est_dir" CC_TEST_GATE_REPO_ROOT="$est_dir/nogit" \
+  bash "$est_dir/nogit/scripts/test-gate.sh" --record-add "$est_dir/add2.tsv" > /dev/null 2> "$est_dir/nogit.err" || est_rc=$?
+check "git 밖이면 조용히 건너뛴다" "$est_rc|$(grep -c . "$est_dir/nogit.err" || true)" "0|0"
+
+# A narrowed run writes its cut's keys; a nested call writes nothing. A caller
+# that owns the marker file gets the merge only by naming the record.
+est_rc=0
+env -u CC_TEST_GATE_ORACLE_INNER CC_GATE_TIMING_RECORD="$est_dir/run.tsv" \
+  bash "$est_suite" --run-one 0d > "$est_dir/r.out" 2> "$est_dir/r.err" || est_rc=$?
+check "좁힌 실행은 컷의 절·전주·머리 키만 기록한다" \
+  "$est_rc|$(cut -f1 "$est_dir/run.tsv" 2>/dev/null | LC_ALL=C sort -u | tr '\n' ' ')" "0|0d @head @pre-static "
+env -u CC_TEST_GATE_ORACLE_INNER CC_GATE_TIMING_OUT="$est_dir/m.tsv" CC_GATE_TIMING_RECORD="$est_dir/m-rec.tsv" \
+  bash "$est_suite" --run-one 0d > /dev/null 2>&1 || true
+check "호출자 표지의 실행은 기록 변수를 명시하면 합친다" \
+  "$(cut -f1 "$est_dir/m-rec.tsv" 2>/dev/null | LC_ALL=C sort -u | tr '\n' ' ')|$(cut -f1 "$est_dir/m.tsv" 2>/dev/null | tr '\n' ' ')" \
+  "0d @head @pre-static |@pre-static 0d @epilogue "
+
+awk '
+  index($0, "check \"비지 않은 --sections 는 가드를 지나간다\"") == 1 && !d { print "sleep 3"; d = 1 }
+  { print }
+' "$est_suite" > "$est_dir/slow.sh"
+CC_TEST_GATE_ORACLE_INNER=1 CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_PROGRESS_SECS=1 \
+  CC_GATE_TIMING_RECORD="$est_dir/nest.tsv" TMPDIR="$est_dir" \
+  bash "$est_dir/slow.sh" --run-one 0d > /dev/null 2> "$est_dir/nest.err" || true
+est_nest=없음; [ -e "$est_dir/nest.tsv" ] && est_nest=있음
+check "중첩 호출은 기록도 진행 줄도 쓰지 않는다" \
+  "$est_nest|$(grep -c '^test-gate: 진행 — ' "$est_dir/nest.err" || true)" "없음|0"
+( env -u CC_TEST_GATE_ORACLE_INNER CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_PROGRESS_SECS=1 \
+    TMPDIR="$est_dir" bash "$est_dir/slow.sh" --run-one 0d 2>&1 > "$est_dir/p.out"
+  date +%s > "$est_dir/child_end" ) | cat > "$est_dir/p.err"
+date +%s > "$est_dir/pipe_end"
+est_lines=$(grep -c '^test-gate: 진행 — ' "$est_dir/p.err" || true)
+est_shape=$(grep '^test-gate: 진행 — ' "$est_dir/p.err" \
+  | grep -c -v -E '^test-gate: 진행 — 절 [^ ]+ [0-9]+초째\(예상 ([0-9]+초|없음)\) · 전체 [0-9]+초\(예상 ([0-9]+초|없음)\)$' || true)
+if [ "${est_lines:-0}" -ge 2 ] && [ "${est_shape:-1}" = "0" ]; then
+  ok "진행 줄은 감싸는 쪽 stderr 에 정해진 모양으로 찍힌다 (${est_lines}줄)"
+else
+  bad "진행 줄" "줄 ${est_lines:-0}, 모양이 다른 줄 ${est_shape:-?}: $(grep '^test-gate: 진행' "$est_dir/p.err" | awk 'NR<=2' | tr '\n' ' ')"
+fi
+check "진행 줄은 stdout 에 섞이지 않고 합계 줄은 그대로다" \
+  "$(grep -c '^test-gate: 진행' "$est_dir/p.out" || true)|$(grep -c -E '^test-gate: [0-9]+ passed, 0 failed$' "$est_dir/p.out" || true)" "0|1"
+est_gap=$(( $(cat "$est_dir/pipe_end") - $(cat "$est_dir/child_end") ))
+est_left=$(pgrep -f "$est_dir/slow.sh" 2>/dev/null | grep -c . || true)
+check "자식이 끝나면 루프가 2초 안에 파이프를 놓고 남지 않는다" \
+  "$([ "$est_gap" -le 2 ] && echo 2초안 || echo "${est_gap}초")|${est_left:-0}" "2초안|0"
+rm -rf "$est_dir"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table

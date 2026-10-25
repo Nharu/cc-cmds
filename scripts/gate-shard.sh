@@ -74,8 +74,15 @@
 #                                                      the shards' union equals the
 #                                                      --list set, no id twice, and
 #                                                      the row ids are exactly 1..N
+#   bash scripts/gate-shard.sh --timing F --weights   id<TAB>ms<TAB>표|추정 per
+#                                                      section: the table's ms, or
+#                                                      the span-rate estimate below
 #   bash scripts/gate-shard.sh --self-test
 #
+#   --only IDS      partition only the components of the whole suite that hold
+#                   one of these ids; a row lists the named ids it got and
+#                   weighs them with their `needs:` closure, and there are
+#                   min(N, components) rows (check-push's lanes)
 #   --suite PATH    the suite to partition (default: scripts/test-gate.sh)
 #   --census PATH   the census to weigh with (default: scripts/gate-census.tsv;
 #                   a missing file weighs every section 1)
@@ -92,7 +99,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 
 shard_usage() {
-  printf 'gate-shard: 사용법 — --shards N 와 함께 --shard K / --table / --digest / --check 중 하나, 또는 --self-test (선택: --suite PATH, --census PATH, --timing PATH, --from-table F)\n' >&2
+  printf 'gate-shard: 사용법 — --shards N 와 함께 --shard K / --table / --digest / --check 중 하나, --timing PATH 와 함께 --weights, 또는 --self-test (선택: --suite PATH, --census PATH, --timing PATH, --from-table F, --only IDS)\n' >&2
   exit 2
 }
 
@@ -149,7 +156,7 @@ shard_banners() {
 # per ignored edge, `B <message>` per component over budget. Everything runs
 # under LC_ALL=C so that every string comparison is bytewise on every awk.
 shard_partition() {
-  local suite="$1" census="$2" shards="$3" timing="${4:-}"
+  local suite="$1" census="$2" shards="$3" timing="${4:-}" only="${5:-}"
   local tmp ids_f ban_f cen_f tim_f
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard.XXXXXX")
   ids_f="$tmp/ids"; ban_f="$tmp/banners"; cen_f="$tmp/census"; tim_f=""
@@ -169,7 +176,7 @@ shard_partition() {
   if [ -f "$census" ]; then cp "$census" "$cen_f"; else : > "$cen_f"; fi
   if [ -n "$timing" ] && [ -f "$timing" ]; then tim_f="$tmp/timing"; cp "$timing" "$tim_f"; fi
 
-  LC_ALL=C awk -F '\t' -v N="$shards" -v IDS="$ids_f" -v BAN="$ban_f" -v CEN="$cen_f" -v TIM="$tim_f" '
+  LC_ALL=C awk -F '\t' -v N="$shards" -v IDS="$ids_f" -v BAN="$ban_f" -v CEN="$cen_f" -v TIM="$tim_f" -v ONLY="$only" '
     function find(x,   r) { r = x; while (par[r] != r) r = par[r]; while (par[x] != r) { nx = par[x]; par[x] = r; x = nx } return r }
     function unite(a, b,   ra, rb) { ra = find(a); rb = find(b); if (ra != rb) { if (rb < ra) par[ra] = rb; else par[rb] = ra } }
     function edges(id, list,   n, k, arr, d) {
@@ -252,20 +259,49 @@ shard_partition() {
         }
         print "U\t실측 없는 절 " un "개 — 실측 절 " nm "개의 중앙값 " med " ms 와 본문 길이 추정(줄당 p90 " sprintf("%.1f", rate) " ms) 가운데 큰 값으로 적재합니다" (un ? ": " uids : "")
         for (i = 1; i <= nul; i++) print ul[i]
+        for (i = 1; i <= nid; i++) { id = ids[i]; print "X\t" id "\t" w[id] "\t" ((id in tw) ? "표" : "추정") }
       }
       for (i = 1; i <= nid; i++) {
         id = ids[i]
         if (id in bned) edges(id, bned[id])
         if (id in cned) edges(id, cned[id])
       }
+      # A SUBSET KEEPS THE WHOLE SUITE`S COMPONENTS. The components above are the
+      # full graph`s, so two named ids that CI would put in one shard land in one
+      # row here too; only the components holding a named id are kept. A row
+      # lists only named ids, and weighs them with the sections their `needs:`
+      # closure pulls into the cut, each once. The row count is the smaller of
+      # N and the components kept, so no row comes out empty.
+      if (ONLY != "") {
+        no = split(ONLY, oa, ",")
+        for (k = 1; k <= no; k++) {
+          x = oa[k]; gsub(/[ \t]/, "", x)
+          if (x == "") continue
+          if (!(x in known)) { print "E\t지명한 절 id " x " 가 --list 에 없습니다"; bad_only = 1; continue }
+          named[x] = 1
+          if (!(x in act)) { act[x] = 1; qn++; qa[qn] = x }
+        }
+        for (k = 1; k <= qn; k++) {
+          x = qa[k]
+          if (!(x in bned) || bned[x] == "-") continue
+          nn = split(bned[x], na, ",")
+          for (m = 1; m <= nn; m++) {
+            d = na[m]
+            if (d == "" || d == "-" || !(d in known) || (d in act)) continue
+            act[d] = 1; qn++; qa[qn] = d
+          }
+        }
+        if (bad_only) exit
+      }
       nc = 0
       for (i = 1; i <= nid; i++) {
-        id = ids[i]; r = find(id)
+        id = ids[i]
+        if (ONLY != "" && !(id in act)) continue
+        r = find(id)
         if (!(r in cidx)) { nc++; cidx[r] = nc; cid[nc] = id; cwt[nc] = 0; cn[nc] = 0 }
         c = cidx[r]
         if (id < cid[c]) cid[c] = id
-        cn[c]++
-        cmem[c, cn[c]] = id
+        if (ONLY == "" || (id in named)) { cn[c]++; cmem[c, cn[c]] = id }
         if (tm) {
           cwt[c] += w[id]; cms[c] += w[id]
           if (!((c SUBSEP grp[id]) in cg)) {
@@ -287,6 +323,7 @@ shard_partition() {
         while (j >= 1 && (cwt[ord[j]] < cwt[v] || (cwt[ord[j]] == cwt[v] && cid[ord[j]] > cid[v]))) { ord[j + 1] = ord[j]; j-- }
         ord[j + 1] = v
       }
+      if (ONLY != "" && nc < N) N = nc
       for (k = 1; k <= N; k++) { load[k] = 0; sn[k] = 0 }
       for (i = 1; i <= nc; i++) {
         c = ord[i]; best = 1
@@ -319,6 +356,12 @@ shard_partition() {
       }
     }
   ' < /dev/null > "$tmp/out"
+  if grep -q '^E	' "$tmp/out"; then
+    sed -n 's/^E	/gate-shard: /p' "$tmp/out" >&2
+    rm -rf "$tmp"
+    return 3
+  fi
+  sed -n 's/^X	//p' "$tmp/out" > "${SHARD_WEIGHTS_OUT:-/dev/null}" 2>/dev/null || true
   sed -n 's/^W	/gate-shard: /p' "$tmp/out" >&2
   sed -n 's/^U	/gate-shard: /p' "$tmp/out" >&2
   sed -n 's/^B	/gate-shard: 예산 초과 덩어리 — /p' "$tmp/out" >&2
@@ -576,11 +619,30 @@ shard_self_test() {
   k1=$(bash "$0" --suite "$T/s6.sh" --shards 26 --shard 14 --from-table "$T/t26.tsv" 2>/dev/null); rc=$?
   if [ "$rc" = "0" ] && [ "$k1" = "a,b" ]; then ok "(o) --shards 26 --shard 14 --from-table 은 사용법 오류 없이 행을 낸다"; else bad "(o) --shards 26 --shard 14 --from-table 은 사용법 오류 없이 행을 낸다" "rc=$rc 「${k1}」"; fi
 
+  # (p) the weights a caller reads: the table's ms for a measured section and
+  # the estimate (j) placed `n` with for the one the table lacks.
+  out=$(bash "$0" --suite "$T/s8.sh" --census "$T/none.tsv" --timing "$T/t8.tsv" --weights 2>/dev/null)
+  if [ "$out" = "$(printf 'a\t10\t표\nb\t30\t표\nc\t20\t표\nn\t30\t추정')" ]; then ok "(p) --weights 는 표에 있는 절은 표 값, 없는 절은 추정 값을 낸다"; else bad "(p) --weights 는 표에 있는 절은 표 값, 없는 절은 추정 값을 낸다" "「${out}」"; fi
+  bash "$0" --suite "$T/s8.sh" --census "$T/none.tsv" --timing "$T/absent.tsv" --weights > /dev/null 2>&1; rc=$?
+  if [ "$rc" = "2" ]; then ok "(p) 없는 표의 --weights 는 exit 2"; else bad "(p) 없는 표의 --weights 는 exit 2" "rc=$rc"; fi
+
+  # (q) a subset is cut from the whole suite's components: p and z are joined by
+  # a census edge alone and share a row; x's row weighs its closure y too but
+  # lists only x; the unnamed component of q is dropped, so two rows come out
+  # of four asked for.
+  mk_suite "$T/s12.sh" 'x|g|y' 'y|g|-' 'z|g|-' 'p|g|-' 'q|g|-'
+  mk_census "$T/c12.tsv" "p	g	ok	5	1	0	z	-"
+  mk_timing "$T/t12.tsv" "x	10" "y	20" "z	40" "p	5" "q	99"
+  out=$(bash "$0" --suite "$T/s12.sh" --census "$T/c12.tsv" --timing "$T/t12.tsv" --shards 4 --only x,z,p --table 2>/dev/null)
+  if [ "$out" = "$(printf '1\t45\tp,z\n2\t30\tx')" ]; then ok "(q) --only 는 전체 성분을 지명 절로 투영하고 행 수는 성분 수를 넘지 않는다"; else bad "(q) --only 는 전체 성분을 지명 절로 투영하고 행 수는 성분 수를 넘지 않는다" "「${out}」"; fi
+  bash "$0" --suite "$T/s12.sh" --census "$T/c12.tsv" --shards 2 --only x,ghost --table > /dev/null 2>&1; rc=$?
+  if [ "$rc" = "3" ]; then ok "(q) --only 의 모르는 id 는 exit 3"; else bad "(q) --only 의 모르는 id 는 exit 3" "rc=$rc"; fi
+
   rm -rf "$T"
   printf 'gate-shard self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 27 ]; then
-    printf 'gate-shard self-test: 통과 수 %d 가 하한 27 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 31 ]; then
+    printf 'gate-shard self-test: 통과 수 %d 가 하한 31 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -595,6 +657,7 @@ mode=""
 shard_k=""
 from_table=""
 timing=""
+only=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --suite)      [ "$#" -ge 2 ] || shard_usage; suite="$2"; shift 2 ;;
@@ -606,6 +669,8 @@ while [ "$#" -gt 0 ]; do
     --digest)     mode="digest"; shift ;;
     --check)      mode="check"; shift ;;
     --from-table) [ "$#" -ge 2 ] || shard_usage; from_table="$2"; shift 2 ;;
+    --only)       [ "$#" -ge 2 ] || shard_usage; only="$2"; shift 2 ;;
+    --weights)    mode="weights"; shift ;;
     --self-test)  mode="self-test"; shift ;;
     *) printf 'gate-shard: 모르는 인자입니다: %s\n' "$1" >&2; shard_usage ;;
   esac
@@ -616,6 +681,32 @@ if [ "$mode" = "self-test" ]; then
   exit $?
 fi
 [ -n "$mode" ] || shard_usage
+# The weights are the measured model's, so they need a table to fit it to; the
+# census model has no per-section weight that a caller could read as seconds.
+if [ "$mode" = "weights" ]; then
+  if [ -z "$timing" ] || [ ! -f "$timing" ]; then
+    printf 'gate-shard: --weights 는 있는 --timing 표와 함께 씁니다 (받은 것: 「%s」)\n' "$timing" >&2
+    exit 2
+  fi
+  work=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard-main.XXXXXX")
+  trap 'rm -rf "$work"' EXIT
+  SHARD_WEIGHTS_OUT="$work/weights" shard_partition "$suite" "$census" 1 "$timing" > /dev/null
+  prc=$?
+  [ "$prc" = "0" ] || exit "$prc"
+  cat "$work/weights"
+  exit 0
+fi
+case "$only" in
+  ''|*[!A-Za-z0-9_,-]*)
+    if [ -n "$only" ]; then
+      printf 'gate-shard: --only 의 id 에 쓸 수 없는 문자가 있습니다: %s\n' "$only" >&2
+      exit 2
+    fi ;;
+esac
+if [ -n "$only" ] && [ "$mode" = "check" ]; then
+  printf 'gate-shard: --only 는 --check 와 함께 쓰지 않습니다 (덮는 범위 검사는 --list 전체를 본다)\n' >&2
+  exit 2
+fi
 case "$shards" in ''|*[!0-9]*|0) shard_usage ;; esac
 if [ "$mode" = "shard" ]; then
   case "$shard_k" in ''|*[!0-9]*|0) shard_usage ;; esac
@@ -643,7 +734,7 @@ fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard-main.XXXXXX")
 trap 'rm -rf "$work"' EXIT
-SHARD_IDS_OUT="$work/ids" shard_partition "$suite" "$census" "$shards" "$timing" > "$work/table"
+SHARD_IDS_OUT="$work/ids" shard_partition "$suite" "$census" "$shards" "$timing" "$only" > "$work/table"
 prc=$?
 [ "$prc" = "0" ] || exit "$prc"
 
