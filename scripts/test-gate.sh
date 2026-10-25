@@ -13591,7 +13591,7 @@ rm -f "$WORK/plan15v-shape.md"
 
 # ---------------------------------------------------------------------------
 # 15vp. The run-scope visual publish step: its readers, its halts and its grades
-# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 셋이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다 ---
+# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write, gate_reach_disposition | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 셋이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다, 15vp: 발행 단계의 account 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다, 15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다 ---
 #
 # The publish step is the fifth row of the run-scope table. It runs after the
 # visual step, publishes the screens at the one lane the host file pins, and
@@ -13822,6 +13822,42 @@ case "$row15vp" in
   *"| 상태=승인 |"*) ok "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" ;;
   *) bad "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" "$row15vp" ;;
 esac
+
+# The reach: the publish stage declares `account` and `append` honestly as
+# `--surface 트리밖쓰기 --reach 기기전역`, calling the copy beside the gate by its
+# path, as the skill spells them. The machine-global cell opens exactly the two
+# the table graded `트리밖쓰기` from that copy, ahead of the check that parks a
+# program named by a path; the grade passed in is the table's own unless a case
+# says otherwise. A copy elsewhere given the same grade, a destructive
+# declaration and an ungraded act still park at that check, which also shows
+# the opening is this branch and not a cell further on.
+vp15_reach() {  # vp15_reach <stage id> <grade or -> <destructive 0|1> <argv...> — `<grade>|<cell/cause>`
+  local sid="$1"; shift
+  vp15 "$VP15/m.md" "$sid" '
+    GATE_GRADE_SOURCE=표; GATE_REACH=기기전역; GATE_DECLARED=트리밖쓰기; GATE_MARK=; GATE_MARK_TRIGGER=
+    GATE_DESTRUCTIVE="$2"
+    if [ "$1" = "-" ]; then shift 2; g=$(surface_of_argv0 "$@"); else g="$1"; shift 2; fi
+    c=$(gate_reach_disposition infra 0 "$g" "$@" | cut -f1,2 | tr "\t" "/")
+    printf "%s|%s" "$g" "${c:-열림}"' "$@"
+}
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+vp15_halt 12 '금지-후보 — 반복 문구' 'hero-gradient'
+vp15_answer 12 사람 승인
+check "15vp: 발행 단계의 account 는 기기전역 선언으로 열린다" \
+  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" account)" "트리밖쓰기|열림"
+check "15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다" \
+  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" append "$ban15vp")" "트리밖쓰기|열림"
+check "15vp: 발행 단계 밖의 account 는 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2#1' - 0 "$CC_ORCH/visual-config.sh" account)" "등급 미상|기기전역/argv0-path"
+check "15vp: 다른 후보의 append 는 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" append 'other-id | 다른 후보')" "등급 미상|기기전역/argv0-path"
+check "15vp: 파괴를 신고한 account 는 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' - 1 "$CC_ORCH/visual-config.sh" account)" "트리밖쓰기|기기전역/argv0-path"
+mkdir -p "$VP15/copy"; cp "$CC_ORCH/visual-config.sh" "$VP15/copy/visual-config.sh"
+check "15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$VP15/copy/visual-config.sh" account)" "트리밖쓰기|기기전역/argv0-path"
+check "15vp: 게이트 옆 사본의 다른 부속 명령은 같은 등급으로도 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$CC_ORCH/visual-config.sh" seed)" "트리밖쓰기|기기전역/argv0-path"
 rm -rf "$VP15"
 
 # An `append` no person approved is refused on the acting path in the default
@@ -45935,7 +45971,7 @@ pb_is "83b: 떨어진 = 단어 앞에서 끊기는 제안은 없다" 'Sx=dropped
 
 # ---------------------------------------------------------------------------
 # 83c. 수리 문구 — park 한 칸마다 문구대로 고치면 같은 행위가 통과한다
-# --- section: 83c | group: reach | covers: plan, reach | anchors: 수리 문구 칸마다 문구대로 고치면 같은 행위가 통과한다 ---
+# --- section: 83c | group: reach | covers: plan, reach, exec, gate_reach_disposition | anchors: 수리 문구 칸마다 문구대로 고치면 같은 행위가 통과한다, 발행 단계의 게이트 옆 헬퍼 account 는 기기전역 선언으로 park 하지 않는다 ---
 #
 # park 은 행위를 하지 않고 고치는 법을 말해야 한다. 그 말이 틀리면 스테이지는 찍힌
 # 행을 붙여 넣고 다시 킥오프해 같은 칸에서 다시 멈춘다. 그래서 이 절은 칸·원인마다
@@ -46261,6 +46297,50 @@ rx_manifest R83C 'cctool --x'
 t3p front3 트리밖쓰기 기기전역 -- /usr/local/bin/cctool --x
 t3_park 8-행추가 기기전역 argv0-path 'whose program is named by a path' 0
 t3_calls 8 0
+
+# 8v — 경로로 지명된 프로그램 중 하나는 행 없이 열린다. 계획의 발행 단계가 게이트 옆
+# 시각 헬퍼의 `account` 를 스킬 문면 그대로 `--surface 트리밖쓰기 --reach 기기전역` 으로
+# exec 하면, 등급표가 매긴 트리밖쓰기가 그 행위를 연다 — park 하지 않고 판단도 부르지
+# 않는다. 헬퍼 자신의 종료 코드는 여기서 보지 않는다(픽스처에 고정 계정이 없다). 같은
+# 헬퍼를 다른 경로에 복사한 사본은 같은 선언으로 등급을 얻지 못한다.
+pj_reset
+rx_manifest R83V ''
+t3v_plan='{ "steps": [ { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": [] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] } ] }'
+t3v_m=$(sed "s/^{ \"steps\": \[\] }\$/$t3v_plan/" "$RX_M"); printf '%s\n' "$t3v_m" > "$RX_M"
+refresh_bd "$RX_M"
+mkdir -p "$WORK/vp83v-cfg" "$WORK/vp83v-copy"
+cp "$CC_ORCH/visual-config.sh" "$WORK/vp83v-copy/visual-config.sh"
+t3v_exec() {  # t3v_exec <스테이지 id> <argv...> — 발행 단계의 선언 그대로 exec
+  local sid="$1" out; shift
+  out=$(cd "$WT" && env CC_PIPELINE_STAGE_ID="$sid" XDG_CONFIG_HOME="$WORK/vp83v-cfg" \
+    CC_CLAUDE_BIN="$PJ_STUB" PJ_DIR="$PJ_DIR" PJ_VERDICT=park \
+    bash "$GATE" exec --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+      --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" \
+      --rationale '발행 계정 판독' -- "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  printf '%s' "$out" > "$WORK/last-output.txt"
+}
+t3v_exec 'S2P#1' "$CC_ORCH/visual-config.sh" account
+if [ "$rc" != 11 ] && [ -z "$(rx_cell)" ]; then ok "83c: 8v — 발행 단계의 게이트 옆 헬퍼 account 는 기기전역 선언으로 park 하지 않는다"
+else bad "83c: 8v — 발행 단계의 게이트 옆 헬퍼 account 는 기기전역 선언으로 park 하지 않는다" "rc=$rc 칸=$(rx_cell): $msg"; fi
+t3_calls 8v 0
+t3v_row=$( { grep -F '`자율 승인`' "$WT/docs/pipeline-run/R83V.md" 2>/dev/null || true; } | grep -F 'visual-config.sh account' | tail -1)
+case "$t3v_row" in *"| 도달=기기전역 |"*)
+  ok "83c: 8v — 자율 승인 행이 그 행위와 기기전역 도달을 담는다" ;;
+  *) bad "83c: 8v — 자율 승인 행이 그 행위와 기기전역 도달을 담는다" "$t3v_row" ;; esac
+# 열리지 않은 행위는 자율 승인 행을 남기지 않는다. 헬퍼의 종료 코드도 0 이 아니므로,
+# 종료 코드가 아니라 그 행의 수로 가른다.
+t3v_n() { { grep -c '^- `자율 승인`' "$WT/docs/pipeline-run/R83V.md" 2>/dev/null || true; }; }
+for t3v_case in "S2#1|$CC_ORCH/visual-config.sh|발행 단계 밖의 account" \
+                "S2P#1|$WORK/vp83v-copy/visual-config.sh|게이트 옆이 아닌 사본의 account"; do
+  t3v_n0=$(t3v_n)
+  t3v_exec "${t3v_case%%|*}" "$(printf '%s' "$t3v_case" | cut -d'|' -f2)" account
+  t3v_n1=$(t3v_n)
+  if [ "$rc" != 0 ] && [ "${t3v_n1:-0}" = "${t3v_n0:-0}" ]; then
+    ok "83c: 8v — ${t3v_case##*|} 는 같은 선언으로 열리지 않는다"
+  else bad "83c: 8v — ${t3v_case##*|} 는 같은 선언으로 열리지 않는다" "rc=$rc 행 ${t3v_n0}→${t3v_n1}: $msg"; fi
+done
+rm -rf "$WORK/vp83v-cfg" "$WORK/vp83v-copy"
 
 # 9 — 기기전역 경로를 담은 외부 상태 변경.
 rx_manifest R83C ''
