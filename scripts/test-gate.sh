@@ -13647,9 +13647,27 @@ vp15_answer 3 사람 '발행하지 않음'
 check "15vp: 발행-실패 의 발행하지 않음 은 무효다" \
   "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal' | cut -f1,3)" "무효	발행하지 않음"
 
+# A person's no outranks an earlier yes. Here the latest verdict record S2P#2
+# holds a person's `승인`, and the `발행하지 않음` to S2P#3 came after it, so a
+# line whose tail names S2P#2 does not stand. Then the same record answered
+# `승인` and then `거부`: the last answer is the one read. A closing `승인` to
+# S2P#2 lifts the refusal, so the provenance checks below start from none.
+ok15vp='승인 유효 0123456789ab'
+check "15vp: 승인 뒤의 발행하지 않음 이 서 있으면 꼬리 달린 승인 줄도 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf " rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" \
+  "승인 무효 — 시각 발행 단계 중단 기록 S2P#3.md 에 사람이 남긴 「발행하지 않음」 답이 서 있다 rc=1"
+vp15_answer 2 사람 승인
+vp15_answer 2 사람 거부
+check "15vp: 같은 기록의 승인 뒤 거부는 거부로 읽힌다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_person_answer "$RUN_DIR/halt/S2P#2.md" 승인 || printf 없음')" "없음"
+check "15vp: 같은 기록의 승인 뒤 거부가 서 있으면 꼬리 달린 승인 줄은 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" "rc=1"
+vp15_answer 2 사람 승인
+check "15vp: 거부 뒤의 사람 승인이 꼬리를 다시 세운다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" "rc=0"
+
 # Provenance: in a run with the publish stage the approval line has to carry
 # the tail naming the latest verdict record, and a person approved that record.
-ok15vp='승인 유효 0123456789ab'
 check "15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다" \
   "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp")" "rc=1"
 check "15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다" \
@@ -13695,6 +13713,9 @@ vp15_halt 1 '시각-판정'
 vp15_answer 1 사람 거부
 check "15vp: 사람 거부 뒤의 종결 문구는 산출이다" \
   "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=0"
+vp15_answer 1 사람 승인
+check "15vp: 사람이 승인으로 바꾼 거부는 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=1"
 rm -f "$SC15VP" "$WT/docs/fixture-design-15vp.md"
 
 # The grades: `account` writes the host file only from the publish stage, and
@@ -13744,7 +13765,69 @@ case "$row15vp" in
   *"답변 문면=중단 답 연동(기록 S2P#7.md, 선택지 거부)"*) ok "15vp: 연동 닫기의 답변 문면은 중단 기록과 선택지를 든다" ;;
   *) bad "15vp: 연동 닫기의 답변 문면은 중단 기록과 선택지를 든다" "$row15vp" ;;
 esac
+
+# A question submitted after the person's no is closed by that no through the
+# predicate arm, even while the approval predicate holds. The predicate is
+# stubbed to hold, so the order is what decides: checked after the predicate,
+# the refusal would never be reached and the question would close `승인`.
+# Both ways in: a `거부` given after a `승인` to the same verdict record, and a
+# `발행하지 않음` to a failed publish after the verdict was approved.
+vp15_resolve() {  # vp15_resolve <승인 id> — the row the predicate arm leaves
+  vp15 "$VP15/m.md" - 'gate_visual_approval_holds() { printf "승인 유효 0123456789ab"; }
+    gate_visual_approval_resolve "$1" "화면 승인" 시각-승인' "$1" >/dev/null
+  grep -F "| 승인 id=$1 |" "$VP15/led.md" | tail -1
+}
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J8 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_halt 10 '시각-판정'
+vp15_answer 10 사람 승인
+vp15_answer 10 사람 거부
+row15vp=$(vp15_resolve J8)
+case "$row15vp" in
+  *"| 상태=거부 |"*"| 처분 사유=중단 답 연동"*) ok "15vp: 같은 기록의 승인 뒤 거부는 승인 술어가 서도 뒤에 제출된 시각-승인 을 거부로 닫는다" ;;
+  *) bad "15vp: 같은 기록의 승인 뒤 거부는 승인 술어가 서도 뒤에 제출된 시각-승인 을 거부로 닫는다" "$row15vp" ;;
+esac
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J7 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_halt 11 '발행-실패'
+vp15_answer 10 사람 승인
+vp15_answer 11 사람 '발행하지 않음'
+row15vp=$(vp15_resolve J7)
+case "$row15vp" in
+  *"| 상태=무효 |"*"| 처분 사유=중단 답 연동"*) ok "15vp: 승인 뒤의 발행하지 않음 은 승인 술어가 서도 뒤에 제출된 시각-승인 을 무효로 닫는다" ;;
+  *) bad "15vp: 승인 뒤의 발행하지 않음 은 승인 술어가 서도 뒤에 제출된 시각-승인 을 무효로 닫는다" "$row15vp" ;;
+esac
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J6 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_answer 10 사람 승인
+row15vp=$(vp15_resolve J6)
+case "$row15vp" in
+  *"| 상태=승인 |"*) ok "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" ;;
+  *) bad "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" "$row15vp" ;;
+esac
 rm -rf "$VP15"
+
+# An `append` no person approved is refused on the acting path in the default
+# auto-resolving mode, declared as the approved one would be. With the switch
+# on, an unknown grade with a declaration takes the declaration path, and the
+# gate's own visual helper must not: its row is the only check left once the
+# publish stage's marker lifts the helper's own in-run refusal. `plan` only
+# warns where `exec` exits, and the unknown-grade arm prints its line only when
+# the declaration path did not take the act, so that line is what is asserted.
+CC_GATE_PREV_AR15VP="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- "$CC_ORCH/visual-config.sh" append 'zz-probe | 텍스트 | probe | -'
+case "$msg" in
+  *"the gate's own visual helper is graded by its subcommand"*) ok "15vp: 승인 없는 append 는 자동 해소 모드의 선언으로도 열리지 않는다" ;;
+  *) bad "15vp: 승인 없는 append 는 자동 해소 모드의 선언으로도 열리지 않는다" "rc=$rc $msg" ;;
+esac
+case "$msg" in
+  *"an orchestrator script this plugin ships"*|*"the table has to be widened"*)
+    bad "15vp: 자기 시각 헬퍼의 등급 미상에는 표 넓히기·버전 어긋남 안내가 붙지 않는다" "$msg" ;;
+  *) ok "15vp: 자기 시각 헬퍼의 등급 미상에는 표 넓히기·버전 어긋남 안내가 붙지 않는다" ;;
+esac
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR15VP"
 
 # ---------------------------------------------------------------------------
 # 15w. A screen slice is not dispatched before its screens are approved
@@ -25060,13 +25143,19 @@ check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
 # THE SEVENTH IS THE `사람-결정` FREE-INPUT CLOSE. That class's free text is the
 # decision, so `gate_close` closes it `승인` instead of leaving it `대기`, and an
 # approval closed there is done being waited on like any other terminal.
+#
+# THE EIGHTH IS THE VISUAL PUBLISH STAGE'S LINKED CLOSE. A person's `거부` to a
+# `시각-판정` halt or `발행하지 않음` to a `발행-실패` halt closes the run's open
+# `시각-승인` questions `거부` or `무효` outside `gate_close`
+# (`gate_visual_halt_linked_close`), and those questions are as done being
+# waited on as the ones the other seven terminals end.
 check "넘침 정리가 닫기 종단 도우미에 한 번 배선돼 있다" \
   "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "1"
 check "그것이 개별 배너 지우기 바로 뒤에 붙어 있다" \
   "$( { grep -A1 -F 'cc_notify_clear answer "$1" || true' "$GATE" || true; } \
       | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "1"
-check "닫기 함수의 다섯 종단과 자동 해소 닫기와 철회 종단이 전부 그 도우미를 부른다" \
-  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "7"
+check "닫기 함수의 다섯 종단과 자동 해소 닫기와 철회 종단과 시각 발행 연동 닫기가 전부 그 도우미를 부른다" \
+  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "8"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #

@@ -6910,21 +6910,12 @@ visual_publish_artifact_complete() {
   # what it owes: its terminal literal is in the stream, and either the sidecar
   # reads `발행됨` or a person declined at one of the stage's halts (`거부` to
   # a `시각-판정`, `발행하지 않음` to a `발행-실패`), which ends the stage with
-  # nothing left to publish.
-  local f
+  # nothing left to publish. The decline is the refusal that still stands
+  # (`visual_publish_standing_refusal`): a `거부` the person later replaced
+  # with a `승인` is not one.
   grep -qF "$LIT_VISUAL_PUBLISH_TERMINAL" "$1" 2>/dev/null || return 1
   visual_sidecar_published "${DOC:-}" && return 0
-  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/halt" ] || return 1
-  for f in "$RUN_DIR"/halt/S2P#*.md; do
-    [ -f "$f" ] || continue
-    if halt_step_has_prefix "$f" '시각-판정' && visual_publish_person_answer "$f" '거부' >/dev/null; then
-      return 0
-    fi
-    if halt_step_has_prefix "$f" '발행-실패' && visual_publish_person_answer "$f" '발행하지 않음' >/dev/null; then
-      return 0
-    fi
-  done
-  return 1
+  visual_publish_standing_refusal >/dev/null
 }
 
 predicate_implement_share() {
@@ -12071,8 +12062,11 @@ visual_publish_latest_verdict_record() {
 visual_publish_person_answer() {
   # visual_publish_person_answer <halt record> <option>... — prints the option
   # of the last `중단 답` row of this run that answers the record (its `중단
-  # 기록` names the same file under the run's `halt/`), was given by a person
-  # and chose one of the options. 1 when there is none.
+  # 기록` names the same file under the run's `halt/`) and was given by a
+  # person, when that option is one of the options. 1 when there is none, or
+  # when the person's last answer to the record chose something else: a later
+  # answer replaces an earlier one, so a `승인` followed by a `거부` reads as
+  # `거부`, the way `visual_publish_standing_refusal` reads the same rows.
   local rec="$1" row f by opt o hit=''
   shift
   while IFS= read -r row; do
@@ -12082,6 +12076,7 @@ visual_publish_person_answer() {
     by=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *답한 주체=//p' | sed 's/[[:space:]]*$//' | tail -1)
     [ "$by" = "사람" ] || continue
     opt=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *선택지=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    hit=''
     for o in "$@"; do
       if [ "$o" = "$opt" ]; then hit=$opt; fi
     done
@@ -12092,15 +12087,56 @@ EOF
   printf '%s' "$hit"
 }
 
+visual_publish_standing_refusal() {
+  # visual_publish_standing_refusal — the run's standing refusal from the
+  # visual publish stage, as `<상태>\t<중단 기록>\t<선택지>`: the last `중단 답`
+  # row a person wrote to a `시각-판정` or `발행-실패` record of `S2P`, when it
+  # chose `거부` (state `거부`) or `발행하지 않음` (state `무효`). 1 when the
+  # last such answer was anything else, or there is none: a later `승인`
+  # supersedes an earlier refusal.
+  #
+  # ONE READER FOR THE GATE AND THE DRIVER. The approval provenance, the publish
+  # stage's artifact predicate and the gate's linked close all read the refusal
+  # here, so none of them can see an approval the others see refused.
+  local row f by opt rec st='' out=''
+  [ -n "${RUN_DIR:-}" ] || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    f=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *중단 기록=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    case "${f##*/}" in S2P#*.md) ;; *) continue ;; esac
+    by=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *답한 주체=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "$by" = "사람" ] || continue
+    rec="$RUN_DIR/halt/${f##*/}"
+    opt=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *선택지=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if halt_step_has_prefix "$rec" '시각-판정'; then
+      if [ "$opt" = "거부" ]; then st='거부'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
+    elif halt_step_has_prefix "$rec" '발행-실패'; then
+      if [ "$opt" = "발행하지 않음" ]; then st='무효'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
+    fi
+  done <<EOF
+$(run_section_rows '중단 답' 2>/dev/null || true)
+EOF
+  [ -n "$st" ] || return 1
+  printf '%s\t%s' "$st" "$out"
+}
+
 visual_approval_provenance() {
   # visual_approval_provenance <approval helper output> — 0 when the approval
   # line may stand in this run. A run whose plan holds the publish stage takes
   # an approval only from a person's answer: the line carries the tail naming
   # the run's latest `시각-판정` record, and a person answered that record
-  # `승인`. A line with no tail does not stand there. Prints the reason on 1.
-  # A run without the publish stage takes the line as the helper read it.
-  local src latest
+  # `승인`. A line with no tail does not stand there, and no line stands while
+  # a person's refusal at the stage stands (`visual_publish_standing_refusal`):
+  # a `거부` to a `시각-판정` or a `발행하지 않음` to a `발행-실패` given after
+  # the `승인` is the person's later word. Prints the reason on 1. A run
+  # without the publish stage takes the line as the helper read it.
+  local src latest ref rec
   manifest_has_visual_publish_step || return 0
+  if ref=$(visual_publish_standing_refusal); then
+    ref=${ref#*$'\t'}; rec=${ref%%$'\t'*}
+    printf '승인 무효 — 시각 발행 단계 중단 기록 %s 에 사람이 남긴 「%s」 답이 서 있다' "${rec##*/}" "${ref#*$'\t'}"
+    return 1
+  fi
   src=$(printf '%s\n' "$1" | sed -n 's/^출처 사람 답 //p' | sed -n 1p)
   if [ -z "$src" ]; then
     printf '승인 무효 — 이 런은 시각 발행 단계(S2P)를 두므로 구현 승인 줄은 사람 답 출처 꼬리를 달아야 한다'

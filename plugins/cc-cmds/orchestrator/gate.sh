@@ -26247,17 +26247,16 @@ gate_visual_approval_resolve() {
   [ -n "$cls" ] || cls=$(gate_approval_field "$id" '판단 부류')
   [ "$cls" = "시각-승인" ] || return 0
   [ "$(gate_approval_state "$id")" = "대기" ] || return 0
-  if ! why=$(gate_visual_approval_holds); then
-    # A QUESTION SUBMITTED AFTER A PERSON'S NO IS CLOSED BY THAT NO. The
-    # person already refused the published screens, or gave up the publish,
-    # at the stage's halt; asking again here would put the same question to
-    # them a second time.
-    if gate_visual_halt_linked_close "$id"; then
-      warn "judgment approval $id was closed as '$(gate_approval_state "$id")' by the person's answer to the visual publish stage's halt — the same question is not asked again"
-      return "$GATE_EXIT_RULE"
-    fi
-    return 0
+  # A QUESTION SUBMITTED AFTER A PERSON'S NO IS CLOSED BY THAT NO, BEFORE THE
+  # APPROVAL IS LOOKED AT. The person already refused the published screens,
+  # or gave up the publish, at the stage's halt; an approval line still in the
+  # sidecar from an earlier `승인` does not outrank that later answer, and
+  # asking again here would put the same question to them a second time.
+  if gate_visual_halt_linked_close "$id"; then
+    warn "judgment approval $id was closed as '$(gate_approval_state "$id")' by the person's answer to the visual publish stage's halt — the same question is not asked again"
+    return "$GATE_EXIT_RULE"
   fi
+  why=$(gate_visual_approval_holds) || return 0
   gate_approval_person_answered "$id" && return 0
   gate_auto_close_approval "$id" 승인 "$q" "시각 승인 술어 성립: $why" || return 0
   GATE_AUTO_RESOLVED_APPROVAL="$id"; export GATE_AUTO_RESOLVED_APPROVAL
@@ -26270,26 +26269,10 @@ gate_visual_halt_refusal() {
   # person wrote to a `시각-판정` or `발행-실패` record of `S2P`, when it chose
   # `거부` (state `거부`) or `발행하지 않음` (state `무효`). Nothing when the
   # last such answer was anything else, or there is none: a later `승인`
-  # supersedes an earlier refusal.
-  local row f by opt rec st='' out=''
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    f=$(gate_row_field "$row" '중단 기록')
-    case "${f##*/}" in S2P#*.md) ;; *) continue ;; esac
-    by=$(gate_row_field "$row" '답한 주체')
-    [ "$by" = "사람" ] || continue
-    rec="$RUN_DIR/halt/${f##*/}"
-    opt=$(gate_row_field "$row" '선택지')
-    if halt_step_has_prefix "$rec" '시각-판정'; then
-      if [ "$opt" = "거부" ]; then st='거부'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
-    elif halt_step_has_prefix "$rec" '발행-실패'; then
-      if [ "$opt" = "발행하지 않음" ]; then st='무효'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
-    fi
-  done <<EOF
-$(run_section_rows '중단 답' 2>/dev/null || true)
-EOF
-  [ -n "$st" ] || return 1
-  printf '%s\t%s' "$st" "$out"
+  # supersedes an earlier refusal. The reader is the driver's
+  # (`visual_publish_standing_refusal`), so the approval verdict both of them
+  # print fails on the same refusal this close stands on.
+  visual_publish_standing_refusal
 }
 
 gate_visual_halt_linked_close() {
@@ -26372,6 +26355,15 @@ gate_physical_path() {
     n=$((n + 1))
   done
   printf '%s' "$p"
+}
+
+gate_own_visual_helper() {
+  # gate_own_visual_helper <argv0> — 0 when argv0 is one of the three visual
+  # helpers beside this gate (`gate_own_helper`).
+  case "${1##*/}" in
+    visual-config.sh|visual-check.sh|visual-capture.sh) gate_own_helper "$1" ;;
+    *) return 1 ;;
+  esac
 }
 
 gate_own_helper() {
@@ -37983,7 +37975,15 @@ gate_verb_act() {
     # evaluator then judges, and with the switch off there is no evaluator to
     # judge it — so off mode keeps today's refusal rather than admitting a claim
     # nothing will check.
-    GATE_UNKNOWN_DECLARED=1
+    #
+    # NOT FOR THE GATE'S OWN VISUAL HELPERS. Their rows grade every spelling the
+    # gate admits, by subcommand and by the ledger (`append` only on a person's
+    # unspent `승인` to that candidate), so their `등급 미상` is the table's
+    # refusal and not a tool it has never seen. The publish stage's marker lifts
+    # the helper's own in-run refusal, which leaves this row as the only check:
+    # a declaration that let it through would open an `append` no person
+    # approved under the same spelling as one a person did.
+    gate_own_visual_helper "$1" || GATE_UNKNOWN_DECLARED=1
   fi
   if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
     # THE GENERIC MESSAGE COMES FIRST SO THE SPECIFIC ONE IS READ LAST. Both
@@ -37998,8 +37998,16 @@ gate_verb_act() {
     # recognized tool in a form the sub-table could not parse (respell the
     # command). Without the distinction the router sees one refusal and has no
     # way to tell which.
-    warn "axis 2 \`등급 미상\` — an argv0 that is not in the grade table does not fall through to \`읽기\`: $1 (if that tool has never been entered in the table, the table has to be widened; if it is in the table and the shape could not be read, rewrite it so the subcommand is visible)"
-    gate_orchestrator_script_hint "$1"
+    #
+    # The gate's own visual helper is neither: its row is there and read the
+    # subcommand, and the grade is the row's answer for this spelling and this
+    # ledger, so neither repair, nor the version-skew advisory, applies.
+    if gate_own_visual_helper "$1"; then
+      warn "axis 2 \`등급 미상\` — the gate's own visual helper is graded by its subcommand and the run's ledger, and this spelling has no grade there: ${1##*/} ${2:-} (\`append\` is graded only on a person's unspent \`승인\` to that very candidate at the publish stage's halt; every other ungraded subcommand is the seat's)"
+    else
+      warn "axis 2 \`등급 미상\` — an argv0 that is not in the grade table does not fall through to \`읽기\`: $1 (if that tool has never been entered in the table, the table has to be widened; if it is in the table and the shape could not be read, rewrite it so the subcommand is visible)"
+      gate_orchestrator_script_hint "$1"
+    fi
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
 
