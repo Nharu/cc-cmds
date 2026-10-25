@@ -87,6 +87,24 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/liveness.sh"
 
+# The enforcement-surface classifier, for the `강제 표면` field of a planned
+# segment row. Sourced in a child shell, as the gate's `gate_es` does, so the
+# hook's library adds nothing to this file's top level; a library that cannot
+# be loaded stamps `판정불가`, never `없음`.
+run_surface_stamp() {  # run_surface_stamp [<declared path>…]
+  local v
+  if v=$(
+      # shellcheck source=/dev/null
+      . "$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh" 2>/dev/null || exit 2  # lint-harness-global-collisions: child-shell
+      command -v es_stamp >/dev/null 2>&1 || exit 2
+      es_stamp "$@"
+    ) && [ -n "$v" ]; then
+    printf '%s' "$v"
+  else
+    printf '%s' '판정불가'
+  fi
+}
+
 # The account router. Its top level is function definitions and guarded
 # `readonly` constants only, because the gate sources this file on every entry
 # and inherits whatever the router puts at top level. This driver calls
@@ -8274,6 +8292,26 @@ merge_gate() {
       "gh -R $slug pr merge $pr"
     return 2
   fi
+  # THE ENFORCEMENT-SURFACE PROVENANCE, THE GATE'S OWN FUNCTION. This merge does
+  # not go through the gate's merge act, so the check that act makes is called
+  # here, right before the one call that lands the branch.
+  local sp_out sp_rc=0
+  sp_out=$(run_gate_call gate_surface_provenance "$seg" "$al" 2>/dev/null) || sp_rc=$?
+  # 3 is a surface that changed outside a seat apply; any other non-zero status
+  # is a check that could not be decided, and the park says which.
+  if [ "$sp_rc" != "0" ]; then
+    sp_out=$(printf '%s' "${sp_out:-(판정 불가 rc=$sp_rc)}" | tr '\t\n' ' ;')
+    if [ "$sp_rc" = "3" ]; then
+      park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+        "좌석 적용 밖에서 바뀐 강제 표면 — ${sp_out:0:300}" \
+        "gh -R $slug pr merge $pr"
+    else
+      park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+        "강제 표면 출처 판정 불가 — ${sp_out:0:300}" \
+        "gh -R $slug pr merge $pr"
+    fi
+    return 2
+  fi
   gh_q "$slug" pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null || {
     park "$seg" act 막힘 "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr merge $pr"
     return 2
@@ -9485,9 +9523,10 @@ $(sed 's/#.*//' "$sib")"
   # tree every run loads is a MERGE, and that is what the permission cutpoint
   # governs. So the assertions below are that the two mechanisms still have the
   # shape this exception was registered against, not that the files are covered.
-  local orch_ex=0 gate_file hook_file n_all n_rules n_rec
+  local orch_ex=0 gate_file hook_file es_file n_all
   gate_file="$ORCH_DIR/gate.sh"
   hook_file="$(dirname "$ORCH_DIR")/hooks/gate-pretool.sh"
+  es_file="$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh"
   if [ -f "$gate_file" ]; then
     n_all=$(sed -n '/^gate_surface_digest_raw()/,/^}/p' "$gate_file" | sed 's/#.*//' \
             | grep -cE 'ORCH_DIR|orchestrator' || true)
@@ -9501,10 +9540,34 @@ $(sed 's/#.*//' "$sib")"
     printf 'FAIL 게이트 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$gate_file"
     orch_ex=$((orch_ex + 1))
   fi
-  if [ -f "$hook_file" ]; then
-    # Every mention of the orchestrator in the hook must BE the rule-catalog arm.
-    # A count comparison rather than a pattern match: it fails the moment an arm
-    # is widened, which a "does the rules arm exist" check would not.
+  self_check_surface_mentions "$hook_file" "$es_file" || orch_ex=$((orch_ex + $?))
+  fails=$((fails + orch_ex))
+
+  if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
+  printf 'self-check: %s FAIL\n' "$fails"; return 1
+}
+
+self_check_surface_mentions() {
+  # self_check_surface_mentions <hook file> <classifier file> — the self-check's
+  # assertions on where the orchestrator is mentioned in the hook and the
+  # enforcement-surface classifier. Prints one `ok`/`FAIL` line per assertion
+  # and returns the number of FAIL lines. A function of its own so a test can
+  # point it at a mutated pair without running the whole self-check once per
+  # mutation.
+  local hook_file="$1" es_file="$2" orch_ex=0 n_all n_rules n_rec
+  if [ -f "$hook_file" ] && [ -f "$es_file" ]; then
+    # Every mention of the orchestrator in the hook's deny list must BE the
+    # rule-catalog arm. A count comparison rather than a pattern match: it fails
+    # the moment an arm is widened, which a "does the rules arm exist" check
+    # would not.
+    #
+    # THE ARMS LIVE IN THE CLASSIFIER NOW, NOT IN THE HOOK. The hook sources
+    # `enforcement-surfaces.sh` and picks only a message per class token, so the
+    # count moved with the globs: the hook itself must mention the orchestrator
+    # nowhere, and in the classifier every mention must be the rule-catalog
+    # glob, at least once. Checking only the hook would pass vacuously on the
+    # day the glob moved out of it, and a widening written into the classifier
+    # is exactly what this assertion exists to catch.
     #
     # OCCURRENCES, NOT LINES. `grep -c` counts matching LINES, and the widening
     # this assertion exists to catch does not need a new line: an arm widened in
@@ -9529,22 +9592,27 @@ $(sed 's/#.*//' "$sib")"
     n_all=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator' | grep -c . || true)
     n_rec=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator-dir' | grep -c . || true)
     n_all=$(( ${n_all:-0} - ${n_rec:-0} ))
-    n_rules=$(sed 's/#.*//' "$hook_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
+    if [ "${n_all:-0}" = "0" ]; then
+      printf 'ok   훅 자신에는 오케스트레이터 언급이 없다 (거부 팔은 분류기에 있다)\n'
+    else
+      printf 'FAIL 훅의 orchestrator 언급 %s건 — 거부 팔은 분류기에만 있어야 하므로 등재된 예외의 문면과 어긋난다\n' \
+        "${n_all:-0}"
+      orch_ex=$((orch_ex + 1))
+    fi
+    n_all=$(sed 's/#.*//' "$es_file" | grep -o 'orchestrator' | grep -c . || true)
+    n_rules=$(sed 's/#.*//' "$es_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
     if [ "${n_rules:-0}" -ge 1 ] && [ "${n_all:-0}" = "${n_rules:-0}" ]; then
       printf 'ok   등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다 (거부되는 것은 룰 카탈로그뿐)\n'
     else
-      printf 'FAIL 훅의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
+      printf 'FAIL 분류기의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
         "${n_all:-0}" "${n_rules:-0}"
       orch_ex=$((orch_ex + 1))
     fi
   else
-    printf 'FAIL 훅 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$hook_file"
+    printf 'FAIL 훅 파일이나 분류기 파일이 없어 등재된 예외를 확인할 수 없다: %s %s\n' "$hook_file" "$es_file"
     orch_ex=$((orch_ex + 1))
   fi
-  fails=$((fails + orch_ex))
-
-  if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
-  printf 'self-check: %s FAIL\n' "$fails"; return 1
+  return "$orch_ex"
 }
 
 # ---------------------------------------------------------------------------
@@ -10064,6 +10132,21 @@ merge_head_is_reviewed() {
   [ -n "$ht" ] && [ "$ht" = "$rt" ]
 }
 
+dispatch_surface_note() {
+  # dispatch_surface_note <segment> — ` · 강제 표면: <경로> (<분류>), …` and
+  # ` · 좌석 적용 커밋: <sha> (<경로>, …); …` for an implement dispatch line,
+  # each left out when its value is `없음`. The gate's two functions compute
+  # them, the same ones its snapshot prints for a routing shift to copy, so a
+  # fresh session learns which declared paths only a seat apply commits and
+  # which commits on its branch the gate made.
+  local sp sc out=''
+  sp=$(run_gate_call gate_segment_surface_paths "$1" 2>/dev/null) || sp=''
+  case "$sp" in ''|'없음') : ;; *) out=" · 강제 표면: $sp" ;; esac
+  sc=$(run_gate_call gate_segment_seat_commits "$1" 2>/dev/null) || sc=''
+  case "$sc" in ''|'없음') : ;; *) out="$out · 좌석 적용 커밋: $sc" ;; esac
+  printf '%s' "$out"
+}
+
 segment_cycle() {
   local seg="$1" files="$2"
   local branch="seg/$SLUG-$seg" wt pre_head cap cycle=0 al seg_repo prev_rp="" converged=0
@@ -10239,7 +10322,7 @@ segment_cycle() {
       local fix_target=""
       [ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"
       [ -z "$cap_rp" ] || fix_target=" · 수정 대상: $cap_rp 의 P0·P1"
-      prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$fix_target\""
+      prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\""
       STAGE_RESUME=""
       # THE KEY A JUDGMENT THIS DISPATCH EMITS IS FILED UNDER. The dispatch id,
       # so the open-judgment check in `continue_or_park` sees this stage's
@@ -10347,7 +10430,7 @@ segment_cycle() {
       fileset_escape "$seg" "$files" "$wt" || return 1
       stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
-      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$fix_target\""
+      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\""
       case "$(terminal_route_class "$class")" in
         '정상 완료') : ;;
         '의도된 park')
@@ -10409,7 +10492,7 @@ segment_cycle() {
           # crash.
           log "$seg: $class — 1회만 재시도"
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$fix_target\"" \
+               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\"" \
                crash-retry "크래시 2회" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -10429,7 +10512,7 @@ segment_cycle() {
           # `limit-reclaim` is what leaves the exhausted account out; any other
           # event would sit this lineage back on the account the reap ran from.
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$fix_target\"" \
+               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\"" \
                limit-reclaim "한도-형상 회수 후 재파견" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -12932,6 +13015,12 @@ plan_from_declaration() {
     _rp=$(slice_field "$doc" "$id" '리뷰 정책')
     [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
     _segargs+=( "선언 다이제스트=$(slice_decl_digest "$doc" "$id")" )
+    # `강제 표면` from the declared files, as the gate's `--from-declaration`
+    # stamps it — the same classifier, the same spelling.
+    local -a _sdf=()
+    local _sf
+    while IFS= read -r _sf; do [ -z "$_sf" ] || _sdf+=("$_sf"); done <<<"$(slice_decl_files "$doc" "$id")"
+    _segargs+=( "강제 표면=$(run_surface_stamp ${_sdf[@]+"${_sdf[@]}"})" )
     _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
     ledger_row 'segment' "${_segargs[@]}"
   done
@@ -12978,9 +13067,17 @@ plan_via_planner() {
       "-" >> "$RUN_DIR/plan.tsv"
   done
   plan_dep_floor_or_park || return 1
+  local -a _pdf
+  local _pf
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
+    # The planner does not classify (its prompt says so); the field is stamped
+    # here from the files it declared, as on the slice path.
+    _pdf=()
+    while IFS= read -r _pf; do [ -z "$_pf" ] || _pdf+=("$_pf"); done \
+      <<<"$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files[]? | strings')"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
+      "강제 표면=$(run_surface_stamp ${_pdf[@]+"${_pdf[@]}"})" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
   done
   return 0

@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -25,6 +25,11 @@ options:
       default: "off (변경 파일 집합을 diff 에서만 유도)"
       summary: "이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다."
       parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다."
+    - name: "--seat-commits <list>"
+      kind: flag
+      default: "off (이 세그먼트에 좌석이 적용한 강제 표면 편집이 없다)"
+      summary: "사람 승인 뒤 게이트가 이 세그먼트 브랜치에 만든 좌석 적용 커밋 목록(`<sha> (<경로>, …); …`). 그 커밋이 바꾼 파일은 선언 집합 안이므로 리뷰 범위이며, 리뷰는 그 변경을 다른 커밋과 똑같이 읽고 개요에 커밋과 경로를 한 줄로 남긴다."
+      parse_note: "`--seat-commits` 다음 토큰을 값으로 취한다. 공백·괄호·쌍반점을 포함하므로 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다."
     - name: "--slice <id>"
       kind: flag
       default: "off (슬라이스 범위를 적용하지 않고 모든 발견을 센다 — 개요에 `적용 안 됨 — 인자 없음`)"
@@ -84,7 +89,7 @@ options:
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(수렴 술어를 얇게 만들기 때문 — 드라이버가 넘긴 `--slice` 에 따른 다른 슬라이스 몫 제외는 스스로 좁히기가 아니다), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -205,6 +210,7 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review, no `gh` commands
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope the driver already resolved. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit this segment branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the segment declared it would touch, quoted by the driver because it contains commas. A flag whose value is missing is dropped along with the flag: consuming the next token would swallow the following flag or the directive.
+- **`--seat-commits <list>`** → the seat-apply commits the gate made on this segment's branch after a person approved an enforcement-surface edit, as `<sha> (<path>, …); …`. It takes the **next token** as its value, quoted by the driver because it contains spaces, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. Those commits are part of the diff under review and their files are inside the declared set: review them like any other commit, never skip them because a person approved them, and name each commit with its paths in one overview line. A missing value drops the flag and says nothing.
 - **`--slice <id>`** → the design slice this segment implemented. It takes the **next token** as its value, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. A `--slice` whose value is missing is dropped along with the flag and leaves one overview line naming the drop; the slice scope then falls back to `인자 없음` in 1c′. What the value selects is decided in 1c′, not here.
 - **`--basis-cycle <n>`, `--basis-review-head <sha>` and `--basis-report-path <abs-path>`** → the delta basis the driver selected. Each takes the **next token** as its value, and each flag is removed together with its value **before** the directive is extracted, exactly as the two flags above are. A flag whose value is missing is dropped along with the flag. Whether the three values qualify is decided in 1b′, not here — parsing only strips them.
 - **`--resolve-basis-cycle <n>`, `--resolve-basis-head <sha>` and `--resolve-base <sha>`** → the resolution basis the router read off `review_next[]`. Stripped with their values before the directive is extracted, exactly as the basis flags are; whether they qualify is decided in 1b″. The three together with any basis flag is not a delta and not a halt: the basis flags are dropped with one overview line, and 1b″ decides alone.

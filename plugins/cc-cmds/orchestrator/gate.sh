@@ -70,8 +70,14 @@
 #      here can also be the act's. A refusal always carries a `gate:` line on
 #      stderr and produces no output from the act; that, not the number, is what
 #      separates the two.
-#   2  vocabulary error — a token outside a closed set
-#   3  rule refusal — a catalog rule said no
+#   2  vocabulary error — a token outside a closed set. From `surface-screen`
+#      also: the enforcement-surface classifier could not be loaded (판정불가).
+#      From `surface-provenance`: the check could not be decided — the
+#      classifier, the merge base or the changed paths could not be read
+#   3  rule refusal — a catalog rule said no. From `seat-apply-preview` also:
+#      the record or the segment worktree fails a check the apply makes. From
+#      `surface-provenance`: the branch changed an enforcement surface outside
+#      a seat apply
 #   4  stale snapshot digest — the router judged against state that has moved
 #   5  approval issued — the act is outside pre-authorization and irreversible
 #   6  grade self-declaration mismatch — the claimed grade is not the graded one
@@ -167,6 +173,30 @@
 #                    `--` (`--no-slice` drops `--slice` instead), then the
 #                    `설계는 <문서>` directive; writes nothing.
 #                    Refused (3) when the segment has no row naming a branch
+#   gate.sh surface-screen --manifest <path> [--list] [--tokens] [-z] [--] [<path>…]
+#                    prints `<path><TAB><class>` for each path the run hook
+#                    refuses as an enforcement surface (`--list` first prints
+#                    the classifier's arms, `--tokens` reads command lines,
+#                    `-z` reads NUL-separated standard input) by running
+#                    `enforcement-surface-screen.sh` from beside this file, so
+#                    a stage that cannot launch that script reaches it here;
+#                    writes nothing. Exit 2 when the classifier could not be
+#                    loaded — nothing was judged, which is never "no surface"
+#   gate.sh seat-apply-preview --manifest <path> --record <halt record> [--target <alias>]
+#                    for a `Step 3 강제 표면 좌석 적용` halt record: prints the
+#                    record digest, the `--numstat` and unified diff of the
+#                    commit a `좌석 적용` answer would make — built by the same
+#                    function as the apply, in an isolated object directory —,
+#                    the apply scope and the question line the seat asks with;
+#                    writes nothing. Refused (3) when the record or the segment
+#                    worktree fails the apply's own checks
+#   gate.sh surface-provenance --manifest <path> --segment <id> [--target <alias>]
+#                    the merge-time provenance check of the segment's
+#                    enforcement surface: one `<path>\t<why>` line per
+#                    classified path the branch changed that neither a seat
+#                    apply of this run nor the base end has as HEAD has it, and
+#                    exit 3; one `-\t<why>` line and exit 2 when the check
+#                    cannot be decided; silent and 0 otherwise. Writes nothing
 #   gate.sh binding-digest --manifest <path> -- <design document path>
 #                    prints the document's binding-surface digest — the one the
 #                    driver compares a segment plan against — on one line;
@@ -228,7 +258,7 @@
 #               -- 상태=<계획됨|실행중|리뷰중|머지됨|완료|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
 #   gate.sh act --kind segment --target <alias> --segment <id> --from-declaration ... \\
 #               -- 상태=계획됨 워크트리=<path>
-#     (레포·선언 파일 집합·선행·절단점·리뷰 정책·선언 다이제스트 는 동결 문서의 ## 구현 슬라이싱 에서
+#     (레포·선언 파일 집합·선행·절단점·리뷰 정책·선언 다이제스트·강제 표면 은 동결 문서의 ## 구현 슬라이싱 에서
 #      게이트가 채운다 — 호출자가 넘기면 거부된다)
 #   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
 #               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>'
@@ -413,6 +443,21 @@ gate_thp() {  # gate_thp <engine function> [<arg>…]
   (
     # shellcheck source=/dev/null
     . "$GATE_DIR/../hooks/target-hook-probe.sh"  # lint-harness-global-collisions: child-shell
+    "$@"
+  )
+}
+
+# The enforcement-surface classifier: the run hook's suffix arms, which the hook
+# sources from its own directory and this file from the pinned copy beside it.
+# Sourced in a child shell for the reason `gate_thp` is. Exit 2 means the
+# classifier could not be loaded, which every caller reads as "cannot judge" —
+# never as "no surface": the seat application, a stage's write act and the
+# provenance check all refuse on it, and the segment stamp reads `판정불가`.
+gate_es() {  # gate_es <classifier function> [<arg>…]
+  (
+    # shellcheck source=/dev/null
+    . "$GATE_DIR/../hooks/enforcement-surfaces.sh" 2>/dev/null || exit 2  # lint-harness-global-collisions: child-shell
+    command -v es_class >/dev/null 2>&1 || exit 2
     "$@"
   )
 }
@@ -3390,23 +3435,82 @@ surface_of_openssl() {
   # this table does not name include `s_client` and `s_server` — and a grade
   # that guesses low on those is the laundering the whole table exists to stop.
   #
-  # `-out <path>` is checked across every arm, not per subcommand. `rand` and
-  # `dgst` both accept it, so an arm that graded `rand` as a read on the
-  # strength of its name alone would let `openssl rand -out secrets.bin 32`
-  # through as one.
+  # The writer flags are checked across every read arm, not per subcommand.
+  # `rand` and `dgst` both accept them, so an arm that graded `rand` as a read
+  # on the strength of its name alone would let `openssl rand -out secrets.bin
+  # 32` through as one. A subcommand outside the read list stays `등급 미상`
+  # whatever writer flag it carries: a writer flag grades where the output
+  # lands, not what else the subcommand reaches, and `ocsp -url <host> -out=<f>`
+  # opens a socket.
   #
-  # THIS ROW KEEPS THE LITERAL MATCH AND DOES NOT USE `gate_argv_has_opt`.
-  # Nothing is lost by staying literal: openssl spells its writer flag as
-  # `-out <file>` and accepts no attached form, so there is no attached spelling
-  # here to miss.
+  # The writer flags come in four spellings, and every one of them writes.
+  # LibreSSL takes only `-out <file>`, but OpenSSL 3 and later — the bare
+  # `openssl` on a Linux runner, and Homebrew's on macOS — also take `--out`,
+  # and both with the value attached as `-out=<file>` / `--out=<file>`. The
+  # same holds for `-keyout`. So an argument that IS one of the four names, or
+  # STARTS WITH one of them followed by `=`, is a write.
   #
-  # AND THE HELPER WOULD BE A TRAP HERE LATER. Its short arm is a prefix match,
+  # THIS ROW DOES NOT USE `gate_argv_has_opt`. Its short arm is a prefix match,
   # and openssl has `-outform` sharing the `-out` prefix. That option belongs to
-  # `x509`, `req`, `rsa` and friends, every one of which this row already
-  # refuses with `등급 미상`, so today the prefix would mis-grade nothing. The
-  # day a subcommand carrying `-outform` is added to the read list below, it
-  # would — and the failure would look like an unrelated row's problem.
-  case " $* " in *" -out "*|*" -keyout "*) printf '워크트리쓰기'; return 0 ;; esac
+  # `x509`, `req`, `rsa` and friends, every one of which this row refuses with
+  # `등급 미상` before any writer flag is read, so today the prefix would
+  # mis-grade nothing. The day a subcommand carrying `-outform` is added to the read list below, it
+  # would — and the failure would look like an unrelated row's problem. The
+  # match below is exact on the name and takes `=` as the only attachment.
+  # `-writerand <file>` (`rand`, `dgst`) writes the generator's seed file and
+  # is one of the same family.
+  #
+  # THE WRITE IS GRADED BY WHERE IT LANDS. The value of each writer flag — the
+  # next argument, or what follows `=` — goes through `surface_of_write_paths`,
+  # so `-out $HOME/.zshrc` is `트리밖쓰기` like `sort -o` to the same path, and
+  # only a write whose every value is inside the tree is `워크트리쓰기`. A
+  # writer flag with no value is graded `트리밖쓰기`: there is no path to show
+  # it lands inside.
+  #
+  # `-provider`, `-provider-path` and `-engine` load a module of the caller's
+  # choosing into the process, which no read subcommand makes harmless, so
+  # any of them is `등급 미상`.
+  #
+  # `base64` is a read in exactly the form a stage is told to use to encode the
+  # content of a seat apply — `base64 -A -in <file>`, optionally with `-e` —
+  # and nothing else. Any other argument, `-d` included, makes it a write: with
+  # `-d` it decodes chosen bytes, and an output option this row has not learned
+  # would turn that into a write of chosen content anywhere.
+  local a outs=() want=0
+  for a in "$@"; do
+    if [ "$want" = 1 ]; then outs[${#outs[@]}]="$a"; want=0; continue; fi
+    case "$a" in
+      -out|--out|-keyout|--keyout|-writerand|--writerand) want=1 ;;
+      -out=*|--out=*|-keyout=*|--keyout=*|-writerand=*|--writerand=*)
+        outs[${#outs[@]}]="${a#*=}" ;;
+      -provider|--provider|-provider=*|--provider=*|-provider-path|--provider-path|-provider-path=*|--provider-path=*|-engine|--engine|-engine=*|--engine=*)
+        printf '등급 미상'; return 0 ;;
+    esac
+  done
+  case "${1:-}" in
+    rand|dgst|sha256|sha1|base64|version|list|help|''|-*) ;;
+    *) printf '등급 미상'; return 0 ;;
+  esac
+  if [ "$want" = 1 ]; then printf '트리밖쓰기'; return 0; fi
+  if [ "${#outs[@]}" -gt 0 ]; then
+    for a in "${outs[@]}"; do
+      [ -n "$a" ] || { printf '트리밖쓰기'; return 0; }
+    done
+    surface_of_write_paths "${outs[@]}"
+    return 0
+  fi
+  if [ "${1:-}" = base64 ]; then
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -A|-e) shift ;;
+        -in) [ "$#" -ge 2 ] || { printf '워크트리쓰기'; return 0; }; shift 2 ;;
+        *) printf '워크트리쓰기'; return 0 ;;
+      esac
+    done
+    printf '읽기'
+    return 0
+  fi
   case "${1:-}" in
     rand|dgst|sha256|sha1|version|list|help) printf '읽기' ;;
     '') printf '읽기' ;;
@@ -12156,6 +12260,49 @@ gate_prior_decl_whole() {
   cat "$p" 2>/dev/null || return 1
 }
 
+gate_segment_declared_whole() {
+  # gate_segment_declared_whole <segment> [<before line>] — the declared set of the segment as
+  # the last of its rows carrying `선언 파일 집합` states it, read back whole
+  # when the row writer clipped it and normalized by `gate_decl_norm`; empty
+  # when no row carries one. 1 when the value was clipped and the file it names
+  # cannot be read back: a reader that needs the whole set cannot judge then.
+  #
+  # The last value any row carried, because a later state row does not repeat
+  # it. The review line and the enforcement-surface readers share this so the
+  # two cannot disagree about which set a segment declared.
+  #
+  # With <before line>, only the rows above that ledger line are read: the set
+  # as it stood when that line was written, which is what a seat-apply
+  # inheritance re-derives the person's approved scope from.
+  local rows decl side
+  if [ -n "${2:-}" ]; then
+    rows=$(LC_ALL=C awk -v l="$2" 'NR < l && index($0, "- `segment` ") == 1' "$LEDGER" 2>/dev/null \
+           | gate_rows_field_eq 'id' "$1")
+  else
+    rows=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$1")
+  fi
+  decl=$(printf '%s\n' "$rows" | gate_rows_field_values '선언 파일 집합' | awk 'NF { v = $0 } END { print v }')
+  case "$decl" in
+    *"(전체: "*")")
+      side=${decl##*"(전체: "}; side=${side%)}
+      decl=$(gate_prior_decl_whole "$side") || return 1 ;;
+  esac
+  gate_decl_norm "$decl"
+}
+
+gate_surface_stamp() {
+  # gate_surface_stamp [<path>…] — the `강제 표면` value for these declared
+  # paths: `<n>건 <분류목록>`, `없음`, or `판정불가` when the classifier could
+  # not be loaded. Never fails: an unloadable classifier is a value, not a
+  # refusal of the row.
+  local v
+  if v=$(gate_es es_stamp "$@") && [ -n "$v" ]; then
+    printf '%s' "$v"
+  else
+    printf '%s' '판정불가'
+  fi
+}
+
 gate_prior_decl_diff() {
   # gate_prior_decl_diff <segment> <ledger> <terminal-row> — empty when that
   # earlier ledger planned <segment> under the declaration the frozen document
@@ -12847,7 +12994,7 @@ gate_from_declaration() {
   for f in "$@"; do
     k=${f%%=*}
     case "$k" in
-      레포|'선언 파일 집합'|선행|'머지 순서'|절단점|'리뷰 정책'|'선언 다이제스트'|plan-binding-digest)
+      레포|'선언 파일 집합'|선행|'머지 순서'|절단점|'리뷰 정책'|'선언 다이제스트'|'강제 표면'|plan-binding-digest)
         warn "--from-declaration 은 「${k}」 를 동결 문서에서 채웁니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB" ;;
     esac
@@ -12947,6 +13094,13 @@ gate_from_declaration() {
       k=$(slice_field "$DOC" "$seg" '리뷰 정책')
       [ -z "$k" ] || GATE_DECL_FIELDS+=( "리뷰 정책=$k" )
       GATE_DECL_FIELDS+=( "선언 다이제스트=$(slice_decl_digest "$DOC" "$seg")" )
+      # `강제 표면` from the same declared files, through the classifier the run
+      # hook sources: a slice that has to edit what the hook refuses says so on
+      # its planned row, before any stage runs into the refusal. The driver's
+      # `plan_from_declaration` stamps the same value the same way.
+      local -a sdf=()
+      while IFS= read -r d; do [ -z "$d" ] || sdf+=("$d"); done <<<"$(slice_decl_files "$DOC" "$seg")"
+      GATE_DECL_FIELDS+=( "강제 표면=$(gate_surface_stamp ${sdf[@]+"${sdf[@]}"})" )
       ;;
     *)
       step=$(gate_plan_implement_step)
@@ -15134,6 +15288,8 @@ gate_on_exit() {
   gate_dispatch_lock_release
   gate_settings_lock_release
   gate_ci_rerun_lock_release
+  # The one-read copy of a seat-apply record is the gate's own scratch file.
+  [ -z "${GATE_SA_COPY:-}" ] || rm -f "$GATE_SA_COPY"
   gate_emit_digest_body
   set -e
   return "$__rc"
@@ -17889,6 +18045,8 @@ gate_main() {
   local wait_interval="" wait_timeout="" nonce=""
   local fields="" fields_seen=0
   local end_cause="" end_successor=""
+  local -a ss_flags=()
+  local sa_record=""
   GATE_RESUME=""; export GATE_RESUME
   # A plain global, reset here, so a value the caller's environment carries
   # never reaches the arm that reads it — only the argv flag below sets it.
@@ -17987,6 +18145,9 @@ gate_main() {
       --request)         request="$2"; shift 2 ;;
       --cause)           end_cause="$2"; shift 2 ;;
       --successor)       end_successor="$2"; shift 2 ;;
+      --record)          sa_record="$2"; shift 2 ;;
+      # The screening tool's own three switches, handed to it as they came.
+      --list|--tokens|-z) ss_flags+=("$1"); shift ;;
       # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
       # token is another flag or the `--` separator) selects the default list;
       # the value is never read as a filename, so `--fields --` cannot swallow
@@ -17998,6 +18159,18 @@ gate_main() {
     esac
   done
 
+  if [ -n "$sa_record" ] && [ "$verb" != "seat-apply-preview" ]; then
+    printf 'gate: --record is used only with seat-apply-preview (verb received: %s)\n' "$verb" >&2
+    exit 2
+  fi
+  if [ "$verb" = "seat-apply-preview" ] && [ -z "$sa_record" ]; then
+    printf 'gate: seat-apply-preview needs --record <halt record>\n' >&2
+    exit 2
+  fi
+  if [ "${#ss_flags[@]}" -gt 0 ] && [ "$verb" != "surface-screen" ]; then
+    printf 'gate: --list, --tokens and -z are used only with surface-screen (verb received: %s)\n' "$verb" >&2
+    exit 2
+  fi
   if [ "$fields_seen" = "1" ] && [ "$verb" != "snapshot" ]; then
     printf 'gate: --fields is used only with snapshot (verb received: %s)\n' "$verb" >&2
     exit 2
@@ -18783,6 +18956,29 @@ gate_main() {
       # with the flags after `--` in it. No ledger row — the dispatch is the act.
       gate_review_line "$segment" "$@"
       ;;
+    surface-screen)
+      # Reading, not acting: the screening tool from beside this file, with the
+      # same arguments and the same output, so a stage whose only Bash is the
+      # gate reaches it. No ledger row — nothing is performed. Its exit status
+      # passes through: 2 is a classifier that could not be loaded.
+      local ss_rc=0
+      bash "$GATE_DIR/enforcement-surface-screen.sh" ${ss_flags[@]+"${ss_flags[@]}"} -- "$@" || ss_rc=$?
+      exit "$ss_rc"
+      ;;
+    seat-apply-preview)
+      # Reading, not acting: the diff a seat apply of the record would commit,
+      # built in an isolated object directory, and the question the seat asks.
+      # No ledger row, no ref, no object in the common store.
+      gate_seat_apply_preview "$sa_record" "$alias"
+      ;;
+    surface-provenance)
+      # Reading, not acting: the merge-time provenance check of one segment's
+      # enforcement surface, the one the merge act and the cone seed run. No
+      # ledger row — the merge it precedes is the act.
+      [ "$segment" != "-" ] && [ -n "$segment" ] \
+        || { printf 'gate: surface-provenance requires --segment\n' >&2; exit 2; }
+      gate_surface_provenance "$segment" "$alias"
+      ;;
     binding-digest)
       # Reading, not acting: the driver's own `binding_digest` over the document
       # named after `--`, so a re-convergence stage takes its before and after
@@ -18978,7 +19174,7 @@ gate_shift_halts_json() {
       esac
     fi
     held=''
-    for m in $(gate_cone_members "$seg"); do
+    for m in $(GATE_CONE_MEMBERS_ONLY=1 gate_cone_members "$seg"); do
       [ "$m" = "$seg" ] && continue
       held="$held${held:+, }\"$(gate_json_escape "$m")\""
     done
@@ -19166,15 +19362,25 @@ gate_halt_answer_consumer() {
   # shift carries it out by writing the segment's `상태=park` row and dispatches
   # nothing, so no `stage-result` would ever spend it; the first such `segment`
   # row of the key on a later line is a candidate beside the `stage-result` one,
-  # and the earlier of the two is the consumer. Every other option is spent the
-  # way it was.
+  # and the earlier of the two is the consumer. An answer `보류` to a
+  # `Step 3 강제 표면 좌석 적용` record is carried out the same way (route
+  # `적용-보류`) and spent the same way. Every other option is spent the way it
+  # was.
   #
   # AN ATTEMPT THAT CARRIED THE ANSWER AND DIED BEFORE ITS SESSION does not take
   # it up either: its row carries `답 운반` and `세션 id=미상`, the card was never
   # read, and the answer is still the one to carry. The two filters below are
   # `gate_row_is_pre_session_death` spelled for a line-numbered stream, so the
   # routing that reads the key's last row sees the same rows passed over.
-  local sr st pk
+  local sr st pk arow aopt
+  arow=$(sed -n "${3}p" "$1" 2>/dev/null)
+  aopt=$(gate_row_field "$arow" '선택지')
+  if [ "$aopt" = '보류' ] \
+     && [ "$(gate_row_field "$arow" '스킬')" = 'implement-unattended' ]; then
+    case "$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "$arow" '중단 기록')" 2>/dev/null | sed -n '1p')" in
+      'Step 3 강제 표면 좌석 적용'*) aopt='세그먼트 park' ;;
+    esac
+  fi
   sr=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
@@ -19209,7 +19415,7 @@ gate_halt_answer_consumer() {
   if [ -n "$bk" ] && { [ -z "$sr" ] || [ "${bk%%:*}" -lt "${sr%%:*}" ]; }; then
     sr=$bk
   fi
-  if [ "$(gate_row_field "$(sed -n "${3}p" "$1" 2>/dev/null)" '선택지')" = '세그먼트 park' ]; then
+  if [ "$aopt" = '세그먼트 park' ]; then
     pk=$(LC_ALL=C awk -v l="$3" -v k="$2" '
       NR > l && !p && index($0, "- `segment` ") == 1 && index($0, "| id=" k " |") \
         && index($0, "| 상태=park |") { print NR ":" $0; p = 1 }' "$1" 2>/dev/null)
@@ -19289,14 +19495,20 @@ gate_halt_recommendation() {
     warn "the seat answers only a \`gate-unanswerable\` halt record without a person — this one is ${cls:-unclassified}: $rec"
     return "$GATE_EXIT_RULE"
   fi
-  if ! grep -q '^- `' "$rec"; then
-    warn "the halt record has no option line, so there is nothing for the seat to answer: $rec"
+  if [ -z "$(gate_halt_option_lines "$rec")" ]; then
+    warn "the halt record has no option line in its \`**선택지**:\` block, so there is nothing for the seat to answer: $rec"
     return "$GATE_EXIT_RULE"
   fi
   step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p')
   case "$step" in
     'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)
       warn "a \`좌석 실행\` halt is run by the seat, not answered from a recommendation: $rec"
+      return "$GATE_EXIT_RULE" ;;
+    # A seat apply commits files a person has to see first, so it is never a
+    # recommendation's: the seat answers it only by inheriting a person's
+    # earlier answer, which is the seat-apply branch's and not this one.
+    'Step 3 강제 표면 좌석 적용'*)
+      warn "a \`Step 3 강제 표면 좌석 적용\` halt is answered by a person or inherited from one, never from a recommendation: $rec"
       return "$GATE_EXIT_RULE" ;;
   esac
   n=$(grep -c '^\*\*추천\*\*: ' "$rec" || true)
@@ -19317,7 +19529,16 @@ gate_halt_recommendation() {
       "- \`$lab\` — "*) desc=${ol#"- \`$lab\` — "}; found=1; break ;;
       "- \`$lab\`") found=1; break ;;
     esac
-  done < "$rec"
+  done <<EOF
+$(gate_halt_option_lines "$rec")
+EOF
+  # THE OLD SEAT-RUN PATH IS SCREENED HERE. A record with no `좌석 실행` step
+  # whose first option spells a command is run by the seat and answered with
+  # that option's label, and that answer comes down this path, not the
+  # `좌석 실행` branch — so the option line gets the same token screen.
+  if [ -n "$found" ]; then
+    gate_halt_surface_tokens "$ol" "the recommended option \`$lab\`" "$rec" || return "$?"
+  fi
   if [ -z "$lab" ] || [ -z "$found" ]; then
     warn "\`**추천**\` names \`$lab\`, which is not one of this halt record's option labels byte for byte: $rec"
     return "$GATE_EXIT_RULE"
@@ -19334,6 +19555,584 @@ gate_halt_recommendation() {
     END { print o }')
   GATE_HALT_REC_LABEL=$lab
   GATE_HALT_REC_KINDS=${kinds:-미상}
+}
+
+gate_halt_option_lines() {
+  # gate_halt_option_lines <record> — the option lines of a halt record, verbatim:
+  # the lines of its `**선택지**:` block — from that line to the next line that
+  # starts with `**`, or the closing fence — that read `` - `<label>` `` alone or
+  # followed by ` — <description>`.
+  #
+  # INSIDE THE BLOCK, BECAUSE OTHER LINES SHARE THE SHAPE'S HEAD. A command line
+  # of a command halt starts with ``- ` `` too, and so can a line quoted into
+  # the question, so a check that scanned the whole record for ``- `<label>` ``
+  # found an option in a line nobody offered as one. Every reader of a record's
+  # options — the option check of `halt-answer`, the recommendation, the
+  # routable labels and the seat-apply frame check — reads them here.
+  LC_ALL=C awk '
+    $0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
+    inb && /^\*\*/ { inb = 0 }
+    /^\*\*선택지\*\*:[ \t]*$/ { inb = 1; next }
+    inb && /^- `[^`]+`$/ { print; next }
+    inb && /^- `[^`]+` — / { print }
+  ' "$1" 2>/dev/null || true
+}
+
+gate_halt_option_labels() {
+  # gate_halt_option_labels <record> — the labels of `gate_halt_option_lines`,
+  # one per line.
+  gate_halt_option_lines "$1" | LC_ALL=C awk '{ l = substr($0, 4); sub(/`.*/, "", l); print l }'
+}
+
+gate_halt_surface_tokens() {
+  # gate_halt_surface_tokens <line> <what> <record> — 0 when no token of the
+  # line is an enforcement surface; otherwise warns, naming the tokens, and
+  # returns GATE_EXIT_RULE. A classifier that could not be loaded refuses too:
+  # "cannot judge" is never "no surface".
+  #
+  # A COMMAND THE SEAT RUNS NAMES NO ENFORCEMENT SURFACE. The seat runs what a
+  # record lists without a person, and a `cp` onto a rule file or a CLAUDE.md
+  # run that way commits nothing a review sees and nothing a person approved.
+  # Such an edit has its own halt, `Step 3 강제 표면 좌석 적용`, which a person
+  # answers. Backticks are blanked first, so a command quoted in a record is
+  # read as the words it is made of. A string check, as the classifier says:
+  # a script whose body writes a surface passes, and the merge's provenance
+  # check is what closes that.
+  local out rc=0
+  out=$(gate_es es_class_command "$(printf '%s' "$1" | tr '`' ' ')") || rc=$?
+  case "$rc" in
+    0) warn "$2 names an enforcement surface ($(printf '%s' "$out" | LC_ALL=C awk -F '\t' '{ printf "%s%s=%s", (NR > 1 ? ", " : ""), $1, $2 }')) — the seat does not run a command on one without a person; a stage commits such an edit through a \`Step 3 강제 표면 좌석 적용\` halt: $3"
+       return "$GATE_EXIT_RULE" ;;
+    1) return 0 ;;
+    *) warn "the enforcement-surface classifier could not be loaded, so whether $2 names an enforcement surface cannot be judged — the seat does not answer it without a person: $3"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+}
+
+# The body of every seat-apply commit. A fixed sentence: the subject is the
+# stage's, and the run directory, the record or a trailer would put a path or a
+# name into the branch's history that the review and the person never chose.
+readonly GATE_SA_BODY='강제 표면 파일을 사람 승인에 따라 좌석 적용으로 커밋했다.'
+# The one-read copy of the record a `halt-answer` seat apply is reading, which
+# the exit trap removes.
+GATE_SA_COPY=""
+
+gate_seat_apply_path_shape() {
+  # gate_seat_apply_path_shape <path> — 0 when <path> is a repository-relative
+  # path with no `..`, `.`, empty or `.git` component, no leading `/`, `-` or
+  # trailing `/`, and no control character, backtick or backslash.
+  case "$1" in ''|/*|*/|-*) return 1 ;; esac
+  case "/$1/" in */../*|*/./*|*//*|*/.git/*) return 1 ;; esac
+  case "$1" in *[[:cntrl:]]*|*'`'*|*\\*) return 1 ;; esac
+  return 0
+}
+
+gate_seat_apply_parse() {
+  # gate_seat_apply_parse <record> — reads a `Step 3 강제 표면 좌석 적용` record
+  # into GATE_SA_BASE, GATE_SA_SUBJECT, GATE_SA_FILES (one
+  # `<path>\t<class>\t<blob|없음>\t<mode>\t<base64|삭제>` line per file the seat
+  # applies), GATE_SA_HUMAN (one `<path>\t<class>` line per file left to a
+  # person) and their counts GATE_SA_NA and GATE_SA_NH. A record whose fields
+  # do not have the written shape is warned about and refused with
+  # GATE_EXIT_RULE. Shape and class only: whether a path may be applied in the
+  # segment worktree is `gate_seat_apply_check`'s.
+  #
+  # A FILE LINE STARTS `- 파일 `, NEVER ``- ` ``. That head is an option line's,
+  # and a path read as an option label is one a person could be offered.
+  local rec="$1" out ln tag rest counts='' c_b c_s c_a c_h p cls blob mode pay want rc_es seen=$'\n'
+  GATE_SA_BASE=''; GATE_SA_SUBJECT=''; GATE_SA_FILES=''; GATE_SA_HUMAN=''; GATE_SA_NA=0; GATE_SA_NH=0
+  out=$(LC_ALL=C awk '
+    BEGIN { sep = " — "; nb = ns = na = nh = 0; fh = "- 파일 `"
+            kb = "**좌석 적용 기준**: "; ks = "**좌석 적용 커밋 제목**: " }
+    $0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
+    /^\*\*/ { blk = "" }
+    index($0, kb) == 1 { nb++; print "B\t" substr($0, length(kb) + 1); next }
+    index($0, ks) == 1 { ns++; print "S\t" substr($0, length(ks) + 1); next }
+    /^\*\*좌석 적용 파일\*\*:[ \t]*$/ { blk = "A"; na++; next }
+    /^\*\*사람 몫 파일\*\*:[ \t]*$/ { blk = "H"; nh++; next }
+    blk == "" || /^[ \t]*$/ { next }
+    index($0, fh) != 1 { print "E\t" NR; next }
+    {
+      r = substr($0, length(fh) + 1); q = index(r, "`")
+      if (q < 2) { print "E\t" NR; next }
+      p = substr(r, 1, q - 1); r = substr(r, q + 1)
+      if (index(r, sep) != 1) { print "E\t" NR; next }
+      n = split(substr(r, length(sep) + 1), f, sep)
+      if (blk == "A") {
+        if (n != 4 || index(f[2], "기준 ") != 1 || index(f[3], "모드 ") != 1) { print "E\t" NR; next }
+        print "A\t" p "\t" f[1] "\t" substr(f[2], length("기준 ") + 1) "\t" substr(f[3], length("모드 ") + 1) "\t" f[4]
+      } else {
+        if (n < 2 || f[2] == "") { print "E\t" NR; next }
+        print "H\t" p "\t" f[1]
+      }
+    }
+    END { print "C\t" nb "\t" ns "\t" na "\t" nh }
+  ' "$rec" 2>/dev/null || true)
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    tag=${ln%%$'\t'*}; rest=${ln#*$'\t'}
+    case "$tag" in
+      B) GATE_SA_BASE=$rest ;;
+      S) GATE_SA_SUBJECT=$rest ;;
+      A) GATE_SA_FILES="$GATE_SA_FILES$rest"$'\n'; GATE_SA_NA=$((GATE_SA_NA + 1)) ;;
+      H) GATE_SA_HUMAN="$GATE_SA_HUMAN$rest"$'\n'; GATE_SA_NH=$((GATE_SA_NH + 1)) ;;
+      E) warn "line $rest of the record's file fields is not a file line of the written shape (\`- 파일 \`<path>\` — <class> — …\`): $rec"
+         return "$GATE_EXIT_RULE" ;;
+      C) counts=$rest ;;
+    esac
+  done <<EOF
+$out
+EOF
+  IFS=$'\t' read -r c_b c_s c_a c_h <<EOF
+${counts:-0	0	0	0}
+EOF
+  if [ "$c_b" -gt 1 ] || [ "$c_s" -gt 1 ] || [ "$c_a" -gt 1 ] || [ "$c_h" -gt 1 ]; then
+    warn "a seat-apply record carries each of \`**좌석 적용 기준**\`, \`**좌석 적용 파일**\`, \`**사람 몫 파일**\` and \`**좌석 적용 커밋 제목**\` at most once: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$GATE_SA_NA" -gt 0 ]; then
+    if [ "$c_b" != 1 ] || [ "$c_s" != 1 ]; then
+      warn "a seat-apply record with files to apply carries \`**좌석 적용 기준**\` and \`**좌석 적용 커밋 제목**\`: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    case "$GATE_SA_BASE" in
+      *[!0-9a-f]*|'') warn "\`**좌석 적용 기준**\` is not a 40-hex commit: ${GATE_SA_BASE:-(empty)}: $rec"; return "$GATE_EXIT_RULE" ;;
+    esac
+    [ "${#GATE_SA_BASE}" -eq 40 ] || { warn "\`**좌석 적용 기준**\` is not a 40-hex commit: $GATE_SA_BASE: $rec"; return "$GATE_EXIT_RULE"; }
+  elif [ "$c_b" != 0 ] || [ "$c_s" != 0 ] || [ "$c_a" != 0 ] || [ "$GATE_SA_NH" -eq 0 ]; then
+    warn "a seat-apply record either applies files (\`**좌석 적용 기준**\`, \`**좌석 적용 파일**\` with file lines, \`**좌석 적용 커밋 제목**\`) or leaves them all to a person (\`**사람 몫 파일**\` with file lines and none of the three): $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  while IFS=$'\t' read -r p cls blob mode pay; do
+    [ -n "$p" ] || continue
+    gate_seat_apply_path_shape "$p" || { warn "\`$p\` is not a repository-relative path without \`..\`, \`.\`, a leading or doubled \`/\` or a control character: $rec"; return "$GATE_EXIT_RULE"; }
+    case "$seen" in *$'\n'"$p"$'\n'*) warn "\`$p\` is named twice in the record's file fields: $rec"; return "$GATE_EXIT_RULE" ;; esac
+    seen="$seen$p"$'\n'
+    want=''; rc_es=0
+    want=$(gate_es es_class "/$p") || rc_es=$?
+    [ "$rc_es" -le 1 ] || { warn "the enforcement-surface classifier could not be loaded, so the record's paths cannot be judged: $rec"; return "$GATE_EXIT_RULE"; }
+    if [ -z "$want" ]; then
+      warn "\`$p\` is not an enforcement surface (the classifier gives it no class), so it is committed by the stage, not by a seat apply: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    [ "$cls" = "$want" ] || { warn "\`$p\` is written as \`$cls\` and the classifier calls it \`$want\`: $rec"; return "$GATE_EXIT_RULE"; }
+    [ -n "$mode" ] || continue
+    gate_es es_seat_applicable_class "$cls" || {
+      warn "\`$p\` is a \`$cls\` path, which the run never commits — it is a file left to a person (\`**사람 몫 파일**\`): $rec"
+      return "$GATE_EXIT_RULE"; }
+    case "$blob" in
+      없음) ;;
+      *[!0-9a-f]*|'') warn "the base blob of \`$p\` is neither a 40-hex blob nor \`없음\`: $blob: $rec"; return "$GATE_EXIT_RULE" ;;
+      *) [ "${#blob}" -eq 40 ] || { warn "the base blob of \`$p\` is neither a 40-hex blob nor \`없음\`: $blob: $rec"; return "$GATE_EXIT_RULE"; } ;;
+    esac
+    case "$mode:$pay" in
+      삭제:삭제) [ "$blob" != 없음 ] || { warn "\`$p\` is deleted but the base has no such path: $rec"; return "$GATE_EXIT_RULE"; } ;;
+      삭제:*|*:삭제) warn "\`$p\` is deleted in one of its mode and content fields and not in the other: $rec"; return "$GATE_EXIT_RULE" ;;
+      100644:*|100755:*)
+        case "$pay" in *[!A-Za-z0-9+/=]*) warn "the content of \`$p\` is not one line of base64: $rec"; return "$GATE_EXIT_RULE" ;; esac
+        # The bytes decode and encode back to the same line, so a payload the
+        # decoder would read leniently — wrapped, padded oddly — is refused
+        # rather than committed as whatever it decodes to.
+        [ "$(printf '%s' "$pay" | openssl base64 -d -A 2>/dev/null | openssl base64 -A 2>/dev/null)" = "$pay" ] || {
+          warn "the content of \`$p\` does not decode to bytes that encode back to the same base64 line: $rec"
+          return "$GATE_EXIT_RULE"; } ;;
+      *) warn "the mode of \`$p\` is not one of 100644 · 100755 · 삭제: $mode: $rec"; return "$GATE_EXIT_RULE" ;;
+    esac
+  done <<EOF
+$GATE_SA_FILES$(printf '%s' "$GATE_SA_HUMAN" | LC_ALL=C awk -F '\t' 'NF { print $1 "\t" $2 }')
+EOF
+  return 0
+}
+
+gate_seat_apply_subject_ok() {
+  # gate_seat_apply_subject_ok <subject> — 0 for one line of the form
+  # `type(scope): <title>`, at most 100 characters, with no trailer-shaped text.
+  local s="$1" n
+  case "$s" in *[[:cntrl:]]*) return 1 ;; esac
+  printf '%s' "$s" | LC_ALL=C grep -Eq '^[a-z]+\([^()[:space:]]+\): [^[:space:]]' || return 1
+  printf '%s' "$s" | LC_ALL=C grep -Eqi 'co-authored-by|signed-off-by|generated with' && return 1
+  # Characters, not bytes: the continuation bytes of UTF-8 are dropped first.
+  n=$(printf '%s' "$s" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')
+  [ "$n" -le 100 ]
+}
+
+gate_seat_apply_scope() {
+  # gate_seat_apply_scope <declared set> — the apply scope of a declaration,
+  # one entry per line, sorted and unique: each declared entry the classifier
+  # puts in a class the seat may commit, and each declared directory (an entry
+  # ending in `/`). A path is in the scope when it is one of them or under a
+  # directory among them, by the declared-set prefix rule. Exit 2 when the
+  # classifier could not be loaded.
+  local d c rc out=''
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$d" in
+      */) out="$out$d"$'\n'; continue ;;
+    esac
+    rc=0; c=$(gate_es es_class "/$d") || rc=$?
+    [ "$rc" -le 1 ] || return 2
+    [ -n "$c" ] || continue
+    gate_es es_seat_applicable_class "$c" && out="$out$d"$'\n'
+  done <<EOF
+$(printf '%s' "$1" | tr ',' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+EOF
+  printf '%s' "$out" | LC_ALL=C sort -u
+}
+
+gate_seat_apply_under() {
+  # gate_seat_apply_under <path> <entries, one per line> — 0 when <path> is one
+  # of the entries or starts with one, the prefix rule `gate_fileset_escape`
+  # reads a declaration by.
+  local e
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    case "$1" in "$e"|"$e"*) return 0 ;; esac
+  done <<EOF
+$2
+EOF
+  return 1
+}
+
+gate_seat_apply_scope_digest() {
+  # gate_seat_apply_scope_digest <scope> — sha256 of the scope's lines, each
+  # ended by a newline.
+  printf '%s\n' "$1" | grep -v '^$' | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_seat_apply_check() {
+  # gate_seat_apply_check <segment> <alias> — the per-path and worktree checks of
+  # a seat apply against the parsed record (GATE_SA_*), with the worktree taken
+  # from the segment row and never from the record. Sets GATE_SA_WT; warns and
+  # returns GATE_EXIT_RULE on the first failure.
+  #
+  # THE WORKTREE IS THE SEGMENT'S, CLEAN, AND AT THE RECORD'S BASE. The apply
+  # never touches the working tree until the fast-forward, so a dirty tree or a
+  # moved HEAD would make that fast-forward carry something nobody approved,
+  # and the rollback's `reset --hard` would lose it.
+  #
+  # NO SYMBOLIC LINK ON THE WAY. Every component of every target path is
+  # `lstat`ed — tracked, untracked or ignored alike: a fast-forward replaces an
+  # ignored symlinked directory with a real one without a word, and
+  # `git status` stays clean.
+  local seg="$1" al="$2" wt top decl p cls blob mode pay ent emode etype eoid pre comp rest
+  wt=$(gate_segment_worktree "$seg")
+  GATE_SA_WT=$wt
+  if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+    warn "segment $seg has no worktree on its row, so there is nothing to apply into: '${wt:-(none)}'"
+    return "$GATE_EXIT_RULE"
+  fi
+  gate_path_of_target "$wt" "$al" || {
+    warn "the worktree of $seg is not a worktree of target $al (its common git directory is not the target's): $wt"
+    return "$GATE_EXIT_RULE"; }
+  top=$( { cd "$wt" 2>/dev/null && env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE git rev-parse --show-toplevel 2>/dev/null; } || true)
+  if [ -z "$top" ] || [ "$(cd "$top" 2>/dev/null && pwd -P)" != "$(cd "$wt" 2>/dev/null && pwd -P)" ]; then
+    warn "the worktree of $seg is not the top of its own repository (${top:-not a repository}): $wt"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$(gate_worktree_tip "$wt" || true)" != "$GATE_SA_BASE" ]; then
+    warn "the HEAD of $seg is not the record's \`**좌석 적용 기준**\` ($GATE_SA_BASE) — the stage's last commit is the base the edit was written against: $wt"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$( (cd "$wt" && git status --porcelain --untracked-files=no) 2>/dev/null || printf 'x')" ]; then
+    warn "the worktree of $seg has uncommitted changes, so the apply could not be undone without losing them: $wt"
+    return "$GATE_EXIT_RULE"
+  fi
+  decl=$(gate_segment_declared_whole "$seg") || {
+    warn "the whole declared file set of $seg cannot be read back, so whether the record's paths are inside it cannot be judged"
+    return "$GATE_EXIT_RULE"; }
+  decl=$(printf '%s' "$decl" | tr ',' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' || true)
+  while IFS=$'\t' read -r p cls blob mode pay; do
+    [ -n "$p" ] || continue
+    gate_seat_apply_under "$p" "$decl" || {
+      warn "\`$p\` is not inside the declared file set of $seg — an enforcement-surface edit outside the declaration leaves the design's binding tier"
+      return "$GATE_EXIT_RULE"; }
+    if (cd "$wt" && git check-ignore -q --no-index -- "$p") 2>/dev/null; then
+      warn "\`$p\` is ignored in the worktree of $seg, so no review could see it as a commit — it is a file left to a person"
+      return "$GATE_EXIT_RULE"
+    fi
+    ent=$( (cd "$wt" && GIT_LITERAL_PATHSPECS=1 git ls-tree -z "$GATE_SA_BASE" -- "$p") 2>/dev/null | tr '\0' '\n' | sed -n '1p')
+    emode=''; etype=''; eoid=''
+    if [ -n "$ent" ]; then
+      ent=${ent%%$'\t'*}
+      read -r emode etype eoid <<EOF
+$ent
+EOF
+      if [ "$etype" != blob ] || { [ "$emode" != 100644 ] && [ "$emode" != 100755 ]; }; then
+        warn "\`$p\` is a \`$emode $etype\` entry at the base, not a regular file"
+        return "$GATE_EXIT_RULE"
+      fi
+    fi
+    if [ "$blob" = 없음 ]; then
+      [ -z "$ent" ] || { warn "the record says the base has no \`$p\`, and it has $eoid"; return "$GATE_EXIT_RULE"; }
+    elif [ "$blob" != "$eoid" ]; then
+      warn "the base blob of \`$p\` is ${eoid:-absent}, not the record's $blob — the edit was written against other bytes"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ "$cls" = 지침파일 ] && [ -z "$ent" ]; then
+      warn "\`$p\` is a CLAUDE.md the base does not track — that slot is written by the gate's own CLAUDE.md route, not by a seat apply"
+      return "$GATE_EXIT_RULE"
+    fi
+    pre=$wt; rest=$p
+    while :; do
+      comp=${rest%%/*}
+      pre="$pre/$comp"
+      if [ -L "$pre" ]; then
+        warn "\`${pre#"$wt"/}\` on the way to \`$p\` is a symbolic link in the worktree of $seg"
+        return "$GATE_EXIT_RULE"
+      fi
+      [ "$rest" != "$comp" ] || break
+      rest=${rest#*/}
+    done
+  done <<EOF
+$GATE_SA_FILES
+EOF
+  return 0
+}
+
+gate_seat_apply_build() {
+  # gate_seat_apply_build <worktree> — the commit a seat apply lands, printed:
+  # the record's files over `**좌석 적용 기준**` in a temporary index, written
+  # as a tree and committed with the record's subject and the fixed body. The
+  # working tree, the index and every ref stay as they were. With
+  # `gate_iso_open` in force the objects go into the isolated directory, which
+  # is how the preview shows the very commit the apply would make.
+  local wt="$1" idxd p cls blob mode pay oid tree c rc=0
+  idxd=$(mktemp -d "${TMPDIR:-/tmp}/gate-sa-index.XXXXXX") || return 1
+  (
+    GIT_INDEX_FILE="$idxd/index"; export GIT_INDEX_FILE
+    gate_iso_git "$wt" read-tree "$GATE_SA_BASE" || exit 1
+    while IFS=$'\t' read -r p cls blob mode pay; do
+      [ -n "$p" ] || continue
+      if [ "$mode" = 삭제 ]; then
+        gate_iso_git "$wt" update-index --force-remove -- "$p" || exit 1
+      else
+        oid=$(printf '%s' "$pay" | openssl base64 -d -A | gate_iso_git "$wt" hash-object -w --no-filters --stdin) || exit 1
+        gate_iso_git "$wt" update-index --add --cacheinfo "$mode" "$oid" "$p" || exit 1
+      fi
+    done <<EOF
+$GATE_SA_FILES
+EOF
+    tree=$(gate_iso_git "$wt" write-tree) || exit 1
+    printf '%s\n\n%s\n' "$GATE_SA_SUBJECT" "$GATE_SA_BODY" | gate_iso_git "$wt" commit-tree "$tree" -p "$GATE_SA_BASE"
+  ) || rc=1
+  rm -rf "$idxd"
+  return "$rc"
+}
+
+gate_seat_apply_question() {
+  # gate_seat_apply_question <record digest> <segment> <scope> — the question
+  # line the seat puts to the person verbatim, and the frame check looks for in
+  # the question the person was shown.
+  local paths
+  if [ "$GATE_SA_NA" -gt 0 ]; then
+    paths=$(printf '%s' "$GATE_SA_FILES" | LC_ALL=C awk -F '\t' 'NF { printf "%s%s", (n++ ? ", " : ""), $1 }')
+    printf '기록 %s — 세그먼트 %s 의 강제 표면 편집 %s건을 게이트가 좌석 적용으로 커밋합니다: %s. 이 답은 같은 세그먼트에서 뒤에 나오는 적용 범위 %s건(%s) 안의 강제 표면 편집에도 쓰입니다.' \
+      "$1" "$2" "$GATE_SA_NA" "$paths" "$(printf '%s\n' "$3" | grep -c . || true)" \
+      "$(printf '%s\n' "$3" | grep -v '^$' | LC_ALL=C awk '{ printf "%s%s", (n++ ? ", " : ""), $0 }')"
+  else
+    paths=$(printf '%s' "$GATE_SA_HUMAN" | LC_ALL=C awk -F '\t' 'NF { printf "%s%s", (n++ ? ", " : ""), $1 }')
+    printf '기록 %s — 세그먼트 %s 의 강제 표면 편집 %s건은 런이 커밋할 수 없어 사람 몫으로 넘깁니다: %s.' \
+      "$1" "$2" "$GATE_SA_NH" "$paths"
+  fi
+}
+
+gate_seat_apply_frame() {
+  # gate_seat_apply_frame <record digest> <question line> <record copy> <option>
+  # — 0 with GATE_SA_FRAME set to the `tool_use_id` when the caller's lineage
+  # holds the harness-written answer of an `AskUserQuestion` whose question
+  # carried the question line, whose options were the record's labels and whose
+  # answer is <option>; otherwise a warning and GATE_EXIT_RULE.
+  #
+  # THE PERSON'S FIRST ANSWER IS PROVED BY THE FRAME, NOT TOLD BY THE SEAT. The
+  # binding of the frame reader is the token alone, so the question line is
+  # required verbatim: a frame that carries the digest in another question
+  # would otherwise pass. The id is spent once — a frame already quoted as some
+  # row's `승인 프레임` proves nothing new.
+  local dig="$1" q="$2" rec="$3" opt="$4" shown want r
+  GATE_SA_FRAME=''
+  if gate_transcript_torn; then
+    warn "a transcript of this session's lineage ends mid-line, so the person's answer cannot be read yet — answer again once it is written out: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  gate_frame_candidate "$dig" || true
+  if [ "$GATE_FRAME_KIND" != answers ]; then
+    warn "no answered \`AskUserQuestion\` carrying record digest $dig is in this session's lineage (${GATE_FRAME_KIND}) — ask the person with the preview's question line first"
+    return "$GATE_EXIT_RULE"
+  fi
+  gate_frame_parse "$GATE_FRAME_FILE" "$GATE_FRAME_LINE" "$dig"
+  if [ "$GATE_FRAME_TYPE" != user ] || [ -z "$GATE_FRAME_TID" ] || [ "$GATE_FRAME_ERR" = 1 ] \
+     || [ "$GATE_FRAME_TOOL" != AskUserQuestion ] || [ "$GATE_FRAME_HASANS" != 1 ] || [ "$GATE_FRAME_HASKEY" != 1 ]; then
+    warn "the frame carrying record digest $dig is not the harness-written answer of an \`AskUserQuestion\` (tool ${GATE_FRAME_TOOL:-미상}, error ${GATE_FRAME_ERR:-0}, answer map ${GATE_FRAME_HASANS:-0}/${GATE_FRAME_HASKEY:-0})"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$GATE_FRAME_KEY" in
+    *"$q"*) ;;
+    *) warn "the question the person was shown does not carry the preview's question line verbatim — ask with the line \`seat-apply-preview\` prints"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+  if [ "$GATE_FRAME_ANSWER" != "$opt" ]; then
+    warn "the person answered \`$GATE_FRAME_ANSWER\`, not \`$opt\` — a free answer or another label is not a seat-apply approval"
+    return "$GATE_EXIT_RULE"
+  fi
+  shown=$(printf '%s\n' "$GATE_FRAME_LABELS" | while IFS= read -r r; do [ -n "$r" ] && gate_menu_normalize "$r" && printf '\n'; done | LC_ALL=C sort -u)
+  want=$(gate_halt_option_labels "$rec" | LC_ALL=C sort -u)
+  if [ "$shown" != "$want" ]; then
+    warn "the options the person was shown are not the record's labels ($(printf '%s' "$want" | tr '\n' ' '))"
+    return "$GATE_EXIT_RULE"
+  fi
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    if [ "$(gate_row_field "$r" '승인 프레임')" = "$GATE_FRAME_TID" ]; then
+      warn "the question frame $GATE_FRAME_TID already approved a seat apply, and one frame approves one record"
+      return "$GATE_EXIT_RULE"
+    fi
+  done <<EOF
+$( { gate_rows '중단 답' || true; } )
+EOF
+  GATE_SA_FRAME=$GATE_FRAME_TID
+}
+
+gate_halt_seat_apply_covered() {
+  # gate_halt_seat_apply_covered <key> — 0 when the parsed record (GATE_SA_*) is
+  # covered by a person's earlier seat-apply answer of the same segment, with
+  # GATE_SA_COV_FRAME and GATE_SA_COV_REC set to that answer's frame and record;
+  # otherwise a warning and GATE_EXIT_RULE, and the seat asks the person.
+  #
+  # THE PERSON ANSWERS ONCE PER SEGMENT, FOR THE SCOPE THEY WERE SHOWN. The
+  # latest `중단 답` row of the key that a person gave to a seat apply, with its
+  # frame, carried in by no adoption (`출처 런`); its commit still an ancestor
+  # of the worktree's HEAD; no `park` of the segment, no run end by `포기` or
+  # `이어받음` and no adopted answer of the key after it; every path of the new
+  # record inside its scope; and nothing left to a person. The scope is
+  # re-derived from the declaration that stood when the person answered and
+  # compared with the digest the row keeps, so a side file read differently
+  # later inherits nothing.
+  local key="$1" r ln row last='' lastln='' sc scope wt sha p cls blob mode pay
+  GATE_SA_COV_FRAME=''; GATE_SA_COV_REC=''
+  if [ "$GATE_SA_NH" -gt 0 ]; then
+    warn "the record leaves files to a person, so the seat does not answer it — a person sees every such file"
+    return "$GATE_EXIT_RULE"
+  fi
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    ln=${r%%:*}; row=${r#*:}
+    [ "$(gate_row_field "$row" '세그먼트')" = "$key" ] || continue
+    [ -z "$(gate_row_field "$row" '출처 런')" ] || continue
+    [ "$(gate_row_field "$row" '선택지')" = '좌석 적용' ] || continue
+    [ "$(gate_row_field "$row" '답한 주체')" = '사람' ] || continue
+    [ "$(gate_row_field "$row" '근거 종류')" = '좌석 적용' ] || continue
+    [ -n "$(gate_row_field "$row" '승인 프레임')" ] || continue
+    last=$row; lastln=$ln
+  done <<EOF
+$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } )
+EOF
+  if [ -z "$last" ]; then
+    warn "$key has no seat apply a person approved, so this one is the person's to answer"
+    return "$GATE_EXIT_RULE"
+  fi
+  sha=$(gate_row_field "$last" '좌석 커밋')
+  wt=$(gate_segment_worktree "$key")
+  if [ -z "$sha" ] || [ -z "$wt" ] || ! (cd "$wt" && git merge-base --is-ancestor "$sha" HEAD) 2>/dev/null; then
+    warn "the seat commit ${sha:-(none)} the person approved (ledger line $lastln) is no longer an ancestor of $key's HEAD — the branch was rebuilt or rebased, so the person answers again"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$(LC_ALL=C awk -v l="$lastln" -v k="$key" '
+        NR <= l { next }
+        index($0, "- `segment` ") == 1 && index($0, " | id=" k " |") && index($0, " | 상태=park ") { print NR; exit }
+        index($0, "- `segment` ") == 1 && index($0, " | id=" k " |") && $0 ~ / \| 상태=park$/ { print NR; exit }
+        index($0, "- `자율 승인` ") == 1 && (index($0, "| 종료 부류=포기") || index($0, "| 종료 부류=이어받음")) { print NR; exit }
+        index($0, "- `중단 답` ") == 1 && index($0, " | 세그먼트=" k " |") && index($0, " | 출처 런=") { print NR; exit }
+      ' "$LEDGER" 2>/dev/null)" ]; then
+    warn "$key was parked, the run was given up or taken over, or an answer was adopted into it after the person's seat apply (ledger line $lastln), so that answer covers nothing later"
+    return "$GATE_EXIT_RULE"
+  fi
+  sc=$(gate_segment_declared_whole "$key" "$lastln") || {
+    warn "the declaration $key had when the person answered cannot be read back whole, so the scope they approved cannot be re-derived"
+    return "$GATE_EXIT_RULE"; }
+  scope=$(gate_seat_apply_scope "$sc") || {
+    warn "the enforcement-surface classifier could not be loaded, so the scope the person approved cannot be re-derived"
+    return "$GATE_EXIT_RULE"; }
+  if [ "$(gate_seat_apply_scope_digest "$scope")" != "$(gate_row_field "$last" '적용 범위 다이제스트')" ]; then
+    warn "the scope re-derived from $key's declaration is not the one the person approved (ledger line $lastln) — the person answers again"
+    return "$GATE_EXIT_RULE"
+  fi
+  while IFS=$'\t' read -r p cls blob mode pay; do
+    [ -n "$p" ] || continue
+    gate_seat_apply_under "$p" "$scope" || {
+      warn "\`$p\` is outside the scope the person approved (ledger line $lastln) — a path the approval did not show goes to the person"
+      return "$GATE_EXIT_RULE"; }
+  done <<EOF
+$GATE_SA_FILES
+EOF
+  GATE_SA_COV_FRAME=$(gate_row_field "$last" '승인 프레임')
+  GATE_SA_COV_REC=$(gate_row_field "$last" '중단 기록')
+}
+
+gate_seat_apply_preview() {
+  # gate_seat_apply_preview <record> [<alias>] — what a seat apply of the record would
+  # commit, and the question the seat asks: the record digest, the unified diff
+  # and `--numstat` of the commit, the apply scope and the question line. The
+  # commit is built in an isolated object directory and dropped, so nothing is
+  # written to the ledger, the worktree, the branch or the common object store.
+  #
+  # THE SAME DECODE AND THE SAME TREE AS THE APPLY. `gate_seat_apply_build` is
+  # the one function both run, so what the person sees is the diff the apply
+  # commits — not a second rendering of the record that could differ from it.
+  local rec="$1" al="${2:-}" seg first cp dig scope decl c rc=0 dd q
+  # The target the apply would run against: `--target`, or the manifest's one
+  # target when it declares one.
+  if [ -z "$al" ]; then
+    al=$(target_aliases 2>/dev/null || true)
+    case "$al" in
+      *[[:space:]]*|'') warn "seat-apply-preview needs --target when the manifest declares more than one target"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+  fi
+  case "$rec" in
+    "$RUN_DIR"/halt/*.md) ;;
+    *) warn "--record has to be a file under this run's halt directory ($RUN_DIR/halt/): $rec"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+  case "$rec" in */../*|*/./*) warn "--record cannot carry a relative segment: $rec"; return "$GATE_EXIT_VOCAB" ;; esac
+  [ -f "$rec" ] || { warn "the halt record does not exist: $rec"; return "$GATE_EXIT_VOCAB"; }
+  cp=$(mktemp "${TMPDIR:-/tmp}/gate-sa-rec.XXXXXX") || return 1
+  cat "$rec" > "$cp" || { rm -f "$cp"; return 1; }
+  dig=$(shasum -a 256 "$cp" | cut -d' ' -f1)
+  first=$(sed -n '1p' "$cp")
+  seg=$(printf '%s' "$first" | sed -n 's/^<!-- cc-pipeline-halt v1;.* stage=\([^;#]*\)[#;].*/\1/p')
+  if [ -z "$seg" ] || ! grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$cp"; then
+    rm -f "$cp"; warn "not a complete halt record whose header names its stage: $rec"; return "$GATE_EXIT_VOCAB"
+  fi
+  case "$(sed -n 's/^\*\*스텝\*\*: //p' "$cp" | sed -n '1p')" in
+    'Step 3 강제 표면 좌석 적용'*) ;;
+    *) rm -f "$cp"; warn "the record is not a \`Step 3 강제 표면 좌석 적용\` halt: $rec"; return "$GATE_EXIT_RULE" ;;
+  esac
+  gate_seat_apply_parse "$cp" || { rc=$?; rm -f "$cp"; return "$rc"; }
+  decl=$(gate_segment_declared_whole "$seg") || decl=''
+  scope=$(gate_seat_apply_scope "$decl") || scope=''
+  printf '기록 다이제스트: %s\n' "$dig"
+  printf '세그먼트: %s\n' "$seg"
+  if [ "$GATE_SA_NA" -gt 0 ]; then
+    gate_seat_apply_check "$seg" "$al" || { rc=$?; rm -f "$cp"; return "$rc"; }
+    gate_iso_open "$GATE_SA_WT" || { rm -f "$cp"; warn "cannot open an isolated object directory for $GATE_SA_WT"; return 1; }
+    c=$(gate_seat_apply_build "$GATE_SA_WT") || rc=1
+    if [ "$rc" = 0 ]; then
+      dd=$(gate_iso_git "$GATE_SA_WT" -c core.quotePath=false diff --no-renames --numstat "$GATE_SA_BASE" "$c")
+      printf '%s\n' '--numstat:' "$dd"
+      printf '%s\n' '통합 diff:'
+      gate_iso_git "$GATE_SA_WT" -c core.quotePath=false diff --no-renames --no-color "$GATE_SA_BASE" "$c"
+    fi
+    gate_iso_close
+    [ "$rc" = 0 ] || { rm -f "$cp"; warn "the apply commit could not be built from the record"; return "$GATE_EXIT_RULE"; }
+  fi
+  if [ "$GATE_SA_NH" -gt 0 ]; then
+    printf '%s\n' '사람 몫 파일:'
+    printf '%s' "$GATE_SA_HUMAN" | LC_ALL=C awk -F '\t' 'NF { print "- " $1 " (" $2 ")" }'
+  fi
+  printf '적용 범위 다이제스트: %s\n' "$(gate_seat_apply_scope_digest "$scope")"
+  printf '적용 범위:\n'
+  printf '%s\n' "$scope" | grep -v '^$' | sed 's/^/- /' || true
+  q=$(gate_seat_apply_question "$dig" "$seg" "$scope")
+  printf '질문 줄: %s\n' "$q"
+  rm -f "$cp"
 }
 
 gate_halt_design_check() {
@@ -20765,7 +21564,7 @@ gate_halt_settle() {
 # 「Handing on a person's answer to a halt」 in the routing shift's skill. The
 # skill maps each id to its item; `scripts/test-gate.sh` reads the ids from
 # this line and fails when the skill stops naming one.
-readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 설계-재수렴 골격급-재수렴'
+readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 적용-보류 설계-재수렴 골격급-재수렴'
 
 gate_row_is_pre_session_death() {
   # gate_row_is_pre_session_death <stage-result row> — whether the row settles
@@ -21003,6 +21802,16 @@ gate_halt_answer_route() {
         fi ;;
       *) why="빈 대상 리뷰 정지에는 \`$opt\` 를 실행할 갈래가 없습니다 — 갈래는 \`구현 재파견\` 과 \`세그먼트 park\` 뿐입니다" ;;
     esac
+  elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "보류" ] \
+       && [ "${step#Step 3 강제 표면 좌석 적용}" != "$step" ]; then
+    # A HELD SEAT APPLY PARKS THE SEGMENT, IT DOES NOT RE-ATTACH. The halted
+    # session has nothing left to do with `보류`: re-attached, it ends without
+    # a record under its new attempt's path, so its end reads `정상 완료` or
+    # `공허한 성공` and the segment goes on to review or is resumed again. The
+    # shift writes the segment's `park` row instead, and that row spends the
+    # answer (`gate_halt_answer_consumer`).
+    id=적용-보류
+    ! gate_segment_terminal "$key" || why=$terminal
   elif [ "$opt" = "골격 재검토" ] && [ "${step#*/ ladder-unsettled}" != "$step" ] \
        && { [ "$skill" = "design-discuss-unattended" ] || [ "$skill" = "design-solo-unattended" ] \
             || [ "$skill" = "design-base-unattended" ]; } \
@@ -21053,18 +21862,14 @@ gate_halt_answer_routable_options() {
   # labels of the record that `gate_halt_answer_route` routes, joined with
   # `, `, or nothing. The seat shows them beside a refusal so a person does not
   # pick a refused label again.
-  local key="$1" rec="$2" by="$3" ol lab out=''
-  while IFS= read -r ol; do
-    case "$ol" in
-      '- `'*'`'*) ;;
-      *) continue ;;
-    esac
-    lab=${ol#- \`}
-    lab=${lab%%\`*}
+  local key="$1" rec="$2" by="$3" lab out=''
+  while IFS= read -r lab; do
     [ -n "$lab" ] || continue
     gate_halt_answer_route "$key" "$rec" "$lab" "$by" >/dev/null 2>&1 || continue
     out="$out${out:+, }$lab"
-  done < "$rec"
+  done <<EOF
+$(gate_halt_option_labels "$rec")
+EOF
   printf '%s' "$out"
 }
 
@@ -23273,18 +24078,63 @@ gate_review_line() {
   if [ "$slice" = "1" ] && [ "$(gate_slicing_branch)" = "선언통치" ]; then line="$line --slice $seg"; fi
   base=$(printf '%s\n' "$rows" | gate_rows_field_values '베이스 sha' | awk 'NF { v = $0 } END { print v }')
   [ -z "$base" ] || line="$line --base-sha $base"
-  decl=$(printf '%s\n' "$rows" | gate_rows_field_values '선언 파일 집합' | awk 'NF { v = $0 } END { print v }')
-  case "$decl" in
-    *"(전체: "*")")
-      side=${decl##*"(전체: "}; side=${side%)}
-      decl=$(gate_prior_decl_whole "$side") || decl='' ;;
-  esac
-  decl=$(gate_decl_norm "$decl")
+  decl=$(gate_segment_declared_whole "$seg") || decl=''
   case "$decl" in ''|'없음'|'(없음)') : ;; *) line="$line --declared-files \"$decl\"" ;; esac
+  # The seat commits ride as a flag of their own: they are commits a stage did
+  # not write, so the review is told which ones to read as the gate's.
+  side=$(gate_segment_seat_commits "$seg")
+  [ "$side" = "없음" ] || line="$line --seat-commits \"$side\""
   [ "${#extra[@]}" -eq 0 ] || line="$line ${extra[*]}"
   doc=$(gate_doc_arg_path)
   [ -z "$doc" ] || line="$line \"설계는 $doc\""
   printf '%s\n' "$line"
+}
+
+gate_segment_seat_commits() {
+  # gate_segment_seat_commits <segment> — the seat commits of this run's
+  # `좌석 적용` answers for the segment, in ledger order, as
+  # `<sha> (<경로>, …); <sha> (<경로>, …)`, or `없음`. The paths are the ones
+  # the commit changed, read off the commit; a commit the segment worktree
+  # cannot find says so instead. The review line, the implement dispatch line
+  # and the snapshot all print this, so the three cannot spell it differently.
+  local seg="$1" wt r row s ps out=''
+  wt=$(gate_segment_worktree "$seg" 2>/dev/null) || wt=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    row=${r#*:}
+    [ "$(gate_row_field "$row" '세그먼트')" = "$seg" ] || continue
+    [ -z "$(gate_row_field "$row" '출처 런')" ] || continue
+    [ "$(gate_row_field "$row" '선택지')" = '좌석 적용' ] || continue
+    s=$(gate_row_field "$row" '좌석 커밋')
+    [ -n "$s" ] || continue
+    ps=''
+    if [ -n "$wt" ] && [ -d "$wt" ] && (cd "$wt" && git cat-file -e "$s^{commit}") 2>/dev/null; then
+      ps=$( { cd "$wt" && git -c core.quotePath=false diff-tree --no-renames -r -z --name-only "$s^" "$s" 2>/dev/null; } \
+            | tr '\0' '\n' | awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }') || ps=''
+    else
+      ps='커밋을 찾을 수 없음'
+    fi
+    out="$out${out:+; }$s (${ps:-변경 없음})"
+  done <<EOF
+$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } )
+EOF
+  printf '%s' "${out:-없음}"
+}
+
+gate_segment_surface_paths() {
+  # gate_segment_surface_paths <segment> — the declared paths the classifier
+  # names, as `<경로> (<분류>), …`, `없음`, or `판정불가` when the declared set
+  # cannot be read whole or the classifier cannot be loaded. Recomputed from
+  # `선언 파일 집합` rather than stored, because a row has a byte cap and the
+  # list is a pure function of that field.
+  local seg="$1" decl p out rc=0
+  decl=$(gate_segment_declared_whole "$seg") || { printf '판정불가'; return 0; }
+  case "$decl" in ''|'없음'|'(없음)') printf '없음'; return 0 ;; esac
+  out=$(printf '%s' "$decl" | tr ',' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        | awk 'NF' | tr '\n' '\0' | gate_es gate__es_class_z) || rc=$?
+  [ "$rc" != 2 ] || { printf '판정불가'; return 0; }
+  [ -n "$out" ] || { printf '없음'; return 0; }
+  printf '%s\n' "$out" | awk -F '\t' 'NF >= 2 { printf "%s%s (%s)", (n++ ? ", " : ""), $2, $1 }'
 }
 
 gate_carry_issue_view() {
@@ -24242,6 +25092,261 @@ DECL
     done
 }
 
+gate__es_class_z() {
+  # Inside `gate_es`: NUL-separated repository-relative paths on stdin, one
+  # `<class>\t<path>` line out for each the classifier names.
+  local p c
+  while IFS= read -r -d '' p; do
+    [ -n "$p" ] || continue
+    c=$(es_class "/$p") || continue
+    printf '%s\t%s\n' "$c" "$p"
+  done
+}
+
+gate__tree_entry() {
+  # gate__tree_entry <rev> <path> — `<mode> <object id>` of the path in the
+  # revision's tree, or `없음`. Run inside the worktree.
+  local e
+  e=$(GIT_LITERAL_PATHSPECS=1 git ls-tree -z "$1" -- "$2" 2>/dev/null | tr '\0' '\n' | sed -n '1p')
+  if [ -z "$e" ]; then printf '없음'; return 0; fi
+  e=${e%%$'\t'*}
+  printf '%s %s' "${e%% *}" "${e##* }"
+}
+
+gate_surface_alias_of() {
+  # gate_surface_alias_of <worktree> — the declared target the worktree belongs
+  # to, by the predicate a segment row's `워크트리` is admitted with.
+  local a
+  for a in $(target_aliases 2>/dev/null || true); do
+    gate_path_of_target "$1" "$a" && { printf '%s' "$a"; return 0; }
+  done
+  return 1
+}
+
+gate_surface_provenance() {
+  # gate_surface_provenance <segment> [<alias>] — 0 when every enforcement-surface
+  # path the segment branch changed stands as this run's seat applies left it or
+  # as the base has it; otherwise one `<path>\t<why>` line per path that does
+  # not, and status 3. Status 2, with one `-\t<why>` line, when the check cannot
+  # be decided: the classifier, the merge base or the changed paths could not be
+  # read. Every caller refuses on both, but only 3 says that a surface changed —
+  # a reader that wrote "changed outside a seat apply" for an unreadable branch
+  # would put a false reason on the ledger and hide the one that was true.
+  #
+  # THIS IS WHAT CLOSES THE GAP, AND THE EXEC REFUSAL IS ONLY A SIGNPOST. A
+  # stage can reach a classified path through an interpreter, a script body or
+  # `git checkout <rev> -- <path>`, none of which an argv check sees. What lands
+  # is the branch, so the branch is examined: the cone seed holds a review on it,
+  # the merge act refuses on it and the driver calls it right before its own
+  # merge. All three call this one function.
+  #
+  # THREE TREES, WHETHER OR NOT THE BRANCH WAS REBASED: the segment HEAD, the
+  # merge base and the base end. A path's HEAD entry has to equal the base end's
+  # or the entry of the last seat commit of this run and this segment that
+  # touched it. And a path the base changed since the merge base that HEAD does
+  # not carry as the base has it is refused even when it equals a seat commit,
+  # because on a branch that was not rebased HEAD still equals the seat commit
+  # and the first comparison alone would let a change on both sides through.
+  # On a rebased branch the merge base is the base end, so that condition does
+  # not stand and the first comparison decides.
+  #
+  # THE MODE IS COMPARED WITH THE OBJECT, AND `없음` IS A VALUE. Many rule
+  # checkers are executables, so a blob-only comparison would pass a mode-only
+  # change; and a deletion only a seat apply or the base made passes while one
+  # nobody approved does not.
+  #
+  # THE TOUCHED PATHS COME FROM THE COMMIT, NOT FROM THE ROW. `diff-tree` of
+  # each seat commit against its parent says what it changed; a commit that
+  # cannot be found refuses, because what it covered can no longer be shown.
+  # Rows carried in by an adoption (`출처 런`) are not counted — a seat apply of
+  # another run is that run's trust, not this one's.
+  local seg="$1" al="${2:-}" wt bref bend mb mbrc=0 lst rc=0 out='' line cls p eh eb em s es found ok
+  local shas='' r row tch anchored
+  wt=$(gate_segment_worktree "$seg")
+  case "$wt" in ''|-) return 0 ;; esac
+  [ -d "$wt" ] || return 0
+  if ! gate_es true; then
+    printf '%s\t%s\n' '-' '분류 라이브러리를 읽을 수 없어 판정 불가'
+    return 2
+  fi
+  case "$al" in ''|-) al=$(gate_surface_alias_of "$wt") || al='' ;; esac
+  bend=''
+  if [ -n "$al" ]; then
+    bref=$(base_branch "$al" 2>/dev/null) || bref=''
+    if [ -n "$bref" ]; then
+      if (cd "$wt" && git remote get-url origin >/dev/null 2>&1); then
+        bref="refs/remotes/origin/$bref"
+      else
+        bref="refs/heads/$bref"
+      fi
+      bend=$(cd "$wt" && git rev-parse --verify --quiet "$bref^{commit}" 2>/dev/null) || bend=''
+    fi
+  fi
+  # The base the segment branched from stands in when the target's base ref
+  # cannot be read: a branch is then compared with where it started.
+  [ -n "$bend" ] || bend=$(gate_segment_field "$seg" '베이스 sha')
+  [ -n "$bend" ] || return 0
+  # A BRANCH WITH NO COMMON HISTORY IS COMPARED FROM THE EMPTY TREE. `merge-base`
+  # exits 1 with nothing printed when the two ends share no ancestor — an orphan
+  # tip, or a root the segment was cut from on purpose. Every path such a branch
+  # carries is one it added, so the empty tree stands in for the merge base and
+  # the same three-tree comparison decides. A classified path HEAD has exactly
+  # as the base end has it passes. One the base end lacks needs a seat commit,
+  # as on any branch. One the base end has differently is refused as changed on
+  # both sides — the base "added" it too, measured from the empty tree — and no
+  # seat commit lifts that: a person decides it. Any other failure (an object
+  # the database cannot read, a HEAD that does not resolve) cannot be decided
+  # and is status 2.
+  #
+  # A SHALLOW REPOSITORY IS NOT AN ORPHAN. Cut below the fork point, it also
+  # makes `merge-base` exit 1, but the two ends do share history the clone does
+  # not hold — the empty tree would then report every path the base changed as
+  # changed on both sides. Exit 1 in a shallow repository cannot be decided.
+  mb=$(cd "$wt" && git merge-base "$bend" HEAD 2>/dev/null) || mbrc=$?
+  if [ "$mbrc" = 1 ] && [ -z "$mb" ] \
+     && [ "$(cd "$wt" && git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+    mb=''; mbrc='1, 얕은 저장소'
+  elif [ "$mbrc" = 1 ] && [ -z "$mb" ]; then
+    mb=$(cd "$wt" && git hash-object -t tree /dev/null 2>/dev/null) || mb=''
+  elif [ "$mbrc" != 0 ]; then
+    mb=''
+  fi
+  if [ -z "$mb" ]; then
+    printf '%s\t%s\n' '-' "베이스 끝 ${bend} 과 HEAD 의 merge-base 를 구할 수 없어 판정 불가 (rc=$mbrc)"
+    return 2
+  fi
+  lst=$( { cd "$wt" && git -c core.quotePath=false diff --no-renames -z --name-only "$mb" HEAD 2>/dev/null; } \
+         | gate_es gate__es_class_z) || rc=$?
+  case "$rc" in
+    0) : ;;
+    2) printf '%s\t%s\n' '-' '분류 라이브러리를 읽을 수 없어 판정 불가'
+       return 2 ;;
+    *) printf '%s\t%s\n' '-' "merge-base ${mb} 와 HEAD 사이의 변경 경로를 읽을 수 없어 판정 불가 (rc=$rc)"
+       return 2 ;;
+  esac
+  [ -n "$lst" ] || return 0
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    row=${r#*:}
+    [ "$(gate_row_field "$row" '세그먼트')" = "$seg" ] || continue
+    [ -z "$(gate_row_field "$row" '출처 런')" ] || continue
+    [ "$(gate_row_field "$row" '선택지')" = '좌석 적용' ] || continue
+    s=$(gate_row_field "$row" '좌석 커밋')
+    [ -n "$s" ] && shas="$shas$s"$'\n'
+  done <<EOF
+$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } )
+EOF
+  while IFS=$'\t' read -r cls p; do
+    [ -n "$p" ] || continue
+    eh=$(cd "$wt" && gate__tree_entry HEAD "$p")
+    eb=$(cd "$wt" && gate__tree_entry "$bend" "$p")
+    em=$(cd "$wt" && gate__tree_entry "$mb" "$p")
+    if [ "$eb" != "$em" ] && [ "$eh" != "$eb" ]; then
+      out="$out$p"$'\t'"베이스와 세그먼트 양쪽에서 바뀜 ($cls)"$'\n'
+      continue
+    fi
+    [ "$eh" = "$eb" ] && continue
+    # A SEAT COMMIT IS AN APPROVAL OF BYTES OVER ONE BASE ENTRY. `anchored` says
+    # some seat commit that touched the path was made over the entry the base end
+    # holds now; when none was, the base changed the path under the approval,
+    # and a rebase that replays the seat bytes over it still leaves HEAD equal
+    # to the seat commit — the change on both sides the first test cannot see.
+    found=''; ok=0; anchored=0
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      if ! (cd "$wt" && git cat-file -e "$s^{commit}") 2>/dev/null; then
+        found="!$s"; break
+      fi
+      # Captured, not piped into `grep -q`: under `pipefail` an early match
+      # would make the writer's SIGPIPE the status of the test.
+      tch=$( { cd "$wt" && git -c core.quotePath=false diff-tree --no-renames -r -z --name-only "$s^" "$s" 2>/dev/null; } \
+             | tr '\0' '\n') || tch=''
+      case $'\n'"$tch"$'\n' in
+        *$'\n'"$p"$'\n'*)
+          found=$s
+          [ "$(cd "$wt" && gate__tree_entry "$s^" "$p")" != "$eb" ] || anchored=1 ;;
+      esac
+    done <<EOF
+$shas
+EOF
+    case "$found" in
+      '') out="$out$p"$'\t'"좌석 적용 커밋 없이 바뀜 ($cls)"$'\n' ;;
+      '!'*) out="$out$p"$'\t'"좌석 커밋 ${found#!} 을 찾을 수 없음 ($cls)"$'\n' ;;
+      *)
+        es=$(cd "$wt" && gate__tree_entry "$found" "$p")
+        [ "$es" = "$eh" ] && ok=1
+        if [ "$ok" != 1 ]; then
+          out="$out$p"$'\t'"마지막 좌석 커밋 ${found} 과 다름 ($cls)"$'\n'
+        elif [ "$anchored" != 1 ]; then
+          out="$out$p"$'\t'"베이스와 세그먼트 양쪽에서 바뀜 — 좌석 커밋이 지금의 베이스 위에서 만들어지지 않음 ($cls)"$'\n'
+        fi ;;
+    esac
+  done <<EOF
+$lst
+EOF
+  [ -n "$out" ] || return 0
+  printf '%s' "$out"
+  return "$GATE_EXIT_RULE"
+}
+
+gate_surface_provenance_hold() {
+  # gate_surface_provenance_hold <segment> — 0 when the segment's branch fails
+  # the provenance check, after recording a cone-scope `blocked` row anchored on
+  # it once; 1 when it passes or the check cannot be decided. The cone seed
+  # calls this, so a review is not dispatched onto a branch whose enforcement
+  # surface nobody approved.
+  #
+  # AN UNDECIDED CHECK IS NOT A SEED. Its row would say a surface changed when
+  # nothing was measured, `gate_has_row` keys on that reason so the false row
+  # would also stand in for a later true one, and seeding first would skip the
+  # ancestry axis, whose own `판정 불가` row is the one that names what could not
+  # be read. The review dispatch and the merge act still refuse on it directly.
+  #
+  # A READ VERB COMPUTES MEMBERSHIP ONLY. `snapshot` reaches this through the
+  # shift-halt array, and a read that appended a `blocked` row would change the
+  # ledger it reports on; with `GATE_CONE_MEMBERS_ONLY=1` the answer is the same
+  # and nothing is written or warned.
+  local seg="$1" out rc=0 why='강제 표면이 좌석 적용 밖에서 바뀜'
+  out=$(gate_surface_provenance "$seg") || rc=$?
+  [ "$rc" = "$GATE_EXIT_RULE" ] || return 1
+  [ "${GATE_CONE_MEMBERS_ONLY:-0}" = 1 ] && return 0
+  if ! gate_has_row 'blocked' "앵커 세그먼트=$seg" "사유=$why"; then
+    gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=cone" "원인=막힘" \
+      "앵커 세그먼트=$seg" "사유=$why" \
+      "근거=$(gate_row_safe "$(printf '%s' "$out" | tr '\t\n' ' ;')" 300)" \
+      "관측=$(now_iso)" \
+      "재개 명령=그 경로의 편집을 \`Step 3 강제 표면 좌석 적용\` 기록으로 다시 적용하거나 세그먼트 브랜치에서 되돌리세요" || true
+  fi
+  warn "segment $seg changed an enforcement surface outside a seat apply — it stays inside the cone: $(printf '%s' "$out" | tr '\t\n' ' ;')"
+  return 0
+}
+
+gate_check_surface_provenance() {
+  # gate_check_surface_provenance <segment> <cutpoint> <alias> — refuse a merge
+  # act whose segment branch fails the provenance check. The narrowing is the
+  # CI verdict's, on the same two argv-derived values and for the same reason:
+  # what is refused is what merges.
+  local seg="$1" cut="$2" al="$3" out rc=0
+  # A park already decided above is the act's disposition; it is not replaced.
+  [ -z "${GATE_PARK_CELL:-}" ] || return 0
+  [ "$cut" = "머지" ] || return 0
+  [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
+  [ "${GATE_SURFACE:-}" = "읽기" ] && return 0
+  if [ "${GATE_SURFACE:-}" = "워크트리쓰기" ] && [ "${GATE_HISTORY_INTEGRATION:-}" = "0" ]; then
+    return 0
+  fi
+  out=$(gate_surface_provenance "$seg" "$al") || rc=$?
+  [ "$rc" != 0 ] || return 0
+  if [ "$rc" != "$GATE_EXIT_RULE" ]; then
+    warn "rule refused: the enforcement-surface provenance of segment $seg could not be decided (강제 표면 출처 판정 불가) — $(printf '%s' "$out" | tr '\t\n' ' ;')"
+    warn "repair the segment worktree, its HEAD or the plugin's classifier library and issue the same merge again"
+    return "$GATE_EXIT_RULE"
+  fi
+  warn "rule refused: segment $seg changed an enforcement surface that no seat apply of this run left as it is, and the base does not have it either — $(printf '%s' "$out" | tr '\t\n' ' ;')"
+  warn "apply the edit through a \`Step 3 강제 표면 좌석 적용\` halt record a person approves, or revert it on the segment branch; a path both the base and the segment changed goes to a person"
+  return "$GATE_EXIT_RULE"
+}
+
 gate_cone_edge() {
   # gate_cone_edge <member> <candidate> — does <candidate> stand on <member>?
   local m="$1" s="$2" cgm cgs d rc=0
@@ -24322,7 +25427,8 @@ gate_cone_members() {
   #   file-set escape non-terminal segments that reached outside what they
   #                   declared — seeding rather than anchoring can only WIDEN
   #                   the cone, and widening is the direction already declared
-  #                   safe
+  #                   safe — and those whose branch changed an enforcement
+  #                   surface outside a seat apply
   #   declared axis   non-terminal segments whose `선행` or `머지 순서` names a
   #                   member
   #   ancestor axis   non-terminal segments whose tip has a member's tip as an
@@ -24388,7 +25494,11 @@ EOF
     [ -n "$sid" ] || continue
     case "$members" in *" $sid "*) continue ;; esac
     gate_segment_terminal "$sid" && continue
-    [ -n "$(gate_fileset_escape "$sid")" ] || continue
+    # An enforcement surface changed outside a seat apply seeds the same way a
+    # file-set escape does, and holds the review with a row of its own.
+    if [ -z "$(gate_fileset_escape "$sid")" ]; then
+      gate_surface_provenance_hold "$sid" || continue
+    fi
     members="$members$sid "
   done
 
@@ -26880,6 +27990,102 @@ gate_rundir_write_guard() {
     fi
   done
   return 0
+}
+
+gate__surface_words() {
+  # Inside `gate_es`: `<argument>\t<class>` for every argument the classifier
+  # names — as written, with a leading `/` when relative, and the value after
+  # an option's `=`.
+  local w c cls
+  for w in "$@"; do
+    [ -n "$w" ] || continue
+    for c in "$w" "${w#*=}"; do
+      [ -n "$c" ] || continue
+      if cls=$(es_class "$c") || { case "$c" in /*) false ;; *) cls=$(es_class "/$c") ;; esac; }; then
+        printf '%s\t%s\n' "$c" "$cls"
+        break
+      fi
+    done
+  done
+}
+
+gate_surface_write_guard() {
+  # gate_surface_write_guard <graded-surface> <argv...> — refuse a stage's write
+  # act that names an enforcement-surface path, and point it at the seat apply.
+  #
+  # A SIGNPOST, NOT THE CLOSURE. Every comparison here is on argv strings, so a
+  # script whose body writes a classified path, an interpreter that builds the
+  # name, and `git checkout <rev> -- <path>` spelled through a variable all pass.
+  # What closes the gap is the provenance check on the segment branch at the
+  # merge; what this buys is that the common spelling — a stage `cp` or `git
+  # add` of a rule file — learns at once where the edit belongs instead of at
+  # the merge, a cycle later.
+  #
+  # ONLY A STAGE IS REFUSED, AND ONLY A WRITE. The seat and the router are not
+  # touched, and a read returns early as the sibling guards do.
+  #
+  # ONE ARGUMENT IS ONE PATH, AND AN ARGUMENT WITH BLANKS IS NOT ONE. A commit
+  # message or a PR body naming `plugins/cc-cmds/orchestrator/rules/` is text
+  # about the file, and splitting it into words refused the commit that only
+  # described an edit. An interpreter's program text is skipped for the same
+  # reason, which is the residual the closure above covers.
+  #
+  # THE UNTRACKED CLAUDE.md SLOT IS THE ONE EXCEPTION. A `CLAUDE.md` the
+  # segment worktree's HEAD does not track — a machine-global slot, or one the
+  # target ignores — cannot be committed, so the seat apply cannot carry it; it
+  # stays with the CLAUDE.md slot guard and the `리뷰-후-적용` rule. A tracked one
+  # is refused like any other path, because written by exec it is refused at the
+  # merge anyway.
+  local graded="$1"; shift
+  [ "$#" -ge 1 ] || return 0
+  [ "$graded" = "읽기" ] && return 0
+  cc_caller_is_stage || return 0
+  shift   # argv0 is the program; running a classified script is not writing it
+  [ "$#" -ge 1 ] || return 0
+  local a hits rc=0 tok cls ab wt wtp rel trk refused=''
+  local cands=()
+  for a in "$@"; do
+    case "$a" in *[[:space:]]*) continue ;; esac
+    cands+=("$a")
+    case "$a" in
+      */*)
+        ab=$(gate_physical_path "$(gate_lexical_abs "$a")" 2>/dev/null) || ab=''
+        [ -n "$ab" ] && [ "$ab" != "$a" ] && cands+=("$ab") ;;
+    esac
+  done
+  [ "${#cands[@]}" -ge 1 ] || return 0
+  hits=$(gate_es gate__surface_words "${cands[@]}") || rc=$?
+  if [ "$rc" = 2 ]; then
+    warn "rule refused: the enforcement-surface classifier could not be loaded, so whether this write names a rule file, a CLAUDE.md or a settings file cannot be judged"
+    return "$GATE_EXIT_RULE"
+  fi
+  [ -n "$hits" ] || return 0
+  wt=$(gate_segment_worktree "${CC_PIPELINE_SEGMENT:-}" 2>/dev/null) || wt=''
+  wtp=''
+  [ -n "$wt" ] && [ -d "$wt" ] && wtp=$(cd -P "$wt" 2>/dev/null && pwd -P) || wtp=''
+  while IFS=$'\t' read -r tok cls; do
+    [ -n "$tok" ] || continue
+    if [ "$cls" = "지침파일" ]; then
+      ab=$(gate_physical_path "$(gate_lexical_abs "$tok")" 2>/dev/null) || ab=''
+      [ -n "$ab" ] || ab=$(gate_lexical_abs "$tok")
+      trk=''
+      if [ -n "$wtp" ]; then
+        case "$ab" in
+          "$wtp"/*)
+            rel=${ab#"$wtp"/}
+            trk=$(cd "$wt" && GIT_LITERAL_PATHSPECS=1 git ls-tree --full-tree --name-only HEAD -- "$rel" 2>/dev/null) || trk='' ;;
+        esac
+      fi
+      [ -n "$trk" ] || continue
+    fi
+    refused="$refused${refused:+, }$tok ($cls)"
+  done <<EOF
+$hits
+EOF
+  [ -n "$refused" ] || return 0
+  warn "rule refused: a stage does not write an enforcement surface through exec — $refused. Write the bytes into a \`Step 3 강제 표면 좌석 적용\` halt record instead: a person approves it at the seat, and the gate commits it to the segment branch as a seat commit"
+  warn "an edit outside the segment's declared files is a CFI-U3 BT-STOP, not this record; a file the seat cannot commit goes into the same record's \`**사람 몫 파일**\`"
+  return "$GATE_EXIT_RULE"
 }
 
 gate_plugin_root_write_guard() {
@@ -29585,6 +30791,19 @@ gate_record_row() {
       # so its list lacked the worktree this row had just admitted. The trap
       # covers `gate_append`'s `die` — a lock left by a dead holder would turn
       # every later re-derivation into a timeout.
+      # `강제 표면` is the gate's in every state, beside `인가면`: it is the
+      # classifier's count over the declared files, written by the
+      # declaration-filled act, and a caller's value would claim — or deny —
+      # an enforcement-surface edit nothing screened. The key's presence is
+      # refused, an empty value included, as `머지 대조` is above.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ]; then
+        for f in "$@"; do
+          if [ "${f%%=*}" = '강제 표면' ]; then
+            warn "segment 행의 「강제 표면」은 게이트가 동결 문서의 선언 파일을 분류해 적는 필드입니다 — 호출자가 넘길 수 없습니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        done
+      fi
       local surf_field="" surf_lk=""
       case "$st" in
         완료|머지됨|park) : ;;
@@ -30914,7 +32133,7 @@ EOF
           *) warn "\`선택지=좌석 실행\` answers only a \`Step 3 잔여 검증 좌석 실행\` or \`Step 3 게이트 도달 좌석 실행\` halt — this record's step is \`${hrstep:-(none)}\`: $hrec"
              return "$GATE_EXIT_RULE" ;;
         esac
-        if ! grep -q '^- `좌석 실행`' "$hrec" 2>/dev/null; then
+        if ! gate_halt_option_labels "$hrec" | grep -xF '좌석 실행' >/dev/null; then
           warn "this halt record offers no \`좌석 실행\` option line, so the seat has nothing it was asked to run: $hrec"
           return "$GATE_EXIT_RULE"
         fi
@@ -30922,16 +32141,52 @@ EOF
           'Step 3 게이트 도달 좌석 실행'*)
             [ -n "$(gate_field_of '첨부' "$@")" ] || {
               warn "a seat run of a command halt carries \`첨부\` — each listed command's exit status and the tail of its output"
-              return "$GATE_EXIT_VOCAB"; } ;;
+              return "$GATE_EXIT_VOCAB"; }
+            # Every listed command is screened before the seat's answer is
+            # taken: a command on an enforcement surface goes to a person.
+            local hcl
+            while IFS= read -r hcl; do
+              [ -n "$hcl" ] || continue
+              gate_halt_surface_tokens "$hcl" "the listed command \`$hcl\`" "$hrec" || return "$?"
+            done <<EOF
+$(LC_ALL=C awk '$0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
+  inb && /^\*\*/ { inb = 0 }
+  /^\*\*좌석 실행 명령\*\*:/ { inb = 1; next }
+  inb && NF { print }' "$hrec" 2>/dev/null || true)
+EOF
+            ;;
         esac
         hseatrun=1
         hkinds='좌석 실행'
       fi
+      # A SEAT APPLY IS ITS OWN BRANCH. The stage wrote the bytes of every
+      # enforcement-surface edit into the record; `좌석 적용` has the gate commit
+      # them over the record's base once a person approved them — proved by the
+      # question frame — or once the seat inherits that approval for the same
+      # segment, and `사람 몫으로 넘김` records that a person takes over edits
+      # the run cannot commit. Both labels mean this only on that step.
+      local hsa='' hsastep
+      case "$hopt" in
+        '좌석 적용'|'사람 몫으로 넘김')
+          hsastep=$(sed -n 's/^\*\*스텝\*\*: //p' "$hrec" 2>/dev/null | sed -n '1p')
+          case "$hsastep" in
+            'Step 3 강제 표면 좌석 적용'*) ;;
+            *) warn "\`선택지=$hopt\` answers only a \`Step 3 강제 표면 좌석 적용\` halt — this record's step is \`${hsastep:-(none)}\`: $hrec"
+               return "$GATE_EXIT_RULE" ;;
+          esac
+          case "$hby:$hopt" in
+            교대:*) warn "a shift does not answer a seat-apply halt — the seat hands it to a person"; return "$GATE_EXIT_RULE" ;;
+            '좌석:사람 몫으로 넘김') warn "\`사람 몫으로 넘김\` is a person's answer — the seat does not hand edits to a person for them"; return "$GATE_EXIT_RULE" ;;
+          esac
+          hsa=1 ;;
+      esac
       # THE SWITCH THAT TURNS OFF EVERY ANSWER NO PERSON GAVE turns this one off
       # too: a recommendation on a halt record is the same thing as a
       # recommendation on an approval, which the switch already stops waiting
-      # for. Off, the seat asks the person.
-      if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && ! gate_auto_resolve_enabled; then
+      # for. Off, the seat asks the person. An inherited seat apply is not a
+      # recommendation: the person answered it once for the segment, and the
+      # switch does not take that answer back.
+      if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && [ -z "$hsa" ] && ! gate_auto_resolve_enabled; then
         warn "CC_CMDS_AUTOPILOT_AUTO_RESOLVE is off, so the seat does not answer a halt record without a person"
         return "$GATE_EXIT_RULE"
       fi
@@ -30994,12 +32249,67 @@ EOF
       # therefore required, and the kinds are stamped on the row as
       # `근거 종류` because the record lives in the volatile run directory and
       # the morning report reads the ledger.
+      # A SEAT APPLY IS READ ONCE. The record is copied to a file only the gate
+      # holds, and its digest, the frame token and every byte it commits come
+      # from that copy — the seat and a shift can both rewrite `halt/*`, and
+      # nothing compares a stage record's digest again when its answer is used.
+      local hread=$hrec hsacopy='' hsadig='' hsaq='' hsascope='' hsadecl
+      local hsac='' hsana='' hsafr='' hsasn='' hsasd='' hsacf='' hsacr='' hsanh=''
+      if [ -n "$hsa" ]; then
+        hsacopy=$(mktemp "${TMPDIR:-/tmp}/gate-sa-rec.XXXXXX") || return 1
+        GATE_SA_COPY=$hsacopy
+        cat "$hrec" > "$hsacopy" || return 1
+        hread=$hsacopy
+        hsadig=$(shasum -a 256 "$hsacopy" | cut -d' ' -f1)
+        if grep -q '^\*\*추천\*\*' "$hsacopy"; then
+          warn "a seat-apply halt carries no \`**추천**\` — a person sees its edits, so no recommendation answers it: $hrec"
+          return "$GATE_EXIT_RULE"
+        fi
+        gate_seat_apply_parse "$hsacopy" || return "$?"
+        case "$hopt" in
+          '좌석 적용')
+            [ "$GATE_SA_NA" -gt 0 ] || {
+              warn "the record applies no file, so \`좌석 적용\` has nothing to commit — its options are \`사람 몫으로 넘김\` and \`보류\`: $hrec"
+              return "$GATE_EXIT_RULE"; }
+            gate_seat_apply_subject_ok "$GATE_SA_SUBJECT" || {
+              warn "\`**좌석 적용 커밋 제목**\` is not one line of the form \`type(scope): <title>\`, at most 100 characters and without a trailer: $GATE_SA_SUBJECT"
+              return "$GATE_EXIT_RULE"; }
+            hsadecl=$(gate_segment_declared_whole "$seg") || hsadecl=''
+            hsascope=$(gate_seat_apply_scope "$hsadecl") || {
+              warn "the enforcement-surface classifier could not be loaded, so the apply scope cannot be derived"
+              return "$GATE_EXIT_RULE"; }
+            hsaq=$(gate_seat_apply_question "$hsadig" "$seg" "$hsascope")
+            if [ "$hby" = "사람" ]; then
+              gate_seat_apply_frame "$hsadig" "$hsaq" "$hsacopy" "$hopt" || return "$?"
+              hsafr=$GATE_SA_FRAME
+              hsasn=$(printf '%s\n' "$hsascope" | grep -c . || true)
+              hsasd=$(gate_seat_apply_scope_digest "$hsascope")
+              hkinds='좌석 적용'
+            else
+              gate_halt_seat_apply_covered "$seg" || return "$?"
+              hsacf=$GATE_SA_COV_FRAME
+              hsacr=$GATE_SA_COV_REC
+              hkinds='좌석 적용 승계'
+            fi
+            gate_seat_apply_check "$seg" "$alias" || return "$?"
+            # A placeholder of the commit's length until the commit exists.
+            hsac=0000000000000000000000000000000000000000
+            hsana=$GATE_SA_NA
+            ;;
+          '사람 몫으로 넘김')
+            if [ "$GATE_SA_NA" -gt 0 ] || [ "$GATE_SA_NH" -eq 0 ]; then
+              warn "\`사람 몫으로 넘김\` answers a record whose every file is left to a person — this one applies $GATE_SA_NA and leaves $GATE_SA_NH: $hrec"
+              return "$GATE_EXIT_RULE"
+            fi ;;
+        esac
+        [ "$GATE_SA_NH" -eq 0 ] || hsanh=$GATE_SA_NH
+      fi
       # On a design stage's ladder record the row also carries the gate's
       # `잔여 판정` stamp: who froze which residual items on what reading. It is
       # not clipped, so it is counted in the projection below as well as in
       # the append.
       local hladder=''
-      if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ]; then
+      if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && [ -z "$hsa" ]; then
         gate_halt_recommendation "$hrec" || return "$?"
         gate_halt_design_check "$hrec" || return "$?"
         hladder=$GATE_HALT_LADDER_STAMP
@@ -31018,13 +32328,16 @@ EOF
       # THE ANSWER IS ONE OF THE OPTIONS THE STAGE WROTE, byte for byte. A free
       # answer has no option line to match, and the stage resumed with it would
       # be handed something its own record never offered.
-      if ! grep -qF -- "- \`$hopt\`" "$hrec"; then
+      # The label is one of the `**선택지**:` block's, whole: a line elsewhere in
+      # the record that starts the same way — a command line, a quoted line —
+      # is not an option, and a label is not the prefix of a longer one.
+      if ! gate_halt_option_labels "$hread" | grep -xF -- "$hopt" >/dev/null; then
         warn "\`선택지\` is not one of the options this halt record lists verbatim: $hopt"
         # A record with no option line at all is the writer's fault, not the
         # answer's: options run inline after `**선택지**:` are read by no one, so
         # every answer to it is refused here with the same line as a typo.
-        grep -q '^- `' "$hrec" \
-          || warn "this halt record has no option line of the form \`- \`<label>\` — <description>\` — its options were written inline, so no answer to it can be recorded until each option sits on its own line: $hrec"
+        [ -n "$(gate_halt_option_lines "$hread")" ] \
+          || warn "this halt record has no option line of the form \`- \`<label>\` — <description>\` inside its \`**선택지**:\` block — its options were written inline or elsewhere, so no answer to it can be recorded until each option sits on its own line under \`**선택지**:\`: $hrec"
         return "$GATE_EXIT_VOCAB"
       fi
       # WHAT THE OPTION CANNOT CARRY GOES IN AN ATTACHMENT. `근거` is clipped to
@@ -31129,30 +32442,73 @@ EOF
           log "자동 답 — 좌석이 기록의 추천을 고름 ($seg ← $hopt)"
         fi
       fi
-      hdig=$(shasum -a 256 "$hrec" | cut -d' ' -f1)
+      if [ -n "$hsa" ]; then hdig=$hsadig; else hdig=$(shasum -a 256 "$hrec" | cut -d' ' -f1); fi
       hlane=$(gate_lane_label)
       hat=$(now_iso)
+      # The seat-apply fields are measured with a 40-character placeholder for
+      # `좌석 커밋`, so a row that cannot fit is refused before anything is
+      # committed rather than after, on the rollback path.
       while [ "$hw" -ge 40 ]; do
         hwhy=$(gate_row_safe "$hpre$(gate_field_of '근거' "$@")" "$hw")
         hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$hrec" \
           "스킬=${hskill:-미상}" "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" \
-          ${hkinds:+"근거 종류=$hkinds"} ${hladder:+"잔여 판정=$hladder"} "기록 다이제스트=$hdig" \
-          ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
+          ${hkinds:+"근거 종류=$hkinds"} ${hsac:+"좌석 커밋=$hsac"} ${hsana:+"적용 파일=$hsana"} \
+          ${hsafr:+"승인 프레임=$hsafr"} ${hsasn:+"적용 범위 수=$hsasn"} ${hsasd:+"적용 범위 다이제스트=$hsasd"} \
+          ${hsacf:+"승계 프레임=$hsacf"} ${hsacr:+"승계 원본=$hsacr"} ${hsanh:+"사람 몫=$hsanh"} \
+          ${hladder:+"잔여 판정=$hladder"} "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
           "레인=$hlane" "기록 시각=$hat")
         [ "$hlen" -le "$GATE_ROW_MAX" ] && break
         hw=$((hw - 40))
       done
       [ "$hlen" -le "$GATE_ROW_MAX" ] || {
+        if [ -n "$hsa" ]; then
+          warn "the \`중단 답\` row of this seat apply does not fit the row cap even with \`근거\` clipped (${hlen} bytes over ${GATE_ROW_MAX}) — nothing was committed; a shorter record path or segment key is needed"
+          return "$GATE_EXIT_RULE"
+        fi
         warn "the \`중단 답\` row does not fit the row cap even with \`근거\` clipped — the option or the path is too long to record"
         return "$GATE_EXIT_VOCAB"; }
-      # ITS ONE READER IS THE SNAPSHOT'S `answered_halts[]`, which a shift
-      # routes from. It enters no termination condition and no progress vector,
-      # and nothing is notified from it.
-      gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
-        "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
-        ${hladder:+"잔여 판정=$hladder"} "기록 다이제스트=$hdig" \
-        ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
-        "레인=$hlane" "기록 시각=$hat"
+      # THE COMMIT, THEN THE ROW, AND THE COMMIT UNDONE WHEN THE ROW FAILS. The
+      # commit is built off the working tree and lands by a fast-forward with
+      # hooks and the filesystem monitor off — `merge` runs `post-merge`, and
+      # `core.fsmonitor` can name a command — and refusing to overwrite an
+      # ignored file. The tree was clean and at the base, so resetting the branch
+      # to the base loses nothing. A process killed between the two leaves a
+      # commit no row names, which the merge's provenance check refuses.
+      if [ -n "$hsa" ] && [ "$hopt" = '좌석 적용' ]; then
+        hsac=$(gate_seat_apply_build "$GATE_SA_WT") && [ -n "$hsac" ] || {
+          warn "the seat-apply commit could not be built from the record — nothing was committed: $hrec"
+          return "$GATE_EXIT_RULE"; }
+        ( cd "$GATE_SA_WT" && git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            merge --ff-only --no-overwrite-ignore --quiet "$hsac" ) >/dev/null 2>&1 || {
+          ( cd "$GATE_SA_WT" && git update-ref HEAD "$GATE_SA_BASE" \
+              && git -c core.hooksPath=/dev/null reset --hard --quiet "$GATE_SA_BASE" ) >/dev/null 2>&1 || true
+          warn "could not fast-forward the worktree of $seg to the seat-apply commit $hsac — the branch is back at $GATE_SA_BASE"
+          return "$GATE_EXIT_RULE"; }
+        if ! ( gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
+                 "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
+                 "좌석 커밋=$hsac" "적용 파일=$hsana" \
+                 ${hsafr:+"승인 프레임=$hsafr"} ${hsasn:+"적용 범위 수=$hsasn"} ${hsasd:+"적용 범위 다이제스트=$hsasd"} \
+                 ${hsacf:+"승계 프레임=$hsacf"} ${hsacr:+"승계 원본=$hsacr"} ${hsanh:+"사람 몫=$hsanh"} \
+                 "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
+                 "레인=$hlane" "기록 시각=$hat" ); then
+          ( cd "$GATE_SA_WT" && git update-ref HEAD "$GATE_SA_BASE" \
+              && git -c core.hooksPath=/dev/null reset --hard --quiet "$GATE_SA_BASE" ) >/dev/null 2>&1 \
+            || warn "the branch of $seg could not be reset to $GATE_SA_BASE — $hsac is on it with no row naming it"
+          warn "the \`중단 답\` row of the seat apply could not be written, so the commit $hsac was undone and the branch is back at $GATE_SA_BASE"
+          return "$GATE_EXIT_RULE"
+        fi
+        log "좌석 적용 — $seg ← $hsac ($GATE_SA_NA 파일, $hby)"
+        printf '좌석 커밋=%s\n' "$hsac"
+      else
+        # ITS ONE READER IS THE SNAPSHOT'S `answered_halts[]`, which a shift
+        # routes from. It enters no termination condition and no progress
+        # vector, and nothing is notified from it.
+        gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
+          "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
+          ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} "기록 다이제스트=$hdig" \
+          ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
+          "레인=$hlane" "기록 시각=$hat"
+      fi
       log "중단 답 기록 — $seg ← $hopt ($hby)"
       ;;
     shift-halt)
@@ -37083,6 +38439,29 @@ gate_verb_act() {
           rn_slice=${rn_slice#S:}
           warn "리뷰 파견의 --slice (${rn_slice:-없음}) 가 --segment ${segment} 와 다릅니다 — 다른 슬라이스의 범위로 리뷰하면 이 세그먼트의 발견이 집계에서 빠집니다"
           exit "$GATE_EXIT_RULE"
+        fi
+        # A branch whose enforcement surface changed outside a seat apply is
+        # not reviewed: the review would pass bytes nobody approved on to the
+        # merge. The hold writes the cone `blocked` row once and says why; a
+        # forecast writes nothing and answers with the same code. A check that
+        # could not be decided refuses too, under a reason of its own.
+        rn_pvrc=0
+        rn_pv=$(gate_surface_provenance "$segment" "$alias") || rn_pvrc=$?
+        if [ "$rn_pvrc" = "$GATE_EXIT_RULE" ]; then
+          [ "$verb" = "plan" ] || gate_surface_provenance_hold "$segment" >/dev/null 2>&1 || true
+          warn "세그먼트 ${segment} 의 브랜치에서 강제 표면이 좌석 적용 밖에서 바뀌었습니다 — 리뷰를 파견하지 않습니다: $(printf '%s' "$rn_pv" | tr '\t\n' ' ;')"
+          exit "$GATE_EXIT_RULE"
+        elif [ "$rn_pvrc" != 0 ]; then
+          if [ "$verb" != "plan" ] \
+             && ! gate_has_row 'blocked' "앵커 세그먼트=$segment" '사유=강제 표면 출처 판정 불가'; then
+            gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=cone" "원인=판정 불가" \
+              "앵커 세그먼트=$segment" '사유=강제 표면 출처 판정 불가' \
+              "근거=$(gate_row_safe "$(printf '%s' "$rn_pv" | tr '\t\n' ' ;')" 300)" \
+              "관측=$(now_iso)" \
+              "재개 명령=세그먼트 워크트리와 HEAD, 플러그인의 분류 라이브러리를 복구한 뒤 같은 리뷰를 다시 파견하세요" || true
+          fi
+          warn "세그먼트 ${segment} 의 강제 표면 출처를 판정할 수 없습니다 — 리뷰를 파견하지 않습니다: $(printf '%s' "$rn_pv" | tr '\t\n' ' ;')"
+          exit "$GATE_EXIT_RULE"
         fi ;;
     esac
   fi
@@ -37720,6 +39099,7 @@ gate_verb_act() {
     *) gate_manifest_write_guard "$graded" "$@" || exit $?
        gate_rundir_write_guard "$graded" "$@" || exit $?
        gate_plugin_root_write_guard "$graded" "$@" || exit $?
+       gate_surface_write_guard "$graded" "$@" || exit $?
        gate_pace_write_guard "$graded" "$@" || exit $?
        gate_shard_exec_guard "$@" || exit $? ;;
   esac
@@ -38532,6 +39912,10 @@ EOF
   # verdict above and for the same three reasons; it does nothing when that
   # verdict already set the park cell.
   gate_check_grade_regression "$segment" "$GATE_ACT_EFFECTIVE" "$alias" "$@"
+  # THE ENFORCEMENT-SURFACE PROVENANCE, in the same seat on the same narrowing.
+  # It refuses rather than parks: what it found is a branch to repair, not a
+  # cell a declaration could open.
+  gate_check_surface_provenance "$segment" "$GATE_ACT_EFFECTIVE" "$alias" || exit $?
 
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
@@ -46016,9 +47400,11 @@ gate_snapshot_segments_json() {
            # segment's end. `착지` is the dispatch floor's own answer for a
            # predecessor (`gate_segment_landed_now`), so the router plans a
            # dependent on the judgment the floor will apply to it.
+           # `강제 표면` and `좌석 적용 커밋` are what a shift copies into the
+           # implement dispatch line, spelled as the driver spells its own.
            sland=false
            gate_segment_landed_now "$sid" && sland=true
-           printf '    {"id": "%s", "상태": "%s", "적용": "%s", "착지": %s, "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s", "브랜치": %s, "HEAD": %s, "원격 팁": %s, "PR": {"번호": %s, "상태": %s, "HEAD": %s}, "원격 단계": "%s", "리뷰 줄": %s},\n' \
+           printf '    {"id": "%s", "상태": "%s", "적용": "%s", "착지": %s, "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s", "브랜치": %s, "HEAD": %s, "원격 팁": %s, "PR": {"번호": %s, "상태": %s, "HEAD": %s}, "원격 단계": "%s", "리뷰 줄": %s, "강제 표면": "%s", "좌석 적용 커밋": "%s"},\n' \
              "$(gate_json_escape "$sid")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '상태')")" \
              "$(gate_json_escape "$(gate_segment_apply_state "" "$sid")")" \
@@ -46035,7 +47421,9 @@ gate_snapshot_segments_json() {
              "$(gate_json_str_or_null "$(gate_row_field "$srr" 'PR 상태')")" \
              "$(gate_json_str_or_null "$(gate_row_field "$srr" 'PR HEAD')")" \
              "$(gate_json_escape "$(gate_remote_stage "$sid")")" \
-             "$(gate_json_str_or_null "$srl")"
+             "$(gate_json_str_or_null "$srl")" \
+             "$(gate_json_escape "$(gate_segment_surface_paths "$sid")")" \
+             "$(gate_json_escape "$(gate_segment_seat_commits "$sid")")"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"

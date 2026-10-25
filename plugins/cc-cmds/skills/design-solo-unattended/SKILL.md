@@ -121,7 +121,7 @@ Read the discuss arm's Step 7U and follow its five jobs in order, with the first
 2. **Slicing self-check** — unchanged; a repair that needs a decision nobody made → halt `slicing-unknown`.
 3. **Requirement-decision list** — unchanged.
 4. **Residual ladder** — unchanged, W3 included; an item no rung settles → halt `ladder-unsettled`, after every item has been walked.
-5. **Freeze.** When this freeze follows an answer to this stage's `ladder-unsettled` halt, first write the `**잔여 동결**` line directly below the status line, in the discuss arm's Step 7U job 5 form. Then one Edit that replaces the single line `**상태**: 초안` with `**상태**: 동결됨`; this is the last document edit. Then emit, in the terminal message, the freeze literal *"설계 문서를 동결했습니다."* on its own line, followed by the document path and its whole-file `sha256`. No judgment markers follow. Name no next step. End the turn.
+5. **Freeze.** When this freeze follows an answer to this stage's `ladder-unsettled` halt, first write the `**잔여 동결**` line directly below the status line, in the discuss arm's Step 7U job 5 form. Then one Edit that replaces the single line `**상태**: 초안` with `**상태**: 동결됨`; this is the last document edit. Then emit, in the terminal message, the freeze literal *"설계 문서를 동결했습니다."* on its own line, followed by the document path and its whole-file `sha256`, then the discuss arm's `강제 표면:` line from job 2's screen when the document has `## 구현 슬라이싱`. No judgment markers follow. Name no next step. End the turn.
 
 ## Constraints
 
