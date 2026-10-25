@@ -63,17 +63,43 @@
 # very thing the unit exists to prevent — it is the line past which the number
 # must be said out loud rather than hidden.
 #
+# ISOLATION WORK RIDES ON THE PARTITION, IT DOES NOT CHANGE IT. `--isolate C`
+# takes the changed sections C and, with the regular rows exactly as they would
+# be without it, adds two things for each X of C and its needs closure (banner
+# and census edges, the graph the components are built from). The limit is F:
+# the heaviest regular row with the head time — the `@head` row of the timing
+# file, 0 without one — paid once, since every process pays it. First the
+# solos: two per X, each a process of its own weighing the closure, the
+# preludes of its groups and the head, X heaviest first, each onto the row with
+# the most room and, when none has room, onto a new extra row S+1, S+2, … while
+# there may be one (`--iso-extra`). A solo is never heavier than X's own row, so
+# an empty extra row always takes it. Then the overlays: X and its closure laid
+# into every other regular row that still has room, the roomiest first, a group
+# the overlay pulls in adding its prelude. A row the overlay does not fit is an
+# uncovered pair, reported and not an error. A solo that finds no row is: exit
+# 5. A closure that reaches an id `--list` does not have is exit 2 — the
+# selector runs everything for an unknown id.
+#
+# With `--isolate` every row has three more columns: the laid-over ids (4), the
+# solos (5, `;`-separated, each `<1|2>:<X>,<closure>` — 2 being the solo the
+# lane runs under the second TMPDIR) and the ids of C the row runs as its own
+# (6). The extra rows follow the regular ones with an empty third column.
+# Without `--isolate` the output is the three-column table, byte for byte.
+#
 # Usage:
 #   bash scripts/gate-shard.sh --shards N --shard K    ids of shard K, comma-joined
 #   bash scripts/gate-shard.sh --shards N --table      K<TAB>load<TAB>ids per shard
 #   bash scripts/gate-shard.sh --shards N --digest     sha256 of the --table output
-#   bash scripts/gate-shard.sh --shards N --shard K --from-table F
+#   bash scripts/gate-shard.sh --shards N --shard K --from-table F [--extra E]
+#                              [--overlay | --solo | --own]
 #                                                      ids of row K of a table
-#                                                      already made (CI's plan job)
-#   bash scripts/gate-shard.sh --shards N --check [--from-table F]
+#                                                      already made (CI's plan job),
+#                                                      or its column 4, 5 or 6
+#   bash scripts/gate-shard.sh --shards N --check [--from-table F --extra E]
 #                                                      the shards' union equals the
 #                                                      --list set, no id twice, and
-#                                                      the row ids are exactly 1..N
+#                                                      the row ids are exactly
+#                                                      1..N+E
 #   bash scripts/gate-shard.sh --self-test
 #
 #   --suite PATH    the suite to partition (default: scripts/test-gate.sh)
@@ -82,9 +108,19 @@
 #   --timing PATH   weigh with measured ms instead (a missing file means the
 #                   census model); `status` and `needs` still come from the
 #                   census and the banners
+#   --isolate C     place the isolation work of the comma list C (may be empty)
+#   --iso-extra E   at most E extra rows for it (default 0)
+#   --extra E       the extra rows a table already made carries (default 0)
 #
-# Exit codes: 0 done, 2 usage, 3 the suite could not be listed or the check
-# failed, 4 the requested shard is empty.
+# The coverage check counts the third column only: a laid-over id appears in
+# several rows by design. An isolation-only row (empty third column, ids in 4
+# or 5) answers `--shard K` with an empty line and exit 0; its caller runs no
+# regular cut for it.
+#
+# Exit codes: 0 done, 2 usage or an isolation closure with an id --list does
+# not have, 3 the suite could not be listed or the check failed, 4 the
+# requested shard is empty (columns 3, 4 and 5), 5 the solos did not fit
+# ("격리 검사 용량 초과").
 
 set -uo pipefail
 
@@ -92,7 +128,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 
 shard_usage() {
-  printf 'gate-shard: 사용법 — --shards N 와 함께 --shard K / --table / --digest / --check 중 하나, 또는 --self-test (선택: --suite PATH, --census PATH, --timing PATH, --from-table F)\n' >&2
+  printf 'gate-shard: 사용법 — --shards N 와 함께 --shard K / --table / --digest / --check 중 하나, 또는 --self-test (선택: --suite PATH, --census PATH, --timing PATH, --from-table F, --isolate C, --iso-extra E, --extra E, --overlay / --solo / --own)\n' >&2
   exit 2
 }
 
@@ -149,8 +185,8 @@ shard_banners() {
 # per ignored edge, `B <message>` per component over budget. Everything runs
 # under LC_ALL=C so that every string comparison is bytewise on every awk.
 shard_partition() {
-  local suite="$1" census="$2" shards="$3" timing="${4:-}"
-  local tmp ids_f ban_f cen_f tim_f
+  local suite="$1" census="$2" shards="$3" timing="${4:-}" iso_on="${5:-0}" iso="${6:-}" iso_extra="${7:-0}"
+  local tmp ids_f ban_f cen_f tim_f rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard.XXXXXX")
   ids_f="$tmp/ids"; ban_f="$tmp/banners"; cen_f="$tmp/census"; tim_f=""
   if ! bash "$suite" --list < /dev/null > "$tmp/list" 2> "$tmp/list.err"; then
@@ -169,7 +205,13 @@ shard_partition() {
   if [ -f "$census" ]; then cp "$census" "$cen_f"; else : > "$cen_f"; fi
   if [ -n "$timing" ] && [ -f "$timing" ]; then tim_f="$tmp/timing"; cp "$timing" "$tim_f"; fi
 
-  LC_ALL=C awk -F '\t' -v N="$shards" -v IDS="$ids_f" -v BAN="$ban_f" -v CEN="$cen_f" -v TIM="$tim_f" '
+  LC_ALL=C awk -F '\t' -v N="$shards" -v IDS="$ids_f" -v BAN="$ban_f" -v CEN="$cen_f" -v TIM="$tim_f" \
+      -v ISOON="$iso_on" -v ISO="$iso" -v EXTRA="$iso_extra" '
+    # What one section adds to a cut, and what a group adds the first time the
+    # cut runs it: the same two terms the partition sums, so a solo or an
+    # overlay is weighed in the unit of the rows it is compared with.
+    function idw(id,   a) { if (tm) return w[id]; a = w[id] - ((grp[id] in fl) ? fl[grp[id]] : 0); return (a < 1) ? 1 : a }
+    function grpw(g) { if (tm) return (g in pre) ? pre[g] : 0; return (g in fl) ? fl[g] : 0 }
     function find(x,   r) { r = x; while (par[r] != r) r = par[r]; while (par[x] != r) { nx = par[x]; par[x] = r; x = nx } return r }
     function unite(a, b,   ra, rb) { ra = find(a); rb = find(b); if (ra != rb) { if (rb < ra) par[ra] = rb; else par[rb] = ra } }
     function edges(id, list,   n, k, arr, d) {
@@ -192,13 +234,14 @@ shard_partition() {
         cgrp[f[1]] = f[2]; cned[f[1]] = (nf >= 7 ? f[7] : "-")
         if (f[4] ~ /^[0-9]+$/) cw[f[1]] = f[4] + 0
       }
-      tm = 0
+      tm = 0; hd = 0
       if (TIM != "") {
         tm = 1
         while ((getline line < TIM) > 0) {
           if (line ~ /^#/ || line == "") continue
           split(line, f, "\t")
           if (f[1] == "id" || f[2] !~ /^[0-9]+(\.[0-9]+)?$/) continue
+          if (f[1] == "@head") { hd = int(f[2] + 0); continue }
           if (f[1] ~ /^@pre-/) { pre[substr(f[1], 6)] = int(f[2] + 0); continue }
           if (f[1] ~ /^@/) continue
           tw[f[1]] = int(f[2] + 0)
@@ -307,6 +350,114 @@ shard_partition() {
           print "B\t덩어리 " cid[c] " — 무게 " cwt[c] ", 절 " cn[c] "개, 샤드 예산 " int(total * 6 / (N * 10)) " (총무게 " total " 의 0.6/" N ") 을 넘어 쪼개지 않고 샤드 " best " 에 넣었습니다"
         }
       }
+      ne = 0
+      if (ISOON) {
+        # The changed sections, each with its needs closure along the same
+        # graph the components were built from: banner needs and census needs.
+        # A closure that reaches an id --list does not have is an error, not a
+        # warning: the selector runs everything for an unknown id, so one solo
+        # would become a full run.
+        ebad = 0; nx = 0
+        na = split(ISO, xa, ",")
+        for (i = 1; i <= na; i++) {
+          x = xa[i]
+          if (x == "" || (x in seenx)) continue
+          seenx[x] = 1
+          if (!(x in known)) { print "E\t바뀐 절 " x " 이 --list 에 없습니다 — 격리 배치를 하지 않습니다"; ebad = 1; continue }
+          xs[++nx] = x
+        }
+        for (i = 1; i <= nx; i++) {
+          x = xs[i]
+          split("", vis); vis[x] = 1; ns = 1; stk[1] = x
+          while (ns > 0) {
+            id = stk[ns]; ns--
+            lst = ((id in bned) ? bned[id] : "-") "," ((id in cned) ? cned[id] : "-")
+            m = split(lst, da, ",")
+            for (j = 1; j <= m; j++) {
+              d = da[j]; gsub(/[ \t]/, "", d)
+              if (d == "" || d == "-" || (d in vis)) continue
+              vis[d] = 1
+              if (!(d in known)) { print "E\t바뀐 절 " x " 의 needs 폐포에 --list 에 없는 id " d " 가 있습니다 — 격리 배치를 하지 않습니다"; ebad = 1; continue }
+              stk[++ns] = d
+            }
+          }
+          # X first, the rest of the closure in --list order.
+          cl[x] = x; cc[x] = 1; cm[x, 1] = x
+          for (j = 1; j <= nid; j++) { id = ids[j]; if (id != x && (id in vis)) { cl[x] = cl[x] "," id; cc[x]++; cm[x, cc[x]] = id } }
+          split("", tg); xw[x] = 0
+          for (j = 1; j <= cc[x]; j++) {
+            id = cm[x, j]; xw[x] += idw(id)
+            if (!(grp[id] in tg)) { tg[grp[id]] = 1; xw[x] += grpw(grp[id]) }
+          }
+        }
+        if (ebad) exit
+        # Heaviest first, then by id bytewise.
+        for (i = 2; i <= nx; i++) {
+          v = xs[i]; j = i - 1
+          while (j >= 1 && (xw[xs[j]] < xw[v] || (xw[xs[j]] == xw[v] && xs[j] > v))) { xs[j + 1] = xs[j]; j-- }
+          xs[j + 1] = v
+        }
+        # F is the heaviest regular row with the head paid once. A row with no
+        # ids runs no process, so it carries nothing.
+        F = 0
+        for (k = 1; k <= N; k++) {
+          cur[k] = (sn[k] > 0) ? load[k] + hd : 0
+          if (cur[k] > F) F = cur[k]
+          for (m = 1; m <= sn[k]; m++) { id = smem[k, m]; rowof[id] = k; rg[k, grp[id]] = 1 }
+        }
+        # Solos first, two per changed section, each a process of its own that
+        # pays the head once: onto the row with the most room (the lowest row
+        # number on a tie), else onto a new extra row while there may be one.
+        rows = N; ncap = 0; capl = ""
+        for (i = 1; i <= nx; i++) {
+          x = xs[i]; s = xw[x] + hd
+          for (rep = 1; rep <= 2; rep++) {
+            best = 1
+            for (k = 2; k <= rows; k++) if (cur[k] < cur[best]) best = k
+            if (F - cur[best] < s) {
+              if (ne < EXTRA + 0 && s <= F) { ne++; rows = N + ne; best = rows; cur[best] = 0 }
+              else { if (!(x in capx)) { capx[x] = 1; ncap++; capl = capl (ncap > 1 ? "," : "") x } continue }
+            }
+            cur[best] += s
+            solo[best] = solo[best] (solo[best] == "" ? "" : ";") rep ":" cl[x]
+          }
+        }
+        if (ncap) { print "C\t격리 검사 용량 초과 — 단독을 싣지 못한 바뀐 절: " capl " (F " F ", 추가 행 상한 " (EXTRA + 0) ")"; exit }
+        # Then the overlays, into the room the solos left: each changed section
+        # onto every regular row it does not belong to, the roomiest row first,
+        # as long as no row passes F. A group the overlay pulls into a row adds
+        # its prelude. A row it does not fit is an uncovered pair.
+        for (i = 1; i <= nx; i++) {
+          x = xs[i]; own = rowof[x]; no = 0
+          for (k = 1; k <= N; k++) {
+            if (sn[k] == 0 || k == own) continue
+            v = k; j = no
+            while (j >= 1 && (cur[ro[j]] > cur[v] || (cur[ro[j]] == cur[v] && ro[j] > v))) { ro[j + 1] = ro[j]; j-- }
+            ro[j + 1] = v; no++
+          }
+          split("", ux)
+          for (j = 1; j <= no; j++) {
+            k = ro[j]; split("", tg); a = 0
+            for (m = 1; m <= cc[x]; m++) {
+              id = cm[x, m]
+              if (rowof[id] == k || ((k SUBSEP id) in ovs)) continue
+              a += idw(id)
+              if (!((k SUBSEP grp[id]) in rg) && !(grp[id] in tg)) { tg[grp[id]] = 1; a += grpw(grp[id]) }
+            }
+            if (cur[k] + a > F) { ux[k] = 1; continue }
+            cur[k] += a
+            for (m = 1; m <= cc[x]; m++) {
+              id = cm[x, m]
+              if (rowof[id] == k || ((k SUBSEP id) in ovs)) continue
+              ovs[k, id] = 1; on[k]++; om[k, on[k]] = id; rg[k, grp[id]] = 1
+            }
+          }
+          unc = ""
+          for (k = 1; k <= N; k++) if (k in ux) unc = unc (unc == "" ? "" : ",") k
+          if (unc != "") print "P\t덮지 못한 쌍 — " x ": 행 " unc
+        }
+      }
+      nw = 0
       for (k = 1; k <= N; k++) {
         for (i = 2; i <= sn[k]; i++) {
           v = smem[k, i]; j = i - 1
@@ -315,17 +466,62 @@ shard_partition() {
         }
         s = ""
         for (i = 1; i <= sn[k]; i++) s = s (i > 1 ? "," : "") smem[k, i]
-        print "T\t" k "\t" load[k] "\t" s
+        if (!ISOON) { print "T\t" k "\t" load[k] "\t" s; continue }
+        for (i = 2; i <= on[k]; i++) {
+          v = om[k, i]; j = i - 1
+          while (j >= 1 && om[k, j] > v) { om[k, j + 1] = om[k, j]; j-- }
+          om[k, j + 1] = v
+        }
+        ovl = ""; for (i = 1; i <= on[k]; i++) ovl = ovl (i > 1 ? "," : "") om[k, i]
+        ownl = ""; for (i = 1; i <= sn[k]; i++) if (smem[k, i] in seenx) ownl = ownl (ownl == "" ? "" : ",") smem[k, i]
+        if (ovl != "" || solo[k] != "" || ownl != "") nw++
+        print "T\t" k "\t" load[k] "\t" s "\t" ovl "\t" solo[k] "\t" ownl
+      }
+      if (ISOON) {
+        for (k = N + 1; k <= N + ne; k++) { nw++; print "T\t" k "\t" cur[k] "\t\t\t" solo[k] "\t" }
+        print "I\t격리 배치 — 바뀐 절 " nx "개 · F " F " · 머리 " hd " · 추가 행 " ne "/" (EXTRA + 0) " · 격리 작업 행 " nw "개"
       }
     }
   ' < /dev/null > "$tmp/out"
   sed -n 's/^W	/gate-shard: /p' "$tmp/out" >&2
   sed -n 's/^U	/gate-shard: /p' "$tmp/out" >&2
   sed -n 's/^B	/gate-shard: 예산 초과 덩어리 — /p' "$tmp/out" >&2
-  sed -n 's/^T	//p' "$tmp/out"
+  sed -n 's/^P	/gate-shard: /p' "$tmp/out" >&2
+  sed -n 's/^I	/gate-shard: /p' "$tmp/out" >&2
+  # An isolation that could not be planned prints no table at all: a table
+  # without the solos would read as a run that checked nothing.
+  rc=0
+  if grep -q '^E	' "$tmp/out"; then
+    sed -n 's/^E	/gate-shard: /p' "$tmp/out" >&2; rc=2
+  elif grep -q '^C	' "$tmp/out"; then
+    sed -n 's/^C	/gate-shard: /p' "$tmp/out" >&2; rc=5
+  else
+    sed -n 's/^T	//p' "$tmp/out"
+  fi
   cp "$ids_f" "${SHARD_IDS_OUT:-/dev/null}" 2>/dev/null || true
   rm -rf "$tmp"
-  return 0
+  return "$rc"
+}
+
+# One row of a table: the ids to run (column 3) by default, or the laid-over
+# (4), solo (5) or own changed (6) column. A row whose columns 3, 4 and 5 are
+# all empty is an empty row and exits 4 — an empty --sections is a full run.
+# A row with an empty third column but laid-over or solo ids is an
+# isolation-only row: its regular ids are an empty line and exit 0, and the
+# caller must not hand that line to --sections. A chosen column 4, 5 or 6 that
+# is empty is an empty line and exit 0.
+shard_row() {
+  local table="$1" k="$2" col="$3" shards="$4" line
+  line=$(awk -F '\t' -v k="$k" -v c="$col" '$1 == k { print (($3 $4 $5) == "" ? "E" : "N") "\t" $c; exit }' "$table")
+  if [ "$col" != "3" ]; then
+    printf '%s\n' "${line#*	}"
+    return 0
+  fi
+  case "$line" in
+    N*) printf '%s\n' "${line#*	}"; return 0 ;;
+  esac
+  printf 'gate-shard: 표의 샤드 %s/%s 가 비었습니다 — 빈 --sections 는 전량 실행이므로 빈 목록을 내지 않습니다\n' "$k" "$shards" >&2
+  return 4
 }
 
 # The coverage check reads the TABLE, not the partition's internals, so a table
@@ -333,7 +529,8 @@ shard_partition() {
 # a count is satisfied by one id twice and another id never.
 #
 # THE ROW IDS ARE CHECKED AS A SET TOO. The table must carry exactly the rows
-# 1..N of the `--shards` it is checked against. A range check alone lets a
+# 1..N of the `--shards` it is checked against, N counting the extra isolation
+# rows when there are any. A range check alone lets a
 # 13-row table pass under `--shards 26`: rows 14..26 are then simply absent, the
 # run-row check counts only rows that carry ids, and the lane that should run
 # them is skipped in silence.
@@ -576,11 +773,74 @@ shard_self_test() {
   k1=$(bash "$0" --suite "$T/s6.sh" --shards 26 --shard 14 --from-table "$T/t26.tsv" 2>/dev/null); rc=$?
   if [ "$rc" = "0" ] && [ "$k1" = "a,b" ]; then ok "(o) --shards 26 --shard 14 --from-table 은 사용법 오류 없이 행을 낸다"; else bad "(o) --shards 26 --shard 14 --from-table 은 사용법 오류 없이 행을 낸다" "rc=$rc 「${k1}」"; fi
 
+  # (p) --isolate with nothing changed keeps the regular rows as they are and
+  # only adds the three empty columns.
+  out=$(bash "$0" --suite "$T/s7.sh" --census "$T/none.tsv" --timing "$T/t7.tsv" --shards 2 --table 2>/dev/null)
+  out2=$(bash "$0" --suite "$T/s7.sh" --census "$T/none.tsv" --timing "$T/t7.tsv" --shards 2 --table --isolate '' --iso-extra 2 2>/dev/null)
+  if [ "$(printf '%s\n' "$out2" | cut -f1-3)" = "$out" ] && [ "$(printf '%s\n' "$out2" | awk -F '\t' 'NF != 6' | grep -c .)" = "0" ]; then
+    ok "(p) 빈 --isolate 는 정규 행을 그대로 두고 빈 열 셋만 더한다"
+  else
+    bad "(p) 빈 --isolate 는 정규 행을 그대로 두고 빈 열 셋만 더한다" "「${out}」 대 「${out2}」"
+  fi
+
+  # (q) F, the head and an extra row: rows p,x (55 + 10 + h's 2) and q,r
+  # (30 + 20 + g's 5) give F = 67 + the head 3 = 70. A solo of x weighs 10 +
+  # 2 + 3 = 15; row 2 has 70 - 58 = 12 of room, so both solos go to extra row 3.
+  # The overlay of x on row 2 then adds 10 + h's 2 and fills it to exactly F.
+  mk_suite "$T/s12.sh" 'p|g|-' 'q|g|-' 'r|g|-' 'x|h|-'
+  mk_timing "$T/t12.tsv" "p	50" "q	30" "r	20" "x	10" "@pre-g	5" "@pre-h	2" "@head	3"
+  out=$(bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --timing "$T/t12.tsv" --shards 2 --table --isolate x --iso-extra 2 2>"$T/e12")
+  if [ "$out" = "$(printf '1\t67\tp,x\t\t\tx\n2\t55\tq,r\tx\t\t\n3\t30\t\t\t1:x;2:x\t')" ]; then ok "(q) 여유가 없는 단독은 추가 행에 가고, 얹힘은 F 까지 채운다"; else bad "(q) 여유가 없는 단독은 추가 행에 가고, 얹힘은 F 까지 채운다" "「${out}」"; fi
+  if grep -q '^gate-shard: 격리 배치 — 바뀐 절 1개 · F 70 · 머리 3 · 추가 행 1/2 · 격리 작업 행 3개$' "$T/e12"; then ok "(q) F 는 정규 행 부하에 @head 한 번을 더한 최댓값이다"; else bad "(q) F 는 정규 행 부하에 @head 한 번을 더한 최댓값이다" "$(cat "$T/e12")"; fi
+  printf '%s\n' "$out" > "$T/p12.tsv"
+
+  # (r) solos first: rows a (100), b (40), c,x (40), F 100. The solos of x take
+  # rows 2 and 3 (the lowest number on the tie); the overlay of x then fits row
+  # 2 and not row 1, which is reported.
+  mk_suite "$T/s13.sh" 'a|g|-' 'b|g|-' 'c|g|-' 'x|g|-'
+  mk_timing "$T/t13.tsv" "a	100" "b	40" "c	30" "x	10"
+  out=$(bash "$0" --suite "$T/s13.sh" --census "$T/none.tsv" --timing "$T/t13.tsv" --shards 3 --table --isolate x --iso-extra 2 2>"$T/e13")
+  if [ "$out" = "$(printf '1\t100\ta\t\t\t\n2\t40\tb\tx\t1:x\t\n3\t40\tc,x\t\t2:x\tx')" ]; then ok "(r) 단독이 먼저 정규 행의 여유를 쓰고 추가 행을 열지 않는다"; else bad "(r) 단독이 먼저 정규 행의 여유를 쓰고 추가 행을 열지 않는다" "「${out}」"; fi
+  if grep -q '^gate-shard: 덮지 못한 쌍 — x: 행 1$' "$T/e13"; then ok "(r) 여유가 모자라 얹지 못한 행은 덮지 못한 쌍으로 적는다"; else bad "(r) 여유가 모자라 얹지 못한 행은 덮지 못한 쌍으로 적는다" "$(cat "$T/e13")"; fi
+
+  # (s) capacity: the solos of (q) with no extra row allowed do not fit.
+  out=$(bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --timing "$T/t12.tsv" --shards 2 --table --isolate x --iso-extra 0 2>"$T/e14"); rc=$?
+  if [ "$rc" = "5" ] && [ -z "$out" ] && grep -q '격리 검사 용량 초과 — 단독을 싣지 못한 바뀐 절: x ' "$T/e14"; then ok "(s) 단독을 다 싣지 못하면 표 없이 exit 5"; else bad "(s) 단독을 다 싣지 못하면 표 없이 exit 5" "rc=$rc 「${out}」 $(cat "$T/e14")"; fi
+
+  # (t) a closure with an id --list does not have, and a changed id it does not
+  # have, are exit 2 with no table.
+  out=$(bash "$0" --suite "$T/s4.sh" --census "$T/none.tsv" --shards 2 --table --isolate m 2>"$T/e15"); rc=$?
+  if [ "$rc" = "2" ] && [ -z "$out" ] && grep -q '폐포에 --list 에 없는 id ghost' "$T/e15"; then ok "(t) 폐포의 모르는 id 는 표 없이 exit 2"; else bad "(t) 폐포의 모르는 id 는 표 없이 exit 2" "rc=$rc 「${out}」 $(cat "$T/e15")"; fi
+  bash "$0" --suite "$T/s4.sh" --census "$T/none.tsv" --shards 2 --table --isolate nope > /dev/null 2>&1; rc=$?
+  if [ "$rc" = "2" ]; then ok "(t) --list 에 없는 바뀐 절은 exit 2"; else bad "(t) --list 에 없는 바뀐 절은 exit 2" "rc=$rc"; fi
+
+  # (u) the closure follows census needs too: q needs p only in the census.
+  out=$(bash "$0" --suite "$T/s3.sh" --census "$T/c3.tsv" --shards 4 --table --isolate q --iso-extra 2 2>/dev/null)
+  if printf '%s\n' "$out" | cut -f5 | grep -q '1:q,p'; then ok "(u) 단독의 폐포는 센서스 needs 간선도 따른다"; else bad "(u) 단독의 폐포는 센서스 needs 간선도 따른다" "「${out}」"; fi
+
+  # (v) the row check takes the extra rows: 1..N+E.
+  if bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --shards 2 --extra 1 --check --from-table "$T/p12.tsv" > /dev/null 2>&1; then ok "(v) --extra E 의 --check 는 행 1..N+E 를 받는다"; else bad "(v) --extra E 의 --check 는 행 1..N+E 를 받는다" "비영 종료"; fi
+  bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --shards 2 --check --from-table "$T/p12.tsv" > /dev/null 2>&1; rc=$?
+  if [ "$rc" = "3" ]; then ok "(v) --extra 없이 추가 행이 있는 표는 --check 에서 실패한다"; else bad "(v) --extra 없이 추가 행이 있는 표는 --check 에서 실패한다" "rc=$rc"; fi
+  if bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --timing "$T/t12.tsv" --shards 2 --isolate x --iso-extra 2 --check > /dev/null 2>&1; then ok "(v) 표를 직접 짜는 --check 는 자기 추가 행을 센다"; else bad "(v) 표를 직접 짜는 --check 는 자기 추가 행을 센다" "비영 종료"; fi
+
+  # (w) a row of a table already made, column by column.
+  k1=$(bash "$0" --suite "$T/s6.sh" --shards 2 --extra 1 --shard 3 --from-table "$T/p12.tsv" 2>/dev/null); rc=$?
+  if [ "$rc" = "0" ] && [ -z "$k1" ]; then ok "(w) 격리 전용 행의 --shard 는 빈 줄과 exit 0"; else bad "(w) 격리 전용 행의 --shard 는 빈 줄과 exit 0" "rc=$rc 「${k1}」"; fi
+  k1=$(bash "$0" --suite "$T/s6.sh" --shards 2 --extra 1 --shard 3 --from-table "$T/p12.tsv" --solo 2>/dev/null)
+  k2=$(bash "$0" --suite "$T/s6.sh" --shards 2 --extra 1 --shard 2 --from-table "$T/p12.tsv" --overlay 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s6.sh" --shards 2 --extra 1 --shard 1 --from-table "$T/p12.tsv" --own 2>/dev/null)
+  if [ "$k1" = "1:x;2:x" ] && [ "$k2" = "x" ] && [ "$out" = "x" ]; then ok "(w) --solo·--overlay·--own 은 그 행의 5·4·6열을 낸다"; else bad "(w) --solo·--overlay·--own 은 그 행의 5·4·6열을 낸다" "「${k1}」「${k2}」「${out}」"; fi
+  k1=$(bash "$0" --suite "$T/s6.sh" --shards 2 --extra 1 --shard 2 --from-table "$T/p12.tsv" --solo 2>/dev/null); rc=$?
+  if [ "$rc" = "0" ] && [ -z "$k1" ]; then ok "(w) 고른 열이 비면 빈 줄과 exit 0"; else bad "(w) 고른 열이 비면 빈 줄과 exit 0" "rc=$rc 「${k1}」"; fi
+  bash "$0" --suite "$T/s6.sh" --shards 2 --shard 3 --from-table "$T/p12.tsv" > /dev/null 2>&1; rc=$?
+  if [ "$rc" = "2" ]; then ok "(w) --extra 없이 N 을 넘는 --shard 는 사용법 오류"; else bad "(w) --extra 없이 N 을 넘는 --shard 는 사용법 오류" "rc=$rc"; fi
+
   rm -rf "$T"
   printf 'gate-shard self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 27 ]; then
-    printf 'gate-shard self-test: 통과 수 %d 가 하한 27 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 44 ]; then
+    printf 'gate-shard self-test: 통과 수 %d 가 하한 44 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -595,6 +855,11 @@ mode=""
 shard_k=""
 from_table=""
 timing=""
+iso_on=0
+iso=""
+iso_extra=0
+extra=0
+col=3
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --suite)      [ "$#" -ge 2 ] || shard_usage; suite="$2"; shift 2 ;;
@@ -606,6 +871,12 @@ while [ "$#" -gt 0 ]; do
     --digest)     mode="digest"; shift ;;
     --check)      mode="check"; shift ;;
     --from-table) [ "$#" -ge 2 ] || shard_usage; from_table="$2"; shift 2 ;;
+    --isolate)    [ "$#" -ge 2 ] || shard_usage; iso_on=1; iso="$2"; shift 2 ;;
+    --iso-extra)  [ "$#" -ge 2 ] || shard_usage; iso_extra="$2"; shift 2 ;;
+    --extra)      [ "$#" -ge 2 ] || shard_usage; extra="$2"; shift 2 ;;
+    --overlay)    col=4; shift ;;
+    --solo)       col=5; shift ;;
+    --own)        col=6; shift ;;
     --self-test)  mode="self-test"; shift ;;
     *) printf 'gate-shard: 모르는 인자입니다: %s\n' "$1" >&2; shard_usage ;;
   esac
@@ -617,9 +888,17 @@ if [ "$mode" = "self-test" ]; then
 fi
 [ -n "$mode" ] || shard_usage
 case "$shards" in ''|*[!0-9]*|0) shard_usage ;; esac
+case "$iso_extra" in ''|*[!0-9]*) shard_usage ;; esac
+case "$extra" in ''|*[!0-9]*) shard_usage ;; esac
+case "$iso" in *[!A-Za-z0-9,._-]*) shard_usage ;; esac
+[ "$col" = "3" ] || [ "$mode" = "shard" ] || shard_usage
+# The rows past --shards are the extra isolation rows: --extra says how many a
+# table already made has, and a table made here may have up to --iso-extra.
+rows_max=$((shards + extra))
+if [ "$iso_on" = "1" ] && [ -z "$from_table" ] && [ "$iso_extra" -gt "$extra" ]; then rows_max=$((shards + iso_extra)); fi
 if [ "$mode" = "shard" ]; then
   case "$shard_k" in ''|*[!0-9]*|0) shard_usage ;; esac
-  [ "$shard_k" -le "$shards" ] || shard_usage
+  [ "$shard_k" -le "$rows_max" ] || shard_usage
 fi
 
 # A SHARD TAKEN FROM A TABLE DOES NOT PARTITION AGAIN. CI makes the table once,
@@ -632,18 +911,13 @@ if [ "$mode" = "shard" ] && [ -n "$from_table" ]; then
     printf 'gate-shard: 표 파일이 없습니다: %s\n' "$from_table" >&2
     exit 3
   fi
-  ids=$(awk -F '\t' -v k="$shard_k" '$1 == k { print $3 }' "$from_table")
-  if [ -z "$ids" ]; then
-    printf 'gate-shard: 표 %s 의 샤드 %s/%s 가 비었습니다 — 빈 --sections 는 전량 실행이므로 빈 목록을 내지 않습니다\n' "$from_table" "$shard_k" "$shards" >&2
-    exit 4
-  fi
-  printf '%s\n' "$ids"
-  exit 0
+  shard_row "$from_table" "$shard_k" "$col" "$shards"
+  exit $?
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard-main.XXXXXX")
 trap 'rm -rf "$work"' EXIT
-SHARD_IDS_OUT="$work/ids" shard_partition "$suite" "$census" "$shards" "$timing" > "$work/table"
+SHARD_IDS_OUT="$work/ids" shard_partition "$suite" "$census" "$shards" "$timing" "$iso_on" "$iso" "$iso_extra" > "$work/table"
 prc=$?
 [ "$prc" = "0" ] || exit "$prc"
 
@@ -651,17 +925,13 @@ case "$mode" in
   table)  cat "$work/table" ;;
   digest) shard_sha256 < "$work/table" ;;
   shard)
-    ids=$(awk -F '\t' -v k="$shard_k" '$1 == k { print $3 }' "$work/table")
-    if [ -z "$ids" ]; then
-      printf 'gate-shard: 샤드 %s/%s 가 비었습니다 — 빈 --sections 는 전량 실행이므로 빈 목록을 내지 않습니다\n' "$shard_k" "$shards" >&2
-      exit 4
-    fi
-    printf '%s\n' "$ids" ;;
+    shard_row "$work/table" "$shard_k" "$col" "$shards"
+    exit $? ;;
   check)
     if [ -n "$from_table" ]; then
-      shard_check "$from_table" "$work/ids" "$shards"
+      shard_check "$from_table" "$work/ids" "$((shards + extra))"
     else
-      shard_check "$work/table" "$work/ids" "$shards"
+      shard_check "$work/table" "$work/ids" "$((shards + $(awk -F '\t' -v n="$shards" '$1 > n' "$work/table" | grep -c .)))"
     fi
     exit $? ;;
 esac
