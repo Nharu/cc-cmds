@@ -74,6 +74,22 @@ case "$out" in
   *) bad "2 이름 안의 — 는 이름에 남는다" "$out" ;;
 esac
 
+# A detail that quotes a refusal carries ` — ` of its own; the `rc=` and `got '`
+# openings drop it whole, and a free-text detail is cut at the last ` — `.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-gate.sh'
+  printf '%s\n' 'FAIL: 83c: A — 칸 x 에서 park 한다 — rc=0 게이트 통과 — exec 커밋 — 줄 44290'
+  printf '%s\n' 'FAIL: 83c: B — 칸 x 에서 park 한다 — rc=0 게이트 통과 — exec 커밋 — 줄 44279'
+  printf '%s\n' "FAIL: 7 문면 — got 'a — b — c', want 'd'"
+  printf '%s\n' 'FAIL: 60b: park — 라벨 — 행이 없다'
+  printf '%s\n' 'test-gate: 0 passed, 4 failed'
+} > "$WORK/b2.log"
+check "2 상세의 — 는 이름에 남지 않는다" "$(extract 'gate-shards (1)' "$WORK/b2.log" | tail -n +2)" \
+  "$(printf '%s\n' 'gate-shards|test-gate.sh|60b: park — 라벨' \
+    'gate-shards|test-gate.sh|7 문면' \
+    'gate-shards|test-gate.sh|83c: A — 칸 x 에서 park 한다' \
+    'gate-shards|test-gate.sh|83c: B — 칸 x 에서 park 한다' | LC_ALL=C sort)"
+
 # ---------------------------------------------------------------------------
 # 3. The variable parts of a name are normalised.
 # ---------------------------------------------------------------------------

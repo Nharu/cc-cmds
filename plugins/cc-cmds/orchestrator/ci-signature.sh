@@ -24,14 +24,24 @@
 #   일반    — reads nothing from the log. It emits one signature per failed step
 #             name the caller passes with `--step`, and precision `단계`.
 #
-# WHERE THE NAME ENDS. The helper prints the name, ` — `, then the detail, and a
-# name may itself carry ` — `. So the line is cut at its LAST ` — `: two names
-# that differ only after an inner ` — ` stay two signatures, and the detail —
-# got/want values that change between reruns — is dropped. A detail that itself
-# carries ` — ` leaves its head on the name; the normalisation below keeps that
-# head stable across reruns where it is a path, a line number, a digest or a
-# time, and where it is not, the cost is a signature that does not match, which
-# reads as `초과` and never as a false subset.
+# WHERE THE NAME ENDS. The helper prints the name, ` — `, then the detail, and
+# both may carry ` — ` of their own: a name such as `83c: X — 칸 Y 에서 park 한다`,
+# a detail that quotes a gate refusal. The suites here open a detail in one of
+# two fixed ways — `got '<value>', want '<value>'` from the `check` helpers and
+# `rc=<code> <output>` from the direct `bad` calls — and no name carries either
+# opening. So the line is cut, in this order:
+#
+#   1. at its first ` — rc=`;
+#   2. at its first ` — got '`;
+#   3. at its LAST ` — `.
+#
+# The first two drop a detail whole however many ` — ` it quotes, and keep a
+# name's inner ` — ` on the name. The third is for a detail in free text: two
+# names that differ only after an inner ` — ` stay two signatures, and a detail
+# that itself carries ` — ` leaves its head on the name. The normalisation below
+# keeps that head stable across reruns where it is a path, a line number, a
+# digest or a time, and where it is not, the cost is a signature that does not
+# match, which reads as `초과` and never as a false subset.
 #
 # WHAT IS NORMALISED IN THE NAME. A `<file>:<line>` line number, a temporary path,
 # a 40- or 64-digit hex digest and an ISO time are replaced by fixed placeholders:
@@ -135,7 +145,9 @@ cs_read_fail_lines() {
       if (line ~ /[0-9]+ passed, [0-9]+ failed/) total = 1
       if (substr(line, 1, 6) == "FAIL: ") {
         body = substr(line, 7)
-        p = lastsep(body, " \342\200\224 ")
+        p = index(body, " \342\200\224 rc=")
+        if (p == 0) p = index(body, " \342\200\224 got \047")
+        if (p == 0) p = lastsep(body, " \342\200\224 ")
         name = (p > 0) ? substr(body, 1, p - 1) : body
         sub(/[ \t]+$/, "", name)
         if (name == "") next
