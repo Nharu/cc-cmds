@@ -8130,9 +8130,17 @@ gate_gh_strip_repo() {
   # gh takes its command cannot be told (a `--` or a run of value flags with no
   # command after them), GATE_GH_API_UNREAD is 1 and every reader takes the
   # argv for the unbound merge it may be.
+  #
+  # `pr new` IS WRITTEN `pr create`. gh documents `new` as the alias of `pr
+  # create` and takes the same flags under it, so `gh pr new --label x` opens a
+  # pull request with a label. The label detector and the ladder read the verb
+  # from this array, and with `new` left as written neither took it for a
+  # create: the label went on with no `라벨 인정` row and the act took no rung.
+  # The flag table parses the argv as written and only to find a merge or a
+  # `repo sync`, so it keeps the one `pr create` row.
   GATE_GH_ARGV=()
   GATE_GH_API_UNREAD=0
-  local bare=0
+  local bare=0 grp=''
   while [ "$#" -gt 0 ]; do
     if [ "$bare" -lt 2 ]; then
       case "$1" in
@@ -8140,7 +8148,15 @@ gate_gh_strip_repo() {
           if [ "$#" -ge 2 ]; then shift 2; continue; fi ;;
         --repo=*|-R?*) shift; continue ;;
         -*) : ;;
-        *) bare=$((bare + 1)) ;;
+        *)
+          bare=$((bare + 1))
+          if [ "$bare" = 1 ]; then
+            grp="$1"
+          elif [ "$grp" = pr ] && [ "$1" = new ]; then
+            GATE_GH_ARGV+=(create)
+            shift
+            continue
+          fi ;;
       esac
     fi
     GATE_GH_ARGV+=("$1")

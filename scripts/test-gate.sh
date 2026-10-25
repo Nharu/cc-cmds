@@ -39149,6 +39149,10 @@ la60_w 0 gh -R o/r pr edit 1 --add-label=x
 la60_w 0 gh pr create --title t --label x
 la60_w 0 gh pr create --title t -l x
 la60_w 0 gh pr create -dlx
+la60_w 0 gh pr new --title t --label x
+la60_w 0 gh pr new --title t -l x
+la60_w 0 gh pr new -dl x
+la60_w 0 gh -R o/r pr new --label=x
 la60_w 0 gh api -X POST repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api -X PUT repos/o/r/issues/1/labels -f 'labels[]=x'
@@ -39168,10 +39172,15 @@ la60_w 1 gh api repos/o/r/issues/1/labels
 la60_w 1 gh api -X PATCH repos/o/r/issues/1 -f title=x
 la60_w 1 gh pr edit 1 --title x
 la60_w 1 gh pr create --title t --body b
+la60_w 1 gh pr new --title x
+la60_w 1 gh issue new --title t --label x
 la60_w 1 gh pr view 1
 la60_w 1 gh api graphql -f 'query=query { viewer { login } }'
 la60_w 1 git push origin HEAD
 check "60d: PR 라벨 쓰기 판정이 형태마다 답한다" "$la60_wfail" ""
+# gh 는 `pr new` 를 `pr create` 의 별칭으로 문서화하므로 사다리도 같은 PR 칸을 준다.
+check "60d: gh pr new 는 pr create 와 같은 PR 칸이다" \
+  "$(ladder_of_gh pr new --title t)/$(ladder_of_gh -R o/r pr new -l x)/$(ladder_of_gh pr create --title t)" "PR/PR/PR"
 
 cb60_head
 la60_new() {
@@ -44370,6 +44379,7 @@ t3e_park 협업 gh api -X POST repos/t/front3/issues/1/labels -f 'labels[]=api-c
 t3e_park 미상 gh api -X POST repos/t/front3/issues/1/labels -f 'labels[]=api-change'
 t3e_park 협업 gh pr edit 1 --add-label api-change
 T3E_CP=PR t3e_park 협업 gh pr create --title t --body b -l api-change
+T3E_CP=PR t3e_park 협업 gh pr new --title t --body b --label api-change
 t3e_park 협업 gh api -X PATCH repos/t/front3/pulls/1 --input body.json
 check "83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
 # 파일에서 읽는 graphql 쿼리는 머지 단계까지 오르고, 그 단계의 규칙이 도달 판정보다
