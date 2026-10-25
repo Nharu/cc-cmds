@@ -191,6 +191,16 @@ case "${ROUTE_AFFINITY_HOLD_PCT:-}" in
   50) ;;
   *) readonly ROUTE_AFFINITY_HOLD_PCT=50 ;;
 esac
+# 질문으로 멈출 수 있는 스테이지의 새 세션은 멈춘 뒤 같은 계정의 재부착까지 주간 여유가
+# 버티는 계정에 먼저 앉는다. 버틴다는 것은 후보의 주간 여유 r7 이 `(1 + n) × 이번 요청의
+# 주간 예약` 이상이라는 뜻이고, n 이 이 상수다 — 이번 구간, 재부착이 다시 요구하는 예약,
+# 멈춘 동안 다른 런이 쓰는 몫. 질문 가능 종류는 jq 의 `rt_ask_kinds` 가 닫는다. 문맥에
+# `config.ask` 가 없으면 기준은 꺼진다. 가드된 상수라 운용 중에 기준을 끄거나 n 을 바꾸는
+# 길은 이 값을 바꾸는 patch 릴리스뿐이다.
+case "${ROUTE_ASK_RESUME_N:-}" in
+  2) ;;
+  *) readonly ROUTE_ASK_RESUME_N=2 ;;
+esac
 
 route__dir() { cd "$(dirname "${BASH_SOURCE[0]}")" && pwd; }
 
@@ -930,22 +940,61 @@ def rt_grant_new($p; $a; $adm; $basis):
    lease_key: $p.okey, nonce: ($p.c.fresh_nonce // null), dormant: false, cost: $adm.cost,
    order: (rt_phase($p.c) | {phase, phase_source, until_epoch, burst_length_s, burst_length_source}
            + {threshold_bp: null, ratio_source: null, tier: null, r7_bp: null, admitted: null,
-              picked_by: null, load5_bp: null, affinity_account: null, affinity_hold_bp: null})};
-# 새 단계 정렬의 키 배열과 그 자리 이름. 두 단계 모두 대여 층·U 부류 다음이 유지
-# (유효한 직전 계정이고 그 그룹의 load5 가 문턱 아래면 0), 그다음 버려질 한도 W7,
-# 분산(load5 작은 순), 주간 키, 붙든 계정, id 다. 쉼의 주간 키는 층과 r7 두 자리다.
+              picked_by: null, load5_bp: null, affinity_account: null, affinity_hold_bp: null,
+              ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null})};
+# 질문으로 멈출 수 있는 스테이지의 종류. 이 종류는 멈춘 뒤 같은 계정의 재부착으로만
+# 답을 받는다. 문맥에 `config.ask` 가 있고 요청 종류가 이 목록에 있을 때만 새 기준이 켜진다.
+def rt_ask_kinds: ["design", "audit", "split", "visual", "implement", "review", "lead-fix", "reconverge"];
+def rt_ask_on($c):
+  (($c.config.ask // null) != null)
+  and ((($c.request.kind // "") | tostring) as $k | any(rt_ask_kinds[]; . == $k));
+# 후보 하나가 재부착까지 버티는가. 기준은 `(1 + resume_n) × 이번 요청의 주간 예약` 이고,
+# r7 은 쉼 단계 정렬과 같은 식이다 — 대여 행의 주간 창 끝은 그 행의 대여 상한, 주간
+# 창을 모르면 null 이고 버티지 못한다.
+def rt_ask_fit($c; $G; $a; $adm):
+  ($c.config.ask.resume_n | if rt_isint and . >= 0 then . else error("config.ask") end) as $n
+  | ((1 + $n) * $adm.reservation_bp.seven_day) as $need
+  | $G.windows.seven_day as $x
+  | (if $a.lend_enrolled == true then ($a.lend.dec.ceiling_bp // 0) else 10000 end) as $top
+  | (if $x.state == "unknown" then null else $top - rt_ueff($x) - $G.sigma.seven_day end) as $r7
+  | {need: $need, r7: $r7, fits: ($r7 != null and $r7 >= $need)};
+# 새 기준이 피하게 한 계정. 고른 후보 `$s[0]` 보다 "새 기준이 없는 키" 가 엄격히 앞서고
+# 버티지 못하는 후보의 id 를 정렬한다. 새 기준이 없는 키는 같은 키 함수를 새 두 자리를
+# 0 으로, 유지를 오늘의 판정으로 되돌린 입력에 다시 부른 값이다.
+def rt_ask_avoided($s; f):
+  ($s[0] | . + {askk: [0, 0], aff: .aff0} | f) as $bk
+  | [$s[] | select(.ask != null and .ask.fits == false)
+     | select((. + {askk: [0, 0], aff: .aff0} | f) < $bk) | .a.id] | sort;
+def rt_ask_order($on; $s; $avoided):
+  if $on then {ask_need_bp: $s[0].ask.need, ask_r7_bp: $s[0].ask.r7, ask_fits: $s[0].ask.fits, ask_avoided: $avoided}
+  else {} end;
+# 새 단계 정렬의 키 배열과 그 자리 이름. 두 단계 모두 대여 층·U 부류 다음이 새 기준의
+# 두 자리(`ask-headroom`), 그다음 유지(유효한 직전 계정이고 그 그룹의 load5 가 문턱
+# 아래면 0), 버려질 한도 W7, 분산(load5 작은 순), 주간 키, 붙든 계정, id 다. 쉼의 주간
+# 키는 층과 r7 두 자리다.
+# 새 기준의 두 자리는 질문 가능 스테이지에서 재부착까지 버티지 못하는 후보를 뒤로
+# 보낸다 — 버티면 [0, 0], 버티지 못하면 [1, -r7](주간 창 미상이면 [1, 0])이라 버티지
+# 못하는 후보끼리는 r7 이 큰 순이다. 버틴다는 것은 r7 이 `(1 + resume_n) × 주간 예약`
+# 이상이라는 뜻이다. 버티지 못하는 후보에서는 유지가 꺼진다(유지 키 1) — 그 계정에 다시
+# 묶이지 않게 하려는 것이다. 기준이 꺼졌거나 질문 가능 종류가 아니면 두 자리는 모두
+# [0, 0] 이고 유지는 오늘의 판정이라 순서는 오늘과 같다.
+# `picked_by == "ask-headroom"` 은 앞 두 후보가 새 두 자리에서 갈렸다는 뜻일 뿐이라,
+# 1등이 새 기준이 없어도 1등이었던 부여도 그렇게 적힌다. 새 기준이 결과를 바꿨는지는
+# 봉투 `order` 의 `ask_avoided` 가 비어 있지 않은지로만 판정한다.
 def rt_new_sticky($p): .a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end;
 def rt_new_kb($p):
-  [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .aff, (0 - .w7), .load5,
+  [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .askk[0], .askk[1],
+   .aff, (0 - .w7), .load5,
    (0 - (if .a.lend_enrolled == true
          then ((.a.lend.dec.ceiling_bp // 0) - (rt_ueff($p.groups[.a.group].windows.seven_day) // 10000))
          else .a.remaining_bp end)),
    rt_new_sticky($p), .a.id];
 def rt_new_kr($p):
-  [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .aff, (0 - .w7), .load5,
+  [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .askk[0], .askk[1],
+   .aff, (0 - .w7), .load5,
    .tier, (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end), rt_new_sticky($p), .a.id];
-def rt_new_names_b: ["lend", "class", "affinity", "w7", "spread", "weekly", "sticky", "id"];
-def rt_new_names_r: ["lend", "class", "affinity", "w7", "spread", "weekly", "weekly", "sticky", "id"];
+def rt_new_names_b: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "spread", "weekly", "sticky", "id"];
+def rt_new_names_r: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "spread", "weekly", "weekly", "sticky", "id"];
 # 정렬 첫째와 둘째의 키 배열이 처음 갈리는 자리의 이름. 후보가 하나면 `only` 다.
 def rt_picked_by($ks; $names):
   if ($ks | length) < 2 then "only"
@@ -1101,14 +1150,23 @@ def rt_new($p; $basis0; $excl):
           | (if $ac == null then null else ((($p.c.config.cap_bp // 10000) * $ac.hold_pct / 100) | round) end) as $Taff
           # 분산. load5 는 그룹의 5시간 사용(창이 풀렸으면 0)에 그 그룹 live 임대의 5시간
           # 예약 합을 더한 지역값이다 — r7 처럼 `rt_aview` 와 그룹 보기에는 싣지 않는다.
+          # 새 기준. 켜지지 않았으면 `rt_ask_fit` 을 부르지 않는다 — 설정 오류가 질문 가능
+          # 종류의 요청에서만 나게 하려는 것이다. `aff0` 은 오늘의 유지 판정이다.
+          | rt_ask_on($p.c) as $askon
           | [$cands[] | $p.groups[.a.group] as $G | $G.windows.five_hour as $x
                | (if $x == null or rt_ueff($x) == null then 10000 else rt_ueff($x) + ($G.sigma.five_hour // 0) end) as $l5
-               | . + {load5: $l5, aff: (if $H != null and .a.id == $H and $l5 < $Taff then 0 else 1 end)}] as $cands
+               | (if $H != null and .a.id == $H and $l5 < $Taff then 0 else 1 end) as $aff0
+               | (if $askon then rt_ask_fit($p.c; $G; .a; .adm) else null end) as $ask
+               | ($ask != null and ($ask.fits | not)) as $short
+               | . + {load5: $l5, aff0: $aff0, ask: $ask,
+                      askk: (if $short then [1, (if $ask.r7 == null then 0 else 0 - $ask.r7 end)] else [0, 0] end),
+                      aff: (if $short then 1 else $aff0 end)}] as $cands
           | (if $ph.phase == "burst" then
                ($cands | sort_by(rt_new_kb($p))) as $s
                | {best: $s[0],
-                  order: {picked_by: rt_picked_by([$s[0:2][] | rt_new_kb($p)]; rt_new_names_b),
-                          load5_bp: $s[0].load5, affinity_account: $H, affinity_hold_bp: $Taff}}
+                  order: ({picked_by: rt_picked_by([$s[0:2][] | rt_new_kb($p)]; rt_new_names_b),
+                           load5_bp: $s[0].load5, affinity_account: $H, affinity_hold_bp: $Taff}
+                          + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kb($p)) else null end)))}
              else
                # 쉼: 주간 여유 r7 이 문턱 T 아래인 계정을 작은 순으로 먼저 쓰고, 문턱 위는 큰
                # 순으로 그 뒤에 둔다. 주간 창을 모르는 계정은 층 2 이고 r7 을 세지 않는다.
@@ -1123,13 +1181,14 @@ def rt_new($p; $basis0; $excl):
                | ($rc | sort_by(rt_new_kr($p))) as $s
                | $s[0] as $b
                | {best: $b,
-                  order: {threshold_bp: $T, ratio_source: $rho.source, tier: (["below", "above", "unknown"][$b.tier]),
-                          r7_bp: $b.r7,
-                          admitted: {below: ([$rc[] | select(.tier == 0)] | length),
-                                     above: ([$rc[] | select(.tier == 1)] | length),
-                                     unknown: ([$rc[] | select(.tier == 2)] | length)},
-                          picked_by: rt_picked_by([$s[0:2][] | rt_new_kr($p)]; rt_new_names_r),
-                          load5_bp: $b.load5, affinity_account: $H, affinity_hold_bp: $Taff}}
+                  order: ({threshold_bp: $T, ratio_source: $rho.source, tier: (["below", "above", "unknown"][$b.tier]),
+                           r7_bp: $b.r7,
+                           admitted: {below: ([$rc[] | select(.tier == 0)] | length),
+                                      above: ([$rc[] | select(.tier == 1)] | length),
+                                      unknown: ([$rc[] | select(.tier == 2)] | length)},
+                           picked_by: rt_picked_by([$s[0:2][] | rt_new_kr($p)]; rt_new_names_r),
+                           load5_bp: $b.load5, affinity_account: $H, affinity_hold_bp: $Taff}
+                          + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kr($p)) else null end)))}
              end) as $pick
           | (rt_grant_new($p; $pick.best.a; $pick.best.adm; $basis) | .order += $pick.order) as $e
           | rt_env($e; "write"; rt_rec_new($p; $e))
@@ -1147,8 +1206,17 @@ def rt_retry($p):
     elif $o != null and $o.kind == "grant" and ($o.live != true) and rt_new_ok($a) and $onpin and ($p.table_corrupt | not)
          and ($p.borrow_corrupt | not)
          and (rt_admit($p; $a) | .admitted) then
+      # 질문 가능 스테이지인데 그 계정이 재부착까지 버티지 못하면 새 정렬로 넘긴다. 새
+      # 정렬이 그 계정을 벗어나지 못하면 — GRANT 가 아니거나 같은 계정을 고르면 — 그
+      # 결과를 버리고 같은 계정의 `sticky` 로 돌아온다. 이 넘김은 위의 재입회 조건이 모두
+      # 참일 때만이라, 그 조건이 거짓인 재시도는 아래 `else` 의 결과를 그대로 낸다.
       rt_admit($p; $a) as $adm
-      | rt_grant_new($p; $a; $adm; "sticky") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
+      | (if rt_ask_on($p.c) and (rt_ask_fit($p.c; $p.groups[$a.group]; $a; $adm) | .fits | not) then
+           rt_new($p; "reassigned-no-room"; null)
+           | if .verdict == "GRANT" and .account != $a.id then . else null end
+         else null end) as $moved
+      | if $moved != null then $moved
+        else rt_grant_new($p; $a; $adm; "sticky") as $e | rt_env($e; "write"; rt_rec_new($p; $e)) end
     else rt_new($p; "reassigned-no-room"; null) end;
 
 def rt_prev($p):
@@ -1599,12 +1667,13 @@ route__config_json() {
     --argjson hf "$ROUTE_COST_HYG_MIN_FRAMES" --argjson hc "$ROUTE_COST_HYG_MIN_COVER" \
     --argjson rm "$ROUTE_REST_MIN_MASS" \
     --argjson at "$ROUTE_AFFINITY_TTL_S" --argjson ah "$ROUTE_AFFINITY_HOLD_PCT" \
+    --argjson an "$ROUTE_ASK_RESUME_N" \
     '{k: {default: {five_hour: $k5, seven_day: $k7}, shift: {five_hour: $ks, seven_day: $ks}},
       c: {five_hour: {default: $c5, by_kind: {}, by_group: {}}, seven_day: {default: $c7, by_kind: {}, by_group: {}}},
       cost: {max_age_s: $ca, max_n: $cn, min_n: $cm, floor: {five_hour: $f5, seven_day: $f7},
              hygiene: {min_frames: $hf, min_cover: $hc}},
       cap_bp: $cap, ttl_s: {"stage-log": $tl, tracker: $tt}, file_stale_factor: $ff, rest_min_mass: $rm,
-      affinity: {ttl_s: $at, hold_pct: $ah}}'
+      affinity: {ttl_s: $at, hold_pct: $ah}, ask: {resume_n: $an}}'
 }
 
 route_cost_samples_read() {
@@ -2686,7 +2755,9 @@ route__affinity_grant() {
          '{schema: $s, at_epoch: $now, run_id: $req.run_id, lineage: $req.lineage, event: $req.event,
            basis: $env.basis, account: $env.account, group: $env.group,
            picked_by: $env.order.picked_by, load5_bp: $env.order.load5_bp,
-           affinity_account: $env.order.affinity_account, affinity_hold_bp: $env.order.affinity_hold_bp}' 2>/dev/null) || line=""
+           affinity_account: $env.order.affinity_account, affinity_hold_bp: $env.order.affinity_hold_bp,
+           ask_need_bp: $env.order.ask_need_bp, ask_r7_bp: $env.order.ask_r7_bp,
+           ask_fits: $env.order.ask_fits, ask_avoided: $env.order.ask_avoided}' 2>/dev/null) || line=""
   if [ -z "$line" ] || ! printf '%s\n' "$line" >> "$RUN_DIR/route-picks.jsonl" 2>/dev/null; then
     route__warn "부여 기록을 덧붙이지 못했다 ($RUN_DIR/route-picks.jsonl)"
   fi
