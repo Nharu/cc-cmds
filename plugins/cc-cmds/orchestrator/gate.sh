@@ -8155,6 +8155,13 @@ gate_gh_strip_repo() {
   # the caller sees it as written. The three readers of gh — the grade, the
   # ladder and the merge binding — share this skip.
   #
+  # A `-R` THAT IS ANOTHER FLAG'S VALUE IS KEPT. cobra drops the word after a
+  # two-letter flag or a `--flag` without `=` as that flag's value (see
+  # `gate_gh_group_verb`), so in `gh pr -t -R new -l x` the `-R` is the title
+  # and gh runs `pr create --title -R --label x`. Taking that `-R` with the
+  # word after it removed the verb, and every reader saw `pr -t -l x`: the
+  # label went on with no `라벨 인정` row and the create took no rung.
+  #
   # `api` IS FOUND THE WAY gh FINDS IT, AND MOVED TO THE FRONT. cobra looks for
   # the command past every flag ahead of it, so `gh --hostname=github.com api
   # -X PUT repos/o/r/pulls/1/merge` merges, and each flag is then parsed
@@ -8177,13 +8184,21 @@ gate_gh_strip_repo() {
   # `repo sync`, so it keeps the one `pr create` row.
   GATE_GH_ARGV=()
   GATE_GH_API_UNREAD=0
-  local bare=0 grp=''
+  local bare=0 grp='' val=0
   while [ "$#" -gt 0 ]; do
     if [ "$bare" -lt 2 ]; then
+      if [ "$val" = 1 ]; then
+        val=0
+        case "$1" in
+          -*|'') GATE_GH_ARGV+=("$1"); shift; continue ;;
+        esac
+      fi
       case "$1" in
         -R|--repo)
           if [ "$#" -ge 2 ]; then shift 2; continue; fi ;;
         --repo=*|-R?*) shift; continue ;;
+        --|-h|--help|--*=*) : ;;
+        --*|-?) val=1 ;;
         -*) : ;;
         *)
           bare=$((bare + 1))

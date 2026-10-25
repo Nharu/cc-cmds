@@ -39161,6 +39161,16 @@ la60_w 0 gh pr --title x new -l y
 la60_w 0 gh -t x pr new -l y
 la60_w 0 gh pr -t x create -l y
 la60_w 0 gh -t x issue edit 3 --add-label y
+# 값 옵션의 값 자리에 선 `-R`/`--repo` 는 그 옵션의 값이므로, 뒤의 동사까지 지우지 않는다.
+la60_w 0 gh pr -t -R new -b y -l x
+la60_w 0 gh pr -t -R create -b y -l x
+la60_w 0 gh pr -t --repo new -l x
+la60_w 0 gh pr -b --repo create -t y --label=x
+la60_w 0 gh pr -t -R edit 1 --add-label x
+la60_w 0 gh issue -t -R edit 1 --add-label x
+la60_w 0 gh -t -R pr new -l x
+la60_w 0 gh pr --repo=o/r new -l x
+la60_w 0 gh pr -Ro/r new -l x
 la60_w 0 gh api -X POST repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api -X PUT repos/o/r/issues/1/labels -f 'labels[]=x'
@@ -39194,6 +39204,10 @@ check "60d: gh pr new 는 pr create 와 같은 PR 칸이다" \
 # 동사 앞에 띄어 쓴 값 옵션이 있어도 gh 가 여는 것은 같은 생성이므로 같은 PR 칸이다.
 check "60d: 동사 앞 값 옵션을 둔 생성도 PR 칸이다" \
   "$(ladder_of_gh pr -t x new)/$(ladder_of_gh -t x pr new)/$(ladder_of_gh pr -t x create)/$(ladder_of_gh pr list --search new)" "PR/PR/PR/"
+# 값 자리의 `-R`/`--repo` 는 지우지 않고, 저장소를 고르는 `-R`/`--repo` 는 계속 지운다.
+check "60d: 값 자리의 -R 뒤 생성도 PR 칸이고 저장소 -R 는 계속 지운다" \
+  "$(ladder_of_gh pr -t -R new)/$(ladder_of_gh pr -b --repo create)/$(ladder_of_gh pr -R o/r new)/$(gate_gh_strip_repo pr -t -R new -l x; echo "${GATE_GH_ARGV[*]}")/$(gate_gh_strip_repo -R o/r pr --repo o/r new; echo "${GATE_GH_ARGV[*]}")" \
+  "PR/PR/PR/pr -t -R create -l x/pr create"
 
 cb60_head
 la60_new() {
@@ -44395,7 +44409,14 @@ T3E_CP=PR t3e_park 협업 gh pr create --title t --body b -l api-change
 T3E_CP=PR t3e_park 협업 gh pr new --title t --body b --label api-change
 T3E_CP=PR t3e_park 협업 gh pr -t t new --body b -l api-change
 t3e_park 협업 gh api -X PATCH repos/t/front3/pulls/1 --input body.json
+T3E_CP=PR t3e_park 협업 gh pr -t -R new --body b -l api-change
 check "83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
+# 값 자리의 `-R` 뒤에 선 생성을 `커밋` 으로 신고하면 PR 칸보다 낮은 신고라 거절된다.
+pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint 커밋 \
+  --surface 외부상태변경 --reach 협업 --rationale t -- gh pr -t -R new --body b -l api-change
+t3e_under=''
+case "$msg" in *under-declared*"grade 'PR'"*) t3e_under=과소 ;; esac
+check "83e: 값 자리 -R 뒤의 생성을 커밋 으로 신고하면 과소 신고로 거절된다" "$rc/$t3e_under" "8/과소"
 # 파일에서 읽는 graphql 쿼리는 머지 단계까지 오르고, 그 단계의 규칙이 도달 판정보다
 # 먼저 멈춘다 — 어느 칸에서 멈추든 형태 행만으로 통과하지는 않는다.
 pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint 머지 \
