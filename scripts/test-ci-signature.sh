@@ -241,7 +241,8 @@ check "8 끼어든 두 스위트의 FAIL 줄은 단계 정밀도" \
   printf '%s\n' 'scripts/test-b.sh: line 40: X: unbound variable'
   sg_end scripts/test-b.sh 1
 } > "$WORK/g3.log"
-check "8 FAIL 줄 없이 죽은 스위트는 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g3.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'rest-tests (1)' "$WORK/g3.log")
+check "8 FAIL 줄 없이 죽은 스위트는 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 
 # A suite that printed a failure and died before its total.
 {
@@ -253,7 +254,8 @@ check "8 FAIL 줄 없이 죽은 스위트는 단계 정밀도" "$(extract 'rest-
   printf '%s\n' 'test-b: 2 passed, 0 failed'
   sg_end scripts/test-b.sh 0
 } > "$WORK/g4.log"
-check "8 합계 줄 전에 죽은 스위트는 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g4.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'rest-tests (1)' "$WORK/g4.log")
+check "8 합계 줄 전에 죽은 스위트는 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 
 # A suite that started and never ended, and a suite the wrapper reaped.
 {
@@ -263,17 +265,20 @@ check "8 합계 줄 전에 죽은 스위트는 단계 정밀도" "$(extract 'res
   sg_end scripts/test-a.sh 1
   printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-b.sh'
 } > "$WORK/g5.log"
-check "8 끝나지 않은 스위트가 있으면 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g5.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'rest-tests (1)' "$WORK/g5.log")
+check "8 끝나지 않은 스위트가 있으면 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 {
   cat "$WORK/g1.log"
   printf '%s\n' '::error::suite-guard: 마감을 넘겨 묶음을 거뒀다(위 덤프) — scripts/test-c.sh'
 } > "$WORK/g6.log"
-check "8 suite-guard 오류 줄이 있으면 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g6.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'rest-tests (1)' "$WORK/g6.log")
+check "8 suite-guard 오류 줄이 있으면 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 {
   cat "$WORK/g1.log"
   printf '%s\n' '##[error]suite-guard: 마감을 넘겨 묶음을 거뒀다(위 덤프) — scripts/test-c.sh'
 } > "$WORK/g6b.log"
-check "8 저장된 로그의 ##[error] 철자도 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g6b.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'rest-tests (1)' "$WORK/g6b.log")
+check "8 저장된 로그의 ##[error] 철자도 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 
 # The shard also runs `--self-test` goals no suite-guard wraps. A self-test's
 # total that falls while one wrapped suite is open is not that suite's total,
@@ -285,13 +290,15 @@ check "8 저장된 로그의 ##[error] 철자도 단계 정밀도" "$(extract 'r
   printf '%s\n' 'scripts/test-a.sh: line 9: syntax error'
   sg_end scripts/test-a.sh 2
 } > "$WORK/g9.log"
-check "8 자가시험의 합계는 열린 스위트의 합계가 아니다" "$(extract 'rest-tests (1)' "$WORK/g9.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'rest-tests (1)' "$WORK/g9.log")
+check "8 자가시험의 합계는 열린 스위트의 합계가 아니다" "${out%%$'\n'*}" "정밀도: 단계"
 {
   cat "$WORK/g1.log"
   printf '%s\n' 'make[1]: *** [Makefile:683: run-rest-shard-selftest] Error 1'
   printf '%s\n' 'make: *** [Makefile:566: rest-shard] Error 2'
 } > "$WORK/g10.log"
-check "8 감싸지 않은 목표의 make 실패 줄은 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g10.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'rest-tests (1)' "$WORK/g10.log")
+check "8 감싸지 않은 목표의 make 실패 줄은 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 {
   cat "$WORK/g1.log"
   printf '%s\n' 'make[1]: *** [Makefile:481: run/scripts/test-b.sh] Error 1'
@@ -300,21 +307,24 @@ check "8 감싸지 않은 목표의 make 실패 줄은 단계 정밀도" "$(extr
 } > "$WORK/g11.log"
 check "8 감싼 스위트의 make 실패 줄과 바깥 make 의 전달 줄은 단언 정밀도를 지킨다" \
   "$(extract 'rest-tests (1)' "$WORK/g11.log")" "$(extract 'rest-tests (1)' "$WORK/g1.log")"
-check "8 그 대조군은 단언 정밀도다" "$(extract 'rest-tests (1)' "$WORK/g11.log" | head -n 1)" "정밀도: 단언"
+out=$(extract 'rest-tests (1)' "$WORK/g11.log")
+check "8 그 대조군은 단언 정밀도다" "${out%%$'\n'*}" "정밀도: 단언"
 
 # A FAIL line outside every suite.
 {
   printf '%s\n' 'FAIL: 0 바깥 — x'
   cat "$WORK/g1.log"
 } > "$WORK/g7.log"
-check "8 스위트 밖의 FAIL 줄은 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g7.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'rest-tests (1)' "$WORK/g7.log")
+check "8 스위트 밖의 FAIL 줄은 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 
 # A detail that quotes a total is not a total, and a log the gate cut is not
 # complete however it reads.
 {
   printf '%s\n' "FAIL: 1 가 — 출력이 '3 passed, 1 failed' 였다"
 } > "$WORK/g8.log"
-check "8 FAIL 줄 안의 합계 문자열은 합계가 아니다" "$(extract 'gate' "$WORK/g8.log" | head -n 1)" "정밀도: 단계"
+out=$(extract 'gate' "$WORK/g8.log")
+check "8 FAIL 줄 안의 합계 문자열은 합계가 아니다" "${out%%$'\n'*}" "정밀도: 단계"
 check "8 --truncated 는 완결된 로그도 단계 정밀도" \
   "$(extract 'rest-tests (1)' "$WORK/g1.log" --truncated --step 'Run rest shard 1')" \
   "$(printf '%s\n' '정밀도: 단계' 'rest-tests|Run rest shard 1')"
