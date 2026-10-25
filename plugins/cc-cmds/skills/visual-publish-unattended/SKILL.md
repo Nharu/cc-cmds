@@ -46,13 +46,13 @@ These rules decide termination and what this stage may write. They stay near the
 
 ## Halt record — the disposition for every point that would have asked
 
-Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema (`cc-pipeline-halt v1`). Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. **Take `<run-id>` from `CC_PIPELINE_RUN_ID`**, `RUN_DIR` from `CC_PIPELINE_RUN_DIR` and `<stage-id>` from `CC_PIPELINE_STAGE_ID` (`S2P#<n>`), each read with `printenv <NAME>` at the moment the record is written — a re-entered session reads them again rather than reusing the values from before its halt. Write it atomically (`../_common/sidecar.md` §1.3), record the question and every option **verbatim**, each option on its own `- \`<label>\` — <description>` line under `**선택지**:`, then take no further step and end the turn. Remove the prototype directory first.
+Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema (`cc-pipeline-halt v1`). Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. **Take `<run-id>` from `CC_PIPELINE_RUN_ID`**, `RUN_DIR` from `CC_PIPELINE_RUN_DIR` and `<stage-id>` from `CC_PIPELINE_STAGE_ID` (`S2P#<n>`), each read with `printenv <NAME>` at the moment the record is written — a re-entered session reads them again rather than reusing the values from before its halt. Write it atomically (`../_common/sidecar.md` §1.3), record the question and every option **verbatim**, each option on its own `- \`<label>\` — <description>` line under `**선택지**:`, then take no further step and end the turn. Remove the prototype directory first when this invocation made one.
 
 **The site goes in `**스텝**`** — the site itself, or `<site> — <free text>` — and `**분류**` takes the value the table gives it. The four sites are a **closed set**, the same four the run's driver and gate know.
 
 | 자리 | 분류 | 조건 | 선택지 | 추천 |
 | --- | --- | --- | --- | --- |
-| `전제-불일치` | `precondition-failed` | 문서에 `**상태**: 동결됨` 줄이 없다, 사이드카가 없거나 머리가 `cc-visual v1` 이 아니거나 `owner-doc=` 가 이 문서의 키가 아니다, 답 없이 들어왔는데 상태가 `검토 통과` 가 아니다, 호스트 금지 목록 파일이 없다 | 없음 | 없음 |
+| `전제-불일치` | `precondition-failed` | 문서에 `**상태**: 동결됨` 줄이 없다, 사이드카가 없거나 머리가 `cc-visual v1` 이 아니거나 `owner-doc=` 가 이 문서의 키가 아니다, 답 없이 들어왔는데 상태가 `검토 통과`·`발행됨` 이 아니다, 호스트 금지 목록 파일이 없다 | 없음 | 없음 |
 | `발행-실패` | `precondition-failed` | Artifact 도구 미적재, claude.ai 로그인 없음, K0~K3 의 `일치` 아닌 판정, URL 을 돌려주지 않은 발행, K2 실패, 게이트가 `account` 행위를 세움(exit 11) | `다시 발행` · `발행하지 않음` | `(없음) — …` |
 | `시각-판정` | `gate-unanswerable` | 발행·다시 생성 뒤, 또는 `승인` 답을 실행하다 화면·검사 결과·런타임이 기록과 달라졌다 | `승인` · `수정 요청` · `거부` | `(없음) — …` |
 | `금지-후보` | `gate-unanswerable` | 구현 승인 줄을 쓴 뒤, 이 런의 `금지-후보` 기록이 아직 이름 짓지 않은 `### 금지 후보` 줄이 남았다 | `승인` · `거절` · `나중에` | `(없음) — …` |
@@ -74,6 +74,8 @@ The grades are a marking, not a proof: `scripts/lint-judgment-grade.sh` counts m
 
 ## Step 0: Tool loading
 
+**A closing answer loads nothing.** Read how this invocation was entered first (Step 2): when it carries a `시각-판정` `거부`, a `발행-실패` `발행하지 않음` or any answer to a `금지-후보` record, skip this step — those branches make no Artifact call.
+
 `ToolSearch("select:Artifact,ArtifactComments,ArtifactData")`. A missing schema is the attended publish contract's preflight failure: halt at `발행-실패` with the cause `Artifact 도구 미적재` and the harness error string verbatim in `**하네스 오류**`. `Agent`, `Read`, `Write` and `Bash` are built-in.
 
 ## Step 1: Resolve
@@ -83,13 +85,20 @@ The grades are a marking, not a proof: `scripts/lint-judgment-grade.sh` counts m
 3. Read the sidecar `<base>/docs/visual/{slug}.md`. Its header is `cc-visual v1` and its `owner-doc=` is this document's key, or halt at `전제-불일치`. Read `<base>/docs/visual-system/system.md` when it exists and check `owner-repo=` per `sidecar.md` §3, as the attended Step 1.3 does.
 4. **The helpers are the copies beside the gate.** Take the directory of `printenv CC_PIPELINE_GATE` once and call `visual-config.sh`, `visual-check.sh` and `visual-capture.sh` by that absolute path, each through `gate.sh exec`: only that copy lifts `account`'s and `append`'s in-run refusal, and only that copy the gate grades as its own.
 5. Run `visual-config.sh snapshot --part models` and keep its table (`contract.md` §6). A non-zero exit is not a halt: use `contract.md`'s default table and carry the helper's reason line into the terminal message.
-6. **The ban list.** Make the prototype directory (CFI-5). When `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/visual-bans` does not exist, halt at `전제-불일치`. Otherwise copy it into the prototype directory with `cp` (an act on the prototype directory, `--reach 런로컬`; it prints nothing) and measure the host file's `shasum -a 256` with `--surface 읽기`. The copy is this invocation's ban list for `scan`, and the sha256 is the one `**구현 승인**` names.
+6. **The ban list.** When `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/visual-bans` does not exist, halt at `전제-불일치`. Otherwise measure its `shasum -a 256` with `--surface 읽기` and keep it. **The host file itself is the ban list `scan` reads**, named by its resolved absolute path in `--bans`, and no step copies it: `scan` and `shasum` are reads the grading table proves, which the gate passes whatever path they name, while a `cp` that names the host path is raised to `기기전역` by that operand whatever reach it declares, and a prototype path no `사전 인가` row can name parks it. The sha256 is the one `**구현 승인**` names.
 
 ## Step 2: Entry
 
-**Re-entered with an answer.** A resumed session's prompt names a halt record and the chosen `선택지`; a fresh session finds an answer card at the path `printenv CC_PIPELINE_HALT_ANSWER` names. Read the card's record path, option and attachment, and check that the record's `shasum -a 256` equals the card's record digest — a mismatch is a `전제-불일치` halt naming both values. Then run K0 and go to the answer's branch in Step 4. **An answer never publishes again on its own**: a sidecar already at `발행됨` stays as it is unless the branch says otherwise.
+**Re-entered with an answer.** A resumed session's prompt names a halt record and the chosen `선택지`; a fresh session finds an answer card at the path `printenv CC_PIPELINE_HALT_ANSWER` names. Read the card's record path, option and attachment, and check that the record's `shasum -a 256` equals the card's record digest — a mismatch is a `전제-불일치` halt naming both values. A re-entered session runs Step 1 again before its branch and reuses no value it held before its halt. **An answer never publishes again on its own**: a sidecar already at `발행됨` stays as it is unless the branch says otherwise. Then, by the answer:
 
-**No answer.** The sidecar is `검토 통과` → Step 3. Any other state → halt at `전제-불일치`.
+- **`시각-판정` `승인` or `수정 요청`, `발행-실패` `다시 발행`** → Step 0 and Step 1.6 as written, then K0, then the answer's branch in Step 4.
+- **`시각-판정` `거부`, `발행-실패` `발행하지 않음`, any answer to a `금지-후보` record** → neither Step 0 nor Step 1.6: none of these branches calls Claude Design, scans or names the ban list's sha256, so a cause that would stop a publish — a missing tool, a login, a parked `account` act, a missing ban list — never turns the person's answer back into the halt it answered. A resumed session runs no K0 on them. A fresh session runs K0 first, as every fresh session does, and on these branches its verdict goes into the terminal message and stops nothing: the branch writes nothing on Claude Design for K0 to guard. Then the answer's branch in Step 4.
+
+**No answer.**
+
+- The sidecar is `검토 통과` → Step 3.
+- The sidecar is `발행됨` → the publish already happened and its verdict was not written: K0, then K1 + K3 for every pinned URL as the 승인 branch's step 1 reads them — pulling back as the attended 동기 does when the bytes differ — and the runtime comparison of Step 3 on the `dc-runtime.js` that read returns; then Step 3's `scan` and the `시각-판정` halt. Nothing is published again.
+- Any other state → halt at `전제-불일치`.
 
 ## Step 3: Publish
 
@@ -97,7 +106,7 @@ K0, then the attended Step 4 (a)–(d) as written: preflight, K1, the publish (o
 
 **The runtime question becomes part of the verdict.** When the received `artifact-type/dc-runtime.js` differs from an existing `docs/visual/support.js`, do not overwrite it: leave this document's `**스냅숏 형태**` at `초안`, as the attended `덮지 않는다` does, and carry the difference into the `시각-판정` record. No paste block is emitted on any path.
 
-Then run `visual-check.sh scan <screens> --bans <the Step 1.6 copy> --lifts <system.md>` and halt at `시각-판정`.
+Then run `visual-check.sh scan <screens> --bans <the host ban list's absolute path> --lifts <system.md>` and halt at `시각-판정`.
 
 ## Step 4: The answer's branch
 
@@ -106,7 +115,7 @@ Then run `visual-check.sh scan <screens> --bans <the Step 1.6 copy> --lifts <sys
 1. K1 + K3 for every pinned URL. When the bytes read differ from the screen files, pull them back as the attended 동기 does, write no approval line, and halt at `시각-판정` again with the new findings.
 2. When the record listed a runtime difference, take `dc-runtime.js` again from the same read. Its sha256 and the list of sidecars to re-pin equal the record's → the attended `덮고 재고정` in one write, moving this document's `**스냅숏 형태**` to the pulled-back form. Either differs → overwrite nothing and halt at `시각-판정` again.
 3. Run `scan` again. Its findings differ from the record's, or an `external-ref` finding stands → halt at `시각-판정` again.
-4. Measure `visual-check.sh bundle <document>`, take the Step 1.6 sha256, and write `**구현 승인**: <now, ISO8601 UTC> — 입력 묶음 <bundle> — 금지 목록 <sha256> — 기계 검사 수용 <the record's rule ids | 없음> — 사람 답 <the answered record's file name>` (`sidecar.md` §2). Run `visual-check.sh approval <document>`: it prints `승인 유효` and `출처 사람 답 <that name>`, or the line is wrong — halt at `시각-판정` again with its output.
+4. Measure `visual-check.sh bundle <document>` and the host ban list's `shasum -a 256` again. That sha256 differs from the one Step 1.6 kept in this invocation → the list changed under the scan: write no line and halt at `시각-판정` again with step 3's findings. Otherwise write `**구현 승인**: <now, ISO8601 UTC> — 입력 묶음 <bundle> — 금지 목록 <sha256> — 기계 검사 수용 <the record's rule ids | 없음> — 사람 답 <the answered record's file name>` (`sidecar.md` §2). Run `visual-check.sh approval <document>`: it prints `승인 유효` and `출처 사람 답 <that name>`, or the line is wrong — halt at `시각-판정` again with its output.
 5. Go to the next candidate (below), or to Step 5 when none is left.
 
 **`시각-판정` — `수정 요청`.** The attended 동기 (K0, K1 + K3, `ArtifactComments`, the pull-back, `**구현 승인**` deleted), then the attended 발행 묶음 다시 생성 with the canvas edits, the open comments and the answer's attachment as generation input — generation and review in a temporary directory outside the tree, publishing a new version on the same URL with K1 and K2, and the pull-back. Then `scan` and halt at `시각-판정`. **The three-round cap of the regeneration opens no new site**: the screen files and the sidecar stay as they were, and the `시각-판정` record is written again carrying the last round's findings.
@@ -121,7 +130,7 @@ Then run `visual-check.sh scan <screens> --bans <the Step 1.6 copy> --lifts <sys
 
 ## Step 5: Terminal
 
-Remove the prototype directory. Then emit the terminal message in Korean: the canvas URLs, the sidecar's state, the approval line written (or why none was), each candidate's disposition and any `append` output or park, and where the model table came from, and as its last line, verbatim:
+Remove the prototype directory when this invocation made one. Then emit the terminal message in Korean: the canvas URLs, the sidecar's state, the approval line written (or why none was), each candidate's disposition and any `append` output or park, the K0 verdict a fresh session took on a closing answer, and where the model table came from, and as its last line, verbatim:
 
 시각 발행 단계를 마쳤습니다.
 
