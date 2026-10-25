@@ -47,8 +47,32 @@
       }
     },
     "unresolved": { "type": "array", "items": { "type": "string" } },
+    "enforcement_surface": {
+      "type": "object",
+      "properties": {
+        "judgment": { "type": "string", "enum": ["확인됨", "가능성", "없음", "판정불가"] },
+        "classes": { "type": "array", "items": { "type": "string", "enum": ["프로젝트설정", "트랜스크립트", "규칙카탈로그", "지침파일"] } },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "class": { "type": "string", "enum": ["프로젝트설정", "트랜스크립트", "규칙카탈로그", "지침파일"] },
+              "slice": { "type": "string" }
+            },
+            "required": ["path", "class", "slice"],
+            "additionalProperties": false
+          }
+        },
+        "source": { "type": "string", "enum": ["의도", "선언", "PR"] },
+        "rationale": { "type": "string" }
+      },
+      "required": ["judgment", "classes", "paths", "source", "rationale"],
+      "additionalProperties": false
+    },
     "notes": { "type": "string" }
   },
-  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "visual_design_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "notes"],
+  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "visual_design_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "notes"],
   "additionalProperties": false
 }
