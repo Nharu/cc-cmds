@@ -574,6 +574,32 @@ tr_g_lent() {
   check "$lb: fleet-lane 첫 줄 → seat.lane" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat","lane":"cc"}'
   : > "$RUN_DIR/fleet-lane"
   check "$lb: 빈 fleet-lane → 맞는 계정 없는 고정" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat","lane":"-"}'
+  # 요청 단위 고정. 요청의 `pin_lane` 은 런 단위 `fleet-lane` 보다 먼저 `seat.lane` 이 되고,
+  # 없는 요청의 문맥은 오늘과 같다. 고정 판정 자체는 아래 `대여-고정` 절이 `seat.lane` 으로
+  # 덮는다 — 이 절은 그 값이 요청에서 오는지만 본다.
+  local preq
+  preq=$(tr_req | jq -c '. + {kind: "visual-publish", pin_lane: " cc "}')
+  check "$lb: pin_lane·빈 fleet-lane → pin_lane 이 seat.lane" "$(route_gather_context "$preq" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat","lane":"cc"}'
+  printf 'zz\n' > "$RUN_DIR/fleet-lane"
+  check "$lb: pin_lane 은 fleet-lane 보다 먼저" "$(route_gather_context "$preq" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat","lane":"cc"}'
+  rm -f "$RUN_DIR/fleet-lane"
+  check "$lb: pin_lane 만 있어도 seat.lane" "$(route_gather_context "$preq" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat","lane":"cc"}'
+  check "$lb: pin_lane 없는 요청의 문맥 seat 는 오늘과 같다" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat"}'
+  check "$lb: 빈 pin_lane 은 고정이 아니다" \
+    "$(route_gather_context "$(tr_req | jq -c '. + {pin_lane: ""}')" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat"}'
+  expect "$lb: pin_lane·가드 1·고정 계정 없는 인벤토리 → PARK lent-seat-unrouted" \
+    "$(route__resolve_as 1 "$(tr_req | jq -c '. + {pin_lane: "zz"}')" 2>/dev/null)" '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  export RUN_DIR="$b/run-pin-dormant"
+  mkdir -p "$RUN_DIR"
+  for g in 0 1; do
+    expect "$lb: pin_lane·가드 ${g}·인벤토리 부재 → PARK lent-seat-unrouted" "$(route__resolve_as "$g" "$preq" 2>/dev/null)" \
+      '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  done
+  printf '{\n' > "$RUN_DIR/inventory.json"
+  expect "$lb: pin_lane·가드 0·인벤토리 깨짐 → PARK lent-seat-unrouted" "$(route__resolve_as 0 "$preq" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  rm -f "$RUN_DIR/inventory.json"
+  check "$lb: pin_lane 없는 요청·인벤토리 부재 → 휴면 봉투" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)" "$(tr_dormant "$(resolve_account)")"
   # 등록 cc 말고 무인 허용이 없는 인벤토리.
   export RUN_DIR="$b/run-noenabled"
   mkdir -p "$RUN_DIR"

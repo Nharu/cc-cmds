@@ -65,7 +65,8 @@ reconverge
 generic
 shift
 split
-visual'
+visual
+visual-publish'
 RUN_STOPS_BOUNDARY='B1
 B2
 B3

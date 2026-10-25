@@ -1690,8 +1690,13 @@ route_gather_context() {
   # 대여 좌석 고정. fleet 이 대여 레인으로 띄운 런의 런 디렉터리에만 있는 기록이고, 첫
   # 줄이 고정 계정이다. 기록이 있는데 비었으면 어느 계정과도 맞지 않는 값으로 고정해
   # 고정 없는 런으로 열리지 않게 한다. 기록이 없으면 `seat` 의 바이트는 그대로다.
-  lane=""
-  if [ -n "${RUN_DIR:-}" ] && [ -e "$RUN_DIR/fleet-lane" ]; then
+  #
+  # 요청 단위 고정이 먼저다. 요청의 `pin_lane` 은 그 한 스테이지를 정해진 레인에만
+  # 띄우라는 요청이고(시각 발행 단계가 호스트 파일의 `lane` 으로 싣는다), 있으면
+  # 런 단위 `fleet-lane` 기록보다 앞서 `seat.lane` 이 된다. 그 뒤 고정 판정은 같다.
+  lane=$(printf '%s' "$req" | jq -r 'if (.pin_lane | type) == "string" then .pin_lane else "" end' 2>/dev/null) || lane=""
+  lane=$(printf '%s' "$lane" | tr -d '[:space:]')
+  if [ -z "$lane" ] && [ -n "${RUN_DIR:-}" ] && [ -e "$RUN_DIR/fleet-lane" ]; then
     lane=$( { head -n 1 "$RUN_DIR/fleet-lane" 2>/dev/null || true; } | tr -d '[:space:]')
     lane=${lane:--}
   fi
@@ -2578,9 +2583,18 @@ route__dormant() {
 }
 
 route__lent_unrouted() {
-  # route__lent_unrouted — 런 디렉터리에 `fleet-lane` 기록이 있으면 PARK
-  # lent-seat-unrouted 봉투 한 줄을 내고 rc 0, 없으면 아무것도 내지 않고 rc 1.
-  [ -n "${RUN_DIR:-}" ] && [ -e "$RUN_DIR/fleet-lane" ] || return 1
+  # route__lent_unrouted [<request-json>] — 요청에 `pin_lane` 이 있거나 런 디렉터리에
+  # `fleet-lane` 기록이 있으면 PARK lent-seat-unrouted 봉투 한 줄을 내고 rc 0, 둘 다
+  # 없으면 아무것도 내지 않고 rc 1. 레인에 고정된 요청은 대여 검사 없이 좌석을 쓰지
+  # 않는다.
+  local pin=""
+  if [ -n "${1:-}" ]; then
+    pin=$(printf '%s' "$1" | jq -r 'if (.pin_lane | type) == "string" then .pin_lane else "" end' 2>/dev/null) || pin=""
+    pin=$(printf '%s' "$pin" | tr -d '[:space:]')
+  fi
+  if [ -z "$pin" ]; then
+    [ -n "${RUN_DIR:-}" ] && [ -e "$RUN_DIR/fleet-lane" ] || return 1
+  fi
   jq -cn "$(route__jq_lib)"' rt_park_unrouted'
 }
 
@@ -2595,20 +2609,21 @@ route__resolve_as() {
   #   가드 1, 유효·enabled 0 → PARK no-enabled-account.
   #   가드 1, 유효            → 문맥을 모아 `lease-txn` 프로세스에 넘긴다.
   #
-  # 휴면 봉투를 낼 자리에서 런 디렉터리에 `fleet-lane` 기록이 있으면 PARK
-  # lent-seat-unrouted 다 — 대여 좌석에 고정된 런은 대여 검사 없이 좌석을 쓰지 않는다.
+  # 휴면 봉투를 낼 자리에서 요청에 `pin_lane` 이 있거나 런 디렉터리에 `fleet-lane`
+  # 기록이 있으면 PARK lent-seat-unrouted 다 — 레인에 고정된 요청이나 대여 좌석에
+  # 고정된 런은 대여 검사 없이 좌석을 쓰지 않는다.
   local guard="${1:-0}" req="${2:-}" ans rc=0 irc=0 inv ctx now table boot pids p out
   local hs=()
   ans=$(resolve_account) || rc=$?
   if [ "$rc" != "0" ]; then return "$rc"; fi
   if [ "$guard" != "1" ]; then
-    route__lent_unrouted && return 0
+    route__lent_unrouted "$req" && return 0
     route__dormant "$ans" "$(route__borrow_now)" || return 1
     return 0
   fi
   inv="${RUN_DIR:-}/inventory.json"
   if [ -z "${RUN_DIR:-}" ] || [ ! -e "$inv" ]; then
-    route__lent_unrouted && return 0
+    route__lent_unrouted "$req" && return 0
     route__dormant "$ans" "$(route__borrow_now)" || return 1
     return 0
   fi
@@ -2619,7 +2634,7 @@ route__resolve_as() {
       printf '%s\n' '{"verdict":"PARK","reason":"inventory-corrupt","recovery":"cc-lane account check"}'
       return 0 ;;
     *)
-      route__lent_unrouted && return 0
+      route__lent_unrouted "$req" && return 0
       route__dormant "$ans" "$(route__borrow_now)" || return 1
       return 0 ;;
   esac

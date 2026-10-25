@@ -291,6 +291,9 @@ readonly LIT_DESIGN_TERMINAL='설계 문서를 동결했습니다.'
 readonly LIT_SPLIT_TERMINAL='베이스 분할을 마쳤습니다.'
 # The last line of the run-scope visual stage (`visual-unattended`).
 readonly LIT_VISUAL_TERMINAL='시각 디자인을 검토 통과로 확정했습니다.'
+# The last line of the run-scope visual publish stage
+# (`visual-publish-unattended`).
+readonly LIT_VISUAL_PUBLISH_TERMINAL='시각 발행 단계를 마쳤습니다.'
 
 # ---------------------------------------------------------------------------
 # Logging. Redirection is not about survival — a driver without it survives a
@@ -1567,6 +1570,32 @@ EOF
               | if ($free | length) > 0 then "구현 단계 \($free | join(", ")) 이 시각 단계 \($v.id) 에 기대지 않습니다" else "" end)
         end' 2>/dev/null || printf '시각 단계를 읽을 수 없습니다')
     [ -z "$vs_why" ] || die "실행 계획의 시각 단계 그래프가 어긋났습니다 — ${vs_why}"
+  fi
+  # 16c — the visual publish step's place in the graph. It publishes the screens
+  # the visual step generated, so it exists only beside a visual step and after
+  # it, and it is the run-scope step the gate keys as `S2P`. It is optional — a
+  # plan with a visual step and no publish step is the plan every run wrote
+  # before it existed — and no implementation waits for it: the screens a slice
+  # implements wait for the approval the gate reads, not for this step.
+  local vp_n vp_why
+  vp_n=$(manifest_plan_json 2>/dev/null \
+           | jq -r '[.steps[]? | select(type == "object" and .skill == "visual-publish")] | length' 2>/dev/null || true)
+  if [ "${vp_n:-0}" -gt 1 ]; then
+    die "실행 계획에 skill 이 visual-publish 인 단계가 ${vp_n}개입니다 — 시각 발행 단계는 많아야 하나입니다"
+  fi
+  if [ "${vp_n:-0}" = "1" ]; then
+    vp_why=$(manifest_plan_json | jq -r '
+      [.steps[]? | select(type == "object")] as $s
+      | ($s | map(select(.skill == "visual-publish")) | .[0]) as $p
+      | ($s | map(select(.skill == "visual")) | map(.id)) as $v
+      | if $p.id != "S2P" then "시각 발행 단계의 id 가 S2P 가 아닙니다 (\($p.id))"
+        elif ($v | length) == 0 then "시각 발행 단계 S2P 가 있는데 시각 단계가 없습니다"
+        elif ((($p.depends_on // []) | map(select(. as $x | $v | index($x))) | length) == 0)
+        then "시각 발행 단계 S2P 의 depends_on 이 시각 단계(\($v | join(", ")))를 담지 않습니다"
+        else ([$s[] | select(.skill == "implement") | select(((.depends_on // []) | index("S2P")) != null) | .id] as $lean
+              | if ($lean | length) > 0 then "구현 단계 \($lean | join(", ")) 이 시각 발행 단계 S2P 에 기댑니다 — 구현은 발행 단계에 기대지 않습니다" else "" end)
+        end' 2>/dev/null || printf '시각 발행 단계를 읽을 수 없습니다')
+    [ -z "$vp_why" ] || die "실행 계획의 시각 발행 단계 그래프가 어긋났습니다 — ${vp_why}"
   fi
   # `베이스 설계` binds a child run to its base. Its form is checked here; the
   # file it names is the child's design stage's to read.
@@ -5089,9 +5118,11 @@ spawn_route_request() {
   # command substitution is still the parent's pid, which is the point.
   jq -cn --arg run "$RUN_ID" --arg lin "$1" --arg ev "$2" --arg kind "$3" --arg bound "${4:-}" \
     --argjson pid "$$" --argjson dl "$(wait_request_deadline "$3")" \
+    --arg pin "$(kind_pin_lane_of "$3" || true)" \
     '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
       bound_account: (if $bound == "" then null else $bound end)}
-     + (if $dl == null then {} else {deadline: $dl} end)'
+     + (if $dl == null then {} else {deadline: $dl} end)
+     + (if $pin == "" then {} else {pin_lane: $pin} end)'
 }
 
 spawn_wait_key() {
@@ -6253,7 +6284,8 @@ stage_kind_of() {
     S2)       printf 'audit'; return 0 ;;
     S2split)  printf 'split'; return 0 ;;
     S2V)      printf 'visual'; return 0 ;;
-    S4)       printf 'implement'; return 0 ;;
+    S2P)      printf 'visual-publish'; return 0 ;;
+    S4)     printf 'implement'; return 0 ;;
     S5|S5R)   printf 'review'; return 0 ;;
     S5F)      printf 'lead-fix'; return 0 ;;
     "S1'"|S0R|S2R) printf 'reconverge'; return 0 ;;
@@ -7019,6 +7051,27 @@ visual_sidecar_reviewed() {
 }
 
 predicate_visual() { grep -qF "$LIT_VISUAL_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && visual_sidecar_reviewed "$DOC"; }
+
+visual_sidecar_published() {
+  # visual_sidecar_published <document path> — 0 when the sidecar's state line
+  # reads `발행됨`.
+  local sc
+  sc=$(visual_sidecar_path "$1") || return 1
+  grep -qxF '**상태**: 발행됨' "$sc" 2>/dev/null
+}
+
+visual_publish_artifact_complete() {
+  # visual_publish_artifact_complete <stream file> — the publish stage produced
+  # what it owes: its terminal literal is in the stream, and either the sidecar
+  # reads `발행됨` or a person declined at one of the stage's halts (`거부` to
+  # a `시각-판정`, `발행하지 않음` to a `발행-실패`), which ends the stage with
+  # nothing left to publish. The decline is the refusal that still stands
+  # (`visual_publish_standing_refusal`): a `거부` the person later replaced
+  # with a `승인` is not one.
+  grep -qF "$LIT_VISUAL_PUBLISH_TERMINAL" "$1" 2>/dev/null || return 1
+  visual_sidecar_published "${DOC:-}" && return 0
+  visual_publish_standing_refusal >/dev/null
+}
 
 predicate_implement_share() {
   # predicate_implement_share <branch> <pre_head> <segment> [<dispatch id>]
@@ -8749,6 +8802,18 @@ wait_request_deadline() {
   printf '{"deadline_epoch":%s,"expected_duration_s":%s}' "$d" "$e"
 }
 
+kind_pin_lane_of() {
+  # kind_pin_lane_of <kind> — the lane id a routed request of this kind pins,
+  # the request's `pin_lane`. Only the visual publish stage pins one: the host
+  # file's `lane` value (`visual-config.sh lane`), because publishing has to
+  # run in the one config directory logged in to the pinned Claude Design
+  # account. Prints nothing and returns 0 for every other kind; returns 1 for
+  # the visual publish stage when the host file names no lane, which the gate
+  # turns into a park before the router is asked.
+  [ "${1:-}" = "visual-publish" ] || return 0
+  bash "$ORCH_DIR/visual-config.sh" lane 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # WAITING FOR AN ACCOUNT BEFORE A SPAWN.
 #
@@ -8922,12 +8987,17 @@ stage_wait_loop() {
     # not a JSON array is sent as `[]`, so a damaged marker reads as no memory
     # instead of failing the request and ending the wait.
     seen=$(cc_waiting_field "$m" '예비')
+    # THE PIN RIDES EVERY QUESTION, this one included: a wait that asked again
+    # without it would let the router grant the visual publish stage a lane
+    # other than the one its first question was pinned to.
     req=$(jq -cn --arg run "$RUN_ID" --arg lin "$lin" --arg ev "$ev" --arg kind "$kind" \
             --arg bound "$bound" --argjson pid "${holder:-0}" \
             --argjson dl "$(wait_request_deadline "$kind")" --arg seen "$seen" \
+            --arg pin "$(kind_pin_lane_of "$kind" || true)" \
             '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid], after_wait: true,
               bound_account: (if $bound == "" then null else $bound end)}
              + (if $dl == null then {} else {deadline: $dl} end)
+             + (if $pin == "" then {} else {pin_lane: $pin} end)
              + {reserve_seen: ([$seen | try fromjson catch null]
                                | if length == 1 and (.[0] | type) == "array" then .[0] else [] end)}') || {
       "$stopfn" "라우터 재질의 요청을 만들지 못했다 — $key 는 기동하지 않는다"
@@ -12076,15 +12146,209 @@ slice_is_screen() {
   esac
 }
 
-visual_approval_why() {
-  # visual_approval_why — 0 when the document's visual sidecar carries the
-  # implementation approval. Prints the helper's first line either way, so a
-  # park can say why it waits.
-  local out rc=0
+# ---------------------------------------------------------------------------
+# The visual publish stage (`S2P`, kind `visual-publish`). It runs after the
+# visual stage, publishes the screens at the pinned lane and halts on the
+# questions only a person answers. Its four halt sites are named by the step
+# prefix of the record, each with the classification the record carries: one
+# `<prefix> <분류>` per line. A step matches a prefix when it equals it or
+# starts with `<prefix> — `.
+#
+# THE GATE SOURCES THIS FILE, so the table and the readers below are the one
+# copy both the gate's approval predicate and the driver's park reason use.
+# ---------------------------------------------------------------------------
+readonly VISUAL_PUBLISH_HALT_STEPS='전제-불일치 precondition-failed
+발행-실패 precondition-failed
+시각-판정 gate-unanswerable
+금지-후보 gate-unanswerable'
+
+manifest_has_visual_publish_step() {
+  [ -n "${MANIFEST:-}" ] || return 1
+  [ "$(manifest_plan_json 2>/dev/null \
+        | jq -r '[.steps[]? | select(type == "object" and .skill == "visual-publish")] | length' 2>/dev/null \
+        || true)" = "1" ]
+}
+
+halt_step_has_prefix() {
+  # halt_step_has_prefix <halt record> <prefix> — the record's first
+  # `**스텝**` value is the prefix, or starts with `<prefix> — `.
+  local step
+  [ -f "$1" ] || return 1
+  step=$(sed -n 's/^\*\*스텝\*\*: //p' "$1" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*$//')
+  [ "$step" = "$2" ] && return 0
+  case "$step" in "$2 — "*) return 0 ;; esac
+  return 1
+}
+
+halt_step_is_visual_publish_site() {
+  # halt_step_is_visual_publish_site <halt record> <prefix>... — the record's
+  # step has one of the given prefixes, each of which is a site of the table.
+  local rec="$1" p site rest
+  shift
+  for p in "$@"; do
+    while IFS=' ' read -r site rest; do
+      [ "$site" = "$p" ] || continue
+      halt_step_has_prefix "$rec" "$p" && return 0
+    done <<EOF
+$VISUAL_PUBLISH_HALT_STEPS
+EOF
+  done
+  return 1
+}
+
+visual_publish_latest_verdict_record() {
+  # visual_publish_latest_verdict_record — prints the path of the run's latest
+  # `시각-판정` record: among `S2P#<n>.md` under the run's `halt/`, the one
+  # whose step has that prefix and whose attempt number is largest. 1 when
+  # there is none.
+  local f b n best='' bestn=-1
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/halt" ] || return 1
+  for f in "$RUN_DIR"/halt/S2P#*.md; do
+    [ -f "$f" ] || continue
+    b=${f##*/}; n=${b#S2P#}; n=${n%.md}
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    halt_step_has_prefix "$f" '시각-판정' || continue
+    if [ "$((10#$n))" -gt "$bestn" ]; then bestn=$((10#$n)); best=$f; fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s' "$best"
+}
+
+visual_publish_person_answer() {
+  # visual_publish_person_answer <halt record> <option>... — prints the option
+  # of the last `중단 답` row of this run that answers the record (its `중단
+  # 기록` names the same file under the run's `halt/`) and was given by a
+  # person, when that option is one of the options. 1 when there is none, or
+  # when the person's last answer to the record chose something else: a later
+  # answer replaces an earlier one, so a `승인` followed by a `거부` reads as
+  # `거부`, the way `visual_publish_standing_refusal` reads the same rows.
+  local rec="$1" row f by opt o hit=''
+  shift
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    f=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *중단 기록=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "${f##*/}" = "${rec##*/}" ] || continue
+    by=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *답한 주체=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "$by" = "사람" ] || continue
+    opt=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *선택지=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    hit=''
+    for o in "$@"; do
+      if [ "$o" = "$opt" ]; then hit=$opt; fi
+    done
+  done <<EOF
+$(run_section_rows '중단 답' 2>/dev/null || true)
+EOF
+  [ -n "$hit" ] || return 1
+  printf '%s' "$hit"
+}
+
+visual_publish_standing_refusal() {
+  # visual_publish_standing_refusal — the run's standing refusal from the
+  # visual publish stage, as `<상태>\t<중단 기록>\t<선택지>`: the last `중단 답`
+  # row a person wrote to a `시각-판정` or `발행-실패` record of `S2P`, when it
+  # chose `거부` (state `거부`) or `발행하지 않음` (state `무효`). 1 when the
+  # last such answer was anything else, or there is none: a later `승인`
+  # supersedes an earlier refusal.
+  #
+  # ONE READER FOR THE GATE AND THE DRIVER. The approval provenance, the publish
+  # stage's artifact predicate and the gate's linked close all read the refusal
+  # here, so none of them can see an approval the others see refused.
+  local row f by opt rec st='' out=''
+  [ -n "${RUN_DIR:-}" ] || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    f=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *중단 기록=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    case "${f##*/}" in S2P#*.md) ;; *) continue ;; esac
+    by=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *답한 주체=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "$by" = "사람" ] || continue
+    rec="$RUN_DIR/halt/${f##*/}"
+    opt=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *선택지=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if halt_step_has_prefix "$rec" '시각-판정'; then
+      if [ "$opt" = "거부" ]; then st='거부'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
+    elif halt_step_has_prefix "$rec" '발행-실패'; then
+      if [ "$opt" = "발행하지 않음" ]; then st='무효'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
+    fi
+  done <<EOF
+$(run_section_rows '중단 답' 2>/dev/null || true)
+EOF
+  [ -n "$st" ] || return 1
+  printf '%s\t%s' "$st" "$out"
+}
+
+visual_approval_provenance() {
+  # visual_approval_provenance <approval helper output> — 0 when the approval
+  # line may stand in this run. A run whose plan holds the publish stage takes
+  # an approval only from a person's answer: the line carries the tail naming
+  # the run's latest `시각-판정` record, and a person answered that record
+  # `승인`. A line with no tail does not stand there, and no line stands while
+  # a person's refusal at the stage stands (`visual_publish_standing_refusal`):
+  # a `거부` to a `시각-판정` or a `발행하지 않음` to a `발행-실패` given after
+  # the `승인` is the person's later word. Prints the reason on 1. A run
+  # without the publish stage takes the line as the helper read it.
+  local src latest ref rec
+  manifest_has_visual_publish_step || return 0
+  if ref=$(visual_publish_standing_refusal); then
+    ref=${ref#*$'\t'}; rec=${ref%%$'\t'*}
+    printf '승인 무효 — 시각 발행 단계 중단 기록 %s 에 사람이 남긴 「%s」 답이 서 있다' "${rec##*/}" "${ref#*$'\t'}"
+    return 1
+  fi
+  src=$(printf '%s\n' "$1" | sed -n 's/^출처 사람 답 //p' | sed -n 1p)
+  if [ -z "$src" ]; then
+    printf '승인 무효 — 이 런은 시각 발행 단계(S2P)를 두므로 구현 승인 줄은 사람 답 출처 꼬리를 달아야 한다'
+    return 1
+  fi
+  if ! latest=$(visual_publish_latest_verdict_record); then
+    printf '승인 무효 — 출처 꼬리 %s 가 가리킬 S2P 의 시각-판정 중단 기록이 이 런에 없다' "$src"
+    return 1
+  fi
+  if [ "${latest##*/}" != "$src" ]; then
+    printf '승인 무효 — 출처 꼬리 %s 가 가장 마지막 시각-판정 기록 %s 이 아니다' "$src" "${latest##*/}"
+    return 1
+  fi
+  if ! visual_publish_person_answer "$latest" '승인' >/dev/null; then
+    printf '승인 무효 — 시각-판정 기록 %s 에 사람이 「승인」 으로 답한 중단 답 행이 없다' "$src"
+    return 1
+  fi
+  return 0
+}
+
+visual_approval_route_hint() {
+  # visual_approval_route_hint — where a person goes to approve the screens:
+  # in a run with the publish stage, the stage's latest `시각-판정` record,
+  # answered `승인`; otherwise the fixed seat's /cc-cmds:visual.
+  local latest
+  if manifest_has_visual_publish_step; then
+    if latest=$(visual_publish_latest_verdict_record); then
+      printf '시각 발행 단계(S2P)의 시각-판정 중단 기록 %s 에 사람이 「승인」 으로 답해 그 단계가 출처 꼬리 달린 구현 승인 줄을 쓰게 하세요' "$latest"
+    else
+      printf '시각 발행 단계(S2P)가 시각-판정 중단 기록을 남길 때까지 기다렸다가, 그 기록에 사람이 「승인」 으로 답하세요'
+    fi
+    return 0
+  fi
+  printf '고정 좌석에서 /cc-cmds:visual 로 화면을 승인해 사이드카에 구현 승인 줄을 다시 쓰세요'
+}
+
+visual_approval_verdict() {
+  # visual_approval_verdict <orchestrator dir> — the one approval verdict the
+  # gate and the driver both print: the helper's first line when the approval
+  # holds and its provenance stands, otherwise the reason it does not.
+  local out rc=0 why
   [ -n "${DOC:-}" ] || { printf '승인 없음 — 이 런에 설계 문서가 없다'; return 1; }
-  out=$(bash "$ORCH_DIR/visual-check.sh" approval "$DOC" 2>&1) || rc=$?
+  out=$(bash "$1/visual-check.sh" approval "$DOC" 2>&1) || rc=$?
+  if [ "$rc" = "0" ] && ! why=$(visual_approval_provenance "$out"); then
+    printf '%s' "$why"
+    return 1
+  fi
   printf '%s' "$(printf '%s\n' "$out" | sed -n 1p)"
   [ "$rc" = "0" ]
+}
+
+visual_approval_why() {
+  # visual_approval_why — 0 when the document's visual sidecar carries the
+  # implementation approval and, in a run with the publish stage, a person's
+  # answer stands behind it. Prints the verdict line either way, so a park can
+  # say why it waits.
+  visual_approval_verdict "$ORCH_DIR"
 }
 
 visual_arm() {

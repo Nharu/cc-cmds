@@ -5868,18 +5868,26 @@ fi
 # The two tool names are matched by equality, not by `test`, so a third entry of
 # any spelling still fails. The allow-list is assembled per kind, so every
 # variant but the shift one is checked; the shift variant's empty allow-list is
-# asserted with its web denial below.
+# asserted with its web denial below. The visual publish variant also allows the
+# three artifact tools, because publishing the screens is that stage's work.
 allow_wide=0
 for f in "$SETTINGS_DIR"/*.json; do
   [ -f "$f" ] || continue
   [ "$(basename "$f")" = "shift.json" ] && continue
-  if ! jq -e '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | sort == ["WebFetch","WebSearch"]' \
+  if [ "$(basename "$f")" = "visual-publish.json" ]; then
+    want1b='["Artifact","ArtifactComments","ArtifactData","WebFetch","WebSearch"]'
+  else
+    want1b='["WebFetch","WebSearch"]'
+  fi
+  if ! jq -e --argjson w "$want1b" '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | sort == $w' \
        "$f" >/dev/null 2>&1; then
     allow_wide=$((allow_wide + 1))
     printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.allow' "$f")" >&2
   fi
 done
-check "allow 목록에 CLAUDE.md 읽기와 웹 조사 도구 말고는 없다" "$allow_wide" "0"
+check "allow 목록에 CLAUDE.md 읽기와 웹 조사 도구(시각 발행 변종은 Artifact 세 도구까지) 말고는 없다" "$allow_wide" "0"
+check "allow 를 세는 설정에 시각 발행 변종이 있다 (위가 공허하지 않다)" \
+  "$( [ -f "$SETTINGS_DIR/visual-publish.json" ] && printf 있음 || printf 없음)" "있음"
 
 # The attempt term of the session id is DERIVED, not passed as argv. Without it
 # a stage that died before producing anything kept its session id and every
@@ -13419,7 +13427,7 @@ rm -f "$k15_led"
 
 # ---------------------------------------------------------------------------
 # 15v. The run-scope visual step: exempt from the segment row, judged by its sidecar
-# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각과 교대를 포함한 모든 설정 변종이 Claude Design 네 도구를 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
+# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각 발행을 뺀 모든 설정 변종이 Claude Design 네 도구를 거부하고 시각 발행 변종은 DesignSync 만 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
 #
 # The visual step is the fourth row of the run-scope table. It generates the
 # night's screens from the audited document and builds no segment, so it is
@@ -13441,21 +13449,28 @@ check "15v 픽스처 매니페스트가 검사를 통과한다 (아래가 공허
 # The night's visual step must not reach the Design canvas any more than the
 # other stages do: every settings variant of this run, the visual one and the
 # shift included, refuses the Claude Design tools, and the set is the one run.sh
-# puts on every judgment call's `--disallowedTools`. No file is exempt, so a new
-# kind arriving without the deny is counted.
+# puts on every judgment call's `--disallowedTools`. The one exception is the
+# visual publish variant: publishing is that stage's work, so it refuses
+# DesignSync alone and lets the three artifact tools through. No other file is
+# exempt, so a new kind arriving without the deny is counted.
 design15v_bad=0
 for f in "$RD15V/settings"/*.json; do
   [ -f "$f" ] || continue
-  if ! jq -e '.permissions.deny // [] | index("DesignSync") != null and index("Artifact") != null
-              and index("ArtifactComments") != null and index("ArtifactData") != null' \
-       "$f" >/dev/null 2>&1; then
+  if [ "$(basename "$f")" = "visual-publish.json" ]; then
+    q15v='.permissions.deny // [] | index("DesignSync") != null and index("Artifact") == null
+          and index("ArtifactComments") == null and index("ArtifactData") == null'
+  else
+    q15v='.permissions.deny // [] | index("DesignSync") != null and index("Artifact") != null
+          and index("ArtifactComments") != null and index("ArtifactData") != null'
+  fi
+  if ! jq -e "$q15v" "$f" >/dev/null 2>&1; then
     design15v_bad=$((design15v_bad + 1))
     printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.deny' "$f")" >&2
   fi
 done
-check "15v: 거부를 세는 설정에 시각 변종과 교대 변종이 있다 (아래가 공허하지 않다)" \
-  "$( [ -f "$RD15V/settings/visual.json" ] && [ -f "$RD15V/settings/shift.json" ] && printf 있음 || printf 없음)" "있음"
-check "15v: 시각과 교대를 포함한 모든 설정 변종이 Claude Design 네 도구를 거부한다" "$design15v_bad" "0"
+check "15v: 거부를 세는 설정에 시각 변종·시각 발행 변종·교대 변종이 있다 (아래가 공허하지 않다)" \
+  "$( [ -f "$RD15V/settings/visual.json" ] && [ -f "$RD15V/settings/visual-publish.json" ] && [ -f "$RD15V/settings/shift.json" ] && printf 있음 || printf 없음)" "있음"
+check "15v: 시각 발행을 뺀 모든 설정 변종이 Claude Design 네 도구를 거부하고 시각 발행 변종은 DesignSync 만 거부한다" "$design15v_bad" "0"
 check "15v: Claude Design 거부 이름은 판단 호출의 거부 이름과 같은 집합이다" \
   "$(grep -E '^readonly CLAUDE_DESIGN_TOOLS=' "$(dirname "$GATE")/run.sh" | cut -d'"' -f2 | tr ' ' '\n' | sort | tr '\n' ' ')" \
   "Artifact ArtifactComments ArtifactData DesignSync "
@@ -13573,6 +13588,318 @@ esac
 check "15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다" \
   "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["D1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' | grep -c '시각 단계' || true)" "0"
 rm -f "$WORK/plan15v-shape.md"
+
+# ---------------------------------------------------------------------------
+# 15vp. The run-scope visual publish step: its readers, its halts and its grades
+# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 셋이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다 ---
+#
+# The publish step is the fifth row of the run-scope table. It runs after the
+# visual step, publishes the screens at the one lane the host file pins, and
+# halts on what only a person answers: a screen verdict, a forbidden-list
+# candidate, a failed publish. The readers here are sourced and called directly
+# on fixture files — a manifest whose plan has `S2P`, a ledger block of `중단
+# 답` rows and the run's halt records — because what they decide is a function
+# of those files and nothing else.
+# ---------------------------------------------------------------------------
+VP15="$WORK/vp15"
+rm -rf "$VP15"; mkdir -p "$VP15/run/halt" "$VP15/docs/visual" "$VP15/cfg/cc-cmds"
+plan15vp='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2P"] } ] }'
+write15c "$VP15/m.md" "$plan15vp" docs/fixture-design-15vp.md R15VP
+write15c "$VP15/m-nop.md" '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' docs/fixture-design-15vp.md R15VP
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+vp15_halt() {  # vp15_halt <n> <step> [<candidate id>] — an S2P halt record
+  { printf '# 정지\n\n**분류**: gate-unanswerable\n**스텝**: %s\n' "$2"
+    [ -z "${3:-}" ] || printf '**금지 후보**: %s\n' "$3"
+    printf '**질문 문면**: 픽스처\n'; } > "$VP15/run/halt/S2P#$1.md"
+}
+vp15_answer() {  # vp15_answer <n> <answered by> <option> — a `중단 답` row
+  printf -- '- `중단 답` | 중단 기록=%s | 답한 주체=%s | 선택지=%s\n' \
+    "$VP15/run/halt/S2P#$1.md" "$2" "$3" >> "$VP15/led.md"
+}
+vp15() {  # vp15 <manifest> <stage id or -> <snippet> [args...] — run a snippet in the sourced gate
+  local m="$1" sid="$2" snip="$3"; shift 3
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 VP_M="$m" VP_SID="$sid" VP_L="$VP15/led.md" \
+      VP_RD="$VP15/run" VP_SNIP="$snip" XDG_CONFIG_HOME="$VP15/cfg" bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    set +e
+    MANIFEST="$VP_M"; LEDGER="$VP_L"; RUN_ID=R15VP; RUN_DIR="$VP_RD"; DOC=docs/fixture-design-15vp.md
+    if [ "$VP_SID" = "-" ]; then unset CC_PIPELINE_STAGE_ID; else CC_PIPELINE_STAGE_ID="$VP_SID"; fi
+    eval "$VP_SNIP"' _ "$@" 2>/dev/null )
+}
+
+check "15vp: S2P 는 visual-publish 종류다" "$(vp15 "$VP15/m.md" - 'stage_kind_of S2P')" "visual-publish"
+check "15vp: 계획의 visual-publish 단계가 런 범위 단계다" "$(vp15 "$VP15/m.md" - 'gate_run_scope_step visual-publish')" "S2P"
+check "15vp: 발행 단계가 없는 계획에는 런 범위 발행 단계가 없다" \
+  "$(vp15 "$VP15/m-nop.md" - 'gate_run_scope_step visual-publish || printf 없음')" "없음"
+check "15vp: 시각 발행만 Artifact 환경과 표지를 받는다" \
+  "$(CLAUDE_CODE_ARTIFACT=1 CC_PIPELINE_VISUAL_PUBLISH=1 vp15 "$VP15/m.md" - '
+       gate_launch_kind_env visual; printf "%s/%s " "${CLAUDE_CODE_ARTIFACT:-x}" "${CC_PIPELINE_VISUAL_PUBLISH:-x}"
+       gate_launch_kind_env visual-publish; printf "%s/%s" "${CLAUDE_CODE_ARTIFACT:-x}" "${CC_PIPELINE_VISUAL_PUBLISH:-x}"')" "x/x 1/1"
+check "15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다" \
+  "$(vp15 "$VP15/m.md" - 'kind_pin_lane_of visual; printf "rc=%s" "$?"')" "rc=0"
+check "15vp: 호스트 파일에 lane 이 없으면 시각 발행 종류의 고정은 실패한다" \
+  "$(vp15 "$VP15/m.md" - 'kind_pin_lane_of visual-publish; printf "rc=%s" "$?"')" "rc=1"
+printf '%s\n' 'account = design.owner@example.com' 'lane = u2' > "$VP15/cfg/cc-cmds/claude-design"
+check "15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다" \
+  "$(vp15 "$VP15/m.md" - 'kind_pin_lane_of visual-publish')" "u2"
+check "15vp: 재진입 표에 시각 발행 정지 셋이 있다" \
+  "$(vp15 "$VP15/m.md" - 'gate_reentry_table' | grep -c '^visual-publish-unattended|' || true)" "6"
+
+# The standing refusal is the last person's answer to a verdict or a failed
+# publish; a seat's or router's answer stands for nothing, and a later approval
+# supersedes an earlier refusal.
+vp15_halt 1 '시각-판정 — 화면 둘'
+vp15_answer 1 좌석 거부
+check "15vp: 사람이 아닌 답은 거부를 세우지 않는다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal || printf 없음')" "없음"
+vp15_answer 1 사람 거부
+check "15vp: 시각-판정 의 사람 거부는 거부다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal' | cut -f1,3)" "거부	거부"
+vp15_halt 2 '시각-판정'
+vp15_answer 2 사람 승인
+check "15vp: 뒤의 사람 승인이 앞의 거부를 지운다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal || printf 없음')" "없음"
+vp15_halt 3 '발행-실패 — 업로드 실패'
+vp15_answer 3 사람 '발행하지 않음'
+check "15vp: 발행-실패 의 발행하지 않음 은 무효다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal' | cut -f1,3)" "무효	발행하지 않음"
+
+# A person's no outranks an earlier yes. Here the latest verdict record S2P#2
+# holds a person's `승인`, and the `발행하지 않음` to S2P#3 came after it, so a
+# line whose tail names S2P#2 does not stand. Then the same record answered
+# `승인` and then `거부`: the last answer is the one read. A closing `승인` to
+# S2P#2 lifts the refusal, so the provenance checks below start from none.
+ok15vp='승인 유효 0123456789ab'
+check "15vp: 승인 뒤의 발행하지 않음 이 서 있으면 꼬리 달린 승인 줄도 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf " rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" \
+  "승인 무효 — 시각 발행 단계 중단 기록 S2P#3.md 에 사람이 남긴 「발행하지 않음」 답이 서 있다 rc=1"
+vp15_answer 2 사람 승인
+vp15_answer 2 사람 거부
+check "15vp: 같은 기록의 승인 뒤 거부는 거부로 읽힌다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_person_answer "$RUN_DIR/halt/S2P#2.md" 승인 || printf 없음')" "없음"
+check "15vp: 같은 기록의 승인 뒤 거부가 서 있으면 꼬리 달린 승인 줄은 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" "rc=1"
+vp15_answer 2 사람 승인
+check "15vp: 거부 뒤의 사람 승인이 꼬리를 다시 세운다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" "rc=0"
+
+# Provenance: in a run with the publish stage the approval line has to carry
+# the tail naming the latest verdict record, and a person approved that record.
+check "15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp")" "rc=1"
+check "15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#1.md')" "rc=1"
+vp15_halt 4 '시각-판정'
+check "15vp: 사람 승인 답이 없는 꼬리는 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf " rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#4.md' | sed -n 's/.* rc=/rc=/p')" "rc=1"
+vp15_answer 4 좌석 승인
+check "15vp: 좌석의 승인 답은 꼬리를 세우지 않는다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#4.md')" "rc=1"
+vp15_answer 4 사람 승인
+check "15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#4.md')" "rc=0"
+check "15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다" \
+  "$(vp15 "$VP15/m-nop.md" - 'visual_approval_provenance "$1"; printf "rc=%s" "$?"' "$ok15vp")" "rc=0"
+case "$(vp15 "$VP15/m.md" - 'visual_approval_route_hint')" in
+  *"S2P#4.md"*) ok "15vp: 발행 단계가 있는 런의 승인 안내는 마지막 시각-판정 기록을 든다" ;;
+  *) bad "15vp: 발행 단계가 있는 런의 승인 안내는 마지막 시각-판정 기록을 든다" "$(vp15 "$VP15/m.md" - 'visual_approval_route_hint')" ;;
+esac
+
+# The artifact: the terminal literal, and either the sidecar at `발행됨` or a
+# person's no at one of the stage's halts. The records and answers above are
+# cleared first, so these checks start from no halt at all.
+printf '시각 발행 단계를 마쳤습니다.\n' > "$VP15/stream.txt"
+rm -f "$VP15/run/halt"/S2P#*.md
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+mkdir -p "$WT/docs/visual"
+printf '# 픽스처 설계\n' > "$WT/docs/fixture-design-15vp.md"
+SC15VP="$WT/docs/visual/docs-fixture-design-15vp.md"
+printf '# 시각 사이드카\n\n**상태**: 검토 통과\n' > "$SC15VP"
+check "15vp: 픽스처 문서의 사이드카 경로가 그 사이드카다 (아래가 공허하지 않다)" \
+  "$(vp15 "$VP15/m.md" - 'visual_sidecar_reviewed "$DOC" && printf 검토통과')" "검토통과"
+check "15vp: 종결 문구만 있는 발행 단계는 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=1"
+printf '# 시각 사이드카\n\n**상태**: 발행됨\n' > "$SC15VP"
+check "15vp: 발행됨 사이드카와 종결 문구는 산출이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=0"
+: > "$VP15/empty.txt"
+check "15vp: 종결 문구 없는 발행됨 사이드카는 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/empty.txt")" "rc=1"
+printf '# 시각 사이드카\n\n**상태**: 검토 통과\n' > "$SC15VP"
+vp15_halt 1 '시각-판정'
+vp15_answer 1 사람 거부
+check "15vp: 사람 거부 뒤의 종결 문구는 산출이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=0"
+vp15_answer 1 사람 승인
+check "15vp: 사람이 승인으로 바꾼 거부는 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=1"
+rm -f "$SC15VP" "$WT/docs/fixture-design-15vp.md"
+
+# The grades: `account` writes the host file only from the publish stage, and
+# `append` adds the one line a person approved, once.
+check "15vp: lane 은 읽기다" \
+  "$(vp15 "$VP15/m.md" - 'surface_of_argv0 "$1" lane' "$CC_ORCH/visual-config.sh")" "읽기"
+check "15vp: 발행 단계 밖의 account 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "등급 미상"
+check "15vp: 발행 단계가 없는 계획의 account 는 등급 미상이다" \
+  "$(vp15 "$VP15/m-nop.md" 'S2P#1' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "등급 미상"
+check "15vp: 발행 단계의 account 는 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "트리밖쓰기"
+vp15_halt 5 '금지-후보 — 반복 문구' 'hero-gradient'
+vp15_answer 5 사람 승인
+ban15vp='- `hero-gradient` | 그라데이션 히어로 — 3회 home'
+check "15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "트리밖쓰기"
+check "15vp: 맨 줄 형태의 같은 후보도 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" 'hero-gradient | 그라데이션 히어로')" "트리밖쓰기"
+check "15vp: 다른 후보의 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" 'other-id | 다른 후보')" "등급 미상"
+check "15vp: 발행 단계 밖의 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "등급 미상"
+check "15vp: 줄이 둘인 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2" "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "등급 미상"
+printf -- '- `자율 승인` | 행위=visual-config.sh append | 소비 중단 답=S2P#5.md\n' >> "$VP15/led.md"
+check "15vp: 소비된 답의 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "등급 미상"
+vp15_halt 6 '금지-후보' 'hero-gradient'
+vp15_answer 6 좌석 승인
+check "15vp: 좌석이 승인한 후보의 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "등급 미상"
+
+# The linked close: an open `시각-승인` question is closed by the person's no at
+# the stage's verdict halt, with a row that names the halt answer.
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J9 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_halt 7 '시각-판정'
+vp15_answer 7 사람 거부
+vp15 "$VP15/m.md" - 'gate_visual_halt_linked_close J9' >/dev/null
+row15vp=$(grep -F '| 승인 id=J9 |' "$VP15/led.md" | tail -1)
+case "$row15vp" in
+  *"| 상태=거부 |"*"| 처분 사유=중단 답 연동"*) ok "15vp: 중단 답 연동 닫기가 처분 사유를 싣는다" ;;
+  *) bad "15vp: 중단 답 연동 닫기가 처분 사유를 싣는다" "$row15vp" ;;
+esac
+case "$row15vp" in
+  *"답변 문면=중단 답 연동(기록 S2P#7.md, 선택지 거부)"*) ok "15vp: 연동 닫기의 답변 문면은 중단 기록과 선택지를 든다" ;;
+  *) bad "15vp: 연동 닫기의 답변 문면은 중단 기록과 선택지를 든다" "$row15vp" ;;
+esac
+
+# A question submitted after the person's no is closed by that no through the
+# predicate arm, even while the approval predicate holds. The predicate is
+# stubbed to hold, so the order is what decides: checked after the predicate,
+# the refusal would never be reached and the question would close `승인`.
+# Both ways in: a `거부` given after a `승인` to the same verdict record, and a
+# `발행하지 않음` to a failed publish after the verdict was approved.
+vp15_resolve() {  # vp15_resolve <승인 id> — the row the predicate arm leaves
+  vp15 "$VP15/m.md" - 'gate_visual_approval_holds() { printf "승인 유효 0123456789ab"; }
+    gate_visual_approval_resolve "$1" "화면 승인" 시각-승인' "$1" >/dev/null
+  grep -F "| 승인 id=$1 |" "$VP15/led.md" | tail -1
+}
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J8 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_halt 10 '시각-판정'
+vp15_answer 10 사람 승인
+vp15_answer 10 사람 거부
+row15vp=$(vp15_resolve J8)
+case "$row15vp" in
+  *"| 상태=거부 |"*"| 처분 사유=중단 답 연동"*) ok "15vp: 같은 기록의 승인 뒤 거부는 승인 술어가 서도 뒤에 제출된 시각-승인 을 거부로 닫는다" ;;
+  *) bad "15vp: 같은 기록의 승인 뒤 거부는 승인 술어가 서도 뒤에 제출된 시각-승인 을 거부로 닫는다" "$row15vp" ;;
+esac
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J7 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_halt 11 '발행-실패'
+vp15_answer 10 사람 승인
+vp15_answer 11 사람 '발행하지 않음'
+row15vp=$(vp15_resolve J7)
+case "$row15vp" in
+  *"| 상태=무효 |"*"| 처분 사유=중단 답 연동"*) ok "15vp: 승인 뒤의 발행하지 않음 은 승인 술어가 서도 뒤에 제출된 시각-승인 을 무효로 닫는다" ;;
+  *) bad "15vp: 승인 뒤의 발행하지 않음 은 승인 술어가 서도 뒤에 제출된 시각-승인 을 무효로 닫는다" "$row15vp" ;;
+esac
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J6 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_answer 10 사람 승인
+row15vp=$(vp15_resolve J6)
+case "$row15vp" in
+  *"| 상태=승인 |"*) ok "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" ;;
+  *) bad "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" "$row15vp" ;;
+esac
+rm -rf "$VP15"
+
+# An `append` no person approved is refused on the acting path in the default
+# auto-resolving mode, declared as the approved one would be. With the switch
+# on, an unknown grade with a declaration takes the declaration path, and the
+# gate's own visual helper must not: its row is the only check left once the
+# publish stage's marker lifts the helper's own in-run refusal. `plan` only
+# warns where `exec` exits, and the unknown-grade arm prints its line only when
+# the declaration path did not take the act, so that line is what is asserted.
+CC_GATE_PREV_AR15VP="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- "$CC_ORCH/visual-config.sh" append 'zz-probe | 텍스트 | probe | -'
+case "$msg" in
+  *"the gate's own visual helper is graded by its subcommand"*) ok "15vp: 승인 없는 append 는 자동 해소 모드의 선언으로도 열리지 않는다" ;;
+  *) bad "15vp: 승인 없는 append 는 자동 해소 모드의 선언으로도 열리지 않는다" "rc=$rc $msg" ;;
+esac
+case "$msg" in
+  *"an orchestrator script this plugin ships"*|*"the table has to be widened"*)
+    bad "15vp: 자기 시각 헬퍼의 등급 미상에는 표 넓히기·버전 어긋남 안내가 붙지 않는다" "$msg" ;;
+  *) ok "15vp: 자기 시각 헬퍼의 등급 미상에는 표 넓히기·버전 어긋남 안내가 붙지 않는다" ;;
+esac
+# Any other copy of the helper runs the same `append` once the publish stage's
+# marker is set, so the declaration path refuses it too: a copy outside the
+# gate's directory called by its path, the same copy behind `env` setting the
+# marker, and behind `command`.
+VPC15="$WORK/vp15-copy"
+rm -rf "$VPC15"; mkdir -p "$VPC15"
+cp "$CC_ORCH/visual-config.sh" "$VPC15/visual-config.sh"
+for vpc15 in "$VPC15/visual-config.sh" "env CC_PIPELINE_VISUAL_PUBLISH=1 $VPC15/visual-config.sh" "command $VPC15/visual-config.sh"; do
+  # shellcheck disable=SC2086
+  gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 런로컬 -- $vpc15 append 'zz-probe | 텍스트 | probe | -'
+  lbl15vp=${vpc15%% *}; lbl15vp=${lbl15vp##*/}
+  case "$msg" in
+    *"a visual helper that is not the file beside this gate has no grade"*)
+      ok "15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다 ($lbl15vp)" ;;
+    *) bad "15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다 ($lbl15vp)" "rc=$rc $msg" ;;
+  esac
+done
+# The launchers that name the helper only further in — `find -exec`, `xargs`
+# with no grade row — and an interpreter running it are refused the same way.
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- find "$VPC15" -maxdepth 0 -exec "$VPC15/visual-config.sh" append 'zz-probe | 텍스트 | probe | -' ';'
+case "$msg" in
+  *"a visual helper that is not the file beside this gate has no grade"*) ok "15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다" ;;
+  *) bad "15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다" "rc=$rc $msg" ;;
+esac
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- xargs "$VPC15/visual-config.sh" append 'zz-probe | 텍스트 | probe | -'
+case "$msg" in
+  *"a visual helper that is not the file beside this gate has no grade"*) ok "15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다" ;;
+  *) bad "15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다" "rc=$rc $msg" ;;
+esac
+for vpc15 in bash "sh -c"; do
+  if [ "$vpc15" = bash ]; then
+    gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 -- bash "$VPC15/visual-config.sh" append 'zz-probe | 텍스트 | probe | -'
+  else
+    gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 -- sh -c "$VPC15/visual-config.sh append zz-probe"
+  fi
+  case "$msg" in
+    *"a runner in front of \`visual-config.sh account|append|seed\` is not graded"*)
+      ok "15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다 (${vpc15%% *})" ;;
+    *) bad "15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다 (${vpc15%% *})" "rc=$rc $msg" ;;
+  esac
+done
+# The word scan does not catch a read: an interpreter over the helper's
+# `lane` stays on the opaque path it always took.
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- bash "$VPC15/visual-config.sh" lane
+case "$msg" in
+  *"a runner in front of"*) bad "15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다" "$msg" ;;
+  *) ok "15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다" ;;
+esac
+rm -rf "$VPC15"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR15VP"
 
 # ---------------------------------------------------------------------------
 # 15w. A screen slice is not dispatched before its screens are approved
@@ -24888,13 +25215,19 @@ check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
 # THE SEVENTH IS THE `사람-결정` FREE-INPUT CLOSE. That class's free text is the
 # decision, so `gate_close` closes it `승인` instead of leaving it `대기`, and an
 # approval closed there is done being waited on like any other terminal.
+#
+# THE EIGHTH IS THE VISUAL PUBLISH STAGE'S LINKED CLOSE. A person's `거부` to a
+# `시각-판정` halt or `발행하지 않음` to a `발행-실패` halt closes the run's open
+# `시각-승인` questions `거부` or `무효` outside `gate_close`
+# (`gate_visual_halt_linked_close`), and those questions are as done being
+# waited on as the ones the other seven terminals end.
 check "넘침 정리가 닫기 종단 도우미에 한 번 배선돼 있다" \
   "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "1"
 check "그것이 개별 배너 지우기 바로 뒤에 붙어 있다" \
   "$( { grep -A1 -F 'cc_notify_clear answer "$1" || true' "$GATE" || true; } \
       | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "1"
-check "닫기 함수의 다섯 종단과 자동 해소 닫기와 철회 종단이 전부 그 도우미를 부른다" \
-  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "7"
+check "닫기 함수의 다섯 종단과 자동 해소 닫기와 철회 종단과 시각 발행 연동 닫기가 전부 그 도우미를 부른다" \
+  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "8"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #
