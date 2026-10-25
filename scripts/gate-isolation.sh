@@ -69,13 +69,18 @@ set -uo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 
-# THE SECOND SOLO'S TMPDIR COMPONENT. Every run-id string the suite's fixtures
-# use, short placeholders and full ids alike, so a fixture that substitutes its
-# run id over a whole file also rewrites a temporary path that file carries —
-# the defect a random mktemp suffix only trips when it happens to contain the
-# id. The self-test checks that every such string of scripts/test-gate.sh is in
-# here; a fixture that adds a new one has to add it here too.
-ISO_TOKEN='iso-R1R2R3R4R5R55R57R68_20260101-aaaaaaaa_20260301-aaaaaaaa_20260301-cccccccc_20260301-dddddddd_20260301-eeeeeeee_20260907-ef4438ac_20260912-376f0543_20260921-aaaaaaaa_20261011-351e739d_20261011-a639461d_20261012-abcdef01_20261015-f482437e'
+# THE SECOND SOLO'S TMPDIR COMPONENT. Every run-id string of three bytes or
+# fewer the suite's fixtures use (the `R<n>` placeholders), so a fixture that
+# substitutes its run id over a whole file also rewrites a temporary path that
+# file carries — the defect a random mktemp suffix only trips when it happens
+# to contain the id, which only a short string can. The 17-byte date-and-hash
+# ids never turn up in a path by chance, so they are left out: they would only
+# lengthen the path, and a long TMPDIR puts the second solo in a context of its
+# own (a section that fails on path length alone is no dependency on another
+# section). The component stays at 60 bytes or fewer. The self-test checks that
+# every short run-id string of scripts/test-gate.sh is in here and the length
+# bound; a fixture that adds a new short one has to add it here too.
+ISO_TOKEN='iso-R1R2R3R4R5R55R57R68'
 
 iso_usage() {
   printf 'gate-isolation: 사용법 — compare --dir D --plan F [--out F] / solos --out D --spec S [--timing-out F] / check --sections C [--with W] [--out D] / sweep [--out D] [--chunk-s S] [--jobs J] / capacity --base REV / --self-test (공통: --bash B, --suite F, --census F, --timing F)\n' >&2
@@ -692,15 +697,17 @@ iso_self_test() {
   if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "^x${tab}맥락 없음${tab}행 1 (제 행)${tab}줄 집합 파일이 없습니다"; then ok "비교기: 기준 맥락이 추적됐는데 줄 집합이 없는 맥락은 맥락 없음이다"; else bad "비교기 줄 집합 없음" "rc=$rc 「${out}」"; fi
 
   # --- the second solo's TMPDIR component ------------------------------------
-  # Every run-id string the suite's fixtures use is in the component: the full
-  # ids and the short placeholders a grant heading, a run-id field or a run
-  # directory names.
+  # Every run-id string of three bytes or fewer the suite's fixtures use is in
+  # the component: the short placeholders a grant heading, a run-id field or a
+  # run directory names, gathered with the full ids and then cut by length.
   local want miss=""
   want=$( { grep -oE '\b20[0-9]{6}-[0-9a-f]{8}\b' "$repo_root/scripts/test-gate.sh"
-            grep -oE '(## 인가 |run-id=|RUN_ID=|/run/)R[0-9]+\b' "$repo_root/scripts/test-gate.sh" | grep -oE 'R[0-9]+$'; } | sort -u)
+            grep -oE '(## 인가 |run-id=|RUN_ID=|/run/)R[0-9]+\b' "$repo_root/scripts/test-gate.sh" | grep -oE 'R[0-9]+$'; } | LC_ALL=C awk 'length($0) <= 3' | sort -u)
   for w in $want; do case "$ISO_TOKEN" in *"$w"*) ;; *) miss="$miss $w" ;; esac; done
-  if [ -n "$want" ] && [ -z "$miss" ]; then ok "토막: 스위트의 픽스처 런 id 꼴 문자열 $(printf '%s\n' "$want" | grep -c .)개를 모두 담는다"; else bad "토막에 빠진 런 id" "${miss:-스위트에서 하나도 찾지 못함}"; fi
-  if [ "${#ISO_TOKEN}" -le 255 ]; then ok "토막은 경로 구성 요소 한 개의 길이 한도 안이다 (${#ISO_TOKEN}바이트)"; else bad "토막 길이" "${#ISO_TOKEN}"; fi
+  if [ -n "$want" ] && [ -z "$miss" ]; then ok "토막: 스위트의 픽스처 런 id 꼴 문자열 가운데 3바이트 이하인 것 $(printf '%s\n' "$want" | grep -c .)개를 모두 담는다"; else bad "토막에 빠진 런 id" "${miss:-스위트에서 3바이트 이하인 것을 하나도 찾지 못함}"; fi
+  local tok_bytes
+  tok_bytes=$(printf '%s' "$ISO_TOKEN" | LC_ALL=C wc -c | tr -d ' ')
+  if [ "$tok_bytes" -le 60 ]; then ok "토막은 60바이트 이하다 (${tok_bytes}바이트)"; else bad "토막 길이" "${tok_bytes}바이트 > 60"; fi
 
   # --- reduced suites cut by the real selector ------------------------------
   # The real head and tail around made-up sections: the selector, the fixture
