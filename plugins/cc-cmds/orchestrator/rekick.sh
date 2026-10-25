@@ -2534,6 +2534,16 @@ EOF
   done <<EOF
 $( { MANIFEST="$draft" rk_shape_rows; MANIFEST="$draft" manifest_autoadopt_rows_anywhere; MANIFEST="$draft" manifest_label_ack_rows; } )
 EOF
+  # The seat neither asks 5u nor adds a `라벨 인정` row: a row is a
+  # pre-authorization that opens the label act with no person, so in seat mode
+  # a 5u key of its own is refused and the draft's rows are the previous ones
+  # byte for byte, in order.
+  if [ "$RK_AUTO" = "1" ]; then
+    [ -n "$RK_ASKED" ] && awk -F '\t' '$1 ~ /^5u / { f = 1 } END { exit !f }' "$RK_ASKED" \
+      && why="${why:+$why; }좌석은 5u 를 묻지 않습니다 — --asked 에 5u 키가 있습니다"
+    [ "$(MANIFEST="$draft" manifest_label_ack_rows)" = "$(MANIFEST="$prev" manifest_label_ack_rows)" ] \
+      || why="${why:+$why; }좌석은 라벨 인정 행을 바꾸지 않습니다 — 초안의 라벨 인정 행이 원천과 바이트 단위로 다릅니다"
+  fi
   vs_check 행 "$why"
 
   # 8 — the interview row: exactly one when the design step stays, none when it

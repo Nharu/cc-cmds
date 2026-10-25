@@ -1825,6 +1825,35 @@ check "12: 플러그인 허용 행이 있는 원천도 render-manifest --auto �
 check "12: 후속 매니페스트에는 플러그인 허용 행이 없다" "$(grep -c '^- `플러그인 허용`' "$SL_OUT" || true)" "0"
 mf_check "$SL_OUT"; rc=$?
 check "12: 플러그인 허용 행을 뺀 후속 초안이 check_manifest 를 통과한다" "$rc" "0"
+
+# The seat neither asks 5u nor changes the `라벨 인정` rows: it carries the
+# source's rows byte for byte, and verify-subset --auto refuses a 5u key of its
+# own and any draft whose label rows differ from the source's — added under its
+# own 5u answer, or dropped.
+LA_SROW='- `라벨 인정` | 대상=rk | 체크=api-surface-guard | 라벨=surface-change | 사유=픽스처'
+LA_SROW2='- `라벨 인정` | 대상=rk | 체크=other-guard | 라벨=surface-change | 사유=좌석이 더한 행'
+P_EXTRA="$SEAT_ROW
+$LA_SROW" mk_seat RKLS 마감
+check "12: 원천 매니페스트에 라벨 인정 행이 있다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cxF -- "$LA_SROW" "$BASE/docs/pipeline-run/RKLS.plan.md")" "1"
+SL_ASKED=""; seat_link RKLS RKLS1
+check "12: 라벨 인정 행을 가진 원천에서 render-manifest --auto 는 0, 그 행이 바이트 그대로 하나, verify-subset --auto 가 통과한다" \
+  "$SL_RC/$(grep -c '^- `라벨 인정`' "$SL_OUT")/$(grep -cxF -- "$LA_SROW" "$SL_OUT")/$SL_VS" "0/1/1/통과"
+vsa12() {  # vsa12 <라벨> <초안> <asked> — verify-subset --auto 가 실패하고 실패한 검사에 행 이 든다
+  local o
+  o=$(rk verify-subset "$2" "$BASE/docs/pipeline-run/RKLS.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" \
+        --asked "$3" --grant "$WORK/sl.block" --auto)
+  check "12: $1" "$(col "$o" 판정)" "실패"
+  has "12: $1 — 실패한 검사는 행 이다" "$(col "$o" 판정 3)" "행"
+}
+printf '5u rk api-surface-guard\t인정함\n7.7 절단점 rk\t머지\n' > "$WORK/asked-la-seat"
+vsa12 "좌석의 --asked 에 5u 키가 있으면 원천 그대로의 초안도 실패한다" "$SL_OUT" "$WORK/asked-la-seat"
+{ cat "$SL_OUT"; printf '%s\n' "$LA_SROW2"; } > "$WORK/v-la-seat-add.md"
+printf '5u rk other-guard\t인정함\n7.7 절단점 rk\t머지\n' > "$WORK/asked-la-seat2"
+vsa12 "좌석 초안이 자기 5u 답으로 원천에 없는 라벨 인정 행을 더하면 실패한다" "$WORK/v-la-seat-add.md" "$WORK/asked-la-seat2"
+grep -vxF -- "$LA_SROW" "$SL_OUT" > "$WORK/v-la-seat-drop.md"
+: > "$WORK/asked-la-none"
+vsa12 "좌석 초안이 원천의 라벨 인정 행을 빼면 실패한다" "$WORK/v-la-seat-drop.md" "$WORK/asked-la-none"
 [ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
 
 # The seat's wording that no helper prints: the stub's reason line and the
