@@ -5,6 +5,55 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-10-25
+
+시각 디자인 스킬군을 Claude Design 기반의 `visual` 쌍으로 바꾸고, autopilot 이 화면을 짓는 슬라이스의 구현을 사람의 화면 승인 뒤로 미루게 한다. 무인 단계는 화면을 로컬에서 생성하고 세 회 안의 검토로 `검토 통과` 까지 올린다. 발행·캔버스 편집·동기·구현 승인은 고정 계정 좌석의 대화형 `/cc-cmds:visual` 이 한다. 화면이 없는 슬라이스는 그 밤에 그대로 구현되고, 화면 슬라이스는 아침의 승인을 기다린다. 옛 Claude Design 스킬 넷(`/cc-cmds:design-system`·`/cc-cmds:design-prompt`·`/cc-cmds:design-ingest`·`/cc-cmds:design-apply`)을 지우므로 슬래시 커맨드가 사라지는 호환성 파괴이고, 그래서 major 판이다.
+
+### Removed
+
+- **옛 Claude Design 스킬 넷** — `/cc-cmds:design-system`·`/cc-cmds:design-prompt`·`/cc-cmds:design-ingest`·`/cc-cmds:design-apply`. 사람이 claude.ai 에서 만든 핸드오프 번들을 가져와 넘기던 흐름은 `visual` 쌍이 대신한다.
+- **핸드오프 공유 문서 둘** — `_common/handoff-contract.md`(핸드오프 번들 머리 스키마)와 `_common/parse-handoff.md`(번들 추출 절차). 읽는 쪽이 남지 않았다.
+
+### Added
+
+- **`/cc-cmds:visual`** — 고정 계정 좌석의 대화형 스킬. 사이드카 `docs/visual/<slug>.md` 의 상태가 국면을 정한다(없음은 생성, `로컬 초안` 은 생성 이어 하기, `검토 통과` 는 발행, `발행됨` 은 동기·발행 묶음 다시 생성·구현 승인·금지 후보 승인). Claude Design 에 닿는 국면은 국면 시작, 아티팩트 호출 직전, 발행 직후, 고정된 URL 을 읽을 때마다 계정을 읽고, 판독이 `일치` 가 아니면 그 자리에서 멈춘다. `구현 승인` 국면만 사이드카에 `**구현 승인**` 줄(입력 묶음과 금지 목록의 sha256, 사람이 수용한 기계 검사 규칙 id)을 쓰고, 동기와 다시 발행은 그 줄을 지운다.
+- **`/cc-cmds:visual-unattended`** — 무인 팔. 화면 생성, 회차마다 새 검토자를 두는 세 회 상한의 검토 루프, 수정 목록 다듬기, 금지 후보 기록만 하고, 발행·계정 판독·구현 승인은 하지 않는다. 사람에게 묻는 표면이 없고 정지 자리는 닫힌 여덟이다.
+- **공유 계약** — `visual/references/contract.md`(생성 규칙, 검토 루브릭, 단계별 모델과 저자 하위 에이전트 봉투, 다듬기 강등)와 `visual/references/sidecar.md`(문서별 사이드카와 레포별 디자인 시스템 연결 파일 `docs/visual-system/system.md`, 설계 문서 구속 다이제스트, 입력 묶음, 승인 술어). 생성·다듬기·큰 화면 번역은 읽기 전용 저자 하위 에이전트가 텍스트로 돌려주고 파일은 부모가 쓴다.
+- **도우미 셋**(`plugins/cc-cmds/orchestrator/`)
+  - `visual-config.sh` — 계정 판독·대조·로그(`account`), 호스트 모델값·금지 목록 해석(`models`·`bans`), 금지 목록 씨앗 복사와 승인 항목 덧붙이기(`seed`·`append`), 무인 단계가 기록 사본을 읽는 `snapshot`. 사람 전용 부명령은 런 안에서 거절한다.
+  - `visual-check.sh` — 화면의 색·간격 리터럴과 금지 목록 위반을 잡는 기계 검사(`scan`), 시작 태그 수(`size`), 승인 술어(`approval`), 입력 묶음 다이제스트(`bundle`).
+  - `visual-capture.sh` — 헤드리스 Chrome 으로 승인된 화면(`ref`)과 루프백 정적 서버에 띄운 구현(`app`)을 트리 밖 디렉터리에 찍는다. 닫힌 로컬 포트를 프록시로 지정해 원격 적재를 끊는다.
+- **금지 목록 씨앗 `visual-bans.seed`** — 호스트 금지 목록이 없을 때 첫 사용에서 심는 기본 항목.
+- **도우미 시험과 픽스처** — `scripts/test-visual-config.sh`·`scripts/test-visual-check.sh`·`scripts/test-visual-capture.sh` 와 `tests/fixtures/visual-check/`. `make test` 의 오케스트레이터 시험 목록에 오르고, CI 는 캡처 시험을 위해 `python3`·`lsof` 를 설치한다.
+- **런 범위 시각 단계** — 진입 계획이 화면을 짓는 일에 `visual` 단계(id `S2V`, 하나까지)를 둔다. 감사 단계(없으면 설계 단계)에 기대고 모든 구현 단계가 그것에 기대며, 베이스 계획에는 두지 않는다. 계획 스키마에 `visual_design_rationale` 이 필수로 더해졌다. 드라이버와 라우터가 `visual-unattended` 를 파견하고, 종단 리터럴과 사이드카 `**상태**: 검토 통과` 가 함께일 때만 정상 완료로 본다. 스테이지 종류 분류와 정지 분류기가 `visual` 을 안다.
+- **구현 전 기다림** — 화면 슬라이스는 승인 술어가 서기 전에 구현되지 않는다.
+  - 게이트는 술어가 서지 않은 화면 슬라이스의 구현 파견을 거절한다.
+  - 판단 부류 `시각-승인` 은 화면 세그먼트 하나를 붙잡는다. 술어가 서면 자동 해소 스위치와 무관하게 게이트가 `승인` 으로 닫고, `close` 는 술어 없는 `승인` 과 자유 문면 답을 받지 않는다.
+  - 라우터 교대는 화면 세그먼트와 그 후속을 `park`(사유 「시각 승인 대기」)로 두고 화면 없는 일을 계속 파견한다. 좌석은 사람에게 고정 좌석에서 승인한 뒤 라벨 `승인` 으로 답하라고 묻고, 승인이 채택되면 같은 런에서 화면 슬라이스를 파견한다. `거부`·`무효` 답은 그 화면이 필요한 절을 불가능으로 정리한다.
+  - 고정 그래프 드라이버는 화면 슬라이스의 브랜치를 자르기 전에 `park` 하고 `재킥 원인=시각승인대기` 로 런을 끝낸다. 아침에 이어 가려면 새 킥오프가 필요하다.
+- **킥오프 기록 전송** — 계획에 시각 단계가 있으면 킥오프가 시각 방향(브랜드·톤·레퍼런스·디자인 시스템 출처·대상 화면·플랫폼과 뷰포트·테마·문구 언어)을 묻고, 인터뷰 기록 `cc-run-interview v3` 의 `## 시각 방향` 에 그 답과 호스트 모델값·금지 목록의 사본을 얼린다. 인터뷰가 없었어도 그 절만 담은 기록을 쓴다. 화면 슬라이스가 생길 계획이면 즉시 경로를 권하고, 고정 좌석의 설정 디렉터리에서 킥오프하지 말라고 알린다.
+- **슬라이스 필드 `**화면**`** — `design` 의 구현 슬라이싱에 선택 필드로 더했다. `없음` 이면 기다리지 않고, 화면 id 목록이면 그 화면만 기다리며, 필드가 없으면 모든 화면을 기다린다. 두 슬라이싱 검증기가 모양만 본다. 무인 설계는 기록의 시각 방향이 `없음` 이 아니면 모든 슬라이스에 이 필드를 쓴다.
+- **아침 보고의 「시각 승인 대기」 절** — 기다리는 화면 세그먼트와 그 후속, 열린 승인 id, 런 종류별로 이어 가는 법을 적는다.
+
+### Changed
+
+- **대화형 `implement`** — 시각 사이드카가 `검토 통과`·`발행됨` 이면 화면 파일과 `docs/visual-system/tokens.css` 를 빌드 입력으로 읽는다. 화면 슬라이스에서는 승인 술어와 기계 검사(승인 줄의 수용 집합 밖 발견)를 보고, 서지 않으면 `중단` 을 추천하며 묻는다. 시작 태그가 문턱 이상인 큰 화면은 `implement-large` 모델의 하위 에이전트가 번역한다.
+- **`implement-unattended`** — 화면 슬라이스에서 승인 술어와 기계 검사가 서지 않으면 `precondition-failed` 로 멈춘다. 모델값은 기록 사본에서 읽고, 사본이 없거나 어긋나면 「시각 설정 사본 없음/불일치」 를 보고하고 기본값으로 간다. 마지막 단계 뒤에는 승인된 화면과 구현을 같은 뷰포트로 찍어 일곱 축으로 대조한 결과를 보고만 한다.
+- **시각 정합 게이트 참조** — 무인 구현의 스크린숏 비교가 같은 일곱 축을 읽는다는 문장을 더했다.
+- **게이트 등급표** — 도우미 셋의 부명령별 등급 행과 좁은 Chrome 스크린숏 행(허용 목록, 설정 홈과 기기 전역 경로 차단)을 더했다. 모든 스테이지 설정 변종이 `DesignSync`·`Artifact`·`ArtifactComments`·`ArtifactData` 를 거부하고, 드라이버의 판단 호출도 같은 네 도구를 `--disallowedTools` 로 막는다.
+- **판단 어휘** — `시각-승인` 을 더해 열세 값이 되었다. 붙잡는 부류가 `사람-결정` 하나에서 `사람-결정`·`시각-승인` 집합으로 넓어졌고, `사람-결정` 의 답 처리에만 속한 자리는 그 부류 하나만 본다. 라우터·좌석·교대 문면과 어휘·종단 리터럴·인터뷰 기록 린트, 메타 시험이 같은 수와 집합을 따른다.
+- **린트 등록** — `lint-skill-invariants`·`lint-unattended-surfaces`·`lint-judgment-grade` 가 옛 스킬 넷 대신 `visual` 쌍을 안다. `_common/sidecar.md` 에 시각 사이드카 두 종류와 트리 안 추출본 규칙을, `_common/base-design.md`·`design-audit` 에서 옛 스킬 이름을 걷어냈다.
+
+### Post-install notes
+
+- **호스트 파일 셋** — `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/` 아래의 세 파일(모두 모드 644)이다.
+  - `claude-design` — `account = <Claude Design 계정 주소>` 한 줄. 사람이 직접 쓰고 심어지지 않는다. 이 줄이 없으면 Claude Design 에 닿는 국면이 멈춘다.
+  - `visual-models` — 단계별 모델(`ds-generate`·`screen-generate`·`polish`·`implement-large`·`implement-large-threshold`)을 `key = value` 로 덮어쓴다. 없으면 스킬 기본값을 쓴다.
+  - `visual-bans` — 한 줄 한 항목의 금지 목록. 처음 `/cc-cmds:visual` 을 돌릴 때 플러그인 씨앗이 심기고, 그 뒤로는 사람이 항목마다 승인한 후보만 덧붙는다. 손으로 고치지 말 것.
+- **`/cc-cmds:visual` 은 고정 좌석에서 돌린다** — `claude-design` 의 계정으로 로그인된 설정 디렉터리의 대화형 세션이다. 다른 좌석에서 돌리면 계정 판독이 `일치` 가 아니어서 멈춘다. autopilot 킥오프는 그 설정 디렉터리에서 띄우지 않는다. 교대와 좌석이 그 디렉터리를 물려받아 밤의 교대가 고정 계정으로 돈다.
+- **옛 `docs/design-system/` 토큰은 옮겨야 한다** — 새 흐름은 레포의 디자인 시스템을 `docs/visual-system/` 에서만 읽고 옛 디렉터리는 읽지 않는다. 옛 토큰을 계속 쓰려면 `tokens.css`(와 `tokens.md`)를 `docs/visual-system/` 으로 옮기고, 같은 자리에 연결 파일 `system.md`(머리 `cc-visual-system v1`, `owner-repo=<메인 워크트리 루트>`, `**출처**: 레포 기존`, `**tokens.css sha256**`)를 둔다. 연결 파일이 없거나 `owner-repo=` 가 맞지 않으면 `visual` 은 디자인 시스템을 새로 생성한다.
+- **옛 `docs/{slug}-fe/impl-design.md` 는 읽히지 않는다** — 옛 `design-apply` 가 쓰던 적용 설계는 새 흐름의 입력이 아니다. 구현은 설계 문서와 시각 사이드카 `docs/visual/<slug>.md` 가 고정한 화면 파일을 읽는다. 진행 중인 화면 작업은 `/cc-cmds:visual <설계 문서>` 의 생성 국면에서 다시 시작한다.
+
 ## [2.117.2] - 2026-10-25
 
 `scripts/measure-test-share.sh` 가 백그라운드 시험의 끝 시각을 실제로 전달된 완료 통지에서만 읽는다. 턴 도중에 도착한 통지(`attachment` 레코드의 `queued_command` 첨부)를 읽지 못해 그 기동을 세션 끝까지 돈 것으로 세던 문제와, 어시스턴트 글이나 도구 결과 안에 인용된 통지 문면이 끝 시각을 앞당기던 문제를 함께 고쳤다. 출력 열·행 순서·마지막 두 줄의 문면은 그대로다.
