@@ -676,6 +676,13 @@ export STUB_GATE_MODE=deadline
 xr run --exp-id 20261017-000000a8 --budget-usd 1000
 [[ "$rc" == "0" && "$(ptsv 20261017-000000a8 1 invalid_reason)" == "벽시계 마감으로 닫힘 — 예비 소진" ]] \
   && pass "seat: a run closed by the deadline makes the pair invalid under that reason" || fail "seat: a deadline-closed run gave exit $rc"
+# The run ended while the gate held the wait, so the gate refuses the seat's
+# call with 3: the done file is the outcome, not a seat failure.
+scenario ended
+export STUB_GATE_MODE=ended
+xr run --exp-id 20261017-000000ab --budget-usd 1000
+[[ "$rc" == "0" && "$(ptsv 20261017-000000ab 1 invalid_reason)" == "벽시계 마감으로 닫힘 — 예비 소진" && "$(pstate 20261017-000000ab 1 status)" != "실패" ]] \
+  && pass "seat: a refused call on a run that already ended reads its done → pair invalid, exit 0" || { fail "seat: a refused call on an ended run gave exit $rc"; cat "$sc/out" >&2; }
 
 scenario nofreeze
 export STUB_NO_FREEZE=1

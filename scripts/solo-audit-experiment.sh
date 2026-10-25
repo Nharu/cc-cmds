@@ -922,7 +922,8 @@ closed_by_deadline() {
 }
 
 # seat <manifest> <clone> <run id> <log> — issue `router-shift` as the seat does
-# until the run's done file exists. Returns 0 on done, 5 on an approval (a
+# until the run's done file exists. Returns 0 on done — also when the call
+# that found it done failed — 5 on an approval (a
 # seat cannot close one), 6 on a shift that handed off with 중단 and left
 # nothing seat_answer_halts could answer, any other status on a failure. After
 # a 승인 or 중단 handoff the seat does not send 대기 — the gate would refuse
@@ -942,11 +943,14 @@ seat() {
           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$h" \
           -- "$reason" -p "/cc-cmds:autopilot-router-shift $m" ) < /dev/null >> "$log" 2>&1 || rc=$?
     done
+    # A run that ended while the gate held the wait — its deadline passed while
+    # the host slept — refuses the next `대기` with 3. Its done file is the
+    # outcome, and the caller reads it like any other end.
+    [[ -e "$rd/done" ]] && return 0
     case "$rc" in
       0) ;;
       *) return "$rc" ;;
     esac
-    [[ -e "$rd/done" ]] && return 0
     case "$(latest_handoff_reason "$clone/docs/pipeline-run/$rid.md")" in
       상한) reason="상한" ;;
       승인) return 5 ;;

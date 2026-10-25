@@ -1002,7 +1002,8 @@ collected() {
 # the seat does until the run's first audit report is collected or its done
 # file exists — the run's cost ceiling writes it once the audit stage is
 # costed, inside the call that ran the stage, at the successor shift's first
-# gated call. Returns 0 on either, 5 on an approval (a seat cannot close one),
+# gated call. Returns 0 on either — also when the call that found it failed —
+# 5 on an approval (a seat cannot close one),
 # 6 on a shift that handed off with 중단 and left nothing seat_answer_halts
 # could answer, any other status on a failure. After a 승인 or 중단 handoff
 # the seat does not send 대기 — the gate would refuse it.
@@ -1021,12 +1022,15 @@ seat() {
           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$h" \
           -- "$reason" -p "/cc-cmds:autopilot-router-shift $m" ) < /dev/null >> "$log" 2>&1 || rc=$?
     done
+    # A run that ended while the gate held the wait — its deadline or its
+    # ceiling reached while the host slept — refuses the next `대기` with 3.
+    # Its report or its done file is the outcome, read by the caller.
+    collected "$clone" "$doc" && return 0
+    [[ -e "$rd/done" ]] && return 0
     case "$rc" in
       0) ;;
       *) return "$rc" ;;
     esac
-    collected "$clone" "$doc" && return 0
-    [[ -e "$rd/done" ]] && return 0
     case "$(latest_handoff_reason "$clone/docs/pipeline-run/$rid.md")" in
       상한) reason="상한" ;;
       승인) return 5 ;;
