@@ -5899,8 +5899,10 @@ check "비지 않은 --sections 는 가드를 지나간다" "$emp_rc" "0"
 # CI weighs the shard partition by the markers a timed cut writes, so two
 # things are asserted on one small cut of the real file, run once without the
 # variable and once with it: the marker file holds exactly one line for the
-# section, one for the prelude the selector inserted and one for the epilogue,
-# and the two runs pass the same assertions with the same exit status. The
+# head (written in front of the cut's first marker, so the head time leaves the
+# prelude out), one for the prelude the selector inserted, one for the section
+# and one for the epilogue, and the two runs pass the same assertions with the
+# same exit status. The
 # cut is taken from the tree's own file rather than `$SELF`, which inside a cut
 # is the cut, and it names `0d` because that section stands on nothing another
 # section makes and runs in seconds.
@@ -5909,7 +5911,7 @@ tim_suite="$repo_root/scripts/test-gate.sh"
 tim_rc_a=0; bash "$tim_suite" --run-one 0d > "$tim_dir/a.out" 2>&1 || tim_rc_a=$?
 tim_rc_b=0; CC_GATE_TIMING_OUT="$tim_dir/t.tsv" bash "$tim_suite" --run-one 0d > "$tim_dir/b.out" 2>&1 || tim_rc_b=$?
 tim_ids=$(cut -f1 "$tim_dir/t.tsv" 2>/dev/null | tr '\n' ' ')
-check "표지 파일에 컷의 절·프렐류드·에필로그가 한 줄씩 있다" "$tim_ids" "@pre-static 0d @epilogue "
+check "표지 파일에 컷의 절·프렐류드·에필로그가 한 줄씩 있다" "$tim_ids" "@head @pre-static 0d @epilogue "
 tim_bad=$(awk -F '\t' 'NF != 2 || $2 !~ /^[0-9]+([.,][0-9]+)?$/' "$tim_dir/t.tsv" 2>/dev/null | grep -c . || true)
 check "표지 줄은 id 와 시각 두 칸이다" "${tim_bad:-0}" "0"
 tim_pass_a=$(grep -c '^PASS:' "$tim_dir/a.out" || true)
@@ -5922,7 +5924,7 @@ fi
 # The nested runs inside the timed cut never saw the variable: the selector
 # drops it before the cut runs, so 0d's own calls to the selector wrote nothing.
 tim_n=$(grep -c . "$tim_dir/t.tsv" 2>/dev/null || true)
-check "중첩된 선택기 호출은 표지를 덧쓰지 않는다" "${tim_n:-0}" "3"
+check "중첩된 선택기 호출은 표지를 덧쓰지 않는다" "${tim_n:-0}" "4"
 tim_rc_q=0; CC_GATE_TIMING_OUT="$tim_dir/it's.tsv" bash "$tim_suite" --run-one 0d >/dev/null 2>&1 || tim_rc_q=$?
 check "작은따옴표가 든 표지 경로는 exit 2 로 멈춘다" "$tim_rc_q" "2"
 CC_GATE_TIMING_OUT="$tim_dir/list.tsv" bash "$tim_suite" --list >/dev/null 2>&1 || true
@@ -5999,8 +6001,81 @@ check "FAIL 줄 수와 합계 줄은 보고가 더해지기 전과 같다" \
   "$(tgf_n sec '^FAIL: ' err)|$(tgf_total sec)|$(tgf_n pre '^FAIL: ' err)|$(tgf_total pre)" \
   "3|test-gate: ${tgf_pass_clean:-?} passed, 3 failed|4|test-gate: ${tgf_pass_clean:-?} passed, 4 failed"
 check "실패 절 보고가 켜진 컷의 표지 파일은 그대로다" \
-  "$(cut -f1 "$tgf_dir/t.tsv" 2>/dev/null | tr '\n' ' ')" "@pre-static 0c 0d @epilogue "
+  "$(cut -f1 "$tgf_dir/t.tsv" 2>/dev/null | tr '\n' ' ')" "@head @pre-static 0c 0d @epilogue "
 rm -rf "$tgf_dir"
+
+# ---------------------------------------------------------------------------
+# 0f. The digest mode, the isolation record and the section-scoped trace
+# --- section: 0f | group: static | covers: - | anchors: 다이제스트는 --list 의 절마다 한 줄이다, 기록 파일에 판정 줄과 잡음 줄이 절 id 와 함께 있다, 추적한 컷의 판정은 추적하지 않은 컷과 같다 ---
+# ---------------------------------------------------------------------------
+# CI finds the sections a change touched by comparing two digest lists, and
+# runs each of them in several contexts that keep a record and a trace. All
+# three are asserted here on the tree's own file and on copies of it, the way
+# 0e asserts the markers: `0d` is the section the cuts run, since it stands on
+# nothing another section makes and runs in seconds. The copy carries a skip,
+# a failure and a noise line at the end of 0d, so one run shows every kind of
+# record line. The trace needs bash 4.1 on PATH; an older one is asked to trace
+# once, to show it stops, and the trace cases are skipped.
+isf_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-iso.XXXXXX")
+isf_suite="$repo_root/scripts/test-gate.sh"
+isf_rc=0; bash "$isf_suite" --digests > "$isf_dir/d.tsv" 2> "$isf_dir/d.err" || isf_rc=$?
+bash "$isf_suite" --list 2>/dev/null | awk '{ print $1 }' | LC_ALL=C sort > "$isf_dir/list"
+isf_shape=$(awk -F '\t' 'NF != 2 || length($2) != 64 || $2 ~ /[^0-9a-f]/' "$isf_dir/d.tsv" | grep -c . || true)
+check "다이제스트는 --list 의 절마다 한 줄이다" \
+  "$isf_rc|${isf_shape:-0}|$(cut -f1 "$isf_dir/d.tsv" | LC_ALL=C sort | cmp -s - "$isf_dir/list" && echo same)" "0|0|same"
+check "--from 으로 같은 파일을 주면 같은 목록이다" \
+  "$(bash "$isf_suite" --digests --from "$isf_suite" 2>/dev/null | cmp -s - "$isf_dir/d.tsv" && echo same)" "same"
+awk '{ if ($0 == "# This was the file'"'"'s only silent fallback. An id nobody declared says so and" && !m) { print $0 " x"; m = 1 } else print }' \
+  "$isf_suite" > "$isf_dir/edit.sh"
+bash "$isf_suite" --digests --from "$isf_dir/edit.sh" > "$isf_dir/e.tsv" 2>/dev/null || true
+check "한 절 본문의 바뀐 줄은 그 절의 다이제스트만 바꾼다" \
+  "$(awk -F '\t' 'FNR == NR { b[$1] = $2; next } !($1 in b) || b[$1] != $2 { printf "%s ", $1 }' "$isf_dir/d.tsv" "$isf_dir/e.tsv")" "0d "
+awk '{ if (index($0, "# --- section: 0c |") == 1 && !m) { sub(/section: 0c /, "section: 0d "); m = 1 } print }' "$isf_suite" > "$isf_dir/dup.sh"
+isf_rc=0; bash "$isf_suite" --digests --from "$isf_dir/dup.sh" > "$isf_dir/dup.out" 2> "$isf_dir/dup.err" || isf_rc=$?
+check "중복 id 가 든 파일은 다이제스트를 내지 않고 exit 2 다" \
+  "$isf_rc|$(grep -c . "$isf_dir/dup.out" || true)|$(grep -c '중복 id=0d' "$isf_dir/dup.err" || true)" "2|0|1"
+
+awk '
+  { print }
+  index($0, "check \"비지 않은 --sections 는 가드를 지나간다\"") == 1 && !d {
+    print "skip \"의도된 건너뜀 0f\""; print "bad \"의도된 실패 0f\" x"; print "tg_no_such_cmd_0f"; d = 1
+  }
+' "$isf_suite" > "$isf_dir/rec.sh"
+env -u CC_TEST_GATE_ORACLE_INNER TMPDIR="$isf_dir" CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_ISO_OUT="$isf_dir/rec" \
+  bash "$isf_dir/rec.sh" --run-one 0d > "$isf_dir/rec.out" 2> "$isf_dir/rec.err" || true
+isf_kinds=""
+for isf_want in "0d	PASS	빈 --sections 는 exit 2 로 멈춘다" "0d	SKIP	의도된 건너뜀 0f" "0d	FAIL	의도된 실패 0f" \
+                "0d	NOISE	tg_no_such_cmd_0f: command not found"; do
+  isf_kinds="$isf_kinds$(grep -cxF "$isf_want" "$isf_dir/rec/rec.tsv" 2>/dev/null || true)"
+done
+check "기록 파일에 판정 줄과 잡음 줄이 절 id 와 함께 있다" "$isf_kinds" "1111"
+# The fixture checks above every section print before the record is opened, so
+# the record's PASS lines are the stream's last ones, in the same order.
+isf_n=$(grep -c '	PASS	' "$isf_dir/rec/rec.tsv" 2>/dev/null || true)
+isf_rec_pass=$(awk -F '\t' '$2 == "PASS" { print $3 }' "$isf_dir/rec/rec.tsv" 2>/dev/null)
+isf_out_pass=$(sed -n 's/^PASS: //p' "$isf_dir/rec.out" | tail -n "${isf_n:-0}")
+if [ "${isf_n:-0}" -ge 1 ] && [ "$isf_rec_pass" = "$isf_out_pass" ]; then
+  ok "기록 파일의 PASS 줄은 PASS 스트림의 줄과 같은 순서로 같다 (${isf_n}줄)"
+else
+  bad "기록 파일의 PASS 줄은 PASS 스트림의 줄과 같은 순서로 같다" "기록 ${isf_n:-0}줄: $(printf '%s' "$isf_rec_pass" | tr '\n' '|')"
+fi
+
+isf_bv=$(bash -c 'if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 1 ]; }; then echo ok; fi' 2>/dev/null)
+isf_rc_a=0; bash "$isf_suite" --run-one 0d > "$isf_dir/a.out" 2>&1 || isf_rc_a=$?
+isf_rc_t=0; CC_GATE_ISO_OUT="$isf_dir/tr" CC_GATE_ISO_TRACE=0d bash "$isf_suite" --run-one 0d > "$isf_dir/t.out" 2>&1 || isf_rc_t=$?
+if [ "$isf_bv" = "ok" ]; then
+  isf_pass_a=$(grep -c '^PASS:' "$isf_dir/a.out" || true)
+  isf_pass_t=$(grep -c '^PASS:' "$isf_dir/t.out" || true)
+  check "추적한 컷의 판정은 추적하지 않은 컷과 같다" \
+    "$isf_rc_t|${isf_pass_t:-0}|$(grep -c '^+' "$isf_dir/t.out" || true)" "$isf_rc_a|${isf_pass_a:-0}|0"
+  check "추적한 절의 줄 집합이 컷 좌표로 남고 대응표가 있다" \
+    "$( [ "$(grep -c '^CUT	[0-9]' "$isf_dir/tr/trace-0d.lines" 2>/dev/null || true)" -ge 1 ] && echo lines)|$( [ -s "$isf_dir/tr/linemap.tsv" ] && echo map)" "lines|map"
+else
+  check "bash 4.1 미만에 추적을 시키면 exit 2 로 멈춘다" "$isf_rc_t" "2"
+  skip "추적한 컷의 판정은 추적하지 않은 컷과 같다 — PATH 의 bash 가 4.1 미만"
+  skip "추적한 절의 줄 집합이 컷 좌표로 남고 대응표가 있다 — PATH 의 bash 가 4.1 미만"
+fi
+rm -rf "$isf_dir"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
@@ -52314,22 +52389,27 @@ check "98: 그 파견의 stage-wait 행은 하나이고 차용 중 재개 대기
 
 # ---------------------------------------------------------------------------
 # 98. gate-shard 레시피의 레인 — 행 배정, 레인별 결과 파일, 종료 코드와 합계 줄 검사
-# --- section: 98 | covers: gate-shard | anchors: 98: 두 레인이 합계 줄을 내면 통과하고 행 k 와 k+N 의 결과 파일을 남긴다, 98: 레인마다 자기 TMPDIR 를 받는다, 98: 레인 출력은 행 순서대로 통째로 찍힌다, 98: 배정 없는 레인은 빈 행으로 끝나 통과한다, 98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다, 98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다, 98: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다, 98: 레인 사례를 모두 돌렸다 ---
+# --- section: 98 | covers: gate-shard | anchors: 98: 두 레인이 합계 줄을 내면 통과하고 행 k 와 k+N 의 결과 파일을 남긴다, 98: 레인마다 자기 TMPDIR 를 받는다, 98: 레인 출력은 행 순서대로 통째로 찍힌다, 98: 배정 없는 레인은 빈 행으로 끝나 통과한다, 98: 한 레인이 0 이 아닌 종료 코드를 내면 레시피가 실패한다, 98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다, 98: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다, 98: 얹힌 절은 행의 컷에 붙고 추적·얹힘·기록 변수로 넘어간다, 98: 추가 행은 정규 컷 없이 단독만 돌고 결과가 격리 전용 행이다, 98: 둘째 단독은 런 id 토막이 든 TMPDIR 아래서 돈다, 98: 단독의 표지는 행의 @end 뒤에 @iso: 로 찍힌다, 98: 추가 행 범위 밖의 SHARD 는 exit 2 로 멈춘다, 98: 레인 사례를 모두 돌렸다 ---
 #
 # Makefile 과 분할기를 임시 체크아웃에 복사하고 가짜 묶음을 둔 뒤 진짜 `make
 # gate-shard` 레시피를 부른다. 러너 2 개 × 레인 2 개라 표는 4 행이고, 러너 k 는 행
 # k 와 k+2 를 함께 돈다. 가짜 묶음은 `--sections` 의 첫 id 로 동작을 고른다:
 # `fail` 로 시작하면 합계 줄을 내고 종료 1, `nototal` 이면 합계 줄 없이 종료 0,
 # 그 밖에는 합계 줄을 내고 종료 0 이다. 받은 TMPDIR 는 로그 디렉터리에 남긴다.
+# 격리 열이 있는 표는 추가 행 하나(행 5)를 더 두고, 가짜 묶음은 받은 선택과 격리
+# 변수를 `iso` 로그에 한 줄씩 적는다. 단독은 복사한 `gate-isolation.sh` 가 이 가짜
+# 묶음으로 돌린다.
 # 사례 수를 마지막 단언으로 고정해, 사례 하나를 조용히 건너뛴 고침은 통과하지 못한다.
 # ---------------------------------------------------------------------------
 d98="$WORK/d98"; mkdir -p "$d98/repo/scripts" "$d98/log"
 cp "$repo_root/Makefile" "$d98/repo/Makefile"
 cp "$repo_root/scripts/gate-shard.sh" "$d98/repo/scripts/gate-shard.sh"
+cp "$repo_root/scripts/gate-isolation.sh" "$d98/repo/scripts/gate-isolation.sh"
 cat > "$d98/repo/scripts/test-gate.sh" <<'EOF98'
 #!/usr/bin/env bash
 ids="$2"
 printf '%s\n' "${TMPDIR:-}" > "$F98_LOG/tmpdir-${ids%%,*}"
+printf '%s|%s|%s|%s|%s\n' "$ids" "${CC_GATE_ISO_TRACE:-}" "${CC_GATE_ISO_OVERLAY:-}" "${CC_GATE_ISO_SOLO:-}" "${CC_GATE_ISO_OUT:-}" >> "$F98_LOG/iso"
 printf 'PASS: fake %s\n' "$ids"
 case "$ids" in
   fail*)    printf '\ntest-gate: 1 passed, 1 failed\n'; exit 1 ;;
@@ -52338,12 +52418,13 @@ case "$ids" in
 esac
 EOF98
 c98=0
-# m98 <러너> <표> <출력 디렉터리> — 레시피의 종료 코드를 rc98 에, 합친 출력을 o98 에 둔다.
+# m98 <러너> <표> <출력 디렉터리> [추가 행 수] — 레시피의 종료 코드를 rc98 에, 합친
+# 출력을 o98 에 둔다.
 m98() {
   c98=$((c98 + 1)); rm -rf "$3"
   rc98=0
   o98=$( ( unset MAKEFLAGS MFLAGS MAKELEVEL; cd "$d98/repo" && F98_LOG="$d98/log" make -s --no-print-directory gate-shard \
-      SHARD="$1" GATE_SHARDS=2 GATE_LANES=2 GATE_TABLE="$2" GATE_OUT_DIR="$3" ) 2>&1 ) || rc98=$?
+      SHARD="$1" GATE_SHARDS=2 GATE_LANES=2 GATE_EXTRA="${4:-0}" GATE_TABLE="$2" GATE_OUT_DIR="$3" ) 2>&1 ) || rc98=$?
 }
 printf '1\t5\tok1\n2\t5\tok2\n3\t5\tok3\n4\t0\t\n' > "$d98/t-ok.tsv"
 m98 1 "$d98/t-ok.tsv" "$d98/o1"
@@ -52373,7 +52454,27 @@ case "$rc98/$o98" in
   *) bad "98: 합계 줄이 없는 레인은 종료 코드 0 이어도 레시피가 실패한다" "rc=$rc98 $o98" ;;
 esac
 check "98: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다" "$(cat "$d98/o4/result-1.tsv" 2>/dev/null)" "$(printf '1\t0\t-')"
-check "98: 레인 사례를 모두 돌렸다" "$c98" "4"
+# 행 1 에는 x 가 얹히고, 추가 행 5 에는 x 의 단독 둘만 실린다.
+printf '1\t5\tok1\tx\t\t\n2\t5\tok2\t\t\t\n3\t5\tok3\t\t\t\n4\t0\t\t\t\t\n5\t3\t\t\t1:x;2:x\t\n' > "$d98/t-iso.tsv"
+: > "$d98/log/iso"
+m98 1 "$d98/t-iso.tsv" "$d98/o5" 1
+check "98: 얹힌 절은 행의 컷에 붙고 추적·얹힘·기록 변수로 넘어간다" \
+  "$rc98|$(grep '^ok1,' "$d98/log/iso")|$(cat "$d98/o5/result-1.tsv" 2>/dev/null)" \
+  "0|ok1,x|x|x||$d98/o5/iso-1/row|$(printf '1\t0\ttest-gate: 1 passed, 0 failed')"
+: > "$d98/log/iso"
+m98 5 "$d98/t-iso.tsv" "$d98/o6" 1
+check "98: 추가 행은 정규 컷 없이 단독만 돌고 결과가 격리 전용 행이다" \
+  "$rc98|$(cat "$d98/o6/result-5.tsv" 2>/dev/null)|$(cut -d'|' -f1,2,4 "$d98/log/iso" | tr '\n' ' ')|$(cat "$d98/o6/iso-5/solo1-x/rc" "$d98/o6/iso-5/solo2-x/rc" 2>/dev/null | tr '\n' ' ')" \
+  "0|$(printf '5\t0\t격리 전용 행')|x|x|1 x|x|1 |0 0 "
+case "$(cat "$d98/log/tmpdir-x" 2>/dev/null)" in
+  */iso-R1R2R3R4R5*) ok "98: 둘째 단독은 런 id 토막이 든 TMPDIR 아래서 돈다" ;;
+  *) bad "98: 둘째 단독은 런 id 토막이 든 TMPDIR 아래서 돈다" "$(cat "$d98/log/tmpdir-x" 2>/dev/null)" ;;
+esac
+check "98: 단독의 표지는 행의 @end 뒤에 @iso: 로 찍힌다" \
+  "$(cut -f1 "$d98/o6/timing-5.tsv" 2>/dev/null | tr '\n' ' ')" "@start @end @iso:@start @iso:@end @iso:@start @iso:@end "
+m98 6 "$d98/t-iso.tsv" "$d98/o7" 1
+check "98: 추가 행 범위 밖의 SHARD 는 exit 2 로 멈춘다" "$rc98" "2"
+check "98: 레인 사례를 모두 돌렸다" "$c98" "7"
 unset -f m98
 
 # --- epilogue-begin ---
