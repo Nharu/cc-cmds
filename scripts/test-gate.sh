@@ -43450,8 +43450,10 @@ fc67d_names=$(printf '%s\n%s\n' "$fc67d_L" "$fc67d_S" | grep . | sort -u)
 # 함수 이름이 바뀌어 sed 가 빈 본문을 내면 아래 포함 단언은 아무것도 배제하지 못한 채
 # 통과한다. 그래서 유도 집합이 실제로 읽혔는지를 먼저 묻는다.
 fc67d_lmiss=''
+# shellcheck disable=SC2086
+fc67d_Lsp=" $(printf '%s ' $fc67d_L)"
 for n in CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_HALT_ANSWER; do
-  printf '%s\n' "$fc67d_L" | grep -qxF "$n" || fc67d_lmiss="$fc67d_lmiss $n"
+  case "$fc67d_Lsp" in *" $n "*) ;; *) fc67d_lmiss="$fc67d_lmiss $n" ;; esac
 done
 fc67d_lc=$(printf '%s\n' "$fc67d_L" | grep -c . || true)
 if [ "${fc67d_lc:-0}" -ge 10 ] && [ -z "$fc67d_lmiss" ]; then ok "67d: 기동부에서 변수 집합을 읽었다"
