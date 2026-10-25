@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.117.1] - 2026-10-25
+
+`scripts/measure-test-share.sh` 가 백그라운드 시험의 끝 시각을 실제로 전달된 완료 통지에서만 읽는다. 턴 도중에 도착한 통지(`attachment` 레코드의 `queued_command` 첨부)를 읽지 못해 그 기동을 세션 끝까지 돈 것으로 세던 문제와, 어시스턴트 글이나 도구 결과 안에 인용된 통지 문면이 끝 시각을 앞당기던 문제를 함께 고쳤다. 출력 열·행 순서·마지막 두 줄의 문면은 그대로다.
+
+### Fixed
+
+- **턴 도중 통지** — `type` 이 `attachment` 이고 `attachment.type` 이 `queued_command` 인 레코드의 `attachment.prompt` 에서도 통지를 찾는다. `commandMode`·`origin` 의 값은 조건으로 쓰지 않는다.
+- **인용 문면** — 통지는 `type: user` 레코드의 문자열 내용과 위 첨부에서만 찾는다. 어시스턴트 레코드, `type: user` 의 배열 내용(도구 결과 포함), `queue-operation` 레코드, 다른 종류의 첨부에 든 통지 문면은 끝 시각으로 치지 않는다.
+- **여러 통지** — 같은 작업 id 에 통지가 여럿이면 기록 순서가 아니라 가장 이른 시각을 끝으로 친다.
+- **픽스처 시험** — 위 세 규칙과 통지가 없는 기동의 `unclosed` 셈을 네 경우로 고정하고 통과 수 하한을 19 로 올렸다.
+
+### Post-install notes
+
+이미 잰 기준선은 이 판으로 다시 재야 한다. 재는 일은 메인 체크아웃에서 사람이 한다.
+
 ## [2.117.0] - 2026-10-23
 
 킥오프 기본값 파일과 환경변수로 이 런의 스테이지에 켤 사용자 플러그인을 미리 적어 둘 수 있다. 5o 에서 확정한 키는 `## 인가` 의 `플러그인 허용` 행(`사유=킥오프 기본값`)으로 얼고, 재킥오프는 앞선 런의 플러그인 허용 행을 바이트 그대로 이어 쓴다. 키가 지금 시드이거나 어느 계정에도 없으면 그 행만 버리고, 계정 파일을 읽지 못해 판정할 수 없는 키의 행은 그대로 잇는다.
