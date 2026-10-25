@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -482,7 +482,7 @@ $(TEST_GOALS): run/%:
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
-	run-gate-timing-selftest run-ci-duration-selftest
+	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 # How many runners the gate suite runs on (N), and how many rows each runner
 # runs at once (L, its lanes). The partition is cut into S = N × L rows; runner
@@ -499,7 +499,17 @@ GATE_SHARDS ?= 26
 GATE_LANES ?= 1
 GATE_SLOTS := $(shell echo $$(( $(GATE_SHARDS) * $(GATE_LANES) )))
 
+# The isolation check of the sections a pull request changed rides on the rows
+# above and, when their room runs out, on extra rows S+1..S+E, one runner each.
+# GATE_ISO_EXTRA is the most CI's plan job may open; GATE_EXTRA is how many the
+# table a runner was handed actually has, which only the plan job knows.
+GATE_ISO_EXTRA ?= 8
+GATE_EXTRA ?= 0
+
 # So CI can read the numbers instead of spelling them a second time.
+print-gate-iso-extra:
+	@echo $(GATE_ISO_EXTRA)
+
 print-gate-shards:
 	@echo $(GATE_SHARDS)
 
@@ -536,7 +546,7 @@ ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
-	run-gate-timing-selftest run-ci-duration-selftest
+	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 test-rest: $(REST_GOALS)
 
@@ -579,7 +589,8 @@ rest-shard:
 # `@end` around the row from here, and the selector's own line in front of each
 # section, prelude and the epilogue), `lane-<K>.out` (the suite's output) and
 # `result-<K>.tsv` (`<K><TAB><exit code><TAB><summary>`, the summary being the
-# suite's total line, `빈 행` for an empty row, or `-`). Each lane's TMPDIR is
+# suite's total line, `빈 행` for an empty row, `격리 전용 행` for a row that
+# carries isolation work only, or `-`). Each lane's TMPDIR is
 # its own `lane-<K>` directory there. A lane fails on a non-zero exit code and
 # on a missing total line alike — a suite that died before its total never ran
 # its tail — and the runner fails when any lane did. The outputs reach the log
@@ -590,6 +601,15 @@ rest-shard:
 # ONE LANE WITHOUT AN OUTPUT DIRECTORY IS THE PLAIN SHARD. With GATE_LANES=1
 # and no GATE_OUT_DIR the suite runs in the foreground with its own output, and
 # GATE_TIMING_OUT, an absolute path, asks for the same markers as above.
+#
+# A ROW OF A TABLE WITH ISOLATION WORK runs it in the same lane. The sections
+# laid over the row join its cut, traced, with their markers under `@iso:`, and
+# the row's own changed sections are traced too; that cut's record goes to
+# `iso-<K>/row`. After `@end` the row's solos run, each a process of its own
+# (`scripts/gate-isolation.sh solos`), into `iso-<K>/solo<n>-<id>`. A solo's
+# exit code is the comparison's to judge, not the row's. An extra row (SHARD
+# S+1..S+E, one runner, no lanes) has no third column: it runs its solos only
+# and its result is `격리 전용 행`.
 GATE_TIMING ?= scripts/gate-timing.tsv
 GATE_TABLE ?=
 GATE_TIMING_OUT ?=
@@ -598,12 +618,19 @@ GATE_OUT_DIR ?=
 gate-shard:
 	@pick() { \
 	  if [ -n '$(GATE_TABLE)' ]; then \
-	    bash scripts/gate-shard.sh --shards $(GATE_SLOTS) --shard "$$1" --from-table '$(GATE_TABLE)'; \
+	    bash scripts/gate-shard.sh --shards $(GATE_SLOTS) --extra $(GATE_EXTRA) --shard "$$@" --from-table '$(GATE_TABLE)'; \
 	  else \
 	    bash scripts/gate-shard.sh --shards $(GATE_SLOTS) --timing '$(GATE_TIMING)' --shard "$$1"; \
 	  fi; }; \
 	case '$(SHARD)' in ''|*[!0-9]*|0) echo "gate-shard: SHARD 는 1..$(GATE_SHARDS) 의 러너 번호입니다: '$(SHARD)'" >&2; exit 2 ;; esac; \
-	[ '$(SHARD)' -le '$(GATE_SHARDS)' ] || { echo "gate-shard: SHARD $(SHARD) 가 러너 수 $(GATE_SHARDS) 를 넘습니다" >&2; exit 2; }; \
+	extra=0; \
+	if [ '$(SHARD)' -gt '$(GATE_SHARDS)' ]; then \
+	  if [ '$(SHARD)' -le '$(GATE_SLOTS)' ] || [ '$(SHARD)' -gt "$$(( $(GATE_SLOTS) + $(GATE_EXTRA) ))" ]; then \
+	    echo "gate-shard: SHARD $(SHARD) 가 러너 수 $(GATE_SHARDS) 를 넘고 추가 행 $$(( $(GATE_SLOTS) + 1 ))..$$(( $(GATE_SLOTS) + $(GATE_EXTRA) )) 도 아닙니다" >&2; exit 2; \
+	  fi; \
+	  [ -n '$(GATE_TABLE)' ] && [ -n '$(GATE_OUT_DIR)' ] || { echo "gate-shard: 추가 행 $(SHARD) 는 GATE_TABLE 과 GATE_OUT_DIR 로만 돕니다" >&2; exit 2; }; \
+	  extra=1; \
+	fi; \
 	if [ '$(GATE_LANES)' = 1 ] && [ -z '$(GATE_OUT_DIR)' ]; then \
 	  out='$(GATE_TIMING_OUT)'; \
 	  mark() { [ -z "$$out" ] || printf '%s\t%s\n' "$$1" "$$(date +%s)" >> "$$out"; }; \
@@ -611,6 +638,7 @@ gate-shard:
 	  ids=$$(pick '$(SHARD)'); rc=$$?; \
 	  if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SLOTS): 배정된 절이 없습니다"; mark @end; exit 0; fi; \
 	  [ "$$rc" = "0" ] || exit "$$rc"; \
+	  if [ -z "$$ids" ]; then echo "shard $(SHARD)/$(GATE_SLOTS): 격리 작업만 실린 행입니다 — GATE_OUT_DIR 없이는 돌리지 않습니다"; mark @end; exit 0; fi; \
 	  rc=0; CC_GATE_TIMING_OUT="$$out" bash scripts/test-gate.sh --sections "$$ids" || rc=$$?; \
 	  mark @end; exit "$$rc"; \
 	fi; \
@@ -626,17 +654,43 @@ gate-shard:
 	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; printf '%s\t0\t빈 행\n' "$$k" > "$$res"; return 0; \
 	  fi; \
 	  if [ "$$rc" != "0" ]; then printf '%s\t%s\t-\n' "$$k" "$$rc" > "$$res"; return "$$rc"; fi; \
+	  ov=; so=; own=; \
+	  if [ -n '$(GATE_TABLE)' ]; then \
+	    ov=$$(pick "$$k" --overlay 2>>"$$lo") && so=$$(pick "$$k" --solo 2>>"$$lo") && own=$$(pick "$$k" --own 2>>"$$lo") \
+	      || { printf '%s\t2\t-\n' "$$k" > "$$res"; return 2; }; \
+	  fi; \
 	  mkdir -p "$$od/lane-$$k"; \
-	  rc=0; TMPDIR="$$od/lane-$$k" CC_GATE_TIMING_OUT="$$tm" bash scripts/test-gate.sh --sections "$$ids" >> "$$lo" 2>&1 || rc=$$?; \
-	  printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; \
-	  tot=$$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$$' "$$lo" | tail -n 1); \
+	  rc=0; \
+	  if [ -z "$$ids" ]; then \
+	    echo "row $$k/$(GATE_SLOTS): 격리 작업만 실린 행입니다" >> "$$lo"; \
+	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; tot='격리 전용 행'; \
+	  elif [ -n "$$ov$$own" ]; then \
+	    TMPDIR="$$od/lane-$$k" CC_GATE_TIMING_OUT="$$tm" CC_GATE_ISO_OUT="$$od/iso-$$k/row" \
+	      CC_GATE_ISO_TRACE="$$ov$${ov:+$${own:+,}}$$own" CC_GATE_ISO_OVERLAY="$$ov" \
+	      bash scripts/test-gate.sh --sections "$$ids$${ov:+,$$ov}" >> "$$lo" 2>&1 || rc=$$?; \
+	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; \
+	    tot=$$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$$' "$$lo" | tail -n 1); \
+	  else \
+	    TMPDIR="$$od/lane-$$k" CC_GATE_TIMING_OUT="$$tm" bash scripts/test-gate.sh --sections "$$ids" >> "$$lo" 2>&1 || rc=$$?; \
+	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; \
+	    tot=$$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$$' "$$lo" | tail -n 1); \
+	  fi; \
 	  printf '%s\t%s\t%s\n' "$$k" "$$rc" "$${tot:--}" > "$$res"; \
+	  if [ -n "$$so" ]; then \
+	    echo "row $$k/$(GATE_SLOTS): 단독 $$(printf '%s' "$$so" | tr ';' '\n' | grep -c .)개 — 기록은 iso-$$k" >> "$$lo"; \
+	    bash scripts/gate-isolation.sh solos --out "$$od/iso-$$k" --spec "$$so" --timing-out "$$tm" --tmp "$$od/lane-$$k" >> "$$lo" 2>&1 \
+	      || echo "row $$k/$(GATE_SLOTS): 단독을 돌리지 못했습니다 — 비교에서 맥락 없음으로 드러납니다" >> "$$lo"; \
+	  fi; \
 	  return "$$rc"; }; \
 	rows=; pids=; j=0; \
-	while [ "$$j" -lt '$(GATE_LANES)' ]; do \
-	  k=$$(( $(SHARD) + j * $(GATE_SHARDS) )); rows="$$rows $$k"; \
-	  lane "$$k" & pids="$$pids $$!"; j=$$((j + 1)); \
-	done; \
+	if [ "$$extra" = 1 ]; then \
+	  rows=' $(SHARD)'; lane '$(SHARD)' & pids=" $$!"; \
+	else \
+	  while [ "$$j" -lt '$(GATE_LANES)' ]; do \
+	    k=$$(( $(SHARD) + j * $(GATE_SHARDS) )); rows="$$rows $$k"; \
+	    lane "$$k" & pids="$$pids $$!"; j=$$((j + 1)); \
+	  done; \
+	fi; \
 	set -- $$pids; rcs=; \
 	for k in $$rows; do rc=0; wait "$$1" || rc=$$?; shift; rcs="$$rcs $$k:$$rc"; done; \
 	bad=0; \
@@ -649,7 +703,7 @@ gate-shard:
 	  sum=$$(cut -f3 "$$od/result-$$k.tsv" 2>/dev/null); \
 	  if [ "$$rc" != "0" ]; then echo "gate-shard: 행 $$k 의 레인이 종료 코드 $$rc 로 끝났습니다" >&2; bad=1; fi; \
 	  case "$$sum" in \
-	    '빈 행') ;; \
+	    '빈 행'|'격리 전용 행') ;; \
 	    'test-gate: '*) ;; \
 	    *) echo "gate-shard: 행 $$k 의 레인 출력에 합계 줄(test-gate: <n> passed, <n> failed)이 없습니다" >&2; bad=1 ;; \
 	  esac; \
@@ -680,6 +734,37 @@ run-test-tree-selftest:
 
 run-rest-shard-selftest:
 	bash scripts/rest-shard.sh --self-test
+
+# The comparator's cases run on made-up records; the reduced-suite cases cut a
+# few made-up sections with the real selector and need a bash that can trace
+# (4.1 or newer), and are skipped with a line saying so under an older one.
+run-gate-isolation-selftest:
+	ISO_BASH='$(ISO_BASH)' bash scripts/gate-isolation.sh --self-test
+
+# The isolation check run by hand, on this machine. Each needs a bash of 4.1 or
+# newer in ISO_BASH; sweep and capacity weigh with ISO_TIMING, or with the
+# median of the latest master artifacts when it is not given.
+#   isolation-check     the solos of each id of ISO_SECTIONS and one cut of
+#                       them with ISO_WITH
+#   isolation-sweep     every section, resumable in ISO_OUT; runs of
+#                       consecutive sections of at most ISO_CHUNK_S seconds
+#   isolation-capacity  whether the solos of what changed since BASE fit the
+#                       rows CI would have
+ISO_BASH ?= bash
+ISO_SECTIONS ?=
+ISO_WITH ?=
+ISO_TIMING ?=
+ISO_OUT ?=
+ISO_CHUNK_S ?= 5400
+
+isolation-check:
+	ISO_BASH='$(ISO_BASH)' bash scripts/gate-isolation.sh check --sections '$(ISO_SECTIONS)' --with '$(ISO_WITH)' $(if $(ISO_OUT),--out '$(ISO_OUT)')
+
+isolation-sweep:
+	ISO_BASH='$(ISO_BASH)' ISO_TIMING='$(ISO_TIMING)' ISO_OUT='$(ISO_OUT)' ISO_CHUNK_S='$(ISO_CHUNK_S)' bash scripts/gate-isolation.sh sweep
+
+isolation-capacity:
+	ISO_TIMING='$(ISO_TIMING)' bash scripts/gate-isolation.sh capacity --base '$(BASE)' --shards $(GATE_SLOTS) --iso-extra $(GATE_ISO_EXTRA)
 
 # Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
 # every section alone, the whole suite once and every shard once — about an hour
