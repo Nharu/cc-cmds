@@ -22018,6 +22018,25 @@ gate_ci_wait_capped() {
   cc_ci_wait_capped "$(gate_ci_wait_clock "$1" "$2" "$3")"
 }
 
+gate_ci_ack_failure() {
+  # gate_ci_ack_failure <segment> <V row> — true when one element of V's
+  # `실패 체크`, split on ", " as the poller joins them, is exactly the `체크` of a
+  # `라벨 인정` row of the segment's target. The target is the slice alias, else
+  # the segment's target alias. L5m and M3a read this one predicate, so the
+  # two never judge one failure two ways. Whether the pair already carries a
+  # label row is the caller's to read.
+  local seg=$1 v=$2 al acks
+  al=$(gate_slice_alias "$seg" 2>/dev/null) || al=""
+  [ -n "$al" ] || al=$(gate_segment_target_alias "$seg")
+  [ -n "$al" ] || return 1
+  acks=$(manifest_label_ack_checks "$al" 2>/dev/null || true)
+  [ -n "$acks" ] || return 1
+  gate_row_field "$v" '실패 체크' | GATE_CIN_ACKS="$acks" awk '
+    BEGIN { n = split(ENVIRON["GATE_CIN_ACKS"], w, "\n"); for (i = 1; i <= n; i++) if (w[i] != "") ack[w[i]] = 1 }
+    { m = split($0, e, /, /); for (j = 1; j <= m; j++) if (e[j] in ack) hit = 1 }
+    END { exit hit ? 0 : 1 }'
+}
+
 gate_ci_fix_next() {
   # gate_ci_fix_next <segment> — the CI join layer over a table `수정` of a CI
   # join target. H, u·a·g, V and "settled" read as in `gate_ci_next`. The first
@@ -22027,20 +22046,26 @@ gate_ci_fix_next() {
   #   M2  no V, V = 대기, V = 실패 with 진행 중 > 0, V = 판정 불가,
   #       or V = 미등록 not past the grace                         CI 대기
   #   M3  V = 통과, or round 0's 미등록 past the grace               수정
+  #   M3a settled, (segment, H) has no 처분=라벨 row, and one of V's
+  #       `실패 체크` is the `체크` of a `라벨 인정` row of the
+  #       segment's target                                       수정
   #   M4  settled, u < CI_RERUN_CAP                               CI 재실행
   #   M5  settled, a = 수락, the round's request saw the base fail  수정
   #   M6  otherwise (settled, a = 수락)                            CI 합류 수정
   # M2 waits for the verdict when the review ends first; M4 keeps the one rerun
-  # before a failure goes back to the implement stage. M1 and M5 carry no
+  # before a failure goes back to the implement stage. M1, M3a and M5 carry no
   # evidence that the segment's change can fix the failure, and the fix makes a
-  # new head whose CI starts again at round 0. A tip that does not resolve
-  # leaves `수정`.
-  local seg=$1 wt h rd u a g base v vst vpend
+  # new head whose CI starts again at round 0. M3a is L5m's predicate: a
+  # failure the manifest acknowledged is neither rerun nor handed to the
+  # implement stage as a CI fix, and the label path takes it on the new head
+  # once the review lets a merge through. A failed or open label round already
+  # reads `수정` at M1. A tip that does not resolve leaves `수정`.
+  local seg=$1 wt h rd u a g base lab v vst vpend
   wt=$(gate_segment_worktree "$seg")
   h=$(gate_worktree_tip "$wt") || { printf '수정'; return 0; }
   rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
   u=$(cc_ci_round_get "$rd" u); a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g)
-  base=$(cc_ci_round_get "$rd" base)
+  base=$(cc_ci_round_get "$rd" base); lab=$(cc_ci_round_get "$rd" lab)
   case "$a" in 열림|실패) printf '수정'; return 0 ;; esac
   v=$(gate_ci_verdict_row "$seg" "$h" "${g:-0}")
   vst=""; vpend=0
@@ -22055,6 +22080,9 @@ gate_ci_fix_next() {
   if [ "$vst" != "실패" ] || [ "$vpend" -gt 0 ]; then
     if gate_ci_wait_capped "$seg" "$h" "${g:-0}"; then printf 'CI 대기 한도'; else printf 'CI 대기'; fi
     return 0
+  fi
+  if [ "$lab" != "1" ] && gate_ci_ack_failure "$seg" "$v"; then
+    printf '수정'; return 0
   fi
   [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
   [ "$base" = "실패" ] && { printf '수정'; return 0; }
@@ -22182,7 +22210,7 @@ gate_ci_next() {
   # "no CI" once round 0's `미등록` is past the grace, or at the wait cap in
   # `CI 대기 한도`, which the router parks. Off a join target the layer reads as
   # before.
-  local seg=$1 nx=$2 b wt h r rd u a g f fix base v vst vpend ad lab acks fc al join=0
+  local seg=$1 nx=$2 b wt h r rd u a g f fix base v vst vpend ad lab join=0
   wt=$(gate_segment_worktree "$seg")
   h=$(gate_worktree_tip "$wt") || { gate_base_next "$seg" "$nx"; return 0; }
   if gate_ci_fix_after_last_cycle "$seg"; then
@@ -22229,20 +22257,8 @@ gate_ci_next() {
   [ "$vst" = "통과" ] && { printf '%s' "$nx"; return 0; }
   # Only a settled failure is left: the poller writes no other value.
   [ "$ad" = "라벨" ] && [ "$a" = "실패" ] && { printf 'CI 라벨 인정'; return 0; }
-  if [ "$lab" != "1" ]; then
-    al=$(gate_slice_alias "$seg" 2>/dev/null) || al=""
-    [ -n "$al" ] || al=$(gate_segment_target_alias "$seg")
-    acks=""
-    [ -z "$al" ] || acks=$(manifest_label_ack_checks "$al" 2>/dev/null || true)
-    if [ -n "$acks" ]; then
-      fc=$(gate_row_field "$v" '실패 체크')
-      if printf '%s' "$fc" | GATE_CIN_ACKS="$acks" awk '
-           BEGIN { n = split(ENVIRON["GATE_CIN_ACKS"], w, "\n"); for (i = 1; i <= n; i++) if (w[i] != "") ack[w[i]] = 1 }
-           { m = split($0, e, /, /); for (j = 1; j <= m; j++) if (e[j] in ack) hit = 1 }
-           END { exit hit ? 0 : 1 }'; then
-        printf 'CI 라벨 인정'; return 0
-      fi
-    fi
+  if [ "$lab" != "1" ] && gate_ci_ack_failure "$seg" "$v"; then
+    printf 'CI 라벨 인정'; return 0
   fi
   [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
   [ "$a" = "실패" ] && [ "$ad" = "재실행" ] && { printf 'CI 재실행'; return 0; }

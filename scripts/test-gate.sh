@@ -47526,6 +47526,10 @@ M88E="$D88E/manifest.md"
 printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88E" > "$M88E"
 M288E="$D88E/manifest-two.md"
 printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n- `target` | 별칭=u | 메인 워크트리=%s | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=o/u | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88E" "$G88E" > "$M288E"
+# 라벨 인정 행을 얹은 매니페스트 둘: MA88E 는 판정 행의 실패 체크 gate 를, MO88E 는 다른 체크를 인정한다.
+MA88E="$D88E/manifest-ack.md"; MO88E="$D88E/manifest-ack-other.md"
+{ cat "$M88E"; printf -- '- `라벨 인정` | 대상=t | 체크=gate | 라벨=api-change | 사유=테스트\n'; } > "$MA88E"
+{ cat "$M88E"; printf -- '- `라벨 인정` | 대상=t | 체크=other | 라벨=api-change | 사유=테스트\n'; } > "$MO88E"
 l88e() {  # l88e <이름> <워크트리> <리뷰 HEAD> <P1|none> [unrouted|-] [segment 행 추가 필드] — 원장 하나
   local l; l=$(lsr_ledger "w88e-$1")
   printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=x | 선행=없음%s | prev=x\n' "$2" "${6:+ | $6}" >> "$l"
@@ -47612,6 +47616,14 @@ ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"; ck88e "$L88E" 실패
 check "88e: 표가 리드 수정 이면 정착 실패에서도 리드 수정 이다" "$(n88e "$L88E")" "리드 수정"
 L88E=$(l88e fix-cap "$W88E" "$R88E" 1); ck88e "$L88E" 대기 0 0 "$T3H88E"
 check "88e: 수정 표의 대기 한도는 CI 대기 한도 다 (MW)" "$(n88e "$L88E")" "CI 대기 한도"
+# 라벨 인정 행이 실패한 체크(gate)를 이름 지으면 수정 갈래는 재실행도 CI 합류도 하지 않고
+# 수정 이다(M3a). 행이 다른 체크(other)를 이름 지으면 gate 의 실패는 여전히 재실행이다.
+L88E=$(l88e fix-ack "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"
+check "88e: 수정 표에서 라벨 인정 체크의 회차 0 정착 실패는 CI 재실행 이 아니라 수정 이다 (M3a)" \
+  "$(n88e "$L88E" "$MA88E")|$(n88e "$L88E" "$MO88E")" "수정|CI 재실행"
+L88E=$(l88e fix-ack-r1 "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
+check "88e: 재실행 뒤 라벨 인정 체크의 정착 실패도 CI 합류 수정 이 아니라 수정 이다 (M3a)" \
+  "$(n88e "$L88E" "$MA88E")|$(n88e "$L88E" "$MO88E")" "수정|CI 합류 수정"
 
 # 7 — 대기 한도. 커밋 시각·가장 이른 관측·수락 관측이 시계다.
 L88EO=$(l88e old "$WO88E" "$RO88E" 0); L88EOF=$(l88e old-fix "$WO88E" "$RO88E" 1)

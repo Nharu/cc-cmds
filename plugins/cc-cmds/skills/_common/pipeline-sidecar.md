@@ -1144,11 +1144,12 @@ L0 comes before the base rows because the base overlay sends a head that moved p
 | MW | the wait cap, where M2 would wait | `CI 대기 한도` | park the segment |
 | M2 | V absent, `대기`, `실패` with `진행 중` > 0, `판정 불가`, or a `미등록` not past the grace | `CI 대기` | as L3 |
 | M3 | V = `통과`, or round 0's `미등록` past the grace | `수정` | the review fix as today |
+| M3a | a settled `실패`, `(seg, H)` has no `처분=라벨` row, and one element of V's `실패 체크` is the `체크` of a `라벨 인정` row of the segment's target (L5m's predicate) | `수정` | the review fix as today, with no `CI 합류:` line |
 | M4 | a settled `실패` and `u` < `CI_RERUN_CAP` | `CI 재실행` | `act --kind ci-rerun` |
 | M5 | a settled `실패`, `a` = `수락`, and round `g`'s `요청` row reads `기본 브랜치=실패` | `수정` | the review fix as today |
 | M6 | otherwise | `CI 합류 수정` | dispatch the review fix with `CI 합류: <H>` |
 
-M1 and M5 carry no evidence that the segment's change can fix the failure, and the fix makes a new head whose CI starts again at round 0. A tip that does not resolve leaves `수정`.
+M1, M3a and M5 carry no evidence that the segment's change can fix the failure, and the fix makes a new head whose CI starts again at round 0. M3a reads the predicate L5m reads (`gate_ci_ack_failure`): a failure of a check the manifest acknowledged is neither rerun nor handed to the implement stage as a CI fix, and the label path takes it at L5m on the new head once its review lets a merge through. It reaches the same `수정` M1 gives an open or failed label round. A tip that does not resolve leaves `수정`.
 
 **The early rerun, E** (`gate_ci_early`), lets the one rerun go out while the segment's review still runs, since `다음` holds the table's value until that review ends. E holds on a CI join target that is neither `머지됨` nor `park`, with a live stage on the segment whose kind is a review, a tip that resolves, `u` = 0, round 0's V a settled `실패`, and no `blocked` row with `사유=도달 park`, `세그먼트=<seg>` and `도달 판정` `재실행대상미상` or `재실행배포트리거` below the first `checks` row of `(seg, H)` — a rerun act that parks does so before its `요청` row, so without that clause E would hold forever. The snapshot's `ci_early[]` carries one element per segment where E holds: `세그먼트`, `head sha`, and round 0's `PR` and `실패 체크`; it is outside H and outside the default `--fields`. The rerun act accepts when `다음` is `CI 재실행` or E holds; its other checks are unchanged.
 
