@@ -25,6 +25,16 @@ under `"modules"`, and its `register` hands `register(on, options)` on to the
 form as well. The form raises no banner of its own and reaches seat 1 instead,
 as the next section says.
 
+`gate-pretool.sh` belongs to the unattended pipeline: a run installs it through
+its own settings, never through `hooks.json`. `enforcement-surfaces.sh` beside
+it is the classifier of the enforcement surfaces that hook refuses to edit
+(project settings, transcripts, the rule catalog, instruction files). The hook
+only picks a refusal message per class it returns, and the gate, the driver and
+the screening tool classify a path with the same file, so they cannot disagree
+with the hook. A hook copy whose directory lacks the classifier refuses every
+edit, because a path it cannot classify is not one it may allow. Neither file
+raises a banner.
+
 ## The two seats, and there are only two
 
 | Seat | Event | Matcher | What it reads | Token |

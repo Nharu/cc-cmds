@@ -10661,14 +10661,18 @@ else
   bad "T17 등재된 예외" "훅 쪽 진술이 없다"
 fi
 # 그리고 그 단언이 실제로 대조한다. 결함을 심지 않은 통과는 공허할 수 있으므로,
-# 플러그인 배치를 그대로 흉내 낸 픽스처에서 훅의 룰 분기를 오케스트레이터 전체로
+# 플러그인 배치를 그대로 흉내 낸 픽스처에서 룰 분기를 오케스트레이터 전체로
 # 넓히고 같은 점검을 다시 돌린다 — 등재된 예외의 문면과 어긋났으니 잡혀야 한다.
+# 거부 팔은 훅이 소싱하는 분류기에 있으므로 변이도 분류기에 심고, 훅은 그대로
+# 함께 복사한다.
+ES_LIB="$(dirname "$HOOK")/enforcement-surfaces.sh"
 FX="$WORK/hookfix"
 mkdir -p "$FX/orchestrator" "$FX/hooks"
 cp "$script_dir"/*.sh "$FX/orchestrator/" 2>/dev/null
 cp -R "$script_dir/prompts" "$FX/orchestrator/" 2>/dev/null || true
-sed 's#\*/orchestrator/rules/\*)#*/orchestrator/*)#' "$HOOK" > "$FX/hooks/gate-pretool.sh"
-if grep -q '\*/orchestrator/\*' "$FX/hooks/gate-pretool.sh"; then
+cp "$HOOK" "$FX/hooks/gate-pretool.sh"
+sed 's#\*/orchestrator/rules/\*)#*/orchestrator/*)#' "$ES_LIB" > "$FX/hooks/enforcement-surfaces.sh"
+if grep -q '\*/orchestrator/\*)' "$FX/hooks/enforcement-surfaces.sh"; then
   env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
     bash "$FX/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
   fx_rc=$?
@@ -10689,8 +10693,9 @@ FX2="$WORK/hookfix-union"
 mkdir -p "$FX2/orchestrator" "$FX2/hooks"
 cp "$script_dir"/*.sh "$FX2/orchestrator/" 2>/dev/null
 cp -R "$script_dir/prompts" "$FX2/orchestrator/" 2>/dev/null || true
-sed 's#\*/orchestrator/rules/\*)#*/orchestrator/rules/*|*/orchestrator/*)#' "$HOOK" > "$FX2/hooks/gate-pretool.sh"
-if grep -q '\*/orchestrator/rules/\*|\*/orchestrator/\*' "$FX2/hooks/gate-pretool.sh"; then
+cp "$HOOK" "$FX2/hooks/gate-pretool.sh"
+sed 's#\*/orchestrator/rules/\*)#*/orchestrator/rules/*|*/orchestrator/*)#' "$ES_LIB" > "$FX2/hooks/enforcement-surfaces.sh"
+if grep -q '\*/orchestrator/rules/\*|\*/orchestrator/\*' "$FX2/hooks/enforcement-surfaces.sh"; then
   env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
     bash "$FX2/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
   fx2_rc=$?
@@ -10701,6 +10706,44 @@ if grep -q '\*/orchestrator/rules/\*|\*/orchestrator/\*' "$FX2/hooks/gate-pretoo
   fi
 else
   bad "T17 픽스처" "훅의 룰 분기를 합집합으로 넓히지 못했다 — 대조가 성립하지 않는다"
+fi
+# 세 번째와 네 번째 변이는 분류기의 팔이 아니라 훅·분류기 파일 쌍을 바꾼다. 그래서
+# 자체 점검 전체를 변이마다 다시 돌리지 않고, 자체 점검이 같은 경로로 부르는 언급
+# 검사 함수만 픽스처 파일 쌍으로 부른다 — 전체 실행은 macOS 에서 한 번에 40초 안팎이라
+# 둘을 더하면 잡 시한을 넘겼다. 자체 점검이 그 함수를 부르는지는 아래에서 따로 본다.
+#
+# 세 번째 변이: 글롭이 분류기 밖, 훅 안으로 되돌아온 모양. 분류기만 세는 가드는
+# 이것을 보지 못하므로 훅 쪽 0 단언이 따로 있다.
+FX3="$WORK/hookfix-inhook"
+mkdir -p "$FX3/hooks"
+cp "$ES_LIB" "$FX3/hooks/enforcement-surfaces.sh"
+{ cat "$HOOK"; printf 'case "$x" in */orchestrator/*) : ;; esac\n'; } > "$FX3/hooks/gate-pretool.sh"
+( self_check_surface_mentions "$FX3/hooks/gate-pretool.sh" "$FX3/hooks/enforcement-surfaces.sh" ) > "$SC_OUT" 2>&1
+fx3_rc=$?
+if [ "$fx3_rc" != "0" ] && grep -q '훅의 orchestrator 언급 1건' "$SC_OUT"; then
+  ok "T17 훅에 오케스트레이터 글롭이 되돌아오면 잡는다"
+else
+  bad "T17 등재된 예외" "훅 안의 글롭을 놓쳤다 (rc=$fx3_rc)"
+fi
+# 네 번째: 분류기가 없으면 자체 점검은 통과하지 않는다 — 없는 파일을 0건으로 읽으면
+# 위 두 단언이 함께 공허해진다.
+FX4="$WORK/hookfix-nolib"
+mkdir -p "$FX4/hooks"
+cp "$HOOK" "$FX4/hooks/gate-pretool.sh"
+( self_check_surface_mentions "$FX4/hooks/gate-pretool.sh" "$FX4/hooks/enforcement-surfaces.sh" ) > "$SC_OUT" 2>&1
+fx4_rc=$?
+if [ "$fx4_rc" != "0" ] && grep -q '분류기 파일이 없어' "$SC_OUT"; then
+  ok "T17 분류기가 없으면 자체 점검이 실패한다"
+else
+  bad "T17 분류기 부재" "분류기 없이 통과했다 (rc=$fx4_rc)"
+fi
+# 위 두 변이가 자체 점검을 대신하려면 자체 점검이 그 함수를 실제로 부르고 그 실패를
+# 실패 수에 더해야 한다. 앞의 두 전체 실행 변이가 그 경로로 잡혔으므로 호출은 성립하고,
+# 여기서는 부르는 줄이 하나뿐임을 고정한다.
+if [ "$(sed -n '/^self_check()/,/^}/p' "$DRIVER" | grep -c 'self_check_surface_mentions "\$hook_file" "\$es_file" || orch_ex=')" = "1" ]; then
+  ok "T17 자체 점검이 언급 검사 함수를 부르고 그 실패를 센다"
+else
+  bad "T17 언급 검사 호출" "self_check 안에 self_check_surface_mentions 호출이 한 줄이 아니다"
 fi
 
 # 30. 리뷰 복구의 읽기 측 — 픽스처 위의 행위 단언
@@ -12634,13 +12677,13 @@ check "35: 첫 리뷰는 --slice 를 고른 값으로, 복구 리뷰는 그대�
   "$(printf '%s\n' "$r35_sc" | grep -cF 'slice_flag=$(review_slice_flag "$seg")' || true)/$(printf '%s\n' "$r35_sc" | grep -cF -- '--report-path $rp$slice_flag$rscope' || true)/$(grep -c 'review-unattended .*--recover.*\$(review_slice_flag "\$seg")' "$DRIVER" || true)" \
   "1/1/1"
 check "35: 수정 대상 지시는 사이클 2 부터, 앞 사이클 리포트가 있을 때만 구현 지시에 붙는다" \
-  "$(printf '%s\n' "$r35_sc" | grep -cF '[ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '선언 파일: $files$fix_target' || true)" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF '[ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)" \
   "1/4"
 check "35: 새 프로세스 재시도와 크래시 재시도도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
-  "$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files\"' || true)" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")\"' || true)" \
   "2/0"
 check "35: 한도-형상 회수 뒤 재파견도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
-  "$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files\"' || true)" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")\"' || true)" \
   "1/0"
 
 # --- 사이클 루프: 마지막 사이클의 수렴, 다른 슬라이스 몫 거절, 복구 리포트의 리뷰 HEAD ---
