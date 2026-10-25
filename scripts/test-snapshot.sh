@@ -846,7 +846,8 @@ check "라우터 두 사본의 act 필드 표 블록이 바이트 동일하다" 
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; f=${pair#*:}
   for lit in \
-    '**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, and no `shift_halts[]` element holds a segment.' \
+    '**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, no `shift_halts[]` element holds a segment, and no segment parked by a `스코프=cone` row reading `사유=시각 승인 대기` still has its `시각-승인` approval open in `pending_approvals[]`.' \
+    'While one is open, end with `사유=승인` as item 2 of 「Dispatching the visual stage」 says, and do not propose done.' \
     '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.' \
     '2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for' \
     '4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.' \

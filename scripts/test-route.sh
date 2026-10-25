@@ -1439,7 +1439,8 @@ tr_consts_case() {
               COST_MAX_AGE_S:.cost.max_age_s COST_MAX_N:.cost.max_n COST_MIN_N:.cost.min_n \
               COST_FLOOR_FIVE_HOUR:.cost.floor.five_hour COST_FLOOR_SEVEN_DAY:.cost.floor.seven_day \
               COST_HYG_MIN_FRAMES:.cost.hygiene.min_frames COST_HYG_MIN_COVER:.cost.hygiene.min_cover \
-              REST_MIN_MASS:.rest_min_mass AFFINITY_TTL_S:.affinity.ttl_s AFFINITY_HOLD_PCT:.affinity.hold_pct; do
+              REST_MIN_MASS:.rest_min_mass AFFINITY_TTL_S:.affinity.ttl_s AFFINITY_HOLD_PCT:.affinity.hold_pct \
+              ASK_RESUME_N:.ask.resume_n; do
     want=$(sed -n "s/^  \*) readonly ROUTE_${pair%%:*}=\(.*\) ;;\$/\1/p" "$TR_ROUTE")
     check "config 가 상수 ROUTE_${pair%%:*} 를 그대로 옮긴다" "$(printf '%s' "$cfg" | jq -r "${pair#*:}")" "$want"
   done
@@ -2448,7 +2449,8 @@ check "phase-read 는 판독만 한다(파일·디렉터리를 만들지 않는�
 expect "몰아 쓰기 GRANT 의 order 는 단계 칸과 근거 칸만 채운다" "$(decide '.')" \
   ".verdict == \"GRANT\" and .order == {phase: \"burst\", phase_source: \"declared\", until_epoch: ($NOW + 3600),
     burst_length_s: 28800, burst_length_source: \"declared\", threshold_bp: null, ratio_source: null, tier: null,
-    r7_bp: null, admitted: null, picked_by: \"spread\", load5_bp: 1000, affinity_account: null, affinity_hold_bp: null}"
+    r7_bp: null, admitted: null, picked_by: \"spread\", load5_bp: 1000, affinity_account: null, affinity_hold_bp: null,
+    ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null}"
 expect "단계 기록이 없으면 쉼/absent 이고 문턱을 싣는다" "$(decide 'del(.phase)')" \
   '.order | .phase == "rest" and .phase_source == "absent" and .until_epoch == null and .burst_length_s == 28800
    and .burst_length_source == "default" and .threshold_bp == 3413 and .ratio_source == "default"'
@@ -3145,9 +3147,14 @@ tr_affinity_rec_case() {
     '["cc-cmds-route-affinity v1","r1","number"]'
   check "기록: 부여 기록이 한 줄이다" "$(wc -l < "$RUN_DIR/route-picks.jsonl" | tr -d ' ')" 1
   check "기록: 부여 기록 한 줄의 근거가 봉투의 order 와 같다" \
-    "$(jq -c '[.schema, .run_id, .lineage, .event, .basis, .account, .group, .picked_by, .load5_bp, .affinity_account, .affinity_hold_bp]' "$RUN_DIR/route-picks.jsonl")" \
+    "$(jq -c '[.schema, .run_id, .lineage, .event, .basis, .account, .group, .picked_by, .load5_bp, .affinity_account, .affinity_hold_bp,
+              .ask_need_bp, .ask_r7_bp, .ask_fits, .ask_avoided]' "$RUN_DIR/route-picks.jsonl")" \
     "$(printf '%s' "$out" | jq -c '["cc-cmds-route-pick v1", "r1", "S1", "first", .basis, .account, .group,
-       .order.picked_by, .order.load5_bp, .order.affinity_account, .order.affinity_hold_bp]')"
+       .order.picked_by, .order.load5_bp, .order.affinity_account, .order.affinity_hold_bp,
+       .order.ask_need_bp, .order.ask_r7_bp, .order.ask_fits, .order.ask_avoided]')"
+  check "기록: 출하 설정의 implement 부여는 새 기준의 네 칸을 채운다" \
+    "$(jq -c '[(.ask_need_bp | type), (.ask_fits | type), (.ask_avoided | type)]' "$RUN_DIR/route-picks.jsonl")" \
+    '["number","boolean","array"]'
   check "기록: 후보 하나의 근거는 only 다" "$(printf '%s' "$out" | jq -r '.order.picked_by')" "only"
   check "기록: gather 가 기록을 affinity 로 싣는다" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.affinity')" "$rec"
   # 같은 계정의 반납. 기록의 시각을 과거로 돌려 두고 반납한다.
@@ -3197,6 +3204,158 @@ tr_affinity_rec_case() {
   done
 }
 tr_in_run "$TR_RUN_SH" tr_affinity_rec_case
+
+# ===========================================================================
+# 질문 가능 스테이지의 주간 여유 기준. 문맥에 `config.ask` 가 있고 요청 종류가 질문
+# 가능이면, 재부착까지 버티지 못하는 후보(r7 < (1 + resume_n) × 주간 예약)가 대여 층·
+# U 부류 다음 두 자리(`ask-headroom`)에서 뒤로 가고 그 후보에서는 유지가 꺼진다. 수치는
+# 주입 예약 TR7 에서 유도한다 — 기준은 3 × TR7, 입회는 주간 사용이 10000 − TR7 이하일
+# 때다. 세 계정의 주간 리셋은 하루 뒤라 W7 은 모두 0 이다.
+# ===========================================================================
+AK_NEED=$((3 * TR7))
+AK_FIT_MAX=$((10000 - AK_NEED))
+AK_ADM_MAX=$((10000 - TR7))
+AK_SHORT=$(((AK_FIT_MAX + AK_ADM_MAX) / 2))
+AK_FIT=$((AK_FIT_MAX / 2))
+AK_JQ='
+def AKON: .config.ask = {resume_n: 2};
+def AW($acct): .leases.items += [LR("r2"; "W1"; $acct; "wait"; null; true; 1)];
+'
+# 실측 재현의 문맥. u7 은 입회되나 버티지 못하고 5시간이 가장 낮다. x·y 는 버틴다.
+AKS="ONLY([\"u7\",\"x\",\"y\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT), UB(\"x\"; 3000; $AK_FIT), UB(\"y\"; 4000; $AK_FIT)]) | REQ({kind: \"audit\"})"
+AK_NULL='.order.ask_need_bp == null and .order.ask_r7_bp == null and .order.ask_fits == null and .order.ask_avoided == null'
+# ak_same <이름> <필터 A> <필터 B> — 두 문맥의 판정 종류·계정·근거·고른 자리가 같다.
+ak_same() {
+  check "$1" "$(decide "$2" | jq -c '[.verdict, .account, (.basis // .reason), .order.picked_by]')" \
+    "$(decide "$3" | jq -c '[.verdict, .account, (.basis // .reason), .order.picked_by]')"
+}
+check "질문 기준: 주입 수치가 버팀·못 버팀·입회 구간을 가른다" \
+  "$([ "$AK_FIT" -le "$AK_FIT_MAX" ] && [ "$AK_FIT_MAX" -lt "$AK_SHORT" ] && [ "$AK_SHORT" -le "$AK_ADM_MAX" ] && printf ok)" ok
+DEAD='ITEMS([LG("r1"; "S1"; "u7"; false)]) | REQ({event: "crash-retry"})'
+for ph in burst rest; do
+  if [ "$ph" = burst ]; then pf='.'; else pf='del(.phase)'; fi
+  # 1. 실측 재현.
+  expect "질문 기준 $ph 1 대조: 새 기준이 없으면 u7 이다" "$(decide "$AK_JQ $pf | $AKS")" '.account == "u7"'
+  expect "질문 기준 $ph 1: 버티지 못하는 u7 을 피한다" "$(decide "$AK_JQ $pf | $AKS | AKON")" \
+    ".verdict == \"GRANT\" and .account != \"u7\" and .order.ask_avoided == [\"u7\"] and .order.ask_fits == true
+     and .order.ask_need_bp == $AK_NEED"
+  # 2. 유지.
+  expect "질문 기준 $ph 2 대조: 새 기준이 없으면 유지가 u7 을 잡는다" \
+    "$(decide "$AF_JQ $AK_JQ $pf | $AKS | AFON | AFF(\"u7\"; 60)")" '.account == "u7" and .order.picked_by == "affinity"'
+  for k in audit reconverge; do
+    expect "질문 기준 $ph 2 ($k): 버티지 못하는 직전 계정은 유지하지 않는다" \
+      "$(decide "$AF_JQ $AK_JQ $pf | $AKS | AFON | AFF(\"u7\"; 60) | REQ({kind: \"$k\"}) | AKON")" \
+      '.account != "u7" and .order.affinity_account == "u7"'
+  done
+  # 3. 후보 하나.
+  expect "질문 기준 $ph 3: 후보가 u7 뿐이면 u7 이다" \
+    "$(decide "$AK_JQ $pf | ONLY([\"u7\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT)]) | AKON")" \
+    '.verdict == "GRANT" and .account == "u7" and .order.picked_by == "only" and .order.ask_fits == false and .order.ask_avoided == []'
+  # 4. 경계.
+  expect "질문 기준 $ph 4: r7 이 기준과 같으면 버틴다" \
+    "$(decide "$AK_JQ $pf | ONLY([\"u7\"]) | USE([UB(\"u7\"; 1000; $AK_FIT_MAX)]) | AKON")" \
+    ".order.ask_r7_bp == $AK_NEED and .order.ask_fits == true"
+  expect "질문 기준 $ph 4: r7 이 기준보다 1 작으면 버티지 못한다" \
+    "$(decide "$AK_JQ $pf | ONLY([\"u7\"]) | USE([UB(\"u7\"; 1000; $((AK_FIT_MAX + 1)))]) | AKON")" \
+    ".order.ask_r7_bp == $((AK_NEED - 1)) and .order.ask_fits == false"
+  # 5. 버티는 후보가 없을 때.
+  AK5="ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 3000; $((AK_SHORT - 500))), UB(\"x\"; 1000; $AK_SHORT)]) | AFON | AFF(\"x\"; 60)"
+  expect "질문 기준 $ph 5 대조: 새 기준이 없으면 유지가 x 를 잡는다" "$(decide "$AF_JQ $AK_JQ $pf | $AK5")" '.account == "x"'
+  expect "질문 기준 $ph 5: 모두 버티지 못하면 r7 이 큰 쪽이고 직전 계정도 유지하지 않는다" \
+    "$(decide "$AF_JQ $AK_JQ $pf | $AK5 | AKON")" \
+    '.account == "u7" and .order.picked_by == "ask-headroom" and .order.ask_fits == false and .order.affinity_account == "x"
+     and .order.ask_avoided == ["x"]'
+  # 6. 대조.
+  ak_same "질문 기준 $ph 6: generic 은 새 기준이 켜져도 오늘과 같다" \
+    "$AK_JQ $pf | $AKS | REQ({kind: \"generic\"}) | AKON" "$AK_JQ $pf | $AKS | REQ({kind: \"generic\"})"
+  expect "질문 기준 $ph 6: generic 은 네 칸이 null 이다" "$(decide "$AK_JQ $pf | $AKS | REQ({kind: \"generic\"}) | AKON")" \
+    ".account == \"u7\" and $AK_NULL"
+  expect "질문 기준 $ph 6: config.ask 가 없으면 네 칸이 null 이다" "$(decide "$AK_JQ $pf | $AKS")" "$AK_NULL"
+  AK6W="ONLY([\"x\",\"y\"]) | USE([UW(\"x\"; W(0.3; \$now + 3600); W(0.1; \$now + 3600)), UB(\"y\"; 1000; $AK_FIT)])"
+  ak_same "질문 기준 $ph 6: 버티는 계정끼리는 W7 이 오늘처럼 정한다" "$AK_JQ $pf | $AK6W | AKON" "$AK_JQ $pf | $AK6W"
+  expect "질문 기준 $ph 6: 버티는 계정끼리의 W7 갈래" "$(decide "$AK_JQ $pf | $AK6W | AKON")" '.account == "x" and .order.picked_by == "w7"'
+  AK6R="ONLY([\"x\",\"y\"]) | USE([UB(\"x\"; 1000; $((AK_FIT + 500))), UB(\"y\"; 1000; $AK_FIT)])"
+  ak_same "질문 기준 $ph 6: 버티는 계정끼리는 주간 키·쉼 층이 오늘처럼 정한다" "$AK_JQ $pf | $AK6R | AKON" "$AK_JQ $pf | $AK6R"
+  # 7. 대여 층.
+  expect "질문 기준 $ph 7: 버티는 대여 행보다 버티지 못하는 일반 계정이 먼저다" \
+    "$(decide "$LJ $AK_JQ $pf | OPEN | USE([UB(\"a\"; 1000; $AK_SHORT), UA(\"cc\"; 0.1; 0.1) + {lending: DEC}]) | AKON")" \
+    '.verdict == "GRANT" and .account == "a" and .order.ask_fits == false'
+  # 8. 충돌 재시도.
+  for ev in crash-retry hollow-retry; do
+    D="$DEAD | REQ({event: \"$ev\"})"
+    expect "질문 기준 $ph 8 ($ev): 버티지 못하는 자기 계정은 다른 계정으로 옮긴다" \
+      "$(decide "$AK_JQ $pf | ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT), UB(\"x\"; 3000; $AK_FIT)]) | $D | AKON")" \
+      '.verdict == "GRANT" and .account == "x" and .basis == "reassigned-no-room"'
+    expect "질문 기준 $ph 8 ($ev): 버티는 자기 계정은 sticky" \
+      "$(decide "$AK_JQ $pf | ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 1000; $AK_FIT), UB(\"x\"; 3000; $AK_FIT)]) | $D | AKON")" \
+      ".verdict == \"GRANT\" and .account == \"u7\" and .basis == \"sticky\" and $AK_NULL"
+    expect "질문 기준 $ph 8 ($ev): 다른 후보가 없으면 sticky" \
+      "$(decide "$AK_JQ $pf | ONLY([\"u7\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT)]) | $D | AKON")" \
+      ".verdict == \"GRANT\" and .account == \"u7\" and .basis == \"sticky\" and $AK_NULL"
+    expect "질문 기준 $ph 8 ($ev): FIFO 에 막혀도 sticky" \
+      "$(decide "$AK_JQ $pf | ONLY([\"u7\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT)]) | $D | AW(\"u7\") | AKON")" \
+      ".verdict == \"GRANT\" and .account == \"u7\" and .basis == \"sticky\" and $AK_NULL"
+    expect "질문 기준 $ph 8 ($ev): 다른 후보도 못 버티고 자기 계정 r7 이 가장 크면 sticky" \
+      "$(decide "$AK_JQ $pf | ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT), UB(\"x\"; 1000; $((AK_SHORT + 500)))]) | $D | AKON")" \
+      ".verdict == \"GRANT\" and .account == \"u7\" and .basis == \"sticky\" and $AK_NULL"
+    expect "질문 기준 $ph 8 ($ev): 다른 후보의 r7 이 더 크면 그 계정으로 옮긴다" \
+      "$(decide "$AK_JQ $pf | ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 1000; $((AK_SHORT + 500))), UB(\"x\"; 1000; $AK_SHORT)]) | $D | AKON")" \
+      '.verdict == "GRANT" and .account == "x" and .basis == "reassigned-no-room"'
+    AK8="ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT), UB(\"x\"; 3000; $AK_FIT)])"
+    for f in "ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 1000; $((AK_ADM_MAX + 1))), UB(\"x\"; 3000; $AK_FIT)]) | $D|입회되지 않는 자기 계정" \
+             "$AK8 | $D | .leases.state = \"corrupt\" | .leases.corrupt = [{path: \"/t/x.lease\", key: \"r9+x\", why: \"schema\"}]|임대 표 손상" \
+             "$AK8 | $D | .borrow = {state: \"corrupt\"}|차용 기록 손상" \
+             "OPEN | PIN | USE([UB(\"a\"; 1000; $AK_SHORT), UA(\"cc\"; 0.1; 0.1) + {lending: DEC}]) | LIVE(\"a\"; false) | REQ({event: \"$ev\"})|고정 계정 불일치"; do
+      ak_same "질문 기준 $ph 8 ($ev): ${f##*|} 은 새 기준이 없을 때와 같다" "$LJ $AK_JQ $pf | ${f%|*} | AKON" "$LJ $AK_JQ $pf | ${f%|*}"
+      expect "질문 기준 $ph 8 ($ev): ${f##*|} 은 sticky 로 바뀌지 않는다" "$(decide "$LJ $AK_JQ $pf | ${f%|*} | AKON")" '.basis != "sticky"'
+    done
+  done
+  # 10. 범위와 경계.
+  for k in design audit split visual implement review lead-fix reconverge; do
+    expect "질문 기준 $ph 10(a): $k 에서 새 기준이 켜진다" "$(decide "$AK_JQ $pf | $AKS | REQ({kind: \"$k\"}) | AKON")" \
+      '.account != "u7" and .order.ask_avoided == ["u7"]'
+  done
+  for k in generic shift ''; do
+    expect "질문 기준 $ph 10(a): '$k' 에서 새 기준이 꺼진다" "$(decide "$AK_JQ $pf | $AKS | REQ({kind: \"$k\"}) | AKON")" \
+      ".account == \"u7\" and $AK_NULL"
+  done
+  expect "질문 기준 $ph 10(b): 주간 창을 모르는 계정은 버티지 못하고 r7 이 null 이다" \
+    "$(decide "$AK_JQ $pf | ONLY([\"u\"]) | USE([UW(\"u\"; W(0.1; \$now + 3600); null)]) | AKON")" \
+    '.verdict == "GRANT" and .account == "u" and .order.ask_r7_bp == null and .order.ask_fits == false'
+  expect "질문 기준 $ph 10(c): 창을 모르는 U 부류는 버티지 못하는 알려진 계정 뒤다" \
+    "$(decide "$AK_JQ $pf | ONLY([\"uu\",\"u7\"]) | USE([UW(\"uu\"; null; W(0.1; \$now + 86400)), UB(\"u7\"; 1000; $AK_SHORT)]) | AKON")" \
+    '.account == "u7" and .order.ask_fits == false'
+  AKE="$AKS | .inventory.accounts += [A(\"z\")] | .usage.accounts += [UB(\"z\"; 0; 0)] | ITEMS([LG(\"r1\"; \"S1\"; \"z\"; true)]) | REQ({event: \"limit-reclaim\"})"
+  expect "질문 기준 $ph 10(e) 대조: 한도 회수의 새 기준 없는 순서는 u7 이다" "$(decide "$AK_JQ $pf | $AKE")" \
+    '.account == "u7" and .basis == "reassigned-after-limit"'
+  expect "질문 기준 $ph 10(e): 한도 회수의 직전 계정 제외 경로에서도 새 기준이 순서를 정한다" \
+    "$(decide "$AK_JQ $pf | $AKE | AKON")" \
+    '.account != "u7" and .account != "z" and .basis == "reassigned-after-limit" and .order.ask_avoided == ["u7"]'
+  AKF="ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT), UB(\"x\"; 2000; $AK_SHORT)]) | AFON | AFF(\"x\"; 60)"
+  expect "질문 기준 $ph 10(f) 대조: 새 기준이 없으면 유지가 x 를 잡는다" "$(decide "$AF_JQ $AK_JQ $pf | $AKF")" \
+    '.account == "x" and .order.picked_by == "affinity"'
+  expect "질문 기준 $ph 10(f): r7 이 같은 두 못 버티는 후보에서 유지가 직전 계정을 잡지 않는다" \
+    "$(decide "$AF_JQ $AK_JQ $pf | $AKF | AKON")" '.account == "u7" and .order.affinity_account == "x" and .order.picked_by == "spread"'
+  AKG="ONLY([\"u7\",\"x\"]) | USE([UB(\"u7\"; 3000; $AK_SHORT), UB(\"x\"; 1000; $AK_FIT)])"
+  expect "질문 기준 $ph 10(g) 대조: 새 기준이 없어도 x 다" "$(decide "$AK_JQ $pf | $AKG")" '.account == "x"'
+  expect "질문 기준 $ph 10(g): 1등이 버티고 2등이 못 버티면 ask-headroom 이고 피한 계정은 없다" \
+    "$(decide "$AK_JQ $pf | $AKG | AKON")" '.account == "x" and .order.picked_by == "ask-headroom" and .order.ask_avoided == []'
+done
+# 10(d). 쉼 정렬의 r7 과 새 기준의 r7 은 같은 값이다. 대여 행에서도 같다.
+expect "질문 기준 10(d): 쉼 부여의 r7_bp 와 ask_r7_bp 가 같다" "$(decide "$AK_JQ del(.phase) | $AKS | AKON")" \
+  '.order.phase == "rest" and .order.r7_bp != null and .order.r7_bp == .order.ask_r7_bp'
+expect "질문 기준 10(d): 대여 행의 쉼 부여에서도 r7_bp 와 ask_r7_bp 가 같다" "$(decide "$LJ $AK_JQ del(.phase) | UBLK | AKON")" \
+  '.account == "cc" and .order.r7_bp != null and .order.r7_bp == .order.ask_r7_bp'
+# 10(h). 설정 오류는 질문 가능 종류의 요청에서만 난다.
+for v in -1 1.5 '"2"'; do
+  out=$(ctx "$AK_JQ $AKS | AKON | .config.ask.resume_n = $v" | bash "$TR_ROUTE" decide 2>&1)
+  case "$out" in
+    *config.ask*) ok "질문 기준 10(h): resume_n $v 는 config.ask 오류로 끝난다" ;;
+    *) bad "질문 기준 10(h): resume_n $v 는 config.ask 오류로 끝난다" "$out" ;;
+  esac
+  ak_same "질문 기준 10(h): resume_n $v 여도 generic 은 오늘과 같다" \
+    "$AK_JQ $AKS | REQ({kind: \"generic\"}) | AKON | .config.ask.resume_n = $v" "$AK_JQ $AKS | REQ({kind: \"generic\"})"
+done
 
 # ===========================================================================
 # 전역 충돌 린트 파생
