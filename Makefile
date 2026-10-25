@@ -558,12 +558,26 @@ print-rest-goals:
 # starts them in that order, as many at once as the outer -j allows: `$(MAKE)`
 # on the same recipe line is what hands the sub-make the outer jobserver. An
 # empty assignment is a success, as it is for gate-shard.
+#
+# EACH SUITE'S OUTPUT REACHES THE LOG WHOLE. The sub-make holds every goal's
+# output, make's echo of the command and the goal's stderr included, and writes
+# it out in one piece when the goal ends, so no line of one suite falls between
+# the start and end lines of another. ci-signature.sh pins a FAIL line on a
+# suite only while that suite alone is open, and without this every failed
+# rest-tests job read at step precision. `2>&1` puts the suite's stderr, where
+# suite-guard prints its end line, in the same held output as its stdout. A make
+# older than 4.0 has no output sync and runs the goals as before; their lines
+# then interleave and the adapter reads the job at step precision. An unwrapped
+# `--self-test` goal's lines come out held the same way but outside every suite,
+# so a FAIL line of one, or its failure, leaves the job at step precision.
+REST_OUTPUT_SYNC := $(if $(filter output-sync,$(.FEATURES)),--output-sync=target)
+
 rest-shard:
 	@goals=$$(bash scripts/rest-shard.sh --shards $(REST_SHARDS) --shard $(SHARD)); rc=$$?; \
 	if [ "$$rc" = "4" ]; then echo "rest shard $(SHARD)/$(REST_SHARDS): 배정된 목표가 없습니다"; exit 0; fi; \
 	[ "$$rc" = "0" ] || exit "$$rc"; \
 	echo "rest shard $(SHARD)/$(REST_SHARDS): $$goals"; \
-	$(MAKE) --no-print-directory $$goals
+	$(MAKE) --no-print-directory $(REST_OUTPUT_SYNC) $$goals 2>&1
 
 # One runner of the gate suite. SHARD is the runner, 1-based (1..N); lane j
 # (0..L−1) runs row K = SHARD + j × N of the S-row partition, and the lanes run

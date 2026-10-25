@@ -215,8 +215,8 @@ check "7 모르는 하위 명령은 2" "$rc" "2"
 check "8 차례로 끝난 두 스위트는 단언 정밀도" "$(extract 'rest-tests (1)' "$WORK/g1.log")" \
   "$(printf '%s\n' '정밀도: 단언' 'rest-tests|test-a.sh|1 가')"
 
-# make -j: the second suite starts before the first ends, and their lines
-# interleave, so no FAIL line can be pinned on one suite.
+# make -j without output sync: the second suite starts before the first ends,
+# and their lines interleave, so no FAIL line can be pinned on one suite.
 {
   printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-a.sh'
   printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-b.sh'
@@ -351,6 +351,43 @@ check "8 FAIL 줄 안의 합계 문자열은 합계가 아니다" "${out%%$'\n'*
 check "8 --truncated 는 완결된 로그도 단계 정밀도" \
   "$(extract 'rest-tests (1)' "$WORK/g1.log" --truncated --step 'Run rest shard 1')" \
   "$(printf '%s\n' '정밀도: 단계' 'rest-tests|Run rest shard 1')"
+
+# ---------------------------------------------------------------------------
+# 9. The real rest-shard recipe under make -j: two suites that run at once.
+# ---------------------------------------------------------------------------
+# The outer make reads this repository's Makefile and runs its rest-shard
+# recipe; the partitioner and the wrapper are stand-ins in a scratch directory,
+# and the sub-make reads the scratch Makefile there. test-a prints its FAIL line
+# while test-b is open, which is the shape every failed rest-tests job had
+# before the sub-make held its goals' output.
+MK=""
+printf 'x:\n\t@echo $(filter output-sync,$(.FEATURES))\n' > "$WORK/features.mk"
+for m in make gmake; do
+  command -v "$m" >/dev/null 2>&1 || continue
+  [ "$("$m" -s -f "$WORK/features.mk" x 2>/dev/null)" = "output-sync" ] && { MK="$m"; break; }
+done
+if [ -n "$MK" ]; then
+  R="$WORK/rest"
+  mkdir -p "$R/scripts"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "run/scripts/test-a.sh run/scripts/test-b.sh"' > "$R/scripts/rest-shard.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'bash "$@"; rc=$?' \
+    'printf '\''suite-guard[%s]: 종료 rc=%s 소요 1s\n'\'' "$*" "$rc" >&2' 'exit "$rc"' > "$R/scripts/suite-guard.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'sleep 1' 'echo "FAIL: 1 가 — x"' 'sleep 1' \
+    'echo "test-a: 0 passed, 1 failed"' 'exit 1' > "$R/scripts/test-a.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "PASS: 1 나"' 'sleep 2' \
+    'echo "test-b: 1 passed, 0 failed"' > "$R/scripts/test-b.sh"
+  printf 'run/%%:\n\tbash scripts/suite-guard.sh $*\n' > "$R/Makefile"
+  "$MK" -j4 --no-print-directory -f "$repo_root/Makefile" -C "$R" rest-shard SHARD=1 REST_SHARDS=1 \
+    > "$WORK/h1.log" 2>&1
+  check "9 rest-shard 레시피 아래 동시에 돈 두 스위트는 단언 정밀도" "$(extract 'rest-tests (1)' "$WORK/h1.log")" \
+    "$(printf '%s\n' '정밀도: 단언' 'rest-tests|test-a.sh|1 가')"
+  "$MK" -j4 --no-print-directory -f "$repo_root/Makefile" -C "$R" rest-shard SHARD=1 REST_SHARDS=1 \
+    REST_OUTPUT_SYNC= > "$WORK/h2.log" 2>&1
+  out=$(extract 'rest-tests (1)' "$WORK/h2.log")
+  check "9 그 대조군 — 출력 동기 없이 돈 같은 목표는 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+else
+  printf 'SKIP: 9 출력 동기를 아는 make(GNU make 4.0 이상)가 없어 rest-shard 레시피 사례를 돌리지 않았다\n'
+fi
 
 printf '\ntest-ci-signature: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

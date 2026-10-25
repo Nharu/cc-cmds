@@ -51,9 +51,12 @@
 # A LOG THAT DOES NOT FINISH IS NOT READ AT ASSERTION PRECISION, AND COMPLETENESS
 # IS JUDGED PER SUITE. The failures a suite printed are all of its failures only
 # when the suite ran to its end, and one job may run many suites at once —
-# `rest-tests` runs its shard under `make -j`, so their lines interleave and one
-# suite's total says nothing about another's. When the log carries suite-guard
-# lines, every suite is followed from its start line (the
+# `rest-tests` runs its shard under `make -j`, and one suite's total says
+# nothing about another's. The shard's sub-make holds each goal's output and
+# writes it whole (`REST_OUTPUT_SYNC` in the Makefile), so a suite's lines sit
+# between its own start and end lines; a make without output sync interleaves
+# them, and the rules below then read the job at step precision. When the log
+# carries suite-guard lines, every suite is followed from its start line (the
 # `bash scripts/suite-guard.sh <args>` make echoes) to its end line
 # (`suite-guard[<args>]: 종료 rc=<rc> …`), and the check stays at assertion
 # precision only when all of these hold:
