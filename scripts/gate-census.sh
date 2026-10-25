@@ -125,6 +125,10 @@ census_run() {
     fi
     XDG_STATE_HOME="$dir/state"; TMPDIR="$dir/tmp"
     export XDG_STATE_HOME TMPDIR
+    # A census run is measured under its own pool's contention, so it keeps
+    # its times out of the suite's local timing record.
+    CC_GATE_TIMING_RECORD=off
+    export CC_GATE_TIMING_RECORD
     exec bash "$suite" "$@"
   ) > "$dir/out" 2> "$dir/err" < /dev/null &
   pid=$!

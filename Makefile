@@ -142,6 +142,10 @@ check-cheap:
 #   CHECK_PUSH_BASE_BRANCH  branch whose FETCH_HEAD line is the base (master)
 #   CHECK_PUSH_SECTIONS     test-gate section ids, comma-separated
 #   CHECK_PUSH_GOALS        REST goals (`make -s print-rest-goals`), comma-separated
+#   CHECK_PUSH_JOBS         section lanes and goal jobs run at once (default 4;
+#                           1 runs them in turn, as before)
+# CHECK_PUSH_JOBS reaches check-push.sh the way CHECK_PUSH_SECTIONS does, as a
+# command-line variable or from the environment; the recipe stays as it is.
 # An unattended run whose head changed plugins/cc-cmds/orchestrator/gate.sh
 # against its merge-base with the base is refused with exit 2 before the clone
 # when CHECK_PUSH_SECTIONS is empty — goals alone do not cover gate.sh — so the
