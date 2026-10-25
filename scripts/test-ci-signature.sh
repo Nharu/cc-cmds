@@ -360,11 +360,17 @@ check "8 --truncated 는 완결된 로그도 단계 정밀도" \
 # and the sub-make reads the scratch Makefile there. test-a prints its FAIL line
 # while test-b is open, which is the shape every failed rest-tests job had
 # before the sub-make held its goals' output.
+#
+# Every make here starts at the top level. Under CI this suite is itself a goal
+# of the rest-shard sub-make, whose MAKEFLAGS carries the output sync; inherited,
+# it would sync the control below too, and make 3.81 reads it as bundled
+# single-letter flags, `-t` among them, and touches the goal instead of running it.
 MK=""
-printf 'x:\n\t@echo $(filter output-sync,$(.FEATURES))\n' > "$WORK/features.mk"
+printf '.PHONY: x\nx:\n\t@echo $(filter output-sync,$(.FEATURES))\n' > "$WORK/features.mk"
 for m in make gmake; do
   command -v "$m" >/dev/null 2>&1 || continue
-  [ "$("$m" -s -f "$WORK/features.mk" x 2>/dev/null)" = "output-sync" ] && { MK="$m"; break; }
+  [ "$(MAKEFLAGS= MFLAGS= MAKELEVEL= "$m" -s -C "$WORK" -f "$WORK/features.mk" x 2>/dev/null)" = "output-sync" ] \
+    && { MK="$m"; break; }
 done
 if [ -n "$MK" ]; then
   R="$WORK/rest"
@@ -372,17 +378,17 @@ if [ -n "$MK" ]; then
   printf '%s\n' '#!/usr/bin/env bash' 'echo "run/scripts/test-a.sh run/scripts/test-b.sh"' > "$R/scripts/rest-shard.sh"
   printf '%s\n' '#!/usr/bin/env bash' 'bash "$@"; rc=$?' \
     'printf '\''suite-guard[%s]: 종료 rc=%s 소요 1s\n'\'' "$*" "$rc" >&2' 'exit "$rc"' > "$R/scripts/suite-guard.sh"
-  printf '%s\n' '#!/usr/bin/env bash' 'sleep 1' 'echo "FAIL: 1 가 — x"' 'sleep 1' \
+  printf '%s\n' '#!/usr/bin/env bash' 'sleep 2' 'echo "FAIL: 1 가 — x"' 'sleep 1' \
     'echo "test-a: 0 passed, 1 failed"' 'exit 1' > "$R/scripts/test-a.sh"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo "PASS: 1 나"' 'sleep 2' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "PASS: 1 나"' 'sleep 4' \
     'echo "test-b: 1 passed, 0 failed"' > "$R/scripts/test-b.sh"
   printf 'run/%%:\n\tbash scripts/suite-guard.sh $*\n' > "$R/Makefile"
-  "$MK" -j4 --no-print-directory -f "$repo_root/Makefile" -C "$R" rest-shard SHARD=1 REST_SHARDS=1 \
-    > "$WORK/h1.log" 2>&1
+  MAKEFLAGS= MFLAGS= MAKELEVEL= "$MK" -j4 --no-print-directory -f "$repo_root/Makefile" -C "$R" \
+    rest-shard SHARD=1 REST_SHARDS=1 > "$WORK/h1.log" 2>&1
   check "9 rest-shard 레시피 아래 동시에 돈 두 스위트는 단언 정밀도" "$(extract 'rest-tests (1)' "$WORK/h1.log")" \
     "$(printf '%s\n' '정밀도: 단언' 'rest-tests|test-a.sh|1 가')"
-  "$MK" -j4 --no-print-directory -f "$repo_root/Makefile" -C "$R" rest-shard SHARD=1 REST_SHARDS=1 \
-    REST_OUTPUT_SYNC= > "$WORK/h2.log" 2>&1
+  MAKEFLAGS= MFLAGS= MAKELEVEL= "$MK" -j4 --no-print-directory -f "$repo_root/Makefile" -C "$R" \
+    rest-shard SHARD=1 REST_SHARDS=1 REST_OUTPUT_SYNC= > "$WORK/h2.log" 2>&1
   out=$(extract 'rest-tests (1)' "$WORK/h2.log")
   check "9 그 대조군 — 출력 동기 없이 돈 같은 목표는 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 else
