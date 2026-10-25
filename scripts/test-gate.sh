@@ -47558,7 +47558,7 @@ mc88e() {  # mc88e <원장> [매니페스트] — 머지 검사의 rc
 }
 nm88e() { printf '%s|%s' "$(n88e "$@")" "$(mc88e "$@")"; }
 sn88e() { lsr_in Linux "$1" - lsr_rp_in "$M88E" gate_snapshot_review_next_json 2>/dev/null; }
-ce88e() { lsr_in Linux "$1" - lsr_rp_in "$M88E" gate_snapshot_ci_early_json 2>/dev/null; }
+ce88e() { lsr_in Linux "$1" - lsr_rp_in "${2:-$M88E}" gate_snapshot_ci_early_json 2>/dev/null; }
 E40088E=$((NOW88E - 400)); E3H88E=$((NOW88E - 10800))
 P88E=""
 launch88e() {  # launch88e <원장> <기록 시각> — 교대 기동 행 하나
@@ -47735,6 +47735,18 @@ o88e="[$(wk88e "$L88E" - S)]"; launch88e "$L88E" "$T088E"; o88e="$o88e[$(wk88e "
 L88E2=$(l88e rk-early-park "$W88E" "$R88E" none); ck88e "$L88E2" 실패 0 0 "$T40088E"; ls88e "$L88E2" review; park88e "$L88E2"
 check "88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다" \
   "$o88e[$(wk88e "$L88E2" - S)]" "[ce:S $E40088E][][]"
+# 5 — 라벨 인정과 E. 게이트 사본은 인정 체크의 실패에 서지 않고, 중계 사본은 매니페스트를 열지
+# 않아 서지만(상위 집합) 인정 밖 체크에서는 두 사본이 함께 선다. 수락된 라벨 회차(g=1, u=0)
+# 뒤에는 두 사본 모두 회차 0 의 대체된 판정을 읽지 않는다.
+L88E=$(l88e ea-ack "$W88E" "$R88E" none); ck88e "$L88E" 실패 0 0 "$T40088E"; ls88e "$L88E" review
+check "88e: 라벨 인정 체크의 회차 0 정착 실패에서 ci_early 원소가 서지 않고, 인정 밖 체크에서는 두 사본이 함께 선다" \
+  "$(ce88e "$L88E" "$MA88E" | grep -c . || true)|$(ce88e "$L88E" "$MO88E" | grep -c '"세그먼트": "S"' || true)|$(wk88e "$L88E" - S)" \
+  "0|1|ce:S $E40088E"
+L88E=$(l88e ea-label "$W88E" "$R88E" none); ck88e "$L88E" 실패 0 0 "$T40088E"; ls88e "$L88E" review
+cd88e "$L88E" 라벨 요청 1 "$T40088E"; cd88e "$L88E" 라벨 수락 1 "$T40088E"
+check "88e: 수락된 라벨 회차 뒤(g=1, u=0)에는 ci_early 원소도 ce 키도 서지 않는다" \
+  "$(lsr_in Linux "$L88E" - cc_ci_round "$L88E" S "$R88E" | grep -E '^(u|g)=' | tr '\n' ' ')|$(ce88e "$L88E" | grep -c . || true)|[$(wk88e "$L88E" - S)]" \
+  "u=0 g=1 |0|[]"
 for p88e in $P88E; do kill "$p88e" 2>/dev/null || true; done
 
 # ---------------------------------------------------------------------------

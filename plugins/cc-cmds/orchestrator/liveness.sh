@@ -869,15 +869,21 @@ cc_ci_early_condition() {
   # the early rerun predicate E, as `<wake epoch>\t<evidence line>`, or nothing:
   # a routed run (`<run-dir>/routing-guard` reads `1`), the segment neither
   # `머지됨` nor `park`, a live review stage on it, its worktree tip resolves,
-  # no rerun spent on that head, round 0's verdict a failure with nothing
-  # running, and no rerun `도달 park` row below the head's first `checks` row.
-  # The wake is that verdict's `관측`.
+  # no round of either kind on that head (max = 0, so an accepted label round,
+  # which never raises u, ends it too), round 0's verdict a failure with
+  # nothing running, and no rerun `도달 park` row below the head's first
+  # `checks` row. The wake is that verdict's `관측`.
   #
   # THE CUTPOINT IS NOT READ. This file opens no manifest, and it need not: a
   # `checks` row exists only where a pull request does, and the router opens
   # one only at a cutpoint of `PR` or above, so a segment the rest of E holds
-  # for is a CI join target.
-  local run_dir="$1" ledger="$2" seg="$3" st wt h u recs v
+  # for is a CI join target. THE `라벨 인정` ROWS ARE NOT READ EITHER, for the
+  # same reason, so this copy is a superset of the gate's `gate_ci_early`,
+  # which also drops a failure of an acknowledged check. A shift woken for one
+  # finds `ci_early[]` empty and takes no act, and the consumption rule wakes
+  # it on that evidence once. The gate's clause only makes E false, so this
+  # copy never misses a wake the gate's would give.
+  local run_dir="$1" ledger="$2" seg="$3" st wt h mx recs v
   [ -n "$run_dir" ] && [ -n "$seg" ] || return 0
   [ "$( { sed -n '1p' "$run_dir/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')" = "1" ] || return 0
   st=$(cc_ci_segment_row_field "$ledger" "$seg" '상태')
@@ -887,8 +893,8 @@ cc_ci_early_condition() {
   wt=$(cc_ci_segment_row_field "$ledger" "$seg" '워크트리')
   h=$(cc_ci_worktree_head "$wt")
   [ -n "$h" ] || return 0
-  u=$(cc_ci_round_get "$(cc_ci_round "$ledger" "$seg" "$h")" u)
-  [ "${u:-0}" = "0" ] || return 0
+  mx=$(cc_ci_round_get "$(cc_ci_round "$ledger" "$seg" "$h")" max)
+  [ "${mx:-0}" = "0" ] || return 0
   recs=$(cc_ci_records "$run_dir" "$ledger" "$seg")
   v=$(printf '%s\n' "$recs" | LC_ALL=C awk -F'\t' -v sha="$h" \
     'NF > 0 && $1 == sha && $2 == 0 { p = $0 } END { printf "%s", p }')

@@ -22022,8 +22022,8 @@ gate_ci_ack_failure() {
   # gate_ci_ack_failure <segment> <V row> — true when one element of V's
   # `실패 체크`, split on ", " as the poller joins them, is exactly the `체크` of a
   # `라벨 인정` row of the segment's target. The target is the slice alias, else
-  # the segment's target alias. L5m and M3a read this one predicate, so the
-  # two never judge one failure two ways. Whether the pair already carries a
+  # the segment's target alias. L5m, M3a and E read this one predicate, so the
+  # three never judge one failure two ways. Whether the pair already carries a
   # label row is the caller's to read.
   local seg=$1 v=$2 al acks
   al=$(gate_slice_alias "$seg" 2>/dev/null) || al=""
@@ -22092,25 +22092,39 @@ gate_ci_fix_next() {
 gate_ci_early() {
   # gate_ci_early <segment> — E, the early rerun predicate: a CI join target
   # neither `머지됨` nor `park`, a live stage on it that is a review, its tip
-  # resolves, no rerun spent on that head, round 0's V a settled failure, and
-  # no rerun `도달 park` row below the head's first `checks` row. While a review
-  # runs, the rerun goes out now rather than after it. A live implement or lead
-  # fix is about to make a new head, so rerunning the old one buys nothing.
+  # resolves, no round of either kind on that head (max = 0), round 0's V a
+  # settled failure none of whose `실패 체크` a `라벨 인정` row of the target
+  # names, and no rerun `도달 park` row below the head's first `checks` row.
+  # While a review runs, the rerun goes out now rather than after it. A live
+  # implement or lead fix is about to make a new head, so rerunning the old one
+  # buys nothing.
+  #
+  # NO ROUND, NOT NO RERUN. A label round raises g and max and never u, so
+  # reading u = 0 here would read round 0's superseded V after an accepted
+  # label and spend the one rerun a later failure was meant to keep. AN
+  # ACKNOWLEDGED CHECK'S FAILURE IS THE LABEL PATH'S: L5m and M3a read the same
+  # `gate_ci_ack_failure`, and a rerun here would only spend that rerun first.
   #
   # THE PARK CLAUSE IS WHAT ENDS IT. A rerun act that parks does so before its
   # `요청` row, so u stays 0; without the clause E would stay true and the same
   # refused act would go out every shift. The relay reads the same predicate
-  # (`cc_ci_early_condition`) over the poller files too.
+  # (`cc_ci_early_condition`) over the poller files too, without the
+  # acknowledged-check clause, because it opens no manifest: its copy is a
+  # superset of this one. A shift it wakes for an acknowledged check finds
+  # `ci_early[]` empty and takes no act, and the consumption rule wakes it on
+  # that evidence once; the clause only makes E false, so the relay never
+  # misses a wake this copy would give.
   local seg=$1 h v
   gate_ci_join_target "$seg" || return 1
   case "$(gate_segment_field "$seg" '상태')" in 머지됨|park) return 1 ;; esac
   cc_stage_is_live "$RUN_DIR" "$seg" || return 1
   [ "$(cc_stage_kind "$RUN_DIR" "$LEDGER" "$seg")" = "review" ] || return 1
   h=$(gate_segment_tip "$seg") || return 1
-  [ "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$h")" u)" = "0" ] || return 1
+  [ "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$h")" max)" = "0" ] || return 1
   v=$(gate_ci_verdict_row "$seg" "$h" 0)
   [ "$(gate_row_field "$v" '상태')" = "실패" ] || return 1
   case "$(gate_row_field "$v" '진행 중')" in ''|0) : ;; *) return 1 ;; esac
+  if gate_ci_ack_failure "$seg" "$v"; then return 1; fi
   if cc_ci_rerun_parked "$LEDGER" "$seg" "$h"; then return 1; fi
   return 0
 }
@@ -22201,7 +22215,10 @@ gate_ci_next() {
   # by L2 or L5 rather than having the head held for good. L5m stands ahead of
   # L6 and so takes a failure of an acknowledged check before a rerun can, at
   # the cost that a transient failure of that check gets the label rather than
-  # its rerun. A worktree whose tip does not resolve leaves the base overlay's
+  # its rerun. The early rerun E and the fix layer's M3a read the same
+  # predicate (`gate_ci_ack_failure`), so neither a review still running nor a
+  # review that asked for a fix reruns that failure first or hands it to the
+  # implement stage. A worktree whose tip does not resolve leaves the base overlay's
   # value: the merge rule reads the same HEAD and refuses on its own.
   #
   # ON A CI JOIN TARGET NOTHING RECORDED IS A WAIT, NOT A PASS. The merge rule
