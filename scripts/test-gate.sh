@@ -47938,7 +47938,7 @@ check "88d: CI 처분 아닌 계열의 수정 낱말은 L0 을 세우지 않는�
 
 # ---------------------------------------------------------------------------
 # 88h. 기본 브랜치 판독과 CI 대조 — 판독 전사, 대조 행위, LM 처분, 머지 검사, 중계 깨움, 수리 인가
-# --- section: 88h | group: ledger_series | covers: gate_master_reading, gate_master_row_one, gate_master_row_if_changed, gate_perform_ci_match, gate_ci_master_next, gate_master_resolved_after, gate_master_claim, gate_ci_repair_pass, gate_check_merge_checks, gate_snapshot_review_next_json, gate_relay_master_segments, gate_relay_master_wake, gate_check_repair_grant, gate_shift_halt_site_table | anchors: 88h: 판독 파일이 없으면 판독 행이 없고 회차 1 의 정착 실패는 CI 기존 실패 다, 88h: 빨강 판독은 행 하나로 전사되고 같은 판독은 다시 쓰지 않는다, 88h: 어휘 밖 판독은 부재로 읽히고 쥔 판독은 (미상) 이 되어 L7 로 돌아간다, 88h: 대조 행이 없는 빨강 판독의 다음은 CI 대조 이고 머지 검사가 거절한다, 88h: 부분집합은 master 대기 이고 회차를 세지 않는다, 88h: 초과는 L7 을 건너뛰어 CI 수정 이다, 88h: 읽지 못한 대조는 판정 불가 이고 master 대기 다, 88h: 베이스 뒤에 해소된 사건의 서명만 겹치면 재합류 필요 이고 master 재합류 다, 88h: 띄울 수 없는 사건의 대표는 master 수리 불가 이고 둘째 세그먼트는 대표를 잡지 못한다, 88h: 수리 런의 단언 부분집합은 수리 통과 이고 머지 검사를 지난다, 88h: 판독이 움직이면 수리 통과는 다시 대조된다, 88h: 대기 인계의 master 대기 칸을 중계가 읽고 판독이 바뀔 때만 깬다, 88h: 수리 런 인가는 동의 문면·절단점·사전 인가 형태를 묶고 사람 인가는 그대로다, 88h: master 수리 불가 정지 자리의 추천은 없음 이다, 88h: master 대기 의 교대는 판독이 초록으로 바뀔 때 깨고 다음은 master 재합류 다, 88h: 저장소에 없는 해소 커밋은 베이스 뒤이고 다음은 master 재합류 다, 88h: 대기 뒤 띄울 수 없음 으로 바뀐 사건은 다시 대조되어 master 수리 불가 다 ---
+# --- section: 88h | group: ledger_series | covers: gate_master_reading, gate_master_row_one, gate_master_row_if_changed, gate_perform_ci_match, gate_ci_master_next, gate_master_resolved_after, gate_master_claim, gate_ci_repair_pass, gate_check_merge_checks, gate_snapshot_review_next_json, gate_relay_master_segments, gate_relay_master_wake, gate_check_repair_grant, gate_shift_halt_site_table | anchors: 88h: 판독 파일이 없으면 판독 행이 없고 회차 1 의 정착 실패는 CI 기존 실패 다, 88h: 빨강 판독은 행 하나로 전사되고 같은 판독은 다시 쓰지 않는다, 88h: 어휘 밖 판독은 부재로 읽히고 쥔 판독은 (미상) 이 되어 L7 로 돌아간다, 88h: 대조 행이 없는 빨강 판독의 다음은 CI 대조 이고 머지 검사가 거절한다, 88h: 부분집합은 master 대기 이고 회차를 세지 않는다, 88h: 초과는 L7 을 건너뛰어 CI 수정 이다, 88h: 읽지 못한 대조는 판정 불가 이고 master 대기 다, 88h: 베이스 뒤에 해소된 사건의 서명만 겹치면 재합류 필요 이고 master 재합류 다, 88h: 띄울 수 없는 사건의 대표는 master 수리 불가 이고 둘째 세그먼트는 대표를 잡지 못한다, 88h: 수리 런의 단언 부분집합은 수리 통과 이고 머지 검사를 지난다, 88h: 판독이 움직이면 수리 통과는 다시 대조된다, 88h: 대기 인계의 master 대기 칸을 중계가 읽고 판독이 바뀔 때만 깬다, 88h: 수리 런 인가는 동의 문면·절단점·사전 인가 형태를 묶고 사람 인가는 그대로다, 88h: master 수리 불가 정지 자리의 추천은 없음 이다, 88h: master 대기 의 교대는 판독이 초록으로 바뀔 때 깨고 다음은 master 재합류 다, 88h: 저장소에 없는 해소 커밋은 베이스 뒤이고 다음은 master 재합류 다, 88h: 대기 뒤 띄울 수 없음 으로 바뀐 사건은 다시 대조되어 master 수리 불가 다, 88h: 대기 뒤 팁만 움직인 판독은 대기를 지키고 서명 지문이 움직이면 다시 대조한다 ---
 #
 # 판정표가 머지 를 내는 세그먼트 위에 회차 1 의 정착 실패를 두고(회차의 요청이 기본
 # 브랜치 실패를 보았다 — L7 의 자리), 기본 브랜치 판독 파일을 이 절의 pace 루트 아래에
@@ -47988,7 +47988,7 @@ q88h() {  # q88h <원장> <명령…> — 절의 판독·표지 루트와 고정
 }
 mf88h() {  # mf88h <상태> <서명 JSON 배열> [사건 JSON 배열] — 판독 파일 하나, 관측은 지금
   mkdir -p "$P88H/master"
-  jq -n --arg st "$1" --argjson sg "$2" --argjson ev "${3:-[]}" --arg tip "$B88H" \
+  jq -n --arg st "$1" --argjson sg "$2" --argjson ev "${3:-[]}" --arg tip "${TIP88H:-$B88H}" \
     --arg obs "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{schema: "cc-master-state v1", tip: $tip, state: $st, precision: "단언", observed_at: $obs,
       signatures: $sg, events: $ev}' > "$P88H/master/Nharu__cc-cmds__main.json"
@@ -48162,6 +48162,21 @@ n88h_v3=$(n88h "$L88HV")
 check "88h: 대기 뒤 띄울 수 없음 으로 바뀐 사건은 다시 대조되어 master 수리 불가 다" \
   "$n88h_v1|$n88h_v2|$n88h_v3|$(pm88h "$L88HV")|$(lsr_last_fields "$L88HV" 'CI 처분' 결과 대표)|$(n88h "$L88HV")" \
   "master 대기|master 대기|CI 대조|0|부분집합|예|master 수리 불가"
+
+# 대기 뒤에 팁만 움직인 판독은 비교 집합을 바꾸지 않으므로 대기를 지키고, 서명 지문이
+# 움직인 판독은 다시 대조한다.
+E5_88H=ffffffffffff
+mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E5_88H" - 대기 - "$S1_88H")]"
+L88HT=$(l88h tiponly); tr88h "$L88HT"; lg88h '1 가'
+pm88h "$L88HT" >/dev/null
+n88h_t1=$(n88h "$L88HT")
+TIP88H="$X88H" mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E5_88H" - 대기 - "$S1_88H")]"
+tr88h "$L88HT"
+n88h_t2=$(n88h "$L88HT")
+TIP88H="$X88H" mf88h 빨강 "$(sg88h "$S1_88H" "$S2_88H")" "[$(ev88h "$E5_88H" - 대기 - "$S1_88H")]"
+tr88h "$L88HT"
+check "88h: 대기 뒤 팁만 움직인 판독은 대기를 지키고 서명 지문이 움직이면 다시 대조한다" \
+  "$n88h_t1|$n88h_t2|$(n88h "$L88HT")" "master 대기|master 대기|CI 대조"
 
 # ---------------------------------------------------------------------------
 # 88h-2. master 재합류 입장 — 대조 행위의 등급, 이동 판정에서만 받는 재합류 파견, 병합 뒤 해소 리뷰

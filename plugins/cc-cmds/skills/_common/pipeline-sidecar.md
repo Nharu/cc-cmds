@@ -1187,7 +1187,7 @@ L0 comes before the base rows because the base overlay sends a head that moved p
 | LM2 | M.`결과` = `초과` | L8 or L9, never L7 | as those rows |
 | LM3 | M.`결과` = `재합류 필요`, or `부분집합` or `판정 불가` while the reading is `초록` | `master 재합류` | `base-check`, then the rejoin dispatch below |
 | LM4 | `부분집합` or `판정 불가`, M.`대표` = `예`, and the reading gives a waited event the repair state `띄울 수 없음` | `master 수리 불가` | the site `master 수리 불가` |
-| LM5 | `부분집합` or `판정 불가` made against a reading whose tip, signature fingerprint or event field differs from the ledger's last reading | `CI 대조` | `act --kind ci-match … -- 대조 <H>` |
+| LM5 | `부분집합` or `판정 불가` made against a reading whose signature fingerprint or event field differs from the ledger's last reading | `CI 대조` | `act --kind ci-match … -- 대조 <H>` |
 | LM6 | `부분집합` or `판정 불가` otherwise | `master 대기` | run other segments; end with `대기` carrying `'master 대기=<id>'` |
 
 **A wait is matched again when its reading moves (LM5).** The representative marker is taken only inside the match act, and the usual order is a wait first and `띄울 수 없음` after it, when the repair run ends without resolving its event; a wait kept against the old reading never reaches LM4. An event resolved while another keeps the base red moves the comparison set the same way. M's `판독 지문` gives the signature fingerprint it was made against, and its `판독 사건` the event field — the two things the comparison set is made of and the relay wakes on; the tip and the observation time are left out, because a base commit that fixes nothing moves the tip, the reading's refresh rewrites the time, and the match would come out the same. The new match records the reading it was made against, so a reading that stays put is matched once.

@@ -71,7 +71,13 @@
 #     than a `run/<suite>` goal, unless a deeper make's error line came before
 #     it — that is the recursive make passing a failure up. The same shard runs
 #     goals no suite-guard wraps (the `--self-test` goals), and their failure is
-#     seen nowhere else.
+#     seen nowhere else;
+#   - when the log names the shard's goals (`rest shard <n>/<m>: <goal>…`) and
+#     a make error line shows make stopped, every listed goal started: a
+#     `run/<suite>` goal by its suite-guard start line, a `run-<x>-selftest`
+#     goal by the `bash scripts/<x>.sh --self-test` line make echoes. The
+#     sub-make runs without `-k`, so after the first failure it starts no
+#     further goal, and a goal that never started leaves no line at all.
 #
 # A `<name> self-test: <n> passed, …` total comes from such an unwrapped goal,
 # so it is never taken as the total of the one wrapped suite open beside it.
@@ -199,7 +205,21 @@ cs_read_fail_lines() {
         next
       }
       if (substr(line, 1, 21) == "::error::suite-guard:" || substr(line, 1, 21) == "##[error]suite-guard:") { broken = 1; next }
+      if (line ~ /^rest shard [0-9]+\/[0-9]+: /) {
+        n = split(substr(line, index(line, ": ") + 2), words, " ")
+        for (i = 1; i <= n; i++) {
+          if (substr(words[i], 1, 4) == "run/") { listed[substr(words[i], 5)] = 1; nlisted++ }
+          else if (words[i] ~ /^run-[A-Za-z0-9_.-]+-selftest$/) { listed_self[words[i]] = 1; nlisted++ }
+        }
+        next
+      }
+      if (line ~ /^bash scripts\/[A-Za-z0-9_.-]+\.sh --self-test$/) {
+        g = line; sub(/^bash scripts\//, "", g); sub(/\.sh --self-test$/, "", g)
+        self_started["run-" g "-selftest"] = 1
+        next
+      }
       if (line ~ /^g?make(\[[0-9]+\])?: \*\*\* \[/) {
+        mkerr = 1
         lvl = 0
         if (match(line, /^g?make\[[0-9]+\]/)) { lvl = substr(line, 1, RLENGTH); sub(/^g?make\[/, "", lvl); sub(/\]$/, "", lvl); lvl += 0 }
         t = substr(line, index(line, "*** [") + 5); sub(/\][^]]*$/, "", t)
@@ -246,6 +266,10 @@ cs_read_fail_lines() {
           k = keys[i]
           if ((k in failed_rc) && (!fails[k] || !(k in totals))) ok = 0
         }
+      }
+      if (ok && nlisted && mkerr) {
+        for (k in listed) if (!(k in open)) ok = 0
+        for (k in listed_self) if (!(k in self_started)) ok = 0
       }
       print (ok ? "T" : "F")
       for (i = 1; i <= nf; i++) print out[i]

@@ -310,6 +310,29 @@ check "8 감싼 스위트의 make 실패 줄과 바깥 make 의 전달 줄은 �
 out=$(extract 'rest-tests (1)' "$WORK/g11.log")
 check "8 그 대조군은 단언 정밀도다" "${out%%$'\n'*}" "정밀도: 단언"
 
+# The shard names its goals, and make stopped after test-a failed: test-c and
+# one self-test never started, so their failures are in no line of the log.
+{
+  printf '%s\n' 'rest shard 1/3: run/scripts/test-a.sh run/scripts/test-b.sh run/scripts/test-c.sh run-gate-shard-selftest run-check-gate-selftest'
+  cat "$WORK/g11.log"
+} > "$WORK/g12.log"
+out=$(extract 'rest-tests (1)' "$WORK/g12.log")
+check "8 목록에 있고 시작하지 못한 스위트가 있으면 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+{
+  printf '%s\n' 'rest shard 1/3: run/scripts/test-a.sh run/scripts/test-b.sh run-gate-shard-selftest'
+  printf '%s\n' 'bash scripts/gate-shard.sh --self-test'
+  printf '%s\n' 'gate-shard self-test: 12 passed, 0 failed'
+  cat "$WORK/g11.log"
+} > "$WORK/g13.log"
+check "8 목록의 목표가 모두 시작했으면 단언 정밀도를 지킨다" \
+  "$(extract 'rest-tests (1)' "$WORK/g13.log")" "$(extract 'rest-tests (1)' "$WORK/g1.log")"
+{
+  printf '%s\n' 'rest shard 1/3: run/scripts/test-a.sh run/scripts/test-b.sh run-gate-shard-selftest'
+  cat "$WORK/g11.log"
+} > "$WORK/g14.log"
+out=$(extract 'rest-tests (1)' "$WORK/g14.log")
+check "8 시작 줄이 없는 자가시험 목표도 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+
 # A FAIL line outside every suite.
 {
   printf '%s\n' 'FAIL: 0 바깥 — x'
