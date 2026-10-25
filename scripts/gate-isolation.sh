@@ -724,32 +724,36 @@ iso_self_test() {
         cat <<'EOS'
 
 # ---------------------------------------------------------------------------
-# 901. P sets a value
-# --- section: 901 | group: - | covers: - | anchors: P 가 값을 정한다 ---
+# 901. P defines a helper in its body and makes a file
+# --- section: 901 | group: - | covers: - | anchors: P 가 헬퍼와 파일을 만든다 ---
 # ---------------------------------------------------------------------------
-iso_p_val=7
-ok "P 가 값을 정한다"
+iso_p_helper() { echo 7; }
+printf 'made\n' > "${TMPDIR:-/tmp}/iso-p-made"
+ok "P 가 헬퍼와 파일을 만든다"
 
 # ---------------------------------------------------------------------------
-# 902. Q reads it
+# 902. Q calls P's helper
 EOS
-        printf '# --- section: 902 | group: - | covers: - | anchors: Q 는 P 가 정한 값을 읽는다%s ---\n' "${nd:+ | needs: $nd}"
+        printf '# --- section: 902 | group: - | covers: - | anchors: Q 는 P 의 헬퍼를 부른다%s ---\n' "${nd:+ | needs: $nd}"
         cat <<'EOS'
 # ---------------------------------------------------------------------------
-check "Q 는 P 가 정한 값을 읽는다" "${iso_p_val:-없음}" "7"
+check "Q 는 P 의 헬퍼를 부른다" "$(iso_p_helper 2>/dev/null || echo 없음)" "7"
 
 # ---------------------------------------------------------------------------
-# 903. Q2 passes either way and runs other lines
+# 903. Q2 reads P's file and passes through its case either way
 EOS
-        printf '# --- section: 903 | group: - | covers: - | anchors: Q2 는 늘 통과한다%s ---\n' "${nd:+ | needs: $nd}"
+        printf '# --- section: 903 | group: - | covers: - | anchors: Q2 는 P 가 만든 파일에서 깨진 값을 찾지 않는다%s ---\n' "${nd:+ | needs: $nd}"
         cat <<'EOS'
 # ---------------------------------------------------------------------------
-if [ -n "${iso_p_val:-}" ]; then
-  iso_q2=set
+if [ -f "${TMPDIR:-/tmp}/iso-p-made" ]; then
+  iso_q2=$(cat "${TMPDIR:-/tmp}/iso-p-made")
 else
-  iso_q2=unset
+  iso_q2=""
 fi
-ok "Q2 는 늘 통과한다"
+case "$iso_q2" in
+  *broken*) bad "Q2 는 P 가 만든 파일에서 깨진 값을 찾지 않는다" "$iso_q2" ;;
+  *) ok "Q2 는 P 가 만든 파일에서 깨진 값을 찾지 않는다" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 904. a fixture run id substituted over a whole file that names a path
@@ -773,10 +777,10 @@ EOS
     out=$(env CC_TEST_GATE_REPO_ROOT="$repo_root" ISO_BASH="$bsh" bash "$0" check --suite "$T/s0/test-gate.sh" --census /dev/null \
       --sections 902,903 --with 901 --out "$T/c0" 2>"$T/c0.err"); rc=$?
     if [ "$rc" = "1" ] && [ "$(verdict "$T/c0" 902)" = "갈림" ] && [ "$(rec_v "$T/c0/iso-1/solo1-902" 902)" = "FAIL" ]; then
-      ok "R3: 선언 없이 P 에 기댄 Q 는 단독에서 실패해 갈림이다"
+      ok "R3: 선언 없이 P 본문의 헬퍼를 부르는 Q 는 단독에서 실패해 갈림이다"
     else bad "R3 선언 없음 Q" "rc=$rc 「${out}」 $(tail -n 3 "$T/c0.err")"; fi
     if [ "$(verdict "$T/c0" 903)" = "갈림" ] && grep -q "^903${tab}갈림${tab}[^${tab}]*${tab}줄 집합 — " "$T/c0/result.tsv"; then
-      ok "R3: 판정은 같고 실행한 줄만 다른 Q2 는 줄 집합 차이로 갈림이다"
+      ok "R3: P 의 파일이 없으면 case 의 통과 갈래로 빠지는 Q2 는 판정이 같아도 줄 집합 차이로 갈림이다"
     else bad "R3 선언 없음 Q2" "「$(cat "$T/c0/result.tsv" 2>/dev/null)」"; fi
 
     suite "$T/s1" "901"
