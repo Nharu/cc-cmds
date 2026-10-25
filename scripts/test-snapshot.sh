@@ -2887,6 +2887,29 @@ check "교대 계약: 정산의 0·3·4 밖 exit 은 3 처럼 운반한다" \
   "$(has "$RS_CORPUS" "Any other exit — a refused argument (\`2\`) included — wrote no row either, so read it as \`3\` and carry the answer below.")" 예
 check "design-reconverge: 기계 정산 줄은 기록을 가진 두 범위에서만 쓴다" \
   "$(has "$RC_SKILL" "- the scope is \`감사 종합 요구 <record>\` or \`구속 티어 이탈 <record>\`. Never for an \`R<n>\` scope")" 예
+# 재수렴의 문서 쓰기는 게이트가 런로컬로 증명하는 이름공간의 사본 하나와 잠금 아래 게시 한 번이다.
+# 사본 자리·신고를 정하지 않으면 스테이지가 임의의 이름을 기기전역으로 신고해 사전 인가 판단에서
+# 멈추므로, 그 자리와 신고를 싣는 것은 이 문장들뿐이다.
+check "design-reconverge: 사본 디렉터리는 cc-proto 이름공간의 mktemp -d 하나다" \
+  "$(has "$RC_SKILL" "the copy lives in the one directory \`mktemp -d \"\${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id>.XXXXXX\"\` makes")" 예
+check "design-reconverge: stage id 는 CC_PIPELINE_STAGE_ID 의 # 를 - 로 바꾼 것이다" \
+  "$(has "$RC_SKILL" "\`<stage id>\` is \`CC_PIPELINE_STAGE_ID\` with \`#\` as \`-\` (\`A#7\` → \`A-7\`), the form the gate proves run-local")" 예
+check "design-reconverge: 네 행위는 트리밖쓰기·런로컬로, rm -r 은 파괴로 신고한다" \
+  "$(has "$RC_SKILL" "The \`mktemp\`, both \`cp\`s (taking the copy and the publish) and the \`rm -r\` are declared \`--surface 트리밖쓰기 --reach 런로컬\`, and the \`rm -r\` adds \`--destructive\`.")" 예
+check "design-reconverge: 기기전역·미상 신고를 금한다" \
+  "$(has "$RC_SKILL" "Never declare them \`기기전역\` or \`미상\`: the first parks on the pre-authorization judgment, the second parks as \`도달미상\` because the document path lies outside the namespace.")" 예
+check "design-reconverge: 게시는 문서 잠금으로 감싼 cp 다" \
+  "$(has "$RC_SKILL" "5. Publish with \`/usr/bin/lockf -k -t 0 \"\${RUN_DIR}/designdoc.lock\" cp <dir>/doc.md <document>\` (absolute path; \`-k\` and \`-t 0\` both required), and record \`shasum -a 256 <document>\` as \`사후 sha256\`.")" 예
+check "design-reconverge: 게시 뒤 사본 디렉터리를 지운다" \
+  "$(has "$RC_SKILL" "6. \`rm -r <dir>\`, then go on to Step 4's verdict and the carrier close.")" 예
+check "design-reconverge: 정지 전에 사본 디렉터리를 먼저 지운다" \
+  "$(has "$RC_SKILL" "7. A halt at 2, 4 or 5 removes the directory first and lists 4's edits in the record's \`관측 상세\`.")" 예
+check "design-reconverge: 압축 뒤 접두사로 찾아 지우고 1 부터 다시 한다" \
+  "$(has "$RC_SKILL" "A compaction between 1 and 5 drops the copy: find it by the prefix \`cc-proto-<run id>-<stage id>.\`, remove it as in 6, and restart at 1.")" 예
+check "design-reconverge: 문서 옆·런 디렉터리·sh -c 사본과 mv 게시를 금한다" \
+  "$(has "$RC_SKILL" "Never put the copy beside the document (a hidden file in the same directory included) or under the run directory, never copy inside \`sh -c\` or \`bash -c\`, never publish with \`mv\`, and never use a temporary name outside the namespace above: the publish is a \`cp\`.")" 예
+check "design-reconverge: 임의 명령을 감싸는 옛 잠금 일반형이 남지 않는다" \
+  "$(has "$RC_SKILL" "\"\${RUN_DIR}/designdoc.lock\" <command>")" 아니오
 check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
   "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg) \')/$(has "$(dirname "$GATE")/liveness.sh" '&& index(banchor[b], "clause-") != 1) step = 1')" "예/예"
 check "좌석 사본: 상한 고지는 세 상한 사유로 고른다" \

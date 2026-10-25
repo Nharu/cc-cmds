@@ -37634,6 +37634,88 @@ if [ "$P53b_PREV_SID_SET" = set ]; then CC_PIPELINE_STAGE_ID="$P53b_PREV_SID"; e
 
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
 # ---------------------------------------------------------------------------
+# 53c. 재수렴 작업 사본 — 사본 뜨기·게시·정리가 런로컬 신고로 park 없이 통과한다
+# --- section: 53c | group: reach | covers: exec, reach | anchors: 53c: 재수렴 사본 디렉터리의 mktemp -d 는 런로컬 신고로 통과한다, 53c: 문서를 사본으로 뜨는 cp 는 런로컬 신고로 통과한다, 53c: 사본을 문서로 게시하는 cp 는 런로컬 신고로 통과한다, 53c: 재수렴 사본 디렉터리의 rm -r 는 파괴 신고로 통과한다, 53c: 다른 시도 키의 사본 틀은 증명이 없다 ---
+# 재수렴 스테이지는 설계 문서를 `${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id>.XXXXXX` 사본
+# 하나에서 고치고 문서 잠금 아래 `cp` 한 번으로 게시한다. 사본 디렉터리만 다루는 `mktemp -d`
+# 와 `rm -r` 은 argv 가 런로컬을 증명하고, 문서를 피연산자로 갖는 두 `cp` 는 문서가 이름공간
+# 밖이라 증명이 서지 않으므로 정직한 `런로컬` 신고가 올림 유도 없이 그대로 받아들여진다.
+# 이 절은 자동 해소가 켜진 모드를 단언하고, 53b 본문의 헬퍼·변수에 기대지 않는다.
+CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+rid53c=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | sed -n 1p)
+RD53c="$XDG_STATE_HOME/cc-cmds/run/$rid53c"
+HH >/dev/null
+L53c=$(cat "$RD53c/ledger-path" 2>/dev/null || true)
+check "53c: 픽스처 런 디렉터리와 원장이 있다 (아래 단언이 공허하지 않다)" \
+  "$([ -d "$RD53c" ] && [ -f "$L53c" ] && echo yes)" "yes"
+TD53c="$WORK/tmp53c"; mkdir -p "$TD53c"
+P53c_PREV_TMPDIR="${TMPDIR-}"; P53c_PREV_TMPDIR_SET="${TMPDIR+set}"
+P53c_PREV_SID="${CC_PIPELINE_STAGE_ID-}"; P53c_PREV_SID_SET="${CC_PIPELINE_STAGE_ID+set}"
+export TMPDIR="$TD53c" CC_PIPELINE_STAGE_ID='A#7'
+P53c="$TD53c/cc-proto-$rid53c-A-7"
+# 메인 워크트리의 설계 문서 자리 — 픽스처 런 디렉터리 밖이다.
+D53c="$WORK/doc53c/design.md"; mkdir -p "$WORK/doc53c"
+printf '# 설계\n\n원문\n' > "$D53c"
+# 마지막 `자율 승인` 행의 한 칸을 읽는다.
+rl53c_cell() {
+  grep '자율 승인' "$L53c" | tail -n 1 | grep -o "| $1=[^|]*" | sed 's/^| //; s/[[:space:]]*$//'
+}
+# 런로컬 신고 exec 한 번 — 통과와 행의 `도달` 을 단언하고, 둘째 인자가 있으면 `유도 도달` 도 단언한다.
+# 셋째 인자는 더할 신고 플래그(없으면 빈 문자열)이고, 그 뒤 `--` 다음이 명령이다.
+rl53c_exec() {
+  local label="$1" derived="$2" extra="$3"; shift 4
+  # shellcheck disable=SC2086
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 런로컬 $extra --snapshot-digest "$(HH)" \
+    --rationale t -- "$@"
+  check "$label" "$rc" "0"
+  check "$label — 행의 도달은 런로컬이다" "$(rl53c_cell 도달)" "도달=런로컬"
+  if [ -n "$derived" ]; then
+    check "$label — 행의 유도 도달은 ${derived}이다" "$(rl53c_cell '유도 도달')" "유도 도달=$derived"
+  fi
+}
+# 소싱 시임으로 유도 하나를 잰다. 런 디렉터리는 소싱 뒤에 둔다.
+rl53c_derived() {
+  local want="$1" label="$2" got; shift 3
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    RUN_DIR="$1"; shift
+    gate_reach_derived front "$@"
+  ' _ "$RD53c" "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+rl53c_exec "53c: 재수렴 사본 디렉터리의 mktemp -d 는 런로컬 신고로 통과한다" 런로컬 '' -- mktemp -d "$P53c.XXXXXX"
+d53c=$(ls -d "$P53c".* 2>/dev/null | sed -n 1p)
+check "53c: 사본 디렉터리가 실제로 만들어졌다" "$([ -d "$d53c" ] && echo yes)" "yes"
+rl53c_exec "53c: 문서를 사본으로 뜨는 cp 는 런로컬 신고로 통과한다" '' '' -- cp "$D53c" "$d53c/doc.md"
+check "53c: 사본이 문서와 같은 바이트다" "$(cmp -s "$D53c" "$d53c/doc.md" && echo same)" "same"
+printf '# 설계\n\n고친 문면\n' > "$d53c/doc.md"
+rl53c_exec "53c: 사본을 문서로 게시하는 cp 는 런로컬 신고로 통과한다" '' '' -- cp "$d53c/doc.md" "$D53c"
+check "53c: 문서가 사본의 바이트가 됐다" "$(cmp -s "$d53c/doc.md" "$D53c" && echo same)" "same"
+# 리눅스 러너에는 잠금 도구가 없다 — 잠금 없는 같은 게시는 위에서 모든 호스트가 단언했다.
+if [ -x /usr/bin/lockf ]; then
+  printf '# 설계\n\n잠금 아래 고친 문면\n' > "$d53c/doc.md"
+  rl53c_exec "53c: 문서 잠금으로 감싼 게시 cp 는 런로컬 신고로 통과한다" '' '' -- /usr/bin/lockf -k -t 0 "$RD53c/designdoc.lock" cp "$d53c/doc.md" "$D53c"
+  check "53c: 잠금 아래 게시로 문서가 사본의 바이트가 됐다" "$(cmp -s "$d53c/doc.md" "$D53c" && echo same)" "same"
+else
+  ok "53c: 이 호스트에는 잠금 도구가 없어 잠금 감싼 게시 갈래를 건너뛴다 (잠금 없는 게시는 위에서 단언했다)"
+fi
+rl53c_exec "53c: 재수렴 사본 디렉터리의 rm -r 는 파괴 신고로 통과한다" 런로컬 --destructive -- rm -r "$d53c"
+case "$(rl53c_cell '파괴 출처')" in
+  '파괴 출처=신고'|'파괴 출처=유도·신고') ok "53c: 그 rm -r 행은 파괴 신고를 적는다" ;;
+  *) bad "53c: 그 rm -r 행은 파괴 신고를 적는다" "$(rl53c_cell '파괴 출처')" ;;
+esac
+check "53c: 사본 디렉터리가 지워졌다" "$([ -e "$d53c" ] || echo gone)" "gone"
+# 이름공간은 정확히 이 스테이지 키 하나다 — 다른 시도의 키와 문서 옆 숨김 사본은 증명이 없다.
+rl53c_derived '-' "53c: 다른 시도 키의 사본 틀은 증명이 없다" -- mktemp -d "$TD53c/cc-proto-$rid53c-A-6.XXXXXX"
+rl53c_derived '-' "53c: 문서 옆 숨김 사본으로 뜨는 cp 는 증명이 없다" -- cp "$D53c" "$WORK/doc53c/.design.md.copy"
+rm -rf "$WORK/doc53c"
+if [ "$P53c_PREV_TMPDIR_SET" = set ]; then TMPDIR="$P53c_PREV_TMPDIR"; export TMPDIR; else unset TMPDIR; fi
+if [ "$P53c_PREV_SID_SET" = set ]; then CC_PIPELINE_STAGE_ID="$P53c_PREV_SID"; export CC_PIPELINE_STAGE_ID; else unset CC_PIPELINE_STAGE_ID; fi
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
+# ---------------------------------------------------------------------------
 # 54. 비밀값 출력 — 알려진 형태는 park 되고 이름을 준 읽기는 통과한다
 # --- section: 54 | group: reach | covers: exec | anchors: 인자 없는 printenv 는 park 된다 ---
 # 이 절은 자동 해소가 켜진 모드를 단언한다 — park 인지 승인인지는 그 스위치
