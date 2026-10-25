@@ -769,9 +769,10 @@ readonly GATE_EXIT_CARRY_CAP=18
 # from the value the gate built, or an implement stop the frame's ordinary form
 # does not spell: one whose `다음` the base or CI layer sets, one followed by a
 # `베이스 판정 판정=충돌` or `CI 처분 처분=수정` row after the last `cycle` row,
-# or a re-implementation after a re-convergence. Over the cycle budget these
-# still end here, since the implement dispatch's budget refusal waits for the
-# carry check on a carry act. The halt's answer is not handed to a fresh
+# or a re-implementation after a re-convergence. Over the cycle budget, or with
+# `다음` at `CI 합류 수정` and no `CI 합류:` line, these still end here, since
+# the implement dispatch's budget and CI-join line refusals wait for the carry
+# check on a carry act. The halt's answer is not handed to a fresh
 # session, so no row is written and the shift re-attaches the halted session
 # with `--resume` as before; over the budget that re-attachment is let in
 # because it names the key's halted implementation. NOT 3: 3

@@ -2820,8 +2820,8 @@ check "교대 계약: 좌석 실행·좌석 적용 정지의 답은 답한 주�
   "$(has "$RS_CORPUS" "When the step begins with \`Step 3 잔여 검증 좌석 실행\`, \`Step 3 게이트 도달 좌석 실행\` or \`Step 3 강제 표면 좌석 적용\`, whoever answered and whatever the option, the halted session reads the answer")" 예
 check "교대 계약: 좌석 실행 정지 갈래가 게이트가 거절하는 두 스텝 접두와 같다" \
   "$(has "$GATE" "'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)")" 예
-check "교대 계약: 좌석 적용 정지 갈래가 게이트가 거절하는 스텝 접두와 같다" \
-  "$(has "$GATE" "'Step 3 강제 표면 좌석 적용'*)")" 예
+check "교대 계약: 좌석 적용 정지 갈래가 게이트가 운반을 거절하는 스텝 접두와 같다" \
+  "$(has "$GATE" "printf '강제 표면 좌석 적용 정지의 답은 그 세션에 재부착하거나 세그먼트를 park 합니다 — 운반하지 않습니다: %s'")" 예
 check "교대 계약: 좌석 실행 답 갈래가 운반 act 로 넘기는 문장보다 앞선다" \
   "$(awk '/When the step begins with `Step 3 잔여 검증 좌석 실행`/{a=NR} /Every other `재부착` answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_CORPUS")" 예
 check "사이드카: 좌석 실행 정지는 사람이 답해도 --resume 으로 재부착한다" \
