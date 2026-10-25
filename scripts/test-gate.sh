@@ -48205,15 +48205,21 @@ mj_tick
 printf '%s\n' "bash scripts/suite-guard.sh scripts/test-gate.sh" "FAIL: 1 가 — got 'x', want 'y'" 'test-gate: 0 passed, 1 failed' > "$MJ_D/log"
 printf '101\tgate\tcompleted\tfailure\tgithub-actions\thttps://github.com/t/%s/actions/runs/777/job/101\n' "$SA_ID" > "$MJ_D/runs"
 mj_next0=$(mj_next)
-gh() {
-  case "$*" in
-    *check-runs*) cat "$MJ_D/runs" ;;
-    *'/logs'*) cat "$MJ_D/log" ;;
-    *actions/jobs/*) printf 'test\n' ;;
-    *) return 1 ;;
-  esac
-}
-export -f gh; export MJ_D
+mkdir -p "$MJ_D/bin"
+cat > "$MJ_D/bin/gh" <<'MJGH'
+#!/usr/bin/env bash
+case "$*" in
+  *check-runs*) cat "$MJ_D/runs" ;;
+  *'/logs'*) cat "$MJ_D/log" ;;
+  *actions/jobs/*) printf 'test\n' ;;
+  *) exit 1 ;;
+esac
+MJGH
+chmod +x "$MJ_D/bin/gh"
+# 스텁은 PATH 가 아니라 함수로 건다: 게이트가 소싱하는 run.sh 가 PATH 앞에 /usr/bin 을
+# 붙여, gh 가 거기 깔린 호스트에서는 PATH 앞의 스텁이 진짜 gh 에 가려진다.
+export MJ_D
+eval 'gh() { "$MJ_D/bin/gh" "$@"; }'; export -f gh
 MJ_PREV_RO="${CC_GATE_TOKEN_RO:-}"; export CC_GATE_TOKEN_RO=mj-ro-fixture
 sag act --manifest "$SA_MANIFEST" --kind ci-match --target main --segment CK --cutpoint PR \
     --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 대조" -- 대조 "$MJ_SHA"

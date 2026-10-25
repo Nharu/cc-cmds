@@ -15555,7 +15555,7 @@ gate_master_reading() {
   st=$(printf '%s' "$s" | jq -r '.state // ""')
   prec=$(printf '%s' "$s" | jq -r '.precision // "-"')
   obs=$(printf '%s' "$s" | jq -r '.observed_at // ""')
-  printf '%s' "$tip" | grep -Eq '^[0-9a-f]{40}$' || return 1
+  [[ $tip =~ ^[0-9a-f]{40}$ ]] || return 1
   case "$st" in 초록|빨강|'진행 중'|'판정 불가') ;; *) return 1 ;; esac
   case "$prec" in 단언|단계|-) ;; *) return 1 ;; esac
   [ -n "$(cc_iso_to_epoch "$obs")" ] || return 1

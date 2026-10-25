@@ -43,7 +43,7 @@ ts() { printf '2026-10-24T06:%02d:%02d.1234567Z ' "$1" "$2"; }
   printf '%s%s\n' "$(ts 1 6)" 'test-gate: 1 passed, 2 failed'
 } > "$WORK/a1.log"
 out=$(extract 'gate-shards (3)' "$WORK/a1.log")
-check "1 첫 줄은 단언 정밀도" "$(printf '%s\n' "$out" | head -n 1)" "정밀도: 단언"
+check "1 첫 줄은 단언 정밀도" "${out%%$'\n'*}" "정밀도: 단언"
 check "1 서명 둘 — 샤드 꼬리·상세·시각 표지가 없다" "$(printf '%s\n' "$out" | tail -n +2)" \
   "$(printf '%s\n' 'gate-shards|test-gate.sh|7 머지 검사' 'gate-shards|test-gate.sh|7 인계 수락' | LC_ALL=C sort)"
 
@@ -140,7 +140,7 @@ check "4 스위트 줄이 없으면 체크와 이름만" "$(extract 'rest-tests 
   printf '%s\n' 'FAIL: 3 무엇 — x'
 } > "$WORK/e.log"
 out=$(extract 'gate-shards (2)' "$WORK/e.log" --step 'Run gate shard')
-check "5 합계 줄이 없으면 단계 정밀도" "$(printf '%s\n' "$out" | head -n 1)" "정밀도: 단계"
+check "5 합계 줄이 없으면 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
 check "5 단계 정밀도의 서명은 단계 이름" "$(printf '%s\n' "$out" | tail -n +2)" 'gate-shards|Run gate shard'
 out=$(extract 'gate-shards (2)' "$WORK/e.log")
 check "5 단계도 없으면 정밀도 줄만" "$out" "정밀도: 단계"
@@ -163,8 +163,8 @@ check "6 FAIL 줄 없는 체크는 단계 서명" "$out" \
 out=$(bash "$CS" extract --repo other/repo --check 'test (ubuntu)' --step 'Run tests' < "$WORK/a1.log")
 check "6 일반 어댑터는 FAIL 줄을 읽지 않는다" "$out" \
   "$(printf '%s\n' '정밀도: 단계' 'test (ubuntu)|Run tests')"
-out=$(bash "$CS" extract --repo NHARU/CC-CMDS --check 'gate-shards (1)' < "$WORK/a1.log" | head -n 1)
-check "6 slug 는 대소문자를 가리지 않는다" "$out" "정밀도: 단언"
+out=$(bash "$CS" extract --repo NHARU/CC-CMDS --check 'gate-shards (1)' < "$WORK/a1.log")
+check "6 slug 는 대소문자를 가리지 않는다" "${out%%$'\n'*}" "정밀도: 단언"
 
 # ---------------------------------------------------------------------------
 # 7. Empty input, fingerprint, arguments.
