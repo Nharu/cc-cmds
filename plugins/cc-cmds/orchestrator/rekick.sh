@@ -129,8 +129,10 @@
 # manifest check, so 5c is asked again. Then `render-manifest` drops the row,
 # `--set 런:apply-probe-codes=<불필요>/<필요>` writes the confirmed mapping as a
 # new row bound to the draft's probe bytes, and `verify-subset` accepts a row
-# that differs from the previous one, compared with the `--set` value when one
-# is given. Nothing here writes the previous run's pinned plugin copy or its
+# that differs from the previous one only as that `--set` value, and refuses a
+# draft with no such value. The value is a `빈칸` row 5o confirmed, or — when
+# `--carry` had no file value and named the key `다시 물음` — 5c's answer,
+# recorded under `5c`. Nothing here writes the previous run's pinned plugin copy or its
 # pin record; the draft is the only file this mode makes.
 #
 # `--blank-rows` is the `--carry` output 5o showed, saved byte for byte. It is
@@ -2566,15 +2568,19 @@ EOF
     why="${why:+$why; }$k 가 원천과 다릅니다"
   done
   # The apply mapping row is the previous row, or none — except where the
-  # previous row cannot be carried, and then the draft's row may differ: it is
-  # 5c's answer, compared with the confirmed `--set` value when there is one.
+  # previous row cannot be carried, and then the draft's row is 5c's answer,
+  # compared with the confirmed `--set` value. A draft there with no such value
+  # is refused: it would freeze with only 불필요=0 defined, and every needed
+  # apply of the new run would stop before its command.
   local acset dac
   if MANIFEST="$prev" apply_code_row_reask; then
     acset=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$VS_SETS" 2>/dev/null)
+    dac=$(MANIFEST="$draft" manifest_apply_code_rows)
     if [ -n "$acset" ]; then
-      dac=$(MANIFEST="$draft" manifest_apply_code_rows)
       [ -n "$dac" ] && [ "$(manifest_row_fields "$dac" '불필요' 1 | head -1)/$(manifest_row_fields "$dac" '필요' 1 | head -1)" = "$acset" ] \
-        || why="${why:+$why; }적용 프로브 코드 행이 5o 에서 확인한 대응 $acset 과 다릅니다"
+        || why="${why:+$why; }적용 프로브 코드 행이 확인한 대응 $acset 과 다릅니다"
+    else
+      why="${why:+$why; }원천의 적용 프로브 코드 행을 이어받을 수 없어 5c 로 다시 물은 대응(--set 런:apply-probe-codes)이 필요합니다"
     fi
   else
     [ "$(MANIFEST="$prev" manifest_apply_code_rows)" = "$(MANIFEST="$draft" manifest_apply_code_rows)" ] \
@@ -2616,9 +2622,17 @@ EOF
   if [ -z "$why" ]; then
     while IFS="$TAB" read -r ssc ssec sf sv sk srsc; do
       [ -n "$ssc" ] || continue
-      MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
-        || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
-      [ -n "$(rk_asked_answer "5o $srsc:$sk")" ] || why="${why:+$why; }$srsc:$sk 는 5o 에서 묻지 않은 값입니다"
+      # The mapping has a second source: where 5o offered no `빈칸` row for it
+      # (no file value, so `--carry` named the key `다시 물음`) or the person did
+      # not confirm the offered one, 5c is asked and its answer, recorded under
+      # `5c`, is the value — the same one `--set` carries.
+      if [ "$sk" = "apply-probe-codes" ] && [ -n "$(rk_asked_answer '5c')" ]; then
+        [ "$(rk_asked_answer '5c')" = "$sv" ] || why="${why:+$why; }$srsc:$sk 의 확정값이 5c 답과 다릅니다"
+      else
+        MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
+          || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
+        [ -n "$(rk_asked_answer "5o $srsc:$sk")" ] || why="${why:+$why; }$srsc:$sk 는 5o 에서 묻지 않은 값입니다"
+      fi
       case " / $D_CONFIRM / " in *" / $srsc:$sk=$sv / "*) ;; *) why="${why:+$why; }$ssc:$sk 의 확정값이 사용자 확인 문면에 없습니다" ;; esac
       if [ "$ssec" = "대상" ]; then sdv=$(MANIFEST="$draft" target_field "$ssc" "$sf")
       elif [ "$sk" = "apply-probe-codes" ]; then

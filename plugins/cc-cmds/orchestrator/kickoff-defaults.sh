@@ -1649,7 +1649,8 @@ EOF
   # means only 불필요=0 is defined and a row with 2 is refused by the manifest
   # check, so the renderer drops it and 5c answers it once more: the file's
   # value is the `빈칸` row offered as the proposal, and with no file value the
-  # key is named as not carried.
+  # key is named `다시 물음` — the re-kickoff asks 5c on that row, and a seat
+  # re-kickoff, which asks nothing, opens no successor run on it.
   kd_ac=$(manifest_apply_code_rows | head -1)
   if apply_code_row_reask; then
     if kd_xi=$(kd_file_ok any apply-probe-codes); then

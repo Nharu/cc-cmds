@@ -1424,7 +1424,26 @@ for ac_case in RKAR0:없음 RKAR2:0/2 RKAR3:2/0; do
   check "7: 대응 행 $ac_v 인 파이프라인 원천의 render-manifest 는 0 으로 끝난다" "$rc" "0"
   check "7: 대응 행 $ac_v 인 파이프라인 원천의 초안에는 적용 프로브 코드 행이 없다" \
     "$(grep -c '^- `적용 프로브 코드`' "$WORK/v-ar.md")" "0"
-  vs "대응 행 $ac_v 인 파이프라인 원천에서 행을 뺀 초안은 통과한다" 통과 "$WORK/v-ar.md" "$E"
+  # With no defaults file the real `--carry` offers no `빈칸` row and names the
+  # key `다시 물음`; a draft frozen without 5c's answer would define only
+  # 불필요=0, so it is refused, as the seat's draft — which passes no `--set` — is.
+  "$BASH" "$KD" --carry "$VS_PREV" --kickoff-at "$KAT1" --expect-sha256 "$PMA" > "$WORK/carry-ar" 2>/dev/null
+  check "7: 대응 행 $ac_v 원천의 실제 --carry 는 기본값 파일 없이 다시 물음을 낸다" \
+    "$(awk -F'\t' '$3 == "apply-probe-codes" { print $1"|"$2"|"$4 }' "$WORK/carry-ar")" "이어받지 않음|런|다시 물음"
+  vs "대응 행 $ac_v 인 파이프라인 원천에서 5c 답 없이 행을 뺀 초안은 실패한다" 실패 "$WORK/v-ar.md" "$E" 고정값
+  vs "대응 행 $ac_v 인 파이프라인 원천의 좌석 초안(--set 없음)도 같은 검사로 실패한다" 실패 "$WORK/v-ar.md" "$E" 고정값 \
+    --blank-rows "$WORK/carry-ar"
+  printf '5c\t0/21\n' > "$WORK/asked-ac5c"
+  rk render-manifest --prev "$ac_id" --base "$BASE" --run-id "${ac_id}N" --kickoff-at "$KAT1" --deadline "$DL1" \
+     --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$WORK/asked-ac5c" \
+     --set '런:apply-probe-codes=0/21' > "$WORK/v-ar5c.md"
+  vs "다시 물음에 5c 로 답한 대응을 실은 초안은 실제 --carry 출력과 같은 --set 으로 통과한다 ($ac_v)" 통과 \
+    "$WORK/v-ar5c.md" "$WORK/asked-ac5c" "" --set '런:apply-probe-codes=0/21' --blank-rows "$WORK/carry-ar"
+  printf '5c\t0/22\n' > "$WORK/asked-ac5x"
+  vs "5c 답과 다른 --set 은 실패한다 ($ac_v)" 실패 "$WORK/v-ar5c.md" "$WORK/asked-ac5x" 확정값 \
+    --set '런:apply-probe-codes=0/21' --blank-rows "$WORK/carry-ar"
+  vs "5o 도 5c 도 묻지 않은 대응의 --set 은 실패한다 ($ac_v)" 실패 "$WORK/v-ar5c.md" "$E" 확정값 \
+    --set '런:apply-probe-codes=0/21' --blank-rows "$WORK/carry-ar"
   rk render-manifest --prev "$ac_id" --base "$BASE" --run-id "${ac_id}N" --kickoff-at "$KAT1" --deadline "$DL1" \
      --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$WORK/asked-ac" \
      --set '런:apply-probe-codes=0/21' > "$WORK/v-ars.md"; rc=$?

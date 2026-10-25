@@ -436,11 +436,13 @@ before that rule — has no code that means 「적용 필요」: exit 0 alone me
 naming the missing row. Neither value may be 1, 2, 126, 127 or 128 and above,
 which a shell or the probe's own failure produces. A re-kickoff or a carry of
 such a manifest — no row, or a row holding 2 — does not copy the row but asks
-5c again. The pre-probe's other exit codes refuse the apply before anything
-is touched, the post-probe is read with the same mapping, and every log and
-ledger text of a skip, a refusal or a convergence carries the codes and the
-mapping. A re-kickoff copies the row byte for byte and offers no way to add,
-drop or change it.
+5c again, and the new run is not frozen without that answer: a seat
+re-kickoff, which asks nothing, opens no successor run on such a source. Any
+other re-kickoff copies the row byte for byte and offers no way to add, drop
+or change it. The pre-probe's other exit codes refuse the apply before
+anything is touched, the post-probe is read with the same mapping, and every
+log and ledger text of a skip, a refusal or a convergence carries the codes
+and the mapping.
 
 **A `라벨 인정` row lets the run put one label on one target's PR so that one
 required check stops failing**, and it is a row for the same reason: the person
