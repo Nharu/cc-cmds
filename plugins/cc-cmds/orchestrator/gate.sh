@@ -22625,7 +22625,9 @@ gate_ci_master_next() {
   #        reading is green                                     master 재합류
   #   LM4  부분집합/판정 불가, 대표 = 예, and a waited event the
   #        reading says no repair run can be started for         master 수리 불가
-  #   LM5  부분집합/판정 불가 otherwise                            master 대기
+  #   LM5  부분집합/판정 불가 against a reading whose tip,
+  #        signature fingerprint or event field has moved        CI 대조
+  #   LM6  부분집합/판정 불가 otherwise                            master 대기
   # Nothing printed leaves the layer as it was. With no reading on the host
   # nothing is printed, so a run without a master stage keeps L7: the failure
   # that was on the base when the round was requested.
@@ -22664,6 +22666,14 @@ gate_ci_master_next() {
       fi
     done
   fi
+  # A WAIT IS MATCHED AGAIN WHEN ITS READING MOVES. The representative marker
+  # is taken inside the match act alone, and the usual order is a wait first
+  # and `띄울 수 없음` after it, when the repair run ends without resolving
+  # the event; a wait kept against the old reading would never reach LM4. An
+  # event resolved while another keeps the base red moves the comparison set
+  # the same way. The new match records the reading it was made against, so
+  # a reading that stays put is matched once.
+  gate_ci_match_same_reading "$m" "$mrow" || { printf 'CI 대조'; return 0; }
   printf 'master 대기'
 }
 
@@ -34692,8 +34702,15 @@ gate_master_resolved_after() {
   # it would drop the event between the check and the merge and send the
   # segment back to L7; once the merge lands the resolving commit is an
   # ancestor of HEAD and the event leaves the set, so a joined fix is never
-  # asked for again. An object the worktree does not have is not after — the
-  # gate does not fetch.
+  # asked for again.
+  #
+  # AN OBJECT THE WORKTREE DOES NOT HAVE IS AFTER. The worktrees are full
+  # clones, so every ancestor of HEAD is in the object store, and a commit
+  # that is not there cannot be one. That is the usual case, not an edge: the
+  # resolving commit is the merge GitHub made on the base branch, and nothing
+  # fetches while a segment waits. Only a commit that resolves and is an
+  # ancestor of HEAD counts as joined. The gate still does not fetch; the
+  # rejoin's base-check reads the remote, and the router fetches before it.
   local seg=$1 al=$2 row ev wt head e id res full
   row=$(gate_master_last_row "$al")
   ev=$(gate_row_field "$row" '사건')
@@ -34702,8 +34719,9 @@ gate_master_resolved_after() {
   head=$(gate_worktree_tip "$wt") || return 0
   for e in $(printf '%s' "$ev" | tr ',' '\n' | awk -F':' '$3 != "-" { print $1 ":" $3 }'); do
     id=${e%%:*}; res=${e#*:}
-    full=$(gate_commit_in "$wt" "$res") || continue
-    gate_iso_git "$wt" merge-base --is-ancestor "$full" "$head" >/dev/null 2>&1 && continue
+    if full=$(gate_commit_in "$wt" "$res"); then
+      gate_iso_git "$wt" merge-base --is-ancestor "$full" "$head" >/dev/null 2>&1 && continue
+    fi
     printf '%s\n' "$id"
   done
 }
@@ -34715,6 +34733,27 @@ gate_ci_match_reading_mark() {
   local tip fp
   tip=$(gate_row_field "$1" '팁'); fp=$(gate_row_field "$1" '서명 지문')
   printf '%.7s/%s/%.12s' "${tip:--}" "$(gate_row_field "$1" '관측')" "${fp:--}"
+}
+
+gate_ci_match_events_mark() {
+  # gate_ci_match_events_mark <master 판독 row> — the first 12 hex of the
+  # sha256 of the row's `사건` field: every event's id, first commit,
+  # resolving commit and repair state at the reading matched against.
+  local fp
+  fp=$(printf '%s\n' "$(gate_row_field "$1" '사건')" | gate_ci_signature fingerprint 2>/dev/null || true)
+  printf '%.12s' "${fp:--}"
+}
+
+gate_ci_match_same_reading() {
+  # gate_ci_match_same_reading <match row> <master 판독 row> — 0 when the match
+  # was made against a reading with the same tip, signature fingerprint and
+  # event field as this one. The observation time is left out: the reading's
+  # refresh rewrites it when nothing else moved, and a wait need not be
+  # matched again for that.
+  local was now
+  was=$(gate_row_field "$1" '판독 지문'); now=$(gate_ci_match_reading_mark "$2")
+  [ "${was%%/*}" = "${now%%/*}" ] && [ "${was##*/}" = "${now##*/}" ] \
+    && [ "$(gate_row_field "$1" '판독 사건')" = "$(gate_ci_match_events_mark "$2")" ]
 }
 
 gate_master_event_state() {
@@ -34816,6 +34855,10 @@ gate_perform_ci_match() {
       fi
       head -c "$GATE_CI_MATCH_LOG_MAX_BYTES" "$tmpd/log.full" > "$tmpd/log" 2>/dev/null || : > "$tmpd/log"
       set --
+      # A log cut at the cap may end between two suites, where nothing in the
+      # part kept says a suite is missing, so the adapter is told.
+      s=$(wc -c < "$tmpd/log.full" 2>/dev/null | tr -d ' ')
+      [ "${s:-0}" -le "$GATE_CI_MATCH_LOG_MAX_BYTES" ] || set -- --truncated
       while IFS= read -r s; do [ -z "$s" ] || set -- "$@" --step "$s"; done < "$tmpd/steps"
       outp=$(gate_ci_signature extract --repo "$slug" --check "$name" "$@" < "$tmpd/log" 2>/dev/null) || { incomplete=1; continue; }
       p=$(printf '%s\n' "$outp" | sed -n '1s/^정밀도: //p')
@@ -34904,7 +34947,7 @@ gate_perform_ci_match() {
     "실행=-" "워크플로=-" "실패 체크=$(gate_row_safe "${fc:--}" 200)" \
     "기본 브랜치=-" "응답=-" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "결과=$result" "정밀도=${prec:--}" "서명 수=$n" "서명 지문=${fp:--}" \
-    "판독 지문=$(gate_ci_match_reading_mark "$mrow")" \
+    "판독 지문=$(gate_ci_match_reading_mark "$mrow")" "판독 사건=$(gate_ci_match_events_mark "$mrow")" \
     "사건=$(gate_row_safe "${waits:--}" 120)" "대표=$rep" || return $?
   log "$seg: CI 대조 — $result (서명 ${n}개)"
   return 0

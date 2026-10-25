@@ -6,7 +6,8 @@
 # an Actions job log carries around a suite's output: the time stamp Actions
 # puts at the head of every line, the `bash scripts/suite-guard.sh <script>` line
 # make echoes before a suite, the `FAIL: <name> — <detail>` lines the `bad`
-# helpers print, and the suite's `<n> passed, <m> failed` total.
+# helpers print, the suite's `<n> passed, <m> failed` total, and the
+# `suite-guard[<args>]: 종료 rc=<rc> 소요 <s>s` line the wrapper prints at its end.
 #
 # Usage: bash scripts/test-ci-signature.sh
 
@@ -30,6 +31,8 @@ extract() { local c="$1" f="$2"; shift 2; bash "$CS" extract --repo Nharu/cc-cmd
 lines() { printf '%s\n' "$1" | grep -c . || true; }
 
 ts() { printf '2026-10-24T06:%02d:%02d.1234567Z ' "$1" "$2"; }
+# sg_end <args> <rc> — the wrapper's end line for the suite started with <args>.
+sg_end() { printf 'suite-guard[%s]: 종료 rc=%s 소요 3s\n' "$1" "$2"; }
 
 # ---------------------------------------------------------------------------
 # 1. One suite, two failures: shard tail, detail, time stamp prefix.
@@ -41,6 +44,7 @@ ts() { printf '2026-10-24T06:%02d:%02d.1234567Z ' "$1" "$2"; }
   printf '%s%s\n' "$(ts 1 4)" 'FAIL: 7 인계 수락 — '
   printf '%s%s\n' "$(ts 1 5)" ''
   printf '%s%s\n' "$(ts 1 6)" 'test-gate: 1 passed, 2 failed'
+  printf '%s%s\n' "$(ts 1 7)" "$(sg_end 'scripts/test-gate.sh --sections 5,7' 1)"
 } > "$WORK/a1.log"
 out=$(extract 'gate-shards (3)' "$WORK/a1.log")
 check "1 첫 줄은 단언 정밀도" "${out%%$'\n'*}" "정밀도: 단언"
@@ -53,6 +57,7 @@ check "1 서명 둘 — 샤드 꼬리·상세·시각 표지가 없다" "$(print
   printf '%s%s\n' "$(ts 9 2)" 'FAIL: 7 인계 수락 — '
   printf '%s%s\n' "$(ts 9 3)" "FAIL: 7 머지 검사 — got '9', want '0'"
   printf '%s%s\n' "$(ts 9 4)" 'test-gate: 0 passed, 2 failed'
+  printf '%s%s\n' "$(ts 9 5)" "$(sg_end 'scripts/test-gate.sh --sections 7' 1)"
 } > "$WORK/a2.log"
 check "1 같은 실패의 두 로그는 같은 출력" "$(extract 'gate-shards (11)' "$WORK/a2.log")" "$out"
 
@@ -66,6 +71,7 @@ check "1 같은 실패의 두 로그는 같은 출력" "$(extract 'gate-shards (
   printf '%s\n' "FAIL: 12 대조 행 — got 'x', want 'y'"
   printf '%s\n' "FAIL: 12 대조 행 수 — got 'x', want 'y'"
   printf '%s\n' 'test-gate: 0 passed, 4 failed'
+  sg_end scripts/test-gate.sh 1
 } > "$WORK/b.log"
 out=$(extract 'gate-shards (1)' "$WORK/b.log")
 check "2 서명 넷이 모두 다르다" "$(lines "$(printf '%s\n' "$out" | tail -n +2)")" "4"
@@ -83,6 +89,7 @@ esac
   printf '%s\n' "FAIL: 7 문면 — got 'a — b — c', want 'd'"
   printf '%s\n' 'FAIL: 60b: park — 라벨 — 행이 없다'
   printf '%s\n' 'test-gate: 0 passed, 4 failed'
+  sg_end scripts/test-gate.sh 1
 } > "$WORK/b2.log"
 check "2 상세의 — 는 이름에 남지 않는다" "$(extract 'gate-shards (1)' "$WORK/b2.log" | tail -n +2)" \
   "$(printf '%s\n' 'gate-shards|test-gate.sh|60b: park — 라벨' \
@@ -97,11 +104,13 @@ check "2 상세의 — 는 이름에 남지 않는다" "$(extract 'gate-shards (
   printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-x.sh'
   printf '%s\n' 'FAIL: gate.sh:1234 에서 /var/folders/ab/T/cc.abc123/run 의 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2026-10-24T06:18:54Z — d'
   printf '%s\n' 'x: 0 passed, 1 failed'
+  sg_end scripts/test-x.sh 1
 } > "$WORK/c1.log"
 {
   printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-x.sh'
   printf '%s\n' 'FAIL: gate.sh:1290 에서 /tmp/cc.zz9/run 의 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2026-10-25T01:02:03Z — e'
   printf '%s\n' 'x: 0 passed, 1 failed'
+  sg_end scripts/test-x.sh 1
 } > "$WORK/c2.log"
 o1=$(extract 'rest-tests (2)' "$WORK/c1.log"); o2=$(extract 'rest-tests (3)' "$WORK/c2.log")
 check "3 줄 번호·임시 경로·16진·시각이 달라도 같은 서명" "$o1" "$o2"
@@ -113,12 +122,16 @@ check "3 정규화된 서명" "$(printf '%s\n' "$o1" | tail -n 1)" \
 # ---------------------------------------------------------------------------
 {
   printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-a.sh'
+  printf '%s\n' 'test-a: 3 passed, 0 failed'
+  sg_end scripts/test-a.sh 0
   printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-b.sh'
   printf '%s\n' 'FAIL: 1 같은 이름 — x'
   printf '%s\n' 'test-b: 0 passed, 1 failed'
+  sg_end scripts/test-b.sh 1
   printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-c.sh'
   printf '%s\n' 'FAIL: 1 같은 이름 — y'
   printf '%s\n' 'test-c: 0 passed, 1 failed'
+  sg_end scripts/test-c.sh 1
 } > "$WORK/d.log"
 out=$(extract 'rest-tests (1)' "$WORK/d.log")
 check "4 스크립트가 서명을 가른다" "$(printf '%s\n' "$out" | tail -n +2)" \
@@ -185,6 +198,94 @@ bash "$CS" extract --check x < /dev/null >/dev/null 2>&1; rc=$?
 check "7 --repo 없으면 2" "$rc" "2"
 bash "$CS" nope >/dev/null 2>&1; rc=$?
 check "7 모르는 하위 명령은 2" "$rc" "2"
+
+# ---------------------------------------------------------------------------
+# 8. Completeness is judged per suite: a job that runs several suites at once.
+# ---------------------------------------------------------------------------
+# Two suites run one after the other, each to its end: assertion precision.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-a.sh'
+  printf '%s\n' 'FAIL: 1 가 — x'
+  printf '%s\n' 'test-a: 0 passed, 1 failed'
+  sg_end scripts/test-a.sh 1
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-b.sh'
+  printf '%s\n' '4 passed, 0 failed'
+  sg_end scripts/test-b.sh 0
+} > "$WORK/g1.log"
+check "8 차례로 끝난 두 스위트는 단언 정밀도" "$(extract 'rest-tests (1)' "$WORK/g1.log")" \
+  "$(printf '%s\n' '정밀도: 단언' 'rest-tests|test-a.sh|1 가')"
+
+# make -j: the second suite starts before the first ends, and their lines
+# interleave, so no FAIL line can be pinned on one suite.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-a.sh'
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-b.sh'
+  printf '%s\n' 'FAIL: 1 가 — x'
+  printf '%s\n' 'test-a: 0 passed, 1 failed'
+  sg_end scripts/test-a.sh 1
+  printf '%s\n' 'test-b: 2 passed, 0 failed'
+  sg_end scripts/test-b.sh 0
+} > "$WORK/g2.log"
+check "8 끼어든 두 스위트의 FAIL 줄은 단계 정밀도" \
+  "$(extract 'rest-tests (1)' "$WORK/g2.log" --step 'Run rest shard 1')" \
+  "$(printf '%s\n' '정밀도: 단계' 'rest-tests|Run rest shard 1')"
+
+# A suite that died with no FAIL line beside one that printed its failures and
+# total: the dead suite is not hidden by the other's total.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-a.sh'
+  printf '%s\n' 'FAIL: 1 가 — x'
+  printf '%s\n' 'test-a: 0 passed, 1 failed'
+  sg_end scripts/test-a.sh 1
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-b.sh'
+  printf '%s\n' 'scripts/test-b.sh: line 40: X: unbound variable'
+  sg_end scripts/test-b.sh 1
+} > "$WORK/g3.log"
+check "8 FAIL 줄 없이 죽은 스위트는 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g3.log" | head -n 1)" "정밀도: 단계"
+
+# A suite that printed a failure and died before its total.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-a.sh'
+  printf '%s\n' 'FAIL: 1 가 — x'
+  printf '%s\n' 'scripts/test-a.sh: line 9: syntax error'
+  sg_end scripts/test-a.sh 2
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-b.sh'
+  printf '%s\n' 'test-b: 2 passed, 0 failed'
+  sg_end scripts/test-b.sh 0
+} > "$WORK/g4.log"
+check "8 합계 줄 전에 죽은 스위트는 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g4.log" | head -n 1)" "정밀도: 단계"
+
+# A suite that started and never ended, and a suite the wrapper reaped.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-a.sh'
+  printf '%s\n' 'FAIL: 1 가 — x'
+  printf '%s\n' 'test-a: 0 passed, 1 failed'
+  sg_end scripts/test-a.sh 1
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-b.sh'
+} > "$WORK/g5.log"
+check "8 끝나지 않은 스위트가 있으면 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g5.log" | head -n 1)" "정밀도: 단계"
+{
+  cat "$WORK/g1.log"
+  printf '%s\n' '::error::suite-guard: 마감을 넘겨 묶음을 거뒀다(위 덤프) — scripts/test-c.sh'
+} > "$WORK/g6.log"
+check "8 suite-guard 오류 줄이 있으면 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g6.log" | head -n 1)" "정밀도: 단계"
+
+# A FAIL line outside every suite.
+{
+  printf '%s\n' 'FAIL: 0 바깥 — x'
+  cat "$WORK/g1.log"
+} > "$WORK/g7.log"
+check "8 스위트 밖의 FAIL 줄은 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g7.log" | head -n 1)" "정밀도: 단계"
+
+# A detail that quotes a total is not a total, and a log the gate cut is not
+# complete however it reads.
+{
+  printf '%s\n' "FAIL: 1 가 — 출력이 '3 passed, 1 failed' 였다"
+} > "$WORK/g8.log"
+check "8 FAIL 줄 안의 합계 문자열은 합계가 아니다" "$(extract 'gate' "$WORK/g8.log" | head -n 1)" "정밀도: 단계"
+check "8 --truncated 는 완결된 로그도 단계 정밀도" \
+  "$(extract 'rest-tests (1)' "$WORK/g1.log" --truncated --step 'Run rest shard 1')" \
+  "$(printf '%s\n' '정밀도: 단계' 'rest-tests|Run rest shard 1')"
 
 printf '\ntest-ci-signature: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

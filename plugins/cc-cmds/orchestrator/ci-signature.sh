@@ -48,18 +48,41 @@
 # they change between two runs of the same failure, and a signature that changes
 # with them would make every rerun a new failure.
 #
-# A LOG THAT DOES NOT FINISH IS NOT READ AT ASSERTION PRECISION. When the cc-cmds
-# adapter finds `FAIL:` lines but no suite total line (`<n> passed, <m> failed`),
-# the suite died part way or the log was cut, and the failures it printed are
-# not all of them. The check then falls to step precision, the same as a check
-# that printed no `FAIL:` line at all (a lint, a build step). A lint that prints
-# `FAIL:` lines without a total — `lint-pace-threshold-pins.sh` does — lands here
-# too, which is what keeps its file-only names from merging distinct failures at
-# assertion precision.
+# A LOG THAT DOES NOT FINISH IS NOT READ AT ASSERTION PRECISION, AND COMPLETENESS
+# IS JUDGED PER SUITE. The failures a suite printed are all of its failures only
+# when the suite ran to its end, and one job may run many suites at once —
+# `rest-tests` runs its shard under `make -j`, so their lines interleave and one
+# suite's total says nothing about another's. When the log carries suite-guard
+# lines, every suite is followed from its start line (the
+# `bash scripts/suite-guard.sh <args>` make echoes) to its end line
+# (`suite-guard[<args>]: 종료 rc=<rc> …`), and the check stays at assertion
+# precision only when all of these hold:
+#
+#   - every suite that started ended, and no `::error::suite-guard:` line says
+#     the wrapper reaped or refused one;
+#   - every `FAIL:` line and every total line falls while exactly one suite is
+#     open, so the line is that suite's — two open suites make the line
+#     unattributable, and a `FAIL:` line outside every suite is the same;
+#   - every suite that ended with a non-zero rc printed at least one `FAIL:`
+#     line and its total line — a suite that died with no `FAIL:` line, or
+#     after some of them, is otherwise hidden by its neighbours.
+#
+# A log with no suite-guard line is one suite: it needs one total line. A total
+# line is a line that is a total and nothing else, `[<name>: ]<n> passed, <m>
+# failed[, …]`, never a `FAIL:` line whose detail quotes one. `--truncated`,
+# which the gate passes when it cut the log at its byte cap, fails the check
+# outright: a cut between two suites leaves nothing in the kept part that says
+# one is missing.
+#
+# Any other log falls to step precision, the same as a check that printed no
+# `FAIL:` line at all (a lint, a build step). A lint that prints `FAIL:` lines
+# without a total — `lint-pace-threshold-pins.sh` does — lands here too, which
+# is what keeps its file-only names from merging distinct failures at assertion
+# precision.
 #
 # Usage:
 #   ci-signature.sh extract --repo <owner/name> --check <check name>
-#                           [--step <failed step name>]...   < job log
+#                           [--step <failed step name>]... [--truncated]  < job log
 #   ci-signature.sh fingerprint                               < signature list
 #
 # `extract` prints `정밀도: 단언` or `정밀도: 단계` first, then the signatures
@@ -118,8 +141,9 @@ cs_normalise() {
     -e 's/[[:space:]]+$//'
 }
 
-# Reads a job log on stdin. Prints `T` when the log carries a suite total line,
-# `F` otherwise, on the first line, then one `[<suite>|]<name>` per FAIL line.
+# Reads a job log on stdin. Prints `T` when the log is complete by the rules in
+# the header, `F` otherwise, on the first line, then one `[<suite>|]<name>` per
+# FAIL line.
 cs_read_fail_lines() {
   LC_ALL=C awk '
     function lastsep(s, sep,    p, i, off) {
@@ -127,22 +151,50 @@ cs_read_fail_lines() {
       while ((i = index(substr(s, off + 1), sep)) > 0) { p = off + i; off = p }
       return p
     }
+    function base(k,    n, parts, first) {
+      first = k; sub(/ .*$/, "", first)
+      n = split(first, parts, "/")
+      return parts[n]
+    }
+    # The one open suite, or "" when none or more than one is open.
+    function sole(    i, k) {
+      if (nopen != 1) return ""
+      for (i = 1; i <= nk; i++) { k = keys[i]; if (open[k] > 0) return k }
+      return ""
+    }
+    BEGIN {
+      SG = "bash scripts/suite-guard.sh "
+      END_MARK = "]: \354\242\205\353\243\214 rc="
+    }
     {
       sub(/\r$/, "")
       if (NR == 1) sub(/^\357\273\277/, "")
       gsub(/\033\[[0-9;]*[A-Za-z]/, "")
       sub(/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]+Z /, "")
       line = $0
-      if (line ~ /^bash scripts\/suite-guard\.sh / || line ~ /^run\//) {
-        rest = line
-        sub(/^bash scripts\/suite-guard\.sh /, "", rest)
-        sub(/^run\//, "", rest)
-        sub(/ .*$/, "", rest)
-        n = split(rest, parts, "/")
-        suite = parts[n]
+      if (substr(line, 1, length(SG)) == SG) {
+        k = substr(line, length(SG) + 1); sub(/[ \t]+$/, "", k)
+        if (!(k in open)) { nk++; keys[nk] = k; open[k] = 0 }
+        open[k]++; nopen++; guarded = 1
         next
       }
-      if (line ~ /[0-9]+ passed, [0-9]+ failed/) total = 1
+      if (substr(line, 1, 12) == "suite-guard[" && (p = index(line, END_MARK)) > 0) {
+        k = substr(line, 13, p - 13)
+        rc = substr(line, p + length(END_MARK)); sub(/[^0-9].*$/, "", rc)
+        if ((k in open) && open[k] > 0) {
+          open[k]--; nopen--
+          if (rc != "0") failed_rc[k] = 1
+        } else {
+          broken = 1
+        }
+        next
+      }
+      if (substr(line, 1, 21) == "::error::suite-guard:") { broken = 1; next }
+      if (line ~ /^run\//) {
+        rest = line; sub(/^run\//, "", rest)
+        suite = base(rest)
+        next
+      }
       if (substr(line, 1, 6) == "FAIL: ") {
         body = substr(line, 7)
         p = index(body, " \342\200\224 rc=")
@@ -152,23 +204,45 @@ cs_read_fail_lines() {
         sub(/[ \t]+$/, "", name)
         if (name == "") next
         nf++
-        out[nf] = (suite != "") ? suite "|" name : name
+        if (guarded) {
+          k = sole()
+          if (k == "") { unattributed = 1; out[nf] = name; next }
+          fails[k]++
+          out[nf] = base(k) "|" name
+        } else {
+          prefail = 1
+          out[nf] = (suite != "") ? suite "|" name : name
+        }
+        next
+      }
+      if (line ~ /^([A-Za-z0-9_.-]+( self-test)?: )?[0-9]+ passed, [0-9]+ failed([,( ].*)?$/) {
+        total = 1
+        if (guarded) { k = sole(); if (k != "") totals[k] = 1 }
       }
     }
     END {
-      print (total ? "T" : "F")
+      ok = total
+      if (guarded) {
+        ok = !broken && !unattributed && !prefail && nopen == 0
+        for (i = 1; ok && i <= nk; i++) {
+          k = keys[i]
+          if ((k in failed_rc) && (!fails[k] || !(k in totals))) ok = 0
+        }
+      }
+      print (ok ? "T" : "F")
       for (i = 1; i <= nf; i++) print out[i]
     }
   '
 }
 
 cs_extract() {
-  local repo="" check="" adapter base raw total sigs="" steps=() s
+  local repo="" check="" adapter base raw total sigs="" steps=() s truncated=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)  [ $# -ge 2 ] || cs_die '--repo 에 값이 없습니다'; repo="$2"; shift 2 ;;
       --check) [ $# -ge 2 ] || cs_die '--check 에 값이 없습니다'; check="$2"; shift 2 ;;
       --step)  [ $# -ge 2 ] || cs_die '--step 에 값이 없습니다'; steps+=("$2"); shift 2 ;;
+      --truncated) truncated=1; shift ;;
       *) cs_die "알 수 없는 인자: $1" ;;
     esac
   done
@@ -181,7 +255,7 @@ cs_extract() {
     raw=$(cs_read_fail_lines)
     total=$(printf '%s\n' "$raw" | head -n 1)
     sigs=$(printf '%s\n' "$raw" | tail -n +2 | grep -v '^$' || true)
-    if [ -n "$sigs" ] && [ "$total" = "T" ]; then
+    if [ -n "$sigs" ] && [ "$total" = "T" ] && [ -z "$truncated" ]; then
       printf '정밀도: 단언\n'
       printf '%s\n' "$sigs" | while IFS= read -r s; do printf '%s|%s\n' "$base" "$s"; done \
         | cs_normalise | grep -v '^$' | LC_ALL=C sort -u
@@ -205,7 +279,7 @@ cs_fingerprint() {
   { grep -v -e '^정밀도: ' -e '^$' || true; } | LC_ALL=C sort -u | cs_sha256
 }
 
-[ $# -ge 1 ] || cs_die '사용법: ci-signature.sh extract --repo <slug> --check <이름> [--step <단계>]... | fingerprint'
+[ $# -ge 1 ] || cs_die '사용법: ci-signature.sh extract --repo <slug> --check <이름> [--step <단계>]... [--truncated] | fingerprint'
 cmd="$1"; shift
 case "$cmd" in
   extract)     cs_extract "$@" ;;
