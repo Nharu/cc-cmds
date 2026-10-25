@@ -4,7 +4,7 @@ name: gate
 # workflow rather than as another job in `lint` because its path filter is
 # narrower: the lint leg has to run on skill and README edits that cannot
 # possibly move a gate section, and pulling the suite along with them (about
-# 170 shard-minutes) is what this split removes.
+# 280 shard-minutes) is what this split removes.
 #
 # THE PARTITION IS WEIGHED WITH WHAT THE LAST THREE MASTER RUNS MEASURED. Every
 # shard writes a marker line in front of each section it runs, `gate-report`
@@ -21,11 +21,16 @@ name: gate
 # warning; no person has to regenerate anything for the weights to stay
 # current.
 #
-# EACH RUNNER RUNS TWO ROWS AT ONCE. The partition has S = N × L rows (the
-# Makefile's GATE_SLOTS); the matrix has N runners, and runner k runs rows k and
-# k + N side by side, each lane with its own temporary directory, marker file
-# and result file. A lane is judged on its own exit code and total line, and
-# `gate-report` checks that every non-empty row of the table printed its total.
+# EACH RUNNER RUNS L ROWS AT ONCE. The partition has S = N × L rows (the
+# Makefile's GATE_SLOTS, with N and L from GATE_SHARDS and GATE_LANES); the
+# matrix has N runners, and runner k runs rows k, k + N, … side by side, each
+# lane with its own temporary directory, marker file and result file. L is 1
+# now, so every runner runs one row: two rows on one runner stretched each
+# section's time by about a fifth. One row per runner removes that stretch, but
+# not the floor the heaviest sections that cannot be split set on the slowest
+# row, which still keeps the wall clock near fifteen minutes.
+# A lane is judged on its own exit code and total line, and `gate-report`
+# checks that every non-empty row of the table printed its total.
 #
 # THE TEST TIME IS A SIGNAL OF ITS OWN. `gate-report` sums the row times and
 # hands them to `scripts/ci-duration.sh`, which fails a pull request
@@ -138,7 +143,7 @@ jobs:
           name: gate-plan
           path: ${{ runner.temp }}/plan/
 
-  # `fail-fast: false` because a red shard must not cancel the other twelve. The
+  # `fail-fast: false` because a red shard must not cancel the others. The
   # first thing anyone asks of a sharded failure is whether it is one section or
   # the whole suite, and a cancelled run cannot answer it. The marker and result
   # files are uploaded even from a red shard: the sections it finished were
@@ -154,7 +159,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
     steps:
       - uses: actions/checkout@v4
 

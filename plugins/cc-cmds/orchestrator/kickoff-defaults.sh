@@ -42,8 +42,13 @@
 #
 # The run-wide keys can also come from the environment, and a valid variable
 # beats the file: CC_CMDS_AUTOPILOT_DEFAULT_{LADDER_RUNGS,STAGNATION_BOUND,
-# COST_CEILING,DEADLINE,ROSTER_MODEL}. An invalid variable is ignored together
-# with the file's value for the same key; an empty one is unset.
+# COST_CEILING,DEADLINE,ROSTER_MODEL,PLUGIN_ALLOW}. An invalid variable is ignored
+# together with the file's value for the same key; an empty one is unset.
+# PLUGIN_ALLOW is a `,`-separated list of `<이름>@<마켓>` keys and replaces every
+# run-wide `plugin-allow` line of the file; its value `없음` means no run-wide
+# plugin default for this run. One element of the wrong shape (an empty one, or
+# `없음` beside another) voids the whole variable. Repository sections are not
+# replaced.
 #
 # Usage
 #
@@ -54,7 +59,7 @@
 #   kickoff-defaults.sh --carry <previous manifest> --kickoff-at <ISO8601>
 #                       --expect-sha256 <hex> [--now <epoch>] [--auto]
 #   kickoff-defaults.sh --apply-probe-sha <manifest draft>
-#   kickoff-defaults.sh --plugin-candidates
+#   kickoff-defaults.sh --plugin-candidates [--confirmed <키>]… [--released <키>]…
 #
 # Output (main mode) is TAB-separated, the first line `cc-kickoff-defaults v1`:
 #
@@ -79,18 +84,25 @@
 # the manifest check's `적용 프로브 코드` half, which the run's first gate call
 # would otherwise be the first to run.
 #
-# `--plugin-candidates` takes no other argument and prints, with no header, the
-# plugin keys the kickoff's 5t proposes from, read from the account directory
-# `CLAUDE_CONFIG_DIR` (else `$HOME/.claude`) and every `config_dir` of the lane
-# inventory `${XDG_CONFIG_HOME:-$HOME/.config}/cc-lane/accounts.json`:
+# `--plugin-candidates` takes no other argument than its own two and prints,
+# with no header, the plugin keys the kickoff's 5t proposes from, read from the
+# account directory `CLAUDE_CONFIG_DIR` (else `$HOME/.claude`) and every
+# `config_dir` of the lane inventory
+# `${XDG_CONFIG_HOME:-$HOME/.config}/cc-lane/accounts.json`:
 #
 #   허용  <키>                 a key of the plugin allow seed, on in every run
 #   후보  <키>  <설명 한 줄>    a user key the seed does not hold; the description
 #                              is the first line of the installed plugin's own
 #                              `.description`, or `-`
 #
+# `--confirmed <키>` names a `plugin-allow` default the person confirmed at 5o:
+# it is left out of the candidates. `--released <키>` names one the person
+# released at 5o: it is a candidate whether or not an account holds it, and its
+# description is `킥오프 기본값`. Both repeat; without them the output is the same.
+#
 # The keys are the ones the gate turns off in every run's settings; a candidate
-# becomes on only through a `플러그인 허용` row the person accepted at 5t.
+# becomes on only through a `플러그인 허용` row the person accepted at 5t, or
+# through a `plugin-allow` default confirmed at 5o.
 #
 # `--carry` reads a previous run's frozen manifest as the answers and the file
 # only as the thing it is compared with. The same header and `원천` row, then:
@@ -109,7 +121,15 @@
 # `출처=길이`. Without that row, or without `--auto`, the failure line stands.
 #
 # Every key of the key table yields, per scope it lives in, an `적용` row, a
-# `빈칸` row or an `이어받지 않음` row. The previous manifest is copied once to a
+# `빈칸` row or an `이어받지 않음` row — except `plugin-allow`, which yields rows
+# per plugin key: a `권한` row (under one `적용` summary) or an `이어받지 않음`
+# row for each previous `플러그인 허용` row, a `빈칸` row for each applied default
+# no previous row holds, an `이어받지 않음` row for each ignored default of a key
+# nothing else names, and the one row `이어받지 않음 런 plugin-allow 원천 없음`
+# only when none of those exists. It has no `차이` row. A previous row whose key
+# is now in the seed or judged not installed is not carried; one whose key
+# cannot be judged, because an account file could not be read, is.
+# The previous manifest is copied once to a
 # private file whose whole sha256 must equal `--expect-sha256` — the hash the
 # kickoff verified — and every read after that is of the copy.
 #
@@ -138,8 +158,8 @@ done
 
 # The key table — a closed set. These two lines are the code side of the key
 # table SKILL.md 5o carries, and a lint compares the two sets.
-KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline roster-model roster-model.<역할> auto-adopt'
-KD_REPO_KEYS='cutpoint review-ceiling terminal-cap dev-ids deploy-triggers act-allow apply-probe apply-probe-codes apply-actor'
+KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline roster-model roster-model.<역할> auto-adopt plugin-allow'
+KD_REPO_KEYS='cutpoint review-ceiling terminal-cap dev-ids deploy-triggers act-allow apply-probe apply-probe-codes apply-actor plugin-allow'
 # Where `--carry` finds each key in a frozen manifest. Not compared by the lint
 # that compares the two lines above with 5o, so the test asserts that every key
 # there yields a row. `<인가>` and `<요소>` are `**<필드>**: ` lines of that
@@ -162,6 +182,7 @@ kd_carry_field() {
     apply-probe)        printf '요소\t적용 프로브' ;;
     apply-probe-codes)  printf '행\t적용 프로브 코드' ;;
     apply-actor)        printf '요소\t적용 주체' ;;
+    plugin-allow)       printf '행\t플러그인 허용' ;;
     *) return 1 ;;
   esac
 }
@@ -170,7 +191,7 @@ KD_NAMED_REFUSED='termination launch defer notify apply-command apply-radius'
 
 KD_ENV_PREFIX='CC_CMDS_AUTOPILOT_DEFAULT'
 KD_ENV_FILE_VAR='CC_CMDS_AUTOPILOT_DEFAULTS_FILE'
-KD_ENV_RUN_VARS='CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND'
+KD_ENV_RUN_VARS='CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND'
 
 KD_ABS_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$'
 
@@ -184,7 +205,7 @@ KD_CHECK_GIVEN=0; KD_CHECK=''
 KD_RESOLVE_GIVEN=0; KD_RESOLVE=''
 KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''; KD_AUTO=0
 KD_APS_GIVEN=0; KD_APS=''
-KD_PC_GIVEN=0
+KD_PC_GIVEN=0; KD_PC_CONFIRMED=''; KD_PC_RELEASED=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
@@ -230,6 +251,16 @@ while [ $# -gt 0 ]; do
       KD_APS_GIVEN=1; KD_APS="$2"; shift 2 ;;
     --plugin-candidates)
       KD_PC_GIVEN=1; shift ;;
+    --confirmed|--released)
+      [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "$1 에 값이 없습니다"
+      printf '%s\n' "$2" | grep -E '^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$' >/dev/null \
+        || kd_usage "$1 은 <이름>@<마켓> 이어야 합니다: '$2'"
+      if [ "$1" = "--confirmed" ]; then KD_PC_CONFIRMED="$KD_PC_CONFIRMED$2
+"
+      else KD_PC_RELEASED="$KD_PC_RELEASED$2
+"
+      fi
+      shift 2 ;;
     --auto)
       KD_AUTO=1; shift ;;
     *) kd_usage "모르는 인자: '$1'" ;;
@@ -247,22 +278,23 @@ if [ "$KD_PC_GIVEN" = "1" ]; then
   . "$KD_DIR/plugin-isolation.sh"
   # The account directories the lane can launch a run under: this session's
   # own, and every account the lane inventory names.
-  KD_PC_DIRS=$(
-    printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    kd_pc_inv="${XDG_CONFIG_HOME:-$HOME/.config}/cc-lane/accounts.json"
-    if [ -f "$kd_pc_inv" ] && [ ! -L "$kd_pc_inv" ]; then
-      jq -r '.accounts[]? | .config_dir // empty' "$kd_pc_inv" 2>/dev/null || true
-    fi
-  )
+  KD_PC_DIRS=$(pi_kickoff_account_dirs)
   KD_PC_ALLOW=$(pi_allow_keys "$KD_DIR/plugin-allow.seed")
   KD_PC_USER=$(IFS='
 '; pi_user_keys $KD_PC_DIRS)
   [ -z "$KD_PC_ALLOW" ] || printf '%s\n' "$KD_PC_ALLOW" | awk '{ print "허용\t" $0 }'
+  # A default released at 5o is a candidate even where no account holds it.
+  KD_PC_KEYS=$(printf '%s\n%s' "$KD_PC_USER" "$KD_PC_RELEASED" | pi_filter_keys)
   # The description is the first line of the plugin's own manifest, read from
   # the install path the account's install record names; `-` when none reads.
-  printf '%s\n' "$KD_PC_USER" | while IFS= read -r kd_pc_key; do
+  printf '%s\n' "$KD_PC_KEYS" | while IFS= read -r kd_pc_key; do
     [ -n "$kd_pc_key" ] || continue
     printf '%s\n' "$KD_PC_ALLOW" | grep -qxF -- "$kd_pc_key" && continue
+    printf '%s' "$KD_PC_CONFIRMED" | grep -qxF -- "$kd_pc_key" && continue
+    if printf '%s' "$KD_PC_RELEASED" | grep -qxF -- "$kd_pc_key"; then
+      printf '후보\t%s\t%s\n' "$kd_pc_key" '킥오프 기본값'
+      continue
+    fi
     kd_pc_desc=''
     kd_pc_ifs=$IFS; IFS='
 '
@@ -280,6 +312,7 @@ if [ "$KD_PC_GIVEN" = "1" ]; then
   done
   exit 0
 fi
+[ -z "$KD_PC_CONFIRMED$KD_PC_RELEASED" ] || kd_usage "--confirmed·--released 는 --plugin-candidates 와 함께만 씁니다"
 
 if [ "$KD_APS_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
@@ -397,6 +430,20 @@ if [ "$KD_APS_GIVEN" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Plugins — the main mode judges each `plugin-allow` default and `--carry` each
+# previous `플러그인 허용` row with the shared judgment, so 5o's ignored rows,
+# the carried rows and the re-kickoff helper's re-derivation agree. The account
+# set is read once, here; the seed is the copy beside this helper.
+# ---------------------------------------------------------------------------
+[ -r "$KD_DIR/plugin-isolation.sh" ] || kd_refuse "plugin-isolation.sh 를 읽을 수 없습니다: $KD_DIR/plugin-isolation.sh"
+# shellcheck disable=SC1091
+. "$KD_DIR/plugin-isolation.sh"
+KD_PI_SEED=$(pi_seed_keys "$KD_DIR/plugin-allow.seed")
+KD_PI_USER=$(pi_kickoff_user_keys)
+KD_PI_FAIL=$(pi_kickoff_read_fail)
+kd_pi_state() { pi_judge "$KD_PI_SEED" "$KD_PI_USER" "$KD_PI_FAIL" "$1"; }
+
+# ---------------------------------------------------------------------------
 # `--carry` — the previous manifest, copied once and read only as the copy.
 #
 # The driver's accessors take a path and read the file again on every call, so
@@ -416,7 +463,7 @@ kd_wide_instant() {
   deadline_instant "$s"
 }
 if [ "$KD_CARRY_GIVEN" = "1" ]; then
-  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows apply_code_row_reask; do
+  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows apply_code_row_reask; do
     command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
   done
   KD_KAT_E=$(kd_wide_instant "$KD_KAT")
@@ -720,6 +767,20 @@ kd_validate() {
       [ "$f1" != "$f2" ] || kd_ign "$i" '형식 오류' '두 값이 같습니다 — 불필요와 필요는 서로 다른 코드입니다' ;;
     apply-actor)
       case "$v" in 파이프라인|사람) ;; *) kd_ign "$i" '어휘 밖' '허용: 파이프라인 사람' ;; esac ;;
+    plugin-allow)
+      # The shape is the manifest check's `플러그인=` cell, through the same
+      # filter the gate applies; a value of any other shape freezes no row.
+      v=$(kd_trim "$v")
+      if [ "$(printf '%s\n' "$v" | pi_filter_keys)" != "$v" ]; then
+        kd_ign "$i" '형식 오류' '<이름>@<마켓> 하나이고 @inline·@builtin 키가 아닙니다'; return
+      fi
+      E_NORM[$i]="$v"; E_ID[$i]="$v"
+      r=$(kd_pi_state "$v")
+      case "$r" in
+        시드) kd_ign "$i" '시드' '플러그인 허용 시드에 있어 모든 런에서 이미 켜집니다' ;;
+        미설치) kd_ign "$i" '미설치' '킥오프가 읽는 어느 계정 디렉터리에도 설치돼 있지 않습니다' ;;
+        '판정 불가'*) kd_ign "$i" '판정 불가' "계정 설치 기록을 읽지 못해 설치 여부를 판정하지 못했습니다 — 읽지 못한 경로: ${r#*	}" ;;
+      esac ;;
   esac
 }
 
@@ -741,6 +802,10 @@ kd_place() {
   case "$k" in
     roster-model.*)
       if printf '%s\n' "${k#roster-model.}" | grep -E '^[a-z0-9-]+$' >/dev/null; then want=run; fi ;;
+    plugin-allow)
+      # The one key of both scopes: a run-wide line and a section line are both
+      # in place, and the two lists are gathered into one union.
+      want="$where" ;;
     *)
       if [ "$k" != "roster-model.<역할>" ] && kd_in "$k" "$KD_RUN_KEYS"; then want=run
       elif kd_in "$k" "$KD_REPO_KEYS"; then want=repo
@@ -906,7 +971,7 @@ kd_i=0
 while [ "$kd_i" -lt "$KD_N" ]; do
   if [ "${E_PLACED[kd_i]}" = "1" ]; then
     case "${E_KEY[kd_i]}" in
-      act-allow|auto-adopt) ;;
+      act-allow|auto-adopt|plugin-allow) ;;
       *)
         kd_j=$((kd_i + 1))
         while [ "$kd_j" -lt "$KD_N" ]; do
@@ -922,11 +987,12 @@ while [ "$kd_i" -lt "$KD_N" ]; do
   kd_i=$((kd_i + 1))
 done
 
-# The same `형태` or the same `판단 부류` again in one scope: the later one goes.
+# The same `형태`, the same `판단 부류` or the same plugin again in one scope:
+# the later one goes.
 kd_i=0
 while [ "$kd_i" -lt "$KD_N" ]; do
   case "${E_KEY[kd_i]}" in
-    act-allow|auto-adopt)
+    act-allow|auto-adopt|plugin-allow)
       if [ "${E_ST[kd_i]}" = "ok" ]; then
         kd_j=$((kd_i + 1))
         while [ "$kd_j" -lt "$KD_N" ]; do
@@ -962,8 +1028,64 @@ kd_key_of_var() {
     CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING) printf 'cost-ceiling' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE) printf 'deadline' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL) printf 'roster-model' ;;
+    CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW) printf 'plugin-allow' ;;
     *) return 1 ;;
   esac
+}
+# kd_env_plugins <variable> <value> — the plugin list variable, one entry per
+# element. Sets KD_ENV_OK to 1 when the variable stands (`없음` included, which
+# makes no entry) and 0 when it is void; a void one leaves a single ignored
+# entry carrying the whole value.
+kd_env_plugins() {
+  local var="$1" val="$2" e seen='' bad='' IFS_SAVE="$IFS"
+  KD_ENV_OK=1
+  case "$val" in
+    *[[:cntrl:]]*) bad='값에 TAB 이나 제어 문자가 있습니다' ;;
+    없음) return ;;
+  esac
+  # The checks run on the whole value first: the shape filter is line-based,
+  # so an element is judged only once no control byte can split it.
+  if [ -z "$bad" ]; then
+    case "$val" in ,*|*,|*,,*) bad='빈 원소가 있습니다 — 쉼표 사이와 양 끝에 키를 씁니다' ;; esac
+  fi
+  set -f
+  if [ -z "$bad" ]; then
+    IFS=','
+    for e in $val; do
+      IFS="$IFS_SAVE"
+      e=$(kd_trim "$e")
+      if [ -z "$e" ]; then bad='빈 원소가 있습니다 — 쉼표 사이와 양 끝에 키를 씁니다'; break; fi
+      if [ "$e" = "없음" ]; then bad='없음 은 값 전체로만 씁니다 — 다른 키와 섞지 않습니다'; break; fi
+      if [ "$(printf '%s\n' "$e" | pi_filter_keys)" != "$e" ]; then
+        bad="원소 '$e' 가 <이름>@<마켓> 이 아니거나 @inline·@builtin 키입니다"; break
+      fi
+      IFS=','
+    done
+    IFS="$IFS_SAVE"
+  fi
+  if [ -n "$bad" ]; then
+    set +f
+    KD_ENV_OK=0
+    kd_add run plugin-allow "$val" "환경:$var"
+    kd_ign "$KD_I" '형식 오류' "$bad — 변수 전체와 파일의 런 전역 plugin-allow 줄을 쓰지 않습니다"
+    return
+  fi
+  IFS=','
+  for e in $val; do
+    IFS="$IFS_SAVE"
+    e=$(kd_trim "$e")
+    kd_add run plugin-allow "$e" "환경:$var"
+    if printf '%s' "$seen" | grep -qxF -- "$e"; then
+      kd_ign "$KD_I" '중복' '같은 원소가 변수 앞쪽에 이미 있습니다 — 뒤엣것을 쓰지 않습니다'
+    else
+      kd_validate "$KD_I"
+      seen="$seen$e
+"
+    fi
+    IFS=','
+  done
+  IFS="$IFS_SAVE"
+  set +f
 }
 for kd_v in $kd_env_names; do
   if [ "$kd_v" = "$KD_ENV_FILE_VAR" ]; then
@@ -980,21 +1102,53 @@ for kd_v in $kd_env_names; do
   fi
   eval "kd_val=\${$kd_v:-}"
   [ -n "$kd_val" ] || continue
-  kd_add run "$kd_k" "$kd_val" "환경:$kd_v"
-  kd_ei=$KD_I
-  case "$kd_val" in
-    *[[:cntrl:]]*) kd_ign "$kd_ei" '형식 오류' '값에 TAB 이나 제어 문자가 있습니다' ;;
-    *) kd_validate "$kd_ei" ;;
-  esac
+  kd_ei=$KD_N
+  if [ "$kd_k" = "plugin-allow" ]; then
+    # A list: the variable stands or falls whole, whatever each element's own
+    # judgment, and it replaces the file's run-wide lines as a whole.
+    kd_env_plugins "$kd_v" "$kd_val"
+  else
+    kd_add run "$kd_k" "$kd_val" "환경:$kd_v"
+    case "$kd_val" in
+      *[[:cntrl:]]*) kd_ign "$kd_ei" '형식 오류' '값에 TAB 이나 제어 문자가 있습니다' ;;
+      *) kd_validate "$kd_ei" ;;
+    esac
+    KD_ENV_OK=0; [ "${E_ST[kd_ei]}" = "ok" ] && KD_ENV_OK=1
+  fi
   kd_i=0
   while [ "$kd_i" -lt "$kd_ei" ]; do
     if [ "${E_SCOPE[kd_i]}" = "run" ] && [ "${E_KEY[kd_i]}" = "$kd_k" ] && [ "${E_ST[kd_i]}" = "ok" ]; then
       case "${E_SRC[kd_i]}" in
         파일:*)
-          if [ "${E_ST[kd_ei]}" = "ok" ]; then
+          if [ "$KD_ENV_OK" = "1" ]; then
             E_ST[kd_i]='hide'
           else
             kd_ign "$kd_i" '환경변수 무효' "같은 키의 환경변수 $kd_v 가 무효라 파일 값도 쓰지 않습니다"
+          fi ;;
+      esac
+    fi
+    kd_i=$((kd_i + 1))
+  done
+done
+
+# The same plugin in two scopes is one key of the union: the first applied
+# entry stands and the later ones are hidden, so the manifest gets one row and
+# the manifest check's duplicate-key refusal is not met. "First" counts the
+# run-wide entries (the variable's elements included) before the target
+# sections, then the sections in file order — not creation order, in which the
+# variable's elements come last.
+kd_pa_seen=''
+for kd_pass in run repo; do
+  kd_i=0
+  while [ "$kd_i" -lt "$KD_N" ]; do
+    if [ "${E_ST[kd_i]}" = "ok" ] && [ "${E_KEY[kd_i]}" = "plugin-allow" ]; then
+      case "$kd_pass:${E_SCOPE[kd_i]}" in
+        run:run|repo:[0-9]*)
+          if printf '%s' "$kd_pa_seen" | grep -qxF -- "${E_ID[kd_i]}"; then
+            E_ST[kd_i]='hide'
+          else
+            kd_pa_seen="$kd_pa_seen${E_ID[kd_i]}
+"
           fi ;;
       esac
     fi
@@ -1195,6 +1349,9 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
       [ "$v" = "파이프라인" ] && KD_WIDE=1
       KD_EFF='5c 에 적용 주체로 미리 채우는 제안입니다 — 적용 명령과 파급 범위는 새로 묻습니다'
       [ "$v" = "파이프라인" ] && KD_EFF="$KD_EFF. 드라이버가 적용을 재시도 없이 스스로 실행합니다" ;;
+    plugin-allow)
+      KD_WIDE=1
+      KD_EFF='이 플러그인을 이 런의 모든 대상·모든 스테이지 세션에서 켭니다 — 라우터 교대는 끈 채로 둡니다' ;;
   esac
 }
 
@@ -1241,6 +1398,14 @@ if [ "$KD_CARRY_GIVEN" = "1" ]; then
         esac ;;
       apply-probe) KD_WIDE=0; KD_EFF='이전 런의 적용 프로브를 그대로 씁니다' ;;
       apply-probe-codes) KD_WIDE=0; KD_EFF='이전 런의 적용 프로브 코드 대응을 그대로 씁니다 — 프로브가 바뀌면 대응도 다시 묻습니다' ;;
+      # A carried row whose key cannot be judged holds the unread path in E_X.
+      plugin-allow)
+        if [ -n "${E_X[$1]}" ]; then
+          KD_WIDE=1
+          KD_EFF="계정 설치 기록을 읽지 못해 설치 여부를 판정하지 못했습니다 — 앞선 행을 그대로 이어 씁니다 (읽지 못한 경로: ${E_X[$1]})"
+        else
+          kd_effect "$1"
+        fi ;;
       *) kd_effect "$1" ;;
     esac
   }
@@ -1390,6 +1555,79 @@ EOF
       kd_out_diff run "$kd_k" "$kd_prev_sum" "$kd_fsum" "${E_SRC[kd_fi]}"
     fi
   done
+
+  # `plugin-allow` — rows per plugin key, never a `차이` row: a list key's
+  # "other value" splits into "present" and "absent" per element. A previous
+  # row is carried as a `권한` row unless its key is now in the seed or judged
+  # not installed; one whose key cannot be judged is carried too. A default no
+  # previous row holds is a `빈칸`, whether or not the source has a `## 인가`
+  # section, so a default not confirmed before is asked again. Every entry is
+  # walked, not only the first per scope as `kd_file_ok` does.
+  kd_pa_prev=''; kd_pa_auth=''; kd_pa_sum=''; kd_pa_out=0
+  while IFS= read -r kd_r; do
+    [ -n "$kd_r" ] || continue
+    kd_pk=$(manifest_row_fields "$kd_r" '플러그인')
+    kd_pa_prev="$kd_pa_prev$kd_pk
+"
+    kd_st=$(kd_pi_state "$kd_pk")
+    case "$kd_st" in
+      시드|미설치)
+        kd_out_not run plugin-allow "$kd_st" "$kd_r"; kd_pa_out=1 ;;
+      *)
+        kd_add run plugin-allow "$kd_r" '이전 매니페스트'
+        E_ID[KD_I]="$kd_pk"; E_NORM[KD_I]="$kd_pk"
+        case "$kd_st" in '판정 불가'*) E_X[KD_I]="${kd_st#*	}" ;; esac
+        kd_pa_auth="$kd_pa_auth$KD_I
+"
+        kd_pa_sum="$kd_pa_sum$kd_pk
+" ;;
+    esac
+  done <<EOF
+$(manifest_plugin_allow_rows)
+EOF
+  if [ -n "$kd_pa_sum" ]; then
+    printf '적용\t런\tplugin-allow\t%s\t이전 매니페스트\t1\t%s\n' \
+      "$(kd_cell "$(printf '%s' "$kd_pa_sum" | grep . | sort -u | paste -sd, -)")" \
+      '이전 런의 행을 그대로 이어받습니다 — 행마다 권한 행이 있습니다'
+    while IFS= read -r kd_ci; do
+      [ -n "$kd_ci" ] || continue
+      kd_out_auth "$kd_ci" "${E_RAW[kd_ci]}"
+    done <<EOF
+$kd_pa_auth
+EOF
+    kd_pa_out=1
+  fi
+  kd_pa_named="$kd_pa_prev"
+  kd_j=0
+  while [ "$kd_j" -lt "$KD_FILE_N" ]; do
+    if [ "${E_ST[kd_j]}" = "ok" ] && [ "${E_KEY[kd_j]}" = "plugin-allow" ] \
+       && ! printf '%s' "$kd_pa_prev" | grep -qxF -- "${E_ID[kd_j]}"; then
+      kd_out_blank "$kd_j"; kd_pa_out=1
+    fi
+    [ "${E_ST[kd_j]}" = "ok" ] && [ "${E_KEY[kd_j]}" = "plugin-allow" ] \
+      && kd_pa_named="$kd_pa_named${E_ID[kd_j]}
+"
+    kd_j=$((kd_j + 1))
+  done
+  # An ignored default is named once per key, by its first entry, when no
+  # previous row and no applied entry already speaks for that key. A value of
+  # the wrong shape has no key, so its trimmed value stands for one.
+  kd_j=0
+  while [ "$kd_j" -lt "$KD_FILE_N" ]; do
+    kd_nk="${E_NORM[kd_j]:-$(kd_trim "${E_RAW[kd_j]}")}"
+    if [ "${E_ST[kd_j]}" = "ign" ] && [ "${E_KEY[kd_j]}" = "plugin-allow" ] \
+       && ! printf '%s' "$kd_pa_named" | grep -qxF -- "$kd_nk"; then
+      kd_sc="${E_SCOPE[kd_j]}"; case "$kd_sc" in run|[0-9]*) ;; *) kd_sc=run ;; esac
+      kd_out_not "$kd_sc" plugin-allow "${E_RT[kd_j]}" \
+        "이전 매니페스트에 플러그인 '$kd_nk' 의 행이 없고 기본값 파일의 값은 쓰지 않습니다 — ${E_RM[kd_j]}"
+      kd_pa_named="$kd_pa_named$kd_nk
+"
+      kd_pa_out=1
+    fi
+    kd_j=$((kd_j + 1))
+  done
+  [ "$kd_pa_out" = "1" ] \
+    || kd_out_not run plugin-allow '원천 없음' '이전 매니페스트에 플러그인 허용 행이 없고 기본값 파일도 채우지 않습니다'
 
   kd_t=0
   while [ "$kd_t" -lt "$KD_NT" ]; do
