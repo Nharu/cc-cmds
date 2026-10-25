@@ -22521,8 +22521,9 @@ gate_ci_next() {
   #   L6  settled, u < CI_RERUN_CAP                               CI 재실행
   #   L6b settled, a = 실패                                        CI 재실행
   #   LM  a CI join target with a fresh reading of its base branch
-  #       that is red or lists an event resolved after the
-  #       segment's base: the match rows of `gate_ci_master_next`   CI 대조,
+  #       that is red, lists an event not yet resolved, or lists
+  #       one resolved after the segment's base: the match rows
+  #       of `gate_ci_master_next`                                CI 대조,
   #       — `초과` skips L7                     master 대기/재합류/수리 불가
   #   L7  settled, a = 수락, the round's request saw the base fail  CI 기존 실패
   #   L8  settled, a = 수락, f < CI_FIX_CAP or (segment, H) has
@@ -22616,42 +22617,67 @@ gate_ci_master_next() {
   # gate_ci_master_next <segment> <head sha> <round> <다음 of the table> — the
   # LM rows of `gate_ci_next`, read on a settled failure after the rerun rows.
   # They stand only on a routed run whose target has a fresh `master 판독` row
-  # that is red, or that lists an event resolved after the segment's base:
+  # that is red, that lists an event with no resolving commit yet, or that
+  # lists an event resolved after the segment's base:
   #   LM0  no match row for this head and round                  CI 대조
+  #        — while the reading is unsettled                     master 대기
   #   LM1  결과 = 수리 통과, against the last reading               the table's
   #        — against an older reading                           CI 대조
+  #        — while the reading is unsettled                     master 대기
   #   LM2  결과 = 초과                     prints `초과`: L8/L9, never L7
   #   LM3  결과 = 재합류 필요, or 부분집합/판정 불가 while the
   #        reading is green                                     master 재합류
   #   LM4  부분집합/판정 불가, 대표 = 예, and a waited event the
   #        reading says no repair run can be started for         master 수리 불가
   #   LM5  부분집합/판정 불가 against a reading whose
-  #        signature fingerprint or event field has moved        CI 대조
+  #        signature fingerprint or event field has moved,
+  #        while the reading is settled                         CI 대조
   #   LM6  부분집합/판정 불가 otherwise                            master 대기
-  # Nothing printed leaves the layer as it was. With no reading on the host
+  # A reading is settled when it is red or green; `진행 중` and `판정 불가` are
+  # not. Nothing printed leaves the layer as it was. With no reading on the host
   # nothing is printed, so a run without a master stage keeps L7: the failure
   # that was on the base when the round was requested.
   #
   # A FLAKY FAILURE GETS ITS RERUN FIRST. The rows stand after L6 and L6b, so
   # only a failure that survived its rerun is compared with the base branch.
-  local seg=$1 h=$2 g=$3 nx=$4 al mrow mst m res e
+  #
+  # AN OPEN EVENT KEEPS THE ROWS STANDING. Every new tip of the base branch —
+  # the repair commit's own merge included — is read as `진행 중` before it is
+  # read again as red or green, and an event is resolved only by a complete
+  # observation. The open events keep a waiting segment off L7's `CI 기존 실패`
+  # and the merge refusal through that reading, which is the very change the
+  # relay wakes its shift on.
+  #
+  # AN UNSETTLED READING IS NOT MATCHED. Its signature list need not hold every
+  # failure of its tip, so a `부분집합` or a `수리 통과` made against it could
+  # hide a new failure. While it lasts the rows read the last match row as it
+  # stands, a missing one or a pass included, and the match and the merge wait
+  # for a red or green reading.
+  local seg=$1 h=$2 g=$3 nx=$4 al mrow mst m res e settled=0
   run_routed || return 0
   al=$(gate_segment_target_alias "$seg")
   [ -n "$al" ] || return 0
   gate_master_fresh "$al" || return 0
   mrow=$(gate_master_last_row "$al")
   mst=$(gate_row_field "$mrow" '상태')
-  if [ "$mst" != '빨강' ] && [ -z "$(gate_master_resolved_after "$seg" "$al")" ]; then
+  if [ "$mst" != '빨강' ] && [ -z "$(gate_master_open_events "$al")" ] \
+     && [ -z "$(gate_master_resolved_after "$seg" "$al")" ]; then
     return 0
   fi
+  case "$mst" in 빨강|초록) settled=1 ;; esac
   m=$(gate_ci_match_row "$seg" "$h" "$g")
-  [ -n "$m" ] || { printf 'CI 대조'; return 0; }
+  if [ -z "$m" ]; then
+    if [ "$settled" = 1 ]; then printf 'CI 대조'; else printf 'master 대기'; fi
+    return 0
+  fi
   res=$(gate_row_field "$m" '결과')
   case "$res" in
     # The merge check takes this pass only against the reading it was made
     # against, so a pass the reading has moved past is matched again.
     '수리 통과')
-      if gate_ci_repair_pass "$seg" "$h" "$g"; then printf '%s' "$nx"; else printf 'CI 대조'; fi
+      if [ "$settled" = 0 ]; then printf 'master 대기'
+      elif gate_ci_repair_pass "$seg" "$h" "$g"; then printf '%s' "$nx"
+      else printf 'CI 대조'; fi
       return 0 ;;
     '초과') printf '초과'; return 0 ;;
     '재합류 필요') printf 'master 재합류'; return 0 ;;
@@ -22672,8 +22698,11 @@ gate_ci_master_next() {
   # the event; a wait kept against the old reading would never reach LM4. An
   # event resolved while another keeps the base red moves the comparison set
   # the same way. The new match records the reading it was made against, so
-  # a reading that stays put is matched once.
-  gate_ci_match_same_reading "$m" "$mrow" || { printf 'CI 대조'; return 0; }
+  # a reading that stays put is matched once. An unsettled reading is not
+  # matched, so the wait holds until the reading is red or green again.
+  if [ "$settled" = 1 ] && ! gate_ci_match_same_reading "$m" "$mrow"; then
+    printf 'CI 대조'; return 0
+  fi
   printf 'master 대기'
 }
 
@@ -34645,6 +34674,13 @@ gate_check_ci_match() {
     warn "no fresh 'master 판독' row for target $al — the base branch's reading is missing or older than ${GATE_MASTER_STALE_SECONDS}s"
     exit "$GATE_EXIT_RULE"
   fi
+  # A reading still `진행 중` or `판정 불가` need not list every failure of its
+  # tip, and a match against it could hide one, so it waits for red or green.
+  case "$(gate_row_field "$(gate_master_last_row "$al")" '상태')" in
+    빨강|초록) ;;
+    *) warn "the 'master 판독' row for target $al is not settled red or green — the match waits for the next reading"
+       exit "$GATE_EXIT_RULE" ;;
+  esac
   wt=$(gate_segment_worktree "$seg")
   h=$(gate_worktree_tip "$wt") || { warn "the segment worktree's tip does not resolve"; exit "$GATE_EXIT_RULE"; }
   dir="$RUN_DIR/ci-match.$seg.lock"
@@ -34724,6 +34760,17 @@ gate_master_resolved_after() {
     fi
     printf '%s\n' "$id"
   done
+}
+
+gate_master_open_events() {
+  # gate_master_open_events <alias> — the ids of the events in the target's
+  # last reading that carry no resolving commit, one per line. An event is
+  # resolved only by a complete observation, so a reading that is `진행 중` or
+  # `판정 불가` still lists every event the base branch had not fixed.
+  local ev
+  ev=$(gate_row_field "$(gate_master_last_row "$1")" '사건')
+  [ -n "$ev" ] && [ "$ev" != "-" ] || return 0
+  printf '%s' "$ev" | tr ',' '\n' | awk -F':' 'NF && $3 == "-" { print $1 }'
 }
 
 gate_ci_match_reading_mark() {
