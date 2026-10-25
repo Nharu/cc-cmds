@@ -183,13 +183,22 @@ One pass. Read-only exploration subagents are allowed here and are not a round (
 - **S3 — Reversibility inside the segment.** Adopt only what the current segment can still undo. A decision that hardens across a segment boundary — one that makes already-merged work depend on it — is not an autonomous adoption.
 - **S4 — A recommendation to convene a team is never auto-adopted.** Where the analysis concludes that a full discussion is warranted, that conclusion **promotes the item to the ladder's team-round rung**; it does not authorize a round here (CFI-2).
 
-Then, holding the lock:
+Then, through one working copy published under the document lock:
 
-- **Take the document lock** for every write: `/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock" <command>` (absolute path; `-k` and `-t 0` both required). `EX_TEMPFAIL` (75) means another writer holds the document — a planning violation rather than a queue. Do **not** wait and do **not** retry: halt with `분류: precondition-failed`, naming both writers.
+- **This pass edits the design document through a working copy, published once under the document lock.** Every write this pass makes to the document — the edits the scope reaches and the grade-line return of "Return the scoped item to its gate" alike — rides one copy and one publish; no response writes the document outside it. CFI-3's one edit of the document is that one publish. With nothing to write (verdict `불필요` and no edit), skip the procedure. `<run id>` is `CC_PIPELINE_RUN_ID` and `<stage id>` is `CC_PIPELINE_STAGE_ID` with `#` as `-` (`A#7` → `A-7`), the form the gate proves run-local; the copy lives in the one directory `mktemp -d "${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id>.XXXXXX"` makes. The `mktemp`, both `cp`s (taking the copy and the publish) and the `rm -r` are declared `--surface 트리밖쓰기 --reach 런로컬`, and the `rm -r` adds `--destructive`. Never declare them `기기전역` or `미상`: the first parks on the pre-authorization judgment, the second parks as `도달미상` because the document path lies outside the namespace. `shasum` is a read. One response each:
+    1. `mktemp -d "${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id>.XXXXXX"`.
+    2. `cp <document> <dir>/doc.md` and `shasum -a 256 <document>`. The expected hash is Step 1's `사전 sha256`; re-entered with a carried answer, it is the record's `지금 sha256`, else its `사전 sha256`. Another hash means another writer: halt with `분류: precondition-failed`.
+    3. Read the copy with `limit: 1` — the Edit tool's precondition; the content is Step 1's read.
+    4. Every write the scope reaches as several Edits on the copy, and `shasum -a 256 <document>` again; if it differs from 2, do not publish — halt with `분류: precondition-failed`.
+    5. Publish with `/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock" cp <dir>/doc.md <document>` (absolute path; `-k` and `-t 0` both required), and record `shasum -a 256 <document>` as `사후 sha256`. `EX_TEMPFAIL` (75) means another writer holds the document — a planning violation rather than a queue. Do **not** wait and do **not** retry: halt with `분류: precondition-failed`, naming both writers.
+    6. `rm -r <dir>`, then go on to Step 4's verdict and the carrier close.
+    7. A halt at 2, 4 or 5 removes the directory first and lists 4's edits in the record's `관측 상세`. A compaction between 1 and 5 drops the copy: find it by the prefix `cc-proto-<run id>-<stage id>.`, remove it as in 6, and restart at 1.
+
+    Never put the copy beside the document (a hidden file in the same directory included) or under the run directory, never copy inside `sh -c` or `bash -c`, never publish with `mv`, and never use a temporary name outside the namespace above: the publish is a `cp`. A halt after the publish carries 5's `사후 sha256` as its `지금 sha256`, as "A halt carries the scope and the Step 1 baselines" defines it. The carrier write (`docs/design-reconverge/{slug}.md`) is outside this procedure and keeps `_common/sidecar.md`'s own write form.
 - **Return the scoped item to its gate.** When the scope is an `R<n>` whose grade line in the document carries `반증됨(실패)` or `검증불가(드리프트)` — a refutation during implementation flips it before halting, one before implementing does not — rewrite that whole line to `**검증 등급**: 구현 시 검증` and leave its `구현 시 검증 기록` line in place as history. Left terminal, the item is skipped by the next implement stage's discovery as already settled, and the segment would go to its pull request without the measurement that refuted it ever running again. This write is inside the scope, and the verdict's digest filters grade lines, so it alone never makes the verdict `재설계 필요`.
 - **Edit only what the scope reaches** (CFI-6). Where a binding-tier decision changes, rewrite the decision sentence and record the superseded one in the same place, so a citation aimed at the old wording still lands. Do not restate history as if it were current.
 - **Every adopted decision gets a record**: the decision, the rejected alternative, the rationale, and — for S2 — the resolving command and its output. This skill writes those records into its own structured output; **the driver transcribes them into the run ledger.** This skill writes no pipeline sidecar.
-- **Record `사후 sha256`** after the last edit.
+- **Record `사후 sha256`** after the last edit: it is the hash step 5 of the working copy takes after the publish.
 
 ### Step 4: Verdict
 
@@ -238,6 +247,7 @@ The absence is the contract. A further re-convergence is a new invocation driven
 - **The carrier's write form is `## 2`'s close, and nothing else.** This skill never uses the append form: that form belongs to the implementation arm, and its field set is shaped for an observation this skill did not make.
 - **Never reach a notification surface.** No `PushNotification`, no `notify.sh`, no `terminal-notifier` — not from this file and not from any agent it spawns. Notifying a sleeping user is the driver's exclusive job.
 - **Never write a pipeline sidecar.** This skill reads the grant to re-derive `RUN_DIR`; the driver is the sole writer of the run ledger and of the autonomous-decision rows this skill emits.
+- **Read pipeline variables by name** — `printenv CC_PIPELINE_RUN_ID`, one name per call — and never bare `env` or bare `printenv`. This stage's own environment carries the pipeline token, so the whole-environment forms print a credential into the transcript and are parked as `비밀출력`.
 - **No code modifications.** This skill changes the design, never the implementation.
 
 Task: $ARGUMENTS

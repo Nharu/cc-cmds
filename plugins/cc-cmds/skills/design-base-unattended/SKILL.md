@@ -56,7 +56,7 @@ The attended skill marks its ask points with a judgment grade (`${CLAUDE_SKILL_D
 
 ### Steps 0–2
 
-**Read Step 0, Step 1 and Step 2 of `design-discuss-unattended` and follow them**, with one difference: the default roster under driver dispatch is this one, frozen here and read, never chosen.
+**Read Step 0, Step 1 and Step 2 of `design-discuss-unattended` and follow them**, with two differences. Its re-entry exemption of the document-present guard and its **Re-entered with a carried answer** do not apply here: a halt of this design flow is not in the gate's re-entry table, so a person's answer to it comes back only by re-attaching the halted session, never as a card to a fresh one. And the default roster under driver dispatch is this one, frozen here and read, never chosen.
 
 ```
 - `설계 로스터` | 역할=architecture | 범위=the requirement's structure, contracts and interfaces across the affected surfaces, and the alternatives to them | 모델=opus
@@ -110,6 +110,13 @@ Driver dispatch only: `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_RUN_DIR`, `CC_PIPELINE_
 9. **Terminal.** End with the line 「베이스 분할을 마쳤습니다.」 as the last line of the terminal message, preceded by the registry path. Ahead of the registry path, when step 5 ran: one line `베이스 제목 유사 후보: <참조 목록|없음>`. Name no next step.
 
 **Split-mode sites are a closed set of five**, all first-failure sites: `split-check-failed` · `audit-open-items` · `publish-not-authorized` · `duplicate-ticket` · `tracker-error`. The record is `cc-pipeline-halt v1` of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4, at `${CC_PIPELINE_RUN_DIR}/halt/${CC_PIPELINE_STAGE_ID}.md`, with the site after the step identifier in `스텝` (`Split 7 / tracker-error`); stop at the **first** site reached. Each site has one `분류`: `split-check-failed` · `publish-not-authorized` · `tracker-error` → `precondition-failed`; `audit-open-items` · `duplicate-ticket` → `gate-unanswerable` (a person decides the open entry, or whether the candidate is the same work). One exception: an act the gate parked (exit 11) is `gate-unanswerable` at whichever site it stopped, with the gate's `도달 판정` in `관측 상세`, so a refusal by the gate is never filed as a tracker error. Adding a site takes on the closed-set duty of `design-discuss-unattended`.
+
+**Re-entered with a carried answer (split mode only).** A fresh split session can be handed a person's answer to an earlier attempt's split halt: the routing shift's carry act writes an answer card and starts this mode with `CC_PIPELINE_HALT_ANSWER` set to its path and the ordinary `--split` prompt. When it is set:
+
+1. **Read the card and check the digest.** Its `**중단 기록**` is the earlier attempt's halt record and `**기록 다이제스트**` that record's sha256. Compute `shasum -a 256` of the record and compare; a difference is a halt with `분류: precondition-failed` naming both values — the answer was given to other bytes.
+2. **Run steps 1–9 from the top, from what is on disk** — the document, the registry and the run directory's `split/` output — and apply the card's option at the site the record names as the answer to its `**질문 문면**`. The registry is idempotent on resume (steps 5 and 7), so the steps before that site redo nothing an earlier attempt finished. Do not ask that question again. There is no document-present exemption: this mode saves no document and has no such guard.
+3. **If the first site that fails is not the record's, or its question is not the record's**, do not apply the answer: write a new halt record for the site reached now, with the card's path in its `관측 상세`.
+4. **Never rewrite the carried record** — the card's `**중단 기록**` belongs to the earlier attempt, and the answer is bound to its digest.
 
 ## Constraints
 

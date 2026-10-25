@@ -241,6 +241,102 @@ cc_supervisor_is_live() {
   [ "$rec" = "$now" ]
 }
 
+cc__apply_pair_live() {
+  # cc__apply_pair_live <pid file> <fingerprint file> — the judgement
+  # `cc_supervisor_is_live` makes, on one named pair: a pid that is alive and,
+  # where a fingerprint was recorded, still the process it names.
+  local pid rec
+  [ -f "$1" ] || return 1
+  pid=$( { cat "$1" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  rec=$(cat "$2" 2>/dev/null || true)
+  [ -n "$rec" ] || return 0
+  [ "$rec" = "$(cc_proc_fingerprint "$pid")" ]
+}
+
+cc_apply_supervisor_is_live() {
+  # cc_apply_supervisor_is_live <run-dir> <segment> — succeeds while the
+  # detached apply supervisor of that segment is up, or about to be.
+  #
+  # TWO RECORDS, EITHER ONE ENOUGH. The dispatch writes `apply/<seg>.sup` and
+  # `.sup.start` from the pid its detach helper printed, after that helper
+  # returns; the supervisor writes `apply/<seg>.sup.self` and `.sup.self.start`
+  # as soon as it has consumed its launch token. A supervisor can consume the
+  # token before the dispatch writes its pair, and a dispatch that dies in
+  # between never writes it, so the supervisor's own pair covers that window.
+  #
+  # AN UNCONSUMED `.launch` YOUNGER THAN 60 SECONDS IS A START IN PROGRESS: the
+  # token is written before the detach, so for a moment it is the only record.
+  # The consumed token's mtime is not read — `mv` keeps the mtime of the write,
+  # so it says when the launch was written, not when the supervisor took it.
+  local d="$1/apply" seg="$2" mt now
+  [ -n "$1" ] && [ -n "$seg" ] || return 1
+  cc__apply_pair_live "$d/$seg.sup" "$d/$seg.sup.start" && return 0
+  cc__apply_pair_live "$d/$seg.sup.self" "$d/$seg.sup.self.start" && return 0
+  [ -f "$d/$seg.launch" ] || return 1
+  mt=$(cc_mtime "$d/$seg.launch")
+  [ -n "$mt" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - mt)) -le 60 ]
+}
+
+cc_segment_apply_phase() {
+  # cc_segment_apply_phase <ledger> <segment> — where that segment's apply
+  # stands, read from its `segment` rows alone: `대기`, `미정산`, `진행`,
+  # `불명`, `멈춤`, or empty.
+  #
+  #   대기    the last row is `머지됨 적용=대기`
+  #   미정산  the last row is `머지됨 적용=미정산`
+  #   진행    the last row is `적용 준비`, and the walk reaches a `머지됨`
+  #           carrying `적용=대기` or `적용=미정산`
+  #   불명    the last row is `park`, and the walk reaches a `머지됨` carrying
+  #           `적용=미정산`, or crosses a `park 적용=불명`
+  #   멈춤    the last row is `park`, the walk reaches a `머지됨` carrying
+  #           `적용=대기`, and crosses no `적용=불명`
+  #   empty   anything else — before the merge, a merge that owes no apply,
+  #           a `완료`
+  #
+  # THE WALK goes back from the last row over `park` and `적용 준비` rows to
+  # the first row that is neither. ONE PREDICATE FOR EVERY READER: the gate's
+  # landing, terminal and import readers and this file's segment counts all
+  # read this word, so none of them spells the state strings on its own. The
+  # manifest is not opened; the gate writes the apply marker on the merge row.
+  local ledger="$1" seg="$2"
+  [ -n "$ledger" ] && [ -f "$ledger" ] && [ -n "$seg" ] || return 0
+  LC_ALL=C awk -F'|' -v seg="$seg" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^- `segment`/ {
+      hit = 0; st = ""; ap = ""
+      for (i = 2; i <= NF; i++) {
+        f = trim($i)
+        if (f == "id=" seg) hit = 1
+        else if (substr(f, 1, 7) == "상태=") st = substr(f, 8)
+        else if (substr(f, 1, 7) == "적용=") ap = substr(f, 8)
+      }
+      if (hit) { n++; S[n] = st; A[n] = ap }
+    }
+    END {
+      if (n == 0) exit
+      last = S[n]
+      if (last == "머지됨") {
+        if (A[n] == "대기" || A[n] == "미정산") printf "%s", A[n]
+        exit
+      }
+      if (last != "park" && last != "적용 준비") exit
+      unk = 0
+      for (j = n; j >= 1 && (S[j] == "park" || S[j] == "적용 준비"); j--)
+        if (S[j] == "park" && A[j] == "불명") unk = 1
+      rs = (j >= 1) ? S[j] : ""; ra = (j >= 1) ? A[j] : ""
+      owed = (rs == "머지됨" && (ra == "대기" || ra == "미정산"))
+      if (last == "적용 준비") { if (owed) printf "진행"; exit }
+      if (unk || (rs == "머지됨" && ra == "미정산")) printf "불명"
+      else if (rs == "머지됨" && ra == "대기") printf "멈춤"
+    }
+  ' "$ledger" 2>/dev/null || true
+  return 0
+}
+
 cc_live_stage_records() {
   # cc_live_stage_records <run-dir> — one line per stage `cc_stage_is_live`
   # accepts: `<segment>\t<stage-id>\t<pid>\t<sup>\t<start>`.
@@ -361,6 +457,11 @@ cc_relay_wait_stages() {
   # is one the relay waits on, including a supervisor still waiting for an
   # account with no stage pid yet. The poller's and the watcher's own pid files
   # are not stages.
+  #
+  # A DETACHED APPLY IS WAITED ON TOO, under the key `apply:<seg>`: its records
+  # sit under `apply/`, where neither stage predicate looks, and it is judged
+  # by `cc_apply_supervisor_is_live`. It is not a stage — the stage count and
+  # the orphan sweep read only the run directory itself.
   local run_dir="$1" f k keys="" seen=" "
   [ -n "$run_dir" ] || return 0
   for f in "$run_dir"/*.pid "$run_dir"/*.sup; do
@@ -371,6 +472,18 @@ cc_relay_wait_stages() {
     case "$seen" in *" $k "*) continue ;; esac
     seen="$seen$k "
     if cc_stage_is_live "$run_dir" "$k" || cc_supervisor_is_live "$run_dir" "$k"; then
+      keys="${keys:+$keys,}$k"
+    fi
+  done
+  for f in "$run_dir"/apply/*.sup "$run_dir"/apply/*.sup.self "$run_dir"/apply/*.launch; do
+    [ -f "$f" ] || continue
+    k=${f##*/}
+    case "$k" in *.sup.self) k=${k%.sup.self} ;; *.sup) k=${k%.sup} ;; *.launch) k=${k%.launch} ;; esac
+    [ -n "$k" ] || continue
+    k="apply:$k"
+    case "$seen" in *" $k "*) continue ;; esac
+    seen="$seen$k "
+    if cc_apply_supervisor_is_live "$run_dir" "${k#apply:}"; then
       keys="${keys:+$keys,}$k"
     fi
   done
@@ -1006,6 +1119,13 @@ cc_relay_wake_keys() {
   esac
   for k in $(cc_relay_field "$run_dir" stages | tr ',' ' '); do
     [ "$k" != "-" ] || continue
+    # An `apply:<seg>` key is a detached apply, judged where its records are;
+    # read as a stage it would wake the relay on every poll while it runs.
+    case "$k" in
+      apply:*)
+        cc_apply_supervisor_is_live "$run_dir" "${k#apply:}" || printf 'st:%s\t\n' "$k"
+        continue ;;
+    esac
     if ! cc_stage_is_live "$run_dir" "$k" && ! cc_supervisor_is_live "$run_dir" "$k"; then
       printf 'st:%s\t\n' "$k"
     fi
@@ -1498,21 +1618,21 @@ cc_nonterminal_segments() {
   # flight. The membership test is the gate's, verbatim, because a second
   # spelling of it is how the two readers diverged in the first place.
   #
-  # A `머지됨` CARRYING `적용=대기` IS IN FLIGHT. The gate's segment arm writes
-  # that marker on the merge of a segment that still owes its apply — a fact
-  # derived from the manifest, which this reader does not open — so the marker
-  # is how the gate's condition 1 and this count agree on such a segment.
-  local ledger="$1" sid row st ap n=0
+  # A `머지됨` WHOSE APPLY IS STILL OWED IS IN FLIGHT: `cc_segment_apply_phase`
+  # reads `대기` (the gate's segment arm marks the merge of a segment that owes
+  # its apply — a fact derived from the manifest, which this reader does not
+  # open) or `미정산` (a merge carried in from an earlier run whose apply did
+  # not finish). That word is how the gate's condition 1 and this count agree.
+  local ledger="$1" sid row st n=0
   [ -n "$ledger" ] || { printf '0'; return 0; }
   for sid in $( { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
                 | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$sid" ] || continue
     row=$( { grep -E '^- `segment`' "$ledger" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1)
     st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    ap=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *적용=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    if [ "$st" = "머지됨" ] && [ "$ap" = "대기" ]; then
-      n=$((n + 1)); continue
-    fi
+    case "$(cc_segment_apply_phase "$ledger" "$sid")" in
+      대기|미정산) n=$((n + 1)); continue ;;
+    esac
     case " $TERMINAL_SEGMENT_STATES " in
       *" $st "*) ;;
       *) n=$((n + 1)) ;;
@@ -1699,25 +1819,27 @@ cc_segment_states() {
   # `<id><TAB><last 상태><TAB><open|done>`.
   #
   # THE THIRD FIELD IS THE VERDICT AND READERS TAKE IT FROM HERE. It is the
-  # membership test of `cc_nonterminal_segments`, `머지됨` carrying `적용=대기`
-  # included, and that case cannot be told from the 상태 field alone — so a
-  # reader that re-applied `TERMINAL_SEGMENT_STATES` to the second field would
-  # be the second copy that function's comment says split two readers before.
+  # membership test of `cc_nonterminal_segments`, a `머지됨` whose apply is
+  # still owed (`cc_segment_apply_phase` reads `대기` or `미정산`) included, and
+  # that case cannot be told from the 상태 field alone — so a reader that
+  # re-applied `TERMINAL_SEGMENT_STATES` to the second field would be the
+  # second copy that function's comment says split two readers before.
   # The `open` lines number exactly what that function counts.
-  local ledger="$1" sid row st ap verdict
+  local ledger="$1" sid row st verdict
   [ -n "$ledger" ] || return 0
   for sid in $( { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
                 | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$sid" ] || continue
     row=$( { grep -E '^- `segment`' "$ledger" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1)
     st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    ap=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *적용=//p' | sed 's/[[:space:]]*$//' | tail -1)
     verdict=open
-    if [ "$st" != "머지됨" ] || [ "$ap" != "대기" ]; then
-      case " $TERMINAL_SEGMENT_STATES " in
-        *" $st "*) verdict=done ;;
-      esac
-    fi
+    case "$(cc_segment_apply_phase "$ledger" "$sid")" in
+      대기|미정산) ;;
+      *)
+        case " $TERMINAL_SEGMENT_STATES " in
+          *" $st "*) verdict=done ;;
+        esac ;;
+    esac
     printf '%s\t%s\t%s\n' "$sid" "${st:--}" "$verdict"
   done
   return 0
@@ -1940,7 +2062,18 @@ cc_run_settled_for_report() {
   # 600 SECONDS AFTER 종단, because a finished run's log is still being written
   # for a while after `done` and a report taken inside that window reads a
   # ledger that is about to change.
+  #
+  # A LIVE DETACHED APPLY IS NEVER SETTLED, whatever the state says. Its records
+  # sit under `apply/`, which `cc_run_state` does not read, and the supervisor
+  # writes nothing until its command ends — an apply that runs for hours leaves
+  # the ledger quiet past `abandon` and reads 버려짐 there, while the row it is
+  # about to write (`park 적용=불명` and its run-scope block) is exactly what a
+  # report taken now would miss for good. The keys come from
+  # `cc_relay_wait_stages`, the one enumeration of `apply/` records; it is read
+  # here and not in `cc_run_state`, so the status line's tokens stay as they are.
+  # A supervisor that died leaves no live key, and its run settles as before.
   local run_dir="$1" ledger="$2" abandon="${3:-}" s idle
+  case ",$(cc_relay_wait_stages "$run_dir")," in *,apply:*) return 1 ;; esac
   if [ -n "$abandon" ]; then
     s=$(cc_run_state "$run_dir" "$ledger" "" "$abandon")
   else
