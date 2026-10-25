@@ -62,7 +62,7 @@ Read `CC_PIPELINE_RUN_ID` by name (`printenv CC_PIPELINE_RUN_ID`, never bare `en
 
 ## Halt record
 
-Follow `## Halt record (driver dispatch)` of the discuss arm as written: schema `cc-pipeline-halt v1` of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4, path `${CC_PIPELINE_RUN_DIR}/halt/${CC_PIPELINE_STAGE_ID}.md`, the ten fields, the atomic form, the closing fence as terminator, the question and every option label and description verbatim, `재호출 명령` recorded and never executed, and the site's id in `스텝` after the step identifier (`Step 7U / ladder-unsettled`). Then take no further step and end the turn.
+Follow `## Halt record (driver dispatch)` of the discuss arm as written: schema `cc-pipeline-halt v1` of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4, path `${CC_PIPELINE_RUN_DIR}/halt/${CC_PIPELINE_STAGE_ID}.md`, the ten fields, the atomic form, the closing fence as terminator, the question and every option label and description verbatim, `재호출 명령` recorded and never executed, and the site's id in `스텝` after the step identifier (`Step 7U / ladder-unsettled`). **Every halt writes `문서 사전 sha256=<값>` in its `관측 상세`** — the `shasum -a 256` of the document at the document path as it stands when the record is written, `없음` when no file is there — so a fresh session handed the answer can tell the saved document is this attempt's own (Step 0's document-present guard). Then take no further step and end the turn.
 
 **The sites are a closed set of four**, all first-failure sites:
 
@@ -89,7 +89,14 @@ The attended skill marks its ask points with a judgment grade (`${CLAUDE_SKILL_D
 
 Load no deferred tool: this arm uses neither `Agent` nor `SendMessage`, and the question tool is absent as in every headless process. There is no roster check and no ledger stub.
 
-**Document-present guard → `document-present`.** If a file exists at the document path and its body carries at least one line beginning with `## `, it is a saved document: halt with `분류: precondition-failed`, putting the path, its byte count, its mtime and the first such line in `관측 상세`. Whether the file carries a design-ledger comment block is not part of the test — a light document has none, and asking for one would read a saved light document as neither saved nor a stub. A file with no `## ` line holds nothing saved, and Step 3's Write replaces it.
+**Document-present guard → `document-present`.** If a file exists at the document path and its body carries at least one line beginning with `## `, it is a saved document: halt with `분류: precondition-failed`, putting the path, its byte count, its mtime and the first such line in `관측 상세`. Whether the file carries a design-ledger comment block is not part of the test — a light document has none, and asking for one would read a saved light document as neither saved nor a stub. A file with no `## ` line holds nothing saved, and Step 3's Write replaces it. **A re-entry is exempt**: when `CC_PIPELINE_HALT_ANSWER` names a card and the `문서 사전 sha256` in the `관측 상세` of the record the card names equals the `shasum -a 256` of the document now, the saved document is the halted attempt's own — do not halt; enter the halted step as **Re-entered with a carried answer** below says. A card whose record carries no `문서 사전 sha256`, or one that differs, gets the guard as written.
+
+**Re-entered with a carried answer.** A fresh session can be handed a person's answer to an earlier attempt's halt: the routing shift's carry act writes an answer card and starts this stage with `CC_PIPELINE_HALT_ANSWER` set to its path and the ordinary design dispatch prompt. When it is set, after the guard above:
+
+1. **Read the card and check the digest.** Its `**중단 기록**` is the earlier attempt's halt record and `**기록 다이제스트**` that record's sha256. Compute `shasum -a 256` of the record and compare; a difference is a halt with `분류: precondition-failed` naming both values — the answer was given to other bytes.
+2. **Enter at the step the record names**, from what is on disk — the document at the document path and the record — and apply the card's option there as the answer to the record's `**질문 문면**`, as **Resumed turns** below says for that option. Do not ask that question again.
+3. **If the question computed there is not the record's**, do not apply the answer: write a new halt record for the question computed now, with the card's path in its `관측 상세`.
+4. **Never rewrite the carried record** — the card's `**중단 기록**` belongs to the earlier attempt, and the answer is bound to its digest.
 
 ### Step 1: Inputs and baseline
 
