@@ -17,11 +17,12 @@
 #
 # ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 14, plus the shift's branch index
 # block (6e-6), which adds 5 + 3n for the shift's n reference files. The census selects every suite
-# that invokes the gate family and asserts two exports for each. This file
-# carries its recognition corpus, so it selects this file too, and
-# scripts/test-local-bundle.sh runs test-gate.sh on its mirror, so it selects
-# that one as well: two suites the source census did not see, two assertions
-# each. The fix-cycle block (6e-3a) adds ten: the two pieces in the driver's
+# that runs or sources the gate family and asserts two exports and the
+# pipeline-name clearing line for each, plus the line's position in a suite
+# that is also sourced as a library. This file carries its recognition corpus,
+# so it selects this file too, and scripts/test-local-bundle.sh runs
+# test-gate.sh on its mirror, so it selects that one as well: two suites the
+# source census did not see. The fix-cycle block (6e-3a) adds ten: the two pieces in the driver's
 # two assignments and in the common file's start condition, the set of files
 # pointing at that file, its missing question and notification surfaces, its
 # missing copies, the phase sentence, and the start disposition and end
@@ -40,6 +41,9 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 # The dashboard server is off for the same reason.
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
+# And it clears the inherited pipeline names, for the same reason: the census
+# demands this line of every suite it selects, this one included.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -133,10 +137,26 @@ leak_pat() {
   # yields an empty handle list — which does not error, it selects no suites,
   # and every assertion in that loop disappears while the suite reports a
   # smaller green total. Measured: 30 assertions became 26 and nothing said so.
-  local _src="$1" _h _ref _pat
-  _pat='(^|[^"A-Za-z_0-9])bash +[^ ]*(gate|run|watch)\.sh'
+  #
+  # THE FAMILY IS FOUR SCRIPTS AND THREE WAYS IN. The gate hook
+  # `gate-pretool.sh` runs gate.sh, so a suite that drives the hook reaches the
+  # gate as surely as one that calls it. Sourcing is running too: a suite that
+  # sources the gate runs its functions in its own process and reads every
+  # variable it inherited. And a `-c` shell handed a family path or handle as a
+  # positional argument sources it as `"$1"`, a spelling no handle name shows.
+  # Each of the three is a row of the corpus below, so narrowing any of them
+  # fails that row rather than silently dropping a suite.
+  local _src="$1" _h _ref _pat _fam _pre _shc
+  _fam='(gate|run|watch|gate-pretool)\.sh'
+  _pre='(^|[^"A-Za-z_0-9])'
+  # The quote rule holds for `-c` as well: a `"` may stand only around `$BASH`,
+  # never in front of a bare `bash`, or a fixture string would count again.
+  _shc="$_pre"'(bash|sh|"\$\{?BASH\}?"|\$\{?BASH\}?) +-c +.*[[:space:]]'
+  _pat="$_pre"'bash +[^ ]*'"$_fam"
+  _pat="$_pat|$_pre"'(\.|source) +[^ ]*'"$_fam"
+  _pat="$_pat|$_shc"'"?[^ ]*'"$_fam"
   for _h in $(printf '%s\n' "$_src" | tr ' \t' '\n\n' \
-      | sed -n -E 's/^([A-Za-z_][A-Za-z_0-9]*)=.*(gate|run|watch)\.sh.*$/\1/p' \
+      | sed -n -E 's/^([A-Za-z_][A-Za-z_0-9]*)=.*(gate|run|watch|gate-pretool)\.sh.*$/\1/p' \
       | sort -u); do
     # `\\$` and not `$`: this string becomes an ERE, where a bare `$` is the
     # end-of-line anchor. Written unescaped the alternative reads as `bash "`
@@ -152,6 +172,8 @@ leak_pat() {
     _ref="\\\$\\{?$_h\\}?"
     _pat="$_pat|(^|[^\"A-Za-z_0-9])bash +\"?$_ref\"?"
     _pat="$_pat|^[[:space:]]*\"?$_ref\"?([[:space:]]|\$)"
+    _pat="$_pat|$_pre(\\.|source) +\"?$_ref\"?([[:space:]]|\$)"
+    _pat="$_pat|$_shc\"?$_ref\"?([[:space:]]|\$)"
   done
   printf '%s' "$_pat"
 }
@@ -161,7 +183,7 @@ leak_pat() {
 # site and a real non-call-site are spelled, so each row is failed by breaking
 # the one thing it names — and the base branch, which today's tree cannot fail,
 # is failed here.
-_lp=$(leak_pat 'GATE=/x/plugins/cc-cmds/orchestrator/gate.sh')
+_lp=$(leak_pat 'GATE=/x/plugins/cc-cmds/orchestrator/gate.sh HOOK=/x/plugins/cc-cmds/hooks/gate-pretool.sh')
 while IFS='|' read -r _want _line; do
   [ -n "$_want" ] || continue
   _got=$(printf '%s\n' "$_line" | grep -cE "$_lp" || true)
@@ -179,8 +201,17 @@ y|  "$GATE" act --kind segment
 n|  "bash $GATE snapshot --manifest m"
 n|bash_json "$GATE" act
 n|  echo "$GATEWAY" act
+y|bash /x/plugins/cc-cmds/hooks/gate-pretool.sh --run-dir r
+y|  bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATE"
+y|. "$GATE" || die2 "could not source $GATE"
+y|  source /x/plugins/cc-cmds/orchestrator/run.sh
+y|  out=$(bash -c 'g="$1"; . "$g"' _ "$GATE" "$1")
+y|  "$BASH" -c '. "$1"' _ "$ORCH/run.sh"
+n|  "source $GATE"
+n|  n=$(grep -c pat "$ORCH/run.sh")
 LEAKROWS
 
+_scrub_line='for v in $(compgen -e | grep '"'"'^CC_PIPELINE_'"'"' || true); do unset "$v"; done'
 _selected=0
 _selected_names=""
 for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrator/test-run.sh; do
@@ -255,6 +286,33 @@ for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrato
   else
     bad "대시보드 누출" "$b 가 게이트 계열을 부르면서 CC_CMDS_DASHBOARD 를 내보내지 않는다 — 픽스처 런 개시마다 실제 서버가 남는다"
   fi
+  # And the same set clears every `CC_PIPELINE_*` it inherited, by prefix rather
+  # than by a list of names. A list is complete only on the day it is written:
+  # the gate later began exporting names the suites' lists did not carry, and a
+  # suite run inside a stage then read the stage's real ledger and manifest.
+  # The whole line, because only the exact spelling is known to clear by prefix.
+  if grep -qxF -- "$_scrub_line" "$f"; then
+    ok "$b 가 물려받은 파이프라인 변수를 접두어로 걷는다"
+  else
+    bad "파이프라인 변수 누출" "$b 가 게이트 계열을 부르면서 최상위에 '$_scrub_line' 줄을 두지 않는다 — 스테이지 안에서 돌면 스테이지의 원장·매니페스트를 그대로 읽는다"
+  fi
+  # A FILE THAT IS ALSO SOURCED keeps the line inside its direct-run guard.
+  # Its sourcer reads `CC_PIPELINE_RUN_ID` after sourcing it — check-push picks
+  # its unattended merge mode that way — so a line above the guard would clear
+  # the variable the moment the library is sourced and switch that mode off
+  # without a word. Only the position is asserted, and only where a guard
+  # exists: a file without one is never sourced for its functions.
+  _guard_ln=$(grep -n -m 1 -E '^[[:space:]]*if \[ "\$\{BASH_SOURCE\[0\]\}" = "\$0" \]' "$f")
+  _guard_ln=${_guard_ln%%:*}
+  if [ -n "$_guard_ln" ]; then
+    _scrub_ln=$(grep -n -m 1 -xF -- "$_scrub_line" "$f")
+    _scrub_ln=${_scrub_ln%%:*}
+    if [ -n "$_scrub_ln" ] && [ "$_scrub_ln" -gt "$_guard_ln" ]; then
+      ok "$b 의 걷기 줄이 직접 실행 가드 안에 있다 (소싱하는 쪽의 변수를 지우지 않는다)"
+    else
+      bad "파이프라인 변수 누출" "$b 는 직접 실행 가드(:$_guard_ln)를 가진 라이브러리인데 걷기 줄이 그 뒤에 없다 (첫 걷기 줄 :${_scrub_ln:-없음}) — 소싱하는 순간 소싱한 쪽의 CC_PIPELINE_RUN_ID 가 지워진다"
+    fi
+  fi
 done
 
 # ZERO SELECTED IS A BROKEN PREDICATE, NOT A CLEAN TREE. Nothing inside the loop
@@ -281,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-oracle.sh test-gate.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-meta-invariants.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
+_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -705,6 +763,68 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   if [ -z "$design_sel" ]; then design_sel="$sel"; else design_sel_rs="$sel"; fi
 done
 check "두 사본의 설계 단계 id 선택식이 바이트 동일하다" "$design_sel_rs" "$design_sel"
+
+# ---------------------------------------------------------------------------
+# 6d-v. The visual dispatch and its screen-slice wait are carried by BOTH copies
+#
+# The lead's loop and the shift each carry the visual-stage section for the same
+# reason the design section is duplicated. What the duplication costs here is a
+# screen slice that one path holds back and the other dispatches: the gate still
+# refuses that dispatch, but the run then ends on a refusal instead of a wait the
+# seat can answer. The literals below are what the section needs to dispatch the
+# stage, to tell a screen slice from one that never waits, to submit the one
+# fixed question, and to take a visual-wait park back up once it is approved —
+# and only then: a resubmission that consumes a person's refusal also ends on
+# exit 0, so each copy has to say that adoption is the `결정=채택` row and that
+# a consumed refusal leaves the segment parked.
+# ---------------------------------------------------------------------------
+visual_section() {
+  # visual_section <skill file> — the visual-dispatch subsection body, read up
+  # to the next heading of any level.
+  awk '/^#### Dispatching the visual stage$/ { f = 1; next } f && /^#+ / { exit } f' "$1"
+}
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}
+  sec=$(visual_section "${pair#*:}")
+  if [ -n "$sec" ]; then
+    ok "$who 사본에 시각 파견 절이 있다"
+  else
+    bad "$who 사본의 시각 파견 절" "표제가 없거나 본문이 비었다"
+  fi
+  for lit in \
+    '-- visual -p "/cc-cmds:visual-unattended <스냅숏 design_doc>"' \
+    '시각 디자인을 검토 통과로 확정했습니다.' \
+    '**상태**: 검토 통과' \
+    'A slice whose `**화면**` reads `없음` never waits.' \
+    '--surface 읽기 -- <plugin root>/orchestrator/visual-check.sh approval <스냅숏 design_doc>' \
+    "-- 등급=2 '판단 부류=시각-승인' '기준=시각 승인 대기' '근거=<화면 세그먼트> 의 화면이 고정 좌석에서 구현 승인되었는가'" \
+    "\`'사유=시각 승인 대기'\`" \
+    'before any branch or worktree is cut for them' \
+    'write `상태=실행중` with the plan row'"'"'s `선행` and dispatch its implementation as any planned slice' \
+    'A `park` the fixed-graph driver wrote is not taken over' \
+    'leave the slice at `park`' \
+    '`결정=거절 소비`' \
+    'the approval is adopted only when that row carries `결정=채택`' \
+    'go to item 5 whatever the predicate says' \
+    'A consumed refusal does not make the segment `실행중` again'
+  do
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 시각 파견 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 시각 파견 절" "「${lit}」이 없다"
+    fi
+  done
+  # The predicate read names the helper as argv0. Behind `bash` the gate grades
+  # an opaque script, and with the auto-resolve switch off the read declaration
+  # is refused, so the approved screen slice would never be dispatched.
+  nbash=$(printf '%s\n' "$sec" | grep -cF -- 'bash <plugin root>/orchestrator/visual-check.sh' || true)
+  if [ "${nbash:-0}" = "0" ]; then
+    ok "$who 사본의 승인 술어 읽기는 bash 뒤에 두지 않는다"
+  else
+    bad "$who 사본의 승인 술어 읽기" "bash 뒤에 도우미를 둔 표기가 남았다"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 6e. Re-attaching a cut stage is carried by BOTH router copies

@@ -21,6 +21,16 @@
 
 set -uo pipefail
 
+# THIS SUITE DRIVES THE GATE HOOK, WHICH RUNS gate.sh. So it clears what a
+# pipeline stage exported to it, keeps banners and the dashboard server off for
+# the whole process, and carries the three lines the meta suite's leak census
+# demands of every gate-family suite.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 HOOK="$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"
@@ -530,6 +540,16 @@ case "$reason" in
   *'/digest/gate-digest-'*) ok "거부 문면이 방출 파일 경로를 지목한다" ;;
   *) bad "거부 문면이 방출 파일 경로를 지목한다" "격리 경로가 문면에 없다" ;;
 esac
+# AND THE LINE COMES FIRST. The gate prints the value as the last line of the
+# call's own output, which costs the stage no request; a message that sent it
+# to the file first would keep the read the line exists to remove.
+dl_before_line=${reason%%'[gate-digest]'*}
+dl_before_file=${reason%%/digest/gate-digest-*}
+if [ "$dl_before_line" != "$reason" ] && [ "${#dl_before_line}" -lt "${#dl_before_file}" ]; then
+  ok "거부 문면이 [gate-digest] 줄을 방출 파일보다 먼저 첫째 출처로 이름한다"
+else
+  bad "거부 문면이 [gate-digest] 줄을 방출 파일보다 먼저 첫째 출처로 이름한다" "줄이 없거나 파일 뒤에 있다"
+fi
 if [ "$n_shapes" -ge 2 ]; then
   ok "거부 문면이 게이트로 시작하는 명령을 둘 이상 제시한다 ($n_shapes)"
 else
@@ -610,6 +630,85 @@ assert_no_period_after_fields "CLAUDE.md 거부" "$reason"
 # is not "fixed" into a containment test.
 decide "$(write_json "/tmp/CLAUDE.md.bak")"
 check "이름을 포함하기만 하는 파일은 대상이 아니다" "$dec" "allow"
+
+# ---------------------------------------------------------------------------
+# The suffix arms live in the enforcement-surface classifier
+#
+# The hook sources `enforcement-surfaces.sh` from its own directory at the head
+# and only picks a message per class token, so the gate, the driver and the
+# screening tool classify with the same arms. Asserted three ways: the source
+# line and the glob-free verdict function (structure), the route sentence each
+# deny message carries now (text), and a hook copy whose directory has no
+# classifier refusing an edit it would otherwise allow (absence).
+# ---------------------------------------------------------------------------
+ES_LIB="$(dirname "$HOOK")/enforcement-surfaces.sh"
+if [ -f "$ES_LIB" ] && grep_all_q -E '^\. .*/enforcement-surfaces\.sh"' "$HOOK"; then
+  ok "훅이 자기 디렉터리의 분류기를 파일 머리에서 소싱한다"
+else
+  bad "분류기 소싱" "소싱 줄이나 분류기 파일이 없다"
+fi
+# 소싱 줄이 `hook_suffix_verdict` 의 정의보다 앞에 있어야, 어느 호출도 분류기 없이
+# 돌지 않는다. `hook_self` 에 기대지 않는다는 것도 같은 줄에서 본다.
+es_src_ln=$(awk '/^\. .*\/enforcement-surfaces\.sh"/ { print NR; exit }' "$HOOK")
+es_fn_ln=$(awk '/^hook_suffix_verdict\(\)/ { print NR; exit }' "$HOOK")
+if [ -n "$es_src_ln" ] && [ -n "$es_fn_ln" ] && [ "$es_src_ln" -lt "$es_fn_ln" ] \
+   && ! sed -n "${es_src_ln}p" "$HOOK" | grep_all_q 'hook_self'; then
+  ok "분류기 소싱이 판정 함수보다 앞이고 hook_self 에 기대지 않는다"
+else
+  bad "분류기 소싱 순서" "소싱 줄 ${es_src_ln:-없음}, 판정 함수 ${es_fn_ln:-없음}"
+fi
+if sed -n '/^hook_suffix_verdict()/,/^}/p' "$HOOK" | grep_all_q -F '*/'; then
+  bad "판정 함수에 글롭이 없다" "hook_suffix_verdict 본문에 '*/' 가 남아 있다"
+else
+  ok "판정 함수 본문에 글롭이 없다 (토큰으로만 문면을 고른다)"
+fi
+# 세 거부 문면은 지금 문면을 그대로 앞에 두고 길 안내만 덧붙인다.
+es_route='implement-unattended puts the edit in a `Step 3 강제 표면 좌석 적용` halt record'
+for es_case in \
+    "/a/repo/plugins/cc-cmds/orchestrator/rules/x.sh|gate: the rule catalog is an enforcement surface — editing a rule is not the work of a run" \
+    "/a/repo/.claude/settings.json|gate: project-scope settings are the hook installation channel and therefore an enforcement surface — they cannot be edited in this run" \
+    "/a/repo/.claude/settings.local.json|gate: project-scope settings are the hook installation channel and therefore an enforcement surface — they cannot be edited in this run" \
+    "/a/repo/docs/transcripts/t.md|gate: session transcripts are the approval-reading channel and therefore an enforcement surface"; do
+  es_p=${es_case%%|*}; es_old=${es_case#*|}
+  decide "$(write_json "$es_p")"
+  reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+  check "강제 표면 쓰기는 거부된다: ${es_p#/a/repo/}" "$dec" "deny"
+  case "$reason" in
+    "$es_old"*"$es_route"*) ok "거부 문면이 옛 문면을 앞에 두고 좌석 적용 안내를 덧붙인다: ${es_p#/a/repo/}" ;;
+    *) bad "강제 표면 거부 문면" "'$reason'" ;;
+  esac
+  case "$reason" in
+    *orchestrator*) bad "새 거부 문면에 orchestrator 낱말이 없다" "'$reason'" ;;
+    *) ok "새 거부 문면에 orchestrator 낱말이 없다: ${es_p#/a/repo/}" ;;
+  esac
+done
+decide "$(write_json "$HOME/dev/cc-cmds/CLAUDE.md")"
+reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+case "$reason" in
+  *"$GATE exec"*"$es_route"*'사람 몫 파일'*) ok "CLAUDE.md 거부 문면이 재라우팅 뒤에 추적 파일의 좌석 적용과 사람 몫을 덧붙인다" ;;
+  *) bad "CLAUDE.md 거부 문면의 좌석 적용 안내" "'$reason'" ;;
+esac
+# 분류기가 없는 자리의 훅 사본은 판정할 수 없으므로 거부한다. 대조군으로 분류기를
+# 함께 둔 사본은 같은 평범한 쓰기를 허용해야 한다 — 그래야 위 거부가 사본을 옮긴
+# 탓이 아니라 분류기 부재 탓이다.
+ES_NOLIB="$WORK/hook-nolib"; ES_WITHLIB="$WORK/hook-withlib"
+mkdir -p "$ES_NOLIB" "$ES_WITHLIB"
+cp "$HOOK" "$ES_NOLIB/gate-pretool.sh"
+cp "$HOOK" "$ES_WITHLIB/gate-pretool.sh"; cp "$ES_LIB" "$ES_WITHLIB/enforcement-surfaces.sh"
+for es_dir in "$ES_NOLIB" "$ES_WITHLIB"; do
+  out=$(write_json "$WORK/plain-$$.md" | bash "$es_dir/gate-pretool.sh" --run-dir "$RUN_DIR" --gate "$GATE" \
+          --ledger "$LEDGER" --grant "$GRANT" --manifest "$MANIFEST" 2>/dev/null)
+  dec=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)
+  if [ "$es_dir" = "$ES_NOLIB" ]; then
+    check "분류기가 없는 훅 사본은 평범한 쓰기도 거부한다" "$dec" "deny"
+    case "$out" in
+      *'enforcement surface classifier'*'cannot judge is not allow'*) ok "그 거부가 분류기 부재의 것이다" ;;
+      *) bad "분류기 부재 사유" "'$out'" ;;
+    esac
+  else
+    check "대조군: 분류기를 함께 둔 훅 사본은 같은 쓰기를 허용한다" "$dec" "allow"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # The rollback sources — baseline copies and per-version history
@@ -724,6 +823,11 @@ decide_stage 'S2#4' "$(write_json "$RUN_DIR/halt/S2#3.md")"
 check "앞 시도의 이름 halt/S2#3.md 도 거부된다" "$dec" "deny"
 decide "$(write_json "$RUN_DIR/halt/S2.md")"
 check "스테이지 id 가 없는 호출자의 halt/S2.md 는 예전처럼 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+# 강제 표면 탐지 — 스테이지는 고정 사본의 스크립트를 띄울 수 없으므로 게이트의 읽기
+# 동사로 탐지 도구에 닿는다. 피연산자가 강제 표면 경로여도 아무것도 쓰지 않는 읽기라
+# 거부되지 않는다.
+decide_stage 'S2#4' "$(bash_json "$GATE surface-screen --manifest $MANIFEST -- CLAUDE.md .claude/settings.json plugins/cc-cmds/orchestrator/rules/r.sh")"
+check "스테이지의 surface-screen 호출은 강제 표면 피연산자가 있어도 허용된다" "$dec" "allow"
 
 # ---------------------------------------------------------------------------
 # 8. 라우터 입력 디렉터리 — cc-lane 설정·상태 디렉터리와 페이싱 디렉터리

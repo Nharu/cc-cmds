@@ -37,6 +37,10 @@
 #   10. `cc-run-kickoff v1` is in the header table, in the `### 2b.6` fence and
 #       in autopilot, and `### 2b.6` names every terminal stage.
 #   11. The `reader=` of the `### 2b.5` fence does not name the morning report.
+#   12. The `### ` sub-block headings under `## 시각 방향` inside the fence are
+#       the ones the visual sidecar reference's record example shows, in
+#       order, and every bold key of that section is in the 5j zone — when
+#       the fence carries that section.
 #
 # A zone runs from the line that opens it to the next line matching
 # `^\*\*5[a-z]( |\(|—)` or `^#{1,4} ` outside a code fence.
@@ -66,6 +70,9 @@ AP="$skills_root/autopilot/SKILL.md"
 # token stay in the resident body.
 APB="$skills_root/autopilot/references/boundaries.md"
 DDU="$skills_root/design-discuss-unattended/SKILL.md"
+# The grammar `visual-config.sh snapshot` reads for the two visual sub-blocks.
+VSC="$skills_root/visual/references/sidecar.md"
+VIS_HEAD='## 시각 방향'
 
 KICKOFF_TOKEN='cc-run-kickoff v1'
 TERMINALS='기동 직전
@@ -147,7 +154,13 @@ T1=$(printf '%s\n' "$prev_line" | { grep -o 'cc-run-interview v[0-9][0-9]*' || t
 K=$(printf '%s\n' "$fence5" | block '## 배포 형상' | sed -n 's/^\*\*\([^*]*\)\*\*:.*/\1/p')
 B=$(printf '%s\n' "$fence5" | block '## 확인된 요구' | sed -n 's/^\*\*\([^*]*\)\*\*:$/\1/p')
 
-for f in "$AP" "$APB" "$DDU" "$RI"; do
+VIS=$(printf '%s\n' "$fence5" | block "$VIS_HEAD")
+VS=$(printf '%s\n' "$VIS" | { grep '^### ' || true; })
+VK=$(printf '%s\n' "$VIS" | sed -n 's/^\*\*\([^*]*\)\*\*:.*/\1/p')
+
+compared="$AP $APB $DDU $RI"
+[[ -z "$VIS" ]] || compared="$compared $VSC"
+for f in $compared; do
   [[ -f "$f" ]] || { echo "FAIL: $f — 없다 ; 절 목록을 대조할 쪽이 사라졌다" >&2; fail=1; }
 done
 if [[ "$fail" != "0" ]]; then
@@ -242,9 +255,24 @@ done <<< "$TERMINALS"
 has 'morning report' "$(grep 'reader=' <<< "$fence5" || true)" \
   && flag 11 "$PS" "### 2b.5 울타리의 reader= 가 morning report 를 읽는 쪽으로 적는다"
 
+# --- 12. The visual sub-blocks match the visual sidecar's example -----------
+# A contract without the visual section has nothing here to compare.
+if [[ -z "$VIS" ]]; then
+  :
+elif [[ -z "$VS" ]]; then
+  flag 12 "$PS" "### 2b.5 울타리의 $VIS_HEAD 아래에 ### 하위 블록 표제가 없다"
+else
+  VE=$(zone "$VSC" '## 6. ' | fence_of | block "$VIS_HEAD" | { grep '^### ' || true; })
+  [[ "$VS" == "$VE" ]] || flag 12 "$VSC" "하위 블록 표제 「$(join_list "$VE")」 이 계약 「$(join_list "$VS")」 과 다르다"
+fi
+while IFS= read -r k; do
+  [[ -n "$k" ]] || continue
+  has "**$k**" "$z5j" || flag 12 "$AP" "5j 구역이 시각 방향 키 **$k** 를 부르지 않는다"
+done <<< "$VK"
+
 if [[ "$fail" != "0" ]]; then
   echo "lint-interview-record-sections: violations found" >&2
   exit 1
 fi
-echo "OK:   interview record sections — 계약 $(printf '%s\n' "$C" | grep -c .)절, 쓰는 쪽·읽는 쪽 v2·v1 목록이 계약과 같다"
+echo "OK:   interview record sections — 계약 $(printf '%s\n' "$C" | grep -c .)절, 쓰는 쪽·읽는 쪽의 현재·이전 버전 목록과 시각 하위 블록이 계약과 같다"
 exit 0

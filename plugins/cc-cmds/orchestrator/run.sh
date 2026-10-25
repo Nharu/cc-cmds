@@ -87,6 +87,24 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/liveness.sh"
 
+# The enforcement-surface classifier, for the `강제 표면` field of a planned
+# segment row. Sourced in a child shell, as the gate's `gate_es` does, so the
+# hook's library adds nothing to this file's top level; a library that cannot
+# be loaded stamps `판정불가`, never `없음`.
+run_surface_stamp() {  # run_surface_stamp [<declared path>…]
+  local v
+  if v=$(
+      # shellcheck source=/dev/null
+      . "$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh" 2>/dev/null || exit 2  # lint-harness-global-collisions: child-shell
+      command -v es_stamp >/dev/null 2>&1 || exit 2
+      es_stamp "$@"
+    ) && [ -n "$v" ]; then
+    printf '%s' "$v"
+  else
+    printf '%s' '판정불가'
+  fi
+}
+
 # The account router. Its top level is function definitions and guarded
 # `readonly` constants only, because the gate sources this file on every entry
 # and inherits whatever the router puts at top level. This driver calls
@@ -271,6 +289,8 @@ readonly LIT_RECONVERGE_TERMINAL='재수렴을 종료합니다. 판정은 여기
 readonly LIT_DESIGN_TERMINAL='설계 문서를 동결했습니다.'
 # The last line of the base split stage (`design-base-unattended --split`).
 readonly LIT_SPLIT_TERMINAL='베이스 분할을 마쳤습니다.'
+# The last line of the run-scope visual stage (`visual-unattended`).
+readonly LIT_VISUAL_TERMINAL='시각 디자인을 검토 통과로 확정했습니다.'
 
 # ---------------------------------------------------------------------------
 # Logging. Redirection is not about survival — a driver without it survives a
@@ -933,7 +953,7 @@ manifest_autoadopt_rows() {
 }
 
 # ---------------------------------------------------------------------------
-# The judgment-class vocabulary — twelve values, closed, four of them named and
+# The judgment-class vocabulary — thirteen values, closed, five of them named and
 # forbidden.
 #
 # It is NOT `자율 승인.kind`. That field has never carried a classification: its
@@ -968,15 +988,21 @@ manifest_autoadopt_rows() {
 # unbounded), and a second `재수렴` to the same halt record after the first one
 # was re-converged still goes to a person.
 #
-# `사람-결정` is forbidden for a different reason than the other three. They
-# hand a risk to the user; this one is a question only a person answers. It sits
-# in the forbidden list so that every check that already refuses by membership —
-# `check_manifest` rule 11, `gate_autoadopt_ok`, kickoff-defaults — refuses a
-# `자동 채택` row of it unchanged, and `JUDGMENT_CLASSES_PERSON` names it apart
-# so the gate can HOLD such an approval at `대기` instead of refusing it at issue.
-readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈 사람-결정"
-readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격 사람-결정"
-readonly JUDGMENT_CLASSES_PERSON="사람-결정"
+# `사람-결정` and `시각-승인` are forbidden for a different reason than the other
+# three. They hand a risk to the user; these two are questions only a person
+# answers. They sit in the forbidden list so that every check that already
+# refuses by membership — `check_manifest` rule 11, `gate_autoadopt_ok`,
+# kickoff-defaults — refuses a `자동 채택` row of them unchanged, and
+# `JUDGMENT_CLASSES_PERSON` names them apart as a SET so the gate can HOLD such
+# an approval at `대기` instead of refusing it at issue. Every reader of the
+# hold, the issue rule and termination clause 2 asks membership of that set
+# (`judgment_class_person`); the reading of an answer — the cited answer, the
+# free-input spend and close, the re-plan bound — belongs to `사람-결정` alone
+# and compares the literal. `시각-승인` differs in one thing: it is closed by the
+# sidecar's implementation-approval predicate, never by a person's free text.
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈 사람-결정 시각-승인"
+readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격 사람-결정 시각-승인"
+readonly JUDGMENT_CLASSES_PERSON="사람-결정 시각-승인"
 
 # THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
 # hole rather than narrowing it. Both used to be a space-padded substring test
@@ -994,6 +1020,14 @@ readonly JUDGMENT_CLASSES_PERSON="사람-결정"
 judgment_class_ok() {
   local t
   for t in $JUDGMENT_CLASSES; do
+    if [ "$t" = "$1" ]; then return 0; fi
+  done
+  return 1
+}
+
+judgment_class_person() {
+  local t
+  for t in $JUDGMENT_CLASSES_PERSON; do
     if [ "$t" = "$1" ]; then return 0; fi
   done
   return 1
@@ -1506,6 +1540,33 @@ EOF
       die "design_scope 가 base 가 아닌데 실행 계획에 split 단계가 있습니다"
     fi
     [ "$bp_n" = "0" ] || die "design_scope 가 base 가 아닌데 「베이스 발행」 행이 있습니다"
+  fi
+  # 16b — the visual step's place in the graph. The night's screens are
+  # generated from the document the audit settled, and every implementation
+  # waits for them, so a plan that puts the visual step anywhere else is
+  # refused while a person can still fix it: more than one visual step (which
+  # sidecar would each write?), a visual step that does not depend on the audit
+  # step — on the design step when the plan has no audit — and an implement
+  # step that does not depend on the visual step.
+  local vs_n vs_why
+  vs_n=$(manifest_plan_json 2>/dev/null \
+           | jq -r '[.steps[]? | select(type == "object" and .skill == "visual")] | length' 2>/dev/null || true)
+  if [ "${vs_n:-0}" -gt 1 ]; then
+    die "실행 계획에 skill 이 visual 인 단계가 ${vs_n}개입니다 — 시각 단계는 많아야 하나입니다"
+  fi
+  if [ "${vs_n:-0}" = "1" ]; then
+    vs_why=$(manifest_plan_json | jq -r '
+      [.steps[]? | select(type == "object")] as $s
+      | ($s | map(select(.skill == "visual")) | .[0]) as $v
+      | ($s | map(select(.skill == "design-audit")) | map(.id)) as $a
+      | ($s | map(select(.skill == "design")) | map(.id)) as $d
+      | (if ($a | length) > 0 then $a elif ($d | length) > 0 then $d else [] end) as $need
+      | if ($need | length) > 0 and ((($v.depends_on // []) | map(select(. as $x | $need | index($x))) | length) == 0)
+        then "시각 단계 \($v.id) 의 depends_on 이 \(if ($a | length) > 0 then "감사" else "설계" end) 단계(\($need | join(", ")))를 담지 않습니다"
+        else ([$s[] | select(.skill == "implement") | select(((.depends_on // []) | index($v.id)) == null) | .id] as $free
+              | if ($free | length) > 0 then "구현 단계 \($free | join(", ")) 이 시각 단계 \($v.id) 에 기대지 않습니다" else "" end)
+        end' 2>/dev/null || printf '시각 단계를 읽을 수 없습니다')
+    [ -z "$vs_why" ] || die "실행 계획의 시각 단계 그래프가 어긋났습니다 — ${vs_why}"
   fi
   # `베이스 설계` binds a child run to its base. Its form is checked here; the
   # file it names is the child's design stage's to read.
@@ -2075,8 +2136,19 @@ slice_ids() { slicing_body "$1" | sed -n 's/^### 슬라이스 \([A-Za-z0-9][A-Za
 
 slice_field() {
   # slice_field <doc> <id> <key>
+  # The id must end where the heading's id ends: a bare prefix match lets
+  # `### 슬라이스 B` open the block of an earlier `### 슬라이스 B0 — …`.
+  # The character after the id is tested with index(), not a regex: macOS awk
+  # counts substr() in bytes but matches regexes on wide characters, so a lone
+  # UTF-8 lead byte cut off before `—`, `·` or a Hangul syllable aborts it.
+  # An empty next character (the line ends with the id) is tested on its own,
+  # since awks disagree on what index() returns for an empty needle.
   slicing_body "$1" | awk -v id="### 슬라이스 $2" -v key="$3" '
-    index($0, id) == 1 { inb = 1; next }
+    BEGIN { idch = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" }
+    index($0, id) == 1 {
+      c = substr($0, length(id) + 1, 1)
+      if (c == "" || index(idch, c) == 0) { inb = 1; next }
+    }
     inb && /^### /     { exit }
     inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
   '
@@ -2606,6 +2678,20 @@ EOF
         warn "슬라이스 $id: 리뷰 정책 '$v' 이 대상 '$sl_al' 의 상한 '$sl_ceil' 을 넘습니다"
         return 1
       fi
+    fi
+    # `화면` is OPTIONAL: `없음`, or screen ids `[a-z0-9-]+` joined by `, `. Only
+    # the shape is checked here — whether an id names a screen of the sidecar is
+    # the dispatch site's question. The rule sits outside the `base` guard
+    # because the gate's slicing check calls this function in `base` mode and
+    # carries its first defect line; inside the guard the gate would never see
+    # a malformed value, and the two checkers would read two grammars.
+    v=$(slice_field "$doc" "$id" '화면')
+    if [ -n "$v" ] && [ "$v" != "없음" ]; then
+      printf '%s\n' "$v" | awk '{
+          n = split($0, part, /, /)
+          for (i = 1; i <= n; i++) if (part[i] !~ /^[a-z0-9-]+$/) exit 1
+        }' \
+        || { warn "슬라이스 $id: 화면이 '없음' 이나 쉼표 + 공백으로 나눈 [a-z0-9-]+ 화면 id 목록이 아님: '$v'"; return 1; }
     fi
     # `잔여 항목` is OPTIONAL, and `없음` says the slice owns no item. Otherwise
     # every element it names has to be a verbatim heading of the residual
@@ -3283,7 +3369,7 @@ run_ledger_series_check() {
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
-  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
+  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
   case "$series" in
@@ -3379,7 +3465,7 @@ run_ledger_series_check() {
   # holds on the row without leaning on how the router happens to behave today.
   case "$series:$basis" in
     stage-lease:single-seat|stage-lease:shift-seat-fallback) seat=1 ;;
-    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room) bound=1 ;;
+    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room|stage-wait:resume-bound-borrowed) bound=1 ;;
   esac
   if [ "$series" = "stage-lease" ]; then
     if { [ "$seat" = "1" ] && [ "$acct" != "-" ]; } || { [ "$seat" = "0" ] && [ "$acct" = "-" ]; }; then
@@ -5538,14 +5624,17 @@ readonly PARK_CAUSES="막힘|무효화|불명|거절 소진"
 park() {
   # park <target> <scope> <cause> <reason> <observed> [<resume command>]
   #      [<anchor segment>] [<basis>] [<issue url>] [<unmet predecessors>]
-  # The seventh to tenth fields are written only when given, so a call with
+  #      [<re-kickoff cause>]
+  # The seventh to eleventh fields are written only when given, so a call with
   # six arguments writes the same bytes it always did. The anchor is what a
   # cone reader matches on; the basis carries a deadline park's lineage or a
   # residual park's class; the issue is the one a `리뷰 잔여` park filed; the
   # unmet predecessors, comma-joined, mark a dependency park and are what the
   # gate's `P0잔존` selector reads — the free sentence in `관측` is never parsed.
+  # The re-kickoff cause is the token `run_end_park_cause` hands the end row
+  # when the walk ends on this park.
   local target="$1" scope="$2" cause="$3" reason="$4" observed="$5" recmd="${6:-(없음)}"
-  local anchor="${7:-}" basis="${8:-}" issue="${9:-}" unmet="${10:-}"
+  local anchor="${7:-}" basis="${8:-}" issue="${9:-}" unmet="${10:-}" rekick="${11:-}"
   local -a extra=()
   case " $PARK_SCOPES " in *" $scope "*) : ;; *) die "park 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;; esac
   case "|$PARK_CAUSES|" in *"|$cause|"*) : ;; *) die "park 원인을 지명하지 못했다: '$cause' (대상 $target)" ;; esac
@@ -5553,6 +5642,7 @@ park() {
   [ -z "$basis" ] || extra+=("근거=$basis")
   [ -z "$issue" ] || extra+=("이슈=$issue")
   [ -z "$unmet" ] || extra+=("미완 선행=$unmet")
+  [ -z "$rekick" ] || extra+=("재킥 원인=$rekick")
   ledger_row 'blocked' "대상=$target" "스코프=$scope" "원인=$cause" \
     "사유=$reason" "관측=$observed" "재개 명령=$recmd" ${extra[@]+"${extra[@]}"}
   report_append "보류" "$target — [$scope/$cause] $reason — $observed"
@@ -6162,6 +6252,7 @@ stage_kind_of() {
     S1design) printf 'design'; return 0 ;;
     S2)       printf 'audit'; return 0 ;;
     S2split)  printf 'split'; return 0 ;;
+    S2V)      printf 'visual'; return 0 ;;
     S4)       printf 'implement'; return 0 ;;
     S5|S5R)   printf 'review'; return 0 ;;
     S5F)      printf 'lead-fix'; return 0 ;;
@@ -6171,6 +6262,7 @@ stage_kind_of() {
     *split*)                printf 'split' ;;
     *design-audit*|*audit*) printf 'audit' ;;
     *reconverge*)           printf 'reconverge' ;;
+    *visual*)               printf 'visual' ;;
     *design*)               printf 'design' ;;
     *implement*)            printf 'implement' ;;
     *review*)               printf 'review' ;;
@@ -6898,6 +6990,35 @@ split_registry_complete() {
 }
 
 predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && split_registry_complete "$DOC"; }
+
+# THE VISUAL STAGE'S ARTIFACT IS ITS SIDECAR at `검토 통과`, crossed with the
+# stage's terminal literal for the same reason. The sidecar is found the way
+# every visual skill and `visual-check.sh` find it: the document key is the
+# path relative to the document's repository top, the slug is that key without
+# `.md` with `/` spelled `-`, and the base is the repository's common git
+# directory's parent, so a segment worktree and the main checkout name one file.
+visual_sidecar_path() {
+  # visual_sidecar_path <document path>
+  local doc="$1" dir top gcd key
+  [ -n "$doc" ] && [ -f "$doc" ] || return 1
+  dir=$(cd "$(dirname "$doc")" && pwd -P) || return 1
+  top=$(cd "$dir" && git rev-parse --show-toplevel 2>/dev/null) || return 1
+  top=$(cd "$top" && pwd -P) || return 1
+  key="$dir/$(basename "$doc")"
+  key=${key#"$top"/}
+  gcd=$(cd "$dir" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  printf '%s/docs/visual/%s.md' "$(dirname "$gcd")" "$(printf '%s' "${key%.md}" | tr '/' '-')"
+}
+
+visual_sidecar_reviewed() {
+  # visual_sidecar_reviewed <document path> — 0 when the sidecar's state line
+  # reads `검토 통과`.
+  local sc
+  sc=$(visual_sidecar_path "$1") || return 1
+  grep -qxF '**상태**: 검토 통과' "$sc" 2>/dev/null
+}
+
+predicate_visual() { grep -qF "$LIT_VISUAL_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && visual_sidecar_reviewed "$DOC"; }
 
 predicate_implement_share() {
   # predicate_implement_share <branch> <pre_head> <segment> [<dispatch id>]
@@ -8325,6 +8446,26 @@ merge_gate() {
       "gh -R $slug pr merge $pr"
     return 2
   fi
+  # THE ENFORCEMENT-SURFACE PROVENANCE, THE GATE'S OWN FUNCTION. This merge does
+  # not go through the gate's merge act, so the check that act makes is called
+  # here, right before the one call that lands the branch.
+  local sp_out sp_rc=0
+  sp_out=$(run_gate_call gate_surface_provenance "$seg" "$al" 2>/dev/null) || sp_rc=$?
+  # 3 is a surface that changed outside a seat apply; any other non-zero status
+  # is a check that could not be decided, and the park says which.
+  if [ "$sp_rc" != "0" ]; then
+    sp_out=$(printf '%s' "${sp_out:-(판정 불가 rc=$sp_rc)}" | tr '\t\n' ' ;')
+    if [ "$sp_rc" = "3" ]; then
+      park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+        "좌석 적용 밖에서 바뀐 강제 표면 — ${sp_out:0:300}" \
+        "gh -R $slug pr merge $pr"
+    else
+      park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+        "강제 표면 출처 판정 불가 — ${sp_out:0:300}" \
+        "gh -R $slug pr merge $pr"
+    fi
+    return 2
+  fi
   gh_q "$slug" pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null || {
     park "$seg" act 막힘 "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr merge $pr"
     return 2
@@ -9259,6 +9400,11 @@ PROMPT_DIR="$ORCH_DIR/prompts"
 
 readonly JUDGMENTS="segment-plan triage redesign-impact preauth-judge rekick-branch"
 
+# THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY JUDGMENT CALL. A judgment call
+# runs with no `--settings`, so the stage settings' deny list does not reach it;
+# the names go on the call line itself, for all five names alike.
+readonly CLAUDE_DESIGN_TOOLS="DesignSync Artifact ArtifactComments ArtifactData"
+
 judgment_call() {
   # judgment_call <name> <input-file> [<output-file> [<prefix>...]] — prompt and
   # schema are found by convention: <name>.md and <name>.schema.json beside this
@@ -9298,6 +9444,7 @@ judgment_call() {
 --- INPUT ---
 $(cat "$input")" \
     --json-schema "$(cat "$schema")" --output-format json --strict-mcp-config \
+    --disallowedTools $CLAUDE_DESIGN_TOOLS \
     ${extra[@]+"${extra[@]}"} \
     $(stage_launch_flags "$name") \
     > "$out" 2>/dev/null || { warn "판단 호출 실패: $name"; return 1; }
@@ -9490,9 +9637,10 @@ $(sed 's/#.*//' "$sib")"
   # tree every run loads is a MERGE, and that is what the permission cutpoint
   # governs. So the assertions below are that the two mechanisms still have the
   # shape this exception was registered against, not that the files are covered.
-  local orch_ex=0 gate_file hook_file n_all n_rules n_rec
+  local orch_ex=0 gate_file hook_file es_file n_all
   gate_file="$ORCH_DIR/gate.sh"
   hook_file="$(dirname "$ORCH_DIR")/hooks/gate-pretool.sh"
+  es_file="$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh"
   if [ -f "$gate_file" ]; then
     n_all=$(sed -n '/^gate_surface_digest_raw()/,/^}/p' "$gate_file" | sed 's/#.*//' \
             | grep -cE 'ORCH_DIR|orchestrator' || true)
@@ -9506,10 +9654,34 @@ $(sed 's/#.*//' "$sib")"
     printf 'FAIL 게이트 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$gate_file"
     orch_ex=$((orch_ex + 1))
   fi
-  if [ -f "$hook_file" ]; then
-    # Every mention of the orchestrator in the hook must BE the rule-catalog arm.
-    # A count comparison rather than a pattern match: it fails the moment an arm
-    # is widened, which a "does the rules arm exist" check would not.
+  self_check_surface_mentions "$hook_file" "$es_file" || orch_ex=$((orch_ex + $?))
+  fails=$((fails + orch_ex))
+
+  if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
+  printf 'self-check: %s FAIL\n' "$fails"; return 1
+}
+
+self_check_surface_mentions() {
+  # self_check_surface_mentions <hook file> <classifier file> — the self-check's
+  # assertions on where the orchestrator is mentioned in the hook and the
+  # enforcement-surface classifier. Prints one `ok`/`FAIL` line per assertion
+  # and returns the number of FAIL lines. A function of its own so a test can
+  # point it at a mutated pair without running the whole self-check once per
+  # mutation.
+  local hook_file="$1" es_file="$2" orch_ex=0 n_all n_rules n_rec
+  if [ -f "$hook_file" ] && [ -f "$es_file" ]; then
+    # Every mention of the orchestrator in the hook's deny list must BE the
+    # rule-catalog arm. A count comparison rather than a pattern match: it fails
+    # the moment an arm is widened, which a "does the rules arm exist" check
+    # would not.
+    #
+    # THE ARMS LIVE IN THE CLASSIFIER NOW, NOT IN THE HOOK. The hook sources
+    # `enforcement-surfaces.sh` and picks only a message per class token, so the
+    # count moved with the globs: the hook itself must mention the orchestrator
+    # nowhere, and in the classifier every mention must be the rule-catalog
+    # glob, at least once. Checking only the hook would pass vacuously on the
+    # day the glob moved out of it, and a widening written into the classifier
+    # is exactly what this assertion exists to catch.
     #
     # OCCURRENCES, NOT LINES. `grep -c` counts matching LINES, and the widening
     # this assertion exists to catch does not need a new line: an arm widened in
@@ -9534,22 +9706,27 @@ $(sed 's/#.*//' "$sib")"
     n_all=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator' | grep -c . || true)
     n_rec=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator-dir' | grep -c . || true)
     n_all=$(( ${n_all:-0} - ${n_rec:-0} ))
-    n_rules=$(sed 's/#.*//' "$hook_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
+    if [ "${n_all:-0}" = "0" ]; then
+      printf 'ok   훅 자신에는 오케스트레이터 언급이 없다 (거부 팔은 분류기에 있다)\n'
+    else
+      printf 'FAIL 훅의 orchestrator 언급 %s건 — 거부 팔은 분류기에만 있어야 하므로 등재된 예외의 문면과 어긋난다\n' \
+        "${n_all:-0}"
+      orch_ex=$((orch_ex + 1))
+    fi
+    n_all=$(sed 's/#.*//' "$es_file" | grep -o 'orchestrator' | grep -c . || true)
+    n_rules=$(sed 's/#.*//' "$es_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
     if [ "${n_rules:-0}" -ge 1 ] && [ "${n_all:-0}" = "${n_rules:-0}" ]; then
       printf 'ok   등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다 (거부되는 것은 룰 카탈로그뿐)\n'
     else
-      printf 'FAIL 훅의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
+      printf 'FAIL 분류기의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
         "${n_all:-0}" "${n_rules:-0}"
       orch_ex=$((orch_ex + 1))
     fi
   else
-    printf 'FAIL 훅 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$hook_file"
+    printf 'FAIL 훅 파일이나 분류기 파일이 없어 등재된 예외를 확인할 수 없다: %s %s\n' "$hook_file" "$es_file"
     orch_ex=$((orch_ex + 1))
   fi
-  fails=$((fails + orch_ex))
-
-  if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
-  printf 'self-check: %s FAIL\n' "$fails"; return 1
+  return "$orch_ex"
 }
 
 # ---------------------------------------------------------------------------
@@ -10069,6 +10246,21 @@ merge_head_is_reviewed() {
   [ -n "$ht" ] && [ "$ht" = "$rt" ]
 }
 
+dispatch_surface_note() {
+  # dispatch_surface_note <segment> — ` · 강제 표면: <경로> (<분류>), …` and
+  # ` · 좌석 적용 커밋: <sha> (<경로>, …); …` for an implement dispatch line,
+  # each left out when its value is `없음`. The gate's two functions compute
+  # them, the same ones its snapshot prints for a routing shift to copy, so a
+  # fresh session learns which declared paths only a seat apply commits and
+  # which commits on its branch the gate made.
+  local sp sc out=''
+  sp=$(run_gate_call gate_segment_surface_paths "$1" 2>/dev/null) || sp=''
+  case "$sp" in ''|'없음') : ;; *) out=" · 강제 표면: $sp" ;; esac
+  sc=$(run_gate_call gate_segment_seat_commits "$1" 2>/dev/null) || sc=''
+  case "$sc" in ''|'없음') : ;; *) out="$out · 좌석 적용 커밋: $sc" ;; esac
+  printf '%s' "$out"
+}
+
 segment_cycle() {
   local seg="$1" files="$2"
   local branch="seg/$SLUG-$seg" wt pre_head cap cycle=0 al seg_repo prev_rp="" converged=0
@@ -10244,7 +10436,7 @@ segment_cycle() {
       local fix_target=""
       [ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"
       [ -z "$cap_rp" ] || fix_target=" · 수정 대상: $cap_rp 의 P0·P1"
-      prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$fix_target\""
+      prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\""
       STAGE_RESUME=""
       # THE KEY A JUDGMENT THIS DISPATCH EMITS IS FILED UNDER. The dispatch id,
       # so the open-judgment check in `continue_or_park` sees this stage's
@@ -10352,7 +10544,7 @@ segment_cycle() {
       fileset_escape "$seg" "$files" "$wt" || return 1
       stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
-      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$fix_target\""
+      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\""
       case "$(terminal_route_class "$class")" in
         '정상 완료') : ;;
         '의도된 park')
@@ -10414,7 +10606,7 @@ segment_cycle() {
           # crash.
           log "$seg: $class — 1회만 재시도"
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$fix_target\"" \
+               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\"" \
                crash-retry "크래시 2회" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -10434,7 +10626,7 @@ segment_cycle() {
           # `limit-reclaim` is what leaves the exhausted account out; any other
           # event would sit this lineage back on the account the reap ran from.
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$fix_target\"" \
+               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\"" \
                limit-reclaim "한도-형상 회수 후 재파견" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -11840,6 +12032,115 @@ split_arm() {
 }
 
 # ---------------------------------------------------------------------------
+# S2V — the run-scope visual stage, and the screen slices that wait on it.
+#
+# THE NIGHT'S SCREENS ARE GENERATED AFTER THE AUDIT AND BEFORE THE PLAN. The
+# stage is the plan's single `visual` step; the manifest check already refused
+# a plan with more than one, or with one placed anywhere else. It builds no
+# segment, so its row carries `세그먼트=-`, and its predicate is the terminal
+# literal together with the document's visual sidecar at `검토 통과`.
+#
+# A VISUAL STAGE THAT DID NOT FINISH HOLDS ONLY THE SCREEN SLICES. Nothing here
+# parks the run: what a screen slice needs is a person's implementation
+# approval at the fixed seat, and the walk asks that predicate of every screen
+# slice whether the stage finished or not. A slice that touches no screen is
+# planned and dispatched as if the step were not there.
+#
+# THE DRIVER HAS NO JUDGMENT PATH, SO IT RAISES NO QUESTION. A screen slice
+# whose approval does not hold is parked before its branch or worktree is cut,
+# with `재킥 원인=시각승인대기`; its followers park on the dependency guard. The
+# run then ends as usual, and the morning's carry is a new kickoff of the same
+# document.
+# ---------------------------------------------------------------------------
+manifest_has_visual_step() {
+  [ -n "${MANIFEST:-}" ] || return 1
+  [ "$(manifest_plan_json 2>/dev/null \
+        | jq -r '[.steps[]? | select(type == "object" and .skill == "visual")] | length' 2>/dev/null \
+        || true)" = "1" ]
+}
+
+slice_is_screen() {
+  # slice_is_screen <doc> <slice id> — a slice whose `**화면**` lists screen
+  # ids, or one that carries no `**화면**` while the plan has a visual step or
+  # the document has a visual sidecar: a slice that does not say waits for
+  # every screen. `없음` never waits.
+  local v sc
+  v=$(slice_field "$1" "$2" '화면')
+  case "$v" in
+    없음) return 1 ;;
+    '')
+      manifest_has_visual_step && return 0
+      sc=$(visual_sidecar_path "$1" 2>/dev/null) || return 1
+      [ -f "$sc" ] ;;
+    *) return 0 ;;
+  esac
+}
+
+visual_approval_why() {
+  # visual_approval_why — 0 when the document's visual sidecar carries the
+  # implementation approval. Prints the helper's first line either way, so a
+  # park can say why it waits.
+  local out rc=0
+  [ -n "${DOC:-}" ] || { printf '승인 없음 — 이 런에 설계 문서가 없다'; return 1; }
+  out=$(bash "$ORCH_DIR/visual-check.sh" approval "$DOC" 2>&1) || rc=$?
+  printf '%s' "$(printf '%s\n' "$out" | sed -n 1p)"
+  [ "$rc" = "0" ]
+}
+
+visual_arm() {
+  local plugin_dir skill_file cmd src rc pred class acct prior prior_class om ro re
+  manifest_has_visual_step || return 0
+  plugin_dir=$(cd "$ORCH_DIR/.." && pwd)
+  skill_file="$plugin_dir/skills/visual-unattended/SKILL.md"
+  if [ ! -f "$skill_file" ]; then
+    report_append "시각" "$skill_file 가 없다 — 시각 단계를 띄우지 않았고, 화면 슬라이스는 승인 술어로만 판단한다"
+    return 1
+  fi
+  prior=$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2V |' || true; } | tail -1)
+  if [ -n "$prior" ]; then
+    prior_class=$(printf '%s' "$prior" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if [ "$prior_class" = "정상 완료" ] && visual_sidecar_reviewed "$DOC"; then
+      log "S2V 건너뜀 — 이 런의 시각 단계가 이미 끝났고 사이드카가 검토 통과다 ($DOC_KEY)"
+      return 0
+    fi
+    report_append "시각" "이 런의 시각 단계가 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 파견하지 않는다"
+    return 1
+  fi
+  cmd="/cc-cmds:visual-unattended $DOC"
+  src=0
+  rm -f "$RUN_DIR/S2V.rc"
+  quiet_window_begin
+  dispatch_stage S2V "$(alias_root "$(home_alias)")" "$cmd" || src=$?
+  if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+    quiet_window_end
+    report_append "시각" "시각 단계를 띄우지 못했다 — $STAGE_SPAWN_PARK_REASON"
+    return 1
+  fi
+  [ "$src" = "0" ] || (exit "$src")
+  quiet_window_end
+  rc=$(cat "$RUN_DIR/S2V.rc" 2>/dev/null || printf '1')
+  if predicate_visual S2V; then pred=0; else pred=1; fi
+  class=$(classify_termination S2V "$rc" "$pred")
+  acct=$(stage_account_of S2V)
+  om=$(stage_org_moves_of S2V); ro=$(stage_reattach_org_of S2V); re=$(stage_reattach_ctx_of S2V)
+  ledger_row 'stage-result' "세그먼트=-" "스테이지=S2V" "파견 id=S2V" "종류=visual" "종료 코드=$rc" \
+    "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned S2V)" \
+    "세션 id=$(stage_session_id "S2V")" "부모=$(stage_parent_id)" \
+    "압축 창=$(stage_window_of S2V)" "레인=$(stage_lane_of S2V)" ${acct:+"계정=$acct"} \
+    ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
+    "effort=$(stage_effort_rec_of S2V)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2V)")" \
+    "종단 부류=$class" "실패 서명=$(row_signature S2V visual "$class" - -)"
+  absorb_stage_judgment S2V S2V "$(home_alias)"
+  if [ "$pred" = "0" ] && [ "$class" = "정상 완료" ]; then
+    report_append "시각" "밤의 시각 단계 완료 — 화면 슬라이스는 고정 좌석의 구현 승인을 기다린다"
+    spawn_lineage_release S2V
+    return 0
+  fi
+  report_append "시각" "시각 단계가 종단 부류 $class 로 끝났다 — 화면 슬라이스만 기다리고 나머지는 평소대로 간다"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
 # The walk and its single end. The body keeps every `return` it had — the
@@ -12148,6 +12449,10 @@ main_loop_body() {
     return 0
   fi
 
+  # S2V — the plan's visual step, when it has one. Its outcome decides nothing
+  # here: the walk asks every screen slice the approval predicate itself.
+  visual_arm || true
+
   # S3 SEGMENT-PLAN — routed by the three-branch predicate.
   #
   # A field-complete declaration means the SHELL builds the plan and the planner
@@ -12246,6 +12551,18 @@ main_loop_body() {
       park "$seg" cone 무효화 "게이트 park" "선행 슬라이스가 완료되지 않음: $(deps_unmet_desc "$deps" "$morder")" \
         "" "$seg" "" "" "$_unmet"
       parked=$((parked + 1)); continue
+    fi
+    # A SCREEN SLICE WAITS FOR ITS SCREENS' APPROVAL, and is parked before
+    # `segment_cycle` cuts its branch: a branch cut tonight would make the
+    # morning's run adopt it and open with a review instead of planning it.
+    if [ -n "$DOC" ] && slice_is_screen "$DOC" "$seg"; then
+      local _vwhy
+      if ! _vwhy=$(visual_approval_why); then
+        park "$seg" cone 막힘 "시각 승인 대기" \
+          "화면 슬라이스의 화면이 고정 좌석에서 구현 승인되지 않았다 — $_vwhy" \
+          "" "$seg" "" "" "" 시각승인대기
+        parked=$((parked + 1)); continue
+      fi
     fi
     cross_repo_deps "$seg" "$deps" "$morder"
     rc=0
@@ -12390,10 +12707,10 @@ run_plugin_pin_id() {
 
 run_end_park_cause() {
   # The `재킥 원인` of the first slice park in this run that carries one —
-  # `대상미선언` or `슬라이싱` — or nothing.
+  # `대상미선언`, `슬라이싱` or `시각승인대기` — or nothing.
   { run_section_rows 'blocked' || true; } \
     | tr '|' '\n' | sed -n 's/^ *재킥 원인=//p' | sed 's/[[:space:]]*$//' \
-    | { grep -x -e '대상미선언' -e '슬라이싱' || true; } | sed -n 1p
+    | { grep -x -e '대상미선언' -e '슬라이싱' -e '시각승인대기' || true; } | sed -n 1p
 }
 
 run_end_record() {
@@ -12812,6 +13129,12 @@ plan_from_declaration() {
     _rp=$(slice_field "$doc" "$id" '리뷰 정책')
     [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
     _segargs+=( "선언 다이제스트=$(slice_decl_digest "$doc" "$id")" )
+    # `강제 표면` from the declared files, as the gate's `--from-declaration`
+    # stamps it — the same classifier, the same spelling.
+    local -a _sdf=()
+    local _sf
+    while IFS= read -r _sf; do [ -z "$_sf" ] || _sdf+=("$_sf"); done <<<"$(slice_decl_files "$doc" "$id")"
+    _segargs+=( "강제 표면=$(run_surface_stamp ${_sdf[@]+"${_sdf[@]}"})" )
     _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
     ledger_row 'segment' "${_segargs[@]}"
   done
@@ -12858,9 +13181,17 @@ plan_via_planner() {
       "-" >> "$RUN_DIR/plan.tsv"
   done
   plan_dep_floor_or_park || return 1
+  local -a _pdf
+  local _pf
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
+    # The planner does not classify (its prompt says so); the field is stamped
+    # here from the files it declared, as on the slice path.
+    _pdf=()
+    while IFS= read -r _pf; do [ -z "$_pf" ] || _pdf+=("$_pf"); done \
+      <<<"$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files[]? | strings')"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
+      "강제 표면=$(run_surface_stamp ${_pdf[@]+"${_pdf[@]}"})" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
   done
   return 0

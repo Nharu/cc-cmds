@@ -131,7 +131,32 @@
 # required with `--set` in `verify-subset`: each entry must equal one of its
 # `빈칸` rows in scope, key and value, so a value moved to another target or
 # typed differently from the row the person confirmed does not pass. A row's
-# scope is resolved against the previous manifest by the rule `--set` uses.
+# scope is resolved against the previous manifest by the rule `--set` uses. It
+# is required too when the draft holds a `플러그인 허용` row the previous run
+# does not carry.
+#
+# THE `플러그인 허용` ROWS CARRY, judged again at each call. `render-manifest`
+# and `graph` keep each previous row in place, byte for byte, unless its key is
+# now in the seed beside this file or judged not installed in the account
+# directories the kickoff reads; a row whose key cannot be judged, because an
+# account file did not read, is carried, and `render-manifest` names each such
+# row on stderr as `플러그인 알림<TAB>판정 불가 이월<TAB><키><TAB><경로>`.
+# `--rows` may add rows for the plugin defaults 5o confirmed for a blank,
+# `- \`플러그인 허용\` | 플러그인=<키> | 사유=킥오프 기본값`, written before the
+# provenance row; a row of another shape, any such row under `--auto`, and a
+# key given twice or already carried are refused. Any `--rows` still replaces
+# every previous shape and auto-adoption row with its own, so a file that holds
+# plugin rows alone drops them: it carries the previous rows it keeps.
+# `verify-subset` checks them as `플러그인`: a person's draft holds every
+# previous row whose key is on or cannot be judged now, and each other row is a
+# confirmed default — that row shape, a `빈칸` row of `--blank-rows` for the
+# key, the `--asked` key `5o <범위>:plugin-allow=<키>`, the answer
+# `<범위>:plugin-allow=<키>` in the confirmation text, and the key on now. The
+# seat's draft passes where a change of the account set between the two calls
+# explains the difference, each named on stderr as `플러그인 알림<TAB>초안에
+# 남은 미설치 행<TAB><키>`, `플러그인 알림<TAB>초안에서 빠진 켬 행<TAB><키>` or
+# `플러그인 알림<TAB>초안에서 빠진 판정 불가 행<TAB><키><TAB><경로>`; a row
+# that differs from every previous row, or whose key is in the seed, fails.
 #
 # `detect` takes no `<base>`: the kickoff resolves its own `<base>` only after
 # the targets are settled, and this step runs before that. Each candidate's
@@ -340,8 +365,20 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
-            dr_duration_seconds manifest_rekick_rows manifest_adoption_rows slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
+            dr_duration_seconds manifest_rekick_rows manifest_adoption_rows manifest_plugin_allow_rows slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
 done
+
+# The plugin judgment — the functions the kickoff judges its plugin defaults
+# with, over the seed copy beside this file. Every judgment reads account files
+# through jq, so without jq there is no judgment to carry rows by.
+[ -r "$RK_DIR/plugin-isolation.sh" ] || rk_refuse "plugin-isolation.sh 를 읽을 수 없습니다: $RK_DIR/plugin-isolation.sh"
+# shellcheck disable=SC1091
+. "$RK_DIR/plugin-isolation.sh" >/dev/null 2>&1 || rk_refuse "plugin-isolation.sh 를 들여오지 못했습니다"
+for rk_f in pi_kickoff_account_dirs pi_key_state pi_judge pi_seed_keys pi_kickoff_user_keys pi_kickoff_read_fail; do
+  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "plugin-isolation.sh 에 $rk_f 가 없습니다"
+done
+command -v jq >/dev/null 2>&1 || rk_refuse "jq 가 없습니다 — 플러그인 허용 행의 설치 여부를 판정하지 못합니다"
+RK_PI_SEED="$RK_DIR/plugin-allow.seed"
 
 RK_TMP=$(mktemp -d "${TMPDIR:-/tmp}/cc-rekick.XXXXXX" 2>/dev/null) || rk_refuse "개인 임시 디렉터리를 만들지 못했습니다"
 chmod 700 "$RK_TMP" 2>/dev/null || rk_refuse "개인 임시 디렉터리의 권한을 700 으로 두지 못했습니다"
@@ -1910,6 +1947,76 @@ rk_check_manifest() {
 }
 
 # ---------------------------------------------------------------------------
+# Plugin rows. A previous `플러그인 허용` row is carried byte for byte unless its
+# key is now in the seed or judged not installed; a row whose key cannot be
+# judged, because an account file did not read, is carried too. The judgment
+# reads the account directories of this call, so `verify-subset` derives it
+# again instead of taking the render's.
+# ---------------------------------------------------------------------------
+rk_pa_key() { manifest_row_fields "$1" '플러그인' | head -n 1; }
+
+# rk_pa_judge — reads the seed and the account set once, for rk_pa_state.
+rk_pa_judge() {
+  RK_PA_SEEDK=$(pi_seed_keys "$RK_PI_SEED")
+  RK_PA_USERK=$(pi_kickoff_user_keys)
+  RK_PA_FAIL=$(pi_kickoff_read_fail)
+}
+# rk_pa_state <key> — `시드`, `켬`, `미설치` or `판정 불가<TAB><경로>`.
+rk_pa_state() { pi_judge "$RK_PA_SEEDK" "$RK_PA_USERK" "$RK_PA_FAIL" "$1"; }
+
+# rk_plugin_carry — over the current MANIFEST's rows: RK_PA_KEPT the rows that
+# carry, RK_PA_DROP the keys whose rows do not, and RK_PA_UNSURE one
+# `<키><TAB><경로>` per row carried because its key cannot be judged; each
+# newline-separated.
+rk_plugin_carry() {
+  local r k st
+  RK_PA_KEPT=''; RK_PA_DROP=''; RK_PA_UNSURE=''
+  rk_pa_judge
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    k=$(rk_pa_key "$r"); st=$(rk_pa_state "$k")
+    case "$st" in
+      시드|미설치) RK_PA_DROP="$RK_PA_DROP$k
+" ;;
+      *)
+        RK_PA_KEPT="$RK_PA_KEPT$r
+"
+        case "$st" in '판정 불가'*) RK_PA_UNSURE="$RK_PA_UNSURE$k$TAB${st#*"$TAB"}
+" ;; esac ;;
+    esac
+  done <<EOF
+$(manifest_plugin_allow_rows)
+EOF
+}
+
+# rk_plugin_rows <out> — the `플러그인 허용` rows of `--rows`, written to <out>
+# in order; each one is a row a person confirmed at 5o for a blank `--carry`
+# showed. Prints the first refusal and returns 1 for a row of another shape, a
+# row under `--auto` (the seat confirms nothing), and a key given twice or
+# already carried. Reads RK_PA_KEPT.
+rk_plugin_rows() {
+  local out="$1" r k seen=''
+  : > "$out"
+  [ -n "$RK_ROWS" ] || return 0
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$RK_AUTO" != "1" ] || { printf '%s' "--auto 의 --rows 에 플러그인 허용 행이 있습니다 — 좌석은 기본값을 확정하지 않습니다: $r"; return 1; }
+    printf '%s\n' "$r" | grep -qE '^- `플러그인 허용` \| 플러그인=[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+ \| 사유=[^|]*[^ |]$' \
+      || { printf '%s' "--rows 의 플러그인 허용 행 형식이 어긋났습니다: $r"; return 1; }
+    k=$(rk_pa_key "$r")
+    case "$k" in *@inline|*@builtin) printf '%s' "--rows 의 플러그인 허용 행이 $k 를 켭니다 — @inline·@builtin 키는 허용 행으로 다루지 않습니다"; return 1 ;; esac
+    case "$seen" in *" $k "*) printf '%s' "--rows 에 플러그인 $k 의 행이 둘 이상입니다"; return 1 ;; esac
+    seen="$seen $k "
+    printf '%s' "$RK_PA_KEPT" | while IFS= read -r kr; do [ -n "$kr" ] && rk_pa_key "$kr" && printf '\n'; done \
+      | grep -qxF -- "$k" && { printf '%s' "--rows 의 플러그인 $k 는 앞선 런에서 이어 쓰는 행이 이미 있습니다"; return 1; }
+    printf '%s\n' "$r" >> "$out"
+  done <<EOF
+$(grep -E '^- `플러그인 허용`' "$RK_ROWS" 2>/dev/null || true)
+EOF
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # The draft. rk_render <out> <new id> <kickoff at> <deadline> <confirmation>
 # <approval> <previous manifest sha256> <previous grant sha256> — reads the
 # current MANIFEST (the previous run's copy) and the G_* graph values, and the
@@ -1928,15 +2035,21 @@ rk_render() {
   fi
   prov="- \`사전 인가\` | 이어받은 런=$RK_PREV | 매니페스트 sha256=$pmsha | 인가 기록 sha256=$pgsha${RK_PROV_SEAT:-}"
   printf '%s' "$trows" > "$RK_TMP/targets.rows"
+  # Whenever `--rows` is given, its shape and auto-adoption rows replace the
+  # previous ones, none included: the file is the whole set the person kept.
   if [ -n "$RK_ROWS" ]; then
     grep -E '^- `(사전 인가` \| 형태=|자동 채택`|라벨 인정`)' "$RK_ROWS" > "$RK_TMP/shape.rows" 2>/dev/null || : > "$RK_TMP/shape.rows"
   fi
+  rk_plugin_carry
+  printf '%s' "$RK_PA_DROP" > "$RK_TMP/plugin.drop"
+  RK_RENDER_WHY=$(rk_plugin_rows "$RK_TMP/plugin.rows") || return 1
   printf '%s' "$RK_RULES" > "$RK_TMP/rules.kv"
   [ -f "$RK_TMP/sets.tsv" ] || : > "$RK_TMP/sets.tsv"
   R_SETS="$RK_TMP/sets.tsv" R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
   R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
+  R_PADROP="$RK_TMP/plugin.drop" R_PFILE="$( [ -s "$RK_TMP/plugin.rows" ] && printf '%s' "$RK_TMP/plugin.rows")" \
   R_BIND="$RK_BIND" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" \
   awk '
     function field(line,   p) { p = index(line, "**: "); return substr(line, 3, p - 3) }
@@ -1951,6 +2064,7 @@ rk_render() {
       if (sec == "## 인가") {
         if (!rows_done && rfile != "") { while ((getline l < rfile) > 0) print l; close(rfile); rows_done = 1 }
         if (!adopt_done && ENVIRON["R_ADOPT"] != "") { while ((getline l < ENVIRON["R_ADOPT"]) > 0) print l; close(ENVIRON["R_ADOPT"]); adopt_done = 1 }
+        if (!plugin_done && pfile != "") { while ((getline l < pfile) > 0) print l; close(pfile); plugin_done = 1 }
         if (!prov_done) { print ENVIRON["R_PROV"]; prov_done = 1 }
       }
       if (sec == "## 요소" && ENVIRON["R_DOUT"] == "1" && !docsha_done) {
@@ -1975,7 +2089,9 @@ rk_render() {
     }
     BEGIN {
       newid = ENVIRON["R_NEWID"]; tfile = ENVIRON["R_TFILE"]; rfile = ENVIRON["R_RFILE"]
-      planf = ENVIRON["R_PLANF"]; hdr = 1
+      planf = ENVIRON["R_PLANF"]; pfile = ENVIRON["R_PFILE"]; hdr = 1
+      while ((getline l < ENVIRON["R_PADROP"]) > 0) if (l != "") padrop[l] = 1
+      close(ENVIRON["R_PADROP"])
       while ((getline l < ENVIRON["R_RULES"]) > 0) { p = index(l, "="); if (p) rule[substr(l, 1, p - 1)] = substr(l, p + 1) }
       close(ENVIRON["R_RULES"])
       while ((getline l < ENVIRON["R_SETS"]) > 0) {
@@ -2012,10 +2128,13 @@ rk_render() {
     # of this run is one derived again at this call, written when the section
     # closes.
     /^- `세그먼트 입양`/ { next }
-    # The plugin rows of the previous run are never carried either: the person
-    # accepted each one for the work of that run, and the successor stages load
-    # the seed allow-list alone. Dropping a row only narrows the successor.
-    /^- `플러그인 허용`/ { next }
+    # The plugin rows of the previous run are carried in place, byte for byte,
+    # except a row whose key is now in the seed or judged not installed.
+    # Dropping a row only narrows the successor.
+    /^- `플러그인 허용`/ {
+      if (match($0, /플러그인=[^ |]*/) && (substr($0, RSTART + length("플러그인="), RLENGTH - length("플러그인=")) in padrop)) next
+      print; next
+    }
     /^- `사전 인가` \| 인터뷰 기록=/ {
       if (ENVIRON["R_DOUT"] == "1") next
       line = $0; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; next
@@ -2237,12 +2356,22 @@ rk_render_manifest() {
 $(rk_adopt_candidates "$trows" full)
 EOF
   fi
+  RK_RENDER_WHY=''
   rk_render "$RK_TMP/draft.md" "$RK_NEWID" "$RK_KAT" "$RK_DEADLINE" "$confirm" "$approval" "$RK_XSHA" "$RK_XGSHA" \
-    || rk_fail "매니페스트 초안을 그리지 못했습니다"
+    || rk_fail "${RK_RENDER_WHY:-매니페스트 초안을 그리지 못했습니다}"
   if [ "$RK_AUTO" = "1" ] && [ -n "$G_REMOVED" ]; then
     rk_check_manifest "$RK_TMP/draft.md" \
       || rk_refuse "빼고 난 매니페스트가 매니페스트 검사를 통과하지 않습니다 — 좌석은 바뀐 그래프를 승인하지 않습니다"
   fi
+  # One fixed-head line on stderr per row carried because its key could not be
+  # judged, so the kickoff can show what it carried blind and why.
+  local pn_k pn_p
+  while IFS="$TAB" read -r pn_k pn_p; do
+    [ -n "$pn_k" ] || continue
+    printf '플러그인 알림\t판정 불가 이월\t%s\t%s\n' "$pn_k" "$pn_p" >&2
+  done <<EOF
+$RK_PA_UNSURE
+EOF
   cat "$RK_TMP/draft.md"
   exit 0
 }
@@ -2294,6 +2423,16 @@ vs_set_is() {
 # has this key and value, and its scope cell resolves in the current MANIFEST
 # to this scope. Key and value compare as bytes.
 VS_BLANKS=""
+# vs_load_blanks <what needs them> — copies `--blank-rows` to blanks.tsv and
+# checks its head line. Prints why and returns 1 when it cannot; the caller
+# sets VS_BLANKS, since this runs in a command substitution.
+vs_load_blanks() {
+  if [ -z "$RK_BLANKS" ]; then printf '%s' "$1 에는 5o 에서 확인한 빈칸 행(--blank-rows)이 필요합니다"; return 1; fi
+  local b
+  b=$(rk_copy "$RK_BLANKS" blanks.tsv) || { printf '%s' "빈칸 행 파일을 읽을 수 없습니다: $RK_BLANKS"; return 1; }
+  [ "$(head -n 1 "$b")" = "cc-kickoff-defaults v1" ] || { printf '%s' "빈칸 행 파일의 머리가 cc-kickoff-defaults v1 이 아닙니다"; return 1; }
+  return 0
+}
 vs_blank_has() {
   local lsc al
   while IFS= read -r lsc; do
@@ -2421,10 +2560,8 @@ EOF
   local ssc ssec sf sv sk sdv srsc
   why="$setwhy"
   if [ -z "$why" ] && [ -s "$VS_SETS" ]; then
-    if [ -z "$RK_BLANKS" ]; then why="--set 에는 5o 에서 확인한 빈칸 행(--blank-rows)이 필요합니다"
-    elif ! VS_BLANKS=$(rk_copy "$RK_BLANKS" blanks.tsv); then why="빈칸 행 파일을 읽을 수 없습니다: $RK_BLANKS"
-    elif [ "$(head -n 1 "$VS_BLANKS")" != "cc-kickoff-defaults v1" ]; then why="빈칸 행 파일의 머리가 cc-kickoff-defaults v1 이 아닙니다"
-    fi
+    why=$(vs_load_blanks '--set') || :
+    [ -n "$why" ] || VS_BLANKS="$RK_TMP/blanks.tsv"
   fi
   if [ -z "$why" ]; then
     while IFS="$TAB" read -r ssc ssec sf sv sk srsc; do
@@ -2545,6 +2682,83 @@ EOF
       || why="${why:+$why; }좌석은 라벨 인정 행을 바꾸지 않습니다 — 초안의 라벨 인정 행이 원천과 바이트 단위로 다릅니다"
   fi
   vs_check 행 "$why"
+
+  # 7b — the `플러그인 허용` rows. P is the previous rows whose key is on or
+  # cannot be judged now, derived again here from this call's own reading of
+  # the account set; D is the draft's rows. A person's draft holds every row of
+  # P byte for byte, and any other row is a default 5o confirmed for a blank.
+  # The seat's draft may differ from P only where a change of the account set
+  # between the render and this call explains it: each such row is named on
+  # stderr and passes, and any other difference fails.
+  local pa_prev pa_p pa_d pa_k pa_st pa_sc pa_dups pa_bwhy=''
+  why=""
+  rk_pa_judge
+  pa_prev=$(MANIFEST="$prev" manifest_plugin_allow_rows)
+  pa_d=$(MANIFEST="$draft" manifest_plugin_allow_rows)
+  pa_p=''
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    case "$(rk_pa_state "$(rk_pa_key "$row")")" in 켬|'판정 불가'*) pa_p="$pa_p$row
+" ;; esac
+  done <<EOF
+$pa_prev
+EOF
+  pa_dups=$(printf '%s\n' "$pa_d" | while IFS= read -r row; do [ -n "$row" ] && rk_pa_key "$row" && printf '\n'; done | sort | uniq -d | paste -sd, -)
+  [ -z "$pa_dups" ] || why="${why:+$why; }초안에 같은 플러그인의 행이 둘 이상입니다: $pa_dups"
+  if [ "$RK_AUTO" = "1" ]; then
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      vs_in "$row" "$pa_p" && continue
+      pa_k=$(rk_pa_key "$row"); pa_st=$(rk_pa_state "$pa_k")
+      if vs_in "$row" "$pa_prev" && [ "$pa_st" = "미설치" ]; then
+        printf '플러그인 알림\t초안에 남은 미설치 행\t%s\n' "$pa_k" >&2
+      else
+        why="${why:+$why; }앞선 런의 행을 다시 판정한 결과로 설명되지 않는 행입니다 (지금 ${pa_st%%"$TAB"*}): $row"
+      fi
+    done <<EOF
+$pa_d
+EOF
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      vs_in "$row" "$pa_d" && continue
+      pa_k=$(rk_pa_key "$row"); pa_st=$(rk_pa_state "$pa_k")
+      case "$pa_st" in
+        켬) printf '플러그인 알림\t초안에서 빠진 켬 행\t%s\n' "$pa_k" >&2 ;;
+        *)  printf '플러그인 알림\t초안에서 빠진 판정 불가 행\t%s\t%s\n' "$pa_k" "${pa_st#*"$TAB"}" >&2 ;;
+      esac
+    done <<EOF
+$pa_p
+EOF
+  else
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      vs_in "$row" "$pa_d" || why="${why:+$why; }앞선 런에서 이어 써야 할 행이 초안에 없습니다: $row"
+    done <<EOF
+$pa_p
+EOF
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      vs_in "$row" "$pa_p" && continue
+      pa_k=$(rk_pa_key "$row")
+      if [ "$row" != "- \`플러그인 허용\` | 플러그인=$pa_k | 사유=킥오프 기본값" ]; then
+        why="${why:+$why; }앞선 런에 없고 5o 에서 확정한 기본값의 행 모양이 아닙니다: $row"; continue
+      fi
+      if [ -z "$VS_BLANKS" ] && [ -z "$pa_bwhy" ]; then
+        pa_bwhy=$(vs_load_blanks '앞선 런에 없는 플러그인 허용 행') || :
+        if [ -n "$pa_bwhy" ]; then why="${why:+$why; }$pa_bwhy"; else VS_BLANKS="$RK_TMP/blanks.tsv"; fi
+      fi
+      [ -n "$VS_BLANKS" ] || continue
+      pa_sc=$(PK="$pa_k" awk -F '\t' '$1 == "빈칸" && $3 == "plugin-allow" && $4 == ENVIRON["PK"] { print $2; exit }' "$VS_BLANKS")
+      if [ -z "$pa_sc" ]; then why="${why:+$why; }플러그인 $pa_k 는 5o 가 보인 빈칸 행이 아닙니다"; continue; fi
+      [ -n "$(rk_asked_answer "5o $pa_sc:plugin-allow=$pa_k")" ] || why="${why:+$why; }$pa_sc:plugin-allow=$pa_k 는 5o 에서 묻지 않은 값입니다"
+      case " / $D_CONFIRM / " in *" / $pa_sc:plugin-allow=$pa_k / "*) ;; *) why="${why:+$why; }$pa_sc:plugin-allow=$pa_k 가 사용자 확인 문면에 없습니다" ;; esac
+      pa_st=$(rk_pa_state "$pa_k")
+      [ "$pa_st" = "켬" ] || why="${why:+$why; }플러그인 $pa_k 가 지금 켬이 아닙니다 (${pa_st%%"$TAB"*})"
+    done <<EOF
+$pa_d
+EOF
+  fi
+  vs_check 플러그인 "$why"
 
   # 8 — the interview row: exactly one when the design step stays, none when it
   # is out, and the previous row with only its path renamed.

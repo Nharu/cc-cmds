@@ -123,6 +123,12 @@ case "${ROUTE_LEASE_SCHEMA:-}" in
   'cc-cmds-lease v1') ;;
   *) readonly ROUTE_LEASE_SCHEMA='cc-cmds-lease v1' ;;
 esac
+# 멈춘 스테이지의 보호 기록. 게이트 감독자가 쓰고 지우며, cc-lane 의 차용 기증자
+# 선택이 읽는다. 본문 규칙은 `route__halt_hold_put_main` 의 머리 주석이 정한다.
+case "${ROUTE_HALT_HOLD_SCHEMA:-}" in
+  'cc-cmds-hold v1') ;;
+  *) readonly ROUTE_HALT_HOLD_SCHEMA='cc-cmds-hold v1' ;;
+esac
 case "${ROUTE_INVENTORY_SCHEMA:-}" in
   'cc-lane-accounts v1') ;;
   *) readonly ROUTE_INVENTORY_SCHEMA='cc-lane-accounts v1' ;;
@@ -980,6 +986,14 @@ def rt_resume($p):
               rt_env(rt_park("resume-bound-ineligible"; "대여 좌석에 고정된 런의 재개가 다른 계정에 묶여 있다 — 계보를 새로 시작한다"); "none"; null)
             elif ($a.lend_enrolled == true) and ($a.lend.ok != true) then
               rt_env(rt_park("resume-bound-ineligible"; "묶인 계정의 대여 닫힘(\($a.lend.why)) — 대여가 다시 열린 뒤 같은 세그먼트를 다시 파견하거나 계보를 새로 시작한다"); "none"; null)
+            # 무인 사용에서 빠진 이유가 cc 레인의 차용뿐이면 사람을 부르지 않고 기다린다.
+            # 그룹 대표의 대기 기록이 cc-lane 의 체인을 부르고, 차용이 끝나면 다음 질의에서
+            # `borrowed` 가 떨어져 재개가 부여된다. 로그인·임대 표·차용 기록이 깨진 상태는
+            # 사람이 풀어야 하므로 이 갈래에 들지 않고 아래의 PARK 로 간다.
+            elif ($a.lend_enrolled != true) and ($a.unattended == "enabled") and ($a.group_reserved | not)
+                 and ($a.mismatch | not) and (($a.borrowed // null) != null)
+                 and ($a.login_bad | not) and ($p.table_corrupt | not) and ($p.borrow_corrupt | not) then
+              rt_env(rt_wait_c($a.group; $a.id; null; "resume-bound-borrowed"; null); "none"; null)
             elif (($a.lend_enrolled != true)
                   and (($a.unattended != "enabled") or $a.group_reserved or (($a.borrowed // null) != null)))
                  or $a.mismatch then
@@ -2346,6 +2360,112 @@ route__wait_drop_main() {
   return 0
 }
 
+route__halt_hold_dir() {
+  # route__halt_hold_dir <lease-table-dir> — 보호 기록 디렉터리. 임대 표 디렉터리의
+  # 형제 `holds` 다. 경로를 따로 짓지 않으므로 상태 루트를 덮어쓴 런에서도 두 디렉터리가
+  # 같은 루트에 있다.
+  printf '%s/holds' "$(dirname "$1")"
+}
+
+route__halt_hold_put_main() {
+  # halt-hold-put --table <lease-table-dir> --run-id <r> --key <k> --lineage <l>
+  #               --account <id> --config-dir <abs> --session-id <s> --run-dir <abs>
+  #               --halted-at <epoch>
+  #
+  # 답을 기다리며 멈춘 스테이지가 어느 계정에 묶였는지를 임대 표 밖에 남긴다. 이 머리
+  # 주석이 보호 기록 본문 규칙의 코드 쪽 권위이고, cc-lane 의 판독기
+  # `Sources/CCLaneKit/Inventory/HaltHoldTable.swift` 의 머리 주석이 이 주석을 가리킨다.
+  #
+  # - 위치: 임대 표 디렉터리의 형제 `holds/`. 없으면 임대 표 디렉터리처럼 만든다.
+  # - 이름: `<rt_enc(run_id)>+<rt_enc(key)>.hold`. `key` 는 멈춘 단계의 키(세그먼트 id
+  #   또는 런 범위 단계 id)이고, 한 런의 한 키에 기록은 하나뿐이라 다시 멈추면 덮어쓴다.
+  # - 본문: JSON 객체 하나, `jq -c` 의 출력 꼴. 필드 순서는 `schema`(글자 그대로
+  #   `cc-cmds-hold v1`), `run_id`, `key`, `lineage`, `account`, `config_dir`(절대 경로),
+  #   `session_id`, `run_dir`(절대 경로), `halted_at_epoch`(정수) 이다.
+  # - 쓰기: 같은 디렉터리의 `.` 으로 시작하고 `.hold` 로 끝나지 않는 임시 파일에 쓴 뒤
+  #   `mv` 로 바꾼다. 판독기는 `.` 으로 시작하거나 `.hold` 로 끝나지 않는 이름을 읽지 않는다.
+  # - 생존: `run_dir` 가 디렉터리로 있고 `run_dir/done` 이 없거나 비어 있을 때만 산다.
+  #   쓸 때마다 그렇지 않은 다른 기록을 지운다. 이미 없는 파일은 오류가 아니므로 두
+  #   감독자가 동시에 치워도 결과가 같다.
+  #
+  # 값은 모두 인자로 받고 시각도 환경도 스스로 읽지 않는다. 그래서 아래 입력은 늘 아래
+  # 본문을 낸다(두 레포의 시험이 이 예시를 바이트까지 같게 쓴다).
+  #   --run-id 20261022-5ac0f2a9 --key D1 --lineage B:D1#1 --account u6
+  #   --config-dir /Users/example/.claude-u6 --session-id 00000000-0000-4000-8000-000000000000
+  #   --run-dir /Users/example/.local/state/cc-cmds/run/20261022-5ac0f2a9 --halted-at 1792682789
+  #   {"schema":"cc-cmds-hold v1","run_id":"20261022-5ac0f2a9","key":"D1","lineage":"B:D1#1","account":"u6","config_dir":"/Users/example/.claude-u6","session_id":"00000000-0000-4000-8000-000000000000","run_dir":"/Users/example/.local/state/cc-cmds/run/20261022-5ac0f2a9","halted_at_epoch":1792682789}
+  #
+  # rc 0 씀 / 2 인자 거부 / 4 디렉터리·쓰기 실패.
+  local t="" run="" k="" lin="" acct="" dir="" sid="" rd="" at="" d name body tmp f frd
+  while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || return 2
+    case "$1" in
+      --table) t="$2" ;;
+      --run-id) run="$2" ;;
+      --key) k="$2" ;;
+      --lineage) lin="$2" ;;
+      --account) acct="$2" ;;
+      --config-dir) dir="$2" ;;
+      --session-id) sid="$2" ;;
+      --run-dir) rd="$2" ;;
+      --halted-at) at="$2" ;;
+      *) return 2 ;;
+    esac
+    shift 2
+  done
+  if [ -z "$t" ] || [ -z "$lin" ] || [ -z "$acct" ] || [ -z "$sid" ]; then return 2; fi
+  case "$dir" in /*) ;; *) return 2 ;; esac
+  case "$rd" in /*) ;; *) return 2 ;; esac
+  case "$at" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+  name=$(route__key "$run" "$k") || return 2
+  [ -n "$name" ] || return 2
+  body=$(jq -cn --arg schema "$ROUTE_HALT_HOLD_SCHEMA" --arg run "$run" --arg k "$k" --arg lin "$lin" \
+         --arg acct "$acct" --arg dir "$dir" --arg sid "$sid" --arg rd "$rd" --argjson at "$at" \
+         '{schema: $schema, run_id: $run, key: $k, lineage: $lin, account: $acct, config_dir: $dir,
+           session_id: $sid, run_dir: $rd, halted_at_epoch: $at}' 2>/dev/null) || return 2
+  d=$(route__halt_hold_dir "$t")
+  if [ ! -d "$d" ]; then
+    mkdir -p "$d" 2>/dev/null || [ -d "$d" ] || return 4
+  fi
+  tmp="$d/.$name.tmp.$$"
+  if ! printf '%s\n' "$body" > "$tmp" 2>/dev/null || ! mv -f "$tmp" "$d/$name.hold" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null
+    return 4
+  fi
+  for f in "$d"/*.hold; do
+    [ -f "$f" ] || continue
+    [ "$f" != "$d/$name.hold" ] || continue
+    frd=$(jq -r '.run_dir // empty | strings' "$f" 2>/dev/null) || continue
+    case "$frd" in /*) ;; *) continue ;; esac
+    if [ ! -d "$frd" ] || [ -s "$frd/done" ]; then rm -f "$f" 2>/dev/null || :; fi
+  done
+  return 0
+}
+
+route__halt_hold_drop_main() {
+  # halt-hold-drop --table <lease-table-dir> --run-id <r> --key <k> — 그 키의 보호
+  # 기록을 지운다. 없으면 성공한 무동작이다.
+  local t="" run="" k="" name d
+  while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || return 2
+    case "$1" in
+      --table) t="$2" ;;
+      --run-id) run="$2" ;;
+      --key) k="$2" ;;
+      *) return 2 ;;
+    esac
+    shift 2
+  done
+  [ -n "$t" ] || return 2
+  name=$(route__key "$run" "$k") || return 2
+  [ -n "$name" ] || return 2
+  d=$(route__halt_hold_dir "$t")
+  rm -f "$d/$name.hold" 2>/dev/null || :
+  return 0
+}
+
 route__cost_put_main() {
   # cost-sample-put <costs-dir> --run-id <r> --lineage <l> --kind <k> --account <id> --log <file>
   # 스테이지 로그 한 파일을 요약해 저장소에 한 줄을 쓴다. 단독 프로세스라 저장소
@@ -2427,6 +2547,8 @@ route_lease_release() {
 route_lease_release_run() { bash "$(route__dir)/route.sh" lease-release-run "$@"; }
 route_lease_wait_put() { bash "$(route__dir)/route.sh" lease-wait-put "$@"; }
 route_lease_wait_drop() { bash "$(route__dir)/route.sh" lease-wait-drop "$@"; }
+route_halt_hold_put() { bash "$(route__dir)/route.sh" halt-hold-put "$@"; }
+route_halt_hold_drop() { bash "$(route__dir)/route.sh" halt-hold-drop "$@"; }
 route_cost_sample_put() { bash "$(route__dir)/route.sh" cost-sample-put "$@"; }
 
 # ---------------------------------------------------------------------------
@@ -2612,7 +2734,7 @@ route_resolve() {
 }
 
 route__usage() {
-  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop|borrow-read|phase-read|cost-sample-put|cost-table> [args]' >&2
+  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop|halt-hold-put|halt-hold-drop|borrow-read|phase-read|cost-sample-put|cost-table> [args]' >&2
 }
 
 route__main() {
@@ -2636,6 +2758,8 @@ route__main() {
     lease-of) route_lease_of "$@" ;;
     lease-wait-put) route__wait_put_main "$@" ;;
     lease-wait-drop) route__wait_drop_main "$@" ;;
+    halt-hold-put) route__halt_hold_put_main "$@" ;;
+    halt-hold-drop) route__halt_hold_drop_main "$@" ;;
     borrow-read) route__borrow_read_main "$@" ;;
     phase-read) route__phase_read_main "$@" ;;
     cost-sample-put) route__cost_put_main "$@" ;;

@@ -40,6 +40,10 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 # starts one, and nothing in this suite stops it.
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
+# A suite started inside a pipeline stage inherits the run's `CC_PIPELINE_*`
+# names, and the gate calls below would read that run's manifest and ledger.
+# Cleared by prefix, so a name the gate starts exporting later goes too.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 # Auto-resolution is off except in the section that tests it, so the approval
 # fixtures above it stay pending the way they are written.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
@@ -623,7 +627,7 @@ check "대기 승인 항목이 절단점을 싣는다" \
   "$(jq -r '.pending_approvals[0].cutpoint' "$SNAP_U")" "판단"
 check "대기 승인 항목이 질문 문면을 싣는다" \
   "$(jq -r '.pending_approvals[0].question' "$SNAP_U")" "q"
-# The class is what tells the router a 사람-결정 wait from an ordinary one, and a
+# The class is what tells the router a person-set wait (사람-결정, 시각-승인) from an ordinary one, and a
 # question raised without one still carries the key, as `-`.
 check "대기 승인 항목이 판단 부류를 싣고, 부류 없는 질문은 - 다" \
   "$(jq -r '.pending_approvals[0].class' "$SNAP_U")" "-"
@@ -810,6 +814,58 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
 done
 check "라우터 두 사본의 설계 스킬 선택 줄이 바이트 동일하다" \
   "$(grep -F -- "$sel_new" "$RS_CORPUS")" "$(grep -F -- "$sel_new" "$AP_ROUTER")"
+
+# Both router copies carry the whole table of field-taking `act` kinds, byte
+# for byte. A shift reads only its own copy, so a row the lead's table has and
+# the shift's lacks is a row no shift knows how to write — the clause row was
+# exactly that.
+fence_act() {  # fence_act <file> — the fenced block whose first line is the segment row
+  awk '
+    /^```/ { if (f) exit; inb = !inb; first = inb; next }
+    inb && first { first = 0; if ($0 ~ /^act --kind segment /) f = 1 }
+    f { print }
+  ' "$1"
+}
+fa_ap=$(fence_act "$AP_ROUTER")
+fa_rs=$(fence_act "$RS_SKILL")
+check "리드 사본의 act 필드 표에 clause 행이 있다" \
+  "$(printf '%s\n' "$fa_ap" | grep -c '^act --kind clause ' || true)" "1"
+check "라우터 두 사본의 act 필드 표 블록이 바이트 동일하다" "$fa_rs" "$fa_ap"
+
+# The order and the evidence forms of settling the termination clauses are
+# the same sentences in both copies; the evidence request and the ban on a
+# question-less `사유=중단` are the shift's alone.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; f=${pair#*:}
+  for lit in \
+    '**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, and no `shift_halts[]` element holds a segment.' \
+    '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.' \
+    '2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for' \
+    '4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.' \
+    '- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit'"'"'s full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks only that `근거` is not empty, so keeping to this is yours.' \
+    '- **`불가능` cites what decided it** — a residual issue URL, a design step'"'"'s `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer.' \
+    '- **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.'; do
+    if grep -qF -- "$lit" "$f"; then
+      ok "$who 사본이 종료 절 정산 문장을 싣는다: ${lit:0:60}"
+    else
+      bad "$who 사본의 종료 절 정산 문장" "없다: $lit"
+    fi
+  done
+done
+for lit in \
+  '| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence no read of this run can produce | never |' \
+  "--segment - \\" \
+  "-- '절=<절 id>'" \
+  '**Do not end on `사유=중단` with a clause unsettled unless every unsettled clause has an open evidence request.**' \
+  'Do not run it yourself, and do not settle such a clause `불가능` without a question.' \
+  '**`근거 제출`** → read the element'"'"'s `attachment` with a gate read' \
+  'act --kind clause -- id=<id> 상태=불가능 '"'"'근거=중단 답 줄 <line>'"'"''; do
+  if grep -qF -- "$lit" "$RS_CORPUS"; then
+    ok "교대 사본이 종료 절 근거 요청 문장을 싣는다: ${lit:0:60}"
+  else
+    bad "교대 사본의 종료 절 근거 요청 문장" "없다: $lit"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 6c-3. `implement_next[]` tells a plan emission from a plan execution
@@ -2579,6 +2635,23 @@ check "부류 없는 판단의 거부는 여전히 배열에 오르지 않는다
   "$(qj_ids | { grep -xF QJ-REFUSED || true; } | gate_count)" "0"
 check "드라이버는 사람-결정 거부를 그 스테이지에 답으로 다시 붙이지 않는다" \
   "$(answered_judgment_stage QW S4 2>/dev/null)" ""
+# `시각-승인` is the other member of the person set, so its refusal is listed the
+# same way and its open wait carries its class; the row's new value is read by
+# the same field and mixed with neither `사람-결정` nor the classless questions.
+gate_append '승인' "승인 id=QJ-VISUAL" "상태=대기" "대상=repo" "절단점=판단" "막는 세그먼트=S4:QV:1" \
+  "질문 문면=화면이 승인되었는가" "판단 부류=시각-승인"
+qv_pj=$(gate_pending_approvals_json 2>/dev/null || true)
+case "$qv_pj" in '['*) ;; *) qv_pj="[$qv_pj]" ;; esac
+check "열린 시각-승인 은 대기 배열에 그 부류를 싣는다" \
+  "$(printf '%s' "$qv_pj" | jq -r '.[] | select(.id == "QJ-VISUAL") | .class' 2>/dev/null)" "시각-승인"
+qj_close QJ-VISUAL 거부 "화면이 승인되었는가" "화면을 짓지 않는다"
+: > "$RUN_DIR/log/S4:QV:1.json"
+check "시각-승인 판단의 거부는 답이 온 판단 배열에 state 거부로 오른다" \
+  "$(printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[] | select(.id == "QJ-VISUAL") | .state' 2>/dev/null)" "거부"
+check "사람-결정 거부의 원소는 시각-승인 행이 더해져도 그대로다" \
+  "$(printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[] | select(.id == "QJ-PERSON") | .state' 2>/dev/null)" "거부"
+check "드라이버는 시각-승인 거부를 그 스테이지에 답으로 다시 붙이지 않는다" \
+  "$(answered_judgment_stage QV S4 2>/dev/null)" ""
 
 LEDGER="$LEDGER_SAVE"
 RUN_DIR="$RUN_DIR_SAVE"
@@ -2802,7 +2875,7 @@ check "교대 계약: 정산의 0·3·4 밖 exit 은 3 처럼 운반한다" \
 check "design-reconverge: 기계 정산 줄은 기록을 가진 두 범위에서만 쓴다" \
   "$(has "$RC_SKILL" "- the scope is \`감사 종합 요구 <record>\` or \`구속 티어 이탈 <record>\`. Never for an \`R<n>\` scope")" 예
 check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
-  "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg)) step = 1')" 예
+  "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg) \')/$(has "$(dirname "$GATE")/liveness.sh" '&& index(banchor[b], "clause-") != 1) step = 1')" "예/예"
 check "좌석 사본: 상한 고지는 두 상한 사유로 고른다" \
   "$(has "$SEAT_REF" "When that \`사유\` begins \`중단 답 라우팅 — 세션 전에 세 번 죽었다\` or \`중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\`, it is the carry's cap")" 예
 check "좌석 사본: 상한 고지는 새 답도 같은 상한에 걸린다고 말한다" \

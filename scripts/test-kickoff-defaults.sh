@@ -52,11 +52,23 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'";
 for v in $(compgen -e | grep -E '^(CC_CMDS_AUTOPILOT_DEFAULT|CC_PIPELINE_)' || true); do
   unset "$v"
 done
+# The pipeline names again, in the one spelling the meta suite's leak census
+# looks for in every suite that runs or sources the gate family — this one
+# sources the gate and the driver in child shells.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The gate's run-open branch starts the dashboard server; nothing here stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 HOME="$WORK/home"; mkdir -p "$HOME"
 export HOME
 unset XDG_CONFIG_HOME
+# The helper judges `plugin-allow` against the session's account directory, so
+# that directory is a fixture too: without this every case would read the host
+# account's plugins.
+CLAUDE_CONFIG_DIR="$WORK/claude"; mkdir -p "$CLAUDE_CONFIG_DIR"
+export CLAUDE_CONFIG_DIR
 TZ=Asia/Seoul
 export TZ
 
@@ -1120,6 +1132,230 @@ check "--plugin-candidates 의 설명이 없으면 - 다" \
 check "--plugin-candidates 는 --target 과 함께 쓰지 않는다" "$(pc $T >/dev/null 2>&1; echo $?)" "2"
 check "--plugin-candidates 는 --now 와 함께 쓰지 않는다" "$(pc --now "$NOW" >/dev/null 2>&1; echo $?)" "2"
 check "--plugin-candidates 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" "$HELPER" --plugin-candidates >/dev/null 2>&1; echo $?)" "3"
+# 인벤토리가 심볼릭 링크면 그 계정은 후보에 더하지 않는다 — 판정 불가 조건이 후보
+# 목록을 바꾸지 않는다.
+PC_XL="$WORK/pc-xdg-link"; mkdir -p "$PC_XL/cc-lane"
+ln -s "$PC_X/cc-lane/accounts.json" "$PC_XL/cc-lane/accounts.json"
+check "--plugin-candidates: 심볼릭 링크 인벤토리의 계정은 읽지 않는다" \
+  "$(CLAUDE_CONFIG_DIR="$PC_A" XDG_CONFIG_HOME="$PC_XL" kd --plugin-candidates | awk -F'\t' '$1=="후보" { print $2 }' | paste -sd' ' -)" \
+  "figma@claude-plugins-official swift-lsp@claude-plugins-official"
+printf '{"plugins":[]}\n' > "$PC_B/plugins.json.unused"
+mkdir -p "$PC_B/plugins"; printf '[]\n' > "$PC_B/plugins/installed_plugins.json"
+check "--plugin-candidates: 모양이 틀린 설치 기록은 키를 더하지 않고 후보는 그대로다" \
+  "$(pc | awk -F'\t' '$1=="후보" { print $2 }' | paste -sd' ' -)" \
+  "figma@claude-plugins-official slack@claude-plugins-official swift-lsp@claude-plugins-official"
+rm -f "$PC_B/plugins/installed_plugins.json" "$PC_B/plugins.json.unused"
+out=$(pc --confirmed slack@claude-plugins-official --released ghost@m --released figma@claude-plugins-official); rc=$?
+check "--plugin-candidates --confirmed·--released 는 0 으로 끝난다" "$rc" "0"
+check "--confirmed 키는 후보에서 빠지고 --released 키는 계정에 없어도 후보다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="후보" { print $2 }' | paste -sd' ' -)" \
+  "figma@claude-plugins-official ghost@m swift-lsp@claude-plugins-official"
+check "--released 후보의 설명은 킥오프 기본값이다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="후보" && ($2=="ghost@m" || $2=="figma@claude-plugins-official") { print $3 }' | paste -sd'|' -)" \
+  "킥오프 기본값|킥오프 기본값"
+check "--released 는 시드 키를 후보로 만들지 않는다" \
+  "$(pc --released typesafe@typesafe-ai | awk -F'\t' '$1=="후보" && $2=="typesafe@typesafe-ai"' | grep -c . || true)" "0"
+check "--confirmed 의 키 모양이 틀리면 2" "$(pc --confirmed notakey >/dev/null 2>&1; echo $?)" "2"
+check "--released 는 --plugin-candidates 와 함께만 쓴다" "$(kd $T --released ghost@m >/dev/null 2>&1; echo $?)" "2"
+
+# ---------------------------------------------------------------------------
+# plugin-allow — 킥오프가 읽는 계정 디렉터리로 키마다 시드·켬·미설치·판정 불가를
+# 가린다. 계정은 파일 머리에서 고정한 CLAUDE_CONFIG_DIR 와, XDG_CONFIG_HOME 아래
+# 레인 인벤토리가 더하는 디렉터리다.
+# ---------------------------------------------------------------------------
+PA="$CLAUDE_CONFIG_DIR"
+PA_N='notion@claude-plugins-official'; PA_F='figma@claude-plugins-official'
+PA_SEED=$(grep -E '^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$' "$ORCH/plugin-allow.seed" | sed -n 1p)
+PA_X="$WORK/pa-xdg"   # 인벤토리 없는 XDG — 파일이 정하는 사례만 이 아래에 만든다
+pa_reset() {
+  rm -rf "$PA" "$PA_X"; mkdir -p "$PA/plugins" "$PA_X/cc-lane"
+  printf '{"version":2,"plugins":{"%s":[{"scope":"user"}]}}\n' "$PA_N" > "$PA/plugins/installed_plugins.json"
+  printf '{"enabledPlugins":{"%s":false}}\n' "$PA_F" > "$PA/settings.json"
+}
+# pk <file content> [helper args…] — the main mode against the account fixture.
+pk() { XDG_CONFIG_HOME="$PA_X" kf "$@" $T; }
+# pr <output> — `<적용|사유 토큰>|<범위>|<값>|<출처>` for each plugin-allow row.
+pr() { printf '%s\n' "$1" | awk -F'\t' '($1=="적용" || $1=="무시") && $3=="plugin-allow" { print ($1=="적용" ? "적용" : $6) "|" $2 "|" $4 "|" $5 }'; }
+# pst <file content> <key> — the token of the run-wide line `plugin-allow = <key>`.
+pst() { st "$(pk "plugin-allow = $1")" plugin-allow; }
+# pmsg <key> — the reason text of that row.
+pmsg() { printf '%s\n' "$(pk "plugin-allow = $1")" | awk -F'\t' '$1=="무시" && $3=="plugin-allow" { print $7; exit }'; }
+[ -n "$PA_SEED" ] && ok "전제: 시드에 키가 있다" || bad "전제" "plugin-allow.seed 에 키가 없다"
+
+pa_reset
+out=$(pk "plugin-allow = $PA_N")
+check "plugin-allow: 런 전역의 설치된 키는 적용" "$(pr "$out")" "적용|런|$PA_N|파일:1"
+check "plugin-allow: 적용 행은 권한 확대 표지를 단다" "$(col "$out" plugin-allow 6)" "1"
+check "plugin-allow: 효과 줄" "$(col "$out" plugin-allow 7)" \
+  "이 플러그인을 이 런의 모든 대상·모든 스테이지 세션에서 켭니다 — 라우터 교대는 끈 채로 둡니다"
+check "plugin-allow: settings.json 에 false 로만 있는 키도 켬이다" "$(pst "$PA_F")" "적용"
+out=$(pk "[Nharu/cc-cmds]
+plugin-allow = $PA_F")
+check "plugin-allow: 레포 구획에만 적은 키는 자리 틀림 없이 적용" "$(pr "$out")" "적용|Nharu/cc-cmds|$PA_F|파일:2"
+out=$(pk "plugin-allow = $PA_N
+plugin-allow = $PA_F")
+check "plugin-allow: 같은 범위의 다른 두 키는 둘 다 적용" "$(pr "$out" | cut -d'|' -f1,3 | paste -sd' ' -)" "적용|$PA_N 적용|$PA_F"
+out=$(pk "plugin-allow = $PA_N
+plugin-allow = $PA_N")
+check "plugin-allow: 같은 범위의 같은 키는 뒤엣것이 중복" "$(pr "$out" | cut -d'|' -f1 | paste -sd' ' -)" "적용 중복"
+for v in notion cc-cmds@inline x@builtin 'a b@m' 'a@m@n'; do
+  check "plugin-allow '$v' → 형식 오류" "$(pst "$v")" "형식 오류"
+done
+check "plugin-allow: 값 앞뒤 공백은 뗀다" "$(pr "$(pk "plugin-allow =   $PA_N  ")" | cut -d'|' -f1,3)" "적용|$PA_N"
+check "plugin-allow: 시드 키는 시드" "$(pst "$PA_SEED")" "시드"
+check "plugin-allow: 어느 계정에도 없는 키는 미설치" "$(pst ghost@m)" "미설치"
+out=$(pk "plugin-allow = $PA_N
+[Nharu/cc-cmds]
+plugin-allow = $PA_N
+plugin-allow = $PA_F")
+check "plugin-allow: 범위가 다른 같은 키는 런 전역 하나로 접힌다" \
+  "$(pr "$out" | cut -d'|' -f1-3 | paste -sd' ' -)" "적용|런|$PA_N 적용|Nharu/cc-cmds|$PA_F"
+out=$(pk "[Nharu/other]
+plugin-allow = $PA_N")
+check "plugin-allow: 대상이 아닌 구획의 키는 행이 없다" "$(pr "$out" | grep -c . || true)" "0"
+
+# 환경변수 — 쉼표 목록이 파일의 런 전역 줄을 통째로 갈아 끼운다.
+PE=CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW
+# pe <value> — the main mode with the variable set, against the fixture file $F.
+pe() { env -u CC_PIPELINE_RUN_ID "$PE=$1" XDG_CONFIG_HOME="$PA_X" CC_CMDS_AUTOPILOT_DEFAULTS_FILE="$F" "$BASH" "$HELPER" --now "$NOW" $T; }
+printf 'plugin-allow = %s\n[Nharu/cc-cmds]\nplugin-allow = %s\n' "$PA_F" "$PA_N" > "$F"
+out=$(pe "$PA_N , $PA_F")
+check "PLUGIN_ALLOW: 원소마다 적용, 파일의 런 전역 줄은 숨고 레포 구획의 같은 키는 접힌다" \
+  "$(pr "$out" | paste -sd' ' -)" "적용|런|$PA_N|환경:$PE 적용|런|$PA_F|환경:$PE"
+printf 'plugin-allow = %s\n[Nharu/cc-cmds]\nplugin-allow = %s\n' "$PA_N" "$PA_F" > "$F"
+out=$(pe '없음')
+check "PLUGIN_ALLOW=없음: 런 전역 줄을 모두 숨기고 레포 구획은 덮지 않는다" \
+  "$(pr "$out" | paste -sd' ' -)" "적용|Nharu/cc-cmds|$PA_F|파일:3"
+for v in "${PA_N}," "${PA_N},,${PA_F}" ",${PA_N}" "${PA_N}, ,${PA_F}" "${PA_N},없음" 'notion' "${PA_N},x@builtin" "${PA_N}	${PA_F}" "${PA_N}
+${PA_F}"; do
+  out=$(pe "$v")
+  check "PLUGIN_ALLOW '$(printf '%s' "$v" | tr '\t\n' '~~')' → 변수 형식 오류, 파일 런 전역 줄은 환경변수 무효" \
+    "$(pr "$out" | awk -F'|' '$2=="런" { print $1 }' | sort | paste -sd' ' -)" "형식 오류 환경변수 무효"
+done
+check "PLUGIN_ALLOW 무효 행은 값 전체를 싣는다" \
+  "$(pr "$(pe "$PA_N,")" | awk -F'|' '$1=="형식 오류" { print $3 }')" "$PA_N,"
+check "PLUGIN_ALLOW 무효 문면은 파일 줄도 쓰지 않는다고 말한다" \
+  "$(pe "$PA_N," | awk -F'\t' '$1=="무시" && $6=="형식 오류" { print $7 }' | grep -c '파일의 런 전역 plugin-allow 줄을 쓰지 않습니다' || true)" "1"
+out=$(pe "$PA_N,$PA_N")
+check "PLUGIN_ALLOW: 같은 원소의 재등장은 뒤엣것이 중복" \
+  "$(pr "$out" | awk -F'|' '$2=="런" { print $1 }' | paste -sd' ' -)" "적용 중복"
+check "PLUGIN_ALLOW: 원소도 하나씩 판정한다 — 미설치·시드" \
+  "$(pr "$(pe "ghost@m,$PA_SEED")" | awk -F'|' '$2=="런" { print $1 }' | paste -sd' ' -)" "미설치 시드"
+check "PLUGIN_ALLOW 는 읽은 환경변수 수에 든다" \
+  "$(pe "$PA_N" | awk -F'\t' '$1=="원천" { print $4 }')" "1"
+
+# 판정 불가 — 계정 집합을 다 읽지 못하면, 읽힌 키는 켬이고 읽히지 않은 키는
+# 미설치가 아니라 판정 불가다. 문면은 읽지 못한 경로를 싣는다.
+# pj <expected path> <case> — ghost 키가 판정 불가이고 문면에 그 경로가 있는지.
+pj() {
+  local got msg
+  got=$(pst ghost@m); msg=$(pmsg ghost@m)
+  check "판정 불가: $2" "$got" "판정 불가"
+  case "$msg" in *"읽지 못한 경로: $1") ok "판정 불가 문면의 경로: $2" ;; *) bad "판정 불가 문면의 경로: $2" "$msg" ;; esac
+}
+inv="$PA_X/cc-lane/accounts.json"
+pa_reset; printf '{' > "$PA/plugins/installed_plugins.json"
+pj "$PA/plugins/installed_plugins.json" "깨진 installed_plugins.json"
+check "판정 불가: 다른 파일에서 읽힌 키는 여전히 적용" "$(pst "$PA_F")" "적용"
+pa_reset; printf '{"accounts":[{"config_dir":"%s"}]}\n' "$WORK/pa-none" > "$inv"
+pj "$WORK/pa-none" "인벤토리가 가리키는 없는 디렉터리"
+pa_reset; rm -f "$PA/plugins/installed_plugins.json"; printf '{}\n' > "$PA/settings.json"
+pj "$PA" "모든 계정의 키가 0개"
+pa_reset; mkdir -p "$WORK/pa-empty"; printf '{"accounts":[{"config_dir":"%s"}]}\n' "$WORK/pa-empty" > "$inv"
+check "두 파일이 없는 계정을 더해도 다른 계정의 키는 적용" "$(pst "$PA_N")" "적용"
+check "두 파일이 없는 계정을 더해도 없는 키는 미설치" "$(pst ghost@m)" "미설치"
+pa_reset; printf '{"accounts":[]}\n' > "$WORK/pa-inv-real"; ln -s "$WORK/pa-inv-real" "$inv"
+pj "$inv" "심볼릭 링크 인벤토리"
+pa_reset; ln -s "$WORK/pa-inv-dangling" "$inv"
+pj "$inv" "가리키는 곳 없는 심볼릭 링크 인벤토리"
+for body in '{}' '{"accounts":"x"}' '{"accounts":3}' '[]' '{"accounts":[{}]}' '{"accounts":[{"config_dir":""}]}' \
+            '{"accounts":[{"config_dir":5}]}' '{"accounts":["x"]}' 'not json'; do
+  pa_reset; printf '%s\n' "$body" > "$inv"
+  pj "$inv" "인벤토리 $body"
+done
+pa_reset; printf '{"accounts":[]}\n' > "$inv"
+check "인벤토리의 빈 배열은 미설치" "$(pst ghost@m)" "미설치"
+pa_reset; mkdir -p "$WORK/pa-obj"; printf '{"enabledPlugins":{"objonly@m":true}}\n' > "$WORK/pa-obj/settings.json"
+printf '{"accounts":{"a":{"config_dir":"%s"}}}\n' "$WORK/pa-obj" > "$inv"
+check "객체형 .accounts 가 가리키는 계정의 키는 적용" "$(pst objonly@m)" "적용"
+pj "$inv" "객체형 .accounts 에서 없는 키"
+pa_reset; mkdir -p "$inv"
+pj "$inv" "인벤토리 자리의 디렉터리"
+# 일곱째 조건 — 파싱되지만 모양이 틀린 계정 파일.
+IP="$PA/plugins/installed_plugins.json"; SJ="$PA/settings.json"
+for body in '' ' ' '[]' 'null' '{}' '{"plugins":[]}' '{"plugins":null}'; do
+  pa_reset; printf '%s' "$body" > "$IP"
+  pj "$IP" "installed_plugins.json '$body'"
+done
+for body in '[]' 'null' '{"enabledPlugins":"x"}' '{"enabledPlugins":null}' '{"enabledPlugins":false}'; do
+  pa_reset; printf '%s' "$body" > "$SJ"
+  pj "$SJ" "settings.json '$body'"
+done
+pa_reset; printf '{}\n' > "$SJ"
+check "settings.json 에 .enabledPlugins 가 없으면 미설치" "$(pst ghost@m)" "미설치"
+pa_reset; printf '{' > "$IP"
+out=$(pe "ghost@m")
+check "PLUGIN_ALLOW: 판정 불가 원소" "$(pr "$out" | awk -F'|' '$2=="런" && $4 ~ /^환경:/ { print $1 }')" "판정 불가"
+
+# --carry — 플러그인 허용 행은 키마다 권한·이어받지 않음·빈칸이고 차이 행은 없다.
+pa_reset
+CW_ROWS_SAVE="$CW_ROWS"
+PA_ROW_N="- \`플러그인 허용\` | 플러그인=$PA_N | 사유=노션 문서"
+PA_ROW_S="- \`플러그인 허용\` | 플러그인=$PA_SEED | 사유=시드"
+PA_ROW_G="- \`플러그인 허용\` | 플러그인=ghost@m | 사유=없어짐"
+CW_ROWS="$CW_ROWS
+$PA_ROW_N
+$PA_ROW_S
+$PA_ROW_G"
+cw_write "$CW"
+pc_carry() { XDG_CONFIG_HOME="$PA_X" kc "$@"; }
+# prc <output> <kind> — `<칸3>|<칸4>` of the plugin-allow rows of that kind.
+prc() { printf '%s\n' "$1" | awk -F'\t' -v t="$2" '$1==t && $3=="plugin-allow" { print $2 "|" $4 }'; }
+out=$(pc_carry "plugin-allow = $PA_F
+plugin-allow = gone@m
+[Nharu/cc-cmds]
+plugin-allow = $PA_F
+plugin-allow = $PA_N")
+check "--carry plugin-allow: 켬 행은 권한 행이고 행을 축자로 싣는다" "$(prc "$out" 권한)" "런|$PA_ROW_N"
+check "--carry plugin-allow: 권한 행은 넓힘 표식을 단다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="권한" && $3=="plugin-allow" { print $5 }')" "1"
+check "--carry plugin-allow: 적용 요약 한 줄이 이어받는 키를 싣는다" "$(prc "$out" 적용)" "런|$PA_N"
+check "--carry plugin-allow: 시드·미설치 행과 미설치 파일 키는 이어받지 않음" \
+  "$(prc "$out" '이어받지 않음' | cut -d'|' -f2 | paste -sd' ' -)" "시드 미설치 미설치"
+check "--carry plugin-allow: 이어받지 않은 행은 그 행을 축자로 싣는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="plugin-allow" && $4=="시드" { print $5 }')" "$PA_ROW_S"
+check "--carry plugin-allow: 앞선 행이 없는 파일 키는 범위가 둘이어도 빈칸 한 줄" "$(prc "$out" 빈칸)" "런|$PA_F"
+check "--carry plugin-allow: 앞선 행이 있는 파일 키는 빈칸이 아니다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="빈칸" && $3=="plugin-allow" && $4=="'"$PA_N"'"' | grep -c . || true)" "0"
+check "--carry plugin-allow: 차이 행은 없다" "$(cnt "$out" 차이 plugin-allow)" "0"
+check "--carry plugin-allow: 원천 없음 행은 없다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="plugin-allow" && $4=="원천 없음"' | grep -c . || true)" "0"
+printf '{' > "$PA/plugins/installed_plugins.json"
+out=$(pc_carry '')
+check "--carry plugin-allow: 계정 파일이 깨지면 읽히지 않은 앞선 행도 권한 행" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="권한" && $3=="plugin-allow" { print $4 }' | sort | paste -sd'~' -)" "$PA_ROW_G~$PA_ROW_N"
+case "$(printf '%s\n' "$out" | awk -F'\t' '$1=="권한" && $3=="plugin-allow" && $4=="'"$PA_ROW_G"'" { print $6 }')" in
+  *"판정하지 못했습니다"*"$PA/plugins/installed_plugins.json"*) ok "--carry plugin-allow: 판정 불가 권한 행의 효과는 읽지 못한 경로를 싣는다" ;;
+  *) bad "--carry plugin-allow 판정 불가 효과" "$out" ;;
+esac
+check "--carry plugin-allow: 깨진 계정 파일에서도 시드 행은 이어받지 않음" "$(prc "$out" '이어받지 않음' | cut -d'|' -f2)" "시드"
+pa_reset
+CW_ROWS="$CW_ROWS_SAVE"; cw_write "$CW"
+out=$(pc_carry "[Nharu/cc-cmds]
+plugin-allow = $PA_F")
+check "--carry plugin-allow: 인가 절이 있고 플러그인 행이 없는 원천에서 파일 키는 빈칸" "$(prc "$out" 빈칸)" "Nharu/cc-cmds|$PA_F"
+out=$(pc_carry "plugin-allow = $PA_SEED
+plugin-allow = ghost@m
+plugin-allow = bad")
+check "--carry plugin-allow: 시드·미설치·형식 오류 파일 키는 각각 이어받지 않음 한 줄" \
+  "$(prc "$out" '이어받지 않음' | cut -d'|' -f2 | paste -sd' ' -)" "시드 미설치 형식 오류"
+printf '{' > "$PA/plugins/installed_plugins.json"
+out=$(pc_carry "plugin-allow = ghost@m")
+check "--carry plugin-allow: 판정 불가 파일 키는 이어받지 않음 판정 불가" "$(prc "$out" '이어받지 않음' | cut -d'|' -f2)" "판정 불가"
+pa_reset
+out=$(pc_carry '')
+check "--carry plugin-allow: 행도 파일 키도 없으면 원천 없음 한 줄" "$(prc "$out" '이어받지 않음')" "런|원천 없음"
+rm -rf "$PA" "$PA_X"; mkdir -p "$PA"
 
 # ---------------------------------------------------------------------------
 # SKILL.md 문면 — 호출 철자와 5n 고지

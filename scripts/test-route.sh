@@ -1182,7 +1182,25 @@ for acct in a c; do
   done
 done
 out=$(decide "$BGRP | LEND(\"a\") | REQ({event: \"resume\", bound_account: \"c\"})")
-expect "그룹 동료의 비생존 바인딩 재개 → PARK resume-bound-ineligible" "$out" '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+expect "그룹 동료의 비생존 바인딩 재개 → WAIT resume-bound-borrowed" "$out" \
+  '.verdict == "WAIT" and .reason == "resume-bound-borrowed" and .group == "org:h" and .account == "c" and .until_epoch == null and .cost == null'
+out=$(decide "$BGRP | LEND(\"a\") | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "차용 기증자에 묶인 재개 → 기증자 그룹을 지명한 WAIT resume-bound-borrowed" "$out" \
+  '.verdict == "WAIT" and .reason == "resume-bound-borrowed" and .group == "org:h" and .account == "a" and .until_epoch == null and .cost == null'
+expect "차용 중 재개 대기는 임대를 쓰지 않는다" "$out" '.txn == null or .txn.op == "none"'
+out=$(decide "$DRAIN | LEND(\"a\") | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "차용 기증자라도 draining 계정의 재개는 PARK resume-bound-ineligible" "$out" '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+out=$(decide '.inventory.accounts = [A("a"), A("c") + {interactive_reserved: true, unattended: "disabled"}]
+  | USE([UA("a"; 0.1; 0.1) + {org_hash: "h"}, UA("c"; 0.1; 0.1) + {org_hash: "h"}]) | LEND("a") | REQ({event: "resume", bound_account: "a"})')
+expect "차용 기증자라도 예약 그룹 계정의 재개는 PARK resume-bound-ineligible" "$out" '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+out=$(decide "$BGRP | .usage.accounts[0].config_dir = \"/elsewhere\" | LEND(\"a\") | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "차용 기증자라도 디렉터리 불일치 계정의 재개는 PARK resume-bound-ineligible" "$out" '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+out=$(decide "$BGRP | .usage.accounts[0].login = \"expired\" | LEND(\"a\") | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "차용 기증자에 묶인 계정의 로그인이 끊기면 지금처럼 PARK resume-bound-ineligible" "$out" '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+out=$(decide "$BGRP | LEND(\"a\") | .leases = {state: \"corrupt\", items: [], corrupt: [{path: \"/t/x.lease\", key: \"r9+x\", why: \"schema\"}], stale_corrupt: []} | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "차용 기증자에 묶인 재개라도 임대 표가 깨지면 지금처럼 PARK resume-bound-ineligible" "$out" '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+out=$(decide "$BGRP | .borrow = BRW(\"corrupt\"; \"a\"; \"/h/.claude-a\") | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "차용 기록이 깨지면 기증자를 지명해도 묶인 재개 → PARK borrow-record-corrupt" "$out" '.verdict == "PARK" and .reason == "borrow-record-corrupt"'
 BC='.borrow = {state: "corrupt"}'
 expect "손상 차용 기록: 풀 → PARK borrow-record-corrupt" "$(decide "$BC")" '.verdict == "PARK" and .reason == "borrow-record-corrupt"'
 out=$(decide "$BC | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; false)]) | REQ({event: \"crash-retry\"})")
@@ -1681,6 +1699,58 @@ bash "$TR_ROUTE" lease-release-run "$d" r1
 check "release-run 은 그 런의 임대만 지운다" "$(ls "$d" | sort | tr '\n' ' ')" "r1x+%531.lease r2+%531.lease "
 rc=0; bash "$TR_ROUTE" lease-release-run "$d" .hidden || rc=$?
 check "점으로 시작하는 run_id 는 거부" "$rc" 2
+
+# 멈춘 스테이지의 보호 기록. 임대 표의 형제 `holds/` 에 쓰고, 고정 예시 입력이면 본문이
+# 그 예시와 바이트까지 같다. cc-lane 의 판독기 시험이 같은 예시를 유효한 기록 하나로 읽는다.
+HH="$WORK/halt-hold"
+mkdir -p "$HH/pace/leases"
+hhput() {
+  # hhput <run_id> <key> <run_dir> [추가 인자…]
+  local r="$1" k="$2" rd="$3"
+  shift 3
+  bash "$TR_ROUTE" halt-hold-put --table "$HH/pace/leases" --run-id "$r" --key "$k" --lineage "B:$k#1" \
+    --account u6 --config-dir /Users/example/.claude-u6 --session-id 00000000-0000-4000-8000-000000000000 \
+    --run-dir "$rd" --halted-at 1792682789 "$@"
+}
+hhcount() { local n=0 f; for f in "$HH/pace/holds"/*.hold; do [ -e "$f" ] && n=$((n + 1)); done; printf '%s' "$n"; }
+check "보호 디렉터리는 첫 쓰기 전에 없다" "$([ -e "$HH/pace/holds" ] && printf 있음 || printf 없음)" "없음"
+rc=0; hhput 20261022-5ac0f2a9 D1 /Users/example/.local/state/cc-cmds/run/20261022-5ac0f2a9 || rc=$?
+check "halt-hold-put 은 rc 0" "$rc" 0
+check "보호 디렉터리는 임대 표의 형제로 생긴다" "$([ -d "$HH/pace/holds" ] && printf 있음 || printf 없음)" "있음"
+check "보호 기록 이름은 run_id 와 key 를 rt_enc 로 인코딩한다" "$(ls "$HH/pace/holds")" "$(tr_key 20261022-5ac0f2a9 D1).hold"
+check "보호 기록 이름의 대문자 키는 인코딩된다" "$(tr_key 20261022-5ac0f2a9 D1)" "20261022-5ac0f2a9+%441"
+check "고정 예시 입력의 본문은 고정 예시와 바이트까지 같다" "$(cat "$HH/pace/holds/$(tr_key 20261022-5ac0f2a9 D1).hold")" \
+  '{"schema":"cc-cmds-hold v1","run_id":"20261022-5ac0f2a9","key":"D1","lineage":"B:D1#1","account":"u6","config_dir":"/Users/example/.claude-u6","session_id":"00000000-0000-4000-8000-000000000000","run_dir":"/Users/example/.local/state/cc-cmds/run/20261022-5ac0f2a9","halted_at_epoch":1792682789}'
+check "보호 디렉터리에 임시 파일이 남지 않는다" "$(ls -A "$HH/pace/holds" | grep -c '^\.' || true)" "0"
+check "보호 기록은 임대 표에 아무것도 넣지 않는다" "$(ls -A "$HH/pace/leases" | grep -c . || true)" "0"
+mkdir -p "$HH/run/live" "$HH/run/done1" "$HH/run/empty-done"
+printf 'ended\n' > "$HH/run/done1/done"
+: > "$HH/run/empty-done/done"
+hhput rlive S1 "$HH/run/live"
+check "다음 쓰기는 run_dir 가 없는 고정 예시 기록을 치운다" "$(ls "$HH/pace/holds")" "$(tr_key rlive S1).hold"
+hhput rdone S1 "$HH/run/done1"
+check "쓰는 기록 자신은 끝난 런이어도 그 쓰기에서 치우지 않는다" "$(hhcount)" "2"
+hhput rempty S1 "$HH/run/empty-done"
+hhput rgone S1 "$HH/run/gone"
+check "쓰기마다 다른 기록 가운데 끝난 런의 기록을 치운다" "$(ls "$HH/pace/holds" | LC_ALL=C sort | tr '\n' ' ')" \
+  "$(printf '%s\n' "$(tr_key rempty S1).hold" "$(tr_key rgone S1).hold" "$(tr_key rlive S1).hold" | LC_ALL=C sort | tr '\n' ' ')"
+hhput rlive S1 "$HH/run/live" --account u7 --config-dir /Users/example/.claude-u7
+expect "같은 키의 다시 쓰기는 덮어쓴다" "$(cat "$HH/pace/holds/$(tr_key rlive S1).hold")" '.account == "u7" and .config_dir == "/Users/example/.claude-u7"'
+check "쓰기는 끝난 런과 run_dir 가 없는 기록을 치운다" "$(ls "$HH/pace/holds" | LC_ALL=C sort | tr '\n' ' ')" \
+  "$(printf '%s\n' "$(tr_key rempty S1).hold" "$(tr_key rlive S1).hold" | LC_ALL=C sort | tr '\n' ' ')"
+check "done 이 비어 있는 런과 끝나지 않은 런의 기록은 남는다" "$(hhcount)" "2"
+for hh_bad in "--config-dir relative/dir" "--run-dir relative/run" "--halted-at 12x" "--account ''" "--bogus x"; do
+  rc=0; eval "hhput rbad S1 \"$HH/run/live\" $hh_bad" >/dev/null 2>&1 || rc=$?
+  check "halt-hold-put 은 잘못된 인자($hh_bad)를 rc 2 로 거부한다" "$rc" 2
+done
+check "거부된 쓰기는 기록을 남기지 않는다" "$([ -e "$HH/pace/holds/$(tr_key rbad S1).hold" ] && printf 있음 || printf 없음)" "없음"
+rc=0; bash "$TR_ROUTE" halt-hold-drop --table "$HH/pace/leases" --run-id rlive --key S1 || rc=$?
+check "halt-hold-drop 은 그 키의 기록을 지운다" "$rc:$([ -e "$HH/pace/holds/$(tr_key rlive S1).hold" ] && printf 있음 || printf 없음)" "0:없음"
+check "halt-hold-drop 은 다른 키의 기록을 남긴다" "$(hhcount)" "1"
+rc=0; bash "$TR_ROUTE" halt-hold-drop --table "$HH/pace/leases" --run-id rnone --key S9 || rc=$?
+check "없는 키의 halt-hold-drop 은 rc 0" "$rc" 0
+rc=0; bash "$TR_ROUTE" halt-hold-drop --table "$WORK/no-such/leases" --run-id rnone --key S9 || rc=$?
+check "보호 디렉터리가 없어도 halt-hold-drop 은 rc 0" "$rc" 0
 d=$(tnew reassign)
 live_lease "$d" r1 S1 a
 out=$(txn "$d" 'USE([UA("a"; 0.1; 0.1), UA("b"; 0.2; 0.2)]) | REQ({event: "limit-reclaim"})')
@@ -3167,7 +3237,7 @@ for tok in \
   "PARK resume-unbound" "PARK resume-logged-out" "PARK resume-bound-ineligible" "PARK resume-bound-unknown-account" \
   "PARK deadline" "PARK borrow-record-corrupt" "PARK lent-seat-unrouted" \
   "WAIT group-exhausted" "WAIT no-room" "WAIT unknown-concurrency" "WAIT resume-bound-exhausted" \
-  "WAIT resume-bound-no-room" "WAIT lease-lock-busy" "WAIT lease-contention" "WAIT fifo-yield" \
+  "WAIT resume-bound-no-room" "WAIT resume-bound-borrowed" "WAIT lease-lock-busy" "WAIT lease-contention" "WAIT fifo-yield" \
   "GRANT first" "GRANT sticky" "GRANT resume-bound" "GRANT reassigned-after-limit" "GRANT reassigned-no-room" \
   "GRANT after-wait" "GRANT shift-seat-fallback" "GRANT single-seat"; do
   if grep -F -x "$tok" "$SEEN" >/dev/null; then ok "부류 포괄: $tok 관측"; else bad "부류 포괄: $tok 관측" "어느 사례에서도 나오지 않았다"; fi

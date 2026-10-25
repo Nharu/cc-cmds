@@ -59,6 +59,17 @@ Write both keys on every judgment; a manifest frozen before this field existed h
 
 `design_path` is a closed enum — `solo-audit` | `discuss-audit` | `none` — and it is not a judgment of yours. Write it by one rule: **`design_required` is `true`, `design_tier` is `team-4` and `design_scope` is `single` → `solo-audit`; every other plan → `none`.** `solo-audit` sends the design to the `design-solo-unattended` stage, one headless lead, and the audit after it stays; `discuss-audit` sends it to the `design-discuss-unattended` stage, a design discussion team whose roster the kickoff takes from the person. Never write `discuss-audit` yourself: the kickoff asks the person which path a heavy single design takes and rewrites the key with their answer. Write the key even when `design_required` is false — the schema requires it unconditionally. A manifest frozen before this field existed has no such key, and a reader takes it as `discuss-audit` on a `team-4` single-scope design and `none` elsewhere.
 
+## A `visual` step designs the screens before they are built
+
+`visual` is a step skill only, like `split` — it is never an `entry_skill`. Put one in the graph when the work builds or changes screens a person will look at: the `visual-unattended` stage generates the screens locally and reviews them, and every slice that carries screens then waits for a person to approve them at the fixed seat in the morning, while the slices without screens go ahead that night. Work with no screen carries no `visual` step.
+
+- The graph carries **at most one** `visual` step, and its id is always **`S2V`**. That id is the one place the visual step's id is fixed; the driver and the gate read the step by it.
+- It depends on the `design-audit` step, or on the `design` step when the graph has no audit.
+- Every `implement` step depends on it.
+- A `base` graph carries no `visual` step: the base run ends at the split, and each ticket's screens belong to that ticket's own run.
+
+`visual_design_rationale` is its prose reason — why the graph carries a `visual` step, or why it does not. Write it on every judgment; the schema requires it unconditionally.
+
 ## `work_class` records what kind of change the run lands — it decides nothing here
 
 `work_class` is a closed enum — `fix` | `feat` | `docs` | `other` | `unknown` — and `work_class_rationale` is its prose reason, the pair of `design_tier_rationale`. `unknown` needs a reason too.
@@ -86,6 +97,17 @@ Mark exactly one target `home` when you can tell which one the work is anchored 
 `steps` is the plan, in the order it would run, each step naming its skill and what it depends on. When `design_required` is true, the first step is `skill: design` and every later step depends on it. With `team-4` a `design-audit` step follows the design; a `solo` graph carries no audit step and goes from the design straight to implementation and review. Keep it at the granularity a person can read and refuse — the segment-level plan is built later by a different judgment, and duplicating it here produces two plans that disagree.
 
 **A graph that reaches a merge must contain a review step, and the schema will not tell you that.** Two rules fire at the merge: one wants a review record covering the branch's current HEAD with P0·P1 at zero, the other wants the reviewing session's ancestry disjoint from the implementing one's. So `implement` followed directly by `apply` — which this schema happily accepts — is a plan that cannot execute, and the person approving it finds out at the merge rather than here. Put the review in, as its own step depending on the implementation, whenever the work is meant to land.
+
+## `enforcement_surface` says whether the work edits what the run cannot
+
+Some files are enforcement surfaces: the run's own hook refuses every edit to them, so a stage that needs one stops on a refusal in the middle of the night. Which spellings those are is not yours to remember. The kickoff hands you the classifier's arms as data — the output of `enforcement-surface-screen.sh --list`, one `<class><TAB><glob><TAB><deny|reroute>` per line — and those lines are the whole definition. Judge the person's words and the resolved anchor against them.
+
+- `judgment` — `확인됨` when a path you can point at matches an arm; `가능성` when the work plausibly needs such an edit but no exact path can be named yet; `없음` when nothing in the inputs points at one; `판정불가` when no arms were handed to you.
+- `classes` — the class of every arm you matched, each once. `paths` — each path you can point at, with its `class` and the `slice` it belongs to (`""` while there are no slices). Both are empty for `없음` and `판정불가`.
+- `source` — `의도` here. A later kickoff step that matches declared files or a pull request's files overwrites `paths`, `judgment` and `source` with what it found.
+- `rationale` — one sentence.
+
+**Prefer a wrong flag to a miss.** A `가능성` that turns out to be nothing costs one sentence read aloud; a surface you missed costs a run that stops where nobody can answer. Put every `확인됨` and `가능성` into `unresolved` as well, so it is read out before anything is frozen. This judgment is advisory: it decides no other field of the plan.
 
 ## `unresolved` is not a weakness, it is the deliverable of a doubt
 
