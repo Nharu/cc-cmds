@@ -460,7 +460,8 @@ ORCH_TESTS := \
 	scripts/test-visual-check.sh \
 	scripts/test-visual-capture.sh \
 	scripts/test-meta-invariants.sh \
-	scripts/test-local-bundle.sh
+	scripts/test-local-bundle.sh \
+	scripts/test-ci-signature.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \
