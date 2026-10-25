@@ -421,9 +421,15 @@ if [ -n "$sec_iso_trace" ] && [ -z "$sec_iso_out" ]; then
   printf 'test-gate: CC_GATE_ISO_TRACE 는 기록 디렉터리 CC_GATE_ISO_OUT(절대 경로)과 함께 줍니다\n' >&2
   exit 2
 fi
-if [ -n "$sec_iso_trace" ] && { [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" = 4 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; }; then
-  printf 'test-gate: 절 범위 추적은 BASH_XTRACEFD 가 있는 bash 4.1 이상에서만 돕니다 (이 bash: %s) — 추적 없이 돌지 않고 멈춥니다\n' "$BASH_VERSION" >&2
-  exit 2
+# The cut runs under the `bash` on PATH, not under the interpreter reading this
+# line, so that one is asked: a selector started by a newer bash on a host
+# whose PATH bash is 3.2 would otherwise let the trace fall onto stderr.
+if [ -n "$sec_iso_trace" ]; then
+  sec_iso_bv=$(bash -c 'if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 1 ]; }; then echo ok; else echo "$BASH_VERSION"; fi' 2>/dev/null)
+  if [ "$sec_iso_bv" != "ok" ]; then
+    printf 'test-gate: 절 범위 추적은 BASH_XTRACEFD 가 있는 bash 4.1 이상에서만 돕니다 (컷을 돌릴 PATH 의 bash: %s) — 추적 없이 돌지 않고 멈춥니다\n' "${sec_iso_bv:-없음}" >&2
+    exit 2
+  fi
 fi
 
 # A NARROWED RUN NAMES THE SECTIONS THAT FAILED, AND THE COMMAND THAT RUNS ONLY
