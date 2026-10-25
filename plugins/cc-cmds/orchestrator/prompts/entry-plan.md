@@ -98,6 +98,17 @@ Mark exactly one target `home` when you can tell which one the work is anchored 
 
 **A graph that reaches a merge must contain a review step, and the schema will not tell you that.** Two rules fire at the merge: one wants a review record covering the branch's current HEAD with P0·P1 at zero, the other wants the reviewing session's ancestry disjoint from the implementing one's. So `implement` followed directly by `apply` — which this schema happily accepts — is a plan that cannot execute, and the person approving it finds out at the merge rather than here. Put the review in, as its own step depending on the implementation, whenever the work is meant to land.
 
+## `enforcement_surface` says whether the work edits what the run cannot
+
+Some files are enforcement surfaces: the run's own hook refuses every edit to them, so a stage that needs one stops on a refusal in the middle of the night. Which spellings those are is not yours to remember. The kickoff hands you the classifier's arms as data — the output of `enforcement-surface-screen.sh --list`, one `<class><TAB><glob><TAB><deny|reroute>` per line — and those lines are the whole definition. Judge the person's words and the resolved anchor against them.
+
+- `judgment` — `확인됨` when a path you can point at matches an arm; `가능성` when the work plausibly needs such an edit but no exact path can be named yet; `없음` when nothing in the inputs points at one; `판정불가` when no arms were handed to you.
+- `classes` — the class of every arm you matched, each once. `paths` — each path you can point at, with its `class` and the `slice` it belongs to (`""` while there are no slices). Both are empty for `없음` and `판정불가`.
+- `source` — `의도` here. A later kickoff step that matches declared files or a pull request's files overwrites `paths`, `judgment` and `source` with what it found.
+- `rationale` — one sentence.
+
+**Prefer a wrong flag to a miss.** A `가능성` that turns out to be nothing costs one sentence read aloud; a surface you missed costs a run that stops where nobody can answer. Put every `확인됨` and `가능성` into `unresolved` as well, so it is read out before anything is frozen. This judgment is advisory: it decides no other field of the plan.
+
 ## `unresolved` is not a weakness, it is the deliverable of a doubt
 
 Anything you could not settle goes here as a question a person can answer in one sentence. This list is read out loud to them before anything is frozen. An empty `unresolved` on a request that genuinely underdetermines the plan is the worst output you can produce: it converts a question that costs ten seconds now into a night that produces nothing.

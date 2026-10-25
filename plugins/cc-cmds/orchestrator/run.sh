@@ -87,6 +87,24 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/liveness.sh"
 
+# The enforcement-surface classifier, for the `강제 표면` field of a planned
+# segment row. Sourced in a child shell, as the gate's `gate_es` does, so the
+# hook's library adds nothing to this file's top level; a library that cannot
+# be loaded stamps `판정불가`, never `없음`.
+run_surface_stamp() {  # run_surface_stamp [<declared path>…]
+  local v
+  if v=$(
+      # shellcheck source=/dev/null
+      . "$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh" 2>/dev/null || exit 2  # lint-harness-global-collisions: child-shell
+      command -v es_stamp >/dev/null 2>&1 || exit 2
+      es_stamp "$@"
+    ) && [ -n "$v" ]; then
+    printf '%s' "$v"
+  else
+    printf '%s' '판정불가'
+  fi
+}
+
 # The account router. Its top level is function definitions and guarded
 # `readonly` constants only, because the gate sources this file on every entry
 # and inherits whatever the router puts at top level. This driver calls
@@ -444,6 +462,7 @@ manifest_snapshot_take() {
   #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
   #   RK <row>     every `- \`재킥오프\`` row anywhere, in order
   #   AC <row>     every `- \`적용 프로브 코드\`` row anywhere, in order
+  #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
@@ -479,6 +498,7 @@ $(LC_ALL=C awk '
     index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
     index($0, "- `재킥오프`") == 1 { print "RK\t" $0 }
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
+    index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
     END {
       if (kind) print "K\t1"
@@ -685,6 +705,83 @@ manifest_apply_code_rows() {
   grep -E '^- `적용 프로브 코드`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_label_ack_rows() {
+  if manifest_memo_on; then manifest_memo_all "LA	"; return 0; fi
+  grep -E '^- `라벨 인정`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_label_ack_checks() {
+  # manifest_label_ack_checks <alias> — the `체크` of every `라벨 인정` row whose
+  # `대상` is <alias>, one per line, in file order. The one reader the gate and
+  # the driver use: no check, label or repository name is written anywhere
+  # else, so a target opts in by its manifest row and by nothing in this code.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(manifest_row_fields "$row" '대상')" = "$1" ] || continue
+    manifest_row_fields "$row" '체크' 1
+  done <<EOF
+$(manifest_label_ack_rows)
+EOF
+}
+
+manifest_label_ack_label() {
+  # manifest_label_ack_label <alias> <check> — the `라벨` of the row naming that
+  # (target, check) pair; nothing when no row does. The pair is unique
+  # (check_manifest), so the first match is the only one.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(manifest_row_fields "$row" '대상')" = "$1" ] || continue
+    [ "$(manifest_row_fields "$row" '체크')" = "$2" ] || continue
+    manifest_row_fields "$row" '라벨' 1
+    return 0
+  done <<EOF
+$(manifest_label_ack_rows)
+EOF
+}
+
+label_ack_row_check() {
+  # Every `라벨 인정` row: `대상` is a declared alias; `체크`·`라벨`·`사유` are
+  # present, non-empty, carry no `|` and no surrounding whitespace; `체크` holds
+  # no comma, because the slice field and the poller's `실패 체크` both join
+  # check names with a comma and a space; and each (target, check) pair is
+  # declared once.
+  local row a k v key seen="" aliases
+  aliases=" $(target_aliases | tr '\n' ' ') "
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    a=$(manifest_row_fields "$row" '대상')
+    case "$aliases" in *" $a "*) [ -n "$a" ] ;; *) false ;; esac \
+      || die "「라벨 인정」 행의 대상이 「## 대상」 별칭이 아닙니다: $row"
+    for key in 체크 라벨 사유; do
+      case "$row" in *"| $key="*|*"|$key="*) ;; *) die "「라벨 인정」 행에 「${key}」가 없습니다: $row" ;; esac
+      v=$(manifest_row_fields "$row" "$key" 1)
+      [ "$(printf '%s\n' "$v" | wc -l | tr -d ' ')" = 1 ] \
+        || die "「라벨 인정」 행의 「${key}」가 둘 이상입니다: $row"
+      [ -n "$v" ] || die "「라벨 인정」 행의 「${key}」가 비었습니다: $row"
+      case "$row" in
+        *"$key=$v |"*|*"$key=$v") ;;
+        *) die "「라벨 인정」 행의 「${key}」 값 앞뒤에 공백이 있거나 「|」가 섞였습니다: $row" ;;
+      esac
+      case "$v" in [[:space:]]*|*[[:space:]]) die "「라벨 인정」 행의 「${key}」 값 앞뒤에 공백이 있습니다: $row" ;; esac
+    done
+    k=$(manifest_row_fields "$row" '체크' 1)
+    case "$k" in *,*) die "「라벨 인정」 행의 체크 이름에 쉼표가 있습니다 — 쉼표가 든 체크는 선언할 수 없습니다: $k" ;; esac
+    case "$seen" in
+      *"
+${a}	${k}
+"*) die "「라벨 인정」 행의 (대상, 체크) 쌍이 둘 이상입니다: $a / $k" ;;
+    esac
+    seen="$seen
+${a}	${k}
+"
+  done <<EOF
+$(manifest_label_ack_rows)
+EOF
+  return 0
+}
+
 manifest_plugin_allow_rows() {
   if manifest_memo_on; then manifest_memo_all "PA	"; return 0; fi
   grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
@@ -800,6 +897,13 @@ binding_set_bytes() {
     # digest. Whole-file scan, zero bytes when absent, so a manifest written
     # before this row existed keeps its digest and reads the default 0/2.
     manifest_apply_code_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/applycodes\t/'
+    # THE `라벨 인정` ROWS ARE IN THE FROZEN SET, on the same terms. Each is a
+    # person's kickoff acknowledgement that a target's label-guarded check may be
+    # passed by the run labelling the PR; the label act opens on nothing else. A
+    # row any act could append mid-run would let a stage widen what the run may
+    # label. Whole-file scan, zero bytes when absent, so a manifest written
+    # before this row existed keeps its digest.
+    manifest_label_ack_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/labelack\t/'
     # THE `플러그인 허용` ROWS ARE IN THE FROZEN SET, on the same terms. Each one
     # turns a user plugin on in every stage's settings, and the gate renders
     # those settings from these rows; a row any act could append mid-run would
@@ -1169,7 +1273,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·플러그인 허용·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1204,6 +1308,9 @@ check_manifest() {
   # person froze a meaning, and running the default instead would apply on a
   # code they said meant something else.
   apply_code_row_check
+  # 9 (cont.) — the `라벨 인정` rows' shape. A row the gate cannot match exactly
+  # would acknowledge nothing, or the wrong check, so it is refused at kickoff.
+  label_ack_row_check
 
   # 11 — the `자동 채택` rows, checked at FREEZE TIME and nowhere else.
   #
@@ -2424,10 +2531,69 @@ slicing_order_defects() {
   return 0
 }
 
+slice_label_ack_checks() {
+  # slice_label_ack_checks <doc> <id> — the checks the slice's optional
+  # `라벨 인정` field names, one per line, an element's enclosing backticks
+  # gone; nothing for a missing field or `없음`. Returns 1, printing nothing,
+  # when the value breaks the grammar: elements joined by a comma and one
+  # space, none empty, none with whitespace around it, no `|`, and `없음`
+  # never beside a check name.
+  local v rest e out=""
+  v=$(slice_field "$1" "$2" '라벨 인정')
+  [ -n "$v" ] && [ "$v" != "없음" ] || return 0
+  case "$v" in *'|'*) return 1 ;; esac
+  rest="$v, "
+  while [ -n "$rest" ]; do
+    e=${rest%%, *}
+    rest=${rest#*, }
+    case "$e" in *,*) return 1 ;; esac
+    case "$e" in '`'?*'`') e=${e#?}; e=${e%?} ;; esac
+    case "$e" in ''|[[:space:]]*|*[[:space:]]|*'`'*|없음) return 1 ;; esac
+    out="$out$e
+"
+  done
+  printf '%s' "$out"
+}
+
+slicing_label_ack_defects() {
+  # slicing_label_ack_defects <doc> — the slice-owned defects of the `라벨 인정`
+  # field, one line per defect, every slice to the end: a value that breaks the
+  # grammar, and a check the field names that no `라벨 인정` row of the slice's
+  # target names. The target is the one whose `원격 슬러그` is the slice's `레포`;
+  # a slug no target carries has no rows, so every check it names is a defect.
+  # The comparison is exact, element against the row's `체크`.
+  local doc="$1" id cks al rows c
+  for id in $(slice_ids "$doc"); do
+    if ! cks=$(slice_label_ack_checks "$doc" "$id"); then
+      printf "슬라이스 %s: 라벨 인정 값이 문법에 맞지 않음 — '%s'\n" "$id" "$(slice_field "$doc" "$id" '라벨 인정')"
+      continue
+    fi
+    [ -n "$cks" ] || continue
+    al=$(alias_for_slug "$(slice_field "$doc" "$id" '레포' | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" 2>/dev/null) || al=""
+    rows=""
+    [ -z "$al" ] || rows=$(manifest_label_ack_checks "$al")
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      case "
+$rows
+" in
+        *"
+$c
+"*) : ;;
+        *) printf "슬라이스 %s: 라벨 인정 체크가 대상 '%s' 의 「라벨 인정」 행에 없음 — %s\n" "$id" "${al:-?}" "$c" ;;
+      esac
+    done <<EOF
+$cks
+EOF
+  done
+  return 0
+}
+
 slicing_slice_defects() {
   # slicing_slice_defects <doc> — every defect a single slice owns, in the
-  # driver's wording: a missing reason field, then the merge-order defects.
-  # The driver parks the owner and what reaches it, and plans the rest.
+  # driver's wording: a missing reason field, then the `라벨 인정` defects,
+  # then the merge-order defects. The driver parks the owner and what reaches
+  # it, and plans the rest.
   local doc="$1" id f
   for id in $(slice_ids "$doc"); do
     while IFS= read -r f; do
@@ -2437,6 +2603,7 @@ slicing_slice_defects() {
 $(slice_reason_keys "$doc" "$id")
 EOF
   done
+  slicing_label_ack_defects "$doc"
   slicing_order_defects "$doc"
 }
 
@@ -2452,7 +2619,8 @@ EOF
 # apply at all.
 #
 # `slicing_fields_ok <doc> base` leaves out what a single slice owns — the
-# reason fields of a new-grammar block and the merge-order defects — so the
+# reason fields of a new-grammar block, the `라벨 인정` defects and the
+# merge-order defects — so the
 # driver can tell a declaration it cannot read from one with a defective slice
 # it can park on its own.
 slicing_fields_ok() {
@@ -2568,6 +2736,8 @@ EOF
     esac
   done
   if [ "$mode" != "base" ]; then
+    v=$(slicing_label_ack_defects "$doc" | sed -n 1p)
+    [ -z "$v" ] || { warn "$v"; return 1; }
     v=$(slicing_order_defects "$doc" | sed -n 1p)
     [ -z "$v" ] || { warn "$v"; return 1; }
   fi
@@ -2964,9 +3134,11 @@ slice_decl_digest() {
   # line and a block reading `**머지 순서**: 없음` hash to what the five-line
   # function gave the same block, so a frozen document's planned rows still
   # match a later run's import, and only a slice that declares a merge-order
-  # predecessor moves its digest.
-  local doc="$1" id="$2" k dk mo
+  # predecessor moves its digest. `라벨 인정` follows the same rule: a line
+  # only when the field is present and not `없음`.
+  local doc="$1" id="$2" k dk mo la
   mo=$(slice_field "$doc" "$id" '머지 순서' 2>/dev/null || true)
+  la=$(slice_field "$doc" "$id" '라벨 인정' 2>/dev/null || true)
   {
     for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
       dk=$k
@@ -2974,6 +3146,7 @@ slice_decl_digest() {
       printf '%s=%s\n' "$k" "$(decl_norm "$(slice_field "$doc" "$id" "$dk" 2>/dev/null || true)")"
     done
     [ -z "$(dep_tokens "$mo")" ] || printf '%s=%s\n' '머지 순서' "$(decl_norm "$mo")"
+    [ -z "$la" ] || [ "$la" = "없음" ] || printf '%s=%s\n' '라벨 인정' "$(decl_norm "$la")"
   } | shasum -a 256 | cut -d' ' -f1
 }
 
@@ -8273,6 +8446,26 @@ merge_gate() {
       "gh -R $slug pr merge $pr"
     return 2
   fi
+  # THE ENFORCEMENT-SURFACE PROVENANCE, THE GATE'S OWN FUNCTION. This merge does
+  # not go through the gate's merge act, so the check that act makes is called
+  # here, right before the one call that lands the branch.
+  local sp_out sp_rc=0
+  sp_out=$(run_gate_call gate_surface_provenance "$seg" "$al" 2>/dev/null) || sp_rc=$?
+  # 3 is a surface that changed outside a seat apply; any other non-zero status
+  # is a check that could not be decided, and the park says which.
+  if [ "$sp_rc" != "0" ]; then
+    sp_out=$(printf '%s' "${sp_out:-(판정 불가 rc=$sp_rc)}" | tr '\t\n' ' ;')
+    if [ "$sp_rc" = "3" ]; then
+      park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+        "좌석 적용 밖에서 바뀐 강제 표면 — ${sp_out:0:300}" \
+        "gh -R $slug pr merge $pr"
+    else
+      park "$seg" act 막힘 "머지 직전 강제 표면 출처" \
+        "강제 표면 출처 판정 불가 — ${sp_out:0:300}" \
+        "gh -R $slug pr merge $pr"
+    fi
+    return 2
+  fi
   gh_q "$slug" pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null || {
     park "$seg" act 막힘 "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr merge $pr"
     return 2
@@ -9444,9 +9637,10 @@ $(sed 's/#.*//' "$sib")"
   # tree every run loads is a MERGE, and that is what the permission cutpoint
   # governs. So the assertions below are that the two mechanisms still have the
   # shape this exception was registered against, not that the files are covered.
-  local orch_ex=0 gate_file hook_file n_all n_rules n_rec
+  local orch_ex=0 gate_file hook_file es_file n_all
   gate_file="$ORCH_DIR/gate.sh"
   hook_file="$(dirname "$ORCH_DIR")/hooks/gate-pretool.sh"
+  es_file="$(dirname "$ORCH_DIR")/hooks/enforcement-surfaces.sh"
   if [ -f "$gate_file" ]; then
     n_all=$(sed -n '/^gate_surface_digest_raw()/,/^}/p' "$gate_file" | sed 's/#.*//' \
             | grep -cE 'ORCH_DIR|orchestrator' || true)
@@ -9460,10 +9654,34 @@ $(sed 's/#.*//' "$sib")"
     printf 'FAIL 게이트 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$gate_file"
     orch_ex=$((orch_ex + 1))
   fi
-  if [ -f "$hook_file" ]; then
-    # Every mention of the orchestrator in the hook must BE the rule-catalog arm.
-    # A count comparison rather than a pattern match: it fails the moment an arm
-    # is widened, which a "does the rules arm exist" check would not.
+  self_check_surface_mentions "$hook_file" "$es_file" || orch_ex=$((orch_ex + $?))
+  fails=$((fails + orch_ex))
+
+  if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
+  printf 'self-check: %s FAIL\n' "$fails"; return 1
+}
+
+self_check_surface_mentions() {
+  # self_check_surface_mentions <hook file> <classifier file> — the self-check's
+  # assertions on where the orchestrator is mentioned in the hook and the
+  # enforcement-surface classifier. Prints one `ok`/`FAIL` line per assertion
+  # and returns the number of FAIL lines. A function of its own so a test can
+  # point it at a mutated pair without running the whole self-check once per
+  # mutation.
+  local hook_file="$1" es_file="$2" orch_ex=0 n_all n_rules n_rec
+  if [ -f "$hook_file" ] && [ -f "$es_file" ]; then
+    # Every mention of the orchestrator in the hook's deny list must BE the
+    # rule-catalog arm. A count comparison rather than a pattern match: it fails
+    # the moment an arm is widened, which a "does the rules arm exist" check
+    # would not.
+    #
+    # THE ARMS LIVE IN THE CLASSIFIER NOW, NOT IN THE HOOK. The hook sources
+    # `enforcement-surfaces.sh` and picks only a message per class token, so the
+    # count moved with the globs: the hook itself must mention the orchestrator
+    # nowhere, and in the classifier every mention must be the rule-catalog
+    # glob, at least once. Checking only the hook would pass vacuously on the
+    # day the glob moved out of it, and a widening written into the classifier
+    # is exactly what this assertion exists to catch.
     #
     # OCCURRENCES, NOT LINES. `grep -c` counts matching LINES, and the widening
     # this assertion exists to catch does not need a new line: an arm widened in
@@ -9488,22 +9706,27 @@ $(sed 's/#.*//' "$sib")"
     n_all=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator' | grep -c . || true)
     n_rec=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator-dir' | grep -c . || true)
     n_all=$(( ${n_all:-0} - ${n_rec:-0} ))
-    n_rules=$(sed 's/#.*//' "$hook_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
+    if [ "${n_all:-0}" = "0" ]; then
+      printf 'ok   훅 자신에는 오케스트레이터 언급이 없다 (거부 팔은 분류기에 있다)\n'
+    else
+      printf 'FAIL 훅의 orchestrator 언급 %s건 — 거부 팔은 분류기에만 있어야 하므로 등재된 예외의 문면과 어긋난다\n' \
+        "${n_all:-0}"
+      orch_ex=$((orch_ex + 1))
+    fi
+    n_all=$(sed 's/#.*//' "$es_file" | grep -o 'orchestrator' | grep -c . || true)
+    n_rules=$(sed 's/#.*//' "$es_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
     if [ "${n_rules:-0}" -ge 1 ] && [ "${n_all:-0}" = "${n_rules:-0}" ]; then
       printf 'ok   등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다 (거부되는 것은 룰 카탈로그뿐)\n'
     else
-      printf 'FAIL 훅의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
+      printf 'FAIL 분류기의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
         "${n_all:-0}" "${n_rules:-0}"
       orch_ex=$((orch_ex + 1))
     fi
   else
-    printf 'FAIL 훅 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$hook_file"
+    printf 'FAIL 훅 파일이나 분류기 파일이 없어 등재된 예외를 확인할 수 없다: %s %s\n' "$hook_file" "$es_file"
     orch_ex=$((orch_ex + 1))
   fi
-  fails=$((fails + orch_ex))
-
-  if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
-  printf 'self-check: %s FAIL\n' "$fails"; return 1
+  return "$orch_ex"
 }
 
 # ---------------------------------------------------------------------------
@@ -10023,6 +10246,21 @@ merge_head_is_reviewed() {
   [ -n "$ht" ] && [ "$ht" = "$rt" ]
 }
 
+dispatch_surface_note() {
+  # dispatch_surface_note <segment> — ` · 강제 표면: <경로> (<분류>), …` and
+  # ` · 좌석 적용 커밋: <sha> (<경로>, …); …` for an implement dispatch line,
+  # each left out when its value is `없음`. The gate's two functions compute
+  # them, the same ones its snapshot prints for a routing shift to copy, so a
+  # fresh session learns which declared paths only a seat apply commits and
+  # which commits on its branch the gate made.
+  local sp sc out=''
+  sp=$(run_gate_call gate_segment_surface_paths "$1" 2>/dev/null) || sp=''
+  case "$sp" in ''|'없음') : ;; *) out=" · 강제 표면: $sp" ;; esac
+  sc=$(run_gate_call gate_segment_seat_commits "$1" 2>/dev/null) || sc=''
+  case "$sc" in ''|'없음') : ;; *) out="$out · 좌석 적용 커밋: $sc" ;; esac
+  printf '%s' "$out"
+}
+
 segment_cycle() {
   local seg="$1" files="$2"
   local branch="seg/$SLUG-$seg" wt pre_head cap cycle=0 al seg_repo prev_rp="" converged=0
@@ -10198,7 +10436,7 @@ segment_cycle() {
       local fix_target=""
       [ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"
       [ -z "$cap_rp" ] || fix_target=" · 수정 대상: $cap_rp 의 P0·P1"
-      prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$fix_target\""
+      prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\""
       STAGE_RESUME=""
       # THE KEY A JUDGMENT THIS DISPATCH EMITS IS FILED UNDER. The dispatch id,
       # so the open-judgment check in `continue_or_park` sees this stage's
@@ -10306,7 +10544,7 @@ segment_cycle() {
       fileset_escape "$seg" "$files" "$wt" || return 1
       stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
-      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$fix_target\""
+      local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\""
       case "$(terminal_route_class "$class")" in
         '정상 완료') : ;;
         '의도된 park')
@@ -10368,7 +10606,7 @@ segment_cycle() {
           # crash.
           log "$seg: $class — 1회만 재시도"
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$fix_target\"" \
+               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\"" \
                crash-retry "크래시 2회" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -10388,7 +10626,7 @@ segment_cycle() {
           # `limit-reclaim` is what leaves the exhausted account out; any other
           # event would sit this lineage back on the account the reap ran from.
           if s4_retry "$sid" "$jkey" "$seg" "$wt" \
-               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$fix_target\"" \
+               "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target\"" \
                limit-reclaim "한도-형상 회수 후 재파견" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
             fileset_escape "$seg" "$files" "$wt" || return 1
@@ -12891,6 +13129,12 @@ plan_from_declaration() {
     _rp=$(slice_field "$doc" "$id" '리뷰 정책')
     [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
     _segargs+=( "선언 다이제스트=$(slice_decl_digest "$doc" "$id")" )
+    # `강제 표면` from the declared files, as the gate's `--from-declaration`
+    # stamps it — the same classifier, the same spelling.
+    local -a _sdf=()
+    local _sf
+    while IFS= read -r _sf; do [ -z "$_sf" ] || _sdf+=("$_sf"); done <<<"$(slice_decl_files "$doc" "$id")"
+    _segargs+=( "강제 표면=$(run_surface_stamp ${_sdf[@]+"${_sdf[@]}"})" )
     _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
     ledger_row 'segment' "${_segargs[@]}"
   done
@@ -12937,9 +13181,17 @@ plan_via_planner() {
       "-" >> "$RUN_DIR/plan.tsv"
   done
   plan_dep_floor_or_park || return 1
+  local -a _pdf
+  local _pf
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
+    # The planner does not classify (its prompt says so); the field is stamped
+    # here from the files it declared, as on the slice path.
+    _pdf=()
+    while IFS= read -r _pf; do [ -z "$_pf" ] || _pdf+=("$_pf"); done \
+      <<<"$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files[]? | strings')"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
+      "강제 표면=$(run_surface_stamp ${_pdf[@]+"${_pdf[@]}"})" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
   done
   return 0
