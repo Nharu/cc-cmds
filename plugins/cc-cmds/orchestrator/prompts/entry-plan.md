@@ -61,12 +61,13 @@ Write both keys on every judgment; a manifest frozen before this field existed h
 
 ## A `visual` step designs the screens before they are built
 
-`visual` is a step skill only, like `split` — it is never an `entry_skill`. Put one in the graph when the work builds or changes screens a person will look at: the `visual-unattended` stage generates the screens locally and reviews them, and every slice that carries screens then waits for a person to approve them at the fixed seat in the morning, while the slices without screens go ahead that night. Work with no screen carries no `visual` step.
+`visual` is a step skill only, like `split` — it is never an `entry_skill`. Put one in the graph when the work builds or changes screens a person will look at: the `visual-unattended` stage generates the screens locally and reviews them, the `visual-publish-unattended` stage then publishes them to Claude Design on the pinned account, and every slice that carries screens waits for a person to approve them by answering that publish stage's question in the morning, while the slices without screens go ahead that night. Work with no screen carries no `visual` step.
 
 - The graph carries **at most one** `visual` step, and its id is always **`S2V`**. That id is the one place the visual step's id is fixed; the driver and the gate read the step by it.
 - It depends on the `design-audit` step, or on the `design` step when the graph has no audit.
 - Every `implement` step depends on it.
 - A `base` graph carries no `visual` step: the base run ends at the split, and each ticket's screens belong to that ticket's own run.
+- With an `S2V` step, write one more step whose `skill` is `visual-publish`: its id is always **`S2P`** and it depends on `S2V` alone (`depends_on: ["S2V"]`). The graph carries **at most one** such step, and none without `S2V`. **No `implement` step depends on `S2P`**: the screen slices wait on the approval, not on the step, and the other slices go ahead. `visual-publish` is a step skill only, never an `entry_skill`, and a `base` graph carries none.
 
 `visual_design_rationale` is its prose reason — why the graph carries a `visual` step, or why it does not. Write it on every judgment; the schema requires it unconditionally.
 
