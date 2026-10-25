@@ -146,7 +146,7 @@ Not every decision is an act. For those, the question is **"may I choose this wi
 
 `act --kind propose-done` carries the goal digest, the termination point decomposed into checkable clauses each with **evidence**, and the residual. **Evidence is a ledger reference or an observable artifact, never prose** — a proposal citing prose is the exact shape of "the check passes and the property fails", while one citing a merge commit is confirmed in the morning with one command.
 
-**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, and no `shift_halts[]` element holds a segment. A plan with no implementation step and a design that stopped follow the same order.
+**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, no `shift_halts[]` element holds a segment, and no segment parked by a `스코프=cone` row reading `사유=시각 승인 대기` still has its `시각-승인` approval open in `pending_approvals[]`. While one is open, end with `사유=승인` as item 2 of 「Dispatching the visual stage」 says, and do not propose done. A plan with no implementation step and a design that stopped follow the same order.
 
 1. Read the snapshot's `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.
 2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for — ledger rows, the run directory, a merge commit's `git show --stat` or `git diff`, `gh pr view`, each through `exec … --surface 읽기` — and when you find it, write `act --kind clause`.
