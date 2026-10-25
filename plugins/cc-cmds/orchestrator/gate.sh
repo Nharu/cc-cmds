@@ -39503,15 +39503,19 @@ gate_check_merge_checks() {
 gate_ci_repair_pass() {
   # gate_ci_repair_pass <segment> <head sha> <round> — the head's newest match
   # row of that round reads `수리 통과`, its `판독 지문` is the mark of the
-  # target's last `master 판독` row, and that reading is fresh.
-  local seg=$1 h=$2 g=$3 al m
+  # target's last `master 판독` row, and that reading is fresh and settled
+  # red or green. A reading still `진행 중` or `판정 불가` passes no merge,
+  # whatever its mark.
+  local seg=$1 h=$2 g=$3 al m last
   run_routed || return 1
   al=$(gate_segment_target_alias "$seg")
   [ -n "$al" ] || return 1
   m=$(gate_ci_match_row "$seg" "$h" "$g")
   [ "$(gate_row_field "$m" '결과')" = '수리 통과' ] || return 1
   gate_master_fresh "$al" || return 1
-  [ "$(gate_row_field "$m" '판독 지문')" = "$(gate_ci_match_reading_mark "$(gate_master_last_row "$al")")" ]
+  last=$(gate_master_last_row "$al")
+  case "$(gate_row_field "$last" '상태')" in 빨강|초록) ;; *) return 1 ;; esac
+  [ "$(gate_row_field "$m" '판독 지문')" = "$(gate_ci_match_reading_mark "$last")" ]
 }
 
 gate_check_grade_regression() {

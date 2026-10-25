@@ -48199,8 +48199,8 @@ n88h_g3=$(n88h "$L88HG"); cm88h_g3=$(cm88h "$L88HG")
 mf88h 초록 '[]' "[$(ev88h "$E6_88H" "$X88H" 해소 - "$S1_88H")]"
 rw88h_g4=$(rw88h "$L88HG"); tr88h "$L88HG"
 check "88h: 열린 사건을 실은 진행 중·판정 불가 판독 동안 대기는 master 대기 를 지키고 대조 행위는 rc 3 이며 초록 뒤 master 재합류 다" \
-  "$n88h_g1|$cm88h_g1|$rw88h_g2|$n88h_g2|$cm88h_g2|$n88h_g3|$cm88h_g3|$({ grep -c '처분=대조' "$L88HG" || true; })|$rw88h_g4|$(n88h "$L88HG")" \
-  "master 대기|0|0|master 대기|3|master 대기|3|1|0|master 재합류"
+  "$n88h_g1|$cm88h_g1|$rw88h_g2|$n88h_g2|$cm88h_g2|$n88h_g3|$cm88h_g3|$rw88h_g4|$(n88h "$L88HG")" \
+  "master 대기|0|0|master 대기|3|master 대기|3|0|master 재합류"
 
 # 대조 행이 없는 머리에서 정착하지 않은 판독 — 열린 사건이 있으면 대조를 부르지 않고 기다린다.
 # 열린 사건도 베이스 뒤 해소도 없으면 층이 서지 않아 L7 그대로다.
@@ -48220,7 +48220,7 @@ mf88h 빨강 "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_
 L88HK=$(l88h repair-unsettled); tr88h "$L88HK"; lg88h '1 가'
 pm88h "$L88HK" >/dev/null
 n88h_k1=$(n88h "$L88HK")
-mf88h '진행 중' "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
+TIP88H="$X88H" mf88h '진행 중' "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
 tr88h "$L88HK"
 check "88h: 진행 중 판독 동안 수리 통과 는 머지 가 아니라 master 대기 이고 머지 검사가 거절한다" \
   "$n88h_k1|$(mt88h "$L88HK")|$(n88h "$L88HK")|$(mc88h "$L88HK")" "머지|대조|수리 통과|1|-|master 대기|3|-"
