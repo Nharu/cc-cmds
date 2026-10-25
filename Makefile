@@ -570,6 +570,14 @@ print-rest-goals:
 # then interleave and the adapter reads the job at step precision. An unwrapped
 # `--self-test` goal's lines come out held the same way but outside every suite,
 # so a FAIL line of one, or its failure, leaves the job at step precision.
+#
+# EVERY GOAL OF THE SHARD STARTS. The sub-make runs with `-k`, so a suite that
+# fails does not stop it from starting the goals still waiting. Without it make
+# starts nothing after the first failure, the goals listed on the `rest shard`
+# line that never started leave no line, and the adapter reads the job at step
+# precision, which was the case for a failure that ended before the shard's last
+# goal started. The job still fails, and its wall clock is still set by the
+# heaviest goal.
 REST_OUTPUT_SYNC := $(if $(filter output-sync,$(.FEATURES)),--output-sync=target)
 
 rest-shard:
@@ -577,7 +585,7 @@ rest-shard:
 	if [ "$$rc" = "4" ]; then echo "rest shard $(SHARD)/$(REST_SHARDS): 배정된 목표가 없습니다"; exit 0; fi; \
 	[ "$$rc" = "0" ] || exit "$$rc"; \
 	echo "rest shard $(SHARD)/$(REST_SHARDS): $$goals"; \
-	$(MAKE) --no-print-directory $(REST_OUTPUT_SYNC) $$goals 2>&1
+	$(MAKE) -k --no-print-directory $(REST_OUTPUT_SYNC) $$goals 2>&1
 
 # One runner of the gate suite. SHARD is the runner, 1-based (1..N); lane j
 # (0..L−1) runs row K = SHARD + j × N of the S-row partition, and the lanes run

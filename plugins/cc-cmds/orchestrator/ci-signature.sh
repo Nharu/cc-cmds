@@ -79,8 +79,9 @@
 #     a make error line shows make stopped, every listed goal started: a
 #     `run/<suite>` goal by its suite-guard start line, a `run-<x>-selftest`
 #     goal by the `bash scripts/<x>.sh --self-test` line make echoes. The
-#     sub-make runs without `-k`, so after the first failure it starts no
-#     further goal, and a goal that never started leaves no line at all.
+#     sub-make runs with `-k` and starts every goal after a failure; a goal
+#     that never started still leaves no line at all, and that is what a make
+#     stopped by a signal, or one run without `-k`, leaves behind.
 #
 # A `<name> self-test: <n> passed, …` total comes from such an unwrapped goal,
 # so it is never taken as the total of the one wrapped suite open beside it.

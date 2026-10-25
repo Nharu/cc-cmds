@@ -353,7 +353,8 @@ check "8 --truncated 는 완결된 로그도 단계 정밀도" \
   "$(printf '%s\n' '정밀도: 단계' 'rest-tests|Run rest shard 1')"
 
 # ---------------------------------------------------------------------------
-# 9. The real rest-shard recipe under make -j: two suites that run at once.
+# 9. The real rest-shard recipe under make -j: two suites that run at once, and
+#    a failure that ends before the shard's last goal starts.
 # ---------------------------------------------------------------------------
 # The outer make reads this repository's Makefile and runs its rest-shard
 # recipe; the partitioner and the wrapper are stand-ins in a scratch directory,
@@ -391,6 +392,30 @@ if [ -n "$MK" ]; then
     rest-shard SHARD=1 REST_SHARDS=1 REST_OUTPUT_SYNC= > "$WORK/h2.log" 2>&1
   out=$(extract 'rest-tests (1)' "$WORK/h2.log")
   check "9 그 대조군 — 출력 동기 없이 돈 같은 목표는 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+
+  # A suite that fails before the shard's last goal starts. Under -j2 test-c
+  # fails at once while test-d runs, and test-e and test-f are still waiting.
+  # The outer make runs without -k, so it is the recipe's own -k that makes the
+  # sub-make start them; without it they leave no line, the `rest shard` list
+  # names them, and the job reads at step precision.
+  R2="$WORK/rest2"
+  mkdir -p "$R2/scripts"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'echo "run/scripts/test-c.sh run/scripts/test-d.sh run/scripts/test-e.sh run/scripts/test-f.sh"' \
+    > "$R2/scripts/rest-shard.sh"
+  cp "$R/scripts/suite-guard.sh" "$R2/scripts/suite-guard.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "FAIL: 1 다 — x"' \
+    'echo "test-c: 0 passed, 1 failed"' 'exit 1' > "$R2/scripts/test-c.sh"
+  for s in d e f; do
+    printf '%s\n' '#!/usr/bin/env bash' 'sleep 2' "echo \"test-$s: 1 passed, 0 failed\"" \
+      > "$R2/scripts/test-$s.sh"
+  done
+  cp "$R/Makefile" "$R2/Makefile"
+  MAKEFLAGS= MFLAGS= MAKELEVEL= "$MK" -j2 --no-print-directory -f "$repo_root/Makefile" -C "$R2" \
+    rest-shard SHARD=1 REST_SHARDS=1 > "$WORK/h3.log" 2>&1
+  check "9 마지막 목표가 시작하기 전에 끝난 실패도 남은 목표가 모두 돌아 단언 정밀도" \
+    "$(extract 'rest-tests (1)' "$WORK/h3.log")" \
+    "$(printf '%s\n' '정밀도: 단언' 'rest-tests|test-c.sh|1 다')"
 else
   printf 'SKIP: 9 출력 동기를 아는 make(GNU make 4.0 이상)가 없어 rest-shard 레시피 사례를 돌리지 않았다\n'
 fi
