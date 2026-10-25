@@ -3768,6 +3768,14 @@ SAGEOF
       printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
       printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
       printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
+      # 라벨 인정 행도 고른 집합만 싣는다(줄마다 `<체크> <라벨>`). 빈 값이면 바이트 그대로다.
+      if [ -n "${SA_LABEL_ACK:-}" ]; then
+        while IFS= read -r extra; do
+          [ -z "$extra" ] || printf -- '- `라벨 인정` | 대상=main | 체크=%s | 라벨=%s | 사유=테스트\n' "${extra% *}" "${extra#* }"
+        done <<SALEOF
+$SA_LABEL_ACK
+SALEOF
+      fi
       # 선택 2행. 기본이 빈 문자열이라 이 블록의 기존 매니페스트는 바이트 그대로
       # 유지된다 — 슬라이스 B 집합만 `gh pr`·`gh api` 를 실어야 하고, 그 집합의
       # argv 는 `gh` 머지라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
@@ -3808,7 +3816,7 @@ SAPEOF
     SA_SEGWT="$SA_ROOT/seg"
     SA_SEGBR="seg-$SA_ID"
     SA_APPLY="(해당 없음)"; SA_APPLY_CMD=""; SA_APPLY_PROBE=""; SA_APPLY_CODES=""
-    SA_PREAUTH_EXTRA=""; SA_TARGET_EXTRA=""; SA_OWNER_DOC=""
+    SA_PREAUTH_EXTRA=""; SA_TARGET_EXTRA=""; SA_OWNER_DOC=""; SA_LABEL_ACK=""
     mkdir -p "$SA_REPO"
     ( cd "$SA_REPO" \
       && git init -q . \
@@ -4083,12 +4091,13 @@ SAPEOF
     cat > "$CB60_STUB" <<'CB60EOF'
 #!/bin/bash
 # 재실행 행위의 GitHub 대역. 답은 `$CB60_S` 의 파일이 고른다:
-#   prlist · checks.pre · checks.post · run.<id> · run.<id>.post · base · post
+#   prlist · checks.pre · checks.post · run.<id> · run.<id>.post · base · post · labels
 #   att_stale · screen_stale  (POST 뒤 옛 답을 몇 번 더 낼지)
 # 파일이 없으면 그 읽기는 실패(rc 1)로 답한다.
 D=${CB60_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
 tok=other; [ "${GH_TOKEN:-}" = cb60-ro-fixture ] && tok=fixture
+[ "${GH_TOKEN:-}" = cb60-rw-fixture ] && tok=write
 printf '%s|GH_TOKEN=%s|GITHUB_TOKEN=%s|GH_CONFIG_DIR=%s|GH_REPO=%s|GH_HOST=%s\n' \
   "$1 $2 $3" "$tok" "${GITHUB_TOKEN-unset}" "${GH_CONFIG_DIR-unset}" "${GH_REPO-unset}" "${GH_HOST-unset}" >> "$D/env.log"
 dec() {
@@ -4099,6 +4108,7 @@ dec() {
 out() { [ -f "$D/$1" ] || exit 1; cat "$D/$1"; exit 0; }
 case "$1 $2" in
   "pr list") out prlist ;;
+  "pr view") out labels ;;
   "pr checks")
     if [ -f "$D/posted" ] && ! dec screen_stale; then out checks.post; else out checks.pre; fi ;;
 esac
@@ -4290,6 +4300,13 @@ CB60EOF
     nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
     sag act --manifest "$SA_MANIFEST" --kind ci-rerun --target main "$@" --snapshot-digest "$(SAH)" --rationale x
     check "60b: 철자 — $lb" "$rc|$(cb60_n 'CI 처분')|$(cb60_posts)" "2|$nr|$np"
+  }
+  # 라벨 인정의 두 절(60d, 60e)이 함께 쓴다.
+  la60_round() { cc_ci_round "$SA_LEDGER" CK "$CK60_SHA" | tr '\n' ' ' | sed 's/ $//'; }
+  la60_row() {
+    # la60_row <상태> <회차> — 세그먼트 CK 의 현재 head 에 손으로 쓴 라벨 회차 행.
+    printf -- '- `CI 처분` | 교대=1 | 세그먼트=CK | PR=%s#1 | head sha=%s | 처분=라벨 | 상태=%s | 회차=%s | 실행=777 | 워크플로=.github/workflows/gate.yml | 실패 체크=gate | 체크=gate | 라벨=api-change | 기본 브랜치=통과 | 응답=- | 관측=- | prev=x\n' \
+      "$CB60_SLUG" "$CK60_SHA" "$1" "$2" >> "$SA_LEDGER"
   }
 }
 
@@ -5941,18 +5958,26 @@ fi
 # The two tool names are matched by equality, not by `test`, so a third entry of
 # any spelling still fails. The allow-list is assembled per kind, so every
 # variant but the shift one is checked; the shift variant's empty allow-list is
-# asserted with its web denial below.
+# asserted with its web denial below. The visual publish variant also allows the
+# three artifact tools, because publishing the screens is that stage's work.
 allow_wide=0
 for f in "$SETTINGS_DIR"/*.json; do
   [ -f "$f" ] || continue
   [ "$(basename "$f")" = "shift.json" ] && continue
-  if ! jq -e '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | sort == ["WebFetch","WebSearch"]' \
+  if [ "$(basename "$f")" = "visual-publish.json" ]; then
+    want1b='["Artifact","ArtifactComments","ArtifactData","WebFetch","WebSearch"]'
+  else
+    want1b='["WebFetch","WebSearch"]'
+  fi
+  if ! jq -e --argjson w "$want1b" '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | sort == $w' \
        "$f" >/dev/null 2>&1; then
     allow_wide=$((allow_wide + 1))
     printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.allow' "$f")" >&2
   fi
 done
-check "allow 목록에 CLAUDE.md 읽기와 웹 조사 도구 말고는 없다" "$allow_wide" "0"
+check "allow 목록에 CLAUDE.md 읽기와 웹 조사 도구(시각 발행 변종은 Artifact 세 도구까지) 말고는 없다" "$allow_wide" "0"
+check "allow 를 세는 설정에 시각 발행 변종이 있다 (위가 공허하지 않다)" \
+  "$( [ -f "$SETTINGS_DIR/visual-publish.json" ] && printf 있음 || printf 없음)" "있음"
 
 # The attempt term of the session id is DERIVED, not passed as argv. Without it
 # a stage that died before producing anything kept its session id and every
@@ -13492,7 +13517,7 @@ rm -f "$k15_led"
 
 # ---------------------------------------------------------------------------
 # 15v. The run-scope visual step: exempt from the segment row, judged by its sidecar
-# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각과 교대를 포함한 모든 설정 변종이 Claude Design 네 도구를 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
+# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각 발행을 뺀 모든 설정 변종이 Claude Design 네 도구를 거부하고 시각 발행 변종은 DesignSync 만 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
 #
 # The visual step is the fourth row of the run-scope table. It generates the
 # night's screens from the audited document and builds no segment, so it is
@@ -13514,21 +13539,28 @@ check "15v 픽스처 매니페스트가 검사를 통과한다 (아래가 공허
 # The night's visual step must not reach the Design canvas any more than the
 # other stages do: every settings variant of this run, the visual one and the
 # shift included, refuses the Claude Design tools, and the set is the one run.sh
-# puts on every judgment call's `--disallowedTools`. No file is exempt, so a new
-# kind arriving without the deny is counted.
+# puts on every judgment call's `--disallowedTools`. The one exception is the
+# visual publish variant: publishing is that stage's work, so it refuses
+# DesignSync alone and lets the three artifact tools through. No other file is
+# exempt, so a new kind arriving without the deny is counted.
 design15v_bad=0
 for f in "$RD15V/settings"/*.json; do
   [ -f "$f" ] || continue
-  if ! jq -e '.permissions.deny // [] | index("DesignSync") != null and index("Artifact") != null
-              and index("ArtifactComments") != null and index("ArtifactData") != null' \
-       "$f" >/dev/null 2>&1; then
+  if [ "$(basename "$f")" = "visual-publish.json" ]; then
+    q15v='.permissions.deny // [] | index("DesignSync") != null and index("Artifact") == null
+          and index("ArtifactComments") == null and index("ArtifactData") == null'
+  else
+    q15v='.permissions.deny // [] | index("DesignSync") != null and index("Artifact") != null
+          and index("ArtifactComments") != null and index("ArtifactData") != null'
+  fi
+  if ! jq -e "$q15v" "$f" >/dev/null 2>&1; then
     design15v_bad=$((design15v_bad + 1))
     printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.deny' "$f")" >&2
   fi
 done
-check "15v: 거부를 세는 설정에 시각 변종과 교대 변종이 있다 (아래가 공허하지 않다)" \
-  "$( [ -f "$RD15V/settings/visual.json" ] && [ -f "$RD15V/settings/shift.json" ] && printf 있음 || printf 없음)" "있음"
-check "15v: 시각과 교대를 포함한 모든 설정 변종이 Claude Design 네 도구를 거부한다" "$design15v_bad" "0"
+check "15v: 거부를 세는 설정에 시각 변종·시각 발행 변종·교대 변종이 있다 (아래가 공허하지 않다)" \
+  "$( [ -f "$RD15V/settings/visual.json" ] && [ -f "$RD15V/settings/visual-publish.json" ] && [ -f "$RD15V/settings/shift.json" ] && printf 있음 || printf 없음)" "있음"
+check "15v: 시각 발행을 뺀 모든 설정 변종이 Claude Design 네 도구를 거부하고 시각 발행 변종은 DesignSync 만 거부한다" "$design15v_bad" "0"
 check "15v: Claude Design 거부 이름은 판단 호출의 거부 이름과 같은 집합이다" \
   "$(grep -E '^readonly CLAUDE_DESIGN_TOOLS=' "$(dirname "$GATE")/run.sh" | cut -d'"' -f2 | tr ' ' '\n' | sort | tr '\n' ' ')" \
   "Artifact ArtifactComments ArtifactData DesignSync "
@@ -13646,6 +13678,318 @@ esac
 check "15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다" \
   "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["D1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' | grep -c '시각 단계' || true)" "0"
 rm -f "$WORK/plan15v-shape.md"
+
+# ---------------------------------------------------------------------------
+# 15vp. The run-scope visual publish step: its readers, its halts and its grades
+# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 셋이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다 ---
+#
+# The publish step is the fifth row of the run-scope table. It runs after the
+# visual step, publishes the screens at the one lane the host file pins, and
+# halts on what only a person answers: a screen verdict, a forbidden-list
+# candidate, a failed publish. The readers here are sourced and called directly
+# on fixture files — a manifest whose plan has `S2P`, a ledger block of `중단
+# 답` rows and the run's halt records — because what they decide is a function
+# of those files and nothing else.
+# ---------------------------------------------------------------------------
+VP15="$WORK/vp15"
+rm -rf "$VP15"; mkdir -p "$VP15/run/halt" "$VP15/docs/visual" "$VP15/cfg/cc-cmds"
+plan15vp='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2P"] } ] }'
+write15c "$VP15/m.md" "$plan15vp" docs/fixture-design-15vp.md R15VP
+write15c "$VP15/m-nop.md" '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' docs/fixture-design-15vp.md R15VP
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+vp15_halt() {  # vp15_halt <n> <step> [<candidate id>] — an S2P halt record
+  { printf '# 정지\n\n**분류**: gate-unanswerable\n**스텝**: %s\n' "$2"
+    [ -z "${3:-}" ] || printf '**금지 후보**: %s\n' "$3"
+    printf '**질문 문면**: 픽스처\n'; } > "$VP15/run/halt/S2P#$1.md"
+}
+vp15_answer() {  # vp15_answer <n> <answered by> <option> — a `중단 답` row
+  printf -- '- `중단 답` | 중단 기록=%s | 답한 주체=%s | 선택지=%s\n' \
+    "$VP15/run/halt/S2P#$1.md" "$2" "$3" >> "$VP15/led.md"
+}
+vp15() {  # vp15 <manifest> <stage id or -> <snippet> [args...] — run a snippet in the sourced gate
+  local m="$1" sid="$2" snip="$3"; shift 3
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 VP_M="$m" VP_SID="$sid" VP_L="$VP15/led.md" \
+      VP_RD="$VP15/run" VP_SNIP="$snip" XDG_CONFIG_HOME="$VP15/cfg" bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    set +e
+    MANIFEST="$VP_M"; LEDGER="$VP_L"; RUN_ID=R15VP; RUN_DIR="$VP_RD"; DOC=docs/fixture-design-15vp.md
+    if [ "$VP_SID" = "-" ]; then unset CC_PIPELINE_STAGE_ID; else CC_PIPELINE_STAGE_ID="$VP_SID"; fi
+    eval "$VP_SNIP"' _ "$@" 2>/dev/null )
+}
+
+check "15vp: S2P 는 visual-publish 종류다" "$(vp15 "$VP15/m.md" - 'stage_kind_of S2P')" "visual-publish"
+check "15vp: 계획의 visual-publish 단계가 런 범위 단계다" "$(vp15 "$VP15/m.md" - 'gate_run_scope_step visual-publish')" "S2P"
+check "15vp: 발행 단계가 없는 계획에는 런 범위 발행 단계가 없다" \
+  "$(vp15 "$VP15/m-nop.md" - 'gate_run_scope_step visual-publish || printf 없음')" "없음"
+check "15vp: 시각 발행만 Artifact 환경과 표지를 받는다" \
+  "$(CLAUDE_CODE_ARTIFACT=1 CC_PIPELINE_VISUAL_PUBLISH=1 vp15 "$VP15/m.md" - '
+       gate_launch_kind_env visual; printf "%s/%s " "${CLAUDE_CODE_ARTIFACT:-x}" "${CC_PIPELINE_VISUAL_PUBLISH:-x}"
+       gate_launch_kind_env visual-publish; printf "%s/%s" "${CLAUDE_CODE_ARTIFACT:-x}" "${CC_PIPELINE_VISUAL_PUBLISH:-x}"')" "x/x 1/1"
+check "15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다" \
+  "$(vp15 "$VP15/m.md" - 'kind_pin_lane_of visual; printf "rc=%s" "$?"')" "rc=0"
+check "15vp: 호스트 파일에 lane 이 없으면 시각 발행 종류의 고정은 실패한다" \
+  "$(vp15 "$VP15/m.md" - 'kind_pin_lane_of visual-publish; printf "rc=%s" "$?"')" "rc=1"
+printf '%s\n' 'account = design.owner@example.com' 'lane = u2' > "$VP15/cfg/cc-cmds/claude-design"
+check "15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다" \
+  "$(vp15 "$VP15/m.md" - 'kind_pin_lane_of visual-publish')" "u2"
+check "15vp: 재진입 표에 시각 발행 정지 셋이 있다" \
+  "$(vp15 "$VP15/m.md" - 'gate_reentry_table' | grep -c '^visual-publish-unattended|' || true)" "6"
+
+# The standing refusal is the last person's answer to a verdict or a failed
+# publish; a seat's or router's answer stands for nothing, and a later approval
+# supersedes an earlier refusal.
+vp15_halt 1 '시각-판정 — 화면 둘'
+vp15_answer 1 좌석 거부
+check "15vp: 사람이 아닌 답은 거부를 세우지 않는다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal || printf 없음')" "없음"
+vp15_answer 1 사람 거부
+check "15vp: 시각-판정 의 사람 거부는 거부다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal' | cut -f1,3)" "거부	거부"
+vp15_halt 2 '시각-판정'
+vp15_answer 2 사람 승인
+check "15vp: 뒤의 사람 승인이 앞의 거부를 지운다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal || printf 없음')" "없음"
+vp15_halt 3 '발행-실패 — 업로드 실패'
+vp15_answer 3 사람 '발행하지 않음'
+check "15vp: 발행-실패 의 발행하지 않음 은 무효다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal' | cut -f1,3)" "무효	발행하지 않음"
+
+# A person's no outranks an earlier yes. Here the latest verdict record S2P#2
+# holds a person's `승인`, and the `발행하지 않음` to S2P#3 came after it, so a
+# line whose tail names S2P#2 does not stand. Then the same record answered
+# `승인` and then `거부`: the last answer is the one read. A closing `승인` to
+# S2P#2 lifts the refusal, so the provenance checks below start from none.
+ok15vp='승인 유효 0123456789ab'
+check "15vp: 승인 뒤의 발행하지 않음 이 서 있으면 꼬리 달린 승인 줄도 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf " rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" \
+  "승인 무효 — 시각 발행 단계 중단 기록 S2P#3.md 에 사람이 남긴 「발행하지 않음」 답이 서 있다 rc=1"
+vp15_answer 2 사람 승인
+vp15_answer 2 사람 거부
+check "15vp: 같은 기록의 승인 뒤 거부는 거부로 읽힌다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_person_answer "$RUN_DIR/halt/S2P#2.md" 승인 || printf 없음')" "없음"
+check "15vp: 같은 기록의 승인 뒤 거부가 서 있으면 꼬리 달린 승인 줄은 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" "rc=1"
+vp15_answer 2 사람 승인
+check "15vp: 거부 뒤의 사람 승인이 꼬리를 다시 세운다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#2.md')" "rc=0"
+
+# Provenance: in a run with the publish stage the approval line has to carry
+# the tail naming the latest verdict record, and a person approved that record.
+check "15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp")" "rc=1"
+check "15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#1.md')" "rc=1"
+vp15_halt 4 '시각-판정'
+check "15vp: 사람 승인 답이 없는 꼬리는 무효다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf " rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#4.md' | sed -n 's/.* rc=/rc=/p')" "rc=1"
+vp15_answer 4 좌석 승인
+check "15vp: 좌석의 승인 답은 꼬리를 세우지 않는다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1" >/dev/null; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#4.md')" "rc=1"
+vp15_answer 4 사람 승인
+check "15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다" \
+  "$(vp15 "$VP15/m.md" - 'visual_approval_provenance "$1"; printf "rc=%s" "$?"' "$ok15vp"$'\n''출처 사람 답 S2P#4.md')" "rc=0"
+check "15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다" \
+  "$(vp15 "$VP15/m-nop.md" - 'visual_approval_provenance "$1"; printf "rc=%s" "$?"' "$ok15vp")" "rc=0"
+case "$(vp15 "$VP15/m.md" - 'visual_approval_route_hint')" in
+  *"S2P#4.md"*) ok "15vp: 발행 단계가 있는 런의 승인 안내는 마지막 시각-판정 기록을 든다" ;;
+  *) bad "15vp: 발행 단계가 있는 런의 승인 안내는 마지막 시각-판정 기록을 든다" "$(vp15 "$VP15/m.md" - 'visual_approval_route_hint')" ;;
+esac
+
+# The artifact: the terminal literal, and either the sidecar at `발행됨` or a
+# person's no at one of the stage's halts. The records and answers above are
+# cleared first, so these checks start from no halt at all.
+printf '시각 발행 단계를 마쳤습니다.\n' > "$VP15/stream.txt"
+rm -f "$VP15/run/halt"/S2P#*.md
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+mkdir -p "$WT/docs/visual"
+printf '# 픽스처 설계\n' > "$WT/docs/fixture-design-15vp.md"
+SC15VP="$WT/docs/visual/docs-fixture-design-15vp.md"
+printf '# 시각 사이드카\n\n**상태**: 검토 통과\n' > "$SC15VP"
+check "15vp: 픽스처 문서의 사이드카 경로가 그 사이드카다 (아래가 공허하지 않다)" \
+  "$(vp15 "$VP15/m.md" - 'visual_sidecar_reviewed "$DOC" && printf 검토통과')" "검토통과"
+check "15vp: 종결 문구만 있는 발행 단계는 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=1"
+printf '# 시각 사이드카\n\n**상태**: 발행됨\n' > "$SC15VP"
+check "15vp: 발행됨 사이드카와 종결 문구는 산출이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=0"
+: > "$VP15/empty.txt"
+check "15vp: 종결 문구 없는 발행됨 사이드카는 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/empty.txt")" "rc=1"
+printf '# 시각 사이드카\n\n**상태**: 검토 통과\n' > "$SC15VP"
+vp15_halt 1 '시각-판정'
+vp15_answer 1 사람 거부
+check "15vp: 사람 거부 뒤의 종결 문구는 산출이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=0"
+vp15_answer 1 사람 승인
+check "15vp: 사람이 승인으로 바꾼 거부는 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=1"
+rm -f "$SC15VP" "$WT/docs/fixture-design-15vp.md"
+
+# The grades: `account` writes the host file only from the publish stage, and
+# `append` adds the one line a person approved, once.
+check "15vp: lane 은 읽기다" \
+  "$(vp15 "$VP15/m.md" - 'surface_of_argv0 "$1" lane' "$CC_ORCH/visual-config.sh")" "읽기"
+check "15vp: 발행 단계 밖의 account 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "등급 미상"
+check "15vp: 발행 단계가 없는 계획의 account 는 등급 미상이다" \
+  "$(vp15 "$VP15/m-nop.md" 'S2P#1' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "등급 미상"
+check "15vp: 발행 단계의 account 는 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "트리밖쓰기"
+vp15_halt 5 '금지-후보 — 반복 문구' 'hero-gradient'
+vp15_answer 5 사람 승인
+ban15vp='- `hero-gradient` | 그라데이션 히어로 — 3회 home'
+check "15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "트리밖쓰기"
+check "15vp: 맨 줄 형태의 같은 후보도 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" 'hero-gradient | 그라데이션 히어로')" "트리밖쓰기"
+check "15vp: 다른 후보의 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" 'other-id | 다른 후보')" "등급 미상"
+check "15vp: 발행 단계 밖의 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "등급 미상"
+check "15vp: 줄이 둘인 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2" "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "등급 미상"
+printf -- '- `자율 승인` | 행위=visual-config.sh append | 소비 중단 답=S2P#5.md\n' >> "$VP15/led.md"
+check "15vp: 소비된 답의 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "등급 미상"
+vp15_halt 6 '금지-후보' 'hero-gradient'
+vp15_answer 6 좌석 승인
+check "15vp: 좌석이 승인한 후보의 append 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" append "$2"' "$CC_ORCH/visual-config.sh" "$ban15vp")" "등급 미상"
+
+# The linked close: an open `시각-승인` question is closed by the person's no at
+# the stage's verdict halt, with a row that names the halt answer.
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J9 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_halt 7 '시각-판정'
+vp15_answer 7 사람 거부
+vp15 "$VP15/m.md" - 'gate_visual_halt_linked_close J9' >/dev/null
+row15vp=$(grep -F '| 승인 id=J9 |' "$VP15/led.md" | tail -1)
+case "$row15vp" in
+  *"| 상태=거부 |"*"| 처분 사유=중단 답 연동"*) ok "15vp: 중단 답 연동 닫기가 처분 사유를 싣는다" ;;
+  *) bad "15vp: 중단 답 연동 닫기가 처분 사유를 싣는다" "$row15vp" ;;
+esac
+case "$row15vp" in
+  *"답변 문면=중단 답 연동(기록 S2P#7.md, 선택지 거부)"*) ok "15vp: 연동 닫기의 답변 문면은 중단 기록과 선택지를 든다" ;;
+  *) bad "15vp: 연동 닫기의 답변 문면은 중단 기록과 선택지를 든다" "$row15vp" ;;
+esac
+
+# A question submitted after the person's no is closed by that no through the
+# predicate arm, even while the approval predicate holds. The predicate is
+# stubbed to hold, so the order is what decides: checked after the predicate,
+# the refusal would never be reached and the question would close `승인`.
+# Both ways in: a `거부` given after a `승인` to the same verdict record, and a
+# `발행하지 않음` to a failed publish after the verdict was approved.
+vp15_resolve() {  # vp15_resolve <승인 id> — the row the predicate arm leaves
+  vp15 "$VP15/m.md" - 'gate_visual_approval_holds() { printf "승인 유효 0123456789ab"; }
+    gate_visual_approval_resolve "$1" "화면 승인" 시각-승인' "$1" >/dev/null
+  grep -F "| 승인 id=$1 |" "$VP15/led.md" | tail -1
+}
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J8 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_halt 10 '시각-판정'
+vp15_answer 10 사람 승인
+vp15_answer 10 사람 거부
+row15vp=$(vp15_resolve J8)
+case "$row15vp" in
+  *"| 상태=거부 |"*"| 처분 사유=중단 답 연동"*) ok "15vp: 같은 기록의 승인 뒤 거부는 승인 술어가 서도 뒤에 제출된 시각-승인 을 거부로 닫는다" ;;
+  *) bad "15vp: 같은 기록의 승인 뒤 거부는 승인 술어가 서도 뒤에 제출된 시각-승인 을 거부로 닫는다" "$row15vp" ;;
+esac
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J7 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_halt 11 '발행-실패'
+vp15_answer 10 사람 승인
+vp15_answer 11 사람 '발행하지 않음'
+row15vp=$(vp15_resolve J7)
+case "$row15vp" in
+  *"| 상태=무효 |"*"| 처분 사유=중단 답 연동"*) ok "15vp: 승인 뒤의 발행하지 않음 은 승인 술어가 서도 뒤에 제출된 시각-승인 을 무효로 닫는다" ;;
+  *) bad "15vp: 승인 뒤의 발행하지 않음 은 승인 술어가 서도 뒤에 제출된 시각-승인 을 무효로 닫는다" "$row15vp" ;;
+esac
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J6 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_answer 10 사람 승인
+row15vp=$(vp15_resolve J6)
+case "$row15vp" in
+  *"| 상태=승인 |"*) ok "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" ;;
+  *) bad "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" "$row15vp" ;;
+esac
+rm -rf "$VP15"
+
+# An `append` no person approved is refused on the acting path in the default
+# auto-resolving mode, declared as the approved one would be. With the switch
+# on, an unknown grade with a declaration takes the declaration path, and the
+# gate's own visual helper must not: its row is the only check left once the
+# publish stage's marker lifts the helper's own in-run refusal. `plan` only
+# warns where `exec` exits, and the unknown-grade arm prints its line only when
+# the declaration path did not take the act, so that line is what is asserted.
+CC_GATE_PREV_AR15VP="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- "$CC_ORCH/visual-config.sh" append 'zz-probe | 텍스트 | probe | -'
+case "$msg" in
+  *"the gate's own visual helper is graded by its subcommand"*) ok "15vp: 승인 없는 append 는 자동 해소 모드의 선언으로도 열리지 않는다" ;;
+  *) bad "15vp: 승인 없는 append 는 자동 해소 모드의 선언으로도 열리지 않는다" "rc=$rc $msg" ;;
+esac
+case "$msg" in
+  *"an orchestrator script this plugin ships"*|*"the table has to be widened"*)
+    bad "15vp: 자기 시각 헬퍼의 등급 미상에는 표 넓히기·버전 어긋남 안내가 붙지 않는다" "$msg" ;;
+  *) ok "15vp: 자기 시각 헬퍼의 등급 미상에는 표 넓히기·버전 어긋남 안내가 붙지 않는다" ;;
+esac
+# Any other copy of the helper runs the same `append` once the publish stage's
+# marker is set, so the declaration path refuses it too: a copy outside the
+# gate's directory called by its path, the same copy behind `env` setting the
+# marker, and behind `command`.
+VPC15="$WORK/vp15-copy"
+rm -rf "$VPC15"; mkdir -p "$VPC15"
+cp "$CC_ORCH/visual-config.sh" "$VPC15/visual-config.sh"
+for vpc15 in "$VPC15/visual-config.sh" "env CC_PIPELINE_VISUAL_PUBLISH=1 $VPC15/visual-config.sh" "command $VPC15/visual-config.sh"; do
+  # shellcheck disable=SC2086
+  gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 런로컬 -- $vpc15 append 'zz-probe | 텍스트 | probe | -'
+  lbl15vp=${vpc15%% *}; lbl15vp=${lbl15vp##*/}
+  case "$msg" in
+    *"a visual helper that is not the file beside this gate has no grade"*)
+      ok "15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다 ($lbl15vp)" ;;
+    *) bad "15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다 ($lbl15vp)" "rc=$rc $msg" ;;
+  esac
+done
+# The launchers that name the helper only further in — `find -exec`, `xargs`
+# with no grade row — and an interpreter running it are refused the same way.
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- find "$VPC15" -maxdepth 0 -exec "$VPC15/visual-config.sh" append 'zz-probe | 텍스트 | probe | -' ';'
+case "$msg" in
+  *"a visual helper that is not the file beside this gate has no grade"*) ok "15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다" ;;
+  *) bad "15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다" "rc=$rc $msg" ;;
+esac
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- xargs "$VPC15/visual-config.sh" append 'zz-probe | 텍스트 | probe | -'
+case "$msg" in
+  *"a visual helper that is not the file beside this gate has no grade"*) ok "15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다" ;;
+  *) bad "15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다" "rc=$rc $msg" ;;
+esac
+for vpc15 in bash "sh -c"; do
+  if [ "$vpc15" = bash ]; then
+    gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 -- bash "$VPC15/visual-config.sh" append 'zz-probe | 텍스트 | probe | -'
+  else
+    gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 -- sh -c "$VPC15/visual-config.sh append zz-probe"
+  fi
+  case "$msg" in
+    *"a runner in front of \`visual-config.sh account|append|seed\` is not graded"*)
+      ok "15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다 (${vpc15%% *})" ;;
+    *) bad "15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다 (${vpc15%% *})" "rc=$rc $msg" ;;
+  esac
+done
+# The word scan does not catch a read: an interpreter over the helper's
+# `lane` stays on the opaque path it always took.
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- bash "$VPC15/visual-config.sh" lane
+case "$msg" in
+  *"a runner in front of"*) bad "15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다" "$msg" ;;
+  *) ok "15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다" ;;
+esac
+rm -rf "$VPC15"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR15VP"
 
 # ---------------------------------------------------------------------------
 # 15w. A screen slice is not dispatched before its screens are approved
@@ -19355,7 +19699,7 @@ sed 's/| 사유=밤새 이어서 돈다$/| 사유=런이 고쳐 썼다/' "$BRK" 
 gate snapshot --manifest "$BRK"
 case "$rc/$msg" in
   0/*) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
-  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·플러그인 허용·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
   *) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
 # The form of each row is refused before anything reads it, fail-closed.
@@ -25143,13 +25487,19 @@ check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
 # THE SEVENTH IS THE `사람-결정` FREE-INPUT CLOSE. That class's free text is the
 # decision, so `gate_close` closes it `승인` instead of leaving it `대기`, and an
 # approval closed there is done being waited on like any other terminal.
+#
+# THE EIGHTH IS THE VISUAL PUBLISH STAGE'S LINKED CLOSE. A person's `거부` to a
+# `시각-판정` halt or `발행하지 않음` to a `발행-실패` halt closes the run's open
+# `시각-승인` questions `거부` or `무효` outside `gate_close`
+# (`gate_visual_halt_linked_close`), and those questions are as done being
+# waited on as the ones the other seven terminals end.
 check "넘침 정리가 닫기 종단 도우미에 한 번 배선돼 있다" \
   "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "1"
 check "그것이 개별 배너 지우기 바로 뒤에 붙어 있다" \
   "$( { grep -A1 -F 'cc_notify_clear answer "$1" || true' "$GATE" || true; } \
       | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "1"
-check "닫기 함수의 다섯 종단과 자동 해소 닫기와 철회 종단이 전부 그 도우미를 부른다" \
-  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "7"
+check "닫기 함수의 다섯 종단과 자동 해소 닫기와 철회 종단과 시각 발행 연동 닫기가 전부 그 도우미를 부른다" \
+  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "8"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #
@@ -41480,9 +41830,20 @@ cc60c_cell() {
   [ "${cc60c_nb:-0}" = "$nb0" ] || cc60c_fail3="$cc60c_fail3[$lb · $tg · $rr: blocked]"
   if [ "$CC60C_BOTH" = 1 ]; then
     cc60c_x 0 "$tg" "$rr" "$cut" -- "$@"
+    cc60c_ad=$(printf '%s' "$*" | shasum -a 256 | cut -d' ' -f1)
     # 등급표에 없는 래퍼(이 기기의 `genv`·`gtimeout`)는 사람이 있는 모드에서 승인 전에 등급
     # 미상(rc 2)으로 멈춘다 — 행위가 나가지 않는 것은 같고, 그 rc 는 문면으로 가린다.
-    case "$rc|$msg" in 5\|*|2\|*'등급 미상'*) ;; *) cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;; esac
+    # 질의를 파일에서 읽는 graphql 철자는 게이트가 본문을 읽지 못해 PR 라벨 쓰기로 보고, 그
+    # 쓰기는 사람이 있는 모드에서도 승인이 아니라 `PR라벨쓰기` park(rc 11)다 — 승인은 행 경로가
+    # 끝내 열지 않는 쓰기를 사람이 열게 하므로. 그 칸은 이 행위의 다이제스트를 실은 blocked
+    # 행의 `도달 판정` 으로 가린다 — 같은 행위의 park 는 한 번만 기록되고, 다시 내면 그 행을
+    # 그대로 따른다.
+    case "$rc|$msg" in 5\|*|2\|*'등급 미상'*) ;;
+      11\|*)
+        cc60c_hit=$( { grep '^- `blocked` ' "$led" 2>/dev/null || true; } | { grep -F "행위 다이제스트=$cc60c_ad" || true; } \
+          | { grep -E '도달 판정=PR라벨쓰기( |$)' || true; } )
+        [ -n "$cc60c_hit" ] || cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;;
+      *) cc60c_fail5="$cc60c_fail5[$lb · $tg · $rr: rc=$rc]" ;; esac
   fi
   [ "$(grep -c . "$CC60C_LOG" || true)" = "$n0" ] || cc60c_called="$cc60c_called[$lb · $tg · $rr]"
 }
@@ -41805,6 +42166,391 @@ check "69: 수집기 rc=2 — 수집기가 실제로 불렸다" "$p69_called" "�
 # 결정적 재현: 실제 수집기는 정수가 아닌 전환 구간 폭을 인자 오류(2)로 거부한다.
 p69_fail_case "실제 수집기 인자 오류" "$repo_root/plugins/cc-cmds/orchestrator/collect-run-metrics.sh" \
   CC_METRICS_SWITCH_WINDOW_S=abc
+
+# ---------------------------------------------------------------------------
+# 60d. 라벨 인정 — types 판독기, 회차, 다음 값, PR 라벨 쓰기 판정, 규칙 갈래
+# --- section: 60d | group: sa | covers: act, plan, snapshot | anchors: 60d: types 판독기가 모양마다 답한다, 60d: PR 라벨 쓰기 판정이 형태마다 답한다, 60d: 선언된 체크의 정착한 실패에서 다음은 CI 라벨 인정 이다, 60d: 열린 라벨 회차에서 다음은 CI 라벨 인정 이다, 60d: 재실행 act 는 라벨 회차를 자기 열린 요청으로 읽지 않는다, 60d: 라벨 회차 통과 뒤 머지가 된다, 60d: 실패로 닫힌 라벨 회차 뒤 통과는 머지로 간다, 60d: 라벨 수락 뒤의 재실행이 새 회차를 연다, 60d: 선언 밖 체크의 실패는 CI 재실행 이다, 60d: 규칙이 표지 있는 라벨 행위를 연다 ---
+#
+# 60b 의 픽스처(`cb60_head`·`cb60_new`) 위에 매니페스트의 `라벨 인정` 행을 얹는다. 라벨
+# 회차의 `CI 처분` 행은 손으로 쓴다 — 라벨 행위가 POST 까지 가려면 규칙 갈래와 슬라이스
+# 선언이 함께 있어야 하는데, 이 절은 그 행위 없이도 정해지는 다음 값·회차·머지를 잰다.
+# 판독기와 PR 라벨 쓰기 판정은 게이트를 소싱한 이 셸에서 함수로 직접 부른다.
+# ---------------------------------------------------------------------------
+LA60_D="$WORK/la60"; rm -rf "$LA60_D"; mkdir -p "$LA60_D"
+la60_types() {
+  # la60_types <기대> <이벤트> <내용> — 판독기 한 사례. 실패는 모아서 한 줄로 낸다.
+  local f="$LA60_D/wf.$((${LA60_I:-0} + 1)).yml"
+  LA60_I=$((${LA60_I:-0} + 1))
+  printf '%s\n' "$3" > "$f"
+  local got; got=$(gate_label_ack_types "$f" "$2")
+  [ "$got" = "$1" ] || la60_tfail="$la60_tfail[$LA60_I: $got≠$1]"
+}
+la60_tfail=''
+la60_types 받지않음 pull_request 'on: pull_request'
+la60_types 받지않음 pull_request 'on: [pull_request, push]'
+la60_types 받지않음 pull_request $'on:\n  pull_request:\n  push:'
+la60_types 받지않음 pull_request $'on:\n  pull_request:\n    branches: [main]'
+la60_types 받음 pull_request $'on:\n  pull_request:\n    types: [opened, labeled]'
+la60_types 받음 pull_request $'on:\n  pull_request:\n    types:\n      - "labeled"\n      - synchronize'
+la60_types 받지않음 pull_request $'on:\n  pull_request:\n    types: [opened]'
+la60_types 받음 pull_request $'"on":\n  pull_request:\n    types: [\'labeled\']'
+la60_types 받음 pull_request $'true:\n  pull_request:\n    types: [labeled]'
+la60_types 받지않음 pull_request $'on:\n  push:\n    branches: [main]'
+la60_types 받음 pull_request_target $'on:\n  pull_request_target:\n    types: [labeled]'
+la60_types 받지않음 pull_request $'on:\n  pull_request_target:\n    types: [labeled]'
+la60_types 읽지못함 pull_request $'on:\n  pull_request: &a\n    types: [labeled]'
+la60_types 읽지못함 pull_request $'on:\n  pull_request:\n    types: labeled'
+la60_types 읽지못함 pull_request $'on:\n  pull_request:\n    types: [opened]\n---\non: push'
+la60_types 읽지못함 pull_request 'name: x'
+check "60d: types 판독기가 모양마다 답한다" "$la60_tfail" ""
+check "60d: 읽을 수 없는 파일은 읽지못함 이다" "$(gate_label_ack_types "$LA60_D/none.yml" pull_request)" "읽지못함"
+
+la60_wfail=''
+la60_w() {
+  # la60_w <기대 0|1> <argv...> — 0 이면 PR 라벨 쓰기, 1 이면 아님.
+  local want="$1" got=1; shift
+  gate_pr_label_write "$@" && got=0
+  [ "$got" = "$want" ] || la60_wfail="$la60_wfail[$*: $got]"
+}
+la60_w 0 gh pr edit 1 --add-label api-change
+la60_w 0 gh issue edit 3 --remove-label x
+la60_w 0 gh -R o/r pr edit 1 --add-label=x
+la60_w 0 gh pr create --title t --label x
+la60_w 0 gh pr create --title t -l x
+la60_w 0 gh pr create -dlx
+la60_w 0 gh pr new --title t --label x
+la60_w 0 gh pr new --title t -l x
+la60_w 0 gh pr new -dl x
+la60_w 0 gh -R o/r pr new --label=x
+la60_w 0 gh pr -R o/r new -l x
+# 동사 앞에 띄어 쓴 값 옵션은 gh 가 그 값까지 건너뛰고 명령을 찾으므로 같은 생성이다.
+la60_w 0 gh pr -t x new -l y
+la60_w 0 gh pr -b x new --label y
+la60_w 0 gh pr --title x new -l y
+la60_w 0 gh -t x pr new -l y
+la60_w 0 gh pr -t x create -l y
+la60_w 0 gh -t x issue edit 3 --add-label y
+# 값 옵션의 값 자리에 선 `-R`/`--repo` 는 그 옵션의 값이므로, 뒤의 동사까지 지우지 않는다.
+la60_w 0 gh pr -t -R new -b y -l x
+la60_w 0 gh pr -t -R create -b y -l x
+la60_w 0 gh pr -t --repo new -l x
+la60_w 0 gh pr -b --repo create -t y --label=x
+la60_w 0 gh pr -t -R edit 1 --add-label x
+la60_w 0 gh issue -t -R edit 1 --add-label x
+la60_w 0 gh -t -R pr new -l x
+la60_w 0 gh pr --repo=o/r new -l x
+la60_w 0 gh pr -Ro/r new -l x
+la60_w 0 gh api -X POST repos/o/r/issues/1/labels -f 'labels[]=x'
+la60_w 0 gh api repos/o/r/issues/1/labels -f 'labels[]=x'
+la60_w 0 gh api -X PUT repos/o/r/issues/1/labels -f 'labels[]=x'
+la60_w 0 gh api -X DELETE repos/o/r/issues/1/labels/x
+la60_w 0 gh api -X PATCH repos/o/r/issues/1 -f 'labels[]=x'
+la60_w 0 gh api -X PATCH repos/o/r/pulls/1 --input body.json
+la60_w 0 gh api -X PATCH repos/o/r/issues/1 -F body=@f.txt
+la60_w 0 gh api graphql -f 'query=mutation { addLabelsToLabelable(input: {}) { clientMutationId } }'
+la60_w 0 gh api graphql -f 'query=mutation { updatePullRequest(input: {labelIds: []}) { clientMutationId } }'
+la60_w 0 gh api graphql -F query=@q.graphql
+la60_w 0 gh api graphql -f query=@q.graphql
+la60_w 0 gh api graphql --input q.json
+la60_w 1 gh issue create --title t --label x
+la60_w 1 gh label create x
+la60_w 1 gh api -X POST repos/o/r/labels -f name=x
+la60_w 1 gh api repos/o/r/issues/1/labels
+la60_w 1 gh api -X PATCH repos/o/r/issues/1 -f title=x
+la60_w 1 gh pr edit 1 --title x
+la60_w 1 gh pr create --title t --body b
+la60_w 1 gh pr new --title x
+la60_w 1 gh pr -t x new --title t
+la60_w 1 gh pr list --search new -l bug
+la60_w 1 gh issue new --title t --label x
+la60_w 1 gh pr view 1
+la60_w 1 gh api graphql -f 'query=query { viewer { login } }'
+la60_w 1 git push origin HEAD
+check "60d: PR 라벨 쓰기 판정이 형태마다 답한다" "$la60_wfail" ""
+# gh 는 `pr new` 를 `pr create` 의 별칭으로 문서화하므로 사다리도 같은 PR 칸을 준다.
+check "60d: gh pr new 는 pr create 와 같은 PR 칸이다" \
+  "$(ladder_of_gh pr new --title t)/$(ladder_of_gh -R o/r pr new -l x)/$(ladder_of_gh pr create --title t)" "PR/PR/PR"
+# 동사 앞에 띄어 쓴 값 옵션이 있어도 gh 가 여는 것은 같은 생성이므로 같은 PR 칸이다.
+check "60d: 동사 앞 값 옵션을 둔 생성도 PR 칸이다" \
+  "$(ladder_of_gh pr -t x new)/$(ladder_of_gh -t x pr new)/$(ladder_of_gh pr -t x create)/$(ladder_of_gh pr list --search new)" "PR/PR/PR/"
+# 값 자리의 `-R`/`--repo` 는 지우지 않고, 저장소를 고르는 `-R`/`--repo` 는 계속 지운다.
+check "60d: 값 자리의 -R 뒤 생성도 PR 칸이고 저장소 -R 는 계속 지운다" \
+  "$(ladder_of_gh pr -t -R new)/$(ladder_of_gh pr -b --repo create)/$(ladder_of_gh pr -R o/r new)/$(gate_gh_strip_repo pr -t -R new -l x; echo "${GATE_GH_ARGV[*]}")/$(gate_gh_strip_repo -R o/r pr --repo o/r new; echo "${GATE_GH_ARGV[*]}")" \
+  "PR/PR/PR/pr -t -R create -l x/pr create"
+
+cb60_head
+la60_new() {
+  # la60_new <라벨> [<체크 라벨> 줄...] — 60b 의 픽스처에 라벨 인정 행을 얹는다.
+  cb60_new "$1"
+  SA_LABEL_ACK="${2-gate api-change}"; sa_manifest 리뷰없음
+}
+
+# 선언된 체크의 정착한 실패 → 열린 라벨 회차 → 수락 → 통과 → 머지 -------------------------
+la60_new "라벨 인정 — 정상 회차"
+la60_snap=$( ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+  | jq -r '.review_next[] | select(.["세그먼트"] == "CK") | [.["다음"], .["head sha"], .["PR"], .["실패 체크"], .["재실행 회차"]] | join("|")')
+check "60d: 선언된 체크의 정착한 실패에서 다음은 CI 라벨 인정 이다" "$la60_snap" "CI 라벨 인정|$CK60_SHA|$CB60_SLUG#1|gate|0"
+la60_row 요청 1
+check "60d: 열린 라벨 회차에서 다음은 CI 라벨 인정 이다" "$(cb60_next)" "CI 라벨 인정"
+check "60d: 열린 라벨 회차는 u 를 올리지 않고 열림·라벨로 읽힌다" "$(la60_round)" \
+  "u=0 a=열림 g=0 f=0 fix=0 base= ad=라벨 ra=없음 lab=1 max=1"
+la60_nb=$(cb60_n blocked); la60_np=$(cb60_posts)
+cb60_act
+check "60d: 재실행 act 는 라벨 회차를 자기 열린 요청으로 읽지 않는다" "$rc|$(cb60_n blocked)|$(cb60_posts)" "3|$la60_nb|$la60_np"
+la60_row 수락 1
+check "60d: 라벨 회차는 u 를 올리지 않고 g 를 올린다" "$(la60_round)" \
+  "u=0 a=수락 g=1 f=0 fix=0 base=통과 ad=라벨 ra=없음 lab=1 max=1"
+check "60d: 라벨 수락 뒤 회차 1 의 판정 전 다음은 CI 대기 다" "$(cb60_next)" "CI 대기"
+cb60_line 통과 1 0 -
+check "60d: 라벨 회차 통과 뒤 다음은 머지 다" "$(cb60_next)" "머지"
+sa_merge CK
+check "60d: 라벨 회차 통과 뒤 머지가 된다" "$rc|$(git --git-dir="$SA_REMOTE" rev-parse "$SA_BASE" 2>/dev/null)" "0|$CK60_SHA"
+
+# 실패로 닫힌 라벨 회차 — 정착한 실패에서는 CI 라벨 인정, 사람이 고친 통과는 머지 ------------
+la60_new "라벨 인정 — 실패로 닫힌 회차"
+la60_row 요청 1
+la60_row 실패 1
+check "60d: 실패로 닫힌 라벨 회차의 정착한 실패에서 다음은 CI 라벨 인정 이다" "$(cb60_next)" "CI 라벨 인정"
+cb60_line 대기 0 1 -
+# 실패로 닫힌 라벨 회차는 g 를 올리지 않아 대기 시계가 회차 0 의 가장 이른 판정(픽스처의
+# 고정 시각)이고, 그 시각이 7200초 넘게 지났으므로 대기 쪽 답은 CI 대기 한도 다.
+check "60d: 실패로 닫힌 라벨 회차 뒤 진행 중이면 라벨 인정이 아니라 대기 쪽(CI 대기 한도)이다" "$(cb60_next)" "CI 대기 한도"
+cb60_line 통과 0 0 -
+check "60d: 실패로 닫힌 라벨 회차 뒤 통과는 머지로 간다" "$(cb60_next)" "머지"
+
+# 라벨 수락 뒤의 실패 — 재실행 한 번의 기회가 남고, 그 재실행은 회차 2 를 연다 ---------------
+la60_new "라벨 인정 — 수락 뒤 재실패"
+la60_row 요청 1
+la60_row 수락 1
+cb60_line 실패 1 0
+check "60d: 라벨 수락 뒤 정착한 실패에서 다음은 CI 재실행 이다" "$(cb60_next)" "CI 재실행"
+cb60_act
+la60_acc=$(cb60_last 'CI 처분')
+check "60d: 라벨 수락 뒤의 재실행이 새 회차를 연다" \
+  "$rc|$(sa_field "$la60_acc" 처분)|$(sa_field "$la60_acc" 상태)|$(sa_field "$la60_acc" 회차)" "0|재실행|수락|2"
+check "60d: 그 뒤 회차는 u=1·g=2·max=2 다" "$(la60_round)" \
+  "u=1 a=수락 g=2 f=0 fix=0 base=통과 ad=재실행 ra=수락 lab=1 max=2"
+
+# 선언 밖 체크 — 행이 이름 짓지 않은 체크의 실패는 재실행으로 간다 ---------------------------
+la60_new "라벨 인정 — 선언 밖 체크" "other api-change"
+check "60d: 선언 밖 체크의 실패는 CI 재실행 이다" "$(cb60_next)" "CI 재실행"
+cb60_foot
+
+# 규칙 갈래 — 사전 인가 대조 규칙이 표지·종류·argv 가 모두 맞는 라벨 행위만 행 없이 연다 ---------
+la60_rule="$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh"
+la60_rr() {
+  # la60_rr <표지 1|""> <종류> <argv> — 규칙의 종료 코드.
+  local r=0
+  ( cd "$SA_WT" && unset GATE_LABEL_ACK_PRE GATE_CI_RERUN_PRE
+    [ -z "$1" ] || export GATE_LABEL_ACK_PRE="$1"
+    GATE_KIND="$2" GATE_ACT=PR GATE_ARGV="$3" GATE_SURFACE=외부상태변경 GATE_MANIFEST="$SA_MANIFEST" \
+      GATE_AUTO_RESOLVE=1 sh "$la60_rule" ) >/dev/null 2>&1 || r=$?
+  printf '%s' "$r"
+}
+la60_sha=0123456789abcdef0123456789abcdef01234567
+check "60d: 규칙이 표지 있는 라벨 행위를 연다" "$(la60_rr 1 label-ack "라벨 $la60_sha")" "0"
+case "$(la60_rr '' label-ack "라벨 $la60_sha")" in
+  0) bad "60d: 표지 없는 라벨 행위는 규칙을 지나지 않는다" "규칙이 exit 0 으로 열었다" ;;
+  *) ok "60d: 표지 없는 라벨 행위는 규칙을 지나지 않는다" ;;
+esac
+la60_open=''
+for la60_a in "재실행 $la60_sha" "라벨 ${la60_sha%?}" "라벨 $la60_sha x" "라벨 0123456789ABCDEF0123456789ABCDEF01234567"; do
+  [ "$(la60_rr 1 label-ack "$la60_a")" != 0 ] || la60_open="$la60_open[$la60_a]"
+done
+check "60d: 다른 argv 철자의 라벨 행위는 규칙이 열지 않는다" "$la60_open" ""
+
+# ---------------------------------------------------------------------------
+# 60e. 라벨 인정 — 행위 본문: 수락, park 칸, 받지 않은 요청, 쓰기 자격, 철자
+# --- section: 60e | group: sa | covers: act, snapshot | anchors: 60e: 적격한 라벨 행위가 요청·수락 행을 쓰고 POST 를 한 번 낸다, 60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다, 60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다, 60e: 쓰기 자격 없는 라벨 행위는 행도 POST 도 없이 rc 3 이다, 60e: 사전 인가 행 없는 라벨 행위가 규칙을 지나 수락된다 ---
+#
+# 60b 의 픽스처(`cb60_head`·`cb60_new`) 위에 매니페스트의 `라벨 인정` 행, 그 체크를 이름
+# 짓는 슬라이스 문서, `labeled` 를 받는 워크플로를 얹고 `act --kind label-ack` 를 실제로
+# 낸다. 마지막 사례 하나를 빼고는 매니페스트에 그 행위를 축자로 적은 `사전 인가` 행을
+# 싣는다 — 사전 인가 규칙의 표지 갈래와 무관하게 행위 본문까지 닿게 하려는 것이다. 표지
+# 갈래는 60d 가 규칙 파일을 직접 불러 재고, 마지막 사례가 그 행 없이 끝까지 낸다.
+# 같은 argv 의 둘째 park 는 되풀이로 읽히므로 park 사례마다 tip 에 커밋을 올린다.
+# ---------------------------------------------------------------------------
+cb60_head
+CB60_WF=$'name: gate\non:\n  pull_request:\n    types: [opened, synchronize, labeled]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true'
+LA61_WF="$CB60_WF"
+# 쓰기 자격은 고정한 픽스처 값이다. 비워 두면 게이트가 이 기기의 키체인을 읽는다.
+LA61_PREV_RW="${CC_GATE_TOKEN_RW-}"; LA61_HAD_RW="${CC_GATE_TOKEN_RW+1}"
+export CC_GATE_TOKEN_RW=cb60-rw-fixture
+la61_doc() {
+  # la61_doc <슬라이스 필드 줄|""> — 세그먼트 CK 의 슬라이스 하나를 가진 설계 문서를
+  # 매니페스트의 설계 문서로 두고 매니페스트를 다시 쓴다.
+  printf '# 픽스처\n\n## 구현 슬라이싱\n\n### 슬라이스 CK — 라벨\n\n**스킬**: implement\n**레포**: t/%s\n**선언 파일**: `a.txt`\n**선행**: 없음\n%s' \
+    "$SA_ID" "$1" > "$SA_ROOT/slice-doc.md"
+  SA_OWNER_DOC="${SA_ROOT#/}/slice-doc.md"
+  sa_manifest 리뷰없음
+}
+la61_pre() {
+  # la61_pre — 현재 tip 의 라벨 행위를 축자로 적은 사전 인가 행을 싣는다.
+  SA_PREAUTH_EXTRA="라벨 $CK60_SHA"; sa_manifest 리뷰없음
+}
+la61_new() {
+  # la61_new <라벨> [행 0] — 라벨 인정 행과 슬라이스 필드가 같은 체크 gate 를 이름 짓고 PR 에
+  # 라벨이 아직 없는 픽스처. 둘째 인자가 0 이면 사전 인가 행을 싣지 않는다.
+  cb60_new "$1"
+  SA_LABEL_ACK="gate api-change"
+  [ "${2:-1}" = 0 ] || SA_PREAUTH_EXTRA="라벨 $CK60_SHA"
+  la61_doc $'**라벨 인정**: `gate`\n'
+  : > "$CB60_S/labels"
+}
+la61_again() {
+  # la61_again [tip 워크플로] — 같은 픽스처에서 다음 사례를 새 tip 으로 연다.
+  cb60_again "${1:-$LA61_WF}"
+  la61_pre
+  : > "$CB60_S/labels"
+}
+la61_act() {
+  sag act --manifest "$SA_MANIFEST" --kind label-ack --target main --segment CK --cutpoint PR \
+      --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale "픽스처 — 라벨" -- 라벨 "${1:-$CK60_SHA}"
+}
+la61_post_n() { { grep -c -- "^api -X POST -i repos/$CB60_SLUG/issues/1/labels -f labels\[\]=api-change\$" "$CB60_S/gh.log" || true; }; }
+la61_fail=''
+la61_park() {
+  # la61_park <칸> <관측 조각> <라벨> [수리 문구 조각] — 이미 고친 픽스처에서 라벨 행위 하나가
+  # 그 칸의 blocked 행 하나를 쓰고, POST 도 CI 처분 행도 없이 rc 11 로 끝난다. 칸의 원인
+  # (open·closed)은 행이 아니라 수리 문구가 가르므로 넷째 인자는 그 문구에서 찾는다.
+  local nb np nr row f=""
+  nb=$(cb60_n blocked); np=$(cb60_posts); nr=$(cb60_n 'CI 처분')
+  la61_act
+  row=$(cb60_last blocked)
+  [ "$rc" = 11 ] || f="$f[rc=$rc]"
+  [ "$(cb60_n blocked)" = "$((nb + 1))" ] || f="$f[blocked $(cb60_n blocked)-$nb]"
+  [ "$(sa_field "$row" '도달 판정')" = "$1" ] || f="$f[칸 $(sa_field "$row" '도달 판정')]"
+  case "$(sa_field "$row" 관측)" in *"$2"*) ;; *) f="$f[관측 $(sa_field "$row" 관측)]" ;; esac
+  if [ -n "${4:-}" ]; then
+    case "$raw" in *"$4"*) ;; *) f="$f[수리 문구]" ;; esac
+  fi
+  [ "$(cb60_posts)" = "$np" ] || f="$f[POST]"
+  [ "$(cb60_n 'CI 처분')" = "$nr" ] || f="$f[CI 처분 행]"
+  if [ -n "$f" ]; then
+    bad "60e: park — $3" "$f ${msg:-}"
+    la61_fail="$la61_fail[$3]"
+  else
+    ok "60e: park — $3 ($1)"
+  fi
+}
+
+# 적격한 행위 — 요청 행, POST 하나, 새 실행의 확인, 수락 행 -----------------------------
+la61_new "라벨 인정 — 수락"
+check "60e: 적격한 픽스처의 다음은 CI 라벨 인정 이다" "$(cb60_next)" "CI 라벨 인정"
+la61_nr=$(cb60_n 'CI 처분'); la61_np=$(cb60_posts)
+la61_act
+la61_cl=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -2)
+la61_req=$(printf '%s\n' "$la61_cl" | sed -n 1p); la61_acc=$(printf '%s\n' "$la61_cl" | sed -n 2p)
+la61_got="$rc|$(( $(cb60_n 'CI 처분') - la61_nr ))|$(( $(cb60_posts) - la61_np ))|$(la61_post_n)"
+la61_got="$la61_got|$(sa_field "$la61_req" 상태)>$(sa_field "$la61_acc" 상태)"
+for la61_f in 처분 회차 체크 라벨 '실패 체크' 실행 '기본 브랜치' 응답; do
+  la61_got="$la61_got|$(sa_field "$la61_acc" "$la61_f")"
+done
+check "60e: 적격한 라벨 행위가 요청·수락 행을 쓰고 POST 를 한 번 낸다" "$la61_got" \
+  "0|2|1|1|요청>수락|라벨|1|gate|api-change|gate|777|통과|201"
+la61_epost=$( { grep '^api -X POST|' "$CB60_S/env.log" || true; } | tail -1 | cut -d'|' -f2,3,5,6)
+check "60e: 라벨 POST 는 쓰기 자격으로 나가고 GH_REPO·GH_HOST 가 없다" \
+  "$la61_epost" "GH_TOKEN=write|GITHUB_TOKEN=|GH_REPO=unset|GH_HOST=unset"
+check "60e: 라벨 수락 뒤 다음은 CI 대기 다" "$(cb60_next)" "CI 대기"
+check "60e: 라벨 수락은 회차를 수락·라벨로 연다" "$(la60_round)" \
+  "u=0 a=수락 g=1 f=0 fix=0 base=통과 ad=라벨 ra=없음 lab=1 max=1"
+
+# 부적격 — 각 칸 ---------------------------------------------------------------------
+la61_new "라벨 인정 — park"
+la61_doc ''
+la61_park 라벨인정없음 "gate" "슬라이스 필드 없음"
+la61_again; la61_doc $'**라벨 인정**: 없음\n'
+la61_park 라벨인정없음 "gate" "슬라이스 필드 없음 값"
+la61_again; la61_doc $'**라벨 인정**: `other`\n'
+la61_park 라벨인정없음 "gate" "슬라이스 필드가 다른 체크를 이름 지음"
+la61_again; la61_doc $'**라벨 인정**: `gate`,`other`\n'
+la61_park 라벨인정없음 "gate" "슬라이스 필드가 문법에 맞지 않음"
+la61_again; la61_doc $'**라벨 인정**: `gate`\n'
+la61_park_wf=$'name: gate\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true'
+la61_again "$la61_park_wf"
+la61_park 라벨새실행없음 "gate:.github/workflows/gate.yml:받지않음" "자기 워크플로가 labeled 를 받지 않음"
+la61_again $'name: gate\non:\n  pull_request:\n    types: labeled\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true'
+la61_park 라벨새실행없음 "gate:.github/workflows/gate.yml:읽지못함" "자기 워크플로의 types 를 읽지 못함"
+la61_again "$LA61_WF"$'\n    environment: prod'
+la61_park 라벨배포트리거 "gate.yml" "tip 워크플로의 환경 키"
+la61_again
+cb60_tgt "배포트리거 식별자=branch:$SA_SEGBR"
+la61_park 라벨배포트리거 "branch:$SA_SEGBR" "식별자 branch"
+la61_again
+cb60_tgt "배포트리거 식별자=workflow:gate"
+la61_park 라벨배포트리거 "workflow:gate" "식별자 workflow"
+la61_again
+cb60_tgt "배포트리거 식별자=argv:issues/1/labels"
+la61_park 라벨배포트리거 "argv:issues/1/labels" "식별자 argv"
+cb60_tgt ""
+la61_again
+printf 'api-change\n' > "$CB60_S/labels"
+la61_park 라벨이미있음 "gate:api-change" "라벨이 이미 있음"
+la61_again
+la60_row 요청 1
+la61_park 라벨요청실패 "회차:열림" "닫히지 않은 라벨 요청" "its closing row never came"
+la61_again
+la60_row 요청 1; la60_row 실패 1
+la61_park 라벨요청실패 "회차:실패" "실패로 닫힌 라벨 회차" "does not label again"
+la61_new "라벨 인정 — 기본 브랜치 워크플로"
+cb60_wf_base x-run.yml $'on:\n  workflow_run:\n    workflows: [gate]\n    types: [completed]\njobs: {}'
+la61_again
+la61_park 라벨배포트리거 "기본 브랜치 x-run.yml" "기본 브랜치의 workflow_run"
+check "60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다" "$la61_fail" ""
+
+# 받지 않은 요청 — 요청 행 뒤의 실패 행, blocked 하나, 다시 내지 않는다 -----------------------
+la61_fail=''
+for la61_case in post422 screen; do
+  la61_new "라벨 인정 — 받지 않은 요청 $la61_case"
+  case "$la61_case" in
+    post422) printf '422\n' > "$CB60_S/post"; la61_want=422 ;;
+    screen)  cb60_checks post fail 777 1; la61_want='201,화면' ;;
+  esac
+  la61_nr=$(cb60_n 'CI 처분'); la61_nb=$(cb60_n blocked)
+  la61_act
+  la61_cl=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -2)
+  la61_row=$(cb60_last blocked)
+  la61_got="$rc|$(( $(cb60_n 'CI 처분') - la61_nr ))|$(( $(cb60_n blocked) - la61_nb ))|$(la61_post_n)"
+  la61_got="$la61_got|$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 1p)" 상태)>$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 2p)" 상태)"
+  la61_got="$la61_got|$(sa_field "$(printf '%s\n' "$la61_cl" | sed -n 2p)" 응답)|$(sa_field "$la61_row" '도달 판정')"
+  check "60e: 받지 않은 라벨 요청 ($la61_case)" "$la61_got" "11|2|1|1|요청>실패|$la61_want|라벨요청실패"
+  case "$raw" in *'does not label again'*) ;; *) la61_fail="$la61_fail[$la61_case 수리 문구]" ;; esac
+  check "60e: 받지 않은 라벨 요청 뒤 다음은 CI 라벨 인정 이다 ($la61_case)" "$(cb60_next)" "CI 라벨 인정"
+done
+check "60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다" "$la61_fail" ""
+
+# 쓰기 자격 없음 — 행도 POST 도 없이 rc 3 ---------------------------------------------------
+la61_new "라벨 인정 — 쓰기 자격 없음"
+unset CC_GATE_TOKEN_RW
+security() { return 1; }
+la61_nr=$(cb60_n 'CI 처분'); la61_nb=$(cb60_n blocked); la61_np=$(cb60_posts)
+la61_act
+unset -f security
+export CC_GATE_TOKEN_RW=cb60-rw-fixture
+check "60e: 쓰기 자격 없는 라벨 행위는 행도 POST 도 없이 rc 3 이다" \
+  "$rc|$(( $(cb60_n 'CI 처분') - la61_nr ))|$(( $(cb60_n blocked) - la61_nb ))|$(( $(cb60_posts) - la61_np ))" "3|0|0|0"
+
+# 철자 — rc 2, 행 없음, POST 없음 ----------------------------------------------------------
+la61_spell() {
+  local lb="$1" nr np; shift
+  nr=$(cb60_n 'CI 처분'); np=$(cb60_posts)
+  sag act --manifest "$SA_MANIFEST" --kind label-ack --target main "$@" --snapshot-digest "$(SAH)" --rationale x
+  check "60e: 철자 — $lb" "$rc|$(cb60_n 'CI 처분')|$(cb60_posts)" "2|$nr|$np"
+}
+la61_spell "절단점 머지" --segment CK --cutpoint 머지 --surface 외부상태변경 -- 라벨 "$CK60_SHA"
+la61_spell "argv 낱말 하나 더" --segment CK --cutpoint PR --surface 외부상태변경 -- 라벨 "$CK60_SHA" gate
+la61_spell "40자리 hex 가 아닌 sha" --segment CK --cutpoint PR --surface 외부상태변경 -- 라벨 "${CK60_SHA%?}"
+la61_spell "세그먼트 -" --segment - --cutpoint PR --surface 외부상태변경 -- 라벨 "$CK60_SHA"
+
+# 사전 인가 행 없이 — 규칙의 표지 갈래가 행위를 연다 ------------------------------------------
+la61_new "라벨 인정 — 사전 인가 행 없음" 0
+la61_np=$(cb60_posts)
+la61_act
+check "60e: 사전 인가 행 없는 라벨 행위가 규칙을 지나 수락된다" \
+  "$rc|$(( $(cb60_posts) - la61_np ))|$(sa_field "$(cb60_last 'CI 처분')" 상태)" "0|1|수락"
+if [ -n "$LA61_HAD_RW" ]; then export CC_GATE_TOKEN_RW="$LA61_PREV_RW"; else unset CC_GATE_TOKEN_RW; fi
+unset LA61_PREV_RW LA61_HAD_RW
+cb60_foot
 
 # ---------------------------------------------------------------------------
 # 61. 휴면 기동의 원장 바이트
@@ -45992,8 +46738,9 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 # `never`·`external`)도 A 에 넣는다 — 넣지 않으면 문구가 빠진 바꿈을 잡지 못한다.
 # EXEMPT 는 고침이 행이 아닌 칸이다: 「모른다」인 `도달미상`, 결코 열지 않는 `dev파괴`,
 # 처분 밖에서 정해지는 병합 칸 셋(60·61c 절이 묶는다), 그리고 재실행 행위의 칸 셋
-# (60b 가 묶는다 — 고침이 행이 아니라 사람의 판단이고, 문구는 사전 인가를 권하지 않는다).
-t3_exempt=" 도달미상 dev파괴 CI실패 등급회귀 등급회귀판정불가 재실행배포트리거 재실행대상미상 재실행요청실패 "
+# (60b 가 묶는다 — 고침이 행이 아니라 사람의 판단이고, 문구는 사전 인가를 권하지 않는다),
+# 같은 이유의 라벨 인정 행위의 칸 다섯, 그리고 어떤 행도 열지 않는 `PR라벨쓰기`.
+t3_exempt=" 도달미상 dev파괴 CI실패 등급회귀 등급회귀판정불가 재실행배포트리거 재실행대상미상 재실행요청실패 라벨인정없음 라벨새실행없음 라벨배포트리거 라벨이미있음 라벨요청실패 PR라벨쓰기 "
 t3_T=" 기기전역/no-row 기기전역/judged 기기전역/judge-failed 기기전역/argv0-path 기기전역/external 기기전역/never 파괴형태미명시/marked 파괴형태미명시/declared 신고등급한도/opaque 신고등급한도/code 신고등급한도/wrapper 신고등급한도/unlisted prod인가없음/- 배포트리거인가없음/- dev식별자부재/- dev식별자불일치/- dev대조불가/- 비밀출력/- push원격불일치/- 도달모순/- dropped none code spaced never external "
 t3_D=$( { awk '/^gate_reach_disposition\(\) \{/ { on = 1 } on && /^}$/ { on = 0 } on' "$GATE" \
             | grep -o "printf '[^\\\\']*\\\\t" | sed "s/^printf '//; s/\\\\t\$//"
@@ -46805,6 +47552,75 @@ $dk_r3"
   fi
 fi
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83D"
+
+# ---------------------------------------------------------------------------
+# 83e. exec 의 PR 라벨 쓰기 — 사전 인가 형태 행이 있어도 PR라벨쓰기 로 park 한다
+# --- section: 83e | group: reach | covers: plan, reach | anchors: 83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다, 83e: 협업 표면에 남는 라벨 형태는 통과한다, 83e: 자동 처리를 끈 모드에서 도달 신고 없이도 PR라벨쓰기 로 park 한다 ---
+#
+# 협업 표면이 행 없이 열던 PR 라벨 쓰기를 무인 런은 `act --kind label-ack` 로만 한다. 형태
+# 행 `gh api -X PUT`·`gh pr`·`gh api graphql` 을 실은 매니페스트에서도 뺀 쓰기는 도달을
+# 무엇으로 신고하든 같은 칸에서 멈추고, 문구는 행을 권하지 않는다. 새 이슈의 라벨과 레포의
+# 라벨 정의는 협업 표면에 남는다. 행위를 하지 않는 `plan` 만으로 잰다.
+# ---------------------------------------------------------------------------
+CC_GATE_PREV_AR83E="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+pj_reset; PJ_VERDICT=park
+rx_manifest R83E $'gh api -X PUT\ngh api -X POST\ngh pr\ngh api graphql\ngh issue\ngh label'
+t3e_fail=''
+t3e_park() {
+  # t3e_park <도달> <argv...> — PR라벨쓰기 칸·행 줄 없음·수리 문구. 단계는 argv 가
+  # 오르는 칸보다 낮게 신고하지 않도록 T3E_CP 로 고른다.
+  local rr="$1"; shift
+  pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint "${T3E_CP:-push}" \
+    --surface 외부상태변경 --reach "$rr" --rationale t -- "$@"
+  [ "$rc" = 11 ] && [ "$(rx_cell)" = PR라벨쓰기 ] && [ -z "$(rx_row)" ] \
+    && case "$msg" in *'act --kind label-ack'*) true ;; *) false ;; esac \
+    || t3e_fail="$t3e_fail[$rr $*: rc=$rc 칸=$(rx_cell)]"
+}
+t3e_park 협업 gh api -X PUT repos/t/front3/issues/1/labels -f 'labels[]=api-change'
+t3e_park 협업 gh api -X POST repos/t/front3/issues/1/labels -f 'labels[]=api-change'
+t3e_park 미상 gh api -X POST repos/t/front3/issues/1/labels -f 'labels[]=api-change'
+t3e_park 협업 gh pr edit 1 --add-label api-change
+T3E_CP=PR t3e_park 협업 gh pr create --title t --body b -l api-change
+T3E_CP=PR t3e_park 협업 gh pr new --title t --body b --label api-change
+T3E_CP=PR t3e_park 협업 gh pr -t t new --body b -l api-change
+t3e_park 협업 gh api -X PATCH repos/t/front3/pulls/1 --input body.json
+T3E_CP=PR t3e_park 협업 gh pr -t -R new --body b -l api-change
+check "83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
+# 값 자리의 `-R` 뒤에 선 생성을 `커밋` 으로 신고하면 PR 칸보다 낮은 신고라 거절된다.
+pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint 커밋 \
+  --surface 외부상태변경 --reach 협업 --rationale t -- gh pr -t -R new --body b -l api-change
+t3e_under=''
+case "$msg" in *under-declared*"grade 'PR'"*) t3e_under=과소 ;; esac
+check "83e: 값 자리 -R 뒤의 생성을 커밋 으로 신고하면 과소 신고로 거절된다" "$rc/$t3e_under" "8/과소"
+# 파일에서 읽는 graphql 쿼리는 머지 단계까지 오르고, 그 단계의 규칙이 도달 판정보다
+# 먼저 멈춘다 — 어느 칸에서 멈추든 형태 행만으로 통과하지는 않는다.
+pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint 머지 \
+  --surface 외부상태변경 --reach 협업 --rationale t -- gh api graphql -F query=@q.graphql
+check "83e: 파일 쿼리 graphql 은 형태 행으로 통과하지 않는다" "$([ "$rc" != 0 ] && echo 막힘)" "막힘"
+t3e_fail=''
+for t3e_a in "gh issue create --title t --body b --label bug" "gh label create api-change"; do
+  # shellcheck disable=SC2086
+  pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+    --surface 외부상태변경 --reach 협업 --rationale t -- $t3e_a
+  [ "$rc" = 0 ] || t3e_fail="$t3e_fail[$t3e_a: rc=$rc $(rx_cell)]"
+done
+check "83e: 협업 표면에 남는 라벨 형태는 통과한다" "$t3e_fail" ""
+check "83e: PR 라벨 쓰기 판정은 판단을 부르지 않는다" "$(pj_calls)" "0"
+# 자동 처리를 끈 모드에서 도달을 신고하지 않아도 같은 칸이다. 처분 평가기는 그 모드에서
+# 신고가 없으면 돌지 않으므로, 이 칸을 평가기 뒤에 두면 `gh pr` 형태 행이 쓰기를 연다.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=off
+t3e_fail=''
+for t3e_a in "gh pr edit 1 --add-label api-change" "gh api -X POST repos/t/front3/issues/1/labels"; do
+  # shellcheck disable=SC2086
+  pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+    --surface 외부상태변경 --rationale t -- $t3e_a
+  [ "$rc" = 11 ] && [ "$(rx_cell)" = PR라벨쓰기 ] && [ -z "$(rx_row)" ] \
+    && case "$msg" in *'act --kind label-ack'*) true ;; *) false ;; esac \
+    || t3e_fail="$t3e_fail[$t3e_a: rc=$rc 칸=$(rx_cell)]"
+done
+check "83e: 자동 처리를 끈 모드에서 도달 신고 없이도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83E"
 
 # ---------------------------------------------------------------------------
 # 84. gate_metrics_timed leaves nothing behind in a detached child under make
@@ -49943,6 +50759,10 @@ M88E="$D88E/manifest.md"
 printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88E" > "$M88E"
 M288E="$D88E/manifest-two.md"
 printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n- `target` | 별칭=u | 메인 워크트리=%s | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=o/u | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88E" "$G88E" > "$M288E"
+# 라벨 인정 행을 얹은 매니페스트 둘: MA88E 는 판정 행의 실패 체크 gate 를, MO88E 는 다른 체크를 인정한다.
+MA88E="$D88E/manifest-ack.md"; MO88E="$D88E/manifest-ack-other.md"
+{ cat "$M88E"; printf -- '- `라벨 인정` | 대상=t | 체크=gate | 라벨=api-change | 사유=테스트\n'; } > "$MA88E"
+{ cat "$M88E"; printf -- '- `라벨 인정` | 대상=t | 체크=other | 라벨=api-change | 사유=테스트\n'; } > "$MO88E"
 l88e() {  # l88e <이름> <워크트리> <리뷰 HEAD> <P1|none> [unrouted|-] [segment 행 추가 필드] — 원장 하나
   local l; l=$(lsr_ledger "w88e-$1")
   printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=x | 선행=없음%s | prev=x\n' "$2" "${6:+ | $6}" >> "$l"
@@ -49971,7 +50791,7 @@ mc88e() {  # mc88e <원장> [매니페스트] — 머지 검사의 rc
 }
 nm88e() { printf '%s|%s' "$(n88e "$@")" "$(mc88e "$@")"; }
 sn88e() { lsr_in Linux "$1" - lsr_rp_in "$M88E" gate_snapshot_review_next_json 2>/dev/null; }
-ce88e() { lsr_in Linux "$1" - lsr_rp_in "$M88E" gate_snapshot_ci_early_json 2>/dev/null; }
+ce88e() { lsr_in Linux "$1" - lsr_rp_in "${2:-$M88E}" gate_snapshot_ci_early_json 2>/dev/null; }
 E40088E=$((NOW88E - 400)); E3H88E=$((NOW88E - 10800))
 P88E=""
 launch88e() {  # launch88e <원장> <기록 시각> — 교대 기동 행 하나
@@ -50029,6 +50849,21 @@ ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"; ck88e "$L88E" 실패
 check "88e: 표가 리드 수정 이면 정착 실패에서도 리드 수정 이다" "$(n88e "$L88E")" "리드 수정"
 L88E=$(l88e fix-cap "$W88E" "$R88E" 1); ck88e "$L88E" 대기 0 0 "$T3H88E"
 check "88e: 수정 표의 대기 한도는 CI 대기 한도 다 (MW)" "$(n88e "$L88E")" "CI 대기 한도"
+# 라벨 인정 행이 실패한 체크(gate)를 이름 지으면 수정 갈래는 재실행도 CI 합류도 하지 않고
+# 수정 이다(M3a). 행이 다른 체크(other)를 이름 지으면 gate 의 실패는 여전히 재실행이다.
+L88E=$(l88e fix-ack "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"
+check "88e: 수정 표에서 라벨 인정 체크의 회차 0 정착 실패는 CI 재실행 이 아니라 수정 이다 (M3a)" \
+  "$(n88e "$L88E" "$MA88E")|$(n88e "$L88E" "$MO88E")" "수정|CI 재실행"
+L88E=$(l88e fix-ack-r1 "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
+check "88e: 재실행 뒤 라벨 인정 체크의 정착 실패도 CI 합류 수정 이 아니라 수정 이다 (M3a)" \
+  "$(n88e "$L88E" "$MA88E")|$(n88e "$L88E" "$MO88E")" "수정|CI 합류 수정"
+# 라벨 회차가 이미 수락된 head(lab=1)에서 같은 체크가 다시 실패하면 M3a 는 서지 않는다 —
+# 라벨은 한 번만 붙으므로 그 실패는 인정 행이 있어도 재실행 갈래로 간다. 라벨 회차는 u 를
+# 세지 않으므로 그 값은 CI 재실행 이다.
+L88E=$(l88e fix-ack-lab "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"
+cd88e "$L88E" 라벨 요청 1 "$T088E"; cd88e "$L88E" 라벨 수락 1 "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
+check "88e: 수락된 라벨 회차 뒤 라벨 인정 체크의 실패는 M3a 가 아니라 CI 재실행 이다" \
+  "$(n88e "$L88E" "$MA88E")" "CI 재실행"
 
 # 7 — 대기 한도. 커밋 시각·가장 이른 관측·수락 관측이 시계다.
 L88EO=$(l88e old "$WO88E" "$RO88E" 0); L88EOF=$(l88e old-fix "$WO88E" "$RO88E" 1)
@@ -50140,6 +50975,18 @@ o88e="[$(wk88e "$L88E" - S)]"; launch88e "$L88E" "$T088E"; o88e="$o88e[$(wk88e "
 L88E2=$(l88e rk-early-park "$W88E" "$R88E" none); ck88e "$L88E2" 실패 0 0 "$T40088E"; ls88e "$L88E2" review; park88e "$L88E2"
 check "88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다" \
   "$o88e[$(wk88e "$L88E2" - S)]" "[ce:S $E40088E][][]"
+# 5 — 라벨 인정과 E. 게이트 사본은 인정 체크의 실패에 서지 않고, 중계 사본은 매니페스트를 열지
+# 않아 서지만(상위 집합) 인정 밖 체크에서는 두 사본이 함께 선다. 수락된 라벨 회차(g=1, u=0)
+# 뒤에는 두 사본 모두 회차 0 의 대체된 판정을 읽지 않는다.
+L88E=$(l88e ea-ack "$W88E" "$R88E" none); ck88e "$L88E" 실패 0 0 "$T40088E"; ls88e "$L88E" review
+check "88e: 라벨 인정 체크의 회차 0 정착 실패에서 ci_early 원소가 서지 않고, 인정 밖 체크에서는 두 사본이 함께 선다" \
+  "$(ce88e "$L88E" "$MA88E" | grep -c . || true)|$(ce88e "$L88E" "$MO88E" | grep -c '"세그먼트": "S"' || true)|$(wk88e "$L88E" - S)" \
+  "0|1|ce:S $E40088E"
+L88E=$(l88e ea-label "$W88E" "$R88E" none); ck88e "$L88E" 실패 0 0 "$T40088E"; ls88e "$L88E" review
+cd88e "$L88E" 라벨 요청 1 "$T40088E"; cd88e "$L88E" 라벨 수락 1 "$T40088E"
+check "88e: 수락된 라벨 회차 뒤(g=1, u=0)에는 ci_early 원소도 ce 키도 서지 않는다" \
+  "$(lsr_in Linux "$L88E" - cc_ci_round "$L88E" S "$R88E" | grep -E '^(u|g)=' | tr '\n' ' ')|$(ce88e "$L88E" | grep -c . || true)|[$(wk88e "$L88E" - S)]" \
+  "u=0 g=1 |0|[]"
 for p88e in $P88E; do kill "$p88e" 2>/dev/null || true; done
 
 # ---------------------------------------------------------------------------

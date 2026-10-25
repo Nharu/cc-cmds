@@ -313,6 +313,8 @@ git -c core.quotePath=false log --no-renames -p --remerge-diff "$TARGET" "^$B" "
 
 There is no user to confirm with, and CFI-U1 forbids narrowing. **Record** the scope instead of confirming it — target type, PR title/number/URL, change statistics, key changed files, existing-comment summary, CI status with failed checks highlighted. This record becomes the report's overview.
 
+**A failing check the manifest acknowledges is recorded, not routed.** When the run's manifest (`CC_PIPELINE_MANIFEST`) has a `라벨 인정` row for the pull request's target, a failing check that row's `체크` names is listed in the overview as 「라벨 인정 체크 — 게이트의 라벨 인정 경로가 처리」 and goes no further: it is not put in any reviewer's CI failure priority check area, and its failure is not by itself a finding. This holds whether or not the segment's slice acknowledges it too — when it does not, the gate hands the segment to a person at its label act, so counting the failure as a P1 here would only void the run for a question that is already a person's. Every other failing check is routed as before.
+
 Where the change exceeds 50 files, note the scale and add a **Scope Coordinator** in Step 3 rather than reducing coverage.
 
 #### 1c′: Slice scope — what `--slice <id>` reads, and the four fallbacks
@@ -423,7 +425,7 @@ The spawn / ledger / dispatch+convergence / escalation contract and the task-ass
 
 ### Step 5: Result Synthesis & Documentation (Korean) — the terminal step
 
-**Before synthesizing, Read `${CLAUDE_SKILL_DIR}/../review/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure, naming/version conventions, and the paste-ready comment section.
+**Before synthesizing, Read `${CLAUDE_SKILL_DIR}/../review/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure, naming/version conventions, and the paste-ready comment section. **This rule comes before that file's CI instruction:** a failing check the manifest's `라벨 인정` row names (1c) never carries `[CI-CONFIRMED]`.
 
 Synthesize into the resolved report path, following the template. Leave the `<!-- cc-design-ledger v3 … -->` block in place. **The `- **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건` summary line is the driver's terminal predicate** — emit it byte for byte in the template's position.
 
@@ -545,7 +547,7 @@ Every review after a segment's first lead fix — after a further lead fix, or a
 - **Nameless background sub-agents required**: reviewers MUST be spawned as nameless `Agent` background tasks and driven through lead-mediated cross-review through the witnesses on disk — each round a fresh dispatch of the role that reads its own past witnesses and its peers' by path, a re-request inside one key a resume of the same `agentId`. A dispatch that reads no peer witness breaks cross-review.
 - **Codebase grounding required**: reviewers ground findings in the source with their own `grep`/`Glob`/`Read`; the lead does not proxy searches. The one second grounding surface is a `design-conformance` finding, which grounds in the supplied design document *and* in the source, because its claim is a mismatch between the two. No finding is ever grounded in the design document alone.
 - **PR comment dedup required**: existing PR comments and reviews are always provided to reviewers; findings duplicating them are filtered or flagged.
-- **CI failure routing**: failed checks are recorded in 1c, and "CI failure priority check area: [check name and related files]" is added as its own item to the relevant reviewer's context package.
+- **CI failure routing**: failed checks are recorded in 1c, and "CI failure priority check area: [check name and related files]" is added as its own item to the relevant reviewer's context package — except a check the manifest's `라벨 인정` row names, which 1c records and routes nowhere.
 - **Never reach a notification surface.** No `PushNotification`, no `notify.sh`, no `terminal-notifier` — not from this file and not from any agent it spawns.
 - **Never write a pipeline sidecar.** This arm reads the grant to re-derive `RUN_DIR`; the driver is the sole writer of both pipeline sidecars.
 

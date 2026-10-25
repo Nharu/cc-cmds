@@ -1458,6 +1458,60 @@ grep -vF -- "$AC_ROW" "$WORK/v-ark.md" > "$WORK/v-ark-drop.md"
 vs "이어받는 대응 행을 뺀 초안은 실패한다" 실패 "$WORK/v-ark-drop.md" "$E" 고정값
 VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 
+# (h) The label acknowledgement rows are carried in the place the shape rows
+# are, and a row the previous run did not hold passes only under a 5u answer
+# that came with an added target or a cutpoint raised by 7.7.
+LA_ROW="- \`라벨 인정\` | 대상=rk | 체크=api-surface-guard | 라벨=surface-change | 사유=픽스처"
+P_EXTRA="$LA_ROW" mk_prev RKLA; fx_done
+mf_check "$BASE/docs/pipeline-run/RKLA.plan.md"; rc=$?
+check "7: 라벨 인정 행을 가진 원천이 check_manifest 를 통과한다" "$rc" "0"
+vla=$(rk verify --prev RKLA --base "$BASE")
+PML=$(printf '%s\n' "$vla" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGL=$(printf '%s\n' "$vla" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+rk graph --prev RKLA --base "$BASE" --expect-sha256 "$PML" >/dev/null
+rk render-manifest --prev RKLA --base "$BASE" --run-id RKNL --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PML" --expect-grant-sha256 "$PGL" > "$WORK/v-la.md"; rc=$?
+check "7: 라벨 인정 행을 가진 원천의 render-manifest 는 0 으로 끝난다" "$rc" "0"
+check "7: 라벨 인정 행이 초안에 바이트 그대로 하나 옮겨진다" \
+  "$(grep -c '^- `라벨 인정`' "$WORK/v-la.md")/$(grep -cxF -- "$LA_ROW" "$WORK/v-la.md")" "1/1"
+VS_PREV="$BASE/docs/pipeline-run/RKLA.plan.md"; VS_PMSHA="$PML"; VS_PGSHA="$PGL"
+vs "라벨 인정 행이 원천과 같은 초안은 통과한다" 통과 "$WORK/v-la.md" "$E"
+# A --rows file replaces the source's shape, auto-adoption and label rows, so
+# a re-kickoff that passes one, the seat's included, writes the carried label
+# row into it; a file without that row drops it from the draft.
+grep -E '^- `(사전 인가` \| 형태=|자동 채택`|라벨 인정`)' "$BASE/docs/pipeline-run/RKLA.plan.md" > "$WORK/rows-la"
+rk render-manifest --prev RKLA --base "$BASE" --run-id RKNL --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PML" --expect-grant-sha256 "$PGL" --rows "$WORK/rows-la" > "$WORK/v-la-rows.md"; rc=$?
+check "7: 원천의 라벨 인정 행을 담은 --rows 로 render-manifest 는 0 이고 그 행이 하나 남는다" \
+  "$rc/$(grep -c '^- `라벨 인정`' "$WORK/v-la-rows.md")/$(grep -cxF -- "$LA_ROW" "$WORK/v-la-rows.md")" "0/1/1"
+check "7: 원천의 형태·자동 채택·라벨 인정 행을 모두 담은 --rows 의 초안에 그 행들이 바이트 그대로 남는다" \
+  "$(wc -l < "$WORK/rows-la" | tr -d ' ')/$(grep -cxFf "$WORK/rows-la" "$WORK/v-la-rows.md")/$(grep -cE '^- `(사전 인가` \| 형태=|자동 채택`|라벨 인정`)' "$WORK/v-la-rows.md")" "3/3/3"
+vs "원천의 라벨 인정 행을 담은 --rows 의 초안은 통과한다" 통과 "$WORK/v-la-rows.md" "$E"
+: > "$WORK/rows-none"
+rk render-manifest --prev RKLA --base "$BASE" --run-id RKNL --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PML" --expect-grant-sha256 "$PGL" --rows "$WORK/rows-none" > "$WORK/v-la-norows.md"; rc=$?
+check "7: 라벨 인정 행이 없는 --rows 는 원천의 라벨 인정 행을 초안에서 뺀다" \
+  "$rc/$(grep -c '^- `라벨 인정`' "$WORK/v-la-norows.md")" "0/0"
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+{ cat "$NM1"; printf '%s\n' "$LA_ROW"; } > "$WORK/v-la-add.md"
+vs "원천에 없는 라벨 인정 행을 5u 답 없이 더한 초안은 실패한다" 실패 "$WORK/v-la-add.md" "$E" 행
+# The answers are recorded as the re-kickoff document records them: one key
+# per (target, check) pair and the option label as the answer.
+printf '5u rk api-surface-guard\t인정함\n' > "$WORK/asked-5u"
+vs "대상 추가도 7.7 절단점 답도 없이 5u 가 있으면 실패한다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5u" 대상추가
+printf '7.7 절단점 other\t머지\n' >> "$WORK/asked-5u"
+vs "다른 대상의 7.7 절단점 답은 5u 답을 받치지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5u" 대상추가
+printf '7.7 절단점 rk\t머지\n' >> "$WORK/asked-5u"
+o=$(rk verify-subset "$WORK/v-la-add.md" "$VS_PREV" --expect-sha256 "$VS_PMSHA" --expect-grant-sha256 "$VS_PGSHA" --asked "$WORK/asked-5u")
+check "7: 그 쌍의 5u 답 「인정함」으로 덮인 라벨 인정 행은 행 검사를 지난다" \
+  "$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "행" { print $3 }')" "통과"
+check "7: 같은 대상의 7.7 절단점 답과 함께 온 5u 답은 대상추가 검사를 지난다" \
+  "$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "대상추가" { print $3 }')" "통과"
+printf '5u rk api-surface-guard\t행을 두지 않음 — 그 체크가 실패하면 그 세그먼트는 사람에게 멈춥니다\n7.7 절단점 rk\t머지\n' > "$WORK/asked-5u-no"
+vs "그 쌍의 5u 답이 「행을 두지 않음」이면 라벨 인정 행은 덮이지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5u-no" 행
+printf '5u rk other-check\t인정함\n7.7 절단점 rk\t머지\n' > "$WORK/asked-5u-other"
+vs "다른 체크의 5u 답은 라벨 인정 행을 덮지 않는다" 실패 "$WORK/v-la-add.md" "$WORK/asked-5u-other" 행
+
 # The interview copy.
 out=$(rk render-interview --prev RKIV --base "$BASE" --expect-sha256 "$PMI"); rc=$?
 check "7: render-interview 는 0 으로 끝난다" "$rc" "0"
@@ -1960,6 +2014,35 @@ seat_link RKPA RKPAR --rows "$WORK/rows-seat"
 check "12: --auto 의 --rows 에 플러그인 행이 있으면 render-manifest 가 1 이고 초안이 없다" \
   "$SL_RC/$( [ -s "$WORK/sl.draft" ] && echo 있음 || echo 없음)" "1/없음"
 has "12: 그 거절은 좌석이 기본값을 확정하지 않는다고 짚는다" "$(cat "$WORK/sl.rerr")" "좌석은 기본값을 확정하지 않습니다"
+
+# The seat neither asks 5u nor changes the `라벨 인정` rows: it carries the
+# source's rows byte for byte, and verify-subset --auto refuses a 5u key of its
+# own and any draft whose label rows differ from the source's — added under its
+# own 5u answer, or dropped.
+LA_SROW='- `라벨 인정` | 대상=rk | 체크=api-surface-guard | 라벨=surface-change | 사유=픽스처'
+LA_SROW2='- `라벨 인정` | 대상=rk | 체크=other-guard | 라벨=surface-change | 사유=좌석이 더한 행'
+P_EXTRA="$SEAT_ROW
+$LA_SROW" mk_seat RKLS 마감
+check "12: 원천 매니페스트에 라벨 인정 행이 있다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cxF -- "$LA_SROW" "$BASE/docs/pipeline-run/RKLS.plan.md")" "1"
+SL_ASKED=""; seat_link RKLS RKLS1
+check "12: 라벨 인정 행을 가진 원천에서 render-manifest --auto 는 0, 그 행이 바이트 그대로 하나, verify-subset --auto 가 통과한다" \
+  "$SL_RC/$(grep -c '^- `라벨 인정`' "$SL_OUT")/$(grep -cxF -- "$LA_SROW" "$SL_OUT")/$SL_VS" "0/1/1/통과"
+vsa12() {  # vsa12 <라벨> <초안> <asked> — verify-subset --auto 가 실패하고 실패한 검사에 행 이 든다
+  local o
+  o=$(rk verify-subset "$2" "$BASE/docs/pipeline-run/RKLS.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" \
+        --asked "$3" --grant "$WORK/sl.block" --auto)
+  check "12: $1" "$(col "$o" 판정)" "실패"
+  has "12: $1 — 실패한 검사는 행 이다" "$(col "$o" 판정 3)" "행"
+}
+printf '5u rk api-surface-guard\t인정함\n7.7 절단점 rk\t머지\n' > "$WORK/asked-la-seat"
+vsa12 "좌석의 --asked 에 5u 키가 있으면 원천 그대로의 초안도 실패한다" "$SL_OUT" "$WORK/asked-la-seat"
+{ cat "$SL_OUT"; printf '%s\n' "$LA_SROW2"; } > "$WORK/v-la-seat-add.md"
+printf '5u rk other-guard\t인정함\n7.7 절단점 rk\t머지\n' > "$WORK/asked-la-seat2"
+vsa12 "좌석 초안이 자기 5u 답으로 원천에 없는 라벨 인정 행을 더하면 실패한다" "$WORK/v-la-seat-add.md" "$WORK/asked-la-seat2"
+grep -vxF -- "$LA_SROW" "$SL_OUT" > "$WORK/v-la-seat-drop.md"
+: > "$WORK/asked-la-none"
+vsa12 "좌석 초안이 원천의 라벨 인정 행을 빼면 실패한다" "$WORK/v-la-seat-drop.md" "$WORK/asked-la-none"
 
 # The transition table: the key's state at the render, then at verify-subset,
 # made by changing the fixture account between the two calls. 켬 installs the

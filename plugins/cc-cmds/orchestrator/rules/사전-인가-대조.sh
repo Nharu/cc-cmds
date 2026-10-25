@@ -36,6 +36,18 @@ if [ "$probe" != "1" ]; then
         esac ;;
     esac
   fi
+  # 라벨 인정 행위 — `act --kind label-ack --cutpoint PR -- 라벨 <head sha>` 만 연다.
+  # 적격성은 게이트의 전제 함수가 먼저 확인하고 지났을 때 `GATE_LABEL_ACK_PRE=1` 을 싣는다.
+  if [ "${GATE_KIND:-}" = "label-ack" ] && [ "${GATE_ACT:-}" = "PR" ] && [ "${GATE_LABEL_ACK_PRE:-}" = "1" ]; then
+    case "$GATE_ARGV" in
+      "라벨 "*)
+        label_sha="${GATE_ARGV#라벨 }"
+        case "$label_sha" in
+          ''|*[!0-9a-f]*) ;;
+          *) [ "${#label_sha}" -eq 40 ] && exit 0 ;;
+        esac ;;
+    esac
+  fi
   # 재실행의 다른 철자는 행이 일치해도 열지 않는다 — 재실행은 위 행위로만 나간다.
   # 등급 판정이 벗기는 투명 래퍼(env·genv 와 그 옵션·대입 낱말, command, nice, nohup,
   # timeout 과 시간 인자, stdbuf, time, lockf 와 파일 인자, g 접두 꼴)를 같은 순서로

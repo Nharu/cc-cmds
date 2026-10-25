@@ -9,7 +9,12 @@
 #   account    the four verdicts (same address, another address, no
 #              claude-design, the fake claude exiting 1 or printing broken
 #              JSON); the log line carries no domain
-#   run guard  account, seed and append refuse while CC_PIPELINE_RUN_ID is set
+#   run guard  account, seed and append refuse while CC_PIPELINE_RUN_ID is set;
+#              the publish stage's marker CC_PIPELINE_VISUAL_PUBLISH=1 lifts it
+#              for account and append, never for seed, and only for the copy
+#              beside CC_PIPELINE_GATE
+#   lane       the pinned lane from claude-design, read inside a run too; no
+#              key or no file is an empty output and exit 1
 #   models     defaults, overrides, an out-of-vocabulary value and an unknown
 #              key reported
 #   seed       copies only when the host file is absent; writes nothing when
@@ -75,9 +80,10 @@ vc() {
   while [ "$1" != -- ]; do envs+=("$1"); shift; done
   shift
   RC=0
-  env -u CC_PIPELINE_RUN_ID -u CC_PIPELINE_MANIFEST PATH="$T/bin:$PATH" \
+  env -u CC_PIPELINE_RUN_ID -u CC_PIPELINE_MANIFEST -u CC_PIPELINE_GATE -u CC_PIPELINE_VISUAL_PUBLISH \
+    PATH="$T/bin:$PATH" \
     XDG_CONFIG_HOME="$home/config" XDG_STATE_HOME="$home/state" ${envs[@]+"${envs[@]}"} \
-    bash "$CONFIG" "$@" > "$T/out" 2> "$T/err" || RC=$?
+    bash "${VC_HELPER:-$CONFIG}" "$@" > "$T/out" 2> "$T/err" || RC=$?
 }
 
 # --- account ------------------------------------------------------------------
@@ -118,6 +124,45 @@ for sub in account seed "append x"; do
   vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef -- $sub
   [ "$RC" = 2 ] && grep -q '런 안에서는 거절한다' "$T/err" && pass "런 안에서 ${sub%% *} 는 거절 (종료 2)" || fail "런 안 ${sub%% *} = ${RC}"
 done
+# The publish stage's marker lifts the guard for account and append only, and
+# only for the copy beside the gate the stage was launched with.
+GATE_BESIDE="$(dirname "$CONFIG")/gate.sh"
+vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef CC_PIPELINE_VISUAL_PUBLISH=1 CC_PIPELINE_GATE="$GATE_BESIDE" FAKE_CLAUDE_EMAIL=design.owner@example.com -- account
+[ "$RC" = 0 ] && grep -q '계정 판정: 일치' "$T/out" && pass "발행 표지가 있으면 런 안에서도 account 를 판독한다" || fail "발행 표지 account = ${RC} $(cat "$T/err")"
+vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef CC_PIPELINE_VISUAL_PUBLISH=1 CC_PIPELINE_GATE="$GATE_BESIDE" -- append x
+[ "$RC" != 2 ] && ! grep -q '런 안에서는 거절한다' "$T/err" && pass "발행 표지가 있으면 런 안에서도 append 가 줄 검사까지 간다" || fail "발행 표지 append = ${RC} $(cat "$T/err")"
+# A copy of the helper that is not beside the stage's gate stays refused under
+# the marker: the run's source checkout or a worktree copy, and a marker with no
+# gate at all.
+mkdir -p "$T/other-copy"
+cp "$CONFIG" "$SEED" "$T/other-copy/"
+for sub in account "append x"; do
+  # shellcheck disable=SC2086
+  VC_HELPER="$T/other-copy/visual-config.sh" vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef CC_PIPELINE_VISUAL_PUBLISH=1 CC_PIPELINE_GATE="$GATE_BESIDE" FAKE_CLAUDE_EMAIL=design.owner@example.com -- $sub
+  [ "$RC" = 2 ] && grep -q '런 안에서는 거절한다' "$T/err" && pass "게이트 옆이 아닌 사본은 발행 표지가 있어도 ${sub%% *} 를 거절 (종료 2)" || fail "다른 사본 ${sub%% *} = ${RC}"
+  # shellcheck disable=SC2086
+  vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef CC_PIPELINE_VISUAL_PUBLISH=1 FAKE_CLAUDE_EMAIL=design.owner@example.com -- $sub
+  [ "$RC" = 2 ] && grep -q '런 안에서는 거절한다' "$T/err" && pass "스테이지 게이트 경로 없이 발행 표지만 있으면 ${sub%% *} 를 거절 (종료 2)" || fail "게이트 경로 없는 표지 ${sub%% *} = ${RC}"
+done
+vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef CC_PIPELINE_VISUAL_PUBLISH=1 CC_PIPELINE_GATE="$GATE_BESIDE" -- seed
+[ "$RC" = 2 ] && grep -q '런 안에서는 거절한다' "$T/err" && pass "발행 표지가 있어도 seed 는 런 안에서 거절 (종료 2)" || fail "발행 표지 seed = ${RC}"
+vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef CC_PIPELINE_VISUAL_PUBLISH=0 -- account
+[ "$RC" = 2 ] && pass "표지 값이 1 이 아니면 account 는 그대로 거절" || fail "표지 0 account = ${RC}"
+
+# --- lane ---------------------------------------------------------------------
+HL="$T/h-lane"
+mkdir -p "$HL/config/cc-cmds"
+printf '%s\n' '# 고정 좌석' 'account = design.owner@example.com' > "$HL/config/cc-cmds/claude-design"
+vc "$HL" CC_PIPELINE_RUN_ID=20261012-deadbeef -- lane
+[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "lane: 키가 없으면 빈 출력과 종료 1" || fail "lane 없음 = ${RC} $(cat "$T/out")"
+printf '%s\n' '  lane =  u2  ' >> "$HL/config/cc-cmds/claude-design"
+vc "$HL" CC_PIPELINE_RUN_ID=20261012-deadbeef -- lane
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = "u2" ] && pass "lane: 런 안에서도 읽고 앞뒤 공백을 다듬는다" || fail "lane 판독 = ${RC} $(cat "$T/out")"
+printf '%s\n' 'lane = u3' >> "$HL/config/cc-cmds/claude-design"
+vc "$HL" -- lane
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = "u3" ] && pass "lane: 여러 줄이면 마지막 줄" || fail "lane 마지막 줄 = ${RC} $(cat "$T/out")"
+vc "$T/h-unset" -- lane
+[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "lane: 호스트 파일이 없으면 종료 1" || fail "lane 파일 없음 = ${RC}"
 
 # --- models -------------------------------------------------------------------
 H="$T/h-models"
