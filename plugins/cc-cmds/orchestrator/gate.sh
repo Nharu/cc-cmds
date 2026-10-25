@@ -26239,9 +26239,11 @@ gate_visual_approval_resolve() {
   # the hold for the person set, so the class never reaches the forbidden
   # classes' `거부`.
   #
-  # A QUESTION A PERSON ANSWERED IN WORDS IS NOT CLOSED HERE. Its last row
-  # carries `처분 사유=자유 입력`, the `'대기' 1` transition refuses that row,
-  # and the seat asks the person again for the label.
+  # A QUESTION A PERSON ANSWERED IN WORDS IS NOT CLOSED `승인` HERE. Its last
+  # row carries `처분 사유=자유 입력`, the `'대기' 1` transition refuses that
+  # row, and the seat asks the person again for the label. A standing refusal
+  # at the publish stage still closes it below, before that check: the
+  # person's no at the halt is a label, and the free text is not.
   local id="$1" q="$2" cls="${3:-}" why
   GATE_AUTO_RESOLVED_APPROVAL=""; export GATE_AUTO_RESOLVED_APPROVAL
   [ -n "$cls" ] || cls=$(gate_approval_field "$id" '판단 부류')
