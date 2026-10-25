@@ -269,6 +269,38 @@ check "8 끝나지 않은 스위트가 있으면 단계 정밀도" "$(extract 'r
   printf '%s\n' '::error::suite-guard: 마감을 넘겨 묶음을 거뒀다(위 덤프) — scripts/test-c.sh'
 } > "$WORK/g6.log"
 check "8 suite-guard 오류 줄이 있으면 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g6.log" | head -n 1)" "정밀도: 단계"
+{
+  cat "$WORK/g1.log"
+  printf '%s\n' '##[error]suite-guard: 마감을 넘겨 묶음을 거뒀다(위 덤프) — scripts/test-c.sh'
+} > "$WORK/g6b.log"
+check "8 저장된 로그의 ##[error] 철자도 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g6b.log" | head -n 1)" "정밀도: 단계"
+
+# The shard also runs `--self-test` goals no suite-guard wraps. A self-test's
+# total that falls while one wrapped suite is open is not that suite's total,
+# and a self-test that failed shows only in make's error line.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-a.sh'
+  printf '%s\n' 'FAIL: 1 가 — x'
+  printf '%s\n' 'rest-shard self-test: 30 passed, 0 failed'
+  printf '%s\n' 'scripts/test-a.sh: line 9: syntax error'
+  sg_end scripts/test-a.sh 2
+} > "$WORK/g9.log"
+check "8 자가시험의 합계는 열린 스위트의 합계가 아니다" "$(extract 'rest-tests (1)' "$WORK/g9.log" | head -n 1)" "정밀도: 단계"
+{
+  cat "$WORK/g1.log"
+  printf '%s\n' 'make[1]: *** [Makefile:683: run-rest-shard-selftest] Error 1'
+  printf '%s\n' 'make: *** [Makefile:566: rest-shard] Error 2'
+} > "$WORK/g10.log"
+check "8 감싸지 않은 목표의 make 실패 줄은 단계 정밀도" "$(extract 'rest-tests (1)' "$WORK/g10.log" | head -n 1)" "정밀도: 단계"
+{
+  cat "$WORK/g1.log"
+  printf '%s\n' 'make[1]: *** [Makefile:481: run/scripts/test-b.sh] Error 1'
+  printf '%s\n' 'make[1]: *** Waiting for unfinished jobs....'
+  printf '%s\n' 'make: *** [Makefile:566: rest-shard] Error 2'
+} > "$WORK/g11.log"
+check "8 감싼 스위트의 make 실패 줄과 바깥 make 의 전달 줄은 단언 정밀도를 지킨다" \
+  "$(extract 'rest-tests (1)' "$WORK/g11.log")" "$(extract 'rest-tests (1)' "$WORK/g1.log")"
+check "8 그 대조군은 단언 정밀도다" "$(extract 'rest-tests (1)' "$WORK/g11.log" | head -n 1)" "정밀도: 단언"
 
 # A FAIL line outside every suite.
 {

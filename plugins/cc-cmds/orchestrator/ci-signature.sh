@@ -58,14 +58,23 @@
 # (`suite-guard[<args>]: 종료 rc=<rc> …`), and the check stays at assertion
 # precision only when all of these hold:
 #
-#   - every suite that started ended, and no `::error::suite-guard:` line says
-#     the wrapper reaped or refused one;
+#   - every suite that started ended, and no `::error::suite-guard:` line
+#     (`##[error]suite-guard:` once Actions has rewritten the workflow command
+#     in the stored log) says the wrapper reaped or refused one;
 #   - every `FAIL:` line and every total line falls while exactly one suite is
 #     open, so the line is that suite's — two open suites make the line
 #     unattributable, and a `FAIL:` line outside every suite is the same;
 #   - every suite that ended with a non-zero rc printed at least one `FAIL:`
 #     line and its total line — a suite that died with no `FAIL:` line, or
-#     after some of them, is otherwise hidden by its neighbours.
+#     after some of them, is otherwise hidden by its neighbours;
+#   - no make error line (`make[<n>]: *** [<target>] …`) names a target other
+#     than a `run/<suite>` goal, unless a deeper make's error line came before
+#     it — that is the recursive make passing a failure up. The same shard runs
+#     goals no suite-guard wraps (the `--self-test` goals), and their failure is
+#     seen nowhere else.
+#
+# A `<name> self-test: <n> passed, …` total comes from such an unwrapped goal,
+# so it is never taken as the total of the one wrapped suite open beside it.
 #
 # A log with no suite-guard line is one suite: it needs one total line. A total
 # line is a line that is a total and nothing else, `[<name>: ]<n> passed, <m>
@@ -189,7 +198,16 @@ cs_read_fail_lines() {
         }
         next
       }
-      if (substr(line, 1, 21) == "::error::suite-guard:") { broken = 1; next }
+      if (substr(line, 1, 21) == "::error::suite-guard:" || substr(line, 1, 21) == "##[error]suite-guard:") { broken = 1; next }
+      if (line ~ /^g?make(\[[0-9]+\])?: \*\*\* \[/) {
+        lvl = 0
+        if (match(line, /^g?make\[[0-9]+\]/)) { lvl = substr(line, 1, RLENGTH); sub(/^g?make\[/, "", lvl); sub(/\]$/, "", lvl); lvl += 0 }
+        t = substr(line, index(line, "*** [") + 5); sub(/\][^]]*$/, "", t)
+        p = lastsep(t, ": "); if (p > 0) t = substr(t, p + 2)
+        if (substr(t, 1, 4) != "run/" && !(mkdeep > lvl)) unguarded_failed = 1
+        if (lvl > mkdeep) mkdeep = lvl
+        next
+      }
       if (line ~ /^run\//) {
         rest = line; sub(/^run\//, "", rest)
         suite = base(rest)
@@ -217,13 +235,13 @@ cs_read_fail_lines() {
       }
       if (line ~ /^([A-Za-z0-9_.-]+( self-test)?: )?[0-9]+ passed, [0-9]+ failed([,( ].*)?$/) {
         total = 1
-        if (guarded) { k = sole(); if (k != "") totals[k] = 1 }
+        if (guarded && line !~ /^[A-Za-z0-9_.-]+ self-test: /) { k = sole(); if (k != "") totals[k] = 1 }
       }
     }
     END {
       ok = total
       if (guarded) {
-        ok = !broken && !unattributed && !prefail && nopen == 0
+        ok = !broken && !unattributed && !prefail && !unguarded_failed && nopen == 0
         for (i = 1; ok && i <= nk; i++) {
           k = keys[i]
           if ((k in failed_rc) && (!fails[k] || !(k in totals))) ok = 0

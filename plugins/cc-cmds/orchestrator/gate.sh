@@ -22625,7 +22625,7 @@ gate_ci_master_next() {
   #        reading is green                                     master 재합류
   #   LM4  부분집합/판정 불가, 대표 = 예, and a waited event the
   #        reading says no repair run can be started for         master 수리 불가
-  #   LM5  부분집합/판정 불가 against a reading whose tip,
+  #   LM5  부분집합/판정 불가 against a reading whose
   #        signature fingerprint or event field has moved        CI 대조
   #   LM6  부분집합/판정 불가 otherwise                            master 대기
   # Nothing printed leaves the layer as it was. With no reading on the host
@@ -34746,13 +34746,14 @@ gate_ci_match_events_mark() {
 
 gate_ci_match_same_reading() {
   # gate_ci_match_same_reading <match row> <master 판독 row> — 0 when the match
-  # was made against a reading with the same tip, signature fingerprint and
-  # event field as this one. The observation time is left out: the reading's
-  # refresh rewrites it when nothing else moved, and a wait need not be
-  # matched again for that.
-  local was now
-  was=$(gate_row_field "$1" '판독 지문'); now=$(gate_ci_match_reading_mark "$2")
-  [ "${was%%/*}" = "${now%%/*}" ] && [ "${was##*/}" = "${now##*/}" ] \
+  # was made against a reading with the same signature fingerprint and event
+  # field as this one. Those two are all the comparison set is made of, and
+  # they are what the relay wakes on. The tip and the observation time are
+  # left out: a base commit that fixes nothing moves the tip, the reading's
+  # refresh rewrites the time, and the match would come out the same.
+  local was fp
+  was=$(gate_row_field "$1" '판독 지문'); fp=$(gate_row_field "$2" '서명 지문')
+  [ "${was##*/}" = "$(printf '%.12s' "${fp:--}")" ] \
     && [ "$(gate_row_field "$1" '판독 사건')" = "$(gate_ci_match_events_mark "$2")" ]
 }
 
