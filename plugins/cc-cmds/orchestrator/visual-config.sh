@@ -71,7 +71,7 @@
 
 set -euo pipefail
 
-script_dir=$(cd "$(dirname "$0")" && pwd -P)
+script_dir=$(cd -P "$(dirname "$0")" && pwd -P)
 SEED="$script_dir/visual-bans.seed"
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
@@ -105,7 +105,7 @@ refuse_in_run_unless_publish() {
   # before.
   if [ "${CC_PIPELINE_VISUAL_PUBLISH:-}" = "1" ] && [ -n "${CC_PIPELINE_GATE:-}" ]; then
     local gate_dir
-    gate_dir=$(cd "$(dirname "$CC_PIPELINE_GATE")" 2>/dev/null && pwd -P) || gate_dir=''
+    gate_dir=$(cd -P "$(dirname "$CC_PIPELINE_GATE")" 2>/dev/null && pwd -P) || gate_dir=''
     [ -n "$gate_dir" ] && [ "$gate_dir" = "$script_dir" ] && return 0
   fi
   refuse_in_run "$1"

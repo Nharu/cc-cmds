@@ -26390,6 +26390,32 @@ gate_argv_visual_helper() {
   esac
 }
 
+gate_argv_visual_helper_write() {
+  # gate_argv_visual_helper_write <argv...> — 0 when some word of argv, read
+  # with quotes and shell punctuation turned into blanks, names
+  # `visual-config.sh` and the word after it is `account`, `append` or `seed`,
+  # the subcommands that write the host files. The peel above stops at the
+  # launchers whose operands the table reads; `find -exec`, `xargs`, `sudo`
+  # and an interpreter (`bash <copy> append …`, `sh -c '<copy> append …'`)
+  # run a helper the same way and name it only as a word further in, so this
+  # reads every word instead. Quote-blind on purpose: a false hit refuses an
+  # act that names a helper's writing subcommand, never opens one.
+  (
+    set -f
+    local w t prev=''
+    for w in "$@"; do
+      w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
+      for t in $w; do
+        case "${prev##*/}:$t" in
+          visual-config.sh:account|visual-config.sh:append|visual-config.sh:seed) exit 0 ;;
+        esac
+        prev=$t
+      done
+    done
+    exit 1
+  )
+}
+
 gate_own_helper() {
   # gate_own_helper <argv0> — 0 when argv0 is the file of that name beside this
   # gate, compared as physical paths. A bare name is what the act's PATH finds,
@@ -38009,8 +38035,21 @@ gate_verb_act() {
     # publish stage's marker, say) does not change what runs. Only argv0 itself
     # was asked here once, so the run's pinned source checkout, a worktree copy
     # and an `env`-wrapped spelling all took the declaration path and opened an
-    # `append` no person approved.
-    [ -n "$(gate_argv_visual_helper "$@")" ] || GATE_UNKNOWN_DECLARED=1
+    # `append` no person approved. A launcher the table has no row for
+    # (`xargs`, `sudo`) or one it delegates past its own operands (`find -exec`)
+    # names the helper further in, which the word scan reads.
+    { [ -n "$(gate_argv_visual_helper "$@")" ] || gate_argv_visual_helper_write "$@"; } \
+      || GATE_UNKNOWN_DECLARED=1
+  fi
+  if [ "${GATE_OPAQUE:-0}" = "1" ] && [ "$graded" != "등급 미상" ] && gate_argv_visual_helper_write "$@"; then
+    # AN INTERPRETER RUNNING A VISUAL HELPER'S WRITING SUBCOMMAND. `bash <copy>
+    # append …` and `sh -c '<copy> append …'` grade as the runner, and the
+    # opaque cell opens an out-of-tree run-local declaration, so the copy's
+    # marker check would be all that stands before the host forbidden list —
+    # and the caller sets that environment. The gate's own copy is graded only
+    # when it is called directly, so no interpreter spelling is needed for it.
+    warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
+    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
   if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
     # THE GENERIC MESSAGE COMES FIRST SO THE SPECIFIC ONE IS READ LAST. Both
@@ -38033,8 +38072,8 @@ gate_verb_act() {
     # helper: a respelling does not change what runs.
     if gate_own_visual_helper "$1"; then
       warn "axis 2 \`등급 미상\` — the gate's own visual helper is graded by its subcommand and the run's ledger, and this spelling has no grade there: ${1##*/} ${2:-} (\`append\` is graded only on a person's unspent \`승인\` to that very candidate at the publish stage's halt; every other ungraded subcommand is the seat's)"
-    elif [ -n "$(gate_argv_visual_helper "$@")" ]; then
-      warn "axis 2 \`등급 미상\` — a visual helper that is not the file beside this gate has no grade, and no declaration opens a visual helper the table left ungraded: $(gate_argv_visual_helper "$@")"
+    elif [ -n "$(gate_argv_visual_helper "$@")" ] || gate_argv_visual_helper_write "$@"; then
+      warn "axis 2 \`등급 미상\` — a visual helper that is not the file beside this gate has no grade, and no declaration opens a visual helper the table left ungraded: $(_vh=$(gate_argv_visual_helper "$@"); printf '%s' "${_vh:-$1}")"
     else
       warn "axis 2 \`등급 미상\` — an argv0 that is not in the grade table does not fall through to \`읽기\`: $1 (if that tool has never been entered in the table, the table has to be widened; if it is in the table and the shape could not be read, rewrite it so the subcommand is visible)"
       gate_orchestrator_script_hint "$1"
