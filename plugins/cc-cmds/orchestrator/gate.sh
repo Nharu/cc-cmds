@@ -1538,7 +1538,29 @@ gate_pr_label_write() {
   gate_gh_strip_repo "$@"
   [ "$GATE_GH_API_UNREAD" = 0 ] || return 1
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
-  local grp="${1:-}" w edit=0 create=0 j c
+  local grp="${1:-}" w edit=0 create=0 j c skip=0 cg='' cv=''
+  # THE GROUP AND THE VERB ARE ALSO FOUND THE WAY gh FINDS THEM. cobra's
+  # `stripFlags` takes a two-letter flag or a `--flag` without `=` that the
+  # command level does not define as a value and drops the next word with it,
+  # so `gh pr -t x new -l y` and `gh -t x pr new -l y` open a pull request with
+  # a label: the alias `new` is not where `gate_gh_strip_repo` rewrites it, and
+  # in the second the first plain word is `x`. Read by position alone, neither
+  # was a create. The positional scans below stay as they were.
+  for w in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$w" in
+      --) break ;;
+      -h|--help|--*=*|-?=*) ;;
+      --*|-?) skip=1 ;;
+      -*|'') ;;
+      *)
+        if [ -z "$cg" ]; then cg="$w"; else cv="$w"; break; fi ;;
+    esac
+  done
+  case "$grp" in
+    pr|issue|api) ;;
+    *) case "$cg" in pr|issue) grp="$cg" ;; esac ;;
+  esac
   case "$grp" in
     pr|issue)
       for w in "$@"; do
@@ -1547,6 +1569,12 @@ gate_pr_label_write() {
           create) create=1 ;;
         esac
       done
+      if [ "$cg" = "$grp" ]; then
+        case "$cv" in
+          edit) edit=1 ;;
+          create|new) create=1 ;;
+        esac
+      fi
       if [ "$edit" = 1 ]; then
         for w in "$@"; do
           case "$w" in

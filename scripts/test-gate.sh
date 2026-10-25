@@ -39154,6 +39154,12 @@ la60_w 0 gh pr new --title t -l x
 la60_w 0 gh pr new -dl x
 la60_w 0 gh -R o/r pr new --label=x
 la60_w 0 gh pr -R o/r new -l x
+# 동사 앞에 띄어 쓴 값 옵션은 gh 가 그 값까지 건너뛰고 명령을 찾으므로 같은 생성이다.
+la60_w 0 gh pr -t x new -l y
+la60_w 0 gh pr -b x new --label y
+la60_w 0 gh pr --title x new -l y
+la60_w 0 gh -t x pr new -l y
+la60_w 0 gh pr -t x create -l y
 la60_w 0 gh api -X POST repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api repos/o/r/issues/1/labels -f 'labels[]=x'
 la60_w 0 gh api -X PUT repos/o/r/issues/1/labels -f 'labels[]=x'
@@ -39174,6 +39180,8 @@ la60_w 1 gh api -X PATCH repos/o/r/issues/1 -f title=x
 la60_w 1 gh pr edit 1 --title x
 la60_w 1 gh pr create --title t --body b
 la60_w 1 gh pr new --title x
+la60_w 1 gh pr -t x new --title t
+la60_w 1 gh pr list --search new -l bug
 la60_w 1 gh issue new --title t --label x
 la60_w 1 gh pr view 1
 la60_w 1 gh api graphql -f 'query=query { viewer { login } }'
@@ -44381,6 +44389,7 @@ t3e_park 미상 gh api -X POST repos/t/front3/issues/1/labels -f 'labels[]=api-c
 t3e_park 협업 gh pr edit 1 --add-label api-change
 T3E_CP=PR t3e_park 협업 gh pr create --title t --body b -l api-change
 T3E_CP=PR t3e_park 협업 gh pr new --title t --body b --label api-change
+T3E_CP=PR t3e_park 협업 gh pr -t t new --body b -l api-change
 t3e_park 협업 gh api -X PATCH repos/t/front3/pulls/1 --input body.json
 check "83e: PR 라벨 쓰기는 형태 행이 있어도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
 # 파일에서 읽는 graphql 쿼리는 머지 단계까지 오르고, 그 단계의 규칙이 도달 판정보다
