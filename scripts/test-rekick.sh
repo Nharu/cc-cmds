@@ -2439,12 +2439,13 @@ DOC13PSHA=$(sha "$BASE/$DOC13P")
 # `커밋`, I2 on a worktree of its own ending the same way with PR 42, I3 a
 # `완료` with `커밋` only. The ledger carries a `run` row naming the document,
 # which the gate's prior-run lookup reads to find the ledgers of that document,
-# and I2's plan row carries the slice's declaration it compares. K13P_NOANCHOR2 leaves out I2's `원격 판독` row and
-# K13P_OPEN the met termination clause. Leaves S13P_W2, S13P_B2, S13P_H2.
+# and I2's plan row carries the slice's declaration it compares. K13P_NOANCHOR2 leaves out I2's `원격 판독` row,
+# K13P_OPEN the met termination clause, and K13P_START sets the `run` row's
+# `시작`. Leaves S13P_W2, S13P_B2, S13P_H2.
 mk13p() {
   local s="$1" w2="$WORK/repo-run-$1-I2" b2="seg/$1-I2" h2
   P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$s"
-  fx_row 'run' "run-id=$s" "설계 문서=$DOC13P" "시작=2026-10-01T00:00:00Z"
+  fx_row 'run' "run-id=$s" "설계 문서=$DOC13P" "시작=${K13P_START:-2026-10-01T00:00:00Z}"
   ( cd "$WT" && git worktree add -q -b "$b2" "$w2" main && cd "$w2" && printf '%s I2\n' "$s" > seg.txt \
       && git add seg.txt && git commit -qm "$s I2" && git push -q origin "$b2" ) >/dev/null 2>&1
   h2=$(cd "$w2" && git rev-parse HEAD)
@@ -2462,6 +2463,7 @@ mk13p() {
 PF13=20261001-a000000e
 mk13p "$PF13"; gh13
 PW1=$S13_W; PB1=$S13_B; PH1=$S13_H
+PFW2=$S13P_W2; PFB2=$S13P_B2; PFH2=$S13P_H2
 a13 "$PF13"
 check "13 PR 절단점: 절단점 머지인 I1 의 입양후보 줄에는 칸이 없다" "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I1"')" \
   "입양후보${TAB}I1${TAB}$PB1${TAB}$PW1${TAB}41${TAB}$PH1"
@@ -2489,9 +2491,10 @@ VOUT=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$PF13.plan.md" --expe
 has "13 PR 절단점: 그 실패의 사유는 이어받는 세그먼트가 없는 초안이다" "$VOUT" "이어받는 세그먼트가 없는 초안은 받지 않습니다"
 hasnt "13 PR 절단점: 그대로 두기 답은 라벨 불일치로 읽히지 않는다" "$VOUT" "입양 I2 의 답이"
 # Without I2's anchor and on a source the gate ended: I2 is `입양불가` and still
-# carries the cell, and detect's notice for it says what the new run does.
+# carries the cell, and detect's notice for it says what the new run does. It
+# starts before PF13, so the prior-run lookup picks PF13's `완료` below.
 PG13=20261001-a000000f
-K13P_NOANCHOR2=1 K13P_OPEN=1 mk13p "$PG13"; gh13
+K13P_START=2026-09-30T00:00:00Z K13P_NOANCHOR2=1 K13P_OPEN=1 mk13p "$PG13"; gh13
 a13 "$PG13"
 check "13 PR 절단점: 앵커가 없는 I2 의 입양불가 줄도 칸을 지닌다" "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" \
   "입양불가${TAB}I2${TAB}42${TAB}PR기록없음${TAB}미입양=PR들여오기"
@@ -2508,13 +2511,34 @@ check "13 PR 절단점: 칸이 없는 입양불가 고지는 그대로 다시 �
 PH13=20261001-a0000010
 P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$PH13"
 fx_row 'run' "run-id=$PH13" "설계 문서=$DOC13P" "시작=2026-10-02T00:00:00Z"
-fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$S13P_W2" "브랜치=$S13P_B2" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
-fx_row 'segment' "id=I2" "상태=리뷰중" "워크트리=$S13P_W2" "PR=42"
-fx_row '원격 판독' "세그먼트=I2" "브랜치=$S13P_B2" "워크트리 HEAD=$S13P_H2" "원격 팁=$S13P_H2" "PR=42" "PR 상태=OPEN" "PR HEAD=$S13P_H2"
+fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$PFW2" "브랜치=$PFB2" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
+fx_row 'segment' "id=I2" "상태=리뷰중" "워크트리=$PFW2" "PR=42"
+fx_row '원격 판독' "세그먼트=I2" "브랜치=$PFB2" "워크트리 HEAD=$PFH2" "원격 팁=$PFH2" "PR=42" "PR 상태=OPEN" "PR HEAD=$PFH2"
 gh13
+gh13_view OPEN "$PFB2" "$PFH2" > "$GH13/view.42"
 a13 "$PH13"
 check "13 PR 절단점: 원천에 완료 행이 없어도 같은 문서의 앞선 런이 남긴 완료로 칸을 지닌다" \
-  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2" { print $NF }')" "미입양=PR들여오기"
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" "입양후보${TAB}I2${TAB}$PFB2${TAB}$PFW2${TAB}42${TAB}$PFH2${TAB}미입양=PR들여오기"
+# The same source after it pushed a review fix to PR 42: the planning act
+# compares the head with PF13's `커밋` and does the slice again, so the
+# candidate carries no cell and a `다시 하기` answer to it passes.
+PJ13=20261001-a0000011
+( cd "$PFW2" && printf 'review fix\n' >> seg.txt && git commit -qam "$PJ13 I2 review fix" && git push -q origin "$PFB2" ) >/dev/null 2>&1
+PJH2=$(cd "$PFW2" && git rev-parse HEAD)
+P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$PJ13"
+fx_row 'run' "run-id=$PJ13" "설계 문서=$DOC13P" "시작=2026-10-03T00:00:00Z"
+fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$PFW2" "브랜치=$PFB2" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
+fx_row 'segment' "id=I2" "상태=리뷰중" "워크트리=$PFW2" "PR=42"
+fx_row '원격 판독' "세그먼트=I2" "브랜치=$PFB2" "워크트리 HEAD=$PJH2" "원격 팁=$PJH2" "PR=42" "PR 상태=OPEN" "PR HEAD=$PJH2"
+gh13
+printf '[{"number":42,"state":"OPEN","headRefOid":"%s"}]\n' "$PJH2" > "$GH13/list.$(printf '%s' "$PFB2" | tr '/' '_')"
+gh13_view OPEN "$PFB2" "$PJH2" > "$GH13/view.42"
+a13 "$PJ13"
+check "13 PR 절단점: head 가 앞선 런의 완료 행 커밋에서 움직인 후보에는 칸이 없다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" "입양후보${TAB}I2${TAB}$PFB2${TAB}$PFW2${TAB}42${TAB}$PJH2"
+printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n입양 I2\t다시 하기 — I2 · PR #42\n' "$S13_B" "$(printf '%s' "$S13_H" | cut -c1-12)" > "$WORK/a13-jredo"
+SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-jredo" seat_link "$PJ13" 20261002-b000000d
+check "13 PR 절단점: head 가 움직인 후보를 다시 하기로 답한 초안은 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
 rm -f "$GH13/view.42"
 use13 "$SW" "$SB" "$SH"
 

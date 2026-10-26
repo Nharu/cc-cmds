@@ -209,9 +209,11 @@
 # carry a `재수렴` answer into the new run), then `미입양=PR들여오기` — on an
 # `입양불가` line too, after its reason — when the frozen document declares the
 # slice `절단점: PR` and the latest landing any run of the document left for it
-# (past a trailing `park`) is a `완료` carrying `PR` and `커밋` only: a new run
-# that does not adopt it may bring that open pull request in as done,
-# so the person's second answer is `그대로 두기`, not `다시 하기`. The reason tokens: park,
+# (past a trailing `park`) is a `완료` carrying `PR` and `커밋` only — on an
+# `입양후보` line, a `PR` and `커밋` equal to the line's PR and HEAD: a new run
+# that does not adopt it brings that open pull request in as done while its
+# head is that `커밋`, so the person's second answer is `그대로 두기`, not
+# `다시 하기`. The reason tokens: park,
 # 설계재실행, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
 # 라이브, 원장없음, 중단답이월불가, and 판정불가 when the gate child could
@@ -489,14 +491,17 @@ EOF
 #   adopt-check <seg> <alias> <row>   통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨
 #                                     — the planning-time adoption check, its
 #                                     warning mapped to a token
-#   pr-import <doc> <seg> <doc key>   들여오기|아님 — 들여오기 when the document
-#                                     declares the slice `절단점: PR` and the
-#                                     gate's own prior-run lookup, over every
-#                                     ledger of that document beside the given
-#                                     one, picks a `완료` by its pull request
+#   pr-import <doc> <seg> <doc key>   들여오기<TAB><PR><TAB><커밋>|아님 —
+#                                     들여오기 when the document declares the
+#                                     slice `절단점: PR` and the gate's own
+#                                     prior-run lookup, over every ledger of
+#                                     that document beside the given one,
+#                                     picks a `완료` by its pull request
 #                                     cutpoint arm and not as a run-outside
-#                                     merge: the planning act of a run that
-#                                     does not adopt the segment brings it in
+#                                     merge, with that row's `PR` and `커밋`:
+#                                     the planning act of a run that does not
+#                                     adopt the segment brings it in while
+#                                     that pull request is open at that commit
 #   halt-source <seg>                 이월|없음|불가 — the halt-answer carry check
 #   tip-of <dir> <slug> <branch>      <40 hex>|없음|미상
 #   pr-of <dir> <slug> <branch> <head>
@@ -544,7 +549,8 @@ ROWS
         [ "$(cutpoint_token "$c" 2>/dev/null || true)" = "PR" ] || { printf "아님"; exit 0; }
         DOC=$a1; DOC_KEY=$a3; LEDGER="$(dirname "$led")/rk-pr-import-probe.md"
         if gate_prior_run_landed "$a2" 2>"$err" && [ -z "$GATE_PRIOR_OUTSIDE" ] && [ "$GATE_PRIOR_KIND" = "PR" ] \
-           && [ "$(gate_row_field "$GATE_PRIOR_ROW" "상태")" = "완료" ]; then printf "들여오기"
+           && [ "$(gate_row_field "$GATE_PRIOR_ROW" "상태")" = "완료" ]; then
+          printf "들여오기\t%s\t%s" "$(gate_row_field "$GATE_PRIOR_ROW" "PR")" "$(gate_row_field "$GATE_PRIOR_ROW" "커밋")"
         else printf "아님"; fi ;;
       adopt-check)
         gate_adoption_check "$a1" "$a2" "$a3" 2>"$err" || rc=$?
@@ -585,7 +591,11 @@ ROWS
     landed)
       case "$out" in 착지됨|미착지) ;; *) out='판정불가' ;; esac ;;
     pr-import)
-      case "$out" in 들여오기|아님) ;; *) out='판정불가' ;; esac ;;
+      IFS="$TAB" read -r a b c x <<EOF
+$out
+EOF
+      if [ "$a" = "들여오기" ] && [ -z "$x" ] && rk_num "$b" && rk_sha40 "$c"; then out="들여오기${TAB}${b}${TAB}${c}"
+      elif [ "$out" != "아님" ]; then out='판정불가'; fi ;;
     adopt-check)
       case "$out" in 통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨) ;; *) out='판정불가' ;; esac ;;
     halt-source)
@@ -813,11 +823,12 @@ rk_adopt_halts() {
 # before), the worktree and the remote too. The first condition that fails
 # names the reason. RK_AUTO selects the seat's branch. Both layers end a line
 # with `미입양=PR들여오기` when the gate child's `pr-import` answers 들여오기
-# over the document at `<base>`, read without the network.
+# over the document at `<base>`, read without the network — an `입양후보` line
+# only when the answer's `PR` and `커밋` are the line's PR and HEAD.
 rk_adopt_candidates() {
   local trows="$1" layer="$2" key keys rows last W B anchor n h wh rt ph ab slug al row tal
   local cg tcg tbase cur hd st tip prl pn ps ph2 pv vs vb vh vc vo vbase tail tok mcopy err doc docf dcopy first pre halts
-  local pdoc pim
+  local pdoc pim pip pic cim
   keys=$( { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | while IFS= read -r row; do manifest_row_fields "$row" 'id' | head -n 1; printf '\n'; done | awk 'NF && !seen[$0]++')
   err="$RK_TMP/adopt.err"
   pdoc=$(rk_copy "$RK_BASE/$(manifest_field '요소' '설계 문서')" adopt-prdoc.md) || pdoc=''
@@ -827,10 +838,18 @@ rk_adopt_candidates() {
     # The pull request cutpoint cell: a segment the new run does not adopt may
     # be brought in by its planning act as done, so its second answer is to
     # leave it, not to do it again. A child that cannot answer adds no cell.
-    pim=''
-    if [ -n "$pdoc" ] && [ "$(rk_gate pr-import "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pdoc" "$key" "$(manifest_field '요소' '설계 문서')")" = "들여오기" ]; then
-      pim="${TAB}미입양=PR들여오기"
+    # The planning act brings an open pull request in only at the `커밋` of the
+    # row the lookup picked, so a candidate carries the cell only when its pull
+    # request and head are that row's; an `입양불가` line, whose head nobody
+    # read, carries it whenever the lookup picked such a row, and item 8's
+    # screen states that condition for it.
+    pim=''; pip=''; pic=''
+    if [ -n "$pdoc" ]; then
+      IFS="$TAB" read -r pim pip pic <<EOF
+$(rk_gate pr-import "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pdoc" "$key" "$(manifest_field '요소' '설계 문서')")
+EOF
     fi
+    if [ "$pim" = "들여오기" ]; then pim="${TAB}미입양=PR들여오기"; else pim=''; pip=''; pic=''; fi
     rows=$(rk_ledger_seg_rows "$key")
     last=$(printf '%s\n' "$rows" | tail -n 1)
     anchor=$( { grep -E '^- `원격 판독` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| 세그먼트=$key |" || true; } \
@@ -879,7 +898,9 @@ rk_adopt_candidates() {
     fi
     h=$wh
     if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
-    if [ "$layer" != "full" ]; then printf '입양후보\t%s\t%s\t%s\t%s\t%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pim"; continue; fi
+    cim=$pim
+    { [ "$pip" = "$n" ] && [ "$pic" = "$h" ]; } || cim=''
+    if [ "$layer" != "full" ]; then printf '입양후보\t%s\t%s\t%s\t%s\t%s%s\n' "$key" "$B" "$W" "$n" "$h" "$cim"; continue; fi
 
     # 5 — the worktree belongs to the segment's target and has B checked out.
     slug=$(rk_rows_last_field "$rows" '레포')
@@ -982,7 +1003,7 @@ EOF
     fi
     halts=$(rk_adopt_halts "$key")
     [ -z "$halts" ] || pre="${pre}${TAB}중단기록=$halts"
-    printf '입양후보\t%s\t%s\t%s\t%s\t%s%s%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pre" "$tail" "$pim"
+    printf '입양후보\t%s\t%s\t%s\t%s\t%s%s%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pre" "$tail" "$cim"
   done <<EOF
 $keys
 EOF
