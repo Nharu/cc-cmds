@@ -4459,6 +4459,9 @@ SAPEOF
     sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
         --cutpoint "$cut" -- "$@"
   }
+  # sp_ld <argv...> — 게이트를 소싱해 그 argv 의 유도 절단점만 찍는다. 35-32 와
+  # 38-20 이 함께 쓴다.
+  sp_ld() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv0 "$@"' _ "$GATE" "$@"; }
   sp_rbase() { git --git-dir="$SA_REMOTE" rev-parse "refs/heads/$SA_BASE" 2>/dev/null; }
   sp_refused() {
     # sp_refused <라벨> <want rc> <원격 베이스 기준값> — 거절의 세 면: rc, 게이트 통과 줄
@@ -30053,7 +30056,6 @@ done
 
 # gh api 의 머지 철자 — 사다리·결속·협업면이 한 판독을 쓴다. `?query`·`#`·후행 `/` 가
 # 붙은 REST 경로와 GraphQL 머지도 머지로 읽혀 결속을 받는다.
-sp_ld() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv0 "$@"' _ "$GATE" "$@"; }
 sp_cs() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
            if gate_collaboration_surface "" "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
@@ -36673,6 +36675,139 @@ sb_silent 'git branch 는 침묵한다'     -- git branch 곁가지-보호
 sb_silent 'gh pr view 는 침묵한다'     -- gh pr view 1
 sb_silent 'terraform plan 은 침묵한다' -- terraform plan
 sb_silent 'gh api 의 GET 은 침묵한다'  -- gh api repos/o/r/pulls/1/merge
+
+# --- 38-20. 리뷰 게시는 신고와 무관하게 커밋 칸이고, 절단점-준수 거절은 갈래를 안내한다 ---
+# --- section: 38-20 | group: sb | covers: ladder_of_gh, ladder_of_gh_api, gate_gh_api_rest_class, gate_gh_api_rest_segs, gate_gh_api_review_post, gate_run_rules, gate_cutpoint_refusal_hint, act, plan | anchors: 20: POST 리뷰 생성은 커밋 칸이다, 20: 리뷰 목록 GET 은 유도값이 없다, 20: 리뷰 기각은 유도값이 없다, 20: 리뷰 경로 뒤의 ../merge 는 머지다, 20: 이 절의 세그먼트 행이 기록된다 (아래 단언이 공허하지 않다), 20: 유도값 없는 argv 의 거절은 재신고 갈래 줄을 낸다, 20: 유도값이 판정한 거절은 park 갈래 줄을 낸다, 20: 유도하지 않는 종류의 거절에는 갈래 줄이 없다 ---
+#
+# 리뷰 게시 argv 에 유도값이 없던 동안에는 신고값이 그대로 판정에 쓰여, 같은
+# argv 가 `커밋` 으로 신고되면 통과하고 `PR` 로 신고되면 커밋 런에서 절단점-준수
+# 거절을 받았다. 유도 범위는 `gh pr review` 와 REST 의 두 POST(리뷰 생성,
+# pending 리뷰 제출) 뿐이고, 같은 경로 아래의 수정·삭제·기각과 GraphQL 리뷰
+# 변이·줄 댓글은 유도 밖이다 — 대조군이 그 경계를 묶는다.
+for sp_a20 in "pr review 7 --approve" "pr review --comment -b x" "pr -R o/r review 7 -r -b x"; do
+  # shellcheck disable=SC2086
+  check "20: gh $sp_a20 는 커밋 칸이다" "$(sp_ld gh $sp_a20)" "커밋"
+done
+sp_f20="$WORK/review-body-20.json"
+X20="0123456789abcdef0123456789abcdef01234567"
+check "20: POST 리뷰 생성은 커밋 칸이다" \
+  "$(sp_ld gh api -X POST repos/o/r/pulls/7/reviews -f event=APPROVE)" "커밋"
+for sp_p20 in "repos/o/r/pulls/7/reviews -f event=COMMENT" \
+              "repos/o/r/pulls/7/reviews --input $sp_f20" \
+              "repos/o/r/pulls/7/reviews -F body=@$sp_f20" \
+              "-X POST repos/o/r/pulls/7/reviews/9/events -f event=COMMENT" \
+              "-X POST repos/{owner}/{repo}/pulls/7/reviews" \
+              "-X POST repos/:owner/:repo/pulls/7/reviews" \
+              "-X POST repos/o/r/pulls/7/reviews/" \
+              "-X POST repos/o/r/pulls/7/reviews?per_page=1" \
+              "-X POST /repos/o/r/pulls/7/reviews" \
+              "-X POST https://api.github.com/repos/o/r/pulls/7/reviews" \
+              "-X post repos/o/r/pulls/7/reviews" \
+              "-X Post repos/o/r/pulls/7/reviews"; do
+  # shellcheck disable=SC2086
+  check "20: POST 리뷰 생성·제출 철자 「gh api ${sp_p20}」 는 커밋 칸이다" "$(sp_ld gh api $sp_p20)" "커밋"
+done
+check "20: 리뷰 목록 GET 은 유도값이 없다" "$(sp_ld gh api repos/o/r/pulls/7/reviews)" ""
+check "20: 리뷰 기각은 유도값이 없다" \
+  "$(sp_ld gh api -X PUT repos/o/r/pulls/7/reviews/9/dismissals -f message=x)" ""
+check "20: pending 리뷰 삭제는 유도값이 없다" "$(sp_ld gh api -X DELETE repos/o/r/pulls/7/reviews/9)" ""
+check "20: 리뷰 수정은 유도값이 없다" "$(sp_ld gh api -X PUT repos/o/r/pulls/7/reviews/9 -f body=x)" ""
+check "20: 제출 경로 뒤에 조각이 더 붙은 POST 는 유도값이 없다" \
+  "$(sp_ld gh api -X POST repos/o/r/pulls/7/reviews/9/events/x -f event=COMMENT)" ""
+check "20: 리뷰 경로 뒤의 ../merge 는 머지다" \
+  "$(sp_ld gh api -X POST repos/o/r/pulls/7/reviews/../merge -f event=COMMENT)" "머지"
+check "20: gh 가 채우는 {branch} 조각의 리뷰 경로는 머지다" \
+  "$(sp_ld gh api -X POST 'repos/o/r/pulls/{branch}/reviews' -f event=COMMENT)" "머지"
+check "20: 줄 댓글 POST 는 유도값이 없다" \
+  "$(sp_ld gh api -X POST repos/o/r/pulls/7/comments -f body=x)" ""
+q20r='mutation{addPullRequestReview(input:{pullRequestId:"PR_x"}){clientMutationId}}'
+check "20: 인라인 본문의 GraphQL 리뷰 변이는 유도값이 없다" "$(sp_ld gh api graphql -f "query=$q20r")" ""
+check "20: 본문이 파일인 GraphQL POST 는 머지다" "$(sp_ld gh api graphql -F "query=@$sp_f20")" "머지"
+check "20: gh pr comment 는 유도값이 없다" "$(sp_ld gh pr comment 7 -b x)" ""
+
+# 신고 무관 판정 — 대상 절단점 `커밋` 에서 같은 리뷰 게시 argv 를 세 높이로 신고한다.
+# `plan` 으로 잰다: 원격을 부르지 않고 예고 줄에 유도값을 싣는다.
+sb_new '20 리뷰 게시 판정' 선머지후리뷰
+sb_target_field 절단점 커밋
+sa_seg_row SB20 선머지후리뷰
+check "20: 이 절의 세그먼트 행이 기록된다 (아래 단언이 공허하지 않다)" "$rc" "0"
+sb20_plan() {
+  # sb20_plan <신고 절단점> <argv...>
+  local cut="$1"; shift
+  sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SB20 \
+      --cutpoint "$cut" --rationale x -- "$@"
+}
+for sp_c20 in 커밋 PR 머지; do
+  sb20_plan "$sp_c20" gh api -X POST repos/o/r/pulls/7/reviews -f event=COMMENT -f "commit_id=$X20" -f body=x
+  check "20: 커밋 대상에서 $sp_c20 로 신고한 리뷰 게시가 통과한다 (REST)" "$rc" "0"
+  case "$msg" in
+    *"유도=커밋"*) ok "20: 그 판정의 유도 절단점이 커밋이다 (REST, $sp_c20 신고)" ;;
+    *) bad "20: 그 판정의 유도 절단점이 커밋이다 (REST, $sp_c20 신고)" "$msg" ;;
+  esac
+  sb20_plan "$sp_c20" gh pr review 7 --comment -b x
+  check "20: 커밋 대상에서 $sp_c20 로 신고한 리뷰 게시가 통과한다 (gh pr review)" "$rc" "0"
+  case "$msg" in
+    *"유도=커밋"*) ok "20: 그 판정의 유도 절단점이 커밋이다 (gh pr review, $sp_c20 신고)" ;;
+    *) bad "20: 그 판정의 유도 절단점이 커밋이다 (gh pr review, $sp_c20 신고)" "$msg" ;;
+  esac
+done
+
+# 거절 안내 — 절단점-준수 거절 뒤에 갈래 줄 하나. 각 단언은 exit 3 과 거절 줄을
+# 먼저 본다. 어느 줄에도 exit 8 의 「raise the declaration」 처방이 없다.
+sb20_refused() {
+  # sb20_refused <라벨> — rc 3 과 절단점-준수 거절 줄.
+  check "$1 (exit 3)" "$rc" "3"
+  case "$msg" in
+    *"rule refused: 절단점-준수"*) ok "$1 — 절단점-준수 거절 줄이 있다" ;;
+    *) bad "$1 — 절단점-준수 거절 줄이 있다" "$msg" ;;
+  esac
+  case "$msg" in
+    *"raise the declaration"*) bad "$1 — exit 8 의 처방 문구가 없다" "$msg" ;;
+    *) ok "$1 — exit 8 의 처방 문구가 없다" ;;
+  esac
+}
+sb20_plan PR gh pr comment 7 -b x
+sb20_refused "20: 유도값 없는 argv 를 PR 로 신고하면 거절된다"
+case "$msg" in
+  *"judged at the declared height 'PR' — "*"re-declare the same argv at that height"*"this is not a stop that asks a person"*)
+    ok "20: 유도값 없는 argv 의 거절은 재신고 갈래 줄을 낸다" ;;
+  *) bad "20: 유도값 없는 argv 의 거절은 재신고 갈래 줄을 낸다" "$msg" ;;
+esac
+sa_seg_row_at PR SB20K ""
+sb20_refused "20: 유도하지 않는 종류를 PR 로 신고하면 거절된다"
+case "$msg" in
+  *"re-declare"*|*"park"*) bad "20: 유도하지 않는 종류의 거절에는 갈래 줄이 없다" "$msg" ;;
+  *) ok "20: 유도하지 않는 종류의 거절에는 갈래 줄이 없다" ;;
+esac
+
+# 유도값이 판정한 거절 — REST 병합을 머지로 신고한다. 세그먼트 행과 리뷰 정책이
+# 없는 픽스처로 돌려, 머지 순서 대기와 머지 결속이 규칙보다 먼저 끝내지 않게 한다.
+sb_new '20 유도 판정 거절' ''
+sb_target_field 절단점 커밋
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment - \
+    --cutpoint 머지 --rationale x \
+    -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$X20"
+sb20_refused "20: 유도값 머지인 argv 를 머지로 신고하면 거절된다"
+case "$msg" in
+  *"the argv itself is at '머지', above the target cutpoint '커밋' — do not re-declare it; park"*)
+    ok "20: 유도값이 판정한 거절은 park 갈래 줄을 낸다" ;;
+  *) bad "20: 유도값이 판정한 거절은 park 갈래 줄을 낸다" "$msg" ;;
+esac
+
+# 푸시 이음매는 유도값을 채우고도 더 높은 신고를 내리지 않는다 — 대상 `push` 에서
+# 베이스가 아닌 push 를 `PR` 로 신고하면 유도값 `push` 가 차 있어도 신고값으로
+# 판정된 것이므로 재신고 갈래이고, 그 줄이 실제 높이 `push` 를 적는다.
+sb_new '20 푸시 재신고' ''
+sb_target_field 절단점 push
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment - \
+    --cutpoint PR --rationale x \
+    -- git push origin HEAD:refs/heads/보호20
+sb20_refused "20: 대상 push 에서 PR 로 신고한 push 는 거절된다"
+case "$msg" in
+  *"judged at the declared height 'PR'; the argv's own height is 'push' — "*"re-declare the same argv at that height"*)
+    ok "20: 유도값이 있어도 신고값으로 판정된 거절은 재신고 갈래이고 실제 높이를 적는다" ;;
+  *) bad "20: 유도값이 있어도 신고값으로 판정된 거절은 재신고 갈래이고 실제 높이를 적는다" "$msg" ;;
+esac
 
 # --- 38-12. 적용 행위의 다섯 전제 ------------------------------------------------
 # --- section: 38-12 | group: sb | covers: act, apply, gate_segment_apply_state, snapshot | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 불필요=0 만 정의하고 문면에 싣는다, 12: 적용 명령이 없으면 적용 불필요 로 rc 0 이다, 12: 절단점이 배포 가 아니면 적용 불필요 로 rc 0 이다, 12: 빚지지 않은 세그먼트는 M^2 가 리뷰 HEAD 와 달라도 전제 4 앞에서 적용 불필요 로 끝난다, 12: 두 번째 적용 행위는 적용 불필요 로 끝난다 ---

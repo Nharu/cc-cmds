@@ -14,10 +14,11 @@ anchor rather than a good intention.
 The two banner seats are not the only hooks in this directory.
 `active-notify-pretool.sh` belongs to the `active-notify` skill,
 `session-return-dismiss.sh` closes a session's banners when the person comes
-back to it, and `stage-rules-edit.sh` shows the stage rules status after an
-edit of the user-scope `CLAUDE.md`; the last two have their contracts in later sections
+back to it, `session-title.sh` names a session after the slash command it is
+running, and `stage-rules-edit.sh` shows the stage rules status after an
+edit of the user-scope `CLAUDE.md`; the last three have their contracts in later sections
 of this file. `autopilot-status.tsx` is not a command hook at all but a plugin
-module, listed under `"modules"`; its section is the last one. None of the four
+module, listed under `"modules"`; its section is the last one. None of the five
 raises a session banner, and the
 rules below are written for the two seats alone. The question form under
 `question-form/` is a sub-mod: `autopilot-status.tsx` is the one entry listed
@@ -207,9 +208,10 @@ nothing unless Apple events to iTerm2 are already allowed, so it cannot bring
 up a permission prompt. A hook whose session switch is off starts none, because
 the emitter checks the switch before it builds the value.
 
-**Five `hooks.json` entries pin `"timeout": 5`: the two seats' entries and the
+**Six `hooks.json` entries pin `"timeout": 5`: the two seats' entries, the
 return hook's three** (`UserPromptSubmit`, `PostToolUse` with the matcher
-`AskUserQuestion`, and `Stop`). The `Bash` entry under `PreToolUse` has no
+`AskUserQuestion`, and `Stop`), **and the session title hook's
+`UserPromptSubmit` entry**. The `Bash` entry under `PreToolUse` has no
 timeout and the `Edit|Write|MultiEdit` entry has 10, so "every entry" would be
 wrong. All of these events block, and the default is long, so an emitter that
 stalls for any reason would stall the session with it. Nothing in the design
@@ -225,7 +227,9 @@ the defence it is. Putting the `Stop` entry into the `PreToolUse` array instead
 of its own key is a silent failure — the harness passes it over on a matcher miss
 and seat 2 simply never runs.
 
-**The return hook adds three entries.** A new top-level `UserPromptSubmit` key; a
+**The return hook adds three entries.** A new top-level `UserPromptSubmit` key
+(the session title hook's entry is a sibling in that same array, after this
+one, with no matcher); a
 sibling entry under `PostToolUse` with the matcher `AskUserQuestion`, not merged
 into the `Edit|Write|MultiEdit` entry; and a sibling entry under `Stop`, leaving
 seat 2's entry byte for byte as it was. The `PostToolUse` entry has to keep its
@@ -349,6 +353,146 @@ under the global `cc-cmds-active-notify`. Banners raised before the upgrade —
 under that global group, or without a group — are not reached either and stay
 until removed by hand. Of the eight rules above, every one but the seventh
 applies to it unchanged, and rule 5 covers its own switch the same way.
+
+## The session title hook
+
+`session-title.sh` names a session after the slash command it is running. It
+is the second entry of the `UserPromptSubmit` array, a sibling after the return
+hook's, with no matcher and `"timeout": 5`; `SessionStart` is not used, because
+a session is not named when it starts. It raises no banner, sources nothing
+from `../orchestrator/`, and reads no `CC_PIPELINE_*` variable,
+`.transcript_path` or `.agent_type`.
+
+**What it emits.** On the one path that titles the session it writes exactly
+one line to stdout,
+`{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","sessionTitle":"…"}}`,
+and nothing on any other path. The harness stores that title where `/rename`
+stores a name, so it shows in the `cc -r` picker, the prompt box and the
+terminal title. The title is `<label>·<summary>`:
+
+- The label is the command name without its namespace: `/cc-cmds:review 1085`
+  gives `review`. Only the first line of the prompt is read, and it must start
+  with `/`. A namespaced name always counts; a bare name counts only when it
+  resolves in one of five places — the plugin's `skills/<name>/SKILL.md`, the
+  configuration home's `skills/<name>/SKILL.md` or `commands/<name>.md`, or the
+  same two under `<cwd>/.claude/`, `<cwd>` being the payload's `.cwd`. A plain prompt, a pasted path
+  and a built-in command are not titled.
+- The summary is built from the arguments: quoted arguments stay one piece and
+  lose their quotes, `--flag value` and `--flag=value` are dropped, a
+  pull or issue URL becomes `#N`, a path or `.md` file becomes its base name
+  without `.md`, a `YYYYMMDD-<8 hex>` run id becomes the hex part, and a leading
+  bare number becomes `#N`. `/cc-cmds:review 1085` gives `review·#1085`; with
+  no summary the title is the label alone.
+- **The width is 38 display cells**, measured and cut inside the one `jq`
+  program by the same `cw`/`cut` definitions the banner emitter carries (a test
+  compares the copies byte for byte). A label wider than 38 is cut alone.
+- **Normalisation follows the harness's.** C0 and C1 controls, the line and
+  paragraph separators, every Unicode 17.0 `Cf` code point and the spaces
+  JavaScript `trim` removes are compared by code point, so the hook's idea of
+  "the same title" is the one the harness applies when it stores it.
+
+**It never overwrites a name a person gave.** The harness does not protect a
+`/rename` name from a hook title, and the payload carries no field saying who
+set the current title. So the hook remembers what it emitted, per session, and
+acts only when the current `.session_title` is empty or one of its own — equal
+to a remembered title, or one with the harness's uniqueness suffix
+`-<adjective>-<noun>[-N]` (lowercase only). The first time it sees a title it
+did not emit, it marks the session released and never titles that session
+again. After `/clear` — a new session id carrying the old title — the title is
+adopted when it is the last title another session's file recorded. The same
+title again, with or without that suffix, is not emitted: the harness skips
+the first itself, and the second may come back without the suffix after a
+resume.
+
+**The ownership state file.**
+`${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session-title/<sid>`, the sid
+accepted only when it matches `^[A-Za-z0-9-]+$`. Line 1 is the schema line
+`cc-session-title v1`; the rest is either up to the four newest titles, oldest
+first, or the single line `!released`. It is written through a `mktemp`
+sibling and `mv -f`. A title that could not be remembered is not emitted,
+because next time it would read as a person's name and stop that session's
+titling for good. The directory holds this one format only, because the
+`/clear` lookup reads every file in it.
+
+**The current title file.**
+`${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session-title-now/<sid>` holds
+the session's title as it stands, whoever set it: two lines, the schema line
+`cc-session-title-now v1` and the title. Every prompt that gets past the
+session id check sets it once, before the stdout line — on a plain prompt, on
+a released session, on someone else's title, on a repeat, on a failed state
+write and on an emitted title alike. The value is the emitted title, or else
+`.session_title` with each run of control characters turned into one space. A
+different value is written through a `mktemp` sibling and `mv -f`; an empty
+value removes the file; an equal value leaves it alone, mtime and all. A
+failure here changes neither the output nor the ownership state. It lives in
+its own directory so that the ownership directory keeps one format.
+
+What a reader of that file must do:
+
+- Read it and nothing else: take line 1 as the schema check and line 2 as the
+  title, without trimming. Never fall back to the transcript.
+- Do not read the switch below. A file written before the switch was set stays
+  where it is and is still read; switching the hook off stops the updates, not
+  the file.
+- Never write it.
+
+**Old files go after 30 days.** When a call wrote or removed a file in either
+directory, it then runs `find <dir> -type f -mtime +30 -exec rm -f {} +` over
+both directories; a call that wrote nothing sweeps nothing. Reverting the
+plugin removes the hook that sweeps, so whatever is in
+`~/.local/state/cc-cmds/session-title/` and
+`~/.local/state/cc-cmds/session-title-now/` (or the same two under
+`$XDG_STATE_HOME/cc-cmds/`) is left behind until removed by hand.
+
+**Which of the eight rules apply.** Five apply as written: every path exits 0
+(rule 1; exit 2 on this event blocks the prompt), nothing reaches stderr
+(rule 3), `set -uo pipefail` and never `-e` with the reason in the script
+header (rule 4), the subagent gate reads `agent_id` and not `agent_type`
+(rule 7; this event's payload carries no `agent_id` today, so the branch is a
+defence), and a missing `jq` exits 0 silently after the same Homebrew PATH
+prepend (rule 8). **Rule 2 does not apply**: this hook answers through stdout,
+so it writes the one JSON object there on the titling path. A
+`UserPromptSubmit` hook's plain stdout is added to the model's context, so no
+diagnostic is ever written there.
+
+**There is no pipeline-marker check, on purpose.** Unattended stage sessions
+get their titles by the same rules. Copying the stage check of a sibling hook
+here would make stage titles disappear without a sound.
+
+**Switching it off.** The value grammar is the one the banner switches use, and
+an off value exits before stdin is read, so neither file is written or removed.
+
+- 「세션 제목 훅을 끄시려면 세션을 띄우기 전에 `CC_CMDS_SESSION_TITLE=0` 을 걸어 주세요 — `off`·`false`·`no` 도 대소문자 구분 없이 같게 읽습니다.」
+
+**Where the title shows.** A user-defined title, whoever set it, is used by the
+`cc -r` picker and its search, the prompt box and the terminal title. The
+terminal title gets a two-cell status glyph in front (`✳ <title>` inside tmux
+while the harness keeps a static glyph there, a spinning one otherwise; two
+cells either way) and becomes the tmux `pane_title`. With
+`terminalTitleFromRename: false` in the settings, or
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE` in the environment, it does not reach the
+terminal title at all. The tmux status line is drawn by tmux outside the Claude
+Code screen, so it stays visible while an `AskUserQuestion` dialog covers the
+prompt box. The recommended `~/.tmux.conf` block widens the title to 40 cells
+and, if wanted, mirrors it to the outer terminal's tab and window title:
+
+```tmux
+set -g status-right-length 60
+set -g status-right '#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}"#{=40:pane_title}" %H:%M %d-%b-%y'
+# optional: mirror the pane title to the iTerm2 tab/window title
+set -g set-titles on
+set -g set-titles-string '#{pane_title}'
+```
+
+The two quotes, 40 title cells, the time and the date come to 58 cells, inside
+60; only while `window_bigger` adds its prefix can the end of the date be cut.
+The two `set-titles` lines are optional: with them a tab that is asking shows
+it in its tab title while another tab is in front. `window-status-format` and
+`automatic-rename` are not recommended, because each Claude Code instance has
+its own tmux session and the window name is tied to the version number.
+Whether tmux redraws the status line as soon as the title changes or waits for
+`status-interval` has not been measured; only the delay depends on it. The
+block is applied by a person, not by this plugin.
 
 ## The stage rules edit hook
 
