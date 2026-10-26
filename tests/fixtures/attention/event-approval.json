@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "id": "mbp-1.appr.20261026-f33cba74.J-0000abcd",
+  "host": "mbp-1",
+  "created_at_ms": 1793030003000,
+  "kind": "approval",
+  "token": "answer",
+  "slot": "cc-cmds-autopilot-20261026-f33cba74-J-0000abcd",
+  "title": "cc-cmds — 승인 대기",
+  "body": "승인 J-0000abcd — 세그먼트 A 의 리뷰 발견을 고치지 않고 넘겨도 될까요?",
+  "actionable": true,
+  "accepts": ["option"],
+  "origin": {
+    "session_id": null,
+    "run_id": "20261026-f33cba74",
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": null,
+    "tmux_pane": null
+  },
+  "reply": {
+    "surface": "approval",
+    "run_id": "20261026-f33cba74",
+    "approval_id": "J-0000abcd",
+    "question": "승인 J-0000abcd — 세그먼트 A 의 리뷰 발견을 고치지 않고 넘겨도 될까요?",
+    "options": ["승인", "거부", "무효"]
+  }
+}

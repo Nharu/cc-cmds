@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030009000.8293a4b5",
+  "host": "mbp-1",
+  "created_at_ms": 1793030009000,
+  "kind": "permission",
+  "token": "permission",
+  "slot": "cc-cmds-permission-5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+  "title": "cc-cmds — 권한 확인",
+  "body": "Bash: make check 를 실행하려 합니다.",
+  "actionable": false,
+  "accepts": [],
+  "origin": {
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "run_id": null,
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": null,
+    "tmux_pane": null
+  },
+  "reply": {
+    "surface": "permission",
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "tool_name": "Bash",
+    "input_summary": "make check"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030008000.718293a4",
+  "host": "mbp-1",
+  "created_at_ms": 1793030008000,
+  "kind": "active-notify",
+  "token": "active-notify",
+  "slot": "cc-cmds-active-notify-5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+  "title": "Claude Code",
+  "body": "빌드가 끝났습니다.",
+  "actionable": false,
+  "accepts": [],
+  "origin": {
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "run_id": null,
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": null,
+    "tmux_pane": "%3"
+  },
+  "reply": null
+}

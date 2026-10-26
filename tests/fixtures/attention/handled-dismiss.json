@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030013000.c6d7e8f9",
+  "host": "mbp-1",
+  "at_ms": 1793030013000,
+  "slot": "cc-cmds-active-notify-5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+  "prefix": false,
+  "cause": "dismiss"
+}

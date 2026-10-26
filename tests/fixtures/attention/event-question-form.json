@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030001000.1b2c3d4e",
+  "host": "mbp-1",
+  "created_at_ms": 1793030001000,
+  "kind": "question-form",
+  "token": "session-ask",
+  "slot": "cc-cmds-session-5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+  "title": "cc-cmds — 질문지",
+  "body": "범위와 순서를 골라 주세요.",
+  "actionable": true,
+  "accepts": ["option"],
+  "origin": {
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "run_id": null,
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": null,
+    "tmux_pane": null
+  },
+  "reply": {
+    "surface": "question-form",
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "form_id": "form-7",
+    "questions": [
+      {"id": "scope", "question": "범위는?", "options": [{"label": "전부"}, {"label": "일부"}]},
+      {"id": "order", "question": "순서는?", "options": [{"label": "먼저"}, {"label": "나중"}]}
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030000000.0a1b2c3d",
+  "host": "mbp-1",
+  "created_at_ms": 1793030000000,
+  "kind": "auq",
+  "token": "session-ask",
+  "slot": "cc-cmds-session-5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+  "title": "cc-cmds — 질문",
+  "body": "어느 브랜치에 올릴까요?",
+  "actionable": true,
+  "accepts": ["option"],
+  "origin": {
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "run_id": null,
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": "Nharu/cc-cmds",
+    "tmux_pane": "%3"
+  },
+  "reply": {
+    "surface": "auq",
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "tool_use_id": "toolu_01AbCdEf",
+    "questions": [
+      {
+        "question": "어느 브랜치에 올릴까요?",
+        "header": "브랜치",
+        "multi_select": false,
+        "options": [{"label": "master"}, {"label": "새 브랜치"}]
+      }
+    ]
+  }
+}
