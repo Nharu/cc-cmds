@@ -863,6 +863,21 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     fi
   done
 done
+# A review the shift posts settles a clause through the gate, so a failed or
+# refused post is cited by what the gate recorded, and posting one is not the
+# kind of execution that needs a person's question.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; f=${pair#*:}
+  for lit in \
+    'or the `중단 답 줄 <n>` of a `불가능으로 정산` answer. An act that passed the gate and then failed cites its ledger row anchor `A-<8 hex>`; an act the gate refused cites the refusal line, the exit code and the target cutpoint.' \
+    'Posting a pull request review is not such an execution:'; do
+    if grep -qF -- "$lit" "$f"; then
+      ok "$who 사본이 리뷰 게시 정산 문장을 싣는다: ${lit:0:60}"
+    else
+      bad "$who 사본의 리뷰 게시 정산 문장" "없다: $lit"
+    fi
+  done
+done
 for lit in \
   '| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence no read of this run can produce | never |' \
   "--segment - \\" \
