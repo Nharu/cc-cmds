@@ -53494,6 +53494,43 @@ check "88h: 선리뷰후머지 세그먼트의 다음은 리뷰 다" \
   "$(n88h "$(l88h strict 선리뷰후머지)" "$(m88h 머지)")|$(n88h "$(l88h deploy 선머지후리뷰)" "$(m88h 배포)")" "리뷰|선머지"
 
 # ---------------------------------------------------------------------------
+# 88h-2. 머지 먼저 — 사후리뷰 행이 머지된 세그먼트를 다시 열고 사후 리뷰를 낸다
+# --- section: 88h-2 | group: sa | covers: gate_segment_post_merge, gate_post_merge_next, gate_segment_review_next, gate_snapshot_review_next_json, gate_implement_next_raw, gate_review_line, gate_base_review_head, act | anchors: 88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다, 88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다, 88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다, 88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다, 88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다, 88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다, 88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다, 88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다 ---
+#
+# 88h 와 같은 픽스처로 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤, 사후리뷰 행과
+# 그 사후 리뷰를 차례로 둔다. 다른 정책의 세그먼트와 머지가 없는 세그먼트에는 같은
+# 행이 거부된다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+mf_new '머지 먼저 — 사후리뷰'
+mf_checks 통과
+mf2_base=$( cd "$SA_SEGWT" && git rev-parse HEAD~1 )
+sa_merge H
+sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
+mf_rnext() { mf_snap | jq -r '[.review_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")'; }
+check "88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다" "[$(mf_inext)]|$(mf_rnext)" "[]|사후리뷰"
+sa_seg_state H 사후리뷰 "베이스 sha=$mf2_base"; mf2_r=$rc
+check "88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다" \
+  "$mf2_r|$(mf_snap | jq -r '.segments[] | select(.id == "H") | .["상태"]')|$(mf_rnext)" "0|사후리뷰|사후리뷰"
+sag review-line --manifest "$SA_MANIFEST" --segment H
+mf2_got=$msg
+case "$msg" in *"--base-sha $mf2_base"*"--post-merge $MF_TIP"*) mf2_got=둘다 ;; esac
+check "88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$mf2_got" "둘다"
+check "88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다" \
+  "$(mf_snap | jq -r '.unmet_condition_numbers | index(1) != null')" "true"
+sa_cycle H 1 0 0 "$MF_TIP"
+check "88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다" "$(mf_rnext)" "머지"
+sa_commit '리드 수정' >/dev/null
+check "88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다" "$(mf_rnext)" "CI 대기"
+sa_seg_row G 선리뷰후머지
+sa_seg_state G 사후리뷰; mf2_g=$rc
+sa_seg_row K 선머지후리뷰
+sa_seg_state K 사후리뷰; mf2_k=$rc
+check "88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_g" "2"
+check "88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_k" "2"
+
+# ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
 # --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan, audit_disclosure | anchors: 89: 검사기가 solo-audit 계획을 통과시킨다, 89: solo-audit 계획의 solo 설계 명령은 통과한다, 89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다, 89: 감사 하나가 감사 공시 행 하나를 쓴다, 89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다, 89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다, 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
 #

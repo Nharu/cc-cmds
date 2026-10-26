@@ -24292,7 +24292,15 @@ gate_segment_review_next() {
   # so a review's findings and a CI failure that survived its rerun go back to
   # the implement stage in one dispatch. `리드 수정` is a review stage's own fix
   # and has no place for the failure, so it keeps the table's value.
+  #
+  # A MERGE-FIRST SEGMENT PAST ITS MERGE reads `gate_post_merge_next` instead:
+  # its review comes after the merge, so neither overlay has a merge left to
+  # stand on.
   local seg=$1 nx
+  if gate_segment_post_merge "$seg"; then
+    gate_post_merge_next "$seg"
+    return 0
+  fi
   nx=$(gate_segment_review_next_table "$seg")
   case "$nx" in
     머지|'이월 머지') run_routed && { gate_ci_next "$seg" "$nx"; return 0; } ;;
@@ -24343,6 +24351,67 @@ gate_merge_first_next() {
   else
     printf '선머지'
   fi
+}
+
+gate_segment_merged_line() {
+  # gate_segment_merged_line <segment> — the ledger line number of the
+  # segment's last `머지됨` row, empty when it has none. Field equality, as
+  # `gate_apply_line_of` reads it.
+  { grep -n '^- `segment` ' "$LEDGER" 2>/dev/null || true; } \
+    | gate_rows_field_eq 'id' "$1" | gate_rows_field_eq '상태' '머지됨' | tail -1 | cut -d: -f1
+}
+
+gate_segment_obligation_tip() {
+  # gate_segment_obligation_tip <segment> — the `머지 커밋` of the segment's last
+  # issued `리뷰 의무` row: the worktree tip its last merge put on the base,
+  # empty when no merge issued one.
+  { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$1" \
+    | gate_rows_field_eq '상태' '미이행' | tail -1 | gate_rows_field_values '머지 커밋'
+}
+
+gate_segment_post_merge() {
+  # gate_segment_post_merge <segment> — a merge-first segment whose merge waits
+  # on the review it deferred: a `리뷰 의무` row of the segment exists, and its
+  # last row is `사후리뷰`, or `머지됨` with nothing owed after the merge. A
+  # `머지됨` still owing its apply or handover is the apply's to finish first.
+  local seg=$1
+  gate_segment_merge_first "$seg" || return 1
+  [ -n "$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$seg")" ] || return 1
+  case "$(gate_segment_field "$seg" '상태')" in
+    사후리뷰) return 0 ;;
+    머지됨) [ "$(gate_segment_apply_state "$(gate_segment_target_alias "$seg")" "$seg")" = '없음' ] ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_post_merge_next() {
+  # gate_post_merge_next <segment> — `다음` of a segment `gate_segment_post_merge`
+  # holds. `사후리뷰` while no `cycle` row follows its last `머지됨` row: the
+  # deferred review is due. After that the review table's value, with neither
+  # the base overlay nor the CI layer — the reviewed commits are already on the
+  # base — except that a passing value reads `선머지` (with its CI layer) when
+  # the worktree HEAD carries commits past the merged tip: a lead fix the
+  # review asked for has not merged yet.
+  local seg=$1 ml cl nx tip wt n=''
+  ml=$(gate_segment_merged_line "$seg")
+  cl=$(gate_apply_line_of 'cycle' '세그먼트' "$seg")
+  if [ -z "$cl" ] || { [ -n "$ml" ] && [ "$cl" -lt "$ml" ]; }; then
+    printf '사후리뷰'
+    return 0
+  fi
+  nx=$(gate_segment_review_next_table "$seg")
+  if [ "$nx" = '머지' ] || [ "$nx" = '이월 머지' ]; then
+    tip=$(gate_segment_obligation_tip "$seg")
+    wt=$(gate_segment_worktree "$seg")
+    if [ -n "$tip" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
+      n=$( { cd "$wt" && git rev-list --count "$tip..HEAD"; } 2>/dev/null || true)
+    fi
+    case "$n" in
+      ''|0|*[!0-9]*) : ;;
+      *) gate_merge_first_next "$seg"; return 0 ;;
+    esac
+  fi
+  printf '%s' "$nx"
 }
 
 gate_ci_join_target() {
@@ -24731,10 +24800,13 @@ gate_base_review_head() {
   # R is the worktree tip: the head the merge binds is the head the base check
   # judges. Given `선머지` the tip is taken at once; given nothing, the review
   # table's merging values come first and a segment whose `implement_next[]`
-  # reads `선머지` before its CI layer takes the tip after them.
+  # reads `선머지` before its CI layer takes the tip after them. A segment past
+  # its merge-first merge takes the tip too: what it merges next is the lead
+  # fix on top of the merged tip, not the head its last cycle read.
   local seg=$1 v=${2:-} nx row wt
   wt=$(gate_segment_worktree "$seg")
   if [ "$v" = '선머지' ]; then gate_worktree_tip "$wt"; return; fi
+  if [ -z "$v" ] && gate_segment_post_merge "$seg"; then gate_worktree_tip "$wt"; return; fi
   nx=$(gate_segment_review_next_table "$seg")
   case "$nx" in
     머지|'이월 머지') ;;
@@ -25446,8 +25518,8 @@ gate_review_line() {
   # gate_review_line <segment> [<flag>…] — prints the prompt of a review
   # dispatch of the segment, built the way the fixed-graph driver builds its
   # own: `/cc-cmds:review-unattended <브랜치> --report-path <경로>[ --slice
-  # <id>][ --base-sha <sha>][ --declared-files "<집합>"][ <flag>…] "설계는
-  # <문서>"`. Refused with GATE_EXIT_RULE when the segment has no row or no
+  # <id>][ --base-sha <sha>][ --post-merge <sha>][ --declared-files "<집합>"][
+  # <flag>…] "설계는 <문서>"`. Refused with GATE_EXIT_RULE when the segment has no row or no
   # branch to review.
   #
   # THE ROUTER HAD NOTHING TO SPELL THIS FROM. The lead fix, the re-check, the
@@ -25470,7 +25542,7 @@ gate_review_line() {
   # document argument from `설계는 ` to the end of the prompt. `--no-slice` is
   # the gate's own and never reaches the prompt: it drops `--slice` for the one
   # review that answers a `cycle` row refused for its other-slice section.
-  local seg=$1 rows br n rp base decl doc line a slice=1
+  local seg=$1 rows br n rp base decl doc line a pm slice=1
   local -a extra=()
   shift
   for a in "$@"; do
@@ -25494,6 +25566,15 @@ gate_review_line() {
   if [ "$slice" = "1" ] && [ "$(gate_slicing_branch)" = "선언통치" ]; then line="$line --slice $seg"; fi
   base=$(printf '%s\n' "$rows" | gate_rows_field_values '베이스 sha' | awk 'NF { v = $0 } END { print v }')
   [ -z "$base" ] || line="$line --base-sha $base"
+  # A MERGE-FIRST SEGMENT PAST ITS MERGE is reviewed after it landed, so the
+  # line names the merge commit its last `머지됨` row recorded: the review
+  # re-runs the design's checks on what the base now holds. The diff still
+  # spans `--base-sha` to the branch tip.
+  if gate_segment_post_merge "$seg"; then
+    pm=$(printf '%s\n' "$rows" | gate_rows_field_eq '상태' '머지됨' | gate_rows_field_values '머지 커밋' \
+           | awk 'NF { v = $0 } END { print v }')
+    [ -z "$pm" ] || line="$line --post-merge $pm"
+  fi
   decl=$(gate_segment_decl_whole "$seg")
   case "$decl" in ''|'없음'|'(없음)') : ;; *) line="$line --declared-files \"$decl\"" ;; esac
   # The seat commits ride as a flag of their own: they are commits a stage did
@@ -49804,12 +49885,18 @@ gate_snapshot_review_next_json() {
   # `CI 대기`, `CI 대기 한도`, `CI 수정`, `CI 합류 수정`, `CI 리뷰`,
   # `CI 기존 실패`, `CI 수정 한도`, `CI 라벨 인정` — it carries the keys
   # `gate_snapshot_ci_keys_json` names.
-  local out s row nx brow bcy
+  #
+  # A merge-first segment past its merge (`gate_segment_post_merge`) has an
+  # element whether or not it has a cycle row, `머지됨` included: its review is
+  # what is left, and `다음` reads `사후리뷰` until that review's row lands.
+  local out s row nx brow bcy pm
   out=$(gate_segment_ids | while IFS= read -r s; do
           [ -n "$s" ] || continue
-          [ "$(gate_segment_field "$s" '상태')" = "머지됨" ] && continue
+          pm=''
+          gate_segment_post_merge "$s" && pm=1
+          if [ -z "$pm" ] && [ "$(gate_segment_field "$s" '상태')" = "머지됨" ]; then continue; fi
           row=$(gate_segment_last_cycle_row "$s")
-          [ -n "$row" ] || continue
+          if [ -z "$row" ] && [ -z "$pm" ]; then continue; fi
           nx=$(gate_segment_review_next "$s")
           printf '    {"세그먼트": "%s", "다음": "%s", "사이클": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s"' \
             "$(gate_json_escape "$s")" "$(gate_json_escape "$nx")" \
@@ -49925,12 +50012,23 @@ gate_implement_next_raw() {
   # policy is `선머지후리뷰` and its cutpoint reaches `머지` (`머지` or `배포`):
   # below that the merge never passes the gate, no review obligation is issued,
   # and the segment is reviewed first as before.
-  local seg=$1 rows last res ahead st cnt_all cnt_emit dg cnt nx al
+  #
+  # A MERGE THAT FOLLOWS THE IMPLEMENTATION ENDS ITS ELEMENT. Once a merge-first
+  # segment's `머지됨` row stands after its last implement row, the branch is on
+  # the base and counts no commit ahead of it, which would read as an
+  # implementation that left nothing; the deferred review is `review_next[]`'s.
+  local seg=$1 rows last res ahead st cnt_all cnt_emit dg cnt nx al ml il
   rows=$(gate_plan_rows_of "$seg")
   last=$( { printf '%s\n' "$rows" | grep '^- `stage-result` ' || true; } | tail -1)
   [ -n "$last" ] || return 1
   [ "$(gate_row_field "$last" '종류')" = 'implement' ] || return 1
   [ "$(gate_row_field "$last" '종단 부류')" = '정상 완료' ] || return 1
+  if gate_segment_merge_first "$seg"; then
+    ml=$(gate_segment_merged_line "$seg")
+    il=$( { grep -n '^- `stage-result` ' "$LEDGER" 2>/dev/null || true; } \
+          | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_eq '종류' 'implement' | tail -1 | cut -d: -f1)
+    if [ -n "$ml" ] && [ -n "$il" ] && [ "$ml" -gt "$il" ]; then return 1; fi
+  fi
   # One awk over the rows, `index` and field splits rather than a regex over
   # Korean names. It consumes its whole input (no `exit`): an early-exiting
   # reader kills the writer with SIGPIPE, and under `pipefail` the pipeline
