@@ -47283,8 +47283,9 @@ gate_record_stage_outcome() {
   # `골격급` and `재수렴 요청`, on an audit's row only. The count is the audit
   # report fence's, `미상` without a single fence. The request is `예` when an
   # audit that ended `정상 완료` counted at least one skeleton-grade item and
-  # its key has had no re-convergence in this run yet — a re-audit reports what
-  # remains and parks itself instead of asking again.
+  # its key has had fewer re-convergences in this run than run.sh's
+  # `AUDIT_SKELETAL_RECONVERGE_CAP` — at the cap, the skeleton-grade items that
+  # remain stay in the document's open issues and the audit ends as it is.
   local sk="" rq=""
   if [ "$kind" = "audit" ]; then
     sk=$(gate_audit_skeleton_count)

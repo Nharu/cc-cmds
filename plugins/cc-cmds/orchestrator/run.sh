@@ -7055,6 +7055,11 @@ audit_artifact_complete() {
     && audit_skeleton_fence_body >/dev/null
 }
 
+# 감사 키당 자동 재수렴 수. An audit's key is audited once and re-audited after
+# each of at most this many re-convergences; `audit_row_request` counts them
+# with `audit_key_reconverge_rows`, whatever wrote them.
+AUDIT_SKELETAL_RECONVERGE_CAP=2
+
 audit_key_reconverge_rows() {
   # audit_key_reconverge_rows <audit step id> <ledger> — the run-scope
   # re-convergences the audit's key carries, in either writer's shape and in
@@ -7073,13 +7078,16 @@ audit_key_reconverge_rows() {
 audit_row_request() {
   # audit_row_request <skeletal> <terminal class> <audit step id> — the audit
   # row's `재수렴 요청`: `예` when an audit that ended `정상 완료` counted at
-  # least one skeleton-grade item and the audit's key has had no
-  # re-convergence in this run yet, `아니오` otherwise. A re-audit reports what
-  # remains and parks itself instead of asking again. Both writers of an audit
-  # row call this.
+  # least one skeleton-grade item and the audit's key has had fewer than
+  # `AUDIT_SKELETAL_RECONVERGE_CAP` re-convergences in this run, `아니오`
+  # otherwise. Once the key's re-convergences reach the cap, the skeleton-grade
+  # items that remain stay in the document's open issues and the audit ends as
+  # it is. Both writers of an audit row call this.
   case "$1" in ''|*[!0-9]*) printf '아니오'; return 0 ;; esac
+  local n
+  n=$(audit_key_reconverge_rows "$3" "${LEDGER:-}" | grep -c . || true)
   if [ "$1" -ge 1 ] && [ "$2" = '정상 완료' ] \
-     && [ -z "$(audit_key_reconverge_rows "$3" "${LEDGER:-}")" ]; then
+     && [ "${n:-0}" -lt "$AUDIT_SKELETAL_RECONVERGE_CAP" ]; then
     printf '예'
   else
     printf '아니오'
@@ -12708,12 +12716,19 @@ s2_last_audit_field() {
 
 s2_skeleton_reconverge() {
   # s2_skeleton_reconverge — the re-convergence an audit that counted
-  # skeleton-grade items asks for, under stage and dispatch id `S2R`. The same
-  # on a resumed run, so one that already ended normally is known by its row
-  # and not dispatched again; any other earlier ending parks the run. Returns 0
-  # when the document has been re-converged, 1 when the run parked.
+  # skeleton-grade items asks for, under stage and dispatch id `S2R`. Each
+  # cycle's re-convergence is the last `S2R` row after this run's last S2 audit
+  # row; with no S2 audit row in this run (a resumed run whose earlier fence
+  # asked for a re-convergence) every `S2R` row of the run counts as after it.
+  # Such a row that ended normally means this cycle's re-convergence is done
+  # (a resumed run), so it is not dispatched again; any other ending parks the
+  # run; no such row dispatches it. Returns 0 when the document has been
+  # re-converged, 1 when the run parked.
   local sid=S2R prior pclass src rclass
-  prior=$( { run_section_rows 'stage-result' || true; } | { grep -F "| 파견 id=$sid |" || true; } | tail -1)
+  prior=$( { run_section_rows 'stage-result' || true; } | awk -v sid="$sid" '
+    index($0, "| 스테이지=S2 |") && index($0, "| 종류=audit ") { last = "" ; next }
+    index($0, "| 파견 id=" sid " |") { last = $0 }
+    END { if (last != "") print last }')
   if [ -n "$prior" ]; then
     pclass=$(manifest_row_fields "$prior" '종단 부류')
     if [ "$pclass" = "정상 완료" ]; then
@@ -12756,15 +12771,25 @@ s2_audit_run() {
   # s2_audit_run <audit command> <first act: audit|reconverge> — the audit and
   # the skeletal re-convergence it may ask for. An audit that ends `정상 완료`
   # with `재수렴 요청=예` is followed by `s2_skeleton_reconverge` and a re-audit
-  # under the same stage id; a re-audit never asks again, so the loop turns at
-  # most once. Returns 0 when the audit has concluded, 1 when the run parked.
-  local cmd="$1" next="${2:-audit}"
+  # under the same stage id; the loop turns until the key's re-convergences
+  # reach `AUDIT_SKELETAL_RECONVERGE_CAP`. An audit at the cap that still counts
+  # skeleton-grade items leaves them in the document's open issues and the run
+  # goes on, with one line in the report. Returns 0 when the audit has
+  # concluded, 1 when the run parked.
+  local cmd="$1" next="${2:-audit}" lsk
   while :; do
     if [ "$next" = "reconverge" ]; then
       s2_skeleton_reconverge || return 1
     fi
     s2_audit_attempt "$cmd" || return 1
-    [ "$(s2_last_audit_field '재수렴 요청')" = '예' ] || return 0
+    if [ "$(s2_last_audit_field '재수렴 요청')" != '예' ]; then
+      lsk=$(s2_last_audit_field '골격급')
+      case "$lsk" in ''|*[!0-9]*) lsk=0 ;; esac
+      if [ "$lsk" -ge 1 ] && [ "$(s2_last_audit_field '종단 부류')" = '정상 완료' ]; then
+        report_append "감사" "S2 — 재수렴 상한(${AUDIT_SKELETAL_RECONVERGE_CAP}회)에 닿아 골격급 ${lsk}건을 미해결 이슈로 두고 계속한다"
+      fi
+      return 0
+    fi
     log "S2 — 감사가 골격급 $(s2_last_audit_field '골격급')건을 세고 재수렴을 요청했다"
     next=reconverge
   done
@@ -12776,8 +12801,11 @@ s2_audit_next_from_fence() {
   # first pass that counted skeleton-grade items over the document's present
   # bytes, `audit` when it counted them over other bytes, nothing otherwise —
   # the report then stands as today and the audit is skipped. The round is read
-  # before the digest: a re-audit's skeleton-grade items are a person's to
-  # settle, so a `재감사` fence is skipped whether or not the document moved.
+  # before the digest: a re-audit fence an earlier run left is skipped whether
+  # or not it reached the cap and whether or not the document moved — its
+  # remaining skeleton-grade items sit in the document's open issues
+  # (`골격급: 예`). The cap counts this run's ledger's re-convergence rows, so it
+  # holds within one run: what an earlier run left of it is not carried over.
   local n round sha cur
   n=$(audit_skeleton_fence_skeletal)
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
