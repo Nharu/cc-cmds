@@ -830,8 +830,19 @@ cc_ci_wait_clock() {
   #   2. on a round ≥ 1, the newest `CI 처분 처분=재실행 상태=수락` row of
   #      (segment, head) — its `관측`, which the gate stamps in UTC;
   #   3. the head's commit time, read in UTC, whatever the round.
+  #   4. once one of the three has set the clock, the latest `기록 시각` of the
+  #      segment's `중단 답` rows a person gave replaces it when later — the
+  #      latest, not the last row, because a carried row repeats an earlier
+  #      row's time. A row whose `답한 주체` is `교대` or `좌석`, or that has no
+  #      `답한 주체` and whose `근거` opens with `자동 채택(구속-이탈) — `, is not
+  #      a person's (the two branches of the gate's `gate_halt_answer_is_auto`).
+  #      A `기록 시각` that does not parse leaves out that row only.
   # The evidence line is `-` for a verdict still in a poller file and empty for
   # the commit time, which no row carries.
+  #
+  # A PERSON'S ANSWER RESTARTS THE WAIT. The time a segment spent waiting on a
+  # person, at whatever halt, is not CI's to spend, so one answer buys one cap
+  # from its own time. Taking the later of the two never moves the clock back.
   #
   # THE EARLIEST ROW, NOT THE NEWEST: a round whose verdict goes back and forth
   # is measured from its first sighting, so the clock never moves back. A round
@@ -844,17 +855,18 @@ cc_ci_wait_clock() {
   # `format-local` under `TZ=UTC`: `cc_iso_to_epoch` drops any offset, and a
   # `%cI` of `+09:00` would shift the clock by nine hours.
   local run_dir="$1" ledger="$2" seg="$3" sha="$4" g="${5:-0}" wt="$6" r ob
+  local res="" tab t ln ep bep="" best="" bestln="" cur
   [ -n "$seg" ] && [ -n "$sha" ] || return 0
+  tab=$(printf '\t')
   r=$(cc_ci_records "$run_dir" "$ledger" "$seg" \
       | LC_ALL=C awk -F'\t' -v sha="$sha" -v g="$g" 'NF > 0 && $1 == sha && $2 == g { print; exit }')
   if [ -n "$r" ]; then
     ob=$(printf '%s' "$r" | cut -f5)
     if [ -n "$(cc_iso_to_epoch "$ob")" ]; then
-      printf '%s\t%s' "$ob" "$(printf '%s' "$r" | cut -f6)"
-      return 0
+      res="$ob$tab$(printf '%s' "$r" | cut -f6)"
     fi
   fi
-  if [ "$g" -ge 1 ] 2>/dev/null && [ -n "$ledger" ] && [ -f "$ledger" ]; then
+  if [ -z "$res" ] && [ "$g" -ge 1 ] 2>/dev/null && [ -n "$ledger" ] && [ -f "$ledger" ]; then
     r=$(LC_ALL=C awk -F'|' -v seg="$seg" -v sha="$sha" '
       function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
       function val(n,   i, f) {
@@ -869,15 +881,44 @@ cc_ci_wait_clock() {
     ' "$ledger" 2>/dev/null || true)
     ob=$(printf '%s' "$r" | cut -f1)
     if [ -n "$r" ] && [ -n "$(cc_iso_to_epoch "$ob")" ]; then
-      printf '%s' "$r"
-      return 0
+      res="$r"
     fi
   fi
-  [ -n "$wt" ] && [ -d "$wt" ] || return 0
-  ob=$( ( cd "$wt" 2>/dev/null && TZ=UTC git --no-optional-locks log -1 \
-          --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd "$sha" 2>/dev/null ) || true)
-  [ -n "$(cc_iso_to_epoch "$ob")" ] || return 0
-  printf '%s\t' "$ob"
+  if [ -z "$res" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
+    ob=$( ( cd "$wt" 2>/dev/null && TZ=UTC git --no-optional-locks log -1 \
+            --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd "$sha" 2>/dev/null ) || true)
+    [ -z "$(cc_iso_to_epoch "$ob")" ] || res="$ob$tab"
+  fi
+  [ -n "$res" ] || return 0
+  if [ -n "$ledger" ] && [ -f "$ledger" ]; then
+    r=$(LC_ALL=C awk -F'|' -v seg="$seg" '
+      function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+      function val(n,   i, f) {
+        for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, n "=") == 1) return substr(f, length(n) + 2) }
+        return ""
+      }
+      /^- `중단 답` / {
+        if (val("세그먼트") != seg) next
+        by = val("답한 주체")
+        if (by == "교대" || by == "좌석") next
+        if (by == "" && index(val("근거"), "자동 채택(구속-이탈) — ") == 1) next
+        print val("기록 시각") "\t" NR
+      }
+    ' "$ledger" 2>/dev/null || true)
+    while IFS="$tab" read -r t ln; do
+      [ -n "$t" ] || continue
+      ep=$(cc_iso_to_epoch "$t")
+      [ -n "$ep" ] || continue
+      if [ -z "$bep" ] || [ "$ep" -gt "$bep" ]; then bep=$ep; best=$t; bestln=$ln; fi
+    done <<EOF
+$r
+EOF
+    if [ -n "$bep" ]; then
+      cur=$(cc_iso_to_epoch "${res%%"$tab"*}")
+      if [ -z "$cur" ] || [ "$bep" -gt "$cur" ]; then res="$best$tab$bestln"; fi
+    fi
+  fi
+  printf '%s' "$res"
 }
 
 cc_ci_unregistered_expired() {

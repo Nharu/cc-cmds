@@ -3387,13 +3387,13 @@ gate_park_repair_line() {
     # start a deploy, or whether the run is this head's, is a fact of the
     # repository and of GitHub, and a `사전 인가` row would only hide it.
     재실행배포트리거/*)
-      msg="repair: a rerun of this run may start a deploy (a deploy-trigger identifier, a base-branch workflow triggered by workflow_run/check_suite/check_run/status, or an environment or reusable workflow in the run's file) — a person reruns it on GitHub, or a new commit moves the head; the poller then observes that head's checks" ;;
+      msg="repair: a rerun of this run may start a deploy (a deploy-trigger identifier, a base-branch workflow triggered by workflow_run/check_suite/check_run/status, or an environment or reusable workflow in the run's file) — a person reruns it on GitHub and answers the segment's \`도달 거부\` halt with \`재시도\`, and the next rerun act records it as this head's round — or a new commit moves the head" ;;
     재실행대상미상/*)
-      msg="repair: the failing run could not be proved to be this pull request's own run at this head (or reading it failed) — a person checks the run on GitHub and reruns it there, or a new commit moves the head" ;;
+      msg="repair: the failing run could not be proved to be this pull request's own run at this head (or reading it failed) — a person checks the run on GitHub, reruns it there and answers the segment's \`도달 거부\` halt with \`재시도\`, and the next rerun act records it as this head's round — or a new commit moves the head" ;;
     재실행요청실패/open)
-      msg="repair: a rerun of this head was requested and its closing row never came — check that run's attempt on GitHub, then move the head with a new commit or put the segment down; the gate does not close the request row without a person" ;;
+      msg="repair: a rerun of this head was requested and its closing row never came — a person checks that run's attempt on GitHub, reruns it there if it did not start, and answers the segment's \`도달 거부\` halt with \`재시도\`, and the next rerun act records it as this head's round — or a new commit moves the head; the gate does not close the request row without a person" ;;
     재실행요청실패/*)
-      msg="repair: GitHub did not take the rerun (the POST or its confirmation failed) and the gate does not try again — a person reruns the run on GitHub, and the poller observes that result on the round-0 key; answering with a retry and no rerun parks here again" ;;
+      msg="repair: GitHub did not take the rerun (the POST or its confirmation failed) and the gate does not try again — a person reruns it on GitHub and answers the segment's \`도달 거부\` halt with \`재시도\`, and the next rerun act records it as this head's round — or a new commit moves the head" ;;
     # NONE OF THE FIVE LABEL CELLS IS OPENED BY A ROW either: the acknowledgement
     # is the kickoff's `라벨 인정` row and the slice's field, and what a label
     # event wakes is a fact of the repository.
@@ -18411,8 +18411,9 @@ gate_main() {
   GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
   # The rerun act's marker, verdict and runs are set by this process's own
   # precondition and eligibility checks and by nothing a caller exports: a
-  # verdict inherited from the environment would send a POST no check chose.
-  unset GATE_CI_RERUN_PRE GATE_CI_RERUN_VERDICT GATE_CI_RERUN_RUNS GATE_PARK_OBS
+  # verdict inherited from the environment would send a POST no check chose,
+  # and an inherited answer line would record a round no person gave.
+  unset GATE_CI_RERUN_PRE GATE_CI_RERUN_VERDICT GATE_CI_RERUN_RUNS GATE_CI_RERUN_ANSWER GATE_PARK_OBS
   # The settlement act's marker likewise: set only once its entry checks passed.
   unset GATE_SETTLE_PRE
   # The label act's the same way.
@@ -22648,7 +22649,7 @@ gate_shift_halt_site_table() {
 적용 전제 거부|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|사람이 적용 전제를 갖춘 뒤, 다음 교대가 이 세그먼트의 적용을 다시 시도한다
 병합 거절|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 거절 원인을 다시 읽고 이 세그먼트의 병합을 다시 시도한다
 push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남길지는 원격을 본 사람만 안다|사람이 원격 가지를 맞춘 뒤, 다음 교대가 이 세그먼트의 push 를 다시 시도한다
-도달 거부|없음|그 행위가 닿는 곳에 이 런이 닿아도 되는지는 사람만 정한다|사람이 그 도달을 정한 뒤, 다음 교대가 이 세그먼트의 막힌 행위를 다시 시도한다
+도달 거부|없음|그 행위가 닿는 곳에 이 런이 닿아도 되는지는 사람만 정한다|막힌 행위가 CI 재실행이면, 사람이 GitHub 에서 실패한 실행을 다시 돌려 그 결과가 나온 뒤(또는 지금 실패를 그대로 이 head 의 재실행 결과로 받기로 하고) 고른다 — 다음 교대의 재실행 행위가 이 답을 이 head 의 재실행 회차로 기록하고 게이트는 재실행을 내지 않는다. 다른 행위는 다음 교대가 한 번 더 내고, 게이트가 같은 판정을 내리면 다시 park 되어 이 자리에 다시 선다
 베이스 해소 한도|없음|어느 베이스 위에 다시 쌓을지는 사람만 정한다|사람이 베이스를 정해 이 세그먼트의 가지에 해소를 올린 뒤, 다음 교대가 그 해소를 리뷰에 보낸다 — 코드 충돌 수는 세그먼트마다 쌓이므로 교대의 해소 파견은 다시 열리지 않는다
 워크트리 기록 없음|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 세그먼트 행의 워크트리를 다시 읽고 이 세그먼트를 다시 시도한다
 종료 조건 11 판독 불가|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 이 세그먼트의 가지 끝을 다시 읽고 종료 조건 11 판정을 다시 시도한다
@@ -23886,6 +23887,7 @@ gate_ci_fix_next() {
   # join target. H, u·a·g, V and "settled" read as in `gate_ci_next`. The first
   # row that holds wins:
   #   M1  a = 열림 or a = 실패                                      수정
+  #   M1n a = 없음 (the head has no round)                          수정
   #   MW  the wait cap, where M2 would wait                       CI 대기 한도
   #   M2  no V, V = 대기, V = 실패 with 진행 중 > 0, V = 판정 불가,
   #       or V = 미등록 not past the grace                         CI 대기
@@ -23893,24 +23895,29 @@ gate_ci_fix_next() {
   #   M3a settled, (segment, H) has no 처분=라벨 row, and one of V's
   #       `실패 체크` is the `체크` of a `라벨 인정` row of the
   #       segment's target                                       수정
-  #   M4  settled, u < CI_RERUN_CAP                               CI 재실행
+  #   M4  settled, u < CI_RERUN_CAP (after an accepted label round) 수정
   #   M5  settled, a = 수락, the round's request saw the base fail  수정
   #   M6  otherwise (settled, a = 수락)                            CI 합류 수정
-  # M2 waits for the verdict when the review ends first; M4 keeps the one rerun
-  # before a failure goes back to the implement stage. M1, M3a and M5 carry no
-  # evidence that the segment's change can fix the failure, and the fix makes a
-  # new head whose CI starts again at round 0. M3a is L5m's predicate: a
-  # failure the manifest acknowledged is neither rerun nor handed to the
-  # implement stage as a CI fix, and the label path takes it on the new head
-  # once the review lets a merge through. A failed or open label round already
-  # reads `수정` at M1. A tip that does not resolve leaves `수정`.
+  # THE FIX GOES FIRST. A review that asked for a fix sends it before any rerun
+  # or wait: the fix commit moves the head and its CI starts again at round 0,
+  # so rerunning or waiting on the old head buys a result with nowhere to go.
+  # M1n is that rule for a head with no round, whatever its verdict; past it
+  # every row below stands on an accepted round, M4 only on a label round's,
+  # and M2 and MW wait on that round's result only. M1, M3a, M4 and M5 carry no
+  # evidence that the segment's change can fix the failure, so they carry no
+  # failing check names; M6 does, a failure that survived its rerun round. M3a
+  # is L5m's predicate: a failure the manifest acknowledged is neither rerun
+  # nor handed to the implement stage as a CI fix, and the label path takes it
+  # on the new head once the review lets a merge through. A failed or open
+  # label round already reads `수정` at M1. A tip that does not resolve leaves
+  # `수정`.
   local seg=$1 wt h rd u a g base lab v vst vpend
   wt=$(gate_segment_worktree "$seg")
   h=$(gate_worktree_tip "$wt") || { printf '수정'; return 0; }
   rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
   u=$(cc_ci_round_get "$rd" u); a=$(cc_ci_round_get "$rd" a); g=$(cc_ci_round_get "$rd" g)
   base=$(cc_ci_round_get "$rd" base); lab=$(cc_ci_round_get "$rd" lab)
-  case "$a" in 열림|실패) printf '수정'; return 0 ;; esac
+  case "$a" in 열림|실패|없음|'') printf '수정'; return 0 ;; esac
   v=$(gate_ci_verdict_row "$seg" "$h" "${g:-0}")
   vst=""; vpend=0
   if [ -n "$v" ]; then
@@ -23928,7 +23935,7 @@ gate_ci_fix_next() {
   if [ "$lab" != "1" ] && gate_ci_ack_failure "$seg" "$v"; then
     printf '수정'; return 0
   fi
-  [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
+  [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf '수정'; return 0; }
   [ "$base" = "실패" ] && { printf '수정'; return 0; }
   printf 'CI 합류 수정'
 }
@@ -37288,11 +37295,124 @@ gate_ci_rerun_on_hit() {
 }
 
 gate_ci_rerun_x5_hit() {
-  # gate_ci_rerun_x5_hit <file> — 0 when the run's own workflow file carries an
-  # `environment` key in any spelling or names a file under .github/workflows/.
-  # Read as text, never as YAML: a comment or a paths filter that matches counts
-  # towards the park, which is the direction every check here may err in.
-  LC_ALL=C grep -Eq '(^|[^A-Za-z0-9_])environment["'"'"']?[[:space:]]*:|\.github/workflows/' "$1"
+  # gate_ci_rerun_x5_hit <file> — 0 when the run's own workflow file may start a
+  # deployment or another workflow, 1 when it is clean; any other status is "not
+  # judged" and the caller parks on it. Read line by line, never as YAML:
+  #   - A line whose first non-blank is `#` is skipped, and a ` #` tail outside
+  #     quotes is cut off.
+  #   - A key whose whole value is a block scalar indicator (`|`, `>`, with
+  #     `-`/`+`/digits after and an anchor or tag before) opens a body: every
+  #     following line indented deeper than the key's column (the column after
+  #     a `- ` prefix), blank lines included. A body line is never read as a key.
+  #   - A key line matches on: an `environment` key at any depth; a `uses` key
+  #     whose value names .github/workflows/, is an alias, or is not on the line;
+  #     a key other than `run` whose scalar value names .github/workflows/; a
+  #     flow collection (`{…}`/`[…]` as a value, a sequence item or a whole
+  #     line) holding an `environment` or `uses` key, or not closed by the end
+  #     of the file; an alias in key position; a `? ` complex key.
+  #   - Every line, body included, with `\` continuations joined, matches on
+  #     `workflow run` (whatever options stand before it), `/dispatches`, or a
+  #     path token under .github/workflows/ that does not end in .yml/.yaml.
+  # A glob (`.github/workflows/**`) or directory token is such a token and
+  # matches: the form this reader cannot judge stays on the park side. A paths
+  # filter item naming a workflow file, a comment, and a workflow path inside a
+  # `run` body are clean. Anchors and merge keys are not followed: the anchored
+  # original is read where it stands.
+  LC_ALL=C awk -v q="'" '
+    function unq(s) { gsub(/"/, "", s); gsub(q, "", s); return s }
+    function opens(s, i) { return i == 1 || index(" \t:,[{-", substr(s, i - 1, 1)) > 0 }
+    function stripc(s,   i, c, inq) {
+      inq = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (inq == "") {
+          if ((c == "\"" || c == q) && opens(s, i)) inq = c
+          else if (c == "#" && i > 1 && index(" \t", substr(s, i - 1, 1)) > 0) { s = substr(s, 1, i - 1); break }
+        } else if (c == inq) inq = ""
+      }
+      sub(/[ \t]+$/, "", s)
+      return s
+    }
+    function depth(s,   i, c, inq, d) {
+      inq = ""; d = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (inq == "") {
+          if ((c == "\"" || c == q) && opens(s, i)) inq = c
+          else if (c == "{" || c == "[") d++
+          else if (c == "}" || c == "]") d--
+        } else if (c == inq) inq = ""
+      }
+      return d
+    }
+    function pathhit(s,   i, t, j) {
+      while ((i = index(s, ".github/workflows/")) > 0) {
+        t = substr(s, i)
+        for (j = 1; j <= length(t); j++) if (index(delim, substr(t, j, 1)) > 0) break
+        t = substr(t, 1, j - 1)
+        if (t !~ /\.ya?ml$/) return 1
+        s = substr(s, i + 18)
+      }
+      return 0
+    }
+    function texthit(s) {
+      return s ~ /(^|[^A-Za-z0-9_])workflow[ \t]+run([^A-Za-z0-9_-]|$)/ || index(s, "/dispatches") > 0 || pathhit(s)
+    }
+    function text(s) {
+      if (s ~ /\\$/) { cont = cont substr(s, 1, length(s) - 1) " "; return }
+      s = cont s; cont = ""
+      if (texthit(s)) { hit = 1; exit }
+    }
+    function flowhit(s) { return s ~ flowkey }
+    function startflow(s) {
+      buf = s; d = depth(s)
+      if (d > 0) { inflow = 1; return }
+      if (flowhit(buf)) { hit = 1; exit }
+    }
+    BEGIN {
+      delim = " \t" q "\",)]};`"
+      keyre = "^(\"[^\"]*\"|" q "[^" q "]*" q "|[^ \t\"" q "{[][^:]*)[ \t]*:([ \t]|$)"
+      flowkey = "(^|[{,[ \t])[\"" q "]?(environment|uses)[\"" q "]?[ \t]*:"
+      blockre = "^((&[^ \t]+|![^ \t]*)[ \t]+)*[|>][-+0-9]*$"
+    }
+    {
+      ind = match($0, /[^ \t]/) - 1
+      if (inbody) {
+        if (ind < 0) next
+        if (ind > bcol) { if (substr($0, ind + 1, 1) != "#") text(stripc($0)); next }
+        inbody = 0
+      }
+      if (ind < 0 || substr($0, ind + 1, 1) == "#") next
+      s = stripc($0)
+      text(s)
+      if (inflow) {
+        buf = buf " " s; d += depth(s)
+        if (d <= 0) { inflow = 0; if (flowhit(buf)) { hit = 1; exit } }
+        next
+      }
+      r = substr(s, ind + 1); col = ind
+      while (r ~ /^-([ \t]|$)/) { match(r, /^-[ \t]*/); col += RLENGTH; r = substr(r, RLENGTH + 1) }
+      if (r == "") next
+      if (r ~ /^\?([ \t]|$)/ || r ~ /^\*/) { hit = 1; exit }
+      if (r ~ /^[{[]/) { startflow(r); next }
+      if (!match(r, keyre)) next
+      k = substr(r, 1, RLENGTH); v = substr(r, RLENGTH + 1)
+      sub(/[ \t]*:[ \t]*$/, "", k); k = unq(k); sub(/^[ \t]+/, "", v)
+      if (k == "environment") { hit = 1; exit }
+      if (v ~ /^[{[]/) { startflow(v); next }
+      if (v ~ blockre) {
+        if (k == "uses") { hit = 1; exit }
+        inbody = 1; bcol = col; next
+      }
+      if (k == "uses") {
+        if (v == "" || v ~ /^\*/ || index(unq(v), ".github/workflows/") > 0) { hit = 1; exit }
+      } else if (k != "run" && index(unq(v), ".github/workflows/") > 0) { hit = 1; exit }
+    }
+    END {
+      if (hit || inflow) exit 0
+      if (cont != "" && texthit(cont)) exit 0
+      exit 1
+    }' "$1"
 }
 
 gate_ci_rerun_checks_tsv() {
@@ -37318,7 +37438,9 @@ gate_check_ci_rerun() {
   # failing run, for the rerun act and nothing else. Refusal exits 3 with no
   # row; a park sets the park cell for the dispatch below it to write; an
   # eligible set leaves `GATE_CI_RERUN_VERDICT=eligible` and the runs for the
-  # performer.
+  # performer; a person's `재시도` answer to this head's rerun park leaves
+  # `GATE_CI_RERUN_VERDICT=사람` and the answer's line in
+  # `GATE_CI_RERUN_ANSWER`, and no runs.
   [ "$1" = "ci-rerun" ] || return 0
   local seg="$segment" al="$alias" wt h nx rd a slug br prs n pnum phead pref
   local checks fails pend runs="" r rj st wf_name wf_path wf_id ev hsha hbr rfull hfull
@@ -37338,11 +37460,20 @@ gate_check_ci_rerun() {
     warn "다음 of segment $seg is '$nx', not 'CI 재실행', and no early rerun stands on it — the rerun act is refused"
     exit "$GATE_EXIT_RULE"
   fi
+  # A PERSON'S `재시도` TO THIS HEAD'S RERUN PARK IS READ FIRST, ahead of the
+  # act's own rounds, so a `재실행요청실패` halt a person answered does not park
+  # on the same cell again. Only on `다음` = `CI 재실행`: a head where a rerun
+  # parked never stands on the early predicate. The PR, the checks screen and
+  # the base tip are read as below and refuse or park as below; the X checks
+  # are not — the gate sends no request, so what the run may start is not this
+  # act's to judge — and nothing parks once those reads pass.
+  local pa=""
+  [ "$nx" = "CI 재실행" ] && pa=$(gate_ci_rerun_person_answer "$seg" "$h")
   # ITS OWN ROUNDS ONLY: a label round open or failed on the same head is the
   # label act's to park, never this act's.
   rd=$(cc_ci_round "$LEDGER" "$seg" "$h")
   a=$(cc_ci_round_get "$rd" ra)
-  if [ "$a" = "열림" ] || [ "$a" = "실패" ]; then
+  if [ -z "$pa" ] && { [ "$a" = "열림" ] || [ "$a" = "실패" ]; }; then
     GATE_PARK_CELL='재실행요청실패'
     if [ "$a" = "열림" ]; then GATE_PARK_CAUSE='open'; else GATE_PARK_CAUSE='closed'; fi
     GATE_PARK_OBS="회차:$a"
@@ -37389,6 +37520,14 @@ EOF
   if [ -z "$fails" ]; then
     warn "PR $pnum shows no failing check now — nothing to rerun"
     exit "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$pa" ]; then
+    GATE_CI_RERUN_VERDICT=사람; GATE_CI_RERUN_ANSWER="$pa"
+    GATE_CI_RERUN_RUNS=""
+    GATE_CI_RERUN_PR="$pnum"; GATE_CI_RERUN_SLUG="$slug"; GATE_CI_RERUN_HEAD="$h"
+    GATE_CI_RERUN_BASE="$basebr"; GATE_CI_RERUN_FAILS="$fails"; GATE_CI_RERUN_MAX=$(cc_ci_round_get "$rd" max)
+    GATE_CI_RERUN_OBS=""; GATE_CI_RERUN_ATTS=""; GATE_CI_RERUN_WFS=""
+    return 0
   fi
   # X1 on each link, and the distinct run ids. A failing check with no details
   # link (a commit status posted without a target URL) cannot be judged, so it
@@ -37503,8 +37642,89 @@ EOF
 gate_ci_rerun_park() {
   # gate_ci_rerun_park <칸> <관측> — set the park cell for the dispatch.
   GATE_PARK_CELL="$1"; GATE_PARK_CAUSE='-'; GATE_PARK_OBS="$2"
-  GATE_CI_RERUN_VERDICT=""
+  GATE_CI_RERUN_VERDICT=""; GATE_CI_RERUN_ANSWER=""
   export GATE_PARK_CELL GATE_PARK_CAUSE GATE_PARK_OBS
+}
+
+gate_ci_rerun_person_answer() {
+  # gate_ci_rerun_person_answer <segment> <head sha> — the ledger line of the
+  # last `중단 답` row that hands this head's rerun round to a person, or
+  # nothing. The row must hold all five:
+  #   1. it is the segment's, and its `선택지` is `재시도`;
+  #   2. its `답한 주체` is `사람` — a row without the field is not read as a
+  #      person's, the rule `gate_apply_answer_check` keeps;
+  #   3. the cone row that wrote its `중단 기록` (`gate_shift_halt_row_of`)
+  #      stands at `자리=도달 거부` — a row carried from an earlier run has no
+  #      cone row in this ledger;
+  #   4. above that cone row, the segment's last shift reach park row
+  #      (`blocked`, `사유=도달 park`, `스테이지` empty or `-`) has `도달 판정`
+  #      재실행배포트리거, 재실행대상미상 or 재실행요청실패, and stands below the
+  #      first `checks` row of (segment, head) — the line order
+  #      `cc_ci_rerun_parked` ties a park to its head by, over a wider set of
+  #      cells, so an answer to an older head's halt is not this head's round;
+  #   5. no `CI 처분` row carries `근거=중단 답 줄 <its line>` — one answer is
+  #      one round.
+  #
+  # THE ANSWER SAYS A PERSON TOOK THE ROUND — they reran the failing run on
+  # GitHub, or took the result on the screen as the rerun's — never that the
+  # gate should send the rerun it parked. The gate's judgment of what that run
+  # may start stands; the person's act is recorded as the round.
+  local seg="$1" sha="$2" r ln row rec cone cl fc=0 pl pv tag a b hit=""
+  local parks="" used=" "
+  [ -n "$seg" ] && [ -n "$sha" ] && [ -f "$LEDGER" ] || return 0
+  r=$(LC_ALL=C awk -F'|' -v seg="$seg" -v sha="$sha" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function val(n,   i, f, v) {
+      v = ""
+      for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, n "=") == 1) v = substr(f, length(n) + 2) }
+      return v
+    }
+    BEGIN { pfx = "중단 답 줄 " }
+    /^- `checks` / { if (!fc && val("세그먼트") == seg && val("head sha") == sha) fc = NR; next }
+    /^- `blocked` / {
+      if (val("세그먼트") != seg || val("사유") != "도달 park") next
+      st = val("스테이지"); if (st != "" && st != "-") next
+      print "P " NR " " val("도달 판정"); next
+    }
+    /^- `CI 처분` / { b = val("근거"); if (index(b, pfx) == 1) print "U " substr(b, length(pfx) + 1); next }
+    END { print "F " (fc + 0) }
+  ' "$LEDGER" 2>/dev/null) || return 0
+  while read -r tag a b; do
+    case "$tag" in
+      F) fc=$a ;;
+      P) parks="$parks$a $b
+" ;;
+      U) used="$used$a " ;;
+    esac
+  done <<EOF
+$r
+EOF
+  [ "${fc:-0}" -gt 0 ] 2>/dev/null || return 0
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    ln=${r%%:*}; row=${r#*:}
+    [ "$(gate_row_field "$row" '선택지')" = "재시도" ] || continue
+    [ "$(gate_row_field "$row" '답한 주체')" = "사람" ] || continue
+    case "$used" in *" $ln "*) continue ;; esac
+    rec=$(gate_row_field "$row" '중단 기록')
+    cone=$(gate_shift_halt_row_of "$rec")
+    [ -n "$cone" ] || continue
+    [ "$(gate_row_field "${cone#*:}" '자리')" = "도달 거부" ] || continue
+    cl=${cone%%:*}
+    pl=""; pv=""
+    while read -r a b; do
+      [ -n "$a" ] || continue
+      [ "$a" -lt "$cl" ] || break
+      pl=$a; pv=$b
+    done <<EOF
+$parks
+EOF
+    [ -n "$pl" ] && [ "$pl" -gt "$fc" ] || continue
+    case "$pv" in 재실행배포트리거|재실행대상미상|재실행요청실패) hit=$ln ;; esac
+  done <<EOF
+$( { grep -nE '^- `중단 답` ' "$LEDGER" 2>/dev/null || true; } | gate_rows_field_eq '세그먼트' "$seg")
+EOF
+  [ -z "$hit" ] || printf '%s' "$hit"
 }
 
 gate_ci_rerun_base_evidence() {
@@ -37528,8 +37748,18 @@ gate_perform_ci_rerun() {
   # per run, the confirmation, and the closing row. No retry: a POST that did
   # not take is a person's, and a second POST after an unknown outcome would be
   # a second rerun.
+  #
+  # A PERSON'S ROUND SENDS NOTHING. On `GATE_CI_RERUN_VERDICT=사람` the act
+  # writes the request and acceptance rows of a round with `실행 주체=사람` and
+  # `근거=중단 답 줄 <n>`, and no POST, attempt or screen confirmation: every
+  # reader of rounds counts it as it counts the gate's own.
   local al="$1" seg="$2"; shift 2
-  if [ "${GATE_CI_RERUN_VERDICT:-}" != "eligible" ] || [ -z "${GATE_CI_RERUN_RUNS:-}" ]; then
+  if [ "${GATE_CI_RERUN_VERDICT:-}" = "사람" ]; then
+    case "${GATE_CI_RERUN_ANSWER:-}" in ''|*[!0-9]*)
+      warn "the rerun act reached its performer as a person's round with no answer line — nothing was recorded"
+      return "$GATE_EXIT_RULE" ;;
+    esac
+  elif [ "${GATE_CI_RERUN_VERDICT:-}" != "eligible" ] || [ -z "${GATE_CI_RERUN_RUNS:-}" ]; then
     warn "the rerun act reached its performer without an eligibility verdict — nothing was requested"
     return "$GATE_EXIT_RULE"
   fi
@@ -37540,6 +37770,16 @@ gate_perform_ci_rerun() {
   base=$(gate_ci_rerun_base_evidence)
   fc=$(printf '%s\n' "$GATE_CI_RERUN_FAILS" | awk -F'\t' 'NF >= 2 { printf "%s%s", (n++ ? "," : ""), $2 }')
   local -a common=("세그먼트=$seg" "PR=$pr" "head sha=$h" "처분=재실행")
+  if [ "$GATE_CI_RERUN_VERDICT" = "사람" ]; then
+    local st
+    for st in 요청 수락; do
+      gate_append 'CI 처분' "${common[@]}" "상태=$st" "회차=$k" "실행=-" "워크플로=-" \
+        "실패 체크=$(gate_row_safe "${fc:--}" "$GATE_CHECKS_FAIL_MAX")" "기본 브랜치=$base" "응답=-" \
+        "실행 주체=사람" "근거=중단 답 줄 $GATE_CI_RERUN_ANSWER" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return $?
+    done
+    log "$seg: 사람 재실행 회차 — 회차 $k, 중단 답 줄 $GATE_CI_RERUN_ANSWER"
+    return 0
+  fi
   local runs_f; runs_f=$(printf '%s' "$GATE_CI_RERUN_RUNS" | tr ' ' ',')
   # THE ROW BEFORE THE POST: a gate that dies between the two leaves a request a
   # person can see, never a rerun nobody recorded.

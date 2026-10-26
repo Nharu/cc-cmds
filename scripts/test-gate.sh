@@ -2735,6 +2735,27 @@ pre_base() {
   seg_field() {
     printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
   }
+  # sb19_cone <런 디렉터리> <원장> <세그먼트> <자리> <이름> — 교대의 중단 기록과 그 cone
+  # 행을 심고 기록 경로를 찍는다. sb19_ans <원장> <세그먼트> <기록> <선택지> [답한 주체|-]
+  # [기록 시각] — 그 기록에 준 중단 답 행 하나를 심고 그 줄 번호를 찍는다. `shift-halt`
+  # 행위는 교대 호출자만 쓸 수 있으므로 정지와 답을 재는 절들(적용 정산, CI 재실행,
+  # 대기 시계)은 두 행을 원장에 직접 심고, 게이트가 읽는 것은 그 행들뿐이다.
+  sb19_cone() {
+    local rec="$1/halt/shift/$5.md"
+    mkdir -p "$1/halt/shift"
+    printf '# 중단 기록 %s\n' "$5" > "$rec"
+    printf -- '- `blocked` | 교대=1 | 대상=%s | 스코프=cone | 원인=막힘 | 사유=교대 중단 | 자리=%s | 앵커 세그먼트=%s | 중단 기록=%s | 기록 다이제스트=%s | prev=x\n' \
+      "$3" "$4" "$3" "$rec" "$(shasum -a 256 < "$rec" | cut -d' ' -f1)" >> "$2"
+    printf '%s' "$rec"
+  }
+  sb19_ans() {
+    local by="" at=""
+    [ "${5:--}" = "-" ] || by=" | 답한 주체=$5"
+    [ -z "${6:-}" ] || at=" | 기록 시각=$6"
+    printf -- '- `중단 답` | 교대=0 | 세그먼트=%s | 중단 기록=%s | 선택지=%s%s | 근거=x%s | prev=x\n' \
+      "$2" "$3" "$4" "$by" "$at" >> "$1"
+    grep -c '' "$1"
+  }
   # in_dirs <settings.json> <dir> — 0 when <dir> is in `additionalDirectories`.
   in_dirs() {
     jq -e --arg d "$2" '.permissions.additionalDirectories | index($d)' "$1" >/dev/null 2>&1
@@ -37512,22 +37533,8 @@ check "18: 그 거부는 원장에 segment 행을 남기지 않는다" "$(sb_cou
 #
 # 정산이 「필요」로 park 한 세그먼트에 교대가 적용 정산 자리의 중단 기록을 쓰고, 사람이
 # 답한다. 교대의 cone 막힘 행과 중단 답 행은 원장에 직접 심는다 — 답의 판독은 원장 행만
-# 읽고, 이 절이 재는 것은 그 판독이다.
-sb19_cone() {  # sb19_cone <세그먼트> <자리> <이름> — 교대의 중단 기록과 그 cone 행. 기록 경로를 찍는다.
-  local rec="$SA_RUN/halt/shift/$3.md"
-  mkdir -p "$SA_RUN/halt/shift"
-  printf '# 중단 기록 %s\n' "$3" > "$rec"
-  printf -- '- `blocked` | 교대=1 | 대상=%s | 스코프=cone | 원인=막힘 | 사유=교대 중단 | 자리=%s | 앵커 세그먼트=%s | 중단 기록=%s | 기록 다이제스트=%s | prev=x\n' \
-    "$1" "$2" "$1" "$rec" "$(shasum -a 256 < "$rec" | cut -d' ' -f1)" >> "$SA_LEDGER"
-  printf '%s' "$rec"
-}
-sb19_ans() {  # sb19_ans <세그먼트> <기록> <선택지> [답한 주체|-] — 중단 답 행 하나. 그 줄 번호를 찍는다.
-  local by=""
-  [ "${4:--}" = "-" ] || by=" | 답한 주체=$4"
-  printf -- '- `중단 답` | 교대=0 | 세그먼트=%s | 중단 기록=%s | 선택지=%s%s | 근거=x | prev=x\n' \
-    "$1" "$2" "$3" "$by" >> "$SA_LEDGER"
-  grep -c '' "$SA_LEDGER"
-}
+# 읽고, 이 절이 재는 것은 그 판독이다. 두 행을 심는 도우미(`sb19_cone`·`sb19_ans`)는
+# CI 재실행·대기 시계 절도 함께 쓰므로 `pre_base` 에 있다.
 sb19_needed() {  # sb19_needed <라벨> <세그먼트> <표지> <허가 파일> — 불명 → 정산 필요 park 까지
   SB_CODES='0 21' sb_apply_new "$1" "test -e $3 && exit 0 || exit 21" "test -e $4 && touch $3 || true"
   sb_reviewed_landing "$2"
@@ -37542,10 +37549,10 @@ sb19_needed() {  # sb19_needed <라벨> <세그먼트> <표지> <허가 파일> 
 sb19_mark="$WORK/sb19-applied"; sb19_go="$WORK/sb19-go"
 rm -f "$sb19_mark" "$sb19_go"
 sb19_needed '19 재실행' SB19 "$sb19_mark" "$sb19_go"
-sb19_rec=$(sb19_cone SB19 '적용 정산' SB19-1)
+sb19_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SB19 '적용 정산' SB19-1)
 sb19_refused=0
 for sb19_by in 좌석 교대 -; do
-  sb19_l=$(sb19_ans SB19 "$sb19_rec" 재실행 "$sb19_by")
+  sb19_l=$(sb19_ans "$SA_LEDGER" SB19 "$sb19_rec" 재실행 "$sb19_by")
   sb19_base=$(sa_rows)
   sb_apply SB19 "$sb19_l"
   case "$rc:$msg" in
@@ -37556,7 +37563,7 @@ for sb19_by in 좌석 교대 -; do
 done
 check "19: 사람이 아닌 재실행 답은 거부된다" "$sb19_refused" "3"
 touch "$sb19_go"
-sb19_l=$(sb19_ans SB19 "$sb19_rec" 재실행 사람)
+sb19_l=$(sb19_ans "$SA_LEDGER" SB19 "$sb19_rec" 재실행 사람)
 sb_apply SB19 "$sb19_l"
 check "19: 사람의 재실행 답이 받힌다" "$rc" "0"
 case "$( { grep -F 'id=SB19 | 상태=적용 준비' "$SA_LEDGER" || true; } | tail -1 )" in
@@ -37582,14 +37589,14 @@ esac
 sb19h_mark="$WORK/sb19h-applied"
 rm -f "$sb19h_mark"
 sb19_needed '19 사람 확인' SB19H "$sb19h_mark" "$WORK/sb19h-never"
-sb19h_rec=$(sb19_cone SB19H '적용 정산' SB19H-1)
-sb19h_l=$(sb19_ans SB19H "$sb19h_rec" '사람 확인 정산' 좌석)
+sb19h_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SB19H '적용 정산' SB19H-1)
+sb19h_l=$(sb19_ans "$SA_LEDGER" SB19H "$sb19h_rec" '사람 확인 정산' 좌석)
 sb_settle act SB19H --answer "$sb19h_l"
 case "$rc:$msg" in
   3:*"답한 주체=좌석 입니다"*) ok "19: 좌석의 사람 확인 정산 답은 거부된다" ;;
   *) bad "19: 좌석 사람 확인" "rc=$rc $msg" ;;
 esac
-sb19h_l=$(sb19_ans SB19H "$sb19h_rec" '사람 확인 정산' 사람)
+sb19h_l=$(sb19_ans "$SA_LEDGER" SB19H "$sb19h_rec" '사람 확인 정산' 사람)
 sb_settle act SB19H --answer "$sb19h_l"
 case "$rc:$(sb_seg_last SB19H):$(sb_blocked_open '적용 불명 SB19H')" in
   0:*"상태=완료"*"워크트리=$(sb_apply_wt SB19H) "*"적용=정산"*"정산 주체=사람"*"정산 근거=중단 답 ${sb19h_l}·입구 b"*:0)
@@ -37600,8 +37607,8 @@ if [ -e "$sb19h_mark" ]; then bad "19: 사람 확인 정산" "명령이나 프�
 
 # 세그먼트 park — 사람이 이 세그먼트를 내려놓았다. 라우터의 park 행이 그 답을 집행한다.
 sb19_needed '19 세그먼트 park' SB19P "$WORK/sb19p-applied" "$WORK/sb19p-never"
-sb19p_rec=$(sb19_cone SB19P '적용 정산' SB19P-1)
-sb19_ans SB19P "$sb19p_rec" '세그먼트 park' 사람 >/dev/null
+sb19p_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SB19P '적용 정산' SB19P-1)
+sb19_ans "$SA_LEDGER" SB19P "$sb19p_rec" '세그먼트 park' 사람 >/dev/null
 check "19: park 답 전에는 막힘이 열려 있다" "$(sb_blocked_open '적용 불명 SB19P')" "1"
 sa_seg_state SB19P park
 check "19: 라우터의 park 행이 받힌다" "$rc" "0"
@@ -37625,20 +37632,20 @@ case "$sb19i_a|$rc:$msg" in
       || bad "19: 들여온 세그먼트 거부" "원장에 행이 늘었다" ;;
   *) bad "19: 들여온 세그먼트 거부" "적용 $sb19i_a / 정산 rc=$rc $msg" ;;
 esac
-sb19i_rec=$(sb19_cone SB19I '들여온 적용 정산' SB19I-1)
-sb19i_l=$(sb19_ans SB19I "$sb19i_rec" '사람 확인 정산' 사람)
+sb19i_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SB19I '들여온 적용 정산' SB19I-1)
+sb19i_l=$(sb19_ans "$SA_LEDGER" SB19I "$sb19i_rec" '사람 확인 정산' 사람)
 sb19_confirm() {
   sag act --manifest "$SA_MANIFEST" --kind apply-settle-confirm --target main --segment SB19I --cutpoint 배포 \
       --surface 읽기 --snapshot-digest "$(SAH)" --rationale x -- "중단 답=$1"
 }
 # 새 중단이 앞선 답 뒤에 오면 그 답은 그 중단의 답이 아니다.
-sb19_cone SB19I '들여온 적용 정산' SB19I-2 >/dev/null
+sb19_cone "$SA_RUN" "$SA_LEDGER" SB19I '들여온 적용 정산' SB19I-2 >/dev/null
 sb19_confirm "$sb19i_l"
 case "$rc:$msg" in
   3:*"마지막 들여온 적용 정산 중단"*"보다 뒤가 아닙니다"*) ok "19: 새 중단 뒤에는 앞선 답으로 확인하지 않는다" ;;
   *) bad "19: 새 중단 뒤 앞선 답" "rc=$rc $msg" ;;
 esac
-sb19i_l=$(sb19_ans SB19I "$SA_RUN/halt/shift/SB19I-2.md" '사람 확인 정산' 사람)
+sb19i_l=$(sb19_ans "$SA_LEDGER" SB19I "$SA_RUN/halt/shift/SB19I-2.md" '사람 확인 정산' 사람)
 sb19_confirm "$sb19i_l"
 case "$rc:$(sb_seg_last SB19I)" in
   0:*"상태=완료"*"고정 커밋=$sb19i_m"*"머지 커밋=$sb19i_m"*"적용=정산"*"정산 주체=사람"*"입구 c"*"출처=RAOLD"*"이전 런=RAOLD"*)
@@ -42261,7 +42268,7 @@ cb60_foot
 
 # ---------------------------------------------------------------------------
 # 60b-2. 리뷰가 깨끗한 세그먼트의 CI 실패 — 부적격 실행의 park
-# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다 ---
+# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: paths 필터·run 본문·주석·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다 ---
 #
 # 60b 의 둘째 조각. 픽스처는 `cb60_head` 로 새로 세운다. 같은 argv 의 둘째 park 가 행을
 # 더 쓰지 않는지는 칸과 종류마다 처음 사례에서 `cb60_park` 이 모으고 그 단언은 60b-3
@@ -42295,11 +42302,46 @@ cb60_i=0
 cb60_new "CI 재실행 — tip 워크플로"
 for cb60_tipwf in "$CB60_WF"$'\n    environment: prod' "$CB60_WF"$'\n  u:\n    uses: ./.github/workflows/x.yml' \
                   "$CB60_WF"$'\n    "environment": prod' "$CB60_WF"$'\n    with: {environment: prod}' \
-                  "$CB60_WF"$'\n  u:\n    uses: "./.github/workflows/x.yml"'; do
+                  "$CB60_WF"$'\n  u:\n    uses: "./.github/workflows/x.yml"' \
+                  "$CB60_WF"$'\n      - run: gh workflow run deploy.yml' \
+                  "$CB60_WF"$'\n      - run: gh -R o/r workflow run deploy.yml' \
+                  "$CB60_WF"$'\n      - run: bash .github/workflows/deploy.sh' \
+                  "$CB60_WF"$'\n      - {environment: prod}' \
+                  '{"name": "gate", "on": {"pull_request": {"branches": ["main"]}}, "jobs": {"t": {"runs-on": "ubuntu-latest", "environment": "prod", "steps": [{"run": "true"}]}}}' \
+                  $'name: gate\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          true\n        environment: prod'; do
   cb60_i=$((cb60_i + 1))
   cb60_again "$cb60_tipwf"
-  cb60_park 재실행배포트리거 "gate.yml:777" "tip 워크플로의 환경·재사용 $cb60_i"
+  cb60_park 재실행배포트리거 "gate.yml:777" "tip 워크플로의 배포 자리 $cb60_i"
 done
+# 배포 자리가 아닌 글자 — paths 필터의 자기 경로, `run: |` 본문의 워크플로 파일 경로, 주석의
+# 환경 키, 앵커·별칭으로 나눠 쓴 paths. 넷을 한 tip 에 모아도 재실행은 수락까지 간다.
+cb60_new "CI 재실행 — 배포 자리가 아닌 글자"
+CB60_CLEANWF=$'name: gate\non:\n  pull_request:\n    branches: [main]\n    paths: &p\n      - \'.github/workflows/gate.yml\'\n      - \'a.txt\'\n  push:\n    paths: *p\njobs:\n  t:\n    runs-on: ubuntu-latest\n    # environment: prod\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml\n          true'
+cb60_again "$CB60_CLEANWF"
+cb60_np=$(cb60_posts); cb60_nb=$(cb60_n blocked)
+cb60_act
+check "60b: paths 필터·run 본문·주석·별칭의 워크플로 글자는 park 하지 않고 수락된다" \
+  "$rc|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(( $(cb60_posts) - cb60_np ))|$(( $(cb60_n blocked) - cb60_nb ))" "0|수락|1|0"
+# 판독기 함수 — 레포의 실제 워크플로 셋은 깨끗하고, 어휘 경계의 다섯 모양은 각자 답한다.
+cb60_x5fail=""
+for cb60_f in gate.yml lint.yml notify-macos.yml; do
+  cb60_r=0; gate_ci_rerun_x5_hit "$repo_root/.github/workflows/$cb60_f" || cb60_r=$?
+  [ "$cb60_r" = 1 ] || cb60_x5fail="$cb60_x5fail[$cb60_f rc=$cb60_r]"
+done
+check "60b: 레포의 실제 워크플로 셋은 X5 판독기에서 깨끗하다" "$cb60_x5fail" ""
+cb60_x5() {
+  # cb60_x5 <기대 rc> <내용> — 판독기 함수 하나의 답.
+  local f="$CB60_ROOT/x5-$cb60_i.yml" r=0; cb60_i=$((cb60_i + 1))
+  printf '%s\n' "$2" > "$f"
+  gate_ci_rerun_x5_hit "$f" || r=$?
+  [ "$r" = "$1" ] || cb60_x5fail="$cb60_x5fail[$2 rc=$r]"
+}
+cb60_x5 1 $'on:\n  pull_request:\n    paths:\n      - \'.github/workflows/gate.yml\''
+cb60_x5 1 $'jobs:\n  t:\n    steps:\n      - run: echo workflow running'
+cb60_x5 0 $'on:\n  pull_request:\n    paths:\n      - \'.github/workflows/**\''
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: cmd |\n          environment: prod'
+cb60_x5 1 $'jobs:\n  t:\n    steps:\n      - run: &a |\n          environment: prod'
+check "60b: X5 판독기의 어휘 경계가 모양마다 답한다" "$cb60_x5fail" ""
 # 섞인 집합 — 실행 777 은 적격, 778 의 워크플로에 환경 키. 하나라도 걸리면 POST 는 없다.
 cb60_new "CI 재실행 — 섞인 집합"
 ( cd "$SA_SEGWT" && printf '%s\n    environment: prod\n' "$CB60_WF" > .github/workflows/deploy.yml && git add -A && git commit -qm deploy ) >/dev/null 2>&1
@@ -42478,6 +42520,112 @@ check "60b: 재실행 POST 의 자격 증명 환경이 읽기 전용이고 GH_RE
 check "60b: 머지 PUT 의 자격 증명 환경이 재실행 POST 와 같다" "$cb60_eput" "${cb60_epost%%|GH_REPO=*}"
 check "60b: 재실행 POST 의 argv 가 대상 슬러그를 명시한다" \
   "$( { grep -c "^api -X POST -i repos/$CB60_SLUG/actions/runs/777/rerun-failed-jobs\$" "$CB60_S/gh.log" || true; } )" "1"
+cb60_foot
+
+# ---------------------------------------------------------------------------
+# 60b-4. 재실행 도달 park 뒤 사람의 재시도 답 — 회차로 기록하고 재실행을 내지 않는다
+# --- section: 60b-4 | group: sa | covers: act, snapshot, halt-answer, gate_check_ci_rerun | anchors: 60b-4: 사람의 재시도 답 뒤 같은 재실행 행위는 POST 없이 사람 회차의 요청·수락 행을 쓴다, 60b-4: 한 답은 한 번만 회차가 된다, 60b-4: 사람 회차 뒤 회차 판독은 g=1·u=1·a=수락 이다, 60b-4: 교대의 재시도 답 뒤 같은 재실행 행위는 새 행 없이 rc 11 이다, 60b-4: 새 head 에서는 옛 정지의 답을 쓰지 않고 다시 park 한다, 60b-4: 재실행요청실패 정지의 사람 답도 회차 2 가 된다, 60b-4: 정지 자리 표와 재실행 park 복구 문면이 사람 회차를 말한다 ---
+#
+# 60b 의 픽스처(`cb60_head`·`cb60_new`) 위에서 재실행 행위를 park 시킨 뒤, 교대의 `도달 거부`
+# 정지 cone 행과 그 기록에 준 `중단 답` 행을 원장에 직접 심고(`sb19_cone`·`sb19_ans`) 같은
+# 재실행 행위를 다시 낸다. 사람의 `재시도` 는 사람이 GitHub 에서 재실행했거나 지금 실패를 이
+# head 의 재실행 결과로 받기로 했다는 답이라, 게이트는 POST 없이 요청·수락 한 쌍을 쓴다.
+# ---------------------------------------------------------------------------
+cb60_head
+cb64_halt() {
+  # cb64_halt <이름> <답한 주체> — 세그먼트 CK 의 도달 거부 정지와 그 재시도 답. 답의 줄 번호를 찍는다.
+  local rec; rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" CK '도달 거부' "$1")
+  sb19_ans "$SA_LEDGER" CK "$rec" 재시도 "$2"
+}
+cb64_answer() {
+  # cb64_answer — 게이트가 지금 사람 회차로 받을 답의 원장 줄(없으면 빈 값).
+  ( LEDGER="$SA_LEDGER" RUN_DIR="$SA_RUN" gate_ci_rerun_person_answer CK "$CK60_SHA" )
+}
+cb64_round() { la60_round | tr ' ' '\n' | grep -E '^(g|u|a)=' | tr '\n' ' ' | sed 's/ $//'; }
+cb64_pair() {
+  # cb64_pair <답 줄> — 마지막 CI 처분 두 행의 상태·회차·실행·워크플로·실행 주체·근거.
+  local cl r1 r2; cl=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -2)
+  r1=$(printf '%s\n' "$cl" | sed -n 1p); r2=$(printf '%s\n' "$cl" | sed -n 2p)
+  printf '%s>%s|%s|%s|%s|%s,%s|%s,%s' "$(sa_field "$r1" 상태)" "$(sa_field "$r2" 상태)" "$(sa_field "$r2" 회차)" \
+    "$(sa_field "$r2" 실행)" "$(sa_field "$r2" 워크플로)" "$(sa_field "$r1" '실행 주체')" "$(sa_field "$r2" '실행 주체')" \
+    "$(sa_field "$r1" 근거)" "$(sa_field "$r2" 근거)"
+}
+CB64_ENV="$CB60_WF"$'\n    environment: prod'
+
+# 배포트리거 정지 → 사람의 재시도 → 사람 회차 → 회차 1 의 판정 ---------------------------
+cb60_new "CI 재실행 — 사람의 재시도 답"
+cb60_again "$CB64_ENV"
+cb60_act
+check "60b-4: 환경 키 tip 의 재실행은 재실행배포트리거 로 park 하고 다음은 CI 재실행 이다" \
+  "$rc|$(sa_field "$(cb60_last blocked)" '도달 판정')|$(cb60_next)" "11|재실행배포트리거|CI 재실행"
+cb64_l=$(cb64_halt CK-1 사람)
+check "60b-4: 도달 거부 정지의 사람 재시도 답을 게이트가 회차로 읽는다" "$(cb64_answer)" "$cb64_l"
+cb64_nb=$(cb60_n blocked); cb64_np=$(cb60_posts); cb64_nr=$(cb60_n 'CI 처분')
+cb60_act
+check "60b-4: 사람의 재시도 답 뒤 같은 재실행 행위는 POST 없이 사람 회차의 요청·수락 행을 쓴다" \
+  "$rc|$(( $(cb60_n blocked) - cb64_nb ))|$(( $(cb60_posts) - cb64_np ))|$( { grep -c 'rerun-failed-jobs' "$CB60_S/gh.log" || true; } )|$(( $(cb60_n 'CI 처분') - cb64_nr ))|$(cb64_pair)" \
+  "0|0|0|0|2|요청>수락|1|-|-|사람,사람|중단 답 줄 $cb64_l,중단 답 줄 $cb64_l"
+cb64_nr=$(cb60_n 'CI 처분')
+cb60_act
+check "60b-4: 한 답은 한 번만 회차가 된다" "$(cb64_answer)|$rc|$(( $(cb60_n 'CI 처분') - cb64_nr ))|$(cb60_posts)" "|3|0|0"
+check "60b-4: 사람 회차 뒤 회차 판독은 g=1·u=1·a=수락 이다" "$(cb64_round)|$(cb60_next)" "u=1 a=수락 g=1|CI 대기"
+cb60_line 실패 1 0
+cb64_n1=$(cb60_next)
+cb60_line 통과 1 0 -
+check "60b-4: 사람 회차의 정착된 실패는 CI 수정 이고 통과는 머지 다" "$cb64_n1|$(cb60_next)" "CI 수정|머지"
+
+# 정지 자리 표와 park 복구 문면 — 재실행이 막힌 자리에서 사람이 할 일과 그 답이 낳는 동작.
+cb64_site=$( { gate_shift_halt_site_table | grep '^도달 거부|' || true; } )
+cb64_txt=""
+case "$cb64_site" in
+  *"재실행 회차로 기록하고 게이트는 재실행을 내지 않는다"*"다시 park 되어 이 자리에 다시 선다"*) ;;
+  *) cb64_txt="$cb64_txt[자리 표 $cb64_site]" ;;
+esac
+for cb64_c in 재실행배포트리거:- 재실행대상미상:- 재실행요청실패:open 재실행요청실패:-; do
+  cb64_m=$(cd "$SA_WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "$0" >/dev/null 2>&1; gate_park_repair_line "$1" "$2" 2>&1' \
+    "$GATE" "${cb64_c%%:*}" "${cb64_c#*:}" 2>/dev/null)
+  case "$cb64_m" in
+    *'round-0 key'*) cb64_txt="$cb64_txt[$cb64_c 회차 0 문장]" ;;
+    *"answers the segment's \`도달 거부\` halt with \`재시도\`, and the next rerun act records it as this head's round"*) ;;
+    *) cb64_txt="$cb64_txt[$cb64_c $cb64_m]" ;;
+  esac
+done
+check "60b-4: 정지 자리 표와 재실행 park 복구 문면이 사람 회차를 말한다" "$cb64_txt" ""
+
+# 교대의 답과 새 head — 사람이 아닌 답은 같은 칸으로, 옛 head 의 답은 새 head 에서 쓰이지 않는다 --
+cb60_new "CI 재실행 — 사람이 아닌 답과 새 head"
+cb60_again "$CB64_ENV"
+cb60_act
+cb64_halt CK-1 교대 >/dev/null
+cb64_nb=$(cb60_n blocked); cb64_nr=$(cb60_n 'CI 처분')
+cb60_act
+check "60b-4: 교대의 재시도 답 뒤 같은 재실행 행위는 새 행 없이 rc 11 이다" \
+  "$(cb64_answer)|$rc|$(( $(cb60_n blocked) - cb64_nb ))|$(( $(cb60_n 'CI 처분') - cb64_nr ))|$(cb60_posts)" "|11|0|0|0"
+cb64_halt CK-2 사람 >/dev/null
+cb60_again "$CB64_ENV"
+cb64_nb=$(cb60_n blocked); cb64_nr=$(cb60_n 'CI 처분')
+cb64_a=$(cb64_answer)
+cb60_act
+check "60b-4: 새 head 에서는 옛 정지의 답을 쓰지 않고 다시 park 한다" \
+  "$cb64_a|$rc|$(( $(cb60_n blocked) - cb64_nb ))|$(sa_field "$(cb60_last blocked)" '도달 판정')|$(( $(cb60_n 'CI 처분') - cb64_nr ))" \
+  "|11|1|재실행배포트리거|0"
+
+# 받지 않은 요청의 정지 — 게이트의 요청이 회차 1 이었으므로 사람 회차는 2 다 --------------------
+cb60_new "CI 재실행 — 받지 않은 요청 뒤 사람의 재시도"
+printf '500\n' > "$CB60_S/post"
+cb60_act
+check "60b-4: POST 500 의 재실행은 재실행요청실패 로 park 한다" "$rc|$(sa_field "$(cb60_last blocked)" '도달 판정')" "11|재실행요청실패"
+# 사람이 GitHub 에서 다시 돌린 실행도 실패로 끝났다 — 화면은 POST 앞의 실패 화면이다.
+rm -f "$CB60_S/posted"
+printf 'gate\tfailure\n' > "$CB60_S/base"
+cb64_l=$(cb64_halt CK-1 사람)
+cb64_np=$(cb60_posts)
+cb60_act
+check "60b-4: 재실행요청실패 정지의 사람 답도 회차 2 가 된다" \
+  "$rc|$(( $(cb60_posts) - cb64_np ))|$(cb64_pair)|$(cb64_round)" \
+  "0|0|요청>수락|2|-|-|사람,사람|중단 답 줄 $cb64_l,중단 답 줄 $cb64_l|u=2 a=수락 g=2"
+cb60_line 실패 2 0
+check "60b-4: 기본 브랜치가 실패한 사람 회차의 정착된 실패는 CI 기존 실패 다" "$(cb60_next)" "CI 기존 실패"
 cb60_foot
 
 # ---------------------------------------------------------------------------
@@ -43070,7 +43218,7 @@ check "60d: 다른 argv 철자의 라벨 행위는 규칙이 열지 않는다" "
 
 # ---------------------------------------------------------------------------
 # 60e. 라벨 인정 — 행위 본문: 수락, park 칸, 받지 않은 요청, 쓰기 자격, 철자
-# --- section: 60e | group: sa | covers: act, snapshot | anchors: 60e: 적격한 라벨 행위가 요청·수락 행을 쓰고 POST 를 한 번 낸다, 60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다, 60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다, 60e: 쓰기 자격 없는 라벨 행위는 행도 POST 도 없이 rc 3 이다, 60e: 사전 인가 행 없는 라벨 행위가 규칙을 지나 수락된다 ---
+# --- section: 60e | group: sa | covers: act, snapshot | anchors: 60e: 적격한 라벨 행위가 요청·수락 행을 쓰고 POST 를 한 번 낸다, 60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다, 60e: paths 필터·run 본문·주석·별칭의 워크플로 글자는 라벨 행위를 park 하지 않는다, 60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다, 60e: 쓰기 자격 없는 라벨 행위는 행도 POST 도 없이 rc 3 이다, 60e: 사전 인가 행 없는 라벨 행위가 규칙을 지나 수락된다 ---
 #
 # 60b 의 픽스처(`cb60_head`·`cb60_new`) 위에 매니페스트의 `라벨 인정` 행, 그 체크를 이름
 # 짓는 슬라이스 문서, `labeled` 를 받는 워크플로를 얹고 `act --kind label-ack` 를 실제로
@@ -43206,6 +43354,15 @@ cb60_wf_base x-run.yml $'on:\n  workflow_run:\n    workflows: [gate]\n    types:
 la61_again
 la61_park 라벨배포트리거 "기본 브랜치 x-run.yml" "기본 브랜치의 workflow_run"
 check "60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다" "$la61_fail" ""
+# 배포 자리가 아닌 글자 — paths 필터의 자기 경로, `run: |` 본문의 워크플로 파일 경로, 주석의
+# 환경 키, 잡 사이의 앵커·별칭은 라벨배포트리거 로 park 하지 않는다. 앵커는 `jobs` 쪽에 둔다:
+# `on` 블록 안의 앵커는 types 판독기가 읽지 못함 으로 읽어 라벨새실행없음 으로 park 한다.
+la61_new "라벨 인정 — 배포 자리가 아닌 글자"
+la61_again $'name: gate\non:\n  pull_request:\n    types: [opened, synchronize, labeled]\n    paths:\n      - \'.github/workflows/gate.yml\'\n      - \'a.txt\'\njobs:\n  t:\n    runs-on: ubuntu-latest\n    env: &e\n      A: x\n    # environment: prod\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml\n          true\n  u:\n    runs-on: ubuntu-latest\n    env: *e\n    steps:\n      - run: true'
+la61_np=$(cb60_posts); la61_nb=$(cb60_n blocked)
+la61_act
+check "60e: paths 필터·run 본문·주석·별칭의 워크플로 글자는 라벨 행위를 park 하지 않는다" \
+  "$rc|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(( $(la61_post_n) ))|$(( $(cb60_n blocked) - la61_nb ))" "0|수락|1|0"
 
 # 받지 않은 요청 — 요청 행 뒤의 실패 행, blocked 하나, 다시 내지 않는다 -----------------------
 la61_fail=''
@@ -52325,7 +52482,7 @@ check "88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 �
 
 # ---------------------------------------------------------------------------
 # 88e. CI 판정의 리뷰 사이클 합류 — 판정 전 머지 금지, 수정 갈래의 CI 층, 대기 한도, 선재실행 술어, 중계 깨움
-# --- section: 88e | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json, gate_ci_early, relay | anchors: 88e: 회차 0 의 행 없음·유예 안 미등록·대기·진행 중 실패·판정 불가는 CI 대기 이고 머지 검사가 거절한다, 88e: 400초 전의 회차 0 미등록 은 머지 이고 머지 검사를 지난다, 88e: 수정 표에서 회차 0 정착 실패는 CI 재실행, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다, 88e: 처분=합류 행은 CI 수정 예산 f 를 세지 않는다, 88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 두 표에서 CI 대기 한도 이고 머지 검사가 거절한다, 88e: CI 대기 한도 원소는 상태 와 대기 시계 를 싣는다, 88e: 절단점 push 세그먼트는 행 없음에서 머지·수정 이고 머지 검사를 지난다, 88e: 대상 별칭이 비는 세그먼트는 행 없음에서 머지 이고 머지 검사를 지난다, 88e: 살아 있는 리뷰 스테이지와 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 유예 안 미등록·판정 불가·다른 head 의 판정은 ci 키를 세우지 않는다, 88e: 통과의 ci 키는 교대 기동 행 뒤에 다시 서지 않고 그 뒤 줄에 전사된 판정은 한 번 더 세운다, 88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다 ---
+# --- section: 88e | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json, gate_ci_early, relay | anchors: 88e: 회차 0 의 행 없음·유예 안 미등록·대기·진행 중 실패·판정 불가는 CI 대기 이고 머지 검사가 거절한다, 88e: 400초 전의 회차 0 미등록 은 머지 이고 머지 검사를 지난다, 88e: 수정 표에서 회차 없는 head 는 행 없음·정착 실패 모두 수정, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다, 88e: 수정 표의 받아들여진 회차 뒤 진행 중 실패는 CI 대기 이고 통과 는 수정 이다 (M2, M3), 88e: 수락된 라벨 회차 뒤 라벨 인정 체크의 실패는 M3a 가 아니라 M4 의 수정 이다, 88e: 처분=합류 행은 CI 수정 예산 f 를 세지 않는다, 88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 머지 표에서 CI 대기 한도 이고 머지 검사가 거절하며 수정 표에서는 수정 이다, 88e: 첫 관측이 오래되어도 방금 쓴 사람의 중단 답 뒤에는 CI 대기 이고 대기 시계는 그 답의 기록 시각이다, 88e: 답한 주체가 없는 옛 행은 자동 채택 접두가 없을 때만 시계를 옮긴다, 88e: CI 대기 한도 원소는 상태 와 대기 시계 를 싣는다, 88e: 절단점 push 세그먼트는 행 없음에서 머지·수정 이고 머지 검사를 지난다, 88e: 대상 별칭이 비는 세그먼트는 행 없음에서 머지 이고 머지 검사를 지난다, 88e: 살아 있는 리뷰 스테이지와 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 유예 안 미등록·판정 불가·다른 head 의 판정은 ci 키를 세우지 않는다, 88e: 통과의 ci 키는 교대 기동 행 뒤에 다시 서지 않고 그 뒤 줄에 전사된 판정은 한 번 더 세운다, 88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다 ---
 #
 # 라우팅 런의 CI 합류 대상(절단점 PR·머지·배포)에서 리뷰가 CI 판정보다 먼저 끝나면 판정을
 # 기다리고, 그 기다림이 늘 끝나는지를 원장만으로 잰다. 시각은 `관측` 과 픽스처 커밋의 커밋
@@ -52413,20 +52570,24 @@ check "88e: 400초 전의 회차 0 미등록 은 머지 이고 머지 검사를 
 L88E=$(l88e pass "$W88E" "$R88E" 0); ck88e "$L88E" 통과 0 0 "$T088E"
 check "88e: 회차 0 의 통과 는 머지 이고 머지 검사를 지난다" "$(nm88e "$L88E")" "머지|0"
 
-# 2 — 수정 표의 CI 합류 층.
+# 2 — 수정 표의 CI 합류 층. 리뷰가 수정을 요구하면 수정이 재실행과 기다림보다 먼저다 —
+# 회차가 없는 head 는 판정과 무관하게 수정(M1n)이고, 아래 갈래는 받아들여진 회차 뒤에만 닿는다.
 L88EF=$(l88e fix "$W88E" "$R88E" 1)
 o88e="$(n88e "$L88EF")"
 ck88e "$L88EF" 실패 0 0 "$T088E"; o88e="$o88e|$(n88e "$L88EF")"
 acc88e "$L88EF" "$T088E"; o88e="$o88e|$(n88e "$L88EF")"
 ck88e "$L88EF" 실패 1 0 "$T088E"; o88e="$o88e|$(n88e "$L88EF")"
-check "88e: 수정 표에서 회차 0 정착 실패는 CI 재실행, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다" \
-  "$o88e" "CI 대기|CI 재실행|CI 대기|CI 합류 수정"
+check "88e: 수정 표에서 회차 없는 head 는 행 없음·정착 실패 모두 수정, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다" \
+  "$o88e" "수정|수정|CI 대기|CI 합류 수정"
 cd88e "$L88EF" 합류 - - "$T088E"
 check "88e: 처분=합류 행은 CI 수정 예산 f 를 세지 않는다" \
   "$(n88e "$L88EF")|$(lsr_in Linux "$L88EF" - cc_ci_round "$L88EF" S "$R88E" | sed -n 's/^f=//p')" "CI 합류 수정|0"
-L88E=$(l88e fix-pass "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 2 "$T088E"
+L88E=$(l88e fix-pass0 "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 2 "$T088E"
 o88e=$(n88e "$L88E"); ck88e "$L88E" 통과 0 0 "$T088E"
-check "88e: 수정 표의 진행 중 실패는 CI 대기 이고 통과 는 수정 이다 (M2, M3)" "$o88e|$(n88e "$L88E")" "CI 대기|수정"
+check "88e: 수정 표에서 회차 없는 head 의 진행 중 실패와 통과 는 수정 이다 (M1n)" "$o88e|$(n88e "$L88E")" "수정|수정"
+L88E=$(l88e fix-pass "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"
+ck88e "$L88E" 실패 1 2 "$T088E"; o88e=$(n88e "$L88E"); ck88e "$L88E" 통과 1 0 "$T088E"
+check "88e: 수정 표의 받아들여진 회차 뒤 진행 중 실패는 CI 대기 이고 통과 는 수정 이다 (M2, M3)" "$o88e|$(n88e "$L88E")" "CI 대기|수정"
 L88E=$(l88e fix-open "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"; cd88e "$L88E" 재실행 요청 1 "$T088E"
 L88E2=$(l88e fix-closed "$W88E" "$R88E" 1); ck88e "$L88E2" 실패 0 0 "$T088E"
 cd88e "$L88E2" 재실행 요청 1 "$T088E"; cd88e "$L88E2" 재실행 실패 1 "$T088E"
@@ -52439,28 +52600,31 @@ printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=2 | P0=0 | P1=1 | �
   "$R88E" "$(lsr_rp_report "$D88E/c-lead2.md" 0 1 차단)" >> "$L88E"
 ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
 check "88e: 표가 리드 수정 이면 정착 실패에서도 리드 수정 이다" "$(n88e "$L88E")" "리드 수정"
-L88E=$(l88e fix-cap "$W88E" "$R88E" 1); ck88e "$L88E" 대기 0 0 "$T3H88E"
-check "88e: 수정 표의 대기 한도는 CI 대기 한도 다 (MW)" "$(n88e "$L88E")" "CI 대기 한도"
+L88E=$(l88e fix-cap0 "$W88E" "$R88E" 1); ck88e "$L88E" 대기 0 0 "$T3H88E"
+L88E2=$(l88e fix-cap "$W88E" "$R88E" 1); ck88e "$L88E2" 실패 0 0 "$T3H88E"; acc88e "$L88E2" "$T3H88E"
+ck88e "$L88E2" 대기 1 0 "$T3H88E"
+check "88e: 수정 표의 대기 한도는 회차 없는 head 에서 수정 이고 받아들여진 회차 뒤에 CI 대기 한도 다 (M1n, MW)" \
+  "$(n88e "$L88E")|$(n88e "$L88E2")" "수정|CI 대기 한도"
 # 라벨 인정 행이 실패한 체크(gate)를 이름 지으면 수정 갈래는 재실행도 CI 합류도 하지 않고
-# 수정 이다(M3a). 행이 다른 체크(other)를 이름 지으면 gate 의 실패는 여전히 재실행이다.
+# 수정 이다(M3a). 회차 0 에서는 그보다 앞서 M1n 이 서므로 인정 행이 무엇을 이름 짓든 수정 이다.
 L88E=$(l88e fix-ack "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"
-check "88e: 수정 표에서 라벨 인정 체크의 회차 0 정착 실패는 CI 재실행 이 아니라 수정 이다 (M3a)" \
-  "$(n88e "$L88E" "$MA88E")|$(n88e "$L88E" "$MO88E")" "수정|CI 재실행"
+check "88e: 수정 표에서 회차 0 정착 실패는 라벨 인정 체크든 아니든 수정 이다 (M1n)" \
+  "$(n88e "$L88E" "$MA88E")|$(n88e "$L88E" "$MO88E")" "수정|수정"
 L88E=$(l88e fix-ack-r1 "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"; acc88e "$L88E" "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
 check "88e: 재실행 뒤 라벨 인정 체크의 정착 실패도 CI 합류 수정 이 아니라 수정 이다 (M3a)" \
   "$(n88e "$L88E" "$MA88E")|$(n88e "$L88E" "$MO88E")" "수정|CI 합류 수정"
 # 라벨 회차가 이미 수락된 head(lab=1)에서 같은 체크가 다시 실패하면 M3a 는 서지 않는다 —
-# 라벨은 한 번만 붙으므로 그 실패는 인정 행이 있어도 재실행 갈래로 간다. 라벨 회차는 u 를
-# 세지 않으므로 그 값은 CI 재실행 이다.
+# 라벨은 한 번만 붙는다. 라벨 회차는 u 를 세지 않으므로 그 실패는 M4 에 닿고, 수정 표는
+# 재실행보다 수정을 먼저 보내므로 그 값은 수정 이다.
 L88E=$(l88e fix-ack-lab "$W88E" "$R88E" 1); ck88e "$L88E" 실패 0 0 "$T088E"
 cd88e "$L88E" 라벨 요청 1 "$T088E"; cd88e "$L88E" 라벨 수락 1 "$T088E"; ck88e "$L88E" 실패 1 0 "$T088E"
-check "88e: 수락된 라벨 회차 뒤 라벨 인정 체크의 실패는 M3a 가 아니라 CI 재실행 이다" \
-  "$(n88e "$L88E" "$MA88E")" "CI 재실행"
+check "88e: 수락된 라벨 회차 뒤 라벨 인정 체크의 실패는 M3a 가 아니라 M4 의 수정 이다" \
+  "$(n88e "$L88E" "$MA88E")" "수정"
 
 # 7 — 대기 한도. 커밋 시각·가장 이른 관측·수락 관측이 시계다.
 L88EO=$(l88e old "$WO88E" "$RO88E" 0); L88EOF=$(l88e old-fix "$WO88E" "$RO88E" 1)
-check "88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 두 표에서 CI 대기 한도 이고 머지 검사가 거절한다" \
-  "$(nm88e "$L88EO")|$(n88e "$L88EOF")" "CI 대기 한도|3|CI 대기 한도"
+check "88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 머지 표에서 CI 대기 한도 이고 머지 검사가 거절하며 수정 표에서는 수정 이다" \
+  "$(nm88e "$L88EO")|$(n88e "$L88EOF")" "CI 대기 한도|3|수정"
 check "88e: 대기 시계는 커밋 시각을 UTC 로 읽는다 (+0900 커밋)" \
   "$(lsr_in Linux "$L88EO" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$RO88E" 0 2>/dev/null)|$CO88E" "$(iso88e $((NOW88E - 10800)))|$(iso88e $((NOW88E - 10800)))"
 check "88e: CI 대기 한도 원소는 상태 와 대기 시계 를 싣는다" \
@@ -52489,6 +52653,32 @@ check "88e: 미등록 만료와 대기 한도가 함께 참인 회차 0 미등�
 L88EOA=$(l88e old-acc-dash "$WO88E" "$RO88E" 0); ck88e "$L88EOA" 실패 0 0 "$T3H88E" "$RO88E"; acc88e "$L88EOA" - 없음 "$RO88E"
 check "88e: 수락 관측이 - 이고 회차 1 행이 없으면 시계는 커밋 시각이라 CI 대기 한도 다" \
   "$(n88e "$L88EOA")|$(lsr_in Linux "$L88EOA" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$RO88E" 1 2>/dev/null)" "CI 대기 한도|$CO88E"
+# 사람의 답이 시계를 다시 연다 — 교대가 사람의 답을 기다린 시간은 CI 를 기다린 시간이 아니다.
+# 세 시간 전의 첫 관측 뒤에 방금 쓰인 사람의 중단 답이 있으면 시계는 그 답의 기록 시각이다.
+# 사람의 답만 옮기고(교대·좌석 답은 아니다), 답한 주체가 없는 옛 행은 근거의 자동 채택 접두로
+# 가른다. 원장 줄 순서가 아니라 기록 시각이 가장 늦은 답이 시계다(이월 행은 앞선 시각을 싣는다).
+wc88e() { lsr_in Linux "$1" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$R88E" 0 2>/dev/null; }
+L88E=$(l88e ans-person "$W88E" "$R88E" 0); ck88e "$L88E" 대기 0 0 "$T3H88E"
+o88e="$(n88e "$L88E")"; sb19_ans "$L88E" S x 재시도 사람 "$T088E" >/dev/null
+check "88e: 첫 관측이 오래되어도 방금 쓴 사람의 중단 답 뒤에는 CI 대기 이고 대기 시계는 그 답의 기록 시각이다" \
+  "$o88e|$(n88e "$L88E")|$(wc88e "$L88E")" "CI 대기 한도|CI 대기|$T088E"
+L88E=$(l88e ans-fail "$W88E" "$R88E" 0); ck88e "$L88E" 실패 0 0 "$T3H88E"; sb19_ans "$L88E" S x 재시도 사람 "$T088E" >/dev/null
+L88E2=$(l88e ans-shift "$W88E" "$R88E" 0); ck88e "$L88E2" 대기 0 0 "$T3H88E"; sb19_ans "$L88E2" S x 재시도 교대 "$T088E" >/dev/null
+L88E3=$(l88e ans-other "$W88E" "$R88E" 0); ck88e "$L88E3" 대기 0 0 "$T3H88E"
+sb19_ans "$L88E3" T x 재시도 사람 "$T088E" >/dev/null
+check "88e: 사람 답 뒤 정착 실패는 CI 재실행 이고 교대의 답과 다른 세그먼트의 답은 시계를 옮기지 않는다" \
+  "$(n88e "$L88E")|$(n88e "$L88E2")|$(wc88e "$L88E2")|$(n88e "$L88E3")" "CI 재실행|CI 대기 한도|$T3H88E|CI 대기 한도"
+L88E=$(l88e ans-legacy "$W88E" "$R88E" 0); ck88e "$L88E" 대기 0 0 "$T3H88E"
+L88E2=$(l88e ans-legacy-auto "$W88E" "$R88E" 0); ck88e "$L88E2" 대기 0 0 "$T3H88E"
+printf -- '- `중단 답` | 교대=0 | 세그먼트=S | 중단 기록=x | 선택지=재시도 | 근거=사람이 고름 | 기록 시각=%s | prev=x\n' "$T088E" >> "$L88E"
+printf -- '- `중단 답` | 교대=0 | 세그먼트=S | 중단 기록=x | 선택지=재시도 | 근거=자동 채택(구속-이탈) — 추천 | 기록 시각=%s | prev=x\n' "$T088E" >> "$L88E2"
+check "88e: 답한 주체가 없는 옛 행은 자동 채택 접두가 없을 때만 시계를 옮긴다" \
+  "$(n88e "$L88E")|$(wc88e "$L88E")|$(n88e "$L88E2")|$(wc88e "$L88E2")" "CI 대기|$T088E|CI 대기 한도|$T3H88E"
+L88E=$(l88e ans-carry "$W88E" "$R88E" 0); ck88e "$L88E" 대기 0 0 "$T3H88E"
+sb19_ans "$L88E" S x 재시도 사람 "$T40088E" >/dev/null; sb19_ans "$L88E" S y 재시도 사람 "$(iso88e $((NOW88E - 9000)))" >/dev/null
+sb19_ans "$L88E" S z 재시도 사람 '읽을 수 없는 시각' >/dev/null
+check "88e: 사람 답이 여럿이면 기록 시각이 가장 늦은 답이 시계이고 읽을 수 없는 시각은 그 행만 빠진다" \
+  "$(n88e "$L88E")|$(wc88e "$L88E")" "CI 대기|$T40088E"
 
 # 6 — CI 합류 대상의 경계.
 L88E=$(l88e push "$W88E" "$R88E" 0 - '절단점=push'); L88E2=$(l88e push-fix "$W88E" "$R88E" 1 - '절단점=push')
@@ -52550,6 +52740,9 @@ check "88e: 대기 한도의 ci 키는 대기 시계 + 상한 을 시계로 서�
   "$o88e[$(wk88e "$L88E" S -)]" "[ci:S $((E3H88E + 7200))][][]"
 L88E=$(l88e rk-ocap "$WO88E" "$RO88E" 0); ck88e "$L88E" 실패 0 0 "$T3H88E" "$RO88E"; acc88e "$L88E" - 없음 "$RO88E"
 check "88e: 수락 관측이 - 인 회차 1 은 커밋 시각의 한도로 ci 키가 선다" "$(wk88e "$L88E" S -)" "ci:S $((E3H88E + 7200))"
+L88E=$(l88e rk-ans "$W88E" "$R88E" 0); ck88e "$L88E" 대기 0 0 "$T3H88E"
+o88e="[$(wk88e "$L88E" S -)]"; sb19_ans "$L88E" S x 재시도 사람 "$T088E" >/dev/null
+check "88e: 중계의 대기 한도 깨움도 사람 답의 기록 시각에서 다시 잰다" "$o88e[$(wk88e "$L88E" S -)]" "[ci:S $((E3H88E + 7200))][]"
 # 미등록 만료로 깬 교대가 기다리며 끝나면 같은 만료로는 다시 서지 않고, 한도의 시각에 선다 —
 # 그 시각은 미래이므로 깨움 조건을 그 시각의 지금으로 읽어 두 줄의 차례와 소비를 잰다.
 L88E=$(l88e rk-unreg-cap "$W88E" "$R88E" 0); ck88e "$L88E" 미등록 0 0 "$T40088E"; launch88e "$L88E" "$T088E"
@@ -52583,7 +52776,7 @@ for p88e in $P88E; do kill "$p88e" 2>/dev/null || true; done
 
 # ---------------------------------------------------------------------------
 # 88e-2. CI 판정의 리뷰 사이클 합류 — 구현 파견의 세 거절과 합류 행, 리뷰 중 선재실행 행위
-# --- section: 88e-2 | group: sa | covers: act, plan, snapshot, gate_check_ci_rerun | anchors: 88e: 첫 리뷰 도중의 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 선재실행 행위가 받아지고 수락 뒤 원소가 사라진다, 88e: 살아 있는 스테이지가 구현이면 선재실행 행위는 rc 3 이다, 88e: 선재실행의 park 뒤 원소가 사라지고 리뷰 뒤 CI 재실행 의 같은 행위는 새 행 없이 rc 11 이다, 88e: CI 합류 수정 에서 줄 없는 파견과 다른 sha 는 거절되고 head 의 CI 합류 파견은 받아진다, 88e: 같은 head 의 CI 합류 act 둘은 처분=합류 행 하나를 남기고 f 는 0 이다 ---
+# --- section: 88e-2 | group: sa | covers: act, plan, snapshot, gate_check_ci_rerun | anchors: 88e: 첫 리뷰 도중의 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 선재실행 행위가 받아지고 수락 뒤 원소가 사라진다, 88e: 살아 있는 스테이지가 구현이면 선재실행 행위는 rc 3 이다, 88e: 선재실행의 park 뒤 원소가 사라지고 리뷰 뒤 CI 재실행 의 같은 행위는 새 행 없이 rc 11 이다, 88e: 수정 표의 회차 없는 head 의 정착 실패는 수정 이고 수정 대상 파견이 받아진다, 88e: CI 합류 수정 에서 줄 없는 파견과 다른 sha 는 거절되고 head 의 CI 합류 파견은 받아진다, 88e: 같은 head 의 CI 합류 act 둘은 처분=합류 행 하나를 남기고 f 는 0 이다 ---
 #
 # 60b 의 재실행 대역(`cb60_head`) 위에서 행위 경로를 잰다. 픽스처는 `cb60_new` 와 같되
 # cycle 행을 두지 않거나(첫 리뷰 도중) P1 하나의 사이클(표가 수정)로 둔다. 살아 있는
@@ -52673,12 +52866,22 @@ check "88e: 선재실행의 park 뒤 원소가 사라지고 리뷰 뒤 CI 재실
   "$cb60_r1|$(sa_field "$(cb60_last blocked)" '도달 판정')|$cb60_e1|$cb60_r2|$cb60_n3|$rc|$(cb60_n blocked)|$(cb60_posts)" \
   "11|재실행대상미상||3|CI 재실행|11|$cb60_nb|0"
 
-# 수정 표의 CI 합류 — 판정이 서기 전에는 수정 대상 파견을 받지 않고, 재실행 뒤에도 실패한
-# head 는 CI 합류 줄을 실어 리뷰 지적과 함께 구현으로 돌아간다.
+# 수정 표의 CI 합류 — 회차가 없는 head 는 곧바로 수정 대상 파견을 받는다. 받아들여진 재실행
+# 회차의 판정이 서기 전에는 받지 않고, 그 회차 뒤에도 실패한 head 는 CI 합류 줄을 실어 리뷰
+# 지적과 함께 구현으로 돌아간다.
 cj88e_new "CI 합류 — 수정 표" fix
-check "88e: 수정 표의 회차 0 정착 실패는 CI 재실행 이고 수정 대상 파견은 거절된다" "$(cb60_next)|$(cj88e_fix plan)" "CI 재실행|3"
+check "88e: 수정 표의 회차 없는 head 의 정착 실패는 수정 이고 수정 대상 파견이 받아진다" "$(cb60_next)|$(cj88e_fix plan)" "수정|0"
+cj88e_nr=$(cb60_n 'CI 처분'); cj88e_np=$(cb60_posts)
 cb60_act
-check "88e: 재실행 수락 뒤 CI 대기 에서 수정 대상 파견은 거절된다" "$rc|$(cb60_next)|$(cj88e_fix plan)" "0|CI 대기|3"
+check "88e: 수정 표의 회차 없는 head 에서 재실행 행위는 POST 도 행도 없이 rc 3 이다" \
+  "$rc|$(( $(cb60_n 'CI 처분') - cj88e_nr ))|$(( $(cb60_posts) - cj88e_np ))" "3|0|0"
+# 받아들여진 재실행 회차 뒤의 사슬. 수정 표가 재실행을 내지 않으므로 회차 1 의 요청·수락 행을
+# 원장에 직접 심는다 — 두 행은 게이트 재실행이 쓰는 꼴이다.
+for cj88e_st in 요청 수락; do
+  printf -- '- `CI 처분` | 교대=1 | 세그먼트=CK | PR=%s#1 | head sha=%s | 처분=재실행 | 상태=%s | 회차=1 | 실행=777 | 워크플로=gate | 실패 체크=gate | 기본 브랜치=통과 | 응답=201 | 관측=%s | prev=x\n' \
+    "$CB60_SLUG" "$CK60_SHA" "$cj88e_st" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$SA_LEDGER"
+done
+check "88e: 받아들여진 재실행 회차 뒤 CI 대기 에서 수정 대상 파견은 거절된다" "$(cb60_next)|$(cj88e_fix plan)" "CI 대기|3"
 cb60_line 미등록 1 0
 check "88e: 회차 1 의 오래된 미등록 은 CI 대기 한도 이고 수정 대상 파견은 거절된다" "$(cb60_next)|$(cj88e_fix plan)" "CI 대기 한도|3"
 cb60_line 실패 1 0
