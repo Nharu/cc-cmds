@@ -29341,10 +29341,13 @@ sb_plan S29 gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$HEAD29B"
 check "29: 리뷰 뒤 커밋이 더해진 결속된 머지는 여전히 룰이 거절한다" "$rc" "3"
 if sa_names_rule; then ok "29: 그 거절이 리뷰-후-머지 를 지명한다 (덧댄 리뷰 HEAD 뒤)"; else bad "29 덧댄 리뷰 HEAD 룰 이름" "$msg"; fi
 
-# 선머지후리뷰 세그먼트와 룰 끔 — 결속이 지키는 룰이 돌지 않는 두 자리.
+# 선머지후리뷰 세그먼트 — 절단점이 머지 이상인 대상에서는 리뷰 전에 머지하므로,
+# 머지가 발행하는 의무의 머지 커밋이 워크트리 HEAD 이도록 그 머지도 결속된다.
 sa_seg_row S29P 선머지후리뷰
 sb_plan S29P gh pr merge 1
-if sb_bound; then bad "29 선머지후리뷰" "리뷰를 미룬 세그먼트의 머지가 결속 검사에 걸렸다: $msg"; else ok "29: 선머지후리뷰 세그먼트의 머지는 결속 검사를 받지 않는다"; fi
+if sb_bound; then ok "29: 머지 먼저 세그먼트의 머지도 워크트리 HEAD 결속 검사를 받는다"; else bad "29 선머지후리뷰" "머지 먼저 세그먼트의 결속 없는 머지가 결속 검사를 지났다: $msg"; fi
+
+# 룰 끔 — 결속이 지키는 룰이 돌지 않는 자리.
 sb_new '결속 (끔)' 선머지후리뷰
 SA_PREAUTH_EXTRA='gh pr'
 sa_manifest 선머지후리뷰 '**리뷰-후-머지**: 끔'
