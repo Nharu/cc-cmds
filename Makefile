@@ -116,6 +116,35 @@ lint:
 	@jq -e 'has("version")' plugins/cc-cmds/.claude-plugin/plugin.json >/dev/null || (echo "lint: plugin.json must have a .version field (it is the single version SOT)" >&2; exit 1)
 	@jq -e '[.plugins[] | has("version")] | any | not' .claude-plugin/marketplace.json >/dev/null || (echo "lint: marketplace.json plugin entries must NOT declare .version (plugin.json is the version SOT)" >&2; exit 1)
 	@grep -qE '선리뷰후머지.*선머지후리뷰.*리뷰없음' plugins/cc-cmds/skills/_common/pipeline-sidecar.md || (echo "lint: the review-policy axis must be written strict-to-loose in the contract (선리뷰후머지 -> 선머지후리뷰 -> 리뷰없음); a reader who takes the axis backwards picks the opposite end, which is the human form of the defect this axis exists to remove. No lint script is added for this: the token vocabulary has exactly one enumeration in the tree so there is no second copy to drift, and a bad token fails hard on its first call at runtime -- document ORDER is the one thing no runtime detector sees" >&2; exit 1)
+# Every scripts/lint-*.sh and scripts/test-*.sh must be registered here. An
+# unregistered script never runs, so no test of its own can report its absence;
+# this guard is the only place that does. Registration takes two shapes and both
+# count: a recipe line `bash scripts/<name>` and a list item `scripts/<name> \`
+# that `run/%` runs. A name counts as registered when it stands as a whole word
+# on a line that is not a comment — after the line start or whitespace, and
+# before whitespace, a backslash or the line end. Comment lines are left out
+# because comments here name scripts too, and a name that appears only in a
+# comment belongs to a script that never runs. The contract is a glob, not an
+# enumeration, so a new script needs no list edit to be covered.
+#
+# The exception list is closed and holds one name. lint-ci-scope-binding.sh
+# fails on today's tree (the workflow's make call sits inside a multi-line
+# `run: |` block it cannot read), so registering it would turn lint red. The
+# exception is checked both ways: a listed name that leaves the tree, or that
+# reads as registered, is reported, so the commit that fixes and registers that
+# lint must drop it here too.
+	@reg=$$(grep -vE '^[[:space:]]*#' Makefile | tr -s ' \t' '\n\n' | sed -e 's/\\.*//' | grep -E '^scripts/' || true); \
+	 skip='scripts/lint-ci-scope-binding.sh'; \
+	 bad=0; \
+	 for s in $$skip; do \
+	   test -f "$$s" || { echo "lint: Makefile 등록 가드의 예외 $$s 가 트리에 없다 — 예외 목록에서 지운다" >&2; bad=1; }; \
+	   if printf '%s\n' "$$reg" | grep -qFx "$$s"; then echo "lint: Makefile 등록 가드의 예외 $$s 가 등록되어 있다 — 예외 목록에서 지운다" >&2; bad=1; fi; \
+	 done; \
+	 for f in scripts/lint-*.sh scripts/test-*.sh; do \
+	   case " $$skip " in *" $$f "*) continue ;; esac; \
+	   printf '%s\n' "$$reg" | grep -qFx "$$f" || { echo "lint: $$f 가 Makefile 의 주석 아닌 줄에 등록되어 있지 않다 — 등록되지 않은 스크립트는 한 번도 돌지 않는다" >&2; bad=1; }; \
+	 done; \
+	 test "$$bad" = 0
 
 readme:
 	bash scripts/generate-readme.sh

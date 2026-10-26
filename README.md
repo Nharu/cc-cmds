@@ -44,7 +44,7 @@ Engineering workflow commands for Claude Code.
 
 ```bash
 brew install terminal-notifier
-brew install jq   # PreToolUse hook 의존성
+brew install jq   # 플러그인 훅 전반의 의존성(PreToolUse 자동 승인, 상태줄 자동 설치)
 ```
 
 **2단계 — 자연어 요청**:
@@ -90,6 +90,17 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 /plugin install cc-cmds@cc-cmds
 ```
 
+### 상태줄 자동 설치
+
+플러그인을 설치하면 **다음 세션을 시작할 때** cc-cmds 상태줄이 설정 디렉터리(`CLAUDE_CONFIG_DIR`, 없으면 `~/.claude`)의 `settings.json` 에 설치됩니다. 플러그인이 업데이트되어 설치 경로가 바뀌면 세션 시작 시 스스로 다시 맞춥니다.
+
+- **이미 다른 상태줄을 쓰고 있으면 건드리지 않습니다.** cc-cmds 가 설치한 것이 아닌 `statusLine` 은 그대로 둡니다.
+- **`jq` 가 없으면 자동 설치만 조용히 비활성화됩니다.** 세션 시작을 막거나 오류를 띄우지 않습니다.
+- **처음 여는 폴더에서는** 워크스페이스 신뢰를 수락한 **다음** 세션에서 설치됩니다.
+- 최초 설치가 일어난 세션에서 안내문이 한 번 뜹니다. 상태줄이 있으면 화면 하단의 키보드 힌트가 대부분 가려집니다.
+- **끄기**: `CC_CMDS_STATUSLINE_AUTOINSTALL=0` 을 설정합니다. **`0` 만이 끄는 값이고, 그 밖의 어떤 값도(미설정 포함) 켜짐입니다** — `=1` 은 끄지 않습니다. 이 변수는 **앞으로의** 자동 설치와 자동 재지정만 막고 **이미 설치된 상태줄은 지우지 않습니다.** 이미 생긴 상태줄을 없애려면 아래 [Uninstall](#uninstall) 을 따릅니다.
+- 백업은 설정 파일 옆에 두 개(`settings.json.orig`·`settings.json.prev`)까지만 쌓입니다. 다만 중단된 실행이 임시 파일을 남길 수 있고, 그 정리 방법도 [Uninstall](#uninstall) 에 있습니다.
+
 ## Usage
 
 ```
@@ -114,9 +125,60 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 
 ## Uninstall
 
+플러그인은 쓰면서 상태줄만 끄려는 경우가 먼저입니다. 아래 순서대로 읽으세요. 아래의 `<설정 디렉터리>` 는 `CLAUDE_CONFIG_DIR`, 없으면 `~/.claude` 입니다.
+
+### 1. 환경변수는 상태줄을 지우지 않는다
+
+`CC_CMDS_STATUSLINE_AUTOINSTALL=0` 은 **앞으로** 자동 설치와 자동 재지정이 일어나지 않게 할 뿐이고, 이미 설치된 상태줄은 그대로 남습니다. 이 플러그인에는 설정 파일에서 상태줄을 지우는 동작이 없습니다. 이미 생긴 상태줄을 없애려면 다음 절의 방법을 따릅니다.
+
+### 2. 상태줄을 끄는 방법
+
+끄는 방법은 하나입니다 — `<설정 디렉터리>/settings.json` 의 `statusLine` 키를 지웁니다. 이것이 이 플러그인이 그 파일에 쓴 것의 **전부**를 되돌립니다(`refreshInterval` 도 그 키의 하위 키입니다).
+
+- **`settings.json.cc-statusline-owned` 는 지우지 말고 그대로 둡니다.** 그 파일이 있어야 다음 세션이 「사용자가 지웠다」로 읽고 다시 설치하지 않습니다. 지우면 다음 세션에 상태줄이 되살아납니다.
+- `statusLine` 객체 안에 손으로 넣어 둔 `padding`·`hideVimModeIndicator` 가 있었다면, 키를 통째로 지울 때 그것도 함께 사라집니다. 그 둘만 남기고 싶으면 `statusLine.command` 와 `statusLine.refreshInterval` 두 하위 키만 지웁니다.
+
+### 3. 형제 파일 정리 (플러그인을 지운 뒤)
+
+플러그인을 제거해도 `settings.json` 의 상태줄 명령은 남습니다. 플러그인과 함께 훅이 사라지므로 스스로 고쳐지지 않으며, 남은 명령은 스크립트가 없으면 설치 전 상태로 돌아갑니다(원래 상태줄이 있었으면 그 명령이, 없었으면 빈 상태줄이 뜹니다). 위 2절로 키를 지운 뒤 플러그인을 제거하고, 그다음 설정 파일 옆의 흔적을 두 줄로 정리합니다. **순서가 고정입니다** — 첫 줄이 락 디렉터리를 먼저 치우지 않으면 둘째 줄이 그것에 부딪혀 rc 1 로 끝납니다(파일들은 지워지지만 오류가 납니다).
+
+```bash
+rmdir <설정 디렉터리>/settings.json.cc-statusline.lock 2>/dev/null
+rm -f <설정 디렉터리>/settings.json.cc-statusline*
+```
+
+둘째 줄은 마커, 소유 비트 파일, 그리고 중단된 실행이 남긴 임시 파일(`settings.json.cc-statusline.tmp.*`·`.bak-tmp.*`·`.mk-tmp.*`)까지 함께 지웁니다. 플러그인을 이미 지운 뒤라면 되살릴 훅이 없으므로 안전합니다. **플러그인을 계속 쓸 생각이면 이 두 줄을 돌리지 않습니다.**
+
+손으로 한 번이라도 상태줄을 설치했던 기기에는 옛 판이 쓰기마다 만든 `settings.json.pre-statusline-<숫자>` 백업이 개수 제한 없이 남아 있습니다. 이 판은 그런 파일을 새로 만들지 않지만 이미 있는 것을 지우지도 않습니다. `settings.json` 은 `env` 블록에 API 키를 담을 수 있고 그 파일들은 그 시점의 축자 사본이므로, 필요 없으면 직접 지웁니다:
+
+```bash
+rm -f <설정 디렉터리>/settings.json.pre-statusline-*
+```
+
+### 4. 백업 두 슬롯은 복구용 스냅숏
+
+`settings.json.orig` 와 `settings.json.prev` 는 끄는 방법이 아니라 복구용 스냅숏입니다. 앞의 것은 이 플러그인이 **처음** 쓰기 직전의 설정 파일 전체, 뒤의 것은 **직전** 쓰기 직전의 설정 파일 전체입니다. 상태줄만 끄려고 이것을 되돌리면 안 됩니다 — 그 사이에 바뀐 테마·모델·승인된 권한·`env` 블록까지 전부 그때 상태로 돌아갑니다. 이것을 쓰는 경우는 하나뿐입니다: **설정 파일 자체가 손상돼 복구가 필요할 때.** 되돌릴 생각이 없다면 두 이름을 직접 지웁니다:
+
+```bash
+rm -f <설정 디렉터리>/settings.json.orig <설정 디렉터리>/settings.json.prev
+```
+
+### 5. 지운 상태줄을 다시 받는 방법
+
+위 2절과 정반대 조작입니다. 기기가 둘로 나뉩니다.
+
+- 다른 상태줄이 있어 설치를 건너뛰기만 했던 기기(`settings.json.cc-statusline-owned` 가 없다)는 `statusLine` 키만 지우면 다음 세션에 설치됩니다.
+- 한 번이라도 이 플러그인의 상태줄을 가졌던 기기는 `settings.json.cc-statusline-owned` 를 **지우고** 새 세션을 엽니다.
+
+### 플러그인 제거
+
 ```
 /plugin uninstall cc-cmds
 ```
+
+## Troubleshooting
+
+- **설정 디렉터리의 `settings.local.json` 에 `statusLine` 을 넣어도 아무 일도 일어나지 않습니다.** Claude Code 가 사용자 설정 디렉터리의 그 파일을 읽지 않기 때문입니다. 상태줄은 같은 디렉터리의 `settings.json` 에 둡니다.
 
 ## Options
 
