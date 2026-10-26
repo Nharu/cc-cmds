@@ -190,6 +190,8 @@ Verify consistency and completeness of the existing design content. Do NOT propo
 
 When `--base` is absent, substitute a single empty line so the prompt structure stays stable.
 
+`{REAUDIT_SCOPE}` is always substituted with a single empty line here: only the unattended audit's re-audit narrows what readers report.
+
 `--base` is not decoration. A base design document is deliberately intent-level, and an unconstrained reader against an intent-level document emits a flood of "missing implementation detail" findings. That inflates the raw finding count, which pushes the single-pass reconciliation limit, which is the one structural selector fixing `READER_COUNT` (CFI-0). The flag is therefore a control on the exact constraint that fixes the budget.
 
 ## Constraints
