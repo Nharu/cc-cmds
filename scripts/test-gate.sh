@@ -750,10 +750,11 @@ fi
 #
 #   CC_GATE_ISO_OUT      the record directory, absolute and free of single quotes.
 #                        `rec.tsv` there takes one `<id><TAB><PASS|FAIL|SKIP>
-#                        <TAB><label>` line per assertion and one `<id><TAB>NOISE
-#                        <TAB><sentence>` line per noise line the oracle pins to a
-#                        section; `linemap.tsv` maps the cut's lines back to this
-#                        file's; `meta.tsv` names what the cut held.
+#                        <TAB><label><TAB><source line>` line per assertion and
+#                        one `<id><TAB>NOISE<TAB><sentence>` line per noise line
+#                        the oracle pins to a section; `linemap.tsv` maps the
+#                        cut's lines back to this file's; `meta.tsv` names what
+#                        the cut held.
 #   CC_GATE_ISO_TRACE    ids whose execution is traced: `trace-<id>.lines` there
 #                        is the set of (file, line) pairs the section ran.
 #   CC_GATE_ISO_OVERLAY  ids laid onto a regular row's cut; their markers, and
@@ -2118,13 +2119,36 @@ grep_all_q() {
 
 passed=0; failed=0; skipped=0
 # A cut asked for an isolation record (`CC_GATE_ISO_OUT`) also appends one
-# `<section><TAB><verdict><TAB><label>` line per assertion. The section is the
-# one the cut last entered, which is `@pre-<group>` or `@epilogue` outside a
-# section. Tabs and newlines in a label become spaces so a line stays a row.
+# `<section><TAB><verdict><TAB><label><TAB><source line>` line per assertion.
+# The section is the one the cut last entered, which is `@pre-<group>` or
+# `@epilogue` outside a section. Tabs and newlines in a label become spaces so a
+# line stays a row. The source line is the line that called `ok`, `bad` or
+# `skip` — inside the helper when a helper such as `check` made the call —
+# carried from the cut back to this file through `linemap.tsv`, which the
+# selector finished before the cut started; the comparator reads it only to find
+# a line's marker. A call from another file, or from a line the selector
+# inserted, has no source line and writes 0.
 tg_iso_put() {
-  local l="$2"
+  local l="$2" n="${BASH_LINENO[1]:-0}" o=0 i a b f
   l="${l//$'\n'/ }"; l="${l//$'\t'/ }"
-  printf '%s\t%s\t%s\n' "${tg_cur_sec:--}" "$1" "$l" >> "$tg_iso_rec"
+  if [ "${BASH_SOURCE[2]:-}" = "${tg_iso_cut:-}" ]; then
+    if [ -z "${tg_iso_mapn:-}" ]; then
+      tg_iso_mapn=0
+      while IFS=$'\t' read -r a b f; do
+        case "$a$b$f" in ''|*[!0-9]*) continue ;; esac
+        tg_iso_ma[tg_iso_mapn]=$a; tg_iso_mb[tg_iso_mapn]=$b; tg_iso_mo[tg_iso_mapn]=$f
+        tg_iso_mapn=$((tg_iso_mapn + 1))
+      done < "$tg_iso_dir/linemap.tsv"
+    fi
+    i=0
+    while [ "$i" -lt "$tg_iso_mapn" ]; do
+      if [ "$n" -ge "${tg_iso_ma[i]}" ] && [ "$n" -le "${tg_iso_mb[i]}" ]; then
+        o=$(( tg_iso_mo[i] + n - tg_iso_ma[i] )); break
+      fi
+      i=$((i + 1))
+    done
+  fi
+  printf '%s\t%s\t%s\t%s\n' "${tg_cur_sec:--}" "$1" "$l" "$o" >> "$tg_iso_rec"
 }
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; [ -z "${tg_iso_rec:-}" ] || tg_iso_put PASS "$1"; }
 # A narrowed cut also names the section it is in, for the failed-section report;
@@ -6717,9 +6741,14 @@ awk '
 ' "$isf_suite" > "$isf_dir/rec.sh"
 env -u CC_TEST_GATE_ORACLE_INNER TMPDIR="$isf_dir" CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_ISO_OUT="$isf_dir/rec" \
   bash "$isf_dir/rec.sh" --run-one 0d > "$isf_dir/rec.out" 2> "$isf_dir/rec.err" || true
+# The fourth column is the copy's own line: `check`'s line for an assertion
+# `check` made, the inserted line for the direct calls. A noise line has three.
+isf_ln_ck=$(grep -n '^check(){' "$isf_dir/rec.sh" | cut -d: -f1)
+isf_ln_sk=$(grep -nxF 'skip "의도된 건너뜀 0g"' "$isf_dir/rec.sh" | cut -d: -f1)
+isf_ln_bd=$(grep -nxF 'bad "의도된 실패 0g" x' "$isf_dir/rec.sh" | cut -d: -f1)
 isf_kinds=""
-for isf_want in "0d	PASS	빈 --sections 는 exit 2 로 멈춘다" "0d	SKIP	의도된 건너뜀 0g" "0d	FAIL	의도된 실패 0g" \
-                "0d	NOISE	tg_no_such_cmd_0g: command not found"; do
+for isf_want in "0d	PASS	빈 --sections 는 exit 2 로 멈춘다	${isf_ln_ck:-?}" "0d	SKIP	의도된 건너뜀 0g	${isf_ln_sk:-?}" \
+                "0d	FAIL	의도된 실패 0g	${isf_ln_bd:-?}" "0d	NOISE	tg_no_such_cmd_0g: command not found"; do
   isf_kinds="$isf_kinds$(grep -cxF "$isf_want" "$isf_dir/rec/rec.tsv" 2>/dev/null || true)"
 done
 check "기록 파일에 판정 줄과 잡음 줄이 절 id 와 함께 있다" "$isf_kinds" "1111"
