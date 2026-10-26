@@ -213,7 +213,8 @@
 # `입양후보` line, a `PR` and `커밋` equal to the line's PR and HEAD: a new run
 # that does not adopt it brings that open pull request in as done while its
 # head is that `커밋`, so the person's second answer is `그대로 두기`, not
-# `다시 하기`. The reason tokens: park,
+# `다시 하기`. A row naming another PR, merged or open at its `커밋`, gives an
+# `입양후보` line the cell followed by `들여올PR=<번호>`. The reason tokens: park,
 # 설계재실행, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
 # 라이브, 원장없음, 중단답이월불가, and 판정불가 when the gate child could
@@ -594,7 +595,7 @@ ROWS
       IFS="$TAB" read -r a b c x <<EOF
 $out
 EOF
-      if [ "$a" = "들여오기" ] && [ -z "$x" ] && rk_num "$b" && rk_sha40 "$c"; then out="들여오기${TAB}${b}${TAB}${c}"
+      if [ "$a" = "들여오기" ] && [ -z "$x" ] && rk_num "$b" && case "$c" in *[!0-9a-f]*) false ;; esac; then out="들여오기${TAB}${b}${TAB}${c}"
       elif [ "$out" != "아님" ]; then out='판정불가'; fi ;;
     adopt-check)
       case "$out" in 통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨) ;; *) out='판정불가' ;; esac ;;
@@ -824,7 +825,9 @@ rk_adopt_halts() {
 # names the reason. RK_AUTO selects the seat's branch. Both layers end a line
 # with `미입양=PR들여오기` when the gate child's `pr-import` answers 들여오기
 # over the document at `<base>`, read without the network — an `입양후보` line
-# only when the answer's `PR` and `커밋` are the line's PR and HEAD.
+# only when the answer's `PR` and `커밋` are the line's PR and HEAD, or, in the
+# full layer, when the answer names another PR that is merged or open at that
+# `커밋`, followed then by `들여올PR=<번호>`.
 rk_adopt_candidates() {
   local trows="$1" layer="$2" key keys rows last W B anchor n h wh rt ph ab slug al row tal
   local cg tcg tbase cur hd st tip prl pn ps ph2 pv vs vb vh vc vo vbase tail tok mcopy err doc docf dcopy first pre halts
@@ -840,7 +843,9 @@ rk_adopt_candidates() {
     # leave it, not to do it again. A child that cannot answer adds no cell.
     # The planning act brings an open pull request in only at the `커밋` of the
     # row the lookup picked, so a candidate carries the cell only when its pull
-    # request and head are that row's; an `입양불가` line, whose head nobody
+    # request and head are that row's, or when the row names another request
+    # the full layer reads as merged or open at that `커밋` just before the
+    # line is printed; an `입양불가` line, whose head nobody
     # read, carries it whenever the lookup picked such a row, and item 8's
     # screen states that condition for it.
     pim=''; pip=''; pic=''
@@ -1003,6 +1008,17 @@ EOF
     fi
     halts=$(rk_adopt_halts "$key")
     [ -z "$halts" ] || pre="${pre}${TAB}중단기록=$halts"
+    # A row naming another pull request than the candidate's — a slice done
+    # again on a new request — is brought in when that request is merged, or
+    # open at the row's `커밋`, so the cell then names it.
+    if [ -n "$pim" ] && [ -z "$cim" ] && rk_num "$pip" && [ "$pip" != "$n" ]; then
+      IFS="$TAB" read -r vs vb vh vc vo vbase <<EOF
+$(rk_gate pr-view "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pip" "$slug")
+EOF
+      if [ "$vs" = "MERGED" ] || { [ "$vs" = "OPEN" ] && [ -n "$pic" ] && [ "$vh" = "$pic" ]; }; then
+        cim="${pim}${TAB}들여올PR=${pip}"
+      fi
+    fi
     printf '입양후보\t%s\t%s\t%s\t%s\t%s%s%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pre" "$tail" "$cim"
   done <<EOF
 $keys

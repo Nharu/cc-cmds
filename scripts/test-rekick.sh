@@ -2539,7 +2539,30 @@ check "13 PR 절단점: head 가 앞선 런의 완료 행 커밋에서 움직인
 printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n입양 I2\t다시 하기 — I2 · PR #42\n' "$S13_B" "$(printf '%s' "$S13_H" | cut -c1-12)" > "$WORK/a13-jredo"
 SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-jredo" seat_link "$PJ13" 20261002-b000000d
 check "13 PR 절단점: head 가 움직인 후보를 다시 하기로 답한 초안은 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
-rm -f "$GH13/view.42"
+# A source that did I2 again on PR 43 while PF13's PR 42 was merged: the
+# planning act brings the merged PR 42 in, so the candidate on PR 43 carries
+# the cell naming PR 42 and a `다시 하기` answer to it is refused.
+PK13=20261001-a0000012
+PKW2="$WORK/repo-run-$PK13-I2"; PKB2="seg/$PK13-I2"
+( cd "$WT" && git worktree add -q -b "$PKB2" "$PKW2" main && cd "$PKW2" && printf '%s I2\n' "$PK13" > seg.txt \
+    && git add seg.txt && git commit -qm "$PK13 I2" && git push -q origin "$PKB2" ) >/dev/null 2>&1
+PKH2=$(cd "$PKW2" && git rev-parse HEAD)
+P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$PK13"
+fx_row 'run' "run-id=$PK13" "설계 문서=$DOC13P" "시작=2026-10-04T00:00:00Z"
+fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$PKW2" "브랜치=$PKB2" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
+fx_row 'segment' "id=I2" "상태=리뷰중" "워크트리=$PKW2" "PR=43"
+fx_row '원격 판독' "세그먼트=I2" "브랜치=$PKB2" "워크트리 HEAD=$PKH2" "원격 팁=$PKH2" "PR=43" "PR 상태=OPEN" "PR HEAD=$PKH2"
+gh13
+printf '[{"number":43,"state":"OPEN","headRefOid":"%s"}]\n' "$PKH2" > "$GH13/list.$(printf '%s' "$PKB2" | tr '/' '_')"
+gh13_view OPEN "$PKB2" "$PKH2" > "$GH13/view.43"
+gh13_view MERGED "$PFB2" "$PJH2" > "$GH13/view.42"
+a13 "$PK13"
+check "13 PR 절단점: 앞선 런의 머지된 다른 PR 을 들여오는 후보는 그 PR 을 이름한 칸을 지닌다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" "입양후보${TAB}I2${TAB}$PKB2${TAB}$PKW2${TAB}43${TAB}$PKH2${TAB}미입양=PR들여오기${TAB}들여올PR=42"
+printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n입양 I2\t다시 하기 — I2 · PR #43\n' "$S13_B" "$(printf '%s' "$S13_H" | cut -c1-12)" > "$WORK/a13-kredo"
+SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-kredo" seat_link "$PK13" 20261002-b000000e
+check "13 PR 절단점: 그 후보를 다시 하기로 답한 초안은 verify-subset 에서 실패한다" "$SL_RC/$SL_VS" "0/실패"
+rm -f "$GH13/view.42" "$GH13/view.43"
 use13 "$SW" "$SB" "$SH"
 
 # 4·5 — the person's path. The default source, answered `이어받기`.
