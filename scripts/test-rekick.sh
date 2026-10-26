@@ -2605,6 +2605,14 @@ check "13 PR 절단점: 브랜치 없는 옛 형식 완료 행이 가리키는 �
 printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n입양 I2\t다시 하기 — I2 · PR #45\n' "$S13_B" "$(printf '%s' "$S13_H" | cut -c1-12)" > "$WORK/a13-lredo"
 SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-lredo" seat_link "$PL13" 20261002-b000000f
 check "13 PR 절단점: 그 후보를 다시 하기로 답한 초안은 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
+# The same `완료` with PR 44 still open at its `커밋`: the open arm reads no
+# branch, so the cell names PR 44 — the lookup answered 들여오기 over PM13's
+# row without a `브랜치`, and the merged case above lacked only the branch.
+gh13_view OPEN "$PFB2" "$PJH2" > "$GH13/view.44"
+a13 "$PL13"
+check "13 PR 절단점: 브랜치 없는 완료 행의 커밋 그대로 열린 다른 PR 은 그 PR 을 이름한 칸을 준다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" "입양후보${TAB}I2${TAB}$PLB2${TAB}$PLW2${TAB}45${TAB}$PLH2${TAB}미입양=PR들여오기${TAB}들여올PR=44"
+gh13_view MERGED "$PFB2" "$PJH2" > "$GH13/view.44"
 PN13=20261001-a0000015
 P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$PN13"
 fx_row 'run' "run-id=$PN13" "설계 문서=$DOC13P" "시작=2026-10-07T00:00:00Z"

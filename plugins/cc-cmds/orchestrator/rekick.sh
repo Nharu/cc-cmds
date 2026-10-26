@@ -599,9 +599,11 @@ ROWS
       IFS="$TAB" read -r a b c d x <<EOF
 $out
 EOF
+      # A branch that is no branch name binds no merged request, as the
+      # planning act reads it, and leaves the open-request arms as they are.
+      case "$d" in ''|*[!A-Za-z0-9._/-]*) d='-' ;; esac
       if [ "$a" = "들여오기" ] && [ -z "$x" ] && rk_num "$b" \
-         && { [ "$c" = "-" ] || { [ -n "$c" ] && case "$c" in *[!0-9a-f]*) false ;; esac; }; } \
-         && { [ "$d" = "-" ] || { [ -n "$d" ] && case "$d" in *[!A-Za-z0-9._/-]*) false ;; esac; }; }; then
+         && { [ "$c" = "-" ] || { [ -n "$c" ] && case "$c" in *[!0-9a-f]*) false ;; esac; }; }; then
         out="들여오기${TAB}${b}${TAB}${c}${TAB}${d}"
       elif [ "$out" != "아님" ]; then out='판정불가'; fi ;;
     adopt-check)
