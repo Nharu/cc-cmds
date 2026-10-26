@@ -15499,7 +15499,7 @@ rm -f "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR"
 
 # ---------------------------------------------------------------------------
 # 15g-3. A predecessor landed outside a run ledger, at a pull request, or before a park
-# --- section: 15g-3 | group: base | covers: snapshot, plan, act | anchors: 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 열린 PR 이나 머지 커밋이 베이스에 없는 PR 의 선행은 들이지 않는다, 15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다, 15g: 머지된 PR 의 head 브랜치나 base 브랜치가 다르면 자기 슬라이스를 들이지 않는다, 15g: head 브랜치가 다른 머지된 PR 의 선행은 들이지 않고 계획이 거부된다, 15g: 머지된 PR 은 head 가 행의 커밋과 달라도 머지 커밋 착지와 브랜치 이름이 맞으면 자기 슬라이스를 들인다, 15g: head 가 움직인 머지된 PR 의 선행을 들여와 다음 슬라이스가 계획된다, 15g: 브랜치가 없거나 세그먼트 브랜치 꼴이 아닌 행은 머지된 PR 로 들이지 않는다 ---
+# --- section: 15g-3 | group: base | covers: snapshot, plan, act | anchors: 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: 입양한 PR 절단점 완료 슬라이스는 들여오지 않고 리뷰하도록 계획한다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 열린 PR 이나 머지 커밋이 베이스에 없는 PR 의 선행은 들이지 않는다, 15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다, 15g: 머지된 PR 의 head 브랜치나 base 브랜치가 다르면 자기 슬라이스를 들이지 않는다, 15g: head 브랜치가 다른 머지된 PR 의 선행은 들이지 않고 계획이 거부된다, 15g: 머지된 PR 은 head 가 행의 커밋과 달라도 머지 커밋 착지와 브랜치 이름이 맞으면 자기 슬라이스를 들인다, 15g: head 가 움직인 머지된 PR 의 선행을 들여와 다음 슬라이스가 계획된다, 15g: 브랜치가 없거나 세그먼트 브랜치 꼴이 아닌 행은 머지된 PR 로 들이지 않는다 ---
 #
 # The third of the four pieces 15g runs as. Its rows are held to a merge commit
 # on the base and to one that is not, which 15g-2 takes for its own runs; this
@@ -15730,6 +15730,33 @@ r15gk=$(g15_row R15GJ2 SA)
 check "15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다" \
   "$rc/$(seg_field "$r15gk" '상태')/$(seg_field "$r15gk" 'PR')/$(seg_field "$r15gk" '커밋')/$(seg_field "$r15gk" '출처')/$(seg_field "$r15gk" '브랜치')/$(g15_segrows R15GJ2 SA 계획됨)" \
   "0/완료/8/$c15gk/R15GJ0/seg/R15GJ1-SA/0"
+# AN ADOPTED SEGMENT BRINGS IN NO TERMINAL ROW. The same pull request cutpoint
+# `완료` and the same stub answer, under a document of its own so no other run
+# of this piece reads the source: without an adoption row the slice is brought
+# in (the control, as above), and with one it is planned for its review. The
+# source's id has the run id form the manifest check holds the row's
+# `출처 런` to.
+DOC15GJA='docs/fixture-design-15gja.md'
+two_slice_doc "$WT/$DOC15GJA" t/infra PR '**리뷰 정책**: 리뷰없음'
+SRC15GJA='20260115-15a0e001'
+g15_run "$SRC15GJA" "$DOC15GJA" "$plan15c" 리뷰없음
+g15_mkwt "$SRC15GJA" SA
+g15_plan act "$SRC15GJA" SA 상태=계획됨 "워크트리=$(g15_wt "$SRC15GJA" SA)"
+[ "$rc" = "0" ] || bad "15g 이전 런 $SRC15GJA 의 SA 계획" "rc=$rc $msg"
+g15_raw "$SRC15GJA" "id=SA | 상태=완료 | PR=9 | 커밋=$c15gk | 브랜치=seg/$SRC15GJA-SA | 워크트리=$(g15_wt "$SRC15GJA" SA) | 선행=없음"
+g15_run R15GJA1 "$DOC15GJA" "$plan15c" 리뷰없음
+g15_mkwt R15GJA1 SA
+g15_pr "OPEN $c15gk - seg/$SRC15GJA-SA main" act R15GJA1 SA 상태=계획됨 "워크트리=$(g15_wt R15GJA1 SA)"
+r15gja1="$rc/$(seg_field "$(g15_row R15GJA1 SA)" '상태')/$(seg_field "$(g15_row R15GJA1 SA)" 'PR')"
+g15_run R15GJA2 "$DOC15GJA" "$plan15c" 리뷰없음
+printf -- '- `세그먼트 입양` | 세그먼트=SA | 브랜치=seg/%s-SA | 워크트리=%s | 출처 런=%s | PR=9\n' \
+  "$SRC15GJA" "$(g15_wt "$SRC15GJA" SA)" "$SRC15GJA" >> "$WORK/plan-R15GJA2.md"
+g15_pr "OPEN $c15gk - seg/$SRC15GJA-SA main" act R15GJA2 SA 상태=계획됨 "워크트리=$(g15_wt "$SRC15GJA" SA)"
+check "15g: 입양한 PR 절단점 완료 슬라이스는 들여오지 않고 리뷰하도록 계획한다" \
+  "$r15gja1|$rc/$(seg_field "$(g15_row R15GJA2 SA)" '상태')/$(g15_segrows R15GJA2 SA 완료)" \
+  "0/완료/9|0/계획됨/0"
+g15_drop "$SRC15GJA:SA" R15GJA1:SA
+rm -f "$WT/$DOC15GJA"
 g15_run R15GJ3 "$DOC15GJ" "$plan15c" 리뷰없음
 g15_mkwt R15GJ3 SA
 g15_pr "OPEN $c15gx - seg/R15GJ1-SA main" act R15GJ3 SA 상태=계획됨 "워크트리=$(g15_wt R15GJ3 SA)"
@@ -49989,7 +50016,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 85. A segment an earlier run cut is adopted through the manifest
-# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다 ---
+# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다, 85: 머지 커밋 없는 완료 세그먼트는 입양 계획된다, 85: 머지 커밋을 지닌 완료 세그먼트는 입양하지 않는다, 85: 고정 커밋을 지닌 적용 완료 세그먼트는 입양하지 않는다, 85: PR 과 커밋만 지닌 PR 절단점 완료 세그먼트는 입양 계획된다, 85: 대시 표기 출처 런의 입양 행은 매니페스트 검사를 통과한다, 85: 대시 표기 출처 런의 세그먼트는 입양 계획된다 ---
 #
 # Segment names derive from the run id, so a run could not continue a segment
 # an earlier run left unmerged: its branch, worktree and pull request were out
@@ -50070,6 +50097,53 @@ case "$msg" in
   *"체크아웃된 브랜치가 seg/$SRC85-SA 입니다"*) ok "85: 그 거부는 체크아웃된 브랜치를 든다" ;;
   *) bad "85 브랜치 문면" "$msg" ;;
 esac
+
+# A `완료` IS A LANDING ONLY WHEN IT CARRIES A LANDING COMMIT — a `머지 커밋`, or
+# the `고정 커밋` of an apply row. A push or pull request cutpoint ends its
+# segment `완료` with no merge, and the work it left on its branch is what a
+# later run adopts to review; each case plans under a run id of its own, so no
+# earlier case's planned row is read.
+H85=0123456789abcdef0123456789abcdef01234567
+src85_done() {  # src85_done <필드…> — the origin run's ledger with one `완료` SA row carrying those fields
+  printf '# 픽스처 출처 런\n\n- `segment` | id=SA | 상태=완료 | %s | 워크트리=%s | 선행=없음\n' "$1" "$WT85" > "$LEDGER85"
+}
+src85_done "커밋=$H85"
+run85 R85P1
+g15_plan act R85P1 SA 상태=계획됨 "워크트리=$WT85"
+check "85: 머지 커밋 없는 완료 세그먼트는 입양 계획된다" "$rc" "0"
+check "85: 머지 커밋 없는 완료 세그먼트의 계획 행은 입양 워크트리를 싣는다" \
+  "$(g15_row R85P1 SA | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//')" "$WT85"
+src85_done "머지 커밋=$H85"
+run85 R85P2
+g15_plan act R85P2 SA 상태=계획됨 "워크트리=$WT85"
+check "85: 머지 커밋을 지닌 완료 세그먼트는 입양하지 않는다" "$rc" "3"
+case "$msg" in
+  *"착지한 세그먼트는 입양하지 않습니다"*) ok "85: 그 거부는 착지한 세그먼트를 든다" ;;
+  *) bad "85 머지 커밋 완료 문면" "$msg" ;;
+esac
+src85_done "적용=건너뜀 | 고정 커밋=$H85"
+run85 R85P3
+g15_plan act R85P3 SA 상태=계획됨 "워크트리=$WT85"
+check "85: 고정 커밋을 지닌 적용 완료 세그먼트는 입양하지 않는다" "$rc" "3"
+src85_done "PR=12 | 커밋=$H85"
+run85 R85P4
+g15_plan act R85P4 SA 상태=계획됨 "워크트리=$WT85"
+check "85: PR 과 커밋만 지닌 PR 절단점 완료 세그먼트는 입양 계획된다" "$rc" "0"
+
+# A RUN ID IN ITS DASHED SPELLING. The earlier run's ledger, worktree and
+# branch carry the id as it was given, so the adoption row names it so too.
+SRC85D='2026-01-01-aaaaaaaa'
+WT85D="$(dirname "$WT")/$(basename "$WT")-run-$SRC85D-SA"
+( cd "$WT" && git worktree add -q -b "seg/$SRC85D-SA" "$WT85D" HEAD ) >/dev/null 2>&1
+LEDGER85D="$WT/docs/pipeline-run/$SRC85D.md"
+printf '# 픽스처 출처 런\n\n- `segment` | id=SA | 상태=리뷰중 | 워크트리=%s | 선행=없음\n' "$WT85D" > "$LEDGER85D"
+run85 R85P5 "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85D-SA | 워크트리=$WT85D | 출처 런=$SRC85D | PR=78"
+snap85 R85P5
+check "85: 대시 표기 출처 런의 입양 행은 매니페스트 검사를 통과한다" "$rc" "0"
+g15_plan act R85P5 SA 상태=계획됨 "워크트리=$WT85D"
+check "85: 대시 표기 출처 런의 세그먼트는 입양 계획된다" "$rc" "0"
+( cd "$WT" && git worktree remove --force "$WT85D" && git branch -D "seg/$SRC85D-SA" ) >/dev/null 2>&1
+rm -f "$LEDGER85D"
 
 # A BRANCH A PERSON MADE OUTSIDE ANY RUN. `출처 런=-` names no earlier run, so
 # the planning act reads the tree and the branch and no ledger: without the
