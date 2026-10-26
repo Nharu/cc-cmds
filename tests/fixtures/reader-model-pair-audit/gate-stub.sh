@@ -22,6 +22,8 @@
 #           does on its second call
 #     wait  exits 5 (an approval for a person)
 #     fail  exits 7
+#     ended  writes `done` with no report and exits 3, as the gate refuses
+#           `대기` on a run that ended while the host slept
 #   STUB_ONLY_DOC=<owner-doc> applies $STUB_GATE_MODE to that document's runs
 #   only; every other run acts as `ok`.
 #
@@ -80,6 +82,10 @@ if [[ "$akind" == "halt-answer" ]]; then
   printf -- '- `중단 답` | 중단 기록=%s | 선택지=%s | 답한 주체=%s | prev=0\n' "$rec" "$opt" "$by" >> "$led"
   touch "$rd/stub-answered"
   exit 0
+fi
+if [[ "$mode" == "ended" ]]; then
+  echo "2026-10-17T05:00:00Z 종단 — 경계 B4 · 근거 비용이 선언 천장에 닿았습니다" > "$rd/done"
+  exit 3
 fi
 if [[ "$mode" == "handoff" ]]; then
   if [[ -e "$rd/stub-answered" ]]; then
