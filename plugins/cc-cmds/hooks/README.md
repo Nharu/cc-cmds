@@ -144,6 +144,19 @@ often the message field is absent does not become a reason to add one. That
 fallback also re-fires markers that already fired, because a turn whose last
 message has no text block makes the walk pick up the message before it.
 
+**The session title in the title line comes only from the current title file
+the session title hook writes.** Both seats read
+`${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session-title-now/<session_id>`
+through `cc_notify_session_title_read` in `notify-run.sh`, after every gate, and
+the title table then reads `cc-cmds · <title> · 답하세요` and
+`cc-cmds · <title> · 차례가 넘어왔습니다`, the title cut to 24 display columns
+with the hook's own `cw`/`cut` definitions so the action at the end survives.
+This value does not open a transcript either. When the file is missing,
+unreadable, has a different first line or an empty second line, or when the id,
+`jq` or the state root is missing, the title line is today's wording. Neither
+the seats nor the emitter read the title switch `CC_CMDS_SESSION_TITLE`: a file
+written before that switch was set is still read.
+
 ## The eight rules the scripts are written against
 
 1. **Every path exits 0.** A `Stop` hook that exits 2 stops the turn from ending;

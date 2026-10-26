@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.6.0] - 2026-10-26
+## [3.7.0] - 2026-10-26
 
 무인 감사의 재감사가 골격급 결함을 다시 세어도 사람에게 멈추지 않는다. 게이트는 감사 키당 자동 재수렴을 2회까지 열고, 상한에 닿은 감사는 남은 골격급을 설계 문서의 미해결 이슈로 둔 채 정상 완료로 끝난다. 재감사는 첫 감사가 동결한 바이트와 지금 문서의 차이로 바뀐 절을 구해, 리더가 그 절의 발견만 보고하게 한다.
 
@@ -26,6 +26,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 한 런에서 재감사가 회차마다 골격급 1건을 다시 세었고, 그때마다 런이 멈춰 사람의 답을 기다렸다. 사람 답 19건 가운데 15건이 `재수렴` 이었으므로 자동 1회는 사람이 실제로 고르던 것보다 짧았다. 재감사 한 회는 판독자 셋이 문서 전체를 새로 읽어 비용이 크다. 그 사이 문서를 바꾼 것은 조정 패스와 재수렴뿐이다. 문서는 정정 문단이 쌓여 34KB 에서 156KB 로 커졌다. 상한 2 는 직전 재수렴이 고친 결정 바로 옆의 결함을 한 번 더 잡는다. 그 뒤에도 남는 결함은 결정 자체가 다투어지는 경우로 보고 미해결 이슈로 넘긴다.
+
+## [3.6.0] - 2026-10-26
+
+슬래시 커맨드로 시작한 세션에 훅이 `<스킬>·<인자 요약>` 꼴의 세션 제목을 붙인다. 훅은 그 세션의 현재 제목을 작은 파일 하나로 남기고, autopilot 패널과 질문 배너·차례 넘김 배너의 제목 줄이 그 파일을 읽어 세션 제목을 보인다. 파일이 없거나 읽히지 않으면 패널과 배너는 지금과 같은 출력을 낸다.
+
+### Added
+
+- **슬래시 커맨드 세션 제목 훅** — `hooks/session-title.sh` 가 기존 `UserPromptSubmit` 배열의 형제 항목(timeout 5)으로 등록된다. 슬래시 커맨드 프롬프트에서 `<스킬>·<인자 요약>` 을 최대 38칸으로 잘라 세션 제목으로 내보내고, 훅이 붙인 제목만 다시 쓰며 사람이 `/rename` 으로 붙인 제목은 건드리지 않는다. `/clear` 뒤의 새 세션은 앞 제목을 이어받는다. 끝마다 현재 제목 파일 `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session-title-now/<session_id>`(1행 `cc-session-title-now v1`, 2행 제목)를 맞추고, 30일 정리는 소유 상태 디렉터리와 이 디렉터리를 함께 돈다. `CC_CMDS_SESSION_TITLE=0`(`off`·`false`·`no`)이면 제목도 현재 제목 파일도 쓰지 않는다.
+- **패널 세션 제목 줄** — `run-pane.sh` 가 `session-title` 묶음을 내고 `autopilot-status` 모듈이 그 묶음을 받는다. 런이 있으면 `autopilot <런 id>` 첫 줄 바로 아래의 보호 행으로, 런이 없으면 「연결된 런 없음」 아래에 `세션 <제목>` 을 보인다. 헬퍼는 jq 를 부르지 않고 아무것도 쓰지 않으며, 파일이 없으면 출력이 지금과 바이트로 같다. 스키마는 `2` 그대로라 이 묶음을 모르는 옛 모듈은 그 줄만 버린다.
+- **질문 배너와 차례 넘김 배너 제목 줄의 세션 제목** — 두 좌석이 현재 제목 파일을 24칸으로 잘라 건네고, 제목 줄이 `cc-cmds · <세션 제목> · 답하세요` 와 `cc-cmds · <세션 제목> · 차례가 넘어왔습니다` 가 된다. 제목을 모르면 지금 문구 그대로다. 질문지 배너는 좌석 1 스크립트를 그대로 부르므로 함께 바뀐다.
+
+### Why
+
+여러 세션을 함께 띄우면 세션 선택기와 tmux 창, autopilot 패널, 배너에서 어느 세션이 무엇을 하는지 가려 볼 수 없었다. 하네스는 세션 제목을 SessionStart 와 UserPromptSubmit 훅 입력에만 싣고 PreToolUse·Stop 입력과 패널에는 싣지 않으므로, 제목을 아는 유일한 자리인 훅이 파일로 건넨다.
+
+### Post-install notes
+
+- tmux 상태줄과 창 제목에 세션 제목을 보이려면 훅 README `plugins/cc-cmds/hooks/README.md` 의 「## The session title hook」 절 「**Where the title shows.**」 문단에 있는 권장 `~/.tmux.conf` 블록을 직접 적용한다.
+- 메인 워크트리에서 master 를 받거나 플러그인을 갱신해야 새 동작이 적용된다.
+- 이미 시작된 런은 런 디렉터리의 플러그인 사본을 계속 쓰므로 새 동작을 받지 않는다.
 
 ## [3.5.1] - 2026-10-26
 
