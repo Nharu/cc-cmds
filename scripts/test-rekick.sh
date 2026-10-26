@@ -2562,7 +2562,58 @@ check "13 PR 절단점: 앞선 런의 머지된 다른 PR 을 들여오는 후�
 printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n입양 I2\t다시 하기 — I2 · PR #43\n' "$S13_B" "$(printf '%s' "$S13_H" | cut -c1-12)" > "$WORK/a13-kredo"
 SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-kredo" seat_link "$PK13" 20261002-b000000e
 check "13 PR 절단점: 그 후보를 다시 하기로 답한 초안은 verify-subset 에서 실패한다" "$SL_RC/$SL_VS" "0/실패"
-rm -f "$GH13/view.42" "$GH13/view.43"
+# The planning act brings a merged PR 42 in only from PF13's row `브랜치` into
+# the target's base branch, so PR 42 merged into another base, or from another
+# branch of the slice's shape, gives the candidate no cell.
+gh13_view MERGED "$PFB2" "$PJH2" false t release > "$GH13/view.42"
+a13 "$PK13"
+check "13 PR 절단점: 대상 베이스가 아닌 곳으로 머지된 다른 PR 은 칸을 주지 않는다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" "입양후보${TAB}I2${TAB}$PKB2${TAB}$PKW2${TAB}43${TAB}$PKH2"
+gh13_view MERGED "seg/rk-other-I2" "$PJH2" > "$GH13/view.42"
+a13 "$PK13"
+check "13 PR 절단점: head 브랜치가 행의 브랜치와 다른 머지된 다른 PR 은 칸을 주지 않는다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" "입양후보${TAB}I2${TAB}$PKB2${TAB}$PKW2${TAB}43${TAB}$PKH2"
+# A run of the same document opened after PF13 that ended I2 on PR 44 in the
+# shape written before the driver recorded `브랜치` (none on its rows): the
+# lookup picks its `완료`, and the planning act refuses a merged PR it cannot
+# bind to a segment branch, so a later source on PR 45 carries no cell with
+# PR 44 merged and a `다시 하기` answer to it passes. The control is the same
+# `완료` with `브랜치`, on a run PN13 opened after PM13 so the lookup picks it:
+# the branch alone decides.
+PM13=20261001-a0000013
+P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$PM13"
+fx_row 'run' "run-id=$PM13" "설계 문서=$DOC13P" "시작=2026-10-05T00:00:00Z"
+fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
+fx_row 'segment' "id=I2" "상태=완료" "커밋=$PJH2" "PR=44"
+PL13=20261001-a0000014
+PLW2="$WORK/repo-run-$PL13-I2"; PLB2="seg/$PL13-I2"
+( cd "$WT" && git worktree add -q -b "$PLB2" "$PLW2" main && cd "$PLW2" && printf '%s I2\n' "$PL13" > seg.txt \
+    && git add seg.txt && git commit -qm "$PL13 I2" && git push -q origin "$PLB2" ) >/dev/null 2>&1
+PLH2=$(cd "$PLW2" && git rev-parse HEAD)
+P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$PL13"
+fx_row 'run' "run-id=$PL13" "설계 문서=$DOC13P" "시작=2026-10-06T00:00:00Z"
+fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$PLW2" "브랜치=$PLB2" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
+fx_row 'segment' "id=I2" "상태=리뷰중" "워크트리=$PLW2" "PR=45"
+fx_row '원격 판독' "세그먼트=I2" "브랜치=$PLB2" "워크트리 HEAD=$PLH2" "원격 팁=$PLH2" "PR=45" "PR 상태=OPEN" "PR HEAD=$PLH2"
+gh13
+printf '[{"number":45,"state":"OPEN","headRefOid":"%s"}]\n' "$PLH2" > "$GH13/list.$(printf '%s' "$PLB2" | tr '/' '_')"
+gh13_view OPEN "$PLB2" "$PLH2" > "$GH13/view.45"
+gh13_view MERGED "$PFB2" "$PJH2" > "$GH13/view.44"
+a13 "$PL13"
+check "13 PR 절단점: 브랜치 없는 옛 형식 완료 행이 가리키는 머지된 다른 PR 은 칸을 주지 않는다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" "입양후보${TAB}I2${TAB}$PLB2${TAB}$PLW2${TAB}45${TAB}$PLH2"
+printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n입양 I2\t다시 하기 — I2 · PR #45\n' "$S13_B" "$(printf '%s' "$S13_H" | cut -c1-12)" > "$WORK/a13-lredo"
+SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-lredo" seat_link "$PL13" 20261002-b000000f
+check "13 PR 절단점: 그 후보를 다시 하기로 답한 초안은 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
+PN13=20261001-a0000015
+P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$PN13"
+fx_row 'run' "run-id=$PN13" "설계 문서=$DOC13P" "시작=2026-10-07T00:00:00Z"
+fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
+fx_row 'segment' "id=I2" "상태=완료" "브랜치=$PFB2" "커밋=$PJH2" "PR=44"
+a13 "$PL13"
+check "13 PR 절단점: 같은 완료 행에 세그먼트 브랜치가 있으면 그 머지된 PR 을 이름한 칸을 지닌다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" "입양후보${TAB}I2${TAB}$PLB2${TAB}$PLW2${TAB}45${TAB}$PLH2${TAB}미입양=PR들여오기${TAB}들여올PR=44"
+rm -f "$GH13/view.42" "$GH13/view.43" "$GH13/view.44" "$GH13/view.45"
 use13 "$SW" "$SB" "$SH"
 
 # 4·5 — the person's path. The default source, answered `이어받기`.

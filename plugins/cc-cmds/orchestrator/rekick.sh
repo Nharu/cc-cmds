@@ -213,8 +213,9 @@
 # `입양후보` line, a `PR` and `커밋` equal to the line's PR and HEAD: a new run
 # that does not adopt it brings that open pull request in as done while its
 # head is that `커밋`, so the person's second answer is `그대로 두기`, not
-# `다시 하기`. A row naming another PR, merged or open at its `커밋`, gives an
-# `입양후보` line the cell followed by `들여올PR=<번호>`. The reason tokens: park,
+# `다시 하기`. A row naming another PR, open at its `커밋` or merged from its
+# `브랜치` (a segment branch of the slice) into the target's base branch, gives
+# an `입양후보` line the cell followed by `들여올PR=<번호>`. The reason tokens: park,
 # 설계재실행, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
 # 라이브, 원장없음, 중단답이월불가, and 판정불가 when the gate child could
@@ -492,17 +493,19 @@ EOF
 #   adopt-check <seg> <alias> <row>   통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨
 #                                     — the planning-time adoption check, its
 #                                     warning mapped to a token
-#   pr-import <doc> <seg> <doc key>   들여오기<TAB><PR><TAB><커밋>|아님 —
+#   pr-import <doc> <seg> <doc key>   들여오기<TAB><PR><TAB><커밋><TAB><브랜치>|아님 —
 #                                     들여오기 when the document declares the
 #                                     slice `절단점: PR` and the gate's own
 #                                     prior-run lookup, over every ledger of
 #                                     that document beside the given one,
 #                                     picks a `완료` by its pull request
 #                                     cutpoint arm and not as a run-outside
-#                                     merge, with that row's `PR` and `커밋`:
+#                                     merge, with that row's `PR`, `커밋` and
+#                                     `브랜치`, `-` standing for an absent one:
 #                                     the planning act of a run that does not
 #                                     adopt the segment brings it in while
-#                                     that pull request is open at that commit
+#                                     that pull request is open at that commit,
+#                                     and a merged one only from that `브랜치`
 #   halt-source <seg>                 이월|없음|불가 — the halt-answer carry check
 #   tip-of <dir> <slug> <branch>      <40 hex>|없음|미상
 #   pr-of <dir> <slug> <branch> <head>
@@ -519,7 +522,7 @@ EOF
 # that writes a ledger row.
 # ---------------------------------------------------------------------------
 rk_gate() {
-  local g="$RK_DIR/gate.sh" out='' mode="$1" a b c x
+  local g="$RK_DIR/gate.sh" out='' mode="$1" a b c d x
   [ -r "$g" ] && out=$(CC_GATE_SOURCE_ONLY=1 bash -c '
     g=$1; mode=$2; mf=$3; rid=$4; rd=$5; led=$6; gr=$7; err=$8
     shift 8
@@ -551,7 +554,8 @@ ROWS
         DOC=$a1; DOC_KEY=$a3; LEDGER="$(dirname "$led")/rk-pr-import-probe.md"
         if gate_prior_run_landed "$a2" 2>"$err" && [ -z "$GATE_PRIOR_OUTSIDE" ] && [ "$GATE_PRIOR_KIND" = "PR" ] \
            && [ "$(gate_row_field "$GATE_PRIOR_ROW" "상태")" = "완료" ]; then
-          printf "들여오기\t%s\t%s" "$(gate_row_field "$GATE_PRIOR_ROW" "PR")" "$(gate_row_field "$GATE_PRIOR_ROW" "커밋")"
+          pc=$(gate_row_field "$GATE_PRIOR_ROW" "커밋"); pb=$(gate_row_field "$GATE_PRIOR_ROW" "브랜치")
+          printf "들여오기\t%s\t%s\t%s" "$(gate_row_field "$GATE_PRIOR_ROW" "PR")" "${pc:--}" "${pb:--}"
         else printf "아님"; fi ;;
       adopt-check)
         gate_adoption_check "$a1" "$a2" "$a3" 2>"$err" || rc=$?
@@ -592,10 +596,13 @@ ROWS
     landed)
       case "$out" in 착지됨|미착지) ;; *) out='판정불가' ;; esac ;;
     pr-import)
-      IFS="$TAB" read -r a b c x <<EOF
+      IFS="$TAB" read -r a b c d x <<EOF
 $out
 EOF
-      if [ "$a" = "들여오기" ] && [ -z "$x" ] && rk_num "$b" && case "$c" in *[!0-9a-f]*) false ;; esac; then out="들여오기${TAB}${b}${TAB}${c}"
+      if [ "$a" = "들여오기" ] && [ -z "$x" ] && rk_num "$b" \
+         && { [ "$c" = "-" ] || { [ -n "$c" ] && case "$c" in *[!0-9a-f]*) false ;; esac; }; } \
+         && { [ "$d" = "-" ] || { [ -n "$d" ] && case "$d" in *[!A-Za-z0-9._/-]*) false ;; esac; }; }; then
+        out="들여오기${TAB}${b}${TAB}${c}${TAB}${d}"
       elif [ "$out" != "아님" ]; then out='판정불가'; fi ;;
     adopt-check)
       case "$out" in 통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨) ;; *) out='판정불가' ;; esac ;;
@@ -826,12 +833,13 @@ rk_adopt_halts() {
 # with `미입양=PR들여오기` when the gate child's `pr-import` answers 들여오기
 # over the document at `<base>`, read without the network — an `입양후보` line
 # only when the answer's `PR` and `커밋` are the line's PR and HEAD, or, in the
-# full layer, when the answer names another PR that is merged or open at that
-# `커밋`, followed then by `들여올PR=<번호>`.
+# full layer, when the answer names another PR that is open at that `커밋` or
+# merged from the answer's `브랜치` (a `seg/*-<seg>` branch) into the target's
+# base branch, followed then by `들여올PR=<번호>`.
 rk_adopt_candidates() {
   local trows="$1" layer="$2" key keys rows last W B anchor n h wh rt ph ab slug al row tal
   local cg tcg tbase cur hd st tip prl pn ps ph2 pv vs vb vh vc vo vbase tail tok mcopy err doc docf dcopy first pre halts
-  local pdoc pim pip pic cim
+  local pdoc pim pip pic pibr cim
   keys=$( { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | while IFS= read -r row; do manifest_row_fields "$row" 'id' | head -n 1; printf '\n'; done | awk 'NF && !seen[$0]++')
   err="$RK_TMP/adopt.err"
   pdoc=$(rk_copy "$RK_BASE/$(manifest_field '요소' '설계 문서')" adopt-prdoc.md) || pdoc=''
@@ -844,17 +852,20 @@ rk_adopt_candidates() {
     # The planning act brings an open pull request in only at the `커밋` of the
     # row the lookup picked, so a candidate carries the cell only when its pull
     # request and head are that row's, or when the row names another request
-    # the full layer reads as merged or open at that `커밋` just before the
-    # line is printed; an `입양불가` line, whose head nobody
+    # the full layer reads, just before the line is printed, as open at that
+    # `커밋` or merged from the row's `브랜치` into the target's base branch;
+    # an `입양불가` line, whose head nobody
     # read, carries it whenever the lookup picked such a row, and item 8's
     # screen states that condition for it.
-    pim=''; pip=''; pic=''
+    pim=''; pip=''; pic=''; pibr=''
     if [ -n "$pdoc" ]; then
-      IFS="$TAB" read -r pim pip pic <<EOF
+      IFS="$TAB" read -r pim pip pic pibr <<EOF
 $(rk_gate pr-import "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pdoc" "$key" "$(manifest_field '요소' '설계 문서')")
 EOF
     fi
-    if [ "$pim" = "들여오기" ]; then pim="${TAB}미입양=PR들여오기"; else pim=''; pip=''; pic=''; fi
+    [ "$pic" != "-" ] || pic=''
+    [ "$pibr" != "-" ] || pibr=''
+    if [ "$pim" = "들여오기" ]; then pim="${TAB}미입양=PR들여오기"; else pim=''; pip=''; pic=''; pibr=''; fi
     rows=$(rk_ledger_seg_rows "$key")
     last=$(printf '%s\n' "$rows" | tail -n 1)
     anchor=$( { grep -E '^- `원격 판독` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| 세그먼트=$key |" || true; } \
@@ -1009,13 +1020,19 @@ EOF
     halts=$(rk_adopt_halts "$key")
     [ -z "$halts" ] || pre="${pre}${TAB}중단기록=$halts"
     # A row naming another pull request than the candidate's — a slice done
-    # again on a new request — is brought in when that request is merged, or
-    # open at the row's `커밋`, so the cell then names it.
+    # again on a new request — is brought in when that request is open at the
+    # row's `커밋`, or merged from the row's `브랜치` (a segment branch of this
+    # slice, which a row written before the driver recorded `브랜치` lacks)
+    # into the target's base branch, so the cell then names it. Whether the
+    # merge commit is on that base the planning act decides with a fetch, which
+    # this read-only call does not make.
     if [ -n "$pim" ] && [ -z "$cim" ] && rk_num "$pip" && [ "$pip" != "$n" ]; then
       IFS="$TAB" read -r vs vb vh vc vo vbase <<EOF
 $(rk_gate pr-view "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pip" "$slug")
 EOF
-      if [ "$vs" = "MERGED" ] || { [ "$vs" = "OPEN" ] && [ -n "$pic" ] && [ "$vh" = "$pic" ]; }; then
+      if { [ "$vs" = "MERGED" ] && [ -n "$pibr" ] && [ "$vb" = "$pibr" ] && [ -n "$tbase" ] && [ "$vbase" = "$tbase" ] \
+             && case "$pibr" in seg/*-"$key") true ;; *) false ;; esac; } \
+         || { [ "$vs" = "OPEN" ] && [ -n "$pic" ] && [ "$vh" = "$pic" ]; }; then
         cim="${pim}${TAB}들여올PR=${pip}"
       fi
     fi
