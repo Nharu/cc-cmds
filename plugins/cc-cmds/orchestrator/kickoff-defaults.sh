@@ -671,13 +671,34 @@ kd_validate() {
       case "$v" in *,) kd_ign "$i" '형식 오류' '목록이 쉼표로 끝납니다 — 빈 원소입니다'; return ;; esac
       E_NORM[$i]="$joined" ;;
     act-allow)
+      # Two fields (the old form: 형태=·사유=) or four or five (the new form:
+      # 형태=·표면=·도달=·[짝 정리=]·사유=), in that order. A new-form row then
+      # meets the driver's own `preauth_row_refusal`, the check the manifest
+      # check runs on the frozen row, so the two writers refuse the same rows.
+      local kd_aa_shape='필드는 형태=·사유= 둘(옛 형식)이거나 형태=·표면=·도달=·[짝 정리=]·사유= 넷 또는 다섯(새 형식)이고 이 순서입니다'
+      local kd_fs='' kd_fr='' kd_fp='' kd_why
       nf=$(printf '%s' "$v" | awk -F'|' '{ print NF }')
-      f1=$(kd_trim "${v%%|*}"); f2=$(kd_trim "${v#*|}")
+      case "$nf" in
+        2|4|5) ;;
+        *) kd_ign "$i" '형식 오류' "$kd_aa_shape"; return ;;
+      esac
+      f1=$(kd_trim "$(printf '%s' "$v" | awk -F'|' '{ print $1 }')")
+      f2=$(kd_trim "$(printf '%s' "$v" | awk -F'|' '{ print $NF }')")
       if [ "$nf" != "2" ]; then
-        kd_ign "$i" '형식 오류' '필드는 정확히 형태=·사유= 둘이고 이 순서입니다'; return
+        kd_fs=$(kd_trim "$(printf '%s' "$v" | awk -F'|' '{ print $2 }')")
+        kd_fr=$(kd_trim "$(printf '%s' "$v" | awk -F'|' '{ print $3 }')")
+        case "$kd_fs" in 표면=*) ;; *) kd_ign "$i" '형식 오류' "$kd_aa_shape"; return ;; esac
+        case "$kd_fr" in 도달=*) ;; *) kd_ign "$i" '형식 오류' "$kd_aa_shape"; return ;; esac
+        if [ "$nf" = "5" ]; then
+          kd_fp=$(kd_trim "$(printf '%s' "$v" | awk -F'|' '{ print $4 }')")
+          case "$kd_fp" in '짝 정리='*) ;; *) kd_ign "$i" '형식 오류' "$kd_aa_shape"; return ;; esac
+        fi
       fi
-      case "$f1" in 형태=*) ;; *) kd_ign "$i" '형식 오류' '필드는 정확히 형태=·사유= 둘이고 이 순서입니다'; return ;; esac
-      case "$f2" in 사유=*) ;; *) kd_ign "$i" '형식 오류' '필드는 정확히 형태=·사유= 둘이고 이 순서입니다'; return ;; esac
+      case "$f1" in 형태=*) ;; *) kd_ign "$i" '형식 오류' "$kd_aa_shape"; return ;; esac
+      case "$f2" in 사유=*) ;; *) kd_ign "$i" '형식 오류' "$kd_aa_shape"; return ;; esac
+      if [ "$nf" != "2" ]; then
+        kd_why=$(preauth_row_refusal "$v") || { kd_ign "$i" '형식 오류' "$kd_why"; return; }
+      fi
       # The row goes out byte for byte, and the matcher compares the text after
       # `형태=` with the argv head joined by single spaces, so any other spacing
       # in the form would be confirmed here and then never match.
@@ -707,7 +728,15 @@ kd_validate() {
       if [ "$(kd_words "$f1")" -lt 2 ]; then
         kd_ign "$i" '형식 오류' '형태 는 <명령> <하위 명령> 처럼 두 낱말 이상의 접두입니다 — 한 낱말은 그 명령 전부를 엽니다'; return
       fi
-      E_ID[$i]="$f1"; E_X[$i]="$f2" ;;
+      # The comparison key across targets: the reason alone for an old-form
+      # row; every field after the shape for a new-form one, so two targets that
+      # disagree on where the act lands or what undoes it are told apart.
+      E_ID[$i]="$f1"
+      if [ "$nf" = "2" ]; then
+        E_X[$i]="$f2"
+      else
+        E_X[$i]="$kd_fs | $kd_fr | ${kd_fp:-짝 정리=-} | 사유=$f2"
+      fi ;;
     auto-adopt)
       nf=$(printf '%s' "$v" | awk -F'|' '{ print NF }')
       if [ "$nf" != "4" ]; then
@@ -998,6 +1027,15 @@ while [ "$kd_i" -lt "$KD_N" ]; do
         while [ "$kd_j" -lt "$KD_N" ]; do
           if [ "${E_ST[kd_j]}" = "ok" ] && [ "${E_KEY[kd_j]}" = "${E_KEY[kd_i]}" ] \
              && [ "${E_SCOPE[kd_j]}" = "${E_SCOPE[kd_i]}" ] && [ "${E_ID[kd_j]}" = "${E_ID[kd_i]}" ]; then
+            if [ "${E_KEY[kd_i]}" = "act-allow" ] \
+               && { case "${E_X[kd_i]}${E_X[kd_j]}" in *표면=*) true ;; *) false ;; esac; } \
+               && [ "${E_X[kd_j]%% | 사유=*}" != "${E_X[kd_i]%% | 사유=*}" ]; then
+              # The same form with another surface, reach or cleanup: the
+              # manifest check refuses that pair, so neither is offered.
+              kd_ign "$kd_i" '값 충돌' "같은 형태의 행이 ${E_SRC[kd_j]} 에 다른 표면·도달·짝 정리로 또 있습니다 — 둘 다 쓰지 않습니다"
+              kd_ign "$kd_j" '값 충돌' "같은 형태의 행이 ${E_SRC[kd_i]} 에 다른 표면·도달·짝 정리로 또 있습니다 — 둘 다 쓰지 않습니다"
+              break
+            fi
             kd_ign "$kd_j" '중복' "같은 항목이 앞(${E_SRC[kd_i]})에 이미 있습니다 — 뒤엣것을 쓰지 않습니다"
           fi
           kd_j=$((kd_j + 1))
@@ -1330,7 +1368,18 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
       else KD_EFF='이 트리거에 닿는 행위는 사전 인가 행이 없으면 park 합니다'; fi ;;
     act-allow)
       KD_WIDE=1
-      KD_EFF='이 접두의 행위를 승인 없이 수행합니다(이 런의 모든 대상에 적용)'
+      case "${E_X[$i]}" in
+        표면=*)
+          # A new-form row: the gate opens the act at the row's own reach cell,
+          # and the cleanup command runs with no approval when the run or the
+          # dispatch ends.
+          KD_EFF="이 접두의 행위를 행의 도달 칸($(manifest_row_fields "${E_X[$i]}" '도달'))에서 승인 없이 수행합니다(이 런의 모든 대상에 적용)"
+          case "${E_X[$i]}" in
+            *'| 짝 정리=- |'*) ;;
+            *) KD_EFF="$KD_EFF. 짝 정리 명령 \`$(manifest_row_fields "${E_X[$i]}" '짝 정리')\` 을 그 행위를 연 파견이나 런이 끝날 때 승인 없이 실행합니다" ;;
+          esac ;;
+        *) KD_EFF='이 접두의 행위를 승인 없이 수행합니다(이 런의 모든 대상에 적용)' ;;
+      esac
       # The matcher's runner arm globs only the first one or two words, so a
       # runner form longer than that matches nothing at all.
       if kd_is_runner_form "${E_ID[$i]}"; then
@@ -1340,7 +1389,12 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
           KD_EFF="$KD_EFF. 러너 형태 — 이 접두로 시작하는 비파괴 행위 전부(접두 일치)"
         fi
       fi
-      [ "${E_DIFF[$i]:-0}" = "1" ] && KD_EFF="$KD_EFF. 사유가 대상마다 다릅니다 — 첫 대상(${KD_TARGET[0]})의 사유를 씁니다" ;;
+      if [ "${E_DIFF[$i]:-0}" = "1" ]; then
+        case "${E_X[$i]}" in
+          표면=*) KD_EFF="$KD_EFF. 표면·도달·짝 정리·사유 가운데 대상마다 다른 칸이 있습니다 — 첫 대상(${KD_TARGET[0]})의 행을 씁니다" ;;
+          *) KD_EFF="$KD_EFF. 사유가 대상마다 다릅니다 — 첫 대상(${KD_TARGET[0]})의 사유를 씁니다" ;;
+        esac
+      fi ;;
     apply-probe)
       KD_EFF='5c 에 적용 프로브로 미리 채우는 제안입니다 — 적용 명령과 파급 범위는 새로 묻습니다' ;;
     apply-probe-codes)
@@ -1523,7 +1577,18 @@ if [ "$KD_CARRY_GIVEN" = "1" ]; then
         fi
       else
         E_ID[kd_ci]=$(manifest_row_fields "$kd_r" '형태')
-        E_X[kd_ci]=$(manifest_row_fields "$kd_r" '사유')
+        if [ -n "$(manifest_row_fields "$kd_r" '표면')" ]; then
+          # A new-form row is carried byte for byte, and only when it still
+          # passes the check the manifest check runs on it.
+          if ! kd_why=$(preauth_row_refusal "$kd_r"); then
+            kd_out_not run "$kd_k" '형식 오류' "이전 행 '$kd_r' 은 지금 사전 인가 행 검사를 통과하지 않습니다 — $kd_why. 이어받지 않고 묻습니다"
+            continue
+          fi
+          kd_pv=$(manifest_row_fields "$kd_r" '짝 정리')
+          E_X[kd_ci]="표면=$(manifest_row_fields "$kd_r" '표면') | 도달=$(manifest_row_fields "$kd_r" '도달') | 짝 정리=${kd_pv:--} | 사유=$(manifest_row_fields "$kd_r" '사유')"
+        else
+          E_X[kd_ci]=$(manifest_row_fields "$kd_r" '사유')
+        fi
       fi
       E_DIFF[kd_ci]=0
       kd_prev_ids="$kd_prev_ids${E_ID[kd_ci]}
