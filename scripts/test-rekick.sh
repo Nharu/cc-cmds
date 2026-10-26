@@ -2156,8 +2156,12 @@ printf '%s\n' "\$*" >> "$GH13/log"
 rc=\$(cat "$GH13/rc" 2>/dev/null || echo 0)
 [ "\$rc" = 0 ] || exit "\$rc"
 case "\$1 \$2" in
-  'pr list') cat "$GH13/list" ;;
-  'pr view') cat "$GH13/view" ;;
+  'pr list')
+    hb=''; pa=''
+    for x in "\$@"; do [ "\$pa" = --head ] && hb=\$x; pa=\$x; done
+    hb=\$(printf '%s' "\$hb" | tr '/' '_')
+    if [ -n "\$hb" ] && [ -f "$GH13/list.\$hb" ]; then cat "$GH13/list.\$hb"; else cat "$GH13/list"; fi ;;
+  'pr view') if [ -f "$GH13/view.\$3" ]; then cat "$GH13/view.\$3"; else cat "$GH13/view"; fi ;;
   *) exit 1 ;;
 esac
 GHSTUB
@@ -2166,12 +2170,13 @@ export CC_REMOTE_GH="$WORK/bin/gh"
 
 # mk13 <src> — the source run. K13_REUSE="<worktree> <branch> <head>" names a
 # worktree another source made instead of making one; K13_NOANCHOR leaves out
-# the `원격 판독` row. Leaves S13_W, S13_B, S13_H and S13_RD on this source.
+# the `원격 판독` row; K13_DOCSHA is the audit's document hash of a source on
+# another P_DOC. Leaves S13_W, S13_B, S13_H and S13_RD on this source.
 mk13() {
   local s="$1" w="$WORK/repo-run-$1-I1" b="seg/$1-I1" h
   P_DOC="${P_DOC:-$DOC13}" P_EXTRA="${P_EXTRA-$SEAT_ROW}" mk_prev "$s"
   fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
-  fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOC13SHA" "동결값=-" "관측=-"
+  fx_row '문서 해시' "스테이지=A1 이후" "sha256=${K13_DOCSHA:-$DOC13SHA}" "동결값=-" "관측=-"
   fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
   if [ -n "${K13_REUSE:-}" ]; then
     read -r w b h <<EOF
@@ -2415,6 +2420,85 @@ has "13 완료 런: 그 실패의 사유는 이어받는 세그먼트가 없는 
 printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n' "$FB" "$(printf '%s' "$FH" | cut -c1-12)" > "$WORK/a13-ftake"
 SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-ftake" seat_link "$F13" 20261002-b0000008
 check "13 완료 런: 이어받기로 답한 초안은 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
+use13 "$SW" "$SB" "$SH"
+
+# A sliced document whose slices end at different cutpoints: I1 at merge, I2
+# and I3 at the pull request. Left untaken, the planning act of a new run
+# brings in I2's open pull request as done, so 4b marks I2 alone — a `완료`
+# carrying `PR` and `커밋` on a `절단점: PR` slice — and the person's second
+# answer to it is to leave it. I1 (cutpoint 머지) and I3 (no `PR`) carry no
+# cell. The stub answers I2's branch and pull request from files of their own.
+DOC13P='docs/rk-adopt-pr.md'
+{ printf '# 입양 PR 절단점 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n입양 본문\n\n## 구현 슬라이싱\n'
+  for x in 'I1 머지' 'I2 PR' 'I3 PR'; do
+    printf '\n### 슬라이스 %s — 픽스처\n\n**스킬**: implement\n**레포**: t/rk\n**선언 파일**: `%s.txt`\n**선행**: 없음\n**절단점**: %s\n' \
+      "${x% *}" "${x% *}" "${x#* }"
+  done; } > "$BASE/$DOC13P"
+DOC13PSHA=$(sha "$BASE/$DOC13P")
+# mk13p <src> — that source: I1 as mk13 leaves it then `완료` with `PR` and
+# `커밋`, I2 on a worktree of its own ending the same way with PR 42, I3 a
+# `완료` with `커밋` only. K13P_NOANCHOR2 leaves out I2's `원격 판독` row and
+# K13P_OPEN the met termination clause. Leaves S13P_W2, S13P_B2, S13P_H2.
+mk13p() {
+  local s="$1" w2="$WORK/repo-run-$1-I2" b2="seg/$1-I2" h2
+  P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$s"
+  ( cd "$WT" && git worktree add -q -b "$b2" "$w2" main && cd "$w2" && printf '%s I2\n' "$s" > seg.txt \
+      && git add seg.txt && git commit -qm "$s I2" && git push -q origin "$b2" ) >/dev/null 2>&1
+  h2=$(cd "$w2" && git rev-parse HEAD)
+  fx_row 'segment' "id=I1" "상태=완료" "워크트리=$S13_W" "브랜치=$S13_B" "커밋=$S13_H" "PR=41"
+  fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$w2" "브랜치=$b2" "선행=없음"
+  fx_row 'segment' "id=I2" "상태=리뷰중" "워크트리=$w2" "PR=42"
+  [ -n "${K13P_NOANCHOR2:-}" ] || fx_row '원격 판독' "세그먼트=I2" "브랜치=$b2" "워크트리 HEAD=$h2" "원격 팁=$h2" "PR=42" "PR 상태=OPEN" "PR HEAD=$h2"
+  fx_row 'segment' "id=I2" "상태=완료" "워크트리=$w2" "브랜치=$b2" "커밋=$h2" "PR=42"
+  fx_row 'segment' "id=I3" "상태=완료" "커밋=$S13_H"
+  [ -n "${K13P_OPEN:-}" ] || fx_row '종료 절' "id=C1" "상태=충족" "근거=픽스처"
+  S13P_W2=$w2; S13P_B2=$b2; S13P_H2=$h2
+  printf '[{"number":42,"state":"OPEN","headRefOid":"%s"}]\n' "$h2" > "$GH13/list.$(printf '%s' "$b2" | tr '/' '_')"
+  gh13_view OPEN "$b2" "$h2" > "$GH13/view.42"
+}
+PF13=20261001-a000000e
+mk13p "$PF13"; gh13
+PW1=$S13_W; PB1=$S13_B; PH1=$S13_H
+a13 "$PF13"
+check "13 PR 절단점: 절단점 머지인 I1 의 입양후보 줄에는 칸이 없다" "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I1"')" \
+  "입양후보${TAB}I1${TAB}$PB1${TAB}$PW1${TAB}41${TAB}$PH1"
+check "13 PR 절단점: PR·커밋 완료인 I2 의 입양후보 줄은 미입양=PR들여오기 로 끝난다" "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" \
+  "입양후보${TAB}I2${TAB}$S13P_B2${TAB}$S13P_W2${TAB}42${TAB}$S13P_H2${TAB}미입양=PR들여오기"
+check "13 PR 절단점: PR 없는 완료인 I3 의 입양불가 줄에는 칸이 없다" "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I3"')" \
+  "입양불가${TAB}I3${TAB}-${TAB}워크트리없음"
+# verify-subset: I2 answered `다시 하기` is refused with its own reason, I2 left
+# and I1 taken passes, and I2 left with I1 redone takes over nothing.
+PTAKE1="이어받기 — I1 · PR #41 · $PB1 · $(printf '%s' "$PH1" | cut -c1-12)"
+printf '입양 I1\t%s\n입양 I2\t다시 하기 — I2 · PR #42\n' "$PTAKE1" > "$WORK/a13-predo"
+SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-predo" seat_link "$PF13" 20261002-b000000a
+check "13 PR 절단점: 칸을 지닌 후보를 다시 하기로 답한 초안은 verify-subset 에서 실패한다" "$SL_RC/$SL_VS" "0/실패"
+has "13 PR 절단점: 그 실패의 사유는 다시 하기를 받지 않는다는 것이다" \
+  "$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$PF13.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13-predo" --grant "$WORK/sl.block")" \
+  "입양 I2 는 PR 절단점의 열린 PR 이라 다시 하기를 받지 않습니다 — 이어받기 또는 그대로 두기"
+printf '입양 I1\t%s\n입양 I2\t그대로 두기 — I2 · PR #42\n' "$PTAKE1" > "$WORK/a13-pkeep"
+SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-pkeep" seat_link "$PF13" 20261002-b000000b
+check "13 PR 절단점: I1 이어받기·I2 그대로 두기 초안은 I1 행 하나로 verify-subset 을 통과한다" \
+  "$SL_RC/$SL_VS/$(grep -c '^- `세그먼트 입양`' "$SL_OUT" || true)/$(grep -c '^- `세그먼트 입양` | 세그먼트=I1 |' "$SL_OUT" || true)" "0/통과/1/1"
+printf '입양 I1\t다시 하기 — I1 · PR #41\n입양 I2\t그대로 두기 — I2 · PR #42\n' > "$WORK/a13-pnone"
+SL_DOC="$DOC13P" SL_DOCSHA="$DOC13PSHA" SL_AUTO= SL_ASKED="$WORK/a13-pnone" seat_link "$PF13" 20261002-b000000c
+check "13 PR 절단점: 칸을 지닌 후보를 그대로 두기로 두고 아무것도 이어받지 않는 완료 원천 초안은 실패한다" "$SL_RC/$SL_VS" "0/실패"
+VOUT=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$PF13.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13-pnone" --grant "$WORK/sl.block")
+has "13 PR 절단점: 그 실패의 사유는 이어받는 세그먼트가 없는 초안이다" "$VOUT" "이어받는 세그먼트가 없는 초안은 받지 않습니다"
+hasnt "13 PR 절단점: 그대로 두기 답은 라벨 불일치로 읽히지 않는다" "$VOUT" "입양 I2 의 답이"
+# Without I2's anchor and on a source the gate ended: I2 is `입양불가` and still
+# carries the cell, and detect's notice for it says what the new run does.
+PG13=20261001-a000000f
+K13P_NOANCHOR2=1 K13P_OPEN=1 mk13p "$PG13"; gh13
+a13 "$PG13"
+check "13 PR 절단점: 앵커가 없는 I2 의 입양불가 줄도 칸을 지닌다" "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2"')" \
+  "입양불가${TAB}I2${TAB}42${TAB}PR기록없음${TAB}미입양=PR들여오기"
+OUT=$(rk_as "s-$PG13" detect --arg '다시')
+check "13 PR 절단점: 게이트가 끝낸 원천은 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 갈래)" "재킥오프/게이트 종료"
+check "13 PR 절단점: 칸을 지닌 입양불가 고지는 열린 PR 을 들여온다고 말한다" \
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I2 PR 42)은 이어받지 않습니다(PR기록없음) — PR 이 열려 있고 head 가 행의 커밋과 같으면 새 런이 끝난 것으로 들여오고, 아니면 다시 합니다")" "1"
+check "13 PR 절단점: 칸이 없는 입양불가 고지는 그대로 다시 한다고 말한다" \
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I3 PR 없음)은 이어받지 않습니다(워크트리없음) — 새 런이 그 세그먼트를 다시 하고 옛 PR 은 그대로 둡니다")" "1"
+rm -f "$GH13/view.42"
 use13 "$SW" "$SB" "$SH"
 
 # 4·5 — the person's path. The default source, answered `이어받기`.
