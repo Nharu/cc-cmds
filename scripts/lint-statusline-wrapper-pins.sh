@@ -126,7 +126,7 @@ if [[ -f "$CMDLIB" ]]; then
   defined=$(grep -oE '^sl_[A-Za-z0-9_]+\(\)' "$CMDLIB" | sed 's/()$//' | sort -u || true)
 
   for name in "${SHARED[@]}"; do
-    if ! printf '%s\n' "$defined" | grep -Fqx -- "$name"; then
+    if ! grep -Fqx -- "$name" <<< "$defined"; then
       echo "FAIL: statusline-command.sh — '$name' is on this lint's shared list but is not defined there" >&2
       fail=1
     fi

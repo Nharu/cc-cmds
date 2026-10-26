@@ -573,8 +573,8 @@ esac
 # reports "had history" for the very run that established it — and `adopted` and
 # `converged` swap places on every machine.
 # ---------------------------------------------------------------------------
-L15_READ=$(grep -n '\[ -e "\$OWNED" \]' "$HOOK" | head -1 | cut -d: -f1)
-L15_CALL=$(grep -n 'apply-statusline\.sh" --apply' "$HOOK" | head -1 | cut -d: -f1)
+L15_READ=$(awk -v p='[ -e "$OWNED" ]' 'index($0, p) { print NR; exit }' "$HOOK")
+L15_CALL=$(awk -v p='apply-statusline.sh" --apply' 'index($0, p) { print NR; exit }' "$HOOK")
 if [ -n "$L15_READ" ] && [ -n "$L15_CALL" ] && [ "$L15_READ" -lt "$L15_CALL" ]; then
   ok "L15 (구조) 소유 비트를 읽는 줄이 설치기 호출보다 앞이다"
 else
