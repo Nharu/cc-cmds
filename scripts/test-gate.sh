@@ -1695,15 +1695,20 @@ FRONTEOF
     # path differs in every context. `linemap.tsv` maps the cut's lines back to
     # this file's (`<cut first> <cut last> <original first>` per copied range)
     # and is written as the copy is built, for the reason the oracle's map is.
+    #
+    # THE MAP IS LOADED HERE, IN THE CUT'S HEAD, before any section's trace can
+    # be on. Loading it on the first assertion would put the loading lines in
+    # the line set of whichever section asserted first in this cut, so a section
+    # that runs first alone and later on a row would differ by those lines.
     sec_iso_map=""
     if [ -n "$sec_iso_out" ]; then
       mkdir -p "$sec_iso_out" || exit 2
       : > "$sec_iso_out/rec.tsv"
       sec_iso_map="$sec_iso_out/linemap.tsv"
       printf '1\t%s\t1\n' "$sec_pre" > "$sec_iso_map"
-      printf "tg_iso_rec='%s'\ntg_iso_dir='%s'\ntg_iso_cut='%s'\n" \
+      printf "tg_iso_rec='%s'\ntg_iso_dir='%s'\ntg_iso_cut='%s'\ntg_iso_load\n" \
         "$sec_iso_out/rec.tsv" "$sec_iso_out" "$sec_cut" >> "$sec_cut"
-      sec_cur=$(( sec_cur + 3 ))
+      sec_cur=$(( sec_cur + 4 ))
     fi
     # One line naming the section the cut is entering, counted like a marker and
     # attributed to no section. It goes in whether or not timing markers are on,
@@ -2129,20 +2134,26 @@ passed=0; failed=0; skipped=0
 # selector finished before the cut started; the comparator reads it only to find
 # a line's marker. A call from another file, or from a line the selector
 # inserted, has no source line and writes 0.
+#
+# `tg_iso_load` reads `linemap.tsv` into three arrays once per process. The
+# selector writes its call into the cut's head, right after the record's paths,
+# so no section's line set holds the loading lines.
+tg_iso_load() {
+  local a b f
+  tg_iso_mapn=0
+  [ -f "${tg_iso_dir:-}/linemap.tsv" ] || return 0
+  while IFS=$'\t' read -r a b f; do
+    case "$a$b$f" in ''|*[!0-9]*) continue ;; esac
+    tg_iso_ma[tg_iso_mapn]=$a; tg_iso_mb[tg_iso_mapn]=$b; tg_iso_mo[tg_iso_mapn]=$f
+    tg_iso_mapn=$((tg_iso_mapn + 1))
+  done < "$tg_iso_dir/linemap.tsv"
+}
 tg_iso_put() {
-  local l="$2" n="${BASH_LINENO[1]:-0}" o=0 i a b f
+  local l="$2" n="${BASH_LINENO[1]:-0}" o=0 i
   l="${l//$'\n'/ }"; l="${l//$'\t'/ }"
   if [ "${BASH_SOURCE[2]:-}" = "${tg_iso_cut:-}" ]; then
-    if [ -z "${tg_iso_mapn:-}" ]; then
-      tg_iso_mapn=0
-      while IFS=$'\t' read -r a b f; do
-        case "$a$b$f" in ''|*[!0-9]*) continue ;; esac
-        tg_iso_ma[tg_iso_mapn]=$a; tg_iso_mb[tg_iso_mapn]=$b; tg_iso_mo[tg_iso_mapn]=$f
-        tg_iso_mapn=$((tg_iso_mapn + 1))
-      done < "$tg_iso_dir/linemap.tsv"
-    fi
     i=0
-    while [ "$i" -lt "$tg_iso_mapn" ]; do
+    while [ "$i" -lt "${tg_iso_mapn:-0}" ]; do
       if [ "$n" -ge "${tg_iso_ma[i]}" ] && [ "$n" -le "${tg_iso_mb[i]}" ]; then
         o=$(( tg_iso_mo[i] + n - tg_iso_ma[i] )); break
       fi
@@ -19326,9 +19337,9 @@ B7_LOG="$WORK/b7-appended.txt"
     mkdir -p "$BRUNS/B7X-$i" 2>/dev/null || true
     b7w=0
     while ! mkdir "$B7_IDX.lock" 2>/dev/null; do
-      b7w=$((b7w + 1))
-      [ "$b7w" -gt 20 ] && break
-      sleep 0.05
+      b7w=$((b7w + 1)) # gate-isolation: 변동
+      [ "$b7w" -gt 20 ] && break # gate-isolation: 변동
+      sleep 0.05 # gate-isolation: 변동
     done
     if [ "$b7w" -le 20 ]; then
       # 게이트와 같은 `$$` 다. `( … ) &` 안에서 `$$` 는 부모 셸의 pid 로 확장되지만
