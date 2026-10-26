@@ -37314,7 +37314,8 @@ gate_ci_rerun_x5_hit() {
   #     value; a flow collection (`{…}`/`[…]` as a value, a sequence item or a
   #     whole line) holding an `environment` or `uses` key or a key other than
   #     `run` whose scalar value names .github/workflows/, or not closed by the
-  #     end of the file; an alias in key position; a `? ` complex key.
+  #     end of the file (a quoted string in a flow is one value); an alias in
+  #     key position; a `? ` complex key.
   #   - Every line, body included, with `\` continuations joined, matches on
   #     `workflow run` (whatever options stand before it), `/dispatches`, or a
   #     path token under .github/workflows/ that does not end in .yml/.yaml.
@@ -37380,7 +37381,21 @@ gate_ci_rerun_x5_hit() {
       }
       return 0
     }
-    function flowhit(s) { return s ~ flowkey || flowpath(s) }
+    function mask(s,   i, c, inq, o) {
+      # The flow text with `,:{}[]` inside quotes turned into `_`, so a quoted
+      # string is read as one value and never as keys or item breaks.
+      inq = ""; o = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (inq == "") {
+          if ((c == "\"" || c == q) && opens(s, i)) inq = c
+        } else if (c == inq) inq = ""
+        else if (index(",:{}[]", c) > 0) c = "_"
+        o = o c
+      }
+      return o
+    }
+    function flowhit(s) { s = mask(s); return s ~ flowkey || flowpath(s) }
     function startflow(s) {
       buf = s; d = depth(s)
       if (d > 0) { inflow = 1; return }
