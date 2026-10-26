@@ -8,9 +8,10 @@
 #     EnterPlanMode / ExitPlanMode. Every point that
 #     would have asked resolves to a halt record instead.
 #   Rule 2 (no notification surface) — an unattended arm must not reach
-#     PushNotification / notify.sh / terminal-notifier. Reaching a sleeping
-#     user is the driver's exclusive job; a stage that works AND notifies is
-#     forbidden without exception.
+#     PushNotification / notify.sh / terminal-notifier, nor call the remote
+#     relay's entry command. Reaching a sleeping user is the driver's
+#     exclusive job; a stage that works AND notifies is forbidden without
+#     exception.
 #   Rules 1 and 2 read the arm's `SKILL.md` and every `<arm>/references/*.md`
 #     of the arm's own directory: a body moved out of `SKILL.md` into a file
 #     the arm Reads on a condition is still the arm's instruction.
@@ -193,6 +194,28 @@ QUESTION_RE='ToolSearch\("select:[^"]*AskUserQuestion|AskUserQuestion\(|ToolSear
 # call-form anchoring so a prose mention in a README sentence is not a hit.
 NOTIFY_RE='PushNotification\(|notify\.sh[[:space:]]+(arm|fire-now|cancel)|terminal-notifier[[:space:]]+-'
 
+# Rule 2, continued — the remote relay's entry command `cc-remote`. The relay
+# carries notifications off this machine, so for an unattended stage it is the
+# same forbidden surface as the local notifier, and Rule 2 checks this pattern
+# together with NOTIFY_RE under the same failure and pass lines. Two forms are
+# blocked:
+#   - `cc-remote` followed by whitespace and a subcommand or option, where the
+#     character before the name is not a letter, digit, `_`, `.` or `-` — a
+#     command position, and a path call such as `…/cc-remote status`;
+#   - a line that is `cc-remote` alone, optionally after a `$ ` prompt.
+# Allowed: the name alone in backticks, a longer name such as
+# `cc-remote-notify`, and a prose mention where a Korean particle follows the
+# name or the name is part of a repository name.
+# Known misses: `$(cc-remote)`, where a closing parenthesis follows the name,
+# and a call whose first character after the name is neither a lowercase
+# letter nor `-` (`cc-remote "$@"`, `cc-remote 2>&1`, `cc-remote | tee`,
+# `cc-remote;`). Known false positive: an English sentence where a word
+# follows the name. Both limits are the price of allowing prose mentions:
+# blocking every form the command can be called in would also fail the
+# repository name and design mentions, so the pattern is narrowed to the
+# call shapes above on purpose.
+RELAY_RE='(^|[^A-Za-z0-9_.-])cc-remote[[:space:]]+[-a-z]|^[[:space:]]*(\$[[:space:]]+)?cc-remote[[:space:]]*$'
+
 # Rule 4 — "<arm>|<skill whose references/ tree the arm reads>". Explicit for
 # the same reason the skill list is: the sharing is stated in prose inside each
 # arm and nothing derives it, so a glob would silently drop a renamed arm
@@ -280,9 +303,9 @@ for skill in "${UNATTENDED_SKILLS[@]}"; do
     fail=1
   fi
 
-  if grep -qE "$NOTIFY_RE" "${scan[@]}"; then
+  if grep -qE "$NOTIFY_RE|$RELAY_RE" "${scan[@]}"; then
     echo "FAIL: $skill — reaches a notification surface" >&2
-    grep -HnE "$NOTIFY_RE" "${scan[@]}" >&2
+    grep -HnE "$NOTIFY_RE|$RELAY_RE" "${scan[@]}" >&2
     fail=1
   fi
 
