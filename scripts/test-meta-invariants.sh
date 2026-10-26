@@ -980,6 +980,23 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   fi
 done
 
+# The shift posts a pull request review a termination clause asks for, and both
+# copies' settling sections give the same REST spelling with the declaration the
+# gate judges it at. A copy that dropped either would leave the review to a
+# stage or to a declaration the cutpoint rule refuses.
+for pair in "리드:$AP_ROUTER|### Proposing that the run is done" \
+            "교대:$RS_CORPUS|### Settling the termination clauses and proposing done"; do
+  who=${pair%%:*}; rest=${pair#*:}; file=${rest%%|*}; head=${rest#*|}
+  sec=$(router_section "$file" "$head")
+  n1=$(printf '%s\n' "$sec" | grep -cF -- '--cutpoint 커밋 --surface 외부상태변경 --reach 협업' || true)
+  n2=$(printf '%s\n' "$sec" | grep -cF -- 'pulls/<n>/reviews' || true)
+  if [ "${n1:-0}" != "0" ] && [ "${n2:-0}" != "0" ]; then
+    ok "$who 사본의 「${head#'### '}」 절이 리뷰 게시 철자와 신고를 함께 싣는다"
+  else
+    bad "$who 사본의 「${head#'### '}」 절" "리뷰 게시 철자 또는 신고가 없다 (신고 $n1, 철자 $n2)"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # 6e-2b. The kickoff writes no design document on any tier
 #

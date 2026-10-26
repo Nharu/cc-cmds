@@ -123,7 +123,7 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | --- | --- | --- |
 | `0` | passed | continue the loop |
 | `2` | bad argv | fix the argv and retry — do not re-decide |
-| `3` | refused by a rule | the act is not available; choose another |
+| `3` | refused by a rule | the act is not available; choose another — a `절단점-준수` refusal is read by the line under it, as **A `3` from `절단점-준수`** below says |
 | `4` | stale digest | re-read the snapshot; never re-type one |
 | `5` | approval issued | **end this shift with `사유=승인`** — except a judgment approval of a held class (`사람-결정` or `시각-승인`), which holds one segment and lets you keep routing the rest (the **CFI-S4 exception**) |
 | `6` | self-declaration mismatch | your declared grade is not the derived one; fix the declaration |
@@ -143,6 +143,8 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | `15` | your context is at or past the hard limit (`shift.over_hard`) | **write `handoff` with `사유=상한` and end this shift.** That act is not capped — bookkeeping kinds pass — so write it first and then exit. Do not choose another act: every other one comes back 15 too |
 
 **`15` is a routing instruction and not a refusal, and what comes with it is how you know it is the gate's.** The act you issued may exit 15 on its own account, so read the two together: a cap carries a `gate:` line on stderr and no output from the act. `wait` reports it the same way, with no `[wait]` final line. Ambiguity remains where an act both prints nothing and exits 15; the gate's line is the only discriminator, and there is no second one.
+
+**A `3` from `절단점-준수` is told apart by the line the gate prints under `rule refused: 절단점-준수`.** That rule compares the act's judged height with the target's cutpoint, and for an act whose argv has a height of its own the gate adds one of two lines. One says the argv itself is above the target cutpoint and tells you to park: the act cannot be done in this run under any declaration, so do not re-declare it. Take the park by what the act was for — for a segment's act, write the segment's `park` row and a `스코프=cone` `blocked` row anchored on it, and do not write a `shift-halt`; for an act that would settle a termination clause, settle that clause `불가능` with the refusal line, that line (or, for a bare spelling admitted with `gate.sh admit`, the warning line it prints), the exit code and the target cutpoint as its evidence; for any other act, go on without it. The other line says the act was judged at the height you declared: when the act's actual height is within the target cutpoint, re-declare the same argv once at that height, and park as above when it is above. An argv with no height of its own — the gate prints the line without one — is re-declared only when this file gives its spelling a height (posting a pull request review is `커밋`, as 「Settling the termination clauses and proposing done」 says). Neither line is a stop that asks a person, and the same argv at the same declaration is never issued again. A `절단점-준수` refusal with no such line is an act the gate does not derive — choose another, as the table says.
 
 **`11` means two things, and the verb you issued tells them apart.** From `act` or `exec` it is 도달 park; from `wait` it is "never dispatched".
 
@@ -426,7 +428,7 @@ act --kind obligation-drop -- 동일성=<problem 행의 동일성> 근거=<원�
 **The evidence a clause row carries depends on its state.**
 
 - **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit's full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks only that `근거` is not empty, so keeping to this is yours.
-- **`불가능` cites what decided it** — a residual issue URL, a design step's `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer. The rules of `references/review-next.md` and `references/design-dispatch.md` for their own `불가능` rows stand as they are.
+- **`불가능` cites what decided it** — a residual issue URL, a design step's `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer. An act that passed the gate and then failed cites its ledger row anchor `A-<8 hex>`; an act the gate refused cites the refusal line, the exit code and the target cutpoint. The rules of `references/review-next.md` and `references/design-dispatch.md` for their own `불가능` rows stand as they are.
 - **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.
 
 **Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, no `shift_halts[]` element holds a segment, and no segment parked by a `스코프=cone` row reading `사유=시각 승인 대기` still has its `시각-승인` approval open in `pending_approvals[]`. While one is open, end with `사유=승인` as item 2 of 「Dispatching the visual stage」 says, and do not propose done. A plan with no implementation step (「Planning the segments」) and a design that stopped follow the same order.
@@ -437,7 +439,18 @@ act --kind obligation-drop -- 동일성=<problem 행의 동일성> 근거=<원�
 4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.
 5. While any evidence request is open, do not propose done: end with `사유=중단` and put each record's absolute path in `막힌 지점`.
 
-**You cannot produce a clause's evidence when its `문면` asks for an execution** — a paid or credentialed call, a local launch, a device, or a person's confirmation — and no ledger row, stage report or answer attachment shows it done. Do not run it yourself, and do not settle such a clause `불가능` without a question.
+**A clause that asks for a pull request review is settled by a review you post yourself** — do not hand it to a stage. Spell it `gh api -X POST repos/<owner>/<repo>/pulls/<n>/reviews -f event=<…> -f commit_id=<리뷰 HEAD> -f body=<본문>` and declare it `--cutpoint 커밋 --surface 외부상태변경 --reach 협업`.
+
+- **`commit_id`** is the `리뷰 HEAD` of the segment's last `cycle` row in the snapshot's `cycles[]`, expanded to 40 characters with a gate read of `git rev-parse`. When that row is outside the snapshot's window, find it in the ledger with a gate read. When no such row is found, post nothing and settle the clause `불가능` saying so. Never take it from `review_next[]`.
+- **`<n>` and `<owner>/<repo>`** are the values of the same segment's REST merge spelling.
+- **The body is one line in `-f body=`** — write no file for it. `event` is `COMMENT` unless the clause names another. Take the P0 and P1 counts from the `cycle` row and the finding titles from a gate read of its `리포트 경로`, and put no design document path or section number in it.
+- **Whatever you declare, the gate judges this argv at `커밋`**, and `gh pr review` too. An inline GraphQL review mutation has no height of its own: declare it `커밋`.
+- **Issue it with `exec`**, or, where the target's own Bash hook refuses it inside a gate call, bare and then `gate.sh admit --request last …` (an admit with no derived height is judged `커밋`). When that form is refused too, settle the clause `불가능` with the refusal as its evidence.
+- **The response's `id` and `html_url` are the `충족` evidence.**
+- **Before posting, before a retry and before settling again**, read the pull request's review list and `gh api user --jq .login` with `--surface 읽기`. When this account already has a review on the same `commit_id`, cite it and post no new one.
+- **On failure:** a gate refusal follows 「Exit codes」 and is not retried; no response or a 5xx is retried once, after the read above; a 4xx is not retried. A failure that is not retried, and a second failure, settle the clause `불가능` with the act's ledger row anchor `A-<8 hex>`.
+
+**You cannot produce a clause's evidence when its `문면` asks for an execution** — a paid or credentialed call, a local launch, a device, or a person's confirmation — and no ledger row, stage report or answer attachment shows it done. Do not run it yourself, and do not settle such a clause `불가능` without a question. Posting a pull request review is not such an execution: you issue it yourself through the gate, as above.
 
 **Ask for it with `shift-halt` at site `종료 절 근거`**, which stops no segment: pass `--segment -` and name the clause in `절`.
 
