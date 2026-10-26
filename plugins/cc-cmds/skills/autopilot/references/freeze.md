@@ -13,7 +13,7 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 
 - when 5m ran, one `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>` row. It carries no `형태=`, so it authorizes no act — the pre-authorization rule skips a row without one — and what it buys is that the record's hash is inside the frozen set;
 - when 5k ran, the approved `설계 로스터` rows, one per member, in the order the person approved them;
-- when 5p took rows, one `- \`사전 인가\` | <값>` row each, the value being the `형태=` and `사유=` tail exactly as confirmed;
+- when 5p took rows, one `- \`사전 인가\` | <값>` row each, the value being the tail exactly as confirmed: `형태=` and `사유=` for an old-form row, and `형태=`, `표면=`, `도달=`, `짝 정리=` (when one was given) and `사유=` in that order for a new-form row;
 - when 5q took rows, one `- \`자동 채택\` | <값>` row each, the value being the four-field tail exactly as confirmed;
 - when 5r ran, exactly one `- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>[ | 원 티켓=<task id>]` row (the bracketed field only on a `clickup` row, and only when 5r took an origin ticket), and its `사전 인가` form rows when the tracker is not `없음`;
 - when Step 4 resolved a base ticket for a child run, exactly one `- \`베이스 설계\` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>` row. The gate checks its form and count only and never re-hashes the file — the design stage does that before it spawns anyone;

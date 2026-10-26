@@ -416,14 +416,17 @@ row segment 'id=p5' '상태=park'
 row stage-result '세그먼트=p5' '스테이지=p5' '종류=design' '실행 버전=1' '종단 부류=공허한 성공'
 row segment 'id=p6' '상태=park'
 row blocked '대상=x' '스코프=act' '원인=막힘' '사유=도달 park' '도달 판정=등급회귀' '세그먼트=p6' '스테이지=p6#1'
+row segment 'id=p7' '상태=park'
+row blocked '대상=x' '스코프=act' '원인=막힘' '사유=도달 park' '도달 판정=행값충돌' '세그먼트=p7' '스테이지=p7#1'
 out=$(stops)
+has "park: two disagreeing pre-authorization rows are a reportable cell, not 미분류" "$out" "$(ev 'park/행값충돌' 비의도)"
 has "park: reportable cell" "$out" "$(ev 'park/CI실패' 비의도)"
 has "park: four-cell park is intended" "$out" "$(ev 'park/prod인가없음' 의도 '사전 인가 밖')"
 has "park: no explaining row falls back" "$out" "$(ev 'segment/park' 비의도)"
 has "park: undeclared target" "$out" "$(ev 'park/대상 미선언' 비의도)"
 has "park: a cell outside the table folds" "$out" "$(ev 'park/미분류' 비의도)"
 has "park: the stage event stands for its segment" "$out" "$(ev 'stage/공허한 성공/design' 비의도)"
-check "park: a segment with a stage event adds no park line" "$(printf '%s\n' "$out" | grep -c '^park/\|^segment/')" "5"
+check "park: a segment with a stage event adds no park line" "$(printf '%s\n' "$out" | grep -c '^park/\|^segment/')" "6"
 
 newcase
 row segment 'id=s1' '상태=실행중'
