@@ -756,6 +756,79 @@ case "$(cat "$SCR_SKILLS/implement/SKILL.md")" in
     esac ;;
   *) bad "화면 낱말 일치" "implement/SKILL.md 의 두 모양 문장이 없다" ;;
 esac
+# `**크기 사유**`·`**권한 혼합 사유**` — 설계 스킬의 예시 줄과 (f) 의 기준선을 직접 읽어,
+# 기준선을 넘는 블록을 드라이버와 게이트가 사유 줄의 유무와 상관없이 그대로 읽는지 잰다.
+# 예시나 기준선을 못 읽으면 실패한다: 건너뛰면 아무것도 재지 않는다. 픽스처와 헬퍼는
+# 이 묶음 안에서만 정의한다.
+SZ_SKILLS="$(dirname "$DRIVER")/../skills"
+SZ_EX=$(sed -nE 's/^[[:space:]]*(\*\*(크기 사유|권한 혼합 사유)\*\*: .*)$/\1/p' "$SZ_SKILLS/design/SKILL.md")
+check "사유 필드: 설계 스킬의 문법 예시는 키마다 한 줄, 두 줄이다" \
+  "$(printf '%s\n' "$SZ_EX" | grep -c . | tr -d ' '):$(printf '%s\n' "$SZ_EX" | grep -c '^\*\*크기 사유\*\*: ' | tr -d ' '):$(printf '%s\n' "$SZ_EX" | grep -c '^\*\*권한 혼합 사유\*\*: ' | tr -d ' ')" "2:1:1"
+SZ_F=$(awk '/\*\*\(f\) Slice size\.\*\*/ { s = substr($0, index($0, "**(f) Slice size.**")); e = index(s, "**(g)"); if (e) s = substr(s, 1, e - 1); print s; exit }' "$SZ_SKILLS/design/SKILL.md")
+SZ_BASE=$(printf '%s\n' "$SZ_F" | grep -oE '\*\*[0-9]+\*\*' | tr -d '*')
+case "$SZ_BASE" in
+  ''|*[!0-9]*) bad "사유 필드: (f) 의 기준선은 굵은 정수 정확히 하나다" "${SZ_BASE:-없음}"; SZ_BASE=20 ;;
+  *) ok "사유 필드: (f) 의 기준선은 굵은 정수 정확히 하나다 ($SZ_BASE)" ;;
+esac
+SZ_N=$((SZ_BASE + 1))
+sz_doc() {  # sz_doc <file> <옛|새> <사유 줄 없음|뒤|앞>
+  local i files=''
+  for i in $(seq 1 "$SZ_N"); do files="${files:+$files, }\`f$i.txt\`"; done
+  {
+    printf '# 문서\n\n## 구현 슬라이싱\n\n### 슬라이스 A\n**스킬**: implement\n**레포**: `o/r`\n**선언 파일**: %s\n' "$files"
+    [ "$3" != 앞 ] || printf '%s\n' "$SZ_EX"
+    printf '**선행**: 없음\n'
+    [ "$2" != 새 ] || printf '**머지 순서**: 없음\n'
+    printf '**절단점**: 커밋\n'
+    [ "$3" != 뒤 ] || printf '%s\n' "$SZ_EX"
+    printf '\n'
+  } > "$1"
+}
+sz_gate() {  # sz_gate <doc> — the gate's branch; `DOC` is set after the source, which resets it
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; DOC=$2; gate_slicing_branch' _ \
+    "$(dirname "$DRIVER")/gate.sh" "$1" 2>/dev/null
+}
+for sz_g in 옛 새; do
+  for sz_r in 뒤 없음; do
+    sz_doc "$RSD/sz-$sz_g-$sz_r.md" "$sz_g" "$sz_r"
+    check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 드라이버 검증기를 경고 없이 통과한다" \
+      "$(rs_sfo "$RSD/sz-$sz_g-$sz_r.md")" "0:"
+    check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 드라이버가 선언통치로 읽고 결함이 없다" \
+      "$(slicing_branch "$RSD/sz-$sz_g-$sz_r.md" 2>/dev/null)|$(slicing_slice_defects "$RSD/sz-$sz_g-$sz_r.md" 2>/dev/null)" "선언통치|"
+    check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 게이트가 선언통치로 읽는다" \
+      "$(sz_gate "$RSD/sz-$sz_g-$sz_r.md")" "선언통치"
+  done
+  check "사유 필드: 사유 줄은 선언 다이제스트를 움직이지 않는다 ($sz_g 문법)" \
+    "$(slice_decl_digest "$RSD/sz-$sz_g-뒤.md" A)" "$(slice_decl_digest "$RSD/sz-$sz_g-없음.md" A)"
+done
+sz_doc "$RSD/sz-front.md" 새 앞
+check "사유 필드: 선행 줄 앞의 사유 줄은 선행·선언 파일 값을 바꾸지 않는다" \
+  "$(slice_field "$RSD/sz-front.md" A '선행')|$(slice_field "$RSD/sz-front.md" A '선언 파일')" \
+  "$(slice_field "$RSD/sz-새-없음.md" A '선행')|$(slice_field "$RSD/sz-새-없음.md" A '선언 파일')"
+# 문면 고정 — 세 경로의 리드가 두 분할 규칙에 닿는 자리와 멈추지 않는다는 처분.
+SZ_CANON=$(cat "$SZ_SKILLS/design/SKILL.md")
+case "$SZ_CANON" in
+  *'**(f) Slice size.**'*'**(g) One permission profile per slice.**'*) ok "사유 필드: 정본 8번 항목에 (f)·(g) 표지가 있다" ;;
+  *) bad "정본 (f)·(g) 표지" "design/SKILL.md 에 두 표지가 없다" ;;
+esac
+check "사유 필드: 정본 (f) 문장에 기준선과 디렉터리 원소 셈이 있다" \
+  "$(printf '%s\n' "$SZ_F" | grep -cF "**$SZ_BASE**" | tr -d ' '):$(printf '%s\n' "$SZ_F" | grep -cF 'git ls-files' | tr -d ' ')" "1:1"
+for sz_sk in design-discuss-unattended design-solo-unattended; do
+  case "$(cat "$SZ_SKILLS/$sz_sk/SKILL.md")" in
+    *'Neither split rule ever reaches `slicing-unknown`: a split nobody decided is not made, and the reason field is written instead.'*)
+      ok "사유 필드: $sz_sk 에 분할 규칙이 멈추지 않는다는 문장이 있다" ;;
+    *) bad "$sz_sk 처분 문장" "축자 문장이 없다" ;;
+  esac
+done
+case "$(cat "$SZ_SKILLS/design-solo-unattended/SKILL.md")" in
+  *'Read item `8. **Slicing self-check` of `${CLAUDE_SKILL_DIR}/../design/SKILL.md`'*) ok "사유 필드: 단독 스킬이 정본 8번 항목을 읽는다" ;;
+  *) bad "단독 스킬 읽기 지시" "Read 지시가 없다" ;;
+esac
+check "사유 필드: discuss 리드의 읽기 표에 정본 8번 항목 정합 행이 있다" \
+  "$(awk '/^## Lead read set/ { on = 1; next } on && /^## / { exit } on' "$SZ_SKILLS/design-discuss-unattended/SKILL.md" \
+     | grep -cF '| 정합 | 드라이버 | `design/SKILL.md` | `8. **Slicing self-check` | 항목 |' | tr -d ' ')" "1"
+check "사유 필드: 기본 병합 규칙은 다섯 조건이고 다섯째 조건이 (f)·(g) 를 이름한다" \
+  "$(grep -c 'when all four hold' "$SZ_SKILLS/design/SKILL.md" | tr -d ' '):$(awk '/when all five hold/ { on = 1; next } on && /^        5\. / { print; exit }' "$SZ_SKILLS/design/SKILL.md" | grep -c '(f).*(g)' | tr -d ' ')" "0:1"
 check "잔여 이어가기 문면은 빠진 표제를 축자로 싣는다" \
   "$(residual_unmet_message "$(printf '### R1. 첫 항목\n### R6. 외부 항목')")" \
   "자기 몫 잔여 검증 항목의 결과 줄(W1 뒤집기·W2 메모)이 없다 — 「### R1. 첫 항목」, 「### R6. 외부 항목」"
