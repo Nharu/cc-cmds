@@ -11804,7 +11804,9 @@ gate_adoption_check() {
   fi
   # The landing is found by the walk the import uses (`gate_landing_walk`), so
   # a segment merged and then parked is not adopted to be done again; the row
-  # it stops on counts when it is `머지됨` or `완료`, as the last row did.
+  # it stops on counts when it records a merge — `머지됨`, or a `완료` carrying
+  # a landing commit (`gate_adoption_row_landed`). A `완료` a cutpoint below
+  # merge left is no landing, and its segment is adopted.
   if gate_landing_walk gate_adoption_row_landed <<ROWS
 $( { grep -E '^- `segment` ' "$src_ledger" 2>/dev/null || true; } | { grep -F "| id=$skey |" || true; })
 ROWS
@@ -13616,9 +13618,18 @@ gate_from_declaration() {
     # PR. Its planned row would send the same work out again, so the terminal
     # row is brought in instead and no planned row is written; the caller sees
     # GATE_DECL_SELF_IMPORTED and stops there. Nothing to bring in plans as before.
-    irc=0
-    gate_import_prior_landed "$verb" "$seg" self || irc=$?
-    case "$irc" in 0) return 0 ;; 1) : ;; *) return "$irc" ;; esac
+    #
+    # AN ADOPTED SEGMENT BRINGS IN NO TERMINAL ROW OF AN EARLIER RUN: its
+    # `세그먼트 입양` row says this run continues that segment and reviews it,
+    # and `gate_adoption_check` has already refused one the earlier run merged.
+    # Without this, a pull request cutpoint's `완료` whose open pull request
+    # still heads its commit would be brought in and the segment recorded as
+    # done without the review the adoption asked for.
+    if ! gate_adoption_row "$seg" >/dev/null; then
+      irc=0
+      gate_import_prior_landed "$verb" "$seg" self || irc=$?
+      case "$irc" in 0) return 0 ;; 1) : ;; *) return "$irc" ;; esac
+    fi
   fi
 
   GATE_DECL_FIELDS+=( "워크트리=$wt" )
@@ -25811,8 +25822,21 @@ gate_landing_walk() {
 
 gate_adoption_row_landed() {
   # gate_adoption_row_landed <row> — 0 when that row of an adopted segment's
-  # origin ledger is `머지됨` or `완료` (`gate_adoption_check`).
-  case "$(gate_row_field "$1" '상태')" in 머지됨|완료) return 0 ;; esac
+  # origin ledger records a merge (`gate_adoption_check`): `머지됨`, or `완료`
+  # carrying a landing commit — a hex `머지 커밋`, or the `고정 커밋` of an apply
+  # row, as `gate_prior_landed_commit` reads it. A `완료` a cutpoint below merge
+  # left — a push cutpoint's, or a PR cutpoint's carrying `PR` and `커밋` only —
+  # put nothing on the base and is no landing, so the segment stays adoptable.
+  # GATE_WALK_PRCUT is not read: adoption follows the merge, not the slice's
+  # declared cutpoint.
+  case "$(gate_row_field "$1" '상태')" in
+    머지됨) return 0 ;;
+    완료)
+      case "$(gate_prior_landed_commit "$1")" in
+        ''|*[!0-9a-f]*) return 1 ;;
+      esac
+      return 0 ;;
+  esac
   return 1
 }
 

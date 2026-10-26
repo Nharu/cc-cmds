@@ -2374,6 +2374,49 @@ a13 "$H13"
 check "13: 그 세그먼트에 걸린 답 없는 중단 기록은 중단기록 칸, 이월할 답은 이월 칸이 된다" \
   "$(printf '%s\n' "$A13" | sed 1d | cut -f7-)" "중단기록=I1#2.md${TAB}이월=재수렴"
 
+# A source that met every termination clause and left I1 `완료` with no merge
+# commit — a cutpoint below merge. With the open pull request its last `원격
+# 판독` row recorded, detect re-kicks it to adopt I1, reading no network;
+# without that row it stays done and says why I1 is not taken over.
+F13=20261001-a000000c
+mk13 "$F13"
+fx_row 'segment' "id=I1" "상태=완료" "워크트리=$S13_W" "브랜치=$S13_B" "커밋=$S13_H" "PR=41"
+fx_row '종료 절' "id=C1" "상태=충족" "근거=픽스처"
+FW=$S13_W; FB=$S13_B; FH=$S13_H
+printf '99\n' > "$GH13/rc"; : > "$GH13/log"
+OUT=$(rk_as "s-$F13" detect --arg '다시')
+check "13 완료 런: 열린 PR 앵커가 있는 미착지 세그먼트가 있으면 판정은 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "재킥오프/$F13"
+check "13 완료 런: 갈래는 완료 런 입양이다" "$(col "$OUT" 갈래)" "완료 런 입양"
+check "13 완료 런: 입양 후보 고지가 한 줄 나온다" \
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I1 PR 41)은 입양 후보입니다 — 재킥오프가 디스크와 원격을 다시 확인합니다")" "1"
+check "13 완료 런: 완료 굵은 줄이 이어받을 세그먼트를 든다" \
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "굵게${TAB}이전 런 $F13 은 완료 기준을 모두 채웠습니다 — 머지되지 않은 세그먼트 1건(I1)을 열린 PR 과 함께 이어받아 그 PR 의 리뷰부터 다시 시작합니다")" "1"
+hasnt "13 완료 런: 끝낸 경계 굵은 줄을 내지 않는다" "$OUT" "끝낸 경계는 같은 값으로"
+check "13 완료 런: 판별이 가짜 gh 를 부르지 않는다" "$(grep -c . "$GH13/log" || true)" "0"
+gh13
+NF13=20261001-a000000d
+K13_NOANCHOR=1 mk13 "$NF13"
+fx_row 'segment' "id=I1" "상태=완료" "워크트리=$S13_W" "브랜치=$S13_B" "커밋=$S13_H" "PR=41"
+fx_row '종료 절' "id=C1" "상태=충족" "근거=픽스처"
+OUT=$(rk_as "s-$NF13" detect --arg '다시')
+check "13 완료 런: 열린 PR 기록이 없으면 판정은 완료다" "$(col "$OUT" 판정)" "완료"
+check "13 완료 런: 완료 고지는 고정 두 줄과 사유 줄 하나다" "$(cnt "$OUT" 고지)" "3"
+check "13 완료 런: 사유 줄은 PR기록없음 과 새 킥오프 입양을 든다" \
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I1 PR 41)은 이어받지 않습니다(PR기록없음) — 이어받으려면 의도를 적어 새 킥오프에서 입양하세요")" "1"
+check "13 완료 런: 사유 줄은 두 고정 줄 사이에 있다" \
+  "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 == "고지" { n++; if (index($2, "PR기록없음")) print n }')" "2"
+# verify-subset: a draft of the done source that takes over nothing is refused,
+# and the same render answered `이어받기` passes (the refusal is not vacuous).
+use13 "$FW" "$FB" "$FH"
+printf '입양 I1\t다시 하기 — I1 · PR #41\n' > "$WORK/a13-fredo"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-fredo" seat_link "$F13" 20261002-b0000007
+check "13 완료 런: 모든 후보를 다시 하기로 답한 초안은 verify-subset 에서 실패한다" "$SL_RC/$SL_VS" "0/실패"
+has "13 완료 런: 그 실패의 사유는 이어받는 세그먼트가 없는 초안이다" "$(cat "$WORK/sl.verr") $(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$F13.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13-fredo" --grant "$WORK/sl.block")" "이어받는 세그먼트가 없는 초안은 받지 않습니다"
+printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n' "$FB" "$(printf '%s' "$FH" | cut -c1-12)" > "$WORK/a13-ftake"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-ftake" seat_link "$F13" 20261002-b0000008
+check "13 완료 런: 이어받기로 답한 초안은 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
+use13 "$SW" "$SB" "$SH"
+
 # 4·5 — the person's path. The default source, answered `이어받기`.
 use13 "$SW" "$SB" "$SH"
 SB_PMS=$(sha "$BASE/docs/pipeline-run/$S13.plan.md"); SB_PGS=$(sha "$BASE/docs/pipeline-grant/$S13.md")

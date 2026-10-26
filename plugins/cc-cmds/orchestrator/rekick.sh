@@ -176,7 +176,7 @@
 # bytes), which print nothing else.
 #
 #   detect         판정  재킥오프|대기|새 런|없음|진행 중|완료  [<id>  [<base>]]
-#                  갈래  게이트 종료|강제 표면 이동 무효화|대기 이어받기
+#                  갈래  게이트 종료|강제 표면 이동 무효화|대기 이어받기|완료 런 입양
 #                  대기 원인  승인 대기|사람 대기|한도 대기|무기록|멈춤
 #                  킥오프  <이전 킥오프 일시>
 #                  종료 표시  <게이트가 남긴 종료 표시>
@@ -1013,12 +1013,35 @@ EOF
   local ub inv=0 gate_tok mark err states
   if rk_is_live; then rk_detect_open running; fi
 
+  # A run that met every termination clause is done, unless a segment it left
+  # unmerged still has the open pull request its ledger recorded: that segment
+  # is adopted by a re-kickoff and reviewed from its pull request, and the run
+  # goes on to the eligibility below as an ended one would. The candidates are
+  # the offline layer's, so this reads no network either.
+  local done_adopt=0 dcands dkind dseg df3 df4 dn nadopt=0 adopt_segs=""
   states=$(rk_clause_states "$RK_PL")
   if rk_clauses_all_met "$states"; then
-    printf '판정\t완료\t%s\n' "$RK_PREV"
-    printf '고지\t이전 런 %s 은 완료 기준을 모두 채웠습니다 — 이어받을 남은 단계가 없습니다\n' "$RK_PREV"
-    printf '고지\t이어받지 않고 처음부터 묻게 하려면 의도를 적어 다시 부르세요\n'
-    exit 0
+    dcands=$(rk_adopt_candidates "$(manifest_targets)" offline)
+    while IFS="$TAB" read -r dkind dseg _; do
+      [ "$dkind" = "입양후보" ] || continue
+      nadopt=$((nadopt + 1)); adopt_segs="${adopt_segs:+$adopt_segs, }$dseg"
+    done <<EOF
+$dcands
+EOF
+    if [ "$nadopt" -eq 0 ]; then
+      printf '판정\t완료\t%s\n' "$RK_PREV"
+      printf '고지\t이전 런 %s 은 완료 기준을 모두 채웠습니다 — 이어받을 남은 단계가 없습니다\n' "$RK_PREV"
+      while IFS="$TAB" read -r dkind dseg df3 df4 _; do
+        [ "$dkind" = "입양불가" ] || continue
+        dn=$df3; [ "$dn" != "-" ] || dn='없음'
+        printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — 이어받으려면 의도를 적어 새 킥오프에서 입양하세요\n' "$dseg" "$dn" "$df4"
+      done <<EOF
+$dcands
+EOF
+      printf '고지\t이어받지 않고 처음부터 묻게 하려면 의도를 적어 다시 부르세요\n'
+      exit 0
+    fi
+    done_adopt=1
   fi
 
   ub=$(cc_unresolved_blocked "$RK_PL" 2>/dev/null) || ub=""
@@ -1044,7 +1067,9 @@ EOF
   fi
 
   printf '판정\t재킥오프\t%s\t%s\n' "$RK_PREV" "$RK_BASE"
-  if [ "$inv" = "1" ]; then printf '갈래\t강제 표면 이동 무효화\n'; else printf '갈래\t게이트 종료\n'; fi
+  if [ "$inv" = "1" ]; then printf '갈래\t강제 표면 이동 무효화\n'
+  elif [ "$done_adopt" = "1" ]; then printf '갈래\t완료 런 입양\n'
+  else printf '갈래\t게이트 종료\n'; fi
   printf '킥오프\t%s\n' "$(manifest_field '런 정체' '킥오프 일시')"
   if [ "$inv" = "1" ]; then
     printf '굵게\t이전 런 %s 은 집행 표면이 옮겨져 무효화됐습니다 — 그 런은 재개하지 않습니다\n' "$RK_PREV"
@@ -1057,7 +1082,10 @@ EOF
     if [ -z "$etok" ]; then
       case "$mark" in '벽시계 마감 경과'*) etok='마감' ;; esac
     fi
-    if rk_budget_token "$etok"; then
+    if [ "$done_adopt" = "1" ]; then
+      printf '굵게\t이전 런 %s 은 완료 기준을 모두 채웠습니다 — 머지되지 않은 세그먼트 %s건(%s)을 열린 PR 과 함께 이어받아 그 PR 의 리뷰부터 다시 시작합니다\n' \
+        "$RK_PREV" "$nadopt" "$adopt_segs"
+    elif rk_budget_token "$etok"; then
       printf '굵게\t이전 런 %s 을 끝낸 경계는 같은 값으로 다시 주어집니다 (%s) — 같은 한도가 다시 바닥날 수 있습니다\n' "$RK_PREV" "$mark"
     else
       printf '굵게\t이전 런 %s 을 끝낸 경계는 같은 값으로 다시 주어집니다 (%s)\n' "$RK_PREV" "$mark"
@@ -2966,6 +2994,15 @@ EOF
   done <<EOF
 $arows
 EOF
+  # A source that met every termination clause is re-kicked only to adopt a
+  # segment it left unmerged: a draft that adopts none of its segments would
+  # run the remaining graph of a finished run again.
+  if rk_clauses_all_met "$(MANIFEST="$prev" rk_clause_states "$RK_PL")" \
+    && ! printf '%s\n' "$arows" | awk -v p="$pid" '
+        { n = split($0, a, / [|] /); for (i = 2; i <= n; i++) if (a[i] == "출처 런=" p) f = 1 }
+        END { exit !f }'; then
+    why="${why:+$why; }원천 런 $pid 은 완료 기준을 모두 채웠습니다 — 이어받는 세그먼트가 없는 초안은 받지 않습니다"
+  fi
   if [ "$RK_AUTO" = "1" ]; then
     awk -F '\t' '$1 ~ /^입양 / { f = 1 } END { exit !f }' "$RK_ASKED" \
       && why="${why:+$why; }좌석은 입양을 묻지 않습니다 — --asked 에 입양 키가 있습니다"
