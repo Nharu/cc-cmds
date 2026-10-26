@@ -48608,7 +48608,7 @@ rx_manifest R83C "$(t3n_row 'bash scripts/publish.sh' 외부상태변경 배포�
 t3n_exec 트리밖쓰기 기기전역 -- "${t3n_a[@]}" "$t3n_long"
 t3n_r=$(t3n_last '자율 승인')
 check "83c: 9n — 최대 길이 두 칸의 exec 가 통과한다" "$rc" "0"
-case "$t3n_r" in *'| 행 값=외부상태변경/배포트리거 |'*'| 신고 불일치=트리밖쓰기/기기전역 |'*)
+case "$t3n_r" in *'| 행 값=외부상태변경/배포트리거 | 신고 불일치=트리밖쓰기/기기전역 |'*)
   ok "83c: 9n — 최대 길이 exec 행이 두 칸을 싣는다" ;;
   *) bad "83c: 9n — 최대 길이 exec 행이 두 칸을 싣는다" "$t3n_r" ;; esac
 if [ "$(printf '%s' "$t3n_r" | wc -c | tr -d ' ')" -le 1024 ]; then ok "83c: 9n — 최대 길이 exec 행이 1024바이트 안이다"
@@ -48623,14 +48623,18 @@ if [ "$(printf '%s' "$t3n_r" | wc -c | tr -d ' ')" -le 1024 ]; then ok "83c: 9n 
 else bad "83c: 9n — 최대 길이 park 행이 1024바이트 안이다" "$(printf '%s' "$t3n_r" | wc -c)"; fi
 T3N_WHY=''
 
-# 9n-꺼진 자동 해소 — 사람이 앞에 있는 런에서는 새 형식 행이 있어도 행 값을 적용하지 않고,
-# 행위는 지금처럼 승인으로 가며, 원장에 `행 값` 칸도 짝 정리 열림도 남지 않는다.
+# 9n-꺼진 자동 해소 — 사람이 앞에 있는 런에서는 새 형식 행이 있어도 행 값을 적용하지 않는다.
+# 행위는 지금 동작 그대로 처분되어 원장 행의 도달이 신고(기기전역)이고, 행의 도달(dev)이
+# 아니며, 원장에 `행 값` 칸도 짝 정리 열림도 남지 않는다.
 rx_manifest R83C "$t3n_dev"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 t3n_n0=$( { grep -c -e '행 값=' -e '^- `짝 정리`' "$t3n_led" 2>/dev/null || true; } )
-t3p front3 외부상태변경 기기전역 -- "${t3n_a[@]}"
-check "83c: 9n — 꺼진 자동 해소에서는 새 형식 행이 행위를 열지 않는다" "$([ "$rc" != 0 ] && echo 닫힘)" "닫힘"
 t3n_exec 외부상태변경 기기전역 -- "${t3n_a[@]}"
+t3n_r=$( { grep -e '^- `자율 승인` ' -e '^- `blocked` ' "$t3n_led" 2>/dev/null || true; } | tail -1)
+case "$t3n_r" in
+  *'| 도달=기기전역 |'*) ok "83c: 9n — 꺼진 자동 해소에서는 행의 도달이 신고를 대신하지 않는다" ;;
+  *) bad "83c: 9n — 꺼진 자동 해소에서는 행의 도달이 신고를 대신하지 않는다" "$t3n_r" ;;
+esac
 t3n_n1=$( { grep -c -e '행 값=' -e '^- `짝 정리`' "$t3n_led" 2>/dev/null || true; } )
 check "83c: 9n — 꺼진 자동 해소의 exec 는 행 값 칸도 짝 정리 열림도 남기지 않는다" "${t3n_n1:-0}" "${t3n_n0:-0}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
@@ -49268,7 +49272,7 @@ p83_open "$l83" S1 1; p83_open "$l83" S2 4
 q83p "$l83" gate_pair_drain stage S1
 check "83p: 스테이지 끝 정리가 성공하면 그 파견의 잔여가 빈다" "$(p83_st "$l83")|$(p83_n ok)|$(p83_n ok2)" "S2/4/미호출|1|0"
 check "83p: 결과 행이 성공·rc 0·스테이지끝 을 싣는다" "$(lsr_last_fields "$l83" '짝 정리' 상태 파견 결과 rc 시점)" "결과|S1|성공|0|스테이지끝"
-check "83p: 정리는 런 디렉터리에서 돈다" "$(cut -d' ' -f1 "$D83P/ok.calls")" "${l83%/*}"
+check "83p: 정리는 런 디렉터리에서 돈다" "$(cut -d' ' -f1 "$D83P/ok.calls")" "$(cd "${l83%/*}" && pwd)"
 
 # 실패 — 한 번 부르고, 같은 스테이지 끝을 다시 불러도 런 끝에도 다시 부르지 않는다.
 p83_clear; l83=$(lsr_ledger p83-fail)
@@ -49337,13 +49341,17 @@ q83p "$l83" gate_pair_append start-free "$p83_ln" - "상태=시작" "열림=$p83
 q83p "$l83" gate_pair_drain run
 check "83p: 결과 없는 시작은 호출중단 이고 다시 부르지 않는다" "$(p83_n ok)|$(p83_st "$l83")" "0|-/1/호출중단"
 
-# 동시에 도는 두 런 끝 정리 — 시작 행을 쓴 쪽만 부른다.
-p83_clear; l83=$(lsr_ledger p83-par)
-p83_open "$l83" - 5
-q83p "$l83" gate_pair_drain run & p83_p1=$!
-q83p "$l83" gate_pair_drain run & p83_p2=$!
-wait "$p83_p1" "$p83_p2" 2>/dev/null || true
-check "83p: 동시에 돈 두 정리가 한 번만 부른다" "$(p83_n slow)|$(p83_rows "$l83" 시작)|$(p83_rows "$l83" 결과)" "1|1|1"
+# 동시에 도는 두 런 끝 정리 — 시작 행을 쓴 쪽만 부른다. 시작 행의 조건을 락 안에서 읽는
+# 것은 락 도구가 있는 갈래의 성질이므로(`lock_tool` 은 darwin 에서만 `/usr/bin/lockf` 를
+# 내고, 그 밖에서는 락 없는 갈래를 탄다) 이 호스트로 띄우고 락 도구가 있을 때만 잰다.
+if [ -x /usr/bin/lockf ]; then
+  p83_clear; l83=$(lsr_ledger p83-par)
+  p83_open "$l83" - 5
+  lsr_in - "$l83" - lsr_rp_in "$M83P" gate_pair_drain run 2>/dev/null & p83_p1=$!
+  lsr_in - "$l83" - lsr_rp_in "$M83P" gate_pair_drain run 2>/dev/null & p83_p2=$!
+  wait "$p83_p1" "$p83_p2" 2>/dev/null || true
+  check "83p: 동시에 돈 두 정리가 한 번만 부른다" "$(p83_n slow)|$(p83_rows "$l83" 시작)|$(p83_rows "$l83" 결과)" "1|1|1"
+fi
 
 # 같은 단위의 열림은 결과가 날 때까지 하나다. 결과가 난 뒤의 열림은 새 짝이다.
 p83_clear; l83=$(lsr_ledger p83-once)
@@ -49363,13 +49371,14 @@ check "83p: 사본이 다르면 정리를 돌리지 않고 rc 없는 실패다" 
 # 드라이버의 훅 — 그 파견의 시작 안 된 열림이 있을 때만 게이트의 스테이지 끝 정리를 부른다.
 p83_drv() {
   # p83_drv <원장> <stage-result 필드…> — run.sh 를 소싱해 훅을 부르고, 게이트 호출을 기록만
-  # 하는 대역이 받은 인자를 낸다.
+  # 하는 대역이 받은 인자를 낸다. 훅은 게이트 호출의 표준 출력과 표준 오류를 버리므로 대역은
+  # fd 3 으로 쓴다.
   local l=$1; shift
   (cd "$WT" && CC_ORCH_SOURCE_ONLY=1 bash -c '
     . "$0" >/dev/null 2>&1
     LEDGER="$1"; shift
-    run_gate_call() { printf "%s\n" "$*"; }
-    driver_pair_drain_row "$@"' "$RUNSH" "$l" "$@" 2>/dev/null)
+    run_gate_call() { printf "%s\n" "$*" >&3; }
+    driver_pair_drain_row "$@"' "$RUNSH" "$l" "$@" 3>&1 >/dev/null 2>&1)
 }
 l83=$(lsr_ledger p83-drv)
 check "83p: 열림이 없으면 드라이버 훅이 게이트를 부르지 않는다" "$(p83_drv "$l83" "세그먼트=S1" "파견 id=S1#2")" ""
