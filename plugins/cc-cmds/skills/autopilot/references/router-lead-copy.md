@@ -150,13 +150,15 @@ Not every decision is an act. For those, the question is **"may I choose this wi
 
 1. Read the snapshot's `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.
 2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for — ledger rows, the run directory, a merge commit's `git show --stat` or `git diff`, `gh pr view`, each through `exec … --surface 읽기` — and when you find it, write `act --kind clause`.
-3. A clause whose evidence no read of this run can produce — its `문면` asks for a paid or credentialed call, a local launch, a device, or a person's confirmation — is not settled `불가능` without a question. A routing shift asks for it with `shift-halt` at site `종료 절 근거` (the shift's copy gives the form), and the seat puts that record to a person.
+3. A clause whose evidence no read of this run can produce — its `문면` asks for a paid or credentialed call, a local launch, a device, or a person's confirmation — is not settled `불가능` without a question. A routing shift asks for it with `shift-halt` at site `종료 절 근거` (the shift's copy gives the form), and the seat puts that record to a person. Posting a pull request review is not such an execution: the shift issues it itself through the gate, as below.
 4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.
+
+**A clause that asks for a pull request review is settled by a review the shift posts itself** — it is not handed to a stage. The spelling is `gh api -X POST repos/<owner>/<repo>/pulls/<n>/reviews -f event=<…> -f commit_id=<리뷰 HEAD> -f body=<본문>`, declared `--cutpoint 커밋 --surface 외부상태변경 --reach 협업`; `commit_id` is the `리뷰 HEAD` of the segment's last `cycle` row, never a `review_next[]` value. Whatever is declared, the gate judges that argv and `gh pr review` at `커밋`, and an inline GraphQL review mutation is declared `커밋`. The response's `id` and `html_url` are the `충족` evidence. The shift's copy gives where each value comes from, the issue form, the duplicate check and the failure branches.
 
 **The evidence a clause row carries depends on its state.**
 
 - **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit's full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks only that `근거` is not empty, so keeping to this is yours.
-- **`불가능` cites what decided it** — a residual issue URL, a design step's `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer.
+- **`불가능` cites what decided it** — a residual issue URL, a design step's `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer. An act that passed the gate and then failed cites its ledger row anchor `A-<8 hex>`; an act the gate refused cites the refusal line, the exit code and the target cutpoint.
 - **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.
 
 The disagreement runs both ways, and only one direction is obvious:
@@ -305,7 +307,7 @@ gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --se
 
 The gate keys that `- reconverge` on the audit step only while the step's last row is that audit and holds the scope after the document to `감사 골격급`; its row then reads `세그먼트=- | 스테이지=<audit step id> | 종류=reconverge`. Wait on it with `gate.sh wait --manifest <매니페스트> --segment <audit step id>`. **After it ends**, read the re-convergence's terminal literal in its own stream, as `autopilot-router-shift` reads it. Present → dispatch the audit afresh on the same key with stage kind `audit` and `-p "/cc-cmds:design-audit-unattended <스냅숏 design_doc>[ --base]"` — ` --base` exactly when the snapshot's `design_scope` is `base` — and route it like the first audit; a re-convergence row reading `재수렴 판정=재설계 필요` additionally re-plans through `replan_due[]`. Absent — a halt, a crash, no literal — → `blocked` for the key with `사유=골격급 재수렴 종단 술어 거짓`, and no second re-convergence. A second dispatch on the same key while the first is live is refused by the gate's live-attempt rule, so dispatch it once.
 
-**The fresh audit asks for no second re-convergence.** It reads itself as a re-audit, reports what remains, and when skeleton-grade items still stand it parks at `Step 7 / 골격급 재발` — `재수렴 요청=아니오` on its row — and a person answers it through the shift skill's 「Handing on a person's answer to a halt」.
+**The fresh audit asks again only under the key's cap.** It reads itself as a re-audit and reports what remains. When skeleton-grade items still stand and the key has had fewer re-convergences than run.sh's `AUDIT_SKELETAL_RECONVERGE_CAP` (2), its row reads `재수렴 요청=예` and the step is routed as the first audit's was; at the cap the row reads `재수렴 요청=아니오`, the items stay in `## 미해결 이슈` and the audit ends `정상 완료`. It writes no `Step 7 / 골격급 재발` halt; a person answers such a record an earlier version wrote through the shift skill's 「Handing on a person's answer to a halt」.
 
 #### Dispatching the split stage
 

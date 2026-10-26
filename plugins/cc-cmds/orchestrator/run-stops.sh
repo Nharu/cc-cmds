@@ -90,7 +90,8 @@ dev파괴
 dev식별자불일치
 dev식별자부재
 CI실패
-대상 미선언'
+대상 미선언
+행값충돌'
 RUN_STOPS_CUTPOINTS='커밋
 브랜치
 push

@@ -756,6 +756,93 @@ case "$(cat "$SCR_SKILLS/implement/SKILL.md")" in
     esac ;;
   *) bad "화면 낱말 일치" "implement/SKILL.md 의 두 모양 문장이 없다" ;;
 esac
+# `**크기 사유**`·`**권한 혼합 사유**` — 설계 스킬의 예시 줄과 (f) 의 기준선을 직접 읽어,
+# 기준선을 넘는 블록을 드라이버와 게이트가 사유 줄의 유무와 상관없이 그대로 읽는지 잰다.
+# 예시나 기준선을 못 읽으면 실패한다: 건너뛰면 아무것도 재지 않는다. 픽스처와 헬퍼는
+# 이 묶음 안에서만 정의한다.
+SZ_SKILLS="$(dirname "$DRIVER")/../skills"
+SZ_EX=$(sed -nE 's/^[[:space:]]*(\*\*(크기 사유|권한 혼합 사유)\*\*: .*)$/\1/p' "$SZ_SKILLS/design/SKILL.md")
+check "사유 필드: 설계 스킬의 문법 예시는 키마다 한 줄, 두 줄이다" \
+  "$(printf '%s\n' "$SZ_EX" | grep -c . | tr -d ' '):$(printf '%s\n' "$SZ_EX" | grep -c '^\*\*크기 사유\*\*: ' | tr -d ' '):$(printf '%s\n' "$SZ_EX" | grep -c '^\*\*권한 혼합 사유\*\*: ' | tr -d ' ')" "2:1:1"
+SZ_F=$(awk '/\*\*\(f\) Slice size\.\*\*/ { s = substr($0, index($0, "**(f) Slice size.**")); e = index(s, "**(g)"); if (e) s = substr(s, 1, e - 1); print s; exit }' "$SZ_SKILLS/design/SKILL.md")
+SZ_BASE=$(printf '%s\n' "$SZ_F" | grep -oE '\*\*[0-9]+\*\*' | tr -d '*')
+case "$SZ_BASE" in
+  ''|*[!0-9]*) bad "사유 필드: (f) 의 기준선은 굵은 정수 정확히 하나다" "${SZ_BASE:-없음}"; SZ_BASE=20 ;;
+  *) ok "사유 필드: (f) 의 기준선은 굵은 정수 정확히 하나다 ($SZ_BASE)" ;;
+esac
+SZ_N=$((SZ_BASE + 1))
+sz_doc() {  # sz_doc <file> <옛|새> <사유 줄 없음|뒤|앞>
+  local i files=''
+  for i in $(seq 1 "$SZ_N"); do files="${files:+$files, }\`f$i.txt\`"; done
+  {
+    printf '# 문서\n\n## 구현 슬라이싱\n\n### 슬라이스 A\n**스킬**: implement\n**레포**: `o/r`\n**선언 파일**: %s\n' "$files"
+    [ "$3" != 앞 ] || printf '%s\n' "$SZ_EX"
+    printf '**선행**: 없음\n'
+    [ "$2" != 새 ] || printf '**머지 순서**: 없음\n'
+    printf '**절단점**: 커밋\n'
+    [ "$3" != 뒤 ] || printf '%s\n' "$SZ_EX"
+    printf '\n'
+  } > "$1"
+}
+sz_gate() {  # sz_gate <doc> — the gate's branch on the first line, then its defect enumeration;
+  # `DOC` is set after the source, which resets it
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; DOC=$2; gate_slicing_branch; printf "\n"; gate_slicing_defects' _ \
+    "$(dirname "$DRIVER")/gate.sh" "$1" 2>/dev/null
+}
+# 결함이 없는 선언에서도 게이트의 열거는 대체 문구 한 줄을 내므로, 열거가 비었는지가 아니라
+# 슬라이스에 돌아가는 결함 줄(「슬라이스 <id>: 」 머리)이 없는지를 잰다.
+sz_gate_check() {  # sz_gate_check <doc> — prints `<branch>|<slice-owned defect line count>`
+  local out
+  out=$(sz_gate "$1")
+  printf '%s|%s' "$(printf '%s\n' "$out" | sed -n 1p)" "$(printf '%s\n' "$out" | sed 1d | grep -c '^슬라이스 ' | tr -d ' ')"
+}
+for sz_g in 옛 새; do
+  for sz_r in 뒤 없음; do
+    sz_doc "$RSD/sz-$sz_g-$sz_r.md" "$sz_g" "$sz_r"
+    check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 드라이버 검증기를 경고 없이 통과한다" \
+      "$(rs_sfo "$RSD/sz-$sz_g-$sz_r.md")" "0:"
+    check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 드라이버가 선언통치로 읽고 결함이 없다" \
+      "$(slicing_branch "$RSD/sz-$sz_g-$sz_r.md" 2>/dev/null)|$(slicing_slice_defects "$RSD/sz-$sz_g-$sz_r.md" 2>/dev/null)" "선언통치|"
+    check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 게이트가 선언통치로 읽고 슬라이스 결함이 없다" \
+      "$(sz_gate_check "$RSD/sz-$sz_g-$sz_r.md")" "선언통치|0"
+  done
+  check "사유 필드: 사유 줄은 선언 다이제스트를 움직이지 않는다 ($sz_g 문법)" \
+    "$(slice_decl_digest "$RSD/sz-$sz_g-뒤.md" A)" "$(slice_decl_digest "$RSD/sz-$sz_g-없음.md" A)"
+done
+# 대조: 절단점 줄만 뺀 같은 블록은 게이트가 선언불완전으로 읽고 그 슬라이스의 결함 줄을 낸다.
+# 헬퍼가 열거를 부르지 못해 출력이 비면 위 「결함이 없다」 단언이 공허하게 통과하므로 함께 잰다.
+grep -v '^\*\*절단점\*\*: ' "$RSD/sz-새-뒤.md" > "$RSD/sz-nocut.md"
+sz_nocut=$(sz_gate "$RSD/sz-nocut.md")
+check "사유 필드: 절단점 줄을 뺀 대조 블록은 게이트가 선언불완전으로 읽고 그 결함을 열거한다" \
+  "$(printf '%s\n' "$sz_nocut" | sed -n 1p)|$(printf '%s\n' "$sz_nocut" | grep -cxF '슬라이스 A: 필수 필드 「절단점」 없음' | tr -d ' ')" "선언불완전|1"
+sz_doc "$RSD/sz-front.md" 새 앞
+check "사유 필드: 선행 줄 앞의 사유 줄은 선행·선언 파일 값을 바꾸지 않는다" \
+  "$(slice_field "$RSD/sz-front.md" A '선행')|$(slice_field "$RSD/sz-front.md" A '선언 파일')" \
+  "$(slice_field "$RSD/sz-새-없음.md" A '선행')|$(slice_field "$RSD/sz-새-없음.md" A '선언 파일')"
+# 문면 고정 — 세 경로의 리드가 두 분할 규칙에 닿는 자리와 멈추지 않는다는 처분.
+SZ_CANON=$(cat "$SZ_SKILLS/design/SKILL.md")
+case "$SZ_CANON" in
+  *'**(f) Slice size.**'*'**(g) One permission profile per slice.**'*) ok "사유 필드: 정본 8번 항목에 (f)·(g) 표지가 있다" ;;
+  *) bad "정본 (f)·(g) 표지" "design/SKILL.md 에 두 표지가 없다" ;;
+esac
+check "사유 필드: 정본 (f) 문장에 기준선과 디렉터리 원소 셈이 있다" \
+  "$(printf '%s\n' "$SZ_F" | grep -cF "**$SZ_BASE**" | tr -d ' '):$(printf '%s\n' "$SZ_F" | grep -cF 'git ls-files' | tr -d ' ')" "1:1"
+for sz_sk in design-discuss-unattended design-solo-unattended; do
+  case "$(cat "$SZ_SKILLS/$sz_sk/SKILL.md")" in
+    *'Neither split rule ever reaches `slicing-unknown`: a split nobody decided is not made, and the reason field is written instead.'*)
+      ok "사유 필드: $sz_sk 에 분할 규칙이 멈추지 않는다는 문장이 있다" ;;
+    *) bad "$sz_sk 처분 문장" "축자 문장이 없다" ;;
+  esac
+done
+case "$(cat "$SZ_SKILLS/design-solo-unattended/SKILL.md")" in
+  *'Read item `8. **Slicing self-check` of `${CLAUDE_SKILL_DIR}/../design/SKILL.md`'*) ok "사유 필드: 단독 스킬이 정본 8번 항목을 읽는다" ;;
+  *) bad "단독 스킬 읽기 지시" "Read 지시가 없다" ;;
+esac
+check "사유 필드: discuss 리드의 읽기 표에 정본 8번 항목 정합 행이 있다" \
+  "$(awk '/^## Lead read set/ { on = 1; next } on && /^## / { exit } on' "$SZ_SKILLS/design-discuss-unattended/SKILL.md" \
+     | grep -cF '| 정합 | 드라이버 | `design/SKILL.md` | `8. **Slicing self-check` | 항목 |' | tr -d ' ')" "1"
+check "사유 필드: 기본 병합 규칙은 다섯 조건이고 다섯째 조건이 (f)·(g) 를 이름한다" \
+  "$(grep -c 'when all four hold' "$SZ_SKILLS/design/SKILL.md" | tr -d ' '):$(awk '/when all five hold/ { on = 1; next } on && /^        5\. / { print; exit }' "$SZ_SKILLS/design/SKILL.md" | grep -c '(f).*(g)' | tr -d ' ')" "0:1"
 check "잔여 이어가기 문면은 빠진 표제를 축자로 싣는다" \
   "$(residual_unmet_message "$(printf '### R1. 첫 항목\n### R6. 외부 항목')")" \
   "자기 몫 잔여 검증 항목의 결과 줄(W1 뒤집기·W2 메모)이 없다 — 「### R1. 첫 항목」, 「### R6. 외부 항목」"
@@ -3494,10 +3581,11 @@ regb_write 없음 문서만 문서만
 printf '바뀐 줄\n' >> "$REGB/docs/b.md"
 check "레지스트리 — 첫 줄의 sha256 이 문서와 다르면 미완결이다" "$(regb_rc)" "1"
 
-# --- 21c-b2 골격급 재수렴 — 감사가 센 골격급이 한 번의 재수렴과 재감사를 부른다 ---
-# 감사 보고서 울타리의 골격급 수가 1 이상이고 이 런에서 감사 키가 아직 재수렴하지
-# 않았으면 감사 행이 `재수렴 요청=예` 를 싣고, 드라이버는 `S2R` 재수렴 뒤 같은
-# 스테이지 id 로 다시 감사한다. 재감사는 다시 요청하지 않으므로 고리는 한 번만 돈다.
+# --- 21c-b2 골격급 재수렴 — 감사가 센 골격급이 상한까지 재수렴과 재감사를 부른다 ---
+# 감사 보고서 울타리의 골격급 수가 1 이상이고 이 런에서 감사 키의 재수렴 행이
+# 상한(`AUDIT_SKELETAL_RECONVERGE_CAP`) 미만이면 감사 행이 `재수렴 요청=예` 를 싣고,
+# 드라이버는 `S2R` 재수렴 뒤 같은 스테이지 id 로 다시 감사한다. 재수렴 행이 상한에
+# 닿으면 고리가 멈추고, 남은 골격급은 보고서의 상한 도달 줄과 함께 미해결 이슈로 남는다.
 SKD="$WORK/skeletal-arm"
 skd_case() {
   # skd_case <라벨> <감사 시도별 골격급, 쉼표> [재수렴 술어 0|1] [앞선 원장 행]
@@ -3565,9 +3653,18 @@ check "감사 스테이지가 최초와 재감사 회차를 받는다" "$(skd_pa
 check "골격급 재수렴이 보고서에 남는다" \
   "$(grep -c '감사가 센 골격급 항목으로 문서를 다시 수렴했다 (S2R)' "$SKD/two-zero/report" 2>/dev/null || true)" "1"
 
-skd_case one-one '1,1'
-check "재감사가 골격급을 남겨도 고리는 한 번만 돈다" \
-  "$(skd_disp one-one)/$(skd_req one-one)/$(skd_rc one-one)" "S2 S2R S2/1:예 1:아니오/0"
+skd_case one-one '1,1,1'
+check "재감사가 골격급을 남기면 고리는 상한(재수렴 2회)까지 돈다" \
+  "$(skd_disp one-one)/$(skd_req one-one)/$(skd_rc one-one)" "S2 S2R S2 S2R S2/1:예 1:예 1:아니오/0"
+check "상한에 닿은 감사는 보고서에 상한 도달 줄을 하나 남긴다" \
+  "$(grep -c '재수렴 상한(2회)에 닿아 골격급 1건' "$SKD/one-one/report" 2>/dev/null || true)" "1"
+check "상한까지 도는 동안 S2R 은 두 번 뜬다" \
+  "$(awk -F'\t' '$1 == "S2R"' "$SKD/one-one/dispatched" | grep -c . || true)" "2"
+
+# 상한은 감사 키의 재수렴 행을 쓴 쪽과 상관없이 센다 — 게이트 모양 행 하나가 한 몫을 쓴다.
+skd_case gate-seeded '1,1' 0 "- \`stage-result\` | 세그먼트=- | 스테이지=S2 | 종류=reconverge | 종단 부류=정상 완료 |"
+check "게이트 모양 재수렴 행이 있으면 S2R 은 한 번만 더 뜬다" \
+  "$(skd_disp gate-seeded)/$(skd_req gate-seeded)/$(skd_rc gate-seeded)/$(skd_pass gate-seeded)" "S2 S2R S2/1:예 1:아니오/0/reaudit reaudit"
 
 skd_case zero '0'
 check "골격급 0건 감사는 재수렴 없이 끝난다" \

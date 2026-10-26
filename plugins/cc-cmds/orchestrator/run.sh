@@ -785,6 +785,152 @@ EOF
   return 0
 }
 
+# The interpreter options that take the program as a code string. A new-form
+# `사전 인가` row whose shape ends in one opens every program the act can spell,
+# so the writers refuse it. One list, read by both writers.
+PREAUTH_CODE_STRING_OPTS='-c -e -E --eval -p --print -r --command'
+# The runners the pre-authorization matcher treats as interpreters. A shape of
+# any other runner reaches `형태=완전` only past its first non-option operand.
+PREAUTH_INTERPRETERS='bash sh zsh python3 node'
+# The two closed vocabularies of a new-form row.
+PREAUTH_ROW_SURFACES='읽기 워크트리쓰기 트리밖쓰기 외부상태변경'
+PREAUTH_ROW_REACHES='dev prod 배포트리거'
+
+preauth_row_refusal() {
+  # preauth_row_refusal <row> — print why a `사전 인가` row is refused and
+  # return 1; return 0 and print nothing for a row it accepts. <row> is the
+  # manifest line or the bare `형태=… | … | 사유=…` value a kickoff source holds.
+  #
+  # A row with `표면=` and `도달=` is new-form; a row with neither and no
+  # `짝 정리=` is old-form and passes untouched, as the defaults file's rows do.
+  # A row with only one of the two, or `짝 정리=` alone, is refused. A new-form
+  # row is refused for a value outside the two vocabularies, a tab or a run of
+  # spaces in `형태=` or `짝 정리=` (the binding digest folds spaces, so two rows
+  # differing only there would freeze one digest for two argvs), a shape ending
+  # in an interpreter's code-string option, a shape of a non-interpreter runner
+  # that does not reach past its first non-option operand (the matcher can never
+  # call it complete, so the row would freeze with no effect), and a `짝 정리=`
+  # that is not one shell-free argv of at most 200 bytes whose words containing
+  # `/` are absolute paths.
+  local row="$1" f k v shape="" surf="" reach="" pair="" has_s=0 has_r=0 has_p=0
+  local first last nwords pos runners
+  while IFS= read -r f; do
+    f="${f#"${f%%[! ]*}"}"
+    case "$f" in *=*) ;; *) continue ;; esac
+    k="${f%%=*}"; v="${f#*=}"
+    v="${v%"${v##*[! 	]}"}"
+    case "$k" in
+      형태)       shape="$v" ;;
+      표면)       has_s=1; surf="$v" ;;
+      도달)       has_r=1; reach="$v" ;;
+      '짝 정리')  has_p=1; pair="$v" ;;
+    esac
+  done <<EOF
+$(printf '%s' "$row" | tr '|' '\n')
+EOF
+  if [ "$has_s" = "0" ] && [ "$has_r" = "0" ]; then
+    [ "$has_p" = "0" ] && return 0
+    printf '짝 정리= 는 표면=·도달= 을 함께 적은 새 형식 행에만 둡니다'
+    return 1
+  fi
+  if [ "$has_s" != "$has_r" ]; then
+    printf '표면= 과 도달= 은 함께 적습니다 — 하나만 적은 행은 새 형식도 옛 형식도 아닙니다'
+    return 1
+  fi
+  case " $PREAUTH_ROW_SURFACES " in *" $surf "*) [ -n "$surf" ] ;; *) false ;; esac \
+    || { printf '표면 값이 어휘 밖입니다: %s — 허용: %s' "$surf" "$PREAUTH_ROW_SURFACES"; return 1; }
+  case " $PREAUTH_ROW_REACHES " in *" $reach "*) [ -n "$reach" ] ;; *) false ;; esac \
+    || { printf '도달 값이 어휘 밖입니다: %s — 허용: %s' "$reach" "$PREAUTH_ROW_REACHES"; return 1; }
+  [ -n "$shape" ] || { printf '새 형식 행에 형태= 가 없습니다'; return 1; }
+  case "$shape" in
+    *'	'*|*'  '*|' '*) printf '형태= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
+  esac
+  last="${shape##* }"
+  case " $PREAUTH_CODE_STRING_OPTS " in
+    *" $last "*) printf '형태의 마지막 낱말이 인터프리터의 코드 문자열 선택지(%s)입니다 — 그 행은 어떤 프로그램이든 엽니다' "$last"; return 1 ;;
+  esac
+  first="${shape%% *}"
+  runners=$(awk -F'"' '/^runners="/ { print $2; exit }' "$ORCH_DIR/rules/사전-인가-대조.sh" 2>/dev/null)
+  [ -n "$(printf '%s' "$runners" | tr -d ' ')" ] \
+    || { printf '사전 인가 대조기에서 러너 목록을 읽지 못해 형태를 판정할 수 없습니다'; return 1; }
+  case " $runners " in
+    *" $first "*)
+      case " $PREAUTH_INTERPRETERS " in
+        *" $first "*) ;;
+        *)
+          nwords=$(printf '%s' "$shape" | awk '{ print NF }')
+          pos=$(printf '%s' "$shape" | awk '{ for (i = 2; i <= NF; i++) { if ($i ~ /^-/) continue; print i; exit } }')
+          [ -n "$pos" ] || pos=2
+          if [ "$nwords" -le "$pos" ]; then
+            printf '러너 %s 의 형태가 첫 비옵션 피연산자 자리 너머까지 닿지 않습니다 — 대조기가 이 행을 완전 일치로 볼 수 없어 행 값도 짝 정리도 효력이 없습니다' "$first"
+            return 1
+          fi ;;
+      esac ;;
+  esac
+  if [ "$has_p" = "1" ]; then
+    [ -n "$pair" ] || { printf '짝 정리= 가 비었습니다'; return 1; }
+    case "$pair" in
+      *'	'*|*'  '*|' '*) printf '짝 정리= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
+      *[\;\&\$\'\"\`\<\>]*) printf '짝 정리= 에 셸 메타문자가 있습니다 — 게이트는 셸 없이 낱말 그대로 실행합니다'; return 1 ;;
+    esac
+    [ "$(printf '%s' "$pair" | wc -c | tr -d ' ')" -le 200 ] \
+      || { printf '짝 정리= 가 200 바이트를 넘습니다'; return 1; }
+    f=$(printf '%s' "$pair" | awk '{ for (i = 1; i <= NF; i++) if (index($i, "/") > 0 && substr($i, 1, 1) != "/") { print $i; exit } }')
+    [ -z "$f" ] || { printf '짝 정리= 의 경로 낱말이 절대 경로가 아닙니다: %s' "$f"; return 1; }
+  fi
+  return 0
+}
+
+preauth_pair_key() {
+  # preauth_pair_key <row> — `<shape>\t<표면>/<도달>/<짝 정리>` of a new-form
+  # row, nothing for any other row: two new-form rows naming one shape must
+  # carry the same three values.
+  local row="$1" f k v shape="" surf="" reach="" pair=""
+  while IFS= read -r f; do
+    f="${f#"${f%%[! ]*}"}"
+    case "$f" in *=*) ;; *) continue ;; esac
+    k="${f%%=*}"; v="${f#*=}"
+    v="${v%"${v##*[! 	]}"}"
+    case "$k" in
+      형태) shape="$v" ;; 표면) surf="$v" ;; 도달) reach="$v" ;; '짝 정리') pair="$v" ;;
+    esac
+  done <<EOF
+$(printf '%s' "$row" | tr '|' '\n')
+EOF
+  [ -n "$shape" ] && [ -n "$surf" ] && [ -n "$reach" ] || return 0
+  printf '%s\t%s/%s/%s' "$shape" "$surf" "$reach" "$pair"
+}
+
+preauth_row_check() {
+  # Every `사전 인가` row through `preauth_row_refusal`, and no shape named by
+  # two new-form rows with different 표면, 도달 or 짝 정리. Old-form rows and
+  # rows without a shape (the interview record) pass as they are.
+  local row why key seen="" s
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    why=$(preauth_row_refusal "$row") || die "「사전 인가」 행이 거절됩니다 — $why: $row"
+    key=$(preauth_pair_key "$row")
+    [ -n "$key" ] || continue
+    s="${key%%	*}"
+    case "$seen" in
+      *"
+${s}	"*)
+        case "$seen" in
+          *"
+${key}
+"*) ;;
+          *) die "「사전 인가」 행 둘이 같은 형태에 다른 표면·도달·짝 정리를 적었습니다: $s" ;;
+        esac ;;
+    esac
+    seen="$seen
+${key}
+"
+  done <<EOF
+$(manifest_preauth_rows)
+EOF
+  return 0
+}
+
 manifest_plugin_allow_rows() {
   if manifest_memo_on; then manifest_memo_all "PA	"; return 0; fi
   grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
@@ -1315,6 +1461,11 @@ check_manifest() {
   # 9 (cont.) — the `라벨 인정` rows' shape. A row the gate cannot match exactly
   # would acknowledge nothing, or the wrong check, so it is refused at kickoff.
   label_ack_row_check
+  # 9 (cont.) — the `사전 인가` rows' new-form fields. A new-form row decides
+  # where an act lands and runs its cleanup with no person, so a row that would
+  # freeze with no effect, open every program, or run a cleanup through a shell
+  # is refused here, the same way the kickoff helper refuses it.
+  preauth_row_check
 
   # 11 — the `자동 채택` rows, checked at FREEZE TIME and nowhere else.
   #
@@ -3837,7 +3988,34 @@ ledger_row() {
   local _rc=0
   run_chained_append "$line" || _rc=$?
   [ "$_rc" = "0" ] || die "원장 행을 쓰지 못했습니다 (rc=${_rc}, 계열 ${series}) — 기록 없는 행위는 수행하지 않습니다"
+  # The pair cleanup after a stage termination folds its status, so this
+  # function still returns what the document-hash row returned.
+  [ "$series" != "stage-result" ] || { driver_pair_drain_row "$@" || true; }
   [ "$series" != "stage-result" ] || driver_doc_hash_row "$@"
+}
+
+driver_pair_drain_row() {
+  # driver_pair_drain_row <the stage-result row's fields> — after a stage
+  # termination this driver recorded, the open pair cleanups of that dispatch,
+  # called through the gate's own `gate_pair_drain stage` — the function the
+  # gate's stage recorder calls for a stage it terminated, so a pair both
+  # writers see is called once (the start row decides who calls it).
+  #
+  # The dispatch id is the row's `파견 id=`, cut at `#`. A row without one (the
+  # S9 apply handoff, which never runs an act through the gate and so can have
+  # opened no pair) and a ledger with no unstarted open of that id return at
+  # once without sourcing the gate, so a run that uses no pairs pays nothing.
+  local a did=""
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] && [ -f "$ORCH_DIR/pair-residue.awk" ] || return 0
+  for a in "$@"; do
+    case "$a" in '파견 id='*) did="${a#파견 id=}" ;; esac
+  done
+  did="${did%%#*}"
+  [ -n "$did" ] || return 0
+  [ -n "$(LC_ALL=C awk -v mode=pending -v disp="$did" -f "$ORCH_DIR/pair-residue.awk" "$LEDGER" 2>/dev/null)" ] \
+    || return 0
+  run_gate_call gate_pair_drain stage "$did" >/dev/null 2>&1 || true
+  return 0
 }
 
 driver_doc_hash_row() {
@@ -6881,6 +7059,11 @@ audit_artifact_complete() {
     && audit_skeleton_fence_body >/dev/null
 }
 
+# 감사 키당 자동 재수렴 수. An audit's key is audited once and re-audited after
+# each of at most this many re-convergences; `audit_row_request` counts them
+# with `audit_key_reconverge_rows`, whatever wrote them.
+AUDIT_SKELETAL_RECONVERGE_CAP=2
+
 audit_key_reconverge_rows() {
   # audit_key_reconverge_rows <audit step id> <ledger> — the run-scope
   # re-convergences the audit's key carries, in either writer's shape and in
@@ -6899,13 +7082,16 @@ audit_key_reconverge_rows() {
 audit_row_request() {
   # audit_row_request <skeletal> <terminal class> <audit step id> — the audit
   # row's `재수렴 요청`: `예` when an audit that ended `정상 완료` counted at
-  # least one skeleton-grade item and the audit's key has had no
-  # re-convergence in this run yet, `아니오` otherwise. A re-audit reports what
-  # remains and parks itself instead of asking again. Both writers of an audit
-  # row call this.
+  # least one skeleton-grade item and the audit's key has had fewer than
+  # `AUDIT_SKELETAL_RECONVERGE_CAP` re-convergences in this run, `아니오`
+  # otherwise. Once the key's re-convergences reach the cap, the skeleton-grade
+  # items that remain stay in the document's open issues and the audit ends as
+  # it is. Both writers of an audit row call this.
   case "$1" in ''|*[!0-9]*) printf '아니오'; return 0 ;; esac
+  local n
+  n=$(audit_key_reconverge_rows "$3" "${LEDGER:-}" | grep -c . || true)
   if [ "$1" -ge 1 ] && [ "$2" = '정상 완료' ] \
-     && [ -z "$(audit_key_reconverge_rows "$3" "${LEDGER:-}")" ]; then
+     && [ "${n:-0}" -lt "$AUDIT_SKELETAL_RECONVERGE_CAP" ]; then
     printf '예'
   else
     printf '아니오'
@@ -12534,12 +12720,19 @@ s2_last_audit_field() {
 
 s2_skeleton_reconverge() {
   # s2_skeleton_reconverge — the re-convergence an audit that counted
-  # skeleton-grade items asks for, under stage and dispatch id `S2R`. The same
-  # on a resumed run, so one that already ended normally is known by its row
-  # and not dispatched again; any other earlier ending parks the run. Returns 0
-  # when the document has been re-converged, 1 when the run parked.
+  # skeleton-grade items asks for, under stage and dispatch id `S2R`. Each
+  # cycle's re-convergence is the last `S2R` row after this run's last S2 audit
+  # row; with no S2 audit row in this run (a resumed run whose earlier fence
+  # asked for a re-convergence) every `S2R` row of the run counts as after it.
+  # Such a row that ended normally means this cycle's re-convergence is done
+  # (a resumed run), so it is not dispatched again; any other ending parks the
+  # run; no such row dispatches it. Returns 0 when the document has been
+  # re-converged, 1 when the run parked.
   local sid=S2R prior pclass src rclass
-  prior=$( { run_section_rows 'stage-result' || true; } | { grep -F "| 파견 id=$sid |" || true; } | tail -1)
+  prior=$( { run_section_rows 'stage-result' || true; } | awk -v sid="$sid" '
+    index($0, "| 스테이지=S2 |") && index($0, "| 종류=audit ") { last = "" ; next }
+    index($0, "| 파견 id=" sid " |") { last = $0 }
+    END { if (last != "") print last }')
   if [ -n "$prior" ]; then
     pclass=$(manifest_row_fields "$prior" '종단 부류')
     if [ "$pclass" = "정상 완료" ]; then
@@ -12582,15 +12775,25 @@ s2_audit_run() {
   # s2_audit_run <audit command> <first act: audit|reconverge> — the audit and
   # the skeletal re-convergence it may ask for. An audit that ends `정상 완료`
   # with `재수렴 요청=예` is followed by `s2_skeleton_reconverge` and a re-audit
-  # under the same stage id; a re-audit never asks again, so the loop turns at
-  # most once. Returns 0 when the audit has concluded, 1 when the run parked.
-  local cmd="$1" next="${2:-audit}"
+  # under the same stage id; the loop turns until the key's re-convergences
+  # reach `AUDIT_SKELETAL_RECONVERGE_CAP`. An audit at the cap that still counts
+  # skeleton-grade items leaves them in the document's open issues and the run
+  # goes on, with one line in the report. Returns 0 when the audit has
+  # concluded, 1 when the run parked.
+  local cmd="$1" next="${2:-audit}" lsk
   while :; do
     if [ "$next" = "reconverge" ]; then
       s2_skeleton_reconverge || return 1
     fi
     s2_audit_attempt "$cmd" || return 1
-    [ "$(s2_last_audit_field '재수렴 요청')" = '예' ] || return 0
+    if [ "$(s2_last_audit_field '재수렴 요청')" != '예' ]; then
+      lsk=$(s2_last_audit_field '골격급')
+      case "$lsk" in ''|*[!0-9]*) lsk=0 ;; esac
+      if [ "$lsk" -ge 1 ] && [ "$(s2_last_audit_field '종단 부류')" = '정상 완료' ]; then
+        report_append "감사" "S2 — 재수렴 상한(${AUDIT_SKELETAL_RECONVERGE_CAP}회)에 닿아 골격급 ${lsk}건을 미해결 이슈로 두고 계속한다"
+      fi
+      return 0
+    fi
     log "S2 — 감사가 골격급 $(s2_last_audit_field '골격급')건을 세고 재수렴을 요청했다"
     next=reconverge
   done
@@ -12602,8 +12805,11 @@ s2_audit_next_from_fence() {
   # first pass that counted skeleton-grade items over the document's present
   # bytes, `audit` when it counted them over other bytes, nothing otherwise —
   # the report then stands as today and the audit is skipped. The round is read
-  # before the digest: a re-audit's skeleton-grade items are a person's to
-  # settle, so a `재감사` fence is skipped whether or not the document moved.
+  # before the digest: a re-audit fence an earlier run left is skipped whether
+  # or not it reached the cap and whether or not the document moved — its
+  # remaining skeleton-grade items sit in the document's open issues
+  # (`골격급: 예`). The cap counts this run's ledger's re-convergence rows, so it
+  # holds within one run: what an earlier run left of it is not carried over.
   local n round sha cur
   n=$(audit_skeleton_fence_skeletal)
   case "$n" in ''|*[!0-9]*) return 0 ;; esac

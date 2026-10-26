@@ -1806,9 +1806,10 @@ printf -- '- an untagged fixture rule\n' > "$WORK/personal-untagged.md"
 export CC_GATE_PERSONAL_RULES_SOURCE="$WORK/personal-untagged.md"
 
 # THE METRICS ROUND IS INERT FOR THIS WHOLE PROCESS, for the same two reasons.
-# Every verb but `plan` runs the collector from the prelude once the stamp is
-# stale, so without this the first gate call of each state root would run the
-# real collector over a fixture ledger directory and could append a filing row
+# Every verb but `plan`, `digest-path` and `pair-residue` runs the collector
+# from the prelude once the stamp is stale, so without this the first gate
+# call of each state root would run the real collector over a fixture ledger
+# directory and could append a filing row
 # into a ledger whose rows another section counts. And the filing settings file
 # lives under the developer's `~/.config`: a Project number there would send a
 # unit suite to real `gh`. Section 60 names its own collector and settings file
@@ -4458,6 +4459,9 @@ SAPEOF
     sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
         --cutpoint "$cut" -- "$@"
   }
+  # sp_ld <argv...> — 게이트를 소싱해 그 argv 의 유도 절단점만 찍는다. 35-32 와
+  # 38-20 이 함께 쓴다.
+  sp_ld() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv0 "$@"' _ "$GATE" "$@"; }
   sp_rbase() { git --git-dir="$SA_REMOTE" rev-parse "refs/heads/$SA_BASE" 2>/dev/null; }
   sp_refused() {
     # sp_refused <라벨> <want rc> <원격 베이스 기준값> — 거절의 세 면: rc, 게이트 통과 줄
@@ -5643,7 +5647,9 @@ pre_reach() {
   # 세 대상을 가진 매니페스트와 그 인가 기록을 처음부터 다시 쓰고 구속 다이제스트를
   # 다시 계산한다. 행을 더하는 것은 킥오프를 다시 하는 것과 같으므로 부분 편집이 아니다.
   # 슬러그는 URL 로 쓰는 푸시가 맞출 값이고, `dep3` 는 배포트리거 식별자를, `devt3` 는
-  # dev 식별자를 갖는다. 결과 경로는 `RX_M` 이다.
+  # dev 식별자를 갖는다. 결과 경로는 `RX_M` 이다. ` | 사유=` 를 담은 줄은 형태 뒤의
+  # 칸까지 적은 행으로 보고 `형태=` 뒤에 그대로 쓴다 — 새 형식 행(`표면=`·`도달=`·
+  # `짝 정리=`)을 싣는 자리다.
   rx_manifest() {
     local rid="$1" rows="$2" devid="${3:-aws-profile:dev-acct}" r td rf rd rv
     RX_M="$WORK/rx-$rid.md"
@@ -5667,7 +5673,11 @@ pre_reach() {
       printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
       printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
       while IFS= read -r r; do
-        [ -z "$r" ] || printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$r"
+        case "$r" in
+          '') ;;
+          *' | 사유='*) printf -- '- `사전 인가` | 형태=%s\n' "$r" ;;
+          *) printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$r" ;;
+        esac
       done <<RXEOF
 $rows
 RXEOF
@@ -13870,16 +13880,17 @@ check "15e-3: 좌석 동결 뒤 입구의 - reconverge 파견 plan 이 통과한
 rm -f "$WT/$DOC15ES"
 
 # ---------------------------------------------------------------------------
-# 15e-4. An audit that counts skeleton-grade items asks for one re-convergence on its key
-# --- section: 15e-4 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-4: 골격급 2건 감사 행이 골격급=2 · 재수렴 요청=예 로 정상 완료다, 15e-4: 골격급 0건 감사 행은 재수렴 요청=아니오 다, 15e-4: 울타리 없는 감사 보고서는 공허한 성공이다, 15e-4: 재수렴 요청=예 뒤 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다, 15e-4: 범위 감사 골격급 을 실은 - reconverge 의 plan 이 통과한다, 15e-4: 다른 범위의 골격급 재수렴은 거부된다, 15e-4: 재수렴 요청=아니오 인 감사 뒤 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 뒤 계획은 새 감사를 기다린다며 거부된다, 15e-4: 감사 스테이지가 최초와 재감사 회차를 받는다, 15e-4: 재수렴을 돌린 키의 재감사는 골격급이 남아도 재수렴 요청=아니오 다, 15e-4: 재감사 뒤 계획은 감사 때문에 거부되지 않는다, 15e-4: 스냅숏 audit_skeleton_due 가 대기 중엔 객체 · 재수렴 뒤엔 null 이다, 15e-4: 골격급 재발 park 의 사람 재수렴 답은 골격급-재수렴 route 다, 15e-4: 그 답을 실행할 감사 골격급 재수렴 plan 이 통과한다, 15e-4: 합성 요구 후보만 있는 감사는 멈추지 않고 정상 완료다, 15e-4: 드라이버 모양의 S2 감사 행을 감사 행으로 읽고 재수렴 행은 세지 않는다, 15e-4: 골격급 필드를 실은 감사 행이 행 길이 상한 안에 든다 ---
+# 15e-4. An audit that counts skeleton-grade items asks for re-convergence on its key up to the cap
+# --- section: 15e-4 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-4: 골격급 2건 감사 행이 골격급=2 · 재수렴 요청=예 로 정상 완료다, 15e-4: 골격급 0건 감사 행은 재수렴 요청=아니오 다, 15e-4: 울타리 없는 감사 보고서는 공허한 성공이다, 15e-4: 재수렴 요청=예 뒤 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다, 15e-4: 범위 감사 골격급 을 실은 - reconverge 의 plan 이 통과한다, 15e-4: 다른 범위의 골격급 재수렴은 거부된다, 15e-4: 재수렴 요청=아니오 인 감사 뒤 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 뒤 계획은 새 감사를 기다린다며 거부된다, 15e-4: 감사 스테이지가 최초와 재감사 회차를 받는다, 15e-4: 재수렴 1회 뒤 재감사는 골격급이 남으면 재수렴 요청=예 다 (1/예), 15e-4: 두 번째 주기의 audit_skeleton_due 는 대기 중 객체다, 15e-4: 두 번째 주기의 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다, 15e-4: 두 번째 감사 골격급 재수렴의 plan 이 통과한다, 15e-4: 재수렴 2회 뒤 재감사는 골격급이 남아도 재수렴 요청=아니오 다 (1/아니오), 15e-4: 사람 답 재수렴 뒤 첫 재감사는 재수렴 요청=예 다, 15e-4: 사람 답 재수렴과 골격급 재수렴 뒤 재감사는 재수렴 요청=아니오 다, 15e-4: 재감사 뒤 계획은 감사 때문에 거부되지 않는다, 15e-4: 스냅숏 audit_skeleton_due 가 대기 중엔 객체 · 재수렴 뒤엔 null 이다, 15e-4: 골격급 재발 park 의 사람 재수렴 답은 골격급-재수렴 route 다, 15e-4: 그 답을 실행할 감사 골격급 재수렴 plan 이 통과한다, 15e-4: 합성 요구 후보만 있는 감사는 멈추지 않고 정상 완료다, 15e-4: 드라이버 모양의 S2 감사 행을 감사 행으로 읽고 재수렴 행은 세지 않는다, 15e-4: 골격급 필드를 실은 감사 행이 행 길이 상한 안에 든다 ---
 #
 # The audit report's skeletal-grade fence is the audit's artifact: without it
 # the audit is a hollow success. An audit that ended `정상 완료` and counted a
 # skeleton-grade item asks for one re-convergence on its key (`재수렴 요청=예`)
 # instead of halting, and nothing plans past it until that re-convergence and a
 # fresh audit stand. The re-audit fills the fence's `회차` from the pass the
-# supervisor exports, and a key that already re-converged never asks again: a
-# re-audit that still finds skeleton-grade items parks for a person instead.
+# supervisor exports, and asks again until the key's re-convergences reach
+# run.sh's cap of two, counted whatever wrote them: a re-audit at the cap that
+# still finds skeleton-grade items ends as it is, with `재수렴 요청=아니오`.
 # ---------------------------------------------------------------------------
 k15_doc() { printf 'docs/fixture-design-15e4-%s.md' "$1"; }
 k15_setup() {  # k15_setup <run id> [<skeletal> [<composed>]] — run, frozen doc and the stub's counts
@@ -13984,16 +13995,36 @@ case "$msg" in
   *"재수렴 뒤 새 감사를 기다립니다"*) ok "15e-4: 그 거부는 새 감사 대기를 든다" ;;
   *) bad "15e-4 골격급 재수렴 뒤 계획 문면" "$msg" ;;
 esac
-# The re-audit still counts one item: a stub that ends `정상 완료` with it shows
-# the request is withheld because the key already re-converged, not because the
-# count is zero.
+# The re-audits still count one item: the first, after one re-convergence, asks
+# for the second; the next, after two, is at the cap and its request is
+# withheld because of the key's re-convergence count, not because the count of
+# items is zero.
 printf '1\n' > "$STATE_LATE/cc-cmds/run/R15K2/stub-au-skeletal"
 k15_audit R15K2
 check "15e-4 픽스처의 재감사가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15K2 A1 audit)" "정상 완료"
-check "15e-4: 재수렴을 돌린 키의 재감사는 골격급이 남아도 재수렴 요청=아니오 다" \
+check "15e-4: 재수렴 1회 뒤 재감사는 골격급이 남으면 재수렴 요청=예 다 (1/예)" \
+  "$(k15_field R15K2 audit 골격급)/$(k15_field R15K2 audit '재수렴 요청')" "1/예"
+check "15e-4: 두 번째 주기의 audit_skeleton_due 는 대기 중 객체다" \
+  "$(k15_due R15K2)" '{"step":"A1","skeletal":1}'
+k15_segplan R15K2
+check "15e-4: 두 번째 주기의 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다" "$rc" "3"
+case "$msg" in
+  *"감사 단계(A1)가 골격급 재수렴을 기다립니다"*) ok "15e-4: 두 번째 주기의 거부는 골격급 재수렴 대기를 든다" ;;
+  *) bad "15e-4 두 번째 주기 골격급 대기 계획 문면" "$msg" ;;
+esac
+k15_reconv R15K2 plan 감사 골격급
+check "15e-4: 두 번째 감사 골격급 재수렴의 plan 이 통과한다" "$rc" "0"
+k15_reconv R15K2 act 감사 골격급
+check "15e-4: 두 번째 골격급 재수렴이 기동한다" "$rc" "0"
+au15_wait R15K2 A1
+check "15e-4 픽스처의 두 번째 골격급 재수렴이 정상 완료다 (아래가 공허하지 않다)" \
+  "$(au15_class R15K2 A1 reconverge)" "정상 완료"
+k15_audit R15K2
+check "15e-4 픽스처의 두 번째 재감사가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15K2 A1 audit)" "정상 완료"
+check "15e-4: 재수렴 2회 뒤 재감사는 골격급이 남아도 재수렴 요청=아니오 다 (1/아니오)" \
   "$(k15_field R15K2 audit 골격급)/$(k15_field R15K2 audit '재수렴 요청')" "1/아니오"
 check "15e-4: 감사 스테이지가 최초와 재감사 회차를 받는다" \
-  "$(tr '\n' ' ' < "$STATE_LATE/cc-cmds/run/R15K2/stub-au-pass.txt")" "first reaudit "
+  "$(tr '\n' ' ' < "$STATE_LATE/cc-cmds/run/R15K2/stub-au-pass.txt")" "first reaudit reaudit "
 case "$(cat "$k15_rep")" in
   *"**회차**: 재감사"*) ok "15e-4: 재감사의 울타리가 회차 재감사 를 싣는다" ;;
   *) bad "15e-4 재감사 울타리 회차" "$(cat "$k15_rep")" ;;
@@ -14072,6 +14103,35 @@ au15_wait R15KP A1
 check "15e-4: 그 재수렴 행이 중단 답을 소비한다" \
   "$(au15_snap "$WORK/plan-R15KP.md" | jq -c '[.answered_halts[] | .segment]')" '[]'
 k15_cleanup R15KP
+
+# --- 상한의 계수 정의: 사람 답이 연 재수렴도 한 몫을 쓴다 ----------------------------
+# An earlier version's `Step 7 / 골격급 재발` record answered `재수렴` by a person
+# opens the key's first re-convergence through the gate's halt-answer route. The
+# re-audit after it asks for one more, and the one after that is at the cap.
+k15_setup R15KS 1
+k15_audit R15KS "$STUB_AU_SKPARK"
+check "15e-4 계수 픽스처의 첫 감사가 이전 판 재발 기록으로 멈춘다 (아래가 공허하지 않다)" \
+  "$(au15_class R15KS A1 audit)" "의도된 park"
+k15_srec="$STATE_LATE/cc-cmds/run/R15KS/halt/A1#1.md"
+gateL act --manifest "$WORK/plan-R15KS.md" --kind halt-answer --target infra --segment A1 --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(au15_H R15KS)" --rationale x \
+      -- "중단 기록=$k15_srec" '선택지=재수렴' '답한 주체=사람' '근거=사람이 재수렴하기로 함'
+check "15e-4 계수 픽스처의 사람 재수렴 답이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
+k15_reconv R15KS act 감사 골격급 "$k15_srec"
+au15_wait R15KS A1
+check "15e-4 계수 픽스처의 사람 답 재수렴이 정상 완료다 (아래가 공허하지 않다)" \
+  "$(au15_class R15KS A1 reconverge)" "정상 완료"
+k15_audit R15KS
+check "15e-4: 사람 답 재수렴 뒤 첫 재감사는 재수렴 요청=예 다" \
+  "$(k15_field R15KS audit 골격급)/$(k15_field R15KS audit '재수렴 요청')" "1/예"
+k15_reconv R15KS act 감사 골격급
+au15_wait R15KS A1
+check "15e-4 계수 픽스처의 골격급 재수렴이 정상 완료다 (아래가 공허하지 않다)" \
+  "$(au15_class R15KS A1 reconverge)" "정상 완료"
+k15_audit R15KS
+check "15e-4: 사람 답 재수렴과 골격급 재수렴 뒤 재감사는 재수렴 요청=아니오 다" \
+  "$(k15_field R15KS audit 골격급)/$(k15_field R15KS audit '재수렴 요청')" "1/아니오"
+k15_cleanup R15KS
 
 # --- 드라이버 모양의 감사 행 ------------------------------------------------------------
 # The driver names its audit stage `S2` and its skeletal re-convergence `S1'`
@@ -14743,7 +14803,7 @@ rmdir "$w15_base/docs/visual" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 15f. A frozen design with a step not yet started keeps the run open
-# --- section: 15f | group: base | covers: act, close, done-conditions | anchors: 15f: 동결 뒤 감사가 남은 0-세그먼트 런의 종료 처분은 미충족이다, 15f: 감사 뒤 구현 단계가 남은 0-세그먼트 런도 미충족이다, 15f: 감사 단계의 계속은 감사 산출물을 이름 대는 계속 메시지를 싣는다, 15f: 계속 상한에 이른 감사 단계의 셋째 계속은 감사 갈래로 거부된다, 15f: 설계만 있는 계획은 설계가 정상 완료하고 문서가 동결돼 있으면 조건 1 이 선다, 15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다, 15f: 같은 원장을 구현 단계를 단 계획으로 읽으면 다음 단계(S2)를 든다, 15f: 설계만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계와 감사만 있는 계획은 감사 전에 감사 단계를 든다, 15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 계획의 재수렴 뒤 감사 단계는 새 감사를 기다린다, 15f: 그 계획은 새 감사가 정상 완료하면 조건 1 이 선다, 15f: 설계와 감사만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 줄만 남으면 처분은 무효화다 ---
+# --- section: 15f | group: base | covers: act, close, done-conditions | anchors: 15f: 동결 뒤 감사가 남은 0-세그먼트 런의 종료 처분은 미충족이다, 15f: 감사 뒤 구현 단계가 남은 0-세그먼트 런도 미충족이다, 15f: 감사 단계의 계속은 감사 산출물을 이름 대는 계속 메시지를 싣는다, 15f: 계속 상한에 이른 감사 단계의 셋째 계속은 감사 갈래로 거부된다, 15f: 설계만 있는 계획은 설계가 정상 완료하고 문서가 동결돼 있으면 조건 1 이 선다, 15f: 그 런의 문서가 동결돼 있지 않으면 조건 1 이 무효 종료 문면을 낸다, 15f: 같은 원장을 구현 단계를 단 계획으로 읽으면 다음 단계(S2)를 든다, 15f: 설계만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계와 감사만 있는 계획은 감사 전에 감사 단계를 든다, 15f: 그 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 계획의 재수렴 뒤 감사 단계는 새 감사를 기다린다, 15f: 그 계획은 새 감사가 정상 완료하면 조건 1 이 선다, 15f: 상한 안의 재감사가 골격급을 남기면 조건 1 은 다시 골격급 재수렴을 기다린다, 15f: 설계와 감사만 있는 계획의 종료 절을 충족으로 정산하면 처분은 충족이다, 15f: 설계만 있는 계획의 멈춘 설계는 조건 1 이 무효 종료 문면을 낸다, 15f: 그 줄만 남으면 처분은 무효화다 ---
 #
 # A design that froze is not a design that stopped. While the plan still has a
 # step after the design that has not started — the audit with no row, or the
@@ -14941,8 +15001,11 @@ check "15f: 그 골격급 재수렴 뒤 조건 1 은 새 감사를 기다린다"
   "$(au15_c1 "$WORK/plan-R15FK.md")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 재수렴 뒤 새 감사를 기다립니다"
 au15_dispatch R15FK "$STUB_AU_AUDIT" audit "/cc-cmds:design-audit-unattended $WT/$DOC15FK"
 au15_wait R15FK A1
-check "15f 골격급 픽스처의 재감사가 재수렴 없이 정상 완료다 (아래가 공허하지 않다)" "$(f15_skel_req R15FK)" "아니오/정상 완료"
-check "15f: 그 재감사가 정상 완료하면 조건 1 이 선다" "$(au15_c1 "$WORK/plan-R15FK.md")" ""
+# One re-convergence is under the cap of two, so the re-audit that still counts
+# skeleton-grade items asks again; the second cycle is 15e-4's.
+check "15f 골격급 픽스처의 재감사가 두 번째 재수렴을 요청하고 정상 완료다 (아래가 공허하지 않다)" "$(f15_skel_req R15FK)" "예/정상 완료"
+check "15f: 상한 안의 재감사가 골격급을 남기면 조건 1 은 다시 골격급 재수렴을 기다린다" \
+  "$(au15_c1 "$WORK/plan-R15FK.md")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 골격급 재수렴을 기다립니다"
 ( cd "$WT" && git worktree remove --force "$WT-run-R15FK-A1" ) >/dev/null 2>&1 || true
 rm -f "$WT/$DOC15FK"
 
@@ -30073,7 +30136,6 @@ done
 
 # gh api 의 머지 철자 — 사다리·결속·협업면이 한 판독을 쓴다. `?query`·`#`·후행 `/` 가
 # 붙은 REST 경로와 GraphQL 머지도 머지로 읽혀 결속을 받는다.
-sp_ld() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv0 "$@"' _ "$GATE" "$@"; }
 sp_cs() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
            if gate_collaboration_surface "" "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
@@ -35129,7 +35191,7 @@ check "34n: 새 답이 서면 답 없는 기록 수가 돌아온다" "$(cc_unans
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$RRT_PREV_AR"
 
 # --- 34o. 답 라우팅의 문면 — 게이트의 경로 id 와 기록의 고정 문자열이 읽는 쪽 문서에 있다 ---
-# --- section: 34o | group: base | covers: act | anchors: 34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다, 34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다, 34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다, 34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다, 34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다 ---
+# --- section: 34o | group: base | covers: act | anchors: 34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다, 34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다, 34o: 감사 스킬이 범위 재감사의 문면 아홉을 싣는다, 34o: 교대 스킬과 리드 사본이 재감사의 키당 상한 문장을 싣는다, 34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다, 34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다, 34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다 ---
 #
 # THE GATE DECIDES THE ROUTE, AND THREE DOCUMENTS HAVE TO AGREE WITH IT. The
 # shift maps each route id to its item, the stage skills write the literal the
@@ -35158,6 +35220,30 @@ grep -qF -- 'CFI-U3 BT-STOP' "$RP_SKILLS/implement-unattended/SKILL.md" && rp_li
 grep -qF -- '`**스텝**: Step 1b 빈 대상`' "$RP_SKILLS/review-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
 grep -qF -- 'Step 7 / 골격급 재발' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
 check "34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다" "$rp_lits" "4"
+# The re-audit narrows what readers report to the headings that changed since
+# the bytes the first audit froze, and asks for another re-convergence only
+# while the key is under its cap. Each literal below is one half of that: the
+# reader prompt's slot and block, the interactive arm's empty substitution, the
+# unattended arm's scope computation, kept copy, digest check and rejection
+# label, and the adjustment pass's in-place rewrite.
+rp_scope=0
+for rp_pair in \
+  'design-audit/references/01-reader-prompt.md|{REAUDIT_SCOPE}' \
+  'design-audit/references/01-reader-prompt.md|REAUDIT SCOPE:' \
+  'design-audit/references/01-reader-prompt.md|its Location line then begins with the tag `범위 밖`' \
+  'design-audit/SKILL.md|`{REAUDIT_SCOPE}` is always substituted with a single empty line here' \
+  'design-audit-unattended/SKILL.md|**Re-audit scope —' \
+  'design-audit-unattended/SKILL.md|docs/design-audit/audited/{slug}.md' \
+  'design-audit-unattended/SKILL.md|frozen-sha256' \
+  'design-audit-unattended/SKILL.md|기각 — 재감사 범위 밖' \
+  'design-audit/references/03-adjustment-pass.md|**An accepted fix rewrites the sentence it fixes, in place.**'; do
+  grep -qF -- "${rp_pair#*|}" "$RP_SKILLS/${rp_pair%%|*}" && rp_scope=$((rp_scope + 1))
+done
+check "34o: 감사 스킬이 범위 재감사의 문면 아홉을 싣는다" "$rp_scope" "9"
+check "34o: 교대 스킬과 리드 사본이 재감사의 키당 상한 문장을 싣는다" \
+  "$(cat "$RP_SHIFT" "$RP_LEAD" | grep -cF "**The fresh audit asks again only under the key's cap.**" || true)" "2"
+check "34o: 교대 스킬과 리드 사본에 재감사가 두 번째 재수렴을 묻지 않는다는 문장이 없다" \
+  "$(cat "$RP_SHIFT" "$RP_LEAD" | grep -cF '**The fresh audit asks for no second re-convergence.**' || true)" "0"
 rp_gate_lits=0
 for rp_lit in 'CFI-3b' 'CFI-U3 BT-STOP' 'Step 1b 빈 대상' 'Step 7 / 골격급 재발'; do
   grep -qF -- "$rp_lit" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" && rp_gate_lits=$((rp_gate_lits + 1))
@@ -36693,6 +36779,139 @@ sb_silent 'git branch 는 침묵한다'     -- git branch 곁가지-보호
 sb_silent 'gh pr view 는 침묵한다'     -- gh pr view 1
 sb_silent 'terraform plan 은 침묵한다' -- terraform plan
 sb_silent 'gh api 의 GET 은 침묵한다'  -- gh api repos/o/r/pulls/1/merge
+
+# --- 38-20. 리뷰 게시는 신고와 무관하게 커밋 칸이고, 절단점-준수 거절은 갈래를 안내한다 ---
+# --- section: 38-20 | group: sb | covers: ladder_of_gh, ladder_of_gh_api, gate_gh_api_rest_class, gate_gh_api_rest_segs, gate_gh_api_review_post, gate_run_rules, gate_cutpoint_refusal_hint, act, plan | anchors: 20: POST 리뷰 생성은 커밋 칸이다, 20: 리뷰 목록 GET 은 유도값이 없다, 20: 리뷰 기각은 유도값이 없다, 20: 리뷰 경로 뒤의 ../merge 는 머지다, 20: 이 절의 세그먼트 행이 기록된다 (아래 단언이 공허하지 않다), 20: 유도값 없는 argv 의 거절은 재신고 갈래 줄을 낸다, 20: 유도값이 판정한 거절은 park 갈래 줄을 낸다, 20: 유도하지 않는 종류의 거절에는 갈래 줄이 없다 ---
+#
+# 리뷰 게시 argv 에 유도값이 없던 동안에는 신고값이 그대로 판정에 쓰여, 같은
+# argv 가 `커밋` 으로 신고되면 통과하고 `PR` 로 신고되면 커밋 런에서 절단점-준수
+# 거절을 받았다. 유도 범위는 `gh pr review` 와 REST 의 두 POST(리뷰 생성,
+# pending 리뷰 제출) 뿐이고, 같은 경로 아래의 수정·삭제·기각과 GraphQL 리뷰
+# 변이·줄 댓글은 유도 밖이다 — 대조군이 그 경계를 묶는다.
+for sp_a20 in "pr review 7 --approve" "pr review --comment -b x" "pr -R o/r review 7 -r -b x"; do
+  # shellcheck disable=SC2086
+  check "20: gh $sp_a20 는 커밋 칸이다" "$(sp_ld gh $sp_a20)" "커밋"
+done
+sp_f20="$WORK/review-body-20.json"
+X20="0123456789abcdef0123456789abcdef01234567"
+check "20: POST 리뷰 생성은 커밋 칸이다" \
+  "$(sp_ld gh api -X POST repos/o/r/pulls/7/reviews -f event=APPROVE)" "커밋"
+for sp_p20 in "repos/o/r/pulls/7/reviews -f event=COMMENT" \
+              "repos/o/r/pulls/7/reviews --input $sp_f20" \
+              "repos/o/r/pulls/7/reviews -F body=@$sp_f20" \
+              "-X POST repos/o/r/pulls/7/reviews/9/events -f event=COMMENT" \
+              "-X POST repos/{owner}/{repo}/pulls/7/reviews" \
+              "-X POST repos/:owner/:repo/pulls/7/reviews" \
+              "-X POST repos/o/r/pulls/7/reviews/" \
+              "-X POST repos/o/r/pulls/7/reviews?per_page=1" \
+              "-X POST /repos/o/r/pulls/7/reviews" \
+              "-X POST https://api.github.com/repos/o/r/pulls/7/reviews" \
+              "-X post repos/o/r/pulls/7/reviews" \
+              "-X Post repos/o/r/pulls/7/reviews"; do
+  # shellcheck disable=SC2086
+  check "20: POST 리뷰 생성·제출 철자 「gh api ${sp_p20}」 는 커밋 칸이다" "$(sp_ld gh api $sp_p20)" "커밋"
+done
+check "20: 리뷰 목록 GET 은 유도값이 없다" "$(sp_ld gh api repos/o/r/pulls/7/reviews)" ""
+check "20: 리뷰 기각은 유도값이 없다" \
+  "$(sp_ld gh api -X PUT repos/o/r/pulls/7/reviews/9/dismissals -f message=x)" ""
+check "20: pending 리뷰 삭제는 유도값이 없다" "$(sp_ld gh api -X DELETE repos/o/r/pulls/7/reviews/9)" ""
+check "20: 리뷰 수정은 유도값이 없다" "$(sp_ld gh api -X PUT repos/o/r/pulls/7/reviews/9 -f body=x)" ""
+check "20: 제출 경로 뒤에 조각이 더 붙은 POST 는 유도값이 없다" \
+  "$(sp_ld gh api -X POST repos/o/r/pulls/7/reviews/9/events/x -f event=COMMENT)" ""
+check "20: 리뷰 경로 뒤의 ../merge 는 머지다" \
+  "$(sp_ld gh api -X POST repos/o/r/pulls/7/reviews/../merge -f event=COMMENT)" "머지"
+check "20: gh 가 채우는 {branch} 조각의 리뷰 경로는 머지다" \
+  "$(sp_ld gh api -X POST 'repos/o/r/pulls/{branch}/reviews' -f event=COMMENT)" "머지"
+check "20: 줄 댓글 POST 는 유도값이 없다" \
+  "$(sp_ld gh api -X POST repos/o/r/pulls/7/comments -f body=x)" ""
+q20r='mutation{addPullRequestReview(input:{pullRequestId:"PR_x"}){clientMutationId}}'
+check "20: 인라인 본문의 GraphQL 리뷰 변이는 유도값이 없다" "$(sp_ld gh api graphql -f "query=$q20r")" ""
+check "20: 본문이 파일인 GraphQL POST 는 머지다" "$(sp_ld gh api graphql -F "query=@$sp_f20")" "머지"
+check "20: gh pr comment 는 유도값이 없다" "$(sp_ld gh pr comment 7 -b x)" ""
+
+# 신고 무관 판정 — 대상 절단점 `커밋` 에서 같은 리뷰 게시 argv 를 세 높이로 신고한다.
+# `plan` 으로 잰다: 원격을 부르지 않고 예고 줄에 유도값을 싣는다.
+sb_new '20 리뷰 게시 판정' 선머지후리뷰
+sb_target_field 절단점 커밋
+sa_seg_row SB20 선머지후리뷰
+check "20: 이 절의 세그먼트 행이 기록된다 (아래 단언이 공허하지 않다)" "$rc" "0"
+sb20_plan() {
+  # sb20_plan <신고 절단점> <argv...>
+  local cut="$1"; shift
+  sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SB20 \
+      --cutpoint "$cut" --rationale x -- "$@"
+}
+for sp_c20 in 커밋 PR 머지; do
+  sb20_plan "$sp_c20" gh api -X POST repos/o/r/pulls/7/reviews -f event=COMMENT -f "commit_id=$X20" -f body=x
+  check "20: 커밋 대상에서 $sp_c20 로 신고한 리뷰 게시가 통과한다 (REST)" "$rc" "0"
+  case "$msg" in
+    *"유도=커밋"*) ok "20: 그 판정의 유도 절단점이 커밋이다 (REST, $sp_c20 신고)" ;;
+    *) bad "20: 그 판정의 유도 절단점이 커밋이다 (REST, $sp_c20 신고)" "$msg" ;;
+  esac
+  sb20_plan "$sp_c20" gh pr review 7 --comment -b x
+  check "20: 커밋 대상에서 $sp_c20 로 신고한 리뷰 게시가 통과한다 (gh pr review)" "$rc" "0"
+  case "$msg" in
+    *"유도=커밋"*) ok "20: 그 판정의 유도 절단점이 커밋이다 (gh pr review, $sp_c20 신고)" ;;
+    *) bad "20: 그 판정의 유도 절단점이 커밋이다 (gh pr review, $sp_c20 신고)" "$msg" ;;
+  esac
+done
+
+# 거절 안내 — 절단점-준수 거절 뒤에 갈래 줄 하나. 각 단언은 exit 3 과 거절 줄을
+# 먼저 본다. 어느 줄에도 exit 8 의 「raise the declaration」 처방이 없다.
+sb20_refused() {
+  # sb20_refused <라벨> — rc 3 과 절단점-준수 거절 줄.
+  check "$1 (exit 3)" "$rc" "3"
+  case "$msg" in
+    *"rule refused: 절단점-준수"*) ok "$1 — 절단점-준수 거절 줄이 있다" ;;
+    *) bad "$1 — 절단점-준수 거절 줄이 있다" "$msg" ;;
+  esac
+  case "$msg" in
+    *"raise the declaration"*) bad "$1 — exit 8 의 처방 문구가 없다" "$msg" ;;
+    *) ok "$1 — exit 8 의 처방 문구가 없다" ;;
+  esac
+}
+sb20_plan PR gh pr comment 7 -b x
+sb20_refused "20: 유도값 없는 argv 를 PR 로 신고하면 거절된다"
+case "$msg" in
+  *"judged at the declared height 'PR' — "*"re-declare the same argv at that height"*"this is not a stop that asks a person"*)
+    ok "20: 유도값 없는 argv 의 거절은 재신고 갈래 줄을 낸다" ;;
+  *) bad "20: 유도값 없는 argv 의 거절은 재신고 갈래 줄을 낸다" "$msg" ;;
+esac
+sa_seg_row_at PR SB20K ""
+sb20_refused "20: 유도하지 않는 종류를 PR 로 신고하면 거절된다"
+case "$msg" in
+  *"re-declare"*|*"park"*) bad "20: 유도하지 않는 종류의 거절에는 갈래 줄이 없다" "$msg" ;;
+  *) ok "20: 유도하지 않는 종류의 거절에는 갈래 줄이 없다" ;;
+esac
+
+# 유도값이 판정한 거절 — REST 병합을 머지로 신고한다. 세그먼트 행과 리뷰 정책이
+# 없는 픽스처로 돌려, 머지 순서 대기와 머지 결속이 규칙보다 먼저 끝내지 않게 한다.
+sb_new '20 유도 판정 거절' ''
+sb_target_field 절단점 커밋
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment - \
+    --cutpoint 머지 --rationale x \
+    -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$X20"
+sb20_refused "20: 유도값 머지인 argv 를 머지로 신고하면 거절된다"
+case "$msg" in
+  *"the argv itself is at '머지', above the target cutpoint '커밋' — do not re-declare it; park"*)
+    ok "20: 유도값이 판정한 거절은 park 갈래 줄을 낸다" ;;
+  *) bad "20: 유도값이 판정한 거절은 park 갈래 줄을 낸다" "$msg" ;;
+esac
+
+# 푸시 이음매는 유도값을 채우고도 더 높은 신고를 내리지 않는다 — 대상 `push` 에서
+# 베이스가 아닌 push 를 `PR` 로 신고하면 유도값 `push` 가 차 있어도 신고값으로
+# 판정된 것이므로 재신고 갈래이고, 그 줄이 실제 높이 `push` 를 적는다.
+sb_new '20 푸시 재신고' ''
+sb_target_field 절단점 push
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment - \
+    --cutpoint PR --rationale x \
+    -- git push origin HEAD:refs/heads/보호20
+sb20_refused "20: 대상 push 에서 PR 로 신고한 push 는 거절된다"
+case "$msg" in
+  *"judged at the declared height 'PR'; the argv's own height is 'push' — "*"re-declare the same argv at that height"*)
+    ok "20: 유도값이 있어도 신고값으로 판정된 거절은 재신고 갈래이고 실제 높이를 적는다" ;;
+  *) bad "20: 유도값이 있어도 신고값으로 판정된 거절은 재신고 갈래이고 실제 높이를 적는다" "$msg" ;;
+esac
 
 # --- 38-12. 적용 행위의 다섯 전제 ------------------------------------------------
 # --- section: 38-12 | group: sb | covers: act, apply, gate_segment_apply_state, snapshot | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 불필요=0 만 정의하고 문면에 싣는다, 12: 적용 명령이 없으면 적용 불필요 로 rc 0 이다, 12: 절단점이 배포 가 아니면 적용 불필요 로 rc 0 이다, 12: 빚지지 않은 세그먼트는 M^2 가 리뷰 HEAD 와 달라도 전제 4 앞에서 적용 불필요 로 끝난다, 12: 두 번째 적용 행위는 적용 불필요 로 끝난다 ---
@@ -38856,8 +39075,9 @@ check "(g) 이 절의 wait 들은 경계 승인 행을 하나도 남기지 않�
 # 41. 프리루드 정산 전수
 # --- section: 41 | group: base | covers: snapshot, plan | anchors: A 핵심 — 외부 종료 행이 정확히 하나, B 지문 없는 기록은 열거만 되고 정산되지 않는다, C 진짜 행이 이미 있으면 이중 정산이 없다, D 드라이버 기록은 정산하지 않는다, F 죽은 정산자가 append 한 뒤의 회수, plan 의 프리루드는 정산하지 않는다 ---
 #
-# The settlement runs in the prelude of every verb but `plan`, on the subset of
-# `cc_orphan_stages` the gate itself dispatched: `.kind` present, `.start`
+# The settlement runs in the prelude of every verb but `plan` and `pair-residue`
+# (a reader of the ledger, which a settlement row would write to), on the
+# subset of `cc_orphan_stages` the gate itself dispatched: `.kind` present, `.start`
 # non-empty, `.attempt` present. Each case below stands on exactly one of
 # those conditions, and `snapshot` is the verb that drives it — the one a
 # blocked run keeps issuing when nothing else moves.
@@ -48038,8 +48258,9 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 # EXEMPT 는 고침이 행이 아닌 칸이다: 「모른다」인 `도달미상`, 결코 열지 않는 `dev파괴`,
 # 처분 밖에서 정해지는 병합 칸 셋(60·61c 절이 묶는다), 그리고 재실행 행위의 칸 셋
 # (60b 가 묶는다 — 고침이 행이 아니라 사람의 판단이고, 문구는 사전 인가를 권하지 않는다),
-# 같은 이유의 라벨 인정 행위의 칸 다섯, 그리고 어떤 행도 열지 않는 `PR라벨쓰기`.
-t3_exempt=" 도달미상 dev파괴 CI실패 등급회귀 등급회귀판정불가 재실행배포트리거 재실행대상미상 재실행요청실패 라벨인정없음 라벨새실행없음 라벨배포트리거 라벨이미있음 라벨요청실패 PR라벨쓰기 "
+# 같은 이유의 라벨 인정 행위의 칸 다섯, 어떤 행도 열지 않는 `PR라벨쓰기`, 그리고 고침이
+# 행을 더하는 것이 아니라 충돌한 두 행 가운데 하나를 고치거나 지우는 것인 `행값충돌`.
+t3_exempt=" 도달미상 dev파괴 CI실패 등급회귀 등급회귀판정불가 재실행배포트리거 재실행대상미상 재실행요청실패 라벨인정없음 라벨새실행없음 라벨배포트리거 라벨이미있음 라벨요청실패 PR라벨쓰기 행값충돌 "
 t3_T=" 기기전역/no-row 기기전역/judged 기기전역/judge-failed 기기전역/argv0-path 기기전역/external 기기전역/never 파괴형태미명시/marked 파괴형태미명시/declared 신고등급한도/opaque 신고등급한도/code 신고등급한도/wrapper 신고등급한도/unlisted prod인가없음/- 배포트리거인가없음/- dev식별자부재/- dev식별자불일치/- dev대조불가/- 비밀출력/- push원격불일치/- 도달모순/- dropped none code spaced never external "
 t3_D=$( { awk '/^gate_reach_disposition\(\) \{/ { on = 1 } on && /^}$/ { on = 0 } on' "$GATE" \
             | grep -o "printf '[^\\\\']*\\\\t" | sed "s/^printf '//; s/\\\\t\$//"
@@ -48408,15 +48629,255 @@ t3p front3 외부상태변경 기기전역 -- aws s3 cp "$HOME/.aws/ccx" s3://b/
 t3_park 9-행추가 기기전역 external 'changes state outside this machine' 0
 
 # 9b — 불투명 스크립트를 외부 상태 변경으로 정직하게 신고. 불투명 상한은 기기전역 칸으로
-# 넘기고, 그 칸이 판단 없이 외부 문구로 멈춘다. 행을 더해도 같다.
+# 넘기고, 그 칸이 판단 없이 외부 문구로 멈춘다. 옛 형식 행을 더해도 같다. 이 행위는 경로
+# 하나만 기기전역으로 올린 불투명 행위라 새 형식 행이 열 수 있는 범위 안이므로, 문구는
+# 그 행 줄을 찍는다(아래 9n 이 그 줄로 고친 뒤를 잰다).
 pj_reset
 rx_manifest R83C ''
 t3p front3 외부상태변경 기기전역 -- bash scripts/publish.sh "$HOME/.config/x"
-t3_park 9b 기기전역 external 'changes state outside this machine' 0 external
+t3_park 9b 기기전역 external 'changes state outside this machine' 1 external
 rx_manifest R83C "bash scripts/publish.sh $HOME/.config/x"
 t3p front3 외부상태변경 기기전역 -- bash scripts/publish.sh "$HOME/.config/x"
-t3_park 9b-행추가 기기전역 external 'changes state outside this machine' 0
+t3_park 9b-행추가 기기전역 external 'changes state outside this machine' 1
 t3_calls 9b 0
+
+# 9n — 새 형식 행. `표면=`·`도달=` 을 적은 행이 경로 하나만 기기전역으로 올린 불투명·미상
+# 행위를 결정하면, 행의 도달이 신고를 대신해 그 도달 칸이 처분한다. 9b 와 같은 행위를 쓴다.
+# 행 값이 적용되려면 형태가 덮는 원소에 빈 원소·공백 원소가 없고, argv0 가 경로가 아니고,
+# Claude 설정 홈 원소가 없어야 한다 — 각 조건을 깨는 갈래가 아래에 하나씩 있다.
+t3n_a=(bash scripts/publish.sh "$HOME/.config/x")
+t3n_row() { printf '%s | 표면=%s | 도달=%s | 사유=테스트' "$1" "$2" "$3"; }  # t3n_row <형태> <표면> <도달>
+t3n_dev=$(t3n_row 'bash scripts/publish.sh' 외부상태변경 dev)
+t3n_led="$WT/docs/pipeline-run/R83C.md"
+# exec 갈래가 실제로 돌릴 스크립트. 없을 때만 만들고, 만든 것만 치운다.
+t3n_made=''
+if [ ! -e "$WT/scripts/publish.sh" ]; then
+  mkdir -p "$WT/scripts"; printf '#!/bin/sh\nexit 0\n' > "$WT/scripts/publish.sh"; t3n_made=1
+fi
+t3n_exec() {
+  # t3n_exec <표면> <도달> [--destructive] -- <argv...> — 이 절의 매니페스트로 exec.
+  local sf="$1" rr="$2"; shift 2
+  if [ "$1" = --destructive ]; then
+    shift 2
+    pj_gate exec --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+      --surface "$sf" --reach "$rr" --destructive --snapshot-digest "$(rx_H "$RX_M")" \
+      --rationale "${T3N_WHY:-행 값 시험}" -- "$@"
+  else
+    shift
+    pj_gate exec --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+      --surface "$sf" --reach "$rr" --snapshot-digest "$(rx_H "$RX_M")" \
+      --rationale "${T3N_WHY:-행 값 시험}" -- "$@"
+  fi
+}
+t3n_last() { { grep "^- \`$1\` " "$t3n_led" 2>/dev/null || true; } | tail -1; }  # t3n_last <계열>
+t3n_disp() {
+  # t3n_disp <매니페스트> <표면> <도달> <argv...> — 처분 함수를 제자리에서 불러 첫 줄에
+  # 「칸/원인」(열리면 `열림`)을, 둘째 줄에 그 칸의 수리 문구를 낸다. 게이트의 매니페스트
+  # 검사를 거치지 않으므로, 그 검사가 거절하는 매니페스트에서 처분이 하는 일을 잴 수 있다.
+  local m="$1" sf="$2" rr="$3"; shift 3
+  (cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 bash -c '
+    . "$0" >/dev/null 2>&1
+    MANIFEST="$1" GATE_DECLARED="$2" GATE_REACH="$3"; shift 3
+    GATE_MARK="" GATE_MARK_TRIGGER="" GATE_DESTRUCTIVE=0
+    g=$(surface_of_argv0 "$@")
+    GATE_GRADE_SOURCE=표
+    [ "$(gate_argv_opaque "$@")" = "1" ] && GATE_GRADE_SOURCE=불투명
+    [ "$g" = "등급 미상" ] && GATE_GRADE_SOURCE=미상
+    o=$(mktemp "${TMPDIR:-/tmp}/t3n.XXXXXX")
+    gate_reach_disposition front3 0 "$g" "$@" > "$o"
+    c=$(head -1 "$o" | cut -f1,2 | tr "\t" "/"); rm -f "$o"
+    printf "%s\n" "${c:-열림}"
+    [ -n "$c" ] || exit 0
+    GATE_PARK_CROWS="$GATE_RF_CROWS" GATE_PARK_SCOPE="$GATE_RF_SCOPE" \
+      GATE_PARK_PROPOSAL="$GATE_RF_PROPOSAL" GATE_PARK_GEFF="$GATE_RF_GEFF" \
+      gate_park_repair_line "${c%%/*}" "${c#*/}" 2>&1 | tr "\n" " "' "$GATE" "$m" "$sf" "$rr" "$@" 2>/dev/null)
+}
+
+# 9n-C2 — 행이 있고 기기전역으로 정직하게 신고한 행위는 행의 dev 칸에서 열리고, 판단을
+# 부르지 않는다.
+pj_reset
+rx_manifest R83C "$t3n_dev"
+t3p front3 외부상태변경 기기전역 -- "${t3n_a[@]}"
+check "83c: 9n — 새 형식 행이 기기전역 신고의 도우미 행위를 행의 도달 칸에서 연다" "$rc" "0"
+t3_calls 9n 0
+
+# 9n-C3 — 같은 argv 를 어떻게 신고하든, 누가 부르든 처분이 같다. 신고는 처분을 바꾸지 않고
+# 행에 기록만 된다: 행 값과 같은 신고는 `신고 불일치` 칸을 싣지 않고, 다른 신고는 싣는다.
+t3n_got=''
+for t3n_d in '외부상태변경 dev' '읽기 기기전역' '외부상태변경 기기전역' '외부상태변경 prod'; do
+  t3p front3 ${t3n_d% *} ${t3n_d#* } -- "${t3n_a[@]}"
+  t3n_got="$t3n_got[$t3n_d:$rc$(rx_cell)]"
+done
+check "83c: 9n — 네 가지 신고가 모두 같은 처분이다" "$t3n_got" \
+  "[외부상태변경 dev:0][읽기 기기전역:0][외부상태변경 기기전역:0][외부상태변경 prod:0]"
+CC_PIPELINE_STAGE_ID='S3#1' t3p front3 외부상태변경 기기전역 -- "${t3n_a[@]}"
+t3n_got="$rc$(rx_cell)"
+CC_PIPELINE_STAGE_ID='' t3p front3 외부상태변경 기기전역 -- "${t3n_a[@]}"
+check "83c: 9n — 스테이지와 리드가 같은 argv 에 같은 처분을 받는다" "$t3n_got|$rc$(rx_cell)" "0|0"
+t3n_got=''
+for t3n_d in '외부상태변경 dev|-' '읽기 기기전역|읽기/기기전역' '외부상태변경 기기전역|외부상태변경/기기전역' \
+             '외부상태변경 prod|외부상태변경/prod'; do
+  t3n_dd=${t3n_d%%|*}
+  t3n_exec ${t3n_dd% *} ${t3n_dd#* } -- "${t3n_a[@]}"
+  t3n_r=$(t3n_last '자율 승인')
+  t3n_v=$(printf '%s\n' "$t3n_r" | tr '|' '\n' | sed -n 's/^ 행 값=\(.*\)$/\1/p' | sed 's/ *$//')
+  t3n_x=$(printf '%s\n' "$t3n_r" | tr '|' '\n' | sed -n 's/^ 신고 불일치=\(.*\)$/\1/p' | sed 's/ *$//')
+  t3n_got="$t3n_got[$t3n_dd:$rc:${t3n_v:--}:${t3n_x:--}]"
+done
+check "83c: 9n — exec 의 자율 승인 행이 행 값을 싣고, 다른 신고에만 신고 불일치를 싣는다" "$t3n_got" \
+  "[외부상태변경 dev:0:외부상태변경/dev:-][읽기 기기전역:0:외부상태변경/dev:읽기/기기전역][외부상태변경 기기전역:0:외부상태변경/dev:외부상태변경/기기전역][외부상태변경 prod:0:외부상태변경/dev:외부상태변경/prod]"
+
+# 9n-C4 — 행이 없으면 9b 그대로 외부 문구로 멈추고(위 9b), 읽기로 신고하면 지금처럼
+# 통과한다 — 행이 없는 행위의 읽기 신뢰는 받아들인 한계다.
+rx_manifest R83C ''
+t3p front3 읽기 기기전역 -- "${t3n_a[@]}"
+check "83c: 9n — 행 없는 도우미 행위의 읽기 신고는 지금처럼 통과한다" "$rc" "0"
+
+# 9n-충돌 — 같은 형태에 다른 도달을 적은 두 새 형식 행. 매니페스트 검사가 그 매니페스트를
+# 거절하므로 게이트는 처분까지 가지 않는다. 처분 함수만은 제자리에서 불러, 두 행을
+# 가리키고 행 줄을 찍지 않는 수리 문구로 멈추는지 잰다. 범위 밖 행위(경로로 지명된
+# 프로그램)에서는 같은 충돌이 처분을 바꾸지 않는다.
+rx_manifest R83C "$t3n_dev
+$(t3n_row 'bash scripts/publish.sh' 외부상태변경 prod)"
+t3n_cm="$RX_M"
+pj_gate plan --manifest "$t3n_cm" --target front3 --segment S3 --cutpoint push \
+  --surface 외부상태변경 --reach 기기전역 --rationale t -- "${t3n_a[@]}"
+case "$rc|$msg" in
+  0\|*|11\|*) bad "83c: 9n — 매니페스트 검사가 충돌한 두 행을 거절한다" "rc=$rc: $msg" ;;
+  *'같은 형태에 다른 표면·도달·짝 정리'*) ok "83c: 9n — 매니페스트 검사가 충돌한 두 행을 거절한다" ;;
+  *) bad "83c: 9n — 매니페스트 검사가 충돌한 두 행을 거절한다" "rc=$rc: $msg" ;;
+esac
+t3n_o=$(t3n_disp "$t3n_cm" 외부상태변경 기기전역 "${t3n_a[@]}")
+check "83c: 9n — 충돌한 두 행은 행값충돌 로 멈춘다" "$(printf '%s\n' "$t3n_o" | sed -n 1p)" "행값충돌/-"
+case "$(printf '%s\n' "$t3n_o" | sed -n 2p)" in
+  *"rows 1 ('bash scripts/publish.sh') and 2 ('bash scripts/publish.sh')"*)
+    ok "83c: 9n — 행값충돌 의 수리 문구가 두 행을 가리킨다" ;;
+  *) bad "83c: 9n — 행값충돌 의 수리 문구가 두 행을 가리킨다" "$t3n_o" ;;
+esac
+case "$t3n_o" in *'repair row:'*) bad "83c: 9n — 행값충돌 은 행 줄을 찍지 않는다" "$t3n_o" ;;
+  *) ok "83c: 9n — 행값충돌 은 행 줄을 찍지 않는다" ;; esac
+rx_manifest R83C "$(t3n_row "/usr/local/bin/cctool $HOME/.config/x" 트리밖쓰기 dev)
+$(t3n_row "/usr/local/bin/cctool $HOME/.config/x" 트리밖쓰기 prod)"
+check "83c: 9n — 범위 밖 행위의 같은 충돌은 지금 처분이다" \
+  "$(t3n_disp "$RX_M" 트리밖쓰기 기기전역 /usr/local/bin/cctool "$HOME/.config/x" | sed -n 1p)" "기기전역/argv0-path"
+
+# 9n-설정 홈·공백 원소 — 행이 있어도 행 값을 적용하지 않고 지금처럼 멈춘다. 신고 도달이
+# `미상` 이면 기기전역 칸의 설정 홈 검사가 돌지 않으므로, 행 값 적용이 그 원소를 따로 잰다.
+rx_manifest R83C "$t3n_dev"
+t3p front3 외부상태변경 미상 -- bash scripts/publish.sh "$HOME/.claude/x"
+check "83c: 9n — 미상 신고의 설정 홈 원소는 행 값을 받지 않고 지금처럼 멈춘다" "$rc/$(rx_cell)" "11/도달미상"
+t3p front3 외부상태변경 기기전역 -- bash "scripts/publish.sh --dry" "$HOME/.config/x"
+check "83c: 9n — 형태가 덮는 원소에 공백이 있으면 기기전역 신고는 지금처럼 멈춘다" "$rc/$(rx_cell)" "11/기기전역"
+t3p front3 외부상태변경 미상 -- bash "scripts/publish.sh --dry" "$HOME/.config/x"
+check "83c: 9n — 형태가 덮는 원소에 공백이 있으면 미상 신고는 지금처럼 멈춘다" "$rc/$(rx_cell)" "11/도달미상"
+
+# 9n-SQL — 동기가 된 도우미 꼴. 형태 뒤 원소가 공백을 품은 SQL 문이어도 형태가 덮는 원소만
+# 보므로 행 값으로 열린다. 형태가 행위 전체를 담아도, 공백만으로 된 원소가 형태 뒤에
+# 있으면 평탄화한 낱말 수로는 행위 전체로 보여도 원소가 더 있으므로, 신고만 있는 파괴는
+# 그 행이 명시하지 않는다(`Rpd=0`).
+t3n_h="$HOME/.config/cc-cmds/t3n-dev-sql.sh"
+rx_manifest R83C "$(t3n_row "bash $t3n_h query" 외부상태변경 dev)"
+t3p front3 외부상태변경 기기전역 -- bash "$t3n_h" query --db sdb_db 'SELECT 1 FROM t'
+check "83c: 9n — 형태 뒤에 공백 원소가 있는 도우미 행위가 행 값으로 열린다" "$rc" "0"
+rx_manifest R83C "$(t3n_row "bash $t3n_h query --db sdb_db" 외부상태변경 prod)"
+t3p front3 외부상태변경 기기전역 --destructive -- bash "$t3n_h" query --db sdb_db
+check "83c: 9n — 행위 전체를 담은 행은 신고만 있는 파괴를 연다 (아래 단언이 공허하지 않다)" "$rc" "0"
+t3p front3 외부상태변경 기기전역 --destructive -- bash "$t3n_h" query --db sdb_db ' '
+check "83c: 9n — 형태 뒤 공백만인 원소가 있으면 행위 전체를 담은 행도 파괴를 열지 않는다" \
+  "$rc/$(rx_cell)" "11/파괴형태미명시"
+
+# 9n-인터프리터 — 등급표가 모르는 인터프리터의 미상 부류 행위도 행 값으로 열린다. 행이
+# 없으면 지금처럼 등급표 밖으로 멈춘다. 형태가 코드 문자열 선택지로 끝나는 행은 어떤
+# 프로그램이든 열므로 매니페스트 검사가 거절한다.
+rx_manifest R83C ''
+t3p front3 외부상태변경 기기전역 -- python scripts/x.py "$HOME/.config/x"
+check "83c: 9n — 행 없는 python 도우미는 지금처럼 멈춘다 (아래 단언이 공허하지 않다)" "$rc" "11"
+rx_manifest R83C "$(t3n_row 'python scripts/x.py' 외부상태변경 dev)"
+t3p front3 외부상태변경 기기전역 -- python scripts/x.py "$HOME/.config/x"
+check "83c: 9n — python 형태의 새 형식 행이 미상 부류 행위를 연다" "$rc" "0"
+rx_manifest R83C "$(t3n_row 'bash -c' 외부상태변경 dev)"
+pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+  --surface 외부상태변경 --reach 기기전역 --rationale t -- "${t3n_a[@]}"
+case "$rc|$msg" in
+  0\|*|11\|*) bad "83c: 9n — 코드 문자열 선택지로 끝나는 행을 매니페스트 검사가 거절한다" "rc=$rc: $msg" ;;
+  *'코드 문자열 선택지'*) ok "83c: 9n — 코드 문자열 선택지로 끝나는 행을 매니페스트 검사가 거절한다" ;;
+  *) bad "83c: 9n — 코드 문자열 선택지로 끝나는 행을 매니페스트 검사가 거절한다" "rc=$rc: $msg" ;;
+esac
+
+# 9n-결정한 행의 파괴 — prod 칸은 일치한 모든 행을 접은 파괴 명시가 아니라 결정한 행의
+# 것을 읽는다. 같은 형식의 더 긴 행은 더 짧은 행이 담은 낱말을 모두 담으므로, 결정한 행이
+# 명시하지 않는 파괴를 명시하는 행은 새 형식 행이 앞서는 옛 형식의 행위 전체 행이다.
+rx_manifest R83C "$(t3n_row "bash $t3n_h query" 외부상태변경 prod)
+bash $t3n_h query --db sdb_db"
+t3p front3 외부상태변경 기기전역 --destructive -- bash "$t3n_h" query --db sdb_db
+check "83c: 9n — 결정한 행이 명시하지 않은 파괴는 다른 일치 행이 명시해도 열리지 않는다" \
+  "$rc/$(rx_cell)" "11/파괴형태미명시"
+
+# 9n-dev파괴·8·10 — 행 값이 데려간 dev 칸은 파괴를 열지 않는다. 경로로 지명된 프로그램과
+# Claude 설정 홈은 새 형식 행이 있어도 8·10 그대로다.
+rx_manifest R83C "$t3n_dev"
+t3p front3 외부상태변경 기기전역 --destructive -- "${t3n_a[@]}"
+check "83c: 9n — 행 값의 dev 칸이 파괴를 dev파괴 로 멈춘다" "$rc/$(rx_cell)" "11/dev파괴"
+rx_manifest R83C "$(t3n_row 'cctool --x' 트리밖쓰기 dev)"
+t3p front3 트리밖쓰기 기기전역 -- /usr/local/bin/cctool --x
+t3_park 9n-8 기기전역 argv0-path 'whose program is named by a path' 0
+rx_manifest R83C "$(t3n_row 'cp a.txt' 트리밖쓰기 dev)"
+t3p front3 트리밖쓰기 기기전역 -- cp a.txt "$HOME/.claude/ccx"
+t3_park 9n-10 기기전역 never 'is under the Claude configuration home' 0
+
+# 9n-수리 — 범위 안 행위의 수리 문구는 새 형식 행 줄을 찍는다. 그 줄의 도달 자리표시를
+# `dev` 로 채워 덧붙이면 같은 행위가 통과한다.
+rx_manifest R83C ''
+t3p front3 외부상태변경 기기전역 -- "${t3n_a[@]}"
+t3_c=$T3_CALL; t3_r=$(rx_row)
+case "$t3_r" in
+  *' | 표면=외부상태변경 | 도달=<dev|prod|배포트리거>') ok "83c: 9n — 수리 줄이 새 형식 행이다" ;;
+  *) bad "83c: 9n — 수리 줄이 새 형식 행이다" "$t3_r" ;;
+esac
+rx_manifest R83C "${t3_r//"<dev|prod|배포트리거>"/dev} | 사유=테스트"
+t3p front3 외부상태변경 기기전역 -- "${t3n_a[@]}"
+t3_pass 9n-수리 "$t3_c"
+
+# 9n-최대 길이 — 두 칸이 가장 긴 값으로 실린 exec 행과 park 행도 1024 바이트 안이다. 배포
+# 트리거 도달과 외부상태변경 표면이 가장 긴 값이고, argv 와 근거를 길게 해 남는 자리를
+# 모두 쓰게 한다.
+t3n_long=$(printf 'a%.0s' $(seq 1 700))
+T3N_WHY=$(printf '긴 근거 %.0s' $(seq 1 80))
+rx_manifest R83C "$(t3n_row 'bash scripts/publish.sh' 외부상태변경 배포트리거)"
+t3n_exec 트리밖쓰기 기기전역 -- "${t3n_a[@]}" "$t3n_long"
+t3n_r=$(t3n_last '자율 승인')
+check "83c: 9n — 최대 길이 두 칸의 exec 가 통과한다" "$rc" "0"
+case "$t3n_r" in *'| 행 값=외부상태변경/배포트리거 | 신고 불일치=트리밖쓰기/기기전역 |'*)
+  ok "83c: 9n — 최대 길이 exec 행이 두 칸을 싣는다" ;;
+  *) bad "83c: 9n — 최대 길이 exec 행이 두 칸을 싣는다" "$t3n_r" ;; esac
+if [ "$(printf '%s' "$t3n_r" | wc -c | tr -d ' ')" -le 1024 ]; then ok "83c: 9n — 최대 길이 exec 행이 1024바이트 안이다"
+else bad "83c: 9n — 최대 길이 exec 행이 1024바이트 안이다" "$(printf '%s' "$t3n_r" | wc -c)"; fi
+t3n_exec 트리밖쓰기 기기전역 --destructive -- "${t3n_a[@]}" "$t3n_long"
+t3n_r=$(t3n_last blocked)
+check "83c: 9n — 최대 길이 두 칸의 파괴 신고는 park 한다" "$rc" "11"
+case "$t3n_r" in *'행 값=외부상태변경/배포트리거'*'신고 불일치=트리밖쓰기/기기전역'*)
+  ok "83c: 9n — 최대 길이 park 행이 두 칸을 싣는다" ;;
+  *) bad "83c: 9n — 최대 길이 park 행이 두 칸을 싣는다" "$t3n_r" ;; esac
+if [ "$(printf '%s' "$t3n_r" | wc -c | tr -d ' ')" -le 1024 ]; then ok "83c: 9n — 최대 길이 park 행이 1024바이트 안이다"
+else bad "83c: 9n — 최대 길이 park 행이 1024바이트 안이다" "$(printf '%s' "$t3n_r" | wc -c)"; fi
+T3N_WHY=''
+
+# 9n-꺼진 자동 해소 — 사람이 앞에 있는 런에서는 새 형식 행이 있어도 행 값을 적용하지 않는다.
+# 행위는 지금 동작 그대로 처분되어 원장 행의 도달이 신고(기기전역)이고, 행의 도달(dev)이
+# 아니며, 원장에 `행 값` 칸도 짝 정리 열림도 남지 않는다.
+rx_manifest R83C "$t3n_dev"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+t3n_n0=$( { grep -c -e '행 값=' -e '^- `짝 정리`' "$t3n_led" 2>/dev/null || true; } )
+t3n_exec 외부상태변경 기기전역 -- "${t3n_a[@]}"
+t3n_r=$( { grep -e '^- `자율 승인` ' -e '^- `blocked` ' "$t3n_led" 2>/dev/null || true; } | tail -1)
+case "$t3n_r" in
+  *'| 도달=기기전역 |'*) ok "83c: 9n — 꺼진 자동 해소에서는 행의 도달이 신고를 대신하지 않는다" ;;
+  *) bad "83c: 9n — 꺼진 자동 해소에서는 행의 도달이 신고를 대신하지 않는다" "$t3n_r" ;;
+esac
+t3n_n1=$( { grep -c -e '행 값=' -e '^- `짝 정리`' "$t3n_led" 2>/dev/null || true; } )
+check "83c: 9n — 꺼진 자동 해소의 exec 는 행 값 칸도 짝 정리 열림도 남기지 않는다" "${t3n_n1:-0}" "${t3n_n0:-0}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+[ -z "$t3n_made" ] || { rm -f "$WT/scripts/publish.sh"; rmdir "$WT/scripts" 2>/dev/null || true; }
 
 # 10 — Claude 설정 홈.
 rx_manifest R83C ''
@@ -48994,6 +49455,236 @@ for t3e_a in "gh pr edit 1 --add-label api-change" "gh api -X POST repos/t/front
 done
 check "83e: 자동 처리를 끈 모드에서 도달 신고 없이도 PR라벨쓰기 로 park 한다" "$t3e_fail" ""
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83E"
+
+# ---------------------------------------------------------------------------
+# 83p. 짝 정리 — 행위 직전에 열고, 스테이지 끝과 런 끝에 한 번만 부르고, 잔여를 드러낸다
+# --- section: 83p | group: reach | covers: gate_pair_open, gate_pair_append, gate_pair_drain, gate_preauth_pair_argv, gate_done_note, gate_end_run, driver_pair_drain_row, pair-residue | anchors: 83p: 스테이지 끝 정리가 성공하면 그 파견의 잔여가 빈다, 83p: 실패한 정리는 런 끝에도 다시 부르지 않는다, 83p: gate_end_run 의 정리는 done 이 서기 전에 돈다, 83p: 동시에 돈 두 정리가 한 번만 부른다, 83p: 같은 단위의 열림은 하나다, 83p: plan 은 열지 않고 예보만 한다, 83p: pair-residue 동사가 판독기와 같은 바이트를 낸다 ---
+#
+# 원장 픽스처에 열림 행을 직접 쓰고 정리 함수를 제자리에서 부른다. 정리 스크립트는 부를
+# 때마다 자기 이름의 `.calls` 파일에 「작업 디렉터리 + done 유무」 한 줄을 남기므로, 부른
+# 횟수와 부른 자리를 그 파일로 잰다. 끝의 묶음은 rx 매니페스트로 게이트를 띄워 열기를 잰다.
+# ---------------------------------------------------------------------------
+pre_reach
+pre_ledger_series
+D83P="$lsr_root/s83p"; rm -rf "$D83P"; mkdir -p "$D83P"
+P83_NAMES=(ok bad race ok2 slow)
+p83_mk() {
+  # p83_mk <이름> <종료 코드> [<셸 줄>] — 부를 때마다 기록을 남기고, 셸 줄을 돌린 뒤 그
+  # 코드로 끝나는 정리 스크립트.
+  cat > "$D83P/$1.sh" <<P83EOF
+#!/bin/sh
+if [ -e done ]; then w=done; else w=nodone; fi
+printf '%s %s\n' "\$(pwd)" "\$w" >> "$D83P/$1.calls"
+${3:-:}
+exit $2
+P83EOF
+}
+p83_mk ok 0
+p83_mk bad 7
+p83_mk race 0 "printf 'race-first\\n' > done"
+p83_mk ok2 0
+p83_mk slow 0 'sleep 1'
+M83P=$(lsr_rp_manifest "$D83P/manifest.md")
+p83_i=0
+for p83_nm in "${P83_NAMES[@]}"; do
+  p83_i=$((p83_i + 1))
+  printf -- '- `사전 인가` | 형태=bash scripts/p%s.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=/bin/sh %s/%s.sh | 사유=시험\n' \
+    "$p83_i" "$D83P" "$p83_nm" >> "$M83P"
+done
+q83p() { local l=$1; shift; lsr_in Linux "$l" - lsr_rp_in "$M83P" "$@" 2>/dev/null; }
+p83_open() {
+  # p83_open <원장> <파견> <행> [<정리 사본>] — 그 단위의 열림 행. rc 는 gate_pair_append 의 것.
+  local a="${4:-/bin/sh $D83P/${P83_NAMES[$(($3 - 1))]}.sh}"
+  q83p "$1" gate_pair_append open-free "$2" "$3" "상태=열림" "파견=$2" "행=$3" "정리=$a"
+}
+p83_st() {  # p83_st <원장> — 잔여를 「파견/행/상태」 로 ; 로 잇는다
+  LC_ALL=C awk -f "$CC_ORCH/pair-residue.awk" "$1" | awk -F'\t' '{ printf "%s%s/%s/%s", (NR > 1 ? ";" : ""), $1, $2, $4 }'
+}
+p83_n() { if [ -f "$D83P/$1.calls" ]; then wc -l < "$D83P/$1.calls" | tr -d ' '; else printf 0; fi; }
+p83_rows() { { grep -c "^- \`짝 정리\` .*상태=$2" "$1" 2>/dev/null || true; }; }  # p83_rows <원장> <상태>
+p83_clear() { rm -f "$D83P"/*.calls; }
+
+# 스테이지 끝 — 그 파견의 열림만 부르고, 다른 파견의 열림은 미호출로 남는다. 정리는 런
+# 디렉터리에서 돈다.
+p83_clear; l83=$(lsr_ledger p83-stage)
+p83_open "$l83" S1 1; p83_open "$l83" S2 4
+q83p "$l83" gate_pair_drain stage S1
+check "83p: 스테이지 끝 정리가 성공하면 그 파견의 잔여가 빈다" "$(p83_st "$l83")|$(p83_n ok)|$(p83_n ok2)" "S2/4/미호출|1|0"
+check "83p: 결과 행이 성공·rc 0·스테이지끝 을 싣는다" "$(lsr_last_fields "$l83" '짝 정리' 상태 파견 결과 rc 시점)" "결과|S1|성공|0|스테이지끝"
+check "83p: 정리는 런 디렉터리에서 돈다" "$(cut -d' ' -f1 "$D83P/ok.calls")" "$(cd "${l83%/*}" && pwd)"
+
+# 실패 — 한 번 부르고, 같은 스테이지 끝을 다시 불러도 런 끝에도 다시 부르지 않는다.
+p83_clear; l83=$(lsr_ledger p83-fail)
+p83_open "$l83" S1 2
+q83p "$l83" gate_pair_drain stage S1
+q83p "$l83" gate_pair_drain stage S1
+q83p "$l83" gate_pair_drain run
+check "83p: 실패한 정리는 런 끝에도 다시 부르지 않는다" "$(p83_n bad)|$(p83_st "$l83")" "1|S1/2/실패 rc=7"
+
+# 런 끝 — gate_end_run 과 gate_done_note 의 정리는 done 이 서기 전에 돌고, 이미 선 done 에
+# 덧붙이는 줄과 종료 행만 쓰는 함수는 정리를 부르지 않는다.
+p83_clear; l83=$(lsr_ledger p83-end)
+p83_open "$l83" - 1
+q83p "$l83" gate_end_run "주 루프 종료" "시험 종료" 해당없음 "" "" >/dev/null
+check "83p: gate_end_run 의 정리는 done 이 서기 전에 돈다" \
+  "$(p83_n ok)|$(cut -d' ' -f2 "$D83P/ok.calls")|$([ -s "${l83%/*}/done" ] && echo done)|$(lsr_last_fields "$l83" '짝 정리' 결과 시점)" \
+  "1|nodone|done|성공|런끝"
+p83_clear; l83=$(lsr_ledger p83-note)
+p83_open "$l83" - 1
+q83p "$l83" gate_done_note "첫 줄"
+check "83p: gate_done_note 의 정리는 done 첫 줄 전에 돈다" \
+  "$(p83_n ok)|$(cut -d' ' -f2 "$D83P/ok.calls")|$(sed -n 1p "${l83%/*}/done")" "1|nodone|첫 줄"
+p83_open "$l83" - 4
+q83p "$l83" gate_done_note "둘째 줄"
+q83p "$l83" gate_end_row "시험" "시험" 해당없음 >/dev/null
+check "83p: 덧붙이는 done 줄과 종료 행은 정리를 부르지 않는다" \
+  "$(p83_n ok2)|$(wc -l < "${l83%/*}/done" | tr -d ' ')|$(p83_st "$l83")" "0|2|-/4/미호출"
+# 경합 — 정리가 도는 사이 다른 쓰는 쪽이 done 을 세우면, 그 첫 줄을 지우지 않고 덧붙인다.
+p83_clear; l83=$(lsr_ledger p83-race)
+p83_open "$l83" - 3
+q83p "$l83" gate_done_note "늦은 줄"
+check "83p: 정리 중에 선 done 의 첫 줄이 남는다" "$(tr '\n' '/' < "${l83%/*}/done")" "race-first/늦은 줄/"
+
+# 스테이지 결과 행을 쓰는 것만으로는 정리를 부르지 않는다 — 부르는 자리는 스테이지
+# 기록기와 드라이버의 훅이다. 런 끝은 남은 것을 부른다.
+p83_clear; l83=$(lsr_ledger p83-row)
+p83_open "$l83" S1 1
+q83p "$l83" gate_append stage-result "세그먼트=S1" "파견 id=S1#1" "종료 코드=0" >/dev/null
+check "83p: stage-result 행을 쓰는 것만으로는 정리가 돌지 않는다" \
+  "$(grep -c '^- `stage-result`' "$l83")|$(p83_n ok)" "1|0"
+q83p "$l83" gate_pair_drain run
+check "83p: 런 끝은 남은 열림을 부른다" "$(p83_n ok)|$(p83_st "$l83")" "1|"
+
+# 런 끝은 살아 있는 스테이지의 열림을 건너뛰고 `-` 열림은 언제나 부른다. 상한을 넘기면
+# 새 정리를 시작하지 않는다.
+p83_clear; l83=$(lsr_ledger p83-live)
+sleep 300 &
+p83_sp=$!
+printf '%s\n' "$p83_sp" > "${l83%/*}/S7.pid"
+cc_proc_fingerprint "$p83_sp" > "${l83%/*}/S7.start"
+p83_open "$l83" S7 1; p83_open "$l83" - 4
+q83p "$l83" gate_pair_drain run
+kill "$p83_sp" 2>/dev/null; wait "$p83_sp" 2>/dev/null || true
+check "83p: 런 끝은 살아 있는 스테이지의 열림을 건너뛴다" "$(p83_n ok)|$(p83_n ok2)|$(p83_st "$l83")" "0|1|S7/1/미호출"
+p83_clear; l83=$(lsr_ledger p83-cap)
+p83_open "$l83" - 1; p83_open "$l83" - 4
+p83_cap0() { GATE_PAIR_RUN_CAP_S=0; gate_pair_drain run; }
+q83p "$l83" p83_cap0
+check "83p: 상한을 넘긴 런 끝은 다음 정리를 시작하지 않는다" "$(p83_n ok)|$(p83_n ok2)|$(p83_st "$l83")" "1|0|-/4/미호출"
+
+# 시작 행만 있고 결과가 없는 정리는 호출중단 으로 드러나고 다시 부르지 않는다.
+p83_clear; l83=$(lsr_ledger p83-abort)
+p83_open "$l83" - 1
+p83_ln=$(LC_ALL=C awk -v mode=pending -f "$CC_ORCH/pair-residue.awk" "$l83" | cut -f1)
+q83p "$l83" gate_pair_append start-free "$p83_ln" - "상태=시작" "열림=$p83_ln" "시점=런끝"
+q83p "$l83" gate_pair_drain run
+check "83p: 결과 없는 시작은 호출중단 이고 다시 부르지 않는다" "$(p83_n ok)|$(p83_st "$l83")" "0|-/1/호출중단"
+
+# 동시에 도는 두 런 끝 정리 — 시작 행을 쓴 쪽만 부른다. 시작 행의 조건을 락 안에서 읽는
+# 것은 락 도구가 있는 갈래의 성질이므로(`lock_tool` 은 darwin 에서만 `/usr/bin/lockf` 를
+# 내고, 그 밖에서는 락 없는 갈래를 탄다) 이 호스트로 띄우고 락 도구가 있을 때만 잰다.
+if [ -x /usr/bin/lockf ]; then
+  p83_clear; l83=$(lsr_ledger p83-par)
+  p83_open "$l83" - 5
+  lsr_in - "$l83" - lsr_rp_in "$M83P" gate_pair_drain run 2>/dev/null & p83_p1=$!
+  lsr_in - "$l83" - lsr_rp_in "$M83P" gate_pair_drain run 2>/dev/null & p83_p2=$!
+  wait "$p83_p1" "$p83_p2" 2>/dev/null || true
+  check "83p: 동시에 돈 두 정리가 한 번만 부른다" "$(p83_n slow)|$(p83_rows "$l83" 시작)|$(p83_rows "$l83" 결과)" "1|1|1"
+fi
+
+# 같은 단위의 열림은 결과가 날 때까지 하나다. 결과가 난 뒤의 열림은 새 짝이다.
+p83_clear; l83=$(lsr_ledger p83-once)
+p83_open "$l83" S1 1; p83_r1=$?
+p83_open "$l83" S1 1; p83_r2=$?
+check "83p: 같은 단위의 열림은 하나다" "$p83_r1|$p83_r2|$(p83_rows "$l83" 열림)" "0|90|1"
+q83p "$l83" gate_pair_drain stage S1
+p83_open "$l83" S1 1
+check "83p: 결과가 난 뒤의 열림은 새 짝이다" "$(p83_rows "$l83" 열림)|$(p83_st "$l83")" "2|S1/1/미호출"
+
+# 열림 행의 사본이 얼린 매니페스트의 값과 다르면 아무것도 돌리지 않고 실패로 적는다.
+p83_clear; l83=$(lsr_ledger p83-copy)
+p83_open "$l83" S1 1 "/bin/sh $D83P/ok2.sh"
+q83p "$l83" gate_pair_drain stage S1
+check "83p: 사본이 다르면 정리를 돌리지 않고 rc 없는 실패다" "$(p83_n ok)|$(p83_n ok2)|$(p83_st "$l83")" "0|0|S1/1/실패 rc=-"
+
+# 드라이버의 훅 — 그 파견의 시작 안 된 열림이 있을 때만 게이트의 스테이지 끝 정리를 부른다.
+p83_drv() {
+  # p83_drv <원장> <stage-result 필드…> — run.sh 를 소싱해 훅을 부르고, 게이트 호출을 기록만
+  # 하는 대역이 받은 인자를 낸다. 훅은 게이트 호출의 표준 출력과 표준 오류를 버리므로 대역은
+  # fd 3 으로 쓴다.
+  local l=$1; shift
+  (cd "$WT" && CC_ORCH_SOURCE_ONLY=1 bash -c '
+    . "$0" >/dev/null 2>&1
+    LEDGER="$1"; shift
+    run_gate_call() { printf "%s\n" "$*" >&3; }
+    driver_pair_drain_row "$@"' "$RUNSH" "$l" "$@" 3>&1 >/dev/null 2>&1)
+}
+l83=$(lsr_ledger p83-drv)
+check "83p: 열림이 없으면 드라이버 훅이 게이트를 부르지 않는다" "$(p83_drv "$l83" "세그먼트=S1" "파견 id=S1#2")" ""
+p83_open "$l83" S1 1
+check "83p: 파견 id 없는 행에는 드라이버 훅이 게이트를 부르지 않는다" "$(p83_drv "$l83" "세그먼트=S1")" ""
+check "83p: 열림이 있으면 드라이버 훅이 그 파견의 스테이지 끝 정리를 부른다" \
+  "$(p83_drv "$l83" "세그먼트=S1" "파견 id=S1#2")" "gate_pair_drain stage S1"
+# 두 쓰는 쪽이 같은 함수를 부른다 — 드라이버의 원장 행 훅과 게이트의 스테이지 기록기.
+if grep -qF '[ "$series" != "stage-result" ] || { driver_pair_drain_row "$@" || true; }' "$RUNSH" \
+   && grep -qF '( gate_pair_drain stage "$seg" ) || true' "$GATE"; then
+  ok "83p: 드라이버 훅과 스테이지 기록기가 같은 스테이지 끝 정리를 부른다"
+else bad "83p: 드라이버 훅과 스테이지 기록기가 같은 스테이지 끝 정리를 부른다" "호출 줄이 없다"; fi
+
+# 게이트를 띄운 묶음 — 행 값을 정한 새 형식 행이 `짝 정리=` 를 실으면 exec 가 행위 직전에
+# 연다. plan 은 열지 않고 예보만 하고, 자동 해소가 꺼진 런은 열지 않는다.
+CC_GATE_PREV_AR83P="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+pj_reset
+rx_manifest R83P "bash scripts/publish.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=/bin/sh $D83P/ok.sh | 사유=테스트"
+l83="$WT/docs/pipeline-run/R83P.md"
+p83_made=''
+if [ ! -e "$WT/scripts/publish.sh" ]; then
+  mkdir -p "$WT/scripts"; printf '#!/bin/sh\nexit 0\n' > "$WT/scripts/publish.sh"; p83_made=1
+fi
+p83_gate() {  # p83_gate <동사> <argv...> — 이 묶음의 매니페스트로 plan 이나 exec
+  local v="$1"; shift
+  if [ "$v" = exec ]; then
+    pj_gate exec --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+      --surface 외부상태변경 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" --rationale '짝 정리 시험' -- "$@"
+  else
+    pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+      --surface 외부상태변경 --reach 기기전역 --rationale '짝 정리 시험' -- "$@"
+  fi
+}
+p83_gate plan bash scripts/publish.sh "$HOME/.config/x"
+case "$rc|$msg" in
+  0\|*'짝 정리 예보'*) ok "83p: plan 은 열지 않고 예보만 한다" ;;
+  *) bad "83p: plan 은 열지 않고 예보만 한다" "rc=$rc: $msg" ;;
+esac
+check "83p: plan 뒤 원장에 짝 정리 행이 없다" "$(p83_rows "$l83" 열림)" "0"
+CC_PIPELINE_STAGE_ID='S5#1' p83_gate exec bash scripts/publish.sh "$HOME/.config/x"; p83_r1=$rc
+CC_PIPELINE_STAGE_ID='S5#2' p83_gate exec bash scripts/publish.sh "$HOME/.config/x"; p83_r2=$rc
+check "83p: 같은 파견의 두 exec 가 열림 하나를 쓴다" \
+  "$p83_r1|$p83_r2|$(p83_rows "$l83" 열림)|$(lsr_last_fields "$l83" '짝 정리' 파견 행 정리)" \
+  "0|0|1|S5|1|/bin/sh $D83P/ok.sh"
+check "83p: exec 는 정리를 부르지 않는다" "$(p83_n ok)" "0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+CC_PIPELINE_STAGE_ID='S6#1' p83_gate exec bash scripts/publish.sh "$HOME/.config/x"
+check "83p: 자동 해소가 꺼진 런의 exec 는 열지 않는다" "$(p83_rows "$l83" 열림)" "1"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+# pair-residue 동사 — 판독기와 같은 바이트를 내고, 원장도 런 디렉터리도 바꾸지 않는다.
+p83_h0=$(shasum -a 256 "$l83" | cut -d' ' -f1)
+p83_d0=$(ls -A "$XDG_STATE_HOME/cc-cmds/run/R83P" 2>/dev/null | tr '\n' ' ')
+p83_v=$(cd "$WT" && bash "$GATE" pair-residue --manifest "$RX_M" 2>/dev/null; printf x)
+p83_a=$(LC_ALL=C awk -f "$CC_ORCH/pair-residue.awk" "$l83"; printf x)
+check "83p: pair-residue 동사가 판독기와 같은 바이트를 낸다" "$([ "$p83_v" = "$p83_a" ] && echo 같음)|${p83_a%x}" \
+  "같음|$(printf 'S5\t1\t/bin/sh %s/ok.sh\t미호출' "$D83P")
+"
+check "83p: pair-residue 동사는 원장과 런 디렉터리를 바꾸지 않는다" \
+  "$(shasum -a 256 "$l83" | cut -d' ' -f1)|$(ls -A "$XDG_STATE_HOME/cc-cmds/run/R83P" 2>/dev/null | tr '\n' ' ')" "$p83_h0|$p83_d0"
+# 읽는 동사 셋의 면제 — 정산과 전제 쓰기에서 pair-residue 가 plan 곁에 선다.
+check "83p: pair-residue 는 잃은 파견 정산에서 빠진다" \
+  "$(grep -cF '[ "$verb" = "plan" ] || [ "$verb" = "pair-residue" ] || gate_settle_lost_dispatches' "$GATE")" "1"
+check "83p: pair-residue 는 plan·digest-path 와 같은 두 면제 갈래에 있다" \
+  "$(grep -cE '^ *plan\|digest-path\|pair-residue\)' "$GATE")" "2"
+[ -z "$p83_made" ] || { rm -f "$WT/scripts/publish.sh"; rmdir "$WT/scripts" 2>/dev/null || true; }
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83P"
 
 # ---------------------------------------------------------------------------
 # 84. gate_metrics_timed leaves nothing behind in a detached child under make
