@@ -738,6 +738,18 @@ describe('그리기', () => {
     expect(await ui.find({ type: 'Text', text: '버릴 줄' })).toBeUndefined()
   })
 
+  test('세션 제목 줄은 연결된 런 없음 아래에 남는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.reply = out('none', '-', ['none\tcut\tdim\t연결된 런 없음', 'session-title\tcut\tdim\t세션 \tnormal\t내 작업'])
+    await start($)
+    await clock.advance(TICK)
+    const ui = await mount($)
+    const lines = await drawnLines(ui)
+    expect(lines).toHaveLength(2)
+    expect(shown(lines[0])).toBe('연결된 런 없음')
+    expect(shown(lines[1])).toBe('세션 내 작업')
+  })
+
   test('인라인 자리에서는 본문 대신 흐린 한 줄을 그린다', async ($, on) => {
     const { w, clock } = world(on)
     w.reply = out('ended', 'r1', ['title\tcut\tnormal\t본문 줄'])

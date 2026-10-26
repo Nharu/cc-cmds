@@ -150,13 +150,15 @@ Not every decision is an act. For those, the question is **"may I choose this wi
 
 1. Read the snapshot's `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.
 2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for — ledger rows, the run directory, a merge commit's `git show --stat` or `git diff`, `gh pr view`, each through `exec … --surface 읽기` — and when you find it, write `act --kind clause`.
-3. A clause whose evidence no read of this run can produce — its `문면` asks for a paid or credentialed call, a local launch, a device, or a person's confirmation — is not settled `불가능` without a question. A routing shift asks for it with `shift-halt` at site `종료 절 근거` (the shift's copy gives the form), and the seat puts that record to a person.
+3. A clause whose evidence no read of this run can produce — its `문면` asks for a paid or credentialed call, a local launch, a device, or a person's confirmation — is not settled `불가능` without a question. A routing shift asks for it with `shift-halt` at site `종료 절 근거` (the shift's copy gives the form), and the seat puts that record to a person. Posting a pull request review is not such an execution: the shift issues it itself through the gate, as below.
 4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.
+
+**A clause that asks for a pull request review is settled by a review the shift posts itself** — it is not handed to a stage. The spelling is `gh api -X POST repos/<owner>/<repo>/pulls/<n>/reviews -f event=<…> -f commit_id=<리뷰 HEAD> -f body=<본문>`, declared `--cutpoint 커밋 --surface 외부상태변경 --reach 협업`; `commit_id` is the `리뷰 HEAD` of the segment's last `cycle` row, never a `review_next[]` value. Whatever is declared, the gate judges that argv and `gh pr review` at `커밋`, and an inline GraphQL review mutation is declared `커밋`. The response's `id` and `html_url` are the `충족` evidence. The shift's copy gives where each value comes from, the issue form, the duplicate check and the failure branches.
 
 **The evidence a clause row carries depends on its state.**
 
 - **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit's full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks only that `근거` is not empty, so keeping to this is yours.
-- **`불가능` cites what decided it** — a residual issue URL, a design step's `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer.
+- **`불가능` cites what decided it** — a residual issue URL, a design step's `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer. An act that passed the gate and then failed cites its ledger row anchor `A-<8 hex>`; an act the gate refused cites the refusal line, the exit code and the target cutpoint.
 - **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.
 
 The disagreement runs both ways, and only one direction is obvious:
