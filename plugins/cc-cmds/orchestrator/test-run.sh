@@ -784,9 +784,17 @@ sz_doc() {  # sz_doc <file> <옛|새> <사유 줄 없음|뒤|앞>
     printf '\n'
   } > "$1"
 }
-sz_gate() {  # sz_gate <doc> — the gate's branch; `DOC` is set after the source, which resets it
-  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; DOC=$2; gate_slicing_branch' _ \
+sz_gate() {  # sz_gate <doc> — the gate's branch on the first line, then its defect enumeration;
+  # `DOC` is set after the source, which resets it
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; DOC=$2; gate_slicing_branch; printf "\n"; gate_slicing_defects' _ \
     "$(dirname "$DRIVER")/gate.sh" "$1" 2>/dev/null
+}
+# 결함이 없는 선언에서도 게이트의 열거는 대체 문구 한 줄을 내므로, 열거가 비었는지가 아니라
+# 슬라이스에 돌아가는 결함 줄(「슬라이스 <id>: 」 머리)이 없는지를 잰다.
+sz_gate_check() {  # sz_gate_check <doc> — prints `<branch>|<slice-owned defect line count>`
+  local out
+  out=$(sz_gate "$1")
+  printf '%s|%s' "$(printf '%s\n' "$out" | sed -n 1p)" "$(printf '%s\n' "$out" | sed 1d | grep -c '^슬라이스 ' | tr -d ' ')"
 }
 for sz_g in 옛 새; do
   for sz_r in 뒤 없음; do
@@ -795,12 +803,18 @@ for sz_g in 옛 새; do
       "$(rs_sfo "$RSD/sz-$sz_g-$sz_r.md")" "0:"
     check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 드라이버가 선언통치로 읽고 결함이 없다" \
       "$(slicing_branch "$RSD/sz-$sz_g-$sz_r.md" 2>/dev/null)|$(slicing_slice_defects "$RSD/sz-$sz_g-$sz_r.md" 2>/dev/null)" "선언통치|"
-    check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 게이트가 선언통치로 읽는다" \
-      "$(sz_gate "$RSD/sz-$sz_g-$sz_r.md")" "선언통치"
+    check "사유 필드: 기준선 초과 블록($sz_g 문법, 사유 줄 $sz_r)은 게이트가 선언통치로 읽고 슬라이스 결함이 없다" \
+      "$(sz_gate_check "$RSD/sz-$sz_g-$sz_r.md")" "선언통치|0"
   done
   check "사유 필드: 사유 줄은 선언 다이제스트를 움직이지 않는다 ($sz_g 문법)" \
     "$(slice_decl_digest "$RSD/sz-$sz_g-뒤.md" A)" "$(slice_decl_digest "$RSD/sz-$sz_g-없음.md" A)"
 done
+# 대조: 절단점 줄만 뺀 같은 블록은 게이트가 선언불완전으로 읽고 그 슬라이스의 결함 줄을 낸다.
+# 헬퍼가 열거를 부르지 못해 출력이 비면 위 「결함이 없다」 단언이 공허하게 통과하므로 함께 잰다.
+grep -v '^\*\*절단점\*\*: ' "$RSD/sz-새-뒤.md" > "$RSD/sz-nocut.md"
+sz_nocut=$(sz_gate "$RSD/sz-nocut.md")
+check "사유 필드: 절단점 줄을 뺀 대조 블록은 게이트가 선언불완전으로 읽고 그 결함을 열거한다" \
+  "$(printf '%s\n' "$sz_nocut" | sed -n 1p)|$(printf '%s\n' "$sz_nocut" | grep -cxF '슬라이스 A: 필수 필드 「절단점」 없음' | tr -d ' ')" "선언불완전|1"
 sz_doc "$RSD/sz-front.md" 새 앞
 check "사유 필드: 선행 줄 앞의 사유 줄은 선행·선언 파일 값을 바꾸지 않는다" \
   "$(slice_field "$RSD/sz-front.md" A '선행')|$(slice_field "$RSD/sz-front.md" A '선언 파일')" \
