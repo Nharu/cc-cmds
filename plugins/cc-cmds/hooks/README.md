@@ -550,18 +550,19 @@ period come from `../orchestrator/run-pane.sh <session id> [--cols N] [--rows N]
 The helper calls `statusline.sh` with `CC_SL_PANE_FIELDS=1`, which adds one
 field row after the human line, so the pane and the status line name the same
 run, state word and watcher verdict from one evaluation. The helper reads the
-ledger, the run directory and the run manifest only, never calls `jq`, always
-exits 0, and writes nothing.
+ledger, the run directory, the run manifest and the session's current title
+file only, never calls `jq`, always exits 0, and writes nothing.
 
 **The rows.** The first row is
 `cc-pane<TAB>2<TAB><class><TAB><run id|-><TAB><session index path|-><TAB><refresh ms>`.
 Every row after it is
 `<bundle><TAB><cut|wrap><TAB><tone><TAB><text>[<TAB><tone><TAB><text>]…`:
 
-- The bundle is one of a closed set — `none`, `title`, `head`, `head-detail`,
-  `gap`, `seg-heading`, `seg`, `seg-detail`, `seg-folded`, `gate-none`,
-  `approval`, `block-heading`, `block-reason`, `cone-unresolved`, `orphan`,
-  `event-heading`, `event`. The module drops a row whose bundle it does not know.
+- The bundle is one of a closed set — `none`, `title`, `session-title`, `head`,
+  `head-detail`, `gap`, `seg-heading`, `seg`, `seg-detail`, `seg-folded`,
+  `gate-none`, `approval`, `block-heading`, `block-reason`, `cone-unresolved`,
+  `orphan`, `event-heading`, `event`. The module drops a row whose bundle it
+  does not know.
 - `cut` draws the line truncated at its end; `wrap` lets the engine wrap it and
   is used only by `block-reason`, so a block's reason is shown in full.
 - A line is one or more tone/text parts drawn in one outer `Text`, so the parts
@@ -575,11 +576,24 @@ refused); on a mismatch, a non-zero exit or a failed run it keeps the last good
 lines, adds one warning line, and opens nothing. The lines live in the session
 state key `paneLines`.
 
+**The session title line.** When the session has a current title (see the
+current title file under the session title hook), the pane shows it as one
+`session-title` line, `세션 ` dimmed and then the title, right under the first
+line: under `autopilot <run id>` when there is a run, and under `연결된 런 없음`
+when there is none. The helper reads the file only for a session id of
+`^[A-Za-z0-9-]+$` — narrower than its own id check, which takes dots and
+underscores — takes the first two lines untrimmed with the shell's `read` (a
+title line without its newline counts, later lines are ignored), and turns a
+TAB in the title into a space. A missing or unreadable file, another schema
+line or an empty title gives no line, and the output is then byte for byte what
+it is without the file. A `/rename` reaches the file only with the next prompt,
+so the pane shows it on the first refresh after that prompt.
+
 **The line budget.** The budget is `min(24, dock rows)`, computed and kept by
-the helper. The title, the head line and its details, every approval, every
-block heading and reason line, the cone-without-owner line, the orphan lines
-and the line of a segment holding a cone block are protected and stay even over
-the budget. Over it, the helper removes, in order, until its estimate fits:
+the helper. The title, the session title line, the head line and its details,
+every approval, every block heading and reason line, the cone-without-owner
+line, the orphan lines and the line of a segment holding a cone block are
+protected and stay even over the budget. Over it, the helper removes, in order, until its estimate fits:
 the oldest events (then the event heading and its gap), the details of finished
 segments, the finished segments themselves (folded into one
 `끝난 세그먼트 N개` line), the remaining segment details (the running

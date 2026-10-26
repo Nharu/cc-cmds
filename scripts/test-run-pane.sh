@@ -797,6 +797,84 @@ has "17 --rows 가 상한을 낮춘다" \
   "$([ "$(body_n "$(pane s-fold --rows 12)")" -lt "$(body_n "$(pane s-fold)")" ] && echo yes || echo no)" "yes"
 
 # ---------------------------------------------------------------------------
+# 18. The session title row, from the current title file the session title
+# hook keeps. With a run it sits right under the title and is protected; with
+# none it sits under `연결된 런 없음`. A file that is missing, of another
+# schema, with an empty title, or under an id outside `^[A-Za-z0-9-]+$` gives
+# no row and the same bytes as no file.
+# ---------------------------------------------------------------------------
+ST_DIR="$XDG_STATE_HOME/cc-cmds/session-title-now"
+# st_put <sid> <bytes> — the session's current title file, exactly those bytes.
+st_put() { mkdir -p "$ST_DIR"; printf '%s' "$2" > "$ST_DIR/$1"; }
+ST_ROW="session-title${TAB}cut${TAB}dim${TAB}세션 ${TAB}normal${TAB}"
+
+fx_mkrun pr-st; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 5
+fx_session_index s-st pr-st
+st_put s-st $'cc-session-title-now v1\n내 작업\n'
+out=$(pane s-st)
+like  "18 런 있음 — 묶음 순서가 title session-title head 로 시작한다" "$(bundles "$out")" \
+      '^title session-title head '
+check "18 런 있음 — 세션 제목 줄" "$(brow "$out" session-title)" "${ST_ROW}내 작업"
+out=$(pane s-st --rows 3)
+check "18 런 있음 --rows 3 — 세션 제목 줄이 남는다" "$(brow "$out" session-title)" "${ST_ROW}내 작업"
+
+fx_session_index s-st-order pr-order
+st_put s-st-order $'cc-session-title-now v1\n보호 확인\n'
+out=$(pane s-st-order --rows 8)
+check "18 보호 줄이 많은 런 --rows 8 — 세션 제목 줄이 title 바로 아래 남는다" \
+      "$(bundles "$out" | cut -d' ' -f1-3)" "title session-title head"
+check "18 보호 줄이 많은 런 --rows 8 — 그 줄의 글" "$(rtext "$(brow "$out" session-title)")" "세션 보호 확인"
+
+st_put s-st-none $'cc-session-title-now v1\n런 없는 세션\n'
+out=$(pane s-st-none)
+check "18 런 없음 — 연결된 런 없음 다음에 세션 제목 줄" "$(body "$out")" \
+      "none${TAB}cut${TAB}dim${TAB}연결된 런 없음
+${ST_ROW}런 없는 세션"
+check "18 런 없음 — 부류는 none 그대로" "$(hfield "$out" 3)" "none"
+
+# Ids the helper's own check takes but the file's writer never makes.
+for st_sid in n.b n_b; do
+  st_put "$st_sid" $'cc-session-title-now v1\n보이면 안 됨\n'
+  out=$(pane "$st_sid")
+  check "18 좁은 검사에 걸리는 id '$st_sid' (런 없음) — 본문은 연결된 런 없음 한 줄" "$(body "$out")" \
+        "none${TAB}cut${TAB}dim${TAB}연결된 런 없음"
+done
+for st_sid in r.b r_b; do
+  fx_session_index "$st_sid" pr-st
+  st_put "$st_sid" $'cc-session-title-now v1\n보이면 안 됨\n'
+  out=$(pane "$st_sid")
+  check "18 좁은 검사에 걸리는 id '$st_sid' (런 있음) — 런은 보인다" "$(hfield "$out" 4)" "pr-st"
+  check "18 좁은 검사에 걸리는 id '$st_sid' (런 있음) — 세션 제목 줄이 없다" "$(brow "$out" session-title)" ""
+done
+
+# The same session before and after each malformed file: the same bytes.
+fx_session_index s-st-bad pr-st
+for st_sess in s-st-badnone s-st-bad; do
+  rm -f "$ST_DIR/$st_sess"
+  want=$(pane "$st_sess")
+  st_put "$st_sess" $'cc-session-title-now v2\n다른 판\n'
+  check "18 $st_sess — 스키마 줄이 다른 파일은 파일이 없을 때와 바이트로 같다" "$(pane "$st_sess")" "$want"
+  st_put "$st_sess" $'cc-session-title-now v1\n\n셋째 줄\n'
+  check "18 $st_sess — 빈 2행은 파일이 없을 때와 바이트로 같다" "$(pane "$st_sess")" "$want"
+  st_put "$st_sess" $'cc-session-title-now v1'
+  check "18 $st_sess — 2행이 없는 파일은 파일이 없을 때와 바이트로 같다" "$(pane "$st_sess")" "$want"
+  rm -f "$ST_DIR/$st_sess"; mkdir -p "$ST_DIR/$st_sess"
+  check "18 $st_sess — 그 자리가 디렉터리면 파일이 없을 때와 바이트로 같다" \
+        "$(pane "$st_sess" 2>&1)" "$want"
+  rmdir "$ST_DIR/$st_sess"
+done
+
+st_put s-st-nonl $'cc-session-title-now v1\n개행 없는 끝'
+check "18 개행 없이 끝난 2행 — 그 값으로 줄이 나온다" "$(brow "$(pane s-st-nonl)" session-title)" \
+      "${ST_ROW}개행 없는 끝"
+st_put s-st-tab $'cc-session-title-now v1\n가\t나\n버릴 줄\n'
+check "18 2행의 TAB — 공백으로 바뀌고 셋째 줄은 읽지 않는다" "$(brow "$(pane s-st-tab)" session-title)" \
+      "${ST_ROW}가 나"
+st_put s-st-pad $'cc-session-title-now v1\n  앞뒤 공백  \n'
+check "18 2행의 앞뒤 공백 — 깎지 않는다" "$(brow "$(pane s-st-pad)" session-title)" \
+      "${ST_ROW}  앞뒤 공백  "
+
+# ---------------------------------------------------------------------------
 # 6. The contract, over every output this suite produced above.
 # ---------------------------------------------------------------------------
 # Each property is one assertion over the whole set; a breach names the output
@@ -804,7 +882,7 @@ has "17 --rows 가 상한을 낮춘다" \
 # reduction never removes — the protected rows, the segment heading, the fold
 # rows, the empty-gate summary — and a `seg` row past the reduction is one that
 # holds a block.
-BUNDLES=" none title head head-detail gap seg-heading seg seg-detail seg-folded gate-none approval block-heading block-reason cone-unresolved orphan event-heading event "
+BUNDLES=" none title session-title head head-detail gap seg-heading seg seg-detail seg-folded gate-none approval block-heading block-reason cone-unresolved orphan event-heading event "
 n_outs=0; e_head=""; e_refresh=""; e_idx=""; e_len=""; e_row=""; classes=""
 for f in "$OUTS"/o.*; do
   case "$f" in *.dim) continue ;; esac
@@ -839,7 +917,7 @@ for f in "$OUTS"/o.*; do
     fi
     total=$((total + ln))
     case " $rb " in
-      " title "|" head "|" head-detail "|" approval "|" block-heading "|" block-reason "|\
+      " title "|" session-title "|" head "|" head-detail "|" approval "|" block-heading "|" block-reason "|\
       " cone-unresolved "|" orphan "|" seg "|" seg-heading "|" seg-folded "|" gate-none "|" none ")
         floor=$((floor + ln)) ;;
     esac
@@ -877,7 +955,8 @@ tree_snap() {
 before=$(tree_snap)
 for s in s-run1 s-run0 s-prog s-appr s-stall s-done s-aband s-block s-demote \
          s-noindex s-empty s-gone s-oldid s-capseg s-captail s-fold s-nolp s-cone s-order \
-         s-replay s-ev2 s-ev1 s-ev0 s-evz s-h1 s-h2 s-w1 s-w2 s-w3 s-pre s-drv s-time; do
+         s-replay s-ev2 s-ev1 s-ev0 s-evz s-h1 s-h2 s-w1 s-w2 s-w3 s-pre s-drv s-time \
+         s-st s-st-order s-st-none n.b n_b r.b r_b s-st-nonl s-st-tab s-st-pad; do
   bash "$PANE" "$s" >/dev/null 2>&1
 done
 after=$(tree_snap)
