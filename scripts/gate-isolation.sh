@@ -14,18 +14,26 @@
 # X leans on, or leaves behind, state another section makes.
 #
 # WHAT IS COMPARED. Each context's cut writes `rec.tsv` (one
-# `<section><TAB><PASS|FAIL|SKIP|NOISE><TAB><label>` line per assertion and per
-# oracle noise line) and, for the sections it traced, `trace-<id>.lines` (the
-# (file, line) pairs the section executed, the cut itself written `CUT`) with
-# `linemap.tsv` mapping the cut's lines back to the suite's. X's record lines
-# are compared as they stand — in their order, duplicates kept, no path or time
-# normalised away: the second solo's TMPDIR exists to make a path dependence
-# show. A label that differs between the two solos is calibration (a label that
-# carries a time or a temporary path) and is not compared at that position; a
-# verdict that differs between them is a divergence. A line only one context
-# has is a divergence, NOISE lines included, and so is SKIP against PASS. The
-# line sets are compared on original line numbers, without the lines marked
-# `# gate-isolation: 변동` and without the lines the two solos already differ in.
+# `<section><TAB><PASS|FAIL|SKIP><TAB><label><TAB><source line>` line per
+# assertion and one `<section><TAB>NOISE<TAB><sentence>` line per oracle noise
+# line) and, for the sections it traced, `trace-<id>.lines` (the (file, line)
+# pairs the section executed, the cut itself written `CUT`) with `linemap.tsv`
+# mapping the cut's lines back to the suite's. X's record lines are compared as
+# they stand — in their order, duplicates kept, no path or time normalised away:
+# the second solo's TMPDIR exists to make a path dependence show. The source
+# line is the suite line that called `ok`, `bad` or `skip` (the helper's line
+# when a helper made the call); it is not compared, and serves only to find the
+# mark. A label that differs between the two solos is calibration (a label that
+# carries a time or a temporary path) and is not compared at that position. A
+# record whose source line ends in `# gate-isolation: 변동` has its label left
+# out between every pair of contexts, because a label that carries a measured
+# value can come out equal in the two solos by chance and differ only in a row;
+# a missing or 0 source line carries no mark. Neither rule touches the verdict
+# or the record's position: a verdict that differs is a divergence, between the
+# solos too. A line only one context has is a divergence, NOISE lines included,
+# and so is SKIP against PASS. The line sets are compared on original line
+# numbers, without the lines marked `# gate-isolation: 변동` and without the
+# lines the two solos already differ in.
 # A failure outside any section (a prelude, the epilogue) is X's in a solo cut
 # and the row's own in a row, reported and not attributed. A failure of a
 # regular section Y of a row X was laid over is X's: "Y failed in the row X was
@@ -166,12 +174,15 @@ iso_compare_one() {
       w = (len[a] > len[b] ? a : b)
       return "한 맥락에만 있는 기록 — " nm[w] " 의 " i "번째 " rec(w, i)
     }
-    # Compare context c with the reference r; calibrated positions skip labels.
+    # Whether position i of a or b was written by a marked line.
+    function marked(a, b, i) { return (sl[a, i] > 0 && (sl[a, i] in mk)) || (sl[b, i] > 0 && (sl[b, i] in mk)) }
+    # Compare context c with the reference r; calibrated and marked positions
+    # skip labels, never verdicts.
     function cmpseq(r, c,   i, m) {
       m = (len[r] < len[c] ? len[r] : len[c])
       for (i = 1; i <= m; i++) {
         if (vv[r, i] != vv[c, i]) return seqmsg(r, c, i)
-        if (ll[r, i] != ll[c, i] && !(i in cal)) return seqmsg(r, c, i)
+        if (ll[r, i] != ll[c, i] && !(i in cal) && !marked(r, c, i)) return seqmsg(r, c, i)
       }
       if (len[r] != len[c]) return onlymsg(r, c, m + 1)
       return ""
@@ -214,7 +225,7 @@ iso_compare_one() {
         got[c] = 1
         while (r > 0) {
           k = split(l, a, "\t"); s = a[1]; v = a[2]; lb = (k >= 3 ? a[3] : "")
-          if (s == X) { len[c]++; vv[c, len[c]] = v; ll[c, len[c]] = lb }
+          if (s == X) { len[c]++; vv[c, len[c]] = v; ll[c, len[c]] = lb; sl[c, len[c]] = (k >= 4 ? a[4] + 0 : 0) }
           else if (v == "FAIL" && (s ~ /^@/ || s == "-")) {
             if (kd[c] == "solo") div(c, "절 밖 실패 — " s " 「" lb "」")
             else print "gate-isolation: " nm[c] " 의 절 밖 실패(" s ")는 행 자신의 실패라 " X " 에 귀속하지 않습니다 — " lb > "/dev/stderr"
@@ -695,6 +706,24 @@ iso_self_test() {
   if [ "$rc" = "0" ]; then ok "비교기: 변동 표지 줄은 줄 집합 비교에서 뺀다"; else bad "비교기 변동 표지" "rc=$rc 「${out}」"; fi
   lsbase; rm -f "$T/d/iso-1/row/trace-x.lines"; cmp_
   if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "^x${tab}맥락 없음${tab}행 1 (제 행)${tab}줄 집합 파일이 없습니다"; then ok "비교기: 기준 맥락이 추적됐는데 줄 집합이 없는 맥락은 맥락 없음이다"; else bad "비교기 줄 집합 없음" "rc=$rc 「${out}」"; fi
+
+  # Record labels from a marked line: line 5 of marked.sh carries the mark. The
+  # two solos give the same label, so calibration cannot take the position, and
+  # the rows give two other ones.
+  mkbase() {
+    rm -rf "$T/d"; mkdir -p "$T/d"
+    mk "$T/d/iso-3/solo1-x" "x${tab}PASS${tab}took 2s${tab}$1" "x${tab}PASS${tab}two${tab}9"
+    mk "$T/d/iso-3/solo2-x" "x${tab}PASS${tab}took 2s${tab}$1" "x${tab}PASS${tab}two${tab}9"
+    mk "$T/d/iso-1/row" "a${tab}PASS${tab}a1${tab}1" "x${tab}PASS${tab}took 3s${tab}$1" "x${tab}PASS${tab}two${tab}9"
+    mk "$T/d/iso-2/row" "b${tab}PASS${tab}b1${tab}1" "x${tab}${2:-PASS}${tab}took 4s${tab}$1" "x${tab}PASS${tab}two${tab}9"
+  }
+  cmpm_() { out=$(bash "$0" compare --dir "$T/d" --plan "$T/plan" --suite "$T/marked.sh" 2>/dev/null); rc=$?; }
+  mkbase 5; cmpm_
+  if [ "$rc" = "0" ] && [ "$out" = "$(printf 'x\t같음\t맥락 4개\t-')" ]; then ok "비교기: 변동 표지 줄의 단언은 두 단독이 같은 이름을 내도 어느 맥락 사이에서도 이름을 맞대지 않는다"; else bad "비교기 표지 줄 이름" "rc=$rc 「${out}」"; fi
+  mkbase 4; cmpm_
+  if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "^x${tab}갈림${tab}행 1 (제 행)${tab}1번째 기록"; then ok "비교기: 표지 없는 줄의 단언은 두 단독이 같은 이름을 내면 행에서 갈린 이름이 갈림이다"; else bad "비교기 표지 없는 줄 이름" "rc=$rc 「${out}」"; fi
+  mkbase 5 FAIL; cmpm_
+  if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "^x${tab}갈림${tab}행 2 (얹힘)${tab}1번째 기록"; then ok "비교기: 변동 표지 줄의 단언도 판정이 갈리면 갈림이다"; else bad "비교기 표지 줄 판정" "rc=$rc 「${out}」"; fi
 
   # --- the second solo's TMPDIR component ------------------------------------
   # Every run-id string of three bytes or fewer the suite's fixtures use is in
