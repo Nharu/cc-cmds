@@ -5127,6 +5127,55 @@ pre_sb() {
   }
 }
 
+# `mf` — the merge-first sections (88h and its pieces): a `선머지후리뷰` segment
+# `H` on a routed run, driven through `act` on an `sa` fixture. The fixture's
+# repository rewrites the target's remote slug URL to its bare remote, so the
+# `git ls-remote` base-check asks stays on this machine. Each piece builds its
+# own fixture with `mf_new`, so none of them leans on another's state.
+pre_mf() {
+  [ -n "${PRE_MF_DONE:-}" ] && return 0
+  PRE_MF_DONE=1
+  pre_sa
+
+  mf_new() {
+    # mf_new <라벨> — 커밋 하나를 앞선 선머지후리뷰 세그먼트 H, 같은 다이제스트의 구현
+    # 정상 완료 두 행(단계 B), 라우팅 기록.
+    sa_new "$1" 선머지후리뷰
+    ( cd "$SA_REPO" && git config "url.$SA_REMOTE.insteadOf" "https://github.com/t/$SA_ID.git" ) >/dev/null 2>&1
+    MF_TIP=$(sa_commit '작업')
+    sa_seg_row H 선머지후리뷰
+    mf_impl d1; mf_impl d1
+    mkdir -p "$SA_RUN"; printf '1\n' > "$SA_RUN/routing-guard"
+  }
+  mf_impl() {
+    # mf_impl <다이제스트> — 세그먼트 H 의 구현 정상 완료 stage-result 행 하나.
+    printf -- '- `stage-result` | 세그먼트=H | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료 | plan_sha256=%s\n' \
+      "$1" >> "$SA_LEDGER"
+  }
+  mf_checks() {
+    # mf_checks <상태> [head sha] — 그 head 의 회차 0 checks 행 하나.
+    printf -- '- `checks` | PR=t/%s#1 | head sha=%s | 상태=%s | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=H | 재실행 회차=0 | 진행 중=0\n' \
+      "$SA_ID" "${2:-$MF_TIP}" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$SA_LEDGER"
+  }
+  mf_snap() { ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ); }
+  mf_inext() {
+    # mf_inext — 스냅숏 implement_next[] 의 H 원소의 다음, 원소가 없으면 빈 문자열.
+    mf_snap | jq -r '[.implement_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")'
+  }
+  mf_base_check() {
+    sag act --manifest "$SA_MANIFEST" --kind base-check --target main --segment H \
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(SAH)" --rationale x
+  }
+  mf_ob_open() {
+    # mf_ob_open — 세그먼트 H 의 의무 가운데 마지막 행이 미이행인 것의 수.
+    local id n=0
+    for id in $(sa_ob_rows | grep -F '세그먼트=H ' | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+      if [ "$(sa_field "$(sa_ob_last "$id")" 상태)" = 미이행 ]; then n=$((n + 1)); fi
+    done
+    printf '%s' "$n"
+  }
+}
+
 # `ledger_series` — the container of sections 61–67: the two routing series
 # `stage-lease` and `stage-wait`, the `계정` field of `stage-result`, and the
 # readers that go with them.
@@ -53392,6 +53441,57 @@ cb60_line 통과 1 0
 check "88e: 회차 1 의 통과 뒤 수정 표는 수정 이고 수정 대상 파견이 받아진다" "$(cb60_next)|$(cj88e_fix plan)" "수정|0"
 for p88e in $P88E2; do kill "$p88e" 2>/dev/null || true; done
 cb60_foot
+
+# ---------------------------------------------------------------------------
+# 88h. 머지 먼저 — 선머지후리뷰 세그먼트는 구현 뒤 리뷰 전에 머지로 간다
+# --- section: 88h | group: sa | covers: gate_implement_next_of, gate_implement_next_raw, gate_merge_first_next, gate_ci_next, gate_base_review_head, gate_base_check_row, gate_check_merge_checks, act | anchors: 88h: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다, 88h: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다, 88h: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다, 88h: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다, 88h: 절단점이 머지 아래면 다음은 리뷰 다, 88h: 선리뷰후머지 세그먼트의 다음은 리뷰 다, 88h: 바인딩 없는 머지는 rc 2 다 ---
+#
+# 커밋 하나가 앞선 선머지후리뷰 세그먼트에 같은 다이제스트의 구현 정상 완료 두 행을
+# 두면 단계 B 다. checks 행 없음 → 실패 → 통과 순서로 원장에 행을 더하며 다음 과 머지
+# 행위의 rc 를 잰다. 통과 뒤에는 base-check 가 워크트리 팁을 판정하고 머지가 의무를 낸다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+mf_new '머지 먼저 — CI 층'
+check "88h: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다" "$(mf_inext)|$(sa_merge H; printf '%s' "$rc")" "CI 대기|3"
+mf_checks 실패
+check "88h: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다" "$(mf_inext)|$(sa_merge H; printf '%s' "$rc")" "CI 재실행|3"
+mf_checks 통과
+mf_n1=$(mf_inext)
+mf_base_check; mf_r1=$rc
+mf_bc=$(lsr_last_fields "$SA_LEDGER" '베이스 판정' 판정\ HEAD 판정)
+sp_act H 머지 gh api -X PUT "repos/t/$SA_ID/pulls/1/merge" -f sha=1111111111111111111111111111111111111111 -f merge_method=merge
+mf_rb=$rc
+sa_merge H; mf_r2=$rc
+check "88h: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다" \
+  "$mf_n1|$mf_r1|$mf_bc|$mf_r2" "선머지|0|$MF_TIP|일치|0"
+check "88h: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다" \
+  "$(mf_ob_open)|$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '머지 커밋')" "1|$MF_TIP"
+check "88h: 바인딩 없는 머지는 rc 2 다" "$mf_rb" "2"
+
+# 같은 원장 모양을 원장만으로 — 절단점이 머지 아래이거나 정책이 선리뷰후머지 면 리뷰 다.
+D88H="$lsr_root/s88h"; rm -rf "$D88H"; mkdir -p "$D88H"
+G88H="$D88H/repo"; W88H="$D88H/seg"
+( git init -q "$G88H" && cd "$G88H" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && printf 'a\n' > a.txt && git add -A && git commit -qm one && git branch -M main \
+  && git worktree add -q -b seg-88h "$W88H" main && cd "$W88H" && printf 'A\n' > a.txt && git commit -qam seg ) >/dev/null 2>&1
+m88h() {  # m88h <절단점> — 그 절단점의 대상 하나를 둔 매니페스트 경로
+  printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=%s\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88H" "$1" > "$D88H/m-$1.md"
+  printf '%s' "$D88H/m-$1.md"
+}
+l88h() {  # l88h <이름> <정책> — 구현 정상 완료 두 행(단계 B)의 세그먼트 S
+  local l; l=$(lsr_ledger "w88h-$1")
+  printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88h | 선행=없음 | 리뷰 정책=%s | prev=x\n' "$W88H" "$2" >> "$l"
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 종류=implement | 종단 부류=정상 완료 | plan_sha256=d1 | prev=x\n' >> "$l"
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 종류=implement | 종단 부류=정상 완료 | plan_sha256=d1 | prev=x\n' >> "$l"
+  printf '%s' "$l"
+}
+n88h() { lsr_in Linux "$1" - lsr_rp_in "$2" gate_implement_next_of S 2>/dev/null | sed -n 's/.*"다음": "\([^"]*\)".*/\1/p'; }
+check "88h: 절단점이 머지 아래면 다음은 리뷰 다" \
+  "$(n88h "$(l88h pr 선머지후리뷰)" "$(m88h PR)")|$(n88h "$(l88h push 선머지후리뷰)" "$(m88h push)")" "리뷰|리뷰"
+check "88h: 선리뷰후머지 세그먼트의 다음은 리뷰 다" \
+  "$(n88h "$(l88h strict 선리뷰후머지)" "$(m88h 머지)")|$(n88h "$(l88h deploy 선머지후리뷰)" "$(m88h 배포)")" "리뷰|선머지"
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
