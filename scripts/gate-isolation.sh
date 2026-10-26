@@ -157,6 +157,26 @@ iso_abs() {
   esac
 }
 
+# The state of the work tree in DIR: `clean`, or the sha256 of what differs from
+# HEAD — the status lines, the tracked diff and each untracked file's name and
+# bytes. A path under EXCL (relative to DIR) is left out, so a result directory
+# kept inside the tree does not change the state it is checked against. A
+# suite's result depends on every file it sources, not only on the suite file.
+iso_tree_state() {
+  local dir="$1" excl="${2:-}" st
+  set -- .
+  [ -z "$excl" ] || set -- . ":(exclude)$excl"
+  st=$(cd "$dir" && git status --porcelain=v1 --untracked-files=all -- "$@" 2>/dev/null) || { printf -- '-\n'; return 0; }
+  if [ -z "$st" ]; then printf 'clean\n'; return 0; fi
+  ( cd "$dir" || exit 0
+    printf '%s\n' "$st"
+    git diff HEAD --binary -- "$@" 2>/dev/null
+    git ls-files --others --exclude-standard -- "$@" 2>/dev/null | while IFS= read -r f; do
+      printf '%s\n' "$f"; cat -- "$f" 2>/dev/null
+    done
+  ) | iso_sha256 /dev/stdin
+}
+
 # --- compare -----------------------------------------------------------------
 
 # One changed section against its contexts. CTX has one
@@ -498,10 +518,73 @@ iso_capacity() {
 
 # --- sweep -------------------------------------------------------------------
 
+# The banner group of every section of SUITE, `<id><TAB><group>` per line, read
+# with the selector's own field rule; a section without one is `-`.
+iso_groups() {
+  awk '
+    /^# --- section: / {
+      id = $0
+      sub(/^# --- section:[ \t]*/, "", id); sub(/[ \t]*\|.*$/, "", id); sub(/[ \t]*---[ \t]*$/, "", id)
+      g = "-"
+      if ($0 ~ /\|[ \t]*group:/) {
+        g = $0
+        sub(/[ \t]*---[ \t]*$/, "", g); sub(/^.*\|[ \t]*group:[ \t]*/, "", g); sub(/[ \t]*\|.*$/, "", g); sub(/[ \t]+$/, "", g)
+        if (g == "") g = "-"
+      }
+      print id "\t" g
+    }
+  ' "$1"
+}
+
+# The sweep's runs of consecutive sections: the ids on stdin, in file order, cut
+# in front of the section that would take a run past LIM ms of planned load.
+# A run's load is counted the way a row's is: the head once, each section's
+# weight, and the `@pre-<group>` of each group the run holds once. Weights come
+# from the timing file TF; an id it does not carry weighs the median of those it
+# does, and a missing `@head` or `@pre-<group>` row counts 0. GROUPS is
+# `iso_groups` output. Prints `<k><TAB><load ms><TAB><ids>` per run.
+iso_chunk_plan() {
+  local tf="$1" groups="$2" lim="$3"
+  LC_ALL=C awk -F '\t' -v TF="$tf" -v GR="$groups" -v LIM="$lim" '
+    BEGIN {
+      while ((getline l < TF) > 0) {
+        split(l, a, "\t")
+        if (a[1] ~ /^#/ || a[1] == "id" || a[2] !~ /^[0-9]+(\.[0-9]+)?$/) continue
+        if (a[1] == "@head") { hd = int(a[2] + 0); continue }
+        if (a[1] ~ /^@pre-/) { pre[substr(a[1], 6)] = int(a[2] + 0); continue }
+        if (a[1] ~ /^@/) continue
+        w[a[1]] = int(a[2] + 0); v[++nv] = int(a[2] + 0)
+      }
+      while ((getline l < GR) > 0) { split(l, a, "\t"); grp[a[1]] = a[2] }
+      for (i = 2; i <= nv; i++) { x = v[i]; for (j = i - 1; j >= 1 && v[j] > x; j--) v[j + 1] = v[j]; v[j + 1] = x }
+      med = (nv ? v[int((nv + 1) / 2)] : 1)
+      sum = hd
+    }
+    NF {
+      g = ($1 in grp ? grp[$1] : "-")
+      x = ($1 in w ? w[$1] : med)
+      p = (g != "-" && !(g in seen) && (g in pre)) ? pre[g] : 0
+      if (cur != "" && sum + x + p > LIM) {
+        print ++k "\t" sum "\t" cur; cur = ""; sum = hd; split("", seen)
+        p = (g != "-" && (g in pre)) ? pre[g] : 0
+      }
+      cur = cur (cur == "" ? "" : ",") $1; sum += x + p
+      if (g != "-") seen[g] = 1
+    }
+    END { if (cur != "") print ++k "\t" sum "\t" cur }
+  '
+}
+
 # One run of consecutive sections as a row of its own, traced whole. A run that
 # dies before its total is cut in two at its middle in file order and both
 # halves run again; a single section left alone is replaced by its first solo,
 # which is the same cut. Each outcome is a line of `chunks.tsv`.
+#
+# A RUN IS MARKED `started` BEFORE IT RUNS. A sweep stopped from outside (the
+# background limit) leaves a run marked but neither `done` nor `split`; the next
+# sweep of the same directory cuts that run in two at once instead of running
+# it whole again, so a run too long for one sitting does not stop every sitting
+# at the same place.
 iso_sweep_chunk() {
   local O="$1" k="$2" ids="$3" bsh="$4" suite="$5" d n tb rc first last h a b
   d="$O/iso-$k"
@@ -514,16 +597,19 @@ iso_sweep_chunk() {
     iso_sweep_chunk "$O" "$k.1" "$a" "$bsh" "$suite"; iso_sweep_chunk "$O" "$k.2" "$b" "$bsh" "$suite"; return 0
   fi
   if [ -f "$d/done" ]; then cat "$d/line" >> "$O/chunks.tsv"; return 0; fi
-  mkdir -p "$d"
-  tb=$(iso_clean_tmp "${TMPDIR:-/tmp}") || return 1
-  rc=0
-  env -u CC_GATE_ISO_OVERLAY -u CC_GATE_ISO_SOLO -u CC_GATE_TIMING_OUT CC_GATE_ISO_OUT="$d/row" CC_GATE_ISO_TRACE="$ids" TMPDIR="$tb" \
-    "$bsh" "$suite" --sections "$ids" > "$d/row.out" 2>&1 || rc=$?
-  rm -rf "$tb"
-  if grep -qE '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$d/row.out"; then
-    printf '%s\t%s\t%s\t%s\t%s\t완료\n' "$k" "$first" "$last" "$n" "$ids" > "$d/line"
-    cat "$d/line" >> "$O/chunks.tsv"
-    printf '%s\n' "$rc" > "$d/done"; return 0
+  if [ ! -f "$d/started" ]; then
+    mkdir -p "$d"
+    : > "$d/started"
+    tb=$(iso_clean_tmp "${TMPDIR:-/tmp}") || return 1
+    rc=0
+    env -u CC_GATE_ISO_OVERLAY -u CC_GATE_ISO_SOLO -u CC_GATE_TIMING_OUT CC_GATE_ISO_OUT="$d/row" CC_GATE_ISO_TRACE="$ids" TMPDIR="$tb" \
+      "$bsh" "$suite" --sections "$ids" > "$d/row.out" 2>&1 || rc=$?
+    rm -rf "$tb"
+    if grep -qE '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$d/row.out"; then
+      printf '%s\t%s\t%s\t%s\t%s\t완료\n' "$k" "$first" "$last" "$n" "$ids" > "$d/line"
+      cat "$d/line" >> "$O/chunks.tsv"
+      printf '%s\n' "$rc" > "$d/done"; return 0
+    fi
   fi
   if [ "$n" -le 1 ]; then
     printf '%s\t%s\t%s\t%s\t%s\t갈음\n' "$k" "$first" "$last" "$n" "$ids" > "$d/line"
@@ -561,17 +647,24 @@ iso_sweep() {
   iso_use_bash "$bsh" || return 2
   if [ -z "$O" ]; then O=$(mktemp -d "${TMPDIR:-/tmp}/gate-isolation-sweep.XXXXXX") || return 2; fi
   O=$(iso_abs "$O"); mkdir -p "$O" || return 2
-  local commit sha
+  # THE SWEEP IS PINNED TO ONE TREE: the commit, the suite's sha256 and the
+  # tree's state (`iso_tree_state`). A sweep resumed on a tree that differs in
+  # any of the three would join runs measured on different code into one result.
+  local commit sha tree excl=""
+  case "$O/" in "$repo_root"/*) excl=${O#"$repo_root"/} ;; esac
   commit=$(cd "$repo_root" && git rev-parse HEAD 2>/dev/null || echo -)
   sha=$(iso_sha256 "$suite")
+  tree=$(iso_tree_state "$repo_root" "$excl")
   if [ -f "$O/sweep.meta" ]; then
-    if [ "$(cat "$O/sweep.meta")" != "$(printf 'commit\t%s\nsuite\t%s' "$commit" "$sha")" ]; then
-      printf 'gate-isolation: %s 는 다른 커밋이나 다른 스위트의 쓸기입니다 — 새 ISO_OUT 을 주세요\n' "$O" >&2
-      cat "$O/sweep.meta" >&2; return 2
+    if [ "$(cat "$O/sweep.meta")" != "$(printf 'commit\t%s\nsuite\t%s\ntree\t%s' "$commit" "$sha" "$tree")" ]; then
+      printf 'gate-isolation: %s 는 다른 커밋·스위트·트리 상태의 쓸기입니다 — 새 ISO_OUT 을 주세요\n' "$O" >&2
+      printf '  기록: %s\n' "$(tr '\n' ' ' < "$O/sweep.meta")" >&2
+      printf '  지금: commit %s suite %s tree %s\n' "$commit" "$sha" "$tree" >&2
+      return 2
     fi
     printf 'gate-isolation: %s 에서 이어 돕니다\n' "$O" >&2
   else
-    printf 'commit\t%s\nsuite\t%s\n' "$commit" "$sha" > "$O/sweep.meta"
+    printf 'commit\t%s\nsuite\t%s\ntree\t%s\n' "$commit" "$sha" "$tree" > "$O/sweep.meta"
   fi
   local tf ids spec
   tf=$(iso_timing "$timing" "$O") || return 2
@@ -582,22 +675,10 @@ iso_sweep() {
     printf '%s\n' "$spec" > "$O/solos.spec"
   fi
   spec=$(cat "$O/solos.spec")
-  # The runs of consecutive sections, by planned load in file order. An id the
-  # timing file does not carry weighs the median of those it does.
+  # The runs of consecutive sections, by planned load in file order.
   if [ ! -s "$O/chunks.plan" ]; then
-    printf '%s\n' "$ids" | tr ',' '\n' | awk -F '\t' -v TF="$tf" -v LIM="$(( chunk * 1000 ))" '
-      BEGIN {
-        while ((getline l < TF) > 0) { split(l, a, "\t"); if (a[1] !~ /^(#|id$|@)/ && a[2] ~ /^[0-9]+$/) { w[a[1]] = a[2] + 0; v[++nv] = a[2] + 0 } }
-        for (i = 2; i <= nv; i++) { x = v[i]; for (j = i - 1; j >= 1 && v[j] > x; j--) v[j + 1] = v[j]; v[j + 1] = x }
-        med = (nv ? v[int((nv + 1) / 2)] : 1)
-      }
-      NF {
-        x = ($1 in w ? w[$1] : med)
-        if (cur != "" && sum + x > LIM) { print ++k "\t" sum "\t" cur; cur = ""; sum = 0 }
-        cur = cur (cur == "" ? "" : ",") $1; sum += x
-      }
-      END { if (cur != "") print ++k "\t" sum "\t" cur }
-    ' > "$O/chunks.plan"
+    iso_groups "$suite" > "$O/groups.tsv"
+    printf '%s\n' "$ids" | tr ',' '\n' | iso_chunk_plan "$tf" "$O/groups.tsv" "$(( chunk * 1000 ))" > "$O/chunks.plan"
   fi
   printf 'gate-isolation: 쓸기 — 절 %s개 · 구간 %s개 · 동시 %s · 결과 %s\n' \
     "$(printf '%s\n' "$ids" | tr ',' '\n' | grep -c .)" "$(grep -c . "$O/chunks.plan")" "$jobs" "$O" >&2
@@ -841,12 +922,54 @@ EOS
   if ! iso_bash_ok "$bsh"; then skip "타이밍 원천이 없으면 쓸기는 exit 2 — bash 4.1 미만"
   elif [ "$rcb" = "2" ] && grep -q '타이밍 표가 없습니다' "$T/sw.err"; then ok "타이밍 원천을 받지 못하면 exit 2"; else bad "타이밍 원천 없음" "rc=$rcb $(cat "$T/sw.err")"; fi
 
+  # --- the sweep's pin, its resume and its plan ------------------------------
+  local g st1 st2 st3 st4
+  g="$T/repo"; mkdir -p "$g"
+  ( cd "$g" && git init -q . && printf 'a\n' > f && git add f \
+      && git -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q -m i ) > /dev/null 2>&1
+  st1=$(iso_tree_state "$g"); printf 'b\n' > "$g/f"; st2=$(iso_tree_state "$g"); printf 'c\n' > "$g/f"; st3=$(iso_tree_state "$g")
+  if [ "$st1" = "clean" ] && [ "${#st2}" = "64" ] && [ "${#st3}" = "64" ] && [ "$st2" != "$st3" ]; then
+    ok "쓸기 고정: 깨끗한 트리는 clean, 바뀐 트리는 바뀐 내용마다 다른 sha256 이다"
+  else bad "쓸기 고정 트리 상태" "1=$st1 2=$st2 3=$st3"; fi
+  printf 'a\n' > "$g/f"; mkdir -p "$g/out"; printf 'x\n' > "$g/out/r"; st4=$(iso_tree_state "$g" out)
+  if [ "$st4" = "clean" ] && [ "$(iso_tree_state "$g")" != "clean" ]; then ok "쓸기 고정: 트리 안의 결과 디렉터리는 트리 상태에서 뺀다"; else bad "쓸기 고정 결과 디렉터리" "제외=$st4"; fi
+
+  mkdir -p "$T/swm"; printf 'commit\tx\nsuite\ty\ntree\tz\n' > "$T/swm/sweep.meta"
+  rcb=0; ISO_TIMING="$T/none.tsv" bash "$0" sweep --out "$T/swm" --bash "$bsh" >/dev/null 2>"$T/swm.err" || rcb=$?
+  if ! iso_bash_ok "$bsh"; then skip "다른 트리 상태의 쓸기는 이어 돌지 않는다 — bash 4.1 미만"
+  elif [ "$rcb" = "2" ] && grep -q '다른 커밋·스위트·트리 상태의 쓸기' "$T/swm.err" && [ ! -f "$T/swm/chunks.plan" ]; then
+    ok "다른 커밋·스위트·트리 상태의 결과 디렉터리에서는 이어 돌지 않고 exit 2"
+  else bad "쓸기 고정 불일치" "rc=$rcb $(cat "$T/swm.err")"; fi
+
+  # The plan counts the head once per run and a group's prelude once per run:
+  # with weights alone a,b (2000) would fit under 2100 together.
+  printf '@head\t100\n@pre-g\t50\na\t1000\nb\t1000\nc\t1000\n' > "$T/cp.tsv"
+  printf 'a\tg\nb\tg\nc\t-\n' > "$T/cp.groups"
+  out=$(printf 'a\nb\nc\n' | iso_chunk_plan "$T/cp.tsv" "$T/cp.groups" 2100)
+  if [ "$out" = "$(printf '1\t1150\ta\n2\t1150\tb\n3\t1100\tc')" ]; then
+    ok "쓸기 구간의 계획 부하는 머리 한 번, 절 무게, 구간에 든 그룹마다 프리앰블 한 번이다"
+  else bad "쓸기 구간 계획 부하" "「${out}」"; fi
+
+  # A run an earlier sweep started and never finished is cut in two without
+  # being run whole again; each half runs and is marked before it does.
+  cat > "$T/fake.sh" <<EOF
+printf '%s\n' "\$*" >> "$T/calls"
+printf 'test-gate: 1 passed, 0 failed\n'
+EOF
+  mkdir -p "$T/swc/iso-1"; : > "$T/swc/iso-1/started"; : > "$T/swc/chunks.tsv"; : > "$T/calls"
+  iso_sweep_chunk "$T/swc" 1 "a,b" bash "$T/fake.sh"
+  if [ "$(cat "$T/calls")" = "$(printf -- '--sections a\n--sections b')" ] \
+     && grep -q "^1${tab}a${tab}b${tab}2${tab}a,b${tab}나눔 a|b\$" "$T/swc/chunks.tsv" \
+     && [ -f "$T/swc/iso-1.1/started" ] && [ -f "$T/swc/iso-1.1/done" ] && [ -f "$T/swc/iso-1.2/done" ]; then
+    ok "시작했으나 끝나지 않은 구간은 다시 통째로 돌지 않고 가운데에서 둘로 나뉜다"
+  else bad "끊긴 구간 나눔" "호출=「$(tr '\n' ' ' < "$T/calls")」 구간=「$(tr '\n' ' ' < "$T/swc/chunks.tsv")」"; fi
+
   rm -rf "$T"
   printf 'gate-isolation self-test: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
   # A skipped case counts toward it: the suite cases need bash 4.1 and say so.
-  if [ "$(( passed + skipped ))" -lt 23 ]; then
-    printf 'gate-isolation self-test: 통과·건너뜀 수 %d 가 하한 23 에 못 미칩니다\n' "$(( passed + skipped ))" >&2
+  if [ "$(( passed + skipped ))" -lt 28 ]; then
+    printf 'gate-isolation self-test: 통과·건너뜀 수 %d 가 하한 28 에 못 미칩니다\n' "$(( passed + skipped ))" >&2
     return 1
   fi
   [ "$failed" = "0" ]
