@@ -71,7 +71,12 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 # no twin for the attended skill's publish, sync and approval phases, so most of
 # the attended marks dispose to "not this stage's phase" rather than to a halt;
 # the three grade dispositions are still owed.
-PAIRS="implement|implement-unattended review|review-unattended design-audit|design-audit-unattended design|design-reconverge design|design-discuss-unattended design-base|design-base-unattended visual|visual-unattended"
+#
+# `visual|visual-publish-unattended` is the visual publish pair. That arm runs
+# the attended publish, sync and approval phases inside a run by Reading them,
+# and every attended mark it meets disposes to one of its four halt sites; the
+# three grade dispositions are owed here too.
+PAIRS="implement|implement-unattended review|review-unattended design-audit|design-audit-unattended design|design-reconverge design|design-discuss-unattended design-base|design-base-unattended visual|visual-unattended visual|visual-publish-unattended"
 
 GRADE_RE='등급 [0-9]'
 VALID_RE='등급 [012]'

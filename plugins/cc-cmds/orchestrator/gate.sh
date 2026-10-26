@@ -3078,11 +3078,27 @@ gate_reach_disposition() {
   # user opened acts that change this machine's configuration, not a remote
   # write that happens to name a home path — and a program named by a path,
   # which a row names by its base name and so never word for word.
+  #
+  # ONE ACT OPENS HERE WITHOUT A ROW: the visual helper's `account` and
+  # `append`, honestly declared machine-global. They append to two fixed host
+  # files — the account log and the ban list — and the table grades them
+  # `트리밖쓰기` only from the visual publish stage, and `append` only on a
+  # person's unconsumed `승인` to the candidate it adds. That grade is what
+  # opens them, so they need neither a `사전 인가` row nor a judgment; and no
+  # row could open them anyway, because the stage calls the helper by the path
+  # of the copy beside this gate, which the argv0 check below parks. Opened only
+  # when argv0 itself is that copy: another copy, another subcommand, a
+  # destructive declaration or an act the table left ungraded falls through to
+  # the checks below as before.
   if [ "$Reff" = "기기전역" ]; then
     [ -n "$_nw" ] && { printf '기기전역\tnever\t-'; return 0; }
     if [ "$Geff" = "외부상태변경" ]; then
       if [ "$_rd" = "기기전역" ]; then printf '기기전역\texternal\t-'; else printf '도달모순\t-\t-'; fi
       return 0
+    fi
+    if [ "$cls" = "표" ] && [ "$graded" = "트리밖쓰기" ] && [ "$Geff" = "트리밖쓰기" ] \
+       && [ "$X" = "0" ] && [ "${1##*/}" = "visual-config.sh" ] && gate_own_helper "$1"; then
+      case "${2:-}" in account|append) return 0 ;; esac
     fi
     case "$1" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
     # A verbatim row opens even a destructive act: it names the act whole, the
@@ -6362,9 +6378,12 @@ surface_of_argv0() {
     # pinned lane from the host file. `account` records the publishing account
     # in the host file, which only the visual publish stage does; `append` adds
     # one forbidden-list line, and only on the person's `승인` to the candidate
-    # the line names (`gate_ban_append_answer`). Anywhere else, and every other
-    # subcommand, writes the settings home or the sidecar, which is the seat's
-    # work, so they take the unknown grade and its refusal.
+    # the line names (`gate_ban_append_answer`). Both land in host files, so the
+    # stage declares them `기기전역`, and the machine-global cell of
+    # `gate_reach_disposition` opens exactly the two this row grades
+    # `트리밖쓰기`. Anywhere else, and every other subcommand, writes the
+    # settings home or the sidecar, which is the seat's work, so they take the
+    # unknown grade and its refusal.
     # `visual-check.sh` only reads the document, the sidecar and the screens.
     # `visual-capture.sh` writes its screenshots into an output directory outside
     # the tree, and `app` serves the build on a loopback port it takes down itself.
