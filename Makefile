@@ -441,6 +441,7 @@ ORCH_TESTS := \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
+	scripts/test-session-title-hook.sh \
 	scripts/test-notify-focus.sh \
 	scripts/test-stage-rules-edit-hook.sh \
 	scripts/test-stage-rules.sh \
