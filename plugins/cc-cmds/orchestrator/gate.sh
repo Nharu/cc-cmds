@@ -205,6 +205,13 @@
 #                    driver compares a segment plan against — on one line;
 #                    writes nothing. Refused (2) for a path that is not a
 #                    readable file
+#   gate.sh pair-residue --manifest <path>
+#                    prints one `<dispatch id>\t<row>\t<cleanup argv>\t<state>`
+#                    line per pair whose cleanup has not succeeded, state
+#                    `실패 rc=<n|->`, `호출중단` or `미호출`, by running
+#                    `pair-residue.awk` from beside this file on the run's
+#                    ledger; writes nothing, and runs none of the prelude's
+#                    settlement, metrics, halt-report or dashboard writers
 #   gate.sh report-check --manifest <path> --report <absolute path>
 #                    checks the item shape of a review report's P0 and P1
 #                    sections — the summary line, items against the summary,
@@ -2871,6 +2878,35 @@ gate_destructive_source() {
   else printf -- '-'; fi
 }
 
+gate_reach_home_element() {
+  # gate_reach_home_element <argv...> — the first element naming the Claude
+  # configuration home anywhere inside it, or nothing. The same scan the
+  # machine-global cell makes, for a caller whose effective reach did not run it.
+  local _a
+  for _a in "$@"; do
+    case "$_a" in *"$HOME"/.claude*) printf '%s' "$_a"; return 0 ;; esac
+    if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+      case "$_a" in *"${CLAUDE_CONFIG_DIR}"/*) printf '%s' "$_a"; return 0 ;; esac
+    fi
+  done
+  return 0
+}
+
+gate_reach_elements_plain() {
+  # gate_reach_elements_plain <n> <argv...> — succeeds when none of the first <n>
+  # elements is empty or carries whitespace. The matcher sees argv flattened, so
+  # only here are element bounds visible: within those <n> elements the matcher's
+  # words and the elements are then the same, one for one.
+  local _n="$1" _i=0 _a; shift
+  case "$_n" in ''|*[!0-9]*) return 1 ;; esac
+  for _a in "$@"; do
+    [ "$_i" -lt "$_n" ] || break
+    _i=$((_i + 1))
+    case "$_a" in ''|*[[:space:]]*) return 1 ;; esac
+  done
+  return 0
+}
+
 gate_reach_disposition() {
   # gate_reach_disposition <alias> <rules_rc> <graded> <argv...>
   #
@@ -2885,7 +2921,19 @@ gate_reach_disposition() {
   # locals. The one caller runs this in a command substitution and prints them in
   # the same subshell right after it returns; the ledger's vocabulary does not
   # carry them, so they never reach a row. The judgment is the exception, and it
-  # rides in the third field because the ledger does carry it.
+  # rides in the third field because the ledger does carry it. The row-value
+  # facts (`GATE_RF_ROW` and the decided row's ordinal, surface, reach and
+  # destructive mark, with the declaration they replaced) ride the same way and
+  # the caller puts them on the act's own row.
+  #
+  # A ROW THAT NAMES SURFACE AND REACH DECIDES THE ACT, NOT THE DECLARATION. When
+  # the matcher reports a decided new-form row (`표면=`/`도달=`) for an opaque or
+  # unknown act that only a path made machine-global, auto-resolution is on, no
+  # element names the Claude configuration home, the elements the row's shape
+  # covers carry no whitespace and argv0 is not a path, the row's reach replaces
+  # the declared one and the act goes straight to that reach's cell: the read
+  # trust line, the run-local write line, the opaque cap, the unknown-reach cell,
+  # the machine-global cell and the push-remote check are all passed over.
   local alias="$1" rules_rc="$2" graded="$3"; shift 3
   local R="${GATE_REACH:--}" cls="$GATE_GRADE_SOURCE" S=0 X=0
   [ -n "$R" ] || R='-'
@@ -2893,6 +2941,9 @@ gate_reach_disposition() {
   { [ "$GATE_MARK" = "파괴" ] || [ "${GATE_DESTRUCTIVE:-0}" = "1" ]; } && X=1
   GATE_RF_SX='-' GATE_RF_SW='-' GATE_RF_PROPOSAL='-' GATE_RF_REFF='-' GATE_RF_GEFF='-'
   GATE_RF_NEVER='-' GATE_RF_TRIG='-' GATE_RF_EV=1
+  GATE_RF_ROW=0 GATE_RF_RN='-' GATE_RF_RS='-' GATE_RF_RR='-' GATE_RF_RPD=0
+  GATE_RF_DECL_SURF="${GATE_DECLARED:--}" GATE_RF_DECL_REACH="$R" GATE_RF_CROWS='-' GATE_RF_SCOPE=0
+  [ -n "$GATE_RF_DECL_SURF" ] || GATE_RF_DECL_SURF='-'
 
   # 1 — a credential on stdout is not undone by anything the morning can do.
   [ "$S" = "1" ] && { printf '비밀출력\t-\t-'; return 0; }
@@ -2984,6 +3035,25 @@ gate_reach_disposition() {
   case "$_t" in *" Sw="*) Sw=${_t#* Sw=}; Sw=${Sw%% *} ;; esac
   [ -n "$Sw" ] || Sw='-'
   GATE_RF_SX="$Sx" GATE_RF_SW="$Sw" GATE_RF_PROPOSAL="$_ps"
+  # The decided new-form row: its ordinal among the shaped rows (`행`), its
+  # surface and reach (`Rs`, `Rr`), whether its own shape names the destruction
+  # (`Rpd`, apart from `Pd`, which folds every matching row), its shape's word
+  # count (`Rw`) and whether two equally long rows disagree (`충돌`, with their
+  # ordinals in `충돌행`). Each is read against its closed vocabulary, so a value
+  # outside it reads as the default and the row-value branch stays shut.
+  local Rn='-' Rs='-' Rr='-' Rpd=0 Rw='-' Rc=0 Rcr='-'
+  case "$_t" in *" 행="*) Rn=${_t#* 행=}; Rn=${Rn%% *} ;; esac
+  case "$_t" in *" Rs="*) Rs=${_t#* Rs=}; Rs=${Rs%% *} ;; esac
+  case "$_t" in *" Rr="*) Rr=${_t#* Rr=}; Rr=${Rr%% *} ;; esac
+  case "$_t" in *" Rw="*) Rw=${_t#* Rw=}; Rw=${Rw%% *} ;; esac
+  case "$_t" in *" 충돌행="*) Rcr=${_t#* 충돌행=}; Rcr=${Rcr%% *} ;; esac
+  case "$_t" in *" Rpd=1 "*) Rpd=1 ;; esac
+  case "$_t" in *" 충돌=1 "*) Rc=1 ;; esac
+  case "$Rn" in ''|*[!0-9]*) Rn='-' ;; esac
+  case "$Rw" in ''|*[!0-9]*) Rw='-' ;; esac
+  case "$Rs" in 읽기|워크트리쓰기|트리밖쓰기|외부상태변경) ;; *) Rs='-' ;; esac
+  case "$Rr" in dev|prod|배포트리거) ;; *) Rr='-' ;; esac
+  case "$Rcr" in [0-9]*,[0-9]*) case "$Rcr" in *[!0-9,]*) Rcr='-' ;; esac ;; *) Rcr='-' ;; esac
   if [ "$pkind" = "완전" ]; then
     case "$cls" in
       불투명) lift=1 ;;
@@ -3035,28 +3105,72 @@ gate_reach_disposition() {
     GATE_RF_EV="$_ev"
   fi
 
+  # THE ROW VALUE, measured after the two checks above and before the cap. The
+  # Claude-home check above ran only on a machine-global effective reach, so a
+  # declared `미상` measures it again here rather than reading its unmeasured
+  # default; and the element condition is the row's own — only the elements its
+  # shape covers, whatever the reach — because an element past the shape cannot
+  # change what the shape matched. The same scope less the row match is kept in
+  # `GATE_RF_SCOPE` for the repair line, which prints a new-form row only there.
+  local _nwr="$_nw" _a0path=0
+  [ "$Reff" = "기기전역" ] || _nwr=$(gate_reach_home_element "$@")
+  case "$1" in */*) _a0path=1 ;; esac
+  if { [ "$cls" = "불투명" ] || [ "$cls" = "미상" ]; } && [ "$_ro" = "path" ] \
+     && [ "$_rd" = "기기전역" ] && [ -z "$_nwr" ] && [ "$_a0path" = "0" ] && [ "$_ps" != "-" ] \
+     && gate_reach_elements_plain "$(printf '%s' "$_ps" | awk '{ print NF; exit }')" "$@"; then
+    GATE_RF_SCOPE=1
+  fi
+  if gate_auto_resolve_enabled && { [ "$cls" = "불투명" ] || [ "$cls" = "미상" ]; } \
+     && [ "$pkind" = "완전" ] && [ "$Rn" != "-" ] && [ "$Rs" != "-" ] && [ "$Rr" != "-" ] \
+     && [ "$_ro" = "path" ] && [ "$_rd" = "기기전역" ] && [ -z "$_nwr" ] \
+     && [ "$Rw" != "-" ] && gate_reach_elements_plain "$Rw" "$@" && [ "$_a0path" = "0" ]; then
+    # Two equally long rows that disagree leave nothing to decide by; outside
+    # the scope above the marker is never read.
+    if [ "$Rc" = "1" ]; then
+      GATE_RF_CROWS="$Rcr"
+      printf '행값충돌\t-\t-'; return 0
+    fi
+    GATE_RF_ROW=1 GATE_RF_RN="$Rn" GATE_RF_RS="$Rs" GATE_RF_RR="$Rr"
+    # A destruction only the stage declared is named by a row whose shape holds
+    # the whole act, and the matcher counts the act in flattened words. An
+    # element that is empty or only whitespace adds an element without a word,
+    # so any such element anywhere leaves the decided row naming no destruction.
+    if [ "$GATE_MARK" != "파괴" ] && [ "${GATE_DESTRUCTIVE:-0}" = "1" ] \
+       && ! gate_reach_elements_plain "$#" "$@"; then
+      Rpd=0
+    fi
+    GATE_RF_RPD="$Rpd"
+    Reff="$Rr"
+    Geff=$(gate_surface_max "$Rs" '워크트리쓰기')
+    GATE_RF_REFF="$Reff" GATE_RF_GEFF="$Geff"
+  fi
+
   # 4 — the opaque and unknown classes. The cap is the user's decision: a payload
   # the gate cannot see is read-and-run-local unless the manifest named the exact
-  # form, script operand included.
+  # form, script operand included. An act a row value decided passes over the
+  # whole arm, its read trust and run-local write lines included: the row named
+  # the act and its reach, and that reach's cell below is what judges it.
   case "$cls" in
     불투명|미상)
-      # A read is trusted only when nothing but a path raised the reach. A
-      # command arm or a deploy trigger is argv saying what the act does, and a
-      # `docker run` declared `읽기` would otherwise pass with no row at all.
-      [ "${GATE_DECLARED:-}" = "읽기" ] && [ "$_ro" != "cmd" ] && [ "$_rd" != "배포트리거" ] && return 0
-      case "${GATE_DECLARED:-}" in
-        워크트리쓰기|트리밖쓰기) [ "$Reff" = "런로컬" ] && return 0 ;;
-      esac
-      if [ "$lift" != "1" ]; then
-        if [ "$Sx" = "code" ]; then printf '신고등급한도\tcode\t-'; return 0
-        elif [ "$cls" = "미상" ] && case "$1" in */*) false ;; *) true ;; esac; then
-          printf '신고등급한도\tunlisted\t-'; return 0
+      if [ "$GATE_RF_ROW" != "1" ]; then
+        # A read is trusted only when nothing but a path raised the reach. A
+        # command arm or a deploy trigger is argv saying what the act does, and a
+        # `docker run` declared `읽기` would otherwise pass with no row at all.
+        [ "${GATE_DECLARED:-}" = "읽기" ] && [ "$_ro" != "cmd" ] && [ "$_rd" != "배포트리거" ] && return 0
+        case "${GATE_DECLARED:-}" in
+          워크트리쓰기|트리밖쓰기) [ "$Reff" = "런로컬" ] && return 0 ;;
+        esac
+        if [ "$lift" != "1" ]; then
+          if [ "$Sx" = "code" ]; then printf '신고등급한도\tcode\t-'; return 0
+          elif [ "$cls" = "미상" ] && case "$1" in */*) false ;; *) true ;; esac; then
+            printf '신고등급한도\tunlisted\t-'; return 0
+          fi
+          # AN OPAQUE ACT THAT LANDS MACHINE-GLOBAL IS LEFT TO THE CELLS BELOW. The
+          # cap would print a row for it, and that row lifts the cap only to meet
+          # the machine-global cell, which opens on a verbatim row or a judgment —
+          # so the cap's own repair would be the wrong one.
+          [ "$Reff" = "기기전역" ] || { printf '신고등급한도\topaque\t-'; return 0; }
         fi
-        # AN OPAQUE ACT THAT LANDS MACHINE-GLOBAL IS LEFT TO THE CELLS BELOW. The
-        # cap would print a row for it, and that row lifts the cap only to meet
-        # the machine-global cell, which opens on a verbatim row or a judgment —
-        # so the cap's own repair would be the wrong one.
-        [ "$Reff" = "기기전역" ] || { printf '신고등급한도\topaque\t-'; return 0; }
       fi
       # Lifted: the manifest named this exact form, so the act is judged by the
       # cells below — but never as the collaboration surface, which is a claim
@@ -3067,8 +3181,9 @@ gate_reach_disposition() {
       gate_collaboration_surface "$alias" "$_rd" "$@" && C=1 ;;
   esac
 
-  # 5 — nothing below can be judged without knowing where the act lands.
-  [ "$Reff" = "미상" ] && { printf '도달미상\t-\t-'; return 0; }
+  # 5 — nothing below can be judged without knowing where the act lands. A row
+  # value has already said where, so cells 5, 6 and 7 are passed over for it.
+  [ "$GATE_RF_ROW" != "1" ] && [ "$Reff" = "미상" ] && { printf '도달미상\t-\t-'; return 0; }
 
   # 6 — MACHINE-GLOBAL OPENS ON A VERBATIM ROW, OR ON A JUDGMENT. The machine
   # opens only an act a row names word for word; anything else a row might
@@ -3090,7 +3205,11 @@ gate_reach_disposition() {
   # when argv0 itself is that copy: another copy, another subcommand, a
   # destructive declaration or an act the table left ungraded falls through to
   # the checks below as before.
-  if [ "$Reff" = "기기전역" ]; then
+  #
+  # An act a row value decided never enters this cell: its reach is the row's
+  # remote one, so what a person opened here — this machine's configuration —
+  # stays the only thing this cell judges.
+  if [ "$GATE_RF_ROW" != "1" ] && [ "$Reff" = "기기전역" ]; then
     [ -n "$_nw" ] && { printf '기기전역\tnever\t-'; return 0; }
     if [ "$Geff" = "외부상태변경" ]; then
       if [ "$_rd" = "기기전역" ]; then printf '기기전역\texternal\t-'; else printf '도달모순\t-\t-'; fi
@@ -3121,10 +3240,15 @@ gate_reach_disposition() {
 
   # 7 — a push whose remote is not the target's. The subcommand is read past
   # git's global flags, so `git -C <dir> push` is checked like `git push`.
-  if [ "${1##*/}" = git ] && [ "$(gate_git_subcommand "${@:2}")" = push ]; then
+  if [ "$GATE_RF_ROW" != "1" ] && [ "${1##*/}" = git ] && [ "$(gate_git_subcommand "${@:2}")" = push ]; then
     gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치\t-\t-'; return 0; }
   fi
 
+  # The prod and deploy-trigger cells read the decided row's own mark under a row
+  # value: `Pd` folds every matching row, so a shorter row's destructive word
+  # would otherwise open a destruction the deciding row never named.
+  local _pdx="$Pd"
+  [ "$GATE_RF_ROW" = "1" ] && _pdx="$GATE_RF_RPD"
   case "$Reff" in
     런로컬)
       case "$Geff" in
@@ -3149,12 +3273,12 @@ gate_reach_disposition() {
       return 0 ;;
     prod)
       [ "$P" = "1" ] || { printf 'prod인가없음\t-\t-'; return 0; }
-      { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
+      { [ "$X" = "0" ] || [ "$_pdx" = "1" ]; } && return 0
       if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked\t-'; else printf '파괴형태미명시\tdeclared\t-'; fi
       return 0 ;;
     배포트리거)
       [ "$P" = "1" ] || { printf '배포트리거인가없음\t-\t-'; return 0; }
-      { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
+      { [ "$X" = "0" ] || [ "$_pdx" = "1" ]; } && return 0
       if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked\t-'; else printf '파괴형태미명시\tdeclared\t-'; fi
       return 0 ;;
     *)
@@ -3183,6 +3307,206 @@ gate_preauth_rows() {
     reason=$(printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//')
     printf '%s\t%s\n' "$shape" "$reason"
   done < "$MANIFEST"
+}
+
+gate_preauth_pair_argv() {
+  # gate_preauth_pair_argv <n> — the `짝 정리=` value of the n-th `사전 인가`
+  # row of the manifest, empty when that row carries none. The ordinal counts
+  # the rows `gate_preauth_rows` lists (a row with a `형태=`), from 1, which is
+  # the ordinal the matcher reports as `행=`. Read from the frozen manifest every
+  # time: the copy an open row carries is for a reader, and the cleanup runs
+  # this value, never that copy.
+  local want="$1" line shape i=0
+  case "$want" in ''|*[!0-9]*) return 0 ;; esac
+  [ -f "${MANIFEST:-}" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in '- `사전 인가`'*) ;; *) continue ;; esac
+    shape=$(printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *형태=//p' | sed 's/[[:space:]]*$//')
+    [ -n "$shape" ] || continue
+    i=$((i + 1))
+    [ "$i" = "$want" ] || continue
+    printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *짝 정리=//p' | sed 's/[[:space:]]*$//' | tail -1
+    return 0
+  done < "$MANIFEST"
+}
+
+# The run-scope cleanup stops starting new pairs this many seconds after its
+# first one started. The environment may shorten it (the tests do); a value
+# that is not an integer reads as 600.
+case "${GATE_PAIR_RUN_CAP_S:-}" in
+  ''|*[!0-9]*) GATE_PAIR_RUN_CAP_S=600 ;;
+esac
+# One cleanup call's deadline, in seconds.
+GATE_PAIR_CALL_TIMEOUT_S=120
+
+gate_pair_append() {
+  # gate_pair_append <open-free|start-free> <key1> <key2> <field=value>... —
+  # append one `짝 정리` row only when the condition holds, the condition read
+  # INSIDE the ledger lock together with the chain tip.
+  #
+  # `open-free <dispatch id> <row>`: no open of that unit is still without a
+  # result. `start-free <open line> -`: no start or result row names that open.
+  # The condition is `pair-residue.awk`'s, the one reader of the series, so the
+  # write and the morning's residue cannot pair rows differently.
+  #
+  # 0 when the row was written, 90 when the condition refused it, any other code
+  # when the row could not be written. NEVER DIES: the cleanup calls this in a
+  # loop and an open that cannot be written refuses its act with a word of its
+  # own, so neither caller may be ended here. Fields are made row-safe the way
+  # `gate_append` makes them.
+  local mode="$1" k1="$2" k2="$3"; shift 3
+  local body f k v n tool prev rc=0 n_args=$# i=0
+  local awkf="$GATE_DIR/pair-residue.awk"
+  [ -f "$awkf" ] && [ -f "${LEDGER:-}" ] || return 1
+  while [ "$i" -lt "$n_args" ]; do
+    f="$1"; shift; i=$((i + 1))
+    f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
+    case "$f" in
+      *=*) k="${f%%=*}"; v="${f#*=}"
+           k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
+           v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
+           f="$k=$v" ;;
+    esac
+    set -- "$@" "$f"
+  done
+  body=$(gate_row_body '짝 정리' "$@")
+  n=$(gate_row_bytes_of_body "$body")
+  [ "$n" -le "$GATE_ROW_MAX" ] || return 1
+  tool=$(lock_tool)
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -d "${RUN_DIR:-}" ]; then
+    "$tool" -k "$RUN_DIR/ledger.lock" \
+      /bin/sh -c '
+        if [ "$5" = "open-free" ]; then
+          LC_ALL=C awk -v mode=open-free -v disp="$6" -v row="$7" -f "$8" "$2"
+        else
+          LC_ALL=C awk -v mode=start-free -v open="$6" -f "$8" "$2"
+        fi
+        g=$?
+        [ "$g" = "0" ] || { [ "$g" = "1" ] && exit 90; exit "$g"; }
+        last=$(grep "$3" "$2" 2>/dev/null | tail -1)
+        [ -n "$last" ] || last="$4"
+        prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
+        printf "%s | prev=%s\n" "$1" "$prev" >> "$2"
+      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" "$mode" "$k1" "$k2" "$awkf" || rc=$?
+  else
+    # No lock tool means no concurrency to serialize; the same sequence runs.
+    if [ "$mode" = "open-free" ]; then
+      LC_ALL=C awk -v mode=open-free -v disp="$k1" -v row="$k2" -f "$awkf" "$LEDGER" || rc=$?
+    else
+      LC_ALL=C awk -v mode=start-free -v open="$k1" -f "$awkf" "$LEDGER" || rc=$?
+    fi
+    [ "$rc" != "1" ] || rc=90
+    if [ "$rc" = "0" ]; then
+      prev=$(gate_chain_tip)
+      printf '%s | prev=%s\n' "$body" "$prev" >> "$LEDGER" || rc=$?
+    fi
+  fi
+  return "$rc"
+}
+
+gate_pair_dispatch_id() {
+  # The unit's dispatch id: the part of `CC_PIPELINE_STAGE_ID` before `#`, so
+  # every attempt of one segment shares it, and `-` for a caller without one
+  # (the lead, a shift). A `-` pair is called only at the run's end.
+  local d="${CC_PIPELINE_STAGE_ID:-}"
+  d="${d%%#*}"
+  printf '%s' "${d:--}"
+}
+
+gate_pair_open() {
+  # gate_pair_open — right before an act runs: when a pre-authorization row
+  # decided the act and that row carries `짝 정리=`, write the open row of the
+  # unit (dispatch id, row ordinal). An open of the same unit still without a
+  # result is left alone — one cleanup undoes any number of runs of the act.
+  # Returns 0 when nothing needs opening or the unit is open; any other code
+  # means the open row could not be written, and the act is not performed.
+  [ "${GATE_PARK_RFROW:-0}" = "1" ] || return 0
+  local n="${GATE_PARK_RFN:--}" argv disp rc=0
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  argv=$(gate_preauth_pair_argv "$n")
+  [ -n "$argv" ] || return 0
+  disp=$(gate_pair_dispatch_id)
+  gate_pair_append open-free "$disp" "$n" "상태=열림" "파견=$disp" "행=$n" "정리=$argv" || rc=$?
+  case "$rc" in 0|90) return 0 ;; esac
+  return "$rc"
+}
+
+gate_pair_drain() {
+  # gate_pair_drain stage <dispatch id> | gate_pair_drain run — call the open
+  # pair cleanups that nobody has started.
+  #
+  # `stage` takes the opens of one dispatch id; `run` takes every open whose
+  # dispatch id does not name a live stage (`cc_stage_is_live`) — a `-` id is
+  # always taken — and starts no new pair once GATE_PAIR_RUN_CAP_S seconds have
+  # passed since its first start. A pair is called only by the caller that
+  # wrote its start row, so two callers picking the same pair call it once.
+  #
+  # The argv is the frozen manifest row's `짝 정리=`, never the open row's copy;
+  # when the two differ nothing runs and the result is `실패 | rc=-`, as it is
+  # when no deadline can be put on the call. The call runs without a shell —
+  # split on spaces only, globbing off — from the run directory, under the
+  # read-scoped credential an exec act gets and this gate's PATH, bounded at
+  # GATE_PAIR_CALL_TIMEOUT_S seconds (rc 143 past it), with stdin closed (the
+  # candidate list is this loop's stdin) and its output dropped:
+  # the result row's `결과=` and `rc=` are the only record. 성공 is rc 0 and
+  # nothing else, and a failed cleanup is never called again.
+  local scope="$1" want="${2:-}" when cand line disp row argv frozen res rc
+  local t0="" now cr
+  case "$scope" in
+    stage) when='스테이지끝'; [ -n "$want" ] || return 2 ;;
+    run)   when='런끝' ;;
+    *)     return 2 ;;
+  esac
+  [ -f "${LEDGER:-}" ] && [ -f "$GATE_DIR/pair-residue.awk" ] || return 0
+  if [ "$scope" = "stage" ]; then
+    cand=$(LC_ALL=C awk -v mode=pending -v disp="$want" -f "$GATE_DIR/pair-residue.awk" "$LEDGER" 2>/dev/null) || return 0
+  else
+    cand=$(LC_ALL=C awk -v mode=pending -f "$GATE_DIR/pair-residue.awk" "$LEDGER" 2>/dev/null) || return 0
+  fi
+  [ -n "$cand" ] || return 0
+  while IFS="$(printf '\t')" read -r line disp row argv; do
+    [ -n "$line" ] || continue
+    if [ "$scope" = "run" ]; then
+      if [ "$disp" != "-" ] && cc_stage_is_live "$RUN_DIR" "$disp"; then
+        continue
+      fi
+      now=$(date +%s)
+      if [ -n "$t0" ] && [ $((now - t0)) -ge "$GATE_PAIR_RUN_CAP_S" ]; then
+        break
+      fi
+    fi
+    gate_pair_append start-free "$line" - "상태=시작" "열림=$line" "시점=$when" || continue
+    [ -n "$t0" ] || t0=$(date +%s)
+    frozen=$(gate_preauth_pair_argv "$row")
+    rc='-'
+    if [ -z "$frozen" ] || [ "$frozen" != "$argv" ]; then
+      res='실패'
+    elif ! command -v perl >/dev/null 2>&1; then
+      res='실패'
+    else
+      cr=0
+      (
+        cd "$RUN_DIR" || exit 1
+        while IFS= read -r cline; do
+          [ -n "$cline" ] || continue
+          export "$cline"
+        done <<CREDS
+$(cred_readonly_env 2>/dev/null || true)
+CREDS
+        set -f
+        IFS=' '
+        set -- $frozen
+        gate_metrics_timed "$GATE_PAIR_CALL_TIMEOUT_S" "$@"
+      ) </dev/null >/dev/null 2>&1 || cr=$?
+      rc=$cr
+      if [ "$cr" = "0" ]; then res='성공'; else res='실패'; fi
+    fi
+    gate_append '짝 정리' "상태=결과" "열림=$line" "파견=$disp" "행=$row" \
+      "결과=$res" "rc=$rc" "시점=$when"
+  done <<EOF
+$cand
+EOF
+  return 0
 }
 
 # The deadline of one pre-authorization judgment, in seconds. The environment
@@ -3333,8 +3657,23 @@ gate_park_repair_line() {
   # The machine-global cell's own clause: there the machine opens only the act
   # the row names word for word, and a judgment decides everything else.
   local Bm="this row opens exactly this act without judgment; any other machine-global act is opened only when a separate judgment call finds it within this row's intent; this run's authorization is frozen, so the row takes effect from the next kickoff"
+  # A new-form row's clause: the reach it names decides the act, in that reach's
+  # cell, whatever the stage declares.
+  local Bn="this row opens this act and every act that begins with these words in the cell of the reach it names (choose dev, prod or 배포트리거), whatever reach a stage declares; this run's authorization is frozen, so the row takes effect from the next kickoff"
   local msg='' row=0
   case "$cell/$cause" in
+    # TWO ROWS SAY DIFFERENT THINGS ABOUT ONE SHAPE, so the repair is to correct
+    # or delete one of them — a row printed here would add a third.
+    행값충돌/*)
+      local _cr="${GATE_PARK_CROWS:--}" _ca _cb _csa='' _csb=''
+      if [ "$_cr" != "-" ]; then
+        _ca=${_cr%%,*}; _cb=${_cr#*,}
+        _csa=$(gate_preauth_rows | sed -n "${_ca}p" | cut -f1)
+        _csb=$(gate_preauth_rows | sed -n "${_cb}p" | cut -f1)
+        msg="repair: \`사전 인가\` rows $_ca ('$_csa') and $_cb ('$_csb') name the same shape with a different 표면, 도달 or 짝 정리, so neither decides this act — correct or delete one of them at the next kickoff"
+      else
+        msg="repair: two \`사전 인가\` rows name the same shape with a different 표면, 도달 or 짝 정리, so neither decides this act — correct or delete one of them at the next kickoff"
+      fi ;;
     기기전역/no-row)
       msg="repair: the manifest has no \`사전 인가\` row, so this machine-global act was not judged — kick off again with the row below"; row=1; B="$Bm" ;;
     기기전역/judged)
@@ -3343,7 +3682,11 @@ gate_park_repair_line() {
       msg="repair: the pre-authorization judgment returned no usable verdict ($(gate_preauth_judge_failure "${GATE_PREAUTH_JUDGE:--}")), so this machine-global act stays parked — kick off again with the row below, or leave it to a person"; row=1; B="$Bm" ;;
     기기전역/argv0-path)
       msg="repair: no \`사전 인가\` row opens a machine-global act whose program is named by a path — call it by its name on PATH, or leave it to a person" ;;
-    기기전역/external) msg=external ;;
+    # Within the row-value scope a new-form row opens this act, so the repair
+    # prints one; outside it no row does.
+    기기전역/external)
+      msg=external
+      [ "${GATE_PARK_SCOPE:-0}" = "1" ] && row=1 ;;
     기기전역/never) msg=never ;;
     파괴형태미명시/marked)
       msg="repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds') — kick off again with the row below"; row=1 ;;
@@ -3430,16 +3773,28 @@ gate_park_repair_line() {
       code)    msg="repair: no row opens an interpreter run whose words before the script are not plain flags the gate knows — program text, a module or stdin ('-c', '-e', '-m', '-'), or an option that may take a value ('-o', '-W', '--norc', …) — put the commands in a script file in the worktree, run it as '<interpreter> <path>' (shell flags -e -u -v -x and python3 flags -u -B -E -I -s -S -O may precede the path), and name that shape in a row at the next kickoff" ;;
     esac
   fi
+  # Where a new-form row opens the external act, the repair says so and points
+  # at the row it prints; elsewhere no row of either form does.
+  local _xt="a new-form row naming 표면 and 도달 opens only an opaque act whose program is not a path and whose shaped words carry no whitespace or Claude configuration home; leave it to a person"
+  [ "$row" = "1" ] && _xt="a new-form row that names its 표면 and 도달 does, in that reach's cell — kick off again with the row below"
   case "$msg" in
     spaced)   msg="repair: no row can name this act word for word — an argument is empty or contains whitespace, so only the judgment can open it; respell the act without such an argument and name it in a row at the next kickoff, or leave it to a person" ;;
     never)    msg="repair: no \`사전 인가\` row opens this — '$nw' is under the Claude configuration home; leave it to a person" ;;
-    external) msg="repair: no \`사전 인가\` row opens this — it changes state outside this machine while carrying a machine-global path; leave it to a person" ;;
+    external) msg="repair: a \`사전 인가\` row of the old form (형태 and 사유 only) does not open this — it changes state outside this machine while carrying a machine-global path; $_xt" ;;
   esac
   [ -n "$msg" ] || return 0
   # BEFORE THE MATCHER CAN PROPOSE A SHAPE there is no row to print, and a
   # message pointing at "the row below" with nothing below it is the false
   # repair this function exists to stop.
-  if [ "$row" = "1" ] && [ "$prop" != "-" ]; then
+  #
+  # WITHIN THE ROW-VALUE SCOPE THE ROW IS A NEW-FORM ROW: the old form would
+  # meet the cell it parked at again, and the new form takes the act to the
+  # reach a person picks. Its surface is the act's effective one and its reach
+  # is left as the placeholder a person fills.
+  if [ "$row" = "1" ] && [ "$prop" != "-" ] && [ "${GATE_PARK_SCOPE:-0}" = "1" ]; then
+    warn "$msg — $Bn"
+    warn "repair row: - \`사전 인가\` | 형태=$prop | 표면=${GATE_PARK_GEFF:--} | 도달=<dev|prod|배포트리거> | 사유=park 수리($cell)"
+  elif [ "$row" = "1" ] && [ "$prop" != "-" ]; then
     warn "$msg — $B"
     warn "repair row: - \`사전 인가\` | 형태=$prop | 사유=park 수리($cell)"
   elif [ "$row" = "1" ]; then
@@ -19153,8 +19508,10 @@ gate_main() {
   # comparison, where their own first writer is.
   if [ "$verb" = "wait" ]; then gate_cap_directive wait ''; fi
 
+  # `pair-residue` is kept out by the same contract: it is a reader of the
+  # ledger, and the settlement writes `stage-result` rows into it.
   GATE_SETTLED_SEGMENTS=""
-  [ "$verb" = "plan" ] || gate_settle_lost_dispatches
+  [ "$verb" = "plan" ] || [ "$verb" = "pair-residue" ] || gate_settle_lost_dispatches
   # The metrics round is started from the same prelude for the same reason and
   # is kept out of `plan` by the same contract; it is stamped, so almost every
   # call stops at one read. The call that meets an expired stamp pays for the
@@ -19165,9 +19522,10 @@ gate_main() {
   # business paying even for the launch. The stamp is not touched, so the round
   # starts on the next verb that is not excluded.
   # The halt-report round is started from the same place under the same
-  # exclusions, on its own stamp and lock.
+  # exclusions, on its own stamp and lock. `pair-residue` is excluded with them:
+  # a reader of the ledger starts no writer.
   case "$verb" in
-    plan|digest-path) ;;
+    plan|digest-path|pair-residue) ;;
     *) gate_metrics_cycle || true
        gate_halt_cycle || true ;;
   esac
@@ -19327,6 +19685,13 @@ gate_main() {
         || { printf 'gate: binding-digest: 읽을 수 있는 파일이 아닙니다: %s\n' "$1" >&2; exit 2; }
       DOC="$1"
       binding_digest; printf '\n'
+      ;;
+    pair-residue)
+      # Reading, not acting: the pairs whose cleanup has not succeeded, as
+      # `pair-residue.awk` prints them from this run's ledger — the same script
+      # the morning report runs on the pinned copy, so the two cannot pair rows
+      # differently. No ledger row, and kept out of the prelude's three writers.
+      LC_ALL=C awk -f "$GATE_DIR/pair-residue.awk" "$LEDGER"
       ;;
     report-check)
       # Reading, not acting: the review stage's own check of the report it
@@ -34572,6 +34937,18 @@ gate_done_note() {
   # THE FIRST LINE STAYS FIRST. Readers `cat` the whole file, so appending costs
   # nothing and keeps both accounts; the operative reason is the one that ended
   # the run, and it is the one on top.
+  #
+  # THE RUN-SCOPE PAIR CLEANUP RUNS BEFORE THE FIRST LINE, never before an
+  # appended one: `done` is what the watcher and the end-settled reading take as
+  # the run's end, so the cleanup has finished by the time anything reads it.
+  # The cleanup can take minutes, and another writer may publish `done` in that
+  # window, so the emptiness is checked again after it and a line that appeared
+  # meanwhile is appended to rather than truncated.
+  if [ -s "$RUN_DIR/done" ]; then
+    printf '%s\n' "$1" >> "$RUN_DIR/done"
+    return 0
+  fi
+  ( gate_pair_drain run ) || true
   if [ -s "$RUN_DIR/done" ]; then
     printf '%s\n' "$1" >> "$RUN_DIR/done"
   else
@@ -34905,6 +35282,10 @@ gate_end_run() {
     line=$(gate_p0_residual_done_line "$why") || line=""
   fi
   [ -n "$line" ] || line=$(printf '%s 종단 — 경계 %s · 근거 %s' "$(now_iso)" "$name" "$why")
+  # The run-scope pair cleanup runs before the mark is published, so whatever
+  # reads `done` as the run's end reads it after the cleanup. In a subshell with
+  # its status folded: a cleanup row that dies must not keep the mark unwritten.
+  ( gate_pair_drain run ) || true
   printf '%s\n' "$line" > "$RUN_DIR/done.$$"
   if ! ln "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null; then
     # Lost the race, or the filesystem cannot hard-link. Either way something
@@ -37098,6 +37479,27 @@ gate_apply_settle_confirm_row() {
   return 0
 }
 
+gate_row_value_fields() {
+  # gate_row_value_fields — the fields an act a row value decided carries on its
+  # own row, left in the array `GATE_RV_FIELDS`: `행 값=<표면>/<도달>` of the
+  # decided row, and `신고 불일치=<표면>/<도달>` of the declaration when it
+  # differs. A mismatch is recorded and refused by nothing. Empty for any other
+  # act. Both values are closed vocabulary, so the two fields together are at
+  # most `GATE_RV_FIELDS_MAX` bytes with their separators.
+  GATE_RV_FIELDS=()
+  [ "${GATE_PARK_RFROW:-0}" = "1" ] || return 0
+  GATE_RV_FIELDS=("행 값=${GATE_PARK_RS:--}/${GATE_PARK_RR:--}")
+  if [ "${GATE_PARK_DECL_SURF:--}" != "${GATE_PARK_RS:--}" ] \
+     || [ "${GATE_PARK_DECL_REACH:--}" != "${GATE_PARK_RR:--}" ]; then
+    GATE_RV_FIELDS+=("신고 불일치=${GATE_PARK_DECL_SURF:--}/${GATE_PARK_DECL_REACH:--}")
+  fi
+  return 0
+}
+# The longest the two fields can be: ` | 행 값=` (11) and ` | 신고 불일치=` (20)
+# bytes of keys and separators, and a value pair of the longest surface
+# `외부상태변경` (18) and the longest reach `배포트리거` (15) with its slash, twice.
+GATE_RV_FIELDS_MAX=99
+
 gate_park_record() {
   # gate_park_record <칸> <원인> <관측> <argv...> — the `blocked` row of a reach
   # park and its repair line. It reads `alias`, `segment`, `graded` and
@@ -37126,8 +37528,15 @@ gate_park_record() {
     _jl=$(gate_preauth_judge_label "$GATE_PREAUTH_JUDGE")
     _jfix="사전 인가 판단=$_jl | 판단 이유= | "
   fi
-  _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | %s근거= | 관측= | 재개 명령= | prev=%064d\n' \
-            "$alias" "$cell" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" "$_jfix" 0 \
+  # A ROW VALUE'S TWO FIELDS ARE PART OF THE FIXED SHARE, measured in the
+  # template below, so the free-text fields shrink to make room rather than the
+  # row growing past the cap.
+  local _rvx=() _rvfix=''
+  gate_row_value_fields
+  _rvx=(${GATE_RV_FIELDS[@]+"${GATE_RV_FIELDS[@]}"})
+  [ "${#_rvx[@]}" -eq 0 ] || _rvfix="$(printf '%s | ' "${_rvx[@]}")"
+  _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | %s%s근거= | 관측= | 재개 명령= | prev=%064d\n' \
+            "$alias" "$cell" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" "$_rvfix" "$_jfix" 0 \
           | wc -c | tr -d ' ')
   _free=$(( GATE_ROW_MAX - _fixed - 8 ))
   [ "$_free" -lt 0 ] && _free=0
@@ -37147,7 +37556,7 @@ gate_park_record() {
   gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
     "도달 판정=$cell" "세그먼트=$_seg55" \
     "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
-    "행위 다이제스트=$_ad" ${_jx[@]+"${_jx[@]}"} "근거=$(gate_row_safe "$rationale" "$_rb")" \
+    "행위 다이제스트=$_ad" ${_rvx[@]+"${_rvx[@]}"} ${_jx[@]+"${_jx[@]}"} "근거=$(gate_row_safe "$rationale" "$_rb")" \
     "관측=$(gate_row_safe "$obs" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
   gate_park_repair_line "$cell" "$cause"
 }
@@ -40867,6 +41276,8 @@ gate_verb_act() {
   GATE_PARK_CELL="" GATE_PARK_CAUSE='-' GATE_PARK_SX='-' GATE_PARK_SW='-' GATE_PARK_REFF='-'
   GATE_PARK_GEFF='-' GATE_PARK_NEVER='-' GATE_PARK_TRIG='-' GATE_PARK_PROPOSAL='-'
   GATE_PARK_EV=1 GATE_PREAUTH_JUDGE='-'
+  GATE_PARK_RFROW=0 GATE_PARK_RFN='-' GATE_PARK_RS='-' GATE_PARK_RR='-' GATE_PARK_RPD=0
+  GATE_PARK_DECL_SURF='-' GATE_PARK_DECL_REACH='-' GATE_PARK_CROWS='-' GATE_PARK_SCOPE=0
   # A plan that carries no act (`--kind propose-done`) has no argv at all.
   GATE_PARK_ARGV0="${1:-}"
   GATE_PARK_ARGV0="${GATE_PARK_ARGV0##*/}"
@@ -40895,11 +41306,18 @@ gate_verb_act() {
     # The verdict is `<칸>\t<원인>\t<판단>` on the first line; the facts the
     # repair line reads follow on the second, printed from the same subshell. The
     # cause and the facts stay here — the ledger's `도달 판정=` takes the cell
-    # alone, and the judgment goes to fields of its own on the row.
+    # alone, and the judgment goes to fields of its own on the row. The row-value
+    # facts ride on the second line too, ahead of the free-text proposal; every
+    # one of them is `-` or a digit when empty, because tab is a whitespace
+    # separator to `read` and an empty field would fold and shift the rest.
     local _out _cell _pcause _facts _rest
     _out=$(gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
-           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
-             "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_EV" "$GATE_RF_PROPOSAL")
+           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+             "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
+             "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_EV" \
+             "$GATE_RF_ROW" "$GATE_RF_RN" "$GATE_RF_RS" "$GATE_RF_RR" "$GATE_RF_RPD" \
+             "$GATE_RF_DECL_SURF" "$GATE_RF_DECL_REACH" "$GATE_RF_CROWS" "$GATE_RF_SCOPE" \
+             "$GATE_RF_PROPOSAL")
     _cell=${_out%%
 *}
     _facts=${_out#*
@@ -40914,7 +41332,9 @@ gate_verb_act() {
     [ -n "$_pcause" ] || _pcause='-'
     [ -n "$GATE_PREAUTH_JUDGE" ] || GATE_PREAUTH_JUDGE='-'
     IFS='	' read -r GATE_PARK_SX GATE_PARK_SW GATE_PARK_REFF GATE_PARK_GEFF GATE_PARK_NEVER \
-      GATE_PARK_TRIG GATE_PARK_EV GATE_PARK_PROPOSAL <<EOF || true
+      GATE_PARK_TRIG GATE_PARK_EV GATE_PARK_RFROW GATE_PARK_RFN GATE_PARK_RS GATE_PARK_RR \
+      GATE_PARK_RPD GATE_PARK_DECL_SURF GATE_PARK_DECL_REACH GATE_PARK_CROWS GATE_PARK_SCOPE \
+      GATE_PARK_PROPOSAL <<EOF || true
 $_facts
 EOF
     if gate_auto_resolve_enabled; then
@@ -41481,6 +41901,17 @@ EOF
     # thing a forecast must not do.
     printf '통과 예상: kind=%s target=%s 절단점=%s 유도=%s 축2=%s\n' \
       "$kind" "$alias" "$GATE_ACT_EFFECTIVE" "${GATE_ACT_DERIVED:--}" "$graded"
+    # The pair the same argv would open as an act, forecast and never written:
+    # the dry run writes no row. Only the kinds that run their argv open one.
+    case "$kind" in
+      skill|router-shift|apply|apply-settle|ci-rerun|label-ack|propose-done) ;;
+      *)
+        if [ "${GATE_PARK_RFROW:-0}" = "1" ] && ! gate_kind_is_bookkeeping "$kind" \
+           && [ -n "$(gate_preauth_pair_argv "${GATE_PARK_RFN:--}")" ]; then
+          printf '짝 정리 예보: act 로 내면 사전 인가 행 %s 의 짝 정리를 열 것입니다 (파견=%s)\n' \
+            "$GATE_PARK_RFN" "$(gate_pair_dispatch_id)"
+        fi ;;
+    esac
     return 0
   fi
 
@@ -41632,7 +42063,11 @@ EOF
       _vpc=$(gate_ban_append_answer "$3" 2>/dev/null || true)
       [ -z "$_vpc" ] || _adm+=("소비 중단 답=$_vpc")
     fi
-    _row_fixed=$(( ${#alias} + ${#segment} + ${#GATE_ACT_EFFECTIVE} + ${#graded} + ${#actor} + 336 ))
+    # The row value's two fields are budgeted at their closed-vocabulary
+    # maximum, present or not, so the excerpt never depends on whether a row
+    # decided the act.
+    gate_row_value_fields
+    _row_fixed=$(( ${#alias} + ${#segment} + ${#GATE_ACT_EFFECTIVE} + ${#graded} + ${#actor} + 336 + GATE_RV_FIELDS_MAX ))
     [ "${GATE_ADMIT:-}" != "1" ] || _row_fixed=$(( _row_fixed + ${#_adm[0]} + ${#_adm[1]} + ${#_adm[2]} + ${#_adm[3]} + 12 ))
     [ -z "$_vpc" ] || _row_fixed=$(( _row_fixed + ${#_vpc} + 24 ))
     _argv_budget=$(( 1024 - 16 - _row_fixed ))
@@ -41646,7 +42081,7 @@ EOF
       "표지=${GATE_MARK:--}" "파괴 출처=$(gate_destructive_source)" \
       "도달=${GATE_REACH:--}" "유도 도달=$(gate_reach_derived "$alias" "$@")" \
       "식별자 대조=$(gate_dev_identifier_check "$alias" "$@")" \
-      "행위 다이제스트=$_ad2" ${_adm[@]+"${_adm[@]}"} \
+      "행위 다이제스트=$_ad2" ${GATE_RV_FIELDS[@]+"${GATE_RV_FIELDS[@]}"} ${_adm[@]+"${_adm[@]}"} \
       "argv=$(gate_row_safe "$*" "$_argv_budget")")
     # A machine-global act a judgment opened carries the verdict and its reason,
     # the reason taking only what the row has left once everything else is in.
@@ -41670,6 +42105,22 @@ EOF
     [ -z "$rv_trig" ] || _act_fx+=("계기=$rv_trig")
     [ -z "$GATE_RECOVERY" ] || _act_fx+=("복구=$GATE_RECOVERY")
     [ "$rv_trig" != "라우터 판단" ] || actwhy="계기 사유: $GATE_TRIGGER_REASON; $rationale"
+    # An act that runs its argv carries the row value's two fields when the
+    # row still leaves `근거` at least 64 bytes with them in; otherwise they are
+    # left off and the exec row is the only one that records them. A router's
+    # own kinds never reach a row value — their argv is the table's to grade.
+    case "$kind" in
+      skill|router-shift|apply|apply-settle|ci-rerun|label-ack) ;;
+      *)
+        gate_row_value_fields
+        gate_kind_is_bookkeeping "$kind" && GATE_RV_FIELDS=()
+        if [ "${#GATE_RV_FIELDS[@]}" -gt 0 ] && [ "$(gate_free_budget "kind=$kind" "결정=$verb" \
+             "대상=$alias" "세그먼트=$segment" "절단점=$GATE_ACT_EFFECTIVE" \
+             "유도 절단점=${GATE_ACT_DERIVED:--}" "축2=$graded" "자격=$credmode" "행위자=$actor" \
+             ${_act_fx[@]+"${_act_fx[@]}"} "${GATE_RV_FIELDS[@]}")" -ge 64 ]; then
+          _act_fx+=("${GATE_RV_FIELDS[@]}")
+        fi ;;
+    esac
     _act_free=$(gate_free_budget "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
       "축2=$graded" "자격=$credmode" "행위자=$actor" ${_act_fx[@]+"${_act_fx[@]}"})
@@ -41741,6 +42192,11 @@ EOF
   [ "$kind" = "propose-done" ] && return 0
   case "$verb" in
     exec)
+      # The pair a deciding pre-authorization row carries is opened right
+      # before the act, whatever the act then does: a helper that fails may
+      # already have changed the state its cleanup undoes. An open that cannot
+      # be written stops the act, as a lost approval row does.
+      gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
       # The stage's own credential set: read-scoped, so a `gh pr merge` spelled
       # here fails at the API rather than at a string match.
       gate_run_readonly "$@" || rc=$?
@@ -41776,7 +42232,9 @@ EOF
         ci-rerun) gate_perform_ci_rerun "$alias" "$segment" "$@" || rc=$? ;;
         # The label POST and its confirmation, the same way.
         label-ack) gate_perform_label_ack "$alias" "$segment" "$@" || rc=$? ;;
-        *)     gate_run_readonly "$@" || rc=$? ;;
+        # The argv itself runs here, so the pair opens here as it does on exec.
+        *)     gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
+               gate_run_readonly "$@" || rc=$? ;;
       esac
       ;;
   esac
@@ -45110,7 +45568,8 @@ gate_dashboard_ensure() {
   # them out — `plan` writes nothing by contract, and the PreToolUse hook calls
   # `digest-path` before every tool call. A run whose first entry is one of them
   # opens without a server and gets one from `/cc-cmds:dashboard` or the next
-  # run's opening.
+  # run's opening. `pair-residue` is kept out with them: it reads the ledger
+  # and starts nothing.
   #
   # NO GRADE AND NO ROW: this is the gate's own housekeeping, as the metrics
   # round is. The off switch (`CC_CMDS_DASHBOARD=off`, `CI`) is read by
@@ -45118,7 +45577,7 @@ gate_dashboard_ensure() {
   # the driver normalises it, so a session that lost `/usr/bin` still finds the
   # system interpreter.
   case "${1:-}" in
-    plan|digest-path) return 0 ;;
+    plan|digest-path|pair-residue) return 0 ;;
   esac
   cc_caller_is_stage && return 0
   local py
@@ -46856,6 +47315,13 @@ gate_record_stage_outcome() {
   fi
 
   gate_absorb_emitted_judgment "$alias" "$seg" "$res" "$kind"
+
+  # THE STAGE'S OPEN PAIR CLEANUPS ARE CALLED LAST, past every block that rides
+  # on the row: the terminal notice has to leave the moment the row is seated
+  # and the disclosure rows sit right after their own row, so the cleanup time
+  # (up to 120 seconds a pair) comes after all of them. In a subshell with its
+  # status folded, because a cleanup row that dies must not end the recorder.
+  ( gate_pair_drain stage "$seg" ) || true
 
   log "스테이지 종단 — $seg ($kind) $klass rc=$rc${cost:+ · ${cost} USD}"
 }
