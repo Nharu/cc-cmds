@@ -37299,7 +37299,8 @@ gate_ci_rerun_x5_hit() {
   # deployment or another workflow, 1 when it is clean; any other status is "not
   # judged" and the caller parks on it. Read line by line, never as YAML:
   #   - A line whose first non-blank is `#` is skipped, and a ` #` tail outside
-  #     quotes is cut off.
+  #     quotes is cut off. A quote starts a quoted string only where a node
+  #     can start; a quote inside a plain scalar is a character.
   #   - A key whose whole value is a block scalar indicator (`|`, `>`, with
   #     `-`/`+`/digits after and an anchor or tag before) opens a body: every
   #     following line indented deeper than the key's column (the column after
@@ -37314,8 +37315,7 @@ gate_ci_rerun_x5_hit() {
   #     value; a flow collection (`{…}`/`[…]` as a value, a sequence item or a
   #     whole line) holding an `environment` or `uses` key or a key other than
   #     `run` whose scalar value names .github/workflows/, or not closed by the
-  #     end of the file (a quoted string in a flow is one value, and a quote
-  #     starts one only where a flow node can start); an alias in
+  #     end of the file (a quoted string in a flow is one value); an alias in
   #     key position; a `? ` complex key.
   #   - Every line, body included, with `\` continuations joined, matches on
   #     `workflow run` (whatever options stand before it), `/dispatches`, or a
@@ -37327,47 +37327,59 @@ gate_ci_rerun_x5_hit() {
   # original is read where it stands.
   LC_ALL=C awk -v q="'" '
     function unq(s) { gsub(/"/, "", s); gsub(q, "", s); return s }
-    function opens(s, i) { return i == 1 || index(" \t:,[{-", substr(s, i - 1, 1)) > 0 }
-    function fopens(s, i,   j, t, c) {
-      # A quote at i opens a quoted string in flow text only where a flow node
-      # can start: the text start, or after `{`, `[`, `,`, `? `, or a `:`
-      # followed by a blank or after a quoted key, with node properties
-      # (`&name`, `!tag`) skipped. A quote inside a plain scalar, after a
-      # letter, a digit, a blank after a word or a `-`, is a character.
+    function opens(s, i,   j, t, c) {
+      # A quote at i opens a quoted string only where a node can start: the
+      # text start, or after `{`, `[`, `,`, or a `?`, `-` or `:` followed by a
+      # blank, or after a `:` that directly follows the quote closing a quoted
+      # key (qend, set by the caller), with node properties (`&name`, `!tag`,
+      # `!<...>`) skipped. A quote inside a plain scalar, after a letter, a
+      # digit, a blank after a word or a `-`, is a character.
       j = i - 1
       while (1) {
         while (j > 0 && index(" \t", substr(s, j, 1)) > 0) j--
         if (j == 0) return 1
+        if (substr(s, j, 1) == ">" && j < i - 1) {
+          for (t = j; t > 1 && substr(s, t - 1, 2) != "!<"; t--) ;
+          if (t > 1) { j = t - 2; continue }
+        }
         for (t = j; t > 0 && index(" \t,[]{}", substr(s, t, 1)) == 0; t--) ;
         if (t < j && index("&!", substr(s, t + 1, 1)) > 0 && j < i - 1) { j = t; continue }
         c = substr(s, j, 1)
         if (index("{[,", c) > 0) return 1
-        if (c == "?") return j < i - 1
-        if (c == ":") return j < i - 1 || (j > 1 && index("\"" q, substr(s, j - 1, 1)) > 0)
+        if (c == "?" || c == "-") return j < i - 1
+        if (c == ":") {
+          if (j < i - 1) return 1
+          for (t = j - 1; t > 0 && index(" \t", substr(s, t, 1)) > 0; t--) ;
+          return t > 0 && t == qend
+        }
         return 0
       }
     }
-    function stripc(s,   i, c, inq) {
-      inq = ""
+    function stripc(s, body,   i, c, inq, o) {
+      # A block scalar body is not YAML, so there a quote after a blank or
+      # `:,[{-` still opens a string.
+      inq = ""; qend = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
-          if ((c == "\"" || c == q) && opens(s, i)) inq = c
+          if (body) o = i == 1 || index(" \t:,[{-", substr(s, i - 1, 1)) > 0
+          else o = opens(s, i)
+          if ((c == "\"" || c == q) && o) inq = c
           else if (c == "#" && i > 1 && index(" \t", substr(s, i - 1, 1)) > 0) { s = substr(s, 1, i - 1); break }
-        } else if (c == inq) inq = ""
+        } else if (c == inq) { inq = ""; qend = i }
       }
       sub(/[ \t]+$/, "", s)
       return s
     }
     function depth(s,   i, c, inq, d) {
-      inq = ""; d = 0
+      inq = ""; d = 0; qend = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
-          if ((c == "\"" || c == q) && fopens(s, i)) inq = c
+          if ((c == "\"" || c == q) && opens(s, i)) inq = c
           else if (c == "{" || c == "[") d++
           else if (c == "}" || c == "]") d--
-        } else if (c == inq) inq = ""
+        } else if (c == inq) { inq = ""; qend = i }
       }
       return d
     }
@@ -37404,13 +37416,13 @@ gate_ci_rerun_x5_hit() {
     function mask(s,   i, c, inq, o) {
       # The flow text with `,:{}[]` inside quotes turned into `_`, so a quoted
       # string is read as one value and never as keys or item breaks. Quotes
-      # open by the rule depth() uses, fopens().
-      inq = ""; o = ""
+      # open by the rule stripc() and depth() use, opens().
+      inq = ""; o = ""; qend = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
-          if ((c == "\"" || c == q) && fopens(s, i)) inq = c
-        } else if (c == inq) inq = ""
+          if ((c == "\"" || c == q) && opens(s, i)) inq = c
+        } else if (c == inq) { inq = ""; qend = i }
         else if (index(",:{}[]", c) > 0) c = "_"
         o = o c
       }
@@ -37434,7 +37446,7 @@ gate_ci_rerun_x5_hit() {
       ind = match($0, /[^ \t]/) - 1
       if (inbody) {
         if (ind < 0) next
-        if (ind > bcol) { if (substr($0, ind + 1, 1) != "#") text(stripc($0)); next }
+        if (ind > bcol) { if (substr($0, ind + 1, 1) != "#") text(stripc($0, 1)); next }
         inbody = 0
       }
       if (ind < 0 || substr($0, ind + 1, 1) == "#") next
