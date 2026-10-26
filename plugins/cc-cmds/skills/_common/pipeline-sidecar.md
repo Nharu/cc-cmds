@@ -215,8 +215,8 @@ person's claim, taken at kickoff — or, on a re-kickoff, a value `rekick.sh`
 derived again from the source run's ledger, the worktree and the remote, never
 one a person read back; the disk is the evidence, read when the segment
 is planned: the worktree must be the slice target's, carry the declared branch,
-and the earlier run must neither have landed the segment nor still run a stage
-on it. The manifest check reads the row's form only, for the reason it reads the
+and the earlier run must neither have landed the segment — landed meaning
+`머지됨`, or `완료` with a landing commit — nor still run a stage on it. The manifest check reads the row's form only, for the reason it reads the
 `베이스 설계` row's form only — it runs on every gate entry, and the worktree is
 torn down once the segment lands. The snapshot's `슬라이싱` names the adopted
 branch and worktree for that segment and adds `입양` and `PR`, and the router
@@ -690,7 +690,8 @@ never compared.
 17. **`세그먼트 입양` rows, form only.** Each row matches its form, its
     `워크트리` is absolute, carries the reserved infix `-run-` the teardown guard
     requires and no double quote, backslash or control byte, its `출처 런` is a
-    run id other than this run's or `-` (a segment no run cut), and no segment
+    run id other than this run's, in either spelling, `YYYYMMDD-xxxxxxxx` or
+    `YYYY-MM-DD-xxxxxxxx`, or `-` (a segment no run cut), and no segment
     has two rows. Each violation is
     a **hard stop**. The worktree, the branch and the earlier run are not read
     here; the segment's planning act reads them.
