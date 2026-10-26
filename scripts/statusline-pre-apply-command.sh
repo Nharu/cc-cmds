@@ -21,6 +21,14 @@
 # THE BYTES ARE THE CONTRACT. `emit_fallback` in `statusline.sh` must produce
 # exactly what this line produces — the escapes, the emoji, and the `%s` the
 # format string ends at, with no trailing newline. The wrapper the apply
-# installs keeps the original command as its `||` fallback, so a session with no
-# run has to render the same bytes whichever branch it takes.
+# installs keeps the original command as its `||` fallback, so on a machine where
+# THIS was the original command a session with no run renders the same bytes
+# whichever branch it takes.
+#
+# THAT IS A CLAIM ABOUT ONE POPULATION, NOT ABOUT EVERY MACHINE. Where the apply
+# finds no status line at all there is no original command to keep, the fallback
+# becomes `true`, and the two branches then differ by this whole line — which is
+# what gives the installer's pre-commit verify run something to read on a first
+# install. This file is the referent the identity claim needs; it is not evidence
+# that the claim holds everywhere.
 printf '\033[36m[cc🎨]\033[0m %s' "${PWD##*/}"

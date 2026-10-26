@@ -53,6 +53,7 @@ lint:
 	bash scripts/lint-pace-threshold-pins.sh
 	bash scripts/lint-fleet-agent-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
+	bash scripts/lint-statusline-wrapper-pins.sh
 	bash scripts/lint-approval-state-vocabulary.sh
 	bash scripts/lint-sidecar-field-table.sh
 	bash scripts/lint-approval-answer-provenance.sh
@@ -77,14 +78,24 @@ lint:
 # A hook whose path is wrong is silent — the harness runs nothing and says
 # nothing — so this is the only place the typo becomes visible.
 #
-# The resolution count is compared first. `grep -o` would drop a command that is
-# not written against the plugin root, and a dropped command is one this walk
-# never checked while reporting success over the rest.
-	@n_cmd=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -c .); \
-	 n_path=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}][^" ]*' | grep -c .); \
-	 test "$$n_cmd" = "$$n_path" || { echo "lint: hooks.json 의 command $$n_cmd 개 중 $$n_path 개만 플러그인 상대 경로로 해소된다" >&2; exit 1; }; \
+# Coverage is checked first, PER COMMAND rather than by a total count. `grep -o`
+# would drop a command that is not written against the plugin root, and a dropped
+# command is one this walk never checked while reporting success over the rest.
+# The earlier form compared the number of commands against the number of root
+# references and demanded they be equal, which silently required EXACTLY ONE
+# reference per command. A command may legitimately name the root twice — once as
+# the script it runs and once as an argument that hands the same directory to
+# that script — and under the old form such a command made the totals differ and
+# failed the check while every command was in fact covered.
+#
+# The coverage test asks for a root reference WITH A PATH under it. A bare
+# `${CLAUDE_PLUGIN_ROOT}` is a directory handed to a script, not something the
+# walk can open, so counting it as coverage would let a command pass the first
+# test and contribute nothing to the second.
+	@bad=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -cvF '$${CLAUDE_PLUGIN_ROOT}/' || true); \
+	 test "$$bad" = "0" || { echo "lint: hooks.json 의 command 중 $$bad 개가 플러그인 루트 아래 경로를 갖지 않아 아래 검사가 건너뛴다" >&2; exit 1; }; \
 	 jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json \
-	   | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}][^" ]*' \
+	   | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}]/[^" ]+' \
 	   | sed -e 's|[$$][{]CLAUDE_PLUGIN_ROOT[}]|plugins/cc-cmds|' \
 	   | while IFS= read -r p; do \
 	       test -f "$$p" || { echo "lint: hooks.json 이 가리키는 파일이 없다: $$p" >&2; exit 1; }; \
@@ -402,6 +413,7 @@ LINT_TESTS := \
 	scripts/test-lint-watch-threshold-pins.sh \
 	scripts/test-lint-pace-threshold-pins.sh \
 	scripts/test-lint-statusline-token-arms.sh \
+	scripts/test-lint-statusline-wrapper-pins.sh \
 	scripts/test-lint-approval-state-vocabulary.sh \
 	scripts/test-lint-sidecar-field-table.sh \
 	scripts/test-lint-approval-answer-provenance.sh \
@@ -418,6 +430,7 @@ LINT_TESTS := \
 	scripts/test-solo-audit-experiment.sh \
 	scripts/test-reader-model-compare.sh \
 	scripts/test-reader-model-pair-audit.sh \
+	scripts/test-measure-audit-findings.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
 	scripts/test-lint-stage-policy-sources.sh \
@@ -448,6 +461,7 @@ ORCH_TESTS := \
 	scripts/test-watch.sh \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
+	scripts/test-statusline-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \
