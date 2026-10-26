@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **사람의 `재시도` 답을 재실행 회차로 기록** — `도달 거부` park 뒤 `답한 주체=사람` 인 `재시도` 답이 있으면 `act --kind ci-rerun` 은 POST 를 내지 않고 `CI 처분` 행에 `실행 주체=사람`·`근거=중단 답 줄 <n>` 을 싣는다. 사람이 아닌 답, 다른 행위, 새 커밋으로 움직인 head 에서는 지금처럼 다시 park 한다.
-- **배포 자리 판독기** — tip 워크플로의 `environment` 키, `workflow run`·배포 스크립트 호출 자리를 YAML 구조로 찾고, `paths` 필터·`run` 블록 본문·주석·앵커 별칭의 글자는 배포 자리로 세지 않는다. 레포의 실제 워크플로 셋은 깨끗하게 읽힌다.
+- **배포 자리 판독기** — tip 워크플로의 `environment` 키, `workflow run`·배포 스크립트 호출 자리를 YAML 구조로 찾고, `paths` 필터·`run` 블록 본문·주석·앵커 별칭의 글자는 배포 자리로 세지 않는다. 앵커·태그가 붙은 키는 그 키 이름으로 읽고, `---` 줄의 flow 문서와 `run` 이 아닌 키가 flow 꼴이나 다음 줄 값으로 넘긴 워크플로 경로도 배포 자리로 센다. 레포의 실제 워크플로 셋은 깨끗하게 읽힌다.
 - **수정 표** — 회차 없는 head 의 정착 실패와 라벨 인정만 받은 head 는 `수정` 을 낸다.
 
 ### Changed

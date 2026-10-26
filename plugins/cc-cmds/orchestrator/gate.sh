@@ -37304,12 +37304,17 @@ gate_ci_rerun_x5_hit() {
   #     `-`/`+`/digits after and an anchor or tag before) opens a body: every
   #     following line indented deeper than the key's column (the column after
   #     a `- ` prefix), blank lines included. A body line is never read as a key.
+  #   - A key is read after the `- ` sequence prefixes, a leading `---`
+  #     document marker and the node properties before it (`&name`, `!tag`,
+  #     `!<…>`), so `&e environment:` is an `environment` key.
   #   - A key line matches on: an `environment` key at any depth; a `uses` key
   #     whose value names .github/workflows/, is an alias, or is not on the line;
-  #     a key other than `run` whose scalar value names .github/workflows/; a
-  #     flow collection (`{…}`/`[…]` as a value, a sequence item or a whole
-  #     line) holding an `environment` or `uses` key, or not closed by the end
-  #     of the file; an alias in key position; a `? ` complex key.
+  #     a key other than `run` whose scalar value names .github/workflows/, on
+  #     its own line or on the deeper lines after it when the key line holds no
+  #     value; a flow collection (`{…}`/`[…]` as a value, a sequence item or a
+  #     whole line) holding an `environment` or `uses` key or a key other than
+  #     `run` whose scalar value names .github/workflows/, or not closed by the
+  #     end of the file; an alias in key position; a `? ` complex key.
   #   - Every line, body included, with `\` continuations joined, matches on
   #     `workflow run` (whatever options stand before it), `/dispatches`, or a
   #     path token under .github/workflows/ that does not end in .yml/.yaml.
@@ -37363,7 +37368,19 @@ gate_ci_rerun_x5_hit() {
       s = cont s; cont = ""
       if (texthit(s)) { hit = 1; exit }
     }
-    function flowhit(s) { return s ~ flowkey }
+    function flowpath(s,   k) {
+      # A key other than `run` whose scalar value in the flow names a workflow
+      # path. The scan resumes after each matched path, so a `run` value never
+      # lends its words to a key read inside it.
+      while (match(s, flowval)) {
+        k = substr(s, RSTART, RLENGTH)
+        sub(/^[{,[ \t]+/, "", k); sub(/[ \t]*:.*$/, "", k)
+        if (unq(k) != "run") return 1
+        s = substr(s, RSTART + RLENGTH)
+      }
+      return 0
+    }
+    function flowhit(s) { return s ~ flowkey || flowpath(s) }
     function startflow(s) {
       buf = s; d = depth(s)
       if (d > 0) { inflow = 1; return }
@@ -37373,7 +37390,9 @@ gate_ci_rerun_x5_hit() {
       delim = " \t" q "\",)]};`"
       keyre = "^(\"[^\"]*\"|" q "[^" q "]*" q "|[^ \t\"" q "{[][^:]*)[ \t]*:([ \t]|$)"
       flowkey = "(^|[{,[ \t])[\"" q "]?(environment|uses)[\"" q "]?[ \t]*:"
+      flowval = "(^|[{,[ \t])[\"" q "]?[A-Za-z0-9_.-]+[\"" q "]?[ \t]*:[ \t]*[^,{}[]*[.]github/workflows/"
       blockre = "^((&[^ \t]+|![^ \t]*)[ \t]+)*[|>][-+0-9]*$"
+      propre = "^(&[^ \t]+|!<[^>]*>|![^ \t]*)([ \t]|$)"
     }
     {
       ind = match($0, /[^ \t]/) - 1
@@ -37390,8 +37409,22 @@ gate_ci_rerun_x5_hit() {
         if (d <= 0) { inflow = 0; if (flowhit(buf)) { hit = 1; exit } }
         next
       }
-      r = substr(s, ind + 1); col = ind
-      while (r ~ /^-([ \t]|$)/) { match(r, /^-[ \t]*/); col += RLENGTH; r = substr(r, RLENGTH + 1) }
+      r = substr(s, ind + 1); col = ind; seq = 0
+      while (1) {
+        if (r ~ /^---([ \t]|$)/) { match(r, /^---[ \t]*/); r = substr(r, RLENGTH + 1) }
+        else if (r ~ /^-([ \t]|$)/) { match(r, /^-[ \t]*/); col += RLENGTH; r = substr(r, RLENGTH + 1); seq = 1 }
+        else if (r ~ propre) { match(r, /^[^ \t]+[ \t]*/); r = substr(r, RLENGTH + 1) }
+        else break
+      }
+      # A key other than `run` that held no value on its line: a deeper scalar
+      # line is that value. A key, a sequence item or a collection ends the wait.
+      if (pend) {
+        if (ind > pcol && !seq && r !~ /^[{[?*]/ && !match(r, keyre)) {
+          if (index(unq(r), ".github/workflows/") > 0) { hit = 1; exit }
+          next
+        }
+        pend = 0
+      }
       if (r == "") next
       if (r ~ /^\?([ \t]|$)/ || r ~ /^\*/) { hit = 1; exit }
       if (r ~ /^[{[]/) { startflow(r); next }
@@ -37399,7 +37432,13 @@ gate_ci_rerun_x5_hit() {
       k = substr(r, 1, RLENGTH); v = substr(r, RLENGTH + 1)
       sub(/[ \t]*:[ \t]*$/, "", k); k = unq(k); sub(/^[ \t]+/, "", v)
       if (k == "environment") { hit = 1; exit }
-      if (v ~ /^[{[]/) { startflow(v); next }
+      w = v
+      while (w ~ propre) { match(w, /^[^ \t]+[ \t]*/); w = substr(w, RLENGTH + 1) }
+      if (k != "run" && w == "") {
+        if (k == "uses") { hit = 1; exit }
+        pend = 1; pcol = col; next
+      }
+      if (w ~ /^[{[]/) { startflow(w); next }
       if (v ~ blockre) {
         if (k == "uses") { hit = 1; exit }
         inbody = 1; bcol = col; next

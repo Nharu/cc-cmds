@@ -42268,7 +42268,7 @@ cb60_foot
 
 # ---------------------------------------------------------------------------
 # 60b-2. 리뷰가 깨끗한 세그먼트의 CI 실패 — 부적격 실행의 park
-# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: paths 필터·run 본문·주석·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다 ---
+# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: paths 필터·run 본문·주석·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다 ---
 #
 # 60b 의 둘째 조각. 픽스처는 `cb60_head` 로 새로 세운다. 같은 argv 의 둘째 park 가 행을
 # 더 쓰지 않는지는 칸과 종류마다 처음 사례에서 `cb60_park` 이 모으고 그 단언은 60b-3
@@ -42342,6 +42342,28 @@ cb60_x5 0 $'on:\n  pull_request:\n    paths:\n      - \'.github/workflows/**\''
 cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: cmd |\n          environment: prod'
 cb60_x5 1 $'jobs:\n  t:\n    steps:\n      - run: &a |\n          environment: prod'
 check "60b: X5 판독기의 어휘 경계가 모양마다 답한다" "$cb60_x5fail" ""
+# 키 노드 속성과 문서 표지 — 앵커·태그가 붙은 키도 그 이름으로 읽고, `---` 줄의 flow 문서도 읽는다.
+cb60_x5fail=""
+cb60_x5 0 $'jobs:\n  d:\n    &e environment: prod'
+cb60_x5 0 $'jobs:\n  d:\n    !!str environment: prod'
+cb60_x5 0 $'jobs:\n  d:\n    &e "environment": prod'
+cb60_x5 0 $'jobs:\n  d:\n    !<tag:yaml.org,2002:str> environment: prod'
+cb60_x5 0 $'--- {on: pull_request, jobs: {d: {runs-on: x, environment: prod, steps: [{run: make}]}}}'
+cb60_x5 0 $'jobs:\n  d:\n    env: &e {environment: prod}'
+cb60_x5 0 $'jobs:\n  d:\n    uses: &u\n      ./.github/workflows/x.yml'
+cb60_x5 1 $'---\nname: x\njobs:\n  t:\n    env: &e\n      A: x\n  u:\n    env: *e'
+check "60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다" "$cb60_x5fail" ""
+# run 이 아닌 키의 값 경로 — flow 꼴과 다음 줄 값도 맞고, run 값·paths 항목은 깨끗하다.
+cb60_x5fail=""
+cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with: {workflow: .github/workflows/deploy.yml}'
+cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with: {a: 1, "workflow": \'.github/workflows/deploy.yml\'}'
+cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with:\n          workflow:\n            .github/workflows/deploy.yml'
+cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with:\n          workflow: &w\n            .github/workflows/deploy.yml'
+cb60_x5 1 $'jobs:\n  d:\n    steps: [{run: yq .on .github/workflows/x.yml}]'
+cb60_x5 1 $'on: {pull_request: {paths: [\'.github/workflows/gate.yml\']}}'
+cb60_x5 1 $'jobs:\n  t:\n    steps:\n      - run:\n          yq .on .github/workflows/x.yml'
+cb60_x5 1 $'jobs:\n  t:\n    with:\n      workflow:\n    paths:\n      - .github/workflows/a.yml'
+check "60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다" "$cb60_x5fail" ""
 # 섞인 집합 — 실행 777 은 적격, 778 의 워크플로에 환경 키. 하나라도 걸리면 POST 는 없다.
 cb60_new "CI 재실행 — 섞인 집합"
 ( cd "$SA_SEGWT" && printf '%s\n    environment: prod\n' "$CB60_WF" > .github/workflows/deploy.yml && git add -A && git commit -qm deploy ) >/dev/null 2>&1
@@ -43330,6 +43352,10 @@ la61_again $'name: gate\non:\n  pull_request:\n    types: labeled\njobs:\n  t:\n
 la61_park 라벨새실행없음 "gate:.github/workflows/gate.yml:읽지못함" "자기 워크플로의 types 를 읽지 못함"
 la61_again "$LA61_WF"$'\n    environment: prod'
 la61_park 라벨배포트리거 "gate.yml" "tip 워크플로의 환경 키"
+la61_again "$LA61_WF"$'\n    &e environment: prod'
+la61_park 라벨배포트리거 "gate.yml" "tip 워크플로의 앵커 붙은 환경 키"
+la61_again "$LA61_WF"$'\n      - uses: a/b@v1\n        with: {workflow: .github/workflows/deploy.yml}'
+la61_park 라벨배포트리거 "gate.yml" "tip 워크플로의 flow 값 워크플로 경로"
 la61_again
 cb60_tgt "배포트리거 식별자=branch:$SA_SEGBR"
 la61_park 라벨배포트리거 "branch:$SA_SEGBR" "식별자 branch"
