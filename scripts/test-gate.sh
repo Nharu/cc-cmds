@@ -13871,7 +13871,7 @@ rm -f "$WT/$DOC15ES"
 
 # ---------------------------------------------------------------------------
 # 15e-4. An audit that counts skeleton-grade items asks for re-convergence on its key up to the cap
-# --- section: 15e-4 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-4: 골격급 2건 감사 행이 골격급=2 · 재수렴 요청=예 로 정상 완료다, 15e-4: 골격급 0건 감사 행은 재수렴 요청=아니오 다, 15e-4: 울타리 없는 감사 보고서는 공허한 성공이다, 15e-4: 재수렴 요청=예 뒤 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다, 15e-4: 범위 감사 골격급 을 실은 - reconverge 의 plan 이 통과한다, 15e-4: 다른 범위의 골격급 재수렴은 거부된다, 15e-4: 재수렴 요청=아니오 인 감사 뒤 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 뒤 계획은 새 감사를 기다린다며 거부된다, 15e-4: 감사 스테이지가 최초와 재감사 회차를 받는다, 15e-4: 재수렴 1회 뒤 재감사는 골격급이 남으면 재수렴 요청=예 다 (1/예),15e-4: 두 번째 주기의 audit_skeleton_due 는 대기 중 객체다, 15e-4: 두 번째 주기의 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다, 15e-4: 두 번째 감사 골격급 재수렴의 plan 이 통과한다, 15e-4: 재수렴 2회 뒤 재감사는 골격급이 남아도 재수렴 요청=아니오 다 (1/아니오),15e-4: 사람 답 재수렴 뒤 첫 재감사는 재수렴 요청=예 다, 15e-4: 사람 답 재수렴과 골격급 재수렴 뒤 재감사는 재수렴 요청=아니오 다, 15e-4: 재감사 뒤 계획은 감사 때문에 거부되지 않는다, 15e-4: 스냅숏 audit_skeleton_due 가 대기 중엔 객체 · 재수렴 뒤엔 null 이다, 15e-4: 골격급 재발 park 의 사람 재수렴 답은 골격급-재수렴 route 다, 15e-4: 그 답을 실행할 감사 골격급 재수렴 plan 이 통과한다, 15e-4: 합성 요구 후보만 있는 감사는 멈추지 않고 정상 완료다, 15e-4: 드라이버 모양의 S2 감사 행을 감사 행으로 읽고 재수렴 행은 세지 않는다, 15e-4: 골격급 필드를 실은 감사 행이 행 길이 상한 안에 든다 ---
+# --- section: 15e-4 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-4: 골격급 2건 감사 행이 골격급=2 · 재수렴 요청=예 로 정상 완료다, 15e-4: 골격급 0건 감사 행은 재수렴 요청=아니오 다, 15e-4: 울타리 없는 감사 보고서는 공허한 성공이다, 15e-4: 재수렴 요청=예 뒤 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다, 15e-4: 범위 감사 골격급 을 실은 - reconverge 의 plan 이 통과한다, 15e-4: 다른 범위의 골격급 재수렴은 거부된다, 15e-4: 재수렴 요청=아니오 인 감사 뒤 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-4: 골격급 재수렴 뒤 계획은 새 감사를 기다린다며 거부된다, 15e-4: 감사 스테이지가 최초와 재감사 회차를 받는다, 15e-4: 재수렴 1회 뒤 재감사는 골격급이 남으면 재수렴 요청=예 다 (1/예), 15e-4: 두 번째 주기의 audit_skeleton_due 는 대기 중 객체다, 15e-4: 두 번째 주기의 세그먼트 계획은 골격급 재수렴을 기다린다며 거부된다, 15e-4: 두 번째 감사 골격급 재수렴의 plan 이 통과한다, 15e-4: 재수렴 2회 뒤 재감사는 골격급이 남아도 재수렴 요청=아니오 다 (1/아니오), 15e-4: 사람 답 재수렴 뒤 첫 재감사는 재수렴 요청=예 다, 15e-4: 사람 답 재수렴과 골격급 재수렴 뒤 재감사는 재수렴 요청=아니오 다, 15e-4: 재감사 뒤 계획은 감사 때문에 거부되지 않는다, 15e-4: 스냅숏 audit_skeleton_due 가 대기 중엔 객체 · 재수렴 뒤엔 null 이다, 15e-4: 골격급 재발 park 의 사람 재수렴 답은 골격급-재수렴 route 다, 15e-4: 그 답을 실행할 감사 골격급 재수렴 plan 이 통과한다, 15e-4: 합성 요구 후보만 있는 감사는 멈추지 않고 정상 완료다, 15e-4: 드라이버 모양의 S2 감사 행을 감사 행으로 읽고 재수렴 행은 세지 않는다, 15e-4: 골격급 필드를 실은 감사 행이 행 길이 상한 안에 든다 ---
 #
 # The audit report's skeletal-grade fence is the audit's artifact: without it
 # the audit is a hollow success. An audit that ended `정상 완료` and counted a
@@ -35155,7 +35155,7 @@ check "34n: 새 답이 서면 답 없는 기록 수가 돌아온다" "$(cc_unans
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$RRT_PREV_AR"
 
 # --- 34o. 답 라우팅의 문면 — 게이트의 경로 id 와 기록의 고정 문자열이 읽는 쪽 문서에 있다 ---
-# --- section: 34o | group: base | covers: act | anchors: 34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다, 34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다, 34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다, 34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다, 34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다 ---
+# --- section: 34o | group: base | covers: act | anchors: 34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다, 34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다, 34o: 감사 스킬이 범위 재감사의 문면 아홉을 싣는다, 34o: 교대 스킬과 리드 사본이 재감사의 키당 상한 문장을 싣는다, 34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다, 34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다, 34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다 ---
 #
 # THE GATE DECIDES THE ROUTE, AND THREE DOCUMENTS HAVE TO AGREE WITH IT. The
 # shift maps each route id to its item, the stage skills write the literal the
@@ -35184,6 +35184,30 @@ grep -qF -- 'CFI-U3 BT-STOP' "$RP_SKILLS/implement-unattended/SKILL.md" && rp_li
 grep -qF -- '`**스텝**: Step 1b 빈 대상`' "$RP_SKILLS/review-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
 grep -qF -- 'Step 7 / 골격급 재발' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
 check "34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다" "$rp_lits" "4"
+# The re-audit narrows what readers report to the headings that changed since
+# the bytes the first audit froze, and asks for another re-convergence only
+# while the key is under its cap. Each literal below is one half of that: the
+# reader prompt's slot and block, the interactive arm's empty substitution, the
+# unattended arm's scope computation, kept copy, digest check and rejection
+# label, and the adjustment pass's in-place rewrite.
+rp_scope=0
+for rp_pair in \
+  'design-audit/references/01-reader-prompt.md|{REAUDIT_SCOPE}' \
+  'design-audit/references/01-reader-prompt.md|REAUDIT SCOPE:' \
+  'design-audit/references/01-reader-prompt.md|its Location line then begins with the tag `범위 밖`' \
+  'design-audit/SKILL.md|`{REAUDIT_SCOPE}` is always substituted with a single empty line here' \
+  'design-audit-unattended/SKILL.md|**Re-audit scope —' \
+  'design-audit-unattended/SKILL.md|docs/design-audit/audited/{slug}.md' \
+  'design-audit-unattended/SKILL.md|frozen-sha256' \
+  'design-audit-unattended/SKILL.md|기각 — 재감사 범위 밖' \
+  'design-audit/references/03-adjustment-pass.md|**An accepted fix rewrites the sentence it fixes, in place.**'; do
+  grep -qF -- "${rp_pair#*|}" "$RP_SKILLS/${rp_pair%%|*}" && rp_scope=$((rp_scope + 1))
+done
+check "34o: 감사 스킬이 범위 재감사의 문면 아홉을 싣는다" "$rp_scope" "9"
+check "34o: 교대 스킬과 리드 사본이 재감사의 키당 상한 문장을 싣는다" \
+  "$(cat "$RP_SHIFT" "$RP_LEAD" | grep -cF "**The fresh audit asks again only under the key's cap.**" || true)" "2"
+check "34o: 교대 스킬과 리드 사본에 재감사가 두 번째 재수렴을 묻지 않는다는 문장이 없다" \
+  "$(cat "$RP_SHIFT" "$RP_LEAD" | grep -cF '**The fresh audit asks for no second re-convergence.**' || true)" "0"
 rp_gate_lits=0
 for rp_lit in 'CFI-3b' 'CFI-U3 BT-STOP' 'Step 1b 빈 대상' 'Step 7 / 골격급 재발'; do
   grep -qF -- "$rp_lit" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" && rp_gate_lits=$((rp_gate_lits + 1))
