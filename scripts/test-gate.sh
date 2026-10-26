@@ -3111,6 +3111,10 @@ STUBEOF
     { grep -F '`blocked`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F '스코프=run' || true; } \
       | { grep -F "$2" || true; } | grep -c . || true
   }
+  g15_slice_parks() {  # g15_slice_parks <run id> <segment id> — act-scope slicing parks naming it
+    { grep -F '`blocked`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F '스코프=act' || true; } \
+      | { grep -F "세그먼트=$2 " || true; } | { grep -F '재킥 원인=슬라이싱' || true; } | grep -c . || true
+  }
   # The driver's rows for the same document, by the driver's own function with its
   # writers replaced by printers. Fields joined by `|`, one row per line.
   # A NEW PROCESS, not a subshell: the in-process gate has already sourced run.sh
@@ -3173,6 +3177,45 @@ EOF
   }
   g15_raw() {  # g15_raw <run id> <필드들> — append one hand-written segment row to that run's ledger
     printf -- '- `segment` | %s\n' "$2" >> "$WT/docs/pipeline-run/$1.md"
+  }
+  # A SLICE IN A REPOSITORY THE RUN DOES NOT TARGET is judged by the remote. The
+  # stub stands in for `gh api`, and it reaches the gate as an exported function
+  # rather than a PATH entry: the driver puts /usr/bin ahead of the inherited PATH,
+  # and a host whose `gh` lives there (the Linux CI runner) would otherwise answer
+  # with the real remote. A function outranks every PATH lookup, and since PATH is
+  # left alone the call stays in-process. 15g-3 plans a dependent of such a slice
+  # and 15g-6 plans the slice itself, so these are definitions.
+  mkdir -p "$WORK/gh15gu"
+  cat > "$WORK/gh15gu/gh" <<'GHSTUB'
+#!/bin/sh
+case "$1 $2" in
+  "api repos/t/far") printf 'main\n' ;;
+  "api repos/t/far/compare/"*) [ "${GH15_STATUS:-}" = "fail" ] && exit 1; printf '%s\n' "$GH15_STATUS" ;;
+  *) exit 1 ;;
+esac
+GHSTUB
+  chmod +x "$WORK/gh15gu/gh"
+  far_slice_doc() {  # far_slice_doc <문서 경로> — SA in t/far (no target), SB in t/infra depending on it
+    {
+      printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
+      printf '\n### 슬라이스 SA — 픽스처\n\n**스킬**: implement\n**레포**: t/far\n**선언 파일**: `SA.txt`\n'
+      printf '**선행**: 없음\n**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
+      printf '\n### 슬라이스 SB — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: `SB.txt`\n'
+      printf '**선행**: SA\n**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
+    } > "$1"
+  }
+  g15_farplan() {  # g15_farplan <verb> <run id> <segment id> <compare status | fail> [fields...] — g15_plan with the stub answering the remote
+    local v="$1" r="$2" s="$3" a="$4"
+    shift 4
+    gh() { "$GH15_STUB" "$@"; }
+    export -f gh
+    export GH15_STUB="$WORK/gh15gu/gh" GH15_STATUS="$a"
+    g15_plan "$v" "$r" "$s" "$@"
+    unset -f gh
+    unset GH15_STUB GH15_STATUS
+  }
+  g15_remote() {  # g15_remote <run id> <compare status | fail> — plan SB with the gh stub answering the remote
+    g15_farplan act "$1" SB "$2" 상태=계획됨 "워크트리=$(g15_wt "$1" SB)"
   }
   au15_settle() {  # au15_settle <run id> — settle K1 as impossible
     gateL act --manifest "$WORK/plan-$1.md" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
@@ -15165,10 +15208,6 @@ g15_plan act R15GD SA 상태=계획됨 "워크트리=$(g15_wt R15GD SA)"
 # 결함마다 슬라이스 이름이 붙어 있으면 막힘은 런이 아니라 그 슬라이스의 것이다 —
 # 런 범위 막힘은 남지 않고, 그 슬라이스를 이름 대는 act 범위 막힘이 재킥 원인
 # 슬라이싱을 싣는다.
-g15_slice_parks() {  # g15_slice_parks <run id> <segment id> — act-scope slicing parks naming it
-  { grep -F '`blocked`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F '스코프=act' || true; } \
-    | { grep -F "세그먼트=$2 " || true; } | { grep -F '재킥 원인=슬라이싱' || true; } | grep -c . || true
-}
 check "15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다" \
   "$rc/$(g15_blocks R15GD '구현 슬라이싱 선언 불완전')/$(g15_slice_parks R15GD SA)" "3/0/1"
 case "$msg" in
@@ -15477,40 +15516,8 @@ case "$msg" in
   *) bad "15g 선행 착지 미착지 문면" "$msg" ;;
 esac
 
-# SA lives in a repository the run does not target: the remote answers. The
-# stub stands in for `gh api`, and it reaches the gate as an exported function
-# rather than a PATH entry: the driver puts /usr/bin ahead of the inherited PATH,
-# and a host whose `gh` lives there (the Linux CI runner) would otherwise answer
-# with the real remote. A function outranks every PATH lookup, and since PATH is
-# left alone the call stays in-process.
-mkdir -p "$WORK/gh15gu"
-cat > "$WORK/gh15gu/gh" <<'GHSTUB'
-#!/bin/sh
-case "$1 $2" in
-  "api repos/t/far") printf 'main\n' ;;
-  "api repos/t/far/compare/"*) [ "${GH15_STATUS:-}" = "fail" ] && exit 1; printf '%s\n' "$GH15_STATUS" ;;
-  *) exit 1 ;;
-esac
-GHSTUB
-chmod +x "$WORK/gh15gu/gh"
-far_slice_doc() {  # far_slice_doc <문서 경로> — SA in t/far (no target), SB in t/infra depending on it
-  {
-    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
-    printf '\n### 슬라이스 SA — 픽스처\n\n**스킬**: implement\n**레포**: t/far\n**선언 파일**: `SA.txt`\n'
-    printf '**선행**: 없음\n**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
-    printf '\n### 슬라이스 SB — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: `SB.txt`\n'
-    printf '**선행**: SA\n**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
-  } > "$1"
-}
-g15_remote() {  # g15_remote <run id> <compare status | fail> — plan SB with the gh stub answering the remote
-  local out
-  out=$(cd "$WT" && gh() { "$GH15_STUB" "$@"; } && export -f gh \
-    && export GH15_STUB="$WORK/gh15gu/gh" GH15_STATUS="$2" \
-    && XDG_STATE_HOME="$STATE_LATE" gate_inproc act --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
-    --surface 읽기 --snapshot-digest "$(au15_H "$1")" --rationale x --from-declaration -- \
-    상태=계획됨 "워크트리=$(g15_wt "$1" SB)" 2>&1); rc=$?
-  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-}
+# SA lives in a repository the run does not target: the remote answers, through
+# the `gh` stub `g15_remote` puts in front of the gate.
 m15gu=0123456789abcdef0123456789abcdef01234567
 DOC15GU='docs/fixture-design-15gu.md'
 far_slice_doc "$WT/$DOC15GU"
@@ -16400,6 +16407,167 @@ g15_drop R15GA1:SA R15GA1N:SA R15GA1N:SB R15GA2:SA R15GA2N:SA R15GA2N:SB R15GA3:
         R15GA7:SA R15GA7N:SA R15GA7N:SB R15GA8:SA R15GA8N:SA R15GA8N:SB
 rm -f "$WT/$DOC15GA1" "$WT/$DOC15GA2" "$WT/$DOC15GA3" "$WT/$DOC15GA4" "$WT/$DOC15GA5" "$WT/$DOC15GA6" \
   "$WT/$DOC15GA7" "$WT/$DOC15GA8" "$WORK/g15a-wait.md"
+
+# ---------------------------------------------------------------------------
+# 15g-6. The manifest's landing row brings in the slice being planned itself
+# --- section: 15g-6 | group: base | covers: snapshot, plan, act | anchors: 15g-6: 스냅숏 슬라이싱 항목이 착지 행 을 매니페스트 행이 있는 슬라이스에만 참으로 낸다, 15g-6: 착지 행이 있는 대상 아닌 슬라이스의 plan 은 통과하고 행을 쓰지 않으며 들여올 것을 든다, 15g-6: 착지 행이 있는 대상 아닌 슬라이스의 계획 act 가 자기 행을 매니페스트에서 들여온다, 15g-6: 들인 슬라이스는 계획 행도 막힘 행도 남기지 않고 스냅숏 착지가 참이다, 15g-6: 이미 들인 슬라이스를 다시 계획하면 0 이고 행이 늘지 않는다, 15g-6: 들인 슬라이스에 기대는 슬라이스가 계획되고 그 뒤를 잇는 슬라이스도 계획된다, 15g-6: 앞선 런 행에 머지 커밋이 없는 대상 레포 슬라이스는 매니페스트 행으로 들어오고 계획 행이 없다, 15g-6: 앞선 런이 없는 대상 레포 슬라이스도 매니페스트 행으로 들어온다, 15g-6: 자기 착지 행의 슬러그가 레포와 다르면 거부되고 아무 행도 쓰지 않는다, 15g-6: 자기 착지 행의 커밋이 대상 베이스에 없으면 거부되고 아무 행도 쓰지 않는다, 15g-6: 원격 비교가 미착지이거나 답하지 못하면 자기 들여오기가 거부되고 아무 행도 쓰지 않는다, 15g-6: 적용이 남는 대상 레포 슬라이스는 자기 착지 행으로 들이지 않고 거부한다, 15g-6: 착지 행이 없는 대상 아닌 슬라이스는 그대로 그 슬라이스만 park 한다, 15g-6: 첫 계획 행위의 선언 전체 검사가 자기 들여오기보다 앞선다 ---
+#
+# A slice whose landing the kickoff froze as a `선행 착지` row is brought in by
+# its own planning act, the way a predecessor is: a slice in a repository the
+# run does not target used to park there, and the slices after it were never
+# planned; a target slice whose earlier-run row carried no merge commit used to
+# be planned and built again. The row's claim is checked as a predecessor's is,
+# and when it does not hold the act refuses and writes nothing.
+# ---------------------------------------------------------------------------
+m15h=$(cd "$WT" && git rev-parse refs/heads/main)
+mfar15h=fedcba9876543210fedcba9876543210fedcba98
+h15_doc() {  # h15_doc <문서> <슬라이스 수> — A, B, C, E in t/infra, D in t/far; C after A, B and D, E after C
+  local spec id rest
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: %s\n' "$2"
+    for spec in 'A:t/infra:없음' 'B:t/infra:없음' 'C:t/infra:A, B, D' 'D:t/far:없음' 'E:t/infra:C'; do
+      id=${spec%%:*}; rest=${spec#*:}
+      printf '\n### 슬라이스 %s — 픽스처\n\n**스킬**: implement\n**레포**: %s\n**선언 파일**: `%s.txt`\n' "$id" "${rest%%:*}" "$id"
+      printf '**선행**: %s\n**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n' "${rest#*:}"
+    done
+  } > "$1"
+}
+h15_cut() {  # h15_cut <run id> <segment id> — plan the slice on a branch cut from the base
+  ( cd "$WT" && git worktree add -q -b "seg/$1-$2" "$(g15_wt "$1" "$2")" refs/heads/main ) >/dev/null 2>&1
+  g15_plan act "$1" "$2" 상태=계획됨 "워크트리=$(g15_wt "$1" "$2")"
+}
+h15_merged() {  # h15_merged <run id> <segment id> <선행> — record a planned slice merged on the base
+  gateL act --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment "$2" --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(au15_H "$1")" --rationale x -- \
+    상태=머지됨 PR=7 "머지 커밋=$m15h" "워크트리=$(g15_wt "$1" "$2")" "선행=$3"
+  [ "$rc" = "0" ] || bad "15g-6 $1 의 $2 머지 행" "rc=$rc $msg"
+}
+h15_blocked() {  # h15_blocked <run id> — every blocked row that run's ledger holds
+  { grep -F '`blocked`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | grep -c . || true
+}
+h15_says() {  # h15_says <fragment>... — 문면 when $msg holds every fragment, else $msg itself
+  local f
+  for f in "$@"; do
+    case "$msg" in *"$f"*) : ;; *) printf '%s' "$msg"; return 0 ;; esac
+  done
+  printf 문면
+}
+
+# --- 이슈 재현: 대상 아닌 레포의 착지 슬라이스 D 와 그 뒤의 C, E ------------
+DOC15H1='docs/fixture-design-15h1.md'
+h15_doc "$WT/$DOC15H1" 5
+g15_run R15H1 "$DOC15H1" "$plan15c" 리뷰없음
+g15_land R15H1 D t/far "$mfar15h"
+check "15g-6: 스냅숏 슬라이싱 항목이 착지 행 을 매니페스트 행이 있는 슬라이스에만 참으로 낸다" \
+  "$(au15_snap "$WORK/plan-R15H1.md" | jq -r '.["슬라이싱"]["세그먼트"] | map(.id + "=" + (.["착지 행"] | tostring)) | join(",")' 2>/dev/null)" \
+  "A=false,B=false,C=false,D=true,E=false"
+g15_farplan plan R15H1 D ahead 상태=계획됨 워크트리=-
+check "15g-6: 착지 행이 있는 대상 아닌 슬라이스의 plan 은 통과하고 행을 쓰지 않으며 들여올 것을 든다" \
+  "$rc/$(g15_segs R15H1)/$(h15_says "act 로 내면 슬라이스 D 를 매니페스트의 선행 착지 행(상태=머지됨 · 머지 커밋=$mfar15h)" "처분=착지 들여오기(계획 행 없음)")" \
+  "0/0/문면"
+g15_farplan act R15H1 D ahead 상태=계획됨 워크트리=-
+r15h1=$(g15_row R15H1 D)
+check "15g-6: 착지 행이 있는 대상 아닌 슬라이스의 계획 act 가 자기 행을 매니페스트에서 들여온다" \
+  "$rc/$(seg_field "$r15h1" '상태')/$(seg_field "$r15h1" '머지 커밋')/$(seg_field "$r15h1" '워크트리')/$(seg_field "$r15h1" '선행')/$(seg_field "$r15h1" '출처')" \
+  "0/머지됨/$mfar15h/-/없음/매니페스트"
+check "15g-6: 들인 슬라이스는 계획 행도 막힘 행도 남기지 않고 스냅숏 착지가 참이다" \
+  "$(g15_segrows R15H1 D 계획됨)/$(h15_blocked R15H1)/$(au15_snap "$WORK/plan-R15H1.md" | jq -r '.segments[] | select(.id == "D") | .["착지"]' 2>/dev/null)" \
+  "0/0/true"
+g15_farplan act R15H1 D ahead 상태=계획됨 워크트리=-
+check "15g-6: 이미 들인 슬라이스를 다시 계획하면 0 이고 행이 늘지 않는다" "$rc/$(g15_segs R15H1)" "0/1"
+h15_cut R15H1 A
+h15_merged R15H1 A 없음
+h15_cut R15H1 B
+h15_merged R15H1 B 없음
+h15_cut R15H1 C
+r15h1c="$rc/$(g15_segrows R15H1 C 계획됨)"
+h15_merged R15H1 C 'A, B, D'
+h15_cut R15H1 E
+check "15g-6: 들인 슬라이스에 기대는 슬라이스가 계획되고 그 뒤를 잇는 슬라이스도 계획된다" \
+  "$r15h1c|$rc/$(g15_segrows R15H1 E 계획됨)" "0/1|0/1"
+
+# --- 대상 레포 변형: 앞선 런 행에 머지 커밋이 없거나 앞선 런이 없다 ---------
+DOC15H2='docs/fixture-design-15h2.md'
+two_slice_doc "$WT/$DOC15H2" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_run R15H2P "$DOC15H2" "$plan15c" 리뷰없음
+g15_mkwt R15H2P SA
+g15_plan act R15H2P SA 상태=계획됨 "워크트리=$(g15_wt R15H2P SA)"
+g15_raw R15H2P "id=SA | 상태=park | 워크트리=$(g15_wt R15H2P SA) | 선행=없음"
+sleep 1
+g15_run R15H2 "$DOC15H2" "$plan15c" 리뷰없음
+g15_land R15H2 SA t/infra "$m15h"
+g15_plan act R15H2 SA 상태=계획됨 "워크트리=$(g15_wt R15H2 SA)"
+r15h2=$(g15_row R15H2 SA)
+check "15g-6: 앞선 런 행에 머지 커밋이 없는 대상 레포 슬라이스는 매니페스트 행으로 들어오고 계획 행이 없다" \
+  "$rc/$(seg_field "$r15h2" '상태')/$(seg_field "$r15h2" '머지 커밋')/$(seg_field "$r15h2" '출처')/$(g15_segrows R15H2 SA 계획됨)" \
+  "0/머지됨/$m15h/매니페스트/0"
+DOC15H3='docs/fixture-design-15h3.md'
+two_slice_doc "$WT/$DOC15H3" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_run R15H3 "$DOC15H3" "$plan15c" 리뷰없음
+g15_land R15H3 SA t/infra "$m15h"
+g15_plan act R15H3 SA 상태=계획됨 "워크트리=$(g15_wt R15H3 SA)"
+r15h3=$(g15_row R15H3 SA)
+check "15g-6: 앞선 런이 없는 대상 레포 슬라이스도 매니페스트 행으로 들어온다" \
+  "$rc/$(seg_field "$r15h3" '상태')/$(seg_field "$r15h3" '출처')/$(g15_segrows R15H3 SA 계획됨)" "0/머지됨/매니페스트/0"
+
+# --- 자기 들여오기의 거부: 아무 행도, 막힘 행도 쓰지 않는다 -----------------
+DOC15H4='docs/fixture-design-15h4.md'
+h15_doc "$WT/$DOC15H4" 5
+g15_run R15H4 "$DOC15H4" "$plan15c" 리뷰없음
+g15_land R15H4 D t/elsewhere "$mfar15h"
+g15_farplan act R15H4 D ahead 상태=계획됨 워크트리=-
+check "15g-6: 자기 착지 행의 슬러그가 레포와 다르면 거부되고 아무 행도 쓰지 않는다" \
+  "$rc/$(g15_segs R15H4)/$(h15_blocked R15H4)/$(h15_says "슬라이스 D 는 원격 슬러그 t/elsewhere 를 들지만 동결 문서가 선언한 레포는 t/far 입니다")" \
+  "3/0/0/문면"
+DOC15H5='docs/fixture-design-15h5.md'
+two_slice_doc "$WT/$DOC15H5" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+m15hv=$(cd "$WT" && git commit-tree "$(git mktree </dev/null)" -p HEAD -m side15hv)
+g15_run R15H5 "$DOC15H5" "$plan15c" 리뷰없음
+g15_land R15H5 SA t/infra "$m15hv"
+g15_plan act R15H5 SA 상태=계획됨 "워크트리=$(g15_wt R15H5 SA)"
+check "15g-6: 자기 착지 행의 커밋이 대상 베이스에 없으면 거부되고 아무 행도 쓰지 않는다" \
+  "$rc/$(g15_segs R15H5)/$(h15_blocked R15H5)/$(h15_says "슬라이스 SA 는 이 런의 원장에 없고, 매니페스트의 선행 착지 행이 든 머지 커밋 $m15hv 은 대상 infra 의 베이스 브랜치에 미착지")" \
+  "3/0/0/문면"
+DOC15H6='docs/fixture-design-15h6.md'
+h15_doc "$WT/$DOC15H6" 5
+g15_run R15H6 "$DOC15H6" "$plan15c" 리뷰없음
+g15_land R15H6 D t/far "$mfar15h"
+g15_farplan act R15H6 D diverged 상태=계획됨 워크트리=-
+r15h6="$rc/$(g15_segs R15H6)/$(h15_blocked R15H6)"
+g15_farplan act R15H6 D fail 상태=계획됨 워크트리=-
+check "15g-6: 원격 비교가 미착지이거나 답하지 못하면 자기 들여오기가 거부되고 아무 행도 쓰지 않는다" \
+  "$r15h6|$rc/$(g15_segs R15H6)/$(h15_blocked R15H6)" "3/0/0|3/0/0"
+DOC15H7='docs/fixture-design-15h7.md'
+two_slice_doc "$WT/$DOC15H7" t/infra 배포
+g15_run R15H7 "$DOC15H7" "$plan15g_rv" -
+awk '/^\*\*적용 주체\*\*: / { print "**적용 주체**: 파이프라인"; print "**적용 지점**: `true`"; print "**적용 프로브**: `exit 0`"; next } { print }' \
+  "$WORK/plan-R15H7.md" > "$WORK/plan-R15H7.md.tmp" && mv "$WORK/plan-R15H7.md.tmp" "$WORK/plan-R15H7.md"
+g15_land R15H7 SA t/infra "$m15h"
+g15_plan act R15H7 SA 상태=계획됨 "워크트리=$(g15_wt R15H7 SA)"
+check "15g-6: 적용이 남는 대상 레포 슬라이스는 자기 착지 행으로 들이지 않고 거부한다" \
+  "$rc/$(g15_segs R15H7)/$(h15_blocked R15H7)/$(h15_says "슬라이스 SA 는 이 런의 선언상 적용이 남는 슬라이스입니다")" \
+  "3/0/0/문면"
+
+# --- 바뀌지 않는 park 와 첫 계획 행위의 선언 전체 검사 ------------------------
+DOC15H8='docs/fixture-design-15h8.md'
+h15_doc "$WT/$DOC15H8" 5
+g15_run R15H8 "$DOC15H8" "$plan15c" 리뷰없음
+g15_farplan act R15H8 D ahead 상태=계획됨 워크트리=-
+check "15g-6: 착지 행이 없는 대상 아닌 슬라이스는 그대로 그 슬라이스만 park 한다" \
+  "$rc/$(g15_segs R15H8)/$(g15_slice_parks R15H8 D)/$(h15_says "레포 「t/far」 가 매니페스트의 어느 대상도 아닙니다")" \
+  "3/0/1/문면"
+DOC15H9='docs/fixture-design-15h9.md'
+h15_doc "$WT/$DOC15H9" 4
+g15_run R15H9 "$DOC15H9" "$plan15c" 리뷰없음
+g15_land R15H9 D t/far "$mfar15h"
+g15_farplan act R15H9 D ahead 상태=계획됨 워크트리=-
+check "15g-6: 첫 계획 행위의 선언 전체 검사가 자기 들여오기보다 앞선다" \
+  "$rc/$(g15_segs R15H9)/$(h15_says "슬라이스 수 체크섬 불일치: 선언 4 vs 파생 5")" \
+  "3/0/문면"
+
+g15_drop R15H1:A R15H1:B R15H1:C R15H1:E R15H2P:SA
+rm -f "$WT/$DOC15H1" "$WT/$DOC15H2" "$WT/$DOC15H3" "$WT/$DOC15H4" "$WT/$DOC15H5" "$WT/$DOC15H6" \
+  "$WT/$DOC15H7" "$WT/$DOC15H8" "$WT/$DOC15H9"
 
 # ---------------------------------------------------------------------------
 # 15m. A merge-order predecessor holds the merge, not the dispatch
