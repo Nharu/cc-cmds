@@ -96,6 +96,14 @@ NOTIFY_LOG="$WORK/notifier.log"
 ERR="$WORK/hook.err"
 OUTF="$WORK/hook.out"
 
+# THE STATE ROOT IS CONFINED TO THE WORK DIRECTORY. Both seats read the session
+# title hook's current title file under it, so an unconfined run would pick up
+# whatever title the session running this suite happens to have, and the
+# title-line assertions would depend on who ran them.
+STATE="$WORK/state"
+NOW_DIR="$STATE/cc-cmds/session-title-now"
+mkdir -p "$NOW_DIR"
+
 # The emitter launches the notifier detached and never asks its status, so a
 # write can land after the hook process has already exited. Bounded wait for the
 # positive cases, boolean assertion — never a comparison of elapsed seconds.
@@ -127,6 +135,7 @@ hook_run() {
       CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
       CC_CMDS_NOTIFY_HOST_OS=Darwin \
       CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+      XDG_STATE_HOME="$STATE" \
       "$@" \
       bash "$hook" < "$payload" > "$OUTF" 2> "$ERR"
   HOOK_RC=$?
@@ -447,6 +456,147 @@ hook_run "$ASK_HOOK" "$P" "$PATH_FULL" CC_CMDS_SESSION_NOTIFY=0
 notify_quiet_window
 check "질문지 — 세션 배너가 꺼져 있으면 무발사" "$(notify_lines)" "0"
 assert_quiet "질문지/꺼짐"
+
+# ---------------------------------------------------------------------------
+# The session title in the title line
+#
+# The value comes only from the current title file the session title hook
+# writes. Every case above ran with no such file under the confined state root,
+# so their title assertions are the "no file, today's wording" cases; the cases
+# below put a file in place and read the title line back.
+# ---------------------------------------------------------------------------
+
+# now_file <sid> <line 1> <line 2> [nonl] — the hook writes both lines with a
+# newline; `nonl` leaves the second one without, the shape a reader must accept.
+now_file() {
+  if [ "${4:-}" = nonl ]; then
+    printf '%s\n%s' "$2" "$3" > "$NOW_DIR/$1"
+  else
+    printf '%s\n%s\n' "$2" "$3" > "$NOW_DIR/$1"
+  fi
+}
+NOW_SCHEMA='cc-session-title-now v1'
+
+for hook in "$ASK_HOOK" "$TURN_HOOK"; do
+  seat=$(basename "$hook")
+  if [ "$hook" = "$ASK_HOOK" ]; then action='답하세요'; else action='차례가 넘어왔습니다'; fi
+
+  now_file S-TT "$NOW_SCHEMA" 'review·#1085'
+  P=$(payload_for "$hook" S-TT)
+  hook_run "$hook" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "세션 제목 — 파일이 있으면 제목 줄에 실린다 ($seat)" \
+    "$(grep -cF -- "-title cc-cmds · review·#1085 · $action " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "세션 제목/$seat"
+
+  # Over 30 columns: the banner carries the 24-column cut, never the whole title.
+  now_file S-TT "$NOW_SCHEMA" '세션제목이아주길어서삼십칸을넘는다'
+  hook_run "$hook" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "세션 제목 — 30칸 넘는 제목은 24칸으로 잘려 실린다 ($seat)" \
+    "$(grep -cF -- "-title cc-cmds · 세션제목이아주길어서삼십 · $action " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "세션 제목 30칸 초과/$seat"
+
+  # Switching the title hook off stops it writing; it does not hide a file it
+  # wrote before, because neither the seat nor the emitter reads that switch.
+  now_file S-TT "$NOW_SCHEMA" 'review·#1085'
+  hook_run "$hook" "$P" "$PATH_FULL" CC_CMDS_SESSION_TITLE=0
+  notify_settle 1
+  check "세션 제목 — 제목 스위치가 꺼져도 파일이 있으면 실린다 ($seat)" \
+    "$(grep -cF -- "-title cc-cmds · review·#1085 · $action " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "세션 제목 스위치 끔/$seat"
+
+  now_file S-TT 'cc-session-title-now v2' 'review·#1085'
+  hook_run "$hook" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "세션 제목 — 스키마 줄이 다르면 지금 문구 ($seat)" \
+    "$(grep -cF -- "-title cc-cmds · $action " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "세션 제목 스키마 불일치/$seat"
+
+  now_file S-TT "$NOW_SCHEMA" ''
+  hook_run "$hook" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "세션 제목 — 2행이 비면 지금 문구 ($seat)" \
+    "$(grep -cF -- "-title cc-cmds · $action " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "세션 제목 빈 2행/$seat"
+
+  now_file S-TT "$NOW_SCHEMA" 'review·#1085' nonl
+  hook_run "$hook" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "세션 제목 — 2행이 개행 없이 끝나도 실린다 ($seat)" \
+    "$(grep -cF -- "-title cc-cmds · review·#1085 · $action " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "세션 제목 개행 없음/$seat"
+
+  # An id with a dot passes the seat's own empty-id gate but not the shape the
+  # hook writes under. The file is there, so only the id check can refuse it.
+  now_file S.DOT "$NOW_SCHEMA" 'review·#1085'
+  P=$(payload_for "$hook" S.DOT)
+  hook_run "$hook" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "세션 제목 — 점을 품은 id 는 지금 문구 ($seat)" \
+    "$(grep -cF -- "-title cc-cmds · $action " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "세션 제목 점 id/$seat"
+done
+rm -f "$NOW_DIR/S-TT" "$NOW_DIR/S.DOT"
+
+# The fixed results of the 24-column cut, read back from the seat's title line:
+# twelve Hangul syllables, a mixed title whose cut lands mid-word, and a cut that
+# would end on `·` and loses it. The title sits between two ` · ` separators, so
+# an exact line also says the cut kept no trailing space or `·`.
+for pair in \
+  '가나다라마바사아자차카타파하|가나다라마바사아자차카타' \
+  'review·가나다라마바사아자차|review·가나다라마바사아' \
+  'implement·abcdefghijklm·x|implement·abcdefghijklm'; do
+  src="${pair%%|*}"; want="${pair#*|}"
+  now_file S-CUT "$NOW_SCHEMA" "$src"
+  P=$(payload_for "$ASK_HOOK" S-CUT)
+  hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "24칸 자르기 — $src" \
+    "$(grep -cF -- "-title cc-cmds · $want · 답하세요 " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "24칸 자르기/$src"
+done
+rm -f "$NOW_DIR/S-CUT"
+
+# With neither HOME nor XDG_STATE_HOME the reader falls back to today's title
+# under `set -u` without a byte on stderr — the question form hands the seat
+# `CLAUDE_PLUGIN_ROOT` only. `hook_run` always sets the state root, so this
+# case builds its own environment.
+P=$(payload_for "$ASK_HOOK" S-NOHOME)
+: > "$NOTIFY_LOG"; : > "$ERR"; : > "$OUTF"
+env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID \
+    -u RUN_ID -u RUN_DIR -u HOME -u XDG_STATE_HOME \
+    -u CC_CMDS_SESSION_NOTIFY -u CC_CMDS_AUTOPILOT_NOTIFY -u TMUX -u TMUX_PANE \
+    PATH="$PATH_FULL" \
+    CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    bash "$ASK_HOOK" < "$P" > "$OUTF" 2> "$ERR"
+check "상태 뿌리가 없으면 — 종료 코드 0" "$?" "0"
+notify_settle 1
+check "상태 뿌리가 없으면 — 지금 문구로 발사한다" \
+  "$(grep -cF -- '-title cc-cmds · 답하세요 ' "$NOTIFY_LOG" || true)" "1"
+check "상태 뿌리가 없어도 stdout·stderr 0바이트" \
+  "$(wc -c < "$OUTF" | tr -d ' ')/$(wc -c < "$ERR" | tr -d ' ')" "0/0"
+
+# THE TWO jq COPIES MUST NOT DRIFT. The hook and the emitter each carry `cw` and
+# `cut` as one line starting at column 0; each file must yield exactly one line
+# of each, and the two files' lines must be the same bytes. This suite runs in
+# the Linux CI too, so the emitter's jq is measured there as well.
+TITLE_HOOK="$PLUGIN_ROOT/hooks/session-title.sh"
+ORCH_DIR="$PLUGIN_ROOT/orchestrator"
+for def in '^def cw:' '^def cut\('; do
+  n_hook=$(grep -cE -- "$def" "$TITLE_HOOK" || true)
+  n_emit=$(grep -cE -- "$def" "$ORCH_DIR/notify-run.sh" || true)
+  check "jq 사본 — session-title.sh 의 '$def' 줄이 정확히 하나" "$n_hook" "1"
+  check "jq 사본 — notify-run.sh 의 '$def' 줄이 정확히 하나" "$n_emit" "1"
+  if [ "$(grep -E -- "$def" "$TITLE_HOOK" || true)" = "$(grep -E -- "$def" "$ORCH_DIR/notify-run.sh" || true)" ]; then
+    ok "jq 사본 — '$def' 줄이 두 파일에서 바이트로 같다"
+  else
+    bad "jq 사본 — '$def'" "session-title.sh 와 notify-run.sh 의 정의가 갈라졌다"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # T15 — the running tally

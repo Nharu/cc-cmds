@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.6.0] - 2026-10-26
+## [3.7.0] - 2026-10-26
 
 사전 인가 행이 도우미 스크립트 행위의 표면과 도달을 직접 정한다. 지금까지 게이트가 속을 읽지 못하는 도우미 행위는 스테이지의 도달 신고에 기대어 매번 park 되거나 잘못 열렸다. 이제 킥오프에서 `형태·표면·도달·[짝 정리]·사유` 다섯 칸의 새 형식 행을 확정하면, 그 행이 결정한 행위는 신고 대신 행의 도달 칸으로 처분된다. 행위가 켠 외부 상태를 끄는 짝 정리도 런이 스테이지 끝과 런 끝에 한 번씩 부르고, 성공하지 못한 정리는 아침 리포트에 남은 외부 상태로 드러난다.
 
@@ -33,6 +33,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Post-install notes
 
 - 옛 형식(`형태·사유`) 사전 인가 행은 그대로 받는다. 도우미 행위의 도달을 행으로 정하려면 다음 킥오프에서 새 형식 행으로 다시 확정한다.
+
+## [3.6.0] - 2026-10-26
+
+슬래시 커맨드로 시작한 세션에 훅이 `<스킬>·<인자 요약>` 꼴의 세션 제목을 붙인다. 훅은 그 세션의 현재 제목을 작은 파일 하나로 남기고, autopilot 패널과 질문 배너·차례 넘김 배너의 제목 줄이 그 파일을 읽어 세션 제목을 보인다. 파일이 없거나 읽히지 않으면 패널과 배너는 지금과 같은 출력을 낸다.
+
+### Added
+
+- **슬래시 커맨드 세션 제목 훅** — `hooks/session-title.sh` 가 기존 `UserPromptSubmit` 배열의 형제 항목(timeout 5)으로 등록된다. 슬래시 커맨드 프롬프트에서 `<스킬>·<인자 요약>` 을 최대 38칸으로 잘라 세션 제목으로 내보내고, 훅이 붙인 제목만 다시 쓰며 사람이 `/rename` 으로 붙인 제목은 건드리지 않는다. `/clear` 뒤의 새 세션은 앞 제목을 이어받는다. 끝마다 현재 제목 파일 `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session-title-now/<session_id>`(1행 `cc-session-title-now v1`, 2행 제목)를 맞추고, 30일 정리는 소유 상태 디렉터리와 이 디렉터리를 함께 돈다. `CC_CMDS_SESSION_TITLE=0`(`off`·`false`·`no`)이면 제목도 현재 제목 파일도 쓰지 않는다.
+- **패널 세션 제목 줄** — `run-pane.sh` 가 `session-title` 묶음을 내고 `autopilot-status` 모듈이 그 묶음을 받는다. 런이 있으면 `autopilot <런 id>` 첫 줄 바로 아래의 보호 행으로, 런이 없으면 「연결된 런 없음」 아래에 `세션 <제목>` 을 보인다. 헬퍼는 jq 를 부르지 않고 아무것도 쓰지 않으며, 파일이 없으면 출력이 지금과 바이트로 같다. 스키마는 `2` 그대로라 이 묶음을 모르는 옛 모듈은 그 줄만 버린다.
+- **질문 배너와 차례 넘김 배너 제목 줄의 세션 제목** — 두 좌석이 현재 제목 파일을 24칸으로 잘라 건네고, 제목 줄이 `cc-cmds · <세션 제목> · 답하세요` 와 `cc-cmds · <세션 제목> · 차례가 넘어왔습니다` 가 된다. 제목을 모르면 지금 문구 그대로다. 질문지 배너는 좌석 1 스크립트를 그대로 부르므로 함께 바뀐다.
+
+### Why
+
+여러 세션을 함께 띄우면 세션 선택기와 tmux 창, autopilot 패널, 배너에서 어느 세션이 무엇을 하는지 가려 볼 수 없었다. 하네스는 세션 제목을 SessionStart 와 UserPromptSubmit 훅 입력에만 싣고 PreToolUse·Stop 입력과 패널에는 싣지 않으므로, 제목을 아는 유일한 자리인 훅이 파일로 건넨다.
+
+### Post-install notes
+
+- tmux 상태줄과 창 제목에 세션 제목을 보이려면 훅 README `plugins/cc-cmds/hooks/README.md` 의 「## The session title hook」 절 「**Where the title shows.**」 문단에 있는 권장 `~/.tmux.conf` 블록을 직접 적용한다.
+- 메인 워크트리에서 master 를 받거나 플러그인을 갱신해야 새 동작이 적용된다.
+- 이미 시작된 런은 런 디렉터리의 플러그인 사본을 계속 쓰므로 새 동작을 받지 않는다.
 
 ## [3.5.1] - 2026-10-26
 

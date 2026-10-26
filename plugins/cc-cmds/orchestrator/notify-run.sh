@@ -268,6 +268,52 @@ cc_caller_is_stage() {
   return 1
 }
 
+cc_notify_session_title_read() {
+  # cc_notify_session_title_read <session-id> — print the session's title cut to
+  # 24 display columns, or nothing.
+  #
+  # THE VALUE COMES FROM ONE FILE AND NOWHERE ELSE. The session title hook keeps
+  # `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session-title-now/<sid>`: line
+  # 1 is `cc-session-title-now v1`, line 2 the title. Neither seat's payload
+  # carries `session_title`, so this file is the only source; there is no
+  # transcript fallback, and this function neither writes nor removes the file.
+  # It does not read `CC_CMDS_SESSION_TITLE` either: that switch stops the hook
+  # from writing, and a file written before the switch was set is still a value.
+  #
+  # THIS IS THE FIRST jq CALL IN THIS FILE, and a missing jq means an empty value
+  # rather than an error: the seats already return early without jq, but the
+  # function does not lean on that. So does every other failure — an id outside
+  # `^[A-Za-z0-9-]+$` (the shape the hook writes under), no `HOME` and no
+  # `XDG_STATE_HOME` (the question form hands the seat `CLAUDE_PLUGIN_ROOT`
+  # only, and the seats run under `set -u`), a missing or unreadable file, a
+  # first line that is not the schema line byte for byte, an empty second line.
+  # Every error goes to /dev/null and the status is always 0, so this is not a
+  # predicate that answers with its status; the empty value is the answer, and
+  # the title table then keeps today's wording.
+  #
+  # The second line may end without a newline and is still a value; lines after
+  # it are ignored, and no line is trimmed.
+  #
+  # `cw` and `cut` stay one line each starting at column 0, byte for byte the
+  # hook's own copies — a test compares the two files' lines.
+  local sid="${1:-}" root f schema='' title='' prog
+  [[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  root="${XDG_STATE_HOME:-${HOME:-}/.local/state}"
+  case "$root" in ''|/.local/state) return 0 ;; esac
+  f="$root/cc-cmds/session-title-now/$sid"
+  [ -f "$f" ] || return 0
+  { IFS= read -r schema || true; IFS= read -r title || true; } 2>/dev/null <"$f" || return 0
+  [ "$schema" = 'cc-session-title-now v1' ] || return 0
+  [ -n "$title" ] || return 0
+  prog='
+def cw: if (. >= 4352 and . <= 4447) or (. >= 11904 and . <= 42191 and . != 12351) or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255) or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135) or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510) or (. >= 127744 and . <= 129791) or (. >= 131072 and . <= 262141) then 2 else 1 end;
+def cut($n): reduce explode[] as $c ({o: [], w: 0, stop: false}; if .stop then . elif .w + ($c|cw) <= $n then .o += [$c] | .w += ($c|cw) else .stop = true end) | .o | implode | sub("[\\s·]+$"; "");
+$t | cut(24)'
+  jq -nr --arg t "$title" "$prog" 2>/dev/null || true
+  return 0
+}
+
 cc_notify_title() {
   # NO TITLE MAY BEGIN WITH ONE OF SIX CHARACTERS — `[ ( { < " -`. The notifier's
   # argument parser swallows such a value whole: the banner still appears, but
@@ -312,6 +358,13 @@ cc_notify_title() {
   # `cc-cmds` STAYS IN FRONT because the application name is permanently
   # `Terminal`, so the title is the only marker of origin, and a value starting
   # with `c` was measured safe against the swallowing set above.
+  #
+  # THE TWO SESSION ARMS CARRY THE SESSION TITLE BETWEEN ORIGIN AND ACTION when
+  # the seat handed one over in `CC_NOTIFY_SESSION_TITLE` (see
+  # `cc_notify_session_title_read`). The action stays last and the title is cut
+  # to 24 columns before it arrives, so a banner cut at its end loses title
+  # before it loses the action. The title never comes first, so the swallowing
+  # set above does not apply to it. An empty value is today's wording.
   case "$1" in
     answer)     printf 'cc-cmds · 답할 것이 생겼습니다' ;;
     answer-run) printf 'cc-cmds · 답할 것이 생겼습니다' ;;
@@ -320,8 +373,18 @@ cc_notify_title() {
     resume)     printf 'cc-cmds · 세션으로 돌아가세요' ;;
     rekick)     printf 'cc-cmds · 새 런을 여세요' ;;
     ended)      printf 'cc-cmds · 결과를 확인하세요' ;;
-    session-ask)  printf 'cc-cmds · 답하세요' ;;
-    session-turn) printf 'cc-cmds · 차례가 넘어왔습니다' ;;
+    session-ask)
+      if [ -n "${CC_NOTIFY_SESSION_TITLE:-}" ]; then
+        printf 'cc-cmds · %s · 답하세요' "$CC_NOTIFY_SESSION_TITLE"
+      else
+        printf 'cc-cmds · 답하세요'
+      fi ;;
+    session-turn)
+      if [ -n "${CC_NOTIFY_SESSION_TITLE:-}" ]; then
+        printf 'cc-cmds · %s · 차례가 넘어왔습니다' "$CC_NOTIFY_SESSION_TITLE"
+      else
+        printf 'cc-cmds · 차례가 넘어왔습니다'
+      fi ;;
     focus-guide)  printf 'cc-cmds · 배너 클릭 설정이 필요합니다' ;;
   esac
 }
@@ -367,6 +430,8 @@ cc_notify_group() {
   # is the set of switches a user types, and the lint that guards those names
   # reads exactly that prefix; this value is an internal hand-off nobody types,
   # so registering it there would be a false entry rather than an honest one.
+  # `CC_NOTIFY_SESSION_TITLE`, which the title table reads, is the same kind of
+  # hand-off and is named the same way for the same reason.
   #
   # An empty id is NOT defaulted here. Every session would then share one slot
   # and erase each other's banners, with a prefix correct enough to pass the
