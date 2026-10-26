@@ -5139,8 +5139,13 @@ pre_mf() {
 
   mf_new() {
     # mf_new <라벨> — 커밋 하나를 앞선 선머지후리뷰 세그먼트 H, 같은 다이제스트의 구현
-    # 정상 완료 두 행(단계 B), 라우팅 기록.
+    # 정상 완료 두 행(단계 B), 라우팅 기록. `MF_APPLY=1` 을 앞에 붙이면 매니페스트가
+    # 파이프라인 적용을 선언한다(절단점은 대상 행의 배포).
     sa_new "$1" 선머지후리뷰
+    if [ -n "${MF_APPLY:-}" ]; then
+      SA_APPLY=파이프라인; SA_APPLY_PROBE='exit 0'; SA_APPLY_CMD=true
+      sa_manifest 선머지후리뷰
+    fi
     ( cd "$SA_REPO" && git config "url.$SA_REMOTE.insteadOf" "https://github.com/t/$SA_ID.git" ) >/dev/null 2>&1
     MF_TIP=$(sa_commit '작업')
     sa_seg_row H 선머지후리뷰
@@ -5173,6 +5178,10 @@ pre_mf() {
       if [ "$(sa_field "$(sa_ob_last "$id")" 상태)" = 미이행 ]; then n=$((n + 1)); fi
     done
     printf '%s' "$n"
+  }
+  mf_u12() {
+    # mf_u12 <세그먼트> — 스냅숏이 보고하는 종료 조건 12 의 줄 가운데 그 세그먼트의 것의 수.
+    mf_snap | jq -r --arg p "12 세그먼트 $1 " '[.unmet_conditions[] | select(startswith($p))] | length'
   }
 }
 
@@ -53529,6 +53538,57 @@ sa_seg_row K 선머지후리뷰
 sa_seg_state K 사후리뷰; mf2_k=$rc
 check "88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_g" "2"
 check "88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_k" "2"
+
+# ---------------------------------------------------------------------------
+# 88h-3. 머지 먼저 — 통과한 사후 리뷰 전에는 종료 조건 12 가 세그먼트를 닫지 않는다
+# --- section: 88h-3 | group: sa | covers: gate_done_conditions, gate_obligation_covers, gate_segment_review_next_table, gate_segment_owes_apply, gate_segment_applied_since_merge, gate_segment_post_merge, act | anchors: 88h-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다, 88h-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다, 88h-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다, 88h-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다, 88h-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다, 88h-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다, 88h-3: 적용 완료 뒤 사후리뷰 원소가 나온다, 88h-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다 ---
+#
+# 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤 사후 리뷰의 cycle 행을 둔다. 적용이
+# 없는 대상에서 P1 이 남은 리뷰는 상태 행이 머지됨·완료 여도 조건 12 의 줄을 내고,
+# park 와 의무 없는 세그먼트는 붙잡히지 않는다. 적용이 있는 대상에서는 마지막 머지 뒤에
+# 적용 쪽 완료 행이 있어야 호출자 완료 가 받아진다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+mf_new '머지 먼저 — 조건 12 (P1 남음)'
+mf_checks 통과
+sa_merge H
+sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
+sa_cycle H 1 0 1 "$MF_TIP"
+check "88h-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다" "$(mf_u12 H)" "1"
+sa_seg_state H 완료; mf3_r=$rc
+check "88h-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다" "$mf3_r|$(mf_u12 H)" "0|1"
+sa_seg_state H park; mf3_rp=$rc
+check "88h-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다" "$mf3_rp|$(mf_u12 H)" "0|0"
+sa_seg_row K 선머지후리뷰
+sa_seg_state K park
+check "88h-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다" "$(mf_u12 K)" "0"
+
+mf_new '머지 먼저 — 조건 12 (통과)'
+mf_checks 통과
+sa_merge H
+sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
+sa_cycle H 1 0 0 "$MF_TIP"
+sa_seg_state H 완료; mf3_r=$rc
+check "88h-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다" "$mf3_r|$(mf_u12 H)" "0|0"
+
+MF_APPLY=1 mf_new '머지 먼저 — 적용'
+mf_checks 통과
+sa_merge H
+sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
+mf3_mrow=$(sa_seg_last H)
+sa_seg_state H 완료; mf3_r=$rc; mf3_msg=$msg
+case "$mf3_mrow|$mf3_msg" in *"적용=대기"*"|"*"적용이 남은"*) mf3_got=거부 ;; *) mf3_got="$mf3_mrow|$mf3_msg" ;; esac
+check "88h-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다" "$mf3_r|$mf3_got" "2|거부"
+# 적용 쪽 완료 행 — 게이트의 적용 경로가 쓰는 모양처럼 리뷰 정책을 이어 싣는다.
+printf -- '- `segment` | id=H | 상태=완료 | 워크트리=%s | 고정 커밋=%s | 머지 커밋=%s | 리뷰 정책=선머지후리뷰 | 적용=수렴\n' \
+  "$SA_SEGWT" "$MF_TIP" "$MF_TIP" >> "$SA_LEDGER"
+check "88h-3: 적용 완료 뒤 사후리뷰 원소가 나온다" \
+  "$(mf_snap | jq -r '[.review_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")')" "사후리뷰"
+sa_seg_state H 사후리뷰
+sa_cycle H 1 0 0 "$MF_TIP"
+sa_seg_state H 완료; mf3_r=$rc
+check "88h-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다" "$mf3_r|$(mf_u12 H)" "0|0"
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제

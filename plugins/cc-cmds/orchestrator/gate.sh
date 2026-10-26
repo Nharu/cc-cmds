@@ -15436,7 +15436,7 @@ readonly GATE_OBLIGATION_CAP=50
 # front of this list — which pushes the singleton tails off it, and those tails
 # (the review obligation, "no termination clause parses") are exactly the answer
 # to "why can this run not end". The number list is deduplicated and cannot
-# exceed eleven values, so it survives any night. There is no arrangement that keeps
+# exceed twelve values, so it survives any night. There is no arrangement that keeps
 # the cap and drops the numbers: dropping them means dropping the cap too.
 readonly GATE_UNMET_CAP=20
 
@@ -15545,7 +15545,7 @@ gate_snapshot() {
   printf '  ],\n'
   printf '  "unmet_conditions_total": %s,\n' "${unmet_total:-0}"
   # UNCAPPED, and that is the point of carrying it beside the capped list. It is
-  # deduplicated, ascending, and cannot exceed eleven values, so it never loses its
+  # deduplicated, ascending, and cannot exceed twelve values, so it never loses its
   # tail — while the text list loses precisely the singleton causes once a long
   # night fills its front with per-segment and per-obligation lines.
   printf '  "unmet_condition_numbers": [%s],\n' \
@@ -24372,14 +24372,18 @@ gate_segment_obligation_tip() {
 gate_segment_post_merge() {
   # gate_segment_post_merge <segment> — a merge-first segment whose merge waits
   # on the review it deferred: a `리뷰 의무` row of the segment exists, and its
-  # last row is `사후리뷰`, or `머지됨` with nothing owed after the merge. A
-  # `머지됨` still owing its apply or handover is the apply's to finish first.
-  local seg=$1
+  # last row is `사후리뷰`, `머지됨` with nothing owed after the merge, or the
+  # `완료` the apply wrote after it (the row carries the gate's `적용` field; a
+  # caller's `완료` does not, and ends the segment). A `머지됨` still owing its
+  # apply or handover is the apply's to finish first.
+  local seg=$1 last
   gate_segment_merge_first "$seg" || return 1
   [ -n "$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$seg")" ] || return 1
   case "$(gate_segment_field "$seg" '상태')" in
     사후리뷰) return 0 ;;
     머지됨) [ "$(gate_segment_apply_state "$(gate_segment_target_alias "$seg")" "$seg")" = '없음' ] ;;
+    완료) last=$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" | tail -1)
+          [ -n "$(printf '%s\n' "$last" | gate_rows_having_field '적용')" ] ;;
     *) return 1 ;;
   esac
 }
@@ -31784,7 +31788,7 @@ gate_record_row() {
         fi
         case "$st" in
           '적용 준비'|완료)
-            if gate_segment_owes_apply "$alias" "$seg"; then
+            if gate_segment_owes_apply "$alias" "$seg" "$( [ "$st" = 완료 ] && printf 완료)"; then
               warn "세그먼트 ${seg} 는 적용이 남은 세그먼트입니다 — 「${st}」 는 act --kind apply 만 씁니다"
               return "$GATE_EXIT_VOCAB"
             fi ;;
@@ -33117,7 +33121,7 @@ EOF
           done
           # ONE QUESTION HOLDS ONE CLAUSE.
           #
-          # Condition 10 is the only one of the eleven that measures what the USER
+          # Condition 10 is the only one of the twelve that measures what the USER
           # authorized the run against, and `보류` settles a clause for it — so
           # with no constraint here a single grade-2 judgment, submitted once,
           # could be cited by every clause in the manifest and the run would
@@ -36709,9 +36713,33 @@ gate_segment_owes_apply() {
   # pipeline as its actor, and `배포` as the segment's cutpoint. Only such a
   # segment has an apply this run is to perform, so only its `머지됨` is not an
   # ending.
+  #
+  # gate_segment_owes_apply <alias> <segment> 완료 — the same question asked
+  # for a caller's `완료` row. A merge-first segment whose apply already wrote
+  # its `완료` after the last `머지됨` owes nothing more: the caller's `완료`
+  # closes its deferred review. Only that caller passes the marker — the merge
+  # row's `적용=대기` and the import readers ask about the merge in front of
+  # them, which the earlier merge's apply did not perform.
   [ -n "$(gate_apply_value "$2" '적용 명령')" ] || return 1
   [ "$(gate_apply_value "$2" '적용 주체')" = "파이프라인" ] || return 1
-  [ "$(gate_segment_cutpoint "$1" "$2")" = "배포" ]
+  [ "$(gate_segment_cutpoint "$1" "$2")" = "배포" ] || return 1
+  if [ "${3:-}" = '완료' ] && gate_segment_merge_first "$2" && gate_segment_applied_since_merge "$2"; then
+    return 1
+  fi
+  return 0
+}
+
+gate_segment_applied_since_merge() {
+  # gate_segment_applied_since_merge <segment> — an apply-side `완료` row (one
+  # carrying the gate's own `적용` field) stands after the segment's last
+  # `머지됨` row.
+  local ml al
+  ml=$(gate_segment_merged_line "$1")
+  [ -n "$ml" ] || return 1
+  al=$( { grep -n '^- `segment` ' "$LEDGER" 2>/dev/null || true; } \
+        | gate_rows_field_eq 'id' "$1" | gate_rows_field_eq '상태' '완료' | gate_rows_having_field '적용' \
+        | tail -1 | cut -d: -f1)
+  [ -n "$al" ] && [ "$al" -gt "$ml" ]
 }
 
 gate_segment_apply_pending() {
@@ -41889,7 +41917,7 @@ EOF
     done
   fi
 
-  # The eleven conditions are evaluated on EVERY act, not only on a done proposal.
+  # The twelve conditions are evaluated on EVERY act, not only on a done proposal.
   # A gate that can refuse a proposal but never cause one leaves the router
   # alone deciding when the night ends — so when every condition holds and the
   # router reaches for something else, it has to name what is left.
@@ -48370,7 +48398,7 @@ gate_close() {
 }
 
 # ---------------------------------------------------------------------------
-# Termination — eleven conditions on the gate side, and a router-side proposal
+# Termination — twelve conditions on the gate side, and a router-side proposal
 # that must carry evidence rather than prose.
 #
 # The disagreement runs BOTH ways and the draft had only one direction. A gate
@@ -48454,7 +48482,7 @@ gate_unmet_summary() {
   # The row this feeds has a 1024-byte cap and the full list grows with the run
   # — one line per non-terminal segment, one per unsettled clause — so joining
   # the text made a run with enough of them unable to record its own rejection.
-  # The numbers cannot exceed eleven distinct values, so this field cannot.
+  # The numbers cannot exceed twelve distinct values, so this field cannot.
   local unmet="$1" n ids
   n=$(printf '%s\n' "$unmet" | grep -c . || true)
   ids=$(printf '%s\n' "$unmet" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' \
@@ -48465,7 +48493,7 @@ gate_unmet_summary() {
 gate_unmet_numbers() {
   # gate_unmet_summary's numbers alone, deduplicated and ascending, one per line.
   # Carried separately from the capped text list because it is the half that
-  # cannot be truncated: it answers "why can this run not end" in eleven values at
+  # cannot be truncated: it answers "why can this run not end" in twelve values at
   # most, while the text grows without bound and loses its tail exactly when the
   # night has been long enough for the tail to matter.
   printf '%s\n' "$1" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' | sort -un
@@ -48608,7 +48636,7 @@ gate_base_split_unmet() {
 
 gate_done_conditions() {
   # Prints one line per UNMET condition, numbered. Empty output means all
-  # ELEVEN hold. Never silently empty on an unreadable ledger — that is
+  # TWELVE hold. Never silently empty on an unreadable ledger — that is
   # condition 4.
   #
   # Condition 10 splits into two arms and both print `10`, so the numbering runs
@@ -49063,6 +49091,48 @@ gate_done_conditions() {
       esac
     done
   fi
+
+  # 12 — no segment under `선머지후리뷰` whose merge has not met a passing
+  # review. The pair of condition 11: there the review comes before the merge,
+  # here after it. A segment with a `리뷰 의무` row closes only when its last
+  # `cycle` covers the `머지 커밋` of its last `리뷰 의무` row (the containment
+  # `gate_obligation_covers` judges) and the review table's own value for that
+  # cycle — before the CI layer and the base overlay — is `머지` or `이월 머지`.
+  # A person's `리뷰 기각` reads `머지` there, so it passes too.
+  #
+  # THE STATE ROW DOES NOT ANSWER. On a target with no apply, `머지됨` is
+  # already terminal, so a check hung on the router writing `사후리뷰` would be
+  # off whenever it did not, and a caller's `완료` after a failing review would
+  # close the run. Fulfilling the obligation does not answer either: condition 9
+  # holds the debt, this holds the verdict.
+  #
+  # Two segments are passed over. One with no `리뷰 의무` row: its merge never
+  # went through the gate, there is no merged commit to cover, and condition 1
+  # counts its ending as before. One whose last row is `park`: it was handed to
+  # a person, which is not a pass and is settled the way every parked segment
+  # is. A `판정 불가` of the containment holds — what could not be judged did
+  # not close. Not turned off by the rule setting.
+  local orow otip ohead onx
+  for sid in $(gate_segment_ids); do
+    [ -n "$sid" ] || continue
+    gate_segment_merge_first "$sid" || continue
+    [ "$(gate_segment_field "$sid" '상태')" = 'park' ] && continue
+    orow=$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$sid" | tail -1)
+    [ -n "$orow" ] || continue
+    otip=$(gate_row_field "$orow" '머지 커밋')
+    ohead=$(gate_segment_review_head "$sid")
+    gate_obligation_covers "$(gate_row_field "$orow" '대상')" "$otip" "$ohead" >/dev/null
+    if [ "$GATE_COVER_VERDICT" != '덮는다' ]; then
+      printf '12 세그먼트 %s 의 마지막 리뷰와 머지 커밋 %s 의 덮음 판정이 %s 입니다 — %s\n' \
+        "$sid" "${otip:-(빈 값)}" "$GATE_COVER_VERDICT" "$GATE_COVER_WHY"
+      continue
+    fi
+    onx=$(gate_segment_review_next_table "$sid")
+    case "$onx" in
+      머지|'이월 머지') ;;
+      *) printf '12 세그먼트 %s 의 머지 뒤 마지막 리뷰가 통과하지 않았습니다 — 판정표 값 %s\n' "$sid" "${onx:-(빈 값)}" ;;
+    esac
+  done
 }
 
 gate_pending_approval_ids() {
