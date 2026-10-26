@@ -49,6 +49,16 @@ TT_GOALVAR="${TT_GOALVAR:---goals}"
 TT_DIR="${TT_DIR:-}"
 TT_WORK="${TT_WORK:-}"
 
+# The job pool of tt_run_items. Only check-push raises TT_JOBS above 1, so the
+# repro command of this file always runs the items one call each, as CI's old
+# trees and the fixtures expect. TT_RECORD is the timing record the lanes merge
+# into (empty: none), TT_PROGRESS_SECS the interval of the progress line.
+TT_JOBS=1
+TT_JOBS_USED=1
+TT_RECORD=""
+TT_PROGRESS_SECS=60
+TT_POOL_PIDS=""
+
 # --- small helpers -----------------------------------------------------------
 
 tt_or_none() {
@@ -71,15 +81,22 @@ tt_doubles() {
   tt_or_none "$out"
 }
 
-# Runs "$@" with the variables of this run's callers removed: check-push's own
-# knobs, the doubles, and the pipeline and session variables CI never has.
+# Removes from the current shell the variables of this run's callers:
+# check-push's own knobs, the doubles, and the pipeline and session variables
+# CI never has. Call it only in a subshell.
+tt_unset_callers() {
+  local v
+  for v in $(compgen -e); do
+    case "$v" in
+      CHECK_PUSH_*|CC_TEST_TREE_*|CC_CHECK_PUSH_*|CC_PIPELINE_*|CLAUDE*) unset "$v" ;;
+    esac
+  done
+}
+
+# Runs "$@" with the variables of this run's callers removed.
 tt_scrubbed() {
   (
-    for v in $(compgen -e); do
-      case "$v" in
-        CHECK_PUSH_*|CC_TEST_TREE_*|CC_CHECK_PUSH_*|CC_PIPELINE_*|CLAUDE*) unset "$v" ;;
-      esac
-    done
+    tt_unset_callers
     exec "$@"
   )
 }
@@ -284,6 +301,12 @@ tt_clone() {
 }
 
 tt_cleanup() {
+  local p
+  if [ -n "${TT_POOL_PIDS:-}" ]; then
+    for p in $TT_POOL_PIDS; do kill -TERM "$p" 2>/dev/null; done
+    for p in $TT_POOL_PIDS; do wait "$p" 2>/dev/null; done
+    TT_POOL_PIDS=""
+  fi
   if [ -n "${TT_DIR:-}" ]; then
     rm -rf "$TT_DIR"
     TT_DIR=""
@@ -462,11 +485,17 @@ $(tt_missing_from "$goals" "$glist")"
   return 0
 }
 
-# One test-gate call for every section, then one make for every goal. The
-# failure names the whole list, because the list is what failed.
+# With TT_JOBS 1: one test-gate call for every section, then one make for every
+# goal. The failure names the whole list, because the list is what failed.
+# Above 1 the items go to the job pool below.
 tt_run_items() {
   local secs="$1" goals="$2" rc
   TT_FAILED=""
+  TT_JOBS_USED=1
+  if [ "${TT_JOBS:-1}" -gt 1 ]; then
+    tt_pool_run "$secs" "$goals"
+    return $?
+  fi
   if [ -n "$secs" ]; then
     tt_gate --sections "$secs"
     rc=$?
@@ -489,6 +518,258 @@ tt_run_items() {
     fi
   fi
   return 0
+}
+
+# --- the job pool --------------------------------------------------------------
+#
+# SECTIONS RUN AS LANES, EACH GOAL AS A JOB, AT MOST TT_JOBS AT A TIME. The
+# lanes are cut by the tested tree's own gate-shard.sh over that tree's
+# test-gate.sh, so two named sections CI would put in one shard share a lane
+# and a `needs:` closure never runs in two lanes. When no cut can be had (a
+# test-gate double, a tree whose gate-shard.sh lacks --only, a cut that fails)
+# every section runs in one lane: the same coverage, only slower. The heaviest
+# job starts first and a job with no estimate counts as the heaviest, so a long
+# job does not start last. bash 3.2: no `wait -n` and no associative arrays; a
+# slot is watched with kill -0, as gate-census.sh's pool does. Every job runs
+# to its end, so one run names every failure.
+
+# The estimate of key $1 in the estimate file $2 in whole seconds, or nothing.
+tt_pool_est_of() {
+  awk -F '\t' -v k="$1" '$1 == k && $2 ~ /^[0-9]+(\.[0-9]+)?$/ { v = int($2 + 0.5) } END { if (v != "") print v }' "$2" 2>/dev/null
+}
+
+# `<n>초`, or 없음 for an unknown estimate.
+tt_pool_secs() {
+  if [ -n "$1" ]; then printf '%s초' "$1"; else printf '없음'; fi
+}
+
+# The lanes of <ids> into file $2 (`<k><TAB><load><TAB><ids>` per lane). 1 when
+# the tested tree cannot cut them.
+tt_pool_cut() {
+  local secs="$1" out="$2" rc
+  if [ -f "$TT_POOL_DIR/timing.tsv" ]; then
+    (cd "$TT_WORK" && tt_scrubbed bash scripts/gate-shard.sh --suite scripts/test-gate.sh --shards "$TT_JOBS" \
+      --only "$secs" --timing "$TT_POOL_DIR/timing.tsv" --table < /dev/null > "$out" 2>/dev/null)
+    rc=$?
+  else
+    (cd "$TT_WORK" && tt_scrubbed bash scripts/gate-shard.sh --suite scripts/test-gate.sh --shards "$TT_JOBS" \
+      --only "$secs" --table < /dev/null > "$out" 2>/dev/null)
+    rc=$?
+  fi
+  [ "$rc" = 0 ] && [ -s "$out" ]
+}
+
+# Starts job $1 in the background: stdin closed, both streams into its own
+# file. A lane gets its own TMPDIR, XDG_STATE_HOME and marker file, and merges
+# its times into TT_RECORD; a goal runs as tt_make does and records nothing.
+tt_pool_start() {
+  local i="$1" jd gate="${CC_TEST_TREE_GATE:-}" mk="${CC_TEST_TREE_MAKE:-make}"
+  jd="$TT_POOL_DIR/job-$i"
+  mkdir -p "$jd/tmp" "$jd/state" || return 1
+  if [ "${TT_PJ_KIND[$i]}" = lane ]; then
+    (
+      cd "$TT_WORK" || exit 2
+      tt_unset_callers
+      TMPDIR="$jd/tmp" XDG_STATE_HOME="$jd/state" CC_GATE_TIMING_OUT="$jd/marks.tsv" CC_GATE_TIMING_RECORD="${TT_RECORD:-off}"
+      export TMPDIR XDG_STATE_HOME CC_GATE_TIMING_OUT CC_GATE_TIMING_RECORD
+      if [ -n "$gate" ]; then exec "$gate" --sections "${TT_PJ_ARG[$i]}"; fi
+      exec bash scripts/test-gate.sh --sections "${TT_PJ_ARG[$i]}"
+    ) < /dev/null > "$jd/out" 2>&1 &
+  else
+    (
+      cd "$TT_WORK" || exit 2
+      export MAKEFLAGS='' MFLAGS='' MAKELEVEL=''
+      tt_unset_callers
+      CC_GATE_TIMING_RECORD=off
+      export CC_GATE_TIMING_RECORD
+      exec "$mk" --no-print-directory "${TT_PJ_ARG[$i]}"
+    ) < /dev/null > "$jd/out" 2>&1 &
+  fi
+  TT_PJ_PID[$i]=$!
+  TT_PJ_T0[$i]=$(date +%s)
+  TT_POOL_PIDS="$TT_POOL_PIDS $!"
+  return 0
+}
+
+# Marks job $1 finished with exit status $2 and says so.
+tt_pool_finish() {
+  local i="$1" rc="$2" p left=""
+  TT_PJ_DONE[$i]=1
+  TT_PJ_RC[$i]="$rc"
+  TT_PJ_EL[$i]=$(( $(date +%s) - ${TT_PJ_T0[$i]:-$(date +%s)} ))
+  for p in $TT_POOL_PIDS; do
+    [ "$p" = "${TT_PJ_PID[$i]:-}" ] || left="$left $p"
+  done
+  TT_POOL_PIDS="$left"
+  printf '%s: 끝 — %s rc=%s %d초\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" "${TT_PJ_EL[$i]}" >&2
+}
+
+tt_pool_run() {
+  local secs="$1" goals="$2" est lanes n=0 i k load ids rest g e h jeff tab
+  local t0 now lastp next=0 ndone=0 running=0 rc old oi bad rr fsecs="" fgoals=""
+  local order=()
+  tab=$(printf '\t')
+  TT_PJ_KIND=(); TT_PJ_ARG=(); TT_PJ_NAME=(); TT_PJ_EST=(); TT_PJ_PID=(); TT_PJ_T0=()
+  TT_PJ_DONE=(); TT_PJ_RC=(); TT_PJ_EL=()
+  TT_FAILED_SECTIONS=""
+  TT_FAILED_GOALS=""
+  [ -n "$secs" ] || [ -n "$goals" ] || return 0
+  TT_POOL_DIR="$TT_DIR/pool"
+  if ! mkdir -p "$TT_POOL_DIR"; then
+    printf '%s: 잡 풀 디렉터리를 만들지 못했다\n' "$TT_PREFIX" >&2
+    TT_FAILED="${secs:+절=$secs}"
+    [ -z "$goals" ] || TT_FAILED="${TT_FAILED:+$TT_FAILED }목표=$goals"
+    return 1
+  fi
+
+  # The estimates: what the record and the census know, read by the tested
+  # tree's own test-gate, which also writes the table the cut weighs with. A
+  # tree that does not know --estimate leaves them empty.
+  est="$TT_POOL_DIR/estimate.txt"
+  (
+    CC_GATE_TIMING_RECORD="${TT_RECORD:-off}"
+    export CC_GATE_TIMING_RECORD
+    if [ -n "$secs" ]; then
+      tt_gate --estimate --sections "$secs" ${goals:+--goals "$goals"} --timing-table "$TT_POOL_DIR/timing.tsv"
+    else
+      tt_gate --estimate --goals "$goals"
+    fi
+  ) > "$est" 2>/dev/null
+
+  if [ -n "$secs" ]; then
+    lanes="$TT_POOL_DIR/lanes.tsv"
+    if [ -n "${CC_TEST_TREE_GATE:-}" ] || ! tt_pool_cut "$secs" "$lanes"; then
+      printf '%s: 레인 분할 불가 — 한 레인으로 돈다\n' "$TT_PREFIX" >&2
+      printf '1\t-\t%s\n' "$secs" > "$lanes"
+    fi
+    h=$(tt_pool_est_of @head "$est")
+    while IFS="$tab" read -r k load ids; do
+      [ -n "$ids" ] || continue
+      e=""
+      case "$load" in
+        -) e=$(sed -n 's/^test-gate: 예상 합계 — \([0-9][0-9]*\)초.*$/\1/p' "$est" | tail -n 1) ;;
+        ''|*[!0-9]*) ;;
+        *) if [ -f "$TT_POOL_DIR/timing.tsv" ]; then e=$(( (load + 500) / 1000 + ${h:-0} )); fi ;;
+      esac
+      TT_PJ_KIND[$n]=lane; TT_PJ_ARG[$n]="$ids"; TT_PJ_NAME[$n]="레인 $k($ids)"; TT_PJ_EST[$n]="$e"
+      n=$((n + 1))
+    done < "$lanes"
+  fi
+  if [ -n "$goals" ]; then
+    rest="$goals,"
+    while [ -n "$rest" ]; do
+      g="${rest%%,*}"
+      rest="${rest#*,}"
+      [ -n "$g" ] || continue
+      TT_PJ_KIND[$n]=goal; TT_PJ_ARG[$n]="$g"; TT_PJ_NAME[$n]="목표 $g"
+      TT_PJ_EST[$n]=$(tt_pool_est_of "make:$g" "$est")
+      n=$((n + 1))
+    done
+  fi
+  [ "$n" -gt 0 ] || return 0
+  jeff="$TT_JOBS"
+  [ "$jeff" -le "$n" ] || jeff="$n"
+  TT_JOBS_USED="$jeff"
+
+  order=($(i=0; while [ "$i" -lt "$n" ]; do printf '%s\t%s\n' "${TT_PJ_EST[$i]:-999999999}" "$i"; i=$((i + 1)); done \
+    | sort -t "$tab" -k1,1nr -k2,2n | cut -f2))
+
+  t0=$(date +%s)
+  lastp="$t0"
+  while [ "$ndone" -lt "$n" ]; do
+    while [ "$running" -lt "$jeff" ] && [ "$next" -lt "$n" ]; do
+      i="${order[$next]}"
+      next=$((next + 1))
+      if tt_pool_start "$i"; then
+        running=$((running + 1))
+      else
+        TT_PJ_T0[$i]=$(date +%s)
+        tt_pool_finish "$i" 1
+        ndone=$((ndone + 1))
+      fi
+    done
+    sleep 1
+    k=0
+    while [ "$k" -lt "$next" ]; do
+      i="${order[$k]}"
+      k=$((k + 1))
+      [ -z "${TT_PJ_DONE[$i]:-}" ] || continue
+      kill -0 "${TT_PJ_PID[$i]}" 2>/dev/null && continue
+      wait "${TT_PJ_PID[$i]}"
+      rc=$?
+      tt_pool_finish "$i" "$rc"
+      running=$((running - 1))
+      ndone=$((ndone + 1))
+    done
+    now=$(date +%s)
+    if [ "$ndone" -lt "$n" ] && [ $((now - lastp)) -ge "${TT_PROGRESS_SECS:-60}" ]; then
+      old=""; oi=""
+      k=0
+      while [ "$k" -lt "$next" ]; do
+        i="${order[$k]}"
+        k=$((k + 1))
+        [ -z "${TT_PJ_DONE[$i]:-}" ] || continue
+        if [ -z "$old" ] || [ "${TT_PJ_T0[$i]}" -lt "$old" ]; then old="${TT_PJ_T0[$i]}"; oi="$i"; fi
+      done
+      if [ -n "$oi" ]; then
+        printf '%s: 진행 — 끝난 잡 %d/%d · 가장 오래 도는 잡 %s %d초째(예상 %s) · 전체 %d초\n' "$TT_PREFIX" \
+          "$ndone" "$n" "${TT_PJ_NAME[$oi]}" $((now - old)) "$(tt_pool_secs "${TT_PJ_EST[$oi]}")" $((now - t0)) >&2
+      fi
+      lastp="$now"
+    fi
+  done
+
+  # The whole output of every job, in the order they were put in the pool,
+  # then the verdicts: a lane fails on a nonzero exit or a missing total line,
+  # as the lanes of the Makefile's gate-shard recipe do.
+  : > "$TT_POOL_DIR/goal-times.tsv"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    printf '=== %s: 잡 %s ===\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}"
+    cat "$TT_POOL_DIR/job-$i/out" 2>/dev/null
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    rc="${TT_PJ_RC[$i]}"
+    if [ "${TT_PJ_KIND[$i]}" = lane ]; then
+      bad=0
+      if [ "$rc" != 0 ]; then
+        printf '%s: %s 가 종료 코드 %s 로 끝났다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" >&2
+        bad=1
+      fi
+      if ! grep -Eq '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$TT_POOL_DIR/job-$i/out" 2>/dev/null; then
+        printf '%s: %s 의 출력에 합계 줄(test-gate: <n> passed, <n> failed)이 없다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" >&2
+        bad=1
+      fi
+      if [ "$bad" = 1 ]; then
+        rr=$(sed -n 's/^test-gate: 실패한 절만 다시 — bash scripts\/test-gate.sh --sections \([^ ]*\)$/\1/p' "$TT_POOL_DIR/job-$i/out" 2>/dev/null | tail -n 1)
+        fsecs="${fsecs:+$fsecs,}${rr:-${TT_PJ_ARG[$i]}}"
+      fi
+    elif [ "$rc" != 0 ]; then
+      printf '%s: %s 가 종료 코드 %s 로 끝났다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" >&2
+      fgoals="${fgoals:+$fgoals,}${TT_PJ_ARG[$i]}"
+    else
+      printf 'make:%s\t%s\n' "${TT_PJ_ARG[$i]}" "${TT_PJ_EL[$i]}" >> "$TT_POOL_DIR/goal-times.tsv"
+    fi
+    i=$((i + 1))
+  done
+
+  # A goal's time goes into the record once, after the pool, through the tested
+  # tree's test-gate; a tree that does not know --record-add drops it.
+  if [ -n "$TT_RECORD" ] && [ -s "$TT_POOL_DIR/goal-times.tsv" ]; then
+    (
+      CC_GATE_TIMING_RECORD="$TT_RECORD"
+      export CC_GATE_TIMING_RECORD
+      tt_gate --record-add "$TT_POOL_DIR/goal-times.tsv"
+    ) > /dev/null 2>&1
+  fi
+
+  TT_FAILED_SECTIONS="$fsecs"
+  TT_FAILED_GOALS="$fgoals"
+  TT_FAILED="${fsecs:+절=$fsecs}"
+  [ -z "$fgoals" ] || TT_FAILED="${TT_FAILED:+$TT_FAILED }목표=$fgoals"
+  [ -z "$TT_FAILED" ]
 }
 
 tt_section_markers() {
@@ -1084,7 +1365,7 @@ EOF
   hasnt "F6 --list 실패에 --sections 를 부르지 않는다" "$(cat "$T/gate.log")" "--sections"
   : > "$T/gate.log"
   : > "$T/make.log"
-  out=$(cd "$W" && CC_PIPELINE_RUN_ID=x CLAUDE_X=y CHECK_PUSH_SECTIONS=z MAKEFLAGS=-k MFLAGS=-k MAKELEVEL=3 bash -c '
+  out=$(cd "$W" && CC_PIPELINE_RUN_ID=x CLAUDE_X=y CHECK_PUSH_SECTIONS=z CHECK_PUSH_JOBS=1 MAKEFLAGS=-k MFLAGS=-k MAKELEVEL=3 bash -c '
     . "$1"; cd "$2" && tt_clone > /dev/null && tt_build "$3" "$4" && tt_check_items "h1,s1" "g2,g1" && printf "%s|%s\n" "$TT_SECTIONS" "$TT_GOALS" && tt_run_items "$TT_SECTIONS" "$TT_GOALS" > /dev/null; printf "rc=%s\n" "$?"; tt_cleanup' _ "$self" "$W" "$sm" "$sh")
   has "F6 절은 파일 순서로 정렬되고 둘 다 돈다" "$out" "s1,h1|g2,g1
 rc=0"
@@ -1092,6 +1373,13 @@ rc=0"
   log=$(cat "$T/make.log")
   has "F6 목표는 make --no-print-directory g2 g1 한 번, 세 make 변수가 비었다" "$log" "argv:--no-print-directory g2 g1|MAKEFLAGS=|MFLAGS=|MAKELEVEL="
   hasnt "F6 게이트 대역과 make 대역에 호출자 변수가 새지 않는다" "$(cat "$T/gate.log" "$T/make.log")" "leak:"
+  # The pool is check-push's alone: this file's library and its repro command
+  # run the items one call each whatever the caller's environment says.
+  : > "$T/gate.log"
+  : > "$T/make.log"
+  out=$(cd "$W" && CHECK_PUSH_JOBS=4 TT_JOBS=4 bash -c '
+    . "$1"; cd "$2" && tt_clone > /dev/null && tt_build "$3" "$4" && tt_check_items "h1,s1" "g2,g1" && tt_run_items "$TT_SECTIONS" "$TT_GOALS" > /dev/null; printf "rc=%s|%s\n" "$?" "$TT_JOBS_USED"; tt_cleanup' _ "$self" "$W" "$sm" "$sh")
+  check "F6 환경의 CHECK_PUSH_JOBS·TT_JOBS 로는 풀이 켜지지 않는다" "$out|$(grep -c -- '--sections' "$T/gate.log")|$(grep -c 'argv:--no-print-directory' "$T/make.log")" "rc=0|1|1|1"
 
   # --- F11 절+베이스 -----------------------------------------------------------
   : > "$T/gate.log"
@@ -1366,8 +1654,8 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 106 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 106 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 107 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 107 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

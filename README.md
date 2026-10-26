@@ -28,7 +28,8 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:review-lite` | 2인 팀을 활용한 경량 코드 리뷰 | 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능) |
 | `/cc-cmds:review-unattended` | 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주) | 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것 |
 | `/cc-cmds:review-upgrade` | 리뷰어 구성 강화 분석 (모델·역할 축) | 직전 `/review` Step 3 리뷰어 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 누락된 리뷰 관점을 메울 신규 리뷰어 추가가 필요한지, 또는 과부하 리뷰어 분할이 필요한지 second-opinion으로 검토할 때 |
-| `/cc-cmds:visual` | 설계 문서의 화면을 로컬에서 생성·검토하고, Claude Design 에 발행·동기하며, 구현 승인을 사이드카에 쓴다 (대화형, 고정 계정 좌석) | 무인 런이 `검토 통과` 로 남긴 화면을 아침에 발행·캔버스 편집·동기한 뒤 구현을 승인할 때, 또는 사이드카 없는 설계 문서의 화면을 대화형으로 처음 만들 때. 무인 파이프라인 스테이지는 `/cc-cmds:visual-unattended` 를 쓴다 |
+| `/cc-cmds:visual` | 설계 문서의 화면을 로컬에서 생성·검토하고, Claude Design 에 발행·동기하며, 구현 승인을 사이드카에 쓴다 (대화형, 고정 계정 좌석) | 무인 런이 `검토 통과` 로 남긴 화면을 아침에 발행·캔버스 편집·동기한 뒤 구현을 승인할 때, 또는 사이드카 없는 설계 문서의 화면을 대화형으로 처음 만들 때. 무인 파이프라인 스테이지는 생성에 `/cc-cmds:visual-unattended`, 계획에 `S2P` 단계가 있는 런의 발행·승인에 `/cc-cmds:visual-publish-unattended` 를 쓴다 |
+| `/cc-cmds:visual-publish-unattended` | 런 안에서 `검토 통과` 화면을 고정 계정으로 Claude Design 에 발행하고, 사람의 시각 판정 답에 따라 구현 승인·다시 생성·금지 후보 반영을 한다 (무인 — 사람 판단은 중단 기록으로) | 자율 파이프라인이 계획에 동결된 `S2P` 단계를 헤드리스로 파견할 때. 사람이 직접 발행할 때는 `/cc-cmds:visual` 을 쓸 것 |
 | `/cc-cmds:visual-unattended` | 동결된 설계 문서의 화면을 로컬에서 생성하고 세 회 안의 검토로 `검토 통과` 까지 올린다 (무인 — 사람 확인 없이 정지 기록) | 자율 파이프라인 드라이버나 라우터가 시각 단계를 헤드리스로 파견할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:visual` 을 쓸 것 |
 
 <!-- SKILLS_TABLE_END -->
@@ -142,6 +143,7 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 - [/cc-cmds:review-unattended](#cc-cmdsreview-unattended)
 - [/cc-cmds:review-upgrade](#cc-cmdsreview-upgrade)
 - [/cc-cmds:visual](#cc-cmdsvisual)
+- [/cc-cmds:visual-publish-unattended](#cc-cmdsvisual-publish-unattended)
 - [/cc-cmds:visual-unattended](#cc-cmdsvisual-unattended)
 
 ### /cc-cmds:autopilot
@@ -430,6 +432,14 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/review` Step 3 리
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 대상 설계 문서 경로 (`.md`). 사이드카 `<base>/docs/visual/<slug>.md` 의 상태가 이번 국면을 정한다. |
+
+### /cc-cmds:visual-publish-unattended
+
+**Usage**: `/cc-cmds:visual-publish-unattended <design-doc-path>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<design-doc-path>` | (required) | 동결된 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다. |
 
 ### /cc-cmds:visual-unattended
 

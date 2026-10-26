@@ -536,6 +536,19 @@ else
   fail "unattended: approval gave exit $rc, attempt '$(att "$EW" 3 5)'"; cat "$sc/out" >&2
 fi
 
+# 4b. A run that ended while the gate held the wait refuses the seat's call
+# with 3; the run's done is read, and the reserve replaces the document.
+stub_sc u-ended
+EE=20261022-000000a7
+export STUB_GATE_MODE=ended STUB_ONLY_DOC=docs/c4.md
+xr run --exp-id "$EE" --budget-usd 1000
+case "$(att "$EE" 3 5)" in "opus-1: 감사 보고서 없음"*) ereason=1 ;; *) ereason=0 ;; esac
+if [[ "$rc" == "0" && "$ereason" == "1" && "$(dcol "$EE" 3 2)" == "docs/c5.md" ]] && all_valid "$EE"; then
+  pass "unattended: a refused call on a run that already ended reads its done, and 예비 3-1 replaces the document"
+else
+  fail "unattended: ended run gave exit $rc, attempt '$(att "$EE" 3 5)'"; cat "$sc/out" >&2
+fi
+
 # 5. A slot with no reserve stays invalid and the verdict is 판정 불가.
 stub_sc u-exhaust
 EX=20261022-000000a5

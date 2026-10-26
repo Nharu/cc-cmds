@@ -290,10 +290,31 @@ sections_given=0
 oracle_mode=""
 oracle_arg1=""
 oracle_arg2=""
+# The estimate mode and the record's own entry points. `--estimate` prints what
+# a narrowed run would take and runs nothing; `--goals` adds the REST goals'
+# recorded times to it; `--record-add` merges `<key><TAB><seconds>` lines into
+# the record and runs nothing; `--timing-table` writes the table the estimate
+# was built from, for a caller that partitions with the same weights.
+est_mode=0
+est_goals=""
+est_goals_given=0
+est_table_out=""
+rec_add_file=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
       sections_list=1; shift ;;
+    --estimate)
+      est_mode=1; shift ;;
+    --goals)
+      est_goals="${2-}"; est_goals_given=1
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --timing-table)
+      est_table_out="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --record-add)
+      rec_add_file="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --sections)
       sections_want="${2-}"; sections_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
@@ -313,7 +334,7 @@ while [ "$#" -gt 0 ]; do
       oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"
       if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --estimate [--goals <목표>[,<목표>...]] [--timing-table <path>], --record-add <file>, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
@@ -361,6 +382,349 @@ case "$sec_timing_out" in
   /*) ;;
   *) sec_timing_out="" ;;
 esac
+
+# THE TIMING RECORD IS READ HERE ONCE AND EVERY CHILD SEES `off`. A narrowed run
+# turns its markers into per-section seconds and merges them into a local
+# record, which the estimate mode reads back. The record is a cache: losing it
+# costs estimates, never a verdict. The value is an absolute path, `off`, or
+# unset — unset means `<git common dir>/cc-cmds-gate-timing.tsv` of this
+# checkout; a path that is not absolute is treated as unset. Exporting `off`
+# keeps a section that calls the selector again, and a nested call, from writing
+# its own fixture timings into the record the outer run is building.
+#
+# A caller that gave `CC_GATE_TIMING_OUT` (a CI shard, a check-push lane) owns
+# its marker file, so its run merges only when this variable is given as well.
+sec_timing_rec="${CC_GATE_TIMING_RECORD:-}"
+CC_GATE_TIMING_RECORD=off
+export CC_GATE_TIMING_RECORD
+case "$sec_timing_rec" in
+  off|/*) ;;
+  *) sec_timing_rec="" ;;
+esac
+# The progress line's interval, in seconds. Read once and dropped, like the two
+# above, so a nested wrapped call keeps the default; a section that asserts the
+# line sets it on its own call.
+tg_progress_secs="${CC_GATE_PROGRESS_SECS:-60}"
+unset CC_GATE_PROGRESS_SECS
+case "$tg_progress_secs" in ''|*[!0-9]*|0) tg_progress_secs=60 ;; esac
+tg_progress_marks=""
+tg_progress_skip=0
+tg_progress_dir=""
+tg_child_t0=""
+
+# The record's path, or a non-zero status when nothing is to be read or written:
+# `off`, or no git repository around the checkout, which is skipped in silence.
+# The common directory is asked for after a `cd` to the repository root.
+tg_record_path() {
+  local gd
+  case "$sec_timing_rec" in
+    off) return 1 ;;
+    /*) printf '%s\n' "$sec_timing_rec"; return 0 ;;
+  esac
+  gd=$(cd "$repo_root" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null) || return 1
+  [ -n "$gd" ] || return 1
+  gd=$(cd "$repo_root" 2>/dev/null && cd "$gd" 2>/dev/null && pwd) || return 1
+  [ -n "$gd" ] || return 1
+  printf '%s/cc-cmds-gate-timing.tsv\n' "$gd"
+}
+
+# THE ONE PLACE THAT WRITES THE RECORD. `<key><TAB><seconds>` lines from the rows
+# file are stamped with the current epoch and appended, and each key keeps its
+# last five rows. The lock is a directory: five seconds without it skips the
+# merge, and a lock older than sixty seconds is a dead writer's and is removed
+# once. The new content is written beside the record and moved over it, so a
+# reader sees the old record or the new one. A failure prints one line and
+# changes neither the exit status nor stdout.
+tg_record_merge() {
+  local rec="$1" rows="$2" lock tries=0 stale=0 tmp now
+  lock="$rec.lock"
+  if [ ! -d "$(dirname "$rec")" ]; then
+    printf 'test-gate: 소요 기록 건너뜀 — 기록 디렉터리가 없다: %s\n' "$(dirname "$rec")" >&2
+    return 1
+  fi
+  until mkdir "$lock" 2>/dev/null; do
+    if [ "$stale" = "0" ] && [ -d "$lock" ] \
+       && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      stale=1
+      rmdir "$lock" 2>/dev/null || rm -rf "$lock"
+      continue
+    fi
+    tries=$((tries + 1))
+    if [ "$tries" -ge 50 ]; then
+      printf 'test-gate: 소요 기록 건너뜀 — 잠금을 5초 안에 얻지 못했다: %s\n' "$lock" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+  now=$(date +%s)
+  if ! tmp=$(mktemp "$rec.XXXXXX" 2>/dev/null); then
+    rmdir "$lock" 2>/dev/null
+    printf 'test-gate: 소요 기록 건너뜀 — 임시 파일을 만들지 못했다: %s\n' "$rec" >&2
+    return 1
+  fi
+  if {
+       if [ -f "$rec" ]; then cat "$rec"; fi
+       LC_ALL=C awk -F '\t' -v now="$now" \
+         'NF >= 2 && $1 != "" && $2 ~ /^[0-9]+(\.[0-9]+)?$/ { print $1 "\t" $2 "\t" now }' "$rows"
+     } | LC_ALL=C awk -F '\t' '
+       NF >= 3 && $1 != "" { n++; k[n] = $1; line[n] = $0; c[$1]++ }
+       END { for (i = 1; i <= n; i++) { seen[k[i]]++; if (c[k[i]] - seen[k[i]] < 5) print line[i] } }
+     ' > "$tmp" && mv "$tmp" "$rec"; then
+    rmdir "$lock" 2>/dev/null
+    return 0
+  fi
+  rm -f "$tmp"
+  rmdir "$lock" 2>/dev/null
+  printf 'test-gate: 소요 기록 건너뜀 — 기록을 바꿔 쓰지 못했다: %s\n' "$rec" >&2
+  return 1
+}
+
+# Marker lines → `<key><TAB><seconds>`, by the interval rule of
+# `scripts/gate-timing.sh`: a line's share runs to the next line, `@pre-<group>`
+# is the prelude's share, and the stretches opened by `@start`, `@end` and
+# `@epilogue` and the one after the last marker are not recorded. `@head` is
+# added here: from the moment before the child was started to the first marker.
+# Lines up to `skip` were in the file before this run and are not this run's.
+tg_marks_rows() {
+  LC_ALL=C awk -F '\t' -v skip="$2" -v t0="$3" '
+    BEGIN { gsub(/,/, ".", t0); t0 = t0 + 0 }
+    NR <= skip { next }
+    { t = $2; gsub(/,/, ".", t)
+      if ($1 == "" || t !~ /^[0-9]+(\.[0-9]+)?$/) next
+      t = t + 0
+      if (!havep) { d = t - t0; if (d < 0) d = 0; printf "@head\t%.3f\n", d }
+      else if (pid !~ /^@(start|end|epilogue)$/ && pid != "-") { d = t - pt; if (d < 0) d = 0; printf "%s\t%.3f\n", pid, d }
+      pid = $1; pt = t; havep = 1 }' "$1"
+}
+
+# `<key><TAB><ms><TAB><출처>` for every key whose share is known without a model:
+# `실측` is the median of the record's rows for the key; `센서스` is a section's
+# census wall time less the census minimum (the head every invocation pays) and
+# less the shares of the sections its `needs:` closure pulls in, taken in the
+# same order, so the closure is counted once; `@head` falls back to that
+# minimum. A section the census lacks and the record lacks is left out here and
+# given its `추정` by the caller. Reads the index on stdin.
+tg_known_shares() {
+  LC_ALL=C awk -v REC="$1" -v CEN="$repo_root/scripts/gate-census.tsv" '
+    function share(id,   v, g, i, qn, x, k, d, sb) {
+      if (id in rs) return rs[id]
+      if (id in memo) return memo[id]
+      if (!(id in cw) || (id in busy)) return 0
+      busy[id] = 1
+      g = ++G; qn = 1; q[g, 1] = id; seen[g, id] = 1
+      for (i = 1; i <= qn; i++) {
+        x = q[g, i]
+        for (k = 1; k <= ndn[x]; k++) { d = nd[x, k]; if (!((g SUBSEP d) in seen)) { seen[g, d] = 1; q[g, ++qn] = d } }
+      }
+      sb = 0
+      for (i = 2; i <= qn; i++) sb += share(q[g, i])
+      v = cw[id] - headmin - sb; if (v < 0) v = 0
+      delete busy[id]; memo[id] = v
+      return v
+    }
+    $1 == "SEC" && $4 != "-" { nid++; ids[nid] = $4 }
+    $1 == "NED" { ndn[$2]++; nd[$2, ndn[$2]] = $3 }
+    END {
+      while (REC != "" && (getline line < REC) > 0) {
+        split(line, f, "\t"); t = f[2]
+        if (f[1] == "" || t !~ /^[0-9]+(\.[0-9]+)?$/) continue
+        if (!(f[1] in rn)) { nk++; rk[nk] = f[1] }
+        rn[f[1]]++; rv[f[1], rn[f[1]]] = int(t * 1000 + 0.5)
+      }
+      for (j = 1; j <= nk; j++) {
+        key = rk[j]; n = rn[key]
+        for (i = 1; i <= n; i++) {
+          v = rv[key, i]; m = i - 1
+          while (m >= 1 && sv[m] > v) { sv[m + 1] = sv[m]; m-- }
+          sv[m + 1] = v
+        }
+        rs[key] = (n % 2) ? sv[(n + 1) / 2] : int((sv[n / 2] + sv[n / 2 + 1]) / 2)
+      }
+      headmin = -1
+      while ((getline line < CEN) > 0) {
+        if (line ~ /^#/ || line == "") continue
+        split(line, f, "\t")
+        if (f[1] == "id" || f[1] ~ /^@/ || f[4] !~ /^[0-9]+$/) continue
+        cw[f[1]] = f[4] * 1000
+        if (headmin < 0 || cw[f[1]] < headmin) headmin = cw[f[1]]
+      }
+      if (headmin < 0) headmin = 0
+      for (i = 1; i <= nid; i++) {
+        id = ids[i]
+        if (id in rs) { print id "\t" rs[id] "\t실측"; done[id] = 1 }
+        else if (id in cw) { print id "\t" share(id) "\t센서스"; done[id] = 1 }
+      }
+      if ("@head" in rs) print "@head\t" rs["@head"] "\t실측"
+      else if (headmin > 0) print "@head\t" headmin "\t센서스"
+      done["@head"] = 1
+      for (j = 1; j <= nk; j++) if (!(rk[j] in done)) print rk[j] "\t" rs[rk[j]] "\t실측"
+    }'
+}
+
+# The whole estimate table into `$2`: the known shares, then a `추정` row for
+# every section they leave out, from the span-rate model of
+# `scripts/gate-shard.sh --weights` fed with the known section shares as a
+# `# gate-timing v1` table — the one model, not a second copy of it. When no
+# section share is known there is nothing to fit the model to, and the table
+# keeps only what it has. `$3`, when given, receives that timing table.
+tg_estimate_table() {
+  local rec="$1" out="$2" tbl_out="${3:-}" tbl
+  tbl=$(mktemp "${TMPDIR:-/tmp}/cc-gate-est.XXXXXX") || return 1
+  printf '%s\n' "$sec_idx" | tg_known_shares "$rec" > "$out"
+  {
+    printf '# gate-timing v1 — source: test-gate estimate generated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'id\tms\trun\n'
+    LC_ALL=C awk -F '\t' '$1 !~ /^(@|make:)/ { print $1 "\t" $2 "\t0" }' "$out"
+  } > "$tbl"
+  if [ -n "$tbl_out" ]; then cp "$tbl" "$tbl_out" 2>/dev/null; fi
+  if [ "$(LC_ALL=C awk -F '\t' '$1 !~ /^(@|make:)/' "$out" | grep -c .)" != "0" ] \
+     && [ -f "$script_dir/gate-shard.sh" ]; then
+    bash "$script_dir/gate-shard.sh" --suite "$SELF" --timing "$tbl" --weights < /dev/null 2>/dev/null \
+      | LC_ALL=C awk -F '\t' '$3 == "추정" { print $1 "\t" $2 "\t추정" }' >> "$out"
+  fi
+  rm -f "$tbl"
+  return 0
+}
+
+# The keys a cut walks, in its order: `@head`, then per section its family
+# prelude (`@pre-<group>`, when the group has one and it is the group's first
+# section in the cut) and its id. Reads `sec_ranges` and the index.
+tg_cut_keys() {
+  local a b grp id done=" "
+  printf '@head\n'
+  while read -r a b; do
+    [ -n "$a" ] || continue
+    grp=$(printf '%s\n' "$sec_idx" | sed -n "s/^SEC $a $b [^ ]* [0-9]* \([^ ]*\) .*\$/\1/p")
+    case "$grp" in
+      ''|-) ;;
+      *)
+        case "$done" in
+          *" $grp "*) ;;
+          *)
+            done="$done$grp "
+            if [ "$(grep -cE "^pre_${grp}\(\) *\{" "$SELF" || true)" != "0" ]; then
+              printf '@pre-%s\n' "$grp"
+            fi ;;
+        esac ;;
+    esac
+    id=$(printf '%s\n' "$sec_idx" | sed -n "s/^SEC $a $b \([^ ]*\) [0-9]* .*\$/\1/p")
+    printf '%s\n' "${id:--}"
+  done <<KEYEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+KEYEOF
+}
+
+# The progress line, every `tg_progress_secs` seconds while the child runs. It
+# writes to the wrapper's own stderr, outside the oracle's tee, and starts with
+# `test-gate:` so the noise check leaves it out. The estimate is computed when
+# the first line is due, so a run shorter than the interval computes nothing.
+# Each second it checks that the wrapper is still there, and the wrapper sends
+# it TERM and reaps it the moment the child ends; its `sleep` holds no stream.
+tg_progress_loop() {
+  local wpid="$1" marks="$2" skip="$3" t0="$4" dir="$5" i rec now src
+  while :; do
+    i=0
+    while [ "$i" -lt "$tg_progress_secs" ]; do
+      sleep 1 < /dev/null > /dev/null 2>&1
+      kill -0 "$wpid" 2>/dev/null || return 0
+      i=$((i + 1))
+    done
+    if [ ! -f "$dir/est" ]; then
+      rec=$(tg_record_path) || rec=""
+      tg_estimate_table "$rec" "$dir/est.tmp" > /dev/null 2>&1 && mv "$dir/est.tmp" "$dir/est"
+      [ -f "$dir/est" ] || : > "$dir/est"
+    fi
+    now="${EPOCHREALTIME:-$(date +%s)}"
+    src="$marks"
+    [ -f "$src" ] || src=/dev/null
+    LC_ALL=C awk -F '\t' -v skip="$skip" -v t0="$t0" -v now="$now" -v EST="$dir/est" -v KEYS="$dir/keys" '
+      function sec(x) { gsub(/,/, ".", x); return x + 0 }
+      function shown(ms) { return int((ms + 500) / 1000) "초" }
+      NR > skip && $1 != "" { key = $1; kt = $2 }
+      END {
+        if (key == "") { key = "@head"; kt = t0 }
+        while ((getline line < EST) > 0) { split(line, f, "\t"); est[f[1]] = f[2]; if (f[1] !~ /^(@|make:)/) known = 1 }
+        tot = 0
+        while ((getline line < KEYS) > 0) if (line in est) tot += est[line]
+        ee = (key in est) ? shown(est[key]) : "없음"
+        et = known ? shown(tot) : "없음"
+        printf "test-gate: 진행 — 절 %s %d초째(예상 %s) · 전체 %d초(예상 %s)\n", key, sec(now) - sec(kt), ee, sec(now) - sec(t0), et
+      }' "$src" >&2
+  done
+}
+
+# The estimate mode's report, on stdout: the closure the cut would run, a
+# `<key><TAB><seconds><TAB><출처>` line per section and then per head and
+# prelude share, the total and the Bash limit to run it under. The limit is
+# twice the total plus five minutes, at least ten minutes and at most the
+# background maximum of two hours; at the maximum a warning says so. With no
+# section share known there is no total, every source reads `없음`, and the
+# limit is the maximum. `--goals` adds `make:<goal>` lines from the record.
+tg_estimate_print() {
+  local rec="$1" dir n_req n_pull g
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-estimate.XXXXXX") || return 1
+  tg_estimate_table "$rec" "$dir/est" "$est_table_out"
+  if [ -n "$sec_ranges" ]; then
+    tg_cut_keys > "$dir/keys"
+    n_req=$(printf '%s\n' "$sections_want" | tr ',' '\n' | grep -c .)
+    n_pull=0
+    if [ -n "$sec_pulled" ]; then n_pull=$(printf '%s\n' "$sec_pulled" | tr ',' '\n' | grep -c .); fi
+    printf 'test-gate: 예상 — 요청한 절 %s개, needs 로 함께 도는 절 %s개%s\n' \
+      "$n_req" "$n_pull" "${sec_pulled:+ ($sec_pulled)}"
+    LC_ALL=C awk -F '\t' -v EST="$dir/est" '
+      BEGIN {
+        while ((getline line < EST) > 0) {
+          split(line, f, "\t"); est[f[1]] = f[2]; src[f[1]] = f[3]
+          if (f[1] !~ /^(@|make:)/ && f[3] != "추정") known = 1
+        }
+      }
+      { k[++n] = $1 }
+      END {
+        for (pass = 1; pass <= 2; pass++)
+          for (i = 1; i <= n; i++) {
+            key = k[i]
+            if ((pass == 1) == (key ~ /^@/)) continue
+            if (known && (key in est)) { printf "%s\t%d\t%s\n", key, int((est[key] + 500) / 1000), src[key]; tot += est[key] }
+            else printf "%s\t-\t없음\n", key
+          }
+        if (!known) { print "test-gate: 예상 합계 — 없음 (실측도 센서스도 없다)"; lim = 7200000; capped = 1 }
+        else {
+          printf "test-gate: 예상 합계 — %d초\n", int((tot + 500) / 1000)
+          lim = 2 * tot + 300000
+          if (lim < 600000) lim = 600000
+          if (lim > 7200000) { lim = 7200000; capped = 1 }
+        }
+        printf "test-gate: 권장 한도 — %dms\n", lim
+        if (capped && known) print "test-gate: 합계가 백그라운드 한도를 넘는다 — 한 번에 끝나지 않을 수 있다"
+      }' "$dir/keys"
+  fi
+  if [ -n "$est_goals" ]; then
+    for g in $(printf '%s\n' "$est_goals" | tr ',' ' '); do
+      LC_ALL=C awk -F '\t' -v key="make:$g" '
+        $1 == key { v = $2; hit = 1 }
+        END { if (hit) printf "%s\t%d\t실측\n", key, int((v + 500) / 1000); else printf "%s\t-\t없음\n", key }' "$dir/est"
+    done
+  fi
+  rm -rf "$dir"
+  return 0
+}
+
+# `--record-add` runs nothing else: the file's `<key><TAB><seconds>` lines go
+# through the one merge above, and the exit status is 0 whatever the merge did.
+if [ -n "$rec_add_file" ]; then
+  if [ ! -r "$rec_add_file" ]; then
+    printf 'test-gate: 소요 기록 건너뜀 — 읽을 수 없는 파일: %s\n' "$rec_add_file" >&2
+    exit 0
+  fi
+  if tg_rec_path=$(tg_record_path); then
+    tg_record_merge "$tg_rec_path" "$rec_add_file" || true
+  fi
+  exit 0
+fi
+if [ "$est_goals_given" = "1" ] && [ "$est_mode" != "1" ]; then
+  printf 'test-gate: --goals 는 --estimate 와 함께만 씁니다\n' >&2
+  exit 2
+fi
 
 # A NARROWED RUN NAMES THE SECTIONS THAT FAILED, AND THE COMMAND THAT RUNS ONLY
 # THOSE. The cut writes the id of the section it is in before each section, and
@@ -667,7 +1031,7 @@ oracle_report_failed() {
 oracle_run() {
   local script="$1" map="$2" scope="$3"
   shift 3
-  local cap fo fe rc tpo tpe verdict_rc
+  local cap fo fe rc tpo tpe tpl verdict_rc
 
   oracle_clean
   oracle_locale
@@ -686,6 +1050,15 @@ oracle_run() {
   tpo=$!
   tee "$cap/err" < "$fe" >&2 &
   tpe=$!
+  # The progress loop is started from here, in the wrapper and outside both
+  # tees, and only for the selector's own wrapped call, which sets the marks.
+  tg_child_t0="${EPOCHREALTIME:-$(date +%s)}"
+  tpl=""
+  if [ -n "$tg_progress_marks" ]; then
+    tg_progress_loop "$$" "$tg_progress_marks" "$tg_progress_skip" "$tg_child_t0" "$tg_progress_dir" \
+      < /dev/null > /dev/null &
+    tpl=$!
+  fi
   if [ -n "$oracle_child_repo_root" ]; then
     CC_TEST_GATE_ORACLE_INNER=1 CC_TEST_GATE_REPO_ROOT="$oracle_child_repo_root" \
       bash "$script" "$@" > "$fo" 2> "$fe"
@@ -694,6 +1067,10 @@ oracle_run() {
       bash "$script" "$@" > "$fo" 2> "$fe"
   fi
   rc=$?
+  if [ -n "$tpl" ]; then
+    kill -TERM "$tpl" 2>/dev/null
+    wait "$tpl" 2>/dev/null || true
+  fi
   wait "$tpo" 2>/dev/null || true
   wait "$tpe" 2>/dev/null || true
   rm -f "$fo" "$fe"
@@ -893,7 +1270,7 @@ section_index() {
 }
 
 sec_idx=""
-if [ "$sections_list" = "1" ] || [ -n "$sections_want" ]; then
+if [ "$sections_list" = "1" ] || [ -n "$sections_want" ] || [ "$est_mode" = "1" ]; then
   sec_idx=$(section_index)
   case "$sec_idx" in
     ERR*)
@@ -953,6 +1330,21 @@ if [ "$sections_list" = "1" ]; then
   printf '%s\n' "$sec_idx" \
     | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) [0-9]* [^ ]* \(.*\)$/\1 \2/p' \
     | sed -n '/^- /!p'
+  exit 0
+fi
+
+# `--estimate` without a selection answers only what it was asked for — the
+# goals, the timing table — and a bare `--estimate` is a usage error: there is
+# no cut to estimate, and estimating the full run is not what anyone asks.
+sec_ranges=""
+sec_pulled=""
+if [ "$est_mode" = "1" ] && [ -z "$sections_want" ]; then
+  if [ -z "$est_goals" ] && [ -z "$est_table_out" ]; then
+    printf 'test-gate: --estimate 는 --sections / --run-one / --goals / --timing-table 가운데 하나와 함께 씁니다\n' >&2
+    exit 2
+  fi
+  tg_rec_path=$(tg_record_path) || tg_rec_path=""
+  tg_estimate_print "$tg_rec_path"
   exit 0
 fi
 
@@ -1054,6 +1446,25 @@ FRONTEOF
     printf 'test-gate: --run-one 에 모르는 절 id 입니다: %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_miss" >&2
     exit 2
   fi
+  # THE ESTIMATE FOLLOWS THE SAME ESCAPE. An unknown id under `--sections`
+  # would run everything, so the estimate says that and gives the maximum
+  # limit rather than estimating a run nobody asked for; `--run-one` stopped
+  # above with its own code.
+  if [ -n "$sec_miss" ] && [ "$est_mode" = "1" ]; then
+    if [ -n "$sec_need_by" ]; then
+      printf 'test-gate: 절 %s 의 needs: 가 모르는 절 id 를 가리킵니다: %s — 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n' "$sec_need_by" "$sec_miss"
+    else
+      printf 'test-gate: 모르는 절 id 입니다: %s — 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n' "$sec_miss"
+    fi
+    printf 'test-gate: 권장 한도 — 7200000ms\n'
+    printf 'test-gate: 합계가 백그라운드 한도를 넘는다 — 한 번에 끝나지 않을 수 있다\n'
+    exit 0
+  fi
+  if [ -z "$sec_miss" ] && [ "$est_mode" = "1" ]; then
+    tg_rec_path=$(tg_record_path) || tg_rec_path=""
+    tg_estimate_print "$tg_rec_path"
+    exit 0
+  fi
   if [ -n "$sec_miss" ]; then
     if [ -n "$sec_need_by" ]; then
       printf 'test-gate: 절 %s 의 needs: 가 모르는 절 id 를 가리킵니다: %s — 전량 실행합니다\n' "$sec_need_by" "$sec_miss" >&2
@@ -1102,6 +1513,25 @@ FRONTEOF
     if [ -n "$sec_fail" ]; then
       printf "tg_fail_file='%s'\n" "$sec_fail" >> "$sec_cut"
       sec_cur=$(( sec_cur + 1 ))
+    fi
+    # THE WRAPPED CALL ALWAYS HAS MARKERS. When the caller gave no marker file
+    # the wrapper makes its own, under the same literal-path rule, so the
+    # progress line and the timing record stand on the mechanism CI already
+    # uses. A nested call is left as it was. A caller's file may already hold
+    # lines; only those this run appends are read.
+    sec_timing_own=0
+    if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ] && [ -z "$sec_timing_out" ]; then
+      sec_timing_out=$(mktemp "$sec_dir/marks.XXXXXX")
+      case "$sec_timing_out" in
+        *"'"*) sec_timing_out="" ;;
+        /*) sec_timing_own=1 ;;
+        *) sec_timing_out="" ;;
+      esac
+    fi
+    tg_progress_skip=0
+    if [ -n "$sec_timing_out" ] && [ -f "$sec_timing_out" ]; then
+      tg_progress_skip=$(grep -c '' "$sec_timing_out" 2>/dev/null || true)
+      tg_progress_skip=${tg_progress_skip:-0}
     fi
     # One line naming the section the cut is entering, counted like a marker and
     # attributed to no section. It goes in whether or not timing markers are on,
@@ -1235,8 +1665,31 @@ SECEOF
       oracle_child_repo_root="$repo_root"
       tg_report_fail_file="$sec_fail"
       tg_report_sel="$sections_want"
+      if [ -n "$sec_timing_out" ]; then
+        tg_progress_marks="$sec_timing_out"
+        tg_progress_dir="$sec_dir"
+        tg_cut_keys > "$sec_dir/keys"
+      fi
       oracle_run "$sec_cut" "$sec_map" "좁힌 실행"
       sec_rc=$?
+      tg_progress_marks=""
+      # The record is written after the verdict, and only by the outermost
+      # wrapped run: its own markers whenever the record is not `off`, a
+      # caller's markers only when the caller named the record as well.
+      tg_rec_on=0
+      if [ -n "$sec_timing_out" ]; then
+        case "$sec_timing_rec" in
+          off) ;;
+          /*) tg_rec_on=1 ;;
+          *) if [ "$sec_timing_own" = "1" ]; then tg_rec_on=1; fi ;;
+        esac
+      fi
+      if [ "$tg_rec_on" = "1" ] && tg_rec_path=$(tg_record_path); then
+        tg_marks_rows "$sec_timing_out" "$tg_progress_skip" "$tg_child_t0" > "$sec_dir/rows" 2>/dev/null
+        if [ -s "$sec_dir/rows" ]; then
+          tg_record_merge "$tg_rec_path" "$sec_dir/rows" || true
+        fi
+      fi
     fi
     rm -rf "$sec_dir"
     exit "$sec_rc"
@@ -1251,6 +1704,11 @@ fi
 # every noise line is unattributed and the whole run takes the strict side, which
 # is correct but says nothing about WHICH section broke. Building it costs one awk
 # pass over this file.
+if [ "$est_mode" = "1" ]; then
+  printf 'test-gate: 절 목록을 만들지 못해 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n'
+  printf 'test-gate: 권장 한도 — 7200000ms\n'
+  exit 0
+fi
 if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
   oracle_full_idx="$sec_idx"
   if [ -z "$oracle_full_idx" ]; then
@@ -5801,6 +6259,127 @@ check "FAIL 줄 수와 합계 줄은 보고가 더해지기 전과 같다" \
 check "실패 절 보고가 켜진 컷의 표지 파일은 그대로다" \
   "$(cut -f1 "$tgf_dir/t.tsv" 2>/dev/null | tr '\n' ' ')" "@pre-static 0c 0d @epilogue "
 rm -rf "$tgf_dir"
+
+# ---------------------------------------------------------------------------
+# 0f. The estimate mode, the timing record and the progress line
+# --- section: 0f | group: static | covers: - | anchors: 예상 모드는 기록을 바꾸지 않는다, 좁힌 실행은 컷의 절·전주·머리 키만 기록한다, 진행 줄은 감싸는 쪽 stderr 에 정해진 모양으로 찍힌다 ---
+# ---------------------------------------------------------------------------
+# A narrowed run records what each section took, the estimate mode reads that
+# record back without running anything, and a wrapped run prints a progress
+# line while the child is silent. Every call names its own record file, because
+# this suite exports `off` to everything it starts. The calls that must reach
+# the wrapper drop the nested-call marker this section inherits, as 0e's do.
+#
+# The progress line is asserted on a copy of this file whose 0d sleeps, so the
+# child is silent longer than the one-second interval the call asks for. The
+# same call is run the way a caller's pipe sees it: the pipe must close within
+# two seconds of the child, and no loop may be left behind.
+est_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-estimate.XXXXXX")
+est_suite="$repo_root/scripts/test-gate.sh"
+printf '0d\t2.000\t1\n0d\t4.000\t2\n0d\t3.000\t3\nmake:g1\t10.000\t4\n' > "$est_dir/rec.tsv"
+est_sum=$(cksum < "$est_dir/rec.tsv")
+est_rc=0
+CC_GATE_TIMING_RECORD="$est_dir/rec.tsv" bash "$est_suite" --estimate --run-one 0d --goals g1,g2 \
+  > "$est_dir/e.out" 2> "$est_dir/e.err" || est_rc=$?
+check "예상 모드는 종료 코드 0 이다" "$est_rc" "0"
+check "예상 모드는 기록을 바꾸지 않는다" "$(cksum < "$est_dir/rec.tsv")" "$est_sum"
+check "실측 출처는 기록 최근값의 중앙값이다" "$(grep -c "^0d	3	실측\$" "$est_dir/e.out" || true)" "1"
+check "목표 줄은 기록이 있으면 실측, 없으면 없음이다" \
+  "$(grep -E '^make:' "$est_dir/e.out" | tr '\t\n' ' |')" "make:g1 10 실측|make:g2 - 없음|"
+check "권장 한도는 10분 아래로 내려가지 않는다" \
+  "$(grep -c '^test-gate: 권장 한도 — 600000ms$' "$est_dir/e.out" || true)" "1"
+# With neither a record nor a census there is no table to fit the model to.
+mkdir -p "$est_dir/bare/scripts"
+cp "$est_suite" "$est_dir/bare/scripts/test-gate.sh"
+CC_TEST_GATE_REPO_ROOT="$est_dir/bare" CC_GATE_TIMING_RECORD="$est_dir/empty.tsv" \
+  bash "$est_dir/bare/scripts/test-gate.sh" --estimate --sections 0d > "$est_dir/b.out" 2>&1 || true
+check "표가 비면 출처는 없음, 합계는 없고 한도는 상한이다" \
+  "$(grep -c -E '^0d	-	없음$|^test-gate: 예상 합계 — 없음|^test-gate: 권장 한도 — 7200000ms$' "$est_dir/b.out" || true)" "3"
+est_rc=0
+bash "$est_suite" --estimate --sections nosuch > "$est_dir/u.out" 2>&1 || est_rc=$?
+check "모르는 id 의 예상은 전량이라고 말하고 상한을 권한다" \
+  "$est_rc|$(grep -c '^test-gate: 권장 한도 — 7200000ms$' "$est_dir/u.out" || true)" "0|1"
+est_rc=0; bash "$est_suite" --goals g1 > /dev/null 2>&1 || est_rc=$?
+check "--estimate 없는 --goals 는 exit 2 다" "$est_rc" "2"
+est_rc=0; bash "$est_suite" --estimate > /dev/null 2>&1 || est_rc=$?
+check "선택 없는 --estimate 는 exit 2 다" "$est_rc" "2"
+
+# The one merge: five rows a key, three columns a row, a dead writer's lock
+# removed, a live one waited out and skipped with the exit status untouched.
+printf 'k\t1\nk\t2\nk\t3\nk\t4\nk\t5\nk\t6\nk\t7\nbad\tx\n' > "$est_dir/add.tsv"
+CC_GATE_TIMING_RECORD="$est_dir/add-rec.tsv" bash "$est_suite" --record-add "$est_dir/add.tsv" > /dev/null 2>&1
+check "--record-add 는 키마다 최근 다섯 줄만 남긴다" "$(cut -f2 "$est_dir/add-rec.tsv" | tr '\n' ' ')" "3 4 5 6 7 "
+check "기록 줄은 키·초·epoch 세 칸이다" "$(awk -F '\t' 'NF != 3' "$est_dir/add-rec.tsv" | grep -c . || true)" "0"
+mkdir "$est_dir/add-rec.tsv.lock"
+touch -t 202001010000 "$est_dir/add-rec.tsv.lock"
+printf 'k\t8\n' > "$est_dir/add2.tsv"
+CC_GATE_TIMING_RECORD="$est_dir/add-rec.tsv" bash "$est_suite" --record-add "$est_dir/add2.tsv" > /dev/null 2>&1
+est_lock=없음; [ -d "$est_dir/add-rec.tsv.lock" ] && est_lock=남음
+check "60초 넘은 잠금은 지우고 합친다" "$(tail -n 1 "$est_dir/add-rec.tsv" | cut -f2)|$est_lock" "8|없음"
+mkdir "$est_dir/add-rec.tsv.lock"
+est_rc=0
+CC_GATE_TIMING_RECORD="$est_dir/add-rec.tsv" bash "$est_suite" --record-add "$est_dir/add2.tsv" \
+  > /dev/null 2> "$est_dir/lock.err" || est_rc=$?
+check "잡힌 잠금은 5초 뒤 건너뛰고 종료 코드는 0 이다" \
+  "$est_rc|$(grep -c '^test-gate: 소요 기록 건너뜀 — 잠금' "$est_dir/lock.err" || true)|$(grep -c . "$est_dir/add-rec.tsv")" "0|1|5"
+rmdir "$est_dir/add-rec.tsv.lock"
+# Unset, the record is the common git directory's file; outside a repository
+# nothing is written and nothing is said. The ceiling keeps git from finding a
+# repository above the scratch directory.
+git init -q "$est_dir/bare" > /dev/null 2>&1
+env -u CC_GATE_TIMING_RECORD CC_TEST_GATE_REPO_ROOT="$est_dir/bare" \
+  bash "$est_dir/bare/scripts/test-gate.sh" --record-add "$est_dir/add2.tsv" > /dev/null 2>&1
+check "기록 변수가 없으면 공통 git 디렉터리의 파일에 쓴다" \
+  "$(cut -f1,2 "$est_dir/bare/.git/cc-cmds-gate-timing.tsv" 2>/dev/null | tr '\t' ' ')" "k 8"
+mkdir -p "$est_dir/nogit/scripts"
+cp "$est_suite" "$est_dir/nogit/scripts/test-gate.sh"
+est_rc=0
+env -u CC_GATE_TIMING_RECORD GIT_CEILING_DIRECTORIES="$est_dir" CC_TEST_GATE_REPO_ROOT="$est_dir/nogit" \
+  bash "$est_dir/nogit/scripts/test-gate.sh" --record-add "$est_dir/add2.tsv" > /dev/null 2> "$est_dir/nogit.err" || est_rc=$?
+check "git 밖이면 조용히 건너뛴다" "$est_rc|$(grep -c . "$est_dir/nogit.err" || true)" "0|0"
+
+# A narrowed run writes its cut's keys; a nested call writes nothing. A caller
+# that owns the marker file gets the merge only by naming the record.
+est_rc=0
+env -u CC_TEST_GATE_ORACLE_INNER CC_GATE_TIMING_RECORD="$est_dir/run.tsv" \
+  bash "$est_suite" --run-one 0d > "$est_dir/r.out" 2> "$est_dir/r.err" || est_rc=$?
+check "좁힌 실행은 컷의 절·전주·머리 키만 기록한다" \
+  "$est_rc|$(cut -f1 "$est_dir/run.tsv" 2>/dev/null | LC_ALL=C sort -u | tr '\n' ' ')" "0|0d @head @pre-static "
+env -u CC_TEST_GATE_ORACLE_INNER CC_GATE_TIMING_OUT="$est_dir/m.tsv" CC_GATE_TIMING_RECORD="$est_dir/m-rec.tsv" \
+  bash "$est_suite" --run-one 0d > /dev/null 2>&1 || true
+check "호출자 표지의 실행은 기록 변수를 명시하면 합친다" \
+  "$(cut -f1 "$est_dir/m-rec.tsv" 2>/dev/null | LC_ALL=C sort -u | tr '\n' ' ')|$(cut -f1 "$est_dir/m.tsv" 2>/dev/null | tr '\n' ' ')" \
+  "0d @head @pre-static |@pre-static 0d @epilogue "
+
+awk '
+  index($0, "check \"비지 않은 --sections 는 가드를 지나간다\"") == 1 && !d { print "sleep 3"; d = 1 }
+  { print }
+' "$est_suite" > "$est_dir/slow.sh"
+CC_TEST_GATE_ORACLE_INNER=1 CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_PROGRESS_SECS=1 \
+  CC_GATE_TIMING_RECORD="$est_dir/nest.tsv" TMPDIR="$est_dir" \
+  bash "$est_dir/slow.sh" --run-one 0d > /dev/null 2> "$est_dir/nest.err" || true
+est_nest=없음; [ -e "$est_dir/nest.tsv" ] && est_nest=있음
+check "중첩 호출은 기록도 진행 줄도 쓰지 않는다" \
+  "$est_nest|$(grep -c '^test-gate: 진행 — ' "$est_dir/nest.err" || true)" "없음|0"
+( env -u CC_TEST_GATE_ORACLE_INNER CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_PROGRESS_SECS=1 \
+    TMPDIR="$est_dir" bash "$est_dir/slow.sh" --run-one 0d 2>&1 > "$est_dir/p.out"
+  date +%s > "$est_dir/child_end" ) | cat > "$est_dir/p.err"
+date +%s > "$est_dir/pipe_end"
+est_lines=$(grep -c '^test-gate: 진행 — ' "$est_dir/p.err" || true)
+est_shape=$(grep '^test-gate: 진행 — ' "$est_dir/p.err" \
+  | grep -c -v -E '^test-gate: 진행 — 절 [^ ]+ [0-9]+초째\(예상 ([0-9]+초|없음)\) · 전체 [0-9]+초\(예상 ([0-9]+초|없음)\)$' || true)
+if [ "${est_lines:-0}" -ge 2 ] && [ "${est_shape:-1}" = "0" ]; then
+  ok "진행 줄은 감싸는 쪽 stderr 에 정해진 모양으로 찍힌다 (${est_lines}줄)"
+else
+  bad "진행 줄" "줄 ${est_lines:-0}, 모양이 다른 줄 ${est_shape:-?}: $(grep '^test-gate: 진행' "$est_dir/p.err" | awk 'NR<=2' | tr '\n' ' ')"
+fi
+check "진행 줄은 stdout 에 섞이지 않고 합계 줄은 그대로다" \
+  "$(grep -c '^test-gate: 진행' "$est_dir/p.out" || true)|$(grep -c -E '^test-gate: [0-9]+ passed, 0 failed$' "$est_dir/p.out" || true)" "0|1"
+est_gap=$(( $(cat "$est_dir/pipe_end") - $(cat "$est_dir/child_end") ))
+est_left=$(pgrep -f "$est_dir/slow.sh" 2>/dev/null | grep -c . || true)
+check "자식이 끝나면 루프가 2초 안에 파이프를 놓고 남지 않는다" \
+  "$([ "$est_gap" -le 2 ] && echo 2초안 || echo "${est_gap}초")|${est_left:-0}" "2초안|0"
+rm -rf "$est_dir"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
@@ -13684,7 +14263,7 @@ rm -f "$WORK/plan15v-shape.md"
 
 # ---------------------------------------------------------------------------
 # 15vp. The run-scope visual publish step: its readers, its halts and its grades
-# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 셋이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다 ---
+# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write, gate_reach_disposition | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 셋이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다, 15vp: 발행 단계의 account 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다, 15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다, 15vp: 호스트 금지 목록을 그 경로로 읽는 shasum 는 읽기 선언으로 통과한다, 15vp: 호스트 금지 목록을 그 경로로 읽는 scan 은 읽기 선언으로 통과한다 ---
 #
 # The publish step is the fifth row of the run-scope table. It runs after the
 # visual step, publishes the screens at the one lane the host file pins, and
@@ -13915,7 +14494,55 @@ case "$row15vp" in
   *"| 상태=승인 |"*) ok "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" ;;
   *) bad "15vp: 서 있는 거부가 없으면 승인 술어가 시각-승인 을 승인으로 닫는다 (위 둘이 공허하지 않다)" "$row15vp" ;;
 esac
+
+# The reach: the publish stage declares `account` and `append` honestly as
+# `--surface 트리밖쓰기 --reach 기기전역`, calling the copy beside the gate by its
+# path, as the skill spells them. The machine-global cell opens exactly the two
+# the table graded `트리밖쓰기` from that copy, ahead of the check that parks a
+# program named by a path; the grade passed in is the table's own unless a case
+# says otherwise. A copy elsewhere given the same grade, a destructive
+# declaration and an ungraded act still park at that check, which also shows
+# the opening is this branch and not a cell further on.
+vp15_reach() {  # vp15_reach <stage id> <grade or -> <destructive 0|1> <argv...> — `<grade>|<cell/cause>`
+  local sid="$1"; shift
+  vp15 "$VP15/m.md" "$sid" '
+    GATE_GRADE_SOURCE=표; GATE_REACH=기기전역; GATE_DECLARED=트리밖쓰기; GATE_MARK=; GATE_MARK_TRIGGER=
+    GATE_DESTRUCTIVE="$2"
+    if [ "$1" = "-" ]; then shift 2; g=$(surface_of_argv0 "$@"); else g="$1"; shift 2; fi
+    c=$(gate_reach_disposition infra 0 "$g" "$@" | cut -f1,2 | tr "\t" "/")
+    printf "%s|%s" "$g" "${c:-열림}"' "$@"
+}
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+vp15_halt 12 '금지-후보 — 반복 문구' 'hero-gradient'
+vp15_answer 12 사람 승인
+check "15vp: 발행 단계의 account 는 기기전역 선언으로 열린다" \
+  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" account)" "트리밖쓰기|열림"
+check "15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다" \
+  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" append "$ban15vp")" "트리밖쓰기|열림"
+check "15vp: 발행 단계 밖의 account 는 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2#1' - 0 "$CC_ORCH/visual-config.sh" account)" "등급 미상|기기전역/argv0-path"
+check "15vp: 다른 후보의 append 는 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" append 'other-id | 다른 후보')" "등급 미상|기기전역/argv0-path"
+check "15vp: 파괴를 신고한 account 는 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' - 1 "$CC_ORCH/visual-config.sh" account)" "트리밖쓰기|기기전역/argv0-path"
+mkdir -p "$VP15/copy"; cp "$CC_ORCH/visual-config.sh" "$VP15/copy/visual-config.sh"
+check "15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$VP15/copy/visual-config.sh" account)" "트리밖쓰기|기기전역/argv0-path"
+check "15vp: 게이트 옆 사본의 다른 부속 명령은 같은 등급으로도 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$CC_ORCH/visual-config.sh" seed)" "트리밖쓰기|기기전역/argv0-path"
 rm -rf "$VP15"
+
+# The ban list's reads, spelled as the publish stage's Step 1 spells them: the
+# host file named by its own path under the config home, measured by `shasum`
+# and read by `scan --bans`, both declared `읽기`. A read the table proves passes
+# whatever path it names, so neither needs a copy of the host file first.
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 읽기 -- shasum -a 256 "$HOME/.config/cc-cmds/visual-bans"
+check "15vp: 호스트 금지 목록을 그 경로로 읽는 shasum 는 읽기 선언으로 통과한다" "$rc" "0"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 읽기 -- "$CC_ORCH/visual-check.sh" scan "$WT/docs/visual/screens" \
+  --bans "$HOME/.config/cc-cmds/visual-bans" --lifts "$WT/docs/visual-system/system.md"
+check "15vp: 호스트 금지 목록을 그 경로로 읽는 scan 은 읽기 선언으로 통과한다" "$rc" "0"
 
 # An `append` no person approved is refused on the acting path in the default
 # auto-resolving mode, declared as the approved one would be. With the switch
@@ -37769,6 +38396,88 @@ if [ "$P53b_PREV_SID_SET" = set ]; then CC_PIPELINE_STAGE_ID="$P53b_PREV_SID"; e
 
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
 # ---------------------------------------------------------------------------
+# 53c. 재수렴 작업 사본 — 사본 뜨기·게시·정리가 런로컬 신고로 park 없이 통과한다
+# --- section: 53c | group: reach | covers: exec, reach | anchors: 53c: 재수렴 사본 디렉터리의 mktemp -d 는 런로컬 신고로 통과한다, 53c: 문서를 사본으로 뜨는 cp 는 런로컬 신고로 통과한다, 53c: 사본을 문서로 게시하는 cp 는 런로컬 신고로 통과한다, 53c: 재수렴 사본 디렉터리의 rm -r 는 파괴 신고로 통과한다, 53c: 다른 시도 키의 사본 틀은 증명이 없다 ---
+# 재수렴 스테이지는 설계 문서를 `${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id>.XXXXXX` 사본
+# 하나에서 고치고 문서 잠금 아래 `cp` 한 번으로 게시한다. 사본 디렉터리만 다루는 `mktemp -d`
+# 와 `rm -r` 은 argv 가 런로컬을 증명하고, 문서를 피연산자로 갖는 두 `cp` 는 문서가 이름공간
+# 밖이라 증명이 서지 않으므로 정직한 `런로컬` 신고가 올림 유도 없이 그대로 받아들여진다.
+# 이 절은 자동 해소가 켜진 모드를 단언하고, 53b 본문의 헬퍼·변수에 기대지 않는다.
+CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+rid53c=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | sed -n 1p)
+RD53c="$XDG_STATE_HOME/cc-cmds/run/$rid53c"
+HH >/dev/null
+L53c=$(cat "$RD53c/ledger-path" 2>/dev/null || true)
+check "53c: 픽스처 런 디렉터리와 원장이 있다 (아래 단언이 공허하지 않다)" \
+  "$([ -d "$RD53c" ] && [ -f "$L53c" ] && echo yes)" "yes"
+TD53c="$WORK/tmp53c"; mkdir -p "$TD53c"
+P53c_PREV_TMPDIR="${TMPDIR-}"; P53c_PREV_TMPDIR_SET="${TMPDIR+set}"
+P53c_PREV_SID="${CC_PIPELINE_STAGE_ID-}"; P53c_PREV_SID_SET="${CC_PIPELINE_STAGE_ID+set}"
+export TMPDIR="$TD53c" CC_PIPELINE_STAGE_ID='A#7'
+P53c="$TD53c/cc-proto-$rid53c-A-7"
+# 메인 워크트리의 설계 문서 자리 — 픽스처 런 디렉터리 밖이다.
+D53c="$WORK/doc53c/design.md"; mkdir -p "$WORK/doc53c"
+printf '# 설계\n\n원문\n' > "$D53c"
+# 마지막 `자율 승인` 행의 한 칸을 읽는다.
+rl53c_cell() {
+  grep '자율 승인' "$L53c" | tail -n 1 | grep -o "| $1=[^|]*" | sed 's/^| //; s/[[:space:]]*$//'
+}
+# 런로컬 신고 exec 한 번 — 통과와 행의 `도달` 을 단언하고, 둘째 인자가 있으면 `유도 도달` 도 단언한다.
+# 셋째 인자는 더할 신고 플래그(없으면 빈 문자열)이고, 그 뒤 `--` 다음이 명령이다.
+rl53c_exec() {
+  local label="$1" derived="$2" extra="$3"; shift 4
+  # shellcheck disable=SC2086
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 런로컬 $extra --snapshot-digest "$(HH)" \
+    --rationale t -- "$@"
+  check "$label" "$rc" "0"
+  check "$label — 행의 도달은 런로컬이다" "$(rl53c_cell 도달)" "도달=런로컬"
+  if [ -n "$derived" ]; then
+    check "$label — 행의 유도 도달은 ${derived}이다" "$(rl53c_cell '유도 도달')" "유도 도달=$derived"
+  fi
+}
+# 소싱 시임으로 유도 하나를 잰다. 런 디렉터리는 소싱 뒤에 둔다.
+rl53c_derived() {
+  local want="$1" label="$2" got; shift 3
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    RUN_DIR="$1"; shift
+    gate_reach_derived front "$@"
+  ' _ "$RD53c" "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+rl53c_exec "53c: 재수렴 사본 디렉터리의 mktemp -d 는 런로컬 신고로 통과한다" 런로컬 '' -- mktemp -d "$P53c.XXXXXX"
+d53c=$(ls -d "$P53c".* 2>/dev/null | sed -n 1p)
+check "53c: 사본 디렉터리가 실제로 만들어졌다" "$([ -d "$d53c" ] && echo yes)" "yes"
+rl53c_exec "53c: 문서를 사본으로 뜨는 cp 는 런로컬 신고로 통과한다" '' '' -- cp "$D53c" "$d53c/doc.md"
+check "53c: 사본이 문서와 같은 바이트다" "$(cmp -s "$D53c" "$d53c/doc.md" && echo same)" "same"
+printf '# 설계\n\n고친 문면\n' > "$d53c/doc.md"
+rl53c_exec "53c: 사본을 문서로 게시하는 cp 는 런로컬 신고로 통과한다" '' '' -- cp "$d53c/doc.md" "$D53c"
+check "53c: 문서가 사본의 바이트가 됐다" "$(cmp -s "$d53c/doc.md" "$D53c" && echo same)" "same"
+# 리눅스 러너에는 잠금 도구가 없다 — 잠금 없는 같은 게시는 위에서 모든 호스트가 단언했다.
+if [ -x /usr/bin/lockf ]; then
+  printf '# 설계\n\n잠금 아래 고친 문면\n' > "$d53c/doc.md"
+  rl53c_exec "53c: 문서 잠금으로 감싼 게시 cp 는 런로컬 신고로 통과한다" '' '' -- /usr/bin/lockf -k -t 0 "$RD53c/designdoc.lock" cp "$d53c/doc.md" "$D53c"
+  check "53c: 잠금 아래 게시로 문서가 사본의 바이트가 됐다" "$(cmp -s "$d53c/doc.md" "$D53c" && echo same)" "same"
+else
+  ok "53c: 이 호스트에는 잠금 도구가 없어 잠금 감싼 게시 갈래를 건너뛴다 (잠금 없는 게시는 위에서 단언했다)"
+fi
+rl53c_exec "53c: 재수렴 사본 디렉터리의 rm -r 는 파괴 신고로 통과한다" 런로컬 --destructive -- rm -r "$d53c"
+case "$(rl53c_cell '파괴 출처')" in
+  '파괴 출처=신고'|'파괴 출처=유도·신고') ok "53c: 그 rm -r 행은 파괴 신고를 적는다" ;;
+  *) bad "53c: 그 rm -r 행은 파괴 신고를 적는다" "$(rl53c_cell '파괴 출처')" ;;
+esac
+check "53c: 사본 디렉터리가 지워졌다" "$([ -e "$d53c" ] || echo gone)" "gone"
+# 이름공간은 정확히 이 스테이지 키 하나다 — 다른 시도의 키와 문서 옆 숨김 사본은 증명이 없다.
+rl53c_derived '-' "53c: 다른 시도 키의 사본 틀은 증명이 없다" -- mktemp -d "$TD53c/cc-proto-$rid53c-A-6.XXXXXX"
+rl53c_derived '-' "53c: 문서 옆 숨김 사본으로 뜨는 cp 는 증명이 없다" -- cp "$D53c" "$WORK/doc53c/.design.md.copy"
+rm -rf "$WORK/doc53c"
+if [ "$P53c_PREV_TMPDIR_SET" = set ]; then TMPDIR="$P53c_PREV_TMPDIR"; export TMPDIR; else unset TMPDIR; fi
+if [ "$P53c_PREV_SID_SET" = set ]; then CC_PIPELINE_STAGE_ID="$P53c_PREV_SID"; export CC_PIPELINE_STAGE_ID; else unset CC_PIPELINE_STAGE_ID; fi
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
+# ---------------------------------------------------------------------------
 # 54. 비밀값 출력 — 알려진 형태는 park 되고 이름을 준 읽기는 통과한다
 # --- section: 54 | group: reach | covers: exec | anchors: 인자 없는 printenv 는 park 된다 ---
 # 이 절은 자동 해소가 켜진 모드를 단언한다 — park 인지 승인인지는 그 스위치
@@ -47412,7 +48121,7 @@ pb_is "83b: 떨어진 = 단어 앞에서 끊기는 제안은 없다" 'Sx=dropped
 
 # ---------------------------------------------------------------------------
 # 83c. 수리 문구 — park 한 칸마다 문구대로 고치면 같은 행위가 통과한다
-# --- section: 83c | group: reach | covers: plan, reach | anchors: 수리 문구 칸마다 문구대로 고치면 같은 행위가 통과한다 ---
+# --- section: 83c | group: reach | covers: plan, reach, exec, gate_reach_disposition | anchors: 수리 문구 칸마다 문구대로 고치면 같은 행위가 통과한다, 발행 단계의 게이트 옆 헬퍼 account 는 기기전역 선언으로 park 하지 않는다 ---
 #
 # park 은 행위를 하지 않고 고치는 법을 말해야 한다. 그 말이 틀리면 스테이지는 찍힌
 # 행을 붙여 넣고 다시 킥오프해 같은 칸에서 다시 멈춘다. 그래서 이 절은 칸·원인마다
@@ -47738,6 +48447,65 @@ rx_manifest R83C 'cctool --x'
 t3p front3 트리밖쓰기 기기전역 -- /usr/local/bin/cctool --x
 t3_park 8-행추가 기기전역 argv0-path 'whose program is named by a path' 0
 t3_calls 8 0
+
+# 8v — 경로로 지명된 프로그램 중 하나는 행 없이 열린다. 계획의 발행 단계가 게이트 옆
+# 시각 헬퍼의 `account` 를 스킬 문면 그대로 `--surface 트리밖쓰기 --reach 기기전역` 으로
+# exec 하면, 등급표가 매긴 트리밖쓰기가 그 행위를 연다 — park 하지 않고 판단도 부르지
+# 않는다. 게이트는 연 행위를 호출자의 PATH 그대로 돌리므로, 헬퍼가 부르는
+# `claude auth status --json` 은 PATH 맨 앞의 스텁이 받는다 — 호스트의 실제 CLI 와 그
+# 저장된 로그인은 이 절에서 한 번도 불리지 않는다. 스텁의 email 과 픽스처의 고정 계정이
+# 같아 헬퍼는 일치로 끝난다. 같은 헬퍼를 다른 경로에 복사한 사본은 같은 선언으로 등급을
+# 얻지 못한다.
+pj_reset
+rx_manifest R83V ''
+t3v_plan='{ "steps": [ { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": [] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] } ] }'
+t3v_m=$(sed "s/^{ \"steps\": \[\] }\$/$t3v_plan/" "$RX_M"); printf '%s\n' "$t3v_m" > "$RX_M"
+refresh_bd "$RX_M"
+mkdir -p "$WORK/vp83v-cfg/cc-cmds" "$WORK/vp83v-copy" "$WORK/vp83v-bin" "$WORK/vp83v-claude-home"
+cp "$CC_ORCH/visual-config.sh" "$WORK/vp83v-copy/visual-config.sh"
+printf 'account = vp83v@example.com\n' > "$WORK/vp83v-cfg/cc-cmds/claude-design"
+cat > "$WORK/vp83v-bin/claude" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$WORK/vp83v-claude-calls"
+printf '{ "loggedIn": true, "email": "vp83v@example.com" }\n'
+STUB
+chmod +x "$WORK/vp83v-bin/claude"
+t3v_exec() {  # t3v_exec <스테이지 id> <argv...> — 발행 단계의 선언 그대로 exec
+  local sid="$1" out; shift
+  out=$(cd "$WT" && env PATH="$WORK/vp83v-bin:$PATH" CLAUDE_CONFIG_DIR="$WORK/vp83v-claude-home" \
+    CC_PIPELINE_STAGE_ID="$sid" XDG_CONFIG_HOME="$WORK/vp83v-cfg" \
+    CC_CLAUDE_BIN="$PJ_STUB" PJ_DIR="$PJ_DIR" PJ_VERDICT=park \
+    bash "$GATE" exec --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+      --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" \
+      --rationale '발행 계정 판독' -- "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  printf '%s' "$out" > "$WORK/last-output.txt"
+}
+t3v_exec 'S2P#1' "$CC_ORCH/visual-config.sh" account
+if [ "$rc" != 11 ] && [ -z "$(rx_cell)" ]; then ok "83c: 8v — 발행 단계의 게이트 옆 헬퍼 account 는 기기전역 선언으로 park 하지 않는다"
+else bad "83c: 8v — 발행 단계의 게이트 옆 헬퍼 account 는 기기전역 선언으로 park 하지 않는다" "rc=$rc 칸=$(rx_cell): $msg"; fi
+t3_calls 8v 0
+t3v_calls=$(cat "$WORK/vp83v-claude-calls" 2>/dev/null || true)
+if [ "$rc" = 0 ] && [ "$t3v_calls" = "auth status --json" ] && grep -qF '계정 판정: 일치' "$WORK/last-output.txt"; then
+  ok "83c: 8v — 연 account 는 PATH 의 claude 스텁만 한 번 부르고 일치로 끝난다"
+else bad "83c: 8v — 연 account 는 PATH 의 claude 스텁만 한 번 부르고 일치로 끝난다" "rc=$rc 스텁 호출=[$t3v_calls]: $msg"; fi
+t3v_row=$( { grep -F '`자율 승인`' "$WT/docs/pipeline-run/R83V.md" 2>/dev/null || true; } | grep -F 'visual-config.sh account' | tail -1)
+case "$t3v_row" in *"| 도달=기기전역 |"*)
+  ok "83c: 8v — 자율 승인 행이 그 행위와 기기전역 도달을 담는다" ;;
+  *) bad "83c: 8v — 자율 승인 행이 그 행위와 기기전역 도달을 담는다" "$t3v_row" ;; esac
+# 열리지 않은 행위는 자율 승인 행을 남기지 않고, 헬퍼가 돌았다면 일치로 0 을 냈을 것이므로
+# 종료 코드도 0 이 아니다. 둘을 함께 본다.
+t3v_n() { { grep -c '^- `자율 승인`' "$WT/docs/pipeline-run/R83V.md" 2>/dev/null || true; }; }
+for t3v_case in "S2#1|$CC_ORCH/visual-config.sh|발행 단계 밖의 account" \
+                "S2P#1|$WORK/vp83v-copy/visual-config.sh|게이트 옆이 아닌 사본의 account"; do
+  t3v_n0=$(t3v_n)
+  t3v_exec "${t3v_case%%|*}" "$(printf '%s' "$t3v_case" | cut -d'|' -f2)" account
+  t3v_n1=$(t3v_n)
+  if [ "$rc" != 0 ] && [ "${t3v_n1:-0}" = "${t3v_n0:-0}" ]; then
+    ok "83c: 8v — ${t3v_case##*|} 는 같은 선언으로 열리지 않는다"
+  else bad "83c: 8v — ${t3v_case##*|} 는 같은 선언으로 열리지 않는다" "rc=$rc 행 ${t3v_n0}→${t3v_n1}: $msg"; fi
+done
+rm -rf "$WORK/vp83v-cfg" "$WORK/vp83v-copy" "$WORK/vp83v-bin" "$WORK/vp83v-claude-home" "$WORK/vp83v-claude-calls"
 
 # 9 — 기기전역 경로를 담은 외부 상태 변경.
 rx_manifest R83C ''
@@ -51443,6 +52211,252 @@ for bad88c in "$LB88C" "$LS88C"; do
     *) bad "88c: 증명되지 않는 둘째 부모의 착지" "$ap88c_out" ;;
   esac
 done
+
+# ---------------------------------------------------------------------------
+# 88m. 재번호 사슬 — 베이스가 거듭 움직일 때의 메타 해소와 코드 충돌 한도
+# --- section: 88m | group: ledger_series | covers: gate_base_cf_release_only, gate_base_conflict_count, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_segment_review_next, gate_apply_preconditions, gate_apply_subject_proof, gate_cycle_trigger_facts | anchors: 88m: 사슬 머리가 다시 릴리스 파일에서만 충돌하면 부류 릴리스 메타 이고 다음은 베이스 해소 다, 88m: 사슬 머리의 릴리스 메타 충돌 뒤 촉발 사실은 버전 경합 이고 베이스 충돌 이 아니다, 88m: HEAD 가 R 이어도 같은 베이스의 부류는 릴리스 메타 다, 88m: 둘째 도우미 머지는 사슬 머리 위에 한 고리를 쌓고 판을 새 베이스 위로 다시 매긴다, 88m: 둘째 고리 HEAD 의 베이스 판정은 일치 이고 다음은 머지 다, 88m: 같은 베이스로 도우미를 다시 부르면 거부되고 HEAD 는 그대로다, 88m: 판정 HEAD 가 아닌 HEAD 위에는 쌓지 않는다, 88m: R 도 사슬 머리도 아닌 HEAD 위에는 쌓지 않는다, 88m: 이미 그 베이스 위에 있는 HEAD 는 다시 해소하지 않는다, 88m: 거부 뒤 HEAD 는 둘째 고리 그대로다, 88m: 두 고리 사슬은 증명되고 머지 행위는 그 머리를 내보낸다, 88m: 리뷰-후-머지 는 사슬 머리를 받을 때만 통과시킨다, 88m: 아래 고리의 판이 틀린 사슬은 증명되지 않고 사유에 고리 자리가 붙는다, 88m: 아래 고리가 같은 베이스를 다시 쓴 사슬은 증명되지 않는다, 88m: 아래 고리가 머지가 아닌 사슬은 증명되지 않는다, 88m: 릴리스 파일만의 충돌은 부류와 무관하게 세지 않는다, 88m: 코드 충돌 넷이면 베이스 해소 한도 다, 88m: 잘린 칸·빈 칸·키 없는 행은 코드 충돌로 센다, 88m: 한도를 넘은 뒤의 릴리스 메타 충돌도 베이스 해소 한도 다, 88m: 사슬 머리를 둘째 부모로 둔 착지는 적용 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다, 88m: 적용 대상 증명은 사슬 머리의 착지에서 리뷰 HEAD 를 세운다, 88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 일치 다 ---
+#
+# 메타 해소 뒤 베이스가 또 판을 올리면 사슬 머리 M1 이 다시 릴리스 파일에서만 충돌한다.
+# 그 충돌은 여전히 판단이 아니어서 도우미가 M1 위에 한 고리를 더 쌓고, 사슬 전체가
+# 증명되는 동안은 리뷰도 사람도 부르지 않는다. 한도는 릴리스 파일 밖의 경로가 든
+# 충돌만 센다. 픽스처는 88c 와 같은 구성을 새로 만든다 — 88c 의 상태에 기대지 않는다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88M="$lsr_root/s88m"; rm -rf "$D88M"; mkdir -p "$D88M"
+O88M="$D88M/origin.git"; G88M="$D88M/repo"; W88M="$D88M/seg"; U88M="$D88M/up"
+PJ88M='plugins/cc-cmds/.claude-plugin/plugin.json'
+pj88m() { printf '{\n  "name": "cc-cmds",\n  "version": "%s",\n  "description": "x"\n}\n' "$1" > "$PJ88M"; }
+cl88m() {  # cl88m <판> <날짜> <본문> — 맨 위에 항목 하나를 얹는다
+  { sed -n '1,2p' CHANGELOG.md; printf '## [%s] - %s\n\n### Added\n- %s\n\n' "$1" "$2" "$3"; sed '1,2d' CHANGELOG.md; } > CHANGELOG.new
+  mv CHANGELOG.new CHANGELOG.md
+}
+up88m() {  # up88m <판> <날짜> <파일> — 상류가 판을 올려 원격 main 에 밀고 그 sha 를 찍는다
+  ( cd "$U88M" && git checkout -q main && pj88m "$1" && cl88m "$1" "$2" "상류 $1" && echo "$1" > "$3" \
+      && git add -A && git commit -qm "up $1" && git push -q origin HEAD:main && git rev-parse HEAD ) 2>/dev/null
+  ( cd "$G88M" && git fetch -q origin ) >/dev/null 2>&1
+}
+( git init -q --bare "$O88M" && git init -q "$G88M" && cd "$G88M" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && git config "url.$O88M.insteadOf" https://github.com/o/r.git \
+  && mkdir -p plugins/cc-cmds/.claude-plugin && pj88m 1.0.0 \
+  && printf '# Changelog\n\n## [1.0.0] - 2026-10-01\n\n### Added\n- 처음\n' > CHANGELOG.md \
+  && git add -A && git commit -qm one && git branch -M main \
+  && git remote add origin https://github.com/o/r.git && git push -q origin main \
+  && git worktree add -q -b seg-88m "$W88M" main \
+  && git clone -q -b main "$O88M" "$U88M" && cd "$U88M" \
+  && git config user.email t@example.invalid && git config user.name T ) >/dev/null 2>&1
+R88M=$( ( cd "$W88M" && pj88m 1.1.0 && cl88m 1.1.0 2026-10-14 '세그먼트 기능' && echo s > seg.txt \
+          && git add -A && git commit -qm seg && git rev-parse HEAD ) 2>/dev/null)
+T188M=$(up88m 1.1.0 2026-10-13 up1.txt)
+M88M="$D88M/manifest.md"
+printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88M" > "$M88M"
+L88M=$(lsr_ledger w88m)
+printf '1\n' > "${L88M%/*}/routing-guard"
+printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88m | 선행=없음 | prev=x\n' "$W88M" >> "$L88M"
+printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+  "$R88M" "$(lsr_rp_report "$D88M/c1.md" 0 0 차단)" >> "$L88M"
+q88m() { local l=$1; shift; lsr_in Linux "$l" - lsr_rp_in "$M88M" "$@" 2>/dev/null; }
+c88m() {  # c88m [원장] — base-check 한 번의 rc
+  local rc88m=0
+  lsr_in Linux "${1:-$L88M}" - lsr_rp_in "$M88M" gate_record_row base-check S t >/dev/null 2>&1 || rc88m=$?
+  printf '%s' "$rc88m"
+}
+mm88m_in() {  # 도우미 한 번 — 거부면 `규칙|<경고 줄>`, 성공이면 `0|<M>`
+  local rc=0 out
+  out=$(gate_meta_merge S 2>"$D88M/mm.err") || rc=$?
+  [ "$rc" != "$GATE_EXIT_RULE" ] || rc=규칙
+  printf '%s|%s' "$rc" "${out:-$(tr '\n' ' ' < "$D88M/mm.err")}"
+}
+mm88m() { lsr_in Linux "$1" - lsr_rp_in "$M88M" mm88m_in 2>/dev/null; }
+pv88m() { lsr_in Linux "$L88M" - lsr_rp_in "$M88M" pv88m_in "$@" 2>/dev/null; }
+pv88m_in() {  # pv88m <R> <H> <T> — 사슬 증명의 rc 와 사유
+  local rc=0
+  gate_meta_resolved "$W88M" "$1" "$2" "$3" || rc=$?
+  printf '%s|%s' "$rc" "$GATE_META_WHY"
+}
+hd88m() { cd "$W88M" && git rev-parse HEAD; }
+cs88m() {  # cs88m <커밋> — 판과 변경 기록 머리말의 차례
+  printf '%s|%s' "$(cd "$W88M" && git show "$1:$PJ88M" | sed -n 's/^  "version": "\(.*\)",$/\1/p')" \
+    "$(cd "$W88M" && git show "$1:CHANGELOG.md" | grep '^## \[' | tr '\n' ';')"
+}
+
+# 첫 고리 — 88c 와 같은 R 위의 메타 해소 M1.
+c88m >/dev/null
+MM188M=$(mm88m "$L88M"); MM188M=${MM188M#0|}
+c88m >/dev/null
+T288M=$(up88m 1.2.0 2026-10-15 up2.txt)
+check "88m: 사슬 머리가 다시 릴리스 파일에서만 충돌하면 부류 릴리스 메타 이고 다음은 베이스 해소 다" \
+  "$(c88m)|$(lsr_last_fields "$L88M" '베이스 판정' 판정\ HEAD 베이스 판정 충돌\ 파일 부류)|$(q88m "$L88M" gate_segment_review_next S)" \
+  "0|$MM188M|$T288M|충돌|CHANGELOG.md|릴리스 메타|베이스 해소"
+tf88m=$(q88m "$L88M" gate_cycle_trigger_facts S)
+check "88m: 사슬 머리의 릴리스 메타 충돌 뒤 촉발 사실은 버전 경합 이고 베이스 충돌 이 아니다" \
+  "$(printf '%s\n' "$tf88m" | grep -c '^버전 경합$' || true)|$(printf '%s\n' "$tf88m" | grep -c '^베이스 충돌$' || true)" "1|0"
+# 사슬 머리를 판정한 충돌 행이 마지막인 원장 — 아래 거부와 계수의 바탕이다.
+L88M1=$(lsr_ledger w88m-one); cp "$L88M" "$L88M1"; printf '1\n' > "${L88M1%/*}/routing-guard"
+ROW88M=$(grep '^- `베이스 판정` ' "$L88M1" | tail -1)
+
+L88MR=$(lsr_ledger w88m-r); cp "$L88M" "$L88MR"; printf '1\n' > "${L88MR%/*}/routing-guard"
+( cd "$W88M" && git checkout -q --detach "$R88M" ) >/dev/null 2>&1
+check "88m: HEAD 가 R 이어도 같은 베이스의 부류는 릴리스 메타 다" \
+  "$(c88m "$L88MR")|$(lsr_last_fields "$L88MR" '베이스 판정' 판정\ HEAD 판정 부류)" "0|$R88M|충돌|릴리스 메타"
+( cd "$W88M" && git checkout -q seg-88m ) >/dev/null 2>&1
+
+MM288M=$(mm88m "$L88M"); MM288M=${MM288M#0|}
+printf -- '- `checks` | 교대=1 | PR=o/r#5 | head sha=%s | 상태=통과 | 필수 집합=- | 실패 체크=- | 관측=%s | 세그먼트=S | 재실행 회차=0 | 진행 중=0 | prev=x\n' \
+  "$MM288M" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$L88M"
+check "88m: 둘째 도우미 머지는 사슬 머리 위에 한 고리를 쌓고 판을 새 베이스 위로 다시 매긴다" \
+  "$(hd88m)|$(cd "$W88M" && git rev-list --parents -n 1 HEAD | cut -d' ' -f2-)|$(cs88m HEAD)" \
+  "$MM288M|$MM188M $T288M|1.3.0|## [1.3.0] - 2026-10-14;## [1.2.0] - 2026-10-15;## [1.1.0] - 2026-10-13;## [1.0.0] - 2026-10-01;"
+check "88m: 둘째 고리 HEAD 의 베이스 판정은 일치 이고 다음은 머지 다" \
+  "$(c88m)|$(lsr_last_fields "$L88M" '베이스 판정' 판정\ HEAD 판정)|$(q88m "$L88M" gate_segment_review_next S)" \
+  "0|$MM288M|일치|머지"
+
+# 도우미의 거부 — 다시 부른 같은 베이스, 판정 HEAD 가 아닌 HEAD, 사슬 머리가 아닌 HEAD,
+# 이미 그 베이스 위의 HEAD. 끝의 셋은 판정 HEAD 칸만 바꾼 충돌 행으로 세운다.
+rw88m() {  # rw88m <이름> <판정 HEAD> — L88M1 뒤에 판정 HEAD 만 바꾼 충돌 행을 붙인 사본
+  local l
+  l=$(lsr_ledger "w88m-$1"); cp "$L88M1" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf '%s\n' "$ROW88M" | sed "s/판정 HEAD=[^|]*|/판정 HEAD=$2 |/" >> "$l"
+  printf '%s' "$l"
+}
+check "88m: 같은 베이스로 도우미를 다시 부르면 거부되고 HEAD 는 그대로다" \
+  "$(mm88m "$L88M" | cut -d'|' -f1)|$(hd88m)" "규칙|$MM288M"
+case "$(mm88m "$L88M1")" in
+  "규칙|"*"is not the HEAD the latest 베이스 판정 judged"*) ok "88m: 판정 HEAD 가 아닌 HEAD 위에는 쌓지 않는다" ;;
+  *) bad "88m: 판정 HEAD 가 아닌 HEAD 위에는 쌓지 않는다" "$(mm88m "$L88M1")" ;;
+esac
+X88M=$( (cd "$W88M" && git commit-tree "$MM288M^{tree}" -p "$R88M" -m x) 2>/dev/null)
+( cd "$W88M" && git branch -q x-88m "$X88M" && git checkout -q x-88m ) >/dev/null 2>&1
+mmx88m=$(mm88m "$(rw88m x "$X88M")")
+( cd "$W88M" && git checkout -q seg-88m ) >/dev/null 2>&1
+case "$mmx88m" in
+  "규칙|"*"is neither R nor a renumbering chain head of R"*) ok "88m: R 도 사슬 머리도 아닌 HEAD 위에는 쌓지 않는다" ;;
+  *) bad "88m: R 도 사슬 머리도 아닌 HEAD 위에는 쌓지 않는다" "$mmx88m" ;;
+esac
+mma88m=$(mm88m "$(rw88m again "$MM288M")")
+case "$mma88m" in
+  "규칙|"*"is already on that base"*) ok "88m: 이미 그 베이스 위에 있는 HEAD 는 다시 해소하지 않는다" ;;
+  *) bad "88m: 이미 그 베이스 위에 있는 HEAD 는 다시 해소하지 않는다" "$mma88m" ;;
+esac
+check "88m: 거부 뒤 HEAD 는 둘째 고리 그대로다" "$(hd88m)" "$MM288M"
+
+ex88m() {  # ex88m <HEAD> — 머지 행위의 내보내기가 남기는 값
+  unset GATE_META_RESOLVED_HEAD
+  gate_meta_resolved_export S "$1"
+  printf '%s' "${GATE_META_RESOLVED_HEAD:-}"
+}
+check "88m: 두 고리 사슬은 증명되고 머지 행위는 그 머리를 내보낸다" \
+  "$(pv88m "$R88M" "$MM288M" "$T288M")|$(q88m "$L88M" ex88m "$MM288M")|$(q88m "$L88M" ex88m "$X88M")" "0||$MM288M|"
+rl88m() {  # rl88m [env 할당…] — 리뷰-후-머지 규칙을 머지 자리의 입력으로 직접
+  ( cd "$G88M" && env -u GATE_SUBJECT_HEAD -u GATE_META_RESOLVED_HEAD "$@" GATE_ACT_INDEX=9 GATE_MERGE_INDEX=1 \
+      GATE_SURFACE=외부상태변경 GATE_HISTORY_INTEGRATION=0 GATE_REVIEW_POLICY_INDEX=0 \
+      GATE_LEDGER="$L88M" GATE_MANIFEST="$M88M" GATE_SEGMENT=S \
+      GATE_SEGMENT_LAST_CYCLE="$(q88m "$L88M" gate_segment_last_cycle_row S)" \
+      GATE_SEGMENT_LAST_SEGMENT="$(q88m "$L88M" gate_segment_last_segment_row S)" \
+      /bin/sh "$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-머지.sh" ) >/dev/null 2>&1 && printf 0 || printf 1
+}
+check "88m: 리뷰-후-머지 는 사슬 머리를 받을 때만 통과시킨다" \
+  "$(rl88m)|$(rl88m GATE_META_RESOLVED_HEAD="$MM288M")|$(rl88m GATE_META_RESOLVED_HEAD="$MM188M")" "1|0|1"
+
+# 증명되지 않는 사슬 셋 — 윗 고리는 모두 E*(R, T2) 의 트리와 부모 T2 를 갖춘다.
+mkdir -p "$D88M/bad/${PJ88M%/*}"; ( cd "$D88M/bad" && pj88m 1.1.0 )
+LOW88M=$( ( cd "$W88M" && b=$(git hash-object -w "$D88M/bad/$PJ88M") && export GIT_INDEX_FILE="$D88M/bad.index" \
+            && git read-tree "$MM188M" && git update-index --cacheinfo "100644,$b,$PJ88M" \
+            && t=$(git write-tree) && git commit-tree "$t" -p "$R88M" -p "$T188M" -m low ) 2>/dev/null)
+top88m() { (cd "$W88M" && git commit-tree "$MM288M^{tree}" -p "$1" -p "$T288M" -m top) 2>/dev/null; }
+CB188M=$(top88m "$LOW88M")
+CB288M=$( (cd "$W88M" && git commit-tree "$MM188M^{tree}" -p "$MM188M" -p "$T188M" -m same) 2>/dev/null)
+CB388M=$(top88m "$X88M")
+check "88m: 아래 고리의 판이 틀린 사슬은 증명되지 않고 사유에 고리 자리가 붙는다" \
+  "$(pv88m "$R88M" "$CB188M" "$T288M")" "1|H's tree is not the expected release tree — link 2 of the chain"
+check "88m: 아래 고리가 같은 베이스를 다시 쓴 사슬은 증명되지 않는다" \
+  "$(pv88m "$R88M" "$CB288M" "$T288M")" "1|H's second parent is not the base or an ancestor of it — link 2 of the chain"
+check "88m: 아래 고리가 머지가 아닌 사슬은 증명되지 않는다" \
+  "$(pv88m "$R88M" "$CB388M" "$T288M")" "1|H is not a two-parent merge whose first parent is R — link 2 of the chain"
+
+# 계수 — 사슬 머리 MM288M 를 판정한 충돌 행을 덧붙인 원장 사본. 덧붙인 행의 마지막이
+# 지금 HEAD 의 충돌이므로 다음은 베이스 해소 갈래이고, 한도 여부만 갈린다.
+cr88m() {  # cr88m <충돌 파일 칸|없음> <부류> — 판정 HEAD 를 MM288M 로 둔 충돌 행 한 줄
+  local r
+  r=$(printf '%s\n' "$ROW88M" | sed -e "s/판정 HEAD=[^|]*|/판정 HEAD=$MM288M |/" -e "s/부류=[^|]*|/부류=$2 |/")
+  if [ "$1" = 없음 ]; then printf '%s\n' "$r" | sed 's/ | 충돌 파일=[^|]*|/ |/'
+  else printf '%s\n' "$r" | sed "s#충돌 파일=[^|]*|#충돌 파일=$1 |#"; fi
+}
+lc88m() {  # lc88m <이름> <행…> — L88M 뒤에 행들을 붙인 사본
+  local l n=$1; shift
+  l=$(lsr_ledger "w88m-c$n"); cp "$L88M" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf '%s\n' "$@" >> "$l"
+  printf '%s' "$l"
+}
+cn88m() {  # cn88m <원장> — 베이스 판정 행 수(덧붙인 행이 비지 않았는지), 코드 충돌 수, 다음
+  printf '%s|%s|%s' "$(grep -c '^- `베이스 판정` .*| 판정=' "$1" || true)" \
+    "$(q88m "$1" gate_base_conflict_count S)" "$(q88m "$1" gate_segment_review_next S)"
+}
+META88M=$(cr88m CHANGELOG.md '릴리스 메타')
+BOTH88M=$(cr88m "$PJ88M,CHANGELOG.md" '릴리스 메타')
+CODE88M=$(cr88m "seg.txt,CHANGELOG.md" '일반')
+check "88m: 릴리스 파일만의 충돌은 부류와 무관하게 세지 않는다" \
+  "$(cn88m "$(lc88m a "$META88M" "$BOTH88M" "$META88M" "$(cr88m CHANGELOG.md '일반')")")" "8|0|베이스 해소"
+check "88m: 코드 충돌 넷이면 베이스 해소 한도 다" \
+  "$(cn88m "$(lc88m b "$CODE88M" "$CODE88M" "$CODE88M")")|$(cn88m "$(lc88m b4 "$CODE88M" "$CODE88M" "$CODE88M" "$CODE88M")")" \
+  "7|3|베이스 해소|8|4|베이스 해소 한도"
+check "88m: 잘린 칸·빈 칸·키 없는 행은 코드 충돌로 센다" \
+  "$(cn88m "$(lc88m c "$(cr88m "$PJ88M,CHANGELOG.md…(3개)" '일반')" "$(cr88m - '일반')" "$(cr88m 없음 '일반')" "$CODE88M")")" \
+  "8|4|베이스 해소 한도"
+check "88m: 한도를 넘은 뒤의 릴리스 메타 충돌도 베이스 해소 한도 다" \
+  "$(cn88m "$(lc88m d "$CODE88M" "$CODE88M" "$CODE88M" "$CODE88M" "$META88M")")" "9|4|베이스 해소 한도"
+
+# 적용 전제 4 와 적용 대상 증명 — 착지 커밋은 T2 에서 갈라진 착지 브랜치에 사슬 머리를
+# --no-ff 로 머지해 만든다. 마지막 베이스 판정 행의 베이스는 T2 다.
+( cd "$W88M" && git branch -q chainbad-88m "$CB188M" ) >/dev/null 2>&1
+la88m() {  # la88m <브랜치> <둘째 부모> — T2 위의 --no-ff 착지를 밀고 그 sha 를 찍는다
+  ( cd "$U88M" && git checkout -q -b "$1" "$T288M" && git merge -q --no-ff -m "land $1" "$2" \
+      && git push -q origin "$1" && git rev-parse HEAD ) 2>/dev/null
+}
+( cd "$U88M" && git fetch -q "$G88M" seg-88m chainbad-88m ) >/dev/null 2>&1
+LM88M=$(la88m land-88m "$MM288M")
+LB88M=$(la88m landbad-88m "$CB188M")
+( cd "$G88M" && git fetch -q origin ) >/dev/null 2>&1
+MA88M="$D88M/manifest-apply.md"
+sed -e 's/베이스 브랜치=main/베이스 브랜치=land-88m/' -e 's/절단점=머지/절단점=배포/' "$M88M" | awk '
+  { print }
+  /^\*\*설계 문서\*\*: / { print "**적용 주체**: 파이프라인"; print "**적용 지점**: `true`"; print "**적용 프로브**: `exit 0`" }
+' > "$MA88M"
+ap88m_in() {
+  local rc=0
+  gate_apply_preconditions act t S 2>"$D88M/ap.err" >/dev/null || rc=$?
+  [ "$rc" != "$GATE_EXIT_RULE" ] || rc=규칙
+  printf '%s|%s|%s|%s|%s' "$rc" "${GATE_APPLY_NOT_OWED:-}" "${GATE_APPLY_MERGE:-}" "${GATE_APPLY_SUBJECT:-}" \
+    "$(tr '\n' ' ' < "$D88M/ap.err")"
+}
+lap88m() {  # lap88m <이름> <머지 커밋> — L88M 뒤에 적용=대기 머지됨 행 하나를 붙인 원장 사본
+  local l
+  l=$(lsr_ledger "w88m-$1"); cp "$L88M" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf -- '- `segment` | 교대=1 | id=S | 상태=머지됨 | 워크트리=%s | 머지 커밋=%s | 적용=대기 | prev=x\n' "$W88M" "$2" >> "$l"
+  printf '%s' "$l"
+}
+ap88m_out=$(lsr_in Linux "$(lap88m ap-ok "$LM88M")" - lsr_rp_in "$MA88M" ap88m_in 2>/dev/null)
+check "88m: 사슬 머리를 둘째 부모로 둔 착지는 적용 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다" \
+  "$(printf '%s' "$ap88m_out" | cut -d'|' -f1-4)" "0||$LM88M|$R88M"
+ap88m_out=$(lsr_in Linux "$(lap88m ap-bad "$LB88M")" - lsr_rp_in "$MA88M" ap88m_in 2>/dev/null)
+case "$ap88m_out" in
+  "규칙|"*"적용 행위 전제 4 불충족"*"(H's tree is not the expected release tree — link 2 of the chain)"*)
+    ok "88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다" ;;
+  *) bad "88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다" "$ap88m_out" ;;
+esac
+sp88m_in() {  # sp88m <M> — 적용 대상 증명이 세운 리뷰 HEAD, 또는 x:<사유>
+  if gate_apply_subject_proof t S "$1"; then printf '%s' "$GATE_APPLY_PROOF_HEAD"; else printf 'x:%s' "$GATE_APPLY_PROOF_WHY"; fi
+}
+check "88m: 적용 대상 증명은 사슬 머리의 착지에서 리뷰 HEAD 를 세운다" \
+  "$(q88m "$L88M" sp88m_in "$LM88M")|$(q88m "$L88M" sp88m_in "$LB88M" | cut -c1-2)" "$R88M|x:"
+
+# 셋째 고리 — 베이스가 한 번 더 판을 올린다.
+T388M=$(up88m 1.3.0 2026-10-16 up3.txt)
+c88m >/dev/null
+MM388M=$(mm88m "$L88M"); MM388M=${MM388M#0|}
+check "88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 일치 다" \
+  "$(cs88m "$MM388M" | cut -d'|' -f1)|$(pv88m "$R88M" "$MM388M" "$T388M")|$(c88m)|$(lsr_last_fields "$L88M" '베이스 판정' 판정\ HEAD 판정)" \
+  "1.4.0|0||0|$MM388M|일치"
 
 # ---------------------------------------------------------------------------
 # 88e. CI 판정의 리뷰 사이클 합류 — 판정 전 머지 금지, 수정 갈래의 CI 층, 대기 한도, 선재실행 술어, 중계 깨움

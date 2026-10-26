@@ -72,7 +72,7 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # invariants live in its top `## Control-Flow Invariants`), `design-audit`,
 # `design-analyze`, and the unattended arms — `implement-unattended`,
 # `review-unattended`, `design-audit-unattended`, `design-reconverge`,
-# `design-discuss-unattended`, `visual-unattended` — and `visual`, whose halt/park termini are exactly the
+# `design-discuss-unattended`, `visual-unattended`, `visual-publish-unattended` — and `visual`, whose halt/park termini are exactly the
 # summarize-away class this rule protects. `design-audit` is non-exempt for the
 # core reason: its termination state is NOT recoverable from the ledger, so it
 # does not qualify for the multi-round agent-team exemption above. A ledger

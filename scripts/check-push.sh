@@ -35,6 +35,9 @@
 #   CHECK_PUSH_SECTIONS     test-gate section ids to run, comma-separated
 #   CHECK_PUSH_GOALS        REST goals to run (`make -s print-rest-goals`),
 #                           comma-separated
+#   CHECK_PUSH_JOBS         how many of the section lanes and goal jobs run at
+#                           once (default 4; 1 runs the sections in one
+#                           test-gate call and the goals in one make, in turn)
 #   CC_CHECK_PUSH_MAKE      the make for lint, readme and check-cheap (default
 #                           make); the self-test swaps in doubles through it,
 #                           as it does through CC_TEST_TREE_GATE,
@@ -55,6 +58,9 @@ TT_SECVAR="CHECK_PUSH_SECTIONS"
 TT_GOALVAR="CHECK_PUSH_GOALS"
 CP_TMP_STAMP=""
 CP_GATE_PATH="plugins/cc-cmds/orchestrator/gate.sh"
+# Read once here: the children never see it, because tt_scrubbed drops every
+# CHECK_PUSH_* variable.
+CP_JOBS="${CHECK_PUSH_JOBS:-4}"
 
 check_push_usage() {
   printf 'check-push: 사용법 — run / verify / --self-test 중 하나\n' >&2
@@ -77,12 +83,36 @@ check_push_field() {
   return 0
 }
 
+# Splits an item step (`절=<ids>`, `목표=<goals>`, or both joined by a space,
+# which the job pool gives when sections and goals failed together) into
+# CP_FAILED_SECTIONS and CP_FAILED_GOALS.
+check_push_failed_parts() {
+  local part
+  CP_FAILED_SECTIONS=""
+  CP_FAILED_GOALS=""
+  for part in $1; do
+    case "$part" in
+      절=*) CP_FAILED_SECTIONS="${part#절=}" ;;
+      목표=*) CP_FAILED_GOALS="${part#목표=}" ;;
+    esac
+  done
+}
+
+# The item step that names <sections> and <goals>, whichever are not empty.
+check_push_items_step() {
+  local s="${1:+절=$1}"
+  printf '%s' "$s${2:+${s:+ }목표=$2}"
+}
+
 # The command that runs only the failed step on the head, in the worktree.
 check_push_rerun_line() {
-  local what
+  local what=""
   case "$1" in
-    절=*) what="bash scripts/test-gate.sh --sections ${1#절=}" ;;
-    목표=*) what="make --no-print-directory $(printf '%s' "${1#목표=}" | tr ',' ' ')" ;;
+    절=*|목표=*)
+      check_push_failed_parts "$1"
+      [ -z "$CP_FAILED_SECTIONS" ] || what="bash scripts/test-gate.sh --sections $CP_FAILED_SECTIONS"
+      [ -z "$CP_FAILED_GOALS" ] || what="${what:+$what && }make --no-print-directory $(printf '%s' "$CP_FAILED_GOALS" | tr ',' ' ')"
+      ;;
     readme) what="make readme && git diff --exit-code -- README.md" ;;
     *) what="make $1" ;;
   esac
@@ -95,8 +125,11 @@ check_push_rerun_line() {
 check_push_merged_rerun_line() {
   local stage="$1" commit="$2" rc secs="" goals=""
   case "$stage" in
-    절=*) secs="${stage#절=}" ;;
-    목표=*) goals="${stage#목표=}" ;;
+    절=*|목표=*)
+      check_push_failed_parts "$stage"
+      secs="$CP_FAILED_SECTIONS"
+      goals="$CP_FAILED_GOALS"
+      ;;
     *) check_push_rerun_line "$stage"; return 0 ;;
   esac
   if ! tt_checkout "$commit"; then
@@ -113,11 +146,7 @@ check_push_merged_rerun_line() {
     printf 'check-push: head 만 다시 돌리기 — head 에 남는 항목이 없어 항목 명령을 찍지 않는다 (헤드에 없는 항목=%s)\n' "$(tt_or_none "$TT_DROPPED")"
     return 0
   fi
-  if [ -n "$secs" ]; then
-    check_push_rerun_line "절=$TT_KEEP_SECTIONS" "헤드에 없는 항목=$(tt_or_none "$TT_DROPPED")"
-  else
-    check_push_rerun_line "목표=$TT_KEEP_GOALS" "헤드에 없는 항목=$(tt_or_none "$TT_DROPPED")"
-  fi
+  check_push_rerun_line "$(check_push_items_step "$TT_KEEP_SECTIONS" "$TT_KEEP_GOALS")" "헤드에 없는 항목=$(tt_or_none "$TT_DROPPED")"
 }
 
 # 0 when <head> leaves gate.sh as it was at its merge-base with <base>; 1 when
@@ -134,6 +163,19 @@ check_push_run() {
   make_bin="${CC_CHECK_PUSH_MAKE:-make}"
   secs="${CHECK_PUSH_SECTIONS:-}"
   goals="${CHECK_PUSH_GOALS:-}"
+  case "$CP_JOBS" in
+    ''|*[!0-9]*|0*)
+      printf 'check-push: CHECK_PUSH_JOBS=%s 는 양의 정수가 아니다 — 비우면 4, 1 이면 직렬로 돈다\n' "$(printf %q "$CP_JOBS")" >&2
+      return 2
+      ;;
+  esac
+  # More than the jobs there are is cut to that count by the pool itself.
+  [ "${#CP_JOBS}" -le 4 ] || CP_JOBS=9999
+  TT_JOBS="$CP_JOBS"
+  case "${CC_CHECK_PUSH_PROGRESS_SECS:-}" in
+    ''|*[!0-9]*|0*) TT_PROGRESS_SECS=60 ;;
+    *) TT_PROGRESS_SECS="$CC_CHECK_PUSH_PROGRESS_SECS" ;;
+  esac
   commit=$(git rev-parse --verify --quiet HEAD) || {
     printf 'check-push: HEAD 커밋을 읽지 못했다 — git 저장소 안에서 커밋 뒤에 돌린다\n' >&2
     return 1
@@ -148,6 +190,9 @@ check_push_run() {
   }
   stamp_dir="$gdir/cc-cmds-check-push"
   stamp="$stamp_dir/$tree"
+  # The lanes merge their times into this repository's record, not the clone's,
+  # which is thrown away.
+  TT_RECORD="$gdir/cc-cmds-gate-timing.tsv"
   if ! git diff --quiet HEAD -- 2>/dev/null; then
     printf 'check-push: 경고 — 작업 트리에 커밋되지 않은 추적 변경이 있다. 그 변경은 검사되지도 push 되지도 않는다\n' >&2
   fi
@@ -198,6 +243,9 @@ check_push_run() {
   fi
 
   trap 'tt_cleanup; [ -z "$CP_TMP_STAMP" ] || rm -f "$CP_TMP_STAMP"' EXIT
+  # An interrupt goes through the EXIT trap too, so the pool's jobs are stopped.
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   tt_clone || return 1
   if [ "$mode" = "merge" ]; then
     tt_build "$base" "$commit"
@@ -291,6 +339,7 @@ check_push_run() {
     printf '절+베이스=%s\n' "$added"
     printf '충돌경로=%s\n' "$(tt_or_none "$TT_CONFLICTS")"
     printf '대역=%s\n' "$doubles"
+    printf '병렬=%s\n' "$TT_JOBS_USED"
   } > "$CP_TMP_STAMP" || return 1
   mv -f "$CP_TMP_STAMP" "$stamp" || return 1
   CP_TMP_STAMP=""
@@ -376,6 +425,9 @@ if [ -f breaker.txt ] && [ "$1" = check-cheap ]; then exit 1; fi
 printf 'BUNDLE %s\n' "$1"
 EOF
   printf '#!/usr/bin/env bash\nexit 1\n' > "$T/bin/bundle-bad"
+  # The gate double prints a total line as test-gate does, so a pool lane can
+  # pass; flag files under $T make it slow, drop the total line, or name the
+  # failed sections the way test-gate's rerun line does.
   sed "s|@T@|$T|g" > "$T/bin/gate" <<'EOF'
 #!/usr/bin/env bash
 printf 'gate:%s\n' "$*" >> "@T@/order.log"
@@ -383,17 +435,29 @@ ids=$(sed -n 's/^# --- section: \([^ |]*\) |.*$/\1/p' scripts/test-gate.sh)
 case "$1" in
   --list) for id in $ids; do printf '%s # t\n' "$id"; done ;;
   --sections)
-    rc=0
+    printf 'env:TMPDIR=%s|OUT=%s|REC=%s\n' "${TMPDIR:-}" "${CC_GATE_TIMING_OUT:-}" "${CC_GATE_TIMING_RECORD:-}" >> "@T@/env.log"
+    [ ! -f "@T@/gate-slow" ] || sleep 3
+    rc=0; failed=""
     for id in $ids; do
-      case ",$2," in *",$id,"*) bash "sections/$id.sh" || rc=1 ;; esac
+      case ",$2," in *",$id,"*) bash "sections/$id.sh" || { rc=1; failed="${failed:+$failed,}$id"; } ;; esac
     done
+    [ ! -f "@T@/gate-no-total" ] || exit 0
+    if [ -n "$failed" ] && [ -f "@T@/gate-rerun-line" ]; then
+      printf 'test-gate: 실패한 절만 다시 — bash scripts/test-gate.sh --sections %s\n' "$failed" >&2
+    fi
+    printf '\ntest-gate: 1 passed, %d failed\n' "$rc"
     exit "$rc" ;;
+  --estimate) [ ! -f "@T@/estimate.txt" ] || cat "@T@/estimate.txt" ;;
+  --record-add) { printf 'REC=%s\n' "${CC_GATE_TIMING_RECORD:-}"; cat "$2"; } >> "@T@/recadd.log" ;;
 esac
 EOF
   sed "s|@T@|$T|g" > "$T/bin/make" <<'EOF'
 #!/usr/bin/env bash
 printf 'make:%s\n' "$*" >> "@T@/order.log"
 if [ "$*" = "-s --no-print-directory print-rest-goals" ]; then cat goals.txt; exit 0; fi
+printf 'menv:%s|REC=%s\n' "$*" "${CC_GATE_TIMING_RECORD-unset}" >> "@T@/env.log"
+for a in "$@"; do last="$a"; done
+[ ! -f "@T@/fail-$last" ] || exit 1
 exit 0
 EOF
   sed "s|@T@|$T|g" > "$T/bin/gh" <<'EOF'
@@ -495,7 +559,7 @@ EOF
   has "F12 make 대역이 base 에만 있는 파일을 본다" "$(cat "$T/seen.log")" "saw-base-only"
   case "$out" in "check-push: 시험 트리 — 합침=합침 base=$sm2 base출처=FETCH_HEAD head=$sh tree=$tm 절=없음 목표=없음 절+베이스=s2 fetch=20"*"BUNDLE lint"*) ok "F12 기록 줄이 검사보다 먼저 나온다" ;; *) bad "F12 기록 줄이 검사보다 먼저 나온다" "$out" ;; esac
   out=$(sed -n 's/=.*$//p' "$stamp" | tr '\n' ' ')
-  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 "
+  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 "
   before=$(cksum < "$stamp")
 
   # --- F19 head 모드는 합친 도장을 바꾸지 않는다 ------------------------------------
@@ -517,9 +581,70 @@ EOF
 
   # --- F20 순서 ----------------------------------------------------------------
   : > "$T/order.log"
-  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_SECTIONS=s1 CHECK_PUSH_GOALS=g2,g1); rc=$?
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=1 CHECK_PUSH_SECTIONS=s1 CHECK_PUSH_GOALS=g2,g1); rc=$?
   check "F20 통과" "$rc" "0"
   check "F20 묶음, 이어 절 한 번, 이어 목표 make 한 번" "$(grep -v -e 'gate:--list' -e 'print-rest-goals' "$T/order.log" | sed 's/|.*$//' | tr '\n' ' ')" "bundle:lint bundle:readme bundle:check-cheap gate:--sections s1 make:--no-print-directory g2 g1 "
+  check "F20 CHECK_PUSH_JOBS=1 의 도장은 병렬=1" "$(check_push_field "$stamp" 병렬)" "1"
+
+  # --- F30 잡 풀: 호출 모양, 순서, 격리, 기록 ----------------------------------------
+  # g1 has no estimate, so it counts as the heaviest and starts with the lane;
+  # g2 is the lightest and waits for a free slot of the two.
+  : > "$T/order.log"; : > "$T/env.log"; : > "$T/recadd.log"
+  printf 'test-gate: 예상 — 요청한 절 1개, needs 로 함께 도는 절 0개\ns1\t5\t실측\n@head\t1\t실측\nmake:g2\t1\t실측\nmake:g1\t-\t없음\n' > "$T/estimate.txt"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=2 CHECK_PUSH_SECTIONS=s1 CHECK_PUSH_GOALS=g2,g1); rc=$?
+  check "F30 통과하고 도장은 병렬=2" "$rc $(check_push_field "$stamp" 병렬)" "0 2"
+  has "F30 대역 gate 면 레인 분할 불가를 알린다" "$out" "check-push: 레인 분할 불가 — 한 레인으로 돈다"
+  check "F30 절은 한 레인으로 한 번, 목표는 목표마다 make 한 번" "$(grep -e '^gate:--sections' -e '^make:--no-print-directory' "$T/order.log" | sort | tr '\n' ' ')" "gate:--sections s1 make:--no-print-directory g1 make:--no-print-directory g2 "
+  check "F30 가장 가벼운 g2 가 마지막에 시작한다" "$(grep -e '^gate:--sections' -e '^make:--no-print-directory' "$T/order.log" | tail -n 1)" "make:--no-print-directory g2"
+  has "F30 예상은 시험 트리의 test-gate 에 절과 목표를 함께 묻는다" "$(cat "$T/order.log")" "gate:--estimate --sections s1 --goals g2,g1 --timing-table "
+  check "F30 잡 출력은 풀에 넣은 순서대로 찍힌다" "$(printf '%s\n' "$out" | sed -n 's/^=== check-push: 잡 \(.*\) ===$/\1/p' | tr '\n' '|')" "레인 1(s1)|목표 g2|목표 g1|"
+  check "F30 잡이 끝날 때마다 끝 줄" "$(printf '%s\n' "$out" | grep -c '^check-push: 끝 — .* rc=0 [0-9]*초$')" "3"
+  case "$(cat "$T/env.log")" in
+    *"env:TMPDIR=$T/tmp/cc-test-tree."*"/pool/job-0/tmp|OUT=$T/tmp/cc-test-tree."*"/pool/job-0/marks.tsv|REC=$W/.git/cc-cmds-gate-timing.tsv"*)
+      ok "F30 레인은 자기 TMPDIR·표지 파일과 메인 레포의 기록 경로를 받는다" ;;
+    *) bad "F30 레인은 자기 TMPDIR·표지 파일과 메인 레포의 기록 경로를 받는다" "$(cat "$T/env.log")" ;;
+  esac
+  check "F30 목표 잡은 기록을 끈다" "$(grep -c '^menv:--no-print-directory g[12]|REC=off$' "$T/env.log")" "2"
+  check "F30 끝난 목표의 소요를 메인 레포 기록에 한 번 넘긴다" "$(grep -c '^REC=' "$T/recadd.log") $(grep '^REC=' "$T/recadd.log") $(grep '^make:' "$T/recadd.log" | cut -f1 | sort | tr '\n' ' ')" "1 REC=$W/.git/cc-cmds-gate-timing.tsv make:g1 make:g2 "
+
+  # --- F31 절과 목표가 함께 실패한다 ------------------------------------------------
+  # s2 leaves the row file s1 refuses, so the lane fails and names s1 alone in
+  # its rerun line; g1's make fails too, and every job still runs to its end.
+  : > "$T/order.log"
+  : > "$T/gate-rerun-line"; : > "$T/fail-g1"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=4 CHECK_PUSH_SECTIONS=s1,s2 CHECK_PUSH_GOALS=g1,g2); rc=$?
+  rm -f "$T/gate-rerun-line" "$T/fail-g1"
+  check "F31 종료 1, 도장 없음" "$rc $(stamp_count)" "1 0"
+  has "F31 단계가 실패한 절과 목표를 함께 든다" "$out" "check-push: 합친 트리 실패 — base=$sm2 단계=절=s1 목표=g1"
+  has "F31 다시 돌리기 줄이 절과 목표를 한 줄에 싣는다" "$out" "head 만 다시 돌리기 (워크트리에서) — bash scripts/test-gate.sh --sections s1 && make --no-print-directory g1 헤드에 없는 항목=없음"
+  check "F31 한 잡이 실패해도 모든 잡이 끝까지 돈다" "$(printf '%s\n' "$out" | grep -c '^check-push: 끝 — ')" "3"
+  has "F31 실패한 목표를 이름 댄다" "$out" "check-push: 목표 g1 가 종료 코드 1 로 끝났다"
+
+  # --- F32 합계 줄 없는 레인 ---------------------------------------------------------
+  : > "$T/gate-no-total"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=2 CHECK_PUSH_SECTIONS=s1); rc=$?
+  rm -f "$T/gate-no-total"
+  check "F32 종료 코드 0 이어도 합계 줄이 없는 레인은 실패다" "$rc $(stamp_count)" "1 0"
+  has "F32 합계 줄이 없다고 알린다" "$out" "check-push: 레인 1(s1) 의 출력에 합계 줄(test-gate: <n> passed, <n> failed)이 없다"
+
+  # --- F33 CHECK_PUSH_JOBS 검증 -------------------------------------------------------
+  : > "$T/order.log"
+  for v in abc 0 -1 2x 04; do
+    out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS="$v"); rc=$?
+    check "F33 CHECK_PUSH_JOBS=$v → 2" "$rc" "2"
+  done
+  has "F33 거부가 변수를 이름 댄다" "$out" "check-push: CHECK_PUSH_JOBS=04 는 양의 정수가 아니다"
+  check "F33 거부는 검사 전에 끝난다" "$(grep -c '^bundle:' "$T/order.log")" "0"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS= CHECK_PUSH_GOALS=g2,g1); rc=$?
+  check "F33 빈 값은 기본 4 이고 잡 수 2 로 줄인다" "$rc $(check_push_field "$stamp" 병렬)" "0 2"
+
+  # --- F34 진행 줄 -------------------------------------------------------------------
+  : > "$T/gate-slow"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=2 CC_CHECK_PUSH_PROGRESS_SECS=1 CHECK_PUSH_SECTIONS=s1 CHECK_PUSH_GOALS=g1); rc=$?
+  rm -f "$T/gate-slow"
+  rc=$(printf '%s\n' "$out" | grep -c '^check-push: 진행 — 끝난 잡 [0-9]/2 · 가장 오래 도는 잡 레인 1(s1) [0-9]*초째(예상 [^)]*) · 전체 [0-9]*초$')
+  if [ "$rc" -ge 1 ]; then ok "F34 도는 동안 진행 줄이 정해진 모양으로 찍힌다 (${rc}줄)"; else bad "F34 도는 동안 진행 줄이 정해진 모양으로 찍힌다" "$out"; fi
+  rm -f "$T/estimate.txt"
   : > "$T/order.log"
   out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_SECTIONS=s9); rc=$?
   check "F20 모르는 항목은 lint 전에 실패한다" "$rc $(grep -c '^bundle:' "$T/order.log")" "1 0"
@@ -664,8 +789,8 @@ EOF
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 72 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 72 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 99 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 99 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

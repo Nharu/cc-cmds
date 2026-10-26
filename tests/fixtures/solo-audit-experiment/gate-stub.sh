@@ -29,6 +29,8 @@
 #     deadline  as `ok`, but the run's done names the wall-clock deadline
 #     wait  exits 5 (an approval for a person)
 #     fail  exits 7
+#     ended  writes a done that names the wall-clock deadline and exits 3, as
+#           the gate refuses `대기` on a run that ended while the host slept
 #     failopen  opens the run, writes a result line costing $STUB_RUN_COST,
 #           and exits 7
 #   STUB_ONLY_DOC=<owner-doc> applies $STUB_GATE_MODE to that document's runs
@@ -136,6 +138,10 @@ if [[ "$mode" == "handoff" ]]; then
     fi
     exit 0
   fi
+fi
+if [[ "$mode" == "ended" ]]; then
+  echo "2026-10-17T05:00:00Z 종단 — 경계 마감 · 근거 마감 지남" > "$rd/done"
+  exit 3
 fi
 if [[ "$mode" == "failopen" ]]; then
   printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "${STUB_RUN_COST:-2}" > "$rd/log/open.json"

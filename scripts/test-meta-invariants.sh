@@ -776,7 +776,9 @@ check "두 사본의 설계 단계 id 선택식이 바이트 동일하다" "$des
 # fixed question, and to take a visual-wait park back up once it is approved —
 # and only then: a resubmission that consumes a person's refusal also ends on
 # exit 0, so each copy has to say that adoption is the `결정=채택` row and that
-# a consumed refusal leaves the segment parked.
+# a consumed refusal leaves the segment parked. A run whose plan carries the
+# publish step `S2P` dispatches it from the same section, so its dispatch line
+# and terminal literal are carried by both copies too.
 # ---------------------------------------------------------------------------
 visual_section() {
   # visual_section <skill file> — the visual-dispatch subsection body, read up
@@ -806,7 +808,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '`결정=거절 소비`' \
     'the approval is adopted only when that row carries `결정=채택`' \
     'go to item 5 whatever the predicate says' \
-    'A consumed refusal does not make the segment `실행중` again'
+    'A consumed refusal does not make the segment `실행중` again' \
+    '-- visual-publish -p "/cc-cmds:visual-publish-unattended <스냅숏 design_doc>"' \
+    '시각 발행 단계를 마쳤습니다.' \
+    'no implement step waits on `S2P`'
   do
     nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
     if [ "${nlit:-0}" != "0" ]; then
