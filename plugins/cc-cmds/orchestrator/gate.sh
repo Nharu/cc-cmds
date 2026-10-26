@@ -37314,7 +37314,8 @@ gate_ci_rerun_x5_hit() {
   #     value; a flow collection (`{…}`/`[…]` as a value, a sequence item or a
   #     whole line) holding an `environment` or `uses` key or a key other than
   #     `run` whose scalar value names .github/workflows/, or not closed by the
-  #     end of the file (a quoted string in a flow is one value); an alias in
+  #     end of the file (a quoted string in a flow is one value, and a quote
+  #     starts one only where a flow node can start); an alias in
   #     key position; a `? ` complex key.
   #   - Every line, body included, with `\` continuations joined, matches on
   #     `workflow run` (whatever options stand before it), `/dispatches`, or a
@@ -37327,6 +37328,25 @@ gate_ci_rerun_x5_hit() {
   LC_ALL=C awk -v q="'" '
     function unq(s) { gsub(/"/, "", s); gsub(q, "", s); return s }
     function opens(s, i) { return i == 1 || index(" \t:,[{-", substr(s, i - 1, 1)) > 0 }
+    function fopens(s, i,   j, t, c) {
+      # A quote at i opens a quoted string in flow text only where a flow node
+      # can start: the text start, or after `{`, `[`, `,`, `? `, or a `:`
+      # followed by a blank or after a quoted key, with node properties
+      # (`&name`, `!tag`) skipped. A quote inside a plain scalar, after a
+      # letter, a digit, a blank after a word or a `-`, is a character.
+      j = i - 1
+      while (1) {
+        while (j > 0 && index(" \t", substr(s, j, 1)) > 0) j--
+        if (j == 0) return 1
+        for (t = j; t > 0 && index(" \t,[]{}", substr(s, t, 1)) == 0; t--) ;
+        if (t < j && index("&!", substr(s, t + 1, 1)) > 0 && j < i - 1) { j = t; continue }
+        c = substr(s, j, 1)
+        if (index("{[,", c) > 0) return 1
+        if (c == "?") return j < i - 1
+        if (c == ":") return j < i - 1 || (j > 1 && index("\"" q, substr(s, j - 1, 1)) > 0)
+        return 0
+      }
+    }
     function stripc(s,   i, c, inq) {
       inq = ""
       for (i = 1; i <= length(s); i++) {
@@ -37344,7 +37364,7 @@ gate_ci_rerun_x5_hit() {
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
-          if ((c == "\"" || c == q) && opens(s, i)) inq = c
+          if ((c == "\"" || c == q) && fopens(s, i)) inq = c
           else if (c == "{" || c == "[") d++
           else if (c == "}" || c == "]") d--
         } else if (c == inq) inq = ""
@@ -37383,12 +37403,13 @@ gate_ci_rerun_x5_hit() {
     }
     function mask(s,   i, c, inq, o) {
       # The flow text with `,:{}[]` inside quotes turned into `_`, so a quoted
-      # string is read as one value and never as keys or item breaks.
+      # string is read as one value and never as keys or item breaks. Quotes
+      # open by the rule depth() uses, fopens().
       inq = ""; o = ""
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
-          if ((c == "\"" || c == q) && opens(s, i)) inq = c
+          if ((c == "\"" || c == q) && fopens(s, i)) inq = c
         } else if (c == inq) inq = ""
         else if (index(",:{}[]", c) > 0) c = "_"
         o = o c
