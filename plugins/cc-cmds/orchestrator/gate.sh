@@ -8587,20 +8587,27 @@ ladder_of_gh() {
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   # A create behind a value flag (`gh pr -t x new`) is found the way gh finds
   # it (see `gate_gh_group_verb`), so it takes the same rung as `gh pr create`.
+  # A REVIEW IS `커밋`, whatever its flags (`--approve`, `--comment`,
+  # `--request-changes`) and wherever a value flag puts the verb
+  # (`gh pr -R o/r review 7`). It writes a review on a pull request and moves
+  # no ref, so the merge checks are not about it; without this row a review
+  # declared `PR` or `머지` was judged at that height and refused in a `커밋` run.
   if [ "${1:-}" != api ]; then
     gate_gh_group_verb "$@"
     case "$GATE_GH_CG:$GATE_GH_CV" in
       pr:create|pr:new) printf 'PR'; return 0 ;;
+      pr:review) printf '커밋'; return 0 ;;
     esac
   fi
   case "${1:-}" in
     api) ladder_of_gh_api "$@" ;;
     pr)
       case "${2:-}" in
-        # `merge` was answered above, by the parse.
+        # `merge` was answered above, by the parse, and `review` by the verb
+        # read above it.
         create) printf 'PR' ;;
-        # `view`, `list`, `review`, `comment` and everything else this row does
-        # not name assert nothing. Naming them would be guessing, and the guess
+        # `view`, `list`, `comment` and everything else this row does not
+        # name assert nothing. Naming them would be guessing, and the guess
         # that costs is the high one.
         *) : ;;
       esac ;;
@@ -8816,6 +8823,41 @@ gate_gh_api_seg_placeholder() {
   [ "$rc" != 1 ]
 }
 
+gate_gh_api_rest_segs() {
+  # After `gate_gh_api_parse`: prints the REST path's segments one per line and
+  # returns 0 when every one of them can be read as written, and prints nothing
+  # and returns 1 otherwise. What makes a segment unreadable is told at
+  # `gate_gh_api_rest_class`, which reads the endpoint from these segments;
+  # `gate_gh_api_review_post` reads the same ones, so the two never disagree on
+  # what the path is.
+  local p seg d segs i=0
+  local -a s=()
+  gate_gh_api_authority_unread && return 1
+  p=$(gate_gh_api_rest_path)
+  segs=$(printf '%s' "$p" | LC_ALL=C tr '/' '\n') || return 1
+  while IFS= read -r seg; do
+    s[${#s[@]}]="$seg"
+  done <<GATE_GHAPI_REST_SEGS
+$segs
+GATE_GHAPI_REST_SEGS
+  for seg in ${s[@]+"${s[@]}"}; do
+    case "$seg" in ''|.|..) return 1 ;; esac
+    case "$seg" in
+      *%*)
+        d=$(gate_gh_api_pct_decode "$seg") || return 1
+        case "$d" in ''|.|..|*/*) return 1 ;; esac ;;
+    esac
+    if gate_gh_api_seg_placeholder "$seg"; then
+      case "$i:$seg" in
+        '1:{owner}'|'1::owner'|'2:{repo}'|'2::repo') : ;;
+        *) return 1 ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  printf '%s\n' ${s[@]+"${s[@]}"}
+}
+
 gate_gh_api_rest_class() {
   # After `gate_gh_api_parse`, on a non-GET REST call: prints `merge`,
   # `merge-async` or `merges` when the path is exactly that endpoint, `inert`
@@ -8851,31 +8893,14 @@ gate_gh_api_rest_class() {
   # bound to nothing passed with no rung. The split reads bytes, and a split
   # that fails prints nothing here, which the caller reads as a write that
   # moves a ref.
-  local p seg d n segs i=0
+  local seg n segs
   local -a s=()
-  gate_gh_api_authority_unread && return 0
-  p=$(gate_gh_api_rest_path)
-  segs=$(printf '%s' "$p" | LC_ALL=C tr '/' '\n') || return 0
+  segs=$(gate_gh_api_rest_segs) || return 0
   while IFS= read -r seg; do
     s[${#s[@]}]="$seg"
   done <<GATE_GHAPI_REST_SEGS
 $segs
 GATE_GHAPI_REST_SEGS
-  for seg in ${s[@]+"${s[@]}"}; do
-    case "$seg" in ''|.|..) return 0 ;; esac
-    case "$seg" in
-      *%*)
-        d=$(gate_gh_api_pct_decode "$seg") || return 0
-        case "$d" in ''|.|..|*/*) return 0 ;; esac ;;
-    esac
-    if gate_gh_api_seg_placeholder "$seg"; then
-      case "$i:$seg" in
-        '1:{owner}'|'1::owner'|'2:{repo}'|'2::repo') : ;;
-        *) return 0 ;;
-      esac
-    fi
-    i=$((i + 1))
-  done
   n="${#s[@]}"
   [ "$n" -ge 4 ] && [ "${s[0]}" = repos ] || return 0
   case "${s[3]}" in
@@ -9126,6 +9151,46 @@ gate_gh_graphql_inert() {
   return 0
 }
 
+gate_gh_api_review_post() {
+  # After `gate_gh_api_parse`: 0 when the call creates a pull request review
+  # (POST `repos/<owner>/<repo>/pulls/<n>/reviews`) or submits a pending one
+  # (POST `…/reviews/<id>/events`), and 1 otherwise.
+  #
+  # ONLY THOSE TWO POSTS. They are the only POSTs GitHub serves under
+  # `…/reviews`, and they are what a run posts a review with. Updating
+  # (PUT `…/reviews/<id>`), deleting (DELETE `…/reviews/<id>`) and dismissing
+  # (PUT `…/reviews/<id>/dismissals`) are writes nothing here asks for, and a
+  # dismissal clears a `CHANGES_REQUESTED` review that may be holding branch
+  # protection shut, so they keep the declared height. So does a path with
+  # more segments after either endpoint, a GraphQL review mutation, and a
+  # comment path.
+  #
+  # The method is compared case-folded here only — gh sends `-X post` as POST
+  # — and `GATE_GHAPI_METHOD` keeps the spelling it was given. The path must
+  # be one `gate_gh_api_rest_class` reads as `inert`, read from the same
+  # segments (`gate_gh_api_rest_segs`), so a segment gh fills in past
+  # `repos/{owner}/{repo}/` or one that is empty, `.`, `..` or escaped is never
+  # a review here.
+  local m segs seg
+  local -a s=()
+  m=$(printf '%s' "$GATE_GHAPI_METHOD" | LC_ALL=C tr '[:lower:]' '[:upper:]')
+  [ "$m" = POST ] || return 1
+  [ "$(gate_gh_api_rest_path)" != graphql ] || return 1
+  [ "$(gate_gh_api_rest_class)" = inert ] || return 1
+  segs=$(gate_gh_api_rest_segs) || return 1
+  while IFS= read -r seg; do
+    s[${#s[@]}]="$seg"
+  done <<GATE_GHAPI_REVIEW_SEGS
+$segs
+GATE_GHAPI_REVIEW_SEGS
+  [ "${s[0]}" = repos ] && [ "${s[3]:-}" = pulls ] && [ "${s[5]:-}" = reviews ] || return 1
+  case "${#s[@]}" in
+    6) return 0 ;;
+    8) [ "${s[7]}" = events ] ;;
+    *) return 1 ;;
+  esac
+}
+
 ladder_of_gh_api() {
   # `gh pr merge` is not the only spelling of a merge — `gh api -X PUT
   # repos/o/r/pulls/1/merge` is the same act through the other door, and it is
@@ -9140,6 +9205,11 @@ ladder_of_gh_api() {
   shift
   gate_gh_api_parse "$@"
   if [ -n "$(gate_gh_api_merge_kind)" ]; then printf '머지'; return 0; fi
+  # A REVIEW POSTED OVER REST IS `커밋`, as `gh pr review` is — see
+  # `gate_gh_api_review_post` for the two endpoints it covers. It is read only
+  # after the merge read above, which already sent a `pulls` path it cannot
+  # read as written, and one with a segment gh fills in, to `머지`.
+  if gate_gh_api_review_post; then printf '커밋'; return 0; fi
   case "$GATE_GHAPI_PATH" in
     graphql|*/graphql)
       if [ "$GATE_GHAPI_OPAQUE" = 1 ]; then
@@ -14876,6 +14946,40 @@ gate_rule_enabled() {
   return 0
 }
 
+gate_cutpoint_refusal_hint() {
+  # After a `절단점-준수` refusal: one line saying which of two repairs applies,
+  # so a stage or a routing shift that declared an act too high does not stop
+  # on a person. It splits on whether the height the rule judged came from the
+  # argv itself. When `GATE_ACT_DERIVED` is set and equal to
+  # `GATE_ACT_EFFECTIVE`, the argv is at that height and no declaration lowers
+  # it, so the line says park. Otherwise the declared height was judged — an
+  # argv with no rung, or a `git push` declared above its own rung, which the
+  # push seam does not lower — and the line says to re-declare the same argv
+  # at its actual height when that is within the target, and park when it is
+  # not, naming the argv's own height when there is one.
+  #
+  # ONLY FOR AN ACT WHOSE ARGV THE LADDER READ. The act seam sets
+  # `GATE_ACT_ARGV_LADDER` to `1` there; a kind that derives nothing
+  # (`propose-done`, `skill`, `apply` and the rest) leaves `GATE_ACT_DERIVED`
+  # empty just as an argv with no rung does, so the emptiness alone cannot tell
+  # them apart. The line says `re-declare` and never `raise`: the
+  # under-declaration refusal (exit 8) prescribes raising, and the two refusals
+  # must stay apart as strings. The rule's name is on the line before.
+  [ "${GATE_ACT_ARGV_LADDER:-}" = 1 ] || return 0
+  [ -n "${GATE_ACT_INDEX:-}" ] && [ -n "${GATE_TARGET_INDEX:-}" ] || return 0
+  local d="${GATE_ACT_DERIVED:-}" e="${GATE_ACT_EFFECTIVE:-}" tgt="${GATE_TARGET_CUTPOINT:-}"
+  if [ -n "$d" ] && [ "$d" = "$e" ]; then
+    warn "the argv itself is at '$d', above the target cutpoint '$tgt' — do not re-declare it; park"
+    return 0
+  fi
+  if [ -n "$d" ]; then
+    warn "judged at the declared height '$e'; the argv's own height is '$d' — when the act's actual height is within the target cutpoint '$tgt', re-declare the same argv at that height, and park when it is above; this is not a stop that asks a person"
+  else
+    warn "judged at the declared height '$e' — when the act's actual height is within the target cutpoint '$tgt', re-declare the same argv at that height, and park when it is above; this is not a stop that asks a person"
+  fi
+  return 0
+}
+
 gate_run_rules() {
   # gate_run_rules <act-token> <alias> <segment> <argv-string> [<preauth-argv>]
   # Returns 0 when every loaded rule passes, GATE_EXIT_RULE on the first refusal.
@@ -14925,6 +15029,7 @@ gate_run_rules() {
       continue
     fi
     warn "rule refused: $name"
+    [ "$name" = 절단점-준수 ] && gate_cutpoint_refusal_hint
     return "$GATE_EXIT_RULE"
   done
   if [ "$approval_seen" = "1" ]; then
@@ -38811,11 +38916,17 @@ gate_verb_act() {
   # split is the same one `GATE_HISTORY_INTEGRATION` already makes verbatim a few
   # hundred lines below — and for the same reason, which is that the answer there
   # would be a guess rather than a fact.
+  # `GATE_ACT_ARGV_LADDER` is `1` exactly where the table was asked, so a
+  # refusal can tell an argv with no rung from a kind that derives nothing —
+  # `GATE_ACT_DERIVED` is empty for both (`gate_cutpoint_refusal_hint`).
   GATE_ACT_DERIVED=""
+  GATE_ACT_ARGV_LADDER=""
   case "$kind" in
     propose-done|skill|router-shift|apply|apply-settle|ci-rerun|label-ack) : ;;
-    *) gate_kind_is_bookkeeping "$kind" \
-         || GATE_ACT_DERIVED=$(ladder_of_argv0 "$@") ;;
+    *) if ! gate_kind_is_bookkeeping "$kind"; then
+         GATE_ACT_ARGV_LADDER=1
+         GATE_ACT_DERIVED=$(ladder_of_argv0 "$@")
+       fi ;;
   esac
   # Set beside the derivation above because they answer the same question — is
   # this argv a COMMAND — and a second answer computed elsewhere is a second
@@ -38856,7 +38967,7 @@ gate_verb_act() {
       GATE_ACT_EFFECTIVE="$GATE_ACT_DERIVED"
     fi
   fi
-  export GATE_ACT_DERIVED GATE_ACT_EFFECTIVE
+  export GATE_ACT_DERIVED GATE_ACT_EFFECTIVE GATE_ACT_ARGV_LADDER
 
   # Snapshot binding, and it sits HERE — after the state-independent argument
   # and vocabulary checks, and before anything that writes. Under parallel
