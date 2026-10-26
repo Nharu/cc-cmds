@@ -42387,6 +42387,13 @@ cb60_x5 1 $'jobs:\n  d:\n    steps: [{"name" :\'a, uses: b\', run: make}]'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: "it\'s, environment: prod", run: make}]'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: !!str \'a, uses: b\', run: make}]'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{"name":\'a, environment: b\', run: make}]'
+cb60_x5 0 $'jobs: {d: {\n  runs-on: x,\n  name: Release - \'24 build,\n  environment: prod,\n  steps: [{run: make}]}}'
+cb60_x5 0 $'jobs: {d: {\n  name: Q ? \'a,\n  environment: prod}}'
+cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - {\n        name: Build - \'nightly,\n        uses: org/deploy-action@v1}'
+cb60_x5 0 $'jobs:\n  d: {\n    if: contains(github.event.label.name, \'deploy\'),\n    name: Ship - \'em out,\n    environment: production }'
+cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: a - \'b\', run: make}]'
+cb60_x5 1 $'jobs:\n  d:\n    steps: [{? \'a, uses: b\' : c, run: make}]'
+cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - \'a # b\': {environment: prod}'
 check "60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다" "$cb60_x5fail" ""
 # 섞인 집합 — 실행 777 은 적격, 778 의 워크플로에 환경 키. 하나라도 걸리면 POST 는 없다.
 cb60_new "CI 재실행 — 섞인 집합"

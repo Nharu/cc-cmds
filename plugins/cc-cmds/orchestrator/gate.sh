@@ -37329,11 +37329,13 @@ gate_ci_rerun_x5_hit() {
     function unq(s) { gsub(/"/, "", s); gsub(q, "", s); return s }
     function opens(s, i,   j, t, c) {
       # A quote at i opens a quoted string only where a node can start: the
-      # text start, or after `{`, `[`, `,`, or a `?`, `-` or `:` followed by a
-      # blank, or after a `:` that directly follows the quote closing a quoted
-      # key (qend, set by the caller), with node properties (`&name`, `!tag`,
-      # `!<...>`) skipped. A quote inside a plain scalar, after a letter, a
-      # digit, a blank after a word or a `-`, is a character.
+      # text start, or after `{`, `[`, `,`, or a `:` followed by a blank, or
+      # after a `?` or `-` followed by a blank that itself stands where a node
+      # can start, or after a `:` that directly follows the quote closing a
+      # quoted key (qend, set by the caller), with node properties (`&name`,
+      # `!tag`, `!<...>`) skipped. A quote inside a plain scalar, after a
+      # letter, a digit, a blank after a word, or a `-` or `?` inside the
+      # scalar (`Release - "24`), is a character.
       j = i - 1
       while (1) {
         while (j > 0 && index(" \t", substr(s, j, 1)) > 0) j--
@@ -37346,7 +37348,7 @@ gate_ci_rerun_x5_hit() {
         if (t < j && index("&!", substr(s, t + 1, 1)) > 0 && j < i - 1) { j = t; continue }
         c = substr(s, j, 1)
         if (index("{[,", c) > 0) return 1
-        if (c == "?" || c == "-") return j < i - 1
+        if (c == "?" || c == "-") return j < i - 1 && opens(s, j)
         if (c == ":") {
           if (j < i - 1) return 1
           for (t = j - 1; t > 0 && index(" \t", substr(s, t, 1)) > 0; t--) ;
