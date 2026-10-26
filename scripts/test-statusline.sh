@@ -1534,16 +1534,23 @@ cas_race() {
   # cas_race <settings> — lose the compare-and-swap deterministically. The first
   # install polls its verify run, and that poll is the window: the file is
   # rewritten while the installer is inside it, so the compare finds a different
-  # file than the snapshot and nothing is written.
-  local s="$1"
+  # file than the snapshot and nothing is written. The verify stub leaves a
+  # sentinel before it sleeps, and the rewrite waits for that sentinel rather
+  # than a fixed delay: the snapshot precedes the verify run, so the sentinel
+  # proves the snapshot is already taken however loaded the machine is.
+  local s="$1" started="$WORK/p-half/verify-started" n=0
   mk_settings_empty "$s"
   mkdir -p "$WORK/p-half/orchestrator"
   cp "$CMDLIB" "$WORK/p-half/orchestrator/"
-  printf '#!/usr/bin/env bash\ncat >/dev/null\nsleep 0.4\nprintf ONE-LINE\n' > "$WORK/p-half/orchestrator/statusline.sh"
+  rm -f "$started"
+  printf '#!/usr/bin/env bash\ncat >/dev/null\n: > "%s"\nsleep 0.4\nprintf ONE-LINE\n' "$started" > "$WORK/p-half/orchestrator/statusline.sh"
   chmod +x "$WORK/p-half/orchestrator/statusline.sh"
   bash "$APPLY" --apply --settings "$s" --plugin-dir "$WORK/p-half" --require-state empty >/dev/null 2>/dev/null &
   local ap=$!
-  sleep 0.15
+  while [ ! -e "$started" ] && [ "$n" -lt 200 ]; do
+    sleep 0.05
+    n=$((n + 1))
+  done
   jq '.theme = "moved-under-the-installer"' "$s" > "$s.race" 2>/dev/null && mv "$s.race" "$s"
   wait "$ap"
   CAS_RC=$?
