@@ -477,15 +477,6 @@ now_file() {
 }
 NOW_SCHEMA='cc-session-title-now v1'
 
-# title_read <sid> — the reader on its own, sourced the way the seats source it,
-# so the cut can be asserted as a value rather than through a banner's argv.
-EMITTER="$PLUGIN_ROOT/orchestrator/notify-run.sh"
-title_read() {
-  env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID \
-      PATH="$PATH_FULL" XDG_STATE_HOME="$STATE" \
-      bash -c 'set -u; . "$1" >/dev/null 2>&1; cc_notify_session_title_read "$2"' _ "$EMITTER" "$1"
-}
-
 for hook in "$ASK_HOOK" "$TURN_HOOK"; do
   seat=$(basename "$hook")
   if [ "$hook" = "$ASK_HOOK" ]; then action='답하세요'; else action='차례가 넘어왔습니다'; fi
@@ -548,43 +539,59 @@ for hook in "$ASK_HOOK" "$TURN_HOOK"; do
 done
 rm -f "$NOW_DIR/S-TT" "$NOW_DIR/S.DOT"
 
-# The fixed results of the 24-column cut: twelve Hangul syllables, a mixed title
-# whose cut lands mid-word, and a cut that would end on `·` and loses it.
+# The fixed results of the 24-column cut, read back from the seat's title line:
+# twelve Hangul syllables, a mixed title whose cut lands mid-word, and a cut that
+# would end on `·` and loses it. The title sits between two ` · ` separators, so
+# an exact line also says the cut kept no trailing space or `·`.
 for pair in \
   '가나다라마바사아자차카타파하|가나다라마바사아자차카타' \
   'review·가나다라마바사아자차|review·가나다라마바사아' \
   'implement·abcdefghijklm·x|implement·abcdefghijklm'; do
   src="${pair%%|*}"; want="${pair#*|}"
   now_file S-CUT "$NOW_SCHEMA" "$src"
-  check "24칸 자르기 — $src" "$(title_read S-CUT)" "$want"
+  P=$(payload_for "$ASK_HOOK" S-CUT)
+  hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "24칸 자르기 — $src" \
+    "$(grep -cF -- "-title cc-cmds · $want · 답하세요 " "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "24칸 자르기/$src"
 done
-now_file S-CUT "$NOW_SCHEMA" '세션제목이아주길어서삼십칸을넘는다'
-got=$(title_read S-CUT)
-case "$got" in
-  ''|*' '|*'·') bad "30칸 초과 제목의 끝" "got '$got'" ;;
-  *) ok "30칸 초과 제목 — 비지 않고 · 나 공백으로 끝나지 않는다" ;;
-esac
 rm -f "$NOW_DIR/S-CUT"
 
-# With neither HOME nor XDG_STATE_HOME the reader falls back to an empty value
+# With neither HOME nor XDG_STATE_HOME the reader falls back to today's title
 # under `set -u` without a byte on stderr — the question form hands the seat
-# `CLAUDE_PLUGIN_ROOT` only.
-got=$(env -u HOME -u XDG_STATE_HOME PATH="$PATH_FULL" \
-  bash -c 'set -u; . "$1" >/dev/null 2>&1; cc_notify_session_title_read S-NOHOME' _ "$EMITTER" 2> "$ERR")
-check "상태 뿌리가 없으면 빈 값" "$got" ""
-check "상태 뿌리가 없어도 stderr 0바이트" "$(wc -c < "$ERR" | tr -d ' ')" "0"
+# `CLAUDE_PLUGIN_ROOT` only. `hook_run` always sets the state root, so this
+# case builds its own environment.
+P=$(payload_for "$ASK_HOOK" S-NOHOME)
+: > "$NOTIFY_LOG"; : > "$ERR"; : > "$OUTF"
+env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID \
+    -u RUN_ID -u RUN_DIR -u HOME -u XDG_STATE_HOME \
+    -u CC_CMDS_SESSION_NOTIFY -u CC_CMDS_AUTOPILOT_NOTIFY -u TMUX -u TMUX_PANE \
+    PATH="$PATH_FULL" \
+    CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    bash "$ASK_HOOK" < "$P" > "$OUTF" 2> "$ERR"
+check "상태 뿌리가 없으면 — 종료 코드 0" "$?" "0"
+notify_settle 1
+check "상태 뿌리가 없으면 — 지금 문구로 발사한다" \
+  "$(grep -cF -- '-title cc-cmds · 답하세요 ' "$NOTIFY_LOG" || true)" "1"
+check "상태 뿌리가 없어도 stdout·stderr 0바이트" \
+  "$(wc -c < "$OUTF" | tr -d ' ')/$(wc -c < "$ERR" | tr -d ' ')" "0/0"
 
 # THE TWO jq COPIES MUST NOT DRIFT. The hook and the emitter each carry `cw` and
 # `cut` as one line starting at column 0; each file must yield exactly one line
 # of each, and the two files' lines must be the same bytes. This suite runs in
 # the Linux CI too, so the emitter's jq is measured there as well.
 TITLE_HOOK="$PLUGIN_ROOT/hooks/session-title.sh"
+ORCH_DIR="$PLUGIN_ROOT/orchestrator"
 for def in '^def cw:' '^def cut\('; do
   n_hook=$(grep -cE -- "$def" "$TITLE_HOOK" || true)
-  n_emit=$(grep -cE -- "$def" "$EMITTER" || true)
+  n_emit=$(grep -cE -- "$def" "$ORCH_DIR/notify-run.sh" || true)
   check "jq 사본 — session-title.sh 의 '$def' 줄이 정확히 하나" "$n_hook" "1"
   check "jq 사본 — notify-run.sh 의 '$def' 줄이 정확히 하나" "$n_emit" "1"
-  if [ "$(grep -E -- "$def" "$TITLE_HOOK" || true)" = "$(grep -E -- "$def" "$EMITTER" || true)" ]; then
+  if [ "$(grep -E -- "$def" "$TITLE_HOOK" || true)" = "$(grep -E -- "$def" "$ORCH_DIR/notify-run.sh" || true)" ]; then
     ok "jq 사본 — '$def' 줄이 두 파일에서 바이트로 같다"
   else
     bad "jq 사본 — '$def'" "session-title.sh 와 notify-run.sh 의 정의가 갈라졌다"
