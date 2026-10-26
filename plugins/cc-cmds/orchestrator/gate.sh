@@ -13619,10 +13619,12 @@ gate_from_declaration() {
     # row is brought in instead and no planned row is written; the caller sees
     # GATE_DECL_SELF_IMPORTED and stops there. Nothing to bring in plans as before.
     #
-    # 입양한 세그먼트는 이전 런의 종단 행을 들여오지 않는다 — 입양 행이 그
-    # 세그먼트를 이어서 리뷰하라고 정했다. 입양 행이 없는 세그먼트는 아래 자기
-    # 들여오기를 그대로 돈다. 재킥오프에서 이어받지 않은 `절단점: PR` 슬라이스의
-    # `완료` 도 그래서, 열린 PR 의 head 가 행의 `커밋` 과 같으면 들여온다.
+    # AN ADOPTED SEGMENT BRINGS IN NO TERMINAL ROW OF AN EARLIER RUN: its
+    # `세그먼트 입양` row says this run continues that segment and reviews it.
+    # A segment with no adoption row runs the self-import below as before, so a
+    # `절단점: PR` slice's `완료` that a re-kickoff did not take over is brought
+    # in when its open pull request still heads the row's `커밋`; the re-kickoff
+    # asks that candidate `그대로 두기`, not `다시 하기`, for this reason.
     if ! gate_adoption_row "$seg" >/dev/null; then
       irc=0
       gate_import_prior_landed "$verb" "$seg" self || irc=$?

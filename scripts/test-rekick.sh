@@ -2437,16 +2437,19 @@ DOC13P='docs/rk-adopt-pr.md'
 DOC13PSHA=$(sha "$BASE/$DOC13P")
 # mk13p <src> — that source: I1 as mk13 leaves it then `완료` with `PR` and
 # `커밋`, I2 on a worktree of its own ending the same way with PR 42, I3 a
-# `완료` with `커밋` only. K13P_NOANCHOR2 leaves out I2's `원격 판독` row and
+# `완료` with `커밋` only. The ledger carries a `run` row naming the document,
+# which the gate's prior-run lookup reads to find the ledgers of that document,
+# and I2's plan row carries the slice's declaration it compares. K13P_NOANCHOR2 leaves out I2's `원격 판독` row and
 # K13P_OPEN the met termination clause. Leaves S13P_W2, S13P_B2, S13P_H2.
 mk13p() {
   local s="$1" w2="$WORK/repo-run-$1-I2" b2="seg/$1-I2" h2
   P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$s"
+  fx_row 'run' "run-id=$s" "설계 문서=$DOC13P" "시작=2026-10-01T00:00:00Z"
   ( cd "$WT" && git worktree add -q -b "$b2" "$w2" main && cd "$w2" && printf '%s I2\n' "$s" > seg.txt \
       && git add seg.txt && git commit -qm "$s I2" && git push -q origin "$b2" ) >/dev/null 2>&1
   h2=$(cd "$w2" && git rev-parse HEAD)
   fx_row 'segment' "id=I1" "상태=완료" "워크트리=$S13_W" "브랜치=$S13_B" "커밋=$S13_H" "PR=41"
-  fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$w2" "브랜치=$b2" "선행=없음"
+  fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$w2" "브랜치=$b2" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
   fx_row 'segment' "id=I2" "상태=리뷰중" "워크트리=$w2" "PR=42"
   [ -n "${K13P_NOANCHOR2:-}" ] || fx_row '원격 판독' "세그먼트=I2" "브랜치=$b2" "워크트리 HEAD=$h2" "원격 팁=$h2" "PR=42" "PR 상태=OPEN" "PR HEAD=$h2"
   fx_row 'segment' "id=I2" "상태=완료" "워크트리=$w2" "브랜치=$b2" "커밋=$h2" "PR=42"
@@ -2495,9 +2498,23 @@ check "13 PR 절단점: 앵커가 없는 I2 의 입양불가 줄도 칸을 지�
 OUT=$(rk_as "s-$PG13" detect --arg '다시')
 check "13 PR 절단점: 게이트가 끝낸 원천은 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 갈래)" "재킥오프/게이트 종료"
 check "13 PR 절단점: 칸을 지닌 입양불가 고지는 열린 PR 을 들여온다고 말한다" \
-  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I2 PR 42)은 이어받지 않습니다(PR기록없음) — PR 이 열려 있고 head 가 행의 커밋과 같으면 새 런이 끝난 것으로 들여오고, 아니면 다시 합니다")" "1"
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I2 PR 42)은 이어받지 않습니다(PR기록없음) — PR 이 열려 있고 head 가 행의 커밋과 같거나 PR 이 머지됐으면 새 런이 끝난 것으로 들여오고, 아니면 다시 합니다")" "1"
 check "13 PR 절단점: 칸이 없는 입양불가 고지는 그대로 다시 한다고 말한다" \
   "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I3 PR 없음)은 이어받지 않습니다(워크트리없음) — 새 런이 그 세그먼트를 다시 하고 옛 PR 은 그대로 둡니다")" "1"
+# A source that adopted I2 from PF13 and stopped in review, PR 42 still at
+# PF13's `커밋`: the source's own ledger holds no `완료` for I2, but the
+# planning act walks every ledger of the document and brings PF13's in, so
+# the cell is read from the same lookup and the line still carries it.
+PH13=20261001-a0000010
+P_DOC="$DOC13P" K13_DOCSHA="$DOC13PSHA" mk13 "$PH13"
+fx_row 'run' "run-id=$PH13" "설계 문서=$DOC13P" "시작=2026-10-02T00:00:00Z"
+fx_row 'segment' "id=I2" "상태=계획됨" "레포=t/rk" "워크트리=$S13P_W2" "브랜치=$S13P_B2" "선행=없음" "선언 파일 집합=\`I2.txt\`" "절단점=PR"
+fx_row 'segment' "id=I2" "상태=리뷰중" "워크트리=$S13P_W2" "PR=42"
+fx_row '원격 판독' "세그먼트=I2" "브랜치=$S13P_B2" "워크트리 HEAD=$S13P_H2" "원격 팁=$S13P_H2" "PR=42" "PR 상태=OPEN" "PR HEAD=$S13P_H2"
+gh13
+a13 "$PH13"
+check "13 PR 절단점: 원천에 완료 행이 없어도 같은 문서의 앞선 런이 남긴 완료로 칸을 지닌다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$2 == "I2" { print $NF }')" "미입양=PR들여오기"
 rm -f "$GH13/view.42"
 use13 "$SW" "$SB" "$SH"
 

@@ -208,8 +208,9 @@
 # unanswered halt records of that segment) and `이월=재수렴` (the gate would
 # carry a `재수렴` answer into the new run), then `미입양=PR들여오기` — on an
 # `입양불가` line too, after its reason — when the frozen document declares the
-# slice `절단점: PR` and its last row is a `완료` carrying `PR` and `커밋` only:
-# a new run that does not adopt it may bring that open pull request in as done,
+# slice `절단점: PR` and the latest landing any run of the document left for it
+# (past a trailing `park`) is a `완료` carrying `PR` and `커밋` only: a new run
+# that does not adopt it may bring that open pull request in as done,
 # so the person's second answer is `그대로 두기`, not `다시 하기`. The reason tokens: park,
 # 설계재실행, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
@@ -488,12 +489,13 @@ EOF
 #   adopt-check <seg> <alias> <row>   통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨
 #                                     — the planning-time adoption check, its
 #                                     warning mapped to a token
-#   pr-import <doc> <seg>             들여오기|아님 — 들여오기 when the document
+#   pr-import <doc> <seg> <doc key>   들여오기|아님 — 들여오기 when the document
 #                                     declares the slice `절단점: PR` and the
-#                                     ledger's landing walk finds a `완료` the
-#                                     adoption predicate reads unlanded and the
-#                                     import's pull request cutpoint arm reads
-#                                     landed: the planning act of a run that
+#                                     gate's own prior-run lookup, over every
+#                                     ledger of that document beside the given
+#                                     one, picks a `완료` by its pull request
+#                                     cutpoint arm and not as a run-outside
+#                                     merge: the planning act of a run that
 #                                     does not adopt the segment brings it in
 #   halt-source <seg>                 이월|없음|불가 — the halt-answer carry check
 #   tip-of <dir> <slug> <branch>      <40 hex>|없음|미상
@@ -540,17 +542,9 @@ ROWS
       pr-import)
         c=$(slice_field "$a1" "$a2" "절단점" 2>/dev/null | tr -d "\`" | sed "s/^[[:space:]]*//; s/[[:space:]]*\$//")
         [ "$(cutpoint_token "$c" 2>/dev/null || true)" = "PR" ] || { printf "아님"; exit 0; }
-        rows=$( { grep -E "^- \`segment\` " "$led" 2>/dev/null || true; } | { grep -F "| id=$a2 |" || true; })
-        if gate_landing_walk gate_adoption_row_landed <<ROWS
-$rows
-ROWS
-        then printf "아님"; exit 0; fi
-        GATE_WALK_PRCUT=1
-        if gate_landing_walk gate_prior_row_landed <<ROWS
-$rows
-ROWS
-        then
-          if [ "$(gate_row_field "$GATE_WALK_ROW" "상태")" = "완료" ]; then printf "들여오기"; else printf "아님"; fi
+        DOC=$a1; DOC_KEY=$a3; LEDGER="$(dirname "$led")/rk-pr-import-probe.md"
+        if gate_prior_run_landed "$a2" 2>"$err" && [ -z "$GATE_PRIOR_OUTSIDE" ] && [ "$GATE_PRIOR_KIND" = "PR" ] \
+           && [ "$(gate_row_field "$GATE_PRIOR_ROW" "상태")" = "완료" ]; then printf "들여오기"
         else printf "아님"; fi ;;
       adopt-check)
         gate_adoption_check "$a1" "$a2" "$a3" 2>"$err" || rc=$?
@@ -834,7 +828,7 @@ rk_adopt_candidates() {
     # be brought in by its planning act as done, so its second answer is to
     # leave it, not to do it again. A child that cannot answer adds no cell.
     pim=''
-    if [ -n "$pdoc" ] && [ "$(rk_gate pr-import "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pdoc" "$key")" = "들여오기" ]; then
+    if [ -n "$pdoc" ] && [ "$(rk_gate pr-import "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pdoc" "$key" "$(manifest_field '요소' '설계 문서')")" = "들여오기" ]; then
       pim="${TAB}미입양=PR들여오기"
     fi
     rows=$(rk_ledger_seg_rows "$key")
@@ -1192,7 +1186,7 @@ rk_detect_tail() {
       입양불가)
         n=$f3; [ "$n" != "-" ] || n='없음'
         if [ "$f5" = "미입양=PR들여오기" ]; then
-          printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — PR 이 열려 있고 head 가 행의 커밋과 같으면 새 런이 끝난 것으로 들여오고, 아니면 다시 합니다\n' "$seg" "$n" "$f4"
+          printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — PR 이 열려 있고 head 가 행의 커밋과 같거나 PR 이 머지됐으면 새 런이 끝난 것으로 들여오고, 아니면 다시 합니다\n' "$seg" "$n" "$f4"
         else
           printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — 새 런이 그 세그먼트를 다시 하고 옛 PR 은 그대로 둡니다\n' "$seg" "$n" "$f4"
         fi ;;
