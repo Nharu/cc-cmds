@@ -37017,14 +37017,15 @@ sag exec --manifest "$SA_MANIFEST" --target main --segment SB12 --cutpoint 배�
 if [ "$rc" = "0" ]; then bad "12: 동결 명령 모양의 exec" "통과했다 — apply 갈래가 종류 밖으로 샜다"
 else ok "12: 사전 인가에 없는 외부 상태 변경 exec 은 여전히 통과하지 않는다 (rc=$rc)"; fi
 
-# 정책이 선리뷰후머지 가 아니면 전제 2.
+# 선머지후리뷰 세그먼트는 cycle 대신 게이트를 지난 머지의 리뷰 의무 행을 증명으로
+# 읽는다. 게이트 밖에서 머지해 의무 행이 없으면 통과한 cycle 이 있어도 전제 3 이다.
 sb_apply_new '12 정책' 'exit 0' 'true' 파이프라인 선머지후리뷰
 sa_seg_row SB12P 선머지후리뷰
 SB_TIP=$(sa_commit '작업'); sb_cycle SB12P "$SB_TIP"; SB_M=$(sb_land_merge)
 sb_merged_row SB12P "$SB_M"
 sb12_base=$(sa_base)
 sb_apply SB12P
-sb_refused_clean "12: 선머지후리뷰 세그먼트의 적용은 전제 2 에서 거부된다" 2 "$sb12_base" SB12P
+sb_refused_clean "12: 의무 행 없는 선머지후리뷰 세그먼트의 적용은 전제 3 에서 거부된다" 3 "$sb12_base" SB12P
 
 # P1>0 은 리뷰-후-머지 를 꺼도 전제 3 에서 거부된다.
 sb_apply_new '12 룰 끔' 'exit 0' 'true' 파이프라인 선리뷰후머지 '**리뷰-후-머지**: 끔'
@@ -53589,6 +53590,61 @@ sa_seg_state H 사후리뷰
 sa_cycle H 1 0 0 "$MF_TIP"
 sa_seg_state H 완료; mf3_r=$rc
 check "88h-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다" "$mf3_r|$(mf_u12 H)" "0|0"
+
+# ---------------------------------------------------------------------------
+# 88h-4. 머지 먼저 — 사후 리뷰의 수정 뒤 두 번째 머지가 새 의무와 재적용을 받는다
+# --- section: 88h-4 | group: sa | covers: gate_apply_preconditions, gate_segment_apply_state, gate_segment_owes_apply, gate_segment_post_merge, gate_implement_next_raw, gate_base_review_head, act, apply | anchors: 88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다, 88h-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다, 88h-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다, 88h-4: 두 번째 머지됨 도 적용=대기 를 받는다, 88h-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다, 88h-4: 두 번째 적용이 통과한다 ---
+#
+# 적용이 있는 대상에서 머지 먼저 한 바퀴를 두 번 돈다: 첫 머지 → 머지됨 → 적용 →
+# 사후 리뷰(P1 1건) → 의무 이행 → 재구현 → 두 번째 머지 → 머지됨 → 적용. 적용 전제는
+# cycle 대신 각 머지가 발행한 리뷰 의무 행을 증명으로 읽는다. 두 번째 머지의 push 는
+# 첫 머지 커밋이 올라간 베이스 대신 별도 참조로 보낸다 — 픽스처 원격에서 빨리감기가
+# 되지 않을 뿐 게이트가 재는 것은 같다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+pre_sb
+MF_APPLY=1 mf_new '머지 먼저 — 두 번째 머지'
+mf_checks 통과
+mf4_tip1=$MF_TIP
+mf4_base=$( cd "$SA_SEGWT" && git rev-parse HEAD~1 )
+sa_merge H
+mf4_m1=$(sb_land_merge)
+sa_seg_state H 머지됨 "머지 커밋=$mf4_m1" PR=1
+mf4_row1=$(sb_seg_last H)
+sb_apply H; mf4_a1=$rc
+mf4_last1=$(sb_seg_last H)
+case "$mf4_row1|$mf4_last1" in *"적용=대기"*"|"*"상태=완료"*"적용="*) mf4_g1=대기후완료 ;; *) mf4_g1="$mf4_row1 || $mf4_last1" ;; esac
+check "88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다" "$mf4_a1|$mf4_g1" "0|대기후완료"
+
+sa_seg_state H 사후리뷰 "베이스 sha=$mf4_base"
+sa_cycle H 1 0 1 "$mf4_tip1"
+mf4_tip2=$(sa_commit '사후 리뷰 수정')
+mf_impl d2; mf_impl d2
+mf_checks 통과 "$mf4_tip2"
+sa_merge H "$SA_SEGBR:refs/heads/mf4-second"; mf4_rr=$rc
+mf4_rule=아님; if sa_names_rule; then mf4_rule=룰; fi
+check "88h-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다" "$mf4_rr|$mf4_rule" "3|룰"
+sa_fulfil "$(sa_ob_id H)"; mf4_rf=$rc
+sa_merge H "$SA_SEGBR:refs/heads/mf4-second"; mf4_r2=$rc
+check "88h-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다" \
+  "$mf4_rf|$mf4_r2|$(mf_ob_open)|$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '머지 커밋')" "0|0|1|$mf4_tip2"
+
+# 둘째 부모가 첫 머지의 팁인 머지 커밋으로 머지됨 을 쓰면 새 의무와 맞지 않는다.
+# 두 번째 팁을 먼저 베이스에 올린다 — 머지됨 행은 워크트리 팁의 착지를 확인한다.
+mf4_m2=$(sb_land_merge)
+sa_seg_state H 머지됨 "머지 커밋=$mf4_m1" PR=2
+mf4_row2=$(sb_seg_last H)
+case "$mf4_row2" in *"적용=대기"*) mf4_g2=대기 ;; *) mf4_g2=$mf4_row2 ;; esac
+check "88h-4: 두 번째 머지됨 도 적용=대기 를 받는다" "$mf4_g2" "대기"
+mf4_rows=$(sa_base)
+sb_apply H
+sb_refused_clean "88h-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다" 4 "$mf4_rows" H
+sa_seg_state H 머지됨 "머지 커밋=$mf4_m2" PR=2
+sb_apply H; mf4_a2=$rc
+mf4_last2=$(sb_seg_last H)
+case "$mf4_last2" in *"상태=완료"*"적용="*) mf4_last2=완료 ;; esac
+check "88h-4: 두 번째 적용이 통과한다" "$mf4_a2|$mf4_last2" "0|완료"
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제

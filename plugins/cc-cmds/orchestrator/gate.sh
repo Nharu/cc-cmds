@@ -36779,6 +36779,15 @@ gate_segment_apply_state() {
   # run neither applies nor measures it, and a person answers it. Two readers
   # only: the apply preconditions and the snapshot. The alias is taken for the
   # signature; the answer reads the ledger and the frozen apply fields alone.
+  #
+  # A merge-first segment merges again after a review that asked for a fix, so
+  # its handover is the one that names the merge commit of its last `머지됨`:
+  # the first merge's handover row does not hand over the second merge.
+  local ho
+  ho=$( { grep -nE '^- `적용 인계`' "$LEDGER" 2>/dev/null || true; } | gate_rows_field_eq '세그먼트' "$2")
+  if [ -n "$ho" ] && gate_segment_merge_first "$2"; then
+    ho=$(printf '%s\n' "$ho" | gate_rows_field_eq '머지 커밋' "$(gate_segment_field "$2" '머지 커밋')")
+  fi
   if [ "$(gate_segment_field "$2" '상태')" != "머지됨" ]; then
     printf '없음'
   elif [ "$(cc_segment_apply_phase "$LEDGER" "$2")" = "미정산" ]; then
@@ -36787,7 +36796,7 @@ gate_segment_apply_state() {
     printf '대기'
   elif [ -n "$(gate_apply_value "$2" '적용 명령')" ] \
        && [ "$(gate_apply_value "$2" '적용 주체')" = "사람" ] \
-       && [ -z "$(gate_apply_line_of '적용 인계' '세그먼트' "$2")" ]; then
+       && [ -z "$ho" ]; then
     printf '인계'
   else
     printf '없음'
@@ -36883,12 +36892,38 @@ gate_apply_preconditions() {
   fi
   fi
 
-  # 2 — the resolved policy reviews before it merges. Resolved the way
-  # `gate_resolve_review_policy` resolves it: the row, and absence is strict.
+  # 2 — the resolved policy reviews before it merges, or merges first through
+  # the gate. Resolved the way `gate_resolve_review_policy` resolves it: the
+  # row, and absence is strict.
+  #
+  # A MERGE-FIRST SEGMENT PROVES ITS MERGE WITH THE OBLIGATION, NOT A CYCLE. Its
+  # review comes after the merge, so 3 and 4 read the `리뷰 의무` row the merge
+  # issued when it went through the gate instead: that row precedes the merged
+  # row, and its `머지 커밋` — the worktree head the merge was bound to — is the
+  # second parent of M. Whether the obligation is fulfilled is not read: the
+  # deferred review is what the policy chose, and termination holds it.
   pol=$(gate_segment_field "$seg" '리뷰 정책')
   [ -n "$pol" ] || pol='선리뷰후머지'
-  [ "$pol" = "선리뷰후머지" ] || { gate_apply_refuse 2 "세그먼트 ${seg} 의 리뷰 정책이 선리뷰후머지 가 아닙니다 (${pol})"; return $?; }
+  local mf='' oline orow rhwhat='cycle 행의 리뷰 HEAD'
+  if [ "$pol" = "선머지후리뷰" ] && gate_segment_merge_first "$seg"; then
+    mf=1; rhwhat='리뷰 의무 행의 머지 커밋'
+  fi
+  [ -n "$mf" ] || [ "$pol" = "선리뷰후머지" ] \
+    || { gate_apply_refuse 2 "세그먼트 ${seg} 의 리뷰 정책이 선리뷰후머지 가 아닙니다 (${pol})"; return $?; }
 
+  if [ -n "$mf" ]; then
+  # 3 (merge first) — the obligation the merge issued came before the merge
+  # was recorded.
+  oline=$( { grep -nE '^- `리뷰 의무`' "$LEDGER" 2>/dev/null || true; } \
+           | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_eq '상태' '미이행' | tail -1 | cut -d: -f1)
+  [ -n "$oline" ] || { gate_apply_refuse 3 "세그먼트 ${seg} 의 리뷰 의무 행이 없습니다 — 머지 먼저 세그먼트의 적용은 게이트를 지난 머지가 발행한 의무를 증명으로 읽습니다"; return $?; }
+  sline=$(gate_apply_line_of 'segment' 'id' "$seg")
+  { [ -n "$sline" ] && [ "$oline" -lt "$sline" ]; } \
+    || { gate_apply_refuse 3 "마지막 리뷰 의무 행이 원장 순서로 머지됨 행보다 앞서지 않습니다"; return $?; }
+  orow=$(sed -n "${oline}p" "$LEDGER")
+  rh=$(gate_row_field "$orow" '머지 커밋')
+  [ -n "$rh" ] || { gate_apply_refuse 3 "마지막 리뷰 의무 행에 머지 커밋 이 없습니다"; return $?; }
+  else
   # 3 — the last cycle row passed, its report is a finished one, and it came
   # before the merge was recorded.
   crow=$(gate_segment_last_cycle_row "$seg")
@@ -36912,12 +36947,14 @@ gate_apply_preconditions() {
   sline=$(gate_apply_line_of 'segment' 'id' "$seg")
   { [ -n "$cline" ] && [ -n "$sline" ] && [ "$cline" -lt "$sline" ]; } \
     || { gate_apply_refuse 3 "마지막 cycle 행이 원장 순서로 머지됨 행보다 앞서지 않습니다"; return $?; }
-
-  # 4 — M is a two-parent merge of the reviewed head, or of the honest release
-  # metadata renumbering merge of it against the base the segment's last
-  # `베이스 판정` row named — the proof the merge act and the merge check use —
-  # and the local remote-tracking base already holds it.
   rh=$(gate_row_field "$crow" '리뷰 HEAD')
+  fi
+
+  # 4 — M is a two-parent merge of the reviewed head (the obligation's merge
+  # commit on a merge-first segment), or of the honest release metadata
+  # renumbering merge of it against the base the segment's last `베이스 판정`
+  # row named — the proof the merge act and the merge check use — and the local
+  # remote-tracking base already holds it.
   root=$(alias_root "$alias" 2>/dev/null || true)
   [ -n "$root" ] && [ -d "$root" ] || { gate_apply_refuse 4 "대상 ${alias} 의 루트를 찾지 못했습니다"; return $?; }
   base=$(target_field "$alias" '베이스 브랜치' 2>/dev/null || true)
@@ -36939,7 +36976,7 @@ gate_apply_preconditions() {
       fi
     fi
     [ -z "$why" ] \
-      || { gate_apply_refuse 4 "머지 커밋의 둘째 부모(${m2:-?})가 cycle 행의 리뷰 HEAD(${rh:-?})와 같지 않습니다 — 리뷰 HEAD 의 릴리스 메타 재번호 머지로도 증명되지 않습니다 (${why})"; return $?; }
+      || { gate_apply_refuse 4 "머지 커밋의 둘째 부모(${m2:-?})가 ${rhwhat}(${rh:-?})와 같지 않습니다 — 그 커밋의 릴리스 메타 재번호 머지로도 증명되지 않습니다 (${why})"; return $?; }
   fi
   ( cd "$root" && git merge-base --is-ancestor "$m" "refs/remotes/origin/$base" ) 2>/dev/null \
     || { gate_apply_refuse 4 "머지 커밋 ${m} 이 로컬 origin/${base} 의 조상이 아닙니다 — 게이트는 fetch 하지 않습니다"; return $?; }
@@ -41536,8 +41573,24 @@ gate_verb_act() {
   # and termination condition 9 — the gate folds it, the checker receives the
   # value. Narrowed to this segment for the reason the reader's own comment
   # gives: run-wide, a sibling's open obligation refuses this segment's merge.
-  GATE_SEGMENT_OPEN_OBLIGATIONS=$(gate_unfulfilled_review_obligations "$segment" \
-    | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  #
+  # AN APPLY OF A MERGE-FIRST SEGMENT IS NOT ITS NEXT MERGE. The obligation its
+  # merge issued stays open until the review it deferred, and the apply of that
+  # merge comes before that review, so it is left out of the set an apply (or
+  # its settlement) hands the checker: the one whose `머지 커밋` is the subject
+  # head the apply preconditions proved. Any other open obligation still
+  # refuses.
+  local _oid _orow _open=''
+  for _oid in $(gate_unfulfilled_review_obligations "$segment"); do
+    if [ -n "${GATE_SUBJECT_HEAD:-}" ] && gate_segment_merge_first "$segment"; then
+      _orow=$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '의무 id' "$_oid" | tail -1)
+      case "$GATE_SUBJECT_HEAD" in
+        "$(gate_row_field "$_orow" '머지 커밋')"*) [ -n "$(gate_row_field "$_orow" '머지 커밋')" ] && continue ;;
+      esac
+    fi
+    _open="${_open:+$_open }$_oid"
+  done
+  GATE_SEGMENT_OPEN_OBLIGATIONS=$_open
   export GATE_SEGMENT_OPEN_OBLIGATIONS
   # The segment's last cycle row, its last segment row, a person's dismissal of
   # that cycle and its carry-over to issues, all folded here for the same
