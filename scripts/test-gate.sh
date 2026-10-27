@@ -13196,6 +13196,7 @@ e4plan15r() {  # e4plan15r <seg> — `<plan file present 0|1>/<suppressed file p
     MANIFEST="'"$FX_MANIFEST"'"
     check_manifest >/dev/null 2>&1
     derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
     p=0; s=0
     [ -f "$RUN_DIR/$1.plan.md" ] && p=1
     [ -f "$RUN_DIR/$1.plan.md.suppressed" ] && s=1

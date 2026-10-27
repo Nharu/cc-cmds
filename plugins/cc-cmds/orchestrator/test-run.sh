@@ -7303,7 +7303,7 @@ unclb_case() {
     else
       printf 'rc=1\n'
     fi
-    printf 'unclosed=%s\n' "$(printf '%s' "$CONTINUE_UNCLOSED" | head -1)"
+    printf 'unclosed=%s\n' "${CONTINUE_UNCLOSED%%$'\n'*}"
     printf 'psha=%s\n' "$(grep -c 'plan_sha256=' "$LEDGER" || true)"
     printf 'plan=%s\n' "$(ls "$RUN_DIR" | grep -c '^A\.plan\.md$' || true)"
   ) > "$d/out" 2>/dev/null
@@ -7374,6 +7374,8 @@ check "프로세스 B 시도는 세그먼트 시작 HEAD 로 판정된다" "$(co
 crashA_case() {
   local d="$CONT/crashA" did="S4:ca:1" variant="${1:-ok}"
   rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  # 미결 판독기는 없는 문서를 판독 불가로 읽어 프로세스 A 를 막으므로, 미결 절 없는 문서를 둔다.
+  printf '# 픽스처 설계\n' > "$d/doc.md"
   (
     RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
     DOC_KEY="docs/x.md"; DOC="$d/doc.md"
