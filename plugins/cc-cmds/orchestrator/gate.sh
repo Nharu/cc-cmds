@@ -38431,9 +38431,10 @@ gate_ci_rerun_on_hit() {
 
 # The X5 floor: the two branches of the line grep the X5 check is never weaker
 # than, kept here once so the reader, the grep and the tests read one string.
-GATE_X5_FLOOR_ENV_RE='(^|[^A-Za-z0-9_])environment["'"'"']?[[:space:]]*:'
-GATE_X5_FLOOR_WF_RE='\.github/workflows/'
-GATE_X5_FLOOR_RE="$GATE_X5_FLOOR_ENV_RE|$GATE_X5_FLOOR_WF_RE"
+# Read-only, so a shell that sources this file keeps them and none rebinds them.
+readonly GATE_X5_FLOOR_ENV_RE='(^|[^A-Za-z0-9_])environment["'"'"']?[[:space:]]*:'
+readonly GATE_X5_FLOOR_WF_RE='\.github/workflows/'
+readonly GATE_X5_FLOOR_RE="$GATE_X5_FLOOR_ENV_RE|$GATE_X5_FLOOR_WF_RE"
 
 gate_ci_rerun_x5_lines() {
   # gate_ci_rerun_x5_lines <regex> <file> — the numbers of the file's lines the
@@ -38563,7 +38564,7 @@ gate_ci_rerun_x5_read() {
   # numbers, those on the `environment` branch, the floor lines not lifted, and
   # whether a condition that turns every lift off was met. Any other status is
   # a reader that did not finish.
-  GATE_X5_FLOOR_RE="$GATE_X5_FLOOR_RE" GATE_X5_FLOOR_ENV_RE="$GATE_X5_FLOOR_ENV_RE" \
+  GATE_X5_FRE="$GATE_X5_FLOOR_RE" GATE_X5_ERE="$GATE_X5_FLOOR_ENV_RE" \
   LC_ALL=C awk -v q="'" '
     function unq(s) { gsub(/"/, "", s); gsub(q, "", s); return s }
     function opens(s, i,   j, t, c, u) {
@@ -38789,7 +38790,7 @@ gate_ci_rerun_x5_read() {
       return 1
     }
     BEGIN {
-      fre = ENVIRON["GATE_X5_FLOOR_RE"]; ere = ENVIRON["GATE_X5_FLOOR_ENV_RE"]
+      fre = ENVIRON["GATE_X5_FRE"]; ere = ENVIRON["GATE_X5_ERE"]
       if (fre == "" || ere == "") { bad = 1; exit }
       wf = "[.]github/workflows/[A-Za-z0-9_.-]+[.]ya?ml"
       e1re = "^[ \t]*-[ \t]+(" wf "|" q wf q "|\"" wf "\")[ \t]*$"
