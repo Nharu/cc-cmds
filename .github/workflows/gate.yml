@@ -128,8 +128,8 @@ jobs:
           fi
           if [ -z "$base" ] \
              || ! git show "$base:scripts/test-gate.sh" > "$RUNNER_TEMP/base-test-gate.sh" \
-             || ! bash scripts/test-gate.sh --digests --from "$RUNNER_TEMP/base-test-gate.sh" > "$plan/base.dig" \
-             || ! bash scripts/test-gate.sh --digests > "$plan/head.dig"; then
+             || ! make -s --no-print-directory print-gate-digests GATE_DIGESTS_FROM="$RUNNER_TEMP/base-test-gate.sh" > "$plan/base.dig" \
+             || ! make -s --no-print-directory print-gate-digests > "$plan/head.dig"; then
             echo "::error::격리 검사 불가 — 베이스 없음 (베이스 '${base:-${BEFORE:-없음}}' 의 scripts/test-gate.sh 다이제스트를 내지 못했습니다)"
             exit 1
           fi

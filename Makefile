@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -528,6 +528,13 @@ print-gate-slots:
 # that make stays the one entry point to the suites and its pinned zone applies.
 print-gate-sections:
 	@bash scripts/test-gate.sh --list < /dev/null
+
+# The section digests, for CI's changed-section plan, through make for the same
+# reason. GATE_DIGESTS_FROM names another copy of the suite (the base's) to read
+# with this one's selector; empty reads this suite.
+GATE_DIGESTS_FROM ?=
+print-gate-digests:
+	@bash scripts/test-gate.sh --digests $(if $(GATE_DIGESTS_FROM),--from '$(GATE_DIGESTS_FROM)') < /dev/null
 
 # The zone a recipe actually receives, and the offset it resolves to. The
 # offset is printed beside the name because glibc falls back to UTC in silence
