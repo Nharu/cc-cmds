@@ -51,6 +51,15 @@ wrapper_path_ok() {
   # could have written. In the unquoted alternative a space or a tab is the same
   # kind of evidence: what we once emitted without quotes could not have held
   # one and still have been the single word the guard tested.
+  #
+  # SO IS EVERY OTHER CHARACTER THE SHELL READS OUTSIDE QUOTES. A `;`, `|`, `&`
+  # or newline with no space around it ends one command and starts another, so
+  # `/usr/bin/true;/x/orchestrator/statusline.sh` runs somebody else's program
+  # first while still ending in our suffix — classified as ours, its first half
+  # would be dropped from the fallback and lost. Redirections, subshells, quotes,
+  # escapes, globs, braces, `~`, `!` and `#` change what the word means in the
+  # same way. Inside the quoted alternative all of these are literal bytes of the
+  # path, which is why the check is the unquoted one's alone.
   local p="$1" kind="$2" tab
   tab=$'\t'
   case "$p" in /*) ;; *) return 1 ;; esac
@@ -61,6 +70,12 @@ wrapper_path_ok() {
   if [ "$kind" = bare ]; then
     case "$p" in *' '*)     return 1 ;; esac
     case "$p" in *"$tab"*)  return 1 ;; esac
+    case "$p" in *[[:cntrl:]]*) return 1 ;; esac
+    case "$p" in
+      *';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'('*|*')'*) return 1 ;;
+      *"'"*|*'\'*|*'*'*|*'?'*|*'['*|*']'*)        return 1 ;;
+      *'{'*|*'}'*|*'~'*|*'!'*|*'#'*)              return 1 ;;
+    esac
   fi
   return 0
 }

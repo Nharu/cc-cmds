@@ -682,6 +682,28 @@ check "L18 (구조) 설치기가 그 어휘를 비교 리터럴로 적은 자리
 check "L18 (구조) 그 패턴은 분류기 자신의 철자를 실제로 잡는다" \
   "$(grep -cE -- "$L18_LIT" "$CMDLIB" | awk '{print ($1 > 0) ? "잡는다" : "못 잡는다"}')" "잡는다"
 
+# ---------------------------------------------------------------------------
+# L19 — a command joined to ours without spaces is somebody else's
+#
+# The value starts with an absolute path and ends in our suffix, so only the
+# operator in between says it runs another program first. Adopting it would drop
+# that program from the fallback, on every machine that has such a value, at the
+# first startup — so the hook must park on it without calling the installer.
+# ---------------------------------------------------------------------------
+l19_i=0
+for v in "/usr/bin/true;$OLDSL" "/opt/a/bin/x|$OLDSL" "/opt/a&&$OLDSL" "/opt/setup.sh
+$OLDSL"; do
+  l19_i=$((l19_i + 1))
+  L19="$WORK/cfg-l19-$l19_i"; mkdir -p "$L19"
+  jq -n --arg c "$v" '{theme: "dark", statusLine: {type: "command", command: $c}}' > "$L19/settings.json"
+  l19_sha=$(sha_of "$L19/settings.json")
+  check "L19 연산자로 이은 값 $l19_i 의 분류" "$(l18_cls "$L19/settings.json")" "foreign"
+  run_hook "$L19" "$PLUG"
+  check "L19 연산자로 이은 값 $l19_i — 설정 파일이 바이트 동일" "$(sha_of "$L19/settings.json")" "$l19_sha"
+  check "L19 연산자로 이은 값 $l19_i — park(foreign) 로 기억된다" \
+    "$(mk_field "$L19" verdict)|$(mk_field "$L19" reason)" "park|foreign"
+done
+
 # L9 is deliberately absent: what a hook does in a workspace whose trust has not
 # been accepted cannot be decided from inside the hook, and the observation that
 # would settle it is a residual item on the design rather than a test.

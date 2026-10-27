@@ -2019,6 +2019,19 @@ for v in "bash \$HOME/orchestrator/statusline.sh" "bash \`pwd\`/orchestrator/sta
   check "M7 \$·백틱·상대경로가 든 값 $m7_i — park" "$(apply "$f" "$APLUG" ours)" "20"
 done
 
+# M10. The operators M6 surrounds with spaces, written without them. The value
+# still starts with an absolute path and still ends in our suffix, so only the
+# characters in between say it runs somebody else's program first — and adopting
+# it would drop that program from the fallback for good.
+m10_i=0
+for v in "/usr/bin/true;$OLDSL" "/opt/a/bin/x|$OLDSL" "/opt/a&&$OLDSL" "/opt/setup.sh
+$OLDSL"; do
+  m10_i=$((m10_i + 1))
+  f="$WORK/m10-$m10_i.json"; mk_settings "$f" "$v"; m10_sha=$(sha_of "$f")
+  check "M10 공백 없는 연산자·줄바꿈으로 이은 값 $m10_i — park" "$(apply "$f" "$APLUG" ours)" "20"
+  check "M10 park — 파일이 바이트 동일 $m10_i" "$(sha_of "$f")" "$m10_sha"
+done
+
 M8="$WORK/m8.json"; mk_settings "$M8" "bash $OLDSL"
 apply "$M8" "$APLUG" ours >/dev/null
 M8S=$(sha_of "$M8")
