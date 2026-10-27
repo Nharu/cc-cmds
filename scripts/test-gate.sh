@@ -42745,7 +42745,7 @@ cb60_foot
 
 # ---------------------------------------------------------------------------
 # 60b-2. 리뷰가 깨끗한 세그먼트의 CI 실패 — 부적격 실행의 park
-# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: paths 필터·run 본문·주석·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
+# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: CRLF tip 워크플로는 커밋 뒤에도 줄 끝 CR 을 담는다, 60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋과 그 CRLF 사본은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 바닥 정규식은 master 의 grep 문자열과 바이트로 같다, 60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키를 배포 자리로 읽는다, 60b: X5 는 바닥 grep 이 맞고 면제 모양이 아닌 줄을 배포 자리로 읽는다, 60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄만 바닥에서 면제한다,60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
 #
 # 60b 의 둘째 조각. 픽스처는 `cb60_head` 로 새로 세운다. 같은 argv 의 둘째 park 가 행을
 # 더 쓰지 않는지는 칸과 종류마다 처음 사례에서 `cb60_park` 이 모으고 그 단언은 60b-3
@@ -42785,40 +42785,150 @@ for cb60_tipwf in "$CB60_WF"$'\n    environment: prod' "$CB60_WF"$'\n  u:\n    u
                   "$CB60_WF"$'\n      - run: bash .github/workflows/deploy.sh' \
                   "$CB60_WF"$'\n      - {environment: prod}' \
                   '{"name": "gate", "on": {"pull_request": {"branches": ["main"]}}, "jobs": {"t": {"runs-on": "ubuntu-latest", "environment": "prod", "steps": [{"run": "true"}]}}}' \
-                  $'name: gate\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          true\n        environment: prod'; do
+                  $'name: gate\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          true\n        environment: prod' \
+                  "$(printf '%s\n' "$CB60_WF"$'\n    environment:\n      name: prod' | LC_ALL=C awk '{ printf "%s\r\n", $0 }')" \
+                  $'name: gate\non:\n  pull_request:\n    branches: [main]\n'"jobs: {d: {a: !<tag:x> v, b: z> 'c, environment: prod, e: 'd', steps: [{run: make}]}}"; do
   cb60_i=$((cb60_i + 1))
   cb60_again "$cb60_tipwf"
+  # 호스트의 core.autocrlf 가 커밋에서 CR 을 지우면 CRLF 사례가 LF 판으로 재지므로 tip 을 본다.
+  case "$cb60_tipwf" in
+    *$'\r'*) cb60_tipcr=$( (cd "$SA_SEGWT" && git show HEAD:.github/workflows/gate.yml) | LC_ALL=C grep -c $'\r$' || true) ;;
+  esac
   cb60_park 재실행배포트리거 "gate.yml:777" "tip 워크플로의 배포 자리 $cb60_i"
 done
-# 배포 자리가 아닌 글자 — paths 필터의 자기 경로, `run: |` 본문의 워크플로 파일 경로, 주석의
-# 환경 키, 앵커·별칭으로 나눠 쓴 paths. 넷을 한 tip 에 모아도 재실행은 수락까지 간다.
+check "60b: CRLF tip 워크플로는 커밋 뒤에도 줄 끝 CR 을 담는다" "$([ "${cb60_tipcr:-0}" -gt 0 ] && echo 있음)" "있음"
+# 배포 자리가 아닌 글자 — 트리거 필터의 블록 시퀀스 paths 항목이 이름 짓는 자기 워크플로 파일,
+# step 의 `run: |` 본문에서 옵션 없는 `yq` 가 읽는 워크플로 파일, 그 paths 를 앵커·별칭으로
+# 나눠 쓴 꼴. 셋을 한 tip 에 모아도 재실행은 수락까지 간다.
 cb60_new "CI 재실행 — 배포 자리가 아닌 글자"
-CB60_CLEANWF=$'name: gate\non:\n  pull_request:\n    branches: [main]\n    paths: &p\n      - \'.github/workflows/gate.yml\'\n      - \'a.txt\'\n  push:\n    paths: *p\njobs:\n  t:\n    runs-on: ubuntu-latest\n    # environment: prod\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml\n          true'
+CB60_CLEANWF=$'name: gate\non:\n  pull_request:\n    branches: [main]\n    paths: &p\n      - \'.github/workflows/gate.yml\'\n      - \'a.txt\'\n  push:\n    paths: *p\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml\n          true'
 cb60_again "$CB60_CLEANWF"
 cb60_np=$(cb60_posts); cb60_nb=$(cb60_n blocked)
 cb60_act
-check "60b: paths 필터·run 본문·주석·별칭의 워크플로 글자는 park 하지 않고 수락된다" \
+check "60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다" \
   "$rc|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(( $(cb60_posts) - cb60_np ))|$(( $(cb60_n blocked) - cb60_nb ))" "0|수락|1|0"
-# 판독기 함수 — 레포의 실제 워크플로 셋은 깨끗하고, 어휘 경계의 다섯 모양은 각자 답한다.
+# 판독기 함수 — 기대가 1 인 픽스처는 바닥 grep 에도 깨끗해야 한다. 바닥이 맞는데 1 인 것은
+# 트리거 paths 항목과 step `run` 본문의 `yq` 읽기 줄, 두 면제 모양뿐이라 그것만 `cb60_x5e` 로 부른다.
+cb60_x5at() {
+  # cb60_x5at <기대 rc> <파일> <라벨> [e] — 파일 하나에 판독기 함수를 부른다. 넷째 인자 e 가
+  # 없으면 기대 1 인 파일이 바닥 grep 에도 깨끗한지 함께 본다.
+  local r=0 g=0
+  gate_ci_rerun_x5_hit "$2" || r=$?
+  [ "$r" = "$1" ] || cb60_x5fail="$cb60_x5fail[$3 rc=$r]"
+  if [ "${4:-}" != e ] && [ "$1" = 1 ]; then
+    LC_ALL=C grep -Eq "$GATE_X5_FLOOR_RE" "$2" || g=$?
+    [ "$g" = 1 ] || cb60_x5fail="$cb60_x5fail[$3 바닥=$g]"
+  fi
+}
+cb60_x5() {
+  # cb60_x5 <기대 rc> <내용> [e] — 셸 문자열 픽스처 하나의 답.
+  local f="$CB60_ROOT/x5-$cb60_i.yml"; cb60_i=$((cb60_i + 1))
+  printf '%s\n' "$2" > "$f"
+  cb60_x5at "$1" "$f" "$2" "${3:-}"
+}
+cb60_x5e() { cb60_x5 "$1" "$2" e; }
+cb60_x5cr() {
+  # cb60_x5cr <기대 rc> <내용> [e] — 줄마다 CR 을 붙인 사본. 셸 문자열로는 만들기 번거로워
+  # awk 로 파일을 직접 쓴다.
+  local f="$CB60_ROOT/x5-$cb60_i.yml"; cb60_i=$((cb60_i + 1))
+  printf '%s\n' "$2" | LC_ALL=C awk '{ printf "%s\r\n", $0 }' > "$f"
+  cb60_x5at "$1" "$f" "CRLF $2" "${3:-}"
+}
 cb60_x5fail=""
 for cb60_f in gate.yml lint.yml notify-macos.yml; do
-  cb60_r=0; gate_ci_rerun_x5_hit "$repo_root/.github/workflows/$cb60_f" || cb60_r=$?
-  [ "$cb60_r" = 1 ] || cb60_x5fail="$cb60_x5fail[$cb60_f rc=$cb60_r]"
+  cb60_x5at 1 "$repo_root/.github/workflows/$cb60_f" "$cb60_f" e
+  LC_ALL=C awk '{ printf "%s\r\n", $0 }' "$repo_root/.github/workflows/$cb60_f" > "$CB60_ROOT/crlf-$cb60_f"
+  cb60_x5at 1 "$CB60_ROOT/crlf-$cb60_f" "CRLF $cb60_f" e
 done
-check "60b: 레포의 실제 워크플로 셋은 X5 판독기에서 깨끗하다" "$cb60_x5fail" ""
-cb60_x5() {
-  # cb60_x5 <기대 rc> <내용> — 판독기 함수 하나의 답.
-  local f="$CB60_ROOT/x5-$cb60_i.yml" r=0; cb60_i=$((cb60_i + 1))
-  printf '%s\n' "$2" > "$f"
-  gate_ci_rerun_x5_hit "$f" || r=$?
-  [ "$r" = "$1" ] || cb60_x5fail="$cb60_x5fail[$2 rc=$r]"
-}
-cb60_x5 1 $'on:\n  pull_request:\n    paths:\n      - \'.github/workflows/gate.yml\''
+check "60b: 레포의 실제 워크플로 셋과 그 CRLF 사본은 X5 판독기에서 깨끗하다" "$cb60_x5fail" ""
+cb60_x5fail=""
+cb60_x5e 1 $'on:\n  pull_request:\n    paths:\n      - \'.github/workflows/gate.yml\''
 cb60_x5 1 $'jobs:\n  t:\n    steps:\n      - run: echo workflow running'
 cb60_x5 0 $'on:\n  pull_request:\n    paths:\n      - \'.github/workflows/**\''
 cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: cmd |\n          environment: prod'
-cb60_x5 1 $'jobs:\n  t:\n    steps:\n      - run: &a |\n          environment: prod'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: &a |\n          environment: prod'
 check "60b: X5 판독기의 어휘 경계가 모양마다 답한다" "$cb60_x5fail" ""
+# 바닥 정규식 — master 의 X5 grep 과 바이트로 같다.
+check "60b: X5 바닥 정규식은 master 의 grep 문자열과 바이트로 같다" \
+  "$GATE_X5_FLOOR_RE|$GATE_X5_FLOOR_ENV_RE|$GATE_X5_FLOOR_WF_RE" \
+  '(^|[^A-Za-z0-9_])environment["'"'"']?[[:space:]]*:|\.github/workflows/|(^|[^A-Za-z0-9_])environment["'"'"']?[[:space:]]*:|\.github/workflows/'
+# 줄 끝 CR 과 검증 태그에 가려진 키 — 판독기는 CR 하나를 떼고 읽고, `>` 앞의 `!<` 는 그 덩어리
+# 안에서만 태그로 건너뛴다. `?` 키 꼴은 키와 `:` 가 다른 줄이라 바닥이 받치지 않는다.
+cb60_x5fail=""
+cb60_x5cr 0 $'on: push\njobs:\n  d:\n    environment:\n      name: prod'
+cb60_x5 0 $'on: push\njobs:\n  d:\n    environment:\n      name: prod'
+cb60_x5 0 "on: push"$'\n'"jobs: {d: {a: !<tag:x> v, b: z> 'c, environment: prod, e: 'd', steps: [{run: make}]}}"
+cb60_x5cr 0 $'on: push\njobs:\n  d:\n    steps:\n      - uses:\n          org/deploy@v1'
+cb60_x5 0 "on: push"$'\n'"jobs: {d: {a: !<tag:x> v, b: z> 'c, uses: org/deploy@v1, e: 'd', steps: [{run: make}]}}"
+cb60_x5cr 0 $'on: push\njobs:\n  d:\n    ?\n      environment\n    : prod'
+check "60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키를 배포 자리로 읽는다" "$cb60_x5fail" ""
+# 바닥 아래로 내려가지 않음 — 판독기가 깨끗함으로 읽어도 바닥 줄이 면제 모양이 아니면 0 이다.
+cb60_x5fail=""
+cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with:\n          workflow: >\n            .github/workflows/deploy.yml'
+cb60_x5 0 $'on: push\njobs:\n  t:\n    # environment: prod\n    steps:\n      - run: make'
+cb60_x5 0 $'on: push\n# see .github/workflows/x.yml\njobs: {}'
+cb60_x5 0 $'on:\n  push:\n    branches:\n      - .github/workflows/x.yml'
+cb60_x5 0 $'name: \'a\n  b\'\non:\n  push:\n    paths:\n      - .github/workflows/x.yml'
+cb60_x5 0 $'env: {a: 1,\n  b: 2}\non:\n  push:\n    paths:\n      - .github/workflows/x.yml'
+for cb60_b in '\r' '\302\205' '\342\200\250' '\342\200\251'; do
+  printf "on:\n  push:\n    paths:\n      - .github/workflows/x.yml\n      - a${cb60_b}b\n" > "$CB60_ROOT/x5-hb.yml"
+  cb60_x5at 0 "$CB60_ROOT/x5-hb.yml" "숨은 줄바꿈 $cb60_b paths"
+  printf "jobs:\n  t:\n    steps:\n      - run: |\n          yq '.on' .github/workflows/x.yml\n          a${cb60_b}b\n" > "$CB60_ROOT/x5-hr.yml"
+  cb60_x5at 0 "$CB60_ROOT/x5-hr.yml" "숨은 줄바꿈 $cb60_b run"
+done
+printf 'on:\n  push:\n    paths:\n      - .github/workflows/x.yml\n      - a\000b\n' > "$CB60_ROOT/x5-nul.yml"
+cb60_x5at 0 "$CB60_ROOT/x5-nul.yml" "NUL"
+cb60_x5 0 $'on:\n  push:\n    paths:\n      - .github/workflows/x.yml # c'
+cb60_x5 0 $'on:\n  push:\n    paths:\n      - .github/workflows/sub/x.yml'
+cb60_x5 0 $'on:\n  push:\n    paths:\n      - \'!.github/workflows/x.yml\''
+cb60_x5 0 $'on:\n  push:\n    paths:\n      - a.txt\n      foo: bar\n      - .github/workflows/x.yml'
+cb60_x5 0 $'on:\n  push:\n    paths:\n  - .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - uses: a/b@v1\n        with:\n          paths:\n            - .github/workflows/x.yml'
+cb60_x5 0 $'on:\n  workflow_dispatch:\n    paths:\n      - .github/workflows/x.yml'
+cb60_x5 0 $'on:\n  push:\n    paths: &p\n      - .github/workflows/x.yml\njobs:\n  t:\n    steps:\n      - uses: a/b@v1\n        with:\n          files: *p'
+cb60_x5 0 $'on:\n  push:\n    paths: &p\n      - .github/workflows/x.yml\n# *p\njobs: {}'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - uses: a/b@v1\n        with:\n          run: |\n            yq \'.on\' .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: &a |\n          yq \'.on\' .github/workflows/x.yml\n      - env: *a'
+cb60_x5 0 $'on:\n  pull_request: &x\n    paths:\n      - .github/workflows/x.yml'
+cb60_x5 0 $'on: !!map\n  push:\n    paths:\n      - .github/workflows/x.yml'
+cb60_x5 0 $'w:\n  on:\n    push:\n      paths:\n        - .github/workflows/x.yml'
+cb60_x5 0 $'on:\n  push:\n    \'paths\':\n      - .github/workflows/x.yml'
+cb60_x5 0 $'on:\n  push:\n    "paths":\n      - .github/workflows/x.yml'
+cb60_x5 0 $'on:\n  push:\n    paths: !!seq\n      - .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps: &s\n      - run: |\n          yq \'.on\' .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  steps:\n    - run: |\n        yq \'.on\' .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: |\n          yq \'.on\' \\\n          .github/workflows/x.yml'
+for cb60_l in 'cp x.yml .github/workflows/new.yml' "yq -i '.a = 1' .github/workflows/x.yml" "yq '.on' .github/workflows/x.yml > out" \
+              "yq '.on' .github/workflows/x.yml | tee .github/workflows/y.yml" "yq '.on' .github/workflows/x.yml | sh" \
+              "yq '.on' .github/workflows/sub/x.yml" "yq '.on' .github/workflows/*.yml" "yq '.on' .github/workflows/x.yml.bak" \
+              "echo yq '.on' .github/workflows/x.yml" "xargs yq '.on' .github/workflows/x.yml" "yq '.a | .b' .github/workflows/x.yml" \
+              "yq '.a' .github/workflows/x.yml; cat .github/workflows/y.yml" "yq '.on' .github/workflows/x.yml | sort -o out" \
+              "yq '.on' .github/workflows/x.yml | sort --compress-program=sh" "yq '.on' .github/workflows/x.yml | uniq - out" \
+              "x && yq '.on' .github/workflows/x.yml" "x; yq '.on' .github/workflows/x.yml"; do
+  cb60_x5 0 "$(printf 'jobs:\n  t:\n    steps:\n      - run: |\n          %s' "$cb60_l")"
+done
+check "60b: X5 는 바닥 grep 이 맞고 면제 모양이 아닌 줄을 배포 자리로 읽는다" "$cb60_x5fail" ""
+# 면제 모양은 깨끗함 — 세 이벤트의 paths·paths-ignore 항목, 같은 자리의 별칭, step `run` 본문의
+# `yq` 읽기 줄과 허용한 뒤 명령, 그리고 각각의 CRLF 판.
+cb60_x5fail=""
+for cb60_ev in push pull_request pull_request_target; do
+  for cb60_it in '.github/workflows/x.yml' "'.github/workflows/x.yml'" '".github/workflows/x.yml"'; do
+    cb60_x5e 1 "$(printf 'on:\n  %s:\n    paths:\n      - %s' "$cb60_ev" "$cb60_it")"
+    cb60_x5cr 1 "$(printf 'on:\n  %s:\n    paths:\n      - %s' "$cb60_ev" "$cb60_it")" e
+  done
+  cb60_x5e 1 "$(printf 'on:\n  %s:\n    paths-ignore:\n      - .github/workflows/x.yml' "$cb60_ev")"
+  cb60_x5cr 1 "$(printf 'on:\n  %s:\n    paths-ignore:\n      - .github/workflows/x.yml' "$cb60_ev")" e
+done
+cb60_x5e 1 $'on:\n  pull_request:\n    paths: &p\n      - a.txt\n      # 사이 주석 — 비 ASCII\n      - .github/workflows/x.yml\n  push:\n    paths: *p'
+cb60_x5cr 1 $'on:\n  pull_request:\n    paths: &p\n      - a.txt\n      # 사이 주석 — 비 ASCII\n      - .github/workflows/x.yml\n  push:\n    paths: *p' e
+for cb60_rk in '- run: |' '- run: &a >' $'- name: x\n        run: |'; do
+  for cb60_l in "yq '.on' .github/workflows/x.yml" "got=\$(yq '.a[]' .github/workflows/x.yml | sort -n | tr '\\n' ' ')" \
+                "got=\$(yq '.a[]' .github/workflows/x.yml | cut -d ' ' -f1)"; do
+    cb60_x5e 1 "$(printf 'jobs:\n  t:\n    steps:\n      %s\n          %s' "$cb60_rk" "$cb60_l")"
+    cb60_x5cr 1 "$(printf 'jobs:\n  t:\n    steps:\n      %s\n          %s' "$cb60_rk" "$cb60_l")" e
+  done
+done
+check "60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄만 바닥에서 면제한다" "$cb60_x5fail" ""
 # 키 노드 속성과 문서 표지 — 앵커·태그가 붙은 키도 그 이름으로 읽고, `---` 줄의 flow 문서도 읽는다.
 cb60_x5fail=""
 cb60_x5 0 $'jobs:\n  d:\n    &e environment: prod'
@@ -42830,19 +42940,21 @@ cb60_x5 0 $'jobs:\n  d:\n    env: &e {environment: prod}'
 cb60_x5 0 $'jobs:\n  d:\n    uses: &u\n      ./.github/workflows/x.yml'
 cb60_x5 1 $'---\nname: x\njobs:\n  t:\n    env: &e\n      A: x\n  u:\n    env: *e'
 check "60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다" "$cb60_x5fail" ""
-# run 이 아닌 키의 값 경로 — flow 꼴과 다음 줄 값도 맞고, run 값·paths 항목은 깨끗하다.
+# run 이 아닌 키의 값 경로 — flow 꼴과 다음 줄 값도 맞는다. flow 안의 run 값·paths 항목, 여러 줄
+# 평문 run 값, 트리거 필터 자리가 아닌 paths 항목은 판독기가 깨끗함으로 읽어도 면제 모양이 아니라
+# 바닥 grep 이 맞음으로 남긴다.
 cb60_x5fail=""
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with: {workflow: .github/workflows/deploy.yml}'
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with: {a: 1, "workflow": \'.github/workflows/deploy.yml\'}'
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with:\n          workflow:\n            .github/workflows/deploy.yml'
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with:\n          workflow: &w\n            .github/workflows/deploy.yml'
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with: {workflow: "x, .github/workflows/deploy.yml"}'
-cb60_x5 1 $'jobs:\n  d:\n    steps: [{run: yq .on .github/workflows/x.yml}]'
-cb60_x5 1 $'jobs:\n  d:\n    steps: [{run: "echo a, b: .github/workflows/x.yml"}]'
-cb60_x5 1 $'on: {push: {branches: [\'release: .github/workflows/x.yml\']}}'
-cb60_x5 1 $'on: {pull_request: {paths: [\'.github/workflows/gate.yml\']}}'
-cb60_x5 1 $'jobs:\n  t:\n    steps:\n      - run:\n          yq .on .github/workflows/x.yml'
-cb60_x5 1 $'jobs:\n  t:\n    with:\n      workflow:\n    paths:\n      - .github/workflows/a.yml'
+cb60_x5 0 $'jobs:\n  d:\n    steps: [{run: yq .on .github/workflows/x.yml}]'
+cb60_x5 0 $'jobs:\n  d:\n    steps: [{run: "echo a, b: .github/workflows/x.yml"}]'
+cb60_x5 0 $'on: {push: {branches: [\'release: .github/workflows/x.yml\']}}'
+cb60_x5 0 $'on: {pull_request: {paths: [\'.github/workflows/gate.yml\']}}'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run:\n          yq .on .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    with:\n      workflow:\n    paths:\n      - .github/workflows/a.yml'
 check "60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다" "$cb60_x5fail" ""
 # flow 의 따옴표 — 평문 값 안의 따옴표는 글자라 뒤의 키를 가리지 않고, 노드가 시작하는 자리의 따옴표 문자열은 한 값이다.
 cb60_x5fail=""
@@ -42861,9 +42973,9 @@ cb60_x5 0 $'jobs: {d: {name: Bob \'s x, #, \'c\n  environment: prod}}'
 cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: |\n          echo \'build # 5\'; gh workflow run deploy.yml'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: !<tag:a,b> \'x, uses: y\', run: make}]'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{"name" :\'a, uses: b\', run: make}]'
-cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: "it\'s, environment: prod", run: make}]'
+cb60_x5 0 $'jobs:\n  d:\n    steps: [{name: "it\'s, environment: prod", run: make}]'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: !!str \'a, uses: b\', run: make}]'
-cb60_x5 1 $'jobs:\n  d:\n    steps: [{"name":\'a, environment: b\', run: make}]'
+cb60_x5 0 $'jobs:\n  d:\n    steps: [{"name":\'a, environment: b\', run: make}]'
 cb60_x5 0 $'jobs: {d: {\n  runs-on: x,\n  name: Release - \'24 build,\n  environment: prod,\n  steps: [{run: make}]}}'
 cb60_x5 0 $'jobs: {d: {\n  name: Q ? \'a,\n  environment: prod}}'
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - {\n        name: Build - \'nightly,\n        uses: org/deploy-action@v1}'
@@ -43771,7 +43883,7 @@ check "60d: 다른 argv 철자의 라벨 행위는 규칙이 열지 않는다" "
 
 # ---------------------------------------------------------------------------
 # 60e. 라벨 인정 — 행위 본문: 수락, park 칸, 받지 않은 요청, 쓰기 자격, 철자
-# --- section: 60e | group: sa | covers: act, snapshot | anchors: 60e: 적격한 라벨 행위가 요청·수락 행을 쓰고 POST 를 한 번 낸다, 60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다, 60e: paths 필터·run 본문·주석·별칭의 워크플로 글자는 라벨 행위를 park 하지 않는다, 60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다, 60e: 쓰기 자격 없는 라벨 행위는 행도 POST 도 없이 rc 3 이다, 60e: 사전 인가 행 없는 라벨 행위가 규칙을 지나 수락된다 ---
+# --- section: 60e | group: sa | covers: act, snapshot | anchors: 60e: 적격한 라벨 행위가 요청·수락 행을 쓰고 POST 를 한 번 낸다, 60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다, 60e: paths 필터·run 본문·별칭의 워크플로 글자는 라벨 행위를 park 하지 않는다, 60e: 받지 않은 라벨 요청은 라벨요청실패 로 park 한다, 60e: 쓰기 자격 없는 라벨 행위는 행도 POST 도 없이 rc 3 이다, 60e: 사전 인가 행 없는 라벨 행위가 규칙을 지나 수락된다 ---
 #
 # 60b 의 픽스처(`cb60_head`·`cb60_new`) 위에 매니페스트의 `라벨 인정` 행, 그 체크를 이름
 # 짓는 슬라이스 문서, `labeled` 를 받는 워크플로를 얹고 `act --kind label-ack` 를 실제로
@@ -43887,6 +43999,8 @@ la61_again "$LA61_WF"$'\n    &e environment: prod'
 la61_park 라벨배포트리거 "gate.yml" "tip 워크플로의 앵커 붙은 환경 키"
 la61_again "$LA61_WF"$'\n      - uses: a/b@v1\n        with: {workflow: .github/workflows/deploy.yml}'
 la61_park 라벨배포트리거 "gate.yml" "tip 워크플로의 flow 값 워크플로 경로"
+la61_again "$LA61_WF"$'\n    # environment: prod'
+la61_park 라벨배포트리거 "gate.yml" "tip 워크플로의 주석 줄 환경 키"
 la61_again
 cb60_tgt "배포트리거 식별자=branch:$SA_SEGBR"
 la61_park 라벨배포트리거 "branch:$SA_SEGBR" "식별자 branch"
@@ -43911,14 +44025,15 @@ cb60_wf_base x-run.yml $'on:\n  workflow_run:\n    workflows: [gate]\n    types:
 la61_again
 la61_park 라벨배포트리거 "기본 브랜치 x-run.yml" "기본 브랜치의 workflow_run"
 check "60e: 부적격 라벨 행위는 POST 없이 그 칸으로 park 한다" "$la61_fail" ""
-# 배포 자리가 아닌 글자 — paths 필터의 자기 경로, `run: |` 본문의 워크플로 파일 경로, 주석의
-# 환경 키, 잡 사이의 앵커·별칭은 라벨배포트리거 로 park 하지 않는다. 앵커는 `jobs` 쪽에 둔다:
-# `on` 블록 안의 앵커는 types 판독기가 읽지 못함 으로 읽어 라벨새실행없음 으로 park 한다.
+# 배포 자리가 아닌 글자 — 트리거 필터의 블록 시퀀스 paths 항목이 이름 짓는 자기 워크플로 파일,
+# step 의 `run: |` 본문에서 옵션 없는 `yq` 가 읽는 워크플로 파일, 잡 사이의 앵커·별칭은
+# 라벨배포트리거 로 park 하지 않는다. 앵커는 `jobs` 쪽에 둔다: `on` 블록 안의 앵커는 types
+# 판독기가 읽지 못함 으로 읽어 라벨새실행없음 으로 park 한다.
 la61_new "라벨 인정 — 배포 자리가 아닌 글자"
-la61_again $'name: gate\non:\n  pull_request:\n    types: [opened, synchronize, labeled]\n    paths:\n      - \'.github/workflows/gate.yml\'\n      - \'a.txt\'\njobs:\n  t:\n    runs-on: ubuntu-latest\n    env: &e\n      A: x\n    # environment: prod\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml\n          true\n  u:\n    runs-on: ubuntu-latest\n    env: *e\n    steps:\n      - run: true'
+la61_again $'name: gate\non:\n  pull_request:\n    types: [opened, synchronize, labeled]\n    paths:\n      - \'.github/workflows/gate.yml\'\n      - \'a.txt\'\njobs:\n  t:\n    runs-on: ubuntu-latest\n    env: &e\n      A: x\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml\n          true\n  u:\n    runs-on: ubuntu-latest\n    env: *e\n    steps:\n      - run: true'
 la61_np=$(cb60_posts); la61_nb=$(cb60_n blocked)
 la61_act
-check "60e: paths 필터·run 본문·주석·별칭의 워크플로 글자는 라벨 행위를 park 하지 않는다" \
+check "60e: paths 필터·run 본문·별칭의 워크플로 글자는 라벨 행위를 park 하지 않는다" \
   "$rc|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(( $(la61_post_n) ))|$(( $(cb60_n blocked) - la61_nb ))" "0|수락|1|0"
 
 # 받지 않은 요청 — 요청 행 뒤의 실패 행, blocked 하나, 다시 내지 않는다 -----------------------
