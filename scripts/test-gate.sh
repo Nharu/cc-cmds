@@ -32558,7 +32558,7 @@ printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orc
   '**스킬**: implement-unattended' '**스텝**: Step 1 CFI-U3 BT-STOP — 미결 결정' \
   '**분류**: gate-unanswerable' '**질문 문면**: 미결 1 의 값을 정해야 한다.' \
   '**미결 결정 항목**: 「### 미결 1. 값」' '**선택지**:' \
-  '- `재수렴` — 근거·첨부에 항목마다 고른 결정을 적어 답한다.' \
+  '- `재수렴` — 첨부에 항목마다 고른 결정을 적어 답한다.' \
   '**추천**: (없음) — 항목마다 사람의 결정이 필요하다' '**추천 근거**: (없음)' \
   '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CAPC_UC"
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC4 | 스테이지=CC4 | 종류=implement | 실행 버전=1 | 세션 id=s-impl-4 | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
@@ -32584,6 +32584,18 @@ capc_uc_person "첨부=${CAPC_UC%.md}.answer.md"
 check "34c A24: 기록 이름의 첨부를 단 사람의 재수렴 답은 통과한다" "$rc" "0"
 check "34c A24: 그 답은 구속-재수렴 으로 라우팅된다" \
   "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r '[.answered_halts[] | select(.segment == "CC4") | .route] | last // ""')" "구속-재수렴"
+# The gate checks only the attachment's path, so the form the re-convergence
+# reads it in reaches the person through the record alone: the stage's
+# question text has to carry it, and the option must not point at `근거`,
+# which the re-convergence never takes a decision from.
+capc_uc_skill=$(grep -F -- '- **Open decisions halt process A before it plans.**' -A 6 \
+  "$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md" || true)
+case "$capc_uc_skill" in
+  *'근거·첨부에'*) bad "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" "선택지가 근거를 가리킨다" ;;
+  *'「답은 첨부 `<첨부 경로>` 에 적는다 — `**미결 결정 항목**` 의 표제마다 그 표제를 `### ` 접두까지 바이트 단위로 같게 한 줄로 옮기고, 그 아래에 고른 결정을 적는다.'*'``- `재수렴` — 첨부에 항목마다 고른 결정을 적어 답한다.'*)
+    ok "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" ;;
+  *) bad "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" "${capc_uc_skill:-(줄 없음)}" ;;
+esac
 
 # --- 34d. 좌석 정지 답 — 기록의 추천을 사람 없이 고른다 ----------------------
 # --- section: 34d | group: cone | covers: act, snapshot | anchors: 34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다, 34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다 ---

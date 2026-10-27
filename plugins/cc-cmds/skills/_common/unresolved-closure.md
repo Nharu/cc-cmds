@@ -7,7 +7,8 @@ not copy its text.
 
 ## 대상 항목
 
-Every entry of `## 미해결 이슈 / 트레이드오프` whose `상태` is not `해결`. An
+Every entry of `## 미해결 이슈 / 트레이드오프` whose `상태` is not `해결`, the
+value read as `## 판독 문법` reads it. An
 entry whose `상태` is `해결` is already binding tier and carries none of the
 fields below. The residual items of `## 구현 시 검증 항목` are not entries of
 this contract: they are facts with a recipe, checked by the implement stage's
@@ -56,6 +57,10 @@ Two cases are always `구현 전 결정`, whatever else holds:
   a section written as a table adds it below the table, in the sub-heading
   form; the interactive `design` skill's rule against mixing the two forms
   applies only when that skill writes the section anew.
+- A writer that closes an entry writes the bare value, `**상태**: 해결`, and
+  puts any note about how it was settled on a line of its own inside the
+  entry. The reader also takes a note after `—`, `·` or `(` (`## 판독 문법`),
+  but a bare value is the one every reader agrees on.
 - An interactive audit writes `사유: 감사 합성 요구 — 사람 판단` on a synthesis
   item the person asked to record as open, as the unattended audit does.
 - The answer an implementation chooses for a `구현 재량` entry is recorded in
@@ -79,6 +84,10 @@ document order, and nothing when none does. It reads **fail closed**:
   reads `해결` is skipped; every other row reads `구현 전 결정 · 전체`, and its
   heading is its first cell. A section mixing both forms reads each by its own
   rule.
+- A `상태` value — a field or a table cell — reads `해결` when, trimmed, it is
+  `해결` or `해결됨` alone, or followed by `—`, `·` or `(` after optional
+  blanks (`해결 — <메모>`, `해결 (…)`). Any other value, `해결 대기` among them,
+  leaves the entry open.
 - `**상태**:` and `상태:` read alike, as do `**구현 처분**:` and `구현 처분:`.
   A value is trimmed and must equal one of the closed set; an empty or
   out-of-vocabulary value reads `구현 전 결정 · 전체`, and so does a missing

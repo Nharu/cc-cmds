@@ -2594,6 +2594,11 @@ residual_unmet_message() {
 # skipped and every other row reads `구현 전 결정 · 전체`. Any other line —
 # `없음`, a guidance line — is no entry.
 #
+# A `상태` value, in a field or a table cell, reads `해결` when it is `해결` or
+# `해결됨` alone, or followed by `—`, `·` or `(` after optional blanks: writers
+# leave a note on the same line (`해결 — <메모>`). `해결 대기` and every other
+# value stay open.
+#
 # THE SEGMENT is a slice id of `## 구현 슬라이싱`. `**닿는 슬라이스**` naming
 # an id the document has no `### 슬라이스 <id>` for reads `전체`, and so does
 # every entry of a document with no slicing section.
@@ -2627,9 +2632,10 @@ unresolved_closure_pending() {
       for (i = 1; i <= n; i++) if (trim(part[i]) == ENVIRON["UCP_SEG"]) return 1
       return 0
     }
+    function resolved(s) { return (s ~ /^해결(됨)?[ \t]*(—|·|\(|$)/) }
     function flush(   forced, touch) {
       if (head == "") return
-      if (hasstate && state == "해결") { head = ""; return }
+      if (hasstate && resolved(state)) { head = ""; return }
       forced = (skel == "예" || index(reason, "감사 합성 요구") == 1 || index(reason, "베이스 계약 변경 필요") == 1)
       if (!forced && disp == "구현 무관") { head = ""; return }
       if (!forced && disp == "구현 재량" && hascrit && crit != "") { head = ""; return }
@@ -2652,7 +2658,7 @@ unresolved_closure_pending() {
       first = trim(cell[2]); if (first == "") return
       st = (statecol ? trim(cell[statecol]) : "")
       gsub(/\*\*/, "", st)
-      if (st == "해결") return
+      if (resolved(st)) return
       if (reaches("")) out[++nout] = first
     }
     /^## / {
