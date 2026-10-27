@@ -18,7 +18,9 @@
 #   bash scripts/test-tree.sh repro --base <40> --head <40> --expect <40tree>
 #                                   [--sections <ids>] [--goals <goals>]
 #       offline: builds the merged tree, refuses it unless it is <tree>, runs
-#       the items on it and then on the head alone, and names the verdict.
+#       the items on it, runs sections that passed there once more in one
+#       job-pool lane, then runs the items on the head alone, and names the
+#       verdict (`환경 차이` when only the lane failed).
 #   bash scripts/test-tree.sh --self-test
 #
 # Nothing here writes a check-push stamp, on any path.
@@ -49,9 +51,11 @@ TT_GOALVAR="${TT_GOALVAR:---goals}"
 TT_DIR="${TT_DIR:-}"
 TT_WORK="${TT_WORK:-}"
 
-# The job pool of tt_run_items. Only check-push raises TT_JOBS above 1, so the
-# repro command of this file always runs the items one call each, as CI's old
-# trees and the fixtures expect. TT_RECORD is the timing record the lanes merge
+# The job pool. It serves check-push's lane parallelism, through tt_run_items
+# once check-push raises TT_JOBS above 1, and the repro command's single-lane
+# rerun, which calls tt_pool_run itself with TT_JOBS still 1. tt_run_items in
+# the repro command runs the items one call each, as CI's old trees and the
+# fixtures expect. TT_RECORD is the timing record the lanes merge
 # into (empty: none), TT_PROGRESS_SECS the interval of the progress line.
 TT_JOBS=1
 TT_JOBS_USED=1
@@ -1010,7 +1014,7 @@ tt_repro_stamp_line() {
 }
 
 tt_cli_repro() {
-  local base="" head="" expect="" secs="" goals="" rc mrc hrc=0 verdict
+  local base="" head="" expect="" secs="" goals="" rc mrc hrc=0 lrc=0 lane_tmp="" lane_state="" verdict
   TT_PREFIX="test-tree repro"
   TT_SECVAR="--sections"
   TT_GOALVAR="--goals"
@@ -1068,7 +1072,23 @@ tt_cli_repro() {
   tt_run_items "$TT_SECTIONS" "$TT_GOALS"
   mrc=$?
 
-  if [ "$TT_OUTCOME" = "조상" ]; then
+  # THE SAME SECTIONS ONCE MORE IN A LANE, when the merged tree passed them. A
+  # check-push lane runs with its own TMPDIR and XDG_STATE_HOME under the job
+  # pool, and a section that fails only there passes the direct run above and
+  # would read as 재현 불가. The lane is the pool's own (tt_pool_start), with
+  # TT_JOBS still 1, so its environment is the one check-push gives its lanes.
+  # Goals do not run in a lane and are not run again.
+  if [ "$mrc" = 0 ] && [ -n "$TT_SECTIONS" ]; then
+    printf 'test-tree repro: 레인 재실행 — 절=%s 를 잡 풀의 레인 하나로 한 번 더 돈다\n' "$TT_SECTIONS"
+    tt_pool_run "$TT_SECTIONS" ""
+    lrc=$?
+    lane_tmp="$TT_POOL_DIR/job-0/tmp"
+    lane_state="$TT_POOL_DIR/job-0/state"
+  fi
+
+  if [ "$lrc" != 0 ]; then
+    verdict="환경 차이"
+  elif [ "$TT_OUTCOME" = "조상" ]; then
     if [ "$mrc" != 0 ]; then verdict="브랜치 결함"; else verdict="재현 불가"; fi
   else
     if ! tt_checkout "$head"; then
@@ -1097,10 +1117,13 @@ tt_cli_repro() {
     fi
   fi
 
-  printf 'test-tree repro: 판정=%s\n' "$verdict"
+  printf 'test-tree repro: 판정=%s%s\n' "$verdict" "${lane_tmp:+ 레인 TMPDIR=$lane_tmp}"
   case "$verdict" in
     "트리 차이") tt_base_status_line "test-tree repro" "$base" ;;
     "재현 불가") printf 'test-tree repro: CI 에서 실패한 것은 잡의 목록 전체다 — 돌린 항목이 그 전부가 아니면 ci-base 가 찍은 목록 전체로 다시 돌린다\n' ;;
+    "환경 차이")
+      printf 'test-tree repro: 레인 TMPDIR=%s XDG_STATE_HOME=%s 실패한 절=%s\n' "$lane_tmp" "$lane_state" "$(tt_or_none "$TT_FAILED_SECTIONS")"
+      printf 'test-tree repro: 합친 트리를 직접 돌리면 통과하고 레인에서만 실패한다 — 스위트의 환경 격리 결함이다. check-push 를 다시 돌리지 말고 결함으로 보고한다\n' ;;
   esac
   tt_repro_stamp_line "$base" "$head" "$secs"
   return 0
@@ -1165,9 +1188,16 @@ case "$1" in
   --sections)
     [ ! -f "@T@/break-alternates" ] || rm -f .git/objects/info/alternates
     rc=0
+    n=0
     for id in $ids; do
-      case ",$2," in *",$id,"*) printf 'GATE-RUN %s\n' "$id"; bash "sections/$id.sh" || rc=1 ;; esac
+      case ",$2," in *",$id,"*) printf 'GATE-RUN %s\n' "$id"; n=$((n + 1)); bash "sections/$id.sh" || rc=1 ;; esac
     done
+    # A lane-only failure: with the marker file, a run whose TMPDIR is a job
+    # pool lane's fails, as a section that depends on the lane's path would.
+    if [ -f "@T@/lane-fail" ]; then
+      case "${TMPDIR:-}" in */pool/job-*) printf 'FAIL: 레인 TMPDIR 에서만 실패\n'; rc=1 ;; esac
+    fi
+    [ "$rc" != 0 ] || printf 'test-gate: %s passed, 0 failed\n' "$n"
     exit "$rc" ;;
 esac
 EOF
@@ -1373,8 +1403,9 @@ rc=0"
   log=$(cat "$T/make.log")
   has "F6 목표는 make --no-print-directory g2 g1 한 번, 세 make 변수가 비었다" "$log" "argv:--no-print-directory g2 g1|MAKEFLAGS=|MFLAGS=|MAKELEVEL="
   hasnt "F6 게이트 대역과 make 대역에 호출자 변수가 새지 않는다" "$(cat "$T/gate.log" "$T/make.log")" "leak:"
-  # The pool is check-push's alone: this file's library and its repro command
-  # run the items one call each whatever the caller's environment says.
+  # The pool serves check-push's lanes and the repro command's single-lane
+  # rerun; tt_run_items here runs the items one call each whatever the
+  # caller's environment says.
   : > "$T/gate.log"
   : > "$T/make.log"
   out=$(cd "$W" && CHECK_PUSH_JOBS=4 TT_JOBS=4 bash -c '
@@ -1413,12 +1444,33 @@ rc=0"
   out=$(repro --base "$sm" --head "$sh" --expect "$tm" --sections s1)
   has "F8 s1 만 → 재현 불가" "$out" "판정=재현 불가"
   has "F8 재현 불가는 목록 전체로 다시 돌리라고 안내한다" "$out" "ci-base 가 찍은 목록 전체로 다시 돌린다"
+  has "F8 통과한 절은 레인에서 한 번 더 돈다" "$out" "test-tree repro: 레인 재실행 — 절=s1 를 잡 풀의 레인 하나로 한 번 더 돈다"
+  has "F8 레인도 통과하면 판정 줄 옆에 레인 TMPDIR 를 적는다" "$out" "판정=재현 불가 레인 TMPDIR=/"
   out=$(repro --base "$sm" --head "$shb" --expect "$(cd "$W" && git merge-tree --write-tree "$sm" "$shb")" --goals g2)
   has "F8 head 쪽 결함 → 브랜치 결함" "$out" "판정=브랜치 결함"
+  hasnt "F8 목표만 준 실행은 레인에서 다시 돌지 않는다" "$out" "레인 재실행"
   : > "$T/gate.log"
   out=$(repro --base "$sb1" --head "$sh" --expect "$th" --sections s1)
-  check "F8 조상은 한 번만 돈다" "$(grep -c -- '--sections' "$T/gate.log")" "1"
+  check "F8 조상은 head 단계 없이 합친 트리와 레인에서 한 번씩 돈다 (견적 호출 하나)" \
+    "$(grep -c '^argv:--sections' "$T/gate.log")|$(grep -c '^argv:--estimate' "$T/gate.log")" "2|1"
   has "F8 조상 통과 → 재현 불가" "$out" "합침=조상"
+
+  # --- F12 환경 차이 -------------------------------------------------------------
+  # The gate double fails only under a job pool lane's TMPDIR while the marker
+  # is there: the direct run passes, the lane fails.
+  touch "$T/lane-fail"
+  out=$(repro --base "$sm" --head "$sh" --expect "$tm" --sections s1)
+  rc=$?
+  check "F12 레인에서만 실패해도 종료 0" "$rc" "0"
+  has "F12 판정=환경 차이와 레인 TMPDIR" "$out" "test-tree repro: 판정=환경 차이 레인 TMPDIR=/"
+  has "F12 레인의 TMPDIR·XDG_STATE_HOME 과 실패한 절" "$out" "/pool/job-0/state 실패한 절=s1"
+  has "F12 결함으로 보고하라고 안내한다" "$out" "check-push 를 다시 돌리지 말고 결함으로 보고한다"
+  hasnt "F12 head 단계는 건너뛴다" "$out" "헤드에 없는 항목="
+  has "F12 도장 줄은 그대로 낸다" "$out" "test-tree repro: 도장:"
+  out=$(repro --base "$sb1" --head "$sh" --expect "$th" --sections s1)
+  has "F12 조상 갈래도 환경 차이" "$out" "합침=조상"
+  has "F12 조상 갈래의 판정" "$out" "판정=환경 차이"
+  rm -f "$T/lane-fail"
   out=$(repro --base "$sm" --head "$shn" --expect "$(cd "$W" && git merge-tree --write-tree "$sm" "$shn")" --sections s2,s1 --goals g1)
   rc=$?
   check "F8 head 의 print-rest-goals 실패 → 6" "$rc" "6"
