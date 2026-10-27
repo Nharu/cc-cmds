@@ -38429,10 +38429,79 @@ gate_ci_rerun_on_hit() {
     }' "$1"
 }
 
+# The X5 floor: the two branches of the line grep the X5 check is never weaker
+# than, kept here once so the reader, the grep and the tests read one string.
+GATE_X5_FLOOR_ENV_RE='(^|[^A-Za-z0-9_])environment["'"'"']?[[:space:]]*:'
+GATE_X5_FLOOR_WF_RE='\.github/workflows/'
+GATE_X5_FLOOR_RE="$GATE_X5_FLOOR_ENV_RE|$GATE_X5_FLOOR_WF_RE"
+
+gate_ci_rerun_x5_lines() {
+  # gate_ci_rerun_x5_lines <regex> <file> — the numbers of the file's lines the
+  # regex matches under `grep -n`, ascending and comma-joined (empty when none),
+  # or 2 when grep fails, prints a line that is not `<n>:`, or exits 0 with no
+  # numbered line (a grep that takes the file as binary prints a notice instead,
+  # on standard output or on standard error).
+  local out rc=0
+  out=$(LC_ALL=C grep -nE "$1" "$2") || rc=$?
+  case "$rc" in
+    0) [ -n "$out" ] || return 2 ;;
+    1) [ -z "$out" ] || return 2; return 0 ;;
+    *) return 2 ;;
+  esac
+  printf '%s\n' "$out" | LC_ALL=C awk '
+    !/^[0-9]+:/ { bad = 1; exit }
+    { sub(/:.*$/, ""); s = s (s == "" ? "" : ",") $0 }
+    END { if (bad) exit 2; print s }'
+}
+
 gate_ci_rerun_x5_hit() {
   # gate_ci_rerun_x5_hit <file> — 0 when the run's own workflow file may start a
   # deployment or another workflow, 1 when it is clean; any other status is "not
-  # judged" and the caller parks on it. Read line by line, never as YAML:
+  # judged" and the caller parks on it.
+  #
+  # THE FLOOR IS THE LINE GREP, AND THE READER ONLY LIFTS TWO SHAPES OFF IT. The
+  # file is first matched with `grep -E "$GATE_X5_FLOOR_RE"` — an `environment`
+  # key spelled with `:` on the same line, or the text `.github/workflows/`,
+  # anywhere, comments included. A clean grep leaves the reader's own verdict.
+  # A matching line (a floor line) is lifted only when the reader below proves
+  # it one of two shapes, judged on the line with one trailing CR removed:
+  #   - E1, a trigger filter item: the whole line is `- ` and one workflow file
+  #     `.github/workflows/<name>.yml` or `.yaml` (no `/` in the name), bare or
+  #     in one pair of quotes, then blanks only; the reader read it as an item of
+  #     a block sequence whose parent is an unquoted `paths` or `paths-ignore`
+  #     key under an unquoted `push`, `pull_request` or `pull_request_target`
+  #     key under an unquoted `on` at column 0, each key line with no value, no
+  #     anchor and no tag (the `paths` line may carry one anchor); only blank
+  #     lines, comment lines and one-line scalar items at the same column stand
+  #     between that key and the line; and when the list carries an anchor,
+  #     every `*name` in the file is a `paths:`/`paths-ignore:` line of the
+  #     same trigger filter place holding that alias alone.
+  #   - E2, a `yq` read in a step's `run` body: the reader read the line as the
+  #     block scalar body of a `run` key that is a key of an item of an unquoted
+  #     `steps` under a job key under an unquoted `jobs` at column 0 (those key
+  #     lines with no value, anchor or tag, and an anchor on the `run`
+  #     indicator only when no `*name` names it); the line holds no `>`, does
+  #     not end in `\` nor follows a body line that does, starts with `yq` or
+  #     `name=$(yq`; every `.github/workflows/` names one `.yml`/`.yaml` file
+  #     ending at a blank, quote, `)`, `|`, `;` or the line end; the command
+  #     around it (from the nearest `|`, `;`, `&`, `(` or backtick, quoted or
+  #     not) is `yq` with no word starting with `-`; and every later command is
+  #     `sort -[nru]+`, `uniq -[cdu]+`, `wc -[lcwm]+`, `head`/`tail` with no
+  #     word, `-n <n>` or `-<n>`, `cut` with at most one `-d <char>` and one
+  #     `-f <list>` (attached or not), `tr` with one or two words none starting
+  #     with `-` or `-d`/`-s` and one such word, or `grep -[vcxEFi]+`… and one
+  #     pattern word.
+  # A floor line on the `environment` branch is never lifted. No line is lifted
+  # when the file holds a CR before a line's end, a NEL, LS or PS byte
+  # sequence, a flow collection left open at a line's end, or a block-context
+  # line ending inside an open quote. The file parks too when it matches the
+  # floor and holds a NUL byte (counted by `tr` and `wc`), and when the
+  # reader's floor line numbers, or its `environment` branch line numbers,
+  # differ from `grep -n`'s: the two tools must agree on which lines the floor
+  # is before any of them is lifted. The reader gets the regexes through the
+  # environment, never `-v`, which would undo their escapes.
+  #
+  # The reader reads line by line, never as YAML, one trailing CR removed:
   #   - A line whose first non-blank is `#` is skipped, and a ` #` tail outside
   #     quotes is cut off. A quote starts a quoted string only where a node
   #     can start; a quote inside a plain scalar is a character. A `\` in
@@ -38460,13 +38529,44 @@ gate_ci_rerun_x5_hit() {
   #     `workflow run` (whatever options stand before it), `/dispatches`, or a
   #     path token under .github/workflows/ that does not end in .yml/.yaml.
   # A glob (`.github/workflows/**`) or directory token is such a token and
-  # matches: the form this reader cannot judge stays on the park side. A paths
-  # filter item naming a workflow file, a comment, and a workflow path inside a
-  # `run` body are clean. Anchors and merge keys are not followed: the anchored
-  # original is read where it stands.
+  # matches: the form this reader cannot judge stays on the park side. Anchors
+  # and merge keys are not followed: the anchored original is read where it
+  # stands. A `>` before a quote skips back over a verbatim tag only when that
+  # blank-free chunk starts with `!<` (at its start or after `{`, `[` or `,`)
+  # and the `>` is the first one after it; any other `>` is a plain character.
+  # Whatever the reader leaves clean, the floor above still parks.
+  local fl=0 sz nz gl ge out rc=0
+  LC_ALL=C grep -Eq "$GATE_X5_FLOOR_RE" "$1" || fl=$?
+  case "$fl" in 0|1) ;; *) return 2 ;; esac
+  sz=$(LC_ALL=C wc -c < "$1") || return 2
+  nz=$(LC_ALL=C tr -d '\000' < "$1" | LC_ALL=C wc -c; [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" = 00 ]) || return 2
+  sz=${sz//[!0-9]/}; nz=${nz//[!0-9]/}
+  if [ -z "$sz" ] || [ -z "$nz" ]; then return 2; fi
+  if [ "$fl" = 0 ] && [ "$sz" != "$nz" ]; then return 0; fi
+  gl=$(gate_ci_rerun_x5_lines "$GATE_X5_FLOOR_RE" "$1") || return 2
+  ge=$(gate_ci_rerun_x5_lines "$GATE_X5_FLOOR_ENV_RE" "$1") || return 2
+  if [ "$fl" = 0 ] && [ -z "$gl" ]; then return 2; fi
+  if [ "$fl" = 1 ] && [ -n "$gl" ]; then return 2; fi
+  out=$(gate_ci_rerun_x5_read "$1") || rc=$?
+  case "$rc" in 0) return 0 ;; 1) ;; *) return 2 ;; esac
+  [[ $out =~ ^floor=([0-9,]*)\ envfloor=([0-9,]*)\ unexempt=([0-9]+)\ invalid=([01])$ ]] || return 2
+  if [ "${BASH_REMATCH[1]}" != "$gl" ] || [ "${BASH_REMATCH[2]}" != "$ge" ]; then return 0; fi
+  if [ "$fl" = 1 ]; then return 1; fi
+  if [ "${BASH_REMATCH[3]}" != 0 ] || [ "${BASH_REMATCH[4]}" != 0 ]; then return 0; fi
+  return 1
+}
+
+gate_ci_rerun_x5_read() {
+  # gate_ci_rerun_x5_read <file> — the reader `gate_ci_rerun_x5_hit` describes:
+  # 0 on its own match, and on a clean read 1 with one line
+  # `floor=<n,…> envfloor=<n,…> unexempt=<n> invalid=<0|1>` — the floor line
+  # numbers, those on the `environment` branch, the floor lines not lifted, and
+  # whether a condition that turns every lift off was met. Any other status is
+  # a reader that did not finish.
+  GATE_X5_FLOOR_RE="$GATE_X5_FLOOR_RE" GATE_X5_FLOOR_ENV_RE="$GATE_X5_FLOOR_ENV_RE" \
   LC_ALL=C awk -v q="'" '
     function unq(s) { gsub(/"/, "", s); gsub(q, "", s); return s }
-    function opens(s, i,   j, t, c) {
+    function opens(s, i,   j, t, c, u) {
       # A quote at i opens a quoted string only where a node can start: the
       # text start, or after `{`, `[`, `,`, or a `:` followed by a blank, or
       # after a `?` or `-` followed by a blank that itself stands where a node
@@ -38480,8 +38580,10 @@ gate_ci_rerun_x5_hit() {
         while (j > 0 && index(" \t", substr(s, j, 1)) > 0) j--
         if (j == 0) return 1
         if (substr(s, j, 1) == ">" && j < i - 1) {
-          for (t = j; t > 1 && substr(s, t - 1, 2) != "!<"; t--) ;
-          if (t > 1) { j = t - 2; continue }
+          # A verbatim tag only within the blank-free chunk the `>` ends.
+          for (t = j; t > 1 && index(" \t", substr(s, t - 1, 1)) == 0; t--) ;
+          for (u = t; u < j; u++) if (substr(s, u, 2) == "!<" && (u == t || index("{[,", substr(s, u - 1, 1)) > 0)) break
+          if (u < j && index(substr(s, u), ">") == j - u + 1) { j = u - 1; continue }
         }
         for (t = j; t > 0 && index(" \t,[]{}", substr(s, t, 1)) == 0; t--) ;
         if (t < j && index("&!", substr(s, t + 1, 1)) > 0 && j < i - 1) { j = t; continue }
@@ -38588,10 +38690,111 @@ gate_ci_rerun_x5_hit() {
     function flowhit(s) { s = mask(s); return s ~ flowkey || flowpath(s) }
     function startflow(s) {
       buf = scan(s, 0, 1, 1, ""); fq = sq; d = sd
-      if (d > 0) { inflow = 1; return }
+      # A flow left open at the line end turns every lift off.
+      if (d > 0) { inflow = 1; invalid = 1; return }
       if (flowhit(buf)) { hit = 1; exit }
     }
+    function push(name, c, dash, kq, clean) {
+      # The block context stack: one entry per key and per `- ` item, by column.
+      sp++; sn[sp] = name; sc[sp] = c; sdash[sp] = dash; skq[sp] = kq; sv[sp] = clean; sid[sp] = ++nid
+    }
+    function bare(i, name) { return sn[i] == name && !sdash[i] && !skq[i] && sv[i] }
+    function trig(n) {
+      # Entries 1..n are an `on` at column 0 and one of the three events under it.
+      return n == 2 && bare(1, "on") && sc[1] == 0 && !sdash[2] && !skq[2] && sv[2] && \
+        (sn[2] == "push" || sn[2] == "pull_request" || sn[2] == "pull_request_target")
+    }
+    function steprun(n) {
+      # Entry n is a key of an item of `steps` under a job under `jobs` at column 0.
+      return n == 5 && bare(1, "jobs") && sc[1] == 0 && !sdash[2] && sv[2] && \
+        bare(3, "steps") && sdash[4] && !sdash[5]
+    }
+    function simple(s,   x) {
+      # One `- ` item holding one closed quoted scalar or one plain scalar.
+      if (!match(s, /^[ \t]*-[ \t]+/)) return 0
+      x = substr(s, RLENGTH + 1); sub(/[ \t]+$/, "", x)
+      if (x ~ /^"[^"\\]*"$/ || x ~ ("^" q "([^" q "]|" q q ")*" q "$")) return 1
+      return x ~ /^[A-Za-z0-9_.\/]/ && x !~ /:([ \t]|$)/ && x !~ /[ \t]#/
+    }
+    function words(s,   i, c, inq, cur, has) {
+      # The words of s into wd[1..nwd]: split at blanks and `)` outside quotes,
+      # quotes removed; a quotes-only word is the text it quotes.
+      nwd = 0; inq = ""; cur = ""; has = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (inq != "") { if (c == inq) inq = ""; else cur = cur c; continue }
+        if (c == "\"" || c == q) { inq = c; has = 1; continue }
+        if (index(" \t)", c) > 0) { if (has) { wd[++nwd] = cur; cur = ""; has = 0 }; continue }
+        cur = cur c; has = 1
+      }
+      if (has) wd[++nwd] = cur
+      return nwd
+    }
+    function nodash(from,   i) {
+      for (i = from; i <= nwd; i++) if (substr(wd[i], 1, 1) == "-") return 0
+      return 1
+    }
+    function allowed(s,   n, c, i, re, d, f) {
+      # A command after the `yq`, in one of the closed forms.
+      n = words(s); if (n < 1) return 0
+      c = wd[1]
+      if (c == "sort" || c == "uniq" || c == "wc") {
+        re = c == "sort" ? "^-[nru]+$" : (c == "uniq" ? "^-[cdu]+$" : "^-[lcwm]+$")
+        for (i = 2; i <= n; i++) if (wd[i] !~ re) return 0
+        return 1
+      }
+      if (c == "head" || c == "tail")
+        return n == 1 || (n == 3 && wd[2] == "-n" && wd[3] ~ /^[0-9]+$/) || (n == 2 && wd[2] ~ /^-[0-9]+$/)
+      if (c == "cut") {
+        d = 0; f = 0
+        for (i = 2; i <= n; i++) {
+          if (!d && wd[i] == "-d" && i < n && length(wd[i + 1]) == 1) { d = 1; i++ }
+          else if (!d && wd[i] ~ /^-d.$/) d = 1
+          else if (!f && wd[i] == "-f" && i < n && wd[i + 1] ~ /^[0-9,-]+$/) { f = 1; i++ }
+          else if (!f && wd[i] ~ /^-f[0-9,-]+$/) f = 1
+          else return 0
+        }
+        return 1
+      }
+      if (c == "tr")
+        return ((n == 2 || n == 3) && nodash(2)) || (n == 3 && wd[2] ~ /^-[ds]$/ && wd[3] !~ /^-/)
+      if (c == "grep") {
+        for (i = 2; i <= n && wd[i] ~ /^-[vcxEFi]+$/; i++) ;
+        return i == n && wd[n] !~ /^-/
+      }
+      return 0
+    }
+    function yqread(s,   t, off, p, b, j, rest) {
+      # A body line that only reads workflow files with `yq`.
+      if (index(s, ">") > 0 || s ~ /\\$/ || bbs) return 0
+      if (s !~ /^[ \t]*([A-Za-z_][A-Za-z0-9_]*=\$\()?yq[ \t]/) return 0
+      off = 0; t = s
+      while ((p = index(t, ".github/workflows/")) > 0) {
+        p += off
+        if (!match(substr(s, p + 18), e2wf)) return 0
+        for (b = p - 1; b > 0 && index(bnd, substr(s, b, 1)) == 0; b--) ;
+        if (words(substr(s, b + 1, p - b - 1)) < 1 || wd[1] != "yq" || !nodash(2)) return 0
+        rest = substr(s, p)
+        for (j = 1; j <= length(rest) && index(bnd, substr(rest, j, 1)) == 0; j++) ;
+        words(substr(rest, 1, j - 1)); if (!nodash(1)) return 0
+        rest = substr(rest, j)
+        while (rest != "") {
+          rest = substr(rest, 2)
+          for (j = 1; j <= length(rest) && index(bnd, substr(rest, j, 1)) == 0; j++) ;
+          if (!allowed(substr(rest, 1, j - 1))) return 0
+          rest = substr(rest, j)
+        }
+        off = p + 17; t = substr(s, off + 1)
+      }
+      return 1
+    }
     BEGIN {
+      fre = ENVIRON["GATE_X5_FLOOR_RE"]; ere = ENVIRON["GATE_X5_FLOOR_ENV_RE"]
+      if (fre == "" || ere == "") { bad = 1; exit }
+      wf = "[.]github/workflows/[A-Za-z0-9_.-]+[.]ya?ml"
+      e1re = "^[ \t]*-[ \t]+(" wf "|" q wf q "|\"" wf "\")[ \t]*$"
+      e2wf = "^[A-Za-z0-9_.-]+[.]ya?ml([ \t" q "\")|;]|$)"
+      bnd = "|;&(`"
       delim = " \t" q "\",)]};`"
       keyre = "^(\"[^\"]*\"|" q "[^" q "]*" q "|[^ \t\"" q "{[][^:]*)[ \t]*:([ \t]|$)"
       flowkey = "(^|[{,[ \t])[\"" q "]?(environment|uses)[\"" q "]?[ \t]*:"
@@ -38600,14 +38803,27 @@ gate_ci_rerun_x5_hit() {
       propre = "^(&[^ \t]+|!<[^>]*>|![^ \t]*)([ \t]|$)"
     }
     {
+      # The floor lines, on the bytes grep reads, ahead of every rule below.
+      isf = $0 ~ fre; ise = $0 ~ ere
+      if (isf) { fl = fl (fl == "" ? "" : ",") NR; fln[++nfl] = NR }
+      if (ise) efl = efl (efl == "" ? "" : ",") NR
+      sub(/\r$/, "")
+      if (index($0, "\r") > 0 || $0 ~ /\302\205|\342\200\250|\342\200\251/) invalid = 1
+      t = $0
+      while (match(t, /\*[A-Za-z0-9_-]+/)) { atot[substr(t, RSTART + 1, RLENGTH - 1)]++; t = substr(t, RSTART + RLENGTH) }
       ind = match($0, /[^ \t]/) - 1
       if (inbody) {
-        if (ind < 0) next
-        if (ind > bcol) { if (substr($0, ind + 1, 1) != "#") text(stripc($0, 1)); next }
+        if (ind < 0) { bbs = 0; next }
+        if (ind > bcol) {
+          if (isf && !ise && e2ok && yqread($0)) ex[NR] = "r" banc
+          bbs = $0 ~ /\\$/
+          if (substr($0, ind + 1, 1) != "#") text(stripc($0, 1)); next
+        }
         inbody = 0
       }
       if (ind < 0 || (!inflow && substr($0, ind + 1, 1) == "#")) next
       if (inflow) {
+        e1 = 0
         # A flow is read as one text: a quote at the start of this line opens
         # a string only where the joined flow lets a node start, and a quoted
         # string runs on over lines, `#` lines included. The scan picks up
@@ -38619,14 +38835,28 @@ gate_ci_rerun_x5_hit() {
         next
       }
       s = stripc($0)
+      # A block-context line that ends inside an open quote turns every lift off.
+      if (sq != "") invalid = 1
       text(s)
-      r = substr(s, ind + 1); col = ind; seq = 0
+      r = substr(s, ind + 1); col = ind; seq = 0; nd = 0; kp = 0
       while (1) {
         if (r ~ /^---([ \t]|$)/) { match(r, /^---[ \t]*/); r = substr(r, RLENGTH + 1) }
-        else if (r ~ /^-([ \t]|$)/) { match(r, /^-[ \t]*/); col += RLENGTH; r = substr(r, RLENGTH + 1); seq = 1 }
-        else if (r ~ propre) { match(r, /^[^ \t]+[ \t]*/); r = substr(r, RLENGTH + 1) }
+        else if (r ~ /^-([ \t]|$)/) { dc[++nd] = col; match(r, /^-[ \t]*/); col += RLENGTH; r = substr(r, RLENGTH + 1); seq = 1 }
+        else if (r ~ propre) { match(r, /^[^ \t]+[ \t]*/); r = substr(r, RLENGTH + 1); kp = 1 }
         else break
       }
+      # The stack keeps what this line nests in; an item stays under a key of its
+      # own column.
+      while (sp > 0 && (sc[sp] > ind || (sc[sp] == ind && !(seq && !sdash[sp])))) sp--
+      # A trigger filter list runs on while its lines are one-line items at one
+      # column right under it.
+      if (e1) {
+        if (seq && nd == 1 && sp == e1 && sid[sp] == e1id && (e1col == "" || e1col == ind) && simple($0)) {
+          e1col = ind
+          if (isf && !ise && $0 ~ e1re) ex[NR] = "p" e1anc
+        } else e1 = 0
+      }
+      for (i = 1; i <= nd; i++) push("", dc[i], 1, 0, 0)
       # A key other than `run` that held no value on its line: a deeper scalar
       # line is that value. A key, a sequence item or a collection ends the wait.
       if (pend) {
@@ -38641,8 +38871,15 @@ gate_ci_rerun_x5_hit() {
       if (r ~ /^[{[]/) { startflow(r); next }
       if (!match(r, keyre)) next
       k = substr(r, 1, RLENGTH); v = substr(r, RLENGTH + 1)
+      kq = index("\"" q, substr(k, 1, 1)) > 0
       sub(/[ \t]*:[ \t]*$/, "", k); k = unq(k); sub(/^[ \t]+/, "", v)
       if (k == "environment") { hit = 1; exit }
+      push(k, col, 0, kq, v == "" && !kp)
+      if ((k == "paths" || k == "paths-ignore") && !kq && !kp && !nd && trig(sp - 1)) {
+        # A trigger filter list starts here, or names one by its alias.
+        if (v == "" || v ~ /^&[A-Za-z0-9_-]+$/) { e1 = sp; e1id = sid[sp]; e1col = ""; e1anc = substr(v, 2) }
+        else if (v ~ /^\*[A-Za-z0-9_-]+$/ && $0 ~ /^[ \t]*(paths|paths-ignore):[ \t]+\*[A-Za-z0-9_-]+[ \t]*$/) agood[substr(v, 2)]++
+      }
       w = v
       while (w ~ propre) { match(w, /^[^ \t]+[ \t]*/); w = substr(w, RLENGTH + 1) }
       if (k != "run" && w == "") {
@@ -38652,15 +38889,39 @@ gate_ci_rerun_x5_hit() {
       if (w ~ /^[{[]/) { startflow(w); next }
       if (v ~ blockre) {
         if (k == "uses") { hit = 1; exit }
-        inbody = 1; bcol = col; next
+        inbody = 1; bcol = col; bbs = 0
+        # A step `run` body, with the anchor its indicator carries.
+        e2ok = k == "run" && !kp && steprun(sp); banc = ""; t = v
+        while (e2ok && match(t, /^(&[^ \t]+|![^ \t]*)[ \t]+/)) {
+          if (substr(t, 1, 1) == "&") {
+            if (banc != "") e2ok = 0
+            banc = substr(t, 2, RLENGTH - 1); sub(/[ \t]+$/, "", banc)
+            if (banc !~ /^[A-Za-z0-9_-]+$/) e2ok = 0
+          }
+          t = substr(t, RLENGTH + 1)
+        }
+        next
       }
       if (k == "uses") {
         if (v == "" || v ~ /^\*/ || index(unq(v), ".github/workflows/") > 0) { hit = 1; exit }
       } else if (k != "run" && index(unq(v), ".github/workflows/") > 0) { hit = 1; exit }
     }
     END {
+      if (bad) exit 2
       if (hit || inflow) exit 0
       if (cont != "" && texthit(cont)) exit 0
+      # A lift whose list or body carries an anchor holds only when every alias
+      # of it is a trigger filter `paths` line (E1) or there is none (E2).
+      un = 0
+      for (i = 1; i <= nfl; i++) {
+        n = fln[i]
+        if (!(n in ex)) { un++; continue }
+        a = substr(ex[n], 2)
+        if (a == "") continue
+        if (substr(ex[n], 1, 1) == "p") { if (atot[a] + 0 != agood[a] + 0) un++ }
+        else if (atot[a] + 0 > 0) un++
+      }
+      printf "floor=%s envfloor=%s unexempt=%d invalid=%d\n", fl, efl, un, invalid
       exit 1
     }' "$1"
 }
