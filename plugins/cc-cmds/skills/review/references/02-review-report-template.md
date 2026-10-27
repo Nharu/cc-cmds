@@ -31,9 +31,11 @@ The lead synthesizes all review results into a Korean document using this templa
 |---|---|
 | A gate bypass that holds only with an argv a cooperating model would never type | It holds under a standard, a regulation, or an observed spelling. A bypass of review-before-merge, of pre-authorization, or of the park on a destructive act is never lowered, whatever the spelling |
 | A test gap (a mutation survives, but there is no behaviour defect) | A behaviour defect comes with it. The test actually performs an external, destructive, or credential-bearing act |
-| A wording mismatch in a document or comment | Applies only to text people read (`docs/`, README, CHANGELOG, comments). SKILL.md, `_common`, prompts, and schemas are instructions a model executes, so a mismatch there is judged as a behaviour defect |
+| A wording mismatch in a document or comment. Polishing a sentence whose facts are right is not this row: it is the `문서표현` field (item 14 of `01-reviewer-context-package.md`), and by default it is not a finding at all | Applies only to text people read (`docs/`, README, CHANGELOG, comments). SKILL.md, `_common`, prompts, and schemas are instructions a model executes, so a mismatch there is judged as a behaviour defect |
 | An extreme condition with no path to occur in practice | Lower only when the report states why it is unreachable. If an unrefuted argument that it is reachable stands, the level is kept |
 | A pre-existing defect this PR did not create (`(기존 결함)`, judged against the base sha) | This diff makes that code reachable or makes it bear load. A defect inherited from an earlier cycle. A regression introduced by a fix commit is not pre-existing |
+
+**Out-of-scope observations take no level.** An observation of a field not open for the review (item 14's Field scope of `01-reviewer-context-package.md`) goes to `## 범위 밖 관찰` and enters neither the `발견 요약` line, nor the merge recommendation, nor any `💬` paste-ready comment.
 
 The internal-level mapping below is subordinate to this criterion: a reviewer assigns the internal level that corresponds to the P level the criterion gives, never the other way round.
 
@@ -156,11 +158,28 @@ Placed after the `## 🟢 P3 (개선 제안)` section and before the `---` that 
 - The head starts `## 다`, not `## 🔴 P0` or `## 🟠 P1`, so the fingerprint and every P0/P1 section reader skip this section unchanged.
 - When the pipeline records the cycle, the gate checks that every `**배정**: 슬라이스 <id>` names a segment of this run other than the current one that has not merged, and that this section's item count equals the `다른 슬라이스 몫` line. This is the one place a review drops a P1 from the count, which is why it is checked at record time. A run without slicing has no such section.
 
+### Out-of-scope observations section
+
+Placed after the `## 🟢 P3 (개선 제안)` section and the `## 다른 슬라이스 몫 (집계 제외)` section, and before the `---` that precedes `## 리뷰어 간 이견 사항`. Present only when there is at least one observation:
+
+```
+## 범위 밖 관찰
+
+- [요구] `파일:라인` <관찰 한 줄> — <리뷰어>
+- [문서표현] `파일:라인` <관찰 한 줄> — <리뷰어>
+```
+
+- Each line is a reviewer's `[범위 밖:<분야>]` line (item 15 of `01-reviewer-context-package.md`) carried over; the same observation at the same `파일:라인` from several reviewers is one line with the reviewers side by side (`— 리뷰어 A, 리뷰어 B`).
+- The marker is the plain `[요구]` or `[문서표현]`, never a bold category tag. The section holds no line shaped like `발견 요약`, no line starting `- **[`, and no bold marker such as `**결함 수준**:`: the gate's report readers count only `- **[` lines inside the P0 and P1 sections as items, but read a bold marker line as the first match in the whole file whatever section it sits in, so a bold marker here would be read as the report's own.
+- The lines carry no level, no rationale and no fix suggestion, and no `💬` block follows them.
+
 ## Category Tags
 
 Findings use `[category]` tags from: `security`, `performance`, `code-quality`, `logic`, `error-handling`, `type-safety`, `testing`, `api-contract`, `concurrency`, `data-integrity`, `design-conformance`.
 
 `design-conformance` is available **only** when a design document was supplied to the review (context-package item 17). Without that document there is no baseline to compare against, so the tag is unusable rather than merely unused.
+
+Opening a field adds no tag. A finding of an open `요구` field takes `logic`, or `design-conformance` when a spec document was supplied; a finding of an open `문서표현` field takes `code-quality`. An out-of-scope observation takes no category tag at all, only its `[요구]` or `[문서표현]` marker (`### Out-of-scope observations section`).
 
 When CI has detected failures that a reviewer confirms, add `[CI-CONFIRMED]` tag to distinguish from independent findings. The unattended review leaves out of this instruction every check that the manifest's `라벨 인정` row names.
 
@@ -407,6 +426,8 @@ conditions as written let it emit the ordinary line.
 - **CI 상태**: ✅ 통과 / ⚠️ [failed check list] / ❌ 빌드 실패
 - **리뷰 대상**: [files/directories/commit range]
 - **변경 규모**: 파일 X개, +Y줄 / -Z줄
+- **리뷰 분야**: 기술(기본)
+- **기획서**: 없음
 - **리뷰 팀 구성**:
     - [role] ([opus|sonnet|haiku]): [scope]
     - ...
@@ -419,6 +440,8 @@ conditions as written let it emit the ordinary line.
 - **다른 슬라이스 몫**: N건 (집계 제외)
 
 `슬라이스 범위` 줄은 두 모양 중 정확히 하나로 쓰며, 슬라이스 범위를 적용하지 않았으면 `적용 안 됨 — <사유>` 모양이다. `다른 슬라이스 몫` 줄은 슬라이스 범위를 적용했을 때만 둔다. 세 줄의 문법은 "P1 Classification Grammar" 섹션이 소유한다.
+
+`리뷰 분야` 줄은 열린 분야가 없으면 `기술(기본)`, 있으면 `기술 + 요구`·`기술 + 문서표현`·`기술 + 요구, 문서표현` 처럼 열린 분야만 「요구, 문서표현」 순서로 쓴다. `기획서` 줄은 컨텍스트 패키지 17번 항목으로 쓴 문서의 경로, 없으면 `없음`, 무인 리뷰가 앵커 브리프(첫 줄 `# 앵커 브리프 — 설계 문서 없는 런`)를 받았으면 `없음 — 앵커 브리프` 다. 분야 규칙은 `01-reviewer-context-package.md` 14번 항목의 Field scope 가 소유한다.
 
 `모델 티어` 블록은 `_common/team-model-tier.md` 에 구속되는 스킬(`review`·`review-unattended`)만 채운다. 모델을 리터럴로 쓰는 `review-lite` 는 고르는 것이 없으므로 이 블록을 생략한다. 행 문법은 그 티어 파일이 소유하며 여기서 다시 적지 않는다.
 
@@ -482,6 +505,11 @@ Mention CI failure items if applicable.]
 - **[category]** **[P2]** `파일:라인` 이슈 설명 — 리뷰어
     - **배정**: 슬라이스 <id> — 「<설계 문서의 그 슬라이스 블록에서 이 발견이 속하는 줄의 축자 문면>」
     - **근거**: <왜 이 슬라이스가 아니라 그 슬라이스의 몫인가>
+
+## 범위 밖 관찰 ← only when there is at least one observation; "Out-of-scope observations section" 참조
+
+- [요구] `파일:라인` <관찰 한 줄> — 리뷰어
+- [문서표현] `파일:라인` <관찰 한 줄> — 리뷰어
 
 ---
 
