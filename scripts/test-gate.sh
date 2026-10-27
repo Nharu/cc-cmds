@@ -55757,7 +55757,7 @@ wtc_call 라우터 >/dev/null
 check "103b: 적용이 남은 세그먼트의 워크트리는 남고 브랜치 줄이 없다" \
   "$(wtc_wt "$w25m")/$(wtc_wt "$w25n")/$(wtc_lines "사유=비종단 세그먼트(S25m)")/$(wtc_lines "사유=비종단 세그먼트(S25n)")/$(wtc_lines '브랜치 정리** (')" "있음/있음/1/1/0"
 check "103b: 그 판정이 세그먼트 상태 판정의 open 과 같다" \
-  "$(wtc_call cc_segment_states "$WLED" | cut -f1,3 | tr '\t\n' ':,')" "S25m:open,S25n:open,|rc=0"
+  "$(wtc_call cc_segment_states "$WLED" | cut -f1,3 | tr '\t\n' ':,' | sed 's/,$//')" "S25m:open,S25n:open,|rc=0"
 
 # T29 — 원장 범위.
 wtc_new
