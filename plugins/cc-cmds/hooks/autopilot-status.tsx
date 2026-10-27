@@ -28,6 +28,7 @@ const KEEP_IDS = 100
 const BUNDLES = new Set([
   'none',
   'title',
+  'session-title',
   'head',
   'head-detail',
   'gap',

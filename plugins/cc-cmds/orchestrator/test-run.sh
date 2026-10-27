@@ -3581,10 +3581,11 @@ regb_write 없음 문서만 문서만
 printf '바뀐 줄\n' >> "$REGB/docs/b.md"
 check "레지스트리 — 첫 줄의 sha256 이 문서와 다르면 미완결이다" "$(regb_rc)" "1"
 
-# --- 21c-b2 골격급 재수렴 — 감사가 센 골격급이 한 번의 재수렴과 재감사를 부른다 ---
-# 감사 보고서 울타리의 골격급 수가 1 이상이고 이 런에서 감사 키가 아직 재수렴하지
-# 않았으면 감사 행이 `재수렴 요청=예` 를 싣고, 드라이버는 `S2R` 재수렴 뒤 같은
-# 스테이지 id 로 다시 감사한다. 재감사는 다시 요청하지 않으므로 고리는 한 번만 돈다.
+# --- 21c-b2 골격급 재수렴 — 감사가 센 골격급이 상한까지 재수렴과 재감사를 부른다 ---
+# 감사 보고서 울타리의 골격급 수가 1 이상이고 이 런에서 감사 키의 재수렴 행이
+# 상한(`AUDIT_SKELETAL_RECONVERGE_CAP`) 미만이면 감사 행이 `재수렴 요청=예` 를 싣고,
+# 드라이버는 `S2R` 재수렴 뒤 같은 스테이지 id 로 다시 감사한다. 재수렴 행이 상한에
+# 닿으면 고리가 멈추고, 남은 골격급은 보고서의 상한 도달 줄과 함께 미해결 이슈로 남는다.
 SKD="$WORK/skeletal-arm"
 skd_case() {
   # skd_case <라벨> <감사 시도별 골격급, 쉼표> [재수렴 술어 0|1] [앞선 원장 행]
@@ -3652,9 +3653,18 @@ check "감사 스테이지가 최초와 재감사 회차를 받는다" "$(skd_pa
 check "골격급 재수렴이 보고서에 남는다" \
   "$(grep -c '감사가 센 골격급 항목으로 문서를 다시 수렴했다 (S2R)' "$SKD/two-zero/report" 2>/dev/null || true)" "1"
 
-skd_case one-one '1,1'
-check "재감사가 골격급을 남겨도 고리는 한 번만 돈다" \
-  "$(skd_disp one-one)/$(skd_req one-one)/$(skd_rc one-one)" "S2 S2R S2/1:예 1:아니오/0"
+skd_case one-one '1,1,1'
+check "재감사가 골격급을 남기면 고리는 상한(재수렴 2회)까지 돈다" \
+  "$(skd_disp one-one)/$(skd_req one-one)/$(skd_rc one-one)" "S2 S2R S2 S2R S2/1:예 1:예 1:아니오/0"
+check "상한에 닿은 감사는 보고서에 상한 도달 줄을 하나 남긴다" \
+  "$(grep -c '재수렴 상한(2회)에 닿아 골격급 1건' "$SKD/one-one/report" 2>/dev/null || true)" "1"
+check "상한까지 도는 동안 S2R 은 두 번 뜬다" \
+  "$(awk -F'\t' '$1 == "S2R"' "$SKD/one-one/dispatched" | grep -c . || true)" "2"
+
+# 상한은 감사 키의 재수렴 행을 쓴 쪽과 상관없이 센다 — 게이트 모양 행 하나가 한 몫을 쓴다.
+skd_case gate-seeded '1,1' 0 "- \`stage-result\` | 세그먼트=- | 스테이지=S2 | 종류=reconverge | 종단 부류=정상 완료 |"
+check "게이트 모양 재수렴 행이 있으면 S2R 은 한 번만 더 뜬다" \
+  "$(skd_disp gate-seeded)/$(skd_req gate-seeded)/$(skd_rc gate-seeded)/$(skd_pass gate-seeded)" "S2 S2R S2/1:예 1:아니오/0/reaudit reaudit"
 
 skd_case zero '0'
 check "골격급 0건 감사는 재수렴 없이 끝난다" \
@@ -12842,6 +12852,22 @@ check "35: 수정 대상 지시는 사이클 2 부터, 앞 사이클 리포트�
 check "35: 새 프로세스 재시도와 크래시 재시도도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")\"' || true)" \
   "2/0"
+
+# --- 리뷰 파견의 --expand: 계획의 review_expand 를 고정 순서로 싣는다 ---
+# 리뷰 줄과 복구 리뷰 줄은 계획이 연 분야를 싣고, 리드 수정 줄은 싣지 않는다 — 리드
+# 수정은 상한 리포트의 발견만 고치고 분야를 새로 열지 않는다.
+r35_xm() {  # r35_xm <파일> <계획 json> — 실행 계획 블록 하나의 매니페스트
+  printf '# m\n\n## 실행 계획\n\n```json\n%s\n```\n' "$2" > "$1"
+}
+r35_xm "$R35/expand-both.md" '{"steps":[],"review_expand":["문서표현","요구","문서표현"],"review_expand_rationale":"x"}'
+r35_xm "$R35/expand-none.md" '{"steps":[],"review_expand":[],"review_expand_rationale":""}'
+r35_xm "$R35/expand-old.md" '{"steps":[]}'
+check "35: 리뷰 줄의 --expand 는 계획의 분야를 요구·문서표현 순서로 한 번씩, 빈 값과 키 없음에는 붙지 않는다" \
+  "$(MANIFEST="$R35/expand-both.md" review_expand_flag)|$(MANIFEST="$R35/expand-none.md" review_expand_flag)|$(MANIFEST="$R35/expand-old.md" review_expand_flag)" \
+  " --expand 요구,문서표현||"
+check "35: 첫 리뷰 줄과 복구 리뷰 줄은 --expand 를 싣고, 리드 수정 줄은 싣지 않는다" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF -- '--report-path $rp$slice_flag$rscope$(review_expand_flag) \"설계는 $(doc_arg)\"' || true)/$(grep -cF -- '${recheck:+ --recheck $recheck}$(review_expand_flag) \"설계는 $(doc_arg)\"' "$DRIVER" || true)/$( { grep -F -- '--lead-fix $crp' "$DRIVER" || true; } | grep -c 'review_expand_flag' || true)" \
+  "1/1/0"
 check "35: 한도-형상 회수 뒤 재파견도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")\"' || true)" \
   "1/0"

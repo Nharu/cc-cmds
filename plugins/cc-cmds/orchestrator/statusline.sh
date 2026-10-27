@@ -31,11 +31,24 @@
 
 set -uo pipefail
 
-# The "no run" line and the fallback line are THE SAME BYTES, deliberately. A
-# session with no run of its own must render exactly what was on screen before
-# this script was ever installed, so that installing it is invisible until it
-# has something to say — and every degraded path lands on the same shape rather
-# than on a second, subtly different one that a reader would have to learn.
+# The "no run" line and the fallback line are THE SAME BYTES ON A MACHINE WHERE
+# THE APPLY FOUND A COMMAND TO REPLACE, deliberately, and that scope is part of
+# the claim rather than a caveat on it. There the replaced command becomes the
+# wrapper's `||` fallback, so a session with no run of its own renders exactly
+# what was on screen before this script was ever installed — installing it is
+# invisible until it has something to say, and every degraded path lands on that
+# one shape rather than on a second, subtly different one a reader would have to
+# learn.
+#
+# ON A MACHINE THAT HAD NO STATUS LINE THE TWO ARE NOT THE SAME BYTES, and that
+# difference is accepted rather than repaired. The fallback there is `true` and
+# emits nothing while this line emits its glyph, so the two branches of the
+# installed guard are separable by output alone — which is exactly what lets the
+# installer's pre-commit verify run tell a live guard from a dead one, and that
+# first install is the only path it still runs on. Matching the bytes would buy
+# an invisibility nobody on that machine can observe, since there was no previous
+# line to be invisible against, and would pay for it with the one check that
+# catches a guard installed permanently false.
 #
 # THAT PROMISE IS SCOPED TO "NO BORROW TO SHOW". When the borrow verdict below
 # is "nothing", every path prints today's bytes exactly. Otherwise the output is
@@ -43,16 +56,17 @@ set -uo pipefail
 # the 도는중 arm may drop more of its run slots so that the borrow mark fits.
 #
 # THE FORMAT STRING IS COPIED FROM THE COMMAND THIS REPLACES, escapes included.
-# The colour is not decoration: the wrapper the apply installs keeps that
-# original command as its `||` fallback, so a version of this line without the
-# escapes gives "nothing to say" two different renderings — the second shape the
-# paragraph above exists to prevent, reintroduced by the very function meant to
-# prevent it. The suite reads the reference out of the install target and runs
-# it rather than transcribing the bytes, because a transcription is how the
-# escapes went missing here while every case stayed green.
+# The colour is not decoration: for the population above, a version of this line
+# without the escapes gives "nothing to say" two different renderings — the
+# second shape the first paragraph exists to prevent, reintroduced by the very
+# function meant to prevent it. The suite reads the reference out of the install
+# target and runs it rather than transcribing the bytes, because a transcription
+# is how the escapes went missing here while every case stayed green.
 #
 # No trailing newline: the command this replaces ends its format string at `%s`,
-# and the apply path asserts byte-identity against that output.
+# and the suite asserts byte-identity against that output. The installer's verify
+# run asserts nothing of the kind — its five conditions ask whether a line can be
+# rendered at all, not whether it matches a particular one.
 emit_fallback() {
   printf '\033[36m[cc🎨]\033[0m %s' "${PWD##*/}"
 }

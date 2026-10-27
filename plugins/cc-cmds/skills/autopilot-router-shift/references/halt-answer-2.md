@@ -76,7 +76,7 @@
      ```
 
    - **After it ends**, a design step whose last `stage-result` row reads `종류=reconverge` is this item's second half. Read the terminal literal in its stream with the read item 6 of 「Routing a pre-implementation refutation to re-convergence」 makes. Present → dispatch the audit afresh on the audit step, exactly as item 4's second half does; the gate refuses segment planning until an audit after the re-convergence ends `정상 완료`, and a row reading `재수렴 판정=재설계 필요` re-plans through `replan_due[]` as item 4 says. **A plan with no audit step** — a `solo` plan's graph has none — has no audit to dispatch, and the gate refuses one with exit 3 there; with the literal present, go straight on to segment planning, the step the graph names after a frozen design, as when item 5 of 「Dispatching the design stage」 finds both freeze facts. The gate does not wait on an audit that the plan does not name. Absent — a halt, a crash, no literal — → stop the design as 「Dispatching the design stage」 says, with the re-convergence row as its evidence, and no second re-convergence.
-10. **A re-audit that still found skeleton-grade items, answered `재수렴`, goes to re-convergence, then to a fresh audit.** The re-audit parked at `Step 7 / 골격급 재발` rather than ask for a second re-convergence itself; a person who answers `재수렴` asks for one more.
+10. **A re-audit that still found skeleton-grade items, answered `재수렴`, goes to re-convergence, then to a fresh audit.** Only an earlier version's re-audit parked at `Step 7 / 골격급 재발`; a person who answers `재수렴` asks for one more re-convergence.
    - **The dispatch** carries `--segment -` and stage kind `reconverge`. The key's last row is the re-audit's `의도된 park`, so the gate keys this `- reconverge` on the audit step the way it keys item 4's:
 
      ```
@@ -87,5 +87,5 @@
      ```
 
    - **After it ends**, take the audit afresh as 「Routing a skeleton-grade audit to re-convergence」 says, with `blocked` and `사유=중단 답 라우팅 — 재수렴 종단 술어 거짓` when the literal is absent.
-   - **There is no count.** Each pass needs a person's answer, and a re-audit that parks again writes a new record with a new question. On exit 3 go to item 8.
+   - **No new record follows.** The fresh audit asks again under the key's cap, which this answer's re-convergence counts toward. On exit 3 go to item 8.
 

@@ -985,6 +985,23 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   fi
 done
 
+# The shift posts a pull request review a termination clause asks for, and both
+# copies' settling sections give the same REST spelling with the declaration the
+# gate judges it at. A copy that dropped either would leave the review to a
+# stage or to a declaration the cutpoint rule refuses.
+for pair in "리드:$AP_ROUTER|### Proposing that the run is done" \
+            "교대:$RS_CORPUS|### Settling the termination clauses and proposing done"; do
+  who=${pair%%:*}; rest=${pair#*:}; file=${rest%%|*}; head=${rest#*|}
+  sec=$(router_section "$file" "$head")
+  n1=$(printf '%s\n' "$sec" | grep -cF -- '--cutpoint 커밋 --surface 외부상태변경 --reach 협업' || true)
+  n2=$(printf '%s\n' "$sec" | grep -cF -- 'pulls/<n>/reviews' || true)
+  if [ "${n1:-0}" != "0" ] && [ "${n2:-0}" != "0" ]; then
+    ok "$who 사본의 「${head#'### '}」 절이 리뷰 게시 철자와 신고를 함께 싣는다"
+  else
+    bad "$who 사본의 「${head#'### '}」 절" "리뷰 게시 철자 또는 신고가 없다 (신고 $n1, 철자 $n2)"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # 6e-2b. The kickoff writes no design document on any tier
 #
@@ -1413,6 +1430,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '#### Planning the segments|That value is the dispatch floor'"'"'s own landing judgment, and it covers both a segment whose last `segment` row is `머지됨` or `완료` and one parked after a `머지됨` — unless that merge still owed this run its apply.' \
     '#### Planning the segments|**A slice is planned when two conditions hold together**: every `선행` token'"'"'s predecessor reads `"착지": true` in its `segments[]` entry, and every `머지 순서` token of the slice — read from the snapshot'"'"'s `슬라이싱.세그먼트[]`, because a slice with no row yet is not in `segments[]` — already has a `segment` row.' \
     '#### Planning the segments|A slice whose `선행` is `없음` and whose `머지 순서` tokens all have rows is planned and dispatched at once, cut from the current base.' \
+    '#### Planning the segments|**A slice whose `슬라이싱` entry reads `"착지 행": true` and that has no `segments[]` entry is brought in, not built**: the manifest carries a `선행 착지` row for it, so issue call 3 alone at once, whatever its `선행` and `머지 순서` read — no `git fetch` and no `git worktree add -b` — with `--target` the entry'"'"'s `대상`, or the alias whose `home` is `예` in `targets[]` when `대상` is empty, and `워크트리=` the entry'"'"'s `워크트리`, or `-` when it is empty; the act writes the slice'"'"'s own `상태=머지됨 · 출처=매니페스트` row and no planned row, so do not dispatch it, and its dependents are planned by the rule above once its `segments[]` entry reads `"착지": true`. A refusal with exit 3 here ends the shift as the predecessor import'"'"'s refusal below does.' \
     '#### Planning the segments|A `머지 순서` token with no row yet (that slice still waits on its own `선행`) defers the slice until the row appears, and a slice carrying both lists follows the same product: with D `선행` A and D `머지 순서` C, D waits for C'"'"'s row even after A has landed.' \
     '#### Planning the segments|Planned earlier, the slice is refused with exit 2 by the floor that requires every token to name a segment this ledger knows.' \
     '#### Planning the segments|The two imports below — a predecessor an earlier run already merged, and one the manifest'"'"'s `선행 착지` row names — apply to a `머지 순서` token as well, and the planning act writes that predecessor'"'"'s row itself; without them the row would never appear and the slice would never be planned.' \

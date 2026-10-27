@@ -7,9 +7,13 @@
 # 탐침 모드: `GATE_PREAUTH_PROBE=1` 이면 거부하지 않고 판정만 stdout 한 줄로
 # 내보내고 exit 0 한다 —
 #   `P=<0|1> 형태=<완전|러너|없음> Pd=<0|1> Pv=<0|1>
-#    Sx=<ok|dropped|none|code> Sw=<단어|-> 제안=<형태|->`
+#    Sx=<ok|dropped|none|code> Sw=<단어|->
+#    행=<n|-> Rs=<표면|-> Rr=<도달|-> Rpd=<0|1> Rw=<n|-> 충돌=<0|1> 충돌행=<a,b|->
+#    제안=<형태|->`
 # (실제로는 한 줄). `제안` 은 자유 문면이라 맨 끝에서 줄 끝까지다. 처분 평가기가
-# 이 한 사본을 부르므로 매칭 규칙이 두 군데로 갈리지 않는다.
+# 이 한 사본을 부르므로 매칭 규칙이 두 군데로 갈리지 않는다. `행` 부터 `충돌행`
+# 까지는 이 행위를 결정한 새 형식 행(`표면=`·`도달=` 을 함께 적은 행)의 것이다 —
+# 아래 행 훑기의 주석이 고르는 법을 말한다.
 #
 # 탐침이 더 받는 입력: `GATE_DESTRUCTIVE`(스테이지의 `--destructive`),
 # `GATE_REACH_EFF`(처분이 정한 실효 도달).
@@ -229,6 +233,14 @@ closed_flags_only() {   # $1 interpreter, $2 shape, $3 script position: every wo
 # 단어열의 p 번째 단어.
 word_at() { printf '%s\n' "$1" | awk -v p="$2" '{ print $p; exit }'; }
 
+# 행의 한 칸 값 — 같은 열쇠가 두 번 있으면 마지막 값이고, 뒤 공백은 뗀다. 탐침 줄의
+# 낱말로 실리는 값이라 공백을 품으면 어휘 밖의 `?` 로 읽어 게이트가 닫게 한다.
+row_field() {   # $1 row, $2 key
+  rf_v=$(printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1)
+  case "$rf_v" in *[[:space:]]*) rf_v='?' ;; esac
+  printf '%s' "$rf_v"
+}
+
 # 정규화 — argv0 은 basename 으로, `-*=*` 단어는 버린다.
 #
 # basename 이 없으면 `/usr/bin/gh pr view` 가 `gh pr` 행과 한 글자도 맞지 않아
@@ -302,7 +314,16 @@ esac
 
 # 모든 행을 훑는다 — 이른 break 가 없다. 첫 일치에서 멈추면 앞의 러너 행이나 짧은
 # 완전 행이 뒤의 더 긴 행을 가려, 축자 일치와 파괴 명시가 그 행을 보지 못한다.
+#
+# 결정한 새 형식 행 — 완전 형태로 일치한 새 형식 행 가운데 가장 긴 것이다. 옛 형식
+# 행은 그보다 길어도 결정하지 않는다: 행 값은 새 형식 행만 갖는다. 그 행의 서수
+# (`형태=` 를 가진 행을 1 부터 센 것으로, 게이트가 `짝 정리=` 를 읽는 서수와 같다),
+# 표면, 도달, 그 행 자신의 파괴 명시, 형태의 단어 수를 낸다 — `Pd` 는 일치한 모든
+# 행을 접은 것이라 결정한 행이 명시하지 않은 파괴를 다른 행이 명시해도 1 이 된다.
+# 같은 길이로 일치한 두 행은 형태가 같으므로, 표면·도달·짝 정리 가운데 하나라도
+# 다르면 고를 근거가 없어 `충돌=1` 과 두 서수를 낸다.
 matched=0; any_full=0; any_runner=0; pd=0; pv=0
+rowno=0; dn='-'; dw=0; ds='-'; dr='-'; dp=''; dpd=0; dc=0; dcr='-'
 mf="$GATE_MANIFEST"; [ -f "$mf" ] || mf=/dev/null
 while IFS= read -r line; do
   [ "$own_ok" = "1" ] || break
@@ -312,6 +333,7 @@ while IFS= read -r line; do
   esac
   shape=$(printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *형태=//p' | sed 's/[[:space:]]*$//')
   [ -n "$shape" ] || continue
+  rowno=$((rowno + 1))
 
   nwords=$(printf '%s' "$shape" | awk '{print NF}')
   first=$(printf '%s' "$shape" | awk '{print $1; exit}')
@@ -372,6 +394,18 @@ while IFS= read -r line; do
       [ "$nwords" = "$nf" ] && [ -z "$drop" ] && pd_row=1
     fi
     [ "$pd_row" = "1" ] && pd=1
+    # 새 형식 행이면 결정 후보다. 더 길면 결정한 행을 바꾸고 충돌을 지우며, 같은
+    # 길이면 세 값을 맞대어 본다 — 첫 충돌의 두 서수를 남긴다.
+    rs_row=$(row_field "$line" 표면)
+    rr_row=$(row_field "$line" 도달)
+    if [ -n "$rs_row" ] && [ -n "$rr_row" ]; then
+      rp_row=$(row_field "$line" '짝 정리')
+      if [ "$nwords" -gt "$dw" ]; then
+        dn=$rowno; dw=$nwords; ds=$rs_row; dr=$rr_row; dp=$rp_row; dpd=$pd_row; dc=0; dcr='-'
+      elif [ "$nwords" = "$dw" ] && [ "$dc" = "0" ] && [ "$rs_row|$rr_row|$rp_row" != "$ds|$dr|$dp" ]; then
+        dc=1; dcr="$dn,$rowno"
+      fi
+    fi
     continue
   fi
 
@@ -484,7 +518,8 @@ if [ "$probe" = "1" ]; then
   fi
   [ "$sx" = "ok" ] || prop='-'
 
-  echo "P=$matched 형태=$matched_kind Pd=$pd Pv=$pv Sx=$sx Sw=$sw 제안=$prop"
+  rw='-'; [ "$dn" = "-" ] || rw=$dw
+  echo "P=$matched 형태=$matched_kind Pd=$pd Pv=$pv Sx=$sx Sw=$sw 행=$dn Rs=$ds Rr=$dr Rpd=$dpd Rw=$rw 충돌=$dc 충돌행=$dcr 제안=$prop"
   exit 0
 fi
 

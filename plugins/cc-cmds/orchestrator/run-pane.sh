@@ -32,10 +32,11 @@
 # its mtime — and is `-` for a session id that fails the shape check. A tone is
 # `normal`, `dim`, `ok`, `warn`, `error` or `accent`, optionally with `.b` for
 # bold. `cut` is drawn truncated at the end and `wrap` wrapped; only
-# `block-reason` wraps. The bundles are a closed set: `none`, `title`, `head`,
-# `head-detail`, `gap`, `seg-heading`, `seg`, `seg-detail`, `seg-folded`,
-# `gate-none`, `approval`, `block-heading`, `block-reason`, `cone-unresolved`,
-# `orphan`, `event-heading`, `event`. Text never holds a TAB.
+# `block-reason` wraps. The bundles are a closed set: `none`, `title`,
+# `session-title`, `head`, `head-detail`, `gap`, `seg-heading`, `seg`,
+# `seg-detail`, `seg-folded`, `gate-none`, `approval`, `block-heading`,
+# `block-reason`, `cone-unresolved`, `orphan`, `event-heading`, `event`. Text
+# never holds a TAB.
 #
 # THE CAP is `min(24, --rows)`, and this file meets it by dropping rows in a
 # fixed order (see the reduction below). Some rows are protected and stay past
@@ -157,11 +158,35 @@ TAB=$(printf '\t')
 NL='
 '
 
+pane_session_title() {
+  # pane_session_title <session-id> — the session's current title, or nothing.
+  #
+  # The file is the one `hooks/session-title.sh` keeps at
+  # `session-title-now/<id>`: a schema line `cc-session-title-now v1`, then the
+  # title. Its writer makes that path only for an id of `^[A-Za-z0-9-]+$`, which
+  # is narrower than the shape check below, so the id is checked again here. A
+  # missing or unreadable file, another schema line or an empty title is no
+  # title. Lines are read with the shell's `read`, untrimmed; a title line
+  # without its newline still counts, and lines past the second are ignored. A
+  # TAB in the title becomes a space, because text never holds a TAB.
+  local f l1="" l2=""
+  printf '%s' "$1" | LC_ALL=C grep -qE '^[A-Za-z0-9-]+$' || return 0
+  f="$PANE_STATE/session-title-now/$1"
+  [ -f "$f" ] && [ -r "$f" ] || return 0
+  { IFS= read -r l1; IFS= read -r l2; } < "$f" 2>/dev/null
+  [ "$l1" = "cc-session-title-now v1" ] && [ -n "$l2" ] || return 0
+  printf '%s' "${l2//$TAB/ }"
+}
+
 pane_none() {
   # pane_none <index-path|-> — the head row and the one body row of a session
-  # with no run to show, then exit.
+  # with no run to show, then exit. A session whose id passed the shape check
+  # also gets its title row under it when it has a current title.
+  local st=""
   printf 'cc-pane\t%s\tnone\t-\t%s\t%s\n' "$PANE_SCHEMA" "$1" "$PANE_REFRESH_OTHER"
   printf 'none\tcut\tdim\t연결된 런 없음\n'
+  [ "$1" = "-" ] || st=$(pane_session_title "$sid")
+  [ -z "$st" ] || printf 'session-title\tcut\tdim\t세션 \tnormal\t%s\n' "$st"
   exit 0
 }
 
@@ -470,6 +495,8 @@ fact_col() { printf '%s' "$1" | cut -f"$2"; }
 # ---------------------------------------------------------------------------
 
 add_row title cut - 1 1 "$gtone.b" "autopilot $rid"
+session_title=$(pane_session_title "$sid")
+[ -z "$session_title" ] || add_row session-title cut - 1 1 dim "세션 " normal "$session_title"
 
 if [ -n "$fields" ]; then
   tail_parts=""
@@ -713,9 +740,9 @@ fi
 #   5. gaps;
 #   6. open segments without a held block (park included), folded into
 #      `끝나지 않은 세그먼트 N개`.
-# Protected rows — title, head, head-detail, approvals, block headings and
-# reasons, the unresolved cone count, orphans, a segment with a held block —
-# are never touched, so the result is at most max(cap, floor).
+# Protected rows — title, session title, head, head-detail, approvals, block
+# headings and reasons, the unresolved cone count, orphans, a segment with a
+# held block — are never touched, so the result is at most max(cap, floor).
 # ---------------------------------------------------------------------------
 
 over() { [ "$TOTAL" -gt "$cap" ]; }
