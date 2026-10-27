@@ -138,11 +138,14 @@ iso_use_bash() {
 # A temporary directory whose path carries no run-id placeholder, for the first
 # solo and the rows: a random suffix that happens to hold `R1` would trip the
 # very defect the second solo is there to show, in every context at once.
+# Only the name mktemp made is looked at: BASE is the caller's, and it already
+# holds the run-id component when this runs inside a second solo (a section that
+# drives the lane recipe), where checking the whole path refuses every try.
 iso_clean_tmp() {
   local base="$1" d i=0
   while [ "$i" -lt 8 ]; do
     d=$(mktemp -d "$base/gate-iso.XXXXXX") || return 1
-    case "$d" in
+    case "${d##*/}" in
       *R[0-9]*) rm -rf "$d"; i=$((i + 1)) ;;
       *) printf '%s\n' "$d"; return 0 ;;
     esac
@@ -818,6 +821,12 @@ iso_self_test() {
   local tok_bytes
   tok_bytes=$(printf '%s' "$ISO_TOKEN" | LC_ALL=C wc -c | tr -d ' ')
   if [ "$tok_bytes" -le 60 ]; then ok "토막은 60바이트 이하다 (${tok_bytes}바이트)"; else bad "토막 길이" "${tok_bytes}바이트 > 60"; fi
+  # A section that drives the lane recipe runs it inside a second solo, so the
+  # base the solos' temporary directories are made under already holds the
+  # component; the clean directory is still made there.
+  local tok_base tok_d
+  tok_base="$T/tb/$ISO_TOKEN"; mkdir -p "$tok_base"
+  if tok_d=$(iso_clean_tmp "$tok_base") && [ -d "$tok_d" ]; then ok "토막을 품은 기저 아래서도 단독의 임시 디렉터리를 만든다"; else bad "토막 기저의 임시 디렉터리" "「${tok_base}」 아래서 만들지 못함"; fi
 
   # --- reduced suites cut by the real selector ------------------------------
   # The real head and tail around made-up sections: the selector, the fixture
@@ -968,8 +977,8 @@ EOF
   printf 'gate-isolation self-test: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
   # A skipped case counts toward it: the suite cases need bash 4.1 and say so.
-  if [ "$(( passed + skipped ))" -lt 28 ]; then
-    printf 'gate-isolation self-test: 통과·건너뜀 수 %d 가 하한 28 에 못 미칩니다\n' "$(( passed + skipped ))" >&2
+  if [ "$(( passed + skipped ))" -lt 29 ]; then
+    printf 'gate-isolation self-test: 통과·건너뜀 수 %d 가 하한 29 에 못 미칩니다\n' "$(( passed + skipped ))" >&2
     return 1
   fi
   [ "$failed" = "0" ]
