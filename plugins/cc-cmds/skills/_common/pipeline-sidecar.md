@@ -710,23 +710,34 @@ never compared.
 21. **The entry judgment's structure.** A plan carrying `design_tier_judged` is
     run through `orchestrator/prompts/entry-plan.check.jq`, the same file the
     kickoff runs on its own output and the gate's tests run on their fixtures,
-    so the three callers cannot assert different rules. Four assertions:
+    so the three callers cannot assert different rules. Seven assertions:
     (a) a `team-4` judgment carries at least one non-blank entry in
     `design_heavy_reasons`, and a `solo` judgment carries `[]`; (b)
     `design_tier_judged` and `design_tier` are each `solo` or `team-4`, and the
     confirmed tier is never below the judged one — a person raises, the kickoff
     never lowers; (c) a `solo` plan with `design_required=true` has exactly one
     `design` step, no `design-audit` step, no `split` step and the `single`
-    scope. A `team-4` graph is asserted on by (d) alone. Any violation is a **hard stop**
-    naming each one. **A plan without `design_tier_judged` is not asserted at
-    all** — every plan frozen before the key existed lacks it, and its tier
-    (`team-2`, `lead-solo`, `null`) is outside the two values above.
+    scope; (d) `design_path` is one of `solo-audit` · `discuss-audit` · `none`;
+    on a design plan it is not `none` exactly when the plan is `team-4` with
+    the `single` scope, and a `solo-audit` plan has exactly one `design` and
+    one `design-audit` step; a plan without the key is not asserted on; (e) an
+    `enforcement_surface` judgment, when the plan carries one, has its shape —
+    a judgment from the closed four, every path's class listed under
+    `classes`, at least one path on `확인됨` and none on `없음`; (f)
+    `run_profile` reads `hotfix` or `standard` (absent reads `standard`), and a
+    `hotfix` plan is the fixed frame — the `solo` tier, the `single` scope,
+    steps `design` → `implement` → `review`, an `enforcement_surface` whose
+    judgment bounds the count of `unresolved`, and a `review_expand`, when the
+    plan carries one, that reads `[]`; (g) a `review_expand`, when the plan
+    carries one, is an array of `요구` · `문서표현` with no value twice, and a
+    non-empty one has a non-blank `review_expand_rationale`. A `team-4` graph
+    is asserted on by (d) alone. Any violation is a **hard stop** naming each
+    one. **A plan without `design_tier_judged` is asserted on (f) alone** —
+    every plan frozen before the key existed lacks it, and its tier (`team-2`,
+    `lead-solo`, `null`) is outside the two values above; (f) still runs there
+    so a hotfix plan that dropped the key keeps its frame.
     `estimated_files` and `design_tier_rationale` are carried for the `설계 티어`
-    row (§3.2) and asserted on by nothing. (d) `design_path` is one of
-    `solo-audit` · `discuss-audit` · `none`; on a design plan it is not `none`
-    exactly when the plan is `team-4` with the `single` scope, and a
-    `solo-audit` plan has exactly one `design` and one `design-audit` step; a
-    plan without the key is not asserted on. The plan's scope, tier and path
+    row (§3.2) and asserted on by nothing. The plan's scope, tier and path
     pick the design step's skill through one selection function,
     `manifest_design_skill` — `design-base-unattended` for the `base` scope,
     `design-solo-unattended` for `solo`, `design-solo-unattended` for `team-4`

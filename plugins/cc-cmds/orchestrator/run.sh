@@ -637,6 +637,52 @@ manifest_plan_field() {
   manifest_plan_json | jq -r "$1" 2>/dev/null || printf 'null'
 }
 
+review_expand_norm() {
+  # review_expand_norm [<field>…] — the review fields named by the arguments,
+  # one rule for every reader: a value outside `요구`·`문서표현` is dropped, a
+  # repeated one is kept once, and the order is `요구,문서표현` whatever order
+  # they came in. Prints the comma-joined list, or nothing.
+  local f has_req='' has_doc='' out=''
+  for f in "$@"; do
+    case "$f" in
+      요구) has_req=1 ;;
+      문서표현) has_doc=1 ;;
+    esac
+  done
+  [ -n "$has_req" ] && out='요구'
+  [ -n "$has_doc" ] && out="${out:+$out,}문서표현"
+  printf '%s' "$out"
+}
+
+review_expand_norm_lines() {
+  # review_expand_norm over the field words on stdin, one per line.
+  local line
+  local -a vals=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && vals+=("$line")
+  done
+  review_expand_norm ${vals[@]+"${vals[@]}"}
+}
+
+review_expand_csv() {
+  # The plan's `review_expand` as the comma-joined field list the review line
+  # carries. A plan frozen before the key existed reads `null`, and `null`, a
+  # non-array and an empty array all read as no field opened — the default
+  # review.
+  { manifest_plan_json | jq -r '.review_expand | if type == "array" then .[] | strings else empty end' 2>/dev/null || true; } \
+    | review_expand_norm_lines
+}
+
+review_expand_flag() {
+  # ` --expand <fields>` when the plan opens a review field, nothing otherwise
+  # — the shape `review_slice_flag` takes, so the line reads the same either
+  # way.
+  local v
+  v=$(review_expand_csv)
+  [ -n "$v" ] || return 0
+  printf ' --expand %s' "$v"
+}
+
 manifest_intent_line() {
   # The first non-empty line of the fenced text block under `## 의도` — the
   # task sentence the design stage receives as its second positional argument.
@@ -10434,7 +10480,7 @@ review_recover() {
   reaped="${reaped##* }"
   [ -n "$reaped" ] || reaped=미상
   local src=0
-  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp$(review_slice_flag "$seg")${recheck:+ --recheck $recheck} \"설계는 $(doc_arg)\"" || src=$?
+  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp$(review_slice_flag "$seg")${recheck:+ --recheck $recheck}$(review_expand_flag) \"설계는 $(doc_arg)\"" || src=$?
   if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
     park_router "$seg" "$seg" cone; return 1
   fi
@@ -11035,7 +11081,7 @@ segment_cycle() {
       slice_flag=$(review_slice_flag "$seg")
       [ "$redo" != "다른 슬라이스 몫 거절" ] || slice_flag=""
       src=0
-      review_line="/cc-cmds:review-unattended $branch --report-path $rp$slice_flag$rscope \"설계는 $(doc_arg)\""
+      review_line="/cc-cmds:review-unattended $branch --report-path $rp$slice_flag$rscope$(review_expand_flag) \"설계는 $(doc_arg)\""
       stage_spawn "$sid" "$seg_repo" "$review_line" || src=$?
       if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
         park_router "$seg" "$seg" cone; return 1
