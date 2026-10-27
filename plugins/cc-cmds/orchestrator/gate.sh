@@ -37300,7 +37300,11 @@ gate_ci_rerun_x5_hit() {
   # judged" and the caller parks on it. Read line by line, never as YAML:
   #   - A line whose first non-blank is `#` is skipped, and a ` #` tail outside
   #     quotes is cut off. A quote starts a quoted string only where a node
-  #     can start; a quote inside a plain scalar is a character.
+  #     can start; a quote inside a plain scalar is a character. A `\` in
+  #     double quotes and a doubled `'` in single quotes do not close the
+  #     string. The lines of an open flow collection are judged as one text,
+  #     so a quote on a continuation line opens a string only where the joined
+  #     flow lets a node start, and a quoted string runs on over lines.
   #   - A key whose whole value is a block scalar indicator (`|`, `>`, with
   #     `-`/`+`/digits after and an anchor or tag before) opens a body: every
   #     following line indented deeper than the key's column (the column after
@@ -37357,23 +37361,33 @@ gate_ci_rerun_x5_hit() {
         return 0
       }
     }
-    function stripc(s, body,   i, c, inq, o) {
+    function closes(s, i, c) {
+      # In a quoted string opened by c, 0 when the character at i is an escape
+      # that keeps the string open (a backslash in double quotes, a doubled
+      # quote in single quotes), 1 when the quote at i closes it, 2 otherwise.
+      if (c == "\"" && substr(s, i, 1) == "\\") return 0
+      if (substr(s, i, 1) != c) return 2
+      return !(c == q && substr(s, i + 1, 1) == q)
+    }
+    function stripc(s, body,   i, c, inq, o, e) {
       # A block scalar body is not YAML, so there a quote after a blank or
       # `:,[{-` still opens a string.
       inq = ""; qend = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
-          if (body) o = i == 1 || index(" \t:,[{-", substr(s, i - 1, 1)) > 0
-          else o = opens(s, i)
-          if ((c == "\"" || c == q) && o) inq = c
-          else if (c == "#" && i > 1 && index(" \t", substr(s, i - 1, 1)) > 0) { s = substr(s, 1, i - 1); break }
-        } else if (c == inq) { inq = ""; qend = i }
+          if (c == "\"" || c == q) {
+            if (body) o = i == 1 || index(" \t:,[{-", substr(s, i - 1, 1)) > 0
+            else o = opens(s, i)
+            if (o) inq = c
+          } else if (c == "#" && i > 1 && index(" \t", substr(s, i - 1, 1)) > 0) { s = substr(s, 1, i - 1); break }
+        } else if ((e = closes(s, i, inq)) == 0) i++
+        else if (e == 1) { inq = ""; qend = i }
       }
       sub(/[ \t]+$/, "", s)
       return s
     }
-    function depth(s,   i, c, inq, d) {
+    function depth(s,   i, c, inq, d, e) {
       inq = ""; d = 0; qend = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
@@ -37381,7 +37395,8 @@ gate_ci_rerun_x5_hit() {
           if ((c == "\"" || c == q) && opens(s, i)) inq = c
           else if (c == "{" || c == "[") d++
           else if (c == "}" || c == "]") d--
-        } else if (c == inq) { inq = ""; qend = i }
+        } else if ((e = closes(s, i, inq)) == 0) i++
+        else if (e == 1) { inq = ""; qend = i }
       }
       return d
     }
@@ -37415,16 +37430,20 @@ gate_ci_rerun_x5_hit() {
       }
       return 0
     }
-    function mask(s,   i, c, inq, o) {
+    function mask(s,   i, c, inq, o, e, t) {
       # The flow text with `,:{}[]` inside quotes turned into `_`, so a quoted
       # string is read as one value and never as keys or item breaks. Quotes
-      # open by the rule stripc() and depth() use, opens().
+      # open by the rule stripc() and depth() use, opens(), and close by
+      # closes().
       inq = ""; o = ""; qend = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
           if ((c == "\"" || c == q) && opens(s, i)) inq = c
-        } else if (c == inq) { inq = ""; qend = i }
+        } else if ((e = closes(s, i, inq)) == 0) {
+          t = substr(s, i + 1, 1); if (index(",:{}[]", t) > 0) t = "_"
+          c = c t; i++
+        } else if (e == 1) { inq = ""; qend = i }
         else if (index(",:{}[]", c) > 0) c = "_"
         o = o c
       }
@@ -37452,13 +37471,18 @@ gate_ci_rerun_x5_hit() {
         inbody = 0
       }
       if (ind < 0 || substr($0, ind + 1, 1) == "#") next
-      s = stripc($0)
-      text(s)
       if (inflow) {
-        buf = buf " " s; d += depth(s)
+        # A flow is read as one text: a quote at the start of this line opens
+        # a string only where the joined flow lets a node start, and a quoted
+        # string runs on over lines.
+        s = stripc(buf " " $0)
+        text(length(s) > length(buf) ? substr(s, length(buf) + 2) : "")
+        buf = s; d = depth(buf)
         if (d <= 0) { inflow = 0; if (flowhit(buf)) { hit = 1; exit } }
         next
       }
+      s = stripc($0)
+      text(s)
       r = substr(s, ind + 1); col = ind; seq = 0
       while (1) {
         if (r ~ /^---([ \t]|$)/) { match(r, /^---[ \t]*/); r = substr(r, RLENGTH + 1) }

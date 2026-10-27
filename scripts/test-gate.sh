@@ -42268,7 +42268,7 @@ cb60_foot
 
 # ---------------------------------------------------------------------------
 # 60b-2. 리뷰가 깨끗한 세그먼트의 CI 실패 — 부적격 실행의 park
-# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: paths 필터·run 본문·주석·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다 ---
+# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: paths 필터·run 본문·주석·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
 #
 # 60b 의 둘째 조각. 픽스처는 `cb60_head` 로 새로 세운다. 같은 argv 의 둘째 park 가 행을
 # 더 쓰지 않는지는 칸과 종류마다 처음 사례에서 `cb60_park` 이 모으고 그 단언은 60b-3
@@ -42394,7 +42394,26 @@ cb60_x5 0 $'jobs:\n  d: {\n    if: contains(github.event.label.name, \'deploy\')
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: a - \'b\', run: make}]'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{? \'a, uses: b\' : c, run: make}]'
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - \'a # b\': {environment: prod}'
+cb60_x5 0 $'jobs: {d: {\n  runs-on: x,\n  name: Release\n    - \'a # , \'x\n  , environment: prod,\n  steps: [{run: make}]}}'
+cb60_x5 0 $'jobs: {d: {\n  runs-on: x,\n  name: Release\n    \'a # , \'x\n  , environment: prod,\n  steps: [{run: make}]}}'
+cb60_x5 0 $'jobs: {d: {\n  runs-on: x,\n  name: Release\n    \'nightly # TODO: \'fix later\n  , environment: prod,\n  steps: [{run: make}]}}'
+cb60_x5 0 $'jobs: {d: {\n  runs-on: x,\n  name: Release\n    "a # , "x\n  , environment: prod,\n  steps: [{run: make}]}}'
+cb60_x5 0 $'jobs: {d: {\n  runs-on: x,\n  name: Release\n    \'a # {\'x\n  , environment: prod,\n  steps: [{run: make}]}}'
+cb60_x5 0 $'jobs:\n  d:\n    steps: [{name: Release\n      - \'a # , \'x\n      , uses: org/deploy@v1}]'
+cb60_x5 1 $'jobs: {d: {runs-on: x\n  , name: \'a # b\'}}'
+cb60_x5 1 $'jobs: {d: {runs-on: x,\n  \'a # b\': y}}'
 check "60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다" "$cb60_x5fail" ""
+# flow 의 따옴표 문자열 — 큰따옴표 안 `\"` 와 작은따옴표 안 두 겹 작은따옴표의 escape 는 문자열을 닫지 않고, 따옴표 문자열은 여러 줄에 걸쳐 한 값이다.
+cb60_x5fail=""
+cb60_x5 0 $'jobs: {d: {name: "say \\"hi\\", \'x", environment: prod,\n  steps: [{run: make}]}}'
+cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - {name: "Run \\"tests\\", \'fast mode", uses: org/deploy@v1}'
+cb60_x5 0 $'jobs: {d: {name: \'it\'\'s\', environment: prod}}'
+cb60_x5 0 $'jobs: {d: {name: \'Build\n  ]]\'\n  , environment: prod}}'
+cb60_x5 0 $'jobs:\n  d:\n    steps: [{name: \'a [x\n      ]]]\'\n      , uses: org/deploy@v1}]'
+cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: "a \\"b, uses: c\\" d", run: make}]'
+cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: \'it\'\'s, uses: b\', run: make}]'
+cb60_x5 1 $'jobs: {d: {name: \'a\n  }}, uses: b\'\n  , runs-on: x}}'
+check "60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다" "$cb60_x5fail" ""
 # 섞인 집합 — 실행 777 은 적격, 778 의 워크플로에 환경 키. 하나라도 걸리면 POST 는 없다.
 cb60_new "CI 재실행 — 섞인 집합"
 ( cd "$SA_SEGWT" && printf '%s\n    environment: prod\n' "$CB60_WF" > .github/workflows/deploy.yml && git add -A && git commit -qm deploy ) >/dev/null 2>&1
