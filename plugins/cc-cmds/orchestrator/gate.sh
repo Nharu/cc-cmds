@@ -37361,19 +37361,24 @@ gate_ci_rerun_x5_hit() {
         return 0
       }
     }
-    function closes(s, i, c) {
+    function closes(s, i, c, esc) {
       # In a quoted string opened by c, 0 when the character at i is an escape
-      # that keeps the string open (a backslash in double quotes, a doubled
-      # quote in single quotes), 1 when the quote at i closes it, 2 otherwise.
-      if (c == "\"" && substr(s, i, 1) == "\\") return 0
+      # that keeps the string open (with esc, a backslash in double quotes or
+      # a doubled quote in single quotes), 1 when the quote at i closes it, 2
+      # otherwise.
+      if (esc && c == "\"" && substr(s, i, 1) == "\\") return 0
       if (substr(s, i, 1) != c) return 2
-      return !(c == q && substr(s, i + 1, 1) == q)
+      return !(esc && c == q && substr(s, i + 1, 1) == q)
     }
-    function stripc(s, body,   i, c, inq, o, e) {
-      # A block scalar body is not YAML, so there a quote after a blank or
-      # `:,[{-` still opens a string.
-      inq = ""; qend = 0
-      for (i = 1; i <= length(s); i++) {
+    function scan(s, body, esc, from, inq,   i, c, o, e) {
+      # s from position from on, starting in quote state inq, with the ` #`
+      # tail cut off. Leaves the quote state at the end in sq and the flow
+      # depth change of the scanned part in sd; qend starts over only when
+      # the scan starts at 1. A block scalar body is not YAML, so there a
+      # quote after a blank or `:,[{-` still opens a string.
+      sd = 0
+      if (from == 1) qend = 0
+      for (i = from; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
           if (c == "\"" || c == q) {
@@ -37381,24 +37386,21 @@ gate_ci_rerun_x5_hit() {
             else o = opens(s, i)
             if (o) inq = c
           } else if (c == "#" && i > 1 && index(" \t", substr(s, i - 1, 1)) > 0) { s = substr(s, 1, i - 1); break }
-        } else if ((e = closes(s, i, inq)) == 0) i++
+          else if (c == "{" || c == "[") sd++
+          else if (c == "}" || c == "]") sd--
+        } else if ((e = closes(s, i, inq, esc)) == 0) i++
         else if (e == 1) { inq = ""; qend = i }
       }
+      sq = inq
       sub(/[ \t]+$/, "", s)
       return s
     }
-    function depth(s,   i, c, inq, d, e) {
-      inq = ""; d = 0; qend = 0
-      for (i = 1; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        if (inq == "") {
-          if ((c == "\"" || c == q) && opens(s, i)) inq = c
-          else if (c == "{" || c == "[") d++
-          else if (c == "}" || c == "]") d--
-        } else if ((e = closes(s, i, inq)) == 0) i++
-        else if (e == 1) { inq = ""; qend = i }
-      }
-      return d
+    function stripc(s, body,   a, b) {
+      # A body line is read both with and without escapes, since a shell may
+      # or may not take a backslash as one, and the longer text is kept.
+      if (!body) return scan(s, 0, 1, 1, "")
+      a = scan(s, 1, 1, 1, ""); b = scan(s, 1, 0, 1, "")
+      return length(a) >= length(b) ? a : b
     }
     function pathhit(s,   i, t, j) {
       while ((i = index(s, ".github/workflows/")) > 0) {
@@ -37433,14 +37435,13 @@ gate_ci_rerun_x5_hit() {
     function mask(s,   i, c, inq, o, e, t) {
       # The flow text with `,:{}[]` inside quotes turned into `_`, so a quoted
       # string is read as one value and never as keys or item breaks. Quotes
-      # open by the rule stripc() and depth() use, opens(), and close by
-      # closes().
+      # open by the rule scan() uses, opens(), and close by closes().
       inq = ""; o = ""; qend = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (inq == "") {
           if ((c == "\"" || c == q) && opens(s, i)) inq = c
-        } else if ((e = closes(s, i, inq)) == 0) {
+        } else if ((e = closes(s, i, inq, 1)) == 0) {
           t = substr(s, i + 1, 1); if (index(",:{}[]", t) > 0) t = "_"
           c = c t; i++
         } else if (e == 1) { inq = ""; qend = i }
@@ -37451,7 +37452,7 @@ gate_ci_rerun_x5_hit() {
     }
     function flowhit(s) { s = mask(s); return s ~ flowkey || flowpath(s) }
     function startflow(s) {
-      buf = s; d = depth(s)
+      buf = scan(s, 0, 1, 1, ""); fq = sq; d = sd
       if (d > 0) { inflow = 1; return }
       if (flowhit(buf)) { hit = 1; exit }
     }
@@ -37470,14 +37471,15 @@ gate_ci_rerun_x5_hit() {
         if (ind > bcol) { if (substr($0, ind + 1, 1) != "#") text(stripc($0, 1)); next }
         inbody = 0
       }
-      if (ind < 0 || substr($0, ind + 1, 1) == "#") next
+      if (ind < 0 || (!inflow && substr($0, ind + 1, 1) == "#")) next
       if (inflow) {
         # A flow is read as one text: a quote at the start of this line opens
         # a string only where the joined flow lets a node start, and a quoted
-        # string runs on over lines.
-        s = stripc(buf " " $0)
+        # string runs on over lines, `#` lines included. The scan picks up
+        # where the last line left the quote state.
+        s = scan(buf " " $0, 0, 1, length(buf) + 1, fq); fq = sq
         text(length(s) > length(buf) ? substr(s, length(buf) + 2) : "")
-        buf = s; d = depth(buf)
+        buf = s; d += sd
         if (d <= 0) { inflow = 0; if (flowhit(buf)) { hit = 1; exit } }
         next
       }

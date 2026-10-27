@@ -42406,12 +42406,16 @@ check "60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽�
 # flow 의 따옴표 문자열 — 큰따옴표 안 `\"` 와 작은따옴표 안 두 겹 작은따옴표의 escape 는 문자열을 닫지 않고, 따옴표 문자열은 여러 줄에 걸쳐 한 값이다.
 cb60_x5fail=""
 cb60_x5 0 $'jobs: {d: {name: "say \\"hi\\", \'x", environment: prod,\n  steps: [{run: make}]}}'
-cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - {name: "Run \\"tests\\", \'fast mode", uses: org/deploy@v1}'
 cb60_x5 0 $'jobs: {d: {name: \'it\'\'s\', environment: prod}}'
+cb60_x5 0 $'jobs: {d: {name: \'a\n  #b\', environment: prod, x: \'y\n  \', steps: [{run: make}]}}'
+cb60_x5 0 $'jobs: {d: {name: "a\n  #b", environment: prod, x: "y\n  ", steps: [{run: make}]}}'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - shell: pwsh\n        run: |\n          Write-Host "C:\\" "x # y"; gh workflow run d'
 cb60_x5 0 $'jobs: {d: {name: \'Build\n  ]]\'\n  , environment: prod}}'
 cb60_x5 0 $'jobs:\n  d:\n    steps: [{name: \'a [x\n      ]]]\'\n      , uses: org/deploy@v1}]'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: "a \\"b, uses: c\\" d", run: make}]'
 cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: \'it\'\'s, uses: b\', run: make}]'
+cb60_x5 1 $'jobs:\n  d:\n    steps: [{name: "a\\\\\\", uses: b", run: make}]'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: |\n          echo "a \\" # b"; gh workflow run d'
 cb60_x5 1 $'jobs: {d: {name: \'a\n  }}, uses: b\'\n  , runs-on: x}}'
 check "60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다" "$cb60_x5fail" ""
 # 섞인 집합 — 실행 777 은 적격, 778 의 워크플로에 환경 키. 하나라도 걸리면 POST 는 없다.
