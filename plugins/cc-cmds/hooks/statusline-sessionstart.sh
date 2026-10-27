@@ -181,6 +181,7 @@ verdict_name() {
     24) printf 'park|sl-missing' ;;
     25) printf 'park|guard-reeval' ;;
     26) printf 'park|plugin-dir' ;;
+    27) printf 'park|linked' ;;
     40) printf 'verify-failed|verify' ;;
     *)  return 1 ;;
   esac

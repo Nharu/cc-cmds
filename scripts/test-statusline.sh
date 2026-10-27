@@ -1149,6 +1149,59 @@ B8="$WORK/b8.json"; mk_settings_empty "$B8"
 check "B8 --plugin-dir 에 후행 슬래시가 남아 있으면 park 한다" "$(apply "$B8" "$APLUG/" empty)" "26"
 check "B8 후행 슬래시 park — 아무것도 쓰지 않았다" "$(jq -r 'has("statusLine")' "$B8")" "false"
 
+# B9. A SETTINGS FILE MANAGED THROUGH A LINK IS NOT WRITTEN. The commit is a
+# rename, which replaces the name rather than the file it points at: a symbolic
+# link would become a plain file while its source kept the old bytes, and a hard
+# link would split into two inodes. Every fixture holds the same writable value
+# (empty), so only the shape of the target can be what parks it — and the plain
+# single-link pair at the end is what fails an installer that parks everything.
+#
+# THE SOURCES ARE AGED FIRST. mtime has a one-second grain, so a write in the
+# same second as the fixture would read as "untouched"; a source dated years ago
+# cannot.
+b9_dir="$WORK/b9"; mkdir -p "$b9_dir"
+b9_islink()  { [ -L "$1" ] && printf y || printf n; }
+b9_multi()   { [ -n "$(find "$1" -maxdepth 0 -links +1 2>/dev/null)" ] && printf y || printf n; }
+b9_leftover() { nglob "$1".cc-statusline.lock "$1".cc-statusline.tmp.* "$1".cc-statusline.bak-tmp.*; }
+
+mk_settings_empty "$b9_dir/sym-src.json"; touch -t 202001010000 "$b9_dir/sym-src.json"
+ln -s "$b9_dir/sym-src.json" "$b9_dir/sym.json"
+b9_sym_sha=$(sha_of "$b9_dir/sym-src.json"); b9_sym_m=$(mtime_of "$b9_dir/sym-src.json")
+check "B9 심볼릭 링크 설정 파일 — rc 27 로 park 한다" "$(apply "$b9_dir/sym.json" "$APLUG" empty)" "27"
+check "B9 심볼릭 링크 — 실행 뒤에도 링크다" "$(b9_islink "$b9_dir/sym.json")" "y"
+check "B9 심볼릭 링크 — 원본 바이트가 그대로다" "$(sha_of "$b9_dir/sym-src.json")" "$b9_sym_sha"
+check "B9 심볼릭 링크 — 원본 mtime 이 그대로다" "$(mtime_of "$b9_dir/sym-src.json")" "$b9_sym_m"
+check "B9 심볼릭 링크 — 락도 임시 파일도 남지 않는다" "$(b9_leftover "$b9_dir/sym.json")" "0"
+check "B9 심볼릭 링크 — 소유 비트가 생기지 않는다" "$([ -e "$b9_dir/sym.json.cc-statusline-owned" ] && printf y || printf n)" "n"
+check "B9 심볼릭 링크 — probe 도 park(1) 다" "$(probe "$b9_dir/sym.json" "$APLUG")" "1"
+
+mk_settings_empty "$b9_dir/hard-a.json"; touch -t 202001010000 "$b9_dir/hard-a.json"
+ln "$b9_dir/hard-a.json" "$b9_dir/hard-b.json"
+b9_hard_sha=$(sha_of "$b9_dir/hard-a.json"); b9_hard_m=$(mtime_of "$b9_dir/hard-a.json")
+check "B9 하드 링크 전제 — 링크 수가 2 이상이다" "$(b9_multi "$b9_dir/hard-a.json")" "y"
+check "B9 하드 링크 설정 파일 — rc 27 로 park 한다" "$(apply "$b9_dir/hard-a.json" "$APLUG" empty)" "27"
+check "B9 하드 링크 — 실행 뒤에도 링크 수가 2 이상이다" "$(b9_multi "$b9_dir/hard-a.json")" "y"
+check "B9 하드 링크 — 두 이름이 여전히 같은 파일이다" "$([ "$b9_dir/hard-a.json" -ef "$b9_dir/hard-b.json" ] && printf y || printf n)" "y"
+check "B9 하드 링크 — 실행한 이름의 바이트가 그대로다" "$(sha_of "$b9_dir/hard-a.json")" "$b9_hard_sha"
+check "B9 하드 링크 — 다른 이름의 바이트도 그대로다" "$(sha_of "$b9_dir/hard-b.json")" "$b9_hard_sha"
+check "B9 하드 링크 — mtime 이 그대로다" "$(mtime_of "$b9_dir/hard-a.json")" "$b9_hard_m"
+check "B9 하드 링크 — 락도 임시 파일도 남지 않는다" "$(b9_leftover "$b9_dir/hard-a.json")" "0"
+
+# A dangling link fails `[ -e ]`, so the snapshot copy fails and the create path
+# would be next — where `ln` refuses the existing link name and the run ends
+# rc 31, outside the verdict band and retried every session. Only `[ -L ]` sees
+# it, and it must park before the lock as the live link does.
+ln -s "$b9_dir/nowhere.json" "$b9_dir/dangling.json"
+check "B9 끊어진 심볼릭 링크 — rc 27 로 park 한다" "$(apply "$b9_dir/dangling.json" "$APLUG" empty)" "27"
+check "B9 끊어진 심볼릭 링크 — 실행 뒤에도 링크다" "$(b9_islink "$b9_dir/dangling.json")" "y"
+check "B9 끊어진 심볼릭 링크 — 링크가 가리키던 자리에 파일이 생기지 않는다" "$([ -e "$b9_dir/nowhere.json" ] && printf y || printf n)" "n"
+check "B9 끊어진 심볼릭 링크 — 락도 임시 파일도 남지 않는다" "$(b9_leftover "$b9_dir/dangling.json")" "0"
+
+mk_settings_empty "$b9_dir/plain.json"
+check "B9 짝 — 링크 하나짜리 일반 파일 전제" "$(b9_islink "$b9_dir/plain.json")$(b9_multi "$b9_dir/plain.json")" "nn"
+check "B9 짝 — probe 는 WRITABLE(2) 이다" "$(probe "$b9_dir/plain.json" "$APLUG")" "2"
+check "B9 짝 — 같은 값의 일반 파일은 park 하지 않고 설치한다" "$(apply "$b9_dir/plain.json" "$APLUG" empty)" "10"
+
 # ---------------------------------------------------------------------------
 # C — convergence, idempotence and the sibling files
 # ---------------------------------------------------------------------------
@@ -1897,6 +1950,14 @@ else
   j12_new guardreeval; j12_run guardreeval "$WORK/b6-reeval/plug\$d"
   j12_new verifyfail;  j12_run verifyfail "$WORK/p-empty"
 
+  # A settings file managed through a symbolic link: the hook reaches the
+  # installer, gets rc 27 back and names it — the source holds a writable value,
+  # so nothing but the link can be what parks it.
+  mkdir -p "$j12_dir/linked"
+  mk_settings_empty "$j12_dir/linked/settings-src.json"
+  ln -s "$j12_dir/linked/settings-src.json" "$j12_dir/linked/settings.json"
+  j12_run linked "$APLUG"                                     # park / linked
+
   if [ -n "${WT_LINKED_PLUG:-}" ] && [ -x "${WT_LINKED_PLUG:-}/orchestrator/statusline.sh" ]; then
     j12_new worktree; j12_run worktree "$WT_LINKED_PLUG"
   else
@@ -1925,7 +1986,7 @@ else
   j12_seen_v=$(sort -u "$j12_obs_v" | tr '\n' ' ')
   j12_seen_r=$(sort -u "$j12_obs_r" | tr '\n' ' ')
   j12_want_v=$(printf '%s\n' adopt-repoint adopted converged deleted drift-repair installed park verify-failed | sort -u | tr '\n' ' ')
-  j12_want_r=$(printf '%s\n' - foreign guard-reeval plugin-dir require-state sl-missing verify worktree | sort -u | tr '\n' ' ')
+  j12_want_r=$(printf '%s\n' - foreign guard-reeval linked plugin-dir require-state sl-missing verify worktree | sort -u | tr '\n' ' ')
   check "J12 관측한 판정 이름의 집합이 닫힌 집합과 상등하다" "$j12_seen_v" "$j12_want_v"
   check "J12 관측한 사유 토큰의 집합이 닫힌 집합과 상등하다" "$j12_seen_r" "$j12_want_r"
 fi
@@ -2019,17 +2080,17 @@ for v in "bash \$HOME/orchestrator/statusline.sh" "bash \`pwd\`/orchestrator/sta
   check "M7 \$·백틱·상대경로가 든 값 $m7_i — park" "$(apply "$f" "$APLUG" ours)" "20"
 done
 
-# M10. The operators M6 surrounds with spaces, written without them. The value
+# B10. The operators M6 surrounds with spaces, written without them. The value
 # still starts with an absolute path and still ends in our suffix, so only the
 # characters in between say it runs somebody else's program first — and adopting
 # it would drop that program from the fallback for good.
-m10_i=0
+b10_i=0
 for v in "/usr/bin/true;$OLDSL" "/opt/a/bin/x|$OLDSL" "/opt/a&&$OLDSL" "/opt/setup.sh
 $OLDSL"; do
-  m10_i=$((m10_i + 1))
-  f="$WORK/m10-$m10_i.json"; mk_settings "$f" "$v"; m10_sha=$(sha_of "$f")
-  check "M10 공백 없는 연산자·줄바꿈으로 이은 값 $m10_i — park" "$(apply "$f" "$APLUG" ours)" "20"
-  check "M10 park — 파일이 바이트 동일 $m10_i" "$(sha_of "$f")" "$m10_sha"
+  b10_i=$((b10_i + 1))
+  f="$WORK/b10-$b10_i.json"; mk_settings "$f" "$v"; b10_sha=$(sha_of "$f")
+  check "B10 공백 없는 연산자·줄바꿈으로 이은 값 $b10_i — park" "$(apply "$f" "$APLUG" ours)" "20"
+  check "B10 park — 파일이 바이트 동일 $b10_i" "$(sha_of "$f")" "$b10_sha"
 done
 
 M8="$WORK/m8.json"; mk_settings "$M8" "bash $OLDSL"

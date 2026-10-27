@@ -179,6 +179,7 @@ rm -f <설정 디렉터리>/settings.json.orig <설정 디렉터리>/settings.js
 ## Troubleshooting
 
 - **설정 디렉터리의 `settings.local.json` 에 `statusLine` 을 넣어도 아무 일도 일어나지 않습니다.** Claude Code 가 사용자 설정 디렉터리의 그 파일을 읽지 않기 때문입니다. 상태줄은 같은 디렉터리의 `settings.json` 에 둡니다.
+- **`settings.json` 을 심볼릭 링크나 하드 링크로 관리하면(dotfiles 관리자 등) 상태줄이 자동으로 설치되지 않습니다.** 플러그인 업데이트 뒤의 경로 재지정도 일어나지 않고, 마커 `settings.json.cc-statusline` 에 `reason=linked` 가 남습니다. 설치기가 파일을 이름째 갈아 끼우면 링크가 일반 파일로 바뀌어 관리하는 원본과 갈라지기 때문입니다. 상태줄 값은 관리하는 원본에 손으로 넣고, 플러그인이 판올림되면 손으로 다시 겨눕니다.
 
 ## Options
 

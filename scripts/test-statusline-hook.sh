@@ -494,6 +494,8 @@ jq -n '{theme:"dark"}' > "$L11DIR/mismatch.json"
 l11 "PARK_REQUIRE_STATE" 21 "$L11DIR/mismatch.json" "$PLUG" ours
 l11 "PARK_SL_MISSING"    24 "$L11DIR/mismatch.json" "$PLUG_NOBIT" empty
 l11 "PARK_PLUGIN_DIR"    26 "$L11DIR/mismatch.json" "$PLUG/" empty
+ln -s "$L11DIR/mismatch.json" "$L11DIR/linked.json"
+l11 "PARK_LINKED"        27 "$L11DIR/linked.json" "$PLUG" empty
 jq -n '{theme:"dark"}' > "$L11DIR/verify.json"
 l11 "VERIFY_FAILED"      40 "$L11DIR/verify.json" "$PLUG_SILENT" empty
 jq -n '{theme:"dark"}' > "$L11DIR/busy.json"
@@ -703,6 +705,34 @@ $OLDSL"; do
   check "L19 연산자로 이은 값 $l19_i — park(foreign) 로 기억된다" \
     "$(mk_field "$L19" verdict)|$(mk_field "$L19" reason)" "park|foreign"
 done
+
+# ---------------------------------------------------------------------------
+# L20 — a settings file managed through a symbolic link is parked and remembered
+#
+# The installer's commit is a rename, which would turn the link into a plain
+# file and leave its source behind. It parks with rc 27 instead, and that code is
+# inside the verdict band — so the marker is written and the next startup skips
+# at the front gate rather than walking the slow path again on every session.
+# ---------------------------------------------------------------------------
+L20="$WORK/cfg-l20"; mkdir -p "$L20"
+jq -n '{theme: "dark", model: "opus", cleanupPeriodDays: 30}' > "$L20/settings-src.json"
+ln -s "$L20/settings-src.json" "$L20/settings.json"
+l20_sha=$(sha_of "$L20/settings-src.json")
+run_hook "$L20" "$PLUG"
+check "L20 링크된 설정 파일 — park(linked) 로 기억된다" \
+  "$(mk_field "$L20" verdict)|$(mk_field "$L20" reason)" "park|linked"
+check "L20 링크된 설정 파일 — 첫 기동 뒤에도 링크다" "$([ -L "$L20/settings.json" ] && printf y || printf n)" "y"
+check "L20 링크된 설정 파일 — 링크 원본의 바이트가 그대로다" "$(sha_of "$L20/settings-src.json")" "$l20_sha"
+# Aged as L13 does: the gate compares mtimes at one-second grain, and `utime`
+# follows the link, so it is the source the gate reads that is pushed back.
+fx_age_file "$L20/settings.json" 10
+fx_age_file "$L20/settings.json.cc-statusline" 5
+l20_mk_m=$(mtime_of "$L20/settings.json.cc-statusline")
+run_hook "$L20" "$PLUG"
+check "L20 두 번째 기동은 앞단 게이트가 건너뛴다 — 마커가 다시 쓰이지 않는다" \
+  "$(mtime_of "$L20/settings.json.cc-statusline")" "$l20_mk_m"
+check "L20 두 번째 기동 뒤에도 링크다" "$([ -L "$L20/settings.json" ] && printf y || printf n)" "y"
+check "L20 두 번째 기동 뒤에도 원본 바이트가 그대로다" "$(sha_of "$L20/settings-src.json")" "$l20_sha"
 
 # L9 is deliberately absent: what a hook does in a workspace whose trust has not
 # been accepted cannot be decided from inside the hook, and the observation that

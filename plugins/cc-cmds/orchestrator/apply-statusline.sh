@@ -66,7 +66,7 @@
 # Probe exit codes — ITS OWN NAMESPACE, not the one below:
 #   0  CONVERGED  the rendered `.statusLine` is byte-identical to the current one
 #   2  WRITABLE   the current value is empty or ours, and the four pre-write
-#                 checks all passed
+#                 checks and the target shape check all passed
 #   1  PARKED     anything else
 #
 # Apply exit codes — A DIFFERENT NAMESPACE, sharing small integers with the
@@ -83,6 +83,9 @@
 #   25  PARK_GUARD_REEVAL   the guard about to be installed is false when the
 #                           shell re-evaluates it
 #   26  PARK_PLUGIN_DIR     --plugin-dir missing, relative, or trailing-slashed
+#   27  PARK_LINKED         the settings file is a symbolic link (dangling
+#                           included) or has a hard-link count of two or more;
+#                           checked before the lock
 #   30  LOCK_BUSY           another process holds the lock; gave up immediately
 #   31  CAS_LOST            the file changed under us; nothing written
 #   40  VERIFY_FAILED       the pre-commit verify run failed; nothing written
@@ -341,9 +344,9 @@ sl_subdigest() {
 
 sl_probe() {
   # The three-way state machine of `--probe`'s own namespace. The pre-write
-  # checks have already run and already folded their failures into PARKED, so
-  # reaching here means all four passed and WRITABLE only has the value question
-  # left to answer.
+  # checks and the target shape check have already run and already folded their
+  # failures into PARKED, so reaching here means all of them passed and WRITABLE
+  # only has the value question left to answer.
   local cls cur want
   cls=$(sl_classify "$SETTINGS") || return 1
   [ "$cls" = foreign ] && return 1
@@ -444,8 +447,25 @@ set_owned_bit() {
   [ -e "$SETTINGS.cc-statusline-owned" ] || : > "$SETTINGS.cc-statusline-owned"
 }
 
+settings_is_linked() {
+  # settings_is_linked — true when the settings file is a symbolic link (a
+  # dangling one included) or a regular file with two or more hard links.
+  #
+  # THE ORDER IS FIXED. `find` does not follow an operand symlink, so on a live
+  # link it sees the link's own count of one; and a dangling link fails `[ -e ]`,
+  # so only `[ -L ]` catches it. An absent file is neither, which is how the
+  # create path passes straight through.
+  #
+  # ONLY THE LAST COMPONENT IS LOOKED AT. A linked settings DIRECTORY resolves
+  # `$T` and the settings file into the same real directory, so the rename there
+  # replaces an ordinary file and nothing the user manages changes identity.
+  [ -L "$SETTINGS" ] && return 0
+  [ -n "$(find "$SETTINGS" -maxdepth 0 -links +1 2>/dev/null)" ]
+}
+
 # ---------------------------------------------------------------------------
-# The settings directory, then the lock, then the work directory.
+# The settings directory, then the target shape check, then the lock, then the
+# work directory.
 #
 # THE DIRECTORY IS CREATED AFTER THE PRE-WRITE CHECKS AND BEFORE THE LOCK, and
 # that is the only place it fits. Ahead of the checks it would leave an empty
@@ -465,7 +485,31 @@ if [ "$MODE" = apply ]; then
   if [ -n "$DIR" ] && [ "$DIR" != "$SETTINGS" ]; then
     mkdir -p "$DIR" || die "설정 디렉터리 생성 실패: $DIR"
   fi
+fi
 
+# THE TARGET SHAPE CHECK: A SETTINGS FILE MANAGED THROUGH A LINK IS NOT WRITTEN.
+# The commit below is a rename, and a rename replaces the NAME, not the file the
+# name points at — a symbolic link would become a plain file while its source
+# kept the old bytes, and a hard link would split into two inodes. Nothing is
+# lost, but the file a dotfiles manager owns and the file the harness reads
+# would silently part ways from then on.
+#
+# FOLLOWING THE LINK INSTEAD IS NOT AN OPTION. No rename preserves a hard link,
+# so following it means writing in place, and that brings back the partial file
+# a concurrent reader can observe — the reason the commit is a rename at all.
+#
+# A REMEMBERED PARK, NOT AN rc 1. Being a link does not change between sessions,
+# so an error outside the verdict band would send that machine down the slow
+# path on every startup; inside the band the front gate skips until the user's
+# own write to the file reopens the decision. It sits after the settings
+# directory and before the lock: a pure filesystem predicate like the four
+# above, and a link that exists has a parent that exists, so the hook's marker
+# always lands. In `--probe` it folds into PARKED, as the four do.
+if settings_is_linked; then
+  park_pre 27 "설정 파일이 심볼릭 링크이거나 하드 링크입니다 ($SETTINGS) — 링크로 관리되는 파일은 쓰지 않습니다. 상태줄 값은 링크 원본에 손으로 넣어 주세요"
+fi
+
+if [ "$MODE" = apply ]; then
   # THE LOCK IS AN OPTIMISATION AND CARRIES NO CORRECTNESS. Every way it can
   # fail — one attempt then give up, a racy stale reclaim, a non-atomic
   # re-acquire — degrades to "another process did useless work", and the
@@ -601,7 +645,9 @@ if [ "$MODE_PATH" = replace ]; then
     exit 31
   fi
 
-  # 6. Commit. NOTHING GOES BETWEEN 5 AND 6.
+  # 6. Commit. NOTHING GOES BETWEEN 5 AND 6. The name being replaced is a
+  #    regular file with a single link — the target shape check before the lock
+  #    guarantees it, so this rename cannot turn a managed link into a copy.
   mv "$T" "$SETTINGS" || die "설정 쓰기 실패"
   T=""
 
