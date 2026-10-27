@@ -186,6 +186,13 @@
 #                    a stage that cannot launch that script reaches it here;
 #                    writes nothing. Exit 2 when the classifier could not be
 #                    loaded — nothing was judged, which is never "no surface"
+#   gate.sh unclosed-decisions --manifest <path> --segment <id>
+#                    prints the headings of the open decisions that reach the
+#                    segment — `## 미해결 이슈 / 트레이드오프` entries read
+#                    `구현 전 결정` by `unresolved_closure_pending` on the
+#                    manifest's design document, one per line in document
+#                    order, or `문서 판독 불가 — <reason>`; empty when none
+#                    does. Writes nothing
 #   gate.sh seat-apply-preview --manifest <path> --record <halt record> [--target <alias>]
 #                    for a `Step 3 강제 표면 좌석 적용` halt record: prints the
 #                    record digest, the `--numstat` and unified diff of the
@@ -293,7 +300,12 @@
 #                  ['첨부=<RUN_DIR/halt/…answer.md>']
 # `halt-answer` is the seat's alone on the same terms, save one shift case: an
 # implement-unattended CFI-U3 BT-STOP record answered `재수렴` under a
-# `자동 채택` row of class 구속-이탈, once per record. `<key>` is the segment
+# `자동 채택` row of class 구속-이탈, once per record. A record whose whole
+# `**스텝**` reads `Step 1 CFI-U3 BT-STOP — 미결 결정` — the halt an implement
+# stage writes when open decisions reach its segment, listing their headings
+# in `**미결 결정 항목**` — is outside that case: only `답한 주체=사람` is
+# recorded for it, and only with `첨부=<the record without .md>.answer.md`,
+# which names each decision under the entry's verbatim heading. `<key>` is the segment
 # id, or the step id for the design step, of the stage that halted; the gate
 # checks the record is this run's, complete, and lists the option verbatim,
 # and refuses with 3 an answer no branch of the shift can carry out
@@ -20042,6 +20054,15 @@ gate_main() {
       bash "$GATE_DIR/enforcement-surface-screen.sh" ${ss_flags[@]+"${ss_flags[@]}"} -- "$@" || ss_rc=$?
       exit "$ss_rc"
       ;;
+    unclosed-decisions)
+      # Reading, not acting: the driver's own `unresolved_closure_pending` on
+      # the manifest's design document for one segment, its output verbatim, so
+      # an implement stage asks before it plans with the reader the gate files
+      # its row by. No ledger row.
+      [ "$segment" != "-" ] && [ -n "$segment" ] \
+        || { printf 'gate: unclosed-decisions requires --segment\n' >&2; exit 2; }
+      unresolved_closure_pending "${DOC:-}" "$segment"
+      ;;
     seat-apply-preview)
       # Reading, not acting: the diff a seat apply of the record would commit,
       # built in an isolated object directory, and the question the seat asks.
@@ -34369,6 +34390,26 @@ EOF
         fi
         hattdig=$(shasum -a 256 "$hatt" | cut -d' ' -f1)
       fi
+      # AN IMPLEMENT STAGE'S OPEN-DECISION HALT IS A PERSON'S, AND ITS DECISION
+      # IS THE ATTACHMENT. The record's whole `**스텝**` line is compared
+      # (`halt_step_is_unclosed_decision`), never the cut at the first ` — ` the
+      # shift's exception below reads, which this record passes: an automatic
+      # `재수렴` would send a re-convergence with no decision to write, so it is
+      # refused here, before that exception. The seat's answer was already
+      # refused above, by the `(없음)` recommendation the record carries. A
+      # person's answer names each decision under the entry's verbatim heading in
+      # the file beside the record; `근거` is clipped and is not where the
+      # re-convergence reads the decision from.
+      if halt_step_is_unclosed_decision "$hrec"; then
+        if [ "$hby" != "사람" ]; then
+          warn "이 중단 기록은 닫히지 않은 결정 항목의 정지(Step 1 CFI-U3 BT-STOP — 미결 결정)입니다 — 답한 주체=사람 의 답만 기록합니다: $hrec"
+          return "$GATE_EXIT_RULE"
+        fi
+        if [ "$hatt" != "${hrec%.md}.answer.md" ]; then
+          warn "닫히지 않은 결정 항목의 정지에 대한 답은 \`첨부=${hrec%.md}.answer.md\` 를 싣습니다 — 항목 표제를 축자로 소제목으로 부르고 그 아래에 고른 결정을 적은 파일"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
       # `근거 제출` TO A CLAUSE'S EVIDENCE REQUEST IS THE ATTACHMENT. The next
       # shift settles the clause on what the seat ran and saw, and the option
       # label carries none of that, so the answer is refused without the file
@@ -44749,9 +44790,15 @@ gate_continuation_argv() {
     visual-publish) unmet="발행 종결 문구($LIT_VISUAL_PUBLISH_TERMINAL)와 함께 발행됨 상태의 시각 사이드카나 사람의 거부·발행하지 않음 답이 없고, 정지 기록도 없다" ;;
     # An implement attempt filed `공허한 성공` for its residual share names the
     # missing headings verbatim, so the continued session can find each item.
+    # A process A whose segment open decisions reach is told those first: no
+    # plan of it is admitted, and what it owes is the halt record.
     implement)
+      local unclosed=""
+      gate_plan_rows_of "$key" | implement_process_b \
+        || unclosed=$(unresolved_closure_pending "${DOC:-}" "$key")
       missing=$(residual_share_missing "${DOC:-}" "$key" "$RUN_DIR/halt" "$RUN_DIR/$key.plan.md")
-      if [ -n "$missing" ]; then unmet=$(residual_unmet_message "$missing")
+      if [ -n "$unclosed" ]; then unmet=$(unclosed_unmet_message "$unclosed")
+      elif [ -n "$missing" ]; then unmet=$(residual_unmet_message "$missing")
       else unmet="게이트를 거친 행위도 정지 기록도 없다"; fi ;;
     *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
   esac
@@ -47847,6 +47894,20 @@ gate_record_stage_outcome() {
     denials=$( { grep -c 'permission_denials' "$out" 2>/dev/null || true; } | tail -1)
     if [ "${denials:-0}" != "0" ]; then klass='산출물 없는 정지'; else klass='공허한 성공'; fi
   fi
+  # AN IMPLEMENT PROCESS A THAT MET OPEN DECISIONS OF ITS SEGMENT is admitted no
+  # plan (`unresolved_closure_verdict`). The overwrite stands OUTSIDE the chain
+  # above, after it decided: the chain is first-match, so an arm anywhere inside
+  # it would also cover a refusal, a crash, a limit or `산출물 없는 정지`. Only
+  # `정상 완료` turns hollow; the digest is dropped below whatever the class.
+  local uverdict="" uprocb=0
+  if [ "$kind" = "implement" ]; then
+    if gate_plan_rows_of "$seg" | implement_process_b; then uprocb=1; fi
+    if uverdict=$(unresolved_closure_verdict "$klass" "$uprocb" "${DOC:-}" "$seg"); then
+      klass=${uverdict%%$'\n'*}
+    else
+      uverdict=""
+    fi
+  fi
   # `일시 원인` ON A CRASH ROW AND ON NO OTHER. Whether the crash was a dropped
   # connection is the premise the router's `--recovery '전송 단절'` dispatch is
   # admitted on, and the router cannot call the driver's reader; the row is
@@ -47898,6 +47959,12 @@ gate_record_stage_outcome() {
     if [ -z "$psha" ] && [ -f "$RUN_DIR/implement-$seg.plan.md" ]; then
       psha=$(shasum -a 256 "$RUN_DIR/implement-$seg.plan.md" | cut -d' ' -f1)
     fi
+    # Suppressed: no digest from any of the four paths, and the plan file is
+    # moved aside so a later attempt's fallback cannot read it.
+    if [ -n "$uverdict" ]; then
+      psha=""
+      unresolved_plan_suppress "$RUN_DIR" "$seg"
+    fi
   fi
   # THE DOCUMENT'S HASH AT EACH STAGE TERMINATION. The kickoff freezes one, the
   # audit is contractually required to EDIT the document (its reconciliation
@@ -47947,11 +48014,14 @@ gate_record_stage_outcome() {
   fi
 
   # `실패 서명`, by the driver's one helper. The cause clue is the halt record's
-  # id for a halt and the unmet residual headings for an implementation's
-  # hollow success; otherwise the helper reads the stream's last error event.
+  # id for a halt, the first open decision for a suppressed implementation's
+  # hollow success and the unmet residual headings for any other; otherwise the
+  # helper reads the stream's last error event.
   local fsig_clue='' fsig
   if [ "$klass" = "의도된 park" ]; then
     fsig_clue="$seg#$attempt"
+  elif [ "$kind" = "implement" ] && [ "$klass" = "공허한 성공" ] && [ -n "$uverdict" ]; then
+    fsig_clue=${uverdict#*$'\n'}
   elif [ "$kind" = "implement" ] && [ "$klass" = "공허한 성공" ]; then
     fsig_clue=$(residual_share_missing "${DOC:-}" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md" 2>/dev/null || true)
   fi

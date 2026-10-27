@@ -13078,7 +13078,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15d-2. A refused stage is re-attached once; an implement process B is asked for its result lines
-# --- section: 15d-2 | group: base | covers: act, gate_main | anchors: 15d-2: 거절로 끝난 시도는 거절 종료다, 15d-2: 거절 종료의 재개는 거절 메시지를 싣는다, 15d-2: 두 번째 거절 뒤의 재개는 exit 3 이다, 15d-2: 원인=거절 소진 cone 막힘이 받힌다, 15d-2: 결과 줄이 빠진 프로세스 B 는 공허한 성공이다, 15d-2: 그 계속 메시지는 빠진 표제를 축자로 든다, 15d-2: 결과 줄이 빠진 프로세스 B 의 계속도 상한에서 exit 3 이다, 15d-2: 같은 실패 서명이 두 번 이어지면 계속은 상한 전에 exit 3 이다 ---
+# --- section: 15d-2 | group: base | covers: act, gate_main | anchors: 15d-2: 거절로 끝난 시도는 거절 종료다, 15d-2: 거절 종료의 재개는 거절 메시지를 싣는다, 15d-2: 두 번째 거절 뒤의 재개는 exit 3 이다, 15d-2: 원인=거절 소진 cone 막힘이 받힌다, 15d-2: 결과 줄이 빠진 프로세스 B 는 공허한 성공이다, 15d-2: 그 계속 메시지는 빠진 표제를 축자로 든다, 15d-2: 결과 줄이 빠진 프로세스 B 의 계속도 상한에서 exit 3 이다, 15d-2: 같은 실패 서명이 두 번 이어지면 계속은 상한 전에 exit 3 이다, 15d-2: 닫히지 않은 결정 위의 프로세스 A 는 공허한 성공이다, 15d-2: 프로세스 B 는 닫히지 않은 결정으로 공허해지지 않는다 ---
 #
 # A stage whose last working turn ended in a model safety refusal is filed
 # `거절 종료` at either exit code, and a router's `--resume` of it carries the
@@ -13277,6 +13277,55 @@ e4probe15r SE4D 1 "$E4D15R/open.md" 1
 e4probe15r SE4D 2 "$E4D15R/open.md" 1
 e4probe15r SE4D 3 "$E4D15R/open3.md" 1
 check "15d-2: 빠진 표제가 달라진 공허한 성공은 새 사유라 계속된다" "$(e4sig15r SE4D "$E4D15R/open3.md")" "0|0"
+
+# A process A over open decisions. The document's `## 미해결 이슈` holds an entry
+# the implementation may not decide, so the plan that attempt wrote is not
+# admitted: the row is hollow and carries no digest, the plan file is moved
+# aside, and the continuation names the entry. A process B over the same
+# document is not judged by it — the open-decision rule binds planning only.
+{
+  printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 미해결 이슈 / 트레이드오프\n\n'
+  printf '### 미결 1. 값\n\n**상태**: 보류\n**구현 처분**: 구현 전 결정\n**닿는 슬라이스**: 전체\n'
+} > "$E4D15R/unclosed.md"
+{
+  printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 미해결 이슈 / 트레이드오프\n\n'
+  printf '### 미결 1. 값\n\n**상태**: 보류\n**구현 처분**: 구현 재량\n**재량 기준**: 기존 값을 따른다\n'
+} > "$E4D15R/latitude.md"
+e4plan15r() {  # e4plan15r <seg> — `<plan file present 0|1>/<suppressed file present 0|1>`
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$FX_MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    p=0; s=0
+    [ -f "$RUN_DIR/$1.plan.md" ] && p=1
+    [ -f "$RUN_DIR/$1.plan.md.suppressed" ] && s=1
+    printf "%s/%s\n" "$p" "$s"
+  ' _ "$@"
+}
+e4probe15r SE4U 1 "$E4D15R/unclosed.md" 1
+check "15d-2: 닫히지 않은 결정 위의 프로세스 A 는 공허한 성공이다" "$(last15r SE4U '종단 부류')" "공허한 성공"
+check "15d-2: 그 행은 계획 다이제스트를 싣지 않는다" "$(last15r SE4U 'plan_sha256')" ""
+check "15d-2: 그 계획 파일은 suppressed 로 옮겨진다" "$(e4plan15r SE4U)" "0/1"
+c15u=$(e4cont15r SE4U "$E4D15R/unclosed.md")
+check "15d-2: 그 재개는 계속으로 기동한다 (미결)" "$(printf '%s\n' "$c15u" | sed -n 1p)" "0"
+case "$c15u" in
+  *"닫히지 않은 결정 항목"*"「### 미결 1. 값」"*) ok "15d-2: 미결 계속 메시지는 닫히지 않은 항목의 표제를 축자로 든다" ;;
+  *) bad "15d-2 미결 계속 메시지" "$c15u" ;;
+esac
+e4probe15r SE4L 1 "$E4D15R/latitude.md" 1
+check "15d-2: 구현 재량 항목만 있는 프로세스 A 는 정상 완료다" "$(last15r SE4L '종단 부류')" "정상 완료"
+e4probe15r SE4P 1 "$E4D15R/noted.md" 1
+e4probe15r SE4P 2 "$E4D15R/unclosed.md" 1
+check "15d-2: 프로세스 B 는 닫히지 않은 결정으로 공허해지지 않는다" "$(last15r SE4P '종단 부류')" "정상 완료"
+e4uc15r() {  # e4uc15r <doc> <seg> — the reader the verb prints, run on <doc>
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; unresolved_closure_pending "$1" "$2"' _ "$@"
+}
+check "15d-2: 판독기는 구현 전 결정 항목의 표제를 낸다" "$(e4uc15r "$E4D15R/unclosed.md" SE4U)" "### 미결 1. 값"
+check "15d-2: 판독기는 구현 재량 항목에 아무것도 내지 않는다" "$(e4uc15r "$E4D15R/latitude.md" SE4U)" ""
+gate unclosed-decisions --manifest "$FX_MANIFEST" --segment -
+check "15d-2: unclosed-decisions 는 세그먼트 없이 2 로 거절된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
@@ -32193,7 +32242,7 @@ check "34b A6: 조직을 옮기지 않은 나가는 교대의 기동 행에는 �
   "$(printf '%s\n' "$capb_row3" | { grep -cF '| 조직 이동=' || true; })" "0"
 
 # --- 34c. 강제 — 하드 상한에서 교대가 넘어간다 -------------------------------
-# --- section: 34c | group: cone | covers: snapshot | anchors: 34c: 하드 상한에서 교대가 강제로 넘어간다 ---
+# --- section: 34c | group: cone | covers: snapshot | anchors: 34c: 하드 상한에서 교대가 강제로 넘어간다, 34c A24: 미결 결정 정지에는 구속-이탈 행이 있어도 교대의 자동 채택이 3 으로 거절된다, 34c A24: 기록 이름의 첨부를 단 사람의 재수렴 답은 통과한다 ---
 #
 # THIS IS THE WITNESS SECTION, and it is separate from 34b for one reason: take
 # the enforcement out of the tree and every assertion in 34b still passes, while
@@ -32725,6 +32774,57 @@ printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | �
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=implement | 실행 버전=3 | 세션 id=s-impl-3b | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
 capc_bt_answer CC3 "$CAPC_BT3" 재수렴
 check "34c A23: 반증 재수렴만 거친 키의 첫 구속 이탈 답은 통과한다" "$rc" "0"
+
+# A24. AN OPEN-DECISION STOP WAITS FOR A PERSON. The implement stage's stop
+# over open decisions keeps the `CFI-U3 BT-STOP` step text, so the shift's
+# `구속-이탈` adoption above would take it as well — and then a re-convergence
+# would run with no decision to write. The gate refuses every writer but a
+# person, and a person's answer without the attachment the decisions travel in.
+# The `구속-이탈` row of A23 is still in `## 인가`, so the shift's refusal below is
+# this rule's and not the missing row's.
+CAPC_UC="$CAP_DIR/halt/CC4#1.md"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=CC4#1; run=R7 -->' \
+  '**스킬**: implement-unattended' '**스텝**: Step 1 CFI-U3 BT-STOP — 미결 결정' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 미결 1 의 값을 정해야 한다.' \
+  '**미결 결정 항목**: 「### 미결 1. 값」' '**선택지**:' \
+  '- `재수렴` — 첨부에 항목마다 고른 결정을 적어 답한다.' \
+  '**추천**: (없음) — 항목마다 사람의 결정이 필요하다' '**추천 근거**: (없음)' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CAPC_UC"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC4 | 스테이지=CC4 | 종류=implement | 실행 버전=1 | 세션 id=s-impl-4 | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
+capc_uc_person() {
+  cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC4 \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+           --rationale "픽스처 — 미결 결정 정지에 대한 사람의 답" \
+           -- "중단 기록=$CAPC_UC" '선택지=재수렴' '답한 주체=사람' '근거=사람이 결정을 첨부에 적음' ${1:+"$1"}
+}
+capc_ha0=$(capc_ha)
+capc_bt_answer CC4 "$CAPC_UC" 재수렴
+check "34c A24: 미결 결정 정지에는 구속-이탈 행이 있어도 교대의 자동 채택이 3 으로 거절된다" "$rc" "3"
+check "34c A24: 그 거절은 사람의 답만 받는다고 말한다" \
+  "$( { grep -qF '답한 주체=사람 의 답만 기록합니다' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+capc_uc_person
+check "34c A24: 첨부 없는 사람의 답은 3 으로 거절된다" "$rc" "3"
+printf '%s\n' '### 미결 1. 값' '값은 3 으로 한다.' > "$CAP_DIR/halt/CC4-other.answer.md"
+capc_uc_person "첨부=$CAP_DIR/halt/CC4-other.answer.md"
+check "34c A24: 기록 이름에서 유도되지 않는 첨부는 3 으로 거절된다" "$rc" "3"
+check "34c A24: 세 거절 모두 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
+printf '%s\n' '### 미결 1. 값' '값은 3 으로 한다.' > "${CAPC_UC%.md}.answer.md"
+capc_uc_person "첨부=${CAPC_UC%.md}.answer.md"
+check "34c A24: 기록 이름의 첨부를 단 사람의 재수렴 답은 통과한다" "$rc" "0"
+check "34c A24: 그 답은 구속-재수렴 으로 라우팅된다" \
+  "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r '[.answered_halts[] | select(.segment == "CC4") | .route] | last // ""')" "구속-재수렴"
+# The gate checks only the attachment's path, so the form the re-convergence
+# reads it in reaches the person through the record alone: the stage's
+# question text has to carry it, and the option must not point at `근거`,
+# which the re-convergence never takes a decision from.
+capc_uc_skill=$(grep -F -A 6 -- '- **Open decisions halt process A before it plans.**' \
+  "$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md" || true)
+case "$capc_uc_skill" in
+  *'근거·첨부에'*) bad "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" "선택지가 근거를 가리킨다" ;;
+  *'「답은 첨부 `<첨부 경로>` 에 적는다 — `**미결 결정 항목**` 의 표제마다 그 표제를 `### ` 접두까지 바이트 단위로 같게 한 줄로 옮기고, 그 아래에 고른 결정을 적는다. 표제가 맞지 않는 항목과 `근거` 에만 적은 결정은 문서에 쓰이지 않는다.」'*'``- `재수렴` — 첨부에 항목마다 고른 결정을 적어 답한다.'*)
+    ok "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" ;;
+  *) bad "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" "${capc_uc_skill:-(줄 없음)}" ;;
+esac
 
 # --- 34d. 좌석 정지 답 — 기록의 추천을 사람 없이 고른다 ----------------------
 # --- section: 34d | group: cone | covers: act, snapshot | anchors: 34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다, 34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다 ---

@@ -74,7 +74,7 @@ Each placeholder is substituted **independently at a single level** — there ar
   ```
   REAUDIT SCOPE:
   Read the whole document, but report only findings inside the sections under the headings below, and findings where one of those sections collides with another section — quote both sections for a collision.
-  A finding in a section outside this list is reported only when it overturns one decision sentence of the document — quote that sentence verbatim and give its replacement sentence — and its Location line then begins with the tag `범위 밖`.
+  A finding in a section outside this list is reported only when it overturns one decision sentence of the document — quote that sentence verbatim and give its replacement sentence — or when it names a behaviour the implementation would have to choose because no decision sentence fixes it — a value, a branch, an order, a format or a fallback — and its Location line then begins with the tag `범위 밖`.
   This narrows what you report, not what you measure: the anchor comparison table (one row per path, line anchor and number the document cites) and the check that some step creates each artifact the architecture requires still cover the whole document.
   Headings:
   <one heading per line, verbatim>
