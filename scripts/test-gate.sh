@@ -6850,6 +6850,12 @@ awk '{ if ($0 == "# This was the file'"'"'s only silent fallback. An id nobody d
 bash "$isf_suite" --digests --from "$isf_dir/edit.sh" > "$isf_dir/e.tsv" 2>/dev/null || true
 check "한 절 본문의 바뀐 줄은 그 절의 다이제스트만 바꾼다" \
   "$(awk -F '\t' 'FNR == NR { b[$1] = $2; next } !($1 in b) || b[$1] != $2 { printf "%s ", $1 }' "$isf_dir/d.tsv" "$isf_dir/e.tsv")" "0d "
+# The range starts at the numbered banner, so the marker line is hashed too: a
+# change to its columns alone (needs, covers, anchors) is a change to the section.
+awk '{ if (index($0, "# --- section: 0c |") == 1 && !m) { sub(/ ---$/, ", 0g 배너 열 ---"); m = 1 } print }' "$isf_suite" > "$isf_dir/ban.sh"
+bash "$isf_suite" --digests --from "$isf_dir/ban.sh" > "$isf_dir/ban.tsv" 2>/dev/null || true
+check "배너 열만 바꾼 절도 그 절의 다이제스트만 바꾼다" \
+  "$(awk -F '\t' 'FNR == NR { b[$1] = $2; next } !($1 in b) || b[$1] != $2 { printf "%s ", $1 }' "$isf_dir/d.tsv" "$isf_dir/ban.tsv")" "0c "
 awk '{ if (index($0, "# --- section: 0c |") == 1 && !m) { sub(/section: 0c /, "section: 0d "); m = 1 } print }' "$isf_suite" > "$isf_dir/dup.sh"
 isf_rc=0; bash "$isf_suite" --digests --from "$isf_dir/dup.sh" > "$isf_dir/dup.out" 2> "$isf_dir/dup.err" || isf_rc=$?
 check "중복 id 가 든 파일은 다이제스트를 내지 않고 exit 2 다" \
