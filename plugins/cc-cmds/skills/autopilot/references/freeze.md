@@ -13,7 +13,7 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 
 - when 5m ran, one `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>` row. It carries no `형태=`, so it authorizes no act — the pre-authorization rule skips a row without one — and what it buys is that the record's hash is inside the frozen set;
 - when 5k ran, the approved `설계 로스터` rows, one per member, in the order the person approved them;
-- when 5p took rows, one `- \`사전 인가\` | <값>` row each, the value being the `형태=` and `사유=` tail exactly as confirmed;
+- when 5p took rows, one `- \`사전 인가\` | <값>` row each, the value being the tail exactly as confirmed: `형태=` and `사유=` for an old-form row, and `형태=`, `표면=`, `도달=`, `짝 정리=` (when one was given) and `사유=` in that order for a new-form row;
 - when 5q took rows, one `- \`자동 채택\` | <값>` row each, the value being the four-field tail exactly as confirmed;
 - when 5r ran, exactly one `- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>[ | 원 티켓=<task id>]` row (the bracketed field only on a `clickup` row, and only when 5r took an origin ticket), and its `사전 인가` form rows when the tracker is not `없음`;
 - when Step 4 resolved a base ticket for a child run, exactly one `- \`베이스 설계\` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>` row. The gate checks its form and count only and never re-hashes the file — the design stage does that before it spawns anyone;
@@ -25,7 +25,7 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 
 **One more row kind goes under `## 인가`, and it is not asked**, so twelve kinds in all can stand there:
 
-- on every kickoff, exactly one `- \`재킥오프\` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>` row, written without a toggle. `길이` is the length 5e captured, `사유` says in one line why the run may be continued by a successor. It is the person's consent that the seat may open a successor run without a person: when this run ends on its deadline, its cost ceiling or its stagnation bound, the seat's re-kickoff (`act2-seat.md` 「Seat re-kickoff」) reads the row — no row, no successor — counts the chain against `연쇄 상한`, and falls back to `길이` when the previous deadline interval cannot be carried. It is frozen into the binding set like every other row, and the seat's successor copies it byte for byte; the manifest check refuses a second row, a `연쇄 상한` that is not a positive integer and a `길이` that is not an ISO 8601 duration.
+- on every kickoff but a `--hotfix` one (「핫픽스 킥오프」 below), exactly one `- \`재킥오프\` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>` row, written without a toggle. `길이` is the length 5e captured, `사유` says in one line why the run may be continued by a successor. It is the person's consent that the seat may open a successor run without a person: when this run ends on its deadline, its cost ceiling or its stagnation bound, the seat's re-kickoff (`act2-seat.md` 「Seat re-kickoff」) reads the row — no row, no successor — counts the chain against `연쇄 상한`, and falls back to `길이` when the previous deadline interval cannot be carried. It is frozen into the binding set like every other row, and the seat's successor copies it byte for byte; the manifest check refuses a second row, a `연쇄 상한` that is not a positive integer and a `길이` that is not an ISO 8601 duration.
 
 **The `재킥오프` row and Step 1.0's re-kickoff are two things that share a word.** Step 1.0 is a person calling this skill again, so that a stopped run's answers are carried into a new run through the restart helper `orchestrator/rekick.sh` and `kickoff-defaults.sh --carry` (CFI-11). The `재킥오프` row is a frozen consent that the seat may run that same path on its own, with `--auto`, after this run ends.
 
@@ -70,9 +70,20 @@ The gate already refuses the exemption unless the frozen plan requires a design 
 
 **Nine fields, in that order, and the gate refuses a block that is missing any of them.** The contract fixes the count and gives this block no rewrite form — it is frozen at append, and re-authorizing is a new run rather than an edit — so a field omitted here is omitted for the life of the run. `직렬 웨이브 고지` records that the user was told the residual-item wave runs serially; write `해당 없음` when there was no such wave.
 
-**`사용자 확인 문면` is verbatim, and it is the only field a human can audit a forged grant against.** Do not paraphrase it, do not tidy it, do not translate it. It is **not** the same field as the manifest's `승인 문면`: that one approved the step graph, this one grants authority.
+**`사용자 확인 문면` is verbatim, and it is the only field a human can audit a forged grant against.** Do not paraphrase it, do not tidy it, do not translate it. It is **not** the same field as the manifest's `승인 문면`: that one approved the step graph, this one grants authority. A `--hotfix` kickoff is the one case where both carry the same utterance (「핫픽스 킥오프」 below).
 
 **`권한 절단점` in the grant is the run's maximum**, a derived audit value. The value that authorizes an act is the one in that target's row, and the driver reads it there.
 
 Once the manifest and the authorization record are both written, append `단계=매니페스트 기록` to the kickoff trace.
+
+## 핫픽스 킥오프
+
+A `--hotfix` kickoff (SKILL.md 「핫픽스 킥오프」) freezes through this same file, with four differences and nothing else.
+
+- **One approval, two fields.** The graph and the authority are approved on one screen (`references/boundaries.md` 「핫픽스 킥오프의 고정값과 승인 화면」), so the person's `이대로` utterance is written verbatim both as the manifest's `승인 문면` and as the authorization record's `사용자 확인 문면`. This is the only kickoff where the two fields hold the same text; neither is paraphrased.
+- **No `재킥오프` row.** A hotfix run ends at its deadline, its cost ceiling or its stagnation bound without a successor. The other row kinds stand under `## 인가` exactly as the screen kept them — the interview record row, the standard `사전 인가` rows the approval kept, and the default rows.
+- **The interview record is frozen in its v3 shape with only what the four questions took.** `## 질문과 답` holds the read-back as one question with its confirmed answer. `## 확인된 요구` holds the 「고칠 것」 line as the thing to do and the 「완료 기준」 line as the completion criterion. `## 탐색 결과` holds only the evidence that located the targets. Every other section reads `없음 — <사유>`, the reason saying the hotfix kickoff did not ask it. The record is hashed into the `인터뷰 기록` row as on any kickoff.
+- **The termination point is the 「완료 기준」 line**, decomposed into `종료 절` rows as 5a's answer is; the authorization record's `종료 지점` is that line verbatim.
+
+The manifest's `## 실행 계획` carries the entry judgment's plan with `run_profile` `hotfix`, and the entry checker above asserts its fixed frame. A frozen hotfix plan launches only in a routing run: `run.sh` refuses it otherwise, before anything else runs.
 
