@@ -2615,9 +2615,11 @@ unresolved_closure_pending() {
   fi
   defenced "$doc" | UCP_SEG="$seg" UCP_IDS=" $ids " UCP_SLICED="$sliced" awk '
     function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
-    function field(line, key,   s) {
+    function field(line, key,   s, v) {
       s = line; sub(/^- /, "", s)
       if (index(s, "**" key "**:") == 1) return "\001" trim(substr(s, length(key) + 6))
+      # `**상태: 해결** — <메모>` bolds the key and the value together.
+      if (index(s, "**" key ":") == 1) { v = trim(substr(s, length(key) + 4)); sub(/\*\*/, "", v); return "\001" trim(v) }
       if (index(s, key ":") == 1) return "\001" trim(substr(s, length(key) + 2))
       return ""
     }

@@ -753,14 +753,16 @@ check "미결: 슬라이싱이 없는 문서는 모든 세그먼트가 전체에
   printf '### 미결 2. 괄호 메모\n- **상태**: 해결 (사용자 확인)\n\n'
   printf '### 미결 3. 붙은 괄호\n상태: 해결(팀 결정)\n\n'
   printf '### 미결 4. 가운뎃점\n**상태**: 해결 · **Closed by**: 감사\n\n'
-  printf '### 미결 5. 됨\n**상태**: 해결됨\n'; } > "$UCD/note.md"
+  printf '### 미결 5. 됨\n**상태**: 해결됨\n\n'
+  printf '### 미결 6. 키와 값을 함께 굵게\n- **상태: 해결** — 메모\n'; } > "$UCD/note.md"
 check "미결: 같은 줄에 메모를 단 해결 값은 ### 항목과 표 칸 모두 닫힌다" "$(unresolved_closure_pending "$UCD/note.md" A)" ""
 { printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n'
   printf '| 항목 | 상태 |\n| --- | --- |\n| 표 대기 | 해결 대기 |\n\n'
   printf '### 미결 1. 해결 대기\n**상태**: 해결 대기\n\n'
-  printf '### 미결 2. 해결책\n**상태**: 해결책 검토 중\n'; } > "$UCD/note-open.md"
+  printf '### 미결 2. 해결책\n**상태**: 해결책 검토 중\n\n'
+  printf '### 미결 3. 굵은 대기\n- **상태: 대기** — 메모\n'; } > "$UCD/note-open.md"
 check "미결: 해결 로 시작할 뿐인 값은 열린 채로 남는다" \
-  "$(unresolved_closure_pending "$UCD/note-open.md" A | tr '\n' '|')" "표 대기|### 미결 1. 해결 대기|### 미결 2. 해결책|"
+  "$(unresolved_closure_pending "$UCD/note-open.md" A | tr '\n' '|')" "표 대기|### 미결 1. 해결 대기|### 미결 2. 해결책|### 미결 3. 굵은 대기|"
 check "미결 이어가기 문구는 표제를 축자로 싣는다" \
   "$(unclosed_unmet_message "$(printf '### 미결 1. A 에 닿는 결정\n### 미결 3. 기준 없는 재량')")" \
   "닫히지 않은 결정 항목이 있어 계획을 받을 수 없다 — 「### 미결 1. A 에 닿는 결정」, 「### 미결 3. 기준 없는 재량」; 정지 기록을 쓰라"

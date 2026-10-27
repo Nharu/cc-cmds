@@ -88,7 +88,8 @@ document order, and nothing when none does. It reads **fail closed**:
   `해결` or `해결됨` alone, or followed by `—`, `·` or `(` after optional
   blanks (`해결 — <메모>`, `해결 (…)`). Any other value, `해결 대기` among them,
   leaves the entry open.
-- `**상태**:` and `상태:` read alike, as do `**구현 처분**:` and `구현 처분:`.
+- `**상태**:`, `상태:` and a key bolded with its value (`**상태: 해결** — …`)
+  read alike, as do the same forms of `구현 처분`.
   A value is trimmed and must equal one of the closed set; an empty or
   out-of-vocabulary value reads `구현 전 결정 · 전체`, and so does a missing
   `**구현 처분**`.

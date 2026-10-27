@@ -32588,11 +32588,11 @@ check "34c A24: 그 답은 구속-재수렴 으로 라우팅된다" \
 # reads it in reaches the person through the record alone: the stage's
 # question text has to carry it, and the option must not point at `근거`,
 # which the re-convergence never takes a decision from.
-capc_uc_skill=$(grep -F -- '- **Open decisions halt process A before it plans.**' -A 6 \
+capc_uc_skill=$(grep -F -A 6 -- '- **Open decisions halt process A before it plans.**' \
   "$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md" || true)
 case "$capc_uc_skill" in
   *'근거·첨부에'*) bad "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" "선택지가 근거를 가리킨다" ;;
-  *'「답은 첨부 `<첨부 경로>` 에 적는다 — `**미결 결정 항목**` 의 표제마다 그 표제를 `### ` 접두까지 바이트 단위로 같게 한 줄로 옮기고, 그 아래에 고른 결정을 적는다.'*'``- `재수렴` — 첨부에 항목마다 고른 결정을 적어 답한다.'*)
+  *'「답은 첨부 `<첨부 경로>` 에 적는다 — `**미결 결정 항목**` 의 표제마다 그 표제를 `### ` 접두까지 바이트 단위로 같게 한 줄로 옮기고, 그 아래에 고른 결정을 적는다. 표제가 맞지 않는 항목과 `근거` 에만 적은 결정은 문서에 쓰이지 않는다.」'*'``- `재수렴` — 첨부에 항목마다 고른 결정을 적어 답한다.'*)
     ok "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" ;;
   *) bad "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" "${capc_uc_skill:-(줄 없음)}" ;;
 esac
