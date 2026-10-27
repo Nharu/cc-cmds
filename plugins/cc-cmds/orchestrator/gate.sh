@@ -37569,7 +37569,9 @@ gate_apply_subject_proof() {
   # 4 does on that branch: its first apply has no `cycle` row at all, and after a
   # second merge the last `cycle` row belongs to the earlier merge. The head is
   # the `머지 커밋` of the segment's issued `리뷰 의무` row that M^2 names, or of
-  # its last one when M^2 is a release-metadata renumbering merge.
+  # its last one when M^2 is a release-metadata renumbering merge. That merge is
+  # made on the head the segment carries now, which is the last merge's, so an
+  # earlier obligation is never the one a renumbering proves.
   local alias="$1" seg="$2" m="$3" crow rh root rhfull m2 t ob what='cycle 행의 리뷰 HEAD'
   GATE_APPLY_PROOF_HEAD=""; GATE_APPLY_PROOF_WHY=""
   root=$(alias_root "$alias" 2>/dev/null || true)
@@ -44123,7 +44125,7 @@ gate_issue_review_obligation() {
   # Membership is decided over a VALUE rather than over a pipeline exit status:
   # ids are `RO-` plus hex and carry no whitespace, so the word-splitting loop
   # this file already uses for the same list reads them exactly.
-  local open_id fork base wt
+  local open_id fork base wt bref
   for open_id in $(gate_unfulfilled_review_obligations "$seg"); do
     [ "$open_id" = "$id" ] && return 0
   done
@@ -44133,12 +44135,17 @@ gate_issue_review_obligation() {
   # After the merge the tip is an ancestor of the base and that question answers
   # the tip itself. The deferred review's line takes its `--base-sha` from here:
   # a routed run writes no `베이스 sha` on its segment rows, and a review left to
-  # derive its own base from a merged pull request finds no commit to read.
+  # derive its own base from a merged pull request finds no commit to read. The
+  # base and its ref are chosen as the merge's anchor check chooses them: the
+  # derived base branch, the tracking ref when the anchor repository has an
+  # origin and the local branch when it has none.
   fork='-'
-  base=$(target_field "$alias" '베이스 브랜치' 2>/dev/null || true)
-  wt=$(gate_segment_worktree "$seg" 2>/dev/null || true)
+  base=$(base_branch "$alias" 2>/dev/null) || base=''
+  wt=$(alias_root "$alias" 2>/dev/null) || wt=''
   if [ -n "$base" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
-    fork=$( { cd "$wt" && git merge-base "$tip" "refs/remotes/origin/$base"; } 2>/dev/null || true)
+    bref="refs/heads/$base"
+    ( cd "$wt" && git remote get-url origin >/dev/null 2>&1 ) && bref="refs/remotes/origin/$base"
+    fork=$( { cd "$wt" && git merge-base "$tip" "$bref"; } 2>/dev/null || true)
     case "$fork" in ''|*[!0-9a-f]*|"$tip") fork='-' ;; esac
   fi
   gate_append '리뷰 의무' "의무 id=$id" "상태=미이행" "세그먼트=$seg" \
