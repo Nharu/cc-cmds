@@ -55002,7 +55002,8 @@ hf101() {
   jq -nc --argjson st "$HF101_STEPS" --argjson es "$HF101_ES_NONE" \
     '{design_required: true, design_tier_judged: "solo", design_tier: "solo", design_heavy_reasons: [],
       estimated_files: 1, design_scope: "single", design_path: "none", run_profile: "hotfix",
-      steps: $st, unresolved: [], enforcement_surface: $es} | '"$1"
+      steps: $st, unresolved: [], enforcement_surface: $es,
+      review_expand: [], review_expand_rationale: "핫픽스 고정 틀이라 기본 분야로 리뷰한다"} | '"$1"
 }
 # hf101_bad <단언 이름> <jq 갱신식> — 핫픽스 단언의 문구로 거부되는지.
 hf101_bad() {
@@ -55955,6 +55956,193 @@ esac
 check "98: 합계 줄이 없는 행의 결과 파일은 요약 칸이 - 다" "$(cat "$d98/o4/result-1.tsv" 2>/dev/null)" "$(printf '1\t0\t-')"
 check "98: 레인 사례를 모두 돌렸다" "$c98" "4"
 unset -f m98
+
+# ---------------------------------------------------------------------------
+# 103. 리뷰 분야 확장 — 계획 키, 리뷰 줄, 파견 대조, 범위 밖 절
+# --- section: 103 | group: base | covers: tier, check_manifest, act, plan, snapshot, report-check | anchors: 103: 요구 분야와 근거를 단 계획이 검사기를 통과한다, 103: 두 값 밖의 분야는 거부된다, 103: 같은 분야를 두 번 단 계획은 거부된다, 103: 근거 없는 분야 확장은 거부된다, 103: 배열이 아닌 분야 값은 거부된다, 103: 분야를 연 핫픽스 계획은 거부된다, 103: review-line 은 계획의 분야를 고정 순서로 설계는 지시 앞에 한 번 싣는다, 103: 빈 분야와 키 없는 계획의 review-line 은 --expand 를 싣지 않는다, 103: 계획과 다른 --expand 의 리뷰 파견은 rc 3 이고 두 값을 든다, 103: --expand 를 빼거나 더한 리뷰 파견은 rc 3 이다, 103: 같은 분야의 다른 순서와 나눈 플래그는 통과한다, 103: 복구 리뷰 파견도 같은 대조를 받는다, 103: 라우터 문면의 복구 파견 줄은 --expand 자리와 설계는 지시를 싣는다, 103: 범위 밖 관찰 절의 굵은 항목은 P1 수에 들지 않는다 ---
+#
+# 진입 판단은 사람이 킥오프에서 청한 리뷰 분야를 계획 JSON 의 `review_expand` 에
+# 얼린다. 이 절은 그 값이 지나는 네 자리를 잰다 — 검사기의 (g)·(f) 가 값의 모양을
+# 지키는지, 게이트의 review-line 이 그 값을 고정 순서의 `--expand` 로 싣는지, 리뷰
+# 파견(복구 포함)이 계획과 다른 `--expand` 를 거절하는지, 리포트의 `## 범위 밖 관찰`
+# 절이 P0·P1 집계와 형식 칸에 들지 않는지. 매니페스트 넷은 여기서 만들고, 분야마다
+# 같은 세그먼트 이름과 같은 워크트리를 쓴다.
+# ---------------------------------------------------------------------------
+pre_tier
+x103() {  # x103 <jq 갱신식> — solo 판정 계획에 그 갱신을 얹은 계획
+  printf '%s' "$TIER_PLAN_SOLO" | jq -c "$1"
+}
+x103_bad() {  # x103_bad <단언 이름> <계획 json> <위반 줄 고정 문자열> — 그 줄 하나로 거부되는지
+  tier_check "$2"
+  case "$TIER_RC/$(printf '%s\n' "$TIER_OUT" | grep -cF "$3" || true)/$(printf '%s\n' "$TIER_OUT" | grep -c '(g)' || true)" in
+    0/*) bad "$1" "통과했다" ;;
+    */1/1) ok "$1" ;;
+    *) bad "$1" "$TIER_OUT" ;;
+  esac
+}
+tier_check "$(x103 '. + {review_expand: ["요구"], review_expand_rationale: "사람이 요구 충족도 보라고 했다"}')"
+check "103: 요구 분야와 근거를 단 계획이 검사기를 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$(x103 '. + {review_expand: [], review_expand_rationale: ""}')"
+check "103: 빈 분야와 빈 근거의 계획이 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TIER_PLAN_SOLO"
+check "103: 분야 키 없는 계획은 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+x103_bad "103: 두 값 밖의 분야는 거부된다" \
+  "$(x103 '. + {review_expand: ["기획"], review_expand_rationale: "x"}')" \
+  "(g) review_expand 에 요구 · 문서표현 밖의 값이 있습니다"
+x103_bad "103: 같은 분야를 두 번 단 계획은 거부된다" \
+  "$(x103 '. + {review_expand: ["요구", "요구"], review_expand_rationale: "x"}')" \
+  "(g) review_expand 에 같은 값이 두 번 있습니다"
+x103_bad "103: 근거 없는 분야 확장은 거부된다" \
+  "$(x103 '. + {review_expand: ["문서표현"], review_expand_rationale: ""}')" \
+  "(g) review_expand 가 비어 있지 않은데 review_expand_rationale 이 비어 있습니다"
+x103_bad "103: 배열이 아닌 분야 값은 거부된다" \
+  "$(x103 '. + {review_expand: "요구", review_expand_rationale: "x"}')" \
+  "(g) review_expand 가 배열이 아닙니다"
+# 핫픽스 고정 틀 — 분야는 기본 하나뿐이고, 판정 키가 없는 조기 반환 갈래에서도 (f) 가 돈다.
+HF103_STEPS='[{"id":"D1","skill":"design","summary":"설계","depends_on":[]},{"id":"I1","skill":"implement","summary":"구현","depends_on":["D1"]},{"id":"R1","skill":"review","summary":"리뷰","depends_on":["I1"]}]'
+hf103() {  # hf103 <jq 갱신식> — 강제 표면 없는 핫픽스 고정 틀에 그 갱신을 얹은 계획
+  jq -nc --argjson st "$HF103_STEPS" \
+    '{design_required: true, design_tier_judged: "solo", design_tier: "solo", design_heavy_reasons: [],
+      estimated_files: 1, design_scope: "single", design_path: "none", run_profile: "hotfix",
+      steps: $st, unresolved: [],
+      enforcement_surface: {judgment: "없음", classes: [], paths: [], source: "의도", rationale: "x"},
+      review_expand: [], review_expand_rationale: "핫픽스 고정 틀이라 기본 분야로 리뷰한다"} | '"$1"
+}
+tier_check "$(hf103 '.')"
+check "103: 빈 분야의 핫픽스 계획이 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$(hf103 'del(.review_expand, .review_expand_rationale)')"
+check "103: 분야 키 없는 핫픽스 계획이 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+r103h=""
+for u103 in '.review_expand = ["요구"]' 'del(.design_tier_judged) | .review_expand = ["요구"]'; do
+  tier_check "$(hf103 "$u103")"
+  case "$TIER_RC/$TIER_OUT" in
+    0/*) r103h="$r103h통과/" ;;
+    *"(f) 핫픽스 계획의 review_expand 가 [] 가 아닙니다"*) r103h="${r103h}거부/" ;;
+    *) r103h="$r103h$TIER_OUT/" ;;
+  esac
+done
+check "103: 분야를 연 핫픽스 계획은 거부된다" "$r103h" "거부/거부/"
+
+# 리뷰 줄과 파견 — 분야마다 매니페스트 하나. a 는 둘을 뒤집힌 순서로, r 은 요구 하나를,
+# e 는 빈 배열을, n 은 키 없이 얼린다.
+W103="$WORK/wt103"
+( cd "$WT" && git worktree add -q --detach "$W103" HEAD ) >/dev/null 2>&1
+m103() {  # m103 <런 id> <jq 갱신식> — 매니페스트·인가·세그먼트 S1 의 행
+  local m="$WORK/plan-$1.md"
+  write15c "$m" "$(jq -nc '{design_required: false, steps: [{id: "S1", skill: "implement", summary: "구현", depends_on: []}]} | '"$2")" \
+    'docs/fixture-design.md' "$1"
+  grant15c "$1" 'docs/fixture-design.md'
+  gateL act --manifest "$m" --kind segment --target infra --segment S1 --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$m" 2>/dev/null | jq -r .H )" \
+    --rationale x -- 상태=실행중 "워크트리=$W103" 선행=없음
+  printf -- '- `segment` | 교대=1 | id=S1 | 상태=실행중 | 워크트리=%s | 선행=없음 | 브랜치=seg/%s-S1 | prev=x\n' \
+    "$W103" "$1" >> "$WT/docs/pipeline-run/$1.md"
+}
+m103 R103a '. + {review_expand: ["문서표현", "요구"], review_expand_rationale: "사람이 둘 다 청했다"}'
+r103m=$rc
+m103 R103r '. + {review_expand: ["요구"], review_expand_rationale: "사람이 요구 충족을 청했다"}'
+m103 R103e '. + {review_expand: [], review_expand_rationale: ""}'
+m103 R103n '.'
+check "103: (전제) 네 매니페스트의 세그먼트 행이 기록된다" "$r103m/$rc" "0/0"
+rl103() { gateL review-line --manifest "$WORK/plan-$1.md" --segment S1 ${2:+-- "$2" "$3"}; }
+pl103() {  # pl103 <런 id> <프롬프트> [계기] — 리뷰 파견의 plan. 복구는 계기를 싣지 않는다
+  local t=()
+  [ -z "${3:-}" ] || t=(--trigger "$3")
+  gateL plan --manifest "$WORK/plan-$1.md" --kind skill --target infra --segment S1 --cutpoint 커밋 \
+    --surface 워크트리쓰기 ${t[@]+"${t[@]}"} -- review -p "$2"
+}
+rl103 R103a; l103a=$msg; r103l=$rc
+case "$r103l/$(printf '%s\n' "$l103a" | grep -o -- '--expand' | grep -c . || true)/$l103a" in
+  0/1/*' --expand 요구,문서표현 "설계는 '*) ok "103: review-line 은 계획의 분야를 고정 순서로 설계는 지시 앞에 한 번 싣는다" ;;
+  *) bad "103: review-line 은 계획의 분야를 고정 순서로 설계는 지시 앞에 한 번 싣는다" "rc=$r103l $l103a" ;;
+esac
+rl103 R103a --recheck /x/c103.md
+case "$rc/$msg" in
+  0/*' --expand 요구,문서표현 --recheck /x/c103.md "설계는 '*) ok "103: review-line 의 덧붙인 플래그는 --expand 뒤에 온다" ;;
+  *) bad "103: review-line 의 덧붙인 플래그는 --expand 뒤에 온다" "rc=$rc $msg" ;;
+esac
+rl103 R103e; l103e=$msg; r103e=$rc
+rl103 R103n; l103n=$msg
+check "103: 빈 분야와 키 없는 계획의 review-line 은 --expand 를 싣지 않는다" \
+  "$r103e/$rc/$(printf '%s\n%s\n' "$l103e" "$l103n" | grep -c -- '--expand' || true)/$(printf '%s\n%s\n' "$l103e" "$l103n" | grep -c '"설계는 ' || true)" "0/0/0/2"
+rl103 R103r; l103r=$msg
+# 파견 — review-line 이 낸 줄을 바탕으로 `--expand` 자리만 바꾼다.
+pl103 R103a "$l103a" '첫 리뷰'
+check "103: review-line 이 낸 줄의 리뷰 파견은 통과한다" "$rc" "0"
+r103p=""
+for v103 in '--expand 문서표현,요구' '--expand 요구 --expand 문서표현' '--expand 문서표현 --expand 요구,문서표현'; do
+  pl103 R103a "${l103a/--expand 요구,문서표현/$v103}" '첫 리뷰'
+  r103p="$r103p$rc/"
+done
+check "103: 같은 분야의 다른 순서와 나눈 플래그는 통과한다" "$r103p" "0/0/0/"
+pl103 R103a "${l103a/--expand 요구,문서표현/--expand 요구}" '첫 리뷰'
+r103d=$rc
+case "$r103d/$msg" in
+  3/*"리뷰 파견의 --expand (요구) 가 매니페스트의 review_expand (요구,문서표현) 와 다릅니다"*)
+    ok "103: 계획과 다른 --expand 의 리뷰 파견은 rc 3 이고 두 값을 든다" ;;
+  *) bad "103: 계획과 다른 --expand 의 리뷰 파견은 rc 3 이고 두 값을 든다" "rc=$r103d $msg" ;;
+esac
+pl103 R103a "${l103a/ --expand 요구,문서표현/}" '첫 리뷰'
+r103x1=$rc; m103x1=$msg
+pl103 R103n "${l103n/ \"설계는 / --expand 요구 \"설계는 }" '첫 리뷰'
+r103x2=$rc; m103x2=$msg
+pl103 R103n "$l103n" '첫 리뷰'
+check "103: --expand 를 빼거나 더한 리뷰 파견은 rc 3 이다" \
+  "$r103x1/$r103x2/$rc/$(printf '%s\n%s\n' "$m103x1" "$m103x2" | grep -c '리뷰 파견의 --expand' || true)" "3/3/0/2"
+pl103 R103r "${l103r/--expand 요구/--expand 요구 --expand 요구}" '첫 리뷰'
+r103u=$rc
+pl103 R103r "${l103r/--expand 요구/--expand 요구 --expand 문서표현}" '첫 리뷰'
+check "103: 같은 값을 되풀이한 --expand 는 한 값이다" "$r103u/$rc" "0/3"
+# 복구 — 리포트의 분야 줄을 플래그에서 쓰므로 같은 대조를 받는다. 계기는 싣지 않는다.
+rp103=$(printf '%s\n' "$l103a" | awk '{ for (i = 1; i < NF; i++) if ($i == "--report-path") print $(i + 1) }')
+doc103=${l103a#*\"설계는 }
+rv103() { printf '/cc-cmds:review-unattended seg/R103a-S1 --recover --scratch-dir %s --report-path %s%s "설계는 %s' \
+  "$WORK/cc-team-witness-103" "$rp103" "$1" "$doc103"; }
+pl103 R103a "$(rv103 ' --expand 요구')"
+r103c1=$rc; m103c1=$msg
+pl103 R103a "$(rv103 '')"
+r103c2=$rc; m103c2=$msg
+pl103 R103a "$(rv103 ' --expand 요구,문서표현')"
+case "$r103c1/$r103c2/$(printf '%s\n%s\n' "$m103c1" "$m103c2" | grep -c '리뷰 파견의 --expand' || true)/$msg" in
+  3/3/2/*"리뷰 파견의 --expand"*) bad "103: 복구 리뷰 파견도 같은 대조를 받는다" "같은 값의 복구가 거절됐다: $msg" ;;
+  3/3/2/*) ok "103: 복구 리뷰 파견도 같은 대조를 받는다" ;;
+  *) bad "103: 복구 리뷰 파견도 같은 대조를 받는다" "rc=$r103c1/$r103c2 $m103c1 | $m103c2" ;;
+esac
+( cd "$WT" && git worktree remove --force "$W103" ) >/dev/null 2>&1
+
+# 라우터 문면 — 교대 본문·참조와 리드 사본이 복구 파견 줄 하나씩을 같은 꼴로 싣는다.
+router_shift_corpus "$WORK/rs103.md"
+r103t=""
+for f103 in "$WORK/rs103.md" "$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md"; do
+  r103t="$r103t$(grep -c -- '--recover --scratch-dir' "$f103" || true):$(grep -- '--recover --scratch-dir' "$f103" | grep -cF -- "-- review -p '/cc-cmds:review-unattended <target> --recover --scratch-dir <abs witness dir> --report-path <abs original report path>[ --recheck <abs cap report>][ --expand <값>] \"설계는 <문서 인자>\"'" || true)/"
+done
+check "103: 라우터 문면의 복구 파견 줄은 --expand 자리와 설계는 지시를 싣는다" "$r103t" "1:1/1:1/"
+
+# 범위 밖 관찰 — 분야를 연 리뷰가 덧붙이는 절. 그 줄은 P0·P1 이 아니라 집계·형식 칸 밖이다.
+h103=$(cd "$WT" && git rev-parse HEAD)
+rr103() {  # rr103 <파일> <P1 절에 더할 줄|-> — P1 하나와 범위 밖 관찰 절을 가진 리포트
+  {
+    printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n' "$h103"
+    printf -- '- **발견 요약**: 🔴 P0 0건 | 🟠 P1 1건 | 🟡 P2 0건 | 🟢 P3 0건\n'
+    printf '\n## 🔴 P0\n\n## 🟠 P1\n\n- **[logic]** **[차단]** `a.txt:1` 경계 검사가 빠졌다 — 빈 입력에서 죽는다\n'
+    [ "$2" = "-" ] || printf '%s\n' "$2"
+    printf '\n## 범위 밖 관찰\n\n- [요구] 설계가 정한 재시도 상한이 구현에 없다 — `b.txt:3`\n'
+    printf -- '- [문서표현] 설계의 두 문단이 같은 값을 다르게 부른다\n'
+    printf -- '- **[logic]** **[차단]** `a.txt:9` 범위 밖에 놓인 굵은 항목 — r\n'
+  } > "$1"
+}
+rr103 "$WORK/rr103-a.md" -
+gateL report-check --manifest "$WORK/plan-R103a.md" --report "$WORK/rr103-a.md"
+r103k=$rc; m103k=$msg
+check "103: 범위 밖 관찰 절은 항목·태그·앵커 수를 바꾸지 않는다" \
+  "$r103k|$m103k|$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_report_format_fields "$2" "$3"' _ "$GATE" "$WORK/rr103-a.md" "$h103" | paste -sd '|' -)" \
+  "0||리포트 형식=정합|항목=0/1|비불릿=0|앵커 없음=0|태그 밖=0|요약=정규|HEAD 줄=일치"
+rr103 "$WORK/rr103-b.md" '- **[logic]** **[차단]** `a.txt:9` 범위 밖에 놓인 굵은 항목 — r'
+gateL report-check --manifest "$WORK/plan-R103a.md" --report "$WORK/rr103-b.md"
+case "$rc/$msg" in
+  1/*"항목 수: P1 요약 1건, 항목 2개"*) ok "103: 범위 밖 관찰 절의 굵은 항목은 P1 수에 들지 않는다" ;;
+  *) bad "103: 범위 밖 관찰 절의 굵은 항목은 P1 수에 들지 않는다" "대조군 rc=$rc $msg" ;;
+esac
 
 # --- epilogue-begin ---
 #

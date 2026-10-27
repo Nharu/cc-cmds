@@ -12852,6 +12852,22 @@ check "35: 수정 대상 지시는 사이클 2 부터, 앞 사이클 리포트�
 check "35: 새 프로세스 재시도와 크래시 재시도도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")\"' || true)" \
   "2/0"
+
+# --- 리뷰 파견의 --expand: 계획의 review_expand 를 고정 순서로 싣는다 ---
+# 리뷰 줄과 복구 리뷰 줄은 계획이 연 분야를 싣고, 리드 수정 줄은 싣지 않는다 — 리드
+# 수정은 상한 리포트의 발견만 고치고 분야를 새로 열지 않는다.
+r35_xm() {  # r35_xm <파일> <계획 json> — 실행 계획 블록 하나의 매니페스트
+  printf '# m\n\n## 실행 계획\n\n```json\n%s\n```\n' "$2" > "$1"
+}
+r35_xm "$R35/expand-both.md" '{"steps":[],"review_expand":["문서표현","요구","문서표현"],"review_expand_rationale":"x"}'
+r35_xm "$R35/expand-none.md" '{"steps":[],"review_expand":[],"review_expand_rationale":""}'
+r35_xm "$R35/expand-old.md" '{"steps":[]}'
+check "35: 리뷰 줄의 --expand 는 계획의 분야를 요구·문서표현 순서로 한 번씩, 빈 값과 키 없음에는 붙지 않는다" \
+  "$(MANIFEST="$R35/expand-both.md" review_expand_flag)|$(MANIFEST="$R35/expand-none.md" review_expand_flag)|$(MANIFEST="$R35/expand-old.md" review_expand_flag)" \
+  " --expand 요구,문서표현||"
+check "35: 첫 리뷰 줄과 복구 리뷰 줄은 --expand 를 싣고, 리드 수정 줄은 싣지 않는다" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF -- '--report-path $rp$slice_flag$rscope$(review_expand_flag) \"설계는 $(doc_arg)\"' || true)/$(grep -cF -- '${recheck:+ --recheck $recheck}$(review_expand_flag) \"설계는 $(doc_arg)\"' "$DRIVER" || true)/$( { grep -F -- '--lead-fix $crp' "$DRIVER" || true; } | grep -c 'review_expand_flag' || true)" \
+  "1/1/0"
 check "35: 한도-형상 회수 뒤 재파견도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")\"' || true)" \
   "1/0"
