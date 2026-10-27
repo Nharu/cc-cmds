@@ -252,6 +252,7 @@ The kickoff's design tier is `solo` or `team-4`. A `team-4` plan whose `design_p
     - 테스트 설계 (대상 프로젝트에 테스트 환경과 기존 테스트 파일이 있는 경우 필수 포함; 둘 중 하나라도 없으면 생략)
     - 구현 슬라이싱 (Step 1의 배포 형상 답변이 있는 경우에 한해 포함; 없으면 생략) — 이 표제를 쓰면 `권장 구현 순서`는 쓰지 않는다
     - 권장 구현 순서 (구현 슬라이싱을 쓰지 않는 경우)
+- **Open entries carry `**구현 처분**`.** Every entry synthesis writes into `## 미해결 이슈 / 트레이드오프` carries `**구현 처분**` and its companion field, chosen and written by `${CLAUDE_SKILL_DIR}/../_common/unresolved-closure.md` (`## 값 고르는 기준`, `## 작성자 꼴`); an entry the implementation would otherwise decide by itself is `구현 전 결정`.
 - **Runtime classification default.** If a runtime point in the product being designed maps unstructured input to a closed set of outcomes, Read `${CLAUDE_SKILL_DIR}/../_common/runtime-classification.md` and apply it before finishing this step — it fixes the predicate, the two exits, and where the decision, the UR entry, and the R-item land. The predicate excludes judgment this same session makes about its own pipeline or design work (topology test, not this-repository test) — see the file.
 - **`## 재현·근본원인` section** (issue/bug tasks only — omitted for feature-design tasks). The section records the reproduction findings produced in Step 1 or Round 0 so the design rests on an observed cause, not a guess.
     - **Placement & heading**: at the **very top** of the document, before 합의된 아키텍처 (for a bug fix the root cause is upstream of architecture and decisions). The heading is exactly `## 재현·근본원인` with **no leading section number** — `## 0.` / `## 1.` etc. is forbidden because the fixed anchor `§재현·근본원인` (used by the Tier-2 pointer below) would dangle.
@@ -454,7 +455,8 @@ Existing design docs use two encodings: **table form** (columns `항목 | 내용
 
 Additional invariants:
 
-- **Mixed-form prohibition**: within a single doc's `## 미해결 이슈` section, do not mix table form and sub-section form. The doc keeps whatever form Step 4 chose; the walkthrough never converts forms.
+- **Mixed-form prohibition**: within a single doc's `## 미해결 이슈` section, do not mix table form and sub-section form. The doc keeps whatever form Step 4 chose; the walkthrough never converts forms. This binds this skill only when it writes the section anew: an audit or a re-convergence adds an entry carrying `**구현 처분**` below a table in sub-section form, by `${CLAUDE_SKILL_DIR}/../_common/unresolved-closure.md` (`## 작성자 꼴`).
+- **Entries left open carry `**구현 처분**`**: before the freeze, every entry left at a `상태` other than `해결` — `보류` above all — carries `**구현 처분**` and its companion field, chosen and written by `${CLAUDE_SKILL_DIR}/../_common/unresolved-closure.md` (`## 값 고르는 기준`, `## 작성자 꼴`).
 - **Fresh section default**: if the Step 4 output has no `## 미해결 이슈` section (synthesis judged 0 issues), the walkthrough uses **sub-section form** by default when creating the section (avoids table layout overhead at 0 rows).
 - **Marker absence → `상태: 대기`**: if an entry exists but has no `상태` marker, the walkthrough interprets it implicitly as `상태: 대기`. A marker is written to the doc only at the moment of a user decision; there is no retroactive bulk-write. This is the migration policy for pre-existing docs written without markers.
 

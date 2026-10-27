@@ -2568,6 +2568,177 @@ residual_unmet_message() {
     "$(printf '%s\n' "$1" | awk 'NF { printf "%s「%s」", (n++ ? ", " : ""), $0 }')"
 }
 
+# ---------------------------------------------------------------------------
+# unresolved_closure_pending <doc> <segment>
+#
+# The headings of the `## 미해결 이슈 / 트레이드오프` entries that are open
+# decisions this segment must not plan over: entries whose `상태` is not `해결`
+# and that read `구현 전 결정` reaching <segment>. One heading per line, in
+# document order; empty output means nothing blocks the plan. Shared with the
+# gate (`unclosed-decisions`, its stage-result row and its unmet text). The
+# contract it reads is `skills/_common/unresolved-closure.md`, section
+# "## 판독 문법".
+#
+# FAIL CLOSED. An empty document argument (a run with no document) prints
+# nothing. A document that is named but missing, unreadable or carries an
+# unclosed fence prints one line `문서 판독 불가 — <reason>`, which reaches
+# every segment. Within an entry, a missing or out-of-vocabulary
+# `**구현 처분**`, a `구현 재량` without `**재량 기준**` and a `구현 전 결정`
+# without `**닿는 슬라이스**` all read `구현 전 결정 · 전체`, and so does an
+# entry whose `골격급` is `예` or whose `사유` starts with `감사 합성 요구` or
+# `베이스 계약 변경 필요`, whatever its `**구현 처분**` says.
+#
+# THE SECTION is the last `## ` heading matching `미해결\s+이슈`, up to the next
+# `## `. Its entries are `### ` blocks, read by their fields, and table rows,
+# whose heading is the first cell: a row whose `상태` column reads `해결` is
+# skipped and every other row reads `구현 전 결정 · 전체`. Any other line —
+# `없음`, a guidance line — is no entry.
+#
+# THE SEGMENT is a slice id of `## 구현 슬라이싱`. `**닿는 슬라이스**` naming
+# an id the document has no `### 슬라이스 <id>` for reads `전체`, and so does
+# every entry of a document with no slicing section.
+# ---------------------------------------------------------------------------
+unresolved_closure_pending() {
+  local doc="${1:-}" seg="${2:-}" ids="" sliced=0
+  [ -n "$doc" ] || return 0
+  if [ ! -f "$doc" ]; then printf '문서 판독 불가 — 파일이 없다: %s\n' "$doc"; return 0; fi
+  if [ ! -r "$doc" ]; then printf '문서 판독 불가 — 읽을 수 없다: %s\n' "$doc"; return 0; fi
+  if fence_unclosed "$doc"; then printf '문서 판독 불가 — 코드 울타리가 닫히지 않았다: %s\n' "$doc"; return 0; fi
+  if slicing_present "$doc"; then
+    sliced=1
+    ids=$(slice_ids "$doc" | tr '\n' ' ' || true)
+  fi
+  defenced "$doc" | UCP_SEG="$seg" UCP_IDS=" $ids " UCP_SLICED="$sliced" awk '
+    function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    function field(line, key,   s) {
+      s = line; sub(/^- /, "", s)
+      if (index(s, "**" key "**:") == 1) return "\001" trim(substr(s, length(key) + 6))
+      if (index(s, key ":") == 1) return "\001" trim(substr(s, length(key) + 2))
+      return ""
+    }
+    # reaches(list) — 1 when a `**닿는 슬라이스**` value reaches this segment.
+    function reaches(v,   n, part, i, id) {
+      if (ENVIRON["UCP_SLICED"] != "1" || v == "" || v == "전체") return 1
+      n = split(v, part, /[,，]/)
+      for (i = 1; i <= n; i++) {
+        id = trim(part[i])
+        if (id == "" || !index(ENVIRON["UCP_IDS"], " " id " ")) return 1
+      }
+      for (i = 1; i <= n; i++) if (trim(part[i]) == ENVIRON["UCP_SEG"]) return 1
+      return 0
+    }
+    function flush(   forced, touch) {
+      if (head == "") return
+      if (hasstate && state == "해결") { head = ""; return }
+      forced = (skel == "예" || index(reason, "감사 합성 요구") == 1 || index(reason, "베이스 계약 변경 필요") == 1)
+      if (!forced && disp == "구현 무관") { head = ""; return }
+      if (!forced && disp == "구현 재량" && hascrit && crit != "") { head = ""; return }
+      touch = ""
+      if (disp == "구현 전 결정" || forced) touch = slices
+      if (!(disp == "구현 전 결정" || forced) || !hasslices) touch = ""
+      if (reaches(touch)) out[++nout] = head
+      head = ""
+    }
+    # A table row: its heading is the first cell; the header row names the
+    # columns and the separator row is skipped.
+    function table_row(line,   n, cell, i, first, st) {
+      n = split(line, cell, "|")
+      if (!intable) {
+        intable = 1; statecol = 0
+        for (i = 2; i < n; i++) if (trim(cell[i]) == "상태" || trim(cell[i]) == "**상태**") statecol = i
+        return
+      }
+      if (line ~ /^\|[ \t:|-]+\|?[ \t]*$/) return
+      first = trim(cell[2]); if (first == "") return
+      st = (statecol ? trim(cell[statecol]) : "")
+      gsub(/\*\*/, "", st)
+      if (st == "해결") return
+      if (reaches("")) out[++nout] = first
+    }
+    /^## / {
+      if (inr) { flush(); inr = 0 }
+      if ($0 ~ /미해결[ \t]+이슈/) { inr = 1; nout = 0; split("", out); head = ""; intable = 0 }
+      next
+    }
+    !inr { next }
+    /^### / {
+      flush(); intable = 0
+      head = trim($0)
+      disp = crit = slices = skel = reason = state = ""
+      hasstate = hascrit = hasslices = hasdisp = 0
+      next
+    }
+    /^[ \t]*\|/ { if (head == "") { table_row(trim($0)) } ; next }
+    { if (head == "") intable = 0 }
+    head == "" { next }
+    {
+      v = field($0, "상태");         if (v != "" && !hasstate) { hasstate = 1; state = substr(v, 2); gsub(/\*\*/, "", state); next }
+      v = field($0, "구현 처분");     if (v != "" && !hasdisp) { hasdisp = 1; disp = substr(v, 2); next }
+      v = field($0, "재량 기준");     if (v != "" && !hascrit) { hascrit = 1; crit = substr(v, 2); next }
+      v = field($0, "닿는 슬라이스"); if (v != "" && !hasslices) { hasslices = 1; slices = substr(v, 2); next }
+      v = field($0, "골격급");        if (v != "" && skel == "") { skel = substr(v, 2); next }
+      v = field($0, "사유");          if (v != "" && reason == "") { reason = substr(v, 2); next }
+    }
+    END {
+      if (inr) flush()
+      for (i = 1; i <= nout; i++) print out[i]
+    }
+  '
+}
+
+# unclosed_unmet_message <pending headings> — the unmet predicate a
+# continuation names when open decisions are what block the plan. The headings
+# go in verbatim, so the stage can name each entry in its halt record.
+unclosed_unmet_message() {
+  printf '닫히지 않은 결정 항목이 있어 계획을 받을 수 없다 — %s; 정지 기록을 쓰라' \
+    "$(printf '%s\n' "$1" | awk 'NF { printf "%s「%s」", (n++ ? ", " : ""), $0 }')"
+}
+
+# ---------------------------------------------------------------------------
+# unresolved_closure_verdict <class> <process b 0|1> <doc> <segment>
+#
+# What an implement attempt's row owes the open decisions of its segment. When
+# the attempt was process A and `unresolved_closure_pending` is not empty, the
+# plan it may have emitted is not admitted: prints two lines — the class the
+# row carries (`공허한 성공` when the class was `정상 완료`, any other class
+# unchanged) and the first pending heading, the signature's clue — and returns
+# 0. The caller then drops the plan digest, the one the plan-file fallback
+# yields included, and moves the plan file aside (`unresolved_plan_suppress`).
+# Otherwise prints nothing and returns 1.
+#
+# The overwrite comes AFTER the class is decided, never inside the chain that
+# decides it: a halt the stage wrote stays `의도된 park`, and a crash, a refusal
+# or a limit stays what it was. Every place that writes `plan_sha256` on an
+# implement row calls this — the driver's first S4 attempt, `continue_attempt`
+# and the gate's stage-result row.
+# ---------------------------------------------------------------------------
+unresolved_closure_verdict() {
+  local class="$1" procb="$2" doc="$3" seg="$4" pending
+  [ "$procb" != "1" ] || return 1
+  pending=$(unresolved_closure_pending "$doc" "$seg")
+  [ -n "$pending" ] || return 1
+  [ "$class" != "정상 완료" ] || class='공허한 성공'
+  printf '%s\n%s\n' "$class" "${pending%%$'\n'*}"
+}
+
+# unresolved_plan_suppress <run dir> <segment> — move a suppressed attempt's
+# `<segment>.plan.md` to `<segment>.plan.md.suppressed`, so neither the
+# driver's nor the gate's plan-file fallback reads a plan written before the
+# decision was made.
+unresolved_plan_suppress() {
+  [ -f "$1/$2.plan.md" ] || return 0
+  mv -f "$1/$2.plan.md" "$1/$2.plan.md.suppressed"
+}
+
+# halt_step_is_unclosed_decision <halt record> — 0 when the record's whole
+# `**스텝**` value is exactly `Step 1 CFI-U3 BT-STOP — 미결 결정`: the halt an
+# implement stage writes when open decisions reach its segment, which only a
+# person answers. The whole value is compared, never a cut at the first ` — `.
+halt_step_is_unclosed_decision() {
+  [ -f "$1" ] || return 1
+  [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]
+}
+
 # `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
 # blocks whose cutpoint index is at or above `PR`, so the two cannot disagree.
 # A mismatch means the declaration was truncated or misnumbered, which is worth
@@ -7278,9 +7449,20 @@ predicate_implement_share() {
   # this driver process B is entered as a continuation of process A, whose own
   # unmet text says there is no commit, so the first attempt's reading names
   # neither the headings nor the cause.
+  #
+  # On process A the open decisions of the segment are asked instead
+  # (`unresolved_closure_pending`): a process A attempt that committed over one
+  # did not finish, and its headings are left in CONTINUE_UNCLOSED for the next
+  # message and the cap cause.
   CONTINUE_MISSING=""
+  CONTINUE_UNCLOSED=""
+  if ! segment_process_b "$3"; then
+    CONTINUE_UNCLOSED=$(unresolved_closure_pending "${DOC:-}" "$3")
+    [ -z "$CONTINUE_UNCLOSED" ] || return 1
+    predicate_implement "$1" "$2" "$3"
+    return
+  fi
   predicate_implement "$1" "$2" "$3" || return 1
-  segment_process_b "$3" || return 0
   CONTINUE_MISSING=$(residual_share_missing "$DOC" "$3" "$RUN_DIR/halt" "$RUN_DIR/$3.plan.md")
   [ -z "$CONTINUE_MISSING" ]
 }
@@ -10496,6 +10678,7 @@ lead_fix_stage() {
       return 1 ;;
     '공허한 성공'|'거절 종료')
       CONTINUE_MISSING=""
+      CONTINUE_UNCLOSED=""
       local ok=0
       if [ "$class" = "거절 종료" ]; then
         refusal_or_park "$sid" "$sid" "$seg" S5F "$wt" "$line" "$unmet" "$(seg_alias "$seg")" \
@@ -10821,11 +11004,24 @@ segment_cycle() {
           unmet=$(residual_unmet_message "$missing")
         fi
       fi
+      # A PROCESS A THAT MET OPEN DECISIONS OF ITS SEGMENT is admitted no plan,
+      # whatever it emitted (`unresolved_closure_verdict`): the digest is
+      # dropped below and a clean end is filed hollow.
+      local uverdict="" uclue=""
+      if uverdict=$(unresolved_closure_verdict "$class" "$procb" "$DOC" "$seg"); then
+        class=${uverdict%%$'\n'*}; uclue=${uverdict#*$'\n'}
+        [ "$class" != "공허한 성공" ] \
+          || unmet=$(unclosed_unmet_message "$(unresolved_closure_pending "$DOC" "$seg")")
+      else
+        uverdict=""
+      fi
       # The signature's cause: the unmet residual headings of a hollow end, the
-      # answer this attempt was re-attached with, or the halt record's id.
-      if [ "$class" = "공허한 성공" ]; then sclue="$missing"; else sclue="$aj_id"; fi
+      # first open decision of a suppressed one, the answer this attempt was
+      # re-attached with, or the halt record's id.
+      if [ "$class" = "공허한 성공" ]; then sclue="${uclue:-$missing}"; else sclue="$aj_id"; fi
       acct=$(stage_account_of "$sid")
       local psha; psha=$(stage_plan_sha256 "$(stage_log_path "$sid")" "$seg")
+      if [ -n "$uverdict" ]; then psha=""; unresolved_plan_suppress "$RUN_DIR" "$seg"; fi
       local om ro re
       om=$(stage_org_moves_of "$sid"); ro=$(stage_reattach_org_of "$sid"); re=$(stage_reattach_ctx_of "$sid")
       # `파견 id=` carries the FULL dispatch id beside the kind. `스테이지=`
@@ -10849,7 +11045,12 @@ segment_cycle() {
       case "$(terminal_route_class "$class")" in
         '정상 완료') : ;;
         '의도된 park')
-          park "$seg" cone 무효화 "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
+          # A halt on open decisions has no answer path on this driver: its
+          # reason says how the person carries the decision forward.
+          local preason="중단 기록"
+          ! halt_step_is_unclosed_decision "$(halt_record_path "$sid")" \
+            || preason="중단 기록 — 닫히지 않은 결정 항목: 결정을 문서에 쓰고 런을 새로 연다"
+          park "$seg" cone 무효화 "게이트 park" "$preason" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
           return 1 ;;
         '공허한 성공')
           # Resume first, a fresh process only for the shape resuming cannot
@@ -10863,6 +11064,8 @@ segment_cycle() {
           # first one: in cycle 1 this first attempt is process A and its own
           # reading is always empty.
           CONTINUE_MISSING="$missing"
+          CONTINUE_UNCLOSED=""
+          [ -z "$uverdict" ] || CONTINUE_UNCLOSED=$(unresolved_closure_pending "$DOC" "$seg")
           if continue_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
                "$unmet" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
@@ -10878,6 +11081,7 @@ segment_cycle() {
           # prose goes on to the continuation, whose cap cause is read as in
           # the arm above.
           CONTINUE_MISSING=""
+          CONTINUE_UNCLOSED=""
           if refusal_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
                "$unmet" "$(seg_alias "$seg")" \
                -- predicate_implement_share "$branch" "$att_base" "$seg"; then
@@ -11418,6 +11622,7 @@ continue_or_park() {
       log "$sid: 공허한 성공 — 트랜스크립트가 없거나 0턴이라 새 프로세스로 1회만 재시도"
       STAGE_RESUME=""
       CONTINUE_MISSING=""
+      CONTINUE_UNCLOSED=""
       CC_SPAWN_EVENT=hollow-retry continue_attempt "$sid.retry" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$alias" -- "$@"
       case "$CONTINUE_CLASS" in
         '정상 완료') return 0 ;;
@@ -11444,10 +11649,14 @@ continue_or_park() {
     log "$sid: 공허한 성공 — 같은 세션 $sess 를 계속 메시지로 재개 ($n/$CONTINUE_MAX)"
     STAGE_RESUME="$sess"
     CONTINUE_MISSING=""
+    CONTINUE_UNCLOSED=""
     CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
-    # The next message says what THIS attempt left unmet: the residual headings
-    # when that is what is missing, otherwise the caller's own text.
-    if [ -n "$CONTINUE_MISSING" ]; then
+    # The next message says what THIS attempt left unmet: the open decisions
+    # when those block the plan, the residual headings when those are what is
+    # missing, otherwise the caller's own text.
+    if [ -n "${CONTINUE_UNCLOSED:-}" ]; then
+      unmet=$(unclosed_unmet_message "$CONTINUE_UNCLOSED")
+    elif [ -n "$CONTINUE_MISSING" ]; then
       unmet=$(residual_unmet_message "$CONTINUE_MISSING")
     else
       unmet="$unmet0"
@@ -11505,8 +11714,22 @@ continue_attempt() {
   acct=$(stage_account_of "$did")
   # An implement attempt's row carries the plan digest it emitted, so the
   # attempt after it is admitted as process B (`stage_plan_sha256`).
-  local psha=""
-  [ "$rkind" != "S4" ] || psha=$(stage_plan_sha256 "$(stage_log_path "$did")" "$rseg")
+  # A process A attempt that met open decisions of its segment is admitted no
+  # plan, the plan-file fallback's digest included (`unresolved_closure_verdict`).
+  # Process B is read before this attempt's own row is written.
+  local psha="" uverdict="" uprocb=0
+  if [ "$rkind" = "S4" ]; then
+    psha=$(stage_plan_sha256 "$(stage_log_path "$did")" "$rseg")
+    segment_process_b "$rseg" && uprocb=1
+    if uverdict=$(unresolved_closure_verdict "$CONTINUE_CLASS" "$uprocb" "${DOC:-}" "$rseg"); then
+      CONTINUE_CLASS=${uverdict%%$'\n'*}
+      psha=""
+      unresolved_plan_suppress "$RUN_DIR" "$rseg"
+      CONTINUE_UNCLOSED=$(unresolved_closure_pending "${DOC:-}" "$rseg")
+    else
+      uverdict=""
+    fi
+  fi
   # One row per attempt. `실행 버전` is the attempt this dispatch pinned — the
   # value the gate writes for its own rows — so "one row per (segment,
   # attempt)" holds on driver rows too. A continued attempt is a resumed launch,
@@ -11515,8 +11738,13 @@ continue_attempt() {
   local skind wtp=- clue=""
   skind=$(stage_kind_of "$did")
   case "$skind" in implement|lead-fix) wtp=$cwd ;; esac
-  [ "$CONTINUE_CLASS" != "공허한 성공" ] || [ "$rkind" != "S4" ] \
-    || clue=$(residual_share_missing "${DOC:-}" "$rseg" "$RUN_DIR/halt" "$RUN_DIR/$rseg.plan.md" 2>/dev/null || true)
+  if [ "$CONTINUE_CLASS" = "공허한 성공" ] && [ "$rkind" = "S4" ]; then
+    if [ -n "$uverdict" ]; then
+      clue=${uverdict#*$'\n'}
+    else
+      clue=$(residual_share_missing "${DOC:-}" "$rseg" "$RUN_DIR/halt" "$RUN_DIR/$rseg.plan.md" 2>/dev/null || true)
+    fi
+  fi
   local om ro re
   om=$(stage_org_moves_of "$did"); ro=$(stage_reattach_org_of "$did"); re=$(stage_reattach_ctx_of "$did")
   # An audit's row carries its kind and its skeletal fields, as the first
@@ -11606,9 +11834,14 @@ refusal_or_park() {
   log "$sid: 거절 종료 — 같은 세션 $sess 에 한 번 다시 붙인다"
   STAGE_RESUME="$sess"
   CONTINUE_MISSING=""
+  CONTINUE_UNCLOSED=""
   CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(refusal_message)" "$alias" -- "$@"
   # A re-attachment that ended in prose is continued with what IT left unmet.
-  [ -z "$CONTINUE_MISSING" ] || unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+  if [ -n "${CONTINUE_UNCLOSED:-}" ]; then
+    unmet=$(unclosed_unmet_message "$CONTINUE_UNCLOSED")
+  elif [ -n "$CONTINUE_MISSING" ]; then
+    unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+  fi
   case "$CONTINUE_CLASS" in
     '정상 완료') return 0 ;;
     '의도된 park') return 1 ;;
@@ -11700,8 +11933,13 @@ s4_retry() {
   CONTINUE_PARK_RECALL=""
   STAGE_RESUME=""
   CONTINUE_MISSING=""
+  CONTINUE_UNCLOSED=""
   CC_SPAWN_EVENT=$ev continue_attempt "$sid.retry" "$jkey" "$seg" S4 "$cwd" "$prompt" "$alias" -- "$@"
-  [ -z "$CONTINUE_MISSING" ] || unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+  if [ -n "${CONTINUE_UNCLOSED:-}" ]; then
+    unmet=$(unclosed_unmet_message "$CONTINUE_UNCLOSED")
+  elif [ -n "$CONTINUE_MISSING" ]; then
+    unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+  fi
   case "$CONTINUE_CLASS" in
     '정상 완료') return 0 ;;
     '의도된 park') return 1 ;;
@@ -11723,11 +11961,16 @@ s4_park_unfinished() {
   # under the cause the CONTINUE_* outputs of the last call name. Always returns
   # 1. The cap cause is read from the LAST attempt judged (CONTINUE_MISSING): a
   # segment whose result lines are what is missing parks `막힘`, because the code
-  # is there and a person can write the lines, which is not an invalidation.
+  # is there and a person can write the lines, which is not an invalidation. A
+  # segment whose open decisions are what blocks the plan (CONTINUE_UNCLOSED)
+  # parks `막힘` too: no halt record stands for a person to answer, so the reason
+  # says how the decision is carried forward.
   local seg="$1"
   [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
   [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
   [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+  [ -z "${CONTINUE_UNCLOSED:-}" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
+    || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(unclosed_unmet_message "$CONTINUE_UNCLOSED") — 문서에 결정을 쓰고 런을 새로 연다"; return 1; }
   [ -z "$CONTINUE_MISSING" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
     || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(residual_unmet_message "$CONTINUE_MISSING")"; return 1; }
   park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"

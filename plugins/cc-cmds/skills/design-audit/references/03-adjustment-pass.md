@@ -39,6 +39,15 @@ Every unique defect goes to exactly one owner. The five counts must sum to the u
 
 **기각 requires a written rationale.** That requirement is what makes triage collapse visible: a run whose rejection count is zero beside a large applied count is the exact signature of the failure that killed this command's predecessor, and the fixed-arity routing lines surface it without any extra instrumentation.
 
+### Decision-shaped defects
+
+A **decision-shaped defect** is one whose fix needs a behaviour the binding tier does not fix — a value, a branch, an order, a format, a fallback. Left alone, the implementation would choose it.
+
+- A decision-shaped defect is never routed to `기각`, to the `implement` pre-gate or to `design-conformance`. It has two owners only: `조정 패스 적용`, which writes the decision into the binding tier, or `## 미해결 이슈`, as an entry carrying `**구현 처분**` and its companion field besides the fields above. That holds for a finding outside a re-audit's scope too.
+- Rejecting a defect that may be decision-shaped requires the rationale to quote, verbatim, the binding-tier sentence that already fixes the behaviour. A rejection without that quotation breaks this rule.
+- Every entry the pass routes to `## 미해결 이슈` carries `**구현 처분**`, chosen by the criteria of `_common/unresolved-closure.md` (`## 값 고르는 기준`) and written in its `## 작성자 꼴`. A defect whose skeleton grade is `예` is written `구현 전 결정`, and so is the unattended audit's synthesis item.
+- The interactive audit, too, writes `사유: 감사 합성 요구 — 사람 판단` on a synthesis item the person answered to record as open, so the reader reads it `구현 전 결정` whatever else the entry says.
+
 ## Applying the pass — compose everything, then land it in one batch
 
 Every request re-reads the whole context, so the pass lands its work in as few responses as it can. The owners above and what each one means are unchanged; this section governs only how their results are written.
