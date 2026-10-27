@@ -53252,9 +53252,10 @@ ro88e() {  # ro88e <원장> <PR HEAD> <판독 시각> — 열린 PR 을 본 원�
 L88E=$(l88e old-pr-new "$WO88E" "$RO88E" 0); ro88e "$L88E" "$RO88E" "$T088E"
 L88E2=$(l88e old-pr-old "$WO88E" "$RO88E" 0); ro88e "$L88E2" "$RO88E" "$T3H88E"; ro88e "$L88E2" "$RO88E" "$T088E"
 L88E3=$(l88e old-pr-other "$WO88E" "$RO88E" 0); ro88e "$L88E3" "$R88E" "$T088E"
+L88EF=$(l88e old-pr-new-fix "$WO88E" "$RO88E" 1); ro88e "$L88EF" "$RO88E" "$T088E"
 check "88e: 오래된 head 에 방금 열린 PR 은 행이 없어도 CI 대기 이고 세 시간 전에 본 PR 이나 다른 head 의 PR 은 CI 대기 한도 다" \
-  "$(n88e "$L88E")|$(lsr_in Linux "$L88E" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$RO88E" 0 2>/dev/null)|$(n88e "$L88E2")|$(n88e "$L88E3")" \
-  "CI 대기|$T088E|CI 대기 한도|CI 대기 한도"
+  "$(n88e "$L88E")|$(lsr_in Linux "$L88E" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$RO88E" 0 2>/dev/null)|$(n88e "$L88EF")|$(sn88e "$L88E" | grep -c '"다음": "CI 대기 한도"' || true)|$(n88e "$L88E2")|$(n88e "$L88E3")" \
+  "CI 대기|$T088E|CI 대기|0|CI 대기 한도|CI 대기 한도"
 
 # 6 — CI 합류 대상의 경계.
 L88E=$(l88e push "$W88E" "$R88E" 0 - '절단점=push'); L88E2=$(l88e push-fix "$W88E" "$R88E" 1 - '절단점=push')
