@@ -26,7 +26,7 @@
 #   > a writer (a team-4 single-scope design) and `none` elsewhere. Only
 #   > `manifest_design_skill` turns scope, tier and path into the design skill.
 #
-# SIX ASSERTIONS AND NO MORE. A `team-4` graph is asserted on only through
+# SEVEN ASSERTIONS AND NO MORE. A `team-4` graph is asserted on only through
 # `design_path`, and only when the key is present:
 #
 #   (a) a `team-4` judgment carries at least one heavy reason that is not blank,
@@ -60,8 +60,17 @@
 #       `가능성`, at least one item and no more items than the judgment's paths
 #       (one when it names no path). The items are free text, so only their
 #       count is bound here; the prompt keeps each one a surface notice. A
-#       hotfix plan with no `enforcement_surface` fails (f). Neither the
-#       number of targets nor the number of files is asked.
+#       hotfix plan with no `enforcement_surface` fails (f). A hotfix plan
+#       that carries `review_expand` holds `[]` there: a hotfix run is always
+#       reviewed on the default field. A hotfix plan without the key was
+#       frozen before it existed and passes; the rationale beside it is free
+#       text and is not bound. Neither the number of targets nor the number
+#       of files is asked.
+#   (g) a `review_expand`, WHEN THE PLAN CARRIES ONE, is an array whose items
+#       are each `요구` or `문서표현` with no item twice, and a non-empty one
+#       has a `review_expand_rationale` that is not blank. A plan frozen
+#       before the key existed has none and is not asserted on it, for the
+#       reason (e) gives.
 #
 # (f) RUNS ON THE EARLY RETURN TOO. A hotfix plan that dropped
 # `design_tier_judged` would otherwise skip the one assertion that pins its
@@ -121,7 +130,10 @@ def hotfix_violations:
               else
                 "(f) 핫픽스 계획의 enforcement_surface.judgment 가 확인됨 · 가능성 · 없음 · 판정불가 중 하나가 아닙니다: \($j | tojson)"
               end
-          end )
+          end ),
+      ( if ($p | has("review_expand")) and $p.review_expand != [] then
+          "(f) 핫픽스 계획의 review_expand 가 [] 가 아닙니다: \($p.review_expand | tojson)"
+        else empty end )
     end;
 
 if type != "object" then
@@ -217,7 +229,24 @@ else
             end
         else empty end ),
       # (f)
-      ( $p | hotfix_violations )
+      ( $p | hotfix_violations ),
+      # (g)
+      ( if $p | has("review_expand") then
+          ($p.review_expand) as $rx
+          | if ($rx | type) != "array" then
+              "(g) review_expand 가 배열이 아닙니다: \($rx | tojson)"
+            else
+              ( if ([$rx[] | select(IN("요구", "문서표현") | not)] | length) > 0 then
+                  "(g) review_expand 에 요구 · 문서표현 밖의 값이 있습니다: \($rx | tojson)"
+                else empty end ),
+              ( if ($rx | length) != ($rx | unique | length) then
+                  "(g) review_expand 에 같은 값이 두 번 있습니다: \($rx | tojson)"
+                else empty end ),
+              ( if ($rx | length) > 0 and ($p.review_expand_rationale | blank) then
+                  "(g) review_expand 가 비어 있지 않은데 review_expand_rationale 이 비어 있습니다"
+                else empty end )
+            end
+        else empty end )
     ]
   | report
 end
