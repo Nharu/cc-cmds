@@ -24470,10 +24470,30 @@ gate_ci_join_target() {
 gate_ci_wait_clock() {
   # gate_ci_wait_clock <segment> <head sha> <round> — the wait clock of that
   # round as a UTC time, read from the ledger alone (`cc_ci_wait_clock`).
-  local t tab
+  #
+  # A CLOCK READ FROM THE COMMIT TIME STARTS NO EARLIER THAN THE PULL REQUEST.
+  # CI cannot run on a head before a pull request carries it, and a merge-first
+  # segment opens that pull request long after its commit — a lead fix's tip
+  # waits out a whole post-merge review first. Measured from the commit, such a
+  # head read `CI 대기 한도` on the very turn its pull request opened, before
+  # the poller had written a single `checks` row, and the router parked it. So
+  # when the commit time is the source (its evidence line is empty), the
+  # `판독 시각` of the segment's earliest `원격 판독` row that saw an open pull
+  # request with this head as `PR HEAD` stands in for it when later. A verdict
+  # or an accepted rerun still sets the clock as before, and a pull request
+  # nobody has read keeps the commit time, so the cap still ends every wait.
+  local t tab ct ev pr pt pe ce
   tab=$(printf '\t')
   t=$(cc_ci_wait_clock "" "$LEDGER" "$1" "$2" "$3" "$(gate_segment_worktree "$1")")
-  printf '%s' "${t%%"$tab"*}"
+  ct=${t%%"$tab"*}; ev=${t#*"$tab"}
+  if [ -n "$ct" ] && [ -z "$ev" ]; then
+    pr=$(gate_rows '원격 판독' | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_eq 'PR 상태' OPEN \
+         | gate_rows_field_eq 'PR HEAD' "$2" | awk 'NR == 1')
+    pt=$(gate_row_field "$pr" '판독 시각')
+    pe=$(cc_iso_to_epoch "$pt"); ce=$(cc_iso_to_epoch "$ct")
+    if [ -n "$pe" ] && [ -n "$ce" ] && [ "$pe" -gt "$ce" ]; then ct=$pt; fi
+  fi
+  printf '%s' "$ct"
 }
 
 gate_ci_wait_capped() {
