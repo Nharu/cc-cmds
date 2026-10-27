@@ -24755,16 +24755,26 @@ gate_ci_wait_clock() {
   # waits out a whole post-merge review first. Measured from the commit, such a
   # head read `CI 대기 한도` on the very turn its pull request opened, before
   # the poller had written a single `checks` row, and the router parked it. So
-  # when the commit time is the source (its evidence line is empty), the
-  # `판독 시각` of the segment's earliest `원격 판독` row that saw an open pull
-  # request with this head as `PR HEAD` stands in for it when later. A verdict
-  # or an accepted rerun still sets the clock as before, and a pull request
-  # nobody has read keeps the commit time, so the cap still ends every wait.
-  local t tab ct ev pr pt pe ce
+  # when the commit time is the source (its evidence line is empty) or a
+  # person's `중단 답` row is (its evidence line is that row), the `판독 시각`
+  # of the segment's earliest `원격 판독` row that saw an open pull request
+  # with this head as `PR HEAD` stands in for it when later: the clock is then
+  # the latest of the commit time, that answer and that read. An answer given
+  # between the commit and the pull request's opening must not keep the clock
+  # before the opening. A verdict or an accepted rerun still sets the clock as
+  # before, and a pull request nobody has read keeps the clock it had, so the
+  # cap still ends every wait.
+  local t tab ct ev pr pt pe ce src=""
   tab=$(printf '\t')
   t=$(cc_ci_wait_clock "" "$LEDGER" "$1" "$2" "$3" "$(gate_segment_worktree "$1")")
   ct=${t%%"$tab"*}; ev=${t#*"$tab"}
-  if [ -n "$ct" ] && [ -z "$ev" ]; then
+  case "$ev" in
+    '') src=commit ;;
+    *[!0-9]*) ;;
+    *) [ -f "$LEDGER" ] && LC_ALL=C awk -v n="$ev" 'NR == n { f = (index($0, "- `중단 답` ") == 1); exit } END { exit !f }' "$LEDGER" \
+         && src=answer ;;
+  esac
+  if [ -n "$ct" ] && [ -n "$src" ]; then
     pr=$(gate_rows '원격 판독' | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_eq 'PR 상태' OPEN \
          | gate_rows_field_eq 'PR HEAD' "$2" | awk 'NR == 1')
     pt=$(gate_row_field "$pr" '판독 시각')
