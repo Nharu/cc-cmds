@@ -3,14 +3,17 @@ name: autopilot
 description: 목표 하나를 받아 이 세션이 라우터가 되어 스킬 호출을 스스로 정하며 완주시키는 파이프라인의 킥오프와 아침 보고
 when_to_use: 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널로 중계되고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때
 disable-model-invocation: true
-usage: "/cc-cmds:autopilot [의도 또는 대상] [--report]"
+usage: "/cc-cmds:autopilot [의도 또는 대상] [--hotfix] [--report]"
 options:
     - name: "<의도 또는 대상>"
       kind: positional
       required: false
       summary: "이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. 같은 세션이 연 런이 멈춘 뒤 비우거나 `다시`·`이어서`·`재개` 같은 재개 낱말, 또는 그 런의 의도 문면 그대로 부르면 그 런의 답을 이어받아 새 런을 바로 시작한다(재킥오프). 끝나지 않은 채 멈춘 런은 `다시`·`재킥오프` 같은 재킥 낱말로 부를 때만 이어받아 닫고, 빈 인자·재개 낱말·의도 문면으로는 이어받지 않고 그 런의 재개를 안내한다."
       parse_note: "`$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다. 재킥오프인지는 1막 맨 앞의 판별이 닫힌 낱말 목록으로 정하고, 그 밖의 인자는 새 런이다."
-    - name: "--report"
+    - name: "--hotfix"
+      kind: flag
+      default: "off (일반 킥오프 — 설계 범위·티어·경로, 요구 인터뷰, 경계 질문을 모두 묻는다)"
+      summary: "핫픽스 킥오프. 의도 되읽기, 대상 레포 확인, 절단점(머지·배포), 계획 승인 네 질문만 하고, 계획은 단독 설계 → 구현 → 리뷰 고정 틀에 리뷰 정책 상한 `선머지후리뷰` 로 얼린다. 나머지 값은 킥오프 기본값 파일과 고정값으로 채워 계획 승인 화면에 모두 보인다. 라우팅 런에서만 기동한다."
       kind: flag
       default: "off (킥오프 모드 — 1막 인터뷰 후 드라이버 기동)"
       summary: "아침 보고 모드. 그 런의 매니페스트·원장·보고서, 설계 문서, 그리고 매니페스트나 `run` 행이 없을 때 킥오프 흔적을 읽어 한국어로 렌더링만 하고, 새 런을 시작하지 않는다."
@@ -121,12 +124,27 @@ Adoption is reached only here, from a person's interactive kickoff: the seat doe
 
 ### Step 1: Read the contracts, then judge the entry
 
-1. Parse `$ARGUMENTS`. `--report` selects the reporting mode — **if present, jump to Act 3** and Read `${CLAUDE_SKILL_DIR}/references/act3-report.md` now, which is its body. Everything else is the intent, read whole.
+1. Parse `$ARGUMENTS`. `--report` selects the reporting mode — **if present, jump to Act 3** and Read `${CLAUDE_SKILL_DIR}/references/act3-report.md` now, which is its body. `--hotfix` selects the hotfix kickoff (「핫픽스 킥오프」 below), and the flag itself is not part of the intent. Everything else is the intent, read whole.
 
     **The argument is an INTENT, never a question to answer.** A kickoff phrased as a question — "이거 개선이 가능할까?" — is still a kickoff, and there is no branch in this skill that reads it as conversation and ends there. If the intent is a question, answer it *by performing Act 1* — the interview is where the question gets asked back properly.
 2. **Read only `### 2b.3 Identity` and `### 2b.6 The kickoff trace` of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` now** — the run id's form and the `BASE` fold Step 2 applies, and the trace Step 2 creates. A `### 2b.<n>` section runs from its heading line up to, not including, the next numbered heading outside a code fence — `### 2b.<n+1>`, or `## 3. ` after `### 2b.6` — and never up to the next `###`: the template in `### 2b.5` carries `### 문 1` and `### 답 1` inside its fence, as `### 2b.1` carries unnumbered H2 lines such as `## 인가` inside its own, so that boundary stops in the middle of a template. Find the start and end lines with `grep -n` and read between them with the Read tool's `offset` and `limit`. The rest of the contract before `## 3. ` is read later, all of it before the manifest is frozen: the two `### 2b.1` excerpts after 5j, `### 2b.5` at 5m, and the rest at Step 6. The part from `## 3. ` on is read at Step 7.
-3. **Read `<plugin root>/orchestrator/prompts/entry-plan.md`** and produce the judgment it describes, satisfying `entry-plan.schema.json`. Its `enforcement_surface` judges against data, not memory: run `bash <plugin root>/orchestrator/enforcement-surface-screen.sh --list` first and hand its lines to the judgment as the classifier's arms; when it exits 2 there are no arms to hand, and the judgment says `판정불가`. Check your own output against that schema before using it — required keys present, every enum value in range — with `jq`, not by eye. Then run the entry checker on it, `jq -f <plugin root>/orchestrator/prompts/entry-plan.check.jq <plan file>`: it prints nothing and exits 0 when the judgment's structure holds, and a violation per line otherwise. Run it again after every scope change or tier raise in Step 4 — `check_manifest` runs the same file on the run's first gate call, when nobody is present to fix what it refuses.
+3. **Read `<plugin root>/orchestrator/prompts/entry-plan.md`** and produce the judgment it describes, satisfying `entry-plan.schema.json`. Its `enforcement_surface` judges against data, not memory: run `bash <plugin root>/orchestrator/enforcement-surface-screen.sh --list` first and hand its lines to the judgment as the classifier's arms; when it exits 2 there are no arms to hand, and the judgment says `판정불가`. Check your own output against that schema before using it — required keys present, every enum value in range — with `jq`, not by eye. Then run the entry checker on it, `jq -f <plugin root>/orchestrator/prompts/entry-plan.check.jq <plan file>`: it prints nothing and exits 0 when the judgment's structure holds, and a violation per line otherwise. Run it again after every scope change or tier raise in Step 4 — `check_manifest` runs the same file on the run's first gate call, when nobody is present to fix what it refuses. **Hand the judgment the kickoff mode as input**: on a `--hotfix` kickoff say that it runs in hotfix mode, and the judgment writes `run_profile: hotfix` with the fixed frame `entry-plan.md` gives; on every other kickoff say nothing, and it writes `standard`.
 4. If the judgment names a `doc` anchor, read that document and record its whole-file `sha256` (`shasum -a 256`).
+
+### 핫픽스 킥오프 (`--hotfix`) — four questions and nothing else
+
+A `--hotfix` kickoff asks the person exactly four things and fills every other answer from the kickoff defaults file and the fixed values of `${CLAUDE_SKILL_DIR}/references/boundaries.md` 「핫픽스 킥오프의 고정값과 승인 화면」 — **Read that section now.** It does not ask Step 4's design scope, design tier and design path questions, any of 5a–5u as a question of its own, 5j's interview, or the closing read-back's re-kickoff consent. The scope and the tier are the fixed frame's `single` and `solo`, and a `solo` plan never asks the design path. Everything else in Act 1 and Act 2 holds as written — CFI-6 and CFI-9 included — and the questions below take the surfaces Step 5 gives a lone question.
+
+**Step 1.0 runs first, as on every kickoff.** Its `새 런` and `없음` verdicts go on into this section. On `재킥오프` or `대기`, say in one line that a hotfix kickoff opens a new run and adopts none — called again without `--hotfix`, the kickoff adopts that run — append `단계=중단` once the trace exists, and stop; every other verdict stops as Step 1.0 says.
+
+**The kickoff explores only to find the target and to write the read-back.** No reproduction, no residual-item reading, no design work: the design stage reads the confirmed sentences and does the rest.
+
+1. **Intent read-back.** Show one line of 「고칠 것」 and one line of 「완료 기준」 as this kickoff understood the intent, and ask whether they are right. When the person corrects them, read back the corrected sentences again; only the two lines the person confirmed go on. They become the interview record's `## 확인된 요구` (`references/freeze.md`), and the 「완료 기준」 line becomes the manifest's termination point.
+2. **Target repository.** Run Step 1's entry judgment with the hotfix mode handed to it, then Step 2 on its targets: the confirmation Step 2 takes is this question, and its disk verification runs as written. Right after the confirmation call the kickoff defaults helper as 5o does on a run without 5j. **For each target whose `dev-ids` or `deploy-triggers` the helper did not print as `적용`, ask them as this question's tail** — 5b's second tail, `없음` allowed. An identifier pair is never filled from nothing.
+3. **Cutpoint.** Ask `머지` or `배포` for each target, with the defaults file's `cutpoint` as the recommended option when it is one of the two. **When the answer is `배포` and the target has an apply, ask as this question's tail everything 5c takes**: the apply command verbatim, the read-only apply probe, its 「적용 불필요」 and 「적용 필요」 exit codes, the actor and the radius. The defaults file's `apply-probe`, `apply-probe-codes` and `apply-actor` are proposals shown as the first option, never the answer: only the values confirmed here are frozen, the two codes as the `적용 프로브 코드` row. Then run 5b's hook check on the answer; a `질문` row it prints is asked here too, and `닿는 칸 없음` stops the kickoff as 5b says.
+4. **The plan's approval — one screen.** Show the screen 「핫픽스 킥오프의 고정값과 승인 화면」 gives, and ask `이대로` or `고칠 항목 지정`, neither with a recommendation suffix. `고칠 항목 지정` asks again only the values the person names, then shows the screen again. `이대로` is the approval of the plan and the confirmation of every default and fixed value on the screen at once; `references/freeze.md` records it.
+
+After `이대로`, freeze the interview record (`references/freeze.md` 「핫픽스 킥오프」), write the manifest and the authorization record (Step 6) and start the run at once (Step 7, immediate). **The run starts only as a routing run:** `run.sh` refuses to start a manifest whose plan reads `run_profile: hotfix` when the run's routing record is not `1`, because only a routing run has the merge-first path the hotfix plan's `선머지후리뷰` slices run on.
 
 ### Step 2: Declare and verify the targets
 
