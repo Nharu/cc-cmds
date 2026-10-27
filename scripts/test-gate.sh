@@ -42745,7 +42745,7 @@ cb60_foot
 
 # ---------------------------------------------------------------------------
 # 60b-2. 리뷰가 깨끗한 세그먼트의 CI 실패 — 부적격 실행의 park
-# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: CRLF tip 워크플로는 커밋 뒤에도 줄 끝 CR 을 담는다, 60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋과 그 CRLF 사본은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 바닥 정규식은 master 의 grep 문자열과 바이트로 같다, 60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키를 배포 자리로 읽는다, 60b: X5 는 바닥 grep 이 맞고 면제 모양이 아닌 줄을 배포 자리로 읽는다, 60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄만 바닥에서 면제한다,60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
+# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: CRLF tip 워크플로는 커밋 뒤에도 줄 끝 CR 을 담는다, 60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋과 그 CRLF 사본은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 바닥 정규식은 master 의 grep 문자열과 바이트로 같다, 60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키를 배포 자리로 읽는다, 60b: X5 는 바닥 grep 이 맞고 면제 모양이 아닌 줄을 배포 자리로 읽는다, 60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄만 바닥에서 면제한다, 60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
 #
 # 60b 의 둘째 조각. 픽스처는 `cb60_head` 로 새로 세운다. 같은 argv 의 둘째 park 가 행을
 # 더 쓰지 않는지는 칸과 종류마다 처음 사례에서 `cb60_park` 이 모으고 그 단언은 60b-3
@@ -42898,6 +42898,8 @@ cb60_x5 0 $'on:\n  push:\n    paths: !!seq\n      - .github/workflows/x.yml'
 cb60_x5 0 $'jobs:\n  t:\n    steps: &s\n      - run: |\n          yq \'.on\' .github/workflows/x.yml'
 cb60_x5 0 $'jobs:\n  steps:\n    - run: |\n        yq \'.on\' .github/workflows/x.yml'
 cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: |\n          yq \'.on\' \\\n          .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: |\n          mv \\\n          yq \'.on\' .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml \\\n            | sh'
 for cb60_l in 'cp x.yml .github/workflows/new.yml' "yq -i '.a = 1' .github/workflows/x.yml" "yq '.on' .github/workflows/x.yml > out" \
               "yq '.on' .github/workflows/x.yml | tee .github/workflows/y.yml" "yq '.on' .github/workflows/x.yml | sh" \
               "yq '.on' .github/workflows/sub/x.yml" "yq '.on' .github/workflows/*.yml" "yq '.on' .github/workflows/x.yml.bak" \
