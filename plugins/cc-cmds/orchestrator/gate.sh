@@ -12736,7 +12736,7 @@ gate_snapshot_slicing_json() {
   # write it: the branch, and per segment its id, branch name and worktree path
   # in declaration order. Read-only — the snapshot is a read verb, so the values
   # are written by `act --kind segment --from-declaration`, never from here.
-  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo=""
+  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo="" lrow=""
   br=$(gate_slicing_branch)
   case "$br" in
     미통치) ids=$(gate_plan_implement_step) ;;
@@ -12765,12 +12765,18 @@ gate_snapshot_slicing_json() {
       dpre=$(gate_dep_tokens "$(slice_field "$DOC" "$id" '선행' 2>/dev/null || true)")
       dmo=$(gate_dep_tokens "$(slice_field "$DOC" "$id" '머지 순서' 2>/dev/null || true)")
     fi
+    # `착지 행` IS A FROZEN FACT, not a verdict: the manifest carries a `선행
+    # 착지` row for the slice. The router reads it to bring such a slice in with
+    # one planning act instead of cutting a branch for it; whether the landing
+    # holds is the planning act's to judge, since that needs the remote.
+    lrow=false
+    if gate_manifest_landing_row "$id" >/dev/null 2>&1; then lrow=true; fi
     [ "$first" = "1" ] || printf ', '
     first=0
-    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s", "선행": %s, "머지 순서": %s%s}' \
+    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s", "선행": %s, "머지 순서": %s, "착지 행": %s%s}' \
       "$(gate_json_escape "$id")" "$(gate_json_escape "$al")" \
       "$(gate_json_escape "$bn")" "$(gate_json_escape "$wt")" \
-      "$(gate_json_id_array $dpre)" "$(gate_json_id_array $dmo)" "$adx"
+      "$(gate_json_id_array $dpre)" "$(gate_json_id_array $dmo)" "$lrow" "$adx"
   done
   printf ']'
   if [ "$br" = "선언불완전" ]; then
@@ -13725,6 +13731,75 @@ gate_remote_landing() {
   return 0
 }
 
+gate_import_manifest_landed() {
+  # gate_import_manifest_landed <verb> <slice> [self] — bring <slice> into this
+  # ledger from the manifest's `선행 착지` row: 0 when it was brought in (on
+  # `plan`, when it would be), 1 when the manifest carries no row for it, and
+  # GATE_EXIT_RULE when the row's claim does not hold.
+  #
+  # TWO CALLERS, ONE WRITER OF `출처=매니페스트`. The planning act calls it for
+  # each predecessor this ledger does not know, and, with `self`, for the slice
+  # being planned once the earlier-run import found nothing. Two shapes leave a
+  # landed slice with no ledger to find: the run that delivered it used a
+  # different segment id or recorded no `머지 커밋`, or the slice lives in a
+  # repository this run does not target, whose segments no ledger of this run's
+  # targets ever holds.
+  #
+  # THE ROW IS A PERSON'S CLAIM and is checked the way a prior ledger's is — the
+  # slug must be the slice's declared `레포`, a target slice must owe no apply,
+  # and the commit must be on that repository's base branch: through the
+  # target's anchor when the repository is a target, through the remote's own
+  # comparison when it is not. Any of them not holding refuses and writes
+  # nothing, `blocked` included — the slice is not done again over a person's
+  # word that it landed. The row written is `머지됨` with `출처=매니페스트` and no
+  # worktree.
+  #
+  # `self` DIFFERS IN THREE THINGS ONLY. A slice this ledger already holds a
+  # `segment` row for is left alone (1), so a slice this run planned is never
+  # overwritten by a landing row; the messages name a `슬라이스` rather than a
+  # `선행`; and success sets GATE_DECL_SELF_IMPORTED, so the caller ends with no
+  # planned row.
+  local verb="$1" d="$2" mode="${3:-}" prow="" pslug="" pm="" dslug="" dal="" pwhere="" pdp="" noun="선행"
+  if [ "$mode" = "self" ]; then
+    noun="슬라이스"
+    case " $(gate_segment_ids | tr '\n' ' ') " in *" $d "*) return 1 ;; esac
+  fi
+  prow=$(gate_manifest_landing_row "$d") || return 1
+  pslug=$(gate_row_field "$prow" '원격 슬러그')
+  pm=$(gate_row_field "$prow" '머지 커밋')
+  dslug=$(slice_field "$DOC" "$d" '레포' 2>/dev/null | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  if [ "$pslug" != "$dslug" ]; then
+    warn "세그먼트 계획 거부: 선행 착지 행의 슬라이스 ${d} 는 원격 슬러그 ${pslug} 를 들지만 동결 문서가 선언한 레포는 ${dslug:-(없음)} 입니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  dal=$(gate_slice_alias "$d" 2>/dev/null) || dal=""
+  if [ -n "$dal" ]; then
+    if gate_segment_owes_apply "$dal" "$d"; then
+      warn "세그먼트 계획 거부: ${noun} ${d} 는 이 런의 선언상 적용이 남는 슬라이스입니다 — 선행 착지 행은 머지만 말하므로 적용이 남은 슬라이스는 들여오지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    gate_obligation_landing "$dal" "$pm"
+    pwhere="대상 ${dal} 의 베이스 브랜치"
+  else
+    gate_remote_landing "$pslug" "$pm"
+    pwhere="원격 ${pslug} 의 기본 브랜치"
+  fi
+  if [ "$GATE_LANDING_VERDICT" != "착지" ]; then
+    warn "세그먼트 계획 거부: ${noun} ${d} 는 이 런의 원장에 없고, 매니페스트의 선행 착지 행이 든 머지 커밋 ${pm} 은 ${pwhere}에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — ${GATE_LANDING_WHY}"
+    return "$GATE_EXIT_RULE"
+  fi
+  [ "$mode" != "self" ] || GATE_DECL_SELF_IMPORTED=1
+  pdp=$(slice_field "$DOC" "$d" '선행' 2>/dev/null || true)
+  if [ "$verb" != "act" ]; then
+    warn "act 로 내면 ${noun} ${d} 를 매니페스트의 선행 착지 행(상태=머지됨 · 머지 커밋=${pm})으로 이 원장에 먼저 들여옵니다"
+    return 0
+  fi
+  gate_append 'segment' "id=$d" "상태=머지됨" "머지 커밋=$pm" "워크트리=-" \
+    "선행=${pdp:-없음}" "출처=매니페스트" "선언 다이제스트=$(slice_decl_digest "$DOC" "$d")"
+  log "${noun} 들여오기 — ${d} (머지됨, 출처 매니페스트, 머지 커밋 ${pm})"
+  return 0
+}
+
 GATE_DECL_FIELDS=()
 gate_from_declaration() {
   # gate_from_declaration <verb> <alias> <segment> <키=값>... — the fields of a
@@ -13734,11 +13809,12 @@ gate_from_declaration() {
   # run-scope block of a structural refusal and, on `act`, the terminal row of
   # a predecessor an earlier run of the same document landed or the manifest's
   # `선행 착지` row names, and the slice's own terminal row when an earlier run
-  # landed it — then GATE_DECL_SELF_IMPORTED is set and no planned row follows.
+  # landed it or the manifest's `선행 착지` row names the slice itself — then
+  # GATE_DECL_SELF_IMPORTED is set and no planned row follows.
   local verb="$1" alias="$2" seg="$3"
   shift 3
   local f="" k="" st="" wt="" want="" br="" why="" al="" astep="" alast="" step="" d="" ids="" declared="" derived=""
-  local known="" dal="" pm="" pdp="" adrow="" prow="" pslug="" dslug="" pwhere="" irc=0
+  local known="" dal="" adrow="" selfland="" irc=0
   GATE_DECL_FIELDS=()
   GATE_DECL_SELF_IMPORTED=""
 
@@ -13830,11 +13906,20 @@ gate_from_declaration() {
            return "$GATE_EXIT_VOCAB" ;;
       esac
       if ! al=$(gate_slice_alias "$seg"); then
-        # This slice owns the defect, so it parks alone (see above).
-        why="구현 슬라이싱 선언 불완전 — 슬라이스 $seg: 레포 「$(slice_field "$DOC" "$seg" '레포')」 가 매니페스트의 어느 대상도 아닙니다"
-        warn "세그먼트 계획 거부: $why"
-        gate_decl_slice_park "$verb" "$alias" "$seg" "$why"
-        return "$GATE_EXIT_RULE"
+        # A SLICE OF A REPOSITORY THIS RUN DOES NOT TARGET CAN STILL BE BROUGHT
+        # IN, when the manifest froze a `선행 착지` row for it. It goes on with no
+        # alias to the imports below, past the four checks that only a planned
+        # row needs — the target match, the review policy, adoption and the
+        # worktree — and never to a planned row.
+        al=""
+        if ! gate_manifest_landing_row "$seg" >/dev/null; then
+          # This slice owns the defect, so it parks alone (see above).
+          why="구현 슬라이싱 선언 불완전 — 슬라이스 $seg: 레포 「$(slice_field "$DOC" "$seg" '레포')」 가 매니페스트의 어느 대상도 아닙니다"
+          warn "세그먼트 계획 거부: $why"
+          gate_decl_slice_park "$verb" "$alias" "$seg" "$why"
+          return "$GATE_EXIT_RULE"
+        fi
+        selfland=1
       fi
       GATE_DECL_FIELDS=( "상태=계획됨" \
         "선언 파일 집합=$(declared_field_for_row "$seg" "$(slice_field "$DOC" "$seg" '선언 파일')")" \
@@ -13868,7 +13953,9 @@ gate_from_declaration() {
       ;;
   esac
 
-  if [ "$alias" != "$al" ]; then
+  # A SLICE ONLY THE MANIFEST CAN BRING IN (`selfland`) skips the four checks
+  # below that serve a planned row and its dispatch; it never gets one.
+  if [ -z "$selfland" ] && [ "$alias" != "$al" ]; then
     warn "세그먼트 ${seg} 의 대상은 ${al} 입니다 — --target ${alias} 로는 계획하지 않습니다"
     return "$GATE_EXIT_VOCAB"
   fi
@@ -13877,8 +13964,8 @@ gate_from_declaration() {
   # that declares no policy reads as `선리뷰후머지`, and a plan with no review
   # step can never satisfy it — the merge would be refused forever, and that
   # surfaces nights later as a refusal naming the review, not the plan.
-  if [ "${k:-선리뷰후머지}" != "리뷰없음" ] \
-     && [ -z "$(manifest_plan_json 2>/dev/null | jq -r '[.steps[]? | select(type == "object" and .skill == "review")][0].skill // empty' 2>/dev/null || true)" ]; then
+  if [ -z "$selfland" ] && [ "${k:-선리뷰후머지}" != "리뷰없음" ] \
+     &&[ -z "$(manifest_plan_json 2>/dev/null | jq -r '[.steps[]? | select(type == "object" and .skill == "review")][0].skill // empty' 2>/dev/null || true)" ]; then
     if [ -z "$k" ]; then
       why="리뷰 정책 미선언 · 계획에 리뷰 단계 없음 — 세그먼트 $seg"
     else
@@ -13889,28 +13976,30 @@ gate_from_declaration() {
     return "$GATE_EXIT_RULE"
   fi
 
-  want=$(gate_decl_worktree "$al" "$seg") || want=""
-  # AN ADOPTED SEGMENT IS PLANNED IN THE TREE THE MANIFEST NAMES, and only once
-  # the disk agrees with that row (see `gate_adoption_check`).
-  if adrow=$(gate_adoption_row "$seg"); then
-    want=$(manifest_row_fields "$adrow" '워크트리')
-    gate_adoption_check "$seg" "$al" "$adrow" || return "$GATE_EXIT_RULE"
-    # The planning act brings in the earlier run's open answer to a halt
-    # (`gate_adoption_halt_carry`); a dry run says what that act would do.
-    if [ "$verb" = "plan" ]; then
-      local crc=0
-      gate_adoption_halt_source "$seg" || crc=$?
-      case "$crc" in
-        0) warn "act 는 출처 런 ${GATE_CARRY_SRC} 원장 ${GATE_CARRY_LINE} 번째 줄의 중단 답(선택지 $(gate_row_field "$GATE_CARRY_ROW" '선택지'))을 이 런으로 들여옵니다" ;;
-        1) ;;
-        *) warn "출처 런 ${GATE_CARRY_SRC} 원장 ${GATE_CARRY_LINE} 번째 줄의 열린 중단 답은 이 런으로 이어지지 않습니다 — ${GATE_CARRY_WHY}" ;;
-      esac
-    fi
-  fi
   wt=$(gate_field_of '워크트리' "$@")
-  if [ -z "$want" ] || [ "$wt" != "$want" ]; then
-    warn "세그먼트 ${seg} 의 「워크트리」는 ${want:-(유도 실패)} 여야 합니다 — 받은 값: ${wt:-(없음)}"
-    return "$GATE_EXIT_VOCAB"
+  if [ -z "$selfland" ]; then
+    want=$(gate_decl_worktree "$al" "$seg") || want=""
+    # AN ADOPTED SEGMENT IS PLANNED IN THE TREE THE MANIFEST NAMES, and only once
+    # the disk agrees with that row (see `gate_adoption_check`).
+    if adrow=$(gate_adoption_row "$seg"); then
+      want=$(manifest_row_fields "$adrow" '워크트리')
+      gate_adoption_check "$seg" "$al" "$adrow" || return "$GATE_EXIT_RULE"
+      # The planning act brings in the earlier run's open answer to a halt
+      # (`gate_adoption_halt_carry`); a dry run says what that act would do.
+      if [ "$verb" = "plan" ]; then
+        local crc=0
+        gate_adoption_halt_source "$seg" || crc=$?
+        case "$crc" in
+          0) warn "act 는 출처 런 ${GATE_CARRY_SRC} 원장 ${GATE_CARRY_LINE} 번째 줄의 중단 답(선택지 $(gate_row_field "$GATE_CARRY_ROW" '선택지'))을 이 런으로 들여옵니다" ;;
+          1) ;;
+          *) warn "출처 런 ${GATE_CARRY_SRC} 원장 ${GATE_CARRY_LINE} 번째 줄의 열린 중단 답은 이 런으로 이어지지 않습니다 — ${GATE_CARRY_WHY}" ;;
+        esac
+      fi
+    fi
+    if [ -z "$want" ] || [ "$wt" != "$want" ]; then
+      warn "세그먼트 ${seg} 의 「워크트리」는 ${want:-(유도 실패)} 여야 합니다 — 받은 값: ${wt:-(없음)}"
+      return "$GATE_EXIT_VOCAB"
+    fi
   fi
 
   # THE FIRST PLANNING ACT CHECKS THE WHOLE DECLARATION, the two checks the
@@ -13983,15 +14072,7 @@ gate_from_declaration() {
   # does nothing. A dry run writes nothing and says what the act would bring in.
   #
   # A PREDECESSOR NO RUN LEDGER RECORDS IS BROUGHT IN FROM THE MANIFEST, when the
-  # kickoff froze a `선행 착지` row for it. Two shapes leave a landed slice with
-  # no ledger to find: the run that delivered it used a different segment id or
-  # recorded no `머지 커밋`, or the slice lives in a repository this run does
-  # not target, whose segments no ledger of this run's targets ever holds. The
-  # row is a person's claim and is checked the way a prior ledger's is — the
-  # slug must be the slice's declared `레포`, and the commit must be on that
-  # repository's base branch: through the target's anchor when the repository
-  # is a target, through the remote's own comparison when it is not. The row
-  # written is `머지됨` with `출처=매니페스트` and no worktree.
+  # kickoff froze a `선행 착지` row for it (`gate_import_manifest_landed`).
   #
   # BOTH KINDS ARE BROUGHT IN. A `머지 순서` token is held by the same
   # known-token floor as a `선행` token, so a merge-order predecessor an earlier
@@ -14006,44 +14087,16 @@ gate_from_declaration() {
         gate_import_prior_landed "$verb" "$d" || irc=$?
         case "$irc" in 0) continue ;; 1) : ;; *) return "$irc" ;; esac
       fi
-      prow=$(gate_manifest_landing_row "$d") || continue
-      pslug=$(gate_row_field "$prow" '원격 슬러그')
-      pm=$(gate_row_field "$prow" '머지 커밋')
-      dslug=$(slice_field "$DOC" "$d" '레포' 2>/dev/null | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      if [ "$pslug" != "$dslug" ]; then
-        warn "세그먼트 계획 거부: 선행 착지 행의 슬라이스 ${d} 는 원격 슬러그 ${pslug} 를 들지만 동결 문서가 선언한 레포는 ${dslug:-(없음)} 입니다"
-        return "$GATE_EXIT_RULE"
-      fi
-      if [ -n "$dal" ]; then
-        if gate_segment_owes_apply "$dal" "$d"; then
-          warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 선언상 적용이 남는 슬라이스입니다 — 선행 착지 행은 머지만 말하므로 적용이 남은 슬라이스는 들여오지 않습니다"
-          return "$GATE_EXIT_RULE"
-        fi
-        gate_obligation_landing "$dal" "$pm"
-        pwhere="대상 ${dal} 의 베이스 브랜치"
-      else
-        gate_remote_landing "$pslug" "$pm"
-        pwhere="원격 ${pslug} 의 기본 브랜치"
-      fi
-      if [ "$GATE_LANDING_VERDICT" != "착지" ]; then
-        warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 원장에 없고, 매니페스트의 선행 착지 행이 든 머지 커밋 ${pm} 은 ${pwhere}에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — ${GATE_LANDING_WHY}"
-        return "$GATE_EXIT_RULE"
-      fi
-      pdp=$(slice_field "$DOC" "$d" '선행' 2>/dev/null || true)
-      if [ "$verb" != "act" ]; then
-        warn "act 로 내면 선행 ${d} 를 매니페스트의 선행 착지 행(상태=머지됨 · 머지 커밋=${pm})으로 이 원장에 먼저 들여옵니다"
-        continue
-      fi
-      gate_append 'segment' "id=$d" "상태=머지됨" "머지 커밋=$pm" "워크트리=-" \
-        "선행=${pdp:-없음}" "출처=매니페스트" "선언 다이제스트=$(slice_decl_digest "$DOC" "$d")"
-      log "선행 들여오기 — ${d} (머지됨, 출처 매니페스트, 머지 커밋 ${pm})"
+      irc=0
+      gate_import_manifest_landed "$verb" "$d" || irc=$?
+      case "$irc" in 0|1) : ;; *) return "$irc" ;; esac
     done
 
     # THE SLICE BEING PLANNED MAY ITSELF HAVE LANDED IN AN EARLIER RUN — a run
     # re-kicked by hand or by the chain after this slice merged or stopped at its
     # PR. Its planned row would send the same work out again, so the terminal
     # row is brought in instead and no planned row is written; the caller sees
-    # GATE_DECL_SELF_IMPORTED and stops there. Nothing to bring in plans as before.
+    # GATE_DECL_SELF_IMPORTED and stops there.
     #
     # AN ADOPTED SEGMENT BRINGS IN NO TERMINAL ROW OF AN EARLIER RUN: its
     # `세그먼트 입양` row says this run continues that segment and reviews it.
@@ -14055,6 +14108,21 @@ gate_from_declaration() {
       irc=0
       gate_import_prior_landed "$verb" "$seg" self || irc=$?
       case "$irc" in 0) return 0 ;; 1) : ;; *) return "$irc" ;; esac
+    fi
+    # OR THE MANIFEST SAYS IT LANDED. With no earlier-run row to bring in, the
+    # kickoff's `선행 착지` row for this slice is brought in the same way a
+    # predecessor's is, and its refusals refuse this plan too: the slice is not
+    # done again over a person's word that it landed. Nothing to bring in plans
+    # as before — and a slice of a repository this run does not target, which
+    # had nothing to plan, parks as it did before the manifest was asked.
+    irc=0
+    gate_import_manifest_landed "$verb" "$seg" self || irc=$?
+    case "$irc" in 0) return 0 ;; 1) : ;; *) return "$irc" ;; esac
+    if [ -n "$selfland" ]; then
+      why="구현 슬라이싱 선언 불완전 — 슬라이스 $seg: 레포 「$(slice_field "$DOC" "$seg" '레포')」 가 매니페스트의 어느 대상도 아닙니다"
+      warn "세그먼트 계획 거부: $why"
+      gate_decl_slice_park "$verb" "$alias" "$seg" "$why"
+      return "$GATE_EXIT_RULE"
     fi
   fi
 
