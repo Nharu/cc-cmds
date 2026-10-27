@@ -53,6 +53,7 @@ lint:
 	bash scripts/lint-pace-threshold-pins.sh
 	bash scripts/lint-fleet-agent-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
+	bash scripts/lint-statusline-wrapper-pins.sh
 	bash scripts/lint-approval-state-vocabulary.sh
 	bash scripts/lint-sidecar-field-table.sh
 	bash scripts/lint-approval-answer-provenance.sh
@@ -77,14 +78,24 @@ lint:
 # A hook whose path is wrong is silent — the harness runs nothing and says
 # nothing — so this is the only place the typo becomes visible.
 #
-# The resolution count is compared first. `grep -o` would drop a command that is
-# not written against the plugin root, and a dropped command is one this walk
-# never checked while reporting success over the rest.
-	@n_cmd=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -c .); \
-	 n_path=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}][^" ]*' | grep -c .); \
-	 test "$$n_cmd" = "$$n_path" || { echo "lint: hooks.json 의 command $$n_cmd 개 중 $$n_path 개만 플러그인 상대 경로로 해소된다" >&2; exit 1; }; \
+# Coverage is checked first, PER COMMAND rather than by a total count. `grep -o`
+# would drop a command that is not written against the plugin root, and a dropped
+# command is one this walk never checked while reporting success over the rest.
+# The earlier form compared the number of commands against the number of root
+# references and demanded they be equal, which silently required EXACTLY ONE
+# reference per command. A command may legitimately name the root twice — once as
+# the script it runs and once as an argument that hands the same directory to
+# that script — and under the old form such a command made the totals differ and
+# failed the check while every command was in fact covered.
+#
+# The coverage test asks for a root reference WITH A PATH under it. A bare
+# `${CLAUDE_PLUGIN_ROOT}` is a directory handed to a script, not something the
+# walk can open, so counting it as coverage would let a command pass the first
+# test and contribute nothing to the second.
+	@bad=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -cvF '$${CLAUDE_PLUGIN_ROOT}/' || true); \
+	 test "$$bad" = "0" || { echo "lint: hooks.json 의 command 중 $$bad 개가 플러그인 루트 아래 경로를 갖지 않아 아래 검사가 건너뛴다" >&2; exit 1; }; \
 	 jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json \
-	   | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}][^" ]*' \
+	   | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}]/[^" ]+' \
 	   | sed -e 's|[$$][{]CLAUDE_PLUGIN_ROOT[}]|plugins/cc-cmds|' \
 	   | while IFS= read -r p; do \
 	       test -f "$$p" || { echo "lint: hooks.json 이 가리키는 파일이 없다: $$p" >&2; exit 1; }; \
@@ -105,6 +116,35 @@ lint:
 	@jq -e 'has("version")' plugins/cc-cmds/.claude-plugin/plugin.json >/dev/null || (echo "lint: plugin.json must have a .version field (it is the single version SOT)" >&2; exit 1)
 	@jq -e '[.plugins[] | has("version")] | any | not' .claude-plugin/marketplace.json >/dev/null || (echo "lint: marketplace.json plugin entries must NOT declare .version (plugin.json is the version SOT)" >&2; exit 1)
 	@grep -qE '선리뷰후머지.*선머지후리뷰.*리뷰없음' plugins/cc-cmds/skills/_common/pipeline-sidecar.md || (echo "lint: the review-policy axis must be written strict-to-loose in the contract (선리뷰후머지 -> 선머지후리뷰 -> 리뷰없음); a reader who takes the axis backwards picks the opposite end, which is the human form of the defect this axis exists to remove. No lint script is added for this: the token vocabulary has exactly one enumeration in the tree so there is no second copy to drift, and a bad token fails hard on its first call at runtime -- document ORDER is the one thing no runtime detector sees" >&2; exit 1)
+# Every scripts/lint-*.sh and scripts/test-*.sh must be registered here. An
+# unregistered script never runs, so no test of its own can report its absence;
+# this guard is the only place that does. Registration takes two shapes and both
+# count: a recipe line `bash scripts/<name>` and a list item `scripts/<name> \`
+# that `run/%` runs. A name counts as registered when it stands as a whole word
+# on a line that is not a comment — after the line start or whitespace, and
+# before whitespace, a backslash or the line end. Comment lines are left out
+# because comments here name scripts too, and a name that appears only in a
+# comment belongs to a script that never runs. The contract is a glob, not an
+# enumeration, so a new script needs no list edit to be covered.
+#
+# The exception list is closed and holds one name. lint-ci-scope-binding.sh
+# fails on today's tree (the workflow's make call sits inside a multi-line
+# `run: |` block it cannot read), so registering it would turn lint red. The
+# exception is checked both ways: a listed name that leaves the tree, or that
+# reads as registered, is reported, so the commit that fixes and registers that
+# lint must drop it here too.
+	@reg=$$(grep -vE '^[[:space:]]*#' Makefile | tr -s ' \t' '\n\n' | sed -e 's/\\.*//' | grep -E '^scripts/' || true); \
+	 skip='scripts/lint-ci-scope-binding.sh'; \
+	 bad=0; \
+	 for s in $$skip; do \
+	   test -f "$$s" || { echo "lint: Makefile 등록 가드의 예외 $$s 가 트리에 없다 — 예외 목록에서 지운다" >&2; bad=1; }; \
+	   if printf '%s\n' "$$reg" | grep -qFx "$$s"; then echo "lint: Makefile 등록 가드의 예외 $$s 가 등록되어 있다 — 예외 목록에서 지운다" >&2; bad=1; fi; \
+	 done; \
+	 for f in scripts/lint-*.sh scripts/test-*.sh; do \
+	   case " $$skip " in *" $$f "*) continue ;; esac; \
+	   printf '%s\n' "$$reg" | grep -qFx "$$f" || { echo "lint: $$f 가 Makefile 의 주석 아닌 줄에 등록되어 있지 않다 — 등록되지 않은 스크립트는 한 번도 돌지 않는다" >&2; bad=1; }; \
+	 done; \
+	 test "$$bad" = 0
 
 readme:
 	bash scripts/generate-readme.sh
@@ -402,6 +442,7 @@ LINT_TESTS := \
 	scripts/test-lint-watch-threshold-pins.sh \
 	scripts/test-lint-pace-threshold-pins.sh \
 	scripts/test-lint-statusline-token-arms.sh \
+	scripts/test-lint-statusline-wrapper-pins.sh \
 	scripts/test-lint-approval-state-vocabulary.sh \
 	scripts/test-lint-sidecar-field-table.sh \
 	scripts/test-lint-approval-answer-provenance.sh \
@@ -418,6 +459,7 @@ LINT_TESTS := \
 	scripts/test-solo-audit-experiment.sh \
 	scripts/test-reader-model-compare.sh \
 	scripts/test-reader-model-pair-audit.sh \
+	scripts/test-measure-audit-findings.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
 	scripts/test-lint-stage-policy-sources.sh \
@@ -448,6 +490,7 @@ ORCH_TESTS := \
 	scripts/test-watch.sh \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
+	scripts/test-statusline-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \

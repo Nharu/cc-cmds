@@ -39,15 +39,38 @@ Item 18 below is conditional on delta mode and is not counted in the heading.
 13. **(Optional) Lead's codebase exploration summary** from Step 2b — key dependencies, related test files, existing pattern summary. Include within context size limits.
 14. **Category tag list**: Choose from: `security`, `performance`, `code-quality`, `logic`, `error-handling`, `type-safety`, `testing`, `api-contract`, `concurrency`, `data-integrity`, `design-conformance`.
     - **`design-conformance` is gated on item 17.** It is usable **only** when the design document of item 17 was actually supplied. Its grounding standard is a comparison against that document — with no document there is nothing to compare against, so the tag would be an unfounded label rather than a finding. When item 17 is omitted, drop `design-conformance` from the list handed to the reviewer; the other ten are unconditional.
+    - **Field scope.** What a review looks at is split into fields. The technical field is always open; two fields leave the default and are opened only on request. The field rules live here and nowhere else — every review skill reads this item.
+
+      | Field | Default | How it opens | Tag of its findings when open |
+      | --- | --- | --- | --- |
+      | Technical — security, performance, logic, error handling, types, tests, API contract, concurrency, data integrity, conformance to written behaviour, awkward wording / typos / tone of on-screen and guidance text, UX and accessibility, a document stating a fact that disagrees with the code, defects in the text of SKILL.md / prompts / schemas | open | (always open) | unchanged |
+      | Spec conformance — comparison against the whole binding text of a document handed to the review | open when a document is supplied | interactively a directive such as `설계는 <경로>` or `기획서는 <경로>`; in the pipeline the run's design document (item 17) | `design-conformance` |
+      | `요구` — a product or planning requirement the reviewer inferred with no written source | closed | `--expand 요구` | `logic`, or `design-conformance` when item 17 is supplied |
+      | `문서표현` — polishing sentences, structure, added explanation or a meaning-preserving typo in a human-read document (`docs/`, README, CHANGELOG, code comments) | closed | `--expand 문서표현` | `code-quality` |
+
+      - The lead writes, in every reviewer's package, one line naming the fields open for this review and whether a spec document (item 17) was supplied.
+      - An observation that belongs to a field not open for this review is not a finding: report it as an out-of-scope observation (item 15). It is never dropped.
+      - Awkward wording, typos and tone of on-screen and guidance text, and UX and accessibility, are the technical field.
+      - A document whose statement of fact disagrees with the code — an option or flag that does not exist, a changed default, command or path, an example that behaves otherwise, a name or command spelled wrong — is the technical field, graded by the severity criterion's downgrade table as before.
+      - The text of SKILL.md, `_common`, prompts and schemas is an instruction the model executes, not a document, so it is always the technical field.
+      - Written behaviour — the baseline of conformance to written behaviour — comes from these sources only: comments, doc comments and types in the code; tests; the PR, commit or issue text describing the change; and the spec document handed to the review (item 17). An input→output, a branch or a boundary value written in one of them that the code does not honour is a technical (`logic`) finding. An expectation with no such source belongs to the `요구` field.
+      - Fields do not change the severity criterion: a finding of an open field is graded by the same criterion as any other. A `요구` finding made with no spec document states in its body that the requirement is inferred, not written.
 15. **Reporting format**: Findings must follow this structure:
     ```
     [severity] [category] file:line (or module/pattern) — issue description
       Rationale: severity justification
       Fix suggestion: fix direction (when applicable)
     [POSITIVE] file:line — positive aspect (when applicable)
+    [범위 밖:<분야>] file:line — observation (when applicable)
     ```
+    - **An out-of-scope observation** (item 14's Field scope) takes the last form, with `<분야>` the closed field it belongs to (`요구` or `문서표현`). It carries no severity and no fix suggestion, and the Quality Gate's demands for a severity rationale and a fix suggestion do not apply to it.
+    - The lead carries each such line into the report's `## 범위 밖 관찰` section as `` - [<분야>] `파일:라인` <관찰 한 줄> — <리뷰어> ``. Lines from several reviewers stating the same observation at the same `파일:라인` merge into one line naming the reviewers side by side.
 16. **Skip-glob list (search hygiene)**: when grep-searching the codebase, skip `node_modules, .next, build, dist, __pycache__, .git, coverage, .turbo, .cache, out, .vercel, .output, vendor, target` to avoid spending token budget on vendored/generated trees.
 17. **(Conditional) Design document + drift sidecar** — include only when the user supplied a design-document path as a review directive; **omit entirely otherwise**, and omit `design-conformance` from item 14 with it. Absence is the normal case, not a defect: a design document is user-local and typically untracked, so it does not exist in a clone. The channel this item opens therefore works when reviewing **your own** work and is structurally unavailable when reviewing someone else's PR — do not construct a fallback that guesses at a document.
+    - **Spec conformance happens only through this item.** A review compares against a spec only when this item is present, and a requirement judgement has no other source: without this item, an expectation no written source states belongs to the closed `요구` field (item 14's Field scope).
+    - **Which directive supplies it.** The interactive /review uses a document as this item when its directive points at a planning or design document by path, in the form `설계는 <경로>` or `기획서는 <경로>`.
+    - **A document without section names is a baseline as a whole.** A spec written elsewhere, carrying none of the cc-cmds design-document section names below, is compared against in its entirety.
+    - **An anchor brief is not a spec.** The unattended review does not take a document whose first line is `# 앵커 브리프 — 설계 문서 없는 런` as this item; it hands it to the reviewers as context of the same standing as the PR body, and leaves `design-conformance` out of item 14. The intent sentence the brief carries is read only as a source of written behaviour, and neither it nor the brief's `## 실행 계획` block (its `review_expand` included) opens a field — a field opens only through the `--expand` the review received.
     - **What binds.** The **binding tier** is the conformance baseline: `## 합의된 아키텍처`, the decision sentences of `## 주요 결정사항과 근거`, entries of `## 미해결 이슈 / 트레이드오프` whose `상태` is `해결`, `## 구현 시 검증 항목`, and a `## 재현·근본원인` whose `근거 등급` is `확인됨(재현·관측)`. A `design-conformance` finding is a divergence from **that** material.
     - **`## 미해결 이슈` is NOT a baseline** — it is a list of known residuals, and it has two uses. Read it to **suppress duplicates**: an item already recorded there is known, so re-reporting it as a new finding is noise. Never raise the non-implementation of an unresolved item as a conformance violation; it is unresolved by design. And read it as a **pointer to where to look**: an entry saying two files carry copies of one rule with nothing coupling them is, for a reviewer, an instruction to diff those two files. Without this second use that check has to be carried in by hand every time, which is precisely the class of obligation that fails at the moment it is needed.
     - **`## 권장 구현 순서` is for scope**, not conformance — use it to judge which stage the change under review belongs to, so a later stage's absence is not reported as a gap.
@@ -86,7 +109,7 @@ Item 18 below is conditional on delta mode and is not counted in the heading.
 - DB/query expert: migration rollback safety, index impact, query plans
 - API contract reviewer: backward compatibility, breaking changes, versioning
 - Concurrency reviewer: race conditions, lock usage, idempotency
-- Logic reviewer: business logic correctness, branch condition completeness, edge case coverage, requirements-implementation alignment
+- Logic reviewer: business logic correctness, branch condition completeness, edge case coverage, written behaviour vs. code — an input→output, a branch or a boundary value written in a source item 14's Field scope names that the code does not honour
 
 ## Review Protocol (rounds per the shared Round budget)
 
@@ -99,6 +122,7 @@ Each round is a fresh dispatch of the reviewer's role — one dispatch per `(rol
     - Severity rationale included for each finding
     - No duplication with existing PR comments
     - Fix suggestions included where appropriate
+    - The severity-rationale and fix-suggestion demands above apply to findings only; an out-of-scope observation (`[범위 밖:<분야>]`, item 15) carries neither and is not sent back for lacking them
     - **Checklist coverage check**: Judge by whether the reviewer actually checked checklist items, not by finding count. "Checked but no issues found" is normal (clean code). If findings are listed without any mention of checklist items, judge as insufficient and send the reviewer back inside its round to re-check. Re-request (by same-key resume) until QG passes (within the round budget — see **Round budget** below).
 
 3. **Cross-validation**: Dispatch each reviewer's role afresh, naming its own past witness and the other reviewers' witnesses **by path** (`_common/agent-team-protocol.md` `## Multi-round`). Explicitly request: validate severity assessments, identify missed issues in overlapping areas, flag false positives, and note findings that interact with their own. The reviewer publishes its cross-validation pass as its witness.
@@ -120,6 +144,7 @@ One reviewer may carry a "scope-coordination" role in its task-assignment header
 Beyond the shared facilitator rules in `_common/agent-team-protocol.md`, review workflows add:
 
 - **Resolve severity disputes**: If reviewers disagree on severity, ask both to justify their rating before the lead makes a final call.
+- **Resolve field disputes**: If reviewers disagree on whether an observation falls in a field open for this review, the lead decides by item 14's Field scope. An observation decided to belong to a closed field moves to the out-of-scope observations (item 15); it is not dropped.
 - **Ensure completeness**: If a reviewer's findings seem unusually sparse for their scope, ask them to double-check specific areas before accepting.
 - **PR comment dedup (2-layer check)**: Reviewers receive existing PR comments as context for 1st-layer filtering. The lead performs 2nd-layer verification during cross-validation to catch missed duplicates. Both reviewers and lead share responsibility to minimize duplication.
 - **Round budget**: how many rounds this protocol drives is defined once in `_common/agent-team-protocol.md`'s `### Round budget` — the default, the ceiling, and the two entry paths that open a third round. There is no extension path: reaching the ceiling surfaces the impasse to the user rather than buying more rounds.
