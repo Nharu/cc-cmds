@@ -172,7 +172,8 @@
 #   gate.sh review-line --manifest <path> --segment <id> [-- <flag>...]
 #                    prints the prompt of the segment's next review dispatch —
 #                    branch, next cycle's report path, `--slice`, `--base-sha`
-#                    and `--declared-files` from its rows, the flags after
+#                    and `--declared-files` from its rows, `--expand` from
+#                    the plan's `review_expand`, the flags after
 #                    `--` (`--no-slice` drops `--slice` instead), then the
 #                    `설계는 <문서>` directive; writes nothing.
 #                    Refused (3) when the segment has no row naming a branch
@@ -25850,8 +25851,9 @@ gate_review_line() {
   # dispatch of the segment, built the way the fixed-graph driver builds its
   # own: `/cc-cmds:review-unattended <브랜치> --report-path <경로>[ --slice
   # <id>][ --base-sha <sha>][ --post-merge <sha>][ --declared-files "<집합>"][
-  # <flag>…] "설계는 <문서>"`. Refused with GATE_EXIT_RULE when the segment has no row or no
-  # branch to review.
+  # --seat-commits "<목록>"][ --expand <값>][ <flag>…] "설계는 <문서>"`.
+  # Refused with GATE_EXIT_RULE when the segment has no row or no branch to
+  # review.
   #
   # THE ROUTER HAD NOTHING TO SPELL THIS FROM. The lead fix, the re-check, the
   # resolution review and the delta review are each written as "the segment's
@@ -25926,6 +25928,10 @@ gate_review_line() {
   # not write, so the review is told which ones to read as the gate's.
   side=$(gate_segment_seat_commits "$seg")
   [ "$side" = "없음" ] || line="$line --seat-commits \"$side\""
+  # The review fields the plan opened, read by the driver's own reader so the
+  # two paths spell the same flag; the review-dispatch check compares the
+  # dispatched prompt against the same value.
+  line="$line$(review_expand_flag)"
   [ "${#extra[@]}" -eq 0 ] || line="$line ${extra[*]}"
   doc=$(gate_doc_arg_path)
   [ -z "$doc" ] || line="$line \"설계는 $doc\""
@@ -40978,7 +40984,9 @@ gate_verb_act() {
     # `리뷰 HEAD` — the same head reviewed again writes the same report — or
     # when a merge-first segment's `머지됨` row follows that cycle row. Its
     # `--slice` must name the segment it reviews, or the report would drop that
-    # segment's own findings from the count as another slice's. These reach the
+    # segment's own findings from the count as another slice's, and its
+    # `--expand` must open the review fields the plan's `review_expand` names,
+    # a recovery included. These reach the
     # routing path only — the driver's dispatches do not pass here, and its own
     # branch on `다음` is what holds them.
     local rn_prompt rn_next rn_slice rn_row rn_rhead rn_head
@@ -41038,6 +41046,24 @@ gate_verb_act() {
         if [ -n "$rn_slice" ] && [ "${rn_slice#S:}" != "$segment" ]; then
           rn_slice=${rn_slice#S:}
           warn "리뷰 파견의 --slice (${rn_slice:-없음}) 가 --segment ${segment} 와 다릅니다 — 다른 슬라이스의 범위로 리뷰하면 이 세그먼트의 발견이 집계에서 빠집니다"
+          exit "$GATE_EXIT_RULE"
+        fi
+        # The review fields the dispatch opens must be the plan's: a flag
+        # dropped or changed while copying the line reviews another field set
+        # with no signal. Every `--expand` counts — two read as their union —
+        # and a missing value or one followed by another flag reads empty. A
+        # recovery (`--recover`) is compared too: it writes the report's field
+        # line from the flag it receives.
+        local rn_xgot rn_xwant
+        rn_xgot=$(printf '%s\n' "$rn_prompt" | awk '
+          { for (i = 1; i <= NF; i++) if ($i == "--expand") {
+              v = (i < NF && substr($(i + 1), 1, 2) != "--") ? $(i + 1) : ""
+              n = split(v, parts, ",")
+              for (j = 1; j <= n; j++) if (parts[j] != "") print parts[j]
+            } }' | review_expand_norm_lines)
+        rn_xwant=$(review_expand_csv)
+        if [ "$rn_xgot" != "$rn_xwant" ]; then
+          warn "리뷰 파견의 --expand (${rn_xgot:-없음}) 가 매니페스트의 review_expand (${rn_xwant:-없음}) 와 다릅니다 — 스냅숏의 리뷰 줄을 그대로 실어 다시 파견하세요"
           exit "$GATE_EXIT_RULE"
         fi
         # A branch whose enforcement surface changed outside a seat apply is
