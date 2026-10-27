@@ -6,6 +6,18 @@
     python3 dashboard.py status          describe the server (pure read)
     python3 dashboard.py stop            stop the recorded server, identity checked
     python3 dashboard.py serve --fd <n>  the server itself; started by `ensure` only
+    python3 dashboard.py preview --port <n>
+                                         a private server on 127.0.0.1:<n>, in this
+                                         process, for checking against real runs
+
+`preview` IS NOT THE RESIDENT SERVER. It binds its own socket, never reads or
+writes the `server` record, `spawn.lock.d/` or `server.log`, and does not ask
+the off switch, since being called from inside a stage is what it is for. It
+refuses port 0, the resident server's port and a port already taken, so it can
+neither stand in for the resident server nor be mistaken for one. Its token is
+made fresh and written nowhere; it logs to the caller's stderr and stops on
+SIGTERM or SIGINT. The routes, headers, polling, ETags and idle exit are
+`serve`'s.
 
 THE BYTECODE CACHE IS OFF BEFORE ANYTHING IS IMPORTED. This file runs from the
 plugin tree and from a run's pinned copy, and importing the sibling module with
@@ -609,8 +621,9 @@ def make_handler(st):
                     return
                 base = (q.get("base") or [""])[0] or None
                 dead = (q.get("dead") or ["0"])[0] == "1"
-                entry = st.tick(("runs", days, base, dead),
-                                lambda: st.model.runs(days=days, base=base, dead=dead))
+                exp = (q.get("exp") or ["0"])[0] == "1"
+                entry = st.tick(("runs", days, base, dead, exp),
+                                lambda: st.model.runs(days=days, base=base, dead=dead, exp=exp))
                 self._json(entry, head)
                 return
             if path.startswith("/api/runs/"):
@@ -662,6 +675,30 @@ def serve(fd):
     token = os.environ.get("CC_CMDS_DASHBOARD_TOKEN", "")
     os.environ.pop("CC_CMDS_DASHBOARD_TOKEN", None)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, fileno=fd)
+    return run_server(sock, token, "대시보드 서버 시작", (signal.SIGTERM,))
+
+
+def preview(port):
+    """The private server of `preview --port <n>`; nonzero without starting one."""
+    if port == 0 or port == configured_port():
+        sys.stderr.write("dashboard preview: 포트 %d 는 쓸 수 없습니다 — 0 과 공용 서버 포트(%d)는 받지 않습니다\n"
+                         % (port, configured_port()))
+        return 2
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+        sock.listen(64)
+    except OSError as e:
+        sock.close()
+        sys.stderr.write("dashboard preview: 포트 %d 에 묶지 못했습니다 — %s\n" % (port, e))
+        return 1
+    return run_server(sock, secrets.token_hex(16), "대시보드 미리보기 시작",
+                      (signal.SIGTERM, signal.SIGINT))
+
+
+def run_server(sock, token, banner, stop_signals):
+    """`serve` and `preview` from a listening socket on: the routes, the tick
+    cache, the idle watcher and the stop signals."""
     port = sock.getsockname()[1]
     st = State(port, token, plugin_version(), model.run_root(), load_assets())
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(st), bind_and_activate=False)
@@ -685,9 +722,11 @@ def serve(fd):
                 httpd.shutdown()
                 return
 
-    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=httpd.shutdown, daemon=True).start())
-    sys.stderr.write("%s 대시보드 서버 시작 — pid=%d port=%d version=%s\n"
-                     % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), os.getpid(), port, st.version))
+    for sig in stop_signals:
+        signal.signal(sig, lambda *_: threading.Thread(target=httpd.shutdown, daemon=True).start())
+    sys.stderr.write("%s %s — pid=%d port=%d version=%s\n"
+                     % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), banner, os.getpid(), port,
+                        st.version))
     sys.stderr.flush()
     threading.Thread(target=idle_watch, daemon=True).start()
     httpd.serve_forever(poll_interval=0.5)
@@ -697,7 +736,8 @@ def serve(fd):
 
 # ---------------------------------------------------------------------------
 
-USAGE = "usage: dashboard.py ensure | open [<run-id>] | url [<run-id>] | status | stop | serve --fd <n>"
+USAGE = ("usage: dashboard.py ensure | open [<run-id>] | url [<run-id>] | status | stop | serve --fd <n>"
+         " | preview --port <n>")
 
 
 def main(argv):
@@ -726,6 +766,13 @@ def main(argv):
         return stop()
     if verb == "serve" and len(rest) == 2 and rest[0] == "--fd":
         return serve(int(rest[1]))
+    if verb == "preview" and len(rest) == 2 and rest[0] == "--port":
+        try:
+            port = int(rest[1])
+        except ValueError:
+            port = -1
+        if 0 <= port <= 65535:
+            return preview(port)
     print(USAGE, file=sys.stderr)
     return 2
 
