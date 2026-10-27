@@ -5127,6 +5127,64 @@ pre_sb() {
   }
 }
 
+# `mf` — the merge-first sections (88h and its pieces): a `선머지후리뷰` segment
+# `H` on a routed run, driven through `act` on an `sa` fixture. The fixture's
+# repository rewrites the target's remote slug URL to its bare remote, so the
+# `git ls-remote` base-check asks stays on this machine. Each piece builds its
+# own fixture with `mf_new`, so none of them leans on another's state.
+pre_mf() {
+  [ -n "${PRE_MF_DONE:-}" ] && return 0
+  PRE_MF_DONE=1
+  pre_sa
+
+  mf_new() {
+    # mf_new <라벨> — 커밋 하나를 앞선 선머지후리뷰 세그먼트 H, 같은 다이제스트의 구현
+    # 정상 완료 두 행(단계 B), 라우팅 기록. `MF_APPLY=1` 을 앞에 붙이면 매니페스트가
+    # 파이프라인 적용을 선언한다(절단점은 대상 행의 배포).
+    sa_new "$1" 선머지후리뷰
+    if [ -n "${MF_APPLY:-}" ]; then
+      SA_APPLY=파이프라인; SA_APPLY_PROBE='exit 0'; SA_APPLY_CMD=true
+      sa_manifest 선머지후리뷰
+    fi
+    ( cd "$SA_REPO" && git config "url.$SA_REMOTE.insteadOf" "https://github.com/t/$SA_ID.git" ) >/dev/null 2>&1
+    MF_TIP=$(sa_commit '작업')
+    sa_seg_row H 선머지후리뷰
+    mf_impl d1; mf_impl d1
+    mkdir -p "$SA_RUN"; printf '1\n' > "$SA_RUN/routing-guard"
+  }
+  mf_impl() {
+    # mf_impl <다이제스트> — 세그먼트 H 의 구현 정상 완료 stage-result 행 하나.
+    printf -- '- `stage-result` | 세그먼트=H | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료 | plan_sha256=%s\n' \
+      "$1" >> "$SA_LEDGER"
+  }
+  mf_checks() {
+    # mf_checks <상태> [head sha] — 그 head 의 회차 0 checks 행 하나.
+    printf -- '- `checks` | PR=t/%s#1 | head sha=%s | 상태=%s | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=H | 재실행 회차=0 | 진행 중=0\n' \
+      "$SA_ID" "${2:-$MF_TIP}" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$SA_LEDGER"
+  }
+  mf_snap() { ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ); }
+  mf_inext() {
+    # mf_inext — 스냅숏 implement_next[] 의 H 원소의 다음, 원소가 없으면 빈 문자열.
+    mf_snap | jq -r '[.implement_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")'
+  }
+  mf_base_check() {
+    sag act --manifest "$SA_MANIFEST" --kind base-check --target main --segment H \
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(SAH)" --rationale x
+  }
+  mf_ob_open() {
+    # mf_ob_open — 세그먼트 H 의 의무 가운데 마지막 행이 미이행인 것의 수.
+    local id n=0
+    for id in $(sa_ob_rows | grep -F '세그먼트=H ' | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+      if [ "$(sa_field "$(sa_ob_last "$id")" 상태)" = 미이행 ]; then n=$((n + 1)); fi
+    done
+    printf '%s' "$n"
+  }
+  mf_u12() {
+    # mf_u12 <세그먼트> — 스냅숏이 보고하는 종료 조건 12 의 줄 가운데 그 세그먼트의 것의 수.
+    mf_snap | jq -r --arg p "12 세그먼트 $1 " '[.unmet_conditions[] | select(startswith($p))] | length'
+  }
+}
+
 # `ledger_series` — the container of sections 61–67: the two routing series
 # `stage-lease` and `stage-wait`, the `계정` field of `stage-result`, and the
 # readers that go with them.
@@ -29310,10 +29368,13 @@ sb_plan S29 gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$HEAD29B"
 check "29: 리뷰 뒤 커밋이 더해진 결속된 머지는 여전히 룰이 거절한다" "$rc" "3"
 if sa_names_rule; then ok "29: 그 거절이 리뷰-후-머지 를 지명한다 (덧댄 리뷰 HEAD 뒤)"; else bad "29 덧댄 리뷰 HEAD 룰 이름" "$msg"; fi
 
-# 선머지후리뷰 세그먼트와 룰 끔 — 결속이 지키는 룰이 돌지 않는 두 자리.
+# 선머지후리뷰 세그먼트 — 절단점이 머지 이상인 대상에서는 리뷰 전에 머지하므로,
+# 머지가 발행하는 의무의 머지 커밋이 워크트리 HEAD 이도록 그 머지도 결속된다.
 sa_seg_row S29P 선머지후리뷰
 sb_plan S29P gh pr merge 1
-if sb_bound; then bad "29 선머지후리뷰" "리뷰를 미룬 세그먼트의 머지가 결속 검사에 걸렸다: $msg"; else ok "29: 선머지후리뷰 세그먼트의 머지는 결속 검사를 받지 않는다"; fi
+if sb_bound; then ok "29: 머지 먼저 세그먼트의 머지도 워크트리 HEAD 결속 검사를 받는다"; else bad "29 선머지후리뷰" "머지 먼저 세그먼트의 결속 없는 머지가 결속 검사를 지났다: $msg"; fi
+
+# 룰 끔 — 결속이 지키는 룰이 돌지 않는 자리.
 sb_new '결속 (끔)' 선머지후리뷰
 SA_PREAUTH_EXTRA='gh pr'
 sa_manifest 선머지후리뷰 '**리뷰-후-머지**: 끔'
@@ -36986,14 +37047,15 @@ sag exec --manifest "$SA_MANIFEST" --target main --segment SB12 --cutpoint 배�
 if [ "$rc" = "0" ]; then bad "12: 동결 명령 모양의 exec" "통과했다 — apply 갈래가 종류 밖으로 샜다"
 else ok "12: 사전 인가에 없는 외부 상태 변경 exec 은 여전히 통과하지 않는다 (rc=$rc)"; fi
 
-# 정책이 선리뷰후머지 가 아니면 전제 2.
+# 선머지후리뷰 세그먼트는 cycle 대신 게이트를 지난 머지의 리뷰 의무 행을 증명으로
+# 읽는다. 게이트 밖에서 머지해 의무 행이 없으면 통과한 cycle 이 있어도 전제 3 이다.
 sb_apply_new '12 정책' 'exit 0' 'true' 파이프라인 선머지후리뷰
 sa_seg_row SB12P 선머지후리뷰
 SB_TIP=$(sa_commit '작업'); sb_cycle SB12P "$SB_TIP"; SB_M=$(sb_land_merge)
 sb_merged_row SB12P "$SB_M"
 sb12_base=$(sa_base)
 sb_apply SB12P
-sb_refused_clean "12: 선머지후리뷰 세그먼트의 적용은 전제 2 에서 거부된다" 2 "$sb12_base" SB12P
+sb_refused_clean "12: 의무 행 없는 선머지후리뷰 세그먼트의 적용은 전제 3 에서 거부된다" 3 "$sb12_base" SB12P
 
 # P1>0 은 리뷰-후-머지 를 꺼도 전제 3 에서 거부된다.
 sb_apply_new '12 룰 끔' 'exit 0' 'true' 파이프라인 선리뷰후머지 '**리뷰-후-머지**: 끔'
@@ -53090,7 +53152,7 @@ check "88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 �
 
 # ---------------------------------------------------------------------------
 # 88e. CI 판정의 리뷰 사이클 합류 — 판정 전 머지 금지, 수정 갈래의 CI 층, 대기 한도, 선재실행 술어, 중계 깨움
-# --- section: 88e | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json, gate_ci_early, relay | anchors: 88e: 회차 0 의 행 없음·유예 안 미등록·대기·진행 중 실패·판정 불가는 CI 대기 이고 머지 검사가 거절한다, 88e: 400초 전의 회차 0 미등록 은 머지 이고 머지 검사를 지난다, 88e: 수정 표에서 회차 0 정착 실패는 CI 재실행, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다, 88e: 처분=합류 행은 CI 수정 예산 f 를 세지 않는다, 88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 두 표에서 CI 대기 한도 이고 머지 검사가 거절한다, 88e: CI 대기 한도 원소는 상태 와 대기 시계 를 싣는다, 88e: 절단점 push 세그먼트는 행 없음에서 머지·수정 이고 머지 검사를 지난다, 88e: 대상 별칭이 비는 세그먼트는 행 없음에서 머지 이고 머지 검사를 지난다, 88e: 살아 있는 리뷰 스테이지와 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 유예 안 미등록·판정 불가·다른 head 의 판정은 ci 키를 세우지 않는다, 88e: 통과의 ci 키는 교대 기동 행 뒤에 다시 서지 않고 그 뒤 줄에 전사된 판정은 한 번 더 세운다, 88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다 ---
+# --- section: 88e | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json, gate_ci_early, relay | anchors: 88e: 회차 0 의 행 없음·유예 안 미등록·대기·진행 중 실패·판정 불가는 CI 대기 이고 머지 검사가 거절한다, 88e: 400초 전의 회차 0 미등록 은 머지 이고 머지 검사를 지난다, 88e: 수정 표에서 회차 0 정착 실패는 CI 재실행, 수락 뒤 판정 없음은 CI 대기, 회차 1 정착 실패는 CI 합류 수정 이다, 88e: 처분=합류 행은 CI 수정 예산 f 를 세지 않는다, 88e: 커밋 시각이 7200초 넘게 지난 행 없는 head 는 두 표에서 CI 대기 한도 이고 머지 검사가 거절한다, 88e: CI 대기 한도 원소는 상태 와 대기 시계 를 싣는다, 88e: 오래된 head 에 방금 열린 PR 은 행이 없어도 CI 대기 이고 세 시간 전에 본 PR 이나 다른 head 의 PR 은 CI 대기 한도 다, 88e: 절단점 push 세그먼트는 행 없음에서 머지·수정 이고 머지 검사를 지난다, 88e: 대상 별칭이 비는 세그먼트는 행 없음에서 머지 이고 머지 검사를 지난다, 88e: 살아 있는 리뷰 스테이지와 회차 0 정착 실패에서 ci_early 원소가 선다, 88e: 유예 안 미등록·판정 불가·다른 head 의 판정은 ci 키를 세우지 않는다, 88e: 통과의 ci 키는 교대 기동 행 뒤에 다시 서지 않고 그 뒤 줄에 전사된 판정은 한 번 더 세운다, 88e: ce 키는 살아 있는 리뷰의 정착 실패에 서고 교대 기동 뒤나 재실행 park 뒤에는 서지 않는다 ---
 #
 # 라우팅 런의 CI 합류 대상(절단점 PR·머지·배포)에서 리뷰가 CI 판정보다 먼저 끝나면 판정을
 # 기다리고, 그 기다림이 늘 끝나는지를 원장만으로 잰다. 시각은 `관측` 과 픽스처 커밋의 커밋
@@ -53254,6 +53316,20 @@ check "88e: 미등록 만료와 대기 한도가 함께 참인 회차 0 미등�
 L88EOA=$(l88e old-acc-dash "$WO88E" "$RO88E" 0); ck88e "$L88EOA" 실패 0 0 "$T3H88E" "$RO88E"; acc88e "$L88EOA" - 없음 "$RO88E"
 check "88e: 수락 관측이 - 이고 회차 1 행이 없으면 시계는 커밋 시각이라 CI 대기 한도 다" \
   "$(n88e "$L88EOA")|$(lsr_in Linux "$L88EOA" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$RO88E" 1 2>/dev/null)" "CI 대기 한도|$CO88E"
+# 커밋된 지 세 시간 지난 head 에 PR 이 방금 열렸으면(머지 먼저 세그먼트의 리드 수정 팁) 시계는
+# 그 head 를 PR HEAD 로 본 가장 이른 원격 판독 행의 판독 시각이다. 그 행이 세 시간 전이거나
+# 다른 head 를 보았으면 시계는 커밋 시각 그대로다.
+ro88e() {  # ro88e <원장> <PR HEAD> <판독 시각> — 열린 PR 을 본 원격 판독 행 하나
+  printf -- '- `원격 판독` | 교대=1 | 세그먼트=S | 브랜치=x | 워크트리 HEAD=%s | 원격 팁=%s | PR=5 | PR 상태=OPEN | PR HEAD=%s | 판독 시각=%s | prev=x\n' \
+    "$RO88E" "$RO88E" "$2" "$3" >> "$1"
+}
+L88E=$(l88e old-pr-new "$WO88E" "$RO88E" 0); ro88e "$L88E" "$RO88E" "$T088E"
+L88E2=$(l88e old-pr-old "$WO88E" "$RO88E" 0); ro88e "$L88E2" "$RO88E" "$T3H88E"; ro88e "$L88E2" "$RO88E" "$T088E"
+L88E3=$(l88e old-pr-other "$WO88E" "$RO88E" 0); ro88e "$L88E3" "$R88E" "$T088E"
+L88EF=$(l88e old-pr-new-fix "$WO88E" "$RO88E" 1); ro88e "$L88EF" "$RO88E" "$T088E"
+check "88e: 오래된 head 에 방금 열린 PR 은 행이 없어도 CI 대기 이고 세 시간 전에 본 PR 이나 다른 head 의 PR 은 CI 대기 한도 다" \
+  "$(n88e "$L88E")|$(lsr_in Linux "$L88E" - lsr_rp_in "$M88E" gate_ci_wait_clock S "$RO88E" 0 2>/dev/null)|$(n88e "$L88EF")|$(sn88e "$L88E" | grep -c '"다음": "CI 대기 한도"' || true)|$(n88e "$L88E2")|$(n88e "$L88E3")" \
+  "CI 대기|$T088E|CI 대기|0|CI 대기 한도|CI 대기 한도"
 
 # 6 — CI 합류 대상의 경계.
 L88E=$(l88e push "$W88E" "$R88E" 0 - '절단점=push'); L88E2=$(l88e push-fix "$W88E" "$R88E" 1 - '절단점=push')
@@ -53466,6 +53542,230 @@ cb60_line 통과 1 0
 check "88e: 회차 1 의 통과 뒤 수정 표는 수정 이고 수정 대상 파견이 받아진다" "$(cb60_next)|$(cj88e_fix plan)" "수정|0"
 for p88e in $P88E2; do kill "$p88e" 2>/dev/null || true; done
 cb60_foot
+
+# ---------------------------------------------------------------------------
+# 88h. 머지 먼저 — 선머지후리뷰 세그먼트는 구현 뒤 리뷰 전에 머지로 간다
+# --- section: 88h | group: sa | covers: gate_implement_next_of, gate_implement_next_raw, gate_merge_first_next, gate_ci_next, gate_base_review_head, gate_base_check_row, gate_check_merge_checks, act | anchors: 88h: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다, 88h: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다, 88h: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다, 88h: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다, 88h: 절단점이 머지 아래면 다음은 리뷰 다, 88h: 선리뷰후머지 세그먼트의 다음은 리뷰 다, 88h: 바인딩 없는 머지는 rc 2 다 ---
+#
+# 커밋 하나가 앞선 선머지후리뷰 세그먼트에 같은 다이제스트의 구현 정상 완료 두 행을
+# 두면 단계 B 다. checks 행 없음 → 실패 → 통과 순서로 원장에 행을 더하며 다음 과 머지
+# 행위의 rc 를 잰다. 통과 뒤에는 base-check 가 워크트리 팁을 판정하고 머지가 의무를 낸다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+mf_new '머지 먼저 — CI 층'
+check "88h: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다" "$(mf_inext)|$(sa_merge H; printf '%s' "$rc")" "CI 대기|3"
+mf_checks 실패
+check "88h: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다" "$(mf_inext)|$(sa_merge H; printf '%s' "$rc")" "CI 재실행|3"
+mf_checks 통과
+mf_n1=$(mf_inext)
+mf_base_check; mf_r1=$rc
+mf_bc=$(lsr_last_fields "$SA_LEDGER" '베이스 판정' 판정\ HEAD 판정)
+sp_act H 머지 gh api -X PUT "repos/t/$SA_ID/pulls/1/merge" -f sha=1111111111111111111111111111111111111111 -f merge_method=merge
+mf_rb=$rc
+sa_merge H; mf_r2=$rc
+check "88h: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다" \
+  "$mf_n1|$mf_r1|$mf_bc|$mf_r2" "선머지|0|$MF_TIP|일치|0"
+check "88h: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다" \
+  "$(mf_ob_open)|$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '머지 커밋')" "1|$MF_TIP"
+check "88h: 바인딩 없는 머지는 rc 2 다" "$mf_rb" "2"
+
+# 같은 원장 모양을 원장만으로 — 절단점이 머지 아래이거나 정책이 선리뷰후머지 면 리뷰 다.
+D88H="$lsr_root/s88h"; rm -rf "$D88H"; mkdir -p "$D88H"
+G88H="$D88H/repo"; W88H="$D88H/seg"
+( git init -q "$G88H" && cd "$G88H" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && printf 'a\n' > a.txt && git add -A && git commit -qm one && git branch -M main \
+  && git worktree add -q -b seg-88h "$W88H" main && cd "$W88H" && printf 'A\n' > a.txt && git commit -qam seg ) >/dev/null 2>&1
+m88h() {  # m88h <절단점> — 그 절단점의 대상 하나를 둔 매니페스트 경로
+  printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=%s\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88H" "$1" > "$D88H/m-$1.md"
+  printf '%s' "$D88H/m-$1.md"
+}
+l88h() {  # l88h <이름> <정책> — 구현 정상 완료 두 행(단계 B)의 세그먼트 S
+  local l; l=$(lsr_ledger "w88h-$1")
+  printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88h | 선행=없음 | 리뷰 정책=%s | prev=x\n' "$W88H" "$2" >> "$l"
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 종류=implement | 종단 부류=정상 완료 | plan_sha256=d1 | prev=x\n' >> "$l"
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 종류=implement | 종단 부류=정상 완료 | plan_sha256=d1 | prev=x\n' >> "$l"
+  printf '%s' "$l"
+}
+n88h() { lsr_in Linux "$1" - lsr_rp_in "$2" gate_implement_next_of S 2>/dev/null | sed -n 's/.*"다음": "\([^"]*\)".*/\1/p'; }
+check "88h: 절단점이 머지 아래면 다음은 리뷰 다" \
+  "$(n88h "$(l88h pr 선머지후리뷰)" "$(m88h PR)")|$(n88h "$(l88h push 선머지후리뷰)" "$(m88h push)")" "리뷰|리뷰"
+check "88h: 선리뷰후머지 세그먼트의 다음은 리뷰 다" \
+  "$(n88h "$(l88h strict 선리뷰후머지)" "$(m88h 머지)")|$(n88h "$(l88h deploy 선머지후리뷰)" "$(m88h 배포)")" "리뷰|선머지"
+
+# ---------------------------------------------------------------------------
+# 88h-2. 머지 먼저 — 사후리뷰 행이 머지된 세그먼트를 다시 열고 사후 리뷰를 낸다
+# --- section: 88h-2 | group: sa | covers: gate_segment_post_merge, gate_post_merge_next, gate_segment_review_next, gate_snapshot_review_next_json, gate_implement_next_raw, gate_review_line, gate_base_review_head, gate_issue_review_obligation, gate_segment_post_merge_base, gate_segment_commits_past_merged, gate_segment_merged_after_last_cycle, act, plan | anchors: 88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다, 88h-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다, 88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다, 88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다, 88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다, 88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다, 88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다, 88h-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다, 88h-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다, 88h-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다, 88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다, 88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다 ---
+#
+# 88h 와 같은 픽스처로 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤, 사후리뷰 행과
+# 그 사후 리뷰를 차례로 둔다. 다른 정책의 세그먼트와 머지가 없는 세그먼트에는 같은
+# 행이 거부된다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+mf_new '머지 먼저 — 사후리뷰'
+mf_checks 통과
+mf2_base=$( cd "$SA_SEGWT" && git rev-parse HEAD~1 )
+sa_merge H
+sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
+mf_rnext() { mf_snap | jq -r '[.review_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")'; }
+check "88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다" "[$(mf_inext)]|$(mf_rnext)" "[]|사후리뷰"
+check "88h-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다" \
+  "$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '분기점')" "$mf2_base"
+# 라우팅 런의 모양 그대로 — 라우터는 세그먼트 행에 베이스 sha 를 쓰지 않는다.
+sa_seg_state H 사후리뷰; mf2_r=$rc
+check "88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다" \
+  "$mf2_r|$(mf_snap | jq -r '.segments[] | select(.id == "H") | .["상태"]')|$(mf_rnext)" "0|사후리뷰|사후리뷰"
+mf2_line() {  # mf2_line — 리뷰 줄의 --base-sha 와 --post-merge 값, `<베이스>|<커밋>`
+  sag review-line --manifest "$SA_MANIFEST" --segment H
+  printf '%s|%s' "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--base-sha") print $(i + 1) }')" \
+    "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--post-merge") print $(i + 1) }')"
+}
+check "88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$(mf2_line)" "$mf2_base|$MF_TIP"
+check "88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다" \
+  "$(mf_snap | jq -r '.unmet_condition_numbers | index(1) != null')" "true"
+sa_cycle H 1 0 0 "$MF_TIP"
+check "88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다" "$(mf_rnext)" "머지"
+mf2_fix=$(sa_commit '리드 수정')
+check "88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다" "$(mf_rnext)" "CI 대기"
+check "88h-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다" "$(mf2_line)" "$mf2_base|$mf2_fix"
+# 리드 수정의 재확인이 통과해 다시 머지되면, 그 머지의 사후 리뷰는 앞 cycle 이 읽은
+# HEAD 위에서도 파견된다. 머지 전에는 같은 HEAD 재리뷰로 거절되는 것과 짝으로 잰다.
+mf2_review() {  # mf2_review — 지금의 리뷰 줄로 리뷰 파견을 예보하고 같은 HEAD 거절 문면 유무를 찍는다
+  local l; sag review-line --manifest "$SA_MANIFEST" --segment H; l=$msg
+  sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment H --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+      --trigger '라우터 판단' --trigger-reason x -- review -p "$l"
+  case "$msg" in *"같은 HEAD 를 다시 리뷰하지 않습니다"*) printf '거절' ;; *) printf '통과' ;; esac
+}
+sa_cycle H 2 0 0 "$mf2_fix"
+mf_checks 통과 "$mf2_fix"
+check "88h-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다" "$(mf_rnext)|$(mf2_review)" "선머지|거절"
+sa_fulfil "$(sa_ob_id H)" >/dev/null
+sa_merge H; mf2_r2=$rc
+sa_seg_state H 머지됨 "머지 커밋=$mf2_fix" PR=2
+check "88h-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다" \
+  "$mf2_r2|$(mf_rnext)|$(mf2_review)|$(mf2_line)" "0|사후리뷰|통과|$mf2_base|$mf2_fix"
+sa_seg_row G 선리뷰후머지
+sa_seg_state G 사후리뷰; mf2_g=$rc
+sa_seg_row K 선머지후리뷰
+sa_seg_state K 사후리뷰; mf2_k=$rc
+check "88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_g" "2"
+check "88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_k" "2"
+
+# ---------------------------------------------------------------------------
+# 88h-3. 머지 먼저 — 통과한 사후 리뷰 전에는 종료 조건 12 가 세그먼트를 닫지 않는다
+# --- section: 88h-3 | group: sa | covers: gate_done_conditions, gate_obligation_covers, gate_segment_review_next_table, gate_segment_owes_apply, gate_segment_applied_since_merge, gate_segment_post_merge, act | anchors: 88h-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다, 88h-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다, 88h-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다, 88h-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다, 88h-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다, 88h-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다, 88h-3: 적용 완료 뒤 사후리뷰 원소가 나온다, 88h-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다 ---
+#
+# 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤 사후 리뷰의 cycle 행을 둔다. 적용이
+# 없는 대상에서 P1 이 남은 리뷰는 상태 행이 머지됨·완료 여도 조건 12 의 줄을 내고,
+# park 와 의무 없는 세그먼트는 붙잡히지 않는다. 적용이 있는 대상에서는 마지막 머지 뒤에
+# 적용 쪽 완료 행이 있어야 호출자 완료 가 받아진다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+mf_new '머지 먼저 — 조건 12 (P1 남음)'
+mf_checks 통과
+sa_merge H
+sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
+sa_cycle H 1 0 1 "$MF_TIP"
+check "88h-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다" "$(mf_u12 H)" "1"
+sa_seg_state H 완료; mf3_r=$rc
+check "88h-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다" "$mf3_r|$(mf_u12 H)" "0|1"
+sa_seg_state H park; mf3_rp=$rc
+check "88h-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다" "$mf3_rp|$(mf_u12 H)" "0|0"
+sa_seg_row K 선머지후리뷰
+sa_seg_state K park
+check "88h-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다" "$(mf_u12 K)" "0"
+
+mf_new '머지 먼저 — 조건 12 (통과)'
+mf_checks 통과
+sa_merge H
+sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
+sa_cycle H 1 0 0 "$MF_TIP"
+sa_seg_state H 완료; mf3_r=$rc
+check "88h-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다" "$mf3_r|$(mf_u12 H)" "0|0"
+
+MF_APPLY=1 mf_new '머지 먼저 — 적용'
+mf_checks 통과
+sa_merge H
+sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
+mf3_mrow=$(sa_seg_last H)
+sa_seg_state H 완료; mf3_r=$rc; mf3_msg=$msg
+case "$mf3_mrow|$mf3_msg" in *"적용=대기"*"|"*"적용이 남은"*) mf3_got=거부 ;; *) mf3_got="$mf3_mrow|$mf3_msg" ;; esac
+check "88h-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다" "$mf3_r|$mf3_got" "2|거부"
+# 적용 쪽 완료 행 — 게이트의 적용 경로가 쓰는 모양처럼 리뷰 정책을 이어 싣는다.
+printf -- '- `segment` | id=H | 상태=완료 | 워크트리=%s | 고정 커밋=%s | 머지 커밋=%s | 리뷰 정책=선머지후리뷰 | 적용=수렴\n' \
+  "$SA_SEGWT" "$MF_TIP" "$MF_TIP" >> "$SA_LEDGER"
+check "88h-3: 적용 완료 뒤 사후리뷰 원소가 나온다" \
+  "$(mf_snap | jq -r '[.review_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")')" "사후리뷰"
+sa_seg_state H 사후리뷰
+sa_cycle H 1 0 0 "$MF_TIP"
+sa_seg_state H 완료; mf3_r=$rc
+check "88h-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다" "$mf3_r|$(mf_u12 H)" "0|0"
+
+# ---------------------------------------------------------------------------
+# 88h-4. 머지 먼저 — 사후 리뷰의 수정 뒤 두 번째 머지가 새 의무와 재적용을 받는다
+# --- section: 88h-4 | group: sa | covers: gate_apply_preconditions, gate_segment_apply_state, gate_segment_owes_apply, gate_segment_post_merge, gate_implement_next_raw, gate_base_review_head, gate_apply_subject_proof, act, apply | anchors: 88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다, 88h-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다, 88h-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다, 88h-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다, 88h-4: 두 번째 머지됨 도 적용=대기 를 받는다, 88h-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다, 88h-4: 두 번째 적용이 통과한다, 88h-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다 ---
+#
+# 적용이 있는 대상에서 머지 먼저 한 바퀴를 두 번 돈다: 첫 머지 → 머지됨 → 적용 →
+# 사후 리뷰(P1 1건) → 의무 이행 → 재구현 → 두 번째 머지 → 머지됨 → 적용. 적용 전제는
+# cycle 대신 각 머지가 발행한 리뷰 의무 행을 증명으로 읽는다. 두 번째 머지의 push 는
+# 첫 머지 커밋이 올라간 베이스 대신 별도 참조로 보낸다 — 픽스처 원격에서 빨리감기가
+# 되지 않을 뿐 게이트가 재는 것은 같다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+pre_sb
+MF_APPLY=1 mf_new '머지 먼저 — 두 번째 머지'
+mf_checks 통과
+mf4_tip1=$MF_TIP
+mf4_base=$( cd "$SA_SEGWT" && git rev-parse HEAD~1 )
+sa_merge H
+mf4_m1=$(sb_land_merge)
+sa_seg_state H 머지됨 "머지 커밋=$mf4_m1" PR=1
+mf4_row1=$(sb_seg_last H)
+sb_apply H; mf4_a1=$rc
+mf4_last1=$(sb_seg_last H)
+case "$mf4_row1|$mf4_last1" in *"적용=대기"*"|"*"상태=완료"*"적용="*) mf4_g1=대기후완료 ;; *) mf4_g1="$mf4_row1 || $mf4_last1" ;; esac
+check "88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다" "$mf4_a1|$mf4_g1" "0|대기후완료"
+mf4_sp() {  # mf4_sp <M> — 적용 정산의 대상 증명이 세운 리뷰 HEAD, 또는 x:<사유>
+  if gate_apply_subject_proof main H "$1"; then printf '%s' "$GATE_APPLY_PROOF_HEAD"; else printf 'x:%s' "$GATE_APPLY_PROOF_WHY"; fi
+}
+check "88h-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다" \
+  "$(lsr_in - "$SA_LEDGER" - lsr_rp_in "$SA_MANIFEST" mf4_sp "$mf4_m1")" "$mf4_tip1"
+
+sa_seg_state H 사후리뷰 "베이스 sha=$mf4_base"
+sa_cycle H 1 0 1 "$mf4_tip1"
+mf4_tip2=$(sa_commit '사후 리뷰 수정')
+mf_impl d2; mf_impl d2
+mf_checks 통과 "$mf4_tip2"
+sa_merge H "$SA_SEGBR:refs/heads/mf4-second"; mf4_rr=$rc
+mf4_rule=아님; if sa_names_rule; then mf4_rule=룰; fi
+check "88h-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다" "$mf4_rr|$mf4_rule" "3|룰"
+sa_fulfil "$(sa_ob_id H)"; mf4_rf=$rc
+sa_merge H "$SA_SEGBR:refs/heads/mf4-second"; mf4_r2=$rc
+check "88h-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다" \
+  "$mf4_rf|$mf4_r2|$(mf_ob_open)|$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '머지 커밋')" "0|0|1|$mf4_tip2"
+
+# 둘째 부모가 첫 머지의 팁인 머지 커밋으로 머지됨 을 쓰면 새 의무와 맞지 않는다.
+# 두 번째 팁을 먼저 베이스에 올린다 — 머지됨 행은 워크트리 팁의 착지를 확인한다.
+mf4_m2=$(sb_land_merge)
+sa_seg_state H 머지됨 "머지 커밋=$mf4_m1" PR=2
+mf4_row2=$(sb_seg_last H)
+case "$mf4_row2" in *"적용=대기"*) mf4_g2=대기 ;; *) mf4_g2=$mf4_row2 ;; esac
+check "88h-4: 두 번째 머지됨 도 적용=대기 를 받는다" "$mf4_g2" "대기"
+mf4_rows=$(sa_base)
+sb_apply H
+sb_refused_clean "88h-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다" 4 "$mf4_rows" H
+sa_seg_state H 머지됨 "머지 커밋=$mf4_m2" PR=2
+sb_apply H; mf4_a2=$rc
+mf4_last2=$(sb_seg_last H)
+case "$mf4_last2" in *"상태=완료"*"적용="*) mf4_last2=완료 ;; esac
+check "88h-4: 두 번째 적용이 통과한다" "$mf4_a2|$mf4_last2" "0|완료"
+check "88h-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다" \
+  "$(lsr_in - "$SA_LEDGER" - lsr_rp_in "$SA_MANIFEST" mf4_sp "$mf4_m2")" "$mf4_tip2"
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
