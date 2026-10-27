@@ -24369,6 +24369,43 @@ gate_segment_obligation_tip() {
     | gate_rows_field_eq '상태' '미이행' | tail -1 | gate_rows_field_values '머지 커밋'
 }
 
+gate_segment_post_merge_base() {
+  # gate_segment_post_merge_base <segment> — the `분기점` of the segment's first
+  # issued `리뷰 의무` row that carries one: where the branch left the base before
+  # its first merge, empty when no row recorded it. The first and not the last,
+  # because a later merge's fork point is the tip the earlier merge landed, and a
+  # review diffed from there would leave the earlier merge's commits unread.
+  { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$1" \
+    | gate_rows_field_eq '상태' '미이행' | gate_rows_field_values '분기점' \
+    | awk '/^[0-9a-f]+$/ { print; exit }'
+}
+
+gate_segment_commits_past_merged() {
+  # gate_segment_commits_past_merged <segment> — how many commits the segment
+  # worktree's HEAD carries past the tip its last merge put on the base (the last
+  # issued `리뷰 의무` row's `머지 커밋`): a lead fix or a re-implementation that
+  # has not merged yet. Empty when either end cannot be read. `다음` after the
+  # deferred review and the review line both read it, so the two never disagree
+  # on whether the merged commit still holds everything the branch carries.
+  local tip wt
+  tip=$(gate_segment_obligation_tip "$1")
+  wt=$(gate_segment_worktree "$1")
+  { [ -n "$tip" ] && [ -n "$wt" ] && [ -d "$wt" ]; } || return 0
+  { cd "$wt" && git rev-list --count "$tip..HEAD"; } 2>/dev/null || true
+}
+
+gate_segment_merged_after_last_cycle() {
+  # gate_segment_merged_after_last_cycle <segment> — a merge-first segment whose
+  # last `머지됨` row stands after its last `cycle` row: that merge's commit has
+  # not been re-verified by any review yet, so the review it owes is due even on
+  # a HEAD an earlier cycle already read.
+  local ml cl
+  gate_segment_merge_first "$1" || return 1
+  ml=$(gate_segment_merged_line "$1")
+  cl=$(gate_apply_line_of 'cycle' '세그먼트' "$1")
+  [ -n "$ml" ] && [ -n "$cl" ] && [ "$ml" -gt "$cl" ]
+}
+
 gate_segment_post_merge() {
   # gate_segment_post_merge <segment> — a merge-first segment whose merge waits
   # on the review it deferred: a `리뷰 의무` row of the segment exists, and its
@@ -24396,20 +24433,14 @@ gate_post_merge_next() {
   # base — except that a passing value reads `선머지` (with its CI layer) when
   # the worktree HEAD carries commits past the merged tip: a lead fix the
   # review asked for has not merged yet.
-  local seg=$1 ml cl nx tip wt n=''
-  ml=$(gate_segment_merged_line "$seg")
-  cl=$(gate_apply_line_of 'cycle' '세그먼트' "$seg")
-  if [ -z "$cl" ] || { [ -n "$ml" ] && [ "$cl" -lt "$ml" ]; }; then
+  local seg=$1 nx n=''
+  if [ -z "$(gate_apply_line_of 'cycle' '세그먼트' "$seg")" ] || gate_segment_merged_after_last_cycle "$seg"; then
     printf '사후리뷰'
     return 0
   fi
   nx=$(gate_segment_review_next_table "$seg")
   if [ "$nx" = '머지' ] || [ "$nx" = '이월 머지' ]; then
-    tip=$(gate_segment_obligation_tip "$seg")
-    wt=$(gate_segment_worktree "$seg")
-    if [ -n "$tip" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
-      n=$( { cd "$wt" && git rev-list --count "$tip..HEAD"; } 2>/dev/null || true)
-    fi
+    n=$(gate_segment_commits_past_merged "$seg")
     case "$n" in
       ''|0|*[!0-9]*) : ;;
       *) gate_merge_first_next "$seg"; return 0 ;;
@@ -25546,7 +25577,7 @@ gate_review_line() {
   # document argument from `설계는 ` to the end of the prompt. `--no-slice` is
   # the gate's own and never reaches the prompt: it drops `--slice` for the one
   # review that answers a `cycle` row refused for its other-slice section.
-  local seg=$1 rows br n rp base decl doc line a pm slice=1
+  local seg=$1 rows br n rp base decl doc line a pm pmseg wtip slice=1
   local -a extra=()
   shift
   for a in "$@"; do
@@ -25568,15 +25599,29 @@ gate_review_line() {
   rp=$(gate_review_report_path "$seg")
   line="/cc-cmds:review-unattended $br --report-path $rp"
   if [ "$slice" = "1" ] && [ "$(gate_slicing_branch)" = "선언통치" ]; then line="$line --slice $seg"; fi
+  pmseg=0
+  gate_segment_post_merge "$seg" && pmseg=1
   base=$(printf '%s\n' "$rows" | gate_rows_field_values '베이스 sha' | awk 'NF { v = $0 } END { print v }')
+  # A MERGED BRANCH HAS NO BASE OF ITS OWN TO DERIVE. Its tip is an ancestor of
+  # the base after the merge, so a review left to find its base from the pull
+  # request diffs nothing. A routed run writes no `베이스 sha` on its segment
+  # rows, so the line takes the fork point the merge's obligation recorded.
+  [ -n "$base" ] || [ "$pmseg" = 0 ] || base=$(gate_segment_post_merge_base "$seg")
   [ -z "$base" ] || line="$line --base-sha $base"
   # A MERGE-FIRST SEGMENT PAST ITS MERGE is reviewed after it landed, so the
   # line names the merge commit its last `머지됨` row recorded: the review
   # re-runs the design's checks on what the base now holds. The diff still
-  # spans `--base-sha` to the branch tip.
-  if gate_segment_post_merge "$seg"; then
+  # spans `--base-sha` to the branch tip. When the worktree carries commits past
+  # the merged tip — a lead fix the review asked for, not merged yet — the merge
+  # commit holds none of them, so the line names the worktree tip instead and
+  # the checks run on the fix they are meant to judge.
+  if [ "$pmseg" = 1 ]; then
     pm=$(printf '%s\n' "$rows" | gate_rows_field_eq '상태' '머지됨' | gate_rows_field_values '머지 커밋' \
            | awk 'NF { v = $0 } END { print v }')
+    case "$(gate_segment_commits_past_merged "$seg")" in
+      ''|0|*[!0-9]*) : ;;
+      *) wtip=$(gate_segment_tip "$seg" 2>/dev/null) && pm=$wtip ;;
+    esac
     [ -z "$pm" ] || line="$line --post-merge $pm"
   fi
   decl=$(gate_segment_decl_whole "$seg")
@@ -34603,7 +34648,8 @@ EOF
 
       # The carried fields come from the row being closed and never from argv.
       # `세그먼트` is what ties the fulfillment to the merge it belongs to,
-      # `생성 등급` is the value the excusal rule reads later, and `대상` names the
+      # `생성 등급` is the value the excusal rule reads later, `분기점` is the fork
+      # point the deferred review's line reads, and `대상` names the
       # repository the landing test just ran in — a router that could restate any
       # of them could also restate it wrongly. They sit AFTER `"$@"` so the
       # router's argv is overwritten rather than merely accompanied.
@@ -34617,6 +34663,7 @@ EOF
         "세그먼트=$oseg" \
         "대상=${oalias:-$alias}" \
         "머지 커밋=$omerge" \
+        "분기점=$(_f=$(gate_row_field "$oprior" '분기점'); printf '%s' "${_f:--}")" \
         "생성 등급=$(gate_row_field "$oprior" '생성 등급')" \
         "이행 판정=$overdict" \
         "발행 시각=$(gate_row_field "$oprior" '발행 시각')" \
@@ -37517,13 +37564,35 @@ gate_apply_subject_proof() {
   # renumbering merge of it. Left in GATE_APPLY_PROOF_HEAD on success, and
   # GATE_APPLY_PROOF_WHY says why not otherwise. Both are globals, so call it
   # in this shell, not inside `$( )`, where the reason would be lost.
-  local alias="$1" seg="$2" m="$3" crow rh root rhfull m2 t
+  #
+  # A MERGE-FIRST SEGMENT PROVES THE HEAD WITH ITS OBLIGATIONS, as precondition
+  # 4 does on that branch: its first apply has no `cycle` row at all, and after a
+  # second merge the last `cycle` row belongs to the earlier merge. The head is
+  # the `머지 커밋` of the segment's issued `리뷰 의무` row that M^2 names, or of
+  # its last one when M^2 is a release-metadata renumbering merge.
+  local alias="$1" seg="$2" m="$3" crow rh root rhfull m2 t ob what='cycle 행의 리뷰 HEAD'
   GATE_APPLY_PROOF_HEAD=""; GATE_APPLY_PROOF_WHY=""
-  crow=$(gate_segment_last_cycle_row "$seg")
-  rh=$(gate_row_field "$crow" '리뷰 HEAD')
   root=$(alias_root "$alias" 2>/dev/null || true)
-  if [ -z "$crow" ] || [ -z "$rh" ]; then GATE_APPLY_PROOF_WHY="이 런의 cycle 행에서 리뷰 HEAD 를 읽지 못했다"; return 1; fi
   if [ -z "$root" ] || [ ! -d "$root" ]; then GATE_APPLY_PROOF_WHY="대상 ${alias} 의 루트를 찾지 못했다"; return 1; fi
+  if gate_segment_merge_first "$seg"; then
+    what='리뷰 의무 행의 머지 커밋'
+    [ -n "$m" ] || { GATE_APPLY_PROOF_WHY="고정 커밋이 없다"; return 1; }
+    m2=$( cd "$root" && git rev-parse --verify -q "${m}^2" 2>/dev/null || true)
+    rh=''
+    while IFS= read -r ob; do
+      [ -n "$ob" ] || continue
+      rh=$ob
+      [ -n "$m2" ] && [ "$( cd "$root" && git rev-parse --verify -q "${ob}^{commit}" 2>/dev/null || true)" = "$m2" ] && break
+    done <<EOF
+$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$seg" \
+     | gate_rows_field_eq '상태' '미이행' | gate_rows_field_values '머지 커밋')
+EOF
+    [ -n "$rh" ] || { GATE_APPLY_PROOF_WHY="이 런의 리뷰 의무 행에서 머지 커밋을 읽지 못했다"; return 1; }
+  else
+    crow=$(gate_segment_last_cycle_row "$seg")
+    rh=$(gate_row_field "$crow" '리뷰 HEAD')
+    if [ -z "$crow" ] || [ -z "$rh" ]; then GATE_APPLY_PROOF_WHY="이 런의 cycle 행에서 리뷰 HEAD 를 읽지 못했다"; return 1; fi
+  fi
   rhfull=$( cd "$root" && git rev-parse --verify -q "${rh}^{commit}" 2>/dev/null || true)
   [ -n "$rhfull" ] || { GATE_APPLY_PROOF_WHY="리뷰 HEAD ${rh} 를 로컬에서 풀지 못했다"; return 1; }
   [ -n "$m" ] || { GATE_APPLY_PROOF_WHY="고정 커밋이 없다"; return 1; }
@@ -37533,7 +37602,7 @@ gate_apply_subject_proof() {
   if [ -n "$m2" ] && [ -n "$t" ] && gate_meta_resolved "$root" "$rhfull" "$m2" "$t"; then
     GATE_APPLY_PROOF_HEAD=$rhfull; return 0
   fi
-  GATE_APPLY_PROOF_WHY="고정 커밋 ${m} 의 둘째 부모(${m2:-?})가 리뷰 HEAD(${rh})로 증명되지 않는다"
+  GATE_APPLY_PROOF_WHY="고정 커밋 ${m} 의 둘째 부모(${m2:-?})가 ${what}(${rh})로 증명되지 않는다"
   return 1
 }
 
@@ -40595,7 +40664,8 @@ gate_verb_act() {
     # cycle, the one whose design-level items it reads. A review dispatch
     # with no implement or lead-fix row after the segment's last cycle row
     # passes only when the segment's tree has moved past that row's
-    # `리뷰 HEAD` — the same head reviewed again writes the same report. Its
+    # `리뷰 HEAD` — the same head reviewed again writes the same report — or
+    # when a merge-first segment's `머지됨` row follows that cycle row. Its
     # `--slice` must name the segment it reviews, or the report would drop that
     # segment's own findings from the count as another slice's. These reach the
     # routing path only — the driver's dispatches do not pass here, and its own
@@ -40633,8 +40703,11 @@ gate_verb_act() {
             fi ;;
         esac ;;
       review)
+        # A merge-first segment merged again after its last cycle owes the
+        # review of that new merge commit, whatever HEAD the cycle read.
         rn_row=$(gate_segment_last_cycle_row "$segment")
-        if [ -n "$rn_row" ] && ! gate_segment_authored_after_last_cycle "$segment"; then
+        if [ -n "$rn_row" ] && ! gate_segment_authored_after_last_cycle "$segment" \
+           && ! gate_segment_merged_after_last_cycle "$segment"; then
           rn_rhead=$(gate_row_field "$rn_row" '리뷰 HEAD')
           rn_head=$( { cd "$(gate_act_worktree "$alias" "$segment")" 2>/dev/null \
                        && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || true)
@@ -44050,12 +44123,26 @@ gate_issue_review_obligation() {
   # Membership is decided over a VALUE rather than over a pipeline exit status:
   # ids are `RO-` plus hex and carry no whitespace, so the word-splitting loop
   # this file already uses for the same list reads them exactly.
-  local open_id
+  local open_id fork base wt
   for open_id in $(gate_unfulfilled_review_obligations "$seg"); do
     [ "$open_id" = "$id" ] && return 0
   done
+  # `분기점` IS THE FORK POINT, READ WHILE IT CAN STILL BE READ. The issuer runs
+  # before the merge lands, so the local remote-tracking base does not hold the
+  # tip yet and its merge-base with the tip is where the branch left the base.
+  # After the merge the tip is an ancestor of the base and that question answers
+  # the tip itself. The deferred review's line takes its `--base-sha` from here:
+  # a routed run writes no `베이스 sha` on its segment rows, and a review left to
+  # derive its own base from a merged pull request finds no commit to read.
+  fork='-'
+  base=$(target_field "$alias" '베이스 브랜치' 2>/dev/null || true)
+  wt=$(gate_segment_worktree "$seg" 2>/dev/null || true)
+  if [ -n "$base" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
+    fork=$( { cd "$wt" && git merge-base "$tip" "refs/remotes/origin/$base"; } 2>/dev/null || true)
+    case "$fork" in ''|*[!0-9a-f]*|"$tip") fork='-' ;; esac
+  fi
   gate_append '리뷰 의무' "의무 id=$id" "상태=미이행" "세그먼트=$seg" \
-    "대상=$alias" "머지 커밋=$tip" "생성 등급=$grade" \
+    "대상=$alias" "머지 커밋=$tip" "분기점=$fork" "생성 등급=$grade" \
     "발행 시각=$(now_iso)" "이행 시각=-"
   log "리뷰 의무 발행 $id — 세그먼트 $seg · 대상 $alias · 머지 커밋 $tip (선머지후리뷰)"
 }

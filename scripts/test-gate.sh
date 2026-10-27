@@ -53508,7 +53508,7 @@ check "88h: 선리뷰후머지 세그먼트의 다음은 리뷰 다" \
 
 # ---------------------------------------------------------------------------
 # 88h-2. 머지 먼저 — 사후리뷰 행이 머지된 세그먼트를 다시 열고 사후 리뷰를 낸다
-# --- section: 88h-2 | group: sa | covers: gate_segment_post_merge, gate_post_merge_next, gate_segment_review_next, gate_snapshot_review_next_json, gate_implement_next_raw, gate_review_line, gate_base_review_head, act | anchors: 88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다, 88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다, 88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다, 88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다, 88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다, 88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다, 88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다, 88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다 ---
+# --- section: 88h-2 | group: sa | covers: gate_segment_post_merge, gate_post_merge_next, gate_segment_review_next, gate_snapshot_review_next_json, gate_implement_next_raw, gate_review_line, gate_base_review_head, gate_issue_review_obligation, gate_segment_post_merge_base, gate_segment_commits_past_merged, gate_segment_merged_after_last_cycle, act, plan | anchors: 88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다, 88h-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다, 88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다, 88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다, 88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다, 88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다, 88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다, 88h-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다, 88h-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다, 88h-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다, 88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다, 88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다 ---
 #
 # 88h 와 같은 픽스처로 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤, 사후리뷰 행과
 # 그 사후 리뷰를 차례로 둔다. 다른 정책의 세그먼트와 머지가 없는 세그먼트에는 같은
@@ -53523,19 +53523,42 @@ sa_merge H
 sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
 mf_rnext() { mf_snap | jq -r '[.review_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")'; }
 check "88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다" "[$(mf_inext)]|$(mf_rnext)" "[]|사후리뷰"
-sa_seg_state H 사후리뷰 "베이스 sha=$mf2_base"; mf2_r=$rc
+check "88h-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다" \
+  "$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '분기점')" "$mf2_base"
+# 라우팅 런의 모양 그대로 — 라우터는 세그먼트 행에 베이스 sha 를 쓰지 않는다.
+sa_seg_state H 사후리뷰; mf2_r=$rc
 check "88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다" \
   "$mf2_r|$(mf_snap | jq -r '.segments[] | select(.id == "H") | .["상태"]')|$(mf_rnext)" "0|사후리뷰|사후리뷰"
-sag review-line --manifest "$SA_MANIFEST" --segment H
-mf2_got=$msg
-case "$msg" in *"--base-sha $mf2_base"*"--post-merge $MF_TIP"*) mf2_got=둘다 ;; esac
-check "88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$mf2_got" "둘다"
+mf2_line() {  # mf2_line — 리뷰 줄의 --base-sha 와 --post-merge 값, `<베이스>|<커밋>`
+  sag review-line --manifest "$SA_MANIFEST" --segment H
+  printf '%s|%s' "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--base-sha") print $(i + 1) }')" \
+    "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--post-merge") print $(i + 1) }')"
+}
+check "88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$(mf2_line)" "$mf2_base|$MF_TIP"
 check "88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다" \
   "$(mf_snap | jq -r '.unmet_condition_numbers | index(1) != null')" "true"
 sa_cycle H 1 0 0 "$MF_TIP"
 check "88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다" "$(mf_rnext)" "머지"
-sa_commit '리드 수정' >/dev/null
+mf2_fix=$(sa_commit '리드 수정')
 check "88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다" "$(mf_rnext)" "CI 대기"
+check "88h-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다" "$(mf2_line)" "$mf2_base|$mf2_fix"
+# 리드 수정의 재확인이 통과해 다시 머지되면, 그 머지의 사후 리뷰는 앞 cycle 이 읽은
+# HEAD 위에서도 파견된다. 머지 전에는 같은 HEAD 재리뷰로 거절되는 것과 짝으로 잰다.
+mf2_review() {  # mf2_review — 지금의 리뷰 줄로 리뷰 파견을 예보하고 같은 HEAD 거절 문면 유무를 찍는다
+  local l; sag review-line --manifest "$SA_MANIFEST" --segment H; l=$msg
+  sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment H --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+      --trigger '라우터 판단' --trigger-reason x -- review -p "$l"
+  case "$msg" in *"같은 HEAD 를 다시 리뷰하지 않습니다"*) printf '거절' ;; *) printf '통과' ;; esac
+}
+sa_cycle H 2 0 0 "$mf2_fix"
+mf_checks 통과 "$mf2_fix"
+check "88h-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다" "$(mf_rnext)|$(mf2_review)" "선머지|거절"
+sa_fulfil "$(sa_ob_id H)" >/dev/null
+sa_merge H; mf2_r2=$rc
+sa_seg_state H 머지됨 "머지 커밋=$mf2_fix" PR=2
+check "88h-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다" \
+  "$mf2_r2|$(mf_rnext)|$(mf2_review)|$(mf2_line)" "0|사후리뷰|통과|$mf2_base|$mf2_fix"
 sa_seg_row G 선리뷰후머지
 sa_seg_state G 사후리뷰; mf2_g=$rc
 sa_seg_row K 선머지후리뷰
@@ -53596,7 +53619,7 @@ check "88h-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 
 
 # ---------------------------------------------------------------------------
 # 88h-4. 머지 먼저 — 사후 리뷰의 수정 뒤 두 번째 머지가 새 의무와 재적용을 받는다
-# --- section: 88h-4 | group: sa | covers: gate_apply_preconditions, gate_segment_apply_state, gate_segment_owes_apply, gate_segment_post_merge, gate_implement_next_raw, gate_base_review_head, act, apply | anchors: 88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다, 88h-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다, 88h-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다, 88h-4: 두 번째 머지됨 도 적용=대기 를 받는다, 88h-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다, 88h-4: 두 번째 적용이 통과한다 ---
+# --- section: 88h-4 | group: sa | covers: gate_apply_preconditions, gate_segment_apply_state, gate_segment_owes_apply, gate_segment_post_merge, gate_implement_next_raw, gate_base_review_head, gate_apply_subject_proof, act, apply | anchors: 88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다, 88h-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다,88h-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다, 88h-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다, 88h-4: 두 번째 머지됨 도 적용=대기 를 받는다, 88h-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다, 88h-4: 두 번째 적용이 통과한다, 88h-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다 ---
 #
 # 적용이 있는 대상에서 머지 먼저 한 바퀴를 두 번 돈다: 첫 머지 → 머지됨 → 적용 →
 # 사후 리뷰(P1 1건) → 의무 이행 → 재구현 → 두 번째 머지 → 머지됨 → 적용. 적용 전제는
@@ -53619,6 +53642,11 @@ sb_apply H; mf4_a1=$rc
 mf4_last1=$(sb_seg_last H)
 case "$mf4_row1|$mf4_last1" in *"적용=대기"*"|"*"상태=완료"*"적용="*) mf4_g1=대기후완료 ;; *) mf4_g1="$mf4_row1 || $mf4_last1" ;; esac
 check "88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다" "$mf4_a1|$mf4_g1" "0|대기후완료"
+mf4_sp() {  # mf4_sp <M> — 적용 정산의 대상 증명이 세운 리뷰 HEAD, 또는 x:<사유>
+  if gate_apply_subject_proof main H "$1"; then printf '%s' "$GATE_APPLY_PROOF_HEAD"; else printf 'x:%s' "$GATE_APPLY_PROOF_WHY"; fi
+}
+check "88h-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다" \
+  "$(lsr_in - "$SA_LEDGER" - lsr_rp_in "$SA_MANIFEST" mf4_sp "$mf4_m1")" "$mf4_tip1"
 
 sa_seg_state H 사후리뷰 "베이스 sha=$mf4_base"
 sa_cycle H 1 0 1 "$mf4_tip1"
@@ -53648,6 +53676,8 @@ sb_apply H; mf4_a2=$rc
 mf4_last2=$(sb_seg_last H)
 case "$mf4_last2" in *"상태=완료"*"적용="*) mf4_last2=완료 ;; esac
 check "88h-4: 두 번째 적용이 통과한다" "$mf4_a2|$mf4_last2" "0|완료"
+check "88h-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다" \
+  "$(lsr_in - "$SA_LEDGER" - lsr_rp_in "$SA_MANIFEST" mf4_sp "$mf4_m2")" "$mf4_tip2"
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
