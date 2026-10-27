@@ -4478,6 +4478,29 @@ run_routed() {
   [ "$rec" = "1" ]
 }
 
+hotfix_routing_check() {
+  # hotfix_routing_check — 0 unless the manifest's plan reads `run_profile:
+  # hotfix` and this run is not routed; then 1 with the reason on stdout. Only a
+  # routed run has the merge-first path a hotfix plan's `선머지후리뷰` slices
+  # run on, so an unrouted hotfix run would review before it merges.
+  #
+  # AFTER `rundir_init`, because the routing record is written inside it. At
+  # `check_manifest` "no record yet" and "not routed" read the same; here both
+  # are refused, the opposite of `routing_guard_check`, which lets a run with no
+  # record through as unrouted. A plan without the key reads `standard`.
+  local profile rec="없음"
+  [ -n "${MANIFEST:-}" ] && [ -f "$MANIFEST" ] || return 0
+  profile=$(manifest_plan_field '.run_profile // "standard"')
+  [ "$profile" = "hotfix" ] || return 0
+  run_routed && return 0
+  if [ -e "${RUN_DIR:-}/routing-guard" ]; then
+    rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
+    rec=${rec:-빈 값}
+  fi
+  printf '핫픽스 계획은 라우팅 런에서만 기동합니다 — 런 라우팅 기록 %s' "$rec"
+  return 1
+}
+
 routing_guard_check() {
   # routing_guard_check — 0 when the run's record and its inventory baseline
   # agree, 1 with the reason on stdout when they do not. No record passes (the
@@ -13761,6 +13784,10 @@ else
 fi
 
 rundir_init
+
+# BEFORE THE EXIT TRAP AND THE LEDGER: a hotfix plan on an unrouted run does not
+# start at all, so it leaves no end row and no ledger behind.
+hotfix_refusal=$(hotfix_routing_check) || die "$hotfix_refusal"
 
 # THE RESIDUAL REPORT SITS ON THE EXIT PATH, not only on the walk's tail. A run
 # that stopped at a `die`, a signal or the cycle budget wrote its `done` file and
