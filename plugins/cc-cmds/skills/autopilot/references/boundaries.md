@@ -234,5 +234,34 @@ Then take its whole-file `sha256` (`shasum -a 256`) and append `단계=인터뷰
 
 **This step sits after 5m because it enters nothing 5m freezes.** The interview record, the manifest and the authorization record are byte-identical on both branches — which is exactly what lets the deferred path perform Step 6 unchanged and diverge only at Step 7.
 
+## 핫픽스 킥오프의 고정값과 승인 화면
+
+A `--hotfix` kickoff (SKILL.md 「핫픽스 킥오프」) asks four questions. Every other answer of this file is filled here, and all of them are shown on the one approval screen below — a default is frozen only after a person has seen it, and this screen is where they see it.
+
+**Fixed values.**
+
+- **Review policy ceiling** — `선머지후리뷰` on every target row. Every hotfix cutpoint is `머지` or `배포`, so the field is always written (`references/freeze.md`).
+- **Launch** — immediate. 5n is not asked.
+- **No `재킥오프` row** — a hotfix run is not continued by a successor the seat opens (`references/freeze.md`).
+- **No roster** — the design is the `solo` stage, one headless lead. 5k only names the document.
+- **Document path** — `docs/<레포>/hotfix-<의도 슬러그>.md`, relative to the home target's repository root, where `<레포>` is the `<name>` of the home target's `<owner>/<name>` and the slug is folded from the confirmed 「고칠 것」 line as 5k folds an intent.
+- **Only when the defaults file gives no value**: the deadline is the kickoff time plus six hours (`kickoff-defaults.sh --resolve-deadline +6h`, which also captures nothing for a `재킥오프` row, since there is none), the ladder is `2` rungs, the terminal-act cap is `없음`, and there are no `자동 채택` rows and no `플러그인 허용` rows. The cost ceiling and the stagnation bound take the defaults file's value and are `없음` otherwise; the deadline then ends the run.
+- **What the defaults file refuses by name** takes a fixed answer and is shown, never asked: the termination point is question (1)'s 「완료 기준」 line, the launch is immediate, there is no deferral, the banner switch is 5i's resolved state said on the screen, and the apply command and radius are question (3)'s tail.
+- **Not asked**: 5s (there is no document yet to declare predecessors) and 5u. A job that passes only once a person labels the pull request stops that segment for a person, as a run without a `라벨 인정` row does — say so on the screen when a target's base branch carries such a job.
+
+**Standard pre-authorization rows.** Offer these `사전 인가` form rows, each with its `사유`, and freeze only the rows the screen showed and the approval kept: `git fetch`, `git push`, `git worktree` (the segment worktree and its branch), `gh pr create`, `gh pr view`, `gh pr checks` (the segment's pull request and its checks), `gh api -X PUT` (워크트리 HEAD 에 결속된 REST 머지 — 머지 말고도 모든 대상의 PUT REST 호출을 승인 없이 엽니다), and `gh run view` (a failed check's log). One row reaches every target, as 5p says. `act-allow` rows the defaults helper printed as `적용` are shown beside them.
+
+**The approval screen.** Append the trace line `기본값 고지`, then show, without emoji:
+
+- **first, when any value widens what the run may do**, the block headed 「[이번 런이 새로 갖게 되는 권한] — 「이대로」 한 번으로 아래 권한이 모두 이 런에 생깁니다」: the review policy ceiling `선머지후리뷰` and every defaults row whose widening column is `1`, each in bold with the tag `[권한 확대]`, a repository row prefixed with its slug;
+- the fixed graph — `design` (one headless lead writes and freezes the design from the confirmed sentences, no audit), `implement` (two processes split by a plan-emission gate), `review` (an agent team) — and that each slice merges first and is reviewed after, the review's findings sending it round again;
+- per target: the cutpoint, the review policy ceiling, the dev and deploy-trigger identifiers, and, on `배포`, the apply values question (3) took;
+- the run-wide values: deadline, ladder, cost ceiling, stagnation bound, terminal-act cap, `자동 채택` and `플러그인 허용` rows, and the banner state — each marked `기본값` or `고정값` by where it came from;
+- the document path, and the standard pre-authorization rows;
+- **every `unresolved` item of the plan, read as a stop notice**: these are the enforcement-surface paths, and each says that the run stops at that edit, with Step 3's sentence on whether the seat can apply that class;
+- the stage-rules status Step 3 shows, and the `무시` rows of the defaults helper with their reasons.
+
+Then ask one question — header `계획 승인`, options `이대로` and `고칠 항목 지정`, **no recommendation suffix on either** (the screen widens the run, and the skill does not recommend accepting that). `고칠 항목 지정` leads to one multi-select question (header `고칠 항목`) whose options are only the values on the screen that are not fixed — each target's cutpoint and identifiers and apply values, the deadline, the ladder, the cost ceiling, the stagnation bound, the terminal-act cap, the standard pre-authorization rows and the document path — and asks again only the values chosen, each as its question in this file asks it, then shows the screen again. The graph, the review policy ceiling, the launch and the `재킥오프` row are not offered: a person who wants them otherwise runs a kickoff without `--hotfix`. On `이대로` append the trace line `기본값 확정`; the utterance is recorded by `references/freeze.md` 「핫픽스 킥오프」.
+
 ---
 

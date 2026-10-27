@@ -54631,6 +54631,95 @@ tier_check "$(printf '%s' "$TIER_PLAN_OLD" | jq -c '. + {enforcement_surface: {j
 check "101: 키 이전 계획의 판정 키는 단언하지 않는다" "$TIER_RC/$TIER_OUT" "0/"
 
 # ---------------------------------------------------------------------------
+# 101h. 핫픽스 계획 표지는 고정 틀을 단언받고, 라우팅 런에서만 기동한다
+# --- section: 101h | group: tier | covers: tier, run_profile, enforcement_surface, check_manifest, hotfix_routing_check | anchors: 101h: 스키마가 run_profile 을 속성과 필수 키 양쪽에 둔다, 101h: 강제 표면 없는 핫픽스 계획이 통과한다, 101h: 감사 단계를 가진 핫픽스 계획은 거부된다, 101h: 표지 없는 기존 solo 계획은 통과한다, 101h: 확인됨 경로 하나와 예고 하나의 핫픽스 계획이 통과한다, 101h: 강제 표면 없음에 예고를 단 핫픽스 계획은 거부된다, 101h: 확인됨인데 예고가 없는 핫픽스 계획은 거부된다, 101h: 티어 판정 키가 없는 핫픽스 계획도 거부된다, 101h: 라우팅 기록 없는 런의 핫픽스 기동은 거부된다, 101h: 라우팅 기록 0 인 런의 핫픽스 기동은 거부된다, 101h: 라우팅 런의 핫픽스 기동은 통과한다, 101h: 표지 없는 계획은 라우팅 기록 없이도 기동한다 ---
+#
+# `--hotfix` 킥오프의 진입 판단은 그래프를 고르지 않고 고정 틀을 채운다. 검사기의
+# (f) 가 그 틀을 지킨다 — solo 티어, 단일 범위, 단계 design → implement → review,
+# 그리고 `unresolved` 는 강제 표면 판정이 낸 멈춤 예고의 수만큼만. 표지가 없는
+# 계획은 standard 로 읽혀 그대로 지나고, 티어 판정 키가 없어 검사기가 일찍 돌아오는
+# 계획에서도 (f) 는 돈다. 머지 먼저 경로는 라우팅 런에만 있으므로 run.sh 는 라우팅
+# 기록이 `1` 이 아닌 런에서 핫픽스 계획을 기동하지 않는다 — 기록이 없는 런도 거부다.
+# 이 절은 pre_tier 의 검사기 도우미만 쓰고, 매니페스트 픽스처는 여기서 만든다.
+# ---------------------------------------------------------------------------
+pre_tier
+check "101h: 스키마가 run_profile 을 속성과 필수 키 양쪽에 둔다" \
+  "$(jq -c '[(.properties.run_profile.enum // null), ((.required | index("run_profile")) != null)]' \
+    "$repo_root/plugins/cc-cmds/orchestrator/prompts/entry-plan.schema.json")" '[["hotfix","standard"],true]'
+HF101_STEPS='[{"id":"D1","skill":"design","summary":"설계","depends_on":[]},{"id":"I1","skill":"implement","summary":"구현","depends_on":["D1"]},{"id":"R1","skill":"review","summary":"리뷰","depends_on":["I1"]}]'
+HF101_ES_NONE='{"judgment":"없음","classes":[],"paths":[],"source":"의도","rationale":"x"}'
+HF101_ES_ONE='{"judgment":"확인됨","classes":["규칙카탈로그"],"paths":[{"path":"plugins/cc-cmds/orchestrator/rules/r.rule","class":"규칙카탈로그","slice":""}],"source":"의도","rationale":"룰 파일을 고친다"}'
+# hf101 <jq 갱신식> — 강제 표면 없는 핫픽스 고정 틀에 그 갱신을 얹은 계획.
+hf101() {
+  jq -nc --argjson st "$HF101_STEPS" --argjson es "$HF101_ES_NONE" \
+    '{design_required: true, design_tier_judged: "solo", design_tier: "solo", design_heavy_reasons: [],
+      estimated_files: 1, design_scope: "single", design_path: "none", run_profile: "hotfix",
+      steps: $st, unresolved: [], enforcement_surface: $es} | '"$1"
+}
+# hf101_bad <단언 이름> <jq 갱신식> — 핫픽스 단언의 문구로 거부되는지.
+hf101_bad() {
+  tier_check "$(hf101 "$2")"
+  case "$TIER_RC/$TIER_OUT" in
+    0/*) bad "$1" "통과했다" ;;
+    *"(f) 핫픽스 계획"*) ok "$1" ;;
+    *) bad "$1" "$TIER_OUT" ;;
+  esac
+}
+tier_check "$(hf101 '.')"
+check "101h: 강제 표면 없는 핫픽스 계획이 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+hf101_bad "101h: 감사 단계를 가진 핫픽스 계획은 거부된다" \
+  '.steps = [.steps[0], {id: "A1", skill: "design-audit", summary: "감사", depends_on: ["D1"]}] + .steps[1:]'
+tier_check "$TIER_PLAN_SOLO"
+check "101h: 표지 없는 기존 solo 계획은 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$(hf101 ".enforcement_surface = $HF101_ES_ONE | .unresolved = [\"이 런은 룰 파일 편집에서 멈춘다\"]")"
+check "101h: 확인됨 경로 하나와 예고 하나의 핫픽스 계획이 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+hf101_bad "101h: 강제 표면 없음에 예고를 단 핫픽스 계획은 거부된다" '.unresolved = ["대상 레포가 맞는가"]'
+hf101_bad "101h: 확인됨인데 예고가 없는 핫픽스 계획은 거부된다" ".enforcement_surface = $HF101_ES_ONE"
+hf101_bad "101h: split 단계를 가진 핫픽스 계획은 거부된다" \
+  '.steps += [{id: "S1", skill: "split", summary: "쪼개기", depends_on: ["D1"]}]'
+hf101_bad "101h: 가능성 판정에 예고 둘을 단 핫픽스 계획은 거부된다" \
+  '.enforcement_surface = {judgment: "가능성", classes: ["지침파일"], paths: [], source: "의도", rationale: "x"} | .unresolved = ["a", "b"]'
+hf101_bad "101h: team-4 핫픽스 계획은 거부된다" \
+  '.design_tier = "team-4" | .design_tier_judged = "team-4" | .design_heavy_reasons = ["x"]'
+hf101_bad "101h: 판정 키가 없는 핫픽스 계획은 거부된다" 'del(.enforcement_surface)'
+hf101_bad "101h: 두 값 밖의 표지는 거부된다" '.run_profile = "fast"'
+# 조기 반환 갈래 — 티어 판정 키가 없어도 (f) 는 돈다.
+hf101_bad "101h: 티어 판정 키가 없는 핫픽스 계획도 거부된다" \
+  'del(.design_tier_judged) | .steps += [{id: "A1", skill: "design-audit", summary: "감사", depends_on: ["D1"]}]'
+tier_check "$(hf101 'del(.design_tier_judged)')"
+check "101h: 티어 판정 키가 없는 고정 틀 핫픽스 계획은 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$(hf101 '.run_profile = "standard" | .steps = .steps[0:2]')"
+check "101h: standard 표지의 solo 계획은 핫픽스 단언을 받지 않는다" "$TIER_RC/$TIER_OUT" "0/"
+
+# 기동 검사 — run.sh 를 소싱해 hotfix_routing_check 하나를 부른다.
+# hf101_launch <계획 json> <routing-guard 내용, 없음이면 파일을 두지 않는다> — rc/출력.
+hf101_launch() {
+  local d
+  d=$(mktemp -d "$WORK/hf101h.XXXXXX")
+  printf '# 매니페스트\n\n## 실행 계획\n\n```json\n%s\n```\n' "$1" > "$d/manifest.md"
+  [ "$2" = "없음" ] || printf '%s\n' "$2" > "$d/routing-guard"
+  HF101_OUT=$(bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; MANIFEST="$2"; RUN_DIR="$3"; hotfix_routing_check' \
+    _ "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$d/manifest.md" "$d" 2>&1)
+  HF101_RC=$?
+}
+# hf101_refused <단언 이름> — 0 이 아닌 종료 코드와 핫픽스·라우팅을 함께 적은 한 줄.
+hf101_refused() {
+  case "$HF101_RC/$(printf '%s\n' "$HF101_OUT" | grep -c .)/$HF101_OUT" in
+    0/*) bad "$1" "통과했다" ;;
+    */1/*핫픽스*라우팅*) ok "$1" ;;
+    *) bad "$1" "rc=$HF101_RC $HF101_OUT" ;;
+  esac
+}
+hf101_launch "$(hf101 '.')" 없음
+hf101_refused "101h: 라우팅 기록 없는 런의 핫픽스 기동은 거부된다"
+hf101_launch "$(hf101 '.')" 0
+hf101_refused "101h: 라우팅 기록 0 인 런의 핫픽스 기동은 거부된다"
+hf101_launch "$(hf101 '.')" 1
+check "101h: 라우팅 런의 핫픽스 기동은 통과한다" "$HF101_RC/$HF101_OUT" "0/"
+hf101_launch "$TIER_PLAN_SOLO" 없음
+check "101h: 표지 없는 계획은 라우팅 기록 없이도 기동한다" "$HF101_RC/$HF101_OUT" "0/"
+
+# ---------------------------------------------------------------------------
 # 102. 계획 행의 강제 표면은 세 작성 경로가 같은 분류기로 적는다
 # --- section: 102 | group: base | covers: plan, act, gate_from_declaration, plan_from_declaration, plan_via_planner, run_surface_stamp, gate_surface_stamp | anchors: 102: 게이트가 계획 행에 강제 표면을 분류해 적는다, 102: 드라이버의 plan_from_declaration 이 같은 값을 적는다, 102: 계획기 경로가 선언 파일에서 강제 표면을 적는다, 102: --from-declaration 의 호출자 강제 표면은 거부된다, 102: 일반 세그먼트 행의 호출자 강제 표면은 거부된다, 102: 분류기를 읽지 못하면 판정불가다 ---
 #

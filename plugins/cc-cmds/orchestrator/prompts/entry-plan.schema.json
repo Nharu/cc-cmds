@@ -71,8 +71,9 @@
       "required": ["judgment", "classes", "paths", "source", "rationale"],
       "additionalProperties": false
     },
+    "run_profile": { "type": "string", "enum": ["hotfix", "standard"] },
     "notes": { "type": "string" }
   },
-  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "visual_design_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "notes"],
+  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "visual_design_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "run_profile", "notes"],
   "additionalProperties": false
 }
