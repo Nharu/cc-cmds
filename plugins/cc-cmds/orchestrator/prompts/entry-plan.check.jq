@@ -9,10 +9,10 @@
 # and the C4 section of `scripts/test-gate.sh`. One file is what keeps the three
 # from asserting different rules.
 #
-# A PLAN WITHOUT `design_tier_judged` IS NOT ASSERTED AT ALL. Every plan frozen
-# before the key existed lacks it, and its tier (`team-2`, `lead-solo`, `null`)
-# is outside the two values below; refusing it here would stop runs that are
-# already frozen.
+# A PLAN WITHOUT `design_tier_judged` IS ASSERTED ON (f) ALONE. Every plan
+# frozen before the key existed lacks it, and its tier (`team-2`, `lead-solo`,
+# `null`) is outside the two values below; refusing it here would stop runs
+# that are already frozen.
 #
 # The tier and the path read as the contract sentence `run.sh` writes once, on
 # `manifest_design_skill`:
@@ -26,7 +26,7 @@
 #   > a writer (a team-4 single-scope design) and `none` elsewhere. Only
 #   > `manifest_design_skill` turns scope, tier and path into the design skill.
 #
-# FIVE ASSERTIONS AND NO MORE. A `team-4` graph is asserted on only through
+# SIX ASSERTIONS AND NO MORE. A `team-4` graph is asserted on only through
 # `design_path`, and only when the key is present:
 #
 #   (a) a `team-4` judgment carries at least one heavy reason that is not blank,
@@ -51,6 +51,22 @@
 #       gate entry, and refusing it would stop runs that are already frozen.
 #       Whether a path really is a surface is the classifier's to say, not this
 #       file's: (e) checks the shape the kickoff reads out, nothing more.
+#   (f) a `run_profile` reads `hotfix` or `standard`, and a plan without the
+#       key reads `standard`. A `hotfix` plan is the fixed frame the `--hotfix`
+#       kickoff fills: the `solo` tier, the `single` scope, and its steps'
+#       skills exactly `design` → `implement` → `review`. Its `unresolved`
+#       carries only the stop notices of the enforcement surface: empty when
+#       the judgment is `없음` or `판정불가`, and when it is `확인됨` or
+#       `가능성`, at least one item and no more items than the judgment's paths
+#       (one when it names no path). The items are free text, so only their
+#       count is bound here; the prompt keeps each one a surface notice. A
+#       hotfix plan with no `enforcement_surface` fails (f). Neither the
+#       number of targets nor the number of files is asked.
+#
+# (f) RUNS ON THE EARLY RETURN TOO. A hotfix plan that dropped
+# `design_tier_judged` would otherwise skip the one assertion that pins its
+# frame. A plan frozen before `design_tier_judged` existed has no `run_profile`
+# either, so on that branch nothing is still asserted on it.
 
 def tier_rank:
   if . == "solo" then 0 elif . == "team-4" then 1 else null end;
@@ -66,10 +82,52 @@ def skill_count($s):
 def blank:
   type != "string" or test("^[[:space:]]*$");
 
+def report:
+  if length > 0 then (join("\n") + "\n") | halt_error(1) else empty end;
+
+# (f), as a list of violations.
+def hotfix_violations:
+  . as $p
+  | ($p.run_profile // "standard") as $rp
+  | if ($rp | IN("hotfix", "standard")) | not then
+      "(f) 핫픽스 계획 표지 run_profile 이 hotfix · standard 중 하나가 아닙니다: \($rp | tojson)"
+    elif $rp != "hotfix" then empty
+    else
+      ( if $p.design_tier != "solo" then
+          "(f) 핫픽스 계획의 design_tier 가 solo 가 아닙니다: \($p.design_tier | tojson)"
+        else empty end ),
+      ( if ($p.design_scope // "single") != "single" then
+          "(f) 핫픽스 계획의 design_scope 가 single 이 아닙니다: \($p.design_scope | tojson)"
+        else empty end ),
+      ( [plan_steps[] | .skill] as $sk
+        | if $sk != ["design", "implement", "review"] then
+            "(f) 핫픽스 계획의 단계가 design → implement → review 가 아닙니다: \($sk | tojson)"
+          else empty end ),
+      ( ([$p.unresolved[]?] | length) as $n
+        | if ($p.enforcement_surface | type) != "object" then
+            "(f) 핫픽스 계획에 enforcement_surface 판정이 없습니다"
+          else
+            ($p.enforcement_surface.judgment) as $j
+            | ([$p.enforcement_surface.paths[]?] | length) as $np
+            | if $j == "없음" or $j == "판정불가" then
+                ( if $n != 0 then
+                    "(f) 핫픽스 계획의 강제 표면 판정이 \($j)인데 unresolved 가 \($n)개입니다 — 비어 있어야 합니다"
+                  else empty end )
+              elif $j == "확인됨" or $j == "가능성" then
+                ( if $np == 0 then 1 else $np end ) as $max
+                | ( if $n < 1 or $n > $max then
+                      "(f) 핫픽스 계획의 강제 표면 판정이 \($j)인데 unresolved 가 \($n)개입니다 — 1개 이상 \($max)개 이하여야 합니다"
+                    else empty end )
+              else
+                "(f) 핫픽스 계획의 enforcement_surface.judgment 가 확인됨 · 가능성 · 없음 · 판정불가 중 하나가 아닙니다: \($j | tojson)"
+              end
+          end )
+    end;
+
 if type != "object" then
   "계획이 JSON 객체가 아닙니다\n" | halt_error(1)
 elif has("design_tier_judged") | not then
-  empty
+  [hotfix_violations] | report
 else
   . as $p
   | ($p.design_tier_judged) as $judged
@@ -157,7 +215,9 @@ else
                     "(e) enforcement_surface.judgment 가 없음인데 paths 가 비어 있지 않습니다"
                   else empty end )
             end
-        else empty end )
+        else empty end ),
+      # (f)
+      ( $p | hotfix_violations )
     ]
-  | if length > 0 then (join("\n") + "\n") | halt_error(1) else empty end
+  | report
 end
