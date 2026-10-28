@@ -46555,6 +46555,11 @@ gate_verb_supervise_stage() {
     write_run_record "$RUN_DIR/$seg.config-dir" "$r_cfg" \
       || warn "the attempt's config directory record was not written ($seg#$attempt) — the transcript readers will not find it"
     local -x CLAUDE_CONFIG_DIR="$r_cfg"
+  else
+    # The unrouted record is the first two lines, and it goes down before the
+    # launch too: the dispatch act returns as soon as `.pid` appears, so a
+    # record written after the launch is not there yet when its caller reads it.
+    printf '%s\n%s\n' "$window" "$(gate_lane_label)" > "$RUN_DIR/$seg.window"
   fi
   # THE RE-ATTACHMENT ORGANIZATION CHECK, the same one the driver's launch makes.
   # The previous attempt's record goes first, so a fresh session never carries
@@ -46644,7 +46649,7 @@ gate_verb_supervise_stage() {
   # after this process is gone can still put them on the row. No reader makes
   # its presence a precondition: absent, the row says `(미상)`. The effort and
   # the routed account are lines 3 and 4 of the same record; an unrouted launch
-  # writes neither, and the routed one wrote all four before the launch above.
+  # writes neither. Both wrote it before the launch above.
   if [ "$routed" = "1" ]; then
     # The stage joins the lease's holders, so the lease outlives this process
     # if it is killed. Not fatal: this process already holds it.
@@ -46653,8 +46658,6 @@ gate_verb_supervise_stage() {
       route_lease_hold "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" "$spid" >/dev/null 2>&1 || hrc=$?
       [ "$hrc" = "0" ] || log "스테이지 임대 보유 rc=$hrc — $seg#$attempt ($r_lineage)"
     fi
-  else
-    printf '%s\n%s\n' "$window" "$(gate_lane_label)" > "$RUN_DIR/$seg.window"
   fi
   # `.anchor` IS A RECORD TOO, written for a re-attachment only: the base the
   # re-attachment delay is measured from. A dispatch with no base removes it,
