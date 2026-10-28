@@ -42715,7 +42715,7 @@ ck60_grew=$(( $(sa_rows) - ck60_rows0 ))
 if [ -z "$ck60_win" ]; then
   bad "60 드레인 증가분" "게이트에서 조상 창 크기를 읽지 못했다"
 elif [ "$ck60_grew" -gt 0 ] && [ "$ck60_grew" -lt "$ck60_win" ]; then
-  ok "60: 이 드레인이 조상 창 안에서 행을 늘렸다 (${ck60_grew}행 < ${ck60_win})"
+  ok "60: 이 드레인이 조상 창 안에서 행을 늘렸다 (${ck60_grew}행 < ${ck60_win})" # gate-isolation: 변동
 else
   bad "60 드레인 증가분" "행이 ${ck60_grew} 늘었다 — 아래 다이제스트 단언이 창을 재지 못한다"
 fi
@@ -42742,7 +42742,7 @@ ck60_obs 실패 "$(ck60_long "$ck60_reqmax")" "$CK60_SHA" "$(ck60_long "$ck60_fa
 ck60_row=$( { grep -F '`checks`' "$SA_LEDGER" || true; } | tail -1)
 ck60_len=$(printf '%s\n' "$ck60_row" | wc -c | tr -d ' ')
 if [ "$ck60_len" -le "$ck60_cap" ]; then
-  ok "60: 상한까지 채운 관측의 checks 행이 행 상한 안에 든다 (${ck60_len}B <= ${ck60_cap})"
+  ok "60: 상한까지 채운 관측의 checks 행이 행 상한 안에 든다 (${ck60_len}B <= ${ck60_cap})" # gate-isolation: 변동
 else
   bad "60 행 예산" "checks 행이 ${ck60_len}B 다 — 상한 ${ck60_cap} 을 넘으면 그 행은 잘리는 것이 아니라 거절돼 관측이 사라진다"
 fi
