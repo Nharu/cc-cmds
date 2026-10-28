@@ -71,6 +71,10 @@ fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-return-dismiss.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
+# The attention spool root is a path under the work directory that is never
+# created, so the attention tap writes nothing from this suite and never
+# reaches the account spool.
+export CC_CMDS_ATTENTION_ROOT="$WORK/attention-root-absent"
 
 BIN="$WORK/bin"          # stateful notifier stub + jq
 BIN_NO_JQ="$WORK/bin-nj" # notifier stub + bash only — the WHOLE PATH of the no-jq case

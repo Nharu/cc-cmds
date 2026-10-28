@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030007000.60718293",
+  "host": "mbp-1",
+  "created_at_ms": 1793030007000,
+  "kind": "run-blocked",
+  "token": "hands",
+  "slot": "cc-cmds-autopilot-20261026-f33cba74-hands",
+  "title": "cc-cmds — 사람 손 대기",
+  "body": "런 20261026-f33cba74 이 사람의 손을 기다립니다.",
+  "actionable": false,
+  "accepts": [],
+  "origin": {
+    "session_id": null,
+    "run_id": "20261026-f33cba74",
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": null,
+    "tmux_pane": null
+  },
+  "reply": null
+}
