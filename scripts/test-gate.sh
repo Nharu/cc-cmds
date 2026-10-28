@@ -42879,7 +42879,7 @@ wait "$ck60_bg"
 ck60_dw=$(( $(date -u +%s) - ck60_t0 ))
 check "60: 잠금이 풀린 뒤 그 관측을 전사한다" "$(ck60_checks)" "$((ck60_nw + 1))"
 if [ "$ck60_dw" -ge "$ck60_hold" ]; then
-  ok "60: 그 드레인이 잠금이 풀릴 때까지 기다렸다 (${ck60_dw}초 >= ${ck60_hold}초)"
+  ok "60: 그 드레인이 잠금이 풀릴 때까지 기다렸다 (${ck60_dw}초 >= ${ck60_hold}초)" # gate-isolation: 변동
 else
   bad "60 잠금 대기" "행위가 ${ck60_dw}초 만에 끝났다 — 붙잡아 둔 ${ck60_hold}초보다 짧으면 기다린 것이 아니다"
 fi
@@ -42898,7 +42898,7 @@ ck60_drain
 ck60_dt2=$(( $(date -u +%s) - ck60_t0 ))
 check "60: 낡은 탈취 잠금을 걷어 내고 죽은 소유자의 잠금을 빼앗는다" "$(ck60_checks)" "$((ck60_nt + 1))"
 if [ "$ck60_dt2" -lt 30 ]; then
-  ok "60: 그 탈취도 나이 만료를 기다리지 않는다 (${ck60_dt2}초)"
+  ok "60: 그 탈취도 나이 만료를 기다리지 않는다 (${ck60_dt2}초)" # gate-isolation: 변동
 else
   bad "60 탈취 잠금" "${ck60_dt2}초 걸렸다 — 낡은 탈취 잠금이 아니라 나이 만료가 풀었다"
 fi
