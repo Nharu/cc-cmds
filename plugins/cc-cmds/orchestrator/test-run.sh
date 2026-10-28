@@ -691,6 +691,105 @@ check "잔여: 선언 없는 문서에서 세그먼트가 하나면 전부가 �
 check "잔여: 선언 없는 문서에서 세그먼트가 둘이면 몫이 없다" \
   "$( ( LEDGER="$RSD/l2.md"; LEDGER_SCOPE=파일; printf -- '- `segment` | id=A | 워크트리=/x\n- `segment` | id=B | 워크트리=/y\n' > "$LEDGER"
         residual_share_missing "$RSD/nodecl.md" A ) )" ""
+
+# 닫히지 않은 결정. `## 미해결 이슈 / 트레이드오프` 에서 해결이 아닌 항목 가운데
+# 이 세그먼트에 닿는 `구현 전 결정`(실패 닫힘으로 읽힌 것 포함)의 표제를 문서 순서로 낸다.
+UCD="$WORK/unclosed"; mkdir -p "$UCD"
+uc_slicing() { printf '## 구현 슬라이싱\n\n**슬라이스 수**: 2\n\n### 슬라이스 A\n\n**스킬**: implement\n\n### 슬라이스 B\n\n**스킬**: implement\n'; }
+uc_five() {  # uc_five <file> [기준 없는 재량 항목을 넣는가 1|0]
+  {
+    printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n안내 줄은 항목이 아니다.\n\n'
+    printf '### 미결 1. A 에 닿는 결정\n**상태**: 대기\n**구현 처분**: 구현 전 결정\n**닿는 슬라이스**: A\n\n'
+    printf '### 미결 2. 기준 있는 재량\n**상태**: 대기\n**구현 처분**: 구현 재량\n**재량 기준**: 짧은 쪽을 고른다\n\n'
+    [ "${2:-1}" = "0" ] || printf '### 미결 3. 기준 없는 재량\n상태: 보류\n구현 처분: 구현 재량\n\n'
+    printf '### 미결 4. 구현 무관\n**상태**: 대기\n**구현 처분**: 구현 무관\n\n'
+    printf '### 미결 5. 해결된 항목\n**상태**: 해결\n\n'
+    uc_slicing
+  } > "$1"
+}
+uc_five "$UCD/five.md"
+check "미결: A 에는 A 에 닿는 결정과 기준 없는 재량이 닿는다" \
+  "$(unresolved_closure_pending "$UCD/five.md" A | tr '\n' '|')" "### 미결 1. A 에 닿는 결정|### 미결 3. 기준 없는 재량|"
+check "미결: B 에는 기준 없는 재량만 닿는다" \
+  "$(unresolved_closure_pending "$UCD/five.md" B | tr '\n' '|')" "### 미결 3. 기준 없는 재량|"
+{ printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 옛 항목\n**상태**: 대기\n\n'; uc_slicing; } > "$UCD/old.md"
+check "미결: 필드 없는 옛 항목은 A·B 모두에 닿는다" \
+  "$(unresolved_closure_pending "$UCD/old.md" A)/$(unresolved_closure_pending "$UCD/old.md" B)" "### 미결 1. 옛 항목/### 미결 1. 옛 항목"
+{ printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 없는 슬라이스\n**상태**: 대기\n**구현 처분**: 구현 전 결정\n**닿는 슬라이스**: Z\n\n'; uc_slicing; } > "$UCD/noid.md"
+check "미결: 문서에 없는 슬라이스 id 는 전체로 읽힌다" \
+  "$(unresolved_closure_pending "$UCD/noid.md" B)" "### 미결 1. 없는 슬라이스"
+{ printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 골격급\n**상태**: 대기\n**골격급**: 예\n**구현 처분**: 구현 재량\n**재량 기준**: 아무거나\n\n'
+  printf '### 미결 2. 합성\n**상태**: 대기\n**사유**: 감사 합성 요구 — 사람 판단\n**구현 처분**: 구현 무관\n\n'; uc_slicing; } > "$UCD/forced.md"
+check "미결: 골격급·합성 요구는 적힌 처분과 무관하게 구현 전 결정" \
+  "$(unresolved_closure_pending "$UCD/forced.md" B | tr '\n' '|')" "### 미결 1. 골격급|### 미결 2. 합성|"
+printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n없음\n' > "$UCD/none-items.md"
+check "미결: 본문이 없음 한 줄이면 항목 없음" "$(unresolved_closure_pending "$UCD/none-items.md" A)" ""
+printf '# 문서\n\n## 합의된 아키텍처\n\n본문\n' > "$UCD/no-section.md"
+check "미결: 절이 없으면 항목 없음" "$(unresolved_closure_pending "$UCD/no-section.md" A)" ""
+{ printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 빈 값\n**상태**: 대기\n**구현 처분**:   \n\n'; uc_slicing; } > "$UCD/empty-value.md"
+check "미결: 빈 처분 값은 실패 닫힘으로 닿는다" "$(unresolved_closure_pending "$UCD/empty-value.md" B)" "### 미결 1. 빈 값"
+printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n```\n### 미결 1. 울타리 안\n' > "$UCD/unclosed-fence.md"
+case "$(unresolved_closure_pending "$UCD/unclosed-fence.md" A)" in
+  '문서 판독 불가 — '*) ok "미결: 울타리가 닫히지 않은 문서는 판독 불가 한 줄" ;;
+  *) bad "미결: 울타리 미닫힘" "$(unresolved_closure_pending "$UCD/unclosed-fence.md" A)" ;;
+esac
+case "$(unresolved_closure_pending "$UCD/missing.md" A)" in
+  '문서 판독 불가 — '*) ok "미결: 없는 문서 경로는 판독 불가 한 줄" ;;
+  *) bad "미결: 없는 문서" "$(unresolved_closure_pending "$UCD/missing.md" A)" ;;
+esac
+check "미결: 문서 인자가 비면 빈 출력" "$(unresolved_closure_pending '' A)" ""
+printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n| 항목 | 상태 | 비고 |\n| --- | --- | --- |\n| 표 항목 하나 | 대기 | x |\n| 표 항목 둘 | 해결 | y |\n\n### 미결 9. 표 아래 항목\n**상태**: 대기\n**구현 처분**: 구현 무관\n' > "$UCD/table.md"
+check "미결: 표 행은 해결이 아니면 첫 셀을 표제로 전체에 닿고, 표 아래 하위 표제는 제 규칙대로" \
+  "$(unresolved_closure_pending "$UCD/table.md" A | tr '\n' '|')" "표 항목 하나|"
+{ printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 앞 절\n**상태**: 대기\n\n## 미해결 이슈 / 트레이드오프 (두 번째)\n\n없음\n'; } > "$UCD/last.md"
+check "미결: 절은 표제의 마지막 일치다" "$(unresolved_closure_pending "$UCD/last.md" A)" ""
+printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 선언 없음\n**상태**: 대기\n**구현 처분**: 구현 전 결정\n**닿는 슬라이스**: A\n' > "$UCD/nodecl.md"
+check "미결: 슬라이싱이 없는 문서는 모든 세그먼트가 전체에 닿는다" "$(unresolved_closure_pending "$UCD/nodecl.md" B)" "### 미결 1. 선언 없음"
+# 작성자가 같은 줄에 메모를 단 해결 값. 재수렴이 실제로 남긴 철자 그대로 닫히고,
+# `해결` 로 시작할 뿐인 다른 값은 열린 채로 남는다.
+{ printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n'
+  printf '| 항목 | 상태 |\n| --- | --- |\n| 표 메모 | 해결 — x |\n\n'
+  printf '### 미결 1. 줄표 메모\n**상태**: 해결 — 사람이 재수렴을 고른 뒤 결정을 문서에 썼다\n\n'
+  printf '### 미결 2. 괄호 메모\n- **상태**: 해결 (사용자 확인)\n\n'
+  printf '### 미결 3. 붙은 괄호\n상태: 해결(팀 결정)\n\n'
+  printf '### 미결 4. 가운뎃점\n**상태**: 해결 · **Closed by**: 감사\n\n'
+  printf '### 미결 5. 됨\n**상태**: 해결됨\n\n'
+  printf '### 미결 6. 키와 값을 함께 굵게\n- **상태: 해결** — 메모\n'; } > "$UCD/note.md"
+check "미결: 같은 줄에 메모를 단 해결 값은 ### 항목과 표 칸 모두 닫힌다" "$(unresolved_closure_pending "$UCD/note.md" A)" ""
+{ printf '# 문서\n\n## 미해결 이슈 / 트레이드오프\n\n'
+  printf '| 항목 | 상태 |\n| --- | --- |\n| 표 대기 | 해결 대기 |\n\n'
+  printf '### 미결 1. 해결 대기\n**상태**: 해결 대기\n\n'
+  printf '### 미결 2. 해결책\n**상태**: 해결책 검토 중\n\n'
+  printf '### 미결 3. 굵은 대기\n- **상태: 대기** — 메모\n'; } > "$UCD/note-open.md"
+check "미결: 해결 로 시작할 뿐인 값은 열린 채로 남는다" \
+  "$(unresolved_closure_pending "$UCD/note-open.md" A | tr '\n' '|')" "표 대기|### 미결 1. 해결 대기|### 미결 2. 해결책|### 미결 3. 굵은 대기|"
+check "미결 이어가기 문구는 표제를 축자로 싣는다" \
+  "$(unclosed_unmet_message "$(printf '### 미결 1. A 에 닿는 결정\n### 미결 3. 기준 없는 재량')")" \
+  "닫히지 않은 결정 항목이 있어 계획을 받을 수 없다 — 「### 미결 1. A 에 닿는 결정」, 「### 미결 3. 기준 없는 재량」; 정지 기록을 쓰라"
+
+# 억제·덮어쓰기 판정. 프로세스 A 이고 판독 출력이 있으면 부류(정상 완료만 공허한
+# 성공으로)와 첫 표제를 내고, 그 밖에는 아무것도 내지 않는다.
+uc_five "$UCD/five-b.md" 0
+ucv() { local o; if o=$(unresolved_closure_verdict "$@"); then printf 'Y:%s' "$(printf '%s' "$o" | tr '\n' '|')"; else printf 'N:%s' "$o"; fi; }
+check "미결 판정: 프로세스 A·A 의 정상 완료는 억제와 공허한 성공" \
+  "$(ucv '정상 완료' 0 "$UCD/five.md" A)" "Y:공허한 성공|### 미결 1. A 에 닿는 결정"
+check "미결 판정: B 의 판독이 빈 문서면 억제하지 않는다" "$(ucv '정상 완료' 0 "$UCD/five-b.md" B)" "N:"
+check "미결 판정: 프로세스 B 는 억제하지 않는다" "$(ucv '정상 완료' 1 "$UCD/five.md" A)" "N:"
+check "미결 판정: 의도된 park·크래시·거절 종료·산출물 없는 정지는 덮지 않는다" \
+  "$(ucv '의도된 park' 0 "$UCD/five.md" A)/$(ucv '크래시' 0 "$UCD/five.md" A)/$(ucv '거절 종료' 0 "$UCD/five.md" A)/$(ucv '산출물 없는 정지' 0 "$UCD/five.md" A)" \
+  "Y:의도된 park|### 미결 1. A 에 닿는 결정/Y:크래시|### 미결 1. A 에 닿는 결정/Y:거절 종료|### 미결 1. A 에 닿는 결정/Y:산출물 없는 정지|### 미결 1. A 에 닿는 결정"
+( RUN_DIR="$UCD/run"; mkdir -p "$RUN_DIR"; printf 'plan\n' > "$RUN_DIR/A.plan.md"
+  unresolved_plan_suppress "$RUN_DIR" A
+  [ ! -e "$RUN_DIR/A.plan.md" ] && [ -f "$RUN_DIR/A.plan.md.suppressed" ] && [ -z "$(stage_plan_sha256 '' A)" ] ) \
+  && ok "미결 억제: 계획 파일은 .suppressed 로 옮겨져 대체 해시의 원천에서 빠진다" \
+  || bad "미결 억제: 계획 파일 이동" "A.plan.md 가 남았거나 대체 해시가 나왔다"
+# 세 자리가 판정 함수를 부르는가 — 정적 단언.
+check "미결 판정은 segment_cycle 첫 시도와 continue_attempt 에서 불린다" \
+  "$(grep -c 'unresolved_closure_verdict "\$class" "\$procb" "\$DOC" "\$seg"\|unresolved_closure_verdict "\$CONTINUE_CLASS" "\$uprocb"' "$DRIVER" || true)" "2"
+printf '**스킬**: implement-unattended\n**스텝**: Step 1 CFI-U3 BT-STOP — 미결 결정\n' > "$UCD/h1.md"
+printf '**스킬**: implement-unattended\n**스텝**: Step 3 CFI-U3 BT-STOP — 미결 결정 아님\n' > "$UCD/h2.md"
+check "미결 결정 정지 판별은 스텝 값 전체를 비교한다" \
+  "$(halt_step_is_unclosed_decision "$UCD/h1.md" && printf y || printf n)$(halt_step_is_unclosed_decision "$UCD/h2.md" && printf y || printf n)" "yn"
 # 검증기 — 설계 스킬이 쓰라고 한 표기는 통과하고, 그 밖의 값은 이유를 대며 거절된다.
 rs_full() {  # rs_full <file> <잔여 항목 값>
   {
@@ -7181,6 +7280,58 @@ check "첫 계속(프로세스 B 진입)은 호출자의 문면을 받는다" \
   "$(sed -n '1p' "$CONT/missb/spawned" | cut -f3 | grep -c '충족되지 않았다: 세그먼트 브랜치에 새 커밋도 정지 기록도 없다' || true)" "1"
 check "그 뒤의 계속 메시지는 프로세스 B 가 빠뜨린 표제를 축자로 댄다" \
   "$(sed -n '2p' "$CONT/missb/spawned" | cut -f3 | grep -c '「### R5. 빠진 항목」' || true)" "1"
+
+# 닫히지 않은 결정에 닿은 프로세스 A 는 계속에서 커밋해도 완료가 아니다. 계속 시도의
+# 행은 계획 파일의 대체 해시까지 버리고, 다음 계속 메시지는 CONTINUE_UNCLOSED 를 거쳐
+# 미결 표제를 축자로 싣는다. git 사다리만 스텁한다.
+unclb_case() {
+  local d="$CONT/unclb" did="S4:A:1"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
+    DOC_KEY="docs/x.md"; DOC="$UCD/five.md"
+    : > "$LEDGER"
+    UB_SID="99999999-2222-3333-4444-666666666666"
+    resolve_account() { printf '%s' "$d/cfg"; }
+    stage_parent_id() { printf 'parent'; }
+    absorb_stage_judgment() { :; }
+    log() { :; }
+    predicate_implement() { [ -f "$d/commit" ]; }
+    stage_spawn() {
+      local s="$1" att
+      att=$(stage_pin_attempt "$s")
+      printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "$3" >> "$d/spawned"
+      printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
+      printf '{"type":"system","subtype":"init","session_id":"%s"}\n%s\n{"type":"result","num_turns":7}\n' \
+        "$UB_SID" "$DP_READ" > "$(stage_log_path "$s")"
+      printf 'plan\n' > "$RUN_DIR/A.plan.md"
+      : > "$d/commit"
+      printf '0' > "$RUN_DIR/$s.rc"
+      return 0
+    }
+    : > "$d/cfg/projects/p/$UB_SID.jsonl"
+    stage_spawn "$did" "$d" "/cc-cmds:implement-unattended 원래 프롬프트"
+    ledger_row 'stage-result' "세그먼트=A" "스테이지=S4" "파견 id=$did" "종료 코드=0" \
+      "아티팩트 술어 결과=1" "실행 버전=$(stage_attempt_pinned "$did")" "종단 부류=공허한 성공"
+    : > "$d/spawned"
+    CONTINUE_MISSING=""; CONTINUE_UNCLOSED=""
+    if continue_or_park "$did" "$did" A S4 "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
+         "$(unclosed_unmet_message "$(unresolved_closure_pending "$DOC" A)")" home -- predicate_implement_share A pre A; then
+      printf 'rc=0\n'
+    else
+      printf 'rc=1\n'
+    fi
+    printf 'unclosed=%s\n' "${CONTINUE_UNCLOSED%%$'\n'*}"
+    printf 'psha=%s\n' "$(grep -c 'plan_sha256=' "$LEDGER" || true)"
+    printf 'plan=%s\n' "$(ls "$RUN_DIR" | grep -c '^A\.plan\.md$' || true)"
+  ) > "$d/out" 2>/dev/null
+}
+unclb_case
+check "미결에 닿은 프로세스 A 의 계속은 커밋해도 완료가 아니고 plan_sha256 을 남기지 않는다" \
+  "$(cont_field unclb rc)/$(cont_field unclb unclosed)/$(cont_field unclb psha)/$(cont_field unclb plan)" \
+  "1/### 미결 1. A 에 닿는 결정/0/0"
+check "미결에 닿은 계속 메시지는 CONTINUE_UNCLOSED 의 표제를 축자로 싣는다" \
+  "$(sed -n '2p' "$CONT/unclb/spawned" | cut -f3 | grep -c '닫히지 않은 결정 항목이 있어 계획을 받을 수 없다 — 「### 미결 1. A 에 닿는 결정」' || true)" "1"
 check "S4 의 상한 원인은 마지막 시도의 빠진 목록으로 막힘을 고른다 (s4_park_unfinished 한 곳)" \
   "$(grep -c '\[ -z "\$CONTINUE_MISSING" \] || \[ "\$CONTINUE_CLASS" = "의도된 park" \]' "$DRIVER" || true)" "1"
 check "S4 의 네 갈래(계속·거절·크래시·한도-형상 회수)가 모두 같은 park 원인 선택을 쓴다" \
@@ -7241,6 +7392,8 @@ check "프로세스 B 시도는 세그먼트 시작 HEAD 로 판정된다" "$(co
 crashA_case() {
   local d="$CONT/crashA" did="S4:ca:1" variant="${1:-ok}"
   rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  # 미결 판독기는 없는 문서를 판독 불가로 읽어 프로세스 A 를 막으므로, 미결 절 없는 문서를 둔다.
+  printf '# 픽스처 설계\n' > "$d/doc.md"
   (
     RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
     DOC_KEY="docs/x.md"; DOC="$d/doc.md"
@@ -12852,6 +13005,22 @@ check "35: 수정 대상 지시는 사이클 2 부터, 앞 사이클 리포트�
 check "35: 새 프로세스 재시도와 크래시 재시도도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '재시도) · 선언 파일: $files$(dispatch_surface_note "$seg")\"' || true)" \
   "2/0"
+
+# --- 리뷰 파견의 --expand: 계획의 review_expand 를 고정 순서로 싣는다 ---
+# 리뷰 줄과 복구 리뷰 줄은 계획이 연 분야를 싣고, 리드 수정 줄은 싣지 않는다 — 리드
+# 수정은 상한 리포트의 발견만 고치고 분야를 새로 열지 않는다.
+r35_xm() {  # r35_xm <파일> <계획 json> — 실행 계획 블록 하나의 매니페스트
+  printf '# m\n\n## 실행 계획\n\n```json\n%s\n```\n' "$2" > "$1"
+}
+r35_xm "$R35/expand-both.md" '{"steps":[],"review_expand":["문서표현","요구","문서표현"],"review_expand_rationale":"x"}'
+r35_xm "$R35/expand-none.md" '{"steps":[],"review_expand":[],"review_expand_rationale":""}'
+r35_xm "$R35/expand-old.md" '{"steps":[]}'
+check "35: 리뷰 줄의 --expand 는 계획의 분야를 요구·문서표현 순서로 한 번씩, 빈 값과 키 없음에는 붙지 않는다" \
+  "$(MANIFEST="$R35/expand-both.md" review_expand_flag)|$(MANIFEST="$R35/expand-none.md" review_expand_flag)|$(MANIFEST="$R35/expand-old.md" review_expand_flag)" \
+  " --expand 요구,문서표현||"
+check "35: 첫 리뷰 줄과 복구 리뷰 줄은 --expand 를 싣고, 리드 수정 줄은 싣지 않는다" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF -- '--report-path $rp$slice_flag$rscope$(review_expand_flag) \"설계는 $(doc_arg)\"' || true)/$(grep -cF -- '${recheck:+ --recheck $recheck}$(review_expand_flag) \"설계는 $(doc_arg)\"' "$DRIVER" || true)/$( { grep -F -- '--lead-fix $crp' "$DRIVER" || true; } | grep -c 'review_expand_flag' || true)" \
+  "1/1/0"
 check "35: 한도-형상 회수 뒤 재파견도 첫 프롬프트와 같은 수정 대상 꼬리를 싣는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")$fix_target' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '회수 후 재파견) · 선언 파일: $files$(dispatch_surface_note "$seg")\"' || true)" \
   "1/0"

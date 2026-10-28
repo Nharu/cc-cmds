@@ -3,7 +3,7 @@ name: review
 description: 에이전트 팀을 활용한 다관점 코드 리뷰
 when_to_use: 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때
 disable-model-invocation: true
-usage: "/cc-cmds:review [<target>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]"
+usage: "/cc-cmds:review [<target>] [--base-sha <sha>] [--declared-files <csv>] [--expand <분야>[,<분야>]] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -42,6 +42,11 @@ options:
       default: "off (변경 파일 집합을 diff 에서만 유도)"
       summary: "이 변경이 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다."
       parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다."
+    - name: "--expand <분야>[,<분야>]"
+      kind: flag
+      default: "off (기술 분야만 리뷰 — 기획서 없이 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다)"
+      summary: "기본에서 빠진 리뷰 분야를 연다. 값은 `요구`(적힌 근거 없이 추정한 제품·기획 요구 판단)와 `문서표현`(사람이 읽는 문서의 문장 다듬기·구성·설명 보강·뜻을 바꾸지 않는 오탈자) 둘이다. 열린 분야의 발견은 같은 심각도 기준으로 등급을 받는다."
+      parse_note: "`--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다. 분야는 이 플래그로만 열린다 — 지시문은 분야를 열지 않는다."
     - name: "<directive>"
       kind: positional
       required: false
@@ -59,7 +64,7 @@ User-facing communication and saved documentation should be in Korean.
 
 `$ARGUMENTS` can be: a PR URL (`https://github.com/.../pull/N`), a PR number, a branch name, a file/directory path, a mixed input (target + directive, e.g., "PR #42 보안 중심으로"), or empty (auto-detect from current branch). See Step 1a for detailed parsing logic.
 
-**Design document (optional, directive-supplied).** A directive may name a design document the change was built from — e.g. *"PR #42, 설계는 docs/auth-flow.md"*. When one is given, it becomes context-package item 17 and unlocks the `design-conformance` tag. It is supplied explicitly rather than inferred: a design document is user-local and typically untracked, so branch-name guessing or reverse-lookup through a sidecar would work only on your own work — the same case where saying so outright costs nothing. Absence is the normal path and is never an error.
+**Design document (optional, directive-supplied).** A directive may name a design document the change was built from — e.g. *"PR #42, 설계는 docs/auth-flow.md"*. When one is given, it becomes context-package item 17 and unlocks the `design-conformance` tag. It is supplied explicitly rather than inferred: a design document is user-local and typically untracked, so branch-name guessing or reverse-lookup through a sidecar would work only on your own work — the same case where saying so outright costs nothing. Absence is the normal path and is never an error. A directive naming a spec the other way — *"기획서는 docs/spec.md"* — makes the same item 17. A review given no such document has no source for a requirement judgement: an expectation nothing written states belongs to the closed `요구` field (item 14's Field scope of `references/01-reviewer-context-package.md`), not to a finding.
 
 ## Workflow
 
@@ -98,6 +103,8 @@ Parse `$ARGUMENTS`:
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review (inform user: "파일 경로 기반 리뷰입니다. PR 기반 리뷰 시 추가 컨텍스트(PR 댓글, CI 상태 등)를 활용할 수 있습니다.")
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope hints from a caller that already knows both. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit the change branched from — verify it in 1b rather than trusting it. `--declared-files` is the comma-separated set the change was supposed to touch; quote it, since it contains commas and may contain spaces. Both are optional and a human invocation normally supplies neither. A flag whose value is missing is dropped along with the flag: consuming the following token would silently swallow the next flag or the directive.
+- **`--expand <분야>[,<분야>]`** → opens fields the default leaves closed (item 14's Field scope of `references/01-reviewer-context-package.md`). It takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. Split the value on commas; the known values are `요구` and `문서표현`. Given twice, the open fields are the union of both values. An unknown value is discarded with one Korean warning naming it; when nothing is left, it is as if the flag were not given. A flag whose value is missing is dropped along with the flag, without consuming the next token. Without this bullet the flag would fall to the next bullet and be discarded.
+- **A directive does not open a field.** Fields open only through `--expand`. When the directive reads as asking for a field outside the default — an inferred product requirement, polishing the wording of a document — leave the field closed and emit one Korean line: `분야는 지시문으로 열리지 않습니다 — 요청한 분야를 보려면 --expand <요구|문서표현> 을 붙여 다시 호출하세요.`
 - **Any other token beginning with `--`** → **not** a directive. Emit one Korean warning naming the token, discard it, and do not propagate it to team composition, the context package, or the report. Absorbing an unrecognized flag into the directive is the failure this bullet exists to prevent: the directive reaches the reviewers as a review-perspective instruction, so a mistyped or newly-added flag arrives as a weighting hint nobody wrote and nothing reports.
 - **Mixed input** (target + directive, e.g., "PR #42 보안 중심으로") → extract target + propagate directive to:
     - Step 3: prioritize directive in team composition (e.g., "보안 중심" → the tier file's `directive` promotion trigger fires on the security seat, and extra security focus may be added)
@@ -294,6 +301,9 @@ Present to user in Korean:
 - 위험 신호: [detected risk indicators]
 
 **제안 팀 구성:**
+- 리뷰 분야: 기술(기본)
+- 기획서: 없음
+
 | 역할 | 모델 | 담당 범위 |
 |------|------|-----------|
 | ... | ... | ... |
@@ -303,6 +313,8 @@ Present to user in Korean:
 
 이 팀 구성으로 진행할까요?
 ```
+
+The `리뷰 분야` line takes the shape of the report's overview line — `기술(기본)`, or `기술 + ` followed by the open fields in the order 「요구, 문서표현」 — and the `기획서` line the path of the item-17 document or `없음` (`02-review-report-template.md` `## Document Structure`). **An open field adds no seat; it joins an existing seat's `담당 범위`.** `요구` joins the Logic reviewer when the roster has one and the Code quality reviewer otherwise; `문서표현` joins the Code quality reviewer. A re-proposal after a modification request carries the same two lines.
 
 The `모델` column holds the value the tier file's table (promotion included) chose for that seat, as a bare lowercase alias. A user who lowers a seat's model when approving overrides the table — follow it, and record that seat with `출처=사용자` in Step 5.
 
@@ -318,6 +330,8 @@ Branch on user response:
 The spawn / ledger / dispatch+convergence / escalation contract and the task-assignment header come from `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`, **read in Step 0**. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), one fresh dispatch per `(role, round/phase)` key and resumed by `agentId` only inside that key, self-terminating on return — each reviewer's result is delivered by its **witness file**, and the return text is only an early-wake hint (see the protocol's witness contract and `witness_present` completion predicate). There is no `TeamCreate`/named-teammate/DM machinery.
 
 **Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/references/01-reviewer-context-package.md`** for the 17-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
+
+**Write the field line into every package.** Item 14's Field scope asks the lead for one line naming the fields open for this review (the approved `리뷰 분야` line) and whether a spec document was supplied (item 17). A reviewer told nothing reads only the technical field open.
 
 - **Derive the review slug** from the target (this names the review-report doc + keys the ledger; it is no longer a harness team name):
   - PR review: `review-pr{NUMBER}` (e.g., `review-pr42`)
@@ -346,6 +360,8 @@ The spawn / ledger / dispatch+convergence / escalation contract and the task-ass
 The lead synthesizes all review results into a Korean document at `docs/reviews/{slug}.md` (the early stub created at spawn time) following the template. Leave the `<!-- cc-design-ledger v3 … -->` block in place (it renders invisibly and carries the agentId ledger). Re-read the ledger from disk before any later phase.
 
 **Fill the report's model record.** Write each seat's `리뷰 팀 구성` parenthesis as one bare lowercase alias, and fill the `모델 티어` block directly after it with one row per seat. The row syntax belongs to `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` and is not restated here.
+
+**Write the field lines and the out-of-scope section.** The overview carries `- **리뷰 분야**:` and `- **기획서**:` directly after `변경 규모`, as the approved Step 3 proposal read. Carry every reviewer's `[범위 밖:<분야>]` line into `## 범위 밖 관찰`, merging the same observation at the same `파일:라인` into one line; with no such line, the section is not written. The template's "Out-of-scope observations section" owns the position and the line shape.
 
 #### P1 classification (lead-authored)
 
@@ -393,6 +409,7 @@ Team re-creation proposal format builds on Step 3's format with additional field
 - **Additional analysis scope**: specific targets and expected outcomes
 - Include previous review findings in the new reviewers' context packages
 - Requires user approval
+- **The session's `리뷰 분야` line carries over unchanged.** Step 6 reads no arguments, so a re-creation never opens a field this session did not open. When the user needs such a field, say so in one Korean line and point them to a new `/cc-cmds:review` call with `--expand <값>`.
 
 **Leftover detection**: before re-spawning, re-read the ledger from disk and scan for residual `state=running` rows (a leftover signal — this replaces the removed team-directory filesystem scan). The previous reviewers self-terminated on return, so ledger hygiene before the next spawn is all that is needed: set returned rows to `done`, and `TaskStop` any genuinely-running leftover before marking it `aborted`. Re-spawn fresh nameless tasks and record their new `agentId`s in the ledger (**stamp `epoch` = `max(disk epoch, 0)+1`, re-derived from the on-disk ledger — never an in-context counter; this fresh follow-up team → `epoch 2` in the normal sequence — and the round-1 `witnessNonce` on every row in the at-spawn recording window, per the protocol Spawn section**).
 

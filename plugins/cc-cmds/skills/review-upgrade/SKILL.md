@@ -3,15 +3,20 @@ name: review-upgrade
 description: 리뷰어 구성 강화 분석 (모델·역할 축)
 when_to_use: 직전 `/review` Step 3 리뷰어 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 누락된 리뷰 관점을 메울 신규 리뷰어 추가가 필요한지, 또는 과부하 리뷰어 분할이 필요한지 second-opinion으로 검토할 때
 disable-model-invocation: true
-usage: "/cc-cmds:review-upgrade"
-options: []
+usage: "/cc-cmds:review-upgrade [--expand <분야>[,<분야>]]"
+options:
+    - name: "--expand <분야>[,<분야>]"
+      kind: flag
+      default: "off (입력의 `리뷰 분야` 줄이 연 분야만 이어받는다 — 줄이 없는 옛 입력은 기술(기본))"
+      summary: "입력에서 이어받은 리뷰 분야에 더할 분야. 값은 `요구`와 `문서표현` 둘이다. 열린 분야가 없으면 요구·문서표현 관점의 ADD 를 제안하지 않고, 열린 분야가 있으면 그 분야를 담당 범위로 하는 ADD 와 재투입 안내에 분야를 함께 싣는다."
+      parse_note: "`--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다."
 notes: |
-    이 커맨드는 별도 인자를 받지 않으며, 직전 `/review` Step 3 리뷰어 구성 제안이 현재 대화 컨텍스트에 있어야 동작한다. opus 승격, 누락 리뷰 관점 추가, 과부하 리뷰어 분할은 강화가 유의미할 때만 제안하며, 그 외에는 유지 사유를 제시한다. 독립 실행 시 결과가 불정확할 수 있다.
+    이 커맨드는 `--expand` 하나만 받으며, 직전 `/review` Step 3 리뷰어 구성 제안이 현재 대화 컨텍스트에 있어야 동작한다. opus 승격, 누락 리뷰 관점 추가, 과부하 리뷰어 분할은 강화가 유의미할 때만 제안하며, 그 외에는 유지 사유를 제시한다. 독립 실행 시 결과가 불정확할 수 있다.
 ---
 
 Analyze the reviewer team composition proposed in the preceding `/review` Step 3 output and produce a second opinion along **two axes** — model and role — recommending only *reinforcing* changes.
 
-**Read `${CLAUDE_SKILL_DIR}/../_common/team-upgrade-analysis.md`** for the axis-agnostic engine: the two-axis Scope, restraint principle, role-gap detection + HARD LIMIT, the per-OPERATION gates (restraint / split / remove / merge), OPERATION output format and integrity rules, the per-existing-role invariant, the degraded-axis handling, and the Cross-axis synthesis. Resolve every `{PLACEHOLDER}` in that core against the `## Bindings` below. The `## Operations Layer`, role-axis mapping, SPLIT-axis degradation, Precondition, review-lite conflict guard, schema-drift sync-note, and 3-path Fallback that follow are this skill's injected layers.
+**Read `${CLAUDE_SKILL_DIR}/../_common/team-upgrade-analysis.md`** for the axis-agnostic engine: the two-axis Scope, restraint principle, role-gap detection + HARD LIMIT, the per-OPERATION gates (restraint / split / remove / merge), OPERATION output format and integrity rules, the per-existing-role invariant, the degraded-axis handling, and the Cross-axis synthesis. Resolve every `{PLACEHOLDER}` in that core against the `## Bindings` below. The `## Review fields`, `## Operations Layer`, role-axis mapping, SPLIT-axis degradation, Precondition, review-lite conflict guard, schema-drift sync-note, and 3-path Fallback that follow are this skill's injected layers.
 
 ## Bindings
 
@@ -28,9 +33,18 @@ Analyze the reviewer team composition proposed in the preceding `/review` Step 3
 | `{PRECONDITION}` | the preceding `/review` Step 3 reviewer composition is in context |
 | `{MODEL_AXIS_DEGRADES_UNDER}` | never (the saved report preserves each reviewer's model) |
 | `{SAVED_DOC_LOCATION}` | `docs/reviews/<report>.md` |
-| `{REFEED_TARGET}` | live / Path-1 → `/review` Step 3 re-proposal (prospective); Path-2 → `/review` Step 6 team re-creation (retrospective) |
+| `{REFEED_TARGET}` | live / Path-1 → `/review` Step 3 re-proposal (prospective), the note carrying `--expand <값>` when a field is open; Path-2 → `/review` Step 6 team re-creation (retrospective) in the session that wrote the report, whose re-creation proposal carries that session's `리뷰 분야` line unchanged — and when an inherited field is one that session did not open, a new `/review` call with `--expand <값>` instead, since Step 6 reads no arguments and cannot open it (see `## Review fields` below) |
 
 Note the column order differs from design-upgrade: Step 3's schema places **모델 before 담당 범위**. `역할` / `모델` are shared tokens; `담당 범위` substitutes design's `탐색 범위`. Every OPERATION that emits a full role triple does so in `역할 / 모델 / 담당 범위` order for paste-back parity; the ones that omit scope (they name a role rather than describe one) are unaffected by the order rule. Which OPERATIONs fall on which side is the core's to say — read it there rather than trusting a list here.
+
+## Review fields
+
+A review looks at the technical field always and at the `요구` and `문서표현` fields only when they were opened (item 14's Field scope of `../review/references/01-reviewer-context-package.md`). This skill inherits the open fields from its input rather than deciding them.
+
+- **Argument parsing.** `$ARGUMENTS` takes one flag, `--expand <분야>[,<분야>]`. It takes the next token as its value, split on commas; the known values are `요구` and `문서표현`, and given twice the value is the union. An unknown value is discarded with one Korean warning naming it; when nothing is left, it is as if the flag were not given. A flag whose value is missing is dropped along with it. Any other token is discarded with one Korean warning.
+- **Inherited fields.** On the live path and Path 1, read the `리뷰 분야` line above the Step 3 `역할 | 모델 | 담당 범위` table; on Path 2, read the saved report overview's `- **리뷰 분야**:` line. An input with no such line predates the line and reads as `기술(기본)` — on Path 1, say so in one Korean line (`붙여 넣은 제안에 리뷰 분야 줄이 없어 기술(기본)으로 읽었습니다.`). The open fields of this analysis are the inherited fields together with this call's own `--expand`.
+- **Fields follow the seat.** When a Path-1 or live `REMOVE`, `MERGE` or `SPLIT-REPLACE` takes away a seat whose `담당 범위` carries an open field, that field moves to the `담당 범위` of the seat that takes the coverage over, so no open field is left without a seat.
+- **Re-feed carries the fields.** When a field is open, the 재투입 대상 note carries it. Path 1 and live: the `/review` Step 3 re-proposal, with `--expand <값>` written on the note. Path 2: the Step 6 team re-creation of the `/review` session that wrote the report, whose re-creation proposal carries that session's `리뷰 분야` line unchanged; when a field inherited here is one that session did not open, Step 6 cannot open it, because it reads no arguments and a field opens only through the flag — point to a new `/review` call carrying `--expand <값>` instead.
 
 ## Operations Layer
 
@@ -60,7 +74,7 @@ Both entries append to the core's forbidden-set; read that set in the core rathe
 
 ## Role-axis mapping (review)
 
-The core's role axis here means **uncovered review perspective**, drawn from: security / performance / code-quality / logic / error-handling / type-safety / testing / api-contract / concurrency / data-integrity / design-conformance (the last only when a design document was supplied to the review — see the review context package's conditional 17th item).
+The core's role axis here means **uncovered review perspective**, drawn from: security / performance / code-quality / logic / error-handling / type-safety / testing / api-contract / concurrency / data-integrity / design-conformance (the last only when a design document was supplied to the review — see the review context package's conditional 17th item). **There is no `ADD` whose `담당 범위` is a field that is not open** (`## Review fields` below): with no field open, no `ADD` proposes a `요구` or `문서표현` perspective, so a second opinion does not widen the default technical scope back.
 
 **Risk-indicator reconciliation rule (the heart of the restraint)**: Step 3's risk-indicator → reviewer mapping (auth→security, DB→perf/DB, public-API→API-contract, external→security+integration, async→concurrency) is Step 3's own coverage contract. An `ADD` fires only when ALL hold:
 
@@ -70,6 +84,8 @@ The core's role axis here means **uncovered review perspective**, drawn from: se
 - (d) it is not already absorbed into an existing reviewer's role-specific checklist.
 
 Because those checklists are broad, the restraint gate's distinct-expertise bar (condition 3) is high and most candidates drop at (c)/(d). The canonical valid `ADD`: Step 3 misclassified the PR type so an indicator that *should* have fired did not, leaving a perspective (e.g. DB migration → data-integrity) genuinely uncovered.
+
+**An open field is a perspective too, under the same gate.** An `ADD` whose `담당 범위` is an open field (`## Review fields` below) is emitted with the perspective its tag maps to: `요구` → logic, or design-conformance when a spec document was supplied; `문서표현` → code-quality.
 
 **SPLIT-over-`담당 범위`**: fires when a single `담당 범위` spans two separable perspectives and this PR's volume would starve one side. The overload evidence here is **quantitative** (file count + diff size of the parent perspective's slice, from the in-context per-file statistics) — this is where the core HARD LIMIT item 2 ("a large hit is SPLIT input") applies. PARTITION: `childA.담당 범위 ⊎ childB.담당 범위 = parent.담당 범위 (no overlap, no loss)`. The split gate's step-4 cross-axis reconciliation chooses between SPLIT (two sonnets, parallel focus, +coordination, +1 headcount) and UPGRADE (promote the parent to opus, single synthesis preserved).
 
@@ -89,14 +105,15 @@ This skill requires the preceding `/review` Step 3 reviewer composition to be in
 
 When the precondition is not met, follow a 3-path fallback. The re-feed target is path-conditional — emit a per-path "재투입 대상" note so the user does not paste back into the wrong slot.
 
-- **Path 1 — session roster paste** (full two-axis): the user pastes the Step 3 `역할 | 모델 | 담당 범위` table → full two-axis analysis. This path uniquely still holds Step 3's `위험 신호` directly, the freshest reconciliation input. **재투입 대상**: `/review` Step 3 re-proposal (prospective).
+- **Path 1 — session roster paste** (full two-axis): the user pastes the Step 3 `역할 | 모델 | 담당 범위` table together with the `리뷰 분야` and `기획서` lines above it → full two-axis analysis. The open fields are read from that `리뷰 분야` line as `## Review fields` says, `기술(기본)` with the one-line notice when the paste has none, joined with this call's `--expand`. This path uniquely still holds Step 3's `위험 신호` directly, the freshest reconciliation input. **재투입 대상**: `/review` Step 3 re-proposal (prospective); when a field is open, write `--expand <값>` on the note.
 
 - **Path 2 — reverse-engineer from a saved review report** (model + perspective-ADD axes complete; every quantitatively-gated OPERATION degraded): unlike design, `docs/reviews/<report>.md` `## 개요`'s `리뷰 팀 구성` preserves all three axes as `역할 ([모델]): [담당 범위]` → the **model axis (UPGRADE) is fully restored**, and the perspective-gap `ADD` is restorable subject to the caveats below. But **the per-file quantitative signal is absent, so quantitative SPLIT and ADD-Coordinator gating degrade to N/A / suppressed** (see SPLIT-axis degradation above; symmetric to design Path-2's model-axis N/A). Caveats to state:
     - (i) This is an AS-RUN roster (generated from the approved Step 3, possibly modified at Step 6 — retrospective), so it is followup-team information, not a live proposal.
     - (ii) Step 3's `위험 신호` is not preserved → reconcile `ADD` from the report's `## 미검토 영역` (direct ADD input, but a **conditional section — may be omitted when not applicable**) + finding `[category]` tags + bounded diff re-read. When `## 미검토 영역` is absent, re-derive ADD from the secondary inputs (`[category]` tags + bounded re-read) alone; ADD input confidence is lower in that case, so "fully restored" holds **only when `## 미검토 영역` exists**.
     - (iii) On multiple report versions, use the highest version.
     - (iv) **Every OPERATION resting on the per-file quantitative signal is suppressed** — quantitative SPLIT, ADD-Coordinator, and both reducing operations (see SPLIT-axis degradation above). Path-2 output is limited to UPGRADE + ADD (perspective gap).
-  - **재투입 대상**: `/review` Step 6 team re-creation (retrospective). Step 6 requires augmented fields (Re-creation reason / Previous review coverage / Additional analysis scope) + an approval cycle, not the Step 3 form, so there is no slot a `역할 | 모델 | 담당 범위` OPERATION drops into verbatim. Map the Path-2 output instead: the OPERATION roster delta that Path-2 can actually produce (per caveat (iv) above) → Step 6 **Additional analysis scope** (plus the re-created roster); each ADD's rationale → Step 6 **Previous review coverage** (covered vs uncovered, citing the report's `## 미검토 영역`); **Re-creation reason** is supplied separately by the user / next-turn model (the emit does not force it). This keeps "paste back without ambiguity" aligned with Step 6's input schema.
+    - (v) The open fields are read from the overview's `- **리뷰 분야**:` line, `기술(기본)` when the report has none, joined with this call's `--expand` (`## Review fields`).
+  - **재투입 대상**: `/review` Step 6 team re-creation (retrospective). Step 6 requires augmented fields (Re-creation reason / Previous review coverage / Additional analysis scope) + an approval cycle, not the Step 3 form, so there is no slot a `역할 | 모델 | 담당 범위` OPERATION drops into verbatim. Map the Path-2 output instead: the OPERATION roster delta that Path-2 can actually produce (per caveat (iv) above) → Step 6 **Additional analysis scope** (plus the re-created roster); each ADD's rationale → Step 6 **Previous review coverage** (covered vs uncovered, citing the report's `## 미검토 영역`); **Re-creation reason** is supplied separately by the user / next-turn model (the emit does not force it). This keeps "paste back without ambiguity" aligned with Step 6's input schema. When a field is open, the note says that the re-creation proposal carries the session's `리뷰 분야` line unchanged, and that a field inherited here which the session did not open needs a new `/review` call carrying `--expand <값>`, since Step 6 cannot open it.
 
 - **Path 3 — start a new `/review`**: when neither is available, two-axis analysis is impossible — emit a Korean notice (e.g., *"분석할 리뷰어 구성이 없습니다. 먼저 `/cc-cmds:review`를 실행해 Step 3 리뷰어 구성을 받은 뒤 다시 호출하세요."*) and stop.
 

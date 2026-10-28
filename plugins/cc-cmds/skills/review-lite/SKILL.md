@@ -3,7 +3,7 @@ name: review-lite
 description: 2인 팀을 활용한 경량 코드 리뷰
 when_to_use: 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능)
 disable-model-invocation: true
-usage: "/cc-cmds:review-lite [<target>] [--base-sha <sha>] [--declared-files <csv>]"
+usage: "/cc-cmds:review-lite [<target>] [--base-sha <sha>] [--declared-files <csv>] [--expand <분야>[,<분야>]]"
 options:
     - name: "<target>"
       kind: positional
@@ -19,6 +19,11 @@ options:
       default: "off (변경 파일 집합을 diff 에서만 유도)"
       summary: "이 변경이 건드리기로 선언된 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하므로, 선언 밖 파일을 지목할 수 있게 한다."
       parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다."
+    - name: "--expand <분야>[,<분야>]"
+      kind: flag
+      default: "off (기술 분야만 리뷰 — 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다)"
+      summary: "기본에서 빠진 리뷰 분야를 연다. 값은 `요구`와 `문서표현` 둘이며, 고정 2인 가운데 코드 품질·로직 리뷰어가 맡는다. lite 는 문서를 받는 길이 없어 기획서는 늘 없음이다 — 기획서와 대조하려면 /cc-cmds:review 를 쓴다."
+      parse_note: "`--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다. 이 토큰과 값은 대상 뒤 여분 토큰 판정 전에 인자열에서 제거된다."
 ---
 
 Conduct a lightweight code review using a fixed 2-member sonnet agent team for the given task.
@@ -68,6 +73,7 @@ Parse `$ARGUMENTS`:
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review (inform user: "파일 경로 기반 리뷰입니다. PR 기반 리뷰 시 추가 컨텍스트(PR 댓글, CI 상태 등)를 활용할 수 있습니다.")
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope hints from a caller that already knows both. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string before the remainder is judged below. `--base-sha` names the commit the change branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the change was supposed to touch; quote it. A flag whose value is missing is dropped along with the flag rather than consuming the following token.
+- **`--expand <분야>[,<분야>]`** → opens fields the default leaves closed (item 14's Field scope of `../review/references/01-reviewer-context-package.md`). It takes the **next token** as its value, and both the flag and its value are removed from the argument string before the remainder is judged below — otherwise the value would be read as an extra token after the target and draw the directive warning. Split the value on commas; the known values are `요구` and `문서표현`. Given twice, the open fields are the union. An unknown value is discarded with one Korean warning naming it; when nothing is left, it is as if the flag were not given. A flag whose value is missing is dropped along with the flag, without consuming the next token. The directive is still discarded as below; only this flag opens a field.
 - **Any other token beginning with `--`** → not a directive and not silently absorbed. Emit one Korean warning naming the token and discard it, the same disposition the bullet below takes. The two bullets differ only in what they name: this one exists because an unrecognized flag reaching the discard path as prose would be reported as a rejected *directive*, which sends the reader looking for a directive nobody wrote.
 - **Mixed input with extra tokens after the target** (e.g., "PR #42 보안 중심으로"): extract the target only. Emit one Korean warning and discard the remainder: *"리뷰 지시문은 review-lite에서 지원하지 않아 무시합니다. 가중치 분석이 필요하면 /cc-cmds:review 를 사용하세요."* Do NOT propagate the directive to team composition, context package, or the report.
 - **Ambiguous input** → clarify with AskUserQuestion
@@ -183,6 +189,9 @@ Announcement template (Korean):
 
 ```
 **리뷰 팀 구성** (review-lite 고정 2인):
+- 리뷰 분야: 기술(기본)
+- 기획서: 없음
+
 | 역할 | 모델 | 담당 범위 |
 |------|------|-----------|
 | 보안 전담 리뷰어 | sonnet | 위협 모델, 인증·인가, 입력 검증, 시크릿/크레덴셜, 암호 사용, 세션·토큰 처리, 의존성 취약점 |
@@ -190,6 +199,8 @@ Announcement template (Korean):
 
 이 구성으로 진행할까요?
 ```
+
+The `리뷰 분야` line is `기술(기본)`, or `기술 + ` followed by the fields `--expand` opened in the order 「요구, 문서표현」. The `기획서` line is always `없음`: lite has no way to take a document, and a review against a spec is `/cc-cmds:review`'s, as the directive warning in Step 1a already says. **An open field adds no seat.** Both `요구` and `문서표현` join the `담당 범위` of the 코드 품질·로직 리뷰어, and each reviewer's context package carries the field line item 14's Field scope asks for.
 
 Branch on user response:
 - **Approve** → proceed to Step 4 (spawn the team)
@@ -247,6 +258,8 @@ The lead synthesizes all review results into a Korean document under `docs/revie
 - the overview line `- **슬라이스 범위**: 적용 안 됨 — 인자 없음`, because this skill takes no `--slice` and so never applies a slice scope; there is no `다른 슬라이스 몫` line and no `## 다른 슬라이스 몫 (집계 제외)` section.
 
 This skill registers no issue. Whether a report reading "이월 후 머지 가능" sends its carryable items to follow-up issues and merges is the person's decision.
+
+**Field lines and the out-of-scope section.** The overview carries `- **리뷰 분야**:` as announced in Step 3 and `- **기획서**: 없음`, directly after `변경 규모`. Carry each reviewer's `[범위 밖:<분야>]` line into `## 범위 밖 관찰` as the template's "Out-of-scope observations section" spells it, and leave the section out when there is none. That section is not `## 리뷰 범위` below, whose name and meaning are unchanged.
 
 **Mandatory section — `## 리뷰 범위`** (coverage-gap explicit disclosure):
 

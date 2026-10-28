@@ -87,6 +87,14 @@ There is one rule: **which commit type would this run's main deliverable land as
 
 **Write both keys even when `design_required` is false** — the schema requires them unconditionally. The field is recorded and nothing else: do not use it to decide any other field of this judgment, `design_tier` included. A manifest frozen before this field existed has no such key, and a reader takes it as unknown — as it does a value outside the enum, and `unknown` itself.
 
+## `review_expand` opens a review field only when the person asked for it
+
+Every review of the run looks at the technical field. Two fields stay closed unless they are opened: `요구` — product and planning requirements judged without a written basis — and `문서표현` — the wording, structure and explanation of documents people read. `review_expand` lists the fields this run's reviews open, each at most once, and `review_expand_rationale` is its prose reason.
+
+**Judge it from the person's words at kickoff alone.** Put a field in only when those words explicitly ask the review to look at it — 「리뷰는 문서 표현까지 봐 줘」 opens `문서표현`. Otherwise write `[]` and an empty rationale. That the work is a document, or that it touches requirements, is not a request: the review already checks a document's facts against the code and the work against its design document without opening either field. When you open a field, the rationale quotes the words that asked for it.
+
+**Write both keys on every judgment** — the schema requires them unconditionally. A manifest frozen before these fields existed has no such keys, and a reader takes them as `[]`.
+
 ## Targets are proposed here and CONFIRMED by the person
 
 List every repository the work plausibly touches in `targets`, with the alias you would give it and the remote slug. You are proposing, not deciding: the repo set is declared and verified by the human in front of you, never derived. Three reasons, and none of them is about your ability — a design document contains no absolute path, the only inference available is the convention this pipeline is retiring, and a worktree-vs-repository confusion is invisible to inference while being common on disk.
@@ -108,10 +116,25 @@ Some files are enforcement surfaces: the run's own hook refuses every edit to th
 - `source` — `의도` here. A later kickoff step that matches declared files or a pull request's files overwrites `paths`, `judgment` and `source` with what it found.
 - `rationale` — one sentence.
 
-**Prefer a wrong flag to a miss.** A `가능성` that turns out to be nothing costs one sentence read aloud; a surface you missed costs a run that stops where nobody can answer. Put every `확인됨` and `가능성` into `unresolved` as well, so it is read out before anything is frozen. This judgment is advisory: it decides no other field of the plan.
+**Prefer a wrong flag to a miss.** A `가능성` that turns out to be nothing costs one sentence read aloud; a surface you missed costs a run that stops where nobody can answer. Put every `확인됨` and `가능성` into `unresolved` as well, so it is read out before anything is frozen — on a hotfix plan too, where these are the only items `unresolved` carries (see `run_profile` below). This judgment is advisory: it decides no other field of the plan.
 
 ## `unresolved` is not a weakness, it is the deliverable of a doubt
 
 Anything you could not settle goes here as a question a person can answer in one sentence. This list is read out loud to them before anything is frozen. An empty `unresolved` on a request that genuinely underdetermines the plan is the worst output you can produce: it converts a question that costs ten seconds now into a night that produces nothing.
+
+**A hotfix plan is the one exception.** Its `unresolved` carries the enforcement-surface notices above and nothing else; every other open point goes to the design stage as a requirement decision, not into this list.
+
+## `run_profile` marks a hotfix plan, and a hotfix plan is a fixed frame
+
+`run_profile` is `hotfix` only when the kickoff hands you, as input, that it runs in hotfix mode (`--hotfix`). Every other judgment writes `standard`. A manifest frozen before this field existed has no such key, and a reader takes it as `standard`.
+
+A `hotfix` plan does not choose its graph. Write this frame and nothing else:
+
+- `design_required` `true`; `design_tier` and `design_tier_judged` `solo`; `design_heavy_reasons` `[]`; `design_scope` `single`; `design_path` `none`; no `visual` step.
+- `steps` exactly three, in this order: a `design` step with no prerequisite, an `implement` step that depends on it, and a `review` step that depends on the `implement` step.
+- `unresolved` holds the enforcement-surface notices only: one item per path when the judgment is `확인됨`, one item when it is `가능성`, and none when it is `없음` or `판정불가`. Each item tells the person that the run stops at that edit; it is a notice, not a question.
+- `review_expand` `[]`, with a `review_expand_rationale` that says it is the hotfix frame. A hotfix run is reviewed on the default field whatever the person's words ask; a person who wants a field opened runs a kickoff without `--hotfix`.
+
+What your judgment fills on a hotfix plan is `work_class`, `estimated_files`, `enforcement_surface` and `targets`, with the rationale of every key — the rationale keys of the fixed frame say that it is the hotfix frame. The number of targets and files is not limited: the design stage splits a large hotfix into slices.
 
 Do not fabricate. Every path, slug and pull-request number must be something the person said or something you can point at. If a repository might exist under a name you guessed, that guess belongs in `unresolved`, not in `targets`.
