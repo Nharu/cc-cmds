@@ -11,4 +11,3 @@ scripts/test-route.sh|clock-margin|out=$(txn "$d" '.' --boot-epoch "$((NOW - 10)
 scripts/test-route.sh|clock-margin|recent=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 10))" '.at = $t')
 scripts/test-route.sh|clock-margin|{ ts_line $((NOW - 50)); rl_line 0.25 null; } > "$RUN_DIR/log/S1.retry.json"
 scripts/test-snapshot.sh|clock-margin|"그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
-scripts/test-stage-supervisor.sh|clock-margin|W13_DL=$(( W13_NOW + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 20 ))

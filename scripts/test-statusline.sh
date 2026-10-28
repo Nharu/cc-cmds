@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # lint-bash-portability: self-skip
-# Test the status line and the apply path that installs it.
+# Test the status line, the shared wrapper grammar, and the apply path that
+# installs it.
 #
 # TWO GUARANTEES THAT DO NOT COVER EACH OTHER. The apply proves the settings
 # file ends up correct and no worse than it started; this suite proves the
 # script is TOTAL — that every degraded input still yields one valid line and
-# exit 0. The apply's own verify run exercises whichever branch the installed
-# path happens to reach on that machine, so it can never stand in for the cases
-# below, and a green apply is not evidence that the script works.
+# exit 0. The apply's own verify run only happens on a first install now, and
+# even there it exercises whichever branch the installed path reaches on that
+# machine, so it can never stand in for the cases below.
 #
 # WHAT THE ISOLATION HIDES. Every case here sets `XDG_STATE_HOME`, so the real
 # environment's branch — the variable unset, falling back to `$HOME/.local/state`
@@ -15,6 +16,12 @@
 # textual assertion rather than left to the fixture, which by construction cannot
 # reach it. The borrow record's path is the exception: SB05 renders with the
 # variable unset and `HOME` pointed at a fixture, so its fallback branch runs.
+#
+# THE HAND-WRITTEN COPY OF THE WRAPPER GRAMMAR LIVES HERE, and this is one of
+# exactly two files allowed to hold one. A suite that sourced the implementation
+# it is testing would turn every comparison into a tautology.
+# `scripts/lint-statusline-wrapper-pins.sh` pins both production rules against
+# this file and asserts that no third file carries the literal.
 #
 # Usage: bash scripts/test-statusline.sh
 
@@ -33,12 +40,21 @@ set -uo pipefail
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 
+# AND THE STAGE GUARD IS CLEARED FOR THIS WHOLE PROCESS. The hook exits
+# immediately when it sees a pipeline stage session, and this suite is run from
+# one — inside a stage every case that drives the hook would observe a silent
+# rc 0 and read it as the behaviour under test. The guard itself is exercised by
+# the hook suite, which sets the variable deliberately.
+unset CC_PIPELINE_STAGE_ID
+
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 SL="$repo_root/plugins/cc-cmds/orchestrator/statusline.sh"
 APPLY="$repo_root/plugins/cc-cmds/orchestrator/apply-statusline.sh"
+CMDLIB="$repo_root/plugins/cc-cmds/orchestrator/statusline-command.sh"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+HOOK="$repo_root/plugins/cc-cmds/hooks/statusline-sessionstart.sh"
 . "$repo_root/scripts/run-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-test.XXXXXX")
@@ -52,21 +68,36 @@ unset CLAUDE_CONFIG_DIR
 trap 'fx_reap; chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # THE APPLY CASES INSTALL FROM A COPY, NOT FROM THIS CHECKOUT. `--plugin-dir`
-# now parks on a linked git worktree, and this suite is run from one about as
-# often as from a clone — pointing the apply at its own tree would make every
-# case below pass or park depending on where somebody happened to check the
+# parks on a linked git worktree, and this suite is run from one about as often
+# as from a clone — pointing the apply at its own tree would make every case
+# below pass or park depending on where somebody happened to check the
 # repository out. The copy is made here rather than carried in the repository so
 # it cannot drift from the files it is a copy of.
+#
+# THE SHARED GRAMMAR FILE IS PART OF THE COPY. The installer sources it out of
+# `--plugin-dir`, so a plugin tree without it is a partial checkout.
+#
+# AND SO IS THE INSTALLER ITSELF, because the hook resolves it out of the same
+# `--plugin-dir` rather than being told where it is. A tree without it makes
+# every hook-driven case end at an exit code outside the verdict band, which
+# looks exactly like a hook that decided to do nothing.
 APLUG="$WORK/plugin"
 mkdir -p "$APLUG/orchestrator"
-cp "$SL" "$LIVENESS" "$APLUG/orchestrator/"
+cp "$SL" "$LIVENESS" "$CMDLIB" "$APPLY" "$APLUG/orchestrator/"
 chmod +x "$APLUG/orchestrator/statusline.sh"
+
+# A plugin directory that does NOT exist, standing in for the older cache
+# version an installed wrapper points at after a marketplace update. It is never
+# created: the recogniser must not stat the path it recognises.
+OLDPLUG="$WORK/oldplug"
+OLDSL="$OLDPLUG/orchestrator/statusline.sh"
 
 passed=0; failed=0; skipped=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
 skip() { skipped=$((skipped + 1)); printf 'SKIP: %s — %s\n' "$1" "${2:-}"; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
+differ(){ if [ "$2" != "$3" ]; then ok "$1"; else bad "$1" "두 값이 같다: '$2'"; fi; }
 has()  { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "'$2' 에 '$3' 없음" ;; esac; }
 hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" ;; esac; }
 
@@ -123,6 +154,13 @@ check "시계 슬롯을 벗기면 뒤 시점이 같은 그 한 줄이 된다" \
 # borrow record is present, which is the property cases 10-13 exist to hold in
 # place.
 #
+# THIS IDENTITY IS ABOUT THE DEGRADED PATHS OF `statusline.sh`, NOT ABOUT THE
+# INSTALLED WRAPPER'S TWO BRANCHES. On a machine that already had a status line
+# the wrapper's fallback is the user's previous command and the identity holds
+# there too; on a machine that had none the fallback is `true` and emits
+# nothing, which is exactly the difference the first install's verify run is
+# still there to see.
+#
 # THE REFERENCE IS IN THE REPOSITORY, and it is executed on every run. Taken
 # only from the install target it is absent on the CI runner, where the
 # reference then degrades to the script's OWN no-run output and every case below
@@ -151,7 +189,7 @@ check "폴백이 적용 전 명령의 출력과 바이트 동일" "$(bash "$SL" 
 REF_SETTINGS="${CC_SL_REF_SETTINGS:-$HOME/.claude-cc/settings.json}"
 ref_cmd=$(jq -r '.statusLine.command // ""' "$REF_SETTINGS" 2>/dev/null || true)
 case "$ref_cmd" in "[ -x "*) ref_cmd=${ref_cmd#*" || "} ;; esac
-if [ -n "$ref_cmd" ]; then
+if [ -n "$ref_cmd" ] && [ "$ref_cmd" != "true" ]; then
   check "설치 대상의 적용 전 명령도 같은 바이트를 낸다" \
     "$(sh -c "$ref_cmd" </dev/null 2>/dev/null)" "$FALLBACK"
 else
@@ -866,10 +904,9 @@ fi
 # ---------------------------------------------------------------------------
 # THE EXECUTABLE BIT IS LOAD-BEARING and is not a packaging detail. The command
 # that gets installed guards on `[ -x ]`, so a status line shipped without the
-# bit makes that guard permanently false: every render takes the fallback, the
-# apply's verify run takes the fallback too and passes all five conditions, and
-# the pipeline records a dead status line as a success. Losing the bit is
-# silent everywhere except here.
+# bit makes that guard permanently false: every render takes the fallback, and
+# on a machine that already had a status line nothing downstream notices.
+# Losing the bit is silent everywhere except here.
 if [ -x "$SL" ]; then ok "statusline.sh 에 실행 비트가 있다 (설치되는 가드가 -x 를 본다)"
 else bad "statusline.sh 실행 비트" "가드가 영구히 거짓이 된다"; fi
 
@@ -882,102 +919,1257 @@ check "F1 플러그인 경로가 실행 가능하면 그 스크립트가 불린�
 check "F2 플러그인 경로 부재 — 적용 전 리터럴과 바이트 동일" \
   "$(fx_statusline_stdin sess-live | sh -c "$f2_cmd")" "PRE-APPLY-LITERAL"
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # The apply path.
 #
 # A fixture settings file throughout — the real one is never touched.
-# ---------------------------------------------------------------------------
+# ===========================================================================
+
 mk_settings() {
   # mk_settings <path> [command] — a settings file shaped like the real one:
   # several unrelated keys around the one this design owns.
+  #
+  # ITS VALUE IS FOREIGN UNDER THE PARK PREDICATE, AND IT STAYS THAT WAY. This
+  # is the fixture every pre-write park case stands on, and it is the only thing
+  # that separates "the four pre-write checks run BEFORE the value is
+  # classified" from "they run after": on a writable fixture both orders pass.
   local p="$1" c="${2:-printf 'PRE-APPLY-LITERAL'}"
   jq -n --arg c "$c" \
     '{theme: "dark", model: "opus", statusLine: {type: "command", command: $c}, cleanupPeriodDays: 30}' \
     > "$p"
 }
 
-digest_of() { jq -S -c '.statusLine' "$1" | shasum -a 256 | cut -d' ' -f1; }
+mk_settings_empty() {
+  # mk_settings_empty <path> — the same unrelated keys, and NO `statusLine` key
+  # at all. Classified empty; a successful apply against it is rc 10.
+  jq -n '{theme: "dark", model: "opus", cleanupPeriodDays: 30}' > "$1"
+}
 
-S1F="$WORK/settings-normal.json"; mk_settings "$S1F"
-EXPECT1=$(digest_of "$S1F")
+mk_settings_ours() {
+  # mk_settings_ours <path> [fallback] — a guarded wrapper aimed at an OLDER
+  # plugin path, with a named fallback behind it. Classified ours; a successful
+  # apply against it is rc 11, and the fallback has to survive the re-point.
+  local p="$1" fb="${2:-printf 'USER-CMD'}"
+  jq -n --arg c "[ -x \"$OLDSL\" ] && exec bash \"$OLDSL\" || $fb" \
+    '{theme: "dark", model: "opus", statusLine: {type: "command", command: $c}, cleanupPeriodDays: 30}' \
+    > "$p"
+}
 
-bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
-check "적용 사전 프로브 — 옛 값이면 2(진행)" "$?" "2"
+mk_fake_plugin() {
+  # mk_fake_plugin <dir> <printf-format> — a plugin tree whose status line emits
+  # exactly the given bytes. The shared grammar file goes in too: the installer
+  # sources it out of `--plugin-dir`.
+  local d="$1" fmt="$2"
+  mkdir -p "$d/orchestrator"
+  cp "$CMDLIB" "$APPLY" "$d/orchestrator/"
+  printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf %s\n' "'$fmt'" \
+    > "$d/orchestrator/statusline.sh"
+  chmod +x "$d/orchestrator/statusline.sh"
+}
 
-out=$(bash "$APPLY" --apply --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" 2>&1)
-check "적용 — 종료 코드 0" "$?" "0"
-has "적용 — 백업 포인터를 표준출력으로 낸다" "$out" "백업:"
-has "적용 — 변경 탐지용 전체 다이제스트를 함께 낸다" "$out" "적용 후 전체 sha256:"
-check "적용 — 무관한 키가 보존된다" "$(jq -r '.theme + "/" + .model' "$S1F")" "dark/opus"
-check "적용 — 키 수가 늘지 않는다" "$(jq -r '[keys[]] | length' "$S1F")" "4"
-has "적용 — 설치된 명령이 방어적 가드다" \
-  "$(jq -r '.statusLine.command' "$S1F")" "[ -x \"$APLUG/orchestrator/statusline.sh\" ]"
-has "적용 — 사용자의 기존 명령이 폴백으로 남는다" \
-  "$(jq -r '.statusLine.command' "$S1F")" "|| printf 'PRE-APPLY-LITERAL'"
-has "적용 — exec bash 이지 exec <경로> 가 아니다" \
-  "$(jq -r '.statusLine.command' "$S1F")" "exec bash \"$APLUG/orchestrator/statusline.sh\""
-n=$(ls "$WORK"/settings-normal.json.pre-statusline-* 2>/dev/null | grep -c . || true)
-check "적용 — 대상 파일 옆에 기존 명명 관례로 백업이 남는다" "$n" "1"
+sha_of()   { shasum -a 256 "$1" | cut -d' ' -f1; }
+mtime_of() { perl -e 'print((stat($ARGV[0]))[9])' "$1" 2>/dev/null; }
+cmd_of()   { jq -r '.statusLine.command' "$1" 2>/dev/null; }
+nglob()    { ls -d "$@" 2>/dev/null | grep -c . || true; }
 
-bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
-check "적용 사후 프로브 — 같은 인자로 0(수렴)" "$?" "0"
+apply() {
+  # apply <settings> <plugin-dir> <require-state> — run the installer and echo
+  # its exit code. `2>/dev/null`, NOT `2>&1`: the diagnostics belong on stderr
+  # and the cases that assert an empty stdout would otherwise be asserting an
+  # empty stderr as well, which would break every case that reads a park reason.
+  local s="$1" p="$2" st="$3"
+  bash "$APPLY" --apply --settings "$s" --plugin-dir "$p" --require-state "$st" >/dev/null 2>/dev/null
+  printf '%s' "$?"
+}
 
-# The subobject digest is what makes this survive a neighbour's edit; a
-# whole-file hash would have parked here.
-jq '.newUnrelatedKey = "drifted"' "$S1F" > "$S1F.tmp" && mv "$S1F.tmp" "$S1F"
-bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
-check "프로브 — 무관한 키 표류에 걸리지 않는다" "$?" "0"
+probe() {
+  local s="$1" p="$2"
+  bash "$APPLY" --probe --settings "$s" --plugin-dir "$p" >/dev/null 2>/dev/null
+  printf '%s' "$?"
+}
 
-# Applying twice must not nest the wrapper inside its own fallback.
-bash "$APPLY" --apply --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
-n=$(jq -r '.statusLine.command' "$S1F" | grep -c 'exec bash' || true)
-check "적용은 멱등이다 — 두 번 적용해도 래퍼가 겹치지 않는다" "$n" "1"
-
-S3F="$WORK/settings-third.json"; mk_settings "$S3F" "printf 'SOMEBODY-ELSE'"
-bash "$APPLY" --probe --settings "$S3F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
-check "프로브 — 제삼자가 손댄 값이면 1(park)" "$?" "1"
+drift() {
+  # drift <settings> — re-aim the installed wrapper at an older plugin path so
+  # the next apply owes a real write. This is the shape a marketplace update
+  # leaves behind.
+  local s="$1" tmp="$1.drift"
+  jq --arg c "[ -x \"$OLDSL\" ] && exec bash \"$OLDSL\" || $(cmd_of "$s" | sed 's/.*|| //')" \
+    '.statusLine.command = $c' "$s" > "$tmp" && mv "$tmp" "$s"
+}
 
 # ---------------------------------------------------------------------------
-# The applies that must not write
+# A — the first install, and the argument contract
 # ---------------------------------------------------------------------------
-S4F="$WORK/settings-guard.json"; mk_settings "$S4F"
-E4=$(digest_of "$S4F"); B4=$(shasum -a 256 "$S4F" | cut -d' ' -f1)
+A1="$WORK/a1.json"; mk_settings_empty "$A1"
+A1_PRE=$(sha_of "$A1")
+out=$(bash "$APPLY" --apply --settings "$A1" --plugin-dir "$APLUG" --require-state empty 2>/dev/null); rc=$?
+check "A1 statusLine 키 부재 — 최초 설치로 진행한다" "$rc" "10"
+check "A8 성공 종단의 stdout 이 정확히 0바이트다" "$(printf '%s' "$out" | wc -c | tr -d ' ')" "0"
+has "A3 설치된 명령이 방어적 가드다" "$(cmd_of "$A1")" "[ -x \"$APLUG/orchestrator/statusline.sh\" ]"
+has "A4 exec bash 이지 exec <경로> 가 아니다" "$(cmd_of "$A1")" "exec bash \"$APLUG/orchestrator/statusline.sh\""
+has "A5 상태줄이 없던 기기의 폴백은 true 다" "$(cmd_of "$A1")" "|| true"
+check "A2 무관한 키가 보존된다" "$(jq -r '.theme + "/" + .model' "$A1")" "dark/opus"
+check "A2b 키 수가 늘지 않는다" "$(jq -r '[keys[]] | length' "$A1")" "4"
 
-bash "$APPLY" --apply --settings "$S4F" --plugin-dir "" --expect "$E4" >/dev/null 2>&1
-check "--plugin-dir 이 비면 쓰기 전에 park 한다" "$?" "1"
-bash "$APPLY" --apply --settings "$S4F" --plugin-dir "relative/path" --expect "$E4" >/dev/null 2>&1
-check "--plugin-dir 이 절대경로가 아니면 쓰기 전에 park 한다" "$?" "1"
-bash "$APPLY" --apply --settings "$S4F" --plugin-dir "$APLUG" >/dev/null 2>&1
-check "--expect 는 생략할 수 없다" "$?" "1"
-check "park 한 세 경우 모두 파일을 건드리지 않았다" "$(shasum -a 256 "$S4F" | cut -d' ' -f1)" "$B4"
+# A8b. THE DISK, NOT THE STDOUT. The two assertions this replaces read a merged
+# capture for a substring, so they stayed green for a script that printed
+# `백업:` and made no backup at all, and they would have stayed green for one
+# that merely moved the same four lines to stderr.
+if [ -s "$A1.orig" ]; then ok "A8b 첫 쓰기 스냅숏 슬롯이 대상 파일 옆에 있고 비어 있지 않다"
+else bad "A8b 첫 쓰기 스냅숏 슬롯" "$A1.orig 이 없거나 0바이트다"; fi
+differ "A8b 설정 파일의 바이트가 실제로 바뀌었다" "$(sha_of "$A1")" "$A1_PRE"
+check "A8b 첫 쓰기 스냅숏은 쓰기 이전 바이트를 담는다" "$(sha_of "$A1.orig")" "$A1_PRE"
 
-# ---------------------------------------------------------------------------
-# The absolute paths that are still wrong.
+# The three other shapes of "empty".
+for shape in null:'.statusLine = null' emptyobj:'.statusLine = {}' \
+             blankcmd:'.statusLine = {type:"command", command:"   "}' \
+             nullcmd:'.statusLine = {type:"command", command:null}'; do
+  tag=${shape%%:*}; prog=${shape#*:}
+  f="$WORK/a1-$tag.json"; mk_settings_empty "$f"
+  jq "$prog" "$f" > "$f.t" && mv "$f.t" "$f"
+  check "A1 빈 상태의 변형 ($tag) — park 하지 않고 진행한다" "$(apply "$f" "$APLUG" empty)" "10"
+done
+
+# A2c. THE POSITIVE HALF STANDS ON A FIXTURE THAT IS ACTUALLY WRITABLE. Left on
+# the shared foreign fixture this case parks, and an assertion named "the value
+# is installed" that parks is green for the wrong reason.
+A2C="$WORK/a2c.json"; mk_settings_empty "$A2C"
+check "A2c WRITABLE 픽스처 위에서 값이 그대로 설치된다" "$(apply "$A2C" "$APLUG" empty)" "10"
+check "A12 --require-state empty 를 EMPTY 픽스처에 주면 진행한다" "$(cmd_of "$A2C" | grep -c 'exec bash')" "1"
+
+# A2b's negative half. "The unrelated keys are preserved" and "the key count did
+# not grow" are both satisfied by an apply that did nothing at all, so each owes
+# a park-side reading that separates "the write preserved them" from "there was
+# no write".
+A2N="$WORK/a2n.json"; mk_settings "$A2N"
+check "A2 음성 짝 — park 실행 뒤에도 같은 두 키" "$(apply "$A2N" "$APLUG" empty)" "20"
+check "A2 음성 짝 — park 은 무관한 키를 보존하지만 쓰지도 않는다" "$(jq -r '.theme + "/" + .model' "$A2N")" "dark/opus"
+check "A2b 음성 짝 — park 실행 뒤 키 수도 그대로" "$(jq -r '[keys[]] | length' "$A2N")" "4"
+
+# A2c-b. The assertion that used to cover three cases covers two: the third is
+# now an argument rejection rather than a park, and it has its own case.
+A2CB="$WORK/a2cb.json"; mk_settings "$A2CB"; B=$(sha_of "$A2CB")
+check "A2c-b 빈 --plugin-dir 은 쓰기 전에 park 한다" "$(apply "$A2CB" "" empty)" "26"
+check "A2c-b 상대경로 --plugin-dir 은 쓰기 전에 park 한다" "$(apply "$A2CB" "relative/path" empty)" "26"
+check "A2c-b park 한 두 경우 모두 파일을 건드리지 않았다" "$(sha_of "$A2CB")" "$B"
+
+# A9. STRUCTURE, BECAUSE BEHAVIOUR ONLY SEES THE PATHS IT WALKS. `--apply`
+# landing with an empty stdout says nothing about a code path this suite has not
+# reached, and the whole point of deleting the four success lines is that the
+# installer's legal stdout is now the empty string and nothing else.
+a9_hits=$(grep -vE '^[[:space:]]*#' "$APPLY" | grep -nE 'printf|echo' | grep -vc '>&2' || true)
+check "A9 설치기 안에 >&2 로 리디렉션되지 않은 배출이 0 건이다 (구조)" "$a9_hits" "0"
+
+# A10. STRUCTURE ONLY, AND DELIBERATELY SO. Burning this guard behaviourally
+# needs a `--settings` with no slash in it, which the absolute-path requirement
+# rejects at the argument parser — so the only way to write that case is to
+# weaken the requirement, which is the very change this guard exists to survive.
+if grep -qF 'DIR="${SETTINGS%/*}"' "$APPLY" \
+   && grep -qE '^[[:space:]]*if \[ -n "\$DIR" \] && \[ "\$DIR" != "\$SETTINGS" \]; then' "$APPLY" \
+   && grep -qE '^[[:space:]]*mkdir -p "\$DIR"' "$APPLY"; then
+  ok "A10 설정 디렉터리 생성이 두 조건 가드 안에 있다 (구조)"
+else
+  bad "A10 설정 디렉터리 가드" "무가드 mkdir -p 는 설정 파일 자리에 디렉터리를 만들고 rc 0 으로 끝난다"
+fi
+
+# A11. The flag is gone from the tree, and passing it is refused. The structural
+# half is what makes the deletion real: a `case` arm left in place with only the
+# required-ness check removed would pass the behavioural half.
 #
-# Every case here was measured landing as `apply rc=0` AND `post-probe rc=0` —
-# the driver's only success condition — while the installed command rendered the
-# fallback forever. None of them can be caught after the write: the verify run
-# feeds a session id with no index, so the script's own "no run" output and the
-# fallback are the same bytes and the five conditions pass on either branch.
+# THE SCAN IS THE FILES THAT TALK TO THE INSTALLER. Other tools in the tree own
+# flags of the same spelling (`--expect-sha256`, a tree-hash `--expect`) that
+# have nothing to do with this one, so the scan is every file outside this suite
+# that names the installer, and the flag is matched as a whole word.
+a11_tree=0
+for f in $(grep -rlF -- 'apply-statusline' "$repo_root/plugins" "$repo_root/scripts" "$repo_root/Makefile" 2>/dev/null); do
+  [ "$f" = "$script_dir/test-statusline.sh" ] && continue
+  grep -qE -- '--expect([^-A-Za-z0-9_]|$)' "$f" && a11_tree=$((a11_tree + 1))
+done
+check "A11 --expect 가 설치기와 그 호출자들에서 0 건이다 (구조)" "$a11_tree" "0"
+A11="$WORK/a11.json"; mk_settings_empty "$A11"
+bash "$APPLY" --apply --settings "$A11" --plugin-dir "$APLUG" --expect deadbeef >/dev/null 2>/dev/null
+check "A11 --expect 를 넘기면 알 수 없는 인자로 거절한다" "$?" "1"
+
 # ---------------------------------------------------------------------------
-S7F="$WORK/settings-path.json"; mk_settings "$S7F"
-E7=$(digest_of "$S7F"); B7=$(shasum -a 256 "$S7F" | cut -d' ' -f1)
+# B — park
+# ---------------------------------------------------------------------------
+B1="$WORK/b1.json"; mk_settings "$B1"; B1S=$(sha_of "$B1")
+check "B1 제삼자 값에 park 한다" "$(apply "$B1" "$APLUG" empty)" "20"
+check "B1 park 뒤 파일이 바이트 동일" "$(sha_of "$B1")" "$B1S"
+check "B2 park 에서는 refreshInterval 이 생기지 않는다" "$(jq -r '.statusLine | has("refreshInterval")' "$B1")" "false"
+check "B2 park 에서는 설치 이력도 남지 않는다" "$([ -e "$B1.cc-statusline-owned" ] && printf y || printf n)" "n"
+check "B3 프로브 — 제삼자 값이면 1(park)" "$(probe "$B1" "$APLUG")" "1"
 
-bash "$APPLY" --apply --settings "$S7F" --plugin-dir "$WORK/does-not-exist" --expect "$E7" >/dev/null 2>&1
-check "절대경로이나 존재하지 않는 트리 — 쓰기 전에 park 한다" "$?" "1"
+# B4. THE REVERSE-MIXED WRAPPER — the guard tests OUR path while the exec target
+# is somebody else's binary. Dropping the "both P are the same" conjunct accepts
+# exactly this value and nothing else, so this case alone holds that conjunct in
+# place; a starship-shaped value parks either way.
+B4="$WORK/b4.json"
+mk_settings "$B4" "[ -x \"$OLDSL\" ] && exec bash \"/usr/local/bin/starship\" || true"
+B4S=$(sha_of "$B4")
+check "B4 역혼합 래퍼는 우리 것으로 오인되지 않는다" "$(apply "$B4" "$APLUG" ours)" "20"
+check "B4 역혼합 래퍼 — 파일이 바이트 동일" "$(sha_of "$B4")" "$B4S"
 
-mkdir -p "$WORK/partial-plugin/orchestrator"
-bash "$APPLY" --apply --settings "$S7F" --plugin-dir "$WORK/partial-plugin" --expect "$E7" >/dev/null 2>&1
-check "statusline.sh 만 없는 부분 체크아웃 — 쓰기 전에 park 한다" "$?" "1"
+B5="$WORK/b5.json"
+mk_settings "$B5" "[ -x \"/usr/local/bin/starship\" ] && exec bash \"/usr/local/bin/starship\" || true"
+check "B5 두 자리 모두 제삼자인 값도 park 한다" "$(apply "$B5" "$APLUG" empty)" "20"
 
-mkdir -p "$WORK/nobit/orchestrator"
-cp "$SL" "$WORK/nobit/orchestrator/statusline.sh"
-chmod -x "$WORK/nobit/orchestrator/statusline.sh"
-bash "$APPLY" --apply --settings "$S7F" --plugin-dir "$WORK/nobit" --expect "$E7" >/dev/null 2>&1
-check "파일은 있으나 실행 비트가 없음 — 쓰기 전에 park 한다" "$?" "1"
+# B6. THE FOUR PRE-WRITE CHECKS RUN BEFORE THE VALUE IS CLASSIFIED, and this is
+# the only case that can tell. The fixture is FOREIGN, so if the order were
+# reversed every one of these would answer 20 instead of its own code. Reading
+# "it parked" would not separate them; reading WHICH REASON does.
+mkdir -p "$WORK/b6-partial/orchestrator"
+mkdir -p "$WORK/b6-nobit/orchestrator"
+cp "$SL" "$LIVENESS" "$CMDLIB" "$APPLY" "$WORK/b6-nobit/orchestrator/"
+chmod -x "$WORK/b6-nobit/orchestrator/statusline.sh"
+mkdir -p "$WORK/b6-reeval/plug\$d/orchestrator"
+cp "$SL" "$LIVENESS" "$CMDLIB" "$APPLY" "$WORK/b6-reeval/plug\$d/orchestrator/"
+chmod +x "$WORK/b6-reeval/plug\$d/orchestrator/statusline.sh"
+B6="$WORK/b6.json"; mk_settings "$B6"; B6S=$(sha_of "$B6")
+for shape in "empty::26" "relative/x::26" "$APLUG/::26" "$WORK/b6-missing::24" \
+             "$WORK/b6-partial::24" "$WORK/b6-nobit::24" "$WORK/b6-reeval/plug\$d::25"; do
+  dir=${shape%::*}; want=${shape##*::}
+  [ "$dir" = "empty" ] && dir=""
+  got=$(apply "$B6" "$dir" empty)
+  check "B6 사전 park 가 값 분류보다 먼저다 ($want: ${dir:-빈 값})" "$got" "$want"
+  differ "B6 그 park 는 foreign 코드가 아니다 (${dir:-빈 값})" "$got" "20"
+done
+check "B6 일곱 모양 모두 파일을 건드리지 않았다" "$(sha_of "$B6")" "$B6S"
 
-check "경로 성질로 park 한 세 경우 모두 파일을 건드리지 않았다" \
-  "$(shasum -a 256 "$S7F" | cut -d' ' -f1)" "$B7"
+# B7. The window between the hook's classification and the installer's snapshot.
+B7="$WORK/b7.json"; mk_settings_empty "$B7"; B7S=$(sha_of "$B7"); B7M=$(mtime_of "$B7")
+check "B7 넘긴 상태와 스냅숏 분류가 어긋나면 park 한다" "$(apply "$B7" "$APLUG" ours)" "21"
+check "B7 상태 불일치 park — 바이트가 그대로다" "$(sha_of "$B7")" "$B7S"
+check "B7 상태 불일치 park — mtime 도 그대로다" "$(mtime_of "$B7")" "$B7M"
+check "B7 상태 불일치 park — 소유 비트가 생기지 않는다" "$([ -e "$B7.cc-statusline-owned" ] && printf y || printf n)" "n"
+
+# B8. A trailing slash still resolves to the same directory, so every other
+# check passes it. Only this case catches an installer that quietly normalises.
+B8="$WORK/b8.json"; mk_settings_empty "$B8"
+check "B8 --plugin-dir 에 후행 슬래시가 남아 있으면 park 한다" "$(apply "$B8" "$APLUG/" empty)" "26"
+check "B8 후행 슬래시 park — 아무것도 쓰지 않았다" "$(jq -r 'has("statusLine")' "$B8")" "false"
+
+# B9. A SETTINGS FILE MANAGED THROUGH A LINK IS NOT WRITTEN. The commit is a
+# rename, which replaces the name rather than the file it points at: a symbolic
+# link would become a plain file while its source kept the old bytes, and a hard
+# link would split into two inodes. Every fixture holds the same writable value
+# (empty), so only the shape of the target can be what parks it — and the plain
+# single-link pair at the end is what fails an installer that parks everything.
+#
+# THE SOURCES ARE AGED FIRST. mtime has a one-second grain, so a write in the
+# same second as the fixture would read as "untouched"; a source dated years ago
+# cannot.
+b9_dir="$WORK/b9"; mkdir -p "$b9_dir"
+b9_islink()  { [ -L "$1" ] && printf y || printf n; }
+b9_multi()   { [ -n "$(find "$1" -maxdepth 0 -links +1 2>/dev/null)" ] && printf y || printf n; }
+b9_leftover() { nglob "$1".cc-statusline.lock "$1".cc-statusline.tmp.* "$1".cc-statusline.bak-tmp.*; }
+
+mk_settings_empty "$b9_dir/sym-src.json"; touch -t 202001010000 "$b9_dir/sym-src.json"
+ln -s "$b9_dir/sym-src.json" "$b9_dir/sym.json"
+b9_sym_sha=$(sha_of "$b9_dir/sym-src.json"); b9_sym_m=$(mtime_of "$b9_dir/sym-src.json")
+check "B9 심볼릭 링크 설정 파일 — rc 27 로 park 한다" "$(apply "$b9_dir/sym.json" "$APLUG" empty)" "27"
+check "B9 심볼릭 링크 — 실행 뒤에도 링크다" "$(b9_islink "$b9_dir/sym.json")" "y"
+check "B9 심볼릭 링크 — 원본 바이트가 그대로다" "$(sha_of "$b9_dir/sym-src.json")" "$b9_sym_sha"
+check "B9 심볼릭 링크 — 원본 mtime 이 그대로다" "$(mtime_of "$b9_dir/sym-src.json")" "$b9_sym_m"
+check "B9 심볼릭 링크 — 락도 임시 파일도 남지 않는다" "$(b9_leftover "$b9_dir/sym.json")" "0"
+check "B9 심볼릭 링크 — 소유 비트가 생기지 않는다" "$([ -e "$b9_dir/sym.json.cc-statusline-owned" ] && printf y || printf n)" "n"
+check "B9 심볼릭 링크 — probe 도 park(1) 다" "$(probe "$b9_dir/sym.json" "$APLUG")" "1"
+
+mk_settings_empty "$b9_dir/hard-a.json"; touch -t 202001010000 "$b9_dir/hard-a.json"
+ln "$b9_dir/hard-a.json" "$b9_dir/hard-b.json"
+b9_hard_sha=$(sha_of "$b9_dir/hard-a.json"); b9_hard_m=$(mtime_of "$b9_dir/hard-a.json")
+check "B9 하드 링크 전제 — 링크 수가 2 이상이다" "$(b9_multi "$b9_dir/hard-a.json")" "y"
+check "B9 하드 링크 설정 파일 — rc 27 로 park 한다" "$(apply "$b9_dir/hard-a.json" "$APLUG" empty)" "27"
+check "B9 하드 링크 — 실행 뒤에도 링크 수가 2 이상이다" "$(b9_multi "$b9_dir/hard-a.json")" "y"
+check "B9 하드 링크 — 두 이름이 여전히 같은 파일이다" "$([ "$b9_dir/hard-a.json" -ef "$b9_dir/hard-b.json" ] && printf y || printf n)" "y"
+check "B9 하드 링크 — 실행한 이름의 바이트가 그대로다" "$(sha_of "$b9_dir/hard-a.json")" "$b9_hard_sha"
+check "B9 하드 링크 — 다른 이름의 바이트도 그대로다" "$(sha_of "$b9_dir/hard-b.json")" "$b9_hard_sha"
+check "B9 하드 링크 — mtime 이 그대로다" "$(mtime_of "$b9_dir/hard-a.json")" "$b9_hard_m"
+check "B9 하드 링크 — 락도 임시 파일도 남지 않는다" "$(b9_leftover "$b9_dir/hard-a.json")" "0"
+
+# A dangling link fails `[ -e ]`, so the snapshot copy fails and the create path
+# would be next — where `ln` refuses the existing link name and the run ends
+# rc 31, outside the verdict band and retried every session. Only `[ -L ]` sees
+# it, and it must park before the lock as the live link does.
+ln -s "$b9_dir/nowhere.json" "$b9_dir/dangling.json"
+check "B9 끊어진 심볼릭 링크 — rc 27 로 park 한다" "$(apply "$b9_dir/dangling.json" "$APLUG" empty)" "27"
+check "B9 끊어진 심볼릭 링크 — 실행 뒤에도 링크다" "$(b9_islink "$b9_dir/dangling.json")" "y"
+check "B9 끊어진 심볼릭 링크 — 링크가 가리키던 자리에 파일이 생기지 않는다" "$([ -e "$b9_dir/nowhere.json" ] && printf y || printf n)" "n"
+check "B9 끊어진 심볼릭 링크 — 락도 임시 파일도 남지 않는다" "$(b9_leftover "$b9_dir/dangling.json")" "0"
+
+mk_settings_empty "$b9_dir/plain.json"
+check "B9 짝 — 링크 하나짜리 일반 파일 전제" "$(b9_islink "$b9_dir/plain.json")$(b9_multi "$b9_dir/plain.json")" "nn"
+check "B9 짝 — probe 는 WRITABLE(2) 이다" "$(probe "$b9_dir/plain.json" "$APLUG")" "2"
+check "B9 짝 — 같은 값의 일반 파일은 park 하지 않고 설치한다" "$(apply "$b9_dir/plain.json" "$APLUG" empty)" "10"
+
+# ---------------------------------------------------------------------------
+# C — convergence, idempotence and the sibling files
+# ---------------------------------------------------------------------------
+C1="$WORK/c1.json"; mk_settings_empty "$C1"
+check "C1 최초 설치" "$(apply "$C1" "$APLUG" empty)" "10"
+C1S=$(sha_of "$C1"); C1PREV=$(sha_of "$C1.prev"); C1PREVM=$(mtime_of "$C1.prev")
+check "C1 재적용은 수렴이고 쓰지 않는다" "$(apply "$C1" "$APLUG" ours)" "0"
+check "C1 재적용해도 파일이 바이트 동일" "$(sha_of "$C1")" "$C1S"
+check "C2 수렴한 재적용은 직전 스냅숏 슬롯의 내용을 바꾸지 않는다" "$(sha_of "$C1.prev")" "$C1PREV"
+check "C2 수렴한 재적용은 직전 스냅숏 슬롯의 mtime 도 바꾸지 않는다" "$(mtime_of "$C1.prev")" "$C1PREVM"
+check "C1 재적용 뒤에도 exec bash 가 한 번뿐이다" "$(cmd_of "$C1" | grep -c 'exec bash')" "1"
+
+C3="$WORK/c3.json"; mk_settings_empty "$C3"
+jq '.statusLine = {type:"command", command:"", refreshInterval: 5}' "$C3" > "$C3.t" && mv "$C3.t" "$C3"
+check "C3 기존 refreshInterval 이 있는 빈 명령 — 설치된다" "$(apply "$C3" "$APLUG" empty)" "10"
+check "C3 기존 refreshInterval 값이 그대로다" "$(jq -r '.statusLine.refreshInterval' "$C3")" "5"
+
+# C4. FOUR PARTS, NOT ONE NUMBER. "no more than four siblings" was green while
+# seeing none of (b), (c) or (d): a leaked temporary, a stale lock directory and
+# a deleted legacy backup all passed it.
+C4="$WORK/c4.json"; mk_settings_empty "$C4"
+: > "$C4.pre-statusline-1700000000"
+: > "$C4.pre-statusline-1700000001"
+printf 'legacy-a' > "$C4.pre-statusline-1700000000"
+printf 'legacy-b' > "$C4.pre-statusline-1700000001"
+C4LEG=$(sha_of "$C4.pre-statusline-1700000000")$(sha_of "$C4.pre-statusline-1700000001")
+C4LEGM=$(mtime_of "$C4.pre-statusline-1700000000")
+check "C4 12회 실쓰기 — 첫 설치" "$(apply "$C4" "$APLUG" empty)" "10"
+i=1
+while [ "$i" -lt 12 ]; do
+  drift "$C4"
+  check "C4 12회 실쓰기 — 재지정 $i" "$(apply "$C4" "$APLUG" ours)" "11"
+  i=$((i + 1))
+done
+c4_persist=0
+for name in "$C4.cc-statusline" "$C4.cc-statusline-owned" "$C4.orig" "$C4.prev"; do
+  [ -e "$name" ] && c4_persist=$((c4_persist + 1))
+done
+check "C4 (a) 이 설계의 영속 산출물은 정확히 넷 중 설치기 몫 셋이다" "$c4_persist" "3"
+check "C4 (b) 임시 산출물이 0개다" "$(nglob "$C4".cc-statusline.tmp.* "$C4".cc-statusline.bak-tmp.* "$C4".cc-statusline.mk-tmp.*)" "0"
+check "C4 (c) 락 디렉터리가 남지 않았다" "$([ -d "$C4.cc-statusline.lock" ] && printf y || printf n)" "n"
+check "C4 (d) 레거시 접두 백업의 개수가 변하지 않았다" "$(nglob "$C4".pre-statusline-*)" "2"
+
+# C5. The legacy backups are untouched in BOTH directions. Counting alone passes
+# an implementation that deletes and recreates them; a structural grep alone
+# passes one that assembles the name indirectly.
+check "C5 (구조) 레거시 접두가 파일명을 조립하는 자리에 0 건이다" \
+  "$(grep -c 'pre-statusline-' "$APPLY" || true)" "0"
+check "C5 (구조) 레거시 접두가 rm·unlink·mv 의 대상으로도 0 건이다" \
+  "$(grep -E '(rm|unlink|mv)[^\n]*pre-statusline' "$APPLY" | grep -c . || true)" "0"
+check "C5 (행동) 12회 쓰기 뒤 레거시 백업의 바이트가 그대로다" \
+  "$(sha_of "$C4.pre-statusline-1700000000")$(sha_of "$C4.pre-statusline-1700000001")" "$C4LEG"
+check "C5 (행동) 12회 쓰기 뒤 레거시 백업의 mtime 도 그대로다" \
+  "$(mtime_of "$C4.pre-statusline-1700000000")" "$C4LEGM"
+
+# C4b. WHAT A KILLED RUN LEAVES BEHIND MUST BE COVERED BY THE CLEANUP THIS
+# DESIGN PUBLISHES. Two lines are published — `rmdir` on the lock first, then
+# `rm -f` over the `…cc-statusline*` glob — plus the two backup names, which are
+# recovery snapshots and deliberately outside that glob.
+C4B="$WORK/c4b.json"; mk_settings_empty "$C4B"
+apply "$C4B" "$APLUG" empty >/dev/null
+i=0
+while [ "$i" -lt 20 ]; do
+  drift "$C4B"
+  bash "$APPLY" --apply --settings "$C4B" --plugin-dir "$APLUG" --require-state ours >/dev/null 2>/dev/null &
+  kp=$!
+  kill -9 "$kp" 2>/dev/null
+  wait "$kp" 2>/dev/null
+  i=$((i + 1))
+done
+c4b_uncovered=0
+for f in "$WORK"/c4b.json*; do
+  base=${f##*/}
+  case "$base" in
+    c4b.json|c4b.json.cc-statusline*|c4b.json.orig|c4b.json.prev) ;;
+    *) c4b_uncovered=$((c4b_uncovered + 1)); printf '  c4b: 계약 밖 이름 %s\n' "$base" >&2 ;;
+  esac
+done
+check "C4b SIGKILL 잔재 중 발행된 정리 절차에 잡히지 않는 이름이 0 개다" "$c4b_uncovered" "0"
+rmdir "$C4B.cc-statusline.lock" 2>/dev/null
+rm -f "$C4B".cc-statusline.tmp.* "$C4B".cc-statusline.bak-tmp.* 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# D — refreshInterval
+# ---------------------------------------------------------------------------
+D1="$WORK/d1.json"; mk_settings_empty "$D1"
+apply "$D1" "$APLUG" empty >/dev/null
+check "D1 키가 없으면 10 이 들어간다" "$(jq -r '.statusLine.refreshInterval' "$D1")" "10"
+
+D2="$WORK/d2.json"; mk_settings_ours "$D2"
+jq '.statusLine.refreshInterval = 5' "$D2" > "$D2.t" && mv "$D2.t" "$D2"
+apply "$D2" "$APLUG" ours >/dev/null
+check "D2 기존 값 5 는 보존된다" "$(jq -r '.statusLine.refreshInterval' "$D2")" "5"
+
+# `//=` and `// 10` both overwrite this one, and both look right everywhere else.
+D3="$WORK/d3.json"; mk_settings_ours "$D3"
+jq '.statusLine.refreshInterval = 0' "$D3" > "$D3.t" && mv "$D3.t" "$D3"
+apply "$D3" "$APLUG" ours >/dev/null
+check "D3 명시적 0 도 「존재」로 보존된다" "$(jq -r '.statusLine.refreshInterval' "$D3")" "0"
+
+D4="$WORK/d4.json"; mk_settings_empty "$D4"
+jq '.statusLine = {type:"command", command:"", padding: 1, hideVimModeIndicator: true}' "$D4" > "$D4.t" && mv "$D4.t" "$D4"
+apply "$D4" "$APLUG" empty >/dev/null
+check "D4 statusLine 안의 형제 키가 보존된다" \
+  "$(jq -r '(.statusLine.padding|tostring) + "/" + (.statusLine.hideVimModeIndicator|tostring)' "$D4")" "1/true"
+
+# ---------------------------------------------------------------------------
+# E — nesting
+# ---------------------------------------------------------------------------
+E1="$WORK/e1.json"; mk_settings_ours "$E1"
+apply "$E1" "$APLUG" ours >/dev/null
+check "E1 경로 갱신 후 exec bash 가 정확히 한 번" "$(cmd_of "$E1" | grep -c 'exec bash')" "1"
+has "E2 폴백이 옛 래퍼가 아니라 사용자의 원래 명령이다" "$(cmd_of "$E1")" "|| printf 'USER-CMD'"
+drift "$E1"
+apply "$E1" "$APLUG" ours >/dev/null
+check "E3 연속 두 번 갱신에도 한 겹이다" "$(cmd_of "$E1" | grep -c 'exec bash')" "1"
+
+nest_value() {
+  # nest_value <depth> — a value nested <depth> times over the user's command.
+  local d="$1" v="printf 'USER-CMD'" i=0
+  while [ "$i" -lt "$d" ]; do
+    v="[ -x \"$OLDSL\" ] && exec bash \"$OLDSL\" || $v"
+    i=$((i + 1))
+  done
+  printf '%s' "$v"
+}
+
+for depth in 2 3; do
+  f="$WORK/e-$depth.json"; mk_settings "$f" "$(nest_value "$depth")"
+  apply "$f" "$APLUG" ours >/dev/null
+  check "E4~E5 ${depth}중 중첩에서 시작해도 한 겹으로 접힌다" "$(cmd_of "$f" | grep -c 'exec bash')" "1"
+  has "E4~E5 ${depth}중 중첩 — 사용자 명령이 폴백으로 회수된다" "$(cmd_of "$f")" "|| printf 'USER-CMD'"
+done
+
+E6A="$WORK/e6a.json"; mk_settings "$E6A" "$(nest_value 8)"
+apply "$E6A" "$APLUG" ours >/dev/null
+check "E6 상한 8 에서는 완전히 붕괴한다" "$(cmd_of "$E6A" | grep -c 'exec bash')" "1"
+E6B="$WORK/e6b.json"; mk_settings "$E6B" "$(nest_value 9)"
+apply "$E6B" "$APLUG" ours >/dev/null
+n=$(cmd_of "$E6B" | grep -o 'exec bash' | grep -c . || true)
+if [ "$n" -ge 2 ]; then ok "E6 9단에서는 남은 꼬리가 그대로 폴백이 된다 (수용된 결과)"
+else bad "E6 9단 중첩" "exec bash 가 $n 개 — 상한에서 park 하거나 꼬리를 잃었다"; fi
+
+E7="$WORK/e7.json"; mk_settings_empty "$E7"
+apply "$E7" "$APLUG" empty >/dev/null
+e7_len=$(cmd_of "$E7" | wc -c | tr -d ' ')
+i=0
+while [ "$i" -lt 5 ]; do
+  drift "$E7"
+  apply "$E7" "$APLUG" ours >/dev/null
+  i=$((i + 1))
+done
+check "E7 5회 연속 드리프트에도 명령 길이가 증가하지 않는다" "$(cmd_of "$E7" | wc -c | tr -d ' ')" "$e7_len"
+
+# ---------------------------------------------------------------------------
+# F — the front gate
+#
+# The gate lives in the hook, and it is read here through an isolated-sourcing
+# seam: the region between two marker comments is extracted and sourced on its
+# own, so what these cases exercise is the code itself rather than a copy of it.
+# The precedent is `scripts/test-liveness-agreement.sh`, which pulls functions
+# out of `gate.sh` the same way.
+# ---------------------------------------------------------------------------
+GATE_BEGIN='# >>> cc-statusline gate region begin'
+GATE_END='# <<< cc-statusline gate region end'
+GATE_REGION="$WORK/gate-region.sh"
+awk -v b="$GATE_BEGIN" -v e="$GATE_END" \
+  '$0 == b {inr = 1; next} $0 == e {inr = 0} inr {print}' "$HOOK" > "$GATE_REGION" 2>/dev/null
+
+if [ ! -s "$GATE_REGION" ]; then
+  bad "F 앞단 게이트 격리 소싱" "$HOOK 에서 게이트 영역을 뽑을 수 없다 (마커 주석 부재)"
+else
+  gate_verdict() {
+    # gate_verdict <plugin-dir> <config-dir> — the gate's own return code, run
+    # with nothing else of the hook around it. An early `exit 0` inside the
+    # region ends the subshell, and the empty answer that leaves is observable.
+    (
+      CLAUDE_CONFIG_DIR="$2"
+      export CLAUDE_CONFIG_DIR
+      set -uo pipefail
+      # shellcheck disable=SC1090
+      . "$GATE_REGION" --plugin-dir "$1"
+      sl_gate_converged
+      printf '%s' "$?"
+    ) 2>/dev/null
+  }
+
+  # A converged machine: marker present, settings older than it, path and length
+  # both agreeing.
+  FCFG="$WORK/fcfg"; mkdir -p "$FCFG"
+  FSET="$FCFG/settings.json"; mk_settings_empty "$FSET"
+  apply "$FSET" "$APLUG" empty >/dev/null
+  flen=$(wc -c < "$FSET" | tr -d ' ')
+  printf 'schema=1|path=%s/orchestrator/statusline.sh|len=%s|lastAt=0|verdict=installed|reason=|\n' \
+    "$APLUG" "$flen" > "$FSET.cc-statusline"
+  fx_age_file "$FSET" 5
+
+  check "F10 네 조건이 전부 참일 때만 건너뛴다" "$(gate_verdict "$APLUG" "$FCFG")" "0"
+
+  mv "$FSET.cc-statusline" "$WORK/f-marker.bak"
+  check "F6 조건 1 — 마커 부재면 느린 경로" "$(gate_verdict "$APLUG" "$FCFG")" "1"
+  mv "$WORK/f-marker.bak" "$FSET.cc-statusline"
+
+  fx_age_file "$FSET.cc-statusline" 5
+  touch "$FSET"
+  check "F7 조건 2 — 마지막 판정 뒤 설정이 건드려졌으면 느린 경로" "$(gate_verdict "$APLUG" "$FCFG")" "1"
+  fx_age_file "$FSET" 5
+
+  check "F8 조건 3 — 플러그인 경로가 움직였으면 느린 경로" "$(gate_verdict "$WORK/moved-plugin" "$FCFG")" "1"
+
+  printf 'schema=1|path=%s/orchestrator/statusline.sh|len=999999|lastAt=0|verdict=installed|reason=|\n' \
+    "$APLUG" > "$FSET.cc-statusline"
+  fx_age_file "$FSET.cc-statusline" 0
+  fx_age_file "$FSET" 5
+  check "F9 조건 4 — 같은 초 안의 길이 변경이면 느린 경로" "$(gate_verdict "$APLUG" "$FCFG")" "1"
+
+  # F4. THE FORK COUNT IS A STRUCTURAL ASSERTION, and it covers the PROLOGUE as
+  # well as the gate body — the derivation of the target path runs on every
+  # startup too, so a command substitution there costs the dominant path a fork
+  # while every behavioural case stays green.
+  #
+  # Membership is decided by asking the shell, not by an enumeration: a word is
+  # allowed when `type -t` calls it a builtin or a reserved word, or when the
+  # region itself defines it as a function. An enumeration would go stale the
+  # first time the prologue grew a line.
+  f4_subst=$( { grep -cE '\$\(|`' "$GATE_REGION" || true; } )
+  check "F4 격리 영역에 명령 치환과 백틱이 0 건이다 (구조)" "$f4_subst" "0"
+
+  region_funcs=$(grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$GATE_REGION" | sed 's/()$//' | tr '\n' ' ')
+  f4_external=0
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    case " $region_funcs " in *" $w "*) continue ;; esac
+    t=$(type -t "$w" 2>/dev/null)
+    case "$t" in
+      builtin|keyword) ;;
+      *) f4_external=$((f4_external + 1)); printf '  F4: 빌트인이 아닌 명령어 %s (%s)\n' "$w" "${t:-미정의}" >&2 ;;
+    esac
+  done <<EOF
+$(awk '
+  {
+    line = $0
+    if (line ~ /^[[:space:]]*#/) next
+    out = ""; q = ""; n = length(line)
+    for (i = 1; i <= n; i++) {
+      c = substr(line, i, 1)
+      if (q != "") { if (c == q) q = ""; out = out "x"; continue }
+      if (c == "\"" || c == "\047") { q = c; out = out "x"; continue }
+      out = out c
+    }
+    gsub(/&&|\|\||\|/, "\n", out)
+    gsub(/;;|;/, "\n", out)
+    m = split(out, parts, "\n")
+    for (j = 1; j <= m; j++) {
+      w = parts[j]
+      gsub(/^[[:space:]]+/, "", w)
+      gsub(/[[:space:]]+$/, "", w)
+      if (w == "") continue
+      k = split(w, f, /[[:space:]]+/)
+      idx = 1
+      while (idx <= k && f[idx] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) idx++
+      if (idx > k) continue
+      first = f[idx]
+      if (first ~ /\)$/) continue
+      if (first ~ /\(\)$/) continue
+      print first
+    }
+  }' "$GATE_REGION")
+EOF
+  check "F4 격리 영역의 모든 명령어가 빌트인이거나 예약어다 (구조)" "$f4_external" "0"
+
+  # F11. The positive half of the same property: the length is taken with the
+  # builtin form rather than with a process.
+  if grep -qF '${#buf}' "$GATE_REGION"; then
+    ok "F11 길이 계산이 빌트인 경로다 (구조)"
+  else
+    bad "F11 길이 계산" "\${#buf} 형태가 격리 영역에 없다"
+  fi
+
+  # F2/F3. NOT "IT DECIDED TO SKIP" BUT "HAVING SKIPPED, IT DID NOTHING". The
+  # architecture's axiom that the gate only ever exits early does not stand in
+  # for these: a gate that skipped and still took the lock would satisfy the
+  # axiom and fail here.
+  F23CFG="$WORK/f23cfg"; mkdir -p "$F23CFG"
+  F23SET="$F23CFG/settings.json"; mk_settings_empty "$F23SET"
+  CLAUDE_CONFIG_DIR="$F23CFG" bash "$HOOK" --plugin-dir "$APLUG" >/dev/null 2>/dev/null
+  f23_sha=$(sha_of "$F23SET"); f23_mtime=$(mtime_of "$F23SET")
+  CLAUDE_CONFIG_DIR="$F23CFG" bash "$HOOK" --plugin-dir "$APLUG" >/dev/null 2>/dev/null
+  check "F2 수렴한 기동은 설정 파일에 쓰지 않는다" "$(sha_of "$F23SET")" "$f23_sha"
+  check "F2 수렴한 기동은 설정 파일의 mtime 도 건드리지 않는다" "$(mtime_of "$F23SET")" "$f23_mtime"
+  check "F3 수렴한 기동은 잠금 디렉터리를 만들지도 않는다" "$([ -d "$F23SET.cc-statusline.lock" ] && printf y || printf n)" "n"
+fi
+
+# ---------------------------------------------------------------------------
+# G — the lock and the work directory
+# ---------------------------------------------------------------------------
+check "G6 (구조) 락 디렉터리 안에 무언가를 쓰는 자리가 0 건이다" \
+  "$(grep -E '>[[:space:]]*"?\$LOCK|\$LOCK/' "$APPLY" | grep -c . || true)" "0"
+
+G1="$WORK/g1.json"; mk_settings_empty "$G1"
+apply "$G1" "$APLUG" empty >/dev/null
+mkdir "$G1.cc-statusline.lock"
+drift "$G1"
+check "G 보유 중이면 즉시 포기하고 대기하지 않는다" "$(apply "$G1" "$APLUG" ours)" "30"
+check "G6 (행동) 락 디렉터리 안이 비어 있다" "$(ls -A "$G1.cc-statusline.lock" | grep -c . || true)" "0"
+check "G11 probe 는 자기가 잡은 적 없는 락을 지우지 않는다 — 먼저 probe" "$(probe "$G1" "$APLUG")" "2"
+check "G11 probe 뒤에도 남의 락이 살아 있다" "$([ -d "$G1.cc-statusline.lock" ] && printf y || printf n)" "y"
+
+# H3 rides the same fixture: five minutes older is the stale threshold, and a
+# bare `rmdir` is the whole reclaim.
+fx_age_file "$G1.cc-statusline.lock" 400
+check "H3 5분 넘은 스테일 락은 회수되지만 이번 세션은 포기한다" "$(apply "$G1" "$APLUG" ours)" "30"
+check "H3 회수된 락은 사라졌다" "$([ -d "$G1.cc-statusline.lock" ] && printf y || printf n)" "n"
+check "H3 회수 다음 실행은 정상 진행한다" "$(apply "$G1" "$APLUG" ours)" "11"
+
+# G7/G7b. The verify run is the first install's, and only the first install's.
+mk_fake_plugin "$WORK/p-2nl" 'LINE ONE\nLINE TWO\n'
+G7="$WORK/g7.json"; mk_settings_ours "$G7"
+check "G7 재지정 경로는 verify 를 건너뛴다" "$(apply "$G7" "$WORK/p-2nl" ours)" "11"
+check "G7 재지정 뒤 락이 정상 해제됐다" "$([ -d "$G7.cc-statusline.lock" ] && printf y || printf n)" "n"
+G7B="$WORK/g7b.json"; mk_settings_empty "$G7B"
+check "G7b EMPTY 경로는 verify 를 수행한다" "$(apply "$G7B" "$WORK/p-2nl" empty)" "40"
+
+# G8. The poll cap moved from three seconds to one, and a status line that takes
+# longer than a second has already failed.
+mkdir -p "$WORK/p-slow/orchestrator"
+cp "$CMDLIB" "$WORK/p-slow/orchestrator/"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nsleep 5\nprintf X\n' > "$WORK/p-slow/orchestrator/statusline.sh"
+chmod +x "$WORK/p-slow/orchestrator/statusline.sh"
+G8="$WORK/g8.json"; mk_settings_empty "$G8"
+g8_start=$SECONDS
+check "G8 느린 상태줄은 verify 에서 실패한다" "$(apply "$G8" "$WORK/p-slow" empty)" "40"
+g8_elapsed=$((SECONDS - g8_start))
+if [ "$g8_elapsed" -le 3 ]; then ok "G8 폴링 상한이 1초다 (경과 ${g8_elapsed}초)"
+else bad "G8 폴링 상한" "${g8_elapsed}초가 걸렸다 — 상한이 1초로 줄지 않았다"; fi
+
+# G9/G9b. THE WORK DIRECTORY IS CREATED ONLY AFTER THE LOCK ATTEMPT RESOLVES.
+# G9b is what fixes the decision: an early `mktemp -d` with a trap passes G9 and
+# fails here, because SIGKILL does not run traps.
+g9_before=$(nglob "${TMPDIR:-/tmp}"/cc-apply-statusline.*)
+G9="$WORK/g9.json"; mk_settings_empty "$G9"; mkdir "$G9.cc-statusline.lock"
+i=0
+while [ "$i" -lt 20 ]; do
+  apply "$G9" "$APLUG" empty >/dev/null
+  i=$((i + 1))
+done
+check "G9 경합 20회 뒤 임시 디렉터리 수가 그대로다" "$(nglob "${TMPDIR:-/tmp}"/cc-apply-statusline.*)" "$g9_before"
+check "G9 미리 만들어 둔 락이 살아 있다" "$([ -d "$G9.cc-statusline.lock" ] && printf y || printf n)" "y"
+i=0
+while [ "$i" -lt 10 ]; do
+  bash "$APPLY" --apply --settings "$G9" --plugin-dir "$APLUG" --require-state empty >/dev/null 2>/dev/null &
+  kp=$!
+  kill -9 "$kp" 2>/dev/null
+  wait "$kp" 2>/dev/null
+  i=$((i + 1))
+done
+check "G9b trap 이 돌기 전 SIGKILL 에도 임시 디렉터리 수가 그대로다" "$(nglob "${TMPDIR:-/tmp}"/cc-apply-statusline.*)" "$g9_before"
+rmdir "$G9.cc-statusline.lock"
+
+# G10/G12. THE SAME EIGHT TERMINALS, TWO DIFFERENT COLUMNS. G10 reads the work
+# directory under `$TMPDIR`; G12 reads the temporary files beside the settings
+# file. The compare-and-swap loss must be in the list: it is the only terminal
+# that ends with `$T` in existence, so it is the one place the trap's `rm -f`
+# does any work.
+drive_terminal() {
+  # drive_terminal <name> <settings> — drive one of the eight terminals that end
+  # with a work directory in existence.
+  local name="$1" s="$2"
+  case "$name" in
+    probe)        probe "$s" "$APLUG" >/dev/null ;;
+    foreign)      mk_settings "$s";       apply "$s" "$APLUG" empty >/dev/null ;;
+    requirestate) mk_settings_empty "$s"; apply "$s" "$APLUG" ours >/dev/null ;;
+    verifyfail)   mk_settings_empty "$s"; apply "$s" "$WORK/p-2nl" empty >/dev/null ;;
+    renderfail)   printf '{ this is not json' > "$s"; apply "$s" "$APLUG" empty >/dev/null ;;
+    caslost)      cas_race "$s" ;;
+    converged)    mk_settings_empty "$s"; apply "$s" "$APLUG" empty >/dev/null
+                  apply "$s" "$APLUG" ours >/dev/null ;;
+    success)      mk_settings_empty "$s"; apply "$s" "$APLUG" empty >/dev/null ;;
+  esac
+}
+
+cas_race() {
+  # cas_race <settings> — lose the compare-and-swap deterministically. The first
+  # install polls its verify run, and that poll is the window: the file is
+  # rewritten while the installer is inside it, so the compare finds a different
+  # file than the snapshot and nothing is written. The verify stub leaves a
+  # sentinel before it sleeps, and the rewrite waits for that sentinel rather
+  # than a fixed delay: the snapshot precedes the verify run, so the sentinel
+  # proves the snapshot is already taken however loaded the machine is.
+  local s="$1" started="$WORK/p-half/verify-started" n=0
+  mk_settings_empty "$s"
+  mkdir -p "$WORK/p-half/orchestrator"
+  cp "$CMDLIB" "$WORK/p-half/orchestrator/"
+  rm -f "$started"
+  printf '#!/usr/bin/env bash\ncat >/dev/null\n: > "%s"\nsleep 0.4\nprintf ONE-LINE\n' "$started" > "$WORK/p-half/orchestrator/statusline.sh"
+  chmod +x "$WORK/p-half/orchestrator/statusline.sh"
+  bash "$APPLY" --apply --settings "$s" --plugin-dir "$WORK/p-half" --require-state empty >/dev/null 2>/dev/null &
+  local ap=$!
+  while [ ! -e "$started" ] && [ "$n" -lt 200 ]; do
+    sleep 0.05
+    n=$((n + 1))
+  done
+  jq '.theme = "moved-under-the-installer"' "$s" > "$s.race" 2>/dev/null && mv "$s.race" "$s"
+  wait "$ap"
+  CAS_RC=$?
+}
+
+CAS_RC=0
+cas_race "$WORK/cas-probe.json"
+check "G10/G12 전제 — 전체 파일 CAS 패배를 결정적으로 몬다" "$CAS_RC" "31"
+
+g10_before=$(nglob "${TMPDIR:-/tmp}"/cc-apply-statusline.*)
+for term in probe foreign requirestate verifyfail renderfail caslost converged success; do
+  tf="$WORK/g10-$term.json"
+  [ "$term" = probe ] && mk_settings_empty "$tf"
+  drive_terminal "$term" "$tf"
+  check "G10 종단 $term — TMPDIR 아래 작업 디렉터리 수가 실행 전후로 같다" \
+    "$(nglob "${TMPDIR:-/tmp}"/cc-apply-statusline.*)" "$g10_before"
+  check "G12 종단 $term — 설정 디렉터리의 임시 파일 수가 실행 전후로 같다" \
+    "$(nglob "$tf".cc-statusline.tmp.* "$tf".cc-statusline.bak-tmp.*)" "0"
+done
+
+# ---------------------------------------------------------------------------
+# H — the atomic write
+# ---------------------------------------------------------------------------
+if grep -qF 'T=$(mktemp "$SETTINGS.cc-statusline.tmp.XXXXXX")' "$APPLY"; then
+  ok "H1 임시 파일이 대상과 같은 디렉터리에서 만들어진다 (구조)"
+else
+  bad "H1 임시 파일 위치" "다른 파일시스템에서는 mv 가 복사-삭제로 degrade 한다"
+fi
+
+# H2. Killed mid-apply, the settings file is one of the two whole states and
+# never a third.
+H2="$WORK/h2.json"; mk_settings_empty "$H2"
+H2_ORIG=$(sha_of "$H2")
+apply "$H2" "$APLUG" empty >/dev/null
+H2_DONE=$(sha_of "$H2")
+h2_bad=0
+i=0
+while [ "$i" -lt 15 ]; do
+  f="$WORK/h2-$i.json"; mk_settings_empty "$f"
+  bash "$APPLY" --apply --settings "$f" --plugin-dir "$APLUG" --require-state empty >/dev/null 2>/dev/null &
+  kp=$!
+  kill -9 "$kp" 2>/dev/null
+  wait "$kp" 2>/dev/null
+  s=$(sha_of "$f")
+  if [ "$s" != "$H2_ORIG" ] && [ "$s" != "$H2_DONE" ]; then
+    h2_bad=$((h2_bad + 1))
+  fi
+  i=$((i + 1))
+done
+check "H2 적용 도중 SIGKILL — 원본이 온전하거나 완전히 쓰였거나 둘 중 하나다" "$h2_bad" "0"
+
+# H4. BOTH CALLERS SOURCE ONE FILE. A private copy in either of them is the
+# failure this design exists to remove, and it is invisible until the two
+# recognisers disagree.
+check "H4 설치기가 공유 파일을 소스한다" \
+  "$(grep -E '^[^#]*(^|[[:space:]&;])\. "\$SL_CMD_LIB"' "$APPLY" | grep -c . || true)" "1"
+if [ -f "$HOOK" ]; then
+  check "H4 훅도 같은 공유 파일을 소스한다" \
+    "$(grep -c 'statusline-command\.sh' "$HOOK" || true)" "1"
+else
+  bad "H4 훅의 소싱" "$HOOK 이 없다"
+fi
+
+# H5. BSD `mv -n` answers rc 0 whether it moved the file or refused to, which
+# loses the whole distinction the create path's compare-and-swap is made of.
+#
+# COMMENT LINES ARE EXCLUDED FROM THE SECOND HALF, because the reason `ln` is
+# there is worth writing down next to it and naming the rejected form is how you
+# write it down. A check that forbids the spelling everywhere makes the file
+# choose between being correct and saying why, and it is not the spelling that
+# is dangerous — it is the call.
+H5_MVN=$(grep -vE '^[[:space:]]*#' "$APPLY" | grep -cF 'mv -n' || true)
+if grep -qE '^[[:space:]]*if ! ln "\$T" "\$SETTINGS"' "$APPLY" && [ "$H5_MVN" = "0" ]; then
+  ok "H5 생성 경로가 mv -n 이 아니라 ln 이다 (구조)"
+else
+  bad "H5 생성 경로의 CAS" "mv -n 은 이미 있는 대상에 rc 0 을 낸다"
+fi
+
+# H6. The three-line publication is what makes a slot's replacement atomic; a
+# direct `cp` onto a slot has no such property and is invisible until a copy is
+# interrupted.
+check "H6 (구조) 백업 슬롯을 직접 겨냥한 cp 가 0 건이다" \
+  "$(grep -E 'cp[^\n]*"\$SETTINGS\.(orig|prev)"' "$APPLY" | grep -c . || true)" "0"
+if grep -qF 'TB=$(mktemp "$SETTINGS.cc-statusline.bak-tmp.XXXXXX")' "$APPLY" \
+   && grep -qF 'cp "$WORK/pre" "$TB"' "$APPLY" \
+   && grep -qF 'mv "$TB" "$slot"' "$APPLY"; then
+  ok "H6 (구조) 슬롯 발행이 mktemp→cp→mv 세 줄 형태다"
+else
+  bad "H6 슬롯 발행 형태" "임시 파일을 거치지 않으면 파일시스템 경계에서 원자성이 사라진다"
+fi
+
+# H7. Each slot is old bytes or new bytes, never something in between.
+H7="$WORK/h7.json"; mk_settings_empty "$H7"
+apply "$H7" "$APLUG" empty >/dev/null
+h7_orig_sha=$(sha_of "$H7.orig")
+h7_bad=0
+i=0
+while [ "$i" -lt 15 ]; do
+  drift "$H7"
+  h7_prev_before=$(sha_of "$H7.prev")
+  h7_expect_new=$(sha_of "$H7")
+  bash "$APPLY" --apply --settings "$H7" --plugin-dir "$APLUG" --require-state ours >/dev/null 2>/dev/null &
+  kp=$!
+  kill -9 "$kp" 2>/dev/null
+  wait "$kp" 2>/dev/null
+  s=$(sha_of "$H7.prev")
+  if [ "$s" != "$h7_prev_before" ] && [ "$s" != "$h7_expect_new" ]; then
+    h7_bad=$((h7_bad + 1))
+  fi
+  i=$((i + 1))
+done
+check "H7 슬롯 발행 중 SIGKILL — 슬롯이 옛 바이트거나 새 바이트다" "$h7_bad" "0"
+check "H7 첫 쓰기 스냅숏은 그 사이에도 바뀌지 않는다" "$(sha_of "$H7.orig")" "$h7_orig_sha"
+rmdir "$H7.cc-statusline.lock" 2>/dev/null
+rm -f "$H7".cc-statusline.tmp.* "$H7".cc-statusline.bak-tmp.* 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# I — the pre-commit verify
+#
+# THE HEAD ASSERTION IS mtime, NOT BYTES. A byte comparison cannot separate
+# "never written" from "written and put back", so it is green under both orders
+# and cannot falsify the one this design chose.
+# ---------------------------------------------------------------------------
+mk_fake_plugin "$WORK/p-empty" ''
+
+I1="$WORK/i1.json"; mk_settings_empty "$I1"
+apply "$I1" "$APLUG" empty >/dev/null
+i1_orig_sha=$(sha_of "$I1.orig"); i1_orig_m=$(mtime_of "$I1.orig")
+i1_prev_sha=$(sha_of "$I1.prev"); i1_prev_m=$(mtime_of "$I1.prev")
+i1_set_sha=$(sha_of "$I1");       i1_set_m=$(mtime_of "$I1")
+fx_age_file "$I1.orig" 5; fx_age_file "$I1.prev" 5; fx_age_file "$I1" 5
+i1_orig_m=$(mtime_of "$I1.orig"); i1_prev_m=$(mtime_of "$I1.prev"); i1_set_m=$(mtime_of "$I1")
+# Make the next run a first install again on a machine that already has slots.
+jq 'del(.statusLine)' "$I1" > "$I1.t" && mv "$I1.t" "$I1"
+fx_age_file "$I1" 5
+i1_set_sha=$(sha_of "$I1"); i1_set_m=$(mtime_of "$I1")
+check "I1 사전 verify 실패 실행" "$(apply "$I1" "$WORK/p-empty" empty)" "40"
+check "I1 앞선 성공이 만든 .orig 이 바이트로 건드려지지 않는다" "$(sha_of "$I1.orig")" "$i1_orig_sha"
+check "I1 앞선 성공이 만든 .orig 이 mtime 으로도 건드려지지 않는다" "$(mtime_of "$I1.orig")" "$i1_orig_m"
+check "I1b .prev 는 사전 verify 실패 실행에서 갱신되지 않는다 (음성)" "$(mtime_of "$I1.prev")" "$i1_prev_m"
+check "I1b .prev 의 바이트도 그대로다 (음성)" "$(sha_of "$I1.prev")" "$i1_prev_sha"
+check "I2b 교체 경로 — 설정 파일의 바이트가 그대로다" "$(sha_of "$I1")" "$i1_set_sha"
+check "I2b 교체 경로 — 설정 파일의 mtime 도 그대로다" "$(mtime_of "$I1")" "$i1_set_m"
+
+# I1b's POSITIVE half. Without it an implementation that never updates `.prev`
+# at all passes the negative one.
+check "I1b 실쓰기가 있었던 실행에서는 .prev 가 갱신된다 (양성)" "$(apply "$I1" "$APLUG" empty)" "10"
+differ "I1b 실쓰기 뒤 .prev 의 mtime 이 실제로 움직였다" "$(mtime_of "$I1.prev")" "$i1_prev_m"
+
+# I2b's create half: a failing verify leaves NO settings file behind.
+I2="$WORK/i2nested/settings.json"
+check "I2b 생성 경로 — 사전 verify 실패" "$(apply "$I2" "$WORK/p-empty" empty)" "40"
+check "I2b 생성 경로 — 설정 파일이 만들어지지 않았다" "$([ -e "$I2" ] && printf y || printf n)" "n"
+check "I2b 생성 경로 — 소유 비트도 생기지 않았다" "$([ -e "$I2.cc-statusline-owned" ] && printf y || printf n)" "n"
+
+# I1c. A publication that fails leaves the slot at its old bytes, which a direct
+# copy onto the slot cannot promise.
+I1C="$WORK/i1c.json"; mk_settings_empty "$I1C"
+apply "$I1C" "$APLUG" empty >/dev/null
+i1c_prev=$(sha_of "$I1C.prev")
+drift "$I1C"
+chmod 500 "$WORK" 2>/dev/null
+apply "$I1C" "$APLUG" ours >/dev/null
+chmod 700 "$WORK" 2>/dev/null
+check "I1c 발행이 실패해도 슬롯이 옛 바이트로 남는다" "$(sha_of "$I1C.prev")" "$i1c_prev"
+
+# I3. THE TWO WRITERS POINT IN OPPOSITE DIRECTIONS, and that is the whole case.
+# The marker is never written by the installer — not on failure and not on
+# success, or an implementation that kept the marker step on the success path
+# would pass. The ownership bit is the mirror image: absent on a failed verify,
+# a park and a lost compare-and-swap, and PRESENT on rc 0, 10 and 11.
+check "I3 (구조) 설치기 안에 마커 줄을 쓰는 자리가 0 건이다" \
+  "$(grep -E '\.cc-statusline"' "$APPLY" | grep -c . || true)" "0"
+I3="$WORK/i3.json"; mk_settings_empty "$I3"
+apply "$I3" "$WORK/p-empty" empty >/dev/null
+check "I3 사전 verify 실패 — 마커가 없다" "$([ -e "$I3.cc-statusline" ] && printf y || printf n)" "n"
+check "I3 사전 verify 실패 — 소유 비트도 없다" "$([ -e "$I3.cc-statusline-owned" ] && printf y || printf n)" "n"
+apply "$I3" "$APLUG" empty >/dev/null
+check "I3 성공 경로 — 설치기는 마커를 만들지 않는다" "$([ -e "$I3.cc-statusline" ] && printf y || printf n)" "n"
+check "I3 성공 경로(rc 10) — 소유 비트는 만든다" "$([ -e "$I3.cc-statusline-owned" ] && printf y || printf n)" "y"
+I3B="$WORK/i3b.json"; mk_settings_ours "$I3B"
+apply "$I3B" "$APLUG" ours >/dev/null
+check "I3 rc 11 — 소유 비트를 만든다" "$([ -e "$I3B.cc-statusline-owned" ] && printf y || printf n)" "y"
+rm -f "$I3B.cc-statusline-owned"
+apply "$I3B" "$APLUG" ours >/dev/null
+check "I3 rc 0(수렴) — 소유 비트를 만든다" "$([ -e "$I3B.cc-statusline-owned" ] && printf y || printf n)" "y"
+I3C="$WORK/i3c.json"
+cas_race "$I3C"
+check "I3 CAS 패배 — 소유 비트를 만들지 않는다" "$([ -e "$I3C.cc-statusline-owned" ] && printf y || printf n)" "n"
+
+# ---------------------------------------------------------------------------
+# J — the install history
+# ---------------------------------------------------------------------------
+# J2. Adoption: a machine whose status line is already ours but which has no
+# history — the entire installed base at the moment this ships.
+J2="$WORK/j2.json"; mk_settings_ours "$J2"
+check "J2 이력 없는 ours — 채택하며 재지정한다" "$(apply "$J2" "$APLUG" ours)" "11"
+check "J2 채택이 소유 비트를 만든다" "$([ -e "$J2.cc-statusline-owned" ] && printf y || printf n)" "y"
+
+# J2b. The end state is reached by walking the real order, not by writing it.
+J2B="$WORK/j2b.json"; mk_settings_empty "$J2B"
+apply "$J2B" "$APLUG" empty >/dev/null
+jq 'del(.statusLine)' "$J2B" > "$J2B.t" && mv "$J2B.t" "$J2B"
+check "J2b 채택 후 사용자가 지우면 최초 설치로 분류되지 않는다" "$(apply "$J2B" "$APLUG" empty)" "10"
+check "J2b 그 판정은 훅이 짧게 끊어야 하는 자리다 — 비트가 남아 있다" \
+  "$([ -e "$J2B.cc-statusline-owned" ] && printf y || printf n)" "y"
+
+# J7. Two settings files, two histories. A single global marker fails here.
+J7A="$WORK/j7a.json"; J7B="$WORK/j7b.json"
+mk_settings_empty "$J7A"; mk_settings_empty "$J7B"
+apply "$J7A" "$APLUG" empty >/dev/null
+check "J7 이력이 설정 파일 경로별로 독립이다 — 다른 파일에는 비트가 없다" \
+  "$([ -e "$J7B.cc-statusline-owned" ] && printf y || printf n)" "n"
+check "J7 다른 파일도 스스로 최초 설치가 된다" "$(apply "$J7B" "$APLUG" empty)" "10"
+
+# J8. Not making the bit and not writing the marker line are different acts on
+# different files; the hook writes the line even here, and without it a machine
+# with a broken status line pays the poll on every startup forever.
+J8="$WORK/j8.json"; mk_settings_empty "$J8"; j8_sha=$(sha_of "$J8")
+fx_age_file "$J8" 5; j8_m=$(mtime_of "$J8")
+check "J8 사전 verify 실패 — rc 40" "$(apply "$J8" "$WORK/p-empty" empty)" "40"
+check "J8 사전 verify 실패 — 소유 비트를 만들지 않는다" "$([ -e "$J8.cc-statusline-owned" ] && printf y || printf n)" "n"
+check "J8 사전 verify 실패 — 바이트가 그대로다" "$(sha_of "$J8")" "$j8_sha"
+check "J8 사전 verify 실패 — mtime 도 그대로다" "$(mtime_of "$J8")" "$j8_m"
+
+# J9. FOUR LEGS. The behavioural one walks the real order; the two structural
+# ones are where monotonicity actually hangs; the byte one is taken at EVERY
+# step, because an end-state reading passes an implementation that deletes the
+# bit and makes it again.
+J9="$WORK/j9.json"; mk_settings_empty "$J9"
+j9_steps_ok=1
+apply "$J9" "$APLUG" empty >/dev/null
+[ -e "$J9.cc-statusline-owned" ] && [ ! -s "$J9.cc-statusline-owned" ] || j9_steps_ok=0
+jq '.statusLine.command = "printf '"'"'SOMEBODY-ELSE'"'"'"' "$J9" > "$J9.t" && mv "$J9.t" "$J9"
+apply "$J9" "$APLUG" ours >/dev/null
+[ -e "$J9.cc-statusline-owned" ] && [ ! -s "$J9.cc-statusline-owned" ] || j9_steps_ok=0
+jq 'del(.statusLine)' "$J9" > "$J9.t" && mv "$J9.t" "$J9"
+j9_last=$(apply "$J9" "$APLUG" empty)
+[ -e "$J9.cc-statusline-owned" ] && [ ! -s "$J9.cc-statusline-owned" ] || j9_steps_ok=0
+check "J9 (1) 설치 → park → 삭제 순서를 실제로 몬다" "$j9_last" "10"
+check "J9 (4) 각 단계 뒤에 소유 비트가 존재하고 크기가 0 이다" "$j9_steps_ok" "1"
+check "J9 (2) 트리 전체에서 …-owned 에 가해지는 연산이 만들기 하나뿐이다" \
+  "$(grep -rE '(rm|unlink|mv|>)[^\n]*cc-statusline-owned' "$repo_root/plugins" "$repo_root/scripts" 2>/dev/null | grep -v ':[[:space:]]*#' | grep -vc 'cc-statusline-owned" \]' || true)" "1"
+check "J9 (3) 마커 줄을 쓰는 자리가 apply-statusline.sh 안에 0 건이다" \
+  "$(grep -E 'cc-statusline"' "$APPLY" | grep -c . || true)" "0"
+
+# J10. Five parks in a row after an install leave the bit exactly as it was.
+J10="$WORK/j10.json"; mk_settings_empty "$J10"
+apply "$J10" "$APLUG" empty >/dev/null
+j10_m=$(mtime_of "$J10.cc-statusline-owned")
+jq '.statusLine.command = "printf '"'"'SOMEBODY-ELSE'"'"'"' "$J10" > "$J10.t" && mv "$J10.t" "$J10"
+i=0
+while [ "$i" -lt 5 ]; do
+  apply "$J10" "$APLUG" empty >/dev/null
+  i=$((i + 1))
+done
+check "J10 설치 뒤 park 를 다섯 번 몰아도 소유 비트가 그대로다" "$(mtime_of "$J10.cc-statusline-owned")" "$j10_m"
+
+# J12. SET EQUALITY, NOT CONTAINMENT. "everything observed is inside the
+# vocabulary" is true of an implementation that only ever produces three of the
+# verdicts, so a subset check stays green on exactly the regression this case
+# exists to catch. Requiring equality turns an unreachable verdict into a
+# failure, and it makes visible WHICH verdicts no scenario can reach.
+#
+# TWO OF THEM CANNOT BE REACHED END TO END, AND THAT IS A FINDING RATHER THAN A
+# GAP. `reason=require-state` needs the value to change between the hook's
+# classification and the installer's snapshot, which is a race and not a
+# scenario; `reason=plugin-dir` needs the installer to receive a trailing slash,
+# which the hook normalises away before it ever calls. Both are driven at the
+# installer instead, and their names are then taken from the hook's own mapping
+# rather than typed here — so the two halves cannot drift.
+VERDICT_BEGIN='# >>> cc-statusline verdict region begin'
+VERDICT_END='# <<< cc-statusline verdict region end'
+VERDICT_REGION="$WORK/verdict-region.sh"
+awk -v b="$VERDICT_BEGIN" -v e="$VERDICT_END" \
+  '$0 == b {inr = 1; next} $0 == e {inr = 0} inr {print}' "$HOOK" > "$VERDICT_REGION" 2>/dev/null
+
+if [ ! -s "$VERDICT_REGION" ]; then
+  bad "J12 판정 어휘" "$HOOK 에서 판정 조립 영역을 뽑을 수 없다 (마커 주석 부재)"
+else
+  j12_dir="$WORK/j12"
+  mkdir -p "$j12_dir"
+  j12_obs_v="$WORK/j12-verdicts"
+  j12_obs_r="$WORK/j12-reasons"
+  : > "$j12_obs_v"; : > "$j12_obs_r"
+
+  j12_run() {
+    # j12_run <tag> <plugin-dir> — one startup of the hook against its own
+    # configuration directory, then the marker it left.
+    # THE DIRECTORY IS BUILT ON THE LINE AFTER THE DECLARATION. `local` is a
+    # command, so every one of its arguments is expanded before it runs — a
+    # `cfg="$j12_dir/$tag"` in the same statement reads whatever `tag` held
+    # OUTSIDE this function, and this suite has such a global. Every scenario
+    # then drives the hook against one shared directory and the verdicts collapse
+    # to whatever that directory happens to be in.
+    local tag="$1" plug="$2" mk cfg
+    cfg="$j12_dir/$tag"
+    CLAUDE_CONFIG_DIR="$cfg" bash "$HOOK" --plugin-dir "$plug" >/dev/null 2>/dev/null
+    mk="$cfg/settings.json.cc-statusline"
+    [ -f "$mk" ] || return 1
+    sed -e 's/.*|verdict=//' -e 's/|.*//' "$mk" >> "$j12_obs_v"
+    sed -e 's/.*|reason=//' -e 's/|.*//' "$mk" | sed 's/^$/-/' >> "$j12_obs_r"
+    return 0
+  }
+
+  j12_new() { mkdir -p "$j12_dir/$1"; mk_settings_empty "$j12_dir/$1/settings.json"; }
+
+  # THE MARKER IS CLEARED BETWEEN THESE RUNS ON PURPOSE. Left in place the front
+  # gate skips the whole slow path — correctly, that is the design — and the
+  # marker still holds the PREVIOUS verdict, so a scenario meant to produce a new
+  # one silently re-reads the old one. Removing it is what forces the decision to
+  # be taken again; the ownership bit is what separates the two verdicts.
+  j12_new installed;  j12_run installed "$APLUG"
+  rm -f "$j12_dir/installed/settings.json.cc-statusline"
+  j12_run installed "$APLUG"                                  # converged
+  rm -f "$j12_dir/installed/settings.json.cc-statusline-owned"
+  rm -f "$j12_dir/installed/settings.json.cc-statusline"
+  j12_run installed "$APLUG"                                  # adopted
+
+  mkdir -p "$j12_dir/adoptrepoint"
+  mk_settings_ours "$j12_dir/adoptrepoint/settings.json"
+  j12_run adoptrepoint "$APLUG"                               # adopt-repoint
+
+  j12_new driftrepair; j12_run driftrepair "$APLUG"
+  drift "$j12_dir/driftrepair/settings.json"
+  rm -f "$j12_dir/driftrepair/settings.json.cc-statusline"
+  j12_run driftrepair "$APLUG"                                # drift-repair
+
+  j12_new deleted; j12_run deleted "$APLUG"
+  jq 'del(.statusLine)' "$j12_dir/deleted/settings.json" > "$j12_dir/deleted/s.t" \
+    && mv "$j12_dir/deleted/s.t" "$j12_dir/deleted/settings.json"
+  rm -f "$j12_dir/deleted/settings.json.cc-statusline"
+  j12_run deleted "$APLUG"                                    # deleted
+
+  mkdir -p "$j12_dir/foreign"; mk_settings "$j12_dir/foreign/settings.json"
+  j12_run foreign "$APLUG"                                    # park / foreign
+
+  # THE PLUGIN TREE HAS TO EXIST FOR THE HOOK TO GET THAT FAR. A directory that
+  # is not there has no shared grammar file either, so the hook stops at its own
+  # source guard and never reaches the installer — and `sl-missing` would then be
+  # a verdict no scenario produces. `b6-nobit` is the shape that separates the
+  # two: everything present, the status line script without its executable bit.
+  j12_new slmissing;  j12_run slmissing "$WORK/b6-nobit"
+  j12_new guardreeval; j12_run guardreeval "$WORK/b6-reeval/plug\$d"
+  j12_new verifyfail;  j12_run verifyfail "$WORK/p-empty"
+
+  # A settings file managed through a symbolic link: the hook reaches the
+  # installer, gets rc 27 back and names it — the source holds a writable value,
+  # so nothing but the link can be what parks it.
+  mkdir -p "$j12_dir/linked"
+  mk_settings_empty "$j12_dir/linked/settings-src.json"
+  ln -s "$j12_dir/linked/settings-src.json" "$j12_dir/linked/settings.json"
+  j12_run linked "$APLUG"                                     # park / linked
+
+  if [ -n "${WT_LINKED_PLUG:-}" ] && [ -x "${WT_LINKED_PLUG:-}/orchestrator/statusline.sh" ]; then
+    j12_new worktree; j12_run worktree "$WT_LINKED_PLUG"
+  else
+    # The worktree verdict is driven at the installer and named through the
+    # hook's own mapping, exactly like the two below.
+    printf 'park\n' >> "$j12_obs_v"; printf 'worktree\n' >> "$j12_obs_r"
+  fi
+
+  j12_map() {
+    # j12_map <rc> <had-bit> — the hook's own naming, applied to a return code
+    # no hook-driven scenario can produce.
+    ( set -uo pipefail; . "$VERDICT_REGION"; verdict_name "$1" "$2" ) 2>/dev/null
+  }
+  j12_rs="$WORK/j12-rs.json"; mk_settings_empty "$j12_rs"
+  j12_rs_rc=$(apply "$j12_rs" "$APLUG" ours)
+  check "J12 전제 — 설치기가 상태 불일치를 rc 21 로 낸다" "$j12_rs_rc" "21"
+  j12_pd="$WORK/j12-pd.json"; mk_settings_empty "$j12_pd"
+  j12_pd_rc=$(apply "$j12_pd" "$APLUG/" empty)
+  check "J12 전제 — 설치기가 후행 슬래시를 rc 26 으로 낸다" "$j12_pd_rc" "26"
+  for pair in "$j12_rs_rc" "$j12_pd_rc"; do
+    m=$(j12_map "$pair" n)
+    printf '%s\n' "${m%%|*}" >> "$j12_obs_v"
+    printf '%s\n' "${m##*|}" >> "$j12_obs_r"
+  done
+
+  j12_seen_v=$(sort -u "$j12_obs_v" | tr '\n' ' ')
+  j12_seen_r=$(sort -u "$j12_obs_r" | tr '\n' ' ')
+  j12_want_v=$(printf '%s\n' adopt-repoint adopted converged deleted drift-repair installed park verify-failed | sort -u | tr '\n' ' ')
+  j12_want_r=$(printf '%s\n' - foreign guard-reeval linked plugin-dir require-state sl-missing verify worktree | sort -u | tr '\n' ' ')
+  check "J12 관측한 판정 이름의 집합이 닫힌 집합과 상등하다" "$j12_seen_v" "$j12_want_v"
+  check "J12 관측한 사유 토큰의 집합이 닫힌 집합과 상등하다" "$j12_seen_r" "$j12_want_r"
+fi
+
+# ---------------------------------------------------------------------------
+# K — broken input and the argument contract
+# ---------------------------------------------------------------------------
+K1="$WORK/k1.json"; printf '{ this is not json' > "$K1"; K1S=$(sha_of "$K1")
+check "K1 깨진 JSON — 쓰기 전에 중단한다" "$(apply "$K1" "$APLUG" empty)" "1"
+check "K1 깨진 JSON — 파일이 그대로다" "$(sha_of "$K1")" "$K1S"
+check "K1 깨진 JSON — 락을 남기지 않는다" "$([ -d "$K1.cc-statusline.lock" ] && printf y || printf n)" "n"
+check "K1 깨진 JSON — 백업도 만들지 않는다" "$(nglob "$K1".orig "$K1".prev)" "0"
+
+# The interpreter is named absolutely: a PATH with nothing on it cannot resolve
+# `bash` either, and a 127 from the lookup would look like the script's own
+# verdict while proving nothing about it.
+K2="$WORK/k2.json"; mk_settings_empty "$K2"; K2S=$(sha_of "$K2")
+mkdir -p "$WORK/nojq"
+PATH="$WORK/nojq" /bin/bash "$APPLY" --apply --settings "$K2" --plugin-dir "$APLUG" --require-state empty >/dev/null 2>/dev/null
+check "K2 jq 부재 — 실패하고 아무것도 쓰지 않는다" "$?" "1"
+check "K2 jq 부재 — 파일이 그대로다" "$(sha_of "$K2")" "$K2S"
+
+# K3. THE TWO CODES BOTH MEAN FAILURE, so a loose "not zero" check passes the
+# very implementation this leg exists to reject — the one that folds an unknown
+# spelling into "mismatch" and has the hook remember it as a park.
+K3="$WORK/k3.json"; mk_settings_empty "$K3"
+k3_rc=$(apply "$K3" "$APLUG" ALREADY-OURS)
+check "K3 어휘 밖 철자는 rc 1 이다" "$k3_rc" "1"
+differ "K3 그리고 rc 21 이 아니다" "$k3_rc" "21"
+k3b_rc=$(apply "$K3" "$APLUG" EMPTY)
+check "K3 대문자 술어 이름도 rc 1 이다" "$k3b_rc" "1"
+differ "K3 대문자 술어 이름도 rc 21 이 아니다" "$k3b_rc" "21"
+
+bash "$APPLY" --apply --settings "$K3" --plugin-dir "$APLUG" >/dev/null 2>/dev/null
+check "K4 --apply 를 필수 상태 인자 없이 부르면 오류다" "$?" "1"
+bash "$APPLY" --probe --settings "$K3" --plugin-dir "$APLUG" --require-state empty >/dev/null 2>/dev/null
+check "K5 probe 모드에 그 인자를 동반하면 오류다" "$?" "1"
+bash "$APPLY" --apply --settings "relative/settings.json" --plugin-dir "$APLUG" --require-state empty >/dev/null 2>/dev/null
+check "K --settings 가 상대경로면 오류다" "$?" "1"
+
+# ---------------------------------------------------------------------------
+# M — the guardless value is adopted, not parked
+#
+# The park predicate exists to avoid overwriting SOMEBODY ELSE'S status line,
+# and a value that names our script is not somebody else's. The observability
+# document guided exactly this shape of hand installation, which is where the
+# population comes from.
+# ---------------------------------------------------------------------------
+M1="$WORK/m1.json"; mk_settings "$M1" "bash $OLDSL"
+check "M1 무가드 맨 호출은 park 하지 않는다" "$(apply "$M1" "$APLUG" ours)" "11"
+has "M1 가드 래퍼로 재지정된다" "$(cmd_of "$M1")" "[ -x \"$APLUG/orchestrator/statusline.sh\" ]"
+has "M1 무가드 값을 채택하면 폴백이 true 다" "$(cmd_of "$M1")" "|| true"
+
+m2_i=0
+for v in "\"$OLDSL\"" "bash \"$OLDSL\"" "sh $OLDSL" "exec bash $OLDSL" "$OLDSL"; do
+  m2_i=$((m2_i + 1))
+  f="$WORK/m2-$m2_i.json"; mk_settings "$f" "$v"
+  check "M2 무가드 변형 $m2_i — M1 과 같은 결과" "$(apply "$f" "$APLUG" ours)" "11"
+  has "M2 무가드 변형 $m2_i — 폴백이 true" "$(cmd_of "$f")" "|| true"
+done
+
+M3="$WORK/m3.json"; mk_settings "$M3" "  bash $OLDSL  "
+check "M3 앞뒤 공백·탭이 붙은 무가드 값도 같은 결과" "$(apply "$M3" "$APLUG" ours)" "11"
+
+# M4. The residue is a guardless call of ours, so the fallback is EMPTIED rather
+# than carried — a dead pointer riding behind a guard that is true is invisible.
+M4="$WORK/m4.json"
+mk_settings "$M4" "[ -x \"$OLDSL\" ] && exec bash \"$OLDSL\" || bash $OLDSL"
+check "M4 나머지가 무가드 우리 값인 가드 래퍼 — 한 겹 벗겨진다" "$(apply "$M4" "$APLUG" ours)" "11"
+check "M4 폴백이 비워진다 — 죽은 옛 포인터가 남지 않는다" "$(cmd_of "$M4" | grep -c "|| true$")" "1"
+hasnt "M4 옛 경로가 명령에 남아 있지 않다" "$(cmd_of "$M4")" "$OLDSL"
+
+# M5. The suffix is two segments, and this is the only case that holds it there.
+# The harness documents `~/.claude/statusline.sh` as where a hand-written status
+# line goes, so one segment would adopt and overwrite the user's own script.
+M5="$WORK/m5.json"; mk_settings "$M5" "bash $WORK/home/.claude/statusline.sh"; M5S=$(sha_of "$M5")
+check "M5 한 세그먼트 접미사는 우리 것이 아니다 — park" "$(apply "$M5" "$APLUG" ours)" "20"
+check "M5 park — 파일이 바이트 동일" "$(sha_of "$M5")" "$M5S"
+
+m6_i=0
+for v in "bash $OLDSL | cat" "bash $OLDSL --flag" "bash $OLDSL && echo hi" "FOO=1 bash $OLDSL"; do
+  m6_i=$((m6_i + 1))
+  f="$WORK/m6-$m6_i.json"; mk_settings "$f" "$v"
+  check "M6 장식이 붙은 무가드 값 $m6_i — park" "$(apply "$f" "$APLUG" ours)" "20"
+done
+
+m7_i=0
+for v in "bash \$HOME/orchestrator/statusline.sh" "bash \`pwd\`/orchestrator/statusline.sh" "bash rel/orchestrator/statusline.sh"; do
+  m7_i=$((m7_i + 1))
+  f="$WORK/m7-$m7_i.json"; mk_settings "$f" "$v"
+  check "M7 \$·백틱·상대경로가 든 값 $m7_i — park" "$(apply "$f" "$APLUG" ours)" "20"
+done
+
+# B10. The operators M6 surrounds with spaces, written without them. The value
+# still starts with an absolute path and still ends in our suffix, so only the
+# characters in between say it runs somebody else's program first — and adopting
+# it would drop that program from the fallback for good.
+b10_i=0
+for v in "/usr/bin/true;$OLDSL" "/opt/a/bin/x|$OLDSL" "/opt/a&&$OLDSL" "/opt/setup.sh
+$OLDSL"; do
+  b10_i=$((b10_i + 1))
+  f="$WORK/b10-$b10_i.json"; mk_settings "$f" "$v"; b10_sha=$(sha_of "$f")
+  check "B10 공백 없는 연산자·줄바꿈으로 이은 값 $b10_i — park" "$(apply "$f" "$APLUG" ours)" "20"
+  check "B10 park — 파일이 바이트 동일 $b10_i" "$(sha_of "$f")" "$b10_sha"
+done
+
+M8="$WORK/m8.json"; mk_settings "$M8" "bash $OLDSL"
+apply "$M8" "$APLUG" ours >/dev/null
+M8S=$(sha_of "$M8")
+apply "$M8" "$APLUG" ours >/dev/null
+check "M8 M1 적용 뒤 재적용이 바이트 동일" "$(sha_of "$M8")" "$M8S"
+
+# M9. THE FILE CANNOT TELL THESE TWO APART. A park leaves the file alone and so
+# does a converged apply, so M8's byte identity is satisfied by an
+# implementation whose own output it then classifies as foreign — which would
+# make the machine alternate between re-pointing and parking forever. The probe
+# reports the verdict, and that is what separates them.
+check "M9 M1 적용 결과물에 probe 를 돌리면 park(1) 가 아니라 수렴(0) 이다" "$(probe "$M8" "$APLUG")" "0"
+
+# ---------------------------------------------------------------------------
+# The settings file that does not exist yet
+# ---------------------------------------------------------------------------
+S6F="$WORK/nested/settings-new.json"
+check "대상 파일 부재 — 사전 프로브는 2(진행)" "$(probe "$S6F" "$APLUG")" "2"
+check "대상 파일 부재 — 최소 파일을 만든다" "$(apply "$S6F" "$APLUG" empty)" "10"
+check "새로 만든 파일은 키 하나뿐이다" "$(jq -r '[keys[]] | join(",")' "$S6F")" "statusLine"
+check "새로 만든 뒤 사후 프로브 — 0(수렴)" "$(probe "$S6F" "$APLUG")" "0"
+check "생성 경로에는 백업이 없다" "$(nglob "$S6F".orig "$S6F".prev)" "0"
+
+# ---------------------------------------------------------------------------
+# The absolute paths that are still wrong, and the ones that only look wrong
+# ---------------------------------------------------------------------------
+SREF="$WORK/settings-reeval.json"; mk_settings "$SREF"
+BREF=$(sha_of "$SREF")
+
+# THE FOURTH NAME PINS THE STRATEGY, NOT A CHARACTER. The three before it are
+# the characters a reader would enumerate, so a pre-evaluation rewritten as
+# "reject `$`, `"` and a backtick" keeps all three of them red — and installs a
+# dead status line for the fourth. Two backslashes pass such an enumeration
+# untouched and still collapse to one at the render's second evaluation.
+mkdir -p "$WORK/reeval"
+for bad_name in 'plug$dollar' 'plug"quote' 'plug`tick`' 'plug\\double'; do
+  bad_plug="$WORK/reeval/$bad_name"
+  mkdir -p "$bad_plug/orchestrator"
+  cp "$SL" "$LIVENESS" "$CMDLIB" "$bad_plug/orchestrator/"
+  chmod +x "$bad_plug/orchestrator/statusline.sh"
+  check "재평가에서 해석되는 문자가 든 절대경로 ($bad_name) — 쓰기 전에 park 한다" \
+    "$(apply "$SREF" "$bad_plug" empty)" "25"
+done
+check "재평가로 park 한 네 경우 모두 파일을 건드리지 않았다" "$(sha_of "$SREF")" "$BREF"
+
+reeval_ok_case() {
+  # reeval_ok_case <tag> <label> <plugin-dir> — a path whose characters survive
+  # the render's second evaluation. Two assertions, because a successful apply
+  # is not evidence that the guard was true: on this fixture the fallback branch
+  # emits the pre-apply literal and would pass a weaker reading. Comparing the
+  # installed command's render against the live one separates the branches.
+  local tag="$1" label="$2" dir="$3" sf
+  mkdir -p "$dir/orchestrator"
+  cp "$SL" "$LIVENESS" "$CMDLIB" "$dir/orchestrator/"
+  chmod +x "$dir/orchestrator/statusline.sh"
+  sf="$WORK/settings-reeval-$tag.json"; mk_settings_empty "$sf"
+  check "$label — 적용이 성공한다" "$(apply "$sf" "$dir" empty)" "10"
+  check "$label — 설치된 명령이 폴백이 아니라 그 스크립트를 부른다" \
+    "$(fx_statusline_stdin sess-live | sh -c "$(cmd_of "$sf")" | strip_clock)" \
+    "$(sl sess-live | strip_clock)"
+}
+
+# `$(printf ...)` is how the newline gets into the name at all — a literal one
+# cannot be written into the word list above without ending it.
+reeval_ok_case bs "백슬래시가 든 절대경로" "$WORK/reeval/plug\\back"
+reeval_ok_case nl "개행이 든 절대경로" "$(printf '%s/reeval/plug\nnewline' "$WORK")"
+
+# The space that made the installed `[` fail with too many arguments.
+SPACED="$WORK/plugin with space"
+mkdir -p "$SPACED/orchestrator"
+cp "$SL" "$LIVENESS" "$CMDLIB" "$SPACED/orchestrator/"
+chmod +x "$SPACED/orchestrator/statusline.sh"
+S9F="$WORK/settings-spaced.json"; mk_settings_empty "$S9F"
+check "공백이 든 절대경로 — 적용이 성공한다" "$(apply "$S9F" "$SPACED" empty)" "10"
+check "공백이 든 절대경로 — 설치된 명령이 폴백이 아니라 그 스크립트를 부른다" \
+  "$(fx_statusline_stdin sess-live | sh -c "$(cmd_of "$S9F")" | strip_clock)" \
+  "$(sl sess-live | strip_clock)"
 
 # The throwaway worktree — the one shape that passes all three checks above and
 # is gone seconds later. Its sibling assertion matters as much: an ordinary
@@ -986,21 +2178,13 @@ if command -v git >/dev/null 2>&1; then
   # EVERY PATH BELOW REACHES THE CHECKOUT THROUGH A SYMLINK, and the plugin
   # directory is a SUBDIRECTORY of it. Together those two are the shape
   # `--plugin-dir` actually has, and the only shape in which the two git answers
-  # differ as strings while naming one directory: git answers `--git-dir`
-  # physically absolute and `--git-common-dir` relative, so resolving the second
-  # one logically keeps the symlink the caller walked in through.
-  #
-  # Built at the checkout ROOT instead, this fixture proves nothing — there git
-  # answers both relative to the same place, and the assertion passes whether
-  # the compare normalises physically, logically, or not at all. That is how it
-  # stayed green over a compare that parked every ordinary checkout reached
-  # through `/tmp` or `/var`, which on this platform is all of them.
+  # differ as strings while naming one directory.
   mkdir -p "$WORK/wt-real"
   ln -s "$WORK/wt-real" "$WORK/wt-via"
   WT_MAIN="$WORK/wt-via/main"
   WT_MAIN_PLUG="$WT_MAIN/plugins/cc-cmds"
   mkdir -p "$WT_MAIN_PLUG/orchestrator"
-  cp "$SL" "$LIVENESS" "$WT_MAIN_PLUG/orchestrator/"
+  cp "$SL" "$LIVENESS" "$CMDLIB" "$WT_MAIN_PLUG/orchestrator/"
   chmod +x "$WT_MAIN_PLUG/orchestrator/statusline.sh"
   (
     cd "$WT_MAIN" || exit 1
@@ -1011,163 +2195,20 @@ if command -v git >/dev/null 2>&1; then
   ) >/dev/null 2>&1
   WT_LINKED_PLUG="$WORK/wt-via/linked/plugins/cc-cmds"
   if [ -x "$WT_LINKED_PLUG/orchestrator/statusline.sh" ]; then
-    S8F="$WORK/settings-wt.json"; mk_settings "$S8F"; E8=$(digest_of "$S8F")
-    B8=$(shasum -a 256 "$S8F" | cut -d' ' -f1)
-    bash "$APPLY" --apply --settings "$S8F" --plugin-dir "$WT_LINKED_PLUG" --expect "$E8" >/dev/null 2>&1
-    check "임시 워크트리를 가리키는 --plugin-dir — 쓰기 전에 park 한다" "$?" "1"
-    check "워크트리로 park — 파일을 건드리지 않았다" \
-      "$(shasum -a 256 "$S8F" | cut -d' ' -f1)" "$B8"
-    bash "$APPLY" --apply --settings "$S8F" --plugin-dir "$WT_MAIN_PLUG" --expect "$E8" >/dev/null 2>&1
-    check "심링크를 경유한 본 체크아웃의 하위 디렉터리는 park 하지 않는다" "$?" "0"
+    S8F="$WORK/settings-wt.json"; mk_settings "$S8F"
+    B8S=$(sha_of "$S8F")
+    check "임시 워크트리를 가리키는 --plugin-dir — 쓰기 전에 park 한다" \
+      "$(apply "$S8F" "$WT_LINKED_PLUG" empty)" "23"
+    check "워크트리로 park — 파일을 건드리지 않았다" "$(sha_of "$S8F")" "$B8S"
+    S8G="$WORK/settings-wt-main.json"; mk_settings_empty "$S8G"
+    check "심링크를 경유한 본 체크아웃의 하위 디렉터리는 park 하지 않는다" \
+      "$(apply "$S8G" "$WT_MAIN_PLUG" empty)" "10"
   else
     skip "임시 워크트리 park" "git worktree 를 만들 수 없다"
   fi
 else
   skip "임시 워크트리 park" "git 이 없다"
 fi
-
-# The space that made the installed `[` fail with too many arguments. Comparing
-# against the live render rather than against "not the fallback literal" is what
-# makes this prove the guard was TRUE — the two branches are otherwise only
-# distinguishable by which script produced the bytes.
-SPACED="$WORK/plugin with space"
-mkdir -p "$SPACED/orchestrator"
-cp "$SL" "$LIVENESS" "$SPACED/orchestrator/"
-chmod +x "$SPACED/orchestrator/statusline.sh"
-S9F="$WORK/settings-spaced.json"; mk_settings "$S9F"; E9=$(digest_of "$S9F")
-bash "$APPLY" --apply --settings "$S9F" --plugin-dir "$SPACED" --expect "$E9" >/dev/null 2>&1
-check "공백이 든 절대경로 — 적용이 성공한다" "$?" "0"
-check "공백이 든 절대경로 — 설치된 명령이 폴백이 아니라 그 스크립트를 부른다" \
-  "$(fx_statusline_stdin sess-live | sh -c "$(jq -r '.statusLine.command' "$S9F")" | strip_clock)" \
-  "$(sl sess-live | strip_clock)"
-
-# ---------------------------------------------------------------------------
-# The absolute paths the installed guard cannot survive being re-evaluated over.
-#
-# What lands in the settings file is a STRING, and the harness hands that string
-# to `sh -c` on every render — so the double quotes around the path stop a space
-# and nothing else. A `$`, a backtick or a `"` inside it is expanded at that
-# second evaluation, the guard is false forever, and the apply still lands rc=0
-# because the verify run cannot tell the guard's two branches apart: the session
-# id it feeds has no index, so the script's own "no run" output and the fallback
-# are the same bytes.
-#
-# BOTH DIRECTIONS OR NEITHER. A check written as "reject these characters"
-# instead of as "the guard about to be installed is true" parks ordinary applies
-# too, and that failure is not hypothetical — it is what parked every legitimate
-# checkout the last time this pair was one-sided. A backslash and a newline come
-# through the second evaluation untouched, so they must still install, and what
-# they install must still call the script; the two blocks below are one case.
-# ---------------------------------------------------------------------------
-SREF="$WORK/settings-reeval.json"; mk_settings "$SREF"
-EREF=$(digest_of "$SREF"); BREF=$(shasum -a 256 "$SREF" | cut -d' ' -f1)
-
-# THE FOURTH NAME PINS THE STRATEGY, NOT A CHARACTER. The three before it are
-# the characters a reader would enumerate, so a pre-evaluation rewritten as
-# "reject `$`, `"` and a backtick" keeps all three of them red — and installs a
-# dead status line for the fourth. Two backslashes pass such an enumeration
-# untouched and still collapse to one at the render's second evaluation, so the
-# installed guard then tests a path that does not exist, is false forever, and
-# the apply lands rc=0 anyway. Measured: with the pre-evaluation replaced by
-# that enumeration this suite is green except for this one case.
-#
-# Its sibling below is the ACCEPT case for a SINGLE backslash, which the second
-# evaluation does leave alone. The pair is what keeps this from being read as
-# "backslashes are dangerous" — the question is whether the guard about to be
-# installed is true, not which characters somebody has thought of.
-mkdir -p "$WORK/reeval"
-for bad_name in 'plug$dollar' 'plug"quote' 'plug`tick`' 'plug\\double'; do
-  bad_plug="$WORK/reeval/$bad_name"
-  mkdir -p "$bad_plug/orchestrator"
-  cp "$SL" "$LIVENESS" "$bad_plug/orchestrator/"
-  chmod +x "$bad_plug/orchestrator/statusline.sh"
-  bash "$APPLY" --apply --settings "$SREF" --plugin-dir "$bad_plug" --expect "$EREF" >/dev/null 2>&1
-  check "재평가에서 해석되는 문자가 든 절대경로 ($bad_name) — 쓰기 전에 park 한다" "$?" "1"
-done
-check "재평가로 park 한 네 경우 모두 파일을 건드리지 않았다" \
-  "$(shasum -a 256 "$SREF" | cut -d' ' -f1)" "$BREF"
-
-reeval_ok_case() {
-  # reeval_ok_case <tag> <label> <plugin-dir> — a path whose characters survive
-  # the render's second evaluation. Two assertions, because the apply landing
-  # rc=0 is not evidence that the guard was true: the fallback branch also exits
-  # 0 and passes all five verify conditions. Comparing the installed command's
-  # render against the live one is what separates the branches.
-  local tag="$1" label="$2" dir="$3" sf ef
-  mkdir -p "$dir/orchestrator"
-  cp "$SL" "$LIVENESS" "$dir/orchestrator/"
-  chmod +x "$dir/orchestrator/statusline.sh"
-  sf="$WORK/settings-reeval-$tag.json"; mk_settings "$sf"; ef=$(digest_of "$sf")
-  bash "$APPLY" --apply --settings "$sf" --plugin-dir "$dir" --expect "$ef" >/dev/null 2>&1
-  check "$label — 적용이 성공한다" "$?" "0"
-  check "$label — 설치된 명령이 폴백이 아니라 그 스크립트를 부른다" \
-    "$(fx_statusline_stdin sess-live | sh -c "$(jq -r '.statusLine.command' "$sf")" | strip_clock)" \
-    "$(sl sess-live | strip_clock)"
-}
-
-# `$(printf ...)` is how the newline gets into the name at all — a literal one
-# cannot be written into the word list above without ending it.
-reeval_ok_case bs "백슬래시가 든 절대경로" "$WORK/reeval/plug\\back"
-reeval_ok_case nl "개행이 든 절대경로" "$(printf '%s/reeval/plug\nnewline' "$WORK")"
-
-# The interpreter is named absolutely: a PATH with nothing on it cannot resolve
-# `bash` either, and a 127 from the lookup would look like the script's own
-# verdict while proving nothing about it.
-mkdir -p "$WORK/nojq"
-PATH="$WORK/nojq" /bin/bash "$APPLY" --apply --settings "$S4F" --plugin-dir "$APLUG" --expect "$E4" >/dev/null 2>&1
-check "jq 부재 — 실패하고 아무것도 쓰지 않는다" "$?" "1"
-check "jq 부재 — 파일이 그대로다" "$(shasum -a 256 "$S4F" | cut -d' ' -f1)" "$B4"
-
-S5F="$WORK/settings-broken.json"; printf '{ this is not json' > "$S5F"
-B5=$(shasum -a 256 "$S5F" | cut -d' ' -f1)
-bash "$APPLY" --apply --settings "$S5F" --plugin-dir "$APLUG" --expect "$E4" >/dev/null 2>&1
-check "깨진 JSON — 쓰기 전에 중단한다" "$?" "1"
-check "깨진 JSON — 파일이 그대로다" "$(shasum -a 256 "$S5F" | cut -d' ' -f1)" "$B5"
-n=$(ls "$WORK"/settings-broken.json.pre-statusline-* 2>/dev/null | grep -c . || true)
-check "깨진 JSON — 백업도 만들지 않는다" "$n" "0"
-
-# ---------------------------------------------------------------------------
-# Verification and rollback. Three plugin dirs, one per output shape — this is
-# the "exactly one line" rule under the three feeds that decide it.
-# ---------------------------------------------------------------------------
-mk_fake_plugin() {
-  # mk_fake_plugin <dir> <printf-format> — a plugin tree whose status line emits
-  # exactly the given bytes.
-  local d="$1" fmt="$2"
-  mkdir -p "$d/orchestrator"
-  printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf %s\n' "'$fmt'" \
-    > "$d/orchestrator/statusline.sh"
-  chmod +x "$d/orchestrator/statusline.sh"
-}
-
-mk_fake_plugin "$WORK/p-nonl"  'ONE LINE NO NEWLINE'
-mk_fake_plugin "$WORK/p-1nl"   'ONE LINE ONE NEWLINE\n'
-mk_fake_plugin "$WORK/p-2nl"   'LINE ONE\nLINE TWO\n'
-mk_fake_plugin "$WORK/p-empty" ''
-
-for case_name in nonl:0 1nl:0 2nl:1 empty:1; do
-  tag=${case_name%%:*}; want=${case_name##*:}
-  SF="$WORK/settings-$tag.json"; mk_settings "$SF"
-  EF=$(digest_of "$SF"); BF=$(shasum -a 256 "$SF" | cut -d' ' -f1)
-  bash "$APPLY" --apply --settings "$SF" --plugin-dir "$WORK/p-$tag" --expect "$EF" >/dev/null 2>&1
-  check "검증 ($tag) — 종료 코드" "$?" "$want"
-  if [ "$want" = "1" ]; then
-    check "검증 실패 ($tag) — 백업으로 롤백해 바이트 동일" \
-      "$(shasum -a 256 "$SF" | cut -d' ' -f1)" "$BF"
-  fi
-done
-
-# ---------------------------------------------------------------------------
-# The settings file that does not exist yet
-# ---------------------------------------------------------------------------
-S6F="$WORK/nested/settings-new.json"
-bash "$APPLY" --probe --settings "$S6F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
-check "대상 파일 부재 — 사전 프로브는 2(진행)" "$?" "2"
-bash "$APPLY" --apply --settings "$S6F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
-check "대상 파일 부재 — 최소 파일을 만든다" "$?" "0"
-check "새로 만든 파일은 키 하나뿐이다" "$(jq -r '[keys[]] | join(",")' "$S6F")" "statusLine"
-bash "$APPLY" --probe --settings "$S6F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
-check "새로 만든 뒤 사후 프로브 — 0(수렴)" "$?" "0"
 
 # ---------------------------------------------------------------------------
 # 상태 루트 아래를 가리키는 --plugin-dir — 런의 고정 사본이다
@@ -1179,15 +2220,12 @@ check "새로 만든 뒤 사후 프로브 — 0(수렴)" "$?" "0"
 # 같은 방식으로 막아야 한다.
 SLST="$WORK/xstate"
 SLST_PLUG="$SLST/cc-cmds/run/R/plugin/cc-cmds"
-mkdir -p "$SLST_PLUG/orchestrator"
-cp "$SL" "$SLST_PLUG/orchestrator/statusline.sh"
-chmod +x "$SLST_PLUG/orchestrator/statusline.sh"
+mk_fake_plugin "$SLST_PLUG" 'SLST-LINE'
 SSTF="$WORK/settings-state-root.json"
-printf '{ "statusLine": { "type": "command", "command": "orig" } }\n' > "$SSTF"
-EST=$(shasum -a 256 "$SSTF" | cut -d' ' -f1)
+mk_settings_empty "$SSTF"
 SST_BEFORE=$(shasum -a 256 "$SSTF" | cut -d' ' -f1)
 sl_state_out=$(XDG_STATE_HOME="$SLST" bash "$APPLY" --apply --settings "$SSTF" \
-  --plugin-dir "$SLST_PLUG" --expect "$EST" 2>&1)
+  --plugin-dir "$SLST_PLUG" --require-state empty 2>&1)
 check "상태 루트 아래를 가리키는 --plugin-dir — 쓰기 전에 park 한다" "$?" "1"
 check "그때 설정 파일은 한 바이트도 바뀌지 않는다" \
   "$(shasum -a 256 "$SSTF" | cut -d' ' -f1)" "$SST_BEFORE"
@@ -1197,10 +2235,10 @@ case "$sl_state_out" in
 esac
 # 음성 대조군 — 상태 루트를 다른 곳으로 옮기면 같은 디렉터리가 통과한다. 없으면
 # 위 단언이 「그 경로는 원래 통과하지 않는다」와 구별되지 않는다.
-printf '{ "statusLine": { "type": "command", "command": "orig" } }\n' > "$SSTF"
+mk_settings_empty "$SSTF"
 XDG_STATE_HOME="$WORK/elsewhere" bash "$APPLY" --apply --settings "$SSTF" \
-  --plugin-dir "$SLST_PLUG" --expect "$EST" >/dev/null 2>&1
-check "음성 대조군 — 상태 루트 밖이면 같은 디렉터리가 통과한다" "$?" "0"
+  --plugin-dir "$SLST_PLUG" --require-state empty >/dev/null 2>&1
+check "음성 대조군 — 상태 루트 밖이면 같은 디렉터리가 설치된다" "$?" "10"
 
 # ---------------------------------------------------------------------------
 # SB01-SB20. The borrow segment

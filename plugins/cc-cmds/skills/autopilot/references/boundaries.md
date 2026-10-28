@@ -244,6 +244,7 @@ A `--hotfix` kickoff (SKILL.md 「핫픽스 킥오프」) asks four questions. E
 - **Launch** — immediate. 5n is not asked.
 - **No `재킥오프` row** — a hotfix run is not continued by a successor the seat opens (`references/freeze.md`).
 - **No roster** — the design is the `solo` stage, one headless lead. 5k only names the document.
+- **Review field** — `기술(기본)`. The plan's `review_expand` is `[]` in the hotfix frame, so every review of the run looks at the technical field alone.
 - **Document path** — `docs/<레포>/hotfix-<의도 슬러그>.md`, relative to the home target's repository root, where `<레포>` is the `<name>` of the home target's `<owner>/<name>` and the slug is folded from the confirmed 「고칠 것」 line as 5k folds an intent.
 - **Only when the defaults file gives no value**: the deadline is the kickoff time plus six hours (`kickoff-defaults.sh --resolve-deadline +6h`, which also captures nothing for a `재킥오프` row, since there is none), the ladder is `2` rungs, the terminal-act cap is `없음`, and there are no `자동 채택` rows and no `플러그인 허용` rows. The cost ceiling and the stagnation bound take the defaults file's value and are `없음` otherwise; the deadline then ends the run.
 - **What the defaults file refuses by name** takes a fixed answer and is shown, never asked: the termination point is question (1)'s 「완료 기준」 line, the launch is immediate, there is no deferral, the banner switch is 5i's resolved state said on the screen, and the apply command and radius are question (3)'s tail.
@@ -255,13 +256,14 @@ A `--hotfix` kickoff (SKILL.md 「핫픽스 킥오프」) asks four questions. E
 
 - **first, when any value widens what the run may do**, the block headed 「[이번 런이 새로 갖게 되는 권한] — 「이대로」 한 번으로 아래 권한이 모두 이 런에 생깁니다」: the review policy ceiling `선머지후리뷰` and every defaults row whose widening column is `1`, each in bold with the tag `[권한 확대]`, a repository row prefixed with its slug;
 - the fixed graph — `design` (one headless lead writes and freezes the design from the confirmed sentences, no audit), `implement` (two processes split by a plan-emission gate), `review` (an agent team) — and that each slice merges first and is reviewed after, the review's findings sending it round again;
+- beside the graph, the line 「리뷰 분야: 기술(기본)」, marked `고정값`;
 - per target: the cutpoint, the review policy ceiling, the dev and deploy-trigger identifiers, and, on `배포`, the apply values question (3) took;
 - the run-wide values: deadline, ladder, cost ceiling, stagnation bound, terminal-act cap, `자동 채택` and `플러그인 허용` rows, and the banner state — each marked `기본값` or `고정값` by where it came from;
 - the document path, and the standard pre-authorization rows;
 - **every `unresolved` item of the plan, read as a stop notice**: these are the enforcement-surface paths, and each says that the run stops at that edit, with Step 3's sentence on whether the seat can apply that class;
 - the stage-rules status Step 3 shows, and the `무시` rows of the defaults helper with their reasons.
 
-Then ask one question — header `계획 승인`, options `이대로` and `고칠 항목 지정`, **no recommendation suffix on either** (the screen widens the run, and the skill does not recommend accepting that). `고칠 항목 지정` leads to one multi-select question (header `고칠 항목`) whose options are only the values on the screen that are not fixed — each target's cutpoint and identifiers and apply values, the deadline, the ladder, the cost ceiling, the stagnation bound, the terminal-act cap, the standard pre-authorization rows and the document path — and asks again only the values chosen, each as its question in this file asks it, then shows the screen again. The graph, the review policy ceiling, the launch and the `재킥오프` row are not offered: a person who wants them otherwise runs a kickoff without `--hotfix`. On `이대로` append the trace line `기본값 확정`; the utterance is recorded by `references/freeze.md` 「핫픽스 킥오프」.
+Then ask one question — header `계획 승인`, options `이대로` and `고칠 항목 지정`, **no recommendation suffix on either** (the screen widens the run, and the skill does not recommend accepting that). `고칠 항목 지정` leads to one multi-select question (header `고칠 항목`) whose options are only the values on the screen that are not fixed — each target's cutpoint and identifiers and apply values, the deadline, the ladder, the cost ceiling, the stagnation bound, the terminal-act cap, the standard pre-authorization rows and the document path — and asks again only the values chosen, each as its question in this file asks it, then shows the screen again. The graph, the review policy ceiling, the review field, the launch and the `재킥오프` row are not offered: a person who wants them otherwise runs a kickoff without `--hotfix`. On `이대로` append the trace line `기본값 확정`; the utterance is recorded by `references/freeze.md` 「핫픽스 킥오프」.
 
 ---
 

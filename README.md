@@ -44,7 +44,7 @@ Engineering workflow commands for Claude Code.
 
 ```bash
 brew install terminal-notifier
-brew install jq   # PreToolUse hook 의존성
+brew install jq   # 플러그인 훅 전반의 의존성(PreToolUse 자동 승인, 상태줄 자동 설치)
 ```
 
 **2단계 — 자연어 요청**:
@@ -90,6 +90,17 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 /plugin install cc-cmds@cc-cmds
 ```
 
+### 상태줄 자동 설치
+
+플러그인을 설치하면 **다음 세션을 시작할 때** cc-cmds 상태줄이 설정 디렉터리(`CLAUDE_CONFIG_DIR`, 없으면 `~/.claude`)의 `settings.json` 에 설치됩니다. 플러그인이 업데이트되어 설치 경로가 바뀌면 세션 시작 시 스스로 다시 맞춥니다.
+
+- **이미 다른 상태줄을 쓰고 있으면 건드리지 않습니다.** cc-cmds 가 설치한 것이 아닌 `statusLine` 은 그대로 둡니다.
+- **`jq` 가 없으면 자동 설치만 조용히 비활성화됩니다.** 세션 시작을 막거나 오류를 띄우지 않습니다.
+- **처음 여는 폴더에서는** 워크스페이스 신뢰를 수락한 **다음** 세션에서 설치됩니다.
+- 최초 설치가 일어난 세션에서 안내문이 한 번 뜹니다. 상태줄이 있으면 화면 하단의 키보드 힌트가 대부분 가려집니다.
+- **끄기**: `CC_CMDS_STATUSLINE_AUTOINSTALL=0` 을 설정합니다. **`0` 만이 끄는 값이고, 그 밖의 어떤 값도(미설정 포함) 켜짐입니다** — `=1` 은 끄지 않습니다. 이 변수는 **앞으로의** 자동 설치와 자동 재지정만 막고 **이미 설치된 상태줄은 지우지 않습니다.** 이미 생긴 상태줄을 없애려면 아래 [Uninstall](#uninstall) 을 따릅니다.
+- 백업은 설정 파일 옆에 두 개(`settings.json.orig`·`settings.json.prev`)까지만 쌓입니다. 다만 중단된 실행이 임시 파일을 남길 수 있고, 그 정리 방법도 [Uninstall](#uninstall) 에 있습니다.
+
 ## Usage
 
 ```
@@ -114,9 +125,61 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 
 ## Uninstall
 
+플러그인은 쓰면서 상태줄만 끄려는 경우가 먼저입니다. 아래 순서대로 읽으세요. 아래의 `<설정 디렉터리>` 는 `CLAUDE_CONFIG_DIR`, 없으면 `~/.claude` 입니다.
+
+### 1. 환경변수는 상태줄을 지우지 않는다
+
+`CC_CMDS_STATUSLINE_AUTOINSTALL=0` 은 **앞으로** 자동 설치와 자동 재지정이 일어나지 않게 할 뿐이고, 이미 설치된 상태줄은 그대로 남습니다. 이 플러그인에는 설정 파일에서 상태줄을 지우는 동작이 없습니다. 이미 생긴 상태줄을 없애려면 다음 절의 방법을 따릅니다.
+
+### 2. 상태줄을 끄는 방법
+
+끄는 방법은 하나입니다 — `<설정 디렉터리>/settings.json` 의 `statusLine` 키를 지웁니다. 이것이 이 플러그인이 그 파일에 쓴 것의 **전부**를 되돌립니다(`refreshInterval` 도 그 키의 하위 키입니다).
+
+- **`settings.json.cc-statusline-owned` 는 지우지 말고 그대로 둡니다.** 그 파일이 있어야 다음 세션이 「사용자가 지웠다」로 읽고 다시 설치하지 않습니다. 지우면 다음 세션에 상태줄이 되살아납니다.
+- `statusLine` 객체 안에 손으로 넣어 둔 `padding`·`hideVimModeIndicator` 가 있었다면, 키를 통째로 지울 때 그것도 함께 사라집니다. 그 둘만 남기고 싶으면 `statusLine.command` 와 `statusLine.refreshInterval` 두 하위 키만 지웁니다.
+
+### 3. 형제 파일 정리 (플러그인을 지운 뒤)
+
+플러그인을 제거해도 `settings.json` 의 상태줄 명령은 남습니다. 플러그인과 함께 훅이 사라지므로 스스로 고쳐지지 않으며, 남은 명령은 스크립트가 없으면 설치 전 상태로 돌아갑니다(원래 상태줄이 있었으면 그 명령이, 없었으면 빈 상태줄이 뜹니다). 위 2절로 키를 지운 뒤 플러그인을 제거하고, 그다음 설정 파일 옆의 흔적을 두 줄로 정리합니다. **순서가 고정입니다** — 첫 줄이 락 디렉터리를 먼저 치우지 않으면 둘째 줄이 그것에 부딪혀 rc 1 로 끝납니다(파일들은 지워지지만 오류가 납니다).
+
+```bash
+rmdir <설정 디렉터리>/settings.json.cc-statusline.lock 2>/dev/null
+rm -f <설정 디렉터리>/settings.json.cc-statusline*
+```
+
+둘째 줄은 마커, 소유 비트 파일, 그리고 중단된 실행이 남긴 임시 파일(`settings.json.cc-statusline.tmp.*`·`.bak-tmp.*`·`.mk-tmp.*`)까지 함께 지웁니다. 플러그인을 이미 지운 뒤라면 되살릴 훅이 없으므로 안전합니다. **플러그인을 계속 쓸 생각이면 이 두 줄을 돌리지 않습니다.**
+
+손으로 한 번이라도 상태줄을 설치했던 기기에는 옛 판이 쓰기마다 만든 `settings.json.pre-statusline-<숫자>` 백업이 개수 제한 없이 남아 있습니다. 이 판은 그런 파일을 새로 만들지 않지만 이미 있는 것을 지우지도 않습니다. `settings.json` 은 `env` 블록에 API 키를 담을 수 있고 그 파일들은 그 시점의 축자 사본이므로, 필요 없으면 직접 지웁니다:
+
+```bash
+rm -f <설정 디렉터리>/settings.json.pre-statusline-*
+```
+
+### 4. 백업 두 슬롯은 복구용 스냅숏
+
+`settings.json.orig` 와 `settings.json.prev` 는 끄는 방법이 아니라 복구용 스냅숏입니다. 앞의 것은 이 플러그인이 **처음** 쓰기 직전의 설정 파일 전체, 뒤의 것은 **직전** 쓰기 직전의 설정 파일 전체입니다. 상태줄만 끄려고 이것을 되돌리면 안 됩니다 — 그 사이에 바뀐 테마·모델·승인된 권한·`env` 블록까지 전부 그때 상태로 돌아갑니다. 이것을 쓰는 경우는 하나뿐입니다: **설정 파일 자체가 손상돼 복구가 필요할 때.** 되돌릴 생각이 없다면 두 이름을 직접 지웁니다:
+
+```bash
+rm -f <설정 디렉터리>/settings.json.orig <설정 디렉터리>/settings.json.prev
+```
+
+### 5. 지운 상태줄을 다시 받는 방법
+
+위 2절과 정반대 조작입니다. 기기가 둘로 나뉩니다.
+
+- 다른 상태줄이 있어 설치를 건너뛰기만 했던 기기(`settings.json.cc-statusline-owned` 가 없다)는 `statusLine` 키만 지우면 다음 세션에 설치됩니다.
+- 한 번이라도 이 플러그인의 상태줄을 가졌던 기기는 `settings.json.cc-statusline-owned` 를 **지우고** 새 세션을 엽니다.
+
+### 플러그인 제거
+
 ```
 /plugin uninstall cc-cmds
 ```
+
+## Troubleshooting
+
+- **설정 디렉터리의 `settings.local.json` 에 `statusLine` 을 넣어도 아무 일도 일어나지 않습니다.** Claude Code 가 사용자 설정 디렉터리의 그 파일을 읽지 않기 때문입니다. 상태줄은 같은 디렉터리의 `settings.json` 에 둡니다.
+- **`settings.json` 을 심볼릭 링크나 하드 링크로 관리하면(dotfiles 관리자 등) 상태줄이 자동으로 설치되지 않습니다.** 플러그인 업데이트 뒤의 경로 재지정도 일어나지 않고, 마커 `settings.json.cc-statusline` 에 `reason=linked` 가 남습니다. 설치기가 파일을 이름째 갈아 끼우면 링크가 일반 파일로 바뀌어 관리하는 원본과 갈라지기 때문입니다. 상태줄 값은 관리하는 원본에 손으로 넣고, 플러그인이 판올림되면 손으로 다시 겨눕니다.
 
 ## Options
 
@@ -322,7 +385,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review
 
-**Usage**: `/cc-cmds:review [<target>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]`
+**Usage**: `/cc-cmds:review [<target>] [--base-sha <sha>] [--declared-files <csv>] [--expand <분야>[,<분야>]] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -330,6 +393,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `<directive>` | _(optional)_ | 리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로"). |
 | `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 호출자가 지정. 이미 base 를 아는 호출자(파이프라인 드라이버 등)가 리뷰의 재유도를 없애기 위해 넘긴다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 검증에 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. |
 | `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 변경이 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다. |
+| `--expand <분야>[,<분야>]` | off (기술 분야만 리뷰 — 기획서 없이 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다) | 기본에서 빠진 리뷰 분야를 연다. 값은 `요구`(적힌 근거 없이 추정한 제품·기획 요구 판단)와 `문서표현`(사람이 읽는 문서의 문장 다듬기·구성·설명 보강·뜻을 바꾸지 않는 오탈자) 둘이다. 열린 분야의 발견은 같은 심각도 기준으로 등급을 받는다. |
 
 **`<target>` 입력 형태별 처리:**
 
@@ -348,23 +412,28 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 > _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다._
 
+> _Parsing (`--expand <분야>[,<분야>]`): `--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다. 분야는 이 플래그로만 열린다 — 지시문은 분야를 열지 않는다._
+
 ### /cc-cmds:review-lite
 
-**Usage**: `/cc-cmds:review-lite [<target>] [--base-sha <sha>] [--declared-files <csv>]`
+**Usage**: `/cc-cmds:review-lite [<target>] [--base-sha <sha>] [--declared-files <csv>] [--expand <분야>[,<분야>]]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<target>` | _(optional)_ | 리뷰 대상 (PR 번호/URL, 브랜치, 파일/디렉토리, 또는 생략 시 현재 브랜치 자동 감지). PR 크기 무관 — 큰 PR 은 report 의 *리뷰 범위* 섹션에 미커버 영역 명시. |
 | `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 호출자가 지정. 넘겨받은 값은 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. lite 에서도 동일하다. |
 | `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 변경이 건드리기로 선언된 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하므로, 선언 밖 파일을 지목할 수 있게 한다. |
+| `--expand <분야>[,<분야>]` | off (기술 분야만 리뷰 — 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다) | 기본에서 빠진 리뷰 분야를 연다. 값은 `요구`와 `문서표현` 둘이며, 고정 2인 가운데 코드 품질·로직 리뷰어가 맡는다. lite 는 문서를 받는 길이 없어 기획서는 늘 없음이다 — 기획서와 대조하려면 /cc-cmds:review 를 쓴다. |
 
 > _Parsing (`--base-sha <sha>`): `--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다._
 
 > _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다._
 
+> _Parsing (`--expand <분야>[,<분야>]`): `--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다. 이 토큰과 값은 대상 뒤 여분 토큰 판정 전에 인자열에서 제거된다._
+
 ### /cc-cmds:review-unattended
 
-**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]`
+**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -376,6 +445,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `--seat-commits <list>` | off (이 세그먼트에 좌석이 적용한 강제 표면 편집이 없다) | 사람 승인 뒤 게이트가 이 세그먼트 브랜치에 만든 좌석 적용 커밋 목록(`<sha> (<경로>, …); …`). 그 커밋이 바꾼 파일은 선언 집합 안이므로 리뷰 범위이며, 리뷰는 그 변경을 다른 커밋과 똑같이 읽고 개요에 커밋과 경로를 한 줄로 남긴다. |
 | `--post-merge <commit>` | off (머지 전 리뷰 — 머지 커밋에서 아무것도 다시 돌리지 않는다) | 머지 먼저(선머지후리뷰) 세그먼트의 사후 리뷰. 값은 다시 검증할 커밋 — 베이스에 생긴 머지 커밋, 또는 브랜치가 머지된 것보다 앞선 커밋을 지녔을 때(아직 머지되지 않은 리드 수정) 게이트가 고른 브랜치 팁. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀고, 그 커밋을 분리 체크아웃에 꺼내 설계 문서의 재현 절차와 이 슬라이스 몫의 구현 시 검증 레시피를 다시 돌려 결과를 리포트에 남기며, 실패는 P0 로 적는다. 다른 슬라이스의 항목은 `미실행 — 다른 슬라이스`, 어느 슬라이스에도 배정되지 않은 항목은 `미실행 — 배정 없음` 으로 적는다. diff 기준은 그대로 `--base-sha`...브랜치 팁. |
 | `--slice <id>` | off (슬라이스 범위를 적용하지 않고 모든 발견을 센다 — 개요에 `적용 안 됨 — 인자 없음`) | 이 세그먼트가 구현한 설계 슬라이스 id. 지시문의 `설계는 <doc>` 이 가리키는 설계 문서의 `## 구현 슬라이싱` 에서 같은 id 의 블록을 이 슬라이스의 범위로 읽고, 다른 선언 슬라이스에 배정된 P1·P2·P3 발견을 `## 다른 슬라이스 몫 (집계 제외)` 절로 옮겨 집계에서 뺀다. 문서·절·블록이 없으면 모두 센다. |
+| `--expand <분야>[,<분야>]` | off (기술 분야만 리뷰 — 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다) | 기본에서 빠진 리뷰 분야를 연다. 값은 `요구`와 `문서표현` 둘이다. 드라이버와 게이트가 매니페스트 계획의 `review_expand` 를 리뷰 파견마다 싣는다. 분야는 이 플래그로만 열리며, 앵커 브리프의 의도 문장이나 `## 실행 계획` 블록은 분야를 열지 않는다. `--lead-fix` 는 이 플래그를 읽지 않는다. |
 | `--basis-cycle <n>` | off (delta mode is not attempted; review runs full) | The 사이클 number of this segment's most recent FULL review cycle. Required together with --basis-review-head and --basis-report-path to attempt delta mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt. |
 | `--basis-review-head <sha>` | off (delta mode is not attempted; review runs full) | The 리뷰 HEAD of the cycle named by --basis-cycle. Verified with git merge-base --is-ancestor against the target head named explicitly, never the caller's ambient HEAD. On failure, or when the three-flag set is incomplete or malformed, the arm falls back to a full review and records why in the report overview. |
 | `--basis-report-path <abs-path>` | off (delta mode is not attempted; review runs full) | Main-worktree absolute path to the --basis-cycle report — the source of the prior findings this cycle re-adjudicates. Read-only; never written by this arm. Must be absolute or it is treated as malformed. |
@@ -389,7 +459,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 > _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
 
-> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
+> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
 
 > _Parsing (`--report-path <abs-path>`): `--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지._
 
@@ -402,6 +472,8 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 > _Parsing (`--post-merge <commit>`): `--post-merge` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다._
 
 > _Parsing (`--slice <id>`): `--slice` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다._
+
+> _Parsing (`--expand <분야>[,<분야>]`): `--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이다. 값이 없거나 모르는 값이면 정지하지 않고 버리며 개요에 한 줄 남긴다. 남은 값이 없으면 플래그를 주지 않은 것과 같다._
 
 > _Parsing (`--basis-cycle <n>`): `--basis-cycle` takes the next token as its value. Missing, or not a positive integer, or either companion flag itself missing or malformed → all three are treated as absent for this call; full review, no halt. One overview line records the attempt only when at least one of the three was actually supplied on argv._
 
@@ -425,9 +497,13 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review-upgrade
 
-**Usage**: `/cc-cmds:review-upgrade`
+**Usage**: `/cc-cmds:review-upgrade [--expand <분야>[,<분야>]]`
 
-_이 커맨드는 별도 인자를 받지 않으며, 직전 `/review` Step 3 리뷰어 구성 제안이 현재 대화 컨텍스트에 있어야 동작한다. opus 승격, 누락 리뷰 관점 추가, 과부하 리뷰어 분할은 강화가 유의미할 때만 제안하며, 그 외에는 유지 사유를 제시한다. 독립 실행 시 결과가 불정확할 수 있다._
+| Option | Default | Summary |
+| --- | --- | --- |
+| `--expand <분야>[,<분야>]` | off (입력의 `리뷰 분야` 줄이 연 분야만 이어받는다 — 줄이 없는 옛 입력은 기술(기본)) | 입력에서 이어받은 리뷰 분야에 더할 분야. 값은 `요구`와 `문서표현` 둘이다. 열린 분야가 없으면 요구·문서표현 관점의 ADD 를 제안하지 않고, 열린 분야가 있으면 그 분야를 담당 범위로 하는 ADD 와 재투입 안내에 분야를 함께 싣는다. |
+
+> _Parsing (`--expand <분야>[,<분야>]`): `--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다._
 
 ### /cc-cmds:visual
 
