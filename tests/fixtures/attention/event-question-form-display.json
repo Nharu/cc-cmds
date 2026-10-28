@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030001500.2c3d4e5f",
+  "host": "mbp-1",
+  "created_at_ms": 1793030001500,
+  "kind": "question-form",
+  "token": "session-ask",
+  "slot": "cc-cmds-session-5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+  "title": "cc-cmds — 질문지",
+  "body": "이름과 사용할 기능을 적어 주세요.",
+  "actionable": false,
+  "accepts": [],
+  "origin": {
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "run_id": null,
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": null,
+    "tmux_pane": null
+  },
+  "reply": {
+    "surface": "question-form",
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "form_id": "form-8",
+    "questions": [
+      {"id": "name", "question": "이름은?", "options": []},
+      {"id": "features", "question": "어느 기능을 쓰나요?", "options": [{"label": "알림"}, {"label": "중계"}]}
+    ]
+  }
+}

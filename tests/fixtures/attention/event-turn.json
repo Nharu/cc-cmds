@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030002000.3d4e5f60",
+  "host": "mbp-1",
+  "created_at_ms": 1793030002000,
+  "kind": "turn",
+  "token": "session-turn",
+  "slot": "cc-cmds-session-5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+  "title": "cc-cmds — 차례 끝",
+  "body": "구현을 마쳤습니다. 시험 결과를 확인해 주세요.",
+  "actionable": false,
+  "accepts": [],
+  "origin": {
+    "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
+    "run_id": null,
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": null,
+    "tmux_pane": "%3"
+  },
+  "reply": null
+}

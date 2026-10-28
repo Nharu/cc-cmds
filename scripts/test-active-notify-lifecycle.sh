@@ -106,6 +106,10 @@ for fixture_dir in "${fixtures[@]}"; do
     # (or the fixture-controlled empty PATH) governs `command -v terminal-notifier`
     # rather than the host's real /opt/homebrew/bin/terminal-notifier.
     export CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1
+    # The attention spool root is a path under the fixture's tmpdir that is
+    # never created, so the attention tap writes nothing and never reaches the
+    # account spool.
+    export CC_CMDS_ATTENTION_ROOT="$tmpdir/attention-root-absent"
     # Positive host-OS injection so fixtures default to the Darwin branch
     # uniformly across both CI legs — Linux runner takes the Darwin branch
     # (terminal-notifier invocation, missing-binary stderr hint, etc.) just

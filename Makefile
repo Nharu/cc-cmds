@@ -40,6 +40,7 @@ lint:
 	bash scripts/lint-team-budget-pins.sh
 	bash scripts/lint-team-model-tier-pins.sh
 	bash scripts/lint-unattended-surfaces.sh
+	bash scripts/lint-attention-schema.sh
 	bash scripts/lint-lead-read-set.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-autoadopt-vocabulary.sh
@@ -485,6 +486,7 @@ ORCH_TESTS := \
 	scripts/test-session-notify-hook.sh \
 	scripts/test-session-title-hook.sh \
 	scripts/test-notify-focus.sh \
+	scripts/test-attention.sh \
 	scripts/test-stage-rules-edit-hook.sh \
 	scripts/test-stage-rules.sh \
 	scripts/test-watch.sh \
