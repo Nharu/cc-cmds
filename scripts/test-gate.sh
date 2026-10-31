@@ -49427,7 +49427,7 @@ check "88d: CI 처분 아닌 계열의 수정 낱말은 L0 을 세우지 않는�
 
 # ---------------------------------------------------------------------------
 # 88h. 기본 브랜치 판독과 CI 대조 — 판독 전사, 대조 행위, LM 처분, 머지 검사, 중계 깨움, 수리 인가
-# --- section: 88h | group: ledger_series | covers: gate_master_reading, gate_master_row_one, gate_master_row_if_changed, gate_perform_ci_match, gate_ci_master_next, gate_master_resolved_after, gate_master_open_events, gate_check_ci_match, gate_master_claim, gate_ci_repair_pass, gate_check_merge_checks, gate_snapshot_review_next_json, gate_relay_master_segments, gate_relay_master_wake, gate_check_repair_grant, gate_shift_halt_site_table | anchors: 88h: 판독 파일이 없으면 판독 행이 없고 회차 1 의 정착 실패는 CI 기존 실패 다, 88h: 빨강 판독은 행 하나로 전사되고 같은 판독은 다시 쓰지 않는다, 88h: 어휘 밖 판독은 부재로 읽히고 쥔 판독은 (미상) 이 되어 L7 로 돌아간다, 88h: 대조 행이 없는 빨강 판독의 다음은 CI 대조 이고 머지 검사가 거절한다, 88h: 부분집합은 master 대기 이고 회차를 세지 않는다, 88h: 초과는 L7 을 건너뛰어 CI 수정 이다, 88h: 읽지 못한 대조는 판정 불가 이고 master 대기 다, 88h: 베이스 뒤에 해소된 사건의 서명만 겹치면 재합류 필요 이고 master 재합류 다, 88h: 띄울 수 없는 사건의 대표는 master 수리 불가 이고 둘째 세그먼트는 대표를 잡지 못한다, 88h: 수리 런의 단언 부분집합은 수리 통과 이고 머지 검사를 지난다, 88h: 판독이 움직이면 수리 통과는 다시 대조된다, 88h: 대기 인계의 master 대기 칸을 중계가 읽고 판독이 바뀔 때만 깬다, 88h: 수리 런 인가는 동의 문면·절단점·사전 인가 형태를 묶고 사람 인가는 그대로다, 88h: master 수리 불가 정지 자리의 추천은 없음 이다, 88h: master 대기 의 교대는 판독이 초록으로 바뀔 때 깨고 다음은 master 재합류 다, 88h: 저장소에 없는 해소 커밋은 베이스 뒤이고 다음은 master 재합류 다, 88h: 대기 뒤 띄울 수 없음 으로 바뀐 사건은 다시 대조되어 master 수리 불가 다, 88h: 대기 뒤 팁만 움직인 판독은 대기를 지키고 서명 지문이 움직이면 다시 대조한다, 88h: 열린 사건을 실은 진행 중·판정 불가 판독 동안 대기는 master 대기 를 지키고 대조 행위는 rc 3 이며 초록 뒤 master 재합류 다, 88h: 대조 행이 없는 진행 중 판독은 열린 사건이 있으면 master 대기 이고 사건이 없는 진행 중·초록 판독은 CI 기존 실패 다, 88h: 진행 중 판독 동안 수리 통과 는 머지 가 아니라 master 대기 이고 머지 검사가 거절한다 ---
+# --- section: 88h | group: ledger_series | covers: gate_master_reading, gate_master_row_one, gate_master_row_if_changed, gate_perform_ci_match, gate_ci_master_next, gate_master_resolved_after, gate_master_open_events, gate_check_ci_match, gate_master_claim, gate_ci_repair_pass, gate_check_merge_checks, gate_snapshot_review_next_json, gate_relay_master_segments, gate_relay_master_wake, gate_check_repair_grant, gate_shift_halt_site_table, gate_ci_match_gh, gate_ci_match_checks_passed, gate_ci_match_reading_mark, gate_ci_match_mark_key, gate_master_claim_publish, gate_master_claim_run_ended, gate_base_head_matched, gate_snapshot_master_keys_json, gate_repair_preauth_subset, gate_repair_put_outside | anchors: 88h: master 재합류 원소는 베이스·판정을 싣고 일치 판정 뒤 다음은 L7 이다, 88h: 대표 표지는 새로 잡고 살아 있는 런에는 양보하며 done·사라진 런과 오래 빈 표지는 넘겨받는다, 88h: 관측만 다른 판독은 수리 통과를 지키고 팁이 다르거나 낡은 판독은 머지 검사가 거절한다, 88h: 사건의 체크가 성공으로 끝나지 않았거나 사건 지문이 다르면 수리 통과가 아니라 판정 불가 다, 88h: 머지 검사는 낡은 판독 행을 먼저 갱신하고 움직인 판독으로 수리 통과를 거절한다, 88h: 낯선 결론의 체크도 실패로 세어 그 서명이 초과 를 만든다, 88h: 한도를 넘긴 gh 읽기는 판정 불가 이다, 88h: 형태가 없는 사전 인가 행은 수리 런 인가를 막지 않는다, 88h: 수리 런의 PUT 은 repos/<slug>/pulls/<n>/merge 만 열고 다른 경로·저장소·비숫자 번호는 밖이다, 88h: 판독 파일이 없으면 판독 행이 없고 회차 1 의 정착 실패는 CI 기존 실패 다, 88h: 빨강 판독은 행 하나로 전사되고 같은 판독은 다시 쓰지 않는다, 88h: 어휘 밖 판독은 부재로 읽히고 쥔 판독은 (미상) 이 되어 L7 로 돌아간다, 88h: 대조 행이 없는 빨강 판독의 다음은 CI 대조 이고 머지 검사가 거절한다, 88h: 부분집합은 master 대기 이고 회차를 세지 않는다, 88h: 초과는 L7 을 건너뛰어 CI 수정 이다, 88h: 읽지 못한 대조는 판정 불가 이고 master 대기 다, 88h: 베이스 뒤에 해소된 사건의 서명만 겹치면 재합류 필요 이고 master 재합류 다, 88h: 띄울 수 없는 사건의 대표는 master 수리 불가 이고 둘째 세그먼트는 대표를 잡지 못한다, 88h: 수리 런의 단언 부분집합은 수리 통과 이고 머지 검사를 지난다, 88h: 판독이 움직이면 수리 통과는 다시 대조된다, 88h: 대기 인계의 master 대기 칸을 중계가 읽고 판독이 바뀔 때만 깬다, 88h: 수리 런 인가는 동의 문면·절단점·사전 인가 형태를 묶고 사람 인가는 그대로다, 88h: master 수리 불가 정지 자리의 추천은 없음 이다, 88h: master 대기 의 교대는 판독이 초록으로 바뀔 때 깨고 다음은 master 재합류 다, 88h: 저장소에 없는 해소 커밋은 베이스 뒤이고 다음은 master 재합류 다, 88h: 대기 뒤 띄울 수 없음 으로 바뀐 사건은 다시 대조되어 master 수리 불가 다, 88h: 대기 뒤 팁만 움직인 판독은 대기를 지키고 서명 지문이 움직이면 다시 대조한다, 88h: 열린 사건을 실은 진행 중·판정 불가 판독 동안 대기는 master 대기 를 지키고 대조 행위는 rc 3 이며 초록 뒤 master 재합류 다, 88h: 대조 행이 없는 진행 중 판독은 열린 사건이 있으면 master 대기 이고 사건이 없는 진행 중·초록 판독은 CI 기존 실패 다, 88h: 진행 중 판독 동안 수리 통과 는 머지 가 아니라 master 대기 이고 머지 검사가 거절한다 ---
 #
 # 판정표가 머지 를 내는 세그먼트 위에 회차 1 의 정착 실패를 두고(회차의 요청이 기본
 # 브랜치 실패를 보았다 — L7 의 자리), 기본 브랜치 판독 파일을 이 절의 pace 루트 아래에
@@ -49449,8 +49449,13 @@ X88H=$( ( cd "$G88H" && printf 'fix\n' > fix.txt && git add -A && git commit -qm
 M88H="$D88H/manifest.md"
 printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88H" > "$M88H"
 E1_88H=aaaaaaaaaaaa; E2_88H=bbbbbbbbbbbb; E3_88H=cccccccccccc
+S1_88H='gate|test-gate.sh|1 가'; S2_88H='gate|test-gate.sh|2 나'; S3_88H='gate|test-gate.sh|3 다'
+# 수리 사건 행의 넷째 칸은 사건 서명 목록의 지문이다 — 호스트의 사건 파일이 이것과 같아야 수리 통과가 선다.
+F3_88H=$(printf '%s\n' "$S3_88H" | bash "$repo_root/plugins/cc-cmds/orchestrator/ci-signature.sh" fingerprint)
 M88HR="$D88H/manifest-repair.md"
-{ cat "$M88H"; printf -- '- `수리 사건` | Nharu/cc-cmds | main | %s | %s\n' "$E3_88H" "$(printf '%064d' 0)"; } > "$M88HR"
+{ cat "$M88H"; printf -- '- `수리 사건` | Nharu/cc-cmds | main | %s | %s\n' "$E3_88H" "$F3_88H"; } > "$M88HR"
+M88HZ="$D88H/manifest-repair-badsha.md"
+{ cat "$M88H"; printf -- '- `수리 사건` | Nharu/cc-cmds | main | %s | %s\n' "$E3_88H" "$(printf '%064d' 0)"; } > "$M88HZ"
 B88HL="$D88H/base.md"
 {
   printf '# 원장 픽스처\n\n## 실행 LS\n\n'
@@ -49465,7 +49470,6 @@ B88HL="$D88H/base.md"
   done
   printf -- '- `checks` | 교대=1 | PR=Nharu/cc-cmds#5 | head sha=%s | 상태=실패 | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=S | 재실행 회차=1 | 진행 중=0 | prev=x\n' "$R88H" "$now88h"
 } > "$B88HL"
-S1_88H='gate|test-gate.sh|1 가'; S2_88H='gate|test-gate.sh|2 나'; S3_88H='gate|test-gate.sh|3 다'
 l88h() {  # l88h <이름> — 바탕 원장을 베낀 라우팅 원장
   local l; l=$(lsr_ledger "w88h-$1"); cp "$B88HL" "$l"; printf '1\n' > "${l%/*}/routing-guard"
   printf '%s' "$l"
@@ -49498,10 +49502,18 @@ lg88h() {  # lg88h <시험 이름…> — 실패한 시험 이름들을 싣는 �
     printf 'suite-guard[scripts/test-gate.sh]: 종료 rc=1 소요 3s\n'; } > "$D88H/gh/log"
   printf '101\tgate\tcompleted\tfailure\tgithub-actions\thttps://github.com/Nharu/cc-cmds/actions/runs/777/job/101\n' > "$D88H/gh/runs"
 }
+# rn88h <이름> <결론> — 체크 런 한 줄을 더한다. `gate (2)` 처럼 샤드 꼬리가 붙은 이름은 기본 이름 gate 다.
+rn88h() {
+  printf '%s\t%s\tcompleted\t%s\tgithub-actions\thttps://github.com/Nharu/cc-cmds/actions/runs/777/job/%s\n' \
+    "$((200 + $(wc -l < "$D88H/gh/runs")))" "$1" "$2" "$((200 + $(wc -l < "$D88H/gh/runs")))" >> "$D88H/gh/runs"
+}
 pm88h_in() {  # 대조 행위의 수행부 — 입장이 세우는 세 값을 두고 gh 를 함수 대역으로 가린다
+  # GH88H_SLOW 가 서면 체크 런 읽기가 그만큼 걸리고, GS88H 가 호출 한도를 줄인다.
+  GATE_CI_MATCH_GH_SECONDS=${GS88H:-$GATE_CI_MATCH_GH_SECONDS}
   gh() {
     case "$*" in
-      *check-runs*) [ -f "$D88H/gh/runs" ] || return 1; cat "$D88H/gh/runs" ;;
+      *check-runs*) [ -z "${GH88H_SLOW:-}" ] || sleep "$GH88H_SLOW"
+                    [ -f "$D88H/gh/runs" ] || return 1; cat "$D88H/gh/runs" ;;
       *'/logs'*) cat "$D88H/gh/log" ;;
       *actions/jobs/*) printf 'test\n' ;;
       *) return 1 ;;
@@ -49571,6 +49583,18 @@ check "88h: 베이스 뒤에 해소된 사건의 서명만 겹치면 재합류 �
   "$(q88h "$L88HJ" gate_master_resolved_after S t)|$(pm88h "$L88HJ")|$(mt88h "$L88HJ")|$(n88h "$L88HJ")" \
   "$E1_88H|0|대조|재합류 필요|1|-|master 재합류"
 
+# 재합류 원소는 최신 베이스 판정 행의 베이스·판정을 싣고, 이 머리를 일치 로 판정한 뒤에는
+# 받아들일 것이 없으므로 master 재합류 를 내지 않고 L7 로 간다.
+bj88h() {  # bj88h <원장> <판정> — 이 머리의 베이스 판정 행 하나
+  printf -- '- `베이스 판정` | 교대=1 | 세그먼트=S | 리뷰 HEAD=%s | 판정 HEAD=%s | 베이스=%s | 판정=%s | 충돌 파일=- | 부류=일반 | prev=x\n' \
+    "$R88H" "$R88H" "$X88H" "$2" >> "$1"
+}
+cp "$L88HJ" "$L88HJ.move"; bj88h "$L88HJ.move" 이동
+cp "$L88HJ" "$L88HJ.same"; bj88h "$L88HJ.same" 일치
+check "88h: master 재합류 원소는 베이스·판정을 싣고 일치 판정 뒤 다음은 L7 이다" \
+  "$(q88h "$L88HJ.move" gate_snapshot_review_next_json | grep -c "\"베이스\": \"$X88H\", \"판정\": \"이동\"" || true)|$(n88h "$L88HJ.move")|$(n88h "$L88HJ.same")" \
+  "1|master 재합류|CI 기존 실패"
+
 # 대표 — 수리 런을 띄울 수 없는 열린 사건. 이 런의 다른 세그먼트는 표지를 잡지 못한다.
 mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E2_88H" - '띄울 수 없음' '렌더 실패' "$S1_88H")]"
 L88HU=$(l88h unable); tr88h "$L88HU"; lg88h '1 가'
@@ -49578,6 +49602,24 @@ cl88h() { local rc=0; q88h "$1" gate_master_claim "$E2_88H" S2 || rc=$?; printf 
 check "88h: 띄울 수 없는 사건의 대표는 master 수리 불가 이고 둘째 세그먼트는 대표를 잡지 못한다" \
   "$(pm88h "$L88HU")|$(mt88h "$L88HU")|$(lsr_last_fields "$L88HU" 'CI 처분' 사건)|$(n88h "$L88HU")|$(cl88h "$L88HU")" \
   "0|대조|부분집합|1|예|$E2_88H|master 수리 불가|1"
+# 대표 표지의 소유권 — 새로 잡기, 살아 있는(끝났다고 판정되지 않는) 다른 런에 양보, done 이
+# 있는 런과 런 디렉터리가 사라진 런에서 넘겨받기, 소유자가 아직 없는 표지는 잠깐 기다리고
+# 오래 빈 표지는 넘겨받기.
+CR88H="$S88H/cc-cmds/master-claims"
+mk88h() {  # mk88h <사건 id> <소유 줄|-> — 표지 하나
+  mkdir -p "$CR88H/$1"; [ "$2" = "-" ] || printf '%s\n' "$2" > "$CR88H/$1/owner"
+}
+co88h() { local rc=0; q88h "$L88HU" gate_master_claim "$1" S || rc=$?; printf '%s:%s' "$rc" "$(head -1 "$CR88H/$1/owner" 2>/dev/null | cut -d' ' -f2)"; }
+mkdir -p "$S88H/cc-cmds/run/R88live" "$S88H/cc-cmds/run/R88done"; : > "$S88H/cc-cmds/run/R88done/done"
+mk88h 0a0a0a0a0a01 'R88live S9'
+mk88h 0a0a0a0a0a02 'R88done S9'
+mk88h 0a0a0a0a0a03 'R88gone S9'
+mk88h 0a0a0a0a0a04 -
+mk88h 0a0a0a0a0a05 -; touch -t 202001010000 "$CR88H/0a0a0a0a0a05"
+check "88h: 대표 표지는 새로 잡고 살아 있는 런에는 양보하며 done·사라진 런과 오래 빈 표지는 넘겨받는다" \
+  "$(co88h 0a0a0a0a0a00)|$(co88h 0a0a0a0a0a01)|$(co88h 0a0a0a0a0a02)|$(co88h 0a0a0a0a0a03)|$(co88h 0a0a0a0a0a04)|$(co88h 0a0a0a0a0a05)" \
+  "0:S|1:S9|0:S|0:S|1:|0:S"
+
 check "88h: master 수리 불가 원소는 사건·수리 사유를 싣는다" \
   "$(q88h "$L88HU" gate_snapshot_review_next_json | grep -c "\"수리 사유\": \"$E2_88H 렌더 실패\"" || true)" "1"
 check "88h: master 수리 불가 정지 자리의 추천은 없음 이다" \
@@ -49586,13 +49628,58 @@ check "88h: master 수리 불가 정지 자리의 추천은 없음 이다" \
 # 수리 통과 — 수리 사건 행이 든 매니페스트, 제 사건의 서명이 남지 않은 단언 부분집합.
 M88H_USE="$M88HR"
 mf88h 빨강 "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
-L88HP=$(l88h repair); tr88h "$L88HP"; lg88h '1 가'
+L88HP=$(l88h repair); tr88h "$L88HP"; lg88h '1 가'; rn88h 'gate (2)' success
 check "88h: 수리 런의 단언 부분집합은 수리 통과 이고 머지 검사를 지난다" \
   "$(pm88h "$L88HP")|$(mt88h "$L88HP")|$(n88h "$L88HP")|$(mc88h "$L88HP")" "0|대조|수리 통과|1|-|머지|0|-"
+
+# 관측 시각만 새로 적은 판독 행은 수리 통과를 지키고, 팁이 다르거나 낡은 행은 무효로 한다.
+r88hp=$( { grep '^- `master 판독` ' "$L88HP" || true; } | tail -1)
+cp "$L88HP" "$L88HP.obs"
+printf '%s\n' "$r88hp" | sed "s/| 관측=[^|]*|/| 관측=$(date -u +%Y-%m-%dT%H:%M:%SZ) |/" >> "$L88HP.obs"
+cp "$L88HP" "$L88HP.tip"
+printf '%s\n' "$r88hp" | sed "s/| 팁=[^|]*|/| 팁=$X88H |/" >> "$L88HP.tip"
+cp "$L88HP" "$L88HP.old"
+printf '%s\n' "$r88hp" | sed "s/| 관측=[^|]*|/| 관측=2020-01-01T00:00:00Z |/" >> "$L88HP.old"
+check "88h: 관측만 다른 판독은 수리 통과를 지키고 팁이 다르거나 낡은 판독은 머지 검사가 거절한다" \
+  "$(mc88h "$L88HP.obs")|$(mc88h "$L88HP.tip")|$(mc88h "$L88HP.old")" "0|-|3|-|3|-"
+
+# 수리 통과의 거절 대조 — 사건이 지목한 체크가 이 머리에서 통과하지 않았거나(실패만, 건너뜀),
+# 호스트의 사건 목록 지문이 매니페스트의 것과 다르면 판정 불가 다.
+L88HP1=$(l88h repair-nopass); tr88h "$L88HP1"; lg88h '1 가'
+L88HP2=$(l88h repair-skipped); tr88h "$L88HP2"
+L88HP3=$(l88h repair-badsha); M88H_USE="$M88HZ" tr88h "$L88HP3"
+check "88h: 사건의 체크가 성공으로 끝나지 않았거나 사건 지문이 다르면 수리 통과가 아니라 판정 불가 다" \
+  "$(pm88h "$L88HP1" >/dev/null; mt88h "$L88HP1")|$(rn88h 'gate (2)' skipped; pm88h "$L88HP2" >/dev/null; mt88h "$L88HP2")|$(lg88h '1 가'; rn88h 'gate (2)' success; M88H_USE="$M88HZ" pm88h "$L88HP3" >/dev/null; mt88h "$L88HP3")" \
+  "대조|판정 불가|1|-|대조|판정 불가|1|-|대조|판정 불가|1|-"
+
+# 머지 검사는 판정 전에 판독 행을 갱신한다 — 원장의 행이 아직 옛 판독이어도 새 파일을 읽는다.
+mcv88h_in() { verb=act; GATE_SURFACE=외부상태변경; gate_check_merge_checks S 머지; printf '%s' "${GATE_PARK_CELL:--}"; }
+mcv88h() {
+  local out rc=0
+  out=$( ( export GATE_PACE_ROOT="$P88H" XDG_STATE_HOME="$S88H"
+           lsr_in Linux "$1" - lsr_rp_in "${M88H_USE:-$M88H}" mcv88h_in ) 2>/dev/null) || rc=$?
+  printf '%s|%s' "$rc" "${out:--}"
+}
+cp "$L88HP" "$L88HP.fresh"
 mf88h 빨강 "$(sg88h "$S1_88H" "$S2_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
+check "88h: 머지 검사는 낡은 판독 행을 먼저 갱신하고 움직인 판독으로 수리 통과를 거절한다" \
+  "$(nm88h "$L88HP.fresh")|$(mcv88h "$L88HP.fresh")|$(nm88h "$L88HP.fresh")" "1|3|-|2"
 tr88h "$L88HP"
 check "88h: 판독이 움직이면 수리 통과는 다시 대조된다" "$(n88h "$L88HP")|$(mc88h "$L88HP")" "CI 대조|3|-"
 M88H_USE=""
+
+# 결론 목록은 거부 기본값이다 — 목록에 없는 결론(startup_failure)도 실패로 세어 서명을 읽는다.
+mf88h 빨강 "$(sg88h "$S1_88H")"
+L88HC=$(l88h concl); tr88h "$L88HC"; lg88h '1 가'
+rn88h lint startup_failure
+check "88h: 낯선 결론의 체크도 실패로 세어 그 서명이 초과 를 만든다" \
+  "$(pm88h "$L88HC")|$(lsr_last_fields "$L88HC" 'CI 처분' 결과)" "0|초과"
+
+# gh 호출 한도 — 한도를 넘긴 읽기는 버리고 판정 불가 로 적는다. 한도가 없었다면 같은 읽기가
+# 늦게라도 답해 부분집합 이 되므로, 결과가 둘을 가른다.
+L88HTO=$(l88h timeout); tr88h "$L88HTO"; lg88h '1 가'
+check "88h: 한도를 넘긴 gh 읽기는 판정 불가 이다" \
+  "$(GS88H=1 GH88H_SLOW=8 pm88h "$L88HTO")|$(lsr_last_fields "$L88HTO" 'CI 처분' 결과)" "0|판정 불가"
 
 # 수리 런 인가 — 사람의 인가는 수리 사건 행이 없으면 그대로다.
 GR88H="$D88H/grant.md"
@@ -49610,6 +49697,17 @@ M88HG="$D88H/manifest-repair-push.md"
 check "88h: 수리 런 인가는 동의 문면·절단점·사전 인가 형태를 묶고 사람 인가는 그대로다" \
   "$(M88H_USE="$M88HG" q88h "$L88H0" gr88h_in "$CON88H" 머지)|$(M88H_USE="$M88HR" q88h "$L88H0" gr88h_in "${CON88H%의}" 머지)|$(M88H_USE="$M88HR" q88h "$L88H0" gr88h_in "$CON88H" 배포)|$(M88H_USE="$M88HX" q88h "$L88H0" gr88h_in "$CON88H" 머지)|$(q88h "$L88H0" gr88h_in '사람 인가' 배포)" \
   "0|3|3|3|0"
+M88HE="$D88H/manifest-repair-empty.md"
+{ cat "$M88HR"; printf -- '- `사전 인가` | 사유=형태 없는 행\n'; } > "$M88HE"
+check "88h: 형태가 없는 사전 인가 행은 수리 런 인가를 막지 않는다" \
+  "$(M88H_USE="$M88HE" q88h "$L88H0" gr88h_in "$CON88H" 머지)" "0"
+
+# 수리 런의 PUT 은 제 저장소 PR 의 머지뿐이다 — 다른 PUT 경로와 다른 저장소는 승인으로 돈다.
+po88h_in() { local rc=0; gate_repair_put_outside "$@" || rc=$?; printf '%s' "$rc"; }
+po88h() { M88H_USE="$M88HR" q88h "$L88H0" po88h_in "$@"; }
+check "88h: 수리 런의 PUT 은 repos/<slug>/pulls/<n>/merge 만 열고 다른 경로·저장소·비숫자 번호는 밖이다" \
+  "$(po88h gh api -X PUT repos/Nharu/cc-cmds/pulls/12/merge)|$(po88h gh api --method=PUT /repos/Nharu/cc-cmds/pulls/12/merge -f merge_method=squash)|$(po88h gh api -X PUT repos/Nharu/cc-cmds/contents/a.txt -f content=x)|$(po88h gh api -X PUT repos/Other/repo/pulls/12/merge)|$(po88h gh api -XPUT repos/Nharu/cc-cmds/pulls/x/merge)|$(po88h gh api repos/Nharu/cc-cmds/pulls/12)|$(M88H_USE="$M88H" q88h "$L88H0" po88h_in gh api -X PUT repos/Nharu/cc-cmds/contents/a.txt)" \
+  "1|1|0|0|0|1|1"
 
 # 교대 깨움 — 빨강 판독의 열린 사건에서 master 대기 로 선 세그먼트. 판독이 초록이 되고
 # 그 사건이 세그먼트 베이스 뒤의 커밋으로 해소되면 중계가 깨고 다음은 master 재합류 다.
@@ -49706,7 +49804,7 @@ check "88h: 대조 행이 없는 진행 중 판독은 열린 사건이 있으면
 # 수리 통과 뒤에 판독이 진행 중으로 바뀐다 — 정착하기 전에는 머지하지 않고 기다린다.
 M88H_USE="$M88HR"
 mf88h 빨강 "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
-L88HK=$(l88h repair-unsettled); tr88h "$L88HK"; lg88h '1 가'
+L88HK=$(l88h repair-unsettled); tr88h "$L88HK"; lg88h '1 가'; rn88h 'gate (2)' success
 pm88h "$L88HK" >/dev/null
 n88h_k1=$(n88h "$L88HK")
 TIP88H="$X88H" mf88h '진행 중' "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"

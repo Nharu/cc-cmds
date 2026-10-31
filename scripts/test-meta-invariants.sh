@@ -1137,6 +1137,13 @@ if grep -qF -- 'and for `master 수리 불가` no act at all' "$RS_CORPUS"; then
 else
   bad "교대 사본의 재시도 목록" "「master 수리 불가」가 없다"
 fi
+# 리드 사본도 교대 사본처럼 shift-halt 로 멈춘다 — 세그먼트 park 는 대표 표지를 다음 대기
+# 세그먼트로 넘겨 같은 사건의 park 와 질문을 잇달아 낳는다.
+if grep -qF -- 'Stop with `shift-halt` at site `master 수리 불가`' "$AP_ROUTER"; then
+  ok "리드 사본이 「master 수리 불가」에서 shift-halt 로 멈춘다"
+else
+  bad "리드 사본의 master 수리 불가" "「Stop with \`shift-halt\` at site \`master 수리 불가\`」가 없다"
+fi
 if grep -qF -- 'the refused act for `대상 훅 거절`' "$RS_CORPUS"; then
   ok "교대 사본의 재시도 목록이 「대상 훅 거절」의 거절된 행위를 싣는다"
 else

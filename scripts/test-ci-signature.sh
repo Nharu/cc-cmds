@@ -444,5 +444,70 @@ else
   printf 'SKIP: 9 출력 동기를 아는 make(GNU make 4.0 이상)가 없어 rest-shard 레시피 사례를 돌리지 않았다\n'
 fi
 
+# ---------------------------------------------------------------------------
+# 10. The count agrees with the names; test-gate's verdict line; every escape.
+# ---------------------------------------------------------------------------
+# Guarded: the suite counted three failures and printed two names.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-gate.sh'
+  printf '%s\n' 'FAIL: 1 가 — x'
+  printf '%s\n' 'FAIL: 2 나 — y'
+  printf '%s\n' 'test-gate: 0 passed, 3 failed'
+  sg_end scripts/test-gate.sh 1
+} > "$WORK/k1.log"
+out=$(extract 'gate-shards (1)' "$WORK/k1.log")
+check "10 가드 경로 — 합계가 FAIL 이름보다 많으면 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+# Guarded: two failures under one name — the list would carry one.
+{
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-gate.sh'
+  printf '%s\n' 'FAIL: 1 가 — x'
+  printf '%s\n' 'FAIL: 1 가 — y'
+  printf '%s\n' 'test-gate: 0 passed, 2 failed'
+  sg_end scripts/test-gate.sh 1
+} > "$WORK/k2.log"
+out=$(extract 'gate-shards (1)' "$WORK/k2.log")
+check "10 가드 경로 — 한 이름의 두 실패는 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+# Unguarded: the same two shapes, and the agreeing control.
+printf '%s\n' 'FAIL: 1 가 — x' '0 passed, 2 failed' > "$WORK/k3.log"
+out=$(extract 'rest-tests (1)' "$WORK/k3.log")
+check "10 무가드 경로 — 합계가 FAIL 이름보다 많으면 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+printf '%s\n' 'FAIL: 1 가 — x' 'FAIL: 1 가 — y' '0 passed, 2 failed' > "$WORK/k4.log"
+out=$(extract 'rest-tests (1)' "$WORK/k4.log")
+check "10 무가드 경로 — 한 이름의 두 실패는 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+printf '%s\n' 'FAIL: 1 가 — x' 'FAIL: 2 나 — y' '0 passed, 2 failed' > "$WORK/k5.log"
+check "10 무가드 경로 — 수가 맞으면 단언 정밀도" "$(extract 'rest-tests (1)' "$WORK/k5.log")" \
+  "$(printf '%s\n' '정밀도: 단언' 'rest-tests|1 가' 'rest-tests|2 나')"
+
+# test-gate's verdict line: swallowed, crash, noise and probe say the count or
+# the cut is wrong; fail and pass do not.
+for v in swallowed crash noise probe; do
+  { cat "$WORK/a1.log"; printf 'test-gate: 판정=%s 범위=x — 이유 (rc=1)\n' "$v"; } > "$WORK/k6-$v.log"
+  out=$(extract 'gate-shards (1)' "$WORK/k6-$v.log")
+  check "10 test-gate 판정=$v 줄은 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+done
+{ cat "$WORK/a1.log"; printf '%s\n' '##[error]test-gate 판정=swallowed 범위=x — 이유'; } > "$WORK/k7.log"
+out=$(extract 'gate-shards (1)' "$WORK/k7.log")
+check "10 저장된 로그의 ##[error] 판정 줄도 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+{ cat "$WORK/k5.log"; printf '%s\n' 'test-gate: 판정=crash 범위=x — 이유'; } > "$WORK/k7b.log"
+out=$(extract 'rest-tests (1)' "$WORK/k7b.log")
+check "10 무가드 경로의 판정 줄도 단계 정밀도" "${out%%$'\n'*}" "정밀도: 단계"
+{ cat "$WORK/a1.log"; printf '%s\n' 'test-gate: 판정=fail 범위=x — 단언이 실패했습니다'; } > "$WORK/k8.log"
+check "10 판정=fail 줄은 단언 정밀도를 지킨다" "$(extract 'gate-shards (1)' "$WORK/k8.log")" \
+  "$(extract 'gate-shards (1)' "$WORK/a1.log")"
+
+# Escapes other than a colour code: a hyperlink (OSC 8, ended by ST and by BEL),
+# a control sequence with a private parameter, and a two-byte escape. Each sits
+# at the head of a line it would otherwise hide.
+E=$'\033'; B=$'\007'
+{
+  printf '%s\n' "${E}]8;;https://x${E}\\bash scripts/suite-guard.sh scripts/test-gate.sh${E}]8;;${E}\\"
+  printf '%s\n' "${E}[?25l${E}(BFAIL: 1 가 — x"
+  printf '%s\n' "${E}]0;title${B}FAIL: 2 나 — y"
+  printf '%s\n' "${E}[1;31mtest-gate: 0 passed, 2 failed${E}[0m"
+  printf '%s\n' "${E}=$(sg_end scripts/test-gate.sh 1)"
+} > "$WORK/k9.log"
+check "10 CSI 밖의 ESC 시퀀스도 지우고 단언 정밀도로 읽는다" "$(extract 'gate-shards (1)' "$WORK/k9.log")" \
+  "$(printf '%s\n' '정밀도: 단언' 'gate-shards|test-gate.sh|1 가' 'gate-shards|test-gate.sh|2 나')"
+
 printf '\ntest-ci-signature: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

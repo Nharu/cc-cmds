@@ -800,7 +800,9 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '--kind ci-match' \
     '-- 대조 <head sha>' \
     "'master 대기=<id>'" \
-    '부류=master 재합류'; do
+    '부류=master 재합류' \
+    "the snapshot's \`master 재합류\` element carries it as \`베이스\`, beside \`판정\`, both read from the latest \`베이스 판정\` row" \
+    "\`일치\` → dispatch nothing; read \`다음\` again — a HEAD whose last check reads \`일치\` has nothing to take in"; do
     if grep -qF -- "$lit" "$f"; then
       ok "$who 사본이 CI 갈래 리터럴을 싣는다: $lit"
     else

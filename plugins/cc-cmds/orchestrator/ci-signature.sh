@@ -70,6 +70,10 @@
 #   - every suite that ended with a non-zero rc printed at least one `FAIL:`
 #     line and its total line — a suite that died with no `FAIL:` line, or
 #     after some of them, is otherwise hidden by its neighbours;
+#   - every suite's `failed` count, summed over its total lines, equals the
+#     number of distinct `FAIL:` names it printed — a failure counted with no
+#     line of its own, or two failures under one name, would leave the list
+#     short;
 #   - no make error line (`make[<n>]: *** [<target>] …`) names a target other
 #     than a `run/<suite>` goal, unless a deeper make's error line came before
 #     it — that is the recursive make passing a failure up. The same shard runs
@@ -89,9 +93,16 @@
 # A `<name> self-test: <n> passed, …` total comes from such an unwrapped goal,
 # so it is never taken as the total of the one wrapped suite open beside it.
 #
-# A log with no suite-guard line is one suite: it needs one total line. A total
-# line is a line that is a total and nothing else, `[<name>: ]<n> passed, <m>
-# failed[, …]`, never a `FAIL:` line whose detail quotes one. `--truncated`,
+# A log with no suite-guard line is one suite: it needs one total line, and the
+# `failed` counts of its total lines must sum to its number of distinct `FAIL:`
+# names. A total line is a line that is a total and nothing else, `[<name>: ]<n>
+# passed, <m> failed[, …]`, never a `FAIL:` line whose detail quotes one. In
+# either shape, a `test-gate: 판정=<v>` line (or its `::error::`/`##[error]`
+# form) whose verdict is `swallowed`, `crash`, `noise` or `probe` fails the
+# check: test-gate says there the count or the cut is not to be trusted. Every
+# escape sequence (control, operating-system command and the rest) is removed
+# before a line is read, so colour or a hyperlink does not hide a line's
+# opening. `--truncated`,
 # which the gate passes when it cut the log at its byte cap, fails the check
 # outright: a cut between two suites leaves nothing in the kept part that says
 # one is missing.
@@ -187,13 +198,36 @@ cs_read_fail_lines() {
     BEGIN {
       SG = "bash scripts/suite-guard.sh "
       END_MARK = "]: \354\242\205\353\243\214 rc="
+      # `판정=` in UTF-8, so the source stays ASCII under the C locale.
+      VERDICT = "\355\214\220\354\240\225="
+      # Every escape sequence a terminal or a runner may write, in the order
+      # that keeps one from leaving a piece of another: an operating-system
+      # command (ended by BEL or ST, or by nothing when cut), a control
+      # sequence with its parameter and intermediate bytes, any other
+      # two-or-more-byte escape, then a lone ESC.
+      OSC_RE = "\033][^\007\033]*(\007|\033\\\\)?"
+      CSI_RE = "\033\\[[0-?]*[ -/]*[@-~]"
+      ESC_RE = "\033[ -/]*[0-~]"
     }
     {
       sub(/\r$/, "")
       if (NR == 1) sub(/^\357\273\277/, "")
-      gsub(/\033\[[0-9;]*[A-Za-z]/, "")
+      gsub(OSC_RE, ""); gsub(CSI_RE, ""); gsub(ESC_RE, ""); gsub(/\033/, "")
       sub(/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]+Z /, "")
       line = $0
+      # The verdict test-gate prints last: one that says the count itself is
+      # wrong, the suite crashed, the cut broke or the probe failed says the
+      # FAIL lines above it are not all of the failures.
+      j = line
+      if (substr(j, 1, 9) == "::error::" || substr(j, 1, 9) == "##[error]") j = substr(j, 10)
+      if (substr(j, 1, 11) == "test-gate: ") j = substr(j, 12)
+      else if (substr(j, 1, 10) == "test-gate ") j = substr(j, 11)
+      else j = ""
+      if (j != "" && substr(j, 1, length(VERDICT)) == VERDICT) {
+        v = substr(j, length(VERDICT) + 1); sub(/ .*$/, "", v)
+        if (v == "swallowed" || v == "crash" || v == "noise" || v == "probe") broken = 1
+        next
+      }
       if (substr(line, 1, length(SG)) == SG) {
         k = substr(line, length(SG) + 1); sub(/[ \t]+$/, "", k)
         if (!(k in open)) { nk++; keys[nk] = k; open[k] = 0 }
@@ -259,24 +293,36 @@ cs_read_fail_lines() {
           if (k == "") { unattributed = 1; out[nf] = name; next }
           fails[k]++
           out[nf] = base(k) "|" name
+          if (!((k, name) in seenk)) { seenk[k, name] = 1; dist[k]++ }
         } else {
           prefail = 1
           out[nf] = (suite != "") ? suite "|" name : name
+          if (!(out[nf] in seenu)) { seenu[out[nf]] = 1; ndist++ }
         }
         next
       }
       if (line ~ /^([A-Za-z0-9_.-]+( self-test)?: )?[0-9]+ passed, [0-9]+ failed([,( ].*)?$/) {
         total = 1
-        if (guarded && line !~ /^[A-Za-z0-9_.-]+ self-test: /) { k = sole(); if (k != "") totals[k] = 1 }
+        match(line, /[0-9]+ failed/); m = substr(line, RSTART, RLENGTH); sub(/ .*$/, "", m); m += 0
+        if (guarded) {
+          if (line !~ /^[A-Za-z0-9_.-]+ self-test: /) { k = sole(); if (k != "") { totals[k] = 1; tfail[k] += m } }
+        } else {
+          tsum += m
+        }
       }
     }
     END {
-      ok = total
+      # THE COUNT MUST AGREE WITH THE NAMES. A failure the suite counted but
+      # printed no FAIL line for, or two failures printed under one name, leave
+      # the signature list short of the failures, and a short list reads as a
+      # subset of master.
+      ok = total && !broken && (tsum + 0) == (ndist + 0)
       if (guarded) {
         ok = !broken && !unattributed && !prefail && !unguarded_failed && nopen == 0
         for (i = 1; ok && i <= nk; i++) {
           k = keys[i]
           if ((k in failed_rc) && (!fails[k] || !(k in totals))) ok = 0
+          if ((tfail[k] + 0) != (dist[k] + 0)) ok = 0
         }
       }
       if (ok && nlisted && mkerr) {
