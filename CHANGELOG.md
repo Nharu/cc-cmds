@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.14.2] - 2026-10-31
+## [3.14.3] - 2026-10-31
 
 대상 훅의 긴 거절 문면 하나가 `대상 거절` 행을 1024 바이트 상한 너머로 밀어, 그 런의 게이트 호출이 모두 같은 정지로 끝나던 결함을 고친다. 행은 늘 상한 안에 맞춰 쓰고, 행이 될 수 없는 배수 단위는 격리하며, 교대가 게이트 정지로 죽으면 그 문면이 무기록 행에 남고, 좌석은 막힌 배수를 한 번 풀고 이어 간다.
 
@@ -20,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 거절 행은 명령과 문면을 고정 폭으로 잘랐을 뿐 행 전체 길이를 재지 않았다. 긴 루트 경로와 한글 문면이 겹치면 행이 상한을 넘어 `die` 했고, 거절 기록은 그 자리에 남아 다음 호출이 같은 기록을 다시 만나 다시 멈췄다. 교대는 인계 없이 죽고 무기록 행에는 원인이 없었으며, 좌석의 행위까지 같은 정지에 막혀 런이 사람 없이는 나아가지 못했다.
+
+## [3.14.2] - 2026-11-01
+
+무인 런이 띄우는 스테이지 리드·라우터 시프트·단발 판단 호출을 메인 대화 프롬프트 캐시 수명 5분으로 기동한다. 지금까지는 어디서도 수명을 세우지 않아 구독 계정의 자동값(1시간)을 물려받았고, 요청 사이가 거의 비지 않는데도 단가가 높은 1시간 캐시 쓰기를 했다.
+
+### Fixed
+
+- **캐시 수명 값 표** — `run.sh` 의 effort·model 표 옆에 `stage_cache_ttl_of`·`stage_cache_ttl_env` 를 더했다. 호스트 변수 `CC_ORCH_PROMPT_CACHE_TTL` 이 없거나 비었거나 `5m` 이면 `5m`, `1h` 면 `1h`, `auto` 면 CLI 변수를 지워 CLI 자신의 규칙에 맡긴다. 그 밖의 값은 무시하고 `5m` 이다. 게이트는 run.sh 를 소싱하므로 표는 한 곳에만 있다.
+- **네 기동 지점** — 게이트의 스테이지 기동(`gate_verb_supervise_stage`, 새 기동과 재부착 모두)과 시프트 기동(`gate_launch_shift`), 드라이버의 스테이지 스폰 서브셸, 단발 판단 호출 다섯을 모두 지나는 `judgment_call` 이 CLI 직전에 `CLAUDE_CODE_PROMPT_CACHE_TTL` 을 세우거나 지운다. 기동만을 위한 프로세스·서브셸 안에서 하므로 드라이버와 좌석이 부른 게이트의 환경은 바뀌지 않는다. 서브에이전트 수명과 원장 형식은 그대로다.
+- **시험** — test-gate 가 값 표와 헬퍼, 게이트의 스테이지·시프트 기동 환경, 게이트를 거친 판단 호출의 환경, 드라이버 스폰 본문의 헬퍼 호출을 단언하고, 드라이버 시험이 드라이버 스폰과 판단 호출의 실제 기동 환경을 단언한다.
+
+### Post-install notes
+
+- 1시간으로 되돌리려면 런을 띄우는 셸에 `CC_ORCH_PROMPT_CACHE_TTL=1h` 를, CLI 자동값에 맡기려면 `CC_ORCH_PROMPT_CACHE_TTL=auto` 를 세운다.
 
 ## [3.14.1] - 2026-10-31
 
