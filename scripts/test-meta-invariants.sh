@@ -937,6 +937,34 @@ do
   fi
 done
 
+# A DRAIN STOP IS RELEASED ONCE BY THE SEAT, THEN ASKED. One drain unit the gate
+# cannot turn into a row stops every later act of the run, the seat's included,
+# and the shift dies of it without a handoff. The seat's procedure — read
+# `drain_blocked` or the `무기록` row's `마지막 정지`, call `drain-release` once,
+# relaunch once with `사유=중단`, and otherwise show the stop text and ask without
+# touching the run directory or closing the run — is pinned here, with the
+# exit-code row that sends the seat to it. So is its order: with no marker, the
+# dropped-connection and limit branches take a `무기록` row before its
+# `마지막 정지` can send the seat to a person.
+for lit in \
+  "**A drain stop is released once, then asked.**" \
+  "When it is \`null\`, the dropped-connection and limit branches of the paragraph above come first" \
+  "The run is in this state when \`drain_blocked\` is not \`null\`, or when the last \`handoff[]\` element reading \`\"사유\": \"무기록\"\` carries a \`마지막 정지\` other than \`-\` and \`null\` and neither of those two branches took it." \
+  "call \`gate.sh drain-release --manifest <매니페스트>\` once" \
+  "On \`0\`, issue \`router-shift\` with \`사유=중단\` once more." \
+  "show the stop text verbatim — \`drain_blocked\`'s \`정지 문면\`, or \`마지막 정지\` — and ask the person at this seat" \
+  "Do not move or remove a file under the run directory yourself, and do not close the run as abandoned." \
+  "The release is recorded only by the \`배수 격리 행위자=좌석\` row and in the ledger the morning report reads; raise no notification banner for it." \
+  "**On the seat, read the snapshot's \`drain_blocked\` next**"
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SEAT" || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    ok "좌석 지침이 배수 정지 절차의 「${lit}」을 싣는다"
+  else
+    bad "좌석 지침의 배수 정지 절차" "「${lit}」이 없다"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # 6e-2. The audit dispatch and segment planning are carried by BOTH router copies
 #
