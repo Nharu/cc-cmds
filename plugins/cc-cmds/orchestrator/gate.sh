@@ -363,8 +363,12 @@
 # target's base branch (`git ls-remote`, no fetch), merges the segment's
 # reviewed HEAD with it in an object directory of its own, and writes a
 # `베이스 판정` row: `일치`, `이동` or `충돌` with the conflicted files and
-# whether only the release files conflict. Refused (3) unless the segment's
-# review lets a merge through, and when the base tip is not fetched yet.
+# whether only the release files conflict. The HEAD it judges is the reviewed
+# one, a HEAD with its tree, the renumbering merge of it the gate proves, or a
+# resolution HEAD whose branch change has the reviewed one's patch-id after the
+# release metadata is normalized; the row's `판정 근거` says which. Refused (3)
+# unless the segment's review lets a merge through, and when the base tip is
+# not fetched yet.
 #   gate.sh act --kind remote-check --target <alias> [--segment <id>] \\
 #               --cutpoint 커밋 --surface 읽기 --reach 협업 ...
 # `remote-check` takes nothing after `--`. It reads the remote tip of the
@@ -19131,6 +19135,10 @@ gate_main() {
   # The renumbering merge the merge rule passes is proved by the act itself,
   # below, and by nothing a caller can set.
   unset GATE_META_RESOLVED_HEAD
+  # So is the patch-id same HEAD: the merge act proves it against the base the
+  # segment's latest `베이스 판정` row named, and a value a caller exports would
+  # let a resolution merge nobody proved through the merge rule.
+  unset GATE_PATCH_SAME_HEAD
   GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
   # The rerun act's marker, verdict and runs are set by this process's own
   # precondition and eligibility checks and by nothing a caller exports: a
@@ -25486,12 +25494,264 @@ gate_meta_resolved_export() {
   return 0
 }
 
+# --- patch-id sameness ---------------------------------------------------------
+#
+# A RESOLUTION MERGE THAT CHANGES NOTHING THE REVIEW READ KEEPS THE REVIEW. When
+# the base moves, the resolution merge H has a tree of its own, but the change
+# the branch lays on its base can be the reviewed one line for line. The proof
+# measures each branch diff from its own merge base with the base T — R's from
+# merge-base(R, T), H's from merge-base(H, T) — after normalizing the release
+# metadata a renumbering changes mechanically, and compares their
+# `git patch-id --verbatim`. The id hashes three lines of context on each side,
+# so a base change beside the branch's change fails it and goes to a resolution
+# review; it does not hash the hunk header, so the same change moved to another
+# place with the same context passes. What was taken out of the diff is checked
+# on its own: the version moved by the reviewed grade, and the head changelog
+# entries carry the same body. Every failure is a resolution review — no path
+# that is open today closes.
+GATE_PATCH_WHY=""
+GATE_PATCH_MEMO=""
+GATE_PATCH_MEMO_RC=""
+GATE_PATCH_MEMO_WHY=""
+# The empty tree: the diff reads attributes from it, so a `.gitattributes` in the
+# worktree or the repository root does not change the id between the two places
+# that prove the same merge.
+GATE_PATCH_EMPTY_TREE='4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+gate_patch_readme_strip() {
+  # gate_patch_readme_strip <in> <out> — <in> with the lines between each
+  # generated-block marker pair removed and the marker lines kept; 1 when no
+  # pair is whole (exactly one start line before exactly one end line), so the
+  # caller keeps the file as it is.
+  awk '
+    NR == FNR {
+      if ($0 == "<!-- SKILLS_TABLE_START -->") { ts++; tsl = FNR }
+      if ($0 == "<!-- SKILLS_TABLE_END -->") { te++; tel = FNR }
+      if ($0 == "<!-- SKILLS_OPTIONS_START -->") { os++; osl = FNR }
+      if ($0 == "<!-- SKILLS_OPTIONS_END -->") { oe++; oel = FNR }
+      next
+    }
+    FNR == 1 {
+      t = (ts == 1 && te == 1 && tsl < tel); o = (os == 1 && oe == 1 && osl < oel)
+      if (!t && !o) exit 1
+    }
+    t && FNR > tsl && FNR < tel { next }
+    o && FNR > osl && FNR < oel { next }
+    { print }' "$1" "$1" > "$2"
+}
+
+gate_patch_same() {
+  # gate_patch_same <dir> <R> <H> <T> — 0 when H carries R's branch change onto
+  # T unchanged; 1 with the reason in `GATE_PATCH_WHY` otherwise. The checks, in
+  # this order, ending at the first that fails:
+  #   1. H and R resolve and H is not R;
+  #   2. R is an ancestor of H;
+  #   3. MB_R = merge-base(R, T) and MB_H = merge-base(H, T) resolve;
+  #   4. the normalized trees of MB_R, R, MB_H and H can be built: plugin.json's
+  #      one version line reads 0.0.0, the changelog of R (of H) is MB_R's (MB_H's)
+  #      when it is that one with one entry added on top — the entry taken off
+  #      is checked in 7 — and README.md's generated blocks are empty;
+  #   5. diff(N(MB_R), N(R)) and diff(N(MB_H), N(H)) are made by one fixed
+  #      command, and `git patch-id --verbatim` reads each;
+  #   6. both ids are non-empty and equal;
+  #   7. the metadata taken out agrees: the versions moved by the reviewed grade,
+  #      the head entries were taken off on both sides or neither, carry the
+  #      same body and name their own versions, and a renumbered head entry
+  #      names no version in its body.
+  # A git command that fails is the step-5 reason, never an empty diff. The
+  # judgment leaves nothing behind: it writes into an isolated object directory,
+  # opened here when the caller did not. One gate call proves one (R, H, T) once:
+  # the last answer is kept for the same arguments.
+  local dir=$1 r=$2 h=$3 t=$4 key w rc=0 opened=0
+  GATE_PATCH_WHY=""
+  key="$dir $r $h $t"
+  if [ -n "$GATE_PATCH_MEMO" ] && [ "$GATE_PATCH_MEMO" = "$key" ]; then
+    GATE_PATCH_WHY=$GATE_PATCH_MEMO_WHY
+    return "$GATE_PATCH_MEMO_RC"
+  fi
+  if [ -z "$GATE_ISO_DIR" ]; then
+    gate_iso_open "$dir" || { GATE_PATCH_WHY="git diff or git patch-id failed"; return 1; }
+    opened=1
+  fi
+  w=$(mktemp -d "${TMPDIR:-/tmp}/gate-patch.XXXXXX") || {
+    [ "$opened" = 0 ] || gate_iso_close
+    GATE_PATCH_WHY="git diff or git patch-id failed"; return 1
+  }
+  # A subshell so every early return removes the scratch directory.
+  (
+    fail() { printf '%s' "$1" > "$w/why"; exit 1; }
+    gitf() { gate_iso_git "$dir" "$@" 2>/dev/null || fail "git diff or git patch-id failed"; }
+    # logpair <base> <end> <tag> — the base's changelog blob when the end's is
+    # the base's with one entry on top (that entry left in <tag>.head), nothing
+    # when the two are the same bytes.
+    logpair() {
+      local b=$1 e=$2 tag=$3 bb eb why
+      bb=$(gitf ls-tree "$b" -- "$GATE_META_LOG" | awk '{ print $3 }') || exit 1
+      eb=$(gitf ls-tree "$e" -- "$GATE_META_LOG" | awk '{ print $3 }') || exit 1
+      [ "$bb" != "$eb" ] || return 0
+      why="the normalized tree of $e cannot be built: CHANGELOG.md is not one head entry over the base"
+      [ -n "$bb" ] && [ -n "$eb" ] || fail "$why"
+      gitf cat-file blob "$bb" > "$w/$tag.blog" || exit 1
+      gitf cat-file blob "$eb" > "$w/$tag.elog" || exit 1
+      gate_meta_log_split "$w/$tag.blog" "$w/$tag.bpre" "$w/$tag.bhead" "$w/$tag.brest" || fail "$why"
+      gate_meta_log_split "$w/$tag.elog" "$w/$tag.epre" "$w/$tag.head" "$w/$tag.erest" || fail "$why"
+      cmp -s "$w/$tag.bpre" "$w/$tag.epre" || fail "$why"
+      cat "$w/$tag.bhead" "$w/$tag.brest" > "$w/$tag.bentries"
+      cmp -s "$w/$tag.erest" "$w/$tag.bentries" || fail "$why"
+      printf '%s' "$bb"
+    }
+    # norm <rev> <tag> [<changelog blob>] — the normalized tree of <rev>.
+    norm() {
+      local rev=$1 tag=$2 lb=${3:-} idx="$w/$2.index" ent mode blob n
+      GIT_INDEX_FILE="$idx" gitf read-tree "$rev^{tree}"
+      ent=$(gitf ls-tree "$rev" -- "$GATE_META_PLUGIN") || exit 1
+      if [ -n "$ent" ]; then
+        mode=${ent%% *}; blob=$(printf '%s' "$ent" | awk '{ print $3 }')
+        gitf cat-file blob "$blob" > "$w/$tag.json"
+        n=$(awk '/^[ \t]*"version"[ \t]*:[ \t]*"[0-9]+\.[0-9]+\.[0-9]+"[ \t]*,?[ \t]*$/ { n++ } END { print n + 0 }' "$w/$tag.json")
+        [ "$n" = 1 ] || fail "the normalized tree of $rev cannot be built: plugin.json has not exactly one version line"
+        GATE_FEQ_V='0.0.0' awk '
+          /^[ \t]*"version"[ \t]*:[ \t]*"[0-9]+\.[0-9]+\.[0-9]+"[ \t]*,?[ \t]*$/ {
+            i = index($0, "\""); pre = substr($0, 1, i); rest = substr($0, i + 1)
+            j = index(rest, ":"); pre = pre substr(rest, 1, j); rest = substr(rest, j + 1)
+            k = index(rest, "\""); pre = pre substr(rest, 1, k); rest = substr(rest, k + 1)
+            l = index(rest, "\""); print pre ENVIRON["GATE_FEQ_V"] substr(rest, l); next }
+          { print }' "$w/$tag.json" > "$w/$tag.njson"
+        blob=$(gitf hash-object -w --no-filters "$w/$tag.njson") || exit 1
+        GIT_INDEX_FILE="$idx" gitf update-index --cacheinfo "$mode,$blob,$GATE_META_PLUGIN"
+      fi
+      if [ -n "$lb" ]; then
+        ent=$(gitf ls-tree "$rev" -- "$GATE_META_LOG") || exit 1
+        GIT_INDEX_FILE="$idx" gitf update-index --cacheinfo "${ent%% *},$lb,$GATE_META_LOG"
+      fi
+      ent=$(gitf ls-tree "$rev" -- README.md) || exit 1
+      if [ -n "$ent" ]; then
+        mode=${ent%% *}; blob=$(printf '%s' "$ent" | awk '{ print $3 }')
+        gitf cat-file blob "$blob" > "$w/$tag.readme"
+        if gate_patch_readme_strip "$w/$tag.readme" "$w/$tag.nreadme"; then
+          blob=$(gitf hash-object -w --no-filters "$w/$tag.nreadme") || exit 1
+          GIT_INDEX_FILE="$idx" gitf update-index --cacheinfo "$mode,$blob,README.md"
+        fi
+      fi
+      GIT_INDEX_FILE="$idx" gitf write-tree
+    }
+    # pid <tree a> <tree b> <tag> — the patch-id of the fixed diff between them.
+    # Every setting that changes the diff's bytes is pinned on the command line,
+    # and attributes come from the empty tree and no user or system file. The
+    # submodule settings are pinned too: `diff.submodule=log|diff` prints a
+    # gitlink as one `Submodule …` line with no `diff --git` header, where
+    # `git patch-id` ends the patch and hashes the rest as a second one, and an
+    # `ignore = all` from any config or `.gitmodules` drops the gitlink from the
+    # diff. The whole diff is one patch, so an output of more than one id is a
+    # step-5 failure rather than a first line read alone.
+    pid() {
+      GIT_ATTR_NOSYSTEM=1 gitf -c core.attributesFile=/dev/null -c core.quotePath=true \
+        -c diff.noprefix=false -c diff.mnemonicPrefix=false -c diff.suppressBlankEmpty=false \
+        -c diff.submodule=short -c diff.ignoreSubmodules=none \
+        -c patchid.stable=false -c patchid.verbatim=true --attr-source="$GATE_PATCH_EMPTY_TREE" \
+        diff --no-ext-diff --no-textconv --no-color --no-renames --no-relative \
+        --binary -U3 --diff-algorithm=myers --indent-heuristic --inter-hunk-context=0 -O/dev/null \
+        --submodule=short --ignore-submodules=none \
+        "$1" "$2" > "$w/$3.diff"
+      gitf patch-id --verbatim < "$w/$3.diff" > "$w/$3.pid"
+      [ "$(awk 'END { print NR }' "$w/$3.pid")" -le 1 ] || fail "git diff or git patch-id failed"
+      awk 'NR == 1 { print $1 }' "$w/$3.pid"
+    }
+    local_r=$(gate_iso_git "$dir" rev-parse --verify --quiet "$r^{commit}" 2>/dev/null) || fail "the HEAD or the reviewed HEAD does not resolve"
+    local_h=$(gate_iso_git "$dir" rev-parse --verify --quiet "$h^{commit}" 2>/dev/null) || fail "the HEAD or the reviewed HEAD does not resolve"
+    [ -n "$local_r" ] && [ -n "$local_h" ] || fail "the HEAD or the reviewed HEAD does not resolve"
+    [ "$local_r" != "$local_h" ] || fail "the HEAD is the reviewed HEAD"
+    gate_iso_git "$dir" merge-base --is-ancestor "$local_r" "$local_h" >/dev/null 2>&1 || fail "R is not an ancestor of H"
+    mb_r=$(gate_iso_git "$dir" merge-base "$local_r" "$t" 2>/dev/null) || fail "a merge base with the base does not resolve"
+    mb_h=$(gate_iso_git "$dir" merge-base "$local_h" "$t" 2>/dev/null) || fail "a merge base with the base does not resolve"
+    [ -n "$mb_r" ] && [ -n "$mb_h" ] || fail "a merge base with the base does not resolve"
+    lb_r=$(logpair "$mb_r" "$local_r" r) || exit 1
+    lb_h=$(logpair "$mb_h" "$local_h" h) || exit 1
+    n_mbr=$(norm "$mb_r" mbr) || exit 1
+    n_r=$(norm "$local_r" r "$lb_r") || exit 1
+    n_mbh=$(norm "$mb_h" mbh) || exit 1
+    n_h=$(norm "$local_h" h "$lb_h") || exit 1
+    id_r=$(pid "$n_mbr" "$n_r" dr) || exit 1
+    id_h=$(pid "$n_mbh" "$n_h" dh) || exit 1
+    [ -n "$id_r" ] && [ -n "$id_h" ] || fail "the branch diff is empty"
+    [ "$id_r" = "$id_h" ] || fail "the branch patch differs from the reviewed one"
+    # 7 — the metadata taken out of the diff.
+    vof() {
+      local ent
+      ent=$(gitf ls-tree "$1" -- "$GATE_META_PLUGIN" | awk '{ print $3 }') || exit 1
+      [ -n "$ent" ] || return 0
+      gitf cat-file blob "$ent" > "$w/v.json"
+      gate_meta_version_of "$w/v.json"
+    }
+    v_mbr=$(vof "$mb_r") || exit 1; v_r=$(vof "$local_r") || exit 1
+    v_mbh=$(vof "$mb_h") || exit 1; v_h=$(vof "$local_h") || exit 1
+    det_r=0; [ -z "$lb_r" ] || det_r=1
+    det_h=0; [ -z "$lb_h" ] || det_h=1
+    if [ -z "$v_mbr" ] && [ -z "$v_r" ] && [ -z "$v_mbh" ] && [ -z "$v_h" ]; then
+      [ "$det_r" = 0 ] && [ "$det_h" = 0 ] || fail "a head entry does not name its version"
+      exit 0
+    fi
+    # Some empty and some not: the bump functions compare integers and would
+    # print an error on an empty one, so they are not called.
+    [ -n "$v_mbr" ] && [ -n "$v_r" ] && [ -n "$v_mbh" ] && [ -n "$v_h" ] || fail "the version is not the reviewed bump"
+    if [ "$v_r" != "$v_mbr" ]; then
+      g=$(gate_meta_bump_grade "$v_mbr" "$v_r")
+      [ -n "$g" ] || fail "the version is not the reviewed bump"
+      [ "$v_h" = "$(gate_meta_bump "$v_mbh" "$g")" ] || fail "the version is not the reviewed bump"
+    else
+      [ "$v_h" = "$v_mbh" ] || fail "the version is not the reviewed bump"
+    fi
+    [ "$det_r" = "$det_h" ] || fail "the head entries differ"
+    if [ "$det_r" = 1 ]; then
+      cmp -s <(awk 'NR > 1' "$w/r.head") <(awk 'NR > 1' "$w/h.head") || fail "the head entries differ"
+      [ "$(gate_meta_head_version "$w/r.head")" = "$v_r" ] || fail "a head entry does not name its version"
+      [ "$(gate_meta_head_version "$w/h.head")" = "$v_h" ] || fail "a head entry does not name its version"
+      if [ "$v_h" != "$v_r" ]; then
+        awk 'NR > 1 && /[0-9]+\.[0-9]+\.[0-9]+/ { bad = 1 } END { exit bad ? 1 : 0 }' "$w/h.head" \
+          || fail "the head entry body names a version"
+      fi
+    fi
+    exit 0
+  ) || rc=$?
+  if [ "$rc" != 0 ]; then
+    rc=1
+    GATE_PATCH_WHY=$(cat "$w/why" 2>/dev/null || printf 'git diff or git patch-id failed')
+  fi
+  rm -rf "$w"
+  [ "$opened" = 0 ] || gate_iso_close
+  GATE_PATCH_MEMO=$key; GATE_PATCH_MEMO_RC=$rc; GATE_PATCH_MEMO_WHY=$GATE_PATCH_WHY
+  return "$rc"
+}
+
+gate_patch_same_export() {
+  # gate_patch_same_export <segment> <HEAD> — THE PATCH-ID SAME MERGE IS JUDGED
+  # HERE AND HANDED TO THE MERGE RULE AS ONE SHA, the way
+  # `gate_meta_resolved_export` hands a renumbering merge: the rule is a
+  # `/bin/sh` checker that reads no ledger and does not know the base, so the
+  # gate proves H against the base the segment's latest `베이스 판정` row named
+  # and exports the HEAD it proved. Nothing is exported otherwise; the gate's
+  # entry has already unset whatever a caller passed.
+  local seg=$1 h=$2 r t wt
+  [ -n "$h" ] || return 0
+  r=$(gate_base_review_head "$seg") || return 0
+  [ "$h" != "$r" ] || return 0
+  t=$(gate_row_field "$(gate_base_last_row "$seg")" '베이스')
+  wt=$(gate_segment_worktree "$seg")
+  if [ -n "$t" ] && gate_patch_same "$wt" "$r" "$h" "$t"; then
+    GATE_PATCH_SAME_HEAD=$h
+    export GATE_PATCH_SAME_HEAD
+  fi
+  return 0
+}
+
 gate_base_next() {
   # gate_base_next <segment> <다음 of the table> — the overlay. First the subject
   # the base checks judge, the way base-check picks it:
   #   HEAD is R, or R's tree                      R
   #   HEAD heads an honest renumbering chain      that chain head
   #     of R onto the base a check observed
+  #   HEAD carries R's branch change unchanged    that HEAD
+  #     onto that base (`gate_patch_same`)
   #   HEAD moved past R otherwise                 none — 해소 리뷰
   # Then the latest check: `충돌` of that subject → 베이스 해소 (코드 충돌 수가
   # 3 을 넘으면 베이스 해소 한도), anything else → the table's. The cap reads
@@ -25513,6 +25773,8 @@ gate_base_next() {
     t=$(gate_row_field "$brow" '베이스')
     if [ -n "$t" ] && gate_meta_resolved "$wt" "$r" "$head" "$t"; then
       subj=$head
+    elif [ -n "$t" ] && gate_patch_same "$wt" "$r" "$head" "$t"; then
+      subj=$head
     else
       printf '해소 리뷰'; return 0
     fi
@@ -25529,11 +25791,16 @@ gate_base_check_row() {
   # gate_base_check_row <segment> <alias> <argv…> — the `base-check` arm: judge
   # the segment's R (or the head of its renumbering chain) against the remote's
   # base and write the `베이스 판정` row. At `선머지` R is the worktree tip
-  # (`gate_base_review_head`). Refused with GATE_EXIT_RULE when there
-  # is no R, when HEAD has moved past it, when the remote does not answer or when
-  # its tip is not here yet; nothing is written then.
+  # (`gate_base_review_head`). The subject is R, a HEAD with R's tree, the head
+  # of a renumbering chain of R, or a HEAD that carries R's branch change
+  # unchanged (`gate_patch_same`), tried in that order; the row's `판정 근거`
+  # names which (`R`, `트리동일`, `재번호`, `패치동일`). Refused with
+  # GATE_EXIT_RULE when there is no R, when HEAD has moved past it and none of
+  # those holds, when the remote does not answer or when its tip is not here
+  # yet; nothing is written then.
   # A conflict is `부류=릴리스 메타` only when the subject is R or a proved chain
-  # head (not a HEAD that merely has R's tree — the helper cannot stack on it),
+  # head (not a HEAD that merely has R's tree or R's patch — the helper cannot
+  # stack on it),
   # the subject's merge with T conflicts in at least one path and in the release
   # files alone, and E*(R, T) exists; every other conflict is `일반`. The middle
   # clause keeps a `릴리스 메타` row one the conflict cap never counts.
@@ -25561,8 +25828,10 @@ gate_base_check_row() {
       subj=$head; from='트리동일'
     elif gate_meta_resolved "$wt" "$r" "$head" "$t"; then
       subj=$head; from='재번호'
+    elif gate_patch_same "$wt" "$r" "$head" "$t"; then
+      subj=$head; from='패치동일'
     else
-      warn "the HEAD of $seg ($head) moved past the reviewed $r and is not a renumbering merge of it onto $t ($GATE_META_WHY) — 다음 is 해소 리뷰; review first"
+      warn "the HEAD of $seg ($head) moved past the reviewed $r and is neither a renumbering merge of it onto $t ($GATE_META_WHY) nor its branch change unchanged ($GATE_PATCH_WHY) — 다음 is 해소 리뷰; review first"
       return "$GATE_EXIT_RULE"
     fi
   fi
@@ -25585,7 +25854,7 @@ gate_base_check_row() {
       1) v='충돌'
          cf=$(printf '%s\n' "$mt" | sed '1d' | awk 'NF' | paste -sd, -)
          [ -n "$cf" ] || cf='-'
-         if [ "$from" != '트리동일' ] && gate_base_cf_release_only "$cf" \
+         if [ "$from" != '트리동일' ] && [ "$from" != '패치동일' ] && gate_base_cf_release_only "$cf" \
             && release_meta_expected_tree "$wt" "$r" "$t"; then
            cls='릴리스 메타'
          else
@@ -25601,7 +25870,7 @@ gate_base_check_row() {
   n=$(printf '%s' "$cf" | tr ',' '\n' | gate_count)
   if [ "${#cf}" -gt 400 ]; then cf="$(printf '%s' "$cf" | cut -c1-400)…(${n}개)"; fi
   gate_append '베이스 판정' "세그먼트=$seg" "리뷰 HEAD=$r" "판정 HEAD=$subj" "베이스=$t" \
-    "판정=$v" "충돌 파일=$cf" "부류=$cls" "기록 시각=$(now_iso)"
+    "판정=$v" "충돌 파일=$cf" "부류=$cls" "판정 근거=$from" "기록 시각=$(now_iso)"
   log "베이스 판정 — $seg: $v$( [ "$cls" = '-' ] || printf ' (%s)' "$cls") (다음=$(gate_segment_ci_next "$seg"))"
 }
 
@@ -32619,15 +32888,22 @@ gate_record_row() {
         # without a review. Proved the way the merge act proves it.
         # The other parent has to be the base this segment's latest
         # `베이스 판정` observed, or an ancestor of it: without that base any
-        # commit could stand as the other side.
-        local mmeta=0 mr mt_seen
+        # commit could stand as the other side. When it is not, the tip may
+        # carry the reviewed branch change unchanged onto that base — the
+        # patch-id proof the merge act runs after the renumbering one.
+        local mmeta=0 mpatch=0 mr mt_seen
         if [ "$GATE_CYCLE_COVER_VERDICT" = '덮지 않는다' ] && [ -n "$mtip" ]; then
           mr=$(gate_commit_in "$mwt" "$(gate_row_field "$(gate_segment_last_cycle_row "$seg")" '리뷰 HEAD')" || true)
           mt_seen=$(gate_row_field "$(gate_base_last_row "$seg")" '베이스')
-          if [ -n "$mr" ] && [ "$mr" != "$mtip" ] && [ -n "$mt_seen" ] \
-             && gate_meta_resolved "$mwt" "$mr" "$mtip" "$mt_seen"; then mmeta=1; fi
+          if [ -n "$mr" ] && [ "$mr" != "$mtip" ] && [ -n "$mt_seen" ]; then
+            if gate_meta_resolved "$mwt" "$mr" "$mtip" "$mt_seen"; then
+              mmeta=1
+            elif gate_patch_same "$mwt" "$mr" "$mtip" "$mt_seen"; then
+              mpatch=1
+            fi
+          fi
         fi
-        mc_field="머지 대조=$(gate_merge_check_value "$rpol_eff" "$GATE_CYCLE_COUNT_VERDICT" "$GATE_CYCLE_COVER_VERDICT" "$mmeta")"
+        mc_field="머지 대조=$(gate_merge_check_value "$rpol_eff" "$GATE_CYCLE_COUNT_VERDICT" "$GATE_CYCLE_COVER_VERDICT" "$mmeta" "$mpatch")"
         fc_field="최종 사이클=$GATE_CYCLE_NUMBER"
         set -- "$@" "$mc_field" "$fc_field"
       fi
@@ -37347,7 +37623,9 @@ gate_apply_preconditions() {
   # 4 — M is a two-parent merge of the reviewed head (the obligation's merge
   # commit on a merge-first segment), or of the honest release metadata
   # renumbering merge of it against the base the segment's last `베이스 판정`
-  # row named — the proof the merge act and the merge check use — and the local
+  # row named — the proof the merge act and the merge check use — or, on a
+  # segment that is not merge-first, a merge that carries the reviewed head's
+  # branch change unchanged onto that base (`gate_patch_same`), and the local
   # remote-tracking base already holds it.
   root=$(alias_root "$alias" 2>/dev/null || true)
   [ -n "$root" ] && [ -d "$root" ] || { gate_apply_refuse 4 "대상 ${alias} 의 루트를 찾지 못했습니다"; return $?; }
@@ -37367,10 +37645,20 @@ gate_apply_preconditions() {
         why=""
       else
         why=${GATE_META_WHY:-no answer}
+        # A merge-first segment's reviewed head is its obligation's merge
+        # commit, the worktree tip at the merge, and not a landed merge: a
+        # patch-id branch there would take a tip no obligation covered.
+        if ! gate_segment_merge_first "$seg"; then
+          if gate_patch_same "$root" "$rhfull" "$m2" "$t"; then
+            why=""
+          else
+            why="${why}; patch-id: ${GATE_PATCH_WHY:-no answer}"
+          fi
+        fi
       fi
     fi
     [ -z "$why" ] \
-      || { gate_apply_refuse 4 "머지 커밋의 둘째 부모(${m2:-?})가 ${rhwhat}(${rh:-?})와 같지 않습니다 — 그 커밋의 릴리스 메타 재번호 머지로도 증명되지 않습니다 (${why})"; return $?; }
+      || { gate_apply_refuse 4 "머지 커밋의 둘째 부모(${m2:-?})가 ${rhwhat}(${rh:-?})와 같지 않습니다 — 그 커밋의 릴리스 메타 재번호 머지로도, patch-id 동일로도 증명되지 않습니다 (${why})"; return $?; }
   fi
   ( cd "$root" && git merge-base --is-ancestor "$m" "refs/remotes/origin/$base" ) 2>/dev/null \
     || { gate_apply_refuse 4 "머지 커밋 ${m} 이 로컬 origin/${base} 의 조상이 아닙니다 — 게이트는 fetch 하지 않습니다"; return $?; }
@@ -37908,7 +38196,8 @@ gate_apply_subject_proof() {
   # gate_apply_subject_proof <alias> <segment> <M> — the reviewed head the apply
   # proved M to merge, read from the segment's last `cycle` row the way
   # precondition 4 reads it: M^2 is that head, or the honest release-metadata
-  # renumbering merge of it. Left in GATE_APPLY_PROOF_HEAD on success, and
+  # renumbering merge of it, or — on a segment that is not merge-first — a merge
+  # that carries its branch change unchanged. Left in GATE_APPLY_PROOF_HEAD on success, and
   # GATE_APPLY_PROOF_WHY says why not otherwise. Both are globals, so call it
   # in this shell, not inside `$( )`, where the reason would be lost.
   #
@@ -37949,6 +38238,12 @@ EOF
   if [ -n "$m2" ] && [ "$m2" = "$rhfull" ]; then GATE_APPLY_PROOF_HEAD=$rhfull; return 0; fi
   t=$(gate_row_field "$(gate_base_last_row "$seg")" '베이스')
   if [ -n "$m2" ] && [ -n "$t" ] && gate_meta_resolved "$root" "$rhfull" "$m2" "$t"; then
+    GATE_APPLY_PROOF_HEAD=$rhfull; return 0
+  fi
+  # The patch-id branch takes the same guard as precondition 4: not on a
+  # merge-first segment.
+  if ! gate_segment_merge_first "$seg" && [ -n "$m2" ] && [ -n "$t" ] \
+     && gate_patch_same "$root" "$rhfull" "$m2" "$t"; then
     GATE_APPLY_PROOF_HEAD=$rhfull; return 0
   fi
   GATE_APPLY_PROOF_WHY="고정 커밋 ${m} 의 둘째 부모(${m2:-?})가 ${what}(${rh})로 증명되지 않는다"
@@ -42617,6 +42912,11 @@ gate_verb_act() {
       fi
     fi
     [ "$_mpol" = '선리뷰후머지' ] && gate_meta_resolved_export "$segment" "$mhead"
+    # The patch-id proof runs only when the renumbering one did not stand: one
+    # proved HEAD is enough for the rule.
+    if [ "$_mpol" = '선리뷰후머지' ] && [ -z "${GATE_META_RESOLVED_HEAD:-}" ]; then
+      gate_patch_same_export "$segment" "$mhead"
+    fi
   fi
 
   # WHAT THE ORDER PREDICATE READS. The checker is a separate `/bin/sh` and
@@ -44997,15 +45297,17 @@ EOF
 }
 
 gate_merge_check_value() {
-  # gate_merge_check_value <리뷰 정책> <카운트 판정> <커버리지 판정> [<메타>] —
-  # the `머지 대조` value. Closed set: 충족 · 이월 · 기각 · 메타 해소 ·
-  # 위반(카운트) · 위반(미포함) · 위반(카운트·미포함) · 리뷰 없음 · 판정 불가 ·
-  # 정책 면제.
+  # gate_merge_check_value <리뷰 정책> <카운트 판정> <커버리지 판정> [<메타>]
+  # [<패치>] — the `머지 대조` value. Closed set: 충족 · 이월 · 기각 · 메타 해소 ·
+  # 패치 동일 · 위반(카운트) · 위반(미포함) · 위반(카운트·미포함) · 리뷰 없음 ·
+  # 판정 불가 · 정책 면제.
   #
   # `메타 해소` is a passing count over a tip the review did not cover, when
   # <메타> is 1: the tip is the renumbering merge of the reviewed HEAD, whose
-  # tree that HEAD and the merged base fix to the object id. Only the coverage
-  # half is excused, and only by that proof.
+  # tree that HEAD and the merged base fix to the object id. `패치 동일` is the
+  # same when <메타> is not 1 and <패치> is: the tip carries the reviewed HEAD's
+  # branch change unchanged onto the merged base (`gate_patch_same`). Only the
+  # coverage half is excused, and only by those proofs.
   #
   # `이월` EXCUSES THE COUNT HALF ONLY. A carry-over moves the open P1 findings
   # to issues; it says nothing about whether the review saw the merged commit,
@@ -45017,7 +45319,7 @@ gate_merge_check_value() {
   # `판정 불가` OUTRANKS A PARTIAL VIOLATION. A value that names one violation
   # while the other half went unmeasured reads as the whole answer, and the
   # repair it points to may not be the one that is missing.
-  local pol="$1" cnt="$2" cov="$3" meta="${4:-0}"
+  local pol="$1" cnt="$2" cov="$3" meta="${4:-0}" patch="${5:-0}"
   if [ "$pol" != '선리뷰후머지' ]; then printf '%s' '정책 면제'; return 0; fi
   if [ "$cnt" = '리뷰 없음' ]; then printf '%s' '리뷰 없음'; return 0; fi
   if [ "$cnt" = '판정 불가' ] || [ "$cov" = '판정 불가' ]; then printf '%s' '판정 불가'; return 0; fi
@@ -45027,7 +45329,9 @@ gate_merge_check_value() {
     '기각:덮는다') printf '%s' '기각' ;;
     '위반:덮는다') printf '%s' '위반(카운트)' ;;
     '충족:덮지 않는다'|'이월:덮지 않는다'|'기각:덮지 않는다')
-      if [ "$meta" = 1 ]; then printf '%s' '메타 해소'; else printf '%s' '위반(미포함)'; fi ;;
+      if [ "$meta" = 1 ]; then printf '%s' '메타 해소'
+      elif [ "$patch" = 1 ]; then printf '%s' '패치 동일'
+      else printf '%s' '위반(미포함)'; fi ;;
     '위반:덮지 않는다') printf '%s' '위반(카운트·미포함)' ;;
     *) printf '%s' '판정 불가' ;;
   esac
@@ -50238,9 +50542,11 @@ gate_done_conditions() {
   # writes `리뷰 기각` — which the merge rule and the `다음` table read before
   # the counts and let through. A `P0 > 0` or `P1 > 0` with neither still reads
   # `위반(카운트)` and holds, and either one that does not cover the merged tip
-  # reads `위반(미포함)` and holds — save `메타 해소`, which passes: the tip the
-  # review did not cover is the renumbering merge of the reviewed HEAD, whose
-  # tree that HEAD and the merged base fix to the object id.
+  # reads `위반(미포함)` and holds — save `메타 해소` and `패치 동일`, which
+  # pass: the tip the review did not cover is the renumbering merge of the
+  # reviewed HEAD, whose tree that HEAD and the merged base fix to the object
+  # id, or a merge that carries the reviewed HEAD's branch change unchanged onto
+  # that base.
   if gate_rule_enabled '리뷰-후-머지'; then
     local pol mcv mrow
     for sid in $(gate_segment_ids); do
@@ -50252,7 +50558,7 @@ gate_done_conditions() {
       [ -n "$mrow" ] || continue
       mcv=$(gate_row_field "$mrow" '머지 대조')
       case "$mcv" in
-        '충족'|'정책 면제'|'이월'|'기각'|'메타 해소') ;;
+        '충족'|'정책 면제'|'이월'|'기각'|'메타 해소'|'패치 동일') ;;
         *) printf '11 세그먼트 %s 의 머지 대조가 %s 입니다\n' "$sid" "${mcv:-(빈 값)}" ;;
       esac
     done
