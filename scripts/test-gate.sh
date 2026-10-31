@@ -3264,11 +3264,14 @@ STUBEOF
   # `stage-policy.md`, printed. A launcher that reaches the wrapper without the
   # policy is the failure both 14h and 34 refuse, and the only way to reach it
   # through the real launch path is a gate whose own directory lacks the file.
+  # The copy is made once per suite process: whichever of 14h and 34 runs first
+  # makes it and the other reuses it, so the three lines that make it run in one
+  # of the two sections only and are marked as varying with the cut.
   si_gate_nopolicy() {
     if [ ! -f "$WORK/gate-nopolicy/gate.sh" ]; then
-      rm -rf "$WORK/gate-nopolicy"
-      cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$WORK/gate-nopolicy"
-      rm -f "$WORK/gate-nopolicy/stage-policy.md"
+      rm -rf "$WORK/gate-nopolicy" # gate-isolation: 변동
+      cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$WORK/gate-nopolicy" # gate-isolation: 변동
+      rm -f "$WORK/gate-nopolicy/stage-policy.md" # gate-isolation: 변동
     fi
     si_gate_hooks
     printf '%s/gate.sh' "$WORK/gate-nopolicy"
@@ -10680,8 +10683,17 @@ check "새 기동은 세션별 기록에 합성 sha256 을 남긴다" \
 check "게시 뒤 instructions/ 에 임시 파일이 남지 않는다" \
   "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
 # No volatile token: the same bytes for every stage of this target in this run.
+# The file names fixture paths under the temporary directory, whose name may
+# itself carry a run-id string, so that directory is taken out of the text
+# first, in its physical spelling before the one it was given as.
+si_tmp="${TMPDIR:-/tmp}"
+si_tmpp=$(cd "$si_tmp" && pwd -P)
+si_scrubbed=$(awk -v a="$si_tmpp" -v b="$si_tmp" '{
+    while (a != "" && (i = index($0, a)) > 0) $0 = substr($0, 1, i - 1) "<tmp>" substr($0, i + length(a))
+    while (b != "" && (i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) "<tmp>" substr($0, i + length(b))
+    print }' "$SI_F" 2>/dev/null)
 check "합성 파일에 런 id·세그먼트·시도가 들어 있지 않다" \
-  "$(grep -cE 'R1|SL#|세그먼트|attempt' "$SI_F" 2>/dev/null || true)" "0"
+  "$(printf '%s\n' "$si_scrubbed" | grep -cE 'R1|SL#|세그먼트|attempt' || true)" "0"
 
 # --- THE SYNTHESIS CALLED DIRECTLY: determinism, the host map, the refusals ---
 #
