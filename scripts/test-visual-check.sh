@@ -399,7 +399,7 @@ drv_binding() {
 }
 rc=0; VB=$(bash "$CHECK" binding "$RDOC" 2>/dev/null) || rc=$?
 DB=$(drv_binding "$RDOC")
-if [ "$rc" = 0 ] && printf '%s' "$VB" | grep -qxE '[0-9a-f]{64}' && [ "$VB" = "$DB" ]; then
+if [ "$rc" = 0 ] && [[ "$VB" =~ ^[0-9a-f]{64}$ ]] && [ "$VB" = "$DB" ]; then
   pass "binding: 시각 정합 기준 절이 없는 문서에서 드라이버 binding_digest 와 같다"
 else
   fail "binding = ${rc} ${VB}, 드라이버 ${DB}"
