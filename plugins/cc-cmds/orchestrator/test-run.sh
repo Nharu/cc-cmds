@@ -11820,8 +11820,9 @@ done
 check "판단 호출 attention-review 의 argv 가 도구 없음·세션 없음·지출 상한 2 를 싣는다" \
   "$(grep -c -x -e '--no-session-persistence' "$JCD/argv-attention-review.txt" 2>/dev/null || true)/$(awk 'p { print; exit } $0 == "--max-budget-usd" { p = 1 }' "$JCD/argv-attention-review.txt" 2>/dev/null)" \
   "1/2"
-check "주의 좌석의 판단 이름은 JUDGMENTS 어휘 안에 있다" \
-  "$(case " $JUDGMENTS " in *" attention-review "*) echo 있음 ;; *) echo 없음 ;; esac)" "있음"
+ar_in=없음
+case " $JUDGMENTS " in *" attention-review "*) ar_in=있음 ;; esac
+check "주의 좌석의 판단 이름은 JUDGMENTS 어휘 안에 있다" "$ar_in" "있음"
 check "주의 좌석은 기본으로 sonnet 에서 돈다" \
   "$(env -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL bash -c 'ar_drv="$1"; set --; . "$ar_drv" >/dev/null 2>&1; set +e; stage_model_of attention-review' _ "$DRIVER" 2>/dev/null)" "sonnet"
 ar_pb=$(wc -c < "$(dirname "$DRIVER")/prompts/attention-review.md" | tr -d ' ')
