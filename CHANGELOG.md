@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.15.0] - 2026-11-01
+## [3.16.0] - 2026-11-01
 
 레인에 고정된 요청(시각 발행의 `pin_lane`, fleet 대여 레인 런의 `fleet-lane`)이 라우터에서 기다리지 않는다. 고정 행이 cc-lane 의 발행 전용 행이면 주간 사용량 98% 아래에서만 들고, 대여 등록 행이면 대여 검사로만 들며, 막히면 계정과 원인을 밝힌 PARK 로 멈춘다.
 
@@ -29,6 +29,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Post-install notes
 
 발행 전용 행을 쓰려면 cc-lane 의 발행 전용 등록이 설치된 뒤 `cc-lane account add <id> --publish-only` 로 행을 등록하고, 그 디렉터리에서 로그인한 다음, 이 버전이 반영된 뒤에 claude-design 의 `lane` 을 그 행 id 로 바꾼다. 등록 전에 열린 런은 그 행을 모르므로 그런 런이 모두 끝난 뒤에 바꾼다.
+
+## [3.15.0] - 2026-11-01
+
+사용자 범위 `CLAUDE.md` 의 규칙마다 그 규칙을 무엇이 막는지 적는 강제 표지(`강제: ...` 또는 `산문: <사유>` 연속 줄)를 읽어, 규칙별 판정표를 내는 `stage-rules.sh enforcement` 모드를 더한다. 그 파일을 고친 직후의 편집 훅은 이번 편집이 막히지 않은 규칙을 남겼을 때 상태 뒤에 물음 덩어리를 붙인다.
+
+### Added
+
+- **`stage-rules.sh enforcement`** — 불릿마다 표지를 읽어 `강제`·`부분`·`산문` 판정과 살아 있는 수단을 한 행에 싣고, 산문 전용 규칙·부분 공백·죽은 수단을 따로 모은다. 수단은 파일이 있고 닻 문자열이 그 안에 있을 때만 살아 있다. 원천이 없으면 종료 0 이다.
+- **`--notice-for -` 와 `--notice-line`** — 편집이 들인 줄과 지운 표지 줄 번호를 받아, 그 가운데 모든 경로에서 막히지 않았거나 죽은 수단을 단 규칙만 낸다.
+- **편집 훅의 물음 덩어리** — `Rule enforcement check:` 로 시작하고 2000 바이트로 묶이며, 6000 바이트 예산 안에서 상태가 먼저 잘리고 덩어리는 잘리지 않는다. 표지를 다는 것은 사람의 몫이고 편집은 막지 않는다. `Write` 는 파일 안 해당 규칙 수만 싣는다.
+- **`make rule-enforcement`** — 사용자 범위 파일의 전체 판정표를 손으로 볼 때 쓴다. `lint`·`check` 에는 들지 않는다.
+
+### Why
+
+규칙 가운데 무엇이 훅·게이트·린트로 실제로 막히고 무엇이 산문으로만 남는지 기록이 없어, 규칙을 고칠 때 더 높은 층으로 올릴 자리를 찾을 수 없었다. 강제 수단이 사라져도 그 사실이 드러나지 않았다.
+
+## [3.14.2] - 2026-11-01
+
+무인 런이 띄우는 스테이지 리드·라우터 시프트·단발 판단 호출을 메인 대화 프롬프트 캐시 수명 5분으로 기동한다. 지금까지는 어디서도 수명을 세우지 않아 구독 계정의 자동값(1시간)을 물려받았고, 요청 사이가 거의 비지 않는데도 단가가 높은 1시간 캐시 쓰기를 했다.
+
+### Fixed
+
+- **캐시 수명 값 표** — `run.sh` 의 effort·model 표 옆에 `stage_cache_ttl_of`·`stage_cache_ttl_env` 를 더했다. 호스트 변수 `CC_ORCH_PROMPT_CACHE_TTL` 이 없거나 비었거나 `5m` 이면 `5m`, `1h` 면 `1h`, `auto` 면 CLI 변수를 지워 CLI 자신의 규칙에 맡긴다. 그 밖의 값은 무시하고 `5m` 이다. 게이트는 run.sh 를 소싱하므로 표는 한 곳에만 있다.
+- **네 기동 지점** — 게이트의 스테이지 기동(`gate_verb_supervise_stage`, 새 기동과 재부착 모두)과 시프트 기동(`gate_launch_shift`), 드라이버의 스테이지 스폰 서브셸, 단발 판단 호출 다섯을 모두 지나는 `judgment_call` 이 CLI 직전에 `CLAUDE_CODE_PROMPT_CACHE_TTL` 을 세우거나 지운다. 기동만을 위한 프로세스·서브셸 안에서 하므로 드라이버와 좌석이 부른 게이트의 환경은 바뀌지 않는다. 서브에이전트 수명과 원장 형식은 그대로다.
+- **시험** — test-gate 가 값 표와 헬퍼, 게이트의 스테이지·시프트 기동 환경, 게이트를 거친 판단 호출의 환경, 드라이버 스폰 본문의 헬퍼 호출을 단언하고, 드라이버 시험이 드라이버 스폰과 판단 호출의 실제 기동 환경을 단언한다.
+
+### Post-install notes
+
+- 1시간으로 되돌리려면 런을 띄우는 셸에 `CC_ORCH_PROMPT_CACHE_TTL=1h` 를, CLI 자동값에 맡기려면 `CC_ORCH_PROMPT_CACHE_TTL=auto` 를 세운다.
 
 ## [3.14.1] - 2026-10-31
 
