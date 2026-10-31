@@ -9977,40 +9977,8 @@ ladder_of_terraform() {
 # keeps a row under the measured threshold, and the chain makes the rare case
 # detectable rather than silent.
 # ---------------------------------------------------------------------------
-# Every read below goes through this. A ledger that does not exist yet is the
-# NORMAL state at the first act of a run, and `grep` answers a missing file with
-# exit 2 — which `pipefail` promotes to the whole pipeline's status and `set -e`
-# turns into a silent exit of the snapshot. The first act of the first run is
-# exactly when a router most needs the snapshot to answer, so the tolerance is
-# not defensive padding: it is the case that always happens.
-#
-# THE READ-ZONE MEMO. The four `GATE_ROWS_MEMO_*` names exist only as `local`s
-# of a warming function (see `gate_ledger_warm`), so they are cleared here at
-# load. A caller whose environment carried one of them in would otherwise have
-# that scalar read as element 0 of the memo, and `gate_rows` would answer rows
-# the ledger does not hold.
-unset GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
-gate_rows() {
-  # gate_rows <series>
-  #
-  # Inside a warmed zone a series the zone warmed is answered from the memo,
-  # with builtins only, so the read spawns no process. The memo is consulted
-  # only while `LEDGER` is still the path it was filled from; a string compare,
-  # not a freshness probe — a probe would be a process per call, the very cost
-  # the memo removes. Everything else falls through to the grep, unchanged.
-  if [ -n "${GATE_ROWS_MEMO_LEDGER:-}" ] && [ "$GATE_ROWS_MEMO_LEDGER" = "$LEDGER" ]; then
-    local m=0
-    while [ "$m" -lt "${GATE_ROWS_MEMO_N:-0}" ]; do
-      if [ "${GATE_ROWS_MEMO_KINDS[$m]}" = "$1" ]; then
-        [ -z "${GATE_ROWS_MEMO_ROWS[$m]}" ] || printf '%s\n' "${GATE_ROWS_MEMO_ROWS[$m]}"
-        return 0
-      fi
-      m=$((m + 1))
-    done
-  fi
-  grep -E "^- \`$1\`" "$LEDGER" 2>/dev/null || true
-}
-
+# Every read below goes through `gate_rows`, defined with its load-time memo
+# guard in worktree-cleanup.sh, which run.sh sources for both processes.
 gate_has_row() {
   # gate_has_row <series> <키=값> [<키=값>…]
   #
@@ -14343,14 +14311,6 @@ gate_from_declaration() {
     esac
   done
   return 0
-}
-
-gate_row_field() {
-  # gate_row_field <row-text> <key> — the last value with that key in ONE row.
-  # `gate_field_of` reads an argv field LIST; carrying a value forward needs a
-  # field of a row already written, and the two are not interchangeable.
-  local row="$1" key="$2"
-  printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
 gate_rows_field_eq() {
@@ -43199,6 +43159,11 @@ EOF
     # REACHES THIS ARM OPEN. Termination condition 2 counts it, because a
     # segment of this run is held on it, so `unmet` is not empty while one is
     # waiting and the run does not end over it.
+    #
+    # `wtc_run 라우터` after the disposition report removes this run's
+    # finished segment worktrees and merged local branches; it judges run
+    # completion off the ending row written below, so a `질의 잔여` end only
+    # leaves a `생략` line. No stage is alive here (condition 7 holds).
     gate_done_note "$(gate_satisfied_done_line "$rationale")"
     # Each arm writes its ending row beside `done`, as the invalidated arm does:
     # only the satisfied one is a normal completion, `종료 부류=완료`.
@@ -43208,6 +43173,7 @@ EOF
       gate_end_row "종료 조건 성립" "$rationale" 해당없음 완료 || true
     fi
     gate_write_disposition_report
+    wtc_run 라우터 || true
     # The notification seat is carried over from the other parent; its own
     # `done` write is not. That write spelled the same file with the older
     # single-class line and would have run after the branch above, overwriting
@@ -43269,6 +43235,7 @@ EOF
         gate_end_run "종료 조건 성립" "$end_why" 해당없음 "$end_kind" "" \
           "$(gate_satisfied_done_line "$end_why")" || true
         gate_write_disposition_report || true
+        wtc_run 라우터 || true
       fi
       exit "$GATE_EXIT_RULE"
     fi
@@ -50312,43 +50279,6 @@ gate_done_conditions() {
       *) printf '12 세그먼트 %s 의 머지 뒤 마지막 리뷰가 통과하지 않았습니다 — 판정표 값 %s\n' "$sid" "${onx:-(빈 값)}" ;;
     esac
   done
-}
-
-gate_pending_approval_ids() {
-  # gate_pending_approval_ids [act|판단] — pending approval ids, optionally
-  # narrowed by whether the row's `절단점` is the literal `판단`.
-  #
-  # The narrowing exists because the two kinds of answer have different lifetimes
-  # and only one of them expires with the night. An ACT approval's answer is
-  # valid now — its binding tuple carries head and base shas and freshness is
-  # re-derived against them — so a run may not end while one is open. A QUESTION
-  # approval's answer is an input to work that has not started; it is durable,
-  # and a successor run can consume it. Counting the second kind in termination
-  # condition 2 is what made one open question a run that could never say it was
-  # done, which is the defect this design exists to remove.
-  #
-  # `사람` NARROWS FURTHER, to the `판단` approvals whose class is in the person
-  # set: the kind of question the run does not end around. Its answer is not an
-  # input a successor consumes but the decision the held segment is waiting on,
-  # so termination condition 2 counts these beside the act approvals.
-  local want="${1:-}" id st row cut
-  for id in $(gate_rows '승인' | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
-    [ -n "$id" ] || continue
-    row=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } | tail -1)
-    st=$(gate_row_field "$row" '상태')
-    [ "$st" = "대기" ] || continue
-    if [ -n "$want" ]; then
-      cut=$(gate_row_field "$row" '절단점')
-      case "$want" in
-        act)  [ "$cut" = "판단" ] && continue ;;
-        판단) [ "$cut" = "판단" ] || continue ;;
-        사람) [ "$cut" = "판단" ] || continue
-              judgment_class_person "$(gate_row_field "$row" '판단 부류')" || continue ;;
-      esac
-    fi
-    printf '%s\n' "$id"
-  done
-  return 0
 }
 
 gate_unfulfilled_review_obligations() {

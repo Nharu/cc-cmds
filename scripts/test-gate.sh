@@ -2621,6 +2621,7 @@ pre_static() {
   # file it scans through a pipe whose reader stops at the first match.
   scanned_files() {
     printf '%s\n' "$GATE" \
+      "$repo_root/plugins/cc-cmds/orchestrator/worktree-cleanup.sh" \
       "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
       "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" \
       "$repo_root/plugins/cc-cmds/orchestrator/notify-focus.sh" \
@@ -6046,6 +6047,136 @@ TGGH
   tg_last_row() { grep -- "^- \`$1\`" "$TG_L" 2>/dev/null | tail -1; }
   # tg_age <file…> — move the mtime two minutes back, the settlement's wait.
   tg_age() { perl -e '$t = time - 120; utime $t, $t, @ARGV' "$@"; }
+}
+
+# `wtc` — the run-complete cleanup's fixtures. Each `wtc_new` builds a run of
+# its own under `$WORK`: a main repository with a bare origin, a manifest
+# declaring that repository as the one target, a ledger named after the run id
+# and a run directory. `wtc_seg` adds a segment worktree whose name carries the
+# run id the way the driver names one, with a commit and (by default) its
+# branch pushed. `wtc_call` runs the routine, or any one function, in a fresh
+# bash that sources the gate in source-only mode, so every observation sees
+# the gate's own readers and nothing this suite defined. No section here
+# depends on another's state.
+pre_wtc() {
+  [ -n "${PRE_WTC_DONE:-}" ] && return 0
+  PRE_WTC_DONE=1
+  WTC_N=0
+  WTC_INFIX=run
+  WTC_PROBE="$WORK/wtc-probe.sh"
+  cat > "$WTC_PROBE" <<'WTCPROBE'
+#!/usr/bin/env bash
+# wtc-probe.sh <gate.sh> <매니페스트|-> <원장> <런 id> <런 디렉터리> <베이스> <작업 디렉터리> <명령…>
+# `라우터`·`드라이버` 는 `wtc_run` 으로, 그 밖의 첫 낱말은 함수 이름으로 부르고
+# 그 출력 뒤에 `|rc=<종료 코드>` 를 찍는다.
+g="$1"; m="$2"; l="$3"; rid="$4"; rd="$5"; b="$6"; cwd="$7"; shift 7
+CC_GATE_SOURCE_ONLY=1 . "$g" </dev/null >/dev/null 2>&1 || exit 97
+set +e
+{
+  MANIFEST="$m"; [ "$m" != "-" ] || MANIFEST=""
+  LEDGER="$l"; RUN_ID="$rid"; RUN_DIR="$rd"; BASE="$b"
+}
+cd "$cwd" || exit 96
+# 소싱이 PATH 앞에 시스템 경로를 붙이고 RUN_HALTED 를 0 으로 놓으므로 둘은 그 뒤에 세운다.
+[ -z "${WTC_PATH_FRONT:-}" ] || PATH="$WTC_PATH_FRONT:$PATH"
+[ -z "${WTC_HALTED:-}" ] || RUN_HALTED="$WTC_HALTED"
+case "$1" in
+  라우터|드라이버) wtc_run "$1"; printf '|rc=%s' "$?" ;;
+  *) "$@"; printf '|rc=%s' "$?" ;;
+esac
+WTCPROBE
+
+  wtc_new() {
+    # wtc_new [메인 디렉터리 이름] — 새 런 하나. WD·WRID·WMAIN·WORIGIN·WMAN·WLED·WRUN 을 세운다.
+    WTC_N=$((WTC_N + 1))
+    WD=$(mktemp -d "$WORK/wtc.XXXXXX")
+    WD=$(cd "$WD" && pwd -P)
+    WRID=$(printf '20260101-%08x' "$((40960 + WTC_N))")
+    WMAIN="$WD/${1:-main}"; WMAIN="${WMAIN//@RID@/$WRID}"
+    WORIGIN="$WD/origin.git"; WRUN="$WD/run"; WMAN="$WD/plan.md"
+    WLED="$WMAIN/docs/pipeline-run/$WRID.md"
+    WTC_CWD="$WD"
+    mkdir -p "$WRUN" "$WMAIN"
+    ( cd "$WMAIN" && git init -q . && git config user.email t@example.invalid \
+      && git config user.name T && printf 'a\n' > a.txt && git add -A \
+      && git commit -qm one && git branch -M master ) >/dev/null 2>&1
+    ( git init -q --bare "$WORIGIN" && cd "$WMAIN" && git remote add origin "$WORIGIN" \
+      && git push -q origin master ) >/dev/null 2>&1
+    mkdir -p "$(dirname "$WLED")"
+    printf '# 파이프라인 런 보고서 — %s\n\n' "$WRID" > "$WLED"
+    {
+      printf '# 파이프라인 런 매니페스트 — %s\n' "$WRID"
+      printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$WRID"
+      printf '     origin-worktree=%s;\n' "$WMAIN"
+      printf '     NOT a design doc; mechanism-local -->\n\n'
+      printf '## 대상\n- `target` | 별칭=main | 메인 워크트리=%s | 베이스 브랜치=master | 홈=예\n' "$WMAIN"
+    } > "$WMAN"
+  }
+  wtc_master() {
+    # wtc_master <파일> <내용> — 메인의 master 에 커밋 하나를 더하고 민다.
+    ( cd "$WMAIN" && printf '%s\n' "$2" > "$1" && git add -A && git commit -qm "$1" \
+      && git push -q origin master ) >/dev/null 2>&1
+  }
+  wtc_row() {
+    # wtc_row <종류> <필드…> — 원장에 행 하나.
+    local k="$1" r f; shift
+    r="- \`$k\`"
+    for f in "$@"; do r="$r | $f"; done
+    printf '%s | prev=x\n' "$r" >> "$WLED"
+  }
+  wtc_seg() {
+    # wtc_seg <세그먼트> <상태> [push|nopush] [필드…] — 런 id 를 단 워크트리와 브랜치,
+    # 커밋 하나, 그리고 segment 행. WW·WB 를 세운다.
+    local sid="$1" st="$2" push="${3:-push}"
+    shift 2; [ $# -eq 0 ] || shift
+    WW="$WD/main-$WTC_INFIX-$WRID-$sid"; WB="seg/$WRID-$sid"
+    ( cd "$WMAIN" && git worktree add -q -b "$WB" "$WW" master ) >/dev/null 2>&1
+    ( cd "$WW" && printf '%s\n' "$sid" > "$sid.txt" && git add -A && git commit -qm "$sid" ) >/dev/null 2>&1
+    [ "$push" = nopush ] || ( cd "$WW" && git push -q -u origin "$WB" ) >/dev/null 2>&1
+    wtc_row segment "id=$sid" "상태=$st" "워크트리=$WW" "브랜치=$WB" "$@"
+  }
+  wtc_end() {
+    # wtc_end [재킥 원인] [종료 부류|-] — 종료 행. 인자가 없으면 완주다.
+    local cause="${1:-해당없음}" kind="${2-완료}"
+    if [ -n "$kind" ] && [ "$kind" != "-" ]; then
+      wtc_row '자율 승인' '등급=0' '결정=종료' "재킥 원인=$cause" "종료 부류=$kind"
+    else
+      wtc_row '자율 승인' '등급=0' '결정=종료' "재킥 원인=$cause"
+    fi
+  }
+  wtc_call() {
+    # wtc_call <명령…> — 이 런의 값으로 새 bash 에서 부른다. WTC_ENV 의 대입을 앞에 둔다.
+    env ${WTC_ENV:-} bash "$WTC_PROBE" "$GATE" "${WTC_MAN-$WMAN}" "${WTC_LED:-$WLED}" "$WRID" \
+      "$WRUN" "$WMAIN" "$WTC_CWD" "$@" 2>/dev/null
+  }
+  wtc_lines() {
+    # wtc_lines <고정 문자열> — 원장에서 그 문자열을 담은 정리 줄의 수
+    { grep -E '^- \*\*(워크트리|브랜치) 정리\*\*' "${WTC_LED:-$WLED}" 2>/dev/null || true; } \
+      | awk -v s="$1" 'index($0, s) { n++ } END { print n + 0 }'
+  }
+  wtc_line() {
+    # wtc_line <고정 문자열> — 그 문자열을 담은 첫 정리 줄
+    { grep -E '^- \*\*(워크트리|브랜치) 정리\*\*' "${WTC_LED:-$WLED}" 2>/dev/null || true; } \
+      | awk -v s="$1" 'index($0, s) { print; exit }'
+  }
+  wtc_wt() {
+    # wtc_wt <경로> — 메인의 porcelain 에 그 경로가 등록돼 있으면 있음, 아니면 없음
+    local out
+    out=$(cd "$WMAIN" && git worktree list --porcelain 2>/dev/null)
+    case "
+$out
+" in *"
+worktree $1
+"*) printf 있음 ;; *) printf 없음 ;; esac
+  }
+  wtc_br() {
+    # wtc_br <브랜치> — 메인의 로컬 브랜치가 있으면 있음
+    if ( cd "$WMAIN" && git show-ref --verify --quiet "refs/heads/$1" ); then printf 있음; else printf 없음; fi
+  }
+  wtc_rbr() {
+    # wtc_rbr <브랜치> — 원격 bare 에 그 브랜치가 있으면 있음
+    if git --git-dir="$WORIGIN" show-ref --verify --quiet "refs/heads/$1"; then printf 있음; else printf 없음; fi
+  }
 }
 
 # THE SHARED RUN FIXTURE IS SOURCED IN THE HEAD, not only in the section that
@@ -23414,6 +23545,131 @@ check "Q2j: 끝난 런에서 같은 act 는 여전히 3 이다" "$rc" "3"
 check "Q2j: 그 반복이 done 첫 줄을 바꾸지 않는다" "$(head -n 1 "$DONE6_DIR/done" 2>/dev/null || true)" "$q2j_line"
 check "Q2j: 그 반복이 종료 행을 늘리지 않는다" \
   "$( { grep -cF '| 결정=종료 |' "$LEDGER6" 2>/dev/null || true; } )" "1"
+
+# THE RUN-COMPLETE CLEANUP ON THE THREE ENDINGS ABOVE. Each arm that ends a run
+# with every condition met calls the cleanup once, and the cleanup writes its
+# own lines to the ledger. A run whose earliest ending row does not carry
+# `종료 부류=완료` gets one skip line per ending call; a complete one gets the
+# summary line. The fixtures' worktree (`cone-a`) carries no run id, so it stays.
+wl31() {  # wl31 <원장> <고정 문자열> — 그 문자열을 담은 정리 줄의 수
+  { grep -E '^- \*\*(워크트리|브랜치) 정리\*\*' "$1" 2>/dev/null || true; } \
+    | awk -v s="$2" 'index($0, s) { n++ } END { print n + 0 }'
+}
+check "31al: 질의 잔여로 끝난 두 수락 제안이 생략 줄을 하나씩 남긴다" \
+  "$(wl31 "$LEDGER4" '')/$(wl31 "$LEDGER4" '생략 — 종료 행 재킥 원인 해당없음 · 종료 부류 없음')" "2/2"
+check "31al: 완료로 끝난 거절 갈래는 요약 줄 하나를 남긴다" \
+  "$(wl31 "$LEDGER5" '런 완주(라우터) — ')/$(wl31 "$LEDGER5" '생략 — ')/$(wl31 "$LEDGER5" "보존 · $CONE_A · 세그먼트 SN1 · 사유=런 id 없는 경로")" "1/0/1"
+check "31al: 질의 잔여로 끝난 거절 갈래는 생략 줄만 남긴다" \
+  "$(wl31 "$LEDGER6" '런 완주(라우터) — ')/$(wl31 "$LEDGER6" '생략 — 종료 행 재킥 원인 해당없음 · 종료 부류 없음')" "0/$(wl31 "$LEDGER6" '')"
+
+# T20 · T28 — THE TWO ENDING ARMS ON A RUN WHOSE WORKTREE IS ITS OWN. The
+# worktree is cut from the base under a name carrying the run id, recorded
+# `머지됨` with its merge commit, and the run ends complete: through an accepted
+# `propose-done` (R4V) and through a refused `act` (R4W).
+wtc31_run() {  # wtc31_run <런 id> — 런 하나를 세우고 워크트리 WT31·원장 L31·런 디렉터리 D31·매니페스트 M31 을 둔다
+  M31="$WORK/wtc31-$1-plan.md"
+  sed -e "s/run-id=$CONE_RUN_ID;/run-id=$1;/" -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $1/" "$NM" > "$M31"
+  fx_rid_copy "$CONE_RUN_ID" "$1" "$CONE_GRANT" "$WT/docs/pipeline-grant/$1.md"
+  L31="$WT/docs/pipeline-run/$1.md"
+  printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$1" "$1" > "$L31"
+  D31="$STATE_CONE/cc-cmds/run/$1"
+  WT31="$WORK/wt-run-$1-SN1"
+  ( cd "$WT" && git worktree add -q -b "seg/$1-SN1" "$WT31" refs/heads/main ) >/dev/null 2>&1
+  WT31=$(cd "$WT31" && pwd -P)
+  gate31 act --manifest "$M31" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(H31)" --rationale x -- 워크트리="$WT31" 상태=실행중 선행=없음
+  check "$1 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+  local k
+  for k in K1 K2 K3; do
+    gate31 act --manifest "$M31" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+          --snapshot-digest "$(H31)" --rationale x -- id=$k 상태=충족 근거="$1 픽스처"
+    check "$1 픽스처의 종료 절 $k 가 충족으로 정산된다" "$rc" "0"
+  done
+  # 머지 대조가 충족이 되도록, 머지되는 커밋을 덮는 리뷰 사이클 하나를 먼저 둔다.
+  local tip; tip=$(cd "$WT" && git rev-parse refs/heads/main)
+  gate31 act --manifest "$M31" --kind cycle --target infra --segment SN1 --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(H31)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$tip" \
+        "리포트 경로=$(CANON_LEDGER="$L31" CANON_BASE="$CANON_TOP" canon_put "$1" SN1 "$FXREPORT")"
+  check "$1 픽스처의 리뷰 사이클 행이 기록된다" "$rc" "0"
+  gate31 act --manifest "$M31" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(H31)" --rationale x -- \
+        상태=머지됨 PR=7 "머지 커밋=$tip" 워크트리="$WT31" 선행=없음
+  check "$1 픽스처의 세그먼트가 머지됨으로 옮겨간다" "$rc" "0"
+  local aid aq
+  for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$M31" 2>/dev/null \
+               | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
+    aq=$(row_field "$( { grep -F '`승인`' "$L31" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
+    auq_frame "$NTX/$D5SID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+          CLAUDE_CODE_SESSION_ID="$D5SID" gate_inproc close --manifest "$M31" --approval "$aid" 2>&1); rc=$?
+    check "$1 픽스처의 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
+  done
+}
+gate31() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+H31() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$M31" 2>/dev/null | jq -r .H; }
+wt31() {  # wt31 <경로> — 메인의 porcelain 에 그 경로가 있으면 있음
+  case "$(cd "$WT" && git worktree list --porcelain 2>/dev/null)
+" in *"worktree $1
+"*) printf 있음 ;; *) printf 없음 ;; esac
+}
+set31() {  # set31 — 런 디렉터리 아래 설정 파일들의 이름과 해시
+  ( cd "$D31" 2>/dev/null && find . -name '*settings*.json' -type f | LC_ALL=C sort | while IFS= read -r f; do
+      printf '%s %s\n' "$f" "$(shasum -a 256 < "$f" | cut -d' ' -f1)"; done )
+}
+
+# T20 — 받아들여진 종료 제안.
+wtc31_run R4V
+check "R4V 사전 조건: 워크트리가 있고 done 이 없다" "$(wt31 "$WT31")/$( [ -e "$D31/done" ] && printf 있음 || printf 없음)" "있음/없음"
+gate31 act --manifest "$M31" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H31)" --rationale "모든 절이 정산되었다"
+check "T20: 완주 런의 종료 제안이 통과한다" "$rc" "0"
+case "$(head -n 1 "$D31/done" 2>/dev/null || true)" in
+  *"종단 — 종료 조건 성립"*) ok "T20: done 첫 줄이 종료 조건 성립이다" ;;
+  *) bad "T20 done 첫 줄" "$(head -n 1 "$D31/done" 2>/dev/null || true)" ;;
+esac
+check "T20: 가장 이른 종료 행이 종료 부류=완료 를 가진다" \
+  "$( { grep -F '| 결정=종료 |' "$L31" 2>/dev/null || true; } | awk 'NR == 1' | { grep -cF '| 종료 부류=완료' || true; } )" "1"
+check "T20: 머지됨 워크트리가 제거되고 요약 줄이 하나다" \
+  "$(wt31 "$WT31")/$(wl31 "$L31" "제거 · $WT31 · 세그먼트 SN1(머지됨)")/$(wl31 "$L31" '런 완주(라우터) — 워크트리 제거 1 ·')" "없음/1/1"
+# R3 — 정리 뒤 세 동사를 한 번씩 더 부른다. 거부되거나 segment 행을 쓰지 않고 설정 파일이 그대로다.
+r3_set=$(set31); r3_seg=$( { grep -cF '`segment`' "$L31" || true; } )
+gate31 act --manifest "$M31" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H31)" --rationale "정리 뒤 한 번 더" -- ls
+r3a=$rc
+gate31 plan --manifest "$M31" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --rationale "정리 뒤 한 번 더" -- ls
+r3b=$rc
+gate31 exec --manifest "$M31" --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H31)" --rationale "정리 뒤 한 번 더" -- ls
+r3c=$rc
+check "T20: 정리 뒤 act·plan·exec 가 거부된다" \
+  "$( [ "$r3a" != 0 ] && printf 거부 || printf 통과)/$( [ "$r3b" != 0 ] && printf 거부 || printf 통과)/$( [ "$r3c" != 0 ] && printf 거부 || printf 통과)" "거부/거부/거부"
+check "T20: 그 세 호출이 segment 행을 쓰지 않고 설정 파일이 그대로다" \
+  "$( { grep -cF '`segment`' "$L31" || true; } )/$( [ "$(set31)" = "$r3_set" ] && printf 같음 || printf 다름)" "$r3_seg/같음"
+check "T20: 마지막 segment 행이 종단 상태다" \
+  "$( { grep -F '`segment`' "$L31" || true; } | tail -1 | { grep -cF '| 상태=머지됨 ' || true; } )" "1"
+
+# T28 — 거절 갈래.
+wtc31_run R4W
+gate31 act --manifest "$M31" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H31)" --rationale "다 끝났으니 정리하자" -- ls
+check "T28: 거절 갈래의 종료 코드는 3 그대로다" "$rc" "3"
+check "T28: done 이 생기고 가장 이른 종료 행이 완료다" \
+  "$( [ -s "$D31/done" ] && printf 있음 || printf 없음)/$( { grep -F '| 결정=종료 |' "$L31" 2>/dev/null || true; } | awk 'NR == 1' | { grep -cF '| 종료 부류=완료' || true; } )" "있음/1"
+check "T28: 머지됨 워크트리가 제거되고 요약 줄이 하나다" \
+  "$(wt31 "$WT31")/$(wl31 "$L31" "제거 · $WT31 · 세그먼트 SN1(머지됨)")/$(wl31 "$L31" '런 완주(라우터) — ')" "없음/1/1"
+n28=$(wl31 "$L31" '')
+# 정리 뒤에는 세그먼트 행이 이름 댄 워크트리가 없으므로, 같은 호출은 끝난 런의 거절(3)보다
+# 머지 앵커를 읽을 수 없다는 거절(10)에 먼저 닿는다. 어느 쪽이든 거부되고 정리 줄은 그대로다.
+gate31 act --manifest "$M31" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H31)" --rationale "한 번 더" -- ls
+check "T28: 같은 런의 거절 갈래를 다시 불러도 거부되고 정리 줄이 늘지 않는다" \
+  "$( [ "$rc" != 0 ] && printf 거부 || printf 통과)/$(wl31 "$L31" '')" "거부/$n28"
+unset -f wtc31_run gate31 H31 wt31 set31 wl31
 
 # --- 31am. An ineligible frame is NAMED and held, and writes nothing --------
 # --- section: 31am | group: cone | covers: act, close | anchors: 다이얼로그 취소 프레임은 닫지 않는다 (exit 5) ---
@@ -48464,7 +48720,6 @@ dsa_run() {
     doc_is_frozen() { [ "$DSA_FROZEN" = 1 ]; }
     split_registry_complete() { [ "$DSA_REG" = 1 ]; }
     park() { printf "park %s\n" "$5" >> "$DSA_DIR/out"; }
-    quiet_window_begin() { :; }; quiet_window_end() { :; }
     ledger_row() { :; }; absorb_stage_judgment() { :; }; report_append() { :; }
     spawn_lineage_release() { :; }; stage_open_judgment() { return 1; }; log() { :; }
     stage_account_of() { :; }; stage_attempt_pinned() { :; }; stage_session_id() { :; }
@@ -56653,6 +56908,420 @@ case "$rc/$msg" in
   1/*"항목 수: P1 요약 1건, 항목 2개"*) ok "103: 범위 밖 관찰 절의 굵은 항목은 P1 수에 들지 않는다" ;;
   *) bad "103: 범위 밖 관찰 절의 굵은 항목은 P1 수에 들지 않는다" "대조군 rc=$rc $msg" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 104. 런 완주 정리 — 워크트리 판정과 철거
+# --- section: 104 | group: wtc | covers: worktree-cleanup, wtc_run, wtc_sweep, wtc_worktree_verdict | anchors: 104: 머지됨 워크트리가 사라지고 로컬 브랜치가 지워진다, 104: 무시된 파일만 있는 워크트리는 무시된 파일 수를 사유로 남는다, 104: 무시된 내용 탐지는 색인을 다시 쓰지 않는다, 104: 디렉터리가 없는 등록 항목도 HEAD 줄을 낸다, 104: 다시 부른 정리는 아무것도 더 지우지 않는다 ---
+#
+# 정리 루틴을 게이트의 소싱 전용 판본에서 직접 부른다. 런마다 자기 임시 레포와
+# bare origin 을 만들고, 원장의 가장 이른 종료 행이 `종료 부류=완료` 를 가진다.
+# 단언은 원장의 정리 줄, `git worktree list --porcelain`, 로컬·원격 ref 만 본다.
+# ---------------------------------------------------------------------------
+pre_wtc
+
+# T1 · T2 — `-run-` 꼴과 `-pipeline-` 꼴의 머지됨, 원격과 같은 커밋.
+wtc_new
+wtc_seg S1 머지됨
+w1="$WW"; b1="$WB"; s1=$(cd "$WMAIN" && git rev-parse "$b1" | cut -c1-12)
+WTC_INFIX=pipeline; wtc_seg S2 머지됨; WTC_INFIX=run
+w2="$WW"; b2="$WB"
+wtc_end
+out=$(wtc_call 라우터)
+check "104: 머지됨 워크트리가 사라지고 로컬 브랜치가 지워진다" \
+  "$(wtc_wt "$w1")/$(wtc_br "$b1")/$(wtc_rbr "$b1")/${out##*|}" "없음/없음/있음/rc=0"
+check "104: 제거와 삭제가 한 줄씩 남는다" \
+  "$(wtc_lines "제거 · $w1 · 세그먼트 S1(머지됨)")/$(wtc_lines "삭제 · $b1 · 세그먼트 S1 · origin 같은 커밋 $s1")" "1/1"
+check "104: -pipeline- 꼴 워크트리도 같다" "$(wtc_wt "$w2")/$(wtc_br "$b2")/$(wtc_rbr "$b2")" "없음/없음/있음"
+check "104: 요약 줄이 하나다" "$(wtc_lines '런 완주(라우터) — 워크트리 제거 2 · 보존 0 · 브랜치 삭제 2 · 보존 0')" "1"
+
+# T19 — 같은 런을 표시를 지우고 다시 부른다. 이 런과 무관한 워크트리 둘을 함께 둔다.
+wu1="$WD/main-run-20260101-ffffffff-U1"; wu2="$WD/hand-made-sibling"
+( cd "$WMAIN" && git worktree add -q --detach "$wu1" master && git worktree add -q --detach "$wu2" master ) >/dev/null 2>&1
+printf '2026-01-01T00:00:00Z 종단 — 종료 조건 성립 · 근거 x\n' > "$WRUN/done"
+done_before=$(od -c < "$WRUN/done"); rem_before=$(git --git-dir="$WORIGIN" for-each-ref)
+rm_before=$(wtc_lines '제거 · '); del_before=$(wtc_lines '삭제 · ')
+rm -rf "$WRUN/worktree-cleanup.once"
+out=$(wtc_call 라우터)
+check "104: 다시 부른 정리는 아무것도 더 지우지 않는다" \
+  "$(wtc_lines '제거 · ')/$(wtc_lines '삭제 · ')/${out##*|}" "$rm_before/$del_before/rc=0"
+check "104: done 과 원격 ref 가 그대로다" \
+  "$( [ "$(od -c < "$WRUN/done")" = "$done_before" ] && printf 같음 || printf 다름)/$( [ "$(git --git-dir="$WORIGIN" for-each-ref)" = "$rem_before" ] && printf 같음 || printf 다름)" "같음/같음"
+check "104: 무관한 워크트리 둘이 그대로다" \
+  "$(wtc_wt "$wu1")/$(wtc_wt "$wu2")/$( [ -d "$wu1" ] && [ -d "$wu2" ] && printf 디스크 || printf 없음)" "있음/있음/디스크"
+
+# T22b — 표시가 남은 채 다시 부르면 생략 한 줄만 쓴다.
+n_before=$(wtc_lines '')
+wtc_call 라우터 >/dev/null
+check "104: 한 번 표시가 있으면 생략 줄 하나만 더한다" \
+  "$(( $(wtc_lines '') - n_before ))/$(wtc_lines '생략 — 이 런 디렉터리에서 이미 정리함')" "1/1"
+
+# T3 · T4 · T5 · T6 — 원격 없음, 원격과 다른 커밋, 완료, park.
+wtc_new
+wtc_seg S3 머지됨 nopush; w3="$WW"; b3="$WB"
+wtc_seg S4 머지됨; w4="$WW"; b4="$WB"
+( cd "$w4" && printf 'more\n' >> S4.txt && git commit -qam more ) >/dev/null 2>&1
+wtc_seg S5 완료; w5="$WW"; b5="$WB"
+wtc_seg S6 park; w6="$WW"
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104: 원격 없는 머지됨 브랜치는 남는다" "$(wtc_wt "$w3")/$(wtc_br "$b3")/$(wtc_lines "보존 · $b3 · 세그먼트 S3 · 사유=원격 없음")" "없음/있음/1"
+check "104: 원격보다 앞선 로컬 브랜치는 남는다" "$(wtc_wt "$w4")/$(wtc_br "$b4")/$(wtc_lines "보존 · $b4 · 세그먼트 S4 · 사유=원격과 다른 커밋")" "없음/있음/1"
+check "104: 완료 세그먼트는 워크트리만 지운다" "$(wtc_wt "$w5")/$(wtc_br "$b5")/$(wtc_lines "보존 · $b5 · 세그먼트 S5 · 사유=완료 세그먼트(머지 대상 아님)")" "없음/있음/1"
+check "104: park 워크트리는 남고 브랜치 줄이 없다" "$(wtc_wt "$w6")/$(wtc_lines "세그먼트 S6 · 사유=park 세그먼트 공유(S6)")/$(wtc_lines "브랜치 정리** (")" "있음/1/3"
+
+# T7 · T8 · T10 · T16 — 공유 park, 미추적 파일, 잠김, 호출자 작업 디렉터리.
+wtc_new
+wtc_seg S7a park; w7="$WW"
+( cd "$WMAIN" && git branch "seg/$WRID-S7b" master && git push -q origin "seg/$WRID-S7b" ) >/dev/null 2>&1
+wtc_row segment id=S7b 상태=머지됨 "워크트리=$w7" "브랜치=seg/$WRID-S7b"
+wtc_seg S8 머지됨; w8="$WW"; printf 'u\n' > "$w8/u.txt"
+wtc_seg S10 머지됨; w10="$WW"; ( cd "$WMAIN" && git worktree lock "$w10" ) >/dev/null 2>&1
+wtc_seg S16 머지됨; w16="$WW"
+wtc_end
+WTC_CWD="$w16"; wtc_call 라우터 >/dev/null; WTC_CWD="$WD"
+check "104: park 와 머지됨이 한 경로를 나누면 남는다" \
+  "$(wtc_wt "$w7")/$(wtc_lines "사유=park 세그먼트 공유(S7a)")/$(wtc_lines "보존 · seg/$WRID-S7b · 세그먼트 S7b · 사유=워크트리 보존")" "있음/1/1"
+check "104: 미추적 파일은 비강제 철거가 거부한다" "$(wtc_wt "$w8")/$(wtc_lines "보존 · $w8 · 세그먼트 S8 · 사유=비강제 철거 거부(git 종료 128)")/$( [ -f "$w8/u.txt" ] && printf 남음)" "있음/1/남음"
+check "104: 잠긴 워크트리는 남는다" "$(wtc_wt "$w10")/$(wtc_lines "보존 · $w10 · 세그먼트 S10 · 사유=잠김")" "있음/1"
+check "104: 호출자의 작업 디렉터리는 남는다" "$(wtc_wt "$w16")/$(wtc_lines "보존 · $w16 · 세그먼트 S16 · 사유=호출자 작업 디렉터리")" "있음/1"
+
+# T9 · T9b · R1 — 무시된 내용. `.gitignore` 를 세그먼트보다 먼저 master 에 커밋한다.
+wtc_new
+wtc_master .gitignore "$(printf '*.log\nbuild/')"
+wtc_seg S9a 머지됨; w9a="$WW"; printf 'x\n' > "$w9a/x.log"
+wtc_seg S9b 머지됨; w9b="$WW"; printf 'x\n' > "$w9b/x.log"; mkdir -p "$w9b/build"; printf 'a\n' > "$w9b/build/a"
+wtc_seg S9c 머지됨; w9c="$WW"
+wtc_end
+wtc_idx() {  # wtc_idx <워크트리> — 색인 파일의 mtime 과 해시
+  local ix; ix=$(cd "$1" && git rev-parse --path-format=absolute --git-path index)
+  printf '%s:%s' "$(perl -e 'print +(stat shift)[9]' "$ix")" "$(shasum -a 256 < "$ix" | cut -d' ' -f1)"
+}
+i9b=$(wtc_idx "$w9b"); i9c=$(wtc_idx "$w9c")
+sleep 1
+o9b=$(cd "$w9b" && git ls-files -o -i --exclude-standard --directory); o9c=$(cd "$w9c" && git ls-files -o -i --exclude-standard --directory)
+check "104: 무시된 내용 탐지가 무시된 항목을 한 줄씩 내고 깨끗하면 비어 있다" \
+  "$(printf '%s\n' "$o9b" | awk 'NF' | LC_ALL=C sort | paste -s -d, -)/$(printf '%s' "$o9c" | awk 'NF' | wc -l | tr -d ' ')" "build/,x.log/0"
+check "104: 무시된 내용 탐지는 색인을 다시 쓰지 않는다" \
+  "$( [ "$(wtc_idx "$w9b")" = "$i9b" ] && [ "$(wtc_idx "$w9c")" = "$i9c" ] && printf 그대로 || printf 바뀜)" "그대로"
+wtc_bin="$WD/bin"; mkdir -p "$wtc_bin"
+wtc_realgit=$(command -v git)
+printf '#!/bin/sh\nif [ "$1" = ls-files ] && [ "$2" = -o ]; then exit 7; fi\nexec "%s" "$@"\n' "$wtc_realgit" > "$wtc_bin/git"
+chmod +x "$wtc_bin/git"
+WTC_ENV="WTC_PATH_FRONT=$wtc_bin"; wtc_call 라우터 >/dev/null; WTC_ENV=""
+check "104: 무시된 내용을 읽지 못하면 지우지 않는다" \
+  "$(wtc_wt "$w9c")/$(wtc_lines "보존 · $w9c · 세그먼트 S9c · 사유=판정 읽기 실패(무시된 파일 git 종료 7)")" "있음/1"
+rm -rf "$WRUN/worktree-cleanup.once"
+wtc_call 라우터 >/dev/null
+check "104: 무시된 파일만 있는 워크트리는 무시된 파일 수를 사유로 남는다" \
+  "$(wtc_wt "$w9a")/$(wtc_lines "보존 · $w9a · 세그먼트 S9a · 사유=무시된 파일(1)")/$( [ -f "$w9a/x.log" ] && printf 남음)/$(wtc_lines "사유=무시된 파일(2)")" "있음/1/남음/1"
+check "104: 깨끗한 워크트리는 지워진다" "$(wtc_wt "$w9c")/$(wtc_lines "제거 · $w9c · 세그먼트 S9c(머지됨)")" "없음/1"
+
+# T11 · T12 · T17 · T13 — 브랜치 밖 커밋, 다른 런 id, --doc 꼴, 메인 워크트리.
+wtc_new "repo-@RID@"
+w11="$WD/main-run-$WRID-S11"
+( cd "$WMAIN" && git worktree add -q --detach "$w11" master && cd "$w11" \
+  && printf 'd\n' > d.txt && git add -A && git commit -qm d ) >/dev/null 2>&1
+wtc_row segment id=S11 상태=머지됨 "워크트리=$w11"
+w12="$WD/main-run-20260101-ffffffff-S12"
+( cd "$WMAIN" && git worktree add -q --detach "$w12" master ) >/dev/null 2>&1
+wtc_row segment id=S12 상태=머지됨 "워크트리=$w12"
+w17="$WD/main-run-design-doc-S17"
+( cd "$WMAIN" && git worktree add -q --detach "$w17" master ) >/dev/null 2>&1
+wtc_row segment id=S17 상태=머지됨 "워크트리=$w17"
+wtc_row segment id=S13 상태=머지됨 "워크트리=$WMAIN"
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104: 어느 브랜치에도 없는 분리 HEAD 커밋은 남는다" "$(wtc_wt "$w11")/$(wtc_lines "보존 · $w11 · 세그먼트 S11 · 사유=브랜치 밖 커밋")" "있음/1"
+check "104: 다른 런 id 의 경로는 남는다" "$(wtc_wt "$w12")/$(wtc_lines "보존 · $w12 · 세그먼트 S12 · 사유=런 id 없는 경로")" "있음/1"
+check "104: --doc 꼴 경로는 남는다" "$(wtc_wt "$w17")/$(wtc_lines "보존 · $w17 · 세그먼트 S17 · 사유=런 id 없는 경로")" "있음/1"
+check "104: 메인 워크트리는 남는다" "$( [ -d "$WMAIN/.git" ] && printf 그대로)/$(wtc_lines "보존 · $WMAIN · 세그먼트 S13 · 사유=메인·실행 워크트리")" "그대로/1"
+
+# T14 — 다른 런의 원장. park 는 두 꼴(마지막 필드인 워크트리 포함) 모두 막고, 완료는 막지 않는다.
+# 같은 디렉터리의 `.plan.md` 는 원장이 아니다.
+wtc_new
+wtc_seg S14a 머지됨; w14a="$WW"
+wtc_seg S14b 머지됨; w14b="$WW"
+wtc_seg S14c 머지됨; w14c="$WW"
+wtc_seg S14d 머지됨; w14d="$WW"
+wtc_end
+other="$(dirname "$WLED")/20260101-0000beef.md"
+{
+  printf -- '- `segment` | id=X1 | 상태=park | 워크트리=%s\n' "$w14a"
+  printf -- '- `segment` | id=X2 | 워크트리=%s | 상태=park | prev=x\n' "$w14b"
+  printf -- '- `segment` | id=X3 | 상태=완료 | 워크트리=%s | prev=x\n' "$w14c"
+} > "$other"
+printf -- '- `segment` | id=X4 | 상태=park | 워크트리=%s | prev=x\n' "$w14d" > "$(dirname "$WLED")/20260101-0000beef.plan.md"
+wtc_call 라우터 >/dev/null
+check "104: 다른 런 원장의 park 가 지목한 워크트리는 남는다" \
+  "$(wtc_wt "$w14a")/$(wtc_wt "$w14b")/$(wtc_lines "사유=다른 런 원장이 지목(20260101-0000beef:X1)")/$(wtc_lines "사유=다른 런 원장이 지목(20260101-0000beef:X2)")" "있음/있음/1/1"
+check "104: 다른 런 원장의 완료 행과 계획 파일은 막지 않는다" "$(wtc_wt "$w14c")/$(wtc_wt "$w14d")" "없음/없음"
+
+# T15 · R8 — 디렉터리가 없는 등록 항목. 이 런의 것은 지우고, 원장에 없는 분리 HEAD
+# 항목은 prune 하지 않으므로 남는다.
+wtc_new
+wtc_seg S15 머지됨; w15="$WW"
+w15x="$WD/stale-detached"
+( cd "$WMAIN" && git worktree add -q --detach "$w15x" master && cd "$w15x" \
+  && printf 's\n' > s.txt && git add -A && git commit -qm s ) >/dev/null 2>&1
+rm -rf "$w15" "$w15x"
+wtc_end
+p15=$(cd "$WMAIN" && git worktree list --porcelain)
+r8=$(printf '%s\n' "$p15" | awk -v w="worktree $w15x" '$0 == w { on = 1; next } on && /^$/ { exit } on { sub(/ .*/, ""); print }' | paste -s -d, -)
+check "104: 디렉터리가 없는 등록 항목도 HEAD 줄을 낸다" "$r8" "HEAD,detached,prunable"
+r15=$(printf '%s\n' "$p15" | awk -v w="worktree $w15" '$0 == w { on = 1; next } on && /^$/ { exit } on && /^HEAD / { print "HEAD" }')
+check "104: 이 런의 지워진 디렉터리 항목에도 HEAD 줄이 있다" "$r15" "HEAD"
+wtc_call 라우터 >/dev/null
+check "104: 디렉터리가 없는 이 런의 항목은 등록만 지운다" "$(wtc_wt "$w15")/$(wtc_lines "제거 · 이미 없음 · $w15 · 세그먼트 S15(머지됨)")" "없음/1"
+check "104: prune 하지 않아 다른 낡은 항목이 남는다" "$(wtc_wt "$w15x")" "있음"
+
+# T18 · R2 — 닿지 않는 원격. 표준 입력은 닫고 timeout 없이 부른다.
+wtc_new
+wtc_seg S18 머지됨; b18="$WB"
+lr() { ( cd "$WMAIN" && GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code --heads origin "refs/heads/$1" </dev/null >/dev/null 2>&1 ); printf '%s' "$?"; }
+r2a=$(lr "$b18"); r2b=$(lr "seg/none")
+( cd "$WMAIN" && git remote set-url origin "$WD/no-such.git" )
+r2c=$(lr "$b18")
+( cd "$WMAIN" && git remote set-url origin "https://127.0.0.1:9/x.git" )
+r2d=$(lr "$b18")
+check "104: ls-remote 는 있으면 0 없으면 2 닿지 않으면 그 밖이다" \
+  "$r2a/$r2b/$(case "$r2c" in (0|2) printf '%s' "$r2c" ;; (*) printf 그밖 ;; esac)/$(case "$r2d" in (0|2) printf '%s' "$r2d" ;; (*) printf 그밖 ;; esac)" "0/2/그밖/그밖"
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104: 닿지 않는 https 원격은 원격 조회 실패로 남긴다" "$(wtc_br "$b18")/$(wtc_lines "보존 · $b18 · 세그먼트 S18 · 사유=원격 조회 실패")" "있음/1"
+wtc_new
+wtc_seg S18b 머지됨; b18b="$WB"
+( cd "$WMAIN" && git remote set-url origin "$WD/no-such.git" )
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104: 없는 경로 원격도 원격 조회 실패로 남긴다" "$(wtc_br "$b18b")/$(wtc_lines "보존 · $b18b · 세그먼트 S18b · 사유=원격 조회 실패")" "있음/1"
+unset -f lr wtc_idx
+
+# ---------------------------------------------------------------------------
+# 104b. 런 완주 정리 — 남은 어휘, 판정 이음매, 원장 범위, bash 3.2
+# --- section: 104b | group: wtc | covers: worktree-cleanup, wtc_run, wtc_end_row_complete, wtc_driver_should_run | anchors: 104b: 완주 판정은 가장 이른 종료 행이 완료일 때만 성립한다, 104b: 비종단 세그먼트의 워크트리는 남는다, 104b: 긴 보존 줄은 1024 바이트 아래다, 104b: 원장이 이 런 하나의 파일이 아니면 생략한다, 104b: bash 3.2 의 set -euo pipefail 아래에서도 끝까지 돈다 ---
+# ---------------------------------------------------------------------------
+pre_wtc
+
+# T21 — 판정 이음매. 원장마다 done 첫 줄은 판정과 어긋나게 둔다.
+seam() {  # seam <원장 행…> — 두 판정 함수의 출력과 rc
+  wtc_new
+  local r
+  for r in "$@"; do printf '%s | prev=x\n' "$r" >> "$WLED"; done
+  printf '2026-01-01T00:00:00Z 종단 — 반대 꼴\n' > "$WRUN/done"
+  printf '%s#%s' "$(wtc_call wtc_end_row_complete)" "$(wtc_call wtc_router_should_run)"
+}
+check "104b: 완주 판정은 가장 이른 종료 행이 완료일 때만 성립한다" \
+  "$(seam '- `자율 승인` | 결정=종료 | 재킥 원인=해당없음 | 종료 부류=완료')" "|rc=0#|rc=0"
+check "104b: 종료 행이 없으면 그렇게 말한다" "$(seam '- `segment` | id=A | 상태=머지됨')" "종료 행 없음|rc=1#종료 행 없음|rc=1"
+check "104b: 종료 부류가 없는 종료 행은 원인과 없음을 낸다" \
+  "$(seam '- `자율 승인` | 결정=종료 | 재킥 원인=질의잔여')" "종료 행 재킥 원인 질의잔여 · 종료 부류 없음|rc=1#종료 행 재킥 원인 질의잔여 · 종료 부류 없음|rc=1"
+check "104b: 경계 종단 행 뒤의 완료 행은 판정을 바꾸지 않는다" \
+  "$(seam '- `자율 승인` | 결정=종료 | 재킥 원인=경계 | 종료 부류=경계 종단' '- `자율 승인` | 결정=종료 | 재킥 원인=해당없음 | 종료 부류=완료')" \
+  "종료 행 재킥 원인 경계 · 종료 부류 경계 종단|rc=1#종료 행 재킥 원인 경계 · 종료 부류 경계 종단|rc=1"
+check "104b: P0잔존 종료 행은 완주가 아니다" \
+  "$(seam '- `자율 승인` | 결정=종료 | 재킥 원인=P0잔존 | 종료 부류=P0잔존')" "종료 행 재킥 원인 P0잔존 · 종료 부류 P0잔존|rc=1#종료 행 재킥 원인 P0잔존 · 종료 부류 P0잔존|rc=1"
+check "104b: 먼저 온 run 스코프 막힘 종료 행이 이긴다" \
+  "$(seam '- `blocked` | 스코프=run | 재킥 원인=표면이동 | 사유=x' '- `자율 승인` | 결정=종료 | 재킥 원인=해당없음 | 종료 부류=완료')" \
+  "종료 행 재킥 원인 표면이동 · 종료 부류 없음|rc=1#종료 행 재킥 원인 표면이동 · 종료 부류 없음|rc=1"
+wtc_new
+wtc_seg S21 머지됨; w21="$WW"
+wtc_row blocked 스코프=run '재킥 원인=표면이동' 사유=x
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104b: 완주가 아니면 생략 줄 하나만 쓴다" \
+  "$(wtc_lines '생략 — 종료 행 재킥 원인 표면이동 · 종료 부류 없음')/$(wtc_lines '')/$(wtc_wt "$w21")" "1/1/있음"
+unset -f seam
+
+# T25 — 닫힌 어휘의 남은 갈래.
+wtc_new
+wtc_seg S25a 실행중; w25a="$WW"
+w25b="$WD/main-run-$WRID-S25b"; mkdir -p "$w25b"
+wtc_row segment id=S25b 상태=머지됨 "워크트리=$w25b"
+w25c="$WD/main-run-$WRID-S25c"
+( cd "$WMAIN" && git worktree add -q -b "seg/$WRID-S25c" "$w25c" master ) >/dev/null 2>&1
+wtc_row segment id=S25c 상태=머지됨 "워크트리=$w25c"
+w25d="$WD/main-run-$WRID-S25d"
+( cd "$WMAIN" && git worktree add -q -b feature/x "$w25d" master ) >/dev/null 2>&1
+wtc_row segment id=S25d 상태=머지됨 "워크트리=$w25d" 브랜치=feature/x
+w25e="$WD/main-run-$WRID-S25e"
+( cd "$WMAIN" && git worktree add -q -b "tmp/$WRID-S25e" "$w25e" master \
+  && git branch "seg/$WRID-S25e" master && git worktree add -q "$WD/hand-S25e" "seg/$WRID-S25e" ) >/dev/null 2>&1
+wtc_row segment id=S25e 상태=머지됨 "워크트리=$w25e" "브랜치=seg/$WRID-S25e"
+wtc_seg S25f 머지됨; b25f="$WB"
+( cd "$WMAIN" && git branch --set-upstream-to=origin/master "$b25f" ) >/dev/null 2>&1
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104b: 비종단 세그먼트의 워크트리는 남는다" "$(wtc_wt "$w25a")/$(wtc_lines "보존 · $w25a · 세그먼트 S25a · 사유=비종단 세그먼트(S25a)")" "있음/1"
+check "104b: 등록되지 않은 디렉터리는 대상의 워크트리가 아니다" "$( [ -d "$w25b" ] && printf 남음)/$(wtc_lines "보존 · $w25b · 세그먼트 S25b · 사유=선언된 대상의 워크트리 아님")" "남음/1"
+check "104b: 브랜치 필드가 없으면 브랜치 미상이다" "$(wtc_lines "보존 · - · 세그먼트 S25c · 사유=브랜치 미상")" "1"
+check "104b: 런 id 없는 브랜치는 남는다" "$(wtc_br feature/x)/$(wtc_lines "보존 · feature/x · 세그먼트 S25d · 사유=다른 런 브랜치")" "있음/1"
+check "104b: 다른 워크트리가 체크아웃한 브랜치는 남는다" "$(wtc_lines "보존 · seg/$WRID-S25e · 세그먼트 S25e · 사유=다른 워크트리에 체크아웃됨")" "1"
+check "104b: upstream 이 낡은 브랜치는 비강제 삭제가 거부한다" "$(wtc_br "$b25f")/$(wtc_lines "보존 · $b25f · 세그먼트 S25f · 사유=비강제 삭제 거부(git 종료 1)")" "있음/1"
+
+# T25b · T25c — 한 세그먼트의 경로 여럿, 만들어진 적 없는 경로, 긴 줄.
+wtc_new
+wtc_seg S25g 머지됨; w25g="$WW"; b25g="$WB"
+w25h="$WD/main-run-$WRID-S25h"
+( cd "$WMAIN" && git worktree add -q --detach "$w25h" "$b25g" && git worktree lock "$w25h" ) >/dev/null 2>&1
+wtc_row segment id=S25g 상태=머지됨 "워크트리=$w25h" "브랜치=$b25g"
+wtc_row segment id=S25p 상태=머지됨 "워크트리=$WD/main-run-$WRID-S25p" "브랜치=seg/$WRID-S25p"
+wtc_seg S25L park; w25l="$WW"
+long_ids=""
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  sid="S25L-$(printf '%060d' "$i")"
+  long_ids="$long_ids $sid"
+  wtc_row segment "id=$sid" 상태=park "워크트리=$w25l"
+done
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104b: 경로 하나가 남은 세그먼트의 브랜치는 남는다" \
+  "$(wtc_wt "$w25g")/$(wtc_wt "$w25h")/$(wtc_lines "보존 · $b25g · 세그먼트 S25g · 사유=워크트리 보존")" "없음/있음/1"
+check "104b: 만들어진 적 없는 경로는 줄도 셈도 없다" \
+  "$(wtc_lines "main-run-$WRID-S25p ")/$(wtc_lines '런 완주(라우터) — 워크트리 제거 1 · 보존 2 ·')" "0/1"
+l25=$(wtc_line "보존 · $w25l ")
+check "104b: 긴 보존 줄은 1024 바이트 아래다" \
+  "$( [ "$(printf '%s' "$l25" | LC_ALL=C wc -c | tr -d ' ')" -lt 1024 ] && printf 아래)/$(case "$l25" in (*"…(13개)"*"사유="*) printf 담음 ;; (*) printf 빠짐 ;; esac)" "아래/담음"
+
+# T25d — 적용이 남은 머지됨, 적용 준비만 남은 세그먼트.
+wtc_new
+wtc_seg S25m 머지됨 push 적용=대기; w25m="$WW"
+wtc_seg S25n 머지됨 push 적용=대기; w25n="$WW"
+wtc_row segment id=S25n "상태=적용 준비" "워크트리=$WD/main-run-$WRID-S25n-apply"
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104b: 적용이 남은 세그먼트의 워크트리는 남고 브랜치 줄이 없다" \
+  "$(wtc_wt "$w25m")/$(wtc_wt "$w25n")/$(wtc_lines "사유=비종단 세그먼트(S25m)")/$(wtc_lines "사유=비종단 세그먼트(S25n)")/$(wtc_lines '브랜치 정리** (')" "있음/있음/1/1/0"
+check "104b: 그 판정이 세그먼트 상태 판정의 open 과 같다" \
+  "$(wtc_call cc_segment_states "$WLED" | cut -f1,3 | tr '\t\n' ':,' | sed 's/,$//')" "S25m:open,S25n:open,|rc=0"
+
+# T29 — 원장 범위.
+wtc_new
+wtc_seg S29 머지됨; w29="$WW"
+wtc_end
+cp "$WLED" "$WD/kept.md"
+printf '## 실행 다른 런\n' >> "$WLED"
+wtc_call 라우터 >/dev/null
+check "104b: 원장이 이 런 하나의 파일이 아니면 생략한다" \
+  "$(wtc_wt "$w29")/$(wtc_lines '생략 — 원장이 이 런 하나의 파일이 아님')/$(wtc_lines '')" "있음/1/1"
+cp "$WD/kept.md" "$WMAIN/docs/pipeline-run/shared.md"
+WTC_LED="$WMAIN/docs/pipeline-run/shared.md"; wtc_call 라우터 >/dev/null; WTC_LED=""
+check "104b: 런 id 가 아닌 이름의 원장도 생략한다" "$(wtc_wt "$w29")/$(wtc_lines '생략 — 원장이 이 런 하나의 파일이 아님')" "있음/2"
+cp "$WD/kept.md" "$WLED"
+WTC_ENV="GATE_ROWS_MEMO_LEDGER=$WLED GATE_ROWS_MEMO_N=1 GATE_ROWS_MEMO_KINDS=segment GATE_ROWS_MEMO_ROWS="
+wtc_call 라우터 >/dev/null; WTC_ENV=""
+check "104b: 환경의 메모 이름이 원장 행을 가리지 못한다" "$(wtc_wt "$w29")/$(wtc_lines "제거 · $w29 · 세그먼트 S29(머지됨)")" "없음/1"
+
+# --doc 꼴 — 매니페스트가 없으면 생략한다.
+wtc_new
+wtc_seg S30 머지됨; w30="$WW"
+wtc_end
+WTC_MAN=-; wtc_call 라우터 >/dev/null; unset WTC_MAN
+check "104b: 매니페스트가 없으면 생략한다" "$(wtc_wt "$w30")/$(wtc_lines '생략 — 매니페스트 없음(--doc 모드)')" "있음/1"
+
+# R9 — /bin/bash 와 set -euo pipefail 아래, 게이트 없이 run.sh 만 싣고 부른다.
+r9() {  # r9 — 이 런을 bash 3.2 로 부르고 after= 줄을 낸다
+  /bin/bash -c '
+    set -euo pipefail
+    CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1
+    set -euo pipefail
+    MANIFEST=$2; LEDGER=$3; RUN_ID=$4; RUN_DIR=$5; BASE=$6; GRANT=""
+    cd "$7"
+    wtc_run 라우터 || true; echo "after=$?"' _ "$RUNSH" "$WMAN" "$WLED" "$WRID" "$WRUN" "$WMAIN" "$WD" 2>/dev/null
+}
+wtc_new
+wtc_end
+check "104b: bash 3.2 의 set -euo pipefail 아래에서도 끝까지 돈다" \
+  "$(r9)/$(wtc_lines '런 완주(라우터) — 워크트리 제거 0 · 보존 0 · 브랜치 삭제 0 · 보존 0')" "after=0/1"
+wtc_new
+w9x="$WD/main-run-20260101-ffffffff-S9x"
+( cd "$WMAIN" && git worktree add -q --detach "$w9x" master ) >/dev/null 2>&1
+wtc_row segment id=S9x 상태=머지됨 "워크트리=$w9x"
+wtc_end
+check "104b: 후보가 모두 걸러지는 런도 끝까지 돈다" \
+  "$(r9)/$(wtc_lines '런 완주(라우터) — 워크트리 제거 0 · 보존 1 · 브랜치 삭제 0 · 보존 1')" "after=0/1"
+unset -f r9
+
+# ---------------------------------------------------------------------------
+# 104c. 런 완주 정리 — 드라이버 경로의 다섯 조건
+# --- section: 104c | group: wtc | covers: worktree-cleanup, wtc_driver_should_run | anchors: 104c: 드라이버 경로는 조건이 모두 서면 머지됨을 지운다, 104c: 머지 막힘 세그먼트의 워크트리는 남는다, 104c: 다시 계획한 런은 생략한다 ---
+# ---------------------------------------------------------------------------
+pre_wtc
+
+# T26 — 조건이 모두 선 런. 적용이 끝난 머지됨과 적용이 남은 머지됨 하나씩.
+drv_new() {
+  wtc_new
+  wtc_seg S26a 머지됨 push 적용=끝남; w26a="$WW"; b26a="$WB"
+  wtc_seg S26b 머지됨 push 적용=대기; w26b="$WW"
+  wtc_end
+}
+drv_new
+wtc_call 드라이버 >/dev/null
+check "104c: 드라이버 경로는 조건이 모두 서면 머지됨을 지운다" \
+  "$(wtc_wt "$w26a")/$(wtc_br "$b26a")/$(wtc_wt "$w26b")/$(wtc_lines '사유=비종단 세그먼트(S26b)')/$(wtc_lines '런 완주(드라이버) — ')" "없음/없음/있음/1/1"
+drv_skip() {  # drv_skip <생략 문면> — 그 런의 정리 줄이 그 생략 하나뿐이고 워크트리가 그대로다
+  wtc_call 드라이버 >/dev/null
+  printf '%s/%s/%s' "$(wtc_lines "생략 — $1")" "$(wtc_lines '')" "$(wtc_wt "$w26a")"
+}
+drv_new; WTC_ENV="WTC_HALTED=1"
+check "104c: 정지한 런은 생략한다" "$(drv_skip '런 정지(RUN_HALTED=1)')" "1/1/있음"
+WTC_ENV=""
+drv_new; wtc_row blocked 스코프=run 원인=대상미선언 '사유=대상 미선언'
+check "104c: 풀리지 않은 run 막힘이 있으면 생략한다" "$(drv_skip '풀리지 않은 run 막힘(대상 미선언)')" "1/1/있음"
+drv_new; wtc_row blocked 스코프=act 원인=마감 사유=예산·벽시계
+check "104c: 예산·벽시계 막힘 행이 있으면 생략한다" "$(drv_skip '예산·벽시계 막힘 행')" "1/1/있음"
+drv_new; wtc_row 승인 '승인 id=J-1' 상태=대기 절단점=판단 '판단 부류=설계-쟁점'
+check "104c: 열린 판단 승인이 있으면 생략한다" "$(drv_skip '열린 판단 승인(J-1)')" "1/1/있음"
+
+# T27 — act 스코프 막힘만 있고 마지막 상태가 실행중인 세그먼트.
+drv_new
+wtc_seg S27 실행중; w27="$WW"
+wtc_row blocked 스코프=act 원인=검사실패 '사유=머지 막힘' "앵커 세그먼트=S27"
+wtc_call 드라이버 >/dev/null
+check "104c: 머지 막힘 세그먼트의 워크트리는 남는다" "$(wtc_wt "$w27")/$(wtc_lines "보존 · $w27 · 세그먼트 S27 · 사유=비종단 세그먼트(S27)")" "있음/1"
+
+# T30 — 마감으로 끝난 뒤 다시 계획해 모두 머지된 런.
+wtc_new
+wtc_end 마감 -
+wtc_row '자율 승인' 등급=1 kind=replan '결정=다시 계획'
+wtc_seg S30a 머지됨; w30a="$WW"; b30a="$WB"
+wtc_call 드라이버 >/dev/null
+check "104c: 다시 계획한 런은 생략한다" \
+  "$(wtc_lines '생략 — 종료 행 재킥 원인 마감 · 종료 부류 없음')/$(wtc_lines '')/$(wtc_wt "$w30a")/$(wtc_br "$b30a")" "1/1/있음/있음"
+unset -f drv_new drv_skip
+
+# ---------------------------------------------------------------------------
+# 104d. 런 완주 정리 — 게이트 호출 자리와 판독 함수의 정의 수
+# --- section: 104d | covers: worktree-cleanup, gate_rows | anchors: 104d: 게이트의 정리 호출은 두 종단 갈래에 하나씩이다, 104d: 옮긴 판독 함수는 두 파일을 통틀어 정의가 하나씩이다 ---
+#
+# 정적 판독. 주석 줄을 뺀 gate.sh 에서 호출 줄이 둘이고, 하나는 수락 분기의
+# 처분 보고서 줄 바로 뒤에 와서 같은 분기의 ended 발화보다 앞서며, 다른 하나는
+# 거절 갈래의 `gate_write_disposition_report || true` 바로 뒤에 와서 그 갈래의
+# exit 보다 앞선다. 무효화 분기와 종료 행·종료 런 함수 본문에는 없다.
+# ---------------------------------------------------------------------------
+WTC_SRC="$repo_root/plugins/cc-cmds/orchestrator/worktree-cleanup.sh"
+d104=$(awk '!/^[[:space:]]*#/ { sub(/^[[:space:]]+/, ""); print NR "\t" $0 }' "$GATE")
+c104=$(printf '%s\n' "$d104" | awk -F '\t' '$2 ~ /wtc_run/ { n++ } END { print n + 0 }')
+p104=$(printf '%s\n' "$d104" | awk -F '\t' '
+  $2 ~ /wtc_run/ { print prev "|" $2; want = 1; next }
+  want && ($2 ~ /cc_notify_fire ended/ || $2 ~ /^exit "\$GATE_EXIT_RULE"/) { print "  →" ($2 ~ /exit/ ? "exit" : "ended"); want = 0 }
+  { prev = $2 }' | paste -s -d '#' -)
+check "104d: 게이트의 정리 호출은 두 종단 갈래에 하나씩이다" "$c104:$p104" \
+  "2:gate_write_disposition_report|wtc_run 라우터 || true#  →ended#gate_write_disposition_report || true|wtc_run 라우터 || true#  →exit"
+for f104 in gate_end_run gate_end_row; do
+  check "104d: $f104 본문에는 정리 호출이 없다" \
+    "$(awk -v f="^$f104\\\\(\\\\)" '$0 ~ f { on = 1 } on && /wtc_/ { n++ } on && /^}/ { on = 0 } END { print n + 0 }' "$GATE")" "0"
+done
+check "104d: 무효화 분기의 ended 발화 앞에는 정리 호출이 없다" \
+  "$(awk '/런이 무효화된 채로 종료됐습니다/ { print (seen ? "있음" : "없음"); exit } /gate_write_disposition_report$/ { seen = 0 } /wtc_run/ { seen = 1 }' "$GATE")" "없음"
+d104n=""
+for f104 in gate_rows gate_row_field gate_pending_approval_ids; do
+  d104n="$d104n$f104=$(cat "$GATE" "$WTC_SRC" | { grep -cE "^${f104}\\(\\)" || true; } ) "
+done
+check "104d: 옮긴 판독 함수는 두 파일을 통틀어 정의가 하나씩이다" "$d104n" \
+  "gate_rows=1 gate_row_field=1 gate_pending_approval_ids=1 "
+check "104d: 정의는 정리 파일 쪽에 있다" \
+  "$( { grep -cE '^(gate_rows|gate_row_field|gate_pending_approval_ids)\(\)' "$WTC_SRC" || true; } )" "3"
+unset d104 c104 p104 f104 d104n
 
 # --- epilogue-begin ---
 #

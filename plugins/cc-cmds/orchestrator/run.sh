@@ -87,6 +87,12 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/liveness.sh"
 
+# The run-complete cleanup routine and the gate's ledger readers it shares
+# (`gate_rows`, `gate_row_field`, `gate_pending_approval_ids`). Defined there
+# once for both processes: the gate sources this file, so it gets them here.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/worktree-cleanup.sh"
+
 # The enforcement-surface classifier, for the `강제 표면` field of a planned
 # segment row. Sourced in a child shell, as the gate's `gate_es` does, so the
 # hook's library adds nothing to this file's top level; a library that cannot
@@ -6294,30 +6300,6 @@ wt_create() {
   printf '%s' "$p"
 }
 
-wt_remove() {
-  # THREE conditions, all required. (1) is the substantive guarantee; (2) is
-  # defence in depth against a corrupted ledger; (3) is the failure mode that
-  # only exists at N>1 — a ledger row written for a DIFFERENT alias passes the
-  # first two, because both of them are properties of the string rather than of
-  # the repository it belongs to. Never --force: the tree may hold the only
-  # copy of an uncommitted change.
-  local seg="$1" p recorded root
-  p=$(wt_path "$seg") || { warn "철거 거부 — 세그먼트의 레포를 해소할 수 없습니다: $seg"; return 1; }
-  recorded=$(grep -E "^- \`segment\`" "$LEDGER" 2>/dev/null | grep -F "id=$seg" | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | tail -1)
-  if [ -z "$recorded" ] || [ "$recorded" != "$p" ]; then
-    warn "철거 거부 — 이 런의 원장에 생성 시점 값으로 없습니다: $p"; return 1
-  fi
-  case "$p" in *"$WORKTREE_INFIX"*) : ;; *) warn "철거 거부 — 예약 인픽스 부재: $p"; return 1 ;; esac
-  root=$(seg_root "$seg") || { warn "철거 거부 — 레포 루트 해소 실패: $seg"; return 1; }
-  case "$p" in
-    "$(dirname "$root")"/*) : ;;
-    *) warn "철거 거부 — 해당 별칭의 레포 루트 아래가 아닙니다: $p"; return 1 ;;
-  esac
-  ( cd "$root" && git worktree remove "$p" >/dev/null 2>&1 && git worktree prune >/dev/null 2>&1 ) \
-    || { warn "철거 실패(보고만, 강제 삭제하지 않음): $p"; return 1; }
-  return 0
-}
-
 stash_attribution_check() {
   # An absent refs/stash is a normal "no stash" value, not a violation — this
   # repository has carried one since before the pipeline existed, so a
@@ -6332,26 +6314,6 @@ stash_attribution_check() {
     *" on "*)            log "제3자 stash 활동 기록만 하고 계속: $top"; return 0 ;;
     *)                   warn "stash 귀속 모호 — 보수적으로 위반 판정"; return 1 ;;
   esac
-}
-
-# ---------------------------------------------------------------------------
-# Worktree quiet window. `git worktree list` is repository-global, so creating
-# or removing a sibling worktree inside a stage's freeze window fails that
-# stage for something it did not do. Removals may be deferred (off the critical
-# path); creations may NOT (deferring one is a dispatch barrier).
-# ---------------------------------------------------------------------------
-QUIET_WINDOW=0
-PENDING_REMOVALS=""
-
-quiet_window_begin() { QUIET_WINDOW=1; }
-quiet_window_end() {
-  QUIET_WINDOW=0
-  local seg
-  for seg in ${PENDING_REMOVALS:-}; do wt_remove "$seg" || true; done
-  PENDING_REMOVALS=""
-}
-wt_remove_or_defer() {
-  if [ "$QUIET_WINDOW" = "1" ]; then PENDING_REMOVALS="$PENDING_REMOVALS $1"; else wt_remove "$1" || true; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -10718,16 +10680,13 @@ lead_fix_stage() {
   local sid="S5F:$seg:$cycle" src=0 rc pred class acct line unmet
   line="/cc-cmds:review-unattended $branch --lead-fix $crp \"설계는 $(doc_arg)\""
   unmet="수정 기록 $(lead_fix_record_path "$crp") 에 상한 리포트의 P0·P1 항목마다 한 줄이 없다"
-  quiet_window_begin
   stage_spawn "$sid" "$wt" "$line" || src=$?
   if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-    quiet_window_end
     park_router "$seg" "$seg" cone
     return 1
   fi
   [ "$src" = "0" ] || (exit "$src")
   stage_wait_all "$sid"
-  quiet_window_end
   rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
   if predicate_lead_fix "$crp"; then pred=0; else pred=1; fi
   class=$(classify_termination "$sid" "$rc" "$pred")
@@ -10967,7 +10926,6 @@ segment_cycle() {
     # re-convergence or on the gate's `재구현`.
     sid="S4:$seg:$cycle"
     if [ "$lead_iter" = 0 ] && [ "$recheck_iter" = 0 ]; then
-      quiet_window_begin
       # `declared_files` travels ON the dispatch line. The set bounds the cycle
       # budget and the escape check judges against it, so a stage that never
       # sees it is being measured against a contract it was not told.
@@ -11058,13 +11016,11 @@ segment_cycle() {
       CC_SPAWN_EVENT=$spawn_event stage_spawn "$sid" "$wt" "$prompt" || src=$?
       STAGE_RESUME=""
       if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-        quiet_window_end
         park_router "$seg" "$seg" cone
         return 1
       fi
       [ "$src" = "0" ] || (exit "$src")
       stage_wait_all "$sid"
-      quiet_window_end
       local missing="" unmet="세그먼트 브랜치에 새 커밋도 정지 기록도 없다" sclue=""
       rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
       if predicate_implement "$branch" "$att_base" "$seg"; then pred=0; else pred=1; fi
@@ -11559,7 +11515,7 @@ EOF
   [ "$arc" = "2" ] && return 4
   [ "$arc" = "0" ] || return 3
 
-  wt_remove_or_defer "$seg"
+  # The worktree stays: the run-complete cleanup removes it once the run ends.
   return 0
 }
 
@@ -11773,10 +11729,8 @@ continue_attempt() {
     local -x CC_PIPELINE_AUDIT_PASS
     CC_PIPELINE_AUDIT_PASS=$(audit_pass_of S2)
   fi
-  quiet_window_begin
   dispatch_stage "$did" "$cwd" "$prompt" || drc=$?
   STAGE_RESUME=""
-  quiet_window_end
   # A launch the router declined ran nothing, so there is no attempt to
   # classify and no row to write: the class says so, and the caller parks.
   if [ "$drc" = "$STAGE_SPAWN_PARK_RC" ]; then
@@ -12464,17 +12418,14 @@ design_arm() {
   # writes only the document, so the alias root is the right cwd. The stage
   # id contains `design` and neither `audit` nor `reconverge`, which is what
   # selects the `design` settings variant in `stage_spawn`.
-  quiet_window_begin
   local src1=0
   dispatch_stage S1design "$(alias_root "$(home_alias)")" \
     "$(design_stage_cmd "$skill1")" || src1=$?
   if [ "$src1" = "$STAGE_SPAWN_PARK_RC" ]; then
-    quiet_window_end
     park_router "S1design" "S1design" run
     return 1
   fi
   [ "$src1" = "0" ] || (exit "$src1")
-  quiet_window_end
   local rc1 pred1 class1 acct1
   rc1=$(cat "$RUN_DIR/S1design.rc" 2>/dev/null || printf '1')
   if predicate_design S1design; then pred1=0; else pred1=1; fi
@@ -12603,15 +12554,12 @@ split_arm() {
   while :; do
     src=0
     rm -f "$RUN_DIR/S2split.rc"
-    quiet_window_begin
     dispatch_stage S2split "$(alias_root "$(home_alias)")" "$cmd" || src=$?
     if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-      quiet_window_end
       park "S2split" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
       return 1
     fi
     [ "$src" = "0" ] || (exit "$src")
-    quiet_window_end
     rc=$(cat "$RUN_DIR/S2split.rc" 2>/dev/null || printf '1')
     if predicate_split S2split; then pred=0; else pred=1; fi
     class=$(classify_termination S2split "$rc" "$pred")
@@ -12924,15 +12872,12 @@ visual_arm() {
   cmd="/cc-cmds:visual-unattended $DOC"
   src=0
   rm -f "$RUN_DIR/S2V.rc"
-  quiet_window_begin
   dispatch_stage S2V "$(alias_root "$(home_alias)")" "$cmd" || src=$?
   if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-    quiet_window_end
     report_append "시각" "시각 단계를 띄우지 못했다 — $STAGE_SPAWN_PARK_REASON"
     return 1
   fi
   [ "$src" = "0" ] || (exit "$src")
-  quiet_window_end
   rc=$(cat "$RUN_DIR/S2V.rc" 2>/dev/null || printf '1')
   if predicate_visual S2V; then pred=0; else pred=1; fi
   class=$(classify_termination S2V "$rc" "$pred")
@@ -12975,19 +12920,16 @@ s2_audit_attempt() {
   # launch (`audit_pass_of`). Returns 0 when the audit ended `정상 완료`, 1
   # when the run parked.
   local audit_cmd2="$1"
-  quiet_window_begin
   local src2=0
   CC_PIPELINE_AUDIT_PASS="$(audit_pass_of S2)" \
     dispatch_stage S2 "$(alias_root "$(home_alias)")" "$audit_cmd2" || src2=$?
   # `S2.rc` is absent after a declined launch, and the line below reads that as
   # 1 — a crash. The router's answer is not a crash.
   if [ "$src2" = "$STAGE_SPAWN_PARK_RC" ]; then
-    quiet_window_end
     park_router "S2" "S2" run
     return 1
   fi
   [ "$src2" = "0" ] || (exit "$src2")
-  quiet_window_end
   local rc2 pred2 class2 acct2 sk2 rq2
   rc2=$(cat "$RUN_DIR/S2.rc" 2>/dev/null || printf '1')
   if predicate_audit S2; then pred2=0; else pred2=1; fi
@@ -13171,8 +13113,8 @@ main_loop_body() {
   design_arm || return 0
 
   # S2 AUDIT — headless, one pass. Runs before any segment, so the freeze window
-  # never overlaps a sibling worktree creation on the first pass; only a
-  # RE-audit can, and the quiet window covers that.
+  # never overlaps a sibling worktree creation on the first pass. No worktree is
+  # removed while the run walks: removal waits for the run-complete cleanup.
   # AN AUDIT THAT ALREADY HAPPENED IS NOT REDONE. This dispatch had no predicate
   # in front of it, so a document a person had already audited by hand was
   # audited again — billed, and with its findings routed a second time into the
@@ -13480,6 +13422,10 @@ main_loop_body() {
   # to guess which sense was meant on each line.
   [ "$imported" -eq 0 ] || report_append "착지 들여오기" "${imported}건 — 이전 런이 착지시킨 슬라이스라 디스패치하지 않았다"
   report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · park ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
+  # Run-complete cleanup, after `run_end_record` above wrote the ending row it
+  # reads and with every stage collected. Not in the EXIT trap: a run that did
+  # not reach this tail was interrupted and keeps its worktrees.
+  wtc_run 드라이버 || true
   # The walk is over and every stage it spawned has been collected; what the run
   # still holds goes back now, unless something of it is still running.
   spawn_lease_release_run

@@ -955,19 +955,67 @@ check "프로세스: 재수렴 행 뒤는 다시 A" \
   "$(pb '- `stage-result` | 세그먼트=A | 스테이지=A | 종류=implement | plan_sha256=ab' '- `stage-result` | 세그먼트=A | 스테이지=A | 종류=reconverge | 종단 부류=정상 완료')" "A"
 
 # ---------------------------------------------------------------------------
-# 6. Worktree teardown guard — BOTH conditions required
+# 6. Worktree infix and the run-complete cleanup's driver seam
 # ---------------------------------------------------------------------------
 WORKTREE_INFIX_SAVE="$WORKTREE_INFIX"
 main_root() { printf '%s' "$WORK/repo"; }
 mkdir -p "$WORK/repo"
-
-# (1) not recorded in this run's ledger -> refuse, even with the infix present
-if wt_remove "segA" 2>/dev/null; then bad "철거 가드 (1)" "원장에 없는 경로를 철거함"; else ok "철거 거부: 이 런의 원장에 생성 시점 값이 없음"; fi
-
-# recorded but WITHOUT the reserved infix -> refuse (defence in depth)
 printf -- '- `segment` | id=segB | 워크트리=%s/repo-hand-made-segB\n' "$(dirname "$WORK/repo")" >> "$LEDGER"
-if wt_remove "segB" 2>/dev/null; then bad "철거 가드 (2)" "예약 인픽스 없는 경로를 철거함"; else ok "철거 거부: 예약 인픽스 부재"; fi
 check "인픽스 상수 불변" "$WORKTREE_INFIX" "$WORKTREE_INFIX_SAVE"
+
+# 드라이버 경로의 판정 이음매. 원장마다 하위 셸에서 LEDGER·RUN_HALTED 만 바꿔
+# `wtc_driver_should_run` 의 출력과 종료 코드를 본다.
+WTC_L="$WORK/wtc-seam.md"
+wtc_end_ok='- `자율 승인` | 등급=0 | 결정=종료 | 재킥 원인=해당없음 | 종료 부류=완료'
+wtc_seam() {  # wtc_seam <RUN_HALTED> <원장 행…>
+  local h="$1" r; shift
+  : > "$WTC_L"
+  for r in "$@"; do printf '%s\n' "$r" >> "$WTC_L"; done
+  ( LEDGER="$WTC_L"; RUN_HALTED="$h"; out=$(wtc_driver_should_run); printf '%s|%s' "$out" "$?" )
+}
+check "정리 이음매: 조건이 모두 서면 빈 답과 0" "$(wtc_seam 0 "$wtc_end_ok")" "|0"
+check "정리 이음매: 정지한 런" "$(wtc_seam 1 "$wtc_end_ok")" "런 정지(RUN_HALTED=1)|1"
+check "정리 이음매: 완료 종료 행이 없음" "$(wtc_seam 0 '- `segment` | id=A | 상태=머지됨')" "종료 행 없음|1"
+check "정리 이음매: 더 이른 다른 부류 종료 행이 뒤의 완료 행을 막는다" \
+  "$(wtc_seam 0 '- `자율 승인` | 등급=0 | 결정=종료 | 재킥 원인=마감' "$wtc_end_ok")" "종료 행 재킥 원인 마감 · 종료 부류 없음|1"
+check "정리 이음매: 풀리지 않은 run 막힘" \
+  "$(wtc_seam 0 "$wtc_end_ok" '- `blocked` | 스코프=run | 원인=대상미선언 | 사유=대상 미선언')" "풀리지 않은 run 막힘(대상 미선언)|1"
+check "정리 이음매: 해소로 풀린 run 막힘은 막지 않는다" \
+  "$(wtc_seam 0 "$wtc_end_ok" '- `blocked` | 스코프=run | 원인=대상미선언 | 사유=대상 미선언' '- `blocked` | 스코프=run | 원인=해소 | 사유=대상 미선언')" "|0"
+check "정리 이음매: act 스코프의 예산·벽시계 행" \
+  "$(wtc_seam 0 "$wtc_end_ok" '- `blocked` | 스코프=act | 원인=마감 | 사유=예산·벽시계')" "예산·벽시계 막힘 행|1"
+check "정리 이음매: 열린 판단 승인" \
+  "$(wtc_seam 0 "$wtc_end_ok" '- `승인` | 승인 id=J-1 | 상태=대기 | 절단점=판단 | 판단 부류=설계-쟁점')" "열린 판단 승인(J-1)|1"
+
+# --doc 모드(매니페스트 없음)의 드라이버 호출은 생략 줄 하나만 쓰고 죽지 않는다.
+WTC_B="$WORK/wtc-doc"; mkdir -p "$WTC_B/docs/pipeline-run" "$WORK/wtc-doc-run"
+printf '%s\n' "$wtc_end_ok" > "$WTC_B/docs/pipeline-run/20260101-0000d0c0.md"
+wtc_doc=$( ( MANIFEST=""; LEDGER="$WTC_B/docs/pipeline-run/20260101-0000d0c0.md"; RUN_ID=20260101-0000d0c0
+             RUN_DIR="$WORK/wtc-doc-run"; BASE="$WTC_B"; RUN_HALTED=0
+             wtc_run 드라이버; printf 'rc=%s' "$?" ) 2>/dev/null )
+check "정리: --doc 모드는 생략 한 줄만 쓰고 0 으로 돌아온다" \
+  "$wtc_doc/$(grep -c '^- \*\*워크트리 정리\*\*' "$WTC_B/docs/pipeline-run/20260101-0000d0c0.md" | tr -d ' ')/$(grep -c '생략 — 매니페스트 없음(--doc 모드)' "$WTC_B/docs/pipeline-run/20260101-0000d0c0.md" | tr -d ' ')" \
+  "rc=0/1/1"
+
+# run.sh 를 싣는 프로세스는 환경으로 들어온 GATE_ROWS_MEMO_* 를 적재 때 지우므로
+# gate_rows 가 원장 행을 읽는다.
+printf -- '- `segment` | id=M1 | 상태=머지됨\n- `segment` | id=M2 | 상태=완료\n' > "$WORK/wtc-memo.md"
+wtc_memo=$(GATE_ROWS_MEMO_LEDGER="$WORK/wtc-memo.md" GATE_ROWS_MEMO_N=1 GATE_ROWS_MEMO_KINDS=segment GATE_ROWS_MEMO_ROWS= \
+  bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; LEDGER=$2; gate_rows segment | wc -l | tr -d " "' _ "$script_dir/run.sh" "$WORK/wtc-memo.md" 2>/dev/null)
+check "정리: 환경의 메모 이름이 run.sh 프로세스의 gate_rows 를 가리지 못한다" "$wtc_memo" "2"
+unset -f wtc_seam
+
+# 정적 고정. 걷기 꼬리는 종료 행을 쓴 뒤에 정리하고 그 뒤에 임대를 놓는다 —
+# 정리가 종료 행보다 앞서면 완주 판정이 읽을 행이 아직 없다.
+wtc_tail=$(awk '!/^[[:space:]]*#/ { sub(/^[[:space:]]+/, "") }
+  $0 == "run_end_record || true" || $0 == "wtc_run 드라이버 || true" || $0 == "spawn_lease_release_run" { print }' \
+  "$script_dir/run.sh" | awk '$0 == "run_end_record || true" { last = $0; next } { if (last != "") print last; last = ""; print }' | paste -s -d '>' -)
+check "정리: 걷기 꼬리에서 종료 행 기록, 정리, 임대 해제가 한 번씩 이 순서다" \
+  "$wtc_tail" "run_end_record || true>wtc_run 드라이버 || true>spawn_lease_release_run"
+check "정리: EXIT 트랩은 정리를 부르지 않는다" \
+  "$(grep -E "^trap .* EXIT" "$script_dir/run.sh" | grep -c 'wtc_' | tr -d ' ')" "0"
+check "정리: 걷기 중 철거와 정적 창 함수가 run.sh 에 남지 않았다" \
+  "$(grep -cE 'wt_remove_or_defer|quiet_window_|wt_remove\(' "$script_dir/run.sh" | tr -d ' ')" "0"
 
 # ---------------------------------------------------------------------------
 # 7. Detection lock — a held lock must return EX_TEMPFAIL, not block
@@ -2157,17 +2205,6 @@ if wt_create segX seg/mr-segX >/dev/null 2>&1; then
 else
   ok "미선언 별칭에는 워크트리를 만들지 않는다"
 fi
-
-# 철거 가드 셋째 조건 — 다른 별칭에 대해 쓰인 원장 행은 앞의 둘을 통과한다.
-MR_LEDGER_SAVE="$LEDGER"; LEDGER="$MR_DIR/ledger.md"; : > "$LEDGER"
-FOREIGN="$MR_DIR/beta$WORKTREE_INFIX$SLUG-segA"
-printf -- '- `segment` | id=segA | 워크트리=%s\n' "$FOREIGN" >> "$LEDGER"
-if wt_remove segA 2>/dev/null; then
-  bad "철거 가드 (3)" "다른 별칭의 레포 루트 아래 경로를 철거했다"
-else
-  ok "철거 거부: 해당 별칭의 레포 루트 아래가 아님"
-fi
-LEDGER="$MR_LEDGER_SAVE"
 SLUG="$SLUG_SAVE"
 rm -f "$RUN_DIR/plan.tsv"
 
@@ -3563,8 +3600,6 @@ armb_case() {
     park() { printf '%s\n' "$*" >> "$d/parked"; }
     absorb_stage_judgment() { :; }
     spawn_lineage_release() { :; }
-    quiet_window_begin() { :; }
-    quiet_window_end() { :; }
     continue_or_park() { CONTINUE_BLOCKED=""; CONTINUE_PARK_REASON="계속 없음"; return 1; }
     whole_digest() { printf 'x'; }
     grant_field() { printf 'x'; }
@@ -3728,8 +3763,6 @@ skd_case() {
     park_router() { printf 'router %s\n' "$*" >> "$d/parked"; }
     absorb_stage_judgment() { :; }
     spawn_lineage_release() { :; }
-    quiet_window_begin() { :; }
-    quiet_window_end() { :; }
     continue_or_park() { CONTINUE_BLOCKED=""; CONTINUE_PARK_REASON="계속 없음"; return 1; }
     s2_audit_run "/cc-cmds:design-audit-unattended $DOC" "${SKD_FIRST:-audit}"; printf 'rc=%s\n' "$?"
   ) > "$d/out" 2>/dev/null
@@ -3903,8 +3936,6 @@ arms_loop() {
     park() { printf '%s\n' "$*" >> "$d/parked"; }
     absorb_stage_judgment() { :; }
     spawn_lineage_release() { :; }
-    quiet_window_begin() { :; }
-    quiet_window_end() { :; }
     whole_digest() { printf 'x'; }
     grant_field() { printf 'x'; }
     report_path() { printf '%s' "$d/report"; }
@@ -4768,8 +4799,6 @@ re_loop() {
     park() { printf '%s\n' "$*" >> "$d/parked"; }
     absorb_stage_judgment() { :; }
     spawn_lineage_release() { :; }
-    quiet_window_begin() { :; }
-    quiet_window_end() { :; }
     whole_digest() { printf 'x'; }
     grant_field() { printf 'x'; }
     report_path() { printf '%s' "$d/report"; }
@@ -8973,6 +9002,17 @@ cp "$PROBE" "$script_dir/liveness.sh" "$PP2/" 2>/dev/null
 part2_out=$(XDG_STATE_HOME="$FR" bash "$PP2/lane-probe.sh" 2>/dev/null); part2_rc=$?
 check "run.sh 가 없는 설치본도 같은 형태로 열거 실패다" "$part2_rc" "3"
 check "그리고 아무것도 출력하지 않는다" "$part2_out" ""
+# run.sh 는 worktree-cleanup.sh 도 소싱한다. 그 파일 하나만 빠진 설치본에서는 소싱이
+# 실패해도 센서스가 쓰는 함수는 모두 실려 있으므로, 프로브는 온전한 설치본과 같은
+# 답과 같은 종료 코드를 낸다. 두 사본을 같은 순간에 돌려 대조한다.
+PP3="$WORK/probe-partial3"; PF3="$WORK/probe-full3"
+rm -rf "$PP3" "$PF3"
+cp -R "$script_dir" "$PP3" 2>/dev/null; rm -f "$PP3/worktree-cleanup.sh"
+cp -R "$script_dir" "$PF3" 2>/dev/null
+part3_out=$(XDG_STATE_HOME="$FR" bash "$PP3/lane-probe.sh" 2>/dev/null); part3_rc=$?
+full3_out=$(XDG_STATE_HOME="$FR" bash "$PF3/lane-probe.sh" 2>/dev/null); full3_rc=$?
+check "worktree-cleanup.sh 만 빠진 설치본은 온전한 설치본과 같은 종료 코드다" "$part3_rc" "$full3_rc"
+check "그리고 같은 답을 낸다" "$part3_out" "$full3_out"
 
 kill "$LIVE_PID" 2>/dev/null
 wait "$LIVE_PID" 2>/dev/null
@@ -12118,7 +12158,6 @@ printf -- '- `run` | run-id=r34prior | 설계 문서=%s\n- `stage-result` | 세�
   grant_field() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
   run_cycle_budget() { printf 10; }
   spawn_lease_release_run() { :; }; report_run_residual() { :; }
-  quiet_window_begin() { :; }; quiet_window_end() { :; }
   main_loop; printf 'rc=%s\n' "$?"
   printf 'all=%s\n' "${RUN_END_ALL_LANDED:-}"
 ) > "$R34M/out" 2>/dev/null
@@ -12210,7 +12249,6 @@ r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12;
     grant_field() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
     run_cycle_budget() { printf 10; }
     spawn_lease_release_run() { :; }; report_run_residual() { :; }
-    quiet_window_begin() { :; }; quiet_window_end() { :; }
     main_loop; printf 'rc=%s\n' "$?"
     printf 'all=%s\n' "${RUN_END_ALL_LANDED:-}"
   ) > "$d/out" 2>"$d/err"
@@ -12403,7 +12441,6 @@ m34_main() {  # m34_main <이름> <plan.tsv 본문> [실패할 세그먼트] [�
     grant_field() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
     run_cycle_budget() { printf 10; }
     spawn_lease_release_run() { :; }; report_run_residual() { :; }
-    quiet_window_begin() { :; }; quiet_window_end() { :; }
     main_loop; printf 'rc=%s\n' "$?"
   ) > "$d/out" 2>/dev/null
 }
@@ -13094,7 +13131,7 @@ r35_loop_in() {
   seg_alias() { printf 'home'; }; plan_uncell() { printf '%s' "$1"; }; segment_cap() { printf '%s' "$R35CAP"; }
   wt_create() { printf '%s' "$MF_REPO"; }; base_sha() { printf '%s' "$H35"; }; stash_ref() { :; }
   past_deadline() { return 1; }; run_cycles_spend() { printf '1'; }
-  quiet_window_begin() { :; }; quiet_window_end() { :; }; with_doc_lock() { return 0; }
+  with_doc_lock() { return 0; }
   answered_judgment_stage() { :; }; segment_process_b() { return 1; }; s4_attempt_base() { printf '%s' "$H35"; }
   predicate_implement() { return 0; }; predicate_review() { return 0; }
   # 설계 수준 재수렴(S1R) — R35_RCFAIL 이면 종단 리터럴 없이 끝나고, R35_DECLMOVE 면 재수렴
@@ -13138,7 +13175,7 @@ r35_loop_in() {
     local d; d=$(printf '%s\n' $R35_DISPO | sed -n "${7}p")
     return "${d:-1}"
   }
-  ledger_last() { :; }; apply_stage() { return 0; }; wt_remove_or_defer() { :; }
+  ledger_last() { :; }; apply_stage() { return 0; }
   merge_gate() { printf 'merge %s\n' "$1" >> "$R35/spawn.log"; return 0; }
   segment_cycle S2 a.txt >/dev/null 2>&1 || rc=$?
   printf '%s' "$rc"
