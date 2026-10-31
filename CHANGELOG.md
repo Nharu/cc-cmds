@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.16.0] - 2026-11-01
+## [3.17.0] - 2026-11-01
 
 베이스가 움직여 생긴 해소 머지가 브랜치 변경을 리뷰 때와 그대로 싣고 있으면 해소 리뷰 없이 머지된다. 게이트가 리뷰된 HEAD 와 해소 HEAD 의 브랜치 디프를 릴리스 메타 정규화 뒤 `git patch-id --verbatim` 으로 대조해 증명하고, 리뷰-후-머지 검사기는 게이트가 증명한 HEAD 하나만 받아 통과시킨다.
 
@@ -24,6 +24,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 베이스만 움직였을 뿐 브랜치가 얹는 변경이 리뷰 때와 한 줄도 다르지 않은 해소 머지도 트리가 달라 해소 리뷰로 갔고, 그 리뷰는 사람이 볼 것 없이 사이클 상한만 먹었다. patch-id 는 앞뒤 세 줄 문맥까지 해시하므로 베이스가 브랜치 변경의 곁을 건드린 해소는 지금처럼 해소 리뷰로 간다.
+
+## [3.16.0] - 2026-11-01
+
+레인에 고정된 요청(시각 발행의 `pin_lane`, fleet 대여 레인 런의 `fleet-lane`)이 라우터에서 기다리지 않는다. 고정 행이 cc-lane 의 발행 전용 행이면 주간 사용량 98% 아래에서만 들고, 대여 등록 행이면 대여 검사로만 들며, 막히면 계정과 원인을 밝힌 PARK 로 멈춘다.
+
+### Added
+
+- **발행 전용 행 고정** — 인벤토리의 `publish_only: true` 행(예약 아님, 무인 꺼짐, 대여 auto 아님)에 고정된 요청은 그 행의 사용량 행이 있고 로그인·디렉터리가 맞고 사용량 파일이 신선하고 창이 미상·소진이 아니며 주간 사용량이 9800 bp 아래일 때 GRANT 를 받는다. 차용 상태·같은 그룹의 예약 합·FIFO 대기는 보지 않는다. 살아 있는 임대는 상한을 넘은 뒤에도 유지되고, 재개도 같은 규칙으로 입장한다.
+- **새 PARK 이유 셋** — `pinned-publish-blocked`·`pinned-lend-blocked`·`pinned-lane-ineligible`. 봉투는 `account`(고정 계정)와 `why`(막힌 원인 토큰)를 싣고 `ready_at` 은 싣지 않는다. 복구 안내는 계정·원인과, 판정이 아는 리셋 시각을 담는다.
+- **연성 판정 토큰 둘** — 인벤토리 연성 판정이 `publish-only`(불리언이 아닌 `publish_only`)와 `publish-not-isolated`(발행 전용인데 예약·무인 사용·대여 auto)를 cc-lane 과 같은 순서로 낸다. 두 레포가 나눠 갖는 판정 말뭉치가 28줄이 됐다.
+
+### Changed
+
+- **대여 등록 행 고정** — 후보가 없으면 계정 없는 `no-room` 대기 대신 `pinned-lend-blocked` PARK 다. 대여 등록 행에 묶인 재개는 끝 시각을 모를 때만 같은 PARK 이고, 끝 시각을 알면 지금처럼 기다린다.
+- **고정 요청의 PARK 계정** — 고정 요청이 받는 PARK 는 판정 순서상 고정 판정보다 앞에서 나는 것(`inventory-corrupt`·`no-enabled-account`·`own-lease-corrupt`·임대 표·차용 기록 깨짐·재개 PARK)까지 고정 계정을 `account` 에 싣는다. 고정 없는 요청의 봉투는 그대로다.
+- **`lent-seat-unrouted` 안내** — 인벤토리가 유효한데 고정 계정이 없으면 등록 안내를, 인벤토리를 읽지 못하면 인벤토리 확인 안내를 쓴다.
+- **무인 사용 가드** — 무인 사용이 켜진 계정이 없어도 발행 전용 행에 고정된 요청은 가드를 건너뛰어 고정 행의 판정으로 간다.
+
+### Why
+
+대여가 닫힌 cc 에 고정된 시각 발행 스테이지가 계정 없는 `no-room` 대기로 멈춰, 무엇이 막혔는지도 언제 풀리는지도 드러나지 않았다. 발행 전용 디렉터리를 cc 조직의 별도 행으로 두면 대여와 무관하게 주간 예비분 안에서 발행할 수 있고, 막힌 고정 요청은 사람이 바로 고칠 수 있는 원인을 남긴다.
+
+### Post-install notes
+
+발행 전용 행을 쓰려면 cc-lane 의 발행 전용 등록이 설치된 뒤 `cc-lane account add <id> --publish-only` 로 행을 등록하고, 그 디렉터리에서 로그인한 다음, 이 버전이 반영된 뒤에 claude-design 의 `lane` 을 그 행 id 로 바꾼다. 등록 전에 열린 런은 그 행을 모르므로 그런 런이 모두 끝난 뒤에 바꾼다.
 
 ## [3.15.0] - 2026-11-01
 
