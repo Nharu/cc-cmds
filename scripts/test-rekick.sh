@@ -1361,6 +1361,32 @@ VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 { cat "$NM1"; printf -- '- `사전 인가` | 인터뷰 기록=docs/pipeline-run/%s.interview.md | sha256=%s\n' "$NEW1" "$OLDBASESHA"; } > "$WORK/v-iv-left.md"
 vs "설계가 빠졌는데 인터뷰 행이 남으면 실패한다" 실패 "$WORK/v-iv-left.md" "$E" 인터뷰
 
+# (e2) A source whose design and audit are out but whose visual steps stay: the
+# visual stage still reads the interview record, so the row is kept and renamed.
+PLANVIS='{ "design_required": true, "entry_skill": "design", "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2P", "skill": "visual-publish", "summary": "시각 발행", "depends_on": ["S2V"] }, { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": ["A1", "S2V"] }, { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": ["I1"] } ] }'
+P_PLAN="$PLANVIS" mk_prev RKVIS; fx_done
+fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
+PMV=$(sha "$BASE/docs/pipeline-run/RKVIS.plan.md"); PGV=$(sha "$BASE/docs/pipeline-grant/RKVIS.md")
+gv=$(rk graph --prev RKVIS --base "$BASE")
+check "6: 시각 단계가 남는 원천도 동결 문서면 D1·A1 이 빠진다" \
+  "$(printf '%s\n' "$gv" | awk -F'\t' '$1 == "건너뜀" { print $2 }' | tr '\n' ' ')" "D1 A1 "
+check "6: 시각 단계는 남는다" "$(col "$gv" 계획 | jq -r '[.steps[].id] | join(",")')" "S2V,S2P,I1,R1"
+rk render-manifest --prev RKVIS --base "$BASE" --run-id RKN7V --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMV" --expect-grant-sha256 "$PGV" > "$WORK/v-ivv.md"
+VS_PREV="$BASE/docs/pipeline-run/RKVIS.plan.md"; VS_PMSHA="$PMV"; VS_PGSHA="$PGV"
+check "7: 시각 단계가 남으면 설계가 빠져도 인터뷰 행이 새 run id 로 남는다" \
+  "$(grep -c "^- \`사전 인가\` | 인터뷰 기록=docs/pipeline-run/RKN7V.interview.md | sha256=$(sha "$BASE/docs/pipeline-run/RKVIS.interview.md")$" "$WORK/v-ivv.md")" "1"
+check "7: 설계가 빠지면 시각 단계가 남아도 로스터 행은 없다" "$(grep -c '^- `설계 로스터`' "$WORK/v-ivv.md")" "0"
+vs "시각 단계가 남아 인터뷰 행을 옮긴 초안은 통과한다" 통과 "$WORK/v-ivv.md" "$E"
+grep -v '^- `사전 인가` | 인터뷰 기록=' "$WORK/v-ivv.md" > "$WORK/v-ivv-none.md"
+vs "시각 단계가 남는데 인터뷰 행을 뺀 초안은 실패한다" 실패 "$WORK/v-ivv-none.md" "$E" 인터뷰
+out=$(rk render-interview --prev RKVIS --base "$BASE" --expect-sha256 "$PMV"); rc=$?
+check "7: 시각 단계가 남는 원천의 인터뷰 복사본이 원천 기록과 같다" \
+  "$rc/$(printf '%s\n' "$out" | shasum -a 256 | cut -d' ' -f1)" "0/$(sha "$BASE/docs/pipeline-run/RKVIS.interview.md")"
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+
 # (f) The apply probe code row is carried byte for byte, and the source run's
 # pinned plugin copy and its pin record are left alone by the whole flow.
 AC_ROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' 'make probe' | shasum -a 256 | cut -d' ' -f1)"
@@ -2011,6 +2037,20 @@ check "12: --targets 없이 그리면 원천 대상 행이 그대로 옮겨진�
   "$(grep -E '^- `target`' "$SL_OUT")" "$(grep -E '^- `target`' "$BASE/docs/pipeline-run/RKCT.plan.md")"
 SL_ASKED=""
 
+# A seat source whose design and audit are out but whose visual steps stay: the
+# seat's draft keeps the interview row, and its copy equals the source record.
+P_PLAN="$PLANVIS" P_EXTRA="$SEAT_ROW" mk_prev RKSV
+fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
+seat_end 마감
+seat_link RKSV RKSV1
+check "12: 시각 단계가 남는 좌석 원천의 render-manifest --auto 는 0 이고 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "12: 그 좌석 초안은 인터뷰 행을 새 run id 로 하나 싣는다" \
+  "$(grep -c '^- `사전 인가` | 인터뷰 기록=docs/pipeline-run/RKSV1\.interview\.md | ' "$SL_OUT")" "1"
+check "12: 그 좌석 초안의 인터뷰 복사본이 원천 기록과 같다" \
+  "$(sha "$BASE/docs/pipeline-run/RKSV1.interview.md")" "$(sha "$BASE/docs/pipeline-run/RKSV.interview.md")"
+
 # A `플러그인 허용` row whose key an account has now carries byte for byte, and
 # the successor passes its checks.
 PA_ROW="- \`플러그인 허용\` | 플러그인=$PA_N | 사유=픽스처"
@@ -2336,6 +2376,20 @@ tok13 "원격 판독 행이 없으면" PR기록없음 "$N13"
 D13=20261001-a0000007
 P_DOC="$DOC_OPEN" mk13 "$D13"; gh13
 tok13 "설계 문서가 동결되지 않아 설계를 다시 하면" 설계재실행 "$D13"
+# A plan that never had a design step: the open segment is a candidate, not a
+# re-design; a document the graph could not measure as the copy reads it is
+# `문서바뀜` — a document gone after the source run is that case on one call.
+PLANNOD='{ "design_required": false, "entry_skill": "implement", "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": ["I1"] } ] }'
+ND13=20261001-a0000008
+P_PLAN="$PLANNOD" mk13 "$ND13"; gh13
+tok13 "설계 단계가 없는 계획의 열린 PR 세그먼트는" 후보 "$ND13"
+DOC13G='docs/rk-adopt-gone.md'
+cp "$BASE/$DOC13" "$BASE/$DOC13G"
+NG13=20261001-a0000016
+P_PLAN="$PLANNOD" P_DOC="$DOC13G" K13_DOCSHA="$DOC13SHA" mk13 "$NG13"; gh13
+tok13 "설계 단계가 없는 계획에서 지울 문서가 아직 있으면" 후보 "$NG13"
+rm -f "$BASE/$DOC13G"
+tok13 "설계 단계가 없는 계획에서 매니페스트의 설계 문서를 읽을 수 없으면" 문서바뀜 "$NG13"
 
 # A last row of `park`: the seat leaves it, a person is asked with its cause.
 P13=20261001-a0000002

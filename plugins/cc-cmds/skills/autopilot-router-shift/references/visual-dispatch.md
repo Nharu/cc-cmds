@@ -8,7 +8,7 @@ gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --se
   -- visual -p "/cc-cmds:visual-unattended <스냅숏 design_doc>"
 ```
 
-Wait on it as *Waiting on a stage* describes. The stage is complete when its artifact predicate holds: the literal `시각 디자인을 검토 통과로 확정했습니다.` in its stream, and the document's visual sidecar reading `**상태**: 검토 통과`. Either alone is a `공허한 성공`, which 「Continuing a stage that ended its turn in prose」 takes. The visual step is not a segment and its rows carry `세그먼트=-`. **A visual step that did not end `정상 완료` — a halt included — holds only the screen slices**: plan and dispatch every slice whose `**화면**` field reads `없음` as if the step had not been there.
+Wait on it as *Waiting on a stage* describes. The stage is complete when its artifact predicate holds: the literal `시각 디자인을 검토 통과로 확정했습니다.` in its stream, and the document's visual sidecar reading `**상태**: 검토 통과` or `**상태**: 발행됨` (a re-kicked run reuses its source's sidecar without writing it). Either alone is a `공허한 성공`, which 「Continuing a stage that ended its turn in prose」 takes. The visual step is not a segment and its rows carry `세그먼트=-`. **A visual step that did not end `정상 완료` — a halt included — holds only the screen slices**: plan and dispatch every slice whose `**화면**` field reads `없음` as if the step had not been there.
 
 **The publish step.** When `steps[]` carries exactly one step whose `skill` is `visual-publish` (`S2P`), and the step its `depends_on` names (`S2V`) ended `정상 완료`, dispatch it — `--segment -`, stage kind `visual-publish`:
 
