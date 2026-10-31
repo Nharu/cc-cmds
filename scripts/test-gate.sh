@@ -55127,9 +55127,12 @@ check "89: 공시 울타리가 없는 보고서의 넷은 미상이다" \
   "미상/미상/미상/미상"
 check "89: 골격급 울타리의 셋은 수로 읽힌다" \
   "$(tier_row_field "$tier_disc" 골격급)/$(tier_row_field "$tier_disc" '합성 후보')/$(tier_row_field "$tier_disc" '합성 골격급')" "0/1/0"
+check "89: 하류 부류 울타리가 없는 보고서의 다섯은 미상이다" \
+  "$(tier_row_field "$tier_disc" '결과물 동일')/$(tier_row_field "$tier_disc" '자가 수정')/$(tier_row_field "$tier_disc" '리뷰 포착')/$(tier_row_field "$tier_disc" '운영 노출')/$(tier_row_field "$tier_disc" '경량 처리')" \
+  "미상/미상/미상/미상/미상"
 tier_disc_bytes=$(printf '%s' "$tier_disc" | wc -c | tr -d ' ')
-if [ "$tier_disc_bytes" -lt 450 ]; then ok "89: 미상투성이 감사 공시 행도 450 바이트 아래다"
-else bad "89: 미상투성이 감사 공시 행도 450 바이트 아래다" "$tier_disc_bytes 바이트"; fi
+if [ "$tier_disc_bytes" -lt 568 ]; then ok "89: 미상투성이 감사 공시 행도 568 바이트 아래다"
+else bad "89: 미상투성이 감사 공시 행도 568 바이트 아래다" "$tier_disc_bytes 바이트"; fi
 
 # 공시 울타리를 읽는 규칙과 회차 — 게이트의 그 함수를 직접 부른다.
 tier_rd="$WORK/tier-rd"
@@ -55146,6 +55149,29 @@ printf '%s\n' '<!-- cc-design-audit-disclosure v1 begin -->' '**고유 결함 �
 check "89: 울타리가 두 쌍이면 넷 모두 미상이다" "$(tier_fence_read)" "미상/미상/미상/미상/"
 check "89: 재수렴이 있었던 감사 키의 공시 행은 재감사 다" \
   "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; audit_pass_of() { printf reaudit; }; gate_append() { shift; printf "%s\n" "$@"; }; gate_record_audit_disclosure A1 2' _ "$GATE" | sed -n 's/^회차=//p')" "재감사"
+
+# 하류 부류 울타리 — 감사 공시 행의 다섯 필드는 그 울타리 한 쌍 사이에서만 읽는다.
+tier_ds_doc="$WORK/tier-ds/docs/design-audit"
+mkdir -p "$tier_ds_doc"
+tier_ds_write() {
+  printf '%s\n' '# 감사 보고서' '<!-- cc-design-audit-downstream v1 begin -->' "**하류 부류 — 결과물 동일**: $1" \
+    "**하류 부류 — 구현자 자가 수정**: $2" "**하류 부류 — 리뷰 포착**: $3" "**하류 부류 — 운영 노출**: $4" \
+    "**경량 처리 수**: $5" '<!-- /cc-design-audit-downstream v1 end -->' > "$tier_ds_doc/k.md"
+}
+tier_ds_read() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; DOC_BASE="$2"; DOC_SLUG=k; for s in "하류 부류 — 결과물 동일" "하류 부류 — 구현자 자가 수정" "하류 부류 — 리뷰 포착" "하류 부류 — 운영 노출" "경량 처리 수"; do printf "%s/" "$(gate_audit_fence_field "$GATE_AUDIT_DOWNSTREAM_BEGIN" "$GATE_AUDIT_DOWNSTREAM_END" "$s")"; done' _ "$GATE" "$WORK/tier-ds"
+}
+tier_ds_write 3 5 2 1 4
+check "89: 하류 부류 울타리 한 쌍의 다섯을 수로 읽는다" "$(tier_ds_read)" "3/5/2/1/4/"
+check "89: 감사 공시 행의 다섯 필드가 하류 부류 울타리의 맞는 슬롯을 싣는다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; DOC_BASE="$2"; DOC_SLUG=k; audit_pass_of() { printf first; }; gate_append() { shift; printf "%s\n" "$@"; }; gate_record_audit_disclosure A1 1' _ "$GATE" "$WORK/tier-ds" \
+     | grep -E '^(결과물 동일|자가 수정|리뷰 포착|운영 노출|경량 처리)=' | tr '\n' ' ')" \
+  "결과물 동일=3 자가 수정=5 리뷰 포착=2 운영 노출=1 경량 처리=4 "
+tier_ds_write 3 5 둘 1 4
+check "89: 하류 부류 슬롯 값이 수가 아니면 그 칸만 미상이다" "$(tier_ds_read)" "3/5/미상/1/4/"
+tier_ds_write 3 5 2 1 4
+printf '%s\n' '<!-- cc-design-audit-downstream v1 begin -->' '**경량 처리 수**: 9' '<!-- /cc-design-audit-downstream v1 end -->' >> "$tier_ds_doc/k.md"
+check "89: 하류 부류 울타리가 두 쌍이면 다섯 모두 미상이다" "$(tier_ds_read)" "미상/미상/미상/미상/미상/"
 
 # 감사 판 — 감사 지침 파일의 바이트에 묶이고, 플러그인 핀이 없으면 미상이다.
 tier_plug="$WORK/tier-plug"

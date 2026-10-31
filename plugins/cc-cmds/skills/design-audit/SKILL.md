@@ -155,7 +155,7 @@ Apply the protocol's `witness_present` completion predicate, its reconcile ladde
 
 **Read `${CLAUDE_SKILL_DIR}/references/03-adjustment-pass.md`.**
 
-Record the `조정 시작` timestamp as the **first** act of this step. In one non-recursive pass: re-assign severity as a single labeller; route every unique defect to exactly one named owner; apply the accepted set; write the routed items into their carriers; ask the synthesis question of CFI-3b and answer it in writing; record `조정 종료`.
+Record the `조정 시작` timestamp as the **first** act of this step. In one non-recursive pass: re-assign severity as a single labeller; route every unique defect to exactly one named owner; assign each non-rejected unique defect its downstream class and decide the light path by `03-adjustment-pass.md` (`### Downstream class`); apply the accepted set; write the routed items into their carriers; ask the synthesis question of CFI-3b and answer it in writing; record `조정 종료`.
 
 Severity is re-assigned here, by one labeller, in one pass. It is **never** aggregated across readers by taking a maximum — per-reader severity labels are not comparable (measured spread across readers on one document was better than twofold), so a maximum is a ratchet rather than a measurement. Readers do not emit severity tiers at all, so there is nothing to aggregate even if someone tried.
 
@@ -163,7 +163,7 @@ Severity is re-assigned here, by one labeller, in one pass. It is **never** aggr
 
 **Read `${CLAUDE_SKILL_DIR}/references/04-disclosure-block.md`.**
 
-Compose the disclosure block, run the four anti-vacuity self-checks, write the report, echo the block in Korean, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. Emit the next-step line, then stop with the literal statement *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."*
+Compose the disclosure block and the downstream class fence after it, run the four anti-vacuity self-checks, write the report, echo the block in Korean, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. Emit the next-step line, then stop with the literal statement *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."*
 
 ### (There is no Step 8.)
 

@@ -11581,21 +11581,30 @@ gate_audit_skeleton_count() {
 # reconcile path writes none: its row is not an audit's end.
 #
 # VALUES COME FROM INSIDE THE FENCES ONLY. The counts are read between the
-# disclosure v1 fence pair and the skeletal fence pair of the audit report, by
-# the rule the measurement script follows: a report without exactly one pair
-# reads `미상` for every slot of that fence, and no prose is read as a value.
+# disclosure v1 fence pair, the downstream class fence pair and the skeletal
+# fence pair of the audit report, by the rule the measurement script follows:
+# a report without exactly one pair reads `미상` for every slot of that fence,
+# and no prose is read as a value.
 # ---------------------------------------------------------------------------
 GATE_AUDIT_DISCLOSURE_BEGIN='<!-- cc-design-audit-disclosure v1 begin -->'
 GATE_AUDIT_DISCLOSURE_END='<!-- /cc-design-audit-disclosure v1 end -->'
+GATE_AUDIT_DOWNSTREAM_BEGIN='<!-- cc-design-audit-downstream v1 begin -->'
+GATE_AUDIT_DOWNSTREAM_END='<!-- /cc-design-audit-downstream v1 end -->'
 
 gate_audit_disclosure_field() {
-  # gate_audit_disclosure_field <slot> — the value of the disclosure v1 fence's
-  # `**<slot>**: <n>` line when it is a count, `미상` otherwise (no report, not
-  # exactly one fence pair, no such slot, not a number).
+  # gate_audit_disclosure_field <slot> — the disclosure v1 fence's slot.
+  gate_audit_fence_field "$GATE_AUDIT_DISCLOSURE_BEGIN" "$GATE_AUDIT_DISCLOSURE_END" "$1"
+}
+
+gate_audit_fence_field() {
+  # gate_audit_fence_field <begin> <end> <slot> — the value of the
+  # `**<slot>**: <n>` line between the given fence pair when it is a count,
+  # `미상` otherwise (no report, not exactly one fence pair, no such slot, not
+  # a number).
   local rp v
   rp=$(audit_report_path) || { printf '미상'; return 0; }
   [ -f "$rp" ] || { printf '미상'; return 0; }
-  v=$(awk -v b="$GATE_AUDIT_DISCLOSURE_BEGIN" -v e="$GATE_AUDIT_DISCLOSURE_END" -v k="**$1**: " '
+  v=$(awk -v b="$1" -v e="$2" -v k="**$3**: " '
     { sub(/\r$/, "") }
     $0 == b { nb++; if (nb == 1 && ne == 0) inside = 1; next }
     $0 == e { ne++; if (inside) { inside = 0; closed = 1 }; next }
@@ -11663,7 +11672,12 @@ gate_record_audit_disclosure() {
     "바이트=$(gate_audit_disclosure_field '동결 문서 바이트')" \
     "골격급=$(gate_audit_skeletal_fence_count '골격급 수')" \
     "합성 후보=$(gate_audit_skeletal_fence_count '합성 요구 후보 수')" \
-    "합성 골격급=$(gate_audit_skeletal_fence_count '합성 요구 골격급 수')"
+    "합성 골격급=$(gate_audit_skeletal_fence_count '합성 요구 골격급 수')" \
+    "결과물 동일=$(gate_audit_fence_field "$GATE_AUDIT_DOWNSTREAM_BEGIN" "$GATE_AUDIT_DOWNSTREAM_END" '하류 부류 — 결과물 동일')" \
+    "자가 수정=$(gate_audit_fence_field "$GATE_AUDIT_DOWNSTREAM_BEGIN" "$GATE_AUDIT_DOWNSTREAM_END" '하류 부류 — 구현자 자가 수정')" \
+    "리뷰 포착=$(gate_audit_fence_field "$GATE_AUDIT_DOWNSTREAM_BEGIN" "$GATE_AUDIT_DOWNSTREAM_END" '하류 부류 — 리뷰 포착')" \
+    "운영 노출=$(gate_audit_fence_field "$GATE_AUDIT_DOWNSTREAM_BEGIN" "$GATE_AUDIT_DOWNSTREAM_END" '하류 부류 — 운영 노출')" \
+    "경량 처리=$(gate_audit_fence_field "$GATE_AUDIT_DOWNSTREAM_BEGIN" "$GATE_AUDIT_DOWNSTREAM_END" '경량 처리 수')"
 }
 
 # ---------------------------------------------------------------------------

@@ -302,11 +302,16 @@ cm_design_json() {
       --arg raw "$(cm_field "$row" '원시')" --arg uniq "$(cm_field "$row" '고유')" \
       --arg unr "$(cm_field "$row" '미보강')" --arg bytes "$(cm_field "$row" '바이트')" \
       --arg skel "$(cm_field "$row" '골격급')" --arg cand "$(cm_field "$row" '합성 후보')" \
-      --arg cskel "$(cm_field "$row" '합성 골격급')" '
+      --arg cskel "$(cm_field "$row" '합성 골격급')" \
+      --arg csame "$(cm_field "$row" '결과물 동일')" --arg cself "$(cm_field "$row" '자가 수정')" \
+      --arg crev "$(cm_field "$row" '리뷰 포착')" --arg cops "$(cm_field "$row" '운영 노출')" \
+      --arg light "$(cm_field "$row" '경량 처리')" '
       def num: if test("^[0-9]+$") then tonumber else null end;
       {stage: $st, attempt: ($ver | num), path: $path, pass: $pass, edition: $ed, plugin: $plugin,
        raw: ($raw | num), unique: ($uniq | num), unreinforced: ($unr | num), bytes: ($bytes | num),
-       skeletal: ($skel | num), synth_candidates: ($cand | num), synth_skeletal: ($cskel | num)}')
+       skeletal: ($skel | num), synth_candidates: ($cand | num), synth_skeletal: ($cskel | num),
+       cls_same: ($csame | num), cls_self_fix: ($cself | num), cls_review: ($crev | num),
+       cls_ops: ($cops | num), light: ($light | num)}')
 "
   done <<ROWS
 $(cm_ledger_rows "$1" '감사 공시')
@@ -1007,7 +1012,7 @@ ROWS
      quality: {first_cycles: ($cycles | split("\n") | map(select(length > 0) | split("\t")
                  | {segment: .[0], cycle: (.[1] | if test("^[0-9]+$") then tonumber else null end), p0: (.[2] | num), p1: (.[3] | num)})
                  | group_by(.segment) | map(min_by(.cycle // 1e18))),
-               audits: [$design[0].audits[] | {pass, unique, skeletal}]}}' 2>/dev/null \
+               audits: [$design[0].audits[] | {pass, unique, skeletal, light, cls_ops}]}}' 2>/dev/null \
     || { rm -rf "$tmp"; return 1; }
   rm -rf "$tmp"
 }
@@ -1233,6 +1238,11 @@ cm_aggregate() {
                       unreinforced: ([.[].unreinforced | select(. != null)] | dist),
                       skeletal: ([.[].skeletal | select(. != null)] | dist),
                       synth_candidates: ([.[].synth_candidates | select(. != null)] | dist),
+                      cls_same: ([.[].cls_same | select(. != null)] | dist),
+                      cls_self_fix: ([.[].cls_self_fix | select(. != null)] | dist),
+                      cls_review: ([.[].cls_review | select(. != null)] | dist),
+                      cls_ops: ([.[].cls_ops | select(. != null)] | dist),
+                      light: ([.[].light | select(. != null)] | dist),
                       unique_per_kb_median: ([.[] | select(.unique != null and .bytes != null and .bytes > 0)
                                               | .unique / (.bytes / 1024)] | median),
                       reconverge_rate: (if length == 0 then null

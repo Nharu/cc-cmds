@@ -265,7 +265,7 @@ Apply the protocol's `witness_present` completion predicate, its reconcile ladde
 
 **Read `${CLAUDE_SKILL_DIR}/../design-audit/references/03-adjustment-pass.md`.** Land the fixes and the report's adjustment content by its `## Applying the pass` rules.
 
-Record the `조정 시작` timestamp as the **first** act of this step. In one non-recursive pass: re-assign severity as a single labeller; route every unique defect to exactly one named owner; write the accepted set and the routed items by the procedure below; ask the synthesis question of CFI-3b and answer it in writing; record `조정 종료`.
+Record the `조정 시작` timestamp as the **first** act of this step. In one non-recursive pass: re-assign severity as a single labeller; route every unique defect to exactly one named owner; assign each non-rejected unique defect its downstream class and decide the light path by `03-adjustment-pass.md` (`### Downstream class`); write the accepted set and the routed items by the procedure below; ask the synthesis question of CFI-3b and answer it in writing; record `조정 종료`.
 
 Severity is re-assigned by one labeller in one pass, **never** as a maximum across readers.
 
@@ -289,7 +289,7 @@ Severity is re-assigned by one labeller in one pass, **never** as a maximum acro
 
 **Read `${CLAUDE_SKILL_DIR}/../design-audit/references/04-disclosure-block.md`.**
 
-Compose the disclosure block, run the four anti-vacuity self-checks, write the report, write the block into the report in Korean, then write the `골격급` disclosure below, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. The disclosure block, the `## 골격급 결함` section, the skeletal fence (its `문서 sha256` measured after the publish) and `조정 종료` are Edits in one response; the response before it measures `shasum -a 256 <document>` and `date` together.
+Compose the disclosure block, run the four anti-vacuity self-checks, write the report, write the block into the report in Korean, then write the `골격급` disclosure below, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. The disclosure block, the downstream class fence, the `## 골격급 결함` section, the skeletal fence (its `문서 sha256` measured after the publish) and `조정 종료` are Edits in one response; the response before it measures `shasum -a 256 <document>` and `date` together.
 
 **`골격급` disclosure.** A `## 골격급 결함` section, one item per `골격급` grade:
 
@@ -305,7 +305,7 @@ Compose the disclosure block, run the four anti-vacuity self-checks, write the r
 
 `**미해결 항목**` is what lets a re-convergence mark the item it settled in place. A `합성 요구` entry's item is still found by its candidate text.
 
-In `## 잔여 공개`, after the disclosure v1 end fence — the v1 block stays byte for byte:
+In `## 잔여 공개`, after the disclosure v1 end fence — the v1 block stays byte for byte; the downstream fence of `04-disclosure-block.md` comes first, then this one:
 
 ```text
 <!-- cc-design-audit-skeletal v1 begin -->
