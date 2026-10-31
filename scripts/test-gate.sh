@@ -47065,10 +47065,10 @@ case "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" in
   "3|"*"이월 인계를 쓸 수 없습니다 — 런이 이미 끝났습니다"*) ok "95: TH1 끝난 런의 이월 인계는 exit 3 이다" ;;
   *) bad "95 TH1 끝난 런" "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" ;;
 esac
-# 대기 인계의 거절 문면은 그대로다 — 이월이 생겨도 기다릴 것 없는 대기는 같은 말로 선다.
+# 기다릴 것 없는 대기 인계는 이월이 생겨도 거절되고, 문면은 기다릴 수 있는 대상(`CI 대기`·`master 대기` 세그먼트, `리셋 대기` 키)을 모두 적는다.
 case "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" in
-  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"*)
-    ok "95: TH1 기다릴 것 없는 대기 인계의 거절 문면은 바뀌지 않았다" ;;
+  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"*)
+    ok "95: TH1 기다릴 것 없는 대기 인계는 기다릴 대상을 모두 적은 문면으로 거절된다" ;;
   *) bad "95 TH1 대기 문면" "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" ;;
 esac
 check "95: TH1 거절들은 handoff 행을 쓰지 않는다" "$(lsr93_n "$lsr_root/th1/ledger.md" '- `handoff` ')" "0"
