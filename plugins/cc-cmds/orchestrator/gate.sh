@@ -6782,8 +6782,8 @@ surface_of_argv0() {
       esac ;;
     visual-check.sh)
       case "${1:-}" in
-        scan|size|approval|bundle) printf '읽기' ;;
-        *)                         printf '등급 미상' ;;
+        scan|size|approval|bundle|binding|reuse) printf '읽기' ;;
+        *)                                       printf '등급 미상' ;;
       esac ;;
     visual-capture.sh)
       case "${1:-}" in
@@ -46598,6 +46598,7 @@ gate_verb_supervise_stage() {
     CC_PIPELINE_AUDIT_PASS=$(audit_pass_of "$seg")
   fi
   gate_launch_kind_env "$kind"
+  stage_cache_ttl_env
   # THE ANSWER CARD, when the dispatch wrote one for this attempt. Its path
   # follows from `seg#attempt`, so the launch token carries nothing new; an
   # attempt with no card gets no variable, whatever this process inherited.
@@ -48473,10 +48474,12 @@ gate_record_stage_outcome() {
        && ! { grep -qF "$LIT_SPLIT_TERMINAL" "$out" 2>/dev/null && split_registry_complete "${DOC:-}"; }; then
     klass='공허한 성공'
   # A visual stage too: its terminal literal in the stream and its sidecar at
-  # `검토 통과`. Either alone is a stage that said it finished over screens nobody
-  # reviewed, or reviewed screens whose stage never said it was done.
+  # `검토 통과` or `발행됨` (a re-kicked run reusing the source's published
+  # screens ends without writing the sidecar). Either alone is a stage that said
+  # it finished over screens nobody reviewed, or reviewed screens whose stage
+  # never said it was done.
   elif [ "$kind" = "visual" ] \
-       && ! { grep -qF "$LIT_VISUAL_TERMINAL" "$out" 2>/dev/null && visual_sidecar_reviewed "${DOC:-}"; }; then
+       && ! { grep -qF "$LIT_VISUAL_TERMINAL" "$out" 2>/dev/null && visual_sidecar_complete "${DOC:-}"; }; then
     klass='공허한 성공'
   # The visual publish stage: its terminal literal, and either the sidecar at
   # `발행됨` or a person's `거부`/`발행하지 않음` at one of its halts.
@@ -51873,7 +51876,11 @@ gate_launch_shift() {
   # THE VISUAL PUBLISH STAGE'S TWO VARIABLES ARE CLEARED as for every kind but
   # that one: a shift launched from inside that stage would otherwise load the
   # Artifact tools and carry the helper marker.
+  #
+  # THE PROMPT CACHE LIFETIME is set or cleared here too, so a shift launched
+  # from inside a stage does not keep that stage's value under `auto`.
   gate_launch_kind_env shift
+  stage_cache_ttl_env
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \

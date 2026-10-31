@@ -3,7 +3,9 @@
 # plugins/cc-cmds/orchestrator/gate.sh behind SOLO_EXP_GATE.
 #
 #   snapshot  prints {"H":"stub-h"}
-#   act       appends its argv to $STUB_GATE_LOG, then acts by $STUB_GATE_MODE:
+#   act       appends its argv to $STUB_GATE_LOG and, with STUB_ENV_LOG set,
+#             the names of its environment variables to that file, then acts
+#             by $STUB_GATE_MODE:
 #     ok    the first call of a run does nothing (the seat must call again);
 #           the second writes what the stage would have written and `done`:
 #           a design run writes the frozen document (no 상태 line when
@@ -53,6 +55,9 @@ case "$verb" in
 esac
 
 printf '%s\n' "act $*" >> "${STUB_GATE_LOG:?}"
+# The names (never the values) of the variables a stage process would
+# inherit, so the test can see that no SOLO_EXP_* variable reaches one.
+[[ -z "${STUB_ENV_LOG:-}" ]] || compgen -e >> "$STUB_ENV_LOG"
 
 m=""; akind=""
 while (( $# > 0 )); do

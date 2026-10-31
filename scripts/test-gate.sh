@@ -130,7 +130,7 @@ unset TMUX TMUX_PANE
 # The launch switches go too: the effort, model and window on every launch argv
 # the suite measures would otherwise be a property of the caller's shell. The
 # sections that exercise a switch set it on the call.
-unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL
+unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL CC_ORCH_PROMPT_CACHE_TTL
 # VERSION PINNING IS OFF FOR THE WHOLE SUITE, and this seam only ever turns off
 # the taking of a NEW pin — it can never make the gate ignore one that exists.
 # Every fixture run below would otherwise copy the plugin root into its fixture
@@ -3211,8 +3211,8 @@ pre_base() {
   # THE CLI-SHAPED STUB IS A DEFINITION, so it lives here: 14h launches through
   # it and 14g resumes through it, and a cut of 14g alone died on `STUB: unbound
   # variable` while it sat in 14h's body. It records the argv it was handed and
-  # the two discovery switches and the subagent-append switch in its
-  # environment, then emits one result line.
+  # the two discovery switches, the subagent-append switch and the prompt cache
+  # lifetime in its environment, then emits one result line.
   # With `CC_STUB_ECHO_SID=1` the result's `session_id` is the `--session-id` or
   # `-r` value on the argv, which is what the real CLI answers — the resume
   # fixtures need the ledger's session id to be the one the gate recorded its
@@ -3228,7 +3228,8 @@ pre_base() {
 printf '%s\n' "$*" > "${CC_STUB_ARGV_OUT:-/dev/null}"
 { printf 'MDS=%s\n' "${CLAUDE_CODE_DISABLE_CLAUDE_MDS-unset}"
   printf 'MEM=%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}"
-  printf 'SUB=%s\n' "${CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT-unset}"; } > "${CC_STUB_ENV_OUT:-/dev/null}"
+  printf 'SUB=%s\n' "${CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT-unset}"
+  printf 'TTL=%s\n' "${CLAUDE_CODE_PROMPT_CACHE_TTL-unset}"; } > "${CC_STUB_ENV_OUT:-/dev/null}"
 if [ -n "${CC_STUB_MODEL:-}" ]; then
   printf '{"type":"system","subtype":"init","model":"%s"}\n' "$CC_STUB_MODEL"
 fi
@@ -3263,11 +3264,14 @@ STUBEOF
   # `stage-policy.md`, printed. A launcher that reaches the wrapper without the
   # policy is the failure both 14h and 34 refuse, and the only way to reach it
   # through the real launch path is a gate whose own directory lacks the file.
+  # The copy is made once per suite process: whichever of 14h and 34 runs first
+  # makes it and the other reuses it, so the three lines that make it run in one
+  # of the two sections only and are marked as varying with the cut.
   si_gate_nopolicy() {
     if [ ! -f "$WORK/gate-nopolicy/gate.sh" ]; then
-      rm -rf "$WORK/gate-nopolicy"
-      cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$WORK/gate-nopolicy"
-      rm -f "$WORK/gate-nopolicy/stage-policy.md"
+      rm -rf "$WORK/gate-nopolicy" # gate-isolation: 변동
+      cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$WORK/gate-nopolicy" # gate-isolation: 변동
+      rm -f "$WORK/gate-nopolicy/stage-policy.md" # gate-isolation: 변동
     fi
     si_gate_hooks
     printf '%s/gate.sh' "$WORK/gate-nopolicy"
@@ -10056,9 +10060,53 @@ check "닫힌 집합 밖의 수준은 무시된다" "$(lf_kind LF_KIND=design CC
 check "effort 끄기 스위치는 --effort 만 뺀다" "$(lf_kind LF_KIND=design CC_ORCH_STAGE_EFFORT=off)" "--model opus"
 check "model 끄기 스위치는 --model 만 뺀다" "$(lf_kind LF_KIND=design CC_ORCH_STAGE_MODEL=off)" "--effort high"
 check "off 가 아닌 model 값은 무시된다" "$(lf_kind LF_KIND=design CC_ORCH_STAGE_MODEL=sonnet)" "--effort high --model opus"
-lf_defs=$(grep -cE '^(stage_kind_of|stage_effort_of|stage_model_of|stage_launch_flags|stage_served_model_of)\(\)' \
+lf_defs=$(grep -cE '^(stage_kind_of|stage_effort_of|stage_model_of|stage_launch_flags|stage_served_model_of|stage_cache_ttl_of|stage_cache_ttl_env)\(\)' \
   "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" || true)
 check "게이트는 종류·effort·model 함수를 스스로 정의하지 않는다" "$lf_defs" "0"
+# The prompt cache lifetime comes from the same file: one value for every kind,
+# `5m` unless the host switch names `1h`, and nothing under `auto`.
+ct_of() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env -u CC_ORCH_PROMPT_CACHE_TTL "$@" \
+    bash -c '. "'"$GATE"'"; stage_cache_ttl_of' _
+}
+check "캐시 수명은 기본으로 5m 이다" "$(ct_of)" "5m"
+check "캐시 수명 스위치 5m 은 5m 이다" "$(ct_of CC_ORCH_PROMPT_CACHE_TTL=5m)" "5m"
+check "캐시 수명 스위치 1h 는 1h 다" "$(ct_of CC_ORCH_PROMPT_CACHE_TTL=1h)" "1h"
+check "캐시 수명 스위치 auto 는 빈 값이다" "$(ct_of CC_ORCH_PROMPT_CACHE_TTL=auto)" ""
+check "빈 캐시 수명 스위치는 5m 이다" "$(ct_of CC_ORCH_PROMPT_CACHE_TTL=)" "5m"
+check "닫힌 집합 밖의 캐시 수명 값은 무시되고 5m 이다" "$(ct_of CC_ORCH_PROMPT_CACHE_TTL=30m)" "5m"
+# The setter clears what the launching process inherited, so `auto` really
+# leaves the lifetime to the CLI.
+ct_env() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env -u CC_ORCH_PROMPT_CACHE_TTL "$@" \
+    bash -c '. "'"$GATE"'"; stage_cache_ttl_env; printf "%s" "${CLAUDE_CODE_PROMPT_CACHE_TTL-unset}"' _
+}
+check "물려받은 1h 위에 호스트 값이 없으면 5m 을 세운다" "$(ct_env CLAUDE_CODE_PROMPT_CACHE_TTL=1h)" "5m"
+check "물려받은 5m 위에 auto 면 그 변수를 지운다" \
+  "$(ct_env CLAUDE_CODE_PROMPT_CACHE_TTL=5m CC_ORCH_PROMPT_CACHE_TTL=auto)" "unset"
+# The judgment call the gate reaches through the sourced driver launches the
+# CLI under the same value. The stub's output is no judgment, so the call's own
+# return is not what is asserted — only the environment the CLI saw.
+printf 'input\n' > "$WORK/ct-jc-in.txt"
+ct_jc() {
+  rm -f "$WORK/ct-jc-env.txt"
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 env -u CC_ORCH_PROMPT_CACHE_TTL -u CLAUDE_CODE_PROMPT_CACHE_TTL \
+      CC_CLAUDE_BIN="$STUB" CC_STUB_ENV_OUT="$WORK/ct-jc-env.txt" "$@" \
+      bash -c '. "'"$GATE"'"; judgment_call preauth-judge "'"$WORK"'/ct-jc-in.txt" "'"$WORK"'/ct-jc-out.json"' _ ) \
+    >/dev/null 2>&1 || true
+  sed -n 's/^TTL=//p' "$WORK/ct-jc-env.txt" 2>/dev/null
+}
+check "게이트가 부르는 판단 호출은 기본으로 5분 캐시 수명으로 뜬다" "$(ct_jc)" "5m"
+check "호스트 1h 면 판단 호출도 1h 로 뜬다" "$(ct_jc CC_ORCH_PROMPT_CACHE_TTL=1h)" "1h"
+check "물려받은 값 위에 호스트 auto 면 판단 호출의 환경에 그 변수가 없다" \
+  "$(ct_jc CLAUDE_CODE_PROMPT_CACHE_TTL=5m CC_ORCH_PROMPT_CACHE_TTL=auto)" "unset"
+# The driver's own spawn runs the setter inside the subshell that execs the
+# wrapper, before the exec; its launched environment is asserted by the
+# driver's suite, which has a harness that drives the spawn to the end.
+ct_drv=$(awk '/\( cd "\$cwd" &&/ { s = NR; t = ($0 ~ /stage_cache_ttl_env/) }
+  /exec nohup bash "\$ORCH_DIR\/stage-wrapper\.sh"/ { print ((s && NR - s <= 6 && t) ? "부른다" : "부르지 않는다"); exit }' \
+  "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
+check "드라이버 스폰 서브셸이 래퍼 exec 앞에서 캐시 수명 헬퍼를 부른다" "$ct_drv" "부른다"
 check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" \
   "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "~/cfg"
 check "HOME 밖의 레인은 그대로 적는다" \
@@ -10608,6 +10656,7 @@ esac
 check "동적 절 제외 플래그가 argv 에 있다" "$(si_argv_has "$WORK/stub-argv.txt" --exclude-dynamic-system-prompt-sections)" "1"
 check "스텁 환경에 CLAUDE.md 자동 로딩 끄기가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/stub-env.txt")" "1"
 check "자동 메모리는 끄지 않는다 (환경에 그 변수가 없다)" "$(sed -n 's/^MEM=//p' "$WORK/stub-env.txt")" "unset"
+check "스텁 환경에 5분 캐시 수명이 서 있다" "$(sed -n 's/^TTL=//p' "$WORK/stub-env.txt")" "5m"
 if [ -f "$SI_F" ] && head -c "$(wc -c < "$SI_POLICY" | tr -d ' ')" "$SI_F" | cmp -s - "$SI_POLICY"; then
   ok "합성 파일은 정책 바이트로 시작한다"
 else
@@ -10634,8 +10683,17 @@ check "새 기동은 세션별 기록에 합성 sha256 을 남긴다" \
 check "게시 뒤 instructions/ 에 임시 파일이 남지 않는다" \
   "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
 # No volatile token: the same bytes for every stage of this target in this run.
+# The file names fixture paths under the temporary directory, whose name may
+# itself carry a run-id string, so that directory is taken out of the text
+# first, in its physical spelling before the one it was given as.
+si_tmp="${TMPDIR:-/tmp}"
+si_tmpp=$(cd "$si_tmp" && pwd -P)
+si_scrubbed=$(awk -v a="$si_tmpp" -v b="$si_tmp" '{
+    while (a != "" && (i = index($0, a)) > 0) $0 = substr($0, 1, i - 1) "<tmp>" substr($0, i + length(a))
+    while (b != "" && (i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) "<tmp>" substr($0, i + length(b))
+    print }' "$SI_F" 2>/dev/null)
 check "합성 파일에 런 id·세그먼트·시도가 들어 있지 않다" \
-  "$(grep -cE 'R1|SL#|세그먼트|attempt' "$SI_F" 2>/dev/null || true)" "0"
+  "$(printf '%s\n' "$si_scrubbed" | grep -cE 'R1|SL#|세그먼트|attempt' || true)" "0"
 
 # --- THE SYNTHESIS CALLED DIRECTLY: determinism, the host map, the refusals ---
 #
@@ -15014,6 +15072,14 @@ check "15v: 검토 통과 사이드카를 둔 시각 파견이 기동한다" "$r
 au15_wait R15V S2V
 check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0"
 check "15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
+# A re-kicked run's visual stage reuses its source's published sidecar without
+# writing it, so a `발행됨` sidecar with the literal completes the step too.
+printf '# 시각 사이드카\n\n**상태**: 발행됨\n' > "$SC15V"
+au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
+check "15v: 발행됨 사이드카를 둔 시각 파견이 기동한다" "$rc" "0"
+au15_wait R15V S2V
+check "15v: 그 시각 단계의 기다림도 상한 안에 끝난다" "$rc" "0"
+check "15v: 종결 문구와 발행됨 사이드카가 함께인 시각 단계도 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
 check "15v: 시각 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
   "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15V.md" 2>/dev/null || true; } | grep -c . || true)" "0"
 rm -f "$SC15V" "$WT/$DOC15V"
@@ -32420,6 +32486,7 @@ check "(f) 교대 argv 가 shift 종류의 effort 와 sonnet 을 싣는다" \
   "$(si_argv_value "$WORK/shift-argv.txt" --effort):$(si_argv_value "$WORK/shift-argv.txt" --model)" "medium:sonnet"
 check "(f) 교대 환경에 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/shift-env.txt")" "1"
 check "(f) 교대도 자동 메모리는 끄지 않는다" "$(sed -n 's/^MEM=//p' "$WORK/shift-env.txt")" "unset"
+check "(f) 교대 환경에 5분 캐시 수명이 서 있다" "$(sed -n 's/^TTL=//p' "$WORK/shift-env.txt")" "5m"
 f_shift_sid=$(si_argv_value "$WORK/shift-argv.txt" --session-id)
 check "(f) 교대 세션의 기록이 합성 sha256 을 담는다" \
   "$(cat "$SHIFT_DIR/instructions/session/$f_shift_sid" 2>/dev/null | tr -d '[:space:]')" "$(basename "$f_shift_f" .md)"
@@ -48861,7 +48928,7 @@ graded_as '읽기'         '79v:visual-config.sh snapshot 은 읽기다'        
 for w79v in account models bans seed append; do
   graded_as '등급 미상'  "79v:visual-config.sh $w79v 는 등급 미상이다"        -- "$CC_ORCH/visual-config.sh" "$w79v"
 done
-for w79v in scan size approval bundle; do
+for w79v in scan size approval bundle binding reuse; do
   graded_as '읽기'       "79v:visual-check.sh $w79v 은 읽기다"                -- "$CC_ORCH/visual-check.sh" "$w79v" docs/x.md
 done
 graded_as '등급 미상'    '79v:모르는 visual-check.sh 하위 명령은 등급 미상이다' -- "$CC_ORCH/visual-check.sh" frob docs/x.md

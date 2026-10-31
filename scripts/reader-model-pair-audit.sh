@@ -10,10 +10,10 @@
 #               unique-defect count) and put every other candidate in the bin
 #               of its nearest pick as a reserve (`예비 <n>-<k>`)
 #               → selection.tsv
-#   2 branches  two independent clones at commit C (`gate-sonnet`,
-#               `gate-opus`), detached and without `origin`; the opus clone
-#               carries one local commit that sets only the model cell of the
-#               `audit-reader` row back to opus
+#   2 branches  two independent clones at commit C, one per model, detached
+#               and without `origin`; the opus clone carries one local commit
+#               that sets only the model cell of the `audit-reader` row back
+#               to opus
 #   3 prepare   per document: the main checkout's current bytes of the
 #               owner-doc and their sha256; per audit (opus-1, sonnet, opus-2)
 #               a target clone at the original run's base commit, the bytes
@@ -40,6 +40,30 @@
 # No model CLI is called here; billing happens only when a branch gate's `act`
 # launches a stage. The experiment measures today's production path.
 #
+# Every clone a stage can see — the target clones and the branch clones whose
+# gate pins the plugin — lives under the work root with a random name, and
+# which branch a path belongs to is written only in the state files. The
+# strings this script writes into a run (the target row, the confirmation and
+# approval texts, the intent, the plan's free text, the goal and its clause,
+# the opus commit) carry no harness or model name and no word of the
+# forbidden list; the surface check below refuses a run that would.
+#
+# Protocol: scripts/prompt-change-protocol.md
+#   1 candidate surface  — changed: clones under the work root with random
+#                          names, neutral alias, slug, base branch and texts,
+#                          the surface check before the first act, and the
+#                          READER_EXP_* variables unset after they are read
+#   2 blind judge        — not applicable: no judge; reader-model-compare.sh
+#                          counts
+#   3 compliance scoring — not applicable: chain compliance is not measured,
+#                          and the reviewer count is not in the verdict
+#   4 fixed rule         — met: constants and golden tests
+#   5 noise              — met: the W term from the two opus runs
+#   6 budget             — met: --budget-usd, checked before each run
+#
+# State opened by the layout before this one (clones under the state root,
+# alias `exp`) is not resumed by this script.
+#
 # Usage:
 #   scripts/reader-model-pair-audit.sh [run] [--exp-id <id>] --budget-usd <N> [--repo <dir>] [--ref <commit>]
 #   scripts/reader-model-pair-audit.sh run --dry-run [--exp-id <id>] [--ref <commit>]
@@ -62,17 +86,22 @@
 #                 its `audit-reader` row must be sonnet
 #
 # Environment:
-#   READER_EXP_STATE_ROOT  clones and run state
+#   READER_EXP_STATE_ROOT  run state
 #                          (default ${HOME}/.local/state/cc-cmds/reader-model-exp)
+#   READER_EXP_WORK_ROOT   the clones, each under a random name
+#                          (default ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/work)
 #   READER_EXP_GATE        a gate that opens every branch's runs instead of the
 #                          branch clone's own gate.sh — for tests only: the pin
 #                          of a real run must come from the branch clone's gate
+#   Every READER_EXP_* variable is read at start and then unset, so no stage
+#   process inherits one.
 #   CC_CMDS_AUTOPILOT_AUTO_RESOLVE  0, off, false or no keeps the seat from
 #                          answering a halt record by the fixed policy
 #
 # Exit codes:
 #   0 — a verdict was written (`판정 불가` included), or a dry run finished
-#   1 — failure
+#   1 — failure, a hit of the surface check included (the word and where it
+#       stands are printed)
 #   2 — usage error
 #   4 — budget guard: the next billed step would exceed --budget-usd; the
 #       slots not finished are invalid and a verdict was written. The same
@@ -106,12 +135,19 @@ RUN_CEILING_USD=0.01
 # the manifest still carries one because the field is required.
 DEADLINE_SECONDS=14400
 SEAT_MAX="${READER_EXP_SEAT_MAX:-500}"
-TARGET_ALIAS="exp"
+TARGET_ALIAS="work"
 # Not a repository on any remote: a router that reaches for a remote fails
 # instead of acting on the real one. The cutpoint `커밋` keeps the run from
 # pushing at all.
-TARGET_SLUG="local/reader-model-exp"
+TARGET_SLUG="local/work"
+# The one branch a target clone keeps.
+BASE_BRANCH="base"
 BRANCHES="opus-1 sonnet opus-2"
+# The value of the `**금지어**:` line of scripts/prompt-change-protocol.md,
+# byte for byte; the test compares the two.
+FORBIDDEN_WORDS="eval evaluation evaluate judge judging rubric grader grading benchmark experiment exp 실험 평가 심판 채점 루브릭"
+# The names of the arms, checked the same way.
+ARM_WORDS="opus sonnet"
 TIER_FILE="plugins/cc-cmds/skills/_common/team-model-tier.md"
 
 FENCE_BEGIN='<!-- cc-design-audit-disclosure v1 begin -->'
@@ -170,6 +206,7 @@ if [[ "$cmd" != "status" && "$dry" == "0" && -z "$budget" ]]; then
 fi
 
 STATE_ROOT="${READER_EXP_STATE_ROOT:-$HOME/.local/state/cc-cmds/reader-model-exp}"
+WORK_ROOT="${READER_EXP_WORK_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/work}"
 RUN_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
 COMPARE="$script_dir/reader-model-compare.sh"
 # Set per branch before each seat call; see run_seat_or_stop.
@@ -179,6 +216,9 @@ GATE_OVERRIDE="${READER_EXP_GATE:-}"
 # A variable inherited from a pipeline stage would make the gate read THIS
 # shell as a seat of that run. The experiment's runs are runs of their own.
 for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+# The harness's own variables are read above; a stage process must not see
+# that a harness started it.
+for v in $(compgen -e | grep '^READER_EXP_' || true); do unset "$v"; done
 
 if [[ -z "$exp_id" ]]; then
   [[ "$cmd" == "run" ]] || usage "--exp-id is required"
@@ -206,6 +246,99 @@ kv_del() {
   local tmp="$1.tmp.$$"
   awk -F'\t' -v k="$2" '$1 != k' "$1" > "$tmp"
   mv "$tmp" "$1"
+}
+
+# ---------- the candidate surface --------------------------------------------
+
+# phys <dir> — the physical path of a directory that exists, else the path.
+phys() { if [[ -d "$1" ]]; then (cd "$1" && pwd -P); else printf '%s' "$1"; fi; }
+
+# new_work_dir — a path under the work root that does not exist yet, named by
+# twelve random hex digits. Which branch it serves is written only in state.
+new_work_dir() {
+  local root d
+  mkdir -p "$WORK_ROOT"
+  root=$(phys "$WORK_ROOT")
+  while :; do
+    d="$root/$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+    [[ -e "$d" ]] || break
+  done
+  printf '%s' "$d"
+}
+
+# rm_recorded <path> — remove a clone a state file names, only when it lies
+# under the work root or the state root; any other path is left and named.
+rm_recorded() {
+  local p="$1" w s
+  [[ -n "$p" && -e "$p" ]] || return 0
+  w=$(phys "$WORK_ROOT"); s=$(phys "$STATE_ROOT")
+  case "$p" in
+    */../*|*/..) ;;
+    "$w"/?*|"$s"/?*) rm -rf "$p"; return 0 ;;
+  esac
+  echo "reader-model-pair-audit: not removing $p — it is outside the work root and the state root" >&2
+}
+
+# rm_state_clones <dir> — remove the clone every *.state file in dir names.
+rm_state_clones() {
+  local f
+  for f in "$1"/*.state; do
+    [[ -f "$f" ]] || continue
+    rm_recorded "$(kv "$f" clone)"
+  done
+}
+
+# undoc <text> <doc> — the text with every occurrence of the document path
+# replaced by <DOC>: the path is what the run audits, not a string this
+# script chose.
+undoc() {
+  [[ -n "$2" ]] || { printf '%s\n' "$1"; return 0; }
+  printf '%s\n' "$1" | awk -v d="$2" '{ s = $0; o = ""; while ((i = index(s, d)) > 0) { o = o substr(s, 1, i - 1) "<DOC>"; s = substr(s, i + length(d)) } print o s }'
+}
+
+# surface_words <text> — every forbidden word and arm name the text holds,
+# one per line. A word of letters, digits and `_` matches in any case between
+# characters outside [A-Za-z0-9_]; any other word matches as a substring.
+surface_words() {
+  local w
+  for w in $FORBIDDEN_WORDS $ARM_WORDS; do
+    if [[ "$w" =~ ^[A-Za-z0-9_]+$ ]]; then
+      printf '%s\n' "$1" | LC_ALL=C grep -qiE "(^|[^A-Za-z0-9_])${w}([^A-Za-z0-9_]|\$)" && printf '%s\n' "$w"
+    else
+      printf '%s\n' "$1" | LC_ALL=C grep -qF -- "$w" && printf '%s\n' "$w"
+    fi
+  done
+  return 0
+}
+
+# surface_hit <where> <text> — end the call with 1 when the text holds a
+# forbidden word or an arm name, naming each word and where it stands. Every
+# string checked here is one this script wrote, so a hit is a defect of the
+# script and stopping loses no sample.
+surface_hit() {
+  local hits w
+  hits=$(surface_words "$2")
+  [[ -n "$hits" ]] || return 0
+  while IFS= read -r w; do
+    echo "reader-model-pair-audit: surface check: '${w}' in ${1}" >&2
+  done <<< "$hits"
+  exit 1
+}
+
+# surface_check_run <manifest> <grant> <owner-doc> — the strings of one run
+# a stage reads that this script wrote: the target row, the texts of the
+# manifest and the grant, the intent and the plan's free text.
+surface_check_run() {
+  local m="$1" g="$2" doc="$3" line f
+  surface_hit "the target row of $m" "$(undoc "$(grep -m 1 -E '^- `target` ' "$m")" "$doc")"
+  for f in "$m" "$g"; do
+    while IFS= read -r line; do
+      surface_hit "$f: ${line%%:*}" "$(undoc "$line" "$doc")"
+    done < <(grep -E '^(\*\*(사용자 확인 문면|승인 문면|종료 지점|보고서)\*\*: |- `종료 절` )' "$f" || true)
+  done
+  surface_hit "the intent of $m" "$(undoc "$(awk '/^## 의도$/ { on = 1; next } on && /^## / { exit } on' "$m")" "$doc")"
+  surface_hit "the plan's free text in $m" "$(undoc "$(awk '/^```json$/ { on = 1; next } on && /^```$/ { exit } on' "$m" \
+    | jq -r '[.entry_rationale, .design_rationale, .design_tier_rationale, .design_scope_rationale, .work_class_rationale, .notes, (.targets[]?.why), (.steps[]?.summary)] | .[] | strings')" "$doc")"
 }
 
 has_fence() { grep -qF -- "$FENCE_BEGIN" "$1"; }
@@ -606,17 +739,20 @@ selected_row() { sample_row "선정 ${1}"; }
 
 # ---------- stage 2: branches ------------------------------------------------
 
-# gate_clone <model> — the branch clone whose gate opens that model's runs.
-gate_clone() { printf '%s/gate-%s' "$ST" "$1"; }
+# gate_clone <model> — the branch clone whose gate opens that model's runs, as
+# branches.state records it.
+gate_clone() { kv "$ST/branches.state" "${1}_clone"; }
 
 make_branches() {
   local bs="$ST/branches.state"
   [[ "$(kv "$bs" ready)" == "1" ]] && return 0
   local c gs go oc got
   c=$(cd "$repo" && git rev-parse --verify --quiet "${ref:-HEAD}^{commit}") || die "--ref is not a commit of $repo: ${ref:-HEAD}"
-  gs=$(gate_clone sonnet); go=$(gate_clone opus)
-  rm -rf "$gs" "$go"
+  rm_recorded "$(gate_clone sonnet)"; rm_recorded "$(gate_clone opus)"
   mkdir -p "$ST"
+  gs=$(new_work_dir); mkdir -p "$gs"; kv_set "$bs" sonnet_clone "$gs"
+  go=$(new_work_dir); mkdir -p "$go"; kv_set "$bs" opus_clone "$go"
+  surface_hit "a branch clone path" "$(printf '%s\n%s\n' "$gs" "$go")"
   local d
   for d in "$gs" "$go"; do
     git clone --quiet --no-hardlinks "$repo" "$d" || die "branch clone failed: $d"
@@ -626,18 +762,21 @@ make_branches() {
   done
   got=$(tier_model "$gs/$TIER_FILE")
   if [[ "$got" != "sonnet" ]]; then
-    rm -rf "$gs" "$go"
+    rm_recorded "$gs"; rm_recorded "$go"
     die "the audit-reader row of commit ${c:0:12} is '${got:-없음}', not sonnet — the experiment compares a sonnet row against its opus restoration"
   fi
   # The opus branch: the model cell of that one row back to opus, nothing else,
   # as one local commit with a fixed author and date so its id is reproducible.
+  # A stage can read this commit, so its message and author name neither the
+  # harness nor a model.
   awk 'index($0, "| `audit-reader` |") == 1 { n = split($0, c, "|"); c[n-1] = " opus "; s = ""; for (i = 1; i < n; i++) s = s c[i] "|"; print s; next } { print }' \
     "$go/$TIER_FILE" > "$go/$TIER_FILE.new" && mv "$go/$TIER_FILE.new" "$go/$TIER_FILE"
   ( cd "$go" && git add -- "$TIER_FILE" \
-    && GIT_AUTHOR_NAME=reader-model-pair-audit GIT_AUTHOR_EMAIL=reader-model-pair-audit@localhost \
-       GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_NAME=reader-model-pair-audit \
-       GIT_COMMITTER_EMAIL=reader-model-pair-audit@localhost GIT_COMMITTER_DATE=2026-01-01T00:00:00Z \
-       git commit --quiet --no-verify -m "experiment: audit-reader row back to opus" ) || die "the opus branch commit failed"
+    && GIT_AUTHOR_NAME=work GIT_AUTHOR_EMAIL=work@localhost \
+       GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_NAME=work \
+       GIT_COMMITTER_EMAIL=work@localhost GIT_COMMITTER_DATE=2026-01-01T00:00:00Z \
+       git commit --quiet --no-verify -m "chore: set the audit-reader row model" ) || die "the opus branch commit failed"
+  surface_hit "the branch commit" "$(cd "$go" && git log -1 --format='%an%n%ae%n%cn%n%ce%n%B')"
   oc=$(cd "$go" && git rev-parse HEAD)
   got=$(cd "$go" && git diff --numstat "$c" "$oc")
   if [[ "$got" != "1	1	${TIER_FILE}" ]]; then
@@ -679,24 +818,26 @@ write_run_files() {
   local now dl docsha confirm intent plan goal clause
   now=$(now_iso)
   dl=$(epoch_iso $(( $(date -u +%s) + DEADLINE_SECONDS )))
-  confirm="reader-model-pair-audit ${exp_id} 문서 ${n} ${br} — 실행 스크립트가 연 실험 런"
+  # A stage reads every text below: none names the harness, the document slot,
+  # the branch or a word of the forbidden list (surface_check_run).
+  confirm="실행 스크립트가 연 런"
   goal="설계 감사가 ${doc} 의 보고서를 공시 블록과 함께 남긴다"
   clause="감사 보고서가 공시 블록과 함께 남았다"
   docsha=$(sha_of "$clone/$doc")
-  intent="동결된 ${doc} 를 설계 감사한다 (reader-model-pair-audit ${exp_id} 문서 ${n} ${br})"
-  plan=$(jq -n --arg ak "$doc" --arg doc "$doc" --arg exp "$exp_id" --arg n "$n" --arg br "$br" \
+  intent="동결된 ${doc} 를 설계 감사한다"
+  plan=$(jq -n --arg ak "$doc" --arg doc "$doc" \
     --arg alias "$TARGET_ALIAS" --arg slug "$TARGET_SLUG" '{
       anchor_kind: "doc", anchor_key: $ak, entry_skill: "design-audit",
-      entry_rationale: ("판독자 모델 쌍 재감사 " + $exp + " 문서 " + $n + " " + $br + " — 동결된 " + $doc + " 를 감사한다."),
+      entry_rationale: ("동결된 " + $doc + " 를 감사한다."),
       design_required: false,
-      design_rationale: "문서는 원 런이 동결했고 실험은 그 바이트를 그대로 감사한다.",
+      design_rationale: "문서는 원 런이 동결했고 이 런은 그 바이트를 그대로 감사한다.",
       design_tier: "solo", design_tier_judged: "solo", design_heavy_reasons: [], estimated_files: 0,
       design_tier_rationale: "설계 스텝이 없다.",
       design_scope: "single", design_scope_rationale: "단일 문서다.",
       work_class: "unknown", work_class_rationale: "감사까지만 돈다.",
-      targets: [{alias: $alias, remote_slug: $slug, home: true, why: "기준 커밋에서 만든 실험 클론"}],
+      targets: [{alias: $alias, remote_slug: $slug, home: true, why: "기준 커밋에서 만든 클론"}],
       steps: [{id: "A1", skill: "design-audit", summary: "동결 문서 감사", depends_on: []}],
-      unresolved: [], notes: "reader-model-pair-audit 가 쓴 실험 런 매니페스트"
+      unresolved: [], notes: "실행 스크립트가 쓴 런 매니페스트"
     }')
   local cg
   cg=$(cd "$clone" && git rev-parse --path-format=absolute --git-common-dir)
@@ -711,11 +852,11 @@ write_run_files() {
       "$now" "$rid" "$doc" "$confirm"
     printf '## 의도\n```text\n%s\n```\n\n' "$intent"
     printf '## 대상\n**대상 맵 다이제스트**: @TMD@\n'
-    printf -- '- `target` | 별칭=%s | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=exp-base | 홈=예 | 원격 슬러그=%s | 절단점=커밋 | 말단 행위 상한=없음\n\n' \
-      "$TARGET_ALIAS" "$clone" "$cg" "$TARGET_SLUG"
+    printf -- '- `target` | 별칭=%s | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=%s | 홈=예 | 원격 슬러그=%s | 절단점=커밋 | 말단 행위 상한=없음\n\n' \
+      "$TARGET_ALIAS" "$clone" "$cg" "$BASE_BRANCH" "$TARGET_SLUG"
     printf '## 요소\n**설계 문서**: %s\n**설계 문서 전체 sha256**: %s\n**리뷰 대상**: (없음)\n**적용 지점**: (없음)\n**적용 프로브**: (없음)\n**적용 주체**: (해당 없음)\n\n' \
       "$doc" "$docsha"
-    printf '## 실행 계획\n**승인 문면**: reader-model-pair-audit 고정 계획\n```json\n%s\n```\n\n' "$plan"
+    printf '## 실행 계획\n**승인 문면**: 고정 계획\n```json\n%s\n```\n\n' "$plan"
     printf '## 인가\n**구속 다이제스트**: @BD@\n**런 최대 절단점**: 커밋\n**종료 지점**: %s\n**벽시계 마감**: %s\n' "$goal" "$dl"
     printf '**비용 천장**: %s\n**무진전 상한**: 없음\n**시각 정합 마커**: 없음\n**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n' "$RUN_CEILING_USD"
     printf -- '- `종료 절` | id=C1 | 문면=%s\n' "$clause"
@@ -735,19 +876,20 @@ write_run_files() {
     cat "$ST/doc-$n/check-$br.log" >&2
     die "document ${n} ${br}: the audit manifest fails check_manifest — $m"
   fi
+  surface_check_run "$m" "$g" "$doc"
   kv_set "$bst" manifest "$m"
 }
 
 # target_clone <dir> <base> — an independent clone at the base commit with
 # nothing past it: the stages' worktrees share its refs, and git history is a
-# leak. Only exp-base is left, with no remote, and the rest is pruned.
+# leak. Only the base branch is left, with no remote, and the rest is pruned.
 target_clone() {
   git clone --quiet --no-hardlinks "$repo" "$1" || return 1
-  ( cd "$1" && git checkout --quiet -b exp-base "$2" ) || return 1
+  ( cd "$1" && git checkout --quiet -b "$BASE_BRANCH" "$2" ) || return 1
   ( cd "$1" \
     && git remote remove origin \
     && git for-each-ref --format='%(refname)' | while IFS= read -r r; do
-         [[ "$r" == "refs/heads/exp-base" ]] || git update-ref -d "$r" || exit 1
+         [[ "$r" == "refs/heads/${BASE_BRANCH}" ]] || git update-ref -d "$r" || exit 1
        done \
     && git reflog expire --expire=now --all \
     && git gc --quiet --prune=now )
@@ -764,6 +906,7 @@ prepare_doc() {
   [[ -n "$row" ]] || die "document ${n}: ${sample} is not in selection.tsv"
   name=$(printf '%s' "$row" | cut -f1); owner=$(printf '%s' "$row" | cut -f2)
   orig=$(printf '%s' "$row" | cut -f5); base=$(printf '%s' "$row" | cut -f6)
+  rm_state_clones "$ds"
   rm -rf "$ds"
   mkdir -p "$ds"
   # The bytes every branch audits: the main checkout's current file, kept here
@@ -776,14 +919,16 @@ prepare_doc() {
   kv_set "$ds/doc.state" base "$base"
   kv_set "$ds/doc.state" input_sha "$(sha_of "$ds/input.md")"
   for br in $BRANCHES; do
-    target_clone "$ds/$br" "$base" || die "document ${n} ${br}: preparing the target clone at $base failed"
-    clone=$(cd "$ds/$br" && pwd -P)
+    # The clone a stage works in: a random name under the work root, its
+    # branch written only in $br.state.
+    clone=$(new_work_dir)
+    kv_set "$ds/$br.state" clone "$clone"
+    target_clone "$clone" "$base" || die "document ${n} ${br}: preparing the target clone at $base failed"
     mkdir -p "$(dirname "$clone/$owner")"
     cp "$ds/input.md" "$clone/$owner"
     rid=$(gen_run_id)
     while grep -qx "$rid" "$ST/runs.list" 2>/dev/null; do rid=$(gen_run_id); done
     printf '%s\n' "$rid" >> "$ST/runs.list"
-    kv_set "$ds/$br.state" clone "$clone"
     kv_set "$ds/$br.state" run "$rid"
     write_run_files "$n" "$br"
     kv_set "$ds/$br.state" status "준비됨"
@@ -849,7 +994,7 @@ halt_policy() {
   done <<'EOF'
 design-audit-unattended	^Step 6.*CFI-3b	record in the unresolved-issues section	합성 질문을 미해결 이슈로 적으면 재수렴도 새 감사도 부르지 않아 첫 감사가 그대로다
 design-audit-unattended	^Step 7 / 골격급 재발	미해결 이슈로 두고 계속	골격급 재발은 재감사에서만 나고 이 답은 재수렴을 부르지 않는다
-design-solo-unattended	^Step 7U / ladder-unsettled	잔여로 두고 동결	단독 설계가 쓴 문서를 그대로 동결한다
+design-solo-unattended	^Step 7U / ladder-unsettled	잔여로 두고 동결	설계가 쓴 문서를 그대로 동결한다
 EOF
 }
 
@@ -929,7 +1074,7 @@ seat_answer_halts() {
         label="${pol%%	*}"; why="${pol#*	}"
         {
           printf '# 정책 답 — %s\n\n' "$(basename "$f")"
-          printf '실험 고정 정책 표의 줄을 적용했다. 사람이 이 기록을 읽고 답한 것이 아니다.\n\n'
+          printf '고정 정책 표의 줄을 적용했다. 사람이 이 기록을 읽고 답한 것이 아니다.\n\n'
           printf -- '- 스킬: %s\n' "$(bold_field "$f" '스킬')"
           printf -- '- 스텝: %s\n' "$(bold_field "$f" '스텝')"
           printf -- '- 라벨: %s\n' "$label"
@@ -937,7 +1082,7 @@ seat_answer_halts() {
           printf '\n되돌리는 법: 같은 기록에 다른 선택지로 다시 답하거나, 그 문서를 --rerun-doc 로 처음부터 다시 돌린다.\n'
         } > "$ans"
         halt_answer_act "$m" "$clone" "$key" "$log" \
-          "중단 기록=${f}" "선택지=${label}" "답한 주체=사람" "근거=실험 고정 정책 — ${why}; 사람이 이 기록을 읽고 답한 것이 아니다" "첨부=${ans}" || rc=$?
+          "중단 기록=${f}" "선택지=${label}" "답한 주체=사람" "근거=고정 정책 — ${why}; 사람이 이 기록을 읽고 답한 것이 아니다" "첨부=${ans}" || rc=$?
         if [[ "$rc" == "0" ]]; then
           got=0; echo "seat: answered $f by the fixed policy with ${label}" >> "$log"; continue
         fi
@@ -1154,7 +1299,8 @@ doc_invalid() { [[ "$(kv "$ST/doc-$1/doc.state" status)" == "무효" ]]; }
 # invalid reason, kept path), drop its docs.tsv row and report copies, and
 # prepare the next reserve of the slot's bin. With no reserve left the invalid
 # reason gains ` — 예비 소진` in the state and the docs.tsv row, the slot is
-# final, and it returns 1.
+# final, and it returns 1. The attempt's clones stay under the work root,
+# named by the state files kept with it.
 replace_slot() {
   local n="$1" ds="$ST/doc-$1" cur next k why doc try=1 row br
   cur=$(kv "$ds/doc.state" sample)
@@ -1236,6 +1382,7 @@ rerun_doc() {
   # The slot's attempts go with it, so it starts again from `선정 <n>`.
   for d in "$ST/doc-$n" "$ST/doc-$n".try*; do
     [[ -e "$d" ]] || continue
+    rm_state_clones "$d"
     case "$d" in "$STATE_ROOT"/*) rm -rf "$d" ;; esac
   done
   rm -f "$EXP/reports/$n-opus-1.md" "$EXP/reports/$n-sonnet.md" "$EXP/reports/$n-opus-2.md"
