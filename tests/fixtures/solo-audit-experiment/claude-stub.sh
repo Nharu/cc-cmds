@@ -2,8 +2,9 @@
 # Stub CLI for scripts/test-solo-audit-experiment.sh — stands in for `claude`
 # behind SOLO_EXP_CLAUDE_BIN in the classification call.
 #
-# Appends its flags (not the prompt) to $STUB_CLI_LOG, then answers from the
-# input itself: every `| <id> | <routing> | <class> |` row after the
+# Appends its flags (not the prompt) to $STUB_CLI_LOG and, with STUB_ENV_LOG
+# set, the names of its environment variables to that file, then answers from
+# the input itself: every `| <id> | <routing> | <class> |` row after the
 # `--- INPUT ---` line becomes one classified defect. STUB_CLI_DROP=1 drops the
 # last one, so the id count no longer matches the disclosure block.
 
@@ -19,6 +20,7 @@ while (( $# > 0 )); do
   esac
 done
 printf 'call%s\n' "$flags" >> "${STUB_CLI_LOG:?}"
+[[ -z "${STUB_ENV_LOG:-}" ]] || compgen -e >> "$STUB_ENV_LOG"
 
 printf '%s\n' "$prompt" | awk -v drop="${STUB_CLI_DROP:-0}" '
   /^--- INPUT ---$/ { on = 1; next }
