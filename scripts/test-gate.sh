@@ -57176,6 +57176,39 @@ check "96c: check-push 가 아닌 도구 호출과 그 결과는 싣지 않는�
 check "96c: 출처 목록은 원장 줄 번호와 세션 머리를 든다" \
   "$(grep -c -x -F "$(printf 'S\t원장 14')" "$p96c_in.heads" 2>/dev/null || true)/$(grep -c -x -F "$(printf 'T\treview#1')" "$p96c_in.heads" 2>/dev/null || true)" "1/1"
 
+# B3 — 할당이 한 블록 하한(1500바이트)에 걸리는 런. 세션 스물아홉 개 가운데 하나는 실을
+# 블록이 없고, 나머지는 1600바이트 text 블록과 1600바이트 check-push 결과를 지녀 어느 블록도
+# 머리와 줄바꿈까지 더하면 1500바이트를 넘는다. 하한은 블록 하나를 담아야 하고, 아무것도
+# 싣지 못한 세션은 세션 읽음의 분자와 출처 머리에 들지 않는다. check-push 블록은 머리
+# `implement#1`~`implement#9` 이면 1524바이트, 그 뒤로는 1525바이트라 40000바이트 칸에
+# 스물여섯 세션이 들고 두 세션이 칸이 차서 빠진다.
+P96C_LANE4="$P96C/lane4"
+mkdir -p "$P96C_LANE4/projects" "$P96C/rd/L3"
+p96c_ft=$(printf 'f%.0s' $(seq 1 1600))
+p96c_fc="$(printf 'c%.0s' $(seq 1 1600))FLOORCP"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Bash","input":{"command":"ls"}}]}}' \
+  > "$P96C_LANE4/projects/fl-0.jsonl"
+for p96c_i in $(seq 1 28); do
+  {
+    jq -n -c --arg t "$p96c_ft" '{type: "assistant", message: {content: [{type: "text", text: $t}]}}'
+    jq -n -c '{type: "assistant", message: {content: [{type: "tool_use", id: "k1", name: "Bash", input: {command: "make check-push"}}]}}'
+    jq -n -c --arg c "$p96c_fc" '{type: "user", message: {content: [{type: "tool_result", tool_use_id: "k1", content: $c}]}}'
+  } > "$P96C_LANE4/projects/fl-$p96c_i.jsonl"
+done
+{
+  printf '# 파이프라인 런 보고서 — L3\n\n'
+  printf -- '- `stage-result` | 세그먼트=Z | 스테이지=review | 실행 버전=1 | 세션 id=fl-0 | 레인=%s | 종류=review | 종료 코드=0 | 종단 부류=정상\n' "$P96C_LANE4"
+  awk -v l="$P96C_LANE4" 'BEGIN { for (i = 1; i <= 28; i++) printf "- `stage-result` | 세그먼트=S%d | 스테이지=implement | 실행 버전=%d | 세션 id=fl-%d | 레인=%s | 종류=implement | 종료 코드=0 | 종단 부류=정상\n", i, i, i, l }'
+} > "$P96C/led/L3.md"
+p96c_in3="$P96C/L3.input"
+bash -c '. "$1"; attention_input "$2" "$3" "$4"' _ "$P96C_AR" "$P96C/led/L3.md" "$P96C/rd/L3" "$p96c_in3" 2>/dev/null || true
+check "96c: 한 블록 하한의 할당은 check-push 결과 블록 하나를 담는다" \
+  "$(grep -c -F FLOORCP "$p96c_in3" 2>/dev/null || true)/$(grep -c -x -E 'implement#[0-9]+ check-push' "$p96c_in3" 2>/dev/null || true)" "26/26"
+check "96c: 실은 세션만 세션 읽음의 분자에 들고 나머지는 범위 줄에 센다" \
+  "$(grep -c -F '세션 읽음 26/29 · 칸이 차서 넣지 못한 세션 2 · 실을 블록이 없는 세션 1 · check-push 결과 26' "$p96c_in3" 2>/dev/null || true)" "1"
+check "96c: 블록을 싣지 못한 세션은 출처 머리가 되지 않는다" \
+  "$(grep -c "^T$(printf '\t')" "$p96c_in3.heads" 2>/dev/null || true)/$(grep -c -x -F "$(printf 'T\treview#1')" "$p96c_in3.heads" 2>/dev/null || true)/$(grep -c -x -F "$(printf 'T\timplement#27')" "$p96c_in3.heads" 2>/dev/null || true)" "26/0/0"
+
 # C — 끝난 기록에 다시 온 계기.
 p96c_sha=$(shasum -a 256 "$P96C_ROOT/runs/T1.json" | cut -d' ' -f1)
 p96c_kick T1 >/dev/null

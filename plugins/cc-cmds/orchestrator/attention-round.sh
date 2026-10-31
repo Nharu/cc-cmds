@@ -271,7 +271,10 @@ attention_session_blocks() {
   # bytes under `<head> check-push`, and a result that is only the notice of a
   # background start is not one. Within the allocation the check-push results go
   # first, then the blocks carrying a question marker, then the rest, both from
-  # the end of the session; the selection is printed in session order.
+  # the end of the session; the selection is printed in session order. The
+  # first block in that order is taken even when its head, its prefix and its
+  # newline carry it past the allocation, so an allocation at the one-block
+  # floor always holds one whole block.
   jq -R -n -c --arg head "$2" --argjson alloc "$3" --arg re "$(attention_checkpush_re)" '
     def cpb: if . < 128 then 1 elif . < 2048 then 2 elif . < 65536 then 3 else 4 end;
     def takeb($n): reduce .[] as $c ({b: 0, o: [], s: false};
@@ -305,7 +308,7 @@ attention_session_blocks() {
     | ([$B[] | select(.k == "c")]
        + ([$B[] | select(.k == "t" and .q)] | reverse)
        + ([$B[] | select(.k == "t" and (.q | not))] | reverse)) as $order
-    | reduce $order[] as $c ({u: 0, sel: []}; if .u + $c.b <= $alloc then .u += $c.b | .sel += [$c] else . end)
+    | reduce $order[] as $c ({u: 0, sel: []}; if .u + $c.b <= $alloc or (.sel | length) == 0 then .u += $c.b | .sel += [$c] else . end)
     | {text: ([.sel | sort_by(.i)[] | .x] | join("\n")), bytes: .u,
        cp: ([.sel[] | select(.k == "c")] | length), hasq: any($B[]; .q)}' < "$1" 2>/dev/null
 }
@@ -323,7 +326,7 @@ attention_input() {
   # own cap, so the whole input — the section headings and the blank lines
   # between them included — stays at or under the total.
   local ledger="$1" rd="$2" out="$3" tmp f name hb tb sb lb cap sep total
-  local nh=0 hd=0 halt_gone=0 a=0 b=0 skipped=0 cpn=0 nsess=0 alloc rec bytes cnt
+  local nh=0 hd=0 halt_gone=0 a=0 b=0 skipped=0 empty=0 cpn=0 nsess=0 alloc rec bytes cnt
   local ld le _line _q head sid lane obj
   [ -n "$ledger" ] && [ -r "$ledger" ] || return 1
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/attention-input.XXXXXX" 2>/dev/null) || return 1
@@ -381,10 +384,13 @@ attention_input() {
       if [ "$((tb + bytes))" -gt "$(attention_transcript_max)" ]; then
         skipped=$((skipped + 1)); continue
       fi
-      if [ "${bytes:-0}" -gt 0 ]; then
-        printf '%s' "$obj" | jq -r '.text' >> "$tmp/tr" 2>/dev/null || true
-        tb=$((tb + bytes))
+      # A session that gave no block put nothing into the input: it is not a
+      # session read and not a source an item may name.
+      if [ "${bytes:-0}" -le 0 ]; then
+        empty=$((empty + 1)); continue
       fi
+      printf '%s' "$obj" | jq -r '.text' >> "$tmp/tr" 2>/dev/null || true
+      tb=$((tb + bytes))
       a=$((a + 1))
       printf 'T\t%s\n' "$head" >> "$tmp/heads"
       cnt=$(printf '%s' "$obj" | jq -r '.cp' 2>/dev/null || printf 0)
@@ -435,8 +441,8 @@ attention_input() {
   else
     sb="정지 기록 ${nh}건 넣음 · 상한으로 뺀 정지 기록 ${hd}건"
   fi
-  printf '범위: 원장 %s행 넣음 · 상한으로 뺀 원장 행 %s · 도달 감사 밖 exec 행 %s(수만 셈) · %s · 세션 읽음 %s/%s · 칸이 차서 넣지 못한 세션 %s · check-push 결과 %s\n' \
-    "${lb:-0}" "${ld:-0}" "${le:-0}" "$sb" "$a" "$b" "$skipped" "$cpn" | attention_clip "$(attention_scope_max)" > "$tmp/scope"
+  printf '범위: 원장 %s행 넣음 · 상한으로 뺀 원장 행 %s · 도달 감사 밖 exec 행 %s(수만 셈) · %s · 세션 읽음 %s/%s · 칸이 차서 넣지 못한 세션 %s · 실을 블록이 없는 세션 %s · check-push 결과 %s\n' \
+    "${lb:-0}" "${ld:-0}" "${le:-0}" "$sb" "$a" "$b" "$skipped" "$empty" "$cpn" | attention_clip "$(attention_scope_max)" > "$tmp/scope"
 
   {
     printf '## 원장\n'; cat "$tmp/led"
