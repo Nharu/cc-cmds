@@ -36714,7 +36714,7 @@ check "34u: 표지 없는 drain-release 는 3 이고 아무것도 쓰지 않는�
   "$rc/$(db_quarantine_rows)/$(db_q_files)" "3/$db_q1/1"
 
 # 교대가 살아넘긴 정지는 뒤의 다른 사망의 원인으로 붙지 않는다. 같은 교대의 다음
-# 게이트 호출이 die 아닌 결과로 끝나면 정지 파일이 내려가, 무기록 행의 `마지막 정지`
+# 게이트 호출이 성공(0)으로 끝나면 정지 파일이 내려가, 무기록 행의 `마지막 정지`
 # 는 `-` 이고 좌석은 그 행을 사람 질문으로 보내지 않는다.
 CC_TEST_DB_MODE=survive CC_TEST_DB_OUT="$DB_OUT/survive" CC_TEST_DB_WHY="$DB_WHY" CC_TEST_CONE_A="$CONE_A" \
   cap_gate "$DB_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
@@ -53616,7 +53616,7 @@ check "87g: = 로 시작하는 첫 낱말의 맨 머지 요청은 admit 이 rc 2
 
 # ---------------------------------------------------------------------------
 # 87h. 넘치는 거절 기록 — 대상 거절 행은 상한 안에 맞추고, 행이 될 수 없는 기록은 격리한다
-# --- section: 87h | group: tguard | covers: exec, act, snapshot, gate_refusal_row, gate_refused_drain, gate_refused_drain_one, gate_drain_quarantine, gate_refusal_block | anchors: 87h: 기본 폭의 행은 상한을 넘는다, 87h: 긴 거절 기록 뒤 exec 읽기는 0 이다, 87h: 그 대상 거절 행은 행 상한 안이고 줄인 폭을 쓴다, 87h: 기록은 소비되고 두 곁파일이 명령과 문면 전문을 담는다, 87h: 다음 행위 호출도 0 이다, 87h: 같은 행위의 재시도는 3 으로 막힌다, 87h: 행이 될 수 없는 기록은 격리되고 다음 호출은 0 이다, 87h: 그 격리는 배수 격리 행위자=게이트 행을 남긴다, 87h: 스냅숏 drain_quarantine[] 이 그 격리를 싣는다, 87h: 깨진 JSON 기록도 같은 격리를 지난다, 87h: 처리 도중 사라진 기록은 건너뛰고 배수는 0 이다, 87h: 옮길 수 없는 기록은 die 로 1 이고 막힘 표지가 그 기록을 가리킨다 ---
+# --- section: 87h | group: tguard | covers: exec, act, snapshot, gate_refusal_row, gate_refused_drain, gate_refused_drain_one, gate_drain_quarantine, gate_refusal_block | anchors: 87h: 기본 폭의 행은 상한을 넘는다, 87h: 긴 거절 기록 뒤 exec 읽기는 0 이다, 87h: 그 대상 거절 행은 행 상한 안이고 줄인 폭을 쓴다, 87h: 기록은 소비되고 두 곁파일이 명령과 문면 전문을 담는다, 87h: 다음 행위 호출도 0 이다, 87h: 같은 행위의 재시도는 3 으로 막힌다, 87h: 행이 될 수 없는 기록은 격리되고 다음 호출은 0 이다, 87h: 그 격리는 배수 격리 행위자=게이트 행을 남긴다, 87h: 스냅숏 drain_quarantine[] 이 그 격리를 싣는다, 87h: 깨진 JSON 기록도 같은 격리를 지난다, 87h: 처리 도중 사라진 기록은 건너뛰고 배수는 0 이다, 87h: 이동 전에 사라진 단위의 격리는 2 이고 아무것도 쓰지 않는다, 87h: 옮길 수 없는 기록은 die 로 1 이고 막힘 표지가 그 기록을 가리킨다 ---
 #
 # 런 훅이 남기는 거절 기록을 직접 심는다. 한글 거절 문면 수백 자와 수백 바이트 명령을
 # 담고, 기록의 루트는 물리 경로가 약 170 바이트인 디렉터리(대상의 `.claude` 사본)라
@@ -53707,6 +53707,12 @@ r87h_race=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"
 check "87h: 처리 도중 사라진 기록은 건너뛰고 배수는 0 이다" \
   "$r87h_race/$(tg87h_files "admit/refused")/$(tg87h_files "quarantine/대상거절")/$(tg_rows '배수 격리')/$( [ -f "$TG_RD/drain-blocked" ] && printf 표지 || printf 없음)" \
   "rc=0/0/2/$((r87h_q0 + 2))/없음"
+
+# 격리 직전에 사라진 단위 — 이동할 것이 없으므로 2 를 돌려주고 행도 파일도 남기지 않는다.
+r87h_gone=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"
+  q=0; gate_drain_quarantine 대상거절 "$2/admit/refused/none/r6" 게이트 x || q=$?; printf "rc=%s" "$q"' _ "$GATE" "$TG_RD" 2>/dev/null)
+check "87h: 이동 전에 사라진 단위의 격리는 2 이고 아무것도 쓰지 않는다" \
+  "$r87h_gone/$(tg87h_files "quarantine/대상거절")/$(tg_rows '배수 격리')" "rc=2/2/$((r87h_q0 + 2))"
 
 # 옮길 수도 없는 기록 — 격리 디렉터리 자리에 일반 파일을 둔다. 호출은 die 로 1 이고
 # 막힘 표지가 그 기록을 가리키며, 기록은 제자리에 남는다.
