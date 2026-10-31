@@ -3624,8 +3624,8 @@ gate_device_pair_ordinal() {
     [ -n "$shape" ] || continue
     i=$((i + 1))
     [ "$shape" = "$want" ] || continue
-    printf '%s\n' "$f" | grep -q '^ *표면=' || continue
-    printf '%s\n' "$f" | grep -q '^ *도달=' || continue
+    [ "$(printf '%s\n' "$f" | grep -c '^ *표면=')" -gt 0 ] || continue
+    [ "$(printf '%s\n' "$f" | grep -c '^ *도달=')" -gt 0 ] || continue
     [ "$(printf '%s\n' "$f" | sed -n 's/^ *짝 정리=//p' | sed 's/[[:space:]]*$//' | tail -1)" = "$GATE_DEVICE_PAIR_VALUE" ] || continue
     printf '%s' "$i"
     return 0
@@ -12531,10 +12531,11 @@ gate_defect_fix() {
     [ -n "$f" ] || continue
     nfiles=$((nfiles + 1))
     gate_path_in_declared "$f" "$decl" || outside="${outside}${f}"$'\n'
-    if [ -n "$body" ] && printf '%s' "$body" | grep -qF -- "$f"; then
-      marked="${marked}${f}"$'\n'
-      nmarked=$((nmarked + 1))
-    fi
+    case "$body" in
+      *"$f"*)
+        marked="${marked}${f}"$'\n'
+        nmarked=$((nmarked + 1)) ;;
+    esac
   done <<EOF
 $files
 EOF
