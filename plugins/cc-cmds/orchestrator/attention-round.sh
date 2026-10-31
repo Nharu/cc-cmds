@@ -458,7 +458,7 @@ attention_input() {
 attention_meta() {
   # attention_meta <meta-file> <key> — the value of `<key>=` in an input's meta.
   [ -f "$1" ] || return 0
-  { sed -n "s/^$2=//p" "$1" 2>/dev/null || true; } | head -n 1
+  sed -n "/^$2=/{s/^$2=//p;q;}" "$1" 2>/dev/null || true
 }
 
 attention_items() {
@@ -571,7 +571,7 @@ attention_write_result() {
 attention_result_field() {
   # attention_result_field <result-file> <name> — the value of `**<name>**: `.
   [ -f "$1" ] || return 0
-  { sed -n "s/^\*\*$2\*\*: //p" "$1" 2>/dev/null || true; } | head -n 1
+  sed -n "/^\*\*$2\*\*: /{s/^\*\*$2\*\*: //p;q;}" "$1" 2>/dev/null || true
 }
 
 attention_result_ok() {
