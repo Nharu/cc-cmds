@@ -780,6 +780,15 @@ def rt_w7($c; $G; $cost):
       | max | round
     end;
 
+# 관측 줄에 싣는 ρ7(하루당 bp 정수). `rt_w7` 의 ρ(초당)에 86400 을 곱한 값이고,
+# 주간 창 상태와 무관하게 비용만으로 셈한다. 5시간 비용이 양수가 아니거나 주간
+# 비용이 수가 아니면 셈할 수 없어 null 이다.
+def rt_rho7_bp_d($c; $cost):
+  if ((($cost.five_hour.bp | type) == "number") and ($cost.five_hour.bp > 0)
+      and (($cost.seven_day.bp | type) == "number"))
+  then (($cost.seven_day.bp / $cost.five_hour.bp) * $c.config.cap_bp / 18000 * 86400) | round
+  else null end;
+
 # 리셋권 종류가 덮는 창. 모르는 종류는 아무 창도 덮지 않는다.
 def rt_pass_wins($kind):
   if $kind == "five_hour" then ["five_hour"]
@@ -1275,16 +1284,18 @@ def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $sc
 
 # 관측 줄의 그룹 항목. 결정과 같은 문맥(잠금 아래 다시 읽은 표를 끼운 것)에서 모든
 # 그룹의 W7 과 주간 창 값을 그룹 순으로 늘어놓는다. 비용은 그 그룹에 대한 입장
-# 판정이 쓰는 값이다.
+# 판정이 쓰는 값이고, 항목 끝의 ρ7 도 W7 과 같은 비용으로 셈해 싣는다.
 def rt_observe($schema):
   rt_need_cap | rt_cost_apply | rt_prep($schema) as $p
   | [$p.groups[]] | sort_by(.group)
   | map((.) as $G | $G.windows.seven_day as $x
+        | rt_admit_core($p.c; $G; null).cost as $cost
         | {group: $G.group,
-           w7_bp: rt_w7($p.c; $G; rt_admit_core($p.c; $G; null).cost),
+           w7_bp: rt_w7($p.c; $G; $cost),
            u7_bp: (if $x.state == "known" then $x.u_bp else null end),
            sigma7_bp: $G.sigma.seven_day,
-           resets_at: ($x.resets_at // null)});
+           resets_at: ($x.resets_at // null),
+           rho7_bp_d: rt_rho7_bp_d($p.c; $cost)});
 def rt_observe_line($schema; $oschema; $env; $op):
   (.request // {}) as $r
   | {schema: $oschema, at: .now, run_id: ($r.run_id // null), lineage: ($r.lineage // null),
