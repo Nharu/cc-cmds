@@ -534,6 +534,25 @@ itself: counts and bytes per tag, the untagged and malformed bullets, the
 cut at a line boundary and ends in
 `[truncated: run bash "<helper>" status for the full status]`.
 
+**The enforcement notice.** After the status comes a block starting
+`Rule enforcement check:` when the edit left a rule uncovered. For an `Edit`
+or `MultiEdit`, the lines the edit brought in, and the line of any enforcement
+marker it deleted, go to `../orchestrator/stage-rules.sh enforcement
+--notice-for -`; the rules it prints — not covered on every path they need by a
+live enforcement means, or carrying a dead one — are listed one per line with
+the reason, and the block asks the session to put to the person whether a
+higher layer could block each one. The marker (`강제: ...` or `산문: <reason>`)
+is the person's to add, never the session's. A `Write` replaces the whole file,
+so its block carries only the number of such rules in the file. An edit that
+leaves no such rule adds nothing: the context is byte for byte the status
+alone. Nothing is ever blocked.
+
+The block is held to 2000 bytes: target lines are taken whole from the front,
+and the rest is replaced by `[and <n> more: run bash "<helper>" enforcement]`.
+Inside the 6000-byte budget the status gets what the block leaves, so the
+status is cut first and the block never is. `make rule-enforcement` prints the
+full table for the user-scope file by hand.
+
 **Why stdout is used here.** The banner seats keep stdout empty because it is
 the harness's control channel. For a `PostToolUse` hook that channel is exactly
 how text reaches the model, so this hook writes to it on the one path that has
