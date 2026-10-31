@@ -57209,6 +57209,22 @@ check "96c: 실은 세션만 세션 읽음의 분자에 들고 나머지는 범�
 check "96c: 블록을 싣지 못한 세션은 출처 머리가 되지 않는다" \
   "$(grep -c "^T$(printf '\t')" "$p96c_in3.heads" 2>/dev/null || true)/$(grep -c -x -F "$(printf 'T\treview#1')" "$p96c_in3.heads" 2>/dev/null || true)/$(grep -c -x -F "$(printf 'T\timplement#27')" "$p96c_in3.heads" 2>/dev/null || true)" "26/0/0"
 
+# B4 — 같은 하한에서 text 블록만 지닌 세션 스물일곱 개. 블록은 머리와 줄바꿈을 더해
+# 1501바이트라 할당 1500 을 넘지만 하나는 담기고, 40000바이트 칸에 스물여섯 세션이 든다.
+mkdir -p "$P96C/rd/L4"
+for p96c_i in $(seq 1 27); do
+  jq -n -c --arg t "FLOORTEXT$p96c_ft" '{type: "assistant", message: {content: [{type: "text", text: $t}]}}' \
+    > "$P96C_LANE4/projects/ft-$p96c_i.jsonl"
+done
+{
+  printf '# 파이프라인 런 보고서 — L4\n\n'
+  awk -v l="$P96C_LANE4" 'BEGIN { for (i = 1; i <= 27; i++) printf "- `stage-result` | 세그먼트=S%d | 스테이지=implement | 실행 버전=%d | 세션 id=ft-%d | 레인=%s | 종류=implement | 종료 코드=0 | 종단 부류=정상\n", i, i, i, l }'
+} > "$P96C/led/L4.md"
+p96c_in4="$P96C/L4.input"
+bash -c '. "$1"; attention_input "$2" "$3" "$4"' _ "$P96C_AR" "$P96C/led/L4.md" "$P96C/rd/L4" "$p96c_in4" 2>/dev/null || true
+check "96c: 한 블록 하한의 할당은 text 블록 하나를 담는다" \
+  "$(grep -c -F FLOORTEXT "$p96c_in4" 2>/dev/null || true)/$(grep -c -F '세션 읽음 26/27 · 칸이 차서 넣지 못한 세션 1 · 실을 블록이 없는 세션 0' "$p96c_in4" 2>/dev/null || true)" "26/1"
+
 # C — 끝난 기록에 다시 온 계기.
 p96c_sha=$(shasum -a 256 "$P96C_ROOT/runs/T1.json" | cut -d' ' -f1)
 p96c_kick T1 >/dev/null
