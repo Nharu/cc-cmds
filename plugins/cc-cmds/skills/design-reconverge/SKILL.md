@@ -219,8 +219,10 @@ The distinction is measurable rather than asserted: compute it over the **bindin
 **Close the carrier block** where Step 2 took one, using `## 2`'s **close** write form and nothing else: flip `상태` to `처리됨` and insert **exactly one** `처리 기록` line at field position 2, immediately after that block's `상태` line, with every other block byte-unchanged. Its value grammar is fixed here:
 
 ```
-**처리 기록**: 재수렴 sha256: <사후 sha256> · 판정: 재설계 필요|불필요 · <한 줄 사유>
+**처리 기록**: 재수렴 sha256: <사후 sha256> · 판정: 재설계 필요|불필요 · 런: <run id> · <한 줄 사유>
 ```
+
+`<run id>` is `CC_PIPELINE_RUN_ID` (read by name, `printenv CC_PIPELINE_RUN_ID`). When it is unset or empty — an interactive call outside any run — leave the ` · 런: <run id>` part out and write the line as `재수렴 sha256: <사후 sha256> · 판정: 재설계 필요|불필요 · <한 줄 사유>`. The run part is what `gate.sh reconverge-spent` counts: a block closed by another run, or before this part existed, does not spend the item in this run.
 
 A block that already carries a `처리 기록` is **not** a member of the close set — another reader closed it inside the window — and writing a second one into it is a construction fault. Evaluate the close form's diff constraint against the pre-write bytes before the `mv`; a violation means discard the temp, do not write, and report.
 

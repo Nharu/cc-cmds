@@ -12418,6 +12418,194 @@ gate_decision_hold_refuse() {
   exit "$GATE_EXIT_RULE"
 }
 
+# ---------------------------------------------------------------------------
+# THE DEFECT-FIX FENCE. An implement stage whose residual recipe failed on a
+# defect of its own code may fix it itself, inside a fence the review reads
+# afterwards: at most two attempts per segment and item, only while the
+# document is the one the decisions were collected for, and only within the
+# segment's declared files. The gate writes the `결함 수정` rows and the triage
+# file; it never writes the design document.
+# ---------------------------------------------------------------------------
+gate_defect_fix_rows() {
+  # gate_defect_fix_rows <segment> <item> — the segment's `결함 수정` rows of
+  # the item, in ledger order.
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '세그먼트')" = "$1" ] || continue
+    [ "$(gate_row_field "$r" '항목')" = "$2" ] || continue
+    printf '%s\n' "$r"
+  done <<EOF
+$(gate_rows '결함 수정' 2>/dev/null || true)
+EOF
+}
+
+gate_path_in_declared() {
+  # gate_path_in_declared <path> <declared set> — 0 when one entry of the
+  # comma-separated set is the path, a directory (`…/`) holding it, or a glob
+  # matching it.
+  local p="$1" e
+  local IFS=','
+  for e in $2; do
+    e=$(printf '%s' "$e" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$e" ] || continue
+    [ "$p" = "$e" ] && return 0
+    case "$e" in */) case "$p" in "$e"*) return 0 ;; esac ;; esac
+    # shellcheck disable=SC2254
+    case "$p" in $e) return 0 ;; esac
+  done
+  return 1
+}
+
+gate_defect_fix() {
+  # gate_defect_fix <segment> <open|close> <item> <cause> <evidence> <result>
+  local seg="$1" mode="$2" item="$3" cause="$4" ev="$5" res="$6"
+  local wt rows last n start tdir tfile files f decl body dig latest
+  local outside='' marked='' nfiles=0 nmarked=0 at
+  case "$item" in
+    R[0-9]*) case "${item#R}" in *[!0-9]*) printf 'gate: defect-fix --item takes R<n>: %s\n' "$item" >&2; exit 2 ;; esac ;;
+    *) printf 'gate: defect-fix --item takes R<n>: %s\n' "${item:-(없음)}" >&2; exit 2 ;;
+  esac
+  [ -n "${DOC:-}" ] && [ -r "${DOC:-}" ] || {
+    warn "결함 수정: 매니페스트의 설계 문서를 읽을 수 없습니다"
+    return "$GATE_EXIT_RULE"; }
+  wt=$(gate_segment_worktree "$seg")
+  { [ -n "$wt" ] && [ -d "$wt" ]; } || {
+    warn "결함 수정: 세그먼트 ${seg} 의 워크트리가 없습니다"
+    return "$GATE_EXIT_RULE"; }
+  rows=$(gate_defect_fix_rows "$seg" "$item")
+  last=$(printf '%s\n' "$rows" | awk 'NF { v = $0 } END { print v }')
+  n=$(printf '%s\n' "$rows" | { grep -c -F '| 단계=열기 ' || true; })
+  tdir="$RUN_DIR/defect-triage"
+  mkdir -p "$tdir" 2>/dev/null || true
+  tfile="$tdir/$seg.md"
+  at=$(now_iso)
+  if [ "$mode" = "open" ]; then
+    { [ -n "$cause" ] && [ -n "$ev" ]; } || {
+      printf 'gate: defect-fix --open needs --cause and --evidence\n' >&2; exit 2; }
+    if [ "$(residual_item_value "$DOC" "$item" '검증 등급')" != '구현 시 검증' ]; then
+      warn "결함 수정: ${item} 의 검증 등급이 「구현 시 검증」 이 아닙니다 — 자체 수정을 열지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    dig=$(binding_digest 2>/dev/null) || dig=''
+    latest=$(gate_decision_collect_latest_digest)
+    if [ -z "$latest" ] || [ "$dig" != "$latest" ]; then
+      warn "결함 수정: 설계 문서의 구속 표면 다이제스트(${dig:-미상})가 가장 최근 결정 수거 행의 문서 다이제스트(${latest:-없음})와 다릅니다 — 자체 수정을 열지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ -n "$last" ] && [ "$(gate_row_field "$last" '단계')" = '열기' ]; then
+      warn "결함 수정: ${seg} 의 ${item} 시도 $(gate_row_field "$last" '시도') 가 아직 닫히지 않았습니다 — --close 를 먼저 부르세요"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ "${n:-0}" -ge 2 ]; then
+      warn "결함 수정: ${seg} 의 ${item} 은 이미 두 번 자체 수정을 열었습니다 — 세 번째 시도는 열지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    start=$(cd "$wt" && git rev-parse HEAD 2>/dev/null) || start=''
+    [ -n "$start" ] || { warn "결함 수정: ${wt} 의 HEAD 를 읽지 못했습니다"; return "$GATE_EXIT_RULE"; }
+    gate_append '결함 수정' "세그먼트=$seg" "항목=$item" "단계=열기" "시도=$((n + 1))" \
+      "시작 HEAD=$start" "원인=$(gate_row_safe "$cause" 200)" "기록 시각=$at" || return "$?"
+    {
+      printf '## %s 시도 %s — 열기 (%s)\n\n' "$item" "$((n + 1))" "$at"
+      printf -- '- 시작 HEAD: %s\n' "$start"
+      printf -- '- 원인: %s\n' "$(printf '%s' "$cause" | tr '\n\r' '  ')"
+      printf -- '- 근거: %s\n\n' "$(printf '%s' "$ev" | tr '\n\r' '  ')"
+    } >> "$tfile"
+    printf '시도=%s\n시작 HEAD=%s\n' "$((n + 1))" "$start"
+    return 0
+  fi
+  case "$res" in
+    통과|실패) ;;
+    *) printf 'gate: defect-fix --close needs --result 통과|실패\n' >&2; exit 2 ;;
+  esac
+  if [ -z "$last" ] || [ "$(gate_row_field "$last" '단계')" != '열기' ]; then
+    warn "결함 수정: ${seg} 의 ${item} 에 열린 자체 수정이 없습니다 — --open 을 먼저 부르세요"
+    return "$GATE_EXIT_RULE"
+  fi
+  start=$(gate_row_field "$last" '시작 HEAD')
+  files=$( { (cd "$wt" && git diff --name-only "$start" -- 2>/dev/null); \
+             (cd "$wt" && git ls-files --others --exclude-standard 2>/dev/null); } | awk 'NF && !seen[$0]++')
+  decl=$(gate_segment_declared_whole "$seg") || decl=''
+  body=$(residual_item_lines "$DOC" "$item")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    nfiles=$((nfiles + 1))
+    gate_path_in_declared "$f" "$decl" || outside="${outside}${f}"$'\n'
+    if [ -n "$body" ] && printf '%s' "$body" | grep -qF -- "$f"; then
+      marked="${marked}${f}"$'\n'
+      nmarked=$((nmarked + 1))
+    fi
+  done <<EOF
+$files
+EOF
+  if [ -n "$outside" ]; then
+    {
+      printf '## %s 시도 %s — 울타리 이탈 (%s)\n\n' "$item" "$(gate_row_field "$last" '시도')" "$at"
+      printf '%s' "$outside" | awk 'NF { print "- 선언 밖: " $0 }'
+      printf '\n'
+    } >> "$tfile"
+    gate_append '결함 수정' "세그먼트=$seg" "항목=$item" "단계=닫기" "시도=$(gate_row_field "$last" '시도')" \
+      "시작 HEAD=$start" "결과=울타리 이탈" "바뀐 파일=$nfiles" "시험 파일 변경=$nmarked" "기록 시각=$at" || return "$?"
+    warn "결함 수정: 시작 HEAD 뒤 바뀐 파일 중 선언 파일 밖의 것이 있습니다 — $(printf '%s' "$outside" | paste -sd ',' - | sed 's/,/, /g')"
+    return "$GATE_EXIT_RULE"
+  fi
+  gate_append '결함 수정' "세그먼트=$seg" "항목=$item" "단계=닫기" "시도=$(gate_row_field "$last" '시도')" \
+    "시작 HEAD=$start" "결과=$res" "바뀐 파일=$nfiles" "시험 파일 변경=$nmarked" "기록 시각=$at" || return "$?"
+  {
+    printf '## %s 시도 %s — 닫기 (%s)\n\n' "$item" "$(gate_row_field "$last" '시도')" "$at"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if printf '%s' "$marked" | grep -qxF -- "$f"; then
+        printf -- '- %s — 시험 파일 변경\n' "$f"
+      else
+        printf -- '- %s\n' "$f"
+      fi
+    done <<EOF
+$files
+EOF
+    printf -- '- 결과: %s\n\n' "$res"
+  } >> "$tfile"
+  printf '결과=%s\n바뀐 파일=%s\n시험 파일 변경=%s\n' "$res" "$nfiles" "$nmarked"
+}
+
+gate_reconverge_spent() {
+  # gate_reconverge_spent <R<n>> — `소진` when this run's re-convergence
+  # already closed a carrier block naming the item (its `처리 기록` carries
+  # ` · 런: <this run id> · `), `아님` otherwise, `판독 불가 — <reason>` when
+  # the carrier cannot be read. Always 0.
+  local item="$1" carrier
+  case "$item" in
+    R[0-9]*) case "${item#R}" in *[!0-9]*) printf '판독 불가 — 항목이 R<n> 꼴이 아니다\n'; return 0 ;; esac ;;
+    *) printf '판독 불가 — 항목이 R<n> 꼴이 아니다\n'; return 0 ;;
+  esac
+  [ -n "${DOC:-}" ] || { printf '판독 불가 — 매니페스트에 설계 문서가 없다\n'; return 0; }
+  carrier=$(gate_reconverge_carrier_path "$DOC" 2>/dev/null) || carrier=''
+  [ -n "$carrier" ] || { printf '판독 불가 — 캐리어 경로를 유도하지 못했다\n'; return 0; }
+  [ -e "$carrier" ] || { printf '아님\n'; return 0; }
+  [ -r "$carrier" ] || { printf '판독 불가 — 캐리어를 읽을 수 없다\n'; return 0; }
+  LC_ALL=C awk -v item="$item" -v run=" · 런: ${RUN_ID:-} · " '
+    function close_block() {
+      if (inb && st == "처리됨" && hit && index(rec, run) > 0) spent = 1
+      inb = 0; st = ""; hit = 0; rec = ""
+    }
+    /^## 회차 / { close_block(); inb = 1; next }
+    /^<!-- cc-design-reconverge: end -->/ { close_block(); lastend = NR; next }
+    NF { lastmark = NR }
+    inb && /^\*\*상태\*\*: / { st = $0; sub(/^\*\*상태\*\*: */, "", st); sub(/[ \t\r]+$/, "", st) }
+    inb && /^\*\*대상 항목\*\*: / {
+      v = $0; sub(/^\*\*대상 항목\*\*: */, "", v)
+      if (match(v, "(^|[^A-Za-z0-9])" item "([^0-9]|$)")) hit = 1
+    }
+    inb && /^\*\*처리 기록\*\*: / { rec = $0 }
+    END {
+      close_block()
+      if (lastend == 0 || lastmark > lastend) { print "판독 불가 — 캐리어 잘림"; exit }
+      print (spent ? "소진" : "아님")
+    }
+  ' "$carrier"
+  return 0
+}
+
 gate_snapshot_decision_holds_json() {
   # One element for the `결정 수거` row of the document's current binding
   # digest, when it holds anything: `record`, `digest`, `segments` and
@@ -20934,10 +21122,10 @@ gate_main() {
   # business paying even for the launch. The stamp is not touched, so the round
   # starts on the next verb that is not excluded.
   # The halt-report round is started from the same place under the same
-  # exclusions, on its own stamp and lock. `pair-residue` is excluded with them:
-  # a reader of the ledger starts no writer.
+  # exclusions, on its own stamp and lock. `pair-residue` and
+  # `reconverge-spent` are excluded with them: a reader starts no writer.
   case "$verb" in
-    plan|digest-path|pair-residue) ;;
+    plan|digest-path|pair-residue|reconverge-spent) ;;
     *) gate_metrics_cycle || true
        gate_halt_cycle || true ;;
   esac
@@ -21084,6 +21272,32 @@ gate_main() {
       printf '문서 다이제스트=%s\n중단 기록=%s\n보류 세그먼트=%s\n' \
         "$GATE_DC_DIGEST" "$GATE_DC_RECORD" "$GATE_DC_HOLDS"
       [ -z "$GATE_DC_LOOPCAP" ] || printf '순환 상한=%s\n' "$GATE_DC_LOOPCAP"
+      ;;
+    defect-fix)
+      # Writing one ledger row and the segment's triage file under the run
+      # directory: the fence of an implement stage's own defect fix
+      # (`gate_defect_fix`).
+      [ "$segment" != "-" ] && [ -n "$segment" ] \
+        || { printf 'gate: defect-fix requires --segment\n' >&2; exit 2; }
+      if [ "$df_open" = "$df_close" ]; then
+        printf 'gate: defect-fix takes exactly one of --open and --close\n' >&2; exit 2
+      fi
+      if [ "$df_open" = 1 ] && [ -n "$df_result" ]; then
+        printf 'gate: --result belongs to defect-fix --close\n' >&2; exit 2
+      fi
+      if [ "$df_close" = 1 ] && { [ -n "$end_cause" ] || [ -n "$df_evidence" ]; }; then
+        printf 'gate: --cause and --evidence belong to defect-fix --open\n' >&2; exit 2
+      fi
+      local df_rc=0 df_mode=close
+      [ "$df_open" = 1 ] && df_mode=open
+      gate_defect_fix "$segment" "$df_mode" "$df_item" "$end_cause" "$df_evidence" "$df_result" || df_rc=$?
+      exit "$df_rc"
+      ;;
+    reconverge-spent)
+      # Reading, not acting: whether this run's re-convergence already handled
+      # the item. Always 0; no ledger row.
+      gate_reconverge_spent "$df_item"
+      exit 0
       ;;
     unclosed-decisions)
       # Reading, not acting: the driver's own `unresolved_closure_pending` on
@@ -48151,7 +48365,7 @@ gate_dashboard_ensure() {
   # the driver normalises it, so a session that lost `/usr/bin` still finds the
   # system interpreter.
   case "${1:-}" in
-    plan|digest-path|pair-residue) return 0 ;;
+    plan|digest-path|pair-residue|reconverge-spent) return 0 ;;
   esac
   cc_caller_is_stage && return 0
   local py
