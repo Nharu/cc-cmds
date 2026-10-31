@@ -2761,6 +2761,57 @@ unresolved_closure_pending() {
   '
 }
 
+# unresolved_closure_fields <doc> <heading> — one TAB-separated line
+# `<추천 답>\t<추천 근거>\t<닿는 슬라이스>` for one heading
+# `unresolved_closure_pending` printed, read from that entry's block in the same
+# section and with the same key forms. A missing recommendation reads
+# `(없음)`, a missing `**닿는 슬라이스**` reads `전체`, and a table row (whose
+# heading is its first cell) reads `(없음)\t(없음)\t전체`. A tab inside a value
+# becomes a space. Prints nothing for an empty document argument.
+unresolved_closure_fields() {
+  local doc="${1:-}" want="${2:-}"
+  [ -n "$doc" ] && [ -r "$doc" ] || return 0
+  defenced "$doc" | UCF_WANT="$want" awk '
+    function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    function field(line, key,   s, v) {
+      s = line; sub(/^- /, "", s)
+      if (index(s, "**" key "**:") == 1) return "\001" trim(substr(s, length(key) + 6))
+      if (index(s, "**" key ":") == 1) { v = trim(substr(s, length(key) + 4)); sub(/\*\*/, "", v); return "\001" trim(v) }
+      if (index(s, key ":") == 1) return "\001" trim(substr(s, length(key) + 2))
+      return ""
+    }
+    function flush() {
+      if (cur) { ra = a; rb = b; rc = c; found = 1 }
+      cur = 0
+    }
+    /^## / {
+      if (inr) flush()
+      inr = ($0 ~ /미해결[ \t]+이슈/)
+      if (inr) { found = 0; ra = rb = rc = "" }
+      next
+    }
+    !inr { next }
+    /^### / {
+      flush()
+      cur = (trim($0) == ENVIRON["UCF_WANT"])
+      a = b = c = ""
+      next
+    }
+    !cur { next }
+    {
+      v = field($0, "추천 답");       if (v != "" && a == "") { a = substr(v, 2); next }
+      v = field($0, "추천 근거");     if (v != "" && b == "") { b = substr(v, 2); next }
+      v = field($0, "닿는 슬라이스"); if (v != "" && c == "") { c = substr(v, 2); next }
+    }
+    END {
+      if (inr) flush()
+      if (!found) { ra = rb = rc = "" }
+      gsub(/\t/, " ", ra); gsub(/\t/, " ", rb); gsub(/\t/, " ", rc)
+      printf "%s\t%s\t%s\n", (ra == "" ? "(없음)" : ra), (rb == "" ? "(없음)" : rb), (rc == "" ? "전체" : rc)
+    }
+  '
+}
+
 # unclosed_unmet_message <pending headings> — the unmet predicate a
 # continuation names when open decisions are what block the plan. The headings
 # go in verbatim, so the stage can name each entry in its halt record.
@@ -10963,6 +11014,25 @@ segment_cycle() {
         park "$seg" cone 무효화 "게이트 park" "설계 문서 잠금 경합 — 두 세그먼트가 같은 문서를 쓰려 한다"
         return 1
       }
+      # THE DECISIONS ARE COLLECTED BEFORE A PROCESS A PLANS, by the gate's own
+      # collection (`gate_decision_collect`), so this traversal parks the same
+      # segments a routed dispatch is refused for and goes on with the others.
+      if [ -n "${DOC:-}" ] && ! segment_process_b "$seg"; then
+        local dcl dcrc dch dcr
+        dcl=$(run_gate_call gate_decision_collect_holds "$DOC" 2>/dev/null) || dcl=""
+        dcrc=$(printf '%s' "$dcl" | cut -f1)
+        dch=$(printf '%s' "$dcl" | cut -f2)
+        dcr=$(printf '%s' "$dcl" | cut -f3)
+        if [ "${dcrc:-1}" != "0" ]; then
+          park "$seg" act 막힘 "게이트 park" "결정 수거 실패 — 설계 문서의 구현 전 결정을 수거하지 못했다"
+          return 1
+        fi
+        case " $dch " in
+          *" $seg "*|*" 전체 "*)
+            park "$seg" act 막힘 "게이트 park" "결정 수거 보류 — 기록 $dcr 에 대한 사람의 답과 재수렴을 기다린다"
+            return 1 ;;
+        esac
+      fi
       # THIS RELAY BELONGS TO THE FIXED-GRAPH TRAVERSAL, and it is not the only
       # consumer of an answered judgment. A run driven by the router never
       # enters this loop at all; there the live consumer is the snapshot's

@@ -24,7 +24,11 @@ closed set:
 - `구현 전 결정` — a person (or an audit, or a re-convergence) closes it before
   any implementation plans over it. It is followed by
   `**닿는 슬라이스**: <id>, <id> | 전체` — the slices of `## 구현 슬라이싱` whose
-  work the decision changes, or `전체`.
+  work the decision changes, or `전체` — and then by two more lines,
+  `**추천 답**: <한 줄>`, the answer the writer recommends, and
+  `**추천 근거**: <한 줄>`, why. The run collects every such entry before
+  implementation and shows a person each one with its recommendation, so the
+  person can confirm them all at once.
 - `구현 무관` — the entry decides nothing the code writes: a later measurement,
   another ticket, an operational judgment outside the repository. The
   implementation does not read it.
@@ -49,6 +53,20 @@ Two cases are always `구현 전 결정`, whatever else holds:
 - an entry whose `골격급` is `예` — a skeleton-grade item left after the audit's
   re-convergence cap is one;
 - an entry whose `사유` starts with `감사 합성 요구` or `베이스 계약 변경 필요`.
+
+**A writer closes on its own what a record already answers.** An entry whose
+answer one of the repository's facts, the interview record or a written rule
+decides is closed by the writer: written `해결`, or `구현 재량` when the four
+conditions above hold. This does not narrow the rules above — the two
+always-`구현 전 결정` cases stay, and so does condition 3 of `구현 재량` — so an
+entry a fact answers but whose answer changes a contract another side reads is
+closed as `해결` or left `구현 전 결정`, never written `구현 재량`. Outside those
+two cases a writer leaves `구현 전 결정` only for four kinds of entry:
+
+- a value judgment no written standard decides;
+- a risk acceptance;
+- a requirement beyond the record;
+- an external resource a person has to prepare.
 
 ## 작성자 꼴
 
@@ -101,9 +119,21 @@ document order, and nothing when none does. It reads **fail closed**:
   each is a `### 슬라이스 <id>` of the document, whatever that slice's
   `**스킬**`; an id the document does not have reads `전체`. A document with no
   `## 구현 슬라이싱` reaches every segment with every entry.
+- `**추천 답**` and `**추천 근거**` are read from the entry's block, in the
+  same key forms as `**구현 처분**`; an entry without them reads both as
+  `(없음)`, as an entry of an older document and an entry forced to
+  `구현 전 결정` (`골격급: 예`, or a `사유` starting with `감사 합성 요구` or
+  `베이스 계약 변경 필요`) usually do, and every table row does. The headings the reader prints
+  do not change: `unresolved_closure_fields <doc> <heading>` in
+  `orchestrator/run.sh` reads the two values and `**닿는 슬라이스**` of one
+  printed heading, for the gate's `decision-collect`.
 
 ## 읽는 쪽
 
+- The gate's `decision-collect` collects every entry of a document before any
+  process A implement dispatch of it, writes one halt record that lists each
+  with its recommendation, and holds the segments the entries reach until a
+  re-convergence closes them (`_common/pipeline-sidecar.md` §4).
 - The unattended implement stage asks `gate.sh unclosed-decisions` before it
   plans (process A) and halts on a non-empty answer with the
   `Step 1 CFI-U3 BT-STOP — 미결 결정` record of `_common/pipeline-sidecar.md`

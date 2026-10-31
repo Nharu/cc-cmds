@@ -193,6 +193,33 @@
 #                    manifest's design document, one per line in document
 #                    order, or `문서 판독 불가 — <reason>`; empty when none
 #                    does. Writes nothing
+#   gate.sh decision-collect --manifest <path> --document <design document>
+#                    collects every open `구현 전 결정` entry of the document
+#                    under its binding-surface digest: one halt record
+#                    `halt/decision-collect-<digest 12>.md` listing each with
+#                    its recommendation, and one `결정 수거` row naming the
+#                    record and the segments the entries reach. Prints
+#                    `문서 다이제스트=`, `중단 기록=` and `보류 세그먼트=`
+#                    (`없음` when nothing is open). A digest already collected
+#                    writes nothing; a document the reader cannot read writes
+#                    nothing and exits 3. A process A implement dispatch runs
+#                    the same collection and is refused (3) for a held segment
+#   gate.sh defect-fix --manifest <path> --segment <id> --item R<n> --open
+#                      --cause <원인> --evidence <근거>
+#   gate.sh defect-fix --manifest <path> --segment <id> --item R<n> --close
+#                      --result 통과|실패
+#                    the fence of an implement stage's own fix of a defect a
+#                    residual recipe found: `--open` admits at most two
+#                    attempts per segment and item, only while the document's
+#                    binding digest is the last `결정 수거` row's, and writes a
+#                    `결함 수정` row and `defect-triage/<segment>.md`; `--close`
+#                    lists the files changed since the open, refuses (3) one
+#                    outside the declared files, marks a file the recipe names
+#                    `시험 파일 변경`, and writes the closing row
+#   gate.sh reconverge-spent --manifest <path> --item R<n>
+#                    prints `소진` when this run's re-convergence already
+#                    handled the item, `아님`, or `판독 불가 — <사유>`; always
+#                    exits 0 and writes nothing
 #   gate.sh seat-apply-preview --manifest <path> --record <halt record> [--target <alias>]
 #                    for a `Step 3 강제 표면 좌석 적용` halt record: prints the
 #                    record digest, the `--numstat` and unified diff of the
@@ -12148,6 +12175,278 @@ EOF
   [ "$first" = "1" ] || printf '\n'
 }
 
+# ---------------------------------------------------------------------------
+# DECISION COLLECTION. Every `구현 전 결정` entry of the design document is
+# gathered once per binding digest, before any process A implement dispatch of
+# it, into one halt record that shows a person each entry with its
+# recommendation (`_common/unresolved-closure.md`). The `결정 수거` row names
+# the record and the segments the entries reach. A process A dispatch of such
+# a segment is refused while the row of the document's current digest holds
+# it, answered or not: only a re-convergence that closes the entries changes
+# the digest, and the collection under the new digest then lets it go.
+# ---------------------------------------------------------------------------
+readonly GATE_DC_STEP='결정 수거 — 구현 전 결정'
+
+halt_step_is_decision_collect() {
+  # halt_step_is_decision_collect <halt record> — 0 when the record's whole
+  # `**스텝**` value is the decision collection's.
+  [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1" 2>/dev/null)" = "$GATE_DC_STEP" ]
+}
+
+gate_decision_collect_key() {
+  # gate_decision_collect_key <fallback> — the key a collection record is
+  # answered on: the plan's last design-side run-scope step (the audit, else
+  # the design), or <fallback>, the first held segment, in a run whose plan
+  # has neither.
+  local k s
+  for k in audit design; do
+    if s=$(gate_run_scope_step "$k" 2>/dev/null) && [ -n "$s" ]; then
+      printf '%s' "$s"
+      return 0
+    fi
+  done
+  printf '%s' "$1"
+}
+
+gate_decision_collect_row() {
+  # gate_decision_collect_row <document digest> — the last `결정 수거` row of
+  # that digest, or nothing.
+  local r last=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '문서 다이제스트')" = "$1" ] && last=$r
+  done <<EOF
+$(gate_rows '결정 수거' 2>/dev/null || true)
+EOF
+  printf '%s' "$last"
+}
+
+gate_decision_collect_latest_digest() {
+  # gate_decision_collect_latest_digest — the `문서 다이제스트` of the run's
+  # last `결정 수거` row, or nothing.
+  local r last=''
+  while IFS= read -r r; do
+    [ -n "$r" ] && last=$r
+  done <<EOF
+$(gate_rows '결정 수거' 2>/dev/null || true)
+EOF
+  [ -n "$last" ] || return 0
+  gate_row_field "$last" '문서 다이제스트'
+}
+
+gate_decision_collect_answered() {
+  # gate_decision_collect_answered <record> — 0 when a `중단 답` row names it.
+  [ -n "$1" ] && [ "$1" != "없음" ] || return 1
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '중단 기록')" = "$1" ] && return 0
+  done <<EOF
+$(gate_rows '중단 답' 2>/dev/null || true)
+EOF
+  return 1
+}
+
+gate_decision_collect_capped() {
+  # gate_decision_collect_capped <record> — 0 when the `결정 수거` row that
+  # wrote the record carries `순환 상한`: a segment an answered collection
+  # already sent through a re-convergence was held again, so the record goes
+  # to a person and no answer of it is routed.
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '중단 기록')" = "$1" ] || continue
+    [ -n "$(gate_row_field "$r" '순환 상한')" ] && return 0
+  done <<EOF
+$(gate_rows '결정 수거' 2>/dev/null || true)
+EOF
+  return 1
+}
+
+gate_decision_holds_seg() {
+  # gate_decision_holds_seg <space-separated holds> <segment> — 0 when the
+  # list names the segment or reads `전체`.
+  case " $1 " in
+    *" $2 "*|*" 전체 "*) return 0 ;;
+  esac
+  return 1
+}
+
+gate_decision_collect() {
+  # gate_decision_collect <document> — collects the document's open
+  # `구현 전 결정` entries under its current binding digest and leaves
+  # GATE_DC_DIGEST, GATE_DC_RECORD (`없음` when nothing is open),
+  # GATE_DC_HOLDS (space-separated slice ids, `전체`, or `없음`) and
+  # GATE_DC_LOOPCAP. A digest that already has its row is read back and
+  # nothing is written. A document the reader cannot read writes nothing and
+  # returns GATE_EXIT_RULE with the reader's line warned.
+  local DOC="$1" ids id out heads='' holds='' loopcap='' h f key n rec tmp dig
+  local rdig='없음' prev items='' nitems=0 fa fr fs
+  GATE_DC_DIGEST=''; GATE_DC_RECORD=''; GATE_DC_HOLDS=''; GATE_DC_LOOPCAP=''
+  { [ -n "$DOC" ] && [ -f "$DOC" ] && [ -r "$DOC" ]; } || {
+    warn "결정 수거: 읽을 수 있는 설계 문서가 아닙니다: ${DOC:-(없음)}"
+    return "$GATE_EXIT_VOCAB"; }
+  dig=$(binding_digest) && [ -n "$dig" ] || {
+    warn "결정 수거: 구속 표면 다이제스트를 구하지 못했습니다: $DOC"
+    return "$GATE_EXIT_RULE"; }
+  GATE_DC_DIGEST=$dig
+  prev=$(gate_decision_collect_row "$dig")
+  if [ -n "$prev" ]; then
+    GATE_DC_RECORD=$(gate_row_field "$prev" '중단 기록')
+    GATE_DC_HOLDS=$(gate_row_field "$prev" '보류 세그먼트')
+    GATE_DC_LOOPCAP=$(gate_row_field "$prev" '순환 상한')
+    return 0
+  fi
+  # A DOCUMENT WITH NO SLICING reaches every segment with every entry, so one
+  # reading under any id is the whole answer and the hold is `전체`.
+  ids=$(slice_ids "$DOC")
+  [ -n "$ids" ] || ids='전체'
+  for id in $ids; do
+    out=$(unresolved_closure_pending "$DOC" "$id")
+    case "$out" in
+      '문서 판독 불가'*)
+        warn "결정 수거: $(printf '%s\n' "$out" | sed -n '1p') — 기록도 행도 쓰지 않습니다"
+        return "$GATE_EXIT_RULE" ;;
+    esac
+    [ -n "$out" ] || continue
+    holds="${holds:+$holds }$id"
+    heads=$(printf '%s\n%s\n' "$heads" "$out" | awk 'NF && !seen[$0]++')
+  done
+  # THE LOOP CAP, once. A segment an earlier collection held, whose record a
+  # person answered and so sent through a re-convergence, is held again under
+  # the new digest: the record that holds it now goes to a person and its
+  # answer is not routed (`gate_decision_collect_capped`).
+  for id in $holds; do
+    while IFS= read -r prev; do
+      [ -n "$prev" ] || continue
+      gate_decision_holds_seg "$(gate_row_field "$prev" '보류 세그먼트')" "$id" || continue
+      gate_decision_collect_answered "$(gate_row_field "$prev" '중단 기록')" || continue
+      loopcap="${loopcap:+$loopcap }$id"
+      break
+    done <<EOF
+$(gate_rows '결정 수거' 2>/dev/null || true)
+EOF
+  done
+  rec='없음'
+  if [ -n "$heads" ]; then
+    key=$(gate_decision_collect_key "${holds%% *}")
+    n=$( { gate_stage_result_rows_of "$key" 2>/dev/null || true; } | { grep -c -F -- '- `stage-result`' || true; })
+    [ "${n:-0}" -ge 1 ] 2>/dev/null || n=1
+    mkdir -p "$RUN_DIR/halt" 2>/dev/null || true
+    rec="$RUN_DIR/halt/decision-collect-$(printf '%s' "$dig" | cut -c1-12).md"
+    while IFS= read -r h; do
+      [ -n "$h" ] || continue
+      f=$(unresolved_closure_fields "$DOC" "$h")
+      fa=$(printf '%s' "$f" | cut -f1); fr=$(printf '%s' "$f" | cut -f2); fs=$(printf '%s' "$f" | cut -f3)
+      items="${items}- 「${h}」 — 추천 답: ${fa:-(없음)} · 추천 근거: ${fr:-(없음)} · 닿는 슬라이스: ${fs:-전체}"$'\n'
+      nitems=$((nitems + 1))
+    done <<EOF
+$heads
+EOF
+    tmp=$(mktemp "$RUN_DIR/halt/.decision-collect.XXXXXX") || {
+      warn "결정 수거: $RUN_DIR/halt 아래에 임시 파일을 만들지 못했습니다"
+      return "$GATE_EXIT_RULE"; }
+    {
+      printf '<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=%s#%s; run=%s -->\n' "$key" "$n" "$RUN_ID"
+      printf '**중단 시각**: %s\n' "$(now_iso)"
+      printf '**스킬**: autopilot-router-shift\n'
+      printf '**스텝**: %s\n' "$GATE_DC_STEP"
+      printf '**분류**: gate-unanswerable\n'
+      printf '**질문 문면**: 설계 문서 %s 의 「구현 전 결정」 항목 %s개가 구현 전에 사람의 결정을 기다립니다. 항목마다 표제 · 추천 답 · 추천 근거 · 닿는 슬라이스를 적습니다. 보류 세그먼트: %s.\n' \
+        "$DOC" "$nitems" "$holds"
+      printf '%s' "$items"
+      printf '「항목별로 답함」 은 이 기록 옆의 %s 를 첨부로 싣습니다 — 항목 표제를 축자로 `### ` 소제목으로 부르고 그 아래에 고른 결정을 적은 파일이며, 첨부에 없는 항목은 추천 답으로 닫힙니다.\n' \
+        "${rec%.md}.answer.md"
+      if [ -n "$loopcap" ]; then
+        printf '순환 상한: 세그먼트 %s 는 답을 받아 재수렴을 거친 수거가 이미 한 번 보류했던 세그먼트입니다. 이 기록의 답은 교대가 실행하지 않습니다 — 사람이 문서의 항목을 직접 닫아야 합니다.\n' "$loopcap"
+      fi
+      printf '**미결 결정 항목**: %s\n' "$(printf '%s\n' "$heads" | awk 'NF { printf "%s「%s」", (n++ ? ", " : ""), $0 }')"
+      printf '**선택지**:\n'
+      printf -- '- `추천대로 확정` — 항목마다 적힌 추천 답으로 모든 항목을 닫는다: 같은 런의 교대가 /cc-cmds:design-reconverge %s 구속 티어 이탈 %s 를 보내 항목을 해결로 닫고 본문에 반영하며, 보류된 세그먼트는 새 수거가 놓아 준 뒤 프로세스 A 부터 다시 계획한다\n' "$DOC" "$rec"
+      printf -- '- `항목별로 답함` — 첨부의 결정으로 그 항목을 닫고 첨부에 없는 항목은 추천 답으로 닫는다. 그 뒤의 경로는 `추천대로 확정` 과 같다\n'
+      printf '**추천**: (없음) — 항목마다 사람의 결정이 필요하다\n'
+      printf '**추천 근거**: (없음)\n'
+      printf '**하네스 오류**: (없음)\n'
+      printf '**재호출 명령**: (없음)\n'
+      printf '**후속**: 보류 큐\n'
+      printf '<!-- /cc-pipeline-halt v1 -->\n'
+    } > "$tmp" || { rm -f "$tmp"; warn "결정 수거: 중단 기록을 쓰지 못했습니다"; return "$GATE_EXIT_RULE"; }
+    # `mv -n` NEVER REPLACES. A file already at the name is the record an
+    # earlier collection of the same digest wrote before it could add its row;
+    # that one is kept and named.
+    mv -n "$tmp" "$rec" 2>/dev/null || true
+    [ ! -e "$tmp" ] || rm -f "$tmp"
+    rdig=$(shasum -a 256 "$rec" | cut -d' ' -f1)
+  fi
+  gate_append '결정 수거' "문서 다이제스트=$dig" "중단 기록=$rec" "기록 다이제스트=$rdig" \
+    "보류 세그먼트=${holds:-없음}" ${loopcap:+"순환 상한=$loopcap"} "기록 시각=$(now_iso)" || return "$?"
+  GATE_DC_RECORD=$rec
+  GATE_DC_HOLDS=${holds:-없음}
+  GATE_DC_LOOPCAP=$loopcap
+  return 0
+}
+
+gate_decision_collect_holds() {
+  # gate_decision_collect_holds <document> — the collection for a caller in
+  # another shell (the driver's `run_gate_call`): one line
+  # `<exit>\t<보류 세그먼트>\t<중단 기록>\t<순환 상한>`.
+  local rc=0
+  gate_decision_collect "$1" >/dev/null 2>&1 || rc=$?
+  printf '%s\t%s\t%s\t%s\n' "$rc" "${GATE_DC_HOLDS:--}" "${GATE_DC_RECORD:--}" "${GATE_DC_LOOPCAP:--}"
+}
+
+gate_decision_hold_refuse() {
+  # gate_decision_hold_refuse <segment> — the admission of a process A
+  # implement dispatch: the collection runs first, and the dispatch is refused
+  # with exit 3 while the current digest's row holds the segment, whether its
+  # record was answered or not.
+  local seg="$1" rc=0
+  [ -n "${DOC:-}" ] || return 0
+  gate_decision_collect "$DOC" || rc=$?
+  if [ "$rc" != 0 ]; then
+    warn "세그먼트 ${seg} 의 구현(프로세스 A)을 보내지 않습니다 — 설계 문서의 구현 전 결정을 수거하지 못했습니다"
+    exit "$GATE_EXIT_RULE"
+  fi
+  gate_decision_holds_seg "$GATE_DC_HOLDS" "$seg" || return 0
+  if [ -n "$GATE_DC_LOOPCAP" ] && gate_decision_holds_seg "$GATE_DC_LOOPCAP" "$seg"; then
+    warn "세그먼트 ${seg} 는 결정 수거의 순환 상한에 닿았습니다 — 답을 받아 재수렴을 거친 뒤에도 같은 세그먼트가 다시 보류돼, 기록 ${GATE_DC_RECORD} 은 사람 몫입니다"
+    warn "이 세그먼트는 park 로 두고 보류 집합 밖의 세그먼트를 계속 라우팅하세요"
+  else
+    warn "세그먼트 ${seg} 는 결정 수거 기록 ${GATE_DC_RECORD} 의 보류 세그먼트입니다 — 답 여부와 상관없이, 재수렴이 항목을 닫아 새 수거가 이 세그먼트를 놓아 줄 때까지 구현을 보내지 않습니다"
+    warn "보류 집합 밖의 세그먼트를 계속 라우팅하세요. 사람의 답은 그 기록의 중단 답으로 받습니다"
+  fi
+  exit "$GATE_EXIT_RULE"
+}
+
+gate_snapshot_decision_holds_json() {
+  # One element for the `결정 수거` row of the document's current binding
+  # digest, when it holds anything: `record`, `digest`, `segments` and
+  # `loop_cap`. A read — the digest is computed, nothing is collected.
+  local LC_CTYPE=C; export LC_CTYPE
+  [ -n "${DOC:-}" ] && [ -r "${DOC:-}" ] || return 0
+  local dig row holds cap s first segs='' caps=''
+  dig=$(binding_digest 2>/dev/null) && [ -n "$dig" ] || return 0
+  row=$(gate_decision_collect_row "$dig")
+  [ -n "$row" ] || return 0
+  holds=$(gate_row_field "$row" '보류 세그먼트')
+  [ -n "$holds" ] && [ "$holds" != "없음" ] || return 0
+  cap=$(gate_row_field "$row" '순환 상한')
+  first=1
+  for s in $holds; do
+    [ "$first" = 1 ] || segs="$segs, "
+    first=0
+    segs="$segs\"$(gate_json_escape "$s")\""
+  done
+  first=1
+  for s in $cap; do
+    [ "$first" = 1 ] || caps="$caps, "
+    first=0
+    caps="$caps\"$(gate_json_escape "$s")\""
+  done
+  printf '    {"record": "%s", "digest": "%s", "segments": [%s], "loop_cap": [%s]}\n' \
+    "$(gate_json_escape "$(gate_row_field "$row" '중단 기록')")" "$dig" "$segs" "$caps"
+}
+
 gate_replan_person_decided() {
   # gate_replan_person_decided <sibling> <스테이지>#<실행 버전> — 0 when a
   # `사람-결정` question on the sibling, first issued after the cited
@@ -16594,6 +16893,15 @@ gate_snapshot() {
   printf '  "replan_due": [\n'
   gate_replan_due_json
   printf '  ],\n'
+  # THE SEGMENTS THE DECISION COLLECTION HOLDS under the document's current
+  # binding digest, and the record a person answers for them
+  # (`gate_decision_collect`). The same row the process A dispatch refuses on,
+  # so a shift counts those segments as waiting on a person and routes the
+  # others. Outside the default `--fields` projection and outside `H`, as
+  # `cone_blocks[]` is; always emitted, empty included.
+  printf '  "decision_holds": [\n'
+  gate_snapshot_decision_holds_json
+  printf '  ],\n'
   # THE AUDIT THAT ASKED FOR ITS SKELETAL RE-CONVERGENCE, or null. The same
   # evaluation the segment plan, the split and condition 1 make
   # (`gate_audit_concluded`), so a router that dispatches on it is acting on the
@@ -19810,6 +20118,7 @@ gate_main() {
   local end_cause="" end_successor=""
   local -a ss_flags=()
   local sa_record=""
+  local dc_doc="" df_open=0 df_close=0 df_item="" df_evidence="" df_result="" df_seen=0
   GATE_RESUME=""; export GATE_RESUME
   # A plain global, reset here, so a value the caller's environment carries
   # never reaches the arm that reads it — only the argv flag below sets it.
@@ -19912,6 +20221,12 @@ gate_main() {
       --cause)           end_cause="$2"; shift 2 ;;
       --successor)       end_successor="$2"; shift 2 ;;
       --record)          sa_record="$2"; shift 2 ;;
+      --document)        dc_doc="$2"; shift 2 ;;
+      --open)            df_open=1; df_seen=1; shift ;;
+      --close)           df_close=1; df_seen=1; shift ;;
+      --item)            df_item="$2"; df_seen=1; shift 2 ;;
+      --evidence)        df_evidence="$2"; df_seen=1; shift 2 ;;
+      --result)          df_result="$2"; df_seen=1; shift 2 ;;
       # The screening tool's own three switches, handed to it as they came.
       --list|--tokens|-z) ss_flags+=("$1"); shift ;;
       # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
@@ -20064,10 +20379,32 @@ gate_main() {
   fi
   # The same rule for the two closing flags: they decide something on one verb
   # only. Their vocabulary is checked in that verb, after the run is known.
-  if [ -n "$end_cause" ] || [ -n "$end_successor" ]; then
+  if [ -n "$end_successor" ] && [ "$verb" != "end-abandoned" ]; then
+    printf 'gate: --successor is used only with end-abandoned (verb received: %s)\n' "$verb" >&2
+    exit 2
+  fi
+  if [ -n "$end_cause" ]; then
     case "$verb" in
-      end-abandoned) ;;
-      *) printf 'gate: --cause and --successor are used only with end-abandoned (verb received: %s)\n' "$verb" >&2
+      end-abandoned|defect-fix) ;;
+      *) printf 'gate: --cause is used only with end-abandoned and defect-fix (verb received: %s)\n' "$verb" >&2
+         exit 2 ;;
+    esac
+  fi
+  if [ -n "$dc_doc" ] && [ "$verb" != "decision-collect" ]; then
+    printf 'gate: --document is used only with decision-collect (verb received: %s)\n' "$verb" >&2
+    exit 2
+  fi
+  # `--item` is shared by the two verbs that read a residual item; the other
+  # four belong to the defect-fix fence alone.
+  if [ "$df_seen" = "1" ]; then
+    case "$verb" in
+      defect-fix) ;;
+      reconverge-spent)
+        if [ "$df_open" = 1 ] || [ "$df_close" = 1 ] || [ -n "$df_evidence" ] || [ -n "$df_result" ]; then
+          printf 'gate: --open, --close, --evidence and --result are used only with defect-fix\n' >&2
+          exit 2
+        fi ;;
+      *) printf 'gate: --open, --close, --item, --evidence and --result are used only with defect-fix (and --item with reconverge-spent) (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -20734,6 +21071,19 @@ gate_main() {
       local ss_rc=0
       bash "$GATE_DIR/enforcement-surface-screen.sh" ${ss_flags[@]+"${ss_flags[@]}"} -- "$@" || ss_rc=$?
       exit "$ss_rc"
+      ;;
+    decision-collect)
+      # Writing under the run directory and one ledger row: the collection of
+      # the named document's `구현 전 결정` entries under its current binding
+      # digest (`gate_decision_collect`). A digest already collected writes
+      # nothing and prints its row's values again.
+      [ -n "$dc_doc" ] || { printf 'gate: decision-collect requires --document <path>\n' >&2; exit 2; }
+      local dc_rc=0
+      gate_decision_collect "$dc_doc" || dc_rc=$?
+      [ "$dc_rc" = 0 ] || exit "$dc_rc"
+      printf '문서 다이제스트=%s\n중단 기록=%s\n보류 세그먼트=%s\n' \
+        "$GATE_DC_DIGEST" "$GATE_DC_RECORD" "$GATE_DC_HOLDS"
+      [ -z "$GATE_DC_LOOPCAP" ] || printf '순환 상한=%s\n' "$GATE_DC_LOOPCAP"
       ;;
     unclosed-decisions)
       # Reading, not acting: the driver's own `unresolved_closure_pending` on
@@ -22895,6 +23245,9 @@ gate_carry_routed_elsewhere() {
      && [ "$opt" = "재수렴" ]; then
     printf '구속 티어 이탈 정지의 재수렴 답은 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
   fi
+  if [ "$skill" = "autopilot-router-shift" ] && halt_step_is_decision_collect "$rec"; then
+    printf '결정 수거 기록의 답은 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
+  fi
   if [ "$skill" = "review-unattended" ]; then
     case "$step" in
       'Step 1b 빈 대상'*)
@@ -23977,6 +24330,20 @@ gate_halt_answer_route() {
     id=골격급-재수렴
     if ! gate_audit_reconverge_keyable "$key"; then
       why="감사 단계 $key 의 마지막 행이 의도된 park 로 끝난 감사가 아니어서(종류=$(gate_row_field "$GATE_AUDIT_RECONVERGE_LAST" '종류') · 종단 부류=$(gate_row_field "$GATE_AUDIT_RECONVERGE_LAST" '종단 부류')) 교대가 - reconverge 를 띄울 수 없습니다"
+    fi
+  elif [ "$skill" = "autopilot-router-shift" ] && halt_step_is_decision_collect "$rec"; then
+    # THE DECISION COLLECTION'S ANSWER GOES THE BINDING-TIER WAY: a
+    # re-convergence of scope `구속 티어 이탈 <record>` on the last design
+    # step key closes the entries, and the next collection lets the held
+    # segments go. A record written past the loop cap is a person's to settle
+    # in the document; no answer of it is carried out.
+    id=구속-재수렴
+    case "$opt" in
+      '추천대로 확정'|'항목별로 답함') ;;
+      *) why="결정 수거 기록에는 「${opt}」 를 실행할 갈래가 없습니다 — 갈래는 「추천대로 확정」 과 「항목별로 답함」 뿐입니다" ;;
+    esac
+    if [ -z "$why" ] && gate_decision_collect_capped "$rec"; then
+      why="결정 수거의 순환 상한에 닿은 기록입니다 — 교대가 실행할 갈래가 없고, 사람이 문서의 항목을 직접 닫아야 합니다"
     fi
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
        && [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ]; then
@@ -35107,6 +35474,26 @@ EOF
           return "$GATE_EXIT_RULE"
         fi
       fi
+      # THE DECISION COLLECTION'S RECORD IS A PERSON'S TOO, answered on the key
+      # its header names — the last design step key, which the re-convergence
+      # the answer routes to is keyed on. `항목별로 답함` is the attachment;
+      # `추천대로 확정` needs none, since every recommendation is in the record.
+      if halt_step_is_decision_collect "$hrec"; then
+        local hdckey
+        if [ "$hby" != "사람" ]; then
+          warn "이 중단 기록은 결정 수거 기록(${GATE_DC_STEP})입니다 — 답한 주체=사람 의 답만 기록합니다: $hrec"
+          return "$GATE_EXIT_RULE"
+        fi
+        hdckey=$(sed -n '1s/.*; stage=\([^;]*\)#[0-9][0-9]*; .*/\1/p' "$hrec")
+        if [ -z "$hdckey" ] || [ "$seg" != "$hdckey" ]; then
+          warn "결정 수거 기록의 답은 그 기록이 머리에 적은 설계 단계 키(${hdckey:-없음})로 씁니다 — --segment ${hdckey:-<키>}: $hrec"
+          return "$GATE_EXIT_RULE"
+        fi
+        if [ "$hopt" = "항목별로 답함" ] && [ "$hatt" != "${hrec%.md}.answer.md" ]; then
+          warn "「항목별로 답함」 은 \`첨부=${hrec%.md}.answer.md\` 를 싣습니다 — 항목 표제를 축자로 소제목으로 부르고 그 아래에 고른 결정을 적은 파일"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
       # `근거 제출` TO A CLAUSE'S EVIDENCE REQUEST IS THE ATTACHMENT. The next
       # shift settles the clause on what the seat ran and saw, and the option
       # label carries none of that, so the answer is refused without the file
@@ -42138,6 +42525,14 @@ gate_verb_act() {
       warn "$(visual_approval_route_hint) — 그 뒤 디스패치하세요"
       exit "$GATE_EXIT_RULE"
     fi
+  fi
+  # THE DECISIONS ARE COLLECTED BEFORE A PROCESS A PLANS. The collection of the
+  # document's current digest is made here if it is not made yet, and a segment
+  # it holds is not dispatched (`gate_decision_hold_refuse`). A process B
+  # dispatch has an admitted plan already and is not asked.
+  if [ "$verb" = "act" ] && [ "$kind" = "skill" ] && [ "${1:-}" = "implement" ] \
+     && [ "$segment" != "-" ] && ! gate_plan_rows_of "$segment" | implement_process_b; then
+    gate_decision_hold_refuse "$segment"
   fi
 
   # THE DOCUMENT ARGUMENT AND THE CYCLE BUDGET, the two facts the driver fixes
