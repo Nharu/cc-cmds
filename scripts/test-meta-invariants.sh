@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
+_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -797,6 +797,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '-- visual -p "/cc-cmds:visual-unattended <스냅숏 design_doc>"' \
     '시각 디자인을 검토 통과로 확정했습니다.' \
     '**상태**: 검토 통과' \
+    'reading `**상태**: 검토 통과` or `**상태**: 발행됨`' \
     'A slice whose `**화면**` reads `없음` never waits.' \
     '--surface 읽기 -- <plugin root>/orchestrator/visual-check.sh approval <스냅숏 design_doc>' \
     "-- 등급=2 '판단 부류=시각-승인' '기준=시각 승인 대기' '근거=<화면 세그먼트> 의 화면이 고정 좌석에서 구현 승인되었는가'" \
@@ -830,6 +831,16 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     bad "$who 사본의 승인 술어 읽기" "bash 뒤에 도우미를 둔 표기가 남았다"
   fi
 done
+# Both router copies accept a `발행됨` sidecar because a re-kicked run's visual
+# stage reuses its source's sidecar without writing it. That holds only while
+# the stage itself still runs the reuse check, so pin the call in its text.
+VU_SKILL="$PLUGIN_ROOT/skills/visual-unattended/SKILL.md"
+nreuse=$(grep -cF -- 'visual-check.sh reuse' "$VU_SKILL" || true)
+if [ "${nreuse:-0}" != "0" ]; then
+  ok "visual-unattended 문면이 visual-check.sh reuse 로 재사용을 판정한다"
+else
+  bad "visual-unattended 문면의 재사용 판정" "visual-check.sh reuse 호출이 없다"
+fi
 
 # ---------------------------------------------------------------------------
 # 6e. Re-attaching a cut stage is carried by BOTH router copies

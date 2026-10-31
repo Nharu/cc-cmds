@@ -216,7 +216,7 @@
 # `다시 하기`. A row naming another PR, open at its `커밋` or merged from its
 # `브랜치` (a segment branch of the slice) into the target's base branch, gives
 # an `입양후보` line the cell followed by `들여올PR=<번호>`. The reason tokens: park,
-# 설계재실행, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
+# 설계재실행, 문서바뀜, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
 # 라이브, 원장없음, 중단답이월불가, and 판정불가 when the gate child could
 # not answer.
@@ -829,8 +829,8 @@ rk_adopt_halts() {
 #   입양후보<TAB><seg><TAB><B><TAB><W><TAB><PR><TAB><HEAD>[<TAB><꼬리>…]
 #   입양불가<TAB><seg><TAB><PR|-><TAB><사유>[<TAB>미입양=PR들여오기]
 # `offline` reads the ledger only (conditions 3 and 4) and is what `detect`
-# asks; `full` reads the graph values (G_DESIGN_OUT, G_DOC_SHA, G_PLAN, set
-# before), the worktree and the remote too. The first condition that fails
+# asks; `full` reads the graph values (G_DESIGN_PLANNED, G_DESIGN_OUT,
+# G_DOC_SHA, G_DOC_NOW, G_PLAN, set before), the worktree and the remote too. The first condition that fails
 # names the reason. RK_AUTO selects the seat's branch. Both layers end a line
 # with `미입양=PR들여오기` when the gate child's `pr-import` answers 들여오기
 # over the document at `<base>`, read without the network — an `입양후보` line
@@ -880,16 +880,35 @@ EOF
     if [ "$layer" = "full" ] && [ "$RK_AUTO" = "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
       tok='park'
     fi
-    # 2 — the new run plans no design step, and the key is a slice of the frozen
+    # 2 — the new run does not design again, and the key is a slice of the
     # document the graph measured (or the plan's implement step, with no
-    # slicing section).
+    # slicing section). Three cases, in order:
+    #   the remaining plan runs a design step       → 설계재실행;
+    #   the graph took the design step out          → the document copy must be
+    #     the frozen one it measured, else 설계재실행;
+    #   the plan never had a design step            → a document the manifest
+    #     names must be the one the graph measured, else 문서바뀜; with no
+    #     document only the implement step is compared.
     if [ -z "$tok" ] && [ "$layer" = "full" ]; then
-      if [ "$G_DESIGN_OUT" != "1" ]; then tok='설계재실행'
-      else
+      dcopy=''
+      if [ "$G_DESIGN_PLANNED" = "1" ]; then tok='설계재실행'
+      elif [ "$G_DESIGN_OUT" = "1" ]; then
         doc=$(manifest_field '요소' '설계 문서'); docf="$RK_BASE/$doc"
         dcopy=$(rk_copy "$docf" adopt-doc.md) || dcopy=''
-        if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_SHA" ]; then tok='설계재실행'
-        elif grep -qxF '## 구현 슬라이싱' "$dcopy"; then
+        if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_SHA" ]; then tok='설계재실행'; fi
+      else
+        doc=$(manifest_field '요소' '설계 문서')
+        case "$doc" in
+          ''|'(없음)') ;;
+          *)
+            docf="$RK_BASE/$doc"
+            dcopy=$(rk_copy "$docf" adopt-doc.md) || dcopy=''
+            if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_NOW" ]; then tok='문서바뀜'; fi
+            ;;
+        esac
+      fi
+      if [ -z "$tok" ]; then
+        if [ -n "$dcopy" ] && grep -qxF '## 구현 슬라이싱' "$dcopy"; then
           slice_ids "$dcopy" | grep -qxF -- "$key" || tok='슬라이스다름'
         else
           first=$(printf '%s' "$G_PLAN" | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id // empty][0] // empty' 2>/dev/null)
@@ -1888,17 +1907,28 @@ EOF
 # ---------------------------------------------------------------------------
 # graph — which steps the ledger proves finished, and the plan without them.
 # Sets G_PLAN (compact JSON), G_REMOVED, G_SKIPS, G_DESIGN_OUT, G_DOC_SHA,
-# G_DESIGN_NOTE, G_AUDIT_NOTE, G_SCOPE. Reads the current MANIFEST (a copy).
+# G_DESIGN_PLANNED, G_DOC_NOW, G_IV_KEEP, G_DESIGN_NOTE, G_AUDIT_NOTE, G_SCOPE.
+# Reads the current MANIFEST (a copy).
+# G_DESIGN_OUT says the graph took the design step out, and drives what the
+# remaining plan says of the design (`design_required`, the design roster, the
+# document's whole sha256). The other three answer other questions:
+#   G_DESIGN_PLANNED — 1 when the remaining plan still runs a design step;
+#   G_DOC_NOW        — the design document's sha256 measured here, `-` when
+#                      there is no document, whether or not a design step is;
+#   G_IV_KEEP        — 1 when the remaining plan holds a `design` or `visual`
+#                      step, the stages that read the interview record.
 # ---------------------------------------------------------------------------
 rk_graph_compute() {
   local plan doc docf docsha did aid lastn hashrow hsha frozen
   plan=$(manifest_plan_json)
   G_SCOPE=$(manifest_design_scope)
   G_REMOVED=""; G_SKIPS=""; G_DESIGN_OUT=0; G_DOC_SHA="-"
+  G_DESIGN_PLANNED=0; G_DOC_NOW="-"; G_IV_KEEP=0
   G_DESIGN_NOTE="없음${TAB}계획에 설계 단계가 없습니다"; G_AUDIT_NOTE="없음${TAB}계획에 감사 단계가 없습니다"
   doc=$(manifest_field '요소' '설계 문서')
   case "$doc" in ''|'(없음)') docf="" ;; *) docf="$RK_BASE/$doc" ;; esac
   docsha=""; [ -n "$docf" ] && docsha=$(rk_sha "$docf")
+  [ -n "$docsha" ] && G_DOC_NOW=$docsha
   did=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)
   aid=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)
 
@@ -1906,6 +1936,7 @@ rk_graph_compute() {
     [ -z "$did" ] || G_DESIGN_NOTE="남음${TAB}base 범위 런의 그래프는 빼지 않습니다"
     [ -z "$aid" ] || G_AUDIT_NOTE="남음${TAB}base 범위 런의 그래프는 빼지 않습니다"
     G_PLAN=$(printf '%s' "$plan" | jq -c . 2>/dev/null)
+    rk_graph_derived "$did"
     return 0
   fi
 
@@ -1998,6 +2029,16 @@ rk_graph_compute() {
         | (if (.steps | length) > 0 then .entry_skill = (.steps[0] | if type == "object" then .skill else . end) else . end)
         | (if $dout == "1" then .design_required = false else . end)
       end' 2>/dev/null)
+  rk_graph_derived "$did"
+}
+
+# rk_graph_derived <design step id> — G_DESIGN_PLANNED and G_IV_KEEP from the
+# pruned G_PLAN and G_DESIGN_OUT, for both returns of rk_graph_compute.
+rk_graph_derived() {
+  local n
+  if [ -n "$1" ] && [ "$G_DESIGN_OUT" != "1" ]; then G_DESIGN_PLANNED=1; else G_DESIGN_PLANNED=0; fi
+  n=$(printf '%s' "$G_PLAN" | jq -r '[.steps[]? | select(type == "object" and (.skill == "design" or .skill == "visual"))] | length' 2>/dev/null)
+  if [ "${n:-0}" -ge 1 ] 2>/dev/null; then G_IV_KEEP=1; else G_IV_KEEP=0; fi
 }
 
 # rk_plan_shape <json> — the step-graph shape the kickoff checks before it
@@ -2192,7 +2233,7 @@ rk_render() {
   fi
   R_ACDROP="$acdrop" R_ACROW="$acrow" \
   R_SETS="$RK_TMP/sets.tsv" R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
-  R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_DOCSHA="$G_DOC_SHA" \
+  R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_IVKEEP="$G_IV_KEEP" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
   R_PADROP="$RK_TMP/plugin.drop" R_PFILE="$( [ -s "$RK_TMP/plugin.rows" ] && printf '%s' "$RK_TMP/plugin.rows")" \
@@ -2285,8 +2326,10 @@ rk_render() {
     # A mapping row the pipeline cannot run on is not carried; 5c answers it
     # again and the confirmed row is written when the section closes.
     /^- `적용 프로브 코드`/ { if (ENVIRON["R_ACDROP"] == "1") next; print; next }
+    # The interview row stays, its path moved to the new run, while the
+    # remaining plan holds a design or a visual step — the stages that read it.
     /^- `사전 인가` \| 인터뷰 기록=/ {
-      if (ENVIRON["R_DOUT"] == "1") next
+      if (ENVIRON["R_IVKEEP"] != "1") next
       line = $0; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; next
     }
     /^- `설계 로스터`/ { if (ENVIRON["R_DOUT"] == "1") next; print; next }
@@ -2951,22 +2994,24 @@ EOF
   fi
   vs_check 플러그인 "$why"
 
-  # 8 — the interview row: exactly one when the design step stays, none when it
-  # is out, and the previous row with only its path renamed.
-  local dplan hasd piv div want niv
+  # 8 — the interview row: exactly one when the draft plan holds a design or a
+  # visual step (the stages that read the record), none when both are out, and
+  # the previous row with only its path renamed.
+  local dplan hasd hasiv piv div want niv
   dplan=$(MANIFEST="$draft" manifest_plan_json)
   hasd=$(printf '%s' "$dplan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design")] | length' 2>/dev/null)
+  hasiv=$(printf '%s' "$dplan" | jq -r '[.steps[]? | select(type == "object" and (.skill == "design" or .skill == "visual"))] | length' 2>/dev/null)
   piv=$(MANIFEST="$prev" rk_interview_rows); div=$(MANIFEST="$draft" rk_interview_rows)
   niv=$(printf '%s' "$div" | grep -c . || true)
   why=""
-  if [ "${hasd:-0}" -ge 1 ]; then
-    if [ "${niv:-0}" != "1" ]; then why="설계 단계가 남는데 인터뷰 행이 ${niv:-0}개입니다"
+  if [ "${hasiv:-0}" -ge 1 ]; then
+    if [ "${niv:-0}" != "1" ]; then why="설계나 시각 단계가 남는데 인터뷰 행이 ${niv:-0}개입니다"
     else
       want=$(printf '%s' "$piv" | awk -v p="docs/pipeline-run/$D_ID.interview.md" '{ sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" p " |"); print }')
       [ -n "$piv" ] && [ "$div" = "$want" ] || why="인터뷰 행이 원천 행에서 경로만 새 런으로 바꾼 것이 아닙니다"
     fi
   else
-    [ "${niv:-0}" = "0" ] || why="설계 단계가 빠졌는데 인터뷰 행이 남았습니다"
+    [ "${niv:-0}" = "0" ] || why="설계·시각 단계가 모두 빠졌는데 인터뷰 행이 남았습니다"
   fi
   vs_check 인터뷰 "$why"
 

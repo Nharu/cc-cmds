@@ -9,7 +9,8 @@
 # head sha, with the parents in GitHub's order (base, head).
 #
 # Sourced, it is a library for scripts/check-push.sh. Run, it is a CLI with two
-# commands for reproducing a CI failure, declared as two separate acts:
+# commands for reproducing a CI failure and one for judging a check-push
+# failure, declared as separate acts:
 #
 #   bash scripts/test-tree.sh ci-base --run <id> --repo <owner/name> [--job <id>]
 #       network read only (gh GET), writes no file: reads the failed job's log,
@@ -20,7 +21,16 @@
 #       offline: builds the merged tree, refuses it unless it is <tree>, runs
 #       the items on it, runs sections that passed there once more in one
 #       job-pool lane, then runs the items on the head alone, and names the
-#       verdict (`환경 차이` when only the lane failed).
+#       verdict (`환경 차이` when only the lane failed). Before it names
+#       `브랜치 결함` it runs the failed items on the base and splits them into
+#       `기존 결함` (the base fails them too) and `브랜치 결함`.
+#   bash scripts/test-tree.sh base-verdict --base <40> --head <40> --expect <40tree>
+#                                   [--sections <ids>] [--goals <goals>] [--jobs <n>]
+#       offline: the cause line check-push prints after a failed merged or
+#       ancestor run. It builds the tree, refuses it unless it is <tree>, runs
+#       nothing on it — check-push already failed those items there — and runs
+#       the items on the base alone in the job pool, <n> at a time (default 4),
+#       to name each one `기존 결함` or `브랜치 결함`.
 #   bash scripts/test-tree.sh --self-test
 #
 # Nothing here writes a check-push stamp, on any path.
@@ -34,8 +44,10 @@
 #
 # repro exit codes: 0 verdict given, 1 unknown item, 2 usage or item syntax,
 # 3 the merge conflicts, 4 an object is missing, 5 the tree is not --expect,
-# 6 no verdict on the head side. ci-base: 0, 1 a checkout line is missing,
-# 2 usage / job choice / gh failure / a value fails the output check, 3 no list.
+# 6 no verdict on the head or the base side. base-verdict: the same 0 to 5,
+# 2 also for a --jobs that is not a positive integer, and 6 no verdict on the
+# base side. ci-base: 0, 1 a checkout line is missing, 2 usage / job choice /
+# gh failure / a value fails the output check, 3 no list.
 
 # The section and goal runs below start fixture suites, and a suite that calls
 # the gate family must not reach the user's screen or leave a dashboard server.
@@ -52,8 +64,10 @@ TT_DIR="${TT_DIR:-}"
 TT_WORK="${TT_WORK:-}"
 
 # The job pool. It serves check-push's lane parallelism, through tt_run_items
-# once check-push raises TT_JOBS above 1, and the repro command's single-lane
-# rerun, which calls tt_pool_run itself with TT_JOBS still 1. tt_run_items in
+# once check-push raises TT_JOBS above 1, the repro command's single-lane
+# rerun, which calls tt_pool_run itself with TT_JOBS still 1, and the base
+# contrast (tt_base_contrast), which calls it itself at whatever TT_JOBS its
+# caller set, so the base's failures are known item by item. tt_run_items in
 # the repro command runs the items one call each, as CI's old trees and the
 # fixtures expect. TT_RECORD is the timing record the lanes merge
 # into (empty: none), TT_PROGRESS_SECS the interval of the progress line.
@@ -465,9 +479,10 @@ EOF
   return 0
 }
 
-# The items the checked-out head can name. 1 when it cannot list them, 6 when
-# nothing is left.
-tt_head_filter() {
+# The items the tree checked out now (the head or the base) can name, in
+# TT_KEEP_SECTIONS and TT_KEEP_GOALS; the rest in TT_DROPPED. 1 when it cannot
+# list them, 6 when nothing is left.
+tt_tree_filter() {
   local secs="$1" goals="$2" slist="" glist="" dropped
   TT_KEEP_SECTIONS=""
   TT_KEEP_GOALS=""
@@ -882,10 +897,126 @@ tt_base_status_line() {
   printf '%s: base 상태 — gh run list --repo Nharu/cc-cmds --commit %s --json workflowName,conclusion,databaseId — 워크플로마다, 런 없음 또는 진행 중이면 그 워크플로의 베이스 상태는 모름이다 (초록이 아니다)\n' "$1" "$2"
 }
 
+# Splits an item step (`절=<ids>`, `목표=<goals>`, or both joined by a space,
+# which the job pool gives when sections and goals failed together) into
+# TT_STEP_SECTIONS and TT_STEP_GOALS.
+tt_failed_parts() {
+  local part
+  TT_STEP_SECTIONS=""
+  TT_STEP_GOALS=""
+  for part in $1; do
+    case "$part" in
+      절=*) TT_STEP_SECTIONS="${part#절=}" ;;
+      목표=*) TT_STEP_GOALS="${part#목표=}" ;;
+    esac
+  done
+}
+
+# 0 when <item> is one of the comma list <list>.
+tt_in_list() {
+  case ",$2," in *",$1,"*) return 0 ;; esac
+  return 1
+}
+
+# One item cell: `s1,s2` for sections alone, `g1` for goals alone,
+# `절=<ids> 목표=<goals>` when both are there, 없음 when neither is.
+tt_items_cell() {
+  if [ -n "$1" ] && [ -n "$2" ]; then
+    printf '절=%s 목표=%s' "$1" "$2"
+  else
+    tt_or_none "$1$2"
+  fi
+}
+
+# THE FAILED ITEMS ON THE BASE, ONCE, IN THE JOB POOL. <sections> and <goals>
+# are what already failed on the tested tree, which is not run again. This
+# checks <base> out in the clone, keeps the items the base can name and runs
+# them with tt_pool_run at the caller's TT_JOBS, so every item gets its own
+# result even with one slot. An item the base fails too is 기존 결함; one the
+# base passes or does not have is 브랜치 결함. A failed section the base's
+# rerun line names outside <sections> (a `needs:` closure) is not counted.
+# Prints the three item lines and sets TT_PRE_ITEMS, TT_BRANCH_ITEMS,
+# TT_BASE_DROPPED (item cells, empty for none) and TT_BASE_VERDICT; the caller
+# prints the verdict line and then tt_base_contrast_tail. 6 with TT_BASE_WHY
+# when the base side gives no verdict.
+tt_base_contrast() {
+  local base="$1" secs="$2" goals="$3" rc rest it fs="" fg=""
+  local psecs="" pgoals="" bsecs="" bgoals="" dsecs="" dgoals=""
+  TT_PRE_ITEMS=""
+  TT_BRANCH_ITEMS=""
+  TT_BASE_DROPPED=""
+  TT_BASE_VERDICT=""
+  TT_BASE_WHY=""
+  if ! tt_checkout "$base"; then
+    TT_BASE_WHY="base 를 꺼낼 수 없다"
+    return 6
+  fi
+  tt_tree_filter "$secs" "$goals"
+  rc=$?
+  if [ "$rc" = 1 ]; then
+    TT_BASE_WHY="base 트리에서 항목을 나열할 수 없다"
+    return 6
+  fi
+  if [ "$rc" = 0 ]; then
+    printf '%s: base 실행 — 절=%s 목표=%s\n' "$TT_PREFIX" "$(tt_or_none "$TT_KEEP_SECTIONS")" "$(tt_or_none "$TT_KEEP_GOALS")"
+    tt_pool_run "$TT_KEEP_SECTIONS" "$TT_KEEP_GOALS"
+    fs="$TT_FAILED_SECTIONS"
+    fg="$TT_FAILED_GOALS"
+  fi
+  rest="${secs:+$secs,}"
+  while [ -n "$rest" ]; do
+    it="${rest%%,*}"
+    rest="${rest#*,}"
+    if ! tt_in_list "$it" "$TT_KEEP_SECTIONS"; then
+      dsecs="${dsecs:+$dsecs,}$it"
+      bsecs="${bsecs:+$bsecs,}$it"
+    elif tt_in_list "$it" "$fs"; then
+      psecs="${psecs:+$psecs,}$it"
+    else
+      bsecs="${bsecs:+$bsecs,}$it"
+    fi
+  done
+  rest="${goals:+$goals,}"
+  while [ -n "$rest" ]; do
+    it="${rest%%,*}"
+    rest="${rest#*,}"
+    if ! tt_in_list "$it" "$TT_KEEP_GOALS"; then
+      dgoals="${dgoals:+$dgoals,}$it"
+      bgoals="${bgoals:+$bgoals,}$it"
+    elif tt_in_list "$it" "$fg"; then
+      pgoals="${pgoals:+$pgoals,}$it"
+    else
+      bgoals="${bgoals:+$bgoals,}$it"
+    fi
+  done
+  [ -z "$psecs$pgoals" ] || TT_PRE_ITEMS=$(tt_items_cell "$psecs" "$pgoals")
+  [ -z "$bsecs$bgoals" ] || TT_BRANCH_ITEMS=$(tt_items_cell "$bsecs" "$bgoals")
+  [ -z "$dsecs$dgoals" ] || TT_BASE_DROPPED=$(tt_items_cell "$dsecs" "$dgoals")
+  if [ -n "$TT_PRE_ITEMS" ] && [ -n "$TT_BRANCH_ITEMS" ]; then
+    TT_BASE_VERDICT="브랜치 결함·기존 결함"
+  elif [ -n "$TT_PRE_ITEMS" ]; then
+    TT_BASE_VERDICT="기존 결함"
+  else
+    TT_BASE_VERDICT="브랜치 결함"
+  fi
+  printf '%s: base 에 없는 항목=%s\n' "$TT_PREFIX" "$(tt_or_none "$TT_BASE_DROPPED")"
+  printf '%s: 기존 결함 항목=%s\n' "$TT_PREFIX" "$(tt_or_none "$TT_PRE_ITEMS")"
+  printf '%s: 브랜치 결함 항목=%s\n' "$TT_PREFIX" "$(tt_or_none "$TT_BRANCH_ITEMS")"
+  return 0
+}
+
+# What follows the verdict line of a base contrast that found 기존 결함 items:
+# the base status read and what to do with such an item.
+tt_base_contrast_tail() {
+  [ -n "${TT_PRE_ITEMS:-}" ] || return 0
+  tt_base_status_line "$1" "$2"
+  printf '%s: 기존 결함 항목은 base 에서도 같이 실패한다 — 이 브랜치가 만든 실패가 아니다. base 의 CI 가 그 항목에서 초록이면 이 기계에서만 나는 실패이므로 다시 돌리지 말고 결함으로 보고한다\n' "$1"
+}
+
 # --- CLI: ci-base ------------------------------------------------------------
 
 tt_cli_usage() {
-  printf '%s: 사용법 — ci-base --run <id> --repo <owner/name> [--job <id>] / repro --base <40> --head <40> --expect <40> [--sections <ids>] [--goals <goals>] / --self-test\n' "$TT_PREFIX" >&2
+  printf '%s: 사용법 — ci-base --run <id> --repo <owner/name> [--job <id>] / repro --base <40> --head <40> --expect <40> [--sections <ids>] [--goals <goals>] / base-verdict --base <40> --head <40> --expect <40> [--sections <ids>] [--goals <goals>] [--jobs <n>] / --self-test\n' "$TT_PREFIX" >&2
 }
 
 tt_cli_ci_base() {
@@ -1086,16 +1217,28 @@ tt_cli_repro() {
     lane_state="$TT_POOL_DIR/job-0/state"
   fi
 
+  # A failure the tested tree (and, merged, the head alone) gave is contrasted
+  # with the base before it is named: the items the base fails too are
+  # 기존 결함, the rest 브랜치 결함.
   if [ "$lrc" != 0 ]; then
     verdict="환경 차이"
   elif [ "$TT_OUTCOME" = "조상" ]; then
-    if [ "$mrc" != 0 ]; then verdict="브랜치 결함"; else verdict="재현 불가"; fi
+    if [ "$mrc" != 0 ]; then
+      tt_failed_parts "$TT_FAILED"
+      if ! tt_base_contrast "$base" "$TT_STEP_SECTIONS" "$TT_STEP_GOALS"; then
+        printf 'test-tree repro: 판정 없음 — %s\n' "$TT_BASE_WHY"
+        return 6
+      fi
+      verdict="$TT_BASE_VERDICT"
+    else
+      verdict="재현 불가"
+    fi
   else
     if ! tt_checkout "$head"; then
       printf 'test-tree repro: 판정 없음 — head 를 꺼낼 수 없다\n'
       return 6
     fi
-    tt_head_filter "$secs" "$goals"
+    tt_tree_filter "$secs" "$goals"
     rc=$?
     if [ "$rc" = 1 ]; then
       printf 'test-tree repro: 판정 없음 — head 트리에서 항목을 나열할 수 없다\n'
@@ -1113,19 +1256,108 @@ tt_cli_repro() {
     elif [ "$hrc" = 0 ]; then
       verdict="트리 차이"
     else
-      verdict="브랜치 결함"
+      tt_failed_parts "$TT_FAILED"
+      if ! tt_base_contrast "$base" "$TT_STEP_SECTIONS" "$TT_STEP_GOALS"; then
+        printf 'test-tree repro: 판정 없음 — %s\n' "$TT_BASE_WHY"
+        return 6
+      fi
+      verdict="$TT_BASE_VERDICT"
     fi
   fi
 
   printf 'test-tree repro: 판정=%s%s\n' "$verdict" "${lane_tmp:+ 레인 TMPDIR=$lane_tmp}"
   case "$verdict" in
     "트리 차이") tt_base_status_line "test-tree repro" "$base" ;;
+    "브랜치 결함"|"기존 결함"|"브랜치 결함·기존 결함") tt_base_contrast_tail "test-tree repro" "$base" ;;
     "재현 불가") printf 'test-tree repro: CI 에서 실패한 것은 잡의 목록 전체다 — 돌린 항목이 그 전부가 아니면 ci-base 가 찍은 목록 전체로 다시 돌린다\n' ;;
     "환경 차이")
       printf 'test-tree repro: 레인 TMPDIR=%s XDG_STATE_HOME=%s 실패한 절=%s\n' "$lane_tmp" "$lane_state" "$(tt_or_none "$TT_FAILED_SECTIONS")"
       printf 'test-tree repro: 합친 트리를 직접 돌리면 통과하고 레인에서만 실패한다 — 스위트의 환경 격리 결함이다. check-push 를 다시 돌리지 말고 결함으로 보고한다\n' ;;
   esac
   tt_repro_stamp_line "$base" "$head" "$secs"
+  return 0
+}
+
+# --- CLI: base-verdict -------------------------------------------------------
+
+# THE TESTED TREE IS NOT RUN AGAIN. check-push has just failed these items on
+# it, so the one fact a verdict lacks is whether the base fails them too. The
+# tree is still built and held to --expect, which ties the cause line
+# check-push printed to that tree, and the items are still checked against its
+# lists; then only the base runs, in the job pool. No stamp line: a merged
+# check-push deletes the stamp of its tree before it starts.
+tt_cli_base_verdict() {
+  local base="" head="" expect="" secs="" goals="" jobs="4" rc
+  TT_PREFIX="test-tree base-verdict"
+  TT_SECVAR="--sections"
+  TT_GOALVAR="--goals"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --base) base="${2:-}"; shift 2 || { tt_cli_usage; return 2; } ;;
+      --head) head="${2:-}"; shift 2 || { tt_cli_usage; return 2; } ;;
+      --expect) expect="${2:-}"; shift 2 || { tt_cli_usage; return 2; } ;;
+      --sections) secs="${2:-}"; shift 2 || { tt_cli_usage; return 2; } ;;
+      --goals) goals="${2:-}"; shift 2 || { tt_cli_usage; return 2; } ;;
+      --jobs) jobs="${2:-}"; shift 2 || { tt_cli_usage; return 2; } ;;
+      *) tt_cli_usage; return 2 ;;
+    esac
+  done
+  if ! tt_is_sha "$base" || ! tt_is_sha "$head" || ! tt_is_sha "$expect"; then
+    printf 'test-tree base-verdict: --base·--head·--expect 는 모두 40자 hex 여야 한다\n' >&2
+    return 2
+  fi
+  if [ -z "$secs" ] && [ -z "$goals" ]; then
+    printf 'test-tree base-verdict: --sections 나 --goals 가 적어도 하나 있어야 한다\n' >&2
+    return 2
+  fi
+  case "$jobs" in
+    ''|*[!0-9]*|0*)
+      printf 'test-tree base-verdict: --jobs %s 는 양의 정수가 아니다\n' "$(printf %q "$jobs")" >&2
+      return 2
+      ;;
+  esac
+  # More than the jobs there are is cut to that count by the pool itself.
+  [ "${#jobs}" -le 4 ] || jobs=9999
+  TT_HINT=""
+  if ! tt_items_syntax "$secs" "절" || ! tt_items_syntax "$goals" "목표"; then
+    printf '%s\n' "$TT_HINT" >&2
+    return 2
+  fi
+
+  trap 'tt_cleanup' EXIT
+  tt_clone || return 2
+  tt_build "$base" "$head"
+  rc=$?
+  if [ "$rc" = 4 ]; then
+    printf 'test-tree base-verdict: 객체 없음 — %s 가 이 저장소에 없다. git fetch --no-tags --refmap= origin %s (게이트 --surface 읽기 --reach 협업) 로 받은 뒤 다시 돌린다\n' "$TT_MISSING_OBJ" "$TT_MISSING_OBJ" >&2
+    return 4
+  fi
+  [ "$rc" = 0 ] || { printf 'test-tree base-verdict: 트리를 만들지 못했다\n' >&2; return 2; }
+  if [ "$TT_OUTCOME" = "충돌" ]; then
+    printf 'test-tree base-verdict: 합침=충돌 %s — 합친 트리가 없어 아무것도 돌리지 않았다\n' "$(tt_or_none "$TT_CONFLICTS")"
+    return 3
+  fi
+  if [ "$TT_TREE" != "$expect" ]; then
+    printf 'test-tree base-verdict: 트리 불일치 — 만든 트리 %s 가 --expect %s 와 다르다, 아무것도 돌리지 않았다\n' "$TT_TREE" "$expect" >&2
+    return 5
+  fi
+  printf 'test-tree base-verdict: 시험 트리 — 합침=%s base=%s head=%s tree=%s 절=%s 목표=%s 대역=%s\n' \
+    "$TT_OUTCOME" "$base" "$head" "$TT_TREE" "$(tt_or_none "$secs")" "$(tt_or_none "$goals")" "$(tt_doubles)"
+  printf 'test-tree base-verdict: 시험 트리는 다시 돌리지 않는다 — check-push 가 이 트리에서 실패시킨 항목을 base 에서만 돌린다\n'
+
+  tt_check_items "$secs" "$goals"
+  rc=$?
+  if [ "$rc" != 0 ]; then
+    printf '%s\n' "$TT_HINT" >&2
+    return "$rc"
+  fi
+  TT_JOBS="$jobs"
+  if ! tt_base_contrast "$base" "$TT_SECTIONS" "$TT_GOALS"; then
+    printf 'test-tree base-verdict: 판정 없음 — %s\n' "$TT_BASE_WHY"
+    return 6
+  fi
+  printf 'test-tree base-verdict: 판정=%s\n' "$TT_BASE_VERDICT"
+  tt_base_contrast_tail "test-tree base-verdict" "$base"
   return 0
 }
 
@@ -1158,6 +1390,7 @@ tt_st_probe() {
 
 tt_self_test() {
   local passed=0 failed=0 T self out rc line W sa sb1 sb2 sm sh shb shn sx tm tb2 th snap1 snap2 log fh v rec stamps before
+  local sbf shf tbf thf tbfhn tbfhb
   ok()  { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
   bad() { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
   check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
@@ -1187,16 +1420,21 @@ case "$1" in
     for id in $ids; do printf '%s # t\n' "$id"; done ;;
   --sections)
     [ ! -f "@T@/break-alternates" ] || rm -f .git/objects/info/alternates
+    # The tree this run had checked out, on a line of its own so the argv
+    # lines read as before.
+    printf 'run-tree:%s\n' "$(git rev-parse 'HEAD^{tree}' 2>/dev/null)" >> "@T@/gate.log"
     rc=0
     n=0
+    failed=""
     for id in $ids; do
-      case ",$2," in *",$id,"*) printf 'GATE-RUN %s\n' "$id"; n=$((n + 1)); bash "sections/$id.sh" || rc=1 ;; esac
+      case ",$2," in *",$id,"*) printf 'GATE-RUN %s\n' "$id"; n=$((n + 1)); bash "sections/$id.sh" || { rc=1; failed="${failed:+$failed,}$id"; } ;; esac
     done
     # A lane-only failure: with the marker file, a run whose TMPDIR is a job
     # pool lane's fails, as a section that depends on the lane's path would.
     if [ -f "@T@/lane-fail" ]; then
       case "${TMPDIR:-}" in */pool/job-*) printf 'FAIL: 레인 TMPDIR 에서만 실패\n'; rc=1 ;; esac
     fi
+    [ -z "$failed" ] || printf 'test-gate: 실패한 절만 다시 — bash scripts/test-gate.sh --sections %s\n' "$failed"
     [ "$rc" != 0 ] || printf 'test-gate: %s passed, 0 failed\n' "$n"
     exit "$rc" ;;
 esac
@@ -1212,6 +1450,7 @@ if [ "$*" = "-s --no-print-directory print-rest-goals" ]; then
   cat goals.txt goals-m.txt 2>/dev/null
   exit 0
 fi
+printf 'run-tree:%s\n' "$(git rev-parse 'HEAD^{tree}' 2>/dev/null)" >> "@T@/make.log"
 printf 'MAKE-RUN %s\n' "$*"
 rc=0
 for g in "$@"; do
@@ -1237,7 +1476,9 @@ EOF
 
   # The fixture history. master: A - B1 - B2 - M, where B1 adds the goal list
   # and M adds section s2 (in front of s1) and goal gm. Branches: H and HB from
-  # B1, HN (no goal list: an old head) and X (conflicts with B1) from A.
+  # B1, HN (no goal list: an old head) and X (conflicts with B1) from A. BF
+  # from B1 is a base that fails section s3 and goal g2 itself, and HF on top
+  # of it adds section h3, which BF does not have.
   W="$T/work"
   sgit init -q --bare "$T/origin.git"
   mkdir -p "$W/scripts" "$W/sections" "$W/goals.d"
@@ -1276,6 +1517,16 @@ EOF
     sgit checkout -q -b x a
     printf 'other\n' > base1.txt
     sgit add -A && sgit commit -q -m X
+    sgit checkout -q -b bf b1
+    mkdir -p goals.d
+    printf '#!/usr/bin/env bash\n# fixture\n# --- section: s1 | group: g | covers: x | anchors: y ---\n# --- section: s3 | group: g | covers: x | anchors: y ---\n# f1\n# f2\n# f3\n# f4\n# f5\n# f6\n# end\n' > scripts/test-gate.sh
+    printf 'exit 1\n' > sections/s3.sh
+    printf 'exit 1\n' > goals.d/g2.sh
+    sgit add -A && sgit commit -q -m BF
+    sgit checkout -q -b hf bf
+    printf '#!/usr/bin/env bash\n# fixture\n# --- section: s1 | group: g | covers: x | anchors: y ---\n# --- section: s3 | group: g | covers: x | anchors: y ---\n# --- section: h3 | group: g | covers: x | anchors: y ---\n# f1\n# f2\n# f3\n# f4\n# f5\n# f6\n# end\n' > scripts/test-gate.sh
+    printf 'exit 1\n' > sections/h3.sh
+    sgit add -A && sgit commit -q -m HF
     sgit checkout -q h
     sgit push -q origin master h hb hn x
   ) > /dev/null 2>&1 || { bad "픽스처 준비" "git 실패"; rm -rf "$T"; return 1; }
@@ -1290,6 +1541,12 @@ EOF
   th=$(cd "$W" && git rev-parse "h^{tree}")
   tm=$(cd "$W" && git merge-tree --write-tree "$sm" "$sh")
   tb2=$(cd "$W" && git merge-tree --write-tree "$sb2" "$sh")
+  sbf=$(cd "$W" && git rev-parse bf)
+  shf=$(cd "$W" && git rev-parse hf)
+  tbf=$(cd "$W" && git rev-parse "bf^{tree}")
+  thf=$(cd "$W" && git rev-parse "hf^{tree}")
+  tbfhn=$(cd "$W" && git merge-tree --write-tree "$sbf" "$shn")
+  tbfhb=$(cd "$W" && git merge-tree --write-tree "$sbf" "$shb")
   : "$sa"
 
   # A caller snapshot: refs, HEAD, index and loose objects.
@@ -1506,6 +1763,86 @@ rc=0"
   out=$(repro --base "$sm" --head "$sh" --expect "$tm" --sections s9)
   check "repro 모르는 항목 → 1" "$?" "1"
 
+  # --- F36 base 대조: repro 의 두 판정 자리 -------------------------------------
+  out=$(repro --base "$sbf" --head "$shf" --expect "$thf" --goals g2)
+  rc=$?
+  check "F36 repro 조상 실패 + base 도 실패: 종료 0" "$rc" "0"
+  has "F36 repro 조상 실패 + base 도 실패 → 기존 결함" "$out" "test-tree repro: 판정=기존 결함"
+  has "F36 repro 조상의 base 대조 항목 줄" "$out" "test-tree repro: 기존 결함 항목=g2"
+  out=$(repro --base "$sbf" --head "$shb" --expect "$tbfhb" --goals g2)
+  rc=$?
+  has "F36 repro 합침 head 단독 실패 + base 실패 → 기존 결함" "$rc $out" "test-tree repro: 판정=기존 결함"
+  has "F36 repro 합침도 head 단계를 먼저 돈다" "$out" "test-tree repro: 헤드에 없는 항목=없음"
+  has "F36 repro 기존 결함에 base 상태 읽기와 안내" "$out" "test-tree repro: base 상태 — gh run list --repo Nharu/cc-cmds --commit $sbf"
+
+  # --- F37 base-verdict --------------------------------------------------------
+  # The tested tree is never run: every run the doubles record carries the
+  # base's tree.
+  bv() { (cd "$W" && bash "$self" base-verdict "$@" 2>&1); }
+  runs_on() { cat "$T/gate.log" "$T/make.log" | grep -c "^run-tree:$1$"; }
+  : > "$T/gate.log"; : > "$T/make.log"
+  out=$(bv --base "$sbf" --head "$shf" --expect "$thf" --goals g2)
+  rc=$?
+  check "F37 조상, base 도 실패: 종료 0" "$rc" "0"
+  has "F37 조상, base 도 실패: 시험 트리 줄과 다시 돌리지 않는다는 줄" "$out" "test-tree base-verdict: 시험 트리 — 합침=조상 base=$sbf head=$shf tree=$thf 절=없음 목표=g2 대역=CC_TEST_TREE_GATE,CC_TEST_TREE_MAKE
+test-tree base-verdict: 시험 트리는 다시 돌리지 않는다 — check-push 가 이 트리에서 실패시킨 항목을 base 에서만 돌린다"
+  has "F37 조상, base 도 실패: base 실행 줄" "$out" "test-tree base-verdict: base 실행 — 절=없음 목표=g2"
+  has "F37 조상, base 도 실패: 항목 줄 셋, 판정, base 상태가 차례로" "$out" "test-tree base-verdict: base 에 없는 항목=없음
+test-tree base-verdict: 기존 결함 항목=g2
+test-tree base-verdict: 브랜치 결함 항목=없음
+test-tree base-verdict: 판정=기존 결함
+test-tree base-verdict: base 상태 — gh run list --repo Nharu/cc-cmds --commit $sbf"
+  has "F37 조상, base 도 실패: 결함으로 보고하라는 안내" "$out" "test-tree base-verdict: 기존 결함 항목은 base 에서도 같이 실패한다 — 이 브랜치가 만든 실패가 아니다."
+  check "F37 조상, base 도 실패: --expect 트리에서 0회, base 트리에서 1회" "$(runs_on "$thf")|$(runs_on "$tbf")" "0|1"
+  hasnt "F37 도장 줄을 내지 않는다" "$out" "도장:"
+  out=$(bv --base "$sbf" --head "$shf" --expect "$thf" --goals g1)
+  rc=$?
+  has "F37 조상, base 통과 → 브랜치 결함" "$rc $out" "0 "
+  has "F37 조상, base 통과: 판정" "$out" "test-tree base-verdict: 판정=브랜치 결함"
+  has "F37 조상, base 통과: 브랜치 결함 항목" "$out" "test-tree base-verdict: 브랜치 결함 항목=g1"
+  hasnt "F37 조상, base 통과: base 상태 줄이 없다" "$out" "base 상태 —"
+  : > "$T/gate.log"; : > "$T/make.log"
+  out=$(bv --base "$sbf" --head "$shn" --expect "$tbfhn" --sections s1,s3)
+  rc=$?
+  has "F37 합침, 절 하나만 base 실패: 판정" "$rc $out" "test-tree base-verdict: 판정=브랜치 결함·기존 결함"
+  has "F37 합침, 절 하나만 base 실패: 두 항목 줄이 각 절을 이름 댄다" "$out" "test-tree base-verdict: 기존 결함 항목=s3
+test-tree base-verdict: 브랜치 결함 항목=s1"
+  has "F37 합침: 시험 트리 줄" "$out" "합침=합침 base=$sbf head=$shn tree=$tbfhn"
+  check "F37 합침: --expect 트리에서 0회" "$(runs_on "$tbfhn")" "0"
+  out=$(bv --base "$sbf" --head "$shn" --expect "$tbfhn" --sections s1,s3 --goals g1,g2 --jobs 2)
+  has "F37 절과 목표가 섞이면 단계 표기로 이름 댄다" "$out" "test-tree base-verdict: 기존 결함 항목=절=s3 목표=g2
+test-tree base-verdict: 브랜치 결함 항목=절=s1 목표=g1"
+  : > "$T/gate.log"
+  out=$(bv --base "$sbf" --head "$shf" --expect "$thf" --sections h3)
+  rc=$?
+  has "F37 base 에 없는 항목: 그 줄에 든다" "$rc $out" "test-tree base-verdict: base 에 없는 항목=h3"
+  has "F37 base 에 없는 항목: 판정은 브랜치 결함" "$out" "test-tree base-verdict: 판정=브랜치 결함"
+  hasnt "F37 base 에 없는 항목: 그 항목으로 base 를 돌리지 않는다" "$(cat "$T/gate.log")" "argv:--sections"
+  out=$(bv --base "${sbf%?}" --head "$shf" --expect "$thf" --goals g2)
+  check "F37 짧은 sha → 2" "$?" "2"
+  out=$(bv --base "$sbf" --head "$shf" --expect "$thf")
+  check "F37 항목 없음 → 2" "$?" "2"
+  out=$(bv --base "$sbf" --head "$shf" --expect "$thf" --goals g2 --jobs 0)
+  rc=$?
+  check "F37 --jobs 0 → 2" "$rc" "2"
+  has "F37 --jobs 거부 문면" "$out" "test-tree base-verdict: --jobs 0 는 양의 정수가 아니다"
+  out=$(bv --base "$sm" --head "$sx" --expect "$tm" --sections s1)
+  check "F37 충돌 → 3" "$?" "3"
+  out=$(bv --base 0123456789abcdef0123456789abcdef01234567 --head "$shf" --expect "$thf" --goals g2)
+  rc=$?
+  check "F37 없는 객체 → 4" "$rc" "4"
+  has "F37 없는 객체는 --refmap= fetch 를 이름 댄다" "$out" "git fetch --no-tags --refmap= origin 0123456789abcdef0123456789abcdef01234567"
+  : > "$T/gate.log"; : > "$T/make.log"
+  out=$(bv --base "$sbf" --head "$shf" --expect "$tm" --goals g2)
+  rc=$?
+  check "F37 트리 불일치 → 5, 아무것도 돌지 않는다" "$rc|$(cat "$T/gate.log" "$T/make.log")" "5|"
+  out=$(bv --base "$sbf" --head "$shf" --expect "$thf" --sections s9)
+  check "F37 모르는 항목 → 1" "$?" "1"
+  out=$(bv --base "$sa" --head "$sh" --expect "$th" --goals g1)
+  rc=$?
+  check "F37 base 목록 불가 → 6" "$rc" "6"
+  has "F37 base 목록 불가 문면" "$out" "test-tree base-verdict: 판정 없음 — base 트리에서 항목을 나열할 수 없다"
+
   stamps="$W/.git/cc-cmds-check-push"
   mkdir -p "$stamps"
   printf 'v=2\ncommit=%s\nat=t\nbash=x\n합침=합침\nbase=%s\nbase출처=FETCH_HEAD\nfetch=t\ntested_tree=%s\nsections=s1\ngoals=없음\n절+베이스=없음\n충돌경로=없음\n대역=없음\n' "$sh" "$sm" "$tm" > "$stamps/$th"
@@ -1701,13 +2038,13 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
 
   # --- F28 repro side ---------------------------------------------------------
   out=$(find "$T/tmp" -maxdepth 1 -name 'cc-test-tree.*' | wc -l | tr -d ' ')
-  check "F28 repro(판정, 5, 6)와 라이브러리 뒤 TMPDIR 에 cc-test-tree.* 가 없다" "$out" "0"
+  check "F28 repro(판정, 5, 6)·base-verdict(판정, 3~6)와 라이브러리 뒤 TMPDIR 에 cc-test-tree.* 가 없다" "$out" "0"
 
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 107 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 107 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 143 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 143 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -1728,6 +2065,7 @@ for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
   case "${1:-}" in
     ci-base) shift; tt_cli_ci_base "$@"; exit $? ;;
     repro) shift; tt_cli_repro "$@"; exit $? ;;
+    base-verdict) shift; tt_cli_base_verdict "$@"; exit $? ;;
     --self-test) tt_self_test; exit $? ;;
     --self-test-probe) shift; tt_st_probe "$@"; exit $? ;;
     *) tt_cli_usage; exit 2 ;;
