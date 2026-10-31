@@ -46598,6 +46598,7 @@ gate_verb_supervise_stage() {
     CC_PIPELINE_AUDIT_PASS=$(audit_pass_of "$seg")
   fi
   gate_launch_kind_env "$kind"
+  stage_cache_ttl_env
   # THE ANSWER CARD, when the dispatch wrote one for this attempt. Its path
   # follows from `seg#attempt`, so the launch token carries nothing new; an
   # attempt with no card gets no variable, whatever this process inherited.
@@ -51875,7 +51876,11 @@ gate_launch_shift() {
   # THE VISUAL PUBLISH STAGE'S TWO VARIABLES ARE CLEARED as for every kind but
   # that one: a shift launched from inside that stage would otherwise load the
   # Artifact tools and carry the helper marker.
+  #
+  # THE PROMPT CACHE LIFETIME is set or cleared here too, so a shift launched
+  # from inside a stage does not keep that stage's value under `auto`.
   gate_launch_kind_env shift
+  stage_cache_ttl_env
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
