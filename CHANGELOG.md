@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.1] - 2026-10-31
+
+라우팅이 꺼진 스테이지 파견에서 감독자가 `<세그먼트>.window` 기록을 스테이지 실행 전에 쓴다. 파견 act 는 `.pid` 가 생기면 바로 반환하는데, 지금까지 이 갈래는 실행 뒤에야 `.window` 를 써서 반환 직후에 기록이 없을 수 있었다(#1527).
+
+### Fixed
+
+- **`.window` 기록 시점** — 라우팅 꺼진 갈래의 두 줄 기록(압축 창, 레인)을 라우팅 켜진 갈래의 네 줄 기록과 같은 자리, 래퍼 실행 전에 쓴다. 스테이지가 실행 직후 죽어도 `stage-result` 행의 압축 창·레인이 `(미상)` 으로 떨어지지 않는다.
+
+### Why
+
+master CI 의 `rest-tests (1)` 이 `test-stage-supervisor` 의 "(2) 반환 직후 A.window 가 있다"·"(3) 감독자가 쓴 행의 레인은 A.window 2행이다" 단언에서 간헐적으로 실패했다. 느린 러너에서 감독자가 `.pid` 를 쓴 뒤 대기 표지와 임대 표의 보류 기록을 정리하는 동안 act 가 먼저 반환했기 때문이다.
+
 ## [3.13.0] - 2026-10-29
 
 런이 완주한 뒤에 그 런의 세그먼트 워크트리와 머지된 세그먼트의 로컬 브랜치를 한 번에 정리한다. 지금까지 라우터 경로는 워크트리를 하나도 지우지 않았고, 드라이버 경로는 세그먼트가 끝날 때마다 걷기 도중에 지웠다. 이제 두 경로가 같은 루틴을 런 끝에서 한 번 부르고, 원장의 가장 이른 종료 행이 `종료 부류=완료` 일 때만 정리한다.
