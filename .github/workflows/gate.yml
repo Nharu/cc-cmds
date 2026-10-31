@@ -33,9 +33,17 @@ name: gate
 # checks that every non-empty row of the table printed its total.
 #
 # THE TEST TIME IS A SIGNAL OF ITS OWN. `gate-report` sums the row times and
-# hands them to `scripts/ci-duration.sh`, which fails a pull request
-# whose increment over the master baseline is past the tolerance without a
-# matching budget raise, and warns whenever the absolute level is over budget.
+# hands them to `scripts/ci-duration.sh`, together with the plan directory and
+# this run's merged section times. A pull request whose sum, less its budget
+# raise, stays under the common upper bound — the master window's median plus
+# the tolerance, or its largest value plus tol_s, whichever is larger — passes.
+# Past it, the sections the pull request did not change measure the runner:
+# their time in this run over their master median is a factor, floored at 1,
+# that the baseline is scaled by. Still past the scaled bound fails, as growth
+# the pull request added; inside it warns, naming the factor and that the
+# cause is the runner environment or a shared path this pull request slowed;
+# without usable plan inputs it warns with the reason. The absolute level over
+# budget always only warns.
 # How even the shards actually were is in the report job's summary, with a
 # warning past a max/median of 1.5.
 #
@@ -404,7 +412,7 @@ jobs:
 
       - name: Duration signal
         if: needs.gate-shards.result == 'success'
-        run: bash scripts/ci-duration.sh check --key gate --seconds "${{ steps.report.outputs.sum }}" --window-out "$RUNNER_TEMP/ci-duration-gate"
+        run: bash scripts/ci-duration.sh check --key gate --seconds "${{ steps.report.outputs.sum }}" --window-out "$RUNNER_TEMP/ci-duration-gate" --plan-dir "$RUNNER_TEMP/plan" --sections "$RUNNER_TEMP/timing/gate-timing.tsv"
 
       - name: Duration signal skipped
         if: needs.gate-shards.result != 'success'
