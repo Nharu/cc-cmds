@@ -89,8 +89,13 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 ASSERTION_FLOOR=1104
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
+# 고정 요청의 새 기동 입장 판정(첫 요청과 limit-reclaim·first-reject 재입장)의 봉투를 한
+# 줄씩 모은다. 대여 절 끝의 단언이 그 가운데 대기가 하나도 없음을 본다. 잠금 경합의 짧은
+# 재시도 대기와 재개 판정은 입장 판정이 아니라 모으지 않는다.
+PINSEEN="$WORK/pinseen"
 : > "$RESULTS"
 : > "$SEEN"
+: > "$PINSEEN"
 
 ok()    { printf 'PASS\t%s\n' "$1" >> "$RESULTS"; [ -n "${TEST_ROUTE_QUIET:-}" ] || printf 'PASS: %s\n' "$1"; }
 bad()   { printf 'FAIL\t%s\n' "$1" >> "$RESULTS"; printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
@@ -104,6 +109,9 @@ expect() {
   if printf '%s' "$2" | jq -e "$3" >/dev/null 2>&1; then ok "$1"; else bad "$1" "$3 가 거짓: $2"; fi
   seen "$2"
 }
+pinrec() { printf '%s' "$1" | jq -c . >> "$PINSEEN"; }
+# pexpect <이름> <JSON> <jq 식> — expect 와 같고, 봉투를 고정 입장 판정 목록에 더한다.
+pexpect() { expect "$1" "$2" "$3"; pinrec "$2"; }
 count_results() { local n; n=$(grep -c "^$1	" "$RESULTS" 2>/dev/null || true); printf '%s' "${n:-0}"; }
 count_files() { local n=0 f; for f in "$1"/*.lease; do [ -e "$f" ] && n=$((n + 1)); done; printf '%s' "$n"; }
 
@@ -551,13 +559,25 @@ tr_g_lent() {
   export RUN_DIR="$b/run-dormant"
   mkdir -p "$RUN_DIR"
   printf 'cc\n' > "$RUN_DIR/fleet-lane"
+  local unr_inv='.verdict == "PARK" and .reason == "lent-seat-unrouted" and .why == null and (.recovery | contains("인벤토리 무효"))'
   for g in 0 1; do
     out=$(route__resolve_as "$g" "$(tr_req)" 2>/dev/null)
-    expect "$lb: fleet-lane·가드 ${g}·인벤토리 부재 → PARK lent-seat-unrouted" "$out" '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+    expect "$lb: fleet-lane·가드 ${g}·인벤토리 부재 → PARK lent-seat-unrouted, fleet-lane 계정" "$out" "$unr_inv and .account == \"cc\""
   done
+  : > "$RUN_DIR/fleet-lane"
+  expect "$lb: 빈 fleet-lane·인벤토리 부재 → PARK lent-seat-unrouted, 계정 null" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)" \
+    "$unr_inv and .account == null and has(\"account\")"
+  printf 'cc\n' > "$RUN_DIR/fleet-lane"
   tr_write_inv corrupt "$RUN_DIR/inventory.json"
-  expect "$lb: fleet-lane·가드 0·인벤토리 깨짐 → PARK lent-seat-unrouted" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)" \
-    '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  expect "$lb: fleet-lane·가드 0·인벤토리 깨짐 → PARK lent-seat-unrouted, fleet-lane 계정" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)" \
+    "$unr_inv and .account == \"cc\""
+  printf ' cc \nzz\n' > "$RUN_DIR/fleet-lane"
+  expect "$lb: fleet-lane·가드 1·인벤토리 깨짐 → PARK inventory-corrupt, fleet-lane 첫 줄 계정" "$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "inventory-corrupt" and .recovery == "cc-lane account check" and .account == "cc" and .why == null'
+  expect "$lb: pin_lane·가드 1·인벤토리 깨짐 → PARK inventory-corrupt, pin_lane 계정" \
+    "$(route__resolve_as 1 "$(tr_req | jq -c '. + {pin_lane: "zz"}')" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "inventory-corrupt" and .account == "zz" and .why == null'
+  printf 'cc\n' > "$RUN_DIR/fleet-lane"
   rm -f "$RUN_DIR/fleet-lane"
   check "$lb: fleet-lane 없음 → 휴면 봉투" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)" "$(tr_dormant "$(resolve_account)")"
   # 고정 계정이 인벤토리에 없는 활성 경로.
@@ -565,8 +585,8 @@ tr_g_lent() {
   mkdir -p "$RUN_DIR"
   tr_write_inv valid "$RUN_DIR/inventory.json"
   printf 'cc\n' > "$RUN_DIR/fleet-lane"
-  expect "$lb: fleet-lane·가드 1·고정 계정 없는 인벤토리 → PARK lent-seat-unrouted" "$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)" \
-    '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  expect "$lb: fleet-lane·가드 1·고정 계정 없는 인벤토리 → PARK lent-seat-unrouted, 등록 안내" "$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "lent-seat-unrouted" and .account == "cc" and (.recovery | contains("인벤토리에 없다"))'
   # 문맥의 좌석. 기록이 없으면 오늘의 바이트, 있으면 첫 줄, 비었으면 어느 계정과도 맞지 않는 값.
   rm -f "$RUN_DIR/fleet-lane"
   check "$lb: fleet-lane 없음 → 문맥 seat 는 오늘과 같다" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat"}'
@@ -588,16 +608,21 @@ tr_g_lent() {
   check "$lb: 빈 pin_lane 은 고정이 아니다" \
     "$(route_gather_context "$(tr_req | jq -c '. + {pin_lane: ""}')" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat"}'
   expect "$lb: pin_lane·가드 1·고정 계정 없는 인벤토리 → PARK lent-seat-unrouted" \
-    "$(route__resolve_as 1 "$(tr_req | jq -c '. + {pin_lane: "zz"}')" 2>/dev/null)" '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+    "$(route__resolve_as 1 "$(tr_req | jq -c '. + {pin_lane: "zz"}')" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "lent-seat-unrouted" and .account == "zz" and (.recovery | contains("인벤토리에 없다"))'
   export RUN_DIR="$b/run-pin-dormant"
   mkdir -p "$RUN_DIR"
   for g in 0 1; do
-    expect "$lb: pin_lane·가드 ${g}·인벤토리 부재 → PARK lent-seat-unrouted" "$(route__resolve_as "$g" "$preq" 2>/dev/null)" \
-      '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+    expect "$lb: pin_lane·가드 ${g}·인벤토리 부재 → PARK lent-seat-unrouted, pin_lane 계정" "$(route__resolve_as "$g" "$preq" 2>/dev/null)" \
+      "$unr_inv and .account == \"cc\""
   done
+  printf 'zz\n' > "$RUN_DIR/fleet-lane"
+  expect "$lb: pin_lane·fleet-lane·인벤토리 부재 → PARK lent-seat-unrouted, pin_lane 계정" "$(route__resolve_as 0 "$preq" 2>/dev/null)" \
+    "$unr_inv and .account == \"cc\""
+  rm -f "$RUN_DIR/fleet-lane"
   printf '{\n' > "$RUN_DIR/inventory.json"
-  expect "$lb: pin_lane·가드 0·인벤토리 깨짐 → PARK lent-seat-unrouted" "$(route__resolve_as 0 "$preq" 2>/dev/null)" \
-    '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  expect "$lb: pin_lane·가드 0·인벤토리 깨짐 → PARK lent-seat-unrouted, pin_lane 계정" "$(route__resolve_as 0 "$preq" 2>/dev/null)" \
+    "$unr_inv and .account == \"cc\""
   rm -f "$RUN_DIR/inventory.json"
   check "$lb: pin_lane 없는 요청·인벤토리 부재 → 휴면 봉투" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)" "$(tr_dormant "$(resolve_account)")"
   # 등록 cc 말고 무인 허용이 없는 인벤토리.
@@ -606,7 +631,73 @@ tr_g_lent() {
   jq -cn --arg h "$HOME" '{schema: "cc-lane-accounts v1", accounts: [{id: "cc", config_dir: ($h + "/.claude-cc"), label: "cc",
     interactive_reserved: true, unattended: "disabled", interactive_lending: "auto", added_at: 0}]}' > "$RUN_DIR/inventory.json"
   expect "$lb: 등록 cc 말고 무인 허용 없음 → PARK no-enabled-account" "$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)" \
-    '.verdict == "PARK" and .reason == "no-enabled-account"'
+    '.verdict == "PARK" and .reason == "no-enabled-account" and (has("account") | not)'
+
+  # 발행 전용 행 고정. 인벤토리에 발행 전용 p 와 대여 등록 cc 가 있고, 둘의 사용량 행은 같은
+  # 조직이다. cc 의 대여 결정은 닫혀 있다.
+  local now_s pinp
+  now_s=$(date -u +%s)
+  pinp=$(tr_req | jq -c '. + {kind: "visual-publish", pin_lane: "p"}')
+  tr_pub_inv() {
+    # tr_pub_inv <파일> [enabled 계정 id…] — 발행 전용 p 와 대여 등록 cc, 그리고 무인 사용 계정들.
+    local f="$1"
+    shift
+    jq -cn --arg h "$HOME" --args '{schema: "cc-lane-accounts v1", accounts: ([
+      {id: "cc", config_dir: ($h + "/.claude-cc"), label: "cc", interactive_reserved: true, unattended: "disabled",
+       interactive_lending: "auto", added_at: 0},
+      {id: "p", config_dir: ($h + "/.claude-p"), label: "p", interactive_reserved: false, unattended: "disabled",
+       publish_only: true, added_at: 0}]
+      + [$ARGS.positional[] | {id: ., config_dir: ($h + "/.claude-" + .), label: ., interactive_reserved: false,
+         unattended: "enabled", added_at: 0}])}' "$@" > "$f"
+  }
+  tr_pub_usage() {
+    # tr_pub_usage <주간 사용률> — 이 절의 상태 루트에 cc·p 의 같은 조직 사용량 행과 a 의 행을 쓴다.
+    jq -cn --argjson now "$now_s" --argjson u7 "$1" --arg h "$HOME" '{schema: "cc-lane-usage v1", written_at_epoch: $now,
+      publish_interval_s: 300,
+      accounts: ([("cc", "p") as $i | {id: $i, config_dir: ($h + "/.claude-" + $i), org_hash: "hc", login: "ok", status: "allowed",
+          windows: {five_hour: {utilization: 0.1, resets_at_epoch: ($now + 3600), observed_at_epoch: ($now - 60), source: "tracker"},
+                    seven_day: {utilization: $u7, resets_at_epoch: ($now + 86400), observed_at_epoch: ($now - 60), source: "tracker"}}}
+          + (if $i == "cc" then {lending: {state: "closed", mode: "auto", evaluated_at_epoch: ($now - 30)}} else {} end)]
+        + [{id: "a", config_dir: ($h + "/.claude-a"), org_hash: "ha", login: "ok", status: "allowed",
+            windows: {five_hour: {utilization: 0.9, resets_at_epoch: ($now + 3600), observed_at_epoch: ($now - 60), source: "tracker"},
+                      seven_day: {utilization: 0.1, resets_at_epoch: ($now + 86400), observed_at_epoch: ($now - 60), source: "tracker"}}}])}' \
+      > "$XDG_STATE_HOME/cc-lane/usage.json"
+  }
+  export XDG_STATE_HOME="$b/pstate"
+  mkdir -p "$XDG_STATE_HOME/cc-lane"
+  tr_pub_usage 0.5
+  # 무인 사용 가드. 무인 사용이 켜진 계정이 없어도 발행 전용 행 고정만 가드를 건너뛴다.
+  export RUN_DIR="$b/run-pub-noenabled" RUN_PACE_ROOT="$b/ppace-1"
+  mkdir -p "$RUN_DIR"
+  tr_pub_inv "$RUN_DIR/inventory.json"
+  out=$(route__resolve_as 1 "$pinp" 2>/dev/null)
+  expect "$lb: 무인 사용 없는 인벤토리·pin_lane p → 가드를 건너뛰어 GRANT p" "$out" '.verdict == "GRANT" and .account == "p" and .dormant == false'
+  pinrec "$out"
+  export RUN_PACE_ROOT="$b/ppace-2"
+  expect "$lb: 무인 사용 없는 인벤토리·pin_lane cc → PARK no-enabled-account, 고정 계정" \
+    "$(route__resolve_as 1 "$(tr_req | jq -c '. + {pin_lane: "cc"}')" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "no-enabled-account" and .account == "cc" and .why == null'
+  expect "$lb: 무인 사용 없는 인벤토리·고정 없음 → PARK no-enabled-account, 계정 칸 없음" "$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)" \
+    '.verdict == "PARK" and .reason == "no-enabled-account" and (has("account") | not)'
+  # fleet 대여 레인 런 안의 시각 발행. 런의 fleet-lane 은 cc 이고 대여는 닫혀 있다.
+  export RUN_DIR="$b/run-pub-fleet" RUN_PACE_ROOT="$b/ppace-3"
+  mkdir -p "$RUN_DIR"
+  tr_pub_inv "$RUN_DIR/inventory.json" a
+  printf 'cc\n' > "$RUN_DIR/fleet-lane"
+  out=$(route__resolve_as 1 "$pinp" 2>/dev/null)
+  expect "$lb: fleet-lane cc 런·pin_lane p·주간 0.5 → GRANT p" "$out" '.verdict == "GRANT" and .account == "p"'
+  pinrec "$out"
+  export RUN_PACE_ROOT="$b/ppace-4"
+  out=$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)
+  expect "$lb: fleet-lane cc 런·pin_lane 없음 → PARK pinned-lend-blocked, 계정 cc" "$out" \
+    '.verdict == "PARK" and .reason == "pinned-lend-blocked" and .account == "cc" and .why == "closed"'
+  pinrec "$out"
+  tr_pub_usage 0.98
+  export RUN_PACE_ROOT="$b/ppace-5"
+  out=$(route__resolve_as 1 "$pinp" 2>/dev/null)
+  expect "$lb: fleet-lane cc 런·pin_lane p·주간 0.98 → PARK pinned-publish-blocked(reserve)" "$out" \
+    '.verdict == "PARK" and .reason == "pinned-publish-blocked" and .account == "p" and .why == "reserve"'
+  pinrec "$out"
 }
 
 tr_guard_sections() {
@@ -662,7 +753,7 @@ check "인벤토리 부재 → rc 2" "$rc" 2
 # `inventory-check` 의 rc 와 사유로, 연성 판정은 rc 0 그대로 표준 오류 한 줄로 본다.
 # 치명 판정이 있는 줄은 연성 줄을 내지 않으므로 그 칸은 `rt_lending_why` 를 직접 부른다.
 INVC="$repo_root/tests/fixtures/route-inventory-contract/inventory-verdicts.jsonl"
-check "판정 말뭉치는 23줄" "$(grep -c '' "$INVC")" 23
+check "판정 말뭉치는 28줄" "$(grep -c '' "$INVC")" 28
 n=0
 while IFS= read -r line; do
   n=$((n + 1))
@@ -687,7 +778,7 @@ while IFS= read -r line; do
     check "말뭉치 $cn → 연성 사유 $soft 한 번" "$(grep -c "연성 결함: .*($soft)" "$f.err")" 1
   fi
 done < "$INVC"
-check "판정 말뭉치의 모든 줄을 돌았다" "$n" 23
+check "판정 말뭉치의 모든 줄을 돌았다" "$n" 28
 out=$(decide '.inventory.accounts = [A("a") + {config_dir: "/h/.claude-a//x/./"}] | ONLY(["a"]) | .inventory.accounts[0].config_dir = "/h/.claude-a//x/." | .usage.accounts = []')
 expect "config_dir 는 정규화하지 않고 축자로 싣는다" "$out" '.config_dir == "/h/.claude-a//x/."'
 
@@ -2886,6 +2977,9 @@ LJ='def CCA: A("cc") + {interactive_reserved: true, unattended: "disabled", inte
   def SHIFT: REQ({kind: "shift", lineage: "shift#1"});'
 lwhy() { classify "$LJ $1" | jq -r '[.accounts[] | select(.id == "cc") | .lend.why] | .[0] | tostring'; }
 NOTCC='(.verdict == "GRANT" and .account == "cc") | not'
+# 고정 행이 막힌 PARK 의 술어. 이유, 계정, 철자로 적은 원인을 함께 본다.
+plb() { printf '.verdict == "PARK" and .reason == "pinned-lend-blocked" and .account == "cc" and .why == "%s"' "$1"; }
+ppb() { printf '.verdict == "PARK" and .reason == "pinned-publish-blocked" and .account == "p" and .why == "%s"' "$1"; }
 
 # 입장 술어.
 expect "대여-입장: 열림·u 여유 → u 먼저" "$(decide "$LJ OPEN")" '.verdict == "GRANT" and .account == "a"'
@@ -2940,10 +3034,11 @@ expect "대여-재검사: 첫 대여 임대가 있으면 둘째 요청은 cc 아
 check "대여-재검사: 둘째 요청의 사유" "$(lwhy "UBLK | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"})")" five-hour-cap
 expect "대여-재검사: 첫 대여 임대가 있어도 u 여유면 u" "$(decide "$LJ OPEN | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"})")" \
   '.verdict == "GRANT" and .account == "a"'
-expect "대여-재검사: 고정된 둘째 요청 → WAIT" "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"})")" '.verdict == "WAIT"'
-expect "대여-재검사: 고정된 둘째 요청의 기한 지남 → PARK deadline" \
+pexpect "대여-재검사: 고정된 둘째 요청 → PARK pinned-lend-blocked(five-hour-cap)" \
+  "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"})")" "$(plb five-hour-cap)"
+pexpect "대여-재검사: 고정된 둘째 요청의 기한 지남 → 기한 판정 전에 PARK pinned-lend-blocked" \
   "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; true) | REQ({run_id: \"r2\"}) | CCX(.windows.five_hour.utilization = 0.9) | DL1")" \
-  '.verdict == "PARK" and .reason == "deadline"'
+  "$(plb five-hour-cap)"
 LEND_INJ="$WORK/lend-inj"
 put_lease "$LEND_INJ" r2 S1 grant cc "$RES_JSON" "$TR_HOLDER" "$TR_HOLDER_FP" 1 n-inj
 INJ="cp '$LEND_INJ/$(tr_key r2 S1).lease' \"\$1/\""
@@ -3025,12 +3120,17 @@ for st in 'OPEN|열림' 'OPEN | CL|닫힘'; do
 done
 
 # 대여 좌석 고정.
-expect "대여-고정: 열림 → GRANT cc" "$(decide "$LJ UBLK | PIN")" '.verdict == "GRANT" and .account == "cc"'
-expect "대여-고정: u 여유 → GRANT u 아님" "$(decide "$LJ OPEN | PIN")" '.verdict == "GRANT" and .account == "cc"'
-expect "대여-고정: 닫힘 → 기존 대기 토큰의 WAIT" "$(decide "$LJ OPEN | PIN | CL")" '.verdict == "WAIT" and .reason == "no-room"'
-expect "대여-고정: 기한 지남 → 기한 PARK, 대여 그룹 리셋권 대기 없음" \
+pexpect "대여-고정: 열림 → GRANT cc" "$(decide "$LJ UBLK | PIN")" '.verdict == "GRANT" and .account == "cc"'
+pexpect "대여-고정: u 여유 → GRANT u 아님" "$(decide "$LJ OPEN | PIN")" '.verdict == "GRANT" and .account == "cc"'
+out=$(decide "$LJ OPEN | PIN | CL")
+pexpect "대여-고정: 닫힘 → PARK pinned-lend-blocked(closed)" "$out" "$(plb closed)"
+expect "대여-고정: 닫힘 PARK 의 안내는 계정과 원인을 담는다" "$out" '(.recovery | contains("cc")) and (.recovery | contains("closed"))'
+expect "대여-고정: 닫힘 PARK 은 대기 끝 시각을 싣지 않는다" "$out" 'has("ready_at") | not'
+out=$(decide "$LJ OPEN | PIN | .borrow = BRW(\"borrowed\"; \"zz\"; \"/h/.claude-zz\")")
+pexpect "대여-고정 + 차용 중 → PARK pinned-lend-blocked(borrow)" "$out" "$(plb borrow)"
+pexpect "대여-고정: 기한 지남 → 기한 판정 전에 PARK pinned-lend-blocked, 대여 그룹 리셋권 대기 없음" \
   "$(decide "$LJ OPEN | PIN | RP | CCX(.windows.five_hour.utilization = 0.9) | DL1")" \
-  '.verdict == "PARK" and .reason == "deadline" and (has("reserve") | not)'
+  "$(plb five-hour-cap) and (has(\"reserve\") | not)"
 expect "대여-고정: resume 이 u 에 묶임(죽은 임대) → PARK resume-bound-ineligible" "$(decide "$LJ OPEN | PIN | RSM(\"a\")")" \
   '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
 expect "대여-고정: resume 이 u 의 살아 있는 임대 → PARK resume-bound-ineligible" \
@@ -3042,36 +3142,201 @@ expect "대여-고정: u 의 살아 있는 임대는 첫 요청 멱등으로 잇
 # 한도 뒤 재배정은 고정 계정을 제외하지 않는다. 회수된 스테이지의 죽은 자기 임대가 남아
 # 제외 계정이 고정 계정이어도, 고정 행 자신의 입장 판정으로 부여하거나 기다린다.
 for ev in limit-reclaim first-reject; do
-  expect "대여-고정: 죽은 cc 임대가 남은 $ev → GRANT cc" \
+  pexpect "대여-고정: 죽은 cc 임대가 남은 $ev → GRANT cc" \
     "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | REQ({event: \"$ev\"}) | REQ({after_wait: true})")" \
     '.verdict == "GRANT" and .account == "cc" and .basis == "after-wait"'
-  expect "대여-고정: 묶인 계정이 cc 인 $ev → GRANT cc" "$(decide "$LJ OPEN | PIN | REQ({event: \"$ev\"}) | REQ({bound_account: \"cc\"})")" \
+  pexpect "대여-고정: 묶인 계정이 cc 인 $ev → GRANT cc" "$(decide "$LJ OPEN | PIN | REQ({event: \"$ev\"}) | REQ({bound_account: \"cc\"})")" \
     '.verdict == "GRANT" and .account == "cc" and .basis == "reassigned-after-limit"'
-  check "대여-고정: 닫힘 + 죽은 cc 임대의 $ev 는 첫 요청과 같은 대기" \
-    "$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false) | REQ({event: \"$ev\"})" | jq -c '[.verdict, .reason, .group, .until_epoch]')" \
-    "$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false)" | jq -c '[.verdict, .reason, .group, .until_epoch]')"
-  expect "대여-고정: 소진 창 + 죽은 cc 임대의 $ev → 리셋 시각의 WAIT" \
+  o1=$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false) | REQ({event: \"$ev\"})")
+  o2=$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false)")
+  pexpect "대여-고정: 닫힘 + 죽은 cc 임대의 $ev → PARK pinned-lend-blocked(closed)" "$o1" "$(plb closed)"
+  pexpect "대여-고정: 닫힘 + 죽은 cc 임대의 첫 요청 → PARK pinned-lend-blocked(closed)" "$o2" "$(plb closed)"
+  check "대여-고정: 닫힘 + 죽은 cc 임대의 $ev 는 첫 요청과 같은 판정" \
+    "$(printf '%s' "$o1" | jq -c '[.verdict, .reason, .account, .why]')" "$(printf '%s' "$o2" | jq -c '[.verdict, .reason, .account, .why]')"
+  pexpect "대여-고정: 소진 창 + 죽은 cc 임대의 $ev → PARK pinned-lend-blocked(ceiling)" \
     "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | CCD(.mode = \"open\") | CCX(.windows.seven_day.utilization = 1.0) | REQ({event: \"$ev\"})")" \
-    '.verdict == "WAIT" and (.until_epoch | type) == "number"'
+    "$(plb ceiling)"
 done
 expect "대여-고정 대조: 고정 없는 limit-reclaim 은 제외 계정을 건너뛴다" \
   "$(decide "$LJ OPEN | LIVE(\"a\"; false) | REQ({event: \"limit-reclaim\"})")" '(.verdict == "GRANT" and .account == "a") | not'
 for st in absent corrupt; do
   f="OPEN | PIN | .inventory = {state: \"$st\", accounts: []}"
-  expect "대여-고정: 인벤토리 $st → PARK lent-seat-unrouted" "$(decide "$LJ $f")" '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
+  pexpect "대여-고정: 인벤토리 $st → PARK lent-seat-unrouted, 고정 계정과 인벤토리 무효 안내" "$(decide "$LJ $f")" \
+    '.verdict == "PARK" and .reason == "lent-seat-unrouted" and .account == "cc" and .why == null
+     and (.recovery | contains("cc")) and (.recovery | contains("인벤토리 무효"))'
 done
-expect "대여-고정: 고정 계정이 인벤토리에 없음 → PARK lent-seat-unrouted" "$(decide "$LJ OPEN | .seat.lane = \"zz\"")" \
-  '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
-expect "대여-고정: 후보 없음 + 교대 → shift-seat-fallback 아님" "$(decide "$LJ OPEN | PIN | CL | SHIFT")" '.verdict == "WAIT" and .reason == "no-room"'
+pexpect "대여-고정: 고정 계정이 인벤토리에 없음 → PARK lent-seat-unrouted, 그 계정과 등록 안내" "$(decide "$LJ OPEN | .seat.lane = \"zz\"")" \
+  '.verdict == "PARK" and .reason == "lent-seat-unrouted" and .account == "zz" and .why == null
+   and (.recovery | contains("인벤토리에 없다")) and (.recovery | contains("zz"))'
+pexpect "대여-고정: 후보 없음 + 교대 → shift-seat-fallback 아닌 PARK pinned-lend-blocked(closed)" "$(decide "$LJ OPEN | PIN | CL | SHIFT")" \
+  "$(plb closed)"
 expect "대여-고정 대조: 고정 없는 교대의 후보 없음은 좌석" "$(decide "$LJ UBLK | CL | SHIFT")" '.verdict == "GRANT" and .basis == "shift-seat-fallback"'
 KS=$(tr_key r1 'shift#1')
 OC=".leases.corrupt = [{key: \"$KS\", path: \"/t/$KS.lease\"}]"
-expect "대여-고정: 교대의 자기 임대 깨짐 → PARK own-lease-corrupt" "$(decide "$LJ OPEN | PIN | SHIFT | $OC")" '.verdict == "PARK" and .reason == "own-lease-corrupt"'
+expect "대여-고정: 교대의 자기 임대 깨짐 → PARK own-lease-corrupt, 고정 계정을 싣는다" "$(decide "$LJ OPEN | PIN | SHIFT | $OC")" \
+  '.verdict == "PARK" and .reason == "own-lease-corrupt" and .account == "cc" and .why == null'
 expect "대여-고정 대조: 고정 없는 교대의 자기 임대 깨짐은 좌석" "$(decide "$LJ OPEN | SHIFT | $OC")" '.verdict == "GRANT" and .basis == "shift-seat-fallback"'
 d=$(tnew lend-pin-brw)
 BP=$(lb_bp lend-pin-brw)
 lb_rec "$BP" none a
 expect "대여-고정: 교대 거래의 되돌림은 좌석 아님" "$(lbx "$d" "$BP" "$LJ OPEN | PIN | SHIFT" "cp '$LB/intent-b.json' '$BP'")" "$WAITC"
+
+# 고정 요청의 PARK 는 판정 순서상 고정 판정보다 앞에서 나도 고정 계정을 싣는다. 이유와
+# 안내는 그대로이고 `why` 는 null 이다. 고정 없는 같은 문맥은 계정 칸을 싣지 않는다.
+TC='.leases.state = "corrupt" | .leases.corrupt = [{key: null, path: "/t/x.lease"}]'
+for row in "$TC#lease-table-corrupt" '.borrow = {state: "corrupt"}#borrow-record-corrupt'; do
+  pexpect "고정-계정: 새 기동의 ${row#*#} → 고정 계정을 싣는다" "$(decide "$LJ OPEN | PIN | ${row%#*}")" \
+    ".verdict == \"PARK\" and .reason == \"${row#*#}\" and .account == \"cc\" and .why == null"
+  expect "고정-계정 대조: 고정 없는 새 기동의 ${row#*#} → 계정 칸 없음" "$(decide "$LJ OPEN | ${row%#*}")" \
+    ".verdict == \"PARK\" and .reason == \"${row#*#}\" and (has(\"account\") | not)"
+done
+expect "고정-계정: 재개의 lease-table-corrupt → 고정 계정을 싣는다" "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | RSM(\"cc\") | $TC")" \
+  '.verdict == "PARK" and .reason == "lease-table-corrupt" and .account == "cc" and .why == null'
+expect "고정-계정: 재개의 resume-bound-ineligible → 고정 계정을 싣는다" "$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false) | RSM(\"cc\")")" \
+  '.verdict == "PARK" and .reason == "resume-bound-ineligible" and .account == "cc" and .why == null'
+expect "고정-계정 대조: 고정 없는 재개의 resume-bound-ineligible → 계정 칸 없음" "$(decide "$LJ OPEN | CL | LIVE(\"cc\"; false) | RSM(\"cc\")")" \
+  '.verdict == "PARK" and .reason == "resume-bound-ineligible" and (has("account") | not)'
+
+# 대여 등록 행에 묶인 재개는 끝 시각을 모를 때만 기다리지 않는다. 5시간 상한을 1000 으로
+# 낮추면 열린 cc 의 대여 검사는 통과하고 입장 판정만 cap 으로 떨어진다. 5시간 리셋 시각이
+# 없으면 그 판정의 끝 시각도 없다.
+NOR5='CCX(.windows.five_hour.resets_at_epoch = null)'
+LOWCAP='.config.cap_bp = 1000'
+expect "대여-재개: 죽은 cc 임대·입장 판정이 끝 시각 없이 막힘 → PARK pinned-lend-blocked(cap)" \
+  "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | RSM(\"cc\") | $LOWCAP | $NOR5")" "$(plb cap) and (has(\"ready_at\") | not)"
+expect "대여-재개: 죽은 cc 임대·입장 판정이 끝 시각을 냄 → WAIT resume-bound-no-room" \
+  "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | RSM(\"cc\") | $LOWCAP")" \
+  '.verdict == "WAIT" and .reason == "resume-bound-no-room" and .account == "cc" and (.until_epoch | type) == "number"'
+expect "대여-재개: 살아 있는 cc 임대 + X·끝 시각 모름 → PARK pinned-lend-blocked(exhausted)" \
+  "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; true) | REQ({event: \"resume\"}) | CCX(.windows.seven_day.utilization = 1.0 | .windows.seven_day.resets_at_epoch = null)")" \
+  "$(plb exhausted)"
+expect "대여-재개: 살아 있는 cc 임대 + X·끝 시각 앎 → WAIT resume-bound-exhausted" \
+  "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; true) | REQ({event: \"resume\"}) | CCX(.windows.seven_day.utilization = 1.0)")" \
+  '.verdict == "WAIT" and .reason == "resume-bound-exhausted" and .account == "cc" and (.until_epoch | type) == "number"'
+
+# ===========================================================================
+# 발행 전용 행 고정. 인벤토리에 발행 전용 행 p(예약 아님, 무인 꺼짐, 대여 꺼짐)를 더하고
+# cc 와 같은 조직의 사용량 행을 더한 뒤 seat.lane = "p" 로 고정한다. 같은 관측 시각의 두
+# 행 가운데 그룹 창은 큰 쪽이라, p 행의 주간 값이 그룹의 주간 값이다. 발행 전용 행은
+# 차용·σ·FIFO 를 보지 않고 주간 9800 bp 아래에서만 새로 입장한다.
+# ===========================================================================
+PJ="$LJ"'
+  def PROW: A("p") + {unattended: "disabled", publish_only: true};
+  def PX(f): .usage.accounts |= map(if .id == "p" then f else . end);
+  def PINV(f): .inventory.accounts |= map(if .id == "p" then f else . end);
+  def PUB0: .inventory.accounts += [PROW] | CCX(. + {org_hash: "hc"}) | .seat.lane = "p";
+  def PUB($u7): PUB0 | .usage.accounts += [UA("p"; 0.1; $u7) + {org_hash: "hc"}];
+  def OLD7: PX(.windows.seven_day.observed_at_epoch = ($now - 4000)) | CCX(.windows.seven_day.observed_at_epoch = ($now - 4000));
+  def OLD5: PX(.windows.five_hour.observed_at_epoch = ($now - 4000)) | CCX(.windows.five_hour.observed_at_epoch = ($now - 4000));'
+PG='.verdict == "GRANT" and .account == "p"'
+pexpect "발행-고정: 대여 닫힘(cc) + 주간 0.5 → GRANT p" "$(decide "$PJ OPEN | CL | PUB(0.5)")" "$PG and .basis == \"first\""
+pexpect "발행-고정: 차용 중 + 주간 0.5 → GRANT p" \
+  "$(decide "$PJ OPEN | CL | PUB(0.5) | CCX(.org_hash = \"hd\") | .usage.accounts |= map(if .id == \"a\" then . + {org_hash: \"hd\"} else . end) | LEND(\"a\")")" \
+  "$PG"
+pexpect "발행-고정: 주간 0.979 → GRANT p" "$(decide "$PJ OPEN | PUB(0.979)")" "$PG"
+out=$(decide "$PJ OPEN | PUB(0.98)")
+pexpect "발행-고정: 주간 0.98 → PARK pinned-publish-blocked(reserve)" "$out" "$(ppb reserve)"
+expect "발행-고정: reserve 안내는 계정·상한·사용률·리셋 시각을 담는다" "$out" \
+  "(.recovery | contains(\"발행 전용 계정 p\")) and (.recovery | contains(\"98%\")) and (.recovery | contains(\"(98%)\"))
+   and (.recovery | contains(\"($((NOW + 86400)))\")) and (has(\"ready_at\") | not)"
+pexpect "발행-고정: 5시간 1.0 → PARK pinned-publish-blocked(exhausted)" "$(decide "$PJ OPEN | PUB(0.5) | PX(.windows.five_hour.utilization = 1.0)")" \
+  "$(ppb exhausted)"
+pexpect "발행-고정: 주간 관측이 TTL 밖 → PARK pinned-publish-blocked(window-unknown)" "$(decide "$PJ OPEN | PUB(0.5) | OLD7")" \
+  "$(ppb window-unknown)"
+pexpect "발행-고정: 사용량 파일 낡음 → PARK pinned-publish-blocked(usage-stale)" \
+  "$(decide "$PJ OPEN | PUB(0.5) | .usage.written_at_epoch = (\$now - 1000)")" "$(ppb usage-stale)"
+out=$(decide "$PJ OPEN | PUB(0.5) | PX(.login = \"expired\")")
+pexpect "발행-고정: 로그인 끊김 → PARK pinned-publish-blocked(logged-out)" "$out" "$(ppb logged-out)"
+expect "발행-고정: 로그인 끊김 안내는 claude /login 이다" "$out" '.recovery | contains("claude /login")'
+pexpect "발행-고정: 디렉터리 불일치 → PARK pinned-publish-blocked(mismatch)" \
+  "$(decide "$PJ OPEN | PUB(0.5) | PX(.config_dir = \"/h/.claude-q\")")" "$(ppb mismatch)"
+pexpect "발행-고정: 같은 그룹의 큰 예약(σ) + 주간 0.9 → GRANT p, σ 를 보지 않는다" \
+  "$(decide "$PJ OPEN | PUB(0.9) | "'ITEMS([LR("r9"; "S9"; "cc"; "grant"; {five_hour: 6000, seven_day: 6000}; true; 1)])')" "$PG"
+pexpect "발행-고정: FIFO 대기 항목이 있어도 GRANT p" \
+  "$(decide "$PJ OPEN | PUB(0.5) | ITEMS([LR(\"r9\"; \"S9\"; \"p\"; \"wait\"; null; true; 1)])")" "$PG"
+for ev in limit-reclaim first-reject; do
+  pexpect "발행-고정: 죽은 p 임대가 남은 $ev → GRANT p" \
+    "$(decide "$PJ OPEN | PUB(0.5) | LIVE(\"p\"; false) | REQ({event: \"$ev\"})")" "$PG"
+  pexpect "발행-고정: 주간 0.98 의 $ev → PARK pinned-publish-blocked(reserve)" \
+    "$(decide "$PJ OPEN | PUB(0.98) | LIVE(\"p\"; false) | REQ({event: \"$ev\"})")" "$(ppb reserve)"
+done
+# 유지. 살아 있는 임대는 예비분 상한을 넘은 뒤에도 끝까지 간다. 소진(X)이면 유지하지 않는다.
+expect "발행-유지: 살아 있는 p 임대 + 주간 0.99 의 crash-retry → GRANT sticky" \
+  "$(decide "$PJ OPEN | PUB(0.99) | LIVE(\"p\"; true) | REQ({event: \"crash-retry\"})")" "$PG and .basis == \"sticky\""
+expect "발행-유지: 살아 있는 p 임대 + 주간 0.99 의 첫 요청 멱등 → GRANT first" \
+  "$(decide "$PJ OPEN | PUB(0.99) | LIVE(\"p\"; true) | REQ({nonce: \"n-r1-S1\"})")" "$PG and .basis == \"first\""
+expect "발행-유지: 살아 있는 p 임대 + 주간 1.0 의 crash-retry → PARK pinned-publish-blocked(exhausted)" \
+  "$(decide "$PJ OPEN | PUB(1.0) | LIVE(\"p\"; true) | REQ({event: \"crash-retry\"})")" "$(ppb exhausted)"
+pexpect "발행-유지: 살아 있는 p 임대 + 주간 1.0 의 첫 요청 멱등 → PARK pinned-publish-blocked(exhausted)" \
+  "$(decide "$PJ OPEN | PUB(1.0) | LIVE(\"p\"; true) | REQ({nonce: \"n-r1-S1\"})")" "$(ppb exhausted)"
+# 재개.
+expect "발행-재개: p 에 묶임(죽은 임대) + 주간 0.5 → GRANT resume-bound" \
+  "$(decide "$PJ OPEN | PUB(0.5) | LIVE(\"p\"; false) | RSM(\"p\")")" "$PG and .basis == \"resume-bound\" and .txn.op == \"write\""
+expect "발행-재개: p 에 묶임(죽은 임대) + 주간 0.99 → PARK pinned-publish-blocked(reserve)" \
+  "$(decide "$PJ OPEN | PUB(0.99) | LIVE(\"p\"; false) | RSM(\"p\")")" "$(ppb reserve)"
+expect "발행-재개: 살아 있는 p 임대 + X → 대기 아닌 PARK pinned-publish-blocked(exhausted)" \
+  "$(decide "$PJ OPEN | PUB(1.0) | LIVE(\"p\"; true) | REQ({event: \"resume\"})")" "$(ppb exhausted)"
+expect "발행-재개: p 에 묶임 + 로그인 끊김 → PARK resume-logged-out, 고정 계정" \
+  "$(decide "$PJ OPEN | PUB(0.5) | LIVE(\"p\"; false) | RSM(\"p\") | PX(.login = \"expired\")")" \
+  '.verdict == "PARK" and .reason == "resume-logged-out" and .account == "p"'
+expect "발행-재개: p 에 묶임 + 디렉터리 불일치 → PARK pinned-publish-blocked(mismatch)" \
+  "$(decide "$PJ OPEN | PUB(0.5) | LIVE(\"p\"; false) | RSM(\"p\") | PX(.config_dir = \"/h/.claude-q\")")" "$(ppb mismatch)"
+expect "발행-재개: p 에 묶임 + 임대 표 깨짐 → PARK lease-table-corrupt, 고정 계정" \
+  "$(decide "$PJ OPEN | PUB(0.5) | LIVE(\"p\"; false) | RSM(\"p\") | $TC")" \
+  '.verdict == "PARK" and .reason == "lease-table-corrupt" and .account == "p" and .why == null'
+expect "발행-재개: p 에 묶임 + 차용 기록 깨짐 → PARK borrow-record-corrupt, 고정 계정" \
+  "$(decide "$PJ OPEN | PUB(0.5) | LIVE(\"p\"; false) | RSM(\"p\") | .borrow = {state: \"corrupt\"}")" \
+  '.verdict == "PARK" and .reason == "borrow-record-corrupt" and .account == "p" and .why == null'
+expect "발행-재개: 고정 없는 요청이 p 에 묶임 + 주간 0.5 → GRANT resume-bound" \
+  "$(decide "$PJ OPEN | PUB(0.5) | del(.seat.lane) | LIVE(\"p\"; false) | RSM(\"p\")")" "$PG and .basis == \"resume-bound\""
+# 행 종류.
+expect "발행-고정 대조: 고정 없는 요청은 u 가 모두 막혀도 p 를 고르지 않는다" \
+  "$(decide "$PJ UBLK | CL | PUB(0.5) | del(.seat.lane)")" '(.verdict == "GRANT" and .account == "p") | not'
+pexpect "발행-고정: seat.lane 이 u 계정 → PARK pinned-lane-ineligible" "$(decide "$PJ OPEN | PUB(0.5) | .seat.lane = \"a\"")" \
+  '.verdict == "PARK" and .reason == "pinned-lane-ineligible" and .account == "a" and .why == null and (.recovery | contains("a"))'
+pexpect "발행-고정: publish_only 가 \"yes\" → PARK pinned-lane-ineligible" "$(decide "$PJ OPEN | PUB(0.5) | PINV(.publish_only = \"yes\")")" \
+  '.verdict == "PARK" and .reason == "pinned-lane-ineligible" and .account == "p"'
+pexpect "발행-고정: 발행 전용이면서 예약·대여 auto → PARK pinned-lane-ineligible" \
+  "$(decide "$PJ OPEN | PUB(0.5) | "'PINV(. + {interactive_reserved: true, interactive_lending: "auto"})')" \
+  '.verdict == "PARK" and .reason == "pinned-lane-ineligible" and .account == "p"'
+# 사용량 행 없음. 신원 대조를 할 수 없으면 새로 입장하지도 유지하지도 않는다.
+pexpect "발행-고정: 사용량 행 없음 → PARK pinned-publish-blocked(usage-row-missing)" "$(decide "$PJ OPEN | PUB0")" "$(ppb usage-row-missing)"
+pexpect "발행-유지: 사용량 행 없음 + 살아 있는 p 임대의 첫 요청 멱등 → 유지하지 않는다" \
+  "$(decide "$PJ OPEN | PUB0 | LIVE(\"p\"; true) | REQ({nonce: \"n-r1-S1\"})")" "$(ppb usage-row-missing)"
+expect "발행-재개: 사용량 행 없음 + p 에 묶임 → PARK pinned-publish-blocked(usage-row-missing)" \
+  "$(decide "$PJ OPEN | PUB0 | LIVE(\"p\"; false) | RSM(\"p\")")" "$(ppb usage-row-missing)"
+# 쓰기 거래. 재검증은 발행 전용 행의 새 기록에 일반 창 검사를 쓰지 않는다.
+d=$(tnew pub-sigma)
+BP=$(lb_bp pub-sigma)
+lb_rec "$BP" none a
+put_lease "$d" r9 S9 grant cc '{"five_hour":6000,"seven_day":6000}' "$TR_HOLDER" "$TR_HOLDER_FP" 1 n-r9-S9
+out=$(lbx "$d" "$BP" "$PJ OPEN | PUB(0.97)" ":")
+pexpect "발행-거래: 주간 0.97 과 큰 σ 의 새 쓰기 → 재검증을 지나 GRANT p" "$out" "$PG"
+check "발행-거래: 큰 σ 의 새 쓰기 뒤 임대 둘" "$(count_files "$d")" 2
+d=$(tnew pub-brw)
+BP=$(lb_bp pub-brw)
+lb_rec "$BP" borrowed a
+out=$(lbx "$d" "$BP" "$PJ OPEN | PUB(0.5) | LEND(\"a\")" ":")
+pexpect "발행-거래: 차용 중의 새 쓰기는 되돌리지 않는다" "$out" "$PG"
+check "발행-거래: 차용 중의 새 쓰기 뒤 임대 하나" "$(count_files "$d")" 1
+i=0
+for f in 'REQ({nonce: "n-r1-S1"})|같은 nonce' '.|nonce 없는 멱등'; do
+  i=$((i + 1))
+  d=$(tnew "pub-u-hold-$i")
+  live_lease "$d" r1 S1 p
+  BP=$(lb_bp "pub-u-hold-$i")
+  lb_rec "$BP" none a
+  out=$(lbx "$d" "$BP" "$PJ OPEN | PUB(0.5) | OLD5 | ${f%%|*}" ":")
+  expect "발행-거래: 창 하나 미상 + 살아 있는 p 임대의 ${f#*|} 유지 → GRANT, lease-contention 아님" "$out" "$PG and .nonce == \"n-r1-S1\""
+  check "발행-거래: 창 하나 미상의 ${f#*|} 유지 뒤 임대 유지" "$(count_files "$d")" 1
+done
+
+# 완료 기준. 고정 요청의 새 기동 입장 판정은 대기로 끝나지 않는다 — 특히 계정 없는
+# no-room 대기가 하나도 없다. 모은 줄 수가 어긋나면 사례가 빠졌거나 수집이 끊긴 것이다.
+check "고정 입장 판정: 모은 봉투 가운데 WAIT 없음" "$(jq -c 'select(.verdict == "WAIT")' "$PINSEEN" | grep -c . || true)" 0
+check "고정 입장 판정: 계정 없는 no-room 없음" \
+  "$(jq -c 'select(.reason == "no-room" and .account == null)' "$PINSEEN" | grep -c . || true)" 0
+check "고정 입장 판정: 모은 봉투는 쉰 줄" "$(grep -c . "$PINSEEN")" 50
 
 # ===========================================================================
 # 새 단계 정렬의 분산과 유지. 두 단계 모두 대여 층·U 부류 다음 키가 유지(유효한 직전
@@ -3445,6 +3710,7 @@ for tok in \
   "PARK inventory-corrupt" "PARK no-enabled-account" "PARK lease-table-corrupt" "PARK own-lease-corrupt" \
   "PARK resume-unbound" "PARK resume-logged-out" "PARK resume-bound-ineligible" "PARK resume-bound-unknown-account" \
   "PARK deadline" "PARK borrow-record-corrupt" "PARK lent-seat-unrouted" \
+  "PARK pinned-publish-blocked" "PARK pinned-lend-blocked" "PARK pinned-lane-ineligible" \
   "WAIT group-exhausted" "WAIT no-room" "WAIT unknown-concurrency" "WAIT resume-bound-exhausted" \
   "WAIT resume-bound-no-room" "WAIT resume-bound-borrowed" "WAIT lease-lock-busy" "WAIT lease-contention" "WAIT fifo-yield" \
   "GRANT first" "GRANT sticky" "GRANT resume-bound" "GRANT reassigned-after-limit" "GRANT reassigned-no-room" \
@@ -3462,13 +3728,15 @@ tk1_fall=$(sed -n '/^gate_launch_route_carry() {/,/^}/s/^ *\(deadline|resume-[a-
   | tr '|' '\n' | LC_ALL=C sort | tr '\n' ' ')
 check "TK1: 게이트의 넘어가는 이유 목록이 다섯이다" "$tk1_fall" \
   "deadline resume-bound-ineligible resume-bound-unknown-account resume-logged-out resume-unbound "
-tk1_stay="lease-table-corrupt borrow-record-corrupt lent-seat-unrouted inventory-corrupt own-lease-corrupt"
+tk1_stay="lease-table-corrupt borrow-record-corrupt lent-seat-unrouted inventory-corrupt own-lease-corrupt pinned-publish-blocked pinned-lend-blocked"
 tk1_src=$( { sed -n '/^def rt_decide(/,/rt_resume(\$p)$/p' "$TR_ROUTE"; sed -n '/^def rt_resume(/,/^def rt_waitpick(/p' "$TR_ROUTE"; } )
 tk1_seen=$( { printf '%s\n' "$tk1_src" | grep -oE 'rt_park\("[a-z-]+"' | sed 's/^rt_park("//; s/"$//'
               case "$tk1_src" in (*'rt_park_deadline('*) printf 'deadline\n' ;; esac
               case "$tk1_src" in (*rt_park_borrow_corrupt*) printf 'borrow-record-corrupt\n' ;; esac
-              case "$tk1_src" in (*rt_park_unrouted*) printf 'lent-seat-unrouted\n' ;; esac; } | LC_ALL=C sort -u)
-check "TK1: 판정 앞단과 rt_resume 에서 뽑은 PARK 이유가 열 개다 (공허하지 않다)" "$(printf '%s\n' "$tk1_seen" | grep -c .)" "10"
+              case "$tk1_src" in (*rt_park_unrouted*) printf 'lent-seat-unrouted\n' ;; esac
+              case "$tk1_src" in (*rt_park_publish*) printf 'pinned-publish-blocked\n' ;; esac
+              case "$tk1_src" in (*rt_park_lend*) printf 'pinned-lend-blocked\n' ;; esac; } | LC_ALL=C sort -u)
+check "TK1: 판정 앞단과 rt_resume 에서 뽑은 PARK 이유가 열두 개다 (공허하지 않다)" "$(printf '%s\n' "$tk1_seen" | grep -c .)" "12"
 tk1_miss=""
 for tk1_r in $tk1_seen; do
   case " $tk1_fall $tk1_stay " in *" $tk1_r "*) ;; *) tk1_miss="$tk1_miss $tk1_r" ;; esac

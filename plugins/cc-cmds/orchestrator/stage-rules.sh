@@ -22,6 +22,9 @@
 #   bash stage-rules.sh status [--source <file>]
 #   bash stage-rules.sh migrate --source <file> --legacy-table <tsv>
 #                               --ack-store <dir> --out <file>
+#   bash stage-rules.sh enforcement [--source <file>]
+#   bash stage-rules.sh enforcement --source <file> --notice-for -
+#                                   [--notice-line <n>]...
 #
 #   extract   With `--out-dir`, writes the block to `<dir>/<sha256>.md`, then
 #             publishes the pointer `<dir>/current` with `mv -n` (an existing
@@ -44,6 +47,64 @@
 #             source is never written, and an `--out` that is the source
 #             itself is refused. Refused while `CC_PIPELINE_RUN_ID` is set:
 #             the disposition is the person's.
+#   enforcement
+#             Pairs every top-level bullet with the enforcement means its
+#             markers name (below) and prints the table: a verdict per bullet,
+#             the prose-only bullets, the uncovered paths of the partial ones
+#             and every dead means. The source defaults to the global
+#             instruction file. Read-only: a marker is the person's to write.
+#             With `--notice-for -` it prints only the target bullets (the
+#             notice table below) among the bullets this edit touched: a bullet
+#             whose first line or marker line equals, byte for byte, a line read
+#             from standard input, and a bullet holding a source line given by
+#             `--notice-line` (the edit hook passes the lines of a deleted
+#             marker that way), each once, in source order. Runs under
+#             `CC_PIPELINE_RUN_ID` as well; prose bullets never make it fail.
+#
+# Marker grammar. A marker is a continuation line of a top-level bullet whose
+# content, leading spaces and tabs removed, starts with `강제:` or `산문:`; the
+# blank after the colon is optional, and a sub-bullet line is never one (a
+# marker indented under a sub-bullet still belongs to the top-level bullet).
+#   강제: <kind> <location>[#<anchor>][ @무인|@대화형][; ...]
+#   산문: <reason>
+# Items are split at `;` and trimmed; the items of every `강제:` line add up.
+# The kind is one of 훅 게이트 린트 시험 구조. The location starts with
+# `plugin:` (the plugin root, the parent of this script's directory with links
+# resolved; a `..` component is malformed), `config:` (`${CLAUDE_CONFIG_DIR:-
+# $HOME/.claude}`), `~/` (`HOME`; malformed when `HOME` is empty) or `/`. The
+# anchor runs from the first `#` and is looked up as a fixed string. An empty
+# item, a `강제:` line with no item, an unknown kind, a missing location, an
+# unknown prefix, an empty anchor, an unknown or second path mark and any word
+# left over make the item malformed. A `산문:` line with a blank reason is no
+# marker; with several, the first reason counts.
+#
+# Verdict. An item is dead when it is malformed, when its file is not a
+# readable file (`missing file`) or when its anchor is not in that file
+# (`anchor not found`). A live item covers the path its mark names; with no
+# mark a 게이트 item covers 무인 and every other kind covers both. A bullet
+# needs 대화형 and 무인 when the source is another file than the default
+# (`scope: other`) or when it is tagged `[무인]`; any other bullet of the
+# default source needs 대화형 alone. All needed paths covered — enforced; some
+# — partial (`partial, uncovered <paths>`); none — prose, read as
+# `uncovered <paths>` when a live item exists, else `means lost` when an item
+# exists, else `marked prose: <reason>`, else `no marker`. Paths are listed
+# 대화형 first, joined by `,`.
+#
+# Notice table. A target is an enforced bullet with a dead item (the reason is
+# `dead <item> <reason>` per dead item, joined by `; `), and a partial or
+# prose bullet that has no `산문:` marker or has a dead item (the prose-only
+# reason, then `; dead <item> <reason>` per dead item).
+#
+# Enforcement output:
+#   source: <path>[ (absent, read as empty)]
+#   scope: <user|other>
+#   rules: total=<n> enforced=<n> partial=<n> prose=<n>
+#   line <n><TAB><verdict><TAB><first 40 chars><TAB><live items joined by `; `, or ->
+#   prose-only:   then `  line <n><TAB><first 40><TAB><reason>` per bullet
+#   partial gaps: then `  line <n><TAB><first 40><TAB>covered <p> by <items>; uncovered <p>[ — <prose reason>]`
+#   dead means:   then `  line <n><TAB><item><TAB><reason>` per dead item
+# An empty group is the line `  (none)`. A notice line is
+# `line <n><TAB><first 40 chars><TAB><reason>`.
 #
 # Tag grammar. A top-level bullet is a line starting `- ` at column 0 together
 # with every following line up to the next such line, the end of the file, or
@@ -60,7 +121,7 @@
 # the gate itself writes `failed rc=<n>` when this script does not succeed.
 #
 # Exit codes: 0 — done; 2 — usage error, an unreadable input, or `migrate`
-# refused under a run.
+# refused under a run. An absent source reads as empty and exits 0.
 #
 # Compatibility: bash 3.2, no python, no perl. `LC_ALL=C` so that every byte
 # count is a byte count.
@@ -395,11 +456,295 @@ cmd_migrate() {
   printf 'proposal: %s (the source is unchanged)\n' "$out"
 }
 
-[ $# -ge 1 ] || die_usage "usage: stage-rules.sh extract|status|migrate ..."
+# ---------- enforcement ----------------------------------------------------------
+
+SPTAB=$' \t'
+NL=$'\n'
+
+# trim <text> — sets T to the text without leading and trailing spaces and tabs.
+trim() {
+  T="$1"
+  T="${T#"${T%%[!$SPTAB]*}"}"
+  T="${T%"${T##*[!$SPTAB]}"}"
+}
+
+# enf_markers <k> — reads the marker lines of bullet k: every line after the
+# first whose content, leading spaces and tabs removed, starts with `강제:` or
+# `산문:`. Sub-bullet lines never start that way, so a sub-bullet is never a
+# marker, and a marker line indented under a sub-bullet belongs to the
+# top-level bullet like every other continuation line.
+#   M_ITEMS[]  every `강제:` item, trimmed, in marker order
+#   M_HASP     1 when a `산문:` line with a reason exists; M_PROSE its reason
+#   M_LINES    every marker line as written, each ending in a newline
+M_ITEMS=(); M_HASP=0; M_PROSE=""; M_LINES=""
+enf_markers() {
+  local rest="${B_RAW[$1]}" line body item more
+  M_ITEMS=(); M_HASP=0; M_PROSE=""; M_LINES=""
+  rest="${rest#*$NL}"
+  while [ -n "$rest" ]; do
+    line="${rest%%$NL*}"
+    rest="${rest#*$NL}"
+    trim "$line"
+    case "$T" in
+      "강제:"*)
+        M_LINES="$M_LINES$line$NL"
+        trim "${T#강제:}"
+        body="$T"
+        # A `강제:` line with no item is one malformed item.
+        while :; do
+          case "$body" in
+            *";"*) item="${body%%;*}"; body="${body#*;}"; more=1 ;;
+            *) item="$body"; more=0 ;;
+          esac
+          trim "$item"
+          M_ITEMS[${#M_ITEMS[@]}]="$T"
+          [ "$more" = 1 ] || break
+        done ;;
+      "산문:"*)
+        trim "${T#산문:}"
+        # A reason that is empty or blank leaves the line no marker at all.
+        [ -n "$T" ] || continue
+        M_LINES="$M_LINES$line$NL"
+        if [ "$M_HASP" = 0 ]; then M_HASP=1; M_PROSE="$T"; fi ;;
+    esac
+  done
+}
+
+# enf_item <item> — sets I_STATE (live, malformed, missing file or anchor not
+# found) and I_COVER, the paths a live item covers: 1 interactive, 2
+# unattended, 3 both.
+I_STATE=""; I_COVER=0
+enf_item() {
+  local it="$1" kind w mark loc anchor="" has_anchor=0 path rel
+  local IFS="$SPTAB"
+  I_STATE=malformed; I_COVER=0
+  [ -n "$it" ] || return 0
+  set -f
+  # shellcheck disable=SC2086
+  set -- $it
+  set +f
+  [ $# -ge 2 ] && [ $# -le 3 ] || return 0
+  kind="$1"; w="$2"; mark="${3:-}"
+  case "$kind" in 훅|게이트|린트|시험|구조) ;; *) return 0 ;; esac
+  case "$mark" in ''|@무인|@대화형) ;; *) return 0 ;; esac
+  case "$w" in
+    *'#'*) loc="${w%%#*}"; anchor="${w#*#}"; has_anchor=1; [ -n "$anchor" ] || return 0 ;;
+    *) loc="$w" ;;
+  esac
+  case "$loc" in
+    plugin:*)
+      rel="${loc#plugin:}"
+      case "/$rel/" in */../*) return 0 ;; esac
+      path="$ENF_PLUGIN_ROOT/$rel" ;;
+    config:*) path="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/${loc#config:}" ;;
+    '~/'*)
+      [ -n "${HOME:-}" ] || return 0
+      path="$HOME/${loc#'~/'}" ;;
+    /*) path="$loc" ;;
+    *) return 0 ;;
+  esac
+  if [ ! -f "$path" ] || [ ! -r "$path" ]; then I_STATE='missing file'; return 0; fi
+  if [ "$has_anchor" = 1 ] && ! grep -q -F -e "$anchor" "$path" 2>/dev/null; then
+    I_STATE='anchor not found'; return 0
+  fi
+  I_STATE=live
+  case "$mark" in
+    @무인) I_COVER=2 ;;
+    @대화형) I_COVER=1 ;;
+    *) case "$kind" in 게이트) I_COVER=2 ;; *) I_COVER=3 ;; esac ;;
+  esac
+}
+
+# path_names <bits> — sets PN to the path names, interactive first.
+path_names() {
+  case "$1" in 1) PN='대화형' ;; 2) PN='무인' ;; *) PN='대화형,무인' ;; esac
+}
+
+# enf_eval <k> — judges bullet k against the closed tables of the header.
+#   E_VERDICT  enforced, partial or prose
+#   E_REASON   the `prose-only:` reason, empty for an enforced bullet
+#   E_GAP      the `partial gaps:` text, empty unless partial
+#   E_LIVE     the live items joined with `; `, or `-`
+#   E_DEADS    one `<item><TAB><reason>` line per dead item
+#   E_TARGET   1 when the notice table makes the bullet a target; E_NOTICE its reason
+E_VERDICT=""; E_REASON=""; E_GAP=""; E_LIVE=""; E_DEADS=""; E_TARGET=0; E_NOTICE=""
+enf_eval() {
+  local k="$1" i=0 need cov=0 live=0 unc both by="" dead="" ndead=0
+  local -a covers
+  enf_markers "$k"
+  E_VERDICT=""; E_REASON=""; E_GAP=""; E_LIVE=""; E_DEADS=""; E_TARGET=0; E_NOTICE=""
+  covers=()
+  while [ "$i" -lt "${#M_ITEMS[@]}" ]; do
+    enf_item "${M_ITEMS[$i]}"
+    covers[$i]=0
+    if [ "$I_STATE" = live ]; then
+      live=1
+      covers[$i]=$I_COVER
+      cov=$((cov | I_COVER))
+      E_LIVE="${E_LIVE:+$E_LIVE; }${M_ITEMS[$i]}"
+    else
+      ndead=$((ndead + 1))
+      E_DEADS="$E_DEADS${M_ITEMS[$i]}	$I_STATE$NL"
+      dead="$dead; dead ${M_ITEMS[$i]} $I_STATE"
+    fi
+    i=$((i + 1))
+  done
+  [ -n "$E_LIVE" ] || E_LIVE='-'
+  if [ "$ENF_SCOPE" = user ] && [ "${B_TAG[$k]}" != u ]; then need=1; else need=3; fi
+  unc=$((need & ~cov & 3))
+  both=$((need & cov))
+  if [ "$unc" = 0 ]; then
+    E_VERDICT=enforced
+  elif [ "$both" != 0 ]; then
+    E_VERDICT=partial
+    path_names "$unc"
+    E_REASON="partial, uncovered $PN"
+    i=0
+    while [ "$i" -lt "${#M_ITEMS[@]}" ]; do
+      if [ $(( ${covers[$i]} & both )) != 0 ]; then by="${by:+$by, }${M_ITEMS[$i]}"; fi
+      i=$((i + 1))
+    done
+    path_names "$both"
+    E_GAP="covered $PN by $by; "
+    path_names "$unc"
+    E_GAP="${E_GAP}uncovered $PN"
+    if [ "$M_HASP" = 1 ]; then E_GAP="$E_GAP — $M_PROSE"; fi
+  else
+    E_VERDICT=prose
+    if [ "$live" = 1 ]; then
+      path_names "$need"
+      E_REASON="uncovered $PN"
+    elif [ "${#M_ITEMS[@]}" -gt 0 ]; then
+      E_REASON='means lost'
+    elif [ "$M_HASP" = 1 ]; then
+      E_REASON="marked prose: $M_PROSE"
+    else
+      E_REASON='no marker'
+    fi
+  fi
+  if [ "$E_VERDICT" = enforced ]; then
+    if [ "$ndead" -gt 0 ]; then E_TARGET=1; E_NOTICE="${dead#; }"; fi
+  elif [ "$M_HASP" = 0 ] || [ "$ndead" -gt 0 ]; then
+    E_TARGET=1; E_NOTICE="$E_REASON$dead"
+  fi
+}
+
+# bullet_end <k> — sets BE to the last source line of bullet k: its first line
+# and every continuation and sub-bullet line `parse` gave it.
+bullet_end() {
+  local nls="${B_RAW[$1]//[!$NL]/}"
+  BE=$(( ${B_LINE[$1]} + ${#nls} - 1 ))
+}
+
+cmd_enforcement() {
+  local source="" notice=0 def k sel input first rest line v
+  local enforced=0 partial=0 prose=0 rows="" onlys="" gaps="" deads="" p40 d
+  local -a nlines
+  nlines=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --source) [ $# -ge 2 ] || die_usage "--source needs a file"; source="$2"; shift 2 ;;
+      --notice-for)
+        [ $# -ge 2 ] && [ "$2" = - ] || die_usage "enforcement: --notice-for takes - (standard input) only"
+        notice=1; shift 2 ;;
+      --notice-line)
+        [ $# -ge 2 ] || die_usage "--notice-line needs a line number"
+        case "$2" in
+          ''|0*|*[!0-9]*) die_usage "enforcement: --notice-line takes a positive decimal line number: $2" ;;
+        esac
+        nlines[${#nlines[@]}]="$2"; shift 2 ;;
+      *) die_usage "enforcement: unknown argument: $1" ;;
+    esac
+  done
+  if [ "$notice" = 0 ] && [ "${#nlines[@]}" -gt 0 ]; then
+    die_usage "enforcement: --notice-line needs --notice-for -"
+  fi
+  def=$(default_source)
+  ENF_SCOPE=other
+  if [ -z "$source" ]; then
+    source="$def"; ENF_SCOPE=user
+  elif [ "$source" = "$def" ] || [ "$source" -ef "$def" ]; then
+    ENF_SCOPE=user
+  fi
+  if [ -e "$source" ] && [ ! -r "$source" ]; then
+    die_usage "enforcement: source not readable: $source"
+  fi
+  ENF_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || ENF_PLUGIN_ROOT=""
+  ENF_PLUGIN_ROOT="${ENF_PLUGIN_ROOT%/*}"
+  parse "$source"
+
+  if [ "$notice" = 1 ]; then
+    input="$NL$(cat)$NL"
+    k=0
+    while [ "$k" -lt "${#B_LINE[@]}" ]; do
+      enf_markers "$k"
+      sel=0
+      first="${B_RAW[$k]%%$NL*}"
+      case "$input" in *"$NL$first$NL"*) sel=1 ;; esac
+      rest="$M_LINES"
+      while [ "$sel" = 0 ] && [ -n "$rest" ]; do
+        line="${rest%%$NL*}"
+        rest="${rest#*$NL}"
+        case "$input" in *"$NL$line$NL"*) sel=1 ;; esac
+      done
+      if [ "$sel" = 0 ] && [ "${#nlines[@]}" -gt 0 ]; then
+        bullet_end "$k"
+        for v in "${nlines[@]}"; do
+          # A number this long is past any file's last line.
+          [ "${#v}" -le 9 ] || continue
+          if [ "$v" -ge "${B_LINE[$k]}" ] && [ "$v" -le "$BE" ]; then sel=1; break; fi
+        done
+      fi
+      if [ "$sel" = 1 ]; then
+        enf_eval "$k"
+        if [ "$E_TARGET" = 1 ]; then
+          printf 'line %s\t%s\t%s\n' "${B_LINE[$k]}" "$(prefix40 "${B_TEXT[$k]}")" "$E_NOTICE"
+        fi
+      fi
+      k=$((k + 1))
+    done
+    return 0
+  fi
+
+  k=0
+  while [ "$k" -lt "${#B_LINE[@]}" ]; do
+    enf_eval "$k"
+    p40=$(prefix40 "${B_TEXT[$k]}")
+    case "$E_VERDICT" in
+      enforced) enforced=$((enforced + 1)) ;;
+      partial) partial=$((partial + 1)) ;;
+      prose) prose=$((prose + 1)) ;;
+    esac
+    rows="${rows}line ${B_LINE[$k]}	${E_VERDICT}	${p40}	${E_LIVE}${NL}"
+    if [ -n "$E_REASON" ]; then onlys="${onlys}  line ${B_LINE[$k]}	${p40}	${E_REASON}${NL}"; fi
+    if [ -n "$E_GAP" ]; then gaps="${gaps}  line ${B_LINE[$k]}	${p40}	${E_GAP}${NL}"; fi
+    rest="$E_DEADS"
+    while [ -n "$rest" ]; do
+      d="${rest%%$NL*}"
+      rest="${rest#*$NL}"
+      deads="${deads}  line ${B_LINE[$k]}	$d$NL"
+    done
+    k=$((k + 1))
+  done
+  if [ -f "$source" ]; then
+    printf 'source: %s\n' "$source"
+  else
+    printf 'source: %s (absent, read as empty)\n' "$source"
+  fi
+  printf 'scope: %s\n' "$ENF_SCOPE"
+  printf 'rules: total=%s enforced=%s partial=%s prose=%s\n' "${#B_LINE[@]}" "$enforced" "$partial" "$prose"
+  printf '%s' "$rows"
+  printf 'prose-only:\n%s' "${onlys:-  (none)$NL}"
+  printf 'partial gaps:\n%s' "${gaps:-  (none)$NL}"
+  printf 'dead means:\n%s' "${deads:-  (none)$NL}"
+}
+
+[ $# -ge 1 ] || die_usage "usage: stage-rules.sh extract|status|migrate|enforcement ..."
 mode="$1"; shift
 case "$mode" in
   extract) cmd_extract "$@" ;;
   status) cmd_status "$@" ;;
   migrate) cmd_migrate "$@" ;;
-  *) die_usage "unknown mode: $mode (extract|status|migrate)" ;;
+  enforcement) cmd_enforcement "$@" ;;
+  *) die_usage "unknown mode: $mode (extract|status|migrate|enforcement)" ;;
 esac

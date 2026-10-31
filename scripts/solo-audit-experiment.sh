@@ -36,6 +36,35 @@
 # The design skill is not touched and no stage is launched outside the gate:
 # the experiment measures today's production path, nothing else.
 #
+# The clone a pair's stages work in lives under the work root with a random
+# name, and which pair it belongs to is written only in pair.state. The
+# strings this script writes into a run (the target row, the confirmation and
+# approval texts, the intent it builds, the plan's free text, the goal and its
+# clause) carry no harness or arm name and no word of the forbidden list; the
+# surface check below refuses a run that would. What the production path
+# carries itself — the original run's intent, the interview copy, the
+# document path, the enumerated plan fields — is the treatment and is not
+# checked.
+#
+# Protocol: scripts/prompt-change-protocol.md
+#   1 candidate surface  — changed: clones under the work root with random
+#                          names, neutral alias, slug, base branch and texts,
+#                          the surface check before the first act, and the
+#                          SOLO_EXP_* variables unset after they are read
+#   2 blind judge        — changed: no arm cue in the classification prompt,
+#                          the classification model fixed with --model, and
+#                          the arm words in its input counted into
+#                          classify/leak.tsv
+#   3 compliance scoring — not applicable: chain compliance is not measured,
+#                          and the reviewer count is only in the confound table
+#   4 fixed rule         — met: constants and golden tests
+#   5 noise              — recorded gap: no noise term; it goes in through the
+#                          fixed-rule procedure before a new experiment opens
+#   6 budget             — met: --budget-usd, checked before each billed step
+#
+# State opened by the layout before this one (clones under the state root,
+# alias `exp`) is not resumed by this script.
+#
 # Usage:
 #   scripts/solo-audit-experiment.sh [run] [--exp-id <id>] --budget-usd <N> [--repo <dir>]
 #   scripts/solo-audit-experiment.sh run --dry-run [--exp-id <id>] [--budget-usd <N>]
@@ -58,14 +87,19 @@
 #   SOLO_EXP_GATE         gate to open the runs with
 #                         (default <repo>/plugins/cc-cmds/orchestrator/gate.sh)
 #   SOLO_EXP_CLAUDE_BIN   CLI for the classification call (default: claude on PATH)
-#   SOLO_EXP_STATE_ROOT   clones and run state
+#   SOLO_EXP_STATE_ROOT   run state
 #                         (default ${HOME}/.local/state/cc-cmds/solo-audit-exp)
+#   SOLO_EXP_WORK_ROOT    the clones, each under a random name
+#                         (default ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/work)
+#   Every SOLO_EXP_* variable is read at start and then unset, so no stage
+#   process inherits one.
 #   CC_CMDS_AUTOPILOT_AUTO_RESOLVE  0, off, false or no keeps the seat from
 #                         answering a halt record by the fixed policy
 #
 # Exit codes:
 #   0 — a verdict was written (`판정 불가` included), or a dry run finished
-#   1 — failure
+#   1 — failure, a hit of the surface check included (the word and where it
+#       stands are printed)
 #   2 — usage error
 #   4 — budget guard: the next billed step would exceed --budget-usd; the
 #       slots not finished are invalid and a verdict was written. The same
@@ -86,11 +120,21 @@ RESERVE_CLASSIFY=3
 CLASSIFY_BUDGET=3
 DEADLINE_SECONDS=14400
 SEAT_MAX="${SOLO_EXP_SEAT_MAX:-500}"
-TARGET_ALIAS="exp"
+TARGET_ALIAS="work"
 # Not a repository on any remote: a router that reaches for a remote fails
 # instead of acting on the real one. The cutpoint `커밋` keeps the run from
 # pushing at all.
-TARGET_SLUG="local/solo-audit-exp"
+TARGET_SLUG="local/work"
+# The one branch a pair's clone keeps.
+BASE_BRANCH="base"
+# The value of the `**금지어**:` line of scripts/prompt-change-protocol.md,
+# byte for byte; the test compares the two.
+FORBIDDEN_WORDS="eval evaluation evaluate judge judging rubric grader grading benchmark experiment exp 실험 평가 심판 채점 루브릭"
+# The names of the arms, checked the same way, and counted in the
+# classification input.
+ARM_WORDS="solo team 단독 팀"
+# The classification model, the same for both sides of every pair.
+CLASSIFY_MODEL=opus
 
 FENCE_BEGIN='<!-- cc-design-audit-disclosure v1 begin -->'
 FENCE_END='<!-- /cc-design-audit-disclosure v1 end -->'
@@ -148,6 +192,7 @@ fi
 GATE="${SOLO_EXP_GATE:-$repo/plugins/cc-cmds/orchestrator/gate.sh}"
 CLAUDE_BIN="${SOLO_EXP_CLAUDE_BIN:-$(command -v claude || true)}"
 STATE_ROOT="${SOLO_EXP_STATE_ROOT:-$HOME/.local/state/cc-cmds/solo-audit-exp}"
+WORK_ROOT="${SOLO_EXP_WORK_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/work}"
 RUN_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
 # The driver whose check the manifests must pass: this script's own checkout,
 # which is the main repository unless --repo points elsewhere (the tests do).
@@ -159,6 +204,9 @@ SCHEMA="$script_dir/solo-audit-classify.schema.json"
 # A variable inherited from a pipeline stage would make the gate read THIS
 # shell as a seat of that run. The experiment's runs are runs of their own.
 for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+# The harness's own variables are read above; a stage process must not see
+# that a harness started it.
+for v in $(compgen -e | grep '^SOLO_EXP_' || true); do unset "$v"; done
 
 if [[ -z "$exp_id" ]]; then
   [[ "$cmd" == "run" ]] || usage "--exp-id is required"
@@ -186,6 +234,107 @@ kv_del() {
   local tmp="$1.tmp.$$"
   awk -F'\t' -v k="$2" '$1 != k' "$1" > "$tmp"
   mv "$tmp" "$1"
+}
+
+# ---------- the candidate surface --------------------------------------------
+
+# phys <dir> — the physical path of a directory that exists, else the path.
+phys() { if [[ -d "$1" ]]; then (cd "$1" && pwd -P); else printf '%s' "$1"; fi; }
+
+# new_work_dir — a path under the work root that does not exist yet, named by
+# twelve random hex digits. Which pair it serves is written only in state.
+new_work_dir() {
+  local root d
+  mkdir -p "$WORK_ROOT"
+  root=$(phys "$WORK_ROOT")
+  while :; do
+    d="$root/$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+    [[ -e "$d" ]] || break
+  done
+  printf '%s' "$d"
+}
+
+# rm_recorded <path> — remove a clone a state file names, only when it lies
+# under the work root or the state root; any other path is left and named.
+rm_recorded() {
+  local p="$1" w s
+  [[ -n "$p" && -e "$p" ]] || return 0
+  w=$(phys "$WORK_ROOT"); s=$(phys "$STATE_ROOT")
+  case "$p" in
+    */../*|*/..) ;;
+    "$w"/?*|"$s"/?*) rm -rf "$p"; return 0 ;;
+  esac
+  echo "solo-audit-experiment: not removing $p — it is outside the work root and the state root" >&2
+}
+
+# undoc <text> <doc> — the text with every occurrence of the document path
+# replaced by <DOC>: the path is what the run designs and audits, not a
+# string this script chose.
+undoc() {
+  [[ -n "$2" ]] || { printf '%s\n' "$1"; return 0; }
+  printf '%s\n' "$1" | awk -v d="$2" '{ s = $0; o = ""; while ((i = index(s, d)) > 0) { o = o substr(s, 1, i - 1) "<DOC>"; s = substr(s, i + length(d)) } print o s }'
+}
+
+# words_in <text> <words> — every word of the list the text holds, one per
+# line. A word of letters, digits and `_` matches in any case between
+# characters outside [A-Za-z0-9_]; any other word matches as a substring.
+words_in() {
+  local w
+  for w in $2; do
+    if [[ "$w" =~ ^[A-Za-z0-9_]+$ ]]; then
+      printf '%s\n' "$1" | LC_ALL=C grep -qiE "(^|[^A-Za-z0-9_])${w}([^A-Za-z0-9_]|\$)" && printf '%s\n' "$w"
+    else
+      printf '%s\n' "$1" | LC_ALL=C grep -qF -- "$w" && printf '%s\n' "$w"
+    fi
+  done
+  return 0
+}
+
+# word_count <text> <word> — how many times the word stands in the text,
+# matched as words_in matches it.
+word_count() {
+  if [[ "$2" =~ ^[A-Za-z0-9_]+$ ]]; then
+    printf '%s\n' "$1" | LC_ALL=C awk -v w="$2" '
+      { s = tolower($0); n = length(w)
+        for (i = 1; i + n - 1 <= length(s); i++)
+          if (substr(s, i, n) == w && (i == 1 || substr(s, i - 1, 1) !~ /[a-z0-9_]/) && (i + n > length(s) || substr(s, i + n, 1) !~ /[a-z0-9_]/)) c++ }
+      END { print c + 0 }'
+  else
+    printf '%s\n' "$1" | LC_ALL=C awk -v w="$2" '{ s = $0; while ((i = index(s, w)) > 0) { c++; s = substr(s, i + length(w)) } } END { print c + 0 }'
+  fi
+}
+
+# surface_hit <where> <text> — end the call with 1 when the text holds a
+# forbidden word or an arm name, naming each word and where it stands. Every
+# string checked here is one this script wrote, so a hit is a defect of the
+# script and stopping loses no sample.
+surface_hit() {
+  local hits w
+  hits=$(words_in "$2" "$FORBIDDEN_WORDS $ARM_WORDS")
+  [[ -n "$hits" ]] || return 0
+  while IFS= read -r w; do
+    echo "solo-audit-experiment: surface check: '${w}' in ${1}" >&2
+  done <<< "$hits"
+  exit 1
+}
+
+# surface_check_run <manifest> <grant> <owner-doc> <intent: check|skip> — the
+# strings of one run a stage reads that this script wrote: the target row,
+# the texts of the manifest and the grant, the intent when this script built
+# it, and the plan's free text.
+surface_check_run() {
+  local m="$1" g="$2" doc="$3" line f
+  surface_hit "the target row of $m" "$(undoc "$(grep -m 1 -E '^- `target` ' "$m")" "$doc")"
+  for f in "$m" "$g"; do
+    while IFS= read -r line; do
+      surface_hit "$f: ${line%%:*}" "$(undoc "$line" "$doc")"
+    done < <(grep -E '^(\*\*(사용자 확인 문면|승인 문면|종료 지점|보고서)\*\*: |- `종료 절` )' "$f" || true)
+  done
+  if [[ "$4" == "check" ]]; then
+    surface_hit "the intent of $m" "$(undoc "$(awk '/^## 의도$/ { on = 1; next } on && /^## / { exit } on' "$m")" "$doc")"
+  fi
+  surface_hit "the plan's free text in $m" "$(undoc "$(awk '/^```json$/ { on = 1; next } on && /^```$/ { exit } on' "$m" \
+    | jq -r '[.entry_rationale, .design_rationale, .design_tier_rationale, .design_scope_rationale, .work_class_rationale, .notes, (.targets[]?.why), (.steps[]?.summary)] | .[] | strings')" "$doc")"
 }
 
 # fence_get <report> <slot key> — one slot of the v1 disclosure block, read
@@ -593,52 +742,56 @@ write_run_files() {
   slug=$(doc_slug "$doc")
   m="$clone/docs/pipeline-run/$rid.plan.md"
   g="$clone/docs/pipeline-grant/$rid.md"
-  local now dl docsha confirm intent plan preauth=""
+  local now dl docsha confirm intent plan preauth="" intent_check=check
   now=$(now_iso)
   dl=$(epoch_iso $(( $(date -u +%s) + DEADLINE_SECONDS )))
-  confirm="solo-audit-experiment ${exp_id} 짝 ${n} — 실행 스크립트가 연 실험 런"
+  # A stage reads every text below: none this script builds names the
+  # harness, the pair, an arm or a word of the forbidden list
+  # (surface_check_run). The original run's intent is carried as it is.
+  confirm="실행 스크립트가 연 런"
   if [[ "$kind" == "design" ]]; then
     anchor_kind="intent"; anchor_key="$slug"
-    goal="단독 설계 스테이지가 ${doc} 를 동결한다"
+    goal="설계 스테이지가 ${doc} 를 동결한다"
     clause="설계 문서가 동결됐다"
     docsha="(해당 없음)"
     intent=$(intent_text "$repo/docs/pipeline-run/$orig.plan.md")
-    [[ -n "$intent" ]] || intent="원 런 ${orig} 의 동결 인터뷰 기록으로 ${doc} 를 단독 설계한다"
+    if [[ -n "$intent" ]]; then intent_check=skip
+    else intent="원 런 ${orig} 의 동결 인터뷰 기록으로 ${doc} 를 설계한다"; fi
     local icopy="docs/pipeline-run/$rid.interview.md"
     preauth="- \`사전 인가\` | 인터뷰 기록=${icopy} | sha256=$(sha_of "$clone/$icopy")"
-    plan=$(jq -n --arg ak "$anchor_key" --arg orig "$orig" --arg doc "$doc" --arg exp "$exp_id" --arg n "$n" \
+    plan=$(jq -n --arg ak "$anchor_key" --arg orig "$orig" --arg doc "$doc" \
       --arg alias "$TARGET_ALIAS" --arg slug "$TARGET_SLUG" '{
         anchor_kind: "intent", anchor_key: $ak, entry_skill: "design",
-        entry_rationale: ("단독 설계 감사 실험 " + $exp + " 짝 " + $n + " — 원 런 " + $orig + " 의 동결 인터뷰 기록으로 " + $doc + " 를 단독 설계한다."),
+        entry_rationale: ("원 런 " + $orig + " 의 동결 인터뷰 기록으로 " + $doc + " 를 설계한다."),
         design_required: true,
-        design_rationale: "실험 프로토콜이 같은 인터뷰 기록의 단독 설계를 요구한다.",
+        design_rationale: "동결 인터뷰 기록이 있어 설계부터 돈다.",
         design_tier: "solo", design_tier_judged: "solo", design_heavy_reasons: [], estimated_files: 0,
-        design_tier_rationale: "실험 프로토콜이 단독 설계 스테이지를 고정한다.",
+        design_tier_rationale: "고정 계획이 설계 스테이지를 정한다.",
         design_scope: "single", design_scope_rationale: "원 설계와 같은 단일 문서다.",
         work_class: "unknown", work_class_rationale: "설계까지만 돈다.",
-        targets: [{alias: $alias, remote_slug: $slug, home: true, why: "기준 커밋에서 만든 실험 클론"}],
-        steps: [{id: "D1", skill: "design", summary: "원 인터뷰 기록으로 단독 설계", depends_on: []}],
-        unresolved: [], notes: "solo-audit-experiment 가 쓴 실험 런 매니페스트"
+        targets: [{alias: $alias, remote_slug: $slug, home: true, why: "기준 커밋에서 만든 클론"}],
+        steps: [{id: "D1", skill: "design", summary: "원 인터뷰 기록으로 설계", depends_on: []}],
+        unresolved: [], notes: "실행 스크립트가 쓴 런 매니페스트"
       }')
   else
     anchor_kind="doc"; anchor_key="$doc"
     goal="설계 감사가 ${doc} 의 보고서를 공시 블록과 함께 남긴다"
     clause="감사 보고서가 공시 블록과 함께 남았다"
     if [[ -f "$clone/$doc" ]]; then docsha=$(sha_of "$clone/$doc"); else docsha="(해당 없음)"; fi
-    intent="동결된 ${doc} 를 설계 감사한다 (solo-audit-experiment ${exp_id} 짝 ${n})"
-    plan=$(jq -n --arg ak "$anchor_key" --arg doc "$doc" --arg exp "$exp_id" --arg n "$n" \
+    intent="동결된 ${doc} 를 설계 감사한다"
+    plan=$(jq -n --arg ak "$anchor_key" --arg doc "$doc" \
       --arg alias "$TARGET_ALIAS" --arg slug "$TARGET_SLUG" '{
         anchor_kind: "doc", anchor_key: $ak, entry_skill: "design-audit",
-        entry_rationale: ("단독 설계 감사 실험 " + $exp + " 짝 " + $n + " — 동결된 " + $doc + " 를 감사한다."),
+        entry_rationale: ("동결된 " + $doc + " 를 감사한다."),
         design_required: false,
-        design_rationale: "문서는 앞선 실험 런이 동결했다.",
+        design_rationale: "문서는 앞선 런이 동결했다.",
         design_tier: "solo", design_tier_judged: "solo", design_heavy_reasons: [], estimated_files: 0,
         design_tier_rationale: "설계 스텝이 없다.",
         design_scope: "single", design_scope_rationale: "단일 문서다.",
         work_class: "unknown", work_class_rationale: "감사까지만 돈다.",
-        targets: [{alias: $alias, remote_slug: $slug, home: true, why: "기준 커밋에서 만든 실험 클론"}],
+        targets: [{alias: $alias, remote_slug: $slug, home: true, why: "기준 커밋에서 만든 클론"}],
         steps: [{id: "A1", skill: "design-audit", summary: "동결 문서 감사", depends_on: []}],
-        unresolved: [], notes: "solo-audit-experiment 가 쓴 실험 런 매니페스트"
+        unresolved: [], notes: "실행 스크립트가 쓴 런 매니페스트"
       }')
   fi
   local cg
@@ -654,11 +807,11 @@ write_run_files() {
       "$now" "$rid" "$anchor_kind" "$anchor_key" "$confirm"
     printf '## 의도\n```text\n%s\n```\n\n' "$intent"
     printf '## 대상\n**대상 맵 다이제스트**: @TMD@\n'
-    printf -- '- `target` | 별칭=%s | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=exp-base | 홈=예 | 원격 슬러그=%s | 절단점=커밋 | 말단 행위 상한=없음\n\n' \
-      "$TARGET_ALIAS" "$clone" "$cg" "$TARGET_SLUG"
+    printf -- '- `target` | 별칭=%s | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=%s | 홈=예 | 원격 슬러그=%s | 절단점=커밋 | 말단 행위 상한=없음\n\n' \
+      "$TARGET_ALIAS" "$clone" "$cg" "$BASE_BRANCH" "$TARGET_SLUG"
     printf '## 요소\n**설계 문서**: %s\n**설계 문서 전체 sha256**: %s\n**리뷰 대상**: (없음)\n**적용 지점**: (없음)\n**적용 프로브**: (없음)\n**적용 주체**: (해당 없음)\n\n' \
       "$doc" "$docsha"
-    printf '## 실행 계획\n**승인 문면**: solo-audit-experiment 고정 계획\n```json\n%s\n```\n\n' "$plan"
+    printf '## 실행 계획\n**승인 문면**: 고정 계획\n```json\n%s\n```\n\n' "$plan"
     printf '## 인가\n**구속 다이제스트**: @BD@\n**런 최대 절단점**: 커밋\n**종료 지점**: %s\n**벽시계 마감**: %s\n' "$goal" "$dl"
     printf '**비용 천장**: 없음\n**무진전 상한**: 없음\n**시각 정합 마커**: 없음\n**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
     printf -- '- `종료 절` | id=C1 | 문면=%s\n' "$clause"
@@ -679,6 +832,7 @@ write_run_files() {
     cat "$ps/check-$kind.log" >&2
     die "pair ${n}: the ${kind} manifest fails check_manifest — $m"
   fi
+  surface_check_run "$m" "$g" "$doc" "$intent_check"
   kv_set "$ps/pair.state" "${kind}_manifest" "$m"
 }
 
@@ -695,18 +849,22 @@ prepare_pair() {
   orig=$(printf '%s' "$row" | cut -f5); base=$(printf '%s' "$row" | cut -f6)
   ipath=$(grep -m 1 -E '^- `사전 인가` \| 인터뷰 기록=' "$repo/docs/pipeline-run/$orig.plan.md" \
     | tr '|' '\n' | sed -n 's/^ *인터뷰 기록=//p' | sed 's/[[:space:]]*$//')
+  rm_recorded "$(kv "$ps/pair.state" clone)"
   rm -rf "$ps"
   mkdir -p "$ps"
-  git clone --quiet --no-hardlinks "$repo" "$ps/clone" || die "pair ${n}: clone failed"
-  clone=$(cd "$ps/clone" && pwd -P)
-  ( cd "$clone" && git checkout --quiet -b exp-base "$base" ) || die "pair ${n}: checkout of $base failed"
+  # The clone the pair's stages work in: a random name under the work root,
+  # its pair written only in pair.state.
+  clone=$(new_work_dir)
+  kv_set "$ps/pair.state" clone "$clone"
+  git clone --quiet --no-hardlinks "$repo" "$clone" || die "pair ${n}: clone failed"
+  ( cd "$clone" && git checkout --quiet -b "$BASE_BRANCH" "$base" ) || die "pair ${n}: checkout of $base failed"
   # Nothing past the base commit stays in the clone: the stages' worktrees
   # share its refs, and git history is a leak the contamination check cannot
-  # see. Only exp-base is left, with no remote, and the rest is pruned.
+  # see. Only the base branch is left, with no remote, and the rest is pruned.
   ( cd "$clone" \
     && git remote remove origin \
     && git for-each-ref --format='%(refname)' | while IFS= read -r r; do
-         [[ "$r" == "refs/heads/exp-base" ]] || git update-ref -d "$r" || exit 1
+         [[ "$r" == "refs/heads/${BASE_BRANCH}" ]] || git update-ref -d "$r" || exit 1
        done \
     && git reflog expire --expire=now --all \
     && git gc --quiet --prune=now ) || die "pair ${n}: removing history past $base from the clone failed"
@@ -715,7 +873,6 @@ prepare_pair() {
   while [[ "$arid" == "$drid" ]]; do arid=$(gen_run_id); done
   printf '%s\n%s\n' "$drid" "$arid" >> "$ST/runs.list"
   kv_set "$ps/pair.state" sample "$sample"
-  kv_set "$ps/pair.state" clone "$clone"
   kv_set "$ps/pair.state" doc "$owner"
   kv_set "$ps/pair.state" team_report "$name"
   kv_set "$ps/pair.state" orig_run "$orig"
@@ -787,7 +944,7 @@ halt_policy() {
   done <<'EOF'
 design-audit-unattended	^Step 6.*CFI-3b	record in the unresolved-issues section	합성 질문을 미해결 이슈로 적으면 재수렴도 새 감사도 부르지 않아 첫 감사가 그대로다
 design-audit-unattended	^Step 7 / 골격급 재발	미해결 이슈로 두고 계속	골격급 재발은 재감사에서만 나고 이 답은 재수렴을 부르지 않는다
-design-solo-unattended	^Step 7U / ladder-unsettled	잔여로 두고 동결	단독 설계가 쓴 문서를 그대로 동결한다
+design-solo-unattended	^Step 7U / ladder-unsettled	잔여로 두고 동결	설계가 쓴 문서를 그대로 동결한다
 EOF
 }
 
@@ -867,7 +1024,7 @@ seat_answer_halts() {
         label="${pol%%	*}"; why="${pol#*	}"
         {
           printf '# 정책 답 — %s\n\n' "$(basename "$f")"
-          printf '실험 고정 정책 표의 줄을 적용했다. 사람이 이 기록을 읽고 답한 것이 아니다.\n\n'
+          printf '고정 정책 표의 줄을 적용했다. 사람이 이 기록을 읽고 답한 것이 아니다.\n\n'
           printf -- '- 스킬: %s\n' "$(bold_field "$f" '스킬')"
           printf -- '- 스텝: %s\n' "$(bold_field "$f" '스텝')"
           printf -- '- 라벨: %s\n' "$label"
@@ -875,7 +1032,7 @@ seat_answer_halts() {
           printf '\n되돌리는 법: 같은 기록에 다른 선택지로 다시 답하거나, 그 짝을 --rerun-pair 로 처음부터 다시 돌린다.\n'
         } > "$ans"
         halt_answer_act "$m" "$clone" "$key" "$log" \
-          "중단 기록=${f}" "선택지=${label}" "답한 주체=사람" "근거=실험 고정 정책 — ${why}; 사람이 이 기록을 읽고 답한 것이 아니다" "첨부=${ans}" || rc=$?
+          "중단 기록=${f}" "선택지=${label}" "답한 주체=사람" "근거=고정 정책 — ${why}; 사람이 이 기록을 읽고 답한 것이 아니다" "첨부=${ans}" || rc=$?
         if [[ "$rc" == "0" ]]; then
           got=0; echo "seat: answered $f by the fixed policy with ${label}" >> "$log"; continue
         fi
@@ -1153,6 +1310,29 @@ crosscheck() {
   return 0
 }
 
+# leak_disclose <label> <input> — count the arm words the classification
+# input carries in the report's own text. Nothing is removed: the judge reads
+# what the audit wrote. Each word found gets a row of classify/leak.tsv
+# (label, word, count), replacing the label's earlier rows, and one line is
+# printed. The pair stays valid and the verdict does not read the file.
+leak_disclose() {
+  local label="$1" input="$2" lt="$EXP/classify/leak.tsv" w c rows="" said=""
+  for w in $ARM_WORDS; do
+    c=$(word_count "$input" "$w")
+    (( c > 0 )) || continue
+    rows="${rows}${label}	${w}	${c}
+"
+    said="${said:+${said}, }${w} ${c}"
+  done
+  if [[ -f "$lt" ]]; then
+    awk -F'\t' -v l="$label" 'NR == 1 || $1 != l' "$lt" > "$lt.tmp" && mv "$lt.tmp" "$lt"
+  fi
+  [[ -n "$rows" ]] || return 0
+  [[ -f "$lt" ]] || printf '표지\t단어\t횟수\n' > "$lt"
+  printf '%s' "$rows" >> "$lt"
+  say "classification input ${label} carries arm words (${said}); recorded in $lt"
+}
+
 classify_report() {
   local n="$1" side="$2" pt="$EXP/pairs/$1/pair.tsv" rep label raw out clone why
   rep=$(kv "$pt" "${side}_report"); label=$(kv "$pt" "${side}_label")
@@ -1164,11 +1344,12 @@ classify_report() {
     guard "$RESERVE_CLASSIFY" "the classification of report ${label}"
     local input
     input=$(classify_input "$rep" "$clone")
+    leak_disclose "$label" "$input"
     if [[ -f "$raw" ]]; then mv "$raw" "$EXP/classify/$label.$(date -u +%s).raw.json"; fi
     ( cd "$EXP/classify" && "$CLAUDE_BIN" -p "$(cat "$PROMPT")
 
 --- INPUT ---
-${input}" --json-schema "$(cat "$SCHEMA")" --output-format json --strict-mcp-config --tools "" \
+${input}" --model "$CLASSIFY_MODEL" --json-schema "$(cat "$SCHEMA")" --output-format json --strict-mcp-config --tools "" \
         --no-session-persistence --max-budget-usd "$CLASSIFY_BUDGET" ) > "$raw" 2>"$EXP/classify/$label.stderr" \
       || die "pair ${n}: the classification call for ${label} failed; see $EXP/classify/$label.stderr"
     if [[ "$(jq -r '.subtype // empty' "$raw" 2>/dev/null)" != "success" ]] \
@@ -1208,19 +1389,24 @@ classify_pair() {
 
 # ---------- slots and reserves -----------------------------------------------
 
-# drop_review_rows <label> — remove one report's rows from review.tsv.
+# drop_review_rows <label> — remove one report's rows from review.tsv and
+# from leak.tsv.
 drop_review_rows() {
-  local rv="$EXP/classify/review.tsv"
-  [[ -n "$1" && -f "$rv" ]] || return 0
-  awk -F'\t' -v l="$1" 'NR == 1 || $1 != l' "$rv" > "$rv.tmp"
-  mv "$rv.tmp" "$rv"
+  local f
+  [[ -n "$1" ]] || return 0
+  for f in "$EXP/classify/review.tsv" "$EXP/classify/leak.tsv"; do
+    [[ -f "$f" ]] || continue
+    awk -F'\t' -v l="$1" 'NR == 1 || $1 != l' "$f" > "$f.tmp"
+    mv "$f.tmp" "$f"
+  done
 }
 
 # replace_slot <n> — move slot n's invalid attempt aside to pair-<n>.try<k>,
 # log it in pairs/<n>/attempts.tsv (attempt, sample, owner-doc, invalid
 # reason, kept path) and prepare the next reserve of the slot's bin. With no
 # reserve left the invalid reason gains ` — 예비 소진`, the slot is final, and
-# it returns 1.
+# it returns 1. The attempt's clone stays under the work root, named by the
+# pair.state kept with it.
 replace_slot() {
   local n="$1" ps="$ST/pair-$1" pd="$EXP/pairs/$1" cur next k why doc try=1 l
   cur=$(kv "$ps/pair.state" sample)
@@ -1293,6 +1479,7 @@ rerun_pair() {
   local d
   for d in "$ST/pair-$n" "$ST/pair-$n".try*; do
     [[ -e "$d" ]] || continue
+    rm_recorded "$(kv "$d/pair.state" clone)"
     case "$d" in "$STATE_ROOT"/*) rm -rf "$d" ;; esac
   done
   case "$EXP/pairs/$n" in "$repo/docs/solo-audit-experiment/"*) rm -rf "$EXP/pairs/$n" ;; esac
