@@ -36651,6 +36651,154 @@ tr_launch conn /usr/bin/true
 check "34l: 사람 차례 기동 뒤의 일시 원인 재기동은 다시 탐침되어 연결 확인=1/성공 을 싣는다" \
   "$rc/$(tr_launches)/$(row_field "$(tr_last_launch)" '연결 확인')" "1/$((tr_n1 + 2))/1/성공"
 CAP_STUB="$TR_CAP_STUB_SAVE"
+
+# --- 34u. 막힌 배수 — 교대의 정지 문면이 무기록 행에 남고 좌석이 한 번 푼다 ------
+# --- section: 34u | group: cone | covers: act, snapshot, drain-release, gate_on_exit, gate_stop_record, gate_stop_clear, gate_stop_shift_file, gate_drain_stall, gate_drain_quarantine, gate_shift_trace_unrecorded | anchors: 34u: 막힌 배수에서 교대의 읽기는 1 이고 기동은 0 이다, 34u: 무기록 행이 마지막 정지 로 그 정지 문면을 싣는다, 34u: 스냅숏 handoff[] 의 마지막 항목이 마지막 정지 를 싣는다, 34u: drain_blocked 가 stall 계열로 선다, 34u: 풀기 전에는 좌석의 행위도 같은 정지로 1 이다, 34u: 스테이지 신분의 drain-release 는 3 이고 아무것도 옮기지 않는다, 34u: 교대 신분의 drain-release 는 3 이고 아무것도 옮기지 않는다, 34u: 좌석의 drain-release 는 0 이고 stall 파일을 격리한다, 34u: 그 격리는 배수 격리 행위자=좌석 행을 남긴다, 34u: 푼 뒤 좌석의 다음 행위는 0 이다, 34u: 표지 없는 drain-release 는 3 이고 아무것도 쓰지 않는다, 34u: 살아넘긴 정지는 무기록 행의 마지막 정지 로 실리지 않는다 ---
+#
+# 교대 스텁이 런 디렉터리의 `stall` 에 상한을 넘는 사유 한 줄을 쓰고 게이트 읽기를
+# 한 번 한다. 그 호출은 stall 배수에서 행 상한 초과로 `die` 하고, 교대는 인계 없이
+# 0 으로 끝난다. 게이트는 그 정지 문면을 `stop/shift-<n>` 과 막힘 표지에 남기고,
+# 실행기가 쓰는 무기록 행이 그것을 `마지막 정지` 로 싣는다. 같은 단위가 좌석의
+# 행위도 막으므로 좌석은 `drain-release` 로 그 단위를 격리하고 이어 간다. 이 절은
+# 자기 런(`R34U`)과 자기 스텁만 쓰므로 혼자 돌아도 같은 것을 단언한다.
+# ---------------------------------------------------------------------------
+DB_RID=R34U
+cap_fx_new "$DB_RID"
+DB_SEAT="34343434-9999-2222-3333-444444444444"
+cap_usage_line 10000 5000 1000 > "$NTX/$DB_SEAT.jsonl"
+DB_OUT="$WORK/db-out"; mkdir -p "$DB_OUT"
+DB_WHY=$(printf '%*s' 1100 '' | tr ' ' w)
+DB_STUB="$WORK/bin/claude-dbstub"
+cat > "$DB_STUB" <<'STUB'
+#!/usr/bin/env bash
+g="$CC_PIPELINE_GATE"; m="$CC_PIPELINE_MANIFEST"; o="$CC_TEST_DB_OUT"
+mkdir -p "$o"
+case "${CC_TEST_DB_MODE:-}" in
+  stall)
+    printf '2026-10-31T00:00:00Z\t%s\t-\n' "$CC_TEST_DB_WHY" >> "$CC_PIPELINE_RUN_DIR/stall"
+    bash "$g" exec --manifest "$m" --target infra --segment DB1 --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(bash "$g" snapshot --manifest "$m" --fields H 2>/dev/null)" \
+      --rationale "픽스처 — 막힌 배수를 만나는 교대의 읽기" -- ls "$CC_TEST_CONE_A" \
+      > "$o/rd.out" 2> "$o/rd.err"
+    printf '%s\n' "$?" > "$o/rd.rc" ;;
+  survive)
+    # 첫 읽기는 막힌 배수에서 멈추고, 원인이 치워진 뒤의 둘째 읽기는 지난다. 교대는
+    # 그 정지를 살아넘긴 뒤 인계 없이 끝난다 — 끊긴 연결로 죽은 교대의 꼴이다.
+    printf '2026-10-31T00:00:00Z\t%s\t-\n' "$CC_TEST_DB_WHY" >> "$CC_PIPELINE_RUN_DIR/stall"
+    bash "$g" exec --manifest "$m" --target infra --segment DB1 --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(bash "$g" snapshot --manifest "$m" --fields H 2>/dev/null)" \
+      --rationale "픽스처 — 막힌 배수를 만나는 교대의 읽기" -- ls "$CC_TEST_CONE_A" \
+      > "$o/rd1.out" 2> "$o/rd1.err"
+    printf '%s\n' "$?" > "$o/rd1.rc"
+    ls "$CC_PIPELINE_RUN_DIR/stop" > "$o/stop1.ls" 2>/dev/null
+    rm -f "$CC_PIPELINE_RUN_DIR/stall"
+    bash "$g" exec --manifest "$m" --target infra --segment DB1 --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(bash "$g" snapshot --manifest "$m" --fields H 2>/dev/null)" \
+      --rationale "픽스처 — 정지를 살아넘긴 교대의 읽기" -- ls "$CC_TEST_CONE_A" \
+      > "$o/rd2.out" 2> "$o/rd2.err"
+    printf '%s\n' "$?" > "$o/rd2.rc" ;;
+esac
+exit 0
+STUB
+chmod +x "$DB_STUB"
+DB_CAP_STUB_SAVE="$CAP_STUB"
+CAP_STUB="$DB_STUB"
+db_seat_act() {  # db_seat_act — 좌석의 장부 행위 하나
+  cap_gate "$DB_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra \
+    --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$DB_SEAT" '')" \
+    --rationale "픽스처 — 좌석의 장부 행위" \
+    -- 교대=0 대상=infra 사유=중단 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
+}
+db_quarantine_rows() { { cap_rows '배수 격리' | grep -c . || true; } | tr -d ' '; }
+db_q_files() { { find "$CAP_DIR/quarantine" -type f 2>/dev/null || true; } | wc -l | tr -d ' '; }
+
+cap_gate "$DB_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment DB1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$DB_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34u: 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+
+CC_TEST_DB_MODE=stall CC_TEST_DB_OUT="$DB_OUT/stall" CC_TEST_DB_WHY="$DB_WHY" CC_TEST_CONE_A="$CONE_A" \
+  cap_gate "$DB_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+    --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$DB_SEAT" '')" \
+    --rationale "픽스처 — 막힌 배수를 만나는 교대" \
+    -- 중단 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34u: 막힌 배수에서 교대의 읽기는 1 이고 기동은 0 이다" \
+  "$(cat "$DB_OUT/stall/rd.rc" 2>/dev/null)/$rc" "1/0"
+db_row=$(cap_rows 'handoff' | grep -F '| 사유=무기록 |' | tail -1)
+db_n=$(row_field "$db_row" '교대')
+db_stop=$(row_field "$db_row" '마지막 정지')
+check "34u: stop/shift-<n> 에 그 교대의 정지 문면이 한 줄 남는다" \
+  "$( { grep -c 'over the cap' "$CAP_DIR/stop/shift-$db_n" 2>/dev/null || true; } | tr -d ' ')" "1"
+db_stop_v=$db_stop
+case "$db_stop" in *'the ledger row is over the cap'*'blocked'*) db_stop_v=실림 ;; esac
+check "34u: 무기록 행이 마지막 정지 로 그 정지 문면을 싣는다" "$db_stop_v" "실림"
+check "34u: 그 무기록 행도 행 상한 안이다" \
+  "$( [ "$(printf '%s' "$db_row" | wc -c | tr -d ' ')" -le 1024 ] && printf under || printf over)" "under"
+check "34u: 스냅숏 handoff[] 의 마지막 항목이 마지막 정지 를 싣는다" \
+  "$(cap_snap "$DB_SEAT" '' | jq -r '.handoff | last | .["마지막 정지"] // "" | test("over the cap")')" "true"
+check "34u: drain_blocked 가 stall 계열로 선다" \
+  "$(cap_snap "$DB_SEAT" '' | jq -r '.drain_blocked | "\(.["계열"])/\(.["경로"])/\(.["정지 문면"] | test("over the cap"))"')" "stall/stall/true"
+
+# 같은 단위가 좌석의 행위도 막는다 — 배수는 모든 행위의 머리에서 돈다.
+db_seat_act
+db_same=다름
+case "$msg" in *'over the cap'*) db_same=같음 ;; esac
+check "34u: 풀기 전에는 좌석의 행위도 같은 정지로 1 이다" "$rc/$db_same" "1/같음"
+
+# 좌석만 푼다 — 스테이지와 교대의 호출은 아무것도 옮기지 않는다.
+db_q0=$(db_quarantine_rows)
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" CC_CLAUDE_BIN="$CAP_STUB" \
+    CC_PIPELINE_STAGE_ID='DB1#1' CC_PIPELINE_SEGMENT=DB1 CC_PIPELINE_SHIFT_ID='' \
+    bash "$GATE" drain-release --manifest "$CAP_NM" ) > /dev/null 2>&1; rc=$?
+check "34u: 스테이지 신분의 drain-release 는 3 이고 아무것도 옮기지 않는다" \
+  "$rc/$(db_quarantine_rows)/$(db_q_files)/$( [ -s "$CAP_DIR/stall" ] && printf 남음 || printf 없음)/$( [ -f "$CAP_DIR/drain-blocked" ] && printf 표지)" \
+  "3/$db_q0/0/남음/표지"
+cap_gate "$DB_SEAT" "$DB_RID#9" drain-release --manifest "$CAP_NM"
+check "34u: 교대 신분의 drain-release 는 3 이고 아무것도 옮기지 않는다" \
+  "$rc/$(db_quarantine_rows)/$(db_q_files)/$( [ -s "$CAP_DIR/stall" ] && printf 남음 || printf 없음)" \
+  "3/$db_q0/0/남음"
+
+cap_gate "$DB_SEAT" '' drain-release --manifest "$CAP_NM"
+check "34u: 좌석의 drain-release 는 0 이고 stall 파일을 격리한다" \
+  "$rc/$( [ -e "$CAP_DIR/stall" ] && printf 남음 || printf 없음)/$(db_q_files)/$( [ -f "$CAP_DIR/drain-blocked" ] && printf 표지 || printf 없음)" \
+  "0/없음/1/없음"
+db_qrow=$(cap_rows '배수 격리' | tail -1)
+check "34u: 그 격리는 배수 격리 행위자=좌석 행을 남긴다" \
+  "$(db_quarantine_rows)/$(row_field "$db_qrow" '계열')/$(row_field "$db_qrow" '원래 경로')/$(row_field "$db_qrow" '행위자')/$(row_field "$db_qrow" '격리 경로' | grep -c '^quarantine/stall/[0-9]\{8\}T[0-9]\{6\}Z\.stall$' || true)" \
+  "$((db_q0 + 1))/stall/stall/좌석/1"
+check "34u: 격리된 파일이 그 사유 줄을 그대로 담는다" \
+  "$( { grep -c "$DB_WHY" "$CAP_DIR/$(row_field "$db_qrow" '격리 경로')" 2>/dev/null || true; } | tr -d ' ')" "1"
+check "34u: 스냅숏이 격리를 drain_quarantine[] 에 싣고 표지는 null 이다" \
+  "$(cap_snap "$DB_SEAT" '' | jq -r '"\(.drain_quarantine | length)/\(.drain_quarantine[0]["계열"])/\(.drain_quarantine[0]["격리 시각"] | type)/\(.drain_blocked)"')" \
+  "1/stall/string/null"
+
+db_seat_act
+check "34u: 푼 뒤 좌석의 다음 행위는 0 이다" "$rc" "0"
+
+db_q1=$(db_quarantine_rows)
+cap_gate "$DB_SEAT" '' drain-release --manifest "$CAP_NM"
+check "34u: 표지 없는 drain-release 는 3 이고 아무것도 쓰지 않는다" \
+  "$rc/$(db_quarantine_rows)/$(db_q_files)" "3/$db_q1/1"
+
+# 교대가 살아넘긴 정지는 뒤의 다른 사망의 원인으로 붙지 않는다. 같은 교대의 다음
+# 게이트 호출이 성공(0)으로 끝나면 정지 파일이 내려가, 무기록 행의 `마지막 정지`
+# 는 `-` 이고 좌석은 그 행을 사람 질문으로 보내지 않는다.
+CC_TEST_DB_MODE=survive CC_TEST_DB_OUT="$DB_OUT/survive" CC_TEST_DB_WHY="$DB_WHY" CC_TEST_CONE_A="$CONE_A" \
+  cap_gate "$DB_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+    --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$DB_SEAT" '')" \
+    --rationale "픽스처 — 정지를 살아넘기는 교대" \
+    -- 중단 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+db_sv_row=$(cap_rows 'handoff' | grep -F '| 사유=무기록 |' | tail -1)
+db_sv_n=$(row_field "$db_sv_row" '교대')
+check "34u: 정지를 살아넘긴 교대는 첫 읽기 1 · 둘째 읽기 0 이고 그 사이 정지 파일이 섰다" \
+  "$(cat "$DB_OUT/survive/rd1.rc" 2>/dev/null)/$(cat "$DB_OUT/survive/rd2.rc" 2>/dev/null)/$( [ "$db_sv_n" != "$db_n" ] && printf 새교대)/$( grep -qx "shift-$db_sv_n" "$DB_OUT/survive/stop1.ls" 2>/dev/null && printf 섰음)" \
+  "1/0/새교대/섰음"
+check "34u: 살아넘긴 정지는 무기록 행의 마지막 정지 로 실리지 않는다" \
+  "$(row_field "$db_sv_row" '마지막 정지')/$( [ -e "$CAP_DIR/stop/shift-$db_sv_n" ] && printf 남음 || printf 없음)" "-/없음"
+check "34u: 스냅숏 handoff[] 의 마지막 항목도 마지막 정지 가 - 다" \
+  "$(cap_snap "$DB_SEAT" '' | jq -r '.handoff | last | .["마지막 정지"]')" "-"
+CAP_STUB="$DB_CAP_STUB_SAVE"
+
 # --- 34h. 죽은 교대 정산 — 교대와 실행기가 함께 죽으면 서두가 무기록을 쓴다 -------
 # --- section: 34h | group: cone | covers: act, snapshot | needs: 34e | anchors: 34h: 죽은 교대 정산이 무기록 행을 정확히 하나 쓴다, 34h: 실행기가 살아 있으면 정산하지 않는다 ---
 #
@@ -53532,6 +53680,123 @@ tg_world g4 -
 tg_hook "=gh pr merge 1"
 tg_admit 외부상태변경
 check "87g: = 로 시작하는 첫 낱말의 맨 머지 요청은 admit 이 rc 2 로 거절한다" "$rc|$(tk87g)" "2|0"
+
+# ---------------------------------------------------------------------------
+# 87h. 넘치는 거절 기록 — 대상 거절 행은 상한 안에 맞추고, 행이 될 수 없는 기록은 격리한다
+# --- section: 87h | group: tguard | covers: exec, act, snapshot, gate_refusal_row, gate_refused_drain, gate_refused_drain_one, gate_drain_quarantine, gate_refusal_block | anchors: 87h: 기본 폭의 행은 상한을 넘는다, 87h: 긴 거절 기록 뒤 exec 읽기는 0 이다, 87h: 그 대상 거절 행은 행 상한 안이고 줄인 폭을 쓴다, 87h: 기록은 소비되고 두 곁파일이 명령과 문면 전문을 담는다, 87h: 다음 행위 호출도 0 이다, 87h: 같은 행위의 재시도는 3 으로 막힌다, 87h: 행이 될 수 없는 기록은 격리되고 다음 호출은 0 이다, 87h: 그 격리는 배수 격리 행위자=게이트 행을 남긴다, 87h: 스냅숏 drain_quarantine[] 이 그 격리를 싣는다, 87h: 깨진 JSON 기록도 같은 격리를 지난다, 87h: 처리 도중 사라진 기록은 건너뛰고 배수는 0 이다, 87h: 이동 전에 사라진 단위의 격리는 2 이고 아무것도 쓰지 않는다, 87h: 옮길 수 없는 기록은 die 로 1 이고 막힘 표지가 그 기록을 가리킨다 ---
+#
+# 런 훅이 남기는 거절 기록을 직접 심는다. 한글 거절 문면 수백 자와 수백 바이트 명령을
+# 담고, 기록의 루트는 물리 경로가 약 170 바이트인 디렉터리(대상의 `.claude` 사본)라
+# 기본 폭(명령 120·문면 160)으로는 행이 상한을 넘는다 — 그 전제를 먼저 단언한다.
+# 이어서 대상 별칭이 1100 바이트인 기록과 JSON 이 아닌 기록을 심어, 어느 폭으로도
+# 행이 될 수 없는 기록이 호출을 멈추지 않고 `quarantine/대상거절/` 로 옮겨짐을 본다.
+# ---------------------------------------------------------------------------
+tg_world h guard_b0.py
+check "87h: 픽스처 세계의 세그먼트 행이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
+tg87h_field() { printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+tg87h_clip() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_row_safe "$2" "$3"' _ "$GATE" "$1" "$2" 2>/dev/null; }
+tg87h_bytes() { printf '%s' "$1" | wc -c | tr -d ' '; }
+tg87h_files() { { find "$TG_RD/$1" -type f ! -name '.tmp.*' 2>/dev/null || true; } | wc -l | tr -d ' '; }
+tg87h_plant() {  # tg87h_plant <이름> <대상> <루트> <명령> <문면> — 런 훅이 쓰는 꼴의 기록 하나
+  jq -nc --arg c "$4" --arg pd "$3" --arg t "$5" --arg tg "$2" \
+    '{command_b64: ($c | @base64), cwd: $pd, project_dir: $pd, verdict: "거절", text: $t, hook_digest: "-",
+      target: $tg, segment: "SA", caller: "SA#1", caller_kind: "stage", tool_use_id: "tu-87h", recorded: 0}' \
+    > "$TG87H_DIR/$1"
+}
+tg87h_read() {
+  tg_g "$TG_WT" exec --manifest "$TG_M" --target a --segment SA --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(tg_H)" --rationale '87h 읽기' -- ls
+}
+TG87H_DIR="$TG_RD/admit/refused/$(thp_key_norm "$TG_CALLER")"
+mkdir -p "$TG87H_DIR"
+tg87h_pad=$((170 - ${#TG} - 1)); [ "$tg87h_pad" -ge 8 ] || tg87h_pad=8
+TG87H_ROOT="$TG/$(printf '%*s' "$tg87h_pad" '' | tr ' ' r)"
+mkdir -p "$TG87H_ROOT" && cp -R "$TG_A/.claude" "$TG87H_ROOT/"
+TG87H_LONG=$(printf '%*s' 300 '' | tr ' ' a)
+TG87H_CMD="$GATE exec --manifest $TG_M --target a --segment SA --cutpoint 커밋 --surface 읽기 --snapshot-digest x --rationale x -- ls $TG87H_LONG"
+TG87H_TEXT=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do TG87H_TEXT="${TG87H_TEXT}이 저장소의 가드가 이 명령의 낱말을 막는다고 답했다. "; done
+tg87h_plant r1 a "$TG87H_ROOT" "$TG87H_CMD" "$TG87H_TEXT"
+
+tg87h_read
+r87h_read=$rc
+r87h_row=$(tg_last_row '대상 거절')
+r87h_cmdv=$(tg87h_field "$r87h_row" '명령')
+r87h_txtv=$(tg87h_field "$r87h_row" '거절 문면')
+r87h_len=$(tg87h_bytes "$r87h_row")
+r87h_def=$(( r87h_len - $(tg87h_bytes "$r87h_cmdv") - $(tg87h_bytes "$r87h_txtv") \
+  + $(tg87h_bytes "$(tg87h_clip "$TG87H_CMD" 120)") + $(tg87h_bytes "$(tg87h_clip "거절: $TG87H_TEXT" 160)") ))
+check "87h: 기본 폭의 행은 상한을 넘는다 (아래가 공허하지 않다)" \
+  "$( [ "$r87h_def" -gt 1024 ] && printf 넘음 || printf '%s' "$r87h_def")" "넘음"
+check "87h: 긴 거절 기록 뒤 exec 읽기는 0 이다" "$r87h_read" "0"
+check "87h: 그 대상 거절 행은 행 상한 안이고 줄인 폭을 쓴다" \
+  "$( [ "$r87h_len" -le 1024 ] && printf under || printf '%s' "$r87h_len")/$(tg87h_field "$r87h_row" '형태')/$( [ "$(tg87h_bytes "$r87h_txtv")" -lt 160 ] && printf 줄임 || printf 그대로)" \
+  "under/감쌈/줄임"
+r87h_side=$(tg87h_field "$r87h_row" '곁파일')
+r87h_tside=$(tg87h_field "$r87h_row" '문면 곁파일')
+check "87h: 기록은 소비되고 두 곁파일이 명령과 문면 전문을 담는다" \
+  "$(tg87h_files "admit/refused")/$( [ "$(cat "$TG_RD/$r87h_side" 2>/dev/null)" = "$TG87H_CMD" ] && printf 명령)/$( [ "$(cat "$TG_RD/$r87h_tside" 2>/dev/null)" = "거절: $TG87H_TEXT" ] && printf 문면)" \
+  "0/명령/문면"
+tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target a --segment SA --cutpoint 커밋 \
+  --snapshot-digest "$(tg_H)" --rationale x -- 상태=실행중 "워크트리=$TG_WT" "브랜치=$TG_BR" 선행=없음
+check "87h: 다음 행위 호출도 0 이다" "$rc" "0"
+tg_g "$TG_WT" exec --manifest "$TG_M" --target a --segment SA --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale '87h 재시도' -- ls "$TG87H_LONG"
+r87h_same=다름
+case "$msg" in *"refused this act before"*) r87h_same=같음 ;; esac
+check "87h: 같은 행위의 재시도는 3 으로 막힌다" "$rc/$r87h_same" "3/같음"
+
+# 어느 폭으로도 맞지 않는 기록 — 대상 별칭이 1100 바이트다.
+r87h_q0=$(tg_rows '배수 격리')
+r87h_ref0=$(tg_rows '대상 거절')
+tg87h_plant r2 "$(printf '%*s' 1100 '' | tr ' ' t)" "$TG_A" "$TG87H_CMD" "짧은 문면"
+tg87h_read
+check "87h: 행이 될 수 없는 기록은 격리되고 다음 호출은 0 이다" \
+  "$rc/$(tg87h_files "admit/refused")/$(tg87h_files "quarantine/대상거절")/$(tg_rows '대상 거절')" "0/0/1/$r87h_ref0"
+r87h_qrow=$(tg_last_row '배수 격리')
+check "87h: 그 격리는 배수 격리 행위자=게이트 행을 남긴다" \
+  "$(tg_rows '배수 격리')/$(tg87h_field "$r87h_qrow" '계열')/$(tg87h_field "$r87h_qrow" '행위자')/$(tg87h_field "$r87h_qrow" '원래 경로')" \
+  "$((r87h_q0 + 1))/대상거절/게이트/admit/refused/$(thp_key_norm "$TG_CALLER")/r2"
+check "87h: 스냅숏 drain_quarantine[] 이 그 격리를 싣는다" \
+  "$(tg_snap | jq -r '[.drain_quarantine[] | select(.["계열"] == "대상거절")] | "\(length)/\(.[0]["격리 경로"] | test("^quarantine/대상거절/[0-9]{8}T[0-9]{6}Z[.]r2$"))"')" "1/true"
+
+printf '{"command_b64": ' > "$TG87H_DIR/r3"
+tg87h_read
+check "87h: 깨진 JSON 기록도 같은 격리를 지난다" \
+  "$rc/$(tg87h_files "admit/refused")/$(tg87h_files "quarantine/대상거절")/$(tg_rows '배수 격리')" "0/0/2/$((r87h_q0 + 2))"
+
+# 처리 도중 다른 호출이 같은 기록을 가져간 경합 — 기록을 지우고 실패하는 한 건
+# 처리로 바꿔 배수를 직접 부른다. 사라진 기록은 건너뛰고 배수는 0 으로 끝난다.
+tg87h_plant r5 a "$TG_A" "$TG87H_CMD" "짧은 문면"
+r87h_race=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"
+  gate_refused_drain_one() { rm -f "$1"; return 1; }
+  gate_refused_drain; printf "rc=%s" "$?"' _ "$GATE" "$TG_RD" 2>/dev/null)
+check "87h: 처리 도중 사라진 기록은 건너뛰고 배수는 0 이다" \
+  "$r87h_race/$(tg87h_files "admit/refused")/$(tg87h_files "quarantine/대상거절")/$(tg_rows '배수 격리')/$( [ -f "$TG_RD/drain-blocked" ] && printf 표지 || printf 없음)" \
+  "rc=0/0/2/$((r87h_q0 + 2))/없음"
+
+# 격리 직전에 사라진 단위 — 이동할 것이 없으므로 2 를 돌려주고 행도 파일도 남기지 않는다.
+r87h_gone=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"
+  q=0; gate_drain_quarantine 대상거절 "$2/admit/refused/none/r6" 게이트 x || q=$?; printf "rc=%s" "$q"' _ "$GATE" "$TG_RD" 2>/dev/null)
+check "87h: 이동 전에 사라진 단위의 격리는 2 이고 아무것도 쓰지 않는다" \
+  "$r87h_gone/$(tg87h_files "quarantine/대상거절")/$(tg_rows '배수 격리')" "rc=2/2/$((r87h_q0 + 2))"
+
+# 옮길 수도 없는 기록 — 격리 디렉터리 자리에 일반 파일을 둔다. 호출은 die 로 1 이고
+# 막힘 표지가 그 기록을 가리키며, 기록은 제자리에 남는다.
+mv "$TG_RD/quarantine" "$TG_RD/quarantine.87h"
+: > "$TG_RD/quarantine"
+printf '{"command_b64": ' > "$TG87H_DIR/r4"
+tg87h_read
+r87h_stuck_msg=다름
+case "$msg" in *'could not be moved to quarantine'*) r87h_stuck_msg=같음 ;; esac
+check "87h: 옮길 수 없는 기록은 die 로 1 이고 막힘 표지가 그 기록을 가리킨다" \
+  "$rc/$r87h_stuck_msg/$( [ -f "$TG87H_DIR/r4" ] && printf 남음)/$(cut -f1,2 "$TG_RD/drain-blocked" 2>/dev/null | tr '\t' '/')" \
+  "1/같음/남음/대상거절/admit/refused/$(thp_key_norm "$TG_CALLER")/r4"
+rm -f "$TG_RD/quarantine" "$TG87H_DIR/r4"
+mv "$TG_RD/quarantine.87h" "$TG_RD/quarantine"
+tg87h_read
+check "87h: 기록을 치운 뒤의 호출은 0 이고 표지가 내려간다" \
+  "$rc/$( [ -f "$TG_RD/drain-blocked" ] && printf 표지 || printf 없음)" "0/없음"
 
 # ---------------------------------------------------------------------------
 # 88. K2 트립와이어 — 이월 머지가 머지 대조와 종료 조건 11 을 지나는가
