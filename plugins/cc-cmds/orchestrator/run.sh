@@ -7424,8 +7424,10 @@ split_registry_complete() {
 
 predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && split_registry_complete "$DOC"; }
 
-# THE VISUAL STAGE'S ARTIFACT IS ITS SIDECAR at `검토 통과`, crossed with the
-# stage's terminal literal for the same reason. The sidecar is found the way
+# THE VISUAL STAGE'S ARTIFACT IS ITS SIDECAR at `검토 통과` or `발행됨`
+# (`visual_sidecar_complete`), crossed with the stage's terminal literal for the
+# same reason. `발행됨` counts because a re-kicked run whose source already
+# published the screens reuses that sidecar and ends without writing it. The sidecar is found the way
 # every visual skill and `visual-check.sh` find it: the document key is the
 # path relative to the document's repository top, the slug is that key without
 # `.md` with `/` spelled `-`, and the base is the repository's common git
@@ -7451,7 +7453,15 @@ visual_sidecar_reviewed() {
   grep -qxF '**상태**: 검토 통과' "$sc" 2>/dev/null
 }
 
-predicate_visual() { grep -qF "$LIT_VISUAL_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && visual_sidecar_reviewed "$DOC"; }
+visual_sidecar_complete() {
+  # visual_sidecar_complete <document path> — 0 when the sidecar's state line
+  # reads `검토 통과` or `발행됨`: the states a visual stage may end on.
+  local sc
+  sc=$(visual_sidecar_path "$1") || return 1
+  grep -qxF -e '**상태**: 검토 통과' -e '**상태**: 발행됨' "$sc" 2>/dev/null
+}
+
+predicate_visual() { grep -qF "$LIT_VISUAL_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && visual_sidecar_complete "$DOC"; }
 
 visual_sidecar_published() {
   # visual_sidecar_published <document path> — 0 when the sidecar's state line

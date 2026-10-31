@@ -6782,8 +6782,8 @@ surface_of_argv0() {
       esac ;;
     visual-check.sh)
       case "${1:-}" in
-        scan|size|approval|bundle) printf '읽기' ;;
-        *)                         printf '등급 미상' ;;
+        scan|size|approval|bundle|binding|reuse) printf '읽기' ;;
+        *)                                       printf '등급 미상' ;;
       esac ;;
     visual-capture.sh)
       case "${1:-}" in
@@ -48473,10 +48473,12 @@ gate_record_stage_outcome() {
        && ! { grep -qF "$LIT_SPLIT_TERMINAL" "$out" 2>/dev/null && split_registry_complete "${DOC:-}"; }; then
     klass='공허한 성공'
   # A visual stage too: its terminal literal in the stream and its sidecar at
-  # `검토 통과`. Either alone is a stage that said it finished over screens nobody
-  # reviewed, or reviewed screens whose stage never said it was done.
+  # `검토 통과` or `발행됨` (a re-kicked run reusing the source's published
+  # screens ends without writing the sidecar). Either alone is a stage that said
+  # it finished over screens nobody reviewed, or reviewed screens whose stage
+  # never said it was done.
   elif [ "$kind" = "visual" ] \
-       && ! { grep -qF "$LIT_VISUAL_TERMINAL" "$out" 2>/dev/null && visual_sidecar_reviewed "${DOC:-}"; }; then
+       && ! { grep -qF "$LIT_VISUAL_TERMINAL" "$out" 2>/dev/null && visual_sidecar_complete "${DOC:-}"; }; then
     klass='공허한 성공'
   # The visual publish stage: its terminal literal, and either the sidecar at
   # `발행됨` or a person's `거부`/`발행하지 않음` at one of its halts.
