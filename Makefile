@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -399,6 +399,14 @@ run-check-gate-selftest:
 # unattended stage's `make check` red. Run by hand and at autopilot kickoff.
 policy-drift:
 	@bash plugins/cc-cmds/orchestrator/stage-rules.sh status
+
+# Which rules of the user-scope CLAUDE.md a means enforces, by its enforcement
+# markers: one row per rule with its verdict, then the prose-only rules, the
+# partial gaps and the dead means. Deliberately NOT part of `lint` or `check`
+# for the same reason as `policy-drift` — the source is a person's global file.
+# Run by hand.
+rule-enforcement:
+	@bash plugins/cc-cmds/orchestrator/stage-rules.sh enforcement
 
 # Each suite is a LIST of scripts rather than a block of recipe lines, so that
 # the scripts become prerequisites and `make -j` can run them at once. As recipe
