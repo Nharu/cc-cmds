@@ -150,7 +150,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 **미선언 상황 처분**: park | 선언된 기본값 진행
 - `종료 절` | id=C<n> | 문면=<종료 지점을 대조 가능한 한 절로 나눈 문면>     ← 한 절 한 행, 하나 이상
 - `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
-- `사전 인가` | 형태=<argv 접두 형태> | 표면=<읽기|워크트리쓰기|트리밖쓰기|외부상태변경> | 도달=<dev|prod|배포트리거> | 짝 정리=<셸 없는 argv 한 줄> | 사유=<…>     ← 새 형식 행. `짝 정리=` 는 선택이고, 예: `형태=bash /opt/x/publish.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=bash /opt/x/unpublish.sh | 사유=<…>`
+- `사전 인가` | 형태=<argv 접두 형태> | 표면=<읽기|워크트리쓰기|트리밖쓰기|외부상태변경> | 도달=<dev|prod|배포트리거|기기전역> | 짝 정리=<셸 없는 argv 한 줄|기기 정리> | 사유=<…>     ← 새 형식 행. `도달=기기전역` 은 `표면=트리밖쓰기` 에만, 예약 값 `기기 정리` 는 `도달=기기전역` 행에만 둔다. `짝 정리=` 는 선택이고, 예: `형태=bash /opt/x/publish.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=bash /opt/x/unpublish.sh | 사유=<…>`
 - `자동 채택` | 판단 부류=<열세 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
 - `사전 인가` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>     ← 설계 요구사항 인터뷰가 있었을 때만
 - `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>     ← 팀 티어 설계 스테이지가 있을 때만, 한 팀원 한 행
@@ -365,7 +365,12 @@ acts whose effects outlive the run directory.
 carrying `표면=` and `도달=` (and optionally `짝 정리=`) is new-form; a row with
 neither is old-form and is read exactly as above. The two vocabularies are
 closed: `표면` is one of `읽기` `워크트리쓰기` `트리밖쓰기` `외부상태변경`, and
-`도달` one of `dev` `prod` `배포트리거`. The gate applies a new-form row's values
+`도달` one of `dev` `prod` `배포트리거` `기기전역`; a `도달=기기전역` row is
+accepted only with `표면=트리밖쓰기`. A machine-global row is not a row value:
+it names a mobile device tool's write act (`xcrun simctl`, `xcodebuild`, `adb`,
+`emulator`, `avdmanager`, `maestro`) for the `기기전역` cell, which opens it
+by that row verbatim or by the pre-authorization judgment, and its `짝 정리=`
+may carry the reserved value `기기 정리` (below). The gate applies a new-form row's values
 — the **row value** — only on a run with auto-resolution on, and only to an act
 whose class is opaque or unknown, whose argv the row matches as a complete form,
 that carries a machine-global path operand and no path under the Claude
@@ -388,9 +393,35 @@ kickoff defaults helper alike: a row with only one of `표면=`/`도달=`, a row
 in `형태=` or `짝 정리=`, a form ending in an interpreter's code-string option
 (`-c`, `-e`, `--eval`, …), a form of a runner other than an interpreter that
 does not reach past its first non-option operand, two new-form rows naming one
-form with different `표면`, `도달` or `짝 정리`, and a `짝 정리=` that is not one
-shell-free argv of at most 200 bytes whose words containing `/` are absolute
-paths.
+form with different `표면`, `도달` or `짝 정리`, a `도달=기기전역` row whose
+`표면` is not `트리밖쓰기`, and a `짝 정리=` that is not one shell-free argv of
+at most 200 bytes whose words containing `/` are absolute paths. The reserved
+value `기기 정리` is recognised before that argv check and accepted only on a
+`도달=기기전역` row.
+
+**`짝 정리=기기 정리` is the run's own device cleanup.** The gate spells it out as
+`<the run's plugin copy>/orchestrator/device-cleanup.sh <run id> <dispatch id>`,
+in `gate_preauth_pair_argv` alone: the open and the `plan` forecast call it with
+the caller's dispatch id and the drain with the open row's, so the frozen value
+and the open row's `정리=` compare spelled-out with spelled-out. The script
+removes only the simulators, emulators and AVDs whose name begins
+`cc-<run id>-<dispatch id>-` with no `-` after that prefix, prints one line per
+device removed or not, and exits 0 (all removed, or none chosen), 1 (any not
+removed) or 3 (none failed, but one of `xcrun`, `adb`, `emulator`, `avdmanager`
+is not on PATH). An act that makes or boots a device (`simctl create`, `clone`,
+`boot`, `avdmanager create avd`, `emulator -avd`, `xcodebuild test` and
+`test-without-building` with a simulator destination) pairs with the first
+new-form row of its shape carrying this value, whether a row named it verbatim
+or the judgment opened it; with no such row it parks as `기기전역/no-cleanup`, and
+with a name outside the prefix (or an emulator without `-port`, or a `simctl
+boot` by UDID) as `기기전역/device-name`. A device act ending 0 that made a
+device appends `<dispatch id>\t<UDID|emulator-<port>|->\t<name>` to
+`${RUN_DIR}/devices/created.tsv`; an act pointing at an existing device opens
+only when its target is listed there, and `booted`, `all` and `unavailable`
+never are (`기기전역/foreign-device`). After the run-end drain, a run that opened
+any `기기 정리` unit calls `device-cleanup.sh <run id> -` once more as the
+virtual unit `파견=-`, `행=0`, with the same open, start and result rows, so a
+device left behind shows in `pair-residue`.
 
 **`짝 정리` is the command that undoes what the row's act turned on**, and the gate
 runs it. Right before it performs an act a row value opened, `exec` and an argv

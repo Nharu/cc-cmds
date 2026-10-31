@@ -846,7 +846,10 @@ PREAUTH_CODE_STRING_OPTS='-c -e -E --eval -p --print -r --command'
 PREAUTH_INTERPRETERS='bash sh zsh python3 node'
 # The two closed vocabularies of a new-form row.
 PREAUTH_ROW_SURFACES='읽기 워크트리쓰기 트리밖쓰기 외부상태변경'
-PREAUTH_ROW_REACHES='dev prod 배포트리거'
+PREAUTH_ROW_REACHES='dev prod 배포트리거 기기전역'
+# The reserved `짝 정리=` value of a machine-global row: the gate spells it out
+# as this run's device cleanup for the dispatch that opened the act.
+PREAUTH_DEVICE_PAIR='기기 정리'
 
 preauth_row_refusal() {
   # preauth_row_refusal <row> — print why a `사전 인가` row is refused and
@@ -893,6 +896,10 @@ EOF
     || { printf '표면 값이 어휘 밖입니다: %s — 허용: %s' "$surf" "$PREAUTH_ROW_SURFACES"; return 1; }
   case " $PREAUTH_ROW_REACHES " in *" $reach "*) [ -n "$reach" ] ;; *) false ;; esac \
     || { printf '도달 값이 어휘 밖입니다: %s — 허용: %s' "$reach" "$PREAUTH_ROW_REACHES"; return 1; }
+  if [ "$reach" = "기기전역" ] && [ "$surf" != "트리밖쓰기" ]; then
+    printf '도달=기기전역 행은 표면=트리밖쓰기 일 때만 받습니다: 표면=%s' "$surf"
+    return 1
+  fi
   [ -n "$shape" ] || { printf '새 형식 행에 형태= 가 없습니다'; return 1; }
   case "$shape" in
     *'	'*|*'  '*|' '*) printf '형태= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
@@ -919,7 +926,15 @@ EOF
           fi ;;
       esac ;;
   esac
-  if [ "$has_p" = "1" ]; then
+  # THE RESERVED VALUE IS RECOGNISED BEFORE THE ONE-ARGV CHECKS: it is not an
+  # argv but a word the gate spells out, and only a machine-global row has a
+  # device cleanup to spell.
+  if [ "$has_p" = "1" ] && [ "$pair" = "$PREAUTH_DEVICE_PAIR" ]; then
+    [ "$reach" = "기기전역" ] || {
+      printf '짝 정리=%s 는 도달=기기전역 행에서만 받습니다: 도달=%s' "$PREAUTH_DEVICE_PAIR" "$reach"
+      return 1
+    }
+  elif [ "$has_p" = "1" ]; then
     [ -n "$pair" ] || { printf '짝 정리= 가 비었습니다'; return 1; }
     case "$pair" in
       *'	'*|*'  '*|' '*) printf '짝 정리= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
