@@ -913,6 +913,16 @@ check "6: entry_skill 이 남은 첫 단계다" "$(printf '%s' "$GPLAN" | jq -r 
 check "6: 문서 해시가 지금 문서다" "$(col "$out" 문서해시)" "$DOCSHA"
 check "6: 그 빼기는 순수하다" "$(col "$out" 그래프)" "순수"
 
+# A document outside the repository is keyed by its absolute path with the
+# leading separator removed; the graph reads it there, not under `<base>`.
+mkdir -p "$WORK/ext"
+cp "$BASE/$DOC" "$WORK/ext/rk-ext.md"
+DOC_EXT="$WORK/ext/rk-ext.md"
+P_DOC="${DOC_EXT#/}" mk_prev RKGX; fx_done
+out=$(rk graph --prev RKGX --base "$BASE")
+check "6: 레포 밖 절대 키의 동결 문서면 설계 단계가 빠진다" "$(col "$out" 설계)" "뺌"
+check "6: 그 문서 해시는 레포 밖 문서의 것이다" "$(col "$out" 문서해시)" "$(sha "$DOC_EXT")"
+
 # Design and audit both removed: the driver still accepts what is drawn.
 vg=$(rk verify --prev RKG --base "$BASE")
 G_PM=$(printf '%s\n' "$vg" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
