@@ -151,7 +151,8 @@ EOF
 # the rerun shards alone, so raw, path, queued and overlap are written `-` with
 # a notice, and the line is never read as the wall of the whole gate. `rows` is
 # the number of distinct row ids whose `result-<K>.tsv` in the result directory
-# carries a suite total line (`test-gate: <n> passed, <n> failed`), over S. The
+# carries a suite total line (`test-gate: <n> passed, <n> failed`) or, for an
+# extra row that runs isolation work only, `격리 전용 행`, over S. The
 # rule follows the artifact, not the lane count: when the result directory holds
 # no result file at all — a run from before the lanes carried one — it is the
 # number of row timing files in D that reached their `@end` line instead. A row
@@ -255,7 +256,7 @@ EOF
     for f in "$rdir"/result-*.tsv; do [ -f "$f" ] && results+=("$f"); done
   fi
   if [ "${#results[@]}" -ge 1 ]; then
-    executed=$(awk -F '\t' '$3 ~ /^test-gate: [0-9]+ passed, [0-9]+ failed$/ && !($1 in seen) { seen[$1] = 1; n++ } END { print n + 0 }' "${results[@]}")
+    executed=$(awk -F '\t' '($3 ~ /^test-gate: [0-9]+ passed, [0-9]+ failed$/ || $3 == "격리 전용 행") && !($1 in seen) { seen[$1] = 1; n++ } END { print n + 0 }' "${results[@]}")
   else
     for f in "$tdir"/timing-*.tsv; do
       [ -f "$f" ] || continue
@@ -600,6 +601,10 @@ STUB
     printf '9\t1\t-\n' > "$W/r/result-9.tsv"
     out=$(wall --slots 26 --lanes 2 --result-dir "$W/r" 2>&1)
     if printf '%s\n' "$out" | grep -q ' rows=25/26 '; then ok "합계 줄이 없는 결과 파일의 행은 세지 않는다"; else bad "합계 줄 없는 결과" "$out"; fi
+    # An extra isolation row 27 has no total; its `격리 전용 행` result counts.
+    printf '27\t0\t격리 전용 행\n' > "$W/r/result-27.tsv"
+    out=$(wall --slots 27 --lanes 2 --result-dir "$W/r" 2>&1)
+    if printf '%s\n' "$out" | grep -q ' rows=26/27 '; then ok "격리 전용 행 결과를 낸 추가 행도 실행한 행으로 센다"; else bad "격리 전용 행 rows" "$out"; fi
     # Attempt 2 reran shard 2 alone at 17:30:00: the plan job and shard 1 carry
     # attempt 1's times, before the attempt's own start.
     printf '{"id":39640545294,"head_sha":"S0","run_started_at":"2026-10-21T17:30:00Z"}\n' > "$T/stub/attempt.json"
@@ -630,8 +635,8 @@ STUB
   rm -rf "$T"
   printf 'ci-duration self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 28 ]; then
-    printf 'ci-duration self-test: 통과 수 %d 가 하한 28 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 29 ]; then
+    printf 'ci-duration self-test: 통과 수 %d 가 하한 29 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
