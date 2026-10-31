@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.2] - 2026-10-31
+
+라우터 관측 로그(`cc-cmds-route-observe v1`)의 그룹 항목 끝에 `rho7_bp_d` 를 싣는다. 그 줄의 W7 을 셈한 것과 같은 비용으로 셈한 주간 소진 속도 ρ7 이고, 하루당 bp 정수이며 셈할 수 없으면 null 이다. 스키마 이름·W7 산출식·배정 경로는 바꾸지 않는다.
+
+### Fixed
+
+- **관측 줄의 ρ7** — `rt_observe` 가 그룹마다 입장 판정 비용을 한 번 묶어 W7 과 새 정의 `rt_rho7_bp_d` 에 함께 넘긴다. 값은 `(주간 bp / 5시간 bp) × cap_bp × 86400 / 18000` 을 반올림한 것으로 `rt_w7` 의 초당 ρ 에 86400 을 곱한 것과 같고, 주간 창 상태와 무관하게 셈한다. 5시간 비용 bp 가 양수가 아니거나 주간 비용 bp 가 수가 아니면 null 이다.
+- **계약 픽스처** — cc-lane 과 나눠 쓰는 `tests/fixtures/route-usage-contract/route-observe.jsonl` 두 줄의 그룹 항목 끝에 `rho7_bp_d` 를 더했다.
+
+### Why
+
+W7 은 `max(0, r7 − ρ7·t)` 라 남은 양이 적은 주말에는 0 으로 잘리고, 그러면 「잔여 ≥ W7」 대조는 늘 참이라 ρ7 가정이 하한인지 판정할 수 없었다. ρ7 은 그룹·요청 종류마다 비용표에서 정해져 줄마다 다르므로, 리포트가 다시 셈하지 않고 라우터가 그 줄에서 쓴 값을 그대로 읽을 수 있어야 실제 소진과 대조할 수 있다. 키를 덧붙일 뿐이라 지금 설치된 판독기도 새 줄을 그대로 읽는다.
+
 ## [3.13.1] - 2026-10-31
 
 라우팅이 꺼진 스테이지 파견에서 감독자가 `<세그먼트>.window` 기록을 스테이지 실행 전에 쓴다. 파견 act 는 `.pid` 가 생기면 바로 반환하는데, 지금까지 이 갈래는 실행 뒤에야 `.window` 를 써서 반환 직후에 기록이 없을 수 있었다(#1527).
