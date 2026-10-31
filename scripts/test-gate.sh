@@ -6812,7 +6812,7 @@ est_lines=$(grep -c '^test-gate: 진행 — ' "$est_dir/p.err" || true)
 est_shape=$(grep '^test-gate: 진행 — ' "$est_dir/p.err" \
   | grep -c -v -E '^test-gate: 진행 — 절 [^ ]+ [0-9]+초째\(예상 ([0-9]+초|없음)\) · 전체 [0-9]+초\(예상 ([0-9]+초|없음)\)$' || true)
 if [ "${est_lines:-0}" -ge 2 ] && [ "${est_shape:-1}" = "0" ]; then
-  ok "진행 줄은 감싸는 쪽 stderr 에 정해진 모양으로 찍힌다 (${est_lines}줄)"
+  ok "진행 줄은 감싸는 쪽 stderr 에 정해진 모양으로 찍힌다 (${est_lines}줄)" # gate-isolation: 변동
 else
   bad "진행 줄" "줄 ${est_lines:-0}, 모양이 다른 줄 ${est_shape:-?}: $(grep '^test-gate: 진행' "$est_dir/p.err" | awk 'NR<=2' | tr '\n' ' ')"
 fi
