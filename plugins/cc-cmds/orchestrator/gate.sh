@@ -16355,25 +16355,41 @@ gate_stop_record() {
   # - The call stopped inside a drain unit (`GATE_DRAIN_SITE` is set): the drain
   #   marker is written, whatever the text says — the place it stopped is what
   #   makes it a blocked drain, not the wording.
-  local text="$1" at sid n
+  local text="$1" at sf
   [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
   text=$(printf '%s' "$text" | tr '\t\n\r' '   ')
   at=$(now_iso)
-  sid="${CC_PIPELINE_SHIFT_ID:-}"
-  if [ -n "$sid" ] && [ -z "${CC_PIPELINE_STAGE_ID:-}" ] && [ -n "${RUN_ID:-}" ]; then
-    case "$sid" in
-      "$RUN_ID#"*)
-        n=${sid#"$RUN_ID#"}
-        case "$n" in
-          ''|*[!0-9]*) ;;
-          *) mkdir -p "$RUN_DIR/stop" && printf '%s\t%s\n' "$at" "$text" >> "$RUN_DIR/stop/shift-$n" ;;
-        esac ;;
-    esac
+  sf=$(gate_stop_shift_file)
+  if [ -n "$sf" ]; then
+    mkdir -p "$RUN_DIR/stop" && printf '%s\t%s\n' "$at" "$text" >> "$sf"
   fi
   if [ -n "${GATE_DRAIN_SITE:-}" ]; then
     gate_drain_blocked_write "$GATE_DRAIN_SITE" "$at" "$text"
   fi
   return 0
+}
+
+gate_stop_shift_file() {
+  # gate_stop_shift_file — the path `stop/shift-<n>` of the calling routing
+  # shift, or nothing when the caller is not this run's shift (a stage id is
+  # set, the shift id names another run, or its ordinal is not a number).
+  local sid="${CC_PIPELINE_SHIFT_ID:-}" n
+  [ -n "${RUN_DIR:-}" ] && [ -n "$sid" ] && [ -z "${CC_PIPELINE_STAGE_ID:-}" ] && [ -n "${RUN_ID:-}" ] || return 0
+  case "$sid" in "$RUN_ID#"*) ;; *) return 0 ;; esac
+  n=${sid#"$RUN_ID#"}
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s/stop/shift-%s' "$RUN_DIR" "$n"
+}
+
+gate_stop_clear() {
+  # gate_stop_clear — a gate call of the shift that ended any way but `die`
+  # takes the shift's stop file down. The file then holds a line only while the
+  # shift's latest gate call is one that stopped, so the `무기록` row's
+  # `마지막 정지` never pairs a stop the shift went on past with a later death
+  # of another cause (a dropped connection, a usage limit).
+  local sf
+  sf=$(gate_stop_shift_file)
+  [ -z "$sf" ] || rm -f "$sf"
 }
 
 gate_drain_blocked_write() {
@@ -16422,9 +16438,13 @@ gate_on_exit() {
   # A call the gate itself stopped (`die`, exit 1) leaves its text where the
   # next reader looks: the shift's stop file and, inside a drain unit, the drain
   # marker. A rule refusal (2, 3, 11, …) already has its own row and is not
-  # recorded. Failures are swallowed and the status is not changed.
+  # recorded, and a shift's call that ended any other way takes the shift's
+  # earlier stop line down, because that stop is no longer where the shift
+  # stands. Failures are swallowed and the status is not changed.
   if [ "$__rc" = "1" ] && [ -n "${GATE_DIE_TEXT:-}" ]; then
     gate_stop_record "$GATE_DIE_TEXT" 2>/dev/null || true
+  else
+    gate_stop_clear 2>/dev/null || true
   fi
   gate_emit_digest_body
   set -e
@@ -40550,8 +40570,18 @@ gate_refused_drain() {
     GATE_DRAIN_SITE="대상거절"$'\t'"$rel"
     if ( gate_refused_drain_one "$f" ); then
       rm -f "$f"
+    elif [ ! -e "$f" ]; then
+      # Another call drained or quarantined the same record while this one read
+      # it: there is nothing left to move, and nothing of this call is stopped.
+      GATE_DRAIN_SITE=""
+      continue
     else
-      gate_drain_quarantine 대상거절 "$f" 게이트 "the refusal record could not be turned into a row"
+      # A record that can be neither a row nor moved aside stops the call through
+      # `die`, with `GATE_DRAIN_SITE` still set, so the drain marker and the
+      # shift's stop line say which record it was. Ending here on a bare non-zero
+      # return under errexit would leave neither.
+      gate_drain_quarantine 대상거절 "$f" 게이트 "the refusal record could not be turned into a row" \
+        || die "the refusal record $rel could not be turned into a row and could not be moved to quarantine/대상거절/ — release it with drain-release from the seat"
     fi
     GATE_DRAIN_SITE=""
   done
@@ -40596,7 +40626,8 @@ gate_drain_quarantine() {
   # failure there is only a warning: the moved file is already visible in the
   # directory the snapshot's `drain_quarantine[]` reads, so the quarantine is
   # never silent even when the ledger write is what failed. Non-zero only when
-  # the file could not be moved.
+  # the file is still in place and could not be moved; a file another call took
+  # away before the move is a warning and 0, with no row, since nothing moved.
   local series="$1" f="$2" actor="$3" why="$4" stamp qd qrel orel at
   case "$series" in
     대상거절|stall|checks|admit정산) ;;
@@ -40609,6 +40640,10 @@ gate_drain_quarantine() {
   [ ! -e "$RUN_DIR/$qrel" ] || qrel="$qrel.$$"
   orel="${f#"$RUN_DIR"/}"
   mkdir -p "$qd" 2>/dev/null && mv -f "$f" "$RUN_DIR/$qrel" 2>/dev/null || {
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+      warn "drain quarantine: $orel is already gone — nothing to move"
+      return 0
+    fi
     warn "drain quarantine: could not move $orel to $qrel"
     return 1
   }
@@ -51718,8 +51753,10 @@ gate_shift_trace_unrecorded() {
   local transient='아니오'
   if stage_transient_exit "$RUN_DIR/log/shift-$n.json"; then transient='예'; fi
   at=$(now_iso)
-  # `마지막 정지` — the last time a gate call of this shift stopped on `die`,
-  # from the line `gate_stop_record` appended to `stop/shift-<n>`. Without it
+  # `마지막 정지` — the stop of this shift's latest gate call, when that call
+  # ended on `die`, from the line `gate_stop_record` appended to
+  # `stop/shift-<n>`; a later call that ended any other way removed the file
+  # (`gate_stop_clear`), so an older stop is never read here. Without it
   # the row said only that the shift ended without a word, and the cause — a
   # gate that would not let it act — was nowhere a reader looks. The text is
   # cut from 300 bytes down in steps of 40 until the row fits; one that does not

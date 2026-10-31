@@ -932,10 +932,13 @@ done
 # `drain_blocked` or the `무기록` row's `마지막 정지`, call `drain-release` once,
 # relaunch once with `사유=중단`, and otherwise show the stop text and ask without
 # touching the run directory or closing the run — is pinned here, with the
-# exit-code row that sends the seat to it.
+# exit-code row that sends the seat to it. So is its order: with no marker, the
+# dropped-connection and limit branches take a `무기록` row before its
+# `마지막 정지` can send the seat to a person.
 for lit in \
   "**A drain stop is released once, then asked.**" \
-  "The run is in this state when \`drain_blocked\` is not \`null\`, or when the last \`handoff[]\` element reading \`\"사유\": \"무기록\"\` carries a \`마지막 정지\` other than \`-\` and \`null\`." \
+  "When it is \`null\`, the dropped-connection and limit branches of the paragraph above come first" \
+  "The run is in this state when \`drain_blocked\` is not \`null\`, or when the last \`handoff[]\` element reading \`\"사유\": \"무기록\"\` carries a \`마지막 정지\` other than \`-\` and \`null\` and neither of those two branches took it." \
   "call \`gate.sh drain-release --manifest <매니페스트>\` once" \
   "On \`0\`, issue \`router-shift\` with \`사유=중단\` once more." \
   "show the stop text verbatim — \`drain_blocked\`'s \`정지 문면\`, or \`마지막 정지\` — and ask the person at this seat" \
