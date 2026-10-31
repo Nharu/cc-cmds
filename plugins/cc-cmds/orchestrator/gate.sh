@@ -17999,28 +17999,30 @@ gate_repair_put_outside() {
   # it is not known when the row is rendered. A repair run's one PUT is its
   # merge, so any other is sent to the approval it would have met without the
   # row.
-  local rrow slug a0 m="" ep="" a want
+  #
+  # THE ARGV IS READ THE WAY THE PREAUTHORIZATION RULE READS IT. The rule
+  # compares the row with `gate_preauth_argv`, which finds `api` past the flags
+  # ahead of it and reads the method with `gate_gh_api_parse`, so `gh
+  # --hostname=github.com api -X PUT …`, `gh api -X=PUT …` and `gh api -iX PUT
+  # …` all match the row. Read by hand, those spellings were no `gh api` PUT
+  # here, and the row opened them unnarrowed. An argv whose `api` cannot be
+  # placed is taken for the PUT it may be. The readers' globals are local here,
+  # so the caller's reading of the same argv is left as it was.
+  local rrow slug a0 m ep a want
+  local GATE_GH_API_UNREAD GATE_GHAPI_METHOD GATE_GHAPI_PATH GATE_GHAPI_ENDPOINT GATE_GHAPI_OPAQUE
+  local -a GATE_GH_ARGV=() GATE_GHAPI_FIELDS=()
   rrow=$(gate_repair_event_row)
   [ -n "$rrow" ] || return 1
   slug=$(printf '%s' "$rrow" | cut -f1)
   a0=${1:-}; a0=${a0##*/}
-  [ "$a0" = "gh" ] && [ "${2:-}" = "api" ] || return 1
-  shift 2
-  while [ $# -gt 0 ]; do
-    a=$1; shift
-    case "$a" in
-      -X|--method) m=${1:-}; [ $# -eq 0 ] || shift ;;
-      -X*) m=${a#-X} ;;
-      --method=*) m=${a#--method=} ;;
-      -H|--header|-f|--raw-field|-F|--field|--input|-q|--jq|-t|--template|--hostname|--cache|-p|--preview)
-        [ $# -eq 0 ] || shift ;;
-      -*) ;;
-      *) [ -n "$ep" ] || ep=$a ;;
-    esac
-  done
-  m=$(printf '%s' "$m" | tr '[:lower:]' '[:upper:]')
+  [ "$a0" = "gh" ] || return 1
+  gate_gh_strip_repo "${@:2}"
+  [ "$GATE_GH_API_UNREAD" = 1 ] && return 0
+  [ "${GATE_GH_ARGV[0]:-}" = api ] || return 1
+  gate_gh_api_parse "${GATE_GH_ARGV[@]:1}"
+  m=$(printf '%s' "$GATE_GHAPI_METHOD" | LC_ALL=C tr '[:lower:]' '[:upper:]')
   [ "$m" = "PUT" ] || return 1
-  ep=${ep#/}
+  ep=$GATE_GHAPI_PATH
   want="repos/$slug/pulls/"
   case "$ep" in
     "$want"*/merge)
@@ -23756,7 +23758,8 @@ gate_ci_master_next() {
   #        reading is green                                     master 재합류
   #        — when this head's last 베이스 판정 reads 일치         nothing (L7)
   #   LM4  부분집합/판정 불가, 대표 = 예, and a waited event the
-  #        reading says no repair run can be started for         master 수리 불가
+  #        reading says no repair run can be started for,
+  #        while the reading is settled                         master 수리 불가
   #   LM5  부분집합/판정 불가 against a reading whose
   #        signature fingerprint or event field has moved,
   #        while the reading is settled                         CI 대조
@@ -23823,7 +23826,12 @@ gate_ci_master_next() {
     gate_base_head_matched "$seg" "$h" || printf 'master 재합류'
     return 0
   fi
-  if [ "$(gate_row_field "$m" '대표')" = '예' ]; then
+  # A STOP IS ASKED ONLY OF A SETTLED READING. A person who fixes the base
+  # branch by hand makes a new tip, and that tip reads `진행 중` until its
+  # checks end; a `재시도` answered in that window would meet the same stop
+  # again. While the reading is unsettled the segment waits with LM6, and the
+  # question comes back only if the settled reading still holds the event.
+  if [ "$settled" = 1 ] && [ "$(gate_row_field "$m" '대표')" = '예' ]; then
     for e in $(gate_row_field "$m" '사건' | tr ',' ' '); do
       if [ "$(gate_master_event_state "$al" "$e")" = '띄울 수 없음' ]; then
         printf 'master 수리 불가'; return 0
