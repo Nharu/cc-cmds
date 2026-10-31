@@ -776,7 +776,7 @@ check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다
 check "review_carry 가 재구현 사이클 상한과 확인 리뷰 회차 상한을 싣는다" \
   "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2,"RECHECK_ROUND_CAP":2}'
 
-# 6c-3. Both router copies branch on the nine CI values of `다음`
+# 6c-3. Both router copies branch on the thirteen CI values of `다음`
 #
 # A value one copy does not name is a value its router meets with no branch, and
 # a rerun spelled by hand is one the gate refuses in every form. The values the
@@ -800,9 +800,19 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'act --kind label-ack' \
     '--kind label-ack' \
     '-- 라벨 <head sha>' \
-    'the nine CI values' \
+    'the thirteen CI values' \
     '**Every other exit 3 is one disposition**' \
-    '**Never send `gh run rerun`, a rerun or re-request REST path, or the `rerequestCheckSuite` mutation**'; do
+    '**Never send `gh run rerun`, a rerun or re-request REST path, or the `rerequestCheckSuite` mutation**' \
+    '**`CI 대조`**' \
+    '**`master 대기`**' \
+    '**`master 재합류`**' \
+    '**`master 수리 불가`**' \
+    '--kind ci-match' \
+    '-- 대조 <head sha>' \
+    "'master 대기=<id>'" \
+    '부류=master 재합류' \
+    "the snapshot's \`master 재합류\` element carries it as \`베이스\`, beside \`판정\`, both read from the latest \`베이스 판정\` row" \
+    "\`일치\` → dispatch nothing; read \`다음\` again — a HEAD whose last check reads \`일치\` has nothing to take in"; do
     if grep -qF -- "$lit" "$f"; then
       ok "$who 사본이 CI 갈래 리터럴을 싣는다: $lit"
     else
