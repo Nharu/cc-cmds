@@ -3,7 +3,9 @@
 # plugins/cc-cmds/orchestrator/gate.sh behind SOLO_EXP_GATE.
 #
 #   snapshot  prints {"H":"stub-h"}
-#   act       appends its argv to $STUB_GATE_LOG, then acts by $STUB_GATE_MODE:
+#   act       appends its argv to $STUB_GATE_LOG and, with STUB_ENV_LOG set,
+#             the names of its environment variables to that file, then acts
+#             by $STUB_GATE_MODE:
 #     ok    the first call of a run does nothing (the seat must call again);
 #           the second writes what the stage would have written and `done`:
 #           a design run writes the frozen document (no 상태 line when
@@ -29,6 +31,8 @@
 #     deadline  as `ok`, but the run's done names the wall-clock deadline
 #     wait  exits 5 (an approval for a person)
 #     fail  exits 7
+#     ended  writes a done that names the wall-clock deadline and exits 3, as
+#           the gate refuses `대기` on a run that ended while the host slept
 #     failopen  opens the run, writes a result line costing $STUB_RUN_COST,
 #           and exits 7
 #   STUB_ONLY_DOC=<owner-doc> applies $STUB_GATE_MODE to that document's runs
@@ -51,6 +55,9 @@ case "$verb" in
 esac
 
 printf '%s\n' "act $*" >> "${STUB_GATE_LOG:?}"
+# The names (never the values) of the variables a stage process would
+# inherit, so the test can see that no SOLO_EXP_* variable reaches one.
+[[ -z "${STUB_ENV_LOG:-}" ]] || compgen -e >> "$STUB_ENV_LOG"
 
 m=""; akind=""
 while (( $# > 0 )); do
@@ -136,6 +143,10 @@ if [[ "$mode" == "handoff" ]]; then
     fi
     exit 0
   fi
+fi
+if [[ "$mode" == "ended" ]]; then
+  echo "2026-10-17T05:00:00Z 종단 — 경계 마감 · 근거 마감 지남" > "$rd/done"
+  exit 3
 fi
 if [[ "$mode" == "failopen" ]]; then
   printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "${STUB_RUN_COST:-2}" > "$rd/log/open.json"

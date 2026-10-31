@@ -19,7 +19,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-base-unattended` | 베이스 설계의 무인 팔 — 좌석·드라이버가 파견하면 베이스 문서의 토론·저장(드라이버면 동결까지)을, `--split` 이면 감사 뒤 분할 점검과 트래커 발행을 돈다 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design-base` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 이 베이스 런의 설계 단계와 분할 단계로 파견한다(스테이지) |
 | `/cc-cmds:design-discuss-unattended` | 설계 세션의 무인 팔 — 좌석이 파견하면 Step 3 토론과 Step 4 종합·저장을 도는 다리, autopilot 드라이버가 파견하면 Step 7U 동결까지 도는 스테이지 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 드라이버가 `design_required` 인 런의 첫 스테이지로 파견한다(스테이지) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
-| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때, 또는 구현 단계의 구속 티어 이탈 중단(implement-unattended CFI-U3)에 사람이 `재수렴` 을 골라(또는 매니페스트의 `구속-이탈` 자동 채택 행으로) 라우터 교대가 넘길 때, 또는 확인 리뷰 상한의 P0 잔존으로 끝난 런의 후속 런이 첫 단계에서 재수렴을 골랐을 때, 또는 무인 설계 사다리 정지에 사람이 `골격 재검토` 를 골라 라우터 교대가 `잔여 동결 재검토` 범위로 넘길 때(사람 답이 재부착이 아니라 재수렴으로 가는 예외), 또는 무인 감사의 최초 회차가 골격급 결함을 내고 게이트가 그 감사 키에 자동 재수렴 한 번을 열어 라우터 교대나 구동기가 `감사 골격급` 범위로 넘길 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
+| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때, 또는 구현 단계의 구속 티어 이탈 중단(implement-unattended CFI-U3)에 사람이 `재수렴` 을 골라(또는 매니페스트의 `구속-이탈` 자동 채택 행으로) 라우터 교대가 넘길 때, 또는 확인 리뷰 상한의 P0 잔존으로 끝난 런의 후속 런이 첫 단계에서 재수렴을 골랐을 때, 또는 무인 설계 사다리 정지에 사람이 `골격 재검토` 를 골라 라우터 교대가 `잔여 동결 재검토` 범위로 넘길 때(사람 답이 재부착이 아니라 재수렴으로 가는 예외), 또는 무인 감사가 상한 안의 회차에서 골격급 결함을 내고 게이트가 그 감사 키에 자동 재수렴을 열어 라우터 교대나 구동기가 `감사 골격급` 범위로 넘길 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
 | `/cc-cmds:design-solo-unattended` | 리드 단독 설계의 무인 팔 — autopilot 이 `solo` 티어 런과 `team-4` 단일 설계의 `solo-audit` 경로 런의 설계 단계로 파견하면 리드 혼자 요약을 쓰고 동결한다 (팀 없음, 질문은 정지 기록으로) | 사람이 직접 부르지 않는다. autopilot 드라이버·게이트가 선택 함수가 이 스킬을 고른 런 — `solo` 티어이거나 `team-4` 이고 `design_path` 가 `solo-audit` 이며 `design_required` 인 런 — 의 설계 스테이지로 파견한다 |
 | `/cc-cmds:design-upgrade` | 팀 구성 강화 분석 (모델·역할 축) | 직전 `/design` 팀 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 또는 누락 도메인을 메울 신규 역할·과부하 역할 분할이 필요한지 second-opinion으로 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
@@ -28,7 +28,8 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:review-lite` | 2인 팀을 활용한 경량 코드 리뷰 | 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능) |
 | `/cc-cmds:review-unattended` | 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주) | 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것 |
 | `/cc-cmds:review-upgrade` | 리뷰어 구성 강화 분석 (모델·역할 축) | 직전 `/review` Step 3 리뷰어 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 누락된 리뷰 관점을 메울 신규 리뷰어 추가가 필요한지, 또는 과부하 리뷰어 분할이 필요한지 second-opinion으로 검토할 때 |
-| `/cc-cmds:visual` | 설계 문서의 화면을 로컬에서 생성·검토하고, Claude Design 에 발행·동기하며, 구현 승인을 사이드카에 쓴다 (대화형, 고정 계정 좌석) | 무인 런이 `검토 통과` 로 남긴 화면을 아침에 발행·캔버스 편집·동기한 뒤 구현을 승인할 때, 또는 사이드카 없는 설계 문서의 화면을 대화형으로 처음 만들 때. 무인 파이프라인 스테이지는 `/cc-cmds:visual-unattended` 를 쓴다 |
+| `/cc-cmds:visual` | 설계 문서의 화면을 로컬에서 생성·검토하고, Claude Design 에 발행·동기하며, 구현 승인을 사이드카에 쓴다 (대화형, 고정 계정 좌석) | 무인 런이 `검토 통과` 로 남긴 화면을 아침에 발행·캔버스 편집·동기한 뒤 구현을 승인할 때, 또는 사이드카 없는 설계 문서의 화면을 대화형으로 처음 만들 때. 무인 파이프라인 스테이지는 생성에 `/cc-cmds:visual-unattended`, 계획에 `S2P` 단계가 있는 런의 발행·승인에 `/cc-cmds:visual-publish-unattended` 를 쓴다 |
+| `/cc-cmds:visual-publish-unattended` | 런 안에서 `검토 통과` 화면을 고정 계정으로 Claude Design 에 발행하고, 사람의 시각 판정 답에 따라 구현 승인·다시 생성·금지 후보 반영을 한다 (무인 — 사람 판단은 중단 기록으로) | 자율 파이프라인이 계획에 동결된 `S2P` 단계를 헤드리스로 파견할 때. 사람이 직접 발행할 때는 `/cc-cmds:visual` 을 쓸 것 |
 | `/cc-cmds:visual-unattended` | 동결된 설계 문서의 화면을 로컬에서 생성하고 세 회 안의 검토로 `검토 통과` 까지 올린다 (무인 — 사람 확인 없이 정지 기록) | 자율 파이프라인 드라이버나 라우터가 시각 단계를 헤드리스로 파견할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:visual` 을 쓸 것 |
 
 <!-- SKILLS_TABLE_END -->
@@ -43,7 +44,7 @@ Engineering workflow commands for Claude Code.
 
 ```bash
 brew install terminal-notifier
-brew install jq   # PreToolUse hook 의존성
+brew install jq   # 플러그인 훅 전반의 의존성(PreToolUse 자동 승인, 상태줄 자동 설치)
 ```
 
 **2단계 — 자연어 요청**:
@@ -89,6 +90,17 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 /plugin install cc-cmds@cc-cmds
 ```
 
+### 상태줄 자동 설치
+
+플러그인을 설치하면 **다음 세션을 시작할 때** cc-cmds 상태줄이 설정 디렉터리(`CLAUDE_CONFIG_DIR`, 없으면 `~/.claude`)의 `settings.json` 에 설치됩니다. 플러그인이 업데이트되어 설치 경로가 바뀌면 세션 시작 시 스스로 다시 맞춥니다.
+
+- **이미 다른 상태줄을 쓰고 있으면 건드리지 않습니다.** cc-cmds 가 설치한 것이 아닌 `statusLine` 은 그대로 둡니다.
+- **`jq` 가 없으면 자동 설치만 조용히 비활성화됩니다.** 세션 시작을 막거나 오류를 띄우지 않습니다.
+- **처음 여는 폴더에서는** 워크스페이스 신뢰를 수락한 **다음** 세션에서 설치됩니다.
+- 최초 설치가 일어난 세션에서 안내문이 한 번 뜹니다. 상태줄이 있으면 화면 하단의 키보드 힌트가 대부분 가려집니다.
+- **끄기**: `CC_CMDS_STATUSLINE_AUTOINSTALL=0` 을 설정합니다. **`0` 만이 끄는 값이고, 그 밖의 어떤 값도(미설정 포함) 켜짐입니다** — `=1` 은 끄지 않습니다. 이 변수는 **앞으로의** 자동 설치와 자동 재지정만 막고 **이미 설치된 상태줄은 지우지 않습니다.** 이미 생긴 상태줄을 없애려면 아래 [Uninstall](#uninstall) 을 따릅니다.
+- 백업은 설정 파일 옆에 두 개(`settings.json.orig`·`settings.json.prev`)까지만 쌓입니다. 다만 중단된 실행이 임시 파일을 남길 수 있고, 그 정리 방법도 [Uninstall](#uninstall) 에 있습니다.
+
 ## Usage
 
 ```
@@ -113,9 +125,61 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 
 ## Uninstall
 
+플러그인은 쓰면서 상태줄만 끄려는 경우가 먼저입니다. 아래 순서대로 읽으세요. 아래의 `<설정 디렉터리>` 는 `CLAUDE_CONFIG_DIR`, 없으면 `~/.claude` 입니다.
+
+### 1. 환경변수는 상태줄을 지우지 않는다
+
+`CC_CMDS_STATUSLINE_AUTOINSTALL=0` 은 **앞으로** 자동 설치와 자동 재지정이 일어나지 않게 할 뿐이고, 이미 설치된 상태줄은 그대로 남습니다. 이 플러그인에는 설정 파일에서 상태줄을 지우는 동작이 없습니다. 이미 생긴 상태줄을 없애려면 다음 절의 방법을 따릅니다.
+
+### 2. 상태줄을 끄는 방법
+
+끄는 방법은 하나입니다 — `<설정 디렉터리>/settings.json` 의 `statusLine` 키를 지웁니다. 이것이 이 플러그인이 그 파일에 쓴 것의 **전부**를 되돌립니다(`refreshInterval` 도 그 키의 하위 키입니다).
+
+- **`settings.json.cc-statusline-owned` 는 지우지 말고 그대로 둡니다.** 그 파일이 있어야 다음 세션이 「사용자가 지웠다」로 읽고 다시 설치하지 않습니다. 지우면 다음 세션에 상태줄이 되살아납니다.
+- `statusLine` 객체 안에 손으로 넣어 둔 `padding`·`hideVimModeIndicator` 가 있었다면, 키를 통째로 지울 때 그것도 함께 사라집니다. 그 둘만 남기고 싶으면 `statusLine.command` 와 `statusLine.refreshInterval` 두 하위 키만 지웁니다.
+
+### 3. 형제 파일 정리 (플러그인을 지운 뒤)
+
+플러그인을 제거해도 `settings.json` 의 상태줄 명령은 남습니다. 플러그인과 함께 훅이 사라지므로 스스로 고쳐지지 않으며, 남은 명령은 스크립트가 없으면 설치 전 상태로 돌아갑니다(원래 상태줄이 있었으면 그 명령이, 없었으면 빈 상태줄이 뜹니다). 위 2절로 키를 지운 뒤 플러그인을 제거하고, 그다음 설정 파일 옆의 흔적을 두 줄로 정리합니다. **순서가 고정입니다** — 첫 줄이 락 디렉터리를 먼저 치우지 않으면 둘째 줄이 그것에 부딪혀 rc 1 로 끝납니다(파일들은 지워지지만 오류가 납니다).
+
+```bash
+rmdir <설정 디렉터리>/settings.json.cc-statusline.lock 2>/dev/null
+rm -f <설정 디렉터리>/settings.json.cc-statusline*
+```
+
+둘째 줄은 마커, 소유 비트 파일, 그리고 중단된 실행이 남긴 임시 파일(`settings.json.cc-statusline.tmp.*`·`.bak-tmp.*`·`.mk-tmp.*`)까지 함께 지웁니다. 플러그인을 이미 지운 뒤라면 되살릴 훅이 없으므로 안전합니다. **플러그인을 계속 쓸 생각이면 이 두 줄을 돌리지 않습니다.**
+
+손으로 한 번이라도 상태줄을 설치했던 기기에는 옛 판이 쓰기마다 만든 `settings.json.pre-statusline-<숫자>` 백업이 개수 제한 없이 남아 있습니다. 이 판은 그런 파일을 새로 만들지 않지만 이미 있는 것을 지우지도 않습니다. `settings.json` 은 `env` 블록에 API 키를 담을 수 있고 그 파일들은 그 시점의 축자 사본이므로, 필요 없으면 직접 지웁니다:
+
+```bash
+rm -f <설정 디렉터리>/settings.json.pre-statusline-*
+```
+
+### 4. 백업 두 슬롯은 복구용 스냅숏
+
+`settings.json.orig` 와 `settings.json.prev` 는 끄는 방법이 아니라 복구용 스냅숏입니다. 앞의 것은 이 플러그인이 **처음** 쓰기 직전의 설정 파일 전체, 뒤의 것은 **직전** 쓰기 직전의 설정 파일 전체입니다. 상태줄만 끄려고 이것을 되돌리면 안 됩니다 — 그 사이에 바뀐 테마·모델·승인된 권한·`env` 블록까지 전부 그때 상태로 돌아갑니다. 이것을 쓰는 경우는 하나뿐입니다: **설정 파일 자체가 손상돼 복구가 필요할 때.** 되돌릴 생각이 없다면 두 이름을 직접 지웁니다:
+
+```bash
+rm -f <설정 디렉터리>/settings.json.orig <설정 디렉터리>/settings.json.prev
+```
+
+### 5. 지운 상태줄을 다시 받는 방법
+
+위 2절과 정반대 조작입니다. 기기가 둘로 나뉩니다.
+
+- 다른 상태줄이 있어 설치를 건너뛰기만 했던 기기(`settings.json.cc-statusline-owned` 가 없다)는 `statusLine` 키만 지우면 다음 세션에 설치됩니다.
+- 한 번이라도 이 플러그인의 상태줄을 가졌던 기기는 `settings.json.cc-statusline-owned` 를 **지우고** 새 세션을 엽니다.
+
+### 플러그인 제거
+
 ```
 /plugin uninstall cc-cmds
 ```
+
+## Troubleshooting
+
+- **설정 디렉터리의 `settings.local.json` 에 `statusLine` 을 넣어도 아무 일도 일어나지 않습니다.** Claude Code 가 사용자 설정 디렉터리의 그 파일을 읽지 않기 때문입니다. 상태줄은 같은 디렉터리의 `settings.json` 에 둡니다.
+- **`settings.json` 을 심볼릭 링크나 하드 링크로 관리하면(dotfiles 관리자 등) 상태줄이 자동으로 설치되지 않습니다.** 플러그인 업데이트 뒤의 경로 재지정도 일어나지 않고, 마커 `settings.json.cc-statusline` 에 `reason=linked` 가 남습니다. 설치기가 파일을 이름째 갈아 끼우면 링크가 일반 파일로 바뀌어 관리하는 원본과 갈라지기 때문입니다. 상태줄 값은 관리하는 원본에 손으로 넣고, 플러그인이 판올림되면 손으로 다시 겨눕니다.
 
 ## Options
 
@@ -142,15 +206,17 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 - [/cc-cmds:review-unattended](#cc-cmdsreview-unattended)
 - [/cc-cmds:review-upgrade](#cc-cmdsreview-upgrade)
 - [/cc-cmds:visual](#cc-cmdsvisual)
+- [/cc-cmds:visual-publish-unattended](#cc-cmdsvisual-publish-unattended)
 - [/cc-cmds:visual-unattended](#cc-cmdsvisual-unattended)
 
 ### /cc-cmds:autopilot
 
-**Usage**: `/cc-cmds:autopilot [의도 또는 대상] [--report]`
+**Usage**: `/cc-cmds:autopilot [의도 또는 대상] [--hotfix] [--report]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<의도 또는 대상>` | _(optional)_ | 이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. 같은 세션이 연 런이 멈춘 뒤 비우거나 `다시`·`이어서`·`재개` 같은 재개 낱말, 또는 그 런의 의도 문면 그대로 부르면 그 런의 답을 이어받아 새 런을 바로 시작한다(재킥오프). 끝나지 않은 채 멈춘 런은 `다시`·`재킥오프` 같은 재킥 낱말로 부를 때만 이어받아 닫고, 빈 인자·재개 낱말·의도 문면으로는 이어받지 않고 그 런의 재개를 안내한다. |
+| `--hotfix` | off (일반 킥오프 — 설계 범위·티어·경로, 요구 인터뷰, 경계 질문을 모두 묻는다) | 핫픽스 킥오프. 의도 되읽기, 대상 레포 확인, 절단점(머지·배포), 계획 승인 네 질문만 하고, 계획은 단독 설계 → 구현 → 리뷰 고정 틀에 리뷰 정책 상한 `선머지후리뷰` 로 얼린다. 나머지 값은 킥오프 기본값 파일과 고정값으로 채워 계획 승인 화면에 모두 보인다. 라우팅 런에서만 기동한다. |
 | `--report` | off (킥오프 모드 — 1막 인터뷰 후 드라이버 기동) | 아침 보고 모드. 그 런의 매니페스트·원장·보고서, 설계 문서, 그리고 매니페스트나 `run` 행이 없을 때 킥오프 흔적을 읽어 한국어로 렌더링만 하고, 새 런을 시작하지 않는다. |
 
 > _Parsing (`<의도 또는 대상>`): `$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다. 재킥오프인지는 1막 맨 앞의 판별이 닫힌 낱말 목록으로 정하고, 그 밖의 인자는 새 런이다._
@@ -266,7 +332,7 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 재수렴 대상 설계 문서 경로 (`.md`). 드라이버와 라우터 교대가 메인 워크트리 절대 경로로 넘긴다. |
-| `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성, `감사 종합 요구 <중단 기록 절대 경로>` 형태의 채택된 감사 종합 요구, `구속 티어 이탈 <중단 기록 절대 경로>` 형태의 사람이 재수렴을 고른 구속 티어 이탈, `설계 수준 잔여 <리뷰 리포트 절대 경로>` 형태의 확인 리뷰가 설계 수준으로 분류한 잔여 발견, `상한 P0 잔여 <리뷰 리포트 절대 경로>` 형태의 앞 런이 확인 리뷰 상한에서 남긴 P0 발견, 또는 `잔여 동결 재검토 <중단 기록 절대 경로>` 형태의 사람이 `골격 재검토` 를 고른 사다리 정지, 또는 경로 없는 문구 `감사 골격급` 형태의 무인 감사 최초 회차가 낸 골격급 결함(보고서는 설계 문서에서 유도한다). |
+| `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성, `감사 종합 요구 <중단 기록 절대 경로>` 형태의 채택된 감사 종합 요구, `구속 티어 이탈 <중단 기록 절대 경로>` 형태의 사람이 재수렴을 고른 구속 티어 이탈, `설계 수준 잔여 <리뷰 리포트 절대 경로>` 형태의 확인 리뷰가 설계 수준으로 분류한 잔여 발견, `상한 P0 잔여 <리뷰 리포트 절대 경로>` 형태의 앞 런이 확인 리뷰 상한에서 남긴 P0 발견, 또는 `잔여 동결 재검토 <중단 기록 절대 경로>` 형태의 사람이 `골격 재검토` 를 고른 사다리 정지, 또는 경로 없는 문구 `감사 골격급` 형태의 무인 감사가 상한 안의 회차에서 낸 골격급 결함(보고서는 설계 문서에서 유도한다). |
 
 > _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석._
 
@@ -319,7 +385,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review
 
-**Usage**: `/cc-cmds:review [<target>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]`
+**Usage**: `/cc-cmds:review [<target>] [--base-sha <sha>] [--declared-files <csv>] [--expand <분야>[,<분야>]] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -327,6 +393,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `<directive>` | _(optional)_ | 리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로"). |
 | `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 호출자가 지정. 이미 base 를 아는 호출자(파이프라인 드라이버 등)가 리뷰의 재유도를 없애기 위해 넘긴다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 검증에 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. |
 | `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 변경이 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다. |
+| `--expand <분야>[,<분야>]` | off (기술 분야만 리뷰 — 기획서 없이 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다) | 기본에서 빠진 리뷰 분야를 연다. 값은 `요구`(적힌 근거 없이 추정한 제품·기획 요구 판단)와 `문서표현`(사람이 읽는 문서의 문장 다듬기·구성·설명 보강·뜻을 바꾸지 않는 오탈자) 둘이다. 열린 분야의 발견은 같은 심각도 기준으로 등급을 받는다. |
 
 **`<target>` 입력 형태별 처리:**
 
@@ -345,23 +412,28 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 > _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다._
 
+> _Parsing (`--expand <분야>[,<분야>]`): `--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다. 분야는 이 플래그로만 열린다 — 지시문은 분야를 열지 않는다._
+
 ### /cc-cmds:review-lite
 
-**Usage**: `/cc-cmds:review-lite [<target>] [--base-sha <sha>] [--declared-files <csv>]`
+**Usage**: `/cc-cmds:review-lite [<target>] [--base-sha <sha>] [--declared-files <csv>] [--expand <분야>[,<분야>]]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<target>` | _(optional)_ | 리뷰 대상 (PR 번호/URL, 브랜치, 파일/디렉토리, 또는 생략 시 현재 브랜치 자동 감지). PR 크기 무관 — 큰 PR 은 report 의 *리뷰 범위* 섹션에 미커버 영역 명시. |
 | `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 호출자가 지정. 넘겨받은 값은 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. lite 에서도 동일하다. |
 | `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 변경이 건드리기로 선언된 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하므로, 선언 밖 파일을 지목할 수 있게 한다. |
+| `--expand <분야>[,<분야>]` | off (기술 분야만 리뷰 — 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다) | 기본에서 빠진 리뷰 분야를 연다. 값은 `요구`와 `문서표현` 둘이며, 고정 2인 가운데 코드 품질·로직 리뷰어가 맡는다. lite 는 문서를 받는 길이 없어 기획서는 늘 없음이다 — 기획서와 대조하려면 /cc-cmds:review 를 쓴다. |
 
 > _Parsing (`--base-sha <sha>`): `--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다._
 
 > _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다._
 
+> _Parsing (`--expand <분야>[,<분야>]`): `--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다. 이 토큰과 값은 대상 뒤 여분 토큰 판정 전에 인자열에서 제거된다._
+
 ### /cc-cmds:review-unattended
 
-**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]`
+**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -371,7 +443,9 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 드라이버가 지정. 드라이버는 세그먼트가 갈라져 나온 base 를 이미 알고 있으므로, 이 값이 있으면 리뷰가 그것을 다시 유도하지 않는다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. |
 | `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다. |
 | `--seat-commits <list>` | off (이 세그먼트에 좌석이 적용한 강제 표면 편집이 없다) | 사람 승인 뒤 게이트가 이 세그먼트 브랜치에 만든 좌석 적용 커밋 목록(`<sha> (<경로>, …); …`). 그 커밋이 바꾼 파일은 선언 집합 안이므로 리뷰 범위이며, 리뷰는 그 변경을 다른 커밋과 똑같이 읽고 개요에 커밋과 경로를 한 줄로 남긴다. |
+| `--post-merge <commit>` | off (머지 전 리뷰 — 머지 커밋에서 아무것도 다시 돌리지 않는다) | 머지 먼저(선머지후리뷰) 세그먼트의 사후 리뷰. 값은 다시 검증할 커밋 — 베이스에 생긴 머지 커밋, 또는 브랜치가 머지된 것보다 앞선 커밋을 지녔을 때(아직 머지되지 않은 리드 수정) 게이트가 고른 브랜치 팁. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀고, 그 커밋을 분리 체크아웃에 꺼내 설계 문서의 재현 절차와 이 슬라이스 몫의 구현 시 검증 레시피를 다시 돌려 결과를 리포트에 남기며, 실패는 P0 로 적는다. 다른 슬라이스의 항목은 `미실행 — 다른 슬라이스`, 어느 슬라이스에도 배정되지 않은 항목은 `미실행 — 배정 없음` 으로 적는다. diff 기준은 그대로 `--base-sha`...브랜치 팁. |
 | `--slice <id>` | off (슬라이스 범위를 적용하지 않고 모든 발견을 센다 — 개요에 `적용 안 됨 — 인자 없음`) | 이 세그먼트가 구현한 설계 슬라이스 id. 지시문의 `설계는 <doc>` 이 가리키는 설계 문서의 `## 구현 슬라이싱` 에서 같은 id 의 블록을 이 슬라이스의 범위로 읽고, 다른 선언 슬라이스에 배정된 P1·P2·P3 발견을 `## 다른 슬라이스 몫 (집계 제외)` 절로 옮겨 집계에서 뺀다. 문서·절·블록이 없으면 모두 센다. |
+| `--expand <분야>[,<분야>]` | off (기술 분야만 리뷰 — 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다) | 기본에서 빠진 리뷰 분야를 연다. 값은 `요구`와 `문서표현` 둘이다. 드라이버와 게이트가 매니페스트 계획의 `review_expand` 를 리뷰 파견마다 싣는다. 분야는 이 플래그로만 열리며, 앵커 브리프의 의도 문장이나 `## 실행 계획` 블록은 분야를 열지 않는다. `--lead-fix` 는 이 플래그를 읽지 않는다. |
 | `--basis-cycle <n>` | off (delta mode is not attempted; review runs full) | The 사이클 number of this segment's most recent FULL review cycle. Required together with --basis-review-head and --basis-report-path to attempt delta mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt. |
 | `--basis-review-head <sha>` | off (delta mode is not attempted; review runs full) | The 리뷰 HEAD of the cycle named by --basis-cycle. Verified with git merge-base --is-ancestor against the target head named explicitly, never the caller's ambient HEAD. On failure, or when the three-flag set is incomplete or malformed, the arm falls back to a full review and records why in the report overview. |
 | `--basis-report-path <abs-path>` | off (delta mode is not attempted; review runs full) | Main-worktree absolute path to the --basis-cycle report — the source of the prior findings this cycle re-adjudicates. Read-only; never written by this arm. Must be absolute or it is treated as malformed. |
@@ -385,7 +459,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 > _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
 
-> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
+> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
 
 > _Parsing (`--report-path <abs-path>`): `--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지._
 
@@ -395,7 +469,11 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 > _Parsing (`--seat-commits <list>`): `--seat-commits` 다음 토큰을 값으로 취한다. 공백·괄호·쌍반점을 포함하므로 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다._
 
+> _Parsing (`--post-merge <commit>`): `--post-merge` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다._
+
 > _Parsing (`--slice <id>`): `--slice` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다._
+
+> _Parsing (`--expand <분야>[,<분야>]`): `--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이다. 값이 없거나 모르는 값이면 정지하지 않고 버리며 개요에 한 줄 남긴다. 남은 값이 없으면 플래그를 주지 않은 것과 같다._
 
 > _Parsing (`--basis-cycle <n>`): `--basis-cycle` takes the next token as its value. Missing, or not a positive integer, or either companion flag itself missing or malformed → all three are treated as absent for this call; full review, no halt. One overview line records the attempt only when at least one of the three was actually supplied on argv._
 
@@ -419,9 +497,13 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review-upgrade
 
-**Usage**: `/cc-cmds:review-upgrade`
+**Usage**: `/cc-cmds:review-upgrade [--expand <분야>[,<분야>]]`
 
-_이 커맨드는 별도 인자를 받지 않으며, 직전 `/review` Step 3 리뷰어 구성 제안이 현재 대화 컨텍스트에 있어야 동작한다. opus 승격, 누락 리뷰 관점 추가, 과부하 리뷰어 분할은 강화가 유의미할 때만 제안하며, 그 외에는 유지 사유를 제시한다. 독립 실행 시 결과가 불정확할 수 있다._
+| Option | Default | Summary |
+| --- | --- | --- |
+| `--expand <분야>[,<분야>]` | off (입력의 `리뷰 분야` 줄이 연 분야만 이어받는다 — 줄이 없는 옛 입력은 기술(기본)) | 입력에서 이어받은 리뷰 분야에 더할 분야. 값은 `요구`와 `문서표현` 둘이다. 열린 분야가 없으면 요구·문서표현 관점의 ADD 를 제안하지 않고, 열린 분야가 있으면 그 분야를 담당 범위로 하는 ADD 와 재투입 안내에 분야를 함께 싣는다. |
+
+> _Parsing (`--expand <분야>[,<분야>]`): `--expand` 다음 토큰을 값으로 취해 쉼표로 나눈다. 두 번 주면 합집합이고, 모르는 값은 경고 한 줄과 함께 버리며, 남은 값이 없으면 플래그를 주지 않은 것과 같다._
 
 ### /cc-cmds:visual
 
@@ -430,6 +512,14 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/review` Step 3 리
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 대상 설계 문서 경로 (`.md`). 사이드카 `<base>/docs/visual/<slug>.md` 의 상태가 이번 국면을 정한다. |
+
+### /cc-cmds:visual-publish-unattended
+
+**Usage**: `/cc-cmds:visual-publish-unattended <design-doc-path>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<design-doc-path>` | (required) | 동결된 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다. |
 
 ### /cc-cmds:visual-unattended
 

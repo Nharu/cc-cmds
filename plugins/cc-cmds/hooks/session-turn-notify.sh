@@ -80,6 +80,11 @@ case "$last" in
 esac
 if [ -z "$reason" ]; then reason='차례가 넘어왔습니다'; fi
 
+# THE SESSION TITLE IS READ AFTER EVERY GATE ABOVE, so a session with the banners
+# off never opens the file. The value comes only from the session title hook's
+# current title file; any failure there is an empty value and today's title.
+CC_NOTIFY_SESSION_TITLE=$(cc_notify_session_title_read "$sid")
+export CC_NOTIFY_SESSION_TITLE
 CC_NOTIFY_SESSION_ID="$sid"
 export CC_NOTIFY_SESSION_ID
 cc_notify_fire session-turn "$reason" >/dev/null 2>&1

@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
+_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -776,7 +776,9 @@ check "두 사본의 설계 단계 id 선택식이 바이트 동일하다" "$des
 # fixed question, and to take a visual-wait park back up once it is approved —
 # and only then: a resubmission that consumes a person's refusal also ends on
 # exit 0, so each copy has to say that adoption is the `결정=채택` row and that
-# a consumed refusal leaves the segment parked.
+# a consumed refusal leaves the segment parked. A run whose plan carries the
+# publish step `S2P` dispatches it from the same section, so its dispatch line
+# and terminal literal are carried by both copies too.
 # ---------------------------------------------------------------------------
 visual_section() {
   # visual_section <skill file> — the visual-dispatch subsection body, read up
@@ -795,6 +797,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '-- visual -p "/cc-cmds:visual-unattended <스냅숏 design_doc>"' \
     '시각 디자인을 검토 통과로 확정했습니다.' \
     '**상태**: 검토 통과' \
+    'reading `**상태**: 검토 통과` or `**상태**: 발행됨`' \
     'A slice whose `**화면**` reads `없음` never waits.' \
     '--surface 읽기 -- <plugin root>/orchestrator/visual-check.sh approval <스냅숏 design_doc>' \
     "-- 등급=2 '판단 부류=시각-승인' '기준=시각 승인 대기' '근거=<화면 세그먼트> 의 화면이 고정 좌석에서 구현 승인되었는가'" \
@@ -806,7 +809,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '`결정=거절 소비`' \
     'the approval is adopted only when that row carries `결정=채택`' \
     'go to item 5 whatever the predicate says' \
-    'A consumed refusal does not make the segment `실행중` again'
+    'A consumed refusal does not make the segment `실행중` again' \
+    '-- visual-publish -p "/cc-cmds:visual-publish-unattended <스냅숏 design_doc>"' \
+    '시각 발행 단계를 마쳤습니다.' \
+    'no implement step waits on `S2P`'
   do
     nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
     if [ "${nlit:-0}" != "0" ]; then
@@ -825,6 +831,16 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     bad "$who 사본의 승인 술어 읽기" "bash 뒤에 도우미를 둔 표기가 남았다"
   fi
 done
+# Both router copies accept a `발행됨` sidecar because a re-kicked run's visual
+# stage reuses its source's sidecar without writing it. That holds only while
+# the stage itself still runs the reuse check, so pin the call in its text.
+VU_SKILL="$PLUGIN_ROOT/skills/visual-unattended/SKILL.md"
+nreuse=$(grep -cF -- 'visual-check.sh reuse' "$VU_SKILL" || true)
+if [ "${nreuse:-0}" != "0" ]; then
+  ok "visual-unattended 문면이 visual-check.sh reuse 로 재사용을 판정한다"
+else
+  bad "visual-unattended 문면의 재사용 판정" "visual-check.sh reuse 호출이 없다"
+fi
 
 # ---------------------------------------------------------------------------
 # 6e. Re-attaching a cut stage is carried by BOTH router copies
@@ -977,6 +993,23 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     ok "$who 사본의 설계 절이 동결 전 감사·계획 금지 문장을 그대로 싣는다"
   else
     bad "$who 사본의 설계 절" "동결 전 감사·계획 금지 문장이 없다"
+  fi
+done
+
+# The shift posts a pull request review a termination clause asks for, and both
+# copies' settling sections give the same REST spelling with the declaration the
+# gate judges it at. A copy that dropped either would leave the review to a
+# stage or to a declaration the cutpoint rule refuses.
+for pair in "리드:$AP_ROUTER|### Proposing that the run is done" \
+            "교대:$RS_CORPUS|### Settling the termination clauses and proposing done"; do
+  who=${pair%%:*}; rest=${pair#*:}; file=${rest%%|*}; head=${rest#*|}
+  sec=$(router_section "$file" "$head")
+  n1=$(printf '%s\n' "$sec" | grep -cF -- '--cutpoint 커밋 --surface 외부상태변경 --reach 협업' || true)
+  n2=$(printf '%s\n' "$sec" | grep -cF -- 'pulls/<n>/reviews' || true)
+  if [ "${n1:-0}" != "0" ] && [ "${n2:-0}" != "0" ]; then
+    ok "$who 사본의 「${head#'### '}」 절이 리뷰 게시 철자와 신고를 함께 싣는다"
+  else
+    bad "$who 사본의 「${head#'### '}」 절" "리뷰 게시 철자 또는 신고가 없다 (신고 $n1, 철자 $n2)"
   fi
 done
 
@@ -1425,6 +1458,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '#### Planning the segments|That value is the dispatch floor'"'"'s own landing judgment, and it covers both a segment whose last `segment` row is `머지됨` or `완료` and one parked after a `머지됨` — unless that merge still owed this run its apply.' \
     '#### Planning the segments|**A slice is planned when two conditions hold together**: every `선행` token'"'"'s predecessor reads `"착지": true` in its `segments[]` entry, and every `머지 순서` token of the slice — read from the snapshot'"'"'s `슬라이싱.세그먼트[]`, because a slice with no row yet is not in `segments[]` — already has a `segment` row.' \
     '#### Planning the segments|A slice whose `선행` is `없음` and whose `머지 순서` tokens all have rows is planned and dispatched at once, cut from the current base.' \
+    '#### Planning the segments|**A slice whose `슬라이싱` entry reads `"착지 행": true` and that has no `segments[]` entry is brought in, not built**: the manifest carries a `선행 착지` row for it, so issue call 3 alone at once, whatever its `선행` and `머지 순서` read — no `git fetch` and no `git worktree add -b` — with `--target` the entry'"'"'s `대상`, or the alias whose `home` is `예` in `targets[]` when `대상` is empty, and `워크트리=` the entry'"'"'s `워크트리`, or `-` when it is empty; the act writes the slice'"'"'s own `상태=머지됨 · 출처=매니페스트` row and no planned row, so do not dispatch it, and its dependents are planned by the rule above once its `segments[]` entry reads `"착지": true`. A refusal with exit 3 here ends the shift as the predecessor import'"'"'s refusal below does.' \
     '#### Planning the segments|A `머지 순서` token with no row yet (that slice still waits on its own `선행`) defers the slice until the row appears, and a slice carrying both lists follows the same product: with D `선행` A and D `머지 순서` C, D waits for C'"'"'s row even after A has landed.' \
     '#### Planning the segments|Planned earlier, the slice is refused with exit 2 by the floor that requires every token to name a segment this ledger knows.' \
     '#### Planning the segments|The two imports below — a predecessor an earlier run already merged, and one the manifest'"'"'s `선행 착지` row names — apply to a `머지 순서` token as well, and the planning act writes that predecessor'"'"'s row itself; without them the row would never appear and the slice would never be planned.' \

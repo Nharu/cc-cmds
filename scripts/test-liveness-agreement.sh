@@ -973,6 +973,17 @@ id_mkrun() {
   fx_heartbeat 0 "$2"
   ID_AGE="$2"
 }
+ua_case() {
+  # ua_case <설명> <기대 수> [<ledger>] — the dashboard's port of
+  # `cc_unanswered_halts` against the shell's, and the shell's against the
+  # count the fixture was built for, so the two cannot agree on a wrong count.
+  # The port reads the ledger through `Ledger`, the line numbers the dashboard
+  # keys a returned answer on.
+  local led="${3-$FX_LEDGER}" sh
+  sh=$(cc_unanswered_halts "$FX_RUN_DIR" "$led")
+  check "$1 — 포트의 답 없는 기록 수가 셸과 같다" "$(port unanswered-halts "$FX_RUN_DIR" "$led")" "$sh"
+  check "$1 — 답 없는 기록 수가 $2 다" "$sh" "$2"
+}
 
 id_mkrun 20261012-0000000a 90000
 mkdir -p "$FX_RUN_DIR/halt"
@@ -982,13 +993,17 @@ check "유휴 A — 상태표는 이 런을 버려짐 으로 읽는다 (아래 �
 check "유휴 A — 답 없는 중단 기록이 있으면 25시간 조용해도 유휴가 아니다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
 check "유휴 A 폴러 — 끝나지 않았다" "$(read_poller "$FX_RUN_DIR" "$FX_LEDGER")" "끝나지 않음"
+ua_case "유휴 A 이식" 1
 printf '답\n' > "$FX_RUN_DIR/halt/S1.answer.md"
 check "유휴 A — 답 첨부 파일은 원장의 답 행이 아니다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+ua_case "유휴 A 이식 (답 첨부만)" 1
 fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/S1.md" "답=좌석 실행"
 check "유휴 A′ — 그 기록을 원장의 중단 답 행이 가리키면 유휴다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
 check "유휴 A′ 폴러 — 끝났다" "$(read_poller "$FX_RUN_DIR" "$FX_LEDGER")" "끝남"
+ua_case "유휴 A′ 이식" 0
+ua_case "유휴 A′ 이식 (빈 원장 인자는 모든 기록을 답 없음으로 센다)" 1 ""
 
 id_mkrun 20261012-0000000b 90000
 mkdir -p "$FX_RUN_DIR/halt"
@@ -996,6 +1011,21 @@ printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/S1.md"
 fx_row '중단 답' "중단 기록=/elsewhere/20261012-0000000a/halt/S1.md" "답=좌석 실행"
 check "유휴 B — 다른 런의 같은 이름 기록을 가리키는 답은 이 기록의 답이 아니다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+ua_case "유휴 B 이식" 1
+
+# The port matches every `중단 기록=` field of a row, as the shell's awk does,
+# and skips a dot-named record, as the shell's glob does.
+id_mkrun 20261012-00000012 90000
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/S1.md"
+ua_case "이식 — 같은 키 두 번 행 앞" 1
+fx_row '중단 답' "중단 기록=/elsewhere/20261012-00000012/halt/S2.md" "중단 기록=$FX_RUN_DIR/halt/S1.md" "선택지=보류"
+ua_case "이식 — 중단 기록= 이 두 번 나오는 행의 둘째 값이 그 기록을 가리키면 답이다" 0
+id_mkrun 20261012-00000013 90000
+mkdir -p "$FX_RUN_DIR/halt/shift"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/.S1.md"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/shift/.S1#1.md"
+ua_case "이식 — 점으로 시작하는 기록 파일은 세지 않는다" 0
 
 # A SHIFT'S STOP IS A QUESTION TOO. Its record sits one level down, under
 # `halt/shift/`, and a run whose only open question is one of those still waits
@@ -1005,12 +1035,15 @@ mkdir -p "$FX_RUN_DIR/halt/shift"
 printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/shift/S1#1.md"
 check "유휴 G — 교대 정지 기록만 있어도 답이 없으면 유휴가 아니다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+ua_case "유휴 G 이식" 1
 fx_row '중단 답' "중단 기록=/elsewhere/20261012-00000010/halt/S1#1.md" "답=재시도"
 check "유휴 G — halt/ 의 같은 이름을 가리키는 답은 교대 기록의 답이 아니다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+ua_case "유휴 G 이식 (halt/ 의 같은 이름을 가리키는 답)" 1
 fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/shift/S1#1.md" "답=재시도"
 check "유휴 G′ — 그 교대 기록을 원장의 중단 답 행이 가리키면 유휴다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+ua_case "유휴 G′ 이식" 0
 
 # AN ANSWER THE SHIFT HANDED BACK IS A QUESTION AGAIN. The routing shift could
 # not carry it out and wrote a block the gate stamped with the answer's line;
@@ -1024,9 +1057,11 @@ fx_row 'blocked' "스코프=cone" "원인=막힘" "앵커 세그먼트=S1" "사�
   "근거=중단 답 줄 $id_ret_ln" "막힌 답 줄=$id_ret_ln"
 check "유휴 H — 되돌려진 기록이 기다리는 동안 유휴 종료하지 않는다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+ua_case "유휴 H 이식 (되돌림)" 1
 fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/S1#1.md" "선택지=보류"
 check "유휴 H′ — 그 기록에 사람의 새 답이 서면 유휴다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+ua_case "유휴 H′ 이식" 0
 
 id_mkrun 20261012-0000000c 90000
 fx_approval A1 대기

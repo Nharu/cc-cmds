@@ -155,7 +155,7 @@ Apply the protocol's `witness_present` completion predicate, its reconcile ladde
 
 **Read `${CLAUDE_SKILL_DIR}/references/03-adjustment-pass.md`.**
 
-Record the `조정 시작` timestamp as the **first** act of this step. In one non-recursive pass: re-assign severity as a single labeller; route every unique defect to exactly one named owner; apply the accepted set; write the routed items into their carriers; ask the synthesis question of CFI-3b and answer it in writing; record `조정 종료`.
+Record the `조정 시작` timestamp as the **first** act of this step. In one non-recursive pass: re-assign severity as a single labeller; route every unique defect to exactly one named owner; assign each non-rejected unique defect its downstream class and decide the light path by `03-adjustment-pass.md` (`### Downstream class`); apply the accepted set; write the routed items into their carriers; ask the synthesis question of CFI-3b and answer it in writing; record `조정 종료`.
 
 Severity is re-assigned here, by one labeller, in one pass. It is **never** aggregated across readers by taking a maximum — per-reader severity labels are not comparable (measured spread across readers on one document was better than twofold), so a maximum is a ratchet rather than a measurement. Readers do not emit severity tiers at all, so there is nothing to aggregate even if someone tried.
 
@@ -163,7 +163,7 @@ Severity is re-assigned here, by one labeller, in one pass. It is **never** aggr
 
 **Read `${CLAUDE_SKILL_DIR}/references/04-disclosure-block.md`.**
 
-Compose the disclosure block, run the four anti-vacuity self-checks, write the report, echo the block in Korean, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. Emit the next-step line, then stop with the literal statement *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."*
+Compose the disclosure block and the downstream class fence after it, run the four anti-vacuity self-checks, write the report, echo the block in Korean, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. Emit the next-step line, then stop with the literal statement *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."*
 
 ### (There is no Step 8.)
 
@@ -189,6 +189,8 @@ Verify consistency and completeness of the existing design content. Do NOT propo
 **Repo-measurement carve-out (BASE MODE)**: the repo ground-truth measurement of the reader contract is in-scope even under `--base` — an artifact the document's architecture requires but no step creates is an internal incompleteness of the existing design, not a new implementation detail. Using a measurement *result* as a vector for a new task-level design-substance proposal within the same finding remains forbidden.
 
 When `--base` is absent, substitute a single empty line so the prompt structure stays stable.
+
+`{REAUDIT_SCOPE}` is always substituted with a single empty line here: only the unattended audit's re-audit narrows what readers report.
 
 `--base` is not decoration. A base design document is deliberately intent-level, and an unconstrained reader against an intent-level document emits a flood of "missing implementation detail" findings. That inflates the raw finding count, which pushes the single-pass reconciliation limit, which is the one structural selector fixing `READER_COUNT` (CFI-0). The flag is therefore a control on the exact constraint that fixes the budget.
 

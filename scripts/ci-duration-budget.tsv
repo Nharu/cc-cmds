@@ -1,5 +1,6 @@
 # ci-duration-budget v1
 key	budget_s	tol_s	tol_pct
-gate	20000	900	12
+# gate: 2026-10-31 master 실행 41182386281 의 ci-duration-gate 창 31752 30718 29564 29658 30103, 중앙값 30103 을 100초 단위로 올려 30200
+gate	30200	900	12
 lint-rest-tests	1841	300	35
 notify-macos	850	180	40

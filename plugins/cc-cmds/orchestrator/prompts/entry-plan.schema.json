@@ -38,7 +38,7 @@
         "type": "object",
         "properties": {
           "id": { "type": "string", "minLength": 1 },
-          "skill": { "type": "string", "enum": ["design", "design-audit", "implement", "review", "apply", "split", "visual"] },
+          "skill": { "type": "string", "enum": ["design", "design-audit", "implement", "review", "apply", "split", "visual", "visual-publish"] },
           "summary": { "type": "string" },
           "depends_on": { "type": "array", "items": { "type": "string" } }
         },
@@ -71,8 +71,11 @@
       "required": ["judgment", "classes", "paths", "source", "rationale"],
       "additionalProperties": false
     },
+    "run_profile": { "type": "string", "enum": ["hotfix", "standard"] },
+    "review_expand": { "type": "array", "items": { "type": "string", "enum": ["요구", "문서표현"] } },
+    "review_expand_rationale": { "type": "string" },
     "notes": { "type": "string" }
   },
-  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "visual_design_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "notes"],
+  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "visual_design_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "run_profile", "review_expand", "review_expand_rationale", "notes"],
   "additionalProperties": false
 }

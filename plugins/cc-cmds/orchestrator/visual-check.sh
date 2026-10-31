@@ -36,12 +36,33 @@
 #       the document's sidecar is `발행됨`, carries exactly one well-formed
 #       `**구현 승인**` line, and the input bundle measured from the current
 #       files equals the line's value. Otherwise print `승인 없음 — <reason>` or
-#       `승인 무효 — <reason>` and exit 1.
+#       `승인 무효 — <reason>` and exit 1. The line may end in the provenance
+#       tail ` — 사람 답 <file name>`, the name of the halt record under the
+#       run's `halt/` whose person's answer the line was written on
+#       (`[A-Za-z0-9._#-]+\.md`: no path separator, no space). When it does, a
+#       valid approval prints a second line `출처 사람 답 <file name>`; whether
+#       that record and its answer stand is the gate's to check, not this one's.
 #   bundle <design doc> [--lines]
 #       Print the input bundle sha256 (with --lines, the bundle text itself):
 #       `<screen id> <sha256>` per screen in screen-id order, then
 #       `runtime <support.js sha256>` and `tokens <tokens.css sha256>`, with
 #       `(없음)` for a file that does not exist.
+#   binding <design doc>
+#       Print the design document's binding digest the sidecar's
+#       `**설계 문서 구속 다이제스트**` carries: the driver's `binding_digest`
+#       filter (run.sh) with the `## 시각 정합 기준` section dropped besides.
+#   reuse <design doc> --record <interview record>
+#       Decide whether a run may take the document's sidecar as its visual
+#       stage's finished work. Six conditions in order: the sidecar exists,
+#       its header is `cc-visual v1` and `owner-doc` is this document; its state
+#       is `검토 통과` or `발행됨`; the `**기록**` sha256 equals the record
+#       file's (the path is not compared); `**설계 문서 구속 다이제스트**`
+#       equals `binding`; `**디자인 시스템 sha256**` equals the current
+#       `system.md` (`(없음)` when there is none); every screen block's
+#       `**대상 경로**` file exists with the block's `**sha256**`. Print
+#       `재사용 <상태>` and exit 0 when all hold, otherwise
+#       `재사용 불가 — <reason>` for the first that fails and exit 1. Writes
+#       nothing.
 #
 # The sidecar is found the way every visual skill finds it: the document key is
 # the document's path below `git rev-parse --show-toplevel`, the slug is the
@@ -51,8 +72,10 @@
 # tokens `<base>/docs/visual-system/tokens.css`.
 #
 # Exit codes:
-#   0 — scan: no finding; approval: valid; other subcommands: success
-#   1 — scan: at least one finding; approval: none or void; bundle: no sidecar
+#   0 — scan: no finding; approval: valid; reuse: reusable; other subcommands:
+#       success
+#   1 — scan: at least one finding; approval: none or void; bundle: no sidecar;
+#       reuse: not reusable
 #   2 — usage error, an unreadable file, a malformed ban list or pattern, a
 #       screen that ends inside a comment, a tag, a template string or an
 #       unclosed <style>/<script>, or whose CSS or script block comment is
@@ -65,7 +88,7 @@
 set -euo pipefail
 
 usage() {
-  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] | size <화면> | approval <설계 문서> | bundle <설계 문서> [--lines]" >&2
+  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] | size <화면> | approval <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | reuse <설계 문서> --record <기록>" >&2
   exit 2
 }
 
@@ -471,7 +494,7 @@ cmd_bundle() {
 
 cmd_approval() {
   [ $# -eq 1 ] || usage
-  local doc=$1 why owner state n line want id now
+  local doc=$1 why owner state n line want id now src
   if ! why=$(locate_sidecar "$doc"); then
     echo "승인 없음 — ${why}"; exit 1
   fi
@@ -488,9 +511,10 @@ cmd_approval() {
   [ "$n" != 0 ] || { echo "승인 없음 — 구현 승인 줄 없음"; exit 1; }
   [ "$n" = 1 ] || { echo "승인 무효 — 구현 승인 줄이 ${n}개다"; exit 1; }
   line=$(grep -E '^\*\*구현 승인\*\*:' "$SIDECAR")
-  printf '%s\n' "$line" | grep -qE '^\*\*구현 승인\*\*: [^[:space:]]+ — 입력 묶음 [0-9a-f]{64} — 금지 목록 [0-9a-f]{64} — 기계 검사 수용 (없음|[a-z0-9-]+(, [a-z0-9-]+)*)[[:space:]]*$' \
+  printf '%s\n' "$line" | grep -qE '^\*\*구현 승인\*\*: [^[:space:]]+ — 입력 묶음 [0-9a-f]{64} — 금지 목록 [0-9a-f]{64} — 기계 검사 수용 (없음|[a-z0-9-]+(, [a-z0-9-]+)*)( — 사람 답 [A-Za-z0-9._#-]+\.md)?[[:space:]]*$' \
     || { echo "승인 무효 — 구현 승인 줄의 형식이 틀렸다"; exit 1; }
   want=$(printf '%s\n' "$line" | sed -E 's/^.* — 입력 묶음 ([0-9a-f]{64}) — .*$/\1/')
+  src=$(printf '%s\n' "$line" | sed -nE 's/^.* — 사람 답 ([A-Za-z0-9._#-]+\.md)[[:space:]]*$/\1/p')
   [ -n "$(screen_ids)" ] || { echo "승인 무효 — 사이드카에 화면이 없다"; exit 1; }
   for id in $(screen_ids); do
     [ -f "$BASE/docs/visual/${SLUG}.${id}.html" ] || { echo "승인 무효 — 화면 파일 없음 (${id})"; exit 1; }
@@ -498,6 +522,107 @@ cmd_approval() {
   now=$(bundle_text | sha256_stdin)
   [ "$now" = "$want" ] || { echo "승인 무효 — 입력 묶음이 달라졌다 (줄 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
   echo "승인 유효 ${now:0:12}"
+  [ -z "$src" ] || echo "출처 사람 답 ${src}"
+}
+
+# binding_text <design doc> — the document the binding digest hashes: the
+# driver's `binding_digest` filter (the grade and note lines inside
+# `## 구현 시 검증 항목`, then CR, trailing blanks, repeated and leading blank
+# lines) with the `## 시각 정합 기준` section dropped whole besides.
+binding_text() {
+  awk '
+    /^## / {
+      insec = ($0 ~ /^## 구현 시 검증 항목[[:space:]]*$/) ? 1 : 0
+      invis = ($0 ~ /^## 시각 정합 기준[[:space:]]*$/) ? 1 : 0
+    }
+    invis { next }
+    insec && /^(- )?(\*\*검증 등급\*\*|검증 등급): / { next }
+    insec && /^(- )?(\*\*구현 시 검증 기록\*\*|구현 시 검증 기록): / { next }
+    { print }
+  ' "$1" \
+    | tr -d '\r' \
+    | sed 's/[[:space:]]*$//' \
+    | awk '{ if ($0 == "") { blank = 1; next } if (blank && seen) print ""; blank = 0; seen = 1; print }'
+}
+
+cmd_binding() {
+  [ $# -eq 1 ] || usage
+  [ -f "$1" ] || { echo "visual-check.sh binding: 설계 문서가 없다: $1" >&2; exit 2; }
+  binding_text "$1" | sha256_stdin
+}
+
+# sidecar_field <name> — the value of the first `**<name>**:` line of the
+# sidecar's document-level fields (above the first `### ` block).
+sidecar_field() {
+  awk -v k="**$1**:" '
+    /^### / { exit }
+    index($0, k) == 1 { v = substr($0, length(k) + 1); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v); print v; exit }
+  ' "$SIDECAR"
+}
+
+cmd_reuse() {
+  local doc='' rec='' why owner state recf recsha want now sys blocks id path bsha fp
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --record) [ $# -ge 2 ] || usage; rec=$2; shift 2 ;;
+      --*) usage ;;
+      *) [ -z "$doc" ] || usage; doc=$1; shift ;;
+    esac
+  done
+  [ -n "$doc" ] && [ -n "$rec" ] || usage
+  [ -f "$doc" ] || { echo "visual-check.sh reuse: 설계 문서가 없다: $doc" >&2; exit 2; }
+  [ -f "$rec" ] || { echo "visual-check.sh reuse: 기록 파일이 없다: $rec" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "재사용 불가 — ${why}"; exit 1
+  fi
+  locate_sidecar "$doc" >/dev/null
+  # 1 — the sidecar is there, its header is `cc-visual v1` and names this document.
+  [ -f "$SIDECAR" ] || { echo "재사용 불가 — 사이드카 없음 (${SIDECAR})"; exit 1; }
+  owner=$(sed -n '1,2p' "$SIDECAR" | { grep -E '^<!-- cc-visual v1;' || true; } | sed -n '1p' \
+    | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  [ -n "$owner" ] || { echo "재사용 불가 — 사이드카 머리가 cc-visual v1 이 아니다"; exit 1; }
+  [ "$owner" = "$DOC_KEY" ] || { echo "재사용 불가 — 사이드카의 owner-doc 이 이 문서가 아니다"; exit 1; }
+  # 2 — the state is one a visual stage may end on.
+  state=$(sed -nE 's/^\*\*상태\*\*:[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' "$SIDECAR" | head -n 1)
+  case "$state" in
+    '검토 통과'|발행됨) ;;
+    *) echo "재사용 불가 — 상태가 검토 통과·발행됨이 아니다 (${state:-없음})"; exit 1 ;;
+  esac
+  # 3 — the record's hash; its path is not compared.
+  recf=$(sidecar_field '기록')
+  recsha=$(printf '%s\n' "$recf" | sed -nE 's/^.*\(sha256 ([0-9a-f]{64})\)$/\1/p')
+  now=$(sha256_of "$rec")
+  [ -n "$recsha" ] || { echo "재사용 불가 — 사이드카의 기록 필드에 sha256 이 없다 (${recf:-없음})"; exit 1; }
+  [ "$recsha" = "$now" ] || { echo "재사용 불가 — 기록의 sha256 이 다르다 (사이드카 ${recsha:0:12}, 기록 ${now:0:12})"; exit 1; }
+  # 4 — the design document's binding digest.
+  want=$(sidecar_field '설계 문서 구속 다이제스트')
+  now=$(binding_text "$doc" | sha256_stdin)
+  [ "$want" = "$now" ] || { echo "재사용 불가 — 설계 문서 구속 다이제스트가 다르다 (사이드카 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
+  # 5 — the design system file as it is now.
+  want=$(sidecar_field '디자인 시스템 sha256')
+  sys="$BASE/docs/visual-system/system.md"
+  if [ -f "$sys" ]; then now=$(sha256_of "$sys"); else now='(없음)'; fi
+  [ "$want" = "$now" ] || { echo "재사용 불가 — 디자인 시스템 sha256 이 다르다 (사이드카 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
+  # 6 — every screen block's file is there with the block's sha256.
+  blocks=$(awk '
+    /^### 화면 / { if (id != "") print id "\t" p "\t" s; id = $3; p = ""; s = ""; next }
+    /^### / { if (id != "") print id "\t" p "\t" s; id = ""; next }
+    id != "" && index($0, "**대상 경로**:") == 1 { p = substr($0, length("**대상 경로**:") + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", p) }
+    id != "" && index($0, "**sha256**:") == 1 { s = substr($0, length("**sha256**:") + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", s) }
+    END { if (id != "") print id "\t" p "\t" s }
+  ' "$SIDECAR")
+  [ -n "$blocks" ] || { echo "재사용 불가 — 사이드카에 화면이 없다"; exit 1; }
+  while IFS="$(printf '\t')" read -r id path bsha; do
+    [ -n "$id" ] || continue
+    [ -n "$path" ] || { echo "재사용 불가 — 화면 ${id} 의 대상 경로가 없다"; exit 1; }
+    fp="$BASE/$path"
+    [ -f "$fp" ] || { echo "재사용 불가 — 화면 파일 없음 (${id})"; exit 1; }
+    now=$(sha256_of "$fp")
+    [ "$now" = "$bsha" ] || { echo "재사용 불가 — 화면 ${id} 의 sha256 이 다르다 (블록 ${bsha:0:12}, 파일 ${now:0:12})"; exit 1; }
+  done <<EOF
+$blocks
+EOF
+  echo "재사용 ${state}"
 }
 
 [ $# -ge 1 ] || usage
@@ -508,5 +633,7 @@ case "$sub" in
   size) cmd_size "$@" ;;
   approval) cmd_approval "$@" ;;
   bundle) cmd_bundle "$@" ;;
+  binding) cmd_binding "$@" ;;
+  reuse) cmd_reuse "$@" ;;
   *) usage ;;
 esac

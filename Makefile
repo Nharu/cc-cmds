@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -40,6 +40,7 @@ lint:
 	bash scripts/lint-team-budget-pins.sh
 	bash scripts/lint-team-model-tier-pins.sh
 	bash scripts/lint-unattended-surfaces.sh
+	bash scripts/lint-attention-schema.sh
 	bash scripts/lint-lead-read-set.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-autoadopt-vocabulary.sh
@@ -53,6 +54,7 @@ lint:
 	bash scripts/lint-pace-threshold-pins.sh
 	bash scripts/lint-fleet-agent-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
+	bash scripts/lint-statusline-wrapper-pins.sh
 	bash scripts/lint-approval-state-vocabulary.sh
 	bash scripts/lint-sidecar-field-table.sh
 	bash scripts/lint-approval-answer-provenance.sh
@@ -77,14 +79,24 @@ lint:
 # A hook whose path is wrong is silent — the harness runs nothing and says
 # nothing — so this is the only place the typo becomes visible.
 #
-# The resolution count is compared first. `grep -o` would drop a command that is
-# not written against the plugin root, and a dropped command is one this walk
-# never checked while reporting success over the rest.
-	@n_cmd=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -c .); \
-	 n_path=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}][^" ]*' | grep -c .); \
-	 test "$$n_cmd" = "$$n_path" || { echo "lint: hooks.json 의 command $$n_cmd 개 중 $$n_path 개만 플러그인 상대 경로로 해소된다" >&2; exit 1; }; \
+# Coverage is checked first, PER COMMAND rather than by a total count. `grep -o`
+# would drop a command that is not written against the plugin root, and a dropped
+# command is one this walk never checked while reporting success over the rest.
+# The earlier form compared the number of commands against the number of root
+# references and demanded they be equal, which silently required EXACTLY ONE
+# reference per command. A command may legitimately name the root twice — once as
+# the script it runs and once as an argument that hands the same directory to
+# that script — and under the old form such a command made the totals differ and
+# failed the check while every command was in fact covered.
+#
+# The coverage test asks for a root reference WITH A PATH under it. A bare
+# `${CLAUDE_PLUGIN_ROOT}` is a directory handed to a script, not something the
+# walk can open, so counting it as coverage would let a command pass the first
+# test and contribute nothing to the second.
+	@bad=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -cvF '$${CLAUDE_PLUGIN_ROOT}/' || true); \
+	 test "$$bad" = "0" || { echo "lint: hooks.json 의 command 중 $$bad 개가 플러그인 루트 아래 경로를 갖지 않아 아래 검사가 건너뛴다" >&2; exit 1; }; \
 	 jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json \
-	   | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}][^" ]*' \
+	   | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}]/[^" ]+' \
 	   | sed -e 's|[$$][{]CLAUDE_PLUGIN_ROOT[}]|plugins/cc-cmds|' \
 	   | while IFS= read -r p; do \
 	       test -f "$$p" || { echo "lint: hooks.json 이 가리키는 파일이 없다: $$p" >&2; exit 1; }; \
@@ -105,6 +117,35 @@ lint:
 	@jq -e 'has("version")' plugins/cc-cmds/.claude-plugin/plugin.json >/dev/null || (echo "lint: plugin.json must have a .version field (it is the single version SOT)" >&2; exit 1)
 	@jq -e '[.plugins[] | has("version")] | any | not' .claude-plugin/marketplace.json >/dev/null || (echo "lint: marketplace.json plugin entries must NOT declare .version (plugin.json is the version SOT)" >&2; exit 1)
 	@grep -qE '선리뷰후머지.*선머지후리뷰.*리뷰없음' plugins/cc-cmds/skills/_common/pipeline-sidecar.md || (echo "lint: the review-policy axis must be written strict-to-loose in the contract (선리뷰후머지 -> 선머지후리뷰 -> 리뷰없음); a reader who takes the axis backwards picks the opposite end, which is the human form of the defect this axis exists to remove. No lint script is added for this: the token vocabulary has exactly one enumeration in the tree so there is no second copy to drift, and a bad token fails hard on its first call at runtime -- document ORDER is the one thing no runtime detector sees" >&2; exit 1)
+# Every scripts/lint-*.sh and scripts/test-*.sh must be registered here. An
+# unregistered script never runs, so no test of its own can report its absence;
+# this guard is the only place that does. Registration takes two shapes and both
+# count: a recipe line `bash scripts/<name>` and a list item `scripts/<name> \`
+# that `run/%` runs. A name counts as registered when it stands as a whole word
+# on a line that is not a comment — after the line start or whitespace, and
+# before whitespace, a backslash or the line end. Comment lines are left out
+# because comments here name scripts too, and a name that appears only in a
+# comment belongs to a script that never runs. The contract is a glob, not an
+# enumeration, so a new script needs no list edit to be covered.
+#
+# The exception list is closed and holds one name. lint-ci-scope-binding.sh
+# fails on today's tree (the workflow's make call sits inside a multi-line
+# `run: |` block it cannot read), so registering it would turn lint red. The
+# exception is checked both ways: a listed name that leaves the tree, or that
+# reads as registered, is reported, so the commit that fixes and registers that
+# lint must drop it here too.
+	@reg=$$(grep -vE '^[[:space:]]*#' Makefile | tr -s ' \t' '\n\n' | sed -e 's/\\.*//' | grep -E '^scripts/' || true); \
+	 skip='scripts/lint-ci-scope-binding.sh'; \
+	 bad=0; \
+	 for s in $$skip; do \
+	   test -f "$$s" || { echo "lint: Makefile 등록 가드의 예외 $$s 가 트리에 없다 — 예외 목록에서 지운다" >&2; bad=1; }; \
+	   if printf '%s\n' "$$reg" | grep -qFx "$$s"; then echo "lint: Makefile 등록 가드의 예외 $$s 가 등록되어 있다 — 예외 목록에서 지운다" >&2; bad=1; fi; \
+	 done; \
+	 for f in scripts/lint-*.sh scripts/test-*.sh; do \
+	   case " $$skip " in *" $$f "*) continue ;; esac; \
+	   printf '%s\n' "$$reg" | grep -qFx "$$f" || { echo "lint: $$f 가 Makefile 의 주석 아닌 줄에 등록되어 있지 않다 — 등록되지 않은 스크립트는 한 번도 돌지 않는다" >&2; bad=1; }; \
+	 done; \
+	 test "$$bad" = 0
 
 readme:
 	bash scripts/generate-readme.sh
@@ -142,6 +183,10 @@ check-cheap:
 #   CHECK_PUSH_BASE_BRANCH  branch whose FETCH_HEAD line is the base (master)
 #   CHECK_PUSH_SECTIONS     test-gate section ids, comma-separated
 #   CHECK_PUSH_GOALS        REST goals (`make -s print-rest-goals`), comma-separated
+#   CHECK_PUSH_JOBS         section lanes and goal jobs run at once (default 4;
+#                           1 runs them in turn, as before)
+# CHECK_PUSH_JOBS reaches check-push.sh the way CHECK_PUSH_SECTIONS does, as a
+# command-line variable or from the environment; the recipe stays as it is.
 # An unattended run whose head changed plugins/cc-cmds/orchestrator/gate.sh
 # against its merge-base with the base is refused with exit 2 before the clone
 # when CHECK_PUSH_SECTIONS is empty — goals alone do not cover gate.sh — so the
@@ -398,6 +443,7 @@ LINT_TESTS := \
 	scripts/test-lint-watch-threshold-pins.sh \
 	scripts/test-lint-pace-threshold-pins.sh \
 	scripts/test-lint-statusline-token-arms.sh \
+	scripts/test-lint-statusline-wrapper-pins.sh \
 	scripts/test-lint-approval-state-vocabulary.sh \
 	scripts/test-lint-sidecar-field-table.sh \
 	scripts/test-lint-approval-answer-provenance.sh \
@@ -414,6 +460,7 @@ LINT_TESTS := \
 	scripts/test-solo-audit-experiment.sh \
 	scripts/test-reader-model-compare.sh \
 	scripts/test-reader-model-pair-audit.sh \
+	scripts/test-measure-audit-findings.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
 	scripts/test-lint-stage-policy-sources.sh \
@@ -437,12 +484,15 @@ ORCH_TESTS := \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
+	scripts/test-session-title-hook.sh \
 	scripts/test-notify-focus.sh \
+	scripts/test-attention.sh \
 	scripts/test-stage-rules-edit-hook.sh \
 	scripts/test-stage-rules.sh \
 	scripts/test-watch.sh \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
+	scripts/test-statusline-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \
@@ -483,7 +533,7 @@ $(TEST_GOALS): run/%:
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
-	run-gate-timing-selftest run-ci-duration-selftest
+	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 # How many runners the gate suite runs on (N), and how many rows each runner
 # runs at once (L, its lanes). The partition is cut into S = N × L rows; runner
@@ -500,7 +550,17 @@ GATE_SHARDS ?= 26
 GATE_LANES ?= 1
 GATE_SLOTS := $(shell echo $$(( $(GATE_SHARDS) * $(GATE_LANES) )))
 
+# The isolation check of the sections a pull request changed rides on the rows
+# above and, when their room runs out, on extra rows S+1..S+E, one runner each.
+# GATE_ISO_EXTRA is the most CI's plan job may open; GATE_EXTRA is how many the
+# table a runner was handed actually has, which only the plan job knows.
+GATE_ISO_EXTRA ?= 8
+GATE_EXTRA ?= 0
+
 # So CI can read the numbers instead of spelling them a second time.
+print-gate-iso-extra:
+	@echo $(GATE_ISO_EXTRA)
+
 print-gate-shards:
 	@echo $(GATE_SHARDS)
 
@@ -514,6 +574,13 @@ print-gate-slots:
 # that make stays the one entry point to the suites and its pinned zone applies.
 print-gate-sections:
 	@bash scripts/test-gate.sh --list < /dev/null
+
+# The section digests, for CI's changed-section plan, through make for the same
+# reason. GATE_DIGESTS_FROM names another copy of the suite (the base's) to read
+# with this one's selector; empty reads this suite.
+GATE_DIGESTS_FROM ?=
+print-gate-digests:
+	@bash scripts/test-gate.sh --digests $(if $(GATE_DIGESTS_FROM),--from '$(GATE_DIGESTS_FROM)') < /dev/null
 
 # The zone a recipe actually receives, and the offset it resolves to. The
 # offset is printed beside the name because glibc falls back to UTC in silence
@@ -537,7 +604,7 @@ ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
-	run-gate-timing-selftest run-ci-duration-selftest
+	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 test-rest: $(REST_GOALS)
 
@@ -605,7 +672,8 @@ rest-shard:
 # `@end` around the row from here, and the selector's own line in front of each
 # section, prelude and the epilogue), `lane-<K>.out` (the suite's output) and
 # `result-<K>.tsv` (`<K><TAB><exit code><TAB><summary>`, the summary being the
-# suite's total line, `빈 행` for an empty row, or `-`). Each lane's TMPDIR is
+# suite's total line, `빈 행` for an empty row, `격리 전용 행` for a row that
+# carries isolation work only, or `-`). Each lane's TMPDIR is
 # its own `lane-<K>` directory there. A lane fails on a non-zero exit code and
 # on a missing total line alike — a suite that died before its total never ran
 # its tail — and the runner fails when any lane did. The outputs reach the log
@@ -616,6 +684,15 @@ rest-shard:
 # ONE LANE WITHOUT AN OUTPUT DIRECTORY IS THE PLAIN SHARD. With GATE_LANES=1
 # and no GATE_OUT_DIR the suite runs in the foreground with its own output, and
 # GATE_TIMING_OUT, an absolute path, asks for the same markers as above.
+#
+# A ROW OF A TABLE WITH ISOLATION WORK runs it in the same lane. The sections
+# laid over the row join its cut, traced, with their markers under `@iso:`, and
+# the row's own changed sections are traced too; that cut's record goes to
+# `iso-<K>/row`. After `@end` the row's solos run, each a process of its own
+# (`scripts/gate-isolation.sh solos`), into `iso-<K>/solo<n>-<id>`. A solo's
+# exit code is the comparison's to judge, not the row's. An extra row (SHARD
+# S+1..S+E, one runner, no lanes) has no third column: it runs its solos only
+# and its result is `격리 전용 행`.
 GATE_TIMING ?= scripts/gate-timing.tsv
 GATE_TABLE ?=
 GATE_TIMING_OUT ?=
@@ -624,12 +701,19 @@ GATE_OUT_DIR ?=
 gate-shard:
 	@pick() { \
 	  if [ -n '$(GATE_TABLE)' ]; then \
-	    bash scripts/gate-shard.sh --shards $(GATE_SLOTS) --shard "$$1" --from-table '$(GATE_TABLE)'; \
+	    bash scripts/gate-shard.sh --shards $(GATE_SLOTS) --extra $(GATE_EXTRA) --shard "$$@" --from-table '$(GATE_TABLE)'; \
 	  else \
 	    bash scripts/gate-shard.sh --shards $(GATE_SLOTS) --timing '$(GATE_TIMING)' --shard "$$1"; \
 	  fi; }; \
 	case '$(SHARD)' in ''|*[!0-9]*|0) echo "gate-shard: SHARD 는 1..$(GATE_SHARDS) 의 러너 번호입니다: '$(SHARD)'" >&2; exit 2 ;; esac; \
-	[ '$(SHARD)' -le '$(GATE_SHARDS)' ] || { echo "gate-shard: SHARD $(SHARD) 가 러너 수 $(GATE_SHARDS) 를 넘습니다" >&2; exit 2; }; \
+	extra=0; \
+	if [ '$(SHARD)' -gt '$(GATE_SHARDS)' ]; then \
+	  if [ '$(SHARD)' -le '$(GATE_SLOTS)' ] || [ '$(SHARD)' -gt "$$(( $(GATE_SLOTS) + $(GATE_EXTRA) ))" ]; then \
+	    echo "gate-shard: SHARD $(SHARD) 가 러너 수 $(GATE_SHARDS) 를 넘고 추가 행 $$(( $(GATE_SLOTS) + 1 ))..$$(( $(GATE_SLOTS) + $(GATE_EXTRA) )) 도 아닙니다" >&2; exit 2; \
+	  fi; \
+	  [ -n '$(GATE_TABLE)' ] && [ -n '$(GATE_OUT_DIR)' ] || { echo "gate-shard: 추가 행 $(SHARD) 는 GATE_TABLE 과 GATE_OUT_DIR 로만 돕니다" >&2; exit 2; }; \
+	  extra=1; \
+	fi; \
 	if [ '$(GATE_LANES)' = 1 ] && [ -z '$(GATE_OUT_DIR)' ]; then \
 	  out='$(GATE_TIMING_OUT)'; \
 	  mark() { [ -z "$$out" ] || printf '%s\t%s\n' "$$1" "$$(date +%s)" >> "$$out"; }; \
@@ -637,6 +721,7 @@ gate-shard:
 	  ids=$$(pick '$(SHARD)'); rc=$$?; \
 	  if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SLOTS): 배정된 절이 없습니다"; mark @end; exit 0; fi; \
 	  [ "$$rc" = "0" ] || exit "$$rc"; \
+	  if [ -z "$$ids" ]; then echo "shard $(SHARD)/$(GATE_SLOTS): 격리 작업만 실린 행입니다 — GATE_OUT_DIR 없이는 돌리지 않습니다"; mark @end; exit 0; fi; \
 	  rc=0; CC_GATE_TIMING_OUT="$$out" bash scripts/test-gate.sh --sections "$$ids" || rc=$$?; \
 	  mark @end; exit "$$rc"; \
 	fi; \
@@ -652,17 +737,43 @@ gate-shard:
 	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; printf '%s\t0\t빈 행\n' "$$k" > "$$res"; return 0; \
 	  fi; \
 	  if [ "$$rc" != "0" ]; then printf '%s\t%s\t-\n' "$$k" "$$rc" > "$$res"; return "$$rc"; fi; \
+	  ov=; so=; own=; \
+	  if [ -n '$(GATE_TABLE)' ]; then \
+	    ov=$$(pick "$$k" --overlay 2>>"$$lo") && so=$$(pick "$$k" --solo 2>>"$$lo") && own=$$(pick "$$k" --own 2>>"$$lo") \
+	      || { printf '%s\t2\t-\n' "$$k" > "$$res"; return 2; }; \
+	  fi; \
 	  mkdir -p "$$od/lane-$$k"; \
-	  rc=0; TMPDIR="$$od/lane-$$k" CC_GATE_TIMING_OUT="$$tm" bash scripts/test-gate.sh --sections "$$ids" >> "$$lo" 2>&1 || rc=$$?; \
-	  printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; \
-	  tot=$$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$$' "$$lo" | tail -n 1); \
+	  rc=0; \
+	  if [ -z "$$ids" ]; then \
+	    echo "row $$k/$(GATE_SLOTS): 격리 작업만 실린 행입니다" >> "$$lo"; \
+	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; tot='격리 전용 행'; \
+	  elif [ -n "$$ov$$own" ]; then \
+	    TMPDIR="$$od/lane-$$k" CC_GATE_TIMING_OUT="$$tm" CC_GATE_ISO_OUT="$$od/iso-$$k/row" \
+	      CC_GATE_ISO_TRACE="$$ov$${ov:+$${own:+,}}$$own" CC_GATE_ISO_OVERLAY="$$ov" \
+	      bash scripts/test-gate.sh --sections "$$ids$${ov:+,$$ov}" >> "$$lo" 2>&1 || rc=$$?; \
+	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; \
+	    tot=$$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$$' "$$lo" | tail -n 1); \
+	  else \
+	    TMPDIR="$$od/lane-$$k" CC_GATE_TIMING_OUT="$$tm" bash scripts/test-gate.sh --sections "$$ids" >> "$$lo" 2>&1 || rc=$$?; \
+	    printf '@end\t%s\n' "$$(date +%s)" >> "$$tm"; \
+	    tot=$$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$$' "$$lo" | tail -n 1); \
+	  fi; \
 	  printf '%s\t%s\t%s\n' "$$k" "$$rc" "$${tot:--}" > "$$res"; \
+	  if [ -n "$$so" ]; then \
+	    echo "row $$k/$(GATE_SLOTS): 단독 $$(printf '%s' "$$so" | tr ';' '\n' | grep -c .)개 — 기록은 iso-$$k" >> "$$lo"; \
+	    bash scripts/gate-isolation.sh solos --out "$$od/iso-$$k" --spec "$$so" --timing-out "$$tm" --tmp "$$od/lane-$$k" >> "$$lo" 2>&1 \
+	      || echo "row $$k/$(GATE_SLOTS): 단독을 돌리지 못했습니다 — 비교에서 맥락 없음으로 드러납니다" >> "$$lo"; \
+	  fi; \
 	  return "$$rc"; }; \
 	rows=; pids=; j=0; \
-	while [ "$$j" -lt '$(GATE_LANES)' ]; do \
-	  k=$$(( $(SHARD) + j * $(GATE_SHARDS) )); rows="$$rows $$k"; \
-	  lane "$$k" & pids="$$pids $$!"; j=$$((j + 1)); \
-	done; \
+	if [ "$$extra" = 1 ]; then \
+	  rows=' $(SHARD)'; lane '$(SHARD)' & pids=" $$!"; \
+	else \
+	  while [ "$$j" -lt '$(GATE_LANES)' ]; do \
+	    k=$$(( $(SHARD) + j * $(GATE_SHARDS) )); rows="$$rows $$k"; \
+	    lane "$$k" & pids="$$pids $$!"; j=$$((j + 1)); \
+	  done; \
+	fi; \
 	set -- $$pids; rcs=; \
 	for k in $$rows; do rc=0; wait "$$1" || rc=$$?; shift; rcs="$$rcs $$k:$$rc"; done; \
 	bad=0; \
@@ -675,7 +786,7 @@ gate-shard:
 	  sum=$$(cut -f3 "$$od/result-$$k.tsv" 2>/dev/null); \
 	  if [ "$$rc" != "0" ]; then echo "gate-shard: 행 $$k 의 레인이 종료 코드 $$rc 로 끝났습니다" >&2; bad=1; fi; \
 	  case "$$sum" in \
-	    '빈 행') ;; \
+	    '빈 행'|'격리 전용 행') ;; \
 	    'test-gate: '*) ;; \
 	    *) echo "gate-shard: 행 $$k 의 레인 출력에 합계 줄(test-gate: <n> passed, <n> failed)이 없습니다" >&2; bad=1 ;; \
 	  esac; \
@@ -706,6 +817,37 @@ run-test-tree-selftest:
 
 run-rest-shard-selftest:
 	bash scripts/rest-shard.sh --self-test
+
+# The comparator's cases run on made-up records; the reduced-suite cases cut a
+# few made-up sections with the real selector and need a bash that can trace
+# (4.1 or newer), and are skipped with a line saying so under an older one.
+run-gate-isolation-selftest:
+	ISO_BASH='$(ISO_BASH)' bash scripts/gate-isolation.sh --self-test
+
+# The isolation check run by hand, on this machine. Each needs a bash of 4.1 or
+# newer in ISO_BASH; sweep and capacity weigh with ISO_TIMING, or with the
+# median of the latest master artifacts when it is not given.
+#   isolation-check     the solos of each id of ISO_SECTIONS and one cut of
+#                       them with ISO_WITH
+#   isolation-sweep     every section, resumable in ISO_OUT; runs of
+#                       consecutive sections of at most ISO_CHUNK_S seconds
+#   isolation-capacity  whether the solos of what changed since BASE fit the
+#                       rows CI would have
+ISO_BASH ?= bash
+ISO_SECTIONS ?=
+ISO_WITH ?=
+ISO_TIMING ?=
+ISO_OUT ?=
+ISO_CHUNK_S ?= 5400
+
+isolation-check:
+	ISO_BASH='$(ISO_BASH)' bash scripts/gate-isolation.sh check --sections '$(ISO_SECTIONS)' --with '$(ISO_WITH)' $(if $(ISO_OUT),--out '$(ISO_OUT)')
+
+isolation-sweep:
+	ISO_BASH='$(ISO_BASH)' ISO_TIMING='$(ISO_TIMING)' ISO_OUT='$(ISO_OUT)' ISO_CHUNK_S='$(ISO_CHUNK_S)' bash scripts/gate-isolation.sh sweep
+
+isolation-capacity:
+	ISO_TIMING='$(ISO_TIMING)' bash scripts/gate-isolation.sh capacity --base '$(BASE)' --shards $(GATE_SLOTS) --iso-extra $(GATE_ISO_EXTRA)
 
 # Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
 # every section alone, the whole suite once and every shard once — about an hour

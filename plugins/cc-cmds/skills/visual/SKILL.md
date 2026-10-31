@@ -1,7 +1,7 @@
 ---
 name: visual
 description: 설계 문서의 화면을 로컬에서 생성·검토하고, Claude Design 에 발행·동기하며, 구현 승인을 사이드카에 쓴다 (대화형, 고정 계정 좌석)
-when_to_use: 무인 런이 `검토 통과` 로 남긴 화면을 아침에 발행·캔버스 편집·동기한 뒤 구현을 승인할 때, 또는 사이드카 없는 설계 문서의 화면을 대화형으로 처음 만들 때. 무인 파이프라인 스테이지는 `/cc-cmds:visual-unattended` 를 쓴다
+when_to_use: 무인 런이 `검토 통과` 로 남긴 화면을 아침에 발행·캔버스 편집·동기한 뒤 구현을 승인할 때, 또는 사이드카 없는 설계 문서의 화면을 대화형으로 처음 만들 때. 무인 파이프라인 스테이지는 생성에 `/cc-cmds:visual-unattended`, 계획에 `S2P` 단계가 있는 런의 발행·승인에 `/cc-cmds:visual-publish-unattended` 를 쓴다
 disable-model-invocation: true
 usage: "/cc-cmds:visual <design-doc-path>"
 options:
@@ -14,7 +14,7 @@ notes: "국면은 사이드카 상태로 정해진다 — 없음은 생성, `로
 
 Generate, review, publish and approve the screens of a design document, in an attended session on the pinned Claude Design account. User-facing text is Korean; this control prose is English.
 
-**The Design and Design System artifacts are the user's explicit request.** Invoking `/cc-cmds:visual` on a document whose sidecar is `검토 통과` or `발행됨` is the person asking for those artifacts to be created, read and re-versioned. That is the explicit-request exception the Artifact tools require, and it covers only the artifacts this skill's phases name — nothing else is published from here.
+**The Design and Design System artifacts are the user's explicit request.** Invoking `/cc-cmds:visual` on a document whose sidecar is `검토 통과` or `발행됨` is the person asking for those artifacts to be created, read and re-versioned. That is the explicit-request exception the Artifact tools require, and it covers only the artifacts this skill's phases name — nothing else is published from here. Inside a run, the `S2P` step of the plan frozen at kickoff is that request, and `visual-publish-unattended` carries it out under the same phase definitions.
 
 The shared contract lives in `${CLAUDE_SKILL_DIR}/references/`: `contract.md` (generation rules, review rubric, models and author envelopes, polish downgrade) and `sidecar.md` (the two link files, the binding digest, the input bundle and the approval predicate). `visual-unattended` reads the same two files. Helpers are `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-config.sh`, `visual-check.sh` and `visual-capture.sh`.
 
@@ -22,7 +22,7 @@ The shared contract lives in `${CLAUDE_SKILL_DIR}/references/`: `contract.md` (g
 
 These rules decide what a phase may do and where it stops. They stay near the top of this file so that compaction cannot drop them.
 
-**CFI-1 — The sidecar's state is the phase.** No sidecar → 생성. `로컬 초안` → 생성 이어 하기. `검토 통과` → 발행. `발행됨` → one of 동기 / 발행 묶음 다시 생성 / 구현 승인 / 금지 후보 승인. The person confirms the phase once; the confirmation is `등급 0` because the state already decided it. No phase reads or writes run state — not the run ledger, not a manifest, not a halt record, not a pipeline sidecar. This seat holds no run id.
+**CFI-1 — The sidecar's state is the phase.** No sidecar → 생성. `로컬 초안` → 생성 이어 하기. `검토 통과` → 발행. `발행됨` → one of 동기 / 발행 묶음 다시 생성 / 구현 승인 / 금지 후보 승인. The person confirms the phase once; the confirmation is `등급 0` because the state already decided it. In this attended skill no phase reads or writes run state — not the run ledger, not a manifest, not a halt record, not a pipeline sidecar. This seat holds no run id. The publish stage that follows these phases inside a run (`visual-publish-unattended`) reads halt records and writes its own under its own rules.
 
 **CFI-2 — Account pinning stops, it never routes around.** Every phase that reaches Claude Design reads the account with `visual-config.sh account` at four points: K0 at phase start (the `구현 승인` phase included), K1 immediately before every `Artifact`, `ArtifactComments` or `ArtifactData` call, K2 immediately after a publish (the account again, plus reading the returned URL back as its author), K3 every time a URL pinned in a link file is read (it must read as this account's artifact). A verdict other than `일치`, or a K2/K3 author read that fails, stops the phase where it stands and tells the person the verdict, the log path the helper printed and the fix — run the same phase again in the pinned seat. Never publish again under a new URL, never move to another seat, never write a field that records the attempt. The model the person uses on the canvas is not chosen, suggested or recorded here.
 
@@ -88,7 +88,7 @@ The publish contract has five parts.
 - **(c) Pull back and pin.** K1, then read each screen back through its URL and overwrite the local screen file with that source; pin `**아티팩트**`·`**버전**`·`**sha256**`·`**동기 시각**` and `**스냅숏 형태**`. In the same read take the canvas type file `artifact-type/dc-runtime.js` and place it as `docs/visual/support.js`, pinning `**런타임**`.
     - `등급 2` If the received bytes differ from an existing `support.js`, AskUserQuestion before overwriting — 옵션 `덮고 재고정` / `덮지 않는다` / `중단` — showing every other sidecar that pins `**런타임**` and the two type releases. This moves other documents' baselines, so it is a risk acceptance. `덮고 재고정` re-pins those sidecars' `**런타임**` in the same write and reports the list. `덮지 않는다` leaves this document's `**스냅숏 형태**` at `초안` and emits no paste block.
 - **(d) Baseline.** Only publish and sync move it (CFI-3) — including a shared-runtime change another document's publish makes, which that seat re-pins under (c).
-- **(e) No unattended twin.** Publishing and syncing are never done by a stage.
+- **(e) One unattended twin.** Outside a run, publishing and syncing are never done by a stage. Inside a run whose plan carries an `S2P` step, `visual-publish-unattended` Reads these phase definitions and runs them, putting every question of this file to a person through its halt records.
 
 When `system.md` is `**출처**: 신규` and `**아티팩트**: (미발행)`, the publish phase also creates the Design System artifact from the token list of `contract.md` §1 (`project/tokens.json`) and pins its URL in `system.md`; the canvas carries the same list as `project/ds/<folder>/tokens.json`. DesignSync is not driven from here — its tool limits it to a user-started `/design-sync`; for a React design system, suggest `/design-sync` and stop there.
 
@@ -109,7 +109,7 @@ Set `**상태**: 발행됨` and emit the paste block (Step 6).
     - `등급 2` AskUserQuestion for the acceptance set — 옵션 one per rule id found (multi-select) / `수용하지 않는다` / `중단` — saying that an accepted id lets the implementation take those findings as they are. With findings left that the person does not accept, do not write the line; say what to fix and that this phase can be run again.
 5. Measure `visual-check.sh bundle <document>` and the sha256 of the host ban list file, then write `**구현 승인**: <now, ISO8601 UTC> — 입력 묶음 <bundle> — 금지 목록 <sha256> — 기계 검사 수용 <ids | 없음>` (`sidecar.md` §2). Confirm with `visual-check.sh approval <document>` and report its line.
 
-After writing, tell the person: if an autopilot run is waiting on these screens, answer its seat question with `승인` (or tell it to continue).
+After writing, tell the person: if an autopilot run is waiting on these screens, answer its seat question with `승인` (or tell it to continue). A run whose plan carries an `S2P` step for this document does not adopt a line written by this phase: its approval comes through that step's `시각-판정` halt record, answered `승인` by a person, and the run adopts only a line whose ` — 사람 답 <파일>` tail names that record.
 
 **금지 후보 승인.** For each line under `### 금지 후보`, show the id, kind, description, pattern and source screen.
 

@@ -36,7 +36,7 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-solo-audit-exp.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tsae.XXXXXX")
 tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -350,8 +350,8 @@ scenario() {
   sc="$tmp/sc-$1"
   mkdir -p "$sc"
   export XDG_STATE_HOME="$sc/xdg" SOLO_EXP_STATE_ROOT="$sc/state" CLAUDE_CONFIG_DIR="$sc/cfg"
-  export STUB_GATE_LOG="$sc/gate.log" STUB_CLI_LOG="$sc/cli.log"
-  : > "$STUB_GATE_LOG"; : > "$STUB_CLI_LOG"
+  export STUB_GATE_LOG="$sc/gate.log" STUB_CLI_LOG="$sc/cli.log" STUB_ENV_LOG="$sc/env.log"
+  : > "$STUB_GATE_LOG"; : > "$STUB_CLI_LOG"; : > "$STUB_ENV_LOG"
   unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP STUB_HANDOFF STUB_HALT STUB_HALT_ANSWER_RC \
     STUB_ONLY_DOC STUB_DEADLINE_PARK STUB_RUN_COST CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 }
@@ -359,11 +359,52 @@ scenario() {
 use_sc() {
   sc="$tmp/sc-$1"
   export XDG_STATE_HOME="$sc/xdg" SOLO_EXP_STATE_ROOT="$sc/state" CLAUDE_CONFIG_DIR="$sc/cfg"
-  export STUB_GATE_LOG="$sc/gate.log" STUB_CLI_LOG="$sc/cli.log"
+  export STUB_GATE_LOG="$sc/gate.log" STUB_CLI_LOG="$sc/cli.log" STUB_ENV_LOG="$sc/env.log"
   unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP STUB_HANDOFF STUB_HALT STUB_HALT_ANSWER_RC \
     STUB_ONLY_DOC STUB_DEADLINE_PARK STUB_RUN_COST CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 }
 xp() { bash "$exp_sh" --repo "$main" "$@"; }
+
+# ---- the candidate surface ------------------------------------------------------
+
+protocol="$repo_root/scripts/prompt-change-protocol.md"
+FORBIDDEN=$(sed -n 's/^\*\*금지어\*\*: //p' "$protocol")
+ARMS="solo team 단독 팀"
+# hits <text> <words> — the words of the list the text holds: an ASCII word in
+# any case between characters outside [A-Za-z0-9_], any other as a substring.
+hits() {
+  local w out=""
+  for w in $2; do
+    if [[ "$w" =~ ^[A-Za-z0-9_]+$ ]]; then
+      printf '%s\n' "$1" | LC_ALL=C grep -qiE "(^|[^A-Za-z0-9_])${w}([^A-Za-z0-9_]|\$)" && out="${out} ${w}"
+    else
+      printf '%s\n' "$1" | LC_ALL=C grep -qF -- "$w" && out="${out} ${w}"
+    fi
+  done
+  printf '%s' "$out"
+}
+# run_surface <manifest> <grant> <owner-doc> — what a stage reads of one run
+# that the runner wrote, the document path replaced by <DOC>.
+run_surface() {
+  {
+    grep -m 1 -E '^- `target` ' "$1"
+    grep -hE '^(\*\*(사용자 확인 문면|승인 문면|종료 지점|보고서)\*\*: |- `종료 절` )' "$1" "$2"
+    awk '/^## 의도$/ { on = 1; next } on && /^## / { exit } on' "$1"
+    awk '/^```json$/ { on = 1; next } on && /^```$/ { exit } on' "$1" \
+      | jq -r '[.entry_rationale, .design_rationale, .design_tier_rationale, .design_scope_rationale, .work_class_rationale, .notes, (.targets[]?.why), (.steps[]?.summary)] | .[] | strings'
+  } | awk -v d="$3" '{ s = $0; o = ""; while ((i = index(s, d)) > 0) { o = o substr(s, 1, i - 1) "<DOC>"; s = substr(s, i + length(d)) } print o s }'
+}
+
+want=$(sed -n 's/^FORBIDDEN_WORDS="\(.*\)"$/\1/p' "$exp_sh")
+[[ -n "$FORBIDDEN" && "$want" == "$FORBIDDEN" ]] \
+  && pass "surface: the runner's forbidden words are the protocol's 금지어 line, byte for byte" \
+  || fail "surface: the runner's forbidden words '$want' differ from the protocol's '$FORBIDDEN'"
+[[ "$(sed -n 's/^ARM_WORDS="\(.*\)"$/\1/p' "$exp_sh")" == "$ARMS" ]] \
+  && pass "surface: the runner's arm names are solo, team, 단독 and 팀" || fail "surface: the runner's arm names differ"
+grep -qxF '# Protocol: scripts/prompt-change-protocol.md' "$exp_sh" \
+  && pass "surface: the runner's header carries the protocol block" || fail "surface: no protocol block in the runner's header"
+got=$(hits "$(cat "$script_dir/solo-audit-classify.md")" "$ARMS")
+[[ -z "$got" ]] && pass "surface: the classification prompt names neither arm" || fail "surface: the classification prompt carries${got}"
 # xr <args> — one experiment call: its exit status in rc, its output in
 # $sc/out and appended to $tmp/all.out; an exit 3 anywhere is remembered.
 saw3=0
@@ -444,9 +485,9 @@ ST1="$tmp/sc-dry/state"
 SOLO_EXP_STATE_ROOT="$ST1"
 c1clone=$(pstate "$E1" 1 clone)
 [[ "$(cd "$c1clone" && git rev-parse HEAD)" == "$base" ]] && pass "prepare: the clone's HEAD is the base commit" || fail "prepare: clone HEAD is not the base commit"
-[[ "$(cd "$c1clone" && git rev-parse --abbrev-ref HEAD)" == "exp-base" ]] && pass "prepare: branch exp-base" || fail "prepare: not on exp-base"
-[[ "$(cd "$c1clone" && git for-each-ref --format='%(refname)')" == "refs/heads/exp-base" && -z "$(cd "$c1clone" && git remote)" ]] \
-  && pass "prepare: the clone keeps only exp-base and no remote" || fail "prepare: the clone keeps other refs or a remote"
+[[ "$(cd "$c1clone" && git rev-parse --abbrev-ref HEAD)" == "base" ]] && pass "prepare: branch base" || fail "prepare: not on base"
+[[ "$(cd "$c1clone" && git for-each-ref --format='%(refname)')" == "refs/heads/base" && -z "$(cd "$c1clone" && git remote)" ]] \
+  && pass "prepare: the clone keeps only the base branch and no remote" || fail "prepare: the clone keeps other refs or a remote"
 ( cd "$main" && git cat-file -e "${head_}^{commit}" ) || fail "prepare: the commit past the base is missing from the main repository"
 if ( cd "$c1clone" && git cat-file -e "${head_}^{commit}" ) 2>/dev/null; then
   fail "prepare: a commit past the base is still readable in the clone"
@@ -491,6 +532,41 @@ else
 fi
 rm -f "$dm.broken"
 
+# What a stage of these runs can read: every clone a random name under the work
+# root, and no forbidden word or arm name in a clone path or in what the runner
+# wrote into the runs.
+wr=$(cd "$tmp/sc-dry/xdg/cc-cmds/work" && pwd -P)
+ok=1; seen=""
+for n in 1 2 3 4 5; do
+  cl=$(pstate "$E1" "$n" clone); doc=$(pstate "$E1" "$n" doc)
+  [[ "$cl" =~ ^${wr}/[0-9a-f]{12}$ ]] || { ok=0; echo "pair $n: clone $cl is not a random name under $wr" >&2; }
+  case "$seen" in *"$cl"*) ok=0; echo "pair $n: clone $cl used twice" >&2 ;; esac
+  seen="${seen}${cl}
+"
+  got=$(hits "$cl" "$FORBIDDEN $ARMS")
+  [[ -z "$got" ]] || { ok=0; echo "pair $n: clone path carries${got}" >&2; }
+  got=$(hits "$(cd "$cl" && git for-each-ref --format='%(refname)')" "$FORBIDDEN $ARMS")
+  [[ -z "$got" ]] || { ok=0; echo "pair $n: a branch name carries${got}" >&2; }
+  for k in design audit; do
+    m=$(pstate "$E1" "$n" "${k}_manifest")
+    got=$(hits "$(run_surface "$m" "$cl/docs/pipeline-grant/$(pstate "$E1" "$n" "${k}_run").md" "$doc")" "$FORBIDDEN $ARMS")
+    [[ -z "$got" ]] || { ok=0; echo "pair $n $k: the run's texts carry${got}" >&2; }
+  done
+done
+(( ok == 1 )) && pass "surface: every clone is a distinct random name under the work root, and no clone path, branch or run text carries a forbidden word or arm name" \
+  || fail "surface: a clone path or a run text exposes the harness"
+
+# A work root whose path carries a forbidden word is refused before any act.
+scenario surface
+export SOLO_EXP_WORK_ROOT="$sc/experiment-work"
+xr run --exp-id 20261017-000000d3 --budget-usd 1000
+unset SOLO_EXP_WORK_ROOT
+if [[ "$rc" == "1" && "$(acts)" == "0" && "$(calls)" == "0" ]] && grep -qF "surface check: 'experiment' in " "$sc/out"; then
+  pass "surface: a work root that carries 'experiment' → exit 1 naming the word, no gate act and no CLI call"
+else
+  fail "surface: the forbidden work root gave exit $rc with $(acts) acts"; cat "$sc/out" >&2
+fi
+
 # ---- candidate shortage ----------------------------------------------------
 
 scenario short
@@ -518,11 +594,20 @@ else
   fail "full: first call gave exit $rc / $(verdict "$EF")"; cat "$sc/out" >&2
 fi
 [[ "$(acts)" == "20" ]] && pass "full: the seat called router-shift until done (2 calls × 10 runs)" || fail "full: $(acts) act calls"
-grep -q -- '--kind router-shift --target exp --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest stub-h -- 상한 -p /cc-cmds:autopilot-router-shift ' "$STUB_GATE_LOG" \
+grep -q -- '--kind router-shift --target work --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest stub-h -- 상한 -p /cc-cmds:autopilot-router-shift ' "$STUB_GATE_LOG" \
   && pass "full: router-shift in the seat's call form" || fail "full: act argv differs from the seat's form"
 [[ "$(calls)" == "10" ]] && pass "full: one classification call per report" || fail "full: $(calls) CLI calls"
 grep -qE '^call .*--output-format json --strict-mcp-config --tools  --no-session-persistence --max-budget-usd 3$' "$STUB_CLI_LOG" \
   && pass "full: the classification call carries --no-session-persistence and --max-budget-usd 3" || fail "full: CLI flags $(head -n 1 "$STUB_CLI_LOG")"
+[[ "$(grep -c '^call --model opus ' "$STUB_CLI_LOG" || true)" == "10" ]] \
+  && pass "full: every classification call pins its model with --model opus" || fail "full: CLI flags $(head -n 1 "$STUB_CLI_LOG")"
+[[ ! -e "$EXPF/classify/leak.tsv" ]] && ! grep -qF 'carries arm words' "$sc/out" \
+  && pass "full: reports without an arm word leave no leak.tsv" || fail "full: a leak row without an arm word"
+if [[ -s "$STUB_ENV_LOG" ]] && grep -qx 'STUB_GATE_LOG' "$STUB_ENV_LOG" && ! grep -q '^SOLO_EXP_' "$STUB_ENV_LOG"; then
+  pass "surface: no SOLO_EXP_* variable reaches the gate or the classification CLI"
+else
+  fail "surface: $(grep -c '^SOLO_EXP_' "$STUB_ENV_LOG" || true) SOLO_EXP_* name(s) reached a child"
+fi
 rv="$EXPF/classify/review.tsv"
 [[ "$(awk -F'\t' 'NR > 1' "$rv" | wc -l | tr -d ' ')" == "1" ]] && awk -F'\t' 'NR == 2 && $2 == "D2" && $5 == "" { f = 1 } END { exit !f }' "$rv" \
   && pass "full: the ambiguous defect lands in review.tsv with a blank judgment" || fail "full: review.tsv wrong"
@@ -651,7 +736,7 @@ export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=policy
 xr run --exp-id "$EP" --budget-usd 1000
 pha=$(grep -- '--kind halt-answer' "$STUB_GATE_LOG" | awk 'NR == 1')
 case "$pha" in
-  *"--segment A1 "*"선택지=record in the unresolved-issues section 답한 주체=사람 근거=실험 고정 정책 — "*"; 사람이 이 기록을 읽고 답한 것이 아니다 첨부="*"/halt/A1#1.answer.md") pok=1 ;;
+  *"--segment A1 "*"선택지=record in the unresolved-issues section 답한 주체=사람 근거=고정 정책 — "*"; 사람이 이 기록을 읽고 답한 것이 아니다 첨부="*"/halt/A1#1.answer.md") pok=1 ;;
   *) pok=0 ;;
 esac
 [[ "$rc" == "0" && "$(answers)" == "5" && "$pok" == "1" ]] \
@@ -676,6 +761,13 @@ export STUB_GATE_MODE=deadline
 xr run --exp-id 20261017-000000a8 --budget-usd 1000
 [[ "$rc" == "0" && "$(ptsv 20261017-000000a8 1 invalid_reason)" == "벽시계 마감으로 닫힘 — 예비 소진" ]] \
   && pass "seat: a run closed by the deadline makes the pair invalid under that reason" || fail "seat: a deadline-closed run gave exit $rc"
+# The run ended while the gate held the wait, so the gate refuses the seat's
+# call with 3: the done file is the outcome, not a seat failure.
+scenario ended
+export STUB_GATE_MODE=ended
+xr run --exp-id 20261017-000000ab --budget-usd 1000
+[[ "$rc" == "0" && "$(ptsv 20261017-000000ab 1 invalid_reason)" == "벽시계 마감으로 닫힘 — 예비 소진" && "$(pstate 20261017-000000ab 1 status)" != "실패" ]] \
+  && pass "seat: a refused call on a run that already ended reads its done → pair invalid, exit 0" || { fail "seat: a refused call on an ended run gave exit $rc"; cat "$sc/out" >&2; }
 
 scenario nofreeze
 export STUB_NO_FREEZE=1
@@ -699,7 +791,7 @@ repl() {
 replaced_ok() {
   local e="$1" why="$2" what="$3"
   if [[ "$rc" == "0" && "$(attempt "$e" 2 1)" == "1" && "$(attempt "$e" 2 2)" == "선정 2" && "$(attempt "$e" 2 3)" == "docs/c2.md" \
-        && "$(attempt "$e" 2 4)" == "$why" && -d "$SOLO_EXP_STATE_ROOT/$e/pair-2.try1/clone" \
+        && "$(attempt "$e" 2 4)" == "$why" && -d "$(awk -F'\t' '$1 == "clone" { print $2 }' "$SOLO_EXP_STATE_ROOT/$e/pair-2.try1/pair.state")" \
         && "$(pstate "$e" 2 sample)" == "예비 2-1" && "$(ptsv "$e" 2 status)" == "유효" \
         && "$(basename "$(ptsv "$e" 2 team_report)")" == "docs-c3.prior-0000c3c3.md" && "$(verdict "$e")" == "# verdict: ≈" ]]; then
     pass "replace: ${what} → slot 2 invalid (${why}), kept as pair-2.try1, replaced by 예비 2-1, verdict ≈ with exit 0"
@@ -809,6 +901,26 @@ xr run --exp-id 20261017-000000e5 --budget-usd 1000
 export STUB_SOLO_REPORTS="$solo_src"
 [[ "$(basename "$(pstate 20261017-000000e5 1 solo_report)")" == "docs-c1.prior-0000c1c1.md" ]] \
   && pass "solo audit: the earlier-frozen .prior report is the solo first audit" || fail "solo audit: solo report is '$(pstate 20261017-000000e5 1 solo_report)'"
+
+# ---- an arm word in the report's own text ----------------------------------
+#
+# The classification input is the report as the audit wrote it: an arm word in
+# it is not removed, only counted into classify/leak.tsv, and the pair stays valid.
+scenario leak
+alt="$tmp/solo-leak"; rm -rf "$alt"; cp -R "$solo_src" "$alt"
+awk '{ print } $0 == "- 앵커 검사 통과" { print "- Solo 쪽 검토 메모: solo 기준으로 다시 읽었다" }' "$solo_src/docs-c1.md" > "$alt/docs-c1.md"
+export STUB_SOLO_REPORTS="$alt"
+xr run --exp-id 20261017-000000e6 --budget-usd 1000
+export STUB_SOLO_REPORTS="$solo_src"
+lt="$main/docs/solo-audit-experiment/20261017-000000e6/classify/leak.tsv"
+sl=$(ptsv 20261017-000000e6 1 solo_label)
+if [[ -n "$sl" && "$(cat "$lt" 2>/dev/null)" == "$(printf '표지\t단어\t횟수\n%s\tsolo\t2' "$sl")" ]] \
+   && grep -qF "classification input ${sl} carries arm words (solo 2); recorded in $lt" "$sc/out" \
+   && [[ "$(ptsv 20261017-000000e6 1 status)" == "유효" && "$(calls)" == "10" ]]; then
+  pass "leak: an arm word in a report's text is counted into leak.tsv and printed, the pair stays valid"
+else
+  fail "leak: exit $rc, leak.tsv '$(cat "$lt" 2>/dev/null)', pair 1 '$(ptsv 20261017-000000e6 1 status)'"; cat "$sc/out" >&2
+fi
 
 # ---- rerun one pair ---------------------------------------------------------
 

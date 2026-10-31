@@ -31,7 +31,12 @@
 #   size      the start-tag count leaves comments and script out
 #   approval   no sidecar, state not 발행됨, no approval line, one screen byte
 #              changed, valid — and bundle --lines prints the bundle text
-#   grammar    the sidecar and ban-lift grammar examples of
+#   binding    equal to the driver's binding_digest on a document without a
+#              `## 시각 정합 기준` section, blind to that section where it is
+#   reuse      a 검토 통과 and a 발행됨 sidecar where all six conditions hold
+#              are reusable, each condition broken once is not, argument
+#              errors are 2, and no sidecar, record or screen byte moves
+#   grammar   the sidecar and ban-lift grammar examples of
 #              plugins/cc-cmds/skills/visual/references/ read as the helpers
 #              expect; the references must exist
 #
@@ -51,6 +56,17 @@
 # and GNU userland alike.
 
 set -euo pipefail
+
+# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. The binding case sources the
+# driver to compare against its own digest, so the census counts this file as
+# a gate-family caller and demands these exports of it.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off for the same reason.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+# And it clears the inherited pipeline names, for the same reason.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -344,12 +360,150 @@ BANSHA=$(shasum -a 256 "$SEED" | awk '{print $1}')
 write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${B} — 금지 목록 ${BANSHA} — 기계 검사 수용 token-space, pill-button"
 got=$(approval)
 [ "$got" = "0 승인 유효 ${B:0:12}" ] && pass "approval: 유효" || fail "approval 유효 = ${got}"
+[ "$(wc -l < "$T/ap.out" | tr -d ' ')" = "1" ] && pass "approval: 출처 꼬리 없는 줄은 한 줄만 찍는다" || fail "approval 꼬리 없음 출력 = $(cat "$T/ap.out")"
+# The provenance tail ` — 사람 답 <file name>`: a valid line keeps its first
+# line and prints the record's name on a second.
+APL="**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${B} — 금지 목록 ${BANSHA} — 기계 검사 수용 없음"
+write_sidecar 발행됨 "${APL} — 사람 답 S2P#3.md"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${B:0:12}" ] && pass "approval: 출처 꼬리 달린 줄도 유효" || fail "approval 꼬리 유효 = ${got}"
+[ "$(sed -n 2p "$T/ap.out")" = "출처 사람 답 S2P#3.md" ] && pass "approval: 꼬리가 있으면 둘째 줄에 출처 사람 답" || fail "approval 둘째 줄 = $(sed -n 2p "$T/ap.out")"
+for badtail in ' — 사람 답 S2P #3.md' ' — 사람 답 halt/S2P#3.md' ' — 사람 답 S2P#3' ' — 사람 답 '; do
+  write_sidecar 발행됨 "${APL}${badtail}"
+  got=$(approval)
+  case "$got" in "1 승인 무효 — 구현 승인 줄의 형식이 틀렸다"*) pass "approval: 잘못된 꼬리 「${badtail}」 는 형식 무효" ;; *) fail "approval 잘못된 꼬리 「${badtail}」 = ${got}" ;; esac
+done
+write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${B} — 금지 목록 ${BANSHA} — 기계 검사 수용 token-space, pill-button"
 printf '%s\n' '<!doctype html><p>home!</p>' > "$R/docs/visual/docs-feature.home.html"
 got=$(approval)
 case "$got" in "1 승인 무효 — 입력 묶음이 달라졌다"*) pass "approval: 화면 한 바이트가 바뀌면 다이제스트 불일치" ;; *) fail "approval 다이제스트 불일치 = ${got}" ;; esac
 write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${B} — 금지 목록 ${BANSHA}"
 got=$(approval)
 case "$got" in "1 승인 무효 — 구현 승인 줄의 형식이 틀렸다"*) pass "approval: 형식이 틀린 줄은 무효" ;; *) fail "approval 형식 = ${got}" ;; esac
+
+# --- binding ------------------------------------------------------------------
+# The digest the sidecar carries is the driver's `binding_digest` with the
+# `## 시각 정합 기준` section dropped: equal to the driver's value on a document
+# without that section, and blind to that section where it is present.
+DRIVER="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
+RR="$T/rrepo"
+mkdir -p "$RR/docs/visual" "$RR/docs/visual-system" "$RR/docs/pipeline-run"
+(cd "$RR" && git init -q)
+RDOC="$RR/docs/reuse.md"
+{
+  printf '# 재사용 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문   \n\n\n'
+  printf '## 구현 시 검증 항목\n\n### R1. 항목\n**검증 등급**: 구현 시 검증\n- 검증 등급: 구현 시 검증\n'
+} > "$RDOC"
+drv_binding() {
+  (cd "$RR" && CC_ORCH_SOURCE_ONLY=1 bash -c 'd=$1; m=$2; set --; . "$d" >/dev/null 2>&1; set +e; DOC=$m; binding_digest' _ "$DRIVER" "$1" 2>/dev/null)
+}
+rc=0; VB=$(bash "$CHECK" binding "$RDOC" 2>/dev/null) || rc=$?
+DB=$(drv_binding "$RDOC")
+if [ "$rc" = 0 ] && [[ "$VB" =~ ^[0-9a-f]{64}$ ]] && [ "$VB" = "$DB" ]; then
+  pass "binding: 시각 정합 기준 절이 없는 문서에서 드라이버 binding_digest 와 같다"
+else
+  fail "binding = ${rc} ${VB}, 드라이버 ${DB}"
+fi
+cp "$RDOC" "$T/rdoc.save"
+printf '\n## 시각 정합 기준\n\n- 화면 home 은 시안과 같다\n\n## 맺음\n\n끝\n' >> "$RDOC"
+VB2=$(bash "$CHECK" binding "$RDOC")
+{ cat "$T/rdoc.save"; printf '\n## 맺음\n\n끝\n'; } > "$T/rdoc.novis.md"
+cp "$T/rdoc.novis.md" "$RR/docs/novis.md"
+VB3=$(bash "$CHECK" binding "$RR/docs/novis.md")
+[ "$VB2" = "$VB3" ] && pass "binding: 시각 정합 기준 절은 값에 들지 않는다" || fail "binding: 시각 정합 기준 절이 값을 바꿨다 (${VB2} ≠ ${VB3})"
+[ "$VB2" != "$(drv_binding "$RDOC")" ] && pass "binding: 그 절이 있으면 드라이버 값과는 다르다 (위 단언이 공허하지 않다)" || fail "binding: 시각 정합 기준 절이 있는데도 드라이버 값과 같다"
+rm -f "$RR/docs/novis.md"
+rc=0; bash "$CHECK" binding > /dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] && pass "binding: 인자가 없으면 2" || fail "binding 인자 없음 = ${rc}"
+
+# --- reuse --------------------------------------------------------------------
+# Six conditions, each broken once against a sidecar where all hold, and no
+# byte of the sidecar, the record or a screen file moves in any case.
+RSC="$RR/docs/visual/docs-reuse.md"
+REC="$RR/docs/pipeline-run/RUN2.interview.md"
+printf '# 파이프라인 런 인터뷰 기록 — RUN1\n\n원천 기록\n' > "$REC"
+printf '%s\n' '<!doctype html><p>home</p>' > "$RR/docs/visual/docs-reuse.home.html"
+printf '%s\n' '<!doctype html><p>list</p>' > "$RR/docs/visual/docs-reuse.list.html"
+printf '# 디자인 시스템 연결 — %s\n' "$RR" > "$RR/docs/visual-system/system.md"
+sha_of() { shasum -a 256 "$1" | awk '{print $1}'; }
+RB=$(bash "$CHECK" binding "$RDOC")
+# write_reuse <state> [<field>=<value>] — the sidecar with every field matching,
+# one field replaced when given (`head`, `owner`, `rec`, `bind`, `sys`, `home`).
+write_reuse() {
+  local st="$1" kv="${2:-}" k v head owner rec bind sys home
+  k=${kv%%=*}; v=${kv#*=}
+  head='cc-visual v1'; owner='docs/reuse.md'
+  rec="docs/pipeline-run/RUN1.interview.md (sha256 $(sha_of "$REC"))"
+  bind=$RB; sys='(없음)'; [ ! -f "$RR/docs/visual-system/system.md" ] || sys=$(sha_of "$RR/docs/visual-system/system.md"); home=$(sha_of "$RR/docs/visual/docs-reuse.home.html")
+  case "$k" in
+    head) head=$v ;; owner) owner=$v ;; rec) rec=$v ;; bind) bind=$v ;; sys) sys=$v ;; home) home=$v ;;
+  esac
+  {
+    echo "# 시각 디자인 연결 — docs/reuse.md"
+    echo "<!-- ${head}; writer=visual-unattended; reader=visual; owner-doc=${owner}; origin-worktree=$RR; NOT a design doc; mechanism-local, never staged by a skill -->"
+    echo "**상태**: $st"
+    echo "**기록**: $rec"
+    echo "**설계 문서 구속 다이제스트**: $bind"
+    echo "**디자인 시스템 sha256**: $sys"
+    echo
+    echo "### 화면 home"
+    echo "**대상 경로**: docs/visual/docs-reuse.home.html"
+    echo "**sha256**: $home"
+    echo
+    echo "### 화면 list"
+    echo "**대상 경로**: docs/visual/docs-reuse.list.html"
+    echo "**sha256**: $(sha_of "$RR/docs/visual/docs-reuse.list.html")"
+    echo
+    echo "### 금지 후보"
+  } > "$RSC"
+}
+reuse_sums() { for f in "$RSC" "$REC" "$RR/docs/visual/docs-reuse.home.html" "$RR/docs/visual/docs-reuse.list.html"; do [ -f "$f" ] && sha_of "$f" || echo 없음; done; }
+# reuse_case <label> <want rc> <want first line prefix> — runs reuse and checks
+# the answer and that no file it reads moved.
+reuse_case() {
+  local before after rc=0 out
+  before=$(reuse_sums)
+  out=$(bash "$CHECK" reuse "$RDOC" --record "$REC" 2>&1) || rc=$?
+  after=$(reuse_sums)
+  case "$rc $out" in "$2 $3"*) pass "reuse: $1" ;; *) fail "reuse $1 = ${rc} ${out}" ;; esac
+  [ "$before" = "$after" ] && pass "reuse: $1 — 사이드카·기록·화면 파일이 그대로다" || fail "reuse: $1 — 파일이 바뀌었다"
+}
+reuse_case "사이드카가 없으면 재사용 불가" 1 "재사용 불가 — 사이드카 없음"
+write_reuse '검토 통과'
+reuse_case "모두 맞는 검토 통과 사이드카는 재사용" 0 "재사용 검토 통과"
+write_reuse 발행됨
+reuse_case "모두 맞는 발행됨 사이드카는 재사용" 0 "재사용 발행됨"
+write_reuse 발행됨 'head=cc-visual v2'
+reuse_case "머리가 cc-visual v1 이 아니면 재사용 불가" 1 "재사용 불가 — 사이드카 머리가 cc-visual v1 이 아니다"
+write_reuse 발행됨 'owner=docs/other.md'
+reuse_case "owner-doc 이 다른 문서면 재사용 불가" 1 "재사용 불가 — 사이드카의 owner-doc 이 이 문서가 아니다"
+write_reuse '로컬 초안'
+reuse_case "상태가 로컬 초안이면 재사용 불가" 1 "재사용 불가 — 상태가 검토 통과·발행됨이 아니다 (로컬 초안)"
+write_reuse 발행됨 "rec=docs/pipeline-run/RUN2.interview.md (sha256 $(printf 'x' | shasum -a 256 | awk '{print $1}'))"
+reuse_case "기록 sha256 이 다르면 재사용 불가 (경로가 새 런과 같아도)" 1 "재사용 불가 — 기록의 sha256 이 다르다"
+write_reuse 발행됨 'rec=(없음)'
+reuse_case "기록이 (없음)이면 재사용 불가" 1 "재사용 불가 — 사이드카의 기록 필드에 sha256 이 없다"
+write_reuse 발행됨 "bind=$DB"
+[ "$DB" != "$RB" ] || fail "reuse: 드라이버 값과 binding 값이 같아 다음 단언이 공허하다"
+reuse_case "구속 다이제스트가 binding 값과 다르면 재사용 불가" 1 "재사용 불가 — 설계 문서 구속 다이제스트가 다르다"
+write_reuse 발행됨 'sys=(없음)'
+reuse_case "system.md 가 있는데 (없음)이면 재사용 불가" 1 "재사용 불가 — 디자인 시스템 sha256 이 다르다"
+write_reuse 발행됨 "home=$(printf 'y' | shasum -a 256 | awk '{print $1}')"
+reuse_case "화면 블록의 sha256 이 파일과 다르면 재사용 불가" 1 "재사용 불가 — 화면 home 의 sha256 이 다르다"
+write_reuse 발행됨
+mv "$RR/docs/visual/docs-reuse.list.html" "$T/list.save"
+reuse_case "화면 파일이 없으면 재사용 불가" 1 "재사용 불가 — 화면 파일 없음 (list)"
+mv "$T/list.save" "$RR/docs/visual/docs-reuse.list.html"
+mv "$RR/docs/visual-system/system.md" "$T/system.save"
+write_reuse 발행됨 'sys=(없음)'
+reuse_case "system.md 가 없고 (없음)이면 재사용" 0 "재사용 발행됨"
+mv "$T/system.save" "$RR/docs/visual-system/system.md"
+for args in "" "$RDOC" "--record $REC" "$RDOC --record" "$RDOC --record $T/nope.md"; do
+  rc=0
+  # shellcheck disable=SC2086
+  bash "$CHECK" reuse $args > /dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] && pass "reuse: 인자 「${args}」 는 2" || fail "reuse 인자 「${args}」 = ${rc}"
+done
 
 # --- grammar examples of the shared contract ----------------------------------
 # Print the first fenced block under `### <heading>` of the references file.

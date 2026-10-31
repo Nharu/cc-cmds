@@ -64,9 +64,9 @@ fi
 jq -r '
   def cell: if . == null then "-" elif type == "number" then (. * 100 | round / 100 | tostring) else tostring end;
   def rate: if . == null then "-" else ((. * 100 | round | tostring) + "%") end;
-  def head: "| 경로 | n | 고유 중앙값 | 미보강 중앙값 | 골격급 중앙값 | 합성 후보 중앙값 | 바이트 중앙값 | 고유/KB 중앙값 | 재수렴 비율 | 재감사 n | 재감사 고유 중앙값 |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |";
-  def row: "| \(.path) | \(.n) | \(.unique.median | cell) | \(.unreinforced.median | cell) | \(.skeletal.median | cell) | \(.synth_candidates.median | cell) | \(.bytes.median | cell) | \(.unique_per_kb_median | cell) | \(.reconverge_rate | rate) | \(.reaudit.n) | \(.reaudit.unique.median | cell) |";
+  def head: "| 경로 | n | 고유 중앙값 | 미보강 중앙값 | 골격급 중앙값 | 합성 후보 중앙값 | 운영 노출 중앙값 | 경량 중앙값 | 바이트 중앙값 | 고유/KB 중앙값 | 재수렴 비율 | 재감사 n | 재감사 고유 중앙값 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |";
+  def row: "| \(.path) | \(.n) | \(.unique.median | cell) | \(.unreinforced.median | cell) | \(.skeletal.median | cell) | \(.synth_candidates.median | cell) | \(.cls_ops.median | cell) | \(.light.median | cell) | \(.bytes.median | cell) | \(.unique_per_kb_median | cell) | \(.reconverge_rate | rate) | \(.reaudit.n) | \(.reaudit.unique.median | cell) |";
   [.design_paths | to_entries[] | .value] as $all
   | if ($all | length) == 0 then "설계 경로 효용 — 감사 공시 행이 있는 런이 없습니다"
     else

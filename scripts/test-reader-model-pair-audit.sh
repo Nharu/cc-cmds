@@ -176,10 +176,54 @@ mk_report "$dar/docs-reader-x.md" docs/reader-x.md 2026-10-13T00:00:00Z 3
 scenario() {
   sc="$tmp/sc-$1"
   mkdir -p "$sc"
-  export XDG_STATE_HOME="$sc/xdg" READER_EXP_STATE_ROOT="$sc/state" CLAUDE_CONFIG_DIR="$sc/cfg"
+  export XDG_STATE_HOME="$sc/xdg" READER_EXP_STATE_ROOT="$sc/state" CLAUDE_CONFIG_DIR="$sc/cfg" STUB_STATE_ROOT="$sc/state"
 }
 xp() { bash "$runner" --repo "$main" "$@"; }
 bstate() { awk -F'\t' -v k="$4" '$1 == k { print substr($0, length(k) + 2); exit }' "$READER_EXP_STATE_ROOT/$1/doc-$2/$3.state"; }
+# gclone <exp id> <model> — the branch clone branches.state records for it.
+gclone() { awk -F'\t' -v k="${2}_clone" '$1 == k { print $2; exit }' "$READER_EXP_STATE_ROOT/$1/branches.state"; }
+
+# ---- the candidate surface ------------------------------------------------------
+
+protocol="$repo_root/scripts/prompt-change-protocol.md"
+FORBIDDEN=$(sed -n 's/^\*\*금지어\*\*: //p' "$protocol")
+ARMS="opus sonnet"
+# hits <text> <words> — the words of the list the text holds: an ASCII word in
+# any case between characters outside [A-Za-z0-9_], any other as a substring.
+hits() {
+  local w out=""
+  for w in $2; do
+    if [[ "$w" =~ ^[A-Za-z0-9_]+$ ]]; then
+      printf '%s\n' "$1" | LC_ALL=C grep -qiE "(^|[^A-Za-z0-9_])${w}([^A-Za-z0-9_]|\$)" && out="${out} ${w}"
+    else
+      printf '%s\n' "$1" | LC_ALL=C grep -qF -- "$w" && out="${out} ${w}"
+    fi
+  done
+  printf '%s' "$out"
+}
+# run_surface <manifest> <grant> <owner-doc> — what a stage reads of one run
+# that the runner wrote, the document path replaced by <DOC>.
+run_surface() {
+  {
+    grep -m 1 -E '^- `target` ' "$1"
+    grep -hE '^(\*\*(사용자 확인 문면|승인 문면|종료 지점|보고서)\*\*: |- `종료 절` )' "$1" "$2"
+    awk '/^## 의도$/ { on = 1; next } on && /^## / { exit } on' "$1"
+    awk '/^```json$/ { on = 1; next } on && /^```$/ { exit } on' "$1" \
+      | jq -r '[.entry_rationale, .design_rationale, .design_tier_rationale, .design_scope_rationale, .work_class_rationale, .notes, (.targets[]?.why), (.steps[]?.summary)] | .[] | strings'
+  } | awk -v d="$3" '{ s = $0; o = ""; while ((i = index(s, d)) > 0) { o = o substr(s, 1, i - 1) "<DOC>"; s = substr(s, i + length(d)) } print o s }'
+}
+
+[[ -n "$(hits 'x exp-base' exp)" && -z "$(hits 'design_tier_judged' judge)" && -n "$(hits '단독실험' 실험)" && -n "$(hits 'Opus' opus)" ]] \
+  && pass "surface: the matcher takes exp-base and Opus, leaves design_tier_judged, and finds a Korean word inside a word" \
+  || fail "surface: the matcher does not bite as the protocol says"
+want=$(sed -n 's/^FORBIDDEN_WORDS="\(.*\)"$/\1/p' "$runner")
+[[ -n "$FORBIDDEN" && "$want" == "$FORBIDDEN" ]] \
+  && pass "surface: the runner's forbidden words are the protocol's 금지어 line, byte for byte" \
+  || fail "surface: the runner's forbidden words '$want' differ from the protocol's '$FORBIDDEN'"
+[[ "$(sed -n 's/^ARM_WORDS="\(.*\)"$/\1/p' "$runner")" == "$ARMS" ]] \
+  && pass "surface: the runner's arm names are opus and sonnet" || fail "surface: the runner's arm names differ"
+grep -qxF '# Protocol: scripts/prompt-change-protocol.md' "$runner" \
+  && pass "surface: the runner's header carries the protocol block" || fail "surface: no protocol block in the runner's header"
 
 # ---- usage --------------------------------------------------------------------
 
@@ -227,7 +271,7 @@ want_disp docs-reader-x.md "제외|원 런이 없다*" "a lead report whose slug
 
 # Branches.
 ST1="$READER_EXP_STATE_ROOT/$E1"
-gs="$ST1/gate-sonnet"; go="$ST1/gate-opus"
+gs=$(gclone "$E1" sonnet); go=$(gclone "$E1" opus)
 head_c=$(cd "$main" && git rev-parse HEAD)
 [[ "$(cd "$gs" && git rev-parse HEAD)" == "$head_c" && -z "$(cd "$gs" && git remote)" ]] \
   && pass "branches: the sonnet clone is HEAD of --repo with no remote" || fail "branches: the sonnet clone is not C without a remote"
@@ -237,8 +281,10 @@ got=$(cd "$go" && git diff --numstat "$head_c" HEAD)
 [[ "$got" == "1	1	${TIER}" ]] && pass "branches: the two branch commits differ by exactly the one row" || fail "branches: numstat is '$got'"
 grep -qF '| `audit-reader` | every design-audit reader, identically | opus |' "$go/$TIER" \
   && pass "branches: the opus branch's row names opus" || fail "branches: the opus row is wrong"
-[[ "$(cd "$go" && git log -1 --format='%an %aI')" == "reader-model-pair-audit 2026-01-01T00:00:00Z" ]] \
+[[ "$(cd "$go" && git log -1 --format='%an %aI')" == "work 2026-01-01T00:00:00Z" ]] \
   && pass "branches: the opus commit has a fixed author and date" || fail "branches: the opus commit author/date is not fixed"
+got=$(hits "$(cd "$go" && git log -1 --format='%an%n%ae%n%cn%n%ce%n%B')" "$FORBIDDEN $ARMS")
+[[ -z "$got" ]] && pass "surface: the opus commit's message and author carry no forbidden word or arm name" || fail "surface: the opus commit carries${got}"
 
 # Preparation.
 ok=1
@@ -248,8 +294,8 @@ for n in 1 2 3 4 5; do
   [[ "$ins" == "$(shasum -a 256 "$main/$doc" | cut -d' ' -f1)" ]] || { ok=0; echo "doc $n: input sha differs" >&2; }
   for br in opus-1 sonnet opus-2; do
     cl=$(bstate "$E1" "$n" "$br" clone)
-    [[ "$(cd "$cl" && git rev-parse HEAD)" == "$base" && "$(cd "$cl" && git for-each-ref --format='%(refname)')" == "refs/heads/exp-base" && -z "$(cd "$cl" && git remote)" ]] \
-      || { ok=0; echo "doc $n $br: the target clone is not exp-base at the base commit alone" >&2; }
+    [[ "$(cd "$cl" && git rev-parse HEAD)" == "$base" && "$(cd "$cl" && git for-each-ref --format='%(refname)')" == "refs/heads/base" && -z "$(cd "$cl" && git remote)" ]] \
+      || { ok=0; echo "doc $n $br: the target clone is not the base branch at the base commit alone" >&2; }
     cmp -s "$main/$doc" "$cl/$doc" || { ok=0; echo "doc $n $br: the input copy differs" >&2; }
   done
 done
@@ -257,15 +303,44 @@ done
 r1=$(bstate "$E1" 1 opus-1 run); r2=$(bstate "$E1" 1 sonnet run); r3=$(bstate "$E1" 1 opus-2 run)
 [[ "$r1" != "$r2" && "$r2" != "$r3" && "$r1" != "$r3" ]] && pass "prepare: each audit has its own run id" || fail "prepare: run ids collide"
 am=$(bstate "$E1" 1 sonnet manifest)
-grep -qF '"entry_skill": "design-audit"' "$am" && grep -qF 'anchor-kind=doc; anchor-key=docs/c1.md;' "$am" && grep -qF '원격 슬러그=local/reader-model-exp | 절단점=커밋' "$am" \
+grep -qF '"entry_skill": "design-audit"' "$am" && grep -qF 'anchor-kind=doc; anchor-key=docs/c1.md;' "$am" && grep -qF '원격 슬러그=local/work | 절단점=커밋' "$am" \
   && pass "prepare: the audit manifest anchors the document on the local slug at cutpoint 커밋" || fail "prepare: audit manifest wrong"
+
+# What a stage of these runs can read: every clone a random name under the work
+# root, and no forbidden word or arm name in a clone path or in what the runner
+# wrote into the runs.
+wr=$(cd "$XDG_STATE_HOME/cc-cmds/work" && pwd -P)
+ok=1; seen=""
+for cl in "$gs" "$go"; do
+  [[ "$cl" =~ ^${wr}/[0-9a-f]{12}$ ]] || { ok=0; echo "branch clone $cl is not a random name under $wr" >&2; }
+  seen="${seen}${cl}
+"
+done
+for n in 1 2 3 4 5; do
+  doc=$(awk -F'\t' '$1 == "doc" { print $2 }' "$ST1/doc-$n/doc.state")
+  for br in opus-1 sonnet opus-2; do
+    cl=$(bstate "$E1" "$n" "$br" clone); m=$(bstate "$E1" "$n" "$br" manifest)
+    [[ "$cl" =~ ^${wr}/[0-9a-f]{12}$ ]] || { ok=0; echo "doc $n $br: clone $cl is not a random name under $wr" >&2; }
+    case "$seen" in *"$cl"*) ok=0; echo "doc $n $br: clone $cl used twice" >&2 ;; esac
+    seen="${seen}${cl}
+"
+    got=$(hits "$cl" "$FORBIDDEN $ARMS")
+    [[ -z "$got" ]] || { ok=0; echo "doc $n $br: clone path carries${got}" >&2; }
+    got=$(hits "$(run_surface "$m" "$cl/docs/pipeline-grant/$(bstate "$E1" "$n" "$br" run).md" "$doc")" "$FORBIDDEN $ARMS")
+    [[ -z "$got" ]] || { ok=0; echo "doc $n $br: the run's texts carry${got}" >&2; }
+    got=$(hits "$(cd "$cl" && git for-each-ref --format='%(refname)')" "$FORBIDDEN $ARMS")
+    [[ -z "$got" ]] || { ok=0; echo "doc $n $br: a branch name carries${got}" >&2; }
+  done
+done
+(( ok == 1 )) && pass "surface: every clone is a distinct random name under the work root, and no clone path, branch or run text carries a forbidden word or arm name" \
+  || fail "surface: a clone path or a run text exposes the harness"
 
 # The check itself is the branch driver's, not a stub: re-run it on every manifest.
 ok=1
 for n in 1 2 3 4 5; do
   for br in opus-1 sonnet opus-2; do
     m=$(bstate "$E1" "$n" "$br" manifest); cl=$(bstate "$E1" "$n" "$br" clone)
-    rs="$ST1/gate-${br%-*}/plugins/cc-cmds/orchestrator/run.sh"
+    rs="$(gclone "$E1" "${br%-*}")/plugins/cc-cmds/orchestrator/run.sh"
     ( cd "$cl" && CC_ORCH_SOURCE_ONLY=1 && . "$rs" && MANIFEST="$m" && check_manifest ) >/dev/null 2>"$sc/check.err" \
       || { ok=0; echo "check_manifest failed: $m" >&2; cat "$sc/check.err" >&2; }
   done
@@ -299,7 +374,7 @@ oc=$(cd "$go" && git rev-parse HEAD)
 for n in 1 2 3 4 5; do
   for br in opus-1 sonnet opus-2; do
     m=$(bstate "$E1" "$n" "$br" manifest); cl=$(bstate "$E1" "$n" "$br" clone); rid=$(bstate "$E1" "$n" "$br" run)
-    ( cd "$cl" && bash "$ST1/gate-${br%-*}/plugins/cc-cmds/orchestrator/gate.sh" snapshot --manifest "$m" --fields H ) >"$sc/snap.out" 2>"$sc/snap.err" \
+    ( cd "$cl" && bash "$(gclone "$E1" "${br%-*}")/plugins/cc-cmds/orchestrator/gate.sh" snapshot --manifest "$m" --fields H ) >"$sc/snap.out" 2>"$sc/snap.err" \
       && [[ -s "$sc/snap.out" ]] || { snap=0; echo "gate snapshot failed: $m" >&2; cat "$sc/snap.err" >&2; }
     if [[ "${br%-*}" == "opus" ]]; then want="$oc"; else want="$head_c"; fi
     got=$(awk -F'\t' '$1 == "commit" { print $2; exit }' "$XDG_STATE_HOME/cc-cmds/run/$rid/plugin-pin" 2>/dev/null || true)
@@ -331,7 +406,7 @@ led="$cl/docs/pipeline-run/$rid.md"
 rdir="$XDG_STATE_HOME/cc-cmds/run/$rid"
 snap_h() { ( cd "$cl" && bash "$g1" snapshot --manifest "$m" --fields H 2>/dev/null ) | tail -n 1; }
 gread() {
-  ( cd "$cl" && bash "$g1" exec --manifest "$m" --target exp --segment - --cutpoint 커밋 --surface 읽기 \
+  ( cd "$cl" && bash "$g1" exec --manifest "$m" --target work --segment - --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(snap_h)" --rationale 'ceiling test read' -- git rev-parse HEAD ) >>"$sc/ceiling.log" 2>&1
 }
 rc=0; gread || rc=$?
@@ -353,7 +428,7 @@ fi
 # A dispatch whose own entry checks hold — the audit stage's, since no stage
 # row stands — reaches the ended-run refusal.
 rc=0
-( cd "$cl" && bash "$g1" act --manifest "$m" --kind skill --target exp --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+( cd "$cl" && bash "$g1" act --manifest "$m" --kind skill --target work --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
     --snapshot-digest "$(snap_h)" --rationale '감사 스테이지' \
     -- audit -p "/cc-cmds:design-audit-unattended $cl/docs/c1.md" ) >>"$sc/ceiling.log" 2>&1 || rc=$?
 if [[ "$rc" != "0" && ! -e "$tmp/claude.called" ]] && grep -qF 'no new stage is launched' "$sc/ceiling.log"; then
@@ -393,7 +468,7 @@ rm -rf "$short/docs/reader-model-pair-audit"
 rc=0; bash "$runner" --repo "$short" run --exp-id 20261022-000000f1 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
 rep="$short/docs/reader-model-pair-audit/20261022-000000f1/report.md"
 if [[ "$rc" == "0" && "$(tail -n 1 "$rep" 2>/dev/null)" == "# verdict: 판정 불가" ]] && grep -qF '후보 부족' "$rep" \
-   && [[ ! -e "$READER_EXP_STATE_ROOT/20261022-000000f1/gate-sonnet" ]]; then
+   && [[ ! -s "$READER_EXP_STATE_ROOT/20261022-000000f1/branches.state" && -z "$(ls -A "$XDG_STATE_HOME/cc-cmds/work" 2>/dev/null)" ]]; then
   pass "selection: four candidates → 판정 불가 (후보 부족), exit 0, no branch made"
 else
   fail "selection: shortage gave exit $rc"
@@ -449,8 +524,8 @@ saw3=0
 # stub_sc <name> — scenario plus a fresh stub gate log and no stub mode.
 stub_sc() {
   scenario "$1"
-  export STUB_GATE_LOG="$sc/gate.log"
-  : > "$STUB_GATE_LOG"
+  export STUB_GATE_LOG="$sc/gate.log" STUB_ENV_LOG="$sc/env.log"
+  : > "$STUB_GATE_LOG"; : > "$STUB_ENV_LOG"
   unset STUB_GATE_MODE STUB_HANDOFF STUB_HALT STUB_HALT_ANSWER_RC STUB_ONLY_DOC STUB_UNIQUE STUB_RUN_COST CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 }
 # xr <args> — one call on main7: rc, $sc/out, exit 3 remembered.
@@ -485,6 +560,22 @@ if [[ "$rc" == "0" ]] && all_valid "$EU" && [[ "$(gacts)" == "30" ]] && case "$(
 else
   fail "unattended: plain run gave exit $rc with $(gacts) acts / $(verdict7 "$EU")"; cat "$sc/out" >&2
 fi
+if [[ -s "$STUB_ENV_LOG" ]] && grep -qx 'STUB_GATE_LOG' "$STUB_ENV_LOG" && ! grep -q '^READER_EXP_' "$STUB_ENV_LOG"; then
+  pass "surface: no READER_EXP_* variable reaches the gate a stage is launched through"
+else
+  fail "surface: the gate saw $(grep -c '^READER_EXP_' "$STUB_ENV_LOG" || true) READER_EXP_* name(s)"
+fi
+
+# A work root whose path carries a forbidden word is refused before any act.
+stub_sc u-surface
+export READER_EXP_WORK_ROOT="$sc/experiment-work"
+xr run --exp-id 20261022-000000a8 --budget-usd 1000
+unset READER_EXP_WORK_ROOT
+if [[ "$rc" == "1" && "$(gacts)" == "0" ]] && grep -qF "surface check: 'experiment' in a branch clone path" "$sc/out"; then
+  pass "surface: a work root that carries 'experiment' → exit 1 naming the word and where, no gate act"
+else
+  fail "surface: the forbidden work root gave exit $rc with $(gacts) acts"; cat "$sc/out" >&2
+fi
 
 # 2. The fixed policy answers a CFI-3b halt as 사람.
 stub_sc u-policy
@@ -493,7 +584,7 @@ export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=policy
 xr run --exp-id "$EP" --budget-usd 1000
 pha=$(grep -c -- '--kind halt-answer' "$STUB_GATE_LOG" || true)
 if [[ "$rc" == "0" && "$pha" == "15" ]] && all_valid "$EP" \
-   && awk -v w='선택지=record in the unresolved-issues section 답한 주체=사람 근거=실험 고정 정책 — ' \
+   && awk -v w='선택지=record in the unresolved-issues section 답한 주체=사람 근거=고정 정책 — ' \
         'index($0, "--kind halt-answer") { hit = index($0, w) > 0; exit } END { exit !hit }' "$STUB_GATE_LOG" \
    && case "$(verdict7 "$EP")" in "# verdict: "*) true ;; *) false ;; esac; then
   pass "unattended: every run's CFI-3b halt is answered by the policy as 사람, all three branches collected, verdict written"
@@ -534,6 +625,19 @@ if [[ "$rc" == "0" && "$wreason" == "1" && "$(dcol "$EW" 3 2)" == "docs/c5.md" ]
   pass "unattended: an approval makes the branch invalid (승인 대기) and 예비 3-1 replaces the document"
 else
   fail "unattended: approval gave exit $rc, attempt '$(att "$EW" 3 5)'"; cat "$sc/out" >&2
+fi
+
+# 4b. A run that ended while the gate held the wait refuses the seat's call
+# with 3; the run's done is read, and the reserve replaces the document.
+stub_sc u-ended
+EE=20261022-000000a7
+export STUB_GATE_MODE=ended STUB_ONLY_DOC=docs/c4.md
+xr run --exp-id "$EE" --budget-usd 1000
+case "$(att "$EE" 3 5)" in "opus-1: 감사 보고서 없음"*) ereason=1 ;; *) ereason=0 ;; esac
+if [[ "$rc" == "0" && "$ereason" == "1" && "$(dcol "$EE" 3 2)" == "docs/c5.md" ]] && all_valid "$EE"; then
+  pass "unattended: a refused call on a run that already ended reads its done, and 예비 3-1 replaces the document"
+else
+  fail "unattended: ended run gave exit $rc, attempt '$(att "$EE" 3 5)'"; cat "$sc/out" >&2
 fi
 
 # 5. A slot with no reserve stays invalid and the verdict is 판정 불가.

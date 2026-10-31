@@ -1,6 +1,6 @@
 # 시각 디자인 연결 파일 계약
 
-`visual`·`visual-unattended` 두 스킬, 구현 쌍(`implement`·`implement-unattended`), 킥오프와 오케스트레이터가 함께 읽는 연결 파일의 문법이다. 연결 파일은 둘이다 — 설계 문서 하나에 하나인 사이드카(종류 `visual`)와 레포에 하나인 디자인 시스템 연결 파일(종류 `visual-system`). 두 파일의 머리·필드·쓰기 규칙은 이 파일이 소유하고, 다른 파일은 이 문면을 읽는다. 계약의 공통 규칙(문서 키·슬러그 유도, 원자 쓰기, 비우거나 자르지 않기)은 `../../_common/sidecar.md` 를 따른다.
+`visual`·`visual-unattended`·`visual-publish-unattended` 세 스킬, 구현 쌍(`implement`·`implement-unattended`), 킥오프와 오케스트레이터가 함께 읽는 연결 파일의 문법이다. 연결 파일은 둘이다 — 설계 문서 하나에 하나인 사이드카(종류 `visual`)와 레포에 하나인 디자인 시스템 연결 파일(종류 `visual-system`). 두 파일의 머리·필드·쓰기 규칙은 이 파일이 소유하고, 다른 파일은 이 문면을 읽는다. 계약의 공통 규칙(문서 키·슬러그 유도, 원자 쓰기, 비우거나 자르지 않기)은 `../../_common/sidecar.md` 를 따른다.
 
 필드를 파싱하는 코드는 `plugins/cc-cmds/orchestrator/visual-check.sh` 하나이고, `scripts/test-visual-check.sh` 가 아래 두 예시(`### 사이드카 예시`, `### 금지 해제 예시`)를 직접 읽어 그 도우미에 돌린다. 예시를 고치면 그 시험이 함께 돈다.
 
@@ -16,7 +16,7 @@
 
 - `<base>` 는 설계 문서가 있는 레포의 메인 워크트리 루트다 — 문서 자리에서 `git rev-parse --path-format=absolute --git-common-dir` 의 디렉터리. 세그먼트 워크트리에는 추적되지 않는 `docs/` 파일이 없으므로, 읽는 쪽은 언제나 `<base>` 로 풀어 절대 경로로 읽는다.
 - 문서 키는 `git rev-parse --show-toplevel` 아래 문서의 상대 경로이고, `<slug>` 는 키에서 `.md` 를 떼고 `/` 를 `-` 로 바꾼 것이다(`docs/feature.md` → `docs-feature`).
-- 화면 사본·`support.js`·토큰 파일은 정본 아티팩트의 **추출본**이라 머리가 없다. 그 소유는 파일 머리가 아니라 그것을 `**대상 경로**`·`**런타임**` 으로 고정한 사이드카와 `system.md` 가 증명한다. 추출본을 통째로 바꾸는 것은 대화형 발행·동기와 무인 생성뿐이고, 언제나 같은 디렉터리 임시 파일 → rename 의 원자 교체다.
+- 화면 사본·`support.js`·토큰 파일은 정본 아티팩트의 **추출본**이라 머리가 없다. 그 소유는 파일 머리가 아니라 그것을 `**대상 경로**`·`**런타임**` 으로 고정한 사이드카와 `system.md` 가 증명한다. 추출본을 통째로 바꾸는 것은 발행·동기(대화형 국면과, 런 안에서 같은 국면을 따르는 발행 스테이지 `visual-publish-unattended`)와 무인 생성뿐이고, 언제나 같은 디렉터리 임시 파일 → rename 의 원자 교체다.
 - 화면 사본은 종류 디렉터리 안에 평면으로 둔다. 하위 디렉터리를 만들지 않는다.
 - 킥오프가 가져온 비공개 레퍼런스는 `<base>/docs/visual/<slug>.ref-<n>.<확장자>` 다. 무인 팔은 쓰지 않는다.
 
@@ -26,7 +26,7 @@
 
 ```
 # 시각 디자인 연결 — <설계 문서 키>
-<!-- cc-visual v1; writer=visual|visual-unattended; reader=visual,visual-unattended,implement,implement-unattended,autopilot,orchestrator; owner-doc=<문서 키>; origin-worktree=<루트>; NOT a design doc; mechanism-local, never staged by a skill -->
+<!-- cc-visual v1; writer=visual|visual-unattended|visual-publish-unattended; reader=visual,visual-unattended,visual-publish-unattended,implement,implement-unattended,autopilot,orchestrator; owner-doc=<문서 키>; origin-worktree=<루트>; NOT a design doc; mechanism-local, never staged by a skill -->
 **상태**: 로컬 초안 | 검토 통과 | 발행됨
 **검토**: <회차>회, 마지막 판정 <ACCEPT|REJECT> (<YYYY-MM-DD>)
 **검토 렌더**: 가능 | 불가(환경)
@@ -38,7 +38,7 @@
 **런타임**: <docs/visual/support.js sha256> (타입 릴리스 <id>) | (없음)
 **채택**: <채택한 것> — 기준 <미리 쓰인 기준> — 되돌리는 법 <명령·편집>
 **다듬기**: <회차>회 — 수정 목록 <n>건 — <건너뜀 | 기계 치환 | opus | <설정 모델>>
-**구현 승인**: <ISO8601> — 입력 묶음 <sha256> — 금지 목록 <sha256> — 기계 검사 수용 <규칙 id, … | 없음>
+**구현 승인**: <ISO8601> — 입력 묶음 <sha256> — 금지 목록 <sha256> — 기계 검사 수용 <규칙 id, … | 없음>[ — 사람 답 <중단 기록 파일 이름>]
 
 ### 화면 <id>
 **대상 경로**: docs/visual/<slug>.<id>.html
@@ -59,15 +59,16 @@
 - **`**기록**`** 은 무인 팔이 쓴 인터뷰 기록의 `<base>` 기준 경로와 sha256 이다. 대화형 좌석은 기록을 이 필드로만 찾는다. 해시가 파일과 다르거나 판 토큰을 모르면 그 기록을 쓰지 않는다.
 - **`**채택**`** 은 0줄 이상이고, 무인 팔의 `등급 1` 처분이 한 줄씩 남긴다.
 - **`**다듬기**`** 는 무인·대화형 검토 루프의 회차마다 한 줄이다. 넷째 칸은 `contract.md` §7 의 강등표가 고른 처리다.
-- **`**구현 승인**`** 은 0줄 또는 1줄이고, `**상태**: 발행됨` 에서만 선다. 대화형 `visual` 의 `구현 승인` 국면만 쓰고, 동기와 다시 발행이 지운다. 둘째 칸은 §5 의 입력 묶음, 셋째 칸은 그때 읽은 호스트 금지 목록 파일 바이트의 sha256(기록만 하고 술어가 묶지 않는다), 넷째 칸은 사람이 수용한 규칙 id 의 쉼표 + 공백 목록이거나 `없음` 이다. 두 줄 이상이거나 모양이 틀린 줄은 무효다.
-- **`### 금지 후보`** 아래 줄은 검토자가 찾은 새 패턴이다. 앞부분 `<후보 id> | <종류> | <설명> | <패턴 또는 ->` 는 `contract.md` §5 의 금지 목록 한 줄 문법 그대로이고, 꼬리 ` — <회차>회 <화면 id>` 가 출처다. 대화형 `visual` 이 항목별 승인 뒤 그 줄을 그대로 `visual-config.sh append` 에 넘기면 도우미가 꼬리와 따옴표를 떼고 덧붙인다. 승인되거나 거절된 후보 줄은 사이드카에서 지운다.
+- **`**구현 승인**`** 은 0줄 또는 1줄이고, `**상태**: 발행됨` 에서만 선다. 쓰는 쪽은 둘이다 — 대화형 `visual` 의 `구현 승인` 국면, 그리고 런 안의 발행 스테이지 `visual-publish-unattended` 가 사람이 `시각-판정` 중단 기록에 `승인` 으로 답한 뒤. 동기와 다시 발행이 지운다. 둘째 칸은 §5 의 입력 묶음, 셋째 칸은 그때 읽은 호스트 금지 목록 파일 바이트의 sha256(기록만 하고 술어가 묶지 않는다), 넷째 칸은 사람이 수용한 규칙 id 의 쉼표 + 공백 목록이거나 `없음` 이다. 두 줄 이상이거나 모양이 틀린 줄은 무효다.
+- **출처 꼬리 ` — 사람 답 <파일 이름>`** 은 선택이다. `<파일 이름>` 은 런 디렉터리 `halt/` 아래 중단 기록의 파일 이름 하나(`[A-Za-z0-9._#-]+\.md`, 예: `S2P#3.md`)이고 경로를 담지 않는다. 발행 스테이지는 이 꼬리를 늘 붙이고, 그 줄의 근거가 된 `시각-판정` 기록을 가리킨다. 대화형 국면은 붙이지 않는다. 계획에 그 문서를 맡은 `S2P` 단계가 있는 런에서는 꼬리가 가리키는 기록이 그 런의 가장 마지막 `시각-판정` 기록(`halt/S2P#<n>.md` 가운데 `**스텝**` 이 그 자리인 것의 실행 판 번호 최대값)이고 그 기록에 사람(`답한 주체=사람`)의 `승인` 답 행이 있을 때만 게이트가 그 줄을 채택한다. 꼬리 없는 줄은 그런 런에서 채택되지 않으므로, 그 런의 승인은 `S2P` 의 `시각-판정` 으로 받는다. `S2P` 가 없는 런과 런 밖에서는 꼬리 없는 줄이 지금처럼 다뤄진다.
+- **`### 금지 후보`** 아래 줄은 검토자가 찾은 새 패턴이다. 앞부분 `<후보 id> | <종류> | <설명> | <패턴 또는 ->` 는 `contract.md` §5 의 금지 목록 한 줄 문법 그대로이고, 꼬리 ` — <회차>회 <화면 id>` 가 출처다. 대화형 `visual` 이 항목별 승인 뒤, 또는 발행 스테이지가 그 후보의 `금지-후보` 중단 기록에 사람이 `승인` 으로 답한 뒤 그 줄을 그대로 `visual-config.sh append` 에 넘기면 도우미가 꼬리와 따옴표를 떼고 덧붙인다. 승인되거나 거절된 후보 줄은 사이드카에서 지운다.
 - 계정에 관한 것은 사이드카에 아무것도 남기지 않는다.
 
 ### 사이드카 예시
 
 ```
 # 시각 디자인 연결 — docs/feature-checkout.md
-<!-- cc-visual v1; writer=visual|visual-unattended; reader=visual,visual-unattended,implement,implement-unattended,autopilot,orchestrator; owner-doc=docs/feature-checkout.md; origin-worktree=/srv/repo; NOT a design doc; mechanism-local, never staged by a skill -->
+<!-- cc-visual v1; writer=visual|visual-unattended|visual-publish-unattended; reader=visual,visual-unattended,visual-publish-unattended,implement,implement-unattended,autopilot,orchestrator; owner-doc=docs/feature-checkout.md; origin-worktree=/srv/repo; NOT a design doc; mechanism-local, never staged by a skill -->
 **상태**: 발행됨
 **검토**: 2회, 마지막 판정 ACCEPT (2026-10-12)
 **검토 렌더**: 가능
@@ -109,7 +110,7 @@
 
 ```
 # 디자인 시스템 연결 — <메인 워크트리 루트>
-<!-- cc-visual-system v1; writer=autopilot|visual|visual-unattended; reader=visual,visual-unattended,implement,implement-unattended; owner-doc=(없음); owner-repo=<메인 워크트리 루트>; NOT a design doc; mechanism-local, never staged by a skill -->
+<!-- cc-visual-system v1; writer=autopilot|visual|visual-unattended|visual-publish-unattended; reader=visual,visual-unattended,visual-publish-unattended,implement,implement-unattended; owner-doc=(없음); owner-repo=<메인 워크트리 루트>; NOT a design doc; mechanism-local, never staged by a skill -->
 **아티팩트**: <Design System 아티팩트 URL | (미발행)>
 **출처**: 신규 | 레포 기존 | claude.ai 기존
 **tokens.css sha256**: <값>
@@ -126,7 +127,7 @@
 
 ```
 # 디자인 시스템 연결 — /srv/repo
-<!-- cc-visual-system v1; writer=autopilot|visual|visual-unattended; reader=visual,visual-unattended,implement,implement-unattended; owner-doc=(없음); owner-repo=/srv/repo; NOT a design doc; mechanism-local, never staged by a skill -->
+<!-- cc-visual-system v1; writer=autopilot|visual|visual-unattended|visual-publish-unattended; reader=visual,visual-unattended,visual-publish-unattended,implement,implement-unattended; owner-doc=(없음); owner-repo=/srv/repo; NOT a design doc; mechanism-local, never staged by a skill -->
 **아티팩트**: https://claude.ai/design/p/0000-ds
 **출처**: 신규
 **tokens.css sha256**: 6f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a3928170
@@ -142,6 +143,9 @@
 3. 줄 끝 `\r` 과 공백을 지우고, 연속 빈 줄을 하나로, 앞머리 빈 줄을 없앤다.
 4. 남은 문면의 sha256.
 
+계산 도우미는 `visual-check.sh binding <설계 문서>` 하나이고, 무인 팔은 사이드카에 쓸 값을 이 부명령으로 잰다.
+무인 팔의 재사용 판정(`visual-check.sh reuse <설계 문서> --record <기록>`)은 `**기록**` 을 경로가 아니라 sha256 으로만 대조한다 — 재킥오프된 런의 기록은 원천 기록의 바이트 복사라 해시가 같고, 경로 칸은 원천 런의 것으로 남는다.
+
 무인 팔이 사이드카에 쓸 때와 구현 쌍이 대조할 때 이 정의 하나를 읽는다. 대조가 어긋나면 구현 쌍은 보고하고 멈추지 않는다 — 다이제스트는 승인 술어에 들지 않는다(§5).
 
 ## 5. 입력 묶음과 승인 술어
@@ -154,13 +158,13 @@ runtime <support.js sha256>
 tokens <tokens.css sha256>
 ```
 
-없는 파일의 자리는 `(없음)` 이다. 정의와 계산은 `visual-check.sh bundle <설계 문서>` 한 곳에 있고(`--lines` 는 문면 자체), 대화형 `visual` 이 `**구현 승인**` 을 쓸 때도 이 부명령으로 잰다. 설계 문서의 구속 다이제스트와 `system.md` 는 묶지 않는다 — 의도된 정리 편집이나 해제 추가가 승인을 지우지 않게 하려는 것이다.
+없는 파일의 자리는 `(없음)` 이다. 정의와 계산은 `visual-check.sh bundle <설계 문서>` 한 곳에 있고(`--lines` 는 문면 자체), 대화형 `visual` 과 발행 스테이지가 `**구현 승인**` 을 쓸 때도 이 부명령으로 잰다. 설계 문서의 구속 다이제스트와 `system.md` 는 묶지 않는다 — 의도된 정리 편집이나 해제 추가가 승인을 지우지 않게 하려는 것이다.
 
-술어는 `visual-check.sh approval <설계 문서>` 하나다. 사이드카가 이 문서의 것이고(`owner-doc=`), `**상태**: 발행됨` 이며, `**구현 승인**` 줄이 정확히 하나이고 모양이 맞으며, 사이드카의 화면 파일이 모두 있고, 지금 파일로 다시 잰 입력 묶음이 줄의 값과 같을 때만 `승인 유효 <hex 앞 12자>` 와 종료 0 이다. 그 밖은 `승인 없음 — <사유>` 나 `승인 무효 — <사유>` 와 종료 1 이다. 게이트의 파견 거절, 자동 해소의 갈래, `gate_close`, 구현 쌍의 Step 1, 드라이버의 브랜치 전 검사, 라우터 교대의 차례 판정이 모두 이 술어를 부르고, 저마다 다시 구현하지 않는다.
+술어는 `visual-check.sh approval <설계 문서>` 하나다. 사이드카가 이 문서의 것이고(`owner-doc=`), `**상태**: 발행됨` 이며, `**구현 승인**` 줄이 정확히 하나이고 모양이 맞으며, 사이드카의 화면 파일이 모두 있고, 지금 파일로 다시 잰 입력 묶음이 줄의 값과 같을 때만 `승인 유효 <hex 앞 12자>` 와 종료 0 이다. 그 밖은 `승인 없음 — <사유>` 나 `승인 무효 — <사유>` 와 종료 1 이다. 유효한 줄에 출처 꼬리가 있으면 둘째 줄 `출처 사람 답 <파일 이름>` 을 더 찍는다. 이 부명령은 꼬리의 모양만 보고, 그 기록이 `S2P` 의 가장 마지막 `시각-판정` 이고 사람의 `승인` 답이 있는지는 게이트의 승인 술어가 이 둘째 줄을 읽어 원장에서 확인한다(§2 의 출처 꼬리). 게이트의 파견 거절, 자동 해소의 갈래, `gate_close`, 구현 쌍의 Step 1, 드라이버의 브랜치 전 검사, 라우터 교대의 차례 판정이 모두 이 술어를 부르고, 저마다 다시 구현하지 않는다.
 
 ## 6. 기록 `## 시각 방향` 의 두 하위 블록
 
-킥오프는 계획에 시각 단계가 있으면 인터뷰 기록의 `## 시각 방향` 절 안에 두 하위 블록을 쓴다. 무인 팔은 이 사본만 읽고 호스트 설정 디렉터리를 읽지 않는다. `visual-config.sh snapshot` 이 받는 모양은 이렇다.
+킥오프는 계획에 시각 단계가 있으면 인터뷰 기록의 `## 시각 방향` 절 안에 두 하위 블록을 쓴다. 생성 무인 팔(`visual-unattended`)은 이 사본만 읽고 호스트 설정 디렉터리를 읽지 않는다. 발행 스테이지는 모델값을 이 사본에서 읽고, 승인 줄에 sha256 을 싣는 금지 목록은 대화형과 같이 호스트 파일을 읽는다. `visual-config.sh snapshot` 이 받는 모양은 이렇다.
 
 ````
 ## 시각 방향

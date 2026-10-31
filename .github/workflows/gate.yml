@@ -33,11 +33,32 @@ name: gate
 # checks that every non-empty row of the table printed its total.
 #
 # THE TEST TIME IS A SIGNAL OF ITS OWN. `gate-report` sums the row times and
-# hands them to `scripts/ci-duration.sh`, which fails a pull request
-# whose increment over the master baseline is past the tolerance without a
-# matching budget raise, and warns whenever the absolute level is over budget.
+# hands them to `scripts/ci-duration.sh`, together with the plan directory and
+# this run's merged section times. A pull request whose sum, less its budget
+# raise, stays under the common upper bound — the master window's median plus
+# the tolerance, or its largest value plus tol_s, whichever is larger — passes.
+# Past it, the sections the pull request did not change measure the runner:
+# their time in this run over their master median is a factor, floored at 1,
+# that the baseline is scaled by. Still past the scaled bound fails, as growth
+# the pull request added; inside it warns, naming the factor and that the
+# cause is the runner environment or a shared path this pull request slowed;
+# without usable plan inputs it warns with the reason. The absolute level over
+# budget always only warns.
 # How even the shards actually were is in the report job's summary, with a
 # warning past a max/median of 1.5.
+#
+# A CHANGED SECTION IS RUN IN MORE THAN ONE CONTEXT. `gate-plan` compares each
+# section's text with the base's (`test-gate.sh --digests`) and hands the ones
+# that differ to `gate-shard.sh --isolate`, which lays two solo runs of each,
+# and the section laid over other rows, into the room the regular rows leave;
+# what does not fit goes onto extra rows S+1..S+E, at most GATE_ISO_EXTRA of
+# them. The matrix is the plan job's row list, so it grows by E. Every row that
+# ran isolation work uploads `iso-<row>`, and `gate-isolation` compares the
+# contexts of every changed section: a section that behaves differently in one
+# of them leans on state it does not declare, and the run fails. Isolation
+# time stays out of the duration signal. Without a base to compare with, or
+# without measured times to place by, a change to a section fails here rather
+# than going unchecked.
 #
 # THE FILTER NAMES THIS FILE. Without that line the workflow is absent from the
 # pull request that introduces it, so its check names never render and there is
@@ -52,6 +73,7 @@ on:
       - 'scripts/gate-census.tsv'
       - 'scripts/gate-timing.sh'
       - 'scripts/gate-timing.tsv'
+      - 'scripts/gate-isolation.sh'
       - 'scripts/ci-duration.sh'
       - 'scripts/ci-duration-budget.tsv'
       - 'plugins/cc-cmds/orchestrator/**'
@@ -76,12 +98,53 @@ jobs:
   # `gate-plan` artifact has one line per such section with its estimate.
   # Only master push runs of this repository are read, so an artifact of the
   # same name uploaded by a fork's pull request never becomes the source.
+  #
+  # Its outputs drive the rest: `rows` is the matrix (runners 1..N, then the
+  # extra rows S+1..S+E), `extra` is E and `work` is how many rows carry
+  # isolation work, which `gate-isolation` must get back.
   gate-plan:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+    outputs:
+      rows: ${{ steps.table.outputs.rows }}
+      extra: ${{ steps.table.outputs.extra }}
+      work: ${{ steps.table.outputs.work }}
     steps:
+      # A pull request checks out one merge commit whose first parent is the
+      # base tip, so two commits are enough; a push fetches its `before` below.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+
+      # FAILING IS THE POINT WHEN THERE IS NO BASE. Reading "no base" as "no
+      # changed section" would leave the isolation check empty without a word,
+      # so a zero `before`, a fetch that fails or a base file the selector cannot
+      # read (its bounds, or a stray row inside them) fail the run instead.
+      - name: Find the changed sections
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          plan="$RUNNER_TEMP/plan"; mkdir -p "$plan"
+          base=""
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base=$(git rev-parse --verify -q 'HEAD^1') || base=""
+          else
+            case "$BEFORE" in
+              *[!0]*) git fetch --no-tags --depth=1 origin "$BEFORE" && base="$BEFORE" ;;
+            esac
+          fi
+          if [ -z "$base" ] \
+             || ! git show "$base:scripts/test-gate.sh" > "$RUNNER_TEMP/base-test-gate.sh" \
+             || ! make -s --no-print-directory print-gate-digests GATE_DIGESTS_FROM="$RUNNER_TEMP/base-test-gate.sh" > "$plan/base.dig" \
+             || ! make -s --no-print-directory print-gate-digests > "$plan/head.dig"; then
+            echo "::error::격리 검사 불가 — 베이스 없음 (베이스 '${base:-${BEFORE:-없음}}' 의 scripts/test-gate.sh 다이제스트를 내지 못했습니다)"
+            exit 1
+          fi
+          awk -F '\t' 'FNR == NR { b[$1] = $2; next } !($1 in b) || b[$1] != $2 { printf "%s%s", (n++ ? "," : ""), $1 }' \
+            "$plan/base.dig" "$plan/head.dig" > "$plan/changed"
+          echo "$base" > "$plan/base"
+          echo "바뀐 절: $(cat "$plan/changed")"
 
       - name: Find the timing source
         run: |
@@ -116,15 +179,44 @@ jobs:
           fi
           echo "$age" > "$plan/age"
 
+      # Isolation is placed only with measured times. The seed and the census
+      # carry no `@head` row and do not weigh in CI row seconds, so F and the
+      # room they give are not the wall clock's unit; a change to a section then
+      # fails with that reason rather than being placed by a guess.
       - name: Make the partition table
+        id: table
         run: |
           plan="$RUNNER_TEMP/plan"
+          changed=$(cat "$plan/changed")
           if [ -f "$plan/gate-timing.tsv" ]; then set -- --timing "$plan/gate-timing.tsv"; else set --; fi
+          if [ -n "$changed" ]; then
+            case "$(cat "$plan/source")" in
+              artifact*) set -- "$@" --isolate "$changed" --iso-extra "$(make -s print-gate-iso-extra)" ;;
+              *) echo "::error::격리 검사 불가 — 타이밍 원천 없음 (출처 $(cat "$plan/source"), 바뀐 절 $changed)"; exit 1 ;;
+            esac
+          fi
           rc=0
           bash scripts/gate-shard.sh --shards "$(make -s print-gate-slots)" "$@" --table \
             > "$plan/table.tsv" 2> "$plan/table.err" || rc=$?
           cat "$plan/table.err" >&2
-          [ "$rc" = "0" ] || exit "$rc"
+          if [ "$rc" = "5" ]; then
+            echo "::error::격리 검사 용량 초과 — 바뀐 절 $changed 의 단독 실행을 정규 행의 여유와 추가 행 $(make -s print-gate-iso-extra)개에 다 싣지 못했습니다"
+            exit 1
+          fi
+          if [ "$rc" != "0" ]; then
+            echo "::error::gate-shard.sh 도구 오류 (종료 $rc)"
+            exit "$rc"
+          fi
+          n=$(make -s print-gate-shards); s=$(make -s print-gate-slots)
+          e=$(( $(grep -c . "$plan/table.tsv") - s ))
+          rows=$( { seq 1 "$n"; if [ "$e" -gt 0 ]; then seq $(( s + 1 )) $(( s + e )); fi; } | jq -sc .)
+          work=$(awk -F '\t' '$4 != "" || $5 != "" || $6 != ""' "$plan/table.tsv" | grep -c . || true)
+          echo "$e" > "$plan/extra"
+          {
+            echo "rows=$rows"
+            echo "extra=$e"
+            echo "work=${work:-0}"
+          } >> "$GITHUB_OUTPUT"
           {
             echo "### gate 분할 계획"
             echo ""
@@ -132,10 +224,12 @@ jobs:
             un=$(sed -n 's/^gate-shard: 실측 없는 절 /실측 없는 절 /p' "$plan/table.err")
             echo "- ${un:-실측 없는 절: 센서스 무게 모델이라 해당 없음}"
             sed -n 's/^gate-shard: 예산 초과 덩어리 — /- 예산 초과 덩어리: /p' "$plan/table.err"
+            echo "- 베이스 $(cat "$plan/base") 에서 바뀐 절: ${changed:-없음}"
+            sed -n 's/^gate-shard: 격리 배치 — /- 격리 배치: /p; s/^gate-shard: 덮지 못한 쌍 — /- 덮지 못한 쌍: /p' "$plan/table.err"
             echo ""
-            echo "| 행 | 예측 적재 | 절 수 |"
-            echo "| --- | --- | --- |"
-            awk -F '\t' '{ n = split($3, a, ","); print "| " $1 " | " $2 " | " (($3 == "") ? 0 : n) " |" }' "$plan/table.tsv"
+            echo "| 행 | 예측 적재 | 절 수 | 단독 | 얹힘 |"
+            echo "| --- | --- | --- | --- | --- |"
+            awk -F '\t' '{ n = split($3, a, ","); print "| " $1 " | " $2 " | " (($3 == "") ? 0 : n) " | " (($5 == "") ? "-" : $5) " | " (($4 == "") ? "-" : $4) " |" }' "$plan/table.tsv"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
@@ -156,10 +250,12 @@ jobs:
     # here: a missing daemon is a failure, not a skip.
     env:
       CC_GATE_REQUIRE_DOCKER: '1'
+    # The runners and the extra rows come from the plan job: a static list could
+    # not grow by the E extra rows a change to sections opens.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+        shard: ${{ fromJSON(needs.gate-plan.outputs.rows) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -169,7 +265,17 @@ jobs:
           path: ${{ runner.temp }}/plan
 
       - name: Run shard ${{ matrix.shard }}
-        run: make gate-shard SHARD=${{ matrix.shard }} GATE_TABLE="$RUNNER_TEMP/plan/table.tsv" GATE_OUT_DIR="$RUNNER_TEMP/out"
+        run: make gate-shard SHARD=${{ matrix.shard }} GATE_EXTRA=${{ needs.gate-plan.outputs.extra }} GATE_TABLE="$RUNNER_TEMP/plan/table.tsv" GATE_OUT_DIR="$RUNNER_TEMP/out"
+
+      # What the row's traced cut and its solos recorded, for `gate-isolation`.
+      # A row without isolation work writes no `iso-<row>` directory.
+      - name: Upload the isolation records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out/iso-*/
+          if-no-files-found: ignore
 
       - name: Upload the section markers
         if: always()
@@ -197,17 +303,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install mikefarah/yq
-        uses: mikefarah/yq@v4
-
       - uses: actions/download-artifact@v4
         with:
           name: gate-plan
           path: ${{ runner.temp }}/plan
 
-      # The matrix spells its shard numbers out and the Makefile holds the
-      # count. They are two places, so they are compared here — a matrix that
-      # drifted short would leave the missing shard's sections owned by nobody
+      # The matrix is the plan job's row list and the table is the plan job's
+      # cut. They are two outputs, so they are compared here — a list that
+      # drifted short would leave the missing row's sections owned by nobody
       # while every job still passed.
       #
       # THE VALUES ARE COMPARED, NOT THE LENGTH. A duplicate entry keeps the
@@ -217,21 +320,30 @@ jobs:
       # partitioner whether the shards cover the list, not whether the matrix
       # asked for all of them. One sorted comparison closes short, long,
       # duplicated and out-of-range together.
-      - name: Matrix shard numbers are exactly 1..GATE_SHARDS
+      - name: Matrix rows are the runners and the extra rows of the table
+        env:
+          ROWS: ${{ needs.gate-plan.outputs.rows }}
+          EXTRA: ${{ needs.gate-plan.outputs.extra }}
         run: |
-          want=$(make -s print-gate-shards)
-          got=$(yq '.jobs.gate-shards.strategy.matrix.shard[]' .github/workflows/gate.yml | sort -n | tr '\n' ' ')
-          expect=$(seq 1 "$want" | tr '\n' ' ')
+          n=$(make -s print-gate-shards); s=$(make -s print-gate-slots)
+          got=$(printf '%s' "$ROWS" | jq -r '.[]' | sort -n | tr '\n' ' ')
+          expect=$( { seq 1 "$n"; if [ "$EXTRA" -gt 0 ]; then seq $(( s + 1 )) $(( s + EXTRA )); fi; } | tr '\n' ' ')
           if [ "$got" != "$expect" ]; then
-            echo "matrix 의 샤드 번호 [$got] 가 1..$want [$expect] 와 다릅니다" >&2
+            echo "matrix 의 행 번호 [$got] 가 러너 1..$n 과 추가 행 $EXTRA 개 [$expect] 와 다릅니다" >&2
             exit 1
           fi
-          echo "샤드 $want 개"
+          t=$(grep -c . "$RUNNER_TEMP/plan/table.tsv")
+          if [ "$t" != "$(( s + EXTRA ))" ]; then
+            echo "표의 행 수 $t 가 정규 행 $s 개와 추가 행 $EXTRA 개의 합과 다릅니다" >&2
+            exit 1
+          fi
+          echo "러너 $n 개 · 추가 행 $EXTRA 개"
 
-      # The table has S rows, not N: the check counts the rows the plan job cut
-      # and that their ids are exactly 1..S.
+      # The table has S + E rows, not N: the check counts the rows the plan job
+      # cut and that their ids are exactly 1..S+E. Only the third column is
+      # counted, since a laid-over section sits in several rows by design.
       - name: Union of the rows is the whole section list
-        run: bash scripts/gate-shard.sh --shards "$(make -s print-gate-slots)" --check --from-table "$RUNNER_TEMP/plan/table.tsv"
+        run: bash scripts/gate-shard.sh --shards "$(make -s print-gate-slots)" --check --from-table "$RUNNER_TEMP/plan/table.tsv" --extra "${{ needs.gate-plan.outputs.extra }}"
 
   # Runs whatever the shards did, so a red run still uploads what it measured.
   # The increment check is skipped when a shard failed: its time was cut short,
@@ -300,7 +412,7 @@ jobs:
 
       - name: Duration signal
         if: needs.gate-shards.result == 'success'
-        run: bash scripts/ci-duration.sh check --key gate --seconds "${{ steps.report.outputs.sum }}" --window-out "$RUNNER_TEMP/ci-duration-gate"
+        run: bash scripts/ci-duration.sh check --key gate --seconds "${{ steps.report.outputs.sum }}" --window-out "$RUNNER_TEMP/ci-duration-gate" --plan-dir "$RUNNER_TEMP/plan" --sections "$RUNNER_TEMP/timing/gate-timing.tsv"
 
       - name: Duration signal skipped
         if: needs.gate-shards.result != 'success'
@@ -317,9 +429,13 @@ jobs:
       # whole attempt. The artifact carries the attempt number, so a re-run
       # attempt leaves its own line beside the first one. It never fails the
       # job: past 900 s raw it warns.
+      #
+      # The extra rows are rows and runners too, so both counts take E.
       - name: Wall clock
         if: always()
-        run: bash scripts/ci-duration.sh wall --slots "$(make -s print-gate-slots)" --runners "$(make -s print-gate-shards)" --lanes "$(make -s print-gate-lanes)" --timing-dir "$RUNNER_TEMP/shards" --result-dir "$RUNNER_TEMP/results" --out "$RUNNER_TEMP/wall/gate-wall.txt"
+        run: |
+          e=$(cat "$RUNNER_TEMP/plan/extra" 2>/dev/null || echo 0)
+          bash scripts/ci-duration.sh wall --slots "$(( $(make -s print-gate-slots) + e ))" --runners "$(( $(make -s print-gate-shards) + e ))" --lanes "$(make -s print-gate-lanes)" --timing-dir "$RUNNER_TEMP/shards" --result-dir "$RUNNER_TEMP/results" --out "$RUNNER_TEMP/wall/gate-wall.txt"
 
       - name: Upload the wall clock
         if: always()
@@ -332,11 +448,75 @@ jobs:
       # A row that ran is a row that printed its total. Every non-empty row of
       # the table must have one, and no other row may — a runner that never
       # started a lane, or a lane that died before its tail, shows up here by
-      # row id even when the matrix job's own verdict was lost. It is last so a
+      # row id even when the matrix job's own verdict was lost. An extra row has
+      # no regular cut and answers with `격리 전용 행` instead. It is last so a
       # red verdict here never skips the uploads above.
       - name: Every row printed its total
         if: always()
-        run: bash scripts/gate-timing.sh rows --table "$RUNNER_TEMP/plan/table.tsv" --dir "$RUNNER_TEMP/results" --slots "$(make -s print-gate-slots)"
+        run: |
+          e=$(cat "$RUNNER_TEMP/plan/extra" 2>/dev/null || echo 0)
+          bash scripts/gate-timing.sh rows --table "$RUNNER_TEMP/plan/table.tsv" --dir "$RUNNER_TEMP/results" --slots "$(( $(make -s print-gate-slots) + e ))"
+
+  # THE VERDICT ON THE CHANGED SECTIONS. It waits for the shards but runs
+  # whatever they did, since a red row still uploaded what it recorded, and it
+  # runs beside `gate-report` in seconds, so it adds nothing to the wall clock.
+  # A row the plan put isolation work on that sent nothing back is a failure:
+  # an empty input must never read as "the same". With no such row there is
+  # nothing to receive, and the job passes on an empty result without asking
+  # how a download of no artifact ends.
+  gate-isolation:
+    needs: [gate-plan, gate-shards]
+    if: always() && needs.gate-plan.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      WORK: ${{ needs.gate-plan.outputs.work }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-plan
+          path: ${{ runner.temp }}/plan
+
+      - uses: actions/download-artifact@v4
+        if: needs.gate-plan.outputs.work != '0'
+        continue-on-error: true
+        with:
+          pattern: iso-*
+          path: ${{ runner.temp }}/iso
+          merge-multiple: true
+
+      - name: Every changed section behaves the same in every context
+        run: |
+          mkdir -p "$RUNNER_TEMP/iso" "$RUNNER_TEMP/isolation"
+          if [ "$WORK" = "0" ]; then
+            : > "$RUNNER_TEMP/isolation/result.tsv"
+            echo "격리 작업을 실은 행이 없습니다 — 빈 결과 표로 통과합니다"
+            exit 0
+          fi
+          rc=0
+          bash scripts/gate-isolation.sh compare --dir "$RUNNER_TEMP/iso" --plan "$RUNNER_TEMP/plan/table.tsv" \
+            --out "$RUNNER_TEMP/isolation/result.tsv" 2> "$RUNNER_TEMP/isolation/compare.err" || rc=$?
+          cat "$RUNNER_TEMP/isolation/compare.err" >&2
+          {
+            echo "### gate 격리 검사"
+            echo ""
+            sed 's/^gate-isolation: /- /' "$RUNNER_TEMP/isolation/compare.err"
+            echo ""
+            echo "| 절 | 상태 | 맥락 | 첫 차이 |"
+            echo "| --- | --- | --- | --- |"
+            [ ! -f "$RUNNER_TEMP/isolation/result.tsv" ] \
+              || awk -F '\t' '{ gsub(/\|/, "\\|"); print "| " $1 " | " $2 " | " $3 " | " $4 " |" }' "$RUNNER_TEMP/isolation/result.tsv"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Upload the isolation result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-isolation
+          path: ${{ runner.temp }}/isolation/
+          if-no-files-found: ignore
 
   # Set-based, never count-based: one section regressing while another is fixed
   # leaves a count flat and hides exactly the thing being watched. Sections the

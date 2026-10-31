@@ -73,6 +73,10 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-notify-focus.XXXXXX")
 # no prime and writes no cache outside the work directory.
 export CC_CMDS_NOTIFY_FOCUS_PRIME=off
 export CC_CMDS_NOTIFY_FOCUS_CACHE="$WORK/cache"
+# The attention spool root points at a path under the work directory that is
+# never created, so the attention tap writes nothing from this suite and never
+# reaches the account spool. CLICK_ENV carries the same value through `env -i`.
+export CC_CMDS_ATTENTION_ROOT="$WORK/attention-root-absent"
 S=""
 TAIL_PID_FILE=""
 cleanup() {
@@ -296,6 +300,7 @@ CLICK_ENV=(
   CC_CMDS_NOTIFY_FOCUS_OPEN="$WORK/bin/open"
   CC_CMDS_NOTIFY_FOCUS_SWIFTC=none
   CC_CMDS_NOTIFY_FOCUS_GUIDE=off
+  CC_CMDS_ATTENTION_ROOT="$CC_CMDS_ATTENTION_ROOT"
   STUB_LOG="$LOG"
 )
 

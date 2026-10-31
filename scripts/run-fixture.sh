@@ -22,6 +22,14 @@
 : "${CC_CMDS_DASHBOARD:=off}"
 export CC_CMDS_DASHBOARD
 
+# THE SECOND EXCEPTION: the attention spool root is pinned to a path that can
+# never be a directory, so the attention tap writes nothing from any suite that
+# sources this file. An assignment, not a default: an inherited value left in a
+# developer's shell may point at the real account spool, and a wrong value here
+# writes into it.
+CC_CMDS_ATTENTION_ROOT=/dev/null/cc-cmds-attention
+export CC_CMDS_ATTENTION_ROOT
+
 # --------------------------------------------------------------------------
 # Run directory and ledger
 # --------------------------------------------------------------------------

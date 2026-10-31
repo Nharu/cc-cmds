@@ -32,6 +32,13 @@ You are an unattended pipeline stage or an agent spawned in one; no human reads 
 
 - Run long commands as harness-tracked background tasks, never with `nohup` or a bare `&`: a detached process that dies leaves no trace.
 
+## Pipeline variables
+
+- The launcher sets your pipeline variables, so never search the environment for them: `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_RUN_DIR` (the run directory), `CC_PIPELINE_MANIFEST`, `CC_PIPELINE_LEDGER`, `CC_PIPELINE_GRANT`, `CC_PIPELINE_GATE` (the gate's absolute path), `CC_PIPELINE_TARGET`, `CC_PIPELINE_SEGMENT`, `CC_PIPELINE_STAGE_ID` (`<step>#<attempt>`; this and the segment are empty in a routing shift), `CC_PIPELINE_SHIFT_ID` (a routing shift only), and, when they apply, `CC_PIPELINE_HALT_ANSWER` (an answer card's path) and `CC_PIPELINE_AUDIT_PASS`.
+- In a gated command pass them unexpanded, as `"$CC_PIPELINE_MANIFEST"`, and the shell fills them in; only the command's first word, the gate's path, is written out literally. Read a value only when a file tool needs it as a literal path.
+- A stage's halt record is `${CC_PIPELINE_RUN_DIR}/halt/${CC_PIPELINE_STAGE_ID}.md`.
+- Read a value with `printenv CC_PIPELINE_RUN_DIR`: one name per call, each in its own gate call (the macOS `printenv` prints only the first name it is given). Never run `env` or `printenv` with no name: this environment holds the pipeline token, and the gate parks that form as secret output.
+
 ## Ending the turn
 
 - A turn ends in one of three ways only: your own terminal artifact exists (the file your instructions name as the output, or, for a team member, the witness you published), you have written a halt record, or you have handed a judgment marker to the gate. If a person is needed, write the halt record, then end.

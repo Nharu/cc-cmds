@@ -1,6 +1,6 @@
 # Reader Prompt
 
-Agent prompt template for an independent audit reader. Consumed by Step 3 before spawning each reader. Before calling `Agent()`, substitute `{round}` with `ROUND_TOKEN` and `{pass}` with `PASS_TOKEN` (both from the SKILL.md `## Control-Flow Invariants` CFI-0 constants block), `{NOTE}` with the trailing user note (or an empty line when none), `{BASE_MODE_CONSTRAINT}` with the `--base` block (or an empty line), and the path/witness tokens per the substitution contract below — each substituted independently at a single level.
+Agent prompt template for an independent audit reader. Consumed by Step 3 before spawning each reader. Before calling `Agent()`, substitute `{round}` with `ROUND_TOKEN` and `{pass}` with `PASS_TOKEN` (both from the SKILL.md `## Control-Flow Invariants` CFI-0 constants block), `{NOTE}` with the trailing user note (or an empty line when none), `{BASE_MODE_CONSTRAINT}` with the `--base` block (or an empty line), `{REAUDIT_SCOPE}` with the re-audit scope block (or an empty line), and the path/witness tokens per the substitution contract below — each substituted independently at a single level.
 
 **MUST — the rendered prompts are byte-identical across readers** except for `{WITNESS_PATH}`, `{WITNESS_NONCE}`, and `{role-slug}`. Giving readers different lenses destroys the reinforcement multiplicity the disclosure block reports: with disjoint lenses every finding is trivially unreinforced.
 
@@ -33,6 +33,8 @@ Then audit the document against ALL of the following criteria:
 
 {BASE_MODE_CONSTRAINT}
 
+{REAUDIT_SCOPE}
+
 IMPORTANT: Do NOT modify the design document. Report findings only.
 
 Your witness has two required parts, in this order.
@@ -61,12 +63,22 @@ If you found nothing, publish a witness containing the anchor table and an expli
 
 ## Substitution contract
 
-Each placeholder is substituted **independently at a single level** — there are no nested tokens. Body placement order is `{NOTE}` → `{BASE_MODE_CONSTRAINT}`, with one readability blank line between them.
+Each placeholder is substituted **independently at a single level** — there are no nested tokens. Body placement order is `{NOTE}` → `{BASE_MODE_CONSTRAINT}` → `{REAUDIT_SCOPE}`, with one readability blank line between each.
 
 - `{round}`: replace with `ROUND_TOKEN` from the SKILL.md CFI-0 constants block. Inline scalar. Never a counter, never reset, never derived from disk.
 - `{pass}`: replace with `PASS_TOKEN` from the same block. It doubles as the protocol's witnessed `{round/phase}` key, so the two consumers are served by two constants with no derivation.
 - `{NOTE}`: when the user supplied no note, substitute a single empty line; when non-empty, substitute the single line `USER-PROVIDED NOTE (focus/context for this audit): <note>` — identical bytes for every reader.
 - `{BASE_MODE_CONSTRAINT}`: when `--base` is present, substitute the BASE MODE CONSTRAINT block from the SKILL.md `## Options` section; otherwise substitute a single empty line so the prompt structure stays stable.
+- `{REAUDIT_SCOPE}`: when the unattended audit's re-audit scope computation produced a heading list, substitute the block below with that list, one heading per line, verbatim — the same bytes for every reader of the pass; otherwise (a first pass, a whole-document scope, and the interactive `design-audit` always) substitute a single empty line so the prompt structure stays stable.
+
+  ```
+  REAUDIT SCOPE:
+  Read the whole document, but report only findings inside the sections under the headings below, and findings where one of those sections collides with another section — quote both sections for a collision.
+  A finding in a section outside this list is reported only when it overturns one decision sentence of the document — quote that sentence verbatim and give its replacement sentence — or when it names a behaviour the implementation would have to choose because no decision sentence fixes it — a value, a branch, an order, a format or a fallback — and its Location line then begins with the tag `범위 밖`.
+  This narrows what you report, not what you measure: the anchor comparison table (one row per path, line anchor and number the document cites) and the check that some step creates each artifact the architecture requires still cover the whole document.
+  Headings:
+  <one heading per line, verbatim>
+  ```
 - `{role-slug}`: `reader-<k>`. `{WITNESS_PATH}`, `{WITNESS_NONCE}`: per the task-assignment header of the shared team protocol.
 - `{DOC_PATH}`, `{CODE_ROOT}`, `{DETERMINISTIC_FINDINGS}`: per the path context prepend below.
 

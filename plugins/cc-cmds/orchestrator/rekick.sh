@@ -113,19 +113,27 @@
 # `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
 # is that row's scope (`런`, or a target named by its alias or by the remote
 # slug `--carry` labels it with) and `<키>` its key, one of
-# ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor
-# (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
+# ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor ·
+# apply-probe-codes (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
 # deploy-triggers (a target). The previous manifest must hold no value
 # there; anything else is refused. `render-manifest` writes the value into the
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
 #
-# The `적용 프로브 코드` row of `## 인가` has no `--set` key: it is bound to the
-# probe's hash, so `render-manifest` copies it byte for byte with the rest of
-# the section and `verify-subset` refuses a draft whose row differs from the
-# previous one — added, dropped or changed. A previous run without the row
-# keeps the default mapping. Nothing here writes the previous run's pinned
-# plugin copy or its pin record; the draft is the only file this mode makes.
+# The `적용 프로브 코드` row of `## 인가` is bound to the probe's hash, so
+# `render-manifest` copies it byte for byte with the rest of the section and
+# `verify-subset` refuses a draft whose row differs from the previous one —
+# added, dropped or changed. The one exception is a previous manifest whose
+# pipeline-run probe has no row, or a row carrying 2 (`apply_code_row_reask`):
+# with no row only 불필요=0 is defined and a row with 2 is refused by the
+# manifest check, so 5c is asked again. Then `render-manifest` drops the row,
+# `--set 런:apply-probe-codes=<불필요>/<필요>` writes the confirmed mapping as a
+# new row bound to the draft's probe bytes, and `verify-subset` accepts a row
+# that differs from the previous one only as that `--set` value, and refuses a
+# draft with no such value. The value is a `빈칸` row 5o confirmed, or — when
+# `--carry` had no file value and named the key `다시 물음` — 5c's answer,
+# recorded under `5c`. Nothing here writes the previous run's pinned plugin copy or its
+# pin record; the draft is the only file this mode makes.
 #
 # `--blank-rows` is the `--carry` output 5o showed, saved byte for byte. It is
 # required with `--set` in `verify-subset`: each entry must equal one of its
@@ -168,7 +176,7 @@
 # bytes), which print nothing else.
 #
 #   detect         판정  재킥오프|대기|새 런|없음|진행 중|완료  [<id>  [<base>]]
-#                  갈래  게이트 종료|강제 표면 이동 무효화|대기 이어받기
+#                  갈래  게이트 종료|강제 표면 이동 무효화|대기 이어받기|완료 런 입양
 #                  대기 원인  승인 대기|사람 대기|한도 대기|무기록|멈춤
 #                  킥오프  <이전 킥오프 일시>
 #                  종료 표시  <게이트가 남긴 종료 표시>
@@ -191,15 +199,24 @@
 #   verify-subset  검사  <이름>  통과|실패  <사유>
 #                  판정  통과|실패  [<실패한 검사, …>]
 #   adopt          입양후보  <세그먼트>  <브랜치>  <워크트리>  <PR 번호>  <HEAD 40자>  [<꼬리 칸>…]
-#                  입양불가  <세그먼트>  <PR 번호|->  <사유 토큰>
+#                  입양불가  <세그먼트>  <PR 번호|->  <사유 토큰>  [미입양=PR들여오기]
 #
 # An `입양후보` line's tail cells, each only when it applies and in this order:
 # `마지막행=park` (a person's branch, the segment's last row is `park`), then
 # one `원인=<행 종류>:<원장 줄>` per cause row the ledger holds for that park
 # (`원인=없음` when none), `중단기록=<기록 이름,…>` (the previous run's
 # unanswered halt records of that segment) and `이월=재수렴` (the gate would
-# carry a `재수렴` answer into the new run). The reason tokens: park,
-# 설계재실행, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
+# carry a `재수렴` answer into the new run), then `미입양=PR들여오기` — on an
+# `입양불가` line too, after its reason — when the frozen document declares the
+# slice `절단점: PR` and the latest landing any run of the document left for it
+# (past a trailing `park`) is a `완료` carrying `PR` and `커밋` only — on an
+# `입양후보` line, a `PR` and `커밋` equal to the line's PR and HEAD: a new run
+# that does not adopt it brings that open pull request in as done while its
+# head is that `커밋`, so the person's second answer is `그대로 두기`, not
+# `다시 하기`. A row naming another PR, open at its `커밋` or merged from its
+# `브랜치` (a segment branch of the slice) into the target's base branch, gives
+# an `입양후보` line the cell followed by `들여올PR=<번호>`. The reason tokens: park,
+# 설계재실행, 문서바뀜, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
 # 라이브, 원장없음, 중단답이월불가, and 판정불가 when the gate child could
 # not answer.
@@ -476,6 +493,19 @@ EOF
 #   adopt-check <seg> <alias> <row>   통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨
 #                                     — the planning-time adoption check, its
 #                                     warning mapped to a token
+#   pr-import <doc> <seg> <doc key>   들여오기<TAB><PR><TAB><커밋><TAB><브랜치>|아님 —
+#                                     들여오기 when the document declares the
+#                                     slice `절단점: PR` and the gate's own
+#                                     prior-run lookup, over every ledger of
+#                                     that document beside the given one,
+#                                     picks a `완료` by its pull request
+#                                     cutpoint arm and not as a run-outside
+#                                     merge, with that row's `PR`, `커밋` and
+#                                     `브랜치`, `-` standing for an absent one:
+#                                     the planning act of a run that does not
+#                                     adopt the segment brings it in while
+#                                     that pull request is open at that commit,
+#                                     and a merged one only from that `브랜치`
 #   halt-source <seg>                 이월|없음|불가 — the halt-answer carry check
 #   tip-of <dir> <slug> <branch>      <40 hex>|없음|미상
 #   pr-of <dir> <slug> <branch> <head>
@@ -492,7 +522,7 @@ EOF
 # that writes a ledger row.
 # ---------------------------------------------------------------------------
 rk_gate() {
-  local g="$RK_DIR/gate.sh" out='' mode="$1" a b c x
+  local g="$RK_DIR/gate.sh" out='' mode="$1" a b c d x
   [ -r "$g" ] && out=$(CC_GATE_SOURCE_ONLY=1 bash -c '
     g=$1; mode=$2; mf=$3; rid=$4; rd=$5; led=$6; gr=$7; err=$8
     shift 8
@@ -518,6 +548,15 @@ rk_gate() {
 $( { grep -E "^- \`segment\` " "$led" 2>/dev/null || true; } | { grep -F "| id=$a1 |" || true; })
 ROWS
         then printf "착지됨"; else printf "미착지"; fi ;;
+      pr-import)
+        c=$(slice_field "$a1" "$a2" "절단점" 2>/dev/null | tr -d "\`" | sed "s/^[[:space:]]*//; s/[[:space:]]*\$//")
+        [ "$(cutpoint_token "$c" 2>/dev/null || true)" = "PR" ] || { printf "아님"; exit 0; }
+        DOC=$a1; DOC_KEY=$a3; LEDGER="$(dirname "$led")/rk-pr-import-probe.md"
+        if gate_prior_run_landed "$a2" 2>"$err" && [ -z "$GATE_PRIOR_OUTSIDE" ] && [ "$GATE_PRIOR_KIND" = "PR" ] \
+           && [ "$(gate_row_field "$GATE_PRIOR_ROW" "상태")" = "완료" ]; then
+          pc=$(gate_row_field "$GATE_PRIOR_ROW" "커밋"); pb=$(gate_row_field "$GATE_PRIOR_ROW" "브랜치")
+          printf "들여오기\t%s\t%s\t%s" "$(gate_row_field "$GATE_PRIOR_ROW" "PR")" "${pc:--}" "${pb:--}"
+        else printf "아님"; fi ;;
       adopt-check)
         gate_adoption_check "$a1" "$a2" "$a3" 2>"$err" || rc=$?
         if [ "$rc" = "0" ]; then printf "통과"; exit 0; fi
@@ -556,6 +595,17 @@ ROWS
       case "$out" in 끝남|안끝남|통과|실패) ;; *) out='판정불가' ;; esac ;;
     landed)
       case "$out" in 착지됨|미착지) ;; *) out='판정불가' ;; esac ;;
+    pr-import)
+      IFS="$TAB" read -r a b c d x <<EOF
+$out
+EOF
+      # A branch that is no branch name binds no merged request, as the
+      # planning act reads it, and leaves the open-request arms as they are.
+      case "$d" in ''|*[!A-Za-z0-9._/-]*) d='-' ;; esac
+      if [ "$a" = "들여오기" ] && [ -z "$x" ] && rk_num "$b" \
+         && { [ "$c" = "-" ] || { [ -n "$c" ] && case "$c" in *[!0-9a-f]*) false ;; esac; }; }; then
+        out="들여오기${TAB}${b}${TAB}${c}${TAB}${d}"
+      elif [ "$out" != "아님" ]; then out='판정불가'; fi ;;
     adopt-check)
       case "$out" in 통과|라이브|워크트리없음|브랜치다름|원장없음|착지됨) ;; *) out='판정불가' ;; esac ;;
     halt-source)
@@ -694,10 +744,13 @@ rk_adopt_row() {
   printf -- '- `세그먼트 입양` | 세그먼트=%s | 브랜치=%s | 워크트리=%s | 출처 런=%s | PR=%s' "$1" "$2" "$3" "$RK_PREV" "$4"
 }
 
-# rk_adopt_take_label / rk_adopt_redo_label <segment> <PR> [<branch> <head>] —
-# the two answers a person may give to the adoption question.
+# rk_adopt_take_label / rk_adopt_redo_label / rk_adopt_keep_label <segment>
+# <PR> [<branch> <head>] — the answers a person may give to the adoption
+# question: take, and either redo or, for a candidate carrying
+# `미입양=PR들여오기`, keep.
 rk_adopt_take_label() { printf '이어받기 — %s · PR #%s · %s · %s' "$1" "$2" "$3" "$(printf '%s' "$4" | cut -c1-12)"; }
 rk_adopt_redo_label() { printf '다시 하기 — %s · PR #%s' "$1" "$2"; }
+rk_adopt_keep_label() { printf '그대로 두기 — %s · PR #%s' "$1" "$2"; }
 
 # rk_ledger_seg_rows <key> — the ledger's `segment` rows of that id, in order.
 rk_ledger_seg_rows() {
@@ -774,19 +827,47 @@ rk_adopt_halts() {
 # rk_adopt_candidates <target rows> <full|offline> — one line per segment of the
 # previous ledger the gate's landing walk finds unlanded:
 #   입양후보<TAB><seg><TAB><B><TAB><W><TAB><PR><TAB><HEAD>[<TAB><꼬리>…]
-#   입양불가<TAB><seg><TAB><PR|-><TAB><사유>
+#   입양불가<TAB><seg><TAB><PR|-><TAB><사유>[<TAB>미입양=PR들여오기]
 # `offline` reads the ledger only (conditions 3 and 4) and is what `detect`
-# asks; `full` reads the graph values (G_DESIGN_OUT, G_DOC_SHA, G_PLAN, set
-# before), the worktree and the remote too. The first condition that fails
-# names the reason. RK_AUTO selects the seat's branch.
+# asks; `full` reads the graph values (G_DESIGN_PLANNED, G_DESIGN_OUT,
+# G_DOC_SHA, G_DOC_NOW, G_PLAN, set before), the worktree and the remote too. The first condition that fails
+# names the reason. RK_AUTO selects the seat's branch. Both layers end a line
+# with `미입양=PR들여오기` when the gate child's `pr-import` answers 들여오기
+# over the document at `<base>`, read without the network — an `입양후보` line
+# only when the answer's `PR` and `커밋` are the line's PR and HEAD, or, in the
+# full layer, when the answer names another PR that is open at that `커밋` or
+# merged from the answer's `브랜치` (a `seg/*-<seg>` branch) into the target's
+# base branch, followed then by `들여올PR=<번호>`.
 rk_adopt_candidates() {
   local trows="$1" layer="$2" key keys rows last W B anchor n h wh rt ph ab slug al row tal
   local cg tcg tbase cur hd st tip prl pn ps ph2 pv vs vb vh vc vo vbase tail tok mcopy err doc docf dcopy first pre halts
+  local pdoc pim pip pic pibr cim
   keys=$( { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | while IFS= read -r row; do manifest_row_fields "$row" 'id' | head -n 1; printf '\n'; done | awk 'NF && !seen[$0]++')
   err="$RK_TMP/adopt.err"
+  pdoc=$(rk_copy "$RK_BASE/$(manifest_field '요소' '설계 문서')" adopt-prdoc.md) || pdoc=''
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     [ "$(rk_gate landed "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$key")" = "미착지" ] || continue
+    # The pull request cutpoint cell: a segment the new run does not adopt may
+    # be brought in by its planning act as done, so its second answer is to
+    # leave it, not to do it again. A child that cannot answer adds no cell.
+    # The planning act brings an open pull request in only at the `커밋` of the
+    # row the lookup picked, so a candidate carries the cell only when its pull
+    # request and head are that row's, or when the row names another request
+    # the full layer reads, just before the line is printed, as open at that
+    # `커밋` or merged from the row's `브랜치` into the target's base branch;
+    # an `입양불가` line, whose head nobody
+    # read, carries it whenever the lookup picked such a row, and item 8's
+    # screen states that condition for it.
+    pim=''; pip=''; pic=''; pibr=''
+    if [ -n "$pdoc" ]; then
+      IFS="$TAB" read -r pim pip pic pibr <<EOF
+$(rk_gate pr-import "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pdoc" "$key" "$(manifest_field '요소' '설계 문서')")
+EOF
+    fi
+    [ "$pic" != "-" ] || pic=''
+    [ "$pibr" != "-" ] || pibr=''
+    if [ "$pim" = "들여오기" ]; then pim="${TAB}미입양=PR들여오기"; else pim=''; pip=''; pic=''; pibr=''; fi
     rows=$(rk_ledger_seg_rows "$key")
     last=$(printf '%s\n' "$rows" | tail -n 1)
     anchor=$( { grep -E '^- `원격 판독` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| 세그먼트=$key |" || true; } \
@@ -799,16 +880,35 @@ rk_adopt_candidates() {
     if [ "$layer" = "full" ] && [ "$RK_AUTO" = "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
       tok='park'
     fi
-    # 2 — the new run plans no design step, and the key is a slice of the frozen
+    # 2 — the new run does not design again, and the key is a slice of the
     # document the graph measured (or the plan's implement step, with no
-    # slicing section).
+    # slicing section). Three cases, in order:
+    #   the remaining plan runs a design step       → 설계재실행;
+    #   the graph took the design step out          → the document copy must be
+    #     the frozen one it measured, else 설계재실행;
+    #   the plan never had a design step            → a document the manifest
+    #     names must be the one the graph measured, else 문서바뀜; with no
+    #     document only the implement step is compared.
     if [ -z "$tok" ] && [ "$layer" = "full" ]; then
-      if [ "$G_DESIGN_OUT" != "1" ]; then tok='설계재실행'
-      else
+      dcopy=''
+      if [ "$G_DESIGN_PLANNED" = "1" ]; then tok='설계재실행'
+      elif [ "$G_DESIGN_OUT" = "1" ]; then
         doc=$(manifest_field '요소' '설계 문서'); docf="$RK_BASE/$doc"
         dcopy=$(rk_copy "$docf" adopt-doc.md) || dcopy=''
-        if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_SHA" ]; then tok='설계재실행'
-        elif grep -qxF '## 구현 슬라이싱' "$dcopy"; then
+        if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_SHA" ]; then tok='설계재실행'; fi
+      else
+        doc=$(manifest_field '요소' '설계 문서')
+        case "$doc" in
+          ''|'(없음)') ;;
+          *)
+            docf="$RK_BASE/$doc"
+            dcopy=$(rk_copy "$docf" adopt-doc.md) || dcopy=''
+            if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_NOW" ]; then tok='문서바뀜'; fi
+            ;;
+        esac
+      fi
+      if [ -z "$tok" ]; then
+        if [ -n "$dcopy" ] && grep -qxF '## 구현 슬라이싱' "$dcopy"; then
           slice_ids "$dcopy" | grep -qxF -- "$key" || tok='슬라이스다름'
         else
           first=$(printf '%s' "$G_PLAN" | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id // empty][0] // empty' 2>/dev/null)
@@ -834,8 +934,10 @@ rk_adopt_candidates() {
       fi
     fi
     h=$wh
-    if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s\n' "$key" "$n" "$tok"; continue; fi
-    if [ "$layer" != "full" ]; then printf '입양후보\t%s\t%s\t%s\t%s\t%s\n' "$key" "$B" "$W" "$n" "$h"; continue; fi
+    if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
+    cim=$pim
+    { [ "$pip" = "$n" ] && [ "$pic" = "$h" ]; } || cim=''
+    if [ "$layer" != "full" ]; then printf '입양후보\t%s\t%s\t%s\t%s\t%s%s\n' "$key" "$B" "$W" "$n" "$h" "$cim"; continue; fi
 
     # 5 — the worktree belongs to the segment's target and has B checked out.
     slug=$(rk_rows_last_field "$rows" '레포')
@@ -931,14 +1033,31 @@ EOF
       esac
     fi
     rm -f "$mcopy"
-    if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s\n' "$key" "$n" "$tok"; continue; fi
+    if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
     pre=''
     if [ "$RK_AUTO" != "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
       pre="${TAB}마지막행=park$(rk_adopt_causes "$key")"
     fi
     halts=$(rk_adopt_halts "$key")
     [ -z "$halts" ] || pre="${pre}${TAB}중단기록=$halts"
-    printf '입양후보\t%s\t%s\t%s\t%s\t%s%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pre" "$tail"
+    # A row naming another pull request than the candidate's — a slice done
+    # again on a new request — is brought in when that request is open at the
+    # row's `커밋`, or merged from the row's `브랜치` (a segment branch of this
+    # slice, which a row written before the driver recorded `브랜치` lacks)
+    # into the target's base branch, so the cell then names it. Whether the
+    # merge commit is on that base the planning act decides with a fetch, which
+    # this read-only call does not make.
+    if [ -n "$pim" ] && [ -z "$cim" ] && rk_num "$pip" && [ "$pip" != "$n" ]; then
+      IFS="$TAB" read -r vs vb vh vc vo vbase <<EOF
+$(rk_gate pr-view "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$pip" "$slug")
+EOF
+      if { [ "$vs" = "MERGED" ] && [ -n "$pibr" ] && [ "$vb" = "$pibr" ] && [ -n "$tbase" ] && [ "$vbase" = "$tbase" ] \
+             && case "$pibr" in seg/*-"$key") true ;; *) false ;; esac; } \
+         || { [ "$vs" = "OPEN" ] && [ -n "$pic" ] && [ "$vh" = "$pic" ]; }; then
+        cim="${pim}${TAB}들여올PR=${pip}"
+      fi
+    fi
+    printf '입양후보\t%s\t%s\t%s\t%s\t%s%s%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pre" "$tail" "$cim"
   done <<EOF
 $keys
 EOF
@@ -1005,12 +1124,35 @@ EOF
   local ub inv=0 gate_tok mark err states
   if rk_is_live; then rk_detect_open running; fi
 
+  # A run that met every termination clause is done, unless a segment it left
+  # unmerged still has the open pull request its ledger recorded: that segment
+  # is adopted by a re-kickoff and reviewed from its pull request, and the run
+  # goes on to the eligibility below as an ended one would. The candidates are
+  # the offline layer's, so this reads no network either.
+  local done_adopt=0 dcands dkind dseg df3 df4 dn nadopt=0 adopt_segs=""
   states=$(rk_clause_states "$RK_PL")
   if rk_clauses_all_met "$states"; then
-    printf '판정\t완료\t%s\n' "$RK_PREV"
-    printf '고지\t이전 런 %s 은 완료 기준을 모두 채웠습니다 — 이어받을 남은 단계가 없습니다\n' "$RK_PREV"
-    printf '고지\t이어받지 않고 처음부터 묻게 하려면 의도를 적어 다시 부르세요\n'
-    exit 0
+    dcands=$(rk_adopt_candidates "$(manifest_targets)" offline)
+    while IFS="$TAB" read -r dkind dseg _; do
+      [ "$dkind" = "입양후보" ] || continue
+      nadopt=$((nadopt + 1)); adopt_segs="${adopt_segs:+$adopt_segs, }$dseg"
+    done <<EOF
+$dcands
+EOF
+    if [ "$nadopt" -eq 0 ]; then
+      printf '판정\t완료\t%s\n' "$RK_PREV"
+      printf '고지\t이전 런 %s 은 완료 기준을 모두 채웠습니다 — 이어받을 남은 단계가 없습니다\n' "$RK_PREV"
+      while IFS="$TAB" read -r dkind dseg df3 df4 _; do
+        [ "$dkind" = "입양불가" ] || continue
+        dn=$df3; [ "$dn" != "-" ] || dn='없음'
+        printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — 이어받으려면 의도를 적어 새 킥오프에서 입양하세요\n' "$dseg" "$dn" "$df4"
+      done <<EOF
+$dcands
+EOF
+      printf '고지\t이어받지 않고 처음부터 묻게 하려면 의도를 적어 다시 부르세요\n'
+      exit 0
+    fi
+    done_adopt=1
   fi
 
   ub=$(cc_unresolved_blocked "$RK_PL" 2>/dev/null) || ub=""
@@ -1036,7 +1178,9 @@ EOF
   fi
 
   printf '판정\t재킥오프\t%s\t%s\n' "$RK_PREV" "$RK_BASE"
-  if [ "$inv" = "1" ]; then printf '갈래\t강제 표면 이동 무효화\n'; else printf '갈래\t게이트 종료\n'; fi
+  if [ "$inv" = "1" ]; then printf '갈래\t강제 표면 이동 무효화\n'
+  elif [ "$done_adopt" = "1" ]; then printf '갈래\t완료 런 입양\n'
+  else printf '갈래\t게이트 종료\n'; fi
   printf '킥오프\t%s\n' "$(manifest_field '런 정체' '킥오프 일시')"
   if [ "$inv" = "1" ]; then
     printf '굵게\t이전 런 %s 은 집행 표면이 옮겨져 무효화됐습니다 — 그 런은 재개하지 않습니다\n' "$RK_PREV"
@@ -1049,7 +1193,10 @@ EOF
     if [ -z "$etok" ]; then
       case "$mark" in '벽시계 마감 경과'*) etok='마감' ;; esac
     fi
-    if rk_budget_token "$etok"; then
+    if [ "$done_adopt" = "1" ]; then
+      printf '굵게\t이전 런 %s 은 완료 기준을 모두 채웠습니다 — 머지되지 않은 세그먼트 %s건(%s)을 열린 PR 과 함께 이어받아 그 PR 의 리뷰부터 다시 시작합니다\n' \
+        "$RK_PREV" "$nadopt" "$adopt_segs"
+    elif rk_budget_token "$etok"; then
       printf '굵게\t이전 런 %s 을 끝낸 경계는 같은 값으로 다시 주어집니다 (%s) — 같은 한도가 다시 바닥날 수 있습니다\n' "$RK_PREV" "$mark"
     else
       printf '굵게\t이전 런 %s 을 끝낸 경계는 같은 값으로 다시 주어집니다 (%s)\n' "$RK_PREV" "$mark"
@@ -1113,7 +1260,11 @@ rk_detect_tail() {
         printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 입양 후보입니다 — 재킥오프가 디스크와 원격을 다시 확인합니다\n' "$seg" "$f5" ;;
       입양불가)
         n=$f3; [ "$n" != "-" ] || n='없음'
-        printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — 새 런이 그 세그먼트를 다시 하고 옛 PR 은 그대로 둡니다\n' "$seg" "$n" "$f4" ;;
+        if [ "$f5" = "미입양=PR들여오기" ]; then
+          printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — PR 이 열려 있고 head 가 행의 커밋과 같거나 PR 이 머지됐으면 새 런이 끝난 것으로 들여오고, 아니면 다시 합니다\n' "$seg" "$n" "$f4"
+        else
+          printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 이어받지 않습니다(%s) — 새 런이 그 세그먼트를 다시 하고 옛 PR 은 그대로 둡니다\n' "$seg" "$n" "$f4"
+        fi ;;
     esac
   done <<EOF
 $(rk_adopt_candidates "$(manifest_targets)" offline)
@@ -1756,17 +1907,28 @@ EOF
 # ---------------------------------------------------------------------------
 # graph — which steps the ledger proves finished, and the plan without them.
 # Sets G_PLAN (compact JSON), G_REMOVED, G_SKIPS, G_DESIGN_OUT, G_DOC_SHA,
-# G_DESIGN_NOTE, G_AUDIT_NOTE, G_SCOPE. Reads the current MANIFEST (a copy).
+# G_DESIGN_PLANNED, G_DOC_NOW, G_IV_KEEP, G_DESIGN_NOTE, G_AUDIT_NOTE, G_SCOPE.
+# Reads the current MANIFEST (a copy).
+# G_DESIGN_OUT says the graph took the design step out, and drives what the
+# remaining plan says of the design (`design_required`, the design roster, the
+# document's whole sha256). The other three answer other questions:
+#   G_DESIGN_PLANNED — 1 when the remaining plan still runs a design step;
+#   G_DOC_NOW        — the design document's sha256 measured here, `-` when
+#                      there is no document, whether or not a design step is;
+#   G_IV_KEEP        — 1 when the remaining plan holds a `design` or `visual`
+#                      step, the stages that read the interview record.
 # ---------------------------------------------------------------------------
 rk_graph_compute() {
   local plan doc docf docsha did aid lastn hashrow hsha frozen
   plan=$(manifest_plan_json)
   G_SCOPE=$(manifest_design_scope)
   G_REMOVED=""; G_SKIPS=""; G_DESIGN_OUT=0; G_DOC_SHA="-"
+  G_DESIGN_PLANNED=0; G_DOC_NOW="-"; G_IV_KEEP=0
   G_DESIGN_NOTE="없음${TAB}계획에 설계 단계가 없습니다"; G_AUDIT_NOTE="없음${TAB}계획에 감사 단계가 없습니다"
   doc=$(manifest_field '요소' '설계 문서')
   case "$doc" in ''|'(없음)') docf="" ;; *) docf="$RK_BASE/$doc" ;; esac
   docsha=""; [ -n "$docf" ] && docsha=$(rk_sha "$docf")
+  [ -n "$docsha" ] && G_DOC_NOW=$docsha
   did=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)
   aid=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)
 
@@ -1774,6 +1936,7 @@ rk_graph_compute() {
     [ -z "$did" ] || G_DESIGN_NOTE="남음${TAB}base 범위 런의 그래프는 빼지 않습니다"
     [ -z "$aid" ] || G_AUDIT_NOTE="남음${TAB}base 범위 런의 그래프는 빼지 않습니다"
     G_PLAN=$(printf '%s' "$plan" | jq -c . 2>/dev/null)
+    rk_graph_derived "$did"
     return 0
   fi
 
@@ -1866,6 +2029,16 @@ rk_graph_compute() {
         | (if (.steps | length) > 0 then .entry_skill = (.steps[0] | if type == "object" then .skill else . end) else . end)
         | (if $dout == "1" then .design_required = false else . end)
       end' 2>/dev/null)
+  rk_graph_derived "$did"
+}
+
+# rk_graph_derived <design step id> — G_DESIGN_PLANNED and G_IV_KEEP from the
+# pruned G_PLAN and G_DESIGN_OUT, for both returns of rk_graph_compute.
+rk_graph_derived() {
+  local n
+  if [ -n "$1" ] && [ "$G_DESIGN_OUT" != "1" ]; then G_DESIGN_PLANNED=1; else G_DESIGN_PLANNED=0; fi
+  n=$(printf '%s' "$G_PLAN" | jq -r '[.steps[]? | select(type == "object" and (.skill == "design" or .skill == "visual"))] | length' 2>/dev/null)
+  if [ "${n:-0}" -ge 1 ] 2>/dev/null; then G_IV_KEEP=1; else G_IV_KEEP=0; fi
 }
 
 # rk_plan_shape <json> — the step-graph shape the kickoff checks before it
@@ -2045,8 +2218,22 @@ rk_render() {
   RK_RENDER_WHY=$(rk_plugin_rows "$RK_TMP/plugin.rows") || return 1
   printf '%s' "$RK_RULES" > "$RK_TMP/rules.kv"
   [ -f "$RK_TMP/sets.tsv" ] || : > "$RK_TMP/sets.tsv"
+  # A mapping row that cannot be carried is dropped, and a confirmed mapping is
+  # written as a new row bound to the probe the draft will carry: the confirmed
+  # `apply-probe` when one is set, the previous value otherwise.
+  local acdrop="" acrow="" acv acprobe
+  if apply_code_row_reask; then
+    acdrop=1
+    acv=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$RK_TMP/sets.tsv")
+    if [ -n "$acv" ]; then
+      acprobe=$(awk -F '\t' '$2 == "요소" && $3 == "적용 프로브" { print $4 }' "$RK_TMP/sets.tsv")
+      [ -n "$acprobe" ] || acprobe=$(manifest_field '요소' '적용 프로브')
+      acrow="- \`적용 프로브 코드\` | 불필요=${acv%%/*} | 필요=${acv#*/} | 프로브 sha256=$(apply_probe_sha "$(apply_unquote "$acprobe")")"
+    fi
+  fi
+  R_ACDROP="$acdrop" R_ACROW="$acrow" \
   R_SETS="$RK_TMP/sets.tsv" R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
-  R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_DOCSHA="$G_DOC_SHA" \
+  R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_IVKEEP="$G_IV_KEEP" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
   R_PADROP="$RK_TMP/plugin.drop" R_PFILE="$( [ -s "$RK_TMP/plugin.rows" ] && printf '%s' "$RK_TMP/plugin.rows")" \
@@ -2064,6 +2251,7 @@ rk_render() {
       if (sec == "## 인가") {
         if (!rows_done && rfile != "") { while ((getline l < rfile) > 0) print l; close(rfile); rows_done = 1 }
         if (!adopt_done && ENVIRON["R_ADOPT"] != "") { while ((getline l < ENVIRON["R_ADOPT"]) > 0) print l; close(ENVIRON["R_ADOPT"]); adopt_done = 1 }
+        if (!acrow_done && ENVIRON["R_ACROW"] != "") { print ENVIRON["R_ACROW"]; acrow_done = 1 }
         if (!plugin_done && pfile != "") { while ((getline l < pfile) > 0) print l; close(pfile); plugin_done = 1 }
         if (!prov_done) { print ENVIRON["R_PROV"]; prov_done = 1 }
       }
@@ -2135,8 +2323,13 @@ rk_render() {
       if (match($0, /플러그인=[^ |]*/) && (substr($0, RSTART + length("플러그인="), RLENGTH - length("플러그인=")) in padrop)) next
       print; next
     }
+    # A mapping row the pipeline cannot run on is not carried; 5c answers it
+    # again and the confirmed row is written when the section closes.
+    /^- `적용 프로브 코드`/ { if (ENVIRON["R_ACDROP"] == "1") next; print; next }
+    # The interview row stays, its path moved to the new run, while the
+    # remaining plan holds a design or a visual step — the stages that read it.
     /^- `사전 인가` \| 인터뷰 기록=/ {
-      if (ENVIRON["R_DOUT"] == "1") next
+      if (ENVIRON["R_IVKEEP"] != "1") next
       line = $0; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; next
     }
     /^- `설계 로스터`/ { if (ENVIRON["R_DOUT"] == "1") next; print; next }
@@ -2277,6 +2470,20 @@ rk_sets_resolve() {
   while IFS= read -r e; do
     [ -n "$e" ] || continue
     sc=${e%%:*}; rest=${e#*:}; k=${rest%%=*}; v=${rest#*=}; rsc=$sc
+    # The mapping is a row, not a field: it is a blank only where the previous
+    # row cannot be carried, and its value is held to the manifest check's rule.
+    if [ "$k" = "apply-probe-codes" ]; then
+      [ "$sc" = "런" ] || { printf '%s' "--set $k 의 범위는 런입니다"; return 1; }
+      apply_code_value_ok "${v%%/*}" && apply_code_value_ok "${v#*/}" && [ "${v%%/*}" != "${v#*/}" ] \
+        && [ "${v%%/*}/${v#*/}" = "$v" ] \
+        || { printf '%s' "--set 런:$k 의 값은 <불필요>/<필요> 이고, 두 값은 0–125 의 서로 다른 정수이며 1·2 가 아닙니다: $v"; return 1; }
+      apply_code_row_reask \
+        || { printf '%s' "--set 런:$k — 원천 매니페스트의 적용 프로브 코드 행을 그대로 이어받으므로 빈칸이 아닙니다"; return 1; }
+      awk -F '\t' -v k="$k" '$5 == k { d = 1 } END { exit !d }' "$out" \
+        && { printf '%s' "--set 런:$k 가 두 번 주어졌습니다"; return 1; }
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$sc" '인가 행' '적용 프로브 코드' "$v" "$k" "$rsc" >> "$out"
+      continue
+    fi
     loc=$(rk_set_field "$k") || { printf '%s' "--set 의 키를 모릅니다: $k"; return 1; }
     sec=${loc%%"$TAB"*}; f=${loc#*"$TAB"}
     if [ "$sec" = "대상" ]; then
@@ -2527,9 +2734,25 @@ EOF
     if [ -z "$pval" ] && vs_set_is 런 "$k" "$dval"; then continue; fi
     why="${why:+$why; }$k 가 원천과 다릅니다"
   done
-  # The apply mapping row has no `--set`: it is the previous row, or none.
-  [ "$(MANIFEST="$prev" manifest_apply_code_rows)" = "$(MANIFEST="$draft" manifest_apply_code_rows)" ] \
-    || why="${why:+$why; }적용 프로브 코드 행이 원천과 다릅니다"
+  # The apply mapping row is the previous row, or none — except where the
+  # previous row cannot be carried, and then the draft's row is 5c's answer,
+  # compared with the confirmed `--set` value. A draft there with no such value
+  # is refused: it would freeze with only 불필요=0 defined, and every needed
+  # apply of the new run would stop before its command.
+  local acset dac
+  if MANIFEST="$prev" apply_code_row_reask; then
+    acset=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$VS_SETS" 2>/dev/null)
+    dac=$(MANIFEST="$draft" manifest_apply_code_rows)
+    if [ -n "$acset" ]; then
+      [ -n "$dac" ] && [ "$(manifest_row_fields "$dac" '불필요' 1 | head -1)/$(manifest_row_fields "$dac" '필요' 1 | head -1)" = "$acset" ] \
+        || why="${why:+$why; }적용 프로브 코드 행이 확인한 대응 $acset 과 다릅니다"
+    else
+      why="${why:+$why; }원천의 적용 프로브 코드 행을 이어받을 수 없어 5c 로 다시 물은 대응(--set 런:apply-probe-codes)이 필요합니다"
+    fi
+  else
+    [ "$(MANIFEST="$prev" manifest_apply_code_rows)" = "$(MANIFEST="$draft" manifest_apply_code_rows)" ] \
+      || why="${why:+$why; }적용 프로브 코드 행이 원천과 다릅니다"
+  fi
   local prules drules rl rk rv
   prules=$(MANIFEST="$prev" manifest_rule_lines | sort); drules=$(MANIFEST="$draft" manifest_rule_lines | sort)
   if [ "$prules" != "$drules" ]; then
@@ -2566,11 +2789,22 @@ EOF
   if [ -z "$why" ]; then
     while IFS="$TAB" read -r ssc ssec sf sv sk srsc; do
       [ -n "$ssc" ] || continue
-      MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
-        || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
-      [ -n "$(rk_asked_answer "5o $srsc:$sk")" ] || why="${why:+$why; }$srsc:$sk 는 5o 에서 묻지 않은 값입니다"
+      # The mapping has a second source: where 5o offered no `빈칸` row for it
+      # (no file value, so `--carry` named the key `다시 물음`) or the person did
+      # not confirm the offered one, 5c is asked and its answer, recorded under
+      # `5c`, is the value — the same one `--set` carries.
+      if [ "$sk" = "apply-probe-codes" ] && [ -n "$(rk_asked_answer '5c')" ]; then
+        [ "$(rk_asked_answer '5c')" = "$sv" ] || why="${why:+$why; }$srsc:$sk 의 확정값이 5c 답과 다릅니다"
+      else
+        MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
+          || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
+        [ -n "$(rk_asked_answer "5o $srsc:$sk")" ] || why="${why:+$why; }$srsc:$sk 는 5o 에서 묻지 않은 값입니다"
+      fi
       case " / $D_CONFIRM / " in *" / $srsc:$sk=$sv / "*) ;; *) why="${why:+$why; }$ssc:$sk 의 확정값이 사용자 확인 문면에 없습니다" ;; esac
       if [ "$ssec" = "대상" ]; then sdv=$(MANIFEST="$draft" target_field "$ssc" "$sf")
+      elif [ "$sk" = "apply-probe-codes" ]; then
+        dac=$(MANIFEST="$draft" manifest_apply_code_rows | head -n 1)
+        sdv="$(manifest_row_fields "$dac" '불필요' 1 | head -1)/$(manifest_row_fields "$dac" '필요' 1 | head -1)"
       else sdv=$(MANIFEST="$draft" manifest_field "$ssec" "$sf"); fi
       [ "$sdv" = "$sv" ] || why="${why:+$why; }초안의 $ssc:$sk 가 확정값이 아닙니다"
     done < "$VS_SETS"
@@ -2760,22 +2994,24 @@ EOF
   fi
   vs_check 플러그인 "$why"
 
-  # 8 — the interview row: exactly one when the design step stays, none when it
-  # is out, and the previous row with only its path renamed.
-  local dplan hasd piv div want niv
+  # 8 — the interview row: exactly one when the draft plan holds a design or a
+  # visual step (the stages that read the record), none when both are out, and
+  # the previous row with only its path renamed.
+  local dplan hasd hasiv piv div want niv
   dplan=$(MANIFEST="$draft" manifest_plan_json)
   hasd=$(printf '%s' "$dplan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design")] | length' 2>/dev/null)
+  hasiv=$(printf '%s' "$dplan" | jq -r '[.steps[]? | select(type == "object" and (.skill == "design" or .skill == "visual"))] | length' 2>/dev/null)
   piv=$(MANIFEST="$prev" rk_interview_rows); div=$(MANIFEST="$draft" rk_interview_rows)
   niv=$(printf '%s' "$div" | grep -c . || true)
   why=""
-  if [ "${hasd:-0}" -ge 1 ]; then
-    if [ "${niv:-0}" != "1" ]; then why="설계 단계가 남는데 인터뷰 행이 ${niv:-0}개입니다"
+  if [ "${hasiv:-0}" -ge 1 ]; then
+    if [ "${niv:-0}" != "1" ]; then why="설계나 시각 단계가 남는데 인터뷰 행이 ${niv:-0}개입니다"
     else
       want=$(printf '%s' "$piv" | awk -v p="docs/pipeline-run/$D_ID.interview.md" '{ sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" p " |"); print }')
       [ -n "$piv" ] && [ "$div" = "$want" ] || why="인터뷰 행이 원천 행에서 경로만 새 런으로 바꾼 것이 아닙니다"
     fi
   else
-    [ "${niv:-0}" = "0" ] || why="설계 단계가 빠졌는데 인터뷰 행이 남았습니다"
+    [ "${niv:-0}" = "0" ] || why="설계·시각 단계가 모두 빠졌는데 인터뷰 행이 남았습니다"
   fi
   vs_check 인터뷰 "$why"
 
@@ -2874,7 +3110,9 @@ EOF
   # previous run, and each the row a candidate derived again here, on the same
   # branch and over the draft's targets, would make. A person answered each
   # candidate with one of its two labels and the row stands exactly where the
-  # answer took it; the seat asked nothing and wrote a subset of the candidates.
+  # answer took it — `이어받기 — …` and `다시 하기 — …`, or for a candidate
+  # carrying `미입양=PR들여오기` `이어받기 — …` and `그대로 두기 — …`, a redo
+  # answer refused; the seat asked nothing and wrote a subset of the candidates.
   local arows ain aout cands akey arow cline cb cw cn ch aans take redo
   why=""
   arows=$(MANIFEST="$draft" manifest_adoption_rows)
@@ -2899,18 +3137,34 @@ EOF
   done <<EOF
 $arows
 EOF
+  # A source that met every termination clause is re-kicked only to adopt a
+  # segment it left unmerged: a draft that adopts none of its segments would
+  # run the remaining graph of a finished run again.
+  if rk_clauses_all_met "$(MANIFEST="$prev" rk_clause_states "$RK_PL")" \
+    && ! printf '%s\n' "$arows" | awk -v p="$pid" '
+        { n = split($0, a, / [|] /); for (i = 2; i <= n; i++) if (a[i] == "출처 런=" p) f = 1 }
+        END { exit !f }'; then
+    why="${why:+$why; }원천 런 $pid 은 완료 기준을 모두 채웠습니다 — 이어받는 세그먼트가 없는 초안은 받지 않습니다"
+  fi
   if [ "$RK_AUTO" = "1" ]; then
     awk -F '\t' '$1 ~ /^입양 / { f = 1 } END { exit !f }' "$RK_ASKED" \
       && why="${why:+$why; }좌석은 입양을 묻지 않습니다 — --asked 에 입양 키가 있습니다"
   else
-    while IFS="$TAB" read -r _ akey cb cw cn ch _; do
+    local atail keep
+    while IFS="$TAB" read -r _ akey cb cw cn ch atail; do
       [ -n "$akey" ] || continue
       take=$(rk_adopt_take_label "$akey" "$cn" "$cb" "$ch"); redo=$(rk_adopt_redo_label "$akey" "$cn")
+      # A candidate the new run's planning act would bring in as done is not
+      # done again: its second answer is to leave it, and a redo is refused.
+      keep=''
+      case "$TAB$atail$TAB" in *"${TAB}미입양=PR들여오기${TAB}"*) keep=$(rk_adopt_keep_label "$akey" "$cn") ;; esac
       aans=$(rk_asked_answer "입양 $akey")
       arow=$(printf '%s\n' "$arows" | { grep -F -- "| 세그먼트=$akey |" || true; } | head -n 1)
       if [ -z "$aans" ]; then why="${why:+$why; }입양 후보 $akey 에 답이 없습니다"
       elif [ "$aans" = "$take" ]; then [ -n "$arow" ] || why="${why:+$why; }입양 $akey 의 답이 이어받기인데 입양 행이 없습니다"
-      elif [ "$aans" = "$redo" ]; then [ -z "$arow" ] || why="${why:+$why; }입양 $akey 의 답이 다시 하기인데 입양 행이 있습니다"
+      elif [ -n "$keep" ] && [ "$aans" = "$redo" ]; then why="${why:+$why; }입양 $akey 는 PR 절단점의 열린 PR 이라 다시 하기를 받지 않습니다 — 이어받기 또는 그대로 두기"
+      elif [ -n "$keep" ] && [ "$aans" = "$keep" ]; then [ -z "$arow" ] || why="${why:+$why; }입양 $akey 의 답이 그대로 두기인데 입양 행이 있습니다"
+      elif [ -z "$keep" ] && [ "$aans" = "$redo" ]; then [ -z "$arow" ] || why="${why:+$why; }입양 $akey 의 답이 다시 하기인데 입양 행이 있습니다"
       else why="${why:+$why; }입양 $akey 의 답이 두 라벨 어느 것과도 같지 않습니다"
       fi
     done <<EOF

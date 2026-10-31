@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "mbp-1.1793030010000.93a4b5c6",
+  "host": "mbp-1",
+  "at_ms": 1793030010000,
+  "slot": "cc-cmds-autopilot-20261026-f33cba74",
+  "prefix": false,
+  "cause": "clear"
+}

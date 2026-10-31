@@ -37,10 +37,28 @@ Rules (this is check (iv)):
 - Value shapes: sha256 `^[0-9a-f]{64}$`; timestamps `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$`; counts `^[0-9]+$`. `동결 문서 바이트` is a count — the frozen document's size in bytes as `wc -c` reports it, taken from the same bytes the sha256 was taken from.
 - **The value is copied from the same report's `## 감사 개시` block, key `frozen-bytes`, and is never re-measured here.** Step 1's FREEZE took that count from the same read as `frozen-sha256`, and it is the only surviving record of the frozen size — Step 6's reconciliation pass edits the document, so measuring the current file at Step 7 reports the size the document has **after** the freeze, not the size it had at it. That is the worse failure of the two available: a re-measuring block passes check (iv) carrying the wrong integer, turning a halt into a silent wrong answer. There is no path that re-measures the current document except the one below.
 - **A report frozen before `frozen-bytes` existed obtains the value exactly one way.** When the `## 감사 개시` block carries no `frozen-bytes` key, measure the **current** document with `wc -c` and use that value **only if** the current document's sha256 is byte-equal to the recorded `frozen-sha256` — the hash equality is the whole of the proof that the current bytes *are* the frozen bytes. If the two differ, the value does not exist and the audit does not conclude, which is exactly what it did before this key existed. No estimate, no approximation, no `미상`. This path reaches only audits frozen before the key was introduced and disappears on its own as they close out.
-- `동결 문서 바이트` is in the block because finding counts alone cannot separate "a better design" from "less surface to find": a two-seat team writes a shorter document, so the findings-per-kilobyte comparison the rollback observation needs is only computable when the size travels with the count. The fence version stays `v1` — the selector, the lint pins and every already-written report keep matching.
+- `동결 문서 바이트` is in the block because finding counts alone cannot separate "a better design" from "less surface to find": a two-seat team writes a shorter document, so the findings-per-kilobyte comparison the rollback observation needs is only computable when the size travels with the count. The fence version stays `v1` — the selector, the lint pins and every already-written report keep matching. For the same reason the downstream class counts are added as a separate fence with its own version (`### Downstream class fence` below), following the skeleton-grade fence, rather than as new v1 slots.
 - The five routing lines are **fixed arity** — one line per named owner, always present, `0` when empty. Fixed arity is what makes per-owner routing machine-checkable instead of a free-form list, and it is also what makes triage collapse self-reporting: a `기각` of 0 beside a large `적용` is the signature of the failure mode this command was built to remove.
 
 **하류 흡수 가정** must be non-empty and must name the two downstream absorbers and the fact that the rate is unmeasured. The reason it is a slot rather than prose elsewhere: this whole design assumes downstream absorbs a substantial share of the standalone-detectable residuals, and an assumption recorded as prose fails exactly at the moment it is relied upon. As a slot it is re-stated on every single run.
+
+### Downstream class fence
+
+The counts of the per-defect disposition lines of `03-adjustment-pass.md` (`### Downstream class`) go in a second fence. It is a separate fence with its own version rather than new v1 slots, following the skeleton-grade fence: every reader, lint and already-written report that matches the v1 grammar keeps matching.
+
+```markdown
+<!-- cc-design-audit-downstream v1 begin -->
+**하류 부류 — 결과물 동일**: <n>
+**하류 부류 — 구현자 자가 수정**: <n>
+**하류 부류 — 리뷰 포착**: <n>
+**하류 부류 — 운영 노출**: <n>
+**경량 처리 수**: <n>
+<!-- /cc-design-audit-downstream v1 end -->
+```
+
+- **Place.** The same `## 잔여 공개` section, on the line right after the v1 end fence. The unattended arm's skeleton-grade fence comes after it. Readers read each fence by its own exactly-one-pair rule and do not rely on the place, but the place is still fixed.
+- **Grammar (part of check (iv)).** The two fence lines are byte-exact literals and appear exactly once each, in this order, with **exactly 5 slot lines** strictly between them, in this order, with no blank lines and no other keys. Every slot line matches `^\*\*[^*]+\*\*: .+$` and every value `^[0-9]+$`. A class with no defect keeps its line with `0` — fixed arity.
+- **An older report without this fence** reads as `미상` on all five values. Only the lead's self-check (iv) requires the fence in a new report: the machine completion predicate looks at the skeleton-grade fence alone, so an audit missing this fence still ends normally and its ledger row carries `미상`.
 
 ## The four anti-vacuity checks
 
@@ -55,15 +73,18 @@ Rules (this is check (iv)):
 - `고유 ≥ 1` whenever `원시 ≥ 1`
 - the five routing lines sum to `고유 결함 수` — every unique defect routed exactly once
 - `동결 시각 ≤ 조정 패스 시작 ≤ 조정 패스 종료`
+- the four `하류 부류` lines sum to `고유 결함 수` − `라우팅 — 기각`
+- `경량 처리 수` ≤ `라우팅 — 조정 패스 적용`
+- `경량 처리 수` ≤ `하류 부류 — 결과물 동일` + `하류 부류 — 구현자 자가 수정`
 
 *Blocks an all-zeros block.* **Known conservative bias, stated rather than hidden**: a run in which a reader genuinely found nothing trips `원시 ≥ 리뷰어 수`. The disposition is to **fail loud and surface**, not to relax the invariant — a run where a reader found nothing is precisely the run a human should look at, and weakening a pinned invariant to accommodate it re-opens the all-zeros hole.
 
-**(iv) Slot grammar.** As specified above: fences, count, order, key set, per-key value shape.
+**(iv) Slot grammar.** As specified above: fences, count, order, key set, per-key value shape — for the v1 block and the downstream class fence alike.
 
 ## Honest limit
 
-The four checks fence the block's **structure**. The **truth** of the recorded integers cannot be checked: a lead that runs the readers and then writes plausible-but-wrong numbers passes all four. This is the deliberate split — garbage output is fenced structurally, interpretable misjudgment is left to prose. Do not add a fifth check that pretends otherwise, and do not delete this paragraph to make the mechanism look stronger than it is.
+The four checks fence the block's **structure**. The **truth** of the recorded integers cannot be checked: a lead that runs the readers and then writes plausible-but-wrong numbers passes all four. This is the deliberate split — garbage output is fenced structurally, interpretable misjudgment is left to prose. Do not add a fifth check that pretends otherwise, and do not delete this paragraph to make the mechanism look stronger than it is. The same holds for the downstream class counts: whether a class was predicted right cannot be checked by any structural check.
 
 ## Korean echo
 
-After writing the block, echo it to the user in Korean with the routing lines rendered as a short list and the two timestamps rendered as an elapsed duration, followed by the next-step line and the terminal statement of Step 7.
+After writing the block, echo it to the user in Korean with the routing lines rendered as a short list and the two timestamps rendered as an elapsed duration, the four downstream class counts and the light-path count on one line, followed by the next-step line and the terminal statement of Step 7.

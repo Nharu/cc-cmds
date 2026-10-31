@@ -28,6 +28,13 @@
 #         it lives in the unattended arm's SKILL.md alone because no other arm
 #         writes it. A fence whose keys drift away from the code that reads it
 #         keeps the audit green while the reader finds nothing.
+#   (vi)  the downstream class fence — its two fence lines and five keys. Both
+#         arms write it, so it lives in the shared `04-disclosure-block.md`;
+#         the gate's `감사 공시` row reads its five counts between that pair.
+#   (vii) the light path of the shared `03-adjustment-pass.md` — its section
+#         heading, the four closed class tags and the two fixed sentences that
+#         keep decision-shaped defects off it and keep it from opening the
+#         repository. A missing 03 fails like any other reference file.
 #
 # It also carries a NEGATIVE fence: the loop machinery the overhaul deleted must
 # not reappear under this skill. Each forbidden token is asserted to occur on
@@ -57,6 +64,7 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 SKILL="$skills_root/design-audit/SKILL.md"
 PROMPT="$skills_root/design-audit/references/01-reader-prompt.md"
 DISCLOSURE="$skills_root/design-audit/references/04-disclosure-block.md"
+ADJUSTMENT="$skills_root/design-audit/references/03-adjustment-pass.md"
 
 if [[ ! -f "$SKILL" ]]; then
   echo "SKIP: design-audit/SKILL.md not found under $skills_root — skill not present"
@@ -217,6 +225,38 @@ for lit in "${DISCLOSURE_PINS[@]}"; do
   assert_in_file "$lit" "$DISCLOSURE" "design-audit/references/04-disclosure-block.md"
 done
 
+# ---------- (vi) downstream class fence — shared 04, both arms write it -------
+
+DOWNSTREAM_PINS=(
+  '<!-- cc-design-audit-downstream v1 begin -->'
+  '<!-- /cc-design-audit-downstream v1 end -->'
+  '**하류 부류 — 결과물 동일**'
+  '**하류 부류 — 구현자 자가 수정**'
+  '**하류 부류 — 리뷰 포착**'
+  '**하류 부류 — 운영 노출**'
+  '**경량 처리 수**'
+)
+
+for lit in "${DOWNSTREAM_PINS[@]}"; do
+  assert_in_file "$lit" "$DISCLOSURE" "design-audit/references/04-disclosure-block.md"
+done
+
+# ---------- (vii) light path — shared 03 --------------------------------------
+
+LIGHT_PATH_PINS=(
+  '### Downstream class'
+  'A decision-shaped defect never takes the light path, whatever its downstream class.'
+  'The light path opens no file of CODE_ROOT to check its defect; the design document itself is read and edited as rules 1–4 say.'
+  '`결과물 동일`'
+  '`구현자 자가 수정`'
+  '`리뷰 포착`'
+  '`운영 노출`'
+)
+
+for lit in "${LIGHT_PATH_PINS[@]}"; do
+  assert_in_file "$lit" "$ADJUSTMENT" "design-audit/references/03-adjustment-pass.md"
+done
+
 # ---------- (v) skeleton-grade fence — the unattended arm only ----------------
 
 SKELETAL_PINS=(
@@ -319,7 +359,7 @@ if [[ -d "$skills_root/design-audit/references" ]]; then
 fi
 
 if (( fail == 0 )); then
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#FORBIDDEN[@]} denylist + ${#CUSTODY_PINS[@]} custody over ${#ARM_SKILLS[@]} arm(s), ${#PROMPT_PINS[@]} reader-prompt + ${#DISCLOSURE_PINS[@]} disclosure over the shared reference tree, ${#SKELETAL_PINS[@]} skeletal in the unattended arm — all intact"
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#FORBIDDEN[@]} denylist + ${#CUSTODY_PINS[@]} custody over ${#ARM_SKILLS[@]} arm(s), ${#PROMPT_PINS[@]} reader-prompt + ${#DISCLOSURE_PINS[@]} disclosure + ${#DOWNSTREAM_PINS[@]} downstream + ${#LIGHT_PATH_PINS[@]} light-path over the shared reference tree, ${#SKELETAL_PINS[@]} skeletal in the unattended arm — all intact"
 fi
 
 exit "$fail"

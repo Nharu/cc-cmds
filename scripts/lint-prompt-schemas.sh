@@ -48,6 +48,12 @@
 #      who writes a heavy single document, `manifest_design_skill` branches on
 #      it and the checker's (d) asserts on it, so a value cannot appear or
 #      vanish without this lint noticing.
+#   8. `entry-plan.schema.json` carries the review-field pair: `review_expand`
+#      and `review_expand_rationale` are in both sets, `review_expand` is an
+#      array, and its item enum (`.properties.review_expand.items.enum`) is
+#      exactly `요구` / `문서표현`. The driver and the gate put the value on
+#      every review line and the checker's (g) asserts on it, so a field
+#      cannot appear or vanish without this lint noticing.
 #
 # Usage:
 #   bash scripts/lint-prompt-schemas.sh
@@ -315,6 +321,40 @@ if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
   fi
   if [[ "$path_ok" == "1" ]]; then
     echo "OK:   $rel — design_path present on both sides, enum pinned"
+  else
+    fail=1
+  fi
+fi
+
+# ---------- Rule 8: the review-field pair in entry-plan -----------------------
+
+if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
+  rel=${ENTRY#"$repo_root/"}
+  expand_ok=1
+  for key in review_expand review_expand_rationale; do
+    in_props=$(jq -r --arg k "$key" '(.properties // {}) | has($k)' "$ENTRY")
+    in_req=$(jq -r --arg k "$key" '(.required // []) | index($k) != null' "$ENTRY")
+    if [[ "$in_props" != "true" ]]; then
+      echo "FAIL: $rel — '$key' is missing from .properties" >&2
+      expand_ok=0
+    fi
+    if [[ "$in_req" != "true" ]]; then
+      echo "FAIL: $rel — '$key' is missing from .required" >&2
+      expand_ok=0
+    fi
+  done
+  expand_type=$(jq -r '.properties.review_expand.type // ""' "$ENTRY")
+  if [[ "$expand_type" != "array" ]]; then
+    echo "FAIL: $rel — review_expand must be an array, found type '$expand_type'" >&2
+    expand_ok=0
+  fi
+  expand_enum=$(jq -c '.properties.review_expand.items.enum // []' "$ENTRY")
+  if [[ "$expand_enum" != '["요구","문서표현"]' ]]; then
+    echo "FAIL: $rel — review_expand item enum must be exactly [\"요구\",\"문서표현\"], found $expand_enum" >&2
+    expand_ok=0
+  fi
+  if [[ "$expand_ok" == "1" ]]; then
+    echo "OK:   $rel — review_expand pair present on both sides, enum pinned"
   else
     fail=1
   fi
