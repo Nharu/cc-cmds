@@ -11611,7 +11611,7 @@ fi
 # ---------------------------------------------------------------------------
 # 물려받은 스위치가 기댓값을 바꾸지 않게 먼저 지운다. 이 절의 스위치 값은 전부
 # 호출마다 앞에 붙여 그 호출에만 건다.
-unset CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL
+unset CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL CC_ORCH_PROMPT_CACHE_TTL
 while IFS='|' read -r ef_kind ef_want; do
   [ -n "$ef_kind" ] || continue
   check "stage_effort_of $ef_kind → $ef_want" "$(stage_effort_of "$ef_kind")" "$ef_want"
@@ -11677,7 +11677,8 @@ check "스트림이 없으면 (미상) 이다" "$(stage_served_model_of "$SMD/no
 SPD="$WORK/spawn-flags"; rm -rf "$SPD"; mkdir -p "$SPD/orch" "$SPD/run/settings" "$SPD/run/log" "$SPD/cfg"
 printf '{}\n' > "$SPD/run/settings/review.json"
 printf '{}\n' > "$SPD/run/settings/design.json"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" > "$SP_ARGV_OUT"' > "$SPD/orch/stage-wrapper.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" > "$SP_ARGV_OUT"' \
+  'printf "%s\n" "${CLAUDE_CODE_PROMPT_CACHE_TTL-unset}" > "$SP_ARGV_OUT.ttl"' > "$SPD/orch/stage-wrapper.sh"
 cat > "$SPD/probe.sh" <<'SPEOF'
 sp_drv="$1"; SP_ROOT="$2"; sp_sid="$3"; set --
 . "$sp_drv"
@@ -11692,8 +11693,9 @@ stage_collect "$sp_sid"
 SPEOF
 sp_spawn() {  # sp_spawn <stage-id> <argv-out> [VAR=value...]
   local sid="$1" argv_out="$2"; shift 2
-  rm -f "$argv_out"
-  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL SP_ARGV_OUT="$argv_out" "$@" \
+  rm -f "$argv_out" "$argv_out.ttl"
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL -u CC_ORCH_PROMPT_CACHE_TTL \
+    -u CLAUDE_CODE_PROMPT_CACHE_TTL SP_ARGV_OUT="$argv_out" "$@" \
     bash "$SPD/probe.sh" "$DRIVER" "$SPD" "$sid" >/dev/null 2>&1
   cat "$argv_out" 2>/dev/null || true
 }
@@ -11703,6 +11705,10 @@ case "$sp_fresh" in
   *) bad "기동 argv" "새 기동: $sp_fresh" ;;
 esac
 check "새 기동이 .window 셋째 줄에 argv 의 effort 를 남긴다" "$(sed -n '3p' "$SPD/run/S5:segF:1.window" 2>/dev/null)" "medium"
+# 캐시 수명 — 래퍼가 받은 환경에 기본 5m 이 서고, 호스트 auto 는 물려받은 값을 지운다.
+check "드라이버 기동의 래퍼 환경은 기본으로 5분 캐시 수명이다" "$(cat "$SPD/fresh.txt.ttl" 2>/dev/null)" "5m"
+sp_spawn "S5:segT:1" "$SPD/ttl-auto.txt" CLAUDE_CODE_PROMPT_CACHE_TTL=1h CC_ORCH_PROMPT_CACHE_TTL=auto >/dev/null
+check "호스트 auto 는 물려받은 캐시 수명 변수를 지운다" "$(cat "$SPD/ttl-auto.txt.ttl" 2>/dev/null)" "unset"
 sp_resume=$(sp_spawn "S5:segF:1" "$SPD/resume.txt" SP_RESUME=12121212-3434-5656-7878-909090909090)
 case "$sp_resume" in
   *"--resume 12121212-3434-5656-7878-909090909090 --effort medium --model opus -- -p prompt"*)
@@ -11752,13 +11758,16 @@ printf 'input\n' > "$JCD/input"
 cat > "$JCD/cli" <<'JCEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$JC_ARGV_OUT"
+printf '%s\n' "${CLAUDE_CODE_PROMPT_CACHE_TTL-unset}" > "$JC_ARGV_OUT.ttl"
 printf '%s\n' '{"subtype":"success","structured_output":{},"modelUsage":{"claude-opus-5-5[1m]":{"inputTokens":1},"claude-sonnet-5":{"inputTokens":9}}}'
 JCEOF
 chmod +x "$JCD/cli"
-env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv.txt" \
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL -u CC_ORCH_PROMPT_CACHE_TTL \
+  -u CLAUDE_CODE_PROMPT_CACHE_TTL JC_ARGV_OUT="$JCD/argv.txt" \
   bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
            RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli"; judgment_call triage "$jc_root/input"' \
   _ "$DRIVER" "$JCD" >/dev/null 2>"$JCD/log.txt"
+check "판단 호출의 CLI 환경은 기본으로 5분 캐시 수명이다" "$(cat "$JCD/argv.txt.ttl" 2>/dev/null)" "5m"
 if grep_all_q -F -- '--strict-mcp-config --disallowedTools DesignSync Artifact ArtifactComments ArtifactData --effort medium --model opus' "$JCD/argv.txt"; then
   ok "판단 호출의 CLI argv 가 --effort medium --model opus 를 싣는다"
 else
@@ -11784,7 +11793,7 @@ printf '%s\n' "$@" > "$JC_ARGV_OUT"
 printf '%s\n' '{"subtype":"success","structured_output":{"verdict":"park","row":null,"reason":"r"}}'
 JCEOF
 chmod +x "$JCD/cli-words"
-env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv-words.txt" \
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL -u CC_ORCH_PROMPT_CACHE_TTL JC_ARGV_OUT="$JCD/argv-words.txt" \
   bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
            RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli-words"
            judgment_call preauth-judge "$jc_root/input" "$jc_root/pj-out.json" env JC_PREFIX=1' \
@@ -11802,7 +11811,7 @@ check "사전 인가 판단 호출은 준 출력 파일에 쓰고 그 경로를 
 # 거부 목록이 닿지 않는다.
 for jc_name in $JUDGMENTS; do
   rm -f "$JCD/argv-$jc_name.txt"
-  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv-$jc_name.txt" \
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL -u CC_ORCH_PROMPT_CACHE_TTL JC_ARGV_OUT="$JCD/argv-$jc_name.txt" \
     bash -c 'jc_drv="$1"; jc_root="$2"; jc_n="$3"; set --; . "$jc_drv"; set +e
              RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli-words"
              judgment_call "$jc_n" "$jc_root/input" "$jc_root/out-$jc_n.json"' \

@@ -322,5 +322,353 @@ check "migrate: 런 id 아래에서도 원천 불변" "$(sha_of "$MSRC")" "$MSRC
 sr migrate --source "$MSRC" --out "$WORK/p4.md"
 check "migrate: 필수 인자 없으면 rc 2" "$RC" "2"
 
+# ---------- enforcement ----------------------------------------------------------
+#
+# The script runs as a copy under a scratch plugin root outside the
+# repository, so a `plugin:` location resolves against that root, and the
+# default source is a scratch CLAUDE_CONFIG_DIR. No host map exists anywhere
+# here, which is the other user's environment the command has to work in.
+
+EP="$WORK/eplug"
+mkdir -p "$EP/orchestrator" "$EP/hooks"
+cp "$SR" "$EP/orchestrator/stage-rules.sh"
+ESR="$EP/orchestrator/stage-rules.sh"
+ECFG="$WORK/ecfg"
+mkdir -p "$ECFG"
+printf 'guard push here\n-x dash anchor\n' > "$EP/hooks/guard.sh"
+EU="$ECFG/CLAUDE.md"
+TB=$'\t'
+
+# esr <args...> — the scratch copy, outside any run; sets RC, OUT.
+esr() {
+  env -u CC_PIPELINE_RUN_ID -u CC_GATE_STAGE_POLICY_SOURCES HOME="$FAKE_HOME" \
+    CLAUDE_CONFIG_DIR="$ECFG" bash "$ESR" "$@" > "$OUTF" 2> "$ERRF"
+  RC=$?
+  OUT=$(cat "$OUTF")
+}
+# esr_in <stdin> <args...> — the same with standard input.
+esr_in() {
+  local in="$1"; shift
+  printf '%s' "$in" | env -u CC_PIPELINE_RUN_ID -u CC_GATE_STAGE_POLICY_SOURCES HOME="$FAKE_HOME" \
+    CLAUDE_CONFIG_DIR="$ECFG" bash "$ESR" "$@" > "$OUTF" 2> "$ERRF"
+  RC=$?
+  OUT=$(cat "$OUTF")
+}
+
+# the positive control first: one live `plugin:` item covers an [대화형] bullet
+printf '%s' '- [대화형] alpha guarded
+    강제: 훅 plugin:hooks/guard.sh#push
+' > "$EU"
+esr enforcement
+check "enforcement 양성 대조: rc 0" "$RC" "0"
+check "enforcement 양성 대조: stderr 비어 있음" "$(cat "$ERRF")" ""
+check "enforcement 양성 대조: 전체 출력" "$OUT" "source: $EU
+scope: user
+rules: total=1 enforced=1 partial=0 prose=0
+line 1${TB}enforced${TB}alpha guarded${TB}훅 plugin:hooks/guard.sh#push
+prose-only:
+  (none)
+partial gaps:
+  (none)
+dead means:
+  (none)"
+
+# the verdict table over the default source
+printf '%s' '- [무인] beta unattended only
+    강제: 훅 plugin:hooks/guard.sh @무인
+- gamma no marker
+- delta prose
+    산문: no means yet
+- [무인] eps gate
+    강제: 게이트 plugin:hooks/guard.sh
+- [대화형] zeta gate
+    강제: 게이트 plugin:hooks/guard.sh
+- [무인] eta hook
+    강제: 훅 plugin:hooks/guard.sh
+- [대화형] theta human gate
+    강제: 게이트 plugin:hooks/guard.sh @대화형
+' > "$EU"
+esr enforcement
+check "enforcement 판정: rc 0" "$RC" "0"
+has "enforcement 판정: 합계" "$OUT" "rules: total=7 enforced=2 partial=2 prose=3"
+has "enforcement 판정: @무인 만 덮은 [무인] 불릿은 partial" "$OUT" \
+  "line 1${TB}partial${TB}beta unattended only${TB}훅 plugin:hooks/guard.sh @무인"
+has "enforcement 판정: partial gaps 의 빈 경로와 by" "$OUT" \
+  "  line 1${TB}beta unattended only${TB}covered 무인 by 훅 plugin:hooks/guard.sh @무인; uncovered 대화형"
+has "enforcement 판정: partial 불릿은 prose-only 에도 오른다" "$OUT" \
+  "  line 1${TB}beta unattended only${TB}partial, uncovered 대화형"
+has "enforcement 판정: 표지 없는 불릿은 no marker" "$OUT" "  line 3${TB}gamma no marker${TB}no marker"
+has "enforcement 판정: 표지 없는 불릿의 수단 요약은 -" "$OUT" "line 3${TB}prose${TB}gamma no marker${TB}-"
+has "enforcement 판정: 산문 표지" "$OUT" "  line 4${TB}delta prose${TB}marked prose: no means yet"
+has "enforcement 판정: 경로 표시 없는 게이트는 [무인] 불릿을 partial 로" "$OUT" \
+  "  line 6${TB}eps gate${TB}partial, uncovered 대화형"
+has "enforcement 판정: 경로 표시 없는 게이트만 단 [대화형] 불릿은 uncovered 대화형" "$OUT" \
+  "  line 8${TB}zeta gate${TB}uncovered 대화형"
+has "enforcement 판정: 경로 표시 없는 훅은 [무인] 불릿을 enforced 로" "$OUT" \
+  "line 10${TB}enforced${TB}eta hook${TB}훅 plugin:hooks/guard.sh"
+has "enforcement 판정: 사람이 @대화형 을 단 게이트는 대화형을 덮는다" "$OUT" \
+  "line 12${TB}enforced${TB}theta human gate"
+has "enforcement 판정: 죽은 수단 없음" "$OUT" "dead means:
+  (none)"
+
+# the source kind: another file needs both paths whatever its tags
+OTHER="$WORK/other-src.md"
+printf '%s' '- untagged repo rule
+    강제: 훅 plugin:hooks/guard.sh @대화형
+' > "$OTHER"
+esr enforcement --source "$OTHER"
+has "enforcement 원천 종류: 다른 파일은 scope other" "$OUT" "scope: other"
+has "enforcement 원천 종류: other 의 무태그 불릿은 무인 경로도 필요하다" "$OUT" \
+  "  line 1${TB}untagged repo rule${TB}partial, uncovered 무인"
+cp "$OTHER" "$EU"
+esr enforcement --source "$EU"
+has "enforcement 원천 종류: default_source 경로를 주면 scope user" "$OUT" "scope: user"
+has "enforcement 원천 종류: user 의 무태그 불릿은 대화형만 필요하다" "$OUT" \
+  "line 1${TB}enforced${TB}untagged repo rule"
+ln -s "$EU" "$WORK/eu-link.md"
+esr enforcement --source "$WORK/eu-link.md"
+has "enforcement 원천 종류: default_source 를 가리키는 링크도 scope user (-ef)" "$OUT" "scope: user"
+
+# done when the means is gone: a missing file, a lost anchor, an unknown kind
+printf 'gone\n' > "$EP/hooks/gone.sh"
+LOST="$WORK/lost.md"
+printf '%s' '- [대화형] means rule
+    강제: 훅 plugin:hooks/gone.sh
+' > "$LOST"
+esr enforcement --source "$LOST"
+has "enforcement 수단 있음: 지우기 전 enforced" "$OUT" "line 1${TB}enforced${TB}means rule"
+rm -f "$EP/hooks/gone.sh"
+esr enforcement --source "$LOST"
+has "enforcement 수단 사라짐: prose" "$OUT" "line 1${TB}prose${TB}means rule${TB}-"
+has "enforcement 수단 사라짐: means lost" "$OUT" "  line 1${TB}means rule${TB}means lost"
+has "enforcement 수단 사라짐: dead means 에 missing file" "$OUT" \
+  "  line 1${TB}훅 plugin:hooks/gone.sh${TB}missing file"
+printf '%s' '- [대화형] anchor rule
+    강제: 훅 plugin:hooks/guard.sh#no-such-anchor
+- [대화형] kind rule
+    강제: 문서 plugin:hooks/guard.sh
+' > "$LOST"
+esr enforcement --source "$LOST"
+has "enforcement 앵커 사라짐: anchor not found" "$OUT" \
+  "  line 1${TB}훅 plugin:hooks/guard.sh#no-such-anchor${TB}anchor not found"
+has "enforcement 모르는 종류: malformed" "$OUT" "  line 3${TB}문서 plugin:hooks/guard.sh${TB}malformed"
+has "enforcement 죽은 수단만 있으면 prose" "$OUT" "rules: total=2 enforced=0 partial=0 prose=2"
+
+# the location prefixes resolve in the scratch environment, never on this host
+mkdir -p "$FAKE_HOME/.claude"
+printf 'cfg means\n' > "$ECFG/cfg-means.sh"
+printf 'home means\n' > "$FAKE_HOME/home-means.sh"
+printf 'dot claude means\n' > "$FAKE_HOME/.claude/cfg-means.sh"
+printf 'abs means\n' > "$WORK/abs-means.sh"
+LOC="$WORK/loc.md"
+printf '%s' "- [대화형] config rule
+    강제: 훅 config:cfg-means.sh#cfg
+- [대화형] home rule
+    강제: 훅 ~/home-means.sh#home
+- [대화형] absolute rule
+    강제: 훅 $WORK/abs-means.sh#abs
+" > "$LOC"
+esr enforcement --source "$LOC"
+has "enforcement 위치: config: 는 CLAUDE_CONFIG_DIR" "$OUT" "line 1${TB}enforced${TB}config rule"
+has "enforcement 위치: ~/ 는 HOME" "$OUT" "line 3${TB}enforced${TB}home rule"
+has "enforcement 위치: 절대 위치" "$OUT" "line 5${TB}enforced${TB}absolute rule"
+env -u CC_PIPELINE_RUN_ID -u CLAUDE_CONFIG_DIR HOME="$FAKE_HOME" bash "$ESR" enforcement --source "$LOC" > "$OUTF" 2> "$ERRF"
+RC=$?
+OUT=$(cat "$OUTF")
+check "enforcement 위치: CLAUDE_CONFIG_DIR 없이 rc 0" "$RC" "0"
+has "enforcement 위치: CLAUDE_CONFIG_DIR 가 없으면 config: 는 HOME/.claude" "$OUT" \
+  "  line 1${TB}훅 config:cfg-means.sh#cfg${TB}anchor not found"
+env -u CC_PIPELINE_RUN_ID HOME= CLAUDE_CONFIG_DIR="$ECFG" bash "$ESR" enforcement --source "$LOC" > "$OUTF" 2> "$ERRF"
+RC=$?
+OUT=$(cat "$OUTF")
+check "enforcement 위치: 빈 HOME 에서 rc 0" "$RC" "0"
+has "enforcement 위치: 빈 HOME 에서 ~/ 는 malformed" "$OUT" "  line 3${TB}훅 ~/home-means.sh#home${TB}malformed"
+has "enforcement 위치: 빈 HOME 에서도 config: 는 CLAUDE_CONFIG_DIR" "$OUT" "line 1${TB}enforced${TB}config rule"
+
+# an absent source and an untagged one both exit 0
+esr enforcement --source "$WORK/no-such-source.md"
+check "enforcement 없는 원천: rc 0" "$RC" "0"
+has "enforcement 없는 원천: 빈 파일로 읽는다" "$OUT" "source: $WORK/no-such-source.md (absent, read as empty)"
+has "enforcement 없는 원천: 불릿 0" "$OUT" "rules: total=0 enforced=0 partial=0 prose=0"
+printf '%s' '- plain rule
+    강제: 훅 plugin:hooks/guard.sh @대화형
+' > "$EU"
+esr enforcement
+check "enforcement 무태그 원천: rc 0" "$RC" "0"
+has "enforcement 무태그 원천: 필요 경로는 대화형뿐" "$OUT" "line 1${TB}enforced${TB}plain rule"
+
+# the marker lines stay in the extracted block
+XSRC="$WORK/marker-extract.md"
+printf '%s' '- [무인] kept rule
+    강제: 훅 plugin:hooks/guard.sh
+' > "$XSRC"
+sr extract --source "$XSRC"
+check "enforcement: extract 블록에 표지 줄이 그대로 있다" "$(cat "$OUTF")" "- kept rule
+    강제: 훅 plugin:hooks/guard.sh"
+
+# under a pipeline run the command still runs
+env CC_PIPELINE_RUN_ID=20261031-deadbeef HOME="$FAKE_HOME" CLAUDE_CONFIG_DIR="$ECFG" \
+  bash "$ESR" enforcement > "$OUTF" 2> "$ERRF"
+check "enforcement: CC_PIPELINE_RUN_ID 아래에서도 rc 0" "$?" "0"
+
+# the marker grammar, branch by branch
+printf 'abc\n' > "$WORK/dash-anchor.sh"
+GR="$WORK/grammar.md"
+printf '%s' "- [대화형] empty anchor
+    강제: 훅 plugin:hooks/guard.sh#
+- [대화형] two marks
+    강제: 훅 plugin:hooks/guard.sh @무인 @대화형
+- [대화형] empty item
+    강제: 훅 plugin:hooks/guard.sh;
+- [대화형] dash anchor
+    강제: 훅 plugin:hooks/guard.sh#-x
+- [무인] two force lines
+    강제: 훅 plugin:hooks/guard.sh @무인
+    강제: 린트 plugin:hooks/guard.sh @대화형
+- [대화형] two prose lines
+    산문: first reason
+    산문: second reason
+- [무인] marker under a sub bullet
+  - a sub bullet
+      강제: 훅 plugin:hooks/guard.sh
+- [대화형] dot dot
+    강제: 훅 plugin:../eplug/hooks/guard.sh
+- [대화형] no location
+    강제: 훅
+- [대화형] unknown prefix
+    강제: 훅 hooks/guard.sh
+- [대화형] unknown mark
+    강제: 훅 plugin:hooks/guard.sh @nightly
+- [대화형] glued colon
+    강제:훅 plugin:hooks/guard.sh
+- [대화형] bare force
+    강제:
+- [대화형] blank prose
+    산문:
+- [대화형] extra word
+    강제: 훅 plugin:hooks/guard.sh extra
+- [대화형] dash anchor missing
+    강제: 훅 $WORK/dash-anchor.sh#-x
+" > "$GR"
+esr enforcement --source "$GR"
+check "enforcement 문법: rc 0" "$RC" "0"
+has "enforcement 문법: 빈 앵커는 malformed" "$OUT" "  line 1${TB}훅 plugin:hooks/guard.sh#${TB}malformed"
+has "enforcement 문법: 경로 표시 둘은 malformed" "$OUT" \
+  "  line 3${TB}훅 plugin:hooks/guard.sh @무인 @대화형${TB}malformed"
+has "enforcement 문법: 빈 항목은 malformed 하나" "$OUT" "  line 5${TB}${TB}malformed"
+has "enforcement 문법: 빈 항목 옆 살아 있는 항목은 산다" "$OUT" \
+  "line 5${TB}enforced${TB}empty item${TB}훅 plugin:hooks/guard.sh"
+has "enforcement 문법: - 로 시작하는 앵커를 고정 문자열로 찾는다" "$OUT" \
+  "line 7${TB}enforced${TB}dash anchor${TB}훅 plugin:hooks/guard.sh#-x"
+has "enforcement 문법: 강제 줄 둘의 항목이 합쳐진다" "$OUT" \
+  "line 9${TB}enforced${TB}two force lines${TB}훅 plugin:hooks/guard.sh @무인; 린트 plugin:hooks/guard.sh @대화형"
+has "enforcement 문법: 산문 줄이 둘이면 첫 사유" "$OUT" "  line 12${TB}two prose lines${TB}marked prose: first reason"
+has "enforcement 문법: 하위 불릿 아래 강제 줄은 최상위 불릿의 표지" "$OUT" \
+  "line 15${TB}enforced${TB}marker under a sub bullet"
+has "enforcement 문법: plugin: 의 .. 성분은 malformed" "$OUT" \
+  "  line 18${TB}훅 plugin:../eplug/hooks/guard.sh${TB}malformed"
+has "enforcement 문법: 위치 없음은 malformed" "$OUT" "  line 20${TB}훅${TB}malformed"
+has "enforcement 문법: 모르는 위치 접두는 malformed" "$OUT" "  line 22${TB}훅 hooks/guard.sh${TB}malformed"
+has "enforcement 문법: 모르는 경로 표시는 malformed" "$OUT" \
+  "  line 24${TB}훅 plugin:hooks/guard.sh @nightly${TB}malformed"
+has "enforcement 문법: 콜론 뒤 공백 없는 강제 줄도 표지" "$OUT" "line 26${TB}enforced${TB}glued colon"
+has "enforcement 문법: 항목 없는 강제 줄은 malformed 하나" "$OUT" "  line 28${TB}${TB}malformed"
+has "enforcement 문법: 사유가 빈 산문 줄은 표지가 아니다" "$OUT" "  line 30${TB}blank prose${TB}no marker"
+has "enforcement 문법: 남는 낱말은 malformed" "$OUT" \
+  "  line 32${TB}훅 plugin:hooks/guard.sh extra${TB}malformed"
+has "enforcement 문법: - 로 시작하는 앵커가 없는 파일은 anchor not found" "$OUT" \
+  "  line 34${TB}훅 $WORK/dash-anchor.sh#-x${TB}anchor not found"
+
+# a means file that cannot be read is a missing file — unless running as root
+printf 'locked\n' > "$WORK/locked-means.sh"
+chmod 000 "$WORK/locked-means.sh"
+if [ -r "$WORK/locked-means.sh" ]; then
+  echo "SKIP: 읽을 수 없는 수단 파일 — 이 사용자는 권한을 걷어도 읽는다 (root)"
+else
+  printf '%s' "- [대화형] locked rule
+    강제: 훅 $WORK/locked-means.sh
+" > "$LOST"
+  esr enforcement --source "$LOST"
+  has "enforcement: 읽을 수 없는 수단 파일은 missing file" "$OUT" \
+    "  line 1${TB}훅 $WORK/locked-means.sh${TB}missing file"
+fi
+chmod 600 "$WORK/locked-means.sh"
+
+# --notice-for: the bullets this edit touched, filtered by the notice table
+NT="$WORK/notice.md"
+printf '%s' '- [대화형] new bare rule
+- [대화형] old bare rule
+- [대화형] prose rule
+    산문: decided later
+- [대화형] guarded rule
+    강제: 훅 plugin:hooks/guard.sh
+- [대화형] guarded with a dead item
+    강제: 훅 plugin:hooks/guard.sh; 훅 plugin:hooks/none.sh
+- [대화형] prose with a dead item
+    산문: decided later
+    강제: 훅 plugin:hooks/none.sh @무인
+- [대화형] twin rule
+- [대화형] twin rule
+' > "$NT"
+esr_in '- [대화형] new bare rule
+' enforcement --source "$NT" --notice-for -
+check "notice-for: rc 0" "$RC" "0"
+check "notice-for: 첫 줄이 같은 표지 없는 불릿만 찍힌다" "$OUT" "line 1${TB}new bare rule${TB}no marker"
+esr_in '    산문: decided later
+- [대화형] guarded rule
+' enforcement --source "$NT" --notice-for -
+check "notice-for: 산문 불릿과 죽은 수단 없는 enforced 불릿은 안 찍히고, 같은 표지 줄의 죽은 수단 불릿은 찍힌다" "$OUT" \
+  "line 9${TB}prose with a dead item${TB}means lost; dead 훅 plugin:hooks/none.sh @무인 missing file"
+esr_in '    강제: 훅 plugin:hooks/guard.sh; 훅 plugin:hooks/none.sh
+' enforcement --source "$NT" --notice-for -
+check "notice-for: 죽은 수단을 가진 enforced 불릿은 표지 줄로 찍힌다" "$OUT" \
+  "line 7${TB}guarded with a dead item${TB}dead 훅 plugin:hooks/none.sh missing file"
+esr_in '' enforcement --source "$NT" --notice-for -
+check "notice-for: 빈 입력은 출력 없음" "$OUT" ""
+esr_in '- [대화형] twin rule
+' enforcement --source "$NT" --notice-for -
+check "notice-for: 같은 첫 줄의 불릿 둘이 모두 찍힌다" "$OUT" "line 12${TB}twin rule${TB}no marker
+line 13${TB}twin rule${TB}no marker"
+esr_in 'x' enforcement --source "$NT" --notice-for x
+check "notice-for: - 가 아닌 피연산자는 rc 2" "$RC" "2"
+esr enforcement --bogus
+check "enforcement: 모르는 인자는 rc 2" "$RC" "2"
+printf 'x\n' > "$WORK/unreadable-src.md"
+chmod 000 "$WORK/unreadable-src.md"
+if [ -r "$WORK/unreadable-src.md" ]; then
+  echo "SKIP: 읽을 수 없는 원천 — 이 사용자는 권한을 걷어도 읽는다 (root)"
+else
+  esr enforcement --source "$WORK/unreadable-src.md"
+  check "enforcement: 읽을 수 없는 원천은 rc 2" "$RC" "2"
+fi
+chmod 600 "$WORK/unreadable-src.md"
+
+# --notice-line: the bullet holding a line of the source
+NL2="$WORK/notice-line.md"
+printf '%s' 'heading outside every bullet
+- [대화형] lined rule
+    a continuation line
+- [대화형] lined guarded rule
+    강제: 훅 plugin:hooks/guard.sh
+' > "$NL2"
+esr_in '' enforcement --source "$NL2" --notice-for - --notice-line 3
+check "notice-line: 연속 줄 번호로 불릿을 고른다" "$OUT" "line 2${TB}lined rule${TB}no marker"
+esr_in '' enforcement --source "$NL2" --notice-for - --notice-line 2
+check "notice-line: 첫 줄 번호도 같다" "$OUT" "line 2${TB}lined rule${TB}no marker"
+esr_in '- [대화형] lined rule
+' enforcement --source "$NL2" --notice-for - --notice-line 3 --notice-line 2
+check "notice-line: 입력 줄과 함께 고른 불릿은 한 번만" "$OUT" "line 2${TB}lined rule${TB}no marker"
+esr_in '' enforcement --source "$NL2" --notice-for - --notice-line 5
+check "notice-line: 죽은 수단 없는 enforced 불릿은 출력 없음" "$OUT" ""
+esr_in '' enforcement --source "$NL2" --notice-for - --notice-line 1 --notice-line 99 --notice-line 12345678901234
+check "notice-line: 불릿 밖 줄과 파일보다 큰 번호는 출력 없음" "$OUT" ""
+check "notice-line: 그때도 rc 0" "$RC" "0"
+esr_in '' enforcement --source "$NL2" --notice-for - --notice-line 0
+check "notice-line: 0 은 rc 2" "$RC" "2"
+esr_in '' enforcement --source "$NL2" --notice-for - --notice-line two
+check "notice-line: 숫자가 아니면 rc 2" "$RC" "2"
+esr enforcement --source "$NL2" --notice-line 2
+check "notice-line: --notice-for 없이 rc 2" "$RC" "2"
+
 printf 'test-stage-rules: %s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
