@@ -54637,7 +54637,7 @@ check "88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 �
 
 # ---------------------------------------------------------------------------
 # 88p. patch-id 동일 해소 — 리뷰된 브랜치 변경을 그대로 옮긴 해소 HEAD 는 다시 리뷰하지 않는다
-# --- section: 88p | group: ledger_series | covers: gate_patch_same, gate_patch_same_export, gate_base_next, gate_base_check_row, gate_segment_review_next, gate_merge_check_value, gate_done_conditions, gate_apply_preconditions, gate_apply_subject_proof | anchors: 88p: 판을 올리지 않은 브랜치의 먼 줄 해소는 머지 이고 일치 행의 판정 근거는 패치동일 이다, 88p: 메타 증명의 전제가 모두 서는 재번호 해소는 patch-id 도 같지만 판정 근거는 재번호 다, 88p: README 생성 블록 충돌을 더한 재번호 해소는 판정 근거가 패치동일 이다, 88p: 판을 올리지 않은 브랜치에서 README 생성 블록만 섞인 해소는 판정 근거가 패치동일 이다, 88p: 머지 행위는 patch-id 동일 HEAD 만 규칙에 내보낸다, 88p: 덮지 않는 patch-id 동일 머지의 머지 대조는 패치 동일 이다, 88p: 조건 11 은 패치 동일 을 통과시킨다, 88p: 베이스가 변경의 앞뒤 세 줄 안을 바꾼 해소는 해소 리뷰 다, 88p: 코드 한 줄을 더한 머지는 해소 리뷰 다, 88p: 공백만 바꾼 머지는 해소 리뷰 다, 88p: 판을 잘못 매긴 머지는 해소 리뷰 다, 88p: plugin.json 의 판 밖 키를 바꾼 머지는 해소 리뷰 다, 88p: README 생성 블록 밖을 바꾼 머지는 해소 리뷰 다, 88p: 아래 변경 기록 항목을 고친 머지는 해소 리뷰 다, 88p: R 이 조상이 아닌 HEAD 는 해소 리뷰 다, 88p: 메타만 바꾼 브랜치는 빈 디프로 해소 리뷰 다, 88p: patch-id 동일 HEAD 가 다시 릴리스 파일에서만 충돌해도 부류는 일반 이고 다음은 베이스 해소 다, 88p: 적용 전제 4 는 둘째 부모가 patch-id 동일 HEAD 인 착지를 받고 대상 HEAD 는 리뷰 HEAD 다, 88p: 선머지후리뷰 세그먼트의 patch-id 동일 착지는 적용 전제 4 가 거부한다, 88p: 변경 기록만 있는 레포에서 머리 항목을 더한 해소는 해소 리뷰 다, 88p: plugin.json 을 새로 만든 해소는 해소 리뷰 이고 정수 비교 오류가 없다, 88p: 릴리스 파일이 없는 레포의 먼 줄 해소는 판정 근거가 패치동일 이다, 88p: 작업 트리의 .gitattributes 는 증명을 바꾸지 않는다, 88p: 리뷰-후-머지 는 patch-id 동일 HEAD 를 받을 때만 리뷰 뒤 해소 커밋을 통과시킨다 ---
+# --- section: 88p | group: ledger_series | covers: gate_patch_same, gate_patch_same_export, gate_base_next, gate_base_check_row, gate_segment_review_next, gate_merge_check_value, gate_done_conditions, gate_apply_preconditions, gate_apply_subject_proof | anchors: 88p: 판을 올리지 않은 브랜치의 먼 줄 해소는 머지 이고 일치 행의 판정 근거는 패치동일 이다, 88p: 메타 증명의 전제가 모두 서는 재번호 해소는 patch-id 도 같지만 판정 근거는 재번호 다, 88p: README 생성 블록 충돌을 더한 재번호 해소는 판정 근거가 패치동일 이다, 88p: 판을 올리지 않은 브랜치에서 README 생성 블록만 섞인 해소는 판정 근거가 패치동일 이다, 88p: 머지 행위는 patch-id 동일 HEAD 만 규칙에 내보낸다, 88p: 덮지 않는 patch-id 동일 머지의 머지 대조는 패치 동일 이다, 88p: 조건 11 은 패치 동일 을 통과시킨다, 88p: 베이스가 변경의 앞뒤 세 줄 안을 바꾼 해소는 해소 리뷰 다, 88p: 코드 한 줄을 더한 머지는 해소 리뷰 다, 88p: 공백만 바꾼 머지는 해소 리뷰 다, 88p: 판을 잘못 매긴 머지는 해소 리뷰 다, 88p: plugin.json 의 판 밖 키를 바꾼 머지는 해소 리뷰 다, 88p: README 생성 블록 밖을 바꾼 머지는 해소 리뷰 다, 88p: 아래 변경 기록 항목을 고친 머지는 해소 리뷰 다, 88p: R 이 조상이 아닌 HEAD 는 해소 리뷰 다, 88p: 메타만 바꾼 브랜치는 빈 디프로 해소 리뷰 다, 88p: patch-id 동일 HEAD 가 다시 릴리스 파일에서만 충돌해도 부류는 일반 이고 다음은 베이스 해소 다, 88p: 적용 전제 4 는 둘째 부모가 patch-id 동일 HEAD 인 착지를 받고 대상 HEAD 는 리뷰 HEAD 다, 88p: 선머지후리뷰 세그먼트의 patch-id 동일 착지는 적용 전제 4 가 거부한다, 88p: 변경 기록만 있는 레포에서 머리 항목을 더한 해소는 해소 리뷰 다, 88p: plugin.json 을 새로 만든 해소는 해소 리뷰 이고 정수 비교 오류가 없다, 88p: 릴리스 파일이 없는 레포의 먼 줄 해소는 판정 근거가 패치동일 이다, 88p: 작업 트리의 .gitattributes 는 증명을 바꾸지 않는다, 88p: 리뷰-후-머지 는 patch-id 동일 HEAD 를 받을 때만 리뷰 뒤 해소 커밋을 통과시킨다, 88p: 설정 없는 저장소에서 gitlink 뒤에 놓인 변경을 더한 해소는 해소 리뷰 다, 88p: 서브모듈 표시가 log 인 저장소 설정 아래 gitlink 뒤에 놓인 변경을 더한 해소는 해소 리뷰 다, 88p: 작업 트리 .gitmodules 의 ignore = all 아래 gitlink 를 더한 해소는 해소 리뷰 다 ---
 #
 # 베이스가 움직여 손으로 푼 해소 머지는 R 의 트리도 재번호 머지도 아니지만, 브랜치가 베이스
 # 위에 얹는 변경은 리뷰 때와 같을 수 있다. 게이트는 두 쪽 각자의 머지 베이스에서 잰 디프를
@@ -54975,6 +54975,30 @@ HZ88P=$(hm88p z p-h "$RZ88P" "$TZ88P" wr_far88p)
 co88p z p-h; ck88p z "$LZ88P" "$HZ88P"
 check "88p: 릴리스 파일이 없는 레포의 먼 줄 해소는 판정 근거가 패치동일 이다" \
   "$(c88p z "$LZ88P")|$(bf88p "$LZ88P")|$(nx88p z "$LZ88P")" "0|$HZ88P|$TZ88P|일치|-|패치동일|머지"
+co88p z seg
+# 서브모듈 — 먼 줄 해소에 gitlink m 을 더한 해소 머지. 릴리스 파일이 없어 7단계가 바로 통과하므로
+# 디프 비교만이 막는다. `diff.submodule=log` 는 gitlink 를 `diff --git` 머리 없는 한 줄로 찍어
+# `git patch-id` 가 거기서 패치를 끊게 하고, `ignore = all` 은 gitlink 를 디프에서 지운다.
+hg88p() {  # hg88p <브랜치> [z.txt 내용] — R·T 를 부모로, 먼 줄 해소에 gitlink m(과 z.txt)을 더한 해소 머지
+  ( cd "$D88P/z/seg" && git checkout -q -B "$1" "$RZ88P" && git merge -q --no-ff --no-commit -s ours "$TZ88P" \
+      && ax88p 3=S3 18=U18 && { [ -z "${2:-}" ] || printf '%s\n' "$2" > z.txt; } && git add -A \
+      && git update-index --add --cacheinfo "160000,$TZ88P,m" && git commit -qm "resolve $1" \
+      && git rev-parse HEAD && git checkout -q seg ) 2>/dev/null
+}
+HS88P=$(hg88p p-sm evil)
+HG88P=$(hg88p p-gl)
+co88p z p-sm
+check "88p: 설정 없는 저장소에서 gitlink 뒤에 놓인 변경을 더한 해소는 해소 리뷰 다" \
+  "$(nx88p z "$LZ88P")|$(ps88p z "$LZ88P" "$RZ88P" "$HS88P" "$TZ88P")" "해소 리뷰|1|the branch patch differs from the reviewed one"
+( cd "$D88P/z/seg" && git config diff.submodule log ) >/dev/null 2>&1
+check "88p: 서브모듈 표시가 log 인 저장소 설정 아래 gitlink 뒤에 놓인 변경을 더한 해소는 해소 리뷰 다" \
+  "$(nx88p z "$LZ88P")|$(ps88p z "$LZ88P" "$RZ88P" "$HS88P" "$TZ88P")" "해소 리뷰|1|the branch patch differs from the reviewed one"
+( cd "$D88P/z/seg" && git config --unset diff.submodule ) >/dev/null 2>&1
+co88p z p-gl
+printf '[submodule "m"]\n\tpath = m\n\turl = ./m\n\tignore = all\n' > "$D88P/z/seg/.gitmodules"
+check "88p: 작업 트리 .gitmodules 의 ignore = all 아래 gitlink 를 더한 해소는 해소 리뷰 다" \
+  "$(nx88p z "$LZ88P")|$(ps88p z "$LZ88P" "$RZ88P" "$HG88P" "$TZ88P")" "해소 리뷰|1|the branch patch differs from the reviewed one"
+rm -f "$D88P/z/seg/.gitmodules"
 co88p z seg
 
 # ---------------------------------------------------------------------------

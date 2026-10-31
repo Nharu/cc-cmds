@@ -25637,15 +25637,24 @@ gate_patch_same() {
     }
     # pid <tree a> <tree b> <tag> — the patch-id of the fixed diff between them.
     # Every setting that changes the diff's bytes is pinned on the command line,
-    # and attributes come from the empty tree and no user or system file.
+    # and attributes come from the empty tree and no user or system file. The
+    # submodule settings are pinned too: `diff.submodule=log|diff` prints a
+    # gitlink as one `Submodule …` line with no `diff --git` header, where
+    # `git patch-id` ends the patch and hashes the rest as a second one, and an
+    # `ignore = all` from any config or `.gitmodules` drops the gitlink from the
+    # diff. The whole diff is one patch, so an output of more than one id is a
+    # step-5 failure rather than a first line read alone.
     pid() {
       GIT_ATTR_NOSYSTEM=1 gitf -c core.attributesFile=/dev/null -c core.quotePath=true \
         -c diff.noprefix=false -c diff.mnemonicPrefix=false -c diff.suppressBlankEmpty=false \
+        -c diff.submodule=short -c diff.ignoreSubmodules=none \
         -c patchid.stable=false -c patchid.verbatim=true --attr-source="$GATE_PATCH_EMPTY_TREE" \
         diff --no-ext-diff --no-textconv --no-color --no-renames --no-relative \
         --binary -U3 --diff-algorithm=myers --indent-heuristic --inter-hunk-context=0 -O/dev/null \
+        --submodule=short --ignore-submodules=none \
         "$1" "$2" > "$w/$3.diff"
       gitf patch-id --verbatim < "$w/$3.diff" > "$w/$3.pid"
+      [ "$(awk 'END { print NR }' "$w/$3.pid")" -le 1 ] || fail "git diff or git patch-id failed"
       awk 'NR == 1 { print $1 }' "$w/$3.pid"
     }
     local_r=$(gate_iso_git "$dir" rev-parse --verify --quiet "$r^{commit}" 2>/dev/null) || fail "the HEAD or the reviewed HEAD does not resolve"
