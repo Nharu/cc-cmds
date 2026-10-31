@@ -85,8 +85,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 1116(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
-ASSERTION_FLOOR=1095
+# 실측 1311(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
+ASSERTION_FLOOR=1104
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -2282,7 +2282,8 @@ FXO1=$(sed -n 1p "$FXO")
 check "관측 픽스처는 두 줄이다" "$(wc -l < "$FXO" | tr -d ' ')" 2
 check "관측 픽스처 두 줄의 최상위 키 순서가 같다" "$(jq -c keys_unsorted "$FXO" | sort -u | wc -l | tr -d ' ')" 1
 check "관측 픽스처의 groups 항목 키 순서" "$(jq -c '.groups[] | keys_unsorted' "$FXO" | sort -u)" \
-  '["group","w7_bp","u7_bp","sigma7_bp","resets_at"]'
+  '["group","w7_bp","u7_bp","sigma7_bp","resets_at","rho7_bp_d"]'
+check "관측 픽스처 두 줄의 그룹별 rho7_bp_d" "$(jq -c '[.groups[].rho7_bp_d]' "$FXO")" "$(printf '[5120,678]\n[5120,650]')"
 
 P="$OB/grant"
 rc=0; out=$(obtxn "$P" "$OBF" 2>"$OB.grant.err") || rc=$?
@@ -2303,6 +2304,29 @@ w7want=$(printf '%s' "$c" | bash "$TR_ROUTE" classify \
   | ( . "$TR_ROUTE"; jq -r --argjson c "$c" "$(route__jq_lib)"' .groups[] | select(.group == "acct:a") | rt_w7($c; .; rt_admit_core($c; .; null).cost)' ))
 check "관측: 판정된 그룹의 w7_bp 는 같은 문맥의 rt_w7" "$(printf '%s' "$line" | jq -r '.groups[0].w7_bp')" "$w7want"
 check "관측: 그 W7 은 0 보다 크다" "$( [ "${w7want:-0}" -gt 0 ] 2>/dev/null && printf 큼 || printf 아님)" "큼"
+rhowant=$(printf '%s' "$c" | bash "$TR_ROUTE" classify \
+  | ( . "$TR_ROUTE"; jq -r --argjson c "$c" "$(route__jq_lib)"' .groups[] | select(.group == "acct:a") | rt_rho7_bp_d($c; rt_admit_core($c; .; null).cost)' ))
+check "관측: 판정된 그룹의 rho7_bp_d 는 같은 문맥·같은 비용의 rt_rho7_bp_d" "$(printf '%s' "$line" | jq -r '.groups[0].rho7_bp_d')" "$rhowant"
+check "관측: 그 ρ7 은 0 보다 크다" "$( [ "${rhowant:-0}" -gt 0 ] 2>/dev/null && printf 큼 || printf 아님)" "큼"
+# ρ7 은 5시간 비용이 양수이고 주간 비용이 수일 때만 셈한다.
+rho_of() { ( . "$TR_ROUTE"; jq -n -r --argjson c "$c" "$(route__jq_lib)"" rt_rho7_bp_d(\$c; $1)" ); }
+check "관측: 5시간 비용 bp 가 0 이면 rho7_bp_d 는 null" "$(rho_of '{five_hour: {bp: 0}, seven_day: {bp: 800}}')" "null"
+check "관측: 주간 비용 bp 가 null 이면 rho7_bp_d 는 null" "$(rho_of '{five_hour: {bp: 3000}, seven_day: {bp: null}}')" "null"
+
+# 주간 창이 known 이 아닌 계정 b 를 둔 문맥. a 는 OBF 와 같다.
+OBU='USE([UW("a"; W(0.1; $now + 3600); W(0.1; $now + 3600)), UW("b"; W(0.1; $now + 3600); null)])'
+P="$OB/unknown7"
+rc=0; out=$(obtxn "$P" "$OBU" 2>/dev/null) || rc=$?
+check "관측: 주간 창 미상 계정을 둔 GRANT 거래는 a 를 acct:a 로 준다" "$rc/$(printf '%s' "$out" | jq -r '.verdict + " " + .account + " " + .group')" "0/GRANT a acct:a"
+line=$(cat "$P/observe/route.jsonl" 2>/dev/null)
+check "관측: 주간 창이 known 이 아닌 그룹도 rho7_bp_d 는 양의 정수" \
+  "$(printf '%s' "$line" | jq -r '.groups[] | select(.group == "acct:b") | [(.u7_bp == null), ((.rho7_bp_d | type) == "number" and .rho7_bp_d > 0 and .rho7_bp_d == (.rho7_bp_d | floor))] | map(tostring) | join(" ")')" "true true"
+# 리셋권 없이 W7 이 양수인 그룹에서 ρ7·t 는 r7 − W7 과 두 값의 반올림 오차 안에서 같다.
+check "관측: acct:a 의 r7 − W7 과 rho7_bp_d·t 가 반올림 오차 안에서 같다" \
+  "$(printf '%s' "$line" | jq -r '.at as $at | .groups[] | select(.group == "acct:a")
+     | ((.resets_at - $at) / 86400) as $d
+     | (((10000 - .u7_bp - .sigma7_bp - .w7_bp) - .rho7_bp_d * $d) | fabs) <= (0.5 * $d + 0.5)')" "true"
+check "관측: 그 교차 단언의 W7 은 0 보다 크다" "$(printf '%s' "$line" | jq -r '.groups[] | select(.group == "acct:a") | .w7_bp > 0')" "true"
 
 P="$OB/wait"
 rc=0; out=$(obtxn "$P" "$OBWAIT") || rc=$?
