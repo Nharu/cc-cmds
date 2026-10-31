@@ -51047,8 +51047,8 @@ check "83p: pair-residue 동사는 원장과 런 디렉터리를 바꾸지 않�
 # 읽는 동사 셋의 면제 — 정산과 전제 쓰기에서 pair-residue 가 plan 곁에 선다.
 check "83p: pair-residue 는 잃은 파견 정산에서 빠진다" \
   "$(grep -cF '[ "$verb" = "plan" ] || [ "$verb" = "pair-residue" ] || gate_settle_lost_dispatches' "$GATE")" "1"
-check "83p: pair-residue 는 plan·digest-path 와 같은 두 면제 갈래에 있다" \
-  "$(grep -cE '^ *plan\|digest-path\|pair-residue\)' "$GATE")" "2"
+check "83p: pair-residue 는 plan·digest-path·reconverge-spent 와 같은 두 면제 갈래에 있다" \
+  "$(grep -cE '^ *plan\|digest-path\|pair-residue\|reconverge-spent\)' "$GATE")" "2"
 [ -z "$p83_made" ] || { rm -f "$WT/scripts/publish.sh"; rmdir "$WT/scripts" 2>/dev/null || true; }
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83P"
 
@@ -51463,6 +51463,254 @@ rm -rf "$SRCDIR85/halt"
 rm -f "$SMAN85"
 ( cd "$WT" && git worktree remove --force "$WT85" && git branch -D "seg/$SRC85-SA" ) >/dev/null 2>&1
 rm -f "$LEDGER85" "$WT/$DOC85"
+
+# ---------------------------------------------------------------------------
+# 83v. 모바일 기기 도구 — 등급표, 기기 전역 칸, 기기 정리, 구현 전 결정 수거, 결함 수정 울타리, 재수렴 소진
+# --- section: 83v | group: reach | covers: grade, reach, gate_device_act_kind, gate_device_name_fits, gate_device_name_ok, gate_device_listed, gate_device_targets_listed, gate_device_pair_ordinal, gate_device_open_check, gate_device_record, gate_preauth_pair_argv, device-cleanup, gate_decision_collect, gate_decision_collect_holds, gate_decision_hold_refuse, decision-collect, gate_defect_fix, defect-fix, gate_reconverge_spent, reconverge-spent | anchors: 83v: simctl create 는 트리밖쓰기다, 83v: 시뮬레이터가 아닌 xcodebuild test 는 미상이다, 83v: 기기 정리 행이 없는 만들기는 no-cleanup 이다, 83v: 이름 접두가 맞지 않는 만들기는 device-name 이다, 83v: 이 런이 만들지 않은 기기는 목록에 없다, 83v: 정리는 이 파견의 기기만 지운다, 83v: 도구가 없으면 정리는 3 이다, 83v: 첫 수거가 닿는 세그먼트를 보류한다, 83v: 같은 다이제스트의 재수거는 아무것도 쓰지 않는다, 83v: 보류된 세그먼트의 프로세스 A 파견은 3 이다, 83v: 답을 받은 뒤 다시 보류되면 순환 상한이다, 83v: 항목이 닫힌 문서의 수거는 보류를 푼다, 83v: 셋째 시도는 열지 않는다, 83v: 선언 밖 파일은 울타리 이탈이다, 83v: 레시피가 가리키는 시험 파일은 표시된다, 83v: 구속면이 움직이면 열지 않는다, 83v: 스킬 문면의 defect-fix 호출 꼴을 파서가 받는다, 83v: 이 런의 처리 기록은 소진이다, 83v: 다른 런의 처리 기록은 소진이 아니다, 83v: 잘린 캐리어는 판독 불가다 ---
+#
+# 등급은 `gate grade` 로, 나머지는 게이트를 소싱한 셸에서 함수를 제자리에서 불러 잰다.
+# 그 셸의 런 id 는 V83, 파견 id 는 S1 이고, 세그먼트 워크트리·선언 파일·캐리어 경로를
+# 읽는 세 함수는 이 절의 픽스처를 가리키게 바꿔 둔다. 정리 스크립트는 기기 도구를
+# 흉내 내는 대역을 PATH 앞에 두고 돌리고, 대역은 부른 명령을 한 줄씩 기록한다.
+# ---------------------------------------------------------------------------
+pre_reach
+pre_ledger_series
+D83V="$WORK/s83v"; rm -rf "$D83V"; mkdir -p "$D83V"
+
+graded_as '읽기'       '83v: simctl list 는 읽기다'                    -- xcrun simctl list devices
+graded_as '트리밖쓰기' '83v: simctl create 는 트리밖쓰기다'            -- xcrun simctl create cc-a iPhone
+graded_as '등급 미상'  '83v: simctl 이 아닌 xcrun 도구는 미상이다'     -- xcrun devicectl list devices
+graded_as '읽기'       '83v: xcodebuild -list 는 읽기다'               -- xcodebuild -list
+graded_as '트리밖쓰기' '83v: 시뮬레이터 대상 xcodebuild build 는 트리밖쓰기다' -- xcodebuild build -destination 'platform=iOS Simulator,name=cc-a'
+graded_as '등급 미상'  '83v: 시뮬레이터가 아닌 xcodebuild test 는 미상이다' -- xcodebuild test -destination 'id=00008110-000A'
+graded_as '등급 미상'  '83v: xcodebuild archive 는 미상이다'           -- xcodebuild archive
+graded_as '읽기'       '83v: adb devices 는 읽기다'                    -- adb devices
+graded_as '트리밖쓰기' '83v: 에뮬레이터 시리얼의 adb install 은 트리밖쓰기다' -- adb -s emulator-5554 install a.apk
+graded_as '등급 미상'  '83v: 시리얼 없는 adb install 은 미상이다'      -- adb install a.apk
+graded_as '트리밖쓰기' '83v: emulator -avd 는 트리밖쓰기다'            -- emulator -avd cc-a -port 5560
+graded_as '트리밖쓰기' '83v: avdmanager create avd 는 트리밖쓰기다'    -- avdmanager create avd -n cc-a
+graded_as '트리밖쓰기' '83v: 기기를 지정한 maestro 는 트리밖쓰기다'    -- maestro --device emulator-5554 test flow.yaml
+graded_as '등급 미상'  '83v: 기기를 지정하지 않은 maestro 는 미상이다' -- maestro test flow.yaml
+
+# 매니페스트 — 기기 정리 짝을 단 새 형식 행 하나와 짝 없는 행 하나.
+M83V="$D83V/manifest.md"
+{
+  printf '# 픽스처 매니페스트\n\n'
+  printf -- '- `사전 인가` | 형태=xcrun simctl | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=시험\n'
+  printf -- '- `사전 인가` | 형태=emulator -avd | 표면=트리밖쓰기 | 도달=기기전역 | 사유=시험\n'
+} > "$M83V"
+mkdir -p "$D83V/run"
+printf '# 원장 픽스처\n\n## 실행 V83\n\n' > "$D83V/run/ledger.md"
+v83() {
+  # v83 <런 디렉터리> <명령…> — 게이트를 소싱한 셸에서 한 명령을 부르고 rc 를 그대로 낸다.
+  local rd="$1"; shift
+  (cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_PIPELINE_STAGE_ID='S1#1' CC_PIPELINE_RUN_ID=V83 \
+     V83_DOC="${V83_DOC:-}" V83_WT="${V83_WT:-}" V83_DECL="${V83_DECL:-}" V83_CARRIER="${V83_CARRIER:-}" \
+     V83_MANIFEST="$M83V" bash -c '
+    . "$0" >/dev/null 2>&1
+    unset CC_PIPELINE_SHIFT_ID
+    RUN_DIR="$1"; RUN_ID=V83; LEDGER="$1/ledger.md"; MANIFEST="$V83_MANIFEST"; DOC="$V83_DOC"
+    shift
+    gate_segment_worktree() { printf "%s" "$V83_WT"; }
+    gate_segment_declared_whole() { printf "%s" "$V83_DECL"; }
+    gate_reconverge_carrier_path() { printf "%s" "$V83_CARRIER"; }
+    v83_open_probe() {
+      local s="$1"; shift
+      GATE_RF_PAIRN=""
+      gate_device_open_check "$(gate_device_act_kind "$@")" "$s" "$@"
+      printf "%s/%s" "${GATE_DEVICE_PARK:-}" "${GATE_RF_PAIRN:-}"
+    }
+    "$@"' "$GATE" "$rd" "$@")
+}
+v83_rc() { local r=0; v83 "$@" >/dev/null 2>&1 || r=$?; printf '%s' "$r"; }
+
+# 기기 전역 칸 — 이름 접두, 만들기와 겨누기, 짝 정리 서수.
+check "83v: 이 파견의 접두에 이름이 맞는다" "$(v83_rc "$D83V/run" gate_device_name_fits cc-V83-S1-a)" "0"
+check "83v: 접두 뒤에 - 가 있으면 맞지 않는다" "$(v83_rc "$D83V/run" gate_device_name_fits cc-V83-S1-a-b)" "1"
+check "83v: 다른 파견의 접두는 맞지 않는다" "$(v83_rc "$D83V/run" gate_device_name_fits cc-V83-S2-a)" "1"
+check "83v: simctl create 는 만들기다" "$(v83 "$D83V/run" gate_device_act_kind xcrun simctl create cc-V83-S1-a iPhone)" "create"
+check "83v: adb -s 쓰기는 겨누기다" "$(v83 "$D83V/run" gate_device_act_kind adb -s emulator-5554 install a.apk)" "target"
+check "83v: UDID 로 부르는 boot 는 이름 검사를 통과하지 못한다" \
+  "$(v83_rc "$D83V/run" gate_device_name_ok xcrun simctl boot 6F9619FF-8B86-D011-B42D-00C04FC964FF)" "1"
+check "83v: -port 없는 emulator -avd 는 이름 검사를 통과하지 못한다" \
+  "$(v83_rc "$D83V/run" gate_device_name_ok emulator -avd cc-V83-S1-a)" "1"
+check "83v: -port 와 접두 이름의 emulator -avd 는 통과한다" \
+  "$(v83_rc "$D83V/run" gate_device_name_ok emulator -avd cc-V83-S1-a -port 5560)" "0"
+check "83v: 기기 정리 짝의 서수는 형태가 같은 첫 새 형식 행이다" "$(v83 "$D83V/run" gate_device_pair_ordinal 'xcrun simctl')" "1"
+v83_open() { v83 "$D83V/run" v83_open_probe "$@"; }  # v83_open <형태> <argv…> — 「park 사유/짝 서수」
+check "83v: 형태 없이 열린 만들기는 judge-failed 다" "$(v83_open '' xcrun simctl create cc-V83-S1-a iPhone)" "judge-failed/"
+check "83v: 기기 정리 행이 없는 만들기는 no-cleanup 이다" "$(v83_open 'emulator -avd' emulator -avd cc-V83-S1-a -port 5560)" "no-cleanup/"
+check "83v: 이름 접두가 맞지 않는 만들기는 device-name 이다" "$(v83_open 'xcrun simctl' xcrun simctl create other iPhone)" "device-name/"
+check "83v: 맞는 만들기는 짝 서수를 싣고 열린다" "$(v83_open 'xcrun simctl' xcrun simctl create cc-V83-S1-a iPhone)" "/1"
+check "83v: 기기 정리 값은 런 사본의 정리 스크립트로 펴진다" \
+  "$(v83 "$D83V/run" gate_preauth_pair_argv 1 V83 S1)" "$CC_ORCH/device-cleanup.sh V83 S1"
+printf '6F9619FF-8B86-D011-B42D-00C04FC964FF\n' > "$D83V/simctl.out"
+v83 "$D83V/run" gate_device_record "$D83V/simctl.out" xcrun simctl create cc-V83-S1-a iPhone >/dev/null 2>&1 || true
+check "83v: 만든 기기는 런의 목록에 파견·UDID·이름으로 남는다" \
+  "$(tr '\t' '/' < "$D83V/run/devices/created.tsv" 2>/dev/null)" "S1/6F9619FF-8B86-D011-B42D-00C04FC964FF/cc-V83-S1-a"
+check "83v: 이 런이 만든 기기는 UDID 로 목록에 있다" \
+  "$(v83_rc "$D83V/run" gate_device_targets_listed xcrun simctl delete 6F9619FF-8B86-D011-B42D-00C04FC964FF)" "0"
+check "83v: 이 런이 만들지 않은 기기는 목록에 없다" \
+  "$(v83_rc "$D83V/run" gate_device_targets_listed xcrun simctl delete 11111111-2222-3333-4444-555555555555)" "1"
+check "83v: booted 는 어느 기기도 가리키지 않는다" "$(v83_rc "$D83V/run" gate_device_listed booted)" "1"
+
+# 기기 정리 스크립트 — 대역 도구로 돌린다. 기본 PATH 는 스크립트가 쓰는 도구만 링크한
+# 디렉터리라, 대역을 빼면 그 도구는 없다.
+V83B="$D83V/base"; V83S="$D83V/stub"; mkdir -p "$V83B" "$V83S"
+for v83_t in awk sed tr jq cat; do
+  v83_p=$(command -v "$v83_t" 2>/dev/null) && ln -sf "$v83_p" "$V83B/$v83_t"
+done
+V83L="$D83V/stub.log"
+cat > "$V83S/xcrun" <<V83EOF
+#!/bin/sh
+printf 'xcrun %s\n' "\$*" >> "$V83L"
+case "\$2" in
+  list) printf '{"devices":{"r":[{"udid":"U1","name":"cc-V83-S1-a"},{"udid":"U2","name":"cc-V83-S1-x-y"},{"udid":"U3","name":"other"}]}}\n' ;;
+esac
+exit 0
+V83EOF
+cat > "$V83S/adb" <<V83EOF
+#!/bin/sh
+printf 'adb %s\n' "\$*" >> "$V83L"
+case "\$*" in
+  devices) printf 'List of devices attached\nemulator-5554\tdevice\nemulator-5556\tdevice\n' ;;
+  '-s emulator-5554 emu avd name') printf 'cc-V83-S1-p\nOK\n' ;;
+  '-s emulator-5556 emu avd name') printf 'foreign\nOK\n' ;;
+esac
+exit 0
+V83EOF
+cat > "$V83S/emulator" <<V83EOF
+#!/bin/sh
+printf 'cc-V83-S1-p\nforeign-avd\n'
+V83EOF
+cat > "$V83S/avdmanager" <<V83EOF
+#!/bin/sh
+printf 'avdmanager %s\n' "\$*" >> "$V83L"
+[ -z "\${V83_FAIL:-}" ]
+V83EOF
+chmod +x "$V83S"/*
+v83_clean() {  # v83_clean <PATH> <파견> — 정리 스크립트의 rc
+  local r=0
+  : > "$V83L"
+  PATH="$1" "$BASH" "$CC_ORCH/device-cleanup.sh" V83 "$2" > "$D83V/clean.out" 2>/dev/null || r=$?
+  printf '%s' "$r"
+}
+check "83v: 정리는 이 파견의 기기만 지운다" \
+  "$(v83_clean "$V83S:$V83B" S1)|$(grep -c -e 'delete U1' -e 'emulator-5554 emu kill' -e 'delete avd -n cc-V83-S1-p' "$V83L")|$(grep -c -e 'U2' -e 'U3' -e 'emulator-5556 emu kill' -e 'foreign-avd' "$V83L")" \
+  "0|3|0"
+check "83v: 런 끝 쓸기는 접두 뒤 - 가 있는 이름도 지운다" \
+  "$(v83_clean "$V83S:$V83B" -)|$(grep -c 'delete U2' "$V83L")|$(grep -c 'delete U3' "$V83L")" "0|1|0"
+check "83v: 지우지 못한 기기가 있으면 정리는 1 이다" "$(V83_FAIL=1 v83_clean "$V83S:$V83B" S1)" "1"
+check "83v: 도구가 없으면 정리는 3 이다" \
+  "$(v83_clean "$V83B" S1)|$(grep -c '^도구없음' "$D83V/clean.out")" "3|4"
+
+# 구현 전 결정 수거 — 슬라이스 둘의 문서에 A 에만 닿는 항목 하나.
+v83_doc() {  # v83_doc <파일> <항목 상태> <추천 근거> — 픽스처 설계 문서
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n'
+    printf '### 슬라이스 A — 첫째\n\n**선언 파일**: a.sh\n\n### 슬라이스 B — 둘째\n\n**선언 파일**: b.sh\n\n'
+    printf '## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 값\n\n**상태**: %s\n**구현 처분**: 구현 전 결정\n' "$2"
+    printf '**닿는 슬라이스**: A\n**추천 답**: 기본값 3\n**추천 근거**: %s\n\n' "$3"
+    printf '## 구현 시 검증 항목\n\n### R1. 첫 항목\n\n**검증 레시피**: `bash scripts/t.sh`\n**검증 등급**: 구현 시 검증\n\n'
+    printf '### R2. 둘째 항목\n\n**검증 레시피**: `true`\n**검증 등급**: 구현 시 검증\n\n'
+    printf '### R3. 셋째 항목\n\n**검증 레시피**: `true`\n**검증 등급**: 검증됨(통과)\n'
+  } > "$1"
+}
+V83_DOC="$D83V/design.md"
+v83_doc "$V83_DOC" 보류 '기존 상한과 같다'
+v83_dc() { v83 "$D83V/run" gate_decision_collect_holds "$V83_DOC" 2>/dev/null; }
+v83_dcrows() { { grep -c '^- `결정 수거`' "$D83V/run/ledger.md" || true; }; }
+v83_first=$(v83_dc)
+v83_rec=$(printf '%s' "$v83_first" | cut -f3)
+check "83v: 첫 수거가 닿는 세그먼트를 보류한다" "$(printf '%s' "$v83_first" | cut -f1,2,4 | tr '\t' '/')|$(v83_dcrows)" "0/A/-|1"
+case "$v83_rec" in
+  "$D83V/run/halt/decision-collect-"*.md) ok "83v: 수거 기록은 런의 halt 아래 다이제스트 이름이다" ;;
+  *) bad "83v: 수거 기록은 런의 halt 아래 다이제스트 이름이다" "$v83_rec" ;;
+esac
+check "83v: 수거 기록은 스텝·추천 답·두 선택지를 싣는다" \
+  "$(grep -c -e '^\*\*스텝\*\*: 결정 수거 — 구현 전 결정$' -e '추천 답: 기본값 3' -e '^- `추천대로 확정`' -e '^- `항목별로 답함`' "$v83_rec" 2>/dev/null)" "4"
+check "83v: 같은 다이제스트의 재수거는 아무것도 쓰지 않는다" "$(v83_dc)|$(v83_dcrows)" "$v83_first|1"
+check "83v: 보류된 세그먼트의 프로세스 A 파견은 3 이다" "$(v83_rc "$D83V/run" gate_decision_hold_refuse A)" "3"
+check "83v: 보류되지 않은 세그먼트는 지나간다" "$(v83_rc "$D83V/run" gate_decision_hold_refuse B)" "0"
+# 답을 받은 기록 — 재수렴이 항목을 닫지 않고 구속면만 바꾼 뒤 같은 세그먼트가 다시 잡히면
+# 순환 상한이다.
+printf -- '- `중단 답` | 교대=1 | 세그먼트=- | 중단 기록=%s | 선택지=추천대로 확정 | prev=x\n' "$v83_rec" >> "$D83V/run/ledger.md"
+v83_doc "$V83_DOC" 보류 '상한을 다시 쟀다'
+check "83v: 답을 받은 뒤 다시 보류되면 순환 상한이다" "$(v83_dc | cut -f1,2,4 | tr '\t' '/')|$(v83_dcrows)" "0/A/A|2"
+check "83v: 순환 상한의 파견도 3 이다" "$(v83_rc "$D83V/run" gate_decision_hold_refuse A)" "3"
+v83_doc "$V83_DOC" 해결 '상한을 다시 쟀다'
+check "83v: 항목이 닫힌 문서의 수거는 보류를 푼다" \
+  "$(v83_dc | cut -f1,2,3 | tr '\t' '/')|$(v83_rc "$D83V/run" gate_decision_hold_refuse A)" "0/없음/없음|0"
+
+# 결함 수정 울타리 — 세그먼트 워크트리 하나, 선언 파일 셋.
+V83_WT="$D83V/wt"; mkdir -p "$V83_WT/lib" "$V83_WT/scripts"
+( cd "$V83_WT" && git init -q && printf 'a\n' > a.sh && printf 't\n' > scripts/t.sh \
+  && git add a.sh scripts/t.sh && git -c user.name=t -c user.email=t@t commit -q -m init ) >/dev/null 2>&1
+V83_DECL='a.sh,lib/,scripts/t.sh'
+v83_df() {  # v83_df <항목> <open|close> [<결과>] — rc
+  if [ "$2" = open ]; then v83_rc "$D83V/run" gate_defect_fix S1 open "$1" '원인' '근거' ''
+  else v83_rc "$D83V/run" gate_defect_fix S1 close "$1" '' '' "$3"; fi
+}
+v83_dflast() { lsr_last_fields "$D83V/run/ledger.md" '결함 수정' "$@"; }
+check "83v: 첫 시도가 열린다" "$(v83_df R1 open)|$(v83_dflast 항목 단계 시도)" "0|R1|열기|1"
+check "83v: 닫히지 않은 시도 위로는 열지 않는다" "$(v83_df R1 open)" "3"
+printf 'b\n' >> "$V83_WT/a.sh"; printf 'x\n' > "$V83_WT/lib/x.sh"
+check "83v: 닫기는 커밋되지 않은 변경과 새 파일을 센다" \
+  "$(v83_df R1 close 통과)|$(v83_dflast 단계 결과 '바뀐 파일' '시험 파일 변경')" "0|닫기|통과|2|0"
+check "83v: 둘째 시도가 열린다" "$(v83_df R1 open)|$(v83_dflast 시도)" "0|2"
+printf 'u\n' >> "$V83_WT/scripts/t.sh"
+check "83v: 레시피가 가리키는 시험 파일은 표시된다" \
+  "$(v83_df R1 close 실패)|$(v83_dflast 결과 '시험 파일 변경')|$(grep -c 'scripts/t.sh — 시험 파일 변경' "$D83V/run/defect-triage/S1.md")" "0|실패|1|1"
+check "83v: 셋째 시도는 열지 않는다" "$(v83_df R1 open)|$(grep -c '| 단계=열기 ' "$D83V/run/ledger.md")" "3|2"
+check "83v: 종단 등급의 항목은 열지 않는다" "$(v83_df R3 open)" "3"
+check "83v: R2 의 첫 시도가 열린다" "$(v83_df R2 open)" "0"
+printf 'o\n' > "$V83_WT/out.txt"
+check "83v: 선언 밖 파일은 울타리 이탈이다" \
+  "$(v83_df R2 close 통과)|$(v83_dflast 항목 결과)|$(grep -c '선언 밖: out.txt' "$D83V/run/defect-triage/S1.md")" "3|R2|울타리 이탈|1"
+rm -f "$V83_WT/out.txt"
+v83_doc "$V83_DOC" 해결 '구속면이 또 바뀌었다'
+check "83v: 구속면이 움직이면 열지 않는다" "$(v83_df R2 open)" "3"
+# 스킬 문면이 적는 호출 꼴 그대로 — 파서가 받고(2 가 아니다), 꼴이 문면에 축자로 있다.
+gate defect-fix --manifest "$FX_MANIFEST" --segment S1 --item R1 --open --cause '원인' --evidence '근거'
+case "$rc" in 2) bad "83v: 스킬 문면의 defect-fix 호출 꼴을 파서가 받는다" "rc=2: $msg" ;; *) ok "83v: 스킬 문면의 defect-fix 호출 꼴을 파서가 받는다" ;; esac
+gate defect-fix --manifest "$FX_MANIFEST" --segment S1 --item R1 --open --close --result 통과
+check "83v: --open 과 --close 를 함께 주면 2 다" "$rc" "2"
+gate snapshot --manifest "$FX_MANIFEST" --cause x
+check "83v: defect-fix 밖의 --cause 는 여전히 2 다" "$rc" "2"
+if grep -qF 'defect-fix --manifest "$CC_PIPELINE_MANIFEST" --segment <seg> --item R<n> --open --cause' "$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md" \
+   && grep -qF 'defect-fix --manifest "$CC_PIPELINE_MANIFEST" --segment <seg> --item R<n> --close --result 통과' "$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md"; then
+  ok "83v: 스킬 문면이 열기와 닫기를 이 절과 같은 꼴로 적는다"
+else bad "83v: 스킬 문면이 열기와 닫기를 이 절과 같은 꼴로 적는다" "호출 꼴이 없다"; fi
+
+# 재수렴 소진 — 이 런의 처리 기록만 센다.
+V83_CARRIER="$D83V/carrier.md"
+v83_car() {  # v83_car <R1 블록 상태> <R1 처리 기록> [<꼬리>]
+  {
+    printf '# 재수렴 캐리어\n<!-- cc-design-reconverge v1; owner-doc=design.md; -->\n\n'
+    printf '## 회차 1\n\n**상태**: %s\n**대상 항목**: R1\n**처리 기록**: %s\n\n' "$1" "$2"
+    printf '## 회차 2\n\n**상태**: 처리됨\n**대상 항목**: R10\n**처리 기록**: 재수렴 sha256: bb · 판정: 불필요 · 런: V83 · 사유\n\n'
+    printf '<!-- cc-design-reconverge: end -->\n'
+    [ -z "${3:-}" ] || printf '%s\n' "$3"
+  } > "$V83_CARRIER"
+}
+v83_rs() { v83 "$D83V/run" gate_reconverge_spent "$1" 2>/dev/null; }
+v83_car 처리됨 '재수렴 sha256: aa · 판정: 불필요 · 런: V83 · 사유'
+check "83v: 이 런의 처리 기록은 소진이다" "$(v83_rs R1)" "소진"
+v83_car 처리됨 '재수렴 sha256: aa · 판정: 불필요 · 런: OTHER · 사유'
+check "83v: 다른 런의 처리 기록은 소진이 아니다" "$(v83_rs R1)" "아님"
+v83_car 처리됨 '재수렴 sha256: aa · 판정: 불필요 · 사유'
+check "83v: 런 칸이 없는 옛 처리 기록은 소진이 아니다" "$(v83_rs R1)" "아님"
+v83_car 대기 '(없음)'
+check "83v: 대기 블록은 소진이 아니고 R10 의 처리 기록도 R1 을 소진시키지 않는다" "$(v83_rs R1)" "아님"
+v83_car 처리됨 '재수렴 sha256: aa · 판정: 불필요 · 런: V83 · 사유' '## 회차 3'
+check "83v: 잘린 캐리어는 판독 불가다" "$(v83_rs R1)" "판독 불가 — 캐리어 잘림"
+check "83v: R<n> 꼴이 아닌 항목은 판독 불가다" "$(v83_rs X1)" "판독 불가 — 항목이 R<n> 꼴이 아니다"
+rm -f "$V83_CARRIER"
+check "83v: 캐리어가 없으면 소진이 아니다" "$(v83_rs R1)" "아님"
+gate reconverge-spent --manifest "$FX_MANIFEST" --item R1
+check "83v: reconverge-spent 동사는 늘 0 이다" "$rc" "0"
+unset V83_DOC V83_WT V83_DECL V83_CARRIER
+rm -rf "$D83V"
 
 # ---------------------------------------------------------------------------
 # 95d. 런을 넘는 이월 — 입양과 재킥오프 연쇄가 앞선 런의 이월된 중단 답을 들이고, 운반 act 만 그 답을 낸다

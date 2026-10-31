@@ -3517,7 +3517,7 @@ gate_device_name_ok() {
           gate_device_uuid "$nm" && return 1 ;;
         *) return 1 ;;
       esac
-      gate_device_name_fits "$nm" ;;
+      gate_device_name_fits "$nm"; return ;;
     avdmanager)
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -3526,7 +3526,7 @@ gate_device_name_ok() {
         esac
         [ "$#" -gt 0 ] && shift
       done
-      gate_device_name_fits "$nm" ;;
+      gate_device_name_fits "$nm"; return ;;
     emulator)
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -3536,7 +3536,7 @@ gate_device_name_ok() {
         [ "$#" -gt 0 ] && shift
       done
       case "$port" in ''|*[!0-9]*) return 1 ;; esac
-      gate_device_name_fits "$nm" ;;
+      gate_device_name_fits "$nm"; return ;;
     xcodebuild)
       gate_xcodebuild_read "$@" || return 1
       while IFS= read -r d; do
@@ -12588,9 +12588,9 @@ gate_reconverge_spent() {
       if (inb && st == "처리됨" && hit && index(rec, run) > 0) spent = 1
       inb = 0; st = ""; hit = 0; rec = ""
     }
+    NF { lastmark = NR }
     /^## 회차 / { close_block(); inb = 1; next }
     /^<!-- cc-design-reconverge: end -->/ { close_block(); lastend = NR; next }
-    NF { lastmark = NR }
     inb && /^\*\*상태\*\*: / { st = $0; sub(/^\*\*상태\*\*: */, "", st); sub(/[ \t\r]+$/, "", st) }
     inb && /^\*\*대상 항목\*\*: / {
       v = $0; sub(/^\*\*대상 항목\*\*: */, "", v)
@@ -42743,9 +42743,11 @@ gate_verb_act() {
   # THE DECISIONS ARE COLLECTED BEFORE A PROCESS A PLANS. The collection of the
   # document's current digest is made here if it is not made yet, and a segment
   # it holds is not dispatched (`gate_decision_hold_refuse`). A process B
-  # dispatch has an admitted plan already and is not asked.
+  # dispatch has an admitted plan already and is not asked, and neither is an
+  # act that carries a halt answer back to a stopped stage: it plans nothing.
   if [ "$verb" = "act" ] && [ "$kind" = "skill" ] && [ "${1:-}" = "implement" ] \
-     && [ "$segment" != "-" ] && ! gate_plan_rows_of "$segment" | implement_process_b; then
+     && [ "$segment" != "-" ] && [ -z "${GATE_CARRY_ANSWER:-}" ] \
+     && ! gate_plan_rows_of "$segment" | implement_process_b; then
     gate_decision_hold_refuse "$segment"
   fi
 

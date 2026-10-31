@@ -470,6 +470,11 @@ check "cone_blocks 와 replan_due 가 blocked 바로 뒤에 그 순서로 온다
   "$(jq -r 'keys_unsorted | "\(index("cone_blocks") - index("blocked")),\(index("replan_due") - index("blocked"))"' "$WORK/s1.json")" "1,2"
 check "막힘·재계획이 없으면 둘 다 빈 배열이다" \
   "$(jq -c '[.cone_blocks, .replan_due]' "$WORK/s1.json")" "[[],[]]"
+# The decision holds come right after them, under the same rule: always an
+# array, empty when no collection holds a segment.
+check "decision_holds 는 replan_due 바로 뒤에 온다" \
+  "$(jq -r 'keys_unsorted | "\(index("decision_holds") - index("replan_due"))"' "$WORK/s1.json")" "1"
+check "결정 수거가 없으면 decision_holds 는 빈 배열이다" "$(jq -c .decision_holds "$WORK/s1.json")" "[]"
 check "--fields H 는 스냅숏의 H 를 날값 한 줄로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null)" \
   "$(jq -r .H "$WORK/s1.json")"
