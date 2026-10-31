@@ -424,6 +424,18 @@ rk_copy() {
   printf '%s' "$dst"
 }
 
+# rk_doc_file <key> — the design document a manifest's `설계 문서` key names.
+# The key is repo-relative when the document's repository contains it, and
+# otherwise the absolute path with the leading separator removed; the driver
+# tells the two apart by existence, repo-relative first, and so does this. A
+# key that resolves nowhere keeps the repo-relative form.
+rk_doc_file() {
+  if [ -f "$RK_BASE/$1" ]; then printf '%s' "$RK_BASE/$1"
+  elif [ -f "/$1" ]; then printf '%s' "/$1"
+  else printf '%s' "$RK_BASE/$1"
+  fi
+}
+
 # rk_wide_instant <value> — epoch seconds, or nothing. A trailing `Z` and a
 # trailing `±HHMM` are rewritten to `±HH:MM` first, and the driver's own reader
 # decides the rest: it renders the value back to itself and refuses an offset
@@ -844,7 +856,7 @@ rk_adopt_candidates() {
   local pdoc pim pip pic pibr cim
   keys=$( { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | while IFS= read -r row; do manifest_row_fields "$row" 'id' | head -n 1; printf '\n'; done | awk 'NF && !seen[$0]++')
   err="$RK_TMP/adopt.err"
-  pdoc=$(rk_copy "$RK_BASE/$(manifest_field '요소' '설계 문서')" adopt-prdoc.md) || pdoc=''
+  pdoc=$(rk_copy "$(rk_doc_file "$(manifest_field '요소' '설계 문서')")" adopt-prdoc.md) || pdoc=''
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     [ "$(rk_gate landed "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$key")" = "미착지" ] || continue
@@ -886,7 +898,7 @@ EOF
     if [ -z "$tok" ] && [ "$layer" = "full" ]; then
       if [ "$G_DESIGN_OUT" != "1" ]; then tok='설계재실행'
       else
-        doc=$(manifest_field '요소' '설계 문서'); docf="$RK_BASE/$doc"
+        doc=$(manifest_field '요소' '설계 문서'); docf=$(rk_doc_file "$doc")
         dcopy=$(rk_copy "$docf" adopt-doc.md) || dcopy=''
         if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_SHA" ]; then tok='설계재실행'
         elif grep -qxF '## 구현 슬라이싱' "$dcopy"; then
@@ -1897,7 +1909,7 @@ rk_graph_compute() {
   G_REMOVED=""; G_SKIPS=""; G_DESIGN_OUT=0; G_DOC_SHA="-"
   G_DESIGN_NOTE="없음${TAB}계획에 설계 단계가 없습니다"; G_AUDIT_NOTE="없음${TAB}계획에 감사 단계가 없습니다"
   doc=$(manifest_field '요소' '설계 문서')
-  case "$doc" in ''|'(없음)') docf="" ;; *) docf="$RK_BASE/$doc" ;; esac
+  case "$doc" in ''|'(없음)') docf="" ;; *) docf=$(rk_doc_file "$doc") ;; esac
   docsha=""; [ -n "$docf" ] && docsha=$(rk_sha "$docf")
   did=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)
   aid=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)

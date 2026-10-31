@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.3] - 2026-10-31
+
+좌석 재킥오프가 레포 밖에 있는 설계 문서를 읽는다. 매니페스트의 `설계 문서` 키는 레포 안 문서면 레포 상대 경로, 레포 밖 문서면 앞의 `/` 를 뗀 절대 경로인데, `rekick.sh` 는 지금까지 언제나 `<base>/<키>` 로만 읽어 레포 밖 문서를 찾지 못했다(#1538).
+
+### Fixed
+
+- **설계 문서 키 해소** — 새 `rk_doc_file` 이 드라이버와 같은 순서로 키를 푼다. 레포 상대 경로에 파일이 있으면 그것을, 없고 절대 경로에 있으면 그것을 쓰고, 둘 다 없으면 레포 상대 꼴로 둔다. 단계 그래프 계산(`graph`), 입양 후보 산출(`adopt`), 초안 렌더링의 설계 문서 판독이 모두 이 함수를 거친다.
+
+### Why
+
+키를 잘못 풀면 동결된 문서를 동결되지 않은 것으로 읽는다. 그러면 설계 단계가 남은 단계로 다시 들어가 새 런이 이미 있는 문서 앞에서 멈추고(`document-present`), 감사의 재수렴 요청은 이어지지 않으며, 그래프와 초안이 결속하는 문서 해시도 레포 밖 문서의 것이 아니게 된다. 마감으로 끊긴 런을 좌석이 사람 없이 이어 가는 경로가 그 자리에서 막혔다.
+
 ## [3.13.2] - 2026-10-31
 
 라우터 관측 로그(`cc-cmds-route-observe v1`)의 그룹 항목 끝에 `rho7_bp_d` 를 싣는다. 그 줄의 W7 을 셈한 것과 같은 비용으로 셈한 주간 소진 속도 ρ7 이고, 하루당 bp 정수이며 셈할 수 없으면 null 이다. 스키마 이름·W7 산출식·배정 경로는 바꾸지 않는다.
