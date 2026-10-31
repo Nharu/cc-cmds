@@ -6702,10 +6702,12 @@ stage_kind_of() {
 # functions; a copy in the gate would let one kind run at two efforts depending
 # on who launched it. Design, reconverge and audit get `high`; every other kind,
 # the three judgment calls among them, gets `medium`. The model is `opus` for
-# every kind but the shift — the family alias, so the harness resolves it to the
-# current Opus. The shift gets `sonnet` unless `CC_ORCH_SHIFT_MODEL` names
-# `sonnet` or `opus`; any other value of that switch is ignored, and no other
-# kind reads it.
+# every kind but the shift and the run-end attention seat — the family alias,
+# so the harness resolves it to the current Opus. The shift gets `sonnet` unless
+# `CC_ORCH_SHIFT_MODEL` names `sonnet` or `opus`; any other value of that switch
+# is ignored, and no other kind reads it. The attention seat
+# (`attention-review`) always gets `sonnet`: it re-reads what the `opus` stages
+# decided, so it is a different model from the one whose work it reads.
 #
 # Two switches, each dropping only its own half. `CC_ORCH_STAGE_EFFORT=off`
 # drops `--effort`; `CC_ORCH_STAGE_EFFORT=<kind>:<level>[,…]` overrides the
@@ -6739,9 +6741,14 @@ stage_effort_of() {
 }
 
 stage_model_of() {
-  # stage_model_of <kind> — `sonnet` or `opus` for the shift, `opus` for every
-  # other kind, or nothing when the switch is off.
+  # stage_model_of <kind> — `sonnet` or `opus` for the shift, `sonnet` for the
+  # attention seat, `opus` for every other kind, or nothing when the switch is
+  # off.
   if [ "${CC_ORCH_STAGE_MODEL:-}" = "off" ]; then
+    return 0
+  fi
+  if [ "${1:-}" = "attention-review" ]; then
+    printf 'sonnet'
     return 0
   fi
   if [ "${1:-}" = "shift" ]; then
@@ -9914,11 +9921,11 @@ APPLY_PARKED_RADIUS=""
 # ---------------------------------------------------------------------------
 PROMPT_DIR="$ORCH_DIR/prompts"
 
-readonly JUDGMENTS="segment-plan triage redesign-impact preauth-judge rekick-branch"
+readonly JUDGMENTS="segment-plan triage redesign-impact preauth-judge rekick-branch attention-review"
 
 # THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY JUDGMENT CALL. A judgment call
 # runs with no `--settings`, so the stage settings' deny list does not reach it;
-# the names go on the call line itself, for all five names alike.
+# the names go on the call line itself, for all six names alike.
 readonly CLAUDE_DESIGN_TOOLS="DesignSync Artifact ArtifactComments ArtifactData"
 
 judgment_call() {
@@ -9942,9 +9949,14 @@ judgment_call() {
   # that argv could steer; every other judgment keeps the flags it always had.
   # The rekick branch judgment is the same case: its input carries review report
   # text no ledger row pins, verbatim.
+  #
+  # The run-end attention seat reads stage prose and transcript text verbatim,
+  # so it gets the same two flags and a spending cap besides: it runs after the
+  # run ended, outside every cost boundary the run had.
   local extra=()
   case "$name" in
     preauth-judge|rekick-branch) extra=(--tools "" --no-session-persistence) ;;
+    attention-review) extra=(--tools "" --no-session-persistence --max-budget-usd 2) ;;
   esac
 
   [ -f "$prompt" ] || { warn "판단 호출 프롬프트 부재: $prompt"; return 1; }

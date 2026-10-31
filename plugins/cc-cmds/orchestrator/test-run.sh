@@ -55,6 +55,10 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 # starts one, and nothing in this suite stops it.
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
+# The run-end attention seat is off for the same reason: an ending would start a
+# detached round that calls the CLI and writes into a fixture ledger.
+CC_CMDS_ATTENTION=off
+export CC_CMDS_ATTENTION
 
 # Which part of the suite this process runs: 0 is the whole suite.
 case "$#:${1:-}:${2:-}" in
@@ -11797,8 +11801,8 @@ check "사전 인가 판단 호출은 준 출력 파일에 쓰고 그 경로를 
   "$(cat "$JCD/pj-stdout.txt" 2>/dev/null)|$([ -s "$JCD/run/log/judge-preauth-judge.json" ] && echo 기본에도씀 || echo 기본없음)" \
   "$JCD/pj-out.json|기본없음"
 
-# 다섯 판단 이름 모두의 실제 argv 에 Claude Design 네 도구의 거부가 실린다 — `--tools ""`
-# 를 받는 두 이름에서도 함께다. 판단 호출은 `--settings` 없이 뜨므로 스테이지 설정의
+# 여섯 판단 이름 모두의 실제 argv 에 Claude Design 네 도구의 거부가 실린다 — `--tools ""`
+# 를 받는 세 이름에서도 함께다. 판단 호출은 `--settings` 없이 뜨므로 스테이지 설정의
 # 거부 목록이 닿지 않는다.
 for jc_name in $JUDGMENTS; do
   rm -f "$JCD/argv-$jc_name.txt"
@@ -11811,6 +11815,19 @@ for jc_name in $JUDGMENTS; do
     "$(awk 'p && n < 4 { printf "%s ", $0; n++ } $0 == "--disallowedTools" { p = 1 }' "$JCD/argv-$jc_name.txt" 2>/dev/null)" \
     "DesignSync Artifact ArtifactComments ArtifactData "
 done
+# 런 종료 주의 좌석은 스테이지 산문과 트랜스크립트를 그대로 읽으므로 도구도 세션도 없이
+# 뜨고, 런의 비용 경계 밖에서 돌므로 지출 상한을 함께 싣는다.
+check "판단 호출 attention-review 의 argv 가 도구 없음·세션 없음·지출 상한 2 를 싣는다" \
+  "$(grep -c -x -e '--no-session-persistence' "$JCD/argv-attention-review.txt" 2>/dev/null || true)/$(awk 'p { print; exit } $0 == "--max-budget-usd" { p = 1 }' "$JCD/argv-attention-review.txt" 2>/dev/null)" \
+  "1/2"
+check "주의 좌석의 판단 이름은 JUDGMENTS 어휘 안에 있다" \
+  "$(case " $JUDGMENTS " in *" attention-review "*) echo 있음 ;; *) echo 없음 ;; esac)" "있음"
+check "주의 좌석은 기본으로 sonnet 에서 돈다" \
+  "$(env -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL bash -c 'ar_drv="$1"; set --; . "$ar_drv" >/dev/null 2>&1; set +e; stage_model_of attention-review' _ "$DRIVER" 2>/dev/null)" "sonnet"
+ar_pb=$(wc -c < "$(dirname "$DRIVER")/prompts/attention-review.md" | tr -d ' ')
+ar_max=$(sed -n "s/^attention_input_max() { printf '%s' \([0-9]*\); }\$/\1/p" "$(dirname "$DRIVER")/attention-round.sh")
+check "주의 좌석의 프롬프트 + 입력 상한 + 구분 줄이 한 인자 상한 131072 바이트 아래다" \
+  "$([ -n "$ar_max" ] && [ $((ar_pb + ar_max + 64)) -lt 131072 ] && echo 아래 || echo "넘음 ($ar_pb + ${ar_max:-?})")" "아래"
 
 # 드라이버 stage-result 호출부 — S9 적용 행을 뺀 아홉(계속 시도 행, 베이스 분할 행,
 # 시각 단계 행과 리드 수정 행 포함)이 effort 와 서빙 모델을 싣는다.
