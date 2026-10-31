@@ -52310,8 +52310,9 @@ gate_implement_next_of() {
   # gate_implement_next_of <segment> — the `implement_next[]` element of one
   # segment, or nothing when `gate_implement_next_raw` has none. `선머지`
   # carries the CI layer (`gate_merge_first_next`), and a CI value the layer
-  # puts in its place carries the keys `gate_snapshot_ci_keys_json` names, as
-  # it does in `review_next[]`.
+  # puts in its place — a `CI …` value or one of the base branch's `master …`
+  # values — carries the keys `gate_snapshot_ci_keys_json` names, as it does in
+  # `review_next[]`.
   local seg=$1 raw st ahead cnt dg nx
   raw=$(gate_implement_next_raw "$seg") || return 0
   read -r st ahead cnt dg nx <<<"$raw"
@@ -52321,7 +52322,7 @@ gate_implement_next_of() {
   printf '    {"세그먼트": "%s", "다음": "%s", "단계": "%s", "plan_sha256": "%s", "앞선 커밋": %s, "무커밋 구현": %s' \
     "$(gate_json_escape "$seg")" "$(gate_json_escape "$nx")" "$st" "$(gate_json_escape "$dg")" "$ahead" "$cnt"
   case "$nx" in
-    'CI '*) gate_snapshot_ci_keys_json "$seg" "$nx" ;;
+    'CI '*|'master '*) gate_snapshot_ci_keys_json "$seg" "$nx" ;;
   esac
   printf '},\n'
 }

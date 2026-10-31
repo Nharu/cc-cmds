@@ -54773,8 +54773,14 @@ mjh_rc=$rc
 unset -f gh
 if [ -n "$MJ_PREV_RO" ]; then CC_GATE_TOKEN_RO="$MJ_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
 mjh_row=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -1)
+mjh_el() {  # mjh_el <키…> — 스냅숏의 H 원소: review_next 원소 수, 그리고 implement_next 원소의 그 키 값들
+  mf_snap | jq -r --args '([.review_next[] | select(.["세그먼트"] == "H")] | length | tostring) as $r
+    | [.implement_next[] | select(.["세그먼트"] == "H")][0] as $e
+    | ([$r] + [$ARGS.positional[] | ($e[.] // "없음")]) | join("|")' "$@"
+}
 check "88h: 머지 전 선머지 세그먼트의 대조 행위는 implement_next 의 CI 대조 로 받아지고 다음은 master 대기 다" \
-  "$mjh_n0|$mjh_rc|$(sa_field "$mjh_row" 결과)|$(mf_inext)" "CI 대조|0|부분집합|master 대기"
+  "$mjh_n0|$mjh_rc|$(sa_field "$mjh_row" 결과)|$(mjh_el 다음 'head sha' 'master 상태')" \
+  "CI 대조|0|부분집합|0|master 대기|$MF_TIP|빨강"
 
 MJ_X=$( ( cd "$SA_REPO" && git checkout -q main && printf 'fix\n' > fix.txt && git add -A && git commit -qm fix \
           && git push -q origin main && git rev-parse HEAD ) 2>/dev/null)
@@ -54783,11 +54789,12 @@ sag act --manifest "$SA_MANIFEST" --kind x --target main --segment H --cutpoint 
     --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 판독 전사" -- true
 mjh_n1=$(mf_inext)
 mf_base_check; mjh_bc=$rc
+mjh_n1="$mjh_n1|$(mjh_el 다음 베이스)"
 sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment H --cutpoint 커밋 \
     --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
     -- implement -p "/cc-cmds:implement-unattended \"세그먼트 H · 베이스 해소: $MJ_X · 부류=master 재합류\""
 check "88h: 머지 전 선머지 세그먼트의 재합류 파견은 implement_next 의 master 재합류 로 받아진다" \
-  "$mjh_n1|$mjh_bc|$(mj_last '베이스 판정' 판정)|$rc" "master 재합류|0|이동|0"
+  "$mjh_n1|$mjh_bc|$(mj_last '베이스 판정' 판정)|$rc" "master 재합류|0|master 재합류|$MJ_X|0|이동|0"
 
 # ---------------------------------------------------------------------------
 # 88c. 릴리스 메타만의 충돌 — 기대 트리, 고정 도우미, 머지 대조의 메타 해소
