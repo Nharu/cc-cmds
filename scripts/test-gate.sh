@@ -54605,7 +54605,7 @@ check "88h: 대표가 쥔 띄울 수 없음 사건도 진행 중 판독 동안�
 
 # ---------------------------------------------------------------------------
 # 88h-2. master 재합류 입장 — 대조 행위의 등급, 이동 판정에서만 받는 재합류 파견, 병합 뒤 해소 리뷰
-# --- section: 88h-2 | group: sa | covers: act, plan, snapshot, gate_check_ci_match, gate_perform_ci_match, gate_ci_master_next, gate_base_check_row, gate_record_row | anchors: 88h: 대조 행위는 읽기 로 승인되고 부분집합 행을 쓰며 다음은 master 대기 다, 88h: 초록 판독 뒤 다음은 master 재합류 다, 88h: 이동 판정 뒤 재합류 파견은 받아지고 다른 베이스는 rc 3 이다, 88h: 일치 판정 뒤 재합류 파견은 rc 3 이다, 88h: 충돌 판정 뒤 재합류 파견은 rc 3 이고 다음은 베이스 해소 다, 88h: 받아진 재합류 파견은 충돌 수를 늘리지 않는다, 88h: 재합류 병합 뒤 다음은 해소 리뷰 이고 그 해소 cycle 행이 받아진다 ---
+# --- section: 88h-2 | group: sa | covers: act, plan, snapshot, gate_check_ci_match, gate_perform_ci_match, gate_ci_master_next, gate_base_check_row, gate_record_row | anchors: 88h: 대조 행위는 읽기 로 승인되고 부분집합 행을 쓰며 다음은 master 대기 다, 88h: 초록 판독 뒤 다음은 master 재합류 다, 88h: 이동 판정 뒤 재합류 파견은 받아지고 다른 베이스는 rc 3 이다, 88h: 일치 판정 뒤 재합류 파견은 rc 3 이다, 88h: 충돌 판정 뒤 재합류 파견은 rc 3 이고 다음은 베이스 해소 다, 88h: 받아진 재합류 파견은 충돌 수를 늘리지 않는다, 88h: 재합류 병합 뒤 다음은 해소 리뷰 이고 그 해소 cycle 행이 받아진다, 88h: 머지 전 선머지 세그먼트의 대조 행위는 implement_next 의 CI 대조 로 받아지고 다음은 master 대기 다, 88h: 머지 전 선머지 세그먼트의 재합류 파견은 implement_next 의 master 재합류 로 받아진다 ---
 #
 # 리뷰가 깨끗한 세그먼트 CK 의 회차 1 정착 실패(회차의 요청이 기본 브랜치 실패를 보았다)
 # 위에 이 픽스처 슬러그의 판독 파일을 둔다. 판독 루트는 스위트의 XDG_STATE_HOME 아래라
@@ -54744,6 +54744,50 @@ sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutp
     -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$MJ_M" "리포트 경로=$(sa_canon CK "$MJ_RP")" 모드=해소 '기준 사이클=1'
 check "88h: 재합류 병합 뒤 다음은 해소 리뷰 이고 그 해소 cycle 행이 받아진다" \
   "$mj_next_m|$rc|$(mj_last cycle 사이클 모드)" "해소 리뷰|0|2|해소"
+
+# 머지 전의 선머지후리뷰 세그먼트 H — 사이클 행이 없어 review_next 는 `리뷰 없음` 이고
+# master 층 값은 implement_next[] 에만 선다. 같은 판독·대조·재합류를 그 값으로 받는지 잰다.
+pre_mf
+mf_new "master 재합류 입장 — 선머지"
+MJ_B0=$(cd "$SA_REPO" && git rev-parse main)
+MJ_FILE="$XDG_STATE_HOME/cc-cmds/pace/master/t__${SA_ID}__main.json"
+mjh_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mf_checks 실패
+{
+  for mj_st in 요청 수락; do
+    printf -- '- `CI 처분` | 교대=1 | 세그먼트=H | PR=t/%s#1 | head sha=%s | 처분=재실행 | 상태=%s | 회차=1 | 실행=777 | 워크플로=gate | 실패 체크=gate | 기본 브랜치=실패 | 응답=- | 관측=%s\n' \
+      "$SA_ID" "$MF_TIP" "$mj_st" "$mjh_now"
+  done
+  printf -- '- `checks` | 교대=1 | PR=t/%s#1 | head sha=%s | 상태=실패 | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=H | 재실행 회차=1 | 진행 중=0\n' "$SA_ID" "$MF_TIP" "$mjh_now"
+} >> "$SA_LEDGER"
+printf '101\tgate\tcompleted\tfailure\tgithub-actions\thttps://github.com/t/%s/actions/runs/777/job/101\n' "$SA_ID" > "$MJ_D/runs"
+mj_file 빨강 -
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment H --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 판독 전사" -- true
+mjh_n0=$(mf_inext)
+eval 'gh() { "$MJ_D/bin/gh" "$@"; }'; export -f gh
+MJ_PREV_RO="${CC_GATE_TOKEN_RO:-}"; export CC_GATE_TOKEN_RO=mj-ro-fixture
+sag act --manifest "$SA_MANIFEST" --kind ci-match --target main --segment H --cutpoint PR \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 대조" -- 대조 "$MF_TIP"
+mjh_rc=$rc
+unset -f gh
+if [ -n "$MJ_PREV_RO" ]; then CC_GATE_TOKEN_RO="$MJ_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
+mjh_row=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -1)
+check "88h: 머지 전 선머지 세그먼트의 대조 행위는 implement_next 의 CI 대조 로 받아지고 다음은 master 대기 다" \
+  "$mjh_n0|$mjh_rc|$(sa_field "$mjh_row" 결과)|$(mf_inext)" "CI 대조|0|부분집합|master 대기"
+
+MJ_X=$( ( cd "$SA_REPO" && git checkout -q main && printf 'fix\n' > fix.txt && git add -A && git commit -qm fix \
+          && git push -q origin main && git rev-parse HEAD ) 2>/dev/null)
+mj_file 초록 "$MJ_X"
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment H --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 판독 전사" -- true
+mjh_n1=$(mf_inext)
+mf_base_check; mjh_bc=$rc
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment H --cutpoint 커밋 \
+    --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+    -- implement -p "/cc-cmds:implement-unattended \"세그먼트 H · 베이스 해소: $MJ_X · 부류=master 재합류\""
+check "88h: 머지 전 선머지 세그먼트의 재합류 파견은 implement_next 의 master 재합류 로 받아진다" \
+  "$mjh_n1|$mjh_bc|$(mj_last '베이스 판정' 판정)|$rc" "master 재합류|0|이동|0"
 
 # ---------------------------------------------------------------------------
 # 88c. 릴리스 메타만의 충돌 — 기대 트리, 고정 도우미, 머지 대조의 메타 해소

@@ -34324,7 +34324,7 @@ EOF
       # spell would drop the master layer and refuse a segment that waits.
       [ -z "$hms" ] || gate_master_row_if_changed
       for hm in $(printf '%s' "$hms" | tr ',' ' '); do
-        if [ "$(gate_segment_review_next "$hm")" != "master 대기" ]; then
+        if [ "$(gate_segment_ci_next "$hm")" != "master 대기" ]; then
           warn "\`master 대기\` segment $hm does not read \`다음\`=\`master 대기\` now — read the snapshot again"
           return "$GATE_EXIT_RULE"
         fi
@@ -39952,7 +39952,9 @@ gate_check_ci_match() {
     exit "$GATE_EXIT_RULE"
   fi
   [ "$rc" = "2" ] || GATE_CI_MATCH_LOCK="$dir"
-  nx=$(gate_segment_review_next "$seg")
+  # A merge-first segment waiting to merge has no cycle, so its match values
+  # come from `implement_next[]` (`gate_segment_ci_next`), not `review_next[]`.
+  nx=$(gate_segment_ci_next "$seg")
   case "$nx" in
     'CI 대조'|'master 대기'|'master 수리 불가') ;;
     *) warn "다음 of segment $seg is '$nx', not 'CI 대조', 'master 대기' or 'master 수리 불가' — the match act is refused"
@@ -42489,9 +42491,12 @@ gate_verb_act() {
       # resolution's. It spends no cycle budget, as a base resolution does not.
       case "$(gate_skill_prompt_of "$@")" in *'부류=master 재합류'*) br_rejoin=1 ;; esac
       if [ -n "$br_rejoin" ]; then
+        # The rejoin value is a CI layer value, which a merge-first segment
+        # waiting to merge reads from `implement_next[]`.
+        br_next=$(gate_segment_ci_next "$segment")
         if [ "$br_next" != "master 재합류" ]; then
           warn "세그먼트 ${segment} 의 다음 처분은 「${br_next}」 입니다 — master 재합류는 「다음」 이 「master 재합류」 일 때만 파견합니다"
-          warn "스냅숏의 review_next[] 의 「다음」 을 읽고 그 처분으로 가세요"
+          warn "스냅숏의 review_next[] 의 「다음」 (머지 전 선머지 세그먼트는 implement_next[] 의 「다음」) 을 읽고 그 처분으로 가세요"
           exit "$GATE_EXIT_RULE"
         fi
         if [ "$(gate_row_field "$(gate_base_last_row "$segment")" '판정')" != "이동" ]; then
