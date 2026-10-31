@@ -963,10 +963,12 @@ tier_row() {
   printf -- '- `설계 티어` | 판정=team-4 | 확정=team-4 | 범위=single%s | 설계 스킬=design-solo-unattended | 감사=있음 | 추정 파일=3 | 사유=x | 근거=y | 교대=0 | prev=abc' "$p"
 }
 disc_row() {
-  # disc_row <실행 버전> <경로> <회차> <감사 판> <고유> <바이트> <골격급>
-  printf -- '- `감사 공시` | 세그먼트=- | 스테이지=A1 | 실행 버전=%s | 경로=%s | 회차=%s | 감사 판=%s | 플러그인=1.0.0@abcdefabcdef | 원시=9 | 고유=%s | 미보강=1 | 바이트=%s | 골격급=%s | 합성 후보=0 | 합성 골격급=0 | 교대=0 | prev=abc' \
-    "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+  # disc_row <실행 버전> <경로> <회차> <감사 판> <고유> <바이트> <골격급> [하류 부류 다섯 필드]
+  # — 여덟째 인자가 없으면 하류 부류 필드가 생기기 전의 옛 꼴 행이다.
+  printf -- '- `감사 공시` | 세그먼트=- | 스테이지=A1 | 실행 버전=%s | 경로=%s | 회차=%s | 감사 판=%s | 플러그인=1.0.0@abcdefabcdef | 원시=9 | 고유=%s | 미보강=1 | 바이트=%s | 골격급=%s | 합성 후보=0 | 합성 골격급=0%s | 교대=0 | prev=abc' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:+ | $8}"
 }
+DS_FIELDS='결과물 동일=2 | 자가 수정=1 | 리뷰 포착=2 | 운영 노출=1 | 경량 처리=3'
 d14_run() {
   # d14_run <run-id> <행…> — 레인 기록을 가진 감사 스테이지 행 하나 뒤에 주어진 행들.
   local rid="$1"; shift
@@ -978,7 +980,7 @@ R14A=20261001-dddddd01; R14B=20261001-dddddd02; R14C=20261001-dddddd03; R14D=202
 d14_run "$R14A" "$(tier_row solo-audit)" "$(disc_row 1 solo-audit 최초 e1e1e1e1e1e1 4 2048 1)" \
   '- `stage-result` | 세그먼트=- | 스테이지=D1 | 종류=reconverge | 종료 코드=0 | 실행 버전=1 | 세션 id=sid-r14 | 부모=- | 기록자=게이트 | 종단 부류=정상 완료 | 재수렴 판정=불필요 | 레인=~/.claude | 교대=0 | prev=abc' \
   "$(disc_row 2 solo-audit 재감사 e1e1e1e1e1e1 1 2100 0)"
-d14_run "$R14B" "$(tier_row discuss-audit)" "$(disc_row 1 discuss-audit 최초 e1e1e1e1e1e1 6 4096 0)"
+d14_run "$R14B" "$(tier_row discuss-audit)" "$(disc_row 1 discuss-audit 최초 e1e1e1e1e1e1 6 4096 0 "$DS_FIELDS")"
 d14_run "$R14C" "$(tier_row solo-audit)" "$(disc_row 1 solo-audit 최초 e2e2e2e2e2e2 미상 1024 0)"
 d14_run "$R14D" "$(tier_row __none__)"
 collect
@@ -999,6 +1001,14 @@ check "14: 재수렴 비율은 키의 최초 감사 가운데 재수렴이 돈 �
 check "14: 미상 셈은 분포에서만 빠진다" "$(jsum '.design_paths["solo-audit|e2e2e2e2e2e2"] | [.n, .unique.median] | map(tostring) | join(",")')" "1,null"
 check "14: 키마다 감사를 남긴 가장 최근 런을 싣는다" "$(jsum '.design_paths["solo-audit|e1e1e1e1e1e1"].last_run')" "$R14A"
 check "14: 바이트 분포를 싣는다" "$(jsum '.design_paths["discuss-audit|e1e1e1e1e1e1"].bytes.median')" "4096"
+check "14: 하류 부류 다섯 필드를 지닌 행의 감사는 다섯 키를 수로 싣는다" \
+  "$(jrec "$R14B" '.design.audits[0] | [.cls_same, .cls_self_fix, .cls_review, .cls_ops, .light] | map(tostring) | join(",")')" "2,1,2,1,3"
+check "14: 하류 부류 필드가 없는 옛 꼴 행의 다섯 키는 null 이다" \
+  "$(jrec "$R14A" '.design.audits[0] | [.cls_same, .cls_self_fix, .cls_review, .cls_ops, .light] | map(tostring) | join(",")')" "null,null,null,null,null"
+check "14: design_paths 에 운영 노출과 경량 분포가 실린다" \
+  "$(jsum '.design_paths["discuss-audit|e1e1e1e1e1e1"] | [.cls_ops.median, .light.median] | map(tostring) | join(",")')" "1,3"
+check "14: 옛 꼴 행만 가진 키의 운영 노출 분포는 비어 있다" \
+  "$(jsum '.design_paths["solo-audit|e1e1e1e1e1e1"].cls_ops.median | tostring')" "null"
 # 인쇄기는 이 요약을 그대로 읽는다 — 집계를 다시 하지 않으므로 두 판의 표가 그대로 난다.
 DP_OUT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/design-path-report.sh" --ledger-dir "$LEDGER_DIR" 2>/dev/null)
 check "14: 인쇄기가 요약의 감사 판마다 표 하나를 낸다" "$(printf '%s\n' "$DP_OUT" | grep -c '^## 감사 판 ' || true)" "2"
@@ -1128,7 +1138,9 @@ m16_run() {
   mk_ledger "$1" "$(sr_row S1 S1 design 1 "$2" '정상 완료' '300000(argv)' '~/.claude')" \
     "$(cycle_row S1 2 5)" \
     '- `cycle` | 세그먼트=S1 | 사이클=1 | 리포트 경로=r.md | 리뷰 HEAD=abc | P0=1 | P1=2 | 교대=0 | prev=abc' \
-    '- `cycle` | 세그먼트=S2 | 사이클=1 | 리포트 경로=r.md | 리뷰 HEAD=abc | P0=0 | 교대=0 | prev=abc'
+    '- `cycle` | 세그먼트=S2 | 사이클=1 | 리포트 경로=r.md | 리뷰 HEAD=abc | P0=0 | 교대=0 | prev=abc' \
+    "$(disc_row 1 solo-audit 최초 e1e1e1e1e1e1 4 2048 0 "$DS_FIELDS")" \
+    "$(disc_row 2 solo-audit 재감사 e1e1e1e1e1e1 1 2048 0)"
   m16_session "$2"
 }
 jmem() { jq -r "$2" "$LEDGER_DIR/metrics/$1.members.json"; }
@@ -1158,6 +1170,9 @@ check "16: 증인 게시는 파일 단위로 mv -n 요청에서 읽는다(mktemp
 check "16: (역할, 기저 토큰)마다 구간 수를 낸다" "$(jmem "$R16" '[.stages[0].span_counts[] | select(.spans >= 2) | .role + "/" + .base + "=" + (.spans | tostring)] | join(",")')" "crit/round-2=2"
 check "16: 세그먼트의 첫 리뷰 회차만 잡힌다" "$(jmem "$R16" '.quality.first_cycles[] | select(.segment == "S1") | [.cycle, .p0, .p1] | join(",")')" "1,1,2"
 check "16: P1 이 없는 첫 회차는 unknown 이다" "$(jmem "$R16" '.quality.first_cycles[] | select(.segment == "S2") | .p1')" "unknown"
+check "16: 품질 블록의 감사는 경량 수와 운영 노출 수를 싣고, 옛 꼴 행에서는 null 이다" \
+  "$(jmem "$R16" '[.quality.audits[] | [.pass, .unique, .skeletal, .light, .cls_ops] | map(tostring) | join("/")] | join(",")')" \
+  "최초/4/0/3/1,재감사/1/0/null/null"
 check "16: 요약의 members 키는 종류·수명주기·라운드 부류다" "$(jsum '.members | keys | join(",")')" "design|재개|round-1,design|재개|round-2+,design|재생성|phase,design|재생성|round-2+"
 check "16: (종류, 수명주기)마다 요청당 평균 컨텍스트" "$(jsum '.members["design|재생성|phase"].lifecycle_ctx_avg')" "1440"
 check "16: 층의 요청당 평균 컨텍스트는 요청 수 가중이다" "$(jsum '.members["design|재생성|round-2+"].ctx_avg')" "2850"

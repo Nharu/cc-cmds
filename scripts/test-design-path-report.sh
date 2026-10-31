@@ -47,16 +47,19 @@ check "1: 요약이 없다는 줄을 낸다" "$(count 'design_paths 가 없습�
 
 # --- 2. 감사 판마다 표 하나, 다른 판 코호트는 따로 ----------------------------------------
 side() {
-  # side <path> <edition> <last_run> <n> <고유 중앙값> <재수렴 비율> <재감사 n>
-  jq -cn --arg p "$1" --arg e "$2" --arg r "$3" --argjson n "$4" --argjson u "$5" --argjson rr "$6" --argjson rn "$7" '
+  # side <path> <edition> <last_run> <n> <고유 중앙값> <재수렴 비율> <재감사 n> [운영 노출 중앙값] [경량 중앙값]
+  # — 마지막 둘이 없으면 하류 부류 필드가 생기기 전의 요약이라 두 칸이 비어 있다.
+  jq -cn --arg p "$1" --arg e "$2" --arg r "$3" --argjson n "$4" --argjson u "$5" --argjson rr "$6" --argjson rn "$7" \
+    --argjson ops "${8:-null}" --argjson light "${9:-null}" '
     def d($m): {min: $m, median: $m, max: $m};
     {path: $p, edition: $e, last_run: $r, n: $n,
      unique: d($u), unreinforced: d(1), skeletal: d(0), synth_candidates: d(0), bytes: d(2048),
+     cls_ops: d($ops), light: d($light),
      unique_per_kb_median: (if $u == null then null else $u / 2 end), reconverge_rate: $rr,
      reaudit: {n: $rn, unique: d(null), unreinforced: d(null), skeletal: d(null), synth_candidates: d(null),
                bytes: d(null), unique_per_kb_median: null}}'
 }
-jq -n --argjson a "$(side solo-audit eeee22222222 20261010-aaaaaaa1 3 4 0.3333 1)" \
+jq -n --argjson a "$(side solo-audit eeee22222222 20261010-aaaaaaa1 3 4 0.3333 1 1 2)" \
       --argjson b "$(side discuss-audit eeee22222222 20261009-aaaaaaa2 2 6 0 0)" \
       --argjson c "$(side solo-audit eeee11111111 20260901-aaaaaaa3 5 9 1 0)" \
       --argjson d "$(side solo-audit eeee00000000 20260801-aaaaaaa4 1 null null 0)" \
@@ -71,6 +74,10 @@ latest=$(section '## 감사 판 eeee22222222 (최근)')
 check "2: 최근 판의 표에는 그 판의 두 경로가 든다" "$(printf '%s\n' "$latest" | grep -cE '^\| (solo|discuss)-audit \|' || true)" "2"
 check "2: 최근 판의 표에 옛 판의 수가 섞이지 않는다" "$(printf '%s\n' "$latest" | grep -c '| solo-audit | 5 |' || true)" "0"
 check "2: 재수렴 비율은 백분율이다" "$(printf '%s\n' "$latest" | grep -c '| 33% |' || true)" "1"
+check "2: 첫 표 머리에 운영 노출 중앙값과 경량 중앙값이 합성 후보 중앙값 뒤에 있다" \
+  "$(printf '%s\n' "$latest" | grep -c '| 합성 후보 중앙값 | 운영 노출 중앙값 | 경량 중앙값 | 바이트 중앙값 |' || true)" "1"
+check "2: 운영 노출과 경량의 중앙값을 싣는다" "$(printf '%s\n' "$latest" | grep -c '^| solo-audit | 3 | 4 | 1 | 0 | 0 | 1 | 2 | 2048 |' || true)" "1"
+check "2: 하류 부류 값이 없는 요약의 두 칸은 - 다" "$(printf '%s\n' "$latest" | grep -c '^| discuss-audit | 2 | 6 | 1 | 0 | 0 | - | - | 2048 |' || true)" "1"
 others=$(section '## 다른 감사 판')
 check "2: 다른 감사 판 표제가 따로 있다" "$(count '## 다른 감사 판')" "1"
 check "2: 다른 판에서는 경로마다 가장 최근 코호트 하나다" "$(printf '%s\n' "$others" | grep -c '^| solo-audit |' || true)" "1"
