@@ -1414,6 +1414,11 @@ gate_reach_derived_full() {
       if [ "$remote" = 0 ]; then
         case "$(shift $((_dn + 1)); surface_of_docker "$@")" in 트리밖쓰기) printf '기기전역\tcmd\n'; return 0 ;; esac
       fi ;;
+    # The mobile device tools: every form their tables grade `트리밖쓰기` lands
+    # in the simulator set or the emulator state every run on this machine
+    # shares, the same cell as brew and docker. Like docker, no trigger word.
+    xcrun|xcodebuild|adb|emulator|avdmanager|maestro)
+      case "$(surface_of_argv0 "$@")" in 트리밖쓰기) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
   esac
   # Absolute paths into the user's own configuration, wherever they sit in argv.
   # EVERY MATCH IS COLLECTED, not the first: each is a word the row must carry.
@@ -2970,7 +2975,7 @@ gate_reach_disposition() {
   { [ "$GATE_MARK" = "파괴" ] || [ "${GATE_DESTRUCTIVE:-0}" = "1" ]; } && X=1
   GATE_RF_SX='-' GATE_RF_SW='-' GATE_RF_PROPOSAL='-' GATE_RF_REFF='-' GATE_RF_GEFF='-'
   GATE_RF_NEVER='-' GATE_RF_TRIG='-' GATE_RF_EV=1
-  GATE_RF_ROW=0 GATE_RF_RN='-' GATE_RF_RS='-' GATE_RF_RR='-' GATE_RF_RPD=0
+  GATE_RF_ROW=0 GATE_RF_RN='-' GATE_RF_RS='-' GATE_RF_RR='-' GATE_RF_RPD=0 GATE_RF_PAIRN='-'
   GATE_RF_DECL_SURF="${GATE_DECLARED:--}" GATE_RF_DECL_REACH="$R" GATE_RF_CROWS='-' GATE_RF_SCOPE=0
   [ -n "$GATE_RF_DECL_SURF" ] || GATE_RF_DECL_SURF='-'
 
@@ -3249,9 +3254,32 @@ gate_reach_disposition() {
       case "${2:-}" in account|append) return 0 ;; esac
     fi
     case "$1" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
+    # A MOBILE DEVICE ACT carries checks of its own, and none of them is a
+    # row's to waive. An act aimed at an existing device opens only when every
+    # device it names is one this run created — another run's simulator or a
+    # person's is never stopped or erased here, and `booted`, `all` and
+    # `unavailable` name no one device. Once the act is opened, by a verbatim
+    # row or a judgment, `gate_device_open_check` finds the device pair ordinal
+    # of the deciding shape and parks an act that makes or boots a device
+    # without a device cleanup row or without this dispatch's name prefix.
+    # The ordinal rides in `GATE_RF_PAIRN`, never in `GATE_RF_ROW`: that flag
+    # puts the row value's fields on the ledger row and steers the brew and
+    # docker branches below the cell, none of which a device act changes.
+    local _dk='-' _dshape=''
+    [ "$cls" = "표" ] && [ "$graded" = "트리밖쓰기" ] && _dk=$(gate_device_act_kind "$@")
+    if [ "$_dk" = "target" ] && ! gate_device_targets_listed "$@"; then
+      printf '기기전역\tforeign-device\t-'; return 0
+    fi
     # A verbatim row opens even a destructive act: it names the act whole, the
     # destructive word with it.
-    [ "$Pv" = "1" ] && [ "$_ev" = "1" ] && return 0
+    if [ "$Pv" = "1" ] && [ "$_ev" = "1" ]; then
+      if [ "$_dk" != "-" ]; then
+        [ "$Rn" != "-" ] && _dshape=$(gate_preauth_rows | sed -n "${Rn}p" | cut -f1)
+        gate_device_open_check "$_dk" "$_dshape" "$@"
+        [ -z "$GATE_DEVICE_PARK" ] || { printf '기기전역\t%s\t-' "$GATE_DEVICE_PARK"; return 0; }
+      fi
+      return 0
+    fi
     # A destruction only the stage declared names no word a judgment could
     # check a row against, so only the verbatim row above opens it.
     if [ "$GATE_MARK" != "파괴" ] && [ "${GATE_DESTRUCTIVE:-0}" = "1" ]; then
@@ -3263,7 +3291,24 @@ gate_reach_disposition() {
     # With a person in front of the run, the approval they answer stays the
     # answer: a judgment would open what used to be asked.
     gate_auto_resolve_enabled || { printf '기기전역\toff\t-'; return 0; }
-    gate_preauth_judge_disposition "$alias" "$R" "$_ro" "$_rt" "$Geff" "$@"
+    if [ "$_dk" = "-" ]; then
+      gate_preauth_judge_disposition "$alias" "$R" "$_ro" "$_rt" "$Geff" "$@"
+      return 0
+    fi
+    # A device act the judgment opened is checked against the row the verdict
+    # names, read from the kept answer the key points at.
+    local _jd _jk
+    _jd=$(gate_preauth_judge_disposition "$alias" "$R" "$_ro" "$_rt" "$Geff" "$@")
+    case "$_jd" in
+      $'\t\topen/'*)
+        _jk=${_jd##*/}
+        _dshape=$(jq -r '.row // ""' "${RUN_DIR:-}/preauth-judge/$_jk.json" 2>/dev/null || true)
+        gate_device_open_check "$_dk" "$_dshape" "$@"
+        if [ -n "$GATE_DEVICE_PARK" ]; then
+          printf '기기전역\t%s\topen/%s' "$GATE_DEVICE_PARK" "$_jk"; return 0
+        fi ;;
+    esac
+    printf '%s' "$_jd"
     return 0
   fi
 
@@ -3338,15 +3383,343 @@ gate_preauth_rows() {
   done < "$MANIFEST"
 }
 
+# ---------------------------------------------------------------------------
+# 기기 짝 정리 — the reserved `짝 정리=기기 정리` value and the device checks of
+# the machine-global cell.
+#
+# A device a run creates is named `cc-<run id>-<dispatch id>-<rest>`, with no
+# `-` in the rest, so one cleanup per dispatch removes that dispatch's devices
+# and nothing else; the run id is not known at kickoff, so the row freezes the
+# reserved value and the gate spells it out (`gate_preauth_pair_argv`). A
+# device the run created is written to `${RUN_DIR}/devices/created.tsv` when
+# the act that made it ended 0, and an act aimed at an existing device opens
+# only when its target is on that list.
+# ---------------------------------------------------------------------------
+
+# The reserved `짝 정리` value: the run's device cleanup, spelled out per unit.
+GATE_DEVICE_PAIR_VALUE='기기 정리'
+readonly GATE_DEVICE_PAIR_VALUE
+
+gate_device_act_kind() {
+  # gate_device_act_kind <argv...> — for a device act the table graded
+  # `트리밖쓰기`: `create` for an act that makes or boots a device (`simctl
+  # create`/`clone`/`boot`, `avdmanager create avd`, `emulator -avd`, an
+  # `xcodebuild test`/`test-without-building` with a simulator destination),
+  # `target` for an act aimed at an existing device (the other `simctl`
+  # writes, an `adb -s emulator-<port>` write, `avdmanager delete avd`), and
+  # `-` for anything else (`maestro`, an `xcodebuild` build).
+  local cmd="${1##*/}"; shift
+  case "$cmd" in
+    xcrun)
+      [ "${1:-}" = simctl ] || { printf -- '-'; return 0; }
+      case "${2:-}" in
+        create|clone|boot) printf 'create' ;;
+        shutdown|delete|erase|install|uninstall|launch|terminate|io|spawn|openurl|addmedia) printf 'target' ;;
+        *) printf -- '-' ;;
+      esac ;;
+    avdmanager)
+      case "${1:-} ${2:-}" in
+        'create avd') printf 'create' ;;
+        'delete avd') printf 'target' ;;
+        *) printf -- '-' ;;
+      esac ;;
+    emulator) printf 'create' ;;
+    adb) [ "${1:-}" = -s ] && printf 'target' || printf -- '-' ;;
+    xcodebuild)
+      gate_xcodebuild_read "$@" || { printf -- '-'; return 0; }
+      local a d t=0 s=0
+      for a in $GATE_XB_ACTIONS; do
+        case "$a" in test|test-without-building) t=1 ;; esac
+      done
+      while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        [ "$(gate_xcodebuild_destination_kind "$d")" = sim ] && s=1
+      done <<EOF
+$GATE_XB_DESTS
+EOF
+      if [ "$t" = "1" ] && [ "$s" = "1" ]; then printf 'create'; else printf -- '-'; fi ;;
+    *) printf -- '-' ;;
+  esac
+}
+
+gate_device_prefix() {
+  # The name prefix of this dispatch's devices: `cc-<run id>-<dispatch id>-`.
+  printf 'cc-%s-%s-' "${RUN_ID:-}" "$(gate_pair_dispatch_id)"
+}
+
+gate_device_name_fits() {
+  # gate_device_name_fits <name> — 0 when the name begins with this dispatch's
+  # prefix and what follows it is not empty and holds no `-`.
+  local pfx rest
+  pfx=$(gate_device_prefix)
+  case "$1" in "$pfx"*) ;; *) return 1 ;; esac
+  rest="${1#"$pfx"}"
+  case "$rest" in ''|*-*) return 1 ;; esac
+  return 0
+}
+
+gate_simctl_operands() {
+  # gate_simctl_operands <argv after the simctl subcommand...> — the words
+  # that are not options, one per line. `-a`/`--arch` (spawn) takes a value.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -a|--arch) shift ;;
+      -*) ;;
+      *) printf '%s\n' "$1" ;;
+    esac
+    [ "$#" -gt 0 ] && shift
+  done
+}
+
+gate_device_name_ok() {
+  # gate_device_name_ok <argv...> — for a `create` act: 0 when every name it
+  # gives the device fits this dispatch's prefix. `simctl boot` must point at
+  # the device by such a name, never by UDID; `emulator -avd` needs `-port`,
+  # so the list can carry `emulator-<port>`; every simulator destination of an
+  # `xcodebuild test` must carry such a `name=`.
+  local cmd="${1##*/}" w ops nm='' port='' d k kv has
+  shift
+  case "$cmd" in
+    xcrun)
+      ops=$(shift 2; gate_simctl_operands "$@")
+      case "${2:-}" in
+        create) nm=$(printf '%s\n' "$ops" | sed -n '1p') ;;
+        clone)  nm=$(printf '%s\n' "$ops" | sed -n '2p') ;;
+        boot)
+          nm=$(printf '%s\n' "$ops" | sed -n '1p')
+          gate_device_uuid "$nm" && return 1 ;;
+        *) return 1 ;;
+      esac
+      gate_device_name_fits "$nm" ;;
+    avdmanager)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -n|--name) nm="${2:-}"; shift ;;
+          --name=*) nm="${1#--name=}" ;;
+        esac
+        [ "$#" -gt 0 ] && shift
+      done
+      gate_device_name_fits "$nm" ;;
+    emulator)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -avd) nm="${2:-}"; shift ;;
+          -port) port="${2:-}"; shift ;;
+        esac
+        [ "$#" -gt 0 ] && shift
+      done
+      case "$port" in ''|*[!0-9]*) return 1 ;; esac
+      gate_device_name_fits "$nm" ;;
+    xcodebuild)
+      gate_xcodebuild_read "$@" || return 1
+      while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        [ "$(gate_xcodebuild_destination_kind "$d")" = sim ] || continue
+        has=0
+        local IFS=','
+        for kv in $d; do
+          case "$kv" in name=*) gate_device_name_fits "${kv#name=}" && has=1 ;; esac
+        done
+        unset IFS
+        [ "$has" = "1" ] || return 1
+      done <<EOF
+$GATE_XB_DESTS
+EOF
+      return 0 ;;
+  esac
+  return 1
+}
+
+gate_device_listed() {
+  # gate_device_listed <udid|emulator-<port>|name> — 0 when this run's device
+  # list carries it in its second or third column. `booted`, `all` and
+  # `unavailable` name no one device, so they are never on it.
+  local t="$1" f
+  case "$t" in ''|-|booted|all|unavailable) return 1 ;; esac
+  f="${RUN_DIR:-}/devices/created.tsv"
+  [ -n "${RUN_DIR:-}" ] && [ -f "$f" ] || return 1
+  awk -F '\t' -v t="$t" '$2 == t || $3 == t { found = 1 } END { exit found ? 0 : 1 }' "$f"
+}
+
+gate_device_targets() {
+  # gate_device_targets <argv...> — for a `target` act, the devices it points
+  # at, one per line: every operand of `simctl shutdown`/`delete`/`erase`, the
+  # first operand of the other `simctl` writes, the serial of `adb -s`, the
+  # name of `avdmanager delete avd`. Nothing is printed for a form whose
+  # target cannot be read, and the caller parks it.
+  local cmd="${1##*/}"
+  shift
+  case "$cmd" in
+    xcrun)
+      case "${2:-}" in
+        shutdown|delete|erase) (shift 2; gate_simctl_operands "$@") ;;
+        *) (shift 2; gate_simctl_operands "$@") | sed -n '1p' ;;
+      esac ;;
+    adb) printf '%s\n' "${2:-}" ;;
+    avdmanager)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -n|--name) printf '%s\n' "${2:-}"; shift ;;
+          --name=*) printf '%s\n' "${1#--name=}" ;;
+        esac
+        [ "$#" -gt 0 ] && shift
+      done ;;
+  esac
+}
+
+gate_device_targets_listed() {
+  # gate_device_targets_listed <argv...> — 0 when the act names at least one
+  # target and every one is on this run's device list.
+  local t n=0
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    n=$((n + 1))
+    gate_device_listed "$t" || return 1
+  done <<EOF
+$(gate_device_targets "$@")
+EOF
+  [ "$n" -gt 0 ]
+}
+
+gate_device_pair_ordinal() {
+  # gate_device_pair_ordinal <shape> — the ordinal (as `gate_preauth_rows`
+  # counts, from 1) of the FIRST new-form row — one naming `표면=` and `도달=`
+  # — whose `형태=` is byte-equal to the shape and whose `짝 정리=` is the
+  # reserved device value. Nothing when there is none. One rule whatever opened
+  # the act: a verbatim row's shape and a judged row's shape find the same row,
+  # and an old-form row of the same shape never splits the ordinal in two.
+  local want="$1" line shape i=0 f
+  [ -n "$want" ] && [ -f "${MANIFEST:-}" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in '- `사전 인가`'*) ;; *) continue ;; esac
+    f=$(printf '%s' "$line" | tr '|' '\n')
+    shape=$(printf '%s\n' "$f" | sed -n 's/^ *형태=//p' | sed 's/[[:space:]]*$//')
+    [ -n "$shape" ] || continue
+    i=$((i + 1))
+    [ "$shape" = "$want" ] || continue
+    printf '%s\n' "$f" | grep -q '^ *표면=' || continue
+    printf '%s\n' "$f" | grep -q '^ *도달=' || continue
+    [ "$(printf '%s\n' "$f" | sed -n 's/^ *짝 정리=//p' | sed 's/[[:space:]]*$//' | tail -1)" = "$GATE_DEVICE_PAIR_VALUE" ] || continue
+    printf '%s' "$i"
+    return 0
+  done < "$MANIFEST"
+}
+
+gate_device_open_check() {
+  # gate_device_open_check <kind> <deciding shape> <argv...> — run once the
+  # machine-global cell has opened a device act, by a verbatim row or by a
+  # judgment. Sets `GATE_RF_PAIRN` to the device pair ordinal of the deciding
+  # shape and leaves `GATE_DEVICE_PARK` empty when the act may go on; otherwise
+  # `GATE_DEVICE_PARK` holds the park cause. Globals rather than output: the
+  # ordinal has to outlive this call in the caller's shell. A `create` act
+  # needs that ordinal — no shape at all is `judge-failed`, a shape whose rows
+  # carry no device cleanup is `no-cleanup` — and then a name that fits this
+  # dispatch's prefix.
+  local kind="$1" shape="$2" n=''
+  shift 2
+  GATE_DEVICE_PARK=''
+  [ -n "$shape" ] && n=$(gate_device_pair_ordinal "$shape")
+  if [ "$kind" = create ]; then
+    [ -n "$shape" ] || { GATE_DEVICE_PARK='judge-failed'; return 0; }
+    [ -n "$n" ] || { GATE_DEVICE_PARK='no-cleanup'; return 0; }
+    gate_device_name_ok "$@" || { GATE_DEVICE_PARK='device-name'; return 0; }
+  fi
+  [ -n "$n" ] && GATE_RF_PAIRN="$n"
+  return 0
+}
+
+gate_device_record() {
+  # gate_device_record <stdout file> <argv...> — after a `create` act ended 0,
+  # append `<dispatch id>\t<udid|emulator-<port>|->\t<name>` to this run's
+  # device list. The UDID of `simctl create`/`clone` is the first line of the
+  # act's own output; `emulator -avd` gives its port; `avdmanager create avd`
+  # gives a name only. `boot` and `xcodebuild test` make no device of their
+  # own and write nothing.
+  local out="$1" cmd id='-' nm='' port='' ops
+  shift
+  [ -n "${RUN_DIR:-}" ] || return 0
+  cmd="${1##*/}"
+  case "$cmd" in
+    xcrun)
+      ops=$(shift 3; gate_simctl_operands "$@")
+      case "${3:-}" in
+        create) nm=$(printf '%s\n' "$ops" | sed -n '1p') ;;
+        clone)  nm=$(printf '%s\n' "$ops" | sed -n '2p') ;;
+        *) return 0 ;;
+      esac
+      [ -f "$out" ] && id=$(sed -n '1p' "$out" | tr -d '[:space:]')
+      gate_device_uuid "$id" || id='-' ;;
+    emulator)
+      shift
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -avd) nm="${2:-}"; shift ;;
+          -port) port="${2:-}"; shift ;;
+        esac
+        [ "$#" -gt 0 ] && shift
+      done
+      [ -n "$port" ] && id="emulator-$port" ;;
+    avdmanager)
+      shift
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -n|--name) nm="${2:-}"; shift ;;
+          --name=*) nm="${1#--name=}" ;;
+        esac
+        [ "$#" -gt 0 ] && shift
+      done ;;
+    *) return 0 ;;
+  esac
+  [ -n "$nm" ] || return 0
+  mkdir -p "$RUN_DIR/devices" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\n' "$(gate_pair_dispatch_id)" "$id" "$nm" >> "$RUN_DIR/devices/created.tsv"
+}
+
+gate_run_device_aware() {
+  # gate_run_device_aware <argv...> — run the act as `gate_run_readonly` does,
+  # and when it is a device act of kind `create` that ended 0, record the device
+  # it made. Only `simctl create`/`clone` print the id the record needs, so only
+  # their output is captured, and then passed through unchanged.
+  local rc=0 out=''
+  if [ "$(gate_device_act_kind "$@")" != create ]; then
+    gate_run_readonly "$@" || rc=$?
+    return "$rc"
+  fi
+  case "${1##*/} ${2:-} ${3:-}" in
+    'xcrun simctl create'|'xcrun simctl clone')
+      out=$(mktemp "${TMPDIR:-/tmp}/gate-device-out.XXXXXX") || out='' ;;
+  esac
+  if [ -n "$out" ]; then
+    gate_run_readonly "$@" > "$out" || rc=$?
+    cat "$out"
+  else
+    gate_run_readonly "$@" || rc=$?
+  fi
+  [ "$rc" = "0" ] && gate_device_record "${out:-/dev/null}" "$@"
+  [ -z "$out" ] || rm -f "$out"
+  return "$rc"
+}
+
 gate_preauth_pair_argv() {
-  # gate_preauth_pair_argv <n> — the `짝 정리=` value of the n-th `사전 인가`
-  # row of the manifest, empty when that row carries none. The ordinal counts
-  # the rows `gate_preauth_rows` lists (a row with a `형태=`), from 1, which is
-  # the ordinal the matcher reports as `행=`. Read from the frozen manifest every
-  # time: the copy an open row carries is for a reader, and the cleanup runs
-  # this value, never that copy.
-  local want="$1" line shape i=0
+  # gate_preauth_pair_argv <n> [<run id> <dispatch id>] — the `짝 정리=` value
+  # of the n-th `사전 인가` row of the manifest, empty when that row carries
+  # none. The ordinal counts the rows `gate_preauth_rows` lists (a row with a
+  # `형태=`), from 1, which is the ordinal the matcher reports as `행=`. Read
+  # from the frozen manifest every time: the copy an open row carries is for a
+  # reader, and the cleanup runs this value, never that copy.
+  #
+  # THE RESERVED DEVICE VALUE IS SPELLED OUT HERE AND NOWHERE ELSE: `기기 정리`
+  # becomes `<this gate's directory>/device-cleanup.sh <run id> <dispatch id>`.
+  # The open and the forecast call this with the caller's dispatch id and the
+  # drain with the open row's, so the drain compares the spelled-out value with
+  # the spelled-out value. Ordinal 0 with dispatch `-` is the run-end sweep's
+  # virtual unit, `device-cleanup.sh <run id> -`.
+  local want="$1" run="${2:-${RUN_ID:-}}" disp="${3:-}" line shape i=0 v
   case "$want" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$want" = "0" ]; then
+    [ "$disp" = "-" ] && [ -n "$run" ] && printf '%s/device-cleanup.sh %s -' "$GATE_DIR" "$run"
+    return 0
+  fi
   [ -f "${MANIFEST:-}" ] || return 0
   while IFS= read -r line; do
     case "$line" in '- `사전 인가`'*) ;; *) continue ;; esac
@@ -3354,7 +3727,13 @@ gate_preauth_pair_argv() {
     [ -n "$shape" ] || continue
     i=$((i + 1))
     [ "$i" = "$want" ] || continue
-    printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *짝 정리=//p' | sed 's/[[:space:]]*$//' | tail -1
+    v=$(printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *짝 정리=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if [ "$v" = "$GATE_DEVICE_PAIR_VALUE" ]; then
+      [ -n "$run" ] && [ -n "$disp" ] || return 0
+      printf '%s/device-cleanup.sh %s %s' "$GATE_DIR" "$run" "$disp"
+    else
+      printf '%s' "$v"
+    fi
     return 0
   done < "$MANIFEST"
 }
@@ -3449,12 +3828,19 @@ gate_pair_open() {
   # result is left alone — one cleanup undoes any number of runs of the act.
   # Returns 0 when nothing needs opening or the unit is open; any other code
   # means the open row could not be written, and the act is not performed.
-  [ "${GATE_PARK_RFROW:-0}" = "1" ] || return 0
-  local n="${GATE_PARK_RFN:--}" argv disp rc=0
+  #
+  # A device act that makes or boots a device pairs with the ordinal its
+  # disposition found (`GATE_PARK_PAIRN`, the first row of its shape carrying
+  # `짝 정리=기기 정리`), whether a row named it verbatim or a judgment opened it.
+  local n='-' argv disp rc=0
+  case "${GATE_PARK_PAIRN:--}" in
+    ''|-|*[!0-9]*) [ "${GATE_PARK_RFROW:-0}" = "1" ] && n="${GATE_PARK_RFN:--}" ;;
+    *) n="$GATE_PARK_PAIRN" ;;
+  esac
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
-  argv=$(gate_preauth_pair_argv "$n")
-  [ -n "$argv" ] || return 0
   disp=$(gate_pair_dispatch_id)
+  argv=$(gate_preauth_pair_argv "$n" "${RUN_ID:-}" "$disp")
+  [ -n "$argv" ] || return 0
   gate_pair_append open-free "$disp" "$n" "상태=열림" "파견=$disp" "행=$n" "정리=$argv" || rc=$?
   case "$rc" in 0|90) return 0 ;; esac
   return "$rc"
@@ -3479,8 +3865,14 @@ gate_pair_drain() {
   # candidate list is this loop's stdin) and its output dropped:
   # the result row's `결과=` and `rc=` are the only record. 성공 is rc 0 and
   # nothing else, and a failed cleanup is never called again.
+  #
+  # THE RUN-END DEVICE SWEEP: after the run scope has drained its opens, a run
+  # that opened any `기기 정리` unit calls `device-cleanup.sh <run id> -` once
+  # more, as the virtual unit (dispatch `-`, row 0) with the same open, start
+  # and result rows, so a device no unit's cleanup removed surfaces through the
+  # residue reader like any other failed pair.
   local scope="$1" want="${2:-}" when cand line disp row argv frozen res rc
-  local t0="" now cr
+  local t0="" now cr pass=1
   case "$scope" in
     stage) when='스테이지끝'; [ -n "$want" ] || return 2 ;;
     run)   when='런끝' ;;
@@ -3492,10 +3884,10 @@ gate_pair_drain() {
   else
     cand=$(LC_ALL=C awk -v mode=pending -f "$GATE_DIR/pair-residue.awk" "$LEDGER" 2>/dev/null) || return 0
   fi
-  [ -n "$cand" ] || return 0
+  while :; do
   while IFS="$(printf '\t')" read -r line disp row argv; do
     [ -n "$line" ] || continue
-    if [ "$scope" = "run" ]; then
+    if [ "$scope" = "run" ] && [ "$pass" = "1" ]; then
       if [ "$disp" != "-" ] && cc_stage_is_live "$RUN_DIR" "$disp"; then
         continue
       fi
@@ -3506,7 +3898,7 @@ gate_pair_drain() {
     fi
     gate_pair_append start-free "$line" - "상태=시작" "열림=$line" "시점=$when" || continue
     [ -n "$t0" ] || t0=$(date +%s)
-    frozen=$(gate_preauth_pair_argv "$row")
+    frozen=$(gate_preauth_pair_argv "$row" "${RUN_ID:-}" "$disp")
     rc='-'
     if [ -z "$frozen" ] || [ "$frozen" != "$argv" ]; then
       res='실패'
@@ -3535,7 +3927,40 @@ CREDS
   done <<EOF
 $cand
 EOF
+  [ "$scope" = "run" ] && [ "$pass" = "1" ] || break
+  pass=2
+  gate_pair_sweep_due || break
+  frozen=$(gate_preauth_pair_argv 0 "${RUN_ID:-}" -)
+  [ -n "$frozen" ] || break
+  gate_pair_append open-free - 0 "상태=열림" "파견=-" "행=0" "정리=$frozen" || break
+  cand=$(LC_ALL=C awk -v mode=pending -v disp=- -f "$GATE_DIR/pair-residue.awk" "$LEDGER" 2>/dev/null) || break
+  done
   return 0
+}
+
+gate_pair_sweep_due() {
+  # gate_pair_sweep_due — 0 when this run's ledger holds an open of a
+  # `기기 정리` unit (a `정리=` naming `device-cleanup.sh` under a dispatch id)
+  # and no open of the virtual sweep unit (dispatch `-`, row 0) yet, so the
+  # sweep runs once per run however often the run-end drain is called.
+  [ -f "${LEDGER:-}" ] || return 1
+  LC_ALL=C awk -F' [|] ' '
+    index($0, "- `짝 정리`") != 1 { next }
+    {
+      st = ""; d = ""; r = ""; c = ""
+      for (i = 2; i <= NF; i++) {
+        f = $i
+        if (sub(/^상태=/, "", f)) st = f
+        else if (sub(/^파견=/, "", f)) d = f
+        else if (sub(/^행=/, "", f)) r = f
+        else if (sub(/^정리=/, "", f)) c = f
+      }
+      if (st != "열림" || index(c, "/device-cleanup.sh ") == 0) next
+      if (d == "-" && r == "0") v = 1
+      else if (d != "-") dev = 1
+    }
+    END { exit (dev && !v) ? 0 : 1 }
+  ' "$LEDGER"
 }
 
 # The deadline of one pre-authorization judgment, in seconds. The environment
@@ -3689,7 +4114,44 @@ gate_park_repair_line() {
   # A new-form row's clause: the reach it names decides the act, in that reach's
   # cell, whatever the stage declares.
   local Bn="this row opens this act and every act that begins with these words in the cell of the reach it names (choose dev, prod or 배포트리거), whatever reach a stage declares; this run's authorization is frozen, so the row takes effect from the next kickoff"
-  local msg='' row=0
+  local msg='' row=0 dk="${GATE_PARK_DEVKIND:--}"
+  local _pfx="cc-${RUN_ID:-<run id>}-$(gate_pair_dispatch_id)-"
+  # A MOBILE DEVICE ACT HAS REPAIRS OF ITS OWN. An act that makes or boots a
+  # device names it with this run's id, which no row frozen at kickoff can spell,
+  # so no row is printed for it; any other device act gets a new-form row whose
+  # reach is the machine-global one.
+  if [ "$cell" = "기기전역" ]; then
+    case "$dk/$cause" in
+      -/no-row|-/judged|-/judge-failed) ;;
+      */no-row|*/judged|*/judge-failed)
+        local _why
+        case "$cause" in
+          no-row) _why="the manifest has no \`사전 인가\` row for it" ;;
+          judged) _why="the pre-authorization judgment found no \`사전 인가\` row whose intent covers it (its reason is in the ledger row \`preauth-judge\`)" ;;
+          *) _why="the pre-authorization judgment returned no usable verdict ($(gate_preauth_judge_failure "${GATE_PREAUTH_JUDGE:--}"))" ;;
+        esac
+        if [ "$dk" = create ]; then
+          warn "repair: this act makes or boots a mobile device and $_why — its device name carries the run id, so no verbatim row can name it; at the next kickoff take the device rows \`kickoff-defaults.sh --preauth-candidates <worktree>\` proposes (they carry \`짝 정리=기기 정리\`) and keep auto-resolution on, so the judgment opens the act; or leave it to a person"
+          return 0
+        fi
+        if [ "$prop" != "-" ] && [ "$ev" != "0" ]; then
+          warn "repair: this mobile device act changes state on this machine and $_why — kick off again with the row below — $Bm"
+          warn "repair row: - \`사전 인가\` | 형태=$prop | 표면=트리밖쓰기 | 도달=기기전역 | 사유=park 수리($cell)"
+        else
+          warn "repair: this mobile device act changes state on this machine and $_why — kick off again with a new-form row naming its shape with 표면=트리밖쓰기 and 도달=기기전역, or leave it to a person"
+        fi
+        return 0 ;;
+      */no-cleanup)
+        warn "repair: this act makes or boots a mobile device, and no \`사전 인가\` row of its shape carries \`짝 정리=기기 정리\`, so nothing would remove the device at the end of the run — at the next kickoff add \`짝 정리=기기 정리\` to that row (the rows \`kickoff-defaults.sh --preauth-candidates <worktree>\` proposes carry it)"
+        return 0 ;;
+      */device-name)
+        warn "repair: the device this act makes or boots must be named '${_pfx}<name>' with no '-' after the prefix (simctl create's name, clone's new name, emulator -avd and avdmanager -n, the name= of an xcodebuild test destination), an emulator needs an explicit -port, and simctl boot takes the name rather than a UDID — respell the act that way"
+        return 0 ;;
+      */foreign-device)
+        warn "repair: this act points at a device this run did not create (the gate opens only the UDIDs, emulator-<port> serials and names listed in this run's devices/created.tsv; 'booted', 'all' and 'unavailable' are never opened) — point it at a device this run made, or leave it to a person"
+        return 0 ;;
+    esac
+  fi
   case "$cell/$cause" in
     # TWO ROWS SAY DIFFERENT THINGS ABOUT ONE SHAPE, so the repair is to correct
     # or delete one of them — a row printed here would add a third.
@@ -6856,6 +7318,15 @@ surface_of_argv0() {
     kubectl) surface_of_kubectl "$@" ;;
     docker)  surface_of_docker "$@" ;;
     brew)    surface_of_brew "$@" ;;
+    # The mobile device tools, each a subcommand table for the reason the
+    # section above them gives: only a form that certainly names a simulator or
+    # an emulator is graded.
+    xcrun)      surface_of_xcrun "$@" ;;
+    xcodebuild) surface_of_xcodebuild "$@" ;;
+    adb)        surface_of_adb "$@" ;;
+    emulator)   surface_of_emulator "$@" ;;
+    avdmanager) surface_of_avdmanager "$@" ;;
+    maestro)    surface_of_maestro "$@" ;;
     # Not split here, and each for its own reason. `ssh`/`scp`/`rsync` carry the
     # effect in an operand rather than a verb, `wget` has no read-only form worth
     # carving out, and `gcloud`'s verb surface is wide enough that a partial
@@ -8096,6 +8567,229 @@ surface_of_brew() {
 }
 
 # ---------------------------------------------------------------------------
+# 모바일 기기 도구 — the iOS simulator, Xcode's build driver, the Android
+# emulator and its tools, and Maestro.
+#
+# EACH TABLE GRADES ONLY THE FORMS THAT CERTAINLY NAME A SIMULATOR OR AN
+# EMULATOR. A form that may reach a connected physical device — `xcrun
+# devicectl`, an `adb` with no serial or a non-emulator one, an `xcodebuild`
+# destination that is not a simulator, macOS or a generic platform, a `maestro`
+# with no device or another spelling — stays `등급 미상`, so a person still
+# answers it: physical devices are outside what a `사전 인가` row may open.
+# Every `트리밖쓰기` form here lands in the daemon-like state every run on this
+# machine shares (the simulator set, the emulator and its AVDs), so the reach
+# derivation raises them to `기기전역` and the machine-global cell judges them.
+# ---------------------------------------------------------------------------
+
+gate_device_uuid() {
+  # gate_device_uuid <word> — 0 when the word is an 8-4-4-4-12 hexadecimal
+  # UUID, the form a simulator's UDID takes.
+  local h='[0-9A-Fa-f]'
+  case "$1" in
+    $h$h$h$h$h$h$h$h-$h$h$h$h-$h$h$h$h-$h$h$h$h-$h$h$h$h$h$h$h$h$h$h$h$h) return 0 ;;
+  esac
+  return 1
+}
+
+gate_device_emulator_serial() {
+  # gate_device_emulator_serial <word> — 0 when the word is `emulator-<port>`
+  # with a port of digits only.
+  case "$1" in
+    emulator-*) local p="${1#emulator-}"; case "$p" in ''|*[!0-9]*) return 1 ;; esac; return 0 ;;
+  esac
+  return 1
+}
+
+surface_of_xcrun() {
+  # surface_of_xcrun <argv after `xcrun`...> — `simctl` alone is graded; every
+  # other `xcrun` tool (`devicectl` first among them) stays unknown.
+  [ "${1:-}" = simctl ] || { printf '등급 미상'; return 0; }
+  case "${2:-}" in
+    list|getenv|appinfo|listapps|help)
+      printf '읽기' ;;
+    create|clone|boot|shutdown|delete|erase|install|uninstall|launch|terminate|io|spawn|openurl|addmedia)
+      printf '트리밖쓰기' ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
+gate_xcodebuild_destination_kind() {
+  # gate_xcodebuild_destination_kind <-destination value> — `sim`, `macos`,
+  # `generic` or `-`. The value is a comma-separated `key=value` list; a
+  # simulator is a `platform=` value ending in ` Simulator`, macOS is
+  # `platform=macOS`, and generic is a value beginning `generic/platform=`. A
+  # value with no `platform=` (an `id=` alone) or a physical platform is none
+  # of the three.
+  local v="$1" kv p=''
+  case "$v" in generic/platform=*) printf 'generic'; return 0 ;; esac
+  local IFS=','
+  for kv in $v; do
+    case "$kv" in platform=*) p="${kv#platform=}" ;; esac
+  done
+  case "$p" in
+    *' Simulator') printf 'sim' ;;
+    macOS) printf 'macos' ;;
+    *) printf -- '-' ;;
+  esac
+}
+
+# The `xcodebuild` options that take a value, and the flags that take none.
+# An option in neither list leaves the form unread, so it stays unknown.
+GATE_XCODEBUILD_VALUED=' -project -workspace -scheme -target -configuration -sdk -arch -destination -destination-timeout -derivedDataPath -resultBundlePath -resultBundleVersion -xcconfig -testPlan -only-testing -skip-testing -only-test-configuration -skip-test-configuration -parallel-testing-enabled -parallel-testing-worker-count -maximum-parallel-testing-workers -maximum-concurrent-test-simulator-destinations -maximum-concurrent-test-device-destinations -enableCodeCoverage -enableAddressSanitizer -enableThreadSanitizer -enableUndefinedBehaviorSanitizer -test-iterations -testLanguage -testRegion -toolchain -jobs -xctestrun -testProductsPath -clonedSourcePackagesDirPath -packageCachePath -scmProvider -resultStreamPath -collect-test-diagnostics -test-timeouts-enabled -default-test-execution-time-allowance -maximum-test-execution-time-allowance '
+GATE_XCODEBUILD_FLAGS=' -quiet -verbose -json -allowProvisioningUpdates -allowProvisioningDeviceRegistration -skipUnavailableActions -skipPackagePluginValidation -skipMacroValidation -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile -hideShellScriptEnvironment -showBuildTimingSummary -parallelizeTargets -retry-tests-on-failure -dry-run -n -alltargets '
+readonly GATE_XCODEBUILD_VALUED GATE_XCODEBUILD_FLAGS
+
+gate_xcodebuild_read() {
+  # gate_xcodebuild_read <argv after `xcodebuild`...> — sets GATE_XB_ACTIONS
+  # (the actions, space-separated), GATE_XB_DESTS (one destination value per
+  # line), GATE_XB_READ (1 when a read option is present) and GATE_XB_ARCHIVE
+  # (1 for an archive or an export). Returns 1 when a word is outside what the
+  # two lists and the action set can read.
+  GATE_XB_ACTIONS='' GATE_XB_DESTS='' GATE_XB_READ=0 GATE_XB_ARCHIVE=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -list|-version|-showBuildSettings|-showdestinations|-showTestPlans|-showsdks|-usage|-help)
+        GATE_XB_READ=1; shift ;;
+      -exportArchive|-exportLocalizations|-importLocalizations|-exportNotarizedApp)
+        GATE_XB_ARCHIVE=1; shift ;;
+      -archivePath|-exportPath|-exportOptionsPlist)
+        GATE_XB_ARCHIVE=1; shift; [ "$#" -gt 0 ] && shift ;;
+      -destination)
+        [ "$#" -ge 2 ] || return 1
+        GATE_XB_DESTS="$GATE_XB_DESTS$2
+"
+        shift 2 ;;
+      -*)
+        case "$GATE_XCODEBUILD_VALUED" in
+          *" $1 "*) [ "$#" -ge 2 ] || return 1; shift 2; continue ;;
+        esac
+        case "$GATE_XCODEBUILD_FLAGS" in
+          *" $1 "*) shift; continue ;;
+        esac
+        return 1 ;;
+      build|build-for-testing|clean|test|test-without-building|analyze|install|installsrc|docbuild)
+        GATE_XB_ACTIONS="$GATE_XB_ACTIONS $1"; shift ;;
+      archive)
+        GATE_XB_ARCHIVE=1; shift ;;
+      *=*) shift ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+surface_of_xcodebuild() {
+  # surface_of_xcodebuild <argv after `xcodebuild`...>. `build`,
+  # `build-for-testing` and `clean` write outside the tree when every
+  # destination is a simulator, macOS or a generic platform, or none is given;
+  # `test` and `test-without-building` do when at least one destination is
+  # given and every one is a simulator or macOS. Everything else — a physical
+  # destination, an archive, an export, another action, no action — is unknown.
+  gate_xcodebuild_read "$@" || { printf '등급 미상'; return 0; }
+  [ "$GATE_XB_ARCHIVE" = "1" ] && { printf '등급 미상'; return 0; }
+  if [ "$GATE_XB_READ" = "1" ]; then printf '읽기'; return 0; fi
+  [ -n "$GATE_XB_ACTIONS" ] || { printf '등급 미상'; return 0; }
+  local a has_test=0 d k n=0
+  for a in $GATE_XB_ACTIONS; do
+    case "$a" in
+      build|build-for-testing|clean) ;;
+      test|test-without-building) has_test=1 ;;
+      *) printf '등급 미상'; return 0 ;;
+    esac
+  done
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    n=$((n + 1))
+    k=$(gate_xcodebuild_destination_kind "$d")
+    case "$has_test:$k" in
+      0:sim|0:macos|0:generic|1:sim|1:macos) ;;
+      *) printf '등급 미상'; return 0 ;;
+    esac
+  done <<EOF
+$GATE_XB_DESTS
+EOF
+  if [ "$has_test" = "1" ] && [ "$n" = "0" ]; then printf '등급 미상'; return 0; fi
+  printf '트리밖쓰기'
+}
+
+surface_of_adb() {
+  # surface_of_adb <argv after `adb`...>. `devices` and `version` are reads; an
+  # act on a device is graded only behind `-s emulator-<port>`.
+  case "${1:-}" in
+    devices|version) printf '읽기'; return 0 ;;
+    -s) ;;
+    *) printf '등급 미상'; return 0 ;;
+  esac
+  gate_device_emulator_serial "${2:-}" || { printf '등급 미상'; return 0; }
+  case "${3:-}" in
+    install|uninstall|shell|push|pull|logcat|forward|reverse|wait-for-device)
+      printf '트리밖쓰기' ;;
+    emu)
+      case "${4:-} ${5:-} ${6:-}" in
+        'avd name ') printf '읽기' ;;
+        'kill  ') printf '트리밖쓰기' ;;
+        *) printf '등급 미상' ;;
+      esac ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
+surface_of_emulator() {
+  # surface_of_emulator <argv after `emulator`...> — launching an AVD with
+  # `-avd <name>` writes outside the tree; every other spelling is unknown.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -avd) [ -n "${2:-}" ] && { printf '트리밖쓰기'; return 0; } ;;
+    esac
+    shift
+  done
+  printf '등급 미상'
+}
+
+surface_of_avdmanager() {
+  # surface_of_avdmanager <argv after `avdmanager`...> — `create avd` and
+  # `delete avd` write outside the tree; every other spelling is unknown.
+  case "${1:-} ${2:-}" in
+    'create avd'|'delete avd') printf '트리밖쓰기' ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
+gate_maestro_devices() {
+  # gate_maestro_devices <argv after `maestro`...> — one device value per
+  # line, for every `--device`/`--udid` spelling, with or without `=`.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --device|--udid) [ "$#" -ge 2 ] && { printf '%s\n' "$2"; shift; } ;;
+      --device=*) printf '%s\n' "${1#--device=}" ;;
+      --udid=*) printf '%s\n' "${1#--udid=}" ;;
+    esac
+    shift
+  done
+}
+
+surface_of_maestro() {
+  # surface_of_maestro <argv after `maestro`...>. `--help`, alone or after one
+  # subcommand, is a read. Every other form writes outside the tree only when
+  # it names its device and every device it names is `emulator-<port>` or a
+  # simulator UDID; with no device or another spelling it is unknown.
+  case "$#:${1:-}:${2:-}" in
+    1:--help:*) printf '읽기'; return 0 ;;
+    2:*:--help) case "$1" in -*) ;; *) printf '읽기'; return 0 ;; esac ;;
+  esac
+  local d n=0
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    n=$((n + 1))
+    gate_device_emulator_serial "$d" || gate_device_uuid "$d" || { printf '등급 미상'; return 0; }
+  done <<EOF
+$(gate_maestro_devices "$@")
+EOF
+  [ "$n" -gt 0 ] || { printf '등급 미상'; return 0; }
+  printf '트리밖쓰기'
+}
+
+# ---------------------------------------------------------------------------
 # 표지 — two marks the grade cannot carry, because they cut ACROSS it.
 #
 # `비밀출력` is a read whose output is a credential; `파괴` is a write whose
@@ -8395,6 +9089,18 @@ gate_act_mark() {
         *" --delete"*) printf '파괴\t--delete'; return 0 ;;
         *" --remove-source-files "*) printf '파괴\t--remove-source-files'; return 0 ;;
       esac ;;
+    # Every simulator on the machine, or every one whose runtime is gone — other
+    # runs' and a person's devices with them.
+    xcrun)
+      if [ "${1:-}" = simctl ]; then
+        case "${2:-}" in
+          shutdown|delete|erase)
+            local s
+            for s in "${@:3}"; do
+              case "$s" in all|unavailable) printf '파괴\t%s' "$s"; return 0 ;; esac
+            done ;;
+        esac
+      fi ;;
     dropdb) printf '파괴\tdropdb'; return 0 ;;
     mysqladmin)
       case "$all" in *" drop "*) printf '파괴\tdrop'; return 0 ;; esac ;;
@@ -42696,9 +43402,21 @@ gate_verb_act() {
   GATE_PARK_EV=1 GATE_PREAUTH_JUDGE='-'
   GATE_PARK_RFROW=0 GATE_PARK_RFN='-' GATE_PARK_RS='-' GATE_PARK_RR='-' GATE_PARK_RPD=0
   GATE_PARK_DECL_SURF='-' GATE_PARK_DECL_REACH='-' GATE_PARK_CROWS='-' GATE_PARK_SCOPE=0
+  GATE_PARK_PAIRN='-'
   # A plan that carries no act (`--kind propose-done`) has no argv at all.
   GATE_PARK_ARGV0="${1:-}"
   GATE_PARK_ARGV0="${GATE_PARK_ARGV0##*/}"
+  # Whether this is a mobile device act the table graded as a write, and which
+  # kind: the machine-global repair line prints no row for an act that makes or
+  # boots a device, whose name no verbatim row can know.
+  GATE_PARK_DEVKIND='-'
+  case "$GATE_PARK_ARGV0" in
+    xcrun|xcodebuild|adb|emulator|avdmanager|maestro)
+      if [ "$argv_graded" = "1" ] && [ "$graded" = "트리밖쓰기" ]; then
+        GATE_PARK_DEVKIND=$(gate_device_act_kind "$@")
+        [ "$GATE_PARK_DEVKIND" = "-" ] && GATE_PARK_DEVKIND=other
+      fi ;;
+  esac
   # OFF MODE WITH NOTHING DECLARED IS TODAY, EXACTLY. The reach axis is optional
   # there — the required-check above runs only while the switch is on — so an act
   # that declared no reach has made no claim for the evaluator to judge, and
@@ -42730,12 +43448,12 @@ gate_verb_act() {
     # separator to `read` and an empty field would fold and shift the rest.
     local _out _cell _pcause _facts _rest
     _out=$(gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
-           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
              "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
              "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_EV" \
              "$GATE_RF_ROW" "$GATE_RF_RN" "$GATE_RF_RS" "$GATE_RF_RR" "$GATE_RF_RPD" \
              "$GATE_RF_DECL_SURF" "$GATE_RF_DECL_REACH" "$GATE_RF_CROWS" "$GATE_RF_SCOPE" \
-             "$GATE_RF_PROPOSAL")
+             "${GATE_RF_PAIRN:--}" "$GATE_RF_PROPOSAL")
     _cell=${_out%%
 *}
     _facts=${_out#*
@@ -42752,7 +43470,7 @@ gate_verb_act() {
     IFS='	' read -r GATE_PARK_SX GATE_PARK_SW GATE_PARK_REFF GATE_PARK_GEFF GATE_PARK_NEVER \
       GATE_PARK_TRIG GATE_PARK_EV GATE_PARK_RFROW GATE_PARK_RFN GATE_PARK_RS GATE_PARK_RR \
       GATE_PARK_RPD GATE_PARK_DECL_SURF GATE_PARK_DECL_REACH GATE_PARK_CROWS GATE_PARK_SCOPE \
-      GATE_PARK_PROPOSAL <<EOF || true
+      GATE_PARK_PAIRN GATE_PARK_PROPOSAL <<EOF || true
 $_facts
 EOF
     if gate_auto_resolve_enabled; then
@@ -43331,10 +44049,15 @@ EOF
     case "$kind" in
       skill|router-shift|apply|apply-settle|ci-rerun|label-ack|propose-done) ;;
       *)
-        if [ "${GATE_PARK_RFROW:-0}" = "1" ] && ! gate_kind_is_bookkeeping "$kind" \
-           && [ -n "$(gate_preauth_pair_argv "${GATE_PARK_RFN:--}")" ]; then
+        local _fn='-'
+        case "${GATE_PARK_PAIRN:--}" in
+          ''|-|*[!0-9]*) [ "${GATE_PARK_RFROW:-0}" = "1" ] && _fn="${GATE_PARK_RFN:--}" ;;
+          *) _fn="$GATE_PARK_PAIRN" ;;
+        esac
+        if [ "$_fn" != "-" ] && ! gate_kind_is_bookkeeping "$kind" \
+           && [ -n "$(gate_preauth_pair_argv "$_fn" "${RUN_ID:-}" "$(gate_pair_dispatch_id)")" ]; then
           printf '짝 정리 예보: act 로 내면 사전 인가 행 %s 의 짝 정리를 열 것입니다 (파견=%s)\n' \
-            "$GATE_PARK_RFN" "$(gate_pair_dispatch_id)"
+            "$_fn" "$(gate_pair_dispatch_id)"
         fi ;;
     esac
     return 0
@@ -43624,7 +44347,7 @@ EOF
       gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
       # The stage's own credential set: read-scoped, so a `gh pr merge` spelled
       # here fails at the API rather than at a string match.
-      gate_run_readonly "$@" || rc=$?
+      gate_run_device_aware "$@" || rc=$?
       ;;
     act)
       case "$kind" in
@@ -43659,7 +44382,7 @@ EOF
         label-ack) gate_perform_label_ack "$alias" "$segment" "$@" || rc=$? ;;
         # The argv itself runs here, so the pair opens here as it does on exec.
         *)     gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
-               gate_run_readonly "$@" || rc=$? ;;
+               gate_run_device_aware "$@" || rc=$? ;;
       esac
       ;;
   esac
