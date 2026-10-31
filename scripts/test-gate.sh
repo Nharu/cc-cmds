@@ -38346,7 +38346,7 @@ sb13b_bad=$( { grep -E '^- `segment`' "$SA_LEDGER" || true; } | grep -F 'id=SB13
 check "13: 적용 팔의 적용 준비·완료 행은 전부 선행 을 다시 싣는다" "$sb13b_bad" "0"
 
 # --- 38-14. 대상 HEAD 바인딩 -----------------------------------------------------
-# --- section: 38-14 | group: sb | covers: act, apply, exec | anchors: 14: 구현 워크트리가 지워져도 적용은 게이트의 대상 HEAD 로 통과한다, 14: 적용 준비 뒤 같은 세그먼트의 배포 exec 은 여전히 거부된다, 14: 물려준 GATE_META_RESOLVED_HEAD 로도 리뷰 뒤 커밋의 머지는 거부된다 ---
+# --- section: 38-14 | group: sb | covers: act, apply, exec | anchors: 14: 구현 워크트리가 지워져도 적용은 게이트의 대상 HEAD 로 통과한다, 14: 적용 준비 뒤 같은 세그먼트의 배포 exec 은 여전히 거부된다, 14: 물려준 GATE_META_RESOLVED_HEAD 로도 리뷰 뒤 커밋의 머지는 거부된다, 14: 물려준 GATE_PATCH_SAME_HEAD 로도 리뷰 뒤 커밋의 머지는 거부된다 ---
 #
 # 구현 워크트리가 남아 있으면 규칙은 변수 없이도 통과한다 — 규칙을 직접 부른다.
 SB_CODES='0 21' sb_apply_new '14 바인딩' "if [ -f $WORK/sb14-applied ]; then exit 0; else exit 21; fi" "touch $WORK/sb14-applied"
@@ -38405,6 +38405,13 @@ GATE_META_RESOLVED_HEAD="$sb14u_tip" sa_merge SB14U
 check "14: 물려준 GATE_META_RESOLVED_HEAD 로도 리뷰 뒤 커밋의 머지는 거부된다" "$rc" "3"
 sa_names_rule || bad "14: 메타 해소 표지 거부 주체" "$msg"
 check "14: 물려준 GATE_META_RESOLVED_HEAD 로는 원격이 움직이지 않는다" \
+  "$( cd "$SA_REMOTE" && git rev-parse main )" "$sb14u_remote"
+# patch-id 동일 HEAD 의 표지도 같다 — 이 세그먼트에는 베이스 판정 행이 없어 게이트가 증명해
+# 싣는 값이 없으므로, 규칙이 그 값을 보았다면 그것은 호출자가 물려준 것이다.
+GATE_PATCH_SAME_HEAD="$sb14u_tip" sa_merge SB14U
+check "14: 물려준 GATE_PATCH_SAME_HEAD 로도 리뷰 뒤 커밋의 머지는 거부된다" "$rc" "3"
+sa_names_rule || bad "14: patch-id 동일 표지 거부 주체" "$msg"
+check "14: 물려준 GATE_PATCH_SAME_HEAD 로는 원격이 움직이지 않는다" \
   "$( cd "$SA_REMOTE" && git rev-parse main )" "$sb14u_remote"
 
 # --- R13. 홈이 아닌 레포 ------------------------------------------------------
@@ -54374,7 +54381,7 @@ check "88c: 적용 명령이 있는 메타 해소 착지는 전제 4 를 지나�
 for bad88c in "$LB88C" "$LS88C"; do
   ap88c_out=$(ap88c "$MA88C" "$(lap88c ap-bad "$bad88c" '적용=대기')")
   case "$ap88c_out" in
-    "규칙|"*"적용 행위 전제 4 불충족"*"릴리스 메타 재번호 머지로도 증명되지 않습니다 (H's tree is not the expected release tree)"*)
+    "규칙|"*"적용 행위 전제 4 불충족"*"릴리스 메타 재번호 머지로도, patch-id 동일로도 증명되지 않습니다 (H's tree is not the expected release tree"*"; patch-id: "*)
       ok "88c: 증명되지 않는 둘째 부모의 착지는 전제 4 로 거부되고 증명 실패 사유를 싣는다 ($(cd "$G88C" && git rev-parse --short "$bad88c^2"))" ;;
     *) bad "88c: 증명되지 않는 둘째 부모의 착지" "$ap88c_out" ;;
   esac
@@ -54382,7 +54389,7 @@ done
 
 # ---------------------------------------------------------------------------
 # 88m. 재번호 사슬 — 베이스가 거듭 움직일 때의 메타 해소와 코드 충돌 한도
-# --- section: 88m | group: ledger_series | covers: gate_base_cf_release_only, gate_base_conflict_count, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_segment_review_next, gate_apply_preconditions, gate_apply_subject_proof, gate_cycle_trigger_facts | anchors: 88m: 사슬 머리가 다시 릴리스 파일에서만 충돌하면 부류 릴리스 메타 이고 다음은 베이스 해소 다, 88m: 사슬 머리의 릴리스 메타 충돌 뒤 촉발 사실은 버전 경합 이고 베이스 충돌 이 아니다, 88m: HEAD 가 R 이어도 같은 베이스의 부류는 릴리스 메타 다, 88m: 둘째 도우미 머지는 사슬 머리 위에 한 고리를 쌓고 판을 새 베이스 위로 다시 매긴다, 88m: 둘째 고리 HEAD 의 베이스 판정은 일치 이고 다음은 머지 다, 88m: 같은 베이스로 도우미를 다시 부르면 거부되고 HEAD 는 그대로다, 88m: 판정 HEAD 가 아닌 HEAD 위에는 쌓지 않는다, 88m: R 도 사슬 머리도 아닌 HEAD 위에는 쌓지 않는다, 88m: 이미 그 베이스 위에 있는 HEAD 는 다시 해소하지 않는다, 88m: 거부 뒤 HEAD 는 둘째 고리 그대로다, 88m: 두 고리 사슬은 증명되고 머지 행위는 그 머리를 내보낸다, 88m: 리뷰-후-머지 는 사슬 머리를 받을 때만 통과시킨다, 88m: 아래 고리의 판이 틀린 사슬은 증명되지 않고 사유에 고리 자리가 붙는다, 88m: 아래 고리가 같은 베이스를 다시 쓴 사슬은 증명되지 않는다, 88m: 아래 고리가 머지가 아닌 사슬은 증명되지 않는다, 88m: 릴리스 파일만의 충돌은 부류와 무관하게 세지 않는다, 88m: 코드 충돌 넷이면 베이스 해소 한도 다, 88m: 잘린 칸·빈 칸·키 없는 행은 코드 충돌로 센다, 88m: 한도를 넘은 뒤의 릴리스 메타 충돌도 베이스 해소 한도 다, 88m: 사슬 머리를 둘째 부모로 둔 착지는 적용 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다, 88m: 적용 대상 증명은 사슬 머리의 착지에서 리뷰 HEAD 를 세운다, 88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 일치 다 ---
+# --- section: 88m | group: ledger_series | covers: gate_base_cf_release_only, gate_base_conflict_count, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_segment_review_next, gate_apply_preconditions, gate_apply_subject_proof, gate_cycle_trigger_facts, gate_patch_same | anchors: 88m: 사슬 머리가 다시 릴리스 파일에서만 충돌하면 부류 릴리스 메타 이고 다음은 베이스 해소 다, 88m: 사슬 머리의 릴리스 메타 충돌 뒤 촉발 사실은 버전 경합 이고 베이스 충돌 이 아니다, 88m: HEAD 가 R 이어도 같은 베이스의 부류는 릴리스 메타 다, 88m: 둘째 도우미 머지는 사슬 머리 위에 한 고리를 쌓고 판을 새 베이스 위로 다시 매긴다, 88m: 둘째 고리 HEAD 의 베이스 판정은 일치 이고 다음은 머지 다, 88m: 같은 베이스로 도우미를 다시 부르면 거부되고 HEAD 는 그대로다, 88m: 판정 HEAD 가 아닌 HEAD 위에는 쌓지 않는다, 88m: R 도 사슬 머리도 아닌 HEAD 위에는 쌓지 않는다, 88m: 이미 그 베이스 위에 있는 HEAD 는 다시 해소하지 않는다, 88m: 거부 뒤 HEAD 는 둘째 고리 그대로다, 88m: 두 고리 사슬은 증명되고 머지 행위는 그 머리를 내보낸다, 88m: 리뷰-후-머지 는 사슬 머리를 받을 때만 통과시킨다, 88m: 아래 고리의 판이 틀린 사슬은 증명되지 않고 사유에 고리 자리가 붙는다, 88m: 아래 고리가 같은 베이스를 다시 쓴 사슬은 증명되지 않는다, 88m: 아래 고리가 머지가 아닌 사슬은 증명되지 않는다, 88m: 릴리스 파일만의 충돌은 부류와 무관하게 세지 않는다, 88m: 코드 충돌 넷이면 베이스 해소 한도 다, 88m: 잘린 칸·빈 칸·키 없는 행은 코드 충돌로 센다, 88m: 한도를 넘은 뒤의 릴리스 메타 충돌도 베이스 해소 한도 다, 88m: 사슬 머리를 둘째 부모로 둔 착지는 적용 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88m: 아래 고리가 틀린 사슬의 착지는 재번호 증명이 아니라 patch-id 동일로 전제 4 를 지난다, 88m: 적용 대상 증명은 사슬 머리의 착지와 patch-id 가 같은 틀린 사슬의 착지에서 리뷰 HEAD 를 세운다, 88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 일치 다 ---
 #
 # 메타 해소 뒤 베이스가 또 판을 올리면 사슬 머리 M1 이 다시 릴리스 파일에서만 충돌한다.
 # 그 충돌은 여전히 판단이 아니어서 도우미가 M1 위에 한 고리를 더 쌓고, 사슬 전체가
@@ -54606,17 +54613,19 @@ lap88m() {  # lap88m <이름> <머지 커밋> — L88M 뒤에 적용=대기 머�
 ap88m_out=$(lsr_in Linux "$(lap88m ap-ok "$LM88M")" - lsr_rp_in "$MA88M" ap88m_in 2>/dev/null)
 check "88m: 사슬 머리를 둘째 부모로 둔 착지는 적용 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다" \
   "$(printf '%s' "$ap88m_out" | cut -d'|' -f1-4)" "0||$LM88M|$R88M"
-ap88m_out=$(lsr_in Linux "$(lap88m ap-bad "$LB88M")" - lsr_rp_in "$MA88M" ap88m_in 2>/dev/null)
-case "$ap88m_out" in
-  "규칙|"*"적용 행위 전제 4 불충족"*"(H's tree is not the expected release tree — link 2 of the chain)"*)
-    ok "88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다" ;;
-  *) bad "88m: 아래 고리가 틀린 사슬의 착지는 전제 4 로 거부되고 고리 자리를 싣는다" "$ap88m_out" ;;
-esac
+# 아래 고리가 틀린 사슬은 재번호 증명에서 떨어지지만(위의 직접 증명이 고리 자리를 본다), 윗
+# 고리의 트리가 E*(R, T2) 이고 R 을 품으므로 브랜치 변경은 리뷰된 것과 patch-id 가 같다.
+MAB88M="$D88M/manifest-apply-bad.md"
+sed 's/베이스 브랜치=land-88m/베이스 브랜치=landbad-88m/' "$MA88M" > "$MAB88M"
+ap88m_out=$(lsr_in Linux "$(lap88m ap-bad "$LB88M")" - lsr_rp_in "$MAB88M" ap88m_in 2>/dev/null)
+check "88m: 아래 고리가 틀린 사슬의 착지는 재번호 증명이 아니라 patch-id 동일로 전제 4 를 지난다" \
+  "$(printf '%s' "$ap88m_out" | cut -d'|' -f1-4)|$(q88m "$L88M" gate_patch_same "$W88M" "$R88M" "$CB188M" "$T288M" >/dev/null && printf 0 || printf 1)" \
+  "0||$LB88M|$R88M|0"
 sp88m_in() {  # sp88m <M> — 적용 대상 증명이 세운 리뷰 HEAD, 또는 x:<사유>
   if gate_apply_subject_proof t S "$1"; then printf '%s' "$GATE_APPLY_PROOF_HEAD"; else printf 'x:%s' "$GATE_APPLY_PROOF_WHY"; fi
 }
-check "88m: 적용 대상 증명은 사슬 머리의 착지에서 리뷰 HEAD 를 세운다" \
-  "$(q88m "$L88M" sp88m_in "$LM88M")|$(q88m "$L88M" sp88m_in "$LB88M" | cut -c1-2)" "$R88M|x:"
+check "88m: 적용 대상 증명은 사슬 머리의 착지와 patch-id 가 같은 틀린 사슬의 착지에서 리뷰 HEAD 를 세운다" \
+  "$(q88m "$L88M" sp88m_in "$LM88M")|$(q88m "$L88M" sp88m_in "$LB88M")" "$R88M|$R88M"
 
 # 셋째 고리 — 베이스가 한 번 더 판을 올린다.
 T388M=$(up88m 1.3.0 2026-10-16 up3.txt)
@@ -54625,6 +54634,348 @@ MM388M=$(mm88m "$L88M"); MM388M=${MM388M#0|}
 check "88m: 세 고리 사슬도 증명되고 그 HEAD 의 베이스 판정은 일치 다" \
   "$(cs88m "$MM388M" | cut -d'|' -f1)|$(pv88m "$R88M" "$MM388M" "$T388M")|$(c88m)|$(lsr_last_fields "$L88M" '베이스 판정' 판정\ HEAD 판정)" \
   "1.4.0|0||0|$MM388M|일치"
+
+# ---------------------------------------------------------------------------
+# 88p. patch-id 동일 해소 — 리뷰된 브랜치 변경을 그대로 옮긴 해소 HEAD 는 다시 리뷰하지 않는다
+# --- section: 88p | group: ledger_series | covers: gate_patch_same, gate_patch_same_export, gate_base_next, gate_base_check_row, gate_segment_review_next, gate_merge_check_value, gate_done_conditions, gate_apply_preconditions, gate_apply_subject_proof | anchors: 88p: 판을 올리지 않은 브랜치의 먼 줄 해소는 머지 이고 일치 행의 판정 근거는 패치동일 이다, 88p: 메타 증명의 전제가 모두 서는 재번호 해소는 patch-id 도 같지만 판정 근거는 재번호 다, 88p: README 생성 블록 충돌을 더한 재번호 해소는 판정 근거가 패치동일 이다, 88p: 판을 올리지 않은 브랜치에서 README 생성 블록만 섞인 해소는 판정 근거가 패치동일 이다, 88p: 머지 행위는 patch-id 동일 HEAD 만 규칙에 내보낸다, 88p: 덮지 않는 patch-id 동일 머지의 머지 대조는 패치 동일 이다, 88p: 조건 11 은 패치 동일 을 통과시킨다, 88p: 베이스가 변경의 앞뒤 세 줄 안을 바꾼 해소는 해소 리뷰 다, 88p: 코드 한 줄을 더한 머지는 해소 리뷰 다, 88p: 공백만 바꾼 머지는 해소 리뷰 다, 88p: 판을 잘못 매긴 머지는 해소 리뷰 다, 88p: plugin.json 의 판 밖 키를 바꾼 머지는 해소 리뷰 다, 88p: README 생성 블록 밖을 바꾼 머지는 해소 리뷰 다, 88p: 아래 변경 기록 항목을 고친 머지는 해소 리뷰 다, 88p: R 이 조상이 아닌 HEAD 는 해소 리뷰 다, 88p: 메타만 바꾼 브랜치는 빈 디프로 해소 리뷰 다, 88p: patch-id 동일 HEAD 가 다시 릴리스 파일에서만 충돌해도 부류는 일반 이고 다음은 베이스 해소 다, 88p: 적용 전제 4 는 둘째 부모가 patch-id 동일 HEAD 인 착지를 받고 대상 HEAD 는 리뷰 HEAD 다, 88p: 선머지후리뷰 세그먼트의 patch-id 동일 착지는 적용 전제 4 가 거부한다, 88p: 변경 기록만 있는 레포에서 머리 항목을 더한 해소는 해소 리뷰 다, 88p: plugin.json 을 새로 만든 해소는 해소 리뷰 이고 정수 비교 오류가 없다, 88p: 릴리스 파일이 없는 레포의 먼 줄 해소는 판정 근거가 패치동일 이다, 88p: 작업 트리의 .gitattributes 는 증명을 바꾸지 않는다, 88p: 리뷰-후-머지 는 patch-id 동일 HEAD 를 받을 때만 리뷰 뒤 해소 커밋을 통과시킨다 ---
+#
+# 베이스가 움직여 손으로 푼 해소 머지는 R 의 트리도 재번호 머지도 아니지만, 브랜치가 베이스
+# 위에 얹는 변경은 리뷰 때와 같을 수 있다. 게이트는 두 쪽 각자의 머지 베이스에서 잰 디프를
+# 릴리스 메타를 정규화한 뒤 `git patch-id --verbatim` 으로 비교한다. 픽스처는 다섯 벌이다 —
+# n(판을 올리지 않는 브랜치), b·c(판을 올리는 브랜치; c 는 상류가 README 생성 블록도 바꾼다),
+# l(변경 기록만 있는 레포), q(브랜치가 plugin.json 을 새로 만드는 레포), z(릴리스 파일이 없는
+# 레포). 해소 머지는 R 을 첫 부모, 베이스를 둘째 부모로 두고 트리를 손으로 쓴다(`-s ours`
+# 뒤 파일을 고쳐 커밋). 각 단언은 앞선 증명(트리 동일, 메타 재번호) 중 어느 것이 서지 않아
+# patch-id 갈래로 내려오는지를 정해 두고, 기대하는 `판정 근거` 를 적는다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88P="$lsr_root/s88p"; rm -rf "$D88P"; mkdir -p "$D88P"
+PJ88P='plugins/cc-cmds/.claude-plugin/plugin.json'
+pj88p() { mkdir -p "${PJ88P%/*}"; printf '{\n  "name": "cc-cmds",\n  "version": "%s",\n  "description": "%s"\n}\n' "$1" "${2:-x}" > "$PJ88P"; }
+cl88p() {  # cl88p <판> <날짜> <본문> — 맨 위에 항목 하나를 얹는다
+  { sed -n '1,2p' CHANGELOG.md; printf '## [%s] - %s\n\n### Added\n- %s\n\n' "$1" "$2" "$3"; sed '1,2d' CHANGELOG.md; } > CHANGELOG.new
+  mv CHANGELOG.new CHANGELOG.md
+}
+ax88p() {  # ax88p <줄=값…> — 스무 줄의 a.txt, 지명한 줄만 그 값으로
+  local i v kv
+  for i in $(seq 1 20); do
+    v="l$i"
+    for kv in "$@"; do [ "${kv%%=*}" != "$i" ] || v=${kv#*=}; done
+    printf '%s\n' "$v"
+  done > a.txt
+}
+rd88p() {  # rd88p <표 블록 줄> [블록 밖 소개 줄] — 생성 블록 둘을 가진 README
+  printf '# 제목\n\n%s\n\n<!-- SKILLS_TABLE_START -->\n%s\n<!-- SKILLS_TABLE_END -->\n\n## 옵션\n\n<!-- SKILLS_OPTIONS_START -->\n옵션\n<!-- SKILLS_OPTIONS_END -->\n' \
+    "${2:-소개}" "$1" > README.md
+}
+mk88p() {  # mk88p <픽스처> <full|log|none> — 원격·메인 클론·세그먼트 워크트리(seg)·상류 클론과 매니페스트
+  local d="$D88P/$1"
+  mkdir -p "$d"
+  ( git init -q --bare "$d/origin.git" && git init -q "$d/repo" && cd "$d/repo" \
+    && git config user.email t@example.invalid && git config user.name T \
+    && git config "url.$d/origin.git.insteadOf" "https://github.com/o/$1.git" \
+    && ax88p \
+    && case "$2" in
+         full) pj88p 1.0.0 && printf '# Changelog\n\n## [1.0.0] - 2026-10-01\n\n### Added\n- 처음\n' > CHANGELOG.md && rd88p 표 ;;
+         log) printf '# Changelog\n\n## [1.0.0] - 2026-10-01\n\n### Added\n- 처음\n' > CHANGELOG.md ;;
+         none) : ;;
+       esac \
+    && git add -A && git commit -qm one && git branch -M main \
+    && git remote add origin "https://github.com/o/$1.git" && git push -q origin main \
+    && git worktree add -q -b seg "$d/seg" main \
+    && git clone -q -b main "$d/origin.git" "$d/up" && cd "$d/up" \
+    && git config user.email t@example.invalid && git config user.name T ) >/dev/null 2>&1
+  printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/%s | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' \
+    "$d/repo" "$1" > "$d/manifest.md"
+}
+sc88p() {  # sc88p <픽스처> <쓰기 함수> — 세그먼트 워크트리에 커밋 하나를 쌓고 sha 를 찍는다
+  ( cd "$D88P/$1/seg" && "$2" && git add -A && git commit -qm seg && git rev-parse HEAD ) 2>/dev/null
+}
+up88p() {  # up88p <픽스처> <브랜치> <시작> <쓰기 함수> [-] — 상류 커밋 하나를 그 브랜치에(- 가 없으면 main 에도) 밀고 sha
+  local to="HEAD:refs/heads/main"
+  [ "${5:-}" != "-" ] || to=""
+  ( cd "$D88P/$1/up" && git checkout -q -B "$2" "$3" && "$4" && git add -A && git commit -qm "$2" \
+      && git push -q -f origin "HEAD:refs/heads/$2" $to && git rev-parse HEAD ) 2>/dev/null
+  ( cd "$D88P/$1/repo" && git fetch -q origin ) >/dev/null 2>&1
+}
+hm88p() {  # hm88p <픽스처> <브랜치> <R> <T> <쓰기 함수> — 부모가 R·T 이고 트리는 R 의 것을 쓰기 함수가 고친 해소 머지
+  ( cd "$D88P/$1/seg" && git checkout -q -B "$2" "$3" && git merge -q --no-ff --no-commit -s ours "$4" \
+      && "$5" && git add -A && git commit -qm "resolve $2" && git rev-parse HEAD && git checkout -q seg ) 2>/dev/null
+}
+co88p() { ( cd "$D88P/$1/seg" && git checkout -q "$2" ) >/dev/null 2>&1; }  # co88p <픽스처> <브랜치>
+lg88p() {  # lg88p <픽스처> <원장 이름> <R> — 세그먼트 행과 0/0 cycle 행을 둔 새 원장
+  local l
+  l=$(lsr_ledger "w88p-$2"); printf '1\n' > "${l%/*}/routing-guard"
+  printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg | 선행=없음 | prev=x\n' "$D88P/$1/seg" >> "$l"
+  printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+    "$3" "$(lsr_rp_report "$D88P/$2.md" 0 0 차단)" >> "$l"
+  printf '%s' "$l"
+}
+ck88p() {  # ck88p <픽스처> <원장> <head sha> — 라우팅 런의 머지 갈래가 기다리는 회차 0 통과 checks 행
+  printf -- '- `checks` | 교대=1 | PR=o/%s#5 | head sha=%s | 상태=통과 | 필수 집합=- | 실패 체크=- | 관측=%s | 세그먼트=S | 재실행 회차=0 | 진행 중=0 | prev=x\n' \
+    "$1" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$2"
+}
+q88p() { local f=$1 l=$2; shift 2; lsr_in Linux "$l" - lsr_rp_in "$D88P/$f/manifest.md" "$@" 2>/dev/null; }
+c88p() {  # c88p <픽스처> <원장> — base-check 한 번의 rc
+  local rc88p=0
+  lsr_in Linux "$2" - lsr_rp_in "$D88P/$1/manifest.md" gate_record_row base-check S t >/dev/null 2>&1 || rc88p=$?
+  printf '%s' "$rc88p"
+}
+nx88p() { q88p "$1" "$2" gate_segment_review_next S; }  # nx88p <픽스처> <원장>
+bf88p() { lsr_last_fields "$1" '베이스 판정' 판정\ HEAD 베이스 판정 부류 판정\ 근거; }  # bf88p <원장>
+ps88p_in() {  # ps88p_in <dir> <R> <H> <T> — 증명의 rc 와 사유
+  local rc=0
+  gate_patch_same "$@" >/dev/null || rc=$?
+  printf '%s|%s' "$rc" "$GATE_PATCH_WHY"
+}
+ps88p() { local f=$1 l=$2; shift 2; q88p "$f" "$l" ps88p_in "$D88P/$f/seg" "$@"; }  # ps88p <픽스처> <원장> <R> <H> <T>
+
+# --- 픽스처 n — 판을 올리지 않는 브랜치. R 은 a.txt 3 줄과 README 표 블록을 바꾼다.
+mk88p n full
+wr_rn88p() { ax88p 3=S3; rd88p 세그먼트표; }
+wr_t18p() { ax88p 18=U18; }
+RN88P=$(sc88p n wr_rn88p)
+TN88P=$(up88p n t1 main wr_t18p)
+LN88P=$(lg88p n n "$RN88P")
+check "88p: 픽스처 n — R 의 베이스 판정은 이동 이다" "$(c88p n "$LN88P")|$(bf88p "$LN88P")" "0|$RN88P|$TN88P|이동|-|R"
+wr_far88p() { ax88p 3=S3 18=U18; }
+HF88P=$(hm88p n p-far "$RN88P" "$TN88P" wr_far88p)
+co88p n p-far; ck88p n "$LN88P" "$HF88P"
+check "88p: 판을 올리지 않은 브랜치의 먼 줄 해소는 머지 이고 일치 행의 판정 근거는 패치동일 이다" \
+  "$(nx88p n "$LN88P")|$(c88p n "$LN88P")|$(bf88p "$LN88P")|$(nx88p n "$LN88P")" \
+  "머지|0|$HF88P|$TN88P|일치|-|패치동일|머지"
+ex88p_in() {  # ex88p_in <HEAD> — 머지 행위의 내보내기가 남기는 값
+  unset GATE_PATCH_SAME_HEAD
+  gate_patch_same_export S "$1"
+  printf '%s' "${GATE_PATCH_SAME_HEAD:-}"
+}
+check "88p: 머지 행위는 patch-id 동일 HEAD 만 규칙에 내보낸다" \
+  "$(q88p n "$LN88P" ex88p_in "$HF88P")|$(q88p n "$LN88P" ex88p_in "$RN88P")|$(q88p n "$LN88P" ex88p_in "$TN88P")" "$HF88P||"
+# 작업 트리와 메인 클론 뿌리에 커밋하지 않은 `* -diff` 속성이 있어도 디프는 바이너리로 바뀌지
+# 않는다 — 바뀐다면 줄 내용이 해시에서 빠져 아래의 문맥 단언이 무의미해진다.
+wr_t5p() { ax88p 5=U5; }
+TNN88P=$(up88p n t-near main wr_t5p -)
+wr_near88p() { ax88p 3=S3 5=U5; }
+HN88P=$(hm88p n p-near "$RN88P" "$TNN88P" wr_near88p)
+printf '* -diff\n' > "$D88P/n/seg/.gitattributes"; printf '* -diff\n' > "$D88P/n/repo/.gitattributes"
+check "88p: 작업 트리의 .gitattributes 는 증명을 바꾸지 않는다" \
+  "$(ps88p n "$LN88P" "$RN88P" "$HF88P" "$TN88P")/$(ps88p n "$LN88P" "$RN88P" "$HN88P" "$TNN88P")" \
+  "0|/1|the branch patch differs from the reviewed one"
+rm -f "$D88P/n/seg/.gitattributes" "$D88P/n/repo/.gitattributes"
+# 가까운 줄 — 마지막 베이스 판정 행의 베이스만 그 상류로 바꾼 사본으로 다음을 읽는다.
+LNN88P=$(lsr_ledger w88p-n-near); printf '1\n' > "${LNN88P%/*}/routing-guard"
+awk -v t="$TN88P" -v n="$TNN88P" '/^- `베이스 판정` / && /판정=일치/ { next } { gsub("베이스=" t, "베이스=" n); print }' "$LN88P" > "$LNN88P"
+co88p n p-near
+check "88p: 베이스가 변경의 앞뒤 세 줄 안을 바꾼 해소는 해소 리뷰 다" \
+  "$(nx88p n "$LNN88P")|$(ps88p n "$LNN88P" "$RN88P" "$HN88P" "$TNN88P")" "해소 리뷰|1|the branch patch differs from the reviewed one"
+# 나머지 해소 리뷰 갈래는 모두 같은 베이스 TN88P 위의 손 해소다.
+nr88p() {  # nr88p <브랜치> <HEAD> — 그 HEAD 를 세운 다음과 증명의 rc|사유
+  co88p n "$1"
+  printf '%s|%s' "$(nx88p n "$LN88P")" "$(ps88p n "$LN88P" "$RN88P" "$2" "$TN88P")"
+}
+wr_extra88p() { ax88p 3=S3 18=U18; printf 'extra\n' > b.txt; }
+wr_ws88p() { ax88p '3=S3 ' 18=U18; }
+wr_pjkey88p() { ax88p 3=S3 18=U18; pj88p 1.0.0 y; }
+wr_rdout88p() { ax88p 3=S3 18=U18; rd88p 세그먼트표 다른소개; }
+wr_lowlog88p() { ax88p 3=S3 18=U18; printf '# Changelog\n\n## [1.0.0] - 2026-10-01\n\n### Added\n- 처음!\n' > CHANGELOG.md; }
+HX88P=$(hm88p n p-extra "$RN88P" "$TN88P" wr_extra88p)
+HW88P=$(hm88p n p-ws "$RN88P" "$TN88P" wr_ws88p)
+HK88P=$(hm88p n p-pjkey "$RN88P" "$TN88P" wr_pjkey88p)
+HO88P=$(hm88p n p-rdout "$RN88P" "$TN88P" wr_rdout88p)
+HL88P=$(hm88p n p-lowlog "$RN88P" "$TN88P" wr_lowlog88p)
+HA88P=$( ( cd "$D88P/n/seg" && git checkout -q -B p-noanc "$TN88P" && ax88p 3=S3 18=U18 && rd88p 세그먼트표 \
+           && git add -A && git commit -qm noanc && git rev-parse HEAD && git checkout -q seg ) 2>/dev/null)
+check "88p: 코드 한 줄을 더한 머지는 해소 리뷰 다" "$(nr88p p-extra "$HX88P")" "해소 리뷰|1|the branch patch differs from the reviewed one"
+check "88p: 공백만 바꾼 머지는 해소 리뷰 다" "$(nr88p p-ws "$HW88P")" "해소 리뷰|1|the branch patch differs from the reviewed one"
+check "88p: plugin.json 의 판 밖 키를 바꾼 머지는 해소 리뷰 다" "$(nr88p p-pjkey "$HK88P")" "해소 리뷰|1|the branch patch differs from the reviewed one"
+check "88p: README 생성 블록 밖을 바꾼 머지는 해소 리뷰 다" "$(nr88p p-rdout "$HO88P")" "해소 리뷰|1|the branch patch differs from the reviewed one"
+check "88p: 아래 변경 기록 항목을 고친 머지는 해소 리뷰 다" "$(nr88p p-lowlog "$HL88P")" \
+  "해소 리뷰|1|the normalized tree of $HL88P cannot be built: CHANGELOG.md is not one head entry over the base"
+check "88p: R 이 조상이 아닌 HEAD 는 해소 리뷰 다" "$(nr88p p-noanc "$HA88P")" "해소 리뷰|1|R is not an ancestor of H"
+co88p n seg
+# README 생성 블록만 상류와 섞인 해소 — 상류가 표 블록을 바꿔 README 에서 충돌한다.
+wr_trd88p() { rd88p 상류표; }
+TR88P=$(up88p n t-rd main wr_trd88p)
+LNR88P=$(lg88p n n-rd "$RN88P")
+c88p n "$LNR88P" >/dev/null
+wr_rd88p() { ax88p 3=S3; git show "$TR88P:README.md" > README.md; }
+HR88P=$(hm88p n p-rd "$RN88P" "$TR88P" wr_rd88p)
+co88p n p-rd; ck88p n "$LNR88P" "$HR88P"
+check "88p: 판을 올리지 않은 브랜치에서 README 생성 블록만 섞인 해소는 판정 근거가 패치동일 이다" \
+  "$(lsr_last_fields "$LNR88P" '베이스 판정' 판정 충돌\ 파일 부류)|$(c88p n "$LNR88P")|$(bf88p "$LNR88P")|$(nx88p n "$LNR88P")" \
+  "충돌|README.md|일반|0|$HR88P|$TR88P|일치|-|패치동일|머지"
+co88p n seg
+
+check "88p: 덮지 않는 patch-id 동일 머지의 머지 대조는 패치 동일 이다" \
+  "$(q88p n "$LN88P" gate_merge_check_value 선리뷰후머지 충족 '덮지 않는다' 0 1)|$(q88p n "$LN88P" gate_merge_check_value 선리뷰후머지 충족 '덮지 않는다' 1 1)|$(q88p n "$LN88P" gate_merge_check_value 선리뷰후머지 충족 '덮지 않는다' 0 0)" \
+  "패치 동일|메타 해소|위반(미포함)"
+L88PD=$(lsr_ledger w88p-done)
+printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | 리포트 경로=%s | prev=x\n' "$D88P/n.md" >> "$L88PD"
+printf -- '- `segment` | 교대=1 | id=S | 상태=머지됨 | 워크트리=- | 머지 대조=패치 동일 | prev=x\n' >> "$L88PD"
+check "88p: 조건 11 은 패치 동일 을 통과시킨다" "$(q88p n "$L88PD" gate_done_conditions | grep -c '^11 ' || true)" "0"
+
+# --- 픽스처 b — 판을 올리는 브랜치. 상류도 같은 등급으로 판을 올리고 먼 줄을 바꾼다.
+mk88p b full
+wr_rb88p() { ax88p 3=S3; pj88p 1.1.0; cl88p 1.1.0 2026-10-14 '세그먼트 기능'; rd88p 세그먼트표; }
+wr_tb88p() { ax88p 18=U18; pj88p 1.1.0; cl88p 1.1.0 2026-10-13 '상류 기능'; }
+RB88P=$(sc88p b wr_rb88p)
+TB88P=$(up88p b t1 main wr_tb88p)
+LB88P=$(lg88p b b "$RB88P")
+c88p b "$LB88P" >/dev/null
+MM88P=$(q88p b "$LB88P" gate_meta_merge S)
+ck88p b "$LB88P" "$MM88P"
+check "88p: 메타 증명의 전제가 모두 서는 재번호 해소는 patch-id 도 같지만 판정 근거는 재번호 다" \
+  "$(c88p b "$LB88P")|$(bf88p "$LB88P")|$(ps88p b "$LB88P" "$RB88P" "$MM88P" "$TB88P")|$(nx88p b "$LB88P")" \
+  "0|$MM88P|$TB88P|일치|-|재번호|0||머지"
+# 판을 잘못 매긴 머지 — 재번호 머지의 트리에서 plugin.json 만 1.1.0 으로 둔다.
+mkdir -p "$D88P/bad/${PJ88P%/*}"; ( cd "$D88P/bad" && pj88p 1.1.0 )
+BV88P=$( ( cd "$D88P/b/seg" && b=$(git hash-object -w "$D88P/bad/$PJ88P") && export GIT_INDEX_FILE="$D88P/bad.index" \
+           && git read-tree "$MM88P" && git update-index --cacheinfo "100644,$b,$PJ88P" \
+           && t=$(git write-tree) && c=$(git commit-tree "$t" -p "$RB88P" -p "$TB88P" -m bad) \
+           && git branch -q p-badver "$c" && printf '%s' "$c" ) 2>/dev/null)
+LBB88P=$(lsr_ledger w88p-b-bad); printf '1\n' > "${LBB88P%/*}/routing-guard"
+awk '/^- `베이스 판정` / && /판정=일치/ { next } { print }' "$LB88P" > "$LBB88P"
+co88p b p-badver
+check "88p: 판을 잘못 매긴 머지는 해소 리뷰 다" \
+  "$(nx88p b "$LBB88P")|$(ps88p b "$LBB88P" "$RB88P" "$BV88P" "$TB88P")" "해소 리뷰|1|the version is not the reviewed bump"
+co88p b seg
+# 메타만 바꾼 브랜치 — 판과 변경 기록만 올린 R. 정규화하면 디프가 비어 증명이 서지 않는다.
+# 해소의 머리 항목 날짜를 R 의 것과 달리 두어 재번호 증명도 서지 않게 한다.
+wr_rm88p() { pj88p 1.1.0; cl88p 1.1.0 2026-10-16 '판만'; }
+RM88P=$( ( cd "$D88P/b/seg" && git checkout -q -B p-rm main && wr_rm88p && git add -A && git commit -qm rm \
+           && git rev-parse HEAD && git checkout -q seg ) 2>/dev/null)
+wr_hm88p() { ax88p 18=U18; pj88p 1.2.0; git show "$TB88P:CHANGELOG.md" > CHANGELOG.md; cl88p 1.2.0 2026-10-17 '판만'; }
+HM88P=$(hm88p b p-meta "$RM88P" "$TB88P" wr_hm88p)
+LBM88P=$(lg88p b b-meta "$RM88P")
+awk '/^- `베이스 판정` / && /판정=충돌/ { print }' "$LBB88P" | sed "s/리뷰 HEAD=[^|]*|/리뷰 HEAD=$RM88P |/; s/판정 HEAD=[^|]*|/판정 HEAD=$RM88P |/" >> "$LBM88P"
+co88p b p-meta
+check "88p: 메타만 바꾼 브랜치는 빈 디프로 해소 리뷰 다" \
+  "$(nx88p b "$LBM88P")|$(ps88p b "$LBM88P" "$RM88P" "$HM88P" "$TB88P")" "해소 리뷰|1|the branch diff is empty"
+co88p b seg
+
+# --- 픽스처 c — b 와 같은 R 이지만 상류가 README 표 블록도 바꿔 메타 증명의 전제(릴리스 파일
+# 밖 충돌 없음)를 깬다.
+mk88p c full
+wr_tc88p() { ax88p 18=U18; pj88p 1.1.0; cl88p 1.1.0 2026-10-13 '상류 기능'; rd88p 상류표; }
+RC88P=$(sc88p c wr_rb88p)
+TC88P=$(up88p c t1 main wr_tc88p)
+LC88P=$(lg88p c c "$RC88P")
+check "88p: 픽스처 c — R 은 README 에서도 충돌해 부류 일반 이다" \
+  "$(c88p c "$LC88P")|$(lsr_last_fields "$LC88P" '베이스 판정' 판정 부류)|$(lsr_last_fields "$LC88P" '베이스 판정' 충돌\ 파일 | tr ',' '\n' | grep -c '^README.md$' || true)|$(nx88p c "$LC88P")" \
+  "0|충돌|일반|1|베이스 해소"
+wr_hc88p() {
+  ax88p 3=S3 18=U18; pj88p 1.2.0
+  git show "$TC88P:CHANGELOG.md" > CHANGELOG.md; cl88p 1.2.0 2026-10-14 '세그먼트 기능'
+  git show "$TC88P:README.md" > README.md
+}
+HC88P=$(hm88p c p-res "$RC88P" "$TC88P" wr_hc88p)
+co88p c p-res; ck88p c "$LC88P" "$HC88P"
+check "88p: README 생성 블록 충돌을 더한 재번호 해소는 판정 근거가 패치동일 이다" \
+  "$(q88p c "$LC88P" gate_meta_resolved "$D88P/c/seg" "$RC88P" "$HC88P" "$TC88P" >/dev/null && printf 0 || printf 1)|$(nx88p c "$LC88P")|$(c88p c "$LC88P")|$(bf88p "$LC88P")" \
+  "1|머지|0|$HC88P|$TC88P|일치|-|패치동일"
+rl88p() {  # rl88p [env 할당…] — 리뷰-후-머지 규칙을 머지 자리의 입력으로 직접
+  ( cd "$D88P/c/repo" && env -u GATE_SUBJECT_HEAD -u GATE_META_RESOLVED_HEAD -u GATE_PATCH_SAME_HEAD "$@" \
+      GATE_ACT_INDEX=9 GATE_MERGE_INDEX=1 \
+      GATE_SURFACE=외부상태변경 GATE_HISTORY_INTEGRATION=0 GATE_REVIEW_POLICY_INDEX=0 \
+      GATE_LEDGER="$LC88P" GATE_MANIFEST="$D88P/c/manifest.md" GATE_SEGMENT=S \
+      GATE_SEGMENT_LAST_CYCLE="$(q88p c "$LC88P" gate_segment_last_cycle_row S)" \
+      GATE_SEGMENT_LAST_SEGMENT="$(q88p c "$LC88P" gate_segment_last_segment_row S)" \
+      /bin/sh "$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-머지.sh" ) >/dev/null 2>&1 && printf 0 || printf 1
+}
+check "88p: 리뷰-후-머지 는 patch-id 동일 HEAD 를 받을 때만 리뷰 뒤 해소 커밋을 통과시킨다" \
+  "$(rl88p)|$(rl88p GATE_PATCH_SAME_HEAD="$HC88P")|$(rl88p GATE_PATCH_SAME_HEAD="$RC88P")" "1|0|1"
+
+# 적용 전제 4 — 착지는 상류 클론에서 TC88P 위에 해소 HEAD 를 --no-ff 로 머지해 착지 브랜치에 민다.
+( cd "$D88P/c/up" && git fetch -q "$D88P/c/repo" p-res ) >/dev/null 2>&1
+LM88P=$( ( cd "$D88P/c/up" && git checkout -q -B land "$TC88P" && git merge -q --no-ff -m land FETCH_HEAD \
+           && git push -q origin land && git rev-parse HEAD ) 2>/dev/null)
+( cd "$D88P/c/repo" && git fetch -q origin ) >/dev/null 2>&1
+MA88P="$D88P/c/manifest-apply.md"
+sed -e 's/베이스 브랜치=main/베이스 브랜치=land/' -e 's/절단점=머지/절단점=배포/' "$D88P/c/manifest.md" | awk '
+  { print }
+  /^\*\*설계 문서\*\*: / { print "**적용 주체**: 파이프라인"; print "**적용 지점**: `true`"; print "**적용 프로브**: `exit 0`" }
+' > "$MA88P"
+ap88p_in() {
+  local rc=0
+  gate_apply_preconditions act t S 2>"$D88P/ap.err" >/dev/null || rc=$?
+  [ "$rc" != "$GATE_EXIT_RULE" ] || rc=규칙
+  printf '%s|%s|%s|%s|%s' "$rc" "${GATE_APPLY_NOT_OWED:-}" "${GATE_APPLY_MERGE:-}" "${GATE_APPLY_SUBJECT:-}" \
+    "$(tr '\n' ' ' < "$D88P/ap.err")"
+}
+lap88p() {  # lap88p <이름> [선머지] — LC88P 뒤에 적용=대기 머지됨 행을 붙인 사본(선머지면 리뷰 의무 행과 정책을 함께)
+  local l pol=''
+  l=$(lsr_ledger "w88p-$1"); cp "$LC88P" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  if [ -n "${2:-}" ]; then
+    pol=' | 리뷰 정책=선머지후리뷰'
+    printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg%s | prev=x\n' "$D88P/c/seg" "$pol" >> "$l"
+    printf -- '- `리뷰 의무` | 의무 id=O1 | 세그먼트=S | 상태=미이행 | 머지 커밋=%s | prev=x\n' "$RC88P" >> "$l"
+  fi
+  printf -- '- `segment` | 교대=1 | id=S | 상태=머지됨 | 워크트리=%s | 머지 커밋=%s | 적용=대기%s | prev=x\n' "$D88P/c/seg" "$LM88P" "$pol" >> "$l"
+  printf '%s' "$l"
+}
+ap88p_out=$(lsr_in Linux "$(lap88p ap-ok)" - lsr_rp_in "$MA88P" ap88p_in 2>/dev/null)
+sp88p_in() {  # sp88p_in <M> — 적용 대상 증명이 세운 리뷰 HEAD, 또는 x:<사유>
+  if gate_apply_subject_proof t S "$1"; then printf '%s' "$GATE_APPLY_PROOF_HEAD"; else printf 'x:%s' "$GATE_APPLY_PROOF_WHY"; fi
+}
+check "88p: 적용 전제 4 는 둘째 부모가 patch-id 동일 HEAD 인 착지를 받고 대상 HEAD 는 리뷰 HEAD 다" \
+  "$(cd "$D88P/c/repo" && git rev-parse "$LM88P^2")|$(printf '%s' "$ap88p_out" | cut -d'|' -f1-4)|$(q88p c "$LC88P" sp88p_in "$LM88P")" \
+  "$HC88P|0||$LM88P|$RC88P|$RC88P"
+ap88p_out=$(lsr_in Linux "$(lap88p ap-mf 선머지)" - lsr_rp_in "$MA88P" ap88p_in 2>/dev/null)
+case "$ap88p_out" in
+  *"patch-id: "*) bad "88p: 선머지후리뷰 세그먼트의 patch-id 동일 착지는 적용 전제 4 가 거부한다" "patch-id 갈래를 거쳤다: $ap88p_out" ;;
+  "규칙|"*"적용 행위 전제 4 불충족"*"리뷰 의무 행의 머지 커밋"*)
+    ok "88p: 선머지후리뷰 세그먼트의 patch-id 동일 착지는 적용 전제 4 가 거부한다" ;;
+  *) bad "88p: 선머지후리뷰 세그먼트의 patch-id 동일 착지는 적용 전제 4 가 거부한다" "$ap88p_out" ;;
+esac
+
+# 다시 충돌 — 상류가 한 번 더 판을 올리면 patch-id 동일 HEAD 가 판정되고, 충돌이 릴리스
+# 파일에서만 나도 재번호 도우미가 쌓을 수 없는 대상이므로 부류는 일반 이다.
+wr_tc3p() { pj88p 1.2.0; cl88p 1.2.0 2026-10-15 '상류 둘'; }
+TC388P=$(up88p c t3 "$TC88P" wr_tc3p)
+check "88p: patch-id 동일 HEAD 가 다시 릴리스 파일에서만 충돌해도 부류는 일반 이고 다음은 베이스 해소 다" \
+  "$(c88p c "$LC88P")|$(lsr_last_fields "$LC88P" '베이스 판정' 판정\ HEAD 베이스 판정 충돌\ 파일 부류 판정\ 근거)|$(nx88p c "$LC88P")" \
+  "0|$HC88P|$TC388P|충돌|CHANGELOG.md|일반|패치동일|베이스 해소"
+co88p c seg
+
+# --- 픽스처 l — plugin.json 없이 변경 기록만 있는 레포. 브랜치가 머리 항목을 더한다.
+mk88p l log
+wr_rl88p() { ax88p 3=S3; cl88p 1.1.0 2026-10-14 '세그먼트 기능'; }
+RL88P=$(sc88p l wr_rl88p)
+TL88P=$(up88p l t1 main wr_t18p)
+LL88P=$(lg88p l l "$RL88P")
+c88p l "$LL88P" >/dev/null
+HLL88P=$(hm88p l p-h "$RL88P" "$TL88P" wr_far88p)
+co88p l p-h
+check "88p: 변경 기록만 있는 레포에서 머리 항목을 더한 해소는 해소 리뷰 다" \
+  "$(nx88p l "$LL88P")|$(ps88p l "$LL88P" "$RL88P" "$HLL88P" "$TL88P")" "해소 리뷰|1|a head entry does not name its version"
+co88p l seg
+
+# --- 픽스처 q — 베이스에 plugin.json 이 없고 브랜치가 그것을 새로 만든다(네 판 중 둘만 값).
+mk88p q log
+wr_rq88p() { ax88p 3=S3; pj88p 1.1.0; }
+RQ88P=$(sc88p q wr_rq88p)
+TQ88P=$(up88p q t1 main wr_t18p)
+LQ88P=$(lg88p q q "$RQ88P")
+c88p q "$LQ88P" >/dev/null
+HQ88P=$(hm88p q p-h "$RQ88P" "$TQ88P" wr_far88p)
+co88p q p-h
+psq88p=$(lsr_in Linux "$LQ88P" - lsr_rp_in "$D88P/q/manifest.md" ps88p_in "$D88P/q/seg" "$RQ88P" "$HQ88P" "$TQ88P" 2>"$D88P/q.err")
+check "88p: plugin.json 을 새로 만든 해소는 해소 리뷰 이고 정수 비교 오류가 없다" \
+  "$(nx88p q "$LQ88P")|$psq88p|$(grep -c -i -e 'integer' -e '정수' "$D88P/q.err" || true)" "해소 리뷰|1|the version is not the reviewed bump|0"
+co88p q seg
+
+# --- 픽스처 z — 릴리스 파일이 하나도 없는 레포.
+mk88p z none
+wr_rz88p() { ax88p 3=S3; }
+RZ88P=$(sc88p z wr_rz88p)
+TZ88P=$(up88p z t1 main wr_t18p)
+LZ88P=$(lg88p z z "$RZ88P")
+c88p z "$LZ88P" >/dev/null
+HZ88P=$(hm88p z p-h "$RZ88P" "$TZ88P" wr_far88p)
+co88p z p-h; ck88p z "$LZ88P" "$HZ88P"
+check "88p: 릴리스 파일이 없는 레포의 먼 줄 해소는 판정 근거가 패치동일 이다" \
+  "$(c88p z "$LZ88P")|$(bf88p "$LZ88P")|$(nx88p z "$LZ88P")" "0|$HZ88P|$TZ88P|일치|-|패치동일|머지"
+co88p z seg
 
 # ---------------------------------------------------------------------------
 # 88e. CI 판정의 리뷰 사이클 합류 — 판정 전 머지 금지, 수정 갈래의 CI 층, 대기 한도, 선재실행 술어, 중계 깨움
