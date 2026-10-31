@@ -457,6 +457,13 @@ check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이�
 # The target-hook refusals the router reads before a remote act: an array even
 # when no target hook ever refused, so `length` never meets a null.
 check "대상 훅 거절이 없으면 guard_refusals 는 빈 배열이다" "$(jq -c .guard_refusals "$WORK/s1.json")" "[]"
+# The drain's quarantine and its blocked marker sit right after the refusals:
+# the seat reads both on a run whose every act stops on one drain unit, and the
+# snapshot runs no drain, so these two are what it can still read there.
+check "drain_quarantine 와 drain_blocked 가 guard_refusals 바로 뒤에 그 순서로 온다" \
+  "$(jq -r 'keys_unsorted | "\(index("drain_quarantine") - index("guard_refusals")),\(index("drain_blocked") - index("guard_refusals"))"' "$WORK/s1.json")" "1,2"
+check "격리된 배수 단위가 없으면 drain_quarantine 는 빈 배열이다" "$(jq -c .drain_quarantine "$WORK/s1.json")" "[]"
+check "배수 막힘 표지가 없으면 drain_blocked 는 null 이다" "$(jq -c .drain_blocked "$WORK/s1.json")" "null"
 check "segments[] 의 원소는 원격 상태 필드를 싣는다" \
   "$(jq -r '[.segments[] | has("브랜치") and has("HEAD") and has("원격 팁") and has("PR") and has("원격 단계") and has("리뷰 줄")] | if length == 0 then "원소 없음" else all | tostring end' "$WORK/s1.json")" "true"
 # `적용` is always one of three words, never null: the router branches on it

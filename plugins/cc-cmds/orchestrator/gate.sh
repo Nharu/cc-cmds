@@ -146,6 +146,13 @@
 #                    the cause). The seat in the person's turn and a kickoff
 #                    taking over an earlier run call it; a stage or a shift is
 #                    refused, and so is a run with a live shift or stage
+#   gate.sh drain-release --manifest <path>
+#                    the seat's recovery of a blocked drain: runs no drain,
+#                    moves the unit `drain-blocked` names to
+#                    `quarantine/<계열>/` with a `배수 격리 행위자=좌석` row and
+#                    removes the marker; a stage or a shift is refused (3),
+#                    and so is a call with no marker (3) or a marker whose path
+#                    is outside its series' shape (2)
 #   gate.sh carry-body --manifest <path> --segment <id>
 #                    writes the issue body file of every carry-over item of the
 #                    segment's last cycle under `<run-dir>/carry/` and prints
@@ -420,6 +427,17 @@ CC_ORCH_SOURCE_ONLY=1
 export CC_ORCH_SOURCE_ONLY
 # shellcheck source=/dev/null
 . "$GATE_DIR/run.sh"
+# THE GATE'S `die` KEEPS ITS LAST WORDS. Same output and the same exit 1 as
+# run.sh's, and the text is left in `GATE_DIE_TEXT` for `gate_on_exit`, which
+# records it when the main shell really ends on it. Nothing is written here: a
+# `die` inside a subshell or a command substitution is one its caller swallows,
+# and the variable it sets there never reaches the trap.
+GATE_DIE_TEXT=""
+# The drain unit being processed, `<계열>\t<런 디렉터리 상대 경로>`, set and
+# cleared by the four drains around each unit; empty everywhere else, so a
+# value the caller's environment carries never names a unit.
+GATE_DRAIN_SITE=""
+die() { GATE_DIE_TEXT="$*"; printf '%s [run][stop] %s\n' "$(now_iso)" "$*" >&2; exit 1; }
 # The user-plugin key derivation the settings render writes into every variant.
 # Sourced because the kickoff helper lists the same keys as candidates, and two
 # derivations would let the keys it offers differ from the keys the run turns off.
@@ -15783,6 +15801,14 @@ gate_snapshot() {
   printf '  "guard_refusals": [\n'
   gate_guard_refusals_json
   printf '  ],\n'
+  # The drain units moved aside, read from the quarantine directory itself so
+  # they stay visible when the `배수 격리` row could not be written; and the
+  # drain unit a stopped call left behind, which the seat releases with
+  # `drain-release`. This verb runs no drain, so both read on a blocked run.
+  printf '  "drain_quarantine": [\n'
+  gate_drain_quarantine_json
+  printf '  ],\n'
+  printf '  "drain_blocked": %s,\n' "$(gate_drain_blocked_json)"
 
   # WHAT IS KEEPING THE RUN FROM ENDING, in the object the router is contracted
   # to read every turn. The top-level keys carried the goal, the targets, the
@@ -16317,6 +16343,81 @@ gate_digest_path() {
     "$(gate_thp thp_key_norm "${CC_PIPELINE_STAGE_ID:-router}")"
 }
 
+gate_stop_record() {
+  # gate_stop_record <text> — what a gate call that stopped on `die` leaves for
+  # the readers that cannot see its stderr. Called from `gate_on_exit` only, so
+  # it runs on the main shell's real exit and never for a `die` some caller
+  # swallowed inside a subshell.
+  #
+  # - The caller is this run's shift (`CC_PIPELINE_SHIFT_ID` is `<run id>#<n>`
+  #   and no stage id is set): one line `<시각>\t<문면>` is appended to
+  #   `stop/shift-<n>`. The launcher's `사유=무기록` row reads its last line.
+  # - The call stopped inside a drain unit (`GATE_DRAIN_SITE` is set): the drain
+  #   marker is written, whatever the text says — the place it stopped is what
+  #   makes it a blocked drain, not the wording.
+  local text="$1" at sf
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  text=$(printf '%s' "$text" | tr '\t\n\r' '   ')
+  at=$(now_iso)
+  sf=$(gate_stop_shift_file)
+  if [ -n "$sf" ]; then
+    mkdir -p "$RUN_DIR/stop" && printf '%s\t%s\n' "$at" "$text" >> "$sf"
+  fi
+  if [ -n "${GATE_DRAIN_SITE:-}" ]; then
+    gate_drain_blocked_write "$GATE_DRAIN_SITE" "$at" "$text"
+  fi
+  return 0
+}
+
+gate_stop_shift_file() {
+  # gate_stop_shift_file — the path `stop/shift-<n>` of the calling routing
+  # shift, or nothing when the caller is not this run's shift (a stage id is
+  # set, the shift id names another run, or its ordinal is not a number). The
+  # apply supervisor inherits the shift id of the shift whose act started it and
+  # ends hours later, so it is not that shift's call and has no stop file.
+  local sid="${CC_PIPELINE_SHIFT_ID:-}" n
+  [ "${GATE_TRAP_VERB:-}" != "supervise-apply" ] || return 0
+  [ -n "${RUN_DIR:-}" ] && [ -n "$sid" ] && [ -z "${CC_PIPELINE_STAGE_ID:-}" ] && [ -n "${RUN_ID:-}" ] || return 0
+  case "$sid" in "$RUN_ID#"*) ;; *) return 0 ;; esac
+  n=${sid#"$RUN_ID#"}
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s/stop/shift-%s' "$RUN_DIR" "$n"
+}
+
+gate_stop_clear() {
+  # gate_stop_clear — a gate call of the shift that succeeded (exit 0) takes the
+  # shift's stop file down. The file then holds a line only while no call of
+  # the shift has succeeded since it stopped, so the `무기록` row's
+  # `마지막 정지` never pairs a stop the shift went on past with a later death
+  # of another cause (a dropped connection, a usage limit). A rule refusal does
+  # not clear it: a refused call after a stop is no sign the stop was overcome,
+  # and clearing there would lose the cause.
+  local sf
+  sf=$(gate_stop_shift_file)
+  [ -z "$sf" ] || rm -f "$sf"
+}
+
+gate_drain_blocked_write() {
+  # gate_drain_blocked_write <계열\t상대 경로> <시각> <정지 문면> — the drain
+  # marker `drain-blocked`, one line `<계열>\t<상대 경로>\t<시각>\t<문면>` with
+  # the text cut to 300 bytes, written through a temporary file in the same
+  # directory and a rename so a reader never sees half of it.
+  local site="$1" at="$2" text="$3" tmp
+  tmp="$RUN_DIR/.drain-blocked.tmp.$$"
+  printf '%s\t%s\t%s\n' "$site" "$at" "$(gate_row_safe "$(printf '%s' "$text" | tr '\t' ' ')" 300)" > "$tmp" \
+    && mv -f "$tmp" "$RUN_DIR/drain-blocked" || { rm -f "$tmp"; return 1; }
+}
+
+gate_drain_blocked_clear() {
+  # gate_drain_blocked_clear <계열> — a drain of <계열> that ran to its end takes
+  # down a marker of its own series; a marker of another series stays.
+  local f="$RUN_DIR/drain-blocked" s
+  [ -f "$f" ] || return 0
+  s=$(head -1 "$f" 2>/dev/null | cut -f1)
+  [ "$s" = "$1" ] || return 0
+  rm -f "$f"
+}
+
 gate_on_exit() {
   # THE EXIT STATUS ON THE WAY OUT IS NOT THIS FUNCTION'S TO CHANGE. This runs
   # from an EXIT trap, and a trap body that fails under `errexit` REPLACES the
@@ -16340,6 +16441,17 @@ gate_on_exit() {
   gate_ci_match_lock_release
   # The one-read copy of a seat-apply record is the gate's own scratch file.
   [ -z "${GATE_SA_COPY:-}" ] || rm -f "$GATE_SA_COPY"
+  # A call the gate itself stopped (`die`, exit 1) leaves its text where the
+  # next reader looks: the shift's stop file and, inside a drain unit, the drain
+  # marker. A rule refusal (2, 3, 11, …) already has its own row and is not
+  # recorded, and a shift's call that succeeded takes the shift's earlier stop
+  # line down, because that stop is no longer where the shift stands. Failures
+  # are swallowed and the status is not changed.
+  if [ "$__rc" = "1" ] && [ -n "${GATE_DIE_TEXT:-}" ]; then
+    gate_stop_record "$GATE_DIE_TEXT" 2>/dev/null || true
+  elif [ "$__rc" = "0" ]; then
+    gate_stop_clear 2>/dev/null || true
+  fi
   gate_emit_digest_body
   set -e
   return "$__rc"
@@ -19939,7 +20051,7 @@ gate_main() {
   # takes the trap for that second duty alone: it writes its terminal segment
   # row through the same arm, hours after the act that started it returned.
   case "$verb" in
-    act|exec|admit|supervise-apply) trap 'gate_on_exit' EXIT ;;
+    act|exec|admit|supervise-apply) GATE_TRAP_VERB="$verb"; trap 'gate_on_exit' EXIT ;;
   esac
 
   # THE HANDLES A LATER READER NEEDS, written on EVERY entry rather than at run
@@ -20425,6 +20537,12 @@ gate_main() {
       # taking over this run: the run did not end at any boundary, so no
       # acting path reaches an end row for it.
       gate_verb_end_abandoned "$end_cause" "$end_successor"
+      ;;
+    drain-release)
+      # Writing, and the writer is the seat: a drain unit the gate stopped on
+      # is moved aside with a row, without running any drain.
+      [ $# -eq 0 ] || { printf 'gate: drain-release takes no arguments after --manifest\n' >&2; exit 2; }
+      gate_verb_drain_release
       ;;
     *)
       printf 'gate: unknown verb: %s\n' "$verb" >&2; exit 2 ;;
@@ -35686,7 +35804,10 @@ gate_drain_stall() {
   # then truncate. Chained and locked because this is the writer; the watcher's
   # own append was neither, and the chain then read as broken from that row on.
   local f="$RUN_DIR/stall" line ts why cmd
-  [ -s "$f" ] || return 0
+  [ -s "$f" ] || { gate_drain_blocked_clear stall; return 0; }
+  # The unit is the whole file: a `die` before the truncation below leaves it
+  # as it was, and the next drain would meet the same line.
+  GATE_DRAIN_SITE="stall"$'\t'"stall"
   while IFS="$(printf '\t')" read -r ts why cmd; do
     [ -n "$why" ] || continue
     # THE KEY IS "THIS 사유 IS CURRENTLY UNRESOLVED", not "this 사유 appears
@@ -35712,6 +35833,8 @@ gate_drain_stall() {
       "관측=$ts" "재개 명령=$cmd"
   done < "$f"
   : > "$f"
+  GATE_DRAIN_SITE=""
+  gate_drain_blocked_clear stall
 }
 
 gate_drain_checks() {
@@ -35794,21 +35917,28 @@ gate_drain_checks() {
     held=0
     warn "could not create the \`checks\` drain lock and drains without it: $lk"
   }
+  # The unit is one renamed-aside file, named by its path under the run
+  # directory while it is being transcribed.
   while IFS= read -r t; do
     [ -n "$t" ] || continue
+    GATE_DRAIN_SITE="checks"$'\t'"${t#"$RUN_DIR"/}"
     gate_drain_checks_file "$t"
     rm -f "$t"
+    GATE_DRAIN_SITE=""
   done <<EOF
 $( { ls -tr "$RUN_DIR"/checks.observed.draining.* 2>/dev/null || true; } )
 EOF
   if [ -s "$f" ]; then
     t="$f.draining.$$"
     if mv "$f" "$t" 2>/dev/null; then
+      GATE_DRAIN_SITE="checks"$'\t'"${t#"$RUN_DIR"/}"
       gate_drain_checks_file "$t"
       rm -f "$t"
+      GATE_DRAIN_SITE=""
     fi
   fi
   [ "$held" = "0" ] || gate_checks_drain_unlock "$lk"
+  gate_drain_blocked_clear checks
 }
 
 gate_checks_drain_lock() {
@@ -36700,6 +36830,68 @@ gate_verb_end_abandoned() {
     포기)     why="사람이 이 런을 포기했다" ;;
   esac
   gate_end_run "$cause" "$why" 해당없음 "$cause"
+}
+
+gate_verb_drain_release() {
+  # gate_verb_drain_release — the seat's one recovery of a blocked drain: the
+  # drain unit `drain-blocked` names is moved to `quarantine/<계열>/` with a
+  # `배수 격리 행위자=좌석` row, and the marker is removed.
+  #
+  # A BLOCKED DRAIN STOPS EVERY ACTING CALL, THE SHIFT'S INCLUDED. A unit whose
+  # processing makes the gate `die` stays where it is, and the next call's
+  # prelude meets it again, so nothing that goes through the drains can clear
+  # it. This verb runs no drain, which is why it still works on such a run. The
+  # seat does not touch the run directory itself: the ledger's one writer is
+  # the gate, and the recovery has to leave a row.
+  #
+  # ONLY THE SEAT. A stage or a shift is refused with nothing written — the
+  # `end-abandoned` precedent — because the call it would make is the very one
+  # that is blocked, and it cannot know whether moving the unit aside is right.
+  #
+  # THE MARKER'S PATH IS CHECKED AGAINST ITS SERIES' SHAPE before anything
+  # moves: `stall`, a `checks.observed.draining.*` file, `admit/refused/*/*` or
+  # `admit/used/*`, with no `..` and no leading `/`. A path that is not one of
+  # those is a vocabulary refusal, so a marker cannot name another file.
+  local f="$RUN_DIR/drain-blocked" line bs bp bt bx ok=0
+  if cc_caller_is_stage || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+    warn "drain-release is called by the seat — not by a stage or a shift"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ ! -f "$f" ]; then
+    warn "no drain is blocked (there is no drain-blocked marker), so nothing is released"
+    return "$GATE_EXIT_RULE"
+  fi
+  line=$(sed -n '1p' "$f" 2>/dev/null || true)
+  IFS="$(printf '\t')" read -r bs bp bt bx <<EOF
+$line
+EOF
+  case "$bp" in
+    ''|/*|*..*) ;;
+    *)
+      case "$bs:$bp" in
+        stall:stall) ok=1 ;;
+        checks:checks.observed.draining.*) case "${bp#checks.observed.draining.}" in */*) ;; *) ok=1 ;; esac ;;
+        대상거절:admit/refused/*/*) case "${bp#admit/refused/}" in */*/*) ;; *) ok=1 ;; esac ;;
+        admit정산:admit/used/*) case "${bp#admit/used/}" in */*) ;; *) ok=1 ;; esac ;;
+      esac ;;
+  esac
+  if [ "$ok" != "1" ]; then
+    warn "the drain-blocked marker names a unit outside its series' shape, so nothing is moved: 계열=${bs:-(none)} 경로=${bp:-(none)}"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  if [ ! -e "$RUN_DIR/$bp" ]; then
+    rm -f "$f"
+    log "drain-release — $bp is already gone; the marker is removed"
+    return 0
+  fi
+  local q=0
+  gate_drain_quarantine "$bs" "$RUN_DIR/$bp" 좌석 "${bx:-미상}" || q=$?
+  case "$q" in
+    0) rm -f "$f"; log "drain-release — $bp moved to quarantine/$bs/ by the seat" ;;
+    2) rm -f "$f"; log "drain-release — $bp is already gone; the marker is removed" ;;
+    *) return 1 ;;
+  esac
+  return 0
 }
 
 gate_run_ended_ok() {
@@ -41191,21 +41383,55 @@ gate_refusal_row() {
   # gate_refusal_row <alias> <segment> <actor> <form> <basis> <act digest>
   #   <bytes> <text> [<판정>] — writes one `대상 거절` row under the condition
   # GATE_COND holds, once per (target, segment, digest, form, condition); the
-  # whole command goes to the `refused.<n>` file beside the ledger rows.
+  # whole command goes to the `refused.<n>` file and the whole refusal text to
+  # `refused.<n>.text`, beside the ledger rows.
+  #
+  # THE ROW IS MADE TO FIT, NOT ASSUMED TO. The two free texts are the only
+  # fields cut: the refusal text from 160 bytes down to 40 in steps of 40, then
+  # the command from 120 down to 40, each width measured with the ruler
+  # `gate_append` uses. The identity and condition fields are never cut, so
+  # `gate_has_row` above and `gate_refusal_block`'s exit 3 keep matching. A row
+  # that does not fit even at the floor — an identity field itself abnormally
+  # long — is not written: the two side files this call made are removed and
+  # this returns 1, which the drain turns into a quarantine instead of a `die`
+  # that would stop every later call of the same caller.
   local al="$1" seg="$2" actor="$3" form="$4" basis="$5" dig="$6" bytes="$7" text="$8" verdict="${9:-}"
-  local n side
+  local n side tside tw=160 cw=120 cmdv txtv at len
   if gate_has_row '대상 거절' "대상=$al" "세그먼트=$seg" "행위 다이제스트=$dig" "형태=$form" "조건=$GATE_COND"; then
     return 0
   fi
   n=$(gate_rows '대상 거절' | gate_count)
   n=$((n + 1))
   side="refused.$n"
+  tside="refused.$n.text"
   printf '%s' "$bytes" > "$RUN_DIR/$side" 2>/dev/null || side='-'
+  printf '%s' "${text:-미상}" > "$RUN_DIR/$tside" 2>/dev/null || tside='-'
+  at=$(now_iso)
+  while :; do
+    cmdv=$(gate_row_safe "$bytes" "$cw")
+    txtv=$(gate_row_safe "${text:-미상}" "$tw")
+    len=$(gate_row_projected_bytes '대상 거절' "대상=$al" "세그먼트=$seg" "행위자=$actor" "형태=$form" "근거=$basis" \
+      ${verdict:+"판정=$verdict"} "행위 다이제스트=$dig" "명령=$cmdv" "곁파일=$side" \
+      "거절 문면=$txtv" "문면 곁파일=$tside" "조건=$GATE_COND" "루트=$GATE_COND_ROOT" "훅 다이제스트=$GATE_COND_HOOK" \
+      "HEAD=$GATE_COND_HEAD" "원격 팁=$GATE_COND_TIP" "PR=$GATE_COND_PR" "중단 답=$GATE_COND_ANSWER" \
+      "기록 시각=$at")
+    [ "$len" -gt "$GATE_ROW_MAX" ] || break
+    if [ "$tw" -gt 40 ]; then
+      tw=$((tw - 40))
+    elif [ "$cw" -gt 40 ]; then
+      cw=$((cw - 40))
+    else
+      [ "$side" = '-' ] || rm -f "$RUN_DIR/$side"
+      [ "$tside" = '-' ] || rm -f "$RUN_DIR/$tside"
+      warn "the 대상 거절 row does not fit in ${GATE_ROW_MAX} bytes even with the command and the refusal text cut to 40 bytes (${len} bytes) — an identity or condition field is too long, so no row is written: 대상=$(gate_row_safe "$al" 80) 세그먼트=$(gate_row_safe "$seg" 80)"
+      return 1
+    fi
+  done
   gate_append '대상 거절' "대상=$al" "세그먼트=$seg" "행위자=$actor" "형태=$form" "근거=$basis" \
-    ${verdict:+"판정=$verdict"} "행위 다이제스트=$dig" "명령=$(gate_row_safe "$bytes" 120)" "곁파일=$side" \
-    "거절 문면=$(gate_row_safe "${text:-미상}" 160)" "조건=$GATE_COND" "루트=$GATE_COND_ROOT" "훅 다이제스트=$GATE_COND_HOOK" \
+    ${verdict:+"판정=$verdict"} "행위 다이제스트=$dig" "명령=$cmdv" "곁파일=$side" \
+    "거절 문면=$txtv" "문면 곁파일=$tside" "조건=$GATE_COND" "루트=$GATE_COND_ROOT" "훅 다이제스트=$GATE_COND_HOOK" \
     "HEAD=$GATE_COND_HEAD" "원격 팁=$GATE_COND_TIP" "PR=$GATE_COND_PR" "중단 답=$GATE_COND_ANSWER" \
-    "기록 시각=$(now_iso)"
+    "기록 시각=$at"
 }
 
 gate_refusal_block() {
@@ -41258,6 +41484,48 @@ gate_guard_refusals_json() {
   printf '%s\n' "${out%,}"
 }
 
+gate_drain_quarantine_json() {
+  # The snapshot's `drain_quarantine[]`: the files under `quarantine/<계열>/`,
+  # newest first, at most 20 — `계열`, `격리 경로` (relative to the run
+  # directory) and `격리 시각`, read from the UTC stamp the file name starts
+  # with (`null` when the name carries none). The directory and not the ledger
+  # is read, so a quarantine whose row failed is still listed.
+  local d="$RUN_DIR/quarantine" out qre='^[0-9]{8}T[0-9]{6}Z$'
+  [ -d "$d" ] || return 0
+  out=$( { for p in "$d"/*/*; do
+             [ -f "$p" ] || continue
+             printf '%s\t%s\n' "${p##*/}" "$(basename "$(dirname "$p")")"
+           done; } | LC_ALL=C sort -r | awk 'NR <= 20' \
+         | while IFS="$(printf '\t')" read -r qn qs; do
+             [ -n "$qn" ] || continue
+             qt=${qn%%.*}
+             # An if, not a case: bash 3.2 closes `$( … )` at a pattern's `)`.
+             if [[ "$qt" =~ $qre ]]; then
+               qt="\"${qt:0:4}-${qt:4:2}-${qt:6:2}T${qt:9:2}:${qt:11:2}:${qt:13:2}Z\""
+             else
+               qt=null
+             fi
+             printf '    {"계열": "%s", "격리 경로": "%s", "격리 시각": %s},\n' \
+               "$(gate_json_escape "$qs")" "$(gate_json_escape "quarantine/$qs/$qn")" "$qt"
+           done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
+}
+
+gate_drain_blocked_json() {
+  # The snapshot's `drain_blocked`: `null` with no marker, else `계열`, `경로`,
+  # `기록 시각` and `정지 문면` from the one line of `drain-blocked`.
+  local f="$RUN_DIR/drain-blocked" line bs bp bt bx
+  if [ ! -f "$f" ]; then printf 'null'; return 0; fi
+  line=$(sed -n '1p' "$f" 2>/dev/null || true)
+  [ -n "$line" ] || { printf 'null'; return 0; }
+  IFS="$(printf '\t')" read -r bs bp bt bx <<EOF
+$line
+EOF
+  printf '{"계열": "%s", "경로": "%s", "기록 시각": "%s", "정지 문면": "%s"}' \
+    "$(gate_json_escape "$bs")" "$(gate_json_escape "$bp")" "$(gate_json_escape "$bt")" "$(gate_json_escape "$bx")"
+}
+
 gate_refused_flag() {
   # gate_refused_flag <bytes> <flag> — the word after <flag> in the part of a
   # recorded gate call before its first `--`, quotes stripped; empty when the
@@ -41281,33 +41549,108 @@ gate_refused_drain() {
   # into `대상 거절 형태=감쌈 근거=예측` rows, the way `checks.observed` is
   # drained: the hook writes no row, and this is the writer. The act digest is
   # read from the words after the record's first unquoted `--`.
-  local d="$RUN_DIR/admit/refused" f tg sg bytes inner dig v t pd kind actor
-  [ -d "$d" ] || return 0
+  #
+  # ONE RECORD CANNOT STOP THE CALL. Each record is processed in a subshell —
+  # the `gate_settle_dead_shift` precedent — so a `die` inside it (a row over
+  # the cap, an unreadable record, a failed append) ends the subshell and not
+  # this call; the record is then moved to `quarantine/대상거절/` and the next
+  # one is read. Without this a record whose row could not be written stayed in
+  # place, and every later call of the same caller met it again and died again.
+  local d="$RUN_DIR/admit/refused" f rel q
+  [ -d "$d" ] || { gate_drain_blocked_clear 대상거절; return 0; }
   for f in "$d"/*/*; do
     [ -f "$f" ] || continue
     case "${f##*/}" in .tmp.*) continue ;; esac
-    tg=$(jq -r '.target // empty' "$f" 2>/dev/null || true)
-    sg=$(jq -r '.segment // empty' "$f" 2>/dev/null || true)
-    pd=$(jq -r '.project_dir // empty' "$f" 2>/dev/null || true)
-    v=$(jq -r '.verdict // empty' "$f" 2>/dev/null || true)
-    t=$(jq -r '.text // empty' "$f" 2>/dev/null || true)
-    kind=$(jq -r '.caller_kind // empty' "$f" 2>/dev/null || true)
-    bytes=$(jq -j '.command_b64 // "" | @base64d' "$f" 2>/dev/null; printf x)
-    bytes=${bytes%x}
-    inner=$(gate_thp thp_after_dashdash "$bytes" 2>/dev/null) || inner="$bytes"
-    dig=$(gate_thp thp_act_digest "$inner")
-    case "$kind" in stage) actor='스테이지' ;; shift) actor='교대' ;; *) actor='미상' ;; esac
-    # A shift carries no target or segment in its environment; the call's own
-    # `--target` and `--segment` name them.
-    [ -n "$tg" ] || tg=$(gate_refused_flag "$bytes" --target)
-    [ -n "$sg" ] || sg=$(gate_refused_flag "$bytes" --segment)
-    [ -n "$tg" ] || tg='-'
-    [ -n "$sg" ] || sg='-'
-    gate_target_hook_row "$tg" "$pd"
-    gate_refusal_condition "$tg" "$sg" "$pd"
-    gate_refusal_row "$tg" "$sg" "$actor" 감쌈 예측 "$dig" "$bytes" "${v:-거절}: ${t:-미상}"
-    rm -f "$f"
+    rel="admit/refused/${f#"$d"/}"
+    GATE_DRAIN_SITE="대상거절"$'\t'"$rel"
+    if ( gate_refused_drain_one "$f" ); then
+      rm -f "$f"
+    elif [ ! -e "$f" ]; then
+      # Another call drained or quarantined the same record while this one read
+      # it: there is nothing left to move, and nothing of this call is stopped.
+      GATE_DRAIN_SITE=""
+      continue
+    else
+      # A record that can be neither a row nor moved aside stops the call through
+      # `die`, with `GATE_DRAIN_SITE` still set, so the drain marker and the
+      # shift's stop line say which record it was. Ending here on a bare non-zero
+      # return under errexit would leave neither.
+      q=0
+      gate_drain_quarantine 대상거절 "$f" 게이트 "the refusal record could not be turned into a row" || q=$?
+      [ "$q" = 0 ] || [ "$q" = 2 ] \
+        || die "the refusal record $rel could not be turned into a row and could not be moved to quarantine/대상거절/ — the seat's drain-release moves it once quarantine/ can be written"
+    fi
+    GATE_DRAIN_SITE=""
   done
+  gate_drain_blocked_clear 대상거절
+}
+
+gate_refused_drain_one() {
+  # gate_refused_drain_one <record> — one record of `admit/refused/` into its
+  # `대상 거절` row. Run in a subshell by `gate_refused_drain`; non-zero (or a
+  # `die`) is a record the drain quarantines. A record that is not valid JSON
+  # fails here rather than becoming a row of empty fields.
+  local f="$1" tg sg bytes inner dig v t pd kind actor
+  jq -e . "$f" >/dev/null 2>&1 || { warn "the refusal record is not valid JSON: ${f##*/}"; return 1; }
+  tg=$(jq -r '.target // empty' "$f" 2>/dev/null || true)
+  sg=$(jq -r '.segment // empty' "$f" 2>/dev/null || true)
+  pd=$(jq -r '.project_dir // empty' "$f" 2>/dev/null || true)
+  v=$(jq -r '.verdict // empty' "$f" 2>/dev/null || true)
+  t=$(jq -r '.text // empty' "$f" 2>/dev/null || true)
+  kind=$(jq -r '.caller_kind // empty' "$f" 2>/dev/null || true)
+  bytes=$(jq -j '.command_b64 // "" | @base64d' "$f" 2>/dev/null; printf x)
+  bytes=${bytes%x}
+  inner=$(gate_thp thp_after_dashdash "$bytes" 2>/dev/null) || inner="$bytes"
+  dig=$(gate_thp thp_act_digest "$inner") || return 1
+  case "$kind" in stage) actor='스테이지' ;; shift) actor='교대' ;; *) actor='미상' ;; esac
+  # A shift carries no target or segment in its environment; the call's own
+  # `--target` and `--segment` name them.
+  [ -n "$tg" ] || tg=$(gate_refused_flag "$bytes" --target)
+  [ -n "$sg" ] || sg=$(gate_refused_flag "$bytes" --segment)
+  [ -n "$tg" ] || tg='-'
+  [ -n "$sg" ] || sg='-'
+  # Each step is checked by hand: this body runs as the condition of an `if`,
+  # where errexit does not apply.
+  gate_target_hook_row "$tg" "$pd" || return 1
+  gate_refusal_condition "$tg" "$sg" "$pd" || return 1
+  gate_refusal_row "$tg" "$sg" "$actor" 감쌈 예측 "$dig" "$bytes" "${v:-거절}: ${t:-미상}"
+}
+
+gate_drain_quarantine() {
+  # gate_drain_quarantine <계열> <file> <게이트|좌석> <사유> — moves one drain
+  # unit out of every drain's glob to `quarantine/<계열>/<UTC 시각>.<이름>` and
+  # writes one `배수 격리` row saying so. The row is written in a subshell and a
+  # failure there is only a warning: the moved file is already visible in the
+  # directory the snapshot's `drain_quarantine[]` reads, so the quarantine is
+  # never silent even when the ledger write is what failed. 1 when the file is
+  # still in place and could not be moved; 2, with a warning and no row, when
+  # another call took the file away before the move, since nothing moved.
+  local series="$1" f="$2" actor="$3" why="$4" stamp qd qrel orel at
+  case "$series" in
+    대상거절|stall|checks|admit정산) ;;
+    *) warn "drain quarantine: unknown series: $series"; return 1 ;;
+  esac
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  qd="$RUN_DIR/quarantine/$series"
+  qrel="quarantine/$series/$stamp.${f##*/}"
+  # Two units of one name in the same second keep both files.
+  [ ! -e "$RUN_DIR/$qrel" ] || qrel="$qrel.$$"
+  orel="${f#"$RUN_DIR"/}"
+  mkdir -p "$qd" 2>/dev/null && mv -f "$f" "$RUN_DIR/$qrel" 2>/dev/null || {
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+      warn "drain quarantine: $orel is already gone — nothing to move"
+      return 2
+    fi
+    warn "drain quarantine: could not move $orel to $qrel"
+    return 1
+  }
+  at=$(now_iso)
+  warn "drain quarantine: $orel moved to $qrel — $why"
+  ( gate_append '배수 격리' "계열=$series" "원래 경로=$(gate_row_safe "$orel" 200)" \
+      "격리 경로=$(gate_row_safe "$qrel" 220)" "행위자=$actor" "사유=$(gate_row_safe "$why" 300)" \
+      "기록 시각=$at" ) \
+    || warn "drain quarantine: the 배수 격리 row could not be written; the file is in $qrel"
+  return 0
 }
 
 gate_remote_tip_of() {
@@ -41447,13 +41790,16 @@ gate_admit_settle() {
   # effect does not writes `대상 거절 형태=맨 근거=추정 판정=추정`; a read
   # writes `맨 명령 결과 판정=미상`. Settled tickets move to `admit/settled/`.
   local seg="$1" f now mt kind row before after al dig bytes rid tid actor pd rd
-  [ -d "$RUN_DIR/admit/used" ] || return 0
+  [ -d "$RUN_DIR/admit/used" ] || { gate_drain_blocked_clear admit정산; return 0; }
   now=$(date -u +%s)
   for f in "$RUN_DIR"/admit/used/*; do
+    GATE_DRAIN_SITE=""
     [ -f "$f" ] || continue
     [ "$(jq -r '.segment // empty' "$f" 2>/dev/null || true)" = "$seg" ] || continue
     mt=$(gate_mtime "$f"); [ -n "$mt" ] || continue
     [ $((now - mt)) -gt "$GATE_ADMIT_SETTLE_AFTER" ] || continue
+    # The unit is the ticket being settled.
+    GATE_DRAIN_SITE="admit정산"$'\t'"admit/used/${f##*/}"
     kind=$(jq -r '.remote // "-"' "$f" 2>/dev/null || printf -- '-')
     al=$(jq -r '.target // "-"' "$f" 2>/dev/null || printf -- '-')
     dig=$(jq -r '.digest // "-"' "$f" 2>/dev/null || printf -- '-')
@@ -41483,7 +41829,8 @@ gate_admit_settle() {
         else
           bytes=$(jq -j '.command_b64 // "" | @base64d' "$f" 2>/dev/null; printf x); bytes=${bytes%x}
           gate_refusal_condition "$al" "$seg" "$pd"
-          gate_refusal_row "$al" "$seg" "$actor" 맨 추정 "$dig" "$bytes" 미상 추정
+          gate_refusal_row "$al" "$seg" "$actor" 맨 추정 "$dig" "$bytes" 미상 추정 \
+            || warn "the settled ticket's 대상 거절 row does not fit the cap and is not written; the ticket is settled all the same: ${f##*/}"
         fi ;;
       읽기)
         gate_append '맨 명령 결과' "대상=$al" "세그먼트=$seg" "행위자=$actor" "요청=$rid" "티켓=$tid" \
@@ -41491,6 +41838,8 @@ gate_admit_settle() {
     esac
     mkdir -p "$RUN_DIR/admit/settled" 2>/dev/null && mv -f "$f" "$RUN_DIR/admit/settled/" 2>/dev/null || rm -f "$f"
   done
+  GATE_DRAIN_SITE=""
+  gate_drain_blocked_clear admit정산
 }
 
 gate_admit_prepare() {
@@ -44624,10 +44973,15 @@ EOF
   if [ "${GATE_ADMIT:-}" = "1" ]; then
     if ! gate_admit_pred_passes "$_admit_pred"; then
       gate_refusal_condition "$alias" "$segment" "$GATE_ADMIT_PDIR"
+      local _admit_row=1
       gate_refusal_row "$alias" "$segment" "$actor" 맨 예측 "$_ad2" "$GATE_ADMIT_BYTES" \
-        "$_admit_pred: ${_admit_text:-미상}"
+        "$_admit_pred: ${_admit_text:-미상}" || _admit_row=0
       warn "the hooks of the issuing root '$GATE_ADMIT_PDIR' are predicted to answer '$_admit_pred' for this command: ${_admit_text:-(no text)}"
-      warn "no ticket is left; the refusal is on the ledger and the same act stays closed until its condition moves"
+      if [ "$_admit_row" = "1" ]; then
+        warn "no ticket is left; the refusal is on the ledger and the same act stays closed until its condition moves"
+      else
+        warn "no ticket is left, and no 대상 거절 row was written either (the row does not fit the cap), so the ledger does not hold this refusal"
+      fi
       exit "$GATE_EXIT_RULE"
     fi
     gate_admit_issue
@@ -52465,7 +52819,7 @@ gate_snapshot_handoff_json() {
   # the series' final row when that row is `무기록`: the successor still learns
   # that its predecessor ended without a word, and the payload stays bounded at
   # one entry over the cap however long the run of them is.
-  local out row all last tr_v
+  local out row all last tr_v ls_v
   all=$( { gate_rows 'handoff' || true; } )
   last=$(printf '%s\n' "$all" | tail -1)
   [ "$(gate_row_field "$last" '사유')" = '무기록' ] || last=''
@@ -52479,14 +52833,20 @@ gate_snapshot_handoff_json() {
            # `일시 원인` is the gate's own field on a `무기록` row and `-` on every
            # other: the seat relaunches on it without reading the stream.
            tr_v=$(gate_row_field "$row" '일시 원인')
-           printf '    {"교대": "%s", "사유": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s", "기록 시각": "%s", "일시 원인": "%s"},\n' \
+           # `마지막 정지` is the gate's stop text on a `무기록` row; a row
+           # written before the field existed carries none and reads `null`.
+           ls_v=null
+           if [ "${row#*"| 마지막 정지="}" != "$row" ]; then
+             ls_v="\"$(gate_json_escape "$(gate_row_field "$row" '마지막 정지')")\""
+           fi
+           printf '    {"교대": "%s", "사유": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s", "기록 시각": "%s", "일시 원인": "%s", "마지막 정지": %s},\n' \
              "$(gate_json_escape "$(gate_row_field "$row" '교대')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '사유')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '버린 선택지')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '막힌 지점')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '다음 후보')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '기록 시각')")" \
-             "$(gate_json_escape "${tr_v:--}")"
+             "$(gate_json_escape "${tr_v:--}")" "$ls_v"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
@@ -52541,14 +52901,36 @@ gate_shift_trace_unrecorded() {
   local transient='아니오'
   if stage_transient_exit "$RUN_DIR/log/shift-$n.json"; then transient='예'; fi
   at=$(now_iso)
+  # `마지막 정지` — the last stop of this shift's gate calls on `die` that no
+  # later call of the shift succeeded past, from the line `gate_stop_record` appended to
+  # `stop/shift-<n>`; a later call that succeeded removed the file
+  # (`gate_stop_clear`), so an older stop is never read here. Without it
+  # the row said only that the shift ended without a word, and the cause — a
+  # gate that would not let it act — was nowhere a reader looks. The text is
+  # cut from 300 bytes down in steps of 40 until the row fits; one that does not
+  # fit even at 40 is `-`, and so is a shift no gate call of which stopped.
+  local stop_last='' stop_v='-' sw=300
+  if [ -f "$RUN_DIR/stop/shift-$n" ]; then
+    stop_last=$(tail -1 "$RUN_DIR/stop/shift-$n" 2>/dev/null | cut -f2- || true)
+  fi
+  if [ -n "$stop_last" ]; then
+    while [ "$sw" -ge 40 ]; do
+      stop_v=$(gate_row_safe "$stop_last" "$sw")
+      [ "$(gate_row_projected_bytes 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
+             "막힌 지점=-" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
+             "종료 코드=$rc" "행위 수=$acts" "일시 원인=$transient" "마지막 정지=$stop_v")" -gt "$GATE_ROW_MAX" ] || break
+      sw=$((sw - 40))
+    done
+    [ "$sw" -ge 40 ] || stop_v='-'
+  fi
   if [ "$(gate_row_projected_bytes 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
           "막힌 지점=$why" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
-          "종료 코드=$rc" "행위 수=$acts" "일시 원인=$transient")" -gt "$GATE_ROW_MAX" ]; then
+          "종료 코드=$rc" "행위 수=$acts" "일시 원인=$transient" "마지막 정지=$stop_v")" -gt "$GATE_ROW_MAX" ]; then
     why='-'
   fi
   gate_append 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
     "막힌 지점=$why" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
-    "종료 코드=$rc" "행위 수=$acts" "일시 원인=$transient"
+    "종료 코드=$rc" "행위 수=$acts" "일시 원인=$transient" "마지막 정지=$stop_v"
   log "교대 $n 무기록 — 게이트가 인계 행을 대신 남김 (rc=$rc, 행위 ${acts}회)"
 }
 
