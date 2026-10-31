@@ -4158,7 +4158,7 @@ gate_park_repair_line() {
           *) _why="the pre-authorization judgment returned no usable verdict ($(gate_preauth_judge_failure "${GATE_PREAUTH_JUDGE:--}"))" ;;
         esac
         if [ "$dk" = create ]; then
-          warn "repair: this act makes or boots a mobile device and $_why — its device name carries the run id, so no verbatim row can name it; at the next kickoff take the device rows \`kickoff-defaults.sh --preauth-candidates <worktree>\` proposes (they carry \`짝 정리=기기 정리\`) and keep auto-resolution on, so the judgment opens the act; or leave it to a person"
+          warn "repair: this act makes or boots a mobile device and $_why — its device name carries the run id, so no verbatim row can name it; at the next kickoff take the device rows the kickoff's \`--preauth-candidates\` reading proposes (they carry \`짝 정리=기기 정리\`) and keep auto-resolution on, so the judgment opens the act; or leave it to a person"
           return 0
         fi
         if [ "$prop" != "-" ] && [ "$ev" != "0" ]; then
@@ -4169,7 +4169,7 @@ gate_park_repair_line() {
         fi
         return 0 ;;
       */no-cleanup)
-        warn "repair: this act makes or boots a mobile device, and no \`사전 인가\` row of its shape carries \`짝 정리=기기 정리\`, so nothing would remove the device at the end of the run — at the next kickoff add \`짝 정리=기기 정리\` to that row (the rows \`kickoff-defaults.sh --preauth-candidates <worktree>\` proposes carry it)"
+        warn "repair: this act makes or boots a mobile device, and no \`사전 인가\` row of its shape carries \`짝 정리=기기 정리\`, so nothing would remove the device at the end of the run — at the next kickoff add \`짝 정리=기기 정리\` to that row (the device rows the kickoff's \`--preauth-candidates\` reading proposes carry it)"
         return 0 ;;
       */device-name)
         warn "repair: the device this act makes or boots must be named '${_pfx}<name>' with no '-' after the prefix (simctl create's name, clone's new name, emulator -avd and avdmanager -n, the name= of an xcodebuild test destination), an emulator needs an explicit -port, and simctl boot takes the name rather than a UDID — respell the act that way"
