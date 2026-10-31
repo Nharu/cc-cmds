@@ -12556,11 +12556,10 @@ EOF
     printf '## %s 시도 %s — 닫기 (%s)\n\n' "$item" "$(gate_row_field "$last" '시도')" "$at"
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      if printf '%s' "$marked" | grep -qxF -- "$f"; then
-        printf -- '- %s — 시험 파일 변경\n' "$f"
-      else
-        printf -- '- %s\n' "$f"
-      fi
+      case $'\n'"$marked" in
+        *$'\n'"$f"$'\n'*) printf -- '- %s — 시험 파일 변경\n' "$f" ;;
+        *) printf -- '- %s\n' "$f" ;;
+      esac
     done <<EOF
 $files
 EOF
