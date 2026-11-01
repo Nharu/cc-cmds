@@ -18374,7 +18374,7 @@ esac
 # its own rejection at all.
 rejlen=$( { grep -F '결정=기각' "$FX_LEDGER" || true; } | tail -1 | wc -c | tr -d ' ')
 if [ "${rejlen:-0}" -gt 0 ] && [ "${rejlen:-0}" -le 1024 ]; then
-  ok "기각 행이 원장 상한 안에 든다 (${rejlen}바이트)"
+  ok "기각 행이 원장 상한 안에 든다 (${rejlen}바이트)" # gate-isolation: 변동
 else
   bad "기각 행 길이" "${rejlen}바이트"
 fi
