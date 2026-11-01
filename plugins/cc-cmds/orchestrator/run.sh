@@ -7337,8 +7337,45 @@ audit_artifact_complete() {
 
 # 감사 키당 자동 재수렴 수. An audit's key is audited once and re-audited after
 # each of at most this many re-convergences; `audit_row_request` counts them
-# with `audit_key_reconverge_rows`, whatever wrote them.
+# with `audit_key_reconverge_rows`, whatever wrote them except a decision
+# collection's answer.
 AUDIT_SKELETAL_RECONVERGE_CAP=2
+
+audit_key_collect_reconverge_lines() {
+  # audit_key_collect_reconverge_lines <step id> <ledger> — the ledger lines,
+  # each followed by a space, of the re-convergences a person's answer to a
+  # decision-collection record opened on the key: for each record a `결정 수거`
+  # row names, the first `세그먼트=- | 스테이지=<id> | 종류=reconverge` row not
+  # still waiting to spawn after the record's first `중단 답` on the key. The
+  # gate admits one such re-convergence per record and reads it by the same
+  # rule (`gate_decision_reconverge_open`). It closes the collected decisions
+  # in the document and audits nothing, so the audit's key does not wait on it.
+  local id="$1" lg="$2"
+  [ -f "$lg" ] || return 0
+  LC_ALL=C awk -v id="$id" '
+    function recof(s,   i, v) {
+      i = index(s, "| 중단 기록=")
+      if (i == 0) return ""
+      v = substr(s, i + length("| 중단 기록="))
+      i = index(v, " |")
+      if (i > 0) v = substr(v, 1, i - 1)
+      sub(/[ \t\r]+$/, "", v)
+      return v
+    }
+    index($0, "- `결정 수거` ") == 1 { r = recof($0); if (r != "") dc[r] = 1; next }
+    index($0, "- `중단 답` ") == 1 && index($0, "| 세그먼트=" id " | 중단 기록=") > 0 {
+      r = recof($0); if (r != "" && !(r in first)) first[r] = NR; next
+    }
+    index($0, "- `stage-result` ") == 1 && index($0, "세그먼트=- | 스테이지=" id " | 종류=reconverge ") > 0 \
+      && index($0, "| 관측=스폰 전 대기 중") == 0 { rv[++n] = NR }
+    END {
+      for (r in first) {
+        if (!(r in dc)) continue
+        for (j = 1; j <= n; j++) if (rv[j] > first[r]) { out[rv[j]] = 1; break }
+      }
+      for (l in out) printf "%s ", l
+    }' "$lg"
+}
 
 audit_key_reconverge_rows() {
   # audit_key_reconverge_rows <audit step id> <ledger> — the run-scope
@@ -7346,13 +7383,19 @@ audit_key_reconverge_rows() {
   # ledger order, each prefixed with its line number: the router's
   # (`세그먼트=- | 스테이지=<id> | 종류=reconverge`) and the driver's, which
   # writes its skeletal re-convergence as `스테이지=S1'` under dispatch id `S2R`.
-  # A re-convergence still waiting to spawn edited nothing and is left out.
-  local id="$1" lg="$2"
+  # A re-convergence still waiting to spawn edited nothing and is left out, and
+  # so is a decision collection's (`audit_key_collect_reconverge_lines`): it
+  # closes decisions the audit already let through, so no fresh audit follows
+  # it, and counting it would hold every later reader of the audit's end —
+  # segment planning first — until the run ended.
+  local id="$1" lg="$2" skip
   [ -f "$lg" ] || return 0
+  skip=" $(audit_key_collect_reconverge_lines "$id" "$lg")"
   { grep -n -F -e "세그먼트=- | 스테이지=$id | 종류=reconverge " \
                -e "세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge " "$lg" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
-    | { grep -vF '| 관측=스폰 전 대기 중' || true; }
+    | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+    | awk -v skip="$skip" '{ l = $0; sub(/:.*/, "", l); if (index(skip, " " l " ") == 0) print }'
 }
 
 audit_row_request() {
