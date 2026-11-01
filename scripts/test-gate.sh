@@ -30981,10 +30981,13 @@ sp_measured "32p: env LANG=C" "$U32"
 # git argv 가 argv 끝에 오지 않아도 — find 의 ';' 뒤 — 그 앞의 할당이 읽힌다. 경로 피연산자
 # ./git 에서 검사가 멈추면 할당이 탐침에 닿지 않은 채 push 가 지났다.
 for sp_e in "HOME=$SA_ROOT/home-x" "XDG_CONFIG_HOME=$SA_ROOT/xdg-x" "GIT_CONFIG_GLOBAL=$SA_ROOT/g"; do
+  # The label names the operand by its role: the fixture root's own name is a
+  # per-run counter, so it would make the label differ between runs.
   for sp_fd in "$SA_ROOT/git" "$SA_ROOT"; do
+    sp_fdn="${sp_fd##*/}"; [ "$sp_fd" = "$SA_ROOT" ] && sp_fdn="<픽스처 루트>"
     sp_act S32A 머지 find "$sp_fd" -maxdepth 0 -exec env "$sp_e" git push origin "u-$SA_ID:$SA_BASE" ';'
-    sp_refused "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}= git push ';' 는 거절된다" 2 "$B32"
-    sp_unknown "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}="
+    sp_refused "32p: find $sp_fdn -exec env ${sp_e%%=*}= git push ';' 는 거절된다" 2 "$B32"
+    sp_unknown "32p: find $sp_fdn -exec env ${sp_e%%=*}="
   done
 done
 # find 는 -exec 단어 안의 {} 를 매치 경로로 바꿔 돌린다 — 탐침이 리터럴 {} 로 잰 push 는
