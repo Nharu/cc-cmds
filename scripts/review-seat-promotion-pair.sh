@@ -36,8 +36,10 @@
 #   --dry-run     select, branches and prepare, then print the 15 review command
 #                 lines; the model CLI is never called
 #   --pilot       select and branches, then prepare and review only the opus-1
-#                 branch of quantile 1's pick and check it as collect does;
-#                 pilot/result says `통과` or `실패 — <condition>`. The main run
+#                 branch of quantile 1's pick and check it as collect does,
+#                 then that the JSON has total_cost_usd and an empty
+#                 permission_denials and that the witness hook logged no
+#                 witness command it left undecided; pilot/result says `통과` or `실패 — <condition>`. The main run
 #                 (`run`, `--rerun-sample`) stops with exit 1 before any billed
 #                 call unless the same experiment's pilot/result says `통과`
 #   --rerun-sample  discard slot n's state, runs and records and run it again
@@ -708,7 +710,7 @@ write_session_env() {
     printf -- '--model\t플래그\t%s\t%s\t같음\t-\n' "$LEAD_MODEL" "${gm:-미상}"
     printf -- '--effort\t플래그\t%s\t%s\t같음\t-\n' "$LEAD_EFFORT" "${ge:-미상}"
     printf -- '--plugin-dir\t플래그\t<갈래 복제본>/plugins/cc-cmds\t<런의 고정 플러그인 사본>/plugins/cc-cmds\t같음\t-\n'
-    printf -- '--settings\t플래그\t<상태 루트>/settings/<n>-<갈래>.json\t<런 설정 디렉터리>/review.json\t다름\t게이트 훅을 싣지 않고, enabledPlugins 로 계정의 플러그인을 모두 끄며 --plugin-dir 사본만 남긴다\n'
+    printf -- '--settings\t플래그\t<상태 루트>/settings/<n>-<갈래>.json\t<런 설정 디렉터리>/review.json\t다름\t게이트 훅 대신 증인 발행 명령만 승인하는 훅 하나를 싣고, enabledPlugins 로 계정의 플러그인을 모두 끄며 --plugin-dir 사본만 남긴다\n'
     printf -- '--strict-mcp-config\t플래그\t실음\t%s\t같음\t-\n' "${gstrict:-미상}"
     printf -- '--append-system-prompt-file\t플래그\t<상태 루트>/instructions/<sha256>.md\t%s\t같음\t-\n' "${gapp:-미상}"
     printf -- '--append-subagent-system-prompt-file\t플래그\t<상태 루트>/instructions/<sha256>.md (구성원)\t%s\t같음\t-\n' "${gappsub:-미상}"
@@ -718,7 +720,7 @@ write_session_env() {
     printf -- '--output-format\t플래그\tjson\tstream-json\t다름\t비용 기록을 실행기가 진다(result.json 의 total_cost_usd)\n'
     printf -- '--max-budget-usd\t플래그\t%s\t(싣지 않음)\t다름\t세션 예산을 실행기가 진다\n' "$RESERVE_RUN"
     printf -- '-p\t플래그\t리뷰 명령과 지시문\t리뷰 명령과 지시문\t다름\t게이트 밖 세션의 지시문(중단 기록 자리, 게이트·매니페스트 없음)을 더한다\n'
-    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트, 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, mktemp 는 상태·중단 기록 디렉터리 아래)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
+    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트, 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, 팀 규약의 증인 발행 명령은 상태·중단 기록 디렉터리 아래에서 증인 승인 훅)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록, 그리고 증인 발행 명령만 승인하는 훅이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
     printf '대상 복제본\t쓰기 경로\truns/<n>-<갈래>/target\t(세그먼트 워크트리)\t다름\t원격 없는 대상 복제본을 리뷰한다\n'
     printf -- '--report-path\t쓰기 경로\truns/<n>-<갈래>/report.md\t(게이트의 정본 보고서 경로)\t다름\t갈래마다 보고서 자리를 실행기가 정한다\n'
     printf 'XDG_STATE_HOME\t쓰기 경로\truns/<n>-<갈래>/state\t(물려받은 상태 루트)\t다름\t증인 스크래치를 갈래 디렉터리 아래에 둔다\n'
@@ -852,6 +854,132 @@ anchor_brief() {
   } > "$2"
 }
 
+# witness_hook_write <file> — the PreToolUse hook write_settings registers.
+witness_hook_write() {
+  cat > "$1" <<'HOOK'
+#!/usr/bin/env bash
+# PreToolUse hook of the review sessions scripts/review-seat-promotion-pair.sh
+# launches. Arguments: a log file, then the directories a witness command may
+# name. It allows a Bash call made only of the team protocol's witness
+# commands, separated by newlines, `&&` or `;`, each naming paths below one of
+# those directories:
+#   <var>=$(mktemp [-d] <path>)   mktemp [-d] <path>   mkdir -p <path>
+#   mv [-n] <path|"$var"> <path>  echo "$var"   cat > <path|"$var"> <<'TAG'
+# A <path> may be spelled `"$(dirname <path>)/<rest>"` (a dirname operand
+# ending in `/` or holding `//` is not resolved), "$var" is a variable an
+# earlier mktemp of the same call assigned, and a quoted-delimiter heredoc's
+# body is not read. Any other call gets no decision, so the session's
+# permission rules decide it; one that names mktemp, mv or mkdir is also
+# appended to the log as `<agent_id or ->\t<command>`, because a `-p` session
+# refuses it and the pilot fails on a non-empty log.
+set -u
+log="${1:-}"
+(( $# > 1 )) || exit 0
+shift
+roots=("$@")
+in=$(cat)
+cmd=$(printf '%s' "$in" | jq -r 'if .tool_name == "Bash" then (.tool_input.command // "") else "" end' 2>/dev/null) || exit 0
+[[ -n "$cmd" ]] || exit 0
+orig="$cmd"
+
+# miss — give no decision, logging a call that names a witness command.
+miss() {
+  case "$orig" in
+    *mktemp*|*"mv "*|*"mkdir "*)
+      printf '%s\t%s\n' "$(printf '%s' "$in" | jq -r '.agent_id // "-"' 2>/dev/null || echo -)" \
+        "$(printf '%s' "$orig" | tr '\n\t' '  ')" >> "$log" 2>/dev/null || true ;;
+  esac
+  exit 0
+}
+
+# under <path> — an absolute path below one of the roots, naming no `..`,
+# no `//` and no trailing `/`.
+under() {
+  local p="$1" r
+  case "$p" in /*) ;; *) return 1 ;; esac
+  case "$p" in *..*|*//*|*/) return 1 ;; esac
+  for r in "${roots[@]}"; do
+    case "$p" in "$r"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+c='[A-Za-z0-9._/+@%,:=-]'
+v='[A-Za-z_][A-Za-z0-9_]*'
+pth='"?(/'"$c"'+)"?'
+vref='"?\$\{?('"$v"')\}?"?'
+re_hd="<<'(${v})'\$"
+re_dir='\$\(dirname "?(/'"$c"'+)"?\)'
+re_assign='^('"$v"')=\$\(mktemp( -d)? '"$pth"'\)$'
+re_mktemp='^mktemp( -d)? '"$pth"'$'
+re_mkdir='^mkdir -p '"$pth"'$'
+re_mvvar='^mv( -n)? '"$vref"' '"$pth"'$'
+re_mvpath='^mv( -n)? '"$pth"' '"$pth"'$'
+re_echo='^echo '"$vref"'$'
+re_catvar='^cat > '"$vref"'$'
+re_catpath='^cat > '"$pth"'$'
+
+# A quoted-delimiter heredoc's body is literal text: drop it, and the
+# `<<'TAG'` that opens it.
+tag="" out=""
+while IFS= read -r line; do
+  if [[ -n "$tag" ]]; then
+    [[ "$line" != "$tag" ]] || tag=""
+    continue
+  fi
+  if [[ $line =~ $re_hd ]]; then
+    tag="${BASH_REMATCH[1]}"
+    line="${line%"${BASH_REMATCH[0]}"}"
+  fi
+  out="${out}${line}"$'\n'
+done <<<"$cmd"
+[[ -z "$tag" ]] || miss
+cmd="$out"
+
+# Each `$(dirname <path>)` becomes the directory it prints.
+i=0
+while [[ $cmd =~ $re_dir ]]; do
+  i=$((i + 1)); (( i <= 20 )) || miss
+  full="${BASH_REMATCH[0]}"; p="${BASH_REMATCH[1]}"
+  case "$p" in */|*//*) miss ;; esac
+  d="${p%/*}"
+  [[ -n "$d" ]] || miss
+  cmd="${cmd%%"$full"*}${d}${cmd#*"$full"}"
+done
+
+segs=$(printf '%s\n' "$cmd" | awk '{ gsub(/&&|;/, "\n"); print }')
+vars=" "
+n=0
+while IFS= read -r seg; do
+  seg="${seg#"${seg%%[![:space:]]*}"}"
+  seg="${seg%"${seg##*[![:space:]]}"}"
+  [[ -n "$seg" ]] || continue
+  if [[ $seg =~ $re_assign ]]; then
+    under "${BASH_REMATCH[3]}" || miss
+    vars="${vars}${BASH_REMATCH[1]} "
+  elif [[ $seg =~ $re_mktemp ]]; then
+    under "${BASH_REMATCH[2]}" || miss
+  elif [[ $seg =~ $re_mkdir ]]; then
+    under "${BASH_REMATCH[1]}" || miss
+  elif [[ $seg =~ $re_mvvar ]]; then
+    case "$vars" in *" ${BASH_REMATCH[2]} "*) ;; *) miss ;; esac
+    under "${BASH_REMATCH[3]}" || miss
+  elif [[ $seg =~ $re_mvpath ]]; then
+    under "${BASH_REMATCH[2]}" && under "${BASH_REMATCH[3]}" || miss
+  elif [[ $seg =~ $re_echo || $seg =~ $re_catvar ]]; then
+    case "$vars" in *" ${BASH_REMATCH[1]} "*) ;; *) miss ;; esac
+  elif [[ $seg =~ $re_catpath ]]; then
+    under "${BASH_REMATCH[1]}" || miss
+  else
+    miss
+  fi
+  n=$((n + 1))
+done <<<"$segs"
+(( n > 0 )) || miss
+printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"review-seat-promotion-pair: a witness command below the state home or the halt directory"}}'
+HOOK
+}
+
 # write_settings <file> <target> <run dir> — the session's settings: the
 # account's plugins all off, reads, git queries, sub-agents and the plugin's own
 # scripts allowed, writes only inside the target clone, the report path, the
@@ -862,25 +990,41 @@ anchor_brief() {
 # a path rule uses gitignore syntax with `//` for an absolute path, so the report
 # is opened by a rule naming the file itself (`<dir>/**` matches only what is
 # under a directory); and a `-p` session in the default mode refuses every call
-# that needs approval. `acceptEdits` approves file edits and the filesystem
-# commands a member publishes a witness with (`mkdir -p`, `mv -n`, `mv`) for
-# paths in the working directory (the target clone) and in
-# `additionalDirectories` — the state home and the halt directory only, so the
-# rest of the run directory (the command line, the prompt, the inputs) stays
-# closed. `mktemp`, which makes the witness and halt temps, is opened only
-# under those two directories, quoted and unquoted; a rule's `*` matches any
+# that needs approval. `acceptEdits` approves file edits, and filesystem
+# commands whose operands it can read, for paths in the working directory (the
+# target clone) and in `additionalDirectories` — the state home and the halt
+# directory only, so the rest of the run directory (the command line, the
+# prompt, the inputs) stays closed. A bare `mktemp` naming one of those two
+# directories is opened by a rule, quoted and unquoted; a rule's `*` matches any
 # text, so a `mktemp` naming `..` is refused outright, and so is a second
 # template after one ending in `X` (BSD `mktemp` takes several). The plugin's
 # scripts are opened by `<plugin dir>/*` (a `:*` suffix would need a space after
 # the directory's slash), a path naming `..` refused. Network tools are refused.
+#
+# A member publishes its witness with the team protocol's commands as written:
+# `T=$(mktemp "$(dirname <witness>)/.<role>.<round>.XXXXXX")`, `mv -n "$T"
+# <witness>`, and for the round-1 checkpoint `mkdir -p "$(dirname
+# <witness>)/partial"` and a plain `mv`. No allow rule matches the first: a rule
+# matches its text before the first `*` as written and never past an assignment
+# to another variable, and `acceptEdits` checks no operand it cannot read
+# before the command runs. So the settings also carry one PreToolUse hook
+# (witness_hook_write) that allows a Bash call made only of those commands, each
+# naming paths under the state home or the halt directory; any other call gets
+# no decision from it, and one naming mktemp, mv or mkdir is logged to
+# <run dir>/witness-misses.log, which the pilot requires empty. A hook's allow
+# does not lift a deny rule.
+#
 # These are the runner's own rules; the lane's user settings are merged in as
 # they are for a gate stage, so its allow rules and hooks reach the session too.
 write_settings() {
-  local f="$1" t="$2" rd="$3" pd="$4" cfg keys
+  local f="$1" t="$2" rd="$3" pd="$4" cfg keys hook hcmd
   cfg="$LANE_CFG"
+  hook="$(dirname "$f")/witness-hook.sh"
+  witness_hook_write "$hook"
+  hcmd="bash $(shq "$hook") $(shq "$rd/witness-misses.log") $(shq "$rd/state") $(shq "$rd/halt")"
   keys=$(jq -c '(.enabledPlugins // {}) | with_entries(.value = false)' "$cfg/settings.json" 2>/dev/null || echo '{}')
   [[ -n "$keys" ]] || keys='{}'
-  jq -n --arg t "$t" --arg rd "$rd" --arg pd "$pd" --argjson pl "$keys" '{
+  jq -n --arg t "$t" --arg rd "$rd" --arg pd "$pd" --arg hc "$hcmd" --argjson pl "$keys" '{
     permissions: {
       defaultMode: "acceptEdits",
       allow: ([
@@ -902,6 +1046,7 @@ write_settings() {
              ("Bash(bash " + $pd + "/*..*)"), ("Bash(" + $pd + "/*..*)")],
       additionalDirectories: [($rd + "/state"), ($rd + "/halt")]
     },
+    hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $hc}]}]},
     enabledPlugins: $pl
   }' > "$f"
 }
@@ -1120,7 +1265,7 @@ pilot_ok() { [[ "$(head -n 1 "$EXP/pilot/result" 2>/dev/null || true)" == "통�
 run_pilot() {
   mkdir -p "$EXP/pilot"
   if pilot_ok; then say "pilot already passed → $EXP/pilot/result"; exit 0; fi
-  local nm rd head reason cost why
+  local nm rd head reason cost den why
   nm=$(sample_name 1 0)
   rd="$ST/pilot/opus-1"
   rm -rf "$rd"
@@ -1130,12 +1275,19 @@ run_pilot() {
   review_branch pilot opus-1 "$rd"
   [[ ! -f "$rd/report.md" ]] || cp "$rd/report.md" "$EXP/pilot/report.md"
   cost=$(jq -r 'if type == "object" and (.total_cost_usd | type) == "number" then .total_cost_usd else empty end' "$rd/result.json" 2>/dev/null || true)
+  # A refused tool call — a witness command the settings did not open, say —
+  # is a seat working around its instructions, which the pair would compare.
+  den=$(jq -r 'if type == "object" and (.permission_denials | type) == "array"
+    then ([.permission_denials | length | tostring] + [.permission_denials[] | .tool_name // "?"] | join(" ")) else empty end' "$rd/result.json" 2>/dev/null || true)
   why=""
   if [[ -n "$(halt_note "$rd")" ]]; then why="중단 기록이 있다$(halt_note "$rd")"
   else
     reason=$(branch_reason "$rd" opus-1 "$head")
     if [[ -n "$reason" ]]; then why="$reason"
     elif [[ -z "$cost" ]]; then why="total_cost_usd 가 JSON 에 없다"
+    elif [[ -z "$den" ]]; then why="permission_denials 가 JSON 에 없다"
+    elif [[ "${den%% *}" != "0" ]]; then why="거부된 도구 호출 ${den%% *}건 (${den#* })"
+    elif [[ -s "$rd/witness-misses.log" ]]; then why="증인 명령 미승인 $(awk 'END { print NR }' "$rd/witness-misses.log")건"
     fi
   fi
   if [[ -z "$why" ]]; then

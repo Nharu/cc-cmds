@@ -14,7 +14,11 @@
 #   halt         a halt record in the run's halt/ and no report
 #   nocost       a valid report, a JSON without total_cost_usd
 #   twoseats     a valid report whose code-quality seat is promoted too
-# The JSON's total_cost_usd is $STUB_COST (default 1.25).
+#   denied       a valid report, a JSON whose permission_denials holds one call
+#   witnessmiss  a valid report and one line in the run's witness-misses.log,
+#                as the witness hook leaves for a witness command it did not allow
+# The JSON's total_cost_usd is $STUB_COST (default 1.25); its
+# permission_denials is empty except under `denied`, and absent under `nocost`.
 set -euo pipefail
 
 d="${STUB_DIR:?}"
@@ -59,6 +63,9 @@ cq_src="표"; cq_model="sonnet"
 p1=1
 [ "$action" != "badformat" ] || p1=2
 
+if [ "$action" = "witnessmiss" ]; then
+  printf 'a1\tmktemp /tmp/x.XXXXXX\n' >> "$rd/witness-misses.log"
+fi
 if [ "$action" = "halt" ]; then
   mkdir -p "$rd/halt"
   printf -- '- **분류**: gate-unanswerable\n- **질문 문면**: 사전 점검이 멈췄다\n  둘째 줄\n' > "$rd/halt/review.md"
@@ -92,6 +99,8 @@ fi
 
 if [ "$action" = "nocost" ]; then
   printf '{"type":"result","subtype":"success","is_error":false}\n'
+elif [ "$action" = "denied" ]; then
+  printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s,"permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"mktemp x"}}]}\n' "${STUB_COST:-1.25}"
 else
-  printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s}\n' "${STUB_COST:-1.25}"
+  printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s,"permission_denials":[]}\n' "${STUB_COST:-1.25}"
 fi
