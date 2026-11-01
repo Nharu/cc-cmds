@@ -13132,6 +13132,10 @@ r35_loop_in() {
       S1R:*)
         [ -z "${R35_RVV:-}" ] || jq -cn --arg t "$(printf '판정: %s\n%s' "$R35_RVV" "$LIT_RECONVERGE_TERMINAL")" \
           '{type: "result", num_turns: 1, result: $t}' > "$(stage_log_path "$1")" ;;
+      S5:*)
+        # 리뷰는 --report-path 에 리포트 파일을 남긴다 — 트리아지 입력 사본이 그 파일을 읽는다.
+        local vrp; vrp=$(printf '%s' "$3" | sed -n 's/.*--report-path \([^ ]*\).*/\1/p')
+        [ -z "$vrp" ] || { mkdir -p "$(dirname "$vrp")"; [ -f "$vrp" ] || : > "$vrp"; } ;;
       S5F:*)
         local crp; crp=$(printf '%s' "$3" | sed -n 's/.*--lead-fix \([^ ]*\) .*/\1/p')
         mkdir -p "$(dirname "$crp")"; [ -f "$crp" ] || r35_rep "$crp" 1 1
