@@ -11304,7 +11304,7 @@ segment_cycle() {
     # that died would read as finished. The second report is judged as it
     # stands.
     local redo="" recovered slice_flag review_line
-    local tri_out tri bundle brc p0 p1 rhead rowrc nx elem lanes
+    local tri_in tri_out tri bundle brc p0 p1 rhead rowrc nx elem lanes
     while :; do
       recovered=0
       slice_flag=$(review_slice_flag "$seg")
@@ -11374,7 +11374,12 @@ segment_cycle() {
       spawn_lineage_release "$sid"
 
       # --- S6 TRIAGE -------------------------------------------------------
-      tri_out=$(judgment_call triage "$rp") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
+      # The triage call reads a copy of the report without its reproduction
+      # evidence lines: that text comes from the review target and is unbounded.
+      tri_in="$RUN_DIR/log/triage-input-$seg-c$cycle.md"
+      { mkdir -p "$RUN_DIR/log" && review_report_drop_evidence <"$rp" >"$tri_in"; } 2>/dev/null \
+        || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패 — 입력 사본을 만들지 못했다 ($tri_in)"; return 1; }
+      tri_out=$(judgment_call triage "$tri_in") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
       tri=$(judgment_result "$tri_out")
       # THE ROW IS THE REPORT'S, written by the gate. Its P0 and P1 are the
       # report's `발견 요약`, the same numbers the gate's `다음` and the merge rule
@@ -12142,12 +12147,27 @@ manifest_interview_row() {
   { manifest_preauth_rows || true; } | { grep -F '| 인터뷰 기록=' || true; } | sed -n 1p
 }
 
+review_report_drop_evidence() {
+  # review_report_drop_evidence — stdin to stdout without the P0 reproduction
+  # evidence of a review report: every line of four spaces then one of the
+  # five evidence keys (`- **재현 명령**:` `- **재현 스크립트**:` `- **재현 출력**:`
+  # `- **재현 예외**:` `- **경로 추적**:`), and the six-space lines that follow
+  # it up to the first line that does not start with six spaces. That text
+  # comes from the review target and its size is unbounded, so no model call
+  # takes it. An `이월 본문` body does not follow an evidence key and stays.
+  LC_ALL=C awk '
+    /^    - \*\*(재현 명령|재현 스크립트|재현 출력|재현 예외|경로 추적)\*\*:/ { body = 1; next }
+    body && /^      / { next }
+    { body = 0; print }'
+}
+
 rekick_p0_report_section() {
   # rekick_p0_report_section <report> — the report's P0 section, heading to the
-  # next `## ` heading, verbatim.
+  # next `## ` heading, without its reproduction evidence lines
+  # (review_report_drop_evidence); every other line verbatim.
   LC_ALL=C awk 'index($0, "## \360\237\224\264 P0") == 1 { on = 1; print; next }
        on && /^## / { exit }
-       on { print }' "$1"
+       on { print }' "$1" | review_report_drop_evidence
 }
 
 rekick_branch_input() {
