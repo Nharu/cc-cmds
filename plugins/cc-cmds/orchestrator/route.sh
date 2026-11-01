@@ -518,15 +518,44 @@ def rt_gpasses($c; $orgs; $fresh; $g):
          | . + {account: $id}]
        | unique_by(.id) | sort_by([.expires_at_epoch, .id]) end;
 
-def rt_gview($c; $orgs; $fresh; $inv; $items; $g):
+# 5시간 한도 없음. 주간 창이 알려져 있을 때(known·reset_elapsed)만 5시간 창을 상태
+# `unlimited` 로 바꾼다. 사용률이 0 보다 크게 관측된 창은 그대로다. 5시간 창이 unknown
+# 이면 신선한 사용량 파일에 그 그룹의 주간 창 행이 있고, 그룹의 어느 사용량 행에도
+# 5시간 값이 없으며(키 부재 또는 null — 그 밖의 값은 형이 깨진 창이다), 스테이지 로그
+# 프레임에도 그 그룹의 5시간 판독이 없을 때 `basis: "absent"` 다. 사용률 0 이거나 리셋이
+# 지난 창은 프레임에 해제 시각이 아직 오지 않은 5시간 판독이 없고 표본 증거 `$ev` 가
+# 한도 없음일 때 `basis: "evidence"` 다. 한도 있음 쪽 흔적이 하나라도 있으면 그대로 둔다.
+def rt_unl_win($c; $orgs; $fresh; $g; $W; $ev):
+  $W.five_hour as $x5 | $W.seven_day as $x7
+  | [($c.frames // [])[] | select((.account | type) == "string") | select(rt_group_of($orgs; .account) == $g)
+     | (.windows.five_hour? // null) | select(type == "object")] as $f5
+  | if ($x7.state != "known") and ($x7.state != "reset_elapsed") then $W
+    elif $x5.state == "unknown" then
+      [rt_uaccts($c)[] | select(rt_group_of($orgs; .id) == $g)] as $rows
+      | if $fresh and (($f5 | length) == 0)
+           and any($rows[]; ((.windows | type) == "object") and ((.windows.seven_day | type) == "object"))
+           and all($rows[]; ((.windows | type) != "object") or ((.windows | has("five_hour") | not) or (.windows.five_hour == null)))
+        then $W + {five_hour: {state: "unlimited", u_bp: 0, resets_at: null, observed: $x7.observed, source: $x7.source, basis: "absent"}}
+        else $W end
+    elif (($x5.state == "known") and ($x5.u_bp == 0)) or ($x5.state == "reset_elapsed") then
+      if any($f5[]; ((.resets_at | type) == "number") and (.resets_at > $c.now)) then $W
+      elif ($ev[$g]? // null) == "unlimited" then
+        $W + {five_hour: {state: "unlimited", u_bp: 0, resets_at: null, observed: $x5.observed, source: $x5.source, basis: "evidence"}}
+      else $W end
+    else $W end;
+
+def rt_gview($c; $orgs; $fresh; $inv; $items; $g; $ev):
   [$items[] | select(rt_group_of($orgs; .account) == $g)] as $gi
   | {group: $g,
      windows: (reduce rt_wins[] as $w ({};
-       .[$w] = (rt_cands($c; $orgs; $fresh; $g; $w) | (if length == 0 then null else max_by([.observed, .u]) end) | rt_wstate($c)))),
+       .[$w] = (rt_cands($c; $orgs; $fresh; $g; $w) | (if length == 0 then null else max_by([.observed, .u]) end) | rt_wstate($c)))
+       | rt_unl_win($c; $orgs; $fresh; $g; .; $ev)),
      sigma: (reduce rt_wins[] as $w ({}; .[$w] = ([$gi[] | (.reservation_bp[$w]? // 0)] | add // 0))),
      count: ($gi | length),
      reserved: any($inv[]; (rt_group_of($orgs; .id) == $g) and (.interactive_reserved == true)),
      passes: rt_gpasses($c; $orgs; $fresh; $g)};
+# 표본 증거 없이 부르는 판(시험과 증거를 모르는 호출자).
+def rt_gview($c; $orgs; $fresh; $inv; $items; $g): rt_gview($c; $orgs; $fresh; $inv; $items; $g; {});
 
 def rt_class_of($G; $ex):
   if $ex != null or any($G.windows[]; .state == "exhausted") then "X"
@@ -534,8 +563,11 @@ def rt_class_of($G; $ex):
   elif any($G.windows[]; .state == "reset_elapsed") then "R"
   else "K" end;
 def rt_ueff($x): if $x.state == "reset_elapsed" then 0 else $x.u_bp end;
+# 판정에 참여하지 않는 창 — 사용량 문서가 5시간 창이 없다고 알린 한도 없음뿐이다. 표본
+# 증거로 내린 한도 없음은 사용률 0 인 창으로 검사를 그대로 받는다.
+def rt_skip5($x): ($x.state == "unlimited") and ($x.basis == "absent");
 def rt_rem($G):
-  [rt_wins[] as $w | ($G.windows[$w]) as $x
+  [rt_wins[] as $w | ($G.windows[$w]) as $x | select(rt_skip5($x) | not)
     | 10000 - (if $x.state == "reset_elapsed" then 0 elif $x.state == "unknown" then 10000 else $x.u_bp end) - $G.sigma[$w]]
   | min;
 
@@ -570,7 +602,7 @@ def rt_lend_why($c; $d; $uw; $G; $res):
   elif ($d.evaluated_at_epoch | num | not) or ($c.now - $d.evaluated_at_epoch > 180) then "decision-stale"
   elif $d.net_armed != true then "net-disarmed"
   elif $d.donor_ready != true then "no-donor"
-  elif (($uw | type) != "object") or (all(rt_wins[]; . as $w | win_ok($w)) | not) then "window-stale"
+  elif (($uw | type) != "object") or (all(rt_wins[]; . as $w | rt_skip5($G.windows[$w]) or win_ok($w)) | not) then "window-stale"
   elif ($d.resets_at_epoch | num | not) or ($uw.seven_day.resets_at_epoch | num | not)
        or ($d.resets_at_epoch - $uw.seven_day.resets_at_epoch > 120) or ($uw.seven_day.resets_at_epoch - $d.resets_at_epoch > 120)
        or ($c.now >= $uw.seven_day.resets_at_epoch) or ($c.now >= $d.resets_at_epoch) then "resets-drift"
@@ -578,7 +610,7 @@ def rt_lend_why($c; $d; $uw; $G; $res):
   elif any($G.windows[]; .state == "unknown") then "window-unknown"
   elif ($d.ceiling_bp | num | not) or ($res | type) != "object"
        or (rt_ueff($G.windows.seven_day) + $G.sigma.seven_day + $res.seven_day > $d.ceiling_bp) then "ceiling"
-  elif rt_ueff($G.windows.five_hour) + $G.sigma.five_hour + $res.five_hour > 5000 then "five-hour-cap"
+  elif (rt_skip5($G.windows.five_hour) | not) and (rt_ueff($G.windows.five_hour) + $G.sigma.five_hour + $res.five_hour > 5000) then "five-hour-cap"
   else null end;
 
 # 발행 예비분 술어. 발행 전용 행이 새로 입장하지 못하는 첫 원인, 모두 통과면 null 이다.
@@ -628,6 +660,52 @@ def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups):
      elif ($a | has("publish_only")) and $a.publish_only != false then {publish_defect: true}
      else {} end);
 
+# 비용 설정과 표본 한 줄의 형 검사. 비용 표와 한도 없음의 표본 증거가 함께 쓴다.
+def rt_cost_cfg_ok:
+  if type != "object" then false
+  elif ((.floor | type) != "object") or ((.hygiene | type) != "object") then false
+  else (.max_age_s | type) == "number" and (.max_n | rt_isint) and .max_n >= 1 and (.min_n | rt_isint) and .min_n >= 1
+       and ((.floor.five_hour | type) == "number") and ((.floor.seven_day | type) == "number")
+       and ((.hygiene.min_frames | type) == "number") and ((.hygiene.min_cover | type) == "number") end;
+def rt_cost_win_ok:
+  (type == "object") and ((.u0 | type) == "number") and ((.u1 | type) == "number") and .u0 >= 0 and .u1 <= 1
+  and (.n | rt_isint) and .n >= 0 and ((.r0 | type) == "number") and ((.r1 | type) == "number");
+def rt_cost_sample_ok($now):
+  if type != "object" or .schema != rt_cost_schema then false
+  elif ((.run_id | type) != "string") or ((.log | type) != "string") then false
+  elif (.kind as $k | any(rt_cost_kinds[]; . == $k)) | not then false
+  elif (.account | rt_cost_acct_ok) | not then false
+  elif ((.t_start | type) != "number") or ((.t_end | type) != "number") then false
+  elif .t_start > .t_end or .t_end > ($now + 300) then false
+  elif (.windows | type) != "object" then false
+  else (.windows) as $ws | all(rt_wins[]; ($ws[.] // null) as $x | $x == null or ($x | rt_cost_win_ok)) end;
+
+# 5시간 한도 없음의 표본 증거 `{<그룹>: "limited" | "unlimited"}`. 저장소의 표본을
+# 살아 있는 표본과 같은 형 검사·같은 키(런·로그) 중복 제거로 읽되 나이로 거르지 않는다 —
+# 쉬는 한도 없는 계정의 증거가 비용 칸의 기한과 함께 사라지지 않게 하려는 것이다.
+# 그룹마다 주간 판독을 실은 가장 최근 표본(같은 끝 시각이면 5시간 판독을 실은 쪽)에
+# 5시간 판독이 있으면 한도 있음이다. 없으면 5시간 판독을 실은 가장 최근 표본(같은 끝
+# 시각이면 해제 시각이 늦은 쪽)의 해제 시각이 아직 오지 않았을 때 한도 있음, 지났거나
+# 그런 표본이 없으면 한도 없음이다. 주간 판독을 실은 표본이 없는 그룹은 표에 없다.
+# 설정이나 표본 원문을 쓸 수 없으면 빈 표이고, 어느 입력에서도 오류를 내지 않는다.
+def rt_unl_evidence($c):
+  def has5: (.windows.five_hour | type) == "object";
+  ($c.config.cost // null) as $k
+  | if (($k | rt_cost_cfg_ok) | not) or (($c.cost_samples | type) != "string") or (($c.now | type) != "number") then {}
+    else rt_orgs($c) as $orgs
+      | [$c.cost_samples | split("\n")[] | (fromjson? // null) | select(rt_cost_sample_ok($c.now))]
+      | (reduce .[] as $s ({}; .[[$s.run_id, $s.log] | tojson] = $s)) | [.[]]
+      | group_by(rt_group_of($orgs; .account))
+      | reduce .[] as $gs ({};
+          ([$gs[] | select((.windows.seven_day | type) == "object")]
+           | max_by([.t_end, (if has5 then 1 else 0 end)])) as $l7
+          | if $l7 == null then .
+            elif ($l7 | has5) then .[rt_group_of($orgs; $l7.account)] = "limited"
+            else ([$gs[] | select(has5)] | max_by([.t_end, .windows.five_hour.r1])) as $l5
+              | .[rt_group_of($orgs; $l7.account)] = (if $l5 != null and $l5.windows.five_hour.r1 > $c.now then "limited" else "unlimited" end)
+            end)
+    end;
+
 def rt_prep($schema):
   (.) as $c
   | if ($c.now | rt_isint | not) then error("now") else . end
@@ -640,7 +718,8 @@ def rt_prep($schema):
      + (if $own != null then [rt_group_of($orgs; $own.account)] else [] end)
      + (if (($c.request.bound_account | type) == "string") and $c.request.bound_account != "" then [rt_group_of($orgs; $c.request.bound_account)] else [] end)
      | unique) as $gids
-  | (reduce $gids[] as $g ({}; .[$g] = rt_gview($c; $orgs; $fresh; $inv; $items; $g))) as $gv
+  | rt_unl_evidence($c) as $ev
+  | (reduce $gids[] as $g ({}; .[$g] = rt_gview($c; $orgs; $fresh; $inv; $items; $g; $ev))) as $gv
   | ($c.borrow // {"state": "absent"}) as $b
   | (if ($b | rt_borrowing)
      then [$inv[] | select((.id == $b.donor.id) or (.config_dir == $b.donor.config_dir)) | .id]
@@ -669,24 +748,6 @@ def rt_need_cap: if (.config.cap_bp | rt_isint | not) then error("config.cap_bp"
 # 없거나 숫자가 아니거나 표본 원문이 문자열이 아니면 빈 표이고, 그러면 조회는 모두
 # 기본값으로 떨어진다 — 추정기의 결함이 판정을 막지 않는다.
 def rt_cost_empty: {five_hour: {by_kind: {}, by_group: {}}, seven_day: {by_kind: {}, by_group: {}}};
-def rt_cost_cfg_ok:
-  if type != "object" then false
-  elif ((.floor | type) != "object") or ((.hygiene | type) != "object") then false
-  else (.max_age_s | type) == "number" and (.max_n | rt_isint) and .max_n >= 1 and (.min_n | rt_isint) and .min_n >= 1
-       and ((.floor.five_hour | type) == "number") and ((.floor.seven_day | type) == "number")
-       and ((.hygiene.min_frames | type) == "number") and ((.hygiene.min_cover | type) == "number") end;
-def rt_cost_win_ok:
-  (type == "object") and ((.u0 | type) == "number") and ((.u1 | type) == "number") and .u0 >= 0 and .u1 <= 1
-  and (.n | rt_isint) and .n >= 0 and ((.r0 | type) == "number") and ((.r1 | type) == "number");
-def rt_cost_sample_ok($now):
-  if type != "object" or .schema != rt_cost_schema then false
-  elif ((.run_id | type) != "string") or ((.log | type) != "string") then false
-  elif (.kind as $k | any(rt_cost_kinds[]; . == $k)) | not then false
-  elif (.account | rt_cost_acct_ok) | not then false
-  elif ((.t_start | type) != "number") or ((.t_end | type) != "number") then false
-  elif .t_start > .t_end or .t_end > ($now + 300) then false
-  elif (.windows | type) != "object" then false
-  else (.windows) as $ws | all(rt_wins[]; ($ws[.] // null) as $x | $x == null or ($x | rt_cost_win_ok)) end;
 
 # 같은 그룹 표본의 구간 겹침으로 정한 분모 m = (길이 + 겹침 합) / 길이. 입력은 한
 # 그룹의 표본 배열이다. 시작 순으로 늘어놓고 앞으로 훑다가 시작이 자기 끝을 넘는
@@ -783,8 +844,8 @@ def rt_admit_core($c; $G; $ex):
       {admitted: ($G.count == 0), admitted_as: "unknown", reservation_bp: $res,
        failed: (if $G.count == 0 then [] else ["unknown-concurrency"] end), ready_at: null}
     else
-      ([rt_wins[] as $w | select(rt_ueff($W[$w]) + $G.sigma[$w] + $res[$w] > 10000) | $w]
-       + (if rt_ueff($W.five_hour) >= $c.config.cap_bp then ["cap"] else [] end)) as $f
+      ([rt_wins[] as $w | select(rt_skip5($W[$w]) | not) | select(rt_ueff($W[$w]) + $G.sigma[$w] + $res[$w] > 10000) | $w]
+       + (if (rt_skip5($W.five_hour) | not) and (rt_ueff($W.five_hour) >= $c.config.cap_bp) then ["cap"] else [] end)) as $f
       | {admitted: (($f | length) == 0), admitted_as: "known", reservation_bp: $res, failed: $f,
          ready_at: (if ($f | length) == 0 then null
                     else ([$f[] | (if . == "cap" then "five_hour" else . end) as $w | $W[$w].resets_at]
@@ -812,6 +873,15 @@ def rt_w7($c; $G; $cost):
       | max | round
     end;
 
+# 주간 리셋 압력 P(bp/h 정수). 5시간 한도가 없는 그룹의 정렬 키로만 쓰는 필요 속도로,
+# 주간 창 끝 `$top` 까지의 잔여(그 그룹 live 임대의 주간 예약을 뺀 것)를 리셋까지 남은
+# 시간으로 나눈다. 주간 창이 known 이 아니거나 리셋 시각이 지금보다 뒤가 아니면 0 이다.
+# 주간 리셋권은 셈에 넣지 않는다.
+def rt_p7($c; $G; $top):
+  $G.windows.seven_day as $x
+  | if ($x.state != "known") or (($x.resets_at | type) != "number") or ($x.resets_at <= $c.now) then 0
+    else (([0, $top - $x.u_bp - $G.sigma.seven_day] | max) * 3600 / ($x.resets_at - $c.now)) | round end;
+
 # 관측 줄에 싣는 ρ7(하루당 bp 정수). `rt_w7` 의 ρ(초당)에 86400 을 곱한 값이고,
 # 주간 창 상태와 무관하게 비용만으로 셈한다. 5시간 비용이 양수가 아니거나 주간
 # 비용이 수가 아니면 셈할 수 없어 null 이다.
@@ -834,7 +904,7 @@ def rt_pass_wins($kind):
 def rt_press_ok($c; $G; $kind):
   rt_pass_wins($kind) as $ws
   | if (($ws | length) == 0) or any($G.windows[]; .state == "unknown") then false
-    else (reduce $ws[] as $w ($G; .windows[$w] |= {state: "reset_elapsed", u_bp: 0, resets_at, observed, source}))
+    else (reduce $ws[] as $w ($G; if .windows[$w].state == "unlimited" then . else .windows[$w] |= {state: "reset_elapsed", u_bp: 0, resets_at, observed, source} end))
       | rt_admit_core($c; .; null) | .admitted
     end;
 
@@ -1049,7 +1119,8 @@ def rt_grant_new($p; $a; $adm; $basis):
    order: (rt_phase($p.c) | {phase, phase_source, until_epoch, burst_length_s, burst_length_source}
            + {threshold_bp: null, ratio_source: null, tier: null, r7_bp: null, admitted: null,
               picked_by: null, load5_bp: null, affinity_account: null, affinity_hold_bp: null,
-              ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null})};
+              ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null,
+              pressure_bp_h: null, five_hour_state: null, five_hour_basis: null})};
 # 질문으로 멈출 수 있는 스테이지의 종류. 이 종류는 멈춘 뒤 같은 계정의 재부착으로만
 # 답을 받는다. 문맥에 `config.ask` 가 있고 요청 종류가 이 목록에 있을 때만 새 기준이 켜진다.
 def rt_ask_kinds: ["design", "audit", "split", "visual", "implement", "review", "lead-fix", "reconverge"];
@@ -1078,8 +1149,9 @@ def rt_ask_order($on; $s; $avoided):
   else {} end;
 # 새 단계 정렬의 키 배열과 그 자리 이름. 두 단계 모두 대여 층·U 부류 다음이 새 기준의
 # 두 자리(`ask-headroom`), 그다음 유지(유효한 직전 계정이고 그 그룹의 load5 가 문턱
-# 아래면 0), 버려질 한도 W7, 분산(load5 작은 순), 주간 키, 붙든 계정, id 다. 쉼의 주간
-# 키는 층과 r7 두 자리다.
+# 아래면 0 — 5시간 창이 한도 없음인 그룹은 load5 와 문턱을 보지 않고 직전 계정이면 0),
+# 버려질 한도 W7, 분산(load5 작은 순), 주간 키, 붙든 계정, id 다. 쉼의 주간 키는 층과
+# r7 두 자리다.
 # 새 기준의 두 자리는 질문 가능 스테이지에서 재부착까지 버티지 못하는 후보를 뒤로
 # 보낸다 — 버티면 [0, 0], 버티지 못하면 [1, -r7](주간 창 미상이면 [1, 0])이라 버티지
 # 못하는 후보끼리는 r7 이 큰 순이다. 버틴다는 것은 r7 이 `(1 + resume_n) × 주간 예약`
@@ -1090,9 +1162,11 @@ def rt_ask_order($on; $s; $avoided):
 # 1등이 새 기준이 없어도 1등이었던 부여도 그렇게 적힌다. 새 기준이 결과를 바꿨는지는
 # 봉투 `order` 의 `ask_avoided` 가 비어 있지 않은지로만 판정한다.
 def rt_new_sticky($p): .a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end;
+# 주간 리셋 압력 P 는 5시간 한도가 없는 그룹만 0 보다 크다. 몰아 쓰기에서는 W7 다음·분산
+# 앞이고, 쉼에서는 주간 키(층·r7) 다음·붙든 계정 앞이다 — 쉼의 층·r7 이 P 보다 앞선다.
 def rt_new_kb($p):
   [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .askk[0], .askk[1],
-   .aff, (0 - .w7), .load5,
+   .aff, (0 - .w7), (0 - (.p7 // 0)), .load5,
    (0 - (if .a.lend_enrolled == true
          then ((.a.lend.dec.ceiling_bp // 0) - (rt_ueff($p.groups[.a.group].windows.seven_day) // 10000))
          else .a.remaining_bp end)),
@@ -1100,9 +1174,13 @@ def rt_new_kb($p):
 def rt_new_kr($p):
   [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .askk[0], .askk[1],
    .aff, (0 - .w7), .load5,
-   .tier, (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end), rt_new_sticky($p), .a.id];
-def rt_new_names_b: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "spread", "weekly", "sticky", "id"];
-def rt_new_names_r: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "spread", "weekly", "weekly", "sticky", "id"];
+   .tier, (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end), (0 - (.p7 // 0)), rt_new_sticky($p), .a.id];
+def rt_new_names_b: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "pressure", "spread", "weekly", "sticky", "id"];
+def rt_new_names_r: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "spread", "weekly", "weekly", "pressure", "sticky", "id"];
+# 고른 그룹의 5시간 창 상태와 한도 없음의 근거. 한도 없음이 아니면 근거는 null 이다.
+def rt_five_rec($G):
+  ($G.windows.five_hour // null) as $x
+  | {five_hour_state: ($x.state? // null), five_hour_basis: (if ($x.state? // null) == "unlimited" then ($x.basis // null) else null end)};
 # 정렬 첫째와 둘째의 키 배열이 처음 갈리는 자리의 이름. 후보가 하나면 `only` 다.
 def rt_picked_by($ks; $names):
   if ($ks | length) < 2 then "only"
@@ -1282,7 +1360,8 @@ def rt_new($p; $basis0; $excl):
         | (if $p.pin != null and (rt_lend_new_ok($a) | not) then rt_lend_fail(rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until))
            else rt_admit($p; $a) end) as $adm
         | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group),
-           w7: rt_w7($p.c; $p.groups[$a.group]; $adm.cost)}] as $pool
+           w7: (if ($p.groups[$a.group].windows.five_hour.state? // null) == "unlimited" then 0
+                else rt_w7($p.c; $p.groups[$a.group]; $adm.cost) end)}] as $pool
       | [$pool[] | select(.adm.admitted and (.fifo | not))] as $cands
       | if ($cands | length) > 0 then
           # 대여 층이 두 단계 모두에서 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
@@ -1304,17 +1383,23 @@ def rt_new($p; $basis0; $excl):
           | rt_ask_on($p.c) as $askon
           | [$cands[] | $p.groups[.a.group] as $G | $G.windows.five_hour as $x
                | (if $x == null or rt_ueff($x) == null then 10000 else rt_ueff($x) + ($G.sigma.five_hour // 0) end) as $l5
-               | (if $H != null and .a.id == $H and $l5 < $Taff then 0 else 1 end) as $aff0
+               | (($x.state? // null) == "unlimited") as $unl
+               | (if $unl then (if $H != null and .a.id == $H then 0 else 1 end)
+                  elif $H != null and .a.id == $H and $l5 < $Taff then 0 else 1 end) as $aff0
+               | (if $unl then rt_p7($p.c; $G; (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end))
+                  else 0 end) as $p7
                | (if $askon then rt_ask_fit($p.c; $G; .a; .adm) else null end) as $ask
                | ($ask != null and ($ask.fits | not)) as $short
-               | . + {load5: $l5, aff0: $aff0, ask: $ask,
+               | . + {load5: $l5, aff0: $aff0, p7: $p7, ask: $ask,
                       askk: (if $short then [1, (if $ask.r7 == null then 0 else 0 - $ask.r7 end)] else [0, 0] end),
                       aff: (if $short then 1 else $aff0 end)}] as $cands
           | (if $ph.phase == "burst" then
                ($cands | sort_by(rt_new_kb($p))) as $s
                | {best: $s[0],
                   order: ({picked_by: rt_picked_by([$s[0:2][] | rt_new_kb($p)]; rt_new_names_b),
-                           load5_bp: $s[0].load5, affinity_account: $H, affinity_hold_bp: $Taff}
+                           load5_bp: $s[0].load5, affinity_account: $H, affinity_hold_bp: $Taff,
+                           pressure_bp_h: $s[0].p7}
+                          + rt_five_rec($p.groups[$s[0].a.group])
                           + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kb($p)) else null end)))}
              else
                # 쉼: 주간 여유 r7 이 문턱 T 아래인 계정을 작은 순으로 먼저 쓰고, 문턱 위는 큰
@@ -1336,7 +1421,9 @@ def rt_new($p; $basis0; $excl):
                                       above: ([$rc[] | select(.tier == 1)] | length),
                                       unknown: ([$rc[] | select(.tier == 2)] | length)},
                            picked_by: rt_picked_by([$s[0:2][] | rt_new_kr($p)]; rt_new_names_r),
-                           load5_bp: $b.load5, affinity_account: $H, affinity_hold_bp: $Taff}
+                           load5_bp: $b.load5, affinity_account: $H, affinity_hold_bp: $Taff,
+                           pressure_bp_h: $b.p7}
+                          + rt_five_rec($p.groups[$b.a.group])
                           + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kr($p)) else null end)))}
              end) as $pick
           | (rt_grant_new($p; $pick.best.a; $pick.best.adm; $basis) | .order += $pick.order) as $e
@@ -1414,7 +1501,7 @@ def rt_revalidate($schema; $rec):
        else true end)
     else
       (if any($G.windows[]; .state == "unknown") then $G.count == 0
-       else all(rt_wins[]; (.) as $w | (rt_ueff($G.windows[$w]) + $G.sigma[$w] + ($rec.reservation_bp[$w] // 0)) <= 10000) end)
+       else all(rt_wins[]; (.) as $w | rt_skip5($G.windows[$w]) or ((rt_ueff($G.windows[$w]) + $G.sigma[$w] + ($rec.reservation_bp[$w] // 0)) <= 10000)) end)
       # 새로 놓는 대여 쓰기는 다시 읽은 σ 와 그 기록의 예약으로 H3·H4 를, 지금 시각으로
       # H1 을 다시 본다. 사용량 문서는 다시 읽지 않는다. 이어 가는 쓰기는 보지 않는다.
       and (if ($a.lend_enrolled? == true) and ($rec.nonce == $p.c.fresh_nonce)
@@ -2958,7 +3045,9 @@ route__affinity_grant() {
            picked_by: $env.order.picked_by, load5_bp: $env.order.load5_bp,
            affinity_account: $env.order.affinity_account, affinity_hold_bp: $env.order.affinity_hold_bp,
            ask_need_bp: $env.order.ask_need_bp, ask_r7_bp: $env.order.ask_r7_bp,
-           ask_fits: $env.order.ask_fits, ask_avoided: $env.order.ask_avoided}' 2>/dev/null) || line=""
+           ask_fits: $env.order.ask_fits, ask_avoided: $env.order.ask_avoided,
+           pressure_bp_h: $env.order.pressure_bp_h, five_hour_state: $env.order.five_hour_state,
+           five_hour_basis: $env.order.five_hour_basis}' 2>/dev/null) || line=""
   if [ -z "$line" ] || ! printf '%s\n' "$line" >> "$RUN_DIR/route-picks.jsonl" 2>/dev/null; then
     route__warn "부여 기록을 덧붙이지 못했다 ($RUN_DIR/route-picks.jsonl)"
   fi

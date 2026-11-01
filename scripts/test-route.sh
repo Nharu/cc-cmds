@@ -2565,7 +2565,8 @@ expect "몰아 쓰기 GRANT 의 order 는 단계 칸과 근거 칸만 채운다"
   ".verdict == \"GRANT\" and .order == {phase: \"burst\", phase_source: \"declared\", until_epoch: ($NOW + 3600),
     burst_length_s: 28800, burst_length_source: \"declared\", threshold_bp: null, ratio_source: null, tier: null,
     r7_bp: null, admitted: null, picked_by: \"spread\", load5_bp: 1000, affinity_account: null, affinity_hold_bp: null,
-    ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null}"
+    ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null,
+    pressure_bp_h: 0, five_hour_state: \"known\", five_hour_basis: null}"
 expect "단계 기록이 없으면 쉼/absent 이고 문턱을 싣는다" "$(decide 'del(.phase)')" \
   '.order | .phase == "rest" and .phase_source == "absent" and .until_epoch == null and .burst_length_s == 28800
    and .burst_length_source == "default" and .threshold_bp == 3413 and .ratio_source == "default"'
@@ -3437,10 +3438,13 @@ tr_affinity_rec_case() {
   check "기록: 부여 기록이 한 줄이다" "$(wc -l < "$RUN_DIR/route-picks.jsonl" | tr -d ' ')" 1
   check "기록: 부여 기록 한 줄의 근거가 봉투의 order 와 같다" \
     "$(jq -c '[.schema, .run_id, .lineage, .event, .basis, .account, .group, .picked_by, .load5_bp, .affinity_account, .affinity_hold_bp,
-              .ask_need_bp, .ask_r7_bp, .ask_fits, .ask_avoided]' "$RUN_DIR/route-picks.jsonl")" \
+              .ask_need_bp, .ask_r7_bp, .ask_fits, .ask_avoided, .pressure_bp_h, .five_hour_state, .five_hour_basis]' "$RUN_DIR/route-picks.jsonl")" \
     "$(printf '%s' "$out" | jq -c '["cc-cmds-route-pick v1", "r1", "S1", "first", .basis, .account, .group,
        .order.picked_by, .order.load5_bp, .order.affinity_account, .order.affinity_hold_bp,
-       .order.ask_need_bp, .order.ask_r7_bp, .order.ask_fits, .order.ask_avoided]')"
+       .order.ask_need_bp, .order.ask_r7_bp, .order.ask_fits, .order.ask_avoided,
+       .order.pressure_bp_h, .order.five_hour_state, .order.five_hour_basis]')"
+  check "기록: 부여 기록이 압력과 5시간 창 상태 칸을 싣는다" \
+    "$(jq -c '[has("pressure_bp_h"), has("five_hour_state"), has("five_hour_basis")]' "$RUN_DIR/route-picks.jsonl")" '[true,true,true]'
   check "기록: 출하 설정의 implement 부여는 새 기준의 네 칸을 채운다" \
     "$(jq -c '[(.ask_need_bp | type), (.ask_fits | type), (.ask_avoided | type)]' "$RUN_DIR/route-picks.jsonl")" \
     '["number","boolean","array"]'
@@ -3493,6 +3497,274 @@ tr_affinity_rec_case() {
   done
 }
 tr_in_run "$TR_RUN_SH" tr_affinity_rec_case
+
+# ===========================================================================
+# 5시간 한도 없음과 주간 리셋 압력. 주간 창이 알려진 그룹의 5시간 창은 사용량 행에 5시간
+# 값이 없으면(키 부재·null) `unlimited`/`absent`, 사용률 0 이고 비용 표본이 5시간 판독 없는
+# 주간 표본뿐이면 `unlimited`/`evidence` 다. 압력 P 는 한도 없는 그룹만 받고, 몰아 쓰기는
+# W7 다음·분산 앞, 쉼은 층·r7 다음·붙든 계정 앞에서 가른다.
+# 표본은 구간마다 프레임 2(위생 문턱 3 미만)이고 계정마다 하나라 비용 칸이 서지 않는다 —
+# 예약은 주입 설정이 정한다.
+# ===========================================================================
+UN_JQ='
+def ZU($id; $u5; $u7; $s): UW($id; W($u5; $now + 3600); W($u7; $now + $s));
+def Z5($id; $u7; $s): ZU($id; 0.0; $u7; $s);
+def N5($id; $u7; $s): UW($id; null; W($u7; $now + $s)) | del(.windows.five_hour);
+def EVW($u; $r): {u0: $u, u1: $u, r0: $r, r1: $r, n: 2, t0: 0, t1: 0};
+def EVS($acct; $i; $ago; $r5):
+  ($now - $ago) as $te
+  | {schema: "cc-cmds-cost-sample v1", run_id: "ev", lineage: "l", log: "\($acct)-\($i).json", kind: "implement",
+     account: $acct, t_start: ($te - 100), t_end: $te, duration_ms: 100000, usd: 1, cli: "x",
+     windows: ({seven_day: EVW(0.5; ($now + 86400))} + (if $r5 == null then {} else {five_hour: EVW(0.1; $r5)} end))};
+def EVON($xs): .config.cost = {max_age_s: 604800, max_n: 40, min_n: 3, floor: {five_hour: 0.01, seven_day: 0.005},
+                               hygiene: {min_frames: 3, min_cover: 0.5}}
+  | .cost_samples = ([$xs[] | tojson] | join("\n"));
+def EV($ids): EVON([$ids[] | EVS(.; 0; 1000; null)]);
+def FR5($acct; $r): .frames += [{account: $acct, observed_at_epoch: ($now - 60), windows: {five_hour: {u: 0, resets_at: $r}}}];
+def FR7($acct; $u): .frames += [{account: $acct, observed_at_epoch: ($now - 60), windows: {seven_day: {u: $u, resets_at: ($now + 86400)}}}];
+def L3($acct): ITEMS([LG("r7"; "X#1"; $acct; true), LG("r8"; "X#1"; $acct; true), LG("r9"; "X#1"; $acct; true)]);
+'
+# g5 <필터> <그룹> — 분류가 낸 그룹 5시간 창의 `상태/근거`.
+g5() {
+  classify "$UN_JQ $1" | jq -r --arg g "$2" '[.groups[] | select(.group == $g) | .windows.five_hour | "\(.state)/\(.basis // "-")"] | .[0]'
+}
+ulwhy() { classify "$LJ $UN_JQ $1" | jq -r '[.accounts[] | select(.id == "cc") | .lend.why] | .[0] | tostring'; }
+# un_jq <필터> <jq 식> — route.sh 의 jq 정의 위에서 문맥 하나로 식을 계산한다.
+un_jq() { ctx "$UN_JQ $1" | ( . "$TR_ROUTE"; jq -c --arg schema "$LEASE_SCHEMA" "$(route__jq_lib) $2" ); }
+# un_reval <필터> <예약 JSON> — 문맥의 임대 표 위에서 r1/S1 의 a 기록을 다시 검사한 종료 코드.
+un_reval() {
+  local c rc=0
+  c=$(ctx "$UN_JQ $1")
+  ( . "$TR_ORCH/liveness.sh"; . "$TR_ROUTE"
+    route__revalidate "$c" "$(printf '%s' "$c" | jq -c '.leases')" \
+      "{\"run_id\":\"r1\",\"lineage\":\"S1\",\"account\":\"a\",\"nonce\":\"n-x\",\"reservation_bp\":$2}" ) || rc=$?
+  printf '%s' "$rc"
+}
+# un_seq <필터> — 앞선 부여를 다른 런의 live 임대(그 부여의 예약)로 쌓으며 세 번 연속 부여한
+# `계정:picked_by` 순서.
+un_seq() {
+  local items="" out="" i=0 env a res
+  while [ "$i" -lt 3 ]; do
+    env=$(decide "$UN_JQ $1 | ITEMS([$items])")
+    a=$(printf '%s' "$env" | jq -r 'if .verdict == "GRANT" then "\(.account):\(.order.picked_by)" else "" end')
+    [ -n "$a" ] || break
+    out="${out:+$out }$a"
+    res=$(printf '%s' "$env" | jq -c '.reservation_bp')
+    items="${items:+$items, }LR(\"q$i\"; \"P$i\"; \"${a%%:*}\"; \"grant\"; $res; true; $((i + 1)))"
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+# 1. 11-01 함대. u1–u7 의 5시간 사용률 0, 주간 사용률·리셋까지 시간은 11-01 값(9.2h 는
+# 33120초 등)이다. 표본 증거로 일곱 그룹 모두 `unlimited`/`evidence` 다. 부여당 예약은
+# 5시간 3000·주간 1200(TK7 3 × 400) 이다. 예약 없는 P 는 u5 435, u7 208 이고, u5 가 두 부여의
+# 주간 2400 을 지면 P 가 round(1600 × 3600 / 33120) = 174 로 u7 아래가 된다. 그때 u5 의 입회
+# 합은 주간 6000 + 2400 + 1200 = 9600, 5시간 0 + 6000 + 3000 = 9000 이라 둘 다 여유 안이다 —
+# 셋째 부여의 u7 은 입회 실패가 아니라 압력으로 골라진다.
+UN11='ONLY(["u1","u2","u3","u4","u5","u6","u7"])
+  | USE([Z5("u1"; 0.26; 544320), Z5("u2"; 0.03; 591120), Z5("u3"; 0.16; 457920), Z5("u4"; 0.12; 270720),
+         Z5("u5"; 0.60; 33120), Z5("u6"; 0.11; 461520), Z5("u7"; 0.35; 112320)])
+  | .config.c.seven_day.default = 0.04'
+UN11E="$UN11 | EV([\"u1\",\"u2\",\"u3\",\"u4\",\"u5\",\"u6\",\"u7\"])"
+out=$(decide "$UN_JQ $UN11E")
+expect "11-01 몰아 쓰기: 첫 부여는 u2 가 아니라 u5 이고 압력이 정한다" "$out" \
+  '.verdict == "GRANT" and .account == "u5" and .account != "u2" and .order.picked_by == "pressure"
+   and .order.pressure_bp_h == 435 and .order.five_hour_state == "unlimited" and .order.five_hour_basis == "evidence"
+   and .reservation_bp == {five_hour: 3000, seven_day: 1200} and .admitted_as == "known"'
+check "11-01 몰아 쓰기: 예약이 쌓이면 u5, u5 다음 u7 이고 셋 모두 압력이 정한다" "$(un_seq "$UN11E")" \
+  "u5:pressure u5:pressure u7:pressure"
+UN11K="ITEMS([LR(\"q0\"; \"P0\"; \"u5\"; \"grant\"; {five_hour: 3000, seven_day: 1200}; true; 1), LR(\"q1\"; \"P1\"; \"u5\"; \"grant\"; {five_hour: 3000, seven_day: 1200}; true; 2)])"
+expect "11-01 몰아 쓰기: 셋째 부여의 u7 은 P 208 이다" "$(decide "$UN_JQ $UN11E | $UN11K")" \
+  '.account == "u7" and .order.picked_by == "pressure" and .order.pressure_bp_h == 208'
+expect "11-01 몰아 쓰기: 셋째 부여 앞의 u5 는 P 174 이다" "$(decide "$UN_JQ $UN11E | $UN11K | ONLY([\"u5\"])")" \
+  '.account == "u5" and .order.picked_by == "only" and .order.pressure_bp_h == 174'
+expect "11-01 몰아 쓰기: 셋째 부여 앞의 u5 도 입회한다(주간 합 9600)" "$(admit1 "$UN_JQ $UN11E | $UN11K" u5)" \
+  '.admitted == true and .failed == [] and .reservation_bp == {five_hour: 3000, seven_day: 1200}'
+check "11-01: 셋째 부여 앞 u5 의 입회 합" "$((6000 + 2 * 1200 + 1200))/$((0 + 2 * 3000 + 3000))" "9600/9000"
+out=$(decide "$UN_JQ del(.phase) | $UN11E")
+expect "11-01 쉼: 첫 부여는 P 를 뺀 쉼 키(층·r7)가 고르는 계정이다" "$out" \
+  '.order.phase == "rest" and (.order.threshold_bp as $T
+     | [["u1", 7400], ["u2", 9700], ["u3", 8400], ["u4", 8800], ["u5", 4000], ["u6", 8900], ["u7", 6500]]
+     | map({a: .[0], r: .[1], t: (if .[1] < $T then 0 else 1 end)})
+     | sort_by([.t, (if .t == 0 then .r else 0 - .r end)]) | .[0].a) == .account'
+
+# 2. 5시간 창이 빠진 계정. 키를 지운 행과 null 행 모두 그 그룹에 다른 런의 live 임대가 있어도
+# 입회하고 `admitted_as` 가 known 이다. 대여 등록 행이면 window-stale 로 거절되지 않는다.
+for v in 'N5("a"; 0.5; 86400)|키 부재' 'UW("a"; null; W(0.5; $now + 86400))|null'; do
+  out=$(decide "$UN_JQ ONLY([\"a\"]) | USE([${v%|*}]) | ITEMS([LG(\"r0\"; \"X#1\"; \"a\"; true)])")
+  expect "5시간 ${v##*|}: live 임대가 있어도 다음 단계가 known 으로 입회한다" "$out" \
+    '.verdict == "GRANT" and .account == "a" and .admitted_as == "known"
+     and .order.five_hour_state == "unlimited" and .order.five_hour_basis == "absent"'
+done
+check "5시간 키 부재: 대여 등록 행은 window-stale 이 아니다" "$(ulwhy 'UBLK | CCX(del(.windows.five_hour))')" null
+check "5시간 null: 대여 등록 행은 window-stale 이 아니다" "$(ulwhy 'UBLK | CCX(.windows.five_hour = null)')" null
+expect "5시간 키 부재: 대여 등록 행에 GRANT" "$(decide "$LJ $UN_JQ UBLK | CCX(del(.windows.five_hour))")" \
+  '.verdict == "GRANT" and .account == "cc"'
+
+# 3. 판별 경계.
+UNO='ONLY(["a","b"]) | USE([N5("a"; 0.5; 86400) + {org_hash: "o"}, N5("b"; 0.5; 86400) + {org_hash: "o"}])'
+check "경계 대조: 같은 조직의 두 행 모두 5시간 키가 없으면 한도 없음" "$(g5 "$UNO" org:o)" "unlimited/absent"
+check "경계: 같은 조직의 한 행에만 5시간 키가 없으면 한도 없음이 아니다" \
+  "$(g5 'ONLY(["a","b"]) | USE([N5("a"; 0.5; 86400) + {org_hash: "o"}, (UA("b"; 0.0; 0.5) | .windows.five_hour.observed_at_epoch = ($now - 7200)) + {org_hash: "o"}])' org:o)" \
+  "unknown/-"
+check "경계: 사용량 행 없이 프레임만으로 주간이 알려진 그룹은 한도 없음이 아니다" "$(g5 'ONLY(["a"]) | USE([]) | FR7("a"; 0.5)' acct:a)" "unknown/-"
+check "경계: 사용률이 수가 아닌 5시간 창은 표본 증거가 있어도 unknown" \
+  "$(g5 'ONLY(["a"]) | USE([UW("a"; (W(0.0; $now + 3600) | .utilization = "x"); W(0.5; $now + 86400))]) | EV(["a"])' acct:a)" "unknown/-"
+check "경계: 사용률이 수가 아닌 대여 등록 행은 window-unknown" \
+  "$(ulwhy 'UBLK | CCX(.windows.five_hour.utilization = "x") | EV(["cc"])')" "window-unknown"
+out=$(decide "$UN_JQ ONLY([\"a\"]) | USE([Z5(\"a\"; 0.5; 86400)]) | EVON([EVS(\"a\"; 0; 8 * 86400; null)])")
+expect "경계: 7일을 넘겼지만 보존 안인 표본만 있는 그룹은 표본 증거로 한도 없음이고 P 를 받는다" "$out" \
+  '.order.five_hour_state == "unlimited" and .order.five_hour_basis == "evidence" and .order.pressure_bp_h == 208'
+check "경계: 5시간 값이 수(0)인 행은 한도 없음이 아니다" "$(g5 'ONLY(["a"]) | USE([UW("a"; 0; W(0.5; $now + 86400))])' acct:a)" "unknown/-"
+check "경계: windows 가 없는 신선한 행은 한도 없음이 아니다" \
+  "$(g5 'ONLY(["a"]) | USE([{id: "a", config_dir: "/h/.claude-a", login: "ok", status: "allowed"}]) | FR7("a"; 0.5)' acct:a)" "unknown/-"
+check "경계: 사용량 행에 5시간 키가 없어도 프레임에 5시간 판독이 있으면 한도 없음이 아니다" \
+  "$(g5 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400)]) | FR5("a"; ($now + 3600))' acct:a)" "known/-"
+UNZ='ONLY(["a"]) | USE([Z5("a"; 0.5; 86400)])'
+check "경계 대조: 주간 표본 하나면 표본 증거로 한도 없음" "$(g5 "$UNZ | EVON([EVS(\"a\"; 0; 1000; null)])" acct:a)" "unlimited/evidence"
+check "경계: 끝 시각이 같은 두 표본 중 하나에만 5시간 창이 있으면 한도 있음" \
+  "$(g5 "$UNZ | EVON([EVS(\"a\"; 0; 1000; null), EVS(\"a\"; 1; 1000; (\$now - 10))])" acct:a)" "known/-"
+check "경계: 앞선 표본의 5시간 해제 시각이 아직이면 한도 있음" \
+  "$(g5 "$UNZ | EVON([EVS(\"a\"; 0; 1000; null), EVS(\"a\"; 1; 2000; (\$now + 600))])" acct:a)" "known/-"
+check "경계: 앞선 표본의 5시간 해제 시각이 지났으면 한도 없음" \
+  "$(g5 "$UNZ | EVON([EVS(\"a\"; 0; 1000; null), EVS(\"a\"; 1; 2000; (\$now - 600))])" acct:a)" "unlimited/evidence"
+
+# 4. 건너뛰는 자리. 세 임대가 5시간 9000·주간 7200 을 지고, 기록 하나가 3000·2400 을 더한다.
+check "건너뛰기: 한도 없음(absent) 그룹의 live 임대는 5시간 합이 넘쳐도 재검증을 통과한다" \
+  "$(un_reval 'ONLY(["a"]) | USE([N5("a"; 0.0; 86400)]) | L3("a")' "$RES_JSON")" 0
+check "건너뛰기: 리셋권이 덮는 창을 바꿀 때 한도 없음(absent) 창은 그대로다" \
+  "$(un_jq 'ONLY(["a"]) | USE([N5("a"; 0.9; 86400)]) | L3("a")' \
+     'rt_prep($schema) as $p | $p.groups["acct:a"] as $G | [rt_admit_core($p.c; $G; null).admitted, rt_press_ok($p.c; $G; "both")]')" \
+  '[false,true]'
+expect "건너뛰기: 몰아 쓰기의 remaining_bp 는 주간 여유다" "$(classify "$UN_JQ ONLY([\"a\"]) | USE([N5(\"a\"; 0.5; 86400)])")" \
+  '[.accounts[] | select(.id == "a") | .remaining_bp] == [5000]'
+out=$(decide "$UN_JQ .inventory.accounts = [A(\"p\") + {unattended: \"disabled\", publish_only: true}] | .seat.lane = \"p\"
+     | .borrow = {state: \"none\"} | USE([N5(\"p\"; 0.5; 86400)])")
+expect "건너뛰기: 5시간 키가 없는 발행 전용 행은 window-unknown 으로 막히지 않는다" "$out" \
+  '.verdict == "GRANT" and .account == "p"'
+
+# 5. 회귀.
+expect "회귀 (가): 5시간 사용률이 0 보다 크면 표본 증거가 있어도 cap 과 5시간 여유가 걸린다" \
+  "$(admit1 "$UN_JQ ONLY([\"a\"]) | USE([UA(\"a\"; 0.85; 0.1)]) | EV([\"a\"])")" \
+  '.admitted == false and .failed == ["five_hour", "cap"]'
+check "회귀 (가): 그 그룹은 한도 있음" "$(g5 'ONLY(["a"]) | USE([UA("a"; 0.85; 0.1)]) | EV(["a"])' acct:a)" "known/-"
+out=$(decide "$UN_JQ $UN11")
+expect "회귀 (라): 표본이 없으면 사용률 0 인 계정도 한도 있음이고 P 가 0 이다" "$out" \
+  '.order.five_hour_state == "known" and .order.five_hour_basis == null and .order.pressure_bp_h == 0'
+check "회귀 (라): 표본이 없으면 순서와 picked_by 가 사용률이 0 보다 큰 함대와 같다" \
+  "$(printf '%s' "$out" | jq -c '[.account, .order.picked_by]')" \
+  "$(decide "$UN_JQ $UN11 | .usage.accounts |= map(.windows.five_hour.utilization = 0.0001)" | jq -c '[.account, .order.picked_by]')"
+check "회귀 (라): 표본이 없으면 연속 부여도 사용률이 0 보다 큰 함대와 같다" "$(un_seq "$UN11")" \
+  "$(un_seq "$UN11 | .usage.accounts |= map(.windows.five_hour.utilization = 0.0001)")"
+expect "회귀: 주간 창까지 없으면 unknown-concurrency" \
+  "$(decide "$UN_JQ ONLY([\"a\"]) | USE([UW(\"a\"; null; null)]) | ITEMS([LG(\"r0\"; \"X#1\"; \"a\"; true)])")" \
+  '.verdict == "WAIT" and .reason == "unknown-concurrency"'
+expect "회귀: 한도 있는 계정의 W7 > 0 이 한도 없는 계정의 P 보다 앞선다" \
+  "$(decide "$UN_JQ ONLY([\"x\",\"y\"]) | USE([UW(\"x\"; W(0.1; \$now + 3600); W(0.1; \$now + 3600)), N5(\"y\"; 0.5; 36000)])")" \
+  '.account == "x" and .order.picked_by == "w7" and .order.five_hour_state == "known"'
+expect "회귀: W7 = 0 인 한도 있는 계정은 P > 0 인 한도 없는 계정 뒤다" \
+  "$(decide "$UN_JQ ONLY([\"x\",\"y\"]) | USE([UA(\"x\"; 0.1; 0.0), N5(\"y\"; 0.5; 36000)])")" \
+  '.account == "y" and .order.picked_by == "pressure" and .order.pressure_bp_h == 500'
+check "회귀: 가장 최근 표본에 5시간 창이 있으면 더 오래된 표본에 없어도 한도 있음" \
+  "$(g5 "$UNZ | EVON([EVS(\"a\"; 0; 1000; (\$now - 10)), EVS(\"a\"; 1; 2000; null)])" acct:a)" "known/-"
+
+# 6. 표본 증거의 범위. 표본 증거(evidence) 그룹은 정렬에서만 한도 없음이고, 5시간 검사는
+# 사용률 0 인 창으로 그대로 받는다. 같은 상태의 absent 그룹은 건너뛴다.
+expect "표본 증거: W7 이 0 이라 W7 이 컸을 한도 없는 계정 대신 P 가 큰 계정이다" \
+  "$(decide "$UN_JQ ONLY([\"x\",\"y\"]) | USE([Z5(\"x\"; 0.1; 3600), N5(\"y\"; 0.0; 1800)]) | EV([\"x\"])")" \
+  '.account == "y" and .order.picked_by == "pressure"'
+expect "표본 증거 대조: 같은 x 가 한도 있음이면 W7 이 정한다" \
+  "$(decide "$UN_JQ ONLY([\"x\",\"y\"]) | USE([Z5(\"x\"; 0.1; 3600), N5(\"y\"; 0.0; 1800)])")" \
+  '.account == "x" and .order.picked_by == "w7"'
+expect "표본 증거: live 임대의 5시간 합이 여유를 넘으면 입회하지 않는다" \
+  "$(admit1 "$UN_JQ ONLY([\"a\"]) | USE([Z5(\"a\"; 0.0; 86400)]) | EV([\"a\"]) | L3(\"a\")")" \
+  '.admitted == false and .failed == ["five_hour"]'
+expect "표본 증거 대조: 같은 상태의 absent 그룹은 입회한다" \
+  "$(admit1 "$UN_JQ ONLY([\"a\"]) | USE([N5(\"a\"; 0.0; 86400)]) | L3(\"a\")")" \
+  '.admitted == true and .admitted_as == "known" and .failed == []'
+check "표본 증거: live 임대의 5시간 합이 여유를 넘으면 재검증이 거절한다" \
+  "$(un_reval 'ONLY(["a"]) | USE([Z5("a"; 0.0; 86400)]) | EV(["a"]) | L3("a")' "$RES_JSON")" 1
+check "표본 증거: 대여 등록 행은 five-hour-cap 이 걸린다" \
+  "$(ulwhy 'UBLK | CCX(.windows.five_hour.utilization = 0) | EV(["cc"]) | ITEMS([LG("r0"; "X#1"; "cc"; true)])')" "five-hour-cap"
+check "표본 증거 대조: 같은 상태의 absent 대여 등록 행은 five-hour-cap 을 건너뛴다" \
+  "$(ulwhy 'UBLK | CCX(del(.windows.five_hour)) | ITEMS([LG("r0"; "X#1"; "cc"; true)])')" null
+UNR='ITEMS([LG("r7"; "X#1"; "a"; true), LG("r8"; "X#1"; "a"; true)])'
+expect "표본 증거: 몰아 쓰기의 remaining_bp 는 5시간 여유를 포함한다" \
+  "$(classify "$UN_JQ ONLY([\"a\"]) | USE([Z5(\"a\"; 0.1; 86400)]) | EV([\"a\"]) | $UNR")" \
+  '[.accounts[] | select(.id == "a") | .remaining_bp] == [4000]'
+expect "표본 증거 대조: absent 그룹의 remaining_bp 는 주간 여유다" \
+  "$(classify "$UN_JQ ONLY([\"a\"]) | USE([N5(\"a\"; 0.1; 86400)]) | $UNR")" \
+  '[.accounts[] | select(.id == "a") | .remaining_bp] == [4200]'
+check "표본 증거: 리셋권이 덮는 창을 바꿀 때 evidence 창은 사용률 0 으로 검사를 받는다" \
+  "$(un_jq 'ONLY(["a"]) | USE([Z5("a"; 0.9; 86400)]) | EV(["a"]) | L3("a")' \
+     'rt_prep($schema) as $p | $p.groups["acct:a"] as $G | [$G.windows.five_hour.basis, rt_press_ok($p.c; $G; "both")]')" \
+  '["evidence",false]'
+
+# 7. 유지(D8 꼴). y 는 직전 계정이고 두 live 임대가 5시간 6000(문턱 4000 이상)·주간 4800 을
+# 진다. x 는 P 가 더 크고 따로 입회한다.
+UNA='ITEMS([LG("r7"; "X#1"; "y"; true), LG("r8"; "X#1"; "y"; true)]) | AFON | AFF("y"; 60)'
+expect "유지: 한도 없는 직전 계정은 load5 가 문턱 이상이어도 P 가 큰 계정을 이긴다" \
+  "$(decide "$AF_JQ $UN_JQ ONLY([\"x\",\"y\"]) | USE([N5(\"x\"; 0.5; 36000), N5(\"y\"; 0.2; 360000)]) | $UNA")" \
+  '.account == "y" and .order.picked_by == "affinity" and .order.affinity_account == "y" and .order.load5_bp == 6000'
+expect "유지 대조: 같은 load5 의 한도 있는 직전 계정은 유지가 풀린다" \
+  "$(decide "$AF_JQ $UN_JQ ONLY([\"x\",\"y\"]) | USE([UA(\"x\"; 0.0; 0.5), UA(\"y\"; 0.0; 0.2)]) | $UNA")" \
+  '.account == "x" and .order.picked_by == "spread" and .order.affinity_account == "y"'
+
+# 8. 쉼 키. 쉼에서는 층·r7 이 P 보다 앞서고, 그 앞 키가 모두 같을 때만 P 가 가른다.
+UNP='ONLY(["x","y"]) | USE([N5("x"; 0.2; 540000), N5("y"; 0.5; 36000)])'
+expect "쉼 키: P 와 층·r7 이 엇갈리면 층·r7 이 고른다" "$(decide "$UN_JQ del(.phase) | $UNP")" \
+  '.order.phase == "rest" and .order.tier == "above" and .account == "x"'
+expect "쉼 키 대조: 몰아 쓰기에서는 같은 둘에서 P 가 고른다" "$(decide "$UN_JQ $UNP")" \
+  '.account == "y" and .order.picked_by == "pressure"'
+expect "쉼 키: W7·load5·층·r7 이 같으면 P 가 큰 계정이고 picked_by 는 pressure" \
+  "$(decide "$UN_JQ del(.phase) | ONLY([\"x\",\"y\"]) | USE([N5(\"x\"; 0.5; 72000), N5(\"y\"; 0.5; 36000)])")" \
+  '.order.phase == "rest" and .account == "y" and .order.picked_by == "pressure" and .order.pressure_bp_h == 500'
+
+# 9. 기록. rt_new 밖의 부여(재부착)는 세 칸이 null 이다. 한도 있음·absent·evidence 는 위
+# 사례들의 봉투가 싣는다.
+out=$(decide "$UN_JQ ONLY([\"a\"]) | USE([N5(\"a\"; 0.5; 86400)]) | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "기록: 재부착 부여는 압력과 5시간 창 칸이 null 이다" "$out" \
+  '.verdict == "GRANT" and .basis == "resume-bound"
+   and .order.pressure_bp_h == null and .order.five_hour_state == null and .order.five_hour_basis == null'
+
+# 10. 한도 있음 쪽 증거가 이긴다. 5시간 키가 없고 표본 증거가 한도 없음이어도, 해제 시각이
+# 지금보다 뒤인 프레임의 5시간 판독이 있으면 한도 없음이 아니다.
+check "우선 원칙: 해제 전 프레임 5시간 판독이 표본 증거를 이긴다" \
+  "$(g5 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400)]) | EV(["a"]) | FR5("a"; ($now + 3600))' acct:a)" "known/-"
+
+# 11. 한도 뒤 회수. run.sh 를 부분 셸에서 소싱하고 라우터 질의를 실제 봉투 하나로 바꿔
+# `reclaim_has_other_account` 의 종료 코드를 본다. 이 단계의 직전 계정은 z 다.
+tr_reclaim_case() {
+  # tr_reclaim_case <봉투> — 회수 판정의 종료 코드.
+  local d="$WORK/reclaim" rc=0
+  mkdir -p "$d"
+  printf '{}\n' > "$d/inventory.json"
+  printf '%s\n' 1 2 3 z > "$d/S1.window"
+  RUN_DIR="$d"
+  TR_RC_ENV="$1"
+  run_routed() { return 0; }
+  route_inventory_check() { return 0; }
+  spawn_route_request() { printf '{}'; }
+  route_lineage_of() { printf 'S1'; }
+  stage_kind_of() { printf 'implement'; }
+  resolve_account() { printf '/seat'; }
+  route_gather_context() { printf '{}'; }
+  route_decide() { cat >/dev/null; printf '%s' "$TR_RC_ENV"; }
+  reclaim_has_other_account S1 || rc=$?
+  printf '%s' "$rc"
+}
+UNC='ITEMS([LG("r1"; "S1"; "z"; true)]) | REQ({event: "limit-reclaim"})'
+for row in 'Z5("a"; 0.1; 86400)|EV(["a"])|evidence|1' 'N5("a"; 0.1; 86400)|.|absent|0' 'UA("a"; 0.1; 0.1)|EV(["a"])|null|0'; do
+  IFS='|' read -r ua ev basis want <<EOF
+$row
+EOF
+  out=$(decide "$UN_JQ ONLY([\"a\",\"z\"]) | USE([$ua, UB(\"z\"; 0; 0)]) | $ev | $UNC")
+  expect "회수: 재배정 봉투의 five_hour_basis 가 $basis 이다" "$out" \
+    ".verdict == \"GRANT\" and .basis == \"reassigned-after-limit\" and .account == \"a\" and .admitted_as == \"known\"
+     and (.order.five_hour_basis | tostring) == \"$basis\""
+  check "회수: five_hour_basis $basis 인 부여의 회수 판정은 rc $want" "$(tr_in_run "$TR_RUN_SH" tr_reclaim_case "$out")" "$want"
+done
 
 # ===========================================================================
 # 질문 가능 스테이지의 주간 여유 기준. 문맥에 `config.ask` 가 있고 요청 종류가 질문
@@ -3612,7 +3884,7 @@ for ph in burst rest; do
     "$(decide "$AK_JQ $pf | ONLY([\"u\"]) | USE([UW(\"u\"; W(0.1; \$now + 3600); null)]) | AKON")" \
     '.verdict == "GRANT" and .account == "u" and .order.ask_r7_bp == null and .order.ask_fits == false'
   expect "질문 기준 $ph 10(c): 창을 모르는 U 부류는 버티지 못하는 알려진 계정 뒤다" \
-    "$(decide "$AK_JQ $pf | ONLY([\"uu\",\"u7\"]) | USE([UW(\"uu\"; null; W(0.1; \$now + 86400)), UB(\"u7\"; 1000; $AK_SHORT)]) | AKON")" \
+    "$(decide "$AK_JQ $pf | ONLY([\"uu\",\"u7\"]) | USE([UW(\"uu\"; (W(0.1; \$now + 3600) | .observed_at_epoch = (\$now - 7200)); W(0.1; \$now + 86400)), UB(\"u7\"; 1000; $AK_SHORT)]) | AKON")" \
     '.account == "u7" and .order.ask_fits == false'
   AKE="$AKS | .inventory.accounts += [A(\"z\")] | .usage.accounts += [UB(\"z\"; 0; 0)] | ITEMS([LG(\"r1\"; \"S1\"; \"z\"; true)]) | REQ({event: \"limit-reclaim\"})"
   expect "질문 기준 $ph 10(e) 대조: 한도 회수의 새 기준 없는 순서는 u7 이다" "$(decide "$AK_JQ $pf | $AKE")" \

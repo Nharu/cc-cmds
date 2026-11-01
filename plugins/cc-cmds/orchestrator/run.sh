@@ -5976,7 +5976,10 @@ reclaim_has_other_account() {
   # question the re-dispatch will ask — the same lineage under `limit-reclaim`,
   # which leaves the exhausted account out — and says yes only when that answer
   # is a known-room grant on an account other than the one this stage runs on.
-  # An account the router admits without knowing its usage is not room.
+  # An account the router admits without knowing its usage is not room, and
+  # neither is a grant whose five-hour window the router took as unlimited from
+  # cost-sample evidence (`order.five_hour_basis == "evidence"`): that headroom
+  # is an estimate of five-hour usage, not a reading of it.
   local s="$1" inv irc=0 req env prev
   run_routed || { account_has_headroom; return $?; }
   inv="$RUN_DIR/inventory.json"
@@ -5992,7 +5995,8 @@ reclaim_has_other_account() {
   prev=$(sed -n '4p' "$RUN_DIR/$s.window" 2>/dev/null || true)
   printf '%s' "$env" | jq -e --arg prev "$prev" '
     .verdict == "GRANT" and .basis == "reassigned-after-limit" and .admitted_as == "known"
-    and (.dormant != true) and ((.account // "") != "") and (.account != $prev)' >/dev/null 2>&1
+    and (.dormant != true) and ((.account // "") != "") and (.account != $prev)
+    and ((.order.five_hour_basis? // null) != "evidence")' >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
