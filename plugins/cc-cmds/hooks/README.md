@@ -15,10 +15,11 @@ The two banner seats are not the only hooks in this directory.
 `active-notify-pretool.sh` belongs to the `active-notify` skill,
 `session-return-dismiss.sh` closes a session's banners when the person comes
 back to it, `session-title.sh` names a session after the slash command it is
-running, and `stage-rules-edit.sh` shows the stage rules status after an
-edit of the user-scope `CLAUDE.md`; the last three have their contracts in later sections
+running, `session-permission-notify.sh` leaves a remote attention event when a
+permission dialog opens, and `stage-rules-edit.sh` shows the stage rules status after an
+edit of the user-scope `CLAUDE.md`; the last four have their contracts in later sections
 of this file. `autopilot-status.tsx` is not a command hook at all but a plugin
-module, listed under `"modules"`; its section is the last one. None of the five
+module, listed under `"modules"`; its section is the last one. None of the six
 raises a session banner, and the
 rules below are written for the two seats alone. The question form under
 `question-form/` is a sub-mod: `autopilot-status.tsx` is the one entry listed
@@ -221,10 +222,10 @@ nothing unless Apple events to iTerm2 are already allowed, so it cannot bring
 up a permission prompt. A hook whose session switch is off starts none, because
 the emitter checks the switch before it builds the value.
 
-**Six `hooks.json` entries pin `"timeout": 5`: the two seats' entries, the
+**Fifteen `hooks.json` entries pin `"timeout": 5`: the two seats' entries, the
 return hook's three** (`UserPromptSubmit`, `PostToolUse` with the matcher
-`AskUserQuestion`, and `Stop`), **and the session title hook's
-`UserPromptSubmit` entry**. The `Bash` entry under `PreToolUse` has no
+`AskUserQuestion`, and `Stop`), **the session title hook's
+`UserPromptSubmit` entry, and the permission prompt seat's nine**. The `Bash` entry under `PreToolUse` has no
 timeout and the `Edit|Write|MultiEdit` entry has 10, so "every entry" would be
 wrong. All of these events block, and the default is long, so an emitter that
 stalls for any reason would stall the session with it. Nothing in the design
@@ -506,6 +507,127 @@ its own tmux session and the window name is tied to the version number.
 Whether tmux redraws the status line as soon as the title changes or waits for
 `status-interval` has not been measured; only the delay depends on it. The
 block is applied by a person, not by this plugin.
+
+## The permission prompt seat
+
+`session-permission-notify.sh` leaves a `permission` attention event — the
+tool name and an uncut summary of its input — when a permission dialog opens,
+so the remote side can show what the session is waiting for. It raises no
+local banner, calls no notifier and answers no dialog: every path exits 0 with
+nothing on stdout or stderr, so a `PermissionRequest` gets no decision object
+and the permission flow is unchanged. The permission mode is not read; a
+dialog in bypass mode is recorded like any other.
+
+**Nine entries, one script, a role argument.** Every entry has
+`"timeout": 5` and the command
+`bash "${CLAUDE_PLUGIN_ROOT}/hooks/session-permission-notify.sh" <role>`:
+
+| Event | Matcher | Role |
+|---|---|---|
+| `PermissionRequest` (new key) | (none) | `request` |
+| `Notification` (new key) | `permission_prompt` | `notification` |
+| `PostToolUse` (sibling element) | `*` | `settle` |
+| `PostToolUseFailure` (new key) | `*` | `settle` |
+| `PermissionDenied` (new key) | `*` | `settle` |
+| `SubagentStart` (new key) | (none) | `agent-start` |
+| `SubagentStop` (new key) | (none) | `agent-stop` |
+| `Stop` (sibling element) | (none) | `stop` |
+| `UserPromptSubmit` (sibling element) | (none) | `prompt` |
+
+The `PostToolUse` element spells the matcher `*` because no matcher-less
+element may sit in that array; `*` and no matcher mean the same. The hooks of
+one event run in parallel, so nothing depends on the order of the siblings.
+
+**The gates, in order.** For `settle`, `stop` and `prompt` a cheap path comes
+first: when no `open.*` or `pending.*` file exists under any session's state
+directory, one shell glob ends the call before stdin is read, `jq` runs or the
+emitter is sourced — every tool call of every session passes here. Then a
+missing `jq` exits, the emitter is sourced, `cc_notify_session_enabled` (the
+session banner switch `CC_CMDS_SESSION_NOTIFY`) and `cc_caller_is_router`
+must both be true, and the session id must be non-empty and inside
+`[A-Za-z0-9_.-]`, so it is used as is in the slot and the state path. The roles
+that act for the main session alone (`request`, `settle`, `stop`, `prompt`)
+then end on a present `agent_id`.
+
+**The state files.** Under `${TMPDIR:-/tmp}/cc-cmds-permission/<sid>/`, with
+`umask 077`:
+
+- `seen` — the epoch milliseconds of the session's last `PermissionRequest`,
+  a subagent's included;
+- `pending.<fp>` — made in the synchronous part of `request`, moved to
+  `open.<fp>` once the event is written;
+- `open.<fp>`, `open.notification` — a dialog whose event is written and not
+  yet closed;
+- `agent.<agent_id>` — a running subagent.
+
+`request` removes state files older than 24 hours. A stale `agent.*` only holds
+the fallback signal back, which errs on the closed side.
+
+**One slot per dialog.** The slot is `cc-cmds-permission-<sid>@<fp>`, `<fp>`
+being the first 16 hex digits of the sha256 of `{tool_name, tool_input}` as
+key-sorted compact JSON. A handled marker matches by slot and time alone, so a
+single slot per session would let one parallel call's result close another
+dialog that is still open.
+
+**`request`.** It records `seen` (before the `agent_id` check), computes the
+fingerprint, creates `pending.<fp>`, and detaches the rest: one `jq` call
+builds the per-tool summary, redacts it and writes the attachment straight to
+a `cc-attention-detail.*` file; the title is `cc-cmds · <session title> ·
+권한 확인을 기다립니다`, or `cc-cmds · 권한 확인을 기다립니다` without a title;
+`cc_attention_emit permission <slot> <title> "" <attachment>` writes the
+event. Then `pending.<fp>` moves to `open.<fp>`; when that move fails, a settle
+signal took the pending file meanwhile, and the exact marker is written there,
+after the event. The dialog appears only once the hook has returned, which is
+why the heavy part is detached.
+
+**The summary.** Bash shows the command and, when present, `— <description>`;
+Edit the path and the old and new strings; MultiEdit the path and every edit;
+Write the path and the content; NotebookEdit the notebook path and the new
+source; Read the path; WebFetch the URL; WebSearch the query; Glob and Grep the
+pattern and the path. The input keys a known tool does not show follow on one
+`기타 입력: <compact JSON>` line. An unknown tool, or a known one whose key
+field is missing, shows the whole `tool_input` as indented JSON. Nothing is
+cut.
+
+**The redaction.** Inside the same `jq` call, before anything is written,
+`[가림]` replaces: token prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
+`github_pat_`, `sk-`, `xox[abprs]-`, `AKIA` and 16 characters, `AIza`,
+`pk_<digits>_`), a Telegram bot token, a JWT, the value of an `Authorization:`
+header and the value after `Bearer` or `Basic`, a whole PEM private key block,
+the value assigned with `=` or `:` to a key starting with `token`, `secret`,
+`password`, `passwd`, `pwd`, `api_key`, `api-key`, `apikey`, `access_key`,
+`private_key`, `credential` or `auth` (any case; the key stays), the password
+in a URL's user information, and the value of `--token`, `--password`,
+`--secret` and `--api-key`.
+
+**What closes an event.**
+
+- `settle` — a `PostToolUse`, `PostToolUseFailure` or `PermissionDenied` of
+  the same session with the same fingerprint. It removes `open.<fp>` and
+  writes the exact marker (cause `permission-settled`); when it finds
+  `pending.<fp>` instead it removes that, and the detached writer then writes
+  the marker after its event. The move from pending to open happens once, so
+  every interleaving leaves exactly one marker, never before its event.
+- `stop` and `prompt` — when the session has an `open.*` or `pending.*`, all of
+  them are removed and one prefix marker `cc-cmds-permission-<sid>@` is
+  written, cause `permission-settled` on `Stop` and `return` on
+  `UserPromptSubmit`. `Stop` does not fire while a dialog is open, so a turn
+  end closes only dialogs that are already gone.
+- A dialog answered "No" by hand raises no tool event; it closes at the turn
+  end, the return or the relay's expiry. The seat writes no expiry marker.
+
+**The fallback signal.** `Notification` with `permission_prompt` carries no
+tool and no `agent_id`, and arrives about six seconds after the dialog. It
+leaves an event only when the session's `seen` is not within the last 10 000
+ms and no `agent.*` exists: then the slot is
+`cc-cmds-permission-<sid>@notification`, the body is
+`도구를 알 수 없는 권한 확인이 열렸습니다` and the notice's message, the reply is
+null, and `open.notification` is created. Only the prefix marker of `stop` or
+`prompt` closes it.
+
+**The test seam.** `CC_CMDS_NOTIFY_PERMISSION_SYNC=1` runs the detached part of
+`request` in the foreground. It is read in this file only and is not a switch;
+the suite is `scripts/test-session-permission-notify.sh`.
 
 ## The stage rules edit hook
 

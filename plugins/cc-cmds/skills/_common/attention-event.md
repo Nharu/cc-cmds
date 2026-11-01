@@ -213,9 +213,16 @@ otherwise. Kinds without a reply surface (`turn`, `run-end`, `run-stop`,
   so whoever calls the tap substitutes it before computing the slot.
 - The slot of an `active-notify` event is the local group active-notify gives
   that banner.
-- The slot of a `permission` event is `cc-cmds-permission-<session_id>`, with
-  the session id as is (not `safe_sid`), as the session banner groups use it.
-  There is no local banner; the slot is the name a handled marker matches.
+- The slot of a `permission` event is one per dialog:
+  `cc-cmds-permission-<session_id>@<fingerprint>`, the fingerprint being the
+  first 16 hex digits of the sha256 of `{tool_name, tool_input}` as key-sorted
+  compact JSON. An event the seat raised from the fallback permission notice,
+  which names no tool, uses `cc-cmds-permission-<session_id>@notification`. The
+  turn end and the return close every permission event of a session with the
+  prefix marker `cc-cmds-permission-<session_id>@`. The session id is used as
+  is; the seat writes nothing for an id outside the `safe_sid` alphabet, so the
+  two are the same. There is no local banner; the slot is the name a handled
+  marker matches.
 - Session tokens use one slot per session whatever the item key, so one marker
   on that slot closes every open event of the session.
 
