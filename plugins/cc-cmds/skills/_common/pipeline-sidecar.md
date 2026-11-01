@@ -417,7 +417,8 @@ with a name outside the prefix — what follows it must be ASCII letters, digits
 `_` and `.` only (or an emulator without `-port`, or a `simctl
 boot` by UDID) as `기기전역/device-name`. A device act ending 0 that made a
 device appends `<dispatch id>\t<UDID|emulator-<port>|->\t<name>` to
-`${RUN_DIR}/devices/created.tsv`; `emulator -avd <name> -port <p>`, which
+`${RUN_DIR}/devices/created.tsv` (no row for a name or id carrying a tab, CR
+or newline, and a line without exactly three fields is not read); `emulator -avd <name> -port <p>`, which
 stays in the foreground while the device lives, appends its row before it
 starts and sets the serial to `-` when it ends. An act pointing at an existing
 device opens only when its target is listed there — an `emulator-<port>` serial

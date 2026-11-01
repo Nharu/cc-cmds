@@ -3414,8 +3414,8 @@ gate_preauth_rows() {
 # 기기 짝 정리 — the reserved `짝 정리=기기 정리` value and the device checks of
 # the machine-global cell.
 #
-# A device a run creates is named `cc-<run id>-<dispatch id>-<rest>`, with no
-# `-` in the rest, so one cleanup per dispatch removes that dispatch's devices
+# A device a run creates is named `cc-<run id>-<dispatch id>-<rest>`, the rest
+# only ASCII letters, digits, `_` and `.` (no `-`), so one cleanup per dispatch removes that dispatch's devices
 # and nothing else; the run id is not known at kickoff, so the row freezes the
 # reserved value and the gate spells it out (`gate_preauth_pair_argv`). A
 # device the run created is written to `${RUN_DIR}/devices/created.tsv` when
@@ -4231,7 +4231,7 @@ gate_park_repair_line() {
         warn "repair: this act makes or boots a mobile device, and no \`사전 인가\` row of its shape carries \`짝 정리=기기 정리\`, so nothing would remove the device at the end of the run — at the next kickoff add \`짝 정리=기기 정리\` to that row (the device rows the kickoff's \`--preauth-candidates\` reading proposes carry it)"
         return 0 ;;
       */device-name)
-        warn "repair: the device this act makes or boots must be named '${_pfx}<name>' with no '-' after the prefix (simctl create's name, clone's new name, emulator -avd and avdmanager -n, the name= of an xcodebuild test destination), an emulator needs an explicit -port, and simctl boot takes the name rather than a UDID — respell the act that way"
+        warn "repair: the device this act makes or boots must be named '${_pfx}<name>' with only ASCII letters, digits, '_' and '.' after the prefix (simctl create's name, clone's new name, emulator -avd and avdmanager -n, the name= of an xcodebuild test destination), an emulator needs an explicit -port, and simctl boot takes the name rather than a UDID — respell the act that way"
         return 0 ;;
       */foreign-device)
         warn "repair: this act points at a device this run did not create (the gate opens only the UDIDs, emulator-<port> serials and names listed in this run's devices/created.tsv, an emulator serial only while the emulator on that port answers with the listed AVD name; 'booted', 'all' and 'unavailable' are never opened) — point it at a device this run made, or leave it to a person"
