@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.19.0] - 2026-11-01
+
+원격에서 온 선택지 답이 질문 표면에 닿는 이음매의 규칙을 공용 문서 `_common/remote-reply.md` 하나에 정하고, 그 규칙의 고정 예제와 스키마 린트를 둔다. 중계와 게이트가 아직 이 규칙을 쓰지는 않으며, 뒤따를 구현이 같은 바이트를 보도록 계약을 먼저 고정한다.
+
+### Added
+
+- **원격 답 규칙 문서** — 봉투·수령 표지·적용 기록의 키 표, 표면(일반 질문, 질문지, 승인)별 주소 규칙, 우편함에서 봉투 하나가 지나는 수명 주기, 라우터 좌석을 깨우는 리터럴, 게이트가 트랜스크립트 짝이나 질문지 제출 바이트에서 다시 셈하는 `answers_sha256` 식을 적는다.
+- **고정 예제** — `tests/fixtures/remote-reply/` 에 네 가지 봉투, 수령 표지 두 꼴, 질문지 제출 바이트와 트랜스크립트 짝 둘(일반 질문, 승인 질문)에 대응하는 적용 기록, 깨우기 리터럴을 둔다.
+- **스키마 린트** — `scripts/lint-remote-reply-schema.sh` 가 예제마다 키 집합·문법·시각 순서·선택지 바이트 일치와 해시를 검사하고, 자기 키 목록과 주소 규칙을 규칙 문서의 표와 매번 대조한다. `make lint` 가 부르고, `scripts/test-lint-remote-reply-schema.sh` 가 깨뜨린 사본마다 맞는 사유로 실패하는지 시험한다.
+
 ## [3.18.0] - 2026-11-01
 
 베이스가 움직여 생긴 해소 머지가 브랜치 변경을 리뷰 때와 그대로 싣고 있으면 해소 리뷰 없이 머지된다. 게이트가 리뷰된 HEAD 와 해소 HEAD 의 브랜치 디프를 릴리스 메타 정규화 뒤 `git patch-id --verbatim` 으로 대조해 증명하고, 리뷰-후-머지 검사기는 게이트가 증명한 HEAD 하나만 받아 통과시킨다.
