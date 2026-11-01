@@ -20566,7 +20566,7 @@ esac
 crow=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -F '앵커 세그먼트=SA ' | tail -1)
 n=$(printf '%s' "$crow" | wc -c | tr -d ' ')
 if [ "${n:-0}" -gt 0 ] && [ "${n:-0}" -le 1024 ]; then
-  ok "원뿔 행이 원장 행 상한 안에 있다 (${n} 바이트)"
+  ok "원뿔 행이 원장 행 상한 안에 있다 (${n} 바이트)" # gate-isolation: 변동
 else
   bad "원뿔 행 상한" "원뿔 행이 ${n} 바이트다"
 fi
