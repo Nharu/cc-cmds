@@ -134,7 +134,7 @@ mk_report() {
 }
 
 none='적용 안 됨 — 인자 없음'
-mk_report "seg-$rid1-A-cycle1.md" "$p_A..$h_A" "$h_A" 1 0 1 "$none"
+mk_report "seg-$rid1-A-cycle1.md" "$p_A..$h_A" "$h_A" 1 0 1 "$none" '전체 (델타 아님)'
 mk_report "seg-$rid1-A-cycle2.md" "$p_A..$h_A" "$h_A" 1 2 1 "$none"
 mk_report "$rid1-B-c1.md" "${c0:0:7}...${h_B:0:7}" "$h_B" 1 1 1 '슬라이스 B (구현 슬라이싱의 B)'
 mk_report "seg-$rid1-C-cycle1.md" "$p_C..$h_C" "$h_C" 1 2 1 '적용 안 됨 — 설계 문서 없음'
@@ -147,7 +147,8 @@ mk_report "seg-$rid1-I-cycle1.md" "$p_I..$h_I" "$h_I" 0 0 1 "$none"
 mk_report "seg-$rid3-J-cycle1.md" "$p_J..$h_J" "$h_J" 1 1 1 "$none"
 mk_report "seg-$rid1-K-cycle1.md" "$p_K..$h_K" "$h_K" 1 1 0 "$none"
 mk_report "seg-$rid1-L-cycle1.md" "-" "$h_L" 1 1 1 "$none"
-mk_report "seg-$rid1-M-cycle1.md" "$p_M..$h_M" "$h_M" 1 1 1 "$none" '사이클 재확인'
+mk_report "seg-$rid1-M-cycle1.md" "$p_M..$h_M" "$h_M" 1 1 1 "$none" '전체 (상한 사이클 2 재확인, `--recheck`)'
+mk_report "seg-$rid1-N-cycle1.md" "$p_M..$h_M" "$h_M" 1 1 1 "$none" '델타 (기준 사이클 1)'
 mk_report ".hidden.md" "$p_A..$h_A" "$h_A" 1 1 1 "$none"
 mk_report "seg-$rid1-A-cycle1.lead-fix.md" "$p_A..$h_A" "$h_A" 1 1 1 "$none"
 
@@ -215,7 +216,8 @@ expect_eq "a report whose inputs cannot be restored is left out with the field a
   "제외|입력 복원 불가 — 설계 문서: 원 런 매니페스트가 없다 (${rid3})|-" "$(sel_row "seg-$rid3-J-cycle1.md")"
 expect_eq "a report without a promoted row is left out" "제외|출처=승격 행이 없다|-" "$(sel_row "seg-$rid1-K-cycle1.md")"
 expect_eq "a report without a commit range is left out" "제외|리뷰 대상에 커밋 범위가 없다|-" "$(sel_row "seg-$rid1-L-cycle1.md")"
-expect_eq "a review mode other than 전체 is left out" "제외|리뷰 모드가 전체가 아니다 (사이클 재확인)|-" "$(sel_row "seg-$rid1-M-cycle1.md")"
+expect_eq "a cap re-check written as 전체 is left out" "제외|리뷰 모드가 전체가 아니다 (전체 (상한 사이클 2 재확인, \`--recheck\`))|-" "$(sel_row "seg-$rid1-M-cycle1.md")"
+expect_eq "a delta review is left out" "제외|리뷰 모드가 전체가 아니다 (델타 (기준 사이클 1))|-" "$(sel_row "seg-$rid1-N-cycle1.md")"
 if ! grep -q -e '^\.hidden\.md' -e 'lead-fix' "$E/selection.tsv"; then pass "hidden and .lead-fix.md files are not read"; else fail "selection.tsv lists a hidden or .lead-fix.md file"; fi
 expect_eq "a three-dot short-sha range resolves to the merge-base and the full head" \
   "${c0}|${h_B}" "$(awk -F'\t' -v n="$nB" '$1 == n { print $5 "|" $6 }' "$E/selection.tsv")"

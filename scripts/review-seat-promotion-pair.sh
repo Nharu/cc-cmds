@@ -433,7 +433,10 @@ select_samples() {
     case "$nm" in .*|*.lead-fix.md) continue ;; esac
     h=$(scan_h "$r")
     IFS='	' read -r _ ex date summ sp0 sp1 rhead pl rest <<<"$h"
+    # A full review writes `전체` and often a gloss after it (`전체 (델타 아님)`,
+    # `전체 — …`); a cap re-check also starts with `전체` and names `재확인`.
     mode=$(bold_line "$r" '리뷰 모드'); [[ -n "$mode" ]] || mode="전체"
+    case "$mode" in *재확인*) ;; 전체|"전체 "*) mode="전체" ;; esac
     sc=$(stem_cycle "$nm"); stem="${sc%%	*}"; cy="${sc##*	}"
     why=""; base="-"; head="-"; p0p1="-"
     [[ "$summ" == "정규" ]] && p0p1=$((sp0 + sp1))
