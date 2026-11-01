@@ -445,6 +445,20 @@ jq -n --arg c "mktemp /tmp/y.XXXXXX" '{tool_name: "Bash", agent_id: "m1", tool_i
 expect_eq "the hook logs each undecided call naming mktemp, mv or mkdir with its agent, and nothing else" \
   "15|m1	mktemp /tmp/y.XXXXXX" "$(awk 'END { print NR }' "$ml")|$(tail -n 1 "$ml")"
 rm -f "$ml"
+# A read that only mentions the words, and a mkdir in the target clone that
+# acceptEdits approves, are not witness commands the session refuses.
+hook_says "git grep -n mktemp -- scripts" > /dev/null
+hook_says "grep -n 'mv -n' $rd/state/x" > /dev/null
+hook_says "mkdir -p $rd/target/out" > /dev/null
+if [[ ! -e "$ml" ]]; then pass "the hook logs no call that only mentions the words or runs mkdir outside those directories"; else fail "the hook logged: $(cat "$ml")"; fi
+expect_eq "the hook allows mkdir -p of the state home and the halt directory themselves" "allow|allow" \
+  "$(hook_says "mkdir -p $rd/state")|$(hook_says "mkdir -p \"$rd/halt\"")"
+# A double quote left open hides the text up to the next quote from the shell
+# as one string, so the hook must not read a `<<'TAG'` inside it as a heredoc
+# whose body it may skip, nor accept a one-sided quote around a path.
+expect_eq "the hook gives no decision to a one-sided quote, a heredoc hidden in a string, or a heredoc on another command" "none|none|none|none" \
+  "$(hook_says "mkdir -p \"$rd/state/a<<'EOF'"$'\n'"\" ; touch $tmp/pwned ; \""$'\n'"EOF"$'\n'"mkdir -p $rd/state/q\"")|$(hook_says "mkdir -p \"$rd/state/a")|$(hook_says "mv -n \"\$T $wp")|$(hook_says "mkdir -p $rd/state/a <<'EOF'"$'\n'"touch $tmp/pwned"$'\n'"EOF")"
+rm -f "$ml"
 if grep -Fxq '# Personal rules' "$lead" && grep -Fxq -- '- fixture personal rule' "$lead" && grep -Fxq '# fx/repo/CLAUDE.md' "$lead" && grep -Fxq '# fixture repo rules' "$lead"; then
   pass "the lead instructions are the policy, the personal rules and the repository chain"
 else

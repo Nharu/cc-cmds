@@ -865,13 +865,17 @@ witness_hook_write() {
 # those directories:
 #   <var>=$(mktemp [-d] <path>)   mktemp [-d] <path>   mkdir -p <path>
 #   mv [-n] <path|"$var"> <path>  echo "$var"   cat > <path|"$var"> <<'TAG'
-# A <path> may be spelled `"$(dirname <path>)/<rest>"` (a dirname operand
-# ending in `/` or holding `//` is not resolved), "$var" is a variable an
-# earlier mktemp of the same call assigned, and a quoted-delimiter heredoc's
-# body is not read. Any other call gets no decision, so the session's
-# permission rules decide it; one that names mktemp, mv or mkdir is also
-# appended to the log as `<agent_id or ->\t<command>`, because a `-p` session
-# refuses it and the pilot fails on a non-empty log.
+# A <path> or "$var" is either bare or wrapped in one pair of double quotes,
+# never one-sided; a <path> may be spelled `"$(dirname <path>)/<rest>"` (a
+# dirname operand ending in `/` or holding `//` is not resolved); "$var" is a
+# variable an earlier mktemp of the same call assigned; `mkdir -p` may also
+# name one of the directories itself; and the body of a quoted-delimiter
+# heredoc opened at the end of a `cat >` command is not read. Any other call
+# gets no decision, so the session's permission rules decide it. One that runs
+# mktemp, or runs mv or mkdir naming one of the directories or a `$(dirname`,
+# is also appended to the log as `<agent_id or ->\t<command>`, because a `-p`
+# session refuses it and the pilot fails on a non-empty log; a call that only
+# mentions those words, or a mv or mkdir elsewhere, is not logged.
 set -u
 log="${1:-}"
 (( $# > 1 )) || exit 0
@@ -882,20 +886,37 @@ cmd=$(printf '%s' "$in" | jq -r 'if .tool_name == "Bash" then (.tool_input.comma
 [[ -n "$cmd" ]] || exit 0
 orig="$cmd"
 
-# miss — give no decision, logging a call that names a witness command.
+c='[A-Za-z0-9._/+@%,:=-]'
+v='[A-Za-z_][A-Za-z0-9_]*'
+# A command word at the start of the call or after `;`, `&`, `|` or `(`.
+re_runmk='(^|[;&|(])[[:space:]]*('"$v"'=\$\()?mktemp( |$)'
+re_runmv='(^|[;&|(])[[:space:]]*(mv|mkdir)( |$)'
+
+# miss — give no decision, logging a call that runs a witness command.
 miss() {
-  case "$orig" in
-    *mktemp*|*"mv "*|*"mkdir "*)
-      printf '%s\t%s\n' "$(printf '%s' "$in" | jq -r '.agent_id // "-"' 2>/dev/null || echo -)" \
-        "$(printf '%s' "$orig" | tr '\n\t' '  ')" >> "$log" 2>/dev/null || true ;;
-  esac
+  local flat r named=""
+  flat=$(printf '%s' "$orig" | tr '\n' ';')
+  for r in "${roots[@]}"; do
+    case "$orig" in *"$r"*) named=1 ;; esac
+  done
+  case "$orig" in *'$(dirname'*) named=1 ;; esac
+  if [[ $flat =~ $re_runmk ]] || { [[ -n "$named" ]] && [[ $flat =~ $re_runmv ]]; }; then
+    printf '%s\t%s\n' "$(printf '%s' "$in" | jq -r '.agent_id // "-"' 2>/dev/null || echo -)" \
+      "$(printf '%s' "$orig" | tr '\n\t' '  ')" >> "$log" 2>/dev/null || true
+  fi
   exit 0
 }
+
+# unq <token> — a path token without its pair of double quotes.
+unq() { local p="${1#\"}"; printf '%s' "${p%\"}"; }
+# vname <token> — the variable name a "$var" token names.
+vname() { local t="${1//[\"\$\{\}]/}"; printf '%s' "$t"; }
 
 # under <path> — an absolute path below one of the roots, naming no `..`,
 # no `//` and no trailing `/`.
 under() {
-  local p="$1" r
+  local p r
+  p=$(unq "$1")
   case "$p" in /*) ;; *) return 1 ;; esac
   case "$p" in *..*|*//*|*/) return 1 ;; esac
   for r in "${roots[@]}"; do
@@ -904,12 +925,22 @@ under() {
   return 1
 }
 
-c='[A-Za-z0-9._/+@%,:=-]'
-v='[A-Za-z_][A-Za-z0-9_]*'
-pth='"?(/'"$c"'+)"?'
-vref='"?\$\{?('"$v"')\}?"?'
-re_hd="<<'(${v})'\$"
-re_dir='\$\(dirname "?(/'"$c"'+)"?\)'
+# isroot <path> — one of the roots itself.
+isroot() {
+  local p r
+  p=$(unq "$1")
+  for r in "${roots[@]}"; do
+    [[ "$p" != "$r" ]] || return 0
+  done
+  return 1
+}
+
+# A path or variable token is bare or wrapped in one pair of double quotes:
+# the character class holds no quote, so a one-sided quote matches neither.
+pth='("/'"$c"'+"|/'"$c"'+)'
+vref='("\$\{?'"$v"'\}?"|\$\{?'"$v"'\}?)'
+re_hd='cat > ('"$pth"'|'"$vref"') <<'"'"'('"$v"')'"'"'$'
+re_dir='\$\(dirname ("/'"$c"'+"|/'"$c"'+)\)'
 re_assign='^('"$v"')=\$\(mktemp( -d)? '"$pth"'\)$'
 re_mktemp='^mktemp( -d)? '"$pth"'$'
 re_mkdir='^mkdir -p '"$pth"'$'
@@ -920,7 +951,9 @@ re_catvar='^cat > '"$vref"'$'
 re_catpath='^cat > '"$pth"'$'
 
 # A quoted-delimiter heredoc's body is literal text: drop it, and the
-# `<<'TAG'` that opens it.
+# `<<'TAG'` that opens it. Only a line ending in `cat > <path|"$var"> <<'TAG'`
+# opens one, so a quote left open on an earlier line cannot hide real commands
+# as a body: the segments around that quote match no command below.
 tag="" out=""
 while IFS= read -r line; do
   if [[ -n "$tag" ]]; then
@@ -928,8 +961,8 @@ while IFS= read -r line; do
     continue
   fi
   if [[ $line =~ $re_hd ]]; then
-    tag="${BASH_REMATCH[1]}"
-    line="${line%"${BASH_REMATCH[0]}"}"
+    tag="${BASH_REMATCH[4]}"
+    line="${line%" <<'${tag}'"}"
   fi
   out="${out}${line}"$'\n'
 done <<<"$cmd"
@@ -940,7 +973,7 @@ cmd="$out"
 i=0
 while [[ $cmd =~ $re_dir ]]; do
   i=$((i + 1)); (( i <= 20 )) || miss
-  full="${BASH_REMATCH[0]}"; p="${BASH_REMATCH[1]}"
+  full="${BASH_REMATCH[0]}"; p=$(unq "${BASH_REMATCH[1]}")
   case "$p" in */|*//*) miss ;; esac
   d="${p%/*}"
   [[ -n "$d" ]] || miss
@@ -960,14 +993,14 @@ while IFS= read -r seg; do
   elif [[ $seg =~ $re_mktemp ]]; then
     under "${BASH_REMATCH[2]}" || miss
   elif [[ $seg =~ $re_mkdir ]]; then
-    under "${BASH_REMATCH[1]}" || miss
+    under "${BASH_REMATCH[1]}" || isroot "${BASH_REMATCH[1]}" || miss
   elif [[ $seg =~ $re_mvvar ]]; then
-    case "$vars" in *" ${BASH_REMATCH[2]} "*) ;; *) miss ;; esac
+    case "$vars" in *" $(vname "${BASH_REMATCH[2]}") "*) ;; *) miss ;; esac
     under "${BASH_REMATCH[3]}" || miss
   elif [[ $seg =~ $re_mvpath ]]; then
     under "${BASH_REMATCH[2]}" && under "${BASH_REMATCH[3]}" || miss
   elif [[ $seg =~ $re_echo || $seg =~ $re_catvar ]]; then
-    case "$vars" in *" ${BASH_REMATCH[1]} "*) ;; *) miss ;; esac
+    case "$vars" in *" $(vname "${BASH_REMATCH[1]}") "*) ;; *) miss ;; esac
   elif [[ $seg =~ $re_catpath ]]; then
     under "${BASH_REMATCH[1]}" || miss
   else
@@ -1009,8 +1042,11 @@ HOOK
 # to another variable, and `acceptEdits` checks no operand it cannot read
 # before the command runs. So the settings also carry one PreToolUse hook
 # (witness_hook_write) that allows a Bash call made only of those commands, each
-# naming paths under the state home or the halt directory; any other call gets
-# no decision from it, and one naming mktemp, mv or mkdir is logged to
+# naming paths under the state home or the halt directory. A `"$T"` is known to
+# it only inside the call whose mktemp assigned it — a session keeps no shell
+# variable between Bash calls anyway — so a publish in a later call names the
+# temp's literal path. Any other call gets no decision from it, and one running
+# mktemp, or mv or mkdir on those directories, is logged to
 # <run dir>/witness-misses.log, which the pilot requires empty. A hook's allow
 # does not lift a deny rule.
 #
