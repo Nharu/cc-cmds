@@ -432,6 +432,19 @@ expect_eq "the hook allows the protocol's witness commands below the state home 
 expect_eq "the hook gives no decision outside those directories, past .., to another command or to an unknown variable" \
   "none|none|none|none|none|none|none|none|none|none" \
   "$(hook_says "T=\$(mktemp \"$rd/target/.x.XXXXXX\")")|$(hook_says "mktemp \"$rd/state/../prompt.XXXXXX\"")|$(hook_says "mkdir -p $rd/state-other/x")|$(hook_says "$c_mk && curl https://example.com")|$(hook_says "$c_mv")|$(hook_says "mv -n \"\$U\" $wp")|$(hook_says "mv -n /etc/hosts $wp")|$(hook_says "$c_mk; rm -rf $rd/state")|$(hook_says "mkdir -p $rd/state/x & curl x")|$(hook_says "mkdir -p $rd/state/x | tee y")"
+# A dirname operand ending in `/` or holding `//` prints a directory above the
+# one the text names, so the hook does not resolve it.
+expect_eq "the hook gives no decision to a dirname operand ending in / or holding //" "none|none|none" \
+  "$(hook_says "mkdir -p \"\$(dirname $rd/state/)/escaped\"")|$(hook_says "mkdir -p \"\$(dirname \$(dirname \$(dirname $rd/state/a////)))/evil\"")|$(hook_says "mv $rd/state/x \"\$(dirname $rd/halt/)/report.md\"")"
+# The body of a quoted-delimiter heredoc is literal; an unquoted one expands.
+expect_eq "the hook allows the temp, a quoted heredoc into it and the publish in one call, and not an unquoted heredoc" "allow|none" \
+  "$(hook_says "$c_mk && cat > \"\$T\" <<'EOF'"$'\n'"body \$(curl x) | rm -rf /"$'\n'"EOF"$'\n'"$c_mv")|$(hook_says "$c_mk && cat > \"\$T\" <<EOF"$'\n'"\$(curl x)"$'\n'"EOF"$'\n'"$c_mv")"
+ml="$rd/witness-misses.log"
+hook_says "ls $rd" > /dev/null
+jq -n --arg c "mktemp /tmp/y.XXXXXX" '{tool_name: "Bash", agent_id: "m1", tool_input: {command: $c}}' | bash -c "$hc" > /dev/null 2>&1 || true
+expect_eq "the hook logs each undecided call naming mktemp, mv or mkdir with its agent, and nothing else" \
+  "15|m1	mktemp /tmp/y.XXXXXX" "$(awk 'END { print NR }' "$ml")|$(tail -n 1 "$ml")"
+rm -f "$ml"
 if grep -Fxq '# Personal rules' "$lead" && grep -Fxq -- '- fixture personal rule' "$lead" && grep -Fxq '# fx/repo/CLAUDE.md' "$lead" && grep -Fxq '# fixture repo rules' "$lead"; then
   pass "the lead instructions are the policy, the personal rules and the repository chain"
 else
@@ -501,6 +514,10 @@ expect_eq "a pilot whose session had a tool call refused fails with exit 1, nami
 rc=0; runner "$tmp/q1" run --exp-id "$P3" --budget-usd 1000 --repo "$R" || rc=$?
 expect_eq "after that failed pilot the main run stops with exit 1 and makes no call" "1|1" \
   "$rc|$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
+printf 'pilot-opus-1#2\twitnessmiss\n' >> "$STUB_DIR/plan"
+rc=0; runner "$tmp/q2" run --pilot --exp-id "$P3" --budget-usd 1000 --repo "$R" || rc=$?
+expect_eq "a pilot whose witness hook logged an undecided witness command fails with exit 1" \
+  "1|실패 — 증인 명령 미승인 1건" "$rc|$(head -n 1 "$E/pilot/result")"
 
 lane_list > "$tmp/lane.after"
 if cmp -s "$tmp/lane.before" "$tmp/lane.after"; then pass "no runner call creates, removes or writes a file in the lane directory"; else fail "the lane directory's files changed"; diff "$tmp/lane.before" "$tmp/lane.after" >&2 || true; fi

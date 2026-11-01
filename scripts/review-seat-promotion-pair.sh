@@ -38,7 +38,8 @@
 #   --pilot       select and branches, then prepare and review only the opus-1
 #                 branch of quantile 1's pick and check it as collect does,
 #                 then that the JSON has total_cost_usd and an empty
-#                 permission_denials; pilot/result says `통과` or `실패 — <condition>`. The main run
+#                 permission_denials and that the witness hook logged no
+#                 witness command it left undecided; pilot/result says `통과` or `실패 — <condition>`. The main run
 #                 (`run`, `--rerun-sample`) stops with exit 1 before any billed
 #                 call unless the same experiment's pilot/result says `통과`
 #   --rerun-sample  discard slot n's state, runs and records and run it again
@@ -858,25 +859,45 @@ witness_hook_write() {
   cat > "$1" <<'HOOK'
 #!/usr/bin/env bash
 # PreToolUse hook of the review sessions scripts/review-seat-promotion-pair.sh
-# launches. Arguments: the directories a witness command may name. It allows a
-# Bash call made only of the team protocol's witness commands, separated by
-# newlines, `&&` or `;`, each naming paths below one of those directories:
+# launches. Arguments: a log file, then the directories a witness command may
+# name. It allows a Bash call made only of the team protocol's witness
+# commands, separated by newlines, `&&` or `;`, each naming paths below one of
+# those directories:
 #   <var>=$(mktemp [-d] <path>)   mktemp [-d] <path>   mkdir -p <path>
-#   mv [-n] <path|"$var"> <path>  echo "$var"
-# A <path> may be spelled `"$(dirname <path>)/<rest>"`, and "$var" is a variable
-# an earlier mktemp of the same call assigned. Any other call gets no decision,
-# so the session's permission rules decide it.
+#   mv [-n] <path|"$var"> <path>  echo "$var"   cat > <path|"$var"> <<'TAG'
+# A <path> may be spelled `"$(dirname <path>)/<rest>"` (a dirname operand
+# ending in `/` or holding `//` is not resolved), "$var" is a variable an
+# earlier mktemp of the same call assigned, and a quoted-delimiter heredoc's
+# body is not read. Any other call gets no decision, so the session's
+# permission rules decide it; one that names mktemp, mv or mkdir is also
+# appended to the log as `<agent_id or ->\t<command>`, because a `-p` session
+# refuses it and the pilot fails on a non-empty log.
 set -u
+log="${1:-}"
+(( $# > 1 )) || exit 0
+shift
 roots=("$@")
-(( ${#roots[@]} > 0 )) || exit 0
-cmd=$(jq -r 'if .tool_name == "Bash" then (.tool_input.command // "") else "" end' 2>/dev/null) || exit 0
+in=$(cat)
+cmd=$(printf '%s' "$in" | jq -r 'if .tool_name == "Bash" then (.tool_input.command // "") else "" end' 2>/dev/null) || exit 0
 [[ -n "$cmd" ]] || exit 0
+orig="$cmd"
 
-# under <path> — an absolute path below one of the roots, naming no `..`.
+# miss — give no decision, logging a call that names a witness command.
+miss() {
+  case "$orig" in
+    *mktemp*|*"mv "*|*"mkdir "*)
+      printf '%s\t%s\n' "$(printf '%s' "$in" | jq -r '.agent_id // "-"' 2>/dev/null || echo -)" \
+        "$(printf '%s' "$orig" | tr '\n\t' '  ')" >> "$log" 2>/dev/null || true ;;
+  esac
+  exit 0
+}
+
+# under <path> — an absolute path below one of the roots, naming no `..`,
+# no `//` and no trailing `/`.
 under() {
   local p="$1" r
   case "$p" in /*) ;; *) return 1 ;; esac
-  case "$p" in *..*) return 1 ;; esac
+  case "$p" in *..*|*//*|*/) return 1 ;; esac
   for r in "${roots[@]}"; do
     case "$p" in "$r"/*) return 0 ;; esac
   done
@@ -887,6 +908,7 @@ c='[A-Za-z0-9._/+@%,:=-]'
 v='[A-Za-z_][A-Za-z0-9_]*'
 pth='"?(/'"$c"'+)"?'
 vref='"?\$\{?('"$v"')\}?"?'
+re_hd="<<'(${v})'\$"
 re_dir='\$\(dirname "?(/'"$c"'+)"?\)'
 re_assign='^('"$v"')=\$\(mktemp( -d)? '"$pth"'\)$'
 re_mktemp='^mktemp( -d)? '"$pth"'$'
@@ -894,13 +916,34 @@ re_mkdir='^mkdir -p '"$pth"'$'
 re_mvvar='^mv( -n)? '"$vref"' '"$pth"'$'
 re_mvpath='^mv( -n)? '"$pth"' '"$pth"'$'
 re_echo='^echo '"$vref"'$'
+re_catvar='^cat > '"$vref"'$'
+re_catpath='^cat > '"$pth"'$'
+
+# A quoted-delimiter heredoc's body is literal text: drop it, and the
+# `<<'TAG'` that opens it.
+tag="" out=""
+while IFS= read -r line; do
+  if [[ -n "$tag" ]]; then
+    [[ "$line" != "$tag" ]] || tag=""
+    continue
+  fi
+  if [[ $line =~ $re_hd ]]; then
+    tag="${BASH_REMATCH[1]}"
+    line="${line%"${BASH_REMATCH[0]}"}"
+  fi
+  out="${out}${line}"$'\n'
+done <<<"$cmd"
+[[ -z "$tag" ]] || miss
+cmd="$out"
 
 # Each `$(dirname <path>)` becomes the directory it prints.
 i=0
 while [[ $cmd =~ $re_dir ]]; do
-  i=$((i + 1)); (( i <= 20 )) || exit 0
-  full="${BASH_REMATCH[0]}"; d="${BASH_REMATCH[1]%/*}"
-  [[ -n "$d" ]] || exit 0
+  i=$((i + 1)); (( i <= 20 )) || miss
+  full="${BASH_REMATCH[0]}"; p="${BASH_REMATCH[1]}"
+  case "$p" in */|*//*) miss ;; esac
+  d="${p%/*}"
+  [[ -n "$d" ]] || miss
   cmd="${cmd%%"$full"*}${d}${cmd#*"$full"}"
 done
 
@@ -912,25 +955,27 @@ while IFS= read -r seg; do
   seg="${seg%"${seg##*[![:space:]]}"}"
   [[ -n "$seg" ]] || continue
   if [[ $seg =~ $re_assign ]]; then
-    under "${BASH_REMATCH[3]}" || exit 0
+    under "${BASH_REMATCH[3]}" || miss
     vars="${vars}${BASH_REMATCH[1]} "
   elif [[ $seg =~ $re_mktemp ]]; then
-    under "${BASH_REMATCH[2]}" || exit 0
+    under "${BASH_REMATCH[2]}" || miss
   elif [[ $seg =~ $re_mkdir ]]; then
-    under "${BASH_REMATCH[1]}" || exit 0
+    under "${BASH_REMATCH[1]}" || miss
   elif [[ $seg =~ $re_mvvar ]]; then
-    case "$vars" in *" ${BASH_REMATCH[2]} "*) ;; *) exit 0 ;; esac
-    under "${BASH_REMATCH[3]}" || exit 0
+    case "$vars" in *" ${BASH_REMATCH[2]} "*) ;; *) miss ;; esac
+    under "${BASH_REMATCH[3]}" || miss
   elif [[ $seg =~ $re_mvpath ]]; then
-    under "${BASH_REMATCH[2]}" && under "${BASH_REMATCH[3]}" || exit 0
-  elif [[ $seg =~ $re_echo ]]; then
-    case "$vars" in *" ${BASH_REMATCH[1]} "*) ;; *) exit 0 ;; esac
+    under "${BASH_REMATCH[2]}" && under "${BASH_REMATCH[3]}" || miss
+  elif [[ $seg =~ $re_echo || $seg =~ $re_catvar ]]; then
+    case "$vars" in *" ${BASH_REMATCH[1]} "*) ;; *) miss ;; esac
+  elif [[ $seg =~ $re_catpath ]]; then
+    under "${BASH_REMATCH[1]}" || miss
   else
-    exit 0
+    miss
   fi
   n=$((n + 1))
 done <<<"$segs"
-(( n > 0 )) || exit 0
+(( n > 0 )) || miss
 printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"review-seat-promotion-pair: a witness command below the state home or the halt directory"}}'
 HOOK
 }
@@ -945,13 +990,12 @@ HOOK
 # a path rule uses gitignore syntax with `//` for an absolute path, so the report
 # is opened by a rule naming the file itself (`<dir>/**` matches only what is
 # under a directory); and a `-p` session in the default mode refuses every call
-# that needs approval. `acceptEdits` approves file edits and the filesystem
-# commands a member publishes a witness with (`mkdir -p`, `mv -n`, `mv`) for
-# paths in the working directory (the target clone) and in
-# `additionalDirectories` — the state home and the halt directory only, so the
-# rest of the run directory (the command line, the prompt, the inputs) stays
-# closed. `mktemp`, which makes the witness and halt temps, is opened only
-# under those two directories, quoted and unquoted; a rule's `*` matches any
+# that needs approval. `acceptEdits` approves file edits, and filesystem
+# commands whose operands it can read, for paths in the working directory (the
+# target clone) and in `additionalDirectories` — the state home and the halt
+# directory only, so the rest of the run directory (the command line, the
+# prompt, the inputs) stays closed. A bare `mktemp` naming one of those two
+# directories is opened by a rule, quoted and unquoted; a rule's `*` matches any
 # text, so a `mktemp` naming `..` is refused outright, and so is a second
 # template after one ending in `X` (BSD `mktemp` takes several). The plugin's
 # scripts are opened by `<plugin dir>/*` (a `:*` suffix would need a space after
@@ -966,7 +1010,9 @@ HOOK
 # before the command runs. So the settings also carry one PreToolUse hook
 # (witness_hook_write) that allows a Bash call made only of those commands, each
 # naming paths under the state home or the halt directory; any other call gets
-# no decision from it. A hook's allow does not lift a deny rule.
+# no decision from it, and one naming mktemp, mv or mkdir is logged to
+# <run dir>/witness-misses.log, which the pilot requires empty. A hook's allow
+# does not lift a deny rule.
 #
 # These are the runner's own rules; the lane's user settings are merged in as
 # they are for a gate stage, so its allow rules and hooks reach the session too.
@@ -975,7 +1021,7 @@ write_settings() {
   cfg="$LANE_CFG"
   hook="$(dirname "$f")/witness-hook.sh"
   witness_hook_write "$hook"
-  hcmd="bash $(shq "$hook") $(shq "$rd/state") $(shq "$rd/halt")"
+  hcmd="bash $(shq "$hook") $(shq "$rd/witness-misses.log") $(shq "$rd/state") $(shq "$rd/halt")"
   keys=$(jq -c '(.enabledPlugins // {}) | with_entries(.value = false)' "$cfg/settings.json" 2>/dev/null || echo '{}')
   [[ -n "$keys" ]] || keys='{}'
   jq -n --arg t "$t" --arg rd "$rd" --arg pd "$pd" --arg hc "$hcmd" --argjson pl "$keys" '{
@@ -1241,6 +1287,7 @@ run_pilot() {
     elif [[ -z "$cost" ]]; then why="total_cost_usd 가 JSON 에 없다"
     elif [[ -z "$den" ]]; then why="permission_denials 가 JSON 에 없다"
     elif [[ "${den%% *}" != "0" ]]; then why="거부된 도구 호출 ${den%% *}건 (${den#* })"
+    elif [[ -s "$rd/witness-misses.log" ]]; then why="증인 명령 미승인 $(awk 'END { print NR }' "$rd/witness-misses.log")건"
     fi
   fi
   if [[ -z "$why" ]]; then
