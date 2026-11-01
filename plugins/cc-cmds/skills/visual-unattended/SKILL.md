@@ -37,7 +37,7 @@ Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema (`c
 | `direction-missing` | `precondition-failed` | 기록에 `## 시각 방향` 절이 없거나 그 값이 `없음` 인데 시각 단계가 돌았다 |
 | `doc-unfrozen` | `precondition-failed` | 설계 문서에 `**상태**: 동결됨` 줄이 없다 |
 | `system-mismatch` | `precondition-failed` | `**디자인 시스템**` 이 `레포 기존`·`claude.ai 기존` 인데 `<base>/docs/visual-system/system.md` 가 없거나 그 `owner-repo=` 가 맞지 않는다. 또는 `신규` 인데 `system.md` 가 이미 있다 |
-| `output-present` | `precondition-failed` | 사이드카가 이미 있고 상태가 `검토 통과`·`발행됨` 이거나 `owner-doc=` 가 다르다 |
+| `output-present` | `precondition-failed` | 사이드카가 이미 있고 상태가 `검토 통과`·`발행됨` 인데 재사용 판정(`visual-check.sh reuse`)이 맞지 않거나, `owner-doc=` 가 다르다 |
 | `boundary-mismatch` | `freeze-mismatch` | 스스로 돌리는 두 명령 경계 검사가 어긋났다 |
 | `review-cap` | `gate-unanswerable` | 세 회 안에 통과하지 못했다 |
 
@@ -65,7 +65,7 @@ These rules decide termination and what this stage may write. They stay near the
 
 **CFI-2 — Authors and reviewers are read-only.** They return file blocks, edit pairs or a verdict; the parent writes every byte, and rejects a file block outside this phase's paths and an edit pair whose id is not on that round's fix list (`contract.md` §6).
 
-**CFI-3 — The night never overwrites a person's state.** A sidecar at `검토 통과` or `발행됨`, another document's sidecar, an existing `system.md` when the record says `신규` — each is a halt, never a write. A `로컬 초안` this document's earlier attempt left is inherited and continued.
+**CFI-3 — The night never overwrites a person's state.** A sidecar at `검토 통과` or `발행됨`, another document's sidecar, an existing `system.md` when the record says `신규` — each is a halt, never a write. The one other end for such a sidecar is Step 1's reuse branch, which writes nothing either. A `로컬 초안` this document's earlier attempt left is inherited and continued.
 
 **CFI-4 — No host file, no Claude Design.** This stage writes nothing under `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/` — `seed`, `append` and `account` refuse inside a run anyway, because this stage kind carries no publish-stage marker — and calls no Artifact tool. Models and bans come from the frozen record through `visual-config.sh snapshot`, never from the host files.
 
@@ -83,9 +83,13 @@ These rules decide termination and what this stage may write. They stay near the
 2. The document has a `**상태**: 동결됨` line, or halt at `doc-unfrozen`.
 3. **The interview record.** Resolve it by path convention — `$(dirname "$CC_PIPELINE_MANIFEST")/${CC_PIPELINE_RUN_ID}.interview.md` — not from the ledger row, so the resolution does not depend on the row it is checked against. Its header's version token is `cc-run-interview v3`, its `shasum -a 256` equals the manifest `## 인가` row `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>`, and the file exists with its row and the row with its file. Any of those fails → halt at `record-mismatch` with the path, the token, the expected and the observed hash in `**관측 상세**`. A format this stage does not know is not read as "no direction".
 4. The record has a `## 시각 방향` section and its value is not `없음`, or halt at `direction-missing`.
+
+   **Reuse.** When the sidecar exists, its `owner-doc=` is this document's key and its state is `검토 통과` or `발행됨`, run `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh reuse <document> --record <the record item 3 resolved>` as the first word of a `gate.sh exec … --surface 읽기` (its `binding` subcommand is graded `읽기` too). The helper checks the six conditions of `sidecar.md` §4's reuse line — this document's sidecar, its state, the record's sha256 (never its path), the binding digest, the design system file and every screen file — and writes nothing.
+   - `재사용 <상태>` → write nothing at all and skip the rest of Step 1 and Steps 2–4: emit a Korean terminal message naming the reused sidecar, its state and the helper's line, and end it with Step 5's last line, verbatim as Step 5 gives it. The sidecar stays as the source run left it, so a `발행됨` one goes on to the publish stage's own branch for that state.
+   - `재사용 불가 — <사유>` → go on as below; items 6 and 7 halt at `system-mismatch` or `output-present` as they would have, and that halt record's `**관측 상세**` carries the helper's line verbatim.
 5. Run `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-config.sh snapshot --part models` and `… snapshot --part bans`; keep the first as this stage's model table (`contract.md` §6) and write the second into the witness directory of Step 2 as this stage's ban list. A non-zero exit → halt at `record-mismatch` with the helper's reason line.
 6. **The design system.** Read `**디자인 시스템**` from `## 시각 방향`. `레포 기존` or `claude.ai 기존` → `<base>/docs/visual-system/system.md` exists and passes the `owner-repo=` rule of `sidecar.md` §3; `신규` → it does not exist. Otherwise halt at `system-mismatch`.
-7. **The sidecar.** No sidecar → a first attempt. A sidecar whose `owner-doc=` is this document's key and whose state is `로컬 초안` → inherit it: keep its screens, its `**검토**` count and its `**다듬기**` lines, and continue from the next round. A sidecar at `검토 통과` or `발행됨`, or whose `owner-doc=` is another key → halt at `output-present`.
+7. **The sidecar.** No sidecar → a first attempt. A sidecar whose `owner-doc=` is this document's key and whose state is `로컬 초안` → inherit it: keep its screens, its `**검토**` count and its `**다듬기**` lines, and continue from the next round. A sidecar at `검토 통과` or `발행됨` the reuse check of item 4 did not take, or whose `owner-doc=` is another key → halt at `output-present`.
 8. **The screens.** Take the screen list from `## 시각 방향`'s `대상 화면`; when it is `설계에 위임`, derive the list from the frozen document and write it into the sidecar. Screen ids are `[a-z0-9-]+`.
 
 ## Step 2: Witness directory and boundary baselines
@@ -98,7 +102,7 @@ The boundary check is the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_
 
 **Design system.** With `레포 기존`·`claude.ai 기존`, read `tokens.css`·`tokens.md` and the `**금지 해제**` lines of `system.md`. With `신규`, spawn a `ds-generate` author with the model table's value for that key (`contract.md` §6, file-block envelope) for `tokens.css`, `tokens.md` and `system.html`, and write `system.md` with `**출처**: 신규` and `**아티팩트**: (미발행)`.
 
-**Screens.** For a first attempt, spawn a `screen-generate` author per screen with the document, `## 시각 방향`, the tokens and `contract.md` §2 — including the unattended `.dc.html` form: literal values with no `{{holes}}`, and no `./support.js` in the head before a publish has placed it. Write each returned file block to `docs/visual/{slug}.<id>.html` atomically, then the sidecar at `로컬 초안` with every field of `sidecar.md` §2, `**기록**` carrying the record's `<base>`-relative path and sha256, so the morning seat reads the same record.
+**Screens.** For a first attempt, spawn a `screen-generate` author per screen with the document, `## 시각 방향`, the tokens and `contract.md` §2 — including the unattended `.dc.html` form: literal values with no `{{holes}}`, and no `./support.js` in the head before a publish has placed it. Write each returned file block to `docs/visual/{slug}.<id>.html` atomically, then the sidecar at `로컬 초안` with every field of `sidecar.md` §2, `**기록**` carrying the record's `<base>`-relative path and sha256, so the morning seat reads the same record, and `**설계 문서 구속 다이제스트**` the value `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh binding <document>` prints (`gate.sh exec … --surface 읽기`), so a later reuse check compares the same computation.
 
 **Review loop** (CFI-1), per round:
 
@@ -127,6 +131,6 @@ Re-check the boundary gate against the Step 2 baselines; a mismatch → halt at 
 - Writes are limited to `<base>/docs/visual/{slug}.md`, `<base>/docs/visual/{slug}.*.html`, `<base>/docs/visual-system/` when Step 1.6 read `신규`, the witness directory, and the halt record. Every link-file and extract write is the same-directory temp file → rename of `../_common/sidecar.md`. Nothing here is staged or committed.
 - Token values are never normalized; theme wrappers are kept verbatim (`contract.md` §1).
 - Never write the design document, the interview record, the manifest, a pipeline sidecar, a host file or `support.js`.
-- Never emit the terminal literal on any path except Step 5's.
+- Never emit the terminal literal on any path except Step 5's and Step 1's reuse branch, which ends with Step 5's line.
 
 Document: $ARGUMENTS

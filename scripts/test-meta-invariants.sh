@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh"
+_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -797,6 +797,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '-- visual -p "/cc-cmds:visual-unattended <스냅숏 design_doc>"' \
     '시각 디자인을 검토 통과로 확정했습니다.' \
     '**상태**: 검토 통과' \
+    'reading `**상태**: 검토 통과` or `**상태**: 발행됨`' \
     'A slice whose `**화면**` reads `없음` never waits.' \
     '--surface 읽기 -- <plugin root>/orchestrator/visual-check.sh approval <스냅숏 design_doc>' \
     "-- 등급=2 '판단 부류=시각-승인' '기준=시각 승인 대기' '근거=<화면 세그먼트> 의 화면이 고정 좌석에서 구현 승인되었는가'" \
@@ -830,6 +831,16 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     bad "$who 사본의 승인 술어 읽기" "bash 뒤에 도우미를 둔 표기가 남았다"
   fi
 done
+# Both router copies accept a `발행됨` sidecar because a re-kicked run's visual
+# stage reuses its source's sidecar without writing it. That holds only while
+# the stage itself still runs the reuse check, so pin the call in its text.
+VU_SKILL="$PLUGIN_ROOT/skills/visual-unattended/SKILL.md"
+nreuse=$(grep -cF -- 'visual-check.sh reuse' "$VU_SKILL" || true)
+if [ "${nreuse:-0}" != "0" ]; then
+  ok "visual-unattended 문면이 visual-check.sh reuse 로 재사용을 판정한다"
+else
+  bad "visual-unattended 문면의 재사용 판정" "visual-check.sh reuse 호출이 없다"
+fi
 
 # ---------------------------------------------------------------------------
 # 6e. Re-attaching a cut stage is carried by BOTH router copies
@@ -923,6 +934,34 @@ do
     ok "$who 사본이 「${lit}」을 싣는다"
   else
     bad "$who 사본의 개정 문구" "「${lit}」이 없다"
+  fi
+done
+
+# A DRAIN STOP IS RELEASED ONCE BY THE SEAT, THEN ASKED. One drain unit the gate
+# cannot turn into a row stops every later act of the run, the seat's included,
+# and the shift dies of it without a handoff. The seat's procedure — read
+# `drain_blocked` or the `무기록` row's `마지막 정지`, call `drain-release` once,
+# relaunch once with `사유=중단`, and otherwise show the stop text and ask without
+# touching the run directory or closing the run — is pinned here, with the
+# exit-code row that sends the seat to it. So is its order: with no marker, the
+# dropped-connection and limit branches take a `무기록` row before its
+# `마지막 정지` can send the seat to a person.
+for lit in \
+  "**A drain stop is released once, then asked.**" \
+  "When it is \`null\`, the dropped-connection and limit branches of the paragraph above come first" \
+  "The run is in this state when \`drain_blocked\` is not \`null\`, or when the last \`handoff[]\` element reading \`\"사유\": \"무기록\"\` carries a \`마지막 정지\` other than \`-\` and \`null\` and neither of those two branches took it." \
+  "call \`gate.sh drain-release --manifest <매니페스트>\` once" \
+  "On \`0\`, issue \`router-shift\` with \`사유=중단\` once more." \
+  "show the stop text verbatim — \`drain_blocked\`'s \`정지 문면\`, or \`마지막 정지\` — and ask the person at this seat" \
+  "Do not move or remove a file under the run directory yourself, and do not close the run as abandoned." \
+  "The release is recorded only by the \`배수 격리 행위자=좌석\` row and in the ledger the morning report reads; raise no notification banner for it." \
+  "**On the seat, read the snapshot's \`drain_blocked\` next**"
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SEAT" || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    ok "좌석 지침이 배수 정지 절차의 「${lit}」을 싣는다"
+  else
+    bad "좌석 지침의 배수 정지 절차" "「${lit}」이 없다"
   fi
 done
 
@@ -1148,6 +1187,23 @@ if grep -qF -- '| `대상 훅 거절` |' "$RS_CORPUS"; then
   ok "교대 사본의 정지 자리 표가 「대상 훅 거절」을 싣는다"
 else
   bad "교대 사본의 정지 자리 표" "「대상 훅 거절」 행이 없다"
+fi
+if grep -qF -- '| `master 수리 불가` |' "$RS_CORPUS"; then
+  ok "교대 사본의 정지 자리 표가 「master 수리 불가」를 싣는다"
+else
+  bad "교대 사본의 정지 자리 표" "「master 수리 불가」 행이 없다"
+fi
+if grep -qF -- 'and for `master 수리 불가` no act at all' "$RS_CORPUS"; then
+  ok "교대 사본의 재시도 목록이 「master 수리 불가」의 재대조를 싣는다"
+else
+  bad "교대 사본의 재시도 목록" "「master 수리 불가」가 없다"
+fi
+# 리드 사본도 교대 사본처럼 shift-halt 로 멈춘다 — 세그먼트 park 는 대표 표지를 다음 대기
+# 세그먼트로 넘겨 같은 사건의 park 와 질문을 잇달아 낳는다.
+if grep -qF -- 'Stop with `shift-halt` at site `master 수리 불가`' "$AP_ROUTER"; then
+  ok "리드 사본이 「master 수리 불가」에서 shift-halt 로 멈춘다"
+else
+  bad "리드 사본의 master 수리 불가" "「Stop with \`shift-halt\` at site \`master 수리 불가\`」가 없다"
 fi
 if grep -qF -- 'the refused act for `대상 훅 거절`' "$RS_CORPUS"; then
   ok "교대 사본의 재시도 목록이 「대상 훅 거절」의 거절된 행위를 싣는다"
@@ -1527,11 +1583,14 @@ check "복구 팔은 복구 리포트에 리뷰 HEAD 줄을 지어 넣지 않는
 # one row it derives again instead, the `세그먼트 입양` row, and says what
 # happens to every segment that fails the derivation. Both halves are pinned in
 # the resident body, so a rewording that keeps the exception and drops the
-# report of what was not adopted fails here.
+# report of what was not adopted fails here. The third phrase pins the lineage
+# walk for an interview record: a broken link stops the re-kickoff and is never
+# bridged by a farther ancestor.
 # ---------------------------------------------------------------------------
 for lit in \
   'a ledger row only triggers a question — or, for a `세그먼트 입양` row alone, a re-derivation' \
-  'anything else is not adopted and is reported with its cause'
+  'anything else is not adopted and is reported with its cause' \
+  'and it never skips to a farther ancestor'
 do
   check "CFI-11 이 「${lit:0:50}」 을 싣는다" "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
 done
@@ -1571,7 +1630,7 @@ done
 # after-the-re-convergence dispositions decide between a fresh audit and a stop.
 # The design-dispatch file opens on the same state and sends the step to the
 # audit, so the row also says which of the two decides the step's next act.
-rs_halt_row=$(printf '%s\n' "$rs_index" | grep -E '^\| `halt-answer-1\.md`, `halt-answer-2\.md` \|')
+rs_halt_row=$(printf '%s\n' "$rs_index" | grep -E '^\| `halt-answer-1\.md`, `halt-answer-2\.md`, `halt-answer-3\.md` \|')
 check "교대 색인의 할트 답 행이 설계·감사 스텝의 재수렴 뒤 진입 조건을 싣는다" \
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of the design step or of the audit step reads `종류=reconverge`')" "1"
 check "교대 색인의 할트 답 행이 그 상태에서 설계 파견 절보다 할트 답 절의 처분을 앞세운다" \

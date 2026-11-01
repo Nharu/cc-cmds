@@ -83,19 +83,12 @@ check_push_field() {
   return 0
 }
 
-# Splits an item step (`절=<ids>`, `목표=<goals>`, or both joined by a space,
-# which the job pool gives when sections and goals failed together) into
-# CP_FAILED_SECTIONS and CP_FAILED_GOALS.
+# Splits an item step into CP_FAILED_SECTIONS and CP_FAILED_GOALS, the way
+# tt_failed_parts does for the repro command.
 check_push_failed_parts() {
-  local part
-  CP_FAILED_SECTIONS=""
-  CP_FAILED_GOALS=""
-  for part in $1; do
-    case "$part" in
-      절=*) CP_FAILED_SECTIONS="${part#절=}" ;;
-      목표=*) CP_FAILED_GOALS="${part#목표=}" ;;
-    esac
-  done
+  tt_failed_parts "$1"
+  CP_FAILED_SECTIONS="$TT_STEP_SECTIONS"
+  CP_FAILED_GOALS="$TT_STEP_GOALS"
 }
 
 # The item step that names <sections> and <goals>, whichever are not empty.
@@ -136,7 +129,7 @@ check_push_merged_rerun_line() {
     printf 'check-push: head 만 다시 돌리기 — head 를 꺼낼 수 없어 항목 명령을 찍지 않는다\n'
     return 0
   fi
-  tt_head_filter "$secs" "$goals"
+  tt_tree_filter "$secs" "$goals"
   rc=$?
   if [ "$rc" = 1 ]; then
     printf 'check-push: head 만 다시 돌리기 — head 트리에서 항목을 나열할 수 없어 항목 명령을 찍지 않는다\n'
@@ -298,10 +291,17 @@ check_push_run() {
       합침|조상)
         printf 'check-push: 합친 트리 실패 — base=%s 단계=%s\n' "$base" "$stage" >&2
         check_push_merged_rerun_line "$stage" "$commit" >&2
+        # The cause line names only the failed step's items and runs them on
+        # the base alone, in a pool as wide as this run's, so nothing this
+        # tree already failed or passed is run again.
         case "$stage" in
           절=*|목표=*)
-            printf 'check-push: 원인 판정 (게이트 --surface 트리밖쓰기 --reach 런로컬) — bash scripts/test-tree.sh repro --base %s --head %s --expect %s%s%s\n' \
-              "$base" "$commit" "$TT_TREE" "${TT_SECTIONS:+ --sections $TT_SECTIONS}" "${TT_GOALS:+ --goals $TT_GOALS}" >&2
+            check_push_failed_parts "$stage"
+            printf 'check-push: 원인 판정 (게이트 --surface 트리밖쓰기 --reach 런로컬) — bash scripts/test-tree.sh base-verdict --base %s --head %s --expect %s%s%s --jobs %s\n' \
+              "$base" "$commit" "$TT_TREE" "${CP_FAILED_SECTIONS:+ --sections $CP_FAILED_SECTIONS}" "${CP_FAILED_GOALS:+ --goals $CP_FAILED_GOALS}" "$TT_JOBS" >&2
+            if [ "$TT_JOBS" = 1 ]; then
+              printf 'check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄다 — 원인 판정의 브랜치 결함 항목에는 이 트리에서 통과한 항목이 섞일 수 있다\n' >&2
+            fi
             ;;
         esac
         tt_base_status_line "check-push" "$base" >&2
@@ -572,12 +572,30 @@ EOF
   out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_SECTIONS=s1,s2); rc=$?
   check "F14 종료 1, 도장 없음" "$rc $(stamp_count)" "1 0"
   case "$out" in
-    *"check-push: 합친 트리 실패 — base=$sm2 단계=절=s2,s1"*"head 만 다시 돌리기 (워크트리에서) — bash scripts/test-gate.sh --sections s1 헤드에 없는 항목=s2"*"bash scripts/test-tree.sh repro --base $sm2 --head $sh --expect $tm --sections s2,s1"*"gh run list --repo Nharu/cc-cmds --commit $sm2 --json workflowName,conclusion,databaseId — 워크플로마다, 런 없음 또는 진행 중이면 그 워크플로의 베이스 상태는 모름이다 (초록이 아니다)"*)
+    *"check-push: 합친 트리 실패 — base=$sm2 단계=절=s2,s1"*"head 만 다시 돌리기 (워크트리에서) — bash scripts/test-gate.sh --sections s1 헤드에 없는 항목=s2"*"bash scripts/test-tree.sh base-verdict --base $sm2 --head $sh --expect $tm --sections s2,s1 --jobs 4"*"gh run list --repo Nharu/cc-cmds --commit $sm2 --json workflowName,conclusion,databaseId — 워크플로마다, 런 없음 또는 진행 중이면 그 워크플로의 베이스 상태는 모름이다 (초록이 아니다)"*)
       ok "F14 메시지 넷이 차례로 나온다" ;;
     *) bad "F14 메시지 넷이 차례로 나온다" "$out" ;;
   esac
+  hasnt "F14 원인 판정 줄은 repro 가 아니다" "$out" "test-tree.sh repro"
+  hasnt "F14 기본 병렬에는 목록 전체 주의 줄이 없다" "$out" "CHECK_PUSH_JOBS=1 의 실패 단계는"
   hasnt "F14 gh run list 에 --workflow 가 없다" "$out" "--workflow"
   check "F14 gh 대역은 불리지 않았다" "$(cat "$T/gh.log")" ""
+
+  # --- F35 원인 판정 줄은 실패한 항목만 base-verdict 에 넘긴다 ---------------------
+  # An ancestor base with two goals of which only g1 fails: the line names g1
+  # alone, and nothing of the sections or the passing goal.
+  : > "$T/fail-g1"
+  out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_GOALS=g1,g2); rc=$?
+  rm -f "$T/fail-g1"
+  check "F35 조상 목표 실패: 종료 1, 도장 없음" "$rc $(stamp_count)" "1 0"
+  has "F35 조상 목표 실패: 단계는 실패한 목표 하나" "$out" "check-push: 합친 트리 실패 — base=$sa 단계=목표=g1"
+  has "F35 조상 목표 실패: 원인 판정 줄이 실패한 목표만 넘긴다" "$out" "bash scripts/test-tree.sh base-verdict --base $sa --head $sh --expect $th --goals g1 --jobs 4"
+  hasnt "F35 조상 목표 실패: 통과한 목표는 넘기지 않는다" "$out" "--goals g1,g2"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=1 CHECK_PUSH_SECTIONS=s1,s2); rc=$?
+  check "F35 직렬 실패: 종료 1" "$rc" "1"
+  has "F35 직렬 실패: 원인 판정 줄이 --jobs 1 을 넘긴다" "$out" "bash scripts/test-tree.sh base-verdict --base $sm2 --head $sh --expect $tm --sections s2,s1 --jobs 1"
+  has "F35 직렬 실패: 목록 전체 주의 줄이 원인 판정 줄 다음에 나온다" "$out" "--jobs 1
+check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄다 — 원인 판정의 브랜치 결함 항목에는 이 트리에서 통과한 항목이 섞일 수 있다"
 
   # --- F20 순서 ----------------------------------------------------------------
   : > "$T/order.log"
@@ -789,8 +807,8 @@ EOF
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 99 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 99 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 108 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 108 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift test test-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -41,6 +41,7 @@ lint:
 	bash scripts/lint-team-model-tier-pins.sh
 	bash scripts/lint-unattended-surfaces.sh
 	bash scripts/lint-attention-schema.sh
+	bash scripts/lint-remote-reply-schema.sh
 	bash scripts/lint-lead-read-set.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-autoadopt-vocabulary.sh
@@ -400,6 +401,14 @@ run-check-gate-selftest:
 policy-drift:
 	@bash plugins/cc-cmds/orchestrator/stage-rules.sh status
 
+# Which rules of the user-scope CLAUDE.md a means enforces, by its enforcement
+# markers: one row per rule with its verdict, then the prose-only rules, the
+# partial gaps and the dead means. Deliberately NOT part of `lint` or `check`
+# for the same reason as `policy-drift` — the source is a person's global file.
+# Run by hand.
+rule-enforcement:
+	@bash plugins/cc-cmds/orchestrator/stage-rules.sh enforcement
+
 # Each suite is a LIST of scripts rather than a block of recipe lines, so that
 # the scripts become prerequisites and `make -j` can run them at once. As recipe
 # lines they were strictly serial no matter what -j said, and that is the whole
@@ -448,6 +457,7 @@ LINT_TESTS := \
 	scripts/test-lint-sidecar-field-table.sh \
 	scripts/test-lint-approval-answer-provenance.sh \
 	scripts/test-lint-reap-retention.sh \
+	scripts/test-lint-remote-reply-schema.sh \
 	scripts/test-lint-recovery-interlock-pins.sh \
 	scripts/test-lint-ci-scope-binding.sh \
 	scripts/test-lint-macos-keepset-paths.sh \
@@ -455,6 +465,7 @@ LINT_TESTS := \
 	tests/fixtures/lint-gate-banner-fields/run.sh \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
+	scripts/test-measure-lead-context.sh \
 	scripts/test-measure-test-share.sh \
 	scripts/test-measure-discussion-passes.sh \
 	scripts/test-solo-audit-experiment.sh \
@@ -510,7 +521,8 @@ ORCH_TESTS := \
 	scripts/test-visual-check.sh \
 	scripts/test-visual-capture.sh \
 	scripts/test-meta-invariants.sh \
-	scripts/test-local-bundle.sh
+	scripts/test-local-bundle.sh \
+	scripts/test-ci-signature.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \
@@ -624,12 +636,37 @@ print-rest-goals:
 # starts them in that order, as many at once as the outer -j allows: `$(MAKE)`
 # on the same recipe line is what hands the sub-make the outer jobserver. An
 # empty assignment is a success, as it is for gate-shard.
+#
+# EACH SUITE'S OUTPUT REACHES THE LOG WHOLE. The sub-make holds every goal's
+# output, make's echo of the command and the goal's stderr included, and writes
+# it out in one piece when the goal ends, so no line of one suite falls between
+# the start and end lines of another. ci-signature.sh pins a FAIL line on a
+# suite only while that suite alone is open, and without this every failed
+# rest-tests job read at step precision. `2>&1` puts the suite's stderr, where
+# suite-guard prints its end line, in the same held output as its stdout. A make
+# older than 4.0 has no output sync and runs the goals as before; their lines
+# then interleave and the adapter reads the job at step precision. An unwrapped
+# self-test goal's lines come out held the same way but outside every suite,
+# so a FAIL line of one, or its failure, leaves the job at step precision. The
+# adapter sees such a goal start by make's echo of `bash scripts/<x>.sh
+# --self-test`, or, for `run-check-gate-selftest`, whose recipe make does not
+# echo, by its own `run-check-gate-selftest: ` line.
+#
+# EVERY GOAL OF THE SHARD STARTS. The sub-make runs with `-k`, so a suite that
+# fails does not stop it from starting the goals still waiting. Without it make
+# starts nothing after the first failure, the goals listed on the `rest shard`
+# line that never started leave no line, and the adapter reads the job at step
+# precision, which was the case for a failure that ended before the shard's last
+# goal started. The job still fails, and its wall clock is still set by the
+# heaviest goal.
+REST_OUTPUT_SYNC := $(if $(filter output-sync,$(.FEATURES)),--output-sync=target)
+
 rest-shard:
 	@goals=$$(bash scripts/rest-shard.sh --shards $(REST_SHARDS) --shard $(SHARD)); rc=$$?; \
 	if [ "$$rc" = "4" ]; then echo "rest shard $(SHARD)/$(REST_SHARDS): 배정된 목표가 없습니다"; exit 0; fi; \
 	[ "$$rc" = "0" ] || exit "$$rc"; \
 	echo "rest shard $(SHARD)/$(REST_SHARDS): $$goals"; \
-	$(MAKE) --no-print-directory $$goals
+	$(MAKE) -k --no-print-directory $(REST_OUTPUT_SYNC) $$goals 2>&1
 
 # One runner of the gate suite. SHARD is the runner, 1-based (1..N); lane j
 # (0..L−1) runs row K = SHARD + j × N of the S-row partition, and the lanes run

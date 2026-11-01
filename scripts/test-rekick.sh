@@ -1361,6 +1361,32 @@ VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 { cat "$NM1"; printf -- '- `사전 인가` | 인터뷰 기록=docs/pipeline-run/%s.interview.md | sha256=%s\n' "$NEW1" "$OLDBASESHA"; } > "$WORK/v-iv-left.md"
 vs "설계가 빠졌는데 인터뷰 행이 남으면 실패한다" 실패 "$WORK/v-iv-left.md" "$E" 인터뷰
 
+# (e2) A source whose design and audit are out but whose visual steps stay: the
+# visual stage still reads the interview record, so the row is kept and renamed.
+PLANVIS='{ "design_required": true, "entry_skill": "design", "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2P", "skill": "visual-publish", "summary": "시각 발행", "depends_on": ["S2V"] }, { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": ["A1", "S2V"] }, { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": ["I1"] } ] }'
+P_PLAN="$PLANVIS" mk_prev RKVIS; fx_done
+fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
+PMV=$(sha "$BASE/docs/pipeline-run/RKVIS.plan.md"); PGV=$(sha "$BASE/docs/pipeline-grant/RKVIS.md")
+gv=$(rk graph --prev RKVIS --base "$BASE")
+check "6: 시각 단계가 남는 원천도 동결 문서면 D1·A1 이 빠진다" \
+  "$(printf '%s\n' "$gv" | awk -F'\t' '$1 == "건너뜀" { print $2 }' | tr '\n' ' ')" "D1 A1 "
+check "6: 시각 단계는 남는다" "$(col "$gv" 계획 | jq -r '[.steps[].id] | join(",")')" "S2V,S2P,I1,R1"
+rk render-manifest --prev RKVIS --base "$BASE" --run-id RKN7V --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMV" --expect-grant-sha256 "$PGV" > "$WORK/v-ivv.md"
+VS_PREV="$BASE/docs/pipeline-run/RKVIS.plan.md"; VS_PMSHA="$PMV"; VS_PGSHA="$PGV"
+check "7: 시각 단계가 남으면 설계가 빠져도 인터뷰 행이 새 run id 로 남는다" \
+  "$(grep -c "^- \`사전 인가\` | 인터뷰 기록=docs/pipeline-run/RKN7V.interview.md | sha256=$(sha "$BASE/docs/pipeline-run/RKVIS.interview.md")$" "$WORK/v-ivv.md")" "1"
+check "7: 설계가 빠지면 시각 단계가 남아도 로스터 행은 없다" "$(grep -c '^- `설계 로스터`' "$WORK/v-ivv.md")" "0"
+vs "시각 단계가 남아 인터뷰 행을 옮긴 초안은 통과한다" 통과 "$WORK/v-ivv.md" "$E"
+grep -v '^- `사전 인가` | 인터뷰 기록=' "$WORK/v-ivv.md" > "$WORK/v-ivv-none.md"
+vs "시각 단계가 남는데 인터뷰 행을 뺀 초안은 실패한다" 실패 "$WORK/v-ivv-none.md" "$E" 인터뷰
+out=$(rk render-interview --prev RKVIS --base "$BASE" --expect-sha256 "$PMV"); rc=$?
+check "7: 시각 단계가 남는 원천의 인터뷰 복사본이 원천 기록과 같다" \
+  "$rc/$(printf '%s\n' "$out" | shasum -a 256 | cut -d' ' -f1)" "0/$(sha "$BASE/docs/pipeline-run/RKVIS.interview.md")"
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+
 # (f) The apply probe code row is carried byte for byte, and the source run's
 # pinned plugin copy and its pin record are left alone by the whole flow.
 AC_ROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' 'make probe' | shasum -a 256 | cut -d' ' -f1)"
@@ -2011,6 +2037,20 @@ check "12: --targets 없이 그리면 원천 대상 행이 그대로 옮겨진�
   "$(grep -E '^- `target`' "$SL_OUT")" "$(grep -E '^- `target`' "$BASE/docs/pipeline-run/RKCT.plan.md")"
 SL_ASKED=""
 
+# A seat source whose design and audit are out but whose visual steps stay: the
+# seat's draft keeps the interview row, and its copy equals the source record.
+P_PLAN="$PLANVIS" P_EXTRA="$SEAT_ROW" mk_prev RKSV
+fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
+seat_end 마감
+seat_link RKSV RKSV1
+check "12: 시각 단계가 남는 좌석 원천의 render-manifest --auto 는 0 이고 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "12: 그 좌석 초안은 인터뷰 행을 새 run id 로 하나 싣는다" \
+  "$(grep -c '^- `사전 인가` | 인터뷰 기록=docs/pipeline-run/RKSV1\.interview\.md | ' "$SL_OUT")" "1"
+check "12: 그 좌석 초안의 인터뷰 복사본이 원천 기록과 같다" \
+  "$(sha "$BASE/docs/pipeline-run/RKSV1.interview.md")" "$(sha "$BASE/docs/pipeline-run/RKSV.interview.md")"
+
 # A `플러그인 허용` row whose key an account has now carries byte for byte, and
 # the successor passes its checks.
 PA_ROW="- \`플러그인 허용\` | 플러그인=$PA_N | 사유=픽스처"
@@ -2133,6 +2173,248 @@ has "12: 좌석 문서 — 첫 snapshot 전이면 즉시 경로를 다시 수행
 has "12: 좌석 문서 — 그 뒤면 빈 인자 진행 중 뒤 재개한다" "$(cat "$SEATDOC")" "shows the run as \`진행 중\` and it continues by 「Resuming after a break」"
 has "12: 좌석 문서 — 원천을 다시 재킥오프하지 말라고 적는다" "$(cat "$SEATDOC")" "It also says not to re-kick the source"
 has "12: 좌석 문서 — L13 의 다른 베이스 한계를 적는다" "$(cat "$SEATDOC")" "**L13 sees only this base.**"
+
+# ---------------------------------------------------------------------------
+# 14. 계보 — 인터뷰 행도 기록 파일도 없는 원천은 조상의 기록을 이어받는다
+# ---------------------------------------------------------------------------
+# A run opened by an older re-kickoff that dropped the interview row is the
+# source here. The record is found by walking the `이어받은 런` rows back to the
+# nearest ancestor holding a row, every link matched by hash; any link that
+# does not hold stops the re-kickoff with one line naming that link.
+LIN_E="$WORK/asked-lin"; : > "$LIN_E"
+# lin_prov <parent> — the four-field provenance row naming <parent> by the
+# hashes of its manifest and authorization record as they are now.
+lin_prov() {
+  printf -- '- `사전 인가` | 이어받은 런=%s | 매니페스트 sha256=%s | 인가 기록 sha256=%s' \
+    "$1" "$(sha "$BASE/docs/pipeline-run/$1.plan.md")" "$(sha "$BASE/docs/pipeline-grant/$1.md")"
+}
+# lin_anc <id> — an ancestor with its interview row and record (P_* knobs pass through).
+lin_anc() { P_DOC="${P_DOC:-$DOC_OPEN}" mk_prev "$1"; fx_done; }
+# mk_lin <id> <parent|-> — a run with neither an interview row nor a record,
+# carried from <parent> (`-`: no provenance row). Knobs: LIN_PROV replaces the
+# provenance row, LIN_PRE goes before it, LIN_KEEPIV keeps the record file,
+# LIN_PLAN the plan (default PLAN4 on the open document, so the design stays),
+# LIN_VIS the frozen document with D1 and A1 done, so they are out (plan
+# default PLANVIS, whose visual step stays), LIN_SEAT ends it as a seat source
+# (`마감`).
+mk_lin() {
+  local extra="" doc="$DOC_OPEN" plan="${LIN_PLAN:-$PLAN4}"
+  if [ -n "${LIN_PROV+x}" ]; then extra=$LIN_PROV
+  elif [ "$2" != "-" ]; then extra=$(lin_prov "$2"); fi
+  if [ -n "${LIN_PRE:-}" ]; then extra="$LIN_PRE${extra:+
+$extra}"; fi
+  if [ -n "${LIN_VIS:-}" ]; then doc=$DOC; plan=${LIN_PLAN:-$PLANVIS}; fi
+  P_NOIV=1 P_DOC="$doc" P_PLAN="$plan" P_EXTRA="$extra" mk_prev "$1"
+  [ -n "${LIN_KEEPIV:-}" ] || rm -f "$BASE/docs/pipeline-run/$1.interview.md"
+  if [ -n "${LIN_VIS:-}" ]; then
+    fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+    fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+    fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
+  fi
+  if [ -n "${LIN_SEAT:-}" ]; then seat_end 마감; else fx_done; fi
+}
+# lin_v <src> — verify; LV (output), LV_RC.
+lin_v() { LV=$(rk verify --prev "$1" --base "$BASE"); LV_RC=$?; }
+lv_iv()   { printf '%s\n' "$LV" | awk -F'\t' '$1 == "검사" && $2 == "인터뷰" { print $3 "/" $4; exit }'; }
+lv_line() { printf '%s\n' "$LV" | awk -F'\t' '$1 == "계보" { print $2 " " $3 " " $4 }'; }
+lv_hash() { printf '%s\n' "$LV" | awk -F'\t' '$1 == "해시" && $2 == "인터뷰" { print $3 }'; }
+# lin_render <src> <new> — render-manifest on the person's path; LR_RC, LR_OUT.
+lin_render() {
+  LR_OUT="$WORK/lin-$2.md"
+  rk render-manifest --prev "$1" --base "$BASE" --run-id "$2" --kickoff-at "$KAT1" --deadline "$DL1" \
+     --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$1.plan.md")" \
+     --expect-grant-sha256 "$(sha "$BASE/docs/pipeline-grant/$1.md")" > "$LR_OUT"; LR_RC=$?
+}
+# lin_iv <src> — render-interview into lin.iv; LI_RC.
+lin_iv() {
+  rk render-interview --prev "$1" --base "$BASE" --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$1.plan.md")" \
+    > "$WORK/lin.iv"; LI_RC=$?
+}
+# lin_vs <draft> <src> — verify-subset on the person's path; LS (판정[/실패 검사]),
+# LS_IV (the interview check's reason).
+lin_vs() {
+  local o
+  o=$(rk verify-subset "$1" "$BASE/docs/pipeline-run/$2.plan.md" \
+        --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$2.plan.md")" \
+        --expect-grant-sha256 "$(sha "$BASE/docs/pipeline-grant/$2.md")" --asked "$LIN_E")
+  LS=$(col "$o" 판정)
+  [ "$LS" = "통과" ] || LS="$LS/$(col "$o" 판정 3)"
+  LS_IV=$(printf '%s\n' "$o" | awk -F'\t' '$1 == "검사" && $2 == "인터뷰" { print $4; exit }')
+}
+lin_ivrows() { grep -c '^- `사전 인가` | 인터뷰 기록=' "$1" || true; }
+# lin_carried <label> <src> <ancestor> <depth> <new> — the whole person's path
+# of a lineage that holds: verify, the draft's one row, the record's bytes and
+# verify-subset.
+lin_carried() {
+  local ivh
+  ivh=$(sha "$BASE/docs/pipeline-run/$3.interview.md")
+  lin_v "$2"
+  check "14: $1 — verify 가 통과하고 인터뷰 검사도 통과다" "$LV_RC/$(col "$LV" 판정)/$(lv_iv)" "0/통과/통과/-"
+  check "14: $1 — 해시 인터뷰는 조상 기록의 sha256 이다" "$(lv_hash)" "$ivh"
+  check "14: $1 — 계보 인터뷰 줄이 조상과 대수를 싣는다" "$(lv_line)" "인터뷰 $3 $4"
+  lin_render "$2" "$5"
+  check "14: $1 — render-manifest 는 0 이다" "$LR_RC" "0"
+  [ "$LR_RC" = 0 ] || tail -1 "$WORK/rk.err" >&2
+  check "14: $1 — 초안의 인터뷰 행은 정확히 하나이고 새 런 경로에 조상 해시다" \
+    "$(lin_ivrows "$LR_OUT")/$(grep -c "^- \`사전 인가\` | 인터뷰 기록=docs/pipeline-run/$5.interview.md | sha256=$ivh$" "$LR_OUT")" "1/1"
+  check "14: $1 — 인터뷰 행은 출처 행보다 앞이다" \
+    "$(awk '/^- `사전 인가` \| 인터뷰 기록=/ { i = NR } /^- `사전 인가` \| 이어받은 런=/ { p = NR } END { print (i && p && i < p) ? "앞" : "아님" }' "$LR_OUT")" "앞"
+  lin_iv "$2"
+  check "14: $1 — render-interview 의 출력은 조상 기록과 바이트가 같다" \
+    "$LI_RC/$(cmp -s "$WORK/lin.iv" "$BASE/docs/pipeline-run/$3.interview.md" && echo 같음)" "0/같음"
+  lin_vs "$LR_OUT" "$2"
+  check "14: $1 — verify-subset 이 통과한다" "$LS" "통과"
+  [ "$LS" = "통과" ] || printf '%s\n' "$LS_IV" >&2
+}
+# lin_broken <label> <src> <reason> — the walk stops at that link: verify fails
+# on the interview check alone with the reason verbatim, and render-interview and
+# render-manifest end 1 with nothing on stdout and the reason on stderr.
+lin_broken() {
+  lin_v "$2"
+  check "14: $1 — verify 는 인터뷰 검사에서 그 사유로 실패한다" \
+    "$LV_RC/$(col "$LV" 판정 3)/$(lv_iv)" "1/인터뷰/실패/$3"
+  check "14: $1 — 계보 인터뷰 줄은 없다" "$(lv_line)" ""
+  lin_iv "$2"
+  check "14: $1 — render-interview 는 1 이고 출력이 없다" "$LI_RC/$(wc -c < "$WORK/lin.iv" | tr -d ' ')" "1/0"
+  has "14: $1 — render-interview 의 사유" "$(cat "$WORK/rk.err")" "$3"
+  lin_render "$2" "${2}N"
+  check "14: $1 — render-manifest 는 1 이고 출력이 없다" "$LR_RC/$(wc -c < "$LR_OUT" | tr -d ' ')" "1/0"
+  has "14: $1 — render-manifest 의 사유" "$(cat "$WORK/rk.err")" "$3"
+}
+
+# 1 — the shape before the fix: one link back to an ancestor holding the row.
+lin_anc RKL0
+mk_lin RKL1 RKL0
+lin_carried "한 대" RKL1 RKL0 1 RKLN1
+mf_check "$LR_OUT"; rc=$?
+check "14: 한 대 — 조상 행을 넣은 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+LIN_R1_RC=$rc
+
+# 4 — a link that changes after the draft was drawn is caught by verify-subset.
+LIN_DRAFT="$LR_OUT"
+for f in "pipeline-run/RKL0.plan.md|조상 매니페스트 sha256 이 이어받은 런 행과 다릅니다" \
+         "pipeline-grant/RKL0.md|조상 인가 기록 sha256 이 이어받은 런 행과 다릅니다" \
+         "pipeline-run/RKL0.interview.md|조상 인터뷰 기록 sha256 이 조상 행과 다릅니다"; do
+  p="$BASE/docs/${f%%|*}"
+  cp "$p" "$WORK/lin.bak"; printf 'x' >> "$p"
+  lin_vs "$LIN_DRAFT" RKL1
+  check "14: 동결 직전 변경 (${f%%|*}) — verify-subset 의 인터뷰 검사가 실패한다" "$LS/$LS_IV" "실패/인터뷰/계보 고리 RKL1 → RKL0: ${f#*|}"
+  cp "$WORK/lin.bak" "$p"
+done
+lin_vs "$LIN_DRAFT" RKL1
+check "14: 동결 직전 변경 — 되돌리면 다시 통과한다" "$LS" "통과"
+
+# 2 — two links back.
+mk_lin RKL2 RKL1
+lin_carried "두 대" RKL2 RKL0 2 RKLN2
+
+# 7 — a design and a visual step both remain (check 8 counts 2).
+LIN_PLAN="$PLANVIS" mk_lin RKLDV RKL0
+lin_carried "설계와 시각이 함께 남음" RKLDV RKL0 1 RKLNDV
+check "14: 설계와 시각이 함께 남음 — 초안 계획에 설계와 시각 단계가 둘 다 있다" \
+  "$(awk '/^```json/ { f = 1; next } f && /^```/ { exit } f' "$LR_OUT" | jq -r '[.steps[] | select(.skill == "design" or .skill == "visual")] | length')" "2"
+
+# 5 — nothing in the remaining plan reads the record: no walk, no lineage line,
+# even when the provenance row names a run that has no files at all.
+LIN_PROV="- \`사전 인가\` | 이어받은 런=RKLGONE | 매니페스트 sha256=$HEXA | 인가 기록 sha256=$HEXA" \
+  LIN_VIS=1 LIN_PLAN="$PLAN4" mk_lin RKLOFF -
+check "14: 발동하지 않음 — 남는 계획에 설계·시각 단계가 없다" "$(col "$(rk graph --prev RKLOFF --base "$BASE")" 계획 | jq -r '[.steps[].id] | join(",")')" "I1,R1"
+lin_v RKLOFF
+check "14: 발동하지 않음 — verify 통과이고 계보 줄이 없다" "$LV_RC/$(col "$LV" 판정)/$(lv_line)/$(lv_hash)" "0/통과//-"
+
+# 3 — every way a link breaks, each named at the first link that does not hold.
+LIN_PROV= mk_lin RKBRT0 -
+mk_lin RKBRT1 RKBRT0
+lin_broken "뿌리까지 행 없음" RKBRT1 "계보 RKBRT0: 뿌리 런까지 인터뷰 행이 없습니다"
+
+lin_anc RKB0
+LIN_PRE="$(lin_prov RKB0)" mk_lin RKBTWO RKB0
+lin_broken "출처 행 2개" RKBTWO "계보 RKBTWO: 출처 행이 2개입니다"
+LIN_PROV="- \`사전 인가\` | 이어받은 런=RKB0 | 매니페스트 sha256=zz | 인가 기록 sha256=zz" mk_lin RKBBAD -
+lin_broken "출처 행을 읽지 못함" RKBBAD "계보 RKBBAD: 출처 행을 읽지 못했습니다 — 출처 행의 런 id 나 해시가 형식에 맞지 않습니다"
+
+LIN_PROV="- \`사전 인가\` | 이어받은 런=RKBCY2 | 매니페스트 sha256=$HEXA | 인가 기록 sha256=$HEXA" mk_lin RKBCY1 -
+mk_lin RKBCY2 RKBCY1
+lin_broken "순환" RKBCY2 "계보 고리 RKBCY1 → RKBCY2: 순환합니다 — RKBCY2 을 이미 지났습니다"
+
+lin_anc RKBZ0
+i=1
+while [ "$i" -le 9 ]; do mk_lin "RKBZ$i" "RKBZ$((i - 1))"; i=$((i + 1)); done
+lin_v RKBZ8
+check "14: 8대 계보는 통과한다" "$LV_RC/$(col "$LV" 판정)/$(lv_line)" "0/통과/인터뷰 RKBZ0 8"
+lin_broken "9대 계보" RKBZ9 "계보 고리 RKBZ1 → RKBZ0: 8대를 넘습니다"
+
+lin_anc RKBM0; mk_lin RKBM1 RKBM0
+mv "$BASE/docs/pipeline-run/RKBM0.plan.md" "$WORK/lin.moved"
+lin_broken "조상 매니페스트 없음" RKBM1 "계보 고리 RKBM1 → RKBM0: 조상 매니페스트가 없습니다: $BASE/docs/pipeline-run/RKBM0.plan.md"
+mv "$WORK/lin.moved" "$BASE/docs/pipeline-run/RKBM0.plan.md"
+
+lin_anc RKBH0; mk_lin RKBH1 RKBH0
+printf 'x' >> "$BASE/docs/pipeline-run/RKBH0.plan.md"
+lin_broken "조상 매니페스트 해시 불일치" RKBH1 "계보 고리 RKBH1 → RKBH0: 조상 매니페스트 sha256 이 이어받은 런 행과 다릅니다"
+
+lin_anc RKBIH0
+sed 's/run-id=RKBIH0;/run-id=RKBIHX;/' "$BASE/docs/pipeline-run/RKBIH0.plan.md" > "$WORK/lin.t" && mv "$WORK/lin.t" "$BASE/docs/pipeline-run/RKBIH0.plan.md"
+mk_lin RKBIH1 RKBIH0
+lin_broken "조상 매니페스트 머리 run-id 불일치" RKBIH1 "계보 고리 RKBIH1 → RKBIH0: 조상 매니페스트의 run-id 가 맞지 않습니다 — 머리 run-id=RKBIHX · 본문 런 id=RKBIH0"
+lin_anc RKBIB0
+sed 's/^\*\*런 id\*\*: RKBIB0$/**런 id**: RKBIBX/' "$BASE/docs/pipeline-run/RKBIB0.plan.md" > "$WORK/lin.t" && mv "$WORK/lin.t" "$BASE/docs/pipeline-run/RKBIB0.plan.md"
+mk_lin RKBIB1 RKBIB0
+lin_broken "조상 매니페스트 본문 런 id 불일치" RKBIB1 "계보 고리 RKBIB1 → RKBIB0: 조상 매니페스트의 run-id 가 맞지 않습니다 — 머리 run-id=RKBIB0 · 본문 런 id=RKBIBX"
+
+lin_anc RKBG0; mk_lin RKBG1 RKBG0
+rm -f "$BASE/docs/pipeline-grant/RKBG0.md"
+lin_broken "조상 인가 기록 없음" RKBG1 "계보 고리 RKBG1 → RKBG0: 조상 인가 기록이 없습니다"
+lin_anc RKBGH0; mk_lin RKBGH1 RKBGH0
+printf 'x' >> "$BASE/docs/pipeline-grant/RKBGH0.md"
+lin_broken "조상 인가 기록 해시 불일치" RKBGH1 "계보 고리 RKBGH1 → RKBGH0: 조상 인가 기록 sha256 이 이어받은 런 행과 다릅니다"
+
+LIN_IVSHA=$(printf '# 파이프라인 런 인터뷰 기록 — %s\n\n픽스처 인터뷰 %s\n' RKBI20 RKBI20 | shasum -a 256 | cut -d' ' -f1)
+P_EXTRA="- \`사전 인가\` | 인터뷰 기록=docs/pipeline-run/RKBI20.interview.md | sha256=$LIN_IVSHA" lin_anc RKBI20
+mk_lin RKBI21 RKBI20
+lin_broken "조상 인터뷰 행 2개" RKBI21 "계보 고리 RKBI21 → RKBI20: 조상 인터뷰 행이 2개입니다"
+
+mkdir -p "$BASE/docs/other"
+printf '# 다른 자리의 기록\n' > "$BASE/docs/other/RKBIP0.interview.md"
+P_NOIV=1 P_EXTRA="- \`사전 인가\` | 인터뷰 기록=docs/other/RKBIP0.interview.md | sha256=$(sha "$BASE/docs/other/RKBIP0.interview.md")" lin_anc RKBIP0
+mk_lin RKBIP1 RKBIP0
+lin_broken "조상 인터뷰 행 경로가 관례 경로가 아님" RKBIP1 \
+  "계보 고리 RKBIP1 → RKBIP0: 조상 인터뷰 행의 경로가 docs/pipeline-run/RKBIP0.interview.md 가 아닙니다: docs/other/RKBIP0.interview.md"
+
+lin_anc RKBIF0; mk_lin RKBIF1 RKBIF0
+rm -f "$BASE/docs/pipeline-run/RKBIF0.interview.md"
+lin_broken "조상 인터뷰 기록 파일 없음" RKBIF1 "계보 고리 RKBIF1 → RKBIF0: 조상 인터뷰 기록 파일이 없습니다: docs/pipeline-run/RKBIF0.interview.md"
+lin_anc RKBIS0; mk_lin RKBIS1 RKBIS0
+printf 'x' >> "$BASE/docs/pipeline-run/RKBIS0.interview.md"
+lin_broken "조상 인터뷰 기록 해시 불일치" RKBIS1 "계보 고리 RKBIS1 → RKBIS0: 조상 인터뷰 기록 sha256 이 조상 행과 다릅니다"
+
+lin_anc RKBW0
+LIN_KEEPIV=1 mk_lin RKBW1 RKBW0
+mk_lin RKBW2 RKBW1
+lin_broken "중간 조상에 기록 파일만 있음" RKBW2 "계보 고리 RKBW2 → RKBW1: 조상에 인터뷰 기록 파일은 있는데 인터뷰 행이 없습니다"
+hasnt "14: 끊긴 고리 문구는 더 먼 조상 id 를 싣지 않는다" "$(col "$LV" 판정 3)$(lv_iv)" "RKBW0"
+
+# 1 (seat) and 8 — the same lineage as the seat's source, and a broken one.
+LIN_VIS=1 LIN_SEAT=1 LIN_PRE="$SEAT_ROW" mk_lin RKLS1 RKL0
+out=$(jdg RKLS1)
+hasnt "14: 좌석 — 수정 전 모양 계보에서는 L12 가 뜨지 않는다" "$(fired "$out")" "L12 "
+SL_ASKED=""; seat_link RKLS1 RKLS2
+check "14: 좌석 — render-manifest --auto 는 0 이고 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+[ "$SL_VS" = "통과" ] || { tail -1 "$WORK/sl.rerr"; tail -1 "$WORK/sl.verr"; } >&2
+check "14: 좌석 — 새 런의 인터뷰 기록은 조상 기록과 바이트가 같다" \
+  "$(cmp -s "$BASE/docs/pipeline-run/RKLS2.interview.md" "$BASE/docs/pipeline-run/RKL0.interview.md" && echo 같음)" "같음"
+mf_check "$SL_OUT"; rc=$?
+check "14: 좌석 — 조상 행을 넣은 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+
+lin_anc RKLSB0
+LIN_VIS=1 LIN_SEAT=1 LIN_PRE="$SEAT_ROW" mk_lin RKLSB1 RKLSB0
+printf 'x' >> "$BASE/docs/pipeline-run/RKLSB0.plan.md"
+out=$(jdg RKLSB1)
+check "14: 좌석의 끊긴 고리 — judge 의 L12 줄이 고리 사유를 싣는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "금지선" && $2 == "L12" { print $3 }')" \
+  "verify 가 실패했습니다 (인터뷰 — 계보 고리 RKLSB1 → RKLSB0: 조상 매니페스트 sha256 이 이어받은 런 행과 다릅니다)"
 
 # ---------------------------------------------------------------------------
 # 13. 입양 — 이전 런의 착지하지 않은 세그먼트를 새 런이 이어받는가
@@ -2336,6 +2618,20 @@ tok13 "원격 판독 행이 없으면" PR기록없음 "$N13"
 D13=20261001-a0000007
 P_DOC="$DOC_OPEN" mk13 "$D13"; gh13
 tok13 "설계 문서가 동결되지 않아 설계를 다시 하면" 설계재실행 "$D13"
+# A plan that never had a design step: the open segment is a candidate, not a
+# re-design; a document the graph could not measure as the copy reads it is
+# `문서바뀜` — a document gone after the source run is that case on one call.
+PLANNOD='{ "design_required": false, "entry_skill": "implement", "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": ["I1"] } ] }'
+ND13=20261001-a0000008
+P_PLAN="$PLANNOD" mk13 "$ND13"; gh13
+tok13 "설계 단계가 없는 계획의 열린 PR 세그먼트는" 후보 "$ND13"
+DOC13G='docs/rk-adopt-gone.md'
+cp "$BASE/$DOC13" "$BASE/$DOC13G"
+NG13=20261001-a0000016
+P_PLAN="$PLANNOD" P_DOC="$DOC13G" K13_DOCSHA="$DOC13SHA" mk13 "$NG13"; gh13
+tok13 "설계 단계가 없는 계획에서 지울 문서가 아직 있으면" 후보 "$NG13"
+rm -f "$BASE/$DOC13G"
+tok13 "설계 단계가 없는 계획에서 매니페스트의 설계 문서를 읽을 수 없으면" 문서바뀜 "$NG13"
 
 # A last row of `park`: the seat leaves it, a person is asked with its cause.
 P13=20261001-a0000002
