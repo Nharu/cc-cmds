@@ -394,6 +394,12 @@ expect_eq "the settings open writes in the target clone, the state home, the hal
 expect_eq "the settings run in acceptEdits, carry no Write rule and no rule under the report path, and add only the state home and the halt directory" \
   "acceptEdits|0|0|$rd/state $rd/halt" \
   "$(jq -r --arg r "Edit(/$rd/report.md/**)" '[.permissions.defaultMode, ([.permissions.allow[] | select(startswith("Write("))] | length), ([.permissions.allow[] | select(. == $r)] | length), (.permissions.additionalDirectories | join(" "))] | map(tostring) | join("|")' "$st")"
+pdx="$S/promo-opus/plugins/cc-cmds"
+expect_eq "the settings open the plugin's scripts below its directory, a path naming .. refused, and no :* plugin rule" \
+  "Bash(bash $pdx/*)|Bash($pdx/*)|Bash(bash $pdx/*..*)|Bash($pdx/*..*)|0" \
+  "$(jq -r --arg p "$pdx" '[(.permissions.allow[] | select(. == ("Bash(" + $p + "/*)") or . == ("Bash(bash " + $p + "/*)"))), (.permissions.deny[] | select(. == ("Bash(" + $p + "/*..*)") or . == ("Bash(bash " + $p + "/*..*)"))), ([.permissions.allow[] | select(contains($p) and endswith(":*)"))] | length)] | map(tostring) | join("|")' "$st")"
+expect_eq "the settings refuse a second mktemp template and the other network copy tools" "true|true|true|true|true|true|true" \
+  "$(jq -r '[("Bash(mktemp *X *)", "Bash(mktemp *X\" *)", "Bash(scp:*)", "Bash(rsync:*)", "Bash(nc:*)", "Bash(git clone:*)", "Bash(git ls-remote:*)") as $x | (.permissions.deny | index($x) != null)] | map(tostring) | join("|")' "$st")"
 expect_eq "the settings open mktemp only under the state home and the halt directory" \
   "Bash(mktemp \"$rd/halt/*)|Bash(mktemp \"$rd/state/*)|Bash(mktemp -d \"$rd/halt/*)|Bash(mktemp -d \"$rd/state/*)|Bash(mktemp -d $rd/halt/*)|Bash(mktemp -d $rd/state/*)|Bash(mktemp $rd/halt/*)|Bash(mktemp $rd/state/*)" \
   "$(jq -r '[.permissions.allow[] | select(startswith("Bash(mktemp"))] | sort | join("|")' "$st")"

@@ -119,7 +119,8 @@
 # directory. An installed plugin of the same name is kept from winning over the
 # --plugin-dir copy by the `enabledPlugins` of --settings, not by this
 # directory. The cost: a review session shares the directory's harness state
-# with the lane's other sessions, as a gate stage does.
+# with the lane's other sessions and gets the lane's user settings (their allow
+# rules, hooks and env) merged under --settings, as a gate stage does.
 #
 # Exit codes:
 #   0 — a verdict was written (`판정 불가` included), a dry run finished, or the
@@ -225,12 +226,11 @@ for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 
 # The caller's lane directory, absolute: the login the review sessions run
 # with, the source of `enabledPlugins` and of the personal rules.
+# A relative value is made absolute against the current directory; an absolute
+# one is kept as spelled, symbolic links unresolved, because the CLI keys the
+# lane's login on the directory as it is given.
 LANE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-if [[ -d "$LANE_CFG" ]]; then
-  LANE_CFG=$(cd "$LANE_CFG" > /dev/null && pwd -P)
-elif [[ "$LANE_CFG" != /* ]]; then
-  LANE_CFG="$PWD/$LANE_CFG"
-fi
+[[ "$LANE_CFG" == /* ]] || LANE_CFG="$PWD/$LANE_CFG"
 
 if [[ -z "$exp_id" ]]; then
   [[ "$cmd" == "run" ]] || usage "--exp-id is required"
@@ -718,7 +718,7 @@ write_session_env() {
     printf -- '--output-format\t플래그\tjson\tstream-json\t다름\t비용 기록을 실행기가 진다(result.json 의 total_cost_usd)\n'
     printf -- '--max-budget-usd\t플래그\t%s\t(싣지 않음)\t다름\t세션 예산을 실행기가 진다\n' "$RESERVE_RUN"
     printf -- '-p\t플래그\t리뷰 명령과 지시문\t리뷰 명령과 지시문\t다름\t게이트 밖 세션의 지시문(중단 기록 자리, 게이트·매니페스트 없음)을 더한다\n'
-    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트, 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, mktemp 는 상태·중단 기록 디렉터리 아래)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록이 범위를 정한다; 그 밖의 쓰기와 네트워크 쓰기는 열지 않는다\n'
+    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트, 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, mktemp 는 상태·중단 기록 디렉터리 아래)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
     printf '대상 복제본\t쓰기 경로\truns/<n>-<갈래>/target\t(세그먼트 워크트리)\t다름\t원격 없는 대상 복제본을 리뷰한다\n'
     printf -- '--report-path\t쓰기 경로\truns/<n>-<갈래>/report.md\t(게이트의 정본 보고서 경로)\t다름\t갈래마다 보고서 자리를 실행기가 정한다\n'
     printf 'XDG_STATE_HOME\t쓰기 경로\truns/<n>-<갈래>/state\t(물려받은 상태 루트)\t다름\t증인 스크래치를 갈래 디렉터리 아래에 둔다\n'
@@ -869,7 +869,12 @@ anchor_brief() {
 # rest of the run directory (the command line, the prompt, the inputs) stays
 # closed. `mktemp`, which makes the witness and halt temps, is opened only
 # under those two directories, quoted and unquoted; a rule's `*` matches any
-# text, so a `mktemp` naming `..` is refused outright.
+# text, so a `mktemp` naming `..` is refused outright, and so is a second
+# template after one ending in `X` (BSD `mktemp` takes several). The plugin's
+# scripts are opened by `<plugin dir>/*` (a `:*` suffix would need a space after
+# the directory's slash), a path naming `..` refused. Network tools are refused.
+# These are the runner's own rules; the lane's user settings are merged in as
+# they are for a gate stage, so its allow rules and hooks reach the session too.
 write_settings() {
   local f="$1" t="$2" rd="$3" pd="$4" cfg keys
   cfg="$LANE_CFG"
@@ -884,15 +889,17 @@ write_settings() {
         "Bash(git merge-base:*)", "Bash(git status:*)", "Bash(git remote:*)", "Bash(git ls-files:*)",
         "Bash(git cat-file:*)", "Bash(git for-each-ref:*)", "Bash(git branch:*)", "Bash(git blame:*)",
         "Bash(git grep:*)", "Bash(git ls-tree:*)", "Bash(git rev-list:*)",
-        ("Bash(bash " + $pd + "/:*)"), ("Bash(" + $pd + "/:*)")
+        ("Bash(bash " + $pd + "/*)"), ("Bash(" + $pd + "/*)")
       ] + ([$t, ($rd + "/state"), ($rd + "/halt")] | map("Edit(/" + . + "/**)"))
         + ["Edit(/" + $rd + "/report.md)"]
         + ([($rd + "/state"), ($rd + "/halt")]
             | map(("Bash(mktemp " + . + "/*)"), ("Bash(mktemp \"" + . + "/*)"),
                   ("Bash(mktemp -d " + . + "/*)"), ("Bash(mktemp -d \"" + . + "/*)")))),
       deny: ["WebFetch", "WebSearch", "Bash(curl:*)", "Bash(wget:*)", "Bash(git push:*)",
-             "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(gh:*)", "Bash(sudo:*)", "Bash(ssh:*)",
-             "Bash(mktemp *..*)"],
+             "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(git clone:*)", "Bash(git ls-remote:*)",
+             "Bash(gh:*)", "Bash(sudo:*)", "Bash(ssh:*)", "Bash(scp:*)", "Bash(rsync:*)", "Bash(nc:*)",
+             "Bash(mktemp *..*)", "Bash(mktemp *X *)", "Bash(mktemp *X\" *)",
+             ("Bash(bash " + $pd + "/*..*)"), ("Bash(" + $pd + "/*..*)")],
       additionalDirectories: [($rd + "/state"), ($rd + "/halt")]
     },
     enabledPlugins: $pl
