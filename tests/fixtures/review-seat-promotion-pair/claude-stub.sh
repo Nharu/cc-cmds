@@ -14,7 +14,9 @@
 #   halt         a halt record in the run's halt/ and no report
 #   nocost       a valid report, a JSON without total_cost_usd
 #   twoseats     a valid report whose code-quality seat is promoted too
-# The JSON's total_cost_usd is $STUB_COST (default 1.25).
+#   denied       a valid report, a JSON whose permission_denials holds one call
+# The JSON's total_cost_usd is $STUB_COST (default 1.25); its
+# permission_denials is empty except under `denied`, and absent under `nocost`.
 set -euo pipefail
 
 d="${STUB_DIR:?}"
@@ -92,6 +94,8 @@ fi
 
 if [ "$action" = "nocost" ]; then
   printf '{"type":"result","subtype":"success","is_error":false}\n'
+elif [ "$action" = "denied" ]; then
+  printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s,"permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"mktemp x"}}]}\n' "${STUB_COST:-1.25}"
 else
-  printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s}\n' "${STUB_COST:-1.25}"
+  printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s,"permission_denials":[]}\n' "${STUB_COST:-1.25}"
 fi
