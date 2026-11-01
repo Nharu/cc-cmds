@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.20.0] - 2026-11-01
+
+원격에서 온 선택지 답이 질문 표면에 닿는 이음매의 규칙을 공용 문서 `_common/remote-reply.md` 하나에 정하고, 그 규칙의 고정 예제와 스키마 린트를 둔다. 중계와 게이트가 아직 이 규칙을 쓰지는 않으며, 뒤따를 구현이 같은 바이트를 보도록 계약을 먼저 고정한다.
+
+### Added
+
+- **원격 답 규칙 문서** — 봉투·수령 표지·적용 기록의 키 표, 표면(일반 질문, 질문지, 승인)별 주소 규칙, 우편함에서 봉투 하나가 지나는 수명 주기, 라우터 좌석을 깨우는 리터럴, 게이트가 트랜스크립트 짝이나 질문지 제출 바이트에서 다시 셈하는 `answers_sha256` 식을 적는다.
+- **고정 예제** — `tests/fixtures/remote-reply/` 에 네 가지 봉투, 수령 표지 두 꼴, 질문지 제출 바이트와 트랜스크립트 짝 둘(일반 질문, 승인 질문)에 대응하는 적용 기록, 깨우기 리터럴을 둔다.
+- **스키마 린트** — `scripts/lint-remote-reply-schema.sh` 가 예제마다 키 집합·문법·시각 순서·선택지 바이트 일치와 해시를 검사하고, 자기 키 목록과 주소 규칙을 규칙 문서의 표와 매번 대조한다. `make lint` 가 부르고, `scripts/test-lint-remote-reply-schema.sh` 가 깨뜨린 사본마다 맞는 사유로 실패하는지 시험한다.
+
 ## [3.19.1] - 2026-11-01
 
 기본 브랜치 대조가 실패를 덜 보거나, 고쳐지지 않은 머리를 통과시키거나, 같은 사건으로 사람에게 거듭 묻는 자리를 막는다.
