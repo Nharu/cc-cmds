@@ -17,6 +17,17 @@
 
 set -uo pipefail
 
+# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. This suite runs the gate's
+# grant check and the driver, both of which can fire a banner.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off too: the driver's run-open branch would start it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+# And the inherited pipeline names are cleared by prefix, so a run inside a
+# stage never reads the stage's own ledger and manifest.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
