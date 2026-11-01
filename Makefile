@@ -41,6 +41,7 @@ lint:
 	bash scripts/lint-team-model-tier-pins.sh
 	bash scripts/lint-unattended-surfaces.sh
 	bash scripts/lint-attention-schema.sh
+	bash scripts/lint-remote-reply-schema.sh
 	bash scripts/lint-lead-read-set.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-autoadopt-vocabulary.sh
@@ -456,6 +457,7 @@ LINT_TESTS := \
 	scripts/test-lint-sidecar-field-table.sh \
 	scripts/test-lint-approval-answer-provenance.sh \
 	scripts/test-lint-reap-retention.sh \
+	scripts/test-lint-remote-reply-schema.sh \
 	scripts/test-lint-recovery-interlock-pins.sh \
 	scripts/test-lint-ci-scope-binding.sh \
 	scripts/test-lint-macos-keepset-paths.sh \
@@ -463,6 +465,7 @@ LINT_TESTS := \
 	tests/fixtures/lint-gate-banner-fields/run.sh \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
+	scripts/test-measure-lead-context.sh \
 	scripts/test-measure-test-share.sh \
 	scripts/test-measure-discussion-passes.sh \
 	scripts/test-solo-audit-experiment.sh \

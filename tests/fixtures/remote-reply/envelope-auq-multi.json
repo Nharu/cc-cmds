@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "reply_id": "host-a1.1793500001000.1b2c3d4e",
+  "event_id": "host-a1.1793499991000.22334455",
+  "host": "host-a1",
+  "kind": "option",
+  "target": {
+    "surface": "auq",
+    "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001",
+    "tool_use_id": "toolu_01AuqMulti000000000000001",
+    "questions": [
+      {
+        "question": "이번 판에 무엇을 함께 돌릴까요?",
+        "header": "검사",
+        "multi_select": true,
+        "options": [{"label": "린트"}, {"label": "시험"}, {"label": "문서"}]
+      },
+      {
+        "question": "결과를 어디에 남길까요?",
+        "header": "기록",
+        "multi_select": false,
+        "options": [{"label": "PR 본문"}, {"label": "남기지 않음"}]
+      }
+    ]
+  },
+  "answers": [
+    {"question_index": 0, "labels": ["시험", "린트"]},
+    {"question_index": 1, "labels": ["PR 본문"]}
+  ],
+  "provenance": {
+    "transport": "app",
+    "sender": "app:dk-7f3a91",
+    "received_at_ms": 1793500001000,
+    "transport_ref": "push 7f3a91/0002"
+  },
+  "expires_at_ms": 1793500601000
+}
