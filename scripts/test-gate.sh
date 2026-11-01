@@ -18240,7 +18240,7 @@ check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
 # row cannot pass at all, which is the reason the control row is here.
 # ---------------------------------------------------------------------------
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 # The late state's run directory under a name of its own. `RD_L` is `pre_base`'s
 # and names the base state's run directory; reassigning it here would hand every
