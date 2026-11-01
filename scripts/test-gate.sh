@@ -25131,18 +25131,22 @@ DRAINSID="16161616-3434-5656-7878-909090909090"
 # suspension it then causes costs nothing.
 b1_drain_acts() {
   # b1_drain_acts <라벨> [<남겨 둘 승인 id 접두>]
-  local label="$1" keep="${2-}" aid aq
+  # One assertion per call, whatever the count: how many approvals are open
+  # here depends on what ran before in the same state, and each id that does
+  # not close is named in the value. The loop body runs only when something is
+  # open, so its lines are marked.
+  local label="$1" keep="${2-}" aid aq failed=""
   for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null \
                | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
-    if [ -n "$keep" ]; then
-      case "$aid" in "$keep"*) continue ;; esac
+    if [ -n "$keep" ]; then # gate-isolation: 변동
+      case "$aid" in "$keep"*) continue ;; esac # gate-isolation: 변동
     fi
-    aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
-    auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
-    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-          CLAUDE_CODE_SESSION_ID="$DRAINSID" gate_inproc close --manifest "$NM" --approval "$aid" 2>&1); rc=$?
-    check "$label $aid 를 닫는다" "$rc" "0"
+    aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면') # gate-isolation: 변동
+    auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null # gate-isolation: 변동
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$DRAINSID" gate_inproc close --manifest "$NM" --approval "$aid" 2>&1); rc=$? # gate-isolation: 변동
+    [ "$rc" = "0" ] || failed="$failed $aid(rc=$rc)" # gate-isolation: 변동
   done
+  check "${label}을 모두 닫는다" "${failed# }" ""
 }
 b1_drain_acts "경계 전제를 세우려 열린 행위 승인"
 b1_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
