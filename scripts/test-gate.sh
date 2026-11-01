@@ -51530,6 +51530,14 @@ v83_rc() { local r=0; v83 "$@" >/dev/null 2>&1 || r=$?; printf '%s' "$r"; }
 check "83v: 이 파견의 접두에 이름이 맞는다" "$(v83_rc "$D83V/run" gate_device_name_fits cc-V83-S1-a)" "0"
 check "83v: 접두 뒤에 - 가 있으면 맞지 않는다" "$(v83_rc "$D83V/run" gate_device_name_fits cc-V83-S1-a-b)" "1"
 check "83v: 다른 파견의 접두는 맞지 않는다" "$(v83_rc "$D83V/run" gate_device_name_fits cc-V83-S2-a)" "1"
+check "83v: 접두 뒤에 개행이 있으면 맞지 않는다" "$(v83_rc "$D83V/run" gate_device_name_fits "$(printf 'cc-V83-S1-a\nPixel')")" "1"
+check "83v: 접두 뒤에 탭이 있으면 맞지 않는다" "$(v83_rc "$D83V/run" gate_device_name_fits "$(printf 'cc-V83-S1-a\tx')")" "1"
+check "83v: 접두 뒤에 공백이 있으면 맞지 않는다" "$(v83_rc "$D83V/run" gate_device_name_fits 'cc-V83-S1-a b')" "1"
+check "83v: 개행 든 -avd 이름의 emulator 는 이름 검사를 통과하지 못한다" \
+  "$(v83_rc "$D83V/run" gate_device_name_ok emulator -avd "$(printf 'cc-V83-S1-a\nPixel')" -port 5554)" "1"
+v83 "$D83V/run" gate_device_record /dev/null emulator -avd "$(printf 'cc-V83-S1-a\nS9\temulator-5556\tPixel')" -port 5554 >/dev/null 2>&1 || true
+check "83v: 개행·탭 든 이름은 기기 목록에 행을 쓰지 않는다" \
+  "$(cat "$D83V/run/devices/created.tsv" 2>/dev/null | grep -c . || true)" "0"
 check "83v: simctl create 는 만들기다" "$(v83 "$D83V/run" gate_device_act_kind xcrun simctl create cc-V83-S1-a iPhone)" "create"
 check "83v: adb -s 쓰기는 겨누기다" "$(v83 "$D83V/run" gate_device_act_kind adb -s emulator-5554 install a.apk)" "target"
 check "83v: UDID 로 부르는 boot 는 이름 검사를 통과하지 못한다" \

@@ -3477,12 +3477,16 @@ gate_device_prefix() {
 
 gate_device_name_fits() {
   # gate_device_name_fits <name> — 0 when the name begins with this dispatch's
-  # prefix and what follows it is not empty and holds no `-`.
+  # prefix and what follows it is not empty and holds only ASCII letters,
+  # digits, `_` and `.`. A `-` would let the name reach into another
+  # dispatch's prefix, and a tab, newline or space would break the one-line,
+  # three-field row the device list records it in.
   local pfx rest
   pfx=$(gate_device_prefix)
   case "$1" in "$pfx"*) ;; *) return 1 ;; esac
   rest="${1#"$pfx"}"
-  case "$rest" in ''|*-*) return 1 ;; esac
+  [ -n "$rest" ] || return 1
+  case "$rest" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.]*) return 1 ;; esac
   return 0
 }
 
@@ -3573,13 +3577,13 @@ gate_device_listed() {
   [ -n "${RUN_DIR:-}" ] && [ -f "$f" ] || return 1
   case "$t" in
     emulator-[0-9]*)
-      nm=$(awk -F '\t' -v t="$t" '$2 == t { n = $3 } END { printf "%s", n }' "$f")
+      nm=$(awk -F '\t' -v t="$t" 'NF == 3 && $2 == t { n = $3 } END { printf "%s", n }' "$f")
       [ -n "$nm" ] || return 1
       live=$(adb -s "$t" emu avd name 2>/dev/null | sed -n '1p' | tr -d '\r')
       [ "$live" = "$nm" ]
       return ;;
   esac
-  awk -F '\t' -v t="$t" '$2 == t || $3 == t { found = 1 } END { exit found ? 0 : 1 }' "$f"
+  awk -F '\t' -v t="$t" 'NF == 3 && ($2 == t || $3 == t) { found = 1 } END { exit found ? 0 : 1 }' "$f"
 }
 
 gate_device_targets() {
@@ -3715,6 +3719,10 @@ gate_device_record() {
     *) return 0 ;;
   esac
   [ -n "$nm" ] || return 0
+  # A row is one line of three tab-separated fields, so a name or an id
+  # carrying a tab, CR or newline is not written: it would add a row of its own.
+  case "$nm$id" in *"$(printf '\t')"*|*"$(printf '\r')"*|*"
+"*) return 0 ;; esac
   mkdir -p "$RUN_DIR/devices" 2>/dev/null || return 0
   printf '%s\t%s\t%s\n' "$(gate_pair_dispatch_id)" "$id" "$nm" >> "$RUN_DIR/devices/created.tsv" || return 0
   GATE_DEVICE_RECORDED_ID=$id

@@ -413,7 +413,8 @@ is not on PATH). An act that makes or boots a device (`simctl create`, `clone`,
 `test-without-building` with a simulator destination) pairs with the first
 new-form row of its shape carrying this value, whether a row named it verbatim
 or the judgment opened it; with no such row it parks as `기기전역/no-cleanup`, and
-with a name outside the prefix (or an emulator without `-port`, or a `simctl
+with a name outside the prefix — what follows it must be ASCII letters, digits,
+`_` and `.` only (or an emulator without `-port`, or a `simctl
 boot` by UDID) as `기기전역/device-name`. A device act ending 0 that made a
 device appends `<dispatch id>\t<UDID|emulator-<port>|->\t<name>` to
 `${RUN_DIR}/devices/created.tsv`; `emulator -avd <name> -port <p>`, which
