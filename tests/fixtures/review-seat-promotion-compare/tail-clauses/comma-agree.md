@@ -9,7 +9,7 @@
     - logic-shell | 부류=logic | 모델=opus | 출처=승격 | 지표=authz | 재기동=-
     - conformance | 부류=conformance | 모델=opus | 출처=승격 | 지표=basis-finding | 재기동=-
     - code-quality | 부류=quality | 모델=sonnet | 출처=표 | 지표=- | 재기동=-
-- **발견 요약**: 🔴 P0 0건 | 🟠 P1 4건 | 🟡 P2 0건 | 🟢 P3 0건
+- **발견 요약**: 🔴 P0 0건 | 🟠 P1 5건 | 🟡 P2 0건 | 🟢 P3 0건
 
 ## 🔴 P0 — 즉시 수정
 
@@ -21,3 +21,4 @@
 - **[차단]** **[logic]** `c.sh:2` 심각도를 달리 본 절과 동의 절 — code-quality (logic P2, conformance 동의)
 - **[차단]** **[logic]** `c.sh:3` 가운뎃점으로 나열한 동의 절 — code-quality (logic-shell·conformance 동의)
 - **[차단]** **[logic]** `c.sh:4` 접미사가 붙은 이름의 쉼표 나열 — logic-shell (code-quality-reviewer, conformance 동의)
+- **[차단]** **[logic]** `c.sh:5` 철자가 틀린 앞 이름의 쉼표 나열 — code-quality (logc-shell, conformance 동의)

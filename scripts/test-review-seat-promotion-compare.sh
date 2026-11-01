@@ -141,8 +141,8 @@ else
 fi
 bash "$compare" scan "$fixtures/tail-clauses/comma-agree.md" > "$tmp/scan-comma.tsv"
 got=$(awk -F'\t' '$1 == "I" { printf "%s%s", (n++ ? " " : ""), $3 }' "$tmp/scan-comma.tsv")
-if [[ "$got" == "미상 승격동의 승격동의 미상" ]]; then
-  pass "scan: a comma-listed agreement clause leaves the item 미상, a severity clause is dropped, a ·-listed agreement is read"
+if [[ "$got" == "미상 승격동의 승격동의 미상 미상" ]]; then
+  pass "scan: a comma-listed agreement clause leaves the item 미상 (a misspelt front name too), a severity clause is dropped, a ·-listed agreement is read"
 else
   fail "scan: the parenthesised clauses were read as [$got]"
 fi

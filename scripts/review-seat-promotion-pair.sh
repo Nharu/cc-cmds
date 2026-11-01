@@ -855,7 +855,8 @@ anchor_brief() {
 # `additionalDirectories` — the state home and the halt directory only, so the
 # rest of the run directory (the command line, the prompt, the inputs) stays
 # closed. `mktemp`, which makes the witness and halt temps, is opened only
-# under those two directories, quoted and unquoted.
+# under those two directories, quoted and unquoted; a rule's `*` matches any
+# text, so a `mktemp` naming `..` is refused outright.
 write_settings() {
   local f="$1" t="$2" rd="$3" pd="$4" cfg keys
   cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -877,7 +878,8 @@ write_settings() {
             | map(("Bash(mktemp " + . + "/*)"), ("Bash(mktemp \"" + . + "/*)"),
                   ("Bash(mktemp -d " + . + "/*)"), ("Bash(mktemp -d \"" + . + "/*)")))),
       deny: ["WebFetch", "WebSearch", "Bash(curl:*)", "Bash(wget:*)", "Bash(git push:*)",
-             "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(gh:*)", "Bash(sudo:*)", "Bash(ssh:*)"],
+             "Bash(git fetch:*)", "Bash(git pull:*)", "Bash(gh:*)", "Bash(sudo:*)", "Bash(ssh:*)",
+             "Bash(mktemp *..*)"],
       additionalDirectories: [($rd + "/state"), ($rd + "/halt")]
     },
     enabledPlugins: $pl

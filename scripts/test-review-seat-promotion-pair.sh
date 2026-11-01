@@ -377,8 +377,8 @@ if cmp -s "$tmp/want.names" "$tmp/got.names"; then pass "the session's environme
 # The settings and the instruction files.
 st="$S/settings/pilot-opus-1.json"
 expect_eq "the settings turn the account's plugins off" "false|false" "$(jq -r '[.enabledPlugins["cc-cmds@cc-cmds"], .enabledPlugins["other@market"]] | map(tostring) | join("|")' "$st")"
-expect_eq "the settings refuse push and network tools" "true|true|true" \
-  "$(jq -r '[(.permissions.deny | index("Bash(git push:*)") != null), (.permissions.deny | index("WebFetch") != null), (.permissions.deny | index("Bash(gh:*)") != null)] | map(tostring) | join("|")' "$st")"
+expect_eq "the settings refuse push and network tools, and a mktemp that climbs out with .." "true|true|true|true" \
+  "$(jq -r '[(.permissions.deny | index("Bash(git push:*)") != null), (.permissions.deny | index("WebFetch") != null), (.permissions.deny | index("Bash(gh:*)") != null), (.permissions.deny | index("Bash(mktemp *..*)") != null)] | map(tostring) | join("|")' "$st")"
 expect_eq "the settings open writes in the target clone, the state home, the halt directory and the report file itself" "true|true|true|true" \
   "$(jq -r --arg t "Edit(/$rd/target/**)" --arg s "Edit(/$rd/state/**)" --arg h "Edit(/$rd/halt/**)" --arg r "Edit(/$rd/report.md)" \
     '.permissions.allow as $a | [$t, $s, $h, $r] | map(. as $x | $a | index($x) != null) | map(tostring) | join("|")' "$st")"
