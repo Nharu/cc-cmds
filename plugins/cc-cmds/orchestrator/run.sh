@@ -7346,32 +7346,38 @@ audit_key_collect_reconverge_lines() {
   # each followed by a space, of the re-convergences a person's answer to a
   # decision-collection record opened on the key: for each record a `결정 수거`
   # row names, the first `세그먼트=- | 스테이지=<id> | 종류=reconverge` row not
-  # still waiting to spawn after the record's first `중단 답` on the key. The
-  # gate admits one such re-convergence per record and reads it by the same
-  # rule (`gate_decision_reconverge_open`). It closes the collected decisions
-  # in the document and audits nothing, so the audit's key does not wait on it.
+  # still waiting to spawn after the record's first `중단 답` on the key, and
+  # every later such row of the same session — the `--resume` attempts that
+  # carry the same re-convergence on. The gate admits one such re-convergence
+  # per record and reads it by the same rule (`gate_decision_reconverge_open`,
+  # `gate_decision_reconverge_entry`). It closes the collected decisions in the
+  # document and audits nothing, so the audit's key does not wait on it.
   local id="$1" lg="$2"
   [ -f "$lg" ] || return 0
   LC_ALL=C awk -v id="$id" '
-    function recof(s,   i, v) {
-      i = index(s, "| 중단 기록=")
+    function fieldof(s, k,   i, v) {
+      i = index(s, "| " k "=")
       if (i == 0) return ""
-      v = substr(s, i + length("| 중단 기록="))
+      v = substr(s, i + length("| " k "="))
       i = index(v, " |")
       if (i > 0) v = substr(v, 1, i - 1)
       sub(/[ \t\r]+$/, "", v)
       return v
     }
-    index($0, "- `결정 수거` ") == 1 { r = recof($0); if (r != "") dc[r] = 1; next }
+    index($0, "- `결정 수거` ") == 1 { r = fieldof($0, "중단 기록"); if (r != "") dc[r] = 1; next }
     index($0, "- `중단 답` ") == 1 && index($0, "| 세그먼트=" id " | 중단 기록=") > 0 {
-      r = recof($0); if (r != "" && !(r in first)) first[r] = NR; next
+      r = fieldof($0, "중단 기록"); if (r != "" && !(r in first)) first[r] = NR; next
     }
     index($0, "- `stage-result` ") == 1 && index($0, "세그먼트=- | 스테이지=" id " | 종류=reconverge ") > 0 \
-      && index($0, "| 관측=스폰 전 대기 중") == 0 { rv[++n] = NR }
+      && index($0, "| 관측=스폰 전 대기 중") == 0 { rv[++n] = NR; sid[n] = fieldof($0, "세션 id") }
     END {
       for (r in first) {
         if (!(r in dc)) continue
-        for (j = 1; j <= n; j++) if (rv[j] > first[r]) { out[rv[j]] = 1; break }
+        for (j = 1; j <= n; j++) if (rv[j] > first[r]) break
+        if (j > n) continue
+        out[rv[j]] = 1
+        if (sid[j] == "" || sid[j] == "미상") continue
+        for (m = j + 1; m <= n; m++) if (sid[m] == sid[j]) out[rv[m]] = 1
       }
       for (l in out) printf "%s ", l
     }' "$lg"
@@ -7395,7 +7401,7 @@ audit_key_reconverge_rows() {
                -e "세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge " "$lg" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
-    | awk -v skip="$skip" '{ l = $0; sub(/:.*/, "", l); if (index(skip, " " l " ") == 0) print }'
+    | LC_ALL=C awk -v skip="$skip" '{ l = substr($0, 1, index($0, ":") - 1); if (index(skip, " " l " ") == 0) print }'
 }
 
 audit_row_request() {
