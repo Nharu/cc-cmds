@@ -5,6 +5,22 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.20.0] - 2026-11-01
+
+대화형 세션에 도구 권한 확인 대화상자가 열리면, 자리를 비운 사람이 원격에서 알아챌 수 있도록 주의 사건(`permission`)을 남긴다. 사건은 알리기만 하고 답을 받지 않으며, 대화상자가 닫히면 처리 표지로 닫힌다.
+
+### Added
+
+- **권한 확인 좌석 훅 `session-permission-notify.sh`** — `PermissionRequest` 에서 도구 이름과 입력 요약을 실은 사건을 대화상자 하나마다 슬롯 `cc-cmds-permission-<세션>@<입력 지문>` 으로 남긴다. 요약은 도구별 핵심 필드를 보이고, 알 수 없는 도구는 입력 전체를 들여쓴 JSON 으로 보인다. 토큰·비밀번호·인증 헤더·개인 키 등은 요약과 본문에서 가린다.
+- **닫기** — 도구가 실행되거나(`PostToolUse`) 실패하거나(`PostToolUseFailure`) 거절되면(`PermissionDenied`) 그 대화상자의 처리 표지를 남긴다. 턴이 끝나거나(`Stop`) 사람이 새 프롬프트를 보내면(`UserPromptSubmit`) 그 세션의 열린 사건을 접두 표지로 한꺼번에 닫는다.
+- **대체 신호** — `PermissionRequest` 가 오지 않은 채 `Notification`(`permission_prompt`) 만 온 경우에는 도구를 알 수 없다는 사건을 `@notification` 슬롯으로 남긴다. 하위 에이전트가 도는 동안과 직전 요청 뒤 10초 안에는 내지 않는다.
+- 좌석 훅의 동작·게이트·가림·닫기를 단언하는 `scripts/test-session-permission-notify.sh` 를 `make test` 의 오케스트레이터 시험 묶음에 더한다.
+
+### Changed
+
+- 주의 사건 계약 문서의 `permission` 슬롯 설명을 대화상자별 슬롯·대체 신호 슬롯·접두 표지로 바꾸고, 고정 예제를 새 슬롯 형식으로 맞춘다.
+- 세션 배너 스위치가 꺼져 있거나 파이프라인 스테이지 안이거나 하위 에이전트의 요청이면 사건을 내지 않는다(기존 세션 알림 훅과 같은 게이트).
+
 ## [3.19.1] - 2026-11-01
 
 기본 브랜치 대조가 실패를 덜 보거나, 고쳐지지 않은 머리를 통과시키거나, 같은 사건으로 사람에게 거듭 묻는 자리를 막는다.
