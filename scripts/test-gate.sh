@@ -44910,7 +44910,7 @@ done <<LSR61EOF
 $lsr61_files
 LSR61EOF
 if [ "$lsr61_res" -ge 1 ]; then
-  ok "61: 스텁 기동이 남긴 stage-result 행이 있다 (아래 두 0 이 공허하지 않다: ${lsr61_res}행)"
+  ok "61: 스텁 기동이 남긴 stage-result 행이 있다 (아래 두 0 이 공허하지 않다: ${lsr61_res}행)" # gate-isolation: 변동
 else
   bad "61 stage-result 행" "픽스처 원장에 stage-result 행이 없다 — 14h 가 돌지 않았다"
 fi
