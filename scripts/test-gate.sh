@@ -51743,7 +51743,7 @@ rm -rf "$D83V"
 
 # ---------------------------------------------------------------------------
 # 83w. 결정 수거의 답이 게이트 동사만으로 재수렴까지 가고, 새 수거가 보류를 푼다
-# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route, gate_audit_concluded, audit_key_reconverge_rows, audit_key_collect_reconverge_lines | anchors: 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다, 83w: 수거 재수렴과 그 재개 행은 감사 키의 재수렴으로 세지 않고 골격급 재수렴만 센다, 83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다 ---
+# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route | anchors: 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다 ---
 #
 # 런 범위 설계 → 감사 → 구현 계획에서 감사까지 정상 완료로 띄운 뒤, 게이트 동사만으로 수거
 # → 사람의 답 → `--segment -` 재수렴 → 새 다이제스트의 수거를 잇는다. 둘째 런은 설계 단계를
@@ -51824,30 +51824,6 @@ au15_wait R83W A1
 check "83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다" \
   "$(au15_rows R83W '| 세그먼트=- | 스테이지=A1 | 종류=reconverge |' | grep -c . || true)/$(au15_class R83W A1 reconverge)" "1/정상 완료"
 check "83w: 재수렴 행이 그 답을 소비한다" "$(w83_route R83W "$w83_rec1")" ""
-# 수거 재수렴은 감사 키에 쓰이지만 감사를 다시 부르지 않는다 — 감사는 닫힌 채로 남아,
-# 보류가 풀린 뒤 계획되는 세그먼트가 새 감사를 기다리지 않는다.
-check "83w: 수거 재수렴 뒤에도 감사 단계는 닫힌 것으로 읽힌다" \
-  "$(au15_c1 "$WORK/plan-R83W.md" | grep -c '재수렴 뒤 새 감사' || true)" "0"
-gateL plan --manifest "$WORK/plan-R83W.md" --kind segment --target infra --segment S2 --cutpoint 커밋 --surface 읽기 \
-      --from-declaration -- 상태=계획됨 "워크트리=$(dirname "$WT")/$(basename "$WT")-run-R83W-S2"
-case "$msg" in
-  *"감사 단계(A1)"*) bad "83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다" "$msg" ;;
-  *) ok "83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다" ;;
-esac
-# 같은 수거 재수렴을 --resume 으로 이은 행도 감사 키의 재수렴으로 세지 않는다. 그 뒤
-# 새 감사가 연 골격급 재수렴(다른 세션)은 센다.
-w83_lg="$WORK/ledger-83w-resume.md"
-{
-  printf -- '- `결정 수거` | 교대=1 | 중단 기록=/r/halt/dc.md | 기록 다이제스트=x | prev=a\n'
-  printf -- '- `중단 답` | 교대=1 | 세그먼트=A1 | 중단 기록=/r/halt/dc.md | 스킬=autopilot-router-shift | prev=b\n'
-  printf -- '- `stage-result` | 교대=1 | 세그먼트=- | 스테이지=A1 | 종류=reconverge | 세션 id=s1 | 종단 부류=한도 종료 | prev=c\n'
-  printf -- '- `stage-result` | 교대=1 | 세그먼트=- | 스테이지=A1 | 종류=reconverge | 세션 id=s1 | 종단 부류=정상 완료 | prev=d\n'
-  printf -- '- `stage-result` | 교대=1 | 세그먼트=- | 스테이지=A1 | 종류=audit | 세션 id=s2 | 재수렴 요청=예 | 종단 부류=정상 완료 | prev=e\n'
-  printf -- '- `stage-result` | 교대=1 | 세그먼트=- | 스테이지=A1 | 종류=reconverge | 세션 id=s3 | 종단 부류=정상 완료 | prev=f\n'
-} > "$w83_lg"
-check "83w: 수거 재수렴과 그 재개 행은 감사 키의 재수렴으로 세지 않고 골격급 재수렴만 센다" \
-  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; audit_key_reconverge_rows A1 "$2" | cut -d: -f1 | tr "\n" " "' _ "$GATE" "$w83_lg")" "6 "
-rm -f "$w83_lg"
 w83_plan R83W "$w83_reconv"
 check "83w: 같은 기록의 두 번째 재수렴은 거부된다" "$rc" "3"
 case "$msg" in

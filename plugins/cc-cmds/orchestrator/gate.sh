@@ -13194,9 +13194,7 @@ gate_audit_concluded() {
   # run), `재수렴` (a re-convergence came after the last audit, so a fresh audit
   # comes next), `골격급` (the last audit asked for a re-convergence) or `부류`
   # (the last audit ended another way) — and GATE_AUDIT_WHY the reason line.
-  # The re-convergence a decision-collection answer opens on the audit's key is
-  # not one of those rows (`audit_key_reconverge_rows`): no fresh audit follows
-  # it. Every place that asks whether the audit has concluded asks here.
+  # Every place that asks whether the audit has concluded asks here.
   local astep="$1" arow al rl cls
   GATE_AUDIT_WAIT=''; GATE_AUDIT_WHY=''
   arow=$(gate_audit_result_rows_of "$astep" | tail -1)
