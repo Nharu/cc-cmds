@@ -73,7 +73,7 @@ Follow `## Halt record (driver dispatch)` of the discuss arm as written: schema 
 
 The discuss arm's other sites are never reached here: the nine park sites other than `ledger-missing` all wait on a team, `roster-missing` reads a roster this arm never instantiates, and `skeleton`, `step5-zero-section` and `step7-coherence-conflict` belong to Step 5U and to the team coherence pass, neither of which runs. Adding a site takes on the discuss arm's closed-set duty.
 
-**`**추천**` and `**추천 근거**`**, after the option lines and before `**하네스 오류**`: at `ladder-unsettled` the discuss arm's ladder writing rules in its Step 7U job 4 decide the line, the `**잔여 판정**` line and the fixed step, classification and option labels with it. At the other three sites the discuss arm's general rules decide.
+**`**추천**` and `**추천 근거**`**, after the option lines and before `**하네스 오류**`: at `ladder-unsettled` the discuss arm's ladder writing rules in its Step 7U job 4 decide the line, the `**잔여 판정**` line and the fixed step, classification and option labels with it. At the other three sites the discuss arm's general rules decide. **A halt with options also carries `**선택지 리스크**`** after `**추천 근거**`, by the discuss arm's rules for it, which follow `_common/pipeline-sidecar.md` §4 (the bullet on `**선택지 리스크**`): at `ladder-unsettled` the fixed sentences of that arm's Step 7U, elsewhere one risk per option from the site's facts.
 
 ### Per-grade disposition
 
