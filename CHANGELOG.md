@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.21.0] - 2026-11-01
+
+일반 세션이 지금 무엇을 하고 있고 마지막에 무엇을 출력했는지를 주의 스풀 옆의 세션별 스냅숏 파일로 남긴다. 맥 바깥의 읽기 전용 세션 보기가 읽을 자료이며, 배너와 세션 동작은 바꾸지 않는다.
+
+### Added
+
+- **세션 상태 스냅숏 훅** — `hooks/session-status-snapshot.sh` 가 `status/<safe_sid>.json` 에 호스트 식별자, 세션 id, 설정 디렉터리, 작업 디렉터리, 레포, 상태(`working`·`waiting-question`·`waiting-permission`·`idle`), 마지막 활동 시각, 4096 바이트 이하로 줄 경계에서 자른 최근 출력 발췌를 덮어쓴다. 차례 끝, 일반 질문과 질문지가 열릴 때, 권한 대화상자가 열릴 때, 프롬프트 제출과 질문 답 반환 때 쓰고, 세션이 끝나면 지운다.
+- **등록** — `hooks.json` 의 `PreToolUse`·`PostToolUse`(AskUserQuestion), `PostToolBatch`, `Stop`, `UserPromptSubmit`, `PermissionRequest`, `SessionEnd` 에 기존 항목을 고치지 않고 한 항목씩 더한다. 다른 에이전트가 띄운 에이전트, 파이프라인 단계, 교대, 재진입, 스풀 루트가 없는 호스트에서는 아무것도 쓰지 않으며, 세션 배너 스위치와는 무관하게 쓴다.
+- **시험** — `scripts/test-session-status-snapshot.sh` 가 레코드 필드, 발췌 자르기, 질문지 차례의 한 번 쓰는 표지, 쓰지 않는 경우, 파일 모드, 등록을 시험한다.
+
 ## [3.20.0] - 2026-11-01
 
 원격에서 온 선택지 답이 질문 표면에 닿는 이음매의 규칙을 공용 문서 `_common/remote-reply.md` 하나에 정하고, 그 규칙의 고정 예제와 스키마 린트를 둔다. 중계와 게이트가 아직 이 규칙을 쓰지는 않으며, 뒤따를 구현이 같은 바이트를 보도록 계약을 먼저 고정한다.
