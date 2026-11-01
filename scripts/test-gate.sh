@@ -29128,7 +29128,7 @@ $( { grep -F '`리뷰 의무`' "$sa_l" || true; } | { grep -F '상태=이행' ||
 EOF
 done
 if [ "$sa_n19" -gt 0 ]; then
-  ok "19(i): 닫힌 이행 행이 ${sa_n19}건 관측됐다"
+  ok "19(i): 닫힌 이행 행이 ${sa_n19}건 관측됐다" # gate-isolation: 변동
 else
   bad "19(i)" "닫힌 이행 행이 하나도 없어 이 단언이 공허하다"
 fi
