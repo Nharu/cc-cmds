@@ -5532,15 +5532,26 @@ pre_sb() {
   }
 }
 
-# `mf` — the merge-first sections (88h and its pieces): a `선머지후리뷰` segment
-# `H` on a routed run, driven through `act` on an `sa` fixture. The fixture's
-# repository rewrites the target's remote slug URL to its bare remote, so the
-# `git ls-remote` base-check asks stays on this machine. Each piece builds its
-# own fixture with `mf_new`, so none of them leans on another's state.
+# `mf` — the merge-first sections (88f and its pieces, and 88h-2): a
+# `선머지후리뷰` segment `H` on a routed run, driven through `act` on an `sa`
+# fixture. The fixture's repository rewrites the target's remote slug URL to its
+# bare remote, so the `git ls-remote` base-check asks stays on this machine.
+# Each piece builds its own fixture with `mf_new`, so none of them leans on
+# another's state.
+#
+# IT ALSO CALLS EVERY OTHER PRELUDE THOSE SECTIONS CALL IN THEIR BODIES
+# (`ledger_series` for 88f's `lsr_*` helpers, `sb` for 88f-4's `sb_apply`). A
+# prelude whose first call falls inside a section body runs its whole body in a
+# cut that carries that section alone and only its guard line in a row where an
+# earlier section ran it first, so the section's traced line set differs by
+# context. Run here, as the group prelude the selector inserts before the first
+# section, every in-body call is the guard line in every context.
 pre_mf() {
   [ -n "${PRE_MF_DONE:-}" ] && return 0
   PRE_MF_DONE=1
   pre_sa
+  pre_sb
+  pre_ledger_series
 
   mf_new() {
     # mf_new <라벨> — 커밋 하나를 앞선 선머지후리뷰 세그먼트 H, 같은 다이제스트의 구현
@@ -46712,13 +46723,16 @@ check "95: TC1 카드 디렉터리는 700, 카드는 600 이다" \
   "$(find "${lsr93_a%/*}/halt-answer" -prune -perm 700 | wc -l | tr -d ' ')/$(find "$lsr93_card" -perm 600 | wc -l | tr -d ' ')" "1/1"
 
 # TC2 — `halt/` 의 세 판독기는 카드를 보지 않는다. 같은 바이트를 `halt/` 에 둔
-# 대조에서는 셋 다 본다(공허 방지).
+# 대조에서는 셋 다 본다(공허 방지). 감시자 판독기는 사본이 아니라 저장소의
+# liveness.sh 에서 싣는다 — 사본은 같은 바이트지만 임시 경로 아래에 있어, 이 셸에서
+# 소싱하면 추적된 줄의 파일 이름이 실행마다 달라져 격리 검사가 맥락마다 다른 줄
+# 집합으로 읽는다.
 lsr93_rk=$(sed -n '/^rk_unanswered_halt_names() {/,/^}/p' "$lsr75/cc-cmds/orchestrator/rekick.sh")
 lsr93_halts() {  # lsr93_halts <원장> — 「halt/ 목록|재킥오프 미답 수|감시자 미답 수」
   local rd="${1%/*}"
   printf '%s|%s|%s' "$(ls "$rd/halt" | paste -sd, -)" \
     "$(eval "$lsr93_rk"; rk_unanswered_halt_names "$rd" "$1"; printf '%s' "$RK_HALT_N")" \
-    "$( . "$lsr75/cc-cmds/orchestrator/liveness.sh"; cc_unanswered_halts "$rd" "$1")"
+    "$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_unanswered_halts "$rd" "$1")"
 }
 check "95: TC2 카드를 쓴 뒤에도 halt/ 와 두 미답 수가 그대로다" "$(lsr93_halts "$lsr93_a")" "A1#1.md|0|0"
 cp "$lsr93_card" "${lsr93_a%/*}/halt/A1#2.md"
@@ -54929,7 +54943,7 @@ check "88h: 대표가 쥔 띄울 수 없음 사건도 진행 중 판독 동안�
 
 # ---------------------------------------------------------------------------
 # 88h-2. master 재합류 입장 — 대조 행위의 등급, 이동 판정에서만 받는 재합류 파견, 병합 뒤 해소 리뷰
-# --- section: 88h-2 | group: sa | covers: act, plan, snapshot, gate_check_ci_match, gate_perform_ci_match, gate_ci_master_next, gate_base_check_row, gate_record_row | anchors: 88h: 대조 행위는 읽기 로 승인되고 부분집합 행을 쓰며 다음은 master 대기 다, 88h: 초록 판독 뒤 다음은 master 재합류 다, 88h: 이동 판정 뒤 재합류 파견은 받아지고 다른 베이스는 rc 3 이다, 88h: 일치 판정 뒤 재합류 파견은 rc 3 이다, 88h: 충돌 판정 뒤 재합류 파견은 rc 3 이고 다음은 베이스 해소 다, 88h: 받아진 재합류 파견은 충돌 수를 늘리지 않는다, 88h: 재합류 병합 뒤 다음은 해소 리뷰 이고 그 해소 cycle 행이 받아진다, 88h: 머지 전 선머지 세그먼트의 대조 행위는 implement_next 의 CI 대조 로 받아지고 다음은 master 대기 다, 88h: 머지 전 선머지 세그먼트의 재합류 파견은 implement_next 의 master 재합류 로 받아진다 ---
+# --- section: 88h-2 | group: mf | covers: act, plan, snapshot, gate_check_ci_match, gate_perform_ci_match, gate_ci_master_next, gate_base_check_row, gate_record_row | anchors: 88h: 대조 행위는 읽기 로 승인되고 부분집합 행을 쓰며 다음은 master 대기 다, 88h: 초록 판독 뒤 다음은 master 재합류 다, 88h: 이동 판정 뒤 재합류 파견은 받아지고 다른 베이스는 rc 3 이다, 88h: 일치 판정 뒤 재합류 파견은 rc 3 이다, 88h: 충돌 판정 뒤 재합류 파견은 rc 3 이고 다음은 베이스 해소 다, 88h: 받아진 재합류 파견은 충돌 수를 늘리지 않는다, 88h: 재합류 병합 뒤 다음은 해소 리뷰 이고 그 해소 cycle 행이 받아진다, 88h: 머지 전 선머지 세그먼트의 대조 행위는 implement_next 의 CI 대조 로 받아지고 다음은 master 대기 다, 88h: 머지 전 선머지 세그먼트의 재합류 파견은 implement_next 의 master 재합류 로 받아진다 ---
 #
 # 리뷰가 깨끗한 세그먼트 CK 의 회차 1 정착 실패(회차의 요청이 기본 브랜치 실패를 보았다)
 # 위에 이 픽스처 슬러그의 판독 파일을 둔다. 판독 루트는 스위트의 XDG_STATE_HOME 아래라
@@ -56015,7 +56029,7 @@ cb60_foot
 
 # ---------------------------------------------------------------------------
 # 88f. 머지 먼저 — 선머지후리뷰 세그먼트는 구현 뒤 리뷰 전에 머지로 간다
-# --- section: 88f | group: sa | covers: gate_implement_next_of, gate_implement_next_raw, gate_merge_first_next, gate_ci_next, gate_base_review_head, gate_base_check_row, gate_check_merge_checks, act | anchors: 88f: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다, 88f: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다, 88f: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다, 88f: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다, 88f: 절단점이 머지 아래면 다음은 리뷰 다, 88f: 선리뷰후머지 세그먼트의 다음은 리뷰 다, 88f: 바인딩 없는 머지는 rc 2 다 ---
+# --- section: 88f | group: mf | covers: gate_implement_next_of, gate_implement_next_raw, gate_merge_first_next, gate_ci_next, gate_base_review_head, gate_base_check_row, gate_check_merge_checks, act | anchors: 88f: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다, 88f: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다, 88f: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다, 88f: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다, 88f: 절단점이 머지 아래면 다음은 리뷰 다, 88f: 선리뷰후머지 세그먼트의 다음은 리뷰 다, 88f: 바인딩 없는 머지는 rc 2 다 ---
 #
 # 커밋 하나가 앞선 선머지후리뷰 세그먼트에 같은 다이제스트의 구현 정상 완료 두 행을
 # 두면 단계 B 다. checks 행 없음 → 실패 → 통과 순서로 원장에 행을 더하며 다음 과 머지
@@ -56066,7 +56080,7 @@ check "88f: 선리뷰후머지 세그먼트의 다음은 리뷰 다" \
 
 # ---------------------------------------------------------------------------
 # 88f-2. 머지 먼저 — 사후리뷰 행이 머지된 세그먼트를 다시 열고 사후 리뷰를 낸다
-# --- section: 88f-2 | group: sa | covers: gate_segment_post_merge, gate_post_merge_next, gate_segment_review_next, gate_snapshot_review_next_json, gate_implement_next_raw, gate_review_line, gate_base_review_head, gate_issue_review_obligation, gate_segment_post_merge_base, gate_segment_commits_past_merged, gate_segment_merged_after_last_cycle, act, plan | anchors: 88f-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다, 88f-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다, 88f-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다, 88f-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다, 88f-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다, 88f-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다, 88f-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다, 88f-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다, 88f-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다, 88f-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다, 88f-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다, 88f-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다 ---
+# --- section: 88f-2 | group: mf | covers: gate_segment_post_merge, gate_post_merge_next, gate_segment_review_next, gate_snapshot_review_next_json, gate_implement_next_raw, gate_review_line, gate_base_review_head, gate_issue_review_obligation, gate_segment_post_merge_base, gate_segment_commits_past_merged, gate_segment_merged_after_last_cycle, act, plan | anchors: 88f-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다, 88f-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다, 88f-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다, 88f-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다, 88f-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다, 88f-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다, 88f-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다, 88f-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다, 88f-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다, 88f-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다, 88f-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다, 88f-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다 ---
 #
 # 88f 와 같은 픽스처로 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤, 사후리뷰 행과
 # 그 사후 리뷰를 차례로 둔다. 다른 정책의 세그먼트와 머지가 없는 세그먼트에는 같은
@@ -56126,7 +56140,7 @@ check "88f-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc
 
 # ---------------------------------------------------------------------------
 # 88f-3. 머지 먼저 — 통과한 사후 리뷰 전에는 종료 조건 12 가 세그먼트를 닫지 않는다
-# --- section: 88f-3 | group: sa | covers: gate_done_conditions, gate_obligation_covers, gate_segment_review_next_table, gate_segment_owes_apply, gate_segment_applied_since_merge, gate_segment_post_merge, act | anchors: 88f-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다, 88f-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다, 88f-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다, 88f-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다, 88f-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다, 88f-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다, 88f-3: 적용 완료 뒤 사후리뷰 원소가 나온다, 88f-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다 ---
+# --- section: 88f-3 | group: mf | covers: gate_done_conditions, gate_obligation_covers, gate_segment_review_next_table, gate_segment_owes_apply, gate_segment_applied_since_merge, gate_segment_post_merge, act | anchors: 88f-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다, 88f-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다, 88f-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다, 88f-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다, 88f-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다, 88f-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다, 88f-3: 적용 완료 뒤 사후리뷰 원소가 나온다, 88f-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다 ---
 #
 # 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤 사후 리뷰의 cycle 행을 둔다. 적용이
 # 없는 대상에서 P1 이 남은 리뷰는 상태 행이 머지됨·완료 여도 조건 12 의 줄을 내고,
@@ -56177,7 +56191,7 @@ check "88f-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 
 
 # ---------------------------------------------------------------------------
 # 88f-4. 머지 먼저 — 사후 리뷰의 수정 뒤 두 번째 머지가 새 의무와 재적용을 받는다
-# --- section: 88f-4 | group: sa | covers: gate_apply_preconditions, gate_segment_apply_state, gate_segment_owes_apply, gate_segment_post_merge, gate_implement_next_raw, gate_base_review_head, gate_apply_subject_proof, act, apply | anchors: 88f-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다, 88f-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다, 88f-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다, 88f-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다, 88f-4: 두 번째 머지됨 도 적용=대기 를 받는다, 88f-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다, 88f-4: 두 번째 적용이 통과한다, 88f-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다 ---
+# --- section: 88f-4 | group: mf | covers: gate_apply_preconditions, gate_segment_apply_state, gate_segment_owes_apply, gate_segment_post_merge, gate_implement_next_raw, gate_base_review_head, gate_apply_subject_proof, act, apply | anchors: 88f-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다, 88f-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다, 88f-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다, 88f-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다, 88f-4: 두 번째 머지됨 도 적용=대기 를 받는다, 88f-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다, 88f-4: 두 번째 적용이 통과한다, 88f-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다 ---
 #
 # 적용이 있는 대상에서 머지 먼저 한 바퀴를 두 번 돈다: 첫 머지 → 머지됨 → 적용 →
 # 사후 리뷰(P1 1건) → 의무 이행 → 재구현 → 두 번째 머지 → 머지됨 → 적용. 적용 전제는
