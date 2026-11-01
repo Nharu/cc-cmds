@@ -3024,7 +3024,9 @@ pre_static() {
 # Leaving a deliberately broken surface behind is the section's own debt to
 # settle, not a fact the reader of a later section should have to know.
 pre_base() {
-  [ -n "${PRE_BASE_DONE:-}" ] && return 0
+  # Whether the guard returns here depends on which preludes the cut already
+  # entered, not on the section that calls it.
+  [ -n "${PRE_BASE_DONE:-}" ] && return 0 # gate-isolation: 변동
   PRE_BASE_DONE=1
   SETTINGS_DIR="$XDG_STATE_HOME/cc-cmds/run/R1/settings"
   RD="$XDG_STATE_HOME/cc-cmds/run/R1"
@@ -5847,7 +5849,9 @@ pre_ledger_series() {
 # with a segment row is not the shape under test. Each run id is fresh, so a
 # section cut on its own stands on nothing another section left behind.
 pre_bsplit() {
-  [ -n "${PRE_BSPLIT_DONE:-}" ] && return 0
+  # Whether the guard returns here depends on which preludes the cut already
+  # entered, not on the section that calls it.
+  [ -n "${PRE_BSPLIT_DONE:-}" ] && return 0 # gate-isolation: 변동
   PRE_BSPLIT_DONE=1
   BSX_STATE="$WORK/state-bsplit"
   mkdir -p "$BSX_STATE" "$WORK/bin"
