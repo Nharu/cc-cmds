@@ -34,7 +34,10 @@
 #   2 계기           2번째 이후 사이클마다 하나 — 행의 `계기` 가 있으면 그 토큰, 없으면
 #                    고정 우선순위로 리뷰 P0 · 리뷰 P1 · CI 실패 · 베이스 병합 해소 ·
 #                    중단·재시도 · 미상 — 와 수정 경로, 그리고 둘의 기록·추론 건수와
-#                    `해소 리뷰` 를 `앞 HEAD` 로 나눈 줄.
+#                    `해소 리뷰` 를 `앞 HEAD` 로 나눈 줄. 게이트가 patch-id 동일로
+#                    해소 리뷰를 건너뛴 판정(`베이스 판정` 행의 `판정 근거=패치동일`,
+#                    런·세그먼트·판정 HEAD 의 서로 다른 짝)이 있으면 그 수를
+#                    `<머지된 세그먼트> / <전체>` 로 적은 줄.
 #   2c 라우터 판단   `라우터 판단` 으로 연 사이클마다 파견 행 `근거` 머리의 사유.
 #   3 발견 성격      리포트의 상속 표지와 두 리뷰 HEAD 사이 git diff 덩어리로 가른 버킷,
 #                    읽지 못한 몫(리포트 판독 불가 · 판독 차이)은 버킷이 아닌 칸으로.
@@ -65,7 +68,7 @@
 set -euo pipefail
 
 SELECTOR='<8자리>-<8hex>.md'
-SCHEMA='cc-cycle-causes v2'
+SCHEMA='cc-cycle-causes v3'
 
 mc_diag() { printf 'measure-cycle-causes: %s\n' "$1" >&2; }
 
@@ -217,6 +220,11 @@ mc_parse_ledger() {
           if (t == "라우터 판단" && index(g, p) == 1) { x = substr(g, length(p) + 1); i = index(x, ";"); if (i > 0) x = substr(x, 1, i - 1) }
           rreason[ab(v)] = x
         }
+        next
+      }
+      if (kind == "베이스 판정") {
+        # 리뷰 없이 넘어간 해소는 cycle 행을 만들지 않는다 — 판정이 일어난 행으로 센다.
+        if (fld("판정 근거") == "패치동일") printf "B\t%s\t%s\t%s\t%s\n", label, run, cl(fld("세그먼트")), cl(fld("판정 HEAD"))
         next
       }
       if (kind != "cycle") next
@@ -463,6 +471,7 @@ while [ "$i" -lt "$LD_COUNT" ]; do
     run=$(basename "$f" .md)
     mc_parse_ledger "$label" "$run" "$f" "$root" > "$WORK/one.tsv"
     grep '^S' "$WORK/one.tsv" >> "$ROWS" || true
+    grep '^B' "$WORK/one.tsv" >> "$ROWS" || true
     grep -E '^(S|U)' "$WORK/one.tsv" >> "$SU" || true
     grep '^C' "$WORK/one.tsv" >> "$CF" || true
   done < <(mc_ledger_files "${LD_DIRS[i]}")
@@ -564,6 +573,7 @@ jq -R -s --arg schema "$SCHEMA" --arg selector "$SELECTOR" --arg since "$SINCE" 
   | [ $rows[] | select(.[0] == "S") | {label: .[1], run: .[2], id: .[3], cat: .[4], state: .[5],
         mrows: (.[6] | num), repo: (.[7] | nul), worktree: (.[8] | nul)}
       | . + {cyc: ($CY[.label + "\t" + .run + "\t" + .id] // [])} ] as $SG
+  | [ $rows[] | select(.[0] == "B") | {label: .[1], run: .[2], seg: .[3], head: .[4]} ] as $B
   | {
       schema: $schema,
       population: {selector: $selector, since: ($since | nul), until: ($until | nul)},
@@ -579,6 +589,8 @@ jq -R -s --arg schema "$SCHEMA" --arg selector "$SELECTOR" --arg since "$SINCE" 
         | ($all | map(select((.dup | not) and .n <= 1))) as $first
         | ($all | map(select(.dup | not))) as $nd
         | ($mall | map(select(.dup | not))) as $mnd
+        | ([ $B[] | select(.label == $r.label) ] | unique_by([.run, .seg, .head])) as $bp
+        | [ $mg[] | .run + "\t" + .id ] as $mkeys
         | def trig: reduce .[] as $c (zero($TRIG); .[$c.trigger] += 1);
           def tfp: reduce (.[] | select(.trigger as $t | $FIRSTS | index([$t]) | not)) as $c
                      (reduce $LATER_TRIG[] as $t ({}; .[$t] = zero($FIX)); .[$c.trigger][$c.fix_path // "-"] += 1);
@@ -602,6 +614,9 @@ jq -R -s --arg schema "$SCHEMA" --arg selector "$SELECTOR" --arg since "$SINCE" 
           trigger_by_fix_path: {merged: ($mall | tfp), all: ($all | tfp)},
           sources: {trigger: ($mnd | src(.trigger_source)), fix_path: ($mnd | src(.fix_path_source))},
           resolve_by_prev_head: (reduce ($mnd[] | select(.trigger == "해소 리뷰")) as $c ({}; .[$c.prev_head // "(없음)"] += 1)),
+          resolve_skipped_by_patch_id: {
+            merged: ($bp | map(select((.run + "\t" + .seg) as $k | $mkeys | index([$k]))) | length),
+            all: ($bp | length)},
           router_reasons: ($nd | map(select(.router_reason != null) | {run, segment: .seg, n, reason: .router_reason})),
           findings: {
             buckets: (reduce ($later[].findings[]) as $x (zero($BUCK); .[$x.bucket] += 1)),
@@ -670,6 +685,8 @@ jq -r --argjson TRIG "$TRIG" --argjson FIX "$FIX" --argjson BUCK "$BUCK" '
         | if ($FIRSTS | index([$t])) then $x else "\($x) (\(pct($x; later_sum($m))))" end)),
     ( if ([.repos[].resolve_by_prev_head | length] | add // 0) > 0
       then row("해소 리뷰 × 앞 HEAD"; .resolve_by_prev_head | kv) else empty end ),
+    ( if ([.repos[].resolve_skipped_by_patch_id.all] | add // 0) > 0
+      then row("해소 리뷰 생략(패치 동일)"; .resolve_skipped_by_patch_id | "\(.merged) / \(.all)") else empty end ),
     "",
     "## 2b. 계기 × 수정 경로 (머지된 세그먼트)",
     row("계기 × 수정 경로"; .label),
