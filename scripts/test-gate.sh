@@ -9038,7 +9038,7 @@ fi
 # test run against a ledger with one open would be asserting the suspension
 # while claiming to assert the firing.
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 
 # THE SEED NAMES A BINDING VALUE NOBODY HAS ANSWERED. B1's id is salted with the
