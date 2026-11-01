@@ -44,6 +44,10 @@ export CLAUDE_CONFIG_DIR="$tmp/cfg"
 mkdir -p "$HOME" "$CLAUDE_CONFIG_DIR"
 printf '# account rules\n\n- fixture personal rule\n' > "$CLAUDE_CONFIG_DIR/CLAUDE.md"
 printf '{"enabledPlugins":{"cc-cmds@cc-cmds":true,"other@market":true}}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+# The lane directory's paths and file contents before any runner call; the
+# runner never writes there.
+lane_list() { (cd "$CLAUDE_CONFIG_DIR" && find . | LC_ALL=C sort && find . -type f | LC_ALL=C sort | while IFS= read -r f; do shasum -a 256 "$f"; done); }
+lane_list > "$tmp/lane.before"
 export GIT_AUTHOR_NAME=fx GIT_AUTHOR_EMAIL=fx@localhost GIT_COMMITTER_NAME=fx GIT_COMMITTER_EMAIL=fx@localhost
 export GIT_AUTHOR_DATE=2026-01-02T00:00:00Z GIT_COMMITTER_DATE=2026-01-02T00:00:00Z
 export PROMO_EXP_STATE_ROOT="$tmp/state"
@@ -216,6 +220,9 @@ rc=0; runner "$tmp/d1" run --dry-run --exp-id "$D1" --repo "$R" || rc=$?
 expect_rc "the dry run exits 0" 0 "$rc" "$tmp/d1.err"
 if [[ ! -d "$STUB_DIR/calls" ]]; then pass "the dry run never calls the model CLI"; else fail "the dry run called the model CLI"; fi
 expect_eq "the dry run prints 15 review command lines" 15 "$(grep -c "^cd '" "$tmp/d1" || true)"
+expect_eq "every printed command line passes the caller's lane directory as CLAUDE_CONFIG_DIR" 15 \
+  "$(grep "^cd '" "$tmp/d1" | grep -Fc " CLAUDE_CONFIG_DIR='$tmp/cfg' " || true)"
+expect_eq "no branch directory gets a config directory of its own" "" "$(find "$S/runs" -mindepth 2 -maxdepth 2 -name config 2>/dev/null)"
 
 sel_row() { awk -F'\t' -v n="$1" '$1 == n { print $2 "|" $3 "|" $4 }' "$E/selection.tsv"; }
 expect_eq "quantile 1 picks the smallest P0+P1" "선정|-|1" "$(sel_row "$nA")"
@@ -308,6 +315,8 @@ expect_line "the wait ceiling agrees with the gate" "$E/session-env.tsv" "$(prin
 expect_line "the lead model agrees with the gate's review stage" "$E/session-env.tsv" "$(printf -- '--model\t플래그\topus\topus\t같음\t-')"
 expect_line "the lead effort agrees with the gate's review stage" "$E/session-env.tsv" "$(printf -- '--effort\t플래그\tmedium\tmedium\t같음\t-')"
 expect_line "the autocompact window agrees with the gate's review stage" "$E/session-env.tsv" "$(printf -- '--autocompact\t플래그\t300000\t300000\t같음\t-')"
+expect_line "the config directory row is 같음: the lane directory the gate also gives a stage" "$E/session-env.tsv" \
+  "$(printf 'CLAUDE_CONFIG_DIR\t환경 변수\t(호출자가 해석한 레인의 설정 디렉터리)\t(호출자가 해석한 레인의 설정 디렉터리)\t같음\t-')"
 
 # Determinism: a second experiment selects the same.
 D2=20261101-0000d002
@@ -361,7 +370,7 @@ want_prefix="/cc-cmds:review-unattended work --base-sha ${p_A} --report-path ${r
 if [[ "$prompt" == "$want_prefix"* ]]; then pass "the prompt passes the local branch with --base-sha and the restored inputs"; else fail "the prompt is [$prompt]"; fi
 if [[ "$prompt" == *"${rd}/halt/review.md"* ]]; then pass "the directive names the branch's halt record path"; else fail "the directive does not name ${rd}/halt/review.md"; fi
 for kvp in "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=14400000" "CC_CMDS_STATUSLINE_AUTOINSTALL=0" "XDG_STATE_HOME=$rd/state" \
-           "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1" "CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1" "CLAUDE_CONFIG_DIR=$rd/config"; do
+           "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1" "CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1" "CLAUDE_CONFIG_DIR=$tmp/cfg"; do
   expect_line "the session gets ${kvp%%=*}" "$STUB_DIR/calls/1.env" "value $kvp"
 done
 expect_line "the session runs in the target clone" "$STUB_DIR/calls/1.env" "cwd $rd/target"
@@ -411,6 +420,10 @@ expect_eq "branches with different promoted sets stay valid" "$nE|유효|-|opus-
 expect_eq "sample 5 is valid" "$nF|유효|-" "$(samp 5 | cut -d'|' -f1-3)"
 expect_eq "a call without total_cost_usd is a - row" "-" "$(awk -F'\t' '$1 == "5" && $2 == "opus-1" { print $6 }' "$E/costs.tsv")"
 expect_eq "costs.tsv holds the pilot and every call" 16 "$(awk 'NR > 1' "$E/costs.tsv" | wc -l | tr -d ' ')"
+expect_eq "every call of all three branches gets the same lane directory as CLAUDE_CONFIG_DIR" \
+  "16|16" "$(find "$STUB_DIR/calls" -name '*.env' | wc -l | tr -d ' ')|$(cat "$STUB_DIR"/calls/*.env | grep -Fxc "value CLAUDE_CONFIG_DIR=$tmp/cfg" || true)"
+expect_eq "the main run's sessions span the three branches" "opus-1 opus-2 sonnet" \
+  "$(awk -F'\t' 'NR > 1 && $1 != "pilot" { print $2 }' "$E/costs.tsv" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ -f "$E/reports/1-opus-1.md" && -f "$E/reports/4-sonnet.md" && ! -f "$E/reports/2-opus-1.md" ]]; then pass "valid branch reports are copied to reports/, invalid slots' are not"; else fail "reports/ holds the wrong files"; fi
 expect_eq "the verdict is the report's last line" "# verdict: 판정 불가(표본 수)" "$(tail -n 1 "$E/report.md")"
 expect_line "the verdict report prints the cost total, a - row counting the whole reserve" "$E/report.md" "- 비용 합계(costs.tsv, \`-\` 행은 예비 전액): 168.7500 USD"
@@ -439,6 +452,9 @@ rc=0; runner "$tmp/b2" run --exp-id "$P2" --budget-usd 1000 --repo "$R" || rc=$?
 expect_rc "the same command with a larger budget carries on" 0 "$rc" "$tmp/b2.err"
 expect_eq "the carried-on run finishes every slot" 5 "$(awk -F'\t' 'NR > 1 && $5 == "유효"' "$E/samples.tsv" | wc -l | tr -d ' ')"
 expect_eq "the carried-on run does not repeat the finished session" 16 "$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
+
+lane_list > "$tmp/lane.after"
+if cmp -s "$tmp/lane.before" "$tmp/lane.after"; then pass "no runner call creates, removes or writes a file in the lane directory"; else fail "the lane directory's files changed"; diff "$tmp/lane.before" "$tmp/lane.after" >&2 || true; fi
 
 echo "review-seat-promotion-pair: $passed passed, $failures failed"
 (( failures == 0 ))

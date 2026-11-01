@@ -112,10 +112,14 @@
 # marked 같음 whose two values differ stops the call with exit 1. prepare writes
 # the list to session-env.tsv.
 #
-# CLAUDE_CONFIG_DIR is a fresh directory per branch, so no installed plugin of
-# the same name can win over the --plugin-dir copy. The account's login does
-# not come with it: on a host whose login is bound to the config directory the
-# pilot fails at login, which is the check the pilot exists for.
+# CLAUDE_CONFIG_DIR is the caller's lane directory, `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`
+# resolved once to an absolute path, passed unchanged to all three branches, as
+# the gate gives a stage the lane directory it is logged in with. The account's
+# login comes with it. The runner never creates, removes or writes into that
+# directory. An installed plugin of the same name is kept from winning over the
+# --plugin-dir copy by the `enabledPlugins` of --settings, not by this
+# directory. The cost: a review session shares the directory's harness state
+# with the lane's other sessions, as a gate stage does.
 #
 # Exit codes:
 #   0 — a verdict was written (`판정 불가` included), a dry run finished, or the
@@ -218,6 +222,15 @@ GH_BIN="${PROMO_EXP_GH_BIN:-gh}"
 # A variable inherited from a pipeline stage would make the review session a
 # seat of that run. The experiment's sessions belong to no run.
 for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+
+# The caller's lane directory, absolute: the login the review sessions run
+# with, the source of `enabledPlugins` and of the personal rules.
+LANE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+if [[ -d "$LANE_CFG" ]]; then
+  LANE_CFG=$(cd "$LANE_CFG" > /dev/null && pwd -P)
+elif [[ "$LANE_CFG" != /* ]]; then
+  LANE_CFG="$PWD/$LANE_CFG"
+fi
 
 if [[ -z "$exp_id" ]]; then
   [[ "$cmd" == "run" ]] || usage "--exp-id is required"
@@ -690,7 +703,7 @@ write_session_env() {
     printf 'XDG_STATE_HOME\t환경 변수\truns/<n>-<갈래>/state 의 절대 경로\t(물려받은 값)\t다름\t증인 스크래치 루트를 갈래 디렉터리 아래로 옮긴다\n'
     printf 'CLAUDE_CODE_DISABLE_CLAUDE_MDS\t환경 변수\t1\t%s\t같음\t-\n' "${gmds:-미상}"
     printf 'CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT\t환경 변수\t1\t%s\t같음\t-\n' "${gsub:-미상}"
-    printf 'CLAUDE_CONFIG_DIR\t환경 변수\truns/<n>-<갈래>/config 의 절대 경로\t(레인의 설정 디렉터리)\t다름\t갈래마다 새로 만든 디렉터리라 설치된 같은 이름의 cc-cmds 플러그인이 --plugin-dir 사본을 이기지 못한다\n'
+    printf 'CLAUDE_CONFIG_DIR\t환경 변수\t(호출자가 해석한 레인의 설정 디렉터리)\t(호출자가 해석한 레인의 설정 디렉터리)\t같음\t-\n'
     printf 'CC_PIPELINE_*\t환경 변수\t(지운다)\t(런 변수를 싣는다)\t다름\t리뷰 세션은 어떤 런에도 속하지 않는다\n'
     printf -- '--model\t플래그\t%s\t%s\t같음\t-\n' "$LEAD_MODEL" "${gm:-미상}"
     printf -- '--effort\t플래그\t%s\t%s\t같음\t-\n' "$LEAD_EFFORT" "${ge:-미상}"
@@ -734,7 +747,7 @@ make_instructions() {
   policy="$g/stage-policy.md"
   [[ -f "$policy" ]] || die "no stage policy in the branch clone: $policy"
   mkdir -p "$out"
-  cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  cfg="$LANE_CFG"
   src="$cfg/CLAUDE.md"
   pdir="$out/personal"; mkdir -p "$pdir"
   rules_bin="$g/stage-rules.sh"
@@ -859,7 +872,7 @@ anchor_brief() {
 # text, so a `mktemp` naming `..` is refused outright.
 write_settings() {
   local f="$1" t="$2" rd="$3" pd="$4" cfg keys
-  cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  cfg="$LANE_CFG"
   keys=$(jq -c '(.enabledPlugins // {}) | with_entries(.value = false)' "$cfg/settings.json" 2>/dev/null || echo '{}')
   [[ -n "$keys" ]] || keys='{}'
   jq -n --arg t "$t" --arg rd "$rd" --arg pd "$pd" --argjson pl "$keys" '{
@@ -912,7 +925,7 @@ prepare_branch() {
   bst="$rd/branch.state"
   [[ "$(kv "$bst" prepared)" == "1" ]] && return 0
   base=$(sel_field "$nm" 5); head=$(sel_field "$nm" 6)
-  rm -rf "$rd"; mkdir -p "$rd/halt" "$rd/state" "$rd/config"
+  rm -rf "$rd"; mkdir -p "$rd/halt" "$rd/state"
   t="$rd/target"
   target_clone "$t" "$head" "$base" || die "sample ${n} ${br}: the target clone failed ($nm)"
   in="$ST/inputs/$nm.tsv"
@@ -953,7 +966,7 @@ prepare_branch() {
   {
     printf 'cd %s && ' "$(shq "$t")"
     printf 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=%s CC_CMDS_STATUSLINE_AUTOINSTALL=0 XDG_STATE_HOME=%s ' "$WAIT_CEILING_MS" "$(shq "$rd/state")"
-    printf 'CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1 CLAUDE_CONFIG_DIR=%s ' "$(shq "$rd/config")"
+    printf 'CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1 CLAUDE_CONFIG_DIR=%s ' "$(shq "$LANE_CFG")"
     printf '%s -p %s' "$(shq "$CLAUDE_BIN")" "$(shq "$prompt")"
     printf ' --plugin-dir %s --settings %s' "$(shq "$pd")" "$(shq "$ST/settings/${n}-${br}.json")"
     printf ' --model %s --effort %s --strict-mcp-config --autocompact %s' "$LEAD_MODEL" "$LEAD_EFFORT" "$AUTOCOMPACT_REVIEW"
@@ -980,7 +993,7 @@ review_branch() {
     export XDG_STATE_HOME="$rd/state"
     export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
     export CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1
-    export CLAUDE_CONFIG_DIR="$rd/config"
+    export CLAUDE_CONFIG_DIR="$LANE_CFG"
     exec "$CLAUDE_BIN" -p "$(cat "$rd/prompt")" \
       --plugin-dir "$(kv "$bst" plugin)" --settings "$(kv "$bst" settings)" \
       --model "$LEAD_MODEL" --effort "$LEAD_EFFORT" --strict-mcp-config --autocompact "$AUTOCOMPACT_REVIEW" \
