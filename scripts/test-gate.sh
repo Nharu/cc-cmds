@@ -27571,7 +27571,7 @@ check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카�
 # alive in the run directory while the routing seat goes on judging.
 # ---------------------------------------------------------------------------
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 B1_N_UNDER_TEST=$(sed -n 's/^readonly B1_STAGNATION_N=\([0-9][0-9]*\)$/\1/p' "$GATE")
 if [ -n "$B1_N_UNDER_TEST" ]; then
