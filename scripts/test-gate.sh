@@ -37689,7 +37689,7 @@ $( { grep -E '^- `(자율 승인|승인)`' "$sb_l" || true; } )
 EOF
 done
 if [ "$sb_seen" -gt 0 ]; then
-  ok "8: 절단점을 싣는 행이 ${sb_seen}건 관측됐다"
+  ok "8: 절단점을 싣는 행이 ${sb_seen}건 관측됐다" # gate-isolation: 변동
 else
   bad "8" "그런 행이 하나도 없어 이 단언이 공허하다"
 fi
