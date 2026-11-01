@@ -519,7 +519,8 @@ ORCH_TESTS := \
 	scripts/test-visual-capture.sh \
 	scripts/test-meta-invariants.sh \
 	scripts/test-local-bundle.sh \
-	scripts/test-ci-signature.sh
+	scripts/test-ci-signature.sh \
+	scripts/test-repair.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \
