@@ -450,6 +450,8 @@ Synthesize into the resolved report path, following the template. Leave the `<!-
 
 **Fill the report's model record.** Write each seat's `리뷰 팀 구성` parenthesis as one bare lowercase alias, and fill the template's `모델 티어` block directly after it with one row per seat. The row syntax belongs to `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` and is not restated here. This block is part of the shared template rather than an overlay, so it is filled the same way in both arms.
 
+**Fill every P0 and P1 item's `**좌석**` line.** At synthesis, give each P0 and P1 item its `    - **좌석**: 낸=… | 동의=…` first sub-bullet, spelling every seat with the same role-slug its `모델 티어` row starts with. `낸` names the seats whose own witness raised the defect; read `동의` from the cross-verification record — a seat that confirmed the item at its final severity or above. The template (`02-review-report-template.md`, beside the `모델 티어` block description) owns the grammar and which items carry the line.
+
 **Write the P1 classification and the slice scope the template defines.** The template's `### P1 분류 기준` and "P1 Classification Grammar" sections own the grammar, which all three review skills share; it is not restated here. This arm writes it exactly as spelled there, because the gate parses it:
 
 - the `- **P1 분류**: 차단 N건 | 이월 가능 N건` line directly after `발견 요약`, always — `차단 0건 | 이월 가능 0건` when there is no P1, `차단 미상 | 이월 가능 미상` in a report whose summary key is `발견 요약(부분 복구)`;

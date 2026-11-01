@@ -111,7 +111,7 @@ The first line of an item carries the tag one space after the category tag, with
 
 **Anchor.** The first backtick token of every P0 and P1 item line is `파일:라인` — a path with no space or backtick, a colon, and a line number or range (``^[^ `]+:[0-9]+(-[0-9]+)?$``); a `[CI-CONFIRMED]` token before it is skipped. A finding about something that is missing anchors at the line its fix would touch. The finding fingerprint and the readers that tell one finding from another read this token, and `report-check` flags an item line without it as `앵커 없음`.
 
-The sub-bullets come after the existing `근거` / `💡 수정 제안` / `📎` lines and before the blank line that precedes `💬`. Every P1 item has:
+The sub-bullets come after the existing `근거` / `💡 수정 제안` / `📎` lines and before the blank line that precedes `💬`. The one exception is the `**좌석**` line, which is the item's first sub-bullet, above `근거` (its rule sits beside the `모델 티어` block description below). Every P1 item has:
 
 ```
     - **분류 근거**: <한 줄 — 이월 가능이면 세 기준을 모두 만족하는 이유, 차단이면 어긋난 기준 번호와 이유>
@@ -445,6 +445,8 @@ conditions as written let it emit the ordinary line.
 
 `모델 티어` 블록은 `_common/team-model-tier.md` 에 구속되는 스킬(`review`·`review-unattended`)만 채운다. 모델을 리터럴로 쓰는 `review-lite` 는 고르는 것이 없으므로 이 블록을 생략한다. 행 문법은 그 티어 파일이 소유하며 여기서 다시 적지 않는다.
 
+`**좌석**` 줄은 그 블록을 채우는 보고서의 모든 P0·P1 항목이 항목 줄 바로 아래 첫 하위 불릿으로 갖는다: `    - **좌석**: 낸=<role-slug>[,<role-slug>…] | 동의=<role-slug>[,<role-slug>…]`, 동의 좌석이 없으면 `동의=-`. 슬러그는 같은 보고서 `모델 티어` 행의 첫 칸과 바이트가 같다. `낸` 은 자기 증인에서 그 결함을 낸 좌석 전부이고, Finding Merge Rules 로 합친 항목이면 합쳐진 모든 좌석을 적는다. `동의` 는 낸 좌석이 아닌 좌석 가운데 교차 검증에서 그 항목을 최종 심각도 이상으로 확인한 좌석이며, 낮은 심각도로 본 좌석·반박한 좌석·다루지 않은 좌석은 적지 않는다. 상속되어 다시 들어온 항목(`(상한 사이클 N에서 상속, …)`, 델타 모드의 `(사이클 N에서 상속, 미해결)`·`(사이클 N에서 상속)`)은 원 보고서의 이 줄을 그대로 옮기고, 원 보고서에 줄이 없으면 쓰지 않는다. `## 상한 사이클 재확인` 항목과 P2·P3 항목은 이 줄을 갖지 않는다. 팀 없이 증인 잔재로 합성하는 복구 보고서(`--recover`, `발견 요약(부분 복구)`)는 `모델 티어` 블록과 이 줄을 갖지 않고, `--lead-fix` 는 새 보고서를 쓰지 않으므로 해당하지 않는다. 이 줄은 `**[차단]**`·`**[이월 가능]**` 태그 토큰을 담지 않는다 — 게이트가 P1 절의 모든 줄에서 그 토큰을 센다. `review-lite` 는 `모델 티어` 블록과 함께 이 줄을 생략한다. 항목 줄 끝의 `— 리뷰어` 는 사람이 읽는 꼬리로 그대로 남는다.
+
 각 P0·P1·P2 항목은 분석(근거/제안) 아래에 `💬 붙여넣기용 코멘트` 블록을 두어 GitHub 인라인 코멘트로 그대로 복사할 수 있게 했다(톤: 분석은 단정, 코멘트는 정중). P3는 항목 한 줄이 곧 코멘트다.
 
 ---
@@ -459,6 +461,7 @@ Mention CI failure items if applicable.]
 ## 🔴 P0 (즉시 수정 필수) ← skip section if none
 
 - **[category]** `파일:라인` 이슈 설명 — 리뷰어
+    - **좌석**: 낸=<role-slug>[,<role-slug>] | 동의=<role-slug>[,<role-slug>]|-
     - **근거**: [severity justification]
     - 💡 수정 제안: [specific fix direction or example code]
     - 📎 관련 PR 코멘트: [@author의 기존 코멘트 참조] (if applicable)
@@ -468,6 +471,7 @@ Mention CI failure items if applicable.]
 ## 🟠 P1 (머지 전 수정 권장)
 
 - **[category]** **[차단]** `파일:라인` 이슈 설명 — 리뷰어
+    - **좌석**: 낸=<role-slug>[,<role-slug>] | 동의=<role-slug>[,<role-slug>]|-
     - **근거**: [severity justification]
     - 💡 수정 제안: [specific fix direction]
     - 📎 관련 PR 코멘트: [if applicable]
@@ -476,6 +480,7 @@ Mention CI failure items if applicable.]
     💬 붙여넣기용 코멘트 ← "Paste-Ready Comment Blockquote" 섹션 참조 (📎로 confirms-existing이면 블록쿼트 대신 평문 노트)
 
 - **[category]** **[이월 가능]** `파일:라인` 이슈 설명 — 리뷰어
+    - **좌석**: 낸=<role-slug>[,<role-slug>] | 동의=<role-slug>[,<role-slug>]|-
     - **근거**: [severity justification]
     - 💡 수정 제안: [specific fix direction]
     - **분류 근거**: <한 줄 — 이월 가능이면 세 기준을 모두 만족하는 이유, 차단이면 어긋난 기준 번호와 이유>
