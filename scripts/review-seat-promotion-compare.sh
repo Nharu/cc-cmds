@@ -30,6 +30,9 @@
 #     seats). A name is lowercased and loses a trailing `-reviewer`, then
 #     matched against the report's slugs normalised the same way; one name
 #     that does not match, or a tail off the grammar, leaves the item `미상`.
+#     A clause that is only seat names, with no ` 동의`, is an agreement listed
+#     with commas (`(logic, contract 동의)`) that the clause split cut apart;
+#     it leaves the item `미상` too, so no listed name is dropped unseen.
 #   An item line carrying `에서 상속` is inherited, counted as `상속 제외` and
 #   not classified.
 #
@@ -276,6 +279,14 @@ scan_report() {
                 if (length(cc) > L && substr(cc, length(cc) - L + 1) == " 동의") {
                   delete nm2; m2 = namelist(substr(cc, 1, length(cc) - L), nm2); if (m2 == 0) ok = 0
                   for (k = 1; k <= m2 && ok; k++) { x = norm(nm2[k]); if (!(x in tnorm) || tnorm[x] == "\002") ok = 0; else As[++na] = tnorm[x] }
+                } else {
+                  # A clause that is nothing but seat names is the front of an
+                  # agreement listed with commas, `(logic, contract 동의)`: the
+                  # split above cut it from its ` 동의`, so the item is `미상`
+                  # rather than read with those names dropped.
+                  delete nm2; m2 = namelist(cc, nm2); named = (m2 > 0)
+                  for (k = 1; k <= m2 && named; k++) { x = norm(nm2[k]); if (!(x in tnorm)) named = 0 }
+                  if (named) ok = 0
                 }
               }
             }

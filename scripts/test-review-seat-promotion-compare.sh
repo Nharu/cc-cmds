@@ -139,6 +139,13 @@ if awk -F'\t' '$1 == "H" && $11 ~ /앵커 없음|태그 밖/ { bad = 1 } END { e
 else
   fail "scan: b-tail reported a format problem"
 fi
+bash "$compare" scan "$fixtures/tail-clauses/comma-agree.md" > "$tmp/scan-comma.tsv"
+got=$(awk -F'\t' '$1 == "I" { printf "%s%s", (n++ ? " " : ""), $3 }' "$tmp/scan-comma.tsv")
+if [[ "$got" == "미상 승격동의 승격동의 미상" ]]; then
+  pass "scan: a comma-listed agreement clause leaves the item 미상, a severity clause is dropped, a ·-listed agreement is read"
+else
+  fail "scan: the parenthesised clauses were read as [$got]"
+fi
 bash "$compare" scan "$obs/d-headform.md" > "$tmp/scan-d.tsv"
 if awk -F'\t' '$1 == "H" && $2 == "머리형 항목" && $11 ~ /비불릿:1/ { ok = 1 } END { exit !ok }' "$tmp/scan-d.tsv"; then
   pass "scan: a heading-form item is a format problem"
