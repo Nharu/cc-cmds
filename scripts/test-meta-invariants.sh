@@ -1538,11 +1538,14 @@ check "복구 팔은 복구 리포트에 리뷰 HEAD 줄을 지어 넣지 않는
 # one row it derives again instead, the `세그먼트 입양` row, and says what
 # happens to every segment that fails the derivation. Both halves are pinned in
 # the resident body, so a rewording that keeps the exception and drops the
-# report of what was not adopted fails here.
+# report of what was not adopted fails here. The third phrase pins the lineage
+# walk for an interview record: a broken link stops the re-kickoff and is never
+# bridged by a farther ancestor.
 # ---------------------------------------------------------------------------
 for lit in \
   'a ledger row only triggers a question — or, for a `세그먼트 입양` row alone, a re-derivation' \
-  'anything else is not adopted and is reported with its cause'
+  'anything else is not adopted and is reported with its cause' \
+  'and it never skips to a farther ancestor'
 do
   check "CFI-11 이 「${lit:0:50}」 을 싣는다" "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
 done
