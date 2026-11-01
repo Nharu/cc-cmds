@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **백로그 적재자** — 킥오프 좌석과 fleet 의 master 단계 둘이 레코드를 덧붙이고, 디스패처는 상태만 고쳐 쓴다. 보통 백로그 머리는 수리 레코드를 집지 않는다.
+- **사이드카 계약** — `master 판독` 의 사건 id 를 해시하는 바이트 꼴(처음 커밋 40 hex 와 줄바꿈, 이어서 `LC_ALL=C sort -u` 로 정렬한 서명 줄)을 적고, 동결 목록과 `check_manifest` 조건 6 의 열거에 드라이버가 이미 결박 지문에 넣는 `수리 사건` 행을 더한다.
 
 ### Why
 
