@@ -1051,18 +1051,19 @@ one appended line per Act 1 boundary:
 - <ISO8601> | 단계=기본값 고지 | 제시=<n> | 무시=<m> | 파일=<a> | 환경=<b> | 경로=<파일 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->
 - <ISO8601> | 단계=기본값 확정 | 적용=<n> | 해제=<k>
 - <ISO8601> | 단계=문답(질문지) | 질문=<n>
-- <ISO8601> | 단계=이어받기 고지 | 이전 런=<id> | 매니페스트 sha256=<hex> | 인가 기록 sha256=<hex> | 인터뷰 sha256=<hex|-> | 이어받음=<n> | 물음=<k>
+- <ISO8601> | 단계=이어받기 고지 | 이전 런=<id> | 매니페스트 sha256=<hex> | 인가 기록 sha256=<hex> | 인터뷰 sha256=<hex|-> | 인터뷰 출처=<런 id|-> | 이어받음=<n> | 물음=<k>
 ````
 
 There is no H1. Only six stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
 `대상 변경` (`새 base=`), `기본값 고지` (`제시=`, `무시=`, `파일=`, `환경=`,
 `경로=`, `sha256=`), `기본값 확정` (`적용=`, `해제=`), `문답(질문지)`
 (`질문=`, the number of questions on the form) and `이어받기 고지` (`이전 런=`,
-the three source hashes, `이어받음=` the number of values carried and `물음=` the
-number of questions this re-kickoff asked). Every other line ends at
-`단계=<토큰>`. The two kickoff-defaults lines carry counts, the defaults file's
-path and its hash, and never a value; `이어받기 고지` carries an id, hashes and
-counts only.
+the three source hashes, `인터뷰 출처=` the run whose interview record was copied
+— the source itself or the lineage ancestor `rekick.sh verify` named, `-` when
+none was — `이어받음=` the number of values carried and `물음=` the number of
+questions this re-kickoff asked). Every other line ends at `단계=<토큰>`. The
+two kickoff-defaults lines carry counts, the defaults file's path and its hash,
+and never a value; `이어받기 고지` carries run ids, hashes and counts only.
 
 **The stage vocabulary is closed**: `대상 확인` · `대상 변경` · `계획 제시` ·
 `요구사항 인터뷰` · `요구 확인` · `기본값 고지` · `기본값 확정` · `경계 질문` ·

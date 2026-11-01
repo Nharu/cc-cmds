@@ -8,14 +8,16 @@
 # carried, checks that its frozen files are intact, removes the steps the
 # ledger proves finished, and renders the new manifest draft and the checks the
 # draft must pass. It decides nothing a person has to answer: every value it
-# renders is either byte-identical to the previous run, re-derived here, or an
-# answer the kickoff passes in.
+# renders is either byte-identical to the previous run, byte-identical to the
+# interview record of the nearest ancestor the `이어받은 런` hash chain proves
+# (only when the previous run holds no interview row or record), re-derived
+# here, or an answer the kickoff passes in.
 #
 # IT WRITES NOTHING. Not into the previous run's directory, not into its ledger,
 # not under `<base>`. The only files it makes are private copies in `TMPDIR`
-# (mode 600, removed on exit), and every read of a previous run's manifest,
-# authorization record and interview record is of such a copy — so the bytes it
-# measured are the bytes it reads.
+# (mode 600, removed on exit), and every read of a previous run's — or a lineage
+# ancestor's — manifest, authorization record and interview record is of such a
+# copy — so the bytes it measured are the bytes it reads.
 #
 # `adopt`, `render-manifest` AND `verify-subset` READ THE DISK AND THE REMOTE.
 # Whether an unlanded segment of the previous run may be adopted is read at the
@@ -187,6 +189,7 @@
 #                  사실  종료 토큰|연쇄|진전|열린 승인|미답 중단|종료 절|남은 단계  <값>
 #   verify        검사  다이제스트|인터뷰|인가|머리  통과|실패  <사유>
 #                  해시  매니페스트|인가 기록|인터뷰  <hex|->
+#                  계보  인터뷰  <조상 id>  <대수>   (only when the record was found up the lineage)
 #                  베이스설계  <문서>  <행 sha256>  <지금 sha256|->
 #                  질문  베이스설계  <문서>  <행 sha256>  <지금 sha256>
 #                  값  <이름>  <값>        대상  <대상 행>
@@ -244,6 +247,10 @@
 set -uo pipefail
 
 RK_PROG='rekick.sh'
+# How many links back `rk_iv_resolve` walks for an interview record; the
+# source itself is link 0.
+RK_IV_DEPTH_MAX=8
+RK_IVANC=""
 RK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 
 rk_refuse() { printf '%s: %s\n' "$RK_PROG" "$1" >&2; exit 3; }
@@ -1582,26 +1589,7 @@ rk_chain() {
     *) RK_CH_WHY="원천 출처 행이 ${n}개입니다"; return 0 ;;
   esac
   local out
-  out=$(printf '%s\n' "$row" | awk '
-    function hex(v) { return v ~ /^[0-9a-f]+$/ && length(v) == 64 }
-    function idok(v) { return v ~ /^[A-Za-z0-9._-]+$/ && v != "." && v != ".." }
-    {
-      n = split($0, f, / \| /)
-      if (n != 4 && n != 7) { print "bad\t출처 행의 필드 수가 맞지 않습니다"; exit }
-      if (f[1] != "- `사전 인가`") { print "bad\t출처 행의 머리가 다릅니다"; exit }
-      split("이어받은 런,매니페스트 sha256,인가 기록 sha256,좌석 연쇄,뿌리 런,원인", want, ",")
-      for (i = 2; i <= n; i++) {
-        p = index(f[i], "=")
-        if (p == 0 || substr(f[i], 1, p - 1) != want[i - 1]) { print "bad\t출처 행의 필드 이름이나 순서가 다릅니다"; exit }
-        v[i - 1] = substr(f[i], p + 1)
-      }
-      if (!idok(v[1]) || !hex(v[2]) || !hex(v[3])) { print "bad\t출처 행의 런 id 나 해시가 형식에 맞지 않습니다"; exit }
-      if (n == 4) { print "ok\t0\t\t"; exit }
-      if (v[4] !~ /^[1-9][0-9]*$/) { print "bad\t출처 행의 좌석 연쇄가 양의 정수가 아닙니다"; exit }
-      if (!idok(v[5])) { print "bad\t출처 행의 뿌리 런이 런 id 가 아닙니다"; exit }
-      if (v[6] == "" || v[6] ~ /[ \t]/) { print "bad\t출처 행의 원인이 비었거나 형식에 맞지 않습니다"; exit }
-      printf "ok\t%s\t%s\t%s\n", v[4], v[5], v[6]
-    }')
+  out=$(printf '%s\n' "$row" | rk_carry_parse chain)
   case "$out" in
     ok"$TAB"*)
       local seat root pc
@@ -1615,6 +1603,121 @@ EOF
   esac
   [ -n "$RK_CH_K" ] || [ -n "$RK_CH_WHY" ] || RK_CH_WHY="출처 행을 읽지 못했습니다"
   return 0
+}
+
+# rk_carry_parse <chain|link> — reads one provenance row on stdin, the
+# four-field row a person's re-kickoff writes or the seven-field row of the
+# seat's link, and checks its head, field names and order, the run id and the
+# two hashes. `chain` prints `ok<TAB>seat count<TAB>root run<TAB>cause` (count 0
+# and the other two empty for a four-field row); `link` prints
+# `ok<TAB>carried run<TAB>manifest sha256<TAB>authorization record sha256`.
+# Either prints `bad<TAB><reason>` for a row it cannot read. The seven-field
+# checks are the same for both, so a seat's row in the middle of a lineage is
+# read by the standard `rk_chain` reads it by.
+rk_carry_parse() {
+  awk -v mode="$1" '
+    function hex(v) { return v ~ /^[0-9a-f]+$/ && length(v) == 64 }
+    function idok(v) { return v ~ /^[A-Za-z0-9._-]+$/ && v != "." && v != ".." }
+    {
+      n = split($0, f, / \| /)
+      if (n != 4 && n != 7) { print "bad\t출처 행의 필드 수가 맞지 않습니다"; exit }
+      if (f[1] != "- `사전 인가`") { print "bad\t출처 행의 머리가 다릅니다"; exit }
+      split("이어받은 런,매니페스트 sha256,인가 기록 sha256,좌석 연쇄,뿌리 런,원인", want, ",")
+      for (i = 2; i <= n; i++) {
+        p = index(f[i], "=")
+        if (p == 0 || substr(f[i], 1, p - 1) != want[i - 1]) { print "bad\t출처 행의 필드 이름이나 순서가 다릅니다"; exit }
+        v[i - 1] = substr(f[i], p + 1)
+      }
+      if (!idok(v[1]) || !hex(v[2]) || !hex(v[3])) { print "bad\t출처 행의 런 id 나 해시가 형식에 맞지 않습니다"; exit }
+      if (n == 7) {
+        if (v[4] !~ /^[1-9][0-9]*$/) { print "bad\t출처 행의 좌석 연쇄가 양의 정수가 아닙니다"; exit }
+        if (!idok(v[5])) { print "bad\t출처 행의 뿌리 런이 런 id 가 아닙니다"; exit }
+        if (v[6] == "" || v[6] ~ /[ \t]/) { print "bad\t출처 행의 원인이 비었거나 형식에 맞지 않습니다"; exit }
+      }
+      if (mode == "link") { printf "ok\t%s\t%s\t%s\n", v[1], v[2], v[3]; exit }
+      if (n == 4) { print "ok\t0\t\t"; exit }
+      printf "ok\t%s\t%s\t%s\n", v[4], v[5], v[6]
+    }'
+}
+
+# rk_iv_resolve <keep> — where the new run's interview record comes from. The
+# argument is the count of remaining `design`/`visual` steps (`G_IV_KEEP`, or
+# check 8's `hasiv`). Reads the current MANIFEST (the previous run's copy),
+# RK_BASE and RK_PREV, writes nothing outside RK_TMP and never changes MANIFEST:
+# an ancestor's manifest is read through a `MANIFEST=<copy>` prefix on that one
+# call. Sets, always and first:
+#   RK_IV_ROW   — the interview row to carry, its path not yet moved;
+#   RK_IV_FROM  — the run that holds that row (RK_PREV for the source itself);
+#   RK_IV_DEPTH — how many links back it was found, 0 for the source;
+#   RK_IV_COPY · RK_IV_SHA — the ancestor record's private copy and its sha256,
+#                 set only at depth 1 or more;
+#   RK_IV_WHY   — the one line that stops the walk, empty when nothing did.
+# A source with exactly one row returns it at depth 0, and a source with two or
+# more rows, or with no row but a record file at the conventional path, returns
+# with nothing set: each mode checks those as it always has. Only a source with
+# neither, and a keep of 1 or more, walks the `이어받은 런` rows back to the
+# nearest ancestor holding a row, matching each link's manifest and
+# authorization record against the hashes the row carries, and the record
+# against the ancestor's row. The first link that does not hold stops the walk;
+# no farther ancestor is tried.
+rk_iv_resolve() {
+  RK_IV_ROW=""; RK_IV_FROM=""; RK_IV_DEPTH=0; RK_IV_COPY=""; RK_IV_SHA=""; RK_IV_WHY=""
+  local keep="${1:-0}" rows n
+  rows=$(rk_interview_rows); n=$(printf '%s' "$rows" | grep -c . || true)
+  if [ "${n:-0}" = "1" ]; then RK_IV_ROW=$rows; RK_IV_FROM=$RK_PREV; return 0; fi
+  [ "${n:-0}" = "0" ] || return 0
+  [ ! -e "$RK_BASE/docs/pipeline-run/$RK_PREV.interview.md" ] || return 0
+  rk_num "$keep" || return 0
+  [ "$keep" -ge 1 ] || return 0
+
+  local c="$RK_PREV" cur="$MANIFEST" seen=" $RK_PREV " depth=0 out a msha gsha
+  local amf agr link hr br arows an apath asha acopy
+  while :; do
+    rows=$(MANIFEST="$cur" rk_carry_rows); n=$(printf '%s' "$rows" | grep -c . || true)
+    case "${n:-0}" in
+      0) RK_IV_WHY="계보 $c: 뿌리 런까지 인터뷰 행이 없습니다"; return 0 ;;
+      1) ;;
+      *) RK_IV_WHY="계보 $c: 출처 행이 ${n}개입니다"; return 0 ;;
+    esac
+    out=$(printf '%s\n' "$rows" | rk_carry_parse link)
+    case "$out" in
+      ok"$TAB"*) ;;
+      *) RK_IV_WHY="계보 $c: 출처 행을 읽지 못했습니다 — ${out#bad"$TAB"}"; return 0 ;;
+    esac
+    IFS="$TAB" read -r _ a msha gsha <<EOF
+$out
+EOF
+    link="계보 고리 $c → $a"
+    case "$seen" in *" $a "*) RK_IV_WHY="$link: 순환합니다 — $a 을 이미 지났습니다"; return 0 ;; esac
+    depth=$((depth + 1))
+    [ "$depth" -le "$RK_IV_DEPTH_MAX" ] || { RK_IV_WHY="$link: ${RK_IV_DEPTH_MAX}대를 넘습니다"; return 0; }
+    amf=$(rk_copy "$RK_BASE/docs/pipeline-run/$a.plan.md" "anc.$depth.plan.md") \
+      || { RK_IV_WHY="$link: 조상 매니페스트가 없습니다: $RK_BASE/docs/pipeline-run/$a.plan.md"; return 0; }
+    [ "$(rk_sha "$amf")" = "$msha" ] || { RK_IV_WHY="$link: 조상 매니페스트 sha256 이 이어받은 런 행과 다릅니다"; return 0; }
+    hr=$(MANIFEST="$amf" manifest_hdr_field 'run-id'); br=$(MANIFEST="$amf" manifest_field '런 정체' '런 id')
+    if [ "$hr" != "$a" ] || [ "$br" != "$a" ]; then
+      RK_IV_WHY="$link: 조상 매니페스트의 run-id 가 맞지 않습니다 — 머리 run-id=$hr · 본문 런 id=$br"; return 0
+    fi
+    agr=$(rk_copy "$RK_BASE/docs/pipeline-grant/$a.md" "anc.$depth.grant.md") \
+      || { RK_IV_WHY="$link: 조상 인가 기록이 없습니다"; return 0; }
+    [ "$(rk_sha "$agr")" = "$gsha" ] || { RK_IV_WHY="$link: 조상 인가 기록 sha256 이 이어받은 런 행과 다릅니다"; return 0; }
+    arows=$(MANIFEST="$amf" rk_interview_rows); an=$(printf '%s' "$arows" | grep -c . || true)
+    if [ "${an:-0}" -gt 1 ]; then RK_IV_WHY="$link: 조상 인터뷰 행이 ${an}개입니다"; return 0; fi
+    if [ "${an:-0}" = "1" ]; then
+      apath=$(manifest_row_fields "$arows" '인터뷰 기록' | head -n 1)
+      asha=$(manifest_row_fields "$arows" 'sha256' | head -n 1)
+      [ "$apath" = "docs/pipeline-run/$a.interview.md" ] \
+        || { RK_IV_WHY="$link: 조상 인터뷰 행의 경로가 docs/pipeline-run/$a.interview.md 가 아닙니다: $apath"; return 0; }
+      acopy=$(rk_copy "$RK_BASE/$apath" "anc.$depth.interview.md") \
+        || { RK_IV_WHY="$link: 조상 인터뷰 기록 파일이 없습니다: $apath"; return 0; }
+      [ "$(rk_sha "$acopy")" = "$asha" ] || { RK_IV_WHY="$link: 조상 인터뷰 기록 sha256 이 조상 행과 다릅니다"; return 0; }
+      RK_IV_ROW=$arows; RK_IV_FROM=$a; RK_IV_DEPTH=$depth; RK_IV_COPY=$acopy; RK_IV_SHA=$asha
+      return 0
+    fi
+    [ ! -e "$RK_BASE/docs/pipeline-run/$a.interview.md" ] \
+      || { RK_IV_WHY="$link: 조상에 인터뷰 기록 파일은 있는데 인터뷰 행이 없습니다"; return 0; }
+    c=$a; cur=$amf; seen="$seen$a "
+  done
 }
 
 # rk_seat_token <token> — succeeds for the end tokens a seat may carry on: the
@@ -1715,7 +1818,12 @@ EOF
   # L12 — the source's frozen files, through `verify`. Its two questions are
   # the only waits.
   ( rk_verify ) > "$RK_TMP/judge-verify.out" 2>/dev/null
-  if awk -F '\t' '$1 == "판정" && $2 == "실패" { f = 1 } END { exit !f }' "$RK_TMP/judge-verify.out"; then
+  local ivwhy
+  ivwhy=$(awk -F '\t' '$1 == "검사" && $2 == "인터뷰" && $3 == "실패" && index($4, "계보") == 1 { print $4; exit }' "$RK_TMP/judge-verify.out")
+  if awk -F '\t' '$1 == "판정" && $2 == "실패" { f = 1 } END { exit !f }' "$RK_TMP/judge-verify.out" && [ -n "$ivwhy" ]; then
+    # A broken lineage link is named on the seat's line verbatim.
+    rk_fire L12 "verify 가 실패했습니다 ($(awk -F '\t' '$1 == "판정" { sub(/(, )?인터뷰$/, "", $3); sub(/인터뷰, /, "", $3); if ($3 != "") printf "%s; ", $3; exit }' "$RK_TMP/judge-verify.out")인터뷰 — $ivwhy)"
+  elif awk -F '\t' '$1 == "판정" && $2 == "실패" { f = 1 } END { exit !f }' "$RK_TMP/judge-verify.out"; then
     rk_fire L12 "verify 가 실패했습니다 ($(awk -F '\t' '$1 == "판정" { print $3; exit }' "$RK_TMP/judge-verify.out"))"
   elif ! grep -q "^판정${TAB}통과" "$RK_TMP/judge-verify.out"; then
     rk_fire L12 "verify 의 판정을 읽지 못했습니다"
@@ -1786,7 +1894,7 @@ rk_budget_token() {
 # verify
 # ---------------------------------------------------------------------------
 rk_verify() {
-  local failed="" pm_sha pg_sha iv_sha="-" why
+  local failed="" pm_sha pg_sha iv_sha="-" iv_line="" why
   rk_prev_paths
   printf 'cc-rekick v1\n'
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || {
@@ -1822,8 +1930,17 @@ rk_verify() {
       fi
     fi
   else
-    [ ! -e "$RK_BASE/docs/pipeline-run/$RK_PREV.interview.md" ] \
-      || why="인터뷰 기록 파일은 있는데 매니페스트에 인터뷰 행이 없습니다"
+    if [ -e "$RK_BASE/docs/pipeline-run/$RK_PREV.interview.md" ]; then
+      why="인터뷰 기록 파일은 있는데 매니페스트에 인터뷰 행이 없습니다"
+    else
+      # Neither a row nor a file: when the remaining plan still reads the
+      # record, the nearest ancestor holding one is found through the chain.
+      rk_graph_compute
+      rk_iv_resolve "$G_IV_KEEP"
+      if [ -n "$RK_IV_WHY" ]; then why=$RK_IV_WHY
+      elif [ "$RK_IV_DEPTH" -ge 1 ]; then iv_sha=$RK_IV_SHA; iv_line="계보${TAB}인터뷰${TAB}${RK_IV_FROM}${TAB}${RK_IV_DEPTH}"
+      fi
+    fi
   fi
   if [ -z "$why" ]; then printf '검사\t인터뷰\t통과\t-\n'
   else printf '검사\t인터뷰\t실패\t%s\n' "$why"; failed="${failed:+$failed, }인터뷰"; fi
@@ -1851,6 +1968,7 @@ rk_verify() {
   else printf '검사\t머리\t실패\t머리 run-id=%s · 본문 런 id=%s · 요청 %s\n' "$hr" "$br" "$RK_PREV"; failed="${failed:+$failed, }머리"; fi
 
   printf '해시\t매니페스트\t%s\n해시\t인가 기록\t%s\n해시\t인터뷰\t%s\n' "$pm_sha" "$pg_sha" "$iv_sha"
+  [ -z "$iv_line" ] || printf '%s\n' "$iv_line"
 
   # A base binding whose document moved is a question, not a failure.
   local bdrow bdoc bsha bnow
@@ -2237,7 +2355,7 @@ rk_render() {
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
   R_PADROP="$RK_TMP/plugin.drop" R_PFILE="$( [ -s "$RK_TMP/plugin.rows" ] && printf '%s' "$RK_TMP/plugin.rows")" \
-  R_BIND="$RK_BIND" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" \
+  R_BIND="$RK_BIND" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" R_IVANC="$RK_IVANC" \
   awk '
     function field(line,   p) { p = index(line, "**: "); return substr(line, 3, p - 3) }
     # What a section must still carry is written when it closes, before the
@@ -2253,6 +2371,10 @@ rk_render() {
         if (!adopt_done && ENVIRON["R_ADOPT"] != "") { while ((getline l < ENVIRON["R_ADOPT"]) > 0) print l; close(ENVIRON["R_ADOPT"]); adopt_done = 1 }
         if (!acrow_done && ENVIRON["R_ACROW"] != "") { print ENVIRON["R_ACROW"]; acrow_done = 1 }
         if (!plugin_done && pfile != "") { while ((getline l < pfile) > 0) print l; close(pfile); plugin_done = 1 }
+        # An interview row found up the lineage, its path moved to the new run.
+        if (!ivanc_done && ENVIRON["R_IVANC"] != "") {
+          line = ENVIRON["R_IVANC"]; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; ivanc_done = 1
+        }
         if (!prov_done) { print ENVIRON["R_PROV"]; prov_done = 1 }
       }
       if (sec == "## 요소" && ENVIRON["R_DOUT"] == "1" && !docsha_done) {
@@ -2523,6 +2645,11 @@ rk_render_manifest() {
   setwhy=$(rk_sets_resolve "$RK_TMP/sets.tsv") || rk_fail "$setwhy"
   rk_graph_compute
   [ -n "$G_PLAN" ] || rk_fail "원천 매니페스트의 실행 계획을 읽지 못했습니다"
+  # The interview record's source, judged as `verify` judged it: a row found
+  # up the lineage is written into the draft, a broken link draws nothing.
+  rk_iv_resolve "$G_IV_KEEP"
+  [ -z "$RK_IV_WHY" ] || rk_fail "$RK_IV_WHY"
+  [ "$RK_IV_DEPTH" -lt 1 ] || RK_IVANC=$RK_IV_ROW
   local confirm approval
   if [ "$RK_AUTO" = "1" ]; then
     # The seat's link: the texts are fixed here, not written by the seat, and
@@ -2594,6 +2721,14 @@ rk_render_interview() {
   fi
   local irows nir ipath isha icopy
   irows=$(rk_interview_rows); nir=$(printf '%s' "$irows" | grep -c . || true)
+  # Neither a row nor a file at the source: the record comes from the nearest
+  # ancestor the lineage proves, or the walk's line stops the copy.
+  if [ "${nir:-0}" = "0" ] && [ ! -e "$RK_BASE/docs/pipeline-run/$RK_PREV.interview.md" ]; then
+    rk_graph_compute
+    rk_iv_resolve "$G_IV_KEEP"
+    [ -z "$RK_IV_WHY" ] || rk_fail "$RK_IV_WHY"
+    if [ "$RK_IV_DEPTH" -ge 1 ]; then cat "$RK_IV_COPY"; exit 0; fi
+  fi
   [ "${nir:-0}" = "1" ] || rk_fail "원천 매니페스트의 인터뷰 행이 ${nir:-0}개입니다 — 정확히 하나여야 복사합니다"
   ipath=$(manifest_row_fields "$irows" '인터뷰 기록' | head -n 1)
   isha=$(manifest_row_fields "$irows" 'sha256' | head -n 1)
@@ -3005,7 +3140,15 @@ EOF
   niv=$(printf '%s' "$div" | grep -c . || true)
   why=""
   if [ "${hasiv:-0}" -ge 1 ]; then
-    if [ "${niv:-0}" != "1" ]; then why="설계나 시각 단계가 남는데 인터뷰 행이 ${niv:-0}개입니다"
+    # A previous manifest with neither a row nor a file judges its lineage
+    # again, so a link that changed after the draft was drawn fails here.
+    if [ -z "$piv" ] && [ ! -e "$pbase/docs/pipeline-run/$pid.interview.md" ]; then
+      MANIFEST="$prev" RK_BASE="$pbase" RK_PREV="$pid" rk_iv_resolve "$hasiv"
+      [ -z "$RK_IV_WHY" ] || why=$RK_IV_WHY
+      piv=$RK_IV_ROW
+    fi
+    if [ -n "$why" ]; then :
+    elif [ "${niv:-0}" != "1" ]; then why="설계나 시각 단계가 남는데 인터뷰 행이 ${niv:-0}개입니다"
     else
       want=$(printf '%s' "$piv" | awk -v p="docs/pipeline-run/$D_ID.interview.md" '{ sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" p " |"); print }')
       [ -n "$piv" ] && [ "$div" = "$want" ] || why="인터뷰 행이 원천 행에서 경로만 새 런으로 바꾼 것이 아닙니다"
