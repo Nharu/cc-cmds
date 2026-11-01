@@ -463,6 +463,7 @@ LINT_TESTS := \
 	tests/fixtures/lint-gate-banner-fields/run.sh \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
+	scripts/test-measure-lead-context.sh \
 	scripts/test-measure-test-share.sh \
 	scripts/test-measure-discussion-passes.sh \
 	scripts/test-solo-audit-experiment.sh \
