@@ -480,7 +480,8 @@ if [[ "$mixed_lines" == "4" ]]; then
 else
   fail "mixed-window marker should sit on 4 signal lines, got $mixed_lines"
 fi
-if grep -q '^\[reconverge\] 세션 0$' "$tmp/main.txt" && grep -A1 '^\[reconverge\] 세션 0$' "$tmp/main.txt" | grep -q '가중 합계 -M'; then
+reconverge_block=$(grep -A1 '^\[reconverge\] 세션 0$' "$tmp/main.txt" || true)
+if [[ "$reconverge_block" == *'가중 합계 -M'* ]]; then
   pass "table prints - for a kind with no session"
 else
   fail "table prints - for a kind with no session"
