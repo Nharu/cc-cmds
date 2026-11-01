@@ -3671,8 +3671,9 @@ gate_device_open_check() {
 
 gate_device_record() {
   # gate_device_record <stdout file> <argv...> — after a `create` act ended 0,
-  # append `<dispatch id>\t<udid|emulator-<port>|->\t<name>` to this run's
-  # device list. The UDID of `simctl create`/`clone` is the first line of the
+  # or for `emulator -avd` before it starts (the act runs until the emulator
+  # exits, and the device must be listed while it runs), append
+  # `<dispatch id>\t<udid|emulator-<port>|->\t<name>` to this run's device list. The UDID of `simctl create`/`clone` is the first line of the
   # act's own output; `emulator -avd` gives its port; `avdmanager create avd`
   # gives a name only. `boot` and `xcodebuild test` make no device of their
   # own and write nothing. GATE_DEVICE_RECORDED_ID is left as the id column
@@ -12483,13 +12484,19 @@ gate_decision_hold_refuse() {
 
 gate_decision_collect_named() {
   # gate_decision_collect_named <record> — 0 when a `결정 수거` row of this
-  # run names the record: a file the gate wrote as a collection, not one that
-  # only carries the collection's step line.
+  # run names the record and the file is still the one that row vouches for: a
+  # regular file whose bytes hash to the row's `기록 다이제스트`. A file that
+  # only carries the collection's step line is not one, and neither is a
+  # record changed after the gate wrote it — the person answers what the record
+  # shows, and the re-convergence reads its item line as its scope.
   [ -n "$1" ] && [ "$1" != "없음" ] || return 1
-  local r
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  local r have
+  have=$(shasum -a 256 "$1" | cut -d' ' -f1)
   while IFS= read -r r; do
     [ -n "$r" ] || continue
-    [ "$(gate_row_field "$r" '중단 기록')" = "$1" ] && return 0
+    [ "$(gate_row_field "$r" '중단 기록')" = "$1" ] || continue
+    [ "$(gate_row_field "$r" '기록 다이제스트')" = "$have" ] && return 0
   done <<EOF
 $(gate_rows '결정 수거' 2>/dev/null || true)
 EOF
@@ -12511,7 +12518,7 @@ gate_decision_reconverge_open() {
   local key="$1" rec="$2" hk first
   GATE_DCR_WHY=''
   if ! gate_decision_collect_named "$rec"; then
-    GATE_DCR_WHY="이 런의 결정 수거 행이 이름 대지 않는 기록입니다: $rec"
+    GATE_DCR_WHY="이 런의 결정 수거 행이 이름 대지 않거나, 게이트가 쓴 뒤 바이트가 바뀐 기록입니다: $rec"
     return 1
   fi
   hk=$(sed -n '1s/.*; stage=\([^;]*\)#[0-9][0-9]*; .*/\1/p' "$rec" 2>/dev/null)
@@ -42607,6 +42614,22 @@ gate_verb_act() {
     if [ -n "$rs_cok" ] && [ -n "${GATE_RESUME:-}" ]; then
       [ "$rs_ckey" != "$rs_astep" ] || rs_aok=""
       [ "$rs_ckey" != "$rs_dstep" ] || rs_dok=""
+    fi
+    # THE COLLECTION'S SCOPE IS ITS OWN. Its prompt names `구속 티어 이탈` and
+    # the record's absolute path, which no other branch's scope carries, so when
+    # another branch is open as well the prompt decides: that exact scope is
+    # this branch, any other scope is not. Without it two unconsumed answers on
+    # different keys would refuse every `- reconverge` until the run ended.
+    if [ -n "$rs_cok" ] && [ -z "${GATE_RESUME:-}" ] && { [ -n "$rs_aok" ] || [ -n "$rs_dok" ]; }; then
+      local rs_sp rs_srest
+      rs_sp=$(gate_skill_prompt_of "$@")
+      rs_srest=${rs_sp#'/cc-cmds:design-reconverge '}
+      rs_srest=${rs_srest#* }
+      if [ "$rs_srest" = "구속 티어 이탈 $rs_crec" ]; then
+        rs_aok="" rs_dok=""
+      else
+        rs_cok=""
+      fi
     fi
     if [ -n "$rs_aok" ] && [ -n "$rs_dok" ] && [ -z "$rs_cok" ]; then
       warn "- reconverge 가 감사 단계(${rs_astep})의 재수렴과 설계 단계(${rs_dstep})의 잔여 동결 재검토 양쪽에 다 맞습니다 — 게이트는 둘 중 하나를 고르지 않습니다"
