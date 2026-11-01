@@ -55086,8 +55086,11 @@ mj_rejoin "$MJ_X"
 check "88h: 받아진 재합류 파견은 충돌 수를 늘리지 않는다" \
   "$(mj_last '베이스 판정' 판정)|$(mj_next)|$rc|$mj_c0|$(mj_conflicts)" "이동|master 재합류|0|1|1"
 
-# 구현 스테이지가 하는 병합 — 베이스를 --no-ff 로 들인다.
-MJ_M=$( ( cd "$SA_SEGWT" && git merge -q --no-ff "$MJ_X" -m "merge: master 재합류" && git rev-parse HEAD ) 2>/dev/null)
+# 구현 스테이지가 하는 병합 — 베이스를 --no-ff 로 들이고 해소 중에 한 줄을 더한다.
+# 브랜치 변경을 리뷰 때와 그대로 싣는 병합은 patch-id 동일로 증명되어 해소 리뷰 없이
+# 지나가므로, 해소 리뷰 경로를 재려면 병합이 브랜치 디프를 바꿔야 한다.
+MJ_M=$( ( cd "$SA_SEGWT" && git merge -q --no-ff --no-commit "$MJ_X" && printf 'rejoin\n' >> work.txt \
+          && git add work.txt && git commit -qm "merge: master 재합류" && git rev-parse HEAD ) 2>/dev/null)
 mj_next_m=$(mj_next)
 MJ_RP="$SA_ROOT/rejoin-review.md"
 { cat "$FXREPORT"; printf -- '- **리뷰 모드**: 해소 (기준 사이클 1, 기준 리뷰 HEAD `%s`, 베이스 `%s`)\n' "$MJ_SHA" "$MJ_X"; } > "$MJ_RP"
