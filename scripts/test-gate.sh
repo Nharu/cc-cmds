@@ -10638,8 +10638,13 @@ check "새 기동은 세션별 기록에 합성 sha256 을 남긴다" \
 check "게시 뒤 instructions/ 에 임시 파일이 남지 않는다" \
   "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
 # No volatile token: the same bytes for every stage of this target in this run.
+# The ancestor label carries this fixture's own work path, and a TMPDIR may
+# itself spell a run id, so the path is taken out before the token search.
+si_txt=$(cat "$SI_F" 2>/dev/null || true)
+si_txt=${si_txt//"$WORKP"/}
+si_txt=${si_txt//"$WORK"/}
 check "합성 파일에 런 id·세그먼트·시도가 들어 있지 않다" \
-  "$(grep -cE 'R1|SL#|세그먼트|attempt' "$SI_F" 2>/dev/null || true)" "0"
+  "$(printf '%s\n' "$si_txt" | grep -cE 'R1|SL#|세그먼트|attempt' || true)" "0"
 
 # --- THE SYNTHESIS CALLED DIRECTLY: determinism, the host map, the refusals ---
 #
