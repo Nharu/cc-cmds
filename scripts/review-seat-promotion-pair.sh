@@ -52,6 +52,9 @@
 #                          (default ${HOME}/.local/state/cc-cmds/review-seat-promotion-exp)
 #   PROMO_EXP_CLAUDE_BIN   the model CLI (default `claude` on PATH); tests put a
 #                          stub here
+#   PROMO_EXP_GH_BIN       the GitHub CLI select reads a pull request's title,
+#                          body and labels with (default `gh` on PATH); tests put
+#                          a stub here
 #   Every inherited CC_PIPELINE_* variable is unset at start: the review
 #   sessions belong to no run.
 #
@@ -71,15 +74,19 @@
 # Restoring the original review's inputs. Every branch of one sample gets the
 # same inputs, read from the run that sent the original review — the run id
 # and segment are read from the report's file name
-# (`[seg-]<YYYYMMDD-8hex>-<segment>-(cycle|c)<n>.md`) — and from the report:
+# (`[seg-]<YYYYMMDD-8hex>-<segment>-(cycle|c)<n>.md`) — and from the report,
+# except a pull request's title, body and labels, which neither keeps and which
+# are read where the original review read them, on GitHub:
 #
 #   | field             | read from                                              | not received        | blocked (입력 복원 불가)                       |
 #   | 설계 문서          | the run manifest's `**설계 문서**:`; `(없음)` → the       | (never — the review | the manifest is missing, or the document is    |
 #   |                   | anchor brief rebuilt from that manifest (the driver's    | always gets one)    | not in the main checkout                       |
 #   |                   | own layout)                                              |                     |                                                |
 #   | --expand          | the manifest plan's `review_expand` list                 | empty list → 없음   | the plan JSON does not parse                   |
-#   | PR 제목·본문·라벨   | the report's `- **PR**:` line                            | no line → 없음      | the line is there: body and labels are in no   |
-#   |                   |                                                          |                     | record                                         |
+#   | PR 제목·본문·라벨   | the report's `- **PR**:` line: `#<N>` → today's title,  | no line, or a value | any other value; --repo's origin is not a      |
+#   |                   | body and labels from `gh pr view <N> --repo             | starting `없음` or   | GitHub repository; the `gh pr view` call fails |
+#   |                   | <owner>/<repo> --json title,body,labels`, <owner>/<repo> | `해당 없음` → 없음    | or its JSON does not parse                     |
+#   |                   | from --repo's origin                                     |                     |                                                |
 #   | --slice           | the report's `**슬라이스 범위**:` line: `슬라이스 <id>` →  | `적용 안 됨 — 인자   | the line is missing                            |
 #   |                   | <id>; `적용 안 됨 — <other>` → the segment id             | 없음` → 없음         |                                                |
 #   | --declared-files  | the ledger's first `segment` row of the segment,         | empty or `-` → 없음 | no such row, or a truncated value whose full   |
@@ -89,6 +96,13 @@
 # The document is copied as it stands in the main checkout today; a document
 # rewritten since the original review is copied as rewritten. inputs records the
 # copy's sha256, so the three branches of one sample provably got the same bytes.
+# A pull request's title, body and labels are likewise today's: a body or label
+# edited since the original review is restored as edited, and inputs records
+# the number, the title, the body's sha256 and the labels. That `gh pr view` is
+# a GitHub read select makes, so a dry run makes it too; the review session
+# never reaches GitHub (its target clone has no remote, and its settings refuse
+# `gh`), and the restored metadata reaches it in the `-p` instructions because
+# the local diff mode has no pull request to read.
 #
 # The review session's environment — the closed list. Nothing outside it is
 # added to or removed from the environment the runner inherited, and no flag
@@ -199,6 +213,7 @@ fi
 
 STATE_ROOT="${PROMO_EXP_STATE_ROOT:-$HOME/.local/state/cc-cmds/review-seat-promotion-exp}"
 CLAUDE_BIN="${PROMO_EXP_CLAUDE_BIN:-claude}"
+GH_BIN="${PROMO_EXP_GH_BIN:-gh}"
 
 # A variable inherited from a pipeline stage would make the review session a
 # seat of that run. The experiment's sessions belong to no run.
@@ -362,10 +377,53 @@ stem_cycle() {
   fi
 }
 
+# gh_slug — `<owner>/<repo>` of the GitHub repository --repo's origin names
+# (https, ssh:// and scp-like URLs, a trailing `.git` dropped), or nothing.
+gh_slug() {
+  local u
+  u=$(cd "$repo" && git remote get-url origin 2>/dev/null) || return 0
+  u="${u%/}"; u="${u%.git}"
+  if [[ "$u" =~ ^(https?|ssh|git)://([^@/]+@)?github\.com(:[0-9]+)?/([^/]+)/([^/]+)$ ]]; then
+    printf '%s/%s' "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}"
+  elif [[ "$u" =~ ^([^@/]+@)?github\.com:([^/]+)/([^/]+)$ ]]; then
+    printf '%s/%s' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+  fi
+}
+
+# GH_SLUG is resolved once, before select reads the reports.
+GH_SLUG=""
+
+# restore_pr <report> <out-prefix> — the PR field. Prints the key<TAB>value
+# lines pr, pr_title, pr_body_sha and pr_labels (all empty when the original
+# review got no pull request) and writes the body to <out-prefix>.pr-body; on a
+# blocked field prints `<field>: <why>` and returns 1.
+restore_pr() {
+  local r="$1" body="$2.pr-body" v num js title labels
+  v=$(bold_line "$r" 'PR')
+  if [[ -z "$v" || "$v" == 없음* || "$v" == 해당\ 없음* ]]; then
+    rm -f "$body"
+    printf 'pr\t\npr_title\t\npr_body_sha\t\npr_labels\t\n'
+    return 0
+  fi
+  if [[ ! "$v" =~ ^#([0-9]+) ]]; then
+    echo "PR 제목·본문·라벨: 원 리뷰가 PR 을 받았는지 가릴 수 없다 (${v})"; return 1
+  fi
+  num="${BASH_REMATCH[1]}"
+  [[ -n "$GH_SLUG" ]] || { echo "PR 제목·본문·라벨: --repo 의 origin 이 GitHub 저장소로 풀리지 않는다"; return 1; }
+  js=$("$GH_BIN" pr view "$num" --repo "$GH_SLUG" --json title,body,labels 2>/dev/null) \
+    && title=$(printf '%s' "$js" | jq -er '.title | strings' 2>/dev/null) \
+    && labels=$(printf '%s' "$js" | jq -er '[.labels[]?.name | strings] | join(",")' 2>/dev/null) \
+    && printf '%s' "$js" | jq -ej '.body // "" | strings' > "$body" 2>/dev/null \
+    || { rm -f "$body"; echo "PR 제목·본문·라벨: gh pr view #${num} 조회 실패"; return 1; }
+  title=$(printf '%s' "$title" | tr '\t\r\n' '   ')
+  printf 'pr\t%s\npr_title\t%s\npr_body_sha\t%s\npr_labels\t%s\n' "$num" "$title" "$(sha_of "$body")" "$labels"
+}
+
 # restore_inputs <report> <out> — the original review's inputs, one
 # key<TAB>value line each, written to <out>; on a blocked field prints
 # `<field>: <why>` and returns 1. Keys: rid seg doc_src doc_rel expand slice
-# declared pr.
+# declared pr pr_title pr_body_sha pr_labels; a received pull request's body is
+# beside <out> as <out without .tsv>.pr-body.
 restore_inputs() {
   local r="$1" out="$2" nm rid seg man led docv rel exp sl decl full pr
   nm=$(basename "$r")
@@ -411,11 +469,11 @@ restore_inputs() {
   # the same list bare, `a, b`.
   decl=$(printf '%s' "$decl" | tr -d '`' | sed -E 's/[[:space:]]+$//')
   [[ "$decl" != "-" && "$decl" != "없음" ]] || decl=""
-  pr=$(bold_line "$r" 'PR')
-  if [[ -n "$pr" ]]; then echo "PR 제목·본문·라벨: 원 리뷰가 PR 을 받았는데 본문·라벨이 원장·원 보고서에 없다"; return 1; fi
+  pr=$(restore_pr "$r" "${out%.tsv}") || { printf '%s\n' "$pr"; return 1; }
   {
     printf 'rid\t%s\nseg\t%s\ndoc_src\t%s\ndoc_rel\t%s\n' "$rid" "$seg" "$docv" "$rel"
-    printf 'expand\t%s\nslice\t%s\ndeclared\t%s\npr\t%s\n' "$exp" "$sl" "$decl" ""
+    printf 'expand\t%s\nslice\t%s\ndeclared\t%s\n' "$exp" "$sl" "$decl"
+    printf '%s\n' "$pr"
   } > "$out"
 }
 
@@ -423,6 +481,7 @@ select_samples() {
   local sel="$EXP/selection.tsv"
   [[ -f "$sel" ]] && return 0
   mkdir -p "$EXP" "$ST/inputs"
+  GH_SLUG=$(gh_slug)
   [[ -f "$EXP/meta" ]] || printf 'exp-id\t%s\nrepo\t%s\ncommit\t%s\nstarted\t%s\n' "$exp_id" "$repo" "$C" "$(now_iso)" > "$EXP/meta"
   local rows="$ST/.rows.tsv" r nm h ex date summ sp0 sp1 rhead pl rest mode why b hh dots base head p0p1 sc stem cy
   : > "$rows"
@@ -817,6 +876,12 @@ review_prompt() {
   [[ -z "$(kv "$in" declared)" ]] || line="$line --declared-files \"$(kv "$in" declared)\""
   [[ -z "$(kv "$in" expand)" ]] || line="$line --expand $(kv "$in" expand)"
   line="$line \"설계는 ${doc}\""
+  if [[ -n "$(kv "$in" pr)" ]]; then
+    local body labels
+    body=$(cat "${in%.tsv}.pr-body" 2>/dev/null || true)
+    labels=$(kv "$in" pr_labels); [[ -n "$labels" ]] || labels="없음"
+    line="$line \"$(printf '%s' "이 대상은 로컬 diff 모드라 PR 이 없으므로, 원 리뷰가 받은 PR 메타데이터를 여기 싣는다 — PR #$(kv "$in" pr), 제목: $(kv "$in" pr_title), 라벨: ${labels}, 본문: ${body}" | sed 's/"/\\"/g')\""
+  fi
   line="$line \"이 세션은 파이프라인 런 밖에서 직접 띄운 리뷰다 — 게이트·런 매니페스트·인가 기록이 없다. 중단 기록은 ${rd}/halt/review.md 에 쓴다(CC_PIPELINE_RUN_DIR·CC_PIPELINE_STAGE_ID·pipeline-grant 에서 유도하지 않는다). 무인 규칙 가운데 행위를 gate.sh exec 로 하라는 규칙, Step 5 의 gate.sh report-check, 매니페스트를 읽는 라벨 인정은 이 세션에서 건너뛴다.\""
   printf '%s' "$line"
 }
@@ -844,7 +909,12 @@ prepare_branch() {
   {
     printf '설계 문서\t%s\t%s\n' "$rel" "$(sha_of "$t/$rel")"
     printf -- '--expand\t%s\n' "$(kv "$in" expand | sed 's/^$/없음/')"
-    printf 'PR 제목·본문·라벨\t없음\n'
+    if [[ -z "$(kv "$in" pr)" ]]; then
+      printf 'PR 제목·본문·라벨\t없음\n'
+    else
+      printf 'PR 제목·본문·라벨\t#%s\t%s\t본문 sha256 %s\t라벨 %s\n' "$(kv "$in" pr)" "$(kv "$in" pr_title)" \
+        "$(kv "$in" pr_body_sha)" "$(kv "$in" pr_labels | sed 's/^$/없음/')"
+    fi
     printf -- '--slice\t%s\n' "$(kv "$in" slice | sed 's/^$/없음/')"
     printf -- '--declared-files\t%s\n' "$(kv "$in" declared | sed 's/^$/없음/')"
     printf '설계 문서 지시문\t설계는 <대상 복제본>/%s\n' "$rel"

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Test scripts/review-seat-promotion-pair.sh against a fixture repository built
-# here under `mktemp -d` and the model CLI stub
-# tests/fixtures/review-seat-promotion-pair/claude-stub.sh.
+# here under `mktemp -d`, the model CLI stub
+# tests/fixtures/review-seat-promotion-pair/claude-stub.sh and the GitHub CLI
+# stub tests/fixtures/review-seat-promotion-pair/gh-stub.sh, which answers
+# pull request 11 only.
 #
 # The fixture repository carries the plugin pieces the runner reads at commit
 # C (tests/fixtures/review-seat-promotion-pair/plugin/: the tier file with the
@@ -49,6 +51,15 @@ cp "$fixtures/claude-stub.sh" "$tmp/claude-stub"
 chmod 755 "$tmp/claude-stub"
 export PROMO_EXP_CLAUDE_BIN="$tmp/claude-stub"
 export STUB_DIR="$tmp/stub-none"
+cp "$fixtures/gh-stub.sh" "$tmp/gh-stub"
+chmod 755 "$tmp/gh-stub"
+export PROMO_EXP_GH_BIN="$tmp/gh-stub"
+export GH_STUB_DIR="$tmp/gh-prs"
+mkdir -p "$GH_STUB_DIR"
+# Pull request 11 has a title, a body of several lines with a double quote,
+# and two labels; no other pull request exists.
+pr_body=$(printf '첫 줄 "인용"\n\n둘째 단락')
+jq -n --arg b "$pr_body" '{title: "feat(x): 픽스처 PR", body: $b, labels: [{name: "bug"}, {name: "autopilot"}]}' > "$GH_STUB_DIR/11.json"
 
 # expect_eq <label> <want> <got>
 expect_eq() {
@@ -78,6 +89,8 @@ R="$tmp/repo"
 mkdir -p "$R"
 cd "$R"
 git init -q -b master
+# select resolves the pull request field's repository from this origin.
+git remote add origin https://github.com/fx/repo.git
 mkdir -p plugins/cc-cmds scripts
 cp -R "$fixtures/plugin/." plugins/cc-cmds/
 cp "$repo_root/scripts/review-seat-promotion-compare.sh" scripts/
@@ -111,7 +124,7 @@ rid3=20261009-0000000b
 mkdir -p "$R/docs/reviews" "$R/docs/pipeline-run"
 printf '# 설계 x\n\n본문\n' > "$R/docs/design-x.md"
 
-# mk_report <name> <range or -> <review head> <p0> <p1> <promoted 1|0> <slice line> [mode]
+# mk_report <name> <range or -> <review head> <p0> <p1> <promoted 1|0> <slice line> [mode] [PR line]
 mk_report() {
   local f="$R/docs/reviews/$1" i
   {
@@ -119,6 +132,7 @@ mk_report() {
     printf -- '- **리뷰 날짜**: 2026-10-20\n'
     if [[ "$2" == "-" ]]; then printf -- '- **리뷰 대상**: 브랜치 `seg/x`\n'
     else printf -- '- **리뷰 대상**: 브랜치 `seg/x`, 커밋 범위 `%s`\n' "$2"; fi
+    [[ -z "${9:-}" ]] || printf -- '- **PR**: %s\n' "$9"
     printf -- '- **리뷰 모드**: %s\n' "${8:-전체}"
     printf -- '- **슬라이스 범위**: %s\n' "$7"
     printf -- '- **리뷰 HEAD**: `%s`\n' "$3"
@@ -134,12 +148,14 @@ mk_report() {
 }
 
 none='적용 안 됨 — 인자 없음'
-mk_report "seg-$rid1-A-cycle1.md" "$p_A..$h_A" "$h_A" 1 0 1 "$none" '전체 (델타 아님)'
+mk_report "seg-$rid1-A-cycle1.md" "$p_A..$h_A" "$h_A" 1 0 1 "$none" '전체 (델타 아님)' '#11 — feat(x): 픽스처 PR'
 mk_report "seg-$rid1-A-cycle2.md" "$p_A..$h_A" "$h_A" 1 2 1 "$none"
 mk_report "$rid1-B-c1.md" "${c0:0:7}...${h_B:0:7}" "$h_B" 1 1 1 '슬라이스 B (구현 슬라이싱의 B)'
 mk_report "seg-$rid1-C-cycle1.md" "$p_C..$h_C" "$h_C" 1 2 1 '적용 안 됨 — 설계 문서 없음'
-mk_report "seg-$rid1-D-cycle1.md" "$p_D..$h_D" "$h_D" 2 2 1 "$none"
-mk_report "seg-$rid1-E-cycle1.md" "$p_E..$h_E" "$h_E" 2 3 1 "$none"
+mk_report "seg-$rid1-D-cycle1.md" "$p_D..$h_D" "$h_D" 2 2 1 "$none" "" '없음 — 로컬 모드(브랜치 직접 리뷰)'
+mk_report "seg-$rid1-E-cycle1.md" "$p_E..$h_E" "$h_E" 2 3 1 "$none" "" '해당 없음 — 브랜치 대상 리뷰 (로컬 diff 모드)'
+mk_report "seg-$rid1-O-cycle1.md" "$p_K..$h_K" "$h_K" 1 1 1 "$none" "" '#99 — 지워진 PR'
+mk_report "seg-$rid1-P-cycle1.md" "$p_K..$h_K" "$h_K" 1 1 1 "$none" "" '나중에 정한다'
 mk_report "seg-$rid2-F-cycle1.md" "$p_F..$h_F" "$h_F" 3 3 1 "$none"
 mk_report "seg-$rid1-G-cycle1.md" "$p_G..$h_G" "$h_A" 1 1 1 "$none"
 mk_report "seg-$rid1-H-cycle1.md" "$p_H..$h_U" "$h_U" 1 1 1 "$none"
@@ -163,7 +179,7 @@ mk_report "seg-$rid1-A-cycle1.lead-fix.md" "$p_A..$h_A" "$h_A" 1 1 1 "$none"
 printf '`f-E.sh`, `docs/long.md`\n' > "$tmp/declared.E"
 {
   printf '# 원장\n\n'
-  for s in A B C D G H I K L M; do
+  for s in A B C D G H I K L M O P; do
     printf -- '- `segment` | id=%s | 상태=시작 | 선언 파일 집합=`f-%s.sh`, `README.md` | 베이스 sha=x\n' "$s" "$s"
   done
   printf -- '- `segment` | id=E | 상태=시작 | 선언 파일 집합=`f-E.…(잘림) (전체: %s) | 베이스 sha=x\n' "$tmp/declared.E"
@@ -218,6 +234,11 @@ expect_eq "a report without a promoted row is left out" "제외|출처=승격 �
 expect_eq "a report without a commit range is left out" "제외|리뷰 대상에 커밋 범위가 없다|-" "$(sel_row "seg-$rid1-L-cycle1.md")"
 expect_eq "a cap re-check written as 전체 is left out" "제외|리뷰 모드가 전체가 아니다 (전체 (상한 사이클 2 재확인, \`--recheck\`))|-" "$(sel_row "seg-$rid1-M-cycle1.md")"
 expect_eq "a delta review is left out" "제외|리뷰 모드가 전체가 아니다 (델타 (기준 사이클 1))|-" "$(sel_row "seg-$rid1-N-cycle1.md")"
+expect_eq "a pull request gh cannot find is left out as 입력 복원 불가" \
+  "제외|입력 복원 불가 — PR 제목·본문·라벨: gh pr view #99 조회 실패|-" "$(sel_row "seg-$rid1-O-cycle1.md")"
+expect_eq "a PR line that tells nothing is left out as 입력 복원 불가" \
+  "제외|입력 복원 불가 — PR 제목·본문·라벨: 원 리뷰가 PR 을 받았는지 가릴 수 없다 (나중에 정한다)|-" "$(sel_row "seg-$rid1-P-cycle1.md")"
+expect_line "select reads the pull request from the origin's GitHub repository" "$STUB_DIR/gh-calls" "pr view 11 --repo fx/repo --json title,body,labels"
 if ! grep -q -e '^\.hidden\.md' -e 'lead-fix' "$E/selection.tsv"; then pass "hidden and .lead-fix.md files are not read"; else fail "selection.tsv lists a hidden or .lead-fix.md file"; fi
 expect_eq "a three-dot short-sha range resolves to the merge-base and the full head" \
   "${c0}|${h_B}" "$(awk -F'\t' -v n="$nB" '$1 == n { print $5 "|" $6 }' "$E/selection.tsv")"
@@ -256,6 +277,18 @@ expect_line "inputs records the design document copy and its sha256" "$S/runs/1-
   "$(printf '설계 문서\tdocs/design-x.md\t%s' "$(shasum -a 256 "$R/docs/design-x.md" | cut -d' ' -f1)")"
 expect_line "inputs records the restored --expand" "$S/runs/1-opus-1/inputs" "$(printf -- '--expand\tperf')"
 expect_line "inputs records the bare declared files" "$S/runs/1-opus-1/inputs" "$(printf -- '--declared-files\tf-A.sh, README.md')"
+expect_line "inputs records the pull request's number, title, body sha256 and labels" "$S/runs/1-opus-1/inputs" \
+  "$(printf 'PR 제목·본문·라벨\t#11\tfeat(x): 픽스처 PR\t본문 sha256 %s\t라벨 bug,autopilot' "$(printf '%s' "$pr_body" | shasum -a 256 | cut -d' ' -f1)")"
+expect_line "a report with no PR line restores the PR field as 없음" "$S/runs/2-opus-1/inputs" "$(printf 'PR 제목·본문·라벨\t없음')"
+expect_line "a PR line reading 없음 restores the PR field as 없음" "$S/runs/3-opus-1/inputs" "$(printf 'PR 제목·본문·라벨\t없음')"
+expect_line "a PR line reading 해당 없음 restores the PR field as 없음" "$S/runs/4-opus-1/inputs" "$(printf 'PR 제목·본문·라벨\t없음')"
+pr_piece='이 대상은 로컬 diff 모드라 PR 이 없으므로, 원 리뷰가 받은 PR 메타데이터를 여기 싣는다 — PR #11, 제목: feat(x): 픽스처 PR, 라벨: bug,autopilot, 본문: 첫 줄 \"인용\"'
+if grep -Fq -- "$pr_piece" "$S/runs/1-opus-1/prompt" && grep -Fq '둘째 단락" "' "$S/runs/1-opus-1/prompt"; then
+  pass "the prompt carries the restored pull request's number, title, labels and body"
+else
+  fail "sample 1's prompt does not carry the pull request"
+fi
+if ! grep -Fq 'PR 메타데이터' "$S/runs/2-opus-1/prompt"; then pass "a review that got no pull request gets no PR piece"; else fail "sample 2's prompt carries a PR piece"; fi
 expect_line "a run with no design document gets the anchor brief" "$S/runs/5-opus-1/target/docs/anchor-brief-$rid2.md" "# 앵커 브리프 — 설계 문서 없는 런"
 expect_line "the anchor brief carries the manifest" "$S/runs/5-opus-1/target/docs/anchor-brief-$rid2.md" "- 앵커 키: fx-intent"
 expect_line "no declared files and no --expand restore as 없음" "$S/runs/5-opus-1/inputs" "$(printf -- '--declared-files\t없음')"
@@ -289,6 +322,7 @@ fi
 G="$tmp/repo-g"
 git clone -q "$R" "$G"
 cp -R "$R/docs" "$G/docs"
+(cd "$G" && git remote set-url origin https://github.com/fx/repo.git)
 (cd "$G" && printf 'stage_launch_flags() { printf -- "--effort high --model opus"; }\n[ "${CC_ORCH_SOURCE_ONLY:-}" = "1" ] && return 0\n' > plugins/cc-cmds/orchestrator/run.sh \
   && git commit -q -am "move the review effort")
 rc=0; runner "$tmp/g1" run --dry-run --exp-id 20261101-0000d003 --repo "$G" || rc=$?
@@ -323,7 +357,7 @@ prompt=$(cat "$rd/prompt")
     --exclude-dynamic-system-prompt-sections --no-session-persistence --output-format json --max-budget-usd 150
 } > "$tmp/want.argv"
 if cmp -s "$tmp/want.argv" "$STUB_DIR/calls/1.argv"; then pass "the review call carries exactly the closed list's flags"; else fail "the review call's arguments differ from the closed list"; diff "$tmp/want.argv" "$STUB_DIR/calls/1.argv" >&2 || true; fi
-want_prefix="/cc-cmds:review-unattended work --base-sha ${p_A} --report-path ${rd}/report.md --declared-files \"f-A.sh, README.md\" --expand perf \"설계는 ${rd}/target/docs/design-x.md\" \"${directive_tail}"
+want_prefix="/cc-cmds:review-unattended work --base-sha ${p_A} --report-path ${rd}/report.md --declared-files \"f-A.sh, README.md\" --expand perf \"설계는 ${rd}/target/docs/design-x.md\" \"${pr_piece}"$'\n\n'"둘째 단락\" \"${directive_tail}"
 if [[ "$prompt" == "$want_prefix"* ]]; then pass "the prompt passes the local branch with --base-sha and the restored inputs"; else fail "the prompt is [$prompt]"; fi
 if [[ "$prompt" == *"${rd}/halt/review.md"* ]]; then pass "the directive names the branch's halt record path"; else fail "the directive does not name ${rd}/halt/review.md"; fi
 for kvp in "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=14400000" "CC_CMDS_STATUSLINE_AUTOINSTALL=0" "XDG_STATE_HOME=$rd/state" \
@@ -347,7 +381,7 @@ expect_eq "the settings refuse push and network tools" "true|true|true" \
   "$(jq -r '[(.permissions.deny | index("Bash(git push:*)") != null), (.permissions.deny | index("WebFetch") != null), (.permissions.deny | index("Bash(gh:*)") != null)] | map(tostring) | join("|")' "$st")"
 expect_eq "the settings open writes in the target clone and the state home" "true|true" \
   "$(jq -r --arg t "Write(/$rd/target/**)" --arg s "Write(/$rd/state/**)" '[(.permissions.allow | index($t) != null), (.permissions.allow | index($s) != null)] | map(tostring) | join("|")' "$st")"
-if grep -Fxq '# Personal rules' "$lead" && grep -Fxq -- '- fixture personal rule' "$lead" && grep -Fxq '# repo/CLAUDE.md' "$lead" && grep -Fxq '# fixture repo rules' "$lead"; then
+if grep -Fxq '# Personal rules' "$lead" && grep -Fxq -- '- fixture personal rule' "$lead" && grep -Fxq '# fx/repo/CLAUDE.md' "$lead" && grep -Fxq '# fixture repo rules' "$lead"; then
   pass "the lead instructions are the policy, the personal rules and the repository chain"
 else
   fail "the lead instructions miss a part"
