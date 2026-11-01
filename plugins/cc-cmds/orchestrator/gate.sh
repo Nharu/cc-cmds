@@ -3419,8 +3419,9 @@ gate_preauth_rows() {
 # and nothing else; the run id is not known at kickoff, so the row freezes the
 # reserved value and the gate spells it out (`gate_preauth_pair_argv`). A
 # device the run created is written to `${RUN_DIR}/devices/created.tsv` when
-# the act that made it ended 0, and an act aimed at an existing device opens
-# only when its target is on that list.
+# the act that made it ended 0 — an emulator, which lives as long as its
+# foreground act, before it starts, its serial withdrawn when it ends — and an
+# act aimed at an existing device opens only when its target is on that list.
 # ---------------------------------------------------------------------------
 
 # The reserved `짝 정리` value: the run's device cleanup, spelled out per unit.
@@ -3561,10 +3562,23 @@ gate_device_listed() {
   # gate_device_listed <udid|emulator-<port>|name> — 0 when this run's device
   # list carries it in its second or third column. `booted`, `all` and
   # `unavailable` name no one device, so they are never on it.
-  local t="$1" f
+  #
+  # AN EMULATOR SERIAL IS CHECKED AGAINST THE DEVICE ON THE PORT. A port is
+  # reused once its emulator ends, so `emulator-<port>` on the list is this
+  # run's device only while `adb -s <serial> emu avd name` still answers with
+  # the name the row recorded. No answer, or another name, is not listed.
+  local t="$1" f nm live
   case "$t" in ''|-|booted|all|unavailable) return 1 ;; esac
   f="${RUN_DIR:-}/devices/created.tsv"
   [ -n "${RUN_DIR:-}" ] && [ -f "$f" ] || return 1
+  case "$t" in
+    emulator-[0-9]*)
+      nm=$(awk -F '\t' -v t="$t" '$2 == t { n = $3 } END { printf "%s", n }' "$f")
+      [ -n "$nm" ] || return 1
+      live=$(adb -s "$t" emu avd name 2>/dev/null | sed -n '1p' | tr -d '\r')
+      [ "$live" = "$nm" ]
+      return ;;
+  esac
   awk -F '\t' -v t="$t" '$2 == t || $3 == t { found = 1 } END { exit found ? 0 : 1 }' "$f"
 }
 
@@ -3661,9 +3675,11 @@ gate_device_record() {
   # device list. The UDID of `simctl create`/`clone` is the first line of the
   # act's own output; `emulator -avd` gives its port; `avdmanager create avd`
   # gives a name only. `boot` and `xcodebuild test` make no device of their
-  # own and write nothing.
+  # own and write nothing. GATE_DEVICE_RECORDED_ID is left as the id column
+  # of the row written, empty when none was.
   local out="$1" cmd id='-' nm='' port='' ops
   shift
+  GATE_DEVICE_RECORDED_ID=''
   [ -n "${RUN_DIR:-}" ] || return 0
   cmd="${1##*/}"
   case "$cmd" in
@@ -3699,17 +3715,51 @@ gate_device_record() {
   esac
   [ -n "$nm" ] || return 0
   mkdir -p "$RUN_DIR/devices" 2>/dev/null || return 0
-  printf '%s\t%s\t%s\n' "$(gate_pair_dispatch_id)" "$id" "$nm" >> "$RUN_DIR/devices/created.tsv"
+  printf '%s\t%s\t%s\n' "$(gate_pair_dispatch_id)" "$id" "$nm" >> "$RUN_DIR/devices/created.tsv" || return 0
+  GATE_DEVICE_RECORDED_ID=$id
+}
+
+gate_device_withdraw_serial() {
+  # gate_device_withdraw_serial <emulator-<port>> — this dispatch's rows that
+  # carry the serial keep their name and lose the serial (`-`): the emulator
+  # on that port has ended. The list is rewritten through a file in the same
+  # directory and renamed over it.
+  local s="$1" f tmp d
+  f="${RUN_DIR:-}/devices/created.tsv"
+  [ -n "${RUN_DIR:-}" ] && [ -f "$f" ] || return 0
+  d=$(gate_pair_dispatch_id)
+  tmp=$(mktemp "$RUN_DIR/devices/.created.XXXXXX") || return 0
+  if awk -F '\t' -v OFS='\t' -v s="$s" -v d="$d" '$1 == d && $2 == s { $2 = "-" } { print }' "$f" > "$tmp"; then
+    mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
 }
 
 gate_run_device_aware() {
   # gate_run_device_aware <argv...> — run the act as `gate_run_readonly` does,
-  # and when it is a device act of kind `create` that ended 0, record the device
-  # it made. Only `simctl create`/`clone` print the id the record needs, so only
-  # their output is captured, and then passed through unchanged.
-  local rc=0 out=''
+  # and when it is a device act of kind `create`, record the device it made:
+  # after it ended 0, or for an emulator while it runs (below). Only
+  # `simctl create`/`clone` print the id the record needs, so only their
+  # output is captured, and then passed through unchanged.
+  #
+  # AN EMULATOR IS RECORDED WHILE IT RUNS. `emulator -avd <name> -port <p>`
+  # stays in the foreground for as long as the device lives, so a row written
+  # after it ended would name a serial that is already gone, and every
+  # `adb -s emulator-<p>` act while it lived would find no row. Its row is
+  # written before it starts, from the name and port its own argv carries,
+  # and its serial is withdrawn when it ends, whatever its exit status: the
+  # port is free again, and a later device on it is not this one.
+  local rc=0 out='' eserial=''
   if [ "$(gate_device_act_kind "$@")" != create ]; then
     gate_run_readonly "$@" || rc=$?
+    return "$rc"
+  fi
+  if [ "${1##*/}" = emulator ]; then
+    gate_device_record /dev/null "$@"
+    eserial=$GATE_DEVICE_RECORDED_ID
+    gate_run_readonly "$@" || rc=$?
+    [ -z "$eserial" ] || [ "$eserial" = "-" ] || gate_device_withdraw_serial "$eserial"
     return "$rc"
   fi
   case "${1##*/} ${2:-} ${3:-}" in
@@ -4175,7 +4225,7 @@ gate_park_repair_line() {
         warn "repair: the device this act makes or boots must be named '${_pfx}<name>' with no '-' after the prefix (simctl create's name, clone's new name, emulator -avd and avdmanager -n, the name= of an xcodebuild test destination), an emulator needs an explicit -port, and simctl boot takes the name rather than a UDID — respell the act that way"
         return 0 ;;
       */foreign-device)
-        warn "repair: this act points at a device this run did not create (the gate opens only the UDIDs, emulator-<port> serials and names listed in this run's devices/created.tsv; 'booted', 'all' and 'unavailable' are never opened) — point it at a device this run made, or leave it to a person"
+        warn "repair: this act points at a device this run did not create (the gate opens only the UDIDs, emulator-<port> serials and names listed in this run's devices/created.tsv, an emulator serial only while the emulator on that port answers with the listed AVD name; 'booted', 'all' and 'unavailable' are never opened) — point it at a device this run made, or leave it to a person"
         return 0 ;;
     esac
   fi
@@ -12194,10 +12244,11 @@ halt_step_is_decision_collect() {
 }
 
 gate_decision_collect_key() {
-  # gate_decision_collect_key <fallback> — the key a collection record is
-  # answered on: the plan's last design-side run-scope step (the audit, else
-  # the design), or <fallback>, the first held segment, in a run whose plan
-  # has neither.
+  # gate_decision_collect_key — prints the key a collection record is
+  # answered on and returns 0: the plan's last design-side run-scope step (the
+  # audit, else the design). Returns 1 in a run whose plan has neither: no key
+  # there takes the answer and the `- reconverge` that carries it out, so the
+  # collection does not hold anything (`수거 생략`).
   local k s
   for k in audit design; do
     if s=$(gate_run_scope_step "$k" 2>/dev/null) && [ -n "$s" ]; then
@@ -12205,7 +12256,7 @@ gate_decision_collect_key() {
       return 0
     fi
   done
-  printf '%s' "$1"
+  return 1
 }
 
 gate_decision_collect_row() {
@@ -12328,8 +12379,19 @@ $(gate_rows '결정 수거' 2>/dev/null || true)
 EOF
   done
   rec='없음'
+  # A PLAN WITH NO DESIGN-SIDE STEP HOLDS NOTHING. The record would be
+  # answered on a key no stage of this run has a row on, and its answer would
+  # route to a `- reconverge` with no key to ride on, so the held segments
+  # would wait on a question nobody can carry out. The row says the collection
+  # was skipped, and the open entries are left to the implement stage's own
+  # binding-tier stop.
+  local skip=''
+  if [ -n "$heads" ] && ! key=$(gate_decision_collect_key); then
+    skip='설계 단계 없음'
+    warn "결정 수거: 실행 계획에 설계 단계도 감사 단계도 없어 답을 받을 키가 없습니다 — 미결 결정 항목은 보류하지 않고 구현 단계의 구속 티어 정지에 맡깁니다"
+    heads=''; holds=''; loopcap=''
+  fi
   if [ -n "$heads" ]; then
-    key=$(gate_decision_collect_key "${holds%% *}")
     n=$( { gate_stage_result_rows_of "$key" 2>/dev/null || true; } | { grep -c -F -- '- `stage-result`' || true; })
     [ "${n:-0}" -ge 1 ] 2>/dev/null || n=1
     mkdir -p "$RUN_DIR/halt" 2>/dev/null || true
@@ -12379,7 +12441,8 @@ EOF
     rdig=$(shasum -a 256 "$rec" | cut -d' ' -f1)
   fi
   gate_append '결정 수거' "문서 다이제스트=$dig" "중단 기록=$rec" "기록 다이제스트=$rdig" \
-    "보류 세그먼트=${holds:-없음}" ${loopcap:+"순환 상한=$loopcap"} "기록 시각=$(now_iso)" || return "$?"
+    "보류 세그먼트=${holds:-없음}" ${loopcap:+"순환 상한=$loopcap"} ${skip:+"수거 생략=$skip"} \
+    "기록 시각=$(now_iso)" || return "$?"
   GATE_DC_RECORD=$rec
   GATE_DC_HOLDS=${holds:-없음}
   GATE_DC_LOOPCAP=$loopcap
@@ -12416,6 +12479,113 @@ gate_decision_hold_refuse() {
     warn "보류 집합 밖의 세그먼트를 계속 라우팅하세요. 사람의 답은 그 기록의 중단 답으로 받습니다"
   fi
   exit "$GATE_EXIT_RULE"
+}
+
+gate_decision_collect_named() {
+  # gate_decision_collect_named <record> — 0 when a `결정 수거` row of this
+  # run names the record: a file the gate wrote as a collection, not one that
+  # only carries the collection's step line.
+  [ -n "$1" ] && [ "$1" != "없음" ] || return 1
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '중단 기록')" = "$1" ] && return 0
+  done <<EOF
+$(gate_rows '결정 수거' 2>/dev/null || true)
+EOF
+  return 1
+}
+
+gate_decision_reconverge_open() {
+  # gate_decision_reconverge_open <key> <record> — 0 when an answer to the
+  # collection record can still send the document through the re-convergence
+  # of scope `구속 티어 이탈 <record>` on that key; 1 otherwise, with
+  # GATE_DCR_WHY saying which fact is missing. The route of the answer and the
+  # `- reconverge` dispatch that carries it out ask this same test.
+  #
+  # Four facts, all read from the ledger and the record: a `결정 수거` row
+  # names the record; the record's header names this key, and the key is the
+  # plan's design or audit step; the collection row did not reach the loop
+  # cap; and no re-convergence of the key has a row after the record's first
+  # `중단 답` — a record opens its re-convergence once.
+  local key="$1" rec="$2" hk first
+  GATE_DCR_WHY=''
+  if ! gate_decision_collect_named "$rec"; then
+    GATE_DCR_WHY="이 런의 결정 수거 행이 이름 대지 않는 기록입니다: $rec"
+    return 1
+  fi
+  hk=$(sed -n '1s/.*; stage=\([^;]*\)#[0-9][0-9]*; .*/\1/p' "$rec" 2>/dev/null)
+  if [ -z "$hk" ] || [ "$hk" != "$key" ]; then
+    GATE_DCR_WHY="결정 수거 기록의 머리 키(${hk:-없음})가 ${key} 가 아닙니다: $rec"
+    return 1
+  fi
+  case "$(gate_run_scope_kind_of_key "$key" 2>/dev/null)" in
+    design|audit) ;;
+    *) GATE_DCR_WHY="${key} 는 실행 계획의 설계 단계나 감사 단계가 아니어서 - reconverge 의 키가 될 수 없습니다"
+       return 1 ;;
+  esac
+  if gate_decision_collect_capped "$rec"; then
+    GATE_DCR_WHY="결정 수거의 순환 상한에 닿은 기록입니다 — 교대가 실행할 갈래가 없고, 사람이 문서의 항목을 직접 닫아야 합니다"
+    return 1
+  fi
+  first=$( { grep -n -F "| 세그먼트=$key | 중단 기록=$rec |" "$LEDGER" 2>/dev/null || true; } \
+           | { grep "^[0-9]*:- \`중단 답\` " || true; } | sed -n '1p' | cut -d: -f1)
+  if [ -n "$first" ] \
+     && [ -n "$( { grep -n -F "세그먼트=- | 스테이지=$key | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
+                 | { grep "^[0-9]*:- \`stage-result\` " || true; } \
+                 | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+                 | awk -F: -v l="$first" '$1 > l')" ]; then
+    GATE_DCR_WHY="이 결정 수거 기록은 이미 재수렴을 한 번 열었습니다 — 같은 기록으로 두 번 열지 않고, 새 다이제스트의 수거가 보류를 다시 정합니다: $rec"
+    return 1
+  fi
+  return 0
+}
+
+gate_decision_reconverge_entry() {
+  # gate_decision_reconverge_entry <key> — 0 when a `- reconverge` on the key
+  # is the re-convergence a person's answer to a decision-collection record
+  # asks for, with GATE_DCR_RECORD that record; 1 otherwise, with GATE_DCR_WHY
+  # saying which fact is missing.
+  #
+  # The key's last `중단 답` is a person's `추천대로 확정` or `항목별로 답함`
+  # on a record `gate_decision_reconverge_open` still admits. A `--resume` of
+  # that re-convergence is admitted the way the audit's is: the key's last row
+  # is a re-convergence of the session being resumed, and the record is the
+  # one the key's last collection answer names.
+  local key="$1" last row rec lrow
+  GATE_DCR_RECORD=''; GATE_DCR_WHY=''
+  last=$( { grep -n -F "| 세그먼트=$key |" "$LEDGER" 2>/dev/null || true; } \
+          | { grep "^[0-9]*:- \`중단 답\` " || true; } | sed -n '$p')
+  if [ -z "$last" ]; then
+    GATE_DCR_WHY="${key} 에 중단 답 행이 없습니다"
+    return 1
+  fi
+  row=${last#*:}
+  rec=$(gate_row_field "$row" '중단 기록')
+  if [ -n "${GATE_RESUME:-}" ]; then
+    lrow=$(gate_stage_result_rows_of "$key" | tail -1)
+    if [ "$(gate_row_field "$lrow" '종류')" = "reconverge" ] \
+       && [ "$(gate_row_field "$lrow" '세션 id')" = "$GATE_RESUME" ] \
+       && halt_step_is_decision_collect "$rec" && gate_decision_collect_named "$rec"; then
+      GATE_DCR_RECORD=$rec
+      return 0
+    fi
+  fi
+  if ! halt_step_is_decision_collect "$rec"; then
+    GATE_DCR_WHY="${key} 의 마지막 중단 답(원장 ${last%%:*}번째 줄)이 결정 수거 기록의 답이 아닙니다"
+    return 1
+  fi
+  case "$(gate_row_field "$row" '선택지')" in
+    '추천대로 확정'|'항목별로 답함') ;;
+    *) GATE_DCR_WHY="결정 수거 기록의 마지막 답(원장 ${last%%:*}번째 줄)이 「추천대로 확정」 이나 「항목별로 답함」 이 아닙니다"
+       return 1 ;;
+  esac
+  if [ "$(gate_halt_answered_by "$row")" != '사람' ]; then
+    GATE_DCR_WHY="결정 수거 기록의 마지막 답(원장 ${last%%:*}번째 줄)이 사람의 답이 아닙니다"
+    return 1
+  fi
+  gate_decision_reconverge_open "$key" "$rec" || return 1
+  GATE_DCR_RECORD=$rec
 }
 
 # ---------------------------------------------------------------------------
@@ -24550,14 +24720,16 @@ gate_halt_answer_route() {
     # re-convergence of scope `구속 티어 이탈 <record>` on the last design
     # step key closes the entries, and the next collection lets the held
     # segments go. A record written past the loop cap is a person's to settle
-    # in the document; no answer of it is carried out.
+    # in the document; no answer of it is carried out. The structural test is
+    # the one the `- reconverge` dispatch asks (`gate_decision_reconverge_open`),
+    # so a route this branch gives is one that dispatch admits.
     id=구속-재수렴
     case "$opt" in
       '추천대로 확정'|'항목별로 답함') ;;
       *) why="결정 수거 기록에는 「${opt}」 를 실행할 갈래가 없습니다 — 갈래는 「추천대로 확정」 과 「항목별로 답함」 뿐입니다" ;;
     esac
-    if [ -z "$why" ] && gate_decision_collect_capped "$rec"; then
-      why="결정 수거의 순환 상한에 닿은 기록입니다 — 교대가 실행할 갈래가 없고, 사람이 문서의 항목을 직접 닫아야 합니다"
+    if [ -z "$why" ] && ! gate_decision_reconverge_open "$key" "$rec"; then
+      why=$GATE_DCR_WHY
     fi
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
        && [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ]; then
@@ -35499,8 +35671,18 @@ EOF
       # act on. That segment row is the `교대-정지` route's condition, so
       # `gate_halt_answer_route` refuses its absence below, with the routing
       # refusal's two lines.
+      #
+      # A DECISION-COLLECTION RECORD IS ONE ITS ROW VOUCHES FOR TOO. The gate
+      # wrote it before any implementation, on the design-side key its header
+      # names, and that key can have no row at all — a design step skipped over
+      # a document frozen before the run. Its answer is carried out by a
+      # `- reconverge`, not by re-attaching a stage, so the `결정 수거` row
+      # naming the record stands where the stage's row would; the header key
+      # check below still holds.
       if [ -n "$hsrow" ]; then
         gate_shift_halt_record_intact "$seg" "$hrec" "$hsrow" || return "$?"
+      elif halt_step_is_decision_collect "$hrec" && gate_decision_collect_named "$hrec"; then
+        :
       else
         [ -n "$(gate_stage_result_rows_of "$seg")" ] || {
           warn "no \`stage-result\` row names $seg — --segment has to be the segment id, or the step id for the design step, of the stage that halted"
@@ -42375,6 +42557,7 @@ gate_verb_act() {
   # review both hold, the gate does not pick one: the dispatch is refused.
   local stage_key="$segment" stage_is_run_scope_step=0 rs_kind="${1:-}" rs_table="${1:-}" rs_skill rs_astep="" rs_alast=""
   local rs_dstep="" rs_drec="" rs_aok="" rs_dok="" rs_dwhy=""
+  local rs_ckey="" rs_crec="" rs_cok="" rs_cwhy=""
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "$rs_kind" = "reconverge" ]; then
     rs_table=""
     if rs_astep=$(gate_run_scope_step audit); then
@@ -42406,16 +42589,41 @@ gate_verb_act() {
         rs_dwhy=$GATE_DRC_WHY
       fi
     fi
-    if [ -n "$rs_aok" ] && [ -n "$rs_dok" ]; then
+    # AND ON THE COLLECTION'S KEY, THE RE-CONVERGENCE A PERSON'S ANSWER TO A
+    # DECISION-COLLECTION RECORD ASKS FOR. The key is the one the record's
+    # header names (the audit step, else the design step), its prompt carries
+    # the scope `구속 티어 이탈 <that record>`, and it is admitted only in the
+    # state `gate_decision_reconverge_entry` reads. A `--resume` of it matches
+    # the other branches' resume reads too, since all of them read the key's
+    # last row; on the same key that resume is this one.
+    if rs_ckey=$(gate_decision_collect_key); then
+      if gate_decision_reconverge_entry "$rs_ckey"; then
+        rs_cok=1
+        rs_crec=$GATE_DCR_RECORD
+      else
+        rs_cwhy=$GATE_DCR_WHY
+      fi
+    fi
+    if [ -n "$rs_cok" ] && [ -n "${GATE_RESUME:-}" ]; then
+      [ "$rs_ckey" != "$rs_astep" ] || rs_aok=""
+      [ "$rs_ckey" != "$rs_dstep" ] || rs_dok=""
+    fi
+    if [ -n "$rs_aok" ] && [ -n "$rs_dok" ] && [ -z "$rs_cok" ]; then
       warn "- reconverge 가 감사 단계(${rs_astep})의 재수렴과 설계 단계(${rs_dstep})의 잔여 동결 재검토 양쪽에 다 맞습니다 — 게이트는 둘 중 하나를 고르지 않습니다"
+      exit "$GATE_EXIT_RULE"
+    elif [ "$(( ${rs_aok:-0} + ${rs_dok:-0} + ${rs_cok:-0} ))" -gt 1 ]; then
+      warn "- reconverge 가 감사 단계(${rs_astep:-없음})의 재수렴, 설계 단계(${rs_dstep:-없음})의 잔여 동결 재검토, 결정 수거 답의 재수렴(${rs_ckey}) 가운데 둘 이상에 맞습니다 — 게이트는 그 가운데 하나를 고르지 않습니다"
       exit "$GATE_EXIT_RULE"
     elif [ -n "$rs_aok" ]; then
       rs_table=audit
     elif [ -n "$rs_dok" ]; then
       rs_table=design
+    elif [ -n "$rs_cok" ]; then
+      rs_table=$(gate_run_scope_kind_of_key "$rs_ckey")
     else
       warn "- reconverge 는 감사 단계(${rs_astep:-없음})의 마지막 행이 의도된 park 로 끝난 감사이거나, 재수렴 요청=예 로 정상 완료된 감사에 범위 감사 골격급 을 실었거나, --resume 이 그 마지막 재수렴 행의 세션일 때만 받습니다 — 지금 마지막 행은 종류=$(gate_row_field "$rs_alast" '종류') · 종단 부류=$(gate_row_field "$rs_alast" '종단 부류') 입니다"
       [ -z "$rs_dwhy" ] || warn "설계 단계의 잔여 동결 재검토로도 받지 않습니다 — $rs_dwhy"
+      [ -z "$rs_cwhy" ] || warn "결정 수거 답의 재수렴으로도 받지 않습니다 — $rs_cwhy"
     fi
   fi
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
@@ -42492,13 +42700,34 @@ gate_verb_act() {
     #
     # The audit's continuation shares its key and its document lock, so it does
     # not start while an attempt on that key is still running.
-    if [ "$rs_kind" = "reconverge" ] && [ "$rs_table" = "audit" ] && gate_stage_live_attempt "$stage_key"; then
+    if [ "$rs_kind" = "reconverge" ] && [ "$rs_table" = "audit" ] && [ -z "$rs_cok" ] \
+       && gate_stage_live_attempt "$stage_key"; then
       warn "감사 단계($stage_key)의 재수렴은 그 단계에 살아 있는 시도가 없을 때만 뜹니다 — 그 시도가 끝난 뒤 다시 파견하세요"
       exit "$GATE_EXIT_RULE"
     fi
+    # The collection answer's re-convergence edits the document both
+    # design-side steps read, so it waits for both keys, and its prompt names
+    # the scope and the record whose entries it closes.
+    if [ "$rs_kind" = "reconverge" ] && [ -n "$rs_cok" ]; then
+      if { [ -n "$rs_dstep" ] && gate_stage_live_attempt "$rs_dstep"; } \
+         || { [ -n "$rs_astep" ] && gate_stage_live_attempt "$rs_astep"; }; then
+        warn "결정 수거 답의 재수렴(${stage_key})은 설계 단계와 감사 단계 어느 쪽에도 살아 있는 시도가 없을 때만 뜹니다 — 그 시도가 끝난 뒤 다시 파견하세요"
+        exit "$GATE_EXIT_RULE"
+      fi
+      if [ -z "${GATE_RESUME:-}" ]; then
+        local rs_cp rs_crest
+        rs_cp=$(gate_skill_prompt_of "$@")
+        rs_crest=${rs_cp#'/cc-cmds:design-reconverge '}
+        rs_crest=${rs_crest#* }
+        if [ "$rs_crest" != "구속 티어 이탈 $rs_crec" ]; then
+          warn "결정 수거 답의 재수렴 프롬프트는 /cc-cmds:design-reconverge <design_doc> 구속 티어 이탈 ${rs_crec} 이어야 합니다 — 범위와 그 결정 수거 기록의 절대 경로를 그대로 싣습니다"
+          exit "$GATE_EXIT_RULE"
+        fi
+      fi
+    fi
     # The design's review edits the document the audit reads, so it waits for
     # both keys, and its prompt names the scope and the record it reviews.
-    if [ "$rs_kind" = "reconverge" ] && [ "$rs_table" = "design" ]; then
+    if [ "$rs_kind" = "reconverge" ] && [ "$rs_table" = "design" ] && [ -z "$rs_cok" ]; then
       if gate_stage_live_attempt "$stage_key" \
          || { [ -n "$rs_astep" ] && gate_stage_live_attempt "$rs_astep"; }; then
         warn "설계 단계($stage_key)의 잔여 동결 재검토는 설계 단계와 감사 단계 어느 쪽에도 살아 있는 시도가 없을 때만 뜹니다 — 그 시도가 끝난 뒤 다시 파견하세요"

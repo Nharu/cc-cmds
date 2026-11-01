@@ -51492,12 +51492,14 @@ graded_as '트리밖쓰기' '83v: avdmanager create avd 는 트리밖쓰기다' 
 graded_as '트리밖쓰기' '83v: 기기를 지정한 maestro 는 트리밖쓰기다'    -- maestro --device emulator-5554 test flow.yaml
 graded_as '등급 미상'  '83v: 기기를 지정하지 않은 maestro 는 미상이다' -- maestro test flow.yaml
 
-# 매니페스트 — 기기 정리 짝을 단 새 형식 행 하나와 짝 없는 행 하나.
+# 매니페스트 — 기기 정리 짝을 단 새 형식 행 하나와 짝 없는 행 하나, 그리고 결정 수거가
+# 답을 받을 키(설계 단계 D1)를 가진 실행 계획.
 M83V="$D83V/manifest.md"
 {
   printf '# 픽스처 매니페스트\n\n'
   printf -- '- `사전 인가` | 형태=xcrun simctl | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=시험\n'
   printf -- '- `사전 인가` | 형태=emulator -avd | 표면=트리밖쓰기 | 도달=기기전역 | 사유=시험\n'
+  printf '\n## 실행 계획\n```json\n%s\n```\n' '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] } ] }'
 } > "$M83V"
 mkdir -p "$D83V/run"
 printf '# 원장 픽스처\n\n## 실행 V83\n\n' > "$D83V/run/ledger.md"
@@ -51604,6 +51606,32 @@ check "83v: 지우지 못한 기기가 있으면 정리는 1 이다" "$(V83_FAIL
 check "83v: 도구가 없으면 정리는 3 이다" \
   "$(v83_clean "$V83B" S1)|$(grep -c '^도구없음' "$D83V/clean.out")" "3|4"
 
+# 에뮬레이터 — 앞에서 도는 동안 목록에 시리얼과 이름으로 있고, 끝나면 rc 와 상관없이
+# 시리얼이 빠진다. 대역 emulator 는 불렸을 때의 목록을 베껴 두고 끝난다. 시리얼은 그 포트의
+# 에뮬레이터가 목록의 AVD 이름으로 답할 때만 이 런의 기기다(대역 adb 가 5554 는
+# cc-V83-S1-p, 5556 은 foreign 으로 답한다).
+V83E="$D83V/emu"; mkdir -p "$V83E"
+cat > "$V83E/emulator" <<V83EOF
+#!/bin/sh
+cp "$D83V/run/devices/created.tsv" "$D83V/emu-live.tsv" 2>/dev/null || : > "$D83V/emu-live.tsv"
+exit \${V83_EMU_RC:-0}
+V83EOF
+chmod +x "$V83E/emulator"
+v83_tsv() { awk -F '\t' -v n="$1" '$3 == n { printf "%s%s/%s", (c++ ? ";" : ""), $1, $2 }' "$2" 2>/dev/null; }
+PATH="$V83E:$V83S:$PATH" v83 "$D83V/run" gate_run_device_aware emulator -avd cc-V83-S1-p -port 5554 >/dev/null 2>&1
+check "83v: 에뮬레이터는 도는 동안 시리얼과 이름으로 목록에 있다" "$(v83_tsv cc-V83-S1-p "$D83V/emu-live.tsv")" "S1/emulator-5554"
+check "83v: 끝난 에뮬레이터의 행은 이름만 남고 시리얼이 빠진다" "$(v83_tsv cc-V83-S1-p "$D83V/run/devices/created.tsv")" "S1/-"
+PATH="$V83E:$V83S:$PATH" V83_EMU_RC=3 v83 "$D83V/run" gate_run_device_aware emulator -avd cc-V83-S1-q -port 5556 >/dev/null 2>&1
+check "83v: 실패로 끝난 에뮬레이터도 시리얼이 빠진다" "$(v83_tsv cc-V83-S1-q "$D83V/emu-live.tsv")|$(v83_tsv cc-V83-S1-q "$D83V/run/devices/created.tsv")" \
+  "S1/emulator-5556|S1/-"
+check "83v: 시리얼이 빠진 에뮬레이터는 목록에 없다" \
+  "$(PATH="$V83S:$PATH" v83_rc "$D83V/run" gate_device_listed emulator-5554)" "1"
+printf 'S1\temulator-5554\tcc-V83-S1-p\nS1\temulator-5556\tcc-V83-S1-q\n' >> "$D83V/run/devices/created.tsv"
+check "83v: 그 포트가 목록의 AVD 이름으로 답하는 시리얼은 목록에 있다" \
+  "$(PATH="$V83S:$PATH" v83_rc "$D83V/run" gate_device_listed emulator-5554)" "0"
+check "83v: 그 포트가 다른 AVD 이름으로 답하는 시리얼은 목록에 없다" \
+  "$(PATH="$V83S:$PATH" v83_rc "$D83V/run" gate_device_listed emulator-5556)" "1"
+
 # 구현 전 결정 수거 — 슬라이스 둘의 문서에 A 에만 닿는 항목 하나.
 v83_doc() {  # v83_doc <파일> <항목 상태> <추천 근거> — 픽스처 설계 문서
   {
@@ -51629,6 +51657,7 @@ case "$v83_rec" in
 esac
 check "83v: 수거 기록은 스텝·추천 답·두 선택지를 싣는다" \
   "$(grep -c -e '^\*\*스텝\*\*: 결정 수거 — 구현 전 결정$' -e '추천 답: 기본값 3' -e '^- `추천대로 확정`' -e '^- `항목별로 답함`' "$v83_rec" 2>/dev/null)" "4"
+check "83v: 수거 기록의 머리 키는 계획의 설계 단계다" "$(sed -n '1s/.*; stage=\([^;]*\); .*/\1/p' "$v83_rec" 2>/dev/null)" "D1#1"
 check "83v: 같은 다이제스트의 재수거는 아무것도 쓰지 않는다" "$(v83_dc)|$(v83_dcrows)" "$v83_first|1"
 check "83v: 보류된 세그먼트의 프로세스 A 파견은 3 이다" "$(v83_rc "$D83V/run" gate_decision_hold_refuse A)" "3"
 check "83v: 보류되지 않은 세그먼트는 지나간다" "$(v83_rc "$D83V/run" gate_decision_hold_refuse B)" "0"
@@ -51711,6 +51740,285 @@ gate reconverge-spent --manifest "$FX_MANIFEST" --item R1
 check "83v: reconverge-spent 동사는 늘 0 이다" "$rc" "0"
 unset V83_DOC V83_WT V83_DECL V83_CARRIER
 rm -rf "$D83V"
+
+# ---------------------------------------------------------------------------
+# 83w. 결정 수거의 답이 게이트 동사만으로 재수렴까지 가고, 새 수거가 보류를 푼다
+# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route | anchors: 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다 ---
+#
+# 런 범위 설계 → 감사 → 구현 계획에서 감사까지 정상 완료로 띄운 뒤, 게이트 동사만으로 수거
+# → 사람의 답 → `--segment -` 재수렴 → 새 다이제스트의 수거를 잇는다. 둘째 런은 설계 단계를
+# 한 번도 띄우지 않은 동결 문서(행 없는 키), 셋째 런은 설계 단계도 감사 단계도 없는 계획이다.
+# ---------------------------------------------------------------------------
+pre_base
+w83_doc() {  # w83_doc <파일> <항목 상태> <추천 근거> — 슬라이스 S2 하나와 S2 에 닿는 구현 전 결정 하나
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n\n## 구현 슬라이싱\n\n'
+    printf '### 슬라이스 S2 — 구현\n\n**선언 파일**: s2.sh\n\n'
+    printf '## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 값\n\n**상태**: %s\n**구현 처분**: 구현 전 결정\n' "$2"
+    printf '**닿는 슬라이스**: S2\n**추천 답**: 기본값 3\n**추천 근거**: %s\n' "$3"
+  } > "$1"
+}
+w83_dc() {  # w83_dc <런 id> <설계 문서> — decision-collect 동사; rc·msg 와 W83_REC·W83_HOLDS
+  gateL decision-collect --manifest "$WORK/plan-$1.md" --document "$WT/$2"
+  W83_REC=$(printf '%s' "$msg" | sed -n 's/.*중단 기록=\([^ ]*\).*/\1/p')
+  W83_HOLDS=$(printf '%s' "$msg" | sed -n 's/.*보류 세그먼트=\([^ ]*\).*/\1/p')
+}
+w83_ans() {  # w83_ans <런 id> <--segment> <답한 주체> <선택지> [<argv>…] — 수거 기록 W83_REC 의 답
+  local r="$1" s="$2" by="$3" o="$4"
+  shift 4
+  gateL act --manifest "$WORK/plan-$r.md" --kind halt-answer --target infra --segment "$s" --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H "$r")" --rationale x \
+        -- "중단 기록=$W83_REC" "선택지=$o" "답한 주체=$by" '근거=픽스처의 답' "$@"
+}
+w83_plan() {  # w83_plan <런 id> <프롬프트> — `--segment -` 재수렴, plan 으로
+  gateL plan --manifest "$WORK/plan-$1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+       --surface 워크트리쓰기 -- reconverge -p "$2"
+}
+w83_route() {  # w83_route <런 id> <기록> — 그 기록의 answered_halts 원소 「segment/route/route_refusal」
+  au15_snap "$WORK/plan-$1.md" | jq -r --arg r "$2" \
+    '[.answered_halts[] | select(.record == $r) | "\(.segment)/\(.route // "")/\(.route_refusal // "")"] | last // ""'
+}
+
+# 첫째 런 — 감사 키에서 끝까지.
+DOC83W='docs/fixture-design-83w.md'
+au15_run R83W "$DOC83W"
+w83_doc "$WT/$DOC83W" 보류 '기존 상한과 같다'
+au15_dispatch R83W "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$DOC83W \"테스트\""
+au15_wait R83W D1
+check "83w 픽스처의 설계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R83W D1 design)" "정상 완료"
+au15_dispatch R83W "$STUB_AU_AUDIT" audit "/cc-cmds:design-audit-unattended $WT/$DOC83W"
+au15_wait R83W A1
+check "83w 픽스처의 감사가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R83W A1 audit)" "정상 완료"
+w83_dc R83W "$DOC83W"
+check "83w: 첫 수거가 S2 를 보류하고 기록을 쓴다" "$rc|$W83_HOLDS|$([ -f "$W83_REC" ] && echo 기록)" "0|S2|기록"
+check "83w: 수거 기록의 머리 키는 감사 단계다" "$(sed -n '1s/.*; stage=\([^;]*\); .*/\1/p' "$W83_REC" 2>/dev/null)" "A1#1"
+w83_rec1=$W83_REC
+w83_prev_ar="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+w83_ans R83W A1 좌석 '추천대로 확정'
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$w83_prev_ar"
+check "83w: 좌석의 답은 거부된다" "$rc" "3"
+w83_ans R83W D1 사람 '추천대로 확정'
+check "83w: 머리 키가 아닌 --segment 의 답은 거부된다" "$rc" "3"
+case "$msg" in
+  *"머리에 적은 설계 단계 키(A1)"*) ok "83w: 그 거부는 머리 키를 든다" ;;
+  *) bad "83w 머리 키 거부 문면" "$msg" ;;
+esac
+w83_ans R83W A1 사람 '항목별로 답함'
+check "83w: 첨부 없는 항목별로 답함은 거부된다" "$rc" "3"
+w83_ans R83W A1 사람 '추천대로 확정'
+check "83w: 사람의 추천대로 확정이 선다" "$rc" "0"
+check "83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다" "$(w83_route R83W "$w83_rec1")" "A1/구속-재수렴/"
+w83_reconv="/cc-cmds:design-reconverge $WT/$DOC83W 구속 티어 이탈 $w83_rec1"
+w83_plan R83W "/cc-cmds:design-reconverge $WT/$DOC83W 구속 티어 이탈 $STATE_LATE/cc-cmds/run/R83W/halt/other.md"
+check "83w: 범위가 다른 재수렴 프롬프트는 거부된다" "$rc" "3"
+case "$msg" in
+  *"구속 티어 이탈 $w83_rec1 이어야 합니다"*) ok "83w: 그 거부는 범위와 기록 경로를 든다" ;;
+  *) bad "83w 범위 문면" "$msg" ;;
+esac
+w83_plan R83W "$w83_reconv"
+check "83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다" "$rc" "0"
+au15_dispatch R83W "$STUB_AU_RECONV" reconverge "$w83_reconv"
+check "83w: 그 재수렴이 기동한다" "$rc" "0"
+au15_wait R83W A1
+check "83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다" \
+  "$(au15_rows R83W '| 세그먼트=- | 스테이지=A1 | 종류=reconverge |' | grep -c . || true)/$(au15_class R83W A1 reconverge)" "1/정상 완료"
+check "83w: 재수렴 행이 그 답을 소비한다" "$(w83_route R83W "$w83_rec1")" ""
+w83_plan R83W "$w83_reconv"
+check "83w: 같은 기록의 두 번째 재수렴은 거부된다" "$rc" "3"
+case "$msg" in
+  *"이미 재수렴을 한 번 열었습니다"*) ok "83w: 그 거부는 한 번 연 기록을 든다" ;;
+  *) bad "83w 두 번째 재수렴 문면" "$msg" ;;
+esac
+w83_dc R83W "$DOC83W"
+check "83w: 같은 다이제스트의 수거는 보류를 그대로 둔다" "$W83_HOLDS|$W83_REC" "S2|$w83_rec1"
+# 재수렴이 항목을 닫지 않고 구속면만 바꿨다 — 새 수거는 순환 상한이고 그 답은 실행되지 않는다.
+w83_doc "$WT/$DOC83W" 보류 '상한을 다시 쟀다'
+w83_dc R83W "$DOC83W"
+check "83w: 답을 받아 재수렴을 거친 뒤 다시 보류되면 순환 상한이다" "$rc|$W83_HOLDS|$(printf '%s' "$msg" | grep -c '순환 상한=S2')" "0|S2|1"
+w83_ans R83W A1 사람 '추천대로 확정'
+check "83w: 순환 상한 기록의 답은 거부된다" "$rc" "3"
+w83_doc "$WT/$DOC83W" 해결 '상한을 다시 쟀다'
+w83_dc R83W "$DOC83W"
+check "83w: 항목이 닫힌 문서의 수거는 보류를 푼다" "$rc|$W83_HOLDS|$W83_REC" "0|없음|없음"
+( cd "$WT" && git worktree remove --force "$WT-run-R83W-A1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC83W"
+
+# 둘째 런 — 설계 단계 하나뿐인 계획, 런 전에 동결된 문서. 설계 단계에 행이 하나도 없다.
+DOC83WD='docs/fixture-design-83w-d.md'
+au15_run R83WD "$DOC83WD" "$plan15d"
+w83_doc "$WT/$DOC83WD" 보류 '기존 상한과 같다'
+w83_dc R83WD "$DOC83WD"
+check "83w: 행 없는 설계 키의 수거 기록은 그 키를 머리에 적는다" \
+  "$rc|$W83_HOLDS|$(sed -n '1s/.*; stage=\([^;]*\); .*/\1/p' "$W83_REC" 2>/dev/null)" "0|S2|D1#1"
+check "83w 픽스처의 설계 키에 stage-result 행이 없다 (아래가 공허하지 않다)" "$(au15_rows R83WD 'D1' | grep -c . || true)" "0"
+w83_ans R83WD D1 사람 '추천대로 확정'
+check "83w: 행 없는 설계 키에서도 사람의 답이 선다" "$rc" "0"
+check "83w: 그 답의 route 도 구속-재수렴이다" "$(w83_route R83WD "$W83_REC")" "D1/구속-재수렴/"
+w83_plan R83WD "/cc-cmds:design-reconverge $WT/$DOC83WD 구속 티어 이탈 $W83_REC"
+check "83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다" "$rc" "0"
+rm -f "$WT/$DOC83WD"
+
+# 셋째 런 — 설계 단계도 감사 단계도 없는 계획. 답을 받을 키가 없어 아무것도 보류하지 않는다.
+DOC83WN='docs/fixture-design-83w-n.md'
+au15_run R83WN "$DOC83WN" '{ "design_required": false, "steps": [ { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+w83_doc "$WT/$DOC83WN" 보류 '기존 상한과 같다'
+w83_dc R83WN "$DOC83WN"
+check "83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다" "$rc|$W83_HOLDS|$W83_REC" "0|없음|없음"
+check "83w: 그 수거 행은 수거 생략을 싣는다" \
+  "$( { grep -F '`결정 수거`' "$WT/docs/pipeline-run/R83WN.md" 2>/dev/null || true; } | { grep -cF '| 수거 생략=설계 단계 없음 |' || true; })" "1"
+rm -f "$WT/$DOC83WN"
+
+# ---------------------------------------------------------------------------
+# 83x. 기기 짝 정리 — exec 가 열고, 스테이지 끝과 런 끝 정리가 이 런의 기기만 지운다
+# --- section: 83x | group: reach | covers: exec, reach, gate_act_mark, gate_device_listed, gate_device_targets_listed, gate_device_open_check, gate_device_record, gate_device_withdraw_serial, gate_run_device_aware, gate_pair_open, gate_pair_drain, device-cleanup, pair-residue | anchors: 83x: 짝 정리 행의 simctl create 가 열리고 기기를 목록에 남긴다, 83x: 만든 기기를 겨누는 simctl shutdown 은 열린다, 83x: simctl shutdown all 은 park 한다, 83x: simctl delete unavailable 은 park 한다, 83x: 이 런이 만들지 않은 UDID 는 foreign-device 로 park 한다, 83x: 접두가 맞지 않는 만들기는 device-name 수리 줄과 park 한다, 83x: 정리 짝 없는 만들기는 no-cleanup 수리 줄과 park 한다, 83x: 도는 에뮬레이터의 시리얼을 겨누는 adb 는 열린다, 83x: 끝난 에뮬레이터의 시리얼을 겨누는 adb 는 park 한다, 83x: 스테이지 끝 정리가 그 파견의 기기만 지운다, 83x: 런 끝 쓸기가 이 런의 남은 기기를 지운다, 83x: 정리가 다 성공하면 pair-residue 가 빈다 ---
+#
+# rx 매니페스트로 게이트의 exec 를 부르고, 기기 도구는 PATH 앞의 대역이 받는다. 대역
+# xcrun 은 만들기에 고정 UDID 를 내고 목록에 이 파견의 기기·다른 파견의 기기·남의 기기를
+# 하나씩 내며, 대역 emulator 는 붙잡는 파일이 있는 동안 앞에서 돌고, 대역 adb 는 그동안만
+# 그 포트를 이 파견의 AVD 이름으로 답한다. 모든 대역은 부른 명령을 한 줄씩 기록한다.
+# 사전 인가 행은 모두 행위를 축자로 이름 대므로 판단 호출은 없고, park 은 행보다 앞서거나
+# 뒤에 도는 기기 검사가 낸다. 자동 해소를 켜 두는 것은 그 park 이 승인 대기(rc 5)가 아니라
+# park(rc 11)으로 끝나게 하려는 것이다.
+# ---------------------------------------------------------------------------
+pre_reach
+pre_ledger_series
+X83D="$WORK/s83x"; rm -rf "$X83D"; mkdir -p "$X83D/stub"
+X83S="$X83D/stub"; X83L="$X83D/stub.log"; : > "$X83L"
+X83U='6F9619FF-8B86-D011-B42D-00C04FC964FF'
+cat > "$X83S/xcrun" <<X83EOF
+#!/bin/sh
+printf 'xcrun %s\n' "\$*" >> "$X83L"
+case "\$2" in
+  create) printf '%s\n' "$X83U" ;;
+  list) printf '{"devices":{"r":[{"udid":"$X83U","name":"cc-R83X-S5-a"},{"udid":"U2","name":"cc-R83X-S6-b"},{"udid":"U3","name":"other"}]}}\n' ;;
+esac
+exit 0
+X83EOF
+cat > "$X83S/adb" <<X83EOF
+#!/bin/sh
+printf 'adb %s\n' "\$*" >> "$X83L"
+[ -e "$X83D/emu.live" ] || { [ "\$1" = devices ] && printf 'List of devices attached\n'; exit 0; }
+case "\$*" in
+  devices) printf 'List of devices attached\nemulator-5560\tdevice\n' ;;
+  '-s emulator-5560 emu avd name') printf 'cc-R83X-S5-p\nOK\n' ;;
+esac
+exit 0
+X83EOF
+cat > "$X83S/emulator" <<X83EOF
+#!/bin/sh
+printf 'emulator %s\n' "\$*" >> "$X83L"
+if [ "\$1" = -list-avds ]; then printf 'cc-R83X-S5-p\nother-avd\n'; exit 0; fi
+: > "$X83D/emu.live"
+i=0
+while [ -e "$X83D/emu.hold" ] && [ "\$i" -lt 600 ]; do sleep 0.1; i=\$((i + 1)); done
+rm -f "$X83D/emu.live"
+exit 0
+X83EOF
+cat > "$X83S/avdmanager" <<X83EOF
+#!/bin/sh
+printf 'avdmanager %s\n' "\$*" >> "$X83L"
+exit 0
+X83EOF
+chmod +x "$X83S"/*
+rx_manifest R83X "xcrun simctl create cc-R83X-S5-a iPhone | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=테스트
+xcrun simctl shutdown $X83U | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
+emulator -avd cc-R83X-S5-p -port 5560 | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=테스트
+adb -s emulator-5560 install a.apk | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
+xcrun simctl create other iPhone | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=테스트
+avdmanager create avd -n cc-R83X-S5-z -k x | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트"
+X83LED="$WT/docs/pipeline-run/R83X.md"
+X83RD="$XDG_STATE_HOME/cc-cmds/run/R83X"
+# x83_run <argv…> — 파견 S5 의 exec. 게이트는 뜰 때 PATH 앞에 시스템 경로를 붙이므로 새
+# 게이트 프로세스로는 /usr/bin 에 있는 도구(macOS 의 xcrun)를 대역으로 가릴 수 없다. 그래서
+# 게이트를 제자리로 올린 서브셸에서 PATH 맨 앞에 대역을 다시 두고 부른다. 판단 스텁은 이
+# 꼴로 바꿀 수 없으므로, 여는 행위는 그것을 축자로 이름 댄 행이 판단 없이 연다. rc·msg 는
+# pj_gate 와 같은 꼴로 남긴다.
+x83_run() {
+  local out h
+  h=$(rx_H "$RX_M")
+  out=$( (
+    export X83S RX_M h
+    cd "$WT" || exit 1
+    IFS=$' \t\n'
+    gate_seam_scrub
+    gate_seam_enter
+    PATH="$X83S:$PATH"; export PATH
+    export CC_PIPELINE_STAGE_ID='S5#1' CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+    gate_main exec --manifest "$RX_M" --target front3 --segment S5 --cutpoint 커밋 --surface 트리밖쓰기 \
+      --reach 기기전역 --snapshot-digest "$h" --rationale '기기 짝 정리 시험' -- "$@"
+  ) 2>&1 ); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+x83_tsv() { awk -F '\t' -v n="$1" '$3 == n { printf "%s%s/%s", (c++ ? ";" : ""), $1, $2 }' "$X83RD/devices/created.tsv" 2>/dev/null; }
+x83_opens() { { grep -c '^- `짝 정리` .*상태=열림' "$X83LED" 2>/dev/null || true; }; }
+
+x83_run xcrun simctl create cc-R83X-S5-a iPhone
+check "83x: 짝 정리 행의 simctl create 가 열리고 기기를 목록에 남긴다" "$rc|$(x83_tsv cc-R83X-S5-a)|$(x83_opens)" "0|S5/$X83U|1"
+check "83x: 그 create 는 대역에 닿았다 (실제 도구가 돌지 않았다)" "$(grep -c "simctl create cc-R83X-S5-a" "$X83L")" "1"
+x83_run xcrun simctl shutdown "$X83U"
+check "83x: 만든 기기를 겨누는 simctl shutdown 은 열린다" "$rc" "0"
+axis_is gate_act_mark '파괴/all' '83x: simctl shutdown all 은 파괴 표지다' -- xcrun simctl shutdown all
+axis_is gate_act_mark '파괴/unavailable' '83x: simctl delete unavailable 은 파괴 표지다' -- xcrun simctl delete unavailable
+axis_is gate_act_mark '파괴/all' '83x: simctl erase all 은 파괴 표지다' -- xcrun simctl erase all
+x83_run xcrun simctl shutdown all
+check "83x: simctl shutdown all 은 park 한다" "$rc" "11"
+x83_run xcrun simctl delete unavailable
+check "83x: simctl delete unavailable 은 park 한다" "$rc" "11"
+x83_run xcrun simctl shutdown 11111111-2222-3333-4444-555555555555
+check "83x: 이 런이 만들지 않은 UDID 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+x83_run xcrun simctl create other iPhone
+check "83x: 접두가 맞지 않는 만들기는 device-name 수리 줄과 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'must be named')" "11|1"
+x83_run avdmanager create avd -n cc-R83X-S5-z -k x
+check "83x: 정리 짝 없는 만들기는 no-cleanup 수리 줄과 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'nothing would remove the device')" "11|1"
+check "83x: park 한 행위는 대역에 닿지 않는다" \
+  "$(grep -c -e 'shutdown all' -e 'delete unavailable' -e 'shutdown 11111111' -e 'create other' -e 'avdmanager create' "$X83L")" "0"
+
+# 에뮬레이터 — 앞에서 도는 exec 를 뒤에서 띄우고, 도는 동안과 끝난 뒤의 adb 를 잰다.
+: > "$X83D/emu.hold"
+( x83_run emulator -avd cc-R83X-S5-p -port 5560; printf '%s' "$rc" > "$X83D/emu.rc" ) &
+x83_ep=$!
+x83_i=0
+while ! { [ -e "$X83D/emu.live" ] && [ -n "$(x83_tsv cc-R83X-S5-p)" ]; } && [ "$x83_i" -lt 300 ]; do
+  sleep 0.1; x83_i=$((x83_i + 1))
+done
+check "83x 픽스처의 에뮬레이터가 도는 동안 목록에 있다 (아래가 공허하지 않다)" "$(x83_tsv cc-R83X-S5-p)" "S5/emulator-5560"
+x83_run adb -s emulator-5560 install a.apk
+check "83x: 도는 에뮬레이터의 시리얼을 겨누는 adb 는 열린다" "$rc" "0"
+x83_run adb -s emulator-5562 install a.apk
+check "83x: 이 런이 띄우지 않은 포트의 adb 는 park 한다" "$rc" "11"
+rm -f "$X83D/emu.hold"
+wait "$x83_ep" 2>/dev/null || true
+check "83x: 에뮬레이터 exec 가 끝나면 시리얼이 빠진다" "$(cat "$X83D/emu.rc" 2>/dev/null)|$(x83_tsv cc-R83X-S5-p)" "0|S5/-"
+x83_run adb -s emulator-5560 install a.apk
+check "83x: 끝난 에뮬레이터의 시리얼을 겨누는 adb 는 park 한다" "$rc" "11"
+check "83x: 열림은 짝 행 하나에 하나씩이다" "$(x83_opens)" "2"
+
+# 정리 — 스테이지 끝은 그 파견의 기기를, 런 끝 쓸기는 이 런의 남은 기기를 지운다.
+x83_drain() {  # x83_drain <stage <파견>|run> — 게이트를 올린 서브셸에서 정리를 부른다
+  (
+    gate_seam_enter
+    unset CC_PIPELINE_SHIFT_ID CC_PIPELINE_STAGE_ID
+    PATH="$X83S:$PATH"; LEDGER="$X83LED"; RUN_DIR="$X83RD"; RUN_ID=R83X; MANIFEST="$RX_M"
+    gate_pair_drain "$@"
+  ) >/dev/null 2>&1
+}
+# 열린 짝 두 개(시뮬레이터 행·에뮬레이터 행)가 같은 정리를 한 번씩 부르고, 대역 목록은 지운
+# 기기를 기억하지 않으므로 이 파견의 시뮬레이터와 AVD 를 지우는 줄이 둘씩 남는다.
+: > "$X83L"
+x83_drain stage S5
+check "83x: 스테이지 끝 정리가 그 파견의 기기만 지운다" \
+  "$(grep -c -e "simctl delete $X83U" -e 'avdmanager delete avd -n cc-R83X-S5-p' "$X83L")|$(grep -c -e 'delete U2' -e 'delete U3' -e 'other-avd' "$X83L")" "4|0"
+check "83x: 스테이지 끝 정리의 결과 행이 둘 다 성공이다" \
+  "$( { grep '^- `짝 정리` .*상태=결과' "$X83LED" || true; } | { grep -F '| 파견=S5 ' || true; } | { grep -cF '| 결과=성공 ' || true; })" "2"
+: > "$X83L"
+x83_drain run
+check "83x: 런 끝 쓸기가 이 런의 남은 기기를 지운다" \
+  "$(grep -c 'simctl delete U2' "$X83L")|$(grep -c 'delete U3' "$X83L")|$(lsr_last_fields "$X83LED" '짝 정리' 파견 행 결과)" "1|0|-|0|성공"
+x83_res=$(cd "$WT" && bash "$GATE" pair-residue --manifest "$RX_M" 2>/dev/null; printf x)
+check "83x: 정리가 다 성공하면 pair-residue 가 빈다" "${x83_res%x}" ""
+rm -rf "$X83D"
 
 # ---------------------------------------------------------------------------
 # 95d. 런을 넘는 이월 — 입양과 재킥오프 연쇄가 앞선 런의 이월된 중단 답을 들이고, 운반 act 만 그 답을 낸다
