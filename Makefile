@@ -460,6 +460,8 @@ LINT_TESTS := \
 	scripts/test-solo-audit-experiment.sh \
 	scripts/test-reader-model-compare.sh \
 	scripts/test-reader-model-pair-audit.sh \
+	scripts/test-review-seat-promotion-compare.sh \
+	scripts/test-review-seat-promotion-pair.sh \
 	scripts/test-measure-audit-findings.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
