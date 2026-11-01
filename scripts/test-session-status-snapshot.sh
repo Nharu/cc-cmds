@@ -305,14 +305,18 @@ check "9 status/ 에 점 파일 없음" "$(cd "$ROOT/status" && find . -name '.?
 # 10. Registration.
 # ---------------------------------------------------------------------------
 TAB=$(printf '\t')
-reg=$(jq -r '.hooks | to_entries[] | .key as $e | .value[] | (.matcher // "") as $m
-  | .hooks[] | "\($e)\t\($m)\t\(.command)\t\(.timeout // "")"' "$HOOKS_JSON" 2>/dev/null)
+# The registration list goes to files, and each `grep -q` reads a file: under
+# pipefail a writer piped into `grep -q` can die of SIGPIPE when grep stops early.
+REG="$WORK/reg.tsv"
+REG3="$WORK/reg3.tsv"
+jq -r '.hooks | to_entries[] | .key as $e | .value[] | (.matcher // "") as $m
+  | .hooks[] | "\($e)\t\($m)\t\(.command)\t\(.timeout // "")"' "$HOOKS_JSON" > "$REG" 2>/dev/null
+cut -f1-3 "$REG" > "$REG3"
 mine='bash "${CLAUDE_PLUGIN_ROOT}/hooks/session-status-snapshot.sh"'
-check "10 이 스크립트를 가리키는 항목은 일곱" \
-  "$(printf '%s\n' "$reg" | grep -cF "$mine")" "7"
+check "10 이 스크립트를 가리키는 항목은 일곱" "$(grep -cF "$mine" "$REG")" "7"
 for em in 'PreToolUse	AskUserQuestion' 'PostToolUse	AskUserQuestion' 'PostToolBatch	' \
           'Stop	' 'UserPromptSubmit	' 'PermissionRequest	' 'SessionEnd	'; do
-  if printf '%s\n' "$reg" | grep -qxF "$em$TAB$mine${TAB}5"; then
+  if grep -qxF "$em$TAB$mine${TAB}5" "$REG"; then
     ok "10 등록: ${em%%"$TAB"*} ${em#*"$TAB"}"
   else
     bad "10 등록: ${em%%"$TAB"*} ${em#*"$TAB"}" "항목이 없거나 timeout 이 5 가 아니다"
@@ -332,7 +336,7 @@ EOF
 )
 missing=0
 while IFS= read -r line; do
-  printf '%s\n' "$reg" | cut -f1-3 | grep -qxF "$line" || missing=$((missing + 1))
+  grep -qxF "$line" "$REG3" || missing=$((missing + 1))
 done <<EOF
 $old
 EOF
