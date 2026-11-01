@@ -75,6 +75,22 @@
 # the run dashboard's server in its own session, and that server keeps serving
 # after the dispatch job has exited. The start lives in the gate, not here.
 #
+# A WAITING JOB ALSO WATCHES THE BASE BRANCH, AND MAY START ONE REPAIR RUN. Beside
+# the watcher and the CI poller, `fleet_start_watch` starts a master observer
+# child (`fleet.sh master-watch`) that runs the master stage every
+# FLEET_MASTER_INTERVAL_SECONDS while the job waits, so a host whose every lane
+# holds a run still keeps its base-branch readings fresh. When a `pending`
+# repair record is there, that child starts `fleet.sh repair-run` in the
+# background — the one backgrounded launch of this file's own subcommands, and
+# it stays inside the job's process group. `repair-run` claims the record under
+# `backlog.lock` and runs `run.sh` in ITS foreground through the same function
+# the backlog dispatch uses, so the repair run lives exactly as long as that
+# process. The job's main process, once its own run is over, rewrites its
+# record, drops its own marker and then waits — at most
+# FLEET_REPAIR_WAIT_MAX_SECONDS — while a repair marker naming it as the job is
+# alive. Launchd therefore never tears the group down under a repair run, and
+# nothing outlives the job.
+#
 # THE PACING SENSOR CAN NEVER STOP DISPATCH BY BEING ABSENT. `state.json` that
 # is missing, stale, or of an unknown schema is read as no verdict at all, which
 # is `유지`. Two admission clauses fail CLOSED, and neither is read from the
@@ -86,14 +102,19 @@
 # Subcommands:
 #   fleet.sh sensor                     # one tick: publish state, heartbeat, history
 #   fleet.sh dispatch <id>              # start the backlog head on account <id>, blocking
+#   fleet.sh master-watch <id> <job pid> <job fingerprint>
+#                                       # the master observer child of a waiting job
+#   fleet.sh repair-run <id> <job pid>  # claim one repair record and run it, blocking
 #   fleet.sh agent install|uninstall|status
 #
 # Files (all under PACE_ROOT = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace):
 #   state.json             the last published tick (schema `cc-pace-state v1`)
 #   verdict-history.jsonl  one record per verdict change (`cc-pace-verdict v1`)
 #   seat-bindings.jsonl    one record per observed re-binding of a seat
-#   backlog.jsonl          deferred launches (`cc-pace-backlog v1`); enqueuer
-#                          appends, dispatcher rewrites status — never this
+#   backlog.jsonl          deferred launches (`cc-pace-backlog v1`); two writers
+#                          append — the kickoff seat, and the master stage,
+#                          which appends `kind: master-repair` records only —
+#                          and the dispatcher rewrites status; never this
 #                          sensor
 #   backlog.lock/          the dispatcher's claim lock (mkdir), held from head
 #                          selection to the `dispatched` flip and around every
@@ -105,7 +126,19 @@
 #   night-summary.md       rewritten once a day from the files above
 #   lanes-streak           start tick of the current unavailable-census streak
 #   busy/<id>.<pid>        one run marker per dispatch job that claimed a head:
-#                          pid, its start fingerprint, run id
+#                          pid, its start fingerprint, run id; a repair run's
+#                          marker adds `master-repair` and the waiting job's pid
+#   master/<o>__<n>__<b>.json
+#                          one base-branch reading per watched (repository,
+#                          base branch) pair (`cc-master-state v1`), the three
+#                          pieces percent-encoded as the gate reads them;
+#                          `<same>.settled` holds the epoch of its last settled
+#                          observation
+#   master/watch.<pid>/    the observer child's claim on the job <pid>
+#   master.lock/           the master stage's lock (mkdir), holding its pid
+#   master-repair.off      the repair switch: present and empty turns repair
+#                          runs off for every repository, one `owner/name` a
+#                          line turns them off for those
 #
 # Inputs read from cc-lane (never written here):
 #   accounts.json          ${XDG_CONFIG_HOME:-$HOME/.config}/cc-lane/accounts.json —
@@ -120,6 +153,10 @@
 #   FLEET_LAUNCH_AGENTS_DIR          ~/Library/LaunchAgents
 #   FLEET_NOW_EPOCH        fixed "now" in epoch seconds
 #   FLEET_CC_SWAP_MARK     file whose first line is the epoch of the last cc-swap
+#   FLEET_GH               the `gh` the master stage's read wrapper calls
+#   FLEET_MASTER_INTERVAL_TEST_SECONDS
+#                          a shorter observer period (never a longer one); the
+#                          skip window shrinks to half of it
 #
 # Exit codes:
 #   0  the subcommand completed (a refused dispatch is a completed dispatch)
@@ -161,6 +198,16 @@ readonly FLEET_SCAN_FILES_MAX=1000              # transcript scan caps, per home
 readonly FLEET_SCAN_BYTES_MAX=2147483648
 readonly FLEET_REENTRY_CALLS_MAX=12             # router-shift calls that launched no shift, at most, in one boot-time re-entry chain
 readonly FLEET_REENTRY_QUICK_SECONDS=60         # a `대기` call back sooner than this with no launch is a quick return
+readonly FLEET_MASTER_INTERVAL_SECONDS=120      # the observer child runs the master stage this often
+readonly FLEET_MASTER_BUDGET_SECONDS=60         # one master stage, every pair together, at most this long
+readonly FLEET_MASTER_SKIP_SECONDS=60           # a pair whose reading is younger than this is skipped (half the interval)
+readonly FLEET_MASTER_LOCK_STALE_SECONDS=120    # a master.lock this old, or with a dead pid, is broken (twice the budget)
+readonly FLEET_MASTER_FIX_PR_HOLD_SECONDS=7200  # a person's fix PR holds an event's repair run this long, once per event
+readonly FLEET_MASTER_LOG_MAX_BYTES=8388608     # one job log is cut here (the gate's match act holds the same)
+readonly FLEET_MASTER_GH_SECONDS=20             # one `gh api` read is abandoned after this long
+readonly FLEET_MASTER_SETTLED_MAX_SECONDS=3600  # no settled reading for this long -> the reading stops being rewritten
+readonly FLEET_REPAIR_SEATS=1                   # repair runs alive at once, beside the ceiling and lane occupancy
+readonly FLEET_REPAIR_WAIT_MAX_SECONDS=22200    # a job waits on its repair run at most this long (the run's deadline + 600)
 # The burn calibration is a literal by decision, and it is not an integer, so the
 # threshold lint does not own it: 0.104 %p of weekly quota per million weighted
 # tokens over a 4h window.
@@ -169,6 +216,8 @@ readonly FLEET_BURN_PP_PER_MWT=0.104
 readonly FLEET_STATE_SCHEMA='cc-pace-state v1'
 readonly FLEET_VERDICT_SCHEMA='cc-pace-verdict v1'
 readonly FLEET_BACKLOG_SCHEMA='cc-pace-backlog v1'
+readonly FLEET_MASTER_SCHEMA='cc-master-state v1'
+readonly FLEET_REPAIR_KIND='master-repair'
 # v2 is the per-home shape. The cache is adopted by schema alone, so the bump is
 # what keeps a v1 cache — one figure for every seat home together — from being
 # read with the new meaning in the minutes after an upgrade.
@@ -1058,13 +1107,19 @@ fleet_backlog_head() {
   # parked, not modified — because refusing an oversize record is the
   # enqueuer's job, in front of a person, and a dispatcher that parked it would
   # do so with nobody watching.
-  local f="$PACE_ROOT/backlog.jsonl" line best="" best_at="" at
+  #
+  # A REPAIR RECORD IS NEVER THIS HEAD. With a first argument `repair` the
+  # head is the oldest pending `kind: master-repair` record instead; without
+  # one, those records are skipped, so a repair run is admitted only through
+  # the repair admission and never takes an ordinary seat.
+  local f="$PACE_ROOT/backlog.jsonl" line best="" best_at="" at want="${1:-}"
   [ -r "$f" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     [ "${#line}" -le "$FLEET_BACKLOG_RECORD_MAX" ] || continue
-    at=$(printf '%s' "$line" | jq -r --arg schema "$FLEET_BACKLOG_SCHEMA" \
-          'select(.schema == $schema and .status == "pending") | .enqueued_at // empty' 2>/dev/null || true)
+    at=$(printf '%s' "$line" | jq -r --arg schema "$FLEET_BACKLOG_SCHEMA" --arg k "$FLEET_REPAIR_KIND" --arg w "$want" \
+          'select(.schema == $schema and .status == "pending"
+                  and ((.kind == $k) == ($w == "repair"))) | .enqueued_at // empty' 2>/dev/null || true)
     [ -n "$at" ] || continue
     if [ -z "$best_at" ] || [ "$at" \< "$best_at" ]; then best="$line"; best_at="$at"; fi
   done < "$f"
@@ -1140,17 +1195,27 @@ fleet_busy_live() {
   printf '%s' "$census" | jq -e --arg r "$run" \
     'any(.[]; .run_id == $r and (.status == "도는중" or .status == "판정 불가"))' >/dev/null 2>&1
 }
+fleet_busy_is_repair() {
+  # fleet_busy_is_repair <marker> — rc 0 for a repair run's marker: its fourth
+  # line is FLEET_REPAIR_KIND. Readers of the first three lines never see it.
+  [ "$(sed -n '4p' "$1" 2>/dev/null)" = "$FLEET_REPAIR_KIND" ]
+}
 fleet_busy_count() {
   # fleet_busy_count <lane> <census-json> [<lend-ids-json>] — `<all> <same-lane>
-  # <not-lending>` live markers, the third leaving out the markers of the lanes
-  # the JSON array names. With no array it equals the first. Called under the
-  # claim lock, so a dead marker (dead or reused pid, and no live row for its
-  # run) is removed here.
-  local lane="$1" census="$2" lend="${3:-[]}" f base all=0 same=0 non=0
+  # <not-lending> <repair>` live markers, the third leaving out the markers of
+  # the lanes the JSON array names. With no array it equals the first. Called
+  # under the claim lock, so a dead marker (dead or reused pid, and no live row
+  # for its run) is removed here.
+  #
+  # A REPAIR MARKER COUNTS ONLY IN THE FOURTH FIGURE. The repair run has a seat
+  # of its own (FLEET_REPAIR_SEATS) beside the ceiling and lane occupancy, so
+  # while it runs the ordinary backlog keeps every seat it had.
+  local lane="$1" census="$2" lend="${3:-[]}" f base all=0 same=0 non=0 rep=0
   for f in "$PACE_ROOT/busy"/*; do
     [ -f "$f" ] || continue
     base=${f##*/}
     if fleet_busy_live "$f" "$census"; then
+      if fleet_busy_is_repair "$f"; then rep=$(( rep + 1 )); continue; fi
       all=$(( all + 1 ))
       [ "${base%.*}" = "$lane" ] && same=$(( same + 1 ))
       printf '%s' "$lend" | jq -e --arg l "${base%.*}" 'any(.[]; . == $l)' >/dev/null 2>&1 || non=$(( non + 1 ))
@@ -1158,14 +1223,37 @@ fleet_busy_count() {
       rm -f "$f"
     fi
   done
-  printf '%s %s %s' "$all" "$same" "$non"
+  printf '%s %s %s %s' "$all" "$same" "$non" "$rep"
+}
+fleet_busy_repair_live() {
+  # fleet_busy_repair_live [<job pid>] — the live repair markers, one path a
+  # line; with a pid, only those whose fifth line names that job. Judged on the
+  # pid and its fingerprint alone: the marker's owner is the process waiting on
+  # the repair run, so it is alive exactly as long as the run.
+  local f pid fp
+  for f in "$PACE_ROOT/busy"/*; do
+    [ -f "$f" ] && fleet_busy_is_repair "$f" || continue
+    [ -z "${1:-}" ] || [ "$(sed -n '5p' "$f")" = "$1" ] || continue
+    pid=$(sed -n '1p' "$f" 2>/dev/null | tr -d '[:space:]' || true); fp=$(sed -n '2p' "$f" 2>/dev/null || true)
+    if [ -n "$pid" ] && [ -n "$fp" ] && kill -0 "$pid" 2>/dev/null \
+       && [ "$(TZ=UTC0 cc_proc_fingerprint "$pid")" = "$fp" ]; then
+      printf '%s\n' "$f"
+    fi
+  done
 }
 fleet_busy_write() {
-  # fleet_busy_write <lane> <run-id> — this process's marker, by temp file and
-  # rename so a reader never sees two lines of three.
+  # fleet_busy_write <lane> <run-id> [<job pid>] — this process's marker, by
+  # temp file and rename so a reader never sees a partial one. With a job pid
+  # it is a repair run's marker: `master-repair` on line four and the pid of the
+  # dispatch job that waits on it on line five.
   local f="$PACE_ROOT/busy/$1.$$"
   mkdir -p "$PACE_ROOT/busy"
-  printf '%s\n%s\n%s\n' "$$" "$(TZ=UTC0 cc_proc_fingerprint "$$")" "$2" | fleet_write_atomic "$f" || return 1
+  if [ -n "${3:-}" ]; then
+    printf '%s\n%s\n%s\n%s\n%s\n' "$$" "$(TZ=UTC0 cc_proc_fingerprint "$$")" "$2" "$FLEET_REPAIR_KIND" "$3" \
+      | fleet_write_atomic "$f" || return 1
+  else
+    printf '%s\n%s\n%s\n' "$$" "$(TZ=UTC0 cc_proc_fingerprint "$$")" "$2" | fleet_write_atomic "$f" || return 1
+  fi
   FLEET_BUSY_MARK="$f"
 }
 
@@ -1194,12 +1282,24 @@ fleet_start_watch() {
   # is a gate call of the re-entry like any other; the watcher and the poller
   # do not carry it. A seventh argument `poller` starts the poller alone: a
   # re-entry whose relay came back because the poller died restarts that one
-  # and not a second watcher beside the first.
+  # and not a second watcher beside the first. A seventh argument `no-master`
+  # starts everything but the master observer child: a repair run started by
+  # an observer child is watched by that child already.
+  #
+  # THE OBSERVER CHILD is `fleet.sh master-watch`, from this copy of the file
+  # and not the run's pinned gate directory, on the lane this job dispatches
+  # for (FLEET_LANE). It is started once per job — its own claim directory
+  # refuses a second — and ends when this job's process is gone. The job's
+  # fingerprint is taken as `cc_holder_is_live` takes it, with no TZ of its own:
+  # the child inherits this environment, so both sides read one clock zone.
   local home="$1" pdir="$2" manifest="$3" run_dir="$4" ledger="$5" mark="${6:-}" only="${7:-}"
   if [ "$only" != "poller" ]; then
     CLAUDE_CONFIG_DIR="$home" CC_PIPELINE_REENTRY="$mark" bash "$pdir/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
     mkdir -p "$run_dir"
     bash "$pdir/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
+  fi
+  if [ "$only" = "" ] && [ -n "${FLEET_LANE:-}" ]; then
+    bash "$FLEET_DIR/fleet.sh" master-watch "$FLEET_LANE" "$$" "$(cc_proc_fingerprint "$$")" > "$run_dir/master-watch.log" 2>&1 < /dev/null &
   fi
   # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
   # merge refusal it feeds is the only thing standing between a red check and a
@@ -1535,6 +1635,860 @@ fleet_reentry_tick() {
   return "$ran"
 }
 
+# ===========================================================================
+# MASTER — the base-branch reading, its events, and the repair runs
+#
+# THE READING IS THE GATE'S INPUT, NOT A VERDICT OF THIS FILE. For every
+# (repository, base branch) pair a queued or live run names, the master stage
+# reads the base tip's check runs and, for each failed Actions job, its failed
+# steps and its log, and turns them into signatures with `ci-signature.sh` —
+# the calls the gate's own CI match act makes, in the same order, so the two
+# compare like for like. It writes one `cc-master-state v1` file per pair; the
+# gate reads it and decides what a waiting segment does.
+#
+# ONLY A SETTLED OBSERVATION MOVES EVENTS. `초록` and `빨강` are settled. A check
+# still running is `진행 중`, which may carry the new tip; anything this stage
+# could not read is `판정 불가`, which keeps the previous tip, signatures and
+# events. An event opens on a settled `빨강` whose signatures no open event
+# holds, and resolves on a settled reading that holds none of its signatures.
+#
+# THE REMOTE IS READ, NEVER WRITTEN. `fleet_master_gh` passes `gh api` GETs
+# only, with the read-scoped token when the credential store has one and the
+# active login otherwise; the pipeline's write credential is never asked for.
+#
+# EACH EVENT'S REPAIR STATE IS RECOMPUTED EVERY ROUND from its backlog record
+# and the record's run directory, so the file never carries a state that
+# stopped being true. Only the stage starts nothing: it renders and enqueues a
+# record, and the dispatch path claims it.
+# ===========================================================================
+
+fleet_master_dir() { printf '%s/master' "$PACE_ROOT"; }
+fleet_master_enc() {
+  # The gate's encoding of one path piece: `%`, `/` and `_` are escaped, so a
+  # `__` in the file name can only be the separator.
+  printf '%s' "$1" | sed -e 's/%/%25/g' -e 's#/#%2F#g' -e 's/_/%5F/g'
+}
+fleet_master_file() {
+  # fleet_master_file <owner/name> <base branch> — the pair's reading.
+  printf '%s/%s__%s__%s.json' "$(fleet_master_dir)" "$(fleet_master_enc "${1%%/*}")" \
+    "$(fleet_master_enc "${1#*/}")" "$(fleet_master_enc "$2")"
+}
+fleet_master_real_now() { date -u +%s; }
+fleet_master_in_budget() { [ "$(fleet_master_real_now)" -lt "$1" ]; }
+fleet_master_interval() {
+  # The observer child's period. FLEET_MASTER_INTERVAL_TEST_SECONDS may only
+  # shorten it, for a fixture.
+  local t="${FLEET_MASTER_INTERVAL_TEST_SECONDS:-}"
+  case "$t" in ''|*[!0-9]*|0) printf '%s' "$FLEET_MASTER_INTERVAL_SECONDS"; return 0 ;; esac
+  if [ "$t" -lt "$FLEET_MASTER_INTERVAL_SECONDS" ]; then printf '%s' "$t"; else printf '%s' "$FLEET_MASTER_INTERVAL_SECONDS"; fi
+}
+fleet_master_skip() {
+  # Half the period: a pair read that recently is not read again this round.
+  local i; i=$(fleet_master_interval)
+  if [ "$i" -lt "$FLEET_MASTER_INTERVAL_SECONDS" ]; then printf '%s' $(( i / 2 )); else printf '%s' "$FLEET_MASTER_SKIP_SECONDS"; fi
+}
+
+fleet_master_kill_tree() {
+  # The process and everything under it: the read runs a subshell deep.
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null || true); do fleet_master_kill_tree "$c"; done
+  kill "$1" 2>/dev/null || true
+}
+
+fleet_master_gh() {
+  # fleet_master_gh <out file> api <args…> — one GET into the file, abandoned
+  # after FLEET_MASTER_GH_SECONDS (rc 124). Anything but `gh api`, an argument
+  # that carries a request body, or a method other than GET is refused before
+  # it runs (rc 2). `FLEET_GH` names the program, for a fixture.
+  local out="$1" a prev="" pid t=0 lim gh="${FLEET_GH:-gh}"
+  shift
+  if [ "${1:-}" != api ]; then fleet_log "master: 읽기 래퍼는 gh api 만 부른다 — ${1:-}"; return 2; fi
+  for a in "$@"; do
+    case "$prev" in
+      -X|--method) if [ "$a" != GET ]; then fleet_log "master: GET 이 아닌 메서드를 거부한다 — $a"; return 2; fi ;;
+    esac
+    case "$a" in
+      -f|-F|--field|--raw-field|--input|-f?*|-F?*|--field=*|--raw-field=*|--input=*)
+        fleet_log "master: 본문을 싣는 인자를 거부한다 — $a"; return 2 ;;
+      -X?*|--method=*)
+        if [ "$a" != -XGET ] && [ "$a" != --method=GET ]; then fleet_log "master: GET 이 아닌 메서드를 거부한다 — $a"; return 2; fi ;;
+    esac
+    prev="$a"
+  done
+  (
+    unset GH_REPO GH_HOST
+    if [ -r "$FLEET_DIR/credentials.sh" ]; then
+      envl=$( ( . "$FLEET_DIR/credentials.sh" && cred_readonly_env ) 2>/dev/null ) || envl=""
+      while IFS= read -r a; do
+        case "$a" in GH_TOKEN=?*|GITHUB_TOKEN=*|GH_CONFIG_DIR=?*) export "${a?}" ;; esac
+      done <<EOF
+$envl
+EOF
+    fi
+    exec "$gh" "$@"
+  ) > "$out" 2>/dev/null &
+  pid=$!
+  lim=$(( FLEET_MASTER_GH_SECONDS * 5 ))
+  while cc_pid_exists "$pid"; do
+    if [ "$t" -ge "$lim" ]; then
+      fleet_master_kill_tree "$pid"
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.2; t=$(( t + 1 ))
+  done
+  wait "$pid"
+}
+
+fleet_master_obs_json() {
+  # fleet_master_obs_json <state> <precision> <signatures> <failed check
+  # names> <failed run ids> <every check name> — the lists one item a line.
+  jq -cn --arg st "$1" --arg p "$2" --arg s "$3" --arg c "$4" --arg f "$5" --arg n "${6:-}" '
+    def lines($x): $x | split("\n") | map(select(. != "")) | unique;
+    {state: $st, precision: (if $p == "" then "-" else $p end), signatures: lines($s),
+     checks: lines($c), failed_runs: lines($f), names: lines($n)}'
+}
+
+fleet_master_observe_sha() {
+  # fleet_master_observe_sha <slug> <sha> <deadline epoch> <tmp dir> [<previous
+  # reading>] — one observation of a commit's checks, as fleet_master_obs_json.
+  # `진행 중` when no check run exists yet or one is not completed; `초록` when
+  # every completed run passed; `빨강` when every failed run is an Actions job
+  # whose signatures came out; `판정 불가` otherwise (a read failed, a failure
+  # is not an Actions job, an extraction was empty, the budget ran out).
+  #
+  # THE LOGS ARE READ ONCE PER FAILURE SET. When the previous reading was a
+  # settled `빨강` of the same tip over the same failed runs, its signatures
+  # are this one's: a rerun is a new run id and is read afresh.
+  local slug="$1" h="$2" dl="$3" d="$4" prev="${5:-null}" line cid name concl app durl job s outp p
+  local sigs="" prec="" fc="" fr="" names="" incomplete=""
+  fleet_master_in_budget "$dl" || { fleet_master_obs_json '판정 불가' '' '' '' ''; return 0; }
+  if ! fleet_master_gh "$d/runs" api --paginate "repos/$slug/commits/$h/check-runs?per_page=100" \
+         --jq '.check_runs[] | [(.id | tostring), .name, (.status // ""), (.conclusion // ""), (.app.slug // ""), (.details_url // "")] | join("\t")'; then
+    fleet_master_obs_json '판정 불가' '' '' '' ''; return 0
+  fi
+  names=$(cut -f2 "$d/runs")
+  if ! grep -q . "$d/runs" || awk -F'\t' 'NF && $3 != "completed" { f = 1 } END { exit !f }' "$d/runs"; then
+    fleet_master_obs_json '진행 중' '' '' '' '' "$names"; return 0
+  fi
+  # `cut`, never `read`, so an empty field does not shift the ones after it.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    concl=$(printf '%s' "$line" | cut -f4)
+    case "$concl" in success|neutral|skipped|'') continue ;; esac
+    fc=$(printf '%s\n%s' "$fc" "$(printf '%s' "$line" | cut -f2)")
+    fr=$(printf '%s\n%s' "$fr" "$(printf '%s' "$line" | cut -f1)")
+  done < "$d/runs"
+  if [ -z "$fr" ]; then fleet_master_obs_json '초록' '' '' '' '' "$names"; return 0; fi
+  if printf '%s' "$prev" | jq -e --arg t "$h" --arg f "$fr" '
+       .tip == $t and .state == "빨강"
+       and ((.failed_runs // []) == ($f | split("\n") | map(select(. != "")) | unique))' >/dev/null 2>&1; then
+    printf '%s' "$prev" | jq -c --arg n "$names" '{state, precision, signatures, checks: (.checks // []),
+      failed_runs, names: ($n | split("\n") | map(select(. != "")) | unique)}'
+    return 0
+  fi
+  while IFS= read -r line <&3; do
+    [ -n "$line" ] || continue
+    [ -z "$incomplete" ] || break
+    cid=$(printf '%s' "$line" | cut -f1);    name=$(printf '%s' "$line" | cut -f2)
+    concl=$(printf '%s' "$line" | cut -f4);  app=$(printf '%s' "$line" | cut -f5)
+    durl=$(printf '%s' "$line" | cut -f6)
+    case "$concl" in success|neutral|skipped|'') continue ;; esac
+    fleet_master_in_budget "$dl" || { incomplete=1; continue; }
+    if [ "$app" != "github-actions" ]; then incomplete=1; continue; fi
+    job=$(printf '%s' "$durl" | sed -n 's#.*/job/\([0-9][0-9]*\).*#\1#p')
+    [ -n "$job" ] || job="$cid"
+    case "$job" in ''|*[!0-9]*) incomplete=1; continue ;; esac
+    if ! fleet_master_gh "$d/steps" api "repos/$slug/actions/jobs/$job" \
+           --jq '.steps[]? | select(.conclusion == "failure") | .name'; then
+      incomplete=1; continue
+    fi
+    if ! fleet_master_gh "$d/log.full" api --allow-escape-sequences "repos/$slug/actions/jobs/$job/logs"; then
+      incomplete=1; continue
+    fi
+    head -c "$FLEET_MASTER_LOG_MAX_BYTES" "$d/log.full" > "$d/log" 2>/dev/null || : > "$d/log"
+    set --
+    s=$(wc -c < "$d/log.full" 2>/dev/null | tr -d ' ')
+    [ "${s:-0}" -le "$FLEET_MASTER_LOG_MAX_BYTES" ] || set -- --truncated
+    while IFS= read -r s; do [ -z "$s" ] || set -- "$@" --step "$s"; done < "$d/steps"
+    outp=$(bash "$FLEET_DIR/ci-signature.sh" extract --repo "$slug" --check "$name" "$@" < "$d/log" 2>/dev/null) \
+      || { incomplete=1; continue; }
+    p=$(printf '%s\n' "$outp" | sed -n '1s/^정밀도: //p')
+    s=$(printf '%s\n' "$outp" | tail -n +2 | { grep -v '^$' || true; })
+    if [ -z "$s" ]; then incomplete=1; continue; fi
+    sigs=$(printf '%s\n%s' "$sigs" "$s")
+    case "$p" in 단언) [ -n "$prec" ] || prec='단언' ;; *) prec='단계' ;; esac
+  done 3< "$d/runs"
+  if [ -n "$incomplete" ]; then fleet_master_obs_json '판정 불가' '' '' '' '' "$names"; return 0; fi
+  fleet_master_obs_json '빨강' "$prec" "$sigs" "$fc" "$fr" "$names"
+}
+
+fleet_master_event_id() {
+  # fleet_master_event_id <first commit> <signatures, a line each> — the
+  # event's id: the first 12 hex of the sha256 of the bytes `<first commit,
+  # 40 hex>\n` followed by the signatures `LC_ALL=C sort -u`, each line ending
+  # in `\n`. The same failure first seen on the same commit is the same event.
+  { printf '%s\n' "$1"; printf '%s\n' "$2" | { grep -v '^$' || true; } | LC_ALL=C sort -u; } \
+    | fleet_sha256_stdin | cut -c1-12
+}
+fleet_sha256_stdin() { shasum -a 256 2>/dev/null | cut -d' ' -f1; }
+
+fleet_master_switch_off() {
+  # fleet_master_switch_off <owner/name> — rc 0 when repair runs are off for
+  # the repository: `master-repair.off` present with no non-blank line turns
+  # them off everywhere; otherwise a line holding the slug turns that one off.
+  local f="$PACE_ROOT/master-repair.off" lines
+  [ -f "$f" ] || return 1
+  lines=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" | { grep -v '^$' || true; })
+  [ -n "$lines" ] || return 0
+  printf '%s\n' "$lines" | grep -qxF -- "$1"
+}
+
+fleet_master_record_of() {
+  # fleet_master_record_of <event id> — the newest repair record of that
+  # event, verbatim (the line a compare-and-swap needs), or nothing.
+  local f="$PACE_ROOT/backlog.jsonl"
+  [ -r "$f" ] || return 0
+  jq -rR --arg s "$FLEET_BACKLOG_SCHEMA" --arg k "$FLEET_REPAIR_KIND" --arg e "$1" \
+    '. as $l | (fromjson? // {}) | select(.schema == $s and .kind == $k and .event_id == $e) | $l' "$f" 2>/dev/null \
+    | tail -n 1
+}
+fleet_master_repair_run_ids() {
+  # The run ids of every repair record, one a line.
+  local f="$PACE_ROOT/backlog.jsonl" m
+  [ -r "$f" ] || return 0
+  jq -rR --arg s "$FLEET_BACKLOG_SCHEMA" --arg k "$FLEET_REPAIR_KIND" \
+    'fromjson? // {} | select(.schema == $s and .kind == $k) | .manifest_path // empty' "$f" 2>/dev/null \
+    | while IFS= read -r m; do [ -r "$m" ] && fleet_manifest_field "$m" run-id; done
+}
+fleet_master_run_marker_live() {
+  # fleet_master_run_marker_live <run id> — rc 0 while a live repair marker
+  # carries that run id.
+  local f
+  for f in $(fleet_busy_repair_live); do
+    [ "$(sed -n '3p' "$f" | tr -d '[:space:]')" = "$1" ] && return 0
+  done
+  return 1
+}
+
+fleet_master_fix_pr() {
+  # fleet_master_fix_pr <slug> <base> <event json> <tmp dir> <deadline> — the
+  # number of an open pull request into the base that looks like a person's
+  # fix of the event, or nothing. A candidate is not a repair run's own branch,
+  # contains the base (`ahead` or `identical`), has a settled reading of its
+  # head in which every check the event failed in has run, and fails with
+  # none of the event's signatures.
+  local slug="$1" base="$2" ev="$3" d="$4" dl="$5" line num ref sha rid ids obs
+  fleet_master_in_budget "$dl" || return 0
+  fleet_master_gh "$d/pulls" api "repos/$slug/pulls?state=open&base=$base&per_page=100" \
+    --jq '.[] | [(.number | tostring), .head.ref, .head.sha] | join("\t")' || return 0
+  ids=$(fleet_master_repair_run_ids || true)
+  while IFS= read -r line <&4; do
+    [ -n "$line" ] || continue
+    num=$(printf '%s' "$line" | cut -f1); ref=$(printf '%s' "$line" | cut -f2); sha=$(printf '%s' "$line" | cut -f3)
+    case "$num" in ''|*[!0-9]*) continue ;; esac
+    printf '%s' "$sha" | grep -qE '^[0-9a-f]{40}$' || continue
+    case "$ref" in
+      seg/*) rid=${ref#seg/}; rid=${rid%-*}
+             if [ -n "$ids" ] && printf '%s\n' "$ids" | grep -qxF -- "$rid"; then continue; fi ;;
+    esac
+    fleet_master_in_budget "$dl" || return 0
+    fleet_master_gh "$d/cmp" api "repos/$slug/compare/$base...$sha" --jq .status || continue
+    case "$(tr -d '[:space:]' < "$d/cmp")" in ahead|identical) ;; *) continue ;; esac
+    mkdir -p "$d/pr"
+    obs=$(fleet_master_observe_sha "$slug" "$sha" "$dl" "$d/pr")
+    if printf '%s' "$obs" | jq -e --argjson e "$ev" '
+         def basename: sub(" \\([0-9]+\\)$"; "");
+         . as $o
+         | ($o.state == "초록" or $o.state == "빨강")
+           and ([$o.names[] | basename] as $have | all(($e.checks // [])[] | basename; . as $c | any($have[]; . == $c)))
+           and all($e.signatures[]; . as $s | (any(($o.signatures // [])[]; . == $s) | not))' >/dev/null 2>&1; then
+      printf '%s' "$num"; return 0
+    fi
+  done 4< "$d/pulls"
+  return 0
+}
+
+fleet_master_enqueue() {
+  # fleet_master_enqueue <slug> <base> <worktree> <event json> <tmp dir> —
+  # render the event's repair run and append its record, under `backlog.lock`
+  # and only when no record of the event is there. Prints the run id (rc 0);
+  # rc 3 the lock was not taken, 4 the render failed (its last line printed),
+  # 5 the append failed, 6 a record of the event is already there.
+  local slug="$1" base="$2" wt="$3" ev="$4" d="$5" id out rc=0 m rid at dl dsha bc rec
+  id=$(printf '%s' "$ev" | jq -r .id)
+  fleet_backlog_lock || return 3
+  if [ -n "$(fleet_master_record_of "$id")" ]; then fleet_backlog_unlock; return 6; fi
+  printf '%s' "$ev" | jq -r '.signatures[]' > "$d/sigs"
+  out=$(bash "$FLEET_DIR/repair.sh" render --slug "$slug" --base "$base" --event "$id" --signatures "$d/sigs" \
+          --first-commit "$(printf '%s' "$ev" | jq -r .first_commit)" --worktree "$wt" 2>&1) || rc=$?
+  if [ "$rc" != 0 ]; then
+    fleet_backlog_unlock
+    printf '%s' "$(printf '%s\n' "$out" | { grep -v '^$' || true; } | tail -n 1)"
+    return 4
+  fi
+  m=$(printf '%s\n' "$out" | sed -n 's/^manifest=//p' | sed -n '1p')
+  rid=$(printf '%s\n' "$out" | sed -n 's/^run_id=//p' | sed -n '1p')
+  at=$(printf '%s\n' "$out" | sed -n 's/^rendered_at=//p' | sed -n '1p')
+  dl=$(printf '%s\n' "$out" | sed -n 's/^deadline=//p' | sed -n '1p')
+  dsha=$(printf '%s\n' "$out" | sed -n 's/^doc_sha256=//p' | sed -n '1p')
+  bc=$( (cd "$wt" && git rev-parse HEAD) 2>/dev/null || true)
+  rec=$(jq -cn --arg schema "$FLEET_BACKLOG_SCHEMA" --arg k "$FLEET_REPAIR_KIND" --arg e "$id" --arg slug "$slug" \
+          --arg base "$base" --arg at "$at" --arg dl "$dl" --arg bc "$bc" --arg dsha "$dsha" --arg m "$m" '
+          {schema: $schema, id: ("mr-" + $e), kind: $k, event_id: $e, slug: $slug, base: $base,
+           status: "pending", enqueued_at: $at, authorized_at: $at, deadline: $dl, base_commit: $bc,
+           doc_sha256: $dsha, manifest_path: $m, lane: ""}')
+  if [ -z "$m" ] || [ -z "$rid" ] || ! printf '%s\n' "$rec" >> "$PACE_ROOT/backlog.jsonl"; then
+    fleet_backlog_unlock; return 5
+  fi
+  fleet_backlog_unlock
+  printf '%s' "$rid"
+}
+
+fleet_master_end_token() {
+  # fleet_master_end_token <ledger> — the `재킥 원인` of the run's earliest end
+  # row, or `-`.
+  local t
+  t=$(grep -E '^- `자율 승인`' "$1" 2>/dev/null | grep -F '결정=종료' | sed -n '1p' \
+        | sed -n 's/.*재킥 원인=\([^ |]*\).*/\1/p' || true)
+  printf '%s' "${t:--}"
+}
+
+fleet_master_event_repair() {
+  # fleet_master_event_repair <slug> <base> <worktree> <event json> <settled
+  # 1|0> <round epoch> <tmp dir> <deadline> — the event with its `repair`
+  # recomputed, as one JSON line.
+  local slug="$1" base="$2" wt="$3" ev="$4" settled="$5" round="$6" d="$7" dl="$8"
+  local id rec st reason pr="" runid="" status m now hold he out rc rd ledger n done_e e_auth e_dl
+  id=$(printf '%s' "$ev" | jq -r .id)
+  now=$(fleet_now)
+  rec=$(fleet_master_record_of "$id")
+  st=""; reason=""
+  if [ -z "$rec" ]; then
+    local pst preason
+    pst=$(printf '%s' "$ev" | jq -r '.repair.state // "대기"')
+    preason=$(printf '%s' "$ev" | jq -r '.repair.reason // ""')
+    if [ "$pst" = "띄울 수 없음" ] && [ "${preason#렌더 실패}" != "$preason" ]; then
+      printf '%s' "$ev"; return 0
+    fi
+    if fleet_master_switch_off "$slug"; then
+      st="띄울 수 없음"; reason="끄는 스위치"
+    elif [ "$settled" != 1 ]; then
+      # Nothing new starts on a reading that is not settled.
+      case "$pst" in 보류) st="보류"; pr=$(printf '%s' "$ev" | jq -r '.repair.pr // ""') ;; *) st="대기" ;; esac
+    else
+      hold=$(printf '%s' "$ev" | jq -r '.hold_started_at // ""')
+      he=""; [ -z "$hold" ] || he=$(fleet_iso_epoch "$hold")
+      if [ -z "$he" ] || [ $(( now - he )) -lt "$FLEET_MASTER_FIX_PR_HOLD_SECONDS" ]; then
+        pr=$(fleet_master_fix_pr "$slug" "$base" "$ev" "$d" "$dl")
+      fi
+      if [ -n "$pr" ]; then
+        st="보류"
+        [ -n "$hold" ] || ev=$(printf '%s' "$ev" | jq -c --arg at "$(fleet_iso "$now")" '.hold_started_at = $at')
+      else
+        rc=0; out=$(fleet_master_enqueue "$slug" "$base" "$wt" "$ev" "$d") || rc=$?
+        case "$rc" in
+          0) st="띄움"; runid="$out" ;;
+          4) st="띄울 수 없음"; reason="렌더 실패 — $out" ;;
+          5) st="띄울 수 없음"; reason="백로그 적재 실패" ;;
+          *) st="대기" ;;
+        esac
+      fi
+    fi
+  else
+    status=$(printf '%s' "$rec" | jq -r '.status // ""')
+    m=$(printf '%s' "$rec" | jq -r '.manifest_path // ""')
+    runid=$( [ -r "$m" ] && fleet_manifest_field "$m" run-id || true)
+    case "$status" in
+      pending)
+        e_dl=$(fleet_iso_epoch "$(printf '%s' "$rec" | jq -r '.deadline // ""')")
+        if [ -z "$e_dl" ] || [ "$e_dl" -lt "$now" ]; then st="띄울 수 없음"; reason="마감 지난 레코드"
+        else st="띄움"; fi ;;
+      parked)
+        st="띄울 수 없음"; reason="park $(printf '%s' "$rec" | jq -r '.park_reason // "?"')" ;;
+      dispatched|done)
+        rd="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$runid"
+        if [ "$status" = dispatched ] && [ ! -d "$rd" ] && ! fleet_master_run_marker_live "$runid"; then
+          # A claim whose run never opened and whose claimant is gone: the
+          # record goes back to pending, by compare-and-swap.
+          if fleet_backlog_lock; then
+            fleet_backlog_rewrite "$rec" "$(printf '%s' "$rec" | jq -c '.status = "pending" | del(.dispatched_lane, .dispatched_at)')" \
+              || fleet_log "master: $id 의 pending 되돌림이 원본 줄을 찾지 못했다"
+            fleet_backlog_unlock
+          fi
+          st="띄움"
+        else
+          ledger=$(sed -n '1p' "$rd/ledger-path" 2>/dev/null || true)
+          n=0
+          if [ -n "$ledger" ] && [ -d "$rd/halt" ]; then n=$(cc_unanswered_halts "$rd" "$ledger" 2>/dev/null || printf 0); fi
+          done_e=""
+          if [ -e "$rd/done" ]; then done_e=$(fleet_mtime "$rd/done"); elif [ "$status" = done ]; then done_e=0; fi
+          e_auth=$(fleet_iso_epoch "$(printf '%s' "$rec" | jq -r '.authorized_at // ""')")
+          if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+            st="정지"
+          elif [ -n "$done_e" ]; then
+            if [ "$settled" = 1 ] && [ "$round" -gt "${done_e:-0}" ]; then
+              st="띄울 수 없음"; reason="수리 런이 해소 없이 끝남 ($(fleet_master_end_token "$ledger"))"
+            else
+              st="띄움"
+            fi
+          elif ! fleet_master_run_marker_live "$runid" && [ -n "$e_auth" ] \
+               && [ "$now" -gt $(( e_auth + FLEET_REPAIR_WAIT_MAX_SECONDS )) ]; then
+            st="띄울 수 없음"; reason="수리 런이 대기 상한 안에 끝나지 않음"
+          else
+            st="띄움"
+          fi
+        fi ;;
+      *) st="대기" ;;
+    esac
+  fi
+  printf '%s' "$ev" | jq -c --arg st "$st" --arg r "$reason" --arg pr "$pr" --arg run "$runid" '
+    def cut160: if (. | utf8bytelength) <= 160 then . else .[0:length - 1] | cut160 end;
+    .repair = {state: $st,
+               pr: (if $pr == "" then null else ($pr | tonumber) end),
+               run_id: (if $run == "" then null else $run end),
+               reason: (if $r == "" then null else ($r | gsub("[\\n\\r\\t]"; " ") | cut160) end)}'
+}
+
+fleet_master_pairs() {
+  # The watched pairs, `<slug>\t<base>\t<main worktree>` once each, the first
+  # worktree seen for a pair kept: every target row of the manifest of a
+  # pending record, of a dispatched record whose run has not ended, and of a
+  # run directory that has not ended and moved within FLEET_LANE_HORIZON_SECONDS.
+  local f="$PACE_ROOT/backlog.jsonl" mans="" m rd mt rid now
+  now=$(fleet_master_real_now)
+  if [ -r "$f" ]; then
+    while IFS= read -r m; do
+      [ -n "$m" ] && [ -r "$m" ] || continue
+      rid=$(fleet_manifest_field "$m" run-id)
+      [ -z "$rid" ] || [ ! -e "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$rid/done" ] || continue
+      mans=$(printf '%s\n%s' "$mans" "$m")
+    done <<EOF
+$(jq -rR --arg s "$FLEET_BACKLOG_SCHEMA" 'fromjson? // {} | select(.schema == $s and (.status == "pending" or .status == "dispatched")) | .manifest_path // empty' "$f" 2>/dev/null)
+EOF
+  fi
+  for rd in "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"/*; do
+    [ -d "$rd" ] && [ ! -e "$rd/done" ] || continue
+    mt=$(fleet_mtime "$rd")
+    [ -n "$mt" ] && [ $(( now - mt )) -le "$FLEET_LANE_HORIZON_SECONDS" ] || continue
+    m=$(sed -n 's/^manifest=//p' "$rd/seat-call" 2>/dev/null | sed -n '1p' || true)
+    [ -n "$m" ] && [ -r "$m" ] || continue
+    mans=$(printf '%s\n%s' "$mans" "$m")
+  done
+  printf '%s\n' "$mans" | { grep -v '^$' || true; } | while IFS= read -r m; do
+    LC_ALL=C awk -F' [|] ' '
+      index($0, "- `target` ") == 1 {
+        s = ""; b = ""; w = ""
+        for (i = 2; i <= NF; i++) {
+          v = $i
+          if (sub(/^원격 슬러그=/, "", v)) s = v
+          else if (sub(/^베이스 브랜치=/, "", v)) b = v
+          else if (sub(/^메인 워크트리=/, "", v)) w = v
+        }
+        if (s != "" && b != "") printf "%s\t%s\t%s\n", s, b, w
+      }' "$m" 2>/dev/null || true
+  done | while IFS="$(printf '\t')" read -r s b w; do
+    printf '%s' "$s" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || continue
+    git check-ref-format --branch "$b" >/dev/null 2>&1 || continue
+    printf '%s\t%s\t%s\n' "$s" "$b" "$w"
+  done | awk -F'\t' '!seen[$1 FS $2]++'
+}
+
+fleet_master_pair() {
+  # fleet_master_pair <slug> <base> <worktree> <round epoch> <deadline epoch> —
+  # observe one pair and rewrite its reading.
+  local slug="$1" base="$2" wt="$3" round="$4" dl="$5" f sf prev d tip="" obs st settled=0 last mt
+  local newsigs ev=null eid json
+  f=$(fleet_master_file "$slug" "$base"); sf="$f.settled"
+  mkdir -p "$(fleet_master_dir)"
+  mt=$(fleet_mtime "$f")
+  if [ -n "$mt" ] && [ $(( $(fleet_master_real_now) - mt )) -lt "$(fleet_master_skip)" ]; then return 0; fi
+  prev=$(jq -c --arg s "$FLEET_MASTER_SCHEMA" 'select(.schema == $s)' "$f" 2>/dev/null || true)
+  [ -n "$prev" ] || prev=null
+  d=$(mktemp -d "${TMPDIR:-/tmp}/fleet-master.XXXXXX") || return 0
+  if fleet_master_in_budget "$dl" && fleet_master_gh "$d/tip" api "repos/$slug/commits/$base" --jq .sha; then
+    tip=$(tr -d '[:space:]' < "$d/tip")
+  fi
+  printf '%s' "$tip" | grep -qE '^[0-9a-f]{40}$' || tip=""
+  if [ -n "$tip" ]; then obs=$(fleet_master_observe_sha "$slug" "$tip" "$dl" "$d" "$prev")
+  else obs=$(fleet_master_obs_json '판정 불가' '' '' '' ''); fi
+  st=$(printf '%s' "$obs" | jq -r .state)
+  # THE SETTLED CLOCK. A pair with no settled reading for
+  # FLEET_MASTER_SETTLED_MAX_SECONDS stops being rewritten, so its file ages
+  # into the gate's staleness rather than reading as fresh and undecided.
+  case "$st" in 초록|빨강) settled=1; printf '%s\n' "$round" | fleet_write_atomic "$sf" ;; esac
+  last=$(sed -n '1p' "$sf" 2>/dev/null | tr -d '[:space:]' || true)
+  case "$last" in ''|*[!0-9]*) last="$round"; printf '%s\n' "$round" | fleet_write_atomic "$sf" ;; esac
+  if [ $(( round - last )) -gt "$FLEET_MASTER_SETTLED_MAX_SECONDS" ]; then
+    fleet_log "master: $slug $base — 결론 난 판독이 ${FLEET_MASTER_SETTLED_MAX_SECONDS}초 넘게 없다; 판독을 다시 쓰지 않는다"
+    rm -rf "$d"; return 0
+  fi
+  if [ "$prev" = null ] && [ -z "$tip" ]; then rm -rf "$d"; return 0; fi
+  case "$st" in
+    초록|빨강)
+      newsigs=$(jq -rn --argjson p "$prev" --argjson o "$obs" '
+        [(($p // {}).events // [])[] | select(.resolved_at == null) | .signatures[]?] as $open
+        | $o.signatures[] | select(. as $s | (any($open[]; . == $s) | not))')
+      if [ -n "$newsigs" ]; then
+        eid=$(fleet_master_event_id "$tip" "$newsigs")
+        ev=$(jq -cn --arg id "$eid" --arg t "$tip" --arg s "$newsigs" --argjson o "$obs" '
+          {id: $id, first_commit: $t, signatures: ($s | split("\n") | map(select(. != "")) | unique),
+           checks: $o.checks, resolved_at: null, resolved_commit: null, hold_started_at: null,
+           repair: {state: "대기", pr: null, run_id: null, reason: null}}')
+      fi
+      json=$(jq -cn --argjson p "$prev" --argjson o "$obs" --argjson ev "$ev" --arg t "$tip" --arg iso "$(fleet_iso "$round")" '
+        [(($p // {}).events // [])[]
+          | if .resolved_at == null and all(.signatures[]?; . as $s | (any($o.signatures[]; . == $s) | not))
+            then .resolved_at = $iso | .resolved_commit = $t | .repair.state = "해소" | .repair.reason = null
+            else . end] as $evs
+        | {tip: $t, state: $o.state, precision: $o.precision, signatures: $o.signatures,
+           failed_runs: $o.failed_runs,
+           events: ($evs + (if $ev == null or any($evs[]; .id == $ev.id) then [] else [$ev] end))}') ;;
+    '진행 중')
+      json=$(jq -cn --argjson p "$prev" --arg t "$tip" '
+        {tip: $t, state: "진행 중", precision: (($p // {}).precision // "-"),
+         signatures: (($p // {}).signatures // []), failed_runs: (($p // {}).failed_runs // []),
+         events: (($p // {}).events // [])}') ;;
+    *)
+      json=$(jq -cn --argjson p "$prev" --arg t "$tip" '
+        {tip: (($p // {}).tip // $t), state: "판정 불가", precision: (($p // {}).precision // "-"),
+         signatures: (($p // {}).signatures // []), failed_runs: (($p // {}).failed_runs // []),
+         events: (($p // {}).events // [])}') ;;
+  esac
+  # Every unresolved event's repair state, recomputed.
+  local id e
+  for id in $(printf '%s' "$json" | jq -r '.events[] | select(.resolved_at == null) | .id'); do
+    e=$(printf '%s' "$json" | jq -c --arg id "$id" '[.events[] | select(.id == $id)][0]')
+    e=$(fleet_master_event_repair "$slug" "$base" "$wt" "$e" "$settled" "$round" "$d" "$dl")
+    json=$(printf '%s' "$json" | jq -c --argjson e "$e" '.events |= map(if .id == $e.id then $e else . end)')
+  done
+  # Every unresolved event and the newest ten resolved ones, the unresolved
+  # last: the gate reads the tail of the list.
+  printf '%s' "$json" | jq --arg schema "$FLEET_MASTER_SCHEMA" --arg iso "$(fleet_iso "$round")" --argjson ep "$round" '
+    {schema: $schema, observed_at: $iso, observed_at_epoch: $ep} + .
+    | .events = ((.events | map(select(.resolved_at != null)) | .[-10:]) + (.events | map(select(.resolved_at == null))))' \
+    | fleet_write_atomic "$f" || fleet_log "master: $f 를 쓰지 못했다"
+  rm -rf "$d"
+}
+
+fleet_master_stage() {
+  # One round over every watched pair, under `master.lock`. Run it in a
+  # subshell of its own: its EXIT trap releases what it holds, whichever way
+  # it ends. A lock whose pid is gone, or older than
+  # FLEET_MASTER_LOCK_STALE_SECONDS on the real clock, is broken; a live one
+  # means another round is running and this one does nothing.
+  local lockd holder mt round dl pairs slug base wt
+  command -v jq >/dev/null 2>&1 || return 0
+  mkdir -p "$PACE_ROOT"
+  lockd="$PACE_ROOT/master.lock"
+  # The traps are set before the lock is taken and remove it only once it is
+  # this round's, so a signal between the two neither leaves it nor takes
+  # another round's.
+  FLEET_MASTER_LOCKD=""
+  trap 'fleet_backlog_unlock; [ -z "$FLEET_MASTER_LOCKD" ] || rm -rf "$FLEET_MASTER_LOCKD"' EXIT
+  # A signal ends the round through `exit`, so the EXIT trap above still runs.
+  trap 'exit 143' TERM INT
+  if ! mkdir "$lockd" 2>/dev/null; then
+    holder=$(sed -n '1p' "$lockd/pid" 2>/dev/null | tr -d '[:space:]' || true)
+    mt=$(fleet_mtime "$lockd")
+    if { [ -z "$holder" ] || cc_pid_exists "$holder"; } \
+       && [ -n "$mt" ] && [ $(( $(fleet_master_real_now) - mt )) -le "$FLEET_MASTER_LOCK_STALE_SECONDS" ]; then
+      return 0
+    fi
+    fleet_log "master: master.lock 을 깬다 (보유 pid ${holder:-?})"
+    rm -rf "$lockd"
+    mkdir "$lockd" 2>/dev/null || return 0
+  fi
+  FLEET_MASTER_LOCKD="$lockd"
+  printf '%s\n' "$$" > "$lockd/pid"
+  round=$(fleet_now)
+  dl=$(( $(fleet_master_real_now) + FLEET_MASTER_BUDGET_SECONDS ))
+  pairs=$(fleet_master_pairs)
+  while IFS="$(printf '\t')" read -r slug base wt <&5; do
+    [ -n "$slug" ] || continue
+    fleet_master_pair "$slug" "$base" "$wt" "$round" "$dl" || fleet_log "master: $slug $base 관측이 실패했다"
+  done 5<<EOF
+$pairs
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# REPAIR RUNS — the claim, the shared run function, the observer child and the
+# job's wait.
+# ---------------------------------------------------------------------------
+
+fleet_repair_recognized() {
+  # fleet_repair_recognized <record json> — rc 0 when the record's manifest
+  # carries a `수리 사건` row whose fourth cell is the record's event id. A
+  # record that only says `kind: master-repair` is not a repair run.
+  local m e
+  m=$(printf '%s' "$1" | jq -r '.manifest_path // empty')
+  e=$(printf '%s' "$1" | jq -r '.event_id // empty')
+  [ -n "$m" ] && [ -r "$m" ] && [ -n "$e" ] || return 1
+  grep -E '^- `수리 사건` ' "$m" 2>/dev/null | awk -F'|' -v e="$e" '
+    { v = $4; gsub(/^[ \t]+|[ \t]+$/, "", v); if (v == e) f = 1 } END { exit !f }'
+}
+
+FLEET_CLAIM_ORIG=""; FLEET_CLAIM_LINE=""; FLEET_CLAIM_MANIFEST=""; FLEET_CLAIM_RUN_ID=""; FLEET_CLAIM_WT=""
+fleet_repair_claim() {
+  # fleet_repair_claim <lane> <job pid> <inventory json> <dirs json> <home> —
+  # claim the oldest pending repair record for this lane under `backlog.lock`.
+  # rc 0 with FLEET_CLAIM_* set and this process's repair marker written; rc 1
+  # when nothing was claimed. THE REPAIR ADMISSION: the record is a repair run
+  # by its manifest's row, passes the park checks, is not recorded on another
+  # account, its repository's switch is not off, fewer than
+  # FLEET_REPAIR_SEATS repair runs are alive, and this account's 5h window
+  # passes. The fleet ceiling and lane occupancy are not asked: the repair run
+  # has its own seat.
+  local lane="$1" jpid="$2" inv="$3" dirs="$4" home="$5" head rec id park="" clause="" detail="-"
+  local manifest="" run_id="" wt="" run_dir rec_dir slug n leases="" ctx res now iso line
+  now=$(fleet_now); iso=$(fleet_iso "$now")
+  fleet_backlog_lock || return 1
+  head=$(fleet_backlog_head repair)
+  if [ -z "$head" ]; then fleet_backlog_unlock; return 1; fi
+  rec="$head"; id=$(printf '%s' "$rec" | jq -r '.id // "?"')
+  fleet_repair_recognized "$rec" || park=repair-unrecognized
+  [ -n "$park" ] || park=$(fleet_dispatch_park_reason "$rec")
+  if [ -z "$park" ]; then
+    manifest=$(printf '%s' "$rec" | jq -r '.manifest_path')
+    run_id=$(fleet_manifest_field "$manifest" run-id)
+    wt=$(fleet_manifest_field "$manifest" origin-worktree)
+    [ -n "$run_id" ] || park=manifest-missing
+  fi
+  if [ -n "$park" ]; then
+    line=$(printf '%s' "$rec" | jq -c --arg r "$park" '.status = "parked" | .park_reason = $r')
+    fleet_backlog_rewrite "$head" "$line" || fleet_log "repair $lane: $id 의 park 재작성이 원본 줄을 찾지 못했다 (rc=$?)"
+    fleet_backlog_unlock
+    fleet_log "repair $lane: $id park — $park"
+    return 1
+  fi
+  run_dir="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$run_id"
+  rec_dir=$(sed -n '1p' "$run_dir/config-dir" 2>/dev/null || true); rec_dir=${rec_dir%/}
+  if [ -n "$rec_dir" ] && [ "$rec_dir" != "${home%/}" ]; then clause=lane; detail=lane-mismatch; fi
+  slug=$(printf '%s' "$rec" | jq -r '.slug // ""')
+  if [ -z "$clause" ] && fleet_master_switch_off "$slug"; then clause=switch; fi
+  if [ -z "$clause" ]; then
+    n=$(fleet_busy_repair_live | grep -c . || true)
+    [ "${n:-0}" -lt "$FLEET_REPAIR_SEATS" ] || clause=repair-seat
+  fi
+  if [ -z "$clause" ]; then
+    if fleet_lend_ids "$inv" | jq -e --arg l "$lane" 'any(.[]; . == $l)' >/dev/null 2>&1; then
+      leases=$(fleet_lend_leases) || { clause=window; detail=lending-unrouted; }
+    fi
+    if [ -z "$clause" ]; then
+      ctx=$(fleet_context "$now" "$inv" "$leases")
+      res=$(fleet_cap_eval "$ctx" "$dirs" "$lane" | jq -r '.result')
+      [ "$res" = pass ] || { clause=window; detail="${res:-unknown}"; }
+    fi
+  fi
+  if [ -n "$clause" ]; then
+    line=$(printf '%s' "$rec" | jq -c --arg at "$iso" --arg c "$clause" \
+            '.last_refusal_at = $at | .last_refusal_verdict = "-" | .last_refusal_clause = $c')
+    fleet_backlog_rewrite "$head" "$line" || fleet_log "repair $lane: $id 의 거부 재작성이 원본 줄을 찾지 못했다 (rc=$?)"
+    fleet_backlog_unlock
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$iso" "$lane" "$clause" "-" "$id" "$detail" >> "$PACE_ROOT/refusals.tsv"
+    fleet_log "repair $lane: $id 거부 — 절 $clause/$detail"
+    return 1
+  fi
+  line=$(printf '%s' "$rec" | jq -c --arg l "$lane" --arg at "$iso" \
+          '.status = "dispatched" | .dispatched_lane = $l | .dispatched_at = $at')
+  if ! fleet_backlog_rewrite "$head" "$line"; then
+    fleet_backlog_unlock
+    fleet_log "repair $lane: $id 는 이미 다른 쪽이 집었다 — 기동하지 않는다"
+    return 1
+  fi
+  fleet_busy_write "$lane" "$run_id" "$jpid" || fleet_log "repair $lane: 수리 표지를 쓰지 못했다"
+  fleet_backlog_unlock
+  FLEET_CLAIM_ORIG="$rec"; FLEET_CLAIM_LINE="$line"; FLEET_CLAIM_MANIFEST="$manifest"
+  FLEET_CLAIM_RUN_ID="$run_id"; FLEET_CLAIM_WT="$wt"
+  return 0
+}
+
+fleet_run_record() {
+  # fleet_run_record <lane> <home> <original line> <dispatched line>
+  # <manifest> <run id> <origin worktree> <lending 0|1> [no-master] — the run
+  # of one claimed record, the backlog dispatch's and a repair run's alike:
+  # the report stub, the watchers, the lending pin, `run.sh` in the
+  # foreground, and the `done` rewrite.
+  #
+  # THE FOUR PREPARATION STEPS, IN THIS ORDER: the report stub, then one
+  # snapshot so the run directory exists, THEN the watcher — a watcher started
+  # before the directory exists reads its absence as "the run went away" and
+  # exits quietly — and THEN the CI poller, which reads the directory the same
+  # way and so carries the same ordering debt. Then `run.sh` in the foreground,
+  # and this process waits.
+  # THE LEDGER IS WHERE `run.sh` WRITES IT: under the parent of the git common
+  # dir measured from the origin worktree, not under the worktree itself. From
+  # the main worktree the two are the same file; from a linked one they are
+  # not, and the stub, the watcher and the poller then watched a file the run
+  # never wrote — the watcher's silence arm fired on a healthy run. A path that
+  # is not a git worktree keeps the worktree-relative ledger.
+  local lane="$1" home="$2" orig="$3" line="$4" manifest="$5" run_id="$6" wt="$7" lend="$8" only="${9:-}"
+  local run_dir lbase="" ledger rc=0 line2 id iso
+  run_dir="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$run_id"
+  id=$(printf '%s' "$orig" | jq -r '.id // "?"')
+  iso=$(fleet_iso "$(fleet_now)")
+  if [ -n "$wt" ]; then
+    lbase=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+    [ -z "$lbase" ] || lbase=$(dirname "$lbase")
+  fi
+  ledger="${lbase:-$wt}/docs/pipeline-run/$run_id.md"
+  if [ -n "$wt" ] && [ ! -e "$ledger" ]; then
+    mkdir -p "$(dirname "$ledger")"
+    printf '# 파이프라인 런 %s\n\n런 id: %s · 파견 레인: %s · 파견 시각: %s\n' "$run_id" "$run_id" "$lane" "$iso" > "$ledger"
+  fi
+  fleet_start_watch "$home" "$FLEET_DIR" "$manifest" "$run_dir" "$ledger" "" "$only"
+  # THE LENDING PIN, HERE ONLY. The router reads it as the run's seat and
+  # admits the run on the lending account alone. It is written here and not in
+  # `fleet_start_watch`, which a boot-time re-entry also calls on a run a
+  # person supervised. A run that cannot carry the pin is not started: the
+  # record goes back to pending for a later tick.
+  if [ "$lend" = 1 ] && ! printf '%s\n' "$lane" | fleet_write_atomic "$run_dir/fleet-lane"; then
+    fleet_backlog_rewrite_locked "$line" "$orig" || fleet_log "run $lane: $id 의 pending 되돌림이 원본 줄을 찾지 못했다 (rc=$?)"
+    fleet_log "run $lane: $id 의 대여 좌석 고정 기록을 쓰지 못했다 — 기동하지 않는다"
+    return 0
+  fi
+  fleet_log "run $lane: $id 기동 — run $run_id (매니페스트 $manifest)"
+  CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/run.sh" --manifest "$manifest" || rc=$?
+  line2=$(printf '%s' "$line" | jq -c '.status = "done"')
+  fleet_backlog_rewrite_locked "$line" "$line2" || fleet_log "run $lane: $id 의 done 재작성이 실패했다 (rc=$?) — 레코드는 dispatched 로 남는다"
+  fleet_log "run $lane: $id 종료 rc=$rc"
+  return 0
+}
+
+FLEET_REPAIR_CHILD=""
+fleet_master_repair_launch() {
+  # fleet_master_repair_launch <lane> <job pid> <log> — THE ONE BACKGROUND
+  # LAUNCH OF THIS FILE'S OWN SUBCOMMANDS besides the observer child. It stays
+  # in the job's process group, and the job waits on the run it claims.
+  bash "$FLEET_DIR/fleet.sh" repair-run "$1" "$2" > "$3" 2>&1 < /dev/null &
+  FLEET_REPAIR_CHILD=$!
+}
+
+FLEET_MW_DIR=""; FLEET_MW_STAGE=""
+fleet_master_watch_exit() {
+  # The stage releases master.lock in its own EXIT trap, so it is waited for:
+  # a child that ended first would leave the lock behind it.
+  if [ -n "$FLEET_MW_STAGE" ]; then
+    fleet_master_kill_tree "$FLEET_MW_STAGE"
+    wait "$FLEET_MW_STAGE" 2>/dev/null || true
+  fi
+  [ -z "$FLEET_MW_DIR" ] || rm -rf "$FLEET_MW_DIR"
+}
+fleet_master_watch() {
+  # fleet_master_watch <lane> <job pid> <job fingerprint> — the observer child
+  # of a waiting dispatch job: the master stage every period while that job is
+  # alive, and a repair run when a pending repair record is there and no
+  # repair run this child started is still alive.
+  local lane="$1" jpid="$2" jfp="$3" d opid ofp mt rp="" rfp="" i n log
+  case "$lane" in ''|-*|*[!a-z0-9-]*|sensor) fleet_usage "master-watch <id> <잡 pid> <잡 지문> — 레인 id 형식이 아니다: $lane" ;; esac
+  case "$jpid" in ''|*[!0-9]*) fleet_usage "master-watch <id> <잡 pid> <잡 지문> — 잡 pid 가 숫자가 아니다: $jpid" ;; esac
+  [ -n "$jfp" ] || fleet_usage "master-watch <id> <잡 pid> <잡 지문> — 지문이 비었다"
+  command -v jq >/dev/null 2>&1 || fleet_die "jq 가 없습니다"
+  mkdir -p "$(fleet_master_dir)"
+  d="$(fleet_master_dir)/watch.$jpid"
+  if ! mkdir "$d" 2>/dev/null; then
+    opid=$(sed -n '1p' "$d/owner" 2>/dev/null | tr -d '[:space:]' || true); ofp=$(sed -n '2p' "$d/owner" 2>/dev/null || true)
+    mt=$(fleet_mtime "$d")
+    if { [ -n "$opid" ] && cc_holder_is_live "$opid" "$ofp"; } \
+       || { [ -z "$opid" ] && [ -n "$mt" ] && [ $(( $(fleet_master_real_now) - mt )) -lt 10 ]; }; then
+      fleet_log "master-watch $lane: 잡 $jpid 의 관측 자식이 이미 있다"
+      return 0
+    fi
+    rm -rf "$d"
+    mkdir "$d" 2>/dev/null || return 0
+  fi
+  FLEET_MW_DIR="$d"
+  trap 'fleet_master_watch_exit' EXIT
+  trap 'exit 143' TERM INT
+  printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" | fleet_write_atomic "$d/owner"
+  log="$(fleet_master_dir)/repair-run.$jpid.log"
+  while cc_holder_is_live "$jpid" "$jfp"; do
+    ( fleet_master_stage ) &
+    FLEET_MW_STAGE=$!
+    wait "$FLEET_MW_STAGE" || true
+    FLEET_MW_STAGE=""
+    cc_holder_is_live "$jpid" "$jfp" || break
+    if [ -n "$(fleet_backlog_head repair)" ] && ! { [ -n "$rp" ] && cc_holder_is_live "$rp" "$rfp"; }; then
+      fleet_master_repair_launch "$lane" "$jpid" "$log"
+      rp="$FLEET_REPAIR_CHILD"; rfp=$(cc_proc_fingerprint "$rp")
+      printf '%s\n%s\n' "$rp" "$rfp" | fleet_write_atomic "$d/launch"
+    fi
+    i=0; n=$(fleet_master_interval)
+    while [ "$i" -lt "$n" ] && cc_holder_is_live "$jpid" "$jfp"; do sleep 1; i=$(( i + 1 )); done
+  done
+  return 0
+}
+
+fleet_master_watch_stop() {
+  # fleet_master_watch_stop <job pid> — end that job's observer child, and give
+  # a repair run it had just started the time to claim or give up: a claim
+  # made after the job's last look must still be waited for.
+  local d pid fp lp="" lfp="" n=0
+  d="$(fleet_master_dir)/watch.$1"
+  # Either file may be absent — a job whose tick started no observer child, or
+  # a child that launched nothing — and an absent file reads as empty.
+  pid=$(sed -n '1p' "$d/owner" 2>/dev/null | tr -d '[:space:]' || true); fp=$(sed -n '2p' "$d/owner" 2>/dev/null || true)
+  lp=$(sed -n '1p' "$d/launch" 2>/dev/null | tr -d '[:space:]' || true); lfp=$(sed -n '2p' "$d/launch" 2>/dev/null || true)
+  if [ -n "$pid" ] && cc_holder_is_live "$pid" "$fp"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    while cc_pid_exists "$pid" && [ "$n" -lt 50 ]; do sleep 0.2; n=$(( n + 1 )); done
+  fi
+  n=0
+  if [ -n "$lp" ]; then
+    while cc_holder_is_live "$lp" "$lfp" && [ -z "$(fleet_busy_repair_live "$1")" ] \
+          && [ "$n" -lt $(( (FLEET_BACKLOG_LOCK_WAIT_SECONDS + 20) * 5 )) ]; do
+      sleep 0.2; n=$(( n + 1 ))
+    done
+  fi
+  return 0
+}
+
+fleet_job_wait_repairs() {
+  # The job's main process, once its own run is over and its own marker is
+  # gone: wait while a repair run naming this job is alive, then stop the
+  # observer child, then look once more under the lock — a claim the child
+  # made between the last look and its stop is waited for too. At most
+  # FLEET_REPAIR_WAIT_MAX_SECONDS in all; launchd tears the group down when
+  # this process returns, so nothing of the job's may still be running then.
+  local start live
+  start=$(fleet_master_real_now)
+  while :; do
+    while [ -n "$(fleet_busy_repair_live "$$")" ]; do
+      if [ $(( $(fleet_master_real_now) - start )) -ge "$FLEET_REPAIR_WAIT_MAX_SECONDS" ]; then
+        fleet_log "job $$: 수리 런을 ${FLEET_REPAIR_WAIT_MAX_SECONDS}초 기다렸다 — 기다림을 끝낸다"
+        fleet_master_watch_stop "$$"
+        return 0
+      fi
+      sleep 1
+    done
+    fleet_master_watch_stop "$$"
+    live=""
+    if fleet_backlog_lock; then live=$(fleet_busy_repair_live "$$"); fleet_backlog_unlock; fi
+    [ -n "$live" ] || return 0
+  done
+}
+
+fleet_repair_run() {
+  # fleet_repair_run <lane> <job pid> — claim one repair record for this lane
+  # and run it in this process's foreground. Started by the observer child of
+  # the dispatch job <job pid>, whose wait keeps the group alive meanwhile.
+  local lane="$1" jpid="$2" inv dirs home lend=0
+  case "$lane" in ''|-*|*[!a-z0-9-]*|sensor) fleet_usage "repair-run <id> <잡 pid> — 레인 id 형식이 아니다: $lane" ;; esac
+  case "$jpid" in ''|*[!0-9]*) fleet_usage "repair-run <id> <잡 pid> — 잡 pid 가 숫자가 아니다: $jpid" ;; esac
+  command -v jq >/dev/null 2>&1 || fleet_die "jq 가 없습니다"
+  mkdir -p "$PACE_ROOT"
+  inv=$(fleet_inventory_json)
+  dirs=$(fleet_dirs_json "$inv")
+  home=$(printf '%s' "$inv" | jq -r --arg i "$lane" '.accounts[] | select(.id == $i) | .config_dir')
+  if [ -z "$home" ]; then fleet_log "repair-run $lane: 인벤토리에 그 레인이 없다"; return 0; fi
+  fleet_lend_ids "$inv" | jq -e --arg l "$lane" 'any(.[]; . == $l)' >/dev/null 2>&1 && lend=1
+  trap 'fleet_backlog_unlock; fleet_busy_drop' EXIT
+  fleet_repair_claim "$lane" "$jpid" "$inv" "$dirs" "$home" || return 0
+  fleet_run_record "$lane" "$home" "$FLEET_CLAIM_ORIG" "$FLEET_CLAIM_LINE" "$FLEET_CLAIM_MANIFEST" \
+    "$FLEET_CLAIM_RUN_ID" "$FLEET_CLAIM_WT" "$lend" no-master
+}
+
 fleet_dispatch() {
   local lane="$1" home state verdict head rec id line line2 clause="" detail="-" park probe rc=0 occ
   local manifest run_id run_dir wt ledger now iso inv dirs ctx why rec_dir other census busy res
@@ -1547,6 +2501,8 @@ fleet_dispatch() {
   esac
   mkdir -p "$PACE_ROOT"
   now=$(fleet_now); iso=$(fleet_iso "$now")
+  # The lane `fleet_start_watch` starts this job's master observer child for.
+  FLEET_LANE="$lane"
 
   # (1b) BOOT-TIME RE-ENTRY, BEFORE ELIGIBILITY AND THE BACKLOG LOCK. The
   #      eligibility below is for a new run on this label's account, and a run
@@ -1556,8 +2512,14 @@ fleet_dispatch() {
   #      head.
   if fleet_reentry_tick "$lane"; then
     fleet_log "dispatch $lane: 이번 틱은 재진입을 돌렸다 — 백로그는 다음 틱에 본다"
+    fleet_job_wait_repairs
     return 0
   fi
+
+  # (1c) THE MASTER STAGE, after the re-entry branch and before eligibility: a
+  #      lane that may not start anything this tick still keeps the base-branch
+  #      readings fresh. Its own subshell, so its lock and trap stay its own.
+  ( fleet_master_stage ) || fleet_log "dispatch $lane: master 단계가 실패했다 (rc=$?)"
 
   # (2) ELIGIBILITY, BEFORE THE LOCK. A lane that may not work now ends with one
   #     log line and no refusal row: that is "this lane is idle", not a verdict
@@ -1602,6 +2564,15 @@ fleet_dispatch() {
   # run is hours, and a lock held across the run would serialize the lanes this
   # file exists to run side by side.
   trap 'fleet_backlog_unlock; fleet_busy_drop' EXIT
+  # (2b) AN IDLE LANE TAKES A PENDING REPAIR RECORD FIRST, through the repair
+  #      admission and not the backlog's: the repair run has its own seat.
+  if fleet_repair_claim "$lane" "$$" "$inv" "$dirs" "$home"; then
+    fleet_run_record "$lane" "$home" "$FLEET_CLAIM_ORIG" "$FLEET_CLAIM_LINE" "$FLEET_CLAIM_MANIFEST" \
+      "$FLEET_CLAIM_RUN_ID" "$FLEET_CLAIM_WT" "$lend"
+    fleet_busy_drop
+    fleet_job_wait_repairs
+    return 0
+  fi
   if ! fleet_backlog_lock; then
     fleet_log "dispatch $lane: backlog.lock 을 ${FLEET_BACKLOG_LOCK_WAIT_SECONDS}초 안에 잡지 못했다 — 다른 레인이 집는 중이므로 이번 틱은 시작하지 않는다"
     return 0
@@ -1678,7 +2649,7 @@ fleet_dispatch() {
       census=$(printf '%s\n' "$probe" | fleet_census_parse "$inv")
       [ -n "$census" ] || census='[]'
       busy=$(fleet_busy_count "$lane" "$census" "$lend_ids")
-      read -r _ b_same b_non <<EOF
+      read -r _ b_same b_non _ <<EOF
 $busy
 EOF
       if [ "$b_same" -gt 0 ]; then
@@ -1763,44 +2734,12 @@ EOF
   fleet_busy_write "$lane" "$run_id" || fleet_log "dispatch $lane: 실행 표지를 쓰지 못했다 — 이 런은 프로브에 행이 생기기 전까지 상한에 세어지지 않는다"
   fleet_backlog_unlock
 
-  # THE FOUR PREPARATION STEPS, IN THIS ORDER: the report stub, then one
-  # snapshot so the run directory exists, THEN the watcher — a watcher started
-  # before the directory exists reads its absence as "the run went away" and
-  # exits quietly — and THEN the CI poller, which reads the directory the same
-  # way and so carries the same ordering debt. Then `run.sh` in the foreground,
-  # and this job waits.
-  # THE LEDGER IS WHERE `run.sh` WRITES IT: under the parent of the git common
-  # dir measured from the origin worktree, not under the worktree itself. From
-  # the main worktree the two are the same file; from a linked one they are
-  # not, and the stub, the watcher and the poller then watched a file the run
-  # never wrote — the watcher's silence arm fired on a healthy run. A path that
-  # is not a git worktree keeps the worktree-relative ledger.
-  local lbase=""
-  if [ -n "$wt" ]; then
-    lbase=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
-    [ -z "$lbase" ] || lbase=$(dirname "$lbase")
-  fi
-  ledger="${lbase:-$wt}/docs/pipeline-run/$run_id.md"
-  if [ -n "$wt" ] && [ ! -e "$ledger" ]; then
-    mkdir -p "$(dirname "$ledger")"
-    printf '# 파이프라인 런 %s\n\n런 id: %s · 파견 레인: %s · 파견 시각: %s\n' "$run_id" "$run_id" "$lane" "$iso" > "$ledger"
-  fi
-  fleet_start_watch "$home" "$FLEET_DIR" "$manifest" "$run_dir" "$ledger"
-  # THE LENDING PIN, ON THIS PATH ONLY. The router reads it as the run's seat
-  # and admits the run on the lending account alone. It is written here and
-  # not in `fleet_start_watch`, which a boot-time re-entry also calls on a run
-  # a person supervised. A run that cannot carry the pin is not started: the
-  # head goes back to pending for a later tick.
-  if [ "$lend" = 1 ] && ! printf '%s\n' "$lane" | fleet_write_atomic "$run_dir/fleet-lane"; then
-    fleet_backlog_rewrite_locked "$line" "$rec" || fleet_log "dispatch $lane: $id 의 pending 되돌림이 원본 줄을 찾지 못했다 (rc=$?)"
-    fleet_log "dispatch $lane: $id 의 대여 좌석 고정 기록을 쓰지 못했다 — 기동하지 않는다"
-    return 0
-  fi
-  fleet_log "dispatch $lane: $id 기동 — run $run_id (매니페스트 $manifest)"
-  CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/run.sh" --manifest "$manifest" || rc=$?
-  line2=$(printf '%s' "$line" | jq -c '.status = "done"')
-  fleet_backlog_rewrite_locked "$line" "$line2" || fleet_log "dispatch $lane: $id 의 done 재작성이 실패했다 (rc=$?) — 레코드는 dispatched 로 남는다"
-  fleet_log "dispatch $lane: $id 종료 rc=$rc"
+  # (11) THE RUN, through the function a repair run uses too. Then this job
+  # drops its own marker — its run no longer holds a seat — and waits for any
+  # repair run its observer child started.
+  fleet_run_record "$lane" "$home" "$rec" "$line" "$manifest" "$run_id" "$wt" "$lend"
+  fleet_busy_drop
+  fleet_job_wait_repairs
   return 0
 }
 
@@ -1987,6 +2926,7 @@ fleet_agent_status() {
   lend_ids=$(fleet_lend_ids "$inv")
   for f in "$PACE_ROOT/busy"/*; do
     [ -f "$f" ] || continue
+    fleet_busy_is_repair "$f" && continue
     if fleet_busy_live "$f" '[]'; then
       id=${f##*/}; id=${id%.*}
       printf '%s' "$lend_ids" | jq -e --arg l "$id" 'any(.[]; . == $l)' >/dev/null 2>&1 || n_live=$(( n_live + 1 ))
@@ -1998,16 +2938,31 @@ fleet_agent_status() {
     n_lend=0
     for f in "$PACE_ROOT/busy/$id".*; do
       [ -f "$f" ] || continue
+      fleet_busy_is_repair "$f" && continue
       fleet_busy_live "$f" '[]' && n_lend=$(( n_lend + 1 ))
     done
     printf '%s 레인 살아 있는 실행 표지: %s / 점유 상한 %s\n' "$id" "$n_lend" "$FLEET_LANE_OCCUPANCY_MAX"
   done
+  # The repair switch and the repair seat: one line, beside the ceiling it
+  # does not count against.
+  local sw="꺼짐 없음" n_rep
+  if [ -f "$PACE_ROOT/master-repair.off" ]; then
+    if [ -s "$PACE_ROOT/master-repair.off" ]; then
+      sw="꺼짐: $(grep -v '^[[:space:]]*$' "$PACE_ROOT/master-repair.off" | tr '\n' ' ' | sed 's/ $//')"
+    else
+      sw="모든 저장소 꺼짐"
+    fi
+  fi
+  n_rep=$(fleet_busy_repair_live | grep -c . || true)
+  printf '수리 런: 스위치 %s · 살아 있는 수리 표지 %s / 자리 %s\n' "$sw" "${n_rep:-0}" "$FLEET_REPAIR_SEATS"
 }
 
 main() {
   case "${1:-}" in
     sensor)   fleet_sensor ;;
     dispatch) [ -n "${2:-}" ] || fleet_usage "dispatch <id> — 레인(인벤토리 id)이 필요하다"; fleet_dispatch "$2" ;;
+    master-watch) fleet_master_watch "${2:-}" "${3:-}" "${4:-}" ;;
+    repair-run)   fleet_repair_run "${2:-}" "${3:-}" ;;
     agent)
       case "${2:-}" in
         install)   fleet_agent_install ;;
@@ -2015,7 +2970,7 @@ main() {
         status)    fleet_agent_status ;;
         *) fleet_usage "agent install|uninstall|status" ;;
       esac ;;
-    *) fleet_usage "sensor | dispatch <id> | agent install|uninstall|status" ;;
+    *) fleet_usage "sensor | dispatch <id> | master-watch <id> <잡 pid> <잡 지문> | repair-run <id> <잡 pid> | agent install|uninstall|status" ;;
   esac
 }
 

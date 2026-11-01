@@ -39,8 +39,20 @@
 #   agent: label set from the inventory, refused installs (violation, empty
 #          set, orphan, half-installed, running), uninstall over the universe,
 #          status with eligibility, orphans and live markers
+#   master: the reading per (repository, base) — 진행 중 opens nothing, a
+#           settled 빨강 opens one event whose id is the digest of its first
+#           commit and signatures, 판정 불가 keeps the previous reading, a
+#           settled 초록 resolves; logs read once per failure set; the skip;
+#           one repair record per event; the repair state recomputed from the
+#           record; the switch; a sticky render failure; the fix-PR hold and
+#           its 7200 s; master.lock live, stale and dead
+#   repair admission: its own seat beside the ceiling, the repair-seat,
+#           window and switch refusals, an unrecognized record parked, the
+#           observer child's launch while the lane's run goes on, the job's
+#           wait, one run under a claim race, and the reading kept fresh
 #   source greps              — no detach helper, no notifier, one watcher line,
-#                               none of the removed seat names
+#                               one run.sh / repair-run / master-watch launch,
+#                               no write credential, none of the removed seat names
 #
 # Usage: bash scripts/test-fleet.sh
 
@@ -86,8 +98,13 @@ EOF
 cat > "$FX/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'run %s CLAUDE_CONFIG_DIR=%s\n' "$*" "${CLAUDE_CONFIG_DIR:-}" >> "$TEST_LOG_DIR/run.log"
-# A slow driver keeps the dispatch job — and its run marker — alive.
-[ -n "${TEST_RUN_SLEEP:-}" ] && sleep "$TEST_RUN_SLEEP"
+# A slow driver keeps the dispatch job — and its run marker — alive. A repair
+# run (its manifest is an `rr-` one) sleeps TEST_REPAIR_RUN_SLEEP instead, so it
+# can outlive the lane's own run.
+case "$*" in
+  */rr-*) [ -z "${TEST_REPAIR_RUN_SLEEP:-}" ] || sleep "$TEST_REPAIR_RUN_SLEEP" ;;
+  *)      [ -z "${TEST_RUN_SLEEP:-}" ] || sleep "$TEST_RUN_SLEEP" ;;
+esac
 # With TEST_RUN_STEAL set the stub rewrites the dispatched record under the
 # driver's feet, so the dispatcher's `done` flip finds no line to flip.
 if [ -n "${TEST_RUN_STEAL:-}" ]; then
@@ -95,6 +112,61 @@ if [ -n "${TEST_RUN_STEAL:-}" ]; then
   mv -f "$FLEET_PACE_ROOT/backlog.jsonl.new" "$FLEET_PACE_ROOT/backlog.jsonl"
 fi
 exit 0
+EOF
+# The signature extractor is copied for real, so a reading's signatures are the
+# ones the gate's match act would compute. The fixture repository is not
+# cc-cmds, so the generic adapter names each failed step: `<check>|<step>`.
+cp "$ORCH/ci-signature.sh" "$FX/"
+# The repair renderer stub: the manifest the real one renders, cut to what the
+# fleet reads — the run id, the origin worktree, the target row, the `수리 사건`
+# row and the `(해당 없음)` design digest — and the key=value lines it prints.
+# With TEST_REPAIR_FAIL set it fails with that line.
+cat > "$FX/repair.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'repair %s\n' "$*" >> "$TEST_LOG_DIR/repair.log"
+if [ -n "${TEST_REPAIR_FAIL:-}" ]; then printf 'repair: %s\n' "$TEST_REPAIR_FAIL" >&2; exit 1; fi
+s=""; b=""; e=""; w=""
+while [ $# -gt 0 ]; do
+  case "$1" in --slug) s="$2"; shift ;; --base) b="$2"; shift ;; --event) e="$2"; shift ;; --worktree) w="$2"; shift ;; esac
+  shift
+done
+mkdir -p "$TEST_REPAIR_DIR"
+m="$TEST_REPAIR_DIR/rr-$e.plan.md"
+at=$(jq -rn --argjson e "$TEST_NOW" '$e | todate'); dl=$(jq -rn --argjson e "$TEST_NOW" '$e + 21600 | todate')
+{
+  printf '<!-- cc-run-manifest v1; run-id=rr-%s; owner-doc=docs/master-repair-%s.md; origin-worktree=%s; -->\n\n' "$e" "$e" "$w"
+  printf '**설계 문서 전체 sha256**: (해당 없음)\n\n'
+  printf -- '- `target` | 별칭=repo | 메인 워크트리=%s | 베이스 브랜치=%s | 원격 슬러그=%s\n' "$w" "$b" "$s"
+  printf -- '- `수리 사건` | %s | %s | %s | fp\n' "$s" "$b" "$e"
+} > "$m"
+printf 'manifest=%s\ngrant=%s/g.md\nrun_id=rr-%s\nrendered_at=%s\ndeadline=%s\ndoc_sha256=(해당 없음)\n' "$m" "$TEST_REPAIR_DIR" "$e" "$at" "$dl"
+EOF
+# The remote, from files under $TEST_GH: the tip, `runs.<sha>` (the check runs
+# as the reader's --jq prints them), `steps.<job>`, `log.<job>`, `pulls` and
+# `compare.<sha>`. Every call is logged; a path no file answers fails, and so
+# does every call while `$TEST_GH/down` exists.
+cat > "$WORK/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_GH/calls"
+[ ! -e "$TEST_GH/down" ] || exit 1
+[ "${1:-}" = api ] || exit 1
+shift
+p=""; skip=""
+for a in "$@"; do
+  if [ -n "$skip" ]; then skip=""; continue; fi
+  case "$a" in --jq) skip=1 ;; -*) ;; *) [ -n "$p" ] || p="$a" ;; esac
+done
+case "$p" in
+  repos/*/commits/*/check-runs*) h=${p%/check-runs*}; f="$TEST_GH/runs.${h##*/}" ;;
+  repos/*/commits/*) f="$TEST_GH/tip" ;;
+  repos/*/actions/jobs/*/logs) j=${p%/logs}; f="$TEST_GH/log.${j##*/}" ;;
+  repos/*/actions/jobs/*) f="$TEST_GH/steps.${p##*/}" ;;
+  repos/*/pulls*) f="$TEST_GH/pulls" ;;
+  repos/*/compare/*) f="$TEST_GH/compare.${p##*...}" ;;
+  *) exit 1 ;;
+esac
+[ -r "$f" ] || exit 1
+cat "$f"
 EOF
 # The lane probe stub: prints $TEST_PROBE_OUT, sleeps $TEST_PROBE_SLEEP first,
 # exits with $TEST_PROBE_RC.
@@ -152,6 +224,8 @@ export TEST_LOG_DIR="$WORK/logs"; mkdir -p "$TEST_LOG_DIR"
 export TEST_LAUNCHD_LOG="$WORK/launchctl.log" TEST_LAUNCHD_STATE="$WORK/launchd.state" TEST_LAUNCHD_RUNNING="$WORK/launchd.running"
 export TEST_PROBE_OUT="$WORK/probe.out" TEST_PROBE_RC=0 TEST_PROBE_SLEEP=""
 : > "$WORK/probe.out"
+export TEST_GH="$WORK/gh" TEST_REPAIR_DIR="$WORK/repair" TEST_NOW="$NOW"
+mkdir -p "$TEST_GH"
 
 inv_write() {
   # inv_write [<jq-filter>] — cc (reserved), u1, u2 enabled; the filter edits it.
@@ -184,9 +258,11 @@ fresh_pace() {
   : > "$TEST_PROBE_OUT"
 }
 fleet() {
-  # fleet <args...> — the actor under the fixture's environment.
+  # fleet <args...> — the actor under the fixture's environment. The remote is
+  # always the stub; FLEET_NOW_PIN set and empty runs on the real clock.
   FLEET_PACE_ROOT="$PACE" FLEET_PLUTIL="$WORK/bin/plutil" FLEET_LAUNCHCTL="$WORK/bin/launchctl" \
-  FLEET_LAUNCH_AGENTS_DIR="$WORK/agents" FLEET_LANE_PROBE="$WORK/bin/lane-probe.sh" FLEET_NOW_EPOCH="$NOW" \
+  FLEET_LAUNCH_AGENTS_DIR="$WORK/agents" FLEET_LANE_PROBE="$WORK/bin/lane-probe.sh" FLEET_NOW_EPOCH="${FLEET_NOW_PIN-$NOW}" \
+  FLEET_GH="$WORK/bin/gh" \
   HOME="$HOMEX" XDG_CONFIG_HOME="$WORK/cfg" XDG_STATE_HOME="$WORK/xdg" \
   bash "${FLEET_UNDER_TEST:-$FLEET}" "$@"
 }
@@ -1215,10 +1291,311 @@ rm -rf "$RUNDIR"
 # --- (iii) the pin is written on the dispatch path only -------------------------------------
 fn_body() { awk -v fn="$2" '$0 ~ "^" fn "\\(\\) *\\{" { on = 1 } on { print } on && /^}/ { exit }' "$1"; }
 check "(iii) fleet-lane 을 쓰는 자리는 하나다" "$(grep -c 'fleet_write_atomic "\$run_dir/fleet-lane"' "$ORCH/fleet.sh" || true)" "1"
-check "(iii) 그 자리는 fleet_dispatch 안이다" "$(fn_body "$ORCH/fleet.sh" fleet_dispatch | grep -c 'fleet_write_atomic "\$run_dir/fleet-lane"' || true)" "1"
+check "(iii) 그 자리는 공유 실행 함수 fleet_run_record 안이다" "$(fn_body "$ORCH/fleet.sh" fleet_run_record | grep -c 'fleet_write_atomic "\$run_dir/fleet-lane"' || true)" "1"
+check "(iii) fleet_dispatch 와 repair-run 은 그 함수로 런을 돌린다" \
+  "$(fn_body "$ORCH/fleet.sh" fleet_dispatch | grep -c '^ *fleet_run_record ' || true)/$(fn_body "$ORCH/fleet.sh" fleet_repair_run | grep -c '^ *fleet_run_record ' || true)" "2/1"
 check "(iii) fleet_start_watch 는 fleet-lane 을 쓰지 않는다" "$(fn_body "$ORCH/fleet.sh" fleet_start_watch | grep -c 'fleet-lane' || true)" "0"
 check "(iii) 부팅 재진입 경로는 fleet-lane 을 쓰지 않는다" \
   "$(for f in $(grep -oE '^fleet_reentry_[a-z_]+' "$ORCH/fleet.sh" | sort -u); do fn_body "$ORCH/fleet.sh" "$f"; done | grep -c 'fleet-lane' || true)" "0"
+
+# ===========================================================================
+# MASTER — the base-branch reading and the repair record it enqueues
+# ===========================================================================
+SLUG=o/n
+TIP1=$(printf '%040d' 1); TIP2=$(printf '%040d' 2)
+PRA=$(printf '%040d' 7); PRB=$(printf '%040d' 8); PRC=$(printf '%040d' 9)
+MMAN="$WORK/M1.plan.md"
+m_manifest() {
+  # m_manifest <file> <run id> — a run manifest whose target row names o/n master.
+  printf '<!-- cc-run-manifest v1; run-id=%s; owner-doc=docs/x.md; origin-worktree=%s; -->\n\n**설계 문서 전체 sha256**: %s\n\n- `target` | 별칭=repo | 메인 워크트리=%s | 공통 git 디렉터리=%s/.git | 베이스 브랜치=master | 홈=예 | 원격 슬러그=%s\n' \
+    "$2" "$WT" "$DOC_SHA" "$WT" "$WT" "$SLUG" > "$1"
+}
+m_manifest "$MMAN" M1
+MFILE_REL="master/o__n__master.json"
+mf() { jq -r "$1" "$PACE/$MFILE_REL" 2>/dev/null; }
+eid_of() { printf '%s\n%s\n' "$1" "$2" | shasum -a 256 | cut -c1-12; }
+E1=$(eid_of "$TIP1" 'build|Run tests')
+gh_tip() { printf '%s\n' "$1" > "$TEST_GH/tip"; }
+gh_red() {
+  # gh_red <sha> <job> — one failed Actions job on that commit, its failed
+  # step `Run tests`, and a log.
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "1$2" 'build (1)' completed failure github-actions "https://github.com/$SLUG/actions/runs/5/job/$2" > "$TEST_GH/runs.$1"
+  printf 'Run tests\n' > "$TEST_GH/steps.$2"
+  printf 'log of %s\n' "$2" > "$TEST_GH/log.$2"
+}
+gh_green() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' 21 'build (1)' completed success github-actions '' > "$TEST_GH/runs.$1"; }
+gh_running() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' 31 'build (1)' in_progress '' github-actions '' > "$TEST_GH/runs.$1"; }
+gh_calls() { grep -c -- "$1" "$TEST_GH/calls" 2>/dev/null || true; }
+m_fresh() {
+  # m_fresh <name> — an admitting scenario whose one pending record's manifest
+  # names o/n master, a clean remote at TIP1, and no repair manifests or runs.
+  d_fresh "$1" m1; set_backlog "$(backlog_record m1 ".manifest_path = \"$MMAN\"")"
+  rm -rf "$TEST_GH" "$TEST_REPAIR_DIR" "$WORK/xdg/cc-cmds/run"/rr-*; mkdir -p "$TEST_GH"; : > "$TEST_GH/pulls"
+  : > "$WORK/master.err"
+  gh_tip "$TIP1"
+}
+m_round() {
+  # One master stage, through a lane that is not eligible: the stage runs at
+  # the top of every dispatch tick, before eligibility. The reading is aged
+  # first so the round does not skip the pair.
+  [ ! -e "$PACE/$MFILE_REL" ] || touch -t 202001010000 "$PACE/$MFILE_REL"
+  fleet dispatch cc >/dev/null 2>>"$WORK/master.err"
+}
+repair_recs() { jq -r 'select(.kind == "master-repair") | .id' "$PACE/backlog.jsonl" | count_lines /dev/stdin; }
+rec_set() {
+  # rec_set <jq> — rewrite the E1 repair record in place.
+  jq -c --arg id "mr-$E1" "if .id == \$id then $1 else . end" "$PACE/backlog.jsonl" > "$PACE/backlog.new" \
+    && mv "$PACE/backlog.new" "$PACE/backlog.jsonl"
+}
+young() { local m; m=$(date -u -r "$1" +%s 2>/dev/null || printf 0); [ $(( $(date -u +%s) - m )) -lt 60 ] && printf yes || printf no; }
+
+# --- a settled reading opens an event; 진행 중 opens nothing ---------------------
+m_fresh m-open
+gh_running "$TIP1"; m_round
+check "진행 중 판독은 새 tip 을 싣고 사건을 열지 않는다" \
+  "$(mf '.schema + "/" + .state + "/" + .tip + "/" + (.events | length | tostring)')" "cc-master-state v1/진행 중/$TIP1/0"
+gh_red "$TIP1" 101; m_round
+check "빨강 판독은 서명과 정밀도를 싣는다 (범용 어댑터: 단계)" "$(mf '.state + "/" + .precision + "/" + (.signatures | join(","))')" "빨강/단계/build|Run tests"
+check "사건 하나가 열린다 — id 는 첫 커밋 줄과 정렬된 서명 줄의 sha256 앞 12자" \
+  "$(mf '[.events[] | .id + "/" + .first_commit + "/" + (.checks | join(","))] | join(" ")')" "$E1/$TIP1/build (1)"
+check "관측 시각은 라운드 시각이다" "$(mf '.observed_at + "/" + (.observed_at_epoch | tostring)')" "$(iso "$NOW")/$NOW"
+check "수리 런이 렌더되어 사건은 띄움이고 run_id 는 렌더한 런이다" "$(mf '.events[0].repair | .state + "/" + .run_id')" "띄움/rr-$E1"
+check "수리 레코드 하나가 pending 으로 적재된다" \
+  "$(backlog_field "mr-$E1" '.kind + "/" + .status + "/" + .event_id + "/" + .slug + "/" + .base + "/" + .doc_sha256 + "/" + .lane')" \
+  "master-repair/pending/$E1/o/n/master/(해당 없음)/"
+check "레코드의 적재·인가 시각은 렌더 시각이고 기준 커밋은 워크트리 HEAD 다" \
+  "$(backlog_field "mr-$E1" '[.enqueued_at == .authorized_at, .enqueued_at, .base_commit] | map(tostring) | join("/")')" "true/$(iso "$NOW")/$BASE"
+check "렌더러는 사건 id·첫 커밋·워크트리를 받는다" "$(grep -c -- "--event $E1 .*--first-commit $TIP1 --worktree $WT" "$TEST_LOG_DIR/repair.log" || true)" "1"
+check "실패 job 의 로그는 한 번 읽힌다" "$(gh_calls '/logs')" "1"
+m_round
+check "같은 tip 의 같은 실패 묶음은 로그를 다시 읽지 않는다" "$(gh_calls '/logs')" "1"
+check "열린 사건의 서명은 사건을 다시 열지 않는다" "$(mf '.events | length')" "1"
+check "사건마다 레코드는 하나다 — 렌더도 다시 하지 않는다" "$(repair_recs)/$(count_lines "$TEST_LOG_DIR/repair.log")" "1/1"
+calls=$(count_lines "$TEST_GH/calls")
+fleet dispatch cc >/dev/null 2>&1
+check "주기 절반보다 젊은 판독의 쌍은 그 라운드에 읽지 않는다" "$(count_lines "$TEST_GH/calls")" "$calls"
+touch "$TEST_GH/down"; m_round; rm -f "$TEST_GH/down"
+check "판정 불가는 앞 판독의 tip·서명·사건을 그대로 둔다" \
+  "$(mf '.state + "/" + .tip + "/" + (.signatures | join(",")) + "/" + (.events | length | tostring) + "/" + (.events[0].resolved_at | tostring)')" \
+  "판정 불가/$TIP1/build|Run tests/1/null"
+gh_tip "$TIP2"; gh_running "$TIP2"; m_round
+check "진행 중은 새 tip 을 싣되 사건을 해소하지 않는다" "$(mf '.state + "/" + .tip + "/" + (.events[0].resolved_at | tostring)')" "진행 중/$TIP2/null"
+gh_green "$TIP2"; m_round
+check "결론 난 초록은 사건을 해소한다" \
+  "$(mf '.state + "/" + .events[0].resolved_commit + "/" + .events[0].repair.state + "/" + (.events[0].resolved_at != null | tostring)')" "초록/$TIP2/해소/true"
+
+# --- the repair state follows the record, every round ---------------------------
+m_fresh m-rec; gh_red "$TIP1" 101; m_round
+rec_set ".deadline = \"$(iso $(( NOW - 60 )))\""; m_round
+check "마감이 지난 pending 레코드 → 띄울 수 없음" "$(mf '.events[0].repair | .state + "/" + .reason')" "띄울 수 없음/마감 지난 레코드"
+rec_set '.status = "parked" | .park_reason = "doc-changed"'; m_round
+check "park 된 레코드 → 띄울 수 없음, 사유는 park 토큰" "$(mf '.events[0].repair | .state + "/" + .reason')" "띄울 수 없음/park doc-changed"
+rec_set '.status = "dispatched" | .dispatched_lane = "u1"'; m_round
+check "런 디렉터리도 산 표지도 없는 dispatched 는 pending 으로 되돌아가고 띄움이다" \
+  "$(backlog_status "mr-$E1")/$(backlog_field "mr-$E1" '.dispatched_lane | tostring')/$(mf '.events[0].repair.state')" "pending/null/띄움"
+rec_set '.status = "done"'; mkdir -p "$WORK/xdg/cc-cmds/run/rr-$E1"; touch -t 202001010000 "$WORK/xdg/cc-cmds/run/rr-$E1/done"; m_round
+check "해소 없이 끝난 수리 런 → 띄울 수 없음, 끝 행의 원인 토큰과 함께" "$(mf '.events[0].repair | .state + "/" + .reason')" "띄울 수 없음/수리 런이 해소 없이 끝남 (-)"
+check "어느 라운드도 같은 사건의 레코드를 다시 적재하지 않는다" "$(repair_recs)" "1"
+
+# --- the switch, and a render failure that stays -----------------------------------
+m_fresh m-switch; : > "$PACE/master-repair.off"; gh_red "$TIP1" 101; m_round
+check "빈 master-repair.off 는 모든 저장소의 수리 런을 막는다" "$(mf '.events[0].repair | .state + "/" + .reason')/$(repair_recs)" "띄울 수 없음/끄는 스위치/0"
+printf 'other/repo\n' > "$PACE/master-repair.off"; m_round
+check "다른 슬러그만 적힌 스위치는 이 저장소를 막지 않는다" "$(mf '.events[0].repair.state')/$(repair_recs)" "띄움/1"
+m_fresh m-render; gh_red "$TIP1" 101
+TEST_REPAIR_FAIL='템플릿을 읽지 못했다' m_round
+check "렌더 실패 → 띄울 수 없음, 사유는 렌더러의 마지막 줄" "$(mf '.events[0].repair | .state + "/" + .reason')" "띄울 수 없음/렌더 실패 — repair: 템플릿을 읽지 못했다"
+m_round
+check "렌더 실패는 다음 라운드에 다시 렌더하지 않는다" "$(count_lines "$TEST_LOG_DIR/repair.log")/$(repair_recs)/$(mf '.events[0].repair.state')" "1/0/띄울 수 없음"
+
+# --- a person's fix PR holds the repair run, 7200 seconds once per event ----------
+m_fresh m-pr; gh_red "$TIP1" 101
+printf '8\tbehind-branch\t%s\n7\tfix-branch\t%s\n' "$PRB" "$PRA" > "$TEST_GH/pulls"
+printf 'behind\n' > "$TEST_GH/compare.$PRB"; gh_green "$PRB"
+printf 'ahead\n' > "$TEST_GH/compare.$PRA"; gh_green "$PRA"
+m_round
+check "사건의 체크가 돌고 그 서명이 없는 베이스 포함 PR 은 수리 런을 보류한다" \
+  "$(mf '.events[0] | .repair.state + "/" + (.repair.pr | tostring) + "/" + .hold_started_at')/$(repair_recs)" "보류/7/$(iso "$NOW")/0"
+NOW_SAVE=$NOW
+NOW=$(( NOW_SAVE + 3600 )); m_round
+check "보류 시작 시각은 한 번만 적힌다" "$(mf '.events[0] | .hold_started_at + "/" + .repair.state')" "$(iso "$NOW_SAVE")/보류"
+NOW=$(( NOW_SAVE + 7300 )); m_round; NOW=$NOW_SAVE
+check "보류 7200초가 지나면 PR 이 있어도 수리 런을 적재한다" "$(mf '.events[0].repair | .state + "/" + (.pr | tostring)')/$(repair_recs)" "띄움/null/1"
+m_fresh m-pr-red; gh_red "$TIP1" 101
+printf '9\tstill-red\t%s\n' "$PRC" > "$TEST_GH/pulls"; printf 'ahead\n' > "$TEST_GH/compare.$PRC"; gh_red "$PRC" 102
+m_round
+check "사건의 서명으로 실패하는 PR 은 보류하지 않는다" "$(mf '.events[0].repair.state')/$(repair_recs)" "띄움/1"
+
+# --- master.lock: a live holder skips the round, a dead or stale one is broken ------
+m_fresh m-lock; gh_red "$TIP1" 101
+sleep 30 & LKP=$!; BG_PIDS="$BG_PIDS $LKP"
+mkdir -p "$PACE/master.lock"; printf '%s\n' "$LKP" > "$PACE/master.lock/pid"
+m_round
+[ -e "$PACE/$MFILE_REL" ] && bad "산 보유자의 젊은 master.lock 이면 그 라운드는 아무것도 읽지 않는다" "판독이 쓰였다" \
+  || ok "산 보유자의 젊은 master.lock 이면 그 라운드는 아무것도 읽지 않는다"
+touch -t 202001010000 "$PACE/master.lock"; m_round
+check "보유자가 살아 있어도 묵은 master.lock 은 깨고 읽는다" "$(mf .state)" "빨강"
+kill "$LKP" 2>/dev/null; wait "$LKP" 2>/dev/null
+mkdir -p "$PACE/master.lock"; printf '%s\n' "$LKP" > "$PACE/master.lock/pid"; : > "$WORK/master.err"
+m_round
+check "죽은 pid 의 master.lock 은 그 라운드에 깨지고 판독이 다시 쓰인다" \
+  "$(grep -c 'master.lock 을 깬다' "$WORK/master.err" || true)/$(young "$PACE/$MFILE_REL")" "1/yes"
+[ -d "$PACE/master.lock" ] && bad "라운드가 끝나면 master.lock 이 남지 않는다" "남아 있다" || ok "라운드가 끝나면 master.lock 이 남지 않는다"
+
+# ===========================================================================
+# REPAIR ADMISSION — the repair run's own seat, beside the ceiling
+# ===========================================================================
+r_fresh() {
+  # r_fresh <name> [only] — one rendered pending repair record for E1; with
+  # `only` the ordinary record is dropped so an ordinary tick has no head.
+  m_fresh "$1"; gh_red "$TIP1" 101; m_round; clear_logs
+  if [ "${2:-}" = only ]; then
+    jq -c 'select(.kind == "master-repair")' "$PACE/backlog.jsonl" > "$PACE/backlog.new" && mv "$PACE/backlog.new" "$PACE/backlog.jsonl"
+  fi
+}
+r_fresh r-ceil
+sleep 60 & RP1=$!; sleep 60 & RP2=$!; BG_PIDS="$BG_PIDS $RP1 $RP2"
+mark u1 "$RP1" X1; mark u2 "$RP2" X2
+fleet dispatch u1 >/dev/null 2>&1
+check "상한이 찬 함대에서도 수리 레코드는 자기 자리로 기동한다" "$(backlog_field "mr-$E1" '.status + "/" + .dispatched_lane')" "done/u1"
+check "기동한 것은 수리 매니페스트의 런 하나다" \
+  "$(grep -c "run --manifest $TEST_REPAIR_DIR/rr-$E1.plan.md" "$TEST_LOG_DIR/run.log" || true)/$(count_lines "$TEST_LOG_DIR/run.log")" "1/1"
+check "그 틱은 보통 머리를 기동하지 않는다" "$(backlog_status m1)" "pending"
+check "끝나면 수리 표지가 남지 않는다" "$(ls "$PACE/busy" | tr '\n' ' ')" "u1.$RP1 u2.$RP2 "
+kill "$RP1" "$RP2" 2>/dev/null; wait "$RP1" "$RP2" 2>/dev/null
+
+r_fresh r-seat only
+sleep 60 & RP3=$!; BG_PIDS="$BG_PIDS $RP3"
+mark u2 "$RP3" rr-other; printf 'master-repair\n1\n' >> "$PACE/busy/u2.$RP3"
+fleet dispatch u1 >/dev/null 2>"$WORK/r-seat.err"
+check "산 수리 표지가 자리 수만큼이면 거부 행 repair-seat, 판정 칸은 -" "$(cut -f2-4,6 "$PACE/refusals.tsv")" "$(printf 'u1\trepair-seat\t-\t-')"
+check "거부된 수리 레코드는 pending 으로 남고 거부 절을 싣는다" \
+  "$(backlog_field "mr-$E1" '.status + "/" + .last_refusal_clause + "/" + .last_refusal_verdict')" "pending/repair-seat/-"
+check "보통 머리는 수리 레코드를 집지 않는다" "$(grep -c 'pending 레코드가 없다' "$WORK/r-seat.err" || true)/$(count_lines "$TEST_LOG_DIR/run.log")" "1/0"
+kill "$RP3" 2>/dev/null; wait "$RP3" 2>/dev/null
+fleet dispatch u1 >/dev/null 2>&1
+check "수리 자리가 비면 다음 틱에 기동한다" "$(backlog_status "mr-$E1")" "done"
+
+repair_append() {
+  # repair_append <event id> — render with the stub and append the record the
+  # master stage would, under backlog.lock (the lanes may be rewriting it).
+  local out m at dl rec n=0
+  out=$(bash "$FX/repair.sh" render --slug "$SLUG" --base master --event "$1" --worktree "$WT")
+  m=$(printf '%s\n' "$out" | sed -n 's/^manifest=//p'); at=$(printf '%s\n' "$out" | sed -n 's/^rendered_at=//p')
+  dl=$(printf '%s\n' "$out" | sed -n 's/^deadline=//p')
+  rec=$(jq -cn --arg e "$1" --arg m "$m" --arg at "$at" --arg dl "$dl" --arg bc "$BASE" '
+    {schema: "cc-pace-backlog v1", id: ("mr-" + $e), kind: "master-repair", event_id: $e, slug: "o/n", base: "master",
+     status: "pending", enqueued_at: $at, authorized_at: $at, deadline: $dl, base_commit: $bc,
+     doc_sha256: "(해당 없음)", manifest_path: $m, lane: ""}')
+  until mkdir "$PACE/backlog.lock" 2>/dev/null; do [ "$n" -lt 50 ] || return 1; sleep 0.2; n=$(( n + 1 )); done
+  printf '%s\n' "$rec" >> "$PACE/backlog.jsonl"; rm -rf "$PACE/backlog.lock"
+}
+EA=aaaaaaaaaaa1; EB=bbbbbbbbbbb2; EX=ccccccccccc3
+wait_for() {
+  # wait_for <seconds> <command…> — poll the fixture until the command succeeds.
+  local lim=$(( $1 * 5 )) n=0; shift
+  until "$@"; do [ "$n" -lt "$lim" ] || return 1; sleep 0.2; n=$(( n + 1 )); done
+}
+run_started() { [ "$(count_lines "$TEST_LOG_DIR/run.log")" != 0 ]; }
+rec_there() { [ -n "$(backlog_field "mr-$E1" .status 2>/dev/null)" ]; }
+fx_procs() { pgrep -f "$FX/fleet.sh (master-watch|repair-run)" | count_lines /dev/stdin; }
+r_dispatched() { [ "$(backlog_status "mr-$1")" = dispatched ] || [ "$(backlog_status "mr-$1")" = done ]; }
+
+# Two live runs fill the ceiling; two repair records: the first takes the
+# repair seat, the second is refused while the first runs.
+m_fresh r-two; set_backlog
+sleep 60 & RP4=$!; sleep 60 & RP5=$!; BG_PIDS="$BG_PIDS $RP4 $RP5"
+mark u1 "$RP4" X1; mark u2 "$RP5" X2
+repair_append "$EA"; repair_append "$EB"
+TEST_REPAIR_RUN_SLEEP=4 fleet dispatch u1 >/dev/null 2>"$WORK/r-two-u1.err" &
+r2_u1=$!; BG_PIDS="$BG_PIDS $r2_u1"
+wait_for 10 r_dispatched "$EA"
+fleet dispatch u2 >/dev/null 2>"$WORK/r-two-u2.err"
+check "상한이 찬 함대에서 첫 수리 레코드는 dispatched" "$(backlog_field "mr-$EA" '.status + "/" + .dispatched_lane')" "dispatched/u1"
+check "같은 때 둘째 수리 레코드는 repair-seat 거부 행을 남기고 pending 이다" \
+  "$(awk -F'\t' -v id="mr-$EB" '$3 == "repair-seat" && $5 == id { n++ } END { print (n > 0) ? "있다" : "없다" }' "$PACE/refusals.tsv")/$(backlog_status "mr-$EB")" "있다/pending"
+wait "$r2_u1"
+check "첫 수리 런은 끝나 done 이고 둘째는 그동안 뜨지 않았다" \
+  "$(backlog_status "mr-$EA")/$(grep -c "rr-$EB" "$TEST_LOG_DIR/run.log" || true)" "done/0"
+kill "$RP4" "$RP5" 2>/dev/null; wait "$RP4" "$RP5" 2>/dev/null
+
+r_fresh r-window only; usage_write '.accounts[1].windows.five_hour.utilization = 0.80'
+fleet dispatch u1 >/dev/null 2>&1
+check "5시간 창이 닫힌 계정에서는 수리 레코드도 거부된다 (window)" "$(cut -f3,4,6 "$PACE/refusals.tsv")/$(backlog_status "mr-$E1")" "$(printf 'window\t-\tover')/pending"
+r_fresh r-switch only; printf 'o/n\n' > "$PACE/master-repair.off"
+fleet dispatch u1 >/dev/null 2>&1
+check "스위치가 끈 저장소의 수리 레코드는 거부된다 (switch)" "$(cut -f3,6 "$PACE/refusals.tsv")/$(backlog_status "mr-$E1")" "$(printf 'switch\t-')/pending"
+d_fresh r-unrec x0
+set_backlog "$(backlog_record mr-x '.kind = "master-repair" | .event_id = "abcdef012345" | .slug = "o/n" | .base = "master"')"
+fleet dispatch u1 >/dev/null 2>&1
+check "수리 사건 행이 없는 매니페스트의 수리 레코드는 park repair-unrecognized" \
+  "$(backlog_field mr-x '.status + " " + .park_reason')/$(count_lines "$TEST_LOG_DIR/run.log")" "parked repair-unrecognized/0"
+
+# --- the observer child: a repair run while every lane's own run is going ---------
+# Both lanes hold a run; a repair record appended meanwhile is taken by one of
+# their observer children, and the repair run outlives both lane runs.
+m_fresh r-both; gh_green "$TIP1"; m_manifest "$WORK/M2.plan.md" M2
+set_backlog "$(backlog_record m1 ".manifest_path = \"$MMAN\"")" "$(backlog_record m2 ".manifest_path = \"$WORK/M2.plan.md\"")"
+for l in u1 u2; do
+  TEST_RUN_SLEEP=3 TEST_REPAIR_RUN_SLEEP=8 FLEET_MASTER_INTERVAL_TEST_SECONDS=2 fleet dispatch "$l" >/dev/null 2>"$WORK/r-both-$l.err" &
+  eval "rb_$l=\$!"; eval "BG_PIDS=\"\$BG_PIDS \$rb_$l\""
+done
+runs_two() { [ "$(count_lines "$TEST_LOG_DIR/run.log")" -ge 2 ]; }
+wait_for 10 runs_two
+repair_append "$EX"
+wait_for 15 r_dispatched "$EX"
+check "두 레인이 모두 런을 쥔 동안 덧붙인 수리 레코드는 몇 회차 안에 dispatched 다" "$(r_dispatched "$EX" && echo 예 || echo 아니오)" "예"
+rl=$(backlog_field "mr-$EX" .dispatched_lane)
+other=u1; [ "$rl" != u1 ] || other=u2
+eval "wait \"\$rb_$rl\""
+check "수리 런을 띄운 잡은 자기 런이 끝난 뒤에도 수리 런이 끝날 때까지 남는다 — 그 잡이 끝난 때 레코드는 done" \
+  "$(backlog_status "mr-$EX")" "done"
+eval "wait \"\$rb_$other\""
+check "두 레인의 런과 수리 런이 한 번씩 돈다" \
+  "$(backlog_status m1)/$(backlog_status m2)/$(grep -c "run --manifest $TEST_REPAIR_DIR/rr-$EX.plan.md" "$TEST_LOG_DIR/run.log" || true)" "done/done/1"
+check "잡이 끝나면 master-watch·repair-run 프로세스가 남지 않는다" "$(fx_procs)" "0"
+check "잡이 끝나면 실행 표지와 관측 자식의 자리가 남지 않는다" "$(ls "$PACE/busy" 2>/dev/null | count_lines /dev/stdin)/$(ls -d "$PACE/master"/watch.* 2>/dev/null | count_lines /dev/stdin)" "0/0"
+
+# The base breaking while one lane runs: the observer child's own reading
+# enqueues the record, and an idle lane's tick races the child for it.
+m_fresh r-race; gh_green "$TIP1"
+TEST_RUN_SLEEP=5 FLEET_MASTER_INTERVAL_TEST_SECONDS=2 fleet dispatch u1 >/dev/null 2>"$WORK/r-race.err" &
+rr_u1=$!; BG_PIDS="$BG_PIDS $rr_u1"
+wait_for 10 run_started
+gh_red "$TIP1" 101
+wait_for 15 rec_there
+TEST_RUN_SLEEP=5 fleet dispatch u2 >/dev/null 2>"$WORK/r-race-u2.err" &
+rr_u2=$!; BG_PIDS="$BG_PIDS $rr_u2"
+wait "$rr_u1" "$rr_u2"
+check "쉬는 레인의 틱과 관측 자식이 함께 집어도 수리 런은 한 번 돈다" \
+  "$(grep -c "run --manifest $TEST_REPAIR_DIR/rr-$E1.plan.md" "$TEST_LOG_DIR/run.log" || true)/$(backlog_status "mr-$E1")" "1/done"
+check "경합 뒤에도 프로세스가 남지 않는다" "$(fx_procs)" "0"
+
+# --- the observer child keeps the reading fresh; one stage at a time ---------------
+# The real clock, so each round's observed_at is its own.
+NOW=$(date -u +%s); export TEST_NOW="$NOW"
+m_fresh r5; m_manifest "$WORK/M2.plan.md" M2
+set_backlog "$(backlog_record m1 ".manifest_path = \"$MMAN\"")" "$(backlog_record m2 ".manifest_path = \"$WORK/M2.plan.md\"")"
+gh_red "$TIP1" 101
+for l in u1 u2; do
+  FLEET_NOW_PIN='' TEST_RUN_SLEEP=8 FLEET_MASTER_INTERVAL_TEST_SECONDS=2 fleet dispatch "$l" >/dev/null 2>"$WORK/r5-$l.err" &
+  eval "r5_$l=\$!"; eval "BG_PIDS=\"\$BG_PIDS \$r5_$l\""
+done
+seen=""; holders=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+  sleep 0.5
+  o=$(mf .observed_at); [ -z "$o" ] || seen=$(printf '%s\n%s' "$seen" "$o")
+  if [ -d "$PACE/master.lock" ]; then
+    h=$(count_lines "$PACE/master.lock/pid"); [ "$h" -le "$holders" ] || holders=$h
+  fi
+done
+wait "$r5_u1" "$r5_u2"
+n_seen=$(printf '%s\n' "$seen" | grep -v '^$' | sort -u | count_lines /dev/stdin)
+[ "$n_seen" -ge 3 ] && ok "관측 자식이 도는 동안 observed_at 이 두 번 이상 바뀐다 ($n_seen 가지)" \
+  || bad "관측 자식이 도는 동안 observed_at 이 두 번 이상 바뀐다" "값 $n_seen 가지"
+[ "$holders" -le 1 ] && ok "master.lock 의 보유자는 언제나 하나 이하다" || bad "master.lock 의 보유자는 언제나 하나 이하다" "$holders"
+check "런이 끝나면 master-watch 프로세스가 남지 않는다" "$(fx_procs)" "0"
+[ -d "$PACE/master.lock" ] && bad "런이 끝나면 master.lock 이 남지 않는다" "남아 있다" || ok "런이 끝나면 master.lock 이 남지 않는다"
 
 # ===========================================================================
 # SOURCE GREPS
@@ -1228,6 +1605,13 @@ check "fleet.sh 는 알림기를 부르지 않는다" "$(grep -c -i -e 'notify' 
 check "fleet.sh 는 nohup 을 쓰지 않는다" "$(grep -c 'nohup' "$ORCH/fleet.sh" || true)" "0"
 check "워처 기동 줄은 정확히 하나다" "$(grep -c 'watch\.sh" --run-dir' "$ORCH/fleet.sh" || true)" "1"
 check "run.sh 는 앞단(&) 없이 불린다" "$(grep -c 'run\.sh" --manifest "\$manifest".*&$' "$ORCH/fleet.sh" || true)" "0"
+check "run.sh 를 부르는 줄은 공유 실행 함수 안의 하나다" \
+  "$(grep -c 'bash "\$FLEET_DIR/run\.sh"' "$ORCH/fleet.sh" || true)/$(fn_body "$ORCH/fleet.sh" fleet_run_record | grep -c 'bash "\$FLEET_DIR/run\.sh"' || true)" "1/1"
+check "repair-run 배경 기동 줄은 하나이고 수리 기동 함수 안에 있다" \
+  "$(grep -c 'fleet\.sh" repair-run .*&$' "$ORCH/fleet.sh" || true)/$(fn_body "$ORCH/fleet.sh" fleet_master_repair_launch | grep -c 'fleet\.sh" repair-run .*&$' || true)" "1/1"
+check "master-watch 배경 기동 줄은 하나이고 fleet_start_watch 안에 있다" \
+  "$(grep -c 'fleet\.sh" master-watch .*&$' "$ORCH/fleet.sh" || true)/$(fn_body "$ORCH/fleet.sh" fleet_start_watch | grep -c 'fleet\.sh" master-watch .*&$' || true)" "1/1"
+check "master 읽기 래퍼는 쓰기 자격 함수를 부르지 않는다" "$(grep -c 'cred_gate_env' "$ORCH/fleet.sh" || true)" "0"
 for gone in cci HamedElfayome 978307200 FLEET_SEAT_HOMES TRACKER_PLIST; do
   check "fleet.sh 에 $gone 이 없다" "$(grep -c "$gone" "$ORCH/fleet.sh" || true)" "0"
 done
