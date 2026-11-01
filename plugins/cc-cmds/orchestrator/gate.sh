@@ -16578,6 +16578,7 @@ gate_on_exit() {
   gate_dispatch_lock_release
   gate_settings_lock_release
   gate_ci_rerun_lock_release
+  gate_ci_match_lock_release
   # The one-read copy of a seat-apply record is the gate's own scratch file.
   [ -z "${GATE_SA_COPY:-}" ] || rm -f "$GATE_SA_COPY"
   # A call the gate itself stopped (`die`, exit 1) leaves its text where the
@@ -17036,6 +17037,221 @@ gate_pace_row_if_changed() {
     [ "$prev" = "$verdict" ] && return 0
   fi
   gate_append 'pace' "판정=$verdict" "이전=$prev" "기준 틱=$tick" "관측=$obs" "사유=$reason"
+}
+
+# ---------------------------------------------------------------------------
+# The base branch's shared-failure reading, READ AND NEVER COMPUTED.
+#
+# The host's master stage keeps one file per (repository, base branch) under the
+# pace root: what the base branch's tip fails with, as signatures, and the
+# failure events those signatures belong to. This file reads it and copies it
+# into the run's own ledger as a `master 판독` row; every disposition that uses
+# it reads the row and nothing else, so `review_next[]` and the merge check
+# judge from one observation and never from a file that moved between them.
+#
+# FRESHNESS IS THE ROW'S `관측` AGAINST THE CLOCK, NOT THE FILE'S AGE. A row the
+# run wrote ten minutes ago from a file nobody has refreshed since is as old as
+# that file, and the dispositions that wait on a red base fall back to today's
+# behaviour once it is older than `GATE_MASTER_STALE_SECONDS`. The schema is
+# compared by EQUALITY, as with the pace state: an unknown version is absence.
+#
+# NO FILE, NO ROW. A run on a host where the master stage has never written
+# anything keeps exactly today's ledger — the first row appears when a file
+# does, and the `(미상)` row is written only when a reading the run already
+# holds goes away.
+# ---------------------------------------------------------------------------
+readonly GATE_MASTER_STALE_SECONDS=600
+readonly GATE_MASTER_SCHEMA='cc-master-state v1'
+# The row's two growing fields: the events it lists (about 35 bytes each) and
+# the repair reasons it carries, sized so the widest row stays near 850 bytes.
+readonly GATE_MASTER_EVENTS_MAX=10
+readonly GATE_MASTER_REASON_MAX=160
+# The match act's two bounds: one job log is cut at this many bytes before the
+# adapter reads it, and one `gh` call is abandoned after this many seconds.
+# Plain assignments, like GATE_CI_RERUN_CONFIRM_TRIES, so a test that sources
+# the gate can shrink them to reach the cut and the timeout in seconds.
+GATE_CI_MATCH_LOG_MAX_BYTES=8388608
+GATE_CI_MATCH_GH_SECONDS=20
+
+gate_master_enc() {
+  # gate_master_enc <piece> — one piece of the file name with `%`, `/` and `_`
+  # percent-encoded, so `__` joins the three pieces without ambiguity.
+  printf '%s' "$1" | sed -e 's/%/%25/g' -e 's#/#%2F#g' -e 's/_/%5F/g'
+}
+
+gate_master_file() {
+  # gate_master_file <owner/name> <base branch> — the reading's path.
+  printf '%s/master/%s__%s__%s.json' "$(gate_pace_root)" \
+    "$(gate_master_enc "${1%%/*}")" "$(gate_master_enc "${1#*/}")" "$(gate_master_enc "$2")"
+}
+
+gate_master_state() {
+  # gate_master_state <owner/name> <base branch> — the file's object on one
+  # line, or nothing for a file that is absent, unparseable or on another
+  # schema. No freshness here: that is judged on the ledger row.
+  local f s
+  f=$(gate_master_file "$1" "$2")
+  [ -r "$f" ] || return 0
+  s=$(jq -c --arg schema "$GATE_MASTER_SCHEMA" 'select(type == "object" and .schema == $schema)' "$f" 2>/dev/null) || return 0
+  printf '%s' "$s"
+}
+
+gate_master_last_row() {
+  # gate_master_last_row <alias> — the target's newest `master 판독` row.
+  gate_rows 'master 판독' | gate_rows_field_eq '대상' "$1" | awk 'NF { r = $0 } END { if (r != "") print r }'
+}
+
+gate_master_fresh() {
+  # gate_master_fresh <alias> — the target's newest reading is a reading (not
+  # `(미상)`) and its `관측` is within GATE_MASTER_STALE_SECONDS of now.
+  local row ep now
+  row=$(gate_master_last_row "$1")
+  [ -n "$row" ] || return 1
+  [ "$(gate_row_field "$row" '상태')" != '(미상)' ] || return 1
+  ep=$(cc_iso_to_epoch "$(gate_row_field "$row" '관측')")
+  [ -n "$ep" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - ep)) -le "$GATE_MASTER_STALE_SECONDS" ]
+}
+
+gate_ci_signature() {
+  # gate_ci_signature <subcommand> <args…> — the signature adapter beside this file.
+  bash "$GATE_DIR/ci-signature.sh" "$@"
+}
+
+gate_ci_signature_file() {
+  # gate_ci_signature_file <name> — where a signature list is kept: the rows
+  # carry its count and fingerprint, the run directory carries the list. The
+  # name is the list's fingerprint, or `event-<사건 id>` for an event's list —
+  # an id is derived from the event's first commit and its signatures, so
+  # either name stands for one list only.
+  printf '%s/ci-signatures/%s.txt' "$RUN_DIR" "$1"
+}
+
+gate_ci_signature_keep() {
+  # gate_ci_signature_keep <name> — stdin (the list) into its file, written
+  # once and atomically; a list already kept under the same name is the same
+  # list.
+  local f tmp
+  f=$(gate_ci_signature_file "$1")
+  if [ -z "${RUN_DIR:-}" ] || [ -f "$f" ]; then cat > /dev/null; return 0; fi
+  mkdir -p "${f%/*}" 2>/dev/null || { cat > /dev/null; return 0; }
+  tmp=$(mktemp "${f%/*}/.sig.XXXXXX") || { cat > /dev/null; return 0; }
+  cat > "$tmp"
+  mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+}
+
+gate_master_reading() {
+  # gate_master_reading <state json> — the row's fields as `키<TAB>값` lines, or
+  # 1 when a value is outside its vocabulary (read as absence, like a schema
+  # that does not match). The signature list is kept as a side effect.
+  local s=$1 tip st prec obs sigs n fp ev reason
+  tip=$(printf '%s' "$s" | jq -r '.tip // ""')
+  st=$(printf '%s' "$s" | jq -r '.state // ""')
+  prec=$(printf '%s' "$s" | jq -r '.precision // "-"')
+  obs=$(printf '%s' "$s" | jq -r '.observed_at // ""')
+  [[ $tip =~ ^[0-9a-f]{40}$ ]] || return 1
+  case "$st" in 초록|빨강|'진행 중'|'판정 불가') ;; *) return 1 ;; esac
+  case "$prec" in 단언|단계|-) ;; *) return 1 ;; esac
+  [ -n "$(cc_iso_to_epoch "$obs")" ] || return 1
+  sigs=$(printf '%s' "$s" | jq -r '(.signatures // [])[] | strings' 2>/dev/null | grep -v '^$' | LC_ALL=C sort -u || true)
+  n=$(printf '%s\n' "$sigs" | gate_count)
+  if [ "$n" -gt 0 ]; then
+    fp=$(printf '%s\n' "$sigs" | gate_ci_signature fingerprint)
+    printf '%s\n' "$sigs" | gate_ci_signature_keep "$fp"
+  else
+    fp='-'
+  fi
+  # `<id>:<처음 커밋 7>:<해소 커밋 7 | ->:<수리 상태>` per event, the newest
+  # GATE_MASTER_EVENTS_MAX of them — the field grows with the base branch's
+  # history and the row does not. An id or a repair state outside its
+  # vocabulary would put a separator on the row, so either reads the file as
+  # absent.
+  ev=$(printf '%s' "$s" | jq -r --argjson m "$GATE_MASTER_EVENTS_MAX" '[(.events // [])[-$m:][] |
+        [(.id // ""), ((.first_commit // "")[0:7]),
+         ((.resolved_commit // "") | if . == "" then "-" else .[0:7] end),
+         (.repair.state // "대기")] | join(":")] | join(",")' 2>/dev/null) || return 1
+  if [ -n "$ev" ]; then
+    # Lengths and a negated class rather than interval expressions, which the
+    # awk shipped with macOS has not always read.
+    printf '%s\n' "$ev" | tr ',' '\n' | LC_ALL=C awk -F':' '
+      function hexn(v, n) { return length(v) == n && v !~ /[^0-9a-f]/ }
+      !hexn($1, 12) || !hexn($2, 7) || !($3 == "-" || hexn($3, 7)) { bad = 1 }
+      { st = $0; sub(/^[^:]*:[^:]*:[^:]*:/, "", st)
+        if (st != "대기" && st != "보류" && st != "띄움" && st != "정지" && st != "띄울 수 없음" && st != "해소") bad = 1 }
+      END { exit bad }' || return 1
+    # Each listed event's signatures, for the match act's comparison set and
+    # for a repair run's own event.
+    local id
+    for id in $(printf '%s' "$ev" | tr ',' '\n' | cut -d: -f1); do
+      printf '%s' "$s" | jq -r --arg id "$id" \
+        '[(.events // [])[] | select(.id == $id)][0].signatures // [] | .[] | strings' 2>/dev/null \
+        | { grep -v '^$' || true; } | LC_ALL=C sort -u | gate_ci_signature_keep "event-$id"
+    done
+  else
+    ev='-'
+  fi
+  # A reason is free text from the file: a line break or a tab in it would add
+  # a second value to the `키<TAB>값` lines this function prints, so both are
+  # turned into spaces before it is joined.
+  reason=$(printf '%s' "$s" | jq -r '[(.events // [])[] | select((.repair.reason // "") != "") | (.id + " " + (.repair.reason | tostring | gsub("[\\n\\r\\t]"; " ")))] | join("; ")' 2>/dev/null || true)
+  printf '팁\t%s\n상태\t%s\n정밀도\t%s\n서명 수\t%s\n서명 지문\t%s\n사건\t%s\n수리 사유\t%s\n관측\t%s\n' \
+    "$tip" "$st" "$prec" "$n" "$fp" "$ev" "${reason:--}" "$obs"
+}
+
+gate_master_row_one() {
+  # gate_master_row_one <alias> <owner/name> <base branch> — one target's row,
+  # when the reading changed or a held reading is about to go stale.
+  local al=$1 slug=$2 br=$3 s rd last tip st prec n fp ev reason obs ep lep now
+  s=$(gate_master_state "$slug" "$br")
+  last=$(gate_master_last_row "$al")
+  rd=""
+  [ -z "$s" ] || rd=$(gate_master_reading "$s") || rd=""
+  if [ -z "$rd" ]; then
+    { [ -n "$last" ] && [ "$(gate_row_field "$last" '상태')" != '(미상)' ]; } || return 0
+    gate_append 'master 판독' "대상=$al" "팁=-" "상태=(미상)" "정밀도=-" "서명 수=0" \
+      "서명 지문=-" "사건=-" "수리 사유=-" "관측=-"
+    return 0
+  fi
+  tip=$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "팁" { print $2 }')
+  st=$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "상태" { print $2 }')
+  prec=$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "정밀도" { print $2 }')
+  n=$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "서명 수" { print $2 }')
+  fp=$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "서명 지문" { print $2 }')
+  ev=$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "사건" { print $2 }')
+  reason=$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "수리 사유" { print $2 }')
+  obs=$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "관측" { print $2 }')
+  if [ -n "$last" ] && [ "$(gate_row_field "$last" '팁')" = "$tip" ] \
+     && [ "$(gate_row_field "$last" '상태')" = "$st" ] \
+     && [ "$(gate_row_field "$last" '서명 지문')" = "$fp" ] \
+     && [ "$(gate_row_field "$last" '사건')" = "$ev" ]; then
+    # The same reading. It is written again only to keep it from going stale
+    # while acts go on: when the held row is past half the bound and the file
+    # has been observed since.
+    lep=$(cc_iso_to_epoch "$(gate_row_field "$last" '관측')")
+    ep=$(cc_iso_to_epoch "$obs")
+    now=$(date -u +%s)
+    [ -n "$lep" ] && [ -n "$ep" ] || return 0
+    [ $((now - lep)) -gt $((GATE_MASTER_STALE_SECONDS / 2)) ] && [ "$ep" -gt "$lep" ] || return 0
+  fi
+  gate_append 'master 판독' "대상=$al" "팁=$tip" "상태=$st" "정밀도=$prec" "서명 수=$n" \
+    "서명 지문=$fp" "사건=$ev" "수리 사유=$(gate_row_safe "$reason" "$GATE_MASTER_REASON_MAX")" "관측=$obs"
+}
+
+gate_master_row_if_changed() {
+  # gate_master_row_if_changed — the `master 판독` rows of every target, on a
+  # routed run. Called where the `pace` row is, and at a routing shift's start.
+  local al slug br
+  run_routed || return 0
+  while IFS= read -r al; do
+    [ -n "$al" ] || continue
+    slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+    br=$(base_branch "$al" 2>/dev/null || true)
+    { [ -n "$slug" ] && [ -n "$br" ]; } || continue
+    gate_master_row_one "$al" "$slug" "$br"
+  done <<EOF
+$(target_aliases 2>/dev/null || true)
+EOF
 }
 
 # ---------------------------------------------------------------------------
@@ -18985,6 +19201,104 @@ EOF
       return "$GATE_EXIT_RULE"
     fi
   done
+  gate_check_repair_grant "$gi" || return $?
+  return 0
+}
+
+readonly GATE_REPAIR_CONSENT='호스트 수리 런 — 플러그인 기본 동의'
+
+gate_check_repair_grant() {
+  # gate_check_repair_grant <index of 권한 절단점> — a run whose manifest carries
+  # a `수리 사건` row is a repair run the plugin starts on the host's default
+  # consent, not on a person's kickoff, so its authorization is held to that
+  # consent's bounds: the block's confirmation text is the consent's own words,
+  # the run reaches no further than `머지`, every target reviews before it
+  # merges, and the preauthorization rows open nothing beyond a push, a pull
+  # request and the merge call. A manifest without the row is checked as before.
+  local gi=$1 mi a ceil
+  [ -n "$(gate_repair_event_row)" ] || return 0
+  if [ "$(gate_grant_field '사용자 확인 문면')" != "$GATE_REPAIR_CONSENT" ]; then
+    warn "a repair run's authorization must carry \`사용자 확인 문면\` = '$GATE_REPAIR_CONSENT'"
+    return "$GATE_EXIT_RULE"
+  fi
+  mi=$(cutpoint_index '머지')
+  if [ -z "$mi" ] || [ "$gi" -gt "$mi" ] 2>/dev/null; then
+    warn "a repair run's \`권한 절단점\` reaches past 머지"
+    return "$GATE_EXIT_RULE"
+  fi
+  for a in $(target_aliases); do
+    ceil=$(target_field "$a" '리뷰 정책 상한')
+    if [ -n "$ceil" ] && [ "$ceil" != '선리뷰후머지' ]; then
+      warn "a repair run reviews before it merges, but target ${a} allows '${ceil}'"
+      return "$GATE_EXIT_RULE"
+    fi
+  done
+  gate_repair_preauth_subset || return "$GATE_EXIT_RULE"
+}
+
+gate_repair_put_outside() {
+  # gate_repair_put_outside <argv…> — 0 when the argv is a `gh api` call with
+  # the method PUT whose endpoint is not `repos/<수리 사건 slug>/pulls/<n>/merge`.
+  #
+  # WHY THE GATE AND NOT THE ROW. A `사전 인가` shape is matched word by word
+  # from the front, so the repair template's `gh api -X PUT` row opens every
+  # PUT the run spells that way, and the pull request number that would narrow
+  # it is not known when the row is rendered. A repair run's one PUT is its
+  # merge, so any other is sent to the approval it would have met without the
+  # row.
+  #
+  # THE ARGV IS READ THE WAY THE PREAUTHORIZATION RULE READS IT. The rule
+  # compares the row with `gate_preauth_argv`, which finds `api` past the flags
+  # ahead of it and reads the method with `gate_gh_api_parse`, so `gh
+  # --hostname=github.com api -X PUT …`, `gh api -X=PUT …` and `gh api -iX PUT
+  # …` all match the row. Read by hand, those spellings were no `gh api` PUT
+  # here, and the row opened them unnarrowed. An argv whose `api` cannot be
+  # placed is taken for the PUT it may be. The readers' globals are local here,
+  # so the caller's reading of the same argv is left as it was.
+  local rrow slug a0 m ep a want
+  local GATE_GH_API_UNREAD GATE_GHAPI_METHOD GATE_GHAPI_PATH GATE_GHAPI_ENDPOINT GATE_GHAPI_OPAQUE
+  local -a GATE_GH_ARGV=() GATE_GHAPI_FIELDS=()
+  rrow=$(gate_repair_event_row)
+  [ -n "$rrow" ] || return 1
+  slug=$(printf '%s' "$rrow" | cut -f1)
+  a0=${1:-}; a0=${a0##*/}
+  [ "$a0" = "gh" ] || return 1
+  gate_gh_strip_repo "${@:2}"
+  [ "$GATE_GH_API_UNREAD" = 1 ] && return 0
+  [ "${GATE_GH_ARGV[0]:-}" = api ] || return 1
+  gate_gh_api_parse "${GATE_GH_ARGV[@]:1}"
+  m=$(printf '%s' "$GATE_GHAPI_METHOD" | LC_ALL=C tr '[:lower:]' '[:upper:]')
+  [ "$m" = "PUT" ] || return 1
+  ep=$GATE_GHAPI_PATH
+  want="repos/$slug/pulls/"
+  case "$ep" in
+    "$want"*/merge)
+      a=${ep#"$want"}; a=${a%/merge}
+      case "$a" in ''|*[!0-9]*) return 0 ;; esac
+      return 1 ;;
+  esac
+  return 0
+}
+
+gate_repair_preauth_subset() {
+  # gate_repair_preauth_subset — every `사전 인가` row of the manifest has one of
+  # the repair run's fixed shapes: `git push`, `gh pr`, `gh api -X PUT`. The
+  # shape is read the way the preauthorization rule reads it.
+  local line shape
+  while IFS= read -r line; do
+    case "$line" in
+      '- `사전 인가`'*) ;;
+      *) continue ;;
+    esac
+    shape=$(printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *형태=//p' | sed 's/[[:space:]]*$//')
+    case "$shape" in
+      # A row with no shape opens nothing, and the rule skips it the same way.
+      '') continue ;;
+      'git push'|'gh pr'|'gh api -X PUT') ;;
+      *) warn "a repair run's preauthorization row '$shape' is outside git push, gh pr, gh api -X PUT"
+         return 1 ;;
+    esac
+  done < "$MANIFEST"
   return 0
 }
 
@@ -19406,6 +19720,10 @@ gate_main() {
   # verdict inherited from the environment would send a POST no check chose,
   # and an inherited answer line would record a round no person gave.
   unset GATE_CI_RERUN_PRE GATE_CI_RERUN_VERDICT GATE_CI_RERUN_RUNS GATE_CI_RERUN_ANSWER GATE_PARK_OBS
+  # The match act's admission and the target it read are this process's own
+  # in the same way: an inherited admission would write a match row no check
+  # admitted.
+  unset GATE_CI_MATCH_ADMIT GATE_CI_MATCH_ALIAS GATE_CI_MATCH_HEAD
   # The settlement act's marker likewise: set only once its entry checks passed.
   unset GATE_SETTLE_PRE
   # The label act's the same way.
@@ -19598,6 +19916,14 @@ gate_main() {
     case "$verb" in
       act|plan) ;;
       *) printf 'gate: --kind %s is used only with act/plan (verb received: %s)\n' "$kind" "$verb" >&2
+         exit 2 ;;
+    esac
+  fi
+  # `ci-match` too: the gate reads the failing logs and writes the match row.
+  if [ "$kind" = "ci-match" ]; then
+    case "$verb" in
+      act|plan) ;;
+      *) printf 'gate: --kind ci-match is used only with act/plan (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -23664,7 +23990,8 @@ gate_shift_halt_site_table() {
   #
   # `추천=없음` IS FIXED FOR THE IRREVERSIBLE SITES. A push the remote disagrees
   # with, a reach the gate refused, a base that could not be resolved and a
-  # target repository's own hook refusing an act each hang on the state of
+  # target repository's own hook refusing an act, and a base branch broken in a
+  # way no repair run on this host could be started for, each hang on the state of
   # something outside this run, which no record of the run settles. Whatever the shift passes as a recommendation there is dropped
   # and the record reads `(없음)`.
   #
@@ -23691,6 +24018,7 @@ push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남�
 적용 정산|없음|대상 환경이 지금 어떤 상태인지, 다시 실행해도 되는지는 그 환경을 본 사람만 안다|사람이 대상 상태를 확인하거나 조치한 뒤, 다음 교대가 정산 프로브를 다시 잰다|재실행:사람이 승인하면 다음 교대가 동결된 적용 명령을 고정 커밋에 새로 고정한 워크트리에서 한 번 실행하고 사전·사후 프로브로 판정한다;사람 확인 정산:사람이 대상에서 적용 결과를 확인했으므로 다음 교대가 이 세그먼트를 완료로 정산한다
 들여온 적용 정산|없음|이전 런이 머지한 이 세그먼트의 적용이 대상 환경에 들어갔는지는 그 환경을 본 사람만 안다. 이 런에는 이 세그먼트의 리뷰 기록이 없어 런이 스스로 재지 않는다|사람이 대상을 확인할 시간이 더 필요하다. 다음 교대가 같은 자리를 다시 연다|사람 확인 정산:사람이 대상에서 이전 런의 적용 결과를 확인했으므로 다음 교대가 이 세그먼트를 완료로 정산한다
 종료 절 근거|없음|그 절이 요구하는 실행과 그 결과는 이 런의 읽기로 만들 수 없고, 실행할지는 사람이 정한다|-
+master 수리 불가|없음|수리 런을 띄울 수 없게 한 원인(끄는 스위치·렌더·적재)을 고칠지, 사람이 직접 고칠지는 사람만 정한다|사람이 원인을 고치거나 고침을 master 에 넣은 뒤, 다음 교대가 이 세그먼트의 CI 를 다시 대조한다
 EOF
 }
 
@@ -25262,6 +25590,11 @@ gate_ci_next() {
   #       segment's target                                       CI 라벨 인정
   #   L6  settled, u < CI_RERUN_CAP                               CI 재실행
   #   L6b settled, a = 실패, top round's 처분 재실행                  CI 재실행
+  #   LM  a CI join target with a fresh reading of its base branch
+  #       that is red, lists an event not yet resolved, or lists
+  #       one resolved after the segment's base: the match rows
+  #       of `gate_ci_master_next`                                CI 대조,
+  #       — `초과` skips L7                     master 대기/재합류/수리 불가
   #   L7  settled, a = 수락, the round's request saw the base fail  CI 기존 실패
   #   L8  settled, a = 수락, f < CI_FIX_CAP or (segment, H) has
   #       a fix row                                               CI 수정
@@ -25346,11 +25679,138 @@ gate_ci_next() {
   fi
   [ "${u:-0}" -lt "$CI_RERUN_CAP" ] && { printf 'CI 재실행'; return 0; }
   [ "$a" = "실패" ] && [ "$ad" = "재실행" ] && { printf 'CI 재실행'; return 0; }
+  local lm skip_base=0
+  if [ "$join" = 1 ]; then
+    lm=$(gate_ci_master_next "$seg" "$h" "${g:-0}" "$nx")
+    case "$lm" in
+      '') : ;;
+      '초과') skip_base=1 ;;
+      *) printf '%s' "$lm"; return 0 ;;
+    esac
+  fi
   if [ "$a" = "수락" ]; then
-    [ "$base" = "실패" ] && { printf 'CI 기존 실패'; return 0; }
+    [ "$skip_base" = 1 ] || [ "$base" != "실패" ] || { printf 'CI 기존 실패'; return 0; }
     if [ "${f:-0}" -lt "$CI_FIX_CAP" ] || [ "$fix" = "1" ]; then printf 'CI 수정'; return 0; fi
   fi
   printf 'CI 수정 한도'
+}
+
+gate_ci_match_row() {
+  # gate_ci_match_row <segment> <head sha> <round> — the newest match row of
+  # that head and rerun round, or nothing.
+  gate_rows 'CI 처분' | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_eq 'head sha' "$2" \
+    | gate_rows_field_eq '처분' '대조' | gate_rows_field_eq '회차' "$3" \
+    | awk 'NF { r = $0 } END { if (r != "") print r }'
+}
+
+gate_ci_master_next() {
+  # gate_ci_master_next <segment> <head sha> <round> <다음 of the table> — the
+  # LM rows of `gate_ci_next`, read on a settled failure after the rerun rows.
+  # They stand only on a routed run whose target has a fresh `master 판독` row
+  # that is red, that lists an event with no resolving commit yet, or that
+  # lists an event resolved after the segment's base:
+  #   LM0  no match row for this head and round                  CI 대조
+  #        — while the reading is unsettled                     master 대기
+  #   LM1  결과 = 수리 통과, against the last reading               the table's
+  #        — against an older reading                           CI 대조
+  #        — while the reading is unsettled                     master 대기
+  #   LM2  결과 = 초과                     prints `초과`: L8/L9, never L7
+  #   LM3  결과 = 재합류 필요, or 부분집합/판정 불가 while the
+  #        reading is green                                     master 재합류
+  #        — when this head's last 베이스 판정 reads 일치         nothing (L7)
+  #   LM4  부분집합/판정 불가, 대표 = 예, and a waited event the
+  #        reading says no repair run can be started for,
+  #        while the reading is settled                         master 수리 불가
+  #   LM5  부분집합/판정 불가 against a reading whose
+  #        signature fingerprint or event field has moved,
+  #        while the reading is settled                         CI 대조
+  #   LM6  부분집합/판정 불가 otherwise                            master 대기
+  # A reading is settled when it is red or green; `진행 중` and `판정 불가` are
+  # not. Nothing printed leaves the layer as it was. With no reading on the host
+  # nothing is printed, so a run without a master stage keeps L7: the failure
+  # that was on the base when the round was requested.
+  #
+  # A FLAKY FAILURE GETS ITS RERUN FIRST. The rows stand after L6 and L6b, so
+  # only a failure that survived its rerun is compared with the base branch.
+  #
+  # AN OPEN EVENT KEEPS THE ROWS STANDING. Every new tip of the base branch —
+  # the repair commit's own merge included — is read as `진행 중` before it is
+  # read again as red or green, and an event is resolved only by a complete
+  # observation. The open events keep a waiting segment off L7's `CI 기존 실패`
+  # and the merge refusal through that reading, which is the very change the
+  # relay wakes its shift on.
+  #
+  # AN UNSETTLED READING IS NOT MATCHED. Its signature list need not hold every
+  # failure of its tip, so a `부분집합` or a `수리 통과` made against it could
+  # hide a new failure. While it lasts the rows read the last match row as it
+  # stands, a missing one or a pass included, and the match and the merge wait
+  # for a red or green reading.
+  local seg=$1 h=$2 g=$3 nx=$4 al mrow mst m res e settled=0
+  run_routed || return 0
+  al=$(gate_segment_target_alias "$seg")
+  [ -n "$al" ] || return 0
+  gate_master_fresh "$al" || return 0
+  mrow=$(gate_master_last_row "$al")
+  mst=$(gate_row_field "$mrow" '상태')
+  if [ "$mst" != '빨강' ] && [ -z "$(gate_master_open_events "$al")" ] \
+     && [ -z "$(gate_master_resolved_after "$seg" "$al")" ]; then
+    return 0
+  fi
+  case "$mst" in 빨강|초록) settled=1 ;; esac
+  m=$(gate_ci_match_row "$seg" "$h" "$g")
+  if [ -z "$m" ]; then
+    if [ "$settled" = 1 ]; then printf 'CI 대조'; else printf 'master 대기'; fi
+    return 0
+  fi
+  res=$(gate_row_field "$m" '결과')
+  case "$res" in
+    # The merge check takes this pass only against the reading it was made
+    # against, so a pass the reading has moved past is matched again.
+    '수리 통과')
+      if [ "$settled" = 0 ]; then printf 'master 대기'
+      elif gate_ci_repair_pass "$seg" "$h" "$g"; then printf '%s' "$nx"
+      else printf 'CI 대조'; fi
+      return 0 ;;
+    '초과') printf '초과'; return 0 ;;
+    # A REJOIN THE BASE CHECK FOUND NOTHING TO TAKE IN LEAVES THE LAYER. When
+    # the last `베이스 판정` row that judged this very head reads `일치`, the
+    # base branch's tip is already in it — a rewritten base history is the
+    # case — and a rejoin would dispatch nothing, so the layer prints nothing
+    # and the table goes on to L7.
+    '재합류 필요')
+      gate_base_head_matched "$seg" "$h" || printf 'master 재합류'
+      return 0 ;;
+    부분집합|'판정 불가') : ;;
+    *) return 0 ;;
+  esac
+  if [ "$mst" = '초록' ]; then
+    gate_base_head_matched "$seg" "$h" || printf 'master 재합류'
+    return 0
+  fi
+  # A STOP IS ASKED ONLY OF A SETTLED READING. A person who fixes the base
+  # branch by hand makes a new tip, and that tip reads `진행 중` until its
+  # checks end; a `재시도` answered in that window would meet the same stop
+  # again. While the reading is unsettled the segment waits with LM6, and the
+  # question comes back only if the settled reading still holds the event.
+  if [ "$settled" = 1 ] && [ "$(gate_row_field "$m" '대표')" = '예' ]; then
+    for e in $(gate_row_field "$m" '사건' | tr ',' ' '); do
+      if [ "$(gate_master_event_state "$al" "$e")" = '띄울 수 없음' ]; then
+        printf 'master 수리 불가'; return 0
+      fi
+    done
+  fi
+  # A WAIT IS MATCHED AGAIN WHEN ITS READING MOVES. The representative marker
+  # is taken inside the match act alone, and the usual order is a wait first
+  # and `띄울 수 없음` after it, when the repair run ends without resolving
+  # the event; a wait kept against the old reading would never reach LM4. An
+  # event resolved while another keeps the base red moves the comparison set
+  # the same way. The new match records the reading it was made against, so
+  # a reading that stays put is matched once. An unsettled reading is not
+  # matched, so the wait holds until the reading is red or green again.
+  if [ "$settled" = 1 ] && ! gate_ci_match_same_reading "$m" "$mrow"; then
+    printf 'CI 대조'; return 0
+  fi
+  printf 'master 대기'
 }
 
 # ---------------------------------------------------------------------------
@@ -25380,6 +25840,16 @@ gate_base_rows() {
 
 gate_base_last_row() {
   gate_base_rows "$1" | awk 'NF { r = $0 } END { if (r != "") print r }'
+}
+
+gate_base_head_matched() {
+  # gate_base_head_matched <segment> <head sha> — 0 when the segment's last
+  # `베이스 판정` row whose `판정 HEAD` is that head reads `일치`.
+  local seg=$1 h=$2 row
+  [ -n "$h" ] || return 1
+  row=$(gate_base_rows "$seg" | gate_rows_field_eq '판정 HEAD' "$h" \
+        | awk 'NF { r = $0 } END { if (r != "") print r }')
+  [ -n "$row" ] && [ "$(gate_row_field "$row" '판정')" = '일치' ]
 }
 
 gate_base_cf_release_only() {
@@ -34390,15 +34860,43 @@ EOF
           return "$GATE_EXIT_RULE"
         fi
       done
+      # `master 대기` NAMES THE SEGMENTS WAITING ON THEIR BASE BRANCH, in the
+      # grammar of `CI 대기`, never narrowed, and taken only on a `대기` handoff
+      # and only for a segment whose `다음` is `master 대기` now: the relay wakes
+      # on the base branch's reading for these, and a segment that has moved on
+      # would hold a wait nothing ends.
+      local hms hm
+      hms=$(gate_field_of 'master 대기' "$@")
+      hms=$(printf '%s' "$hms" | tr -d ' ')
+      [ "$hms" != "-" ] || hms=""
+      case "$hms" in
+        *[!A-Za-z0-9._,-]*)
+          warn "\`master 대기\` has to be segment ids joined by ',' (received: $hms)"
+          return "$GATE_EXIT_VOCAB" ;;
+      esac
+      if [ -n "$hms" ] && [ "$hwhy" != "대기" ]; then
+        warn "\`master 대기\` belongs to a \`대기\` handoff only (received with \`사유=$hwhy\`)"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      # The reading is brought up to date before `다음` is read: the seat that
+      # writes it runs only after this check, and a reading left from an idle
+      # spell would drop the master layer and refuse a segment that waits.
+      [ -z "$hms" ] || gate_master_row_if_changed
+      for hm in $(printf '%s' "$hms" | tr ',' ' '); do
+        if [ "$(gate_segment_ci_next "$hm")" != "master 대기" ]; then
+          warn "\`master 대기\` segment $hm does not read \`다음\`=\`master 대기\` now — read the snapshot again"
+          return "$GATE_EXIT_RULE"
+        fi
+      done
       # `대기` HANDS THE WAIT TO THE SEAT CALL'S RELAY, SO IT NEEDS SOMETHING TO
-      # WAIT ON. Without a live stage or supervisor, without a `CI 대기` segment
-      # and without a `리셋 대기` key the relay would wake at once and the
-      # successor would find the same nothing — a shift turn spent to learn it.
-      # Refused without a row; a shift with nothing to wait on hands off with
-      # another reason.
-      if [ "$hwhy" = "대기" ] && [ -z "$hci" ] && [ -z "$hrs" ] \
+      # WAIT ON. Without a live stage or supervisor, without a `CI 대기` or
+      # `master 대기` segment and without a `리셋 대기` key the relay would wake
+      # at once and the successor would find the same nothing — a shift turn
+      # spent to learn it. Refused without a row; a shift with nothing to wait
+      # on hands off with another reason.
+      if [ "$hwhy" = "대기" ] && [ -z "$hci" ] && [ -z "$hrs" ] && [ -z "$hms" ] \
          && [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ]; then
-        warn "nothing to wait on — no live stage or supervisor, no \`CI 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"
+        warn "nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"
         return "$GATE_EXIT_RULE"
       fi
       # `종단` SAYS THE RUN HAS ENDED, SO IT IS TAKEN ONLY FROM A RUN THAT HAS.
@@ -34485,6 +34983,7 @@ EOF
       # when it names a key, so a row without one is the row written before it.
       local hrsf=""
       [ -z "$hrs" ] || hrsf=" | 리셋 대기=$hrs"
+      [ -z "$hms" ] || hrsf="$hrsf | master 대기=$hms"
       while [ "$hw" -ge 40 ]; do
         hd=$(gate_row_safe "$(gate_field_of '버린 선택지' "$@")" "$hw")
         hb=$(gate_row_safe "$(gate_field_of '막힌 지점' "$@")" "$hw")
@@ -34496,12 +34995,12 @@ EOF
         hw=$((hw - 40))
       done
       if [ "$hlen" -gt "$GATE_ROW_MAX" ]; then
-        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\` and \`리셋 대기\` are never cut, so nothing is written"
+        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\` and \`master 대기\` are never cut, so nothing is written"
         return "$GATE_EXIT_VOCAB"
       fi
       gate_append 'handoff' "교대=$hn" "사유=$hwhy" \
         "버린 선택지=$hd" "막힌 지점=$hb" "다음 후보=$hc" "CI 대기=${hci:--}" \
-        ${hrs:+"리셋 대기=$hrs"} \
+        ${hrs:+"리셋 대기=$hrs"} ${hms:+"master 대기=$hms"} \
         "대상=$alias" "기록 시각=$(now_iso)"
       log "교대 $hn 기록 — 사유 $hwhy"
       # PAST THE DEADLINE THERE IS NOTHING FOR THE RELAY TO WAKE FOR, so the
@@ -39009,8 +39508,20 @@ gate_ci_rerun_lock() {
   # when its owner's pid is gone: the POST and the confirmation reads can last
   # longer than any age bound would, and taking a live lock would send a second
   # rerun to the same head.
-  local seg="$1" dir owner opid
-  dir="$RUN_DIR/ci-rerun.$seg.lock"
+  local dir="$RUN_DIR/ci-rerun.$1.lock" rc=0
+  gate_ci_seg_lock_take "$dir" || rc=$?
+  [ "$rc" = "1" ] && return 1
+  # Released by `gate_on_exit`: a shell keeps one EXIT trap, and the verb's
+  # trap is already that one.
+  [ "$rc" = "2" ] || GATE_CI_RERUN_LOCK="$dir"
+  return 0
+}
+
+gate_ci_seg_lock_take() {
+  # gate_ci_seg_lock_take <dir> — the per-segment mutex both CI acts use: 0 when
+  # taken and held, 1 when a live owner holds it, 2 when it was taken for a
+  # forecast and already given back.
+  local dir="$1" owner opid
   if ! mkdir "$dir" 2>/dev/null; then
     owner=$(cat "$dir/owner" 2>/dev/null || true)
     opid=$(printf '%s' "$owner" | sed -n 's/^\([0-9][0-9]*\)[[:space:]].*$/\1/p')
@@ -39025,14 +39536,11 @@ gate_ci_rerun_lock() {
   # refuse the act it forecasts.
   if [ "${verb:-}" = "plan" ]; then
     rm -rf "$dir" 2>/dev/null || true
-    return 0
+    return 2
   fi
   # `BASHPID`, not `$$`: in a subshell `$$` is the parent's pid, which outlives
   # the gate that took the lock.
   printf '%s %s\n' "${BASHPID:-$$}" "$(date -u +%s)" > "$dir/owner" 2>/dev/null || true
-  # Released by `gate_on_exit`: a shell keeps one EXIT trap, and the verb's
-  # trap is already that one.
-  GATE_CI_RERUN_LOCK="$dir"
   return 0
 }
 
@@ -40017,6 +40525,484 @@ gate_perform_ci_rerun() {
   warn "reach park — judgment '재실행요청실패'. GitHub did not take the rerun (응답=$codes) and the gate does not try again"
   gate_park_record '재실행요청실패' 'closed' "${GATE_CI_RERUN_OBS:-$codes}" "$@"
   return "$GATE_EXIT_PARK"
+}
+
+# ---------------------------------------------------------------------------
+# The match act — `act --kind ci-match -- 대조 <head sha>`.
+#
+# A SEGMENT WHOSE CI FAILS ONLY WITH WHAT THE BASE BRANCH ALREADY FAILS WITH
+# HAS NOTHING OF ITS OWN TO FIX. Sent to the implement stage it spends the fix
+# budget on a failure it did not cause, and every segment of every run on the
+# same base does the same. The act reads the head's failing checks, turns each
+# failing job's log into signatures with the adapter beside this file, and
+# writes on the `CI 처분` series how they stand against the base branch's
+# reading — the `master 판독` row — and against the events resolved since the
+# segment's base: `초과` (something of its own), `재합류 필요` (a failure the
+# base has since fixed), `부분집합` (only what the base fails with), `수리 통과`
+# (a repair run's segment that removes its own event and adds nothing), or
+# `판정 불가`.
+#
+# IT CHANGES NOTHING OUTSIDE THE RUN. Every GitHub call is a GET under the
+# read-scoped runner; the one write outside the ledger and the run directory
+# is the representative marker below, under the state root.
+# ---------------------------------------------------------------------------
+
+gate_ci_match_preconditions() {
+  # gate_ci_match_preconditions <segment> <sha> — the refusals that need
+  # neither the ledger nor GitHub, as for the rerun act.
+  local seg="$1" sha="$2" tip
+  if ! run_routed; then
+    warn "the match act runs only on a routed run — this run has no routing record"
+    return "$GATE_EXIT_RULE"
+  fi
+  tip=$(gate_segment_tip "$seg") || tip=""
+  if [ -z "$tip" ] || [ "$tip" != "$sha" ]; then
+    warn "the match names head $sha, but the segment worktree's tip is ${tip:-(unresolved)} — read 다음 again"
+    return "$GATE_EXIT_RULE"
+  fi
+}
+
+gate_ci_match_lock_release() {
+  [ -n "${GATE_CI_MATCH_LOCK:-}" ] || return 0
+  rm -rf "$GATE_CI_MATCH_LOCK" 2>/dev/null || true
+  GATE_CI_MATCH_LOCK=""
+}
+
+gate_check_ci_match() {
+  # gate_check_ci_match <kind> — the target, a fresh reading, the lock and
+  # `다음`, for the match act only. Refusal exits 3 with no row of its own.
+  [ "$1" = "ci-match" ] || return 0
+  local seg="$segment" al wt h nx rc=0 dir
+  if ! gate_ci_join_target "$seg"; then
+    warn "segment $seg is not a CI join target — there is no CI verdict to match"
+    exit "$GATE_EXIT_RULE"
+  fi
+  al=$(gate_segment_target_alias "$seg")
+  # The reading this act compares against is the one the ledger holds, so it
+  # is brought up to date first — an act, unlike a forecast, may write it.
+  [ "${verb:-}" != "act" ] || gate_master_row_if_changed
+  if ! gate_master_fresh "$al"; then
+    warn "no fresh 'master 판독' row for target $al — the base branch's reading is missing or older than ${GATE_MASTER_STALE_SECONDS}s"
+    exit "$GATE_EXIT_RULE"
+  fi
+  # A reading still `진행 중` or `판정 불가` need not list every failure of its
+  # tip, and a match against it could hide one, so it waits for red or green.
+  case "$(gate_row_field "$(gate_master_last_row "$al")" '상태')" in
+    빨강|초록) ;;
+    *) warn "the 'master 판독' row for target $al is not settled red or green — the match waits for the next reading"
+       exit "$GATE_EXIT_RULE" ;;
+  esac
+  wt=$(gate_segment_worktree "$seg")
+  h=$(gate_worktree_tip "$wt") || { warn "the segment worktree's tip does not resolve"; exit "$GATE_EXIT_RULE"; }
+  dir="$RUN_DIR/ci-match.$seg.lock"
+  gate_ci_seg_lock_take "$dir" || rc=$?
+  if [ "$rc" = "1" ]; then
+    warn "another match act of segment $seg holds its lock — not queued, read 다음 again"
+    exit "$GATE_EXIT_RULE"
+  fi
+  [ "$rc" = "2" ] || GATE_CI_MATCH_LOCK="$dir"
+  # A merge-first segment waiting to merge has no cycle, so its match values
+  # come from `implement_next[]` (`gate_segment_ci_next`), not `review_next[]`.
+  nx=$(gate_segment_ci_next "$seg")
+  case "$nx" in
+    'CI 대조'|'master 대기'|'master 수리 불가') ;;
+    *) warn "다음 of segment $seg is '$nx', not 'CI 대조', 'master 대기' or 'master 수리 불가' — the match act is refused"
+       exit "$GATE_EXIT_RULE" ;;
+  esac
+  GATE_CI_MATCH_ADMIT=1; GATE_CI_MATCH_ALIAS="$al"; GATE_CI_MATCH_HEAD="$h"
+  return 0
+}
+
+gate_ci_match_kill_tree() {
+  # gate_ci_match_kill_tree <pid> — the process and everything under it: the
+  # read runs two subshells deep, so the direct child alone is not the `gh`.
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null || true); do gate_ci_match_kill_tree "$c"; done
+  kill "$1" 2>/dev/null || true
+}
+
+gate_ci_match_gh() {
+  # gate_ci_match_gh <out file> <gh args…> — one GET into the file, abandoned
+  # after GATE_CI_MATCH_GH_SECONDS. A read that hangs leaves the act's lock
+  # held for as long as it hangs, and the act would rather say `판정 불가`.
+  local out=$1 pid t=0 lim
+  shift
+  gate_ci_rerun_gh "$@" > "$out" 2>/dev/null &
+  pid=$!
+  lim=$((GATE_CI_MATCH_GH_SECONDS * 5))
+  # The repository's shared reading of whether a pid exists, not a probe of
+  # the gate's own: the gate holds no liveness rule of its own.
+  while cc_pid_exists "$pid"; do
+    if [ "$t" -ge "$lim" ]; then
+      gate_ci_match_kill_tree "$pid"
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.2; t=$((t + 1))
+  done
+  wait "$pid"
+}
+
+gate_master_resolved_after() {
+  # gate_master_resolved_after <segment> <alias> — the ids of the events in the
+  # target's last reading that were resolved after the segment's base, one per
+  # line, an id per resolving commit the segment's HEAD does not contain.
+  #
+  # THE BASE IS WHAT THE HEAD CONTAINS, not a row. A `베이스 판정` row moves
+  # when base-check runs, before the rejoin merge lands, so reading the base off
+  # it would drop the event between the check and the merge and send the
+  # segment back to L7; once the merge lands the resolving commit is an
+  # ancestor of HEAD and the event leaves the set, so a joined fix is never
+  # asked for again.
+  #
+  # AN OBJECT THE WORKTREE DOES NOT HAVE IS AFTER. The worktrees are full
+  # clones, so every ancestor of HEAD is in the object store, and a commit
+  # that is not there cannot be one. That is the usual case, not an edge: the
+  # resolving commit is the merge GitHub made on the base branch, and nothing
+  # fetches while a segment waits. Only a commit that resolves and is an
+  # ancestor of HEAD counts as joined. The gate still does not fetch; the
+  # rejoin's base-check reads the remote, and the router fetches before it.
+  local seg=$1 al=$2 row ev wt head e id res full
+  row=$(gate_master_last_row "$al")
+  ev=$(gate_row_field "$row" '사건')
+  [ -n "$ev" ] && [ "$ev" != "-" ] || return 0
+  wt=$(gate_segment_worktree "$seg")
+  head=$(gate_worktree_tip "$wt") || return 0
+  for e in $(printf '%s' "$ev" | tr ',' '\n' | awk -F':' '$3 != "-" { print $1 ":" $3 }'); do
+    id=${e%%:*}; res=${e#*:}
+    if full=$(gate_commit_in "$wt" "$res"); then
+      gate_iso_git "$wt" merge-base --is-ancestor "$full" "$head" >/dev/null 2>&1 && continue
+    fi
+    printf '%s\n' "$id"
+  done
+}
+
+gate_master_open_events() {
+  # gate_master_open_events <alias> — the ids of the events in the target's
+  # last reading that carry no resolving commit, one per line. An event is
+  # resolved only by a complete observation, so a reading that is `진행 중` or
+  # `판정 불가` still lists every event the base branch had not fixed.
+  local ev
+  ev=$(gate_row_field "$(gate_master_last_row "$1")" '사건')
+  [ -n "$ev" ] && [ "$ev" != "-" ] || return 0
+  printf '%s' "$ev" | tr ',' '\n' | awk -F':' 'NF && $3 == "-" { print $1 }'
+}
+
+gate_ci_match_reading_mark() {
+  # gate_ci_match_reading_mark <master 판독 row> —
+  # `<팁 7>/<관측>/<상태>/<서명 지문 12>`, the reading a match was made against.
+  # The merge check computes the same mark from the ledger's last reading and
+  # compares it without the observation time (gate_ci_match_mark_key).
+  local tip st fp
+  tip=$(gate_row_field "$1" '팁'); st=$(gate_row_field "$1" '상태'); fp=$(gate_row_field "$1" '서명 지문')
+  printf '%.7s/%s/%s/%.12s' "${tip:--}" "$(gate_row_field "$1" '관측')" "${st:--}" "${fp:--}"
+}
+
+gate_ci_match_mark_key() {
+  # gate_ci_match_mark_key <판독 지문> — the mark without its observation time:
+  # `<팁 7>/<상태>/<서명 지문 12>`. The reading is rewritten with a new time
+  # while it stays the same reading, so the time would void a match the
+  # reading still supports; freshness is judged apart, by gate_master_fresh.
+  printf '%s' "$1" | awk -F'/' '{ print $1 "/" $3 "/" $4 }'
+}
+
+gate_ci_match_events_mark() {
+  # gate_ci_match_events_mark <master 판독 row> — the first 12 hex of the
+  # sha256 of the row's `사건` field: every event's id, first commit,
+  # resolving commit and repair state at the reading matched against.
+  local fp
+  fp=$(printf '%s\n' "$(gate_row_field "$1" '사건')" | gate_ci_signature fingerprint 2>/dev/null || true)
+  printf '%.12s' "${fp:--}"
+}
+
+gate_ci_match_same_reading() {
+  # gate_ci_match_same_reading <match row> <master 판독 row> — 0 when the match
+  # was made against a reading with the same signature fingerprint and event
+  # field as this one. Those two are all the comparison set is made of, and
+  # they are what the relay wakes on. The tip and the observation time are
+  # left out: a base commit that fixes nothing moves the tip, the reading's
+  # refresh rewrites the time, and the match would come out the same.
+  local was fp
+  was=$(gate_row_field "$1" '판독 지문'); fp=$(gate_row_field "$2" '서명 지문')
+  [ "${was##*/}" = "$(printf '%.12s' "${fp:--}")" ] \
+    && [ "$(gate_row_field "$1" '판독 사건')" = "$(gate_ci_match_events_mark "$2")" ]
+}
+
+gate_master_event_state() {
+  # gate_master_event_state <alias> <id> — that event's repair state in the
+  # target's last reading, or nothing.
+  gate_row_field "$(gate_master_last_row "$1")" '사건' | tr ',' '\n' \
+    | awk -F':' -v id="$2" '$1 == id { s = $0; sub(/^[^:]*:[^:]*:[^:]*:/, "", s); print s; exit }'
+}
+
+gate_repair_event_row() {
+  # gate_repair_event_row — the manifest's `수리 사건` row, `<slug>\t<베이스>\t<사건 id>\t<서명 sha256>`,
+  # or nothing. The row is positional: `- \`수리 사건\` | <slug> | <베이스> | <사건 id> | <서명 sha256>`.
+  [ -n "${MANIFEST:-}" ] && [ -f "$MANIFEST" ] || return 0
+  grep -E '^- `수리 사건` ' "$MANIFEST" 2>/dev/null | awk -F'|' '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    NF == 5 { print trim($2) "\t" trim($3) "\t" trim($4) "\t" trim($5); exit }' || true
+}
+
+gate_master_claim() {
+  # gate_master_claim <event id> <segment> — 0 when this segment holds the
+  # event's representative marker after the call. The marker is a directory
+  # under the state root holding `owner` = `<run id> <segment>`. A marker whose
+  # owner run has ended (`done` in its run directory), or whose owner is a
+  # segment of this run that merged or parked, is taken over. So is a marker
+  # whose owner run of another run id ended without `done` — its run reads
+  # `종단` or `버려짐` (gate_master_claim_run_ended) — and a marker that has
+  # stayed without an owner for a minute, the remains of a claimer that died
+  # between its two steps.
+  #
+  # THE OWNER IS PUBLISHED WHOLE. It is written to a file of its own name and
+  # renamed over `owner`, so a reader sees no owner or a whole one, never a
+  # half-written line; a marker with no owner yet is a claimer between its
+  # `mkdir` and its rename, not a free marker. Two claimers that both decide
+  # to take a marker over both rename, and only the one whose line is in
+  # `owner` afterwards holds it.
+  local id=$1 seg=$2 root dir me owner orun oseg ost
+  root="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
+  dir="$root/master-claims/$id"
+  me="${RUN_ID:-${RUN_DIR##*/}} $seg"
+  mkdir -p "$root/master-claims" 2>/dev/null || return 1
+  if mkdir "$dir" 2>/dev/null; then
+    gate_master_claim_publish "$dir" "$me"
+    return $?
+  fi
+  owner=$(head -1 "$dir/owner" 2>/dev/null || true)
+  [ "$owner" = "$me" ] && return 0
+  orun=${owner%% *}; oseg=${owner#* }
+  if [ -z "$owner" ]; then
+    [ -n "$(find "$dir" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 1
+  elif [ "$orun" = "${RUN_ID:-${RUN_DIR##*/}}" ]; then
+    ost=$(gate_segment_field "$oseg" '상태')
+    case "$ost" in 머지됨|park) ;; *) return 1 ;; esac
+  elif ! gate_master_claim_run_ended "$root/run/$orun"; then
+    return 1
+  fi
+  gate_master_claim_publish "$dir" "$me"
+}
+
+gate_master_claim_publish() {
+  # gate_master_claim_publish <marker dir> <owner line> — the owner line
+  # renamed over `owner` from a file only this call writes; 0 when `owner`
+  # reads that line afterwards.
+  local tmp
+  tmp=$(mktemp "$1/.owner.XXXXXX" 2>/dev/null) || return 1
+  if ! { printf '%s\n' "$2" > "$tmp" && mv -f "$tmp" "$1/owner"; } 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  [ "$(head -1 "$1/owner" 2>/dev/null || true)" = "$2" ]
+}
+
+gate_master_claim_run_ended() {
+  # gate_master_claim_run_ended <run dir> — 0 when that run has ended: its
+  # directory is gone, it carries `done`, or the shared run reading
+  # (cc_run_state) grades it `종단` or `버려짐` from its own ledger. A run whose
+  # ledger cannot be found is not judged ended.
+  local lp st
+  [ -d "$1" ] || return 0
+  [ ! -f "$1/done" ] || return 0
+  lp=$(head -1 "$1/ledger-path" 2>/dev/null || true)
+  [ -n "$lp" ] && [ -f "$lp" ] || return 1
+  st=$(cc_run_state "$1" "$lp" 2>/dev/null || true)
+  case "$st" in 종단|버려짐) return 0 ;; esac
+  return 1
+}
+
+gate_ci_match_checks_passed() {
+  # gate_ci_match_checks_passed <own list> <runs file> — 0 when every check
+  # base name of the list (the piece before a signature's first `|`) has at
+  # least one run in the file, the head's check runs as the match act wrote
+  # them, that completed with `success`. A run's name is read without its
+  # shard tail ` (<n>)`, the way the adapter names the check.
+  local b
+  [ -s "$1" ] && [ -s "$2" ] || return 1
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    awk -F'\t' -v b="$b" '
+      { n = $2; sub(/ \([0-9]+\)$/, "", n) }
+      n == b && $3 == "completed" && $4 == "success" { f = 1 }
+      END { exit !f }' "$2" || return 1
+  done <<EOF
+$(cut -d'|' -f1 "$1" | LC_ALL=C sort -u)
+EOF
+  return 0
+}
+
+gate_perform_ci_match() {
+  # gate_perform_ci_match <alias> <segment> — the reads, the comparison and the
+  # match row. A read that fails makes the result `판정 불가` rather than the
+  # act's failure: the row is what the disposition waits on.
+  local al="$1" seg="$2"
+  if [ "${GATE_CI_MATCH_ADMIT:-}" != "1" ] || [ -z "${GATE_CI_MATCH_HEAD:-}" ]; then
+    warn "the match act reached its performer without its admission — nothing was read"
+    return "$GATE_EXIT_RULE"
+  fi
+  al="${GATE_CI_MATCH_ALIAS:-$al}"
+  local h="$GATE_CI_MATCH_HEAD" slug tmpd rd g pr mrow cur fp="" n=0 prec="" incomplete="" fc=""
+  local line cid name concl app durl job s outp p sigs="" res_ids="" id
+  slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+  rd=$(cc_ci_round "$LEDGER" "$seg" "$h"); g=$(cc_ci_round_get "$rd" g)
+  pr=$(gate_rows 'checks' | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_eq 'head sha' "$h" \
+       | awk 'NF { r = $0 } END { if (r != "") print r }')
+  pr=$(gate_row_field "$pr" 'PR'); [ -n "$pr" ] || pr='-'
+  mrow=$(gate_master_last_row "$al")
+  tmpd=$(mktemp -d "${TMPDIR:-/tmp}/gate-ci-match.XXXXXX") || return "$GATE_EXIT_RULE"
+  if [ -z "$slug" ]; then
+    incomplete=1
+  elif ! gate_ci_match_gh "$tmpd/runs" api --paginate "repos/$slug/commits/$h/check-runs?per_page=100" \
+         --jq '.check_runs[] | [(.id | tostring), .name, (.status // ""), (.conclusion // ""), (.app.slug // ""), (.details_url // "")] | join("\t")'; then
+    incomplete=1
+  else
+    # A check still running is not a settled set: the match waits for nothing
+    # and says so.
+    awk -F'\t' 'NF && $3 != "completed" { f = 1 } END { exit !f }' "$tmpd/runs" && incomplete=1
+    # `cut`, never `read`, for the reason the rerun act gives: an empty field
+    # would shift every field after it. The loop reads on its own descriptor so
+    # nothing inside it can drain the list.
+    while IFS= read -r line <&3; do
+      [ -n "$line" ] || continue
+      cid=$(printf '%s' "$line" | cut -f1);    name=$(printf '%s' "$line" | cut -f2)
+      concl=$(printf '%s' "$line" | cut -f4);  app=$(printf '%s' "$line" | cut -f5)
+      durl=$(printf '%s' "$line" | cut -f6)
+      # DENY BY DEFAULT: a completed run is a failure unless its conclusion is
+      # one of the three that pass, so a conclusion this list never named
+      # (`stale`, `startup_failure`, one GitHub adds later) is counted rather
+      # than skipped. An empty conclusion is a run still going, which already
+      # made the set incomplete above.
+      case "$concl" in success|neutral|skipped|'') continue ;; esac
+      fc="${fc:+$fc,}$name"
+      # An Actions check run is the job of the same id; the details URL names
+      # it as well, and the URL wins when the two disagree.
+      if [ "$app" != "github-actions" ]; then incomplete=1; continue; fi
+      job=$(printf '%s' "$durl" | sed -n 's#.*/job/\([0-9][0-9]*\).*#\1#p')
+      [ -n "$job" ] || job="$cid"
+      case "$job" in ''|*[!0-9]*) incomplete=1; continue ;; esac
+      if ! gate_ci_match_gh "$tmpd/steps" api "repos/$slug/actions/jobs/$job" \
+             --jq '.steps[]? | select(.conclusion == "failure") | .name'; then
+        incomplete=1; continue
+      fi
+      if ! gate_ci_match_gh "$tmpd/log.full" api --allow-escape-sequences "repos/$slug/actions/jobs/$job/logs"; then
+        incomplete=1; continue
+      fi
+      head -c "$GATE_CI_MATCH_LOG_MAX_BYTES" "$tmpd/log.full" > "$tmpd/log" 2>/dev/null || : > "$tmpd/log"
+      set --
+      # A log cut at the cap may end between two suites, where nothing in the
+      # part kept says a suite is missing, so the adapter is told.
+      s=$(wc -c < "$tmpd/log.full" 2>/dev/null | tr -d ' ')
+      [ "${s:-0}" -le "$GATE_CI_MATCH_LOG_MAX_BYTES" ] || set -- --truncated
+      while IFS= read -r s; do [ -z "$s" ] || set -- "$@" --step "$s"; done < "$tmpd/steps"
+      outp=$(gate_ci_signature extract --repo "$slug" --check "$name" "$@" < "$tmpd/log" 2>/dev/null) || { incomplete=1; continue; }
+      p=$(printf '%s\n' "$outp" | sed -n '1s/^정밀도: //p')
+      s=$(printf '%s\n' "$outp" | tail -n +2 | { grep -v '^$' || true; })
+      if [ -z "$s" ]; then incomplete=1; continue; fi
+      sigs=$(printf '%s\n%s\n' "$sigs" "$s")
+      case "$p" in 단언) [ -n "$prec" ] || prec='단언' ;; *) prec='단계' ;; esac
+    done 3< "$tmpd/runs"
+  fi
+  sigs=$(printf '%s\n' "$sigs" | { grep -v '^$' || true; } | LC_ALL=C sort -u)
+  [ -n "$fc" ] || incomplete=1
+  if [ -n "$sigs" ]; then
+    n=$(printf '%s\n' "$sigs" | gate_count)
+    fp=$(printf '%s\n' "$sigs" | gate_ci_signature fingerprint)
+    printf '%s\n' "$sigs" > "$tmpd/seg"
+    gate_ci_signature_keep "$fp" < "$tmpd/seg"
+  else
+    : > "$tmpd/seg"
+  fi
+  # The comparison set: the reading's signatures and those of the events
+  # resolved after the segment's base.
+  cur=$(gate_row_field "$mrow" '서명 지문')
+  if [ -n "$cur" ] && [ "$cur" != "-" ] && [ -f "$(gate_ci_signature_file "$cur")" ]; then
+    LC_ALL=C sort -u "$(gate_ci_signature_file "$cur")" > "$tmpd/cur"
+  else
+    : > "$tmpd/cur"
+  fi
+  res_ids=$(gate_master_resolved_after "$seg" "$al")
+  : > "$tmpd/res"
+  for id in $res_ids; do
+    [ ! -f "$(gate_ci_signature_file "event-$id")" ] || cat "$(gate_ci_signature_file "event-$id")" >> "$tmpd/res"
+  done
+  LC_ALL=C sort -u "$tmpd/res" -o "$tmpd/res"
+  # Events the segment waits on: unresolved events of the reading whose
+  # signatures it shares, else every unresolved event.
+  local waits="" all_open="" e
+  for e in $(gate_row_field "$mrow" '사건' | tr ',' '\n' | awk -F':' '$3 == "-" { print $1 }'); do
+    all_open="${all_open:+$all_open,}$e"
+    if [ -f "$(gate_ci_signature_file "event-$e")" ] \
+       && [ -n "$(LC_ALL=C comm -12 "$tmpd/seg" "$(gate_ci_signature_file "event-$e")" 2>/dev/null)" ]; then
+      waits="${waits:+$waits,}$e"
+    fi
+  done
+  [ -n "$waits" ] || waits="$all_open"
+  local result outside resonly
+  outside=$(LC_ALL=C sort -u "$tmpd/cur" "$tmpd/res" | LC_ALL=C comm -23 "$tmpd/seg" - 2>/dev/null || true)
+  resonly=$(LC_ALL=C comm -12 "$tmpd/seg" "$tmpd/res" 2>/dev/null | LC_ALL=C comm -23 - "$tmpd/cur" 2>/dev/null || true)
+  if [ -n "$outside" ]; then
+    result='초과'
+  elif [ -n "$incomplete" ] || [ -z "$sigs" ]; then
+    result='판정 불가'
+  elif [ -n "$resonly" ]; then
+    result='재합류 필요'
+  else
+    result='부분집합'
+    # A repair run's segment passes when it adds nothing, every signature is
+    # assertion-precise, none of its own event's signatures is left, and every
+    # check its event named ran to success on this head.
+    local rrow rslug rbr rid rsha own
+    rrow=$(gate_repair_event_row)
+    if [ -n "$rrow" ]; then
+      rslug=$(printf '%s' "$rrow" | cut -f1); rbr=$(printf '%s' "$rrow" | cut -f2)
+      rid=$(printf '%s' "$rrow" | cut -f3); rsha=$(printf '%s' "$rrow" | cut -f4)
+      own=$(gate_ci_signature_file "event-$rid")
+      if [ "$rslug" = "$slug" ] && [ "$rbr" = "$(base_branch "$al" 2>/dev/null || true)" ]; then
+        if [ ! -s "$own" ] || [ "$(gate_ci_signature fingerprint < "$own" 2>/dev/null)" != "$rsha" ]; then
+          # THE OWN LIST IS BOUND TO THE EVENT THE RUN WAS RENDERED FOR. The
+          # host's event file is what decides a merge on a red base, so a
+          # list whose fingerprint is not the one the manifest froze is no
+          # list of that event.
+          result='판정 불가'
+        elif [ "$prec" = "단언" ] && [ -z "$(LC_ALL=C comm -12 "$tmpd/seg" "$own" 2>/dev/null)" ]; then
+          # AN ABSENT FAILURE IS NOT A PASS. A check that a path filter kept
+          # from running, or that ended `skipped`, adds no signature either,
+          # so each check base name of the own list needs a completed,
+          # successful run on this head.
+          if gate_ci_match_checks_passed "$own" "$tmpd/runs"; then
+            result='수리 통과'
+          else
+            result='판정 불가'
+          fi
+        fi
+      fi
+    fi
+  fi
+  rm -rf "$tmpd"
+  # The representative marker: one waiting segment per event the host could
+  # not start a repair run for asks the person, and the ledger says which.
+  local rep='-'
+  case "$result" in
+    부분집합|'판정 불가')
+      for e in $(printf '%s' "$waits" | tr ',' ' '); do
+        [ "$(gate_master_event_state "$al" "$e")" = '띄울 수 없음' ] || continue
+        if gate_master_claim "$e" "$seg"; then rep='예'; fi
+      done ;;
+  esac
+  # The row carries a 64-hex fingerprint and the reading's fingerprint on top
+  # of the rerun row's fields, so its two free-length fields are cut shorter
+  # than the rerun row's: the widest match row stays near 900 bytes.
+  local mfp mtip
+  mtip=$(gate_row_field "$mrow" '팁'); mfp=$(gate_row_field "$mrow" '서명 지문')
+  gate_append 'CI 처분' "세그먼트=$seg" "PR=$pr" "head sha=$h" "처분=대조" "상태=대조" "회차=${g:-0}" \
+    "실행=-" "워크플로=-" "실패 체크=$(gate_row_safe "${fc:--}" 200)" \
+    "기본 브랜치=-" "응답=-" "관측=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "결과=$result" "정밀도=${prec:--}" "서명 수=$n" "서명 지문=${fp:--}" \
+    "판독 지문=$(gate_ci_match_reading_mark "$mrow")" "판독 사건=$(gate_ci_match_events_mark "$mrow")" \
+    "사건=$(gate_row_safe "${waits:--}" 120)" "대표=$rep" || return $?
+  log "$seg: CI 대조 — $result (서명 ${n}개)"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -41460,6 +42446,18 @@ gate_verb_act() {
     { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
       || { warn "act --kind ci-rerun 은 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
   fi
+  # THE MATCH ACT'S ONE SPELLING, on the rerun act's pattern: the token `대조`
+  # and the head whose failures it compares, at the `PR` rung, for one segment.
+  # Which checks and which logs it reads are the gate's choice.
+  if [ "$kind" = "ci-match" ]; then
+    if [ $# -ne 2 ] || [ "$1" != "대조" ] || ! printf '%s' "$2" | grep -Eq '^[0-9a-f]{40}$'; then
+      warn "act --kind ci-match 의 argv 는 「대조 <40자리 워크트리 HEAD>」 하나입니다 — 읽을 체크와 로그는 게이트가 고릅니다"
+      exit "$GATE_EXIT_VOCAB"
+    fi
+    [ "$cutpoint" = "PR" ] || { warn "act --kind ci-match 는 --cutpoint PR 로만 냅니다 (받은 값: ${cutpoint})"; exit "$GATE_EXIT_VOCAB"; }
+    { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
+      || { warn "act --kind ci-match 는 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
+  fi
   # THE LABEL ACT'S ONE SPELLING, in the rerun's shape: the token `라벨` and the
   # head. The check and the label are the manifest's, never the router's.
   if [ "$kind" = "label-ack" ]; then
@@ -41496,7 +42494,7 @@ gate_verb_act() {
   GATE_ACT_DERIVED=""
   GATE_ACT_ARGV_LADDER=""
   case "$kind" in
-    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|label-ack) : ;;
+    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack) : ;;
     *) if ! gate_kind_is_bookkeeping "$kind"; then
          GATE_ACT_ARGV_LADDER=1
          GATE_ACT_DERIVED=$(ladder_of_argv0 "$@")
@@ -41730,6 +42728,9 @@ gate_verb_act() {
   # eligibility waits for its own seat beside the merge check.
   if [ "$kind" = "ci-rerun" ]; then
     gate_ci_rerun_preconditions "$segment" "$2" || exit $?
+  fi
+  if [ "$kind" = "ci-match" ]; then
+    gate_ci_match_preconditions "$segment" "$2" || exit $?
   fi
   if [ "$kind" = "label-ack" ]; then
     gate_label_ack_preconditions "$segment" "$2" || exit $?
@@ -42284,10 +43285,32 @@ gate_verb_act() {
                                 print "T:" (n > 0 ? w[1] : ""); got = 1 }')
     fi
     if [ -n "$br_dir" ]; then
-      local br_next br_t br_want br_c1 br_c2 br_wt
+      local br_next br_t br_want br_c1 br_c2 br_wt br_rejoin=""
       br_next=$(gate_segment_review_next "$segment")
       br_t=${br_dir#T:}
-      if [ "$br_next" != "베이스 해소" ]; then
+      # A REJOIN IS A BASE RESOLUTION WITH NO CONFLICT. A segment whose CI
+      # waits on a base-branch failure the base has since fixed takes the base
+      # in, so its prompt carries `부류=master 재합류` beside the directive, and
+      # it is let in only while `다음` reads `master 재합류` and the latest base
+      # check moved (`이동`): a check that found the base already in (`일치`)
+      # leaves nothing to merge, and one that found a conflict is the base
+      # resolution's. It spends no cycle budget, as a base resolution does not.
+      case "$(gate_skill_prompt_of "$@")" in *'부류=master 재합류'*) br_rejoin=1 ;; esac
+      if [ -n "$br_rejoin" ]; then
+        # The rejoin value is a CI layer value, which a merge-first segment
+        # waiting to merge reads from `implement_next[]`.
+        br_next=$(gate_segment_ci_next "$segment")
+        if [ "$br_next" != "master 재합류" ]; then
+          warn "세그먼트 ${segment} 의 다음 처분은 「${br_next}」 입니다 — master 재합류는 「다음」 이 「master 재합류」 일 때만 파견합니다"
+          warn "스냅숏의 review_next[] 의 「다음」 (머지 전 선머지 세그먼트는 implement_next[] 의 「다음」) 을 읽고 그 처분으로 가세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+        if [ "$(gate_row_field "$(gate_base_last_row "$segment")" '판정')" != "이동" ]; then
+          warn "세그먼트 ${segment} 의 마지막 베이스 판정이 「이동」 이 아닙니다 — master 재합류는 base-check 가 「이동」 을 적은 뒤에만 파견합니다"
+          warn "base-check 를 먼저 부르고, 「일치」 면 파견하지 않으며 「충돌」 이면 「다음」 을 다시 읽으세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+      elif [ "$br_next" != "베이스 해소" ]; then
         warn "세그먼트 ${segment} 의 다음 처분은 「${br_next}」 입니다 — 베이스 해소는 「다음」 이 「베이스 해소」 일 때만 파견합니다"
         warn "스냅숏의 review_next[] 의 「다음」 을 읽고 그 처분으로 가세요"
         exit "$GATE_EXIT_RULE"
@@ -42395,7 +43418,7 @@ gate_verb_act() {
         case "$cj_prompt" in
           *'수정 대상: '*' 의 P0·P1'*|*' 의 P0·P1'*'수정 대상: '*)
             case "$cj_next" in
-              'CI 대기'|'CI 재실행'|'CI 대기 한도')
+              'CI 대기'|'CI 재실행'|'CI 대기 한도'|'CI 대조'|'master 대기'|'master 재합류'|'master 수리 불가')
                 warn "세그먼트 ${segment} 의 다음 처분은 「${cj_next}」 입니다 — CI 판정이 서기 전에는 리뷰 지적 수정을 파견하지 않습니다"
                 warn "스냅숏의 review_next[] 의 「다음」 을 읽고 그 처분으로 가세요"
                 exit "$GATE_EXIT_RULE" ;;
@@ -42856,6 +43879,10 @@ gate_verb_act() {
       # performs is the gate's own POST to GitHub, a change of state outside
       # the tree.
       graded="외부상태변경" ;;
+    ci-match)
+      # `대조 <sha>` is a token as well; what the act performs is GETs and the
+      # ledger row, so it reads.
+      graded="읽기" ;;
     *)
       if gate_kind_is_bookkeeping "$kind"; then
         # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
@@ -43166,7 +44193,7 @@ gate_verb_act() {
   # has no answer, and 0 is the honest one: no history is being integrated.
   GATE_HISTORY_INTEGRATION=0
   case "$kind" in
-    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|label-ack) : ;;
+    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack) : ;;
     *) gate_kind_is_bookkeeping "$kind" \
          || GATE_HISTORY_INTEGRATION=$(gate_history_integration "$@") ;;
   esac
@@ -43317,7 +44344,7 @@ gate_verb_act() {
      && [ -n "$segment" ] && [ "$segment" != '-' ] \
      && [ -n "$(gate_segment_field "$segment" '상태')" ]; then
     case "$kind" in
-      propose-done|skill|router-shift|apply|apply-settle|ci-rerun|label-ack) : ;;
+      propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack) : ;;
       *)
         [ "$(gate_merge_binding_of_argv0 "$@")" = '해당없음' ] || _mo_land=1
         if [ "$_mo_land" = 0 ]; then
@@ -43596,6 +44623,17 @@ EOF
     fi
   fi
   export GATE_PARK_CELL
+  # A REPAIR RUN'S PUT IS ITS MERGE AND NOTHING ELSE. After the catalog and
+  # the reach evaluator have said what they would let through, a `gh api` PUT
+  # of a repair run whose endpoint is not that repository's pull request merge
+  # is sent to an approval (exit 5): the run stops there, which is the one
+  # question a repair run asks. An act the evaluator already parks keeps its
+  # park row.
+  if [ "$rules_rc" = "0" ] && [ -z "$GATE_PARK_CELL" ] && [ "$argv_graded" = "1" ] \
+     && gate_repair_put_outside "$@"; then
+    warn "a repair run opens a PUT only on repos/<its slug>/pulls/<n>/merge — this one is sent to an approval"
+    rules_rc="$GATE_EXIT_APPROVAL"
+  fi
   # THE RESOLUTION IS READ BEFORE THE DRY-RUN ARM. `plan` answers "would this
   # act pass", and once the approval is answered the honest answer is yes — an
   # arm that reported "still needs an approval" would be describing a state that
@@ -44084,6 +45122,7 @@ EOF
   # for the same reasons: past the drain and the rule loop, ahead of every
   # append, and above the forecast. Every other kind returns from it at once.
   gate_check_ci_rerun "$kind"
+  gate_check_ci_match "$kind"
   gate_check_label_ack "$kind"
   gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
   # THE LANDING TREE'S OWN GATE, asked before it lands. Same seat as the CI
@@ -44140,7 +45179,7 @@ EOF
     # The pair the same argv would open as an act, forecast and never written:
     # the dry run writes no row. Only the kinds that run their argv open one.
     case "$kind" in
-      skill|router-shift|apply|apply-settle|ci-rerun|label-ack|propose-done) ;;
+      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|propose-done) ;;
       *)
         if [ "${GATE_PARK_RFROW:-0}" = "1" ] && ! gate_kind_is_bookkeeping "$kind" \
            && [ -n "$(gate_preauth_pair_argv "${GATE_PARK_RFN:--}")" ]; then
@@ -44346,7 +45385,7 @@ EOF
     # left off and the exec row is the only one that records them. A router's
     # own kinds never reach a row value — their argv is the table's to grade.
     case "$kind" in
-      skill|router-shift|apply|apply-settle|ci-rerun|label-ack) ;;
+      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack) ;;
       *)
         gate_row_value_fields
         gate_kind_is_bookkeeping "$kind" && GATE_RV_FIELDS=()
@@ -44371,6 +45410,8 @@ EOF
   # read and must stay one, so the only place the ledger learns that the sensor's
   # verdict moved is here, once per approved act or exec, and only when it moved.
   gate_pace_row_if_changed
+  # The base branch's reading rides on the same seat for the same reason.
+  gate_master_row_if_changed
 
   # The RESOLVED policy and not a flag value. What decides whether a merge defers
   # its review is the segment row bounded by the target's ceiling, and a caller
@@ -44471,7 +45512,9 @@ EOF
         # The POST and its confirmation, never the argv: `재실행 <sha>` run as a
         # command would skip the performer's guard.
         ci-rerun) gate_perform_ci_rerun "$alias" "$segment" "$@" || rc=$? ;;
-        # The label POST and its confirmation, the same way.
+        # The reads and the match row, never the argv.
+        ci-match) gate_perform_ci_match "$alias" "$segment" || rc=$? ;;
+        # The label POST and its confirmation, the same way as the rerun's.
         label-ack) gate_perform_label_ack "$alias" "$segment" "$@" || rc=$? ;;
         # The argv itself runs here, so the pair opens here as it does on exec.
         *)     gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
@@ -45276,6 +46319,12 @@ gate_check_merge_checks() {
 
   tip=$(gate_segment_tip "$seg") || tip=""
   [ -n "$tip" ] || return 0
+  # THE READING IS BROUGHT UP TO DATE FIRST, on a routed run and on an act
+  # that may write (a forecast stays a read). The seat that writes it runs
+  # after this check, so after an idle spell the ledger's reading would be
+  # stale here while the file is fresh: the repair pass would fail and `다음`
+  # would drop the master layer for L7's park.
+  case "${verb:-}" in act|exec) gate_master_row_if_changed ;; esac
   # THE ROW IS THE ONE THE CI LAYER READS. The round of (segment, tip) comes from
   # `cc_ci_round`, and the verdict is the newest `checks` row of that segment
   # and head whose `재실행 회차` is the round, so a row of another head written
@@ -45297,6 +46346,14 @@ gate_check_merge_checks() {
     else
       why="a rerun of this head ($tip) was requested and has no closing row"
     fi
+  elif gate_ci_repair_pass "$seg" "$tip" "${g:-0}"; then
+    # A REPAIR RUN'S HEAD MERGES ON ITS MATCH, NOT ON A GREEN CHECK. Its base
+    # is broken, so its own CI fails with the base's failures, and what says it
+    # is fit to land is that it adds none and leaves none of the event it
+    # repairs. Unlike the stale `통과` above, a stale `수리 통과` is not harmless
+    # — it lets a failing head through — so it counts only against the
+    # reading it was made against, and only while that reading is fresh.
+    return 0
   elif [ "${g:-0}" -ge 1 ]; then
     # AFTER A RERUN ONLY A PASS OF THAT ROUND MERGES. The round's first verdict
     # comes after the rerun began, so anything short of `통과` — no row yet, a
@@ -45347,6 +46404,32 @@ gate_check_merge_checks() {
   [ -n "${GATE_PARK_CELL:-}" ] || GATE_PARK_CELL="CI실패"
   export GATE_PARK_CELL
   return 0
+}
+
+gate_ci_repair_pass() {
+  # gate_ci_repair_pass <segment> <head sha> <round> — the head's newest match
+  # row of that round reads `수리 통과`, its `판독 지문` is the mark of the
+  # target's last `master 판독` row by its tip, state and signature
+  # fingerprint, its `판독 사건` is that row's event mark, and that reading is
+  # fresh and settled red or green. A reading still `진행 중` or `판정 불가`
+  # passes no merge, whatever its mark.
+  #
+  # THE OBSERVATION TIME IS NOT COMPARED. The seat rewrites a held reading
+  # with a new time to keep it fresh while it stays the same reading, so a
+  # router act between the match and the merge would otherwise void the match
+  # and send the segment back to matching. Freshness is gate_master_fresh's.
+  local seg=$1 h=$2 g=$3 al m last
+  run_routed || return 1
+  al=$(gate_segment_target_alias "$seg")
+  [ -n "$al" ] || return 1
+  m=$(gate_ci_match_row "$seg" "$h" "$g")
+  [ "$(gate_row_field "$m" '결과')" = '수리 통과' ] || return 1
+  gate_master_fresh "$al" || return 1
+  last=$(gate_master_last_row "$al")
+  case "$(gate_row_field "$last" '상태')" in 빨강|초록) ;; *) return 1 ;; esac
+  [ "$(gate_ci_match_mark_key "$(gate_row_field "$m" '판독 지문')")" \
+    = "$(gate_ci_match_mark_key "$(gate_ci_match_reading_mark "$last")")" ] \
+    && [ "$(gate_row_field "$m" '판독 사건')" = "$(gate_ci_match_events_mark "$last")" ]
 }
 
 gate_check_grade_regression() {
@@ -52395,6 +53478,53 @@ gate_snapshot_ci_keys_json() {
       "$(gate_json_escape "${st:-관측 없음}")" \
       "$(gate_json_escape "$(gate_ci_wait_clock "$s" "$h" "${g:-0}")")"
   fi
+  if [ "$nx" = 'CI 대조' ] || [ "$nx" = 'master 대기' ] || [ "$nx" = 'master 재합류' ] \
+     || [ "$nx" = 'master 수리 불가' ]; then
+    gate_snapshot_master_keys_json "$s" "$h" "${g:-0}" "$nx"
+  fi
+}
+
+gate_snapshot_master_keys_json() {
+  # gate_snapshot_master_keys_json <segment> <head sha> <round> <nx> — what the
+  # four values that compare with the base branch add: the events the match
+  # row waits on (`-` before a match), the reading's state and when it was
+  # observed. `master 수리 불가` also carries what the person is asked about —
+  # each waited event's first commit, a summary of its signatures (the first
+  # three lines of the kept list and their count) and the repair reasons.
+  local s=$1 h=$2 g=$3 nx=$4 al mrow m ev e fcs="" sum="" f n
+  al=$(gate_segment_target_alias "$s")
+  mrow=$(gate_master_last_row "$al")
+  m=$(gate_ci_match_row "$s" "$h" "$g")
+  ev=$(gate_row_field "$m" '사건')
+  printf ', "사건": "%s", "master 상태": "%s", "판독 관측": "%s"' \
+    "$(gate_json_escape "${ev:--}")" \
+    "$(gate_json_escape "$(gate_row_field "$mrow" '상태')")" \
+    "$(gate_json_escape "$(gate_row_field "$mrow" '관측')")"
+  # `master 재합류` carries the segment's latest `베이스 판정` row's `베이스`
+  # and `판정`: the commit a rejoin dispatch names on its `베이스 해소:` line,
+  # once base-check has written that row, and `-` before it has.
+  if [ "$nx" = 'master 재합류' ]; then
+    local brow bb bv
+    brow=$(gate_base_last_row "$s")
+    bb=$(gate_row_field "$brow" '베이스'); bv=$(gate_row_field "$brow" '판정')
+    printf ', "베이스": "%s", "판정": "%s"' \
+      "$(gate_json_escape "${bb:--}")" "$(gate_json_escape "${bv:--}")"
+    return 0
+  fi
+  [ "$nx" = 'master 수리 불가' ] || return 0
+  for e in $(printf '%s' "$ev" | tr ',' ' '); do
+    [ "$e" != '-' ] || continue
+    fcs="${fcs:+$fcs, }$e $(gate_row_field "$mrow" '사건' | tr ',' '\n' | awk -F':' -v id="$e" '$1 == id { print $2; exit }')"
+    f=$(gate_ci_signature_file "event-$e")
+    if [ -f "$f" ]; then
+      n=$(gate_count < "$f")
+      sum="${sum:+$sum; }$e ${n}개: $(head -3 "$f" | paste -sd ',' -)"
+    fi
+  done
+  printf ', "처음 커밋": "%s", "서명 요약": "%s", "수리 사유": "%s"' \
+    "$(gate_json_escape "${fcs:--}")" \
+    "$(gate_json_escape "${sum:--}")" \
+    "$(gate_json_escape "$(gate_row_field "$mrow" '수리 사유')")"
 }
 
 gate_snapshot_ci_early_json() {
@@ -52425,9 +53555,10 @@ gate_snapshot_review_next_json() {
   # At the three base values the element also carries what the resolution and
   # its review name: the basis cycle and its `리뷰 HEAD` (the segment's last
   # cycle that is not a resolution), and the base, the conflicted files and
-  # the class of the latest `베이스 판정` row. At the nine CI values — `CI 재실행`,
-  # `CI 대기`, `CI 대기 한도`, `CI 수정`, `CI 합류 수정`, `CI 리뷰`,
-  # `CI 기존 실패`, `CI 수정 한도`, `CI 라벨 인정` — it carries the keys
+  # the class of the latest `베이스 판정` row. At the thirteen CI values —
+  # `CI 재실행`, `CI 대기`, `CI 대기 한도`, `CI 수정`, `CI 합류 수정`, `CI 리뷰`,
+  # `CI 기존 실패`, `CI 수정 한도`, `CI 라벨 인정`, `CI 대조`, `master 대기`,
+  # `master 재합류`, `master 수리 불가` — it carries the keys
   # `gate_snapshot_ci_keys_json` names.
   #
   # A merge-first segment past its merge (`gate_segment_post_merge`) has an
@@ -52462,7 +53593,9 @@ gate_snapshot_review_next_json() {
           if [ "$nx" = 'CI 재실행' ] || [ "$nx" = 'CI 대기' ] || [ "$nx" = 'CI 수정' ] \
              || [ "$nx" = 'CI 리뷰' ] || [ "$nx" = 'CI 기존 실패' ] || [ "$nx" = 'CI 수정 한도' ] \
              || [ "$nx" = 'CI 합류 수정' ] || [ "$nx" = 'CI 대기 한도' ] \
-             || [ "$nx" = 'CI 라벨 인정' ]; then
+             || [ "$nx" = 'CI 라벨 인정' ] \
+             || [ "$nx" = 'CI 대조' ] || [ "$nx" = 'master 대기' ] || [ "$nx" = 'master 재합류' ] \
+             || [ "$nx" = 'master 수리 불가' ]; then
               gate_snapshot_ci_keys_json "$s" "$nx"
           fi
           printf '},\n'
@@ -52523,8 +53656,9 @@ gate_implement_next_of() {
   # gate_implement_next_of <segment> — the `implement_next[]` element of one
   # segment, or nothing when `gate_implement_next_raw` has none. `선머지`
   # carries the CI layer (`gate_merge_first_next`), and a CI value the layer
-  # puts in its place carries the keys `gate_snapshot_ci_keys_json` names, as
-  # it does in `review_next[]`.
+  # puts in its place — a `CI …` value or one of the base branch's `master …`
+  # values — carries the keys `gate_snapshot_ci_keys_json` names, as it does in
+  # `review_next[]`.
   local seg=$1 raw st ahead cnt dg nx
   raw=$(gate_implement_next_raw "$seg") || return 0
   read -r st ahead cnt dg nx <<<"$raw"
@@ -52534,7 +53668,7 @@ gate_implement_next_of() {
   printf '    {"세그먼트": "%s", "다음": "%s", "단계": "%s", "plan_sha256": "%s", "앞선 커밋": %s, "무커밋 구현": %s' \
     "$(gate_json_escape "$seg")" "$(gate_json_escape "$nx")" "$st" "$(gate_json_escape "$dg")" "$ahead" "$cnt"
   case "$nx" in
-    'CI '*) gate_snapshot_ci_keys_json "$seg" "$nx" ;;
+    'CI '*|'master '*) gate_snapshot_ci_keys_json "$seg" "$nx" ;;
   esac
   printf '},\n'
 }
@@ -53207,6 +54341,9 @@ gate_launch_shift() {
   # or outside the relay loop. A relay woken by a CI verdict hands the shift a
   # snapshot that already carries it, rather than the `CI 대기` the last drain
   # left; the drain appends under its own lock and is done before the row below.
+  # The base branch's reading goes in first for the same reason: a relay woken
+  # by it hands over a snapshot whose `다음` already reads the new reading.
+  gate_master_row_if_changed
   gate_drain_checks
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
     "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
@@ -53475,6 +54612,58 @@ gate_relay_ci_segments() {
   ' "$LEDGER" 2>/dev/null || true
 }
 
+gate_relay_master_segments() {
+  # The `master 대기` segments of the reference row — the latest `handoff`,
+  # when it is `대기` — comma-joined, or empty; read as `gate_relay_ci_segments`
+  # reads its field.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  LC_ALL=C awk -F'|' '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^- `handoff` / {
+      mw = ""
+      if (index($0, " | 사유=대기 | ") == 0) next
+      for (i = 2; i <= NF; i++) {
+        f = trim($i)
+        if (index(f, "master 대기=") == 1) mw = substr(f, length("master 대기=") + 1)
+      }
+    }
+    END { if (mw != "-") printf "%s", mw }
+  ' "$LEDGER" 2>/dev/null || true
+}
+
+gate_relay_master_wake() {
+  # gate_relay_master_wake <segments> — 0 when the base branch of any of the
+  # segments has a reading that differs from the ledger's last `master 판독`
+  # row in its state, signature fingerprint or events, or a reading that is
+  # absent or older than GATE_MASTER_STALE_SECONDS: the disposition then reads
+  # differently, back to L7 when the reading is gone. A reading only observed
+  # again is not a wake — the master stage observes every few minutes.
+  #
+  # The ledger is read from the file, not the row memo, as the relay's other
+  # readers do: other processes append while it polls.
+  local segs=$1 s al slug br st rd last ep now
+  now=$(date -u +%s)
+  for s in $(printf '%s' "$segs" | tr ',' ' '); do
+    al=$(gate_segment_target_alias "$s")
+    [ -n "$al" ] || continue
+    slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+    br=$(base_branch "$al" 2>/dev/null || true)
+    { [ -n "$slug" ] && [ -n "$br" ]; } || continue
+    last=$( { LC_ALL=C grep -E '^- `master 판독` ' "$LEDGER" 2>/dev/null || true; } \
+            | { grep -F "| 대상=$al |" || true; } | tail -1)
+    st=$(gate_master_state "$slug" "$br")
+    rd=""
+    [ -z "$st" ] || rd=$(gate_master_reading "$st") || rd=""
+    [ -n "$rd" ] || return 0
+    ep=$(cc_iso_to_epoch "$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "관측" { print $2 }')")
+    [ -n "$ep" ] && [ $((now - ep)) -le "$GATE_MASTER_STALE_SECONDS" ] || return 0
+    [ "$(gate_row_field "$last" '상태')" = "$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "상태" { print $2 }')" ] || return 0
+    [ "$(gate_row_field "$last" '서명 지문')" = "$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "서명 지문" { print $2 }')" ] || return 0
+    [ "$(gate_row_field "$last" '사건')" = "$(printf '%s\n' "$rd" | awk -F'\t' '$1 == "사건" { print $2 }')" ] || return 0
+  done
+  return 1
+}
+
 gate_cut_reset_at() {
   # gate_cut_reset_at <stream> — the epoch a cut attempt's limit resets at, or
   # nothing. ONE RULE, THE LAST FRAME: the answer is the last `rate_limit_event`
@@ -53690,15 +54879,21 @@ gate_relay_wait() {
   # the deadline, so the set is not empty though nothing else is in it, and
   # the relay wakes one second past the deadline (`cc_relay_wake_keys`) to
   # launch the successor whose first act ends the run.
-  local stages ci reset defer hold now
+  #
+  # THE BASE BRANCH IS THE FIFTH. The `master 대기` segments of the reference
+  # row hold the set open, and the relay wakes when `gate_relay_master_wake`
+  # says their base branch's reading moved or went stale. The watcher's keys
+  # do not carry this member: the relay reads the reading files itself.
+  local stages ci reset defer hold now mw
   stages=$(cc_relay_wait_stages "$RUN_DIR")
   ci=$(gate_relay_ci_segments)
   reset=$(gate_relay_reset_set)
   defer=$(gate_relay_defer_clock)
+  mw=$(gate_relay_master_segments)
   [ -n "$GATE_RELAY_STARTED" ] || GATE_RELAY_STARTED=$(date -u +%s)
   gate_relay_write "$stages" "$ci" "$reset"
   hold=$(gate_relay_hold)
-  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--}"
+  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · master ${mw:--}"
   while :; do
     now=$(date -u +%s)
     if [ -e "$RUN_DIR/done" ]; then
@@ -53713,12 +54908,16 @@ gate_relay_wait() {
       gate_relay_hand_back "$stages" "$ci" "$reset" "CI 를 기다리는데 checks 폴러가 살아 있지 않다"
       return 1
     fi
-    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ]; then
+    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$mw" ]; then
       log "교대 대기 끝 — 기다리던 것이 이미 끝났다"
       return 0
     fi
     if [ -n "$(cc_relay_wake_keys "$RUN_DIR" "$LEDGER")" ]; then
       log "교대 대기 끝 — 깨움 조건이 섰다"
+      return 0
+    fi
+    if [ -n "$mw" ] && gate_relay_master_wake "$mw"; then
+      log "교대 대기 끝 — master 판독이 바뀌었거나 낡았다"
       return 0
     fi
     sleep "$GATE_WAIT_POLL_SECONDS"

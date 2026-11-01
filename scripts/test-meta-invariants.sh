@@ -1188,6 +1188,23 @@ if grep -qF -- '| `대상 훅 거절` |' "$RS_CORPUS"; then
 else
   bad "교대 사본의 정지 자리 표" "「대상 훅 거절」 행이 없다"
 fi
+if grep -qF -- '| `master 수리 불가` |' "$RS_CORPUS"; then
+  ok "교대 사본의 정지 자리 표가 「master 수리 불가」를 싣는다"
+else
+  bad "교대 사본의 정지 자리 표" "「master 수리 불가」 행이 없다"
+fi
+if grep -qF -- 'and for `master 수리 불가` no act at all' "$RS_CORPUS"; then
+  ok "교대 사본의 재시도 목록이 「master 수리 불가」의 재대조를 싣는다"
+else
+  bad "교대 사본의 재시도 목록" "「master 수리 불가」가 없다"
+fi
+# 리드 사본도 교대 사본처럼 shift-halt 로 멈춘다 — 세그먼트 park 는 대표 표지를 다음 대기
+# 세그먼트로 넘겨 같은 사건의 park 와 질문을 잇달아 낳는다.
+if grep -qF -- 'Stop with `shift-halt` at site `master 수리 불가`' "$AP_ROUTER"; then
+  ok "리드 사본이 「master 수리 불가」에서 shift-halt 로 멈춘다"
+else
+  bad "리드 사본의 master 수리 불가" "「Stop with \`shift-halt\` at site \`master 수리 불가\`」가 없다"
+fi
 if grep -qF -- 'the refused act for `대상 훅 거절`' "$RS_CORPUS"; then
   ok "교대 사본의 재시도 목록이 「대상 훅 거절」의 거절된 행위를 싣는다"
 else
@@ -1611,11 +1628,14 @@ done
 # one row it derives again instead, the `세그먼트 입양` row, and says what
 # happens to every segment that fails the derivation. Both halves are pinned in
 # the resident body, so a rewording that keeps the exception and drops the
-# report of what was not adopted fails here.
+# report of what was not adopted fails here. The third phrase pins the lineage
+# walk for an interview record: a broken link stops the re-kickoff and is never
+# bridged by a farther ancestor.
 # ---------------------------------------------------------------------------
 for lit in \
   'a ledger row only triggers a question — or, for a `세그먼트 입양` row alone, a re-derivation' \
-  'anything else is not adopted and is reported with its cause'
+  'anything else is not adopted and is reported with its cause' \
+  'and it never skips to a farther ancestor'
 do
   check "CFI-11 이 「${lit:0:50}」 을 싣는다" "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
 done
@@ -1655,7 +1675,7 @@ done
 # after-the-re-convergence dispositions decide between a fresh audit and a stop.
 # The design-dispatch file opens on the same state and sends the step to the
 # audit, so the row also says which of the two decides the step's next act.
-rs_halt_row=$(printf '%s\n' "$rs_index" | grep -E '^\| `halt-answer-1\.md`, `halt-answer-2\.md` \|')
+rs_halt_row=$(printf '%s\n' "$rs_index" | grep -E '^\| `halt-answer-1\.md`, `halt-answer-2\.md`, `halt-answer-3\.md` \|')
 check "교대 색인의 할트 답 행이 설계·감사 스텝의 재수렴 뒤 진입 조건을 싣는다" \
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of the design step or of the audit step reads `종류=reconverge`')" "1"
 check "교대 색인의 할트 답 행이 그 상태에서 설계 파견 절보다 할트 답 절의 처분을 앞세운다" \
