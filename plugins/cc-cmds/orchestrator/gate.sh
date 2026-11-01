@@ -59,6 +59,12 @@
 #              and bound to its lock the same way: it reports the settled runs'
 #              unintended stops and the fleet's new parks as GitHub issues and
 #              releases the lock. Without the lock's nonce it refuses (exit 3).
+#   attention-round
+#              INTERNAL. The detached half of the run-end attention round,
+#              started and bound to its lock the same way: it runs the attention
+#              seat once for each ended run whose record is open, writes the
+#              result file, the `주의 좌석` row and the cost, and releases the
+#              lock. Without the lock's nonce it refuses (exit 3).
 #   close      resolve a pending approval from the harness-written transcript
 #   prompt     the canonical question and menu the router must ask for one
 #              approval, as JSON — changes nothing
@@ -133,7 +139,10 @@
 #   gate.sh halt-report-round
 #                    --manifest <path> [--target <alias>] --nonce <hex>
 #                                                           (internal; see above)
-#   gate.sh close   --manifest <path> --approval <id> [--void|--reject]
+#   gate.sh attention-round
+#                    --manifest <path> [--target <alias>] --nonce <hex>
+#                                                           (internal; see above)
+#   gate.sh close  --manifest <path> --approval <id> [--void|--reject]
 #   gate.sh prompt   --manifest <path> --approval <id>
 #   gate.sh end-overdue --manifest <path>
 #                    writes one end row for a run past its deadline with no end
@@ -482,6 +491,12 @@ die() { GATE_DIE_TEXT="$*"; printf '%s [run][stop] %s\n' "$(now_iso)" "$*" >&2; 
 # the watcher ends up running different code from the gate that started it.
 # shellcheck source=/dev/null
 . "$GATE_DIR/pin.sh"
+# The run-end attention seat's deterministic half: the round's file paths, the
+# end-token selector, the input assembly and the result file. Sourced because
+# the morning report runs the same file as a reader that never enters the gate,
+# so the path rule and the end-token rule must be the one copy both read.
+# shellcheck source=/dev/null
+. "$GATE_DIR/attention-round.sh"
 # The target-hook engine: the caller key and its file-name form, the target's
 # own Bash hooks, their digest and a run of them on given bytes. The run hook
 # sources the same file, which is the point — a file under `admit/` is named by
@@ -16980,6 +16995,15 @@ readonly GATE_HALT_SCHEMA='cc-halt-report-run v1'
 # The gate suite holds these against the fleet's own spelling.
 readonly GATE_HALT_BACKLOG_SCHEMA='cc-pace-backlog v1'
 readonly GATE_HALT_BACKLOG_REASONS='manifest-missing clock-incoherent deadline-passed doc-changed base-moved'
+# The run-end attention round: its own stamp, lock and records beside the two
+# rounds above, under `attention-round/` of the same state root. The sweep is a
+# fallback for a run whose own last process did not start the round, so ten
+# minutes is enough; the lock outlives one record's handling — the input
+# assembly and the seat call's deadline — with room to spare, because the round
+# refreshes it before every record.
+readonly GATE_ATTENTION_INTERVAL=600
+readonly GATE_ATTENTION_TIMEOUT_S=900
+readonly GATE_ATTENTION_LOCK_TTL=3600
 
 gate_reap_root() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
@@ -18963,6 +18987,10 @@ gate_surface_check() {
       cc_notify_fire rekick \
         "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
     fi
+    # This row is the run's end token and `gate_end_row` is not on its path, so
+    # the round is kicked here too. From a stage it starts nothing, and the
+    # stage's supervisor tail kicks it once the stage is gone.
+    gate_attention_kick || true
   fi
   if [ -n "${CC_PIPELINE_SEGMENT:-}" ]; then
     warn "this condition is not resolved inside this run — do not retry. Stop now, write in your return message what you were trying to do when you were blocked, and go back. The remaining calls get the same refusal."
@@ -19463,8 +19491,8 @@ gate_main() {
   fi
   if [ -n "$nonce" ]; then
     case "$verb" in
-      supervise-stage|supervise-apply|metrics-round|halt-report-round) ;;
-      *) printf 'gate: --nonce is used only with supervise-stage, supervise-apply, metrics-round and halt-report-round (verb received: %s)\n' "$verb" >&2
+      supervise-stage|supervise-apply|metrics-round|halt-report-round|attention-round) ;;
+      *) printf 'gate: --nonce is used only with supervise-stage, supervise-apply, metrics-round, halt-report-round and attention-round (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -19680,6 +19708,17 @@ gate_main() {
       exit "$GATE_EXIT_RULE"
     fi
     gate_halt_round "$nonce"
+    exit 0
+  fi
+  # The attention round leaves at the same point for the same reasons. It runs
+  # on this gate's manifest and reads the run it handles from that run's record.
+  if [ "$verb" = "attention-round" ]; then
+    [ -n "$nonce" ] || { printf 'gate: attention-round requires --nonce\n' >&2; exit 2; }
+    if [ "$(cat "$(attention_lockdir)/nonce" 2>/dev/null || true)" != "$nonce" ]; then
+      printf 'gate: attention-round nonce mismatch — the lock does not carry this nonce, so nothing runs\n' >&2
+      exit "$GATE_EXIT_RULE"
+    fi
+    gate_attention_round "$nonce"
     exit 0
   fi
 
@@ -19951,6 +19990,9 @@ gate_main() {
     # is outside the reporter's population by construction. `|| true` for the
     # reason the reap below has one.
     gate_halt_record_open || true
+    # The run's attention-seat record, beside it and on the same terms: a run
+    # with no record is never re-read after it ends.
+    gate_attention_record_open || true
     # AFTER the `run` row, and only here. Before it, a reap that died would leave
     # the run without so much as its own opening row; and this is the one branch
     # that runs once per run rather than once per gate entry.
@@ -20004,11 +20046,13 @@ gate_main() {
   # starts on the next verb that is not excluded.
   # The halt-report round is started from the same place under the same
   # exclusions, on its own stamp and lock. `pair-residue` is excluded with them:
-  # a reader of the ledger starts no writer.
+  # a reader of the ledger starts no writer. The attention round's sweep follows
+  # under the same exclusions, on its own stamp and lock.
   case "$verb" in
     plan|digest-path|pair-residue) ;;
     *) gate_metrics_cycle || true
-       gate_halt_cycle || true ;;
+       gate_halt_cycle || true
+       gate_attention_cycle || true ;;
   esac
 
   case "$verb" in
@@ -20097,8 +20141,8 @@ gate_main() {
       [ $# -eq 0 ] || { printf 'gate: supervise-apply takes no argv after -- (the command is the frozen one)\n' >&2; exit 2; }
       gate_verb_supervise_apply "$alias" "$segment" "$nonce"
       ;;
-    # `metrics-round` and `halt-report-round` never arrive here: they leave
-    # right after `rundir_init`.
+    # `metrics-round`, `halt-report-round` and `attention-round` never arrive
+    # here: they leave right after `rundir_init`.
     close)
       [ -n "$approval" ] || { printf 'gate: close requires --approval\n' >&2; exit 2; }
       # The two refusing dispositions are different CLAIMS about the same
@@ -35940,21 +35984,13 @@ gate_end_token_row() {
   # token even when the row is run-scope (the slicing invalidation is). An
   # ending row that carries one of them is still read — that is the run's own
   # end site naming the park it stopped behind.
+  #
+  # The selector itself is `attention_end_token_row` in `attention-round.sh`,
+  # which takes the ledger as an argument: the attention round judges other
+  # runs' ledgers with it, and the morning report reads it without entering the
+  # gate, so the one copy lives where all three can reach it.
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
-  awk '
-    (index($0, "- `자율 승인` | ") == 1 && index($0, " | 결정=종료 | ") > 0) ||
-    (index($0, "- `blocked` | ") == 1 && index($0, " | 스코프=run | ") > 0) {
-      blk = (index($0, "- `blocked` | ") == 1)
-      n = split($0, f, / \| /)
-      for (i = 2; i <= n; i++) {
-        if (index(f[i], "재킥 원인=") == 1) {
-          v = f[i]; sub(/^재킥 원인=/, "", v)
-          if (blk && (v == "대상미선언" || v == "슬라이싱")) break
-          print; found = 1; exit
-        }
-      }
-    }
-    END { exit found ? 0 : 1 }' "$LEDGER" 2>/dev/null
+  attention_end_token_row "$LEDGER"
 }
 
 gate_end_row() {
@@ -36006,11 +36042,16 @@ gate_end_row() {
       "절단점=경계" "유도 절단점=-" "축2=읽기" "등급=1" "기준=$std" "되돌리는 법=새 런으로 다시 킥오프" \
       "재킥 원인=$cause" "재킥 지문=$fp")
   fi
+  local _rc=0
   gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
     "절단점=경계" "유도 절단점=-" "축2=읽기" "등급=1" "기준=$std" \
     "되돌리는 법=새 런으로 다시 킥오프" "재킥 원인=$cause" \
     ${ekind:+"종료 부류=$ekind"} ${fp:+"재킥 지문=$fp"} \
-    "근거=$(gate_row_safe "$why" "$_why_free")"
+    "근거=$(gate_row_safe "$why" "$_why_free")" || _rc=$?
+  # The run-end attention seat's first trigger: the ending row is written, so
+  # the run may now be due. The kick never changes this function's status.
+  gate_attention_kick || true
+  return "$_rc"
 }
 
 gate_end_cause_of() {
@@ -48028,6 +48069,524 @@ gate_halt_prune() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# The run-end attention seat: after a run ended, a separate seat re-reads its
+# decision ledger, its stop records and its stages' prose once, and the morning
+# report carries what it pointed at.
+#
+# THE SHAPE IS THE HALT REPORTER'S. The run-open branch creates the run's record
+# under the state root; a detached `attention-round` takes the host lock and
+# handles every record whose run has ended. What the round leaves is the record,
+# a result file beside the ledger and one `주의 좌석` row in the ledger of the
+# run it read — never a banner. `attention-round.sh` holds the deterministic
+# parts (paths, the end-token predicate, input assembly, the result file and the
+# report's reader); this file holds the record, the lock, the seat call and the
+# row.
+#
+# THE RUN'S OWN LAST PROCESS STARTS THE ROUND. The end row, a stage
+# supervisor's tail, a shift's return and the relay's hand-back of a closed run
+# each kick it, and so does the surface-move row that ends a run without `done`;
+# the prelude's sweep only picks up a record all of those missed. A kick that
+# loses the lock race leaves its record to the round that holds it, which looks
+# for due records again before it lets go.
+#
+# EVERY TRANSITION IS WRITTEN AFTER RE-READING THE LOCK'S NONCE AND THE RECORD'S
+# STATE, so two rounds that both believe they hold the lock cannot both take one
+# record, and a round whose lock was taken over stops where it is.
+# ---------------------------------------------------------------------------
+
+gate_attention_enabled() {
+  # The round starts from no kick and no sweep when `CC_CMDS_ATTENTION=off`, or
+  # under CI — the dashboard's switch and its reason: a test or CI run that
+  # merely passes through an ending must not call a model or write rows into a
+  # fixture ledger behind the assertion's back. Records are still created, so a
+  # run opened with the switch off is reported as waiting, not as predating the
+  # feature.
+  [ "${CC_CMDS_ATTENTION:-}" = "off" ] && return 1
+  [ -n "${CI:-}" ] && return 1
+  return 0
+}
+
+gate_attention_record_open() {
+  # Create this run's record when there is none; never touch one that exists.
+  # `ln` makes "only when absent" atomic, as `gate_halt_record_open` does.
+  local f dir tmp ledger mf rd
+  [ -n "${RUN_ID:-}" ] && [ -n "${LEDGER:-}" ] || return 0
+  f=$(attention_record_path "$RUN_ID")
+  [ -e "$f" ] && return 0
+  dir=$(dirname "$f")
+  mkdir -p "$dir" 2>/dev/null || return 0
+  ledger="$LEDGER"; case "$ledger" in /*) ;; *) ledger="$(pwd)/$ledger" ;; esac
+  mf="${MANIFEST:-}"; case "$mf" in ''|/*) ;; *) mf="$(pwd)/$mf" ;; esac
+  rd="${RUN_DIR:-}"
+  tmp=$(mktemp "$dir/.open.XXXXXX" 2>/dev/null) || return 0
+  if jq -n --arg s "$(attention_schema)" --arg run "$RUN_ID" --arg l "$ledger" \
+       --arg m "$mf" --arg rd "$rd" --arg t "$(now_iso)" \
+       '{schema: $s, run: $run, "원장": $l, "매니페스트": $m, RUN_DIR: $rd,
+         "상태": "열림", "열림 시각": $t, "시작 시각": null, "종결 시각": null,
+         pid: null, "지문": null, "결과": null, "사유": null, "파일": null}' \
+       > "$tmp" 2>/dev/null; then
+    ln "$tmp" "$f" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
+gate_attention_field() {
+  # gate_attention_field <record> <key> — one field of a record of this schema,
+  # or nothing.
+  jq -r --arg s "$(attention_schema)" --arg k "$2" \
+    'select(type == "object" and .schema == $s) | .[$k] // empty | tostring' "$1" 2>/dev/null || true
+}
+
+gate_attention_due() {
+  # gate_attention_due <record> — the record's run has ended and nothing of it
+  # is still running. The ledger is the record's, never `$LEDGER`: the sweep and
+  # the round judge other runs' records, and the hosting run's end row must not
+  # decide them.
+  local f="$1" led rd
+  led=$(gate_attention_field "$f" '원장')
+  [ -n "$led" ] && [ -f "$led" ] || return 1
+  attention_end_token_row "$led" >/dev/null 2>&1 || return 1
+  rd=$(gate_attention_field "$f" 'RUN_DIR')
+  # A run directory already reaped holds nothing live.
+  if [ -n "$rd" ] && [ -d "$rd" ]; then
+    [ "$(cc_live_stages "$rd")" = "0" ] || return 1
+    [ "$(cc_waiting_fresh_count "$rd" "$led")" = "0" ] || return 1
+    case ",$(cc_relay_wait_stages "$rd")," in *,apply:*) return 1 ;; esac
+    # A run the router drives ends while its shift still runs the tail, so the
+    # shift has to be gone. `done` is not asked for: the surface-move row ends a
+    # run without it.
+    if cc_run_ends_on_done "$rd"; then
+      cc_shift_is_live "$rd" && return 1
+    fi
+  fi
+  return 0
+}
+
+gate_attention_stale() {
+  # gate_attention_stale <ledger> — the ledger has not changed for longer than
+  # the reaper's retention, so its open record is passed over (not closed).
+  local mt now
+  mt=$(gate_mtime "$1")
+  [ -n "$mt" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - mt)) -ge "$GATE_REAP_RETENTION" ]
+}
+
+gate_attention_lock() {
+  # One attempt, the halt reporter's lock shape on its own directory.
+  local lock owner ots now
+  lock=$(attention_lockdir)
+  mkdir -p "$(attention_root)" 2>/dev/null || return 1
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+    return 0
+  fi
+  owner=$(cat "$lock/owner" 2>/dev/null || true)
+  ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+  [ -n "$ots" ] || ots=$(gate_mtime "$lock")
+  [ -n "$ots" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - ots)) -ge "$GATE_ATTENTION_LOCK_TTL" ] || return 1
+  rm -rf "$lock" 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null || return 1
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_attention_unlock() {
+  # Unconditional: for the launcher that took the lock and could not start the
+  # round. The round itself lets go through `gate_attention_release`.
+  local lock dead
+  lock=$(attention_lockdir)
+  dead="$lock.dead.$$"
+  if mv "$lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
+  return 0
+}
+
+gate_attention_mine() {
+  # The lock carries this round's nonce.
+  [ -n "${GATE_ATTENTION_NONCE:-}" ] \
+    && [ "$(cat "$(attention_lockdir)/nonce" 2>/dev/null || true)" = "$GATE_ATTENTION_NONCE" ]
+}
+
+gate_attention_touch() {
+  # Refresh the lock's time before a record, so the TTL covers one record.
+  gate_attention_mine || return 1
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$(attention_lockdir)/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_attention_release() {
+  # The round's EXIT trap: the lock goes only while it still carries this
+  # round's nonce, so a round whose lock was taken over leaves the new owner's.
+  gate_attention_mine || return 0
+  gate_attention_unlock
+}
+
+gate_attention_spawn() {
+  # gate_attention_spawn — with the lock held, write a fresh nonce into it and
+  # start the detached round. The lock is let go when nothing was started.
+  # `--target` follows the halt reporter's launch.
+  local lock nonce tmp pid logf args
+  lock=$(attention_lockdir)
+  nonce=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || true)
+  tmp=""
+  if [ -n "$nonce" ]; then
+    tmp=$(mktemp "$lock/.nonce.XXXXXX" 2>/dev/null || true)
+  fi
+  if [ -z "$tmp" ] || [ -z "${MANIFEST:-}" ] || ! printf '%s\n' "$nonce" > "$tmp" 2>/dev/null \
+     || ! mv "$tmp" "$lock/nonce" 2>/dev/null; then
+    [ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null || true
+    log "주의 좌석 회차 실패 — 회차를 띄우지 못했다(다음 계기에 다시 본다)"
+    gate_attention_unlock
+    return 0
+  fi
+  logf=/dev/null
+  if [ -n "${RUN_DIR:-}" ] && mkdir -p "$RUN_DIR/log" 2>/dev/null; then
+    logf="$RUN_DIR/log/attention-round.log"
+  fi
+  args=(attention-round --manifest "$MANIFEST")
+  [ -z "${alias:-}" ] || args+=(--target "$alias")
+  args+=(--nonce "$nonce")
+  pid=$( cc_detach_exec "$logf" "$logf" bash "$GATE_DIR/gate.sh" "${args[@]}" ) || pid=""
+  if [ -z "$pid" ]; then
+    log "주의 좌석 회차 실패 — 회차를 띄우지 못했다(다음 계기에 다시 본다)"
+    gate_attention_unlock
+  fi
+  return 0
+}
+
+gate_attention_kick() {
+  # The run's own ending kicks the round for the run's own record. Always
+  # returns 0, and the body runs in a subshell so a `die` in anything it calls
+  # ends only the subshell — the end row or the supervisor tail around it keeps
+  # its own exit status.
+  ( gate_attention_kick_body ) || true
+  return 0
+}
+
+gate_attention_kick_body() {
+  local f
+  gate_attention_enabled || return 0
+  cc_caller_is_stage && return 0
+  [ -n "${RUN_ID:-}" ] || return 0
+  f=$(attention_record_path "$RUN_ID")
+  [ -f "$f" ] || return 0
+  [ "$(gate_attention_field "$f" '상태')" = "열림" ] || return 0
+  gate_attention_due "$f" || return 0
+  gate_attention_lock || return 0
+  gate_attention_spawn
+}
+
+gate_attention_work_waiting() {
+  # Whether a round would find anything: a record left running by a process that
+  # is gone, or an open record that is due or whose ledger is gone.
+  local f st led
+  for f in "$(attention_root)/runs"/*.json; do
+    [ -f "$f" ] || continue
+    st=$(gate_attention_field "$f" '상태')
+    case "$st" in
+      실행중)
+        cc_holder_is_live "$(gate_attention_field "$f" 'pid')" "$(gate_attention_field "$f" '지문')" \
+          || return 0 ;;
+      열림)
+        led=$(gate_attention_field "$f" '원장')
+        [ -f "$led" ] || return 0
+        gate_attention_stale "$led" && continue
+        gate_attention_due "$f" && return 0 ;;
+    esac
+  done
+  return 1
+}
+
+gate_attention_cycle() {
+  # Called from the prelude right after the halt reporter's cycle, under the
+  # same exclusions; its own stamp keeps almost every call at one read. A
+  # fallback only — no ending relies on it. Always returns 0.
+  ( gate_attention_cycle_body ) || true
+  return 0
+}
+
+gate_attention_cycle_body() {
+  local stampf stamp now
+  gate_attention_enabled || return 0
+  cc_caller_is_stage && return 0
+  [ -n "${LEDGER:-}" ] || return 0
+  [ -d "$(dirname "$LEDGER")" ] || return 0
+  stampf=$(attention_stamp)
+  now=$(date -u +%s)
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_ATTENTION_INTERVAL" ]; then
+    return 0
+  fi
+  [ -d "$(attention_root)/runs" ] || return 0
+  gate_attention_lock || return 0
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_ATTENTION_INTERVAL" ]; then
+    gate_attention_unlock
+    return 0
+  fi
+  printf '%s\n' "$now" > "$stampf" 2>/dev/null || true
+  if ! gate_attention_work_waiting; then
+    gate_attention_unlock
+    return 0
+  fi
+  gate_attention_spawn
+}
+
+gate_attention_set() {
+  # gate_attention_set <record> <expected state> <jq filter> [jq args…] — one
+  # transition, written only while the lock carries this round's nonce and the
+  # record is still in the expected state. Rc 1 when either has changed.
+  local f="$1" want="$2" filt="$3" new
+  shift 3
+  gate_attention_mine || return 1
+  [ "$(gate_attention_field "$f" '상태')" = "$want" ] || return 1
+  new=$(jq "$@" "$filt" "$f" 2>/dev/null) || return 1
+  [ -n "$new" ] || return 1
+  gate_halt_write "$f" "$new"
+}
+
+gate_attention_close() {
+  # gate_attention_close <record> <expected state> <결과> <사유> <파일>
+  gate_attention_set "$1" "$2" \
+    '.["상태"] = "종결" | .["종결 시각"] = $t | .["결과"] = $r
+     | .["사유"] = (if $w == "" then null else $w end)
+     | .["파일"] = (if $p == "" then null else $p end)' \
+    --arg t "$(now_iso)" --arg r "$3" --arg w "$4" --arg p "$5"
+}
+
+gate_attention_row_of() {
+  # gate_attention_row_of <ledger> — the last `주의 좌석` row the ledger holds.
+  { grep '^- `주의 좌석` |' "$1" 2>/dev/null || true; } | tail -n 1
+}
+
+gate_attention_failure() {
+  # gate_attention_failure <envelope> — why a seat call that returned 1 failed,
+  # read again from what it left.
+  local st
+  [ -s "$1" ] || { printf '호출 실패'; return 0; }
+  jq -e 'type == "object"' "$1" >/dev/null 2>&1 || { printf '호출 실패'; return 0; }
+  st=$(jq -r '.subtype // "unknown" | tostring' "$1" 2>/dev/null || printf 'unknown')
+  if [ "$st" != "success" ]; then
+    printf '비성공 종단(%s)' "$(printf '%s' "$st" | LC_ALL=C tr -cd 'A-Za-z0-9_.-' | cut -c1-64)"
+    return 0
+  fi
+  if ! jq -e '.structured_output' "$1" >/dev/null 2>&1; then
+    printf '구조화 출력 없음'
+    return 0
+  fi
+  printf '호출 실패'
+}
+
+gate_attention_append_row() {
+  # gate_attention_append_row <결과> <사유> <재독> <대조> <세션 읽음> <파일>
+  # <서빙 모델> <비용 usd> — the `주의 좌석` row, in the ledger the caller set
+  # `LEDGER` to. The model is cut to 128 bytes first; the reason gets what is
+  # left under the row cap, measured on the row without it, less 8 bytes.
+  local res="$1" why="$2" n="$3" m="$4" sess="$5" file="$6" model cost="$8" proj room
+  model=$(gate_row_safe "$7" 128)
+  if [ "$res" = "완료" ]; then
+    gate_append '주의 좌석' "결과=$res" "재독=$n" "대조=$m" "세션 읽음=$sess" \
+      "파일=$file" "서빙 모델=$model" "비용 usd=$cost"
+    return 0
+  fi
+  proj=$(gate_row_projected_bytes '주의 좌석' "결과=$res" "사유=" "재독=$n" "대조=$m" \
+           "세션 읽음=$sess" "파일=$file" "서빙 모델=$model" "비용 usd=$cost")
+  room=$(( GATE_ROW_MAX - proj - 8 ))
+  [ "$room" -gt 0 ] || room=1
+  why=$(gate_row_safe "$why" "$room")
+  gate_append '주의 좌석' "결과=$res" "사유=$why" "재독=$n" "대조=$m" "세션 읽음=$sess" \
+    "파일=$file" "서빙 모델=$model" "비용 usd=$cost"
+}
+
+gate_attention_finish() {
+  # gate_attention_finish <record> <id> <ledger> <run-dir> <결과> <사유>
+  # <envelope|-> <heads|-> <meta|-> — the four writes of a handled record, in
+  # this order: the result file, the row (with the cost), the record's close,
+  # then the output file's removal. A process that ends between the row and the
+  # cost adds too little, never twice. A reaped run directory takes neither the
+  # row nor the cost, and the result file says so.
+  local f="$1" id="$2" led="$3" rd="$4" res="$5" why="$6" env="$7" heads="$8" meta="$9"
+  local rfile fname norow=0 n m sess model cost
+  rfile=$(attention_result_path "$led" "$id")
+  fname=${rfile##*/}
+  [ -n "$rd" ] && [ -d "$rd" ] || norow=1
+  attention_write_result "$rfile" "$id" "$res" "$why" "$norow" "$env" "$heads" "$meta" \
+    || log "주의 좌석 — 결과 파일을 쓰지 못했다: $rfile"
+  if [ "$norow" = 0 ]; then
+    n=$(attention_result_field "$rfile" '재독'); m=$(attention_result_field "$rfile" '대조')
+    sess=$(attention_result_field "$rfile" '세션 읽음')
+    model=$(attention_result_field "$rfile" '서빙 모델')
+    cost=""
+    [ "$env" = "-" ] || cost=$(attention_cost "$env")
+    if ! ( RUN_ID="$id"; LEDGER="$led"; RUN_DIR="$rd"
+           gate_attention_append_row "$res" "$why" "${n:-0}" "${m:-0}" "${sess:--}" "$fname" \
+             "${model:-(미상)}" "${cost:-0}"
+           if [ -n "$cost" ]; then
+             gate_append_cost "$cost" "$(gate_rows 'stage-result' | gate_count)" "$(now_iso)"
+           fi ); then
+      log "주의 좌석 — 원장 행 또는 비용을 쓰지 못했다: $led"
+    fi
+  fi
+  gate_attention_close "$f" '실행중' "$res" "$why" "$fname" \
+    || log "주의 좌석 — 기록을 닫지 못했다(잠금 또는 상태가 바뀌었다): $f"
+  rm -f "$(attention_out_path "$id")" 2>/dev/null || true
+  return 0
+}
+
+gate_attention_run_one() {
+  # gate_attention_run_one <record> — one open, due record: close it from the
+  # row an earlier round wrote, or take it, call the seat and finish it.
+  local f="$1" id led rd row out inp res="완료" why="" env="-" heads="-" meta="-"
+  id=$(gate_attention_field "$f" 'run')
+  led=$(gate_attention_field "$f" '원장')
+  rd=$(gate_attention_field "$f" 'RUN_DIR')
+  [ -n "$id" ] || return 0
+  row=$(gate_attention_row_of "$led")
+  if [ -n "$row" ]; then
+    gate_attention_close "$f" '열림' "$(gate_row_field "$row" '결과')" "" \
+      "$(gate_row_field "$row" '파일')" || true
+    return 0
+  fi
+  gate_attention_set "$f" '열림' \
+    '.["상태"] = "실행중" | .pid = $p | .["지문"] = $fp | .["시작 시각"] = $t' \
+    --arg p "$$" --arg fp "$(cc_proc_fingerprint "$$")" --arg t "$(now_iso)" || return 0
+  out=$(attention_out_path "$id")
+  mkdir -p "$(dirname "$out")" 2>/dev/null || true
+  rm -f "$out" 2>/dev/null || true
+  inp=$(mktemp "${TMPDIR:-/tmp}/cc-attention-input.XXXXXX" 2>/dev/null || true)
+  if [ -z "${CLI_BIN:-}" ]; then
+    why='CLI 없음'
+  elif [ -z "$inp" ] || ! attention_input "$led" "$rd" "$inp"; then
+    why='입력 조립 실패'
+  elif judgment_call attention-review "$inp" "$out" gate_metrics_timed "$GATE_ATTENTION_TIMEOUT_S" >/dev/null; then
+    env="$out"
+  else
+    why=$(gate_attention_failure "$out")
+    [ -f "$out" ] && env="$out"
+  fi
+  [ -z "$why" ] || res="실패"
+  if [ -n "$inp" ] && [ -f "$inp.heads" ]; then heads="$inp.heads"; fi
+  if [ -n "$inp" ] && [ -f "$inp.meta" ]; then meta="$inp.meta"; fi
+  gate_attention_finish "$f" "$id" "$led" "$rd" "$res" "$why" "$env" "$heads" "$meta"
+  [ -z "$inp" ] || rm -f "$inp" "$inp.heads" "$inp.meta" 2>/dev/null || true
+  return 0
+}
+
+gate_attention_lost() {
+  # Records left `실행중` by a process that is gone — or by another process now
+  # holding its pid — are closed. When the earlier round already wrote the row,
+  # it is not written again and neither is the cost: the record takes the
+  # result file's `결과` and the output file goes. Otherwise the normal path's
+  # writes are made with `좌석 프로세스 소실`, the cost of an envelope left
+  # behind included.
+  local f id led rd row rfile res out env
+  for f in "$(attention_root)/runs"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(gate_attention_field "$f" '상태')" = "실행중" ] || continue
+    cc_holder_is_live "$(gate_attention_field "$f" 'pid')" "$(gate_attention_field "$f" '지문')" && continue
+    gate_attention_mine || return 0
+    id=$(gate_attention_field "$f" 'run')
+    led=$(gate_attention_field "$f" '원장')
+    rd=$(gate_attention_field "$f" 'RUN_DIR')
+    out=$(attention_out_path "$id")
+    if [ ! -f "$led" ]; then
+      gate_attention_close "$f" '실행중' '원장 없음' '' '' || true
+      rm -f "$out" 2>/dev/null || true
+      continue
+    fi
+    row=$(gate_attention_row_of "$led")
+    if [ -n "$row" ]; then
+      rfile=$(attention_result_path "$led" "$id")
+      res=$(attention_result_field "$rfile" '결과')
+      [ -n "$res" ] || res=$(gate_row_field "$row" '결과')
+      gate_attention_close "$f" '실행중' "$res" "$(attention_result_field "$rfile" '사유')" \
+        "$(gate_row_field "$row" '파일')" || true
+      rm -f "$out" 2>/dev/null || true
+      continue
+    fi
+    env="-"
+    [ -s "$out" ] && env="$out"
+    ( gate_attention_finish "$f" "$id" "$led" "$rd" '실패' '좌석 프로세스 소실' "$env" '-' '-' ) || true
+  done
+  return 0
+}
+
+gate_attention_round() {
+  # gate_attention_round <nonce> — the body of the detached `attention-round`
+  # verb, in a subshell whose EXIT trap lets the lock go on every way out, a
+  # `die` included. Always returns 0.
+  ( gate_attention_round_body "$1" ) || true
+  return 0
+}
+
+gate_attention_round_body() {
+  local f ts led list tried=" " took
+  GATE_ATTENTION_NONCE="$1"
+  # The launcher's shift marker is not this round's: a row it writes says
+  # shift 0.
+  unset CC_PIPELINE_SHIFT_ID
+  trap 'gate_attention_release' EXIT
+  gate_attention_mine || { log "주의 좌석 회차 — 잠금이 이 회차의 것이 아니어서 돌지 않는다"; return 0; }
+  gate_attention_lost || true
+  while :; do
+    took=0
+    list=""
+    for f in "$(attention_root)/runs"/*.json; do
+      [ -f "$f" ] || continue
+      ts=$(jq -r --arg s "$(attention_schema)" \
+             'select(type == "object" and .schema == $s and .["상태"] == "열림") | .["열림 시각"] // ""' \
+             "$f" 2>/dev/null || true)
+      [ -n "$ts" ] || continue
+      list="${list}${ts}	${f}
+"
+    done
+    while IFS='	' read -r ts f; do
+      [ -n "$f" ] || continue
+      case "$tried" in *" $f "*) continue ;; esac
+      gate_attention_mine || { log "주의 좌석 회차 — 잠금을 잃어 여기서 멈춘다"; return 0; }
+      [ "$(gate_attention_field "$f" '상태')" = "열림" ] || continue
+      led=$(gate_attention_field "$f" '원장')
+      if [ ! -f "$led" ]; then
+        tried="$tried$f "
+        gate_attention_close "$f" '열림' '원장 없음' '' '' || true
+        continue
+      fi
+      gate_attention_stale "$led" && continue
+      gate_attention_due "$f" || continue
+      tried="$tried$f "
+      took=1
+      gate_attention_touch || return 0
+      ( gate_attention_run_one "$f" ) || log "주의 좌석 회차 — 기록 하나를 끝내지 못했다: $f"
+    done <<ATTENTIONRUNS
+$(printf '%s' "$list" | LC_ALL=C sort)
+ATTENTIONRUNS
+    [ "$took" = 1 ] || break
+  done
+  gate_attention_prune || true
+  return 0
+}
+
+gate_attention_prune() {
+  # Closed records older than the reaper's retention are removed.
+  local f mt now
+  now=$(date -u +%s)
+  for f in "$(attention_root)/runs"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(gate_attention_field "$f" '상태')" = "종결" ] || continue
+    mt=$(gate_mtime "$f")
+    [ -n "$mt" ] || continue
+    [ $((now - mt)) -ge "$GATE_REAP_RETENTION" ] || continue
+    rm -f "$f" 2>/dev/null || true
+  done
+  return 0
+}
+
 gate_halt_pin() {
   # gate_halt_pin <ledger> — the `판본` of the run's first `run` row, if it is
   # one of the shapes the gate writes; `(형식 외)` for anything else.
@@ -49150,6 +49709,11 @@ gate_record_stage_outcome() {
     n_stage=$(gate_rows 'stage-result' | gate_count)
     gate_append_cost "$cost" "${n_stage:-1}" "$(now_iso)"
   fi
+
+  # A stage still alive when the end row was written ends here, so this tail
+  # may be the run's last process: it looks at the run's attention record
+  # again. Always 0, and nothing it meets reaches this recorder.
+  gate_attention_kick || true
 
   gate_absorb_emitted_judgment "$alias" "$seg" "$res" "$kind"
 
@@ -52321,6 +52885,10 @@ gate_launch_shift() {
   # sentence is read from `done`'s first line, so a boundary or an invalidation
   # inside the shift is announced as what it was. Without `done` nothing is said.
   gate_shift_return_banner
+  # The shift is gone now, so a router run's end can be due where the end row's
+  # own kick, made while the shift still ran, was not. Outside the banner's
+  # conditions, so the notice settings do not decide it.
+  gate_attention_kick || true
   return "$rc"
 }
 
@@ -52745,6 +53313,7 @@ gate_relay_hand_back() {
   if [ -e "$RUN_DIR/done" ]; then
     printf '%s [relay] 대기를 거둔다 — %s · 다시 내지 않는다\n' "$(now_iso)" "$4"
     gate_shift_return_banner
+    gate_attention_kick || true
     return 0
   fi
   printf '%s [relay] 대기가 이어진다 — %s · 같은 호출을 대기 로 다시 낸다\n' "$(now_iso)" "$4"
