@@ -2008,6 +2008,10 @@ trap 'eval "$CANON_REAP"; rm -rf "$WORK_ROOT"' EXIT
 FXREPORT="$WORK/fixture-review.md"
 printf '# 픽스처 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$FXREPORT"
 export XDG_STATE_HOME="$WORK/state"
+# The pace root follows XDG_STATE_HOME unless GATE_PACE_ROOT names one, and the
+# base branch's readings live under it: a value inherited from the caller would
+# let this host's readings into every routed fixture's dispositions.
+unset GATE_PACE_ROOT
 # gh 는 이 프로세스 전체에서 미인증이고 도달할 수 없는 호스트를 본다. 결속된 원격
 # 머지의 픽스처 철자는 REST `gh api … /pulls/<n>/merge -f sha=…` 이고, 그것을 `act`
 # 로 통과시키면 게이트가 실제로 실행한다 — `gh pr merge` 는 픽스처 원격이 로컬 베어
@@ -5535,15 +5539,26 @@ pre_sb() {
   }
 }
 
-# `mf` — the merge-first sections (88h and its pieces): a `선머지후리뷰` segment
-# `H` on a routed run, driven through `act` on an `sa` fixture. The fixture's
-# repository rewrites the target's remote slug URL to its bare remote, so the
-# `git ls-remote` base-check asks stays on this machine. Each piece builds its
-# own fixture with `mf_new`, so none of them leans on another's state.
+# `mf` — the merge-first sections (88f and its pieces, and 88h-2): a
+# `선머지후리뷰` segment `H` on a routed run, driven through `act` on an `sa`
+# fixture. The fixture's repository rewrites the target's remote slug URL to its
+# bare remote, so the `git ls-remote` base-check asks stays on this machine.
+# Each piece builds its own fixture with `mf_new`, so none of them leans on
+# another's state.
+#
+# IT ALSO CALLS EVERY OTHER PRELUDE THOSE SECTIONS CALL IN THEIR BODIES
+# (`ledger_series` for 88f's `lsr_*` helpers, `sb` for 88f-4's `sb_apply`). A
+# prelude whose first call falls inside a section body runs its whole body in a
+# cut that carries that section alone and only its guard line in a row where an
+# earlier section ran it first, so the section's traced line set differs by
+# context. Run here, as the group prelude the selector inserts before the first
+# section, every in-body call is the guard line in every context.
 pre_mf() {
   [ -n "${PRE_MF_DONE:-}" ] && return 0
   PRE_MF_DONE=1
   pre_sa
+  pre_sb
+  pre_ledger_series
 
   mf_new() {
     # mf_new <라벨> — 커밋 하나를 앞선 선머지후리뷰 세그먼트 H, 같은 다이제스트의 구현
@@ -46722,13 +46737,16 @@ check "95: TC1 카드 디렉터리는 700, 카드는 600 이다" \
   "$(find "${lsr93_a%/*}/halt-answer" -prune -perm 700 | wc -l | tr -d ' ')/$(find "$lsr93_card" -perm 600 | wc -l | tr -d ' ')" "1/1"
 
 # TC2 — `halt/` 의 세 판독기는 카드를 보지 않는다. 같은 바이트를 `halt/` 에 둔
-# 대조에서는 셋 다 본다(공허 방지).
+# 대조에서는 셋 다 본다(공허 방지). 감시자 판독기는 사본이 아니라 저장소의
+# liveness.sh 에서 싣는다 — 사본은 같은 바이트지만 임시 경로 아래에 있어, 이 셸에서
+# 소싱하면 추적된 줄의 파일 이름이 실행마다 달라져 격리 검사가 맥락마다 다른 줄
+# 집합으로 읽는다.
 lsr93_rk=$(sed -n '/^rk_unanswered_halt_names() {/,/^}/p' "$lsr75/cc-cmds/orchestrator/rekick.sh")
 lsr93_halts() {  # lsr93_halts <원장> — 「halt/ 목록|재킥오프 미답 수|감시자 미답 수」
   local rd="${1%/*}"
   printf '%s|%s|%s' "$(ls "$rd/halt" | paste -sd, -)" \
     "$(eval "$lsr93_rk"; rk_unanswered_halt_names "$rd" "$1"; printf '%s' "$RK_HALT_N")" \
-    "$( . "$lsr75/cc-cmds/orchestrator/liveness.sh"; cc_unanswered_halts "$rd" "$1")"
+    "$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_unanswered_halts "$rd" "$1")"
 }
 check "95: TC2 카드를 쓴 뒤에도 halt/ 와 두 미답 수가 그대로다" "$(lsr93_halts "$lsr93_a")" "A1#1.md|0|0"
 cp "$lsr93_card" "${lsr93_a%/*}/halt/A1#2.md"
@@ -47282,10 +47300,10 @@ case "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" in
   "3|"*"이월 인계를 쓸 수 없습니다 — 런이 이미 끝났습니다"*) ok "95: TH1 끝난 런의 이월 인계는 exit 3 이다" ;;
   *) bad "95 TH1 끝난 런" "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" ;;
 esac
-# 대기 인계의 거절 문면은 그대로다 — 이월이 생겨도 기다릴 것 없는 대기는 같은 말로 선다.
+# 기다릴 것 없는 대기 인계는 이월이 생겨도 거절되고, 문면은 기다릴 수 있는 대상(`CI 대기`·`master 대기` 세그먼트, `리셋 대기` 키)을 모두 적는다.
 case "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" in
-  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"*)
-    ok "95: TH1 기다릴 것 없는 대기 인계의 거절 문면은 바뀌지 않았다" ;;
+  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"*)
+    ok "95: TH1 기다릴 것 없는 대기 인계는 기다릴 대상을 모두 적은 문면으로 거절된다" ;;
   *) bad "95 TH1 대기 문면" "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" ;;
 esac
 check "95: TH1 거절들은 handoff 행을 쓰지 않는다" "$(lsr93_n "$lsr_root/th1/ledger.md" '- `handoff` ')" "0"
@@ -54529,6 +54547,611 @@ check "88d: CI 수정 뒤 HEAD 의 다음은 CI 리뷰 다" "$(n88d "$L88DL")" "
 check "88d: CI 처분 아닌 계열의 수정 낱말은 L0 을 세우지 않는다 (해소 리뷰)" "$(n88d "$L88DLN")" "해소 리뷰"
 
 # ---------------------------------------------------------------------------
+# 88h. 기본 브랜치 판독과 CI 대조 — 판독 전사, 대조 행위, LM 처분, 머지 검사, 중계 깨움, 수리 인가
+# --- section: 88h | group: ledger_series | covers: gate_master_reading, gate_master_row_one, gate_master_row_if_changed, gate_perform_ci_match, gate_ci_master_next, gate_master_resolved_after, gate_master_open_events, gate_check_ci_match, gate_master_claim, gate_ci_repair_pass, gate_check_merge_checks, gate_snapshot_review_next_json, gate_relay_master_segments, gate_relay_master_wake, gate_check_repair_grant, gate_shift_halt_site_table, gate_ci_match_gh, gate_ci_match_checks_passed, gate_ci_match_reading_mark, gate_ci_match_mark_key, gate_master_claim_publish, gate_master_claim_run_ended, gate_base_head_matched, gate_snapshot_master_keys_json, gate_repair_preauth_subset, gate_repair_put_outside | anchors: 88h: master 재합류 원소는 베이스·판정을 싣고 일치 판정 뒤 다음은 L7 이다, 88h: 대표 표지는 새로 잡고 살아 있는 런에는 양보하며 done·사라진 런과 오래 빈 표지는 넘겨받는다, 88h: 관측만 다른 판독은 수리 통과를 지키고 팁이 다르거나 낡은 판독은 머지 검사가 거절한다, 88h: 사건의 체크가 성공으로 끝나지 않았거나 사건 지문이 다르면 수리 통과가 아니라 판정 불가 다, 88h: 머지 검사는 낡은 판독 행을 먼저 갱신하고 움직인 판독으로 수리 통과를 거절한다, 88h: 낯선 결론의 체크도 실패로 세어 그 서명이 초과 를 만든다, 88h: 한도를 넘긴 gh 읽기는 판정 불가 이다, 88h: 형태가 없는 사전 인가 행은 수리 런 인가를 막지 않는다, 88h: 수리 런의 PUT 은 repos/<slug>/pulls/<n>/merge 만 열고 다른 경로·저장소·비숫자 번호는 밖이다, 88h: 판독 파일이 없으면 판독 행이 없고 회차 1 의 정착 실패는 CI 기존 실패 다, 88h: 빨강 판독은 행 하나로 전사되고 같은 판독은 다시 쓰지 않는다, 88h: 어휘 밖 판독은 부재로 읽히고 쥔 판독은 (미상) 이 되어 L7 로 돌아간다, 88h: 대조 행이 없는 빨강 판독의 다음은 CI 대조 이고 머지 검사가 거절한다, 88h: 부분집합은 master 대기 이고 회차를 세지 않는다, 88h: 초과는 L7 을 건너뛰어 CI 수정 이다, 88h: 읽지 못한 대조는 판정 불가 이고 master 대기 다, 88h: 베이스 뒤에 해소된 사건의 서명만 겹치면 재합류 필요 이고 master 재합류 다, 88h: 띄울 수 없는 사건의 대표는 master 수리 불가 이고 둘째 세그먼트는 대표를 잡지 못한다, 88h: 수리 런의 단언 부분집합은 수리 통과 이고 머지 검사를 지난다, 88h: 판독이 움직이면 수리 통과는 다시 대조된다, 88h: 대기 인계의 master 대기 칸을 중계가 읽고 판독이 바뀔 때만 깬다, 88h: 수리 런 인가는 동의 문면·절단점·사전 인가 형태를 묶고 사람 인가는 그대로다, 88h: master 수리 불가 정지 자리의 추천은 없음 이다, 88h: master 대기 의 교대는 판독이 초록으로 바뀔 때 깨고 다음은 master 재합류 다, 88h: 저장소에 없는 해소 커밋은 베이스 뒤이고 다음은 master 재합류 다, 88h: 대기 뒤 띄울 수 없음 으로 바뀐 사건은 다시 대조되어 master 수리 불가 다, 88h: 대기 뒤 팁만 움직인 판독은 대기를 지키고 서명 지문이 움직이면 다시 대조한다, 88h: 열린 사건을 실은 진행 중·판정 불가 판독 동안 대기는 master 대기 를 지키고 대조 행위는 rc 3 이며 초록 뒤 master 재합류 다, 88h: 대조 행이 없는 진행 중 판독은 열린 사건이 있으면 master 대기 이고 사건이 없는 진행 중·초록 판독은 CI 기존 실패 다, 88h: 진행 중 판독 동안 수리 통과 는 머지 가 아니라 master 대기 이고 머지 검사가 거절한다, 88h: 수리 런의 PUT 좁히기는 앞쪽 플래그·-X=PUT·묶은 짧은 플래그 철자도 읽고 질의 붙은 머지는 안이다, 88h: 대표가 쥔 띄울 수 없음 사건도 진행 중 판독 동안은 master 대기 이고 정착한 빨강에서 다시 master 수리 불가 다 ---
+#
+# 판정표가 머지 를 내는 세그먼트 위에 회차 1 의 정착 실패를 두고(회차의 요청이 기본
+# 브랜치 실패를 보았다 — L7 의 자리), 기본 브랜치 판독 파일을 이 절의 pace 루트 아래에
+# 써서 층의 각 행을 잰다. 대조 행위의 GitHub 읽기는 서브셸 안의 `gh` 함수 대역이 답하고,
+# 잡 로그는 cc-cmds 어댑터가 단언 정밀도로 읽는 모양이다. 판독 루트와 대표 표지 루트는
+# 절의 디렉터리로 돌려, 이 기기의 판독 파일이 사례에 섞이지 않는다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88H="$lsr_root/s88h"; rm -rf "$D88H"; mkdir -p "$D88H/gh"
+G88H="$D88H/repo"; W88H="$D88H/seg"; P88H="$D88H/pace"; S88H="$D88H/state"
+( git init -q "$G88H" && cd "$G88H" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && printf 'a\n' > a.txt && git add -A && git commit -qm one && git branch -M main \
+  && git worktree add -q -b seg-88h "$W88H" main ) >/dev/null 2>&1
+B88H=$(cd "$G88H" && git rev-parse main)
+R88H=$( ( cd "$W88H" && printf 'A\n' > a.txt && git commit -qam seg && git rev-parse HEAD ) 2>/dev/null)
+# 베이스가 세그먼트 뒤에 얻은 고침 — 저장소에 있고 세그먼트 HEAD 의 조상이 아니다.
+X88H=$( ( cd "$G88H" && printf 'fix\n' > fix.txt && git add -A && git commit -qm fix && git rev-parse HEAD ) 2>/dev/null)
+M88H="$D88H/manifest.md"
+printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88H" > "$M88H"
+E1_88H=aaaaaaaaaaaa; E2_88H=bbbbbbbbbbbb; E3_88H=cccccccccccc
+S1_88H='gate|test-gate.sh|1 가'; S2_88H='gate|test-gate.sh|2 나'; S3_88H='gate|test-gate.sh|3 다'
+# 수리 사건 행의 넷째 칸은 사건 서명 목록의 지문이다 — 호스트의 사건 파일이 이것과 같아야 수리 통과가 선다.
+F3_88H=$(printf '%s\n' "$S3_88H" | bash "$repo_root/plugins/cc-cmds/orchestrator/ci-signature.sh" fingerprint)
+M88HR="$D88H/manifest-repair.md"
+{ cat "$M88H"; printf -- '- `수리 사건` | Nharu/cc-cmds | main | %s | %s\n' "$E3_88H" "$F3_88H"; } > "$M88HR"
+M88HZ="$D88H/manifest-repair-badsha.md"
+{ cat "$M88H"; printf -- '- `수리 사건` | Nharu/cc-cmds | main | %s | %s\n' "$E3_88H" "$(printf '%064d' 0)"; } > "$M88HZ"
+B88HL="$D88H/base.md"
+{
+  printf '# 원장 픽스처\n\n## 실행 LS\n\n'
+  printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88h | 선행=없음 | prev=x\n' "$W88H"
+  printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+    "$R88H" "$(lsr_rp_report "$D88H/c1.md" 0 0 차단)"
+  now88h=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf -- '- `checks` | 교대=1 | PR=Nharu/cc-cmds#5 | head sha=%s | 상태=실패 | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=S | 재실행 회차=0 | 진행 중=0 | prev=x\n' "$R88H" "$now88h"
+  for st88h in 요청 수락; do
+    printf -- '- `CI 처분` | 교대=1 | 세그먼트=S | PR=Nharu/cc-cmds#5 | head sha=%s | 처분=재실행 | 상태=%s | 회차=1 | 실행=777 | 워크플로=gate | 실패 체크=gate | 기본 브랜치=실패 | 응답=- | 관측=%s | prev=x\n' \
+      "$R88H" "$st88h" "$now88h"
+  done
+  printf -- '- `checks` | 교대=1 | PR=Nharu/cc-cmds#5 | head sha=%s | 상태=실패 | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=S | 재실행 회차=1 | 진행 중=0 | prev=x\n' "$R88H" "$now88h"
+} > "$B88HL"
+l88h() {  # l88h <이름> — 바탕 원장을 베낀 라우팅 원장
+  local l; l=$(lsr_ledger "w88h-$1"); cp "$B88HL" "$l"; printf '1\n' > "${l%/*}/routing-guard"
+  printf '%s' "$l"
+}
+q88h() {  # q88h <원장> <명령…> — 절의 판독·표지 루트와 고정 읽기 자격으로 게이트 함수 하나
+  local l=$1; shift
+  ( export GATE_PACE_ROOT="$P88H" XDG_STATE_HOME="$S88H" CC_GATE_TOKEN_RO=s88h-ro-fixture
+    lsr_in Linux "$l" - lsr_rp_in "${M88H_USE:-$M88H}" "$@" ) 2>/dev/null
+}
+mf88h() {  # mf88h <상태> <서명 JSON 배열> [사건 JSON 배열] — 판독 파일 하나, 관측은 지금
+  mkdir -p "$P88H/master"
+  jq -n --arg st "$1" --argjson sg "$2" --argjson ev "${3:-[]}" --arg tip "${TIP88H:-$B88H}" \
+    --arg obs "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{schema: "cc-master-state v1", tip: $tip, state: $st, precision: "단언", observed_at: $obs,
+      signatures: $sg, events: $ev}' > "$P88H/master/Nharu__cc-cmds__main.json"
+}
+sg88h() {  # sg88h <서명…> — JSON 배열
+  printf '%s\n' "$@" | jq -R . | jq -sc .
+}
+ev88h() {  # ev88h <id> <해소 커밋|-> <수리 상태> <사유|-> <서명…> — 사건 하나의 JSON
+  local id=$1 res=$2 st=$3 why=$4; shift 4
+  jq -nc --arg id "$id" --arg fc "$B88H" --arg res "$res" --arg st "$st" --arg why "$why" --argjson sg "$(sg88h "$@")" \
+    '{id: $id, first_commit: $fc, signatures: $sg, repair: ({state: $st} + (if $why == "-" then {} else {reason: $why} end))}
+     + (if $res == "-" then {} else {resolved_commit: $res} end)'
+}
+lg88h() {  # lg88h <시험 이름…> — 실패한 시험 이름들을 싣는 잡 로그와 실패 체크 하나의 목록
+  { printf 'bash scripts/suite-guard.sh scripts/test-gate.sh\n'
+    for n88h in "$@"; do printf "FAIL: %s — got 'x', want 'y'\n" "$n88h"; done
+    printf 'test-gate: 0 passed, %s failed\n' "$#"
+    printf 'suite-guard[scripts/test-gate.sh]: 종료 rc=1 소요 3s\n'; } > "$D88H/gh/log"
+  printf '101\tgate\tcompleted\tfailure\tgithub-actions\thttps://github.com/Nharu/cc-cmds/actions/runs/777/job/101\n' > "$D88H/gh/runs"
+}
+# rn88h <이름> <결론> — 체크 런 한 줄을 더한다. `gate (2)` 처럼 샤드 꼬리가 붙은 이름은 기본 이름 gate 다.
+rn88h() {
+  printf '%s\t%s\tcompleted\t%s\tgithub-actions\thttps://github.com/Nharu/cc-cmds/actions/runs/777/job/%s\n' \
+    "$((200 + $(wc -l < "$D88H/gh/runs")))" "$1" "$2" "$((200 + $(wc -l < "$D88H/gh/runs")))" >> "$D88H/gh/runs"
+}
+pm88h_in() {  # 대조 행위의 수행부 — 입장이 세우는 세 값을 두고 gh 를 함수 대역으로 가린다
+  # GH88H_SLOW 가 서면 체크 런 읽기가 그만큼 걸리고, GS88H 가 호출 한도를 줄인다.
+  GATE_CI_MATCH_GH_SECONDS=${GS88H:-$GATE_CI_MATCH_GH_SECONDS}
+  gh() {
+    case "$*" in
+      *check-runs*) [ -z "${GH88H_SLOW:-}" ] || sleep "$GH88H_SLOW"
+                    [ -f "$D88H/gh/runs" ] || return 1; cat "$D88H/gh/runs" ;;
+      *'/logs'*) cat "$D88H/gh/log" ;;
+      *actions/jobs/*) printf 'test\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  GATE_CI_MATCH_ADMIT=1; GATE_CI_MATCH_ALIAS=t; GATE_CI_MATCH_HEAD="$R88H"
+  gate_perform_ci_match t S >/dev/null 2>&1
+  printf '%s' "$?"
+}
+pm88h() { q88h "$1" pm88h_in; }
+tr88h() { q88h "$1" gate_master_row_if_changed >/dev/null; }
+nm88h() { { grep -c '^- `master 판독` ' "$1" || true; }; }
+n88h() { q88h "$1" gate_segment_review_next S; }
+mc88h_in() { GATE_SURFACE=외부상태변경; gate_check_merge_checks S 머지; printf '%s' "${GATE_PARK_CELL:--}"; }
+mc88h() {  # mc88h <원장> — 머지 검사의 `rc|park 칸`
+  local out rc=0
+  out=$( ( export GATE_PACE_ROOT="$P88H" XDG_STATE_HOME="$S88H"
+           lsr_in Linux "$1" - lsr_rp_in "${M88H_USE:-$M88H}" mc88h_in ) 2>/dev/null) || rc=$?
+  printf '%s|%s' "$rc" "${out:--}"
+}
+mt88h() { lsr_last_fields "$1" 'CI 처분' 처분 결과 서명\ 수 대표; }
+
+rm -f "$P88H/master/Nharu__cc-cmds__main.json"
+L88H0=$(l88h none); tr88h "$L88H0"
+check "88h: 판독 파일이 없으면 판독 행이 없고 회차 1 의 정착 실패는 CI 기존 실패 다" \
+  "$(nm88h "$L88H0")|$(n88h "$L88H0")" "0|CI 기존 실패"
+
+mf88h 빨강 "$(sg88h "$S1_88H" "$S2_88H")"
+L88HR=$(l88h red); tr88h "$L88HR"; tr88h "$L88HR"
+check "88h: 빨강 판독은 행 하나로 전사되고 같은 판독은 다시 쓰지 않는다" \
+  "$(nm88h "$L88HR")|$(lsr_last_fields "$L88HR" 'master 판독' 대상 상태 정밀도 서명\ 수 사건)|$(find "${L88HR%/*}/ci-signatures" -type f 2>/dev/null | wc -l | tr -d ' ')" \
+  "1|t|빨강|단언|2|-|1"
+check "88h: 대조 행이 없는 빨강 판독의 다음은 CI 대조 이고 머지 검사가 거절한다" \
+  "$(n88h "$L88HR")|$(mc88h "$L88HR")" "CI 대조|3|-"
+check "88h: 판독 키는 CI 값의 원소에 실린다" \
+  "$(q88h "$L88HR" gate_snapshot_review_next_json | grep -c '"master 상태": "빨강"' || true)" "1"
+
+# 중계 — 대기 인계의 `master 대기` 칸, 같은 판독은 깨우지 않고 바뀐 판독은 깨운다.
+printf -- '- `handoff` | 교대=1 | 사유=대기 | master 대기=S | prev=x\n' >> "$L88HR"
+rw88h() { local rc=0; q88h "$1" gate_relay_master_wake S || rc=$?; printf '%s' "$rc"; }
+rw88h_same=$(rw88h "$L88HR")
+mf88h 초록 "$(sg88h "$S1_88H" "$S2_88H")"
+check "88h: 대기 인계의 master 대기 칸을 중계가 읽고 판독이 바뀔 때만 깬다" \
+  "$(q88h "$L88HR" gate_relay_master_segments)|$rw88h_same|$(rw88h "$L88HR")" "S|1|0"
+
+# 어휘 밖 상태는 스키마가 맞아도 부재다. 판독을 쥐던 원장에는 (미상) 행이 서고 층이 빠진다.
+mf88h red "$(sg88h "$S1_88H")"
+L88HX=$(l88h oov); tr88h "$L88HX"; tr88h "$L88HR"
+check "88h: 어휘 밖 판독은 부재로 읽히고 쥔 판독은 (미상) 이 되어 L7 로 돌아간다" \
+  "$(nm88h "$L88HX")|$(lsr_last_fields "$L88HR" 'master 판독' 상태)|$(n88h "$L88HR")" "0|(미상)|CI 기존 실패"
+
+# 대조 행위 — 같은 빨강 판독 위에서 세그먼트 로그만 바꾼다.
+mf88h 빨강 "$(sg88h "$S1_88H" "$S2_88H")"
+L88HS=$(l88h sub); tr88h "$L88HS"; lg88h '1 가'
+check "88h: 부분집합은 master 대기 이고 회차를 세지 않는다" \
+  "$(pm88h "$L88HS")|$(mt88h "$L88HS")|$(n88h "$L88HS")|$(lsr_in Linux "$L88HS" - cc_ci_round "$L88HS" S "$R88H" | sed -n 's/^g=//p')" \
+  "0|대조|부분집합|1|-|master 대기|1"
+L88HE=$(l88h exceed); tr88h "$L88HE"; lg88h '1 가' '3 다'
+check "88h: 초과는 L7 을 건너뛰어 CI 수정 이다" "$(pm88h "$L88HE")|$(mt88h "$L88HE")|$(n88h "$L88HE")" "0|대조|초과|2|-|CI 수정"
+L88HI=$(l88h incomplete); tr88h "$L88HI"; rm -f "$D88H/gh/runs"
+check "88h: 읽지 못한 대조는 판정 불가 이고 master 대기 다" "$(pm88h "$L88HI")|$(mt88h "$L88HI")|$(n88h "$L88HI")" "0|대조|판정 불가|0|-|master 대기"
+
+# 재합류 — 초록 판독, 세그먼트 베이스 뒤에 해소된 사건 하나. 그 사건의 서명만 겹친다.
+mf88h 초록 '[]' "[$(ev88h "$E1_88H" "$X88H" 해소 - "$S3_88H")]"
+L88HJ=$(l88h rejoin); tr88h "$L88HJ"; lg88h '3 다'
+check "88h: 베이스 뒤에 해소된 사건의 서명만 겹치면 재합류 필요 이고 master 재합류 다" \
+  "$(q88h "$L88HJ" gate_master_resolved_after S t)|$(pm88h "$L88HJ")|$(mt88h "$L88HJ")|$(n88h "$L88HJ")" \
+  "$E1_88H|0|대조|재합류 필요|1|-|master 재합류"
+
+# 재합류 원소는 최신 베이스 판정 행의 베이스·판정을 싣고, 이 머리를 일치 로 판정한 뒤에는
+# 받아들일 것이 없으므로 master 재합류 를 내지 않고 L7 로 간다.
+bj88h() {  # bj88h <원장> <판정> — 이 머리의 베이스 판정 행 하나
+  printf -- '- `베이스 판정` | 교대=1 | 세그먼트=S | 리뷰 HEAD=%s | 판정 HEAD=%s | 베이스=%s | 판정=%s | 충돌 파일=- | 부류=일반 | prev=x\n' \
+    "$R88H" "$R88H" "$X88H" "$2" >> "$1"
+}
+cp "$L88HJ" "$L88HJ.move"; bj88h "$L88HJ.move" 이동
+cp "$L88HJ" "$L88HJ.same"; bj88h "$L88HJ.same" 일치
+check "88h: master 재합류 원소는 베이스·판정을 싣고 일치 판정 뒤 다음은 L7 이다" \
+  "$(q88h "$L88HJ.move" gate_snapshot_review_next_json | grep -c "\"베이스\": \"$X88H\", \"판정\": \"이동\"" || true)|$(n88h "$L88HJ.move")|$(n88h "$L88HJ.same")" \
+  "1|master 재합류|CI 기존 실패"
+
+# 대표 — 수리 런을 띄울 수 없는 열린 사건. 이 런의 다른 세그먼트는 표지를 잡지 못한다.
+mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E2_88H" - '띄울 수 없음' '렌더 실패' "$S1_88H")]"
+L88HU=$(l88h unable); tr88h "$L88HU"; lg88h '1 가'
+cl88h() { local rc=0; q88h "$1" gate_master_claim "$E2_88H" S2 || rc=$?; printf '%s' "$rc"; }
+check "88h: 띄울 수 없는 사건의 대표는 master 수리 불가 이고 둘째 세그먼트는 대표를 잡지 못한다" \
+  "$(pm88h "$L88HU")|$(mt88h "$L88HU")|$(lsr_last_fields "$L88HU" 'CI 처분' 사건)|$(n88h "$L88HU")|$(cl88h "$L88HU")" \
+  "0|대조|부분집합|1|예|$E2_88H|master 수리 불가|1"
+# 대표 표지의 소유권 — 새로 잡기, 살아 있는(끝났다고 판정되지 않는) 다른 런에 양보, done 이
+# 있는 런과 런 디렉터리가 사라진 런에서 넘겨받기, 소유자가 아직 없는 표지는 잠깐 기다리고
+# 오래 빈 표지는 넘겨받기.
+CR88H="$S88H/cc-cmds/master-claims"
+mk88h() {  # mk88h <사건 id> <소유 줄|-> — 표지 하나
+  mkdir -p "$CR88H/$1"; [ "$2" = "-" ] || printf '%s\n' "$2" > "$CR88H/$1/owner"
+}
+co88h() { local rc=0; q88h "$L88HU" gate_master_claim "$1" S || rc=$?; printf '%s:%s' "$rc" "$(head -1 "$CR88H/$1/owner" 2>/dev/null | cut -d' ' -f2)"; }
+mkdir -p "$S88H/cc-cmds/run/R88live" "$S88H/cc-cmds/run/R88done"; : > "$S88H/cc-cmds/run/R88done/done"
+mk88h 0a0a0a0a0a01 'R88live S9'
+mk88h 0a0a0a0a0a02 'R88done S9'
+mk88h 0a0a0a0a0a03 'R88gone S9'
+mk88h 0a0a0a0a0a04 -
+mk88h 0a0a0a0a0a05 -; touch -t 202001010000 "$CR88H/0a0a0a0a0a05"
+check "88h: 대표 표지는 새로 잡고 살아 있는 런에는 양보하며 done·사라진 런과 오래 빈 표지는 넘겨받는다" \
+  "$(co88h 0a0a0a0a0a00)|$(co88h 0a0a0a0a0a01)|$(co88h 0a0a0a0a0a02)|$(co88h 0a0a0a0a0a03)|$(co88h 0a0a0a0a0a04)|$(co88h 0a0a0a0a0a05)" \
+  "0:S|1:S9|0:S|0:S|1:|0:S"
+
+check "88h: master 수리 불가 원소는 사건·수리 사유를 싣는다" \
+  "$(q88h "$L88HU" gate_snapshot_review_next_json | grep -c "\"수리 사유\": \"$E2_88H 렌더 실패\"" || true)" "1"
+check "88h: master 수리 불가 정지 자리의 추천은 없음 이다" \
+  "$(q88h "$L88HU" gate_shift_halt_site_row 'master 수리 불가' | cut -d'|' -f2)" "없음"
+
+# 수리 통과 — 수리 사건 행이 든 매니페스트, 제 사건의 서명이 남지 않은 단언 부분집합.
+M88H_USE="$M88HR"
+mf88h 빨강 "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
+L88HP=$(l88h repair); tr88h "$L88HP"; lg88h '1 가'; rn88h 'gate (2)' success
+check "88h: 수리 런의 단언 부분집합은 수리 통과 이고 머지 검사를 지난다" \
+  "$(pm88h "$L88HP")|$(mt88h "$L88HP")|$(n88h "$L88HP")|$(mc88h "$L88HP")" "0|대조|수리 통과|1|-|머지|0|-"
+
+# 관측 시각만 새로 적은 판독 행은 수리 통과를 지키고, 팁이 다르거나 낡은 행은 무효로 한다.
+r88hp=$( { grep '^- `master 판독` ' "$L88HP" || true; } | tail -1)
+cp "$L88HP" "$L88HP.obs"
+printf '%s\n' "$r88hp" | sed "s/| 관측=[^|]*|/| 관측=$(date -u +%Y-%m-%dT%H:%M:%SZ) |/" >> "$L88HP.obs"
+cp "$L88HP" "$L88HP.tip"
+printf '%s\n' "$r88hp" | sed "s/| 팁=[^|]*|/| 팁=$X88H |/" >> "$L88HP.tip"
+cp "$L88HP" "$L88HP.old"
+printf '%s\n' "$r88hp" | sed "s/| 관측=[^|]*|/| 관측=2020-01-01T00:00:00Z |/" >> "$L88HP.old"
+check "88h: 관측만 다른 판독은 수리 통과를 지키고 팁이 다르거나 낡은 판독은 머지 검사가 거절한다" \
+  "$(mc88h "$L88HP.obs")|$(mc88h "$L88HP.tip")|$(mc88h "$L88HP.old")" "0|-|3|-|3|-"
+
+# 수리 통과의 거절 대조 — 사건이 지목한 체크가 이 머리에서 통과하지 않았거나(실패만, 건너뜀),
+# 호스트의 사건 목록 지문이 매니페스트의 것과 다르면 판정 불가 다.
+L88HP1=$(l88h repair-nopass); tr88h "$L88HP1"; lg88h '1 가'
+L88HP2=$(l88h repair-skipped); tr88h "$L88HP2"
+L88HP3=$(l88h repair-badsha); M88H_USE="$M88HZ" tr88h "$L88HP3"
+check "88h: 사건의 체크가 성공으로 끝나지 않았거나 사건 지문이 다르면 수리 통과가 아니라 판정 불가 다" \
+  "$(pm88h "$L88HP1" >/dev/null; mt88h "$L88HP1")|$(rn88h 'gate (2)' skipped; pm88h "$L88HP2" >/dev/null; mt88h "$L88HP2")|$(lg88h '1 가'; rn88h 'gate (2)' success; M88H_USE="$M88HZ" pm88h "$L88HP3" >/dev/null; mt88h "$L88HP3")" \
+  "대조|판정 불가|1|-|대조|판정 불가|1|-|대조|판정 불가|1|-"
+
+# 머지 검사는 판정 전에 판독 행을 갱신한다 — 원장의 행이 아직 옛 판독이어도 새 파일을 읽는다.
+mcv88h_in() { verb=act; GATE_SURFACE=외부상태변경; gate_check_merge_checks S 머지; printf '%s' "${GATE_PARK_CELL:--}"; }
+mcv88h() {
+  local out rc=0
+  out=$( ( export GATE_PACE_ROOT="$P88H" XDG_STATE_HOME="$S88H"
+           lsr_in Linux "$1" - lsr_rp_in "${M88H_USE:-$M88H}" mcv88h_in ) 2>/dev/null) || rc=$?
+  printf '%s|%s' "$rc" "${out:--}"
+}
+cp "$L88HP" "$L88HP.fresh"
+mf88h 빨강 "$(sg88h "$S1_88H" "$S2_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
+check "88h: 머지 검사는 낡은 판독 행을 먼저 갱신하고 움직인 판독으로 수리 통과를 거절한다" \
+  "$(nm88h "$L88HP.fresh")|$(mcv88h "$L88HP.fresh")|$(nm88h "$L88HP.fresh")" "1|3|-|2"
+tr88h "$L88HP"
+check "88h: 판독이 움직이면 수리 통과는 다시 대조된다" "$(n88h "$L88HP")|$(mc88h "$L88HP")" "CI 대조|3|-"
+M88H_USE=""
+
+# 결론 목록은 거부 기본값이다 — 목록에 없는 결론(startup_failure)도 실패로 세어 서명을 읽는다.
+mf88h 빨강 "$(sg88h "$S1_88H")"
+L88HC=$(l88h concl); tr88h "$L88HC"; lg88h '1 가'
+rn88h lint startup_failure
+check "88h: 낯선 결론의 체크도 실패로 세어 그 서명이 초과 를 만든다" \
+  "$(pm88h "$L88HC")|$(lsr_last_fields "$L88HC" 'CI 처분' 결과)" "0|초과"
+
+# gh 호출 한도 — 한도를 넘긴 읽기는 버리고 판정 불가 로 적는다. 한도가 없었다면 같은 읽기가
+# 늦게라도 답해 부분집합 이 되므로, 결과가 둘을 가른다.
+L88HTO=$(l88h timeout); tr88h "$L88HTO"; lg88h '1 가'
+check "88h: 한도를 넘긴 gh 읽기는 판정 불가 이다" \
+  "$(GS88H=1 GH88H_SLOW=8 pm88h "$L88HTO")|$(lsr_last_fields "$L88HTO" 'CI 처분' 결과)" "0|판정 불가"
+
+# 수리 런 인가 — 사람의 인가는 수리 사건 행이 없으면 그대로다.
+GR88H="$D88H/grant.md"
+gr88h_in() {  # gr88h_in <확인 문면> <권한 절단점> — 인가 블록 하나를 쓰고 수리 인가 검사의 rc
+  printf '## 인가 LS\n**사용자 확인 문면**: %s\n' "$1" > "$GR88H"
+  GRANT="$GR88H"; GATE_GRANT_MEMO_PATH=""
+  local rc=0; gate_check_repair_grant "$(cutpoint_index "$2")" >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+CON88H='호스트 수리 런 — 플러그인 기본 동의'
+M88HX="$D88H/manifest-repair-extra.md"
+{ cat "$M88HR"; printf -- '- `사전 인가` | 형태=docker build | 사유=x\n'; } > "$M88HX"
+M88HG="$D88H/manifest-repair-push.md"
+{ cat "$M88HR"; printf -- '- `사전 인가` | 형태=git push | 사유=x\n'; } > "$M88HG"
+check "88h: 수리 런 인가는 동의 문면·절단점·사전 인가 형태를 묶고 사람 인가는 그대로다" \
+  "$(M88H_USE="$M88HG" q88h "$L88H0" gr88h_in "$CON88H" 머지)|$(M88H_USE="$M88HR" q88h "$L88H0" gr88h_in "${CON88H%의}" 머지)|$(M88H_USE="$M88HR" q88h "$L88H0" gr88h_in "$CON88H" 배포)|$(M88H_USE="$M88HX" q88h "$L88H0" gr88h_in "$CON88H" 머지)|$(q88h "$L88H0" gr88h_in '사람 인가' 배포)" \
+  "0|3|3|3|0"
+M88HE="$D88H/manifest-repair-empty.md"
+{ cat "$M88HR"; printf -- '- `사전 인가` | 사유=형태 없는 행\n'; } > "$M88HE"
+check "88h: 형태가 없는 사전 인가 행은 수리 런 인가를 막지 않는다" \
+  "$(M88H_USE="$M88HE" q88h "$L88H0" gr88h_in "$CON88H" 머지)" "0"
+
+# 수리 런의 PUT 은 제 저장소 PR 의 머지뿐이다 — 다른 PUT 경로와 다른 저장소는 승인으로 돈다.
+po88h_in() { local rc=0; gate_repair_put_outside "$@" || rc=$?; printf '%s' "$rc"; }
+po88h() { M88H_USE="$M88HR" q88h "$L88H0" po88h_in "$@"; }
+check "88h: 수리 런의 PUT 은 repos/<slug>/pulls/<n>/merge 만 열고 다른 경로·저장소·비숫자 번호는 밖이다" \
+  "$(po88h gh api -X PUT repos/Nharu/cc-cmds/pulls/12/merge)|$(po88h gh api --method=PUT /repos/Nharu/cc-cmds/pulls/12/merge -f merge_method=squash)|$(po88h gh api -X PUT repos/Nharu/cc-cmds/contents/a.txt -f content=x)|$(po88h gh api -X PUT repos/Other/repo/pulls/12/merge)|$(po88h gh api -XPUT repos/Nharu/cc-cmds/pulls/x/merge)|$(po88h gh api repos/Nharu/cc-cmds/pulls/12)|$(M88H_USE="$M88H" q88h "$L88H0" po88h_in gh api -X PUT repos/Nharu/cc-cmds/contents/a.txt)" \
+  "1|1|0|0|0|1|1"
+# 사전 인가 대조가 `gh api -X PUT` 행에 맞춰 주는 철자 — api 앞의 플래그, `-X=PUT`, 묶은 짧은
+# 플래그 — 도 같은 PUT 으로 읽혀 밖의 경로는 승인으로 돌고, 머지 경로는 질의가 붙어도 안이다.
+check "88h: 수리 런의 PUT 좁히기는 앞쪽 플래그·-X=PUT·묶은 짧은 플래그 철자도 읽고 질의 붙은 머지는 안이다" \
+  "$(po88h gh --hostname=github.com api -X PUT repos/Nharu/cc-cmds/issues/3/lock)|$(po88h gh api -X=PUT repos/Nharu/cc-cmds/issues/3/lock)|$(po88h gh api -iX PUT repos/Nharu/cc-cmds/issues/3/lock)|$(po88h gh -R Nharu/cc-cmds api -X PUT repos/Nharu/cc-cmds/labels/x)|$(po88h gh --hostname=github.com api -X PUT repos/Nharu/cc-cmds/pulls/12/merge)|$(po88h gh api -iX PUT 'repos/Nharu/cc-cmds/pulls/12/merge?merge_method=squash')" \
+  "0|0|0|0|1|1"
+
+# 교대 깨움 — 빨강 판독의 열린 사건에서 master 대기 로 선 세그먼트. 판독이 초록이 되고
+# 그 사건이 세그먼트 베이스 뒤의 커밋으로 해소되면 중계가 깨고 다음은 master 재합류 다.
+mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E1_88H" - 대기 - "$S1_88H")]"
+L88HW=$(l88h wake); tr88h "$L88HW"; lg88h '1 가'
+pm88h "$L88HW" >/dev/null
+printf -- '- `handoff` | 교대=1 | 사유=대기 | master 대기=S | prev=x\n' >> "$L88HW"
+n88h_w1=$(n88h "$L88HW"); rw88h_w1=$(rw88h "$L88HW")
+mf88h 초록 '[]' "[$(ev88h "$E1_88H" "$X88H" 해소 - "$S1_88H")]"
+rw88h_w2=$(rw88h "$L88HW"); tr88h "$L88HW"
+check "88h: master 대기 의 교대는 판독이 초록으로 바뀔 때 깨고 다음은 master 재합류 다" \
+  "$n88h_w1|$rw88h_w1|$rw88h_w2|$(n88h "$L88HW")" "master 대기|1|0|master 재합류"
+
+# 해소 커밋이 세그먼트 저장소에 없다 — 원격에서 머지된 고침을 아무도 fetch 하지 않은 보통의
+# 경우. 없는 객체는 HEAD 의 조상일 수 없으므로 베이스 뒤다.
+G88HO="$D88H/other"
+Y88H=$( ( git init -q "$G88HO" && cd "$G88HO" && git config user.email t@example.invalid && git config user.name T \
+          && printf 'y\n' > y.txt && git add -A && git commit -qm other && git rev-parse HEAD ) 2>/dev/null)
+mf88h 초록 '[]' "[$(ev88h "$E1_88H" "$Y88H" 해소 - "$S3_88H")]"
+L88HF=$(l88h foreign); tr88h "$L88HF"; lg88h '3 다'
+check "88h: 저장소에 없는 해소 커밋은 베이스 뒤이고 다음은 master 재합류 다" \
+  "$(q88h "$L88HF" gate_master_resolved_after S t)|$(pm88h "$L88HF")|$(mt88h "$L88HF")|$(n88h "$L88HF")" \
+  "$E1_88H|0|대조|재합류 필요|1|-|master 재합류"
+
+# 대기 뒤에 사건이 띄울 수 없음 으로 바뀐다 — 수리 런이 해소 없이 끝나는 보통의 순서.
+# 판독의 사건 칸이 움직였으므로 다시 대조하고, 그 대조가 대표를 잡는다.
+E4_88H=eeeeeeeeeeee
+mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E4_88H" - 대기 - "$S1_88H")]"
+L88HV=$(l88h unwait); tr88h "$L88HV"; lg88h '1 가'
+pm88h "$L88HV" >/dev/null
+n88h_v1=$(n88h "$L88HV")
+# 같은 판독을 관측 시각만 새로 적은 행은 대기를 다시 대조하게 하지 않는다.
+r88hv=$( { grep '^- `master 판독` ' "$L88HV" || true; } | tail -1)
+printf '%s\n' "$r88hv" | sed "s/| 관측=[^|]*|/| 관측=$(date -u +%Y-%m-%dT%H:%M:%SZ) |/" >> "$L88HV"
+n88h_v2=$(n88h "$L88HV")
+mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E4_88H" - '띄울 수 없음' '수리 런이 해소 없이 끝남' "$S1_88H")]"
+tr88h "$L88HV"
+n88h_v3=$(n88h "$L88HV")
+check "88h: 대기 뒤 띄울 수 없음 으로 바뀐 사건은 다시 대조되어 master 수리 불가 다" \
+  "$n88h_v1|$n88h_v2|$n88h_v3|$(pm88h "$L88HV")|$(lsr_last_fields "$L88HV" 'CI 처분' 결과 대표)|$(n88h "$L88HV")" \
+  "master 대기|master 대기|CI 대조|0|부분집합|예|master 수리 불가"
+
+# 대기 뒤에 팁만 움직인 판독은 비교 집합을 바꾸지 않으므로 대기를 지키고, 서명 지문이
+# 움직인 판독은 다시 대조한다.
+E5_88H=ffffffffffff
+mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E5_88H" - 대기 - "$S1_88H")]"
+L88HT=$(l88h tiponly); tr88h "$L88HT"; lg88h '1 가'
+pm88h "$L88HT" >/dev/null
+n88h_t1=$(n88h "$L88HT")
+TIP88H="$X88H" mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E5_88H" - 대기 - "$S1_88H")]"
+tr88h "$L88HT"
+n88h_t2=$(n88h "$L88HT")
+TIP88H="$X88H" mf88h 빨강 "$(sg88h "$S1_88H" "$S2_88H")" "[$(ev88h "$E5_88H" - 대기 - "$S1_88H")]"
+tr88h "$L88HT"
+check "88h: 대기 뒤 팁만 움직인 판독은 대기를 지키고 서명 지문이 움직이면 다시 대조한다" \
+  "$n88h_t1|$n88h_t2|$(n88h "$L88HT")" "master 대기|master 대기|CI 대조"
+
+# 새 팁마다 지나는 정착하지 않은 판독 — 열린 사건을 실은 진행 중, 이어 판정 불가. 대기는
+# 그대로이고 다시 대조하지 않으며 대조 행위의 입장도 거절된다. 초록과 해소가 오면 재합류다.
+cm88h_in() {  # 대조 행위 입장 검사의 rc — 판독은 원장에 이미 옮겨 둔다
+  local rc=0; ( segment=S; verb=plan; gate_check_ci_match ci-match ) >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"
+}
+cm88h() { q88h "$1" cm88h_in; }
+E6_88H=abababababab
+mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E6_88H" - 대기 - "$S1_88H")]"
+L88HG=$(l88h unsettled); tr88h "$L88HG"; lg88h '1 가'
+pm88h "$L88HG" >/dev/null
+printf -- '- `handoff` | 교대=1 | 사유=대기 | master 대기=S | prev=x\n' >> "$L88HG"
+n88h_g1=$(n88h "$L88HG"); cm88h_g1=$(cm88h "$L88HG")
+TIP88H="$X88H" mf88h '진행 중' "$(sg88h "$S1_88H")" "[$(ev88h "$E6_88H" - 대기 - "$S1_88H")]"
+rw88h_g2=$(rw88h "$L88HG"); tr88h "$L88HG"
+n88h_g2=$(n88h "$L88HG"); cm88h_g2=$(cm88h "$L88HG")
+TIP88H="$X88H" mf88h '판정 불가' '[]' "[$(ev88h "$E6_88H" - 대기 - "$S1_88H")]"
+tr88h "$L88HG"
+n88h_g3=$(n88h "$L88HG"); cm88h_g3=$(cm88h "$L88HG")
+mf88h 초록 '[]' "[$(ev88h "$E6_88H" "$X88H" 해소 - "$S1_88H")]"
+rw88h_g4=$(rw88h "$L88HG"); tr88h "$L88HG"
+check "88h: 열린 사건을 실은 진행 중·판정 불가 판독 동안 대기는 master 대기 를 지키고 대조 행위는 rc 3 이며 초록 뒤 master 재합류 다" \
+  "$n88h_g1|$cm88h_g1|$rw88h_g2|$n88h_g2|$cm88h_g2|$n88h_g3|$cm88h_g3|$rw88h_g4|$(n88h "$L88HG")" \
+  "master 대기|0|0|master 대기|3|master 대기|3|0|master 재합류"
+
+# 대조 행이 없는 머리에서 정착하지 않은 판독 — 열린 사건이 있으면 대조를 부르지 않고 기다린다.
+# 열린 사건도 베이스 뒤 해소도 없으면 층이 서지 않아 L7 그대로다.
+E7_88H=cdcdcdcdcdcd
+mf88h '진행 중' "$(sg88h "$S1_88H")" "[$(ev88h "$E7_88H" - 대기 - "$S1_88H")]"
+L88HN=$(l88h unsettled-nomatch); tr88h "$L88HN"
+mf88h '진행 중' "$(sg88h "$S1_88H")"
+L88HO=$(l88h unsettled-noevent); tr88h "$L88HO"
+mf88h 초록 '[]'
+L88HQ=$(l88h green-noevent); tr88h "$L88HQ"
+check "88h: 대조 행이 없는 진행 중 판독은 열린 사건이 있으면 master 대기 이고 사건이 없는 진행 중·초록 판독은 CI 기존 실패 다" \
+  "$(nm88h "$L88HN")|$(n88h "$L88HN")|$(n88h "$L88HO")|$(n88h "$L88HQ")" "1|master 대기|CI 기존 실패|CI 기존 실패"
+
+# 수리 통과 뒤에 판독이 진행 중으로 바뀐다 — 정착하기 전에는 머지하지 않고 기다린다.
+M88H_USE="$M88HR"
+mf88h 빨강 "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
+L88HK=$(l88h repair-unsettled); tr88h "$L88HK"; lg88h '1 가'; rn88h 'gate (2)' success
+pm88h "$L88HK" >/dev/null
+n88h_k1=$(n88h "$L88HK")
+TIP88H="$X88H" mf88h '진행 중' "$(sg88h "$S1_88H" "$S3_88H")" "[$(ev88h "$E3_88H" - 띄움 - "$S3_88H")]"
+tr88h "$L88HK"
+check "88h: 진행 중 판독 동안 수리 통과 는 머지 가 아니라 master 대기 이고 머지 검사가 거절한다" \
+  "$n88h_k1|$(mt88h "$L88HK")|$(n88h "$L88HK")|$(mc88h "$L88HK")" "머지|대조|수리 통과|1|-|master 대기|3|-"
+M88H_USE=""
+
+# master 수리 불가 에서 사람이 기본 브랜치를 고쳐 새 팁이 진행 중인 동안 — 재시도 답이 같은
+# 질문을 다시 내지 않고 master 대기 로 물러서며, 정착한 빨강이 사건을 그대로 실으면 다시 묻는다.
+E8_88H=efefefefefef
+mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E8_88H" - '띄울 수 없음' '렌더 실패' "$S1_88H")]"
+L88HX=$(l88h unable-unsettled); tr88h "$L88HX"; lg88h '1 가'
+pm88h "$L88HX" >/dev/null
+n88h_x1=$(n88h "$L88HX")
+TIP88H="$X88H" mf88h '진행 중' "$(sg88h "$S1_88H")" "[$(ev88h "$E8_88H" - '띄울 수 없음' '렌더 실패' "$S1_88H")]"
+tr88h "$L88HX"
+n88h_x2=$(n88h "$L88HX")
+TIP88H="$X88H" mf88h 빨강 "$(sg88h "$S1_88H")" "[$(ev88h "$E8_88H" - '띄울 수 없음' '렌더 실패' "$S1_88H")]"
+tr88h "$L88HX"
+check "88h: 대표가 쥔 띄울 수 없음 사건도 진행 중 판독 동안은 master 대기 이고 정착한 빨강에서 다시 master 수리 불가 다" \
+  "$(lsr_last_fields "$L88HX" 'CI 처분' 대표)|$n88h_x1|$n88h_x2|$(n88h "$L88HX")" \
+  "예|master 수리 불가|master 대기|master 수리 불가"
+
+# ---------------------------------------------------------------------------
+# 88h-2. master 재합류 입장 — 대조 행위의 등급, 이동 판정에서만 받는 재합류 파견, 병합 뒤 해소 리뷰
+# --- section: 88h-2 | group: mf | covers: act, plan, snapshot, gate_check_ci_match, gate_perform_ci_match, gate_ci_master_next, gate_base_check_row, gate_record_row | anchors: 88h: 대조 행위는 읽기 로 승인되고 부분집합 행을 쓰며 다음은 master 대기 다, 88h: 초록 판독 뒤 다음은 master 재합류 다, 88h: 이동 판정 뒤 재합류 파견은 받아지고 다른 베이스는 rc 3 이다, 88h: 일치 판정 뒤 재합류 파견은 rc 3 이다, 88h: 충돌 판정 뒤 재합류 파견은 rc 3 이고 다음은 베이스 해소 다, 88h: 받아진 재합류 파견은 충돌 수를 늘리지 않는다, 88h: 재합류 병합 뒤 다음은 해소 리뷰 이고 그 해소 cycle 행이 받아진다, 88h: 머지 전 선머지 세그먼트의 대조 행위는 implement_next 의 CI 대조 로 받아지고 다음은 master 대기 다, 88h: 머지 전 선머지 세그먼트의 재합류 파견은 implement_next 의 master 재합류 로 받아진다 ---
+#
+# 리뷰가 깨끗한 세그먼트 CK 의 회차 1 정착 실패(회차의 요청이 기본 브랜치 실패를 보았다)
+# 위에 이 픽스처 슬러그의 판독 파일을 둔다. 판독 루트는 스위트의 XDG_STATE_HOME 아래라
+# 다른 픽스처의 슬러그와 섞이지 않는다. 대조 행위의 GitHub 읽기는 내보낸 `gh` 함수 대역이
+# 답하고, 베이스 판정은 저장소 설정의 `insteadOf` 가 슬러그 URL 을 베어 원격으로 돌린다.
+# 원격 베이스는 사례마다 베어 원격의 참조를 옮겨 바꾼다.
+# ---------------------------------------------------------------------------
+pre_sa
+sa_new "master 재합류 입장" 리뷰없음
+( cd "$SA_REPO" && git config "url.$SA_REMOTE.insteadOf" "https://github.com/t/$SA_ID.git" ) >/dev/null 2>&1
+MJ_B0=$(cd "$SA_REPO" && git rev-parse main)
+MJ_SHA=$(sa_commit '작업')
+sa_seg_row CK 선리뷰후머지
+sa_cycle CK 1 0 0 "$MJ_SHA"
+mj_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+{
+  printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n'
+  printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S5 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-rev | 부모=router-1 | 종단 부류=정상 완료\n'
+  printf -- '- `checks` | 교대=1 | PR=t/%s#1 | head sha=%s | 상태=실패 | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=CK | 재실행 회차=0 | 진행 중=0\n' "$SA_ID" "$MJ_SHA" "$mj_now"
+  for mj_st in 요청 수락; do
+    printf -- '- `CI 처분` | 교대=1 | 세그먼트=CK | PR=t/%s#1 | head sha=%s | 처분=재실행 | 상태=%s | 회차=1 | 실행=777 | 워크플로=gate | 실패 체크=gate | 기본 브랜치=실패 | 응답=- | 관측=%s\n' \
+      "$SA_ID" "$MJ_SHA" "$mj_st" "$mj_now"
+  done
+  printf -- '- `checks` | 교대=1 | PR=t/%s#1 | head sha=%s | 상태=실패 | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=CK | 재실행 회차=1 | 진행 중=0\n' "$SA_ID" "$MJ_SHA" "$mj_now"
+} >> "$SA_LEDGER"
+printf '1\n' > "$SA_RUN/routing-guard"
+MJ_D="$SA_ROOT/mj"; mkdir -p "$MJ_D" "$XDG_STATE_HOME/cc-cmds/pace/master"
+MJ_FILE="$XDG_STATE_HOME/cc-cmds/pace/master/t__${SA_ID}__main.json"
+# 픽스처 슬러그는 cc-cmds 가 아니라 일반 어댑터가 읽는다 — 서명은 체크와 실패 단계다.
+MJ_E=dddddddddddd; MJ_SIG='gate|test'
+mj_file() {  # mj_file <상태> <해소 커밋|-> — 열린(또는 해소된) 사건 하나를 든 판독 파일
+  jq -n --arg st "$1" --arg res "$2" --arg tip "$(git --git-dir="$SA_REMOTE" rev-parse main)" --arg fc "$MJ_B0" \
+    --arg id "$MJ_E" --arg sig "$MJ_SIG" --arg obs "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{schema: "cc-master-state v1", tip: $tip, state: $st, precision: "단언", observed_at: $obs,
+      signatures: (if $st == "빨강" then [$sig] else [] end),
+      events: [{id: $id, first_commit: $fc, signatures: [$sig], repair: {state: (if $res == "-" then "대기" else "해소" end)}}
+               + (if $res == "-" then {} else {resolved_commit: $res} end)]}' > "$MJ_FILE"
+}
+mj_tick() {  # 판독을 원장으로 옮기는 값싼 행위 하나
+  sag act --manifest "$SA_MANIFEST" --kind x --target main --segment CK --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 판독 전사" -- true
+}
+mj_next() {
+  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+    | jq -r '.review_next[] | select(.["세그먼트"] == "CK") | .["다음"]'
+}
+mj_base() {  # mj_base <sha> — 원격 베이스를 그 커밋으로 옮기고 base-check 를 부른다
+  git --git-dir="$SA_REMOTE" update-ref refs/heads/main "$1"
+  sag act --manifest "$SA_MANIFEST" --kind base-check --target main --segment CK \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(SAH)" --rationale "베이스 판정 — CK"
+}
+mj_rejoin() {  # mj_rejoin <베이스 sha> [부류 꼬리] — 재합류 구현 파견의 plan
+  sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment CK --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+      -- implement -p "/cc-cmds:implement-unattended \"세그먼트 CK · 베이스 해소: $1${2- · 부류=master 재합류}\""
+}
+mj_conflicts() { { grep '^- `베이스 판정` ' "$SA_LEDGER" || true; } | grep -c '판정=충돌' || true; }
+mj_last() {  # mj_last <계열> <필드…> — 그 계열 마지막 행의 필드 값들을 | 로 잇는다
+  local r f out=''
+  r=$( { grep "^- \`$1\` " "$SA_LEDGER" || true; } | tail -1); shift
+  for f in "$@"; do out="$out${out:+|}$(sa_field "$r" "$f")"; done
+  printf '%s' "$out"
+}
+
+mj_file 빨강 -
+mj_tick
+printf '%s\n' "bash scripts/suite-guard.sh scripts/test-gate.sh" "FAIL: 1 가 — got 'x', want 'y'" 'test-gate: 0 passed, 1 failed' > "$MJ_D/log"
+printf '101\tgate\tcompleted\tfailure\tgithub-actions\thttps://github.com/t/%s/actions/runs/777/job/101\n' "$SA_ID" > "$MJ_D/runs"
+mj_next0=$(mj_next)
+mkdir -p "$MJ_D/bin"
+cat > "$MJ_D/bin/gh" <<'MJGH'
+#!/usr/bin/env bash
+case "$*" in
+  *check-runs*) cat "$MJ_D/runs" ;;
+  *'/logs'*) cat "$MJ_D/log" ;;
+  *actions/jobs/*) printf 'test\n' ;;
+  *) exit 1 ;;
+esac
+MJGH
+chmod +x "$MJ_D/bin/gh"
+# 스텁은 PATH 가 아니라 함수로 건다: 게이트가 소싱하는 run.sh 가 PATH 앞에 /usr/bin 을
+# 붙여, gh 가 거기 깔린 호스트에서는 PATH 앞의 스텁이 진짜 gh 에 가려진다.
+export MJ_D
+eval 'gh() { "$MJ_D/bin/gh" "$@"; }'; export -f gh
+MJ_PREV_RO="${CC_GATE_TOKEN_RO:-}"; export CC_GATE_TOKEN_RO=mj-ro-fixture
+sag act --manifest "$SA_MANIFEST" --kind ci-match --target main --segment CK --cutpoint PR \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 대조" -- 대조 "$MJ_SHA"
+mj_rc=$rc
+unset -f gh
+if [ -n "$MJ_PREV_RO" ]; then CC_GATE_TOKEN_RO="$MJ_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
+mj_ap=$( { grep '^- `자율 승인` ' "$SA_LEDGER" || true; } | grep 'kind=ci-match' | tail -1)
+mj_row=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -1)
+check "88h: 대조 행위는 읽기 로 승인되고 부분집합 행을 쓰며 다음은 master 대기 다" \
+  "$mj_next0|$mj_rc|$(sa_field "$mj_ap" 축2)|$(sa_field "$mj_row" 처분)|$(sa_field "$mj_row" 결과)|$(sa_field "$mj_row" 회차)|$(mj_next)" \
+  "CI 대조|0|읽기|대조|부분집합|1|master 대기"
+
+# 베이스가 고침을 얻는다 — 세그먼트와 겹치지 않는 파일 하나.
+MJ_X=$( ( cd "$SA_REPO" && git checkout -q main && printf 'fix\n' > fix.txt && git add -A && git commit -qm fix \
+          && git push -q origin main && git rev-parse HEAD ) 2>/dev/null)
+mj_file 초록 "$MJ_X"
+mj_tick
+check "88h: 초록 판독 뒤 다음은 master 재합류 다" "$(mj_next)" "master 재합류"
+
+mj_base "$MJ_X"
+mj_bc=$rc
+mj_rejoin "$MJ_X"; mj_ok=$rc
+mj_rejoin "$MJ_B0"; mj_other=$rc
+mj_rejoin "$MJ_X" ''; mj_plain=$rc
+check "88h: 이동 판정 뒤 재합류 파견은 받아지고 다른 베이스는 rc 3 이다" \
+  "$mj_bc|$(mj_last '베이스 판정' 판정 베이스)|$mj_ok|$mj_other|$mj_plain" "0|이동|$MJ_X|0|3|3"
+
+mj_base "$MJ_B0"
+mj_rejoin "$MJ_B0"
+check "88h: 일치 판정 뒤 재합류 파견은 rc 3 이다" "$(mj_last '베이스 판정' 판정)|$rc" "일치|3"
+
+MJ_Y=$( ( cd "$SA_REPO" && git checkout -q -b mj-y "$MJ_X" && printf 'other\n' > work.txt && git add -A && git commit -qm y \
+          && git push -q origin mj-y && git rev-parse HEAD && git checkout -q main ) 2>/dev/null)
+mj_base "$MJ_Y"
+mj_rejoin "$MJ_Y"
+check "88h: 충돌 판정 뒤 재합류 파견은 rc 3 이고 다음은 베이스 해소 다" \
+  "$(mj_last '베이스 판정' 판정)|$rc|$(mj_next)" "충돌|3|베이스 해소"
+
+mj_base "$MJ_X"
+mj_c0=$(mj_conflicts)
+mj_rejoin "$MJ_X"
+check "88h: 받아진 재합류 파견은 충돌 수를 늘리지 않는다" \
+  "$(mj_last '베이스 판정' 판정)|$(mj_next)|$rc|$mj_c0|$(mj_conflicts)" "이동|master 재합류|0|1|1"
+
+# 구현 스테이지가 하는 병합 — 베이스를 --no-ff 로 들이고 해소 중에 한 줄을 더한다.
+# 브랜치 변경을 리뷰 때와 그대로 싣는 병합은 patch-id 동일로 증명되어 해소 리뷰 없이
+# 지나가므로, 해소 리뷰 경로를 재려면 병합이 브랜치 디프를 바꿔야 한다.
+MJ_M=$( ( cd "$SA_SEGWT" && git merge -q --no-ff --no-commit "$MJ_X" && printf 'rejoin\n' >> work.txt \
+          && git add work.txt && git commit -qm "merge: master 재합류" && git rev-parse HEAD ) 2>/dev/null)
+mj_next_m=$(mj_next)
+MJ_RP="$SA_ROOT/rejoin-review.md"
+{ cat "$FXREPORT"; printf -- '- **리뷰 모드**: 해소 (기준 사이클 1, 기준 리뷰 HEAD `%s`, 베이스 `%s`)\n' "$MJ_SHA" "$MJ_X"; } > "$MJ_RP"
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$MJ_M" "리포트 경로=$(sa_canon CK "$MJ_RP")" 모드=해소 '기준 사이클=1'
+check "88h: 재합류 병합 뒤 다음은 해소 리뷰 이고 그 해소 cycle 행이 받아진다" \
+  "$mj_next_m|$rc|$(mj_last cycle 사이클 모드)" "해소 리뷰|0|2|해소"
+
+# 머지 전의 선머지후리뷰 세그먼트 H — 사이클 행이 없어 review_next 는 `리뷰 없음` 이고
+# master 층 값은 implement_next[] 에만 선다. 같은 판독·대조·재합류를 그 값으로 받는지 잰다.
+pre_mf
+mf_new "master 재합류 입장 — 선머지"
+MJ_B0=$(cd "$SA_REPO" && git rev-parse main)
+MJ_FILE="$XDG_STATE_HOME/cc-cmds/pace/master/t__${SA_ID}__main.json"
+mjh_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mf_checks 실패
+{
+  for mj_st in 요청 수락; do
+    printf -- '- `CI 처분` | 교대=1 | 세그먼트=H | PR=t/%s#1 | head sha=%s | 처분=재실행 | 상태=%s | 회차=1 | 실행=777 | 워크플로=gate | 실패 체크=gate | 기본 브랜치=실패 | 응답=- | 관측=%s\n' \
+      "$SA_ID" "$MF_TIP" "$mj_st" "$mjh_now"
+  done
+  printf -- '- `checks` | 교대=1 | PR=t/%s#1 | head sha=%s | 상태=실패 | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=H | 재실행 회차=1 | 진행 중=0\n' "$SA_ID" "$MF_TIP" "$mjh_now"
+} >> "$SA_LEDGER"
+printf '101\tgate\tcompleted\tfailure\tgithub-actions\thttps://github.com/t/%s/actions/runs/777/job/101\n' "$SA_ID" > "$MJ_D/runs"
+mj_file 빨강 -
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment H --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 판독 전사" -- true
+mjh_n0=$(mf_inext)
+eval 'gh() { "$MJ_D/bin/gh" "$@"; }'; export -f gh
+MJ_PREV_RO="${CC_GATE_TOKEN_RO:-}"; export CC_GATE_TOKEN_RO=mj-ro-fixture
+sag act --manifest "$SA_MANIFEST" --kind ci-match --target main --segment H --cutpoint PR \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 대조" -- 대조 "$MF_TIP"
+mjh_rc=$rc
+unset -f gh
+if [ -n "$MJ_PREV_RO" ]; then CC_GATE_TOKEN_RO="$MJ_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
+mjh_row=$( { grep '^- `CI 처분` ' "$SA_LEDGER" || true; } | tail -1)
+mjh_el() {  # mjh_el <키…> — 스냅숏의 H 원소: review_next 원소 수, 그리고 implement_next 원소의 그 키 값들
+  mf_snap | jq -r --args '([.review_next[] | select(.["세그먼트"] == "H")] | length | tostring) as $r
+    | [.implement_next[] | select(.["세그먼트"] == "H")][0] as $e
+    | ([$r] + [$ARGS.positional[] | ($e[.] // "없음")]) | join("|")' "$@"
+}
+check "88h: 머지 전 선머지 세그먼트의 대조 행위는 implement_next 의 CI 대조 로 받아지고 다음은 master 대기 다" \
+  "$mjh_n0|$mjh_rc|$(sa_field "$mjh_row" 결과)|$(mjh_el 다음 'head sha' 'master 상태')" \
+  "CI 대조|0|부분집합|0|master 대기|$MF_TIP|빨강"
+
+MJ_X=$( ( cd "$SA_REPO" && git checkout -q main && printf 'fix\n' > fix.txt && git add -A && git commit -qm fix \
+          && git push -q origin main && git rev-parse HEAD ) 2>/dev/null)
+mj_file 초록 "$MJ_X"
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment H --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 판독 전사" -- true
+mjh_n1=$(mf_inext)
+mf_base_check; mjh_bc=$rc
+mjh_n1="$mjh_n1|$(mjh_el 다음 베이스)"
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment H --cutpoint 커밋 \
+    --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+    -- implement -p "/cc-cmds:implement-unattended \"세그먼트 H · 베이스 해소: $MJ_X · 부류=master 재합류\""
+check "88h: 머지 전 선머지 세그먼트의 재합류 파견은 implement_next 의 master 재합류 로 받아진다" \
+  "$mjh_n1|$mjh_bc|$(mj_last '베이스 판정' 판정)|$rc" "master 재합류|0|master 재합류|$MJ_X|0|이동|0"
+
+# ---------------------------------------------------------------------------
 # 88c. 릴리스 메타만의 충돌 — 기대 트리, 고정 도우미, 머지 대조의 메타 해소
 # --- section: 88c | group: ledger_series | covers: release_meta_expected_tree, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_merge_check_value, gate_done_conditions, gate_apply_preconditions, gate_segment_apply_state | anchors: 88c: 빚지지 않은 메타 해소 착지의 적용 전제는 rc 0 이고 빚지지 않음을 세운다, 88c: 적용 명령이 있는 메타 해소 착지는 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88c: 증명되지 않는 둘째 부모의 착지는 전제 4 로 거부되고 증명 실패 사유를 싣는다, 88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다, 88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다, 88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다, 88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다, 88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다, 88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다, 88c: 조건 11 은 메타 해소 를 통과시킨다, 88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다, 88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다, 88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다 ---
 #
@@ -55790,8 +56413,8 @@ for p88e in $P88E2; do kill "$p88e" 2>/dev/null || true; done
 cb60_foot
 
 # ---------------------------------------------------------------------------
-# 88h. 머지 먼저 — 선머지후리뷰 세그먼트는 구현 뒤 리뷰 전에 머지로 간다
-# --- section: 88h | group: sa | covers: gate_implement_next_of, gate_implement_next_raw, gate_merge_first_next, gate_ci_next, gate_base_review_head, gate_base_check_row, gate_check_merge_checks, act | anchors: 88h: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다, 88h: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다, 88h: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다, 88h: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다, 88h: 절단점이 머지 아래면 다음은 리뷰 다, 88h: 선리뷰후머지 세그먼트의 다음은 리뷰 다, 88h: 바인딩 없는 머지는 rc 2 다 ---
+# 88f. 머지 먼저 — 선머지후리뷰 세그먼트는 구현 뒤 리뷰 전에 머지로 간다
+# --- section: 88f | group: mf | covers: gate_implement_next_of, gate_implement_next_raw, gate_merge_first_next, gate_ci_next, gate_base_review_head, gate_base_check_row, gate_check_merge_checks, act | anchors: 88f: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다, 88f: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다, 88f: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다, 88f: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다, 88f: 절단점이 머지 아래면 다음은 리뷰 다, 88f: 선리뷰후머지 세그먼트의 다음은 리뷰 다, 88f: 바인딩 없는 머지는 rc 2 다 ---
 #
 # 커밋 하나가 앞선 선머지후리뷰 세그먼트에 같은 다이제스트의 구현 정상 완료 두 행을
 # 두면 단계 B 다. checks 행 없음 → 실패 → 통과 순서로 원장에 행을 더하며 다음 과 머지
@@ -55800,9 +56423,9 @@ cb60_foot
 pre_ledger_series
 pre_mf
 mf_new '머지 먼저 — CI 층'
-check "88h: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다" "$(mf_inext)|$(sa_merge H; printf '%s' "$rc")" "CI 대기|3"
+check "88f: 행이 없으면 다음은 CI 대기 이고 머지는 rc 3 이다" "$(mf_inext)|$(sa_merge H; printf '%s' "$rc")" "CI 대기|3"
 mf_checks 실패
-check "88h: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다" "$(mf_inext)|$(sa_merge H; printf '%s' "$rc")" "CI 재실행|3"
+check "88f: 회차 0 정착 실패는 CI 재실행 이고 머지는 rc 3 이다" "$(mf_inext)|$(sa_merge H; printf '%s' "$rc")" "CI 재실행|3"
 mf_checks 통과
 mf_n1=$(mf_inext)
 mf_base_check; mf_r1=$rc
@@ -55810,41 +56433,41 @@ mf_bc=$(lsr_last_fields "$SA_LEDGER" '베이스 판정' 판정\ HEAD 판정)
 sp_act H 머지 gh api -X PUT "repos/t/$SA_ID/pulls/1/merge" -f sha=1111111111111111111111111111111111111111 -f merge_method=merge
 mf_rb=$rc
 sa_merge H; mf_r2=$rc
-check "88h: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다" \
+check "88f: 통과 뒤 다음은 선머지 이고 base-check 와 머지가 rc 0 이다" \
   "$mf_n1|$mf_r1|$mf_bc|$mf_r2" "선머지|0|$MF_TIP|일치|0"
-check "88h: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다" \
+check "88f: 머지가 의무 하나를 발행하고 그 머지 커밋이 워크트리 팁이다" \
   "$(mf_ob_open)|$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '머지 커밋')" "1|$MF_TIP"
-check "88h: 바인딩 없는 머지는 rc 2 다" "$mf_rb" "2"
+check "88f: 바인딩 없는 머지는 rc 2 다" "$mf_rb" "2"
 
 # 같은 원장 모양을 원장만으로 — 절단점이 머지 아래이거나 정책이 선리뷰후머지 면 리뷰 다.
-D88H="$lsr_root/s88h"; rm -rf "$D88H"; mkdir -p "$D88H"
-G88H="$D88H/repo"; W88H="$D88H/seg"
-( git init -q "$G88H" && cd "$G88H" \
+D88F="$lsr_root/s88f"; rm -rf "$D88F"; mkdir -p "$D88F"
+G88F="$D88F/repo"; W88F="$D88F/seg"
+( git init -q "$G88F" && cd "$G88F" \
   && git config user.email t@example.invalid && git config user.name T \
   && printf 'a\n' > a.txt && git add -A && git commit -qm one && git branch -M main \
-  && git worktree add -q -b seg-88h "$W88H" main && cd "$W88H" && printf 'A\n' > a.txt && git commit -qam seg ) >/dev/null 2>&1
-m88h() {  # m88h <절단점> — 그 절단점의 대상 하나를 둔 매니페스트 경로
-  printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=%s\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88H" "$1" > "$D88H/m-$1.md"
-  printf '%s' "$D88H/m-$1.md"
+  && git worktree add -q -b seg-88f "$W88F" main && cd "$W88F" && printf 'A\n' > a.txt && git commit -qam seg ) >/dev/null 2>&1
+m88f() {  # m88f <절단점> — 그 절단점의 대상 하나를 둔 매니페스트 경로
+  printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=%s\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88F" "$1" > "$D88F/m-$1.md"
+  printf '%s' "$D88F/m-$1.md"
 }
-l88h() {  # l88h <이름> <정책> — 구현 정상 완료 두 행(단계 B)의 세그먼트 S
-  local l; l=$(lsr_ledger "w88h-$1")
-  printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88h | 선행=없음 | 리뷰 정책=%s | prev=x\n' "$W88H" "$2" >> "$l"
+l88f() {  # l88f <이름> <정책> — 구현 정상 완료 두 행(단계 B)의 세그먼트 S
+  local l; l=$(lsr_ledger "w88f-$1")
+  printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88f | 선행=없음 | 리뷰 정책=%s | prev=x\n' "$W88F" "$2" >> "$l"
   printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 종류=implement | 종단 부류=정상 완료 | plan_sha256=d1 | prev=x\n' >> "$l"
   printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 종류=implement | 종단 부류=정상 완료 | plan_sha256=d1 | prev=x\n' >> "$l"
   printf '%s' "$l"
 }
-n88h() { lsr_in Linux "$1" - lsr_rp_in "$2" gate_implement_next_of S 2>/dev/null | sed -n 's/.*"다음": "\([^"]*\)".*/\1/p'; }
-check "88h: 절단점이 머지 아래면 다음은 리뷰 다" \
-  "$(n88h "$(l88h pr 선머지후리뷰)" "$(m88h PR)")|$(n88h "$(l88h push 선머지후리뷰)" "$(m88h push)")" "리뷰|리뷰"
-check "88h: 선리뷰후머지 세그먼트의 다음은 리뷰 다" \
-  "$(n88h "$(l88h strict 선리뷰후머지)" "$(m88h 머지)")|$(n88h "$(l88h deploy 선머지후리뷰)" "$(m88h 배포)")" "리뷰|선머지"
+n88f() { lsr_in Linux "$1" - lsr_rp_in "$2" gate_implement_next_of S 2>/dev/null | sed -n 's/.*"다음": "\([^"]*\)".*/\1/p'; }
+check "88f: 절단점이 머지 아래면 다음은 리뷰 다" \
+  "$(n88f "$(l88f pr 선머지후리뷰)" "$(m88f PR)")|$(n88f "$(l88f push 선머지후리뷰)" "$(m88f push)")" "리뷰|리뷰"
+check "88f: 선리뷰후머지 세그먼트의 다음은 리뷰 다" \
+  "$(n88f "$(l88f strict 선리뷰후머지)" "$(m88f 머지)")|$(n88f "$(l88f deploy 선머지후리뷰)" "$(m88f 배포)")" "리뷰|선머지"
 
 # ---------------------------------------------------------------------------
-# 88h-2. 머지 먼저 — 사후리뷰 행이 머지된 세그먼트를 다시 열고 사후 리뷰를 낸다
-# --- section: 88h-2 | group: sa | covers: gate_segment_post_merge, gate_post_merge_next, gate_segment_review_next, gate_snapshot_review_next_json, gate_implement_next_raw, gate_review_line, gate_base_review_head, gate_issue_review_obligation, gate_segment_post_merge_base, gate_segment_commits_past_merged, gate_segment_merged_after_last_cycle, act, plan | anchors: 88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다, 88h-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다, 88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다, 88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다, 88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다, 88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다, 88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다, 88h-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다, 88h-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다, 88h-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다, 88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다, 88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다 ---
+# 88f-2. 머지 먼저 — 사후리뷰 행이 머지된 세그먼트를 다시 열고 사후 리뷰를 낸다
+# --- section: 88f-2 | group: mf | covers: gate_segment_post_merge, gate_post_merge_next, gate_segment_review_next, gate_snapshot_review_next_json, gate_implement_next_raw, gate_review_line, gate_base_review_head, gate_issue_review_obligation, gate_segment_post_merge_base, gate_segment_commits_past_merged, gate_segment_merged_after_last_cycle, act, plan | anchors: 88f-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다, 88f-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다, 88f-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다, 88f-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다, 88f-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다, 88f-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다, 88f-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다, 88f-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다, 88f-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다, 88f-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다, 88f-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다, 88f-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다 ---
 #
-# 88h 와 같은 픽스처로 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤, 사후리뷰 행과
+# 88f 와 같은 픽스처로 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤, 사후리뷰 행과
 # 그 사후 리뷰를 차례로 둔다. 다른 정책의 세그먼트와 머지가 없는 세그먼트에는 같은
 # 행이 거부된다.
 # ---------------------------------------------------------------------------
@@ -55856,26 +56479,26 @@ mf2_base=$( cd "$SA_SEGWT" && git rev-parse HEAD~1 )
 sa_merge H
 sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
 mf_rnext() { mf_snap | jq -r '[.review_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")'; }
-check "88h-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다" "[$(mf_inext)]|$(mf_rnext)" "[]|사후리뷰"
-check "88h-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다" \
+check "88f-2: 머지됨 뒤 implement_next 원소는 없고 review_next 는 사후리뷰 다" "[$(mf_inext)]|$(mf_rnext)" "[]|사후리뷰"
+check "88f-2: 머지가 발행한 의무가 머지 전의 분기점을 싣는다" \
   "$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '분기점')" "$mf2_base"
 # 라우팅 런의 모양 그대로 — 라우터는 세그먼트 행에 베이스 sha 를 쓰지 않는다.
 sa_seg_state H 사후리뷰; mf2_r=$rc
-check "88h-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다" \
+check "88f-2: 사후리뷰 행이 받아지고 세그먼트가 사후리뷰 로 읽힌다" \
   "$mf2_r|$(mf_snap | jq -r '.segments[] | select(.id == "H") | .["상태"]')|$(mf_rnext)" "0|사후리뷰|사후리뷰"
 mf2_line() {  # mf2_line — 리뷰 줄의 --base-sha 와 --post-merge 값, `<베이스>|<커밋>`
   sag review-line --manifest "$SA_MANIFEST" --segment H
   printf '%s|%s' "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--base-sha") print $(i + 1) }')" \
     "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--post-merge") print $(i + 1) }')"
 }
-check "88h-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$(mf2_line)" "$mf2_base|$MF_TIP"
-check "88h-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다" \
+check "88f-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$(mf2_line)" "$mf2_base|$MF_TIP"
+check "88f-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다" \
   "$(mf_snap | jq -r '.unmet_condition_numbers | index(1) != null')" "true"
 sa_cycle H 1 0 0 "$MF_TIP"
-check "88h-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다" "$(mf_rnext)" "머지"
+check "88f-2: 사후 리뷰 cycle 뒤 다음은 판정표 값이다" "$(mf_rnext)" "머지"
 mf2_fix=$(sa_commit '리드 수정')
-check "88h-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다" "$(mf_rnext)" "CI 대기"
-check "88h-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다" "$(mf2_line)" "$mf2_base|$mf2_fix"
+check "88f-2: 머지된 팁 위의 새 커밋은 선머지 의 CI 층으로 간다" "$(mf_rnext)" "CI 대기"
+check "88f-2: 리드 수정 뒤 리뷰 줄은 머지 커밋 대신 워크트리 팁을 다시 검증한다" "$(mf2_line)" "$mf2_base|$mf2_fix"
 # 리드 수정의 재확인이 통과해 다시 머지되면, 그 머지의 사후 리뷰는 앞 cycle 이 읽은
 # HEAD 위에서도 파견된다. 머지 전에는 같은 HEAD 재리뷰로 거절되는 것과 짝으로 잰다.
 mf2_review() {  # mf2_review — 지금의 리뷰 줄로 리뷰 파견을 예보하고 같은 HEAD 거절 문면 유무를 찍는다
@@ -55887,22 +56510,22 @@ mf2_review() {  # mf2_review — 지금의 리뷰 줄로 리뷰 파견을 예보
 }
 sa_cycle H 2 0 0 "$mf2_fix"
 mf_checks 통과 "$mf2_fix"
-check "88h-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다" "$(mf_rnext)|$(mf2_review)" "선머지|거절"
+check "88f-2: 재확인 통과 뒤 다음은 선머지 이고 같은 HEAD 리뷰는 거절된다" "$(mf_rnext)|$(mf2_review)" "선머지|거절"
 sa_fulfil "$(sa_ob_id H)" >/dev/null
 sa_merge H; mf2_r2=$rc
 sa_seg_state H 머지됨 "머지 커밋=$mf2_fix" PR=2
-check "88h-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다" \
+check "88f-2: 두 번째 머지 뒤 다음은 사후리뷰 이고 같은 HEAD 의 사후 리뷰가 파견된다" \
   "$mf2_r2|$(mf_rnext)|$(mf2_review)|$(mf2_line)" "0|사후리뷰|통과|$mf2_base|$mf2_fix"
 sa_seg_row G 선리뷰후머지
 sa_seg_state G 사후리뷰; mf2_g=$rc
 sa_seg_row K 선머지후리뷰
 sa_seg_state K 사후리뷰; mf2_k=$rc
-check "88h-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_g" "2"
-check "88h-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_k" "2"
+check "88f-2: 선리뷰후머지 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_g" "2"
+check "88f-2: 머지 없는 머지 먼저 세그먼트의 사후리뷰 행은 rc 2 다" "$mf2_k" "2"
 
 # ---------------------------------------------------------------------------
-# 88h-3. 머지 먼저 — 통과한 사후 리뷰 전에는 종료 조건 12 가 세그먼트를 닫지 않는다
-# --- section: 88h-3 | group: sa | covers: gate_done_conditions, gate_obligation_covers, gate_segment_review_next_table, gate_segment_owes_apply, gate_segment_applied_since_merge, gate_segment_post_merge, act | anchors: 88h-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다, 88h-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다, 88h-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다, 88h-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다, 88h-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다, 88h-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다, 88h-3: 적용 완료 뒤 사후리뷰 원소가 나온다, 88h-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다 ---
+# 88f-3. 머지 먼저 — 통과한 사후 리뷰 전에는 종료 조건 12 가 세그먼트를 닫지 않는다
+# --- section: 88f-3 | group: mf | covers: gate_done_conditions, gate_obligation_covers, gate_segment_review_next_table, gate_segment_owes_apply, gate_segment_applied_since_merge, gate_segment_post_merge, act | anchors: 88f-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다, 88f-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다, 88f-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다, 88f-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다, 88f-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다, 88f-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다, 88f-3: 적용 완료 뒤 사후리뷰 원소가 나온다, 88f-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다 ---
 #
 # 머지 먼저 세그먼트를 머지하고 머지됨 행을 쓴 뒤 사후 리뷰의 cycle 행을 둔다. 적용이
 # 없는 대상에서 P1 이 남은 리뷰는 상태 행이 머지됨·완료 여도 조건 12 의 줄을 내고,
@@ -55916,14 +56539,14 @@ mf_checks 통과
 sa_merge H
 sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
 sa_cycle H 1 0 1 "$MF_TIP"
-check "88h-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다" "$(mf_u12 H)" "1"
+check "88f-3: 머지됨 뒤 P1 이 남은 리뷰는 조건 12 의 줄을 낸다" "$(mf_u12 H)" "1"
 sa_seg_state H 완료; mf3_r=$rc
-check "88h-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다" "$mf3_r|$(mf_u12 H)" "0|1"
+check "88f-3: P1 이 남은 리뷰 뒤 완료 행은 rc 0 이고 조건 12 는 남는다" "$mf3_r|$(mf_u12 H)" "0|1"
 sa_seg_state H park; mf3_rp=$rc
-check "88h-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다" "$mf3_rp|$(mf_u12 H)" "0|0"
+check "88f-3: 의무와 P1 사이클 뒤 park 는 조건 12 가 붙잡지 않는다" "$mf3_rp|$(mf_u12 H)" "0|0"
 sa_seg_row K 선머지후리뷰
 sa_seg_state K park
-check "88h-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다" "$(mf_u12 K)" "0"
+check "88f-3: 의무 없이 park 로 끝난 세그먼트는 조건 12 가 붙잡지 않는다" "$(mf_u12 K)" "0"
 
 mf_new '머지 먼저 — 조건 12 (통과)'
 mf_checks 통과
@@ -55931,7 +56554,7 @@ sa_merge H
 sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
 sa_cycle H 1 0 0 "$MF_TIP"
 sa_seg_state H 완료; mf3_r=$rc
-check "88h-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다" "$mf3_r|$(mf_u12 H)" "0|0"
+check "88f-3: P0 P1 이 0 인 리뷰 뒤 완료 행은 rc 0 이고 조건 12 가 없다" "$mf3_r|$(mf_u12 H)" "0|0"
 
 MF_APPLY=1 mf_new '머지 먼저 — 적용'
 mf_checks 통과
@@ -55940,20 +56563,20 @@ sa_seg_state H 머지됨 "머지 커밋=$MF_TIP" PR=1
 mf3_mrow=$(sa_seg_last H)
 sa_seg_state H 완료; mf3_r=$rc; mf3_msg=$msg
 case "$mf3_mrow|$mf3_msg" in *"적용=대기"*"|"*"적용이 남은"*) mf3_got=거부 ;; *) mf3_got="$mf3_mrow|$mf3_msg" ;; esac
-check "88h-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다" "$mf3_r|$mf3_got" "2|거부"
+check "88f-3: 적용이 남은 머지 먼저 세그먼트의 호출자 완료 는 거부된다" "$mf3_r|$mf3_got" "2|거부"
 # 적용 쪽 완료 행 — 게이트의 적용 경로가 쓰는 모양처럼 리뷰 정책을 이어 싣는다.
 printf -- '- `segment` | id=H | 상태=완료 | 워크트리=%s | 고정 커밋=%s | 머지 커밋=%s | 리뷰 정책=선머지후리뷰 | 적용=수렴\n' \
   "$SA_SEGWT" "$MF_TIP" "$MF_TIP" >> "$SA_LEDGER"
-check "88h-3: 적용 완료 뒤 사후리뷰 원소가 나온다" \
+check "88f-3: 적용 완료 뒤 사후리뷰 원소가 나온다" \
   "$(mf_snap | jq -r '[.review_next[] | select(.["세그먼트"] == "H") | .["다음"]] | join(",")')" "사후리뷰"
 sa_seg_state H 사후리뷰
 sa_cycle H 1 0 0 "$MF_TIP"
 sa_seg_state H 완료; mf3_r=$rc
-check "88h-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다" "$mf3_r|$(mf_u12 H)" "0|0"
+check "88f-3: 적용 완료와 통과한 사후 리뷰 뒤 호출자 완료 는 rc 0 이다" "$mf3_r|$(mf_u12 H)" "0|0"
 
 # ---------------------------------------------------------------------------
-# 88h-4. 머지 먼저 — 사후 리뷰의 수정 뒤 두 번째 머지가 새 의무와 재적용을 받는다
-# --- section: 88h-4 | group: sa | covers: gate_apply_preconditions, gate_segment_apply_state, gate_segment_owes_apply, gate_segment_post_merge, gate_implement_next_raw, gate_base_review_head, gate_apply_subject_proof, act, apply | anchors: 88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다, 88h-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다, 88h-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다, 88h-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다, 88h-4: 두 번째 머지됨 도 적용=대기 를 받는다, 88h-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다, 88h-4: 두 번째 적용이 통과한다, 88h-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다 ---
+# 88f-4. 머지 먼저 — 사후 리뷰의 수정 뒤 두 번째 머지가 새 의무와 재적용을 받는다
+# --- section: 88f-4 | group: mf | covers: gate_apply_preconditions, gate_segment_apply_state, gate_segment_owes_apply, gate_segment_post_merge, gate_implement_next_raw, gate_base_review_head, gate_apply_subject_proof, act, apply | anchors: 88f-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다, 88f-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다, 88f-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다, 88f-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다, 88f-4: 두 번째 머지됨 도 적용=대기 를 받는다, 88f-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다, 88f-4: 두 번째 적용이 통과한다, 88f-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다 ---
 #
 # 적용이 있는 대상에서 머지 먼저 한 바퀴를 두 번 돈다: 첫 머지 → 머지됨 → 적용 →
 # 사후 리뷰(P1 1건) → 의무 이행 → 재구현 → 두 번째 머지 → 머지됨 → 적용. 적용 전제는
@@ -55975,11 +56598,11 @@ mf4_row1=$(sb_seg_last H)
 sb_apply H; mf4_a1=$rc
 mf4_last1=$(sb_seg_last H)
 case "$mf4_row1|$mf4_last1" in *"적용=대기"*"|"*"상태=완료"*"적용="*) mf4_g1=대기후완료 ;; *) mf4_g1="$mf4_row1 || $mf4_last1" ;; esac
-check "88h-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다" "$mf4_a1|$mf4_g1" "0|대기후완료"
+check "88f-4: 첫 머지됨 은 적용=대기 이고 적용이 cycle 없이 통과한다" "$mf4_a1|$mf4_g1" "0|대기후완료"
 mf4_sp() {  # mf4_sp <M> — 적용 정산의 대상 증명이 세운 리뷰 HEAD, 또는 x:<사유>
   if gate_apply_subject_proof main H "$1"; then printf '%s' "$GATE_APPLY_PROOF_HEAD"; else printf 'x:%s' "$GATE_APPLY_PROOF_WHY"; fi
 }
-check "88h-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다" \
+check "88f-4: cycle 이 없는 첫 머지의 대상 증명은 의무의 머지 커밋을 세운다" \
   "$(lsr_in - "$SA_LEDGER" - lsr_rp_in "$SA_MANIFEST" mf4_sp "$mf4_m1")" "$mf4_tip1"
 
 sa_seg_state H 사후리뷰 "베이스 sha=$mf4_base"
@@ -55989,10 +56612,10 @@ mf_impl d2; mf_impl d2
 mf_checks 통과 "$mf4_tip2"
 sa_merge H "$SA_SEGBR:refs/heads/mf4-second"; mf4_rr=$rc
 mf4_rule=아님; if sa_names_rule; then mf4_rule=룰; fi
-check "88h-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다" "$mf4_rr|$mf4_rule" "3|룰"
+check "88f-4: 의무를 갚기 전 두 번째 머지는 리뷰-후-머지 로 거절된다" "$mf4_rr|$mf4_rule" "3|룰"
 sa_fulfil "$(sa_ob_id H)"; mf4_rf=$rc
 sa_merge H "$SA_SEGBR:refs/heads/mf4-second"; mf4_r2=$rc
-check "88h-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다" \
+check "88f-4: 의무를 갚은 뒤 두 번째 머지가 통과하고 새 의무를 낸다" \
   "$mf4_rf|$mf4_r2|$(mf_ob_open)|$(sa_field "$(sa_ob_last "$(sa_ob_id H)")" '머지 커밋')" "0|0|1|$mf4_tip2"
 
 # 둘째 부모가 첫 머지의 팁인 머지 커밋으로 머지됨 을 쓰면 새 의무와 맞지 않는다.
@@ -56001,16 +56624,16 @@ mf4_m2=$(sb_land_merge)
 sa_seg_state H 머지됨 "머지 커밋=$mf4_m1" PR=2
 mf4_row2=$(sb_seg_last H)
 case "$mf4_row2" in *"적용=대기"*) mf4_g2=대기 ;; *) mf4_g2=$mf4_row2 ;; esac
-check "88h-4: 두 번째 머지됨 도 적용=대기 를 받는다" "$mf4_g2" "대기"
+check "88f-4: 두 번째 머지됨 도 적용=대기 를 받는다" "$mf4_g2" "대기"
 mf4_rows=$(sa_base)
 sb_apply H
-sb_refused_clean "88h-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다" 4 "$mf4_rows" H
+sb_refused_clean "88f-4: 둘째 부모가 새 의무의 머지 커밋이 아니면 전제 4 다" 4 "$mf4_rows" H
 sa_seg_state H 머지됨 "머지 커밋=$mf4_m2" PR=2
 sb_apply H; mf4_a2=$rc
 mf4_last2=$(sb_seg_last H)
 case "$mf4_last2" in *"상태=완료"*"적용="*) mf4_last2=완료 ;; esac
-check "88h-4: 두 번째 적용이 통과한다" "$mf4_a2|$mf4_last2" "0|완료"
-check "88h-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다" \
+check "88f-4: 두 번째 적용이 통과한다" "$mf4_a2|$mf4_last2" "0|완료"
+check "88f-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아니라 새 의무의 머지 커밋을 세운다" \
   "$(lsr_in - "$SA_LEDGER" - lsr_rp_in "$SA_MANIFEST" mf4_sp "$mf4_m2")" "$mf4_tip2"
 
 # ---------------------------------------------------------------------------
