@@ -379,8 +379,15 @@ st="$S/settings/pilot-opus-1.json"
 expect_eq "the settings turn the account's plugins off" "false|false" "$(jq -r '[.enabledPlugins["cc-cmds@cc-cmds"], .enabledPlugins["other@market"]] | map(tostring) | join("|")' "$st")"
 expect_eq "the settings refuse push and network tools" "true|true|true" \
   "$(jq -r '[(.permissions.deny | index("Bash(git push:*)") != null), (.permissions.deny | index("WebFetch") != null), (.permissions.deny | index("Bash(gh:*)") != null)] | map(tostring) | join("|")' "$st")"
-expect_eq "the settings open writes in the target clone and the state home" "true|true" \
-  "$(jq -r --arg t "Write(/$rd/target/**)" --arg s "Write(/$rd/state/**)" '[(.permissions.allow | index($t) != null), (.permissions.allow | index($s) != null)] | map(tostring) | join("|")' "$st")"
+expect_eq "the settings open writes in the target clone, the state home, the halt directory and the report file itself" "true|true|true|true" \
+  "$(jq -r --arg t "Edit(/$rd/target/**)" --arg s "Edit(/$rd/state/**)" --arg h "Edit(/$rd/halt/**)" --arg r "Edit(/$rd/report.md)" \
+    '.permissions.allow as $a | [$t, $s, $h, $r] | map(. as $x | $a | index($x) != null) | map(tostring) | join("|")' "$st")"
+expect_eq "the settings run in acceptEdits, carry no Write rule and no rule under the report path, and add only the state home and the halt directory" \
+  "acceptEdits|0|0|$rd/state $rd/halt" \
+  "$(jq -r --arg r "Edit(/$rd/report.md/**)" '[.permissions.defaultMode, ([.permissions.allow[] | select(startswith("Write("))] | length), ([.permissions.allow[] | select(. == $r)] | length), (.permissions.additionalDirectories | join(" "))] | map(tostring) | join("|")' "$st")"
+expect_eq "the settings open mktemp only under the state home and the halt directory" \
+  "Bash(mktemp \"$rd/halt/*)|Bash(mktemp \"$rd/state/*)|Bash(mktemp -d \"$rd/halt/*)|Bash(mktemp -d \"$rd/state/*)|Bash(mktemp -d $rd/halt/*)|Bash(mktemp -d $rd/state/*)|Bash(mktemp $rd/halt/*)|Bash(mktemp $rd/state/*)" \
+  "$(jq -r '[.permissions.allow[] | select(startswith("Bash(mktemp"))] | sort | join("|")' "$st")"
 if grep -Fxq '# Personal rules' "$lead" && grep -Fxq -- '- fixture personal rule' "$lead" && grep -Fxq '# fx/repo/CLAUDE.md' "$lead" && grep -Fxq '# fixture repo rules' "$lead"; then
   pass "the lead instructions are the policy, the personal rules and the repository chain"
 else
