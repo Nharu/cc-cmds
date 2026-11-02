@@ -54,6 +54,10 @@ fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-session-hook.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
+# The attention spool root points at a path under the work directory that is
+# never created, so the attention tap writes nothing from this suite and never
+# reaches the account spool. Every hook run below inherits it.
+export CC_CMDS_ATTENTION_ROOT="$WORK/attention-root-absent"
 
 # Three PATH roots, each missing exactly one thing, so the two fail-open claims
 # are driven by absence rather than by a flag that only pretends to remove it.
