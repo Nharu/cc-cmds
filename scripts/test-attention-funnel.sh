@@ -19,6 +19,16 @@
 
 set -uo pipefail
 
+# Every run below starts from `env -i` with its own values, so these three only
+# keep this suite's own process from reaching the stage's ledger and manifest,
+# a real banner or the dashboard server: the guard this repository asks of every
+# suite that drives the gate family.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
