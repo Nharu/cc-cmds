@@ -21150,11 +21150,15 @@ cat > "$LRC/judgment-grade.md" <<'EOF'
 | `**판단 기준**:` | always |
 | `**판단 되돌리는 법**:` | at grade 1 |
 | `**판단 근거**:` | always |
+| `**판단 추천**:` | optional |
+| `**판단 선택지 리스크**:` | optional |
 EOF
+# 픽스처의 파서 줄은 실물 gate.sh 에서 옮기므로, 파서가 읽는 선택 마커 둘(추천과
+# 선택지 리스크)도 문서 쪽에 있어야 양쪽이 축자로 일치한다.
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 다섯 방출 마커가 전부 정의돼 있으면 통과한다"
+  ok "린트 — 필수 다섯과 선택 둘의 방출 마커가 전부 정의돼 있으면 통과한다"
 else
-  bad "린트" "다섯 마커가 다 있는데 실패했다"
+  bad "린트" "필수 다섯과 선택 둘의 마커가 다 있는데 실패했다"
 fi
 grep -vF '**판단 되돌리는 법**:' "$LRC/judgment-grade.md" > "$LRC/judgment-grade.md.tmp" \
   && mv "$LRC/judgment-grade.md.tmp" "$LRC/judgment-grade.md"
