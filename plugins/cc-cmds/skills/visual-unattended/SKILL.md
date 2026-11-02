@@ -36,12 +36,43 @@ Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema (`c
 | `record-mismatch` | `precondition-failed` | 기록이 없거나, 원장 `사전 인가` 행의 해시와 다르거나, 판 토큰을 모르거나, `visual-config.sh snapshot` 이 실패했다 |
 | `direction-missing` | `precondition-failed` | 기록에 `## 시각 방향` 절이 없거나 그 값이 `없음` 인데 시각 단계가 돌았다 |
 | `doc-unfrozen` | `precondition-failed` | 설계 문서에 `**상태**: 동결됨` 줄이 없다 |
-| `system-mismatch` | `precondition-failed` | `**디자인 시스템**` 이 `레포 기존`·`claude.ai 기존` 인데 `<base>/docs/visual-system/system.md` 가 없거나 그 `owner-repo=` 가 맞지 않는다. 또는 `신규` 인데 `system.md` 가 이미 있다 |
+| `system-mismatch` | `precondition-failed` | `**디자인 시스템**` 이 `레포 기존`·`claude.ai 기존` 인데 `<base>/docs/visual-system/system.md` 가 없다. 또는 `system.md` 가 있는데 그 `owner-repo=` 가 맞지 않는다. 또는 `신규` 인데 `system.md` 가 이미 있고 `visual-check.sh system --owner` 가 이 문서의 것으로 보지 않는다 |
 | `output-present` | `precondition-failed` | 사이드카가 이미 있고 상태가 `검토 통과`·`발행됨` 인데 재사용 판정(`visual-check.sh reuse`)이 맞지 않거나, `owner-doc=` 가 다르다 |
 | `boundary-mismatch` | `freeze-mismatch` | 스스로 돌리는 두 명령 경계 검사가 어긋났다 |
 | `review-cap` | `gate-unanswerable` | 세 회 안에 통과하지 못했다 |
 
-Every site except `review-cap` is a refusal of an input this stage must not work from; it carries no `**선택지**` beyond what §4 requires and puts the observed values — resolved paths, expected and observed hashes, the version token, the verdict line a helper printed — into `**관측 상세**`. `boundary-mismatch` carries the observation the contract's `freeze-mismatch` row asks for, unchanged.
+Every site puts the observed values — resolved paths, expected and observed hashes, the version token, the verdict line a helper printed — into `**관측 상세**`. The sites other than `review-cap`, `system-mismatch` and `output-present` are refusals of an input this stage must not work from and carry no `**선택지**` beyond what §4 requires. `boundary-mismatch` carries the observation the contract's `freeze-mismatch` row asks for, unchanged.
+
+**`system-mismatch` and `output-present` carry options by case.** The case is fixed by what Step 1 observed, and its key goes into `**관측 상세**` as one piece `경우=<key>`, so a resumed session can tell whether the halt it is answering is still the one it would raise now (`## Resumed turns`). Each option is a `- \`<label>\` — <description>` line with the label and description below, verbatim. Every record with options carries `**추천**: (없음) — <the fact only a person has>` and `**추천 근거**: (없음)` after the option lines, then a `**선택지 리스크**` line (`_common/pipeline-sidecar.md` §4, the bullet on `**선택지 리스크**`) giving the fixed risk below for each option it offers, joined with ` / `.
+
+| 자리 | `경우=` | 조건 | 선택지 |
+| --- | --- | --- | --- |
+| `system-mismatch` | `신규·다른 문서` | `신규` 인데 `system.md` 가 있고, `owner-repo=` 가 맞으며, `visual-check.sh system <문서> --owner` 가 종료 1 이다 | `있는 디자인 시스템을 쓴다`, `새로 만들어 덮는다` |
+| `system-mismatch` | `기존·파일 없음` | `레포 기존`·`claude.ai 기존` 인데 `system.md` 가 없다 | `신규로 만든다` |
+| `system-mismatch` | `owner-repo 불일치` | `system.md` 가 있는데 `owner-repo=` 가 이 레포가 아니다(출처 무관) | `새로 만들어 덮는다` |
+| `output-present` | `재고정 가능` | 이 문서의 사이드카이고, 재사용 판정이 기록·구속 다이제스트·디자인 시스템 다이제스트 조건에서 실패했으며, 상태가 `검토 통과` 이거나 `발행됨` 이면서 `visual-check.sh approval <문서>` 가 `승인 유효` 다 | `재사용으로 진행`, `다시 생성` |
+| `output-present` | `다시 생성만` | 이 문서의 사이드카이고 위 경우가 아니다 — 화면 조건이나 `tokens.css` 줄 조건에서 실패했거나, 승인이 유효하지 않은 `발행됨` 이다 | `다시 생성` |
+| `output-present` | `남의 사이드카` | 사이드카의 `owner-doc=` 가 다른 문서이거나 머리가 `cc-visual v1` 이 아니다 | 없음 — `**추천**`·`**추천 근거**`·`**선택지 리스크**` 도 싣지 않는다 |
+
+The `output-present` case is read from the reuse helper's line: `재사용 불가 — 기록의 sha256 이 다르다`, `재사용 불가 — 사이드카의 기록 필드에 sha256 이 없다`, `재사용 불가 — 설계 문서 구속 다이제스트가 다르다` and `재사용 불가 — 디자인 시스템 sha256 이 다르다` are the three conditions of `재고정 가능`; every other reason is `다시 생성만`. For a `발행됨` sidecar run `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh approval <document>` as the first word of a `gate.sh exec … --surface 읽기` and put its line into `**관측 상세**` beside the reuse line.
+
+Option descriptions, verbatim:
+
+- `` - `있는 디자인 시스템을 쓴다` — 있는 system.md 를 레포 기존처럼 읽고 이어 간다. 디자인 시스템 파일은 새로 만들지 않고 덮지 않는다 ``
+- `` - `새로 만들어 덮는다` — 위험 수용: 디자인 시스템을 신규로 생성해 docs/visual-system/ 의 파일을 덮어쓴다. 그 system.md 에 기대던 다른 문서의 사이드카는 재사용되지 않게 된다 ``
+- `` - `신규로 만든다` — 디자인 시스템을 신규로 생성해 docs/visual-system/ 에 쓰고 이어 간다 ``
+- `` - `재사용으로 진행` — 위험 수용: 사이드카의 기록·설계 문서 구속 다이제스트·디자인 시스템 sha256 세 필드만 지금 값으로 다시 고정하고, 화면 고정값과 구현 승인은 그대로 둔 채 재사용으로 끝낸다 ``
+- `` - `다시 생성` — 사이드카와 화면 파일을 첫 시도처럼 다시 생성해 덮어쓴다. 이전 화면 고정값과 구현 승인은 사라지고 발행 단계가 새 판을 다시 발행한다 ``
+
+`**추천**` reads `(없음) — 이 문서의 화면이 다른 문서가 만든 디자인 시스템을 따라도 되는지는 그 디자인 시스템을 정한 사람만 안다` for `신규·다른 문서` and `owner-repo 불일치`, `(없음) — 기록이 가리킨 기존 디자인 시스템을 새로 만들어도 되는지는 시각 방향을 정한 사람만 안다` for `기존·파일 없음`, and `(없음) — 바뀐 입력을 반영하지 않은 화면을 그대로 써도 되는지는 그 화면을 본 사람만 안다` for both `output-present` cases with options.
+
+Risks, verbatim:
+
+- `있는 디자인 시스템을 쓴다` — 다른 문서가 만든 토큰과 금지 해제로 화면이 생성되어, 인터뷰에서 신규로 정한 시각 방향과 다른 디자인 시스템을 따를 수 있다
+- `새로 만들어 덮는다` — 있던 system.md 와 tokens.css 가 덮여, 그 파일에 기대던 다른 문서의 사이드카가 재사용되지 않고 그 화면을 다시 생성해야 한다
+- `신규로 만든다` — 기록이 가리킨 기존 디자인 시스템 대신 새 디자인 시스템이 생겨, 쓰려던 기존 토큰과 다른 화면이 나온다
+- `재사용으로 진행` — 바뀐 기록·설계 문서·디자인 시스템을 반영하지 않은 화면이 그대로 다음 단계로 가고, 그 차이는 사람이 화면을 다시 보기 전까지 드러나지 않는다
+- `다시 생성` — 이전 화면 고정값과 구현 승인이 사라지고 발행된 아티팩트는 고아로 남아, 생성·검토·발행·승인을 다시 받아야 한다
 
 **`review-cap` is the one halt with a choice**, and its options are fixed: `- \`방향을 바꿔 다시 생성\` — …`, `- \`로컬 초안으로 둔다\` — …`, `- \`중단\` — …`, each description saying what happens to the sidecar (it stays `로컬 초안` in all three until a seat acts). **It carries `**추천**: (없음) — <the last round's unresolved findings, by severity>`** after the option lines and before `**하네스 오류**`: whether to accept the screens or move the direction is a judgment only the person who set the direction can make, and nothing in the record, the manifest or this machine settles it. `**질문 문면**` quotes the last round's verdict and every `치명`·`주요` finding. **Its `**선택지 리스크**` line is fixed** (`_common/pipeline-sidecar.md` §4, the bullet on `**선택지 리스크**`), after `**추천 근거**`: `` `방향을 바꿔 다시 생성` — 새 방향으로 생성과 검토 회차가 다시 돌아 그만큼 시간과 비용이 들고, 새 방향도 검토를 통과한다는 보장이 없다 / `로컬 초안으로 둔다` — 마지막 회차의 치명·주요 발견이 남은 화면이 초안으로 남고, 화면 슬라이스는 발행과 승인 전까지 착지하지 않는다 / `중단` — 이 런에서 화면 작업이 더 나아가지 않고 화면 슬라이스가 이 런에서 착지하지 않는다 ``.
 
@@ -65,7 +96,7 @@ These rules decide termination and what this stage may write. They stay near the
 
 **CFI-2 — Authors and reviewers are read-only.** They return file blocks, edit pairs or a verdict; the parent writes every byte, and rejects a file block outside this phase's paths and an edit pair whose id is not on that round's fix list (`contract.md` §6).
 
-**CFI-3 — The night never overwrites a person's state.** A sidecar at `검토 통과` or `발행됨`, another document's sidecar, an existing `system.md` when the record says `신규` — each is a halt, never a write. The one other end for such a sidecar is Step 1's reuse branch, which writes nothing either. A `로컬 초안` this document's earlier attempt left is inherited and continued.
+**CFI-3 — The night never overwrites a person's state.** A sidecar at `검토 통과` or `발행됨`, another document's sidecar, an existing `system.md` when the record says `신규` — each is a halt, never a write. The one other end for such a sidecar is Step 1's reuse branch, which writes nothing but the sidecar's `**기록**` line. An existing `system.md` that `visual-check.sh system --owner` reads as this document's own is not such a file: it is read and continued, never overwritten. What a person's answer to a `system-mismatch` or `output-present` halt directs is the person's own act, and `## Resumed turns` carries it out. A `로컬 초안` this document's earlier attempt left is inherited and continued.
 
 **CFI-4 — No host file, no Claude Design.** This stage writes nothing under `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/` — `seed`, `append` and `account` refuse inside a run anyway, because this stage kind carries no publish-stage marker — and calls no Artifact tool. Models and bans come from the frozen record through `visual-config.sh snapshot`, never from the host files.
 
@@ -84,25 +115,28 @@ These rules decide termination and what this stage may write. They stay near the
 3. **The interview record.** Resolve it by path convention — `$(dirname "$CC_PIPELINE_MANIFEST")/${CC_PIPELINE_RUN_ID}.interview.md` — not from the ledger row, so the resolution does not depend on the row it is checked against. Its header's version token is `cc-run-interview v3`, its `shasum -a 256` equals the manifest `## 인가` row `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>`, and the file exists with its row and the row with its file. Any of those fails → halt at `record-mismatch` with the path, the token, the expected and the observed hash in `**관측 상세**`. A format this stage does not know is not read as "no direction".
 4. The record has a `## 시각 방향` section and its value is not `없음`, or halt at `direction-missing`.
 
-   **Reuse.** When the sidecar exists, its `owner-doc=` is this document's key and its state is `검토 통과` or `발행됨`, run `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh reuse <document> --record <the record item 3 resolved>` as the first word of a `gate.sh exec … --surface 읽기` (its `binding` subcommand is graded `읽기` too). The helper checks the six conditions of `sidecar.md` §4's reuse line — this document's sidecar, its state, the record's sha256 (never its path), the binding digest, the design system file and every screen file — and writes nothing.
-   - `재사용 <상태>` → write nothing at all and skip the rest of Step 1 and Steps 2–4: emit a Korean terminal message naming the reused sidecar, its state and the helper's line, and end it with Step 5's last line, verbatim as Step 5 gives it. The sidecar stays as the source run left it, so a `발행됨` one goes on to the publish stage's own branch for that state.
+   **Reuse.** When the sidecar exists, its `owner-doc=` is this document's key and its state is `검토 통과` or `발행됨`, run `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh reuse <document> --record <the record item 3 resolved>` as the first word of a `gate.sh exec … --surface 읽기` (its `binding` subcommand is graded `읽기` too). The helper checks the conditions of `sidecar.md` §4's reuse line — this document's sidecar, its state, the record's sha256 (never its path), the binding digest, the design system file (its digest with the artifact line put back to unpublished, or its whole-file hash, and its `**tokens.css sha256**` line against `tokens.css`) and every screen file — and writes nothing.
+   - `재사용 <상태>` → rewrite only the sidecar's `**기록**` line, and only when its path column is not this run's record path: replace the path with the `<base>`-relative path of the record item 3 resolved and keep the `(sha256 …)` column byte for byte — it is the same value, since the reuse check just compared it — in one same-directory temp file → rename write (`../_common/sidecar.md` §1.3). Write nothing else — no other field, no screen block, no screen file — and skip the rest of Step 1 and Steps 2–4: emit a Korean terminal message naming the reused sidecar, its state, the helper's line and whether the `**기록**` line was rewritten, and end it with Step 5's last line, verbatim as Step 5 gives it. The sidecar otherwise stays as the source run left it, so a `발행됨` one goes on to the publish stage's own branch for that state, and the attended seat that finds the record through `**기록**` reads this run's.
    - `재사용 불가 — <사유>` → go on as below; items 6 and 7 halt at `system-mismatch` or `output-present` as they would have, and that halt record's `**관측 상세**` carries the helper's line verbatim.
 5. Run `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-config.sh snapshot --part models` and `… snapshot --part bans`; keep the first as this stage's model table (`contract.md` §6) and write the second into the witness directory of Step 2 as this stage's ban list. A non-zero exit → halt at `record-mismatch` with the helper's reason line.
-6. **The design system.** Read `**디자인 시스템**` from `## 시각 방향`. `레포 기존` or `claude.ai 기존` → `<base>/docs/visual-system/system.md` exists and passes the `owner-repo=` rule of `sidecar.md` §3; `신규` → it does not exist. Otherwise halt at `system-mismatch`.
-7. **The sidecar.** No sidecar → a first attempt. A sidecar whose `owner-doc=` is this document's key and whose state is `로컬 초안` → inherit it: keep its screens, its `**검토**` count and its `**다듬기**` lines, and continue from the next round. A sidecar at `검토 통과` or `발행됨` the reuse check of item 4 did not take, or whose `owner-doc=` is another key → halt at `output-present`.
+6. **The design system.** Read `**디자인 시스템**` from `## 시각 방향`. A `<base>/docs/visual-system/system.md` that exists and fails the `owner-repo=` rule of `sidecar.md` §3 → halt at `system-mismatch` (`경우=owner-repo 불일치`), whatever the source. Otherwise:
+   - `레포 기존` or `claude.ai 기존` → `system.md` exists and is read; when it does not exist, halt at `system-mismatch` (`경우=기존·파일 없음`).
+   - `신규` and no `system.md` → this attempt generates the design system (Step 3).
+   - `신규` and `system.md` exists → run `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh system <document> --owner` as the first word of a `gate.sh exec … --surface 읽기`. Exit 0 (`이 문서의 디자인 시스템`) → this document, or an earlier run of it, made that file: read it as `레포 기존` is read, generating nothing and overwriting nothing. Exit 1 → halt at `system-mismatch` (`경우=신규·다른 문서`) with the helper's line verbatim in `**관측 상세**`.
+7. **The sidecar.** No sidecar → a first attempt. A sidecar whose `owner-doc=` is this document's key and whose state is `로컬 초안` → inherit it: keep its screens, its `**검토**` count and its `**다듬기**` lines, and continue from the next round. A sidecar at `검토 통과` or `발행됨` the reuse check of item 4 did not take → halt at `output-present` (`경우=재고정 가능` or `경우=다시 생성만`, read as the option rules above say). A sidecar whose `owner-doc=` is another key or whose header is not `cc-visual v1` → halt at `output-present` (`경우=남의 사이드카`), with no option.
 8. **The screens.** Take the screen list from `## 시각 방향`'s `대상 화면`; when it is `설계에 위임`, derive the list from the frozen document and write it into the sidecar. Screen ids are `[a-z0-9-]+`.
 
 ## Step 2: Witness directory and boundary baselines
 
 Run `${CLAUDE_SKILL_DIR}/../../orchestrator/cc-team-witness-init.sh {slug}` (no `bash` in front) and record the **printed path, literally**. The two boundary baselines, the ban list of Step 1.5, the generation record and every review render's scratch live there — an existing allowed directory, not a new state root. The baselines are taken fresh by this process; an inherited `로컬 초안`'s files are inside the exempt paths and so already inside the new baselines.
 
-The boundary check is the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_common/verification.md`, taken now and re-checked at Step 5. Its exempt paths are this stage's own outputs — `docs/visual/{slug}.md`, `docs/visual/{slug}.*.html`, and `docs/visual-system/*` only when Step 1.6 read `신규`. A reference copy `docs/visual/{slug}.ref-*` is the kickoff's and is **not** exempt. Declare `-run-` as the exception pattern, as the design arm does, so a sibling segment's worktree does not fail this stage's gate.
+The boundary check is the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_common/verification.md`, taken now and re-checked at Step 5. Its exempt paths are this stage's own outputs — `docs/visual/{slug}.md`, `docs/visual/{slug}.*.html`, and `docs/visual-system/*` only when this attempt generates the design system — Step 1.6 read `신규` with no `system.md`, or a resumed answer of `## Resumed turns` chose to create it. A reference copy `docs/visual/{slug}.ref-*` is the kickoff's and is **not** exempt. Declare `-run-` as the exception pattern, as the design arm does, so a sibling segment's worktree does not fail this stage's gate.
 
 ## Step 3: Generate and review
 
-**Design system.** With `레포 기존`·`claude.ai 기존`, read `tokens.css`·`tokens.md` and the `**금지 해제**` lines of `system.md`. With `신규`, spawn a `ds-generate` author with the model table's value for that key (`contract.md` §6, file-block envelope) for `tokens.css`, `tokens.md` and `system.html`, and write `system.md` with `**출처**: 신규` and `**아티팩트**: (미발행)`.
+**Design system.** With `레포 기존`·`claude.ai 기존`, or a `신규` whose existing `system.md` Step 1.6 read as this document's, read `tokens.css`·`tokens.md` and the `**금지 해제**` lines of `system.md`. When this attempt generates the design system, spawn a `ds-generate` author with the model table's value for that key (`contract.md` §6, file-block envelope) for `tokens.css`, `tokens.md` and `system.html`, and write `system.md` with `**출처**: 신규` and `**아티팩트**: (미발행)`.
 
-**Screens.** For a first attempt, spawn a `screen-generate` author per screen with the document, `## 시각 방향`, the tokens and `contract.md` §2 — including the unattended screen form: a plain HTML document whose head carries the token block, with literal values, no `<x-dc>` wrapper, no `{{holes}}` and no `./support.js`. Fill each returned screen's token block with the bytes of `tokens.css` (`contract.md` §7, 토큰 블록 채우기), then write each file block to `docs/visual/{slug}.<id>.html` atomically, then the sidecar at `로컬 초안` with every field of `sidecar.md` §2, `**기록**` carrying the record's `<base>`-relative path and sha256, so the morning seat reads the same record, and `**설계 문서 구속 다이제스트**` the value `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh binding <document>` prints (`gate.sh exec … --surface 읽기`), so a later reuse check compares the same computation.
+**Screens.** For a first attempt, spawn a `screen-generate` author per screen with the document, `## 시각 방향`, the tokens and `contract.md` §2 — including the unattended screen form: a plain HTML document whose head carries the token block, with literal values, no `<x-dc>` wrapper, no `{{holes}}` and no `./support.js`. Fill each returned screen's token block with the bytes of `tokens.css` (`contract.md` §7, 토큰 블록 채우기), then write each file block to `docs/visual/{slug}.<id>.html` atomically, then the sidecar at `로컬 초안` with every field of `sidecar.md` §2, `**기록**` carrying the record's `<base>`-relative path and sha256, so the morning seat reads the same record, `**설계 문서 구속 다이제스트**` the value `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh binding <document>` prints (`gate.sh exec … --surface 읽기`), and `**디자인 시스템 sha256**` the value `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh system <document>` prints (`gate.sh exec … --surface 읽기`, after `system.md` is written when this attempt writes it), so a later reuse check compares the same computation.
 
 **Review loop** (CFI-1), per round:
 
@@ -126,9 +160,20 @@ Re-check the boundary gate against the Step 2 baselines; a mismatch → halt at 
 
 시각 디자인을 검토 통과로 확정했습니다.
 
+## Resumed turns
+
+A `system-mismatch` or `output-present` halt is answered inside the same run by re-attaching this session with the halt record and the chosen option in the prompt; the gate's re-entry table holds no row for this stage, so no fresh session is handed a card. On such a turn:
+
+1. **Run Step 1 again** from item 1, before acting on the answer, and compare the halt it computes now with the record's — its site and its `경우=` piece. When they differ, or when Step 1 now passes without a halt, do not apply the answer: write a new halt record for what Step 1 computes now (with the earlier record's path in `**관측 상세**`) or go on as Step 1 says.
+2. **`있는 디자인 시스템을 쓴다`** → continue as `레포 기존`: read the existing `system.md`, generate nothing and overwrite nothing under `docs/visual-system/`. **`새로 만들어 덮는다`** or **`신규로 만든다`** → continue as `신규` with this attempt generating the design system: Step 2's exempt paths include `docs/visual-system/*`, and Step 3 writes `system.md` and its extracts over whatever is there.
+3. **`재사용으로 진행`** → re-pin the sidecar's three document-level fields to their current values — `**기록**` (this run's record path and its sha256), `**설계 문서 구속 다이제스트**` (`visual-check.sh binding <document>`) and `**디자인 시스템 sha256**` (`visual-check.sh system <document>`), each read through `gate.sh exec … --surface 읽기` — in one same-directory temp file → rename write, touching no screen block and no `**구현 승인**` line. Then run the reuse check of Step 1 item 4 again: `재사용 <상태>` → end as its reuse branch ends; `재사용 불가 — <사유>` → halt at `output-present` again with that line in `**관측 상세**` and the case it now reads.
+4. **`다시 생성`** → go on as a first attempt from Step 2: Step 3 overwrites the sidecar and the screen files. The earlier screen pins and approval are gone, and the publish stage publishes the new version.
+
+This section covers those two sites only; an answer to `review-cap` is outside it.
+
 ## Constraints
 
-- Writes are limited to `<base>/docs/visual/{slug}.md`, `<base>/docs/visual/{slug}.*.html`, `<base>/docs/visual-system/` when Step 1.6 read `신규`, the witness directory, and the halt record. Every link-file and extract write is the same-directory temp file → rename of `../_common/sidecar.md`. Nothing here is staged or committed.
+- Writes are limited to `<base>/docs/visual/{slug}.md`, `<base>/docs/visual/{slug}.*.html`, `<base>/docs/visual-system/` when this attempt generates the design system, the witness directory, and the halt record. Two writes to an existing `검토 통과` or `발행됨` sidecar are allowed besides: Step 1's reuse branch rewriting its `**기록**` line to this run's record path, and `## Resumed turns`' `재사용으로 진행` re-pinning its three document-level fields. Every link-file and extract write is the same-directory temp file → rename of `../_common/sidecar.md`. Nothing here is staged or committed.
 - Token values are never normalized; theme wrappers are kept verbatim (`contract.md` §1).
 - Never write the design document, the interview record, the manifest, a pipeline sidecar, a host file or `support.js`.
 - Never emit the terminal literal on any path except Step 5's and Step 1's reuse branch, which ends with Step 5's line.
