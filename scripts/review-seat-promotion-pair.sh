@@ -865,6 +865,7 @@ witness_hook_write() {
 # those directories:
 #   <var>=$(mktemp [-d] <path>)   mktemp [-d] <path>   mkdir -p <path>
 #   mv [-n] <path|"$var"> <path>  echo "$var"   cat > <path|"$var"> <<'TAG'
+#   openssl rand -hex 8           (the lead's witness nonce, names no path)
 # A <path> or "$var" is either bare or wrapped in one pair of double quotes,
 # never one-sided; a <path> may be spelled `"$(dirname <path>)/<rest>"` (a
 # dirname operand ending in `/` or holding `//` is not resolved); "$var" is a
@@ -949,6 +950,7 @@ re_mvpath='^mv( -n)? '"$pth"' '"$pth"'$'
 re_echo='^echo '"$vref"'$'
 re_catvar='^cat > '"$vref"'$'
 re_catpath='^cat > '"$pth"'$'
+re_nonce='^openssl rand -hex 8$'
 
 # A quoted-delimiter heredoc's body is literal text: drop it, and the
 # `<<'TAG'` that opens it. Only a line ending in `cat > <path|"$var"> <<'TAG'`
@@ -1003,6 +1005,8 @@ while IFS= read -r seg; do
     case "$vars" in *" $(vname "${BASH_REMATCH[1]}") "*) ;; *) miss ;; esac
   elif [[ $seg =~ $re_catpath ]]; then
     under "${BASH_REMATCH[1]}" || miss
+  elif [[ $seg =~ $re_nonce ]]; then
+    :
   else
     miss
   fi
@@ -1014,8 +1018,8 @@ HOOK
 }
 
 # write_settings <file> <target> <run dir> — the session's settings: the
-# account's plugins all off, reads, git queries, sub-agents and the plugin's own
-# scripts allowed, writes only inside the target clone, the report path, the
+# account's plugins all off, reads, git queries, sub-agents, the plugin's own
+# scripts and the lead's nonce command allowed, writes only inside the target clone, the report path, the
 # state home and the halt directory, network tools refused.
 #
 # The rules follow Claude Code's permission rules (code.claude.com/docs/en/permissions):
@@ -1050,6 +1054,12 @@ HOOK
 # <run dir>/witness-misses.log, which the pilot requires empty. A hook's allow
 # does not lift a deny rule.
 #
+# The lead mints each member's witness nonce with `openssl rand -hex 8`, a Bash
+# call of its own that no plugin script makes for it and that neither the
+# read-only defaults nor `acceptEdits` approve. A refused call lands in
+# `permission_denials`, which fails the pilot, so that exact command is opened
+# by a rule, and the hook also allows it as one of the commands of a call.
+#
 # These are the runner's own rules; the lane's user settings are merged in as
 # they are for a gate stage, so its allow rules and hooks reach the session too.
 write_settings() {
@@ -1069,6 +1079,7 @@ write_settings() {
         "Bash(git merge-base:*)", "Bash(git status:*)", "Bash(git remote:*)", "Bash(git ls-files:*)",
         "Bash(git cat-file:*)", "Bash(git for-each-ref:*)", "Bash(git branch:*)", "Bash(git blame:*)",
         "Bash(git grep:*)", "Bash(git ls-tree:*)", "Bash(git rev-list:*)",
+        "Bash(openssl rand -hex 8)",
         ("Bash(bash " + $pd + "/*)"), ("Bash(" + $pd + "/*)")
       ] + ([$t, ($rd + "/state"), ($rd + "/halt")] | map("Edit(/" + . + "/**)"))
         + ["Edit(/" + $rd + "/report.md)"]

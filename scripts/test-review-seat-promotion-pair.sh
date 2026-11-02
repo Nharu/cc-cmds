@@ -453,6 +453,18 @@ hook_says "mkdir -p $rd/target/out" > /dev/null
 if [[ ! -e "$ml" ]]; then pass "the hook logs no call that only mentions the words or runs mkdir outside those directories"; else fail "the hook logged: $(cat "$ml")"; fi
 expect_eq "the hook allows mkdir -p of the state home and the halt directory themselves" "allow|allow" \
   "$(hook_says "mkdir -p $rd/state")|$(hook_says "mkdir -p \"$rd/halt\"")"
+# The lead mints every witness nonce with the protocol's own command, a call of
+# its own: the settings open exactly it, and the hook allows it alone, several
+# in one call, or beside a witness command, and nothing that writes or pipes it.
+p_nonce=$(grep -oE 'openssl rand -hex 8' "$proto" | awk 'NR == 1' || true)
+if [[ -n "$p_nonce" ]]; then pass "the protocol still names the nonce command the settings and the hook open"; else fail "the nonce command is gone from $proto"; fi
+expect_eq "the settings open the protocol's nonce command exactly" "Bash($p_nonce)" \
+  "$(jq -r '[.permissions.allow[] | select(startswith("Bash(openssl"))] | join("|")' "$st")"
+expect_eq "the hook allows the nonce command alone, several at once and beside a witness command" "allow|allow|allow" \
+  "$(hook_says "$p_nonce")|$(hook_says "$p_nonce"$'\n'"$p_nonce; $p_nonce")|$(hook_says "$c_mkd && $p_nonce")"
+expect_eq "the hook gives no decision to the nonce command redirected, piped, or with other arguments" "none|none|none|none" \
+  "$(hook_says "$p_nonce > $rd/state/n")|$(hook_says "$p_nonce | sh")|$(hook_says "openssl rand -out $rd/state/n 8")|$(hook_says "openssl rand -hex 8 -engine x")"
+if [[ ! -e "$ml" ]]; then pass "the hook logs no nonce command"; else fail "the hook logged: $(cat "$ml")"; fi
 # A double quote left open hides the text up to the next quote from the shell
 # as one string, so the hook must not read a `<<'TAG'` inside it as a heredoc
 # whose body it may skip, nor accept a one-sided quote around a path.
