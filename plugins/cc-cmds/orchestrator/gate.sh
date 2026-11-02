@@ -1421,6 +1421,13 @@ gate_reach_derived_full() {
     env)     _gw=$(shift; gate_unwrap_env     gate_reach_derived_unwrapped '' '' "$@") ;;
     timeout|nice|nohup|stdbuf)
       _gw=$(shift; gate_unwrap_wrapper "$cmd" gate_reach_derived_unwrapped '' '' "$@") ;;
+    # `find` runs each `-exec`/`-ok` command itself, and the grade reads
+    # every one of them, so the floor does too: `find … -exec xcrun simctl
+    # erase <udid> ';'` declared `런로컬` raises to `기기전역` as its bare
+    # spelling does, and reaches the device checks of that cell.
+    find)
+      _gw=$(shift; gate_unwrap_find gate_reach_derived_unwrapped $'-\t-' $'-\t-' $'-\t-' \
+        gate_reach_fold_find "$@") ;;
   esac
   case "$_gw" in
     ''|'-	-') ;;
@@ -1514,6 +1521,19 @@ gate_reach_derived_unwrapped() {
   # The resolver the unwraps above call with the wrapped argv alone. The alias is
   # the caller's `alias` local, which bash's dynamic scope makes visible here.
   gate_reach_derived_full "$alias" "$@"
+}
+
+gate_reach_fold_find() {
+  # gate_reach_fold_find <answer> <answer> — the combiner `gate_unwrap_find`
+  # folds the floor's answers for one `find`'s primaries with. The first
+  # primary that raises gives the first line, and every trigger word either
+  # answer carries is kept, since each is a word the row has to carry.
+  case "$1" in '-	-'*) printf '%s' "$2"; return 0 ;; esac
+  case "$2" in '-	-'*) printf '%s' "$1"; return 0 ;; esac
+  case "$2" in
+    *$'\n'*) printf '%s\n%s' "$1" "${2#*$'\n'}" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 gate_docker_globals() {
@@ -3334,13 +3354,16 @@ gate_reach_disposition() {
     # whole argv, launchers included. A wrapped command given as a path parks
     # as a bare one does. `find` runs any number of commands behind `-exec`
     # and `-ok`, and no one of them is the act, so a `find` that names a
-    # device tool anywhere parks as an act whose devices cannot be read.
+    # device tool anywhere parks as an act whose devices cannot be read —
+    # read at the peeled word too, so `timeout 60 find … -exec xcrun …` parks
+    # as its bare spelling does.
     local _dk='-' _dshape='' _ds=1 _dw
     if [ "$cls" = "표" ] && [ "$graded" = "트리밖쓰기" ]; then
       _ds=$(gate_device_act_start "$@")
-      case "${*:$_ds:1}" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
+      _dw=${*:$_ds:1}
+      case "$_dw" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
       _dk=$(gate_device_act_kind "${@:$_ds}")
-      if [ "${1##*/}" = find ]; then
+      if [ "$_dw" = find ]; then
         for _dw in "$@"; do
           case "${_dw##*/}" in
             xcrun|xcodebuild|adb|emulator|avdmanager|maestro) printf '기기전역\tforeign-device\t-'; return 0 ;;

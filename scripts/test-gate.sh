@@ -52240,7 +52240,7 @@ x83_run() {
     PATH="$X83S:$PATH"; export PATH
     export CC_PIPELINE_STAGE_ID='S5#1' CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
     gate_main exec --manifest "$RX_M" --target front3 --segment S5 --cutpoint 커밋 --surface 트리밖쓰기 \
-      --reach 기기전역 --snapshot-digest "$h" --rationale '기기 짝 정리 시험' -- "$@"
+      --reach "${X83_REACH:-기기전역}" --snapshot-digest "$h" --rationale '기기 짝 정리 시험' -- "$@"
   ) 2>&1 ); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
@@ -52281,8 +52281,27 @@ x83_run timeout 60 "$X83S/xcrun" simctl shutdown "$X83U"
 check "83x: 감싼 쪽이 경로인 기기 도구는 열리지 않는다" "$([ "$rc" != 0 ] && echo 거부 || echo 열림)|$(grep -c "shutdown $X83U" "$X83L")" "거부|1"
 x83_run find /dev/null -maxdepth 0 -exec xcrun simctl erase 11111111-2222-3333-4444-555555555555 ';'
 check "83x: find -exec 뒤의 기기 행위는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+# 감싸개 뒤의 find — find 검사가 날 argv0 를 읽으면 감싸개가 앞에 붙은 철자는 기기 검사를
+# 모두 건너뛰어 판단 갈래로 가고, 그 갈래도 0 아닌 코드로 멈추므로 종료 코드와 수리 문구를
+# 함께 본다.
+x83_run timeout 60 find /dev/null -maxdepth 0 -exec xcrun simctl erase 11111111-2222-3333-4444-555555555555 ';'
+check "83x: timeout 으로 감싼 find -exec 의 남의 기기 erase 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+x83_run env FOO=1 find /dev/null -maxdepth 0 -exec xcrun simctl delete 11111111-2222-3333-4444-555555555555 ';'
+check "83x: env 로 감싼 find -exec 의 남의 기기 delete 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+x83_run nice find /dev/null -maxdepth 0 -exec xcrun simctl create other iPhone ';'
+check "83x: nice 로 감싼 find -exec 의 simctl create 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+# 런로컬 선언 — 도달 바닥이 기기 도구를 기기전역 으로 올려야 기계 전역 칸의 기기 검사에
+# 닿는다. 바닥이 find 의 -exec 안을 보지 않으면 런로컬 칸이 그대로 연다. 위에서 이미
+# park 한 argv 는 park 기억이 수리 문구 없이 답하므로, 여기서는 다른 남의 UDID 를 겨눈다.
+X83V='99999999-2222-3333-4444-555555555555'
+X83_REACH=런로컬 x83_run xcrun simctl erase "$X83V"
+check "83x: 런로컬 로 선언한 남의 기기 erase 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+X83_REACH=런로컬 x83_run timeout 60 xcrun simctl erase "$X83V"
+check "83x: 런로컬 로 선언한 감싼 남의 기기 erase 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+X83_REACH=런로컬 x83_run find /dev/null -maxdepth 0 -exec xcrun simctl erase "$X83V" ';'
+check "83x: 런로컬 로 선언한 find -exec 의 남의 기기 erase 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
 check "83x: 감싼 park 행위는 대역에 닿지 않는다" \
-  "$(grep -c -e 'erase 11111111' -e 'delete 11111111' "$X83L")" "0"
+  "$(grep -c -e 'erase 11111111' -e 'delete 11111111' -e "erase $X83V" "$X83L")" "0"
 x83_run xcrun simctl create other iPhone
 check "83x: 접두가 맞지 않는 만들기는 device-name 수리 줄과 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'must be named')" "11|1"
 x83_run avdmanager create avd -n cc-R83X-S5-z -k x
