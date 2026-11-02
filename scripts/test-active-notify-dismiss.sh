@@ -36,7 +36,14 @@
 #
 # THE PIPELINE VARIABLES ARE UNSET FOR EVERY RUN except the cases that set one:
 # run from inside a stage, they would make every hook exit early and every
-# negative assertion pass for the wrong reason.
+# negative assertion pass for the wrong reason. HOME is a directory under the
+# work directory for the same reason the spool root is: nothing this suite
+# starts can reach the account's state.
+#
+# THE HANDLED MARKERS. With a spool root that exists, a dismissal of session A
+# leaves exactly the pair of active-notify markers with cause `return` — the
+# exact slot and the `<slot>@` prefix — on any host and without
+# terminal-notifier; the switch and the stage markers stop them with the rest.
 
 set -uo pipefail
 
@@ -78,7 +85,10 @@ export CC_CMDS_ATTENTION_ROOT="$WORK/attention-root-absent"
 
 BIN="$WORK/bin"          # stateful notifier stub + jq
 BIN_NO_JQ="$WORK/bin-nj" # notifier stub + bash only — the WHOLE PATH of the no-jq case
-mkdir -p "$BIN" "$BIN_NO_JQ"
+BIN_JQ_ONLY="$WORK/bin-jq" # jq only — with /usr/bin:/bin, the PATH without terminal-notifier
+HOME_DIR="$WORK/home"
+SPOOL="$WORK/attention-root"  # created only by the marker cases
+mkdir -p "$BIN" "$BIN_NO_JQ" "$BIN_JQ_ONLY" "$HOME_DIR"
 NC_STATE="$WORK/nc.table"
 NC_LOG="$WORK/nc.log"
 TMPD="$WORK/tmp"         # the TMPDIR every hook and helper sees
@@ -133,6 +143,7 @@ STUB
 chmod +x "$BIN/terminal-notifier"
 cp "$BIN/terminal-notifier" "$BIN_NO_JQ/terminal-notifier"
 ln -s "$JQ" "$BIN/jq"
+ln -s "$JQ" "$BIN_JQ_ONLY/jq"
 BASH_BIN=$(command -v bash 2>/dev/null || true)
 ln -s "$BASH_BIN" "$BIN_NO_JQ/bash"
 
@@ -145,9 +156,10 @@ PATH_NO_JQ="$BIN_NO_JQ"
 # shell might carry are removed so they cannot decide a result.
 base_env() {
   env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID \
+      -u CC_PIPELINE_REENTRY \
       -u CC_CMDS_SESSION_NOTIFY -u CC_CMDS_SESSION_DISMISS -u CC_CMDS_AUTOPILOT_NOTIFY \
-      -u RUN_ID -u RUN_DIR -u TMUX -u TMUX_PANE -u CLAUDE_CODE_SESSION_ID \
-      PATH="$PATH_FULL" \
+      -u RUN_ID -u RUN_DIR -u CC_NOTIFY_REPO -u TMUX -u TMUX_PANE -u CLAUDE_CODE_SESSION_ID \
+      PATH="$PATH_FULL" HOME="$HOME_DIR" \
       CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
       CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
       CC_CMDS_NOTIFY_HOST_OS=Darwin \
@@ -591,6 +603,48 @@ out=$(base_env CC_CMDS_NOTIFY_HOST_OS=Linux bash "$NOTIFY_SH" dismiss abc 2>&1);
 check "dismiss — Darwin 이 아니면 조용히 0" "$rc:$out:$(touch_lines)" "0::0"
 out=$(base_env PATH="/usr/bin:/bin" bash "$NOTIFY_SH" dismiss abc 2>&1); rc=$?
 check "dismiss — terminal-notifier 가 없으면 조용히 0" "$rc:$out:$(touch_lines)" "0::0"
+
+# ---------------------------------------------------------------------------
+# Handled markers in the attention spool
+# ---------------------------------------------------------------------------
+reset_spool() { rm -rf "$SPOOL"; mkdir -p "$SPOOL"; }
+# The active-notify markers with cause `return`, one "<slot> <prefix>" line each.
+an_markers() {
+  local f
+  { find "$SPOOL/handled" -maxdepth 1 -type f -name '*.json' 2>/dev/null || true; } \
+    | while IFS= read -r f; do
+        jq -r 'select(.cause == "return" and (.slot | startswith("cc-cmds-active-notify-")))
+               | "\(.slot) \(.prefix)"' "$f"
+      done | LC_ALL=C sort
+}
+WANT_A_MARKERS=$(printf '%s\n' 'cc-cmds-active-notify-abc false' 'cc-cmds-active-notify-abc@ true')
+
+CASE=marker-return; reset_state; seed; reset_spool
+hook_run "$(ups abc 'plain typed text')" CC_CMDS_ATTENTION_ROOT="$SPOOL"
+expect_dismiss_a
+check "$CASE — A 의 닫힘 표지 한 쌍" "$(an_markers)" "$WANT_A_MARKERS"
+
+CASE=marker-linux; reset_state; seed; reset_spool
+out=$(base_env CC_CMDS_ATTENTION_ROOT="$SPOOL" CC_CMDS_NOTIFY_HOST_OS=Linux bash "$NOTIFY_SH" dismiss abc 2>&1); rc=$?
+check "$CASE — 조용히 0, 배너는 건드리지 않는다" "$rc:$out:$(touch_lines)" "0::0"
+check "$CASE — Darwin 이 아니어도 표지 한 쌍" "$(an_markers)" "$WANT_A_MARKERS"
+
+CASE=marker-no-tool; reset_state; seed; reset_spool
+out=$(base_env CC_CMDS_ATTENTION_ROOT="$SPOOL" PATH="$BIN_JQ_ONLY:/usr/bin:/bin" bash "$NOTIFY_SH" dismiss abc 2>&1); rc=$?
+check "$CASE — 조용히 0, 배너는 건드리지 않는다" "$rc:$out:$(touch_lines)" "0::0"
+check "$CASE — terminal-notifier 가 없어도 표지 한 쌍" "$(an_markers)" "$WANT_A_MARKERS"
+
+CASE=marker-switch-off; reset_state; seed; reset_spool
+hook_run "$(ups abc 'plain typed text')" CC_CMDS_ATTENTION_ROOT="$SPOOL" CC_CMDS_SESSION_DISMISS=0
+expect_nothing
+check "$CASE — 표지가 없다" "$(an_markers)" ""
+
+for var in CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY; do
+  CASE="marker-stage($var)"; reset_state; seed; reset_spool
+  hook_run "$(ups abc 'plain typed text')" CC_CMDS_ATTENTION_ROOT="$SPOOL" "$var=x"
+  expect_nothing
+  check "$CASE — 표지가 없다" "$(an_markers)" ""
+done
 
 check "U1 — 모든 훅 실행이 측정됐다 (0 건이면 공허하다)" "$([ "$u1_checked" -gt 0 ] && echo yes || echo no)" "yes"
 

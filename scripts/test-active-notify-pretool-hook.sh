@@ -3,10 +3,16 @@
 #
 # Fixture contract (tests/fixtures/active-notify-hooks/pretool-*/):
 #   test.sh — required. Available env vars: PRETOOL_HOOK_SH, HOOK_STDOUT,
-#             HOOK_STDERR, CC_CMDS_NOTIFY_INJECT_SID (driver env-loops 0,1).
+#             HOOK_STDERR, PRETOOL_SEAT_DIR (the seat ticket directory under
+#             the run's HOME), CC_CMDS_NOTIFY_INJECT_SID (driver env-loops 0,1).
 #
 # Driver runs each fixture twice — once with CC_CMDS_NOTIFY_INJECT_SID=0
 # (α-path) and once with =1 (γ-path) — so fixtures can branch on the env.
+#
+# Every run gets its own HOME under its temporary directory, so seat tickets the
+# hook writes never land in the real home, and SHELL=/bin/bash, so the hook's
+# syntax check of a rewritten command runs the same shell on every host
+# (including CI runners without zsh).
 
 set -euo pipefail
 
@@ -52,10 +58,14 @@ for fixture_dir in "${fixtures[@]}"; do
     hook_stderr="$tmpdir/hook.stderr"
     : > "$hook_stdout"
     : > "$hook_stderr"
+    mkdir -p "$tmpdir/home"
 
     if (
       set -e
       export TMPDIR="$tmpdir"
+      export HOME="$tmpdir/home"
+      export SHELL=/bin/bash
+      export PRETOOL_SEAT_DIR="$tmpdir/home/.local/state/cc-cmds/active-notify-seat"
       export PRETOOL_HOOK_SH="$pretool_hook_sh"
       export HOOK_STDOUT="$hook_stdout"
       export HOOK_STDERR="$hook_stderr"

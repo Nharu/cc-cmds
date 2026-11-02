@@ -3,8 +3,10 @@
 # arm       <request_text> <context_hint> [mode] [--count=N]   mode: "single"|"repeat" (default "single"); --count default 1, normalize to 1 if invalid or >16
 # fire-now  <workflow> <summary>                                model-driven dispatch — sub-event observation point
 # cancel                                                        deletes flag regardless of mode
-# dismiss   <session_id>                                        hook-only: removes that session's banners, raises none,
-#                                                               touches no flag (called by hooks/session-return-dismiss.sh)
+# dismiss   <session_id>                                        hook-only: leaves that session's handled markers (cause
+#                                                               `return`) in the attention spool when it exists, removes
+#                                                               its banners, raises none, touches no flag
+#                                                               (called by hooks/session-return-dismiss.sh)
 set -euo pipefail
 # Prepend brew install paths so terminal-notifier is discoverable in fire branch
 # regardless of caller PATH (Apple Silicon /opt/homebrew/bin, Intel /usr/local/bin).
@@ -91,8 +93,91 @@ read_armed_at() {
   fi
 }
 
+# an_seat_claim — claim the one-shot seat ticket the PreToolUse hook issued for
+# this call (hooks/active-notify-pretool.sh) and set seat_claimed to 1 only when
+# it was a live ticket: a regular file owned by this user, not a symbolic link,
+# moved away by this process, holding an issue time at most 60 seconds old.
+# The ticket is consumed on every path that reaches it. Prints nothing and
+# never fails.
+seat_claimed=0
+an_seat_claim() {
+  local name="${CC_CMDS_ACTIVE_NOTIFY_SEAT_TICKET:-}" f c content now
+  seat_claimed=0
+  [[ "$name" =~ ^[0-9a-f]{32}$ ]] || return 0
+  f="${HOME:-}/.local/state/cc-cmds/active-notify-seat/${name}"
+  if [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ]; then
+    :
+  else
+    return 0
+  fi
+  c="$f.claimed.$$"
+  mv "$f" "$c" >/dev/null 2>&1 || return 0
+  if [ -L "$c" ]; then
+    rm -f "$c" >/dev/null 2>&1 || :
+    return 0
+  fi
+  content=$(cat "$c" 2>/dev/null) || content=''
+  rm -f "$c" >/dev/null 2>&1 || :
+  # Shape first, arithmetic second, so a malformed value cannot reach `$(( ))`.
+  [[ "$content" =~ ^[0-9]{1,12}$ ]] || return 0
+  now=$(date +%s 2>/dev/null) || return 0
+  [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 0
+  if (( 10#$now - 10#$content >= 0 && 10#$now - 10#$content <= 60 )); then
+    seat_claimed=1
+  fi
+  return 0
+}
+
+# an_remote_seat_ok — a remote copy is left only for a claimed ticket from the
+# router seat. The seat predicate is not copied: its owner file is sourced in a
+# subshell that discards all output, so nothing it defines reaches this process
+# and no shared banner function is called.
+an_remote_seat_ok() {
+  [[ "$seat_claimed" == "1" ]] || return 1
+  ( . "$script_dir/../../../orchestrator/notify-run.sh" && cc_caller_is_router ) </dev/null >/dev/null 2>&1
+}
+
+# an_source_tap — source the attention tap library; false when it cannot be.
+an_source_tap() {
+  local f="$script_dir/../../../orchestrator/attention.sh"
+  [ -f "$f" ] || return 1
+  . "$f" >/dev/null 2>&1 || return 1
+  declare -F cc_attention_emit >/dev/null 2>&1 || return 1
+  declare -F cc_attention_handled >/dev/null 2>&1 || return 1
+}
+
+# an_emit_completion <slot> <title> <body> — leave one active-notify event in
+# the attention spool, record first and banner second. The slot is the group
+# the fire's banner carries (or would carry on a host that cannot raise one).
+# The event belongs to this session and not to a run, so the origin fields are
+# set for this one call: the dispatcher's own session id, and no run or repo.
+# Never changes this script's status or output.
+an_emit_completion() {
+  an_remote_seat_ok || return 0
+  an_source_tap || return 0
+  CC_NOTIFY_SESSION_ID="$session_id" RUN_ID= CC_NOTIFY_REPO= \
+    cc_attention_emit active-notify "$1" "$2" "$3" >/dev/null 2>&1 || true
+  return 0
+}
+
+# repeat_unraised_exit <workflow> <summary> — the repeat fire that cannot raise
+# a banner (non-macOS host, or terminal-notifier missing). The flag is left as
+# it is, so the slot is the group the next raised fire would carry. Called with
+# the lock held; a corrupt fire_count ends without an event and without
+# touching the flag.
+repeat_unraised_exit() {
+  local raw n a
+  raw=$(grep -oE '"fire_count":[0-9]+' "$flag_file" | head -1 || true)
+  [[ -n "$raw" ]] || exit 0
+  n="${raw##*:}"
+  a=$(read_armed_at)
+  rmdir "$lockdir" 2>/dev/null || :
+  an_emit_completion "cc-cmds-active-notify-${safe_sid}@${a}.$(( 10#$n + 1 ))" "cc-cmds ${1}" "${2}"
+  exit 0
+}
+
 dispatch_fire() {
-  local workflow="$1" summary="$2"
+  local workflow="$1" summary="$2" group
 
   # === Acquire fire-branch lock (POSIX-atomic mkdir, no external dep) ===
   # Covers schema/mode check + read-modify-write + mv. Prevents chain-reaction
@@ -167,12 +252,12 @@ dispatch_fire() {
     # stored verbatim but ignored at runtime (storage shape mode-uniform,
     # runtime semantics mode-asymmetric).
     if [[ "$host_os" != "Darwin" ]]; then
-      exit 0   # preserve flag (non-macOS host)
+      repeat_unraised_exit "$workflow" "$summary"   # preserve flag (non-macOS host)
     fi
     if ! command -v terminal-notifier >/dev/null 2>&1; then
       hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint"
       [[ -f "$hint" ]] || { printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2; touch "$hint"; }
-      exit 0   # preserve flag for next turn
+      repeat_unraised_exit "$workflow" "$summary"   # preserve flag for next turn
     fi
     raw_count=$(grep -oE '"fire_count":[0-9]+' "$flag_file" | head -1 || true)
     raw_last=$(grep -oE '"last_fire_at":(null|[0-9]+)' "$flag_file" | head -1 || true)
@@ -194,6 +279,31 @@ dispatch_fire() {
 
   # === Release lock BEFORE terminal-notifier (minimize hold time) ===
   rmdir "$lockdir" 2>/dev/null || :
+
+  # === Banner group, computed once ===
+  # The same string names the banner's group and the attention event's slot,
+  # so the two are equal by construction.
+  # single, arm_count == 1 ↔ classic 1-shot ARM: the per-session slot
+  # "cc-cmds-active-notify-<safe_sid>", so a new banner replaces this session's
+  # previous one and never another session's. armCount > 1 gives every
+  # sub-event its own group "<slot>@<armed_at>.<n>", so the banners pile up in
+  # Notification Center and the return hook can still find and remove them.
+  # repeat — a different group on every fire ("<slot>@<armed_at>.<fire_count>"),
+  # so the banners pile up (dynamic-trust anti-spam) the same way.
+  if [[ "$flag_mode" == "single" ]]; then
+    if [[ "$arm_count" -eq 1 ]]; then
+      group="cc-cmds-active-notify-${safe_sid}"
+    else
+      group="cc-cmds-active-notify-${safe_sid}@${armed_at}.${new_count}"
+    fi
+  else
+    group="cc-cmds-active-notify-${safe_sid}@${armed_at}.${fire_count}"
+  fi
+
+  # === Remote attention event — before any banner branch ===
+  # Every fire that got this far leaves it, whether or not a banner can be
+  # raised or succeeds.
+  an_emit_completion "$group" "cc-cmds ${workflow}" "${summary}"
 
   # === Click value ===
   # Every banner carries `-execute`: the handler's focus command for the tmux
@@ -227,28 +337,15 @@ dispatch_fire() {
     # renders as `Terminal`. The bare marker is kept because there is no way to
     # change the application name (`-sender` and `-appIcon` are discontinued), so
     # the title is the only place provenance can live.
-    notifier_args=( -title "cc-cmds ${workflow}" -message "${summary}" -execute "$click" )
-    # arm_count == 1 ↔ classic 1-shot ARM: the per-session slot
-    # "cc-cmds-active-notify-<safe_sid>", so a new banner replaces this session's
-    # previous one and never another session's. armCount > 1 gives every
-    # sub-event its own group "<slot>@<armed_at>.<n>", so the banners pile up in
-    # Notification Center and the return hook can still find and remove them.
-    if [[ "$arm_count" -eq 1 ]]; then
-      notifier_args+=( -group "cc-cmds-active-notify-${safe_sid}" )
-    else
-      notifier_args+=( -group "cc-cmds-active-notify-${safe_sid}@${armed_at}.${new_count}" )
-    fi
+    notifier_args=( -title "cc-cmds ${workflow}" -message "${summary}" -execute "$click" -group "$group" )
     dispatch_notifier "${notifier_args[@]}" || true
   else
-    # repeat — a different group on every fire ("<slot>@<armed_at>.<fire_count>"),
-    # so the banners pile up (dynamic-trust anti-spam) while the return hook can
-    # still find and remove them. Same swallowing rule as the single-mode
-    # dispatch above.
+    # repeat — same swallowing rule as the single-mode dispatch above.
     dispatch_notifier \
       -title "cc-cmds ${workflow}" \
       -message "${summary}" \
       -execute "$click" \
-      -group "cc-cmds-active-notify-${safe_sid}@${armed_at}.${fire_count}" || true
+      -group "$group" || true
   fi
 }
 
@@ -290,6 +387,9 @@ case "$subcommand" in
     # non-zero exits under `set -euo pipefail`.
     consuming=""; tmp=""; lockdir="${flag_file}.lockdir"
     trap 'rmdir "$lockdir" 2>/dev/null || :; rm -f "${consuming:-}" "${tmp:-}" 2>/dev/null || :' EXIT
+    # The seat ticket is claimed before every other check, so a call that ends
+    # early (no flag, a stage seat) still leaves no ticket behind.
+    an_seat_claim
     [[ -f "$flag_file" ]] || exit 0
     dispatch_fire "$workflow" "$summary"
     exit 0
@@ -302,14 +402,23 @@ case "$subcommand" in
 
   dismiss)
     # Called only by hooks/session-return-dismiss.sh when the person returns to
-    # a session. Removes that session's slot and every "<slot>@…" pile-up group;
-    # the global "cc-cmds-active-notify" of the permission-test bypass matches
-    # neither shape. Raises no banner, touches no flag or lock, prints nothing.
-    [[ "$host_os" == "Darwin" ]] || exit 0
-    command -v terminal-notifier >/dev/null 2>&1 || exit 0
+    # a session, after its switch and router-seat checks — so the seat is not
+    # judged again here. First it leaves the handled-marker pair for that
+    # session's active-notify events (the exact slot and the "<slot>@" prefix,
+    # cause `return`) when the attention spool exists, on any host and with or
+    # without terminal-notifier. Then it removes that session's slot and every
+    # "<slot>@…" pile-up group; the global "cc-cmds-active-notify" of the
+    # permission-test bypass matches neither shape. Raises no banner, touches no
+    # flag or lock, prints nothing.
     target_sid="${1:-}"
     [[ -n "$target_sid" ]] || exit 0
     slot="cc-cmds-active-notify-$(an_safe_sid "$target_sid")"
+    if an_source_tap; then
+      cc_attention_handled "$slot" return </dev/null >/dev/null 2>&1 || true
+      cc_attention_handled "$slot@" return prefix </dev/null >/dev/null 2>&1 || true
+    fi
+    [[ "$host_os" == "Darwin" ]] || exit 0
+    command -v terminal-notifier >/dev/null 2>&1 || exit 0
     listing=$(terminal-notifier -list ALL 2>/dev/null) || exit 0
     first=1
     while IFS= read -r line; do

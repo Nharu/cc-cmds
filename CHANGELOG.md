@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.24.0] - 2026-11-02
+
+`active-notify` 의 완료 알림이 데스크탑 배너와 함께 attention 스풀에 `active-notify` 사건을 남긴다. 사건은 메인 세션이 라우터 좌석에서 부른 fire-now 에만 남고, 그 세션으로 돌아오면 귀환 닫기가 처리 표지를 남긴다.
+
+### Added
+
+- **좌석 티켓** — PreToolUse 훅이 `agent_id` 가 빈 fire-now 호출마다 일회용 티켓을 `~/.local/state/cc-cmds/active-notify-seat/` 에 발급해 명령 앞에 `CC_CMDS_ACTIVE_NOTIFY_SEAT_TICKET=` 로 붙인다. 디스패처는 티켓을 옮겨 지우며 차지하고, 60초 안의 정규 파일이고 호출자가 라우터 좌석(`cc_caller_is_router`)일 때만 사건을 남긴다.
+- **완료 사건** — slot 은 배너 그룹과 같은 문자열이다. 배너를 띄울 수 없는 호스트나 terminal-notifier 가 없을 때도 그 fire 가 가졌을 그룹으로 남는다. origin 은 디스패처 자신의 세션이고 run 과 repo 는 비운다.
+- **귀환 처리 표지** — `notify.sh dismiss` 가 스풀이 있으면 그 세션의 slot 과 `slot@` 접두에 원인 `return` 표지 한 쌍을 남긴다. 호스트와 terminal-notifier 유무를 가리지 않는다.
+
+### Changed
+
+- **훅의 디스패처 분기** — 호출마다 허용만 하고 영구 권한 규칙을 심지 않는다. 접두를 붙일 수 없는 명령 모양(묶음, 제어 구문, 함수 정의 등)이나 `$SHELL` 구문 확인에 실패한 명령은 바꾸지 않고 허용하며, 바꿀 때는 `tool_input` 의 다른 키를 그대로 둔다.
+
 ## [3.23.1] - 2026-11-02
 
 재킥오프가 레포 밖에 둔 설계 문서를 찾고, 이월되지 않는 중단 답을 가진 세그먼트도 사람에게는 입양 여부를 묻는다.
