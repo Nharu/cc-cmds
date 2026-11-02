@@ -527,6 +527,8 @@ expect_eq "every call of all three branches gets the same lane directory as CLAU
 expect_eq "the main run's sessions span the three branches" "opus-1 opus-2 sonnet" \
   "$(awk -F'\t' 'NR > 1 && $1 != "pilot" { print $2 }' "$E/costs.tsv" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ -f "$E/reports/1-opus-1.md" && -f "$E/reports/4-sonnet.md" && ! -f "$E/reports/2-opus-1.md" ]]; then pass "valid branch reports are copied to reports/, invalid slots' are not"; else fail "reports/ holds the wrong files"; fi
+expect_eq "each valid branch's deviations are recorded beside its report, an invalid slot's are not" \
+  "거부	0|미승인	0|no" "$(sed -n 1p "$E/reports/1-opus-1.deviations.tsv")|$(sed -n 2p "$E/reports/1-opus-1.deviations.tsv")|$([[ -f "$E/reports/2-opus-1.deviations.tsv" ]] && echo yes || echo no)"
 expect_eq "the verdict is the report's last line" "# verdict: 판정 불가(표본 수)" "$(tail -n 1 "$E/report.md")"
 expect_line "the verdict report prints the cost total, a - row counting the whole reserve" "$E/report.md" "- 비용 합계(costs.tsv, \`-\` 행은 예비 전액): 168.7500 USD"
 rc=0; runner "$tmp/s1" status --exp-id "$P1" --repo "$R" || rc=$?
@@ -561,17 +563,35 @@ P3=20261101-0000e003
 E="$R/docs/review-seat-promotion-pair/$P3"
 export STUB_DIR="$tmp/stub-e3"
 mkdir -p "$STUB_DIR"
-printf 'pilot-opus-1#1\tdenied\n' > "$STUB_DIR/plan"
+calls() { find "$STUB_DIR/calls" -name '*.argv' 2>/dev/null | wc -l | tr -d ' '; }
+rc=0; runner "$tmp/q9" run --pilot --rejudge --exp-id "$P3" --repo "$R" || rc=$?
+expect_eq "a rejudge with no pilot session left stops with exit 1 and makes no call" "1|0" "$rc|$(calls)"
+printf 'pilot-opus-1#1\tnocost\npilot-opus-1#2\tdenied\n' > "$STUB_DIR/plan"
 rc=0; runner "$tmp/q0" run --pilot --exp-id "$P3" --budget-usd 1000 --repo "$R" || rc=$?
-expect_eq "a pilot whose session had a tool call refused fails with exit 1, naming the count and the tool" \
-  "1|실패 — 거부된 도구 호출 1건 (Bash)" "$rc|$(head -n 1 "$E/pilot/result")"
+expect_eq "a failed pilot records its deviations after the cost and the report, - for a JSON without permission_denials" \
+  "1|실패 — total_cost_usd 가 JSON 에 없다|거부	-|미승인	0" "$rc|$(head -n 1 "$E/pilot/result")|$(sed -n 4p "$E/pilot/result")|$(sed -n 5p "$E/pilot/result")"
 rc=0; runner "$tmp/q1" run --exp-id "$P3" --budget-usd 1000 --repo "$R" || rc=$?
-expect_eq "after that failed pilot the main run stops with exit 1 and makes no call" "1|1" \
-  "$rc|$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
-printf 'pilot-opus-1#2\twitnessmiss\n' >> "$STUB_DIR/plan"
+expect_eq "after that failed pilot the main run stops with exit 1 and makes no call" "1|1" "$rc|$(calls)"
+rows=$(awk 'END { print NR }' "$E/costs.tsv")
+rc=0; runner "$tmp/q3" run --pilot --rejudge --exp-id "$P3" --repo "$R" || rc=$?
+expect_eq "a rejudge needs no budget, judges the left session again under the same conditions and makes no call or cost row" \
+  "1|실패 — total_cost_usd 가 JSON 에 없다|1|$rows" "$rc|$(head -n 1 "$E/pilot/result")|$(calls)|$(awk 'END { print NR }' "$E/costs.tsv")"
 rc=0; runner "$tmp/q2" run --pilot --exp-id "$P3" --budget-usd 1000 --repo "$R" || rc=$?
-expect_eq "a pilot whose witness hook logged an undecided witness command fails with exit 1" \
-  "1|실패 — 증인 명령 미승인 1건" "$rc|$(head -n 1 "$E/pilot/result")"
+expect_eq "a pilot whose session had a tool call refused passes and records the count and the tool" \
+  "0|통과|거부	1 Bash|미승인	0" "$rc|$(head -n 1 "$E/pilot/result")|$(sed -n 4p "$E/pilot/result")|$(sed -n 5p "$E/pilot/result")"
+rc=0; runner "$tmp/q4" run --pilot --rejudge --exp-id "$P3" --repo "$R" || rc=$?
+expect_eq "a rejudge after a passed pilot changes nothing and makes no call" "0|통과|2" "$rc|$(head -n 1 "$E/pilot/result")|$(calls)"
+rc=0; runner "$tmp/q5" run --rejudge --exp-id "$P3" --repo "$R" || rc=$?
+expect_eq "--rejudge without --pilot is a usage error" 2 "$rc"
+
+P4=20261101-0000e004
+E="$R/docs/review-seat-promotion-pair/$P4"
+export STUB_DIR="$tmp/stub-e4"
+mkdir -p "$STUB_DIR"
+printf 'pilot-opus-1#1\twitnessmiss\n' > "$STUB_DIR/plan"
+rc=0; runner "$tmp/q6" run --pilot --exp-id "$P4" --budget-usd 1000 --repo "$R" || rc=$?
+expect_eq "a pilot whose witness hook logged an undecided witness command passes and records the count" \
+  "0|통과|거부	0|미승인	1" "$rc|$(head -n 1 "$E/pilot/result")|$(sed -n 4p "$E/pilot/result")|$(sed -n 5p "$E/pilot/result")"
 
 lane_list > "$tmp/lane.after"
 if cmp -s "$tmp/lane.before" "$tmp/lane.after"; then pass "no runner call creates, removes or writes a file in the lane directory"; else fail "the lane directory's files changed"; diff "$tmp/lane.before" "$tmp/lane.after" >&2 || true; fi

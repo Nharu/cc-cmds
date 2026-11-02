@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.23.2] - 2026-11-02
+## [3.24.1] - 2026-11-02
 
 디자인 시스템을 발행한 뒤 재킥한 런이 같은 문서의 시각 사이드카를 재사용하지 못하던 문제를 고친다. 발행이 `system.md` 의 아티팩트 줄만 바꾸는데도 사이드카가 전체 파일 해시를 들고 있어 재사용이 거절되고, 무인 시각 단계가 선택지 없는 거부로 멈췄다.
 
@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **재사용 조건** (`visual-check.sh reuse`) — 디자인 시스템 다이제스트는 정규화 값과 예전 전체 해시를 모두 받는다. `system.md` 가 있으면 그 `tokens.css sha256` 줄이 실제 `tokens.css` 와 같아야 재사용한다.
 - **무인 시각 정지** (`visual-unattended`) — `system-mismatch`·`output-present` 정지가 `경우=` 로 갈리는 선택지와 추천·리스크 문면을 싣는다. 재사용할 때는 사이드카의 `**기록**` 줄 경로만 이 런의 것으로 고쳐 쓰고, 정지 뒤 다시 붙은 턴의 절차를 적는다. 앞선 `system-mismatch` 답은 뒤따르는 `output-present` 기록이 `앞선 답=` 조각으로 날라, 재개 때 같은 경우의 디자인 시스템 검사를 그 답으로 넘기므로 두 정지가 번갈아 나지 않는다.
 - **게이트 등급** — `visual-check.sh system` 을 읽기로 등급한다.
+
+## [3.24.0] - 2026-11-02
+
+`active-notify` 의 완료 알림이 데스크탑 배너와 함께 attention 스풀에 `active-notify` 사건을 남긴다. 사건은 메인 세션이 라우터 좌석에서 부른 fire-now 에만 남고, 그 세션으로 돌아오면 귀환 닫기가 처리 표지를 남긴다.
+
+### Added
+
+- **좌석 티켓** — PreToolUse 훅이 `agent_id` 가 빈 fire-now 호출마다 일회용 티켓을 `~/.local/state/cc-cmds/active-notify-seat/` 에 발급해 명령 앞에 `CC_CMDS_ACTIVE_NOTIFY_SEAT_TICKET=` 로 붙인다. 디스패처는 티켓을 옮겨 지우며 차지하고, 60초 안의 정규 파일이고 호출자가 라우터 좌석(`cc_caller_is_router`)일 때만 사건을 남긴다.
+- **완료 사건** — slot 은 배너 그룹과 같은 문자열이다. 배너를 띄울 수 없는 호스트나 terminal-notifier 가 없을 때도 그 fire 가 가졌을 그룹으로 남는다. origin 은 디스패처 자신의 세션이고 run 과 repo 는 비운다.
+- **귀환 처리 표지** — `notify.sh dismiss` 가 스풀이 있으면 그 세션의 slot 과 `slot@` 접두에 원인 `return` 표지 한 쌍을 남긴다. 호스트와 terminal-notifier 유무를 가리지 않는다.
+
+### Changed
+
+- **훅의 디스패처 분기** — 호출마다 허용만 하고 영구 권한 규칙을 심지 않는다. 접두를 붙일 수 없는 명령 모양(묶음, 제어 구문, 함수 정의 등)이나 `$SHELL` 구문 확인에 실패한 명령은 바꾸지 않고 허용하며, 바꿀 때는 `tool_input` 의 다른 키를 그대로 둔다.
 
 ## [3.23.1] - 2026-11-02
 
