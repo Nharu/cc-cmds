@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.22.3] - 2026-11-02
+
+주의 사건 공용 문서의 스풀 경로표를 원격 답 규칙 문서와 맞춘다. 두 문서가 적용 기록 이름과 수령 표지의 칸, 지우기 규칙을 다르게 적고 있어, 원격 답 쪽이 정본이라고 알리는 단락으로 버티던 것을 없앤다.
+
+### Fixed
+
+- **스풀 경로표** (`_common/attention-event.md`) — 적용 기록 줄을 `applied/<reply_id>.json` 으로 고친다. 표 아래에 원격 답 경로 단락을 더해, 봉투·수령 표지·적용 기록은 각자 쓴 쪽이 지운다는 것(이음매 파일은 활성인 이음매가 작성자 역할로 지운다), 수령 표지의 `apply_by_ms`·`woken_at_ms` 칸, `woken_at_ms` 를 더하는 덧쓰기만 `mv -n` 이 아니라 `mv` 라는 것을 적는다.
+- **원격 답 규칙 문서** (`_common/remote-reply.md`) — 공용 문서가 옛 꼴이라고 알리던 절을 지우고, 두 문서가 같은 이름과 지우기 규칙을 적는다는 한 문장으로 바꾼다.
+
 ## [3.22.2] - 2026-11-02
 
 무인 리뷰의 P0 는 다시 돌릴 수 있는 재현 근거가 있을 때만 P0 로 남는다. 리뷰어는 재현 레시피나 예외 근거를 적고, 리드가 그 레시피를 일회용 디렉터리에서 돌려 출력을 붙이며, 근거를 붙이지 못한 P0 는 한 가지 강등 규칙으로 P1 로 옮긴다. 대화형 리뷰는 바뀌지 않는다.

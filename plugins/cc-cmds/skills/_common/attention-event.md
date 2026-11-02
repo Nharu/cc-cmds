@@ -30,7 +30,7 @@ a lane session and a borrowed session write to the same spool.
 | `handled/<id>.json` | the handled tap |
 | `inbox/<addr>/<reply_id>.json` | the relay; `<addr>` is `s-<safe_sid>` or `r-<run_id>` |
 | `inbox/<addr>/<reply_id>.picked` | the session seam (the pick-up marker) |
-| `applied/<tool_use_id>.json` | the session seam |
+| `applied/<reply_id>.json` | the session seam (the applied record) |
 | `status/<safe_sid>.json` | the session snapshot seat |
 | `relay/` | the relay only (its state, lifetime ledger and manual presence) |
 
@@ -50,6 +50,18 @@ way.
 `.<id>.<pid>.tmp` in the same directory, moves it to `<id>.json` with `mv -n`,
 and removes the temporary file on every path. The exit status of `mv -n` is
 not read. A second creation of the same id leaves the first file unchanged.
+
+**Remote-reply paths.** The envelope, the pick-up marker and the applied
+record are specified in `plugins/cc-cmds/skills/_common/remote-reply.md`,
+which owns their names, keys and lifetimes. Each of the three is removed by
+its own writer: the relay removes an envelope, and an active session seam
+removes a pick-up marker or an applied record once its envelope is gone. The
+remover is the writer's role, not the one session that wrote the file. A pick-up
+marker carries `apply_by_ms`, the apply deadline (`picked_at_ms + 120000`),
+and, after the seam has woken the router seat for it, `woken_at_ms`. The
+marker is created like any other file, with `mv -n`; its one rewrite adds
+`woken_at_ms` by writing the dot file and moving it over the marker with
+`mv`, not `mv -n`, and changes no other key.
 
 **Test seat.** When `CC_CMDS_ATTENTION_ROOT` is non-empty, its value is the
 spool root. Only the test suites set it; it is not a user setting and no setup
