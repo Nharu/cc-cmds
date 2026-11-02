@@ -463,7 +463,10 @@ for d in "$OWN" "$NOW"; do
 done
 
 # 27. registration
-check "27 UserPromptSubmit 항목 둘" "$(jq -r '.hooks.UserPromptSubmit | length' "$HOOKS_JSON")" "2"
+# Counted by COMMAND, not by array length: other seats append their own
+# UserPromptSubmit entries, and this asserts the two seats this suite covers.
+check "27 UserPromptSubmit 항목 둘" \
+  "$(jq -r '[.hooks.UserPromptSubmit[]? | select(any(.hooks[]; .command | test("session-title\\.sh|session-return-dismiss\\.sh")))] | length' "$HOOKS_JSON")" "2"
 check "27 session-title.sh 항목 하나, matcher 없음, timeout 5" \
   "$(jq -r '[.hooks.UserPromptSubmit[] | select(any(.hooks[]; .command | test("session-title\\.sh")))]
            | length == 1 and (.[0] | has("matcher") | not) and (.[0].hooks[0].timeout == 5)' "$HOOKS_JSON")" "true"

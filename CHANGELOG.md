@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.21.0] - 2026-11-01
+## [3.22.0] - 2026-11-01
 
 3.19 에서 게이트가 읽기만 하던 기본 브랜치 판독을 이 호스트의 fleet 이 직접 쓴다. 런을 기다리는 dispatch 잡이 기본 브랜치의 CI 를 주기마다 읽어 사건 파일을 갱신하고, 고칠 사건마다 수리 런을 렌더해 백로그에 넣으며, 그 수리 런에 함대 상한과 별도의 자리를 열어 기동한다.
 
@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 설치된 dispatch 레이블이 새 `fleet.sh` 를 부르도록 `fleet.sh agent install` 을 다시 돌린다.
 - 수리 런을 띄우고 싶지 않으면 `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace/master-repair.off` 를 만든다. 비워 두면 모든 저장소, `owner/name` 을 한 줄씩 적으면 그 저장소만 막는다. 그 모양이 아닌 줄(주석 포함)을 하나라도 적으면 모든 저장소가 막힌다. `fleet.sh agent status` 의 수리 런 줄이 실제로 막힌 범위를 보여 준다. 판독은 스위치와 무관하게 계속 쓰인다.
+
+## [3.21.0] - 2026-11-01
+
+일반 세션이 지금 무엇을 하고 있고 마지막에 무엇을 출력했는지를 주의 스풀 옆의 세션별 스냅숏 파일로 남긴다. 맥 바깥의 읽기 전용 세션 보기가 읽을 자료이며, 배너와 세션 동작은 바꾸지 않는다.
+
+### Added
+
+- **세션 상태 스냅숏 훅** — `hooks/session-status-snapshot.sh` 가 `status/<safe_sid>.json` 에 호스트 식별자, 세션 id, 설정 디렉터리, 작업 디렉터리, 레포, 상태(`working`·`waiting-question`·`waiting-permission`·`idle`), 마지막 활동 시각, 4096 바이트 이하로 줄 경계에서 자른 최근 출력 발췌를 덮어쓴다. 차례 끝, 일반 질문과 질문지가 열릴 때, 권한 대화상자가 열릴 때, 프롬프트 제출과 질문 답 반환 때 쓰고, 세션이 끝나면 지운다.
+- **등록** — `hooks.json` 의 `PreToolUse`·`PostToolUse`(AskUserQuestion), `PostToolBatch`, `Stop`, `UserPromptSubmit`, `PermissionRequest`, `SessionEnd` 에 기존 항목을 고치지 않고 한 항목씩 더한다. 다른 에이전트가 띄운 에이전트, 파이프라인 단계, 교대, 재진입, 스풀 루트가 없는 호스트에서는 아무것도 쓰지 않으며, 세션 배너 스위치와는 무관하게 쓴다.
+- **시험** — `scripts/test-session-status-snapshot.sh` 가 레코드 필드, 발췌 자르기, 질문지 차례의 한 번 쓰는 표지, 쓰지 않는 경우, 파일 모드, 등록을 시험한다.
 
 ## [3.20.1] - 2026-11-01
 

@@ -279,8 +279,10 @@ fi
 # ---------------------------------------------------------------------------
 HOOKS_JSON="$repo_root/plugins/cc-cmds/hooks/hooks.json"
 
+# Seat 1 is picked by matcher AND command: other seats register their own
+# `AskUserQuestion` entries in PreToolUse, so the matcher alone is not seat 1.
 check "T16 PreToolUse 에 AskUserQuestion 매처 항목이 정확히 하나 있다" \
-  "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")] | length' "$HOOKS_JSON")" "1"
+  "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion") | select(any(.hooks[]; .command | contains("session-ask-notify.sh")))] | length' "$HOOKS_JSON")" "1"
 check "T16 최상위에 Stop 키가 있다" \
   "$(jq -r 'if (.hooks | has("Stop")) then "yes" else "no" end' "$HOOKS_JSON")" "yes"
 # The Stop array is counted by COMMAND, not by length: the return hook adds a
@@ -291,7 +293,7 @@ check "T16 Stop 배열에 좌석 2 항목이 정확히 하나 있다" \
 check "T16 Stop 배열에 귀환 닫기 항목이 정확히 하나 있다" \
   "$(jq -r '[.hooks.Stop[]? | select(any(.hooks[]; .command | contains("session-return-dismiss.sh")))] | length' "$HOOKS_JSON")" "1"
 check "T16 두 세션 항목 모두 timeout 5 를 가진다" \
-  "$(jq -r '[(.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")), (.hooks.Stop[]? | select(any(.hooks[]; .command | contains("session-turn-notify.sh"))))] | [.[].hooks[].timeout] | map(select(. == 5)) | length' "$HOOKS_JSON")" "2"
+  "$(jq -r '[(.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion") | select(any(.hooks[]; .command | contains("session-ask-notify.sh")))), (.hooks.Stop[]? | select(any(.hooks[]; .command | contains("session-turn-notify.sh"))))] | [.[].hooks[].timeout] | map(select(. == 5)) | length' "$HOOKS_JSON")" "2"
 check "T16 Stop 의 귀환 닫기 항목이 timeout 5 를 가진다" \
   "$(jq -r '[.hooks.Stop[]?.hooks[] | select(.command | contains("session-return-dismiss.sh")) | select(.timeout == 5)] | length' "$HOOKS_JSON")" "1"
 
