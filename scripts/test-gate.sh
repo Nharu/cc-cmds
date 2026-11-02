@@ -59787,6 +59787,205 @@ check "104d: 정의는 정리 파일 쪽에 있다" \
   "$( { grep -cE '^(gate_rows|gate_row_field|gate_pending_approval_ids)\(\)' "$WTC_SRC" || true; } )" "3"
 unset d104 c104 p104 f104 d104n
 
+# ---------------------------------------------------------------------------
+# 105. 결정 보조 — 승인 사이드카의 결정 보조, 교대 정지 리스크 줄, 기다리는 결정 도우미
+# --- section: 105 | group: ledger_series | covers: gate_approval_sidecar_write, gate_approval_sidecar_aid, gate_issue_judgment_approval, gate_issue_act_approval, gate_issue_boundary_approval, gate_judgment_aid_take, gate_emitted_judgment_fields, gate_absorb_emitted_judgment, gate_shift_halt_risks, gate_halt_recommendation, waiting-decisions | anchors: 105: 판단 승인 발행이 결정 보조를 쓴다, 105: 경계 다섯 이름의 발행이 그 경계의 결정 보조를 쓴다, 105: 교대 정지 리스크 라벨 집합이 선택지 라벨 집합과 같다, 105: 도우미의 승인 id 집합이 게이트의 대기 승인 집합과 같다 ---
+#
+# 아침 보고가 사람에게 내보이는 결정 보조는 승인을 발행하는 세 자리가 사이드카에 쓴 것이고,
+# 보고 도우미는 게이트의 판독 함수만으로 그것을 읽는다. 그래서 이 절은 한 픽스처 원장에서
+# 발행 자리가 결정 보조를 쓰되 승인 id·질문·행을 바꾸지 않는지, 판독이 결정 보조의 생김새에
+# 흔들리지 않는지, 도우미가 고른 결정과 질문이 게이트의 대기 승인·프롬프트와 같은지를 잰다.
+# 행을 손으로 붙이는 것(run 행, park 행)은 게이트 기록이 모두 끝난 뒤에만 한다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+l105=$(lsr_ledger w105)
+d105="${l105%/*}"
+b105="$lsr_root/base105"
+rm -rf "$b105"; mkdir -p "$b105/docs/pipeline-grant" "$d105/halt"
+: > "$b105/docs/pipeline-grant/LS.md"
+m105=$(lsr_rp_manifest "$lsr_root/m105.md")
+mh105="$lsr_root/m105h.md"
+printf '# 매니페스트\n<!-- cc-pipeline-manifest v1; run-id=LS;\n     origin-worktree=%s;\n-->\n' "$b105" > "$mh105"
+s105="$b105/docs/pipeline-approval/LS.md"
+WD105="$repo_root/plugins/cc-cmds/orchestrator/waiting-decisions.sh"
+
+in105_body() {
+  # 라우터 좌석, 자동 해소 꺼짐(a105=1 이면 켜짐), 이 절의 베이스·인가 기록·매니페스트.
+  BASE="$b105"; GRANT="$b105/docs/pipeline-grant/LS.md"; MANIFEST="$m105"
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE="${a105:-0}"; export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+  unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  gate_notify_approval() { :; }
+  "$@"
+}
+in105() { lsr_in - "$l105" - in105_body "$@"; }
+f105() { printf '%s\n' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | sed -n '1p'; }
+id105() {  # id105 <막는 세그먼트> — 그 세그먼트를 막는 마지막 승인 행의 id
+  f105 "$( { grep -F -e '- `승인` |' "$l105" || true; } | grep -F -e "| 막는 세그먼트=$1 |" | tail -1)" '승인 id'
+}
+idj105() { gate_judgment_approval_id "$1" "$(gate_judgment_question "$2" "$3")"; }
+take105() {
+  gate_judgment_aid_take '기준=a' "추천=$rec105" "선택지 리스크=$long105" '근거=b'
+  printf '%s|%s|%s' "${#GATE_JUDGMENT_AID_REST[@]}" "$GATE_JUDGMENT_AID_REC" \
+    "$([ "$GATE_JUDGMENT_AID_RISK" = "$long105" ] && printf 같음 || printf 다름)"
+}
+res105() {  # res105 <앞|뒤> <부류> <등급> <기준> <근거> — 선택 표지를 다섯 표지 앞이나 뒤에 둔 종단 메시지
+  local five opt t
+  five="**판단 부류**: $2 **판단 등급**: $3 **판단 기준**: $4 **판단 되돌리는 법**: git revert HEAD **판단 근거**: $5"
+  opt="**판단 추천**: $rec105 **판단 선택지 리스크**: $long105"
+  if [ "$1" = "앞" ]; then t="$opt $five"; else t="$five $opt"; fi
+  jq -cn --arg t "$t" '{type: "result", subtype: "success", is_error: false, result: $t}'
+}
+sh105() {  # 자리마다 리스크 줄의 라벨 집합과 선택지 라벨 집합을 대조하고 어긋난 자리를 낸다
+  local s o r v bad=''
+  while IFS='|' read -r s _; do
+    [ -n "$s" ] || continue
+    o=$(gate_shift_halt_options "$s" | sed -n 's/^- `\([^`]*\)` — .*/\1/p' | LC_ALL=C sort | tr '\n' ',')
+    v=$(gate_shift_halt_risks "$s")
+    r=$(printf '%s\n' "$v" | awk '{ gsub(/ \/ `/, "\n`"); print }' | sed -n 's/^`\([^`]*\)` — .*/\1/p' | LC_ALL=C sort | tr '\n' ',')
+    [ "$o" = "$r" ] || bad="$bad[$s:$o/$r]"
+    case "$v" in *'— 미기재'*) bad="$bad[$s:미기재]" ;; esac
+  done <<EOF
+$(gate_shift_halt_site_table)
+EOF
+  printf '%s' "$bad"
+}
+hr105() {  # hr105 <파일> <스텝> <리스크 줄|-> — 추천이 라벨인 정지 기록 하나
+  {
+    printf '<!-- cc-pipeline-halt v1; writer=stage; reader=orchestrator; stage=%s; run=LS -->\n' "$(basename "$1" .md)"
+    printf '**스킬**: implement-unattended\n**스텝**: %s\n**분류**: gate-unanswerable\n**질문 문면**: 계속할까요\n**선택지**:\n' "$2"
+    printf -- '- `계속` — 다음 단계로 갑니다\n- `중단` — 세그먼트를 park 합니다\n'
+    printf '**추천**: `계속` — 상시 지침\n**추천 근거**: 상시 지침: 계속한다\n'
+    [ "$3" = "-" ] || printf '**선택지 리스크**: %s\n' "$3"
+    printf '**하네스 오류**: (없음)\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$1"
+}
+recq105() { local rc=0; gate_halt_recommendation "$1" >/dev/null 2>&1 || rc=$?; printf '%s:%s' "$rc" "${GATE_HALT_REC_LABEL:-}"; }
+auto105() {
+  gate_halt_auto_answer_current S105H "$1" >/dev/null 2>&1 && gate_halt_recommendation "$1" >/dev/null 2>&1 \
+    && printf 'halt/S105H#1.md '
+}
+
+# 판단 승인 — 결정 보조를 쓰고, 질문 읽기와 재발행은 그대로다.
+rec105='`승인` — 상시 지침이 재파견을 정한다'
+risk105='`승인` — 같은 계획으로 한 번 더 돈다 / `거부` — 이 세그먼트가 park 된다'
+long105="\`승인\` — $(printf '아주 긴 리스크 문장입니다 %.0s' $(seq 1 80)) / \`거부\` — 짧다"
+# 부류는 세그먼트 행을 요구하지 않는 것을 쓴다 — 사람이 정하는 부류는 원장에 세그먼트 행이
+# 있어야 열리고, 이 절의 손으로 붙이는 행은 게이트 기록이 끝난 뒤에만 온다.
+in105 gate_issue_judgment_approval cc-cmds S105J '기준 J' '근거 J' 문서-신선도 라우터 "$rec105" "$risk105" >/dev/null 2>&1 || true
+j105=$(id105 S105J)
+check "105: (선행) 판단 승인 행이 쓰였다" "$j105" "$(in105 idj105 S105J '기준 J' '근거 J' 2>/dev/null)"
+aj105=$(in105 gate_approval_sidecar_aid "$j105" 2>/dev/null)
+check "105: 판단 승인 발행이 결정 보조를 쓴다" \
+  "$(printf '%s\n' "$aj105" | grep -c -x -F -e '**추천**: `승인`' -e '**추천 근거**: 상시 지침이 재파견을 정한다' -e "**선택지 리스크**: $risk105" || true)" "3"
+check "105: 결정 보조는 질문 읽기를 바꾸지 않는다" "$(in105 gate_approval_sidecar_question "$j105" 2>/dev/null)" "기준 J — 근거 J"
+sha105=$(lsr_sha "$s105")
+in105 gate_issue_judgment_approval cc-cmds S105J '기준 J' '근거 J' 문서-신선도 라우터 '`거부` — 다른 추천' '`거부` — 다른 리스크' >/dev/null 2>&1 || true
+check "105: 같은 판단의 재발행은 사이드카를 바꾸지 않는다" "$(lsr_sha "$s105")" "$sha105"
+check "105: 재발행 뒤에도 그 세그먼트의 승인 행은 하나다" \
+  "$( { grep -F -e '- `승인` |' "$l105" || true; } | grep -c -F -e '| 막는 세그먼트=S105J |')" "1"
+
+# 행위 승인 — 행위 줄에는 프로그램 이름만, `무효` 리스크는 좌석 질문에 그 갈래가 없다고 말한다.
+in105 gate_issue_act_approval t S105A 커밋 G3 'git push origin s3cr3t-105' >/dev/null 2>&1 || true
+ai105=$(id105 S105A)
+aa105=$(in105 gate_approval_sidecar_aid "$ai105" 2>/dev/null)
+check "105: 행위 승인 발행이 결정 보조를 쓰고 행위 줄에는 프로그램 이름만 있다" \
+  "$(printf '%s\n' "$aa105" | sed -n 's/^\*\*행위\*\*: //p')" "git · 대상 t"
+check "105: 행위 인자는 사이드카 어디에도 없다" "$(grep -c -F 's3cr3t-105' "$s105" || true)" "0"
+check "105: 행위 승인 무효 리스크는 좌석 질문에 그 갈래가 없다고 말한다" \
+  "$(printf '%s\n' "$aa105" | sed -n 's/^\*\*선택지 리스크\*\*: //p' | awk '{ n = split($0, p, / \/ `/); print p[n] }' | grep -c -F -e '무효` — ' | tr -d ' ')|$(printf '%s\n' "$aa105" | grep -c -F '좌석 질문에 없습니다' || true)" "1|1"
+
+# 경계 승인 — 다섯 이름을 직접 발행한다.
+bm105=""
+for n105 in B1 B2 B3 B4 SHIFT-FLOOR; do
+  in105 gate_issue_boundary_approval "$n105" "경계 $n105 질문" "bind105-$n105" >/dev/null 2>&1 || true
+  i105=$(f105 "$( { grep -F -e '- `승인` |' "$l105" || true; } | grep -F -e "| 구속 튜플=$n105/" | tail -1)" '승인 id')
+  ba105=$(in105 gate_boundary_approval_aid "$n105" 2>/dev/null)
+  if [ -z "$i105" ] || [ "$(in105 gate_approval_sidecar_aid "$i105" 2>/dev/null)" != "$ba105" ]; then bm105="$bm105 $n105"; fi
+  case "$(printf '%s\n' "$ba105" | sed -n 's/^\*\*선택지 리스크\*\*: //p')" in
+    '`승인` — '*' / `거부` — '*' / `무효` — '*'좌석 질문에 없습니다'*) : ;;
+    *) bm105="$bm105 $n105(리스크)" ;;
+  esac
+done
+check "105: 경계 다섯 이름의 발행이 그 경계의 결정 보조를 쓴다" "$bm105" ""
+
+# 판독의 내성 — `## 승인` 줄과 긴 백틱 열을 든 결정 보조, 답변 뒤 유지, sha256 불일치.
+odd105=$(printf '**선택지**:\n## 승인 가짜-105\n`````` 긴 백틱 열\n**추천**: (없음) — x')
+in105 gate_approval_sidecar_write X105 issue '질문' '내성 질문' "$odd105" >/dev/null 2>&1 || true
+check "105: 결정 보조 판독은 ## 승인 줄과 긴 백틱 열을 견딘다" "$(in105 gate_approval_sidecar_aid X105 2>/dev/null)" "$odd105"
+check "105: 그 블록의 질문 읽기도 그대로다" "$(in105 gate_approval_sidecar_question X105 2>/dev/null)" "내성 질문"
+check "105: 다른 블록의 결정 보조는 흔들리지 않는다" "$(in105 gate_approval_sidecar_aid "$j105" 2>/dev/null)" "$aj105"
+in105 gate_approval_sidecar_write "$j105" answer '답변' '승인' >/dev/null 2>&1 || true
+check "105: 답변을 쓴 뒤에도 결정 보조가 그대로다" "$(in105 gate_approval_sidecar_aid "$j105" 2>/dev/null)" "$aj105"
+cp "$s105" "$s105.keep"
+awk '{ if ($0 == "**추천 근거**: 상시 지침이 재파견을 정한다") print "**추천 근거**: 바뀐 근거"; else print }' "$s105.keep" > "$s105"
+rc105=0; in105 gate_approval_sidecar_aid "$j105" >/dev/null 2>&1 || rc105=$?
+check "105: 결정 보조가 sha256 과 어긋나면 2 로 실패한다" "$rc105" "2"
+mv "$s105.keep" "$s105"
+
+# 판단 act 의 두 키와 스테이지 방출의 두 선택 표지.
+check "105: 두 키는 act 인자에서 빠지고 결정 보조로만 간다" "$(in105 take105 2>/dev/null)" "2|$rec105|같음"
+a105=1 in105 gate_absorb_emitted_judgment cc-cmds S105R "$(res105 뒤 문서-신선도 2 '채택 기준 R' '채택 근거 R')" design >/dev/null 2>&1 || true
+ad105=$( { grep -F -e '- `자율 승인` |' "$l105" || true; } | grep -F -e '| 세그먼트=S105R |' | tail -1)
+check "105: (선행) 긴 선택지 리스크를 실은 방출이 자율 승인으로 채택됐다" "$([ -n "$ad105" ] && printf 있음 || printf 없음)" "있음"
+check "105: 자율 승인 행에는 두 키가 없다" "$(printf '%s\n' "$ad105" | grep -c -e '추천=' -e '선택지 리스크=' -e '아주 긴 리스크' || true)" "0"
+em105=""
+for p105 in 앞:S105EA 뒤:S105EB; do
+  o105=${p105%%:*}; g105=${p105#*:}
+  in105 gate_absorb_emitted_judgment cc-cmds "$g105" "$(res105 "$o105" 문서-신선도 2 "방출 기준 $g105" "방출 근거 $g105")" design >/dev/null 2>&1 || true
+  e105=$(in105 gate_approval_sidecar_aid "$(id105 "$g105")" 2>/dev/null)
+  if printf '%s\n' "$e105" | grep -q -x -F -e '**추천**: `승인`' \
+     && printf '%s\n' "$e105" | grep -q -x -F -e "**선택지 리스크**: $long105"; then :; else em105="$em105 $o105"; fi
+done
+check "105: 선택 표지를 다섯 표지 앞에 두든 뒤에 두든 결정 보조가 된다" "$em105" ""
+
+# 긴 질문(발췌 상한을 넘는 기준)의 판단 승인 — 도우미의 질문 줄 대조에 쓴다.
+lq105=$(printf '아주 긴 기준 문면입니다 %.0s' $(seq 1 40))
+in105 gate_issue_judgment_approval cc-cmds S105L "$lq105" '긴 근거' 문서-신선도 라우터 >/dev/null 2>&1 || true
+
+# 교대 정지 기록의 리스크 줄, 그리고 리스크 줄이 좌석의 추천 검사를 바꾸지 않는다는 것.
+check "105: 교대 정지 리스크 라벨 집합이 선택지 라벨 집합과 같다" "$(in105 sh105 2>/dev/null)" ""
+hr105 "$lsr_root/S105P#1.md" 'Step 3 검사' '`계속` — 시간이 듭니다 / `중단` — 일이 빠집니다'
+hr105 "$lsr_root/S105Q#1.md" 'Step 3 검사' -
+check "105: (선행) 리스크 줄 없는 기록의 추천 검사가 통과한다" "$(in105 recq105 "$lsr_root/S105Q#1.md" 2>/dev/null)" "0:계속"
+check "105: 리스크 줄이 있든 없든 좌석의 추천 검사 결과가 같다" \
+  "$(in105 recq105 "$lsr_root/S105P#1.md" 2>/dev/null)" "$(in105 recq105 "$lsr_root/S105Q#1.md" 2>/dev/null)"
+
+# 도우미 — 게이트 기록이 끝난 뒤 run 행과 두 park 를 손으로 붙인다.
+hr105 "$d105/halt/S105H#1.md" 'Step 3 검사' '`계속` — 시간이 듭니다 / `중단` — 일이 빠집니다'
+hr105 "$d105/halt/S105S#1.md" 'Step 3 잔여 검증 좌석 실행' -
+for k105 in S105H S105S; do
+  printf -- '- `segment` | id=%s | 상태=park | prev=x\n- `stage-result` | 세그먼트=%s | 스테이지=%s | 실행 버전=1 | 종단 부류=의도된 park | prev=x\n' \
+    "$k105" "$k105" "$k105" >> "$l105"
+done
+printf -- '- `run` | run-id=LS | RUN_DIR=%s | prev=x\n' "$d105" >> "$l105"
+out105=$(bash "$WD105" report "$mh105" "$l105" LS 2>/dev/null); orc105=$?
+check "105: (선행) 도우미가 exit 0 으로 끝난다" "$orc105" "0"
+hid105=$(printf '%s\n' "$out105" | sed -n 's/^\[승인 \([^]]*\)\].*/\1/p' | LC_ALL=C sort | tr '\n' ' ')
+gid105=$(in105 gate_pending_approvals_json 2>/dev/null | { printf '['; cat; printf ']'; } | jq -r '.[].id' 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')
+check "105: (선행) 게이트의 대기 승인이 비어 있지 않다" "$([ -n "$gid105" ] && printf 있음 || printf 없음)" "있음"
+check "105: 도우미의 승인 id 집합이 게이트의 대기 승인 집합과 같다" "$hid105" "$gid105"
+qm105=""
+for i105 in $gid105; do
+  want105="질문: $(in105 gate_prompt "$i105" 2>/dev/null | jq -r '.question' 2>/dev/null)"
+  got105=$(printf '%s\n' "$out105" | awk -v h="[승인 $i105]" 'index($0, h) == 1 { on = 1; next } on && /^질문: / { print; exit }')
+  [ "$got105" = "$want105" ] || qm105="$qm105 $i105"
+done
+check "105: 도우미의 질문 줄이 게이트 프롬프트의 질문과 같다" "$qm105" ""
+check "105: 400 바이트를 넘는 질문도 전문으로 나온다" "$(printf '%s\n' "$out105" | grep -c -F -e "$lq105 — 긴 근거" || true)" "1"
+check "105: 정지 기록 집합은 좌석 실행 스텝을 뺀 가리킨 기록이다" \
+  "$(printf '%s\n' "$out105" | sed -n 's/^\[정지 기록 \([^]]*\)\].*/\1/p' | LC_ALL=C sort | tr '\n' ' ')" "halt/S105H#1.md "
+am105=$(printf '%s\n' "$out105" | awk '/^\[정지 기록 / { r = $3; sub(/\]$/, "", r) } /^자동 답 대상 — / { printf "%s ", r }')
+check "105: (선행) 자동 답 표지가 하나 이상이다" "$([ -n "$am105" ] && printf 있음 || printf 없음)" "있음"
+check "105: 자동 답 표지 집합은 자동 답 두 판정을 통과한 기록이다" "$am105" "$(in105 auto105 "$d105/halt/S105H#1.md" 2>/dev/null)"
+# 런의 고정 사본은 플러그인 디렉터리 전체다 — 게이트는 오케스트레이터 밖의 형제 파일도 읽는다.
+pin105="$lsr_root/pin105"; rm -rf "$pin105"; mkdir -p "$pin105"
+cp -R "$repo_root/plugins/cc-cmds" "$pin105/"
+check "105: 고정 사본에서 돌린 도우미의 출력이 같다" \
+  "$(diff <(bash "$pin105/cc-cmds/orchestrator/waiting-decisions.sh" report "$mh105" "$l105" LS 2>/dev/null) <(printf '%s\n' "$out105") || true)" ""
+rm -rf "$pin105"
+unset l105 d105 b105 m105 mh105 s105 WD105 rec105 risk105 long105 j105 aj105 sha105 ai105 aa105 bm105 n105 i105 ba105 \
+  odd105 rc105 ad105 em105 p105 o105 g105 e105 lq105 out105 orc105 hid105 gid105 qm105 want105 got105 am105 pin105 k105
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
