@@ -60262,7 +60262,7 @@ if [ -n "$s106_home" ] && [ "$s106_home" = "$s106_b" ]; then
   ok "107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다"
 else
   bad "107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다" \
-    "$(diff <(printf '%s\n' "$s106_home") <(printf '%s\n' "$s106_b") | head -20 | tr '\n' ' ')"
+    "$(diff <(printf '%s\n' "$s106_home") <(printf '%s\n' "$s106_b") | sed -n '1,20p' | tr '\n' ' ')"
 fi
 tg_g "$S106/B-wt" exec --manifest "$TG_M" --target b --segment SB --cutpoint 커밋 --surface 읽기 \
   --snapshot-digest "$(tg_H)" --rationale x -- ls
