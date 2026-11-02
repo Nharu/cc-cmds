@@ -103,8 +103,47 @@ decision. And a judgment emitted with **no `판단 부류` at all** is not treat
 "no judgment": it raises an approval rather than vanishing, because such a stage made a
 decision and acted on it inside its own turn.
 
-`scripts/lint-autoadopt-vocabulary.sh` asserts these five spellings are defined
-in at least one `_common/` document. It checks existence and nothing more.
+Two further markers are **optional**, and they are not part of the five: the
+auto-adoption floor reads neither, and their presence or absence changes nothing
+about whether a judgment is adopted. They are the decision aid a person reads in
+the morning report when the judgment becomes an approval instead of a row.
+
+| marker | required | value |
+| --- | --- | --- |
+| `**판단 추천**:` | optional | one sentence `` `<승인|거부|무효>` — <추천 근거> ``: the menu label this judgment recommends, and after the dash what settles it |
+| `**판단 선택지 리스크**:` | optional | the halt record's risk-line grammar: `` `<라벨>` — <risk> / `<라벨>` — <risk> ``, one part per menu label, no ` / ` inside a risk sentence |
+
+The gate reads every marker from its own line up to the next `**판단 ` marker,
+so the two may stand before, between or after the five. An `act --kind judgment`
+submission carries the same two values as the keys `추천=` and `선택지 리스크=`;
+the gate takes them out of the arguments before it assembles the row, so neither
+reaches a `자율 승인` row and a long risk sentence does not push the row past its
+size limit. When the judgment raises an approval, the gate writes both values
+into that approval's `결정 보조` region in the approval sidecar; a value that was
+not given is shown as `미기재` in the morning report.
+
+**Writing the question a person will answer.** Whoever raises a judgment that
+may reach a person writes it so the person can answer from the question alone:
+
+- The question says what is being decided and the facts already known. A
+  question that can be answered only by re-reading the ledger, a report or the
+  tree is not raised; the facts the answer needs go into the question itself.
+- Each option's description says what the run does next when that answer
+  arrives.
+- An option answered with content — a measurement, a command's output, an
+  instruction longer than a label — says `첨부: <what is attached>` in its
+  description.
+- The `선택지 리스크` part of each label says what can go wrong, or what is given
+  up, by choosing it. With no risk at all it reads `알려진 위험 없음 — <why>`;
+  it is never left blank.
+- When the fact the decision needs is held only by a person, the recommendation
+  reads `(없음) — <that fact>`, naming the fact; an empty phrase such as "a
+  person decides" is not written.
+
+`scripts/lint-autoadopt-vocabulary.sh` asserts that every marker the gate's
+parser reads, the two optional ones included, is defined in at least one
+`_common/` document and the other way round. It checks existence and nothing
+more.
 
 ## What the lint does not check
 
