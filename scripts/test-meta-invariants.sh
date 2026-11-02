@@ -1576,6 +1576,51 @@ check "복구 팔은 복구 리포트에 리뷰 HEAD 줄을 지어 넣지 않는
   "$(mo_count "$(cat "$RU_RECOVER")" 'never write a `리뷰 HEAD` line into a recovered report')" "1"
 
 # ---------------------------------------------------------------------------
+# 6e-5b. An unattended P0 stands on reproduction evidence
+#
+# The template owns the evidence grammar and its encoding, the reviewer package
+# owns what a reviewer brings and the evidence check, and the unattended skill
+# owns the lead's run in a disposable directory and the one demotion rule that
+# every path takes. Each sentence below is written once in its owning file, so
+# a second copy that drifts, or a rewording that drops the interactive
+# exclusion, fails here.
+# ---------------------------------------------------------------------------
+RV_TPL="$PLUGIN_ROOT/skills/review/references/02-review-report-template.md"
+RV_PKG="$PLUGIN_ROOT/skills/review/references/01-reviewer-context-package.md"
+for spec in \
+  "템플릿:$RV_TPL:## P0 Reproduction Evidence — review-unattended only" \
+  "템플릿:$RV_TPL:"'원문의 `\` 를 먼저 모두 `\\` 로 두 배로 하고, 그다음 `*` 를 모두 `\*` 로 쓴다' \
+  "템플릿:$RV_TPL:"'다시 돌리는 쪽은 `재현 명령` 값과 `재현 스크립트` 본문 줄을 왼쪽부터 읽어 `\\` 를 `\` 로, `\*` 를 `*` 로 풀고 그 밖의 글자는 그대로 두어 돌린다' \
+  "템플릿:$RV_TPL:"'본문 줄은 돌린 파일의 한 줄마다 하나이고, 공백 여섯 개와 `|` 뒤에 그 줄을 아래 부호화로 옮겨 적는다' \
+  "템플릿:$RV_TPL:"'대화형 `/review`·`/review-lite` 는 이 절의 문법을 쓰지 않는다 — 대화형도 템플릿을 읽지만 이 절의 요건은 무인 리뷰에만 걸린다' \
+  "템플릿:$RV_TPL:"'재현 근거 하위 불릿과 `강등` 줄은 review-unattended 만 쓰고, 대화형 리드는 쓰지 않는다' \
+  "템플릿:$RV_TPL:근거 없음으로 P1 로 옮긴 상속 항목은 옮긴 절의 수로 센다" \
+  "리뷰어 패키지:$RV_PKG:**(Unattended review only) P0 reproduction evidence.**" \
+  "리뷰어 패키지:$RV_PKG:리뷰어는 재현을 돌리지 않는다" \
+  "리뷰어 패키지:$RV_PKG:"'`재현 명령` 에는 게이트로 감싼 줄이 아니라 자리표시자 꼴의 레시피 줄을 적는다' \
+  "리뷰어 패키지:$RV_PKG:강등 재료: " \
+  "리뷰어 패키지:$RV_PKG:"'**(Unattended review only) Evidence of a `critical` finding.**' \
+  "리뷰어 패키지:$RV_PKG:**(Unattended review only) Evidence of an inherited P0.**" \
+  "리뷰어 패키지:$RV_PKG:"'무인 리뷰의 `critical` 은 재현 레시피나 예외 근거를 달고 오거나 `high` 로 낸다' \
+  "리뷰어 패키지:$RV_PKG:**(Unattended review only) Evidence check.**" \
+  "리뷰어 패키지:$RV_PKG:근거 판정: " \
+  "무인 스킬:$RU_SKILL:**실행 전 점검**" \
+  "무인 스킬:$RU_SKILL:"'리뷰 HEAD 의 추적 파일은 파이프 없는 단순 명령 셋으로 `tree` 에 푼다' \
+  "무인 스킬:$RU_SKILL:"'재현 행위의 argv 는 `env -i PATH=<리드 셸의 PATH 값> HOME=<$REPRO_DIR 의 절대 경로>/home TMPDIR=<$REPRO_DIR 의 절대 경로>/tmp LANG=<리드 셸의 LANG 값> <결속한 재현 명령>`' \
+  "무인 스킬:$RU_SKILL:후보당 실행 세 번, 한 리뷰 라운드의 재현 실행 시간 합계 60분" \
+  "무인 스킬:$RU_SKILL:거절·점검 대응표." \
+  "무인 스킬:$RU_SKILL:근거 판정 기각: " \
+  "무인 스킬:$RU_SKILL:강등 처분 — one rule for every path." \
+  "무인 스킬:$RU_SKILL:근거 없음으로 P1 로 옮긴 상속 항목은 옮긴 절의 수로 센다" \
+  "무인 스킬:$RU_SKILL:이 재집계는 요약 수를 항목에 맞춰 고치는 일이 아니다" \
+  "복구 팔:$RU_RECOVER:The synthesis carries Step 5's P0 reproduction evidence rules with it." \
+  "복구 팔:$RU_RECOVER:복구는 명령을 새로 돌리지 않는다"
+do
+  who=${spec%%:*}; rest=${spec#*:}; file=${rest%%:*}; lit=${rest#*:}
+  check "$who 에 P0 재현 근거 문장이 한 번 실린다 — 「${lit:0:50}」" "$(mo_count "$(cat "$file")" "$lit")" "1"
+done
+
+# ---------------------------------------------------------------------------
 # CFI-11 — a re-kickoff carries no ledger row as a permission, with one
 # re-derived exception
 #
