@@ -59933,8 +59933,8 @@ for p105 in 앞:S105EA 뒤:S105EB; do
   o105=${p105%%:*}; g105=${p105#*:}
   in105 gate_absorb_emitted_judgment cc-cmds "$g105" "$(res105 "$o105" 문서-신선도 2 "방출 기준 $g105" "방출 근거 $g105")" design >/dev/null 2>&1 || true
   e105=$(in105 gate_approval_sidecar_aid "$(id105 "$g105")" 2>/dev/null)
-  if printf '%s\n' "$e105" | grep -q -x -F -e '**추천**: `승인`' \
-     && printf '%s\n' "$e105" | grep -q -x -F -e "**선택지 리스크**: $long105"; then :; else em105="$em105 $o105"; fi
+  if grep -q -x -F -e '**추천**: `승인`' <<<"$e105" \
+     && grep -q -x -F -e "**선택지 리스크**: $long105" <<<"$e105"; then :; else em105="$em105 $o105"; fi
 done
 check "105: 선택 표지를 다섯 표지 앞에 두든 뒤에 두든 결정 보조가 된다" "$em105" ""
 
