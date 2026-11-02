@@ -241,6 +241,12 @@ env -i HOME="$HOME_DIR" PATH="$PATH_FULL" CC_CMDS_ATTENTION_ROOT="$ROOT" CC_CMDS
 check "4 꺼진 스위치에서 첨부를 지운다" "$([ -e "$d" ] && echo left || echo gone)" "gone"
 check "4 그 두 길은 사건 0" "$(n_events)" "0"
 
+# The library is read only inside the tap helper's child shell, so its
+# top-level names never land in the shell that sourced the banner file.
+defs=$(env -i HOME="$HOME_DIR" PATH="$PATH_FULL" bash -c \
+  '. "$1"; type -t cc_attention_emit; type -t cc_attention_handled; true' x "$ORCH/notify-run.sh" 2>/dev/null)
+check "4 배너 파일을 읽은 셸에 탭 함수가 정의되지 않는다" "$defs" ""
+
 # --------------------------------------------------------------------------
 # 5. The gate and the watcher on one fixture run.
 # --------------------------------------------------------------------------

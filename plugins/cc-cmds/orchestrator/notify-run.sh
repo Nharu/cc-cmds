@@ -90,22 +90,17 @@ case "${BASH_SOURCE[0]:-}" in
   *)   CC_NOTIFY_FOCUS=notify-focus.sh ;;
 esac
 
-# The attention tap, a sibling of this file, sourced so that the banner function
-# and the clearing function below can leave the remote copy of what they raise
-# and clear. It is read only when it is there and readable; a copy of this file
-# without it raises and clears banners exactly as before, and the two tap sites
-# check that the tap functions are defined before calling them. Its output and
-# status are swallowed because every process that sources this file keeps
-# responsibilities 1 and 2. The path is resolved the way the click handler's is
-# just above.
+# The attention tap, a sibling of this file, which lets the banner function and
+# the clearing function below leave the remote copy of what they raise and
+# clear. Only its path is kept here, resolved the way the click handler's is
+# just above: the file is never read at the top level. `cc_notify_attention_tap`
+# reads it inside a child shell for each tap call, so none of its top-level
+# names lands in the gate's, the watcher's or a hook's shell, and a copy of
+# this file without it raises and clears banners exactly as before.
 case "${BASH_SOURCE[0]:-}" in
   */*) cc_notify_attention_lib="${BASH_SOURCE[0]%/*}/attention.sh" ;;
   *)   cc_notify_attention_lib=attention.sh ;;
 esac
-if [ -f "$cc_notify_attention_lib" ] && [ -r "$cc_notify_attention_lib" ]; then
-  . "$cc_notify_attention_lib" >/dev/null 2>&1 || true
-fi
-unset cc_notify_attention_lib
 
 cc_notify_host_os() {
   # Seamed so the non-Darwin leg can still drive the Darwin branch. Without the
@@ -788,6 +783,29 @@ cc_attention_detail_drop() {
   return 0
 }
 
+cc_notify_attention_tap() {
+  # cc_notify_attention_tap <tap function> [<arg>…] — run one attention tap.
+  #
+  # The tap library is read here, inside a child shell, and nowhere else: this
+  # file is sourced by the gate, the watcher and the session hooks, and a
+  # top-level name of the library must not land in their shells. The Homebrew
+  # prepend applies inside the same child shell, under the same off value as
+  # the banner below, because the tap looks `jq` up on PATH; the caller's PATH
+  # is the same before and after. The child's stdout and stderr are discarded.
+  # Status is not 0 when the library could not be read or does not define the
+  # tap function; the caller decides what that means.
+  (
+    [ -f "$cc_notify_attention_lib" ] && [ -r "$cc_notify_attention_lib" ] || exit 2
+    # shellcheck source=/dev/null
+    . "$cc_notify_attention_lib" || exit 2  # lint-harness-global-collisions: child-shell
+    [ "$(type -t "${1:-}" 2>/dev/null)" = function ] || exit 2
+    if [ -z "${CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND:-}" ]; then
+      PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    fi
+    "$@"
+  ) >/dev/null 2>&1
+}
+
 cc_notify_fire() {
   # cc_notify_fire <token> <message> [item-key]
   #
@@ -801,7 +819,7 @@ cc_notify_fire() {
   # into a local on entry, and every path that returns before the attention tap
   # below removes it; the tap reads and removes it otherwise.
   local token="${1:-}" body="${2:-}" key="${3:-}" title group sound click n detail="${CC_NOTIFY_ATTENTION_DETAIL:-}"
-  local tap_key tap_path
+  local tap_key
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
     session-ask|session-turn|focus-guide) : ;;
@@ -849,23 +867,20 @@ cc_notify_fire() {
   # value is not computed here: computing it starts a session banner's pane
   # resolution, which has to run once, for the banner itself.
   #
-  # The tap looks `jq` up on PATH, and the Homebrew prepend below has not run
-  # yet, so the same prepend, under the same off value, applies for the tap call
-  # only and PATH is put back after it. Which tokens leave an event is the
-  # tap's own table.
-  if command -v cc_attention_emit >/dev/null 2>&1; then
-    tap_key="$key"
-    case "$token" in
-      answer|hands) if [ -z "$tap_key" ]; then tap_key="$token"; fi ;;
-    esac
-    tap_path="$PATH"
-    if [ -z "${CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND:-}" ]; then
-      PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-    fi
-    cc_attention_emit "$token" "$(cc_notify_group "$token" "$tap_key")" \
-      "$(cc_notify_title "$token")" "$body" "$detail" || true
-    PATH="$tap_path"
-  else
+  # The tap runs through `cc_notify_attention_tap`, in a child shell that reads
+  # the library and applies the Homebrew prepend there, so this function's PATH
+  # is the same before and after. Slot and title are computed here, in this
+  # shell, as the arguments. When the helper fails — the library is missing or
+  # unreadable, or does not define the tap — the attachment is dropped; one the
+  # tap already read and removed leaves the drop nothing to do. Which tokens
+  # leave an event is the tap's own table.
+  tap_key="$key"
+  case "$token" in
+    answer|hands) if [ -z "$tap_key" ]; then tap_key="$token"; fi ;;
+  esac
+  if ! cc_notify_attention_tap cc_attention_emit "$token" \
+      "$(cc_notify_group "$token" "$tap_key")" "$(cc_notify_title "$token")" \
+      "$body" "$detail"; then
     cc_attention_detail_drop "$detail"
   fi
 
@@ -1046,14 +1061,13 @@ cc_notify_clear() {
   # session tokens are a return to the session, `answer` is cleared only where an
   # approval closes, and anything else is a plain clear. The session group is
   # one per session whatever the key, so one clearing closes that session's
-  # question and turn events together.
-  if command -v cc_attention_handled >/dev/null 2>&1; then
-    case "$token" in
-      session-ask|session-turn|focus-guide) cc_attention_handled "$group" return || true ;;
-      answer) cc_attention_handled "$group" approval-closed || true ;;
-      *) cc_attention_handled "$group" clear || true ;;
-    esac
-  fi
+  # question and turn events together. The tap runs through
+  # `cc_notify_attention_tap`, and a failure of the helper changes nothing below.
+  case "$token" in
+    session-ask|session-turn|focus-guide) cc_notify_attention_tap cc_attention_handled "$group" return || true ;;
+    answer) cc_notify_attention_tap cc_attention_handled "$group" approval-closed || true ;;
+    *) cc_notify_attention_tap cc_attention_handled "$group" clear || true ;;
+  esac
 
   if ! command -v terminal-notifier >/dev/null 2>&1; then
     return 0
