@@ -13144,11 +13144,22 @@ gate_review_report_candidates() {
 
 gate_review_report_produced() {
   # gate_review_report_produced <segment> — true when one of this cycle's
-  # report paths satisfies the driver's `predicate_review`.
+  # report paths carries either terminal line a review can write: the
+  # canonical `발견 요약` line, judged by the driver's `predicate_review`, or
+  # the recovery arm's partial-recovery head, judged by the one report parser's
+  # `요약=복구`. The partial head counts because it is the recovery arm's
+  # defined end for a recovery it could not complete, and its readers already
+  # take it as one: the router's review-recovery check finds it on a recovery
+  # recorded `정상 완료` and blocks on `부분 복구`. Recorded `공허한 성공`, the
+  # recovery would be continued instead, and the continue message asks for the
+  # canonical line an incomplete witness set cannot honestly fill.
   local f
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     if predicate_review "$f"; then return 0; fi
+    case "$(gate_review_report_counts "$f" 2>/dev/null)" in
+      *'요약=복구'*) return 0 ;;
+    esac
   done <<EOF
 $(gate_review_report_candidates "$1")
 EOF
@@ -51017,13 +51028,16 @@ gate_record_stage_outcome() {
        && gate_plan_rows_of "$seg" | implement_process_b \
        && [ -n "$(residual_share_missing "${DOC:-}" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md")" ]; then
     klass='공허한 성공'
-  # A REVIEW STAGE is asked for this cycle's report by the driver's own
-  # predicate, on the canonical path or a `-r<k>` re-dispatch path
-  # (`gate_review_report_candidates`). The arm stands before the row-count arm
-  # because a review leaves its own admit and exec rows whether or not it wrote
-  # a report, so a row proves only that it acted. A halt record without its
-  # closing fence did not pass the halt arm above and is judged here like no
-  # record. A lead fix is a kind of its own and never reaches this arm.
+  # A REVIEW STAGE is asked for this cycle's report, on the canonical path or a
+  # `-r<k>` re-dispatch path (`gate_review_report_candidates`): a report is
+  # produced when it carries the canonical `발견 요약` line or the recovery
+  # arm's partial-recovery head (`gate_review_report_produced`). A report with
+  # neither, the early stub included, is not. The arm stands before the
+  # row-count arm because a review leaves its own admit and exec rows whether or
+  # not it wrote a report, so a row proves only that it acted. A halt record
+  # without its closing fence did not pass the halt arm above and is judged
+  # here like no record. A lead fix is a kind of its own and never reaches this
+  # arm.
   elif [ "$kind" = "review" ] && ! gate_review_report_produced "$seg"; then
     klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
