@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh"
+_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -832,7 +832,8 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   fi
 done
 # Both router copies accept a `발행됨` sidecar because a re-kicked run's visual
-# stage reuses its source's sidecar without writing it. That holds only while
+# stage reuses its source's sidecar without generating it again (it rewrites
+# only the record path line to this run's). That holds only while
 # the stage itself still runs the reuse check, so pin the call in its text.
 VU_SKILL="$PLUGIN_ROOT/skills/visual-unattended/SKILL.md"
 nreuse=$(grep -cF -- 'visual-check.sh reuse' "$VU_SKILL" || true)
@@ -841,6 +842,55 @@ if [ "${nreuse:-0}" != "0" ]; then
 else
   bad "visual-unattended 문면의 재사용 판정" "visual-check.sh reuse 호출이 없다"
 fi
+# The design system check and the sidecar field share one helper: the stage
+# asks `visual-check.sh system --owner` whether an existing system.md is this
+# document's, and pins `**디자인 시스템 sha256**` with the value
+# `visual-check.sh system` prints, which the reuse check compares again.
+for lit in \
+  'visual-check.sh system <document> --owner' \
+  '`**디자인 시스템 sha256**` the value `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh system <document>` prints'; do
+  if grep -qF -- "$lit" "$VU_SKILL"; then
+    ok "visual-unattended 문면이 「${lit}」를 담는다"
+  else
+    bad "visual-unattended 문면의 디자인 시스템 판정" "「${lit}」가 없다"
+  fi
+done
+# Both halts that refuse an earlier output give a person options, and the
+# labels are the ones a resumed turn reads back.
+for lab in '있는 디자인 시스템을 쓴다' '새로 만들어 덮는다' '신규로 만든다' '재사용으로 진행' '다시 생성'; do
+  if grep -qF -- "- \`${lab}\` — " "$VU_SKILL"; then
+    ok "visual-unattended 문면에 선택지 「${lab}」 줄이 있다"
+  else
+    bad "visual-unattended 문면의 선택지" "「${lab}」 줄이 없다"
+  fi
+done
+# A reused sidecar points at this run's record, not the finished source run's.
+if grep -qF -- "rewrite only the sidecar's \`**기록**\` line" "$VU_SKILL"; then
+  ok "visual-unattended 재사용 갈래가 기록 경로 한 줄을 고쳐 쓴다"
+else
+  bad "visual-unattended 재사용 갈래" "기록 경로를 고쳐 쓰는 문면이 없다"
+fi
+# A resumed turn reruns Step 1 from item 1, and item 6 runs before item 7, so
+# an `output-present` answer is applied only while the following record carries
+# the earlier `system-mismatch` answer and item 6 reads it back for the same
+# case. Without both sentences the two halts alternate without end.
+for lit in \
+  '`앞선 답=<label> · 경우=<key> · 기록=<earlier halt record path>`' \
+  'While item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
+  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece'; do
+  if grep -qF -- "$lit" "$VU_SKILL"; then
+    ok "visual-unattended 재개 턴이 앞선 시스템 불일치 답을 나른다 — 「${lit}」"
+  else
+    bad "visual-unattended 재개 턴의 앞선 답" "「${lit}」가 없다"
+  fi
+done
+for old in 'Every site except `review-cap` is a refusal' 'write nothing at all'; do
+  if grep -qF -- "$old" "$VU_SKILL"; then
+    bad "visual-unattended 문면의 옛 문장" "「${old}」가 남았다"
+  else
+    ok "visual-unattended 문면에 옛 문장 「${old}」가 없다"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 6e. Re-attaching a cut stage is carried by BOTH router copies
