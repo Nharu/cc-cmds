@@ -2474,6 +2474,16 @@ canon_put() {
   case "$p" in "$WORK_ROOT"/*) ;; *) printf '%s\n' "$p" >> "$WORK_ROOT/canon-outside" ;; esac
   printf '%s' "$p"
 }
+# canon_report <run> <segment> [k] — writes the smallest report a review stage
+# owes at that canonical path (a `발견 요약` line the driver's `predicate_review`
+# reads) and prints the path. For a fixture whose review stage must count as
+# having produced its report, so the gate's outcome recorder does not file it
+# as a hollow success.
+canon_report() {
+  local src="$WORK_ROOT/canon-report-src.md"
+  printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' > "$src"
+  canon_put "$1" "$2" "$src" ${3:+"$3"}
+}
 # rv_x <run> <segment> [base] — the smallest review prompt the gate lets through
 # for that segment's next review: the canonical `--report-path` and nothing
 # else, under the given base (CANON_TOP for a manifest directly in `$WORK`). A
@@ -9763,7 +9773,10 @@ check "그 행이 미해결 의무로 세어진다 (조건 3 이 더는 공허�
 # line, so they are exercised through the seam with a synthetic log rather than
 # by launching a CLI the fixture does not have.
 outcome_probe() {
-  # outcome_probe <rc> <subtype> <cost> <extra-log-line>
+  # outcome_probe <rc> <subtype> <cost> <extra-log-line> [kind]
+  # The kind is `review` unless given. A review is asked for its report before
+  # the row-count and denial arms, so a probe of those arms names a kind the
+  # chain has no artifact arm for.
   cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
     . "'"$GATE"'"
     MANIFEST="'"$FX_MANIFEST"'"
@@ -9775,11 +9788,11 @@ outcome_probe() {
       printf "{\"type\":\"result\",\"subtype\":\"%s\",\"total_cost_usd\":%s,\"session_id\":\"sid-probe\"}\n" "$2" "$3"
     } > "$RUN_DIR/log/SP.json"
     nb=$(gate_rows "자율 승인" | gate_count)
-    gate_record_stage_outcome infra SP review 1 "$1" "$nb" >/dev/null 2>&1
-  ' _ "$1" "$2" "$3" "${4:-}"
+    gate_record_stage_outcome infra SP "$5" 1 "$1" "$nb" >/dev/null 2>&1
+  ' _ "$1" "$2" "$3" "${4:-}" "${5:-review}"
 }
 
-outcome_probe 0 success 1.25 ''
+outcome_probe 0 success 1.25 '' lead-fix
 row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
 case "$row" in
   *"종단 부류=공허한 성공"*) ok "행을 남기지 않고 성공한 스테이지는 공허한 성공이다" ;;
@@ -9795,7 +9808,7 @@ case "$crow" in
   *) bad "비용 누적" "$crow" ;;
 esac
 
-outcome_probe 0 success 0.75 '{"permission_denials":[{"tool_name":"Read"}]}'
+outcome_probe 0 success 0.75 '{"permission_denials":[{"tool_name":"Read"}]}' lead-fix
 row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
 case "$row" in
   *"종단 부류=산출물 없는 정지"*) ok "거부 흔적이 있으면 공허한 성공과 구별된다" ;;
@@ -9944,7 +9957,9 @@ esac
 # One session carried across attempts by re-attachment shares its session id
 # while the attempts end differently. The attempt is the file the pin names, so
 # three recorder calls give three rows, and the limit rows count two. The middle
-# attempt's `정상 완료` needs a stage row after its dispatch line.
+# attempt's `정상 완료` needs a stage row after its dispatch line, and, being a
+# review, this cycle's report at its canonical path.
+canon_report "$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | sed -n 1p)" LT >/dev/null
 limit_probe LT 1 1 "$LIM14/limit.json" 1
 printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=infra | 세그먼트=LT | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=한도 픽스처 | prev=x\n' >> "$FX_LEDGER"
 limit_probe LT 2 0 "$LIM14/ok.json" 1
@@ -40538,6 +40553,10 @@ klass42() { { grep -F '`stage-result`' "$FX_LEDGER" || true; } | grep -F "세그
 gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment S42A --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
 check "42 실험용 세그먼트 행 (A) 이 기록된다" "$rc" "0"
+# The report is in place for (A) too: without it the recorder's review arm would
+# file the stage as a hollow success before the row-count arm is read, and the
+# assertion below would pass without measuring which rows were counted.
+canon_report "$rid42" S42A >/dev/null
 # Forked: the stub CLI is read while the gate is sourced (see the 14h launch).
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42A" \
   bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42A --cutpoint 커밋 \
@@ -40563,6 +40582,9 @@ rm -f "$WT/s42-router.txt"
 gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment S42B --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
 check "42 실험용 세그먼트 행 (B) 이 기록된다" "$rc" "0"
+# The stage is a review, which the recorder also asks for this cycle's report;
+# the report is put in place so the assertion below reads the row-count arm.
+canon_report "$rid42" S42B >/dev/null
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
   bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42B --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
@@ -60190,6 +60212,168 @@ check "104d: 옮긴 판독 함수는 두 파일을 통틀어 정의가 하나씩
 check "104d: 정의는 정리 파일 쪽에 있다" \
   "$( { grep -cE '^(gate_rows|gate_row_field|gate_pending_approval_ids)\(\)' "$WTC_SRC" || true; } )" "3"
 unset d104 c104 p104 f104 d104n
+
+# ---------------------------------------------------------------------------
+# 106. 다른 대상 워크트리의 세션 — 검사 3 의 허용 집합, admit 의 이동 거부, 산출물 없는 리뷰의 종단 부류
+# --- section: 106 | group: tguard | covers: check_manifest, admit, gate_record_stage_outcome, gate_continuation_argv | anchors: 106: 두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다, 106: 두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다, 106: 두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다, 106: 선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다, 106: git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다, 106: 홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다, 106: 대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다, 106: 리포트 없는 리뷰는 공허한 성공이다, 106: 정규 경로 리포트가 있는 리뷰는 정상 완료다, 106: -r2 경로 리포트가 있는 리뷰는 정상 완료다, 106: 닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다, 106: 공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다 ---
+#
+# 세계는 이 절이 스스로 만든다: 홈 레포 H 와 그 링크된 워크트리, 두 번째로
+# 선언된 대상 레포 B 와 그 링크된 워크트리, 선언되지 않은 레포 U, git 저장소가
+# 아닌 디렉터리 N. 두 대상의 원격은 저마다 맨 저장소로 돌려, 스냅숏이 원격을
+# 읽어도 다이제스트가 움직이지 않는다. 쓰는 헬퍼는 머리의 `pre_tguard` 것뿐이다.
+# ---------------------------------------------------------------------------
+S106="$WORK/s106"; mkdir -p "$S106/bin" "$S106/N"
+S106=$(cd -P "$S106" && pwd)
+TG="$S106"; TG_A="$S106/H"; TG_RUN=RT106; TG_STATE="$S106/state"
+TG_RD="$TG_STATE/cc-cmds/run/$TG_RUN"; TG_M="$TG_A/plan.md"
+TG_L="$TG_A/docs/pipeline-run/$TG_RUN.md"; TG_GR="$TG_A/docs/pipeline-grant/$TG_RUN.md"
+TG_CALLER='S106#1'; TG_PD="$TG_A"
+cat > "$S106/bin/gh" <<S106GH
+#!/bin/sh
+case "\$*" in *"pr list"*) echo "[]" ;; *) exit 0 ;; esac
+S106GH
+chmod +x "$S106/bin/gh"
+TG_ENV_BASE=(XDG_STATE_HOME="$TG_STATE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE= GIT_ALLOW_PROTOCOL=file
+             CC_REMOTE_GH="$S106/bin/gh" PATH="$S106/bin:$PATH")
+TG_ENV=("${TG_ENV_BASE[@]}" GIT_CONFIG_COUNT=2
+        "GIT_CONFIG_KEY_0=url.$S106/h.git.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/t/h.git
+        "GIT_CONFIG_KEY_1=url.$S106/b.git.insteadOf" GIT_CONFIG_VALUE_1=https://github.com/t/b.git)
+for r106 in h:H b:B; do
+  a106=${r106%%:*}; d106="$S106/${r106#*:}"
+  git init -q --bare "$S106/$a106.git"
+  tgf_repo "$d106"
+  ( cd "$d106" && git remote add origin "https://github.com/t/$a106.git" \
+      && env "${TG_ENV[@]}" git push -q origin master \
+      && git worktree add -q -b "seg/$a106" "$d106-wt" ) >/dev/null 2>&1
+done
+tgf_repo "$S106/U"
+tg_manifest "$TG_M" "$TG_RUN" PR "$TG_A" "$(tg_target_row h "$TG_A" 예 PR)" "$(tg_target_row b "$S106/B" 아니오 PR)"
+tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target h --segment SH --cutpoint 커밋 \
+  --snapshot-digest "$(tg_H)" --rationale x -- 상태=실행중 "워크트리=$S106/H-wt" 브랜치=seg/h 선행=없음
+r106_sh=$rc
+tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target b --segment SB --cutpoint 커밋 \
+  --snapshot-digest "$(tg_H)" --rationale x -- 상태=실행중 "워크트리=$S106/B-wt" 브랜치=seg/b 선행=없음
+check "106: 두 대상의 세그먼트 행이 기록된다 (아래 단언의 전제)" "$r106_sh|$rc" "0|0"
+
+# 단언 1 — 두 번째 대상의 링크된 워크트리는 허용 집합 안이다.
+s106_home=$(tg_snap | jq -S . 2>/dev/null)
+s106_b=$( ( cd "$S106/B-wt" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -S . 2>/dev/null)
+if [ -n "$s106_home" ] && [ "$s106_home" = "$s106_b" ]; then
+  ok "106: 두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다"
+else
+  bad "106: 두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다" \
+    "$(diff <(printf '%s\n' "$s106_home") <(printf '%s\n' "$s106_b") | head -20 | tr '\n' ' ')"
+fi
+tg_g "$S106/B-wt" exec --manifest "$TG_M" --target b --segment SB --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale x -- ls
+check "106: 두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다" "$rc" "0"
+tg_hook "git status" "$S106/B-wt"
+tg_g "$S106/B-wt" admit --request last --manifest "$TG_M" --target b --segment SB --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale x
+check "106: 두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다" \
+  "$rc|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)" "0|표"
+
+# 단언 2 — 선언되지 않은 레포와 git 저장소가 아닌 디렉터리는 여전히 거부된다.
+for d106 in U N; do
+  tg_g "$S106/$d106" snapshot --manifest "$TG_M"
+  r106_snap="$rc"; m106_snap="$msg"
+  tg_g "$S106/$d106" exec --manifest "$TG_M" --target h --segment SH --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest x --rationale x -- ls
+  case "$r106_snap|$rc|$m106_snap|$msg" in
+    0\|*|*\|0\|*) n106=rc ;;
+    *"선언된 어느 대상의 레포도 아닙니다"*"--target 으로 지목하세요"*"선언된 어느 대상의 레포도 아닙니다"*) n106=ok ;;
+    *) n106=문면 ;;
+  esac
+  if [ "$d106" = U ]; then t106="106: 선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다"
+  else t106="106: git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다"; fi
+  if [ "$n106" = ok ]; then ok "$t106"; else bad "$t106" "$n106: snapshot rc=$r106_snap '$m106_snap' / exec rc=$rc '$msg'"; fi
+done
+
+# 단언 3 — 홈에서 낸 이동 요청. 선언된 대상 안으로의 이동은 등급으로 넘어가 표를
+# 받고, 밖으로의 이동과 목적지를 낱말만으로 정할 수 없는 이동은 등급 전에 rc 2 다.
+rm -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")"
+tg_hook "cd $S106/B-wt" "$TG_A"
+tg_g "$TG_A" admit --request last --manifest "$TG_M" --target h --segment SH --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale x
+check "106: 홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다" \
+  "$rc|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)" "0|표"
+n106_rows=$(grep -c . "$TG_L" 2>/dev/null || printf '0')
+g106=""
+for c106 in "cd $S106/U" "cd $S106/N" "pushd $S106/U" cd 'cd $X' popd "cd $S106/없는-디렉터리"; do
+  tg_hook "$c106" "$TG_A"
+  tg_g "$TG_A" admit --request last --manifest "$TG_M" --target h --segment SH --surface 읽기 \
+    --snapshot-digest "$(tg_H)" --rationale x
+  [ "$rc" = 2 ] || g106="$g106 [$c106 → rc=$rc: $(printf '%s' "$msg" | tail -n 2 | tr '\n' ' ')]"
+done
+check "106: 대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다" \
+  "${g106:-없음}|$(grep -c . "$TG_L" 2>/dev/null || printf '0')" "없음|$n106_rows"
+tg_hook "cd $S106/U" "$TG_A"
+tg_g "$TG_A" admit --request last --manifest "$TG_M" --target h --segment SH --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale x
+case "$msg" in
+  *"선언된 대상 밖으로 옮겨"*"--target <별칭> --segment <세그먼트>"*) ok "106: 그 거부는 갇히는 까닭과 머문 채 읽는 형태를 든다" ;;
+  *) bad "106: 이동 거부 문면" "$msg" ;;
+esac
+
+# 단언 4·5 — 리뷰 시도의 종단 부류. 시도마다 세그먼트를 따로 두어 서로의 리포트와
+# 기록을 보지 않는다. 각 시도는 종료 코드 0, 스테이지 행 하나다. 리포트 경로는
+# 게이트에 묻지 않고 매니페스트의 두 단 위 기준과 사이클 1 로 여기서 센다.
+s106_base=$(dirname "$S106")
+s106_rp() { printf '%s/docs/reviews/seg-%s-%s-cycle1%s.md' "$s106_base" "$TG_RUN" "$1" "${2:+-r$2}"; }
+s106_outcome() {  # s106_outcome <seg> <없음|정규|r2|중단>
+  local rp
+  rp=$(s106_rp "$1")
+  case "$2" in
+    정규|r2)
+      [ "$2" = 정규 ] || rp=$(s106_rp "$1" 2)
+      mkdir -p "$(dirname "$rp")"
+      printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' > "$rp" ;;
+  esac
+  ( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" </dev/null >/dev/null 2>&1
+    MANIFEST="$2"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    mkdir -p "$RUN_DIR/log" "$RUN_DIR/halt"
+    printf "1\n" > "$RUN_DIR/$3.attempt"
+    printf "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.1,\"session_id\":\"s-106\",\"num_turns\":5}\n" \
+      > "$RUN_DIR/log/$3#1.json"
+    [ "$4" != 중단 ] || printf "# 파이프라인 중단 기록\n\n**분류**: gate-unanswerable\n**스텝**: 리뷰\n" > "$(halt_record_path "$3")"
+    nb=$(wc -l < "$LEDGER" | tr -d " ")
+    printf -- "- \`자율 승인\` | kind=skill | 결정=act | 대상=h | 세그먼트=%s | 절단점=커밋 | 축2=읽기 | 자격=주변 | 행위자=스테이지 | 근거=픽스처 | prev=x\n" "$3" >> "$LEDGER"
+    gate_record_stage_outcome h "$3" review 1 0 "$nb" "$RUN_DIR/log/$3#1.json" >/dev/null 2>&1
+  ' _ "$GATE" "$TG_M" "$1" "$2" )
+  grep '^- `stage-result` ' "$TG_L" | { grep -F "세그먼트=$1 " || true; } | tail -1 \
+    | sed -n 's/.*| 종단 부류=\([^|]*\) |.*/\1/p'
+}
+check "106: 리포트 없는 리뷰는 공허한 성공이다" "$(s106_outcome SRA 없음)" "공허한 성공"
+check "106: 정규 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRB 정규)" "정상 완료"
+check "106: -r2 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRC r2)" "정상 완료"
+check "106: 닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다" "$(s106_outcome SRD 중단)" "공허한 성공"
+c106=$( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$1" </dev/null >/dev/null 2>&1
+  MANIFEST="$2"
+  check_manifest >/dev/null 2>&1
+  derive_paths_from_manifest
+  rundir_init 2>/dev/null || true
+  GATE_RESUME=s-106
+  r=0; gate_continuation_argv SRA review review -p "원래 프롬프트" 2>/dev/null || r=$?
+  printf "%s\n" "$r"
+  [ "$r" != 0 ] || { i=0; for a in "${GATE_CONTINUE_ARGV[@]}"; do [ "$i" = 1 ] && printf "%s\n" "$a"; [ "$a" = -p ] && i=1 || i=0; done; }
+' _ "$GATE" "$TG_M" )
+case "$c106" in
+  0*"이 사이클의 리뷰 리포트($(s106_rp SRA))에 \`발견 요약\` 줄이 없고 정지 기록도 없다"*)
+    ok "106: 공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다" ;;
+  *) bad "106: 공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다" "$c106" ;;
+esac
+case "$c106" in
+  *"게이트를 거친 행위도 정지 기록도 없다"*) bad "106: 리뷰 계속 메시지" "기본 문면이 갔다: $c106" ;;
+  *) ok "106: 그 메시지는 행위가 없다는 기본 문면을 싣지 않는다" ;;
+esac
+rm -rf "$s106_base/docs/reviews/seg-$TG_RUN-"*
+unset -f s106_rp s106_outcome
+unset S106 r106 a106 d106 r106_sh s106_home s106_b r106_snap m106_snap n106 t106 n106_rows g106 c106 s106_base
 
 # --- epilogue-begin ---
 #

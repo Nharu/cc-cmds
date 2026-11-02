@@ -13124,6 +13124,37 @@ gate_segment_review_ordinal() {
   printf '%s' "$(( ${n:-0} + 1 ))"
 }
 
+gate_review_report_candidates() {
+  # gate_review_report_candidates <segment> — the report paths this cycle's
+  # review may have written, one per line: the canonical one, then every
+  # existing `-r<k>` sibling with k ≥ 2 and no leading zero. The same set the
+  # `cycle` row check accepts, so a report the row may name is one the stage
+  # outcome counts.
+  local rp f k
+  rp=$(gate_review_report_path "$1")
+  printf '%s\n' "$rp"
+  for f in "${rp%.md}"-r*.md; do
+    [ -f "$f" ] || continue
+    k=${f#"${rp%.md}-r"}; k=${k%.md}
+    case "$k" in ''|*[!0-9]*|0*) continue ;; esac
+    [ "$k" -ge 2 ] || continue
+    printf '%s\n' "$f"
+  done
+}
+
+gate_review_report_produced() {
+  # gate_review_report_produced <segment> — true when one of this cycle's
+  # report paths satisfies the driver's `predicate_review`.
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if predicate_review "$f"; then return 0; fi
+  done <<EOF
+$(gate_review_report_candidates "$1")
+EOF
+  return 1
+}
+
 gate_report_norm() {
   # gate_report_norm <absolute path> — the spelling two report paths are
   # compared in: the nearest existing directory resolved physically, so `//`, a
@@ -20557,6 +20588,7 @@ gate_main() {
       gate_admit_load "$request"
       gate_admit_words
       gate_admit_wrapped_push_refuse
+      gate_admit_dir_move_refuse
       # THE CELL IS DERIVED, not asked for: the table's rung, and `push` at
       # least for a git push, whose rung the table leaves to the act's own
       # destination check — which raises a base update to `머지` with exit 8.
@@ -41651,6 +41683,65 @@ gate_admit_wrapped_push_refuse() {
   exit "$GATE_EXIT_VOCAB"
 }
 
+gate_admit_dir_move_refuse() {
+  # gate_admit_dir_move_refuse — exits 2 when the request is a bare `cd`,
+  # `pushd` or `popd` that would move the session outside the run's declared
+  # repositories. A bare command admitted here runs in the session itself, so
+  # it is the one way a session's working directory changes, and the manifest
+  # check every later gate call makes refuses a directory whose common git
+  # directory is not in `manifest_allowed_common_dirs` — a move there traps the
+  # session. A move into a declared repository passes on to grading: the check
+  # admits it, and the gate's acts already run in that target's worktree.
+  # The destination is the first operand after the options -L -P -e -@ (and
+  # their clusters, and `--`), taken from the request's directory when
+  # relative. No operand, `-`, a leading `~` or `+`, an expansion or glob
+  # character, a second operand, and every `popd` cannot be resolved from the
+  # words alone and are refused, as are a missing directory, one outside any
+  # git repository and one of an undeclared repository. Refused before it is
+  # graded, so no row and no ticket is written for it. A `cd` run through exec
+  # runs in the gate's child process and moves nothing, so exec is not checked.
+  local verb="${GATE_ADMIT_WORDS[0]##*/}" n="${#GATE_ADMIT_WORDS[@]}" i=1 w
+  local dest="" d="" cg="" a ok=0
+  case "$verb" in cd|pushd|popd) ;; *) return 0 ;; esac
+  if [ "$verb" != "popd" ]; then
+    while [ "$i" -lt "$n" ]; do
+      w="${GATE_ADMIT_WORDS[$i]}"
+      case "$w" in
+        --) i=$((i + 1)); break ;;
+        -) break ;;
+        -?*)
+          case "${w#-}" in *[!LPe@]*) break ;; esac
+          i=$((i + 1)) ;;
+        *) break ;;
+      esac
+    done
+    if [ "$i" -lt "$n" ] && [ $((i + 1)) -eq "$n" ]; then
+      dest="${GATE_ADMIT_WORDS[$i]}"
+    fi
+    case "$dest" in
+      ''|-*|+*|'~'*|*'$'*|*'`'*|*'*'*|*'?'*|*'['*|*'{'*|*\\*) dest="" ;;
+    esac
+  fi
+  if [ -n "$dest" ]; then
+    case "$dest" in /*) d="$dest" ;; *) d="$GATE_ADMIT_CWD/$dest" ;; esac
+    if [ -d "$d" ]; then
+      cg=$(gate_thp thp_common_dir "$d" 2>/dev/null || true)
+    fi
+    if [ -n "$cg" ]; then
+      while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        [ "$(gate_thp thp_phys "$a" 2>/dev/null || true)" != "$cg" ] || { ok=1; break; }
+      done <<EOF
+$(manifest_allowed_common_dirs)
+EOF
+    fi
+  fi
+  [ "$ok" = "0" ] || return 0
+  warn "이 이동($verb)은 세션을 선언된 대상 밖으로 옮겨 이후 모든 게이트 호출이 매니페스트 검사에 막힌다"
+  warn "다른 대상의 상태는 그 자리에 머문 채 gate.sh exec --target <별칭> --segment <세그먼트> -- <명령> 으로 읽는다"
+  exit "$GATE_EXIT_VOCAB"
+}
+
 gate_admit_git_dir() {
   # gate_admit_git_dir <argv…> — the directory a git command runs in: the
   # request's directory, moved by every `-C <dir>` before the subcommand, and
@@ -47311,6 +47402,9 @@ gate_continuation_argv() {
       if [ -n "$unclosed" ]; then unmet=$(unclosed_unmet_message "$unclosed")
       elif [ -n "$missing" ]; then unmet=$(residual_unmet_message "$missing")
       else unmet="게이트를 거친 행위도 정지 기록도 없다"; fi ;;
+    # A review acted through the gate and still wrote no report, so the default
+    # sentence would be false; it is told the canonical report of this cycle.
+    review) unmet="이 사이클의 리뷰 리포트($(gate_review_report_path "$key"))에 \`발견 요약\` 줄이 없고 정지 기록도 없다" ;;
     *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
   esac
   GATE_CONTINUE_ARGV=()
@@ -50922,6 +51016,15 @@ gate_record_stage_outcome() {
   elif [ "$kind" = "implement" ] \
        && gate_plan_rows_of "$seg" | implement_process_b \
        && [ -n "$(residual_share_missing "${DOC:-}" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md")" ]; then
+    klass='공허한 성공'
+  # A REVIEW STAGE is asked for this cycle's report by the driver's own
+  # predicate, on the canonical path or a `-r<k>` re-dispatch path
+  # (`gate_review_report_candidates`). The arm stands before the row-count arm
+  # because a review leaves its own admit and exec rows whether or not it wrote
+  # a report, so a row proves only that it acted. A halt record without its
+  # closing fence did not pass the halt arm above and is judged here like no
+  # record. A lead fix is a kind of its own and never reaches this arm.
+  elif [ "$kind" = "review" ] && ! gate_review_report_produced "$seg"; then
     klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
     klass='정상 완료'
