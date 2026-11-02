@@ -598,7 +598,10 @@ the value assigned with `=` or `:` to a key starting with `token`, `secret`,
 `password`, `passwd`, `pwd`, `api_key`, `api-key`, `apikey`, `access_key`,
 `private_key`, `credential` or `auth` (any case; the key stays), the password
 in a URL's user information, and the value of `--token`, `--password`,
-`--secret` and `--api-key`. Every string of the input is redacted before the
+`--secret` and `--api-key` — after `=` or blanks, after a backslash line
+continuation, on the next YAML list item, or as the next quoted element of a
+list written inside a string (`"--secret", "v"`, `['--token', 'v']`); a lone
+backslash is never taken as the value. Every string of the input is redacted before the
 summary is drawn — a string drawn as JSON has its line breaks and quotes
 escaped, and the patterns would no longer meet it — and the drawn summary is
 redacted once more. Two shapes exist only in the input's structure and are

@@ -336,6 +336,40 @@ check "가림 — JSON 으로 그린 요약에도 원문 값이 없다" "${leaks
 check "가림 — 구조 안의 키·플래그는 남는다" \
   "$(ev '[.[] | .reply.input_summary] | join("\n") | [contains("\"password\": "), contains("\"--token\",\n    \"[가림]\""), contains("\"api_key\":"), contains("api.telegram.org/bot[가림]/getMe")] | all')" "true"
 
+# A flag and its value inside one string, apart by something other than `=` or
+# blanks: a Dockerfile exec form, a YAML list, a list in a command, a JSON list
+# written as text, and a backslash line continuation, where the lone `\` must
+# not stand in for the value on the next line.
+reset
+SECRETS3=(
+  "DockSec11"
+  "YamlTok22"
+  "PyKey33"
+  "JsonStrTok44"
+  "ContTok55"
+  "YamlQPw66"
+)
+perm sess-red3 Write "$(jq -cn --arg a "${SECRETS3[0]}" '{file_path: "/d/Dockerfile", content: ("FROM x\nCMD [\"app\", \"--secret\", \"" + $a + "\"]\n")}')"
+hook_run request "$PATH_FULL"
+perm sess-red3 Write "$(jq -cn --arg a "${SECRETS3[1]}" --arg b "${SECRETS3[5]}" \
+  '{file_path: "/d/k.yaml", content: ("args:\n  - --token\n  - " + $a + "\n  - \"--password\"\n  - \"" + $b + "\"\n")}')"
+hook_run request "$PATH_FULL"
+perm sess-red3 Bash "$(jq -cn --arg a "${SECRETS3[2]}" --arg q "'" \
+  '{command: ("python3 -c \"import subprocess; subprocess.run([" + $q + "tool" + $q + ", " + $q + "--api-key" + $q + ", " + $q + $a + $q + "])\"")}')"
+hook_run request "$PATH_FULL"
+perm sess-red3 Write "$(jq -cn --arg a "${SECRETS3[3]}" '{file_path: "/d/a.json", content: ("[\"--token\",\"" + $a + "\"]")}')"
+hook_run request "$PATH_FULL"
+perm sess-red3 Bash "$(jq -cn --arg a "${SECRETS3[4]}" '{command: ("curl \\\n  --token \\\n  " + $a + " https://example.com/")}')"
+hook_run request "$PATH_FULL"
+check "가림 — 문자열 안 플래그 배치 사건이 다섯 생긴다" "$(n_events)" "5"
+leaks=""
+for s in "${SECRETS3[@]}"; do
+  if grep -rqF -- "$s" "$SPOOL" "$BASE" "$T" 2>/dev/null; then leaks="$leaks [$s]"; fi
+done
+check "가림 — 문자열 안 플래그 값이 어느 파일에도 없다" "${leaks:-없음}" "없음"
+check "가림 — 문자열 안 플래그는 남고 값 자리에 가림이 선다" \
+  "$(ev '[.[] | .reply.input_summary] | join("\n") | [contains("\"--secret\", \"[가림]\"]"), contains("- --token\n  - [가림]"), (([39] | implode) as $q | contains($q + "--api-key" + $q + ", " + $q + "[가림]" + $q)),contains("[\"--token\",\"[가림]\"]"), contains("--token \\\n  [가림] https://example.com/")] | all')" "true"
+
 # ---------------------------------------------------------------------------
 # 4. Per-tool summaries.
 # ---------------------------------------------------------------------------
