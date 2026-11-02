@@ -60214,8 +60214,8 @@ check "104d: 정의는 정리 파일 쪽에 있다" \
 unset d104 c104 p104 f104 d104n
 
 # ---------------------------------------------------------------------------
-# 106. 다른 대상 워크트리의 세션 — 검사 3 의 허용 집합, admit 의 이동 거부, 산출물 없는 리뷰의 종단 부류
-# --- section: 106 | group: tguard | covers: check_manifest, admit, gate_record_stage_outcome, gate_continuation_argv | anchors: 106: 두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다, 106: 두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다, 106: 두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다, 106: 선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다, 106: git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다, 106: 홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다, 106: 대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다, 106: 리포트 없는 리뷰는 공허한 성공이다, 106: 정규 경로 리포트가 있는 리뷰는 정상 완료다, 106: -r2 경로 리포트가 있는 리뷰는 정상 완료다, 106: 닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다, 106: 공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다 ---
+# 107. 다른 대상 워크트리의 세션 — 검사 3 의 허용 집합, admit 의 이동 거부, 산출물 없는 리뷰의 종단 부류
+# --- section: 107 | group: tguard | covers: check_manifest, admit, gate_record_stage_outcome, gate_continuation_argv | anchors: 107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다, 107:두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다, 107:두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다, 107:선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다, 107:git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다, 107:홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다, 107:대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다, 107:리포트 없는 리뷰는 공허한 성공이다, 107:정규 경로 리포트가 있는 리뷰는 정상 완료다, 107:-r2 경로 리포트가 있는 리뷰는 정상 완료다, 107:닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다, 107:공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다 ---
 #
 # 세계는 이 절이 스스로 만든다: 홈 레포 H 와 그 링크된 워크트리, 두 번째로
 # 선언된 대상 레포 B 와 그 링크된 워크트리, 선언되지 않은 레포 U, git 저장소가
@@ -60253,24 +60253,24 @@ tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target h --segment SH --cut
 r106_sh=$rc
 tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target b --segment SB --cutpoint 커밋 \
   --snapshot-digest "$(tg_H)" --rationale x -- 상태=실행중 "워크트리=$S106/B-wt" 브랜치=seg/b 선행=없음
-check "106: 두 대상의 세그먼트 행이 기록된다 (아래 단언의 전제)" "$r106_sh|$rc" "0|0"
+check "107:두 대상의 세그먼트 행이 기록된다 (아래 단언의 전제)" "$r106_sh|$rc" "0|0"
 
 # 단언 1 — 두 번째 대상의 링크된 워크트리는 허용 집합 안이다.
 s106_home=$(tg_snap | jq -S . 2>/dev/null)
 s106_b=$( ( cd "$S106/B-wt" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -S . 2>/dev/null)
 if [ -n "$s106_home" ] && [ "$s106_home" = "$s106_b" ]; then
-  ok "106: 두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다"
+  ok "107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다"
 else
-  bad "106: 두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다" \
+  bad "107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다" \
     "$(diff <(printf '%s\n' "$s106_home") <(printf '%s\n' "$s106_b") | head -20 | tr '\n' ' ')"
 fi
 tg_g "$S106/B-wt" exec --manifest "$TG_M" --target b --segment SB --cutpoint 커밋 --surface 읽기 \
   --snapshot-digest "$(tg_H)" --rationale x -- ls
-check "106: 두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다" "$rc" "0"
+check "107:두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다" "$rc" "0"
 tg_hook "git status" "$S106/B-wt"
 tg_g "$S106/B-wt" admit --request last --manifest "$TG_M" --target b --segment SB --surface 읽기 \
   --snapshot-digest "$(tg_H)" --rationale x
-check "106: 두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다" \
+check "107:두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다" \
   "$rc|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)" "0|표"
 
 # 단언 2 — 선언되지 않은 레포와 git 저장소가 아닌 디렉터리는 여전히 거부된다.
@@ -60284,8 +60284,8 @@ for d106 in U N; do
     *"선언된 어느 대상의 레포도 아닙니다"*"--target 으로 지목하세요"*"선언된 어느 대상의 레포도 아닙니다"*) n106=ok ;;
     *) n106=문면 ;;
   esac
-  if [ "$d106" = U ]; then t106="106: 선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다"
-  else t106="106: git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다"; fi
+  if [ "$d106" = U ]; then t106="107:선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다"
+  else t106="107:git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다"; fi
   if [ "$n106" = ok ]; then ok "$t106"; else bad "$t106" "$n106: snapshot rc=$r106_snap '$m106_snap' / exec rc=$rc '$msg'"; fi
 done
 
@@ -60295,7 +60295,7 @@ rm -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")"
 tg_hook "cd $S106/B-wt" "$TG_A"
 tg_g "$TG_A" admit --request last --manifest "$TG_M" --target h --segment SH --surface 읽기 \
   --snapshot-digest "$(tg_H)" --rationale x
-check "106: 홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다" \
+check "107:홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다" \
   "$rc|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)" "0|표"
 n106_rows=$(grep -c . "$TG_L" 2>/dev/null || printf '0')
 g106=""
@@ -60305,14 +60305,14 @@ for c106 in "cd $S106/U" "cd $S106/N" "pushd $S106/U" cd 'cd $X' popd "cd $S106/
     --snapshot-digest "$(tg_H)" --rationale x
   [ "$rc" = 2 ] || g106="$g106 [$c106 → rc=$rc: $(printf '%s' "$msg" | tail -n 2 | tr '\n' ' ')]"
 done
-check "106: 대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다" \
+check "107:대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다" \
   "${g106:-없음}|$(grep -c . "$TG_L" 2>/dev/null || printf '0')" "없음|$n106_rows"
 tg_hook "cd $S106/U" "$TG_A"
 tg_g "$TG_A" admit --request last --manifest "$TG_M" --target h --segment SH --surface 읽기 \
   --snapshot-digest "$(tg_H)" --rationale x
 case "$msg" in
-  *"선언된 대상 밖으로 옮겨"*"--target <별칭> --segment <세그먼트>"*) ok "106: 그 거부는 갇히는 까닭과 머문 채 읽는 형태를 든다" ;;
-  *) bad "106: 이동 거부 문면" "$msg" ;;
+  *"선언된 대상 밖으로 옮겨"*"--target <별칭> --segment <세그먼트>"*) ok "107:그 거부는 갇히는 까닭과 머문 채 읽는 형태를 든다" ;;
+  *) bad "107:이동 거부 문면" "$msg" ;;
 esac
 
 # 단언 4·5 — 리뷰 시도의 종단 부류. 시도마다 세그먼트를 따로 두어 서로의 리포트와
@@ -60347,10 +60347,10 @@ s106_outcome() {  # s106_outcome <seg> <없음|정규|r2|중단>
   grep '^- `stage-result` ' "$TG_L" | { grep -F "세그먼트=$1 " || true; } | tail -1 \
     | sed -n 's/.*| 종단 부류=\([^|]*\) |.*/\1/p'
 }
-check "106: 리포트 없는 리뷰는 공허한 성공이다" "$(s106_outcome SRA 없음)" "공허한 성공"
-check "106: 정규 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRB 정규)" "정상 완료"
-check "106: -r2 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRC r2)" "정상 완료"
-check "106: 닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다" "$(s106_outcome SRD 중단)" "공허한 성공"
+check "107:리포트 없는 리뷰는 공허한 성공이다" "$(s106_outcome SRA 없음)" "공허한 성공"
+check "107:정규 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRB 정규)" "정상 완료"
+check "107:-r2 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRC r2)" "정상 완료"
+check "107:닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다" "$(s106_outcome SRD 중단)" "공허한 성공"
 c106=$( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
   . "$1" </dev/null >/dev/null 2>&1
   MANIFEST="$2"
@@ -60364,12 +60364,12 @@ c106=$( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
 ' _ "$GATE" "$TG_M" )
 case "$c106" in
   0*"이 사이클의 리뷰 리포트($(s106_rp SRA))에 \`발견 요약\` 줄이 없고 정지 기록도 없다"*)
-    ok "106: 공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다" ;;
-  *) bad "106: 공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다" "$c106" ;;
+    ok "107:공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다" ;;
+  *) bad "107:공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다" "$c106" ;;
 esac
 case "$c106" in
-  *"게이트를 거친 행위도 정지 기록도 없다"*) bad "106: 리뷰 계속 메시지" "기본 문면이 갔다: $c106" ;;
-  *) ok "106: 그 메시지는 행위가 없다는 기본 문면을 싣지 않는다" ;;
+  *"게이트를 거친 행위도 정지 기록도 없다"*) bad "107:리뷰 계속 메시지" "기본 문면이 갔다: $c106" ;;
+  *) ok "107:그 메시지는 행위가 없다는 기본 문면을 싣지 않는다" ;;
 esac
 rm -rf "$s106_base/docs/reviews/seg-$TG_RUN-"*
 unset -f s106_rp s106_outcome
