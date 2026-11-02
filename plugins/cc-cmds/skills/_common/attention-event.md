@@ -30,7 +30,7 @@ a lane session and a borrowed session write to the same spool.
 | `handled/<id>.json` | the handled tap |
 | `inbox/<addr>/<reply_id>.json` | the relay; `<addr>` is `s-<safe_sid>` or `r-<run_id>` |
 | `inbox/<addr>/<reply_id>.picked` | the session seam (the pick-up marker) |
-| `applied/<tool_use_id>.json` | the session seam |
+| `applied/<reply_id>.json` | the session seam (the applied record) |
 | `status/<safe_sid>.json` | the session snapshot seat |
 | `relay/` | the relay only (its state, lifetime ledger and manual presence) |
 
@@ -50,6 +50,18 @@ way.
 `.<id>.<pid>.tmp` in the same directory, moves it to `<id>.json` with `mv -n`,
 and removes the temporary file on every path. The exit status of `mv -n` is
 not read. A second creation of the same id leaves the first file unchanged.
+
+**Remote-reply paths.** The envelope, the pick-up marker and the applied
+record are specified in `plugins/cc-cmds/skills/_common/remote-reply.md`,
+which owns their names, keys and lifetimes. Each of the three is removed by
+its own writer: the relay removes an envelope, and an active session seam
+removes a pick-up marker or an applied record once its envelope is gone. The
+remover is the writer's role, not the one session that wrote the file. A pick-up
+marker carries `apply_by_ms`, the apply deadline (`picked_at_ms + 120000`),
+and, after the seam has woken the router seat for it, `woken_at_ms`. The
+marker is created like any other file, with `mv -n`; its one rewrite adds
+`woken_at_ms` by writing the dot file and moving it over the marker with
+`mv`, not `mv -n`, and changes no other key.
 
 **Test seat.** When `CC_CMDS_ATTENTION_ROOT` is non-empty, its value is the
 spool root. Only the test suites set it; it is not a user setting and no setup
@@ -212,7 +224,8 @@ otherwise. Kinds without a reply surface (`turn`, `run-end`, `run-stop`,
   banner function only does so inside its demotion branch, below the tap site,
   so whoever calls the tap substitutes it before computing the slot.
 - The slot of an `active-notify` event is the local group active-notify gives
-  that banner.
+  that banner. On a host that cannot raise a banner, or when terminal-notifier
+  is missing, it is the group that fire would have given its banner.
 - The slot of a `permission` event is `cc-cmds-permission-<session_id>`, with
   the session id as is (not `safe_sid`), as the session banner groups use it.
   There is no local banner; the slot is the name a handled marker matches.
@@ -308,7 +321,7 @@ written only when the slot ends with the separator `@`: `@` is outside the
 session's id, while `-` can occur in a session id and cannot be the separator.
 Active-notify closes a session with a pair of markers: the exact marker
 `cc-cmds-active-notify-<safe_sid>` and the prefix marker
-`cc-cmds-active-notify-<safe_sid>@`.
+`cc-cmds-active-notify-<safe_sid>@`, both with the cause `return`.
 
 ## Reader rules
 
@@ -395,7 +408,9 @@ cc_attention_handled <slot> <cause> [prefix]
   read the seat state or presence, and has no switch that turns only the
   remote copy off. An event is written only where a seat has already decided
   to raise the banner; a permission event only where the new seat applied the
-  same seat rule itself.
+  same seat rule itself. Active-notify leaves an event only from a call that
+  passed both of its own checks: the one-shot seat ticket its PreToolUse hook
+  handed over, and the router-seat predicate.
 - `cc_attention_handled` writes nothing for an empty slot, a cause outside the
   list, a third argument other than empty or `prefix`, or a prefix marker whose
   slot does not end with `@`.

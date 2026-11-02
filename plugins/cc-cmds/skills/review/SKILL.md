@@ -361,6 +361,8 @@ The lead synthesizes all review results into a Korean document at `docs/reviews/
 
 **Fill the report's model record.** Write each seat's `리뷰 팀 구성` parenthesis as one bare lowercase alias, and fill the `모델 티어` block directly after it with one row per seat. The row syntax belongs to `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` and is not restated here.
 
+**Fill every P0 and P1 item's `**좌석**` line.** At synthesis, give each P0 and P1 item its `    - **좌석**: 낸=… | 동의=…` first sub-bullet, spelling every seat with the same role-slug its `모델 티어` row starts with. `낸` names the seats whose own witness raised the defect; read `동의` from the cross-verification record — a seat that confirmed the item at its final severity or above. The template (`02-review-report-template.md`, beside the `모델 티어` block description) owns the grammar and which items carry the line.
+
 **Write the field lines and the out-of-scope section.** The overview carries `- **리뷰 분야**:` and `- **기획서**:` directly after `변경 규모`, as the approved Step 3 proposal read. Carry every reviewer's `[범위 밖:<분야>]` line into `## 범위 밖 관찰`, merging the same observation at the same `파일:라인` into one line; with no such line, the section is not written. The template's "Out-of-scope observations section" owns the position and the line shape.
 
 #### P1 classification (lead-authored)

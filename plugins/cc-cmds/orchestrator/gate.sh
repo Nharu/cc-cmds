@@ -240,7 +240,9 @@
 #                    checks the item shape of a review report's P0 and P1
 #                    sections — the summary line, items against the summary,
 #                    `### ` item heads, the category list, the `파일:라인`
-#                    anchor and the `리뷰 HEAD` line — and prints one
+#                    anchor, the `리뷰 HEAD` line and each P0 item's
+#                    reproduction evidence (`재현 없음`, `재현 형식`) — and
+#                    prints one
 #                    `<줄>: <종류>: <문면>` per problem; writes nothing and edits
 #                    nothing. 0 clean; 1 with the last line
 #                    `report-check: 불일치 <n>`; a 1 without that line, or any
@@ -15027,8 +15029,28 @@ gate_review_report_shape() {
   #                         `### P1-n` head and any other id head alike
   #   앵커 없음=<n>         items whose first backtick token is not `파일:라인`
   #   태그 밖=<n>           items whose category is not in the template's list
+  #   재현 근거=<n>         P0 items flagged `재현 없음` or `재현 형식`
   #   문제=<line>: <kind>: <text>
   #                         one per problem `report-check` names, in line order
+  #
+  # The reproduction evidence check reads every P0 item's extent — its
+  # column-0 `- **[` line to the next such line or the section's end — and
+  # takes as a key line any line whose first non-blank characters are `- `
+  # and one of the five keys `**재현 명령**:` `**재현 스크립트**:`
+  # `**재현 출력**:` `**재현 예외**:` `**경로 추적**:`; a key spelled in the
+  # middle of a prose line is not one. No key at all is `재현 없음`. Otherwise
+  # the first of these, in this order, is `재현 형식`: keys of both forms; a
+  # key twice; one side of a form's pair missing; key lines out of their
+  # written order or not adjacent; a key line not four spaces and `- `; a
+  # `재현 명령` value that is not one non-empty backtick pair; a backtick inside
+  # that pair; a `재현 스크립트` name off its pattern, no body line, over sixty
+  # body lines, or no `$REPRO_DIR/<name>` in `재현 명령`; `$REPRO_DIR` or
+  # `$REPRO_TREE` in a script body line; an exit line off `종료 코드 <n>`; no
+  # output body line, over twenty, or a six-space line again after the body;
+  # `**` in a value or body; an exception word outside the four or an empty
+  # reason; fewer than two anchors or an anchor off its shape. One problem
+  # line per item, at the item's first line. P1 and every other section are
+  # not checked, and a 복구 summary is checked the same way.
   #
   # The category is the first `**[…]**` of the item line that is not
   # `CI-CONFIRMED` or a disposition tag; `[CI-CONFIRMED]` is a marker, not a
@@ -15053,8 +15075,99 @@ gate_review_report_shape() {
       split("security performance code-quality logic error-handling type-safety testing api-contract concurrency data-integrity design-conformance", cl, " ")
       for (i in cl) okcat[cl[i]] = 1
       sec = ""; n0 = 0; n1 = 0; nh = 0; na = 0; nt = 0; np = 0; sl = 0
+      ne = 0; inp0 = 0; bn = 0; istart = 0
+      nkey = split("재현 명령|재현 스크립트|재현 출력|재현 예외|경로 추적", K, "|")
     }
     function prob(ln, kind, text) { pr[++np] = ln ": " kind ": " text }
+    function evkey(t,   i) {
+      for (i = 1; i <= nkey; i++) if (index(t, "- **" K[i] "**:") == 1) return K[i]
+      return ""
+    }
+    function namedin(s, nm,   p, c, w) {
+      w = "$REPRO_DIR/" nm
+      while ((p = index(s, w)) > 0) {
+        c = substr(s, p + length(w), 1)
+        if (c == "" || c !~ /[A-Za-z0-9._-]/) return 1
+        s = substr(s, p + 1)
+      }
+      return 0
+    }
+    function evcheck(   i, j, t, k, raw, nk, ka, kb, bad, pos, cnt, val, cmd, inner, nm, sb, ob, w, rest, np2, parts) {
+      nk = 0; ka = 0; kb = 0; bad = 0
+      for (i = 1; i <= bn; i++) {
+        raw = bl[i]; t = raw; sub(/^[ \t]+/, "", t)
+        k = evkey(t)
+        if (k == "") continue
+        nk++; cnt[k]++
+        if (!(k in pos)) {
+          pos[k] = i
+          val[k] = substr(t, length("- **" k "**:") + 1); sub(/^ +/, "", val[k])
+        }
+        if (k == "재현 명령" || k == "재현 스크립트" || k == "재현 출력") ka++; else kb++
+        if (raw != "    " t) bad = 1
+      }
+      if (nk == 0) { ek = "재현 없음"; et = "P0 항목에 재현 근거(재현 명령·재현 출력 또는 재현 예외·경로 추적)가 없다"; return 1 }
+      ek = "재현 형식"
+      if (ka && kb) { et = "재현 형식과 예외 형식의 키가 함께 있다"; return 1 }
+      for (i = 1; i <= nkey; i++) if (cnt[K[i]] > 1) { et = K[i] " 키가 두 번 이상 있다"; return 1 }
+      if (ka && (!("재현 명령" in pos) || !("재현 출력" in pos))) { et = "재현 명령과 재현 출력 중 한쪽만 있다"; return 1 }
+      if (kb && (!("재현 예외" in pos) || !("경로 추적" in pos))) { et = "재현 예외와 경로 추적 중 한쪽만 있다"; return 1 }
+      sb = 0
+      if ("재현 스크립트" in pos)
+        for (j = pos["재현 스크립트"] + 1; j <= bn && bl[j] ~ /^      \|/; j++) sb++
+      if (ka) {
+        if ("재현 스크립트" in pos) {
+          if (pos["재현 스크립트"] != pos["재현 명령"] + 1 || pos["재현 출력"] != pos["재현 스크립트"] + sb + 1) { et = "근거 키 줄이 적힌 순서로 붙어 있지 않다"; return 1 }
+        } else if (pos["재현 출력"] != pos["재현 명령"] + 1) { et = "근거 키 줄이 적힌 순서로 붙어 있지 않다"; return 1 }
+      } else if (pos["경로 추적"] != pos["재현 예외"] + 1) { et = "근거 키 줄이 적힌 순서로 붙어 있지 않다"; return 1 }
+      if (bad) { et = "근거 키 줄이 공백 넷 뒤 「- 」 로 시작하지 않는다"; return 1 }
+      if (ka) {
+        cmd = val["재현 명령"]
+        inner = substr(cmd, 2, length(cmd) - 2)
+        if (length(cmd) < 3 || substr(cmd, 1, 1) != "`" || substr(cmd, length(cmd), 1) != "`" || inner !~ /[^ ]/) { et = "재현 명령 값이 백틱 한 쌍으로 감싼 비지 않은 한 줄이 아니다"; return 1 }
+        if (index(inner, "`") > 0) { et = "재현 명령 값 안에 백틱이 있다"; return 1 }
+        if ("재현 스크립트" in pos) {
+          nm = val["재현 스크립트"]
+          if (nm !~ /^[A-Za-z0-9_][A-Za-z0-9._-]*$/) { et = "재현 스크립트 값이 파일 이름 꼴이 아니다"; return 1 }
+          if (sb == 0) { et = "재현 스크립트 본문 줄이 없다"; return 1 }
+          if (sb > 60) { et = "재현 스크립트 본문이 예순 줄을 넘는다 (" sb "줄)"; return 1 }
+          if (!namedin(inner, nm)) { et = "재현 명령에 $REPRO_DIR/" nm " 이 없다"; return 1 }
+          for (j = pos["재현 스크립트"] + 1; j <= pos["재현 스크립트"] + sb; j++)
+            if (index(bl[j], "$REPRO_DIR") > 0 || index(bl[j], "$REPRO_TREE") > 0) { et = "재현 스크립트 본문에 자리표시자가 있다"; return 1 }
+        }
+        if (val["재현 출력"] !~ /^종료 코드 (0|[1-9][0-9]*)$/) { et = "재현 출력 값이 「종료 코드 <n>」 꼴이 아니다"; return 1 }
+        ob = 0
+        for (j = pos["재현 출력"] + 1; j <= bn && bl[j] ~ /^      [^ ]/; j++) ob++
+        if (ob == 0) { et = "재현 출력 본문 줄이 없다"; return 1 }
+        if (ob > 20) { et = "재현 출력 본문이 스무 줄을 넘는다 (" ob "줄)"; return 1 }
+        for (j = pos["재현 출력"] + ob + 1; j <= bn; j++)
+          if (bl[j] ~ /^      [^ ]/) { et = "재현 출력 본문이 끝난 뒤 여섯 칸 줄이 다시 나온다"; return 1 }
+      }
+      for (i = 1; i <= nkey; i++) if ((K[i] in pos) && index(val[K[i]], "**") > 0) { et = K[i] " 값에 ** 가 있다"; return 1 }
+      if (ka) {
+        if ("재현 스크립트" in pos)
+          for (j = pos["재현 스크립트"] + 1; j <= pos["재현 스크립트"] + sb; j++)
+            if (index(substr(bl[j], 8), "**") > 0) { et = "재현 스크립트 본문에 ** 가 있다"; return 1 }
+        for (j = pos["재현 출력"] + 1; j <= pos["재현 출력"] + ob; j++)
+          if (index(bl[j], "**") > 0) { et = "재현 출력 본문에 ** 가 있다"; return 1 }
+      }
+      if (kb) {
+        w = val["재현 예외"]; rest = ""
+        if (match(w, /^[^ ]+/)) { rest = substr(w, RLENGTH + 1); w = substr(w, 1, RLENGTH) }
+        if (w != "파괴" && w != "비밀" && w != "외부" && w != "문면") { et = "재현 예외 낱말이 파괴·비밀·외부·문면 밖이다"; return 1 }
+        if (rest !~ /^ — .*[^ ]/) { et = "재현 예외의 「—」 뒤 사유가 비었다"; return 1 }
+        np2 = split(val["경로 추적"], parts, " → ")
+        if (np2 < 2) { et = "경로 추적 앵커가 둘 미만이다"; return 1 }
+        for (j = 1; j <= np2; j++)
+          if (parts[j] !~ /^`[^ `]+:[0-9]+(-[0-9]+)?`$/) { et = "경로 추적 앵커가 「파일:라인」 꼴이 아니다: " parts[j]; return 1 }
+      }
+      return 0
+    }
+    function flush() {
+      if (!inp0) return
+      inp0 = 0
+      if (evcheck()) { ne++; prob(istart, ek, et) }
+    }
     function category(s,   t) {
       while (match(s, /\*\*\[[^]]*\]\*\*/)) {
         t = substr(s, RSTART + 3, RLENGTH - 6)
@@ -15076,14 +15189,18 @@ gate_review_report_shape() {
     { line = $0; sub(/[ \t\r]+$/, "", line) }
     sl == 0 && index(line, "- **발견 요약") == 1 { sl = NR }
     index(line, "## ") == 1 {
+      flush()
       if (index(line, "## " R " P0") == 1) sec = "p0"
       else if (index(line, "## " O " P1") == 1) sec = "p1"
       else sec = ""
       next
     }
     sec == "" { next }
+    inp0 && index(line, "- **[") != 1 { bl[++bn] = line }
     index(line, "### ") == 1 { nh++; prob(NR, "비불릿", line); next }
     index(line, "- **[") == 1 {
+      flush()
+      if (sec == "p0") { inp0 = 1; istart = NR; bn = 0 }
       if (sec == "p0") n0++; else n1++
       c = category(line)
       if (!(c in okcat)) { nt++; prob(NR, "태그 밖", (c == "" ? "(분류 없음)" : c)) }
@@ -15091,6 +15208,7 @@ gate_review_report_shape() {
       if (a !~ /^[^ `]+:[0-9]+(-[0-9]+)?$/) { na++; prob(NR, "앵커 없음", line) }
     }
     END {
+      flush()
       if (summ == "없음")
         prob(sl, "요약 없음", (sl ? "정규 발견 요약 줄의 모양이 아니다" : "발견 요약 줄이 없다"))
       if (summ == "정규") {
@@ -15102,6 +15220,7 @@ gate_review_report_shape() {
       print "비불릿=" nh
       print "앵커 없음=" na
       print "태그 밖=" nt
+      print "재현 근거=" ne
       for (i = 1; i <= np; i++) print "문제=" pr[i]
     }' "$rep" 2>/dev/null
 }
@@ -15113,12 +15232,13 @@ gate_report_format_fields() {
   # is a closed word or a number. They are recorded, never refused on.
   #
   # `판독 불가` when the report is absent or unreadable, and the other six read
-  # `-`. Otherwise `정합` when the summary is 정규 or 복구, no head, anchor or
-  # category problem is left, and — outside 복구 — the items equal the summary
+  # `-`. Otherwise `정합` when the summary is 정규 or 복구, no head, anchor,
+  # category or P0 reproduction evidence problem (`재현 근거=0`) is left, and —
+  # outside 복구 — the items equal the summary
   # and the head line does not differ from the row. A missing head line reads
   # `HEAD 줄=없음` and does not stop `정합`. The row carries 7 to 40 hex
   # characters and the report 40, so the row's value being a prefix is `일치`.
-  local rep=$1 rhead=$2 sh summ items nh na nt sp0 sp1 head hl fmt
+  local rep=$1 rhead=$2 sh summ items nh na nt ne sp0 sp1 head hl fmt
   if ! sh=$(gate_review_report_shape "$rep"); then
     printf '리포트 형식=판독 불가\n항목=-\n비불릿=-\n앵커 없음=-\n태그 밖=-\n요약=-\nHEAD 줄=-\n'
     return 0
@@ -15128,6 +15248,7 @@ gate_report_format_fields() {
   nh=$(gate_report_count "$sh" '비불릿')
   na=$(gate_report_count "$sh" '앵커 없음')
   nt=$(gate_report_count "$sh" '태그 밖')
+  ne=$(gate_report_count "$sh" '재현 근거')
   sp0=$(gate_report_count "$sh" '요약 P0')
   sp1=$(gate_report_count "$sh" '요약 P1')
   head=$(gate_report_count "$sh" '리뷰 HEAD')
@@ -15138,7 +15259,7 @@ gate_report_format_fields() {
   fmt='불일치'
   case "$summ" in
     정규|복구)
-      if [ "$nh" = 0 ] && [ "$na" = 0 ] && [ "$nt" = 0 ]; then
+      if [ "$nh" = 0 ] && [ "$na" = 0 ] && [ "$nt" = 0 ] && [ "$ne" = 0 ]; then
         if [ "$summ" = "복구" ]; then fmt='정합'
         elif [ "$items" = "$sp0/$sp1" ] && [ "$hl" != "다름" ]; then fmt='정합'
         fi

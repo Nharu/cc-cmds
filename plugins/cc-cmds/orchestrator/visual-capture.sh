@@ -3,7 +3,11 @@
 #
 # Subcommands:
 #   ref <screen.html> --out <dir> [--size WxH] [--timeout <seconds>]
-#       Capture the screen file over `file://` into <dir>/ref.png.
+#       Capture the screen file over `file://` into <dir>/ref.png. The path in
+#       the URL is percent-encoded byte by byte: ASCII letters, digits and
+#       `/ . _ - ~` stay, every other byte (a Hangul byte included) becomes
+#       `%XX` with upper-case hex, so a `#`, `?`, `%` or space in a directory
+#       name is part of the path and not a fragment, query or broken URL.
 #   app --root <dir> --out <dir> [--size WxH] [--timeout <seconds>]
 #       Serve <dir> on a loopback-only static server on a free port, capture
 #       http://127.0.0.1:<port>/index.html into <dir>/app.png, then stop the
@@ -141,6 +145,26 @@ parse_timeout() {
   printf '%s' "$1"
 }
 
+# url_path <path> — the path percent-encoded for a file:// URL. The bytes are
+# read with od under the C locale, so a multi-byte character is encoded byte by
+# byte whatever the caller's locale.
+url_path() {
+  printf '%s' "$1" | LC_ALL=C od -An -v -tx1 | LC_ALL=C awk '
+    BEGIN { hx = "0123456789abcdef" }
+    {
+      for (i = 1; i <= NF; i++) {
+        h = tolower($i)
+        n = (index(hx, substr(h, 1, 1)) - 1) * 16 + index(hx, substr(h, 2, 1)) - 1
+        if ((n >= 48 && n <= 57) || (n >= 65 && n <= 90) || (n >= 97 && n <= 122) \
+            || n == 47 || n == 46 || n == 95 || n == 45 || n == 126)
+          printf "%c", n
+        else
+          printf "%%%s", toupper(h)
+      }
+    }
+  '
+}
+
 cmd_ref() {
   local screen='' out='' size=1440x900 limit=60 chrome dir png
   while [ $# -gt 0 ]; do
@@ -160,7 +184,7 @@ cmd_ref() {
   chrome=$(find_chrome) || not_compared "Chrome 없음"
   dir=$(cd "$(dirname "$screen")" && pwd -P)
   png="$out/ref.png"
-  run_chrome "$chrome" "file://${dir}/$(basename "$screen")" "$png" "$size" "$limit"
+  run_chrome "$chrome" "file://$(url_path "${dir}/$(basename "$screen")")" "$png" "$size" "$limit"
   echo "찍음 ${png}"
 }
 

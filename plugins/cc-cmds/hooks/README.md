@@ -12,13 +12,16 @@ lint can scan it, which is what makes the kill-switch sentence at the bottom an
 anchor rather than a good intention.
 
 The two banner seats are not the only hooks in this directory.
-`active-notify-pretool.sh` belongs to the `active-notify` skill,
+`active-notify-pretool.sh` belongs to the `active-notify` skill (its output is
+described under "The active-notify self-approve hook" below),
 `session-return-dismiss.sh` closes a session's banners when the person comes
 back to it, `session-title.sh` names a session after the slash command it is
-running, and `stage-rules-edit.sh` shows the stage rules status after an
-edit of the user-scope `CLAUDE.md`; the last three have their contracts in later sections
+running, `stage-rules-edit.sh` shows the stage rules status after an
+edit of the user-scope `CLAUDE.md`, and `session-status-snapshot.sh` leaves
+each session's state and recent output in the attention spool; the last four
+have their contracts in later sections
 of this file. `autopilot-status.tsx` is not a command hook at all but a plugin
-module, listed under `"modules"`; its section is the last one. None of the five
+module, listed under `"modules"`; its section is the last one. None of the six
 raises a session banner, and the
 rules below are written for the two seats alone. The question form under
 `question-form/` is a sub-mod: `autopilot-status.tsx` is the one entry listed
@@ -289,6 +292,54 @@ Where the reach does not extend, the seats do not exist, and their absence shows
 up on no screen at all. This design does not guarantee that a banner appears. It
 guarantees that a banner never blocks anything.
 
+## The active-notify self-approve hook
+
+`active-notify-pretool.sh` is a `PreToolUse` hook on the Bash tool. It answers
+two kinds of command and leaves every other command to the default permission
+gate.
+
+- **The permission-test bypass** (`terminal-notifier … -group
+  'cc-cmds-active-notify'` with no dispatcher call) is allowed with a
+  session-persistent rule, `applyPermissionRules`, and is not rewritten. It
+  goes past the dispatcher, so it leaves no attention event.
+- **A dispatcher call** (`active-notify/scripts/notify.sh` `arm`, `fire-now` or
+  `cancel`) is allowed with `permissionDecision: "allow"` on every call and no
+  permission rule. A `PreToolUse` hook runs before every tool call, so no rule
+  is needed to keep the dialog away, and a rule matching `notify.sh` would also
+  match the `fire-now` calls this hook has to see.
+
+**The seat prefix.** A `fire-now` call gets
+`CC_CMDS_ACTIVE_NOTIFY_SEAT_TICKET=<name> ` in front of the command. When the
+payload's `agent_id` is empty (the main session) `<name>` is a one-shot ticket:
+32 lowercase hex characters naming a file the hook writes under
+`$HOME/.local/state/cc-cmds/active-notify-seat/`, holding the issue time in
+epoch seconds. The directory is made with `umask 077` when missing, and each
+issue removes the files in it older than ten minutes. The dispatcher claims the
+file by renaming it, removes it, and treats the call as the seat only when the
+ticket is at most 60 seconds old; only such a call, from the router seat, leaves
+a remote attention event. With an `agent_id` (a spawned agent or in-process
+teammate) the value is empty and no ticket is written. The hook's assignment
+comes first, so an inherited value is overridden, and a value the model wrote
+later in the command names no live ticket.
+
+**The session id prefix.** With `CC_CMDS_NOTIFY_INJECT_SID=1` every dispatcher
+call also gets `CLAUDE_CODE_SESSION_ID=<session_id> `, after the seat prefix.
+
+**When no prefix is attached.** Prefixes go in front of the command with its
+leading whitespace removed, and only when the command starts with a simple
+command that can take an assignment: its first word starts with a letter, a
+digit or one of `_ . / ~ - " ' $`, is not a shell reserved word, holds none of
+`( ) { } ; & | < >`, and is not followed by `(`. The rewritten command is then
+parsed, not run, by the shell `$SHELL` names (`zsh -f -n -c`, or `bash -n -c`
+with an empty `BASH_ENV`); an empty, missing or other shell counts as a failed
+check. A command that fails either test is allowed unchanged, with no prefix
+of either kind, and a ticket issued for it is removed. That fire still raises
+its local banner and leaves no remote event.
+
+**What is rewritten.** When a prefix is attached, `updatedInput` is the whole
+`tool_input` with only `command` replaced, so `description` and `timeout`
+survive. With no prefix there is no `updatedInput`.
+
 ## The return hook
 
 `session-return-dismiss.sh` closes the banners a session raised once the person
@@ -298,6 +349,10 @@ itself — a detached job clears the session slot through `cc_notify_clear
 session-ask` first and then runs `notify.sh dismiss <sid>`, which reads
 `terminal-notifier -list ALL` once and removes the rows whose group is
 `cc-cmds-active-notify-<sid>` or starts with `cc-cmds-active-notify-<sid>@`.
+Before that, when the attention spool root exists, `dismiss` leaves the pair of
+handled markers for that session's active-notify events — the exact slot and
+the `@` prefix, cause `return` — on any host and with or without
+terminal-notifier.
 The session id is the payload's `.session_id`, the same value the firing side
 puts in the group. The session slot is cleared first so that a question raised
 right after an answer has the shortest possible window to be erased by a late
@@ -360,7 +415,7 @@ non-empty session id. A stage session therefore neither records nor closes.
   closes nothing. Missing a machine envelope would close banners nobody saw, so
   the broad rule was chosen.
 
-It touches nothing else: no `active-notify` flag or lock, no `cc-cmds-autopilot-*`
+Apart from that marker pair, it touches nothing else: no `active-notify` flag or lock, no `cc-cmds-autopilot-*`
 banner, no banner without a group, and not the permission-test bypass banner
 under the global `cc-cmds-active-notify`. Banners raised before the upgrade —
 under that global group, or without a group — are not reached either and stay
@@ -565,6 +620,84 @@ opened.
 **Every path exits 0 and nothing reaches stderr.** It runs under
 `set -uo pipefail`, never `-e`. The helper's stderr goes to `/dev/null`, and a
 missing `jq` exits 0 after the same Homebrew PATH prepend the banner seats use.
+
+## The session status snapshot hook
+
+`session-status-snapshot.sh` keeps one file per session,
+`status/<safe_sid>.json` under the attention spool root, saying what the
+session is doing and what it last said, for a read-only session view outside
+this machine. It raises no banner, calls no notifier and no attention tap, and
+changes nothing the session does.
+
+**Seven entries, one script.** Each is a new object at the end of its event's
+array, with `"timeout": 5`; the script branches on `hook_event_name`.
+
+| Event | Matcher | What it writes |
+| --- | --- | --- |
+| `PreToolUse` | `AskUserQuestion` | `waiting-question`; the questions and labels |
+| `PostToolUse` | `AskUserQuestion` | `working`; the previous excerpt |
+| `PostToolBatch` | none | `waiting-question` and the one-shot marker when the batch opened the question form; nothing otherwise |
+| `Stop` | none | with the marker present, removes the marker and leaves the file; otherwise `idle` with `last_assistant_message` |
+| `UserPromptSubmit` | none | `working`; the previous excerpt |
+| `PermissionRequest` | none | `waiting-permission`; the tool name and an input summary (not for `AskUserQuestion` or the question form) |
+| `SessionEnd` | none | removes the snapshot and the marker, whatever the `reason` |
+
+The question form gets no `PreToolUse` matcher: its mod answers the call in
+place of `next`, so a classic `PreToolUse` never runs for that tool, and the
+batch event after it is where the opening shows.
+
+**The write gate.** In order, and any false step writes and removes nothing:
+`jq` is found; a `PostToolBatch` whose raw input does not contain
+`mcp__cc-cmds__question_form` ends on a shell `case` before anything is sourced
+(the event fires after every tool batch); `cc_caller_is_router` is true; the
+input has no `agent_id`; `session_id` is not empty; `attention.sh`'s
+`cc_attention__root` returns a root, which is never created. The banner switch
+`CC_CMDS_SESSION_NOTIFY` is not read: the snapshot is written with the banners
+off. The root, the host id and the time come from `attention.sh`'s helpers, so
+the test seat of the root is read in that file only.
+
+**The record.** Exactly nine keys, built by one `jq -cn`: `schema` (1),
+`host` (the host id, `local` without a valid `host-id` file), `session_id`,
+`config_dir` (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}`), `cwd` (the input's `cwd`,
+else `PWD`, else `null`), `repo`, `state` (`working`, `waiting-question`,
+`waiting-permission` or `idle`), `last_activity_ms` (epoch milliseconds at the
+write) and `excerpt`. `repo` is the last two path parts of the working
+directory's `git config --get remote.origin.url`, without `.git`, when they
+pass the attention record's `origin.repo` check, and `null` otherwise.
+
+**The excerpt** comes only from what the harness handed over; the transcript
+is never opened. A turn's end gives `last_assistant_message` and keeps the
+tail. A question gives one `<header> — <question>` line per question (`질문`
+without a header) and one `- <label>` line per option, after the form's title
+for the question form, and keeps the head. A permission gives the tool name,
+then `tool_input.command`, else `tool_input.file_path`, else the compact
+`tool_input`, and keeps the head. `working` carries the previous file's excerpt
+over, or the empty string. The cut is at most 4096 UTF-8 bytes on line
+boundaries, taken from the kept side; when the one line on that side alone is
+over the limit it is cut on a character boundary instead. A turn that ends in
+the turn handoff marker is `idle` like any other, and the marker line stays as
+the excerpt's last line: this hook holds no copy of the marker.
+
+**The one-shot marker.** `${TMPDIR:-/tmp}/cc-cmds-session-status/<safe_sid>.form`.
+The turn that opens the question form ends at once with the form still up, so
+its `Stop` would overwrite the question with `idle`. The `PostToolBatch` that
+saw a `QUESTION_FORM_OPEN ` result (a copy of the form's result token) makes
+the marker; the `Stop` that finds it removes it and leaves the file. Every
+other write and `SessionEnd` removes it, so the next turn's end is `idle`
+again. A prompt typed while the form is still up makes the session `working`,
+and that turn ends `idle`. An answered permission is not written as `working`:
+`waiting-permission` stays until the next write.
+
+**Writing.** `status/` is made with `umask 077` and `mkdir -m 700` when it is
+missing, a lost race to make it being no failure; the record goes to the dot
+file `status/.<safe_sid>.<pid>.tmp` and is moved over `status/<safe_sid>.json`
+with `mv -f` — the file is rewritten, unlike an event record, which is created
+once — and the temporary file is removed on every path. Readers skip names that
+start with a dot. Every path exits 0 with nothing on stdout or stderr, under
+`set -uo pipefail`.
+
+**A file can outlive its session.** `SessionEnd` does not run for a killed
+process, so a consumer reads `last_activity_ms` as well as `state`.
 
 ## The run-status pane module
 
