@@ -51299,22 +51299,36 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83P"
 # `grep -c` with nothing to count exits 1.
 # ---------------------------------------------------------------------------
 W84="$WORK/s84"; mkdir -p "$W84"; : > "$W84/marker"
+# The sleeps are counted machine-wide, so their lengths carry a fraction drawn
+# for this run: another copy of this section running at the same time (a sweep
+# chunk beside a solo) leaves sleeps of other lengths, which are not counted. A
+# signalled process can still be listed for a moment under load, so each count
+# is retaken for up to three seconds until it reads zero.
+u84=$(( (RANDOM * 32768 + RANDOM) % 900000 + 100000 ))
 cat > "$W84/child.sh" <<'EOF'
-gate="$1"; o="$2"
+gate="$1"; o="$2"; u="$3"
 CC_GATE_SOURCE_ONLY=1 . "$gate" </dev/null
 exec 7<"$o/marker"
+count84() { ps -A -o command= | grep -cxE "$1" || true; }
+settle84() {  # settle84 <pattern> — the count, retaken until zero or 3 s
+  local n k=0
+  n=$(count84 "$1")
+  while [ "$n" != "0" ] && [ "$k" -lt 30 ]; do sleep 0.1; k=$((k + 1)); n=$(count84 "$1"); done
+  printf '%s\n' "$n"
+}
 t0=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
 i=0; nbad=0
 while [ "$i" -lt 40 ]; do
-  gate_metrics_timed 6.17 true || nbad=$((nbad + 1))
+  gate_metrics_timed "6.$u" true || nbad=$((nbad + 1))
   i=$((i + 1))
 done
 rc=0
-gate_metrics_timed 1 bash -c 'sleep 7.17 & sleep 7.18' || rc=$?
+gate_metrics_timed 1 bash -c "sleep 7.${u}1 & sleep 7.${u}2" || rc=$?
+echo "$nbad" > "$o/nbad"; echo "$rc" > "$o/to.rc"
+settle84 "sleep 6\\.$u" > "$o/n.watch"
+settle84 "sleep 7\\.${u}[12]" > "$o/n.desc"
 t1=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
-echo "$nbad" > "$o/nbad"; echo "$rc" > "$o/to.rc"; echo "$t0 $t1" > "$o/loop"
-ps -A -o command= | grep -cx 'sleep 6.17' > "$o/n.watch" || true
-ps -A -o command= | grep -cxE 'sleep 7\.1[78]' > "$o/n.desc" || true
+echo "$t0 $t1" > "$o/loop"
 lsof -t -- "$o/marker" > "$o/holders" 2>/dev/null 7<&- || true
 grep -vx "$$" "$o/holders" 7<&- | grep -c . > "$o/n.fd" 7<&- || true
 exec 7<&-
@@ -51322,7 +51336,7 @@ echo done > "$o/done"
 EOF
 cat > "$W84/recipe.sh" <<EOF
 . "$repo_root/plugins/cc-cmds/orchestrator/detach.sh"
-p=\$(cc_detach_exec "$W84/child.log" "$W84/child.log" bash "$W84/child.sh" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" "$W84")
+p=\$(cc_detach_exec "$W84/child.log" "$W84/child.log" bash "$W84/child.sh" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" "$W84" "$u84")
 i=0
 while [ ! -e "$W84/done" ] && kill -0 "\$p" 2>/dev/null && [ "\$i" -lt 600 ]; do
   sleep 0.1; i=\$((i + 1))
