@@ -3,13 +3,16 @@
 # branch clones' plugins/cc-cmds/orchestrator/gate.sh behind READER_EXP_GATE.
 #
 #   snapshot  prints {"H":"stub-h"}
-#   act       appends its argv to $STUB_GATE_LOG, then acts by $STUB_GATE_MODE:
+#   act       appends its argv to $STUB_GATE_LOG and, with STUB_ENV_LOG set,
+#             the names of its environment variables to that file, then acts
+#             by $STUB_GATE_MODE:
 #     ok    the first call of a run does nothing (the seat must call again);
 #           the second writes the run's first audit report into the clone's
 #           docs/design-audit/ — both fences, 리뷰어 수 3, the `reader-model`
-#           line of the branch the manifest's 의도 names, the sha256 of the
-#           document bytes in the clone — the run's plugin-pin with that
-#           branch's commit from $READER_EXP_STATE_ROOT/<exp id>/branches.state,
+#           line of the branch whose state file under $STUB_STATE_ROOT
+#           records the manifest's clone, the sha256 of the document bytes in
+#           the clone — the run's plugin-pin with that branch's commit from
+#           the same experiment's branches.state,
 #           a result line costing $STUB_RUN_COST (default 2), and `done`
 #     handoff  appends a handoff row with 사유=$STUB_HANDOFF to the run's
 #           ledger in the clone and exits 0 without done; with STUB_HALT set
@@ -41,6 +44,9 @@ case "$verb" in
 esac
 
 printf '%s\n' "act $*" >> "${STUB_GATE_LOG:?}"
+# The names (never the values) of the variables a stage process would
+# inherit, so the test can see that no READER_EXP_* variable reaches one.
+[[ -z "${STUB_ENV_LOG:-}" ]] || compgen -e >> "$STUB_ENV_LOG"
 
 m=""; akind=""
 while (( $# > 0 )); do
@@ -118,11 +124,12 @@ n=$(( $(cat "$rd/stub-calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$rd/stub-calls"
 (( n >= 2 )) || exit 0
 
-# The 의도 line: `… (reader-model-pair-audit <exp id> 문서 <n> <branch>)`.
-words=$(sed -n 's/.*(reader-model-pair-audit \([^ ]*\) 문서 [0-9]* \([^ )]*\)).*/\1 \2/p' "$m" | head -n 1)
-exp="${words%% *}"; br="${words##* }"
+# The run carries nothing that names its branch, so the branch is the state
+# file that recorded this clone: <state root>/<exp id>/doc-<n>/<branch>.state.
+st=$(grep -lxF "clone	${clone}" "${STUB_STATE_ROOT:?}"/*/doc-*/*.state | head -n 1)
+br=$(basename "$st" .state)
 model="${br%-*}"
-commit=$(awk -F'\t' -v k="${model}_commit" '$1 == k { print $2; exit }' "${READER_EXP_STATE_ROOT:?}/$exp/branches.state")
+commit=$(awk -F'\t' -v k="${model}_commit" '$1 == k { print $2; exit }' "${st%/doc-*}/branches.state")
 sha=$(shasum -a 256 "$clone/$doc" | cut -d' ' -f1)
 bytes=$(wc -c < "$clone/$doc" | tr -d ' ')
 at="2026-10-22T00:00:00Z"

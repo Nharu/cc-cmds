@@ -1,0 +1,4 @@
+[cc-cmds 질문지 답] form=f-3c9e1a7b status=제출 답=2/2
+```json
+{"schema":"cc-form-answers/1","form":"f-3c9e1a7b","status":"제출","answers":[{"id":"q1","header":"배포 창","question":"배포 창은 언제로 할까요?","kind":"single","options":["오늘 저녁","내일 아침"],"state":"답","selected":["내일 아침"],"other":"","note":"","answer":"내일 아침"},{"id":"q2","header":"롤백","question":"롤백 담당은 누구로 할까요?","kind":"single","options":["작성자","당번"],"state":"답","selected":["당번"],"other":"","note":"","answer":"당번"}]}
+```

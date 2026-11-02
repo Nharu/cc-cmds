@@ -357,6 +357,8 @@ check "pin: a reach park with no stage id writes 스테이지=-" \
   "$( { grep -cF 'local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"' "$GATE" || true; } )" "1"
 check "pin: the shift halt site table has the reach refusal site" \
   "$(sed -n '/^gate_shift_halt_site_table() {/,/^}/p' "$GATE" | grep -c '^도달 거부|')" "1"
+check "pin: the shift halt site table has the unstartable repair site, with no recommendation" \
+  "$(sed -n '/^gate_shift_halt_site_table() {/,/^}/p' "$GATE" | grep -c '^master 수리 불가|없음|')" "1"
 check "pin: the gate stamps a returned answer on a routing cone row" \
   "$( { grep -cF 'stamp=("막힌 답 줄=$sl")' "$GATE" || true; } )" "1"
 check "pin: the gate writes the refusal end class" \
