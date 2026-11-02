@@ -11,6 +11,15 @@
 
 set -uo pipefail
 
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+# 게이트의 런 개시 갈래가 대시보드 서버를 띄운다 — 이 스위트에는 그것을 내리는 쪽이 없다.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+# 스테이지 안에서 돌리면 스테이지의 원장·매니페스트 변수가 물려온다. 이름 목록이 아니라
+# 접두어로 걷으므로 게이트가 나중에 내보내기 시작한 이름도 함께 걷힌다.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
