@@ -28857,6 +28857,26 @@ gate_warn_canon_prompt() {
   warn "$(gate_canon_prompt "$1" "$2")"
 }
 
+gate_approval_canon_question() {
+  # gate_approval_canon_question <승인 id> — the canonical question of an
+  # approval, `승인 <id> — <question>`, or nothing when the ledger holds no row
+  # for that id. Never dies, status 0.
+  #
+  # ONE DERIVATION FOR EVERY READER. The question is the sidecar's full text
+  # when the block exists and proves itself this run's, and the row's excerpt
+  # otherwise — a judgment approval's row carries only an excerpt, so the full
+  # text has to come from the sidecar. The `prompt` verb, the gate's approval
+  # banner and the watcher's approval banner all read it here, so the remote
+  # copy of an approval carries the bytes the router asks with.
+  local id="$1" row full
+  row=$(gate_approval_last_row "$id")
+  [ -n "$row" ] || return 0
+  full=$(gate_approval_sidecar_question "$id" || true)
+  [ -n "$full" ] || full=$(gate_row_field "$row" '질문 문면')
+  gate_canon_prompt "$id" "$full"
+  return 0
+}
+
 gate_prompt() {
   # gate_prompt <승인 id> — the question the router must put to a person, as
   # one JSON object: `{"id","cutpoint","state","question","menu_version",
@@ -28872,12 +28892,10 @@ gate_prompt() {
   # The question text is the sidecar's full text when the block exists and
   # proves itself this run's, and the row's excerpt otherwise — an approval
   # issued before the sidecar existed is still askable.
-  local id="$1" row cutp full l opts
+  local id="$1" row cutp l opts
   row=$(gate_approval_last_row "$id")
   [ -n "$row" ] || die "no such approval id in the ledger: $id"
   cutp=$(gate_row_field "$row" '절단점')
-  full=$(gate_approval_sidecar_question "$id" || true)
-  [ -n "$full" ] || full=$(gate_row_field "$row" '질문 문면')
   opts='[]'
   if [ "$cutp" = "판단" ]; then
     opts=$(for l in $(gate_menu_labels); do
@@ -28885,7 +28903,7 @@ gate_prompt() {
     done | jq -s '.')
   fi
   jq -n --arg id "$id" --arg cutpoint "$cutp" --arg state "$(gate_row_field "$row" '상태')" \
-        --arg question "$(gate_canon_prompt "$id" "$full")" --arg mv "$GATE_MENU_VERSION" \
+        --arg question "$(gate_approval_canon_question "$id")" --arg mv "$GATE_MENU_VERSION" \
         --argjson options "$opts" \
         '{id: $id, cutpoint: $cutpoint, state: $state, question: $question, menu_version: $mv, options: $options}'
 }
@@ -33059,7 +33077,7 @@ gate_notify_approval() {
   # is one duplicate banner; the fix would put a lock on the critical path of
   # every act. Recorded here because otherwise a later reader deletes one of the
   # two firing points and restores the delay this whole seat removed.
-  local id="$1" q="$2"
+  local id="$1" q="$2" canon detail
   # A SHIFT DOES NOT DECIDE WHETHER A BANNER REACHES THE USER. It was launched
   # by the lead, and a launched process choosing what the user sees is the one
   # thing the notification rules forbid outright. That test used to sit here as a
@@ -33077,7 +33095,26 @@ gate_notify_approval() {
       printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals" 2>/dev/null || true
     fi
   fi
-  cc_notify_fire answer "$q" "$id" || true
+  # THE REMOTE COPY CARRIES THE CANONICAL QUESTION, the local banner keeps `$q`.
+  # The act approval's banner text adds the alias, cut and grade after the
+  # question, which is right for a glance at a banner and wrong for the event a
+  # remote reader answers from, so the canonical question goes in the funnel
+  # attachment instead. Both callers write the sidecar block and the ledger row
+  # before calling here, so the approval is found. A text that does not begin
+  # with the approval's own prefix (no row, an unreadable ledger) sends no
+  # attachment, and the banner goes up as before without an event.
+  #
+  # The attachment is made here, after the seat check and the announcement
+  # list, so no path that returns early leaves one behind.
+  detail=
+  canon=$(gate_approval_canon_question "$id" 2>/dev/null || true)
+  case "$canon" in
+    "승인 $id — "*)
+      detail=$(cc_attention_detail_make "$(jq -cn --arg b "$canon" \
+        '{kind: "approval", actionable: false, reply: null, body: $b}' 2>/dev/null || true)") || detail=
+      ;;
+  esac
+  CC_NOTIFY_ATTENTION_DETAIL="$detail" cc_notify_fire answer "$q" "$id" || true
   return 0
 }
 
