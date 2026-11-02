@@ -870,6 +870,20 @@ if grep -qF -- "rewrite only the sidecar's \`**기록**\` line" "$VU_SKILL"; the
 else
   bad "visual-unattended 재사용 갈래" "기록 경로를 고쳐 쓰는 문면이 없다"
 fi
+# A resumed turn reruns Step 1 from item 1, and item 6 runs before item 7, so
+# an `output-present` answer is applied only while the following record carries
+# the earlier `system-mismatch` answer and item 6 reads it back for the same
+# case. Without both sentences the two halts alternate without end.
+for lit in \
+  '`앞선 답=<label> · 경우=<key> · 기록=<earlier halt record path>`' \
+  'While item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
+  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece'; do
+  if grep -qF -- "$lit" "$VU_SKILL"; then
+    ok "visual-unattended 재개 턴이 앞선 시스템 불일치 답을 나른다 — 「${lit}」"
+  else
+    bad "visual-unattended 재개 턴의 앞선 답" "「${lit}」가 없다"
+  fi
+done
 for old in 'Every site except `review-cap` is a refusal' 'write nothing at all'; do
   if grep -qF -- "$old" "$VU_SKILL"; then
     bad "visual-unattended 문면의 옛 문장" "「${old}」가 남았다"
