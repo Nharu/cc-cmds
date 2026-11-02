@@ -3367,13 +3367,17 @@ gate_reach_disposition() {
     # `-exec` beside the device one makes the whole `find` opaque, and an
     # opaque act that lands machine-global reaches this cell all the same. The
     # kind is read for an act the table graded `트리밖쓰기`, the device forms
-    # the kinds name.
-    local _dk='-' _dshape='' _ds _dw
+    # the kinds name. A device tool's name is read only from the first `-exec`
+    # family primary on: before it the words are the start paths and the tests,
+    # where `-name adb` names a file and runs nothing.
+    local _dk='-' _dshape='' _ds _dw _dx=0
     _ds=$(gate_device_act_start "$@")
     _dw=${*:$_ds:1}
     case "$_dw" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
     if [ "$_dw" = find ]; then
-      for _dw in "$@"; do
+      for _dw in "${@:$_ds}"; do
+        case "$_dw" in -exec|-execdir|-ok|-okdir) _dx=1; continue ;; esac
+        [ "$_dx" = "1" ] || continue
         case "${_dw##*/}" in
           xcrun|xcodebuild|adb|emulator|avdmanager|maestro) printf '기기전역\tforeign-device\t-'; return 0 ;;
         esac
