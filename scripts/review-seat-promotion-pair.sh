@@ -720,7 +720,7 @@ write_session_env() {
     printf -- '--output-format\t플래그\tjson\tstream-json\t다름\t비용 기록을 실행기가 진다(result.json 의 total_cost_usd)\n'
     printf -- '--max-budget-usd\t플래그\t%s\t(싣지 않음)\t다름\t세션 예산을 실행기가 진다\n' "$RESERVE_RUN"
     printf -- '-p\t플래그\t리뷰 명령과 지시문\t리뷰 명령과 지시문\t다름\t게이트 밖 세션의 지시문(중단 기록 자리, 게이트·매니페스트 없음)을 더한다\n'
-    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트·리드의 증인 nonce 명령(openssl rand -hex 8), 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, 팀 규약의 증인 발행 명령은 상태·중단 기록 디렉터리 아래에서 증인 승인 훅)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록, 그리고 증인 발행 명령과 nonce 명령만 승인하는 훅이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
+    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트·리드의 증인 nonce 명령(openssl rand -hex <바이트 수>), 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, 팀 규약의 증인 발행 명령은 상태·중단 기록 디렉터리 아래에서 증인 승인 훅)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록, 그리고 증인 발행 명령과 nonce 명령만 승인하는 훅이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
     printf '대상 복제본\t쓰기 경로\truns/<n>-<갈래>/target\t(세그먼트 워크트리)\t다름\t원격 없는 대상 복제본을 리뷰한다\n'
     printf -- '--report-path\t쓰기 경로\truns/<n>-<갈래>/report.md\t(게이트의 정본 보고서 경로)\t다름\t갈래마다 보고서 자리를 실행기가 정한다\n'
     printf 'XDG_STATE_HOME\t쓰기 경로\truns/<n>-<갈래>/state\t(물려받은 상태 루트)\t다름\t증인 스크래치를 갈래 디렉터리 아래에 둔다\n'
@@ -865,7 +865,9 @@ witness_hook_write() {
 # those directories:
 #   <var>=$(mktemp [-d] <path>)   mktemp [-d] <path>   mkdir -p <path>
 #   mv [-n] <path|"$var"> <path>  echo "$var"   cat > <path|"$var"> <<'TAG'
-#   openssl rand -hex 8           (the lead's witness nonce, names no path)
+#   openssl rand -hex <n>         (the lead's witness nonce, names no path;
+#                                  <n> is 1-999 bytes, so one call may mint
+#                                  every member's nonce at once)
 # A <path> or "$var" is either bare or wrapped in one pair of double quotes,
 # never one-sided; a <path> may be spelled `"$(dirname <path>)/<rest>"` (a
 # dirname operand ending in `/` or holding `//` is not resolved); "$var" is a
@@ -950,7 +952,7 @@ re_mvpath='^mv( -n)? '"$pth"' '"$pth"'$'
 re_echo='^echo '"$vref"'$'
 re_catvar='^cat > '"$vref"'$'
 re_catpath='^cat > '"$pth"'$'
-re_nonce='^openssl rand -hex 8$'
+re_nonce='^openssl rand -hex [1-9][0-9]{0,2}$'
 
 # A quoted-delimiter heredoc's body is literal text: drop it, and the
 # `<<'TAG'` that opens it. Only a line ending in `cat > <path|"$var"> <<'TAG'`
@@ -1060,6 +1062,10 @@ HOOK
 # read-only defaults nor `acceptEdits` approve. A refused call lands in
 # `permission_denials`, which fails the pilot, so that exact command is opened
 # by a rule, and the hook also allows it as one of the commands of a call.
+# Leads also mint every member's nonce in one call (`openssl rand -hex 24`,
+# `-hex 32`), so the hook allows any byte count from 1 to 999; an exact rule
+# cannot name them all, and a wildcard rule would also match the command
+# redirected or given more arguments, which the hook refuses.
 #
 # These are the runner's own rules; the lane's user settings are merged in as
 # they are for a gate stage, so its allow rules and hooks reach the session too.

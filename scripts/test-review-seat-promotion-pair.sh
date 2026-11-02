@@ -464,6 +464,18 @@ expect_eq "the hook allows the nonce command alone, several at once and beside a
   "$(hook_says "$p_nonce")|$(hook_says "$p_nonce"$'\n'"$p_nonce; $p_nonce")|$(hook_says "$c_mkd && $p_nonce")"
 expect_eq "the hook gives no decision to the nonce command redirected, piped, or with other arguments" "none|none|none|none" \
   "$(hook_says "$p_nonce > $rd/state/n")|$(hook_says "$p_nonce | sh")|$(hook_says "openssl rand -out $rd/state/n 8")|$(hook_says "openssl rand -hex 8 -engine x")"
+# Leads also mint every member's nonce in one call, as `openssl rand -hex 24`
+# or `-hex 32`, beside the protocol's per-member `-hex 8`.
+expect_eq "the hook allows a batch nonce of any byte count from 1 to 999" "allow|allow|allow|allow" \
+  "$(hook_says "openssl rand -hex 24")|$(hook_says "openssl rand -hex 32")|$(hook_says "openssl rand -hex 1")|$(hook_says "openssl rand -hex 999")"
+expect_eq "the hook gives no decision to a byte count of 0, a leading zero, four digits or no number" "none|none|none|none|none" \
+  "$(hook_says "openssl rand -hex 0")|$(hook_says "openssl rand -hex 08")|$(hook_says "openssl rand -hex 1000")|$(hook_says "openssl rand -hex x")|$(hook_says "openssl rand -hex")"
+expect_eq "the hook gives no decision to a batch nonce redirected or piped" "none|none" \
+  "$(hook_says "openssl rand -hex 32 > $rd/target/n")|$(hook_says "openssl rand -hex 24 | sh")"
+# The pattern is anchored at both ends: another command ending in the nonce
+# command is not the nonce command.
+expect_eq "the hook gives no decision to a command that only ends in the nonce command" "none|none" \
+  "$(hook_says "rm -rf $rd/target openssl rand -hex 8")|$(hook_says "sh -c openssl rand -hex 32")"
 if [[ ! -e "$ml" ]]; then pass "the hook logs no nonce command"; else fail "the hook logged: $(cat "$ml")"; fi
 # A double quote left open hides the text up to the next quote from the shell
 # as one string, so the hook must not read a `<<'TAG'` inside it as a heredoc
