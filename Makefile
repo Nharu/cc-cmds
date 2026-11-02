@@ -502,6 +502,7 @@ ORCH_TESTS := \
 	scripts/test-session-status-snapshot.sh \
 	scripts/test-notify-focus.sh \
 	scripts/test-attention.sh \
+	scripts/test-attention-funnel.sh \
 	scripts/test-stage-rules-edit-hook.sh \
 	scripts/test-stage-rules.sh \
 	scripts/test-watch.sh \
