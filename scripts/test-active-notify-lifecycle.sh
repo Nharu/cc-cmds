@@ -5,13 +5,21 @@
 #   tests/fixtures/active-notify-lifecycle/<case>/
 #     test.sh           — required. Runs the scenario; exits 0 on pass, non-zero on fail.
 #                          Available env vars: NOTIFY_SH, FLAG_FILE, FLAG_DIR,
-#                          NOTIFIER_LOG, NOTIFIER_HINT, CLAUDE_SESSION_ID.
+#                          NOTIFIER_LOG, NOTIFIER_HINT, CLAUDE_SESSION_ID,
+#                          PRETOOL_HOOK_SH (the active-notify PreToolUse hook,
+#                          for fixtures that take the seat ticket the way a
+#                          real fire-now call does), FIXTURE_TMPDIR.
 #     stubs/            — optional. If present, prepended to PATH so a
 #                          fake `terminal-notifier` overrides system binary.
 #                          A stub is auto-provided by the driver if absent.
 #     env.sh            — optional. Sourced before test.sh if present.
 #
-# Each fixture runs in its own isolated TMPDIR; driver cleans up afterward.
+# Each fixture runs in its own isolated TMPDIR and its own HOME under it, so
+# seat tickets and the attention spool's default root never reach the account
+# home; driver cleans up afterward. The pipeline variables, RUN_ID and
+# CC_NOTIFY_REPO are cleared for every fixture: run from inside a stage, they
+# would make the remote-seat check refuse and every attention assertion fail
+# or pass for the wrong reason.
 
 set -euo pipefail
 
@@ -19,6 +27,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures_root="$repo_root/tests/fixtures/active-notify-lifecycle"
 notify_sh="$repo_root/plugins/cc-cmds/skills/active-notify/scripts/notify.sh"
+pretool_hook_sh="$repo_root/plugins/cc-cmds/hooks/active-notify-pretool.sh"
 
 if [[ ! -x "$notify_sh" ]]; then
   echo "FAIL: notify.sh not executable: $notify_sh" >&2
@@ -90,6 +99,12 @@ for fixture_dir in "${fixtures[@]}"; do
     # pane the suite happens to run in. A fixture that wants a pane sets one in
     # its env.sh, which is sourced below.
     unset TMUX TMUX_PANE
+    unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY
+    unset RUN_ID CC_NOTIFY_REPO
+    mkdir -p "$tmpdir/home"
+    export HOME="$tmpdir/home"
+    export FIXTURE_TMPDIR="$tmpdir"
+    export PRETOOL_HOOK_SH="$pretool_hook_sh"
     export TMPDIR="$tmpdir"
     export CLAUDE_SESSION_ID="$session_id"
     # notify.sh L21 prefers CLAUDE_CODE_SESSION_ID — set it to the same value
