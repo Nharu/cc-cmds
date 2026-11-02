@@ -24,6 +24,10 @@
           "source": "tracker"
         }
       },
+      "five_hour_limit": {
+        "state": "limited",
+        "source": "auto"
+      },
       "reset_passes": {
         "held": [
           {
@@ -64,6 +68,10 @@
           "source": "tracker"
         }
       },
+      "five_hour_limit": {
+        "state": "limited",
+        "source": "auto"
+      },
       "reset_passes": {
         "held": [
           {
@@ -98,6 +106,10 @@
           "observed_at_epoch": 1799999940,
           "source": "tracker"
         }
+      },
+      "five_hour_limit": {
+        "state": "limited",
+        "source": "auto"
       },
       "reset_passes": {
         "held": [
@@ -134,6 +146,10 @@
           "source": "tracker"
         }
       },
+      "five_hour_limit": {
+        "state": "limited",
+        "source": "auto"
+      },
       "reset_passes": {
         "held": [
           {
@@ -158,6 +174,10 @@
       "windows": {
         "five_hour": null,
         "seven_day": null
+      },
+      "five_hour_limit": {
+        "state": "unknown",
+        "source": "auto"
       },
       "reset_passes": {
         "held": [],

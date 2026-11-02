@@ -518,7 +518,9 @@ def rt_gpasses($c; $orgs; $fresh; $g):
          | . + {account: $id}]
        | unique_by(.id) | sort_by([.expires_at_epoch, .id]) end;
 
-# 5시간 한도 없음. 주간 창이 알려져 있을 때(known·reset_elapsed)만 5시간 창을 상태
+# 5시간 한도 없음의 형태 추정. 그룹의 발행 판정(`rt_pub5`)이 있으면 이 추정은 판정이
+# 되지 않고 `rt_five_win` 이 어긋남 칸의 비교값으로만 쓴다 — 판정은 발행 판정이 없을
+# 때만 이 결과다. 주간 창이 알려져 있을 때(known·reset_elapsed)만 5시간 창을 상태
 # `unlimited` 로 바꾼다. 사용률이 0 보다 크게 관측된 창은 그대로다. 5시간 창이 unknown
 # 이면 신선한 사용량 파일에 그 그룹의 주간 창 행이 있고, 그룹의 어느 사용량 행에도
 # 5시간 값이 없으며(키 부재 또는 null — 그 밖의 값은 형이 깨진 창이다), 스테이지 로그
@@ -544,12 +546,43 @@ def rt_unl_win($c; $orgs; $fresh; $g; $W; $ev):
       else $W end
     else $W end;
 
+# 그룹의 5시간 한도 발행 판정. 신선한 사용량 파일에서 그룹의 계정 행마다
+# `five_hour_limit.state` 가 `limited`·`unlimited` 인 것만 한 표로 센다 — `unknown`, 키
+# 없음, 객체가 아니거나 어휘 밖인 값은 표가 없고 경고도 내지 않는다. `source` 는 판정에
+# 쓰지 않는다. limited 표가 하나라도 있으면 limited, 없고 unlimited 표가 있으면
+# unlimited, 표가 없으면 null(형태 추정으로 판정한다).
+def rt_pub5($c; $orgs; $fresh; $g):
+  if $fresh | not then null
+  else [rt_uaccts($c)[] | select(rt_group_of($orgs; .id) == $g) | .five_hour_limit
+         | select(type == "object") | .state | select(. == "limited" or . == "unlimited")] as $v
+       | if any($v[]; . == "limited") then "limited"
+         elif any($v[]; . == "unlimited") then "unlimited"
+         else null end end;
+
+# 발행 판정과 형태 추정의 합성. 발행 판정이 없으면 추정 결과를 바이트 그대로 돌려준다.
+# 있으면 추정 전 창 `$W` 에서 5시간 창만 정한다 — limited 는 관측된 창 그대로, unlimited
+# 는 관측과 프레임 판독보다 우선한 한도 없음 창이고, 둘 다 `basis: "published"` 를 싣는다.
+# `mismatch` 는 추정이 내렸을 판정이 발행 판정과 다를 때 그 추정 판정(한도 없음이면 그
+# 근거 `absent`·`evidence`, 아니면 `limited`)이고 같으면 null 이다.
+def rt_five_win($c; $orgs; $fresh; $g; $W; $ev):
+  rt_unl_win($c; $orgs; $fresh; $g; $W; $ev) as $E
+  | rt_pub5($c; $orgs; $fresh; $g) as $p
+  | (if $E.five_hour.state == "unlimited" then $E.five_hour.basis else "limited" end) as $guess
+  | if $p == null then $E
+    elif $p == "limited" then
+      $W + {five_hour: ($W.five_hour + {basis: "published", mismatch: (if $guess == "limited" then null else $guess end)})}
+    else
+      (if $W.five_hour.observed != null then $W.five_hour else $W.seven_day end) as $o
+      | $W + {five_hour: {state: "unlimited", u_bp: 0, resets_at: null, observed: $o.observed, source: $o.source,
+                          basis: "published", mismatch: (if $guess == "limited" then "limited" else null end)}}
+    end;
+
 def rt_gview($c; $orgs; $fresh; $inv; $items; $g; $ev):
   [$items[] | select(rt_group_of($orgs; .account) == $g)] as $gi
   | {group: $g,
      windows: (reduce rt_wins[] as $w ({};
        .[$w] = (rt_cands($c; $orgs; $fresh; $g; $w) | (if length == 0 then null else max_by([.observed, .u]) end) | rt_wstate($c)))
-       | rt_unl_win($c; $orgs; $fresh; $g; .; $ev)),
+       | rt_five_win($c; $orgs; $fresh; $g; .; $ev)),
      sigma: (reduce rt_wins[] as $w ({}; .[$w] = ([$gi[] | (.reservation_bp[$w]? // 0)] | add // 0))),
      count: ($gi | length),
      reserved: any($inv[]; (rt_group_of($orgs; .id) == $g) and (.interactive_reserved == true)),
@@ -563,9 +596,10 @@ def rt_class_of($G; $ex):
   elif any($G.windows[]; .state == "reset_elapsed") then "R"
   else "K" end;
 def rt_ueff($x): if $x.state == "reset_elapsed" then 0 else $x.u_bp end;
-# 판정에 참여하지 않는 창 — 사용량 문서가 5시간 창이 없다고 알린 한도 없음뿐이다. 표본
-# 증거로 내린 한도 없음은 사용률 0 인 창으로 검사를 그대로 받는다.
-def rt_skip5($x): ($x.state == "unlimited") and ($x.basis == "absent");
+# 판정에 참여하지 않는 창 — 사용량 문서가 5시간 창이 없다고 알린 한도 없음(`absent`)과
+# 발행 판정이 한도 없음이라고 알린 창(`published`)이다. 표본 증거로 내린 한도 없음은
+# 추정이라 사용률 0 인 창으로 검사를 그대로 받는다.
+def rt_skip5($x): ($x.state == "unlimited") and (($x.basis == "absent") or ($x.basis == "published"));
 def rt_rem($G):
   [rt_wins[] as $w | ($G.windows[$w]) as $x | select(rt_skip5($x) | not)
     | 10000 - (if $x.state == "reset_elapsed" then 0 elif $x.state == "unknown" then 10000 else $x.u_bp end) - $G.sigma[$w]]
@@ -1120,7 +1154,7 @@ def rt_grant_new($p; $a; $adm; $basis):
            + {threshold_bp: null, ratio_source: null, tier: null, r7_bp: null, admitted: null,
               picked_by: null, load5_bp: null, affinity_account: null, affinity_hold_bp: null,
               ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null,
-              pressure_bp_h: null, five_hour_state: null, five_hour_basis: null})};
+              pressure_bp_h: null, five_hour_state: null, five_hour_basis: null, five_hour_mismatch: null})};
 # 질문으로 멈출 수 있는 스테이지의 종류. 이 종류는 멈춘 뒤 같은 계정의 재부착으로만
 # 답을 받는다. 문맥에 `config.ask` 가 있고 요청 종류가 이 목록에 있을 때만 새 기준이 켜진다.
 def rt_ask_kinds: ["design", "audit", "split", "visual", "implement", "review", "lead-fix", "reconverge"];
@@ -1177,10 +1211,12 @@ def rt_new_kr($p):
    .tier, (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end), (0 - (.p7 // 0)), rt_new_sticky($p), .a.id];
 def rt_new_names_b: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "pressure", "spread", "weekly", "sticky", "id"];
 def rt_new_names_r: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "spread", "weekly", "weekly", "pressure", "sticky", "id"];
-# 고른 그룹의 5시간 창 상태와 한도 없음의 근거. 한도 없음이 아니면 근거는 null 이다.
+# 고른 그룹의 5시간 창 상태, 판정 근거와 어긋남. 근거는 창의 `basis` 칸이다 — 발행 판정이
+# 정한 창은 한도 있음이어도 `published` 이고, 발행 판정이 없는 창은 형태 추정이 한도
+# 없음을 냈을 때만 근거가 있다. 어긋남은 발행 판정에 진 추정 판정이고 없으면 null 이다.
 def rt_five_rec($G):
   ($G.windows.five_hour // null) as $x
-  | {five_hour_state: ($x.state? // null), five_hour_basis: (if ($x.state? // null) == "unlimited" then ($x.basis // null) else null end)};
+  | {five_hour_state: ($x.state? // null), five_hour_basis: ($x.basis? // null), five_hour_mismatch: ($x.mismatch? // null)};
 # 정렬 첫째와 둘째의 키 배열이 처음 갈리는 자리의 이름. 후보가 하나면 `only` 다.
 def rt_picked_by($ks; $names):
   if ($ks | length) < 2 then "only"
@@ -3047,7 +3083,7 @@ route__affinity_grant() {
            ask_need_bp: $env.order.ask_need_bp, ask_r7_bp: $env.order.ask_r7_bp,
            ask_fits: $env.order.ask_fits, ask_avoided: $env.order.ask_avoided,
            pressure_bp_h: $env.order.pressure_bp_h, five_hour_state: $env.order.five_hour_state,
-           five_hour_basis: $env.order.five_hour_basis}' 2>/dev/null) || line=""
+           five_hour_basis: $env.order.five_hour_basis, five_hour_mismatch: $env.order.five_hour_mismatch}' 2>/dev/null) || line=""
   if [ -z "$line" ] || ! printf '%s\n' "$line" >> "$RUN_DIR/route-picks.jsonl" 2>/dev/null; then
     route__warn "부여 기록을 덧붙이지 못했다 ($RUN_DIR/route-picks.jsonl)"
   fi
