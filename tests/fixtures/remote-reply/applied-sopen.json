@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "tool_use_id": "toolu_01SopenRemoteWin0000000001",
+  "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001",
+  "reply_id": "host-a1.1793500004000.4e5f6071",
+  "event_id": "host-a1.1793499994000.44556677",
+  "answers_sha256": "afba276b48eb41790aec14336f132e5c4bad0c8cca63d547a3df1770542d2111",
+  "transport": "app",
+  "sender": "app:dk-7f3a91",
+  "applied_at_ms": 1793500030000
+}

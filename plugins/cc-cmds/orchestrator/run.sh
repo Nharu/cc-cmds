@@ -473,6 +473,7 @@ manifest_snapshot_take() {
   #   AC <row>     every `- \`적용 프로브 코드\`` row anywhere, in order
   #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
+  #   RE <row>     every `- \`수리 사건\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -509,6 +510,7 @@ $(LC_ALL=C awk '
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
     index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
+    index($0, "- `수리 사건`") == 1 { print "RE\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -988,6 +990,11 @@ manifest_plugin_allow_rows() {
   grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_repair_rows() {
+  if manifest_memo_on; then manifest_memo_all "RE	"; return 0; fi
+  grep -E '^- `수리 사건`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -1111,6 +1118,13 @@ binding_set_bytes() {
     # load a plugin no person accepted at kickoff. Whole-file scan, zero bytes
     # when absent, so a manifest written before this row existed keeps its digest.
     manifest_plugin_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/pluginallow\t/'
+    # THE `수리 사건` ROW IS IN THE FROZEN SET, on the same terms. It marks a run
+    # the plugin started on its default consent, and the gate holds such a run's
+    # authorization to that consent's bounds only while the row is there; a row
+    # any act could rewrite or drop mid-run would move the run out of those
+    # bounds or onto another event. Whole-file scan, zero bytes when absent, so a
+    # manifest written before this row existed keeps its digest.
+    manifest_repair_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/repair\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1474,7 +1488,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1919,6 +1933,23 @@ EOF
   done <<EOF
 $pa_rows
 EOF
+
+  # 20b — the `수리 사건` row: the event a repair run fixes, written by the
+  # plugin's renderer and read by position. At most one — a run fixes one
+  # event — and exactly five cells, the reading the gate's reader assumes: a
+  # row of another width would be skipped there and leave the run checked as
+  # a person's run while this check had passed it.
+  local re_rows re_row re_n=0
+  re_rows=$(manifest_repair_rows)
+  while IFS= read -r re_row; do
+    [ -n "$re_row" ] || continue
+    re_n=$((re_n + 1))
+    [ "$(printf '%s' "$re_row" | awk -F'|' '{ print NF }')" = "5" ] \
+      || die "「수리 사건」 행의 칸이 다섯이 아닙니다 — 받는 형태는 \`- \`수리 사건\` | <slug> | <베이스 브랜치> | <사건 id> | <서명 sha256>\` 입니다: $re_row"
+  done <<EOF
+$re_rows
+EOF
+  [ "$re_n" -le 1 ] || die "「수리 사건」 행이 ${re_n}개입니다 — 많아야 하나입니다"
 
   # 21 — the entry judgment's structure, for a plan that carries one. The
   # checker beside the entry prompt asserts it: a reason for every `team-4`
@@ -5976,7 +6007,10 @@ reclaim_has_other_account() {
   # question the re-dispatch will ask — the same lineage under `limit-reclaim`,
   # which leaves the exhausted account out — and says yes only when that answer
   # is a known-room grant on an account other than the one this stage runs on.
-  # An account the router admits without knowing its usage is not room.
+  # An account the router admits without knowing its usage is not room, and
+  # neither is a grant whose five-hour window the router took as unlimited from
+  # cost-sample evidence (`order.five_hour_basis == "evidence"`): that headroom
+  # is an estimate of five-hour usage, not a reading of it.
   local s="$1" inv irc=0 req env prev
   run_routed || { account_has_headroom; return $?; }
   inv="$RUN_DIR/inventory.json"
@@ -5992,7 +6026,8 @@ reclaim_has_other_account() {
   prev=$(sed -n '4p' "$RUN_DIR/$s.window" 2>/dev/null || true)
   printf '%s' "$env" | jq -e --arg prev "$prev" '
     .verdict == "GRANT" and .basis == "reassigned-after-limit" and .admitted_as == "known"
-    and (.dormant != true) and ((.account // "") != "") and (.account != $prev)' >/dev/null 2>&1
+    and (.dormant != true) and ((.account // "") != "") and (.account != $prev)
+    and ((.order.five_hour_basis? // null) != "evidence")' >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -11304,7 +11339,7 @@ segment_cycle() {
     # that died would read as finished. The second report is judged as it
     # stands.
     local redo="" recovered slice_flag review_line
-    local tri_out tri bundle brc p0 p1 rhead rowrc nx elem lanes
+    local tri_in tri_out tri bundle brc p0 p1 rhead rowrc nx elem lanes
     while :; do
       recovered=0
       slice_flag=$(review_slice_flag "$seg")
@@ -11374,7 +11409,12 @@ segment_cycle() {
       spawn_lineage_release "$sid"
 
       # --- S6 TRIAGE -------------------------------------------------------
-      tri_out=$(judgment_call triage "$rp") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
+      # The triage call reads a copy of the report without its reproduction
+      # evidence lines: that text comes from the review target and is unbounded.
+      tri_in="$RUN_DIR/log/triage-input-$seg-c$cycle.md"
+      { mkdir -p "$RUN_DIR/log" && review_report_drop_evidence <"$rp" >"$tri_in"; } 2>/dev/null \
+        || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패 — 입력 사본을 만들지 못했다 ($tri_in)"; return 1; }
+      tri_out=$(judgment_call triage "$tri_in") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
       tri=$(judgment_result "$tri_out")
       # THE ROW IS THE REPORT'S, written by the gate. Its P0 and P1 are the
       # report's `발견 요약`, the same numbers the gate's `다음` and the merge rule
@@ -12142,12 +12182,27 @@ manifest_interview_row() {
   { manifest_preauth_rows || true; } | { grep -F '| 인터뷰 기록=' || true; } | sed -n 1p
 }
 
+review_report_drop_evidence() {
+  # review_report_drop_evidence — stdin to stdout without the P0 reproduction
+  # evidence of a review report: every line of four spaces then one of the
+  # five evidence keys (`- **재현 명령**:` `- **재현 스크립트**:` `- **재현 출력**:`
+  # `- **재현 예외**:` `- **경로 추적**:`), and the six-space lines that follow
+  # it up to the first line that does not start with six spaces. That text
+  # comes from the review target and its size is unbounded, so no model call
+  # takes it. An `이월 본문` body does not follow an evidence key and stays.
+  LC_ALL=C awk '
+    /^    - \*\*(재현 명령|재현 스크립트|재현 출력|재현 예외|경로 추적)\*\*:/ { body = 1; next }
+    body && /^      / { next }
+    { body = 0; print }'
+}
+
 rekick_p0_report_section() {
   # rekick_p0_report_section <report> — the report's P0 section, heading to the
-  # next `## ` heading, verbatim.
+  # next `## ` heading, without its reproduction evidence lines
+  # (review_report_drop_evidence); every other line verbatim.
   LC_ALL=C awk 'index($0, "## \360\237\224\264 P0") == 1 { on = 1; print; next }
        on && /^## / { exit }
-       on { print }' "$1"
+       on { print }' "$1" | review_report_drop_evidence
 }
 
 rekick_branch_input() {

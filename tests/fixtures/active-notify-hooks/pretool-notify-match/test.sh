@@ -2,11 +2,11 @@
 # Verify: PreToolUse hook matches notify.sh ARM/CANCEL Bash commands and
 # emits the appropriate JSON for α and γ paths.
 #
-# α-path (CC_CMDS_NOTIFY_INJECT_SID=0, default):
-#   permissionDecision=allow + applyPermissionRules emit
-# γ-path (CC_CMDS_NOTIFY_INJECT_SID=1):
-#   permissionDecision=allow + updatedInput.command rewrite with sid prefix
-#   + applyPermissionRules ABSENT
+# Both paths: permissionDecision=allow on every call, applyPermissionRules ABSENT.
+# α-path (CC_CMDS_NOTIFY_INJECT_SID=0, default): no updatedInput (ARM takes no
+#   seat prefix).
+# γ-path (CC_CMDS_NOTIFY_INJECT_SID=1): updatedInput.command rewrite with the
+#   sid prefix only — no seat prefix on ARM.
 #
 # Driver invokes this fixture once per env value (inject_sid loop).
 set -euo pipefail
@@ -41,12 +41,6 @@ if [[ "$inject_sid" == "1" ]]; then
     echo "  got:      $updated" >&2
     exit 1
   fi
-  # γ-path: applyPermissionRules MUST be absent (so hook fires every call)
-  if jq -e '.hookSpecificOutput.applyPermissionRules' "$HOOK_STDOUT" >/dev/null 2>&1; then
-    echo "FAIL (γ): applyPermissionRules present (would defeat session-id injection)" >&2
-    cat "$HOOK_STDOUT" >&2
-    exit 1
-  fi
   # Reason must distinguish γ from α
   reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' "$HOOK_STDOUT")
   if [[ "$reason" != *"session-id injection"* ]]; then
@@ -55,18 +49,26 @@ if [[ "$inject_sid" == "1" ]]; then
     exit 1
   fi
 else
-  # α-path: applyPermissionRules must be present (session-persistent allow)
-  rules=$(jq -r '.hookSpecificOutput.applyPermissionRules // empty | if type == "array" then join("|") else . end' "$HOOK_STDOUT")
-  if [[ "$rules" != *"notify.sh"* ]]; then
-    echo "FAIL (α): applyPermissionRules missing notify.sh pattern" >&2
-    echo "  got: $rules" >&2
-    exit 1
-  fi
   # α-path: updatedInput must be ABSENT
   if jq -e '.hookSpecificOutput.updatedInput' "$HOOK_STDOUT" >/dev/null 2>&1; then
-    echo "FAIL (α): updatedInput present (should only appear in γ-path)" >&2
+    echo "FAIL (α): updatedInput present (ARM takes no seat prefix)" >&2
     exit 1
   fi
+fi
+
+# Both paths: applyPermissionRules MUST be absent — the dispatcher branch
+# allows per call, so the hook keeps running before every call.
+if jq -e '.hookSpecificOutput.applyPermissionRules' "$HOOK_STDOUT" >/dev/null 2>&1; then
+  echo "FAIL: applyPermissionRules present on the dispatcher branch" >&2
+  cat "$HOOK_STDOUT" >&2
+  exit 1
+fi
+
+# ARM never issues a seat ticket.
+if [[ -d "$PRETOOL_SEAT_DIR" ]] && [[ -n "$(ls -A "$PRETOOL_SEAT_DIR")" ]]; then
+  echo "FAIL: ARM left a seat ticket" >&2
+  ls -A "$PRETOOL_SEAT_DIR" >&2
+  exit 1
 fi
 
 exit 0

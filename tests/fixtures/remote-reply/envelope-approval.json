@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "reply_id": "host-a1.1793500003000.3d4e5f60",
+  "event_id": "host-a1.appr.20261101-a5df83a0.judg-0001-1a2b3c4d",
+  "host": "host-a1",
+  "kind": "option",
+  "target": {
+    "surface": "approval",
+    "run_id": "20261101-a5df83a0",
+    "approval_id": "judg-0001-1a2b3c4d",
+    "question": "승인 judg-0001-1a2b3c4d — 세그먼트 A 를 머지할까요?",
+    "options": ["승인", "거부", "무효"]
+  },
+  "answers": [
+    {"question_index": 0, "labels": ["승인"]}
+  ],
+  "provenance": {
+    "transport": "telegram",
+    "sender": "tg:123456789",
+    "received_at_ms": 1793500003000,
+    "transport_ref": "chat 123456789 message 44"
+  },
+  "expires_at_ms": 1793500603000,
+  "pickup_by_ms": 1793500123500
+}
