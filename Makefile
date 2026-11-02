@@ -497,6 +497,7 @@ ORCH_TESTS := \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
+	scripts/test-session-permission-notify.sh \
 	scripts/test-session-title-hook.sh \
 	scripts/test-session-status-snapshot.sh \
 	scripts/test-notify-focus.sh \
