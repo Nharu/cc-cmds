@@ -78,16 +78,36 @@
 #       Print the design document's binding digest the sidecar's
 #       `**설계 문서 구속 다이제스트**` carries: the driver's `binding_digest`
 #       filter (run.sh) with the `## 시각 정합 기준` section dropped besides.
+#   system <design doc> [--owner]
+#       Without --owner, print the normalized digest of the repository's
+#       `system.md` — the sha256 of the file with every line that starts with
+#       `**아티팩트**: ` replaced by `**아티팩트**: (미발행)` and every other
+#       byte kept, the final newline or its absence included — or `(없음)`
+#       when there is no `system.md`. A file without an artifact line has the
+#       same normalized digest as its whole-file hash. This is the value a
+#       sidecar's `**디자인 시스템 sha256**` carries.
+#       With --owner, decide whether `system.md` is this document's: print
+#       `이 문서의 디자인 시스템` and exit 0 when `system.md` exists, the
+#       document's sidecar exists with a `cc-visual v1` header whose
+#       `owner-doc` is this document (any state, any `**기록**`), its
+#       `**디자인 시스템 sha256**` equals the normalized digest or the
+#       whole-file hash, and the `**tokens.css sha256**` line of `system.md`
+#       equals the current `tokens.css`; otherwise print
+#       `이 문서의 디자인 시스템 아님 — <reason>` for the first that fails and
+#       exit 1. `owner-repo` is not compared here.
 #   reuse <design doc> --record <interview record>
 #       Decide whether a run may take the document's sidecar as its visual
-#       stage's finished work. Six conditions in order: the sidecar exists,
-#       its header is `cc-visual v1` and `owner-doc` is this document; its state
+#       stage's finished work. Conditions in order: the sidecar exists, its
+#       header is `cc-visual v1` and `owner-doc` is this document; its state
 #       is `검토 통과` or `발행됨`; the `**기록**` sha256 equals the record
 #       file's (the path is not compared); `**설계 문서 구속 다이제스트**`
-#       equals `binding`; `**디자인 시스템 sha256**` equals the current
-#       `system.md` (`(없음)` when there is none); every screen block's
-#       `**대상 경로**` file exists with the block's `**sha256**`. Print
-#       `재사용 <상태>` and exit 0 when all hold, otherwise
+#       equals `binding`; `**디자인 시스템 sha256**` is `(없음)` when there
+#       is no `system.md` and otherwise equals its normalized digest or its
+#       whole-file hash (an older sidecar carries the latter); the
+#       `**tokens.css sha256**` line of an existing `system.md` equals the
+#       current `tokens.css` (a missing line or file is a mismatch); every
+#       screen block's `**대상 경로**` file exists with the block's
+#       `**sha256**`. Print `재사용 <상태>` and exit 0 when all hold, otherwise
 #       `재사용 불가 — <reason>` for the first that fails and exit 1. Writes
 #       nothing.
 #
@@ -99,10 +119,10 @@
 # tokens `<base>/docs/visual-system/tokens.css`.
 #
 # Exit codes:
-#   0 — scan: no finding; approval: valid; reuse: reusable; other subcommands:
-#       success
+#   0 — scan: no finding; approval: valid; reuse: reusable; system --owner:
+#       this document's; other subcommands: success
 #   1 — scan: at least one finding; approval: none or void; bundle: no sidecar;
-#       reuse: not reusable
+#       reuse: not reusable; system --owner: not this document's
 #   2 — usage error, an unreadable file, a malformed ban list or pattern, a
 #       --tokens file that is missing or contains `</style` (any case), a
 #       screen that ends inside a comment, a tag, a template string or an
@@ -116,7 +136,7 @@
 set -euo pipefail
 
 usage() {
-  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | reuse <설계 문서> --record <기록>" >&2
+  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | reuse <설계 문서> --record <기록>" >&2
   exit 2
 }
 
@@ -570,6 +590,15 @@ locate_sidecar() {
   SIDECAR="$BASE/docs/visual/${SLUG}.md"
 }
 
+# sidecar_owner — the `owner-doc` of the sidecar's `cc-visual v1` header, or
+# nothing when there is no such header. The machine header is line 2 under the
+# human H1, or line 1 of a sidecar written without one; nothing below line 2 is
+# read as the header.
+sidecar_owner() {
+  sed -n '1,2p' "$SIDECAR" | { grep -E '^<!-- cc-visual v1;' || true; } | sed -n '1p' \
+    | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 screen_ids() {
   sed -nE 's/^### 화면 ([^[:space:]]+)[[:space:]]*$/\1/p' "$SIDECAR" | LC_ALL=C sort -u
 }
@@ -620,10 +649,7 @@ cmd_approval() {
   fi
   locate_sidecar "$doc" >/dev/null
   [ -f "$SIDECAR" ] || { echo "승인 없음 — 사이드카 없음 (${SIDECAR})"; exit 1; }
-  # The machine header is line 2 under the human H1, or line 1 of a sidecar
-  # written without one; nothing below line 2 is read as the header.
-  owner=$(sed -n '1,2p' "$SIDECAR" | { grep -E '^<!-- cc-visual v1;' || true; } | sed -n '1p' \
-    | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  owner=$(sidecar_owner)
   [ "$owner" = "$DOC_KEY" ] || { echo "승인 없음 — 사이드카의 owner-doc 이 이 문서가 아니다"; exit 1; }
   state=$(sed -nE 's/^\*\*상태\*\*:[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' "$SIDECAR" | head -n 1)
   [ "$state" = 발행됨 ] || { echo "승인 없음 — 상태가 발행됨이 아니다 (${state:-없음})"; exit 1; }
@@ -680,8 +706,75 @@ sidecar_field() {
   ' "$SIDECAR"
 }
 
+# system_norm_sha <system.md> — the sha256 of the file with every line that
+# starts with `**아티팩트**: ` replaced by `**아티팩트**: (미발행)` and every
+# other byte kept. The final newline is reproduced only when the file has one,
+# so BSD and GNU hosts hash the same bytes; awk runs under the C locale so the
+# Hangul prefix is compared byte for byte.
+system_norm_sha() {
+  local nl=1
+  [ -z "$(tail -c 1 "$1")" ] || nl=0
+  LC_ALL=C awk -v nl="$nl" '
+    index($0, "**아티팩트**: ") == 1 { $0 = "**아티팩트**: (미발행)" }
+    { if (NR > 1) printf "\n"; printf "%s", $0 }
+    END { if (NR > 0 && nl) printf "\n" }
+  ' "$1" | sha256_stdin
+}
+
+# system_tokens_line <system.md> — the value of its first
+# `**tokens.css sha256**:` line, or nothing when there is none.
+system_tokens_line() {
+  sed -nE 's/^\*\*tokens\.css sha256\*\*:[[:space:]]*([^[:space:]]*)[[:space:]]*$/\1/p' "$1" | head -n 1
+}
+
+# system_tokens_match — succeed when the `**tokens.css sha256**` line of the
+# base's system.md equals the sha256 of the base's tokens.css. A missing line
+# or file is a mismatch. Sets TOK_LINE and TOK_FILE (`(없음)` when absent).
+system_tokens_match() {
+  local tf="$BASE/docs/visual-system/tokens.css"
+  TOK_LINE=$(system_tokens_line "$BASE/docs/visual-system/system.md")
+  [ -n "$TOK_LINE" ] || TOK_LINE='(없음)'
+  if [ -f "$tf" ]; then TOK_FILE=$(sha256_of "$tf"); else TOK_FILE='(없음)'; fi
+  [ "$TOK_LINE" != '(없음)' ] && [ "$TOK_FILE" != '(없음)' ] && [ "$TOK_LINE" = "$TOK_FILE" ]
+}
+
+cmd_system() {
+  local doc='' owner_mode=0 why sys want norm full owner
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner) owner_mode=1; shift ;;
+      --*) usage ;;
+      *) [ -z "$doc" ] || usage; doc=$1; shift ;;
+    esac
+  done
+  [ -n "$doc" ] || usage
+  [ -f "$doc" ] || { echo "visual-check.sh system: 설계 문서가 없다: $doc" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "visual-check.sh system: ${why}" >&2; exit 2
+  fi
+  locate_sidecar "$doc" >/dev/null
+  sys="$BASE/docs/visual-system/system.md"
+  if [ "$owner_mode" = 0 ]; then
+    if [ -f "$sys" ]; then system_norm_sha "$sys"; else echo '(없음)'; fi
+    return 0
+  fi
+  [ -f "$sys" ] || { echo "이 문서의 디자인 시스템 아님 — system.md 없음"; exit 1; }
+  [ -f "$SIDECAR" ] || { echo "이 문서의 디자인 시스템 아님 — 사이드카 없음"; exit 1; }
+  owner=$(sidecar_owner)
+  [ -n "$owner" ] || { echo "이 문서의 디자인 시스템 아님 — 사이드카 머리가 cc-visual v1 이 아니다"; exit 1; }
+  [ "$owner" = "$DOC_KEY" ] || { echo "이 문서의 디자인 시스템 아님 — 사이드카의 owner-doc 이 이 문서가 아니다"; exit 1; }
+  want=$(sidecar_field '디자인 시스템 sha256')
+  norm=$(system_norm_sha "$sys")
+  full=$(sha256_of "$sys")
+  [ "$want" = "$norm" ] || [ "$want" = "$full" ] \
+    || { echo "이 문서의 디자인 시스템 아님 — 디자인 시스템 다이제스트가 다르다"; exit 1; }
+  system_tokens_match \
+    || { echo "이 문서의 디자인 시스템 아님 — tokens.css sha256 줄이 실제 tokens.css 와 다르다"; exit 1; }
+  echo "이 문서의 디자인 시스템"
+}
+
 cmd_reuse() {
-  local doc='' rec='' why owner state recf recsha want now sys blocks id path bsha fp
+  local doc='' rec='' why owner state recf recsha want now full sys blocks id path bsha fp
   while [ $# -gt 0 ]; do
     case "$1" in
       --record) [ $# -ge 2 ] || usage; rec=$2; shift 2 ;;
@@ -698,8 +791,7 @@ cmd_reuse() {
   locate_sidecar "$doc" >/dev/null
   # 1 — the sidecar is there, its header is `cc-visual v1` and names this document.
   [ -f "$SIDECAR" ] || { echo "재사용 불가 — 사이드카 없음 (${SIDECAR})"; exit 1; }
-  owner=$(sed -n '1,2p' "$SIDECAR" | { grep -E '^<!-- cc-visual v1;' || true; } | sed -n '1p' \
-    | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  owner=$(sidecar_owner)
   [ -n "$owner" ] || { echo "재사용 불가 — 사이드카 머리가 cc-visual v1 이 아니다"; exit 1; }
   [ "$owner" = "$DOC_KEY" ] || { echo "재사용 불가 — 사이드카의 owner-doc 이 이 문서가 아니다"; exit 1; }
   # 2 — the state is one a visual stage may end on.
@@ -718,11 +810,21 @@ cmd_reuse() {
   want=$(sidecar_field '설계 문서 구속 다이제스트')
   now=$(binding_text "$doc" | sha256_stdin)
   [ "$want" = "$now" ] || { echo "재사용 불가 — 설계 문서 구속 다이제스트가 다르다 (사이드카 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
-  # 5 — the design system file as it is now.
+  # 5a — the design system file as it is now, with its artifact line put back
+  # to unpublished; an older sidecar's whole-file hash is taken too.
   want=$(sidecar_field '디자인 시스템 sha256')
   sys="$BASE/docs/visual-system/system.md"
-  if [ -f "$sys" ]; then now=$(sha256_of "$sys"); else now='(없음)'; fi
-  [ "$want" = "$now" ] || { echo "재사용 불가 — 디자인 시스템 sha256 이 다르다 (사이드카 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
+  if [ -f "$sys" ]; then
+    now=$(system_norm_sha "$sys"); full=$(sha256_of "$sys")
+  else
+    now='(없음)'; full='(없음)'
+  fi
+  [ "$want" = "$now" ] || [ "$want" = "$full" ] \
+    || { echo "재사용 불가 — 디자인 시스템 sha256 이 다르다 (사이드카 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
+  # 5b — the tokens line of an existing system.md names the tokens file as it is.
+  if [ -f "$sys" ] && ! system_tokens_match; then
+    echo "재사용 불가 — tokens.css 가 system.md 의 tokens.css sha256 줄과 다르다 (줄 ${TOK_LINE:0:12}, 파일 ${TOK_FILE:0:12})"; exit 1
+  fi
   # 6 — every screen block's file is there with the block's sha256.
   blocks=$(awk '
     /^### 화면 / { if (id != "") print id "\t" p "\t" s; id = $3; p = ""; s = ""; next }
@@ -754,6 +856,7 @@ case "$sub" in
   approval) cmd_approval "$@" ;;
   bundle) cmd_bundle "$@" ;;
   binding) cmd_binding "$@" ;;
+  system) cmd_system "$@" ;;
   reuse) cmd_reuse "$@" ;;
   *) usage ;;
 esac

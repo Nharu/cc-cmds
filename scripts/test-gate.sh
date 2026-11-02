@@ -15103,7 +15103,8 @@ au15_wait R15V S2V
 check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0"
 check "15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
 # A re-kicked run's visual stage reuses its source's published sidecar without
-# writing it, so a `발행됨` sidecar with the literal completes the step too.
+# generating it again (it rewrites only the record path line to this run's), so
+# a `발행됨` sidecar with the literal completes the step too.
 printf '# 시각 사이드카\n\n**상태**: 발행됨\n' > "$SC15V"
 au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
 check "15v: 발행됨 사이드카를 둔 시각 파견이 기동한다" "$rc" "0"
@@ -49127,7 +49128,7 @@ graded_as '읽기'         '79v:visual-config.sh snapshot 은 읽기다'        
 for w79v in account models bans seed append; do
   graded_as '등급 미상'  "79v:visual-config.sh $w79v 는 등급 미상이다"        -- "$CC_ORCH/visual-config.sh" "$w79v"
 done
-for w79v in scan size approval bundle binding reuse; do
+for w79v in scan size approval bundle binding system reuse; do
   graded_as '읽기'       "79v:visual-check.sh $w79v 은 읽기다"                -- "$CC_ORCH/visual-check.sh" "$w79v" docs/x.md
 done
 graded_as '등급 미상'    '79v:모르는 visual-check.sh 하위 명령은 등급 미상이다' -- "$CC_ORCH/visual-check.sh" frob docs/x.md
