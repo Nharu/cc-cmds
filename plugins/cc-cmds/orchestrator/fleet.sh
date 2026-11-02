@@ -1123,7 +1123,7 @@ fleet_backlog_head() {
     at=$(printf '%s' "$line" | jq -r --arg schema "$FLEET_BACKLOG_SCHEMA" --arg k "$FLEET_REPAIR_KIND" --arg w "$want" --arg skip "$skip" \
           'select(.schema == $schema and .status == "pending"
                   and ((.kind == $k) == ($w == "repair"))
-                  and ((.id // "") as $i | ($skip | split("\n")) | any(. == $i) | not)) | .enqueued_at // empty' 2>/dev/null || true)
+                  and (((.id // "?") | tostring) as $i | ($skip | split("\n")) | any(. == $i) | not)) | .enqueued_at // empty' 2>/dev/null || true)
     [ -n "$at" ] || continue
     if [ -z "$best_at" ] || [ "$at" \< "$best_at" ]; then best="$line"; best_at="$at"; fi
   done < "$f"
@@ -1841,8 +1841,10 @@ FLEET_MASTER_SLUG_RE='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
 fleet_master_switch_lines() {
   # fleet_master_switch_lines <file> — the switch file's lines, trimmed, the
   # blank ones dropped. A file that cannot be read prints nothing, which reads
-  # as the empty switch.
-  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$1" 2>/dev/null | { grep -v '^$' || true; }
+  # as the empty switch. The C locale keeps sed reading past bytes that are
+  # not valid in the caller's locale, so such a line reaches the shape check
+  # rather than ending the read early.
+  LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$1" 2>/dev/null | { LC_ALL=C grep -v '^$' || true; }
 }
 fleet_master_switch_off() {
   # fleet_master_switch_off <owner/name> — rc 0 when repair runs are off for
@@ -2282,7 +2284,7 @@ fleet_repair_claim() {
     park=""; clause=""; detail="-"; manifest=""; run_id=""; wt=""
     head=$(fleet_backlog_head repair "$skip")
     if [ -z "$head" ]; then fleet_backlog_unlock; return 1; fi
-    rec="$head"; id=$(printf '%s' "$rec" | jq -r '.id // "?"')
+    rec="$head"; id=$(printf '%s' "$rec" | jq -r '(.id // "?") | tostring')
     fleet_repair_recognized "$rec" || park=repair-unrecognized
     [ -n "$park" ] || park=$(fleet_dispatch_park_reason "$rec")
     if [ -z "$park" ]; then
@@ -2308,6 +2310,14 @@ fleet_repair_claim() {
             '.last_refusal_at = $at | .last_refusal_verdict = "-" | .last_refusal_clause = $c')
     fleet_backlog_rewrite "$head" "$line" || fleet_log "repair $lane: $id 의 거부 재작성이 원본 줄을 찾지 못했다 (rc=$?)"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$iso" "$lane" "$clause" "-" "$id" "$detail" >> "$PACE_ROOT/refusals.tsv"
+    # A record the head selector cannot pass over by its id (an empty id, or
+    # one already passed over) ends the claim here, as every refusal did
+    # before records were passed over, so the loop always ends.
+    if [ -z "$id" ] || printf '%s\n' "$skip" | grep -qxF -- "$id"; then
+      fleet_backlog_unlock
+      fleet_log "repair $lane: $id 거부 — 절 $clause/$detail"
+      return 1
+    fi
     fleet_log "repair $lane: $id 거부 — 절 $clause/$detail; 다음 수리 레코드를 본다"
     skip="${skip:+$skip
 }$id"

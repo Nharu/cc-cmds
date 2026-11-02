@@ -1560,6 +1560,15 @@ check "스위치가 끈 가장 오래된 수리 레코드는 다른 저장소의
   "$(backlog_status "mr-$EA")/$(backlog_field "mr-$EB" '.status + "/" + .dispatched_lane')" "pending/done/u1"
 check "건너뛴 머리 레코드의 switch 거부 행은 남는다" \
   "$(awk -F'\t' -v id="mr-$EA" '$3 == "switch" && $5 == id { n++ } END { print n + 0 }' "$PACE/refusals.tsv")" "1"
+# A switched-off repair record with no id cannot be passed over by id; the
+# claim still ends, with one refusal row.
+m_fresh r-switch-noid; set_backlog
+repair_append "$EA"
+jq -c 'del(.id)' "$PACE/backlog.jsonl" > "$PACE/backlog.new" && mv "$PACE/backlog.new" "$PACE/backlog.jsonl"
+printf 'o/n\n' > "$PACE/master-repair.off"
+fleet dispatch u1 >/dev/null 2>&1
+check "id 가 없는 스위치 레코드에서도 수리 입장은 끝나고 거부 행은 하나다" \
+  "$(awk -F'\t' '$3 == "switch" { n++ } END { print n + 0 }' "$PACE/refusals.tsv")/$(jq -r 'select(.event_id == "'"$EA"'") | .status' "$PACE/backlog.jsonl")" "1/pending"
 d_fresh r-unrec x0
 set_backlog "$(backlog_record mr-x '.kind = "master-repair" | .event_id = "abcdef012345" | .slug = "o/n" | .base = "master"')"
 fleet dispatch u1 >/dev/null 2>&1
