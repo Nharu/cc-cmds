@@ -165,9 +165,11 @@ title_for() {
 # shell variable on its way to the attachment. Each shape is replaced by
 # `[가림]`; for an assignment, a header, a flag and a URL only the value goes.
 # A flag's value is found after `=` or blanks (the flag quoted or not), after a backslash line
-# continuation, on the next YAML list item, and as the next quoted element of a
-# list written inside a string (`"--secret", "v"`, `['--token', 'v']`); a lone
-# backslash is never taken as the value.
+# continuation, on the next YAML list item, and after a comma as the next element
+# of a list, quoted or not and whatever quote the flag carries (`"--secret", "v"`,
+# `['--token', 'v']`, `[--token, v]`, `"--token", 'v'`); an unquoted value ends at
+# a blank, `,`, `]` or `}`, never starts with `[` (so `[가림]` is not taken again),
+# and a lone backslash is never taken as the value.
 # shellcheck disable=SC2016
 redact_defs='
 def red:
@@ -176,8 +178,9 @@ def red:
   | gsub("\\b(?<k>bearer|basic)[ \\t]+[A-Za-z0-9._~+/=-]+"; "\(.k) [가림]"; "i")
   | gsub("(?<k>[A-Za-z][A-Za-z0-9+.-]*://[^\\s:/@]+:)[^\\s/@]+@"; "\(.k)[가림]@")
   | gsub("(?<k>--(?:token|password|secret|api-key)(?:[ \\t]*\\\\\\r?\\n[ \\t]*|[\"'"'"']?[ \\t]*\\r?\\n[ \\t]*-[ \\t]+|=|[\"'"'"']?[ \\t]+))(?:\"[^\"]*\"|'"'"'[^'"'"']*'"'"'|(?!\\\\(?:\\s|$)|,)[^\\s]+)"; "\(.k)[가림]"; "i")
-  | gsub("(?<k>--(?:token|password|secret|api-key)\\\\?\"\\s*,\\s*\\\\?\")(?:[^\"\\\\\\n]|\\\\[^\"])*"; "\(.k)[가림]"; "i")
-  | gsub("(?<k>--(?:token|password|secret|api-key)\\\\?'"'"'\\s*,\\s*\\\\?'"'"')(?:[^'"'"'\\\\\\n]|\\\\[^'"'"'])*"; "\(.k)[가림]"; "i")
+  | gsub("(?<k>--(?:token|password|secret|api-key)\\\\?[\"'"'"']?\\s*,\\s*\\\\?\")(?:[^\"\\\\\\n]|\\\\[^\"])*"; "\(.k)[가림]"; "i")
+  | gsub("(?<k>--(?:token|password|secret|api-key)\\\\?[\"'"'"']?\\s*,\\s*\\\\?'"'"')(?:[^'"'"'\\\\\\n]|\\\\[^'"'"'])*"; "\(.k)[가림]"; "i")
+  | gsub("(?<k>--(?:token|password|secret|api-key)\\\\?[\"'"'"']?\\s*,\\s*)[^\\s,\\]}\"'"'"'\\\\\\[][^\\s,\\]}\"'"'"']*"; "\(.k)[가림]"; "i")
   | gsub("\\b(?<k>(?:token|secret|password|passwd|pwd|api_key|api-key|apikey|access_key|private_key|credential|auth)[A-Za-z0-9_.-]*[\"'"'"']?)(?<s>[ \\t]*[:=][ \\t]*)(?:\"[^\"]*\"|'"'"'[^'"'"']*'"'"'|[^\\s\"'"'"',;&]+)"; "\(.k)\(.s)[가림]"; "i")
   | gsub("\\b(?:gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|xox[abprs]-[A-Za-z0-9-]+|AKIA[A-Z0-9]{16}|AIza[A-Za-z0-9_-]+|pk_[0-9]+_[A-Za-z0-9]+)"; "[가림]")
   | gsub("(?<![0-9])[0-9]{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"; "[가림]")

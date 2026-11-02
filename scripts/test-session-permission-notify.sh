@@ -373,6 +373,38 @@ check "가림 — 문자열 안 플래그 값이 어느 파일에도 없다" "${
 check "가림 — 문자열 안 플래그는 남고 값 자리에 가림이 선다" \
   "$(ev '[.[] | .reply.input_summary] | join("\n") | [contains("\"--secret\", \"[가림]\"]"), contains("- --token\n  - [가림]"), (([39] | implode) as $q | contains($q + "--api-key" + $q + ", " + $q + "[가림]" + $q)),contains("[\"--token\",\"[가림]\"]"), contains("--token \\\n  [가림] https://example.com/")] | all')" "true"
 
+# A flag and its value apart by a comma, the value unquoted or quoted
+# differently from the flag: a YAML flow list, a comma with no blank, a list in
+# a string whose value is bare, a plain `--token, v`, mixed quotes, and a YAML
+# flow list with a quoted value.
+reset
+SECRETS4=(
+  "FlowTok11"
+  "AttachedPw22"
+  "BareListSec33"
+  "PlainTok44"
+  "MixedQ55"
+  "FlowQPw66"
+)
+perm sess-red4 Write "$(jq -cn --arg a "${SECRETS4[0]}" --arg b "${SECRETS4[5]}" \
+  '{file_path: "/d/flow.yaml", content: ("spec:\n  args: [--token, " + $a + ", --verbose]\n  more: [--password, \"" + $b + "\"]\n")}')"
+hook_run request "$PATH_FULL"
+perm sess-red4 Write "$(jq -cn --arg a "${SECRETS4[1]}" --arg c "${SECRETS4[2]}" \
+  '{file_path: "/d/c.txt", content: ("cmd: [--password," + $a + "]\nCMD [\"app\", \"--secret\", " + $c + "]\n")}')"
+hook_run request "$PATH_FULL"
+perm sess-red4 Bash "$(jq -cn --arg a "${SECRETS4[3]}" '{command: ("tool --token, " + $a + " next")}')"
+hook_run request "$PATH_FULL"
+perm sess-red4 Bash "$(jq -cn --arg a "${SECRETS4[4]}" --arg q "'" '{command: ("run \"--token\", " + $q + $a + $q + " done")}')"
+hook_run request "$PATH_FULL"
+check "가림 — 쉼표 뒤 플래그 값 사건이 넷 생긴다" "$(n_events)" "4"
+leaks=""
+for s in "${SECRETS4[@]}"; do
+  if grep -rqF -- "$s" "$SPOOL" "$BASE" "$T" 2>/dev/null; then leaks="$leaks [$s]"; fi
+done
+check "가림 — 쉼표 뒤 플래그 값이 어느 파일에도 없다" "${leaks:-없음}" "없음"
+check "가림 — 쉼표 뒤 플래그는 남고 값 자리에 가림이 서며 뒤 구두점이 남는다" \
+  "$(ev '[.[] | .reply.input_summary] | join("\n") | [contains("[--token, [가림], --verbose]"), contains("[--password, \"[가림]\"]"), contains("[--password,[가림]]"), contains("\"app\", \"--secret\", [가림]]"), contains("tool --token, [가림] next"), (([39] | implode) as $q | contains("\"--token\", " + $q + "[가림]" + $q + " done"))] | all')" "true"
+
 # ---------------------------------------------------------------------------
 # 4. Per-tool summaries.
 # ---------------------------------------------------------------------------
