@@ -174,8 +174,30 @@ def red:
   | gsub("(?<k>--(?:token|password|secret|api-key)(?:=|[ \\t]+))(?:\"[^\"]*\"|'"'"'[^'"'"']*'"'"'|[^\\s]+)"; "\(.k)[가림]"; "i")
   | gsub("\\b(?<k>(?:token|secret|password|passwd|pwd|api_key|api-key|apikey|access_key|private_key|credential|auth)[A-Za-z0-9_.-]*[\"'"'"']?)(?<s>[ \\t]*[:=][ \\t]*)(?:\"[^\"]*\"|'"'"'[^'"'"']*'"'"'|[^\\s\"'"'"',;&]+)"; "\(.k)\(.s)[가림]"; "i")
   | gsub("\\b(?:gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|xox[abprs]-[A-Za-z0-9-]+|AKIA[A-Z0-9]{16}|AIza[A-Za-z0-9_-]+|pk_[0-9]+_[A-Za-z0-9]+)"; "[가림]")
-  | gsub("\\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\\b"; "[가림]")
+  | gsub("(?<![0-9])[0-9]{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"; "[가림]")
   | gsub("\\beyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"; "[가림]");
+# The same redaction on a value before it is rendered. Once a string is drawn
+# as JSON its line breaks and quotes are escaped, and `\nghp_…` or
+# `password=\"v\"` no longer match, so every string is redacted where it still
+# holds its own bytes. Two shapes exist only in the structure: the value of an
+# object key that starts like a secret key name, and the array element after a
+# `--token`-style flag.
+def redin:
+  walk(
+    if type == "string" then red
+    elif type == "object" then
+      with_entries(
+        if (.key | test("^(?:token|secret|password|passwd|pwd|api_key|api-key|apikey|access_key|private_key|credential|auth)"; "i"))
+           and (.value | type) == "string"
+        then .value = "[가림]" else . end)
+    elif type == "array" then
+      . as $a
+      | [range(0; length) as $i
+         | if $i > 0 and ($a[$i - 1] | type) == "string"
+              and ($a[$i - 1] | test("^--(?:token|password|secret|api-key)$"; "i"))
+              and ($a[$i] | type) == "string"
+           then "[가림]" else $a[$i] end]
+    else . end);
 '
 
 # The per-tool summary and the attachment, in one jq call that writes the
@@ -232,7 +254,7 @@ def known($t; $o):
   end;
 
 ((.tool_name // "") | str) as $t
-| .tool_input as $in
+| (.tool_input | redin) as $in
 | (if ($in | type) == "object" and (core | has($t)) and all((core | .[$t])[]; . as $k | $in | has($k)) then
      known($t; $in) as $r
      | ($in | delpaths([$r.used[] | [.]])) as $rest
@@ -247,7 +269,7 @@ def known($t; $o):
 # shellcheck disable=SC2016
 notification_prog="$redact_defs"'
 {kind: "permission", actionable: false, reply: null,
- body: ("도구를 알 수 없는 권한 확인이 열렸습니다" + "\n" + ((.message // "") | if type == "string" then . else tojson end | red))}
+ body: ("도구를 알 수 없는 권한 확인이 열렸습니다" + "\n" + ((.message // "") | redin | if type == "string" then . else tojson end | red))}
 '
 
 # write_event <slot> <jq program> — build the attachment with jq straight into

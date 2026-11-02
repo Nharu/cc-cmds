@@ -288,6 +288,49 @@ check "가림 — 가림 표시가 본문에 있다" "$(ev '[.[] | .body | conta
 check "가림 — 키 이름은 남는다" \
   "$(ev '[.[0].reply.input_summary | contains("password="), contains("api_key: "), contains("--token "), contains("Authorization: ")] | all')" "true"
 
+# The summaries drawn as JSON — an unknown tool, a known tool without its key
+# field, the `기타 입력` line and a MultiEdit edit's extra keys — escape line
+# breaks and quotes, so each secret below sits after a line break, inside
+# quotes, as an object value or as the array element after a flag. The Telegram
+# token sits in a Bot API URL and ends with `-`.
+reset
+TG2="987654321:ZZyyXXwwVVuuTTssRRqqPPooNNmmLLkkJJ-"
+SECRETS2=(
+  "ghp_NewlineTok0123456789abcdef"
+  "QuotedPw77"
+  "ArgTok55"
+  "ObjPw66"
+  "Spaced Pw88"
+  "xoxb-3333-4444-NewlineSlack"
+  "HdrKey44"
+  "eyJhbGciOiJub25lIn0.eyJzIjoiMSJ9.NewlineJwtSig"
+  "ghp_MultiEditTok0123456789"
+  "$TG2"
+)
+perm sess-red2 mcp__x__do "$(jq -cn --arg a "${SECRETS2[0]}" --arg b "${SECRETS2[1]}" --arg c "${SECRETS2[2]}" \
+  --arg d "${SECRETS2[3]}" --arg e "${SECRETS2[4]}" \
+  '{note: ("line one\n" + $a), cfg: ("password=\"" + $b + "\""), args: ["--token", $c], password: $d,
+    flag: ("--password \"" + $e + "\"")}')"
+hook_run request "$PATH_FULL"
+perm sess-red2 Bash "$(jq -cn --arg a "${SECRETS2[7]}" '{timeout: 5, env: ("X=1\n" + $a)}')"
+hook_run request "$PATH_FULL"
+perm sess-red2 WebFetch "$(jq -cn --arg a "${SECRETS2[5]}" --arg b "${SECRETS2[6]}" \
+  '{url: "https://example.com/", prompt: ("read\n" + $a), headers: {api_key: $b}}')"
+hook_run request "$PATH_FULL"
+perm sess-red2 MultiEdit "$(jq -cn --arg a "${SECRETS2[8]}" \
+  '{file_path: "/m", edits: [{old_string: "a", new_string: "b", note: ("z\n" + $a)}]}')"
+hook_run request "$PATH_FULL"
+perm sess-red2 Bash "$(jq -cn --arg u "https://api.telegram.org/bot$TG2/getMe" '{command: ("curl " + $u)}')"
+hook_run request "$PATH_FULL"
+check "가림 — JSON 으로 그린 요약 사건이 다섯 생긴다" "$(n_events)" "5"
+leaks=""
+for s in "${SECRETS2[@]}"; do
+  if grep -rqF -- "$s" "$SPOOL" "$BASE" "$T" 2>/dev/null; then leaks="$leaks [$s]"; fi
+done
+check "가림 — JSON 으로 그린 요약에도 원문 값이 없다" "${leaks:-없음}" "없음"
+check "가림 — 구조 안의 키·플래그는 남는다" \
+  "$(ev '[.[] | .reply.input_summary] | join("\n") | [contains("\"password\": "), contains("\"--token\",\n    \"[가림]\""), contains("\"api_key\":"), contains("api.telegram.org/bot[가림]/getMe")] | all')" "true"
+
 # ---------------------------------------------------------------------------
 # 4. Per-tool summaries.
 # ---------------------------------------------------------------------------
