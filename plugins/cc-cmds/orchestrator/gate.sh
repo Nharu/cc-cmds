@@ -13157,9 +13157,11 @@ gate_review_report_produced() {
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     if predicate_review "$f"; then return 0; fi
-    case "$(gate_review_report_counts "$f" 2>/dev/null)" in
-      *'요약=복구'*) return 0 ;;
-    esac
+    # Exact key: the parser's output also carries carry-over titles and bodies
+    # copied from the report, so a substring match could read their text.
+    if [ "$(gate_report_count "$(gate_review_report_counts "$f" 2>/dev/null)" 요약)" = 복구 ]; then
+      return 0
+    fi
   done <<EOF
 $(gate_review_report_candidates "$1")
 EOF
