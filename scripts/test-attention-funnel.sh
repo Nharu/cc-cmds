@@ -92,7 +92,7 @@ spool() {
 }
 n_events()  { find "$ROOT/events" -type f -name '*.json' 2>/dev/null | grep -c . || true; }
 n_handled() { find "$ROOT/handled" -type f -name '*.json' 2>/dev/null | grep -c . || true; }
-event_file() { find "$ROOT/events" -type f -name '*.json' 2>/dev/null | head -1; }
+event_file() { find "$ROOT/events" -type f -name '*.json' 2>/dev/null | awk 'NR==1'; }
 event_jq()  { local f; f=$(event_file); [ -n "$f" ] || { printf 'no-event'; return 0; }; jq -r "$1" "$f"; }
 n_leftover_detail() { find "$DETAIL_TMP" -name 'cc-attention-detail.*' 2>/dev/null | grep -c . || true; }
 
@@ -301,7 +301,7 @@ watch_pass() {
 appr_files() { find "$ROOT/events" -type f -name "*.appr.$RID.$AID.json" 2>/dev/null; }
 # A watcher pass can raise other banners of the run as well, so the approval's
 # own file is read by its deterministic name.
-appr_jq() { local f; f=$(appr_files | head -1); [ -n "$f" ] || { printf 'no-event'; return 0; }; jq -r "$1" "$f"; }
+appr_jq() { local f; f=$(appr_files | awk 'NR==1'); [ -n "$f" ] || { printf 'no-event'; return 0; }; jq -r "$1" "$f"; }
 
 # The gate's own helper derives the canonical question from the sidecar.
 spool
@@ -358,7 +358,7 @@ for order in gate-watch watch-gate; do
     gate-watch) gate_src 'gate_notify_approval "$AID" "$FULLQ — alias / 커밋 / 워크트리쓰기"' >/dev/null 2>&1 ;;
     watch-gate) watch_pass ;;
   esac
-  first=$(appr_files | head -1)
+  first=$(appr_files | awk 'NR==1')
   cp "$first" "$WORK/first.json" 2>/dev/null || : > "$WORK/first.json"
   rm -f "$RUN_DIR_FX/watch.announced-approvals"
   case "$order" in
@@ -370,7 +370,7 @@ for order in gate-watch watch-gate; do
   check "5 $order — 승인 사건 파일은 하나" "$(appr_files | grep -c . || true)" "1"
   check "5 $order — 본문은 정규 질문" "$(appr_jq .body)" "$CANON"
   check "5 $order — 두 번째 구동 뒤 파일 바이트가 같다" \
-    "$(cmp -s "$WORK/first.json" "$(appr_files | head -1)" && echo same || echo changed)" "same"
+    "$(cmp -s "$WORK/first.json" "$(appr_files | awk 'NR==1')" && echo same || echo changed)" "same"
 done
 check "5 첨부 파일이 어느 길로든 남지 않음" "$(n_leftover_detail)" "0"
 
