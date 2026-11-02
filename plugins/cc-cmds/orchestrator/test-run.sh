@@ -55,6 +55,10 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 # starts one, and nothing in this suite stops it.
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
+# The run-end attention seat is off for the same reason: an ending would start a
+# detached round that calls the CLI and writes into a fixture ledger.
+CC_CMDS_ATTENTION=off
+export CC_CMDS_ATTENTION
 
 # Which part of the suite this process runs: 0 is the whole suite.
 case "$#:${1:-}:${2:-}" in
@@ -1665,6 +1669,53 @@ fi
 grep -v '^\*\*무진전 상한\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "상한 필드가 없어도 그 필드를 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+
+# 수리 사건 행 — 플러그인 기본 동의로 띄운 수리 런의 사건은 얼린 집합에 든다. 행이
+# 없으면 바이트를 하나도 내지 않아 기존 매니페스트의 다이제스트가 그대로이고, 있으면
+# 정확히 한 줄을 낸다. 둘 이상이거나 칸이 다섯이 아닌 행은 런 시작에서 거부된다.
+RE_ROW="- \`수리 사건\` | Nharu/cc-cmds | main | 0123456789ab | $(printf 'x' | shasum -a 256 | cut -d' ' -f1)"
+re_mf() {   # re_mf [<행>...] — 주어진 행을 얹은 매니페스트
+  local r
+  write_manifest "$MF"
+  for r in "$@"; do printf '%s\n' "$r" >> "$MF"; done
+}
+re_mf
+bd_nore=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+check "수리 사건 행이 없으면 다이제스트 입력에 그 줄이 없다" \
+  "$( { binding_set_bytes | grep -c '^repair' || true; } )" "0"
+re_mf "$RE_ROW"
+check "수리 사건 행이 있으면 다이제스트 입력에 정확히 한 줄이 든다" \
+  "$( { binding_set_bytes | grep -c '^repair' || true; } )" "1"
+bd_re=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_re" = "$bd_nore" ]; then
+  bad "구속 집합 감도" "수리 사건 행을 더했는데 다이제스트가 그대로다"
+else
+  ok "수리 사건 행이 생기면 구속 다이제스트가 움직인다"
+fi
+re_mf "${RE_ROW/0123456789ab/0123456789ac}"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_re" ]; then
+  bad "구속 집합 감도" "사건 id 를 바꿨는데 다이제스트가 그대로다 — 런 도중 다른 사건으로 옮길 수 있다"
+else
+  ok "수리 사건 행의 값이 바뀌면 구속 다이제스트가 움직인다"
+fi
+re_mf "$RE_ROW"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "수리 사건 행 하나는 매니페스트 검사를 통과한다"
+else
+  bad "수리 사건 행" "올바른 행이 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+re_mf "$RE_ROW" "$RE_ROW"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "수리 사건 행" "행 둘이 통과했다 — 런 하나가 사건 둘을 고친다"
+else
+  ok "수리 사건 행이 둘이면 런 시작에서 거부된다"
+fi
+re_mf "$RE_ROW | 여섯째"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "수리 사건 행" "칸이 여섯인 행이 통과했다 — 게이트는 그 행을 건너뛴다"
+else
+  ok "칸이 다섯이 아닌 수리 사건 행은 런 시작에서 거부된다"
+fi
 
 # 적용 프로브 코드 행 — 프로브의 종료 코드 대응은 `## 인가` 의 행으로 얼린다. 행이
 # 없으면 바이트를 하나도 내지 않아 기존 매니페스트의 다이제스트가 그대로이고, 있으면
@@ -11611,7 +11662,7 @@ fi
 # ---------------------------------------------------------------------------
 # 물려받은 스위치가 기댓값을 바꾸지 않게 먼저 지운다. 이 절의 스위치 값은 전부
 # 호출마다 앞에 붙여 그 호출에만 건다.
-unset CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL
+unset CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL CC_ORCH_PROMPT_CACHE_TTL
 while IFS='|' read -r ef_kind ef_want; do
   [ -n "$ef_kind" ] || continue
   check "stage_effort_of $ef_kind → $ef_want" "$(stage_effort_of "$ef_kind")" "$ef_want"
@@ -11677,7 +11728,8 @@ check "스트림이 없으면 (미상) 이다" "$(stage_served_model_of "$SMD/no
 SPD="$WORK/spawn-flags"; rm -rf "$SPD"; mkdir -p "$SPD/orch" "$SPD/run/settings" "$SPD/run/log" "$SPD/cfg"
 printf '{}\n' > "$SPD/run/settings/review.json"
 printf '{}\n' > "$SPD/run/settings/design.json"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" > "$SP_ARGV_OUT"' > "$SPD/orch/stage-wrapper.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" > "$SP_ARGV_OUT"' \
+  'printf "%s\n" "${CLAUDE_CODE_PROMPT_CACHE_TTL-unset}" > "$SP_ARGV_OUT.ttl"' > "$SPD/orch/stage-wrapper.sh"
 cat > "$SPD/probe.sh" <<'SPEOF'
 sp_drv="$1"; SP_ROOT="$2"; sp_sid="$3"; set --
 . "$sp_drv"
@@ -11692,8 +11744,9 @@ stage_collect "$sp_sid"
 SPEOF
 sp_spawn() {  # sp_spawn <stage-id> <argv-out> [VAR=value...]
   local sid="$1" argv_out="$2"; shift 2
-  rm -f "$argv_out"
-  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL SP_ARGV_OUT="$argv_out" "$@" \
+  rm -f "$argv_out" "$argv_out.ttl"
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL -u CC_ORCH_PROMPT_CACHE_TTL \
+    -u CLAUDE_CODE_PROMPT_CACHE_TTL SP_ARGV_OUT="$argv_out" "$@" \
     bash "$SPD/probe.sh" "$DRIVER" "$SPD" "$sid" >/dev/null 2>&1
   cat "$argv_out" 2>/dev/null || true
 }
@@ -11703,6 +11756,10 @@ case "$sp_fresh" in
   *) bad "기동 argv" "새 기동: $sp_fresh" ;;
 esac
 check "새 기동이 .window 셋째 줄에 argv 의 effort 를 남긴다" "$(sed -n '3p' "$SPD/run/S5:segF:1.window" 2>/dev/null)" "medium"
+# 캐시 수명 — 래퍼가 받은 환경에 기본 5m 이 서고, 호스트 auto 는 물려받은 값을 지운다.
+check "드라이버 기동의 래퍼 환경은 기본으로 5분 캐시 수명이다" "$(cat "$SPD/fresh.txt.ttl" 2>/dev/null)" "5m"
+sp_spawn "S5:segT:1" "$SPD/ttl-auto.txt" CLAUDE_CODE_PROMPT_CACHE_TTL=1h CC_ORCH_PROMPT_CACHE_TTL=auto >/dev/null
+check "호스트 auto 는 물려받은 캐시 수명 변수를 지운다" "$(cat "$SPD/ttl-auto.txt.ttl" 2>/dev/null)" "unset"
 sp_resume=$(sp_spawn "S5:segF:1" "$SPD/resume.txt" SP_RESUME=12121212-3434-5656-7878-909090909090)
 case "$sp_resume" in
   *"--resume 12121212-3434-5656-7878-909090909090 --effort medium --model opus -- -p prompt"*)
@@ -11752,13 +11809,16 @@ printf 'input\n' > "$JCD/input"
 cat > "$JCD/cli" <<'JCEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$JC_ARGV_OUT"
+printf '%s\n' "${CLAUDE_CODE_PROMPT_CACHE_TTL-unset}" > "$JC_ARGV_OUT.ttl"
 printf '%s\n' '{"subtype":"success","structured_output":{},"modelUsage":{"claude-opus-5-5[1m]":{"inputTokens":1},"claude-sonnet-5":{"inputTokens":9}}}'
 JCEOF
 chmod +x "$JCD/cli"
-env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv.txt" \
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL -u CC_ORCH_PROMPT_CACHE_TTL \
+  -u CLAUDE_CODE_PROMPT_CACHE_TTL JC_ARGV_OUT="$JCD/argv.txt" \
   bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
            RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli"; judgment_call triage "$jc_root/input"' \
   _ "$DRIVER" "$JCD" >/dev/null 2>"$JCD/log.txt"
+check "판단 호출의 CLI 환경은 기본으로 5분 캐시 수명이다" "$(cat "$JCD/argv.txt.ttl" 2>/dev/null)" "5m"
 if grep_all_q -F -- '--strict-mcp-config --disallowedTools DesignSync Artifact ArtifactComments ArtifactData --effort medium --model opus' "$JCD/argv.txt"; then
   ok "판단 호출의 CLI argv 가 --effort medium --model opus 를 싣는다"
 else
@@ -11784,7 +11844,7 @@ printf '%s\n' "$@" > "$JC_ARGV_OUT"
 printf '%s\n' '{"subtype":"success","structured_output":{"verdict":"park","row":null,"reason":"r"}}'
 JCEOF
 chmod +x "$JCD/cli-words"
-env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv-words.txt" \
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL -u CC_ORCH_PROMPT_CACHE_TTL JC_ARGV_OUT="$JCD/argv-words.txt" \
   bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
            RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli-words"
            judgment_call preauth-judge "$jc_root/input" "$jc_root/pj-out.json" env JC_PREFIX=1' \
@@ -11797,12 +11857,12 @@ check "사전 인가 판단 호출은 준 출력 파일에 쓰고 그 경로를 
   "$(cat "$JCD/pj-stdout.txt" 2>/dev/null)|$([ -s "$JCD/run/log/judge-preauth-judge.json" ] && echo 기본에도씀 || echo 기본없음)" \
   "$JCD/pj-out.json|기본없음"
 
-# 다섯 판단 이름 모두의 실제 argv 에 Claude Design 네 도구의 거부가 실린다 — `--tools ""`
-# 를 받는 두 이름에서도 함께다. 판단 호출은 `--settings` 없이 뜨므로 스테이지 설정의
+# 여섯 판단 이름 모두의 실제 argv 에 Claude Design 네 도구의 거부가 실린다 — `--tools ""`
+# 를 받는 세 이름에서도 함께다. 판단 호출은 `--settings` 없이 뜨므로 스테이지 설정의
 # 거부 목록이 닿지 않는다.
 for jc_name in $JUDGMENTS; do
   rm -f "$JCD/argv-$jc_name.txt"
-  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv-$jc_name.txt" \
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL -u CC_ORCH_PROMPT_CACHE_TTL JC_ARGV_OUT="$JCD/argv-$jc_name.txt" \
     bash -c 'jc_drv="$1"; jc_root="$2"; jc_n="$3"; set --; . "$jc_drv"; set +e
              RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli-words"
              judgment_call "$jc_n" "$jc_root/input" "$jc_root/out-$jc_n.json"' \
@@ -11811,6 +11871,20 @@ for jc_name in $JUDGMENTS; do
     "$(awk 'p && n < 4 { printf "%s ", $0; n++ } $0 == "--disallowedTools" { p = 1 }' "$JCD/argv-$jc_name.txt" 2>/dev/null)" \
     "DesignSync Artifact ArtifactComments ArtifactData "
 done
+# 런 종료 주의 좌석은 스테이지 산문과 트랜스크립트를 그대로 읽으므로 도구도 세션도 없이
+# 뜨고, 런의 비용 경계 밖에서 돌므로 지출 상한을 함께 싣는다.
+check "판단 호출 attention-review 의 argv 가 도구 없음·세션 없음·지출 상한 2 를 싣는다" \
+  "$(grep -c -x -e '--no-session-persistence' "$JCD/argv-attention-review.txt" 2>/dev/null || true)/$(awk 'p { print; exit } $0 == "--max-budget-usd" { p = 1 }' "$JCD/argv-attention-review.txt" 2>/dev/null)" \
+  "1/2"
+ar_in=없음
+case " $JUDGMENTS " in *" attention-review "*) ar_in=있음 ;; esac
+check "주의 좌석의 판단 이름은 JUDGMENTS 어휘 안에 있다" "$ar_in" "있음"
+check "주의 좌석은 기본으로 sonnet 에서 돈다" \
+  "$(env -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL bash -c 'ar_drv="$1"; set --; . "$ar_drv" >/dev/null 2>&1; set +e; stage_model_of attention-review' _ "$DRIVER" 2>/dev/null)" "sonnet"
+ar_pb=$(wc -c < "$(dirname "$DRIVER")/prompts/attention-review.md" | tr -d ' ')
+ar_max=$(sed -n "s/^attention_input_max() { printf '%s' \([0-9]*\); }\$/\1/p" "$(dirname "$DRIVER")/attention-round.sh")
+check "주의 좌석의 프롬프트 + 입력 상한 + 구분 줄이 한 인자 상한 131072 바이트 아래다" \
+  "$([ -n "$ar_max" ] && [ $((ar_pb + ar_max + 64)) -lt 131072 ] && echo 아래 || echo "넘음 ($ar_pb + ${ar_max:-?})")" "아래"
 
 # 드라이버 stage-result 호출부 — S9 적용 행을 뺀 아홉(계속 시도 행, 베이스 분할 행,
 # 시각 단계 행과 리드 수정 행 포함)이 effort 와 서빙 모델을 싣는다.

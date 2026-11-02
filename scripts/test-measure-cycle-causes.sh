@@ -284,7 +284,7 @@ J1="$WORK/o1.json"; J2="$WORK/o2.json"
 run_json "$J1" --ledger-dir "$A/docs/pipeline-run" --ledger-dir "$B/docs/pipeline-run"
 run_json "$J2" --ledger-dir "$A/docs/pipeline-run" --ledger-dir "$B/docs/pipeline-run"
 if cmp -s "$J1" "$J2"; then ok "7 같은 입력 두 번의 JSON 바이트 동일"; else bad "7 같은 입력 두 번의 JSON 바이트 동일" "differ"; fi
-check "7 schema 는 첫 키" "$(sed -n 2p "$J1")" '  "schema": "cc-cycle-causes v2",'
+check "7 schema 는 첫 키" "$(sed -n 2p "$J1")" '  "schema": "cc-cycle-causes v3",'
 check "7 표 머리의 선택자" "$(grep -c '<8자리>-<8hex>.md' "$WORK/out.txt")" 1
 check "7 --json 이 있으면 알림 줄 없음" "$(grep -c '^# JSON: --json' "$WORK/out.txt")" 0
 bash "$TOOL" --ledger-dir "$A/docs/pipeline-run" > "$WORK/out2.txt" 2>&1
@@ -517,6 +517,30 @@ check "16 정합 행과 도구 셈이 다르면 판독 차이(P0/P1 꼴과 한 �
 check "16 표 — 판독 차이 상태 줄" "$(grep -c "$(printf '\tgate·도구 판독 차이\t')" "$WORK/out.txt")" 2
 check "16 정상 픽스처의 판독 차이 목록은 비었다" "$(jq '[.repos[].reports.gate_tool_gap | length] | add' "$J1")" 0
 check "16 새 필드 픽스처의 판독 차이 목록도 비었다" "$(jq '[.repos[].reports.gate_tool_gap | length] | add' "$JN")" 0
+
+# --- 17. patch-id 동일로 건너뛴 해소 리뷰 ----------------------------------------------------
+# 건너뛴 해소는 cycle 행을 만들지 않으므로 `베이스 판정` 행의 `판정 근거=패치동일` 로 센다.
+
+bp() { printf -- '- `베이스 판정` | 교대=0 | 세그먼트=%s | 리뷰 HEAD=r | 판정 HEAD=%s | 베이스=t | 판정=일치 | 충돌 파일=- | 부류=- | 판정 근거=%s | 기록 시각=x | prev=x\n' "$1" "$2" "$3"; }
+PI="$WORK/pi"; PJ="$WORK/pj"
+{
+  seg PA 머지됨; cyc PA 1 0 0; bp PA h1 패치동일; bp PA h1 패치동일; bp PA h2 패치동일
+  seg PB 실행중; cyc PB 1 0 0; bp PB h3 패치동일
+  seg PC 머지됨; cyc PC 1 0 0; bp PC h4 재번호; bp PC h5 R; bp PC h6 트리동일
+} | mk_ledger "$PI" 20261019-eeeeeeee.md
+{ seg PA 실행중; cyc PA 1 0 0; bp PA h1 패치동일; } | mk_ledger "$PJ" 20261019-eeeeeeee.md
+J="$WORK/pi.json"
+run_json "$J" --ledger-dir pi="$PI/docs/pipeline-run" --ledger-dir pj="$PJ/docs/pipeline-run"
+check "17 머지된 세그먼트만·같은 판정 HEAD 는 한 번" "$(jq -c '.repos[0].resolve_skipped_by_patch_id' "$J")" '{"all":3,"merged":2}'
+check "17 둘째 원장의 같은 런·세그먼트 id 는 그 레포에서만 센다" "$(jq -c '.repos[1].resolve_skipped_by_patch_id' "$J")" '{"all":1,"merged":0}'
+check "17 표 — 해소 리뷰 생략 줄" "$(grep -c "$(printf '^해소 리뷰 생략(패치 동일)\t2 / 3\t0 / 1$')" "$WORK/out.txt")" 1
+{ seg PC 머지됨; cyc PC 1 0 0; bp PC h4 재번호; bp PC h5 R; bp PC h6 트리동일; } | mk_ledger "$WORK/pk" 20261019-ffffffff.md
+run_json "$WORK/pk.json" --ledger-dir pk="$WORK/pk/docs/pipeline-run"
+check "17 다른 판정 근거는 세지 않는다" "$(jq -c '.repos[0].resolve_skipped_by_patch_id' "$WORK/pk.json")" '{"all":0,"merged":0}'
+J="$WORK/t.json"
+run_json "$J" --ledger-dir t="$T/docs/pipeline-run"
+check "17 대조군 — 패치동일 행이 없는 원장의 값은 0 이고 표에 줄이 없다" \
+  "$(jq -c '.repos[0].resolve_skipped_by_patch_id' "$J"):$(grep -c '^해소 리뷰 생략' "$WORK/out.txt")" '{"all":0,"merged":0}:0'
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

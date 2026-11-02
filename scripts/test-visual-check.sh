@@ -14,7 +14,30 @@
 #              and a body sentence are not; a commented-out reference is not
 #   scan bans  the seed's 마크업 items and a 스크립트 item are found under their
 #              own ids; a **금지 해제** id is skipped and named in the header;
-#              a malformed ban line is a usage error
+#              a malformed ban line is a usage error. Its N lines are read
+#              apart from token-undefined, which the fixture's undefined
+#              custom properties draw
+#   scan tokens  the token block and undefined custom properties:
+#              1 a screen with no block draws token-undefined once per name,
+#                without --tokens (the undefined.txt sample: every U line,
+#                no D line), exit 1
+#              2 a screen whose block equals tokens.css is clean with
+#                --tokens (exit 0) and draws token-color on its block lines
+#                without it
+#              3 one byte changed in the block → token-block on the opening
+#                line and the block lines' token-color back
+#              4 two blocks, no block, and an opening line whose `</style>`
+#                is glued to text → one token-block each; with two blocks no
+#                block line is exempt
+#              5 a tokens file with `url(https://…)` → external-ref stays
+#                although the block matches
+#              6 a tokens file holding `</style`, a missing tokens file, and a
+#                screen whose opening line is never followed by `</style` →
+#                exit 2 with the reason
+#              7 a name defined only through setProperty('--x', …) is not
+#                found; an undefined `var(--y, #fff)` draws token-undefined
+#                and token-color together
+#              8 the third header line in both forms
 #   scan leak  a `/*` inside a script or CSS string, a template string whose
 #              `${…}` holds another template, a script regex literal or
 #              a `//` comment glued to the token before it, a `</script>`
@@ -76,7 +99,7 @@ SEED="$repo_root/plugins/cc-cmds/orchestrator/visual-bans.seed"
 fixtures="$repo_root/tests/fixtures/visual-check"
 REFS="$repo_root/plugins/cc-cmds/skills/visual/references/sidecar.md"
 
-for need in "$CHECK" "$CONFIG" "$SEED" "$fixtures/v11.txt" "$fixtures/v32.txt" "$fixtures/refs.txt" "$fixtures/bans.txt" "$fixtures/leak.txt" "$fixtures/hangul.txt"; do
+for need in "$CHECK" "$CONFIG" "$SEED" "$fixtures/v11.txt" "$fixtures/v32.txt" "$fixtures/refs.txt" "$fixtures/bans.txt" "$fixtures/leak.txt" "$fixtures/hangul.txt" "$fixtures/tokens.css" "$fixtures/undefined.txt"; do
   if [[ ! -f "$need" ]]; then
     echo "test-visual-check: missing $need" >&2
     exit 2
@@ -193,13 +216,16 @@ cp "$SEED" "$T/bans.list"
 printf '%s\n' 'local-storage | 스크립트 | 브라우저 저장소에 상태를 둔다 | localStorage\.' >> "$T/bans.list"
 rc=$(run_scan "$T/bans.out" "$T/bans.html" --bans "$T/bans.list")
 [ "$rc" = 1 ] && pass "금지 목록 적중이 있으면 종료 1" || fail "금지 목록 scan 종료 ${rc} (기대 1)"
+# The fixture's N lines reference custom properties it never defines; that
+# rule is the scan tokens case's to judge, so the N lines are read without it.
+{ grep -vE '^token-undefined ' "$T/bans.out" || true; } > "$T/bans.nontu"
 n=0
 while IFS= read -r label; do
   n=$((n + 1))
   case "$label" in
     -) ;;
     N)
-      if grep -qE "^[^ ]+ [^ ]*:${n} " "$T/bans.out"; then fail "금지 목록 비적중 줄 ${n} 이 잡혔다"; else pass "금지 목록 비적중 줄 ${n}"; fi
+      if grep -qE "^[^ ]+ [^ ]*:${n} " "$T/bans.nontu"; then fail "금지 목록 비적중 줄 ${n} 이 잡혔다"; else pass "금지 목록 비적중 줄 ${n}"; fi
       ;;
     *)
       if grep -qE "^${label} [^ ]*:${n} " "$T/bans.out"; then pass "금지 항목 ${label} 이 줄 ${n} 에서 잡힌다"; else fail "금지 항목 ${label} 이 줄 ${n} 에서 잡히지 않았다"; fi
@@ -222,6 +248,101 @@ rc=0; bash "$CHECK" scan >/dev/null 2>&1 || rc=$?
 printf '%s\n' '<!doctype html>' '<p>plain</p>' > "$T/clean.html"
 rc=$(run_scan "$T/clean.out" "$T/clean.html")
 [ "$rc" = 0 ] && pass "발견이 없으면 종료 0" || fail "발견 없는 화면 종료 ${rc} (기대 0)"
+
+# --- scan tokens --------------------------------------------------------------
+TOK="$fixtures/tokens.css"
+# line_set <rule> <scan output> — the rule's line numbers on one line.
+line_set() { lines_of "$1" "$2" | tr '\n' ' ' | sed 's/ $//'; }
+rows_of() { { grep -E "^$1 " "$2" || true; } | grep -c . || true; }
+# tok_screen <out> <tokens file> <mode> — a screen whose head holds the token
+# block as <mode> says (one, two, changed, glued, noclose, none), then the
+# screen's own style that only uses var(--…). With the fixture tokens file a
+# one-block screen has the block on lines 3–16.
+tok_screen() {
+  local out=$1 tok=$2 mode=$3
+  {
+    echo '<!doctype html>'
+    echo '<html><head>'
+    case "$mode" in
+      one|two) echo '<style data-cc-tokens>'; cat "$tok"; echo '</style>' ;;
+      changed) echo '<style data-cc-tokens>'; sed 's/#123456/#123457/' "$tok"; echo '</style>' ;;
+      glued) echo '<style data-cc-tokens>'; echo ':root { --color-bg: #123456; --color-fg: #f5f7fa; }</style>' ;;
+      noclose) echo '<style data-cc-tokens>'; cat "$tok" ;;
+    esac
+    if [ "$mode" = two ]; then echo '<style data-cc-tokens>'; cat "$tok"; echo '</style>'; fi
+    if [ "$mode" = glued ]; then
+      echo '<style>body { margin: 0; background: var(--color-bg); } p { color: var(--color-fg); }</style>'
+    elif [ "$mode" != noclose ]; then
+      echo '<style>'
+      echo 'body { margin: 0; background: var(--color-bg); }'
+      echo 'p { color: var(--color-fg); }'
+      echo '.x { background: var(--color-bg); }'
+      echo '</style>'
+    fi
+    echo '</head><body><p>x</p></body></html>'
+  } > "$out"
+}
+# 1 — the observed defect: no block, only var(--…) uses.
+materialize "$fixtures/undefined.txt" "$T/undef.html" "$T/undef.labels"
+rc=$(run_scan "$T/undef.out" "$T/undef.html")
+[ "$rc" = 1 ] && pass "tokens 1: 정의 없는 변수가 있으면 --tokens 없이도 종료 1" || fail "tokens 1: undefined.txt scan 종료 ${rc} (기대 1)"
+lines_of token-undefined "$T/undef.out" > "$T/undef.hit"
+got=$(tally "$T/undef.labels" "$T/undef.hit" U)
+[ "$got" = "5 5" ] && pass "tokens 1: 정의 없는 이름을 처음 참조한 줄마다 token-undefined (5)" || fail "tokens 1: U 줄 (전체 적중) = ${got}, 기대 5 5"
+got=$(tally "$T/undef.labels" "$T/undef.hit" D)
+[ "$got" = "7 0" ] && pass "tokens 1: 정의된 이름·둘째 이후 참조·마크업 속성·setProperty 정의는 지적하지 않는다 (7)" || fail "tokens 1: D 줄 (전체 오탐) = ${got}, 기대 7 0"
+tok_screen "$T/tk-none.html" "$TOK" none
+rc=$(run_scan "$T/tk-none.out" "$T/tk-none.html")
+got=$(line_set token-undefined "$T/tk-none.out")
+[ "$rc:$got" = "1:4 5" ] && pass "tokens 1: 블록 없는 화면은 이름마다 한 건 (줄 4·5, 종료 1)" || fail "tokens 1: 블록 없는 화면 = ${rc}:${got} (기대 1:4 5)"
+# 2 — the block filled from tokens.css.
+tok_screen "$T/tk-one.html" "$TOK" one
+rc=$(run_scan "$T/tk-one.out" "$T/tk-one.html" --tokens "$TOK")
+rows=$(grep -cvE '^# ' "$T/tk-one.out" || true)
+[ "$rc:$rows" = "0:0" ] && pass "tokens 2: 일치하는 블록을 담은 화면은 --tokens 로 발견 0, 종료 0" || fail "tokens 2: --tokens = ${rc}, 발견 ${rows}: $(grep -vE '^# ' "$T/tk-one.out" | head -n 3)"
+rc=$(run_scan "$T/tk-one.bare" "$T/tk-one.html")
+got=$(line_set token-color "$T/tk-one.bare")
+[ "$rc:$got" = "1:5 6 7 13 14" ] && pass "tokens 2: --tokens 없으면 블록 줄이 token-color 로 지적된다" || fail "tokens 2: --tokens 없음 = ${rc}:${got} (기대 1:5 6 7 13 14)"
+[ "$(rows_of token-undefined "$T/tk-one.bare")" = 0 ] && pass "tokens 2: 블록이 정의하므로 token-undefined 는 없다" || fail "tokens 2: 블록 있는 화면에 token-undefined"
+# 3 — one byte changed in the block.
+tok_screen "$T/tk-chg.html" "$TOK" changed
+rc=$(run_scan "$T/tk-chg.out" "$T/tk-chg.html" --tokens "$TOK")
+[ "$rc:$(line_set token-block "$T/tk-chg.out")" = "1:3" ] && pass "tokens 3: 한 바이트 다른 블록은 여는 줄에 token-block" || fail "tokens 3: token-block = ${rc}:$(line_set token-block "$T/tk-chg.out") (기대 1:3)"
+[ "$(line_set token-color "$T/tk-chg.out")" = "5 6 7 13 14" ] && pass "tokens 3: 다른 블록의 줄은 면제되지 않는다" || fail "tokens 3: token-color = $(line_set token-color "$T/tk-chg.out")"
+# 4 — two blocks, no block, an opening line with no closing line.
+tok_screen "$T/tk-two.html" "$TOK" two
+rc=$(run_scan "$T/tk-two.out" "$T/tk-two.html" --tokens "$TOK")
+[ "$(rows_of token-block "$T/tk-two.out"):$(line_set token-block "$T/tk-two.out")" = "1:17" ] && pass "tokens 4: 블록 둘은 둘째 여는 줄에 token-block 한 건" || fail "tokens 4: 블록 둘 = $(line_set token-block "$T/tk-two.out") (기대 17)"
+[ "$(line_set token-color "$T/tk-two.out")" = "5 6 7 13 14 19 20 21 27 28" ] && pass "tokens 4: 블록이 둘이면 어느 블록 줄도 면제되지 않는다" || fail "tokens 4: 블록 둘 token-color = $(line_set token-color "$T/tk-two.out")"
+rc=$(run_scan "$T/tk-none.tok" "$T/tk-none.html" --tokens "$TOK")
+[ "$(rows_of token-block "$T/tk-none.tok"):$(line_set token-block "$T/tk-none.tok")" = "1:1" ] && pass "tokens 4: 블록 없는 화면은 1행에 token-block 한 건" || fail "tokens 4: 블록 없음 = $(line_set token-block "$T/tk-none.tok") (기대 1)"
+tok_screen "$T/tk-glued.html" "$TOK" glued
+rc=$(run_scan "$T/tk-glued.out" "$T/tk-glued.html" --tokens "$TOK")
+[ "$(rows_of token-block "$T/tk-glued.out"):$(line_set token-block "$T/tk-glued.out")" = "1:1" ] && pass "tokens 4: 닫는 줄 없는 여는 줄은 블록이 아니다 (1행에 token-block 한 건)" || fail "tokens 4: 붙은 닫는 태그 = $(line_set token-block "$T/tk-glued.out") (기대 1)"
+# 5 — an outside reference in the tokens file stays a finding.
+{ cat "$TOK"; echo ':root { --img-hero: url(https://cdn.example.com/a.png); }'; } > "$T/tok-url.css"
+tok_screen "$T/tk-url.html" "$T/tok-url.css" one
+rc=$(run_scan "$T/tk-url.out" "$T/tk-url.html" --tokens "$T/tok-url.css")
+[ "$rc:$(rows_of token-block "$T/tk-url.out"):$(line_set external-ref "$T/tk-url.out")" = "1:0:16" ] && pass "tokens 5: 블록이 일치해도 토큰 파일의 url() 은 external-ref" || fail "tokens 5: = ${rc}:$(rows_of token-block "$T/tk-url.out"):$(line_set external-ref "$T/tk-url.out") (기대 1:0:16)"
+# 6 — input errors are exit 2 with the reason.
+{ cat "$TOK"; echo '/* </STYLE> */'; } > "$T/tok-bad.css"
+rc=$(run_scan "$T/tk-bad.out" "$T/tk-one.html" --tokens "$T/tok-bad.css")
+[ "$rc" = 2 ] && grep -qF '</style 를 담아' "$T/tk-bad.out.err" && pass "tokens 6: </style 를 담은 토큰 파일은 종료 2 와 사유" || fail "tokens 6: </style 토큰 파일 = ${rc} $(cat "$T/tk-bad.out.err")"
+rc=$(run_scan "$T/tk-miss.out" "$T/tk-one.html" --tokens "$T/no-such-tokens.css")
+[ "$rc" = 2 ] && grep -qF '토큰 파일이 없다' "$T/tk-miss.out.err" && pass "tokens 6: 없는 토큰 파일은 종료 2 와 사유" || fail "tokens 6: 없는 토큰 파일 = ${rc} $(cat "$T/tk-miss.out.err")"
+tok_screen "$T/tk-open.html" "$TOK" noclose
+rc=$(run_scan "$T/tk-open.out" "$T/tk-open.html" --tokens "$TOK")
+[ "$rc" = 2 ] && grep -qF '<style> 이 닫히지 않았다' "$T/tk-open.out.err" && pass "tokens 6: 여는 줄 뒤에 </style 이 없는 화면은 종료 2 와 사유" || fail "tokens 6: 닫히지 않은 블록 = ${rc} $(cat "$T/tk-open.out.err")"
+# 7 — setProperty defines; a fallback does not.
+printf '%s\n' '<!doctype html>' '<style>.a { background: var(--x); }' '.b { color: var(--y, #fff); }' '</style>' \
+  "<script>document.documentElement.style.setProperty('--x', v);</script>" > "$T/tk-js.html"
+rc=$(run_scan "$T/tk-js.out" "$T/tk-js.html")
+[ "$(line_set token-undefined "$T/tk-js.out")" = 3 ] && pass "tokens 7: setProperty 로 정한 이름은 지적하지 않고, 대체값 있는 정의 없는 이름은 지적한다" || fail "tokens 7: token-undefined = $(line_set token-undefined "$T/tk-js.out") (기대 3)"
+grep -qE '^token-color [^ ]*:3 ' "$T/tk-js.out" && pass "tokens 7: 같은 줄의 대체값 리터럴은 token-color 로도 나온다" || fail "tokens 7: 3행 token-color 가 없다"
+# 8 — the third header line.
+grep -qxF "# 토큰 블록: $TOK 와 대조" "$T/tk-one.out" && pass "tokens 8: --tokens 가 있으면 대조한 토큰 파일을 머리에 적는다" || fail "tokens 8: 머리 셋째 줄 = $(sed -n 3p "$T/tk-one.out")"
+grep -qxF '# 토큰 블록: 대조 안 함 (--tokens 없음)' "$T/tk-none.out" && pass "tokens 8: --tokens 가 없으면 대조 안 함을 머리에 적는다" || fail "tokens 8: 머리 셋째 줄 = $(sed -n 3p "$T/tk-none.out")"
+[ "$(sed -n 3p "$T/tk-none.out")" = '# 토큰 블록: 대조 안 함 (--tokens 없음)' ] && pass "tokens 8: 토큰 블록 줄은 머리 셋째 줄이다" || fail "tokens 8: 셋째 줄이 토큰 블록 줄이 아니다"
 
 # --- scan leak ----------------------------------------------------------------
 materialize "$fixtures/leak.txt" "$T/leak.html" "$T/leak.labels"

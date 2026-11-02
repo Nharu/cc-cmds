@@ -11,7 +11,11 @@
 # Cases:
 #   argv       --headless, --proxy-server=127.0.0.1:9 and a --screenshot= path
 #              outside every git tree; the first name in lookup order is the
-#              one called
+#              one called; the file:// URL is the path percent-encoded
+#   url encoding  a screen under a directory whose name holds `#`, a space
+#              and Hangul is opened at a URL with `%23`, `%20` and the
+#              Hangul bytes as upper-case `%XX`, equal to Python's
+#              urllib.parse.quote of the path
 #   timeout    a browser that never exits is killed at the time limit and the
 #              result is `비교 안 함`
 #   out guard  an --out inside a git tree is a usage error
@@ -21,8 +25,16 @@
 #   no index   --root without index.html is `비교 안 함`
 #   no Chrome  nothing on PATH and no macOS application path is
 #              `비교 안 함 — Chrome 없음`
+#   real render  with the real Chrome (no stub on PATH): a screen whose head
+#              holds the token block filled from the visual-check fixture
+#              tokens.css (first checked clean by `visual-check.sh scan
+#              --tokens`) and the same screen without the block are captured;
+#              the decoded PNG pixel is the background token's colour for the
+#              first and white for the second
 #
-# python3 and lsof are required; there is no skipping branch.
+# python3, lsof and a real Chrome are required; there is no skipping branch.
+# When the helper finds no Chrome for the real render case, the suite ends
+# with exit 2; any other `비교 안 함` there is a failure.
 #
 # Usage:
 #   bash scripts/test-visual-capture.sh
@@ -30,7 +42,7 @@
 # Exit codes:
 #   0 — every case passed
 #   1 — at least one case failed
-#   2 — the suite could not run (missing helper, python3 or lsof)
+#   2 — the suite could not run (missing helper, python3, lsof or Chrome)
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`; BSD
 # and GNU userland alike.
@@ -40,8 +52,12 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 CAPTURE="$repo_root/plugins/cc-cmds/orchestrator/visual-capture.sh"
+CHECK="$repo_root/plugins/cc-cmds/orchestrator/visual-check.sh"
+TOKENS="$repo_root/tests/fixtures/visual-check/tokens.css"
 
-[[ -f "$CAPTURE" ]] || { echo "test-visual-capture: missing $CAPTURE" >&2; exit 2; }
+for need in "$CAPTURE" "$CHECK" "$TOKENS"; do
+  [[ -f "$need" ]] || { echo "test-visual-capture: missing $need" >&2; exit 2; }
+done
 for tool in python3 lsof; do
   command -v "$tool" >/dev/null 2>&1 || { echo "test-visual-capture: $tool 이 없다 — 이 시험은 건너뛰지 않는다" >&2; exit 2; }
 done
@@ -84,6 +100,12 @@ done
 printf '%s\n' '<!doctype html><p>ref</p>' > "$T/site/screen.html"
 LOG="$T/chrome.log"
 
+# file_url <path> — the URL the helper must open, by an independent encoder:
+# letters, digits and `_ . - ~` (Python's always-safe set) and `/` stay.
+file_url() {
+  python3 -I -c 'import os, sys, urllib.parse as p; print("file://" + p.quote(os.fsencode(sys.argv[1]), safe="/"))' "$1"
+}
+
 cap() { # <mode> <args...> — output in $T/cap.out, status in $RC
   local mode=$1
   shift
@@ -102,9 +124,22 @@ grep -qxF 'arg=--headless=new' "$LOG" && pass "argv 에 --headless=new" || fail 
 grep -qxF 'arg=--proxy-server=127.0.0.1:9' "$LOG" && pass "argv 에 --proxy-server=127.0.0.1:9" || fail "argv 에 닫힌 프록시가 없다"
 grep -qxF "arg=--screenshot=$T/out/ref.png" "$LOG" && pass "argv 의 --screenshot= 은 트리 밖 --out 아래" || fail "argv 의 --screenshot= = $(grep -- '--screenshot=' "$LOG")"
 grep -qxF 'arg=--window-size=800,600' "$LOG" && pass "argv 의 --window-size 는 --size 를 따른다" || fail "argv 의 --window-size = $(grep -- '--window-size' "$LOG")"
-grep -qxF "arg=file://$T/site/screen.html" "$LOG" && pass "ref 는 file:// 로 연다" || fail "ref URL = $(tail -n 1 "$LOG")"
+grep -qxF "arg=$(file_url "$T/site/screen.html")" "$LOG" && pass "ref 는 file:// 로 연다" || fail "ref URL = $(tail -n 1 "$LOG")"
 prof=$(sed -nE 's/^arg=--user-data-dir=(.*)$/\1/p' "$LOG")
 [ -n "$prof" ] && [ ! -e "$prof" ] && pass "버린 프로필 디렉터리는 끝나면 지운다" || fail "프로필 디렉터리가 남았다: ${prof}"
+
+# --- url encoding -------------------------------------------------------------
+odd="$T/x#1 한"
+mkdir -p "$odd"
+cp "$T/site/screen.html" "$odd/screen.html"
+cap ok ref "$odd/screen.html" --out "$T/out"
+url=$(sed -nE 's/^arg=(file:.*)$/\1/p' "$LOG" | tail -n 1)
+[ "$RC" = 0 ] && pass "url encoding: # 과 공백이 든 디렉터리의 화면도 찍는다" || fail "url encoding = ${RC} $(cat "$T/cap.out")"
+case "$url" in
+  *'/x%231%20%ED%95%9C/screen.html') pass "url encoding: # → %23, 공백 → %20, 한글은 바이트마다 대문자 %XX" ;;
+  *) fail "url encoding: URL = ${url}" ;;
+esac
+[ "$url" = "$(file_url "$odd/screen.html")" ] && pass "url encoding: 독립 인코더(urllib.parse.quote)와 같은 주소" || fail "url encoding: ${url} ≠ $(file_url "$odd/screen.html")"
 
 # --- timeout ------------------------------------------------------------------
 cap hang ref "$T/site/screen.html" --out "$T/out" --timeout 1
@@ -164,6 +199,97 @@ sed "s|^readonly MAC_CHROME=.*|readonly MAC_CHROME='$T/nochrome/Google Chrome'|"
 RC=0
 env PATH="$T/bare" "$T/bare/bash" "$T/capture-nomac.sh" ref "$T/site/screen.html" --out "$T/out" > "$T/cap.out" 2>&1 || RC=$?
 [ "$RC" = 1 ] && grep -qxF '비교 안 함 — Chrome 없음' "$T/cap.out" && pass "PATH 에도 macOS 경로에도 없으면 비교 안 함 — Chrome 없음" || fail "Chrome 없음 = ${RC} $(cat "$T/cap.out")"
+
+# --- real render --------------------------------------------------------------
+# The real browser, found the way the helper finds it: no stub on PATH. The
+# screen with the token block must paint its background with the tokens file's
+# --color-bg (#123456 in the light theme); without the block the variable is
+# empty and the page stays white.
+cat > "$T/pixel.py" <<'PY'
+import struct, sys, zlib
+path, x, y = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+data = open(path, 'rb').read()
+if data[:8] != b'\x89PNG\r\n\x1a\n':
+    sys.exit('PNG 가 아니다')
+pos, idat = 8, b''
+w = h = depth = ctype = inter = None
+while pos < len(data):
+    n, kind = struct.unpack('>I4s', data[pos:pos + 8])
+    body = data[pos + 8:pos + 8 + n]
+    pos += 12 + n
+    if kind == b'IHDR':
+        w, h, depth, ctype, _, _, inter = struct.unpack('>IIBBBBB', body)
+    elif kind == b'IDAT':
+        idat += body
+    elif kind == b'IEND':
+        break
+if depth != 8 or ctype not in (2, 6) or inter != 0:
+    sys.exit('읽지 못하는 PNG 형식 (깊이 %s, 색 형식 %s, 비월 %s)' % (depth, ctype, inter))
+if not (0 <= x < w and 0 <= y < h):
+    sys.exit('좌표가 그림 밖이다 (%dx%d)' % (w, h))
+bpp = 3 if ctype == 2 else 4
+raw = zlib.decompress(idat)
+stride = w * bpp
+prev = bytearray(stride)
+i = 0
+for _ in range(y + 1):
+    f = raw[i]
+    line = bytearray(raw[i + 1:i + 1 + stride])
+    i += 1 + stride
+    for k in range(stride):
+        a = line[k - bpp] if k >= bpp else 0
+        b = prev[k]
+        c = prev[k - bpp] if k >= bpp else 0
+        if f == 1:
+            line[k] = (line[k] + a) & 255
+        elif f == 2:
+            line[k] = (line[k] + b) & 255
+        elif f == 3:
+            line[k] = (line[k] + (a + b) // 2) & 255
+        elif f == 4:
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            line[k] = (line[k] + (a if pa <= pb and pa <= pc else (b if pb <= pc else c))) & 255
+    prev = line
+print('#%02x%02x%02x' % tuple(prev[x * bpp:x * bpp + 3]))
+PY
+mkdir -p "$T/real" "$T/real-out"
+real_screen() { # <out> <with|without>
+  {
+    echo '<!doctype html>'
+    echo '<html><head>'
+    if [ "$2" = with ]; then echo '<style data-cc-tokens>'; cat "$TOKENS"; echo '</style>'; fi
+    echo '<style>'
+    echo 'html, body { margin: 0; height: 100%; background: var(--color-bg); }'
+    echo '</style>'
+    echo '</head><body></body></html>'
+  } > "$1"
+}
+real_screen "$T/real/with.html" with
+real_screen "$T/real/without.html" without
+rc=0; bash "$CHECK" scan "$T/real/with.html" --tokens "$TOKENS" > "$T/real/scan.out" 2>&1 || rc=$?
+[ "$rc" = 0 ] && pass "실제 렌더 화면은 visual-check.sh scan --tokens 에서 발견 0" || fail "실제 렌더 화면 scan --tokens = ${rc}: $(grep -vE '^# ' "$T/real/scan.out" | head -n 3)"
+# real_pixel <screen> <png name> — capture with the real browser and set PX to
+# the pixel at (200,150) of a 400x300 viewport, or to the failure; the suite
+# ends with exit 2 when the helper finds no Chrome.
+real_pixel() {
+  local rc=0
+  bash "$CAPTURE" ref "$1" --out "$T/real-out" --size 400x300 --timeout 60 > "$T/real/cap.out" 2>&1 || rc=$?
+  if grep -qxF '비교 안 함 — Chrome 없음' "$T/real/cap.out"; then
+    echo "test-visual-capture: 실제 Chrome 이 없다 — real render 사례는 건너뛰지 않는다" >&2
+    exit 2
+  fi
+  if [ "$rc" != 0 ]; then
+    PX="캡처 실패 ${rc}: $(cat "$T/real/cap.out")"
+    return 0
+  fi
+  mv "$T/real-out/ref.png" "$T/real-out/$2"
+  PX=$(python3 -I "$T/pixel.py" "$T/real-out/$2" 200 150 2>&1 || true)
+}
+real_pixel "$T/real/with.html" with.png
+[ "$PX" = '#123456' ] && pass "real render: 토큰 블록을 담은 화면은 배경 토큰 색 (#123456)" || fail "real render: 블록 있는 화면 화소 = ${PX} (기대 #123456)"
+real_pixel "$T/real/without.html" without.png
+[ "$PX" = '#ffffff' ] && pass "real render: 토큰 블록을 뺀 화면은 흰색 (#ffffff)" || fail "real render: 블록 없는 화면 화소 = ${PX} (기대 #ffffff)"
 
 echo
 echo "passed=${passed} failures=${failures}"

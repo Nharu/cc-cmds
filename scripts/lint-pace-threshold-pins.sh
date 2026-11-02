@@ -27,6 +27,15 @@
 #      (fleet.sh not declaring FLEET_SESSION_WINDOW_PCT_MAX is exit 2)
 #   3  every consumer mention `<NAME>=<n>` or `<NAME> (<n>s)` agrees      [fail]
 #   4  every consumer file exists                                          [fail]
+#   5  the two thresholds rule 1 does not collect — gate.sh's
+#      GATE_MASTER_STALE_SECONDS and repair.sh's REPAIR_DEADLINE_SECONDS —
+#      are each one `readonly <NAME>=<digits>` line                       [fail]
+#   6  the master reading's timing holds together:
+#      GATE_MASTER_STALE_SECONDS >= 3 x (FLEET_MASTER_INTERVAL_SECONDS +
+#      FLEET_MASTER_BUDGET_SECONDS), so three missed rounds still read
+#      fresh, and FLEET_MASTER_SKIP_SECONDS x 2 <= FLEET_MASTER_INTERVAL_SECONDS,
+#      so a pair is never skipped for a whole period                       [fail]
+#      (fleet.sh not declaring one of the three FLEET_MASTER_* is exit 2)
 #
 # Rule 4 is a FAIL and not a skip, unlike the watcher lint. The watcher lint
 # skips an absent consumer because its consumers arrived one at a time; here
@@ -40,7 +49,7 @@
 #   bash scripts/lint-pace-threshold-pins.sh
 #
 # Env overrides (fixture runner):
-#   ORCH_ROOT=<dir>     # directory holding fleet.sh, gate.sh, run.sh
+#   ORCH_ROOT=<dir>     # directory holding fleet.sh, gate.sh, run.sh, repair.sh
 #   SKILLS_ROOT=<dir>   # skills root holding autopilot/SKILL.md and _common/pipeline-sidecar.md
 #
 # Exit codes:
@@ -59,6 +68,7 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 FLEET="$orch_root/fleet.sh"
 GATE="$orch_root/gate.sh"
 RUN="$orch_root/run.sh"
+REPAIR="$orch_root/repair.sh"
 CONSUMERS=(
   "$skills_root/autopilot/SKILL.md"
   "$skills_root/_common/pipeline-sidecar.md"
@@ -95,7 +105,7 @@ value_of() {
 }
 
 # --- Rule 4 first: every consumer exists ------------------------------------
-for c in "${CONSUMERS[@]}" "$RUN"; do
+for c in "${CONSUMERS[@]}" "$RUN" "$REPAIR"; do
   if [[ ! -f "$c" ]]; then
     echo "FAIL: 소비 파일 부재 — $c (부재는 SKIP 이 아니라 FAIL 이다: 이 목록과 함께 옮기지 않은 이동·삭제)" >&2
     fail=1
@@ -163,6 +173,49 @@ check_session_mirror() {
 }
 check_session_mirror "$RUN" "run.sh" RUN_PACE_SESSION_WINDOW_PCT_MAX
 
+# --- Rule 5: the named thresholds outside fleet.sh ---------------------------
+# Rule 1 collects `FLEET_*` from fleet.sh alone, so the gate's freshness horizon
+# for the master reading and the repair run's deadline are held here by name.
+# The value they must hold is rule 6's for the first, and the design's for the
+# second; this rule makes each one line a reader can find.
+named_value() {
+  # named_value <file> <label> <var> — the one declared value, or nothing
+  # after a FAIL line. It runs in a command substitution, so the caller sets
+  # `fail` on an empty result.
+  local f="$1" label="$2" var="$3" decls n
+  decls=$(LC_ALL=C sed -n "s/^readonly $var=\([0-9][0-9]*\)\([[:space:]].*\)\{0,1\}$/\1/p" "$f" || true)
+  n=0
+  if [[ -n "$decls" ]]; then n=$(printf '%s\n' "$decls" | grep -c '' || true); fi
+  if [[ "$n" != "1" ]]; then
+    echo "FAIL: $label — readonly $var=<n> 선언이 정확히 1개여야 하는데 ${n}개다" >&2
+    return 0
+  fi
+  printf '%s' "$decls"
+}
+master_stale=$(named_value "$GATE" "gate.sh" GATE_MASTER_STALE_SECONDS)
+[[ -n "$master_stale" ]] || fail=1
+repair_deadline=$(named_value "$REPAIR" "repair.sh" REPAIR_DEADLINE_SECONDS)
+[[ -n "$repair_deadline" ]] || fail=1
+
+# --- Rule 6: the master reading's timing -------------------------------------
+m_interval=$(value_of FLEET_MASTER_INTERVAL_SECONDS)
+m_budget=$(value_of FLEET_MASTER_BUDGET_SECONDS)
+m_skip=$(value_of FLEET_MASTER_SKIP_SECONDS)
+if [[ -z "$m_interval" || -z "$m_budget" || -z "$m_skip" ]]; then
+  echo "FAIL: fleet.sh — FLEET_MASTER_INTERVAL_SECONDS·FLEET_MASTER_BUDGET_SECONDS·FLEET_MASTER_SKIP_SECONDS 중 선언이 없는 것이 있다; master 판독의 주기 관계를 잴 수 없다" >&2
+  exit 2
+fi
+if [[ -n "$master_stale" ]] && (( master_stale < 3 * (m_interval + m_budget) )); then
+  echo "FAIL: gate.sh — GATE_MASTER_STALE_SECONDS=$master_stale 이 3 x (FLEET_MASTER_INTERVAL_SECONDS $m_interval + FLEET_MASTER_BUDGET_SECONDS $m_budget) = $(( 3 * (m_interval + m_budget) )) 보다 작다" >&2
+  echo "       회차 셋을 놓치기 전에 판독이 낡아, 살아 있는 관측을 게이트가 부재로 읽는다" >&2
+  fail=1
+fi
+if (( m_skip * 2 > m_interval )); then
+  echo "FAIL: fleet.sh — FLEET_MASTER_SKIP_SECONDS=$m_skip 의 두 배가 FLEET_MASTER_INTERVAL_SECONDS=$m_interval 보다 크다" >&2
+  echo "       한 회차 늦게 시작한 판독이 다음 회차에도 건너뛰어져, 쌍 하나가 주기 하나를 통째로 빠진다" >&2
+  fail=1
+fi
+
 # --- Rule 3: every mention in every consumer agrees --------------------------
 # Two spellings are bound to a name: `NAME=<n>` and `NAME` followed on the same
 # line by `(<n>s)` / `(<n>)`. A bare number in prose (`3 x (55 + 5) = 180s`) is
@@ -208,5 +261,5 @@ if [[ "$fail" != "0" ]]; then
   exit 1
 fi
 
-echo "OK:   pace threshold pins — 선언 ${ndecl}개, 거울 3개, 소비 문서 기재 ${mentions_total}건이 fleet.sh 선언과 축자로 일치"
+echo "OK:   pace threshold pins — 선언 ${ndecl}개, 거울 3개, 소비 문서 기재 ${mentions_total}건이 fleet.sh 선언과 축자로 일치, 이름 핀 2개와 master 주기 관계 2개 통과"
 exit 0

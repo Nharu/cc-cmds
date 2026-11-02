@@ -1,0 +1,22 @@
+-|<!doctype html>
+-|<html><head>
+-|<style>
+U|.card { background: var(--color-surface); }
+D|.card:hover { background: var(--color-surface); }
+D|.title { color: var(--color-ink); }
+U|.pad { padding: var(--space-3, var(--space-4)); }
+U|.ink { --color-ink: var(--color-base-ink); }
+-|@property --angle { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+D|.spin { rotate: var(--angle); }
+-|</style>
+-|</head><body>
+D|<p style="--gap-x: 1rem; margin: var(--gap-x)">a</p>
+U|<p style="color: var(--color-muted, black)">b</p>
+D|<p style="color: var(--color-muted)">c</p>
+D|<svg><rect fill="var(--color-fill)"/></svg>
+-|<script>
+-|document.documentElement.style.setProperty('--color-dyn', base);
+D|el.style.color = 'var(--color-dyn)';
+U|el.style.borderColor = "var(--color-edge)";
+-|</script>
+-|</body></html>

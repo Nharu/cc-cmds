@@ -473,6 +473,7 @@ manifest_snapshot_take() {
   #   AC <row>     every `- \`적용 프로브 코드\`` row anywhere, in order
   #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
+  #   RE <row>     every `- \`수리 사건\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -509,6 +510,7 @@ $(LC_ALL=C awk '
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
     index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
+    index($0, "- `수리 사건`") == 1 { print "RE\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -988,6 +990,11 @@ manifest_plugin_allow_rows() {
   grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_repair_rows() {
+  if manifest_memo_on; then manifest_memo_all "RE	"; return 0; fi
+  grep -E '^- `수리 사건`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -1111,6 +1118,13 @@ binding_set_bytes() {
     # load a plugin no person accepted at kickoff. Whole-file scan, zero bytes
     # when absent, so a manifest written before this row existed keeps its digest.
     manifest_plugin_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/pluginallow\t/'
+    # THE `수리 사건` ROW IS IN THE FROZEN SET, on the same terms. It marks a run
+    # the plugin started on its default consent, and the gate holds such a run's
+    # authorization to that consent's bounds only while the row is there; a row
+    # any act could rewrite or drop mid-run would move the run out of those
+    # bounds or onto another event. Whole-file scan, zero bytes when absent, so a
+    # manifest written before this row existed keeps its digest.
+    manifest_repair_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/repair\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1474,7 +1488,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1919,6 +1933,23 @@ EOF
   done <<EOF
 $pa_rows
 EOF
+
+  # 20b — the `수리 사건` row: the event a repair run fixes, written by the
+  # plugin's renderer and read by position. At most one — a run fixes one
+  # event — and exactly five cells, the reading the gate's reader assumes: a
+  # row of another width would be skipped there and leave the run checked as
+  # a person's run while this check had passed it.
+  local re_rows re_row re_n=0
+  re_rows=$(manifest_repair_rows)
+  while IFS= read -r re_row; do
+    [ -n "$re_row" ] || continue
+    re_n=$((re_n + 1))
+    [ "$(printf '%s' "$re_row" | awk -F'|' '{ print NF }')" = "5" ] \
+      || die "「수리 사건」 행의 칸이 다섯이 아닙니다 — 받는 형태는 \`- \`수리 사건\` | <slug> | <베이스 브랜치> | <사건 id> | <서명 sha256>\` 입니다: $re_row"
+  done <<EOF
+$re_rows
+EOF
+  [ "$re_n" -le 1 ] || die "「수리 사건」 행이 ${re_n}개입니다 — 많아야 하나입니다"
 
   # 21 — the entry judgment's structure, for a plan that carries one. The
   # checker beside the entry prompt asserts it: a reason for every `team-4`
@@ -6702,10 +6733,12 @@ stage_kind_of() {
 # functions; a copy in the gate would let one kind run at two efforts depending
 # on who launched it. Design, reconverge and audit get `high`; every other kind,
 # the three judgment calls among them, gets `medium`. The model is `opus` for
-# every kind but the shift — the family alias, so the harness resolves it to the
-# current Opus. The shift gets `sonnet` unless `CC_ORCH_SHIFT_MODEL` names
-# `sonnet` or `opus`; any other value of that switch is ignored, and no other
-# kind reads it.
+# every kind but the shift and the run-end attention seat — the family alias,
+# so the harness resolves it to the current Opus. The shift gets `sonnet` unless
+# `CC_ORCH_SHIFT_MODEL` names `sonnet` or `opus`; any other value of that switch
+# is ignored, and no other kind reads it. The attention seat
+# (`attention-review`) always gets `sonnet`: it re-reads what the `opus` stages
+# decided, so it is a different model from the one whose work it reads.
 #
 # Two switches, each dropping only its own half. `CC_ORCH_STAGE_EFFORT=off`
 # drops `--effort`; `CC_ORCH_STAGE_EFFORT=<kind>:<level>[,…]` overrides the
@@ -6714,6 +6747,10 @@ stage_kind_of() {
 # drops `--model` for every kind, the shift included; any other value is
 # ignored, because a per-kind model for the stages is not a setting this table
 # offers.
+#
+# The prompt cache lifetime is one value for every kind, the shift and the
+# judgment calls included: `5m`, unless `CC_ORCH_PROMPT_CACHE_TTL` names `1h`,
+# or `auto` to leave it to the CLI's own rule. Any other value is ignored.
 stage_effort_of() {
   # stage_effort_of <kind> — the level, or nothing when the switch is off.
   local kind="$1" sw="${CC_ORCH_STAGE_EFFORT:-}" v rest item
@@ -6739,9 +6776,14 @@ stage_effort_of() {
 }
 
 stage_model_of() {
-  # stage_model_of <kind> — `sonnet` or `opus` for the shift, `opus` for every
-  # other kind, or nothing when the switch is off.
+  # stage_model_of <kind> — `sonnet` or `opus` for the shift, `sonnet` for the
+  # attention seat, `opus` for every other kind, or nothing when the switch is
+  # off.
   if [ "${CC_ORCH_STAGE_MODEL:-}" = "off" ]; then
+    return 0
+  fi
+  if [ "${1:-}" = "attention-review" ]; then
+    printf 'sonnet'
     return 0
   fi
   if [ "${1:-}" = "shift" ]; then
@@ -6764,6 +6806,37 @@ stage_launch_flags() {
   [ -z "$e" ] || out="--effort $e"
   [ -z "$m" ] || out="${out:+$out }--model $m"
   printf '%s' "$out"
+}
+
+stage_cache_ttl_of() {
+  # stage_cache_ttl_of — the main conversation's prompt cache lifetime to hand
+  # the CLI: `5m` when the switch is unset, empty or `5m`, `1h` for `1h`, and
+  # nothing for `auto`. Any other value is ignored and reads as `5m`. There is
+  # no kind argument: every kind runs at the same lifetime.
+  case "${CC_ORCH_PROMPT_CACHE_TTL:-}" in
+    1h)   printf '1h' ;;
+    auto) : ;;
+    *)    printf '5m' ;;
+  esac
+}
+
+stage_cache_ttl_env() {
+  # stage_cache_ttl_env — exports `CLAUDE_CODE_PROMPT_CACHE_TTL` with the value
+  # above, or unsets it when there is none. Always returns 0.
+  #
+  # THE UNSET HALF IS WHAT MAKES `auto` TRUE. The launching process may have
+  # inherited the variable — a gate called from inside a stage carries that
+  # stage's `5m` — and leaving it in place would launch at the inherited value
+  # instead of the CLI's own rule. Call it only inside a process or subshell
+  # that exists to launch the CLI, so the caller's environment stays as it was.
+  local v
+  v=$(stage_cache_ttl_of)
+  if [ -n "$v" ]; then
+    export CLAUDE_CODE_PROMPT_CACHE_TTL="$v"
+  else
+    unset CLAUDE_CODE_PROMPT_CACHE_TTL
+  fi
+  return 0
 }
 
 stage_served_model_of() {
@@ -7024,7 +7097,7 @@ stage_spawn() {
   [ -z "$thp_par" ] || prompt="$prompt
 
 $thp_par"
-  ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
+  ( cd "$cwd" && stage_cache_ttl_env && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
       CC_PIPELINE_MANIFEST="$MANIFEST" CC_PIPELINE_TARGET="$(seg_alias "$stage" 2>/dev/null || home_alias)" \
@@ -9924,11 +9997,11 @@ APPLY_PARKED_RADIUS=""
 # ---------------------------------------------------------------------------
 PROMPT_DIR="$ORCH_DIR/prompts"
 
-readonly JUDGMENTS="segment-plan triage redesign-impact preauth-judge rekick-branch"
+readonly JUDGMENTS="segment-plan triage redesign-impact preauth-judge rekick-branch attention-review"
 
 # THE CLAUDE DESIGN TOOLS ARE REFUSED TO EVERY JUDGMENT CALL. A judgment call
 # runs with no `--settings`, so the stage settings' deny list does not reach it;
-# the names go on the call line itself, for all five names alike.
+# the names go on the call line itself, for all six names alike.
 readonly CLAUDE_DESIGN_TOOLS="DesignSync Artifact ArtifactComments ArtifactData"
 
 judgment_call() {
@@ -9952,9 +10025,14 @@ judgment_call() {
   # that argv could steer; every other judgment keeps the flags it always had.
   # The rekick branch judgment is the same case: its input carries review report
   # text no ledger row pins, verbatim.
+  #
+  # The run-end attention seat reads stage prose and transcript text verbatim,
+  # so it gets the same two flags and a spending cap besides: it runs after the
+  # run ended, outside every cost boundary the run had.
   local extra=()
   case "$name" in
     preauth-judge|rekick-branch) extra=(--tools "" --no-session-persistence) ;;
+    attention-review) extra=(--tools "" --no-session-persistence --max-budget-usd 2) ;;
   esac
 
   [ -f "$prompt" ] || { warn "판단 호출 프롬프트 부재: $prompt"; return 1; }
@@ -9963,16 +10041,20 @@ judgment_call() {
   # The call's name is its kind in the effort table. There is no stream here,
   # only the one result object, so the served model is read from its
   # `modelUsage` keys — a single-turn call spawns no team to muddy them.
+  # The cache lifetime is set in a subshell around the call, not by an `env`
+  # prefix: the prefix may be a shell function, and the caller's environment
+  # must not keep the value.
   local effort
   effort=$(stage_effort_of "$name")
-  "$@" "$CLI_BIN" -p "$(cat "$prompt")
+  ( stage_cache_ttl_env
+    "$@" "$CLI_BIN" -p "$(cat "$prompt")
 
 --- INPUT ---
 $(cat "$input")" \
-    --json-schema "$(cat "$schema")" --output-format json --strict-mcp-config \
-    --disallowedTools $CLAUDE_DESIGN_TOOLS \
-    ${extra[@]+"${extra[@]}"} \
-    $(stage_launch_flags "$name") \
+      --json-schema "$(cat "$schema")" --output-format json --strict-mcp-config \
+      --disallowedTools $CLAUDE_DESIGN_TOOLS \
+      ${extra[@]+"${extra[@]}"} \
+      $(stage_launch_flags "$name") ) \
     > "$out" 2>/dev/null || { warn "판단 호출 실패: $name"; return 1; }
   local served
   served=$(jq -r '(.modelUsage // {}) | keys | map(sub("\\[.*$"; "")) | unique | join(",")' "$out" 2>/dev/null || true)

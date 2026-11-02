@@ -237,6 +237,16 @@ if [ -n "${GATE_META_RESOLVED_HEAD:-}" ] && [ "$now" = "$GATE_META_RESOLVED_HEAD
   exit 0
 fi
 
+# patch-id 동일 — 리뷰된 HEAD 가 현재 HEAD 의 조상이고, 둘 각자의 머지
+# 베이스에서 잰 브랜치 디프가 릴리스 메타를 기계적으로 정규화한 뒤 같은
+# patch-id 를 가진다. 리뷰가 읽은 변경이 앞뒤 문맥의 내용까지 그대로이므로
+# 리뷰가 산다(줄 위치는 비교하지 않는다). 이 검사기는 원장을 읽지 않아
+# 베이스를 모르므로, 게이트가 증명한 HEAD 하나만 받아 지금 HEAD 와 같은지
+# 본다.
+if [ -n "${GATE_PATCH_SAME_HEAD:-}" ] && [ "$now" = "$GATE_PATCH_SAME_HEAD" ]; then
+  exit 0
+fi
+
 # 등급 3~5 — 전부 거부이며, 어느 것인지만 다르게 보고한다.
 if (cd "$wt" && git merge-base --is-ancestor "$reviewed" "$now" 2>/dev/null); then
   echo "rule refused: 리뷰-후-머지 — commits were added after the review (reviewed ${reviewed} → now ${now})" >&2
