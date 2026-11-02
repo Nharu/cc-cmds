@@ -3329,9 +3329,15 @@ gate_reach_disposition() {
     # The ordinal rides in `GATE_RF_PAIRN`, never in `GATE_RF_ROW`: that flag
     # puts the row value's fields on the ledger row and steers the brew and
     # docker branches below the cell, none of which a device act changes.
-    local _dk='-' _dshape=''
-    [ "$cls" = "표" ] && [ "$graded" = "트리밖쓰기" ] && _dk=$(gate_device_act_kind "$@")
-    if [ "$_dk" = "target" ] && ! gate_device_targets_listed "$@"; then
+    # The device checks read the act its launchers wrap (`_ds` is where it
+    # starts), as the grade and the reach do; the judgment below is handed the
+    # whole argv, launchers included.
+    local _dk='-' _dshape='' _ds=1
+    if [ "$cls" = "표" ] && [ "$graded" = "트리밖쓰기" ]; then
+      _ds=$(gate_device_act_start "$@")
+      _dk=$(gate_device_act_kind "${@:$_ds}")
+    fi
+    if [ "$_dk" = "target" ] && ! gate_device_targets_listed "${@:$_ds}"; then
       printf '기기전역\tforeign-device\t-'; return 0
     fi
     # A verbatim row opens even a destructive act: it names the act whole, the
@@ -3339,7 +3345,7 @@ gate_reach_disposition() {
     if [ "$Pv" = "1" ] && [ "$_ev" = "1" ]; then
       if [ "$_dk" != "-" ]; then
         [ "$Rn" != "-" ] && _dshape=$(gate_preauth_rows | sed -n "${Rn}p" | cut -f1)
-        gate_device_open_check "$_dk" "$_dshape" "$@"
+        gate_device_open_check "$_dk" "$_dshape" "${@:$_ds}"
         [ -z "$GATE_DEVICE_PARK" ] || { printf '기기전역\t%s\t-' "$GATE_DEVICE_PARK"; return 0; }
       fi
       return 0
@@ -3367,7 +3373,7 @@ gate_reach_disposition() {
       $'\t\topen/'*)
         _jk=${_jd##*/}
         _dshape=$(jq -r '.row // ""' "${RUN_DIR:-}/preauth-judge/$_jk.json" 2>/dev/null || true)
-        gate_device_open_check "$_dk" "$_dshape" "$@"
+        gate_device_open_check "$_dk" "$_dshape" "${@:$_ds}"
         if [ -n "$GATE_DEVICE_PARK" ]; then
           printf '기기전역\t%s\topen/%s' "$GATE_DEVICE_PARK" "$_jk"; return 0
         fi ;;
@@ -3505,6 +3511,51 @@ EOF
       if [ "$t" = "1" ] && [ "$s" = "1" ]; then printf 'create'; else printf -- '-'; fi ;;
     *) printf -- '-' ;;
   esac
+}
+
+gate_device_peel_argc() {
+  # gate_device_peel_argc <argv...> — the number of words left once the
+  # launchers in front of a device act are peeled: `lockf`, `command`, `time`,
+  # `env`, `timeout`, `nice`, `nohup` and `stdbuf`, through the same unwraps
+  # the grade, the reach and the destruction mark read past, so all four agree
+  # on which word is the command. Nothing is printed when a launcher's spelling
+  # cannot be read (an unknown option, no command after it). A count rather
+  # than the words themselves, so the answer survives the subshell
+  # `gate_unwrap_time` calls its resolver in.
+  local cmd="${1:-}"
+  cmd="${cmd##*/}"
+  case "$cmd" in
+    lockf|command|time|env|timeout|nice|nohup|stdbuf) shift ;;
+    *) printf '%s' "$#"; return 0 ;;
+  esac
+  case "$cmd" in
+    lockf)   gate_unwrap_lockf   gate_device_peel_argc '' '' "$@" ;;
+    command) gate_unwrap_command gate_device_peel_argc '' '' "$@" ;;
+    time)    gate_unwrap_time    gate_device_peel_argc '' '' "$@" ;;
+    env)     gate_unwrap_env     gate_device_peel_argc '' '' "$@" ;;
+    *)       gate_unwrap_wrapper "$cmd" gate_device_peel_argc '' '' "$@" ;;
+  esac
+}
+
+gate_device_act_start() {
+  # gate_device_act_start <argv...> — the position (from 1) of the word the
+  # device act starts at once its launchers are peeled, for `"${@:<n>}"`.
+  # 1 when there is no launcher or its spelling cannot be read: the argv is
+  # then read as it stands, which grades no launcher as a device tool.
+  local n
+  n=$(gate_device_peel_argc "$@")
+  case "$n" in ''|*[!0-9]*) printf '1'; return 0 ;; esac
+  if [ "$n" -lt 1 ] || [ "$n" -gt "$#" ]; then printf '1'; return 0; fi
+  printf '%s' "$(( $# - n + 1 ))"
+}
+
+gate_device_peeled_kind() {
+  # gate_device_peeled_kind <argv...> — `gate_device_act_kind` of the act its
+  # launchers wrap: `timeout 60 xcrun simctl erase <udid>` is a `target` act
+  # exactly as its bare spelling is.
+  local s
+  s=$(gate_device_act_start "$@")
+  gate_device_act_kind "${@:$s}"
 }
 
 gate_device_prefix() {
@@ -3796,19 +3847,25 @@ gate_run_device_aware() {
   # written before it starts, from the name and port its own argv carries,
   # and its serial is withdrawn when it ends, whatever its exit status: the
   # port is free again, and a later device on it is not this one.
-  local rc=0 out='' eserial=''
-  if [ "$(gate_device_act_kind "$@")" != create ]; then
+  #
+  # The act runs as it was given; its kind, its branch and its record are
+  # read from the act its launchers wrap, so `env X=1 xcrun simctl create …`
+  # is recorded as the bare spelling is.
+  local rc=0 out='' eserial='' s a0 a1 a2
+  s=$(gate_device_act_start "$@")
+  if [ "$(gate_device_act_kind "${@:$s}")" != create ]; then
     gate_run_readonly "$@" || rc=$?
     return "$rc"
   fi
-  if [ "${1##*/}" = emulator ]; then
-    gate_device_record /dev/null "$@"
+  a0="${*:$s:1}"; a1="${*:$((s + 1)):1}"; a2="${*:$((s + 2)):1}"
+  if [ "${a0##*/}" = emulator ]; then
+    gate_device_record /dev/null "${@:$s}"
     eserial=$GATE_DEVICE_RECORDED_ID
     gate_run_readonly "$@" || rc=$?
     [ -z "$eserial" ] || [ "$eserial" = "-" ] || gate_device_withdraw_serial "$eserial"
     return "$rc"
   fi
-  case "${1##*/} ${2:-} ${3:-}" in
+  case "${a0##*/} $a1 $a2" in
     'xcrun simctl create'|'xcrun simctl clone')
       out=$(mktemp "${TMPDIR:-/tmp}/gate-device-out.XXXXXX") || out='' ;;
   esac
@@ -3818,7 +3875,7 @@ gate_run_device_aware() {
   else
     gate_run_readonly "$@" || rc=$?
   fi
-  [ "$rc" = "0" ] && gate_device_record "${out:-/dev/null}" "$@"
+  [ "$rc" = "0" ] && gate_device_record "${out:-/dev/null}" "${@:$s}"
   [ -z "$out" ] || rm -f "$out"
   return "$rc"
 }
@@ -46000,11 +46057,15 @@ gate_verb_act() {
   # Whether this is a mobile device act the table graded as a write, and which
   # kind: the machine-global repair line prints no row for an act that makes or
   # boots a device, whose name no verbatim row can know.
+  # The launchers in front of the act are peeled first, as the cell peels them.
   GATE_PARK_DEVKIND='-'
-  case "$GATE_PARK_ARGV0" in
+  local _pds=1 _pdv=''
+  [ "$#" -gt 0 ] && _pds=$(gate_device_act_start "$@")
+  [ "$#" -gt 0 ] && _pdv="${*:$_pds:1}"
+  case "${_pdv##*/}" in
     xcrun|xcodebuild|adb|emulator|avdmanager|maestro)
       if [ "$argv_graded" = "1" ] && [ "$graded" = "트리밖쓰기" ]; then
-        GATE_PARK_DEVKIND=$(gate_device_act_kind "$@")
+        GATE_PARK_DEVKIND=$(gate_device_act_kind "${@:$_pds}")
         [ "$GATE_PARK_DEVKIND" = "-" ] && GATE_PARK_DEVKIND=other
       fi ;;
   esac

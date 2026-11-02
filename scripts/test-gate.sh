@@ -52165,7 +52165,7 @@ rm -f "$WT/$DOC83WN"
 
 # ---------------------------------------------------------------------------
 # 83x. 기기 짝 정리 — exec 가 열고, 스테이지 끝과 런 끝 정리가 이 런의 기기만 지운다
-# --- section: 83x | group: reach | covers: exec, reach, gate_act_mark, gate_device_listed, gate_device_targets_listed, gate_device_open_check, gate_device_record, gate_device_withdraw_serial, gate_run_device_aware, gate_pair_open, gate_pair_drain, device-cleanup, pair-residue | anchors: 83x: 짝 정리 행의 simctl create 가 열리고 기기를 목록에 남긴다, 83x: 만든 기기를 겨누는 simctl shutdown 은 열린다, 83x: simctl shutdown all 은 park 한다, 83x: simctl delete unavailable 은 park 한다, 83x: 이 런이 만들지 않은 UDID 는 foreign-device 로 park 한다, 83x: 접두가 맞지 않는 만들기는 device-name 수리 줄과 park 한다, 83x: 정리 짝 없는 만들기는 no-cleanup 수리 줄과 park 한다, 83x: 도는 에뮬레이터의 시리얼을 겨누는 adb 는 열린다, 83x: 끝난 에뮬레이터의 시리얼을 겨누는 adb 는 park 한다, 83x: 스테이지 끝 정리가 그 파견의 기기만 지운다, 83x: 런 끝 쓸기가 이 런의 남은 기기를 지운다, 83x: 정리가 다 성공하면 pair-residue 가 빈다 ---
+# --- section: 83x | group: reach | covers: exec, reach, gate_act_mark, gate_device_act_kind, gate_device_peel_argc, gate_device_act_start, gate_device_peeled_kind, gate_device_listed, gate_device_targets_listed, gate_device_open_check, gate_device_record, gate_device_withdraw_serial, gate_run_device_aware, gate_pair_open, gate_pair_drain, device-cleanup, pair-residue | anchors: 83x: 짝 정리 행의 simctl create 가 열리고 기기를 목록에 남긴다, 83x: 만든 기기를 겨누는 simctl shutdown 은 열린다, 83x: simctl shutdown all 은 park 한다, 83x: simctl delete unavailable 은 park 한다, 83x: 이 런이 만들지 않은 UDID 는 foreign-device 로 park 한다, 83x: timeout 으로 감싼 남의 기기 erase 는 foreign-device 로 park 한다, 83x: env 로 감싼 남의 기기 delete 는 foreign-device 로 park 한다, 83x: nice 로 감싼 남의 기기 shutdown 은 foreign-device 로 park 한다, 83x: 접두가 맞지 않는 만들기는 device-name 수리 줄과 park 한다, 83x: 정리 짝 없는 만들기는 no-cleanup 수리 줄과 park 한다, 83x: 도는 에뮬레이터의 시리얼을 겨누는 adb 는 열린다, 83x: 끝난 에뮬레이터의 시리얼을 겨누는 adb 는 park 한다, 83x: 스테이지 끝 정리가 그 파견의 기기만 지운다, 83x: 런 끝 쓸기가 이 런의 남은 기기를 지운다, 83x: 정리가 다 성공하면 pair-residue 가 빈다, 83x: env 로 감싼 simctl create 도 기기를 목록에 남긴다 ---
 #
 # rx 매니페스트로 게이트의 exec 를 부르고, 기기 도구는 PATH 앞의 대역이 받는다. 대역
 # xcrun 은 만들기에 고정 UDID 를 내고 목록에 이 파견의 기기·다른 파견의 기기·남의 기기를
@@ -52261,6 +52261,24 @@ x83_run xcrun simctl delete unavailable
 check "83x: simctl delete unavailable 은 park 한다" "$rc" "11"
 x83_run xcrun simctl shutdown 11111111-2222-3333-4444-555555555555
 check "83x: 이 런이 만들지 않은 UDID 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+# 감싸개를 붙인 기기 행위 — 등급·도달처럼 기기 판정도 감싸개를 벗긴 행위를 읽는다. 감싼
+# 철자는 어느 행도 축자로 이름 대지 않으므로, 기기 판정이 감싸개를 벗기지 못하면 판단 갈래로
+# 가서 수리 문구가 달라진다.
+axis_is gate_device_peeled_kind 'target' '83x: timeout 으로 감싼 simctl erase 는 겨누기다' -- timeout 60 xcrun simctl erase 11111111-2222-3333-4444-555555555555
+axis_is gate_device_peeled_kind 'target' '83x: env 로 감싼 simctl delete 는 겨누기다' -- env FOO=1 xcrun simctl delete 11111111-2222-3333-4444-555555555555
+axis_is gate_device_peeled_kind 'create' '83x: nice 로 감싼 simctl create 는 만들기다' -- nice xcrun simctl create other iPhone
+axis_is gate_device_peeled_kind 'create' '83x: nohup 으로 감싼 avdmanager create avd 는 만들기다' -- nohup avdmanager create avd -n x
+axis_is gate_device_peeled_kind 'target' '83x: 겹친 감싸개 안의 simctl shutdown 은 겨누기다' -- timeout 60 env FOO=1 xcrun simctl shutdown 11111111-2222-3333-4444-555555555555
+axis_is gate_device_peeled_kind 'target' '83x: 감싸지 않은 simctl erase 는 겨누기다' -- xcrun simctl erase 11111111-2222-3333-4444-555555555555
+axis_is gate_device_act_start '1' '83x: 읽을 수 없는 감싸개 철자는 벗기지 않는다' -- timeout --bogus 60 xcrun simctl erase 11111111-2222-3333-4444-555555555555
+x83_run timeout 60 xcrun simctl erase 11111111-2222-3333-4444-555555555555
+check "83x: timeout 으로 감싼 남의 기기 erase 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+x83_run env FOO=1 xcrun simctl delete 11111111-2222-3333-4444-555555555555
+check "83x: env 로 감싼 남의 기기 delete 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+x83_run nice xcrun simctl shutdown 11111111-2222-3333-4444-555555555555
+check "83x: nice 로 감싼 남의 기기 shutdown 은 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+check "83x: 감싼 park 행위는 대역에 닿지 않는다" \
+  "$(grep -c -e 'erase 11111111' -e 'delete 11111111' "$X83L")" "0"
 x83_run xcrun simctl create other iPhone
 check "83x: 접두가 맞지 않는 만들기는 device-name 수리 줄과 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'must be named')" "11|1"
 x83_run avdmanager create avd -n cc-R83X-S5-z -k x
@@ -52311,6 +52329,15 @@ check "83x: 런 끝 쓸기가 이 런의 남은 기기를 지운다" \
   "$(grep -c 'simctl delete U2' "$X83L")|$(grep -c 'delete U3' "$X83L")|$(lsr_last_fields "$X83LED" '짝 정리' 파견 행 결과)" "1|0|-|0|성공"
 x83_res=$(cd "$WT" && bash "$GATE" pair-residue --manifest "$RX_M" 2>/dev/null; printf x)
 check "83x: 정리가 다 성공하면 pair-residue 가 빈다" "${x83_res%x}" ""
+# 감싼 만들기도 목록에 남는다. 위의 열림 수와 정리 결과를 바꾸지 않도록 짝 정리 열기를
+# 거치지 않고 실행 함수를 바로 부르며, 정리가 끝난 뒤에 둔다.
+(
+  gate_seam_enter
+  PATH="$X83S:$PATH"; RUN_DIR="$X83RD"; RUN_ID=R83X; GATE_ACT_CWD=''
+  export CC_PIPELINE_STAGE_ID='S5#1'
+  gate_run_device_aware env FOO=1 xcrun simctl create cc-R83X-S5-w iPhone
+) >/dev/null 2>&1
+check "83x: env 로 감싼 simctl create 도 기기를 목록에 남긴다" "$(x83_tsv cc-R83X-S5-w)" "S5/$X83U"
 rm -rf "$X83D"
 
 # ---------------------------------------------------------------------------
