@@ -989,8 +989,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     "#### Dispatching the audit stage|grep -qxF '**상태**: 동결됨' <문서>" \
     '#### Dispatching the audit stage|`<main worktree>-run-<run id>-<audit step id>` with `git worktree add --detach`' \
     '#### Dispatching the audit stage|do not write a `segment` row to name it' \
+    '#### Dispatching the audit stage|with `git worktree add --detach` at the tip of `refs/remotes/origin/<base branch>`, resolved after fetching that ref' \
     '#### Planning the segments|`슬라이싱`' \
-    '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>' \
+    '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <슬라이싱 의 베이스>' \
+    '#### Planning the segments|never a local branch name (`main`, `master`) or `HEAD` in its place' \
     '#### Planning the segments|--from-declaration' \
     '#### Planning the segments|-- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>' \
     '#### Planning the segments|its predecessor'"'"'s `segments[]` entry reads `"착지": true`' \
