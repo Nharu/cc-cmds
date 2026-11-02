@@ -1429,9 +1429,14 @@ gate_reach_derived_full() {
       _gw=$(shift; gate_unwrap_find gate_reach_derived_unwrapped $'-\t-' $'-\t-' $'-\t-' \
         gate_reach_fold_find "$@") ;;
   esac
+  # A `find` whose `-exec` raised still goes through the whole-argv scans
+  # below, as its bare inner command would: a configuration path among find's
+  # own operands is a trigger word the row has to carry, and a deploy trigger
+  # outranks the machine-global reach. Only when neither speaks does the
+  # raise derived from its primaries stand.
   case "$_gw" in
-    ''|'-	-') ;;
-    *) printf '%s\n' "$_gw"; return 0 ;;
+    ''|'-	-') _gw='' ;;
+    *) [ "$cmd" = find ] || { printf '%s\n' "$_gw"; return 0; } ;;
   esac
   case "$cmd" in
     git)
@@ -1514,6 +1519,7 @@ gate_reach_derived_full() {
   [ -n "$paths" ] && { printf '기기전역\tpath\n%s' "$paths"; return 0; }
   # A deploy trigger the manifest named for this target.
   if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거\tdeploy\n'; return 0; fi
+  [ -n "$_gw" ] && { printf '%s\n' "$_gw"; return 0; }
   printf -- '-\t-\n'
 }
 
