@@ -15,6 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **등록** — `hooks.json` 의 `PreToolUse`·`PostToolUse`(AskUserQuestion), `PostToolBatch`, `Stop`, `UserPromptSubmit`, `PermissionRequest`, `SessionEnd` 에 기존 항목을 고치지 않고 한 항목씩 더한다. 다른 에이전트가 띄운 에이전트, 파이프라인 단계, 교대, 재진입, 스풀 루트가 없는 호스트에서는 아무것도 쓰지 않으며, 세션 배너 스위치와는 무관하게 쓴다.
 - **시험** — `scripts/test-session-status-snapshot.sh` 가 레코드 필드, 발췌 자르기, 질문지 차례의 한 번 쓰는 표지, 쓰지 않는 경우, 파일 모드, 등록을 시험한다.
 
+## [3.20.1] - 2026-11-01
+
+화면 파일이 디자인 토큰의 정의를 머리의 `<style data-cc-tokens>` 블록에 직접 담게 하고, 같은 결함이 다시 들어오지 않도록 검사를 더한다. 이전에는 화면이 `var(--…)` 만 쓰고 정의를 담지 않아, 캔버스에 올라간 화면이 꾸밈 없이 그려졌다.
+
+### Fixed
+
+- **토큰 블록 검사** — `visual-check.sh scan --tokens <tokens.css>` 가 화면 머리의 토큰 블록이 정확히 하나이고 `tokens.css` 와 바이트가 같은지 보고(`token-block`), 같을 때만 블록 줄의 `token-color`·`token-space` 를 지운다. 토큰 파일이 없거나 `</style` 를 담으면 종료 2 이고, 보고 머리 셋째 줄에 대조 여부를 적는다.
+- **정의 없는 토큰 변수** — `--tokens` 와 상관없이, 파일 안 어디에도 정의되지 않은 채 `var()` 로 참조된 사용자 정의 속성을 이름마다 처음 참조한 줄에서 `token-undefined` 로 지적한다.
+- **참조 렌더 경로 인코딩** — `visual-capture.sh ref` 가 `file://` URL 의 경로를 퍼센트 인코딩해, `#`·공백·한글이 든 디렉터리의 화면도 제대로 그린다.
+- **규약과 스킬** — 화면 계약이 토큰 블록의 문법과 부모가 채우는 절차를 정하고, 무인 화면 형식을 토큰 블록을 담은 일반 HTML 로 바꾼다. 생성·검토·발행·구현 승인·구현의 `scan` 호출이 모두 `--tokens` 를 넘기고, `token-block`·`token-undefined` 발견이 남으면 `external-ref` 와 같이 구현 승인을 쓰지 않는다. 구현은 토큰 블록을 번역하지 않는다.
+
+### Why
+
+검토 렌더는 로컬 토큰으로 그려져 결함이 보이지 않았고, 정의 없는 변수를 잡는 검사도 없어 꾸밈 없는 화면이 승인까지 지나갔다. 화면 한 장이 어디서나 같은 입력으로 그려지게 하고, 그 입력이 틀리면 기계 검사가 멈추게 한다.
+
 ## [3.20.0] - 2026-11-01
 
 원격에서 온 선택지 답이 질문 표면에 닿는 이음매의 규칙을 공용 문서 `_common/remote-reply.md` 하나에 정하고, 그 규칙의 고정 예제와 스키마 린트를 둔다. 중계와 게이트가 아직 이 규칙을 쓰지는 않으며, 뒤따를 구현이 같은 바이트를 보도록 계약을 먼저 고정한다.

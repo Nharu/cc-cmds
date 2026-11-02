@@ -3035,7 +3035,9 @@ pre_static() {
 # Leaving a deliberately broken surface behind is the section's own debt to
 # settle, not a fact the reader of a later section should have to know.
 pre_base() {
-  [ -n "${PRE_BASE_DONE:-}" ] && return 0
+  # Whether the guard returns here depends on which preludes the cut already
+  # entered, not on the section that calls it.
+  [ -n "${PRE_BASE_DONE:-}" ] && return 0 # gate-isolation: 변동
   PRE_BASE_DONE=1
   SETTINGS_DIR="$XDG_STATE_HOME/cc-cmds/run/R1/settings"
   RD="$XDG_STATE_HOME/cc-cmds/run/R1"
@@ -5873,7 +5875,9 @@ pre_ledger_series() {
 # with a segment row is not the shape under test. Each run id is fresh, so a
 # section cut on its own stands on nothing another section left behind.
 pre_bsplit() {
-  [ -n "${PRE_BSPLIT_DONE:-}" ] && return 0
+  # Whether the guard returns here depends on which preludes the cut already
+  # entered, not on the section that calls it.
+  [ -n "${PRE_BSPLIT_DONE:-}" ] && return 0 # gate-isolation: 변동
   PRE_BSPLIT_DONE=1
   BSX_STATE="$WORK/state-bsplit"
   mkdir -p "$BSX_STATE" "$WORK/bin"
@@ -8860,7 +8864,7 @@ fi
 # ---------------------------------------------------------------------------
 n_rows=$(grep -cE '^- `자율 승인`' "$FX_LEDGER" || true)
 if [ "$n_rows" -gt 0 ]; then
-  ok "통과한 행위마다 자율 승인 행이 남는다 (${n_rows}건)"
+  ok "통과한 행위마다 자율 승인 행이 남는다 (${n_rows}건)" # gate-isolation: 변동
 else
   bad "자율 승인 행" "게이트를 여러 번 통과했는데 행이 하나도 없다"
 fi
@@ -9060,7 +9064,7 @@ fi
 # test run against a ledger with one open would be asserting the suspension
 # while claiming to assert the firing.
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 
 # THE SEED NAMES A BINDING VALUE NOBODY HAS ANSWERED. B1's id is salted with the
@@ -10705,15 +10709,19 @@ check "새 기동은 세션별 기록에 합성 sha256 을 남긴다" \
 check "게시 뒤 instructions/ 에 임시 파일이 남지 않는다" \
   "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
 # No volatile token: the same bytes for every stage of this target in this run.
-# The file names fixture paths under the temporary directory, whose name may
-# itself carry a run-id string, so that directory is taken out of the text
-# first, in its physical spelling before the one it was given as.
+# The ancestor label carries this fixture's own work path, and the file names
+# other fixture paths under the temporary directory, whose name may itself carry
+# a run-id string. So the work path is taken out first, then the temporary
+# directory, in its physical spelling before the one it was given as.
+si_txt=$(cat "$SI_F" 2>/dev/null || true)
+si_txt=${si_txt//"$WORKP"/}
+si_txt=${si_txt//"$WORK"/}
 si_tmp="${TMPDIR:-/tmp}"
 si_tmpp=$(cd "$si_tmp" && pwd -P)
-si_scrubbed=$(awk -v a="$si_tmpp" -v b="$si_tmp" '{
+si_scrubbed=$(printf '%s\n' "$si_txt" | awk -v a="$si_tmpp" -v b="$si_tmp" '{
     while (a != "" && (i = index($0, a)) > 0) $0 = substr($0, 1, i - 1) "<tmp>" substr($0, i + length(a))
     while (b != "" && (i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) "<tmp>" substr($0, i + length(b))
-    print }' "$SI_F" 2>/dev/null)
+    print }')
 check "합성 파일에 런 id·세그먼트·시도가 들어 있지 않다" \
   "$(printf '%s\n' "$si_scrubbed" | grep -cE 'R1|SL#|세그먼트|attempt' || true)" "0"
 
@@ -18319,7 +18327,7 @@ check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
 # row cannot pass at all, which is the reason the control row is here.
 # ---------------------------------------------------------------------------
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 # The late state's run directory under a name of its own. `RD_L` is `pre_base`'s
 # and names the base state's run directory; reassigning it here would hand every
@@ -18453,7 +18461,7 @@ esac
 # its own rejection at all.
 rejlen=$( { grep -F '결정=기각' "$FX_LEDGER" || true; } | tail -1 | wc -c | tr -d ' ')
 if [ "${rejlen:-0}" -gt 0 ] && [ "${rejlen:-0}" -le 1024 ]; then
-  ok "기각 행이 원장 상한 안에 든다 (${rejlen}바이트)"
+  ok "기각 행이 원장 상한 안에 든다 (${rejlen}바이트)" # gate-isolation: 변동
 else
   bad "기각 행 길이" "${rejlen}바이트"
 fi
@@ -20645,7 +20653,7 @@ esac
 crow=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -F '앵커 세그먼트=SA ' | tail -1)
 n=$(printf '%s' "$crow" | wc -c | tr -d ' ')
 if [ "${n:-0}" -gt 0 ] && [ "${n:-0}" -le 1024 ]; then
-  ok "원뿔 행이 원장 행 상한 안에 있다 (${n} 바이트)"
+  ok "원뿔 행이 원장 행 상한 안에 있다 (${n} 바이트)" # gate-isolation: 변동
 else
   bad "원뿔 행 상한" "원뿔 행이 ${n} 바이트다"
 fi
@@ -25210,18 +25218,22 @@ DRAINSID="16161616-3434-5656-7878-909090909090"
 # suspension it then causes costs nothing.
 b1_drain_acts() {
   # b1_drain_acts <라벨> [<남겨 둘 승인 id 접두>]
-  local label="$1" keep="${2-}" aid aq
+  # One assertion per call, whatever the count: how many approvals are open
+  # here depends on what ran before in the same state, and each id that does
+  # not close is named in the value. The loop body runs only when something is
+  # open, so its lines are marked.
+  local label="$1" keep="${2-}" aid aq failed=""
   for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null \
                | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
-    if [ -n "$keep" ]; then
-      case "$aid" in "$keep"*) continue ;; esac
+    if [ -n "$keep" ]; then # gate-isolation: 변동
+      case "$aid" in "$keep"*) continue ;; esac # gate-isolation: 변동
     fi
-    aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
-    auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
-    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-          CLAUDE_CODE_SESSION_ID="$DRAINSID" gate_inproc close --manifest "$NM" --approval "$aid" 2>&1); rc=$?
-    check "$label $aid 를 닫는다" "$rc" "0"
+    aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면') # gate-isolation: 변동
+    auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null # gate-isolation: 변동
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$DRAINSID" gate_inproc close --manifest "$NM" --approval "$aid" 2>&1); rc=$? # gate-isolation: 변동
+    [ "$rc" = "0" ] || failed="$failed $aid(rc=$rc)" # gate-isolation: 변동
   done
+  check "${label}을 모두 닫는다" "${failed# }" ""
 }
 b1_drain_acts "경계 전제를 세우려 열린 행위 승인"
 b1_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
@@ -27519,7 +27531,7 @@ check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다
 # silenced and one that has been fixed are indistinguishable from the side
 # where nothing fires.
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 check_ne() { if [ "$1" != "$2" ]; then ok "$3"; else bad "진전 벡터" "$4"; fi; }
 
@@ -27646,7 +27658,7 @@ check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카�
 # alive in the run directory while the routing seat goes on judging.
 # ---------------------------------------------------------------------------
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 B1_N_UNDER_TEST=$(sed -n 's/^readonly B1_STAGNATION_N=\([0-9][0-9]*\)$/\1/p' "$GATE")
 if [ -n "$B1_N_UNDER_TEST" ]; then
@@ -29203,7 +29215,7 @@ $( { grep -F '`리뷰 의무`' "$sa_l" || true; } | { grep -F '상태=이행' ||
 EOF
 done
 if [ "$sa_n19" -gt 0 ]; then
-  ok "19(i): 닫힌 이행 행이 ${sa_n19}건 관측됐다"
+  ok "19(i): 닫힌 이행 행이 ${sa_n19}건 관측됐다" # gate-isolation: 변동
 else
   bad "19(i)" "닫힌 이행 행이 하나도 없어 이 단언이 공허하다"
 fi
@@ -31056,10 +31068,13 @@ sp_measured "32p: env LANG=C" "$U32"
 # git argv 가 argv 끝에 오지 않아도 — find 의 ';' 뒤 — 그 앞의 할당이 읽힌다. 경로 피연산자
 # ./git 에서 검사가 멈추면 할당이 탐침에 닿지 않은 채 push 가 지났다.
 for sp_e in "HOME=$SA_ROOT/home-x" "XDG_CONFIG_HOME=$SA_ROOT/xdg-x" "GIT_CONFIG_GLOBAL=$SA_ROOT/g"; do
+  # The label names the operand by its role: the fixture root's own name is a
+  # per-run counter, so it would make the label differ between runs.
   for sp_fd in "$SA_ROOT/git" "$SA_ROOT"; do
+    sp_fdn="${sp_fd##*/}"; [ "$sp_fd" = "$SA_ROOT" ] && sp_fdn="<픽스처 루트>"
     sp_act S32A 머지 find "$sp_fd" -maxdepth 0 -exec env "$sp_e" git push origin "u-$SA_ID:$SA_BASE" ';'
-    sp_refused "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}= git push ';' 는 거절된다" 2 "$B32"
-    sp_unknown "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}="
+    sp_refused "32p: find $sp_fdn -exec env ${sp_e%%=*}= git push ';' 는 거절된다" 2 "$B32"
+    sp_unknown "32p: find $sp_fdn -exec env ${sp_e%%=*}="
   done
 done
 # find 는 -exec 단어 안의 {} 를 매치 경로로 바꿔 돌린다 — 탐침이 리터럴 {} 로 잰 push 는
@@ -37910,7 +37925,7 @@ $( { grep -E '^- `(자율 승인|승인)`' "$sb_l" || true; } )
 EOF
 done
 if [ "$sb_seen" -gt 0 ]; then
-  ok "8: 절단점을 싣는 행이 ${sb_seen}건 관측됐다"
+  ok "8: 절단점을 싣는 행이 ${sb_seen}건 관측됐다" # gate-isolation: 변동
 else
   bad "8" "그런 행이 하나도 없어 이 단언이 공허하다"
 fi
@@ -45138,7 +45153,7 @@ done <<LSR61EOF
 $lsr61_files
 LSR61EOF
 if [ "$lsr61_res" -ge 1 ]; then
-  ok "61: 스텁 기동이 남긴 stage-result 행이 있다 (아래 두 0 이 공허하지 않다: ${lsr61_res}행)"
+  ok "61: 스텁 기동이 남긴 stage-result 행이 있다 (아래 두 0 이 공허하지 않다: ${lsr61_res}행)" # gate-isolation: 변동
 else
   bad "61 stage-result 행" "픽스처 원장에 stage-result 행이 없다 — 14h 가 돌지 않았다"
 fi
