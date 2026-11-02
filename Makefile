@@ -471,6 +471,8 @@ LINT_TESTS := \
 	scripts/test-solo-audit-experiment.sh \
 	scripts/test-reader-model-compare.sh \
 	scripts/test-reader-model-pair-audit.sh \
+	scripts/test-review-seat-promotion-compare.sh \
+	scripts/test-review-seat-promotion-pair.sh \
 	scripts/test-measure-audit-findings.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
@@ -496,6 +498,7 @@ ORCH_TESTS := \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
 	scripts/test-session-title-hook.sh \
+	scripts/test-session-status-snapshot.sh \
 	scripts/test-notify-focus.sh \
 	scripts/test-attention.sh \
 	scripts/test-stage-rules-edit-hook.sh \
@@ -522,7 +525,8 @@ ORCH_TESTS := \
 	scripts/test-visual-capture.sh \
 	scripts/test-meta-invariants.sh \
 	scripts/test-local-bundle.sh \
-	scripts/test-ci-signature.sh
+	scripts/test-ci-signature.sh \
+	scripts/test-repair.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \

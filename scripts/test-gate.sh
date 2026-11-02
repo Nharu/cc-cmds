@@ -3035,7 +3035,9 @@ pre_static() {
 # Leaving a deliberately broken surface behind is the section's own debt to
 # settle, not a fact the reader of a later section should have to know.
 pre_base() {
-  [ -n "${PRE_BASE_DONE:-}" ] && return 0
+  # Whether the guard returns here depends on which preludes the cut already
+  # entered, not on the section that calls it.
+  [ -n "${PRE_BASE_DONE:-}" ] && return 0 # gate-isolation: 변동
   PRE_BASE_DONE=1
   SETTINGS_DIR="$XDG_STATE_HOME/cc-cmds/run/R1/settings"
   RD="$XDG_STATE_HOME/cc-cmds/run/R1"
@@ -5873,7 +5875,9 @@ pre_ledger_series() {
 # with a segment row is not the shape under test. Each run id is fresh, so a
 # section cut on its own stands on nothing another section left behind.
 pre_bsplit() {
-  [ -n "${PRE_BSPLIT_DONE:-}" ] && return 0
+  # Whether the guard returns here depends on which preludes the cut already
+  # entered, not on the section that calls it.
+  [ -n "${PRE_BSPLIT_DONE:-}" ] && return 0 # gate-isolation: 변동
   PRE_BSPLIT_DONE=1
   BSX_STATE="$WORK/state-bsplit"
   mkdir -p "$BSX_STATE" "$WORK/bin"
@@ -8860,7 +8864,7 @@ fi
 # ---------------------------------------------------------------------------
 n_rows=$(grep -cE '^- `자율 승인`' "$FX_LEDGER" || true)
 if [ "$n_rows" -gt 0 ]; then
-  ok "통과한 행위마다 자율 승인 행이 남는다 (${n_rows}건)"
+  ok "통과한 행위마다 자율 승인 행이 남는다 (${n_rows}건)" # gate-isolation: 변동
 else
   bad "자율 승인 행" "게이트를 여러 번 통과했는데 행이 하나도 없다"
 fi
@@ -9060,7 +9064,7 @@ fi
 # test run against a ledger with one open would be asserting the suspension
 # while claiming to assert the firing.
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 
 # THE SEED NAMES A BINDING VALUE NOBODY HAS ANSWERED. B1's id is salted with the
@@ -10705,15 +10709,19 @@ check "새 기동은 세션별 기록에 합성 sha256 을 남긴다" \
 check "게시 뒤 instructions/ 에 임시 파일이 남지 않는다" \
   "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
 # No volatile token: the same bytes for every stage of this target in this run.
-# The file names fixture paths under the temporary directory, whose name may
-# itself carry a run-id string, so that directory is taken out of the text
-# first, in its physical spelling before the one it was given as.
+# The ancestor label carries this fixture's own work path, and the file names
+# other fixture paths under the temporary directory, whose name may itself carry
+# a run-id string. So the work path is taken out first, then the temporary
+# directory, in its physical spelling before the one it was given as.
+si_txt=$(cat "$SI_F" 2>/dev/null || true)
+si_txt=${si_txt//"$WORKP"/}
+si_txt=${si_txt//"$WORK"/}
 si_tmp="${TMPDIR:-/tmp}"
 si_tmpp=$(cd "$si_tmp" && pwd -P)
-si_scrubbed=$(awk -v a="$si_tmpp" -v b="$si_tmp" '{
+si_scrubbed=$(printf '%s\n' "$si_txt" | awk -v a="$si_tmpp" -v b="$si_tmp" '{
     while (a != "" && (i = index($0, a)) > 0) $0 = substr($0, 1, i - 1) "<tmp>" substr($0, i + length(a))
     while (b != "" && (i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) "<tmp>" substr($0, i + length(b))
-    print }' "$SI_F" 2>/dev/null)
+    print }')
 check "합성 파일에 런 id·세그먼트·시도가 들어 있지 않다" \
   "$(printf '%s\n' "$si_scrubbed" | grep -cE 'R1|SL#|세그먼트|attempt' || true)" "0"
 
@@ -18319,7 +18327,7 @@ check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
 # row cannot pass at all, which is the reason the control row is here.
 # ---------------------------------------------------------------------------
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 # The late state's run directory under a name of its own. `RD_L` is `pre_base`'s
 # and names the base state's run directory; reassigning it here would hand every
@@ -18453,7 +18461,7 @@ esac
 # its own rejection at all.
 rejlen=$( { grep -F '결정=기각' "$FX_LEDGER" || true; } | tail -1 | wc -c | tr -d ' ')
 if [ "${rejlen:-0}" -gt 0 ] && [ "${rejlen:-0}" -le 1024 ]; then
-  ok "기각 행이 원장 상한 안에 든다 (${rejlen}바이트)"
+  ok "기각 행이 원장 상한 안에 든다 (${rejlen}바이트)" # gate-isolation: 변동
 else
   bad "기각 행 길이" "${rejlen}바이트"
 fi
@@ -20645,7 +20653,7 @@ esac
 crow=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -F '앵커 세그먼트=SA ' | tail -1)
 n=$(printf '%s' "$crow" | wc -c | tr -d ' ')
 if [ "${n:-0}" -gt 0 ] && [ "${n:-0}" -le 1024 ]; then
-  ok "원뿔 행이 원장 행 상한 안에 있다 (${n} 바이트)"
+  ok "원뿔 행이 원장 행 상한 안에 있다 (${n} 바이트)" # gate-isolation: 변동
 else
   bad "원뿔 행 상한" "원뿔 행이 ${n} 바이트다"
 fi
@@ -25210,18 +25218,22 @@ DRAINSID="16161616-3434-5656-7878-909090909090"
 # suspension it then causes costs nothing.
 b1_drain_acts() {
   # b1_drain_acts <라벨> [<남겨 둘 승인 id 접두>]
-  local label="$1" keep="${2-}" aid aq
+  # One assertion per call, whatever the count: how many approvals are open
+  # here depends on what ran before in the same state, and each id that does
+  # not close is named in the value. The loop body runs only when something is
+  # open, so its lines are marked.
+  local label="$1" keep="${2-}" aid aq failed=""
   for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null \
                | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
-    if [ -n "$keep" ]; then
-      case "$aid" in "$keep"*) continue ;; esac
+    if [ -n "$keep" ]; then # gate-isolation: 변동
+      case "$aid" in "$keep"*) continue ;; esac # gate-isolation: 변동
     fi
-    aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
-    auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
-    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-          CLAUDE_CODE_SESSION_ID="$DRAINSID" gate_inproc close --manifest "$NM" --approval "$aid" 2>&1); rc=$?
-    check "$label $aid 를 닫는다" "$rc" "0"
+    aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면') # gate-isolation: 변동
+    auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null # gate-isolation: 변동
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$DRAINSID" gate_inproc close --manifest "$NM" --approval "$aid" 2>&1); rc=$? # gate-isolation: 변동
+    [ "$rc" = "0" ] || failed="$failed $aid(rc=$rc)" # gate-isolation: 변동
   done
+  check "${label}을 모두 닫는다" "${failed# }" ""
 }
 b1_drain_acts "경계 전제를 세우려 열린 행위 승인"
 b1_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
@@ -27519,7 +27531,7 @@ check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다
 # silenced and one that has been fixed are indistinguishable from the side
 # where nothing fires.
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 check_ne() { if [ "$1" != "$2" ]; then ok "$3"; else bad "진전 벡터" "$4"; fi; }
 
@@ -27646,7 +27658,7 @@ check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카�
 # alive in the run directory while the routing seat goes on judging.
 # ---------------------------------------------------------------------------
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" # gate-isolation: 변동
 done
 B1_N_UNDER_TEST=$(sed -n 's/^readonly B1_STAGNATION_N=\([0-9][0-9]*\)$/\1/p' "$GATE")
 if [ -n "$B1_N_UNDER_TEST" ]; then
@@ -29203,7 +29215,7 @@ $( { grep -F '`리뷰 의무`' "$sa_l" || true; } | { grep -F '상태=이행' ||
 EOF
 done
 if [ "$sa_n19" -gt 0 ]; then
-  ok "19(i): 닫힌 이행 행이 ${sa_n19}건 관측됐다"
+  ok "19(i): 닫힌 이행 행이 ${sa_n19}건 관측됐다" # gate-isolation: 변동
 else
   bad "19(i)" "닫힌 이행 행이 하나도 없어 이 단언이 공허하다"
 fi
@@ -31056,10 +31068,13 @@ sp_measured "32p: env LANG=C" "$U32"
 # git argv 가 argv 끝에 오지 않아도 — find 의 ';' 뒤 — 그 앞의 할당이 읽힌다. 경로 피연산자
 # ./git 에서 검사가 멈추면 할당이 탐침에 닿지 않은 채 push 가 지났다.
 for sp_e in "HOME=$SA_ROOT/home-x" "XDG_CONFIG_HOME=$SA_ROOT/xdg-x" "GIT_CONFIG_GLOBAL=$SA_ROOT/g"; do
+  # The label names the operand by its role: the fixture root's own name is a
+  # per-run counter, so it would make the label differ between runs.
   for sp_fd in "$SA_ROOT/git" "$SA_ROOT"; do
+    sp_fdn="${sp_fd##*/}"; [ "$sp_fd" = "$SA_ROOT" ] && sp_fdn="<픽스처 루트>"
     sp_act S32A 머지 find "$sp_fd" -maxdepth 0 -exec env "$sp_e" git push origin "u-$SA_ID:$SA_BASE" ';'
-    sp_refused "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}= git push ';' 는 거절된다" 2 "$B32"
-    sp_unknown "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}="
+    sp_refused "32p: find $sp_fdn -exec env ${sp_e%%=*}= git push ';' 는 거절된다" 2 "$B32"
+    sp_unknown "32p: find $sp_fdn -exec env ${sp_e%%=*}="
   done
 done
 # find 는 -exec 단어 안의 {} 를 매치 경로로 바꿔 돌린다 — 탐침이 리터럴 {} 로 잰 push 는
@@ -37910,7 +37925,7 @@ $( { grep -E '^- `(자율 승인|승인)`' "$sb_l" || true; } )
 EOF
 done
 if [ "$sb_seen" -gt 0 ]; then
-  ok "8: 절단점을 싣는 행이 ${sb_seen}건 관측됐다"
+  ok "8: 절단점을 싣는 행이 ${sb_seen}건 관측됐다" # gate-isolation: 변동
 else
   bad "8" "그런 행이 하나도 없어 이 단언이 공허하다"
 fi
@@ -45138,7 +45153,7 @@ done <<LSR61EOF
 $lsr61_files
 LSR61EOF
 if [ "$lsr61_res" -ge 1 ]; then
-  ok "61: 스텁 기동이 남긴 stage-result 행이 있다 (아래 두 0 이 공허하지 않다: ${lsr61_res}행)"
+  ok "61: 스텁 기동이 남긴 stage-result 행이 있다 (아래 두 0 이 공허하지 않다: ${lsr61_res}행)" # gate-isolation: 변동
 else
   bad "61 stage-result 행" "픽스처 원장에 stage-result 행이 없다 — 14h 가 돌지 않았다"
 fi
@@ -59372,6 +59387,395 @@ case "$rc/$msg" in
   1/*"항목 수: P1 요약 1건, 항목 2개"*) ok "103: 범위 밖 관찰 절의 굵은 항목은 P1 수에 들지 않는다" ;;
   *) bad "103: 범위 밖 관찰 절의 굵은 항목은 P1 수에 들지 않는다" "대조군 rc=$rc $msg" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 105. P0 재현 근거 — report-check 의 재현 없음·재현 형식, 리포트 형식, 다음, 근거 줄 거르개
+# --- section: 105 | group: ledger_series | covers: report-check, gate_review_report_shape, gate_report_format_fields, gate_segment_review_next, rekick_p0_report_section, rekick_branch_input, review_report_drop_evidence | anchors: 105: 재현 형식과 예외 형식의 P0 는 문제가 없다, 105: 근거 없는 P0 는 재현 없음 한 줄이고 불일치 1 이다, 105: 재현 형식 조건마다 한 줄이다, 105: 출력 스무 줄과 스크립트 예순 줄은 받고 하나 넘으면 재현 형식이다, 105: 근거 없는 P1 과 강등 P1 은 문제가 아니다, 105: 부호화한 출력 본문은 요약과 항목 수를 바꾸지 않는다, 105: 부호화하지 않은 별표 줄은 재현 형식 하나이고 요약과 항목 수는 그대로다, 105: 리포트 형식은 근거 문제를 반영한다, 105: 복구 요약의 근거 없는 P0 도 재현 없음이다, 105: 근거 없음으로 옮긴 리포트의 다음은 옮긴 결과를 따른다, 105: 재기립 입력은 근거 줄을 빼고 결함 수준별 수는 같다, 105: 트리아지 입력 사본은 근거 줄을 뺀 리포트다 ---
+#
+# 무인 리뷰의 P0 항목은 재현 명령·재현 출력(필요하면 사이에 재현 스크립트) 또는 재현
+# 예외·경로 추적을 단다. 게이트의 소싱 전용 판본에서 리포트 모양 판독과 report-check 동사
+# 함수를 직접 부르고, 다음 판정은 원장 수열 재생으로, 근거 줄 거르개는 드라이버를 새
+# 프로세스에서 소싱해 잰다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D105="$WORK/s105"; rm -rf "$D105"; mkdir -p "$D105"
+r105() {  # r105 <파일> <P0> <P1> — 머리와 요약을 쓰고 표준 입력을 P0 절 제목 뒤에 붙인다. <TAB> 은 탭이 된다
+  {
+    printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `abc1234`\n'
+    printf -- '- **발견 요약**: 🔴 P0 %s건 | 🟠 P1 %s건 | 🟡 P2 0건 | 🟢 P3 0건\n' "$2" "$3"
+    printf '\n## 🔴 P0\n\n'
+    awk '{ gsub(/<TAB>/, "\t"); print }'
+  } > "$1"
+  printf '%s' "$1"
+}
+sh105() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_review_report_shape "$2"' _ "$GATE" "$1" 2>/dev/null; }
+cnt105() { sh105 "$1" | grep -E '^(요약 P0|요약 P1|항목)=' | paste -sd '|' -; }
+rc105() {  # rc105 <리포트> — report-check 의 `<rc>|<문제 종류,…>|<판정 줄>`
+  local out r=0
+  out=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_verb_report_check "$2"' _ "$GATE" "$1" 2>/dev/null) || r=$?
+  printf '%s|%s|%s' "$r" \
+    "$(printf '%s\n' "$out" | awk -F': ' '/^[0-9]+: / { printf "%s%s", (n++ ? "," : ""), $2 }')" \
+    "$(printf '%s\n' "$out" | grep -o '^report-check: 불일치 [0-9]*' || true)"
+}
+F105="1|재현 형식|report-check: 불일치 1"
+
+# 받는 두 형식 — 재현 형식(스크립트 없이·있게)과 예외 형식.
+I105A=$(r105 "$D105/ok-a.md" 1 0 <<'EOF'
+- **[logic]** `a.sh:3` 빈 입력에서 죽는다 — r
+    - **재현 명령**: `bash $REPRO_TREE/a.sh ''`
+    - **재현 출력**: 종료 코드 1
+      a.sh: line 3: 1: unbound variable
+EOF
+)
+I105S=$(r105 "$D105/ok-s.md" 1 0 <<'EOF'
+- **[logic]** `a.sh:3` 경로에 공백이 있으면 죽는다 — r
+    - **재현 명령**: `bash $REPRO_DIR/run.sh $REPRO_TREE`
+    - **재현 스크립트**: run.sh
+      |set -u
+      |
+      |  cd "$1"
+      |<TAB>bash a.sh "$1"
+    - **재현 출력**: 종료 코드 2
+      a.sh: line 3: cd: 없음
+    - **결함 수준**: 구현 — r
+EOF
+)
+I105E=$(r105 "$D105/ok-e.md" 2 0 <<'EOF'
+- **[design-conformance]** `x.md:10` 두 문장이 어긋난다 — r
+    - **재현 예외**: 문면 — 문서 두 곳이 같은 값을 서로 다르게 적는다
+    - **경로 추적**: `x.md:10` → `y.md:3-5`
+- **[data-integrity]** `db.sh:4` 지우는 경로가 확인 없이 돈다 — r
+    - **재현 예외**: 파괴 — 돌리면 실제 저장소를 지운다
+    - **경로 추적**: `db.sh:4` → `lib.sh:20-22` → `lib.sh:40`
+EOF
+)
+check "105: 재현 형식과 예외 형식의 P0 는 문제가 없다" \
+  "$(rc105 "$I105A")/$(rc105 "$I105S")/$(rc105 "$I105E")" "0||/0||/0||"
+
+I105N=$(printf -- '- **[logic]** `a.sh:3` 빈 입력에서 죽는다 — r\n' | r105 "$D105/none.md" 1 0)
+check "105: 근거 없는 P0 는 재현 없음 한 줄이고 불일치 1 이다" "$(rc105 "$I105N")" "1|재현 없음|report-check: 불일치 1"
+
+# 조건마다 한 사례. 머리 줄은 `=== <정합|형식|없음> <이름>` 이고 그 아래가 항목 줄 뒤의 근거 줄이다.
+awk -v d="$D105" '
+  /^=== / { n++; f = sprintf("%s/c%02d.ev", d, n); printf "%s\t%s\n", $2, $3 > (d "/cases.tsv"); next }
+  { print > f }' <<'EOF'
+=== 정합 기본
+    - **재현 명령**: `bash $REPRO_TREE/a.sh`
+    - **재현 출력**: 종료 코드 1
+      실패
+=== 정합 결함수준과-함께
+    - **재현 명령**: `bash $REPRO_TREE/a.sh`
+    - **재현 출력**: 종료 코드 0
+      out
+    - **결함 수준**: 구현 — r
+=== 정합 본문-빈줄-앞공백-탭-$1
+    - **재현 명령**: `sh $REPRO_DIR/t.sh "$REPRO_TREE"`
+    - **재현 스크립트**: t.sh
+      |
+      |   echo "$1"
+      |<TAB>exit 3
+    - **재현 출력**: 종료 코드 3
+      x
+=== 정합 부호화한-별표
+    - **재현 명령**: `printf '%s' '\*\*x'`
+    - **재현 출력**: 종료 코드 0
+      \*\*x
+=== 형식 두-형식
+    - **재현 명령**: `bash $REPRO_TREE/a.sh`
+    - **재현 출력**: 종료 코드 1
+      x
+    - **재현 예외**: 문면 — r
+    - **경로 추적**: `a.sh:1` → `a.sh:2`
+=== 형식 키-두-번
+    - **재현 명령**: `a`
+    - **재현 명령**: `b`
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 명령만
+    - **재현 명령**: `a`
+=== 형식 예외만
+    - **재현 예외**: 문면 — r
+=== 형식 순서
+    - **재현 출력**: 종료 코드 1
+      x
+    - **재현 명령**: `a`
+=== 형식 붙지-않음
+    - **재현 명령**: `a`
+    - 메모
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 들여쓰기
+  - **재현 명령**: `a`
+  - **재현 출력**: 종료 코드 1
+      x
+=== 형식 백틱-없음
+    - **재현 명령**: bash a.sh
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 빈-백틱
+    - **재현 명령**: ` `
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 백틱-안-백틱
+    - **재현 명령**: `echo `x``
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 이름-점
+    - **재현 명령**: `sh $REPRO_DIR/.`
+    - **재현 스크립트**: .
+      |x
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 이름-점점
+    - **재현 명령**: `sh $REPRO_DIR/..`
+    - **재현 스크립트**: ..
+      |x
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 이름-경로
+    - **재현 명령**: `sh $REPRO_DIR/../t.sh`
+    - **재현 스크립트**: ../t.sh
+      |x
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 본문-없음
+    - **재현 명령**: `sh $REPRO_DIR/t.sh`
+    - **재현 스크립트**: t.sh
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 명령에-이름-없음
+    - **재현 명령**: `sh $REPRO_DIR/t.shx`
+    - **재현 스크립트**: t.sh
+      |x
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 본문-자리표시자
+    - **재현 명령**: `sh $REPRO_DIR/t.sh`
+    - **재현 스크립트**: t.sh
+      |cd $REPRO_TREE
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 본문-파이프-없음
+    - **재현 명령**: `sh $REPRO_DIR/t.sh`
+    - **재현 스크립트**: t.sh
+      |x
+      y
+    - **재현 출력**: 종료 코드 1
+      x
+=== 형식 종료-코드-영-앞
+    - **재현 명령**: `a`
+    - **재현 출력**: 종료 코드 01
+      x
+=== 형식 종료-코드-붙여씀
+    - **재현 명령**: `a`
+    - **재현 출력**: 종료코드 1
+      x
+=== 형식 출력-본문-없음
+    - **재현 명령**: `a`
+    - **재현 출력**: 종료 코드 1
+=== 형식 출력-여섯칸-재등장
+    - **재현 명령**: `a`
+    - **재현 출력**: 종료 코드 1
+      x
+
+      y
+=== 형식 값-별표
+    - **재현 명령**: `echo **x`
+    - **재현 출력**: 종료 코드 0
+      x
+=== 형식 출력-본문-별표
+    - **재현 명령**: `a`
+    - **재현 출력**: 종료 코드 0
+      **x
+=== 형식 스크립트-본문-별표
+    - **재현 명령**: `sh $REPRO_DIR/t.sh`
+    - **재현 스크립트**: t.sh
+      |echo a**b
+    - **재현 출력**: 종료 코드 0
+      x
+=== 형식 예외-낱말
+    - **재현 예외**: 보안 — r
+    - **경로 추적**: `a.sh:1` → `a.sh:2`
+=== 형식 예외-사유-빔
+    - **재현 예외**: 파괴 —
+    - **경로 추적**: `a.sh:1` → `a.sh:2`
+=== 형식 예외-사유-없음
+    - **재현 예외**: 외부
+    - **경로 추적**: `a.sh:1` → `a.sh:2`
+=== 형식 앵커-하나
+    - **재현 예외**: 비밀 — r
+    - **경로 추적**: `a.sh:1`
+=== 형식 앵커-꼴
+    - **재현 예외**: 비밀 — r
+    - **경로 추적**: `a.sh` → `a.sh:2`
+=== 형식 여러-조건
+    - **재현 명령**: `a`
+    - **재현 명령**: `b`
+    - **재현 출력**: 종료 코드 x
+=== 없음 산문-속-키
+    본문이 `- **재현 명령**:` 을 산문 속에서 든다
+EOF
+m105=""; i105=0
+while IFS=$'\t' read -r w105 n105; do
+  i105=$((i105 + 1)); f105=$(printf '%s/c%02d' "$D105" "$i105")
+  { printf -- '- **[logic]** `a.sh:3` 항목 — r\n'; cat "$f105.ev"; } | r105 "$f105.md" 1 0 >/dev/null
+  case "$w105" in
+    정합) e105="0||" ;;
+    형식) e105=$F105 ;;
+    *) e105="1|재현 없음|report-check: 불일치 1" ;;
+  esac
+  g105=$(rc105 "$f105.md")
+  [ "$g105" = "$e105" ] || m105="$m105[$n105: $g105] "
+done < "$D105/cases.tsv"
+check "105: 재현 형식 조건마다 한 줄이다" "$i105|$m105" "35|"
+
+b105() {  # b105 <파일> <출력 줄 수> <스크립트 줄 수|-> — 줄 수 경계 사례 하나
+  local i
+  {
+    printf -- '- **[logic]** `a.sh:3` 항목 — r\n'
+    if [ "$3" = "-" ]; then
+      printf '    - **재현 명령**: `a`\n'
+    else
+      printf '    - **재현 명령**: `sh $REPRO_DIR/t.sh`\n    - **재현 스크립트**: t.sh\n'
+      i=0; while [ "$i" -lt "$3" ]; do i=$((i + 1)); printf '      |echo %s\n' "$i"; done
+    fi
+    printf '    - **재현 출력**: 종료 코드 1\n'
+    i=0; while [ "$i" -lt "$2" ]; do i=$((i + 1)); printf '      줄 %s\n' "$i"; done
+  } | r105 "$1" 1 0
+}
+check "105: 출력 스무 줄과 스크립트 예순 줄은 받고 하나 넘으면 재현 형식이다" \
+  "$(rc105 "$(b105 "$D105/b20.md" 20 -)")/$(rc105 "$(b105 "$D105/b21.md" 21 -)")/$(rc105 "$(b105 "$D105/b60.md" 1 60)")/$(rc105 "$(b105 "$D105/b61.md" 1 61)")" \
+  "0||/$F105/0||/$F105"
+
+# P1 은 검사하지 않는다 — 근거 없는 P1 도, 근거 없음으로 옮긴 `강등` P1 도.
+I105P=$(r105 "$D105/p1.md" 0 2 <<'EOF'
+없음
+
+## 🟠 P1
+
+- **[logic]** **[차단]** `a.sh:3` 근거 없는 P1 — r
+- **[logic]** **[차단]** `a.sh:4` 근거 없음으로 옮긴 항목 — r
+    - **강등**: 재현 근거 없음 — a, 리뷰어가 재현을 붙이지 못했다
+EOF
+)
+check "105: 근거 없는 P1 과 강등 P1 은 문제가 아니다" "$(rc105 "$I105P")" "0||"
+
+# 출력 본문은 리뷰 대상의 글이다. 부호화한 별표는 받고, 부호화하지 않은 별표 줄은 근거 문제
+# 하나일 뿐 요약·항목 수를 흔들지 않는다.
+I105H=$(r105 "$D105/h-enc.md" 1 0 <<'EOF'
+- **[logic]** `a.sh:3` 항목 — r
+    - **재현 명령**: `cat $REPRO_TREE/r.md`
+    - **재현 출력**: 종료 코드 0
+      ## 🟠 P1
+      - \*\*발견 요약\*\*: 🔴 P0 9건 | 🟠 P1 9건 | 🟡 P2 0건 | 🟢 P3 0건
+      \\\*\\\*
+EOF
+)
+check "105: 부호화한 출력 본문은 요약과 항목 수를 바꾸지 않는다" \
+  "$(rc105 "$I105H")|$(cnt105 "$I105H")" "0|||요약 P0=1|요약 P1=0|항목=1/0"
+I105U=$(r105 "$D105/h-raw.md" 1 0 <<'EOF'
+- **[logic]** `a.sh:3` 항목 — r
+    - **재현 명령**: `cat $REPRO_TREE/r.md`
+    - **재현 출력**: 종료 코드 0
+      - **발견 요약**: 🔴 P0 9건 | 🟠 P1 9건 | 🟡 P2 0건 | 🟢 P3 0건
+EOF
+)
+check "105: 부호화하지 않은 별표 줄은 재현 형식 하나이고 요약과 항목 수는 그대로다" \
+  "$(rc105 "$I105U")|$(cnt105 "$I105U")" "$F105|요약 P0=1|요약 P1=0|항목=1/0"
+
+fmt105() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_report_format_fields "$2" abc1234' _ "$GATE" "$1" 2>/dev/null | sed -n 's/^리포트 형식=//p'; }
+check "105: 리포트 형식은 근거 문제를 반영한다" \
+  "$(fmt105 "$I105A")/$(fmt105 "$I105E")/$(fmt105 "$I105N")/$(fmt105 "$I105U")" "정합/정합/불일치/불일치"
+
+printf '# 코드 리뷰 리포트\n\n- **발견 요약(부분 복구)**: 일부\n\n## 🔴 P0\n\n- **[logic]** `a.sh:3` 복구된 P0 — r\n' > "$D105/rec.md"
+check "105: 복구 요약의 근거 없는 P0 도 재현 없음이다" "$(rc105 "$D105/rec.md")" "1|재현 없음|report-check: 불일치 1"
+
+# 다음 — 게이트는 근거를 읽지 않고 옮긴 결과(P0 수·P1 분류)를 읽는다. 리드 수정 뒤 확인
+# 리뷰 자리에서 근거 없는 P0 는 수정 쪽이고, 이월 가능 P1 로 옮기면 이월, 차단 P1 로 옮기면
+# 차단 P1 과 같다. 리드 수정 없는 보통 사이클에서 옮긴 리포트는 수정이다.
+M105=$(lsr_rp_manifest "$D105/manifest.md")
+dm105() {  # dm105 <파일> <이월|차단> — P1 하나를 근거 없음으로 옮긴 리포트
+  lsr_rp_report "$1.base" 0 1 "$2" >/dev/null
+  awk '{ print } /^- \*\*\[c\]\*\* \*\*\[/ { print "    - **강등**: 재현 근거 없음 — a, 리뷰어가 재현을 붙이지 못했다" }' "$1.base" > "$1"
+  printf '%s' "$1"
+}
+st105() {  # st105 <이름> <셋째 리포트> <P0> <P1> — c1·c2·리드 수정 뒤 셋째 cycle 행을 놓은 상태
+  local l
+  l=$(lsr_ledger "w105-$1")
+  lsr_rp_cycle "$l" C 1 1 0 "$(lsr_rp_report "$D105/c1.md" 1 0 차단)"
+  lsr_rp_cycle "$l" C 2 1 2 "$(lsr_rp_report "$D105/c2.md" 1 2 차단)"
+  lsr_rp_lead_fix "$l" C
+  lsr_rp_cycle "$l" C 3 "$3" "$4" "$2"
+  lsr_rp_state "$l" "$M105" C
+}
+o105=$(st105 p0 "$(lsr_rp_report "$D105/n3.md" 1 0 차단)" 1 0)
+o105="$o105/$(st105 car "$(dm105 "$D105/mc.md" 이월)" 0 1)"
+o105="$o105/$(st105 blk "$(dm105 "$D105/mb.md" 차단)" 0 1)"
+L105O=$(lsr_ledger w105-ord)
+lsr_rp_cycle "$L105O" C 1 0 1 "$(dm105 "$D105/mo.md" 차단)"
+o105="$o105/$(lsr_rp_state "$L105O" "$M105" C)"
+check "105: 근거 없음으로 옮긴 리포트의 다음은 옮긴 결과를 따른다" "$o105" \
+  "리드 수정|3|거부|통과|0/이월|3|거부|거부|0/리드 수정|3|거부|통과|0/수정|1|통과|거부|0"
+
+# 드라이버 — 재기립 판단 입력과 트리아지 입력 사본은 근거 줄을 뺀다.
+cat > "$D105/rk-ev.md" <<'EOF'
+# 코드 리뷰 리포트
+
+- **리뷰 HEAD**: `abc1234`
+- **발견 요약**: 🔴 P0 2건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건
+
+## 🔴 P0
+
+- **[logic]** `a.sh:3` 첫 항목 — r
+    - **재현 명령**: `bash $REPRO_DIR/t.sh`
+    - **재현 스크립트**: t.sh
+      |echo x
+    - **재현 출력**: 종료 코드 1
+      x
+    - **결함 수준**: 설계 — r
+- **[logic]** `a.sh:5` 둘째 항목 — r
+    - **재현 예외**: 문면 — r
+    - **경로 추적**: `a.sh:5` → `b.sh:1`
+    - **결함 수준**: 구현 — r
+
+## 🟠 P1
+
+없음
+EOF
+cat > "$D105/rk-ref.md" <<'EOF'
+# 코드 리뷰 리포트
+
+- **리뷰 HEAD**: `abc1234`
+- **발견 요약**: 🔴 P0 2건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건
+
+## 🔴 P0
+
+- **[logic]** `a.sh:3` 첫 항목 — r
+    - **결함 수준**: 설계 — r
+- **[logic]** `a.sh:5` 둘째 항목 — r
+    - **결함 수준**: 구현 — r
+
+## 🟠 P1
+
+없음
+EOF
+printf '# 설계\n' > "$D105/doc.md"
+: > "$D105/pled.md"
+drv105() {  # drv105 <함수|drop> <인자…> — 드라이버를 새 프로세스에서 소싱해 한 함수를 부른다. drop 은 파일을 거르개에 흘린다
+  bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null; set +eu; MANIFEST="$2/manifest.md"; DOC="$2/doc.md"; shift 2
+    if [ "$1" = drop ]; then review_report_drop_evidence <"$2"; else "$@"; fi' \
+    _ "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$D105" "$@" 2>/dev/null
+}
+s105a=$(drv105 rekick_p0_report_section "$D105/rk-ev.md")
+s105b=$(drv105 rekick_p0_report_section "$D105/rk-ref.md")
+k105a=$(drv105 rekick_branch_input "$(printf 'S1\t%s' "$D105/rk-ev.md")" "$D105/pled.md" | grep '^결함 수준별 수:')
+k105b=$(drv105 rekick_branch_input "$(printf 'S1\t%s' "$D105/rk-ref.md")" "$D105/pled.md" | grep '^결함 수준별 수:')
+check "105: 재기립 입력은 근거 줄을 빼고 결함 수준별 수는 같다" \
+  "$([ -n "$s105a" ] && [ "$s105a" = "$s105b" ] && printf 같음)|$(printf '%s\n' "$s105a" | grep -c '재현' || true)|$k105a|$k105b" \
+  "같음|0|결함 수준별 수: 설계 1 · 구현 1|결함 수준별 수: 설계 1 · 구현 1"
+check "105: 트리아지 입력 사본은 근거 줄을 뺀 리포트다" \
+  "$([ "$(drv105 drop "$D105/rk-ev.md")" = "$(cat "$D105/rk-ref.md")" ] && printf 같음)|$(grep -cF 'review_report_drop_evidence <"$rp" >"$tri_in"' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")|$(grep -cF 'judgment_call triage "$tri_in"' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")" \
+  "같음|1|1"
 
 # ---------------------------------------------------------------------------
 # 104. 런 완주 정리 — 워크트리 판정과 철거

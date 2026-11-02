@@ -23,6 +23,13 @@
 #   FAIL-9-run-session-absent     run.sh declares RUN_PACE_SESSION_WINDOW_PCT_MAX zero times
 #   FAIL-10-run-session-double    run.sh declares it twice
 #   OK-11-mirror-count            the success line names three mirrors
+#   FAIL-12-gate-master-absent    gate.sh declares GATE_MASTER_STALE_SECONDS zero times
+#   FAIL-13-repair-deadline-double  repair.sh declares REPAIR_DEADLINE_SECONDS twice
+#   FAIL-14-repair-absent         repair.sh is missing — FAIL, not SKIP
+#   FAIL-15-master-stale-short    the master horizon is one second below 3 x (interval + budget)
+#   OK-16-master-stale-edge       the master horizon equals 3 x (interval + budget)
+#   FAIL-17-skip-over-half        the skip threshold is one second over half the interval
+#   EXIT2-18-no-master-interval   fleet.sh does not declare FLEET_MASTER_INTERVAL_SECONDS
 #
 # Fleet-agent lint branches:
 #   OK-1-agree                    template and renderer agree
@@ -51,6 +58,9 @@ readonly FLEET_TICK_BUDGET_SECONDS=5
 readonly FLEET_STATE_STALE_SECONDS=180          # 3 x (55 + 5)
 readonly FLEET_IDLE_SECONDS=1200
 readonly FLEET_SESSION_WINDOW_PCT_MAX=80        # 5h session window ceiling
+readonly FLEET_MASTER_INTERVAL_SECONDS=120
+readonly FLEET_MASTER_BUDGET_SECONDS=60
+readonly FLEET_MASTER_SKIP_SECONDS=60
 readonly FLEET_BURN_PP_PER_MWT=0.104
 fleet_render_plist() {
   local label="$1" sub="$2" lane="$3" cfg="$4" interval="$5" dst="$6" tpl="$FLEET_DIR/fleet-agent.plist.in"
@@ -75,6 +85,11 @@ cat > "$good/orchestrator/gate.sh" <<'EOF'
 # The sensor fires every `FLEET_START_INTERVAL` (55s) and caps its runtime at
 # `FLEET_TICK_BUDGET_SECONDS` (5s), so three periods is 180s.
 readonly GATE_PACE_STALE_SECONDS=180
+readonly GATE_MASTER_STALE_SECONDS=600
+EOF
+cat > "$good/orchestrator/repair.sh" <<'EOF'
+#!/usr/bin/env bash
+readonly REPAIR_DEADLINE_SECONDS=21600
 EOF
 cat > "$good/orchestrator/run.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -199,6 +214,34 @@ case "$ok_out" in
   *'거울 3개'*) passed=$((passed + 1)); echo "PASS: lint-pace-threshold-pins.sh OK-11-mirror-count (거울 3개)" ;;
   *) failures=$((failures + 1)); echo "FAIL: lint-pace-threshold-pins.sh OK-11-mirror-count — 성공 문구에 거울 3개가 없다: $ok_out" >&2 ;;
 esac
+
+clone FAIL-12-gate-master-absent
+sed -e '/^readonly GATE_MASTER_STALE_SECONDS=/d' "$good/orchestrator/gate.sh" > "$work/FAIL-12-gate-master-absent/orchestrator/gate.sh"
+run_case lint-pace-threshold-pins.sh FAIL-12-gate-master-absent
+
+clone FAIL-13-repair-deadline-double
+printf 'readonly REPAIR_DEADLINE_SECONDS=21600\n' >> "$work/FAIL-13-repair-deadline-double/orchestrator/repair.sh"
+run_case lint-pace-threshold-pins.sh FAIL-13-repair-deadline-double
+
+clone FAIL-14-repair-absent
+rm "$work/FAIL-14-repair-absent/orchestrator/repair.sh"
+run_case lint-pace-threshold-pins.sh FAIL-14-repair-absent
+
+clone FAIL-15-master-stale-short
+sed -e 's/^readonly GATE_MASTER_STALE_SECONDS=600$/readonly GATE_MASTER_STALE_SECONDS=539/' "$good/orchestrator/gate.sh" > "$work/FAIL-15-master-stale-short/orchestrator/gate.sh"
+run_case lint-pace-threshold-pins.sh FAIL-15-master-stale-short
+
+clone OK-16-master-stale-edge
+sed -e 's/^readonly GATE_MASTER_STALE_SECONDS=600$/readonly GATE_MASTER_STALE_SECONDS=540/' "$good/orchestrator/gate.sh" > "$work/OK-16-master-stale-edge/orchestrator/gate.sh"
+run_case lint-pace-threshold-pins.sh OK-16-master-stale-edge
+
+clone FAIL-17-skip-over-half
+sed -e 's/^readonly FLEET_MASTER_SKIP_SECONDS=60$/readonly FLEET_MASTER_SKIP_SECONDS=61/' "$good/orchestrator/fleet.sh" > "$work/FAIL-17-skip-over-half/orchestrator/fleet.sh"
+run_case lint-pace-threshold-pins.sh FAIL-17-skip-over-half
+
+clone EXIT2-18-no-master-interval
+sed -e '/^readonly FLEET_MASTER_INTERVAL_SECONDS=/d' "$good/orchestrator/fleet.sh" > "$work/EXIT2-18-no-master-interval/orchestrator/fleet.sh"
+run_case lint-pace-threshold-pins.sh EXIT2-18-no-master-interval
 
 # --- fleet agent pins --------------------------------------------------------
 clone OK-1-agree
