@@ -3363,19 +3363,24 @@ gate_reach_disposition() {
     # device tool anywhere parks as an act whose devices cannot be read —
     # read at the peeled word too, so `timeout 60 find … -exec xcrun …` parks
     # as its bare spelling does.
-    local _dk='-' _dshape='' _ds=1 _dw
-    if [ "$cls" = "표" ] && [ "$graded" = "트리밖쓰기" ]; then
-      _ds=$(gate_device_act_start "$@")
-      _dw=${*:$_ds:1}
-      case "$_dw" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
+    # These checks hold whatever the grade source is: one shell or runner
+    # `-exec` beside the device one makes the whole `find` opaque, and an
+    # opaque act that lands machine-global reaches this cell all the same. The
+    # kind is read for an act the table graded `트리밖쓰기`, the device forms
+    # the kinds name.
+    local _dk='-' _dshape='' _ds _dw
+    _ds=$(gate_device_act_start "$@")
+    _dw=${*:$_ds:1}
+    case "$_dw" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
+    if [ "$_dw" = find ]; then
+      for _dw in "$@"; do
+        case "${_dw##*/}" in
+          xcrun|xcodebuild|adb|emulator|avdmanager|maestro) printf '기기전역\tforeign-device\t-'; return 0 ;;
+        esac
+      done
+    fi
+    if [ "$graded" = "트리밖쓰기" ]; then
       _dk=$(gate_device_act_kind "${@:$_ds}")
-      if [ "$_dw" = find ]; then
-        for _dw in "$@"; do
-          case "${_dw##*/}" in
-            xcrun|xcodebuild|adb|emulator|avdmanager|maestro) printf '기기전역\tforeign-device\t-'; return 0 ;;
-          esac
-        done
-      fi
     fi
     if [ "$_dk" = "target" ] && ! gate_device_targets_listed "${@:$_ds}"; then
       printf '기기전역\tforeign-device\t-'; return 0
