@@ -43779,7 +43779,7 @@ cb60_foot
 
 # ---------------------------------------------------------------------------
 # 60b-2. 리뷰가 깨끗한 세그먼트의 CI 실패 — 부적격 실행의 park
-# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: CRLF tip 워크플로는 커밋 뒤에도 줄 끝 CR 을 담는다, 60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋과 그 CRLF 사본은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 바닥 정규식은 master 의 grep 문자열과 바이트로 같다, 60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키를 배포 자리로 읽는다, 60b: X5 는 바닥 grep 이 맞고 면제 모양이 아닌 줄을 배포 자리로 읽는다, 60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄만 바닥에서 면제한다, 60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
+# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: CRLF tip 워크플로는 커밋 뒤에도 줄 끝 CR 을 담는다, 60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋과 그 CRLF 사본은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 바닥 정규식은 master 의 grep 문자열과 바이트로 같다, 60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키를 배포 자리로 읽는다, 60b: X5 는 바닥 grep 이 맞고 면제 모양이 아닌 줄을 배포 자리로 읽는다, 60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄을 바닥에서 면제한다, 60b: X5 는 블록 스칼라 본문과 flow 밖의 YAML 주석 줄을 바닥에서 면제한다,60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
 #
 # 60b 의 둘째 조각. 픽스처는 `cb60_head` 로 새로 세운다. 같은 argv 의 둘째 park 가 행을
 # 더 쓰지 않는지는 칸과 종류마다 처음 사례에서 `cb60_park` 이 모으고 그 단언은 60b-3
@@ -43842,7 +43842,8 @@ cb60_act
 check "60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다" \
   "$rc|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(( $(cb60_posts) - cb60_np ))|$(( $(cb60_n blocked) - cb60_nb ))" "0|수락|1|0"
 # 판독기 함수 — 기대가 1 인 픽스처는 바닥 grep 에도 깨끗해야 한다. 바닥이 맞는데 1 인 것은
-# 트리거 paths 항목과 step `run` 본문의 `yq` 읽기 줄, 두 면제 모양뿐이라 그것만 `cb60_x5e` 로 부른다.
+# 트리거 paths 항목, step `run` 본문의 `yq` 읽기 줄, 블록 스칼라 본문·flow 밖의 줄 전체 주석, 세 면제
+# 모양뿐이라 그것만 `cb60_x5e` 로 부른다.
 cb60_x5at() {
   # cb60_x5at <기대 rc> <파일> <라벨> [e] — 파일 하나에 판독기 함수를 부른다. 넷째 인자 e 가
   # 없으면 기대 1 인 파일이 바닥 grep 에도 깨끗한지 함께 본다.
@@ -43900,7 +43901,6 @@ check "60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키�
 cb60_x5fail=""
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with:\n          workflow: >\n            .github/workflows/deploy.yml'
 cb60_x5 0 $'on: push\njobs:\n  t:\n    # environment: prod\n    steps:\n      - run: make'
-cb60_x5 0 $'on: push\n# see .github/workflows/x.yml\njobs: {}'
 cb60_x5 0 $'on:\n  push:\n    branches:\n      - .github/workflows/x.yml'
 cb60_x5 0 $'name: \'a\n  b\'\non:\n  push:\n    paths:\n      - .github/workflows/x.yml'
 cb60_x5 0 $'env: {a: 1,\n  b: 2}\non:\n  push:\n    paths:\n      - .github/workflows/x.yml'
@@ -43964,7 +43964,30 @@ for cb60_rk in '- run: |' '- run: &a >' $'- name: x\n        run: |'; do
     cb60_x5cr 1 "$(printf 'jobs:\n  t:\n    steps:\n      %s\n          %s' "$cb60_rk" "$cb60_l")" e
   done
 done
-check "60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄만 바닥에서 면제한다" "$cb60_x5fail" ""
+check "60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄을 바닥에서 면제한다" "$cb60_x5fail" ""
+# 줄 전체 주석 — 블록 스칼라 본문과 열린 flow 밖에서 첫 비공백이 `#` 인 바닥 줄은 YAML 파서가 버리는
+# 줄이라 풀린다. 본문 안 `#` 줄, 키 줄 뒤 꼬리, `environment` 갈래, 실행되는 줄의 배포 자리는 그대로
+# 0 이고, 판독기가 열지 않은 블록 스칼라 표지가 있는 파일, 줄 끝에서 닫히지 않은 따옴표가 있는 파일은
+# 주석 줄도 풀지 않는다.
+cb60_x5fail=""
+cb60_x5e 1 $'on: push\n# see .github/workflows/x.yml\njobs: {}'
+cb60_x5e 1 $'name: x\non:\n  pull_request:\n  push:\njobs:\n  t:\n    runs-on: ubuntu-latest\n    # 인자 없이 부르면 `.github/workflows/` 전량을 잰다.\n    steps:\n      - run: true'
+cb60_x5cr 1 $'name: x\non:\n  pull_request:\n  push:\njobs:\n  t:\n    runs-on: ubuntu-latest\n    # 인자 없이 부르면 `.github/workflows/` 전량을 잰다.\n    steps:\n      - run: true' e
+cb60_x5e 1 $'# .github/workflows/x.yml\nname: x\non: push\njobs: {}'
+cb60_x5e 1 $'on: push\njobs:\n  t:\n    steps:\n      - run: |\n          true\n\n      # 인자 없이 부르면 `.github/workflows/` 전량을 잰다.\n      - run: actionlint'
+cb60_x5e 1 $'on:\n  push:\n    paths:\n      # .github/workflows/x.yml\n      - a.txt\njobs: {}'
+cb60_x5e 1 $'on: push\n# .github/workflows/x.yml\njobs:\n  t:\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml'
+cb60_x5 0 $'name: x\non: push\njobs:\n  t:\n    steps:\n      - run: |\n          # gh workflow run .github/workflows/deploy.yml\n          true'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: |\n          echo a\n         # .github/workflows/x.yml\n          echo b'
+cb60_x5 0 $'on: push\n# environment: x .github/workflows/y.yml\njobs: {}'
+cb60_x5 0 $'on:\n  push:\n    branches: [main] # .github/workflows/x.yml\njobs: {}'
+cb60_x5 0 $'on: push\n# .github/workflows/x.yml\njobs:\n  u:\n    uses: ./.github/workflows/deploy.yml'
+cb60_x5 0 $'on: push\n# .github/workflows/x.yml\njobs:\n  t:\n    steps:\n      - run: gh workflow run deploy.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - uses: a/b@v1\n        with:\n          args:\n            - |\n              # .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run:\n          |\n            # .github/workflows/x.yml\n            true'
+cb60_x5 0 $'on: push\n# .github/workflows/x.yml\njobs:\n  t:\n    steps:\n      - run: cmd |'
+cb60_x5 0 $'name: \'a\n  b\'\n# .github/workflows/x.yml\non: push\njobs: {}'
+check "60b: X5 는 블록 스칼라 본문과 flow 밖의 YAML 주석 줄을 바닥에서 면제한다" "$cb60_x5fail" ""
 # 키 노드 속성과 문서 표지 — 앵커·태그가 붙은 키도 그 이름으로 읽고, `---` 줄의 flow 문서도 읽는다.
 cb60_x5fail=""
 cb60_x5 0 $'jobs:\n  d:\n    &e environment: prod'
