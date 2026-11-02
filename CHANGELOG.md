@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.24.1] - 2026-11-03
+
+무인 스테이지가 선언된 다른 대상의 워크트리에 들어가도 게이트 호출이 막히지 않고, 대상 밖으로 옮기는 `cd` 는 admit 이 미리 거부한다. 리포트를 쓰지 않고 끝난 리뷰 스테이지는 원장에 `공허한 성공` 으로 적힌다.
+
+### Fixed
+
+- **매니페스트 검사의 현재 디렉터리** — 검사 3 이 현재 디렉터리의 공통 git 디렉터리를 origin-worktree 의 것 하나와 견주던 것을, origin-worktree 와 선언된 모든 대상의 공통 git 디렉터리 집합(`manifest_allowed_common_dirs`)과 견준다. 선언된 대상 레포의 링크된 워크트리는 통과하고, 다른 레포나 git 저장소가 아닌 디렉터리는 머문 채 `--target` 으로 지목하라는 문면으로 거부된다.
+- **admit 의 이동 거부** — 맨 형태로 낸 `cd`·`pushd`·`popd` 의 목적지가 선언된 대상의 레포가 아니거나 낱말만으로 정할 수 없으면(피연산자 없음, `-`, `~`, 확장 문자, `popd`) 등급을 매기기 전에 종료 코드 2 로 거부하고 원장 행을 남기지 않는다. 지금까지는 그런 이동이 표를 받아 세션을 옮겼고, 그 뒤 모든 게이트 호출이 매니페스트 검사에 막혔다.
+- **리뷰 스테이지의 종단 부류** — 게이트 기록자가 리뷰 시도에 이 사이클의 리포트(정규 경로 또는 `-r<k>` 재파견 경로)를 드라이버의 `predicate_review` 로 묻고, 없으면 행 개수와 상관없이 `공허한 성공` 으로 적는다. 그 리뷰를 이어갈 때의 계속 메시지는 리포트 경로와 `발견 요약` 줄이 없다는 사실을 든다.
+- **스테이지 정책과 두 무인 스킬** — 다른 대상·세그먼트의 상태는 `cd` 하지 않고 `gate.sh exec` 의 `--target`·`--segment` 로 지목해 읽는다는 문장을 더했다.
+
 ## [3.24.0] - 2026-11-02
 
 `active-notify` 의 완료 알림이 데스크탑 배너와 함께 attention 스풀에 `active-notify` 사건을 남긴다. 사건은 메인 세션이 라우터 좌석에서 부른 fire-now 에만 남고, 그 세션으로 돌아오면 귀환 닫기가 처리 표지를 남긴다.
