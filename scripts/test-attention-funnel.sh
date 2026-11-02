@@ -82,10 +82,20 @@ mkdir -p "$HOME_DIR"
 
 # The emitter launches the notifier detached, so a write can land after the
 # process that raised it has exited.
+#
+# notify_settle <want> [fixed-string] — waits until <want> lines of the log
+# carry the string (any line when none is given). A watcher pass raises other
+# banners of the run beside the one a case asserts on, and their detached writes
+# land in no fixed order, so a case that counts one slot's lines has to wait for
+# that slot's lines.
 notify_settle() {
-  local want="$1" i=0 n
+  local want="$1" pat="${2:-}" i=0 n
   while [ "$i" -lt 40 ]; do
-    n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
+    if [ -n "$pat" ]; then
+      n=$(grep -cF -- "$pat" "$NOTIFY_LOG" 2>/dev/null || true)
+    else
+      n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
+    fi
     if [ "${n:-0}" -ge "$want" ]; then return 0; fi
     sleep 0.1
     i=$((i + 1))
@@ -375,8 +385,8 @@ for order in gate-watch watch-gate; do
     gate-watch) watch_pass ;;
     watch-gate) gate_src 'gate_notify_approval "$AID" "$FULLQ — alias / 커밋 / 워크트리쓰기"' >/dev/null 2>&1 ;;
   esac
-  notify_settle 2
-  check "5 $order — 두 자리 모두 배너를 올렸다" "$(grep -c -- "-group cc-cmds-autopilot-$RID-$AID " "$NOTIFY_LOG" || true)" "2"
+  notify_settle 2 "-group cc-cmds-autopilot-$RID-$AID "
+  check "5 $order — 두 자리 모두 배너를 올렸다" "$(grep -cF -- "-group cc-cmds-autopilot-$RID-$AID " "$NOTIFY_LOG" || true)" "2"
   check "5 $order — 승인 사건 파일은 하나" "$(appr_files | grep -c . || true)" "1"
   check "5 $order — 본문은 정규 질문" "$(appr_jq .body)" "$CANON"
   check "5 $order — 두 번째 구동 뒤 파일 바이트가 같다" \
