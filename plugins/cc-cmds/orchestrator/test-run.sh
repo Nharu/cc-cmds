@@ -1670,6 +1670,53 @@ grep -v '^\*\*무진전 상한\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "상한 필드가 없어도 그 필드를 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
 
+# 수리 사건 행 — 플러그인 기본 동의로 띄운 수리 런의 사건은 얼린 집합에 든다. 행이
+# 없으면 바이트를 하나도 내지 않아 기존 매니페스트의 다이제스트가 그대로이고, 있으면
+# 정확히 한 줄을 낸다. 둘 이상이거나 칸이 다섯이 아닌 행은 런 시작에서 거부된다.
+RE_ROW="- \`수리 사건\` | Nharu/cc-cmds | main | 0123456789ab | $(printf 'x' | shasum -a 256 | cut -d' ' -f1)"
+re_mf() {   # re_mf [<행>...] — 주어진 행을 얹은 매니페스트
+  local r
+  write_manifest "$MF"
+  for r in "$@"; do printf '%s\n' "$r" >> "$MF"; done
+}
+re_mf
+bd_nore=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+check "수리 사건 행이 없으면 다이제스트 입력에 그 줄이 없다" \
+  "$( { binding_set_bytes | grep -c '^repair' || true; } )" "0"
+re_mf "$RE_ROW"
+check "수리 사건 행이 있으면 다이제스트 입력에 정확히 한 줄이 든다" \
+  "$( { binding_set_bytes | grep -c '^repair' || true; } )" "1"
+bd_re=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_re" = "$bd_nore" ]; then
+  bad "구속 집합 감도" "수리 사건 행을 더했는데 다이제스트가 그대로다"
+else
+  ok "수리 사건 행이 생기면 구속 다이제스트가 움직인다"
+fi
+re_mf "${RE_ROW/0123456789ab/0123456789ac}"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_re" ]; then
+  bad "구속 집합 감도" "사건 id 를 바꿨는데 다이제스트가 그대로다 — 런 도중 다른 사건으로 옮길 수 있다"
+else
+  ok "수리 사건 행의 값이 바뀌면 구속 다이제스트가 움직인다"
+fi
+re_mf "$RE_ROW"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "수리 사건 행 하나는 매니페스트 검사를 통과한다"
+else
+  bad "수리 사건 행" "올바른 행이 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+re_mf "$RE_ROW" "$RE_ROW"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "수리 사건 행" "행 둘이 통과했다 — 런 하나가 사건 둘을 고친다"
+else
+  ok "수리 사건 행이 둘이면 런 시작에서 거부된다"
+fi
+re_mf "$RE_ROW | 여섯째"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "수리 사건 행" "칸이 여섯인 행이 통과했다 — 게이트는 그 행을 건너뛴다"
+else
+  ok "칸이 다섯이 아닌 수리 사건 행은 런 시작에서 거부된다"
+fi
+
 # 적용 프로브 코드 행 — 프로브의 종료 코드 대응은 `## 인가` 의 행으로 얼린다. 행이
 # 없으면 바이트를 하나도 내지 않아 기존 매니페스트의 다이제스트가 그대로이고, 있으면
 # 정확히 한 줄을 낸다. 깨진 행은 0/2 로 떨어지지 않고 런 시작에서 거부된다.

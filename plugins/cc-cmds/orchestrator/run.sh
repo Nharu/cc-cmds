@@ -473,6 +473,7 @@ manifest_snapshot_take() {
   #   AC <row>     every `- \`적용 프로브 코드\`` row anywhere, in order
   #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
+  #   RE <row>     every `- \`수리 사건\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -509,6 +510,7 @@ $(LC_ALL=C awk '
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
     index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
+    index($0, "- `수리 사건`") == 1 { print "RE\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -988,6 +990,11 @@ manifest_plugin_allow_rows() {
   grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_repair_rows() {
+  if manifest_memo_on; then manifest_memo_all "RE	"; return 0; fi
+  grep -E '^- `수리 사건`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -1111,6 +1118,13 @@ binding_set_bytes() {
     # load a plugin no person accepted at kickoff. Whole-file scan, zero bytes
     # when absent, so a manifest written before this row existed keeps its digest.
     manifest_plugin_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/pluginallow\t/'
+    # THE `수리 사건` ROW IS IN THE FROZEN SET, on the same terms. It marks a run
+    # the plugin started on its default consent, and the gate holds such a run's
+    # authorization to that consent's bounds only while the row is there; a row
+    # any act could rewrite or drop mid-run would move the run out of those
+    # bounds or onto another event. Whole-file scan, zero bytes when absent, so a
+    # manifest written before this row existed keeps its digest.
+    manifest_repair_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/repair\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1474,7 +1488,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1919,6 +1933,23 @@ EOF
   done <<EOF
 $pa_rows
 EOF
+
+  # 20b — the `수리 사건` row: the event a repair run fixes, written by the
+  # plugin's renderer and read by position. At most one — a run fixes one
+  # event — and exactly five cells, the reading the gate's reader assumes: a
+  # row of another width would be skipped there and leave the run checked as
+  # a person's run while this check had passed it.
+  local re_rows re_row re_n=0
+  re_rows=$(manifest_repair_rows)
+  while IFS= read -r re_row; do
+    [ -n "$re_row" ] || continue
+    re_n=$((re_n + 1))
+    [ "$(printf '%s' "$re_row" | awk -F'|' '{ print NF }')" = "5" ] \
+      || die "「수리 사건」 행의 칸이 다섯이 아닙니다 — 받는 형태는 \`- \`수리 사건\` | <slug> | <베이스 브랜치> | <사건 id> | <서명 sha256>\` 입니다: $re_row"
+  done <<EOF
+$re_rows
+EOF
+  [ "$re_n" -le 1 ] || die "「수리 사건」 행이 ${re_n}개입니다 — 많아야 하나입니다"
 
   # 21 — the entry judgment's structure, for a plan that carries one. The
   # checker beside the entry prompt asserts it: a reason for every `team-4`
