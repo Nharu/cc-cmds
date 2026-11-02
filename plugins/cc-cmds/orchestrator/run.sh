@@ -7504,7 +7504,8 @@ predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/d
 # THE VISUAL STAGE'S ARTIFACT IS ITS SIDECAR at `검토 통과` or `발행됨`
 # (`visual_sidecar_complete`), crossed with the stage's terminal literal for the
 # same reason. `발행됨` counts because a re-kicked run whose source already
-# published the screens reuses that sidecar and ends without writing it. The sidecar is found the way
+# published the screens reuses that sidecar without generating it again — it
+# rewrites only the record path line to this run's. The sidecar is found the way
 # every visual skill and `visual-check.sh` find it: the document key is the
 # path relative to the document's repository top, the slug is that key without
 # `.md` with `/` spelled `-`, and the base is the repository's common git
