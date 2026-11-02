@@ -60215,7 +60215,7 @@ unset d104 c104 p104 f104 d104n
 
 # ---------------------------------------------------------------------------
 # 107. 다른 대상 워크트리의 세션 — 검사 3 의 허용 집합, admit 의 이동 거부, 산출물 없는 리뷰의 종단 부류
-# --- section: 107 | group: tguard | covers: check_manifest, admit, gate_record_stage_outcome, gate_continuation_argv | anchors: 107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다, 107:두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다, 107:두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다, 107:선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다, 107:git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다, 107:홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다, 107:대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다, 107:리포트 없는 리뷰는 공허한 성공이다, 107:정규 경로 리포트가 있는 리뷰는 정상 완료다, 107:-r2 경로 리포트가 있는 리뷰는 정상 완료다, 107:닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다, 107:공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다 ---
+# --- section: 107 | group: tguard | covers: check_manifest, admit, gate_record_stage_outcome, gate_continuation_argv | anchors: 107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다, 107:두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다, 107:두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다, 107:선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다, 107:git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다, 107:홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다, 107:대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다, 107:리포트 없는 리뷰는 공허한 성공이다, 107:정규 경로 리포트가 있는 리뷰는 정상 완료다, 107:-r2 경로 리포트가 있는 리뷰는 정상 완료다, 107:닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다, 107:부분 복구 머리만 있는 리뷰는 정상 완료다, 107:두 종결 줄이 없는 초기 스텁 리포트의 리뷰는 공허한 성공이다, 107:공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다, 107:부분 복구 리뷰는 이어가기 메시지에 닿지 않는다 ---
 #
 # 세계는 이 절이 스스로 만든다: 홈 레포 H 와 그 링크된 워크트리, 두 번째로
 # 선언된 대상 레포 B 와 그 링크된 워크트리, 선언되지 않은 레포 U, git 저장소가
@@ -60320,7 +60320,7 @@ esac
 # 게이트에 묻지 않고 매니페스트의 두 단 위 기준과 사이클 1 로 여기서 센다.
 s106_base=$(dirname "$S106")
 s106_rp() { printf '%s/docs/reviews/seg-%s-%s-cycle1%s.md' "$s106_base" "$TG_RUN" "$1" "${2:+-r$2}"; }
-s106_outcome() {  # s106_outcome <seg> <없음|정규|r2|중단>
+s106_outcome() {  # s106_outcome <seg> <없음|정규|r2|중단|복구|스텁>
   local rp
   rp=$(s106_rp "$1")
   case "$2" in
@@ -60328,6 +60328,14 @@ s106_outcome() {  # s106_outcome <seg> <없음|정규|r2|중단>
       [ "$2" = 정규 ] || rp=$(s106_rp "$1" 2)
       mkdir -p "$(dirname "$rp")"
       printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' > "$rp" ;;
+    복구)
+      # 위젯·라운드가 모자란 복구가 정규 줄 대신 쓰는 부분 복구 머리만 있다.
+      mkdir -p "$(dirname "$rp")"
+      printf '# 리뷰\n\n<!-- cc-design-ledger v3\n- a1 | done\n-->\n\n- **발견 요약(부분 복구)**: 🔴 P0 미상 | 🟠 P1 미상 | 🟡 P2 미상 | 🟢 P3 미상\n- **P1 분류**: 차단 미상 | 이월 가능 미상\n' > "$rp" ;;
+    스텁)
+      # 첫 팀원을 띄울 때 쓰는 초기 스텁: 제목과 원장 블록뿐, 종결 줄은 둘 다 없다.
+      mkdir -p "$(dirname "$rp")"
+      printf '# 리뷰\n\n<!-- cc-design-ledger v3\n- a1 | running\n-->\n' > "$rp" ;;
   esac
   ( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
     . "$1" </dev/null >/dev/null 2>&1
@@ -60351,6 +60359,8 @@ check "107:리포트 없는 리뷰는 공허한 성공이다" "$(s106_outcome SR
 check "107:정규 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRB 정규)" "정상 완료"
 check "107:-r2 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRC r2)" "정상 완료"
 check "107:닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다" "$(s106_outcome SRD 중단)" "공허한 성공"
+check "107:부분 복구 머리만 있는 리뷰는 정상 완료다" "$(s106_outcome SRE 복구)" "정상 완료"
+check "107:두 종결 줄이 없는 초기 스텁 리포트의 리뷰는 공허한 성공이다" "$(s106_outcome SRF 스텁)" "공허한 성공"
 c106=$( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
   . "$1" </dev/null >/dev/null 2>&1
   MANIFEST="$2"
@@ -60371,6 +60381,20 @@ case "$c106" in
   *"게이트를 거친 행위도 정지 기록도 없다"*) bad "107:리뷰 계속 메시지" "기본 문면이 갔다: $c106" ;;
   *) ok "107:그 메시지는 행위가 없다는 기본 문면을 싣지 않는다" ;;
 esac
+# 부분 복구 리뷰는 공허한 성공이 아니므로 같은 세션 재개가 이어가기가 되지 않는다:
+# 반환 0, GATE_CONTINUED 빈 값, 계속 argv 를 만들지 않는다.
+c106=$( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$1" </dev/null >/dev/null 2>&1
+  MANIFEST="$2"
+  check_manifest >/dev/null 2>&1
+  derive_paths_from_manifest
+  rundir_init 2>/dev/null || true
+  GATE_RESUME=s-106
+  GATE_CONTINUE_ARGV=()
+  r=0; gate_continuation_argv SRE review review -p "원래 프롬프트" 2>/dev/null || r=$?
+  printf "%s|%s|%s\n" "$r" "${GATE_CONTINUED:-}" "${#GATE_CONTINUE_ARGV[@]}"
+' _ "$GATE" "$TG_M" )
+check "107:부분 복구 리뷰는 이어가기 메시지에 닿지 않는다" "$c106" "0||0"
 rm -rf "$s106_base/docs/reviews/seg-$TG_RUN-"*
 unset -f s106_rp s106_outcome
 unset S106 r106 a106 d106 r106_sh s106_home s106_b r106_snap m106_snap n106 t106 n106_rows g106 c106 s106_base
