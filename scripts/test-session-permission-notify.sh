@@ -392,7 +392,7 @@ hook_run request "$PATH_FULL"
 perm sess-red4 Write "$(jq -cn --arg a "${SECRETS4[1]}" --arg c "${SECRETS4[2]}" \
   '{file_path: "/d/c.txt", content: ("cmd: [--password," + $a + "]\nCMD [\"app\", \"--secret\", " + $c + "]\n")}')"
 hook_run request "$PATH_FULL"
-perm sess-red4 Bash "$(jq -cn --arg a "${SECRETS4[3]}" '{command: ("tool --token, " + $a + " next")}')"
+perm sess-red4 Bash "$(jq -cn --arg a "${SECRETS4[3]}" '{command: ("tool --token, " + $a + " next; help --token, --secret")}')"
 hook_run request "$PATH_FULL"
 perm sess-red4 Bash "$(jq -cn --arg a "${SECRETS4[4]}" --arg q "'" '{command: ("run \"--token\", " + $q + $a + $q + " done")}')"
 hook_run request "$PATH_FULL"
@@ -403,7 +403,7 @@ for s in "${SECRETS4[@]}"; do
 done
 check "가림 — 쉼표 뒤 플래그 값이 어느 파일에도 없다" "${leaks:-없음}" "없음"
 check "가림 — 쉼표 뒤 플래그는 남고 값 자리에 가림이 서며 뒤 구두점이 남는다" \
-  "$(ev '[.[] | .reply.input_summary] | join("\n") | [contains("[--token, [가림], --verbose]"), contains("[--password, \"[가림]\"]"), contains("[--password,[가림]]"), contains("\"app\", \"--secret\", [가림]]"), contains("tool --token, [가림] next"), (([39] | implode) as $q | contains("\"--token\", " + $q + "[가림]" + $q + " done"))] | all')" "true"
+  "$(ev '[.[] | .reply.input_summary] | join("\n") | [contains("[--token, [가림], --verbose]"), contains("[--password, \"[가림]\"]"), contains("[--password,[가림]]"), contains("\"app\", \"--secret\", [가림]]"), contains("tool --token, [가림] next; help --token, --secret"), (([39] | implode) as $q | contains("\"--token\", " + $q + "[가림]" + $q + " done"))] | all')" "true"
 
 # ---------------------------------------------------------------------------
 # 4. Per-tool summaries.
