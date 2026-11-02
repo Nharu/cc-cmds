@@ -1622,19 +1622,22 @@ m_fresh r5; m_manifest "$WORK/M2.plan.md" M2
 set_backlog "$(backlog_record m1 ".manifest_path = \"$MMAN\"")" "$(backlog_record m2 ".manifest_path = \"$WORK/M2.plan.md\"")"
 gh_red "$TIP1" 101
 for l in u1 u2; do
-  FLEET_NOW_PIN='' TEST_RUN_SLEEP=8 FLEET_MASTER_INTERVAL_TEST_SECONDS=2 fleet dispatch "$l" >/dev/null 2>"$WORK/r5-$l.err" &
+  FLEET_NOW_PIN='' TEST_RUN_SLEEP=20 FLEET_MASTER_INTERVAL_TEST_SECONDS=2 fleet dispatch "$l" >/dev/null 2>"$WORK/r5-$l.err" &
   eval "r5_$l=\$!"; eval "BG_PIDS=\"\$BG_PIDS \$r5_$l\""
 done
-seen=""; holders=0
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
-  sleep 0.5
+# The runs last 20 seconds and the reading is sampled for up to 18 of them,
+# stopping at the third distinct observed_at: a host where one round takes
+# longer than the 2-second interval still shows the reading moving.
+seen=""; holders=0; n_seen=0; n=0
+while [ "$n" -lt 36 ] && [ "$n_seen" -lt 3 ]; do
+  sleep 0.5; n=$(( n + 1 ))
   o=$(mf .observed_at); [ -z "$o" ] || seen=$(printf '%s\n%s' "$seen" "$o")
   if [ -d "$PACE/master.lock" ]; then
     h=$(count_lines "$PACE/master.lock/pid"); [ "$h" -le "$holders" ] || holders=$h
   fi
+  n_seen=$(printf '%s\n' "$seen" | grep -v '^$' | sort -u | count_lines /dev/stdin)
 done
 wait "$r5_u1" "$r5_u2"
-n_seen=$(printf '%s\n' "$seen" | grep -v '^$' | sort -u | count_lines /dev/stdin)
 [ "$n_seen" -ge 3 ] && ok "관측 자식이 도는 동안 observed_at 이 두 번 이상 바뀐다 ($n_seen 가지)" \
   || bad "관측 자식이 도는 동안 observed_at 이 두 번 이상 바뀐다" "값 $n_seen 가지"
 [ "$holders" -le 1 ] && ok "master.lock 의 보유자는 언제나 하나 이하다" || bad "master.lock 의 보유자는 언제나 하나 이하다" "$holders"
