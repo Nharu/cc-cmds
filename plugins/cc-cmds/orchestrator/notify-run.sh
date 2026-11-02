@@ -5,7 +5,9 @@
 # process raising one of those sources this file: the run's liveness watcher and
 # adjudication gate, the session hooks, and the banner click handler
 # (`notify-focus.sh`), which raises the `focus-guide` banner from a click.
-# (`active-notify` has its own dispatcher and does not come through here.)
+# (`active-notify` has its own dispatcher and raises no banner through here; it
+# sources this file in a subshell only to call `cc_caller_is_router` for its
+# remote-seat check.)
 #
 # WHY A SHARED FILE AND NOT A CONVENTION. Two processes raise banners for this
 # pipeline, and they have to agree on the group string, because a group is a

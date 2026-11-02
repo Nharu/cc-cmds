@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.24.0] - 2026-11-02
+## [3.25.0] - 2026-11-02
 
 로컬 배너를 올리고 지우는 두 함수가 주의 스풀에 원격 사본을 남긴다. 배너 함수는 사건을, 지우기 함수는 처리 표지를 쓰고, 사건 종류를 가르거나 전체 문면을 실어야 하는 좌석(질문 좌석 훅, 질문지, 게이트·감시자의 승인 알림)은 깔때기 첨부를 넘긴다. 로컬 배너의 argv, 두 함수의 종료 상태와 출력, 좌석 규칙은 바뀌지 않는다.
 
@@ -20,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 원격으로 답할 수 있으려면 로컬 배너가 올라가고 지워지는 모든 순간이 원격에도 같은 모양으로 남아야 한다. 모든 배너가 이미 두 함수를 지나므로, 그 두 함수에 탭을 두면 좌석 판정을 새로 하지 않고 빠짐없이 남길 수 있다.
+
+## [3.24.0] - 2026-11-02
+
+`active-notify` 의 완료 알림이 데스크탑 배너와 함께 attention 스풀에 `active-notify` 사건을 남긴다. 사건은 메인 세션이 라우터 좌석에서 부른 fire-now 에만 남고, 그 세션으로 돌아오면 귀환 닫기가 처리 표지를 남긴다.
+
+### Added
+
+- **좌석 티켓** — PreToolUse 훅이 `agent_id` 가 빈 fire-now 호출마다 일회용 티켓을 `~/.local/state/cc-cmds/active-notify-seat/` 에 발급해 명령 앞에 `CC_CMDS_ACTIVE_NOTIFY_SEAT_TICKET=` 로 붙인다. 디스패처는 티켓을 옮겨 지우며 차지하고, 60초 안의 정규 파일이고 호출자가 라우터 좌석(`cc_caller_is_router`)일 때만 사건을 남긴다.
+- **완료 사건** — slot 은 배너 그룹과 같은 문자열이다. 배너를 띄울 수 없는 호스트나 terminal-notifier 가 없을 때도 그 fire 가 가졌을 그룹으로 남는다. origin 은 디스패처 자신의 세션이고 run 과 repo 는 비운다.
+- **귀환 처리 표지** — `notify.sh dismiss` 가 스풀이 있으면 그 세션의 slot 과 `slot@` 접두에 원인 `return` 표지 한 쌍을 남긴다. 호스트와 terminal-notifier 유무를 가리지 않는다.
+
+### Changed
+
+- **훅의 디스패처 분기** — 호출마다 허용만 하고 영구 권한 규칙을 심지 않는다. 접두를 붙일 수 없는 명령 모양(묶음, 제어 구문, 함수 정의 등)이나 `$SHELL` 구문 확인에 실패한 명령은 바꾸지 않고 허용하며, 바꿀 때는 `tool_input` 의 다른 키를 그대로 둔다.
 
 ## [3.23.1] - 2026-11-02
 
