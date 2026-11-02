@@ -11,7 +11,7 @@ The lead synthesizes all review results into a Korean document using this templa
 | P2 | 🟡 | No real harm in normal use, or a finding the lowering table below moves here — follow-up issue recommended | Mergeable |
 | P3 | 🟢 | Improvement suggestion (includes nitpick) | Optional |
 
-**Judgment criterion.** This is the only place the criterion is written. The unattended review and the interactive `/review` grade against the same text, and item 10 of `01-reviewer-context-package.md` maps the reviewers' five internal levels onto it without restating it. The question it asks of every finding is: **if this merges, does normal use suffer real harm?**
+**Judgment criterion.** This is the only place the criterion is written. The unattended review and the interactive `/review` grade against the same text, and item 10 of `01-reviewer-context-package.md` maps the reviewers' five internal levels onto it without restating it. The question it asks of every finding is: **if this merges, does normal use suffer real harm?** 무인 리뷰가 P0 를 유지할 조건은 기준이 아니라 근거의 문제이며 `P0 Reproduction Evidence — review-unattended only` 절에 있다(대화형 리뷰에는 해당하지 않는다).
 
 **P0 — merging causes real harm in normal use, and the defect is one of the following.**
 
@@ -116,6 +116,8 @@ The sub-bullets come after the existing `근거` / `💡 수정 제안` / `📎`
 ```
     - **분류 근거**: <한 줄 — 이월 가능이면 세 기준을 모두 만족하는 이유, 차단이면 어긋난 기준 번호와 이유>
 ```
+
+An item moved down from P0 for want of reproduction evidence (review-unattended only) carries `    - **강등**: 재현 근거 없음 — <기준 문자>, <까닭 한 문장>` directly after `분류 근거` and before `이월 제목`; its grammar is in `P0 Reproduction Evidence — review-unattended only`.
 
 A `**[이월 가능]**` item then has, in this order:
 
@@ -253,6 +255,59 @@ When a finding only **confirms an existing PR comment** (it carries `📎 관련
 
 (If the thread reference is a URL, substitute `이미 [이 PR 코멘트](URL)에서 제기된 사항입니다`.) The absence of a blockquote on a confirms-existing finding is the signal for "nothing new to post" (P3 excepted — a P3 line is itself the comment). In the rare case a P3 line is itself confirms-existing, the dedup rule wins: do not post that line as a comment, leave only the confirms-existing plain note.
 
+## P0 Reproduction Evidence — review-unattended only
+
+Written only by `review-unattended`, in every report it writes — the ordinary cycle, delta and resolution, the confirmation review, the review-after-merge post review and the recovery report — for every item that stands in the P0 section, inherited items and other-slice P0 included. 대화형 `/review`·`/review-lite` 는 이 절의 문법을 쓰지 않는다 — 대화형도 템플릿을 읽지만 이 절의 요건은 무인 리뷰에만 걸린다. The P0 criterion itself is the one in `## Severity System (P0~P3)`; this section is the condition for keeping that grade, not a second criterion.
+
+**Place.** Every P0 item carries **exactly one** of the two forms below as sub-bullets (four spaces, then `- `), after the existing `근거` / `💡 수정 제안` / `📎` lines and any `결함 수준` or `배정` sub-bullet, and before the blank line that precedes `💬`. The evidence sub-bullets are the item's last sub-bullets. The key lines follow each other in the written order with nothing between them: `재현 명령`, then on the next line `재현 출력` — or, with a script, `재현 명령`, then `재현 스크립트` and its body, then `재현 출력` on the line right after the body —, and `재현 예외`, then `경로 추적`.
+
+Reproduction form:
+
+```
+    - **재현 명령**: `<명령 한 줄>`
+    - **재현 스크립트**: <파일 이름>
+      |<부호화한 스크립트 줄>
+      |
+      |<부호화한 스크립트 줄>
+    - **재현 출력**: 종료 코드 <n>
+      <출력 줄>
+      <출력 줄>
+```
+
+- **`재현 명령`** is one line wrapped in a single pair of backticks, and that line is one simple command: no shell operator outside quotes (`|`·`&&`·`||`·`;`·`&`·`>`·`<`), no command substitution `$( )`, no `cd`. The lead declares it as one act of `gate.sh exec`, and the gate takes no line with an unquoted operator as one act. A reproduction that needs such a line goes into `재현 스크립트`, and `재현 명령` is the line that calls the script. A command containing a backtick also goes into `재현 스크립트` — rewriting a backtick as `$( )` changes the arguments of a command whose backtick is a literal. The gate's `재현 형식` check does not look at the simple-command condition (telling it needs the quotes unwrapped), but it flags a backtick inside the `재현 명령` value. The lead does not run a `재현 명령` that breaks the condition; that candidate is cap-exhausted, and its `강등` reason reads `실행 전 점검 — 단순 명령 아님`.
+- **Placeholders.** There are two, and only `재현 명령` uses them: `$REPRO_DIR` (the disposable directory) and `$REPRO_TREE` (the review HEAD's tree unpacked inside it, `$REPRO_DIR/tree`). A repository file is called as `"$REPRO_TREE/<저장소 경로>"` and a disposable script as `"$REPRO_DIR/<파일 이름>"` — the lead binds that place to `$REPRO_DIR/scripts/<파일 이름>`. Apart from the two placeholders, `재현 명령` uses no `$`, no `~`, no glob character and no word that names a file by a relative path: the lead's shell would expand them against the lead's environment and current directory before `env -i`. A reproduction that needs them goes into `재현 스크립트`, where the `bash` inside `env -i` expands them. A command breaking this is `실행 전 점검 — 단순 명령 아님` too.
+- **`재현 스크립트` body takes no placeholder.** It receives paths as arguments only (`$1` is `$REPRO_TREE`). A reproduction whose working directory must be the tree (a repository test, for instance) is a script that takes the tree path as its first argument and enters it with `cd "$1"`, and `재현 명령` reads `bash "$REPRO_DIR/<파일 이름>" "$REPRO_TREE"`. The interpreter is written in `재현 명령` (`bash`, `python3`, …). A script whose body contains `$REPRO_DIR` or `$REPRO_TREE` is a `재현 형식` problem.
+- **`재현 스크립트` is optional**, and required whenever the reproduction runs a disposable script the repository does not hold (lines that build a fixture, a multi-line recipe of a post review). Its value is one file name matching `^[A-Za-z0-9_][A-Za-z0-9._-]*$` — the first character is neither `.` nor `-`, so `.` and `..` do not match — and the whole script follows from the next line in 1–60 lines. 본문 줄은 돌린 파일의 한 줄마다 하나이고, 공백 여섯 개와 `|` 뒤에 그 줄을 아래 부호화로 옮겨 적는다 — 빈 줄은 `      |` 만이고, 앞 공백·탭·줄 끝 공백도 원문 그대로 나른다. The reading regex is `^      \|`, and the body ends at the first line that does not match, so an indentation-significant script and a heredoc fixture whose blank lines and leading spaces are content both travel.
+- **Running it.** The one who runs it (the lead's first run, and an inherited or post-review re-run alike) makes a disposable directory, unpacks the review HEAD's tree into `$REPRO_TREE`, takes every body line, deletes its first seven characters (six spaces and `|`), decodes it and appends one newline, writes the result to the file of that name under `$REPRO_DIR/scripts`, replaces `$REPRO_DIR/<그 파일 이름>` in `재현 명령` with that file's absolute path and the two remaining placeholders with their absolute paths, letter for letter, and runs it. Never in the reviewed worktree. Because the carried body is byte-identical to a file ending in a newline, every reproduction evidence can be run again from the report's text and that HEAD's repository content alone.
+- **A command that cannot be run again** — one that calls a file neither the repository nor `재현 스크립트` holds (a file of a deleted disposable directory, for instance) — is evidence that cannot be run again. The lead treats it as no evidence and moves the item to P1; an inherited re-run of such a command that fails or shows no harm is never the basis of `해결됨`.
+- **A reproduction over the size limit** — a script over sixty lines, a reproduction needing two or more files, an output whose harm-showing part does not fit in twenty lines — is cap-exhausted. The lead treats it as a candidate not reproduced within the cap (`high`) and never carries a shortened body that differs from the file it ran.
+- **`재현 출력`** ends in `종료 코드 <0 또는 앞자리 0 없는 십진수>`. 0 is allowed — a silently wrong result (criterion (c)) shows up as a successful exit.
+- **Output body.** From the next line, 1–20 lines, each six spaces followed by a non-space character (reading regex `^      [^ ]`, as in `이월 본문`). The body ends at the first non-matching line, and a six-space line appearing again after it within the item is a `재현 형식` problem (a `재현 스크립트` body ends before the `재현 출력` key line, so it is not one). The body is an excerpt of the original output — the tail that shows the harm — with trailing spaces, `\r`, leading spaces and tabs removed from every line, and empty or blank-only lines dropped. An output with no line at all is the single body line `      (출력 없음)`.
+- **No `**` in a value, and its encoding.** The whole value after a key — the `재현 명령` command, the `재현 스크립트` file name and body, the `재현 출력` body, the `재현 예외` sentence, `경로 추적`, and the `강등` sentence of the P1 section — never contains `**`. 값은 이 부호화로 옮긴다: 원문의 `\` 를 먼저 모두 `\\` 로 두 배로 하고, 그다음 `*` 를 모두 `\*` 로 쓴다. Every `*` of an encoded value is then preceded by `\`, so `**` never appears, and a command already containing `\*\*` (a `grep '\*\*결함 수준\*\*' …` that reproduces this repository's reader regex) becomes `\\\*\\\*`, distinct from a literal `**`. 다시 돌리는 쪽은 `재현 명령` 값과 `재현 스크립트` 본문 줄을 왼쪽부터 읽어 `\\` 를 `\` 로, `\*` 를 `*` 로 풀고 그 밖의 글자는 그대로 두어 돌린다 — 이 풀이는 부호화의 역이라 왕복하면 원문과 같다. The `재현 출력` body and the sentence values are never run, so a reader need not decode them, but they are encoded the same way: the gate's report readers take `**결함 수준**:` anywhere in a report and look for `**[차단]**` / `**[이월 가능]**` outside tag lines in the P1 section, so a stray `**` here could break the defect-level or P1 classification reading. A credential value is never carried into an output.
+
+Exception form:
+
+```
+    - **재현 예외**: <파괴|비밀|외부|문면> — <왜 셸 명령으로 실행할 수 없는지 한 문장>
+    - **경로 추적**: `<파일:라인>` → `<파일:라인>` [→ `<파일:라인>` …]
+```
+
+- An exception is taken only when the reproduction cannot be run as a shell command, and it is told apart by why, not by the criterion's category. `재현 예외` names exactly one of four words: `파괴` (running it would delete or damage data outside a disposable directory), `비밀` (it would read, print or send out a credential or secret value), `외부` (it would write to a remote or external service, or to shared state outside this machine's run directory), `문면` (the defect sits in text a model executes — SKILL.md, `_common`, prompts, schemas — so no shell output can show the harm). `문면` goes by where the defect sits, not by the review category: a design-conformance finding whose defect sits in code takes the reproduction form.
+- `경로 추적` joins two or more backtick anchors with ` → `. Each anchor has the item-line anchor's shape (``^[^ `]+:[0-9]+(-[0-9]+)?$``). The first anchor is where the input enters and the last is where the harm happens. For `문면` the first anchor is the line of the defective text, and the last is where the harm lands when that text is executed as written — the gate or script line that reads the step's output, or the line of the check the step skips.
+
+**Indented lines are invisible to column-0 readers.** Item counting and fingerprints read only column-0 `- ` lines, section heads only column-0 `## ` lines, and the driver's summary predicate only column-0 lines. The evidence key lines are not the `발견 요약` key, and their values carry no `**`, so they change neither the `발견 요약` counts, the finding fingerprint, the `P1 분류` reading nor the other-slice reading. The driver drops the five key lines and the six-space lines after them before a report body reaches a model call (the re-kickoff branch input and the triage call): the body is untrusted text from the review target and its size is unbounded.
+
+**Demotion — `강등`.** An item that cannot carry evidence is moved from the P0 section to `## 🟠 P1`, never deleted, and carries in the P1 section, directly after `분류 근거` and before `이월 제목`:
+
+```
+    - **강등**: 재현 근거 없음 — <기준 문자>, <까닭 한 문장>
+```
+
+- **The criterion letter** comes from the reviewer's `강등 재료` line when there is one. On a path without it (a lead's evidence verdict or report-check fix, a recovery, an inherited item), it is the letter the item's `근거` sentence names when that sentence names one criterion letter, and the fixed word `미상` otherwise — a letter is never guessed.
+- **The reason** is the fact the path saw (`상한 소진 — 세 번 모두 종료 코드 0`, `실행 전 점검 — 단순 명령 아님`, `교차 검증 — 출력에 해악이 보이지 않음`, `상속 — 이번 HEAD 에서 돈 근거 없음`, …).
+- Moving deletes the item's evidence sub-bullets and their bodies; the P1 tag, `분류 근거`, the carryover lines and the counts follow the moving rule of `review-unattended` Step 5.
+- The `강등` line is read by people only: no gate, metric or morning report reads or counts it.
+
 ## Fix Record
 
 Written only by `review-unattended --lead-fix`, at the path that skill's `## The fix record and its path` defines, never inside a report. One line per P0 and P1 item of the cap report, every item, nothing else on the line:
@@ -287,6 +342,8 @@ Written only by `review-unattended --recheck`. After `핵심 요약` and before 
 P0 = 미해결 상한 P0 + 그 밖의 P0(기준 재판정·신규, 중복 제거 뒤)
 P1 = 미해결 상한 P1 + 그 밖의 P1(기준 재판정·신규, 중복 제거 뒤)
 ```
+
+근거 없음으로 P1 로 옮긴 상속 항목은 옮긴 절의 수로 센다 — 근거 없음으로 옮기는 것은 같은 등급의 재기립도 높은 등급 규칙의 재등급도 아니기 때문이다(`P0 Reproduction Evidence — review-unattended only`). 그렇게 옮기면 `결함 수준` 하위 불릿과 그 합(설계 + 구현 = P0 + `차단` P1)도 옮긴 결과로 다시 센다.
 
 ### Defect level — `--recheck` reports only
 
@@ -445,6 +502,8 @@ conditions as written let it emit the ordinary line.
 
 `모델 티어` 블록은 `_common/team-model-tier.md` 에 구속되는 스킬(`review`·`review-unattended`)만 채운다. 모델을 리터럴로 쓰는 `review-lite` 는 고르는 것이 없으므로 이 블록을 생략한다. 행 문법은 그 티어 파일이 소유하며 여기서 다시 적지 않는다.
 
+재현 근거 하위 불릿과 `강등` 줄은 review-unattended 만 쓰고, 대화형 리드는 쓰지 않는다. P0 골격의 `재현 명령`·`재현 출력` 은 두 근거 형식 중 재현 형식의 모양이고, 예외 형식과 `재현 스크립트`·`강등` 의 문법은 "P0 Reproduction Evidence — review-unattended only" 섹션이 소유한다.
+
 각 P0·P1·P2 항목은 분석(근거/제안) 아래에 `💬 붙여넣기용 코멘트` 블록을 두어 GitHub 인라인 코멘트로 그대로 복사할 수 있게 했다(톤: 분석은 단정, 코멘트는 정중). P3는 항목 한 줄이 곧 코멘트다.
 
 ---
@@ -462,6 +521,9 @@ Mention CI failure items if applicable.]
     - **근거**: [severity justification]
     - 💡 수정 제안: [specific fix direction or example code]
     - 📎 관련 PR 코멘트: [@author의 기존 코멘트 참조] (if applicable)
+    - **재현 명령**: `<명령 한 줄>`
+    - **재현 출력**: 종료 코드 <n>
+      <출력 줄>
 
     💬 붙여넣기용 코멘트 ← "Paste-Ready Comment Blockquote" 섹션 참조 (📎로 confirms-existing이면 블록쿼트 대신 평문 노트)
 
@@ -472,6 +534,7 @@ Mention CI failure items if applicable.]
     - 💡 수정 제안: [specific fix direction]
     - 📎 관련 PR 코멘트: [if applicable]
     - **분류 근거**: <한 줄 — 이월 가능이면 세 기준을 모두 만족하는 이유, 차단이면 어긋난 기준 번호와 이유>
+    - **강등**: 재현 근거 없음 — <기준 문자>, <까닭 한 문장>
 
     💬 붙여넣기용 코멘트 ← "Paste-Ready Comment Blockquote" 섹션 참조 (📎로 confirms-existing이면 블록쿼트 대신 평문 노트)
 
