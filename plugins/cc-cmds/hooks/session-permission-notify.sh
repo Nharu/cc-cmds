@@ -188,14 +188,14 @@ def redin:
     elif type == "object" then
       with_entries(
         if (.key | test("^(?:token|secret|password|passwd|pwd|api_key|api-key|apikey|access_key|private_key|credential|auth)"; "i"))
-           and (.value | type) == "string"
+           and ((.value | type) | . != "null" and . != "boolean")
         then .value = "[가림]" else . end)
     elif type == "array" then
       . as $a
       | [range(0; length) as $i
          | if $i > 0 and ($a[$i - 1] | type) == "string"
               and ($a[$i - 1] | test("^--(?:token|password|secret|api-key)$"; "i"))
-              and ($a[$i] | type) == "string"
+              and (($a[$i] | type) == "string" or ($a[$i] | type) == "number")
            then "[가림]" else $a[$i] end]
     else . end);
 '

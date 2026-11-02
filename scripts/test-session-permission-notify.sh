@@ -306,11 +306,16 @@ SECRETS2=(
   "eyJhbGciOiJub25lIn0.eyJzIjoiMSJ9.NewlineJwtSig"
   "ghp_MultiEditTok0123456789"
   "$TG2"
+  "Pw88"
+  "QuoteInVal"
+  "NestedArrVal"
+  "NestedObjVal"
 )
 perm sess-red2 mcp__x__do "$(jq -cn --arg a "${SECRETS2[0]}" --arg b "${SECRETS2[1]}" --arg c "${SECRETS2[2]}" \
-  --arg d "${SECRETS2[3]}" --arg e "${SECRETS2[4]}" \
+  --arg d "${SECRETS2[3]}" --arg e "${SECRETS2[4]}" --arg f "${SECRETS2[11]}" --arg g "${SECRETS2[12]}" \
+  --arg h "${SECRETS2[13]}" \
   '{note: ("line one\n" + $a), cfg: ("password=\"" + $b + "\""), args: ["--token", $c], password: $d,
-    flag: ("--password \"" + $e + "\"")}')"
+    flag: ("--password \"" + $e + "\""), password_q: ("a\"" + $f), token_list: [$g], secret_obj: {v: $h}}')"
 hook_run request "$PATH_FULL"
 perm sess-red2 Bash "$(jq -cn --arg a "${SECRETS2[7]}" '{timeout: 5, env: ("X=1\n" + $a)}')"
 hook_run request "$PATH_FULL"

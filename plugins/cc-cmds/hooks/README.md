@@ -602,8 +602,9 @@ in a URL's user information, and the value of `--token`, `--password`,
 summary is drawn — a string drawn as JSON has its line breaks and quotes
 escaped, and the patterns would no longer meet it — and the drawn summary is
 redacted once more. Two shapes exist only in the input's structure and are
-replaced there: the string value of an object key starting with one of the
-key names above, and the array element right after one of the flags above.
+replaced there: the value of an object key starting with one of the key names
+above (a string, a number, or a whole nested object or array), and the string
+or number right after one of the flags above in an array.
 
 **What closes an event.**
 
