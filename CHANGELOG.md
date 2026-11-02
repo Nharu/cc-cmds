@@ -5,6 +5,14 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.24.2] - 2026-11-03
+
+CI 재실행 적격 판정(X5)이 워크플로 파일의 실행되지 않는 줄 전체 YAML 주석을 배포 자리로 읽지 않는다.
+
+### Fixed
+
+- **X5 바닥의 주석 줄 면제** — 판독기가 블록 스칼라 본문 밖, 열린 flow 밖에서 읽은 줄 전체 주석(첫 비공백이 `#`)이 바닥 grep 에 걸리면 셋째 면제 모양으로 풀어 준다. `environment` 갈래에 걸린 주석 줄, 키 줄 뒤의 ` #` 꼬리, `run` 본문 안의 `#` 줄은 풀지 않는다. 파일에 판독기가 본문을 열지 않은 블록 스칼라 표지(`- |` 항목, 다음 줄에 홀로 선 표지, 평문 값이 ` |` 로 끝나는 줄 등)가 있으면 그 파일의 주석 줄 면제를 모두 끈다. 바닥 정규식과 기존 두 면제 모양은 그대로다. 지금까지는 주석 한 줄이 `.github/workflows/` 를 언급하기만 해도 재실행이 park 되었다.
+
 ## [3.24.0] - 2026-11-02
 
 `active-notify` 의 완료 알림이 데스크탑 배너와 함께 attention 스풀에 `active-notify` 사건을 남긴다. 사건은 메인 세션이 라우터 좌석에서 부른 fire-now 에만 남고, 그 세션으로 돌아오면 귀환 닫기가 처리 표지를 남긴다.
