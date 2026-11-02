@@ -125,7 +125,7 @@ This is the unattended arm of `/cc-cmds:review`. It is a **separate file** rathe
 
 ## Halt record — the disposition for every point that would have asked
 
-Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema. Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. `<run-id>` is re-derived from `<base>/docs/pipeline-grant/{slug}.md`. **Prefer the driver-exported `CC_PIPELINE_RUN_ID`** (with `RUN_DIR` from `CC_PIPELINE_RUN_DIR`); the re-derivation below is the fallback for a driver older than those variables, and it resolves only for a run started from a document — a manifest run keys its grant on the run id instead. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`, defaulting to this skill's name. Write it atomically (`sidecar.md` §1.3), record the question and every option **verbatim**, each option on its own `- \`<label>\` — <description>` line under `**선택지**:`, then take no further step and end the turn. **Never write a pipeline sidecar** — the driver is their sole writer.
+Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema. Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. `<run-id>` is re-derived from `<base>/docs/pipeline-grant/{slug}.md`. **Prefer the driver-exported `CC_PIPELINE_RUN_ID`** (with `RUN_DIR` from `CC_PIPELINE_RUN_DIR`); the re-derivation below is the fallback for a driver older than those variables, and it resolves only for a run started from a document — a manifest run keys its grant on the run id instead. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`, defaulting to this skill's name. Write it atomically (`sidecar.md` §1.3), record the question and every option **verbatim**, each option on its own `- \`<label>\` — <description>` line under `**선택지**:`, and on a halt with options a `**선택지 리스크**` line by that section's bullet on it, then take no further step and end the turn. **Never write a pipeline sidecar** — the driver is their sole writer.
 
 ### Per-grade disposition
 
@@ -253,9 +253,10 @@ Collect exactly what the base skill collects — repository slug, PR metadata, p
 - `세그먼트 park` — 이 세그먼트를 이 런에서 내려놓고 아침 보고서에 남깁니다
 **추천**: `구현 재파견` — 리뷰할 커밋이 없으므로 구현을 다시 보내야 리뷰할 대상이 생깁니다
 **추천 근거**: 기기 사실:git rev-list --count <base>..<target head> → 0
+**선택지 리스크**: `구현 재파견` — 같은 계획의 구현이 또 커밋 없이 끝나면 리뷰가 같은 빈 대상에서 다시 멈추고, 커밋 없는 구현이 한도에 닿으면 세그먼트가 park 됩니다 / `세그먼트 park` — 이 세그먼트와 이 세그먼트를 선행으로 둔 슬라이스가 이 런에서 착지하지 않습니다
 ```
 
-The recommendation follows the writer rules of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 (the bullet on `**추천**`): the count is a fact of this machine, the run can carry out a re-dispatch, and neither description carries a word the gate reads as accepting risk. `gate-unanswerable` and not `precondition-failed` is what lets the seat answer it without a person, and the routing shift answers `구현 재파견` with an implementation dispatch rather than by re-attaching this session, which cannot make a commit. A target that does not resolve at all is still the `precondition-failed` halt of 1a — an empty target is a resolved one.
+The `**선택지 리스크**` line is fixed too and follows the bullet on `**선택지 리스크**` in the same section. The recommendation follows the writer rules of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 (the bullet on `**추천**`): the count is a fact of this machine, the run can carry out a re-dispatch, and neither description carries a word the gate reads as accepting risk. `gate-unanswerable` and not `precondition-failed` is what lets the seat answer it without a person, and the routing shift answers `구현 재파견` with an implementation dispatch rather than by re-attaching this session, which cannot make a commit. A target that does not resolve at all is still the `precondition-failed` halt of 1a — an empty target is a resolved one.
 
 #### 1b′: Delta eligibility — every failure degrades to a full review, none halts
 

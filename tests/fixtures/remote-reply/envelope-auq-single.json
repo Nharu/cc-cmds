@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "reply_id": "host-a1.1793500000000.0a1b2c3d",
+  "event_id": "host-a1.1793499990000.11223344",
+  "host": "host-a1",
+  "kind": "option",
+  "target": {
+    "surface": "auq",
+    "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001",
+    "tool_use_id": "toolu_01AuqSingle00000000000001",
+    "questions": [
+      {
+        "question": "어느 브랜치로 진행할까요?",
+        "header": "브랜치",
+        "multi_select": false,
+        "options": [{"label": "master"}, {"label": "새 브랜치"}]
+      },
+      {
+        "question": "시험을 지금 돌릴까요?",
+        "header": "시험",
+        "multi_select": false,
+        "options": [{"label": "예"}, {"label": "아니요"}]
+      }
+    ]
+  },
+  "answers": [
+    {"question_index": 0, "labels": ["새 브랜치"]},
+    {"question_index": 1, "labels": ["예"]}
+  ],
+  "provenance": {
+    "transport": "telegram",
+    "sender": "tg:123456789",
+    "received_at_ms": 1793500000000,
+    "transport_ref": "chat 123456789 message 42"
+  },
+  "expires_at_ms": 1793500600000
+}

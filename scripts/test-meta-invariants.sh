@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh"
+_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -1188,6 +1188,23 @@ if grep -qF -- '| `대상 훅 거절` |' "$RS_CORPUS"; then
 else
   bad "교대 사본의 정지 자리 표" "「대상 훅 거절」 행이 없다"
 fi
+if grep -qF -- '| `master 수리 불가` |' "$RS_CORPUS"; then
+  ok "교대 사본의 정지 자리 표가 「master 수리 불가」를 싣는다"
+else
+  bad "교대 사본의 정지 자리 표" "「master 수리 불가」 행이 없다"
+fi
+if grep -qF -- 'and for `master 수리 불가` no act at all' "$RS_CORPUS"; then
+  ok "교대 사본의 재시도 목록이 「master 수리 불가」의 재대조를 싣는다"
+else
+  bad "교대 사본의 재시도 목록" "「master 수리 불가」가 없다"
+fi
+# 리드 사본도 교대 사본처럼 shift-halt 로 멈춘다 — 세그먼트 park 는 대표 표지를 다음 대기
+# 세그먼트로 넘겨 같은 사건의 park 와 질문을 잇달아 낳는다.
+if grep -qF -- 'Stop with `shift-halt` at site `master 수리 불가`' "$AP_ROUTER"; then
+  ok "리드 사본이 「master 수리 불가」에서 shift-halt 로 멈춘다"
+else
+  bad "리드 사본의 master 수리 불가" "「Stop with \`shift-halt\` at site \`master 수리 불가\`」가 없다"
+fi
 if grep -qF -- 'the refused act for `대상 훅 거절`' "$RS_CORPUS"; then
   ok "교대 사본의 재시도 목록이 「대상 훅 거절」의 거절된 행위를 싣는다"
 else
@@ -1613,7 +1630,7 @@ done
 # after-the-re-convergence dispositions decide between a fresh audit and a stop.
 # The design-dispatch file opens on the same state and sends the step to the
 # audit, so the row also says which of the two decides the step's next act.
-rs_halt_row=$(printf '%s\n' "$rs_index" | grep -E '^\| `halt-answer-1\.md`, `halt-answer-2\.md` \|')
+rs_halt_row=$(printf '%s\n' "$rs_index" | grep -E '^\| `halt-answer-1\.md`, `halt-answer-2\.md`, `halt-answer-3\.md` \|')
 check "교대 색인의 할트 답 행이 설계·감사 스텝의 재수렴 뒤 진입 조건을 싣는다" \
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of the design step or of the audit step reads `종류=reconverge`')" "1"
 check "교대 색인의 할트 답 행이 그 상태에서 설계 파견 절보다 할트 답 절의 처분을 앞세운다" \
