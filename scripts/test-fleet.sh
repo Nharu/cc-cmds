@@ -1384,6 +1384,15 @@ gh_green "$TIP2"; m_round
 check "결론 난 초록은 사건을 해소한다" \
   "$(mf '.state + "/" + .events[0].resolved_commit + "/" + .events[0].repair.state + "/" + (.events[0].resolved_at != null | tostring)')" "초록/$TIP2/해소/true"
 
+# --- the same failure back on the same first commit opens its event again --------
+m_fresh m-reopen; gh_red "$TIP1" 101; m_round
+gh_green "$TIP1"; m_round
+check "같은 tip 의 결론 난 초록도 사건을 해소한다" "$(mf '.events[0].repair.state')" "해소"
+gh_red "$TIP1" 101; m_round
+check "같은 tip 에서 빨강·초록·빨강이면 해소된 사건이 다시 열린다 — 사건 하나, 해소 칸은 비고 수리 상태는 레코드를 따른다" \
+  "$(mf '[(.events | length), (.events[0] | .id, .resolved_at, .resolved_commit, .repair.state)] | map(tostring) | join("/")')/$(repair_recs)" \
+  "1/$E1/null/null/띄움/1"
+
 # --- the repair state follows the record, every round ---------------------------
 m_fresh m-rec; gh_red "$TIP1" 101; m_round
 rec_set ".deadline = \"$(iso $(( NOW - 60 )))\""; m_round
@@ -1402,6 +1411,20 @@ m_fresh m-switch; : > "$PACE/master-repair.off"; gh_red "$TIP1" 101; m_round
 check "빈 master-repair.off 는 모든 저장소의 수리 런을 막는다" "$(mf '.events[0].repair | .state + "/" + .reason')/$(repair_recs)" "띄울 수 없음/끄는 스위치/0"
 printf 'other/repo\n' > "$PACE/master-repair.off"; m_round
 check "다른 슬러그만 적힌 스위치는 이 저장소를 막지 않는다" "$(mf '.events[0].repair.state')/$(repair_recs)" "띄움/1"
+printf 'O/N\n' > "$PACE/master-repair.off"; m_round
+check "스위치의 slug 는 대소문자를 가리지 않고, 꺼진 저장소의 대기 레코드 사건은 띄울 수 없음이다" \
+  "$(mf '.events[0].repair | .state + "/" + .reason')/$(backlog_status "mr-$E1")" "띄울 수 없음/끄는 스위치/pending"
+printf '# 전부 끔\nother/repo\n' > "$PACE/master-repair.off"; m_round
+check "owner/name 모양이 아닌 줄이 있는 스위치는 모든 저장소를 막는다" "$(mf '.events[0].repair | .state + "/" + .reason')" "띄울 수 없음/끄는 스위치"
+check "agent status 는 그 스위치를 모든 저장소 꺼짐으로 보이고 모양이 아닌 줄을 적는다" \
+  "$(fleet agent status 2>/dev/null | grep -cF '수리 런: 스위치 모든 저장소 꺼짐 — owner/name 모양이 아닌 줄: # 전부 끔 · ' || true)" "1"
+printf '  \n\t\n' > "$PACE/master-repair.off"
+check "공백뿐인 스위치는 agent status 에서도 모든 저장소 꺼짐이다" \
+  "$(fleet agent status 2>/dev/null | grep -cF '수리 런: 스위치 모든 저장소 꺼짐 · ' || true)" "1"
+printf 'other/repo\n' > "$PACE/master-repair.off"; m_round
+check "스위치에서 그 저장소가 빠지면 대기 레코드 사건은 다시 띄움이다" "$(mf '.events[0].repair.state')" "띄움"
+check "agent status 는 slug 만 적힌 스위치의 저장소를 꺼짐으로 적는다" \
+  "$(fleet agent status 2>/dev/null | grep -cF '수리 런: 스위치 꺼짐: other/repo · ' || true)" "1"
 m_fresh m-render; gh_red "$TIP1" 101
 TEST_REPAIR_FAIL='템플릿을 읽지 못했다' m_round
 check "렌더 실패 → 띄울 수 없음, 사유는 렌더러의 마지막 줄" "$(mf '.events[0].repair | .state + "/" + .reason')" "띄울 수 없음/렌더 실패 — repair: 템플릿을 읽지 못했다"
@@ -1525,6 +1548,18 @@ check "5시간 창이 닫힌 계정에서는 수리 레코드도 거부된다 (w
 r_fresh r-switch only; printf 'o/n\n' > "$PACE/master-repair.off"
 fleet dispatch u1 >/dev/null 2>&1
 check "스위치가 끈 저장소의 수리 레코드는 거부된다 (switch)" "$(cut -f3,6 "$PACE/refusals.tsv")/$(backlog_status "mr-$E1")" "$(printf 'switch\t-')/pending"
+# The oldest pending repair record is switched off; a younger one of another
+# repository is still claimed by the same tick.
+m_fresh r-switch-two; set_backlog
+repair_append "$EA"; repair_append "$EB"
+jq -c --arg id "mr-$EB" 'if .id == $id then .slug = "p/q" else . end' "$PACE/backlog.jsonl" > "$PACE/backlog.new" \
+  && mv "$PACE/backlog.new" "$PACE/backlog.jsonl"
+printf 'o/n\n' > "$PACE/master-repair.off"
+fleet dispatch u1 >/dev/null 2>&1
+check "스위치가 끈 가장 오래된 수리 레코드는 다른 저장소의 수리 레코드를 막지 않는다" \
+  "$(backlog_status "mr-$EA")/$(backlog_field "mr-$EB" '.status + "/" + .dispatched_lane')" "pending/done/u1"
+check "건너뛴 머리 레코드의 switch 거부 행은 남는다" \
+  "$(awk -F'\t' -v id="mr-$EA" '$3 == "switch" && $5 == id { n++ } END { print n + 0 }' "$PACE/refusals.tsv")" "1"
 d_fresh r-unrec x0
 set_backlog "$(backlog_record mr-x '.kind = "master-repair" | .event_id = "abcdef012345" | .slug = "o/n" | .base = "master"')"
 fleet dispatch u1 >/dev/null 2>&1

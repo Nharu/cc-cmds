@@ -138,7 +138,8 @@
 #   master.lock/           the master stage's lock (mkdir), holding its pid
 #   master-repair.off      the repair switch: present and empty turns repair
 #                          runs off for every repository, one `owner/name` a
-#                          line turns them off for those
+#                          line (any case) turns them off for those, and any
+#                          line of another shape turns them off everywhere
 #
 # Inputs read from cc-lane (never written here):
 #   accounts.json          ${XDG_CONFIG_HOME:-$HOME/.config}/cc-lane/accounts.json —
@@ -1111,15 +1112,18 @@ fleet_backlog_head() {
   # A REPAIR RECORD IS NEVER THIS HEAD. With a first argument `repair` the
   # head is the oldest pending `kind: master-repair` record instead; without
   # one, those records are skipped, so a repair run is admitted only through
-  # the repair admission and never takes an ordinary seat.
-  local f="$PACE_ROOT/backlog.jsonl" line best="" best_at="" at want="${1:-}"
+  # the repair admission and never takes an ordinary seat. A second argument
+  # lists record ids, one a line, that are passed over: the repair admission
+  # names the records it refused for their repository alone.
+  local f="$PACE_ROOT/backlog.jsonl" line best="" best_at="" at want="${1:-}" skip="${2:-}"
   [ -r "$f" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     [ "${#line}" -le "$FLEET_BACKLOG_RECORD_MAX" ] || continue
-    at=$(printf '%s' "$line" | jq -r --arg schema "$FLEET_BACKLOG_SCHEMA" --arg k "$FLEET_REPAIR_KIND" --arg w "$want" \
+    at=$(printf '%s' "$line" | jq -r --arg schema "$FLEET_BACKLOG_SCHEMA" --arg k "$FLEET_REPAIR_KIND" --arg w "$want" --arg skip "$skip" \
           'select(.schema == $schema and .status == "pending"
-                  and ((.kind == $k) == ($w == "repair"))) | .enqueued_at // empty' 2>/dev/null || true)
+                  and ((.kind == $k) == ($w == "repair"))
+                  and ((.id // "") as $i | ($skip | split("\n")) | any(. == $i) | not)) | .enqueued_at // empty' 2>/dev/null || true)
     [ -n "$at" ] || continue
     if [ -z "$best_at" ] || [ "$at" \< "$best_at" ]; then best="$line"; best_at="$at"; fi
   done < "$f"
@@ -1833,15 +1837,26 @@ fleet_master_event_id() {
 }
 fleet_sha256_stdin() { shasum -a 256 2>/dev/null | cut -d' ' -f1; }
 
+FLEET_MASTER_SLUG_RE='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+fleet_master_switch_lines() {
+  # fleet_master_switch_lines <file> — the switch file's lines, trimmed, the
+  # blank ones dropped. A file that cannot be read prints nothing, which reads
+  # as the empty switch.
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$1" 2>/dev/null | { grep -v '^$' || true; }
+}
 fleet_master_switch_off() {
   # fleet_master_switch_off <owner/name> — rc 0 when repair runs are off for
-  # the repository: `master-repair.off` present with no non-blank line turns
-  # them off everywhere; otherwise a line holding the slug turns that one off.
+  # the repository. The switch closes on what it cannot read: a
+  # `master-repair.off` that is present with no non-blank line, that cannot
+  # be read, or that holds any line not shaped `owner/name` (a comment, a URL,
+  # `*`) turns them off everywhere; otherwise a line holding the slug, compared
+  # without case as GitHub compares it, turns that one off.
   local f="$PACE_ROOT/master-repair.off" lines
   [ -f "$f" ] || return 1
-  lines=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" | { grep -v '^$' || true; })
+  lines=$(fleet_master_switch_lines "$f") || lines=""
   [ -n "$lines" ] || return 0
-  printf '%s\n' "$lines" | grep -qxF -- "$1"
+  if printf '%s\n' "$lines" | LC_ALL=C grep -qvE "$FLEET_MASTER_SLUG_RE"; then return 0; fi
+  printf '%s\n' "$lines" | LC_ALL=C grep -qixF -- "$1"
 }
 
 fleet_master_record_of() {
@@ -2002,7 +2017,10 @@ fleet_master_event_repair() {
     case "$status" in
       pending)
         e_dl=$(fleet_iso_epoch "$(printf '%s' "$rec" | jq -r '.deadline // ""')")
+        # The admission refuses a record whose repository the switch turns
+        # off and leaves it pending, so the event says why it does not start.
         if [ -z "$e_dl" ] || [ "$e_dl" -lt "$now" ]; then st="띄울 수 없음"; reason="마감 지난 레코드"
+        elif fleet_master_switch_off "$slug"; then st="띄울 수 없음"; reason="끄는 스위치"
         else st="띄움"; fi ;;
       parked)
         st="띄울 수 없음"; reason="park $(printf '%s' "$rec" | jq -r '.park_reason // "?"')" ;;
@@ -2136,6 +2154,10 @@ fleet_master_pair() {
            checks: $o.checks, resolved_at: null, resolved_commit: null, hold_started_at: null,
            repair: {state: "대기", pr: null, run_id: null, reason: null}}')
       fi
+      # A new event whose id a resolved event already carries is the same
+      # failure back on the same first commit: that event opens again, its
+      # resolution and hold cleared and its repair state recomputed below,
+      # rather than being dropped as a duplicate of a closed event.
       json=$(jq -cn --argjson p "$prev" --argjson o "$obs" --argjson ev "$ev" --arg t "$tip" --arg iso "$(fleet_iso "$round")" '
         [(($p // {}).events // [])[]
           | if .resolved_at == null and all(.signatures[]?; . as $s | (any($o.signatures[]; . == $s) | not))
@@ -2143,7 +2165,13 @@ fleet_master_pair() {
             else . end] as $evs
         | {tip: $t, state: $o.state, precision: $o.precision, signatures: $o.signatures,
            failed_runs: $o.failed_runs,
-           events: ($evs + (if $ev == null or any($evs[]; .id == $ev.id) then [] else [$ev] end))}') ;;
+           events: (if $ev == null or any($evs[]; .id == $ev.id and .resolved_at == null) then $evs
+                    elif any($evs[]; .id == $ev.id)
+                    then [$evs[] | if .id == $ev.id
+                                   then .resolved_at = null | .resolved_commit = null | .hold_started_at = null
+                                        | .checks = $ev.checks | .repair = $ev.repair
+                                   else . end]
+                    else $evs + [$ev] end)}') ;;
     '진행 중')
       json=$(jq -cn --argjson p "$prev" --arg t "$tip" '
         {tip: $t, state: "진행 중", precision: (($p // {}).precision // "-"),
@@ -2240,33 +2268,50 @@ fleet_repair_claim() {
   # FLEET_REPAIR_SEATS repair runs are alive, and this account's 5h window
   # passes. The fleet ceiling and lane occupancy are not asked: the repair run
   # has its own seat.
-  local lane="$1" jpid="$2" inv="$3" dirs="$4" home="$5" head rec id park="" clause="" detail="-"
-  local manifest="" run_id="" wt="" run_dir rec_dir slug n leases="" ctx res now iso line
+  #
+  # A REFUSAL THAT BELONGS TO ONE RECORD DOES NOT HOLD THE QUEUE. A record
+  # whose repository the switch turns off, or whose run is recorded on
+  # another account, is refused, left pending and passed over, and the next
+  # oldest pending repair record is weighed in the same claim; the seat and
+  # window refusals hold for every record alike and end the claim.
+  local lane="$1" jpid="$2" inv="$3" dirs="$4" home="$5" head rec id park clause detail
+  local manifest run_id wt run_dir rec_dir slug n leases="" ctx res now iso line skip=""
   now=$(fleet_now); iso=$(fleet_iso "$now")
   fleet_backlog_lock || return 1
-  head=$(fleet_backlog_head repair)
-  if [ -z "$head" ]; then fleet_backlog_unlock; return 1; fi
-  rec="$head"; id=$(printf '%s' "$rec" | jq -r '.id // "?"')
-  fleet_repair_recognized "$rec" || park=repair-unrecognized
-  [ -n "$park" ] || park=$(fleet_dispatch_park_reason "$rec")
-  if [ -z "$park" ]; then
-    manifest=$(printf '%s' "$rec" | jq -r '.manifest_path')
-    run_id=$(fleet_manifest_field "$manifest" run-id)
-    wt=$(fleet_manifest_field "$manifest" origin-worktree)
-    [ -n "$run_id" ] || park=manifest-missing
-  fi
-  if [ -n "$park" ]; then
-    line=$(printf '%s' "$rec" | jq -c --arg r "$park" '.status = "parked" | .park_reason = $r')
-    fleet_backlog_rewrite "$head" "$line" || fleet_log "repair $lane: $id 의 park 재작성이 원본 줄을 찾지 못했다 (rc=$?)"
-    fleet_backlog_unlock
-    fleet_log "repair $lane: $id park — $park"
-    return 1
-  fi
-  run_dir="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$run_id"
-  rec_dir=$(sed -n '1p' "$run_dir/config-dir" 2>/dev/null || true); rec_dir=${rec_dir%/}
-  if [ -n "$rec_dir" ] && [ "$rec_dir" != "${home%/}" ]; then clause=lane; detail=lane-mismatch; fi
-  slug=$(printf '%s' "$rec" | jq -r '.slug // ""')
-  if [ -z "$clause" ] && fleet_master_switch_off "$slug"; then clause=switch; fi
+  while :; do
+    park=""; clause=""; detail="-"; manifest=""; run_id=""; wt=""
+    head=$(fleet_backlog_head repair "$skip")
+    if [ -z "$head" ]; then fleet_backlog_unlock; return 1; fi
+    rec="$head"; id=$(printf '%s' "$rec" | jq -r '.id // "?"')
+    fleet_repair_recognized "$rec" || park=repair-unrecognized
+    [ -n "$park" ] || park=$(fleet_dispatch_park_reason "$rec")
+    if [ -z "$park" ]; then
+      manifest=$(printf '%s' "$rec" | jq -r '.manifest_path')
+      run_id=$(fleet_manifest_field "$manifest" run-id)
+      wt=$(fleet_manifest_field "$manifest" origin-worktree)
+      [ -n "$run_id" ] || park=manifest-missing
+    fi
+    if [ -n "$park" ]; then
+      line=$(printf '%s' "$rec" | jq -c --arg r "$park" '.status = "parked" | .park_reason = $r')
+      fleet_backlog_rewrite "$head" "$line" || fleet_log "repair $lane: $id 의 park 재작성이 원본 줄을 찾지 못했다 (rc=$?)"
+      fleet_backlog_unlock
+      fleet_log "repair $lane: $id park — $park"
+      return 1
+    fi
+    run_dir="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$run_id"
+    rec_dir=$(sed -n '1p' "$run_dir/config-dir" 2>/dev/null || true); rec_dir=${rec_dir%/}
+    if [ -n "$rec_dir" ] && [ "$rec_dir" != "${home%/}" ]; then clause=lane; detail=lane-mismatch; fi
+    slug=$(printf '%s' "$rec" | jq -r '.slug // ""')
+    if [ -z "$clause" ] && fleet_master_switch_off "$slug"; then clause=switch; fi
+    [ -n "$clause" ] || break
+    line=$(printf '%s' "$rec" | jq -c --arg at "$iso" --arg c "$clause" \
+            '.last_refusal_at = $at | .last_refusal_verdict = "-" | .last_refusal_clause = $c')
+    fleet_backlog_rewrite "$head" "$line" || fleet_log "repair $lane: $id 의 거부 재작성이 원본 줄을 찾지 못했다 (rc=$?)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$iso" "$lane" "$clause" "-" "$id" "$detail" >> "$PACE_ROOT/refusals.tsv"
+    fleet_log "repair $lane: $id 거부 — 절 $clause/$detail; 다음 수리 레코드를 본다"
+    skip="${skip:+$skip
+}$id"
+  done
   if [ -z "$clause" ]; then
     n=$(fleet_busy_repair_live | grep -c . || true)
     [ "${n:-0}" -lt "$FLEET_REPAIR_SEATS" ] || clause=repair-seat
@@ -2945,12 +2990,18 @@ fleet_agent_status() {
   done
   # The repair switch and the repair seat: one line, beside the ceiling it
   # does not count against.
-  local sw="꺼짐 없음" n_rep
+  # It reads the file the way fleet_master_switch_off does, so what it shows
+  # off is what the admission keeps off.
+  local sw="꺼짐 없음" n_rep sw_lines sw_bad
   if [ -f "$PACE_ROOT/master-repair.off" ]; then
-    if [ -s "$PACE_ROOT/master-repair.off" ]; then
-      sw="꺼짐: $(grep -v '^[[:space:]]*$' "$PACE_ROOT/master-repair.off" | tr '\n' ' ' | sed 's/ $//')"
-    else
+    sw_lines=$(fleet_master_switch_lines "$PACE_ROOT/master-repair.off") || sw_lines=""
+    sw_bad=$(printf '%s\n' "$sw_lines" | { LC_ALL=C grep -vE "$FLEET_MASTER_SLUG_RE" || true; } | { grep -v '^$' || true; })
+    if [ -z "$sw_lines" ]; then
       sw="모든 저장소 꺼짐"
+    elif [ -n "$sw_bad" ]; then
+      sw="모든 저장소 꺼짐 — owner/name 모양이 아닌 줄: $(printf '%s\n' "$sw_bad" | tr '\n' ' ' | sed 's/ $//')"
+    else
+      sw="꺼짐: $(printf '%s\n' "$sw_lines" | tr '\n' ' ' | sed 's/ $//')"
     fi
   fi
   n_rep=$(fleet_busy_repair_live | grep -c . || true)
