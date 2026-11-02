@@ -6821,8 +6821,8 @@ surface_of_argv0() {
       esac ;;
     visual-check.sh)
       case "${1:-}" in
-        scan|size|approval|bundle|binding|reuse) printf '읽기' ;;
-        *)                                       printf '등급 미상' ;;
+        scan|size|approval|bundle|binding|system|reuse) printf '읽기' ;;
+        *)                                              printf '등급 미상' ;;
       esac ;;
     visual-capture.sh)
       case "${1:-}" in
