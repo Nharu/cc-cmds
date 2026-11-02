@@ -710,7 +710,7 @@ write_session_env() {
     printf -- '--model\t플래그\t%s\t%s\t같음\t-\n' "$LEAD_MODEL" "${gm:-미상}"
     printf -- '--effort\t플래그\t%s\t%s\t같음\t-\n' "$LEAD_EFFORT" "${ge:-미상}"
     printf -- '--plugin-dir\t플래그\t<갈래 복제본>/plugins/cc-cmds\t<런의 고정 플러그인 사본>/plugins/cc-cmds\t같음\t-\n'
-    printf -- '--settings\t플래그\t<상태 루트>/settings/<n>-<갈래>.json\t<런 설정 디렉터리>/review.json\t다름\t게이트 훅 대신 증인 발행 명령만 승인하는 훅 하나를 싣고, enabledPlugins 로 계정의 플러그인을 모두 끄며 --plugin-dir 사본만 남긴다\n'
+    printf -- '--settings\t플래그\t<상태 루트>/settings/<n>-<갈래>.json\t<런 설정 디렉터리>/review.json\t다름\t게이트 훅 대신 증인 발행 명령과 리드의 nonce 명령만 승인하는 훅 하나를 싣고, enabledPlugins 로 계정의 플러그인을 모두 끄며 --plugin-dir 사본만 남긴다\n'
     printf -- '--strict-mcp-config\t플래그\t실음\t%s\t같음\t-\n' "${gstrict:-미상}"
     printf -- '--append-system-prompt-file\t플래그\t<상태 루트>/instructions/<sha256>.md\t%s\t같음\t-\n' "${gapp:-미상}"
     printf -- '--append-subagent-system-prompt-file\t플래그\t<상태 루트>/instructions/<sha256>.md (구성원)\t%s\t같음\t-\n' "${gappsub:-미상}"
@@ -720,7 +720,7 @@ write_session_env() {
     printf -- '--output-format\t플래그\tjson\tstream-json\t다름\t비용 기록을 실행기가 진다(result.json 의 total_cost_usd)\n'
     printf -- '--max-budget-usd\t플래그\t%s\t(싣지 않음)\t다름\t세션 예산을 실행기가 진다\n' "$RESERVE_RUN"
     printf -- '-p\t플래그\t리뷰 명령과 지시문\t리뷰 명령과 지시문\t다름\t게이트 밖 세션의 지시문(중단 기록 자리, 게이트·매니페스트 없음)을 더한다\n'
-    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트, 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, 팀 규약의 증인 발행 명령은 상태·중단 기록 디렉터리 아래에서 증인 승인 훅)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록, 그리고 증인 발행 명령만 승인하는 훅이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
+    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트·리드의 증인 nonce 명령(openssl rand -hex 8), 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, 팀 규약의 증인 발행 명령은 상태·중단 기록 디렉터리 아래에서 증인 승인 훅)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록, 그리고 증인 발행 명령과 nonce 명령만 승인하는 훅이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
     printf '대상 복제본\t쓰기 경로\truns/<n>-<갈래>/target\t(세그먼트 워크트리)\t다름\t원격 없는 대상 복제본을 리뷰한다\n'
     printf -- '--report-path\t쓰기 경로\truns/<n>-<갈래>/report.md\t(게이트의 정본 보고서 경로)\t다름\t갈래마다 보고서 자리를 실행기가 정한다\n'
     printf 'XDG_STATE_HOME\t쓰기 경로\truns/<n>-<갈래>/state\t(물려받은 상태 루트)\t다름\t증인 스크래치를 갈래 디렉터리 아래에 둔다\n'
@@ -1019,8 +1019,9 @@ HOOK
 
 # write_settings <file> <target> <run dir> — the session's settings: the
 # account's plugins all off, reads, git queries, sub-agents, the plugin's own
-# scripts and the lead's nonce command allowed, writes only inside the target clone, the report path, the
-# state home and the halt directory, network tools refused.
+# scripts and the lead's nonce command allowed, writes only inside the target
+# clone, the report path, the state home and the halt directory, network tools
+# refused.
 #
 # The rules follow Claude Code's permission rules (code.claude.com/docs/en/permissions):
 # file-write rules are `Edit(...)` rules, because `Write(path)` rules never match;
