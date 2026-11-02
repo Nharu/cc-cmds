@@ -1,0 +1,12 @@
+:root {
+  --color-bg: #123456;
+  --color-fg: #f5f7fa;
+  --color-accent: oklch(0.62 0.19 250);
+  --space-1: 4px;
+  --space-2: 8px;
+  --radius-2: 6px;
+}
+:root[data-theme="dark"] {
+  --color-bg: #0b1220;
+  --color-fg: #e6edf3;
+}

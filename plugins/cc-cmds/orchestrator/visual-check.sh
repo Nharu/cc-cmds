@@ -3,7 +3,7 @@
 # visual design skills.
 #
 # Subcommands:
-#   scan <screen file>... [--bans <file>] [--lifts <system.md>]
+#   scan <screen file>... [--bans <file>] [--lifts <system.md>] [--tokens <tokens.css>]
 #       Print one finding per (rule, line) as `<rule id> <file>:<line> <text>`.
 #       Comments (`<!-- -->`, `/* */`, a script's `//` line-end comment) are
 #       stripped first — a `/*` or `//` inside a quoted string is not one,
@@ -24,10 +24,37 @@
 #                      background value, `url(…)` and `@import` that is not a
 #                      fragment, `data:`, `./support.js` or a non-fetching
 #                      scheme, and every quoted absolute URL in script
+#         token-undefined  a custom property referenced as `var(--x…)` in the
+#                      css or script stream (not in a markup attribute value)
+#                      that the file never defines — one finding per name, on
+#                      the line that first references it. A definition is
+#                      `--x` followed by optional whitespace and `:` in css
+#                      (style attribute values included), `@property --x`, or
+#                      a quoted `'--x'` / `"--x"` / `` `--x` `` in script (a
+#                      value set at run time with setProperty is out of sight,
+#                      so its name counts as defined). A `var(--x, …)` with a
+#                      fallback is still a reference. Runs with or without
+#                      --tokens.
+#         token-block  (only with --tokens) the screen's token block — the
+#                      raw line whose trimmed text is exactly
+#                      `<style data-cc-tokens>` up to the first raw line after
+#                      it whose trimmed text is exactly `</style>`; an opening
+#                      line with no such line after it is no block — must be
+#                      there exactly once with content equal, line by line and
+#                      byte for byte, to the tokens file (a missing final
+#                      newline of the tokens file is no difference). No block
+#                      → a finding on line 1; two or more → one on the second
+#                      opening line; different content → one on the opening
+#                      line. Lines inside comments and script strings count;
+#                      the position is not checked. Only when the block is
+#                      there once and equal are the token-color and
+#                      token-space findings on its content lines dropped;
+#                      external-ref and ban item findings there stay.
 #       Each `마크업` ban item runs on the markup stream and each `스크립트`
 #       item on the script stream, under its own id. A `**금지 해제**: <id> —`
-#       line of --lifts skips that id. The two header lines, prefixed `# `,
-#       state what the check cannot see and which ids were lifted.
+#       line of --lifts skips that id. The three header lines, prefixed `# `,
+#       state what the check cannot see, which ids were lifted and which
+#       tokens file the token block was compared with.
 #   size <screen file>
 #       Print the number of start tags (`<` followed by a letter) outside
 #       comments and script.
@@ -77,6 +104,7 @@
 #   1 — scan: at least one finding; approval: none or void; bundle: no sidecar;
 #       reuse: not reusable
 #   2 — usage error, an unreadable file, a malformed ban list or pattern, a
+#       --tokens file that is missing or contains `</style` (any case), a
 #       screen that ends inside a comment, a tag, a template string or an
 #       unclosed <style>/<script>, or whose CSS or script block comment is
 #       still open at its </style>/</script> or closing attribute quote
@@ -88,7 +116,7 @@
 set -euo pipefail
 
 usage() {
-  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] | size <화면> | approval <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | reuse <설계 문서> --record <기록>" >&2
+  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | reuse <설계 문서> --record <기록>" >&2
   exit 2
 }
 
@@ -320,6 +348,73 @@ ext_refs() {
   ' >> "$FOUND"
 }
 
+# token_undefined <stream dir> — print `token-undefined\t<line>` for every
+# custom property the css or script stream references with `var(` but the file
+# never defines, on the line of its first reference.
+token_undefined() {
+  LC_ALL=C awk '
+    function refs(line, ln,   r, nm) {
+      r = line
+      while (match(r, /var\([[:space:]]*--[A-Za-z0-9_-]+/)) {
+        nm = substr(r, RSTART, RLENGTH); sub(/^var\([[:space:]]*/, "", nm)
+        if (!(nm in first) || ln < first[nm]) first[nm] = ln
+        r = substr(r, RSTART + RLENGTH)
+      }
+    }
+    FILENAME == ARGV[1] {
+      refs($0, FNR)
+      r = $0
+      while (match(r, /--[A-Za-z0-9_-]+[[:space:]]*:/)) {
+        nm = substr(r, RSTART, RLENGTH); sub(/[[:space:]]*:$/, "", nm); def[nm] = 1
+        r = substr(r, RSTART + RLENGTH)
+      }
+      r = $0
+      while (match(r, /@property[[:space:]]+--[A-Za-z0-9_-]+/)) {
+        nm = substr(r, RSTART, RLENGTH); sub(/^@property[[:space:]]+/, "", nm); def[nm] = 1
+        r = substr(r, RSTART + RLENGTH)
+      }
+      next
+    }
+    {
+      refs($0, FNR)
+      r = $0
+      while (match(r, /["\047`]--[A-Za-z0-9_-]+["\047`]/)) {
+        def[substr(r, RSTART + 1, RLENGTH - 2)] = 1
+        r = substr(r, RSTART + RLENGTH)
+      }
+    }
+    END { for (nm in first) if (!(nm in def)) print "token-undefined\t" first[nm] }
+  ' "$1/css" "$1/script"
+}
+
+# token_block <screen file> <tokens file> <range file> — print the
+# `token-block\t<line>` finding, if any, for the screen's token block, and
+# write `<opening line> <closing line>` to the range file when the block is
+# there exactly once and equals the tokens file line by line.
+token_block() {
+  LC_ALL=C awk -v ex="$3" '
+    FILENAME == ARGV[1] { t[++tn] = $0; next }
+    {
+      s = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      if (!inb) { if (s == "<style data-cc-tokens>") { inb = 1; o = FNR; cn = 0; ok = 1 }; next }
+      if (s == "</style>") {
+        if (cn != tn) ok = 0
+        k++
+        if (k == 1) { bo = o; bc = FNR; bok = ok } else if (k == 2) second = o
+        inb = 0; next
+      }
+      cn++
+      if (cn > tn || $0 != t[cn]) ok = 0
+    }
+    END {
+      if (k == 0) print "token-block\t1"
+      else if (k >= 2) print "token-block\t" second
+      else if (!bok) print "token-block\t" bo
+      else print bo " " bc > ex
+    }
+  ' "$2" "$1"
+}
+
 # Parse a ban file into "<id>\t<kind>\t<pattern>" lines on stdout; exit 2 on a
 # malformed line or a pattern grep -E cannot read.
 load_bans() {
@@ -349,12 +444,13 @@ load_bans() {
 }
 
 cmd_scan() {
-  local files='' bans='' lifts='' f
+  local files='' bans='' lifts='' tokens='' f
   local -a fl=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --bans) [ $# -ge 2 ] || usage; bans=$2; shift 2 ;;
       --lifts) [ $# -ge 2 ] || usage; lifts=$2; shift 2 ;;
+      --tokens) [ $# -ge 2 ] || usage; tokens=$2; shift 2 ;;
       --*) usage ;;
       *) fl+=("$1"); shift ;;
     esac
@@ -365,6 +461,12 @@ cmd_scan() {
   done
   [ -z "$bans" ] || [ -f "$bans" ] || { echo "visual-check.sh scan: 금지 목록 파일이 없다: $bans" >&2; exit 2; }
   [ -z "$lifts" ] || [ -f "$lifts" ] || { echo "visual-check.sh scan: system.md 가 없다: $lifts" >&2; exit 2; }
+  if [ -n "$tokens" ]; then
+    [ -f "$tokens" ] || { echo "visual-check.sh scan: 토큰 파일이 없다: $tokens" >&2; exit 2; }
+    if LC_ALL=C grep -qiF '</style' "$tokens"; then
+      echo "visual-check.sh scan: 토큰 파일이 </style 를 담아 화면의 토큰 블록에 넣을 수 없다: $tokens" >&2; exit 2
+    fi
+  fi
 
   WORK=$(mktemp -d "${TMPDIR:-/tmp}/visual-check.XXXXXX")
   trap 'rm -rf "$WORK"' EXIT
@@ -381,8 +483,13 @@ cmd_scan() {
   else
     echo "# 금지 해제: 없음"
   fi
+  if [ -n "$tokens" ]; then
+    echo "# 토큰 블록: $tokens 와 대조"
+  else
+    echo "# 토큰 블록: 대조 안 함 (--tokens 없음)"
+  fi
 
-  local any=0 s id kind pat
+  local any=0 s id kind pat bo bc
   for f in "${fl[@]}"; do
     s="$WORK/s"
     rm -rf "$s"; mkdir "$s"
@@ -412,6 +519,19 @@ cmd_scan() {
         hits "$id" "$s/script" "$pat"
       fi
     done < "$banlist"
+
+    token_undefined "$s" >> "$FOUND"
+    if [ -n "$tokens" ]; then
+      rm -f "$WORK/range"
+      token_block "$f" "$tokens" "$WORK/range" >> "$FOUND"
+      if [ -s "$WORK/range" ]; then
+        read -r bo bc < "$WORK/range"
+        awk -F '\t' -v o="$bo" -v c="$bc" \
+          '!(($1 == "token-color" || $1 == "token-space") && $2 + 0 > o + 0 && $2 + 0 < c + 0)' \
+          "$FOUND" > "$WORK/kept"
+        mv "$WORK/kept" "$FOUND"
+      fi
+    fi
 
     if [ -s "$FOUND" ]; then
       any=1

@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.20.0] - 2026-11-01
+## [3.21.0] - 2026-11-01
 
 3.19 에서 게이트가 읽기만 하던 기본 브랜치 판독을 이 호스트의 fleet 이 직접 쓴다. 런을 기다리는 dispatch 잡이 기본 브랜치의 CI 를 주기마다 읽어 사건 파일을 갱신하고, 고칠 사건마다 수리 런을 렌더해 백로그에 넣으며, 그 수리 런에 함대 상한과 별도의 자리를 열어 기동한다.
 
@@ -33,6 +33,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 설치된 dispatch 레이블이 새 `fleet.sh` 를 부르도록 `fleet.sh agent install` 을 다시 돌린다.
 - 수리 런을 띄우고 싶지 않으면 `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace/master-repair.off` 를 만든다. 비워 두면 모든 저장소, `owner/name` 을 한 줄씩 적으면 그 저장소만 막는다. 그 모양이 아닌 줄(주석 포함)을 하나라도 적으면 모든 저장소가 막힌다. `fleet.sh agent status` 의 수리 런 줄이 실제로 막힌 범위를 보여 준다. 판독은 스위치와 무관하게 계속 쓰인다.
+
+## [3.20.1] - 2026-11-01
+
+화면 파일이 디자인 토큰의 정의를 머리의 `<style data-cc-tokens>` 블록에 직접 담게 하고, 같은 결함이 다시 들어오지 않도록 검사를 더한다. 이전에는 화면이 `var(--…)` 만 쓰고 정의를 담지 않아, 캔버스에 올라간 화면이 꾸밈 없이 그려졌다.
+
+### Fixed
+
+- **토큰 블록 검사** — `visual-check.sh scan --tokens <tokens.css>` 가 화면 머리의 토큰 블록이 정확히 하나이고 `tokens.css` 와 바이트가 같은지 보고(`token-block`), 같을 때만 블록 줄의 `token-color`·`token-space` 를 지운다. 토큰 파일이 없거나 `</style` 를 담으면 종료 2 이고, 보고 머리 셋째 줄에 대조 여부를 적는다.
+- **정의 없는 토큰 변수** — `--tokens` 와 상관없이, 파일 안 어디에도 정의되지 않은 채 `var()` 로 참조된 사용자 정의 속성을 이름마다 처음 참조한 줄에서 `token-undefined` 로 지적한다.
+- **참조 렌더 경로 인코딩** — `visual-capture.sh ref` 가 `file://` URL 의 경로를 퍼센트 인코딩해, `#`·공백·한글이 든 디렉터리의 화면도 제대로 그린다.
+- **규약과 스킬** — 화면 계약이 토큰 블록의 문법과 부모가 채우는 절차를 정하고, 무인 화면 형식을 토큰 블록을 담은 일반 HTML 로 바꾼다. 생성·검토·발행·구현 승인·구현의 `scan` 호출이 모두 `--tokens` 를 넘기고, `token-block`·`token-undefined` 발견이 남으면 `external-ref` 와 같이 구현 승인을 쓰지 않는다. 구현은 토큰 블록을 번역하지 않는다.
+
+### Why
+
+검토 렌더는 로컬 토큰으로 그려져 결함이 보이지 않았고, 정의 없는 변수를 잡는 검사도 없어 꾸밈 없는 화면이 승인까지 지나갔다. 화면 한 장이 어디서나 같은 입력으로 그려지게 하고, 그 입력이 틀리면 기계 검사가 멈추게 한다.
+
+## [3.20.0] - 2026-11-01
+
+원격에서 온 선택지 답이 질문 표면에 닿는 이음매의 규칙을 공용 문서 `_common/remote-reply.md` 하나에 정하고, 그 규칙의 고정 예제와 스키마 린트를 둔다. 중계와 게이트가 아직 이 규칙을 쓰지는 않으며, 뒤따를 구현이 같은 바이트를 보도록 계약을 먼저 고정한다.
+
+### Added
+
+- **원격 답 규칙 문서** — 봉투·수령 표지·적용 기록의 키 표, 표면(일반 질문, 질문지, 승인)별 주소 규칙, 우편함에서 봉투 하나가 지나는 수명 주기, 라우터 좌석을 깨우는 리터럴, 게이트가 트랜스크립트 짝이나 질문지 제출 바이트에서 다시 셈하는 `answers_sha256` 식을 적는다.
+- **고정 예제** — `tests/fixtures/remote-reply/` 에 네 가지 봉투, 수령 표지 두 꼴, 질문지 제출 바이트와 트랜스크립트 짝 둘(일반 질문, 승인 질문)에 대응하는 적용 기록, 깨우기 리터럴을 둔다.
+- **스키마 린트** — `scripts/lint-remote-reply-schema.sh` 가 예제마다 키 집합·문법·시각 순서·선택지 바이트 일치와 해시를 검사하고, 자기 키 목록과 주소 규칙을 규칙 문서의 표와 매번 대조한다. `make lint` 가 부르고, `scripts/test-lint-remote-reply-schema.sh` 가 깨뜨린 사본마다 맞는 사유로 실패하는지 시험한다.
 
 ## [3.19.1] - 2026-11-01
 

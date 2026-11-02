@@ -28,7 +28,7 @@ These rules decide what a phase may do and where it stops. They stay near the to
 
 **CFI-3 — Only publish and sync move the comparison baseline.** The screen files, `support.js` and their pinned `**sha256**`·`**버전**`·`**동기 시각**`·`**런타임**` change only in 발행, 동기 and the publish step of 발행 묶음 다시 생성. Before overwriting, compare the current files against the pinned values and show any unrecorded move to the person. Sync and republish delete the `**구현 승인**` line in the same write.
 
-**CFI-4 — `**구현 승인**` is written by the 구현 승인 phase and nothing else.** It is written only after K0 and K1 + K3 for every pinned URL succeeded in the same invocation, only on `발행됨`, never when `**스냅숏 형태**` is `초안`, never while an `external-ref` finding stands, and its input bundle is measured by `visual-check.sh bundle` — never computed here.
+**CFI-4 — `**구현 승인**` is written by the 구현 승인 phase and nothing else.** It is written only after K0 and K1 + K3 for every pinned URL succeeded in the same invocation, only on `발행됨`, never when `**스냅숏 형태**` is `초안`, never while an `external-ref`, `token-block` or `token-undefined` finding stands, and its input bundle is measured by `visual-check.sh bundle` — never computed here.
 
 **CFI-5 — The review loop is capped at three rounds with a fresh reviewer each.** A round that yields no verdict counts as a failed round. After the third failed round the phase stops and asks (`contract.md` §3 and Step 3 below). Authors and reviewers are read-only subagents; the parent writes every file, and rejects an edit pair whose id is not on that round's fix list.
 
@@ -66,12 +66,12 @@ At the start of every phase that generates or polishes locally, tell the person 
 
 **Design system.** With a usable `system.md` (Step 1.3) read `tokens.css`·`tokens.md` and its `**금지 해제**` lines. Without one, generate it: spawn a `ds-generate` author (`contract.md` §6, file-block envelope) for `tokens.css`, `tokens.md` and `system.html`, and write `system.md` with `**출처**: 신규` and `**아티팩트**: (미발행)`.
 
-**Screens.** Spawn a `screen-generate` author per screen with the document, the direction, the tokens and `contract.md` §2; write each returned file block to `docs/visual/{slug}.<id>.html` atomically. Write the sidecar as `로컬 초안` with the fields of `sidecar.md` §2.
+**Screens.** Spawn a `screen-generate` author per screen with the document, the direction, the tokens and `contract.md` §2; fill each returned screen's token block with the bytes of `tokens.css` (`contract.md` §7, 토큰 블록 채우기) before writing the file block to `docs/visual/{slug}.<id>.html` atomically. Write the sidecar as `로컬 초안` with the fields of `sidecar.md` §2.
 
 **Review loop** (CFI-5), per round:
 
 1. Render each screen with `visual-capture.sh ref <screen> --out <mktemp -d outside the tree>`. Where it reports `비교 안 함`, review from the HTML and set `**검토 렌더**: 불가(환경)`.
-2. Run `visual-check.sh scan <screens> --bans <Step 1.5 list> [--lifts <system.md>]`.
+2. Run `visual-check.sh scan <screens> --bans <Step 1.5 list> [--lifts <system.md>] --tokens <base>/docs/visual-system/tokens.css`.
 3. Spawn a fresh reviewer with `contract.md` §3, the screens, the renders, the scan output and the ban list's `판단` items. The verdict is the structural rule of §3, never the reviewer's opinion.
 4. Record each reviewer candidate under `### 금지 후보`.
 5. `ACCEPT` → set `**상태**: 검토 통과`, update `**검토**`, remove the render directory and go to Step 4 only if the person asks; otherwise end with the next-step line `/cc-cmds:visual <문서>` (발행).
@@ -105,7 +105,7 @@ Set `**상태**: 발행됨` and emit the paste block (Step 6).
 1. K0.
 2. K1 + K3 for every pinned URL. If the bytes read differ from the screen file, show the move as sync does and pull it back first.
 3. `**스냅숏 형태**` is `초안` → refuse, and say that the runtime question of Step 4 (c) left it there.
-4. `visual-check.sh scan <screens> --bans <Step 1.5 list> --lifts <system.md>`. Any `external-ref` finding → refuse. Show the remaining findings grouped by rule id.
+4. `visual-check.sh scan <screens> --bans <Step 1.5 list> --lifts <system.md> --tokens <base>/docs/visual-system/tokens.css`. Any `external-ref`, `token-block` or `token-undefined` finding → refuse. Show the remaining findings grouped by rule id.
     - `등급 2` AskUserQuestion for the acceptance set — 옵션 one per rule id found (multi-select) / `수용하지 않는다` / `중단` — saying that an accepted id lets the implementation take those findings as they are. With findings left that the person does not accept, do not write the line; say what to fix and that this phase can be run again.
 5. Measure `visual-check.sh bundle <document>` and the sha256 of the host ban list file, then write `**구현 승인**: <now, ISO8601 UTC> — 입력 묶음 <bundle> — 금지 목록 <sha256> — 기계 검사 수용 <ids | 없음>` (`sidecar.md` §2). Confirm with `visual-check.sh approval <document>` and report its line.
 
