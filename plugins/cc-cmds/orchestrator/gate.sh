@@ -3331,11 +3331,22 @@ gate_reach_disposition() {
     # docker branches below the cell, none of which a device act changes.
     # The device checks read the act its launchers wrap (`_ds` is where it
     # starts), as the grade and the reach do; the judgment below is handed the
-    # whole argv, launchers included.
-    local _dk='-' _dshape='' _ds=1
+    # whole argv, launchers included. A wrapped command given as a path parks
+    # as a bare one does. `find` runs any number of commands behind `-exec`
+    # and `-ok`, and no one of them is the act, so a `find` that names a
+    # device tool anywhere parks as an act whose devices cannot be read.
+    local _dk='-' _dshape='' _ds=1 _dw
     if [ "$cls" = "표" ] && [ "$graded" = "트리밖쓰기" ]; then
       _ds=$(gate_device_act_start "$@")
+      case "${*:$_ds:1}" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
       _dk=$(gate_device_act_kind "${@:$_ds}")
+      if [ "${1##*/}" = find ]; then
+        for _dw in "$@"; do
+          case "${_dw##*/}" in
+            xcrun|xcodebuild|adb|emulator|avdmanager|maestro) printf '기기전역\tforeign-device\t-'; return 0 ;;
+          esac
+        done
+      fi
     fi
     if [ "$_dk" = "target" ] && ! gate_device_targets_listed "${@:$_ds}"; then
       printf '기기전역\tforeign-device\t-'; return 0
@@ -3517,8 +3528,9 @@ gate_device_peel_argc() {
   # gate_device_peel_argc <argv...> — the number of words left once the
   # launchers in front of a device act are peeled: `lockf`, `command`, `time`,
   # `env`, `timeout`, `nice`, `nohup` and `stdbuf`, through the same unwraps
-  # the grade, the reach and the destruction mark read past, so all four agree
-  # on which word is the command. Nothing is printed when a launcher's spelling
+  # the grade, the reach and the destruction mark read past, so they agree on
+  # which word is the command. `find` is not peeled here: the machine-global
+  # cell parks a `find` that names a device tool. Nothing is printed when a launcher's spelling
   # cannot be read (an unknown option, no command after it). A count rather
   # than the words themselves, so the answer survives the subshell
   # `gate_unwrap_time` calls its resolver in.
