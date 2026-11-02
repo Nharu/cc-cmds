@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.22.4] - 2026-11-02
+
+디자인 시스템을 발행한 뒤 재킥한 런이 같은 문서의 시각 사이드카를 재사용하지 못하던 문제를 고친다. 발행이 `system.md` 의 아티팩트 줄만 바꾸는데도 사이드카가 전체 파일 해시를 들고 있어 재사용이 거절되고, 무인 시각 단계가 선택지 없는 거부로 멈췄다.
+
+### Fixed
+
+- **정규화 다이제스트** (`visual-check.sh system`) — `system.md` 의 `**아티팩트**:` 줄을 `(미발행)` 으로 바꾼 뒤 잰 sha256 을 디자인 시스템 다이제스트로 쓴다. `--owner` 는 이 문서의 디자인 시스템인지를 답하고, 아니면 사유(system.md 없음, 사이드카 없음, 머리 불일치, owner-doc 불일치, 다이제스트 불일치, tokens.css 불일치)를 한 줄로 낸다.
+- **재사용 조건** (`visual-check.sh reuse`) — 디자인 시스템 다이제스트는 정규화 값과 예전 전체 해시를 모두 받는다. `system.md` 가 있으면 그 `tokens.css sha256` 줄이 실제 `tokens.css` 와 같아야 재사용한다.
+- **무인 시각 정지** (`visual-unattended`) — `system-mismatch`·`output-present` 정지가 `경우=` 로 갈리는 선택지와 추천·리스크 문면을 싣는다. 재사용할 때는 사이드카의 `**기록**` 줄 경로만 이 런의 것으로 고쳐 쓰고, 정지 뒤 다시 붙은 턴의 절차를 적는다.
+- **게이트 등급** — `visual-check.sh system` 을 읽기로 등급한다.
+
 ## [3.22.3] - 2026-11-02
 
 주의 사건 공용 문서의 스풀 경로표를 원격 답 규칙 문서와 맞춘다. 두 문서가 적용 기록 이름과 수령 표지의 칸, 지우기 규칙을 다르게 적고 있어, 원격 답 쪽이 정본이라고 알리는 단락으로 버티던 것을 없앤다.
