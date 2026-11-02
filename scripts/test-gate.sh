@@ -2008,6 +2008,10 @@ trap 'eval "$CANON_REAP"; rm -rf "$WORK_ROOT"' EXIT
 FXREPORT="$WORK/fixture-review.md"
 printf '# 픽스처 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$FXREPORT"
 export XDG_STATE_HOME="$WORK/state"
+# The attention spool root points at a path under the work directory that is
+# never created, so the attention tap writes nothing from this suite and never
+# reaches the account spool. Every gate run below inherits it.
+export CC_CMDS_ATTENTION_ROOT="$WORK/attention-root-absent"
 # The pace root follows XDG_STATE_HOME unless GATE_PACE_ROOT names one, and the
 # base branch's readings live under it: a value inherited from the caller would
 # let this host's readings into every routed fixture's dispositions.
