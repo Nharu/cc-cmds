@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **정규화 다이제스트** (`visual-check.sh system`) — `system.md` 의 `**아티팩트**:` 줄을 `(미발행)` 으로 바꾼 뒤 잰 sha256 을 디자인 시스템 다이제스트로 쓴다. `--owner` 는 이 문서의 디자인 시스템인지를 답하고, 아니면 사유(system.md 없음, 사이드카 없음, 머리 불일치, owner-doc 불일치, 다이제스트 불일치, tokens.css 불일치)를 한 줄로 낸다.
 - **재사용 조건** (`visual-check.sh reuse`) — 디자인 시스템 다이제스트는 정규화 값과 예전 전체 해시를 모두 받는다. `system.md` 가 있으면 그 `tokens.css sha256` 줄이 실제 `tokens.css` 와 같아야 재사용한다.
-- **무인 시각 정지** (`visual-unattended`) — `system-mismatch`·`output-present` 정지가 `경우=` 로 갈리는 선택지와 추천·리스크 문면을 싣는다. 재사용할 때는 사이드카의 `**기록**` 줄 경로만 이 런의 것으로 고쳐 쓰고, 정지 뒤 다시 붙은 턴의 절차를 적는다.
+- **무인 시각 정지** (`visual-unattended`) — `system-mismatch`·`output-present` 정지가 `경우=` 로 갈리는 선택지와 추천·리스크 문면을 싣는다. 재사용할 때는 사이드카의 `**기록**` 줄 경로만 이 런의 것으로 고쳐 쓰고, 정지 뒤 다시 붙은 턴의 절차를 적는다. 앞선 `system-mismatch` 답은 뒤따르는 `output-present` 기록이 `앞선 답=` 조각으로 날라, 재개 때 같은 경우의 디자인 시스템 검사를 그 답으로 넘기므로 두 정지가 번갈아 나지 않는다.
 - **게이트 등급** — `visual-check.sh system` 을 읽기로 등급한다.
 
 ## [3.22.3] - 2026-11-02
