@@ -104,7 +104,9 @@
 # the remote tip, the pull request, and the gate's own planning-time adoption
 # and halt-answer checks — and are the same for a person and the seat, except
 # that the seat (`--auto`) does not adopt a segment whose last row is a `park`
-# it never landed from. `render-manifest` writes a `세그먼트 입양` row inside
+# it never landed from, nor one whose open halt answer the gate would not carry:
+# for a person that answer is a tail cell the question names, as the gate's
+# planning act only warns of it, and the seat has no one to tell. `render-manifest` writes a `세그먼트 입양` row inside
 # `## 인가` for each candidate a person answered `이어받기` (`--asked` key
 # `입양 <세그먼트>`), or under `--auto` for every candidate; it never copies the
 # previous run's own adoption rows, and `--no-adopt` writes none. `verify-subset`
@@ -209,7 +211,8 @@
 # one `원인=<행 종류>:<원장 줄>` per cause row the ledger holds for that park
 # (`원인=없음` when none), `중단기록=<기록 이름,…>` (the previous run's
 # unanswered halt records of that segment) and `이월=재수렴` (the gate would
-# carry a `재수렴` answer into the new run), then `미입양=PR들여오기` — on an
+# carry a `재수렴` answer into the new run) or `이월=불가` (the source holds an
+# open answer the gate would not carry, which stays with the source), then `미입양=PR들여오기` — on an
 # `입양불가` line too, after its reason — when the frozen document declares the
 # slice `절단점: PR` and the latest landing any run of the document left for it
 # (past a trailing `park`) is a `완료` carrying `PR` and `커밋` only — on an
@@ -221,7 +224,7 @@
 # an `입양후보` line the cell followed by `들여올PR=<번호>`. The reason tokens: park,
 # 설계재실행, 문서바뀜, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
-# 라이브, 원장없음, 중단답이월불가, and 판정불가 when the gate child could
+# 라이브, 원장없음, 중단답이월불가 (the seat's only), and 판정불가 when the gate child could
 # not answer.
 #
 # The `--asked` file lists the questions this re-kickoff actually asked, one
@@ -429,6 +432,20 @@ rk_copy() {
   ( umask 077; cat -- "$1" > "$dst" ) 2>/dev/null || return 1
   chmod 600 "$dst" 2>/dev/null || return 1
   printf '%s' "$dst"
+}
+
+# rk_doc_path <key> — the design document a manifest's `설계 문서` key names.
+# The key is repo-relative when the document's repository contains it, and
+# otherwise the absolute path with its leading separator removed; the two read
+# alike, so the driver tells them apart by what exists, in this order, and this
+# file must land on the same file the driver does (run.sh, the `DOC` fold).
+rk_doc_path() {
+  if [ -f "$RK_BASE/$1" ]; then printf '%s' "$RK_BASE/$1"
+  elif [ -f "/$1" ]; then printf '%s' "/$1"
+  elif [ -d "$RK_BASE/$(dirname "$1")" ]; then printf '%s' "$RK_BASE/$1"
+  elif [ -d "/$(dirname "$1")" ]; then printf '%s' "/$1"
+  else printf '%s' "$RK_BASE/$1"
+  fi
 }
 
 # rk_wide_instant <value> — epoch seconds, or nothing. A trailing `Z` and a
@@ -851,7 +868,7 @@ rk_adopt_candidates() {
   local pdoc pim pip pic pibr cim
   keys=$( { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | while IFS= read -r row; do manifest_row_fields "$row" 'id' | head -n 1; printf '\n'; done | awk 'NF && !seen[$0]++')
   err="$RK_TMP/adopt.err"
-  pdoc=$(rk_copy "$RK_BASE/$(manifest_field '요소' '설계 문서')" adopt-prdoc.md) || pdoc=''
+  pdoc=$(rk_copy "$(rk_doc_path "$(manifest_field '요소' '설계 문서')")" adopt-prdoc.md) || pdoc=''
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     [ "$(rk_gate landed "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$key")" = "미착지" ] || continue
@@ -900,7 +917,7 @@ EOF
       dcopy=''
       if [ "$G_DESIGN_PLANNED" = "1" ]; then tok='설계재실행'
       elif [ "$G_DESIGN_OUT" = "1" ]; then
-        doc=$(manifest_field '요소' '설계 문서'); docf="$RK_BASE/$doc"
+        doc=$(manifest_field '요소' '설계 문서'); docf=$(rk_doc_path "$doc")
         dcopy=$(rk_copy "$docf" adopt-doc.md) || dcopy=''
         if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_SHA" ]; then tok='설계재실행'; fi
       else
@@ -908,7 +925,7 @@ EOF
         case "$doc" in
           ''|'(없음)') ;;
           *)
-            docf="$RK_BASE/$doc"
+            docf=$(rk_doc_path "$doc")
             dcopy=$(rk_copy "$docf" adopt-doc.md) || dcopy=''
             if [ -z "$dcopy" ] || [ "$(rk_sha "$dcopy")" != "$G_DOC_NOW" ]; then tok='문서바뀜'; fi
             ;;
@@ -1033,7 +1050,7 @@ EOF
     tail=''
     if [ -z "$tok" ]; then
       case "$(rk_gate halt-source "$mcopy" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$key")" in
-        불가) tok='중단답이월불가' ;;
+        불가) if [ "$RK_AUTO" = "1" ]; then tok='중단답이월불가'; else tail="${TAB}이월=불가"; fi ;;
         이월) tail="${TAB}이월=재수렴" ;;
         없음) ;;
         *) tok='판정불가' ;;
@@ -2044,7 +2061,7 @@ rk_graph_compute() {
   G_DESIGN_PLANNED=0; G_DOC_NOW="-"; G_IV_KEEP=0
   G_DESIGN_NOTE="없음${TAB}계획에 설계 단계가 없습니다"; G_AUDIT_NOTE="없음${TAB}계획에 감사 단계가 없습니다"
   doc=$(manifest_field '요소' '설계 문서')
-  case "$doc" in ''|'(없음)') docf="" ;; *) docf="$RK_BASE/$doc" ;; esac
+  case "$doc" in ''|'(없음)') docf="" ;; *) docf=$(rk_doc_path "$doc") ;; esac
   docsha=""; [ -n "$docf" ] && docsha=$(rk_sha "$docf")
   [ -n "$docsha" ] && G_DOC_NOW=$docsha
   did=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)
