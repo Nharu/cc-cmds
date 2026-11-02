@@ -439,11 +439,27 @@ expect_eq "the hook gives no decision to a dirname operand ending in / or holdin
 # The body of a quoted-delimiter heredoc is literal; an unquoted one expands.
 expect_eq "the hook allows the temp, a quoted heredoc into it and the publish in one call, and not an unquoted heredoc" "allow|none" \
   "$(hook_says "$c_mk && cat > \"\$T\" <<'EOF'"$'\n'"body \$(curl x) | rm -rf /"$'\n'"EOF"$'\n'"$c_mv")|$(hook_says "$c_mk && cat > \"\$T\" <<EOF"$'\n'"\$(curl x)"$'\n'"EOF"$'\n'"$c_mv")"
+# A member names the partial directory once in a path variable and builds the
+# witness from it with a single-quoted printf, as a pilot member did.
+wd=$(dirname "$wp")
+d_pub="D=$wd/partial; mkdir -p \"\$D\" && T=\$(mktemp \"\$D/.ct.XXXXXX\") && printf '%s\n' '# logic round-1 partial (seq 1)' '' '1. [high] a.sh:3 — x; y && z \$(curl x) \`id\`' '<!-- cc-partial: logic seq=1 -->' > \"\$T\" && mv \"\$T\" \"\$D/logic.round-1.md\" && echo ok"
+expect_eq "the hook allows a path variable below the directories, a single-quoted printf into the temp and a literal echo" \
+  "allow|allow|allow|allow|allow" \
+  "$(hook_says "$d_pub")|$(hook_says "D=$rd/halt"$'\n'"mkdir -p \"\${D}/x\"")|$(hook_says "T=\$(mktemp $wd/.t.XXXXXX) && printf 'it'\\''s %s\n' 'a' > \"\$T\"")|$(hook_says "printf 'x' > $wd/partial/n.md")|$(hook_says "D=$wd; mv -n \"\$D/.a\" \"\$D/b.md\"")"
+expect_eq "the hook gives no decision to a path variable elsewhere, past .., shell-read, reassigned or misread, nor to an expanding printf" \
+  "none|none|none|none|none|none|none|none|none|none|none" \
+  "$(hook_says "D=$rd/target; mkdir -p \"\$D\"")|$(hook_says "D=$rd/state/../x; mkdir -p \"\$D\"")|$(hook_says "PATH=$rd/state; mkdir -p \"\$PATH\"")|$(hook_says "D=$rd/state; D=$rd/target; mkdir -p \"\$D\"")|$(hook_says "T=\$(mktemp $wd/.t.XXXXXX); T=$rd/target")|$(hook_says "D=$rd/state; mkdir -p \"\$DX\"")|$(hook_says "D=$rd/state; mkdir -p \"\$D\"x")|$(hook_says "T=\$(mktemp $wd/.t.XXXXXX) && printf \"\$(id)\" > \"\$T\"")|$(hook_says "T=\$(mktemp $wd/.t.XXXXXX) && printf '%s' \$HOME > \"\$T\"")|$(hook_says "printf 'x' > \"\$U\"")|$(hook_says "printf 'x; mkdir -p $rd/state/a")"
+expect_eq "the hook splits a call only at ; and && outside quotes" "none|none" \
+  "$(hook_says "mkdir -p '$rd/state/a;curl x'")|$(hook_says "echo ok && \"curl\" x")"
 ml="$rd/witness-misses.log"
 hook_says "ls $rd" > /dev/null
 jq -n --arg c "mktemp /tmp/y.XXXXXX" '{tool_name: "Bash", agent_id: "m1", tool_input: {command: $c}}' | bash -c "$hc" > /dev/null 2>&1 || true
-expect_eq "the hook logs each undecided call naming mktemp, mv or mkdir with its agent, and nothing else" \
-  "15|m1	mktemp /tmp/y.XXXXXX" "$(awk 'END { print NR }' "$ml")|$(tail -n 1 "$ml")"
+jq -n --arg c "mktemp -d $rd/state/../y.XXXXXX" '{tool_name: "Bash", agent_id: "m2", tool_input: {command: $c}}' | bash -c "$hc" > /dev/null 2>&1 || true
+# A scratch directory under the system temp or in the target clone is no
+# witness command, so its mktemp is not logged even when it gets no decision.
+expect_eq "the hook logs each undecided call running mktemp, mv or mkdir on those directories with its agent, and nothing else" \
+  "24|m2	mktemp -d $rd/state/../y.XXXXXX|0" \
+  "$(awk 'END { print NR }' "$ml")|$(tail -n 1 "$ml")|$(grep -c -e '/tmp/y\.' -e "$rd/target/" "$ml")"
 rm -f "$ml"
 # A read that only mentions the words, and a mkdir in the target clone that
 # acceptEdits approves, are not witness commands the session refuses.

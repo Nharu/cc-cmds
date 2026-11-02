@@ -868,17 +868,26 @@ witness_hook_write() {
 #   openssl rand -hex <n>         (the lead's witness nonce, names no path;
 #                                  <n> is 1-999 bytes, so one call may mint
 #                                  every member's nonce at once)
+#   <var>=<path>                  (a path variable, below)
+#   printf '<text>'... > <path|"$var">   echo <word>
 # A <path> or "$var" is either bare or wrapped in one pair of double quotes,
 # never one-sided; a <path> may be spelled `"$(dirname <path>)/<rest>"` (a
 # dirname operand ending in `/` or holding `//` is not resolved); "$var" is a
 # variable an earlier mktemp of the same call assigned; `mkdir -p` may also
 # name one of the directories itself; and the body of a quoted-delimiter
-# heredoc opened at the end of a `cat >` command is not read. Any other call
-# gets no decision, so the session's permission rules decide it. One that runs
-# mktemp, or runs mv or mkdir naming one of the directories or a `$(dirname`,
-# is also appended to the log as `<agent_id or ->\t<command>`, because a `-p`
-# session refuses it and the pilot fails on a non-empty log; a call that only
-# mentions those words, or a mv or mkdir elsewhere, is not logged.
+# heredoc opened at the end of a `cat >` command is not read. A path variable
+# names one of the directories or a path below one, and its `$name` or
+# `${name}` in a later command of the call is read as that path, so a member
+# may write `D=<dir>; mkdir -p "$D" && T=$(mktemp "$D/.x.XXXXXX")`. A printf
+# takes single-quoted arguments only, which the shell does not expand, and
+# `;` or `&&` inside quotes do not split the call. Any other call gets no
+# decision, so the session's permission rules decide it. One that runs
+# mktemp, mv or mkdir and names one of the directories or a `$(dirname` is
+# also appended to the log as `<agent_id or ->\t<command>`, because a `-p`
+# session may refuse it and the pilot fails on a non-empty log; a call that
+# only mentions those words, or a mktemp, mv or mkdir elsewhere — a scratch
+# directory under the system temp, say — is not logged: it is no witness
+# command.
 set -u
 log="${1:-}"
 (( $# > 1 )) || exit 0
@@ -903,7 +912,7 @@ miss() {
     case "$orig" in *"$r"*) named=1 ;; esac
   done
   case "$orig" in *'$(dirname'*) named=1 ;; esac
-  if [[ $flat =~ $re_runmk ]] || { [[ -n "$named" ]] && [[ $flat =~ $re_runmv ]]; }; then
+  if [[ -n "$named" ]] && { [[ $flat =~ $re_runmk ]] || [[ $flat =~ $re_runmv ]]; }; then
     printf '%s\t%s\n' "$(printf '%s' "$in" | jq -r '.agent_id // "-"' 2>/dev/null || echo -)" \
       "$(printf '%s' "$orig" | tr '\n\t' '  ')" >> "$log" 2>/dev/null || true
   fi
@@ -953,6 +962,11 @@ re_echo='^echo '"$vref"'$'
 re_catvar='^cat > '"$vref"'$'
 re_catpath='^cat > '"$pth"'$'
 re_nonce='^openssl rand -hex [1-9][0-9]{0,2}$'
+re_pathvar='^('"$v"')='"$pth"'$'
+# One printf argument: single-quoted text, which may carry a quote as '\''.
+sq="'[^']*'(\\\\''[^']*')*"
+re_printf='^printf( '"$sq"')+ > ('"$pth"'|'"$vref"')$'
+re_echolit='^echo [A-Za-z0-9._-]+$'
 
 # A quoted-delimiter heredoc's body is literal text: drop it, and the
 # `<<'TAG'` that opens it. Only a line ending in `cat > <path|"$var"> <<'TAG'`
@@ -984,16 +998,89 @@ while [[ $cmd =~ $re_dir ]]; do
   cmd="${cmd%%"$full"*}${d}${cmd#*"$full"}"
 done
 
-segs=$(printf '%s\n' "$cmd" | awk '{ gsub(/&&|;/, "\n"); print }')
+# Split the call into its commands at the newlines, `;` and `&&` that stand
+# outside quotes, so a `;` inside a single-quoted printf argument stays text.
+# A backslash outside single quotes carries the next character with it, so an
+# escaped quote opens nothing; a quote left open gets no decision.
+segs=() seg="" q="" i=0 len=${#cmd}
+while (( i < len )); do
+  ch="${cmd:i:1}"
+  if [[ $q == "'" ]]; then
+    [[ $ch != "'" ]] || q=""
+    seg="${seg}${ch}"
+  elif [[ $ch == '\' ]]; then
+    seg="${seg}${cmd:i:2}"; i=$((i + 2)); continue
+  elif [[ -n $q ]]; then
+    [[ $ch != '"' ]] || q=""
+    seg="${seg}${ch}"
+  elif [[ $ch == "'" || $ch == '"' ]]; then
+    q="$ch"; seg="${seg}${ch}"
+  elif [[ $ch == $'\n' || $ch == ';' ]]; then
+    segs[${#segs[@]}]="$seg"; seg=""
+  elif [[ $ch == '&' && ${cmd:i+1:1} == '&' ]]; then
+    segs[${#segs[@]}]="$seg"; seg=""; i=$((i + 2)); continue
+  else
+    seg="${seg}${ch}"
+  fi
+  i=$((i + 1))
+done
+[[ -z $q ]] || miss
+segs[${#segs[@]}]="$seg"
+
+# A path variable — `<var>=<path>` naming one of the directories or a path
+# below one — is replaced by its path in the commands after it, so
+# `D=<path>; mkdir -p "$D"` is read as `mkdir -p "<path>"`. Only a whole
+# `$name` or `${name}` is replaced; `$DX` is not `$D`.
+pvars=$'\n'
+pval() {
+  local rest="${pvars#*$'\n'"$1"=}"
+  [[ "$rest" != "$pvars" ]] || return 1
+  printf '%s' "${rest%%$'\n'*}"
+}
+subst() {
+  local rest="$1" out="" name tok p
+  while [[ $rest == *'$'* ]]; do
+    out="${out}${rest%%\$*}"; rest="${rest#*\$}"
+    if [[ $rest =~ ^(\{($v)\}|($v)) ]]; then
+      tok="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+      if p=$(pval "$name"); then
+        out="${out}${p}"; rest="${rest#"$tok"}"; continue
+      fi
+    fi
+    out="${out}\$"
+  done
+  printf '%s' "${out}${rest}"
+}
+# Names whose value the shell itself reads are not taken as path variables.
+re_special='^(PATH|IFS|ENV|BASH_ENV|CDPATH|HOME|SHELLOPTS|BASHOPTS|PS4|GLOBIGNORE|LD_.*|DYLD_.*)$'
+
 vars=" "
 n=0
-while IFS= read -r seg; do
+for seg in "${segs[@]}"; do
   seg="${seg#"${seg%%[![:space:]]*}"}"
   seg="${seg%"${seg##*[![:space:]]}"}"
   [[ -n "$seg" ]] || continue
+  seg=$(subst "$seg")
   if [[ $seg =~ $re_assign ]]; then
     under "${BASH_REMATCH[3]}" || miss
+    ! pval "${BASH_REMATCH[1]}" > /dev/null || miss
     vars="${vars}${BASH_REMATCH[1]} "
+  elif [[ $seg =~ $re_pathvar ]]; then
+    name="${BASH_REMATCH[1]}"; p=$(unq "${BASH_REMATCH[2]}")
+    [[ ! $name =~ $re_special ]] || miss
+    case "$vars" in *" $name "*) miss ;; esac
+    ! pval "$name" > /dev/null || miss
+    under "$p" || isroot "$p" || miss
+    pvars="${pvars}${name}=${p}"$'\n'
+  elif [[ $seg =~ $re_printf ]]; then
+    tgt="${seg##* > }"
+    if [[ $tgt =~ ^$vref$ ]]; then
+      case "$vars" in *" $(vname "$tgt") "*) ;; *) miss ;; esac
+    else
+      under "$tgt" || miss
+    fi
+  elif [[ $seg =~ $re_echolit ]]; then
+    :
   elif [[ $seg =~ $re_mktemp ]]; then
     under "${BASH_REMATCH[2]}" || miss
   elif [[ $seg =~ $re_mkdir ]]; then

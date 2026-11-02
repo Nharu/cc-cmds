@@ -90,7 +90,9 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
 ## §3 Failure handling
   The firing notify.sh surfaces (`arm`, `fire-now`, `cancel`) are
   model-side Bash dispatches; `dismiss` is called only by the plugin's
-  return hook and raises no banner. Silent skip with respect to the user-visible response
+  return hook and raises no banner. When the attention spool root exists,
+  `dismiss` also leaves that session's pair of active-notify handled
+  markers (cause `return`). Silent skip with respect to the user-visible response
   stream is the default contract — `AskUserQuestion` is never called,
   no user-addressed narration, no assistant response stream logging.
 
@@ -182,7 +184,9 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      ordinary session's banner seats are hooks, and a separate system.
      The subcommands that fire (ARM, fire-now and CANCEL) are called
      only by the model; `dismiss` is a clear-only subcommand called
-     only by the return hook, and it raises no banner. That does not
+     only by the return hook, and it raises no banner. When the attention
+     spool root exists it also leaves that session's pair of
+     active-notify handled markers (cause `return`). That does not
      break the model-invocable helper convention, which forbids a
      harness-driven turn-end path that fires, and `dismiss` fires
      nothing. `active-notify` has no hook-driven turn-end auto-fire.
