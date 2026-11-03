@@ -20135,6 +20135,15 @@ gate_main() {
 
   check_manifest
   derive_paths_from_manifest
+  # THE GATE DECIDES THE LEDGER'S READ SCOPE ITSELF, ONCE, RIGHT AFTER THE PATH.
+  # The gate is the ledger's other writer and emits no `## 실행` heading. The
+  # driver decides the scope with this same function once per run; the ledger
+  # the gate derives is always named `<run-id>.md` and only the driver ever adds
+  # a heading, so deciding it again on every gate call gives the driver's answer.
+  # Without this line the scope stays empty, the shared row readers take an
+  # empty scope as block, and on a ledger with no heading they see no row at
+  # all — a person's answer to a halt included.
+  ledger_scope_resolve
   gate_check_grant || exit $?
 
   # HOP (B) — A RUN OPENING RIGHT NOW. Still above `rundir_init`, and for the
