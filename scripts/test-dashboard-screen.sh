@@ -180,7 +180,13 @@ class N {
     nodes.forEach((n) => { if (n != null) this.appendChild(typeof n === "string" ? this.doc.createTextNode(n) : n); });
   }
   contains(n) { for (; n; n = n.parentNode) if (n === this) return true; return false; }
-  focus() { this.doc.focused = this; }
+  focus() {
+    // A control inside a closed <details> is not rendered and takes no focus.
+    for (let p = this.parentNode; p; p = p.parentNode) {
+      if (p.tagName === "DETAILS" && !p.open && this.tagName !== "SUMMARY") return;
+    }
+    this.doc.focused = this;
+  }
   walk(f) { this.children.forEach((c) => { if (c.tagName) f(c); c.walk(f); }); }
   querySelectorAll(sel) {
     const tests = sel.split(",").map((s) => {
@@ -220,6 +226,7 @@ async function boot(pathname, bodyOf) {
   const fetchStub = async (url, opts) => {
     if (url === "/healthz") return { json: async () => ({ version: "1" }) };
     c.urls.push(url);
+    if (c.failWith) return { status: c.failWith, ok: false };
     const body = bodyOf(url), etag = JSON.stringify(body);
     if ((opts.headers || {})["If-None-Match"] === etag) return { status: 304, ok: false };
     return { status: 200, ok: true, headers: { get: () => etag }, json: async () => body };
@@ -274,10 +281,17 @@ async function listCases() {
   gen++; await c.poll();
   report("다시 닫은 묶음이 폴링 뒤에도 닫혀 있다", c.details(OLD).open, false);
 
+  c.details(OLD).open = true;
   const link = c.link("/run/old-run");
   link.focus();
+  report("열린 묶음 안의 링크가 포커스를 받는다", c.doc.activeElement === link, true);
   gen++; await c.poll();
   report("포커스가 새로 만든 같은 행 링크로 옮겨 간다", c.doc.activeElement === c.link("/run/old-run") && c.doc.activeElement !== link, true);
+
+  const summary = c.details(OLD).querySelectorAll("summary")[0];
+  summary.focus();
+  gen++; await c.poll();
+  report("포커스가 새로 만든 같은 묶음의 머리로 옮겨 간다", c.doc.activeElement === c.details(OLD).querySelectorAll("summary")[0] && c.doc.activeElement !== summary, true);
 
   c.select().focus();
   c.select().fire("mousedown");
@@ -286,6 +300,7 @@ async function listCases() {
   gen++; await c.poll();
   report("누른 레포 선택이 있으면 폴링이 다시 만들지 않는다", root() === before, true);
   report("미루는 동안 마지막 갱신 시각이 움직이지 않는다", c.fresh() === freshBefore, true);
+  report("미루는 동안 띠가 갱신 미룸을 말한다", c.nodes.conn.textContent.includes("갱신 미룸"), true);
   const urls = c.urls.length;
   c.select().value = "/b";
   c.select().fire("change");
@@ -302,6 +317,37 @@ async function listCases() {
   before = root();
   gen++; await c.poll();
   report("포커스가 떠난 레포 선택은 갱신을 막지 않는다", root() !== before, true);
+
+  c.select().fire("mousedown");
+  before = root();
+  gen++; await c.poll();
+  report("값을 바꾸지 않고 닫은 레포 선택도 처음에는 미룬다", root() === before, true);
+  for (let i = 0; i < 3; i++) { gen++; await c.poll(); }
+  report("값을 바꾸지 않고 닫은 레포 선택이 목록을 계속 막지 않는다", root() !== before, true);
+  report("막힘이 풀리면 띠가 주기 갱신을 말한다", c.nodes.conn.textContent.includes("초마다 갱신"), true);
+
+  c.select().fire("keydown", { key: "ArrowDown" });
+  c.select().fire("keydown", { key: "Escape" });
+  before = root();
+  gen++; await c.poll();
+  report("Escape 로 닫은 레포 선택은 갱신을 막지 않는다", root() !== before, true);
+
+  c.selection = { isCollapsed: false, anchorNode: c.nodes.offline, focusNode: c.link("/run/old-run") };
+  before = root();
+  gen++; await c.poll();
+  report("화면 밖에서 시작해 안으로 끈 선택도 다시 만들지 않는다", root() === before, true);
+  c.selection = null;
+
+  c.selection = { isCollapsed: false, anchorNode: c.link("/run/old-run") };
+  c.failWith = 500;
+  await c.poll();
+  report("선택 중의 일시적 서버 오류는 화면을 덮지 않는다", c.app.querySelectorAll("button").length > 1 && c.details(OLD) !== undefined, true);
+  c.selection = null;
+  await c.poll();
+  report("선택이 풀리면 서버 오류를 보인다", c.details(OLD) === undefined, true);
+  c.failWith = 0;
+  gen++; await c.poll();
+  report("오류가 지나가면 펼친 묶음이 그대로 열려 있다", c.details(OLD).open, true);
 
   c.selection = { isCollapsed: false, anchorNode: c.link("/run/old-run") };
   before = root();
@@ -338,6 +384,14 @@ async function detailCases() {
   report("펼친 근거 행이 폴링 뒤에도 열려 있다", c.details("결정A").open, true);
   report("앞에 끼어든 새 판단 행은 닫혀 있다", c.details("결정0").open, false);
   report("펼치지 않은 근거 행은 닫혀 있다", c.details("결정B").open, false);
+
+  const auto = (id) => ({ at: 1793700000, source: "자동 해소", "결정": "같은 답", "해소 승인": id });
+  items = items.concat([auto("A-1"), auto("A-2")]);
+  gen++; await c.poll();
+  c.details("A-2").open = true;
+  items = items.filter((it) => it["해소 승인"] !== "A-1");
+  gen++; await c.poll();
+  report("앞의 같은 문면 행이 빠져도 펼친 행이 그대로 열려 있다", c.details("A-2").open, true);
 
   c.selection = { isCollapsed: false, anchorNode: c.details("결정A") };
   before = root();

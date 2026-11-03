@@ -41,8 +41,11 @@
   var flipped = new Map();
   // A response was held back from the screen and is still to be drawn.
   var redrawOwed = false;
-  // The repo <select> was pressed and not yet settled, so its list may be open.
-  var selectHeld = false;
+  // Until this wall-clock milli, the repo <select> may have its list open. Closing
+  // a list without changing the value fires no event on some browsers, so the
+  // hold runs out by itself rather than waiting for one.
+  var selectHeldUntil = 0;
+  var SELECT_HOLD_MS = 15000;
   var FOCUSABLE = "a, button, select, summary";
   var PERIODS = [["3", "3일"], ["7", "7일"], ["30", "30일"], ["all", "전체"]];
   var WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -213,12 +216,13 @@
 
   // ---------------------------------------------------------------- shell
 
-  function setConn(ok, detail, stopped) {
+  function setConn(ok, detail, stopped, held) {
     var conn = document.getElementById("conn");
     if (!conn) return;
     if (ok) {
       conn.className = "conn";
-      conn.replaceChildren(ico("i-plug", "ico-sm"), stopped ? "연결됨 · 갱신 멈춤" : "연결됨 · " + (detail ? 3 : 5) + "초마다 갱신");
+      conn.replaceChildren(ico("i-plug", "ico-sm"), held ? "연결됨 · 갱신 미룸 — 선택을 풀면 이어집니다"
+        : stopped ? "연결됨 · 갱신 멈춤" : "연결됨 · " + (detail ? 3 : 5) + "초마다 갱신");
     } else {
       conn.className = "conn is-off";
       conn.replaceChildren(ico("i-unplug", "ico-sm"), "연결 끊김");
@@ -467,10 +471,10 @@
     var bases = d.bases || [];
     box.appendChild(el("label", { cls: "fl", "for": "repo-sel" }, ico("i-folder"), "레포"));
     var sel = el("select", { cls: "select", id: "repo-sel", "data-fk": "repo",
-      onmousedown: function () { selectHeld = true; },
-      onkeydown: function (e) { selectHeld = e.key !== "Escape"; },
-      onblur: function () { selectHeld = false; },
-      onchange: function (e) { selectHeld = false; view.base = e.target.value; refresh(false); } });
+      onmousedown: function () { selectHeldUntil = Date.now() + SELECT_HOLD_MS; },
+      onkeydown: function (e) { selectHeldUntil = e.key === "Escape" ? 0 : Date.now() + SELECT_HOLD_MS; },
+      onblur: function () { selectHeldUntil = 0; },
+      onchange: function (e) { selectHeldUntil = 0; view.base = e.target.value; refresh(false); } });
     if (bases.length <= 1) {
       sel.appendChild(el("option", { value: "", text: bases.length ? bases[0] + " (하나뿐)" : "레포 없음" }));
       sel.setAttribute("disabled", "");
@@ -1123,7 +1127,7 @@
     // automatic resolution, so its key is its content and its count among equals.
     var keyCount = new Map();
     items.forEach(function (it) {
-      var jkey = [it.source, it["결정"], it["세그먼트"], it["근거"]].join("|");
+      var jkey = [it.source, it["결정"], it["세그먼트"], it["근거"], it["해소 승인"]].join("|");
       var nth = keyCount.get(jkey) || 0;
       keyCount.set(jkey, nth + 1);
       var sum = el("summary", { cls: "jgrid" },
@@ -1309,9 +1313,9 @@
   // Holding the redraw while a selection lives is what keeps the copy chips
   // usable; a selection outside #app is not lost by a redraw and holds nothing.
   function readerBusy() {
-    if (selectHeld) return true;
+    if (Date.now() < selectHeldUntil) return true;
     var s = window.getSelection();
-    return !!(s && !s.isCollapsed && s.anchorNode && app.contains(s.anchorNode));
+    return !!(s && !s.isCollapsed && (app.contains(s.anchorNode) || app.contains(s.focusNode)));
   }
 
   function focusKey(n) {
@@ -1410,12 +1414,18 @@
       }
       setConn(true, !!r.run);
       hideOffline();
-      lastOk = Date.now();
       if (res.error) {
-        app.replaceChildren(r.run ? detailError(r.run, res.error) : listError(res.error));
-        app.removeAttribute("data-url");
-        redrawOwed = false;
-        setFresh(lastOk);
+        // A passing server error waits behind a live selection like any redraw.
+        if (app.getAttribute("data-url") === url && readerBusy()) {
+          redrawOwed = true;
+          setConn(true, !!r.run, false, true);
+        } else {
+          lastOk = Date.now();
+          redraw(function () { app.replaceChildren(r.run ? detailError(r.run, res.error) : listError(res.error)); });
+          app.removeAttribute("data-url");
+          redrawOwed = false;
+          setFresh(lastOk);
+        }
         schedule(period);
         return;
       }
@@ -1431,7 +1441,12 @@
           redrawOwed = false;
         }
       }
-      if (!redrawOwed) setFresh(lastOk);
+      if (redrawOwed) {
+        setConn(true, !!r.run, false, true);
+      } else {
+        lastOk = Date.now();
+        setFresh(lastOk);
+      }
       if (!redrawOwed && r.run && d.summary && d.summary.state === "종단") {
         setConn(true, true, true);
         return;
