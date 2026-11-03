@@ -35155,7 +35155,7 @@ check "34q: 모든 절이 정산된 뒤 propose-done 이 받아들여진다" "$r
 [ "$rc" = "0" ] || printf '  34q: %s\n' "$msg"
 
 # --- 34qe. 종료 절 근거 실행 — 사전 인가 행이 연 실행으로 절을 정산한다 ---
-# --- section: 34qe | group: cone | covers: act, snapshot, shift-halt, halt-answer, clause-exec, check_manifest, feed, gate_done_conditions, gate_reach_disposition | anchors: 34qe: 관측된 꼴의 쓰기 실행이 승인 대기·도달 park 없이 0 이다, 34qe: 쓰기 실행이 읽기 자격 아래에서 돌았다, 34qe: 재조회를 인용한 충족 행에 자체 근거=예 가 붙는다, 34qe: 결속 형태로 시작하지 않는 실행은 거절된다, 34qe: 요지는 가리고 160자에서 자른다, 34qe: 종료 절 근거 기록에 좌석 답은 거절된다, 34qe: 같은 argv 의 exec 는 도달모순으로 park 된다, 34qe: 근거 실행이 없는 매니페스트의 구속 다이제스트는 그대로다 ---
+# --- section: 34qe | group: cone | covers: act, snapshot, shift-halt, halt-answer, clause-exec, check_manifest, feed, gate_done_conditions, gate_reach_disposition | anchors: 34qe: 관측된 꼴의 쓰기 실행이 승인 대기·도달 park 없이 0 이다, 34qe: 쓰기 실행이 읽기 자격 아래에서 돌았다, 34qe: 재조회를 인용한 충족 행에 자체 근거=예 가 붙는다, 34qe: 결속 형태로 시작하지 않는 실행은 거절된다, 34qe: 요지는 가리고 160자에서 자른다, 34qe: 종료 절 근거 기록에 좌석 답은 거절된다, 34qe: 같은 argv 의 exec 는 도달모순으로 park 된다, 34qe: 파괴를 명시하지 않은 행 아래의 파괴 실행은 협업 칸에서 park 된다, 34qe: 근거 실행이 없는 매니페스트의 구속 다이제스트는 그대로다 ---
 #
 # A CLAUSE WHOSE WORDING ASKS FOR AN EXECUTION IS SETTLED BY THE RUN WHEN A
 # `사전 인가` ROW NAMES THAT EXECUTION WHOLE. The shift hands the command to the
@@ -35227,9 +35227,11 @@ cx_exec() {
   local reach=()
   if [ "${1:-}" = "--reach" ]; then reach=(--reach "$2"); shift 2
   elif [ "$s" != "읽기" ]; then reach=(--reach 런로컬); fi
+  local destr=()
+  if [ "${1:-}" = "--destructive" ]; then destr=(--destructive); shift; fi
   [ "${1:-}" = "--" ] && shift
   cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
-           --cutpoint 커밋 --surface "$s" ${reach[@]+"${reach[@]}"} \
+           --cutpoint 커밋 --surface "$s" ${reach[@]+"${reach[@]}"} ${destr[@]+"${destr[@]}"} \
            --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 종료 절 근거 실행" \
            -- "절=$c" "$@"
   cx_a=$( { grep -oE '\[clause-exec\] 행 A-[0-9a-f]{8}' "$CAP_ERR" || true; } | tail -1 | sed 's/^.*행 //')
@@ -35346,6 +35348,9 @@ cx_fx RCXB '- `종료 절` | id=C2 | 문면=단위 시험이 통과한다 | 근�
            '- `종료 절` | id=C5 | 문면=PR 에 인계 코멘트가 있다' \
            '- `종료 절` | id=C6 | 문면=실기기에서 화면이 뜬다' \
            '- `종료 절` | id=C7 | 문면=유료 호출이 성공한다' \
+           '- `종료 절` | id=C8 | 문면=만료된 인계 티켓이 지워졌다' \
+           '- `사전 인가` | 형태=sh scripts/cx-purge.sh | 사유=인계 티켓 정리' \
+           '- `사전 인가` | 형태=sh scripts/cx-wipe.sh expired | 사유=만료 인계 티켓 삭제' \
            '- `사전 인가` | 형태=sh scripts/cx-unit.sh | 사유=단위 시험' \
            '- `사전 인가` | 형태=sh scripts/cx-other.sh | 사유=다른 시험' \
            '- `사전 인가` | 형태=sh scripts/cx-gist.sh | 사유=검증 스크립트' \
@@ -35356,6 +35361,8 @@ cx_script cx-other.sh "printf '%s\\n' 'other'"
 CX_LONG=$(printf 'x%.0s' $(seq 1 170))
 cx_script cx-gist.sh "printf '%s\\n' '첫 줄' 'token=hunter2 키 AbC123def456GhI789jkl012 $CX_LONG' ''"
 cx_script cx-fail.sh "printf '%s\\n' '실패 줄'; exit 1"
+cx_script cx-purge.sh "printf '%s\\n' \"\$*\" >> '$CX_STORE/purged'"
+cx_script cx-wipe.sh "printf '%s\\n' \"\$*\" >> '$CX_STORE/wiped'"
 cat > "$CX_BIN/gh" <<EOF
 #!/bin/sh
 printf '%s' "\${GH_TOKEN:-}" > '$CX_STORE/gh-token'
@@ -35486,6 +35493,21 @@ case "$rc|$(cap_rows 'blocked' | tail -1)" in
   11\|*도달모순*) ok "34qe: 같은 argv 의 exec 는 도달모순으로 park 된다" ;;
   *) bad "34qe: 같은 argv 의 exec 는 도달모순으로 park 된다" "rc=$rc $msg" ;;
 esac
+
+# A destructive act opens the 협업 cell only under a row that names the
+# destruction: a row that covers the script but not the destructive operand
+# parks it as the prod cell does, and the script does not run.
+cx_n0=$(cx_n '종료 절 실행')
+cx_exec C8 외부상태변경 --reach 협업 --destructive -- sh scripts/cx-purge.sh all
+case "$rc|$(cx_n '종료 절 실행')|$(cap_rows 'blocked' | tail -1)" in
+  "11|$cx_n0|"*파괴형태미명시*) ok "34qe: 파괴를 명시하지 않은 행 아래의 파괴 실행은 협업 칸에서 park 된다" ;;
+  *) bad "34qe: 파괴를 명시하지 않은 행 아래의 파괴 실행은 협업 칸에서 park 된다" "rc=$rc $msg" ;;
+esac
+check "34qe: park 된 파괴 실행은 돌지 않았다" "$( [ -e "$CX_STORE/purged" ] && echo 돌았다 || echo 안돌았다)" "안돌았다"
+cx_exec C8 외부상태변경 --reach 협업 --destructive -- sh scripts/cx-wipe.sh expired
+check "34qe: 대조 — 파괴 실행을 축자로 담은 행 아래에서는 협업 칸이 열린다" \
+  "$rc|$(( $(cx_n '종료 절 실행') - cx_n0 ))|$(cat "$CX_STORE/wiped" 2>/dev/null)" "0|1|expired"
+[ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
 
 # ---- 매니페스트의 근거 실행 ----
 cx_m="$WORK/cx-manifest.md"

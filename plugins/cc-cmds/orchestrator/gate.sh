@@ -3330,9 +3330,17 @@ gate_reach_disposition() {
       # honest `협업` declaration would park as a contradiction even under a
       # complete-shape row. For `clause-exec` alone that row opens the cell —
       # the judgment the `dev` cell below already makes for an act with no
-      # comparable identifier. The caller sets the marker by act kind.
+      # comparable identifier. The caller sets the marker by act kind. A
+      # destructive act opens only as the prod cell opens it — when the deciding
+      # row named the destruction — because `P=1` says a row covers the act,
+      # not that it named the destructive word.
       if [ "${GATE_CLAUSE_EXEC_REACH:-0}" = "1" ] && [ "$P" = "1" ] && [ "$pkind" = "완전" ]; then
-        case "$cls" in 불투명|미상) return 0 ;; esac
+        case "$cls" in
+          불투명|미상)
+            { [ "$X" = "0" ] || [ "$_pdx" = "1" ]; } && return 0
+            if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked\t-'; else printf '파괴형태미명시\tdeclared\t-'; fi
+            return 0 ;;
+        esac
       fi
       printf '도달모순\t-\t-'; return 0 ;;
     dev)
