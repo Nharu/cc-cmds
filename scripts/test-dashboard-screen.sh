@@ -123,5 +123,15 @@ kill "$PREVIEW_PID" 2>/dev/null
 wait_gone "$PREVIEW_PID"
 PREVIEW_PID=""
 
+# ---------------------------------------------------------------------------
+# S5 — source shapes the real-data capture found wrong: the goal link truncates
+# only as a block, the band carries the detail navigation, a stopped poll says
+# so, and the result line does not print its time twice.
+# ---------------------------------------------------------------------------
+check "S5 목표 링크가 블록이라 말줄임이 먹는다" "$(hits '.row-link { display: block;' "$SCREEN/app.css")" "1"
+check "S5 app.js 가 머리 띠의 상세 탐색을 채운다" "$(hits 'getElementById("band-nav")' "$SCREEN/app.js")" "1"
+check "S5 끝난 런의 띠가 갱신 멈춤을 말한다" "$(hits '연결됨 · 갱신 멈춤' "$SCREEN/app.js")" "1"
+check "S5 결과 줄의 원장 시각을 표시 시각으로 바꾼다" "$(hits 's.result.line.replace(' "$SCREEN/app.js")" "1"
+
 printf '\ntest-dashboard-screen: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

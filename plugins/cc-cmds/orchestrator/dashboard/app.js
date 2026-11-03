@@ -200,12 +200,12 @@
 
   // ---------------------------------------------------------------- shell
 
-  function setConn(ok, detail) {
+  function setConn(ok, detail, stopped) {
     var conn = document.getElementById("conn");
     if (!conn) return;
     if (ok) {
       conn.className = "conn";
-      conn.replaceChildren(ico("i-plug", "ico-sm"), "연결됨 · " + (detail ? 3 : 5) + "초마다 갱신");
+      conn.replaceChildren(ico("i-plug", "ico-sm"), stopped ? "연결됨 · 갱신 멈춤" : "연결됨 · " + (detail ? 3 : 5) + "초마다 갱신");
     } else {
       conn.className = "conn is-off";
       conn.replaceChildren(ico("i-unplug", "ico-sm"), "연결 끊김");
@@ -768,12 +768,15 @@
     meta.appendChild(tags);
     if (s.started_at != null) meta.appendChild(span("k num", "시작 " + fmtMDHM(s.started_at) + " " + tzName));
     (s.notes || []).forEach(function (n) { meta.appendChild(span("k sub", n)); });
-    meta.appendChild(el("a", { cls: "lnk", href: "/" }, ico("i-back", "ico-sm"), "런 목록"));
 
     var head = el("div", { cls: "head-top" },
       el("h1", { cls: "goal", id: "goal", text: m.goal || s.goal || "매니페스트 없음 — 목표를 읽을 수 없습니다" }), meta);
     if (ended && s.result && s.result.line) {
-      head.appendChild(span("sub small num", (s.ended_at != null ? fmtYMDHM(s.ended_at) + " " : "") + s.result.line, s.result.line));
+      // 원장의 결과 줄은 UTC 시각으로 시작하므로, 표시 시간대의 종단 시각이 있으면 그것으로 바꿔 적는다
+      var resultText = s.ended_at != null
+        ? fmtYMDHM(s.ended_at) + " " + s.result.line.replace(/^\d{4}-\d{2}-\d{2}T\S+\s+/, "")
+        : s.result.line;
+      head.appendChild(span("sub small num", resultText, s.result.line));
     }
 
     var cost = d.cost || {};
@@ -1288,6 +1291,11 @@
   function applyRoute(r) {
     app.className = r.run ? "wrap p-detail" : "wrap p-list";
     document.title = (r.run ? "런 상세 — " + r.run : "런 대시보드") + " — cc-cmds";
+    document.body.classList.toggle("on-detail", !!r.run);
+    var nav = document.getElementById("band-nav");
+    if (nav && r.run && !nav.firstChild) {
+      nav.replaceChildren(el("a", { cls: "back", href: "/" }, ico("i-back"), "런 목록"), span("crumb num", r.run));
+    }
   }
 
   function schedule(ms) {
@@ -1327,7 +1335,10 @@
         if (r.run) renderDetail(d); else renderList(d);
         app.setAttribute("data-url", url);
       }
-      if (r.run && d.summary && d.summary.state === "종단") return;
+      if (r.run && d.summary && d.summary.state === "종단") {
+        setConn(true, true, true);
+        return;
+      }
       schedule(period);
     });
   }
