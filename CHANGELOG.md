@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.27.4] - 2026-11-03
+
+라우터 교대가 뜨는 세그먼트 브랜치와 게이트가 만드는 감사 워크트리가 로컬 베이스 브랜치가 아니라 fetch 뒤의 원격 추적 베이스(`refs/remotes/origin/<베이스>`)에서 시작한다. 드라이버의 워크트리 생성이 이미 따르던 기준에 두 경로를 맞춘다.
+
+### Fixed
+
+- **스냅숏 `슬라이싱` 의 `베이스`** — 세그먼트 항목마다 `"베이스": "refs/remotes/origin/<베이스 브랜치>"` 를 `워크트리` 바로 뒤에 낸다. 스냅숏은 fetch 하지 않으므로 sha 가 아니라 ref 이름을 낸다. 베이스 브랜치를 정하지 못하면 빈 문자열이다.
+- **교대 프롬프트의 세그먼트 계획** — 호출 1 은 `git fetch origin` 이고, 호출 2 의 시작점은 `<슬라이싱 의 베이스>` 를 축자로 쓴다. 로컬 브랜치 이름이나 `HEAD` 로 바꾸지 않고, fetch 가 실패해도 같은 값을 쓴다. 리드 사본과 교대 사본이 같은 문면이다.
+- **게이트 `exec` 의 시작점 검사** — 이 런의 파생 워크트리 경로(`<메인 워크트리>-run-<런 id>-`)로 가는 `git worktree add` 가 원격 추적 베이스가 아닌 시작점을 쓰거나 시작점을 빼면 실행 전에 종료 코드 2 로 거부한다. 시작점은 `git rev-parse --symbolic-full-name` 으로 기호 대조하고 fetch 하지 않는다. 다른 경로(`mktemp` 실험 워크트리)와 `-b`·`-B`·`--detach` 없이 베이스가 아닌 기존 브랜치를 다시 쓰는 형태는 검사하지 않는다.
+- **감사 워크트리** — 생성 갈래가 베이스 ref 하나를 fetch 한 뒤 `refs/remotes/origin/<베이스>` 를 커밋으로 해소해 그 끝에 분리해 만든다. fetch 가 실패하면 경고를 남기고 그때의 원격 추적 ref 로 뜨며, 그 ref 가 해소되지 않을 때만 거부한다. 이미 있는 감사 워크트리를 다시 쓰는 갈래는 그대로다.
+
+### Why
+
+교대 프롬프트의 호출 2 가 시작점 자리를 정하지 않아 교대가 로컬 `main`·`master` 를 넣는 일이 잦았고, 감사 워크트리는 대상 행의 로컬 베이스 브랜치 이름에서 떴다. 이 호스트에서 아무도 pull 하지 않은 로컬 베이스는 원격보다 뒤처져 있어, 그 위에서 뜬 세그먼트와 감사가 이미 머지된 변경을 보지 못했다.
+
 ## [3.27.3] - 2026-11-02
 
 라우터가 cc-lane 이 사용량 파일의 계정 행마다 싣는 5시간 한도 발행 상태(`five_hour_limit`)를 읽어, 발행 상태가 형태 추정보다 먼저 그룹의 5시간 한도를 정한다.
