@@ -60570,13 +60570,14 @@ check "107: 드라이버 훅이 반증 기록의 문서 필드 갈래를 받는�
 check "107: 반증이 아닌 기록에는 훅이 1 이다" "$(dr107 'refutation_hook SA '"'$x107/a.md'"'; printf "%s" "$?"')" "1"
 # 수정 차례는 게이트 결정(훅)과 시도(continue_attempt)를 차례 목록으로 갈아 끼운 채 돌고, 1 이면
 # 호출부처럼 s4_park_unfinished 로 넘어간다 — 파킹 항목은 기록해 둔 세그먼트 문맥으로 refutation_park 에 닿는다.
+# 문자열 안 줄은 들여 쓴다 — 0열의 대입은 하니스 전역 충돌 린트가 최상위 전역으로 읽는다.
 sw107='refutation_hook() { REFUTATION_BRANCH=${BR%%,*}; BR=${BR#*,}; REFUTATION_ITEM=R1; REFUTATION_RECORD=$2; REFUTATION_REASON=r; return 0; }
-continue_attempt() { printf "%s;" "$1"; P6=$6; CONTINUE_CLASS=${CL%%,*}; CL=${CL#*,}; CONTINUE_HALT_RECORD=/x/rec; }
-refutation_park() { printf "park:%s:%s;" "$1" "$3"; return 1; }
-park() { printf "p:%s;" "$5"; }
-CONTINUE_CLASS=$C0; CONTINUE_HALT_RECORD=/x/rec; CONTINUE_MISSING=""; CONTINUE_UNCLOSED=""; CONTINUE_REFUSED=""
-CONTINUE_BLOCKED=""; CONTINUE_PARK_REASON="중단 기록"; CONTINUE_PARK_RECALL=""; P6=""
-s4_refutation_turn SA "SA#1" k wt 1 f al br ab sb pd; r=$?; printf "|%s|" "$r"; [ "$r" = 0 ] || s4_park_unfinished SA'
+  continue_attempt() { printf "%s;" "$1"; P6=$6; CONTINUE_CLASS=${CL%%,*}; CL=${CL#*,}; CONTINUE_HALT_RECORD=/x/rec; }
+  refutation_park() { printf "park:%s:%s;" "$1" "$3"; return 1; }
+  park() { printf "p:%s;" "$5"; }
+  CONTINUE_CLASS=$C0; CONTINUE_HALT_RECORD=/x/rec; CONTINUE_MISSING=""; CONTINUE_UNCLOSED=""; CONTINUE_REFUSED=""
+  CONTINUE_BLOCKED=""; CONTINUE_PARK_REASON="중단 기록"; CONTINUE_PARK_RECALL=""; P6=""
+  s4_refutation_turn SA "SA#1" k wt 1 f al br ab sb pd; r=$?; printf "|%s|" "$r"; [ "$r" = 0 ] || s4_park_unfinished SA'
 check "107: 구현 수정이 끝나면 수정 차례는 0 이다" \
   "$(dr107 "C0='의도된 park'; BR='구현 수정,'; CL='정상 완료,'; $sw107; printf '%s' \"\${P6##* · }\"")" \
   'SA#1.fix1;|0|수정 대상: /x/rec 의 R1 구현 결함"'
