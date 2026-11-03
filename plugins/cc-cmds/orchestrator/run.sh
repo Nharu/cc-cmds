@@ -1044,6 +1044,28 @@ EOF
   manifest_targets | tr '|' '\n' | sed -n 's/^ *별칭=//p' | sed 's/[[:space:]]*$//'
 }
 
+# The common git directories a session of this run may stand in, one per line:
+# the origin-worktree header's, when the header is set and resolves, and every
+# declared target row's `공통 git 디렉터리`. Empty values and repeats are left
+# out. The manifest check's third test and the gate's admit refusal of a
+# directory move both read this one list, so an admitted move can never land
+# where the check then refuses. A target row's value is taken as declared; the
+# manifest check's fourth test compares it with the repository it names.
+manifest_allowed_common_dirs() {
+  local ow ow_cg a cg
+  {
+    ow=$(manifest_hdr_field 'origin-worktree')
+    if [ -n "$ow" ]; then
+      ow_cg=$( { cd "$ow" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+      [ -z "$ow_cg" ] || printf '%s\n' "$ow_cg"
+    fi
+    for a in $(target_aliases); do
+      cg=$(target_field "$a" '공통 git 디렉터리')
+      [ -z "$cg" ] || printf '%s\n' "$cg"
+    done
+  } | awk 'length($0) > 0 && !seen[$0]++'
+}
+
 canonical_targets() { manifest_targets | sed 's/[[:space:]]\{1,\}/ /g' | sort; }
 
 binding_set_bytes() {
@@ -1432,30 +1454,37 @@ check_manifest() {
   # 3 — origin-worktree tie-break, FAIL-OPEN by design (see the note above).
   local ow
   ow=$(manifest_hdr_field 'origin-worktree')
-  # THE TIE-BREAK IS ABOUT THE REPOSITORY, NOT THE DIRECTORY. Pinning to the
-  # exact worktree made two contract rules unsatisfiable at once: the target row
-  # carries `실행 워크트리` precisely because a branch is checked out in a linked
-  # worktree, and the driver starts a segment stage there — where every gate
-  # subcommand was then refused. Writing the segment worktree into the header
-  # instead only moves the refusal, because the audit stage starts in the home
-  # worktree; with both in one run, NO value satisfies both.
+  # THE TIE-BREAK IS ABOUT REPOSITORIES, NOT DIRECTORIES. The current
+  # directory's common git directory must be one of the run's declared
+  # repositories: the origin-worktree's, or any target row's `공통 git
+  # 디렉터리` (`manifest_allowed_common_dirs`). Pinning to one exact worktree
+  # made two contract rules unsatisfiable at once — a segment stage starts in a
+  # linked worktree and the audit stage in the home worktree — and pinning to
+  # the origin repository alone trapped a session that had moved into another
+  # declared target's worktree: every gate call after the move died here, while
+  # the gate's acts already run in that target's worktree through `--target`.
   #
   # What the check exists for survives the widening. The sidecar paths derive
-  # from `<base>` — the parent of the COMMON git directory — which every linked
-  # worktree of one repository shares, so no state fans out. And target choice
-  # was never this check's job: `--target` names it explicitly and the gate
-  # carries that through to the act's working directory. A worktree of ANOTHER
-  # repository still fails, which is the case the check was written for.
+  # from `<base>` — the parent of the origin-worktree's common git directory —
+  # and that derivation reads the header, not the current directory, so no
+  # state fans out. A target row's declared value cannot widen the set falsely:
+  # the fourth check below compares it with the repository its main worktree is
+  # in. A directory of an undeclared repository, or one outside any git
+  # repository, still fails, which is the case the check was written for.
   local ow_cg cur_cg
   ow_cg=$( { cd "$ow" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
-  cur_cg=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-  if [ -n "$ow" ] && { [ -z "$ow_cg" ] || [ "$ow_cg" != "$cur_cg" ]; }; then
-    # The repair belongs in the message. A router that wants to act in another
-    # declared target does NOT move here — it stays in the home worktree and
-    # names the target with `--target`, which the gate now carries through to
-    # the act's working directory. Without that sentence the obvious reading of
-    # this stop is "cd there first", which is the one move that cannot work.
-    die "매니페스트 origin-worktree= 가 다른 레포입니다: $ow — 같은 레포의 링크된 워크트리는 허용되지만 다른 레포에서는 행위할 수 없습니다. 다른 대상에서 행위하려면 --target 으로 지목하세요"
+  if [ -n "$ow" ] && [ -z "$ow_cg" ]; then
+    die "매니페스트 origin-worktree= 가 git 저장소가 아닙니다: $ow"
+  fi
+  if [ -n "$ow" ]; then
+    cur_cg=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    if [ -z "$cur_cg" ] || ! printf '%s\n' "$(manifest_allowed_common_dirs)" | grep -xF -- "$cur_cg" >/dev/null; then
+      # The repair belongs in the message. A session that wants to read or act
+      # in another declared target does not move there — it stays where it
+      # started and names the target with `--target`·`--segment`, and the gate
+      # runs the act in that target's worktree.
+      die "현재 디렉터리가 매니페스트에 선언된 어느 대상의 레포도 아닙니다: $(pwd) — 선언된 대상 레포의 워크트리는 허용되지만 다른 레포나 git 저장소가 아닌 디렉터리에서는 행위할 수 없습니다. 게이트 행위는 --target·--segment 로 지목한 대상의 워크트리에서 돌므로, 다른 대상은 그 자리에 머문 채 --target 으로 지목하세요"
+    fi
   fi
 
   # 4 — target preflight. A declared repo set with no verification leaves the
@@ -7622,7 +7651,8 @@ predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/d
 # THE VISUAL STAGE'S ARTIFACT IS ITS SIDECAR at `검토 통과` or `발행됨`
 # (`visual_sidecar_complete`), crossed with the stage's terminal literal for the
 # same reason. `발행됨` counts because a re-kicked run whose source already
-# published the screens reuses that sidecar and ends without writing it. The sidecar is found the way
+# published the screens reuses that sidecar without generating it again — it
+# rewrites only the record path line to this run's. The sidecar is found the way
 # every visual skill and `visual-check.sh` find it: the document key is the
 # path relative to the document's repository top, the slug is that key without
 # `.md` with `/` spelled `-`, and the base is the repository's common git
@@ -11476,7 +11506,7 @@ segment_cycle() {
     # that died would read as finished. The second report is judged as it
     # stands.
     local redo="" recovered slice_flag review_line
-    local tri_out tri bundle brc p0 p1 rhead rowrc nx elem lanes
+    local tri_in tri_out tri bundle brc p0 p1 rhead rowrc nx elem lanes
     while :; do
       recovered=0
       slice_flag=$(review_slice_flag "$seg")
@@ -11546,7 +11576,12 @@ segment_cycle() {
       spawn_lineage_release "$sid"
 
       # --- S6 TRIAGE -------------------------------------------------------
-      tri_out=$(judgment_call triage "$rp") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
+      # The triage call reads a copy of the report without its reproduction
+      # evidence lines: that text comes from the review target and is unbounded.
+      tri_in="$RUN_DIR/log/triage-input-$seg-c$cycle.md"
+      { mkdir -p "$RUN_DIR/log" && review_report_drop_evidence <"$rp" >"$tri_in"; } 2>/dev/null \
+        || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패 — 입력 사본을 만들지 못했다 ($tri_in)"; return 1; }
+      tri_out=$(judgment_call triage "$tri_in") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
       tri=$(judgment_result "$tri_out")
       # THE ROW IS THE REPORT'S, written by the gate. Its P0 and P1 are the
       # report's `발견 요약`, the same numbers the gate's `다음` and the merge rule
@@ -12314,12 +12349,27 @@ manifest_interview_row() {
   { manifest_preauth_rows || true; } | { grep -F '| 인터뷰 기록=' || true; } | sed -n 1p
 }
 
+review_report_drop_evidence() {
+  # review_report_drop_evidence — stdin to stdout without the P0 reproduction
+  # evidence of a review report: every line of four spaces then one of the
+  # five evidence keys (`- **재현 명령**:` `- **재현 스크립트**:` `- **재현 출력**:`
+  # `- **재현 예외**:` `- **경로 추적**:`), and the six-space lines that follow
+  # it up to the first line that does not start with six spaces. That text
+  # comes from the review target and its size is unbounded, so no model call
+  # takes it. An `이월 본문` body does not follow an evidence key and stays.
+  LC_ALL=C awk '
+    /^    - \*\*(재현 명령|재현 스크립트|재현 출력|재현 예외|경로 추적)\*\*:/ { body = 1; next }
+    body && /^      / { next }
+    { body = 0; print }'
+}
+
 rekick_p0_report_section() {
   # rekick_p0_report_section <report> — the report's P0 section, heading to the
-  # next `## ` heading, verbatim.
+  # next `## ` heading, without its reproduction evidence lines
+  # (review_report_drop_evidence); every other line verbatim.
   LC_ALL=C awk 'index($0, "## \360\237\224\264 P0") == 1 { on = 1; print; next }
        on && /^## / { exit }
-       on { print }' "$1"
+       on { print }' "$1" | review_report_drop_evidence
 }
 
 rekick_branch_input() {

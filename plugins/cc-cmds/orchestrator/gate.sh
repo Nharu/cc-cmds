@@ -267,7 +267,9 @@
 #                    checks the item shape of a review report's P0 and P1
 #                    sections — the summary line, items against the summary,
 #                    `### ` item heads, the category list, the `파일:라인`
-#                    anchor and the `리뷰 HEAD` line — and prints one
+#                    anchor, the `리뷰 HEAD` line and each P0 item's
+#                    reproduction evidence (`재현 없음`, `재현 형식`) — and
+#                    prints one
 #                    `<줄>: <종류>: <문면>` per problem; writes nothing and edits
 #                    nothing. 0 clean; 1 with the last line
 #                    `report-check: 불일치 <n>`; a 1 without that line, or any
@@ -7474,8 +7476,8 @@ surface_of_argv0() {
       esac ;;
     visual-check.sh)
       case "${1:-}" in
-        scan|size|approval|bundle|binding|reuse) printf '읽기' ;;
-        *)                                       printf '등급 미상' ;;
+        scan|size|approval|bundle|binding|system|reuse) printf '읽기' ;;
+        *)                                              printf '등급 미상' ;;
       esac ;;
     visual-capture.sh)
       case "${1:-}" in
@@ -14609,6 +14611,50 @@ gate_segment_review_ordinal() {
   printf '%s' "$(( ${n:-0} + 1 ))"
 }
 
+gate_review_report_candidates() {
+  # gate_review_report_candidates <segment> — the report paths this cycle's
+  # review may have written, one per line: the canonical one, then every
+  # existing `-r<k>` sibling with k ≥ 2 and no leading zero. The same set the
+  # `cycle` row check accepts, so a report the row may name is one the stage
+  # outcome counts.
+  local rp f k
+  rp=$(gate_review_report_path "$1")
+  printf '%s\n' "$rp"
+  for f in "${rp%.md}"-r*.md; do
+    [ -f "$f" ] || continue
+    k=${f#"${rp%.md}-r"}; k=${k%.md}
+    case "$k" in ''|*[!0-9]*|0*) continue ;; esac
+    [ "$k" -ge 2 ] || continue
+    printf '%s\n' "$f"
+  done
+}
+
+gate_review_report_produced() {
+  # gate_review_report_produced <segment> — true when one of this cycle's
+  # report paths carries either terminal line a review can write: the
+  # canonical `발견 요약` line, judged by the driver's `predicate_review`, or
+  # the recovery arm's partial-recovery head, judged by the one report parser's
+  # `요약=복구`. The partial head counts because it is the recovery arm's
+  # defined end for a recovery it could not complete, and its readers already
+  # take it as one: the router's review-recovery check finds it on a recovery
+  # recorded `정상 완료` and blocks on `부분 복구`. Recorded `공허한 성공`, the
+  # recovery would be continued instead, and the continue message asks for the
+  # canonical line an incomplete witness set cannot honestly fill.
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if predicate_review "$f"; then return 0; fi
+    # Exact key: the parser's output also carries carry-over titles and bodies
+    # copied from the report, so a substring match could read their text.
+    if [ "$(gate_report_count "$(gate_review_report_counts "$f" 2>/dev/null)" 요약)" = 복구 ]; then
+      return 0
+    fi
+  done <<EOF
+$(gate_review_report_candidates "$1")
+EOF
+  return 1
+}
+
 gate_report_norm() {
   # gate_report_norm <absolute path> — the spelling two report paths are
   # compared in: the nearest existing directory resolved physically, so `//`, a
@@ -16514,8 +16560,28 @@ gate_review_report_shape() {
   #                         `### P1-n` head and any other id head alike
   #   앵커 없음=<n>         items whose first backtick token is not `파일:라인`
   #   태그 밖=<n>           items whose category is not in the template's list
+  #   재현 근거=<n>         P0 items flagged `재현 없음` or `재현 형식`
   #   문제=<line>: <kind>: <text>
   #                         one per problem `report-check` names, in line order
+  #
+  # The reproduction evidence check reads every P0 item's extent — its
+  # column-0 `- **[` line to the next such line or the section's end — and
+  # takes as a key line any line whose first non-blank characters are `- `
+  # and one of the five keys `**재현 명령**:` `**재현 스크립트**:`
+  # `**재현 출력**:` `**재현 예외**:` `**경로 추적**:`; a key spelled in the
+  # middle of a prose line is not one. No key at all is `재현 없음`. Otherwise
+  # the first of these, in this order, is `재현 형식`: keys of both forms; a
+  # key twice; one side of a form's pair missing; key lines out of their
+  # written order or not adjacent; a key line not four spaces and `- `; a
+  # `재현 명령` value that is not one non-empty backtick pair; a backtick inside
+  # that pair; a `재현 스크립트` name off its pattern, no body line, over sixty
+  # body lines, or no `$REPRO_DIR/<name>` in `재현 명령`; `$REPRO_DIR` or
+  # `$REPRO_TREE` in a script body line; an exit line off `종료 코드 <n>`; no
+  # output body line, over twenty, or a six-space line again after the body;
+  # `**` in a value or body; an exception word outside the four or an empty
+  # reason; fewer than two anchors or an anchor off its shape. One problem
+  # line per item, at the item's first line. P1 and every other section are
+  # not checked, and a 복구 summary is checked the same way.
   #
   # The category is the first `**[…]**` of the item line that is not
   # `CI-CONFIRMED` or a disposition tag; `[CI-CONFIRMED]` is a marker, not a
@@ -16540,8 +16606,99 @@ gate_review_report_shape() {
       split("security performance code-quality logic error-handling type-safety testing api-contract concurrency data-integrity design-conformance", cl, " ")
       for (i in cl) okcat[cl[i]] = 1
       sec = ""; n0 = 0; n1 = 0; nh = 0; na = 0; nt = 0; np = 0; sl = 0
+      ne = 0; inp0 = 0; bn = 0; istart = 0
+      nkey = split("재현 명령|재현 스크립트|재현 출력|재현 예외|경로 추적", K, "|")
     }
     function prob(ln, kind, text) { pr[++np] = ln ": " kind ": " text }
+    function evkey(t,   i) {
+      for (i = 1; i <= nkey; i++) if (index(t, "- **" K[i] "**:") == 1) return K[i]
+      return ""
+    }
+    function namedin(s, nm,   p, c, w) {
+      w = "$REPRO_DIR/" nm
+      while ((p = index(s, w)) > 0) {
+        c = substr(s, p + length(w), 1)
+        if (c == "" || c !~ /[A-Za-z0-9._-]/) return 1
+        s = substr(s, p + 1)
+      }
+      return 0
+    }
+    function evcheck(   i, j, t, k, raw, nk, ka, kb, bad, pos, cnt, val, cmd, inner, nm, sb, ob, w, rest, np2, parts) {
+      nk = 0; ka = 0; kb = 0; bad = 0
+      for (i = 1; i <= bn; i++) {
+        raw = bl[i]; t = raw; sub(/^[ \t]+/, "", t)
+        k = evkey(t)
+        if (k == "") continue
+        nk++; cnt[k]++
+        if (!(k in pos)) {
+          pos[k] = i
+          val[k] = substr(t, length("- **" k "**:") + 1); sub(/^ +/, "", val[k])
+        }
+        if (k == "재현 명령" || k == "재현 스크립트" || k == "재현 출력") ka++; else kb++
+        if (raw != "    " t) bad = 1
+      }
+      if (nk == 0) { ek = "재현 없음"; et = "P0 항목에 재현 근거(재현 명령·재현 출력 또는 재현 예외·경로 추적)가 없다"; return 1 }
+      ek = "재현 형식"
+      if (ka && kb) { et = "재현 형식과 예외 형식의 키가 함께 있다"; return 1 }
+      for (i = 1; i <= nkey; i++) if (cnt[K[i]] > 1) { et = K[i] " 키가 두 번 이상 있다"; return 1 }
+      if (ka && (!("재현 명령" in pos) || !("재현 출력" in pos))) { et = "재현 명령과 재현 출력 중 한쪽만 있다"; return 1 }
+      if (kb && (!("재현 예외" in pos) || !("경로 추적" in pos))) { et = "재현 예외와 경로 추적 중 한쪽만 있다"; return 1 }
+      sb = 0
+      if ("재현 스크립트" in pos)
+        for (j = pos["재현 스크립트"] + 1; j <= bn && bl[j] ~ /^      \|/; j++) sb++
+      if (ka) {
+        if ("재현 스크립트" in pos) {
+          if (pos["재현 스크립트"] != pos["재현 명령"] + 1 || pos["재현 출력"] != pos["재현 스크립트"] + sb + 1) { et = "근거 키 줄이 적힌 순서로 붙어 있지 않다"; return 1 }
+        } else if (pos["재현 출력"] != pos["재현 명령"] + 1) { et = "근거 키 줄이 적힌 순서로 붙어 있지 않다"; return 1 }
+      } else if (pos["경로 추적"] != pos["재현 예외"] + 1) { et = "근거 키 줄이 적힌 순서로 붙어 있지 않다"; return 1 }
+      if (bad) { et = "근거 키 줄이 공백 넷 뒤 「- 」 로 시작하지 않는다"; return 1 }
+      if (ka) {
+        cmd = val["재현 명령"]
+        inner = substr(cmd, 2, length(cmd) - 2)
+        if (length(cmd) < 3 || substr(cmd, 1, 1) != "`" || substr(cmd, length(cmd), 1) != "`" || inner !~ /[^ ]/) { et = "재현 명령 값이 백틱 한 쌍으로 감싼 비지 않은 한 줄이 아니다"; return 1 }
+        if (index(inner, "`") > 0) { et = "재현 명령 값 안에 백틱이 있다"; return 1 }
+        if ("재현 스크립트" in pos) {
+          nm = val["재현 스크립트"]
+          if (nm !~ /^[A-Za-z0-9_][A-Za-z0-9._-]*$/) { et = "재현 스크립트 값이 파일 이름 꼴이 아니다"; return 1 }
+          if (sb == 0) { et = "재현 스크립트 본문 줄이 없다"; return 1 }
+          if (sb > 60) { et = "재현 스크립트 본문이 예순 줄을 넘는다 (" sb "줄)"; return 1 }
+          if (!namedin(inner, nm)) { et = "재현 명령에 $REPRO_DIR/" nm " 이 없다"; return 1 }
+          for (j = pos["재현 스크립트"] + 1; j <= pos["재현 스크립트"] + sb; j++)
+            if (index(bl[j], "$REPRO_DIR") > 0 || index(bl[j], "$REPRO_TREE") > 0) { et = "재현 스크립트 본문에 자리표시자가 있다"; return 1 }
+        }
+        if (val["재현 출력"] !~ /^종료 코드 (0|[1-9][0-9]*)$/) { et = "재현 출력 값이 「종료 코드 <n>」 꼴이 아니다"; return 1 }
+        ob = 0
+        for (j = pos["재현 출력"] + 1; j <= bn && bl[j] ~ /^      [^ ]/; j++) ob++
+        if (ob == 0) { et = "재현 출력 본문 줄이 없다"; return 1 }
+        if (ob > 20) { et = "재현 출력 본문이 스무 줄을 넘는다 (" ob "줄)"; return 1 }
+        for (j = pos["재현 출력"] + ob + 1; j <= bn; j++)
+          if (bl[j] ~ /^      [^ ]/) { et = "재현 출력 본문이 끝난 뒤 여섯 칸 줄이 다시 나온다"; return 1 }
+      }
+      for (i = 1; i <= nkey; i++) if ((K[i] in pos) && index(val[K[i]], "**") > 0) { et = K[i] " 값에 ** 가 있다"; return 1 }
+      if (ka) {
+        if ("재현 스크립트" in pos)
+          for (j = pos["재현 스크립트"] + 1; j <= pos["재현 스크립트"] + sb; j++)
+            if (index(substr(bl[j], 8), "**") > 0) { et = "재현 스크립트 본문에 ** 가 있다"; return 1 }
+        for (j = pos["재현 출력"] + 1; j <= pos["재현 출력"] + ob; j++)
+          if (index(bl[j], "**") > 0) { et = "재현 출력 본문에 ** 가 있다"; return 1 }
+      }
+      if (kb) {
+        w = val["재현 예외"]; rest = ""
+        if (match(w, /^[^ ]+/)) { rest = substr(w, RLENGTH + 1); w = substr(w, 1, RLENGTH) }
+        if (w != "파괴" && w != "비밀" && w != "외부" && w != "문면") { et = "재현 예외 낱말이 파괴·비밀·외부·문면 밖이다"; return 1 }
+        if (rest !~ /^ — .*[^ ]/) { et = "재현 예외의 「—」 뒤 사유가 비었다"; return 1 }
+        np2 = split(val["경로 추적"], parts, " → ")
+        if (np2 < 2) { et = "경로 추적 앵커가 둘 미만이다"; return 1 }
+        for (j = 1; j <= np2; j++)
+          if (parts[j] !~ /^`[^ `]+:[0-9]+(-[0-9]+)?`$/) { et = "경로 추적 앵커가 「파일:라인」 꼴이 아니다: " parts[j]; return 1 }
+      }
+      return 0
+    }
+    function flush() {
+      if (!inp0) return
+      inp0 = 0
+      if (evcheck()) { ne++; prob(istart, ek, et) }
+    }
     function category(s,   t) {
       while (match(s, /\*\*\[[^]]*\]\*\*/)) {
         t = substr(s, RSTART + 3, RLENGTH - 6)
@@ -16563,14 +16720,18 @@ gate_review_report_shape() {
     { line = $0; sub(/[ \t\r]+$/, "", line) }
     sl == 0 && index(line, "- **발견 요약") == 1 { sl = NR }
     index(line, "## ") == 1 {
+      flush()
       if (index(line, "## " R " P0") == 1) sec = "p0"
       else if (index(line, "## " O " P1") == 1) sec = "p1"
       else sec = ""
       next
     }
     sec == "" { next }
+    inp0 && index(line, "- **[") != 1 { bl[++bn] = line }
     index(line, "### ") == 1 { nh++; prob(NR, "비불릿", line); next }
     index(line, "- **[") == 1 {
+      flush()
+      if (sec == "p0") { inp0 = 1; istart = NR; bn = 0 }
       if (sec == "p0") n0++; else n1++
       c = category(line)
       if (!(c in okcat)) { nt++; prob(NR, "태그 밖", (c == "" ? "(분류 없음)" : c)) }
@@ -16578,6 +16739,7 @@ gate_review_report_shape() {
       if (a !~ /^[^ `]+:[0-9]+(-[0-9]+)?$/) { na++; prob(NR, "앵커 없음", line) }
     }
     END {
+      flush()
       if (summ == "없음")
         prob(sl, "요약 없음", (sl ? "정규 발견 요약 줄의 모양이 아니다" : "발견 요약 줄이 없다"))
       if (summ == "정규") {
@@ -16589,6 +16751,7 @@ gate_review_report_shape() {
       print "비불릿=" nh
       print "앵커 없음=" na
       print "태그 밖=" nt
+      print "재현 근거=" ne
       for (i = 1; i <= np; i++) print "문제=" pr[i]
     }' "$rep" 2>/dev/null
 }
@@ -16600,12 +16763,13 @@ gate_report_format_fields() {
   # is a closed word or a number. They are recorded, never refused on.
   #
   # `판독 불가` when the report is absent or unreadable, and the other six read
-  # `-`. Otherwise `정합` when the summary is 정규 or 복구, no head, anchor or
-  # category problem is left, and — outside 복구 — the items equal the summary
+  # `-`. Otherwise `정합` when the summary is 정규 or 복구, no head, anchor,
+  # category or P0 reproduction evidence problem (`재현 근거=0`) is left, and —
+  # outside 복구 — the items equal the summary
   # and the head line does not differ from the row. A missing head line reads
   # `HEAD 줄=없음` and does not stop `정합`. The row carries 7 to 40 hex
   # characters and the report 40, so the row's value being a prefix is `일치`.
-  local rep=$1 rhead=$2 sh summ items nh na nt sp0 sp1 head hl fmt
+  local rep=$1 rhead=$2 sh summ items nh na nt ne sp0 sp1 head hl fmt
   if ! sh=$(gate_review_report_shape "$rep"); then
     printf '리포트 형식=판독 불가\n항목=-\n비불릿=-\n앵커 없음=-\n태그 밖=-\n요약=-\nHEAD 줄=-\n'
     return 0
@@ -16615,6 +16779,7 @@ gate_report_format_fields() {
   nh=$(gate_report_count "$sh" '비불릿')
   na=$(gate_report_count "$sh" '앵커 없음')
   nt=$(gate_report_count "$sh" '태그 밖')
+  ne=$(gate_report_count "$sh" '재현 근거')
   sp0=$(gate_report_count "$sh" '요약 P0')
   sp1=$(gate_report_count "$sh" '요약 P1')
   head=$(gate_report_count "$sh" '리뷰 HEAD')
@@ -16625,7 +16790,7 @@ gate_report_format_fields() {
   fmt='불일치'
   case "$summ" in
     정규|복구)
-      if [ "$nh" = 0 ] && [ "$na" = 0 ] && [ "$nt" = 0 ]; then
+      if [ "$nh" = 0 ] && [ "$na" = 0 ] && [ "$nt" = 0 ] && [ "$ne" = 0 ]; then
         if [ "$summ" = "복구" ]; then fmt='정합'
         elif [ "$items" = "$sp0/$sp1" ] && [ "$hl" != "다름" ]; then fmt='정합'
         fi
@@ -21962,6 +22127,7 @@ gate_main() {
       gate_admit_load "$request"
       gate_admit_words
       gate_admit_wrapped_push_refuse
+      gate_admit_dir_move_refuse
       # THE CELL IS DERIVED, not asked for: the table's rung, and `push` at
       # least for a git push, whose rung the table leaves to the act's own
       # destination check — which raises a base update to `머지` with exit 8.
@@ -25518,6 +25684,71 @@ gate_shift_halt_options() {
   done <<EOF
 $(printf '%s' "$extra" | tr ';' '\n')
 EOF
+}
+
+gate_shift_halt_risk_table() {
+  # gate_shift_halt_risk_table — what can go wrong, or what is given up, when a
+  # person answers a shift's halt record with each label, one line per site and
+  # label: `<자리>|<라벨>|<리스크>`.
+  #
+  # A TABLE OF ITS OWN, BESIDE THE SITE TABLE AND NOT INSIDE IT. The site
+  # table's field positions are read by the option builder and by the
+  # recommendation check, so a sixth field there would move nothing today and
+  # would be one more place a later edit could shift a column under a reader.
+  # The labels here are the ones `gate_shift_halt_options` prints for the same
+  # site, and the test suite holds the two sets equal for every site. A risk
+  # sentence never carries ` / `, the separator of the line it is joined into.
+  cat <<'EOF'
+적용 전제 거부|재시도|사람이 적용 전제를 갖추기 전에 고르면 다음 교대가 같은 거부에 다시 닿아 이 자리에 다시 서고, 그동안 이 세그먼트와 기대는 세그먼트가 멈춰 있습니다
+적용 전제 거부|세그먼트 park|이 세그먼트의 적용과 이 세그먼트에 기대는 세그먼트가 이번 런에서 빠지고, 다시 넣으려면 사람이 park 를 풀어야 합니다
+병합 거절|재시도|거절 원인이 그대로면 다음 교대가 같은 거절에 다시 닿아 이 자리에 다시 섭니다
+병합 거절|세그먼트 park|이 세그먼트가 머지되지 않은 채 이번 런에서 빠지고, 이 세그먼트에 기대는 세그먼트도 함께 빠집니다
+push원격불일치|재시도|사람이 원격 가지를 맞추기 전에 고르면 같은 불일치로 push 가 다시 막히고, 잘못 맞추면 원격의 커밋을 잃을 수 있습니다
+push원격불일치|세그먼트 park|이 세그먼트의 변경이 원격에 올라가지 않은 채 이번 런에서 빠지고, 이 세그먼트에 기대는 세그먼트도 함께 빠집니다
+도달 거부|재시도|게이트가 같은 판정을 내리면 다시 park 되어 이 자리에 다시 서고, CI 재실행을 받아들인 경우에는 지금 실패가 이 head 의 재실행 결과로 굳습니다
+도달 거부|세그먼트 park|막힌 행위가 이번 런에서 실행되지 않고 이 세그먼트와 기대는 세그먼트가 빠집니다
+베이스 해소 한도|재시도|사람이 해소를 올리기 전에 고르면 리뷰할 해소가 없어 같은 자리에 다시 섭니다
+베이스 해소 한도|세그먼트 park|이 세그먼트가 베이스와 충돌한 채 이번 런에서 빠지고, 다음 런에서 해소부터 다시 해야 합니다
+워크트리 기록 없음|재시도|세그먼트 행의 워크트리가 여전히 읽히지 않으면 같은 자리에 다시 섭니다
+워크트리 기록 없음|세그먼트 park|이 세그먼트와 기대는 세그먼트가 이번 런에서 빠지고, 다시 넣으려면 사람이 park 를 풀어야 합니다
+종료 조건 11 판독 불가|재시도|가지 끝이 여전히 읽히지 않으면 같은 자리에 다시 서고, 그동안 런이 종료 조건 11 을 판정하지 못합니다
+종료 조건 11 판독 불가|세그먼트 park|이 세그먼트가 이번 런에서 빠져 종료 조건 11 의 판정 대상에서 사라집니다
+대상 훅 거절|재시도|사람이 훅이나 행위를 고치기 전에 고르면 같은 거절에 다시 닿아 이 자리에 다시 섭니다
+대상 훅 거절|세그먼트 park|막힌 행위가 실행되지 않은 채 이 세그먼트와 기대는 세그먼트가 이번 런에서 빠집니다
+적용 정산|재시도|대상 상태를 확인하거나 조치하지 않고 고르면 프로브가 같은 결과를 내어 이 자리에 다시 섭니다
+적용 정산|세그먼트 park|적용 결과가 정산되지 않은 채 이 세그먼트가 빠져, 대상 환경에 들어간 변경이 기록상 미정으로 남습니다
+적용 정산|재실행|동결된 적용 명령이 대상 환경에 한 번 더 실행되어, 앞 실행이 이미 반영됐다면 같은 변경이 두 번 적용됩니다
+적용 정산|사람 확인 정산|런이 대상 결과를 재지 않고 완료로 정산하므로, 확인이 틀렸다면 들어가지 않은 변경이 완료로 남습니다
+들여온 적용 정산|재시도|같은 자리가 다시 열려 이 세그먼트가 정산되지 않은 채 남고, 런의 종료가 그만큼 늦어집니다
+들여온 적용 정산|세그먼트 park|이전 런의 적용 결과가 정산되지 않은 채 이 세그먼트가 빠져, 대상 환경의 상태가 기록상 미정으로 남습니다
+들여온 적용 정산|사람 확인 정산|런이 대상 결과를 재지 않고 완료로 정산하므로, 확인이 틀렸다면 들어가지 않은 변경이 완료로 남습니다
+종료 절 근거|근거 제출|첨부가 절이 요구하는 실행과 결과를 담지 못하면 다음 교대가 다시 요청하고 런의 종료가 그만큼 늦어집니다
+종료 절 근거|불가능으로 정산|이 절이 불가능으로 정산되어 런이 무효화로 끝나고, 그 절이 요구한 결과는 이 런에서 얻지 못합니다
+master 수리 불가|재시도|사람이 원인을 고치기 전에 고르면 CI 대조가 같은 결과를 내어 이 자리에 다시 섭니다
+master 수리 불가|세그먼트 park|이 세그먼트가 깨진 베이스 위에서 머지되지 않은 채 이번 런에서 빠지고, 이 세그먼트에 기대는 세그먼트도 함께 빠집니다
+EOF
+}
+
+gate_shift_halt_risks() {
+  # gate_shift_halt_risks <자리> — the `**선택지 리스크**` value of that site's
+  # record: one part per option, in the order `gate_shift_halt_options` prints
+  # them, each `` `<라벨>` — <리스크> ``, joined with ` / `. Nothing (exit 1)
+  # when the site is not in the table; a label the risk table lacks is written
+  # `미기재`, which the morning report counts.
+  local site="$1" opts line label risk out=''
+  opts=$(gate_shift_halt_options "$site") || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      '- `'*'` — '*) label=${line#'- `'}; label=${label%%'` — '*} ;;
+      *) continue ;;
+    esac
+    risk=$(gate_shift_halt_risk_table | awk -F'|' -v s="$site" -v l="$label" '$1 == s && $2 == l { print $3; exit }')
+    [ -n "$out" ] && out="$out / "
+    out="$out\`$label\` — ${risk:-미기재}"
+  done <<EOF
+$opts
+EOF
+  printf '%s' "$out"
 }
 
 gate_clause_key_id() {
@@ -30128,15 +30359,28 @@ gate_approval_sidecar_build() {
 }
 
 gate_approval_sidecar_write() {
-  # gate_approval_sidecar_write <id> <mode> <label> <text> — commit one region
-  # through the atomic compare-and-swap. 0 on commit; non-zero means nothing
-  # was written and the caller must not proceed as if it had.
-  local id="$1" mode="$2" label="$3" text="$4" f dir snap t region attempt
+  # gate_approval_sidecar_write <id> <mode> <label> <text> [<결정 보조>] — commit
+  # one region through the atomic compare-and-swap. 0 on commit; non-zero means
+  # nothing was written and the caller must not proceed as if it had.
+  #
+  # THE DECISION AID RIDES THE ISSUE WRITE. Under `issue` a non-empty fifth
+  # argument adds a `결정 보조` region right after the question region, in the
+  # same atomic write: the options with their descriptions, the recommendation,
+  # its basis and each option's risk, written by whatever raised the approval
+  # at the moment it raised it. The issue mode leaves an existing block alone,
+  # so a re-issue of the same id never rewrites the first aid, and the question
+  # reader stops at the question region's closing fence, so it reads the same
+  # bytes it read before. The aid is not an input to the id, to the question's
+  # digest or to any row.
+  local id="$1" mode="$2" label="$3" text="$4" aid="${5:-}" f dir snap t region attempt
   f=$(gate_approval_sidecar_path) || { warn "cannot derive the approval sidecar path (BASE and RUN_ID unknown)"; return 1; }
   dir=$(dirname "$f")
   gate_approval_sidecar_ok "$f" || return 1
   region=$(mktemp) || return 1
   gate_approval_sidecar_region "$label" "$text" > "$region"
+  if [ "$mode" = "issue" ] && [ -n "$aid" ]; then
+    gate_approval_sidecar_region '결정 보조' "$aid" >> "$region"
+  fi
   for attempt in 1 2 3; do
     mkdir -p "$dir" || { rm -f "$region"; return 1; }
     snap=$(mktemp) || { rm -f "$region"; return 1; }
@@ -30184,6 +30428,47 @@ gate_approval_sidecar_question() {
   ' "$f"
 }
 
+gate_approval_sidecar_aid() {
+  # gate_approval_sidecar_aid <id> — the `결정 보조` region of a block, checked
+  # against its own digest. 0 with the text on stdout; 1 when there is nothing
+  # to read (no path, no file, a file that fails its proof pair, no block, or a
+  # block issued without an aid); 2 when the region is there and its sha256 does
+  # not match its text, which prints nothing. The morning report tells `미기재`
+  # from a malformed aid by these two codes.
+  #
+  # THE SAME FENCE TRACKING AS THE QUESTION READER: the closing fence is the
+  # exact backtick string that opened it, and a `## 승인` line inside an open
+  # fence is payload, so an aid quoting a block heading or a longer run of
+  # backticks than its own fence cannot end the region early.
+  local f out rc=0 want body
+  f=$(gate_approval_sidecar_path) || return 1
+  [ -f "$f" ] || return 1
+  gate_approval_sidecar_ok "$f" 2>/dev/null || return 1
+  out=$(LC_ALL=C awk -v id="$1" '
+    function fence_len(s,   i, n) { n = 0; for (i = 1; i <= length(s); i++) { if (substr(s, i, 1) == "`") n++; else break } return n }
+    BEGIN { inblock = 0; want = 0; infence = 0 }
+    {
+      if (infence) {
+        if (fence_len($0) == flen && length($0) == flen) { infence = 0; if (want) { done = 1; exit } next }
+        if (want) print; next
+      }
+      fl = fence_len($0)
+      if (fl >= 3) { infence = 1; flen = fl; if (want) printf "%s\n", "\001"; next }
+      if ($0 ~ /^## 승인 /) { inblock = ($0 == "## 승인 " id); next }
+      if (inblock && $0 ~ /^\*\*결정 보조 sha256\*\*: /) { want = 1; sub(/^\*\*결정 보조 sha256\*\*: /, ""); printf "%s\n", $0; next }
+    }
+    END { if (!done) exit 3 }
+  ' "$f") || rc=$?
+  [ "$rc" = "0" ] || return 1
+  want=$(printf '%s\n' "$out" | sed -n '1p')
+  # The first line is the recorded digest, the second the fence marker, and
+  # everything after it is the region's text.
+  [ "$(printf '%s\n' "$out" | sed -n '2p')" = $'\001' ] || return 2
+  body=$(printf '%s\n' "$out" | sed '1,2d')
+  [ "$(printf '%s' "$body" | shasum -a 256 | cut -d' ' -f1)" = "$want" ] || return 2
+  printf '%s\n' "$body"
+}
+
 gate_canon_prompt() {
   # gate_canon_prompt <id> <question> — the canonical prompt. `승인 <id> — <question>`
   # is what the router must put verbatim into the question it asks, and the id
@@ -30201,6 +30486,26 @@ gate_warn_canon_prompt() {
   warn "$(gate_canon_prompt "$1" "$2")"
 }
 
+gate_approval_canon_question() {
+  # gate_approval_canon_question <승인 id> — the canonical question of an
+  # approval, `승인 <id> — <question>`, or nothing when the ledger holds no row
+  # for that id. Never dies, status 0.
+  #
+  # ONE DERIVATION FOR EVERY READER. The question is the sidecar's full text
+  # when the block exists and proves itself this run's, and the row's excerpt
+  # otherwise — a judgment approval's row carries only an excerpt, so the full
+  # text has to come from the sidecar. The `prompt` verb, the gate's approval
+  # banner and the watcher's approval banner all read it here, so the remote
+  # copy of an approval carries the bytes the router asks with.
+  local id="$1" row full
+  row=$(gate_approval_last_row "$id")
+  [ -n "$row" ] || return 0
+  full=$(gate_approval_sidecar_question "$id" || true)
+  [ -n "$full" ] || full=$(gate_row_field "$row" '질문 문면')
+  gate_canon_prompt "$id" "$full"
+  return 0
+}
+
 gate_prompt() {
   # gate_prompt <승인 id> — the question the router must put to a person, as
   # one JSON object: `{"id","cutpoint","state","question","menu_version",
@@ -30216,12 +30521,10 @@ gate_prompt() {
   # The question text is the sidecar's full text when the block exists and
   # proves itself this run's, and the row's excerpt otherwise — an approval
   # issued before the sidecar existed is still askable.
-  local id="$1" row cutp full l opts
+  local id="$1" row cutp l opts
   row=$(gate_approval_last_row "$id")
   [ -n "$row" ] || die "no such approval id in the ledger: $id"
   cutp=$(gate_row_field "$row" '절단점')
-  full=$(gate_approval_sidecar_question "$id" || true)
-  [ -n "$full" ] || full=$(gate_row_field "$row" '질문 문면')
   opts='[]'
   if [ "$cutp" = "판단" ]; then
     opts=$(for l in $(gate_menu_labels); do
@@ -30229,7 +30532,7 @@ gate_prompt() {
     done | jq -s '.')
   fi
   jq -n --arg id "$id" --arg cutpoint "$cutp" --arg state "$(gate_row_field "$row" '상태')" \
-        --arg question "$(gate_canon_prompt "$id" "$full")" --arg mv "$GATE_MENU_VERSION" \
+        --arg question "$(gate_approval_canon_question "$id")" --arg mv "$GATE_MENU_VERSION" \
         --argjson options "$opts" \
         '{id: $id, cutpoint: $cutpoint, state: $state, question: $question, menu_version: $mv, options: $options}'
 }
@@ -30322,8 +30625,62 @@ gate_judgment_seat() {
   printf '미상'
 }
 
+gate_judgment_approval_aid() {
+  # gate_judgment_approval_aid [<추천>] [<선택지 리스크>] — the decision aid of a
+  # judgment approval: the gate's own menu with its descriptions, then what the
+  # side that raised the judgment handed over. `<추천>` is one sentence of the
+  # form `` `<메뉴 라벨>` — <근거> `` and is split into the `**추천**` and
+  # `**추천 근거**` lines; a value of any other shape goes on the `**추천**`
+  # line as it came, so the report shows it as malformed instead of the gate
+  # repairing it. `<선택지 리스크>` is one line in the halt record's risk
+  # grammar. A value that was not handed over writes no line, and the report
+  # then reads that cell as `미기재`.
+  local rec="${1:-}" risk="${2:-}" l lbl rest
+  printf '**선택지**:'
+  for l in $(gate_menu_labels); do
+    printf '\n- `%s` — %s' "$l" "$(gate_menu_description "$l")"
+  done
+  if [ -n "$rec" ]; then
+    case "$rec" in
+      '`'*'` — '*)
+        lbl="${rec%%\` — *}\`"; rest="${rec#*\` — }"
+        printf '\n**추천**: %s\n**추천 근거**: %s' "$lbl" "$rest" ;;
+      *) printf '\n**추천**: %s' "$rec" ;;
+    esac
+  fi
+  [ -z "$risk" ] || printf '\n**선택지 리스크**: %s' "$risk"
+}
+
+gate_judgment_aid_take() {
+  # gate_judgment_aid_take <키=값>... — split a judgment act's argv into the
+  # decision aid and everything else. Sets GATE_JUDGMENT_AID_REC and
+  # GATE_JUDGMENT_AID_RISK from the last `추천=` and `선택지 리스크=` fields and
+  # GATE_JUDGMENT_AID_REST to the argv without them.
+  #
+  # THE TWO KEYS LEAVE THE ARGV BEFORE ANY ROW IS ASSEMBLED. The adoption row
+  # copies every field outside its three free-text fields byte for byte and is
+  # refused past `GATE_ROW_MAX`, so a risk line written the way the authoring
+  # convention asks would otherwise get the whole submission refused. They go
+  # to the approval sidecar only.
+  local a
+  GATE_JUDGMENT_AID_REC="" GATE_JUDGMENT_AID_RISK=""
+  GATE_JUDGMENT_AID_REST=()
+  for a in "$@"; do
+    case "$a" in
+      '추천='*) GATE_JUDGMENT_AID_REC="${a#추천=}" ;;
+      '선택지 리스크='*) GATE_JUDGMENT_AID_RISK="${a#선택지 리스크=}" ;;
+      *) GATE_JUDGMENT_AID_REST+=("$a") ;;
+    esac
+  done
+}
+
 gate_issue_judgment_approval() {
   # gate_issue_judgment_approval <alias> <segment> <기준> <근거> [부류] [연 자리]
+  # [추천] [선택지 리스크]
+  #
+  # The last two are the decision aid the raising side handed over; they go
+  # into the sidecar's `결정 보조` region and nowhere else (see
+  # `gate_judgment_approval_aid`).
   #
   # `연 자리` IS WHO RAISED THE JUDGMENT — a stage kind, `라우터`, or `미상` for
   # anything else. It is carried on the row only and touches neither the id nor
@@ -30346,6 +30703,7 @@ gate_issue_judgment_approval() {
   # own recommendation through `act --kind judgment`; whether that becomes a
   # question is decided here.
   local alias="$1" seg="$2" std="$3" why="$4" cls="${5:-}" seat="${6:-}" id q qfull qdig
+  local aidrec="${7:-}" aidrisk="${8:-}"
   GATE_AUTO_RESOLVED_APPROVAL=""
   [ -n "$seat" ] || seat='미상'
   case " $STAGE_KINDS 라우터 " in
@@ -30441,7 +30799,7 @@ gate_issue_judgment_approval() {
   # stop the issue: an act refused with nothing pending is the worse failure,
   # and the row still carries the digest a later reader can check the text
   # against once the sidecar is repaired.
-  gate_approval_sidecar_write "$id" issue '질문' "$qfull" \
+  gate_approval_sidecar_write "$id" issue '질문' "$qfull" "$(gate_judgment_approval_aid "$aidrec" "$aidrisk")" \
     || warn "could not write the full question text into the approval sidecar — the row is issued, but there is no block where the anchor $(gate_approval_sidecar_anchor "$id") points"
   qdig=$(printf '%s' "$qfull" | shasum -a 256 | cut -d' ' -f1)
   # `유도 절단점=-` AND NOT THE EXPORTED GLOBAL, for the same reason the act
@@ -34348,7 +34706,7 @@ gate_notify_approval() {
   # is one duplicate banner; the fix would put a lock on the critical path of
   # every act. Recorded here because otherwise a later reader deletes one of the
   # two firing points and restores the delay this whole seat removed.
-  local id="$1" q="$2"
+  local id="$1" q="$2" canon detail
   # A SHIFT DOES NOT DECIDE WHETHER A BANNER REACHES THE USER. It was launched
   # by the lead, and a launched process choosing what the user sees is the one
   # thing the notification rules forbid outright. That test used to sit here as a
@@ -34366,7 +34724,26 @@ gate_notify_approval() {
       printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals" 2>/dev/null || true
     fi
   fi
-  cc_notify_fire answer "$q" "$id" || true
+  # THE REMOTE COPY CARRIES THE CANONICAL QUESTION, the local banner keeps `$q`.
+  # The act approval's banner text adds the alias, cut and grade after the
+  # question, which is right for a glance at a banner and wrong for the event a
+  # remote reader answers from, so the canonical question goes in the funnel
+  # attachment instead. Both callers write the sidecar block and the ledger row
+  # before calling here, so the approval is found. A text that does not begin
+  # with the approval's own prefix (no row, an unreadable ledger) sends no
+  # attachment, and the banner goes up as before without an event.
+  #
+  # The attachment is made here, after the seat check and the announcement
+  # list, so no path that returns early leaves one behind.
+  detail=
+  canon=$(gate_approval_canon_question "$id" 2>/dev/null || true)
+  case "$canon" in
+    "승인 $id — "*)
+      detail=$(cc_attention_detail_make "$(jq -cn --arg b "$canon" \
+        '{kind: "approval", actionable: false, reply: null, body: $b}' 2>/dev/null || true)") || detail=
+      ;;
+  esac
+  CC_NOTIFY_ATTENTION_DETAIL="$detail" cc_notify_fire answer "$q" "$id" || true
   return 0
 }
 
@@ -36113,7 +36490,8 @@ EOF
           else
             gate_issue_judgment_approval "$alias" "$seg" \
               "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" \
-              "$jcls" "$(gate_judgment_seat)" || jq_rc=$?
+              "$jcls" "$(gate_judgment_seat)" \
+              "${GATE_JUDGMENT_AID_REC:-}" "${GATE_JUDGMENT_AID_RISK:-}" || jq_rc=$?
             # THROUGH THE TRANSLATION, not around it. Propagating the raw value
             # sent the router exit 9 for an answered-but-spent approval, which
             # is the one code the contract does not define. `이미 닫힌 물음` and
@@ -37248,6 +37626,7 @@ EOF
           printf '**추천**: (없음) — %s\n' "$sinfo"
           printf '**추천 근거**: (없음)\n'
         fi
+        printf '**선택지 리스크**: %s\n' "$(gate_shift_halt_risks "$ssite")"
         printf '**하네스 오류**: (없음)\n'
         printf '**관측 상세**: %s\n' "$(printf '%s' "$sobs" | tr '\n\r' '  ')"
         printf '**재호출 명령**: (없음)\n'
@@ -41125,12 +41504,12 @@ gate_ci_rerun_x5_hit() {
   # deployment or another workflow, 1 when it is clean; any other status is "not
   # judged" and the caller parks on it.
   #
-  # THE FLOOR IS THE LINE GREP, AND THE READER ONLY LIFTS TWO SHAPES OFF IT. The
+  # THE FLOOR IS THE LINE GREP, AND THE READER ONLY LIFTS THREE SHAPES OFF IT. The
   # file is first matched with `grep -E "$GATE_X5_FLOOR_RE"` — an `environment`
   # key spelled with `:` on the same line, or the text `.github/workflows/`,
   # anywhere, comments included. A clean grep leaves the reader's own verdict.
   # A matching line (a floor line) is lifted only when the reader below proves
-  # it one of two shapes, judged on the line with one trailing CR removed:
+  # it one of three shapes, judged on the line with one trailing CR removed:
   #   - E1, a trigger filter item: the whole line is `- ` and one workflow file
   #     `.github/workflows/<name>.yml` or `.yaml` (no `/` in the name), bare or
   #     in one pair of quotes, then blanks only; the reader read it as an item of
@@ -41157,6 +41536,18 @@ gate_ci_rerun_x5_hit() {
   #     `-f <list>` (attached or not), `tr` with one or two words none starting
   #     with `-` or `-d`/`-s` and one such word, or `grep -[vcxEFi]+`… and one
   #     pattern word.
+  #   - E3, a whole-line YAML comment: the line's first non-blank is `#` and the
+  #     reader read it outside every block scalar body and outside every open
+  #     flow collection, so a YAML parser drops it and Actions never runs it. A
+  #     ` #` tail after a key line and a `#` line inside a body are not this
+  #     shape. E3 is off for the whole file — each such line counts as not
+  #     lifted — when a block-context line, with its ` #` tail cut off, ends in
+  #     a block scalar indicator (`|` or `>`, with `-`/`+`/digits after) as its
+  #     last blank-separated word but the reader did not open a body on it: a
+  #     `- |` item, an indicator standing alone on the next line, a key the
+  #     reader's key pattern does not read, or a plain value ending in ` |`.
+  #     There the lines YAML takes as a body can be ones the reader reads as
+  #     comments outside one.
   # A floor line on the `environment` branch is never lifted. No line is lifted
   # when the file holds a CR before a line's end, a NEL, LS or PS byte
   # sequence, a flow collection left open at a line's end, or a block-context
@@ -41168,8 +41559,9 @@ gate_ci_rerun_x5_hit() {
   # environment, never `-v`, which would undo their escapes.
   #
   # The reader reads line by line, never as YAML, one trailing CR removed:
-  #   - A line whose first non-blank is `#` is skipped, and a ` #` tail outside
-  #     quotes is cut off. A quote starts a quoted string only where a node
+  #   - A line whose first non-blank is `#` is skipped (outside a body and an
+  #     open flow, a floor line so skipped is lifted as E3), and a ` #` tail
+  #     outside quotes is cut off. A quote starts a quoted string only where a node
   #     can start; a quote inside a plain scalar is a character. A `\` in
   #     double quotes and a doubled `'` in single quotes do not close the
   #     string. The lines of an open flow collection are judged as one text,
@@ -41487,7 +41879,8 @@ gate_ci_rerun_x5_read() {
         }
         inbody = 0
       }
-      if (ind < 0 || (!inflow && substr($0, ind + 1, 1) == "#")) next
+      if (ind < 0) next
+      if (!inflow && substr($0, ind + 1, 1) == "#") { if (isf && !ise) ex[NR] = "c"; next }
       if (inflow) {
         e1 = 0
         # A flow is read as one text: a quote at the start of this line opens
@@ -41501,6 +41894,7 @@ gate_ci_rerun_x5_read() {
         next
       }
       s = stripc($0)
+      if (s ~ /(^|[ \t])[|>][-+0-9]*$/) cand[NR] = 1
       # A block-context line that ends inside an open quote turns every lift off.
       if (sq != "") invalid = 1
       text(s)
@@ -41555,7 +41949,7 @@ gate_ci_rerun_x5_read() {
       if (w ~ /^[{[]/) { startflow(w); next }
       if (v ~ blockre) {
         if (k == "uses") { hit = 1; exit }
-        inbody = 1; bcol = col; bbs = 0
+        inbody = 1; bcol = col; bbs = 0; opened[NR] = 1
         # A step `run` body, with the anchor its indicator carries.
         e2ok = k == "run" && !kp && steprun(sp); banc = ""; t = v
         while (e2ok && match(t, /^(&[^ \t]+|![^ \t]*)[ \t]+/)) {
@@ -41579,9 +41973,11 @@ gate_ci_rerun_x5_read() {
       # A lift whose list or body carries an anchor holds only when every alias
       # of it is a trigger filter `paths` line (E1) or there is none (E2).
       un = 0
+      for (n in cand) if (!(n in opened)) e3off = 1
       for (i = 1; i <= nfl; i++) {
         n = fln[i]
         if (!(n in ex)) { un++; continue }
+        if (ex[n] == "c") { if (e3off) un++; continue }
         a = substr(ex[n], 2)
         if (a == "") continue
         if (substr(ex[n], 1, 1) == "p") { if (atot[a] + 0 != agood[a] + 0) un++ }
@@ -43144,6 +43540,65 @@ gate_admit_wrapped_push_refuse() {
   exit "$GATE_EXIT_VOCAB"
 }
 
+gate_admit_dir_move_refuse() {
+  # gate_admit_dir_move_refuse — exits 2 when the request is a bare `cd`,
+  # `pushd` or `popd` that would move the session outside the run's declared
+  # repositories. A bare command admitted here runs in the session itself, so
+  # it is the one way a session's working directory changes, and the manifest
+  # check every later gate call makes refuses a directory whose common git
+  # directory is not in `manifest_allowed_common_dirs` — a move there traps the
+  # session. A move into a declared repository passes on to grading: the check
+  # admits it, and the gate's acts already run in that target's worktree.
+  # The destination is the first operand after the options -L -P -e -@ (and
+  # their clusters, and `--`), taken from the request's directory when
+  # relative. No operand, `-`, a leading `~` or `+`, an expansion or glob
+  # character, a second operand, and every `popd` cannot be resolved from the
+  # words alone and are refused, as are a missing directory, one outside any
+  # git repository and one of an undeclared repository. Refused before it is
+  # graded, so no row and no ticket is written for it. A `cd` run through exec
+  # runs in the gate's child process and moves nothing, so exec is not checked.
+  local verb="${GATE_ADMIT_WORDS[0]##*/}" n="${#GATE_ADMIT_WORDS[@]}" i=1 w
+  local dest="" d="" cg="" a ok=0
+  case "$verb" in cd|pushd|popd) ;; *) return 0 ;; esac
+  if [ "$verb" != "popd" ]; then
+    while [ "$i" -lt "$n" ]; do
+      w="${GATE_ADMIT_WORDS[$i]}"
+      case "$w" in
+        --) i=$((i + 1)); break ;;
+        -) break ;;
+        -?*)
+          case "${w#-}" in *[!LPe@]*) break ;; esac
+          i=$((i + 1)) ;;
+        *) break ;;
+      esac
+    done
+    if [ "$i" -lt "$n" ] && [ $((i + 1)) -eq "$n" ]; then
+      dest="${GATE_ADMIT_WORDS[$i]}"
+    fi
+    case "$dest" in
+      ''|-*|+*|'~'*|*'$'*|*'`'*|*'*'*|*'?'*|*'['*|*'{'*|*\\*) dest="" ;;
+    esac
+  fi
+  if [ -n "$dest" ]; then
+    case "$dest" in /*) d="$dest" ;; *) d="$GATE_ADMIT_CWD/$dest" ;; esac
+    if [ -d "$d" ]; then
+      cg=$(gate_thp thp_common_dir "$d" 2>/dev/null || true)
+    fi
+    if [ -n "$cg" ]; then
+      while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        [ "$(gate_thp thp_phys "$a" 2>/dev/null || true)" != "$cg" ] || { ok=1; break; }
+      done <<EOF
+$(manifest_allowed_common_dirs)
+EOF
+    fi
+  fi
+  [ "$ok" = "0" ] || return 0
+  warn "이 이동($verb)은 세션을 선언된 대상 밖으로 옮겨 이후 모든 게이트 호출이 매니페스트 검사에 막힌다"
+  warn "다른 대상의 상태는 그 자리에 머문 채 gate.sh exec --target <별칭> --segment <세그먼트> -- <명령> 으로 읽는다"
+  exit "$GATE_EXIT_VOCAB"
+}
+
 gate_admit_git_dir() {
   # gate_admit_git_dir <argv…> — the directory a git command runs in: the
   # request's directory, moved by every `-C <dir>` before the subcommand, and
@@ -43859,6 +44314,15 @@ gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
   shift 9
+  # A judgment's decision aid leaves the argv here, before anything grades,
+  # records or measures it — see `gate_judgment_aid_take`. Every later reader
+  # of `"$@"` on this path, the rule loop and the adoption row included, sees
+  # the submission without the two keys.
+  GATE_JUDGMENT_AID_REC="" GATE_JUDGMENT_AID_RISK=""
+  if [ "$kind" = "judgment" ]; then
+    gate_judgment_aid_take "$@"
+    set -- ${GATE_JUDGMENT_AID_REST[@]+"${GATE_JUDGMENT_AID_REST[@]}"}
+  fi
   local argv="$*" impl_budget_out='' impl_cj_out=''
 
   [ -n "$alias" ]    || { printf 'gate: --target is required\n' >&2; exit 2; }
@@ -46342,7 +46806,8 @@ EOF
       local iss_rc=0
       gate_issue_judgment_approval "$alias" "$segment" \
         "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" \
-        "$GATE_JUDGMENT_CLASS" "$(gate_judgment_seat)" || iss_rc=$?
+        "$GATE_JUDGMENT_CLASS" "$(gate_judgment_seat)" \
+        "${GATE_JUDGMENT_AID_REC:-}" "${GATE_JUDGMENT_AID_RISK:-}" || iss_rc=$?
       case "$(gate_judgment_approval_disposition "$iss_rc")" in
         발행) exit "$GATE_EXIT_APPROVAL" ;;
         답있음)
@@ -47330,6 +47795,84 @@ gate_act_approval_fresh() {
   [ "$frag" = "${cur:0:${#frag}}" ]
 }
 
+gate_approval_seat_void_risk() {
+  # The sentence every act and boundary approval's `무효` risk carries: the
+  # seat asks these two kinds as a plain yes/no and closes a yes as `승인` and a
+  # no as `거부`, so a person answering at the seat has no way to pick `무효`.
+  printf '좌석은 이 승인을 메뉴 없이 예/아니오로 물으므로 이 라벨을 고르는 갈래가 좌석 질문에 없습니다'
+}
+
+gate_act_approval_aid() {
+  # gate_act_approval_aid <alias> <argv> — the decision aid of an act approval.
+  #
+  # THE PROGRAM'S NAME AND NOTHING AFTER IT. The aid is written once and kept,
+  # and an argv may carry a value nobody should find in a file a morning report
+  # reads; a filter on lowercase words lets `hunter2` through, so no argument is
+  # copied at all. A first word that is an environment assignment is not copied
+  # either, for the same reason. The segment, rung and grade are not here: they
+  # are not inputs to the id, a re-issue of the same id may change them, and
+  # the issue mode keeps the first block — the report reads them from the row.
+  local alias="$1" prog="${2%% *}"
+  case "$prog" in *=*) prog='(환경 할당으로 시작하는 행위)' ;; esac
+  printf '**행위**: %s · 대상 %s\n' "${prog:-(없음)}" "$alias"
+  printf '**선택지**:\n'
+  printf -- '- `승인` — 이 행위를 엽니다 — 게이트가 승인 행을 쓰고, 묶인 트리가 그대로면 같은 행위의 다음 제출이 실행됩니다\n'
+  printf -- '- `거부` — 물었고 답은 아니오입니다 — 게이트가 거부 행을 쓰고 같은 행위의 재제출을 거부합니다\n'
+  printf -- '- `무효` — 애초에 물어서는 안 됐던 질문입니다 — 행위 없이 승인만 닫고 같은 행위의 재제출을 거부합니다\n'
+  printf '**추천**: (없음) — 사전 인가 밖 행위는 사람만 엽니다\n'
+  printf '**추천 근거**: (없음)\n'
+  printf '**선택지 리스크**: `승인` — 묶인 트리 위에서 그 행위가 한 번 실행되며, 파괴적이라고 선언된 행위는 되돌릴 수 없습니다'
+  printf ' / `거부` — 그 행위가 실행되지 않고 같은 행위의 재제출이 거부되어, 그 행위가 필요한 일은 다른 길로 가야 합니다'
+  printf ' / `무효` — 그 행위가 실행되지 않고 같은 행위의 재제출이 거부됩니다. %s' "$(gate_approval_seat_void_risk)"
+}
+
+gate_boundary_approval_aid() {
+  # gate_boundary_approval_aid <경계 이름> — the decision aid of a boundary
+  # approval, one fixed table per boundary.
+  #
+  # NO RECOMMENDATION, BECAUSE THE ONE RULE THAT WOULD GIVE ONE DID NOT ACT. A
+  # boundary approval still waiting was not closed by auto-resolution — the
+  # switch is off, or a person's free-form answer made it skip the id — so
+  # whether to continue is a person's call.
+  #
+  # THE RISKS SAY WHAT THE CLOSE ACTUALLY DOES, AND THE CLOSE DOES NOT SPLIT ON
+  # THE LABEL FOR B1..B4. `gate_close_settle` restarts the boundary's count on
+  # every terminal disposition, and the issuer keeps an answered id quiet while
+  # its binding value stays where it was, whatever that answer was; the three
+  # labels differ only in the state the row records. SHIFT-FLOOR is the one
+  # boundary whose reader looks at the label: the launch after a `승인` goes
+  # ahead on the same progress digest, and after anything else it stops.
+  local name="$1" count='' subj='' settle
+  case "$name" in
+    B1) count='진전 해시 반복 계수를'; subj='진전 해시 반복 계수가' ;;
+    B2) count='진전 없는 의무 반복 계수를'; subj='진전 없는 의무 반복 계수가' ;;
+    B3) count='마지막 진전 이후 읽기 초과 exec 계수를'; subj='마지막 진전 이후 읽기 초과 exec 계수가' ;;
+    B4) count='비용 경계의 해소 기준 비율을'; subj='비용 경계의 해소 기준 비율이' ;;
+  esac
+  printf '**선택지**:\n'
+  if [ "$name" = "SHIFT-FLOOR" ]; then
+    printf -- '- `승인` — 계속합니다 — 게이트가 승인 행을 쓰고, 같은 진전 해시에서 다음 교대 기동을 엽니다\n'
+    printf -- '- `거부` — 물었고 답은 아니오입니다 — 게이트가 거부 행을 쓰고, 같은 진전 해시에서는 교대 기동이 계속 멈춥니다\n'
+    printf -- '- `무효` — 애초에 물어서는 안 됐던 질문입니다 — 게이트가 무효 행을 쓰고, 같은 진전 해시에서는 교대 기동이 계속 멈춥니다\n'
+  else
+    printf -- '- `승인` — 계속합니다 — 게이트가 승인 행을 쓰고 %s 처음부터 다시 셉니다\n' "$count"
+    printf -- '- `거부` — 물었고 답은 아니오입니다 — 게이트가 거부 행을 쓰고 %s 처음부터 다시 셉니다\n' "$count"
+    printf -- '- `무효` — 애초에 물어서는 안 됐던 질문입니다 — 게이트가 무효 행을 쓰고 %s 처음부터 다시 셉니다\n' "$count"
+  fi
+  printf '**추천**: (없음) — 자동 해소가 이 승인을 닫지 않은 런이라 계속할지는 사람이 정한다\n'
+  printf '**추천 근거**: (없음)\n'
+  if [ "$name" = "SHIFT-FLOOR" ]; then
+    printf '**선택지 리스크**: `승인` — 인수인계 바닥이 상한을 넘은 채로 교대가 이어져, 교대가 일을 대신하는 상태가 같은 진전 해시 동안 계속됩니다'
+    printf ' / `거부` — 같은 진전 해시가 이어지는 동안 교대 기동이 멈추고 새 승인도 열리지 않아, 진전 해시가 움직이기 전에는 라우팅 좌석이 없습니다'
+    printf ' / `무효` — 정산은 거부와 같아 같은 진전 해시 동안 교대 기동이 멈춥니다. %s' "$(gate_approval_seat_void_risk)"
+  else
+    settle="게이트의 정산은 라벨에 따라 갈리지 않습니다 — ${subj} 처음부터 다시 세어지고, 구속 값이 움직였다 돌아오기 전에는 같은 경계가 다시 묻지 않습니다"
+    printf '**선택지 리스크**: `승인` — %s. 같은 정체가 이어져도 그동안 이 경계의 경고가 다시 오르지 않습니다' "$settle"
+    printf ' / `거부` — %s. 거부는 행에 상태로만 남고 런을 멈추지 않습니다' "$settle"
+    printf ' / `무효` — %s. %s' "$settle" "$(gate_approval_seat_void_risk)"
+  fi
+}
+
 gate_issue_act_approval() {
   # gate_issue_act_approval <alias> <segment> <cutpoint> <grade> <argv>
   #
@@ -47378,7 +47921,7 @@ gate_issue_act_approval() {
   # a sixth parameter. A question a person answers in the morning has to say
   # which rung it is about, and the rung the run acted on is the effective one.
   local q='사전 인가 밖 행위를 수행할까요'
-  gate_approval_sidecar_write "$id" issue '질문' "$q" \
+  gate_approval_sidecar_write "$id" issue '질문' "$q" "$(gate_act_approval_aid "$alias" "$argv")" \
     || warn "could not write the question into the approval sidecar — the row is issued, but there is no block where the anchor $(gate_approval_sidecar_anchor "$id") points"
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=$cut" \
     "유도 절단점=${GATE_ACT_DERIVED:--}" \
@@ -48898,6 +49441,9 @@ gate_continuation_argv() {
       if [ -n "$unclosed" ]; then unmet=$(unclosed_unmet_message "$unclosed")
       elif [ -n "$missing" ]; then unmet=$(residual_unmet_message "$missing")
       else unmet="게이트를 거친 행위도 정지 기록도 없다"; fi ;;
+    # A review acted through the gate and still wrote no report, so the default
+    # sentence would be false; it is told the canonical report of this cycle.
+    review) unmet="이 사이클의 리뷰 리포트($(gate_review_report_path "$key"))에 \`발견 요약\` 줄이 없고 정지 기록도 없다" ;;
     *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
   esac
   GATE_CONTINUE_ARGV=()
@@ -52510,6 +53056,18 @@ gate_record_stage_outcome() {
        && gate_plan_rows_of "$seg" | implement_process_b \
        && [ -n "$(residual_share_missing "${DOC:-}" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md")" ]; then
     klass='공허한 성공'
+  # A REVIEW STAGE is asked for this cycle's report, on the canonical path or a
+  # `-r<k>` re-dispatch path (`gate_review_report_candidates`): a report is
+  # produced when it carries the canonical `발견 요약` line or the recovery
+  # arm's partial-recovery head (`gate_review_report_produced`). A report with
+  # neither, the early stub included, is not. The arm stands before the
+  # row-count arm because a review leaves its own admit and exec rows whether or
+  # not it wrote a report, so a row proves only that it acted. A halt record
+  # without its closing fence did not pass the halt arm above and is judged
+  # here like no record. A lead fix is a kind of its own and never reaches this
+  # arm.
+  elif [ "$kind" = "review" ] && ! gate_review_report_produced "$seg"; then
+    klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
     klass='정상 완료'
   else
@@ -52824,7 +53382,9 @@ gate_record_stage_outcome() {
 
 gate_absorb_issue() {
   # gate_absorb_issue <alias> <segment> <기준> <근거> <문맥> <판단 부류>
-  # <판단 등급> [스테이지 종류] — issue the approval an emitted judgment needs and
+  # <판단 등급> [스테이지 종류] [추천] [선택지 리스크] — the last two are the
+  # optional markers' values, handed to the issuer as the approval's decision
+  # aid. Issue the approval an emitted judgment needs and
   # dispose of every one of the issuer's three returns. ALWAYS returns 0. The
   # kind is the seat that raised the judgment; a caller that has none passes
   # nothing and the row says `미상`.
@@ -52850,7 +53410,8 @@ gate_absorb_issue() {
   # nor an approval nor a warning, the judgment exists only in a terminal
   # message nobody will read again.
   local alias="$1" seg="$2" std="$3" why="$4" ctx="$5" cls="${6:-}" grade="${7:-}" seat="${8:-}" rc=0
-  gate_issue_judgment_approval "$alias" "$seg" "$std" "$why" "$cls" "$seat" || rc=$?
+  local aidrec="${9:-}" aidrisk="${10:-}"
+  gate_issue_judgment_approval "$alias" "$seg" "$std" "$why" "$cls" "$seat" "$aidrec" "$aidrisk" || rc=$?
   case "$(gate_judgment_approval_disposition "$rc")" in
     발행) ;;
     답있음)
@@ -52929,6 +53490,7 @@ gate_emitted_judgment_fields() {
   # look for an approval the absorber never wrote.
   local res="$1" txt
   GATE_EMIT_CLS="" GATE_EMIT_GRADE="" GATE_EMIT_STD="" GATE_EMIT_REVERT="" GATE_EMIT_WHY=""
+  GATE_EMIT_REC="" GATE_EMIT_RISK=""
   txt=$(printf '%s' "$res" | jq -r '.result // empty' 2>/dev/null || true)
   [ -n "$txt" ] || return 1
 
@@ -52952,6 +53514,13 @@ gate_emitted_judgment_fields() {
   GATE_EMIT_STD=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 기준\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
   GATE_EMIT_REVERT=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 되돌리는 법\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
   GATE_EMIT_WHY=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 근거\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
+  # THE TWO OPTIONAL MARKERS — the decision aid an approval carries when this
+  # judgment becomes a question. Each is read up to the next `**판단 ` marker,
+  # so where it stands among the five does not matter. They are not among the
+  # five: auto-adoption never reads them, and their presence alone records no
+  # judgment, so the no-marker test below does not look at them.
+  GATE_EMIT_REC=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 추천\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
+  GATE_EMIT_RISK=$(printf '%s' "$txt"   | sed -n 's/.*\*\*판단 선택지 리스크\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
 
   # No marker of ANY kind — the stage recorded no decision, which is the common
   # case and the only one that may return quietly.
@@ -52986,17 +53555,20 @@ gate_absorb_emitted_judgment() {
 
   if [ -z "$cls" ]; then
     warn "the stage emitted a judgment with no \`판단 부류\` — no row is written and an approval is issued"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음" "" "$grade" "$seat"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음" "" "$grade" "$seat" \
+      "$GATE_EMIT_REC" "$GATE_EMIT_RISK"
     return 0
   fi
   if ! judgment_class_ok "$cls"; then
     warn "the \`판단 부류\` the stage emitted is out of vocabulary: $cls — no row is written and an approval is issued"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls" "$cls" "$grade" "$seat"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls" "$cls" "$grade" "$seat" \
+      "$GATE_EMIT_REC" "$GATE_EMIT_RISK"
     return 0
   fi
   if [ "${grade:-2}" = "2" ] || ! gate_autoadopt_ok "$cls" "$revert"; then
     warn "the judgment the stage emitted did not pass the union of \`자동 채택\` ($cls) — no row is written and an approval is issued"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls" "$grade" "$seat"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls" "$grade" "$seat" \
+      "$GATE_EMIT_REC" "$GATE_EMIT_RISK"
     return 0
   fi
   # Narrowed to the cap from 150 bytes down, as the answered branch of
@@ -58060,7 +58632,7 @@ gate_issue_boundary_approval() {
     return 0
   fi
   printf '%s\n' "$binding" > "$RUN_DIR/boundary-$name.asked"
-  gate_approval_sidecar_write "$id" issue '질문' "$q" \
+  gate_approval_sidecar_write "$id" issue '질문' "$q" "$(gate_boundary_approval_aid "$name")" \
     || warn "could not write the question into the approval sidecar — the row is issued, but there is no block where the anchor $(gate_approval_sidecar_anchor "$id") points"
   # `유도 절단점=-` FOR THE SAME REASON THE ACT DIGEST IS `-`. A boundary has no
   # act, so there is no argv to derive a rung from, and `경계` in the slot beside

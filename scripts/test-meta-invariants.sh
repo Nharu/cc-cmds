@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh"
+_selected_want="test-attention-funnel.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -832,7 +832,8 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   fi
 done
 # Both router copies accept a `발행됨` sidecar because a re-kicked run's visual
-# stage reuses its source's sidecar without writing it. That holds only while
+# stage reuses its source's sidecar without generating it again (it rewrites
+# only the record path line to this run's). That holds only while
 # the stage itself still runs the reuse check, so pin the call in its text.
 VU_SKILL="$PLUGIN_ROOT/skills/visual-unattended/SKILL.md"
 nreuse=$(grep -cF -- 'visual-check.sh reuse' "$VU_SKILL" || true)
@@ -841,6 +842,55 @@ if [ "${nreuse:-0}" != "0" ]; then
 else
   bad "visual-unattended 문면의 재사용 판정" "visual-check.sh reuse 호출이 없다"
 fi
+# The design system check and the sidecar field share one helper: the stage
+# asks `visual-check.sh system --owner` whether an existing system.md is this
+# document's, and pins `**디자인 시스템 sha256**` with the value
+# `visual-check.sh system` prints, which the reuse check compares again.
+for lit in \
+  'visual-check.sh system <document> --owner' \
+  '`**디자인 시스템 sha256**` the value `${CLAUDE_SKILL_DIR}/../../orchestrator/visual-check.sh system <document>` prints'; do
+  if grep -qF -- "$lit" "$VU_SKILL"; then
+    ok "visual-unattended 문면이 「${lit}」를 담는다"
+  else
+    bad "visual-unattended 문면의 디자인 시스템 판정" "「${lit}」가 없다"
+  fi
+done
+# Both halts that refuse an earlier output give a person options, and the
+# labels are the ones a resumed turn reads back.
+for lab in '있는 디자인 시스템을 쓴다' '새로 만들어 덮는다' '신규로 만든다' '재사용으로 진행' '다시 생성'; do
+  if grep -qF -- "- \`${lab}\` — " "$VU_SKILL"; then
+    ok "visual-unattended 문면에 선택지 「${lab}」 줄이 있다"
+  else
+    bad "visual-unattended 문면의 선택지" "「${lab}」 줄이 없다"
+  fi
+done
+# A reused sidecar points at this run's record, not the finished source run's.
+if grep -qF -- "rewrite only the sidecar's \`**기록**\` line" "$VU_SKILL"; then
+  ok "visual-unattended 재사용 갈래가 기록 경로 한 줄을 고쳐 쓴다"
+else
+  bad "visual-unattended 재사용 갈래" "기록 경로를 고쳐 쓰는 문면이 없다"
+fi
+# A resumed turn reruns Step 1 from item 1, and item 6 runs before item 7, so
+# an `output-present` answer is applied only while the following record carries
+# the earlier `system-mismatch` answer and item 6 reads it back for the same
+# case. Without both sentences the two halts alternate without end.
+for lit in \
+  '`앞선 답=<label> · 경우=<key> · 기록=<earlier halt record path>`' \
+  'While item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
+  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece'; do
+  if grep -qF -- "$lit" "$VU_SKILL"; then
+    ok "visual-unattended 재개 턴이 앞선 시스템 불일치 답을 나른다 — 「${lit}」"
+  else
+    bad "visual-unattended 재개 턴의 앞선 답" "「${lit}」가 없다"
+  fi
+done
+for old in 'Every site except `review-cap` is a refusal' 'write nothing at all'; do
+  if grep -qF -- "$old" "$VU_SKILL"; then
+    bad "visual-unattended 문면의 옛 문장" "「${old}」가 남았다"
+  else
+    ok "visual-unattended 문면에 옛 문장 「${old}」가 없다"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 6e. Re-attaching a cut stage is carried by BOTH router copies
@@ -1574,6 +1624,51 @@ check "Step 5 의 report-check 고리는 게이트 실패를 고치지 않고 �
   "$(mo_count "$(cat "$RU_SKILL")" 'is the gate failing, not the report: end the stage without editing')" "1"
 check "복구 팔은 복구 리포트에 리뷰 HEAD 줄을 지어 넣지 않는다" \
   "$(mo_count "$(cat "$RU_RECOVER")" 'never write a `리뷰 HEAD` line into a recovered report')" "1"
+
+# ---------------------------------------------------------------------------
+# 6e-5b. An unattended P0 stands on reproduction evidence
+#
+# The template owns the evidence grammar and its encoding, the reviewer package
+# owns what a reviewer brings and the evidence check, and the unattended skill
+# owns the lead's run in a disposable directory and the one demotion rule that
+# every path takes. Each sentence below is written once in its owning file, so
+# a second copy that drifts, or a rewording that drops the interactive
+# exclusion, fails here.
+# ---------------------------------------------------------------------------
+RV_TPL="$PLUGIN_ROOT/skills/review/references/02-review-report-template.md"
+RV_PKG="$PLUGIN_ROOT/skills/review/references/01-reviewer-context-package.md"
+for spec in \
+  "템플릿:$RV_TPL:## P0 Reproduction Evidence — review-unattended only" \
+  "템플릿:$RV_TPL:"'원문의 `\` 를 먼저 모두 `\\` 로 두 배로 하고, 그다음 `*` 를 모두 `\*` 로 쓴다' \
+  "템플릿:$RV_TPL:"'다시 돌리는 쪽은 `재현 명령` 값과 `재현 스크립트` 본문 줄을 왼쪽부터 읽어 `\\` 를 `\` 로, `\*` 를 `*` 로 풀고 그 밖의 글자는 그대로 두어 돌린다' \
+  "템플릿:$RV_TPL:"'본문 줄은 돌린 파일의 한 줄마다 하나이고, 공백 여섯 개와 `|` 뒤에 그 줄을 아래 부호화로 옮겨 적는다' \
+  "템플릿:$RV_TPL:"'대화형 `/review`·`/review-lite` 는 이 절의 문법을 쓰지 않는다 — 대화형도 템플릿을 읽지만 이 절의 요건은 무인 리뷰에만 걸린다' \
+  "템플릿:$RV_TPL:"'재현 근거 하위 불릿과 `강등` 줄은 review-unattended 만 쓰고, 대화형 리드는 쓰지 않는다' \
+  "템플릿:$RV_TPL:근거 없음으로 P1 로 옮긴 상속 항목은 옮긴 절의 수로 센다" \
+  "리뷰어 패키지:$RV_PKG:**(Unattended review only) P0 reproduction evidence.**" \
+  "리뷰어 패키지:$RV_PKG:리뷰어는 재현을 돌리지 않는다" \
+  "리뷰어 패키지:$RV_PKG:"'`재현 명령` 에는 게이트로 감싼 줄이 아니라 자리표시자 꼴의 레시피 줄을 적는다' \
+  "리뷰어 패키지:$RV_PKG:강등 재료: " \
+  "리뷰어 패키지:$RV_PKG:"'**(Unattended review only) Evidence of a `critical` finding.**' \
+  "리뷰어 패키지:$RV_PKG:**(Unattended review only) Evidence of an inherited P0.**" \
+  "리뷰어 패키지:$RV_PKG:"'무인 리뷰의 `critical` 은 재현 레시피나 예외 근거를 달고 오거나 `high` 로 낸다' \
+  "리뷰어 패키지:$RV_PKG:**(Unattended review only) Evidence check.**" \
+  "리뷰어 패키지:$RV_PKG:근거 판정: " \
+  "무인 스킬:$RU_SKILL:**실행 전 점검**" \
+  "무인 스킬:$RU_SKILL:"'리뷰 HEAD 의 추적 파일은 파이프 없는 단순 명령 셋으로 `tree` 에 푼다' \
+  "무인 스킬:$RU_SKILL:"'재현 행위의 argv 는 `env -i PATH=<리드 셸의 PATH 값> HOME=<$REPRO_DIR 의 절대 경로>/home TMPDIR=<$REPRO_DIR 의 절대 경로>/tmp LANG=<리드 셸의 LANG 값> <결속한 재현 명령>`' \
+  "무인 스킬:$RU_SKILL:후보당 실행 세 번, 한 리뷰 라운드의 재현 실행 시간 합계 60분" \
+  "무인 스킬:$RU_SKILL:거절·점검 대응표." \
+  "무인 스킬:$RU_SKILL:근거 판정 기각: " \
+  "무인 스킬:$RU_SKILL:강등 처분 — one rule for every path." \
+  "무인 스킬:$RU_SKILL:근거 없음으로 P1 로 옮긴 상속 항목은 옮긴 절의 수로 센다" \
+  "무인 스킬:$RU_SKILL:이 재집계는 요약 수를 항목에 맞춰 고치는 일이 아니다" \
+  "복구 팔:$RU_RECOVER:The synthesis carries Step 5's P0 reproduction evidence rules with it." \
+  "복구 팔:$RU_RECOVER:복구는 명령을 새로 돌리지 않는다"
+do
+  who=${spec%%:*}; rest=${spec#*:}; file=${rest%%:*}; lit=${rest#*:}
+  check "$who 에 P0 재현 근거 문장이 한 번 실린다 — 「${lit:0:50}」" "$(mo_count "$(cat "$file")" "$lit")" "1"
+done
 
 # ---------------------------------------------------------------------------
 # CFI-11 — a re-kickoff carries no ledger row as a permission, with one

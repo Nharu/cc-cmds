@@ -5,7 +5,9 @@
 # process raising one of those sources this file: the run's liveness watcher and
 # adjudication gate, the session hooks, and the banner click handler
 # (`notify-focus.sh`), which raises the `focus-guide` banner from a click.
-# (`active-notify` has its own dispatcher and does not come through here.)
+# (`active-notify` has its own dispatcher and raises no banner through here; it
+# sources this file in a subshell only to call `cc_caller_is_router` for its
+# remote-seat check.)
 #
 # WHY A SHARED FILE AND NOT A CONVENTION. Two processes raise banners for this
 # pipeline, and they have to agree on the group string, because a group is a
@@ -88,6 +90,18 @@ CC_NOTIFY_STACK_CAP=8
 case "${BASH_SOURCE[0]:-}" in
   */*) CC_NOTIFY_FOCUS="${BASH_SOURCE[0]%/*}/notify-focus.sh" ;;
   *)   CC_NOTIFY_FOCUS=notify-focus.sh ;;
+esac
+
+# The attention tap, a sibling of this file, which lets the banner function and
+# the clearing function below leave the remote copy of what they raise and
+# clear. Only its path is kept here, resolved the way the click handler's is
+# just above: the file is never read at the top level. `cc_notify_attention_tap`
+# reads it inside a child shell for each tap call, so none of its top-level
+# names lands in the gate's, the watcher's or a hook's shell, and a copy of
+# this file without it raises and clears banners exactly as before.
+case "${BASH_SOURCE[0]:-}" in
+  */*) cc_notify_attention_lib="${BASH_SOURCE[0]%/*}/attention.sh" ;;
+  *)   cc_notify_attention_lib=attention.sh ;;
 esac
 
 cc_notify_host_os() {
@@ -722,6 +736,78 @@ cc_notify_click() {
   esac
 }
 
+cc_attention_detail_make() {
+  # cc_attention_detail_make <json> — write a funnel attachment and print its path.
+  #
+  # A seat that has to tell the attention tap more than the banner arguments
+  # carry — the event kind, the full text, the reply target — writes that JSON
+  # here, right before its banner call, and hands the path to that one call as
+  # `CC_NOTIFY_ATTENTION_DETAIL`. The banner function then either passes it to
+  # the tap, which reads and removes it, or removes it itself on every path that
+  # returns before the tap.
+  #
+  # ONE PLACE FOR THE NAME AND THE MODE. The tap accepts only a regular file of
+  # the current user whose name begins with `cc-attention-detail.`; three seats
+  # each spelling their own `mktemp` would be three places for that to drift.
+  #
+  # Status 0 always; prints the path, or nothing when the file could not be
+  # written — the seat then calls the banner function without an attachment, so
+  # the local banner is unchanged and only the remote copy is missing. Nothing
+  # goes to stderr.
+  local json="${1:-}" f
+  f=$(mktemp "${TMPDIR:-/tmp}/cc-attention-detail.XXXXXX" 2>/dev/null) || return 0
+  [ -n "$f" ] || return 0
+  if ! printf '%s' "$json" > "$f" 2>/dev/null; then
+    rm -f "$f" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s\n' "$f"
+  return 0
+}
+
+cc_attention_detail_drop() {
+  # cc_attention_detail_drop <path> — remove an attachment the tap will not read.
+  #
+  # Only a path the make helper could have produced is removed: a name beginning
+  # with `cc-attention-detail.`, a regular file, not a symbolic link, owned by
+  # the current user. The checks are the tap's own, so the banner function's
+  # early returns cannot be turned into a way of deleting some other file.
+  # Status 0 always, no output.
+  local f="${1:-}"
+  [ -n "$f" ] || return 0
+  case "${f##*/}" in
+    cc-attention-detail.*) : ;;
+    *) return 0 ;;
+  esac
+  if [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ]; then
+    rm -f "$f" 2>/dev/null || true
+  fi
+  return 0
+}
+
+cc_notify_attention_tap() {
+  # cc_notify_attention_tap <tap function> [<arg>…] — run one attention tap.
+  #
+  # The tap library is read here, inside a child shell, and nowhere else: this
+  # file is sourced by the gate, the watcher and the session hooks, and a
+  # top-level name of the library must not land in their shells. The Homebrew
+  # prepend applies inside the same child shell, under the same off value as
+  # the banner below, because the tap looks `jq` up on PATH; the caller's PATH
+  # is the same before and after. The child's stdout and stderr are discarded.
+  # Status is not 0 when the library could not be read or does not define the
+  # tap function; the caller decides what that means.
+  (
+    [ -f "$cc_notify_attention_lib" ] && [ -r "$cc_notify_attention_lib" ] || exit 2
+    # shellcheck source=/dev/null
+    . "$cc_notify_attention_lib" || exit 2  # lint-harness-global-collisions: child-shell
+    [ "$(type -t "${1:-}" 2>/dev/null)" = function ] || exit 2
+    if [ -z "${CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND:-}" ]; then
+      PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    fi
+    "$@"
+  ) >/dev/null 2>&1
+}
+
 cc_notify_fire() {
   # cc_notify_fire <token> <message> [item-key]
   #
@@ -729,12 +815,19 @@ cc_notify_fire() {
   # nothing and says so. Falling back to the quietest token would be the
   # characteristic failure of a table like this — an unclassified condition
   # would reach the user as a status report, or not at all.
-  local token="${1:-}" body="${2:-}" key="${3:-}" title group sound click n
+  #
+  # A seat may hand this one call a funnel attachment in
+  # `CC_NOTIFY_ATTENTION_DETAIL` (see `cc_attention_detail_make`). It is taken
+  # into a local on entry, and every path that returns before the attention tap
+  # below removes it; the tap reads and removes it otherwise.
+  local token="${1:-}" body="${2:-}" key="${3:-}" title group sound click n detail="${CC_NOTIFY_ATTENTION_DETAIL:-}"
+  local tap_key
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
     session-ask|session-turn|focus-guide) : ;;
     *)
       printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 올리지 않습니다\n' "$token" >&2
+      cc_attention_detail_drop "$detail"
       return 0 ;;
   esac
 
@@ -755,8 +848,43 @@ cc_notify_fire() {
   # IT ALSO SITS ABOVE `cc_notify_click`, and that order is a contract with the
   # click handler: computing a session banner's click value starts that pane's
   # background resolution, so a switched-off seat must return before it.
-  if ! cc_notify_scope_enabled "$token"; then return 0; fi
-  if [ "$(cc_notify_host_os)" != "Darwin" ]; then return 0; fi
+  if ! cc_notify_scope_enabled "$token"; then
+    cc_attention_detail_drop "$detail"
+    return 0
+  fi
+  if [ "$(cc_notify_host_os)" != "Darwin" ]; then
+    cc_attention_detail_drop "$detail"
+    return 0
+  fi
+
+  # THE ATTENTION TAP. The seat decided to raise this banner before calling, so
+  # the remote copy is left here, after the switch and the host check and above
+  # the overflow demotion and the notifier check: a demoted approval keeps its
+  # own event, and a host without the notifier still records one. The tap does
+  # not judge the caller and writes nothing to stdout or stderr.
+  #
+  # Slot and title use the token the caller passed, before any demotion, and the
+  # slot key is defaulted here the way the demotion arm below defaults `key`,
+  # without touching `key`. The body is the caller's, before the cut. The click
+  # value is not computed here: computing it starts a session banner's pane
+  # resolution, which has to run once, for the banner itself.
+  #
+  # The tap runs through `cc_notify_attention_tap`, in a child shell that reads
+  # the library and applies the Homebrew prepend there, so this function's PATH
+  # is the same before and after. Slot and title are computed here, in this
+  # shell, as the arguments. When the helper fails — the library is missing or
+  # unreadable, or does not define the tap — the attachment is dropped; one the
+  # tap already read and removed leaves the drop nothing to do. Which tokens
+  # leave an event is the tap's own table.
+  tap_key="$key"
+  case "$token" in
+    answer|hands) if [ -z "$tap_key" ]; then tap_key="$token"; fi ;;
+  esac
+  if ! cc_notify_attention_tap cc_attention_emit "$token" \
+      "$(cc_notify_group "$token" "$tap_key")" "$(cc_notify_title "$token")" \
+      "$body" "$detail"; then
+    cc_attention_detail_drop "$detail"
+  fi
 
   # ONLY THE STACKING TOKENS ARE ADMITTED AGAINST THE CAP. `answer-run` says the
   # whole run is waiting and occupies a per-run replace slot, so counting it
@@ -928,6 +1056,21 @@ cc_notify_clear() {
   if [ -z "${CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND:-}" ]; then
     PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
   fi
+
+  # THE HANDLED TAP, after the seat guard, the switch, the host check and the
+  # group, and above the notifier check, so a host without the notifier records
+  # the clearing as it records the raising. The cause follows the token: the
+  # session tokens are a return to the session, `answer` is cleared only where an
+  # approval closes, and anything else is a plain clear. The session group is
+  # one per session whatever the key, so one clearing closes that session's
+  # question and turn events together. The tap runs through
+  # `cc_notify_attention_tap`, and a failure of the helper changes nothing below.
+  case "$token" in
+    session-ask|session-turn|focus-guide) cc_notify_attention_tap cc_attention_handled "$group" return || true ;;
+    answer) cc_notify_attention_tap cc_attention_handled "$group" approval-closed || true ;;
+    *) cc_notify_attention_tap cc_attention_handled "$group" clear || true ;;
+  esac
+
   if ! command -v terminal-notifier >/dev/null 2>&1; then
     return 0
   fi

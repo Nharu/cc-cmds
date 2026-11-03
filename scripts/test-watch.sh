@@ -39,6 +39,10 @@ WATCH="$repo_root/plugins/cc-cmds/orchestrator/watch.sh"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-watch-test.XXXXXX")
 WAITER_PIDS=""
 trap 'fx_reap; [ -z "$WAITER_PIDS" ] || kill $WAITER_PIDS 2>/dev/null; rm -rf "$WORK"' EXIT
+# The attention spool root points at a path under the work directory that is
+# never created, so the attention tap writes nothing from this suite and never
+# reaches the account spool. Every watcher and gate run below inherits it.
+export CC_CMDS_ATTENTION_ROOT="$WORK/attention-root-absent"
 
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
@@ -615,12 +619,26 @@ fi
 # keeps every other one, rather than loosening the pattern until it also stops
 # catching the file it exists to catch. The exclusion is a WHOLE-LINE match:
 # `bash "$WATCH_DIR/notify-run.sh"` would still be scanned and still fail.
+#
+# The gate is named on one more line: the approval re-notice reads the gate's
+# canonical question by SOURCING `gate.sh` in a child shell with
+# `CC_GATE_SOURCE_ONLY=1`, which runs no verb and writes no gate record. That
+# path line is dropped the same whole-line way, and the check after the scan
+# holds the claim it rests on — the only use of that path is a source-only read.
 if grep -vE '^[[:space:]]*#' "$WATCH" \
    | grep -vxF '. "$WATCH_DIR/notify-run.sh"' \
+   | grep -vxF '  local g="$WATCH_DIR/gate.sh" base' \
    | grep_all_q -E '\bclaude\b|run\.sh|gate\.sh'; then
   bad "재개 금지" "감시 스크립트가 무언가를 기동한다 — 두 번째 의사결정자가 생긴다"
 else
   ok "아무것도 기동하지 않는다 (자동 워치독이 아니다)"
+fi
+if grep -qxF '  CC_GATE_SOURCE_ONLY=1 bash -c '"'" "$WATCH" \
+   && grep -qxF '    . "$g" >/dev/null 2>&1 || exit 0' "$WATCH" \
+   && ! grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -E '(bash|sh|exec)[[:space:]]+"\$g"|^[[:space:]]*"\$g"'; then
+  ok "감시자는 게이트를 source 전용으로만 읽는다 (동사를 부르지 않는다)"
+else
+  bad "게이트 source 전용" "감시자의 gate.sh 경로가 CC_GATE_SOURCE_ONLY=1 하위 셸의 . 읽기 말고 다른 데 쓰인다"
 fi
 
 if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q 'wait -n'; then
