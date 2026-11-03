@@ -37303,12 +37303,16 @@ gate_end_run() {
     return 0
   fi
   rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
-  # THE RUN'S LEASES GO WITH ITS END. A run that ended no longer dispatches, so
-  # a lease it still owns only lengthens the scan every other run's admission
-  # makes under the table lock. A failure is logged and does not hold the end.
+  # THE RUN'S DEAD LEASES GO WITH ITS END. A run that ended no longer
+  # dispatches, so a lease nobody holds any more only lengthens the scan every
+  # other run's admission makes under the table lock. Only records whose holders
+  # are all dead go: ending the run stops no process, and a deadline or a B4/B5
+  # boundary can end it while a stage or a supervisor still runs, whose lease
+  # has to keep counting against its account until it exits — the finished-run
+  # sweep removes it then. A failure is logged and does not hold the end.
   if run_routed; then
     local lrc=0
-    route_lease_release_run "$(run_pace_root)/leases" "$RUN_ID" >/dev/null 2>&1 || lrc=$?
+    route_lease_release_run_dead "$(run_pace_root)/leases" "$RUN_ID" >/dev/null 2>&1 || lrc=$?
     [ "$lrc" = "0" ] || log "끝난 런의 임대를 지우지 못했습니다 rc=$lrc — 다른 런의 훑기가 지웁니다"
   fi
   # The rationale is clipped to what the row has left; see `gate_free_budget`.

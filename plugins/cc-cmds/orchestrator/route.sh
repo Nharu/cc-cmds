@@ -3032,7 +3032,39 @@ route_lease_release() {
   return "$rc"
 }
 route_lease_release_run() { bash "$(route__dir)/route.sh" lease-release-run "$@"; }
-route_lease_has_holder() { bash "$(route__dir)/route.sh" lease-has-holder "$@"; }
+route_lease_release_run_dead() {
+  # route_lease_release_run_dead <table> <run_id> — 방금 `done` 을 쓴 런의 자기 정리.
+  # 그 런의 기록(`<enc(run_id)>+*.lease`) 가운데 보유자가 모두 죽은 것만 지운다.
+  # 런은 자기 스테이지와 감독자를 멈추지 않고 끝날 수 있으므로(마감·경계), 산 보유자가
+  # 있는 기록은 남아 그 보유자의 예약을 계속 센다. 그 기록은 보유자가 죽은 뒤 끝난 런
+  # 훑기가 지운다. `done` 은 호출자가 이미 썼으므로 런 디렉터리를 다시 찾지 않는다.
+  #
+  # 판정은 잠금 없이 하고, 삭제는 `lease-sweep-done` 이 잠금 아래 nonce 비교로 한다 —
+  # 잠금은 기다리지 않는 한 번 시도다. 후보가 없으면 rc 0, 있으면 그 동사의 rc 를
+  # 돌려준다(rc 3 은 잠금 경합). 인자 수·빈 값·`.` 으로 시작하는 run_id 는 rc 2.
+  local t="${1:-}" pfx f key rec nonce
+  local -a pairs=()
+  [ $# -eq 2 ] && [ -n "$t" ] || return 2
+  case "$2" in
+    ''|.*) return 2 ;;
+  esac
+  pfx=$(route__enc "$2") || return 2
+  [ -d "$t" ] || return 0
+  for f in "$t/$pfx+"*.lease; do
+    [ -f "$f" ] || continue
+    key=${f##*/}
+    key=${key%.lease}
+    rec=$(route__lease_read "$f" "$key") || continue
+    [ "$(printf '%s' "$rec" | jq -r '.run_id // empty' 2>/dev/null)" = "$2" ] || continue
+    nonce=$(printf '%s' "$rec" | jq -r '.nonce // empty' 2>/dev/null) || continue
+    [ -n "$nonce" ] || continue
+    if route__lease_is_live "$rec"; then continue; fi
+    pairs+=("$key" "$nonce")
+  done
+  [ "${#pairs[@]}" -gt 0 ] || return 0
+  bash "$(route__dir)/route.sh" lease-sweep-done "$t" "${pairs[@]}"
+}
+route_lease_has_holder(){ bash "$(route__dir)/route.sh" lease-has-holder "$@"; }
 route_lease_sweep_done() {
   # route_lease_sweep_done <table> — 끝난 런의 묵은 임대 훑기. 호출자 셸에서 돈다:
   # 런 디렉터리는 run.sh 의 `rundir_of_run_id` 한 곳이 정하므로, 그 함수가 없는 셸
