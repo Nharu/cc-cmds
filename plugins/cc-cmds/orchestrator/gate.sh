@@ -10949,7 +10949,7 @@ gate_review_post_field() {
   # gate_review_post_field <key> — a field of the manifest's `리뷰 게시` row
   # (`방식`, `의사표시`, `계정`); empty when the run has none.
   local row
-  row=$(manifest_review_post_rows | head -1)
+  row=$(manifest_review_post_rows | sed -n '1p')
   [ -n "$row" ] || return 0
   manifest_row_fields "$row" "$1"
 }
@@ -10957,7 +10957,7 @@ gate_review_post_field() {
 gate_review_depth() {
   # gate_review_depth — the frozen review depth, `전체` when the run froze none.
   local row v=""
-  row=$(manifest_review_depth_rows | head -1)
+  row=$(manifest_review_depth_rows | sed -n '1p')
   [ -z "$row" ] || v=$(manifest_row_fields "$row" '깊이')
   printf '%s' "${v:-전체}"
 }
@@ -41874,7 +41874,7 @@ gate_review_post_format_file() {
   # the row's, else the plugin's default. Prints the path; returns 3 with the
   # mismatch named.
   local row f want got
-  row=$(manifest_review_format_rows | head -1)
+  row=$(manifest_review_format_rows | sed -n '1p')
   if [ -z "$row" ]; then
     printf '%s/review-format.default.md' "$GATE_DIR"
     return 0
@@ -41962,7 +41962,7 @@ gate_review_post_preconditions() {
   fi
   rep=$(gate_report_abs "$(gate_row_field "$crow" '리포트 경로')")
   shape=$(gate_review_report_shape "$rep") || { warn "리포트 ${rep:-(없음)} 를 읽지 못했습니다"; return "$GATE_EXIT_RULE"; }
-  sh=$(printf '%s\n' "$shape" | sed -n 's/^리뷰 HEAD=//p' | head -1)
+  sh=$(printf '%s\n' "$shape" | sed -n 's/^리뷰 HEAD=//p' | sed -n '1p')
   if [ "$sh" != "$rh" ]; then
     warn "리포트의 리뷰 HEAD(${sh:-없음}) 가 고정 헤드 ${rh} 와 다릅니다: $rep"
     return "$GATE_EXIT_RULE"
@@ -41970,7 +41970,7 @@ gate_review_post_preconditions() {
   p0=$(gate_row_field "$crow" 'P0'); p1=$(gate_row_field "$crow" 'P1')
   gate_canon_count "$p0" && gate_canon_count "$p1" || { warn "마지막 cycle 행의 P0·P1 을 읽지 못했습니다"; return "$GATE_EXIT_RULE"; }
   if [ -z "$GATE_REVIEW_CLAUSE" ] && [ "$((p0 + p1))" -gt 0 ] \
-     && [ "$(printf '%s\n' "$shape" | sed -n 's/^게시 항목=//p' | head -1)" = "없음" ]; then
+     && [ "$(printf '%s\n' "$shape" | sed -n 's/^게시 항목=//p' | sed -n '1p')" = "없음" ]; then
     warn "리포트에 「## 게시 항목」 절이 없습니다 — 리뷰 전용 세그먼트의 리뷰는 --post-ready 로 냅니다: $rep"
     return "$GATE_EXIT_RULE"
   fi

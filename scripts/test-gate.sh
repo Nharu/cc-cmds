@@ -60254,8 +60254,7 @@ exit 1
 RV106EOF
 chmod +x "$RV106_STUB"
 export RV106_STUB
-gh() { "$RV106_STUB" "$@"; }
-export -f gh
+eval 'gh() { "$RV106_STUB" "$@"; }'; export -f gh
 
 rv106_new() {
   # rv106_new <라벨> <방식> <의사표시> — 리뷰어 계획, PR 7·8 의 리뷰 PR 행 둘, 게시·깊이 행,
