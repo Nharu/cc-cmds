@@ -5939,14 +5939,16 @@ spawn_cost_samples() {
 }
 
 spawn_lineage_release() {
-  # spawn_lineage_release <dispatch id> — the end of a lineage: the dispatch and
-  # every `.retry` of it that holds a record. A crash retry sits back on the same
-  # lease and a limit reclaim replaces it, so the family is released together
-  # where the lineage ends, not after the first row.
+  # spawn_lineage_release <dispatch id> — the end of a lineage: the dispatch, every
+  # `.retry` of it and every implementation fix (`.fix<k>`, with its own retries)
+  # that holds a record. A crash retry sits back on the same lease and a limit
+  # reclaim replaces it, so the family is released together where the lineage
+  # ends, not after the first row. A fix is a lineage of its own to the router,
+  # and nothing else collects its record before the run ends.
   local base f n=0
   run_routed || return 0
   base=$(route_lineage_of "$1")
-  for f in "$RUN_DIR/$base.lease" "$RUN_DIR/$base".retry*.lease; do
+  for f in "$RUN_DIR/$base.lease" "$RUN_DIR/$base".retry*.lease "$RUN_DIR/$base".fix*.lease; do
     [ -f "$f" ] || continue
     n=$((n + 1))
     spawn_lease_release "$(basename "$f" .lease)"
@@ -12238,6 +12240,9 @@ s4_refutation_turn() {
         && refutation_hook "$seg" "$CONTINUE_HALT_RECORD" && [ "$REFUTATION_BRANCH" = '구현 수정' ]; do
     k=$((k + 1))
     did="$sid.fix$k"
+    # The finished attempts hand their leases back first: a fix is a new lineage
+    # to the router, and they would otherwise count against its admission.
+    spawn_lineage_release "$sid"
     da=$(doc_arg)
     prompt="/cc-cmds:implement-unattended $da \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$(dispatch_surface_note "$seg") · 수정 대상: $REFUTATION_RECORD 의 $REFUTATION_ITEM 구현 결함\""
     log "$seg: 구현 결함 반증 ($REFUTATION_ITEM) — $did 로 구현 수정 재파견"

@@ -20906,8 +20906,9 @@ gate_answered_halts_json() {
   # re-attach the same session with the same answer twice; an answer that
   # stayed visible after it was used would do exactly that. An answer to a
   # shift's halt record is spent by the next shift carrying its option out as
-  # well (`gate_halt_answer_consumer`), and an answer `세그먼트 park` by the
-  # later `상태=park` row of that segment, since parking dispatches nothing.
+  # well (`gate_halt_answer_consumer`), and an answer `세그먼트 park` — or one the
+  # consumer reads as that, `보류` to a seat apply and `파킹` to a refutation — by
+  # the later `상태=park` row of that segment, since parking dispatches nothing.
   #
   # A ROW THAT SETTLES AN ATTEMPT WHICH NEVER SPAWNED does not spend the answer:
   # its `관측` starts `스폰 전 대기 중`, and no stage read the answer.
@@ -21075,22 +21076,25 @@ gate_halt_answer_consumer() {
   # nothing, so no `stage-result` would ever spend it; the first such `segment`
   # row of the key on a later line is a candidate beside the `stage-result` one,
   # and the earlier of the two is the consumer. An answer `보류` to a
-  # `Step 3 강제 표면 좌석 적용` record is carried out the same way (route
-  # `적용-보류`) and spent the same way. Every other option is spent the way it
-  # was.
+  # `Step 3 강제 표면 좌석 적용` record (route `적용-보류`) and an answer `파킹` to
+  # a refutation record (route `반증-파킹`) are carried out the same way and spent
+  # the same way. Every other option is spent the way it was.
   #
   # AN ATTEMPT THAT CARRIED THE ANSWER AND DIED BEFORE ITS SESSION does not take
   # it up either: its row carries `답 운반` and `세션 id=미상`, the card was never
   # read, and the answer is still the one to carry. The two filters below are
   # `gate_row_is_pre_session_death` spelled for a line-numbered stream, so the
   # routing that reads the key's last row sees the same rows passed over.
-  local sr st pk arow aopt
+  local sr st pk arow aopt astep
   arow=$(sed -n "${3}p" "$1" 2>/dev/null)
   aopt=$(gate_row_field "$arow" '선택지')
-  if [ "$aopt" = '보류' ] \
+  if { [ "$aopt" = '보류' ] || [ "$aopt" = '파킹' ]; } \
      && [ "$(gate_row_field "$arow" '스킬')" = 'implement-unattended' ]; then
-    case "$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "$arow" '중단 기록')" 2>/dev/null | sed -n '1p')" in
-      'Step 3 강제 표면 좌석 적용'*) aopt='세그먼트 park' ;;
+    astep=$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "$arow" '중단 기록')" 2>/dev/null | sed -n '1p')
+    case "$aopt:$astep" in
+      '보류:Step 3 강제 표면 좌석 적용'*) aopt='세그먼트 park' ;;
+      '파킹:'*)
+        if gate_refutation_token "$astep" >/dev/null; then aopt='세그먼트 park'; fi ;;
     esac
   fi
   sr=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
@@ -22985,9 +22989,10 @@ gate_carry_prompt_of() {
 gate_refutation_fix_attempt_halted() {
   # gate_refutation_fix_attempt_halted <key> <ledger> <run dir> — 0 when the
   # key's implement attempt before its last one left a `Step 3 구현 결함 반증`
-  # record whose header names that attempt and no `blocked` row of <ledger>
-  # names that record: the last attempt was then the implementation fix the
-  # record sent, dispatched with its `수정 대상` tail.
+  # record whose header names that attempt, and either no `blocked` row of
+  # <ledger> names that record or a person's `구현 수정` answer names it after the
+  # block closed it: the last attempt was then the implementation fix the record
+  # sent, dispatched with its `수정 대상` tail.
   local key=$1 lpl=$2 lprd=$3 prev f
   prev=$( { grep '^- `stage-result` ' "$lpl" 2>/dev/null || true; } \
           | gate_rows_field_eq '스테이지' "$key" | gate_rows_field_eq '종류' 'implement' \
@@ -22999,7 +23004,11 @@ gate_refutation_fix_attempt_halted() {
     [ -f "$f" ] || continue
     [ "$(gate_refutation_header_stage "$f")" = "$key#$prev" ] || continue
     [ "$(gate_refutation_token "$(gate_halt_record_step "$f")" || true)" = 'Step 3 구현 결함 반증' ] || continue
-    if { grep '^- `blocked` ' "$lpl" 2>/dev/null || true; } | grep -F "$f" >/dev/null; then continue; fi
+    if { grep '^- `blocked` ' "$lpl" 2>/dev/null || true; } | grep -F "$f" >/dev/null \
+       && ! { grep '^- `중단 답` ' "$lpl" 2>/dev/null || true; } \
+            | gate_rows_field_eq '중단 기록' "$f" | gate_rows_field_eq '선택지' '구현 수정' | grep . >/dev/null; then
+      continue
+    fi
     return 0
   done
   return 1
@@ -23950,16 +23959,39 @@ gate_halt_answer_route() {
     # AN IMPLEMENTATION DEFECT IS FIXED BY A NEW DISPATCH, NOT A RE-ATTACHMENT.
     # The shift carries the answer out as the refutation branch does: an
     # implement dispatch whose tail names this record and its item, let in
-    # only while `refutation_next[]` reads `구현 수정` for them.
+    # only while `refutation_next[]` reads `구현 수정` for them. The record must
+    # still bind and the decision function must still read that branch, so an
+    # answer the dispatch would be refused for is refused here, while a person
+    # can still pick another option. A live attempt settles neither: it may be
+    # the very dispatch carrying this answer out.
     id=구현-수정
-    ! gate_segment_terminal "$key" || why=$terminal
+    if gate_segment_terminal "$key"; then
+      why=$terminal
+    elif gate_stage_live_attempt "$key"; then
+      :
+    elif [ "$(gate_refutation_bound_name "$key" "$rec")" != "${rec##*/}" ]; then
+      why="기록 ${rec##*/} 이 세그먼트 $key 의 마지막 구현 시도에 묶이지 않아 교대가 구현 수정을 파견할 수 없습니다"
+    else
+      cl=$(gate_refutation_route "$key" "$rec" "${DOC:-}" 2>/dev/null || true)
+      case "$cl" in
+        '갈래=구현 수정'*) ;;
+        *) why="이 기록의 반증 갈래가 $(printf '%s\n' "$cl" | sed -n 's/^갈래=//p' | sed -n '1p') ($(printf '%s\n' "$cl" | sed -n 's/^사유=//p' | sed -n '1p')) 라 구현 수정 파견이 거절됩니다" ;;
+      esac
+    fi
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "파킹" ] \
        && gate_refutation_token "$step" >/dev/null; then
     # A REFUTATION'S PARKING IS CARRIED OUT BY THE SHIFT, NOT THE HALTED
     # SESSION: the push, the PR and the segment's `park` row are acts the
-    # stage holds no verb for.
+    # stage holds no verb for. The record must still bind, because the element
+    # it keeps open is what gives the shift `앞선 커밋`.
     id=반증-파킹
-    ! gate_segment_terminal "$key" || why=$terminal
+    if gate_segment_terminal "$key"; then
+      why=$terminal
+    elif gate_stage_live_attempt "$key"; then
+      :
+    elif [ "$(gate_refutation_bound_name "$key" "$rec")" != "${rec##*/}" ]; then
+      why="기록 ${rec##*/} 이 세그먼트 $key 의 마지막 구현 시도에 묶이지 않아 교대가 이 답을 실행할 갈래가 없습니다"
+    fi
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "보류" ] \
        && [ "${step#Step 3 강제 표면 좌석 적용}" != "$step" ]; then
     # A HELD SEAT APPLY PARKS THE SEGMENT, IT DOES NOT RE-ATTACH. The halted
@@ -54073,8 +54105,14 @@ gate_implement_next_of() {
   # puts in its place — a `CI …` value or one of the base branch's `master …`
   # values — carries the keys `gate_snapshot_ci_keys_json` names, as it does in
   # `review_next[]`.
+  #
+  # A BOUND REFUTATION RECORD TAKES PRECEDENCE. An attempt that wrote one under a
+  # name the classifier does not look for ends `정상 완료`, and the record wins
+  # over the row: the segment has its `refutation_next[]` element and no element
+  # here, so the routers never read two values for it.
   local seg=$1 raw st ahead cnt dg nx
   raw=$(gate_implement_next_raw "$seg") || return 0
+  if gate_refutation_record_of "$seg" >/dev/null; then return 0; fi
   read -r st ahead cnt dg nx <<<"$raw"
   [ "$dg" = '-' ] && dg=''
   [ "$nx" = '선머지' ] && nx=$(gate_merge_first_next "$seg")
@@ -54443,22 +54481,70 @@ gate_refutation_candidate() {
   printf '%s' "$(gate_row_field "$last" '실행 버전')"
 }
 
+gate_refutation_written_in_attempt() {
+  # gate_refutation_written_in_attempt <segment> <실행 버전> <record> — 0 when the
+  # record, whose header names no attempt, can be that attempt's own: the attempt
+  # before it, of any stage kind, left a stream and the record was written after
+  # that stream's last write, or no earlier attempt left one. A record older than
+  # that belongs to an attempt already carried out. An attempt that died before
+  # its session left no stream, so the walk goes on to the one before it.
+  local seg=$1 a=$2 rec=$3 v log=''
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    [ "$v" != "$a" ] || continue
+    if [ -f "$RUN_DIR/log/$seg#$v.json" ]; then log="$RUN_DIR/log/$seg#$v.json"; fi
+  done <<EOF
+$(gate_plan_rows_of "$seg" | { grep '^- `stage-result` ' || true; } | while IFS= read -r v; do gate_row_field "$v" '실행 버전'; printf '\n'; done)
+EOF
+  [ -n "$log" ] || return 0
+  [ "$(gate_mtime "$rec")" -gt "$(gate_mtime "$log")" ]
+}
+
+gate_refutation_answer_opens() {
+  # gate_refutation_answer_opens <segment> <record> — 0 while the key's open
+  # answer names this record with an option the shift carries out on the
+  # segment (`구현 수정`, `파킹`). Such an answer is what a `blocked` row naming
+  # the record is waiting for, so the row does not close the record under it.
+  local ln
+  ln=$(gate_open_answer_line_of "$1" "${2##*/}")
+  [ -n "$ln" ] || return 1
+  case "$(gate_row_field "$(sed -n "${ln}p" "$LEDGER" 2>/dev/null)" '선택지')" in
+    '구현 수정'|'파킹') return 0 ;;
+  esac
+  return 1
+}
+
+gate_refutation_bound_name() {
+  # gate_refutation_bound_name <segment> <record> — the file name of the record
+  # that binds to the segment when an answer to <record> stands, or nothing:
+  # asked before the answer's row exists as well as after, so it cannot lean on
+  # that row to reopen the record.
+  local b
+  b=$(gate_refutation_record_of "$1" "${2##*/}") || return 0
+  printf '%s' "${b##*/}"
+}
+
 gate_refutation_record_of() {
-  # gate_refutation_record_of <segment> — the refutation halt record bound to
-  # the segment's last implement attempt, by the routing shift's binding rule:
-  # a record of `implement-unattended` classed `precondition-failed`, closed,
-  # whose `**스텝**` begins with a refutation token and whose header's `stage=`
-  # is `<segment>#<실행 버전>` of that attempt or `<segment>`, or the skill's own
-  # name while exactly one segment is a candidate. A record a `blocked` row
-  # already names as `근거` has been carried out and binds no more. 1 when none
-  # binds.
-  local seg=$1 a f hd single='' cnt s pick='' alt=''
+  # gate_refutation_record_of <segment> [<record file name>] — the refutation
+  # halt record bound to the segment's last implement attempt, by the routing
+  # shift's binding rule: a record of `implement-unattended` classed
+  # `precondition-failed`, closed, whose `**스텝**` begins with a refutation
+  # token and whose header's `stage=` is `<segment>#<실행 버전>` of that attempt,
+  # or `<segment>` or the skill's own name while exactly one segment is a
+  # candidate, those two when `gate_refutation_written_in_attempt` holds. A
+  # record a `blocked` row already names as `근거` has been carried out and binds
+  # no more, unless a person's answer stands open on it or the optional second
+  # argument names it, which is how the route asks before the answer's row
+  # exists. 1 when none binds.
+  local seg=$1 want=${2:-} a f hd single='' cnt s pick='' alt=''
   a=$(gate_refutation_candidate "$seg") || return 1
   for f in "$RUN_DIR"/halt/*.md; do
     [ -f "$f" ] || continue
     hd=$(gate_refutation_header_stage "$f")
     case "$hd" in
-      "$seg#$a"|"$seg") ;;
+      "$seg#$a") ;;
+      "$seg")
+        gate_refutation_written_in_attempt "$seg" "$a" "$f" || continue ;;
       implement-unattended|implement-unattended#*)
         if [ -z "$single" ]; then
           cnt=0
@@ -54470,7 +54556,8 @@ $(gate_segment_ids)
 EOF
           if [ "$cnt" = 1 ]; then single=yes; else single=no; fi
         fi
-        [ "$single" = yes ] || continue ;;
+        [ "$single" = yes ] || continue
+        gate_refutation_written_in_attempt "$seg" "$a" "$f" || continue ;;
       *) continue ;;
     esac
     [ "$(sed -n 's/^\*\*스킬\*\*: //p' "$f" 2>/dev/null | sed -n '1p')" = 'implement-unattended' ] || continue
@@ -54479,7 +54566,11 @@ EOF
     grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$f" || continue
     # `grep -F` without `-q`: it reads its whole input, so the writer is never
     # killed by SIGPIPE and `pipefail` cannot turn a match into a miss.
-    if gate_rows 'blocked' | grep -F "$f" >/dev/null; then continue; fi
+    if gate_rows 'blocked' | grep -F "$f" >/dev/null \
+       && [ "${f##*/}" != "$want" ] && ! gate_refutation_answer_opens "$seg" "$f"; then
+      continue
+    fi
+    if [ "${f##*/}" = "$want" ]; then printf '%s' "$f"; return 0; fi
     if [ "$hd" = "$seg#$a" ]; then pick=$f; else [ -n "$alt" ] || alt=$f; fi
   done
   [ -n "$pick" ] || pick=$alt
@@ -54495,7 +54586,9 @@ gate_refutation_next_of() {
   # element's `판정 불가` without failing the snapshot. The element closes once
   # the branch was carried out: a park makes the segment terminal, a fix
   # re-dispatch or a re-convergence is a later `stage-result` row, and a
-  # refusal or an undecidable branch is a `blocked` row naming the record.
+  # refusal or an undecidable branch is a `blocked` row naming the record. A
+  # person's open answer on such a record brings the element back for as long as
+  # that answer is unspent, since the shift carries the answer out through it.
   local seg=$1 rec bundle nx why item ahead
   rec=$(gate_refutation_record_of "$seg") || return 0
   bundle=$(gate_refutation_route "$seg" "$rec" "${DOC:-}" 2>/dev/null) || bundle=''
