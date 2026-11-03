@@ -56,9 +56,17 @@
 #              changed, valid — and bundle --lines prints the bundle text
 #   binding    equal to the driver's binding_digest on a document without a
 #              `## 시각 정합 기준` section, blind to that section where it is
-#   reuse      a 검토 통과 and a 발행됨 sidecar where all six conditions hold
-#              are reusable, each condition broken once is not, argument
-#              errors are 2, and no sidecar, record or screen byte moves
+#   reuse      a 검토 통과 and a 발행됨 sidecar where every condition holds
+#              are reusable, each condition broken once is not, a published
+#              artifact line and an older sidecar's whole-file hash still are,
+#              a changed tokens line, tokens.css, ban lift or source line is
+#              not, argument errors are 2, and no sidecar, record, screen,
+#              system.md or tokens.css byte moves
+#   system     the normalized digest of a file without a final newline equals
+#              a fixed constant, the artifact line is put back to unpublished,
+#              a file without one hashes whole, no system.md prints (없음);
+#              --owner is 0 for this document's sidecar whatever its record
+#              and 1 for each reason, and argument errors are 2
 #   grammar   the sidecar and ban-lift grammar examples of
 #              plugins/cc-cmds/skills/visual/references/ read as the helpers
 #              expect; the references must exist
@@ -538,15 +546,36 @@ rc=0; bash "$CHECK" binding > /dev/null 2>&1 || rc=$?
 [ "$rc" = 2 ] && pass "binding: 인자가 없으면 2" || fail "binding 인자 없음 = ${rc}"
 
 # --- reuse --------------------------------------------------------------------
-# Six conditions, each broken once against a sidecar where all hold, and no
-# byte of the sidecar, the record or a screen file moves in any case.
+# Each condition broken once against a sidecar where all hold, and no byte of
+# the sidecar, the record, a screen file, system.md or tokens.css moves in any
+# case.
 RSC="$RR/docs/visual/docs-reuse.md"
 REC="$RR/docs/pipeline-run/RUN2.interview.md"
+RSYS="$RR/docs/visual-system/system.md"
+RTOK="$RR/docs/visual-system/tokens.css"
 printf '# 파이프라인 런 인터뷰 기록 — RUN1\n\n원천 기록\n' > "$REC"
 printf '%s\n' '<!doctype html><p>home</p>' > "$RR/docs/visual/docs-reuse.home.html"
 printf '%s\n' '<!doctype html><p>list</p>' > "$RR/docs/visual/docs-reuse.list.html"
-printf '# 디자인 시스템 연결 — %s\n' "$RR" > "$RR/docs/visual-system/system.md"
+printf '%s\n' ':root { --c: #111; }' > "$RTOK"
 sha_of() { shasum -a 256 "$1" | awk '{print $1}'; }
+# write_system [<line>=<value>] — system.md as the generation stage writes it,
+# unpublished, with one line replaced when given (`art`, `src`, `tok`), or a
+# `**금지 해제**` line added (`lift`).
+write_system() {
+  local kv="${1:-}" k v art src tok
+  k=${kv%%=*}; v=${kv#*=}
+  art='(미발행)'; src='신규'; tok=$(sha_of "$RTOK")
+  case "$k" in art) art=$v ;; src) src=$v ;; tok) tok=$v ;; esac
+  {
+    printf '# 디자인 시스템 연결 — %s\n' "$RR"
+    echo "<!-- cc-visual-system v1; writer=visual-unattended; reader=visual; owner-doc=(없음); owner-repo=$RR; NOT a design doc; mechanism-local, never staged by a skill -->"
+    echo "**아티팩트**: $art"
+    echo "**출처**: $src"
+    echo "**tokens.css sha256**: $tok"
+    [ "$k" != lift ] || echo "**금지 해제**: $v"
+  } > "$RSYS"
+}
+write_system
 RB=$(bash "$CHECK" binding "$RDOC")
 # write_reuse <state> [<field>=<value>] — the sidecar with every field matching,
 # one field replaced when given (`head`, `owner`, `rec`, `bind`, `sys`, `home`).
@@ -555,7 +584,7 @@ write_reuse() {
   k=${kv%%=*}; v=${kv#*=}
   head='cc-visual v1'; owner='docs/reuse.md'
   rec="docs/pipeline-run/RUN1.interview.md (sha256 $(sha_of "$REC"))"
-  bind=$RB; sys='(없음)'; [ ! -f "$RR/docs/visual-system/system.md" ] || sys=$(sha_of "$RR/docs/visual-system/system.md"); home=$(sha_of "$RR/docs/visual/docs-reuse.home.html")
+  bind=$RB; sys=$(bash "$CHECK" system "$RDOC"); home=$(sha_of "$RR/docs/visual/docs-reuse.home.html")
   case "$k" in
     head) head=$v ;; owner) owner=$v ;; rec) rec=$v ;; bind) bind=$v ;; sys) sys=$v ;; home) home=$v ;;
   esac
@@ -578,7 +607,7 @@ write_reuse() {
     echo "### 금지 후보"
   } > "$RSC"
 }
-reuse_sums() { for f in "$RSC" "$REC" "$RR/docs/visual/docs-reuse.home.html" "$RR/docs/visual/docs-reuse.list.html"; do [ -f "$f" ] && sha_of "$f" || echo 없음; done; }
+reuse_sums() { for f in "$RSC" "$REC" "$RR/docs/visual/docs-reuse.home.html" "$RR/docs/visual/docs-reuse.list.html" "$RSYS" "$RTOK"; do [ -f "$f" ] && sha_of "$f" || echo 없음; done; }
 # reuse_case <label> <want rc> <want first line prefix> — runs reuse and checks
 # the answer and that no file it reads moved.
 reuse_case() {
@@ -619,6 +648,87 @@ mv "$RR/docs/visual-system/system.md" "$T/system.save"
 write_reuse 발행됨 'sys=(없음)'
 reuse_case "system.md 가 없고 (없음)이면 재사용" 0 "재사용 발행됨"
 mv "$T/system.save" "$RR/docs/visual-system/system.md"
+# Publishing moves only the artifact line, so the pinned value still holds.
+write_system; write_reuse 발행됨; write_system 'art=https://claude.ai/design/p/0000-ds'
+reuse_case "아티팩트 줄만 발행으로 바뀌면 재사용" 0 "재사용 발행됨"
+write_system; write_reuse 발행됨; write_system "tok=$(printf 'z' | shasum -a 256 | awk '{print $1}')"
+reuse_case "tokens.css sha256 줄이 바뀌면 재사용 불가" 1 "재사용 불가 — 디자인 시스템 sha256 이 다르다"
+write_system; write_reuse 발행됨; write_system 'lift=glassmorphism — 이 제품의 유리 카드는 정체성이다'
+reuse_case "금지 해제 줄이 더해지면 재사용 불가" 1 "재사용 불가 — 디자인 시스템 sha256 이 다르다"
+write_system; write_reuse 발행됨; write_system 'src=레포 기존'
+reuse_case "출처 줄이 바뀌면 재사용 불가" 1 "재사용 불가 — 디자인 시스템 sha256 이 다르다"
+write_system; write_reuse 발행됨
+cp "$RTOK" "$T/tokens.save"; printf '%s\n' ':root { --c: #222; }' > "$RTOK"
+reuse_case "tokens.css 바이트가 system.md 의 토큰 줄과 다르면 재사용 불가" 1 "재사용 불가 — tokens.css 가 system.md 의 tokens.css sha256 줄과 다르다"
+mv "$T/tokens.save" "$RTOK"
+write_system 'tok='; write_reuse 발행됨
+reuse_case "system.md 의 토큰 줄이 비면 재사용 불가" 1 "재사용 불가 — tokens.css 가 system.md 의 tokens.css sha256 줄과 다르다"
+# A sidecar pinned before the normalized digest carries the whole-file hash.
+write_system 'art=https://claude.ai/design/p/0000-ds'
+[ "$(sha_of "$RSYS")" != "$(bash "$CHECK" system "$RDOC")" ] \
+  || fail "reuse: 발행된 system.md 의 전체 해시와 정규화 다이제스트가 같아 다음 단언이 공허하다"
+write_reuse 발행됨 "sys=$(sha_of "$RSYS")"
+reuse_case "옛 사이드카의 값이 발행된 system.md 의 전체 해시면 재사용" 0 "재사용 발행됨"
+
+# --- system -------------------------------------------------------------------
+# The normalized digest reproduces the final newline or its absence, so the
+# value of a file without one is a fixed constant on BSD and GNU hosts alike.
+printf '# DS\n**아티팩트**: https://claude.ai/design/p/0000-ds' > "$RSYS"
+rc=0; out=$(bash "$CHECK" system "$RDOC" 2>&1) || rc=$?
+[ "$rc $out" = "0 17267f540e667a9bf5ca9248080dfddf5f0f8c39041ea8bfb59e63a7864476f2" ] \
+  && pass "system: 끝 개행 없는 system.md 의 정규화 다이제스트가 기대 상수와 같다" \
+  || fail "system 끝 개행 없음 = ${rc} ${out}"
+printf '# DS\n**아티팩트**: https://claude.ai/design/p/0000-ds\n' > "$RSYS"
+want=$(printf '# DS\n**아티팩트**: (미발행)\n' | shasum -a 256 | awk '{print $1}')
+rc=0; out=$(bash "$CHECK" system "$RDOC" 2>&1) || rc=$?
+[ "$rc $out" = "0 $want" ] && pass "system: 아티팩트 줄을 미발행으로 되돌린 문면의 sha256 을 찍는다" || fail "system = ${rc} ${out}, 기대 ${want}"
+printf '# DS\n' > "$RSYS"
+rc=0; out=$(bash "$CHECK" system "$RDOC" 2>&1) || rc=$?
+[ "$rc $out" = "0 $(sha_of "$RSYS")" ] && pass "system: 아티팩트 줄이 없으면 전체 해시와 같다" || fail "system 아티팩트 줄 없음 = ${rc} ${out}"
+mv "$RSYS" "$T/system.save"
+rc=0; out=$(bash "$CHECK" system "$RDOC" 2>&1) || rc=$?
+[ "$rc $out" = "0 (없음)" ] && pass "system: system.md 가 없으면 (없음)" || fail "system 없음 = ${rc} ${out}"
+mv "$T/system.save" "$RSYS"
+for args in "" "--owner" "$RDOC --frob" "$T/nope.md"; do
+  rc=0
+  # shellcheck disable=SC2086
+  bash "$CHECK" system $args > /dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] && pass "system: 인자 「${args}」 는 2" || fail "system 인자 「${args}」 = ${rc}"
+done
+# owner_case <label> <want rc> <want line> — runs system --owner, checks the
+# answer and that no file it reads moved.
+owner_case() {
+  local before after rc=0 out
+  before=$(reuse_sums)
+  out=$(bash "$CHECK" system "$RDOC" --owner 2>&1) || rc=$?
+  after=$(reuse_sums)
+  [ "$rc $out" = "$2 $3" ] && pass "system --owner: $1" || fail "system --owner $1 = ${rc} ${out}"
+  [ "$before" = "$after" ] && pass "system --owner: $1 — 읽는 파일이 그대로다" || fail "system --owner: $1 — 파일이 바뀌었다"
+}
+write_system; write_reuse 발행됨
+owner_case "이 문서 사이드카가 지금 값을 고정했으면 0" 0 "이 문서의 디자인 시스템"
+write_system 'art=https://claude.ai/design/p/0000-ds'
+owner_case "발행으로 아티팩트 줄만 바뀌어도 0" 0 "이 문서의 디자인 시스템"
+write_reuse 발행됨 "sys=$(sha_of "$RSYS")"
+owner_case "사이드카 값이 전체 해시여도 0" 0 "이 문서의 디자인 시스템"
+write_system
+write_reuse '로컬 초안' "rec=docs/pipeline-run/RUN9.interview.md (sha256 $(printf 'w' | shasum -a 256 | awk '{print $1}'))"
+owner_case "기록 sha256 이 다른 같은 문서의 사이드카여도 0" 0 "이 문서의 디자인 시스템"
+write_reuse 발행됨 'owner=docs/other.md'
+owner_case "다른 문서의 사이드카면 1" 1 "이 문서의 디자인 시스템 아님 — 사이드카의 owner-doc 이 이 문서가 아니다"
+write_reuse 발행됨 'head=cc-visual v2'
+owner_case "사이드카 머리가 cc-visual v1 이 아니면 1" 1 "이 문서의 디자인 시스템 아님 — 사이드카 머리가 cc-visual v1 이 아니다"
+write_reuse 발행됨 'sys=(없음)'
+owner_case "사이드카 값이 지금 다이제스트와 다르면 1" 1 "이 문서의 디자인 시스템 아님 — 디자인 시스템 다이제스트가 다르다"
+write_reuse 발행됨
+cp "$RTOK" "$T/tokens.save"; printf '%s\n' ':root { --c: #333; }' > "$RTOK"
+owner_case "토큰 줄이 tokens.css 와 다르면 1" 1 "이 문서의 디자인 시스템 아님 — tokens.css sha256 줄이 실제 tokens.css 와 다르다"
+mv "$T/tokens.save" "$RTOK"
+rm -f "$RSC"
+owner_case "사이드카가 없으면 1" 1 "이 문서의 디자인 시스템 아님 — 사이드카 없음"
+mv "$RSYS" "$T/system.save"
+owner_case "system.md 가 없으면 1" 1 "이 문서의 디자인 시스템 아님 — system.md 없음"
+mv "$T/system.save" "$RSYS"
 for args in "" "$RDOC" "--record $REC" "$RDOC --record" "$RDOC --record $T/nope.md"; do
   rc=0
   # shellcheck disable=SC2086

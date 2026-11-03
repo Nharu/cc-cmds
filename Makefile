@@ -497,10 +497,12 @@ ORCH_TESTS := \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
+	scripts/test-session-permission-notify.sh \
 	scripts/test-session-title-hook.sh \
 	scripts/test-session-status-snapshot.sh \
 	scripts/test-notify-focus.sh \
 	scripts/test-attention.sh \
+	scripts/test-attention-funnel.sh \
 	scripts/test-stage-rules-edit-hook.sh \
 	scripts/test-stage-rules.sh \
 	scripts/test-watch.sh \
@@ -520,6 +522,7 @@ ORCH_TESTS := \
 	scripts/test-design-path-report.sh \
 	scripts/test-measure-cycle-causes.sh \
 	scripts/test-run-issue-filing.sh \
+	scripts/test-waiting-decisions.sh \
 	scripts/test-visual-config.sh \
 	scripts/test-visual-check.sh \
 	scripts/test-visual-capture.sh \
