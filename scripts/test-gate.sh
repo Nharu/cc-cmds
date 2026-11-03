@@ -52430,10 +52430,12 @@ X83_SURF=읽기 x83_run xcrun xcodebuild test -scheme X -destination 'platform=i
 check "83x: 읽기로 신고한 xcrun xcodebuild test 는 park 한다" "$rc" "11"
 X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run xcrun xcodebuild build -scheme X -allowProvisioningUpdates
 check "83x: 런로컬 로 신고한 xcrun xcodebuild 프로비저닝 빌드는 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run xcrun /usr/bin/xcodebuild test -scheme X -destination 'platform=iOS,id=33333333-3333-3333-3333-333333333333'
+check "83x: 읽기로 신고한 xcrun 의 경로 피연산자 xcodebuild 도 park 한다" "$rc" "11"
 X83_SURF=읽기 x83_run find /dev/null -maxdepth 0 -exec adb shell ';'
 check "83x: 읽기로 신고한 find -exec 의 adb shell 은 park 한다" "$rc" "11"
 check "83x: 낮춰 신고한 미상 기기 형태는 대역에 닿지 않는다" \
-  "$(grep -c -e 'adb install -r' -e 'adb shell' -e 'devicectl' -e 'xctrace' -e 'xcrun xcodebuild' "$X83L")" "0"
+  "$(grep -c -e 'adb install -r' -e 'adb shell' -e 'devicectl' -e 'xctrace' -e 'xcrun xcodebuild' -e 'xcrun /usr/bin/xcodebuild' "$X83L")" "0"
 X83_SURF=읽기 x83_run xcrun --find clang
 check "83x: 읽기로 신고한 xcrun --find 는 여전히 열린다" "$rc|$(grep -c 'xcrun --find clang' "$X83L")" "0|1"
 
