@@ -41,12 +41,11 @@ gate-shards (26)
 
 샤드 수는 `Makefile` 의 `GATE_SHARDS` 하나가 정한다. matrix 는 `gate-plan` 이 그 값으로 만들고 `shard-coverage` 가 표와 대조하므로, 그 값을 바꾸면 이 목록만 같은 커밋에서 맞춘다.
 
-## 나머지 (11)
+## 나머지 (10)
 
 ```
 gate-plan           .github/workflows/gate.yml
 shard-coverage      .github/workflows/gate.yml
-census-ratchet      .github/workflows/gate.yml
 gate-report         .github/workflows/gate.yml
 gate-isolation      .github/workflows/gate.yml
 lint-and-readme     .github/workflows/lint.yml
@@ -61,7 +60,7 @@ lint-and-test-macos .github/workflows/notify-macos.yml
 
 ## 이 목록을 그대로 required 로 걸기 전에 읽을 것
 
-**세 워크플로 전부 `pull_request` 에 경로 필터를 달고 있어 「항상 도는」 잡은 하나도 없다.** GitHub 은 경로 필터로 건너뛴 워크플로에 체크 런을 만들지 않고, required 로 지정된 체크가 없으면 그 PR 을 무기한 대기로 둔다. 따라서 위 37개를 그대로 required 로 걸면 **그 경로를 건드리지 않는 PR 은 영원히 머지할 수 없다.**
+**세 워크플로 전부 `pull_request` 에 경로 필터를 달고 있어 「항상 도는」 잡은 하나도 없다.** GitHub 은 경로 필터로 건너뛴 워크플로에 체크 런을 만들지 않고, required 로 지정된 체크가 없으면 그 PR 을 무기한 대기로 둔다. 따라서 위 36개를 그대로 required 로 걸면 **그 경로를 건드리지 않는 PR 은 영원히 머지할 수 없다.**
 
 거는 쪽이 고를 수 있는 것은 둘이다.
 

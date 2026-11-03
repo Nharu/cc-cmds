@@ -365,7 +365,9 @@
 # `apply-settle-confirm` carries out a person's `사람 확인 정산` answer at the
 # `들여온 적용 정산` site, on a segment brought in from an earlier run as
 # `머지됨 적용=미정산`: one `완료 적용=정산` row and nothing else, refused
-# while either earlier run still shows a live process.
+# while either earlier run still shows a live process. Before that site, the
+# same segment is measured once by `act --kind apply-settle` (entry d), with
+# the earlier run's ledger as evidence.
 #   gate.sh act --kind shift-halt --target <alias> --segment <id> --site <자리> ... \\
 #               -- 질문=<사람에게 물을 문면> 관측=<교대가 본 것> \\
 #                  ['추천=<자리 표의 선택지 라벨>' '추천 근거=<종류>: <인용> / …']
@@ -16284,8 +16286,9 @@ gate_snapshot() {
   printf '  ],\n'
   # THE APPLIES, beside the stages and kept out of `H` for the same reason: a
   # supervisor coming alive or ending moves no progress the digest hashes. The
-  # shift waits on `live_applies`, settles `apply_unsettled` and stops at the
-  # `들여온 적용 정산` site for `apply_imported`.
+  # shift waits on `live_applies`, settles `apply_unsettled` (an imported
+  # segment entry d may measure included) and stops at the `들여온 적용 정산`
+  # site for `apply_imported`.
   local apl
   apl=$(gate_snapshot_apply_lists)
   printf '  "live_applies": %s,\n' "$(gate_snapshot_apply_array "$apl" live_applies)"
@@ -16478,13 +16481,20 @@ gate_snapshot_apply_lists() {
   #                    `적용 준비` or `park 적용=불명` — with no live supervisor,
   #                    and, when the last row already carries a verdict, a
   #                    `재시도` answer after it: the segments the shift takes
-  #                    `act --kind apply-settle` on. An imported segment is
-  #                    never here.
-  #   apply_imported   the last row is `머지됨 적용=미정산`, and no stop at the
+  #                    `act --kind apply-settle` on. An imported segment whose
+  #                    last row is `머지됨 적용=미정산` is here too when entry d
+  #                    may measure it now (`gate_apply_imported_open`: no
+  #                    `들여온 정산` row after its last segment row, or a
+  #                    `재시도` answer at the `들여온 적용 정산` site after the
+  #                    last such row) and no stop stands as below.
+  #   apply_imported   the last row is `머지됨 적용=미정산`, no stop at the
   #                    `들여온 적용 정산` site stands after it — unanswered, or
   #                    answered with something other than `재시도` and not yet
-  #                    carried out by a later segment row: the segments the
-  #                    shift stops at that site.
+  #                    carried out by a later segment row — and entry d already
+  #                    measured it or its evidence did not stand, with no
+  #                    `재시도` answer after that verdict: the segments the
+  #                    shift stops at that site. A segment with a stop standing
+  #                    is in neither list.
   local seg st ap lr sl vrow live="" uns="" imp="" c ln cone rec ans opt stand
   for seg in $(gate_segment_ids); do
     [ -n "$seg" ] || continue
@@ -16519,7 +16529,12 @@ gate_snapshot_apply_lists() {
 $( { grep -nE '^- `blocked` ' "$LEDGER" 2>/dev/null || true; } | gate_rows_field_eq '스코프' 'cone' \
      | gate_rows_field_eq '앵커 세그먼트' "$seg" | gate_rows_field_eq '자리' '들여온 적용 정산')
 EOF
-        [ -n "$stand" ] || imp="$imp${imp:+ }$seg" ;;
+        [ -z "$stand" ] || continue
+        if gate_apply_imported_open "$seg"; then
+          uns="$uns${uns:+ }$seg"
+        else
+          imp="$imp${imp:+ }$seg"
+        fi ;;
     esac
   done
   printf 'live_applies\t%s\napply_unsettled\t%s\napply_imported\t%s\n' "$live" "$uns" "$imp"
@@ -24148,8 +24163,10 @@ gate_shift_halt_site_table() {
   # already been parked by the apply act itself, with its own `blocked` row,
   # and the apply's first precondition refuses every retry of a parked segment.
   # An apply whose outcome is unknown stops at `적용 정산`, and an apply an
-  # earlier run left unsettled at `들여온 적용 정산`: their `재실행` and
-  # `사람 확인 정산` are carried out on a person's answer alone.
+  # earlier run left unsettled at `들여온 적용 정산` once the settlement's entry
+  # d measured it without finding it applied, or its evidence did not stand:
+  # their `재실행` and `사람 확인 정산` are carried out on a person's answer
+  # alone, and a `재시도` at either site lets the next shift measure once more.
   cat <<'EOF'
 적용 전제 거부|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|사람이 적용 전제를 갖춘 뒤, 다음 교대가 이 세그먼트의 적용을 다시 시도한다
 병합 거절|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 거절 원인을 다시 읽고 이 세그먼트의 병합을 다시 시도한다
@@ -24160,7 +24177,7 @@ push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남�
 종료 조건 11 판독 불가|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 이 세그먼트의 가지 끝을 다시 읽고 종료 조건 11 판정을 다시 시도한다
 대상 훅 거절|없음|대상 저장소의 훅 규칙이 그 행위를 왜 막는지, 규칙과 행위 중 어느 쪽을 바꿀지는 그 저장소를 맡은 사람만 정한다|사람이 대상 저장소의 훅이나 그 행위를 고친 뒤, 이 답이 거절 조건을 옮기므로 다음 교대가 이 세그먼트의 막힌 행위를 다시 시도한다
 적용 정산|없음|대상 환경이 지금 어떤 상태인지, 다시 실행해도 되는지는 그 환경을 본 사람만 안다|사람이 대상 상태를 확인하거나 조치한 뒤, 다음 교대가 정산 프로브를 다시 잰다|재실행:사람이 승인하면 다음 교대가 동결된 적용 명령을 고정 커밋에 새로 고정한 워크트리에서 한 번 실행하고 사전·사후 프로브로 판정한다;사람 확인 정산:사람이 대상에서 적용 결과를 확인했으므로 다음 교대가 이 세그먼트를 완료로 정산한다
-들여온 적용 정산|없음|이전 런이 머지한 이 세그먼트의 적용이 대상 환경에 들어갔는지는 그 환경을 본 사람만 안다. 이 런에는 이 세그먼트의 리뷰 기록이 없어 런이 스스로 재지 않는다|사람이 대상을 확인할 시간이 더 필요하다. 다음 교대가 같은 자리를 다시 연다|사람 확인 정산:사람이 대상에서 이전 런의 적용 결과를 확인했으므로 다음 교대가 이 세그먼트를 완료로 정산한다
+들여온 적용 정산|없음|이전 런이 머지한 이 세그먼트의 적용을 게이트가 이전 런 원장을 증거로 재었으나 적용됨이 아니었거나, 그 증거가 서지 않았다. 대상 환경에 들어갔는지는 그 환경을 본 사람만 안다|사람이 대상 상태를 확인하거나 조치한 뒤, 다음 교대가 정산 프로브를 다시 잰다|사람 확인 정산:사람이 대상에서 이전 런의 적용 결과를 확인했으므로 다음 교대가 이 세그먼트를 완료로 정산한다
 종료 절 근거|없음|그 절이 요구하는 실행과 그 결과는 이 런의 읽기로 만들 수 없고, 실행할지는 사람이 정한다|-
 master 수리 불가|없음|수리 런을 띄울 수 없게 한 원인(끄는 스위치·렌더·적재)을 고칠지, 사람이 직접 고칠지는 사람만 정한다|사람이 원인을 고치거나 고침을 master 에 넣은 뒤, 다음 교대가 이 세그먼트의 CI 를 다시 대조한다
 EOF
@@ -36077,6 +36094,18 @@ EOF
         warn "\`추천 근거\` without \`추천\` grounds nothing"
         return "$GATE_EXIT_VOCAB"
       fi
+      # THE GATE'S MEASUREMENT RIDES THE IMPORTED SETTLEMENT'S QUESTION. At
+      # `들여온 적용 정산` the latest `들여온 정산` row after the segment's last
+      # segment row is copied, as one line, to the end of the question and of
+      # the observation, and to the front of the cone row's `근거`, whole: the
+      # clipping that fits the row under the cap applies to the shift's
+      # observation behind it. No such row, nothing is added.
+      local sverd="" svrow
+      if [ "$ssite" = "들여온 적용 정산" ]; then
+        svrow=$(gate_apply_imported_verdict_row "$seg")
+        [ -z "$svrow" ] \
+          || sverd="게이트 정산 판정: $(gate_row_field "${svrow#*:}" '정산 판정') — $(gate_row_field "${svrow#*:}" '정산 근거')"
+      fi
       sdir=$(gate_shift_halt_dir) || {
         warn "this run's halt/shift is not a real directory at $RUN_DIR/halt/shift — the record is not written"
         return "$GATE_EXIT_RULE"; }
@@ -36102,7 +36131,7 @@ EOF
         printf '**스킬**: autopilot-router-shift\n'
         printf '**스텝**: 교대 정지 — %s\n' "$ssite"
         printf '**분류**: gate-unanswerable\n'
-        printf '**질문 문면**: %s\n' "$(printf '%s' "$sq" | tr '\n\r' '  ')"
+        printf '**질문 문면**: %s%s\n' "$(printf '%s' "$sq" | tr '\n\r' '  ')" "${sverd:+ $sverd}"
         printf '**선택지**:\n%s\n' "$sopts"
         if [ -n "$srec" ]; then
           printf '**추천**: `%s` — 추천 근거의 인용이 이 선택지를 정한다\n' "$srec"
@@ -36113,7 +36142,7 @@ EOF
         fi
         printf '**선택지 리스크**: %s\n' "$(gate_shift_halt_risks "$ssite")"
         printf '**하네스 오류**: (없음)\n'
-        printf '**관측 상세**: %s\n' "$(printf '%s' "$sobs" | tr '\n\r' '  ')"
+        printf '**관측 상세**: %s%s\n' "$(printf '%s' "$sobs" | tr '\n\r' '  ')" "${sverd:+ $sverd}"
         printf '**재호출 명령**: (없음)\n'
         printf '**후속**: 보류 큐\n'
         printf '<!-- /cc-pipeline-halt v1 -->\n'
@@ -36131,7 +36160,7 @@ EOF
       sord=$(gate_shift_self_ordinal)
       sexp=$(printf '%*s' "$GATE_CONE_LIST_MAX" '' | tr ' ' 'x')
       while [ "$sw" -ge 40 ]; do
-        sline=$(gate_row_safe "$sobs" "$sw")
+        sline="${sverd:+$sverd · }$(gate_row_safe "$sobs" "$sw")"
         slen=$(gate_row_projected_bytes 'blocked' "대상=$alias" '스코프=cone' '원인=막힘' \
           "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
           "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} \
@@ -38674,7 +38703,9 @@ gate_segment_apply_state() {
   # no command, a cutpoint below `배포` or a handover already written is the
   # segment's end. `미정산`: the last row is the `머지됨 적용=미정산` an import
   # wrote — a merge whose apply an earlier run started and never settled; this
-  # run neither applies nor measures it, and a person answers it. Two readers
+  # run does not apply it again: the settlement's entry d measures it once with
+  # the earlier run's ledger as evidence, and a person answers what that
+  # measurement does not settle. Two readers
   # only: the apply preconditions and the snapshot. The alias is taken for the
   # signature; the answer reads the ledger and the frozen apply fields alone.
   #
@@ -38707,6 +38738,31 @@ gate_apply_refuse() {
   warn "적용 행위 전제 $1 불충족 — $2"
   warn "적용 워크트리도 원장 행도 남기지 않았습니다"
   return "$GATE_EXIT_RULE"
+}
+
+GATE_APPLY_OWED_WHY=""
+gate_apply_owed_check() {
+  # gate_apply_owed_check <alias> <segment> — the apply's precondition 5, read
+  # against this run's frozen design document and manifest: an apply command,
+  # its actor, the probe and the cutpoint, in that order. 0 when all four
+  # stand, with GATE_APPLY_COMMAND and GATE_APPLY_PROBE set; 2 when the actor
+  # is a person, with GATE_APPLY_COMMAND set (the apply entry hands over, the
+  # settlement's entry d does not stand); 1 otherwise. GATE_APPLY_OWED_WHY
+  # carries the reason on 1 and 2. The results are globals, so call it in
+  # this shell. The apply entry and the settlement's entry d both read it, so
+  # what entry d checks in place of an `적용 준비` row is the same code.
+  local alias="$1" seg="$2" actor cut
+  GATE_APPLY_OWED_WHY=""; GATE_APPLY_COMMAND=""; GATE_APPLY_PROBE=""
+  GATE_APPLY_COMMAND=$(gate_apply_value "$seg" '적용 명령')
+  [ -n "$GATE_APPLY_COMMAND" ] || { GATE_APPLY_OWED_WHY="세그먼트 ${seg} 에 적용 명령 이 없습니다"; return 1; }
+  actor=$(gate_apply_value "$seg" '적용 주체')
+  [ "$actor" != "사람" ] || { GATE_APPLY_OWED_WHY="세그먼트 ${seg} 의 적용 주체가 사람 입니다"; return 2; }
+  [ "$actor" = "파이프라인" ] || { GATE_APPLY_OWED_WHY="세그먼트 ${seg} 의 적용 주체가 파이프라인 이 아닙니다 (${actor:-(없음)})"; return 1; }
+  GATE_APPLY_PROBE=$(apply_probe_cmd "$seg" 2>/dev/null || true)
+  [ -n "$GATE_APPLY_PROBE" ] || { GATE_APPLY_OWED_WHY="세그먼트 ${seg} 에 적용 프로브 가 없습니다"; return 1; }
+  cut=$(gate_segment_cutpoint "$alias" "$seg")
+  [ "$cut" = "배포" ] || { GATE_APPLY_OWED_WHY="세그먼트 ${seg} 의 절단점이 배포 가 아닙니다 (${cut:-(없음)})"; return 1; }
+  return 0
 }
 
 gate_apply_preconditions() {
@@ -38891,11 +38947,11 @@ gate_apply_preconditions() {
   ( cd "$root" && git merge-base --is-ancestor "$m" "refs/remotes/origin/$base" ) 2>/dev/null \
     || { gate_apply_refuse 4 "머지 커밋 ${m} 이 로컬 origin/${base} 의 조상이 아닙니다 — 게이트는 fetch 하지 않습니다"; return $?; }
 
-  # 5 — a command, then who runs it, then the probe and the rung.
-  GATE_APPLY_COMMAND=$(gate_apply_value "$seg" '적용 명령')
-  [ -n "$GATE_APPLY_COMMAND" ] || { gate_apply_refuse 5 "세그먼트 ${seg} 에 적용 명령 이 없습니다"; return $?; }
-  actor=$(gate_apply_value "$seg" '적용 주체')
-  if [ "$actor" = "사람" ]; then
+  # 5 — a command, then who runs it, then the probe and the rung, read by the
+  # helper the settlement's entry d reads too.
+  local orc=0
+  gate_apply_owed_check "$alias" "$seg" || orc=$?
+  if [ "$orc" = 2 ]; then
     # A HANDOVER, NOT A REFUSAL. The command travels to the morning as a string
     # and nothing runs, which is what the driver's S9 does for the same actor.
     GATE_APPLY_HANDOVER=1
@@ -38905,11 +38961,7 @@ gate_apply_preconditions() {
     log "적용 인계 — $seg (적용 주체가 사람)"
     return 0
   fi
-  [ "$actor" = "파이프라인" ] || { gate_apply_refuse 5 "세그먼트 ${seg} 의 적용 주체가 파이프라인 이 아닙니다 (${actor:-(없음)})"; return $?; }
-  GATE_APPLY_PROBE=$(apply_probe_cmd "$seg" 2>/dev/null || true)
-  [ -n "$GATE_APPLY_PROBE" ] || { gate_apply_refuse 5 "세그먼트 ${seg} 에 적용 프로브 가 없습니다"; return $?; }
-  cut=$(gate_segment_cutpoint "$alias" "$seg")
-  [ "$cut" = "배포" ] || { gate_apply_refuse 5 "세그먼트 ${seg} 의 절단점이 배포 가 아닙니다 (${cut:-(없음)})"; return $?; }
+  [ "$orc" = 0 ] || { gate_apply_refuse 5 "$GATE_APPLY_OWED_WHY"; return $?; }
   # 5's refusals of a missing command and of a cutpoint other than `배포` are
   # no longer reached past the owed check above; they stay as the last net
   # should the two readings ever disagree.
@@ -39311,10 +39363,15 @@ gate_apply_supervise() {
 # ends the segment `완료 적용=정산`; anything else parks it `적용=불명` with the
 # verdict on the row, and a person answers at the `적용 정산` site.
 #
-# ONLY THIS RUN'S REVIEW RECORD OPENS IT. The probe runs at the apply's own
-# rung under the same catalog rule the apply passed, with the subject head the
-# apply proved; a segment brought in from an earlier run has no such record
-# here and is settled by a person's answer alone (`apply-settle-confirm`).
+# A REVIEW RECORD OPENS IT. The probe runs at the apply's own rung under the
+# same catalog rule the apply passed, with the subject head the apply proved.
+# A segment brought in from an earlier run as `머지됨 적용=미정산` has no
+# review record in this run: entry d reads the ledger of the run that did the
+# work as evidence, measures once per run and per `재시도` answer, and writes
+# a `들여온 정산` row instead of a park when the probe does not find it applied
+# or the evidence does not stand. A person then answers at the
+# `들여온 적용 정산` site, and `apply-settle-confirm` records a person's
+# settlement as before.
 # ---------------------------------------------------------------------------
 
 gate_apply_settle_refuse() {
@@ -39387,17 +39444,19 @@ gate_apply_answer_check() {
 }
 
 gate_apply_retry_answered() {
-  # gate_apply_retry_answered <segment> <after line> — a `재시도` answer to a
-  # record of the `적용 정산` site, on a ledger line after <after line>. Anyone
-  # may give it: it only lets the settlement measure once more.
-  local r ln row cone
+  # gate_apply_retry_answered <segment> <after line> [<자리>] — a `재시도` answer
+  # to a record of the <자리> site (`적용 정산` when omitted), on a ledger line
+  # after <after line>. Anyone may give it: it only lets the settlement measure
+  # once more. Entry b reads the default site; entry d and the snapshot read
+  # `들여온 적용 정산`.
+  local r ln row cone site="${3:-적용 정산}"
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     ln=${r%%:*}; row=${r#*:}
     [ "$ln" -gt "$2" ] || continue
     [ "$(gate_row_field "$row" '선택지')" = "재시도" ] || continue
     cone=$(gate_shift_halt_row_of "$(gate_row_field "$row" '중단 기록')")
-    [ -n "$cone" ] && [ "$(gate_row_field "${cone#*:}" '자리')" = "적용 정산" ] && return 0
+    [ -n "$cone" ] && [ "$(gate_row_field "${cone#*:}" '자리')" = "$site" ] && return 0
   done <<EOF
 $( { grep -nE '^- `중단 답` ' "$LEDGER" 2>/dev/null || true; } | gate_rows_field_eq '세그먼트' "$1")
 EOF
@@ -39478,6 +39537,138 @@ EOF
   return 1
 }
 
+gate_apply_imported_verdict_row() {
+  # gate_apply_imported_verdict_row <segment> — the last `들여온 정산` row of
+  # <segment> written after its last `segment` row, `<line>:` prefixed, or
+  # nothing. Entry d's verdict never moves the segment row, so a row before
+  # the last segment row belongs to an earlier state of the segment.
+  local sl
+  sl=$(gate_apply_seg_rows_n "$1" | tail -1 | cut -d: -f1)
+  { grep -nE '^- `들여온 정산` ' "$LEDGER" 2>/dev/null || true; } | gate_rows_field_eq '세그먼트' "$1" \
+    | awk -F: -v s="${sl:-0}" '($1 + 0) > (s + 0) { r = $0 } END { if (r != "") print r }'
+}
+
+gate_apply_imported_open() {
+  # gate_apply_imported_open <segment> — 0 when entry d may measure the imported
+  # segment now: no `들여온 정산` row stands after its last `segment` row, or a
+  # `재시도` answer at the `들여온 적용 정산` site follows the last such row. ONE
+  # MEASUREMENT PER RUN AND PER ANSWER, counted as verdict rows, so the ledger
+  # alone decides it. Entry d and the snapshot both read this, so the act and
+  # the list the shift reads cannot disagree on whether a measurement is due.
+  local v
+  v=$(gate_apply_imported_verdict_row "$1")
+  [ -n "$v" ] || return 0
+  gate_apply_retry_answered "$1" "${v%%:*}" '들여온 적용 정산'
+}
+
+GATE_SETTLE_EVIDENCE_CYCLE=""; GATE_SETTLE_EVIDENCE_RUN=""
+gate_apply_imported_evidence() {
+  # gate_apply_imported_evidence <alias> <segment> — entry d's evidence: the
+  # ledger of the run the imported row's `출처` names, read and never written.
+  # 0 when all of these stand, with GATE_SETTLE_EVIDENCE_CYCLE (that ledger's
+  # last `cycle` row of the segment), GATE_SETTLE_EVIDENCE_RUN and
+  # GATE_SETTLE_SUBJECT set; 1 otherwise, with the reason, unprefixed, in
+  # GATE_SETTLE_FAIL:
+  #   * `출처` is a run id and `<that run id>.md` sits beside this ledger;
+  #   * its hash chain is intact (`gate_chain_verify <ledger> <run id>`);
+  #   * the segment's last `cycle` row there reads P0=0 and P1=0 exactly — a
+  #     dismissal or carry-over is not read — and names `리뷰 HEAD` and a
+  #     `리포트 경로` whose report resolves the way the merge rule resolves it
+  #     and carries a `**발견 요약**` line;
+  #   * the segment's last `머지됨` row there reads `머지 대조=충족`, its
+  #     `최종 사이클` equals that cycle (a merge-first segment has none and is
+  #     not evidence), and its `머지 커밋` equals the imported row's;
+  #   * the subject proof stands against that ledger.
+  # It runs whatever this run's review policy index is: nothing on this run's
+  # side turns it off. LEDGER is rebound locally for the reads of the evidence
+  # ledger, so every reader called below, the subject proof included, reads
+  # that file; the results are globals, so call it in this shell.
+  local alias="$1" seg="$2" org imerge eled crow p0 p1 rep rep_abs mrow fc
+  GATE_SETTLE_EVIDENCE_CYCLE=""; GATE_SETTLE_EVIDENCE_RUN=""; GATE_SETTLE_FAIL=""; GATE_SETTLE_SUBJECT=""
+  org=$(gate_segment_field "$seg" '출처')
+  imerge=$(gate_segment_field "$seg" '머지 커밋')
+  if ! [[ "$org" =~ ^[0-9]{8}-[0-9a-f]{8}$ ]]; then
+    GATE_SETTLE_FAIL="들여온 행의 출처(${org:-없음})가 런 id 꼴이 아니라 증거 원장을 정할 수 없다"; return 1
+  fi
+  eled="$(dirname "$LEDGER")/${org}.md"
+  [ -f "$eled" ] || { GATE_SETTLE_FAIL="증거 원장 ${org}.md 가 없다"; return 1; }
+  gate_chain_verify "$eled" "$org" >/dev/null 2>&1 \
+    || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 해시 연쇄가 온전하지 않다"; return 1; }
+  local LEDGER="$eled"
+  crow=$(gate_segment_last_cycle_row "$seg")
+  [ -n "$crow" ] || { GATE_SETTLE_FAIL="증거 원장 ${org} 에 세그먼트 ${seg} 의 cycle 행이 없다"; return 1; }
+  p0=$(gate_row_field "$crow" 'P0'); p1=$(gate_row_field "$crow" 'P1')
+  { [ "$p0" = "0" ] && [ "$p1" = "0" ]; } \
+    || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 마지막 cycle 행이 P0=${p0:-?} P1=${p1:-?} 이다"; return 1; }
+  [ -n "$(gate_row_field "$crow" '리뷰 HEAD')" ] \
+    || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 마지막 cycle 행에 리뷰 HEAD 가 없다"; return 1; }
+  rep=$(gate_row_field "$crow" '리포트 경로')
+  rep_abs=$(gate_report_abs "$rep")
+  { [ -n "$rep_abs" ] && [ -f "$rep_abs" ]; } \
+    || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 마지막 cycle 행의 리포트가 없다: ${rep:-(없음)}"; return 1; }
+  grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$rep_abs" \
+    || { GATE_SETTLE_FAIL="증거 리포트에 발견 요약 이 없다: ${rep}"; return 1; }
+  mrow=$(gate_apply_seg_rows_n "$seg" | cut -d: -f2- | gate_rows_field_eq '상태' '머지됨' | tail -1)
+  [ -n "$mrow" ] || { GATE_SETTLE_FAIL="증거 원장 ${org} 에 세그먼트 ${seg} 의 머지됨 행이 없다"; return 1; }
+  [ "$(gate_row_field "$mrow" '머지 대조')" = "충족" ] \
+    || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 머지됨 행이 머지 대조=충족 이 아니다 ($(gate_row_field "$mrow" '머지 대조'))"; return 1; }
+  fc=$(gate_row_field "$mrow" '최종 사이클')
+  { [ -n "$fc" ] && [ "$fc" = "$(gate_row_field "$crow" '사이클')" ]; } \
+    || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 머지됨 행의 최종 사이클(${fc:-없음})이 마지막 cycle 행의 사이클($(gate_row_field "$crow" '사이클'))과 같지 않다 — 머지 전에 끝난 리뷰가 아니다"; return 1; }
+  [ -n "$imerge" ] && [ "$(gate_row_field "$mrow" '머지 커밋')" = "$imerge" ] \
+    || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 머지 커밋($(gate_row_field "$mrow" '머지 커밋'))이 들여온 행의 머지 커밋(${imerge:-없음})과 같지 않다"; return 1; }
+  gate_apply_subject_proof "$alias" "$seg" "$imerge" \
+    || { GATE_SETTLE_FAIL="증거 원장 ${org} 로 돌린 리뷰 HEAD 증명 실패 — ${GATE_APPLY_PROOF_WHY}"; return 1; }
+  GATE_SETTLE_SUBJECT=$GATE_APPLY_PROOF_HEAD
+  GATE_SETTLE_EVIDENCE_CYCLE=$crow
+  GATE_SETTLE_EVIDENCE_RUN=$org
+  return 0
+}
+
+gate_apply_settle_entry_d() {
+  # gate_apply_settle_entry_d <alias> <segment> — entry d of the settlement, for
+  # a segment imported `머지됨 적용=미정산`, in order, the first failure
+  # winning: (가) one measurement per run and per answer, refused with no row
+  # otherwise; (나) both earlier runs quiet, refused with no row otherwise;
+  # (다) the evidence ledger (`gate_apply_imported_evidence`), run whatever this
+  # run's review policy index is; (다-2) the apply's precondition 5 against this
+  # run's design document and manifest, with the code the apply entry runs,
+  # standing in for the `적용 준비` row entry d does not require; (라) the probe;
+  # (마) the subject the evidence proved. A failure of (다) or (다-2) sets
+  # GATE_SETTLE_VERDICT=`검증 불성립`, one of (라) `측정 실패`, and
+  # GATE_SETTLE_FAIL the unprefixed reason; the caller then writes a
+  # `들여온 정산` row without running the probe. Everything here only reads, so
+  # `plan` spends no measurement.
+  local alias="$1" seg="$2" v
+  if ! gate_apply_imported_open "$seg"; then
+    v=$(gate_apply_imported_verdict_row "$seg")
+    gate_apply_settle_refuse "세그먼트 ${seg} 는 이미 들여온 정산 판정($(gate_row_field "${v#*:}" '정산 판정'))을 남겼습니다 — 들여온 적용 정산 자리의 재시도 답 뒤에만 다시 잽니다"
+    return $?
+  fi
+  if ! gate_apply_earlier_runs_quiet "$seg" "$(gate_segment_field "$seg" '이전 런')" "$(gate_segment_field "$seg" '출처')"; then
+    gate_apply_settle_refuse "이전 런이 아직 살아 있다: ${GATE_APPLY_LIVE_RUN} (스테이지·릴레이·적용 감독자·교대 중 하나가 살아 있습니다) — 측정 기회를 쓰지 않고 다음 교대가 다시 엽니다"
+    return $?
+  fi
+  GATE_SETTLE_ENTRY=d
+  GATE_SETTLE_MERGE=$(gate_segment_field "$seg" '머지 커밋')
+  GATE_SETTLE_WT=$(gate_segment_field "$seg" '워크트리')
+  if ! gate_apply_imported_evidence "$alias" "$seg"; then
+    GATE_SETTLE_VERDICT='검증 불성립'
+    return 0
+  fi
+  if ! gate_apply_owed_check "$alias" "$seg"; then
+    GATE_SETTLE_VERDICT='검증 불성립'; GATE_SETTLE_SUBJECT=""
+    GATE_SETTLE_FAIL="적용 전제 불성립 — ${GATE_APPLY_OWED_WHY}"
+    return 0
+  fi
+  GATE_SETTLE_PROBE=$GATE_APPLY_PROBE
+  if [ -z "$GATE_SETTLE_PROBE" ]; then
+    GATE_SETTLE_VERDICT='측정 실패'; GATE_SETTLE_SUBJECT=""
+    GATE_SETTLE_FAIL="적용 프로브를 매니페스트에서 읽지 못했다"
+  fi
+  return 0
+}
+
 gate_apply_settle_preconditions() {
   # gate_apply_settle_preconditions <verb> <alias> <segment> — the entry, the
   # liveness checks and the pin, before the catalog. On success sets
@@ -39485,21 +39676,31 @@ gate_apply_settle_preconditions() {
   # recorded worktree every settlement row carries), GATE_SETTLE_PROBE and
   # GATE_SETTLE_SUBJECT; GATE_SETTLE_HUMAN holds the answer line of a person's
   # `사람 확인 정산`, and GATE_SETTLE_FAIL a reason the measurement cannot be
-  # made at all, which the caller records as `측정 실패`.
+  # made at all, which the caller records as GATE_SETTLE_VERDICT — empty on
+  # entries a and b, where it is written as `측정 실패`. An imported
+  # `머지됨 적용=미정산` segment goes to entry d (`gate_apply_settle_entry_d`).
   local verb="$1" alias="$2" seg="$3" repo ralias st ap prow vrow vline d mt now
   GATE_SETTLE_ENTRY=""; GATE_SETTLE_MERGE=""; GATE_SETTLE_WT=""; GATE_SETTLE_PROBE=""
-  GATE_SETTLE_SUBJECT=""; GATE_SETTLE_HUMAN=""; GATE_SETTLE_FAIL=""
+  GATE_SETTLE_SUBJECT=""; GATE_SETTLE_HUMAN=""; GATE_SETTLE_FAIL=""; GATE_SETTLE_VERDICT=""
+  GATE_SETTLE_EVIDENCE_CYCLE=""; GATE_SETTLE_EVIDENCE_RUN=""
   repo=$(gate_segment_field "$seg" '레포' | tr -d '`')
   if [ -n "$repo" ]; then
     ralias=$(alias_for_slug "$repo" 2>/dev/null || true)
     [ "$ralias" = "$alias" ] || { gate_apply_settle_refuse "세그먼트 ${seg} 의 레포 ${repo} 는 대상 ${ralias:-(선언 안 됨)} 이고 --target ${alias} 가 아닙니다"; return $?; }
   fi
-  if gate_segment_imported "$seg"; then
-    gate_apply_settle_refuse "세그먼트 ${seg} 는 이전 런에서 들여온 세그먼트입니다 — 이 런에는 그 리뷰 기록이 없어 게이트가 재지 않고, 사람의 답만 act --kind apply-settle-confirm 으로 기록합니다"
-    return $?
-  fi
   st=$(gate_segment_field "$seg" '상태')
   ap=$(gate_segment_field "$seg" '적용')
+  if gate_segment_imported "$seg"; then
+    # ENTRY d: an imported `머지됨 적용=미정산` with no answer attached is
+    # measured once against the earlier run's ledger as evidence. Every other
+    # imported state, and an answered request, stays refused: a person settles
+    # those with act --kind apply-settle-confirm.
+    { [ "$st" = "머지됨" ] && [ "$ap" = "미정산" ] && [ -z "${GATE_SETTLE_ANSWER:-}" ]; } || {
+      gate_apply_settle_refuse "세그먼트 ${seg} 는 이전 런에서 들여온 세그먼트입니다 — 게이트가 재는 것은 중단 답 없이 부른 머지됨 적용=미정산 뿐이고, 그 밖은 사람의 답만 act --kind apply-settle-confirm 으로 기록합니다 (상태=${st:-행 없음} 적용=${ap:-없음})"
+      return $?; }
+    gate_apply_settle_entry_d "$alias" "$seg"
+    return $?
+  fi
   prow=$(gate_apply_prep_row "$seg")
   vrow=$(gate_apply_verdict_row "$seg")
   vline=${vrow%%:*}
@@ -39585,8 +39786,20 @@ gate_apply_settle_preconditions() {
 gate_apply_settle_park() {
   # gate_apply_settle_park <alias> <segment> <필요|측정 실패> <근거> — the
   # settlement's park: `적용=불명` with the verdict, and the run-scope block
-  # written when none is open.
+  # written when none is open. On entry d it writes a `들여온 정산` row
+  # instead, and neither of those: the segment's last row stays the imported
+  # `머지됨 적용=미정산`, so the stop site, the snapshot and
+  # `apply-settle-confirm` read it as before. Every caller of this writer — the
+  # verdict, an unreadable or mismatched code row, a pin that failed, perl
+  # missing, the time limit — so becomes a verdict row on entry d.
   local alias="$1" seg="$2" v="$3" why="$4"
+  if [ "${GATE_SETTLE_ENTRY:-}" = "d" ]; then
+    gate_append '들여온 정산' "세그먼트=$seg" "대상=$alias" "정산 판정=$v" \
+      "정산 근거=$(gate_row_safe "$why" 240)" "고정 커밋=${GATE_SETTLE_MERGE:--}" \
+      "증거 런=${GATE_SETTLE_EVIDENCE_RUN:-$(gate_segment_field "$seg" '출처')}" || return $?
+    warn "들여온 적용 정산 — $seg: 정산 판정 $v ($why)"
+    return "$GATE_EXIT_PARK"
+  fi
   gate_apply_segment_row "$alias" "$seg" "상태=park" "워크트리=${GATE_SETTLE_WT:--}" \
     ${GATE_SETTLE_MERGE:+"고정 커밋=$GATE_SETTLE_MERGE"} "적용=불명" "정산 판정=$v" \
     "정산 근거=$(gate_row_safe "$why" 240)" || return $?
@@ -39598,13 +39811,18 @@ gate_apply_settle_park() {
 }
 
 gate_apply_settle_done() {
-  # gate_apply_settle_done <alias> <segment> <정산 주체> <근거> — the
-  # settlement's `완료`, then the open `적용 불명` block resolved and every
-  # apply worktree the segment's `적용 준비` rows recorded removed.
-  local alias="$1" seg="$2" who="$3" why="$4" cleared
+  # gate_apply_settle_done <alias> <segment> <정산 주체> <근거> [<출처> <이전 런>]
+  # — the settlement's `완료`, then the open `적용 불명` block resolved and every
+  # apply worktree the segment's `적용 준비` rows recorded removed. Entry d
+  # passes the imported row's `출처` and `이전 런`, which the segment arm takes
+  # only under the apply marker and which this call site is the one to carry;
+  # entries a and b pass neither. An imported segment has no `적용 불명` block
+  # and no `적용 준비` row in this run, so the two cleanups add no row there.
+  local alias="$1" seg="$2" who="$3" why="$4" org="${5:-}" prun="${6:-}" cleared
   gate_apply_segment_row "$alias" "$seg" "상태=완료" "워크트리=${GATE_SETTLE_WT:--}" \
     "고정 커밋=$GATE_SETTLE_MERGE" "머지 커밋=$GATE_SETTLE_MERGE" "적용=정산" \
-    "정산 주체=$who" "정산 근거=$(gate_row_safe "$why" 240)" || return $?
+    "정산 주체=$who" "정산 근거=$(gate_row_safe "$why" 240)" \
+    ${org:+"출처=$org"} ${prun:+"이전 런=$prun"} || return $?
   cleared=$(gate_apply_worktrees_clear "$alias" "$seg" | awk 'NF { printf "%s%s", s, $0; s = " " }')
   gate_apply_unknown_resolve "$seg" "적용 정산 — $why" "정리한 적용 워크트리: ${cleared:-없음}"
   log "적용 정산 완료 — $seg (정산 주체 $who: $why), 정리한 적용 워크트리: ${cleared:-없음}"
@@ -39664,7 +39882,12 @@ gate_perform_apply_settle() {
   fi
   gate_apply_worktree_drop "$root" "$swt"
   if [ -z "$noperl" ] && [ "$rc" = "$nu" ]; then
-    gate_apply_settle_done "$alias" "$seg" 게이트 "프로브 exit ${rc}(${map})·$ent"
+    if [ "$GATE_SETTLE_ENTRY" = "d" ]; then
+      gate_apply_settle_done "$alias" "$seg" 게이트 "프로브 exit ${rc}(${map})·${ent}·증거 런 ${GATE_SETTLE_EVIDENCE_RUN}" \
+        "$(gate_segment_field "$seg" '출처')" "$(gate_segment_field "$seg" '이전 런')"
+    else
+      gate_apply_settle_done "$alias" "$seg" 게이트 "프로브 exit ${rc}(${map})·$ent"
+    fi
     return $?
   fi
   if [ -z "$noperl" ] && [ "$ne" != "-" ] && [ "$rc" = "$ne" ]; then
@@ -39673,6 +39896,37 @@ gate_perform_apply_settle() {
   fi
   [ "$rc" != "143" ] || noperl=" — 상한 ${t}초를 넘겨 끊었다"
   gate_apply_settle_park "$alias" "$seg" '측정 실패' "프로브 exit ${rc}(${map})${nomap}${noperl}·$ent"
+}
+
+GATE_APPLY_QUIET_NOTE=""; GATE_APPLY_LIVE_RUN=""
+gate_apply_earlier_runs_quiet() {
+  # gate_apply_earlier_runs_quiet <segment> <이전 런> <출처> — 0 when neither
+  # earlier run of an imported segment still shows a live stage waiting on its
+  # relay, relay, apply supervisor or shift; 1 otherwise, with the live run id in
+  # GATE_APPLY_LIVE_RUN. A run directory that is gone is no process to wait
+  # for: it is named in GATE_APPLY_QUIET_NOTE instead. A value that is not a run
+  # id (`매니페스트`, empty) is skipped. Read by the person's settlement
+  # (`apply-settle-confirm`) and by the settlement's entry d, so both wait on
+  # the same predicate. Globals: call it in this shell.
+  local seg="$1" id ids="" sdir dir
+  GATE_APPLY_QUIET_NOTE=""; GATE_APPLY_LIVE_RUN=""
+  sdir="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
+  for id in "$2" "$3"; do
+    case "$id" in ''|매니페스트|*[!0-9a-zA-Z-]*) continue ;; esac
+    case " $ids " in *" $id "*) continue ;; esac
+    ids="$ids $id"
+    dir="$sdir/$id"
+    if [ ! -d "$dir" ]; then
+      GATE_APPLY_QUIET_NOTE="${GATE_APPLY_QUIET_NOTE}${GATE_APPLY_QUIET_NOTE:+ · }런 디렉터리 없음 ${id}(추적할 프로세스 기록이 없다)"
+      continue
+    fi
+    if [ -n "$(cc_relay_wait_stages "$dir")" ] || cc_relay_is_live "$dir" \
+       || cc_apply_supervisor_is_live "$dir" "$seg" || cc_shift_is_live "$dir"; then
+      GATE_APPLY_LIVE_RUN=$id
+      return 1
+    fi
+  done
+  return 0
 }
 
 gate_apply_settle_confirm_row() {
@@ -39689,7 +39943,7 @@ gate_apply_settle_confirm_row() {
   # stage, relay, apply supervisor or shift refuses the row; a run directory
   # that is gone is no process to wait for, and the reason says so.
   local seg="$1" alias="$2"; shift 2
-  local f k ln st ap m wt org prun id ids="" sdir dir note="" cline pled pkept
+  local f k ln st ap m wt org prun note="" cline pled pkept
   for f in "$@"; do
     k="${f%%=*}"
     [ "$k" = "중단 답" ] && continue
@@ -39711,22 +39965,11 @@ gate_apply_settle_confirm_row() {
     warn "들여온 적용 정산 거부 — 원장 ${ln} 번째 줄의 답은 이 세그먼트의 마지막 들여온 적용 정산 중단(${cline:-없음} 번째 줄)보다 뒤가 아닙니다"
     return "$GATE_EXIT_RULE"; }
   org=$(gate_segment_field "$seg" '출처'); prun=$(gate_segment_field "$seg" '이전 런')
-  sdir="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
-  for id in "$prun" "$org"; do
-    case "$id" in ''|매니페스트|*[!0-9a-zA-Z-]*) continue ;; esac
-    case " $ids " in *" $id "*) continue ;; esac
-    ids="$ids $id"
-    dir="$sdir/$id"
-    if [ ! -d "$dir" ]; then
-      note="${note}${note:+ · }런 디렉터리 없음 ${id}(추적할 프로세스 기록이 없다)"
-      continue
-    fi
-    if [ -n "$(cc_relay_wait_stages "$dir")" ] || cc_relay_is_live "$dir" \
-       || cc_apply_supervisor_is_live "$dir" "$seg" || cc_shift_is_live "$dir"; then
-      warn "들여온 적용 정산 거부 — 이전 런이 아직 살아 있다: ${id} (스테이지·릴레이·적용 감독자·교대 중 하나가 살아 있습니다)"
-      return "$GATE_EXIT_RULE"
-    fi
-  done
+  if ! gate_apply_earlier_runs_quiet "$seg" "$prun" "$org"; then
+    warn "들여온 적용 정산 거부 — 이전 런이 아직 살아 있다: ${GATE_APPLY_LIVE_RUN} (스테이지·릴레이·적용 감독자·교대 중 하나가 살아 있습니다)"
+    return "$GATE_EXIT_RULE"
+  fi
+  note=$GATE_APPLY_QUIET_NOTE
   m=$(gate_segment_field "$seg" '머지 커밋'); wt=$(gate_segment_field "$seg" '워크트리')
   # The earlier run's kept apply worktree is no path of this run's rows; it is
   # named in the log, for the person comparing it in the morning.
@@ -43168,11 +43411,11 @@ gate_verb_act() {
         exit 0
       fi
       if [ -n "$GATE_SETTLE_FAIL" ]; then
-        printf '통과 예상: kind=apply-settle target=%s 처분=측정 실패 park(%s)\n' "$alias" "$GATE_SETTLE_FAIL"
+        printf '통과 예상: kind=apply-settle target=%s 처분=%s park(%s)\n' "$alias" "${GATE_SETTLE_VERDICT:-측정 실패}" "$GATE_SETTLE_FAIL"
         exit 0
       fi
     elif [ -n "$GATE_SETTLE_FAIL" ]; then
-      gate_apply_settle_park "$alias" "$segment" '측정 실패' "${GATE_SETTLE_FAIL}·입구 ${GATE_SETTLE_ENTRY}"
+      gate_apply_settle_park "$alias" "$segment" "${GATE_SETTLE_VERDICT:-측정 실패}" "${GATE_SETTLE_FAIL}·입구 ${GATE_SETTLE_ENTRY}"
       exit $?
     fi
     GATE_SUBJECT_HEAD="$GATE_SETTLE_SUBJECT"
@@ -44963,10 +45206,21 @@ gate_verb_act() {
   # its own row by substring read a `선행 세그먼트=<seg>` field of another
   # segment's row as this segment's last cycle; the selection is the gate's
   # field-equality reader, written once.
+  #
+  # A SETTLEMENT ON ENTRY d READS ITS CYCLE FROM THE EVIDENCE. The imported
+  # segment has no review in this run's ledger; the cycle row entry d verified
+  # in the earlier run's ledger stands in for it, and no dismissal or carry-over
+  # is folded, so the merge rule passes it only on P0=0 and P1=0. The policy
+  # index, the open obligations and the last segment row stay this run's.
   GATE_SEGMENT_LAST_CYCLE=$(gate_segment_last_cycle_row "$segment")
   GATE_SEGMENT_LAST_SEGMENT=$(gate_segment_last_segment_row "$segment")
   GATE_SEGMENT_REVIEW_DISMISSED=$(gate_segment_review_dismissed "$segment")
   GATE_SEGMENT_REVIEW_CARRIED=$(gate_segment_review_carried "$segment")
+  if [ "$kind" = "apply-settle" ] && [ "${GATE_SETTLE_ENTRY:-}" = "d" ]; then
+    GATE_SEGMENT_LAST_CYCLE=$GATE_SETTLE_EVIDENCE_CYCLE
+    GATE_SEGMENT_REVIEW_DISMISSED=""
+    GATE_SEGMENT_REVIEW_CARRIED=""
+  fi
   export GATE_SEGMENT_LAST_CYCLE GATE_SEGMENT_LAST_SEGMENT \
     GATE_SEGMENT_REVIEW_DISMISSED GATE_SEGMENT_REVIEW_CARRIED
 
