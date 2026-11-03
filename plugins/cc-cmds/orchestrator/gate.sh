@@ -3279,13 +3279,22 @@ gate_reach_disposition() {
   case "$cls" in
     불투명|미상)
       if [ "$GATE_RF_ROW" != "1" ]; then
-        # A read is trusted only when nothing but a path raised the reach. A
-        # command arm or a deploy trigger is argv saying what the act does, and a
-        # `docker run` declared `읽기` would otherwise pass with no row at all.
-        [ "${GATE_DECLARED:-}" = "읽기" ] && [ "$_ro" != "cmd" ] && [ "$_rd" != "배포트리거" ] && return 0
-        case "${GATE_DECLARED:-}" in
-          워크트리쓰기|트리밖쓰기) [ "$Reff" = "런로컬" ] && return 0 ;;
-        esac
+        # A FORM OF A MOBILE DEVICE TOOL THE TABLE LEFT UNGRADED IS NOT TRUSTED ON
+        # ITS DECLARATION. It may install onto or erase a person's phone or
+        # another session's emulator, so a `읽기` or run-local declaration must
+        # not open it ahead of the machine-global cell; it parks as the honest
+        # `--reach 기기전역` declaration of the same act does.
+        local _udt=0
+        [ "$cls" = "미상" ] && gate_device_tool_act "$@" && _udt=1
+        if [ "$_udt" = "0" ]; then
+          # A read is trusted only when nothing but a path raised the reach. A
+          # command arm or a deploy trigger is argv saying what the act does, and a
+          # `docker run` declared `읽기` would otherwise pass with no row at all.
+          [ "${GATE_DECLARED:-}" = "읽기" ] && [ "$_ro" != "cmd" ] && [ "$_rd" != "배포트리거" ] && return 0
+          case "${GATE_DECLARED:-}" in
+            워크트리쓰기|트리밖쓰기) [ "$Reff" = "런로컬" ] && return 0 ;;
+          esac
+        fi
         if [ "$lift" != "1" ]; then
           if [ "$Sx" = "code" ]; then printf '신고등급한도\tcode\t-'; return 0
           elif [ "$cls" = "미상" ] && case "$1" in */*) false ;; *) true ;; esac; then
@@ -3528,8 +3537,10 @@ gate_device_act_kind() {
   # create`/`clone`/`boot`, `avdmanager create avd`, `emulator -avd`, an
   # `xcodebuild test`/`test-without-building` with a simulator destination),
   # `target` for an act aimed at an existing device (the other `simctl`
-  # writes, an `adb -s emulator-<port>` write, `avdmanager delete avd`), and
-  # `-` for anything else (`maestro`, an `xcodebuild` build).
+  # writes, an `adb -s emulator-<port>` write, `avdmanager delete avd`, a
+  # `maestro` run on the device it names — it installs its driver app there and
+  # can clear the app's state), and `-` for anything else (an `xcodebuild`
+  # build).
   local cmd="${1##*/}"; shift
   case "$cmd" in
     xcrun)
@@ -3547,6 +3558,7 @@ gate_device_act_kind() {
       esac ;;
     emulator) printf 'create' ;;
     adb) [ "${1:-}" = -s ] && printf 'target' || printf -- '-' ;;
+    maestro) printf 'target' ;;
     xcodebuild)
       gate_xcodebuild_read "$@" || { printf -- '-'; return 0; }
       local a d t=0 s=0
@@ -3599,6 +3611,26 @@ gate_device_act_start() {
   case "$n" in ''|*[!0-9]*) printf '1'; return 0 ;; esac
   if [ "$n" -lt 1 ] || [ "$n" -gt "$#" ]; then printf '1'; return 0; fi
   printf '%s' "$(( $# - n + 1 ))"
+}
+
+gate_device_tool_act() {
+  # gate_device_tool_act <argv...> — 0 when the act its launchers wrap is run
+  # by a mobile device tool: `xcodebuild`, `adb`, `emulator`, `avdmanager`,
+  # `maestro`, or an `xcrun` that carries `simctl` or `devicectl`. Any other
+  # `xcrun` (`xcrun --find clang`, `xcrun swift build`) reaches no device.
+  local s w
+  s=$(gate_device_act_start "$@")
+  set -- "${@:$s}"
+  w="${1##*/}"
+  case "$w" in
+    xcodebuild|adb|emulator|avdmanager|maestro) return 0 ;;
+    xcrun)
+      shift
+      for w in "$@"; do
+        case "$w" in simctl|devicectl) return 0 ;; esac
+      done ;;
+  esac
+  return 1
 }
 
 gate_device_peeled_kind() {
@@ -3730,8 +3762,9 @@ gate_device_targets() {
   # gate_device_targets <argv...> — for a `target` act, the devices it points
   # at, one per line: every operand of `simctl shutdown`/`delete`/`erase`, the
   # first operand of the other `simctl` writes, the serial of `adb -s`, the
-  # name of `avdmanager delete avd`. Nothing is printed for a form whose
-  # target cannot be read, and the caller parks it.
+  # name of `avdmanager delete avd`, every `--device`/`--udid` of `maestro`.
+  # Nothing is printed for a form whose target cannot be read, and the caller
+  # parks it.
   local cmd="${1##*/}"
   shift
   case "$cmd" in
@@ -3741,6 +3774,7 @@ gate_device_targets() {
         *) (shift 2; gate_simctl_operands "$@") | sed -n '1p' ;;
       esac ;;
     adb) printf '%s\n' "${2:-}" ;;
+    maestro) gate_maestro_devices "$@" ;;
     avdmanager)
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -8867,8 +8901,12 @@ gate_xcodebuild_destination_kind() {
 
 # The `xcodebuild` options that take a value, and the flags that take none.
 # An option in neither list leaves the form unread, so it stays unknown.
+# `-allowProvisioningUpdates`, `-allowProvisioningDeviceRegistration` and the
+# `-authenticationKey*` options are in neither on purpose: they talk to the
+# Apple Developer account and create or renew certificates, profiles and
+# registered devices there, which is a write outside this machine.
 GATE_XCODEBUILD_VALUED=' -project -workspace -scheme -target -configuration -sdk -arch -destination -destination-timeout -derivedDataPath -resultBundlePath -resultBundleVersion -xcconfig -testPlan -only-testing -skip-testing -only-test-configuration -skip-test-configuration -parallel-testing-enabled -parallel-testing-worker-count -maximum-parallel-testing-workers -maximum-concurrent-test-simulator-destinations -maximum-concurrent-test-device-destinations -enableCodeCoverage -enableAddressSanitizer -enableThreadSanitizer -enableUndefinedBehaviorSanitizer -test-iterations -testLanguage -testRegion -toolchain -jobs -xctestrun -testProductsPath -clonedSourcePackagesDirPath -packageCachePath -scmProvider -resultStreamPath -collect-test-diagnostics -test-timeouts-enabled -default-test-execution-time-allowance -maximum-test-execution-time-allowance '
-GATE_XCODEBUILD_FLAGS=' -quiet -verbose -json -allowProvisioningUpdates -allowProvisioningDeviceRegistration -skipUnavailableActions -skipPackagePluginValidation -skipMacroValidation -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile -hideShellScriptEnvironment -showBuildTimingSummary -parallelizeTargets -retry-tests-on-failure -dry-run -n -alltargets '
+GATE_XCODEBUILD_FLAGS=' -quiet -verbose -json -skipUnavailableActions -skipPackagePluginValidation -skipMacroValidation -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile -hideShellScriptEnvironment -showBuildTimingSummary -parallelizeTargets -retry-tests-on-failure -dry-run -n -alltargets '
 readonly GATE_XCODEBUILD_VALUED GATE_XCODEBUILD_FLAGS
 
 gate_xcodebuild_read() {
@@ -12854,8 +12892,14 @@ gate_defect_fix() {
     return "$GATE_EXIT_RULE"
   fi
   start=$(gate_row_field "$last" '시작 HEAD')
-  files=$( { (cd "$wt" && git diff --name-only "$start" -- 2>/dev/null); \
-             (cd "$wt" && git ls-files --others --exclude-standard 2>/dev/null); } | awk 'NF && !seen[$0]++')
+  # Listed NUL-separated with `core.quotePath=false`, as the cone's fence reads
+  # them: git's default spelling of a non-ASCII path is a quoted octal escape
+  # that never matches its own declaration. A newline inside a path becomes
+  # `?`, so such a path still counts and lands outside every declaration.
+  files=$( { (cd "$wt" && git -c core.quotePath=false diff -z --name-only "$start" -- 2>/dev/null); \
+             (cd "$wt" && git -c core.quotePath=false ls-files -z --others --exclude-standard 2>/dev/null); } \
+           | while IFS= read -r -d '' f; do printf '%s\n' "${f//$'\n'/?}"; done \
+           | awk 'NF && !seen[$0]++')
   decl=$(gate_segment_declared_whole "$seg") || decl=''
   body=$(residual_item_lines "$DOC" "$item")
   while IFS= read -r f; do

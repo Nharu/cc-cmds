@@ -51805,6 +51805,11 @@ graded_as '트리밖쓰기' '83v: emulator -avd 는 트리밖쓰기다'         
 graded_as '트리밖쓰기' '83v: avdmanager create avd 는 트리밖쓰기다'    -- avdmanager create avd -n cc-a
 graded_as '트리밖쓰기' '83v: 기기를 지정한 maestro 는 트리밖쓰기다'    -- maestro --device emulator-5554 test flow.yaml
 graded_as '등급 미상'  '83v: 기기를 지정하지 않은 maestro 는 미상이다' -- maestro test flow.yaml
+# 프로비저닝 플래그는 Apple 개발자 계정에 인증서·프로파일·기기를 만드는 외부 쓰기라
+# 무해 플래그 목록에 없고, 그 형태는 미상으로 남는다.
+graded_as '등급 미상'  '83v: -allowProvisioningUpdates 를 단 xcodebuild build 는 미상이다' -- xcodebuild build -scheme X -destination generic/platform=iOS -allowProvisioningUpdates
+graded_as '등급 미상'  '83v: -allowProvisioningDeviceRegistration 을 단 xcodebuild build 는 미상이다' -- xcodebuild build -scheme X -destination generic/platform=iOS -allowProvisioningDeviceRegistration
+graded_as '트리밖쓰기' '83v: 프로비저닝 플래그 없는 같은 빌드는 트리밖쓰기다' -- xcodebuild build -scheme X -destination generic/platform=iOS
 
 # 매니페스트 — 기기 정리 짝을 단 새 형식 행 하나와 짝 없는 행 하나, 그리고 결정 수거가
 # 답을 받을 키(설계 단계 D1)를 가진 실행 계획.
@@ -51993,11 +51998,12 @@ v83_doc "$V83_DOC" 해결 '상한을 다시 쟀다'
 check "83v: 항목이 닫힌 문서의 수거는 보류를 푼다" \
   "$(v83_dc | cut -f1,2,3 | tr '\t' '/')|$(v83_rc "$D83V/run" gate_decision_hold_refuse A)" "0/없음/없음|0"
 
-# 결함 수정 울타리 — 세그먼트 워크트리 하나, 선언 파일 셋.
+# 결함 수정 울타리 — 세그먼트 워크트리 하나, 선언 파일 넷. 넷째는 한글 이름이라, git 기본
+# 철자(따옴표와 8진 이스케이프)로 나열하면 선언 대조에 걸리지 않고 거짓 울타리 이탈이 된다.
 V83_WT="$D83V/wt"; mkdir -p "$V83_WT/lib" "$V83_WT/scripts"
-( cd "$V83_WT" && git init -q && printf 'a\n' > a.sh && printf 't\n' > scripts/t.sh \
-  && git add a.sh scripts/t.sh && git -c user.name=t -c user.email=t@t commit -q -m init ) >/dev/null 2>&1
-V83_DECL='a.sh,lib/,scripts/t.sh'
+( cd "$V83_WT" && git init -q && printf 'a\n' > a.sh && printf 't\n' > scripts/t.sh && printf 'k\n' > 설계노트.sh \
+  && git add a.sh scripts/t.sh 설계노트.sh && git -c user.name=t -c user.email=t@t commit -q -m init ) >/dev/null 2>&1
+V83_DECL='a.sh,설계노트.sh,lib/,scripts/t.sh'
 v83_df() {  # v83_df <항목> <open|close> [<결과>] — rc
   if [ "$2" = open ]; then v83_rc "$D83V/run" gate_defect_fix S1 open "$1" '원인' '근거' ''
   else v83_rc "$D83V/run" gate_defect_fix S1 close "$1" '' '' "$3"; fi
@@ -52005,9 +52011,11 @@ v83_df() {  # v83_df <항목> <open|close> [<결과>] — rc
 v83_dflast() { lsr_last_fields "$D83V/run/ledger.md" '결함 수정' "$@"; }
 check "83v: 첫 시도가 열린다" "$(v83_df R1 open)|$(v83_dflast 항목 단계 시도)" "0|R1|열기|1"
 check "83v: 닫히지 않은 시도 위로는 열지 않는다" "$(v83_df R1 open)" "3"
-printf 'b\n' >> "$V83_WT/a.sh"; printf 'x\n' > "$V83_WT/lib/x.sh"
+printf 'b\n' >> "$V83_WT/a.sh"; printf 'x\n' > "$V83_WT/lib/x.sh"; printf 'k2\n' >> "$V83_WT/설계노트.sh"
 check "83v: 닫기는 커밋되지 않은 변경과 새 파일을 센다" \
-  "$(v83_df R1 close 통과)|$(v83_dflast 단계 결과 '바뀐 파일' '시험 파일 변경')" "0|닫기|통과|2|0"
+  "$(v83_df R1 close 통과)|$(v83_dflast 단계 결과 '바뀐 파일' '시험 파일 변경')" "0|닫기|통과|3|0"
+check "83v: 한글 이름의 선언 파일은 제 철자로 나열되어 울타리 안이다" \
+  "$(grep -c '울타리 이탈' "$D83V/run/defect-triage/S1.md")|$(grep -c '^- 설계노트.sh' "$D83V/run/defect-triage/S1.md")" "0|1"
 check "83v: 둘째 시도가 열린다" "$(v83_df R1 open)|$(v83_dflast 시도)" "0|2"
 printf 'u\n' >> "$V83_WT/scripts/t.sh"
 check "83v: 레시피가 가리키는 시험 파일은 표시된다" \
@@ -52268,13 +52276,21 @@ cat > "$X83S/avdmanager" <<X83EOF
 printf 'avdmanager %s\n' "\$*" >> "$X83L"
 exit 0
 X83EOF
+cat > "$X83S/maestro" <<X83EOF
+#!/bin/sh
+printf 'maestro %s\n' "\$*" >> "$X83L"
+exit 0
+X83EOF
 chmod +x "$X83S"/*
 rx_manifest R83X "xcrun simctl create cc-R83X-S5-a iPhone | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=테스트
 xcrun simctl shutdown $X83U | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
 emulator -avd cc-R83X-S5-p -port 5560 | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=테스트
 adb -s emulator-5560 install a.apk | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
 xcrun simctl create other iPhone | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=테스트
-avdmanager create avd -n cc-R83X-S5-z -k x | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트"
+avdmanager create avd -n cc-R83X-S5-z -k x | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
+maestro --udid $X83U test flow.yaml | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
+maestro --udid 22222222-2222-3333-4444-555555555555 test flow.yaml | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
+maestro --device emulator-5554 test flow.yaml | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트"
 X83LED="$WT/docs/pipeline-run/R83X.md"
 X83RD="$XDG_STATE_HOME/cc-cmds/run/R83X"
 # x83_run <argv…> — 파견 S5 의 exec. 게이트는 뜰 때 PATH 앞에 시스템 경로를 붙이므로 새
@@ -52293,8 +52309,11 @@ x83_run() {
     gate_seam_enter
     PATH="$X83S:$PATH"; export PATH
     export CC_PIPELINE_STAGE_ID='S5#1' CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
-    gate_main exec --manifest "$RX_M" --target front3 --segment S5 --cutpoint 커밋 --surface 트리밖쓰기 \
-      --reach "${X83_REACH:-기기전역}" --snapshot-digest "$h" --rationale '기기 짝 정리 시험' -- "$@"
+    # X83_SURF=읽기 는 도달 없이 읽기로 신고한다 — 낮은 선언이 기기 검사를 비켜 가는지 잰다.
+    local decl=(--surface "${X83_SURF:-트리밖쓰기}" --reach "${X83_REACH:-기기전역}")
+    [ "${X83_SURF:-}" = 읽기 ] && decl=(--surface 읽기)
+    gate_main exec --manifest "$RX_M" --target front3 --segment S5 --cutpoint 커밋 "${decl[@]}" \
+      --snapshot-digest "$h" --rationale '기기 짝 정리 시험' -- "$@"
   ) 2>&1 ); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
@@ -52379,6 +52398,34 @@ x83_run avdmanager create avd -n cc-R83X-S5-z -k x
 check "83x: 정리 짝 없는 만들기는 no-cleanup 수리 줄과 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'nothing would remove the device')" "11|1"
 check "83x: park 한 행위는 대역에 닿지 않는다" \
   "$(grep -c -e 'shutdown all' -e 'delete unavailable' -e 'shutdown 11111111' -e 'create other' -e 'avdmanager create' "$X83L")" "0"
+
+# maestro 는 지정한 기기에 드라이버 앱을 깔고 앱 상태를 지우므로 겨누기 행위다. 남의 기기를
+# 지정한 두 철자도 행이 축자로 이름 대므로, 대상 검사가 없으면 그 행이 그대로 연다.
+axis_is gate_device_act_kind 'target' '83x: 기기를 지정한 maestro 는 겨누기다' -- maestro --device emulator-5554 test flow.yaml
+x83_run maestro --device emulator-5554 test flow.yaml
+check "83x: 이 런이 띄우지 않은 에뮬레이터를 지정한 maestro 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+x83_run maestro --udid 22222222-2222-3333-4444-555555555555 test flow.yaml
+check "83x: 이 런이 만들지 않은 UDID 를 지정한 maestro 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+x83_run maestro --udid "$X83U" test flow.yaml
+check "83x: 이 런이 만든 UDID 를 지정한 maestro 는 짝 정리 없는 행으로도 열린다" "$rc|$(grep -c "maestro --udid $X83U test" "$X83L")" "0|1"
+check "83x: 남의 기기를 지정한 maestro 는 대역에 닿지 않는다" \
+  "$(grep -c -e 'maestro --device emulator-5554' -e 'maestro --udid 22222222' "$X83L")" "0"
+
+# 등급표가 매기지 않는 기기 도구 형태 — 읽기나 런로컬 쓰기로 낮춰 신고해도 기계 전역 칸보다
+# 먼저 열리지 않고, 정직한 기기전역 신고와 같게 park 한다. 기기에 닿지 않는 xcrun 툴체인
+# 조회는 여전히 읽기 신고로 열린다.
+X83_SURF=읽기 x83_run adb install -r a.apk
+check "83x: 읽기로 신고한 시리얼 없는 adb install 은 park 한다" "$rc" "11"
+X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run adb install -r b.apk
+check "83x: 런로컬 로 신고한 시리얼 없는 adb install 은 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run timeout 60 adb shell
+check "83x: 읽기로 신고한 감싼 adb shell 은 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run xcrun devicectl list devices
+check "83x: 읽기로 신고한 xcrun devicectl 은 park 한다" "$rc" "11"
+check "83x: 낮춰 신고한 미상 기기 형태는 대역에 닿지 않는다" \
+  "$(grep -c -e 'adb install -r' -e 'adb shell' -e 'devicectl' "$X83L")" "0"
+X83_SURF=읽기 x83_run xcrun --find clang
+check "83x: 읽기로 신고한 xcrun --find 는 여전히 열린다" "$rc|$(grep -c 'xcrun --find clang' "$X83L")" "0|1"
 
 # 에뮬레이터 — 앞에서 도는 exec 를 뒤에서 띄우고, 도는 동안과 끝난 뒤의 adb 를 잰다.
 : > "$X83D/emu.hold"
