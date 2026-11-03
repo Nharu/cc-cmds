@@ -15,11 +15,12 @@
 #   bash scripts/test-slots.sh --self-test
 #
 # Variables:
-#   CC_TEST_SLOTS           how many slots (a whole number, 0 turns slots off:
-#                           nothing waits, nothing is measured and a job runs
-#                           as it did before slots; unset or empty: max(4,
-#                           CPUs); anything else is warned about and read as
-#                           unset)
+#   CC_TEST_SLOTS           how many slots: a positive whole number is that
+#                           many, auto is max(4, CPUs). Unset, empty or 0
+#                           (the default) turns slots off: nothing waits,
+#                           nothing is measured and a job runs as it did
+#                           before slots. Anything else is warned about and
+#                           read as unset (off)
 #   CC_TEST_SLOTS_DIR       the store; without it the private store the caller
 #                           names (a self-test whose doubles stand), else
 #                           <common git directory>/cc-cmds-test-slots
@@ -149,24 +150,29 @@ ts_wait_max() {
   printf '%s' "$((10#$v))"
 }
 
-# Sets TS_N from CC_TEST_SLOTS.
+# Sets TS_N from CC_TEST_SLOTS: 0 (slots off) when it is unset, empty or 0,
+# max(4, CPUs) for auto, the number itself for a positive whole number, and 0
+# with a warning for anything else.
 ts_set_count() {
   local v="${CC_TEST_SLOTS:-}" c
-  if [ -n "$v" ]; then
-    case "$v" in
-      *[!0-9]*) ;;
-      *)
-        if [ "${#v}" -le 6 ]; then
-          TS_N=$((10#$v))
-          return 0
-        fi
-        ;;
-    esac
-    ts_msg "경고 — CC_TEST_SLOTS=$(printf %q "$v") 는 0 이상의 정수가 아니다, 없는 것으로 본다"
-  fi
-  c=$(ts_cpus)
-  [ "$c" -ge 4 ] || c=4
-  TS_N="$c"
+  TS_N=0
+  case "$v" in
+    '') return 0 ;;
+    auto)
+      c=$(ts_cpus)
+      [ "$c" -ge 4 ] || c=4
+      TS_N="$c"
+      return 0
+      ;;
+    *[!0-9]*) ;;
+    *)
+      if [ "${#v}" -le 6 ]; then
+        TS_N=$((10#$v))
+        return 0
+      fi
+      ;;
+  esac
+  ts_msg "경고 — CC_TEST_SLOTS=$(printf %q "$v") 는 양의 정수·auto·0 이 아니다, 없는 것(꺼짐)으로 본다"
 }
 
 # Decides the store and the slot count for this process. $1 is the private
@@ -709,26 +715,36 @@ EOF
   # --- the store and the count ---------------------------------------------------
   mkdir -p "$T/repo"
   (cd "$T/repo" && git init -q) > /dev/null 2>&1
-  out=$(cd "$T/repo" && unset CC_TEST_SLOTS_DIR && ts_init "" && printf '%s' "$TS_DIR")
+  out=$(cd "$T/repo" && unset CC_TEST_SLOTS_DIR && CC_TEST_SLOTS=auto && export CC_TEST_SLOTS && ts_init "" && printf '%s' "$TS_DIR")
   check "저장소: 아무것도 없으면 공통 git 디렉터리 아래" "$out" "$T/repo/.git/cc-cmds-test-slots"
-  out=$(cd "$T/repo" && unset CC_TEST_SLOTS_DIR && ts_init "$T/priv" && printf '%s' "$TS_DIR")
+  out=$(cd "$T/repo" && unset CC_TEST_SLOTS_DIR && CC_TEST_SLOTS=auto && export CC_TEST_SLOTS && ts_init "$T/priv" && printf '%s' "$TS_DIR")
   check "저장소: 대역이 서면 사적 저장소" "$out" "$T/priv"
-  out=$(cd "$T/repo" && CC_TEST_SLOTS_DIR="$T/named" && export CC_TEST_SLOTS_DIR && ts_init "$T/priv" && printf '%s' "$TS_DIR")
+  out=$(cd "$T/repo" && CC_TEST_SLOTS_DIR="$T/named" && CC_TEST_SLOTS=auto && export CC_TEST_SLOTS_DIR CC_TEST_SLOTS && ts_init "$T/priv" && printf '%s' "$TS_DIR")
   check "저장소: CC_TEST_SLOTS_DIR 이 사적 저장소보다 앞선다" "$out" "$T/named"
-  out=$(unset CC_TEST_SLOTS && ts_init "$T/priv" && printf '%s %s' "$TS_ON" "$TS_N")
-  check "자리 수: 없으면 max(4, CPU 수)" "$out" "1 $cpus"
+  out=$(unset CC_TEST_SLOTS && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "자리 수: 없으면 경고 없이 꺼짐" "$out" "|0 0"
+  out=$(CC_TEST_SLOTS= && export CC_TEST_SLOTS && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "자리 수: 빈 값이면 경고 없이 꺼짐" "$out" "|0 0"
+  out=$(CC_TEST_SLOTS=auto && export CC_TEST_SLOTS && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "자리 수: auto 면 max(4, CPU 수)" "$out" "|1 $cpus"
   out=$(CC_TEST_SLOTS=3 && export CC_TEST_SLOTS && ts_init "$T/priv" && printf '%s %s' "$TS_ON" "$TS_N")
   check "자리 수: CC_TEST_SLOTS=3" "$out" "1 3"
   out=$(CC_TEST_SLOTS=abc && export CC_TEST_SLOTS && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
-  has "자리 수: 정수가 아닌 값은 경고한다" "$out" "CC_TEST_SLOTS=abc 는 0 이상의 정수가 아니다, 없는 것으로 본다"
-  has "자리 수: 정수가 아닌 값은 없는 것으로 본다" "$out" "|1 $cpus"
-  out=$(CC_TEST_SLOTS=-2 && export CC_TEST_SLOTS && ts_init "$T/priv" 2>/dev/null && printf '%s %s' "$TS_ON" "$TS_N")
-  check "자리 수: 음수도 없는 것으로 본다" "$out" "1 $cpus"
+  has "자리 수: 정수가 아닌 값은 경고한다" "$out" "CC_TEST_SLOTS=abc 는 양의 정수·auto·0 이 아니다, 없는 것(꺼짐)으로 본다"
+  has "자리 수: 정수가 아닌 값은 없는 것(꺼짐)으로 본다" "$out" "|0 0"
+  out=$(CC_TEST_SLOTS=-2 && export CC_TEST_SLOTS && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  has "자리 수: 음수는 경고한다" "$out" "CC_TEST_SLOTS=-2 는 양의 정수·auto·0 이 아니다"
+  has "자리 수: 음수도 없는 것(꺼짐)으로 본다" "$out" "|0 0"
+  out=$(CC_TEST_SLOTS=AUTO && export CC_TEST_SLOTS && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  has "자리 수: 대문자 AUTO 는 auto 가 아니라 경고한다" "$out" "CC_TEST_SLOTS=AUTO 는 양의 정수·auto·0 이 아니다"
+  has "자리 수: 대문자 AUTO 는 꺼짐" "$out" "|0 0"
+  out=$(unset CC_TEST_SLOTS && rm -rf "$T/dflt" && ts_init "$T/dflt" && ts_slot_take "목표 x" "" 2>&1; printf '|%s %s %s %s' "$?" "$TS_ON" "$TS_MODE" "$(ls -A "$T/dflt" 2>/dev/null | wc -l | tr -d ' ')")
+  check "기본: CC_TEST_SLOTS 가 없으면 기다리지 않고 exec 로 띄우며 저장소를 만들지 않는다" "$out" "|0 0 exec 0"
   out=$(CC_TEST_SLOTS=0 && export CC_TEST_SLOTS && rm -rf "$T/off" && ts_init "$T/off" && ts_slot_take "목표 x" "" 2>&1; printf '|%s %s %s %s' "$?" "$TS_ON" "$TS_MODE" "$(ls -A "$T/off" 2>/dev/null | wc -l | tr -d ' ')")
   check "끔: CC_TEST_SLOTS=0 이면 기다리지 않고 exec 로 띄우며 저장소를 만들지 않는다" "$out" "|0 0 exec 0"
-  out=$(CC_TEST_SLOT_HELD=1 && export CC_TEST_SLOT_HELD && rm -rf "$T/held" && ts_init "$T/held" && ts_slot_take "목표 x" "" 2>&1; printf '|%s %s %s %s' "$?" "$TS_ON" "$TS_MODE" "$(ls -A "$T/held" 2>/dev/null | wc -l | tr -d ' ')")
+  out=$(CC_TEST_SLOT_HELD=1 && CC_TEST_SLOTS=auto && export CC_TEST_SLOT_HELD CC_TEST_SLOTS && rm -rf "$T/held" && ts_init "$T/held" && ts_slot_take "목표 x" "" 2>&1; printf '|%s %s %s %s' "$?" "$TS_ON" "$TS_MODE" "$(ls -A "$T/held" 2>/dev/null | wc -l | tr -d ' ')")
   check "중첩: CC_TEST_SLOT_HELD=1 이면 자리를 잡지 않는다" "$out" "|0 0 exec 0"
-  out=$(CC_TEST_SLOTS_DIR=/dev/null/x && export CC_TEST_SLOTS_DIR && ts_init "" 2>&1 && ts_slot_take "목표 x" "" 2>&1; printf '|%s %s' "$?" "$TS_MODE")
+  out=$(CC_TEST_SLOTS_DIR=/dev/null/x && CC_TEST_SLOTS=auto && export CC_TEST_SLOTS_DIR CC_TEST_SLOTS && ts_init "" 2>&1 && ts_slot_take "목표 x" "" 2>&1; printf '|%s %s' "$?" "$TS_MODE")
   has "고장: 쓸 수 없는 저장소는 경고하고" "$out" "를 쓸 수 없다, 자리 없이 띄운다"
   has "고장: 자리 없이 띄운다" "$out" "|0 free"
 
@@ -961,7 +977,7 @@ proc $pb $(ts_fp "$pb")
   rm -rf "$T"
   printf 'test-slots self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$mode" = inner ]; then w=66; else w=70; fi
+  if [ "$mode" = inner ]; then w=72; else w=76; fi
   if [ "$passed" -lt "$w" ]; then
     printf 'test-slots self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" "$w" >&2
     return 1

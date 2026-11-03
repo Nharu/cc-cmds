@@ -2194,6 +2194,16 @@ EOF
   wait $!
   check "F38 CC_TEST_SLOTS=0 이면 저장소도 CC_TEST_SLOT_HELD 도 없다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")|$(grep '^S o1 ' "$T/slot.log" | cut -d' ' -f4)" "없음|rc=0|held=unset"
   : > "$T/slot.log"
+  sp A d1 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  check "F38 CC_TEST_SLOTS 가 없는 기본 실행은 저장소도 CC_TEST_SLOT_HELD 도 없다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")|$(grep '^S d1 ' "$T/slot.log" | cut -d' ' -f4)" "없음|rc=0|held=unset"
+  hasnt "F38 기본 실행은 자리 줄을 남기지 않는다" "$(cat "$T/sp-A.err")" "자리"
+  : > "$T/slot.log"
+  sp A rc7 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  has "F38 기본 실행도 대역 목표의 종료 코드를 그대로 받는다" "$(cat "$T/sp-A.err")" "test-tree: 끝 — 목표 rc7 rc=7 "
+  check "F38 기본 실행도 종료 코드 7 의 목표로 풀을 실패시키고 저장소를 만들지 않는다" "$(cat "$T/sp-A.out")|$([ -e "$T/slots" ] && echo 있음 || echo 없음)" "rc=1|없음"
+  : > "$T/slot.log"
   sp A o2 CC_TEST_SLOT_HELD=1 CC_TEST_SLOTS_DIR="$T/slots" &
   wait $!
   check "F38 자리 안에서 뜬 풀은 자리를 잡지 않는다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")" "없음|rc=0"
@@ -2209,8 +2219,8 @@ EOF
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 168 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 168 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 172 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 172 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

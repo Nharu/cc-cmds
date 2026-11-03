@@ -41,8 +41,10 @@
 #   CC_TEST_SLOTS           host-wide test slots the runs of this host share
 #                           (scripts/test-slots.sh): every step and job waits
 #                           for as many as its weight before it starts; a
-#                           whole number, 0 turns them off, unset is max(4,
-#                           CPUs). The stamp's 자리대기= is the seconds waited
+#                           positive whole number is that many, auto is
+#                           max(4, CPUs), and unset, empty or 0 (the default)
+#                           turns them off. The stamp's 자리대기= is the
+#                           seconds waited
 #   CC_TEST_SLOTS_DIR       the slot store (default: cc-cmds-test-slots under
 #                           the common git directory)
 #   CC_CHECK_PUSH_MAKE      the make for lint, readme and check-cheap (default
@@ -578,7 +580,7 @@ EOF
   : > "$T/order.log"
   : > "$T/seen.log"
   : > "$T/held.log"
-  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  out=$(cprun CC_PIPELINE_RUN_ID=t CC_TEST_SLOTS=auto); rc=$?
   check "F12 통과" "$rc" "0"
   check "F12 base 는 FETCH_HEAD 의 sha" "$(check_push_field "$stamp" base) $(check_push_field "$stamp" base출처)" "$sm2 FETCH_HEAD"
   check "F12 tested_tree 가 따로 만든 merge-tree 와 같다" "$(check_push_field "$stamp" tested_tree)" "$tm"
@@ -601,6 +603,13 @@ EOF
   check "F39 자리를 끄면 통과하고 자리대기=0" "$rc $(check_push_field "$stamp" 자리대기)" "0 0"
   hasnt "F39 자리를 끄면 자리 잡음 줄이 없다" "$out" "자리 잡음"
   check "F39 자리를 끄면 묶음 단계에 CC_TEST_SLOT_HELD 가 없다" "$(tr '\n' ' ' < "$T/held.log")" "lint:unset readme:unset check-cheap:unset "
+  rm -f "$stamp"
+  : > "$T/held.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CC_TEST_SLOTS_DIR="$T/dflt-slots"); rc=$?
+  check "F39 CC_TEST_SLOTS 가 없는 기본 실행은 통과하고 자리대기=0" "$rc $(check_push_field "$stamp" 자리대기)" "0 0"
+  hasnt "F39 기본 실행은 자리 잡음 줄이 없다" "$out" "자리 잡음"
+  check "F39 기본 실행은 묶음 단계에 CC_TEST_SLOT_HELD 가 없다" "$(tr '\n' ' ' < "$T/held.log")" "lint:unset readme:unset check-cheap:unset "
+  check "F39 기본 실행은 준 저장소를 만들지 않는다" "$([ -e "$T/dflt-slots" ] && echo 있음 || echo 없음)" "없음"
   mv -f "$stamp_keep" "$stamp"
 
   # --- F19 head 모드는 합친 도장을 바꾸지 않는다 ------------------------------------
@@ -848,8 +857,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 115 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 115 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 119 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 119 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

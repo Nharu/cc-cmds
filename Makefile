@@ -186,8 +186,9 @@ check-cheap:
 #   CHECK_PUSH_GOALS        REST goals (`make -s print-rest-goals`), comma-separated
 #   CHECK_PUSH_JOBS         section lanes and goal jobs run at once (default 4;
 #                           1 runs them in turn, as before)
-#   CC_TEST_SLOTS           host-wide test slots, one CPU's share each (default
-#                           max(4, CPUs); 0 turns them off)
+#   CC_TEST_SLOTS           host-wide test slots, one CPU's share each: a
+#                           positive whole number, or auto for max(4, CPUs);
+#                           unset, empty or 0 (the default) turns them off
 #   CC_TEST_SLOTS_DIR       where the slots live (default the common git
 #                           directory's cc-cmds-test-slots/)
 # CHECK_PUSH_JOBS reaches check-push.sh the way CHECK_PUSH_SECTIONS does, as a
