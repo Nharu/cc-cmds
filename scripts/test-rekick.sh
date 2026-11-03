@@ -2624,7 +2624,9 @@ fx_row 'segment' "id=I9" "상태=계획됨" "워크트리=$S13_W" "브랜치=$S1
 a13 "$X13"
 check "13: 계획의 구현 단계가 아닌 키는 슬라이스다름 이다" "$(why13 I9)" "슬라이스다름"
 fx_row '중단 답' "세그먼트=I1" "중단 기록=$S13_RD/halt/I1#1.md" "스킬=review-unattended" "선택지=다시 하기" "기록 다이제스트=-" "근거=픽스처"
-tok13 "이월할 수 없는 열린 중단 답이 있으면" 중단답이월불가 "$X13"
+tok13 "이월할 수 없는 열린 중단 답이 있어도 사람에게는" 후보 "$X13"
+check "13: 이월할 수 없는 열린 중단 답은 후보 줄의 이월=불가 칸이다" "$(printf '%s\n' "$A13" | awk -F'\t' '$1 == "입양후보" && $2 == "I1"' | cut -f7-)" "이월=불가"
+tok13 "좌석에서 이월할 수 없는 열린 중단 답이 있으면" 중단답이월불가 "$X13" --auto
 
 N13=20261001-a0000005
 K13_NOANCHOR=1 mk13 "$N13"; gh13
@@ -2646,6 +2648,16 @@ P_PLAN="$PLANNOD" P_DOC="$DOC13G" K13_DOCSHA="$DOC13SHA" mk13 "$NG13"; gh13
 tok13 "설계 단계가 없는 계획에서 지울 문서가 아직 있으면" 후보 "$NG13"
 rm -f "$BASE/$DOC13G"
 tok13 "설계 단계가 없는 계획에서 매니페스트의 설계 문서를 읽을 수 없으면" 문서바뀜 "$NG13"
+# A document outside the base is keyed by its absolute path without the
+# leading separator, and is read where the driver reads it.
+mkdir -p "$WORK/outside"
+cp "$BASE/$DOC13" "$WORK/outside/rk-adopt-out.md"
+DOC13O="${WORK#/}/outside/rk-adopt-out.md"
+OD13=20261001-a0000017
+P_DOC="$DOC13O" mk13 "$OD13"; gh13
+tok13 "base 밖 설계 문서를 앞 구분자 없는 절대 경로로 적은 원천은" 후보 "$OD13"
+check "13: base 밖 설계 문서도 graph 가 지금 해시로 읽어 감사를 뺀다" \
+  "$(rk graph --prev "$OD13" --base "$BASE" --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$OD13.plan.md")" | grep '^감사' | cut -f2)" "뺌"
 
 # A last row of `park`: the seat leaves it, a person is asked with its cause.
 P13=20261001-a0000002
@@ -3021,13 +3033,14 @@ gh13
 # 7 — a chain: the source adopted I1 itself. The row names the source's own id
 # for the segment and the branch of its planning row, the run above it is not
 # carried, and the private copy the gate reads carries the candidate row only —
-# the run above left an open answer the gate would refuse to carry, so a copy
-# that kept the old row (the gate reads a segment's first row) would refuse.
+# the run above left an open answer the gate would not carry, so a copy that
+# kept the old row (the gate reads a segment's first row) would mark the line
+# `이월=불가`.
 C1=20261001-a000000a
 mk13 "$C1"; gh13
 fx_row '중단 답' "세그먼트=I1" "중단 기록=$S13_RD/halt/I1#1.md" "스킬=review-unattended" "선택지=다시 하기" "기록 다이제스트=-" "근거=픽스처"
 C1W=$S13_W; C1B=$S13_B; C1H=$S13_H
-tok13 "연쇄의 위 원천 그 자체는(이월할 수 없는 답)" 중단답이월불가 "$C1"
+tok13 "연쇄의 위 원천 그 자체는(이월할 수 없는 답, 좌석)" 중단답이월불가 "$C1" --auto
 C2=20261001-a000000b
 P_EXTRA="$SEAT_ROW
 - \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$C1B | 워크트리=$C1W | 출처 런=$C1 | PR=41" K13_REUSE="$C1W $C1B $C1H" mk13 "$C2"

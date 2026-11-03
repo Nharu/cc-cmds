@@ -265,6 +265,44 @@ open_approval_ids() {
   done
 }
 
+watch_approval_canon_question() {
+  # watch_approval_canon_question <승인 id> — the gate's canonical question for
+  # one approval, `승인 <id> — <question>`, or nothing.
+  #
+  # THE GATE IS SOURCED, NOT CALLED. Every gate verb writes the run directory's
+  # entry records before it reaches its own branch, so calling even a read verb
+  # once a pass would leave the watcher's footprints in the gate's records. The
+  # re-kick script reads gate functions the same way: in a child shell, with the
+  # gate sourced only and the run's paths put in by hand.
+  #
+  # The base is the ledger path with its `/docs/pipeline-run/<file>` tail taken
+  # off, and the authorization record sits under it the way the run script
+  # derives it. A ledger path without that tail has no base, so nothing is
+  # asked. A judgment approval's row carries only an excerpt and its full text
+  # is in the sidecar, so the gate's own reader, with its proof pair, is what
+  # gives the bytes the router asks with. Stdin is closed and stderr dropped.
+  local g="$WATCH_DIR/gate.sh" base
+  case "$LEDGER" in
+    */docs/pipeline-run/*) base=${LEDGER%/docs/pipeline-run/*} ;;
+    *) return 0 ;;
+  esac
+  case "${LEDGER#"$base"/docs/pipeline-run/}" in
+    ''|*/*) return 0 ;;
+  esac
+  [ -n "$base" ] && [ -r "$g" ] || return 0
+  CC_GATE_SOURCE_ONLY=1 bash -c '
+    g=$1; base=$2; rid=$3; rd=$4; led=$5; id=$6
+    set --
+    . "$g" >/dev/null 2>&1 || exit 0
+    set +e
+    unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+    BASE=$base; RUN_ID=$rid; RUN_DIR=$rd; LEDGER=$led
+    GRANT="$base/docs/pipeline-grant/$rid.md"
+    gate_approval_canon_question "$id"
+  ' watch-canon "$g" "$base" "$RUN_ID" "$RUN_DIR" "$LEDGER" "$1" </dev/null 2>/dev/null || true
+  return 0
+}
+
 nonterminal_segments() { cc_nonterminal_segments "$LEDGER"; }
 
 # `YYYY-MM-DDTHH:MM:SSZ` → epoch seconds, or empty. The conversion moved to
@@ -1007,12 +1045,27 @@ pass() {
   #
   # The loud terminal line stays aggregate. It is one screen a person reads top
   # to bottom, not a set of slots that overwrite one another.
+  #
+  # THE REMOTE COPY CARRIES THE GATE'S CANONICAL QUESTION, not this banner's
+  # text, which names the id only. Whichever of this site and the gate's own
+  # site leaves the approval's event first, the event's body is then the
+  # question the router asks. The attachment is made after the id is listed, so
+  # an id this pass skips never leaves one behind; a question that could not be
+  # read sends none, and the banner goes up as before without an event.
   newly=0
   for id in $(open_approval_ids); do
     grep -qxF "$id" "$RUN_DIR/watch.announced-approvals" 2>/dev/null && continue
     printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals"
     newly=$((newly + 1))
-    cc_notify_fire answer "승인 $id 이 답을 기다립니다" "$id" || true
+    w_detail=
+    w_canon=$(watch_approval_canon_question "$id")
+    case "$w_canon" in
+      "승인 $id — "*)
+        w_detail=$(cc_attention_detail_make "$(jq -cn --arg b "$w_canon" \
+          '{kind: "approval", actionable: false, reply: null, body: $b}' 2>/dev/null || true)") || w_detail=
+        ;;
+    esac
+    CC_NOTIFY_ATTENTION_DETAIL="$w_detail" cc_notify_fire answer "승인 $id 이 답을 기다립니다" "$id" || true
   done
   if [ "$newly" -gt 0 ]; then
     announce "승인 대기 ${pend}건 — 런이 답을 기다립니다" \

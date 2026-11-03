@@ -258,7 +258,7 @@ expect_eq "promo-sonnet's one local commit changes only the tier file's three li
   "$(printf '3\t3\tplugins/cc-cmds/skills/_common/team-model-tier.md')" "$(cd "$gs" && git diff --numstat "$C" HEAD)"
 expect_eq "promo-sonnet is one commit past C with no remote" "${C}|" "$(cd "$gs" && git rev-parse HEAD~1)|$(cd "$gs" && git remote)"
 tier_s="$gs/plugins/cc-cmds/skills/_common/team-model-tier.md"
-if grep -Fq 'A promoted seat runs its class model; the record still writes `출처=승격` and its `지표`.' "$tier_s" \
+if grep -Fq 'A promoted seat runs its class model, never `opus` for a `sonnet` class: pass that class model as the `Agent()` call'"'"'s `model` and write it in `모델=`; the record still writes `출처=승격` and its `지표`.' "$tier_s" \
   && grep -Fq 'the triggers below mark its seat as promoted' "$tier_s" \
   && grep -Fq 'marks as promoted every `sonnet` seat' "$tier_s" \
   && ! grep -Fq 'A promoted seat runs `opus`.' "$tier_s"; then
@@ -349,10 +349,15 @@ if (( rc == 1 )) && [[ ! -d "$STUB_DIR/calls" ]]; then pass "the main run stops 
 
 rc=0; runner "$tmp/p1" run --pilot --exp-id "$P1" --budget-usd 1000 --repo "$R" || rc=$?
 expect_rc "the pilot exits 0 when it passes" 0 "$rc" "$tmp/p1.err"
-expect_eq "the pilot calls one branch once" 1 "$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
-expect_eq "pilot/result says 통과" "통과" "$(head -n 1 "$E/pilot/result")"
-if [[ -f "$E/pilot/report.md" ]]; then pass "the pilot report is kept in pilot/"; else fail "no pilot/report.md"; fi
-expect_eq "the pilot cost is a costs.tsv row with n=pilot" "pilot|opus-1|0|1.25" "$(awk -F'\t' '$1 == "pilot" { print $1 "|" $2 "|" $5 "|" $6 }' "$E/costs.tsv")"
+expect_eq "the pilot calls the sonnet branch and then the opus-1 branch, once each" "pilot-sonnet#1 pilot-opus-1#1" "$(paste -sd' ' - < "$STUB_DIR/keys")"
+expect_eq "pilot/result says 통과 with the summed cost and one passing line per branch" \
+  "통과|비용	2.5|갈래	sonnet	통과|갈래	opus-1	통과" "$(sed -n 1p "$E/pilot/result")|$(sed -n 2p "$E/pilot/result")|$(sed -n 4p "$E/pilot/result")|$(sed -n 5p "$E/pilot/result")"
+if [[ -f "$E/pilot/sonnet/report.md" && -f "$E/pilot/opus-1/report.md" ]]; then pass "each branch's pilot report is kept in pilot/<branch>/"; else fail "no pilot/<branch>/report.md"; fi
+expect_eq "the pilot costs are costs.tsv rows with n=pilot" "pilot|sonnet|0|1.25 pilot|opus-1|0|1.25" \
+  "$(awk -F'\t' '$1 == "pilot" { print $1 "|" $2 "|" $5 "|" $6 }' "$E/costs.tsv" | paste -sd' ' -)"
+expect_eq "the pilot keeps each branch's Agent calls, the sonnet branch's promoted seat asking for sonnet" \
+  "claude-sonnet-5-5	logic-shell|-	code-quality|opus	logic-shell" \
+  "$(cut -f1,2 "$E/pilot/sonnet/agents.tsv" | paste -sd'|' -)|$(awk -F'\t' 'NR == 1 { print $1 "\t" $2 }' "$E/pilot/opus-1/agents.tsv")"
 
 # The stub's arguments and environment against the closed list.
 rd="$S/pilot/opus-1"
@@ -365,22 +370,22 @@ prompt=$(cat "$rd/prompt")
     --append-system-prompt-file "$lead" --append-subagent-system-prompt-file "$members" \
     --exclude-dynamic-system-prompt-sections --no-session-persistence --output-format json --max-budget-usd 150
 } > "$tmp/want.argv"
-if cmp -s "$tmp/want.argv" "$STUB_DIR/calls/1.argv"; then pass "the review call carries exactly the closed list's flags"; else fail "the review call's arguments differ from the closed list"; diff "$tmp/want.argv" "$STUB_DIR/calls/1.argv" >&2 || true; fi
+if cmp -s "$tmp/want.argv" "$STUB_DIR/calls/2.argv"; then pass "the review call carries exactly the closed list's flags"; else fail "the review call's arguments differ from the closed list"; diff "$tmp/want.argv" "$STUB_DIR/calls/2.argv" >&2 || true; fi
 want_prefix="/cc-cmds:review-unattended work --base-sha ${p_A} --report-path ${rd}/report.md --declared-files \"f-A.sh, README.md\" --expand perf \"설계는 ${rd}/target/docs/design-x.md\" \"${pr_piece}"$'\n\n'"둘째 단락\" \"${directive_tail}"
 if [[ "$prompt" == "$want_prefix"* ]]; then pass "the prompt passes the local branch with --base-sha and the restored inputs"; else fail "the prompt is [$prompt]"; fi
 if [[ "$prompt" == *"${rd}/halt/review.md"* ]]; then pass "the directive names the branch's halt record path"; else fail "the directive does not name ${rd}/halt/review.md"; fi
 for kvp in "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=14400000" "CC_CMDS_STATUSLINE_AUTOINSTALL=0" "XDG_STATE_HOME=$rd/state" \
            "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1" "CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1" "CLAUDE_CONFIG_DIR=$tmp/cfg"; do
-  expect_line "the session gets ${kvp%%=*}" "$STUB_DIR/calls/1.env" "value $kvp"
+  expect_line "the session gets ${kvp%%=*}" "$STUB_DIR/calls/2.env" "value $kvp"
 done
-expect_line "the session runs in the target clone" "$STUB_DIR/calls/1.env" "cwd $rd/target"
-if ! grep -q '^name CC_PIPELINE_' "$STUB_DIR/calls/1.env"; then pass "the inherited CC_PIPELINE_* are unset"; else fail "a CC_PIPELINE_* reached the session"; fi
+expect_line "the session runs in the target clone" "$STUB_DIR/calls/2.env" "cwd $rd/target"
+if ! grep -q '^name CC_PIPELINE_' "$STUB_DIR/calls/2.env"; then pass "the inherited CC_PIPELINE_* are unset"; else fail "a CC_PIPELINE_* reached the session"; fi
 {
   compgen -e | grep -v '^CC_PIPELINE_' || true
   printf '%s\n' CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS CC_CMDS_STATUSLINE_AUTOINSTALL XDG_STATE_HOME \
     CLAUDE_CODE_DISABLE_CLAUDE_MDS CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT CLAUDE_CONFIG_DIR
 } | grep -v -x -e PWD -e OLDPWD -e SHLVL -e _ | LC_ALL=C sort -u > "$tmp/want.names"
-awk '$1 == "name" { print $2 }' "$STUB_DIR/calls/1.env" | grep -v -x -e PWD -e OLDPWD -e SHLVL -e _ | LC_ALL=C sort -u > "$tmp/got.names"
+awk '$1 == "name" { print $2 }' "$STUB_DIR/calls/2.env" | grep -v -x -e PWD -e OLDPWD -e SHLVL -e _ | LC_ALL=C sort -u > "$tmp/got.names"
 if cmp -s "$tmp/want.names" "$tmp/got.names"; then pass "the session's environment adds and removes nothing outside the closed list"; else fail "the session's environment names differ"; diff "$tmp/want.names" "$tmp/got.names" >&2 || true; fi
 
 # The settings and the instruction files.
@@ -407,6 +412,34 @@ expect_eq "the settings open mktemp only under the state home and the halt direc
 # The witness hook, fed the commands as the team protocol writes them: the
 # member header's temp and publish commands and the checkpoint clause's mkdir.
 expect_eq "the settings register one Bash PreToolUse hook" 1 "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash")] | length' "$st")"
+
+# The Agent hook, fed spawn calls as a lead makes them: it logs the model, the
+# seat of the member's own hidden temp, the agent id and the description, and
+# decides nothing.
+expect_eq "the settings register one Agent PreToolUse hook" 1 "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent|Task")] | length' "$st")"
+ac=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Agent|Task") | .hooks[0].command' "$st")
+al="$rd/agent-calls.tsv"
+# agent_logs <tool_input json> [agent id] — the hook's stdout, then its new log line.
+agent_logs() {
+  local before out
+  before=$(awk 'END { print NR }' "$al" 2>/dev/null || echo 0)
+  out=$(jq -n --argjson t "$1" --arg a "${2:-}" '{hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: $t}
+    + (if $a == "" then {} else {agent_id: $a} end)' | bash -c "$ac")
+  printf '%s#%s' "${out:-none}" "$(awk -v b="$before" 'NR > b' "$al" 2>/dev/null)"
+}
+rm -f "$al"
+own='T=$(mktemp \"$(dirname /w/witness-logic-round-2.md)/.logic.round-2.XXXXXX\")'
+peers='Read /w/witness-tests-round-1.md and /w/witness-security-round-1.md'
+expect_eq "the Agent hook logs the seat of the member's own temp, not its peers' witnesses, and decides nothing" \
+  "none#opus	logic	-	Logic reviewer round 2" \
+  "$(agent_logs "$(jq -n --arg p "$peers. $own" '{description: "Logic reviewer round 2", prompt: $p, model: "opus"}')")"
+expect_eq "a call with no model or no temp logs -, and a nested call its agent id" \
+  "none#-	-	a7	Find lints" \
+  "$(agent_logs "$(jq -n --arg p "$peers" '{description: "Find\tlints", prompt: $p}')" a7)"
+expect_eq "a prompt carrying two seats' temps names no seat" \
+  "none#sonnet	-	-	two" \
+  "$(agent_logs "$(jq -n --arg p "$own .tests.round-1.XXXXXX /.tests.round-1.XXXXXX" '{description: "two", prompt: $p, model: "sonnet"}')")"
+rm -f "$al"
 hc=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command' "$st")
 # hook_says <command> — the hook's decision for a Bash call, `none` for none.
 hook_says() {
@@ -439,11 +472,27 @@ expect_eq "the hook gives no decision to a dirname operand ending in / or holdin
 # The body of a quoted-delimiter heredoc is literal; an unquoted one expands.
 expect_eq "the hook allows the temp, a quoted heredoc into it and the publish in one call, and not an unquoted heredoc" "allow|none" \
   "$(hook_says "$c_mk && cat > \"\$T\" <<'EOF'"$'\n'"body \$(curl x) | rm -rf /"$'\n'"EOF"$'\n'"$c_mv")|$(hook_says "$c_mk && cat > \"\$T\" <<EOF"$'\n'"\$(curl x)"$'\n'"EOF"$'\n'"$c_mv")"
+# A member names the partial directory once in a path variable and builds the
+# witness from it with a single-quoted printf, as a pilot member did.
+wd=$(dirname "$wp")
+d_pub="D=$wd/partial; mkdir -p \"\$D\" && T=\$(mktemp \"\$D/.ct.XXXXXX\") && printf '%s\n' '# logic round-1 partial (seq 1)' '' '1. [high] a.sh:3 — x; y && z \$(curl x) \`id\`' '<!-- cc-partial: logic seq=1 -->' > \"\$T\" && mv \"\$T\" \"\$D/logic.round-1.md\" && echo ok"
+expect_eq "the hook allows a path variable below the directories, a single-quoted printf into the temp and a literal echo" \
+  "allow|allow|allow|allow|allow" \
+  "$(hook_says "$d_pub")|$(hook_says "D=$rd/halt"$'\n'"mkdir -p \"\${D}/x\"")|$(hook_says "T=\$(mktemp $wd/.t.XXXXXX) && printf 'it'\\''s %s\n' 'a' > \"\$T\"")|$(hook_says "printf 'x' > $wd/partial/n.md")|$(hook_says "D=$wd; mv -n \"\$D/.a\" \"\$D/b.md\"")"
+expect_eq "the hook gives no decision to a path variable elsewhere, past .., shell-read, reassigned or misread, nor to an expanding printf" \
+  "none|none|none|none|none|none|none|none|none|none|none" \
+  "$(hook_says "D=$rd/target; mkdir -p \"\$D\"")|$(hook_says "D=$rd/state/../x; mkdir -p \"\$D\"")|$(hook_says "PATH=$rd/state; mkdir -p \"\$PATH\"")|$(hook_says "D=$rd/state; D=$rd/target; mkdir -p \"\$D\"")|$(hook_says "T=\$(mktemp $wd/.t.XXXXXX); T=$rd/target")|$(hook_says "D=$rd/state; mkdir -p \"\$DX\"")|$(hook_says "D=$rd/state; mkdir -p \"\$D\"x")|$(hook_says "T=\$(mktemp $wd/.t.XXXXXX) && printf \"\$(id)\" > \"\$T\"")|$(hook_says "T=\$(mktemp $wd/.t.XXXXXX) && printf '%s' \$HOME > \"\$T\"")|$(hook_says "printf 'x' > \"\$U\"")|$(hook_says "printf 'x; mkdir -p $rd/state/a")"
+expect_eq "the hook splits a call only at ; and && outside quotes" "none|none" \
+  "$(hook_says "mkdir -p '$rd/state/a;curl x'")|$(hook_says "echo ok && \"curl\" x")"
 ml="$rd/witness-misses.log"
 hook_says "ls $rd" > /dev/null
 jq -n --arg c "mktemp /tmp/y.XXXXXX" '{tool_name: "Bash", agent_id: "m1", tool_input: {command: $c}}' | bash -c "$hc" > /dev/null 2>&1 || true
-expect_eq "the hook logs each undecided call naming mktemp, mv or mkdir with its agent, and nothing else" \
-  "15|m1	mktemp /tmp/y.XXXXXX" "$(awk 'END { print NR }' "$ml")|$(tail -n 1 "$ml")"
+jq -n --arg c "mktemp -d $rd/state/../y.XXXXXX" '{tool_name: "Bash", agent_id: "m2", tool_input: {command: $c}}' | bash -c "$hc" > /dev/null 2>&1 || true
+# A scratch directory under the system temp or in the target clone is no
+# witness command, so its mktemp is not logged even when it gets no decision.
+expect_eq "the hook logs each undecided call running mktemp, mv or mkdir on those directories with its agent, and nothing else" \
+  "24|m2	mktemp -d $rd/state/../y.XXXXXX|0" \
+  "$(awk 'END { print NR }' "$ml")|$(tail -n 1 "$ml")|$(grep -c -e '/tmp/y\.' -e "$rd/target/" "$ml")"
 rm -f "$ml"
 # A read that only mentions the words, and a mkdir in the target clone that
 # acceptEdits approves, are not witness commands the session refuses.
@@ -505,16 +554,22 @@ expect_eq "a halt record in the branch's halt directory is attached to the reaso
 expect_eq "branches with different promoted sets stay valid" "$nE|유효|-|opus-1=logic-shell;sonnet=logic-shell,code-quality;opus-2=logic-shell" "$(samp 4)"
 expect_eq "sample 5 is valid" "$nF|유효|-" "$(samp 5 | cut -d'|' -f1-3)"
 expect_eq "a call without total_cost_usd is a - row" "-" "$(awk -F'\t' '$1 == "5" && $2 == "opus-1" { print $6 }' "$E/costs.tsv")"
-expect_eq "costs.tsv holds the pilot and every call" 16 "$(awk 'NR > 1' "$E/costs.tsv" | wc -l | tr -d ' ')"
+expect_eq "costs.tsv holds the pilot's two calls and every call" 17 "$(awk 'NR > 1' "$E/costs.tsv" | wc -l | tr -d ' ')"
 expect_eq "every call of all three branches gets the same lane directory as CLAUDE_CONFIG_DIR" \
-  "16|16" "$(find "$STUB_DIR/calls" -name '*.env' | wc -l | tr -d ' ')|$(cat "$STUB_DIR"/calls/*.env | grep -Fxc "value CLAUDE_CONFIG_DIR=$tmp/cfg" || true)"
+  "17|17" "$(find "$STUB_DIR/calls" -name '*.env' | wc -l | tr -d ' ')|$(cat "$STUB_DIR"/calls/*.env | grep -Fxc "value CLAUDE_CONFIG_DIR=$tmp/cfg" || true)"
 expect_eq "the main run's sessions span the three branches" "opus-1 opus-2 sonnet" \
   "$(awk -F'\t' 'NR > 1 && $1 != "pilot" { print $2 }' "$E/costs.tsv" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ -f "$E/reports/1-opus-1.md" && -f "$E/reports/4-sonnet.md" && ! -f "$E/reports/2-opus-1.md" ]]; then pass "valid branch reports are copied to reports/, invalid slots' are not"; else fail "reports/ holds the wrong files"; fi
+expect_eq "each valid branch's deviations and Agent calls are recorded beside its report, an invalid slot's are not" \
+  "거부	0|미승인	0|claude-sonnet-5-5	logic-shell|no|no" \
+  "$(sed -n 1p "$E/reports/1-opus-1.deviations.tsv")|$(sed -n 2p "$E/reports/1-opus-1.deviations.tsv")|$(head -n 1 "$E/reports/1-sonnet.agents.tsv" | cut -f1,2)|$([[ -f "$E/reports/2-opus-1.deviations.tsv" ]] && echo yes || echo no)|$([[ -f "$E/reports/2-opus-1.agents.tsv" ]] && echo yes || echo no)"
+expect_eq "an invalid try's records and runs move aside under its try number instead of being deleted" \
+  "yes|yes|no|yes|yes|yes" \
+  "$(for x in "$E/reports/invalid/2-0-opus-1.md" "$E/reports/invalid/2-0-opus-1.agents.tsv" "$E/reports/invalid/2-0-sonnet.md" "$E/reports/invalid/2-0-sonnet.deviations.tsv" "$E/reports/invalid/2-1-opus-1.md"; do [[ -f "$x" ]] && echo yes || echo no; done | paste -sd'|' -)|$([[ -f "$S/invalid/2-0-sonnet/result.json" ]] && echo yes || echo no)"
 expect_eq "the verdict is the report's last line" "# verdict: 판정 불가(표본 수)" "$(tail -n 1 "$E/report.md")"
-expect_line "the verdict report prints the cost total, a - row counting the whole reserve" "$E/report.md" "- 비용 합계(costs.tsv, \`-\` 행은 예비 전액): 168.7500 USD"
+expect_line "the verdict report prints the cost total, a - row counting the whole reserve" "$E/report.md" "- 비용 합계(costs.tsv, \`-\` 행은 예비 전액): 170.0000 USD"
 rc=0; runner "$tmp/s1" status --exp-id "$P1" --repo "$R" || rc=$?
-if (( rc == 0 )) && grep -Fq -- '--- 비용 합계: 168.7500 USD' "$tmp/s1"; then pass "status prints the cost total"; else fail "status: exit $rc, no cost total"; fi
+if (( rc == 0 )) && grep -Fq -- '--- 비용 합계: 170.0000 USD' "$tmp/s1"; then pass "status prints the cost total"; else fail "status: exit $rc, no cost total"; fi
 
 # --rerun-sample discards slot 3 and runs it again.
 rc=0; runner "$tmp/r1" --rerun-sample 3 --exp-id "$P1" --budget-usd 1000 --repo "$R" || rc=$?
@@ -529,15 +584,15 @@ export STUB_DIR="$tmp/stub-e2"
 mkdir -p "$STUB_DIR"
 rc=0; runner "$tmp/b0" run --pilot --exp-id "$P2" --budget-usd 1000 --repo "$R" || rc=$?
 expect_rc "the second experiment's pilot passes" 0 "$rc" "$tmp/b0.err"
-rc=0; runner "$tmp/b1" run --exp-id "$P2" --budget-usd 152 --repo "$R" || rc=$?
+rc=0; runner "$tmp/b1" run --exp-id "$P2" --budget-usd 153 --repo "$R" || rc=$?
 expect_rc "the budget guard exits 4" 4 "$rc" "$tmp/b1.err"
-expect_eq "the guard stops before the session that would pass the budget" 2 "$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
+expect_eq "the guard stops before the session that would pass the budget" 3 "$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
 expect_eq "every unfinished slot is 예산 상한" 5 "$(awk -F'\t' 'NR > 1 && $5 == "무효" && index($6, "예산 상한 — ") == 1' "$E/samples.tsv" | wc -l | tr -d ' ')"
 if [[ -f "$E/report.md" ]]; then pass "the guard writes the verdict"; else fail "no report.md after the guard"; fi
 rc=0; runner "$tmp/b2" run --exp-id "$P2" --budget-usd 1000 --repo "$R" || rc=$?
 expect_rc "the same command with a larger budget carries on" 0 "$rc" "$tmp/b2.err"
 expect_eq "the carried-on run finishes every slot" 5 "$(awk -F'\t' 'NR > 1 && $5 == "유효"' "$E/samples.tsv" | wc -l | tr -d ' ')"
-expect_eq "the carried-on run does not repeat the finished session" 16 "$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
+expect_eq "the carried-on run does not repeat the finished session" 17 "$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
 
 # ---------- a pilot with a refused tool call ---------------------------------
 
@@ -545,17 +600,54 @@ P3=20261101-0000e003
 E="$R/docs/review-seat-promotion-pair/$P3"
 export STUB_DIR="$tmp/stub-e3"
 mkdir -p "$STUB_DIR"
-printf 'pilot-opus-1#1\tdenied\n' > "$STUB_DIR/plan"
+calls() { find "$STUB_DIR/calls" -name '*.argv' 2>/dev/null | wc -l | tr -d ' '; }
+rc=0; runner "$tmp/q9" run --pilot --rejudge --exp-id "$P3" --repo "$R" || rc=$?
+expect_eq "a rejudge with no pilot session left stops with exit 1 and makes no call" "1|0" "$rc|$(calls)"
+printf 'pilot-opus-1#1\tnocost\npilot-opus-1#2\tdenied\n' > "$STUB_DIR/plan"
 rc=0; runner "$tmp/q0" run --pilot --exp-id "$P3" --budget-usd 1000 --repo "$R" || rc=$?
-expect_eq "a pilot whose session had a tool call refused fails with exit 1, naming the count and the tool" \
-  "1|실패 — 거부된 도구 호출 1건 (Bash)" "$rc|$(head -n 1 "$E/pilot/result")"
+ob="$E/pilot/opus-1/result"
+expect_eq "a failed pilot names the failing branch and records its deviations after the cost and the report, - for a JSON without permission_denials" \
+  "1|실패 — opus-1: total_cost_usd 가 JSON 에 없다|갈래	opus-1	실패 — total_cost_usd 가 JSON 에 없다|거부	-|미승인	0" \
+  "$rc|$(head -n 1 "$E/pilot/result")|$(sed -n 5p "$E/pilot/result")|$(sed -n 4p "$ob")|$(sed -n 5p "$ob")"
 rc=0; runner "$tmp/q1" run --exp-id "$P3" --budget-usd 1000 --repo "$R" || rc=$?
-expect_eq "after that failed pilot the main run stops with exit 1 and makes no call" "1|1" \
-  "$rc|$(find "$STUB_DIR/calls" -name '*.argv' | wc -l | tr -d ' ')"
-printf 'pilot-opus-1#2\twitnessmiss\n' >> "$STUB_DIR/plan"
+expect_eq "after that failed pilot the main run stops with exit 1 and makes no call" "1|2" "$rc|$(calls)"
+rows=$(awk 'END { print NR }' "$E/costs.tsv")
+rc=0; runner "$tmp/q3" run --pilot --rejudge --exp-id "$P3" --repo "$R" || rc=$?
+expect_eq "a rejudge needs no budget, judges the left sessions again under the same conditions and makes no call or cost row" \
+  "1|실패 — opus-1: total_cost_usd 가 JSON 에 없다|2|$rows" "$rc|$(head -n 1 "$E/pilot/result")|$(calls)|$(awk 'END { print NR }' "$E/costs.tsv")"
 rc=0; runner "$tmp/q2" run --pilot --exp-id "$P3" --budget-usd 1000 --repo "$R" || rc=$?
-expect_eq "a pilot whose witness hook logged an undecided witness command fails with exit 1" \
-  "1|실패 — 증인 명령 미승인 1건" "$rc|$(head -n 1 "$E/pilot/result")"
+expect_eq "a pilot rerun keeps the branch that passed on the same sample, and passes with the refused call's count and tool" \
+  "0|통과|3|pilot-opus-1#2|거부	1 Bash|미승인	0" "$rc|$(head -n 1 "$E/pilot/result")|$(calls)|$(tail -n 1 "$STUB_DIR/keys")|$(sed -n 4p "$ob")|$(sed -n 5p "$ob")"
+rc=0; runner "$tmp/q4" run --pilot --rejudge --exp-id "$P3" --repo "$R" || rc=$?
+expect_eq "a rejudge after a passed pilot changes nothing and makes no call" "0|통과|3" "$rc|$(head -n 1 "$E/pilot/result")|$(calls)"
+rc=0; runner "$tmp/q5" run --rejudge --exp-id "$P3" --repo "$R" || rc=$?
+expect_eq "--rejudge without --pilot is a usage error" 2 "$rc"
+
+P4=20261101-0000e004
+E="$R/docs/review-seat-promotion-pair/$P4"
+export STUB_DIR="$tmp/stub-e4"
+mkdir -p "$STUB_DIR"
+printf 'pilot-opus-1#1\twitnessmiss\n' > "$STUB_DIR/plan"
+rc=0; runner "$tmp/q6" run --pilot --exp-id "$P4" --budget-usd 1000 --repo "$R" || rc=$?
+expect_eq "a pilot whose witness hook logged an undecided witness command passes and records the count" \
+  "0|통과|거부	0|미승인	1" "$rc|$(head -n 1 "$E/pilot/result")|$(sed -n 4p "$E/pilot/opus-1/result")|$(sed -n 5p "$E/pilot/opus-1/result")"
+
+# ---------- a sonnet branch whose promoted seat did not leave opus -----------
+
+P5=20261101-0000e005
+E="$R/docs/review-seat-promotion-pair/$P5"
+export STUB_DIR="$tmp/stub-e5"
+mkdir -p "$STUB_DIR"
+printf 'pilot-sonnet#1\topusseat\npilot-sonnet#2\tnoagent\n' > "$STUB_DIR/plan"
+rc=0; runner "$tmp/u0" run --pilot --exp-id "$P5" --budget-usd 1000 --repo "$R" || rc=$?
+expect_eq "a sonnet branch whose report says sonnet but whose promoted seat was spawned on opus fails the pilot before opus-1 runs" \
+  "1|실패 — sonnet: 승격 실제 모델 불일치 (logic-shell=opus)|1" "$rc|$(head -n 1 "$E/pilot/result")|$(calls)"
+rc=0; runner "$tmp/u1" run --pilot --exp-id "$P5" --budget-usd 1000 --repo "$R" || rc=$?
+expect_eq "a promoted seat with no logged spawn fails the pilot, and the failed branch is run again" \
+  "1|실패 — sonnet: 승격 실제 모델 불일치 (logic-shell=없음)|2" "$rc|$(head -n 1 "$E/pilot/result")|$(calls)"
+printf '%s\n' '통과' '비용	1.25' "$(sed -n 3p "$E/pilot/sonnet/result")" > "$E/pilot/result"
+rc=0; runner "$tmp/u2" run --exp-id "$P5" --budget-usd 1000 --repo "$R" || rc=$?
+expect_eq "a pilot/result that says 통과 without a passing sonnet line does not open the main run" "1|2" "$rc|$(calls)"
 
 lane_list > "$tmp/lane.after"
 if cmp -s "$tmp/lane.before" "$tmp/lane.after"; then pass "no runner call creates, removes or writes a file in the lane directory"; else fail "the lane directory's files changed"; diff "$tmp/lane.before" "$tmp/lane.after" >&2 || true; fi

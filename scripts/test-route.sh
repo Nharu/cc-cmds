@@ -2566,7 +2566,7 @@ expect "몰아 쓰기 GRANT 의 order 는 단계 칸과 근거 칸만 채운다"
     burst_length_s: 28800, burst_length_source: \"declared\", threshold_bp: null, ratio_source: null, tier: null,
     r7_bp: null, admitted: null, picked_by: \"spread\", load5_bp: 1000, affinity_account: null, affinity_hold_bp: null,
     ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null,
-    pressure_bp_h: 0, five_hour_state: \"known\", five_hour_basis: null}"
+    pressure_bp_h: 0, five_hour_state: \"known\", five_hour_basis: null, five_hour_mismatch: null}"
 expect "단계 기록이 없으면 쉼/absent 이고 문턱을 싣는다" "$(decide 'del(.phase)')" \
   '.order | .phase == "rest" and .phase_source == "absent" and .until_epoch == null and .burst_length_s == 28800
    and .burst_length_source == "default" and .threshold_bp == 3413 and .ratio_source == "default"'
@@ -2709,7 +2709,7 @@ tr_in_run "$TR_RUN_SH" tr_phase_gather_case
 # ===========================================================================
 FX="$repo_root/tests/fixtures/route-usage-contract/usage-reset-passes.json"
 FX_NOW=1800000000
-FX_SHA=f282ea51d54fc5166381a464ed2cb5ef4ea033d761b021bda5888b3f1a27017c
+FX_SHA=cf1241826575fe3ac7d6620dcadfa72335d3f8733470b02f8ce3b91919a46457
 FX_JQ='
 def FXINV: .inventory.accounts = [.usage.accounts[].id | A(.) + {config_dir: ("/fixture/" + .)}];
 def FONLY($ids): .inventory.accounts = [$ids[] | A(.) + {config_dir: ("/fixture/" + .)}];
@@ -2751,6 +2751,14 @@ fx_order() {
 check "라우터-9: 고정 입력 바이트의 SHA-256 이 cc-lane 리터럴과 같다" "$(tr_sha256 "$FX")" "$FX_SHA"
 FXU=$(bash "$TR_ROUTE" usage-read "$FX" "$FX_NOW")
 expect "고정 입력이 지금 1800000000 에서 신선하게 읽힌다" "$FXU" '.state == "valid" and .fresh == true and (.accounts | length) == 5'
+check "고정 입력: 다섯 계정 모두 5시간 한도 발행 상태를 싣는다" \
+  "$(printf '%s' "$FXU" | jq -c '[.accounts[] | "\(.id)=\(.five_hour_limit.state)/\(.five_hour_limit.source)"]')" \
+  '["work=limited/auto","busy=limited/auto","late=limited/auto","full=limited/auto","spare=unknown/auto"]'
+check "고정 입력: work 그룹은 발행 판정 limited 라 known/published, spare 는 발행 판정이 없다" \
+  "$(fxctx "$FX_NOW" "$FXU" '.' | bash "$TR_ROUTE" classify \
+     | jq -c --arg w "org:1111111111111111" '[.groups[] | select(.group == $w or .group == "acct:spare")
+         | "\(.group)=\(.windows.five_hour.state)/\(.windows.five_hour.basis // "-")/\(.windows.five_hour.mismatch // "-")"] | sort')" \
+  '["acct:spare=unknown/-/-","org:1111111111111111=known/published/-"]'
 
 G_WORK='org:1111111111111111'; G_BUSY='org:2222222222222222'; G_LATE='org:3333333333333333'
 G_FULL='org:4444444444444444'; G_FULL2='org:5555555555555555'
@@ -3438,13 +3446,15 @@ tr_affinity_rec_case() {
   check "기록: 부여 기록이 한 줄이다" "$(wc -l < "$RUN_DIR/route-picks.jsonl" | tr -d ' ')" 1
   check "기록: 부여 기록 한 줄의 근거가 봉투의 order 와 같다" \
     "$(jq -c '[.schema, .run_id, .lineage, .event, .basis, .account, .group, .picked_by, .load5_bp, .affinity_account, .affinity_hold_bp,
-              .ask_need_bp, .ask_r7_bp, .ask_fits, .ask_avoided, .pressure_bp_h, .five_hour_state, .five_hour_basis]' "$RUN_DIR/route-picks.jsonl")" \
+              .ask_need_bp, .ask_r7_bp, .ask_fits, .ask_avoided, .pressure_bp_h, .five_hour_state, .five_hour_basis,
+              .five_hour_mismatch]' "$RUN_DIR/route-picks.jsonl")" \
     "$(printf '%s' "$out" | jq -c '["cc-cmds-route-pick v1", "r1", "S1", "first", .basis, .account, .group,
        .order.picked_by, .order.load5_bp, .order.affinity_account, .order.affinity_hold_bp,
        .order.ask_need_bp, .order.ask_r7_bp, .order.ask_fits, .order.ask_avoided,
-       .order.pressure_bp_h, .order.five_hour_state, .order.five_hour_basis]')"
-  check "기록: 부여 기록이 압력과 5시간 창 상태 칸을 싣는다" \
-    "$(jq -c '[has("pressure_bp_h"), has("five_hour_state"), has("five_hour_basis")]' "$RUN_DIR/route-picks.jsonl")" '[true,true,true]'
+       .order.pressure_bp_h, .order.five_hour_state, .order.five_hour_basis, .order.five_hour_mismatch]')"
+  check "기록: 부여 기록이 압력과 5시간 창 상태·근거·어긋남 칸을 싣는다" \
+    "$(jq -c '[has("pressure_bp_h"), has("five_hour_state"), has("five_hour_basis"), has("five_hour_mismatch")]' "$RUN_DIR/route-picks.jsonl")" \
+    '[true,true,true,true]'
   check "기록: 출하 설정의 implement 부여는 새 기준의 네 칸을 채운다" \
     "$(jq -c '[(.ask_need_bp | type), (.ask_fits | type), (.ask_avoided | type)]' "$RUN_DIR/route-picks.jsonl")" \
     '["number","boolean","array"]'
@@ -3523,10 +3533,16 @@ def EV($ids): EVON([$ids[] | EVS(.; 0; 1000; null)]);
 def FR5($acct; $r): .frames += [{account: $acct, observed_at_epoch: ($now - 60), windows: {five_hour: {u: 0, resets_at: $r}}}];
 def FR7($acct; $u): .frames += [{account: $acct, observed_at_epoch: ($now - 60), windows: {seven_day: {u: $u, resets_at: ($now + 86400)}}}];
 def L3($acct): ITEMS([LG("r7"; "X#1"; $acct; true), LG("r8"; "X#1"; $acct; true), LG("r9"; "X#1"; $acct; true)]);
+def FL($s): . + {five_hour_limit: {state: $s, source: "auto"}};
 '
 # g5 <필터> <그룹> — 분류가 낸 그룹 5시간 창의 `상태/근거`.
 g5() {
   classify "$UN_JQ $1" | jq -r --arg g "$2" '[.groups[] | select(.group == $g) | .windows.five_hour | "\(.state)/\(.basis // "-")"] | .[0]'
+}
+# g5m <필터> <그룹> — 분류가 낸 그룹 5시간 창의 `상태/근거/어긋남`.
+g5m() {
+  classify "$UN_JQ $1" | jq -r --arg g "$2" \
+    '[.groups[] | select(.group == $g) | .windows.five_hour | "\(.state)/\(.basis // "-")/\(.mismatch // "-")"] | .[0]'
 }
 ulwhy() { classify "$LJ $UN_JQ $1" | jq -r '[.accounts[] | select(.id == "cc") | .lend.why] | .[0] | tostring'; }
 # un_jq <필터> <jq 식> — route.sh 의 jq 정의 위에서 문맥 하나로 식을 계산한다.
@@ -3726,7 +3742,8 @@ expect "쉼 키: W7·load5·층·r7 이 같으면 P 가 큰 계정이고 picked_
 out=$(decide "$UN_JQ ONLY([\"a\"]) | USE([N5(\"a\"; 0.5; 86400)]) | REQ({event: \"resume\", bound_account: \"a\"})")
 expect "기록: 재부착 부여는 압력과 5시간 창 칸이 null 이다" "$out" \
   '.verdict == "GRANT" and .basis == "resume-bound"
-   and .order.pressure_bp_h == null and .order.five_hour_state == null and .order.five_hour_basis == null'
+   and .order.pressure_bp_h == null and .order.five_hour_state == null and .order.five_hour_basis == null
+   and .order.five_hour_mismatch == null'
 
 # 10. 한도 있음 쪽 증거가 이긴다. 5시간 키가 없고 표본 증거가 한도 없음이어도, 해제 시각이
 # 지금보다 뒤인 프레임의 5시간 판독이 있으면 한도 없음이 아니다.
@@ -3755,7 +3772,8 @@ tr_reclaim_case() {
   printf '%s' "$rc"
 }
 UNC='ITEMS([LG("r1"; "S1"; "z"; true)]) | REQ({event: "limit-reclaim"})'
-for row in 'Z5("a"; 0.1; 86400)|EV(["a"])|evidence|1' 'N5("a"; 0.1; 86400)|.|absent|0' 'UA("a"; 0.1; 0.1)|EV(["a"])|null|0'; do
+for row in 'Z5("a"; 0.1; 86400)|EV(["a"])|evidence|1' 'N5("a"; 0.1; 86400)|.|absent|0' 'UA("a"; 0.1; 0.1)|EV(["a"])|null|0' \
+           'UA("a"; 0.1; 0.1) + {five_hour_limit: {state: "unlimited", source: "auto"}}|.|published|0'; do
   IFS='|' read -r ua ev basis want <<EOF
 $row
 EOF
@@ -3765,6 +3783,90 @@ EOF
      and (.order.five_hour_basis | tostring) == \"$basis\""
   check "회수: five_hour_basis $basis 인 부여의 회수 판정은 rc $want" "$(tr_in_run "$TR_RUN_SH" tr_reclaim_case "$out")" "$want"
 done
+
+# 12. 5시간 한도 발행 상태. 신선한 사용량 행의 `five_hour_limit.state` 가 limited·unlimited
+# 면 형태 추정보다 앞서 그룹 5시간 창을 정하고 근거는 `published` 다. 추정이 내렸을 판정이
+# 다르면 그 판정이 `mismatch` 에 남는다. 사례마다 발행 상태를 지운 대조를 둔다.
+# 12-1. 발행 limited — 사용률 0 이고 표본 증거가 한도 없음인 그룹도 한도 있음이다.
+UPZ='ONLY(["a"]) | USE([Z5("a"; 0.5; 86400) | FL("limited")]) | EV(["a"])'
+check "발행 limited: 사용률 0·표본 증거 한도 없음 그룹이 known/published, 어긋남 evidence" "$(g5m "$UPZ" acct:a)" "known/published/evidence"
+check "발행 limited 대조: 발행 상태가 없으면 표본 증거로 한도 없음" \
+  "$(g5m 'ONLY(["a"]) | USE([Z5("a"; 0.5; 86400)]) | EV(["a"])' acct:a)" "unlimited/evidence/-"
+expect "발행 limited: 봉투가 known/published 와 어긋남 evidence 를 싣는다" "$(decide "$UN_JQ $UPZ")" \
+  '.verdict == "GRANT" and .order.five_hour_state == "known" and .order.five_hour_basis == "published"
+   and .order.five_hour_mismatch == "evidence"'
+expect "발행 limited: live 임대의 5시간 합이 여유를 넘으면 입회하지 않는다" \
+  "$(admit1 "$UN_JQ ONLY([\"a\"]) | USE([Z5(\"a\"; 0.0; 86400) | FL(\"limited\")]) | EV([\"a\"]) | L3(\"a\")")" \
+  '.admitted == false and .failed == ["five_hour"]'
+check "발행 limited: 5시간 값이 없는 그룹은 unknown/published, 어긋남 absent" \
+  "$(g5m 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400) | FL("limited")])' acct:a)" "unknown/published/absent"
+check "발행 limited 대조: 발행 상태가 없으면 unlimited/absent" \
+  "$(g5m 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400)])' acct:a)" "unlimited/absent/-"
+# 12-2. 발행 unlimited — 관측된 5시간 창과 해제 전 프레임 판독보다 앞선다.
+UPU='ONLY(["a"]) | USE([UA("a"; 0.85; 0.0) | FL("unlimited")])'
+check "발행 unlimited: 사용률 0.85 그룹이 unlimited/published, 어긋남 limited" "$(g5m "$UPU" acct:a)" "unlimited/published/limited"
+check "발행 unlimited 대조: 발행 상태가 없으면 known" "$(g5m 'ONLY(["a"]) | USE([UA("a"; 0.85; 0.0)])' acct:a)" "known/-/-"
+expect "발행 unlimited: live 임대의 5시간 합이 넘쳐도 입회한다" "$(admit1 "$UN_JQ $UPU | L3(\"a\")")" \
+  '.admitted == true and .failed == []'
+expect "발행 unlimited 대조: 발행 상태가 없으면 입회하지 않는다" \
+  "$(admit1 "$UN_JQ ONLY([\"a\"]) | USE([UA(\"a\"; 0.85; 0.0)]) | L3(\"a\")")" '.admitted == false'
+check "발행 unlimited: live 임대의 5시간 합이 넘쳐도 재검증을 통과한다" "$(un_reval "$UPU | L3(\"a\")" "$RES_JSON")" 0
+check "발행 unlimited 대조: 발행 상태가 없으면 재검증이 거절한다" \
+  "$(un_reval 'ONLY(["a"]) | USE([UA("a"; 0.85; 0.0)]) | L3("a")' "$RES_JSON")" 1
+check "발행 unlimited: 5시간 값이 없는 그룹은 unlimited/published, 어긋남 없음" \
+  "$(g5m 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400) | FL("unlimited")])' acct:a)" "unlimited/published/-"
+check "발행 unlimited: 해제 전 프레임 5시간 판독이 있어도 한도 없음" \
+  "$(g5m 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400) | FL("unlimited")]) | FR5("a"; ($now + 3600))' acct:a)" "unlimited/published/limited"
+check "발행 unlimited 대조: 발행 상태가 없으면 프레임 판독이 이긴다" \
+  "$(g5m 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400)]) | FR5("a"; ($now + 3600))' acct:a)" "known/-/-"
+# 12-3. 그룹 판정 — limited 표가 이기고, unknown·키 없음 행은 표를 던지지 않는다.
+check "발행 그룹: limited + unlimited → limited" \
+  "$(g5m 'ONLY(["a","b"]) | USE([(N5("a"; 0.5; 86400) + {org_hash: "o"} | FL("limited")), (N5("b"; 0.5; 86400) + {org_hash: "o"} | FL("unlimited"))])' org:o)" \
+  "unknown/published/absent"
+check "발행 그룹: unlimited + unknown → unlimited" \
+  "$(g5m 'ONLY(["a","b"]) | USE([(N5("a"; 0.5; 86400) + {org_hash: "o"} | FL("unlimited")), (UA("b"; 0.3; 0.5) + {org_hash: "o"} | FL("unknown"))])' org:o)" \
+  "unlimited/published/limited"
+check "발행 그룹 대조: 같은 두 행에 발행 상태가 없으면 한도 있음" \
+  "$(g5m 'ONLY(["a","b"]) | USE([N5("a"; 0.5; 86400) + {org_hash: "o"}, UA("b"; 0.3; 0.5) + {org_hash: "o"}])' org:o)" "known/-/-"
+check "발행 그룹: unknown + 키 없음 → 형태 추정(absent)" \
+  "$(g5m 'ONLY(["a","b"]) | USE([(N5("a"; 0.5; 86400) + {org_hash: "o"} | FL("unknown")), N5("b"; 0.5; 86400) + {org_hash: "o"}])' org:o)" \
+  "unlimited/absent/-"
+# 12-4. 대체 경로 — 표가 없으면 오늘의 판정 그대로이고 어긋남 칸이 없다.
+check "발행 대체: unknown 만 있는 그룹은 표본 증거로 한도 없음" \
+  "$(g5m 'ONLY(["a"]) | USE([Z5("a"; 0.5; 86400) | FL("unknown")]) | EV(["a"])' acct:a)" "unlimited/evidence/-"
+check "발행 대체: 문자열 five_hour_limit 는 키 없음과 같다" \
+  "$(g5m 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400) + {five_hour_limit: "limited"}])' acct:a)" "unlimited/absent/-"
+check "발행 대체: 어휘 밖 state 는 키 없음과 같다" \
+  "$(g5m 'ONLY(["a"]) | USE([N5("a"; 0.5; 86400) | FL("x")])' acct:a)" "unlimited/absent/-"
+check "발행 대체: unknown 만 있는 그룹의 판정은 발행 상태가 없을 때와 바이트가 같다" \
+  "$(classify "$UN_JQ ONLY([\"a\"]) | USE([Z5(\"a\"; 0.5; 86400) | FL(\"unknown\")]) | EV([\"a\"])" | jq -c '.groups')" \
+  "$(classify "$UN_JQ ONLY([\"a\"]) | USE([Z5(\"a\"; 0.5; 86400)]) | EV([\"a\"])" | jq -c '.groups')"
+check "발행 대체: 낡은 사용량 파일의 발행 상태는 읽지 않는다" \
+  "$(g5m 'ONLY(["a"]) | USE([UA("a"; 0.1; 0.5) | FL("unlimited")]) | .usage.written_at_epoch = ($now - 100000)' acct:a)" "unknown/-/-"
+expect "발행 대체: 봉투의 어긋남 칸은 null 이다" \
+  "$(decide "$UN_JQ ONLY([\"a\"]) | USE([N5(\"a\"; 0.5; 86400) | FL(\"unknown\")])")" \
+  '.order.five_hour_basis == "absent" and .order.five_hour_mismatch == null'
+# 12-5. 부여 기록 줄 — 발행 limited 부여의 줄이 근거와 어긋남을 싣는다.
+un_pick() {
+  local d="$WORK/unpick"
+  rm -rf "$d"; mkdir -p "$d"
+  ( . "$TR_ROUTE"; RUN_DIR="$d"; route__affinity_grant '{"run_id":"r1","lineage":"S1","event":"first"}' "$1" "$NOW" ) 2>/dev/null
+  cat "$d/route-picks.jsonl" 2>/dev/null
+}
+check "발행 limited: 부여 기록 줄이 published 와 어긋남 evidence 를 싣는다" \
+  "$(un_pick "$(decide "$UN_JQ $UPZ")" | jq -c '[.five_hour_state, .five_hour_basis, .five_hour_mismatch]')" '["known","published","evidence"]'
+check "발행 limited 대조: 발행 상태가 없는 부여 기록 줄의 어긋남은 null 이다" \
+  "$(un_pick "$(decide "$UN_JQ ONLY([\"a\"]) | USE([Z5(\"a\"; 0.5; 86400)]) | EV([\"a\"])")" \
+     | jq -c '[.five_hour_state, .five_hour_basis, .five_hour_mismatch]')" '["unlimited","evidence",null]'
+# 12-6. 대여 등록 행 — 발행 unlimited 면 five-hour-cap 과 window-stale 을 받지 않는다.
+check "발행 unlimited: 대여 등록 행은 five-hour-cap 을 건너뛴다" \
+  "$(ulwhy 'UBLK | CCX(.windows.five_hour.utilization = 0.9 | FL("unlimited")) | ITEMS([LG("r0"; "X#1"; "cc"; true)])')" null
+check "발행 unlimited 대조: 발행 상태가 없으면 five-hour-cap" \
+  "$(ulwhy 'UBLK | CCX(.windows.five_hour.utilization = 0.9) | ITEMS([LG("r0"; "X#1"; "cc"; true)])')" "five-hour-cap"
+check "발행 unlimited: 5시간 창이 낡은 대여 등록 행은 window-stale 이 아니다" \
+  "$(ulwhy 'UBLK | CCX(.windows.five_hour.observed_at_epoch = ($now - 100000) | FL("unlimited"))')" null
+check "발행 unlimited 대조: 발행 상태가 없으면 낡은 5시간 창의 대여 등록 행은 막힌다" \
+  "$(ulwhy 'UBLK | CCX(.windows.five_hour.observed_at_epoch = ($now - 100000))')" "window-stale"
 
 # ===========================================================================
 # 질문 가능 스테이지의 주간 여유 기준. 문맥에 `config.ask` 가 있고 요청 종류가 질문

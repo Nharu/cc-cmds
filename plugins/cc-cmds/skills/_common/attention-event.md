@@ -224,10 +224,18 @@ otherwise. Kinds without a reply surface (`turn`, `run-end`, `run-stop`,
   banner function only does so inside its demotion branch, below the tap site,
   so whoever calls the tap substitutes it before computing the slot.
 - The slot of an `active-notify` event is the local group active-notify gives
-  that banner.
-- The slot of a `permission` event is `cc-cmds-permission-<session_id>`, with
-  the session id as is (not `safe_sid`), as the session banner groups use it.
-  There is no local banner; the slot is the name a handled marker matches.
+  that banner. On a host that cannot raise a banner, or when terminal-notifier
+  is missing, it is the group that fire would have given its banner.
+- The slot of a `permission` event is one per dialog:
+  `cc-cmds-permission-<session_id>@<fingerprint>`, the fingerprint being the
+  first 16 hex digits of the sha256 of `{tool_name, tool_input}` as key-sorted
+  compact JSON. An event the seat raised from the fallback permission notice,
+  which names no tool, uses `cc-cmds-permission-<session_id>@notification`. The
+  turn end and the return close every permission event of a session with the
+  prefix marker `cc-cmds-permission-<session_id>@`. The session id is used as
+  is; the seat writes nothing for an id outside the `safe_sid` alphabet, so the
+  two are the same. There is no local banner; the slot is the name a handled
+  marker matches.
 - Session tokens use one slot per session whatever the item key, so one marker
   on that slot closes every open event of the session.
 
@@ -320,7 +328,7 @@ written only when the slot ends with the separator `@`: `@` is outside the
 session's id, while `-` can occur in a session id and cannot be the separator.
 Active-notify closes a session with a pair of markers: the exact marker
 `cc-cmds-active-notify-<safe_sid>` and the prefix marker
-`cc-cmds-active-notify-<safe_sid>@`.
+`cc-cmds-active-notify-<safe_sid>@`, both with the cause `return`.
 
 ## Reader rules
 
@@ -407,7 +415,9 @@ cc_attention_handled <slot> <cause> [prefix]
   read the seat state or presence, and has no switch that turns only the
   remote copy off. An event is written only where a seat has already decided
   to raise the banner; a permission event only where the new seat applied the
-  same seat rule itself.
+  same seat rule itself. Active-notify leaves an event only from a call that
+  passed both of its own checks: the one-shot seat ticket its PreToolUse hook
+  handed over, and the router-seat predicate.
 - `cc_attention_handled` writes nothing for an empty slot, a cause outside the
   list, a third argument other than empty or `prefix`, or a prefix marker whose
   slot does not end with `@`.

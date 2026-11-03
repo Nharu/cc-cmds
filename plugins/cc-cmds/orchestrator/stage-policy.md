@@ -31,6 +31,7 @@ You are an unattended pipeline stage or an agent spawned in one; no human reads 
 ## Code and tools
 
 - Run long commands as harness-tracked background tasks, never with `nohup` or a bare `&`: a detached process that dies leaves no trace.
+- Never `cd` to read another target's or segment's state. A gate act runs in the directory the gate picks (the named segment's worktree, else the target's execution worktree, else its main worktree), so stay where the session started and name it with `--target <alias> --segment <segment>` on `gate.sh exec`; this also keeps the personal rule against `git -C` without a `cd`. The gate refuses a `cd` that moves the session outside the declared targets.
 
 ## Pipeline variables
 

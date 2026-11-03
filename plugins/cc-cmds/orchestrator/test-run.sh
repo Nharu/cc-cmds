@@ -1468,6 +1468,32 @@ else
   bad "매니페스트 검사" "정상 매니페스트가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
 fi
 
+# 검사 3 의 허용 집합은 origin-worktree 의 레포와 선언된 모든 대상의 공통 git
+# 디렉터리다. 이 매니페스트의 대상은 픽스처 레포 하나이고 origin-worktree 는 이
+# 레포이므로, 대상 레포의 링크된 워크트리는 통과하고 어느 쪽도 아닌 레포는 거부된다.
+MF_LWT="$WORK/manifest-repo-wt"; MF_OTHER="$WORK/undeclared-repo"
+( cd "$MF_REPO" && git worktree add -q -b mf-linked "$MF_LWT" ) >/dev/null 2>&1
+( mkdir -p "$MF_OTHER" && cd "$MF_OTHER" && git init -q . ) >/dev/null 2>&1
+if mf3_err=$( ( cd "$MF_LWT" && check_manifest ) 2>&1 ); then
+  ok "선언된 대상 레포의 링크된 워크트리에서 매니페스트 검사가 통과한다"
+else
+  bad "검사 3 허용 집합" "대상 레포의 링크된 워크트리가 거부됐다: $(printf '%s' "$mf3_err" | tail -1)"
+fi
+if mf3_err=$( ( cd "$MF_OTHER" && check_manifest ) 2>&1 ); then
+  bad "검사 3 허용 집합" "선언되지 않은 레포를 통과시켰다"
+else
+  # 문면의 경로는 그 디렉터리의 `pwd` 다 — `$WORK` 는 TMPDIR 끝의 / 때문에 // 를 품을 수 있다.
+  if printf '%s\n' "$mf3_err" | grep -F "현재 디렉터리가 매니페스트에 선언된 어느 대상의 레포도 아닙니다: $(cd "$MF_OTHER" && pwd)" >/dev/null \
+     && printf '%s\n' "$mf3_err" | grep -F -- "--target 으로 지목하세요" >/dev/null; then
+    ok "선언되지 않은 레포에서는 매니페스트 검사가 거부되고 머문 채 지목하는 형태를 든다"
+  else
+    bad "검사 3 거부 문면" "$mf3_err"
+  fi
+fi
+( cd "$MF_REPO" && git worktree remove --force "$MF_LWT" && git branch -q -D mf-linked ) >/dev/null 2>&1
+rm -rf "$MF_OTHER"
+unset MF_LWT MF_OTHER mf3_err
+
 # 앵커가 문서가 아니어도 성립해야 한다 — 그것이 이 변경의 요점이다.
 check "앵커 종류가 문서가 아니어도 읽힌다" "$(manifest_field '런 정체' '앵커 종류')" "repo"
 check "대상 별칭 조회"                     "$(target_field home '원격 슬러그')"      "Nharu/cc-cmds"

@@ -643,5 +643,6 @@ Every review after a segment's first lead fix — after a further lead fix, or a
 - **CI failure routing**: failed checks are recorded in 1c, and "CI failure priority check area: [check name and related files]" is added as its own item to the relevant reviewer's context package — except a check the manifest's `라벨 인정` row names, which 1c records and routes nowhere.
 - **Never reach a notification surface.** No `PushNotification`, no `notify.sh`, no `terminal-notifier` — not from this file and not from any agent it spawns.
 - **Never write a pipeline sidecar.** This arm reads the grant to re-derive `RUN_DIR`; the driver is the sole writer of both pipeline sidecars.
+- **Every Bash goes through `gate.sh exec`, and another target's or segment's git state is read with `--target`·`--segment` on that exec, never after a `cd`** (the stage policy's `Code and tools` bullet).
 
 Task: $ARGUMENTS
