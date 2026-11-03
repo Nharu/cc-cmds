@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -186,6 +186,10 @@ check-cheap:
 #   CHECK_PUSH_GOALS        REST goals (`make -s print-rest-goals`), comma-separated
 #   CHECK_PUSH_JOBS         section lanes and goal jobs run at once (default 4;
 #                           1 runs them in turn, as before)
+#   CC_TEST_SLOTS           host-wide test slots, one CPU's share each (default
+#                           max(4, CPUs); 0 turns them off)
+#   CC_TEST_SLOTS_DIR       where the slots live (default the common git
+#                           directory's cc-cmds-test-slots/)
 # CHECK_PUSH_JOBS reaches check-push.sh the way CHECK_PUSH_SECTIONS does, as a
 # command-line variable or from the environment; the recipe stays as it is.
 # An unattended run whose head changed plugins/cc-cmds/orchestrator/gate.sh
@@ -548,6 +552,7 @@ $(TEST_GOALS): run/%:
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
+	run-test-slots-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 # How many runners the gate suite runs on (N), and how many rows each runner
@@ -619,6 +624,7 @@ ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
+	run-test-slots-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 test-rest: $(REST_GOALS)
@@ -829,6 +835,9 @@ run-check-push-selftest:
 
 run-test-tree-selftest:
 	bash scripts/test-tree.sh --self-test
+
+run-test-slots-selftest:
+	bash scripts/test-slots.sh --self-test
 
 run-rest-shard-selftest:
 	bash scripts/rest-shard.sh --self-test
