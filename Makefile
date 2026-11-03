@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -497,10 +497,12 @@ ORCH_TESTS := \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
+	scripts/test-session-permission-notify.sh \
 	scripts/test-session-title-hook.sh \
 	scripts/test-session-status-snapshot.sh \
 	scripts/test-notify-focus.sh \
 	scripts/test-attention.sh \
+	scripts/test-attention-funnel.sh \
 	scripts/test-stage-rules-edit-hook.sh \
 	scripts/test-stage-rules.sh \
 	scripts/test-watch.sh \
@@ -547,7 +549,7 @@ $(TEST_GOALS): run/%:
 	bash scripts/suite-guard.sh $*
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
+	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
@@ -560,7 +562,7 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 #
 # S IS THE NUMBER OF ROWS AND N THE NUMBER OF JOBS. S goes to the partition
 # table (CI's plan job), the union check and the row ids `gate-shard` asks the
-# partitioner for, and to the census. N goes to the matrix and its number check
+# partitioner for. N goes to the matrix and its number check
 # and is the SHARD a `gate-shard` call takes.
 GATE_SHARDS ?= 26
 GATE_LANES ?= 1
@@ -618,7 +620,7 @@ tz-probe:
 ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest \
+	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
@@ -680,8 +682,8 @@ rest-shard:
 #
 # CI hands every runner the one table its plan job made (GATE_TABLE), so no
 # runner partitions on its own. Without a table each lane partitions here,
-# weighed with the measured times in GATE_TIMING when that file exists and with
-# the census model when it does not.
+# weighed with the measured times in GATE_TIMING when that file exists and by
+# each section's length in lines when it does not.
 #
 # A LANE IS ISOLATED AND JUDGED ON ITS OWN. GATE_OUT_DIR, an absolute path,
 # receives per row K: `timing-<K>.tsv` (the section markers: `@start` and
@@ -810,7 +812,7 @@ gate-shard:
 	[ -z "$$tmpod" ] || rm -rf "$$tmpod"; \
 	exit "$$bad"
 
-# The partitioner, the census and the timing and duration scripts are driven by
+# The partitioner and the timing and duration scripts are driven by
 # flags, so they cannot sit in the argument-less `bash <script>` lists above;
 # their self-tests run no suite and take seconds.
 run-gate-shard-selftest:
@@ -821,9 +823,6 @@ run-gate-timing-selftest:
 
 run-ci-duration-selftest:
 	bash scripts/ci-duration.sh --self-test
-
-run-gate-census-selftest:
-	bash scripts/gate-census.sh --self-test
 
 run-check-push-selftest:
 	bash scripts/check-push.sh --self-test
@@ -864,13 +863,6 @@ isolation-sweep:
 
 isolation-capacity:
 	ISO_TIMING='$(ISO_TIMING)' bash scripts/gate-isolation.sh capacity --base '$(BASE)' --shards $(GATE_SLOTS) --iso-extra $(GATE_ISO_EXTRA)
-
-# Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
-# every section alone, the whole suite once and every shard once — about an hour
-# on an idle machine — and what it writes is a file to review and commit. It is
-# given S, the row count of the partition, as its shard count.
-census:
-	bash scripts/gate-census.sh --shards $(GATE_SLOTS) --out scripts/gate-census.tsv
 
 test-active-notify: $(NOTIFY_TESTS:%=run/%)
 

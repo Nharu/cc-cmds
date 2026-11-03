@@ -1064,6 +1064,28 @@ EOF
   manifest_targets | tr '|' '\n' | sed -n 's/^ *별칭=//p' | sed 's/[[:space:]]*$//'
 }
 
+# The common git directories a session of this run may stand in, one per line:
+# the origin-worktree header's, when the header is set and resolves, and every
+# declared target row's `공통 git 디렉터리`. Empty values and repeats are left
+# out. The manifest check's third test and the gate's admit refusal of a
+# directory move both read this one list, so an admitted move can never land
+# where the check then refuses. A target row's value is taken as declared; the
+# manifest check's fourth test compares it with the repository it names.
+manifest_allowed_common_dirs() {
+  local ow ow_cg a cg
+  {
+    ow=$(manifest_hdr_field 'origin-worktree')
+    if [ -n "$ow" ]; then
+      ow_cg=$( { cd "$ow" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+      [ -z "$ow_cg" ] || printf '%s\n' "$ow_cg"
+    fi
+    for a in $(target_aliases); do
+      cg=$(target_field "$a" '공통 git 디렉터리')
+      [ -z "$cg" ] || printf '%s\n' "$cg"
+    done
+  } | awk 'length($0) > 0 && !seen[$0]++'
+}
+
 canonical_targets() { manifest_targets | sed 's/[[:space:]]\{1,\}/ /g' | sort; }
 
 binding_set_bytes() {
@@ -1452,30 +1474,37 @@ check_manifest() {
   # 3 — origin-worktree tie-break, FAIL-OPEN by design (see the note above).
   local ow
   ow=$(manifest_hdr_field 'origin-worktree')
-  # THE TIE-BREAK IS ABOUT THE REPOSITORY, NOT THE DIRECTORY. Pinning to the
-  # exact worktree made two contract rules unsatisfiable at once: the target row
-  # carries `실행 워크트리` precisely because a branch is checked out in a linked
-  # worktree, and the driver starts a segment stage there — where every gate
-  # subcommand was then refused. Writing the segment worktree into the header
-  # instead only moves the refusal, because the audit stage starts in the home
-  # worktree; with both in one run, NO value satisfies both.
+  # THE TIE-BREAK IS ABOUT REPOSITORIES, NOT DIRECTORIES. The current
+  # directory's common git directory must be one of the run's declared
+  # repositories: the origin-worktree's, or any target row's `공통 git
+  # 디렉터리` (`manifest_allowed_common_dirs`). Pinning to one exact worktree
+  # made two contract rules unsatisfiable at once — a segment stage starts in a
+  # linked worktree and the audit stage in the home worktree — and pinning to
+  # the origin repository alone trapped a session that had moved into another
+  # declared target's worktree: every gate call after the move died here, while
+  # the gate's acts already run in that target's worktree through `--target`.
   #
   # What the check exists for survives the widening. The sidecar paths derive
-  # from `<base>` — the parent of the COMMON git directory — which every linked
-  # worktree of one repository shares, so no state fans out. And target choice
-  # was never this check's job: `--target` names it explicitly and the gate
-  # carries that through to the act's working directory. A worktree of ANOTHER
-  # repository still fails, which is the case the check was written for.
+  # from `<base>` — the parent of the origin-worktree's common git directory —
+  # and that derivation reads the header, not the current directory, so no
+  # state fans out. A target row's declared value cannot widen the set falsely:
+  # the fourth check below compares it with the repository its main worktree is
+  # in. A directory of an undeclared repository, or one outside any git
+  # repository, still fails, which is the case the check was written for.
   local ow_cg cur_cg
   ow_cg=$( { cd "$ow" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
-  cur_cg=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-  if [ -n "$ow" ] && { [ -z "$ow_cg" ] || [ "$ow_cg" != "$cur_cg" ]; }; then
-    # The repair belongs in the message. A router that wants to act in another
-    # declared target does NOT move here — it stays in the home worktree and
-    # names the target with `--target`, which the gate now carries through to
-    # the act's working directory. Without that sentence the obvious reading of
-    # this stop is "cd there first", which is the one move that cannot work.
-    die "매니페스트 origin-worktree= 가 다른 레포입니다: $ow — 같은 레포의 링크된 워크트리는 허용되지만 다른 레포에서는 행위할 수 없습니다. 다른 대상에서 행위하려면 --target 으로 지목하세요"
+  if [ -n "$ow" ] && [ -z "$ow_cg" ]; then
+    die "매니페스트 origin-worktree= 가 git 저장소가 아닙니다: $ow"
+  fi
+  if [ -n "$ow" ]; then
+    cur_cg=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    if [ -z "$cur_cg" ] || ! printf '%s\n' "$(manifest_allowed_common_dirs)" | grep -xF -- "$cur_cg" >/dev/null; then
+      # The repair belongs in the message. A session that wants to read or act
+      # in another declared target does not move there — it stays where it
+      # started and names the target with `--target`·`--segment`, and the gate
+      # runs the act in that target's worktree.
+      die "현재 디렉터리가 매니페스트에 선언된 어느 대상의 레포도 아닙니다: $(pwd) — 선언된 대상 레포의 워크트리는 허용되지만 다른 레포나 git 저장소가 아닌 디렉터리에서는 행위할 수 없습니다. 게이트 행위는 --target·--segment 로 지목한 대상의 워크트리에서 돌므로, 다른 대상은 그 자리에 머문 채 --target 으로 지목하세요"
+    fi
   fi
 
   # 4 — target preflight. A declared repo set with no verification leaves the

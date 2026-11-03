@@ -17,6 +17,15 @@
 #   denied       a valid report, a JSON whose permission_denials holds one call
 #   witnessmiss  a valid report and one line in the run's witness-misses.log,
 #                as the witness hook leaves for a witness command it did not allow
+#   opusseat     a valid report whose promoted seat was spawned asking for `opus`
+#                whatever the branch, as a lead that ignores the tier file does
+#   noagent      a valid report and no Agent call reaching the hook
+# Unless the action is noagent, the stub feeds the Agent hook the --settings
+# file registers one Agent call per seat of the report's tier block, each
+# prompt carrying the member header's hidden temp for that seat, as a lead's
+# spawn does; a promoted seat's call asks for the full model id on the sonnet
+# branch, as a lead may, and a code-quality call names no model unless that seat
+# is promoted too.
 # The JSON's total_cost_usd is $STUB_COST (default 1.25); its
 # permission_denials is empty except under `denied`, and absent under `nocost`.
 set -euo pipefail
@@ -34,11 +43,12 @@ printf '%s\n' "$@" > "$d/calls/$seq.argv"
   printf 'cwd %s\n' "$(pwd -P)"
 } > "$d/calls/$seq.env"
 
-prompt="" pd=""
+prompt="" pd="" settings=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
     --plugin-dir) pd="$2"; shift 2 ;;
+    --settings) settings="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -62,6 +72,23 @@ cq_src="표"; cq_model="sonnet"
 [ "$action" != "twoseats" ] || { cq_src="승격"; cq_model="$model"; }
 p1=1
 [ "$action" != "badformat" ] || p1=2
+
+# spawn <model or empty> <seat> — one Agent call through the settings' hook.
+spawn() {
+  local hc
+  hc=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Agent|Task") | .hooks[0].command' "$settings")
+  jq -n --arg m "$1" --arg s "$2" '{hook_event_name: "PreToolUse", tool_name: "Agent",
+      tool_input: ({description: ($s + " reviewer round 1"), subagent_type: "claude",
+        prompt: ("**Role**: " + $s + ". T=$(mktemp \"$(dirname /w/witness-" + $s + "-round-1.md)/." + $s + ".round-1.XXXXXX\")")}
+        + (if $m == "" then {} else {model: $m} end))}' | bash -c "$hc" > /dev/null
+}
+if [ "$action" != "noagent" ] && [ -n "$settings" ]; then
+  am="$model"
+  [ "$model" != "sonnet" ] || am="claude-sonnet-5-5"
+  [ "$action" != "opusseat" ] || am=opus
+  spawn "$am" logic-shell
+  if [ "$action" = "twoseats" ]; then spawn "$am" code-quality; else spawn "" code-quality; fi
+fi
 
 if [ "$action" = "witnessmiss" ]; then
   printf 'a1\tmktemp /tmp/x.XXXXXX\n' >> "$rd/witness-misses.log"

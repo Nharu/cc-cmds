@@ -120,5 +120,56 @@ CC_NOTIFY_SESSION_TITLE=$(cc_notify_session_title_read "$sid")
 export CC_NOTIFY_SESSION_TITLE
 CC_NOTIFY_SESSION_ID="$sid"
 export CC_NOTIFY_SESSION_ID
-cc_notify_fire session-ask "$body" >/dev/null 2>&1
+
+# THE FUNNEL ATTACHMENT, made after every gate above and right before the banner
+# call, so no path that returns early leaves one behind. It tells the attention
+# tap what the banner arguments cannot: which kind of event this is, the full
+# question text (the body above is cut and drops the question text when there
+# are two or more), and where a remote answer would go. The local banner is
+# still built from stdin alone.
+#
+# TWO CALLERS, TOLD APART BY `tool_name`. `AskUserQuestion` is an `auq` event
+# whose reply target carries the tool call id. The question form runs this
+# script with the same stdin shape and hands its own facts — form id, question
+# ids, kinds, whether a question is conditional, option labels — as the first
+# argument, a JSON object; that is a `question-form` event, and an argument that
+# is missing or not JSON leaves it with no reply target and not answerable.
+#
+# AN APPROVAL QUESTION IS NEVER ANSWERABLE FROM HERE. When any question of the
+# call begins with the gate's canonical approval prefix, the event is marked not
+# answerable: an approval's remote answer has its own route through the
+# approval's event, and asking it together with other questions must not open a
+# second one. A form question that is multiple choice, free text or conditional
+# makes the form not answerable either.
+#
+# A jq failure, or an attachment that could not be written, calls the banner
+# function as before: the local banner is unchanged and only the event is lost.
+detail_json=$(printf '%s' "$input" | jq -c --arg sid "$sid" --arg form "${1:-}" '
+  def appr: (. // "" | tostring) | test("^승인 [A-Za-z0-9_-]{1,55}-[0-9a-f]{8} — ");
+  def labels: [(.options // [])[] | {label}];
+  (.tool_input.questions // []) as $q
+  | ([$q[] | .question | appr] | any) as $ap
+  | (if ($q | length) == 0 then {}
+     else {body: ([$q[] | "\(.header // "질문") — \(.question // "")"] | join("\n"))} end) as $b
+  | if .tool_name == "mcp__cc-cmds__question_form" then
+      (try ($form | fromjson) catch null) as $f
+      | if ($f | type) == "object" and ($f.questions | type) == "array" then
+          {kind: "question-form",
+           actionable: (([$f.questions[] | .question | appr] | any | not) and ($ap | not)
+                        and all($f.questions[]; .kind == "single" and .conditional != true)),
+           reply: {surface: "question-form", session_id: $sid, form_id: $f.form_id,
+                   questions: [$f.questions[] | {id, question, options: labels}]}}
+        else {kind: "question-form", actionable: false, reply: null} end
+    else
+      {kind: "auq", actionable: ($ap | not),
+       reply: {surface: "auq", session_id: $sid, tool_use_id: .tool_use_id,
+               questions: [$q[] | {question, header, multi_select: (.multiSelect == true),
+                                   options: labels}]}}
+    end
+  | . + $b' 2>/dev/null) || detail_json=
+detail=
+if [ -n "$detail_json" ]; then
+  detail=$(cc_attention_detail_make "$detail_json" 2>/dev/null) || detail=
+fi
+CC_NOTIFY_ATTENTION_DETAIL="$detail" cc_notify_fire session-ask "$body" >/dev/null 2>&1
 exit 0
