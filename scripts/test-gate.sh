@@ -5570,9 +5570,11 @@ pre_sb() {
     # 리뷰하고 두 부모 머지로 착지시킨 뒤 적용을 정산하지 못한 채 끝났고, 이 런이 그
     # 착지를 `머지됨 적용=미정산` 으로 들여온 원장. 증거 원장은 게이트가 쓴 행
     # 그대로라 해시 연쇄가 온전하고, 리포트는 발견 요약을 싣는다. 종료 코드 대응은
-    # SB_CODES(기본 `0 21`)다. SD_M·SD_TIP·SD_ELED(증거 원장)를 남긴다.
+    # SB_CODES(기본 `0 21`)다. SD_M·SD_TIP·SD_ELED(증거 원장)·SD_EREP(증거 원장의
+    # cycle 행이 가리키는 정본 리포트)를 남긴다.
     SB_CODES="${SB_CODES:-0 21}" sb_apply_new "$1" "$4" 'true'
     sd_rerun "$2"
+    SD_EREP=$(sa_canon SD)
     sb_reviewed_landing SD "${5:-0}"
     SD_M=$SB_M; SD_TIP=$SB_TIP; SD_ELED=$SA_LEDGER
     sd_rerun "$3"
@@ -39349,7 +39351,12 @@ sd4_noled() { rm -f "$SD_ELED"; }
 sd4_chain() {
   awk '/^- `cycle` / && !d { sub(/P0=0/, "P0=0 "); d = 1 } { print }' "$SD_ELED" > "$SD_ELED.c" && mv "$SD_ELED.c" "$SD_ELED"
 }
-sd4_report() { printf '# 코드 리뷰 리포트\n\n요약 없음\n' > "$SA_ROOT/review-SD.md"; }
+sd4_report() {
+  # 증거 원장의 cycle 행이 가리키는 정본 리포트를 고친다 — 그 자리에 파일이 없으면
+  # 변형이 아무것도 바꾸지 못한 것이다.
+  [ -f "$SD_EREP" ] || bad "19d: 검증 3 픽스처" "정본 리포트가 없다: $SD_EREP"
+  printf '# 코드 리뷰 리포트\n\n요약 없음\n' > "$SD_EREP"
+}
 sd4_merge() {
   awk -v m="$SD_M" -v t="$SD_TIP" '/^- `segment` / && index($0, "출처=") { sub("머지 커밋=" m, "머지 커밋=" t) } { print }' \
     "$SA_LEDGER" > "$SA_LEDGER.c" && mv "$SA_LEDGER.c" "$SA_LEDGER"
