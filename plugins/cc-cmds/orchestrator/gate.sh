@@ -39890,12 +39890,12 @@ gate_ci_rerun_x5_hit() {
   # deployment or another workflow, 1 when it is clean; any other status is "not
   # judged" and the caller parks on it.
   #
-  # THE FLOOR IS THE LINE GREP, AND THE READER ONLY LIFTS TWO SHAPES OFF IT. The
+  # THE FLOOR IS THE LINE GREP, AND THE READER ONLY LIFTS THREE SHAPES OFF IT. The
   # file is first matched with `grep -E "$GATE_X5_FLOOR_RE"` — an `environment`
   # key spelled with `:` on the same line, or the text `.github/workflows/`,
   # anywhere, comments included. A clean grep leaves the reader's own verdict.
   # A matching line (a floor line) is lifted only when the reader below proves
-  # it one of two shapes, judged on the line with one trailing CR removed:
+  # it one of three shapes, judged on the line with one trailing CR removed:
   #   - E1, a trigger filter item: the whole line is `- ` and one workflow file
   #     `.github/workflows/<name>.yml` or `.yaml` (no `/` in the name), bare or
   #     in one pair of quotes, then blanks only; the reader read it as an item of
@@ -39922,6 +39922,18 @@ gate_ci_rerun_x5_hit() {
   #     `-f <list>` (attached or not), `tr` with one or two words none starting
   #     with `-` or `-d`/`-s` and one such word, or `grep -[vcxEFi]+`… and one
   #     pattern word.
+  #   - E3, a whole-line YAML comment: the line's first non-blank is `#` and the
+  #     reader read it outside every block scalar body and outside every open
+  #     flow collection, so a YAML parser drops it and Actions never runs it. A
+  #     ` #` tail after a key line and a `#` line inside a body are not this
+  #     shape. E3 is off for the whole file — each such line counts as not
+  #     lifted — when a block-context line, with its ` #` tail cut off, ends in
+  #     a block scalar indicator (`|` or `>`, with `-`/`+`/digits after) as its
+  #     last blank-separated word but the reader did not open a body on it: a
+  #     `- |` item, an indicator standing alone on the next line, a key the
+  #     reader's key pattern does not read, or a plain value ending in ` |`.
+  #     There the lines YAML takes as a body can be ones the reader reads as
+  #     comments outside one.
   # A floor line on the `environment` branch is never lifted. No line is lifted
   # when the file holds a CR before a line's end, a NEL, LS or PS byte
   # sequence, a flow collection left open at a line's end, or a block-context
@@ -39933,8 +39945,9 @@ gate_ci_rerun_x5_hit() {
   # environment, never `-v`, which would undo their escapes.
   #
   # The reader reads line by line, never as YAML, one trailing CR removed:
-  #   - A line whose first non-blank is `#` is skipped, and a ` #` tail outside
-  #     quotes is cut off. A quote starts a quoted string only where a node
+  #   - A line whose first non-blank is `#` is skipped (outside a body and an
+  #     open flow, a floor line so skipped is lifted as E3), and a ` #` tail
+  #     outside quotes is cut off. A quote starts a quoted string only where a node
   #     can start; a quote inside a plain scalar is a character. A `\` in
   #     double quotes and a doubled `'` in single quotes do not close the
   #     string. The lines of an open flow collection are judged as one text,
@@ -40252,7 +40265,8 @@ gate_ci_rerun_x5_read() {
         }
         inbody = 0
       }
-      if (ind < 0 || (!inflow && substr($0, ind + 1, 1) == "#")) next
+      if (ind < 0) next
+      if (!inflow && substr($0, ind + 1, 1) == "#") { if (isf && !ise) ex[NR] = "c"; next }
       if (inflow) {
         e1 = 0
         # A flow is read as one text: a quote at the start of this line opens
@@ -40266,6 +40280,7 @@ gate_ci_rerun_x5_read() {
         next
       }
       s = stripc($0)
+      if (s ~ /(^|[ \t])[|>][-+0-9]*$/) cand[NR] = 1
       # A block-context line that ends inside an open quote turns every lift off.
       if (sq != "") invalid = 1
       text(s)
@@ -40320,7 +40335,7 @@ gate_ci_rerun_x5_read() {
       if (w ~ /^[{[]/) { startflow(w); next }
       if (v ~ blockre) {
         if (k == "uses") { hit = 1; exit }
-        inbody = 1; bcol = col; bbs = 0
+        inbody = 1; bcol = col; bbs = 0; opened[NR] = 1
         # A step `run` body, with the anchor its indicator carries.
         e2ok = k == "run" && !kp && steprun(sp); banc = ""; t = v
         while (e2ok && match(t, /^(&[^ \t]+|![^ \t]*)[ \t]+/)) {
@@ -40344,9 +40359,11 @@ gate_ci_rerun_x5_read() {
       # A lift whose list or body carries an anchor holds only when every alias
       # of it is a trigger filter `paths` line (E1) or there is none (E2).
       un = 0
+      for (n in cand) if (!(n in opened)) e3off = 1
       for (i = 1; i <= nfl; i++) {
         n = fln[i]
         if (!(n in ex)) { un++; continue }
+        if (ex[n] == "c") { if (e3off) un++; continue }
         a = substr(ex[n], 2)
         if (a == "") continue
         if (substr(ex[n], 1, 1) == "p") { if (atot[a] + 0 != agood[a] + 0) un++ }
