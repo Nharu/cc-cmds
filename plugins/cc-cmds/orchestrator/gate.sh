@@ -21697,7 +21697,7 @@ EOF
     GATE_DRAFT_OPT=$lab
   fi
   # D5
-  if printf '%s' "$GATE_DRAFT_LINES" | cut -f2 | grep -qx 'none'; then
+  if [ "$(printf '%s' "$GATE_DRAFT_LINES" | cut -f2 | grep -cx 'none')" != 0 ]; then
     warn "결정 초안에 \`(없음)\` 줄이 있어 기록 전체가 사람에게 갑니다 — 초안은 모든 항목에 있을 때만 그대로 채택합니다: $rec"
     return "$GATE_EXIT_RULE"
   fi
@@ -21790,7 +21790,7 @@ EOF
         warn "「${item}」 은 표 행이라 \`사유\` 를 읽을 수 없어 사람이 답합니다: $rec"
         return "$GATE_EXIT_RULE"
       fi
-      if printf '%s' "$vrow" | cut -f3 | LC_ALL=C grep -qE '^해결(됨)?[[:blank:]]*(—|·|\(|$)'; then
+      if [ "$(printf '%s' "$vrow" | cut -f3 | LC_ALL=C grep -cE '^해결(됨)?[[:blank:]]*(—|·|\(|$)')" != 0 ]; then
         warn "「${item}」 은 이미 \`해결\` 로 닫혀 있어 사람이 답합니다: $rec"
         return "$GATE_EXIT_RULE"
       fi
