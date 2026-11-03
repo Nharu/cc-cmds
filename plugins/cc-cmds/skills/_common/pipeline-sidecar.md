@@ -150,7 +150,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 **미선언 상황 처분**: park | 선언된 기본값 진행
 - `종료 절` | id=C<n> | 문면=<종료 지점을 대조 가능한 한 절로 나눈 문면>     ← 한 절 한 행, 하나 이상
 - `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
-- `사전 인가` | 형태=<argv 접두 형태> | 표면=<읽기|워크트리쓰기|트리밖쓰기|외부상태변경> | 도달=<dev|prod|배포트리거|기기전역> | 짝 정리=<셸 없는 argv 한 줄|기기 정리> | 사유=<…>     ← 새 형식 행. `도달=기기전역` 은 `표면=트리밖쓰기` 에만, 예약 값 `기기 정리` 는 `도달=기기전역` 행에만 둔다. `짝 정리=` 는 선택이고, 예: `형태=bash /opt/x/publish.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=bash /opt/x/unpublish.sh | 사유=<…>`
+- `사전 인가` | 형태=<argv 접두 형태> | 표면=<읽기|워크트리쓰기|트리밖쓰기|외부상태변경> | 도달=<dev|prod|배포트리거|기기전역> | 짝 정리=<셸 없는 argv 한 줄|기기 정리> | 사유=<…>     ← 새 형식 행. `도달=기기전역` 은 `표면=트리밖쓰기` 에만, 예약 값 `기기 정리` 는 `도달=기기전역` 행에만 두며, `도달=기기전역` 행의 `짝 정리=` 는 그 예약 값만 받는다. `짝 정리=` 는 선택이고, 예: `형태=bash /opt/x/publish.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=bash /opt/x/unpublish.sh | 사유=<…>`
 - `자동 채택` | 판단 부류=<열세 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
 - `사전 인가` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>     ← 설계 요구사항 인터뷰가 있었을 때만
 - `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>     ← 팀 티어 설계 스테이지가 있을 때만, 한 팀원 한 행
@@ -398,7 +398,9 @@ form with different `표면`, `도달` or `짝 정리`, a `도달=기기전역` 
 `표면` is not `트리밖쓰기`, and a `짝 정리=` that is not one shell-free argv of
 at most 200 bytes whose words containing `/` are absolute paths. The reserved
 value `기기 정리` is recognised before that argv check and accepted only on a
-`도달=기기전역` row.
+`도달=기기전역` row, and a `도달=기기전역` row accepts no other `짝 정리=`: the
+machine-global cell carries a cleanup only for the reserved value, so a plain
+argv there would open the act and never run.
 
 **`짝 정리=기기 정리` is the run's own device cleanup.** The gate spells it out as
 `<the run's plugin copy>/orchestrator/device-cleanup.sh <run id> <dispatch id>`,

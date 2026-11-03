@@ -937,6 +937,13 @@ EOF
       return 1
     }
   elif [ "$has_p" = "1" ]; then
+    # A machine-global row opens its act through the machine-global cell,
+    # which carries a cleanup ordinal only for the reserved value: a plain
+    # argv here would be accepted and then never run, so it is refused.
+    if [ "$reach" = "기기전역" ]; then
+      printf '도달=기기전역 행의 짝 정리= 는 예약 값 %s 만 받습니다 — 그 밖의 정리 명령은 게이트가 열지 않습니다: 짝 정리=%s' "$PREAUTH_DEVICE_PAIR" "$pair"
+      return 1
+    fi
     [ -n "$pair" ] || { printf '짝 정리= 가 비었습니다'; return 1; }
     case "$pair" in
       *'	'*|*'  '*|' '*) printf '짝 정리= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
