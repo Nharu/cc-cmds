@@ -12228,7 +12228,13 @@ s4_refutation_turn() {
   local k=0 did prompt unmet da
   S4_RF_SEG=$seg; S4_RF_ALIAS=$al; S4_RF_BRANCH=$branch; S4_RF_WT=$wt
   S4_RF_SBASE=${10}; S4_RF_PDIG=${11}
-  while [ "$CONTINUE_CLASS" = "의도된 park" ] && [ -n "${CONTINUE_HALT_RECORD:-}" ] \
+  # THE DRIVER BOUNDS THE TURN ITSELF. The gate parks on an item's third unit,
+  # but it counts only the records whose header binds to the segment; a fix
+  # whose record it cannot bind would leave its count where it was and the
+  # turn going round. Two fixes after the first attempt are the same three
+  # units, and a decision still reading `구현 수정` after them parks with that
+  # branch named in the reason.
+  while [ "$k" -lt 2 ] && [ "$CONTINUE_CLASS" = "의도된 park" ] && [ -n "${CONTINUE_HALT_RECORD:-}" ] \
         && refutation_hook "$seg" "$CONTINUE_HALT_RECORD" && [ "$REFUTATION_BRANCH" = '구현 수정' ]; do
     k=$((k + 1))
     did="$sid.fix$k"

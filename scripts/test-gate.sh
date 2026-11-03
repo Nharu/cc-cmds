@@ -60572,7 +60572,7 @@ check "107: 반증이 아닌 기록에는 훅이 1 이다" "$(dr107 'refutation_
 # 호출부처럼 s4_park_unfinished 로 넘어간다 — 파킹 항목은 기록해 둔 세그먼트 문맥으로 refutation_park 에 닿는다.
 # 문자열 안 줄은 들여 쓴다 — 0열의 대입은 하니스 전역 충돌 린트가 최상위 전역으로 읽는다.
 sw107='refutation_hook() { REFUTATION_BRANCH=${BR%%,*}; BR=${BR#*,}; REFUTATION_ITEM=R1; REFUTATION_RECORD=$2; REFUTATION_REASON=r; return 0; }
-  continue_attempt() { printf "%s;" "$1"; P6=$6; CONTINUE_CLASS=${CL%%,*}; CL=${CL#*,}; CONTINUE_HALT_RECORD=/x/rec; }
+  continue_attempt() { printf "%s;" "$1"; P6=$6; CONTINUE_CLASS=${CL%%,*}; CL=${CL#*,}; CONTINUE_HALT_RECORD=/x/rec$1; CONTINUE_PARK_REASON="중단 기록"; }
   refutation_park() { printf "park:%s:%s;" "$1" "$3"; return 1; }
   park() { printf "p:%s;" "$5"; }
   CONTINUE_CLASS=$C0; CONTINUE_HALT_RECORD=/x/rec; CONTINUE_MISSING=""; CONTINUE_UNCLOSED=""; CONTINUE_REFUSED=""
@@ -60584,6 +60584,9 @@ check "107: 구현 수정이 끝나면 수정 차례는 0 이다" \
 check "107: 수정이 다시 결함으로 멈추면 다음 단위로 가고 파킹 결정은 refutation_park 에 닿는다" \
   "$(dr107 "C0='의도된 park'; BR='구현 수정,구현 수정,파킹,'; CL='의도된 park,의도된 park,'; $sw107")" \
   "SA#1.fix1;SA#1.fix2;|1|park:SA:br;"
+check "107: 게이트가 계속 구현 수정을 내도 드라이버는 수정 둘 뒤에 그 갈래를 적어 파킹한다" \
+  "$(dr107 "C0='의도된 park'; BR='구현 수정,구현 수정,구현 수정,구현 수정,'; CL='의도된 park,의도된 park,의도된 park,'; $sw107")" \
+  "SA#1.fix1;SA#1.fix2;|1|p:중단 기록 — 반증 갈래 구현 수정 (r);"
 check "107: 재수렴 결정은 수정 없이 갈래를 사유에 적어 파킹한다" \
   "$(dr107 "C0='의도된 park'; BR='재수렴,'; CL=''; $sw107")" "|1|p:중단 기록 — 반증 갈래 재수렴 (r);"
 check "107: 의도된 park 가 아닌 끝은 훅 없이 예전대로 파킹한다" \
