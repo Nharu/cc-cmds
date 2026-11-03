@@ -22990,9 +22990,9 @@ gate_refutation_fix_attempt_halted() {
   # gate_refutation_fix_attempt_halted <key> <ledger> <run dir> — 0 when the
   # key's implement attempt before its last one left a `Step 3 구현 결함 반증`
   # record whose header names that attempt, and either no `blocked` row of
-  # <ledger> names that record or a person's `구현 수정` answer names it after the
-  # block closed it: the last attempt was then the implementation fix the record
-  # sent, dispatched with its `수정 대상` tail.
+  # <ledger> names that record or a person's `구현 수정` answer names it: the last
+  # attempt was then the implementation fix the record sent, dispatched with its
+  # `수정 대상` tail.
   local key=$1 lpl=$2 lprd=$3 prev f
   prev=$( { grep '^- `stage-result` ' "$lpl" 2>/dev/null || true; } \
           | gate_rows_field_eq '스테이지' "$key" | gate_rows_field_eq '종류' 'implement' \
@@ -54532,10 +54532,11 @@ gate_refutation_record_of() {
   # token and whose header's `stage=` is `<segment>#<실행 버전>` of that attempt,
   # or `<segment>` or the skill's own name while exactly one segment is a
   # candidate, those two when `gate_refutation_written_in_attempt` holds. A
-  # record a `blocked` row already names as `근거` has been carried out and binds
-  # no more, unless a person's answer stands open on it or the optional second
-  # argument names it, which is how the route asks before the answer's row
-  # exists. 1 when none binds.
+  # record a `blocked` row already names as `근거`, or a routing block handed
+  # back by its file name in `사유`, has been carried out and binds no more,
+  # unless a person's answer stands open on it or the optional second argument
+  # names it, which is how the route asks before the answer's row exists. 1 when
+  # none binds.
   local seg=$1 want=${2:-} a f hd single='' cnt s pick='' alt=''
   a=$(gate_refutation_candidate "$seg") || return 1
   for f in "$RUN_DIR"/halt/*.md; do
@@ -54566,7 +54567,7 @@ EOF
     grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$f" || continue
     # `grep -F` without `-q`: it reads its whole input, so the writer is never
     # killed by SIGPIPE and `pipefail` cannot turn a match into a miss.
-    if gate_rows 'blocked' | grep -F "$f" >/dev/null \
+    if gate_rows 'blocked' | grep -F -e "$f" -e "중단 답 라우팅 — ${f##*/} — " >/dev/null \
        && [ "${f##*/}" != "$want" ] && ! gate_refutation_answer_opens "$seg" "$f"; then
       continue
     fi

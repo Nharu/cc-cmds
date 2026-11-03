@@ -60827,6 +60827,18 @@ check "107b: 그 답의 수정 파견을 받는다" "$(cb60_pass)" "통과"
 rfa_sr implement 2 '정상 완료'
 check "107b: 수정 시도 행이 답을 소진하고 원소를 닫는다" "$(rfa_ans_field "$r107b" route)|$(rfa_el '다음')" "|"
 
+# 돌려보낸 답 — 앞선 막힘 행 없는 기록의 답을 돌려보내면 그 행의 근거는 기록 경로가 아니어도 원소가 닫힌다.
+rfa_new "반증 답 돌려보냄"
+rfa_sr implement 1 '의도된 park'
+r107b=$(rfa_rec 'RF#1.md' 'RF#1' 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'work.txt')
+rfa_ans "$r107b" '구현 수정'
+l107b=$(grep -n '^- `중단 답` ' "$SA_LEDGER" | tail -1 | cut -d: -f1)
+sag act --manifest "$SA_MANIFEST" --kind blocked --target main --segment RF --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(SAH)" --rationale x -- 스코프=cone 원인=막힘 "사유=중단 답 라우팅 — RF#1.md — 파견 거절" "근거=중단 답 줄 $l107b" '앵커 세그먼트=RF'
+check "107b: 돌려보낸 답의 기록은 원소를 내지 않고 답도 소진된다" "$rc|$(rfa_el '다음')|$(rfa_ans_field "$r107b" route)" "0||"
+rfa_ans "$r107b" '구현 수정'
+check "107b: 돌려보낸 기록에 새 답이 서면 원소가 다시 열린다" "$rc|$(rfa_el '다음')" "0|구현 수정"
+
 rfa_new "반증 파킹 답"
 rfa_sr implement 1 '의도된 park'
 r107b=$(rfa_rec 'RF#1.md' 'RF#1' 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'work.txt')
