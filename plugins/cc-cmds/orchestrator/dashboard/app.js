@@ -12,6 +12,11 @@
 // again. `/healthz` is checked on every poll and the page reloads when the
 // server's version changes.
 //
+// A redraw replaces every node under #app, and almost every poll redraws because
+// the list's `generated_at` and a live run's `elapsed_s` move the ETag. So what
+// the reader opened and focused is carried across by stable keys, and the redraw
+// waits while they hold a text selection or press the repo <select>.
+//
 // Clock text is drawn in the server's display time zone: an epoch is shifted
 // by the response's `tz_offset_s` and read through the UTC accessors, so the
 // browser's own zone never appears. Durations on the list use the response's
@@ -31,6 +36,14 @@
   var tz = null;
   // Wall-clock millis of the last successful fetch, for the stale line.
   var lastOk = null;
+  // A <details> the reader turned away from how it is drawn by default, by its
+  // data-key. The keys carry text from the response, hence a Map.
+  var flipped = new Map();
+  // A response was held back from the screen and is still to be drawn.
+  var redrawOwed = false;
+  // The repo <select> was pressed and not yet settled, so its list may be open.
+  var selectHeld = false;
+  var FOCUSABLE = "a, button, select, summary";
   var PERIODS = [["3", "3일"], ["7", "7일"], ["30", "30일"], ["all", "전체"]];
   var WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
   var TZ_TIP = "표시 시간대는 서버 프로세스가 처음 뜰 때의 CC_CMDS_AUTOPILOT_TZ 를 따릅니다(기본 KST). 값을 바꾼 뒤에는 서버가 다시 뜰 때까지 이전 값을 써서, 다른 화면과 「오늘」 이 갈릴 수 있습니다.";
@@ -434,8 +447,8 @@
     return sec;
   }
 
-  function switchBtn(on, icon, label, cnt, disabled, onclick) {
-    var b = el("button", { type: "button", cls: "switch", role: "switch", "aria-checked": on ? "true" : "false", onclick: onclick },
+  function switchBtn(fk, on, icon, label, cnt, disabled, onclick) {
+    var b = el("button", { type: "button", cls: "switch", role: "switch", "aria-checked": on ? "true" : "false", "data-fk": fk, onclick: onclick },
       el("span", { cls: "track", "aria-hidden": "true" }), ico(icon), label + " ", el("span", { cls: "cnt num", text: cnt }));
     if (disabled) b.setAttribute("disabled", "");
     return b;
@@ -446,14 +459,18 @@
     box.appendChild(el("span", { cls: "fl" }, ico("i-calendar"), "기간"));
     var seg = el("div", { cls: "seg", role: "group", "aria-label": "기간" });
     PERIODS.forEach(function (p) {
-      seg.appendChild(el("button", { type: "button", "aria-pressed": view.days === p[0] ? "true" : "false", text: p[1],
+      seg.appendChild(el("button", { type: "button", "aria-pressed": view.days === p[0] ? "true" : "false", text: p[1], "data-fk": "days-" + p[0],
         onclick: function () { view.days = p[0]; refresh(false); } }));
     });
     box.appendChild(seg);
 
     var bases = d.bases || [];
     box.appendChild(el("label", { cls: "fl", "for": "repo-sel" }, ico("i-folder"), "레포"));
-    var sel = el("select", { cls: "select", id: "repo-sel", onchange: function (e) { view.base = e.target.value; refresh(false); } });
+    var sel = el("select", { cls: "select", id: "repo-sel", "data-fk": "repo",
+      onmousedown: function () { selectHeld = true; },
+      onkeydown: function (e) { selectHeld = e.key !== "Escape"; },
+      onblur: function () { selectHeld = false; },
+      onchange: function (e) { selectHeld = false; view.base = e.target.value; refresh(false); } });
     if (bases.length <= 1) {
       sel.appendChild(el("option", { value: "", text: bases.length ? bases[0] + " (하나뿐)" : "레포 없음" }));
       sel.setAttribute("disabled", "");
@@ -469,11 +486,11 @@
 
     var shownExp = runs.filter(function (r) { return r.experiment; }).length;
     var hiddenExp = d.hidden_experiment || 0;
-    box.appendChild(switchBtn(view.exp, "i-flask", "실험 런 보기",
+    box.appendChild(switchBtn("exp", view.exp, "i-flask", "실험 런 보기",
       view.exp ? shownExp + "건 표시 중" : (hiddenExp ? "숨긴 " + hiddenExp : "숨긴 실험 런 없음"),
       !view.exp && !hiddenExp, function () { view.exp = !view.exp; refresh(false); }));
     var hiddenDead = d.hidden || 0;
-    box.appendChild(switchBtn(view.dead, "i-archive", "버려진 런 보기",
+    box.appendChild(switchBtn("dead", view.dead, "i-archive", "버려진 런 보기",
       view.dead ? dead.length + "건 표시 중" : (hiddenDead ? "숨긴 " + hiddenDead : "숨긴 버려진 런 없음"),
       !view.dead && !hiddenDead, function () { view.dead = !view.dead; refresh(false); }));
 
@@ -499,7 +516,7 @@
       ico("i-inbox", "ico-lg"),
       el("b", { text: view.days === "all" ? "보일 런이 없습니다" : "최근 " + periodLabel() + "에 끝나거나 도는 런이 없습니다" }),
       el("span", { cls: "num", text: parts.length ? parts.join(" · ") + "이 있습니다." : "숨긴 런도 없습니다." }),
-      wider ? el("button", { type: "button", cls: "btn", text: "기간 " + wider[1] + "로 넓히기",
+      wider ? el("button", { type: "button", cls: "btn", text: "기간 " + wider[1] + "로 넓히기", "data-fk": "widen",
         onclick: function () { view.days = wider[0]; refresh(false); } }) : null);
   }
 
@@ -650,7 +667,7 @@
     keys.forEach(function (k) {
       var list = byDay[k];
       var open = k && (k === d.today || k === yesterday);
-      var det = el("details", { cls: "day" });
+      var det = el("details", { cls: "day", "data-key": "day:" + k, "data-default-open": open ? "" : null });
       if (open) det.setAttribute("open", "");
       var sum = el("summary", null, ico("i-chev", "chev"));
       if (!k) sum.appendChild(document.createTextNode("날짜 미상"));
@@ -1102,7 +1119,13 @@
     sec.appendChild(counts);
     sec.appendChild(el("div", { cls: "jgrid jhead" }, el("span", { text: "시각" }), el("span", { text: "출처" }), el("span", { text: "결정" }),
       el("span", { text: "세그먼트" }), el("span", { text: "등급" }), el("span", { text: "되돌리는 법" }), el("span")));
+    // A row's position can shift when a later ledger row pairs with an earlier
+    // automatic resolution, so its key is its content and its count among equals.
+    var keyCount = new Map();
     items.forEach(function (it) {
+      var jkey = [it.source, it["결정"], it["세그먼트"], it["근거"]].join("|");
+      var nth = keyCount.get(jkey) || 0;
+      keyCount.set(jkey, nth + 1);
       var sum = el("summary", { cls: "jgrid" },
         span("num", it.at != null ? fmtMDHM(it.at) : "-"), el("span", { text: it.source || "-" }),
         el("span", { text: it["결정"] || "-" }), el("span", { text: it["세그먼트"] || "-" }),
@@ -1116,7 +1139,7 @@
       kv("근거", it["근거"]);
       if (it.source === "자동 해소") kv("승인 id", it["해소 승인"], true);
       else kv("해소 승인", it["해소 승인"], true);
-      sec.appendChild(el("details", { cls: "jrow" }, sum, body));
+      sec.appendChild(el("details", { cls: "jrow", "data-key": "judgment:" + jkey + "|" + nth }, sum, body));
     });
     return sec;
   }
@@ -1281,6 +1304,73 @@
     app.replaceChildren(frag);
   }
 
+  // ------------------------------------------------ what survives a redraw
+
+  // Holding the redraw while a selection lives is what keeps the copy chips
+  // usable; a selection outside #app is not lost by a redraw and holds nothing.
+  function readerBusy() {
+    if (selectHeld) return true;
+    var s = window.getSelection();
+    return !!(s && !s.isCollapsed && s.anchorNode && app.contains(s.anchorNode));
+  }
+
+  function focusKey(n) {
+    if (n.tagName === "SUMMARY") return "summary:" + n.parentNode.getAttribute("data-key");
+    if (n.tagName === "A") return "link:" + n.getAttribute("href");
+    var fk = n.getAttribute("data-fk");
+    return fk == null ? null : "control:" + fk;
+  }
+
+  // The focused control as its key and its count among controls with that key,
+  // since one PR link can appear in several sections of a run's page.
+  function focusSpot() {
+    var cur = document.activeElement;
+    if (!cur || !app.contains(cur)) return null;
+    var key = focusKey(cur);
+    if (key == null) return null;
+    var nth = 0, nodes = app.querySelectorAll(FOCUSABLE);
+    for (var i = 0; i < nodes.length && nodes[i] !== cur; i++) {
+      if (focusKey(nodes[i]) === key) nth++;
+    }
+    return { key: key, nth: nth };
+  }
+
+  function restoreFocus(spot) {
+    if (!spot) return;
+    var nodes = app.querySelectorAll(FOCUSABLE), seen = 0;
+    for (var i = 0; i < nodes.length; i++) {
+      if (focusKey(nodes[i]) !== spot.key) continue;
+      if (seen++ === spot.nth) { nodes[i].focus({ preventScroll: true }); return; }
+    }
+  }
+
+  // Only a turn away from the default is kept, so a day that stops being today
+  // or yesterday closes by itself unless the reader opened it.
+  function rememberOpen() {
+    var dets = app.querySelectorAll("details[data-key]");
+    for (var i = 0; i < dets.length; i++) {
+      var k = dets[i].getAttribute("data-key");
+      if (dets[i].open === dets[i].hasAttribute("data-default-open")) flipped.delete(k);
+      else flipped.set(k, dets[i].open);
+    }
+  }
+
+  function restoreOpen() {
+    var dets = app.querySelectorAll("details[data-key]");
+    for (var i = 0; i < dets.length; i++) {
+      var k = dets[i].getAttribute("data-key");
+      if (flipped.has(k)) dets[i].open = flipped.get(k);
+    }
+  }
+
+  function redraw(paint) {
+    var spot = focusSpot();
+    rememberOpen();
+    paint();
+    restoreOpen();
+    restoreFocus(spot);
+  }
+
   // ---------------------------------------------------------------- polling
 
   function route() {
@@ -1324,18 +1414,25 @@
       if (res.error) {
         app.replaceChildren(r.run ? detailError(r.run, res.error) : listError(res.error));
         app.removeAttribute("data-url");
+        redrawOwed = false;
         setFresh(lastOk);
         schedule(period);
         return;
       }
       var d = res.data;
       setTz(d.tz_offset_s, d.tz_label);
-      setFresh(lastOk);
-      if (!res.same || app.getAttribute("data-url") !== url) {
-        if (r.run) renderDetail(d); else renderList(d);
-        app.setAttribute("data-url", url);
+      var sameView = app.getAttribute("data-url") === url;
+      if (!res.same || !sameView || redrawOwed) {
+        if (sameView && readerBusy()) {
+          redrawOwed = true;
+        } else {
+          redraw(function () { if (r.run) renderDetail(d); else renderList(d); });
+          app.setAttribute("data-url", url);
+          redrawOwed = false;
+        }
       }
-      if (r.run && d.summary && d.summary.state === "종단") {
+      if (!redrawOwed) setFresh(lastOk);
+      if (!redrawOwed && r.run && d.summary && d.summary.state === "종단") {
         setConn(true, true, true);
         return;
       }
