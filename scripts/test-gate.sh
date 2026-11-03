@@ -29827,7 +29827,9 @@ check "26: 룰 끔 — 조건 11 이 나지 않는다" "$(sa_unmet11)" ""
 # 런을 붙든다. 그것을 푸는 덮는 리뷰는 머지된 PR 을 대상으로 받아야 하므로 줄이
 # --merged 와 머지 커밋, 머지 커밋의 첫 부모와 워크트리 팁의 merge-base 를 베이스로
 # 싣고, 앞 전체 사이클을 기준으로 한 델타 플래그 셋을 싣는다. 머지는 게이트 밖에서
-# 베이스에 --no-ff 머지 커밋을 만들어 민다. 픽스처는 모두 이 절 안에서 만든다.
+# 베이스에 --no-ff 머지 커밋을 만들어 민다. 빨리감기 머지는 베이스를 유도하지 않고
+# 거절하며, squash 머지는 분기점 베이스를 그대로 유도한다. 픽스처는 모두 이 절
+# 안에서 만든다.
 sa26b_merge() {
   # sa26b_merge — 베이스에 다른 커밋 하나를 둔 뒤 세그먼트 브랜치를 --no-ff 머지
   # 커밋으로 들이고 원격 베이스로 민다. 머지 커밋 sha 를 찍는다.
@@ -29948,6 +29950,50 @@ sag review-line --manifest "$SA_MANIFEST" --segment S26D; l26d=$msg
 check "26b: 델타가 마지막이면 기준 플래그는 그 앞 전체 사이클을 가리킨다" \
   "$rc|$(sa26b_flag "$l26d" --basis-cycle)|$(sa26b_flag "$l26d" --basis-review-head)|$(sa26b_flag "$l26d" --basis-report-path)" \
   "0|1|$T26D1|$RP26D"
+
+# 7 — 빨리감기 머지. 전체 사이클 1 의 리뷰 HEAD 뒤에 커밋 둘을 두고 원격 베이스를
+# 세그먼트 팁으로 빨리감기하면 머지 커밋이 팁 자신이다. 그 첫 부모는 머지 직전의
+# 베이스가 아니라 세그먼트 안의 커밋이라, 유도한 베이스는 앞 커밋을 diff 에서 뺀다.
+# 행에 베이스 sha 가 없으므로 줄을 내지 않고 거절한다.
+sa_new '빨리감기로 머지한 미포함'
+sa26b_row S26W
+T26W=$(sa_commit '리뷰된 작업')
+sa_cycle S26W 1 0 0 "$T26W"
+sa_commit '리뷰 뒤의 작업 1' >/dev/null
+U26W=$(sa_commit '리뷰 뒤의 작업 2')
+sa_land
+sa_seg_state S26W 머지됨 "머지 커밋=$U26W"
+check "26b: 빨리감기 머지의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26W)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26W
+case "$msg" in
+  *"/cc-cmds:review-unattended"*) r26w="줄 있음" ;;
+  *) r26w="줄 없음" ;;
+esac
+check "26b: 빨리감기 머지 세그먼트의 리뷰 줄은 rc 3 이고 줄을 내지 않는다" "$rc|$r26w" "3|줄 없음"
+case "$msg" in
+  *"is a fast-forward merge"*) ok "26b: 그 거절이 빨리감기 머지를 지목한다" ;;
+  *) bad "26b 빨리감기 거절 문면" "$msg" ;;
+esac
+
+# 8 — squash 머지. 머지 커밋은 세그먼트 변경을 한 커밋에 담은 새 커밋이라 팁의 조상이
+# 아니고, 그 첫 부모가 머지 직전의 베이스라 유도한 베이스가 분기점이다. 빨리감기
+# 판별이 이 머지를 거르지 않는다.
+sa_new 'squash 로 머지한 미포함'
+sa26b_row S26Q
+F26Q=$(cd "$SA_REPO" && git rev-parse HEAD)
+T26Q=$(sa_commit '리뷰된 작업')
+sa_cycle S26Q 1 0 0 "$T26Q"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+# --squash 는 -q 에도 「Squash commit -- not updating HEAD」를 표준출력에 찍으므로 버린다.
+M26Q=$( cd "$SA_REPO" && git merge -q --squash "$SA_SEGBR" >/dev/null && git commit -qm "squash $SA_SEGBR" \
+  && git push -q origin "$SA_BASE" && git rev-parse HEAD ) 2>/dev/null
+sa_seg_state S26Q 머지됨 "머지 커밋=$M26Q"
+check "26b: squash 머지의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26Q)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26Q; l26q=$msg
+check "26b: squash 머지 세그먼트의 리뷰 줄은 머지 커밋과 분기점 베이스를 싣는다" \
+  "$rc|$(sa26b_flag "$l26q" --merged)|$(sa26b_flag "$l26q" --base-sha)" "0|$M26Q|$F26Q"
 
 # --- 35-27. 게이트가 적는 필드는 호출자가 넘길 수 없고, 넘치는 행은 이름을 대며 거절된다 ---
 # --- section: 35-27 | group: sa | covers: act, snapshot | anchors: 27: 호출자가 넘긴 머지 대조 는 머지됨 행에서 거절된다 ---
