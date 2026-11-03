@@ -2120,18 +2120,19 @@ def cmd_record_started(args):
         raise UsageError("--started takes no --doc-only")
     if not args.ticket or not args.run:
         raise UsageError("--started needs --ticket and --run")
-    doc = Doc(args.doc)
+    # The lock comes first: the document and the registry are read under it.
     try:
+        if not RUN_ID_RE.match(args.run):
+            raise Refused("런 id 를 등록부에 쓸 수 없음")
+        lock = take_lock(args.doc, args.run)
+    except Refused as e:
+        return refused(e)
+    try:
+        doc = Doc(args.doc)
         if doc.kind != "tickets":
             raise Refused("티켓 배달 설계 문서가 아님")
         if args.ticket not in ticket_ids(doc):
             raise Refused("문서에 없는 티켓 %s" % args.ticket)
-        if not RUN_ID_RE.match(args.run):
-            raise Refused("런 id 를 등록부에 쓸 수 없음")
-        lock = take_lock(doc.path, args.run)
-    except Refused as e:
-        return refused(e)
-    try:
         reg = open_registry_by_head(doc)
         key = (args.ticket, args.run)
         if key in reg.started:
@@ -2287,7 +2288,9 @@ def build_child_doc(doc, g, tid, cutpoint):
 def outside_entries(doc, start, end):
     """({path: reason}, faults) of the `**티켓 밖 파일**` field of one slice
     block: `없음`, or an empty field line with one `` - `<path>` — <reason> ``
-    bullet per line under it. A block without the field has none."""
+    bullet per line under it. A block without the field has none. The field
+    ends at the first blank line after `없음` or after its bullet run, so a
+    paragraph that follows it is not part of it."""
     entries, faults = {}, []
     k = next((x for x in range(start, end) if not doc.inside[x]
               and FIELD_RE.match(doc.lines[x]) and FIELD_RE.match(doc.lines[x]).group(1) == OUTSIDE_FIELD), None)
@@ -2296,7 +2299,14 @@ def outside_entries(doc, start, end):
     value = (FIELD_RE.match(doc.lines[k]).group(2) or "").strip()
     under = []
     x = k + 1
+    if not value:
+        # Blank lines between the field line and its first bullet, as
+        # parse_block reads them.
+        while x < end and not doc.inside[x] and not doc.lines[x].strip():
+            x += 1
     while x < end and (doc.inside[x] or not FIELD_RE.match(doc.lines[x])):
+        if not doc.inside[x] and not doc.lines[x].strip():
+            break
         if doc.lines[x].strip():
             under.append(doc.lines[x])
         x += 1
@@ -2599,17 +2609,19 @@ def cmd_revise(args):
     for name in ("from_", "to", "ticket", "run"):
         if not getattr(args, name):
             raise UsageError("revise needs --from, --to, --ticket and --run")
-    doc = Doc(args.doc)
+    # The lock is the first act: the document is read and checked under it, so
+    # a revision that finished in between is seen as a sha256 that moved.
     try:
-        if doc.kind != "tickets":
-            raise Refused("티켓 배달 설계 문서가 아님")
         if not RUN_ID_RE.match(args.run):
             raise Refused("런 id 꼴 어긋남")
-        lock = take_lock(doc.path, args.run)
+        lock = take_lock(args.doc, args.run)
     except Refused as e:
         return refused(e)
     replacing = False
     try:
+        doc = Doc(args.doc)
+        if doc.kind != "tickets":
+            raise Refused("티켓 배달 설계 문서가 아님")
         old = Doc(args.from_)
         new = Doc(args.to)
         # 1 — the document is still the copy the revision started from.

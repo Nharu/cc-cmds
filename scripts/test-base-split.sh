@@ -1247,6 +1247,24 @@ fence_doc noticket '### 티켓 T1 — 형식' '### 티켓 아님'
 run_bs fence-check "$CHILD/noticket.md"
 check "fence-check: a missing ticket block fails" "$rc" "1"
 has "fence-check: names the missing ticket block" "$out" "F1 ## 베이스 제약 의 티켓 블록 0개 (정확히 하나여야 함)"
+fence_doc nonepara "$DECL" "$DECL
+**티켓 밖 파일**: 없음
+
+이 슬라이스는 형식 하나를 구현한다."
+run_bs fence-check "$CHILD/nonepara.md"
+check "fence-check: a paragraph after 없음 is not part of the field" "$rc:$out" "0:"
+fence_doc listpara "$DECL" "$DECL, \`src/x.py\`
+**티켓 밖 파일**:
+- \`src/x.py\` — 앞 티켓 결함 — 읽기 경로가 틀렸다
+
+이 슬라이스는 형식 하나를 구현한다."
+run_bs fence-check "$CHILD/listpara.md"
+check "fence-check: a paragraph after the bullets is not part of the field" "$rc:$out" "0:"
+fence_doc nonewrap "$DECL" "$DECL
+**티켓 밖 파일**: 없음
+이어 쓴 줄"
+run_bs fence-check "$CHILD/nonewrap.md"
+check "fence-check: a line right under 없음 still fails" "$rc:$out" "1:F1 슬라이스 A 티켓 밖 파일 이 없음 인데 아래 줄이 있음"
 
 # ---------------------------------------------------------------------------
 # record --started
@@ -1453,6 +1471,41 @@ check "revise: refused while another call holds the lock" "$rc" "3"
 check "revise: a held lock leaves the document unchanged" "$(cmp -s "$RVDOC" "$RV/pristine.md" && echo same || echo differs)" "same"
 check "revise: a lock it did not take stays" "$([ -d "$RVDOC.revise.lock" ] && echo y || echo n)" "y"
 rmdir "$RVDOC.revise.lock"
+
+# race <rival> <argv...>: run the tool in-process with take_lock wrapped so the
+# document becomes <rival> right before the lock is taken — another call that
+# finished between this call's start and its lock.
+race() {
+  rc=0
+  out=$(python3 - "$BS" "$RVDOC" "$@" 2>"$WORK/stderr" <<'PYEOF'
+import importlib.util, shutil, sys
+bs, doc, rival = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("base_split", bs)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+real = m.take_lock
+def racing(path, run):
+    shutil.copyfile(rival, doc)
+    return real(path, run)
+m.take_lock = racing
+sys.exit(m.main(sys.argv[4:]))
+PYEOF
+  ) || rc=$?
+}
+reg_with T1:r1
+race "$RV/t2owned.md" revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
+check "revise: a revision that finished before the lock is refused" "$rc" "3"
+has "revise: the document is read under the lock" "$(cat "$WORK/stderr")" "상위 문서의 sha256 이 --from 과 다름"
+check "revise: the finished revision stays and the registry is unchanged" \
+  "$(cmp -s "$RVDOC" "$RV/t2owned.md" && cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
+check "revise: the lock is gone after a raced refusal" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
+reg_with T1:r1
+race "$DOCS/none.md" record --started "$RVDOC" --ticket T2 --run r8
+check "record --started: a document that changed before the lock is read under it" "$rc" "3"
+has "record --started: says the raced document is not a ticket delivery design" "$(cat "$WORK/stderr")" "티켓 배달 설계 문서가 아님"
+check "record --started: nothing is written after a raced refusal" \
+  "$(cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
+check "record --started: the lock is gone after a raced refusal" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
