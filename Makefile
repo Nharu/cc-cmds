@@ -511,6 +511,7 @@ ORCH_TESTS := \
 	scripts/test-statusline-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
+	scripts/test-dashboard-screen.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-display-tz.sh \
 	scripts/test-run-stops.sh \
