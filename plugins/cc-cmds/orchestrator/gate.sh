@@ -2989,7 +2989,8 @@ gate_worktree_add_base_mismatch() {
     printf '받은 시작점: 없음, 기대 시작점: %s' "$want"
     return 0
   fi
-  got=$(cd "$dir" 2>/dev/null && git rev-parse --symbolic-full-name "$start" 2>/dev/null | head -1) || got=""
+  got=$(cd "$dir" 2>/dev/null && git rev-parse --symbolic-full-name "$start" 2>/dev/null) || got=""
+  got="${got%%$'\n'*}"
   [ "$got" = "$want" ] && return 0
   printf '받은 시작점: %s (%s), 기대 시작점: %s' "$start" "${got:-이름 없는 커밋}" "$want"
   return 0
