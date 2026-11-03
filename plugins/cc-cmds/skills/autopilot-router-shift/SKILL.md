@@ -272,7 +272,7 @@ The snapshot's `리뷰 세그먼트[]` is the read: one element per `리뷰 PR` 
      -- 상태=계획됨 워크트리=<워크트리>
    ```
 
-   The gate reads the pull request's current head from the remote and writes `종류=리뷰전용 고정 헤드=<sha> 베이스 sha=<sha>` only when it equals the worktree's HEAD. **On exit 3 saying the head moved, take calls 1 and 3 again once** — the fetch moves `refs/cc-review/<run id>/<id>`, so check the worktree out at it with `git checkout --detach refs/cc-review/<run id>/<id>` in the worktree between them. A second refusal stops the segment at `리뷰 게시 거절` with `shift-halt`.
+   The gate reads the pull request's current head from the remote and writes `종류=리뷰전용 고정 헤드=<sha> 베이스 sha=<sha>` only when it equals the worktree's HEAD. **On exit 3 saying the head moved, take calls 1 and 3 again once** — the fetch moves `refs/cc-review/<run id>/<id>`, so check the worktree out at it with `git checkout --detach refs/cc-review/<run id>/<id>` in the worktree between them. **A segment that cannot be planned is parked, not halted** — a second head-moved refusal, any other exit 3 of call 3, or a call 1 or 2 that fails (a pull request closed overnight leaves `refs/pull/<PR>/head` unfetchable): write `act --kind segment --target <대상> --segment <id> -- 상태=park 워크트리=<워크트리> 선행=없음` and a `blocked` row saying why. The gate takes a `park` as the first row of a `리뷰 PR` segment that has no planning row, and `shift-halt` cannot stop a segment that has no row at all.
 
 **Dispatch the review from `gate.sh review-line` unchanged** (「Spelling a review dispatch」), with `--trigger '첫 리뷰'`. For a review-only segment the line names the pull request's URL instead of a branch and carries `--base-sha <베이스 sha> --pr-head <고정 헤드> --depth <깊이> --post-ready`; the stage's working directory is the detached worktree. Record its `cycle` row as for any review.
 
@@ -446,7 +446,7 @@ gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --se
 | `적용 정산` | 「Merging and applying a segment」: `act --kind apply-settle` ended in `park … 정산 판정=필요` or `측정 실패` | never |
 | `들여온 적용 정산` | 「Merging and applying a segment」: the segment is in the snapshot's `apply_imported` | never |
 | `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence no read of this run can produce | never |
-| `리뷰 게시 거절` | `act --kind review-post` exit 3: the posting account is not the frozen one, the review was already posted and matched, or GitHub refused the post | never |
+| `리뷰 게시 거절` | `act --kind review-post` exit 3: the posting account is not the frozen one, the review was already posted and matched, GitHub refused the post (a 4xx), or the post's outcome is unknown (no status line, a 5xx) and no post row was written | never |
 | `게시 대조` | `act --kind review-post` exit 3: the review GitHub holds after the post does not match the rendered request, or cannot be read | never |
 | `보류 리뷰 선점` | `act --kind review-post` exit 3: the posting account already holds a pending review on the pull request | never |
 

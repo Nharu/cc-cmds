@@ -60204,7 +60204,7 @@ unset d104 c104 p104 f104 d104n
 
 # ---------------------------------------------------------------------------
 # 106. 리뷰어 런 — 리뷰 전용 세그먼트의 계획·리뷰 줄·쓰기 거절·게시·대조
-# --- section: 106 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes | anchors: 106: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 106: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 106: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 106: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 106: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 106: 게시가 POST 한 번과 대조 일치 행을 남긴다, 106: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 106: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 106: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 106: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 106: 리뷰어 네 행이 구속 다이제스트를 움직인다 ---
+# --- section: 106 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes | anchors: 106: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 106: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 106: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 106: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 106: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 106: 게시가 POST 한 번과 대조 일치 행을 남긴다, 106: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 106: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 106: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 106: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 106: 리뷰어 네 행이 구속 다이제스트를 움직인다, 106: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 106: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 106: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다 ---
 #
 # 베어 원격 하나에 다른 작성자의 PR 둘(`refs/pull/7/head`, `refs/pull/8/head`)을 두고,
 # 리뷰어 계획(`run_profile: reviewer`)과 `리뷰 PR`·`리뷰 게시`·`리뷰 깊이` 행을 실은
@@ -60224,12 +60224,18 @@ cat > "$RV106_STUB" <<'RV106EOF'
 #!/bin/bash
 # 리뷰 게시 행위의 GitHub 대역. 답은 `$RV106_S` 의 파일이 고른다:
 #   login · head · reviews · rid · tamper(있으면 재판독 본문 끝에 x 를 더한다)
+#   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 500 은 5xx, noid 는 id 없는 200)
 D=${RV106_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
 if [ "$*" = "api user --jq .login" ]; then cat "$D/login"; exit 0; fi
 [ "${1:-}" = api ] || exit 1
 if [ "$2 $3" = "-X POST" ]; then
   cp "$7" "$D/posted.json"
+  case "$(cat "$D/status" 2>/dev/null)" in
+    none) exit 1 ;;
+    500) printf 'HTTP/2.0 500 Internal Server Error\r\n\r\n{}\n'; exit 1 ;;
+    noid) printf 'HTTP/2.0 200 OK\r\n\r\n{}\n'; exit 0 ;;
+  esac
   printf 'HTTP/2.0 200 OK\r\n\r\n{"id":%s}\n' "$(cat "$D/rid")"
   exit 0
 fi
@@ -60257,11 +60263,12 @@ export RV106_STUB
 eval 'gh() { "$RV106_STUB" "$@"; }'; export -f gh
 
 rv106_new() {
-  # rv106_new <라벨> <방식> <의사표시> — 리뷰어 계획, PR 7·8 의 리뷰 PR 행 둘, 게시·깊이 행,
-  # 두 PR 의 게시용 사전 인가 행, 그리고 베어 원격의 두 PR 헤드 ref.
+  # rv106_new <라벨> <방식> <의사표시> [더할 행] — 리뷰어 계획, PR 7·8 의 리뷰 PR 행 둘, 게시·깊이 행,
+  # 두 PR 의 게시용 사전 인가 행, 그리고 베어 원격의 두 PR 헤드 ref. 넷째 인자는 인가 절 끝에 붙는다.
   sa_new "$1" 리뷰없음
   SA_PLAN='{ "run_profile": "reviewer", "steps": [ { "id": "R1", "skill": "review", "depends_on": [] } ] }'
   SA_AUTH_RAW=$(printf -- '- `리뷰 PR` | 세그먼트=P1 | 대상=main | PR=7 | 작성자=other-dev | 드래프트=예 | 베이스=main\n- `리뷰 PR` | 세그먼트=P2 | 대상=main | PR=8 | 작성자=other-dev | 드래프트=아니오 | 베이스=main\n- `리뷰 게시` | 방식=%s | 의사표시=%s | 계정=rv-bot\n- `리뷰 깊이` | 깊이=가벼움' "$2" "$3")
+  [ -z "${4:-}" ] || SA_AUTH_RAW=$(printf '%s\n%s' "$SA_AUTH_RAW" "$4")
   SA_PREAUTH_EXTRA=$(printf 'gh api -X POST repos/t/%s/pulls/7/reviews\ngh api -X POST repos/t/%s/pulls/8/reviews' "$SA_ID" "$SA_ID")
   sa_manifest 리뷰없음
   ( cd "$SA_REPO" && git checkout -q -b pr7 main && printf 'one\ntwo\n' > a.txt && git commit -qam pr7 \
@@ -60341,6 +60348,9 @@ check "106: --review-pr 없는 리뷰 전용 세그먼트의 첫 행은 rc 3 이
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P1 --cutpoint 커밋 \
     --snapshot-digest "$(SAH)" --rationale x -- 상태=계획됨 "워크트리=$rv106_w1" 선행=없음 종류=리뷰전용
 check "106: 호출자가 넘긴 종류 필드는 rc 2 다" "$rc" "2"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P1 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=계획됨 "워크트리=$rv106_w1" 선행=없음 "베이스 sha=$rv106_base"
+check "106: 리뷰 PR 세그먼트에 호출자가 넘긴 베이스 sha 는 rc 2 다" "$rc" "2"
 rv106_plan P1
 check "106: 리뷰 전용 세그먼트 계획이 통과한다" "$rc" "0"
 rv106_row=$(sa_seg_last P1)
@@ -60561,6 +60571,64 @@ awk '{ print } /^자동 리뷰 결과를/ && !done { print "{모름}"; done = 1 
 "$RV106_RP" render --settle --format "$RV106_ROOT/badfmt.md" --report "$RV106_ROOT/items.md" --head "$rd106_head" \
   --p0 1 --p1 2 --out "$RV106_ROOT/s.json" >/dev/null 2>&1
 check "106: 모르는 자리표시자를 가진 문면 파일은 렌더가 거절한다" "$([ $? != 0 ] && echo 거절)" "거절"
+
+# 결과 미상 게시 — 5xx 와 id 없는 2xx 뒤의 재호출은 올라간 리뷰를 찾아 대조하고 다시 POST 하지 않는다 --
+rv106_new "결과 미상 게시" 직접 허용 '- `리뷰 PR` | 세그먼트=P3 | 대상=main | PR=9 | 작성자=other-dev | 드래프트=아니오 | 베이스=main'
+rv106_fetch P1 7; rv106_fetch P2 8
+rv106_plan P1; rv106_plan P2
+rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv106_cycle P1 "$rv106_h7"; rv106_cycle P2 "$rv106_h8"
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '557\n' > "$RV106_S/rid"; printf '500\n' > "$RV106_S/status"
+rv106_post P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시')|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|1|0|1|"*"리뷰 게시 거절"*) ok "106: 5xx 답의 게시는 게시 행 없이 시도 행만 남긴다" ;;
+  *) bad "106: 5xx 답의 게시는 게시 행 없이 시도 행만 남긴다" "rc=$rc posts=$(rv106_posts) $(rv106_last '리뷰 게시') $msg" ;;
+esac
+rm -f "$RV106_S/status"
+printf '[{"id":557,"user":{"login":"rv-bot"},"state":"APPROVED","commit_id":"%s"}]\n' "$rv106_h7" > "$RV106_S/reviews"
+rv106_post P1
+rv106_pr=$(rv106_last '리뷰 게시')
+check "106: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다" \
+  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|1|557|일치"
+printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '558\n' > "$RV106_S/rid"; printf 'noid\n' > "$RV106_S/status"
+printf '[]\n' > "$RV106_S/reviews"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+case "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" 세그먼트)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)|$msg" in
+  "3|2|P2|-|판독불가|"*"게시 대조"*) ok "106: id 없는 2xx 답의 게시는 판독불가 행과 rc 3 이다" ;;
+  *) bad "106: id 없는 2xx 답의 게시는 판독불가 행과 rc 3 이다" "rc=$rc posts=$(rv106_posts) $rv106_pr $msg" ;;
+esac
+rm -f "$RV106_S/status"
+rv106_post P2
+case "$rc|$(rv106_posts)|$msg" in
+  "3|2|"*"게시 대조"*) ok "106: id 없이 받은 게시의 리뷰를 찾지 못한 재호출은 POST 없이 rc 3 이다" ;;
+  *) bad "106: id 없이 받은 게시의 리뷰를 찾지 못한 재호출은 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
+esac
+printf '[{"id":558,"user":{"login":"rv-bot"},"state":"APPROVED","commit_id":"%s"}]\n' "$rv106_h8" > "$RV106_S/reviews"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+check "106: id 없이 받은 게시의 리뷰를 찾은 재호출은 POST 없이 대조한다" \
+  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|2|558|일치"
+
+# 계획하지 못한 세그먼트 — 계획 행 없는 리뷰 PR 세그먼트의 첫 행은 park 만 받는다 ------------------
+rv106_w3=$(rv106_wt P3)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$rv106_w3" 선행=없음
+rv106_got="$rc"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=park "워크트리=$rv106_w3"
+check "106: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다" \
+  "$rv106_got|$rc|$(sa_field "$(sa_seg_last P3)" 상태)" "3|0|park"
+
+# 리뷰어 런 밖 — 드라이버가 머지 행에 싣는 베이스 sha 는 호출자 값으로 받는다 ---------------------
+sa_new "드라이버 머지 행의 베이스 sha"
+sa_seg_row S106B ""
+rv106_t=$(sa_commit 작업)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S106B --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=리뷰중 워크트리="$SA_SEGWT" 선행=없음 "베이스 sha=$rv106_t"
+check "106: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다" \
+  "$rc|$(sa_field "$(sa_seg_last S106B)" '베이스 sha')" "0|$rv106_t"
 
 unset -f gh rv106_new rv106_done rv106_wt rv106_fetch rv106_plan rv106_cycle rv106_post rv106_next rv106_posts rv106_n rv106_last rv106_ev rv106_rp rv106_bsb rd106 rd106_ev rd106_v
 unset RV106_STUB RV106_S

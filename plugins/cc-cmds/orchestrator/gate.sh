@@ -10914,8 +10914,10 @@ gate_segment_kept_field() {
   # segment row of that id that carries the key at all. A review-only segment's
   # planning row is the only one that writes `종류`, `고정 헤드` and `베이스 sha`;
   # the router's later rows (`리뷰중`, `완료`) do not repeat them, so the
-  # last-row reading of `gate_segment_field` would lose them.
-  gate_rows 'segment' | gate_rows_field_eq 'id' "$1" | gate_rows_field_values "$2" \
+  # last-row reading of `gate_segment_field` would lose them. Only rows marked
+  # `종류=리뷰전용` are read: the driver writes `베이스 sha` on an ordinary
+  # segment's merged row, and that value is no review-only segment's pin.
+  gate_rows 'segment' | gate_rows_field_eq 'id' "$1" | gate_rows_field_eq '종류' '리뷰전용' | gate_rows_field_values "$2" \
     | awk 'NF { v = $0 } END { printf "%s", v }'
 }
 
@@ -33517,14 +33519,25 @@ gate_record_row() {
       # missing worktree instead of the review — the wrong repair at 3am.
       [ -n "$wt" ] || { warn "a segment row needs \`워크트리\`"; return "$GATE_EXIT_VOCAB"; }
 
-      # `종류`, `고정 헤드` AND `베이스 sha` ARE THE GATE'S. They mark a
-      # review-only segment and pin the head its review reads, and only the
-      # `--review-pr` planning act writes them, after reading the pull request's
-      # head on the remote. A caller's value would make a segment review-only —
-      # or stop being one — with nothing checked. Later rows leave them off;
-      # `gate_segment_kept_field` carries them.
-      local rp_f
+      # `종류` AND `고정 헤드` ARE THE GATE'S. They mark a review-only segment
+      # and pin the head its review reads, and only the `--review-pr` planning
+      # act writes them, after reading the pull request's head on the remote. A
+      # caller's value would make a segment review-only — or stop being one —
+      # with nothing checked. Later rows leave them off; `gate_segment_kept_field`
+      # carries them.
+      #
+      # `베이스 sha` IS THE GATE'S ONLY ON A REVIEW-ONLY SEGMENT. The driver
+      # writes it on every segment's merged row and the merge-check rows read it
+      # there, so a refusal on every run turned each driver merge into a refused
+      # gate row and its fallback row carried no `머지 대조`. On a reviewer run's
+      # `리뷰 PR` segment, and on a segment already planned review-only, the
+      # caller's value would move the diff the posted review is rendered from.
+      local rp_f rp_seg=""
+      if gate_segment_review_only "$seg" || { gate_reviewer_run && gate_review_pr_row "$seg" >/dev/null; }; then
+        rp_seg=1
+      fi
       for rp_f in '종류' '고정 헤드' '베이스 sha'; do
+        [ "$rp_f" != '베이스 sha' ] || [ -n "$rp_seg" ] || continue
         if [ -n "$(gate_field_of "$rp_f" "$@")" ]; then
           warn "segment 행의 「${rp_f}」는 게이트가 act --kind segment --review-pr 에서만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
           return "$GATE_EXIT_VOCAB"
@@ -33537,8 +33550,15 @@ gate_record_row() {
         set -- "$@" "종류=리뷰전용" "고정 헤드=$GATE_RP_HEAD" "베이스 sha=$GATE_RP_BASE"
         [ -n "$(gate_field_of '선행' "$@")" ] || set -- "$@" "선행=없음"
       elif gate_reviewer_run && gate_review_pr_row "$seg" >/dev/null && ! gate_segment_review_only "$seg"; then
-        warn "세그먼트 ${seg} 는 이 리뷰어 런의 리뷰 전용 세그먼트입니다 — 첫 행은 act --kind segment --review-pr 로 씁니다"
-        return "$GATE_EXIT_RULE"
+        # A `park` is the one other first row: a segment whose fetch, worktree
+        # or planning act failed — a pull request closed overnight, a head that
+        # moved twice — has no planning row, and the run's done proposal waits
+        # for every `리뷰 PR` segment to end in `완료` or `park`.
+        if [ "$st" != 'park' ]; then
+          warn "세그먼트 ${seg} 는 이 리뷰어 런의 리뷰 전용 세그먼트입니다 — 첫 행은 act --kind segment --review-pr 로 쓰고, 계획하지 못한 세그먼트는 「상태=park」 로만 닫습니다"
+          return "$GATE_EXIT_RULE"
+        fi
+        [ -n "$(gate_field_of '선행' "$@")" ] || set -- "$@" "선행=없음"
       fi
       # A review-only segment is `완료` once its review is posted and read back
       # as rendered; any other ending is a `park`.
@@ -42047,6 +42067,7 @@ gate_check_review_post() {
   fi
   GATE_RVP_LOGIN="$login"; GATE_RVP_CUR="$cur"; GATE_RVP_CREDS="$creds"
   last=$(gate_review_post_rows '리뷰 게시' "$seg" | tail -1)
+  local landed=""
   case "$(gate_row_field "$last" '대조')" in
     일치)
       warn "세그먼트 ${seg} 의 리뷰는 이미 게시되어 대조가 일치했습니다 (리뷰 id $(gate_row_field "$last" '리뷰 id')) — 다시 게시하지 않습니다"
@@ -42054,13 +42075,17 @@ gate_check_review_post() {
     불일치|판독불가)
       rid=$(gate_row_field "$last" '리뷰 id')
       case "$rid" in
-        ''|*[!0-9]*) ;;
+        ''|*[!0-9]*) landed=1 ;;
         *) GATE_RVP_VERDICT="verify:$rid"; return 0 ;;
       esac ;;
   esac
-  # An attempt row after the last post row: the POST may have landed with its
-  # answer lost. A review of this account at the pinned head is that POST.
-  if [ -n "$last" ]; then
+  # An attempt row with no post row after it: the POST may have landed with its
+  # answer lost (no status line, a 5xx) — the performer writes no post row then.
+  # A post row without a review id is a POST GitHub accepted whose id was not
+  # read, so its attempt rows stand before it and are read too. A review of this
+  # account at the pinned head is that POST. Only `게시 실패` — a 4xx, nothing
+  # landed — leaves the attempts before it behind.
+  if [ -n "$last" ] && [ -z "$landed" ]; then
     tries=$( { gate_ledger_rows_after "$last" | grep -E '^- `리뷰 게시 시도` ' || true; } | gate_review_post_filter "$seg")
   else
     tries=$(gate_review_post_rows '리뷰 게시 시도' "$seg")
@@ -42072,6 +42097,10 @@ gate_check_review_post() {
       ''|*[!0-9]*) ;;
       *) GATE_RVP_VERDICT="verify:$mine"; return 0 ;;
     esac
+  fi
+  if [ -n "$landed" ]; then
+    warn "세그먼트 ${seg} 의 마지막 게시는 GitHub 가 받았으나 리뷰 id 를 읽지 못했고, 고정 헤드에서 계정 ${login} 의 리뷰를 찾지 못했습니다 — 다시 게시하지 않습니다 (정지 자리 「게시 대조」)"
+    exit "$GATE_EXIT_RULE"
   fi
   lastc=$(printf '%s' "$revs" | jq -r --arg u "$login" \
     '[.[] | select(.user.login == $u and .state == "PENDING")] | length' 2>/dev/null || echo x)
@@ -42085,8 +42114,9 @@ gate_check_review_post() {
 
 gate_perform_review_post() {
   # gate_perform_review_post <alias> <segment> — render, the attempt row, one
-  # POST, the re-read, the comparison and the `리뷰 게시` row. A refused POST
-  # is recorded as `대조=게시 실패` with its response code and not retried.
+  # POST, the re-read, the comparison and the `리뷰 게시` row. A POST refused
+  # with a 4xx is recorded as `대조=게시 실패` with its response code and not
+  # retried; a POST whose outcome is unknown writes no post row.
   local al="$1" seg="$2"
   case "${GATE_RVP_VERDICT:-}" in
     post|verify:*) ;;
@@ -42120,12 +42150,19 @@ gate_perform_review_post() {
     [ -n "$code" ] || code=000
     body=$(printf '%s\n' "$raw" | awk 'b { print; next } /^\r?$/ { b = 1 }')
     rid=$(printf '%s' "$body" | jq -r '.id // empty' 2>/dev/null || true)
+    # Only a 4xx is a refusal: nothing landed, and the row says so. With no
+    # status line or a 5xx the review may exist all the same, so no post row is
+    # written — the attempt row stays the last record, and the next call looks
+    # for this account's review at the pinned head before it posts again.
     case "$code" in
       2??) ;;
-      *)
+      4??)
         gate_append '리뷰 게시' "세그먼트=$seg" "PR=$GATE_RVP_PR" "리뷰 id=-" "방식=$GATE_RVP_MODE" "종류=${kind:--}" \
           "헤드 변경=$hc" "대조=게시 실패" "응답=$(gate_row_safe "$code" 40)" "렌더 sha256=$rsha" "절=${GATE_REVIEW_CLAUSE:--}" || return $?
         warn "GitHub 가 리뷰 게시를 거절했습니다 (응답=$code) — 다시 시도하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
+        return "$GATE_EXIT_RULE" ;;
+      *)
+        warn "리뷰 게시의 결과를 알 수 없습니다 (응답=$code) — 게시 행을 쓰지 않았고, 다시 부르면 고정 헤드에서 이 계정의 리뷰를 먼저 찾습니다 (정지 자리 「리뷰 게시 거절」)"
         return "$GATE_EXIT_RULE" ;;
     esac
   else
