@@ -13976,6 +13976,136 @@ gate unclosed-decisions --manifest "$FX_MANIFEST" --segment -
 check "15d-2: unclosed-decisions 는 세그먼트 없이 2 로 거절된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
+# 15d-3. An entry forced by its base-contract reason is closed in the run by the write form of `## 사유 거둠`
+# --- section: 15d-3 | group: base | covers: unresolved_closure_pending, unresolved_closure_verdict, unclosed-decisions | anchors: 15d-3: 거둠 전 슬라이스 A 판독이 베이스 사유 항목을 낸다, 15d-3: 거둠 전 unclosed-decisions 가 베이스 사유 항목을 낸다, 15d-3: 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다, 15d-3: 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다, 15d-3: 대조 무충돌 거둠 뒤 계획 수용 판정이 출력 없이 1 이다, 15d-3: 사람 수용(충돌) 거둠 뒤 슬라이스 A 판독이 빈다, 15d-3: 사람 수용(충돌) 거둠 뒤 unclosed-decisions 가 빈다, 15d-3: 사람 수용(충돌) 거둠 뒤 계획 수용 판정이 출력 없이 1 이다, 15d-3: 사람 수용(대조 문면 없음) 거둠 뒤 슬라이스 A 판독이 빈다, 15d-3: 사람 수용(대조 문면 없음) 거둠 뒤 unclosed-decisions 가 빈다, 15d-3: 사람 수용(대조 문면 없음) 거둠 뒤 계획 수용 판정이 출력 없이 1 이다, 15d-3: 사람 수용(지명할 줄 없음) 거둠 뒤 슬라이스 A 판독이 빈다, 15d-3: 사람 수용(지명할 줄 없음) 거둠 뒤 unclosed-decisions 가 빈다, 15d-3: 사람 수용(지명할 줄 없음) 거둠 뒤 계획 수용 판정이 출력 없이 1 이다, 15d-3: 표식 없는 베이스 사유 항목은 슬라이스 B 판독에 그대로 나온다, 15d-3: 표식 없는 베이스 사유 항목은 슬라이스 B unclosed-decisions 에 그대로 나온다, 15d-3: 보류 항목에 사유 거둠 줄만 붙으면 계속 나온다, 15d-3: 처분 어휘 계약에 사유 거둠 절이 있다, 15d-3: 다섯 문면이 처분 어휘 계약의 사유 거둠 절을 가리킨다, 15d-3: 재수렴 문면이 두 선택지 라벨을 싣는다, 15d-3: 세 문면이 사람 수용(충돌) 우선 규칙을 베이스 제약과 함께 싣는다, 15d-3: 재수렴 문면이 우선 문구 고정 부분을 싣는다, 15d-3: 사유 거둠 절이 네 표식 값을 모두 싣는다 ---
+#
+# The re-convergence is a skill and does not run in this suite, so its write is
+# replaced by the write form `_common/unresolved-closure.md` `## 사유 거둠`
+# fixes, applied to a fixture document: the `상태` line becomes the bare
+# `해결`, `**사유**` and the other fields stay, and `**사유 거둠**` and
+# `**대조 기록**` follow the `**상태**` line — one fixture per marker value, the
+# `사람 수용(충돌)` one with its precedence phrase after the decision. The
+# reader is asked directly, by sourcing the gate, and through the gate's
+# `unclosed-decisions` verb on a manifest whose `설계 문서` is that fixture,
+# because the verb takes its document from the manifest, not from `DOC`.
+# Planning is measured by `unresolved_closure_verdict`, the judgment that
+# refuses a process A plan over open decisions.
+# ---------------------------------------------------------------------------
+rc15d3_dir="$WT/docs"
+mkdir -p "$rc15d3_dir" "$WT/docs/pipeline-grant"
+rc15d3_doc() {  # rc15d3_doc <name> <entry 1 block> [extra 합의된 아키텍처 lines] — slices A and B; entry 2 is the unmarked control on B
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n'
+    printf '## 베이스 제약\n\n**베이스 문서**: docs/base.md\n**티켓**: T1\n**베이스 sha256**: 0000\n\n'
+    printf '### 계약 C2 — 값\n\n**값 상한**: 10\n\n### 계약 C3 — 이름\n\n**이름 꼴**: 영문 소문자\n\n'
+    printf '## 합의된 아키텍처\n\n본문\n'
+    [ -z "${3:-}" ] || printf '%s\n' "$3"
+    printf '\n## 미해결 이슈 / 트레이드오프\n\n'
+    printf '%s\n' "$2"
+    printf '\n### 미결 2. 표식 없는 베이스 사유\n\n**상태**: 보류\n**사유**: 베이스 계약 변경 필요 — 계약 C3\n**구현 처분**: 구현 무관\n**닿는 슬라이스**: B\n'
+    printf '\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
+    printf '\n### 슬라이스 A — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: `A.txt`\n**선행**: 없음\n**절단점**: 커밋\n'
+    printf '\n### 슬라이스 B — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: `B.txt`\n**선행**: A\n**절단점**: 커밋\n'
+  } > "$rc15d3_dir/fixture-15d3-$1.md"
+}
+rc15d3_closed() {  # rc15d3_closed <marker> <대조 기록 value> — entry 1 closed by the `## 사유 거둠` write form
+  printf '### 미결 1. 베이스 계약과 닿는 결정\n\n**상태**: 해결\n**사유 거둠**: 베이스 개정 없이 — %s · 런 R15D3 · A#3 · 중단 기록 A#1.md\n**대조 기록**: %s\n**사유**: 베이스 계약 변경 필요 — 계약 C2\n**구현 처분**: 구현 무관\n**닿는 슬라이스**: A' "$1" "$2"
+}
+rc15d3_open1='### 미결 1. 베이스 계약과 닿는 결정
+
+**상태**: 보류
+**사유**: 베이스 계약 변경 필요 — 계약 C2
+**구현 처분**: 구현 무관
+**닿는 슬라이스**: A'
+rc15d3_doc before "$rc15d3_open1"
+rc15d3_doc nc "$(rc15d3_closed '대조 무충돌' '「계약 C2 — 값」 무충돌; 「계약 C3 — 이름」 무충돌')" '값 상한 10 을 그대로 쓴다.'
+rc15d3_doc cf "$(rc15d3_closed '사람 수용(충돌)' '「계약 C2 — 값」 충돌: 「**값 상한**: 10」; 「계약 C3 — 이름」 무충돌')" \
+  '값 상한을 20 으로 둔다.
+이 결정은 `## 베이스 제약` 의 「**값 상한**: 10」 보다 앞선다 (사유 거둠 — 사람 수용(충돌))'
+rc15d3_doc nt "$(rc15d3_closed '사람 수용(대조 문면 없음)' '대조 문면 없음')" '값 상한을 20 으로 둔다.'
+rc15d3_doc nl "$(rc15d3_closed '사람 수용(지명할 줄 없음)' '지명할 줄 없음')" '이 공백을 알려진 한계로 받아들인다.'
+rc15d3_doc om '### 미결 3. 보류에 거둠 줄
+
+**상태**: 보류
+**사유 거둠**: 베이스 개정 없이 — 대조 무충돌 · 런 R15D3 · A#3 · 중단 기록 A#1.md
+**사유**: 베이스 계약 변경 필요 — 계약 C4
+**구현 처분**: 구현 무관
+**닿는 슬라이스**: A'
+rc15d3_uc() {  # rc15d3_uc <name> <seg> — the reader, run on the fixture by sourcing the gate
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; unresolved_closure_pending "$1" "$2"' _ "$rc15d3_dir/fixture-15d3-$1.md" "$2" )
+}
+rc15d3_vd() {  # rc15d3_vd <name> — `<rc>|<output>` of the planning judgment over the fixture, slice A
+  local o r=0
+  o=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; unresolved_closure_verdict "정상 완료" 0 "$1" A' _ "$rc15d3_dir/fixture-15d3-$1.md" 2>&1) || r=$?
+  printf '%s|%s' "$r" "$o"
+}
+rc15d3_verb() {  # rc15d3_verb <name> <seg> — `gate unclosed-decisions` on a manifest naming the fixture
+  local rid="R15D3$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  write15c "$WORK/plan-$rid.md" "$plan15c" "docs/fixture-15d3-$1.md" "$rid"
+  grant15c "$rid" "docs/fixture-15d3-$1.md"
+  # stdout only: the gate's credential notice goes to stderr on a fresh manifest.
+  local o r=0
+  o=$(cd "$WT" && gate_inproc unclosed-decisions --manifest "$WORK/plan-$rid.md" --segment "$2" 2>/dev/null) || r=$?
+  printf '%s|%s' "$r" "$(printf '%s\n' "$o" | { grep -vE '\[run\] ' || true; })"
+}
+
+check "15d-3: 거둠 전 슬라이스 A 판독이 베이스 사유 항목을 낸다" \
+  "$(rc15d3_uc before A)" "### 미결 1. 베이스 계약과 닿는 결정"
+check "15d-3: 거둠 전 unclosed-decisions 가 베이스 사유 항목을 낸다" \
+  "$(rc15d3_verb before A)" "0|### 미결 1. 베이스 계약과 닿는 결정"
+check "15d-3: 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다" "$(rc15d3_uc nc A)" ""
+check "15d-3: 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다" "$(rc15d3_verb nc A)" "0|"
+check "15d-3: 대조 무충돌 거둠 뒤 계획 수용 판정이 출력 없이 1 이다" "$(rc15d3_vd nc)" "1|"
+check "15d-3: 사람 수용(충돌) 거둠 뒤 슬라이스 A 판독이 빈다" "$(rc15d3_uc cf A)" ""
+check "15d-3: 사람 수용(충돌) 거둠 뒤 unclosed-decisions 가 빈다" "$(rc15d3_verb cf A)" "0|"
+check "15d-3: 사람 수용(충돌) 거둠 뒤 계획 수용 판정이 출력 없이 1 이다" "$(rc15d3_vd cf)" "1|"
+check "15d-3: 사람 수용(대조 문면 없음) 거둠 뒤 슬라이스 A 판독이 빈다" "$(rc15d3_uc nt A)" ""
+check "15d-3: 사람 수용(대조 문면 없음) 거둠 뒤 unclosed-decisions 가 빈다" "$(rc15d3_verb nt A)" "0|"
+check "15d-3: 사람 수용(대조 문면 없음) 거둠 뒤 계획 수용 판정이 출력 없이 1 이다" "$(rc15d3_vd nt)" "1|"
+check "15d-3: 사람 수용(지명할 줄 없음) 거둠 뒤 슬라이스 A 판독이 빈다" "$(rc15d3_uc nl A)" ""
+check "15d-3: 사람 수용(지명할 줄 없음) 거둠 뒤 unclosed-decisions 가 빈다" "$(rc15d3_verb nl A)" "0|"
+check "15d-3: 사람 수용(지명할 줄 없음) 거둠 뒤 계획 수용 판정이 출력 없이 1 이다" "$(rc15d3_vd nl)" "1|"
+check "15d-3: 표식 없는 베이스 사유 항목은 슬라이스 B 판독에 그대로 나온다" \
+  "$(rc15d3_uc nc B)" "### 미결 2. 표식 없는 베이스 사유"
+check "15d-3: 표식 없는 베이스 사유 항목은 슬라이스 B unclosed-decisions 에 그대로 나온다" \
+  "$(rc15d3_verb nc B)" "0|### 미결 2. 표식 없는 베이스 사유"
+check "15d-3: 보류 항목에 사유 거둠 줄만 붙으면 계속 나온다" \
+  "$(rc15d3_uc om A)" "### 미결 3. 보류에 거둠 줄"
+
+# The five texts that state the rule, and the precedence phrase's fixed part.
+rc15d3_sk="$repo_root/plugins/cc-cmds/skills"
+rc15d3_uc_md="$rc15d3_sk/_common/unresolved-closure.md"
+rc15d3_sec=$(LC_ALL=C awk '/^## 사유 거둠$/ { on = 1; next } on && /^## / { exit } on { print }' "$rc15d3_uc_md")
+check "15d-3: 처분 어휘 계약에 사유 거둠 절이 있다" "$(grep -cxF '## 사유 거둠' "$rc15d3_uc_md" || true)" "1"
+rc15d3_n=0
+for rc15d3_f in design-reconverge/SKILL.md implement-unattended/SKILL.md design-solo-unattended/SKILL.md \
+                design-discuss-unattended/SKILL.md _common/base-linkage.md; do
+  grep -qF '_common/unresolved-closure.md' "$rc15d3_sk/$rc15d3_f" && grep -qF '## 사유 거둠' "$rc15d3_sk/$rc15d3_f" \
+    && rc15d3_n=$((rc15d3_n + 1))
+done
+check "15d-3: 다섯 문면이 처분 어휘 계약의 사유 거둠 절을 가리킨다" "$rc15d3_n" "5"
+rc15d3_n=0
+for rc15d3_l in '`베이스 개정 없이 계속`' '`베이스 개정 후 새 런`'; do
+  grep -qF -- "$rc15d3_l" "$rc15d3_sk/design-reconverge/SKILL.md" && rc15d3_n=$((rc15d3_n + 1))
+done
+check "15d-3: 재수렴 문면이 두 선택지 라벨을 싣는다" "$rc15d3_n" "2"
+rc15d3_n=0
+grep -qF '사람 수용(충돌)' <<<"$rc15d3_sec" && grep -qF '## 베이스 제약' <<<"$rc15d3_sec" \
+  && rc15d3_n=$((rc15d3_n + 1))
+for rc15d3_f in implement-unattended/SKILL.md _common/base-linkage.md; do
+  grep -qF '사람 수용(충돌)' "$rc15d3_sk/$rc15d3_f" && grep -qF '## 베이스 제약' "$rc15d3_sk/$rc15d3_f" \
+    && rc15d3_n=$((rc15d3_n + 1))
+done
+check "15d-3: 세 문면이 사람 수용(충돌) 우선 규칙을 베이스 제약과 함께 싣는다" "$rc15d3_n" "3"
+check "15d-3: 재수렴 문면이 우선 문구 고정 부분을 싣는다" \
+  "$(grep -qF '보다 앞선다 (사유 거둠 — 사람 수용(충돌))' "$rc15d3_sk/design-reconverge/SKILL.md" && printf 있음 || printf 없음)" "있음"
+rc15d3_n=0
+for rc15d3_l in '대조 무충돌' '사람 수용(충돌)' '사람 수용(대조 문면 없음)' '사람 수용(지명할 줄 없음)'; do
+  grep -qF -- "$rc15d3_l" <<<"$rc15d3_sec" && rc15d3_n=$((rc15d3_n + 1))
+done
+check "15d-3: 사유 거둠 절이 네 표식 값을 모두 싣는다" "$rc15d3_n" "4"
+
+# ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
 # --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
 #
