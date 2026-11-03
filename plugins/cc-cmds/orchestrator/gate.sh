@@ -39212,7 +39212,7 @@ gate_apply_imported_evidence() {
   GATE_SETTLE_EVIDENCE_CYCLE=""; GATE_SETTLE_EVIDENCE_RUN=""; GATE_SETTLE_FAIL=""; GATE_SETTLE_SUBJECT=""
   org=$(gate_segment_field "$seg" '출처')
   imerge=$(gate_segment_field "$seg" '머지 커밋')
-  if ! printf '%s' "$org" | grep -qE '^[0-9]{8}-[0-9a-f]{8}$'; then
+  if ! [[ "$org" =~ ^[0-9]{8}-[0-9a-f]{8}$ ]]; then
     GATE_SETTLE_FAIL="들여온 행의 출처(${org:-없음})가 런 id 꼴이 아니라 증거 원장을 정할 수 없다"; return 1
   fi
   eled="$(dirname "$LEDGER")/${org}.md"
