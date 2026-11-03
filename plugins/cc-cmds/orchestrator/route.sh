@@ -3064,7 +3064,7 @@ route_lease_release_run_dead() {
   [ "${#pairs[@]}" -gt 0 ] || return 0
   bash "$(route__dir)/route.sh" lease-sweep-done "$t" "${pairs[@]}"
 }
-route_lease_has_holder(){ bash "$(route__dir)/route.sh" lease-has-holder "$@"; }
+route_lease_has_holder() { bash "$(route__dir)/route.sh" lease-has-holder "$@"; }
 route_lease_sweep_done() {
   # route_lease_sweep_done <table> — 끝난 런의 묵은 임대 훑기. 호출자 셸에서 돈다:
   # 런 디렉터리는 run.sh 의 `rundir_of_run_id` 한 곳이 정하므로, 그 함수가 없는 셸
