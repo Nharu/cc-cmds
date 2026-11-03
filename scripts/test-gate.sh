@@ -52000,8 +52000,9 @@ check "83v: 항목이 닫힌 문서의 수거는 보류를 푼다" \
 
 # 결함 수정 울타리 — 세그먼트 워크트리 하나, 선언 파일 넷. 넷째는 한글 이름이라, git 기본
 # 철자(따옴표와 8진 이스케이프)로 나열하면 선언 대조에 걸리지 않고 거짓 울타리 이탈이 된다.
+# 레포 설정에 core.quotePath true 를 박아, 호스트 전역 설정이 그 철자를 꺼 두어도 시험이 공허해지지 않는다.
 V83_WT="$D83V/wt"; mkdir -p "$V83_WT/lib" "$V83_WT/scripts"
-( cd "$V83_WT" && git init -q && printf 'a\n' > a.sh && printf 't\n' > scripts/t.sh && printf 'k\n' > 설계노트.sh \
+( cd "$V83_WT" && git init -q && git config core.quotePath true && printf 'a\n' > a.sh && printf 't\n' > scripts/t.sh && printf 'k\n' > 설계노트.sh \
   && git add a.sh scripts/t.sh 설계노트.sh && git -c user.name=t -c user.email=t@t commit -q -m init ) >/dev/null 2>&1
 V83_DECL='a.sh,설계노트.sh,lib/,scripts/t.sh'
 v83_df() {  # v83_df <항목> <open|close> [<결과>] — rc
@@ -52412,18 +52413,23 @@ check "83x: 남의 기기를 지정한 maestro 는 대역에 닿지 않는다" \
   "$(grep -c -e 'maestro --device emulator-5554' -e 'maestro --udid 22222222' "$X83L")" "0"
 
 # 등급표가 매기지 않는 기기 도구 형태 — 읽기나 런로컬 쓰기로 낮춰 신고해도 기계 전역 칸보다
-# 먼저 열리지 않고, 정직한 기기전역 신고와 같게 park 한다. 기기에 닿지 않는 xcrun 툴체인
+# 먼저 열리지 않고, 정직한 기기전역 신고와 같게 park 한다. 등급표가 쓰기로 매기는 형태를 읽기로
+# 신고하면 그보다 앞에서 낮은 신고로 거절된다(종료 6). 기기에 닿지 않는 xcrun 툴체인
 # 조회는 여전히 읽기 신고로 열린다.
 X83_SURF=읽기 x83_run adb install -r a.apk
-check "83x: 읽기로 신고한 시리얼 없는 adb install 은 park 한다" "$rc" "11"
+check "83x: 읽기로 신고한 시리얼 없는 adb install 은 등급보다 낮은 신고로 거절된다" "$rc" "6"
 X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run adb install -r b.apk
 check "83x: 런로컬 로 신고한 시리얼 없는 adb install 은 park 한다" "$rc" "11"
 X83_SURF=읽기 x83_run timeout 60 adb shell
 check "83x: 읽기로 신고한 감싼 adb shell 은 park 한다" "$rc" "11"
 X83_SURF=읽기 x83_run xcrun devicectl list devices
 check "83x: 읽기로 신고한 xcrun devicectl 은 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run xcrun xctrace record --device 33333333-3333-3333-3333-333333333333
+check "83x: 읽기로 신고한 xcrun xctrace 는 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run find /dev/null -maxdepth 0 -exec adb shell ';'
+check "83x: 읽기로 신고한 find -exec 의 adb shell 은 park 한다" "$rc" "11"
 check "83x: 낮춰 신고한 미상 기기 형태는 대역에 닿지 않는다" \
-  "$(grep -c -e 'adb install -r' -e 'adb shell' -e 'devicectl' "$X83L")" "0"
+  "$(grep -c -e 'adb install -r' -e 'adb shell' -e 'devicectl' -e 'xctrace' "$X83L")" "0"
 X83_SURF=읽기 x83_run xcrun --find clang
 check "83x: 읽기로 신고한 xcrun --find 는 여전히 열린다" "$rc|$(grep -c 'xcrun --find clang' "$X83L")" "0|1"
 

@@ -3616,9 +3616,12 @@ gate_device_act_start() {
 gate_device_tool_act() {
   # gate_device_tool_act <argv...> — 0 when the act its launchers wrap is run
   # by a mobile device tool: `xcodebuild`, `adb`, `emulator`, `avdmanager`,
-  # `maestro`, or an `xcrun` that carries `simctl` or `devicectl`. Any other
-  # `xcrun` (`xcrun --find clang`, `xcrun swift build`) reaches no device.
-  local s w
+  # `maestro`, or an `xcrun` that carries `simctl`, `devicectl`, `xctrace` or
+  # `instruments`. Any other `xcrun` (`xcrun --find clang`, `xcrun swift
+  # build`) reaches no device. A `find` is one when a word from its first
+  # `-exec` family primary on names any of those tools, as the machine-global
+  # cell reads it; the words before are start paths and tests.
+  local s w x=0
   s=$(gate_device_act_start "$@")
   set -- "${@:$s}"
   w="${1##*/}"
@@ -3627,7 +3630,16 @@ gate_device_tool_act() {
     xcrun)
       shift
       for w in "$@"; do
-        case "$w" in simctl|devicectl) return 0 ;; esac
+        case "$w" in simctl|devicectl|xctrace|instruments) return 0 ;; esac
+      done ;;
+    find)
+      shift
+      for w in "$@"; do
+        case "$w" in -exec|-execdir|-ok|-okdir) x=1; continue ;; esac
+        [ "$x" = "1" ] || continue
+        case "${w##*/}" in
+          xcrun|xcodebuild|adb|emulator|avdmanager|maestro) return 0 ;;
+        esac
       done ;;
   esac
   return 1
