@@ -41751,7 +41751,10 @@ gate_clause_exec_last_merge() {
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     v=$(gate_row_field "$r" '머지 커밋')
-    printf '%s' "$v" | grep -Eq '^[0-9a-f]{7,64}$' && last="$v"
+    # A whole-value hex check without a pipe: an early exit under pipefail
+    # would read as no match.
+    case "$v" in ''|*[!0-9a-f]*) continue ;; esac
+    [ "${#v}" -ge 7 ] && [ "${#v}" -le 64 ] && last="$v"
   done <<EOF
 $(gate_rows 'segment' | gate_rows_field_eq '상태' '머지됨')
 EOF
