@@ -13124,6 +13124,50 @@ gate_segment_review_ordinal() {
   printf '%s' "$(( ${n:-0} + 1 ))"
 }
 
+gate_review_report_candidates() {
+  # gate_review_report_candidates <segment> — the report paths this cycle's
+  # review may have written, one per line: the canonical one, then every
+  # existing `-r<k>` sibling with k ≥ 2 and no leading zero. The same set the
+  # `cycle` row check accepts, so a report the row may name is one the stage
+  # outcome counts.
+  local rp f k
+  rp=$(gate_review_report_path "$1")
+  printf '%s\n' "$rp"
+  for f in "${rp%.md}"-r*.md; do
+    [ -f "$f" ] || continue
+    k=${f#"${rp%.md}-r"}; k=${k%.md}
+    case "$k" in ''|*[!0-9]*|0*) continue ;; esac
+    [ "$k" -ge 2 ] || continue
+    printf '%s\n' "$f"
+  done
+}
+
+gate_review_report_produced() {
+  # gate_review_report_produced <segment> — true when one of this cycle's
+  # report paths carries either terminal line a review can write: the
+  # canonical `발견 요약` line, judged by the driver's `predicate_review`, or
+  # the recovery arm's partial-recovery head, judged by the one report parser's
+  # `요약=복구`. The partial head counts because it is the recovery arm's
+  # defined end for a recovery it could not complete, and its readers already
+  # take it as one: the router's review-recovery check finds it on a recovery
+  # recorded `정상 완료` and blocks on `부분 복구`. Recorded `공허한 성공`, the
+  # recovery would be continued instead, and the continue message asks for the
+  # canonical line an incomplete witness set cannot honestly fill.
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if predicate_review "$f"; then return 0; fi
+    # Exact key: the parser's output also carries carry-over titles and bodies
+    # copied from the report, so a substring match could read their text.
+    if [ "$(gate_report_count "$(gate_review_report_counts "$f" 2>/dev/null)" 요약)" = 복구 ]; then
+      return 0
+    fi
+  done <<EOF
+$(gate_review_report_candidates "$1")
+EOF
+  return 1
+}
+
 gate_report_norm() {
   # gate_report_norm <absolute path> — the spelling two report paths are
   # compared in: the nearest existing directory resolved physically, so `//`, a
@@ -20557,6 +20601,7 @@ gate_main() {
       gate_admit_load "$request"
       gate_admit_words
       gate_admit_wrapped_push_refuse
+      gate_admit_dir_move_refuse
       # THE CELL IS DERIVED, not asked for: the table's rung, and `push` at
       # least for a git push, whose rung the table leaves to the act's own
       # destination check — which raises a base update to `머지` with exit 8.
@@ -28857,6 +28902,26 @@ gate_warn_canon_prompt() {
   warn "$(gate_canon_prompt "$1" "$2")"
 }
 
+gate_approval_canon_question() {
+  # gate_approval_canon_question <승인 id> — the canonical question of an
+  # approval, `승인 <id> — <question>`, or nothing when the ledger holds no row
+  # for that id. Never dies, status 0.
+  #
+  # ONE DERIVATION FOR EVERY READER. The question is the sidecar's full text
+  # when the block exists and proves itself this run's, and the row's excerpt
+  # otherwise — a judgment approval's row carries only an excerpt, so the full
+  # text has to come from the sidecar. The `prompt` verb, the gate's approval
+  # banner and the watcher's approval banner all read it here, so the remote
+  # copy of an approval carries the bytes the router asks with.
+  local id="$1" row full
+  row=$(gate_approval_last_row "$id")
+  [ -n "$row" ] || return 0
+  full=$(gate_approval_sidecar_question "$id" || true)
+  [ -n "$full" ] || full=$(gate_row_field "$row" '질문 문면')
+  gate_canon_prompt "$id" "$full"
+  return 0
+}
+
 gate_prompt() {
   # gate_prompt <승인 id> — the question the router must put to a person, as
   # one JSON object: `{"id","cutpoint","state","question","menu_version",
@@ -28872,12 +28937,10 @@ gate_prompt() {
   # The question text is the sidecar's full text when the block exists and
   # proves itself this run's, and the row's excerpt otherwise — an approval
   # issued before the sidecar existed is still askable.
-  local id="$1" row cutp full l opts
+  local id="$1" row cutp l opts
   row=$(gate_approval_last_row "$id")
   [ -n "$row" ] || die "no such approval id in the ledger: $id"
   cutp=$(gate_row_field "$row" '절단점')
-  full=$(gate_approval_sidecar_question "$id" || true)
-  [ -n "$full" ] || full=$(gate_row_field "$row" '질문 문면')
   opts='[]'
   if [ "$cutp" = "판단" ]; then
     opts=$(for l in $(gate_menu_labels); do
@@ -28885,7 +28948,7 @@ gate_prompt() {
     done | jq -s '.')
   fi
   jq -n --arg id "$id" --arg cutpoint "$cutp" --arg state "$(gate_row_field "$row" '상태')" \
-        --arg question "$(gate_canon_prompt "$id" "$full")" --arg mv "$GATE_MENU_VERSION" \
+        --arg question "$(gate_approval_canon_question "$id")" --arg mv "$GATE_MENU_VERSION" \
         --argjson options "$opts" \
         '{id: $id, cutpoint: $cutpoint, state: $state, question: $question, menu_version: $mv, options: $options}'
 }
@@ -33059,7 +33122,7 @@ gate_notify_approval() {
   # is one duplicate banner; the fix would put a lock on the critical path of
   # every act. Recorded here because otherwise a later reader deletes one of the
   # two firing points and restores the delay this whole seat removed.
-  local id="$1" q="$2"
+  local id="$1" q="$2" canon detail
   # A SHIFT DOES NOT DECIDE WHETHER A BANNER REACHES THE USER. It was launched
   # by the lead, and a launched process choosing what the user sees is the one
   # thing the notification rules forbid outright. That test used to sit here as a
@@ -33077,7 +33140,26 @@ gate_notify_approval() {
       printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals" 2>/dev/null || true
     fi
   fi
-  cc_notify_fire answer "$q" "$id" || true
+  # THE REMOTE COPY CARRIES THE CANONICAL QUESTION, the local banner keeps `$q`.
+  # The act approval's banner text adds the alias, cut and grade after the
+  # question, which is right for a glance at a banner and wrong for the event a
+  # remote reader answers from, so the canonical question goes in the funnel
+  # attachment instead. Both callers write the sidecar block and the ledger row
+  # before calling here, so the approval is found. A text that does not begin
+  # with the approval's own prefix (no row, an unreadable ledger) sends no
+  # attachment, and the banner goes up as before without an event.
+  #
+  # The attachment is made here, after the seat check and the announcement
+  # list, so no path that returns early leaves one behind.
+  detail=
+  canon=$(gate_approval_canon_question "$id" 2>/dev/null || true)
+  case "$canon" in
+    "승인 $id — "*)
+      detail=$(cc_attention_detail_make "$(jq -cn --arg b "$canon" \
+        '{kind: "approval", actionable: false, reply: null, body: $b}' 2>/dev/null || true)") || detail=
+      ;;
+  esac
+  CC_NOTIFY_ATTENTION_DETAIL="$detail" cc_notify_fire answer "$q" "$id" || true
   return 0
 }
 
@@ -39808,12 +39890,12 @@ gate_ci_rerun_x5_hit() {
   # deployment or another workflow, 1 when it is clean; any other status is "not
   # judged" and the caller parks on it.
   #
-  # THE FLOOR IS THE LINE GREP, AND THE READER ONLY LIFTS TWO SHAPES OFF IT. The
+  # THE FLOOR IS THE LINE GREP, AND THE READER ONLY LIFTS THREE SHAPES OFF IT. The
   # file is first matched with `grep -E "$GATE_X5_FLOOR_RE"` — an `environment`
   # key spelled with `:` on the same line, or the text `.github/workflows/`,
   # anywhere, comments included. A clean grep leaves the reader's own verdict.
   # A matching line (a floor line) is lifted only when the reader below proves
-  # it one of two shapes, judged on the line with one trailing CR removed:
+  # it one of three shapes, judged on the line with one trailing CR removed:
   #   - E1, a trigger filter item: the whole line is `- ` and one workflow file
   #     `.github/workflows/<name>.yml` or `.yaml` (no `/` in the name), bare or
   #     in one pair of quotes, then blanks only; the reader read it as an item of
@@ -39840,6 +39922,18 @@ gate_ci_rerun_x5_hit() {
   #     `-f <list>` (attached or not), `tr` with one or two words none starting
   #     with `-` or `-d`/`-s` and one such word, or `grep -[vcxEFi]+`… and one
   #     pattern word.
+  #   - E3, a whole-line YAML comment: the line's first non-blank is `#` and the
+  #     reader read it outside every block scalar body and outside every open
+  #     flow collection, so a YAML parser drops it and Actions never runs it. A
+  #     ` #` tail after a key line and a `#` line inside a body are not this
+  #     shape. E3 is off for the whole file — each such line counts as not
+  #     lifted — when a block-context line, with its ` #` tail cut off, ends in
+  #     a block scalar indicator (`|` or `>`, with `-`/`+`/digits after) as its
+  #     last blank-separated word but the reader did not open a body on it: a
+  #     `- |` item, an indicator standing alone on the next line, a key the
+  #     reader's key pattern does not read, or a plain value ending in ` |`.
+  #     There the lines YAML takes as a body can be ones the reader reads as
+  #     comments outside one.
   # A floor line on the `environment` branch is never lifted. No line is lifted
   # when the file holds a CR before a line's end, a NEL, LS or PS byte
   # sequence, a flow collection left open at a line's end, or a block-context
@@ -39851,8 +39945,9 @@ gate_ci_rerun_x5_hit() {
   # environment, never `-v`, which would undo their escapes.
   #
   # The reader reads line by line, never as YAML, one trailing CR removed:
-  #   - A line whose first non-blank is `#` is skipped, and a ` #` tail outside
-  #     quotes is cut off. A quote starts a quoted string only where a node
+  #   - A line whose first non-blank is `#` is skipped (outside a body and an
+  #     open flow, a floor line so skipped is lifted as E3), and a ` #` tail
+  #     outside quotes is cut off. A quote starts a quoted string only where a node
   #     can start; a quote inside a plain scalar is a character. A `\` in
   #     double quotes and a doubled `'` in single quotes do not close the
   #     string. The lines of an open flow collection are judged as one text,
@@ -40170,7 +40265,8 @@ gate_ci_rerun_x5_read() {
         }
         inbody = 0
       }
-      if (ind < 0 || (!inflow && substr($0, ind + 1, 1) == "#")) next
+      if (ind < 0) next
+      if (!inflow && substr($0, ind + 1, 1) == "#") { if (isf && !ise) ex[NR] = "c"; next }
       if (inflow) {
         e1 = 0
         # A flow is read as one text: a quote at the start of this line opens
@@ -40184,6 +40280,7 @@ gate_ci_rerun_x5_read() {
         next
       }
       s = stripc($0)
+      if (s ~ /(^|[ \t])[|>][-+0-9]*$/) cand[NR] = 1
       # A block-context line that ends inside an open quote turns every lift off.
       if (sq != "") invalid = 1
       text(s)
@@ -40238,7 +40335,7 @@ gate_ci_rerun_x5_read() {
       if (w ~ /^[{[]/) { startflow(w); next }
       if (v ~ blockre) {
         if (k == "uses") { hit = 1; exit }
-        inbody = 1; bcol = col; bbs = 0
+        inbody = 1; bcol = col; bbs = 0; opened[NR] = 1
         # A step `run` body, with the anchor its indicator carries.
         e2ok = k == "run" && !kp && steprun(sp); banc = ""; t = v
         while (e2ok && match(t, /^(&[^ \t]+|![^ \t]*)[ \t]+/)) {
@@ -40262,9 +40359,11 @@ gate_ci_rerun_x5_read() {
       # A lift whose list or body carries an anchor holds only when every alias
       # of it is a trigger filter `paths` line (E1) or there is none (E2).
       un = 0
+      for (n in cand) if (!(n in opened)) e3off = 1
       for (i = 1; i <= nfl; i++) {
         n = fln[i]
         if (!(n in ex)) { un++; continue }
+        if (ex[n] == "c") { if (e3off) un++; continue }
         a = substr(ex[n], 2)
         if (a == "") continue
         if (substr(ex[n], 1, 1) == "p") { if (atot[a] + 0 != agood[a] + 0) un++ }
@@ -41824,6 +41923,65 @@ gate_admit_wrapped_push_refuse() {
   esac
   warn "this push runs behind '${GATE_ADMIT_WORDS[0]##*/}', and a ticket binds a push to the repository state the gate graded only when the command starts with git itself"
   warn "issue the push as the plain git command (git push origin <branch>), with nothing before git, then admit it again"
+  exit "$GATE_EXIT_VOCAB"
+}
+
+gate_admit_dir_move_refuse() {
+  # gate_admit_dir_move_refuse — exits 2 when the request is a bare `cd`,
+  # `pushd` or `popd` that would move the session outside the run's declared
+  # repositories. A bare command admitted here runs in the session itself, so
+  # it is the one way a session's working directory changes, and the manifest
+  # check every later gate call makes refuses a directory whose common git
+  # directory is not in `manifest_allowed_common_dirs` — a move there traps the
+  # session. A move into a declared repository passes on to grading: the check
+  # admits it, and the gate's acts already run in that target's worktree.
+  # The destination is the first operand after the options -L -P -e -@ (and
+  # their clusters, and `--`), taken from the request's directory when
+  # relative. No operand, `-`, a leading `~` or `+`, an expansion or glob
+  # character, a second operand, and every `popd` cannot be resolved from the
+  # words alone and are refused, as are a missing directory, one outside any
+  # git repository and one of an undeclared repository. Refused before it is
+  # graded, so no row and no ticket is written for it. A `cd` run through exec
+  # runs in the gate's child process and moves nothing, so exec is not checked.
+  local verb="${GATE_ADMIT_WORDS[0]##*/}" n="${#GATE_ADMIT_WORDS[@]}" i=1 w
+  local dest="" d="" cg="" a ok=0
+  case "$verb" in cd|pushd|popd) ;; *) return 0 ;; esac
+  if [ "$verb" != "popd" ]; then
+    while [ "$i" -lt "$n" ]; do
+      w="${GATE_ADMIT_WORDS[$i]}"
+      case "$w" in
+        --) i=$((i + 1)); break ;;
+        -) break ;;
+        -?*)
+          case "${w#-}" in *[!LPe@]*) break ;; esac
+          i=$((i + 1)) ;;
+        *) break ;;
+      esac
+    done
+    if [ "$i" -lt "$n" ] && [ $((i + 1)) -eq "$n" ]; then
+      dest="${GATE_ADMIT_WORDS[$i]}"
+    fi
+    case "$dest" in
+      ''|-*|+*|'~'*|*'$'*|*'`'*|*'*'*|*'?'*|*'['*|*'{'*|*\\*) dest="" ;;
+    esac
+  fi
+  if [ -n "$dest" ]; then
+    case "$dest" in /*) d="$dest" ;; *) d="$GATE_ADMIT_CWD/$dest" ;; esac
+    if [ -d "$d" ]; then
+      cg=$(gate_thp thp_common_dir "$d" 2>/dev/null || true)
+    fi
+    if [ -n "$cg" ]; then
+      while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        [ "$(gate_thp thp_phys "$a" 2>/dev/null || true)" != "$cg" ] || { ok=1; break; }
+      done <<EOF
+$(manifest_allowed_common_dirs)
+EOF
+    fi
+  fi
+  [ "$ok" = "0" ] || return 0
+  warn "이 이동($verb)은 세션을 선언된 대상 밖으로 옮겨 이후 모든 게이트 호출이 매니페스트 검사에 막힌다"
+  warn "다른 대상의 상태는 그 자리에 머문 채 gate.sh exec --target <별칭> --segment <세그먼트> -- <명령> 으로 읽는다"
   exit "$GATE_EXIT_VOCAB"
 }
 
@@ -47575,6 +47733,9 @@ gate_continuation_argv() {
       if [ -n "$unclosed" ]; then unmet=$(unclosed_unmet_message "$unclosed")
       elif [ -n "$missing" ]; then unmet=$(residual_unmet_message "$missing")
       else unmet="게이트를 거친 행위도 정지 기록도 없다"; fi ;;
+    # A review acted through the gate and still wrote no report, so the default
+    # sentence would be false; it is told the canonical report of this cycle.
+    review) unmet="이 사이클의 리뷰 리포트($(gate_review_report_path "$key"))에 \`발견 요약\` 줄이 없고 정지 기록도 없다" ;;
     *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
   esac
   GATE_CONTINUE_ARGV=()
@@ -51186,6 +51347,18 @@ gate_record_stage_outcome() {
   elif [ "$kind" = "implement" ] \
        && gate_plan_rows_of "$seg" | implement_process_b \
        && [ -n "$(residual_share_missing "${DOC:-}" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md")" ]; then
+    klass='공허한 성공'
+  # A REVIEW STAGE is asked for this cycle's report, on the canonical path or a
+  # `-r<k>` re-dispatch path (`gate_review_report_candidates`): a report is
+  # produced when it carries the canonical `발견 요약` line or the recovery
+  # arm's partial-recovery head (`gate_review_report_produced`). A report with
+  # neither, the early stub included, is not. The arm stands before the
+  # row-count arm because a review leaves its own admit and exec rows whether or
+  # not it wrote a report, so a row proves only that it acted. A halt record
+  # without its closing fence did not pass the halt arm above and is judged
+  # here like no record. A lead fix is a kind of its own and never reaches this
+  # arm.
+  elif [ "$kind" = "review" ] && ! gate_review_report_produced "$seg"; then
     klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
     klass='정상 완료'

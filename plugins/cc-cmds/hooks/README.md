@@ -56,6 +56,25 @@ script never reads `tool_name`, so the body, the group and the gate are the ones
 written below. The mod sends no `agent_id`, because it registers its tool only in
 the main session, and it does not register at all where a pipeline marker is set.
 
+The form passes one argument besides that stdin: a JSON object with the form's
+`form_id` and, for each question, its `id`, `header`, `question`, `kind`,
+`conditional` (whether the question has a `when` clause) and the option labels.
+The banner body and group never read it. The script reads it only to build the
+attention attachment below, and a form with a missing or unparsable argument
+still raises the same banner.
+
+**Seat 1 also hands the attention funnel an attachment.** Before it fires, the
+script writes one JSON file named `cc-attention-detail.*` under `TMPDIR` and
+points `CC_NOTIFY_ATTENTION_DETAIL` at it; `cc_notify_fire` records the event in
+the attention spool (`orchestrator/attention.sh`) with that attachment and
+removes the file. The attachment carries `kind` (`auq` or `question-form`), the
+joined `<header> — <question>` body, `actionable`, and a `reply` block — the
+session id, the tool use id or form id, and each question's options — that a
+remote answer needs. `actionable` is false when any question is a pipeline
+approval question (`승인 <id> — …`), and for a form also when a question is not a
+single choice or is conditional. The banner itself is unchanged by the
+attachment: the terminal-notifier argv is the same with or without a spool.
+
 Seat 1 is structurally irreplaceable for `AskUserQuestion`: the hook fires at the
 moment the dialog opens and it is the only event that carries the question text.
 Two alternatives were measured and rejected — a permission notice arrives 6.03 s
