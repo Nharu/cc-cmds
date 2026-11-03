@@ -27454,6 +27454,10 @@ esac
 # THE THREE RELEASE LINES LIVE ONCE, in `gate_close_settle`, and each terminal
 # of `gate_close` reaches them by calling it — so the pin is in two halves: the
 # helper holds the release, and each terminal's append is followed by the call.
+# Each terminal's anchor first matches its closing-field array, which is
+# followed by the three-arm `case` that writes the row in one of three route
+# spellings, and only then by the call — so the window spans 20 lines, which
+# reaches that terminal's call and stops short of the next terminal's.
 site_releases() {
   # site_releases <anchor-fixed-string> <lines-after>
   local ln
@@ -27471,13 +27475,13 @@ site_settles() {
 check "승인 닫기 — 종단 도우미가 슬롯을 회수한다" \
   "$( [ "$(site_releases "gate_close_settle() {" 20)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
 check "승인 닫기 — 무효 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=무효\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=무효\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 거부 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=거부\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=거부\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 승인 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=승인\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=승인\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 판단 라벨 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=\$label\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=\$label\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 
 # --- AND ALL THREE TAKE THE BANNER OFF THE SCREEN ---------------------------
 #
