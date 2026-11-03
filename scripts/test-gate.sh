@@ -5728,7 +5728,7 @@ pre_ledger_series() {
   }
 
   lsr_wait_cases() {
-    # 대기 원인 여덟 × `그룹` 세 모양 × `까지` 값/`-`. `계정` 은 재개 구속
+    # 대기 원인 열 × `그룹` 세 모양 × `까지` 값/`-`. `계정` 은 재개 구속
     # 원인에만 값이다. `비용`·`비용 출처` 는 `까지` 와 함께 값이거나 함께 `-` 다.
     local r acct g u c cs
     for r in group-exhausted no-room unknown-concurrency fifo-yield \
@@ -45240,27 +45240,27 @@ check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
 # 호스트를 Darwin 이 아닌 값으로 주입해 어느 러너에서도 락 없는 갈래를 탄다. 락
 # 걸린 갈래는 63 이 잰다.
 #
-# 사례표는 근거 여덟과 대기 원인 여덟을 모두 지나고, `교대` 원천 세 조건(표식 없음,
+# 사례표는 근거 여덟과 대기 원인 열을 모두 지나고, `교대` 원천 세 조건(표식 없음,
 # 한 자리, 두 자리)을 같은 원장 끝에 붙인다.
 # ---------------------------------------------------------------------------
 lsr62_g=$(lsr_ledger w62-gate)
 lsr62_d=$(lsr_ledger w62-driver)
 lsr62_m=$(lsr_ledger w62-mixed)
 { lsr_lease_cases; lsr_wait_cases; } > "$lsr_root/cases62.tsv"
-check "62: 사례표가 임대 48·대기 48 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "96"
+check "62: 사례표가 임대 48·대기 60 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "108"
 check "62: 주입한 호스트에서 lock_tool 이 비어 있다 (락 없는 갈래)" \
   "$(lsr_in Linux "$lsr62_g" - lock_tool)" ""
 check "62: 게이트 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "96 0"
+  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
 check "62: 드라이버 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "96 0"
+  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
 sed -n '1p;49p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
 for lsr62_sh in 'LS#7' 'LS#12'; do
   lsr_in Linux "$lsr62_g" "$lsr62_sh" lsr_each gate_append < "$lsr_root/shift62.tsv" >/dev/null
   lsr_in Linux "$lsr62_d" "$lsr62_sh" lsr_each ledger_row < "$lsr_root/shift62.tsv" >/dev/null
 done
-check "62: 두 원장이 각각 100행이다" \
-  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "100/100"
+check "62: 두 원장이 각각 112행이다" \
+  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "112/112"
 if cmp -s "$lsr62_g" "$lsr62_d"; then
   ok "62: 두 기록자가 같은 바이트와 같은 체인을 쓴다"
 else
@@ -45277,16 +45277,16 @@ check "62: 첫 행이 고정된 문법 그대로다" \
   "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000.5 | 단계=rest | 단계 출처=declared | 문턱=1.2000 | prev=$lsr62_seed"
 check "62: 교대 원천 세 조건 — 표식 없음 0, #7 은 7, #12 는 12" \
   "$( { grep -cF '| 교대=0 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=7 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=12 |' "$lsr62_d" || true; } )" \
-  "96/2/2"
+  "108/2/2"
 check "62: 락 없는 갈래는 락 파일을 만들지 않는다" \
   "$(ls -A "${lsr62_g%/*}" "${lsr62_d%/*}" | { grep -c 'ledger\.lock' || true; })" "0"
 check "62: 번갈아 쓴 두 기록자도 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "96 0"
+  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
 rc=0; lsr_in Linux "$lsr62_m" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "62: 번갈아 쓴 원장의 사슬이 검증된다" "$rc" "0"
 check "62: 번갈아 쓴 원장이 한 기록자가 쓴 원장과 같은 바이트다" \
   "$( { grep '^- `' "$lsr62_m" || true; } | shasum -a 256 | cut -d' ' -f1)" \
-  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,96p' | shasum -a 256 | cut -d' ' -f1)"
+  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,108p' | shasum -a 256 | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------
 # 63. 락 아래 섞어 쓴 두 기록자
@@ -59243,7 +59243,7 @@ h98h_lock "$h98h_pb"
 SECONDS=0
 h98h_bout=$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pb" "$h98h_lb" h98h_c_fail SHB 'B:SHB#1' nb 2>/dev/null)
 h98h_bel=$SECONDS
-check "98h: 잠금이 보유 총예산 내내 바쁘면 감독자는 rc 3 으로 끝나고 기동하지 않는다" "$h98h_bout" "3|0"
+check "98h: 잠금이 보유 총예산 내내 바쁘면 감독자는 rc 3 으로 끝나고 기동하지 않는다" "$h98h_bout" "3|3"
 if [ "$h98h_bel" -ge 2 ] && [ "$h98h_bel" -le 10 ]; then ok "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다"
 else bad "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다" "${h98h_bel}초"; fi
 check "98h: 그 끝은 lease-hold-busy 원인 행 하나를 남긴다" \
@@ -59270,9 +59270,9 @@ h98h_seed "$h98h_ds" SHS
 h98h_seed "$h98h_ds" SHN
 check "98h: stale 임대의 감독자는 lease-hold-lost 원인 행을 남기고 임대를 되살리지 않는다" \
   "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_fail SHS 'B:SHS#1' ns 2>/dev/null)/$( { grep -cF '| 계보=B:SHS#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-lost' "$h98h_ls" || true; } )/$(jq -c '[.holders[].pid]' "$h98h_ps"/leases/*.lease 2>/dev/null)" \
-  "5|0/1/[$h98h_dead]"
+  "5|3/1/[$h98h_dead]"
 check "98h: 없는 임대의 감독자도 lease-hold-lost 다" \
-  "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_fail SHN 'B:SHN#1' nn 2>/dev/null)/$( { grep -cF '| 계보=B:SHN#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-lost' "$h98h_ls" || true; } )" "1|0/1"
+  "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_fail SHN 'B:SHN#1' nn 2>/dev/null)/$( { grep -cF '| 계보=B:SHN#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-lost' "$h98h_ls" || true; } )" "1|3/1"
 check "98h: 잃은 임대의 두 끝도 반납하고 핀만 남긴다" \
   "$(paste -sd, - < "$h98h_ds/released")/$(h98h_files "$h98h_ds" SHS)/$(h98h_files "$h98h_ds" SHN)" "B:SHS#1 ns,B:SHN#1 nn/attempt/attempt"
 check "98h: wait 은 잃은 임대의 시도도 rc 20 으로 읽는다" \
@@ -59281,12 +59281,14 @@ check "98h: resume 사건의 재파견도 원인 행 뒤에 입장으로 닫힌�
   "$(H98H_ENV=$h98h_GRANT h98h_in "$h98h_ps" "$h98h_ls" eval 'GATE_RESUME=sess-98h; gate_resume_binding_of() { printf -; }; gate_resume_grant_ok() { return 0; }; r=0; gate_launch_route infra SHS implement >/dev/null 2>&1 || r=$?; printf "%s %s %s" "$r" "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_EVENT"' 2>/dev/null)" \
   "0 B:SHS#2 resume"
 
-# 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다.
+# 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다. 잠금을 기다렸다면 보유 예산
+# 1초를 두 번 다 쓰고 rc 3 이 되므로, rc 0 과 1초 이하의 경과가 잠금을 건너뛴 증거다
+# (SECONDS 는 초 경계에서 바뀌어 부하 아래 0 이 1 로 읽힐 수 있다).
 h98h_pf="$lsr_root/pace98h-f"; rm -rf "$h98h_pf"
 h98h_lf=$(lsr75_new h98hf)
 h98h_lock "$h98h_pf"
 check "98h: 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다" \
-  "$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pf" "$h98h_lf" eval 'h98h_c_lease LS "B:SHF#1" nf grant $$ >/dev/null 2>&1; SECONDS=0; r=0; gate_sup_lease_secure "B:SHF#1" nf || r=$?; printf "%s|%s" "$r" "$SECONDS"' 2>/dev/null)" "0|0"
+  "$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pf" "$h98h_lf" eval 'h98h_c_lease LS "B:SHF#1" nf grant $$ >/dev/null 2>&1; SECONDS=0; r=0; gate_sup_lease_secure "B:SHF#1" nf || r=$?; e=$SECONDS; [ "$e" -le 1 ] && e=곧바로; printf "%s|%s" "$r" "$e"' 2>/dev/null)" "0|곧바로"
 
 # act 쪽 보유는 재시도 없이 rc 3 으로 돌아가고, 감독자의 확보가 잠금이 풀린 뒤 보유자에 든다.
 h98h_pa="$lsr_root/pace98h-a"; rm -rf "$h98h_pa"

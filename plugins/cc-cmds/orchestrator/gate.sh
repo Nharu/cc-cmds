@@ -48370,7 +48370,10 @@ gate_sup_lease_fail() {
   #
   # ANY OTHER ANSWER IS A FAULT. A malformed call or table (rc 2/4) leaves the
   # act-scope park row with this attempt's lineage, which `wait` reads as 16,
-  # never as 14, and ends with the rule exit as before.
+  # never as 14.
+  #
+  # Every end is the rule exit: no stage was launched, whichever row was left.
+  # Nothing routes on this process's exit status — `wait` reads the row.
   local alias="$1" seg="$2" kind="$3" attempt="$4" lin="$5" nonce="$6" wm="$7" hrc="$8" why rc=0
   gate_sup_await_dispatch "$seg"
   case "$hrc" in
@@ -48393,7 +48396,7 @@ gate_sup_lease_fail() {
     return "$GATE_EXIT_RULE"
   fi
   warn "the supervisor could not hold its lease (rc=$hrc, $why, $lin) — the stage is not launched and the step is dispatched again ($seg#$attempt)"
-  return 0
+  return "$GATE_EXIT_RULE"
 }
 
 gate_launch_kind_env() {
