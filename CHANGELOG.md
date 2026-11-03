@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.27.3] - 2026-11-02
+
+라우터가 cc-lane 이 사용량 파일의 계정 행마다 싣는 5시간 한도 발행 상태(`five_hour_limit`)를 읽어, 발행 상태가 형태 추정보다 먼저 그룹의 5시간 한도를 정한다.
+
+### Fixed
+
+- **5시간 한도 발행 상태 우선** — 신선한 사용량 파일에서 그룹의 계정 행 `five_hour_limit.state` 가 `limited`·`unlimited` 인 것만 표로 세어, limited 가 하나라도 있으면 한도 있음, 없고 unlimited 가 있으면 한도 없음으로 정한다. `unknown`, 키 없음, 형이 어긋난 값은 표를 던지지 않고, 표가 없으면 지금까지의 형태 추정(`absent`·`evidence`)이 그대로 판정한다. 발행 상태가 정한 창의 근거는 `published` 이고, 발행 한도 없음은 `absent` 와 같이 입장·재검증·대여 입장의 5시간 검사와 남은 양 계산에서 빠진다.
+- **어긋남 기록** — 발행 상태가 정한 판정과 형태 추정이 내렸을 판정이 다르면 그 추정 판정을 그룹 5시간 창의 `mismatch`, 봉투 `order.five_hour_mismatch`, 부여 기록 `route-picks.jsonl` 줄의 `five_hour_mismatch` 에 남긴다.
+- **계약 입력 사본** — `tests/fixtures/route-usage-contract/usage-reset-passes.json` 을 cc-lane 발행본과 같은 바이트로 맞추고 라우터 시험의 고정 해시를 갱신한다.
+
+### Why
+
+형태 추정은 사용률 0 과 표본 증거만 보므로, 한도가 남았지만 5시간 창을 쓰지 않은 계정을 한도 없음으로 기울일 수 있었다. 발행 쪽이 계정마다 한도 상태를 직접 알리기 시작했으므로 라우터는 그 값을 먼저 따르고, 두 판정이 갈린 흔적을 부여 기록에 남겨 나중에 대조할 수 있게 한다.
+
 ## [3.27.2] - 2026-11-03
 
 CI 재실행 적격 판정(X5)이 워크플로 파일의 실행되지 않는 줄 전체 YAML 주석을 배포 자리로 읽지 않는다.
