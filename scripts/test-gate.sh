@@ -60224,7 +60224,7 @@ cat > "$RV106_STUB" <<'RV106EOF'
 #!/bin/bash
 # 리뷰 게시 행위의 GitHub 대역. 답은 `$RV106_S` 의 파일이 고른다:
 #   login · head · reviews · rid · tamper(있으면 재판독 본문 끝에 x 를 더한다)
-#   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 500 은 5xx, noid 는 id 없는 200)
+#   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 422 는 4xx, 500 은 5xx, noid 는 id 없는 200)
 D=${RV106_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
 if [ "$*" = "api user --jq .login" ]; then cat "$D/login"; exit 0; fi
@@ -60233,6 +60233,7 @@ if [ "$2 $3" = "-X POST" ]; then
   cp "$7" "$D/posted.json"
   case "$(cat "$D/status" 2>/dev/null)" in
     none) exit 1 ;;
+    422) printf 'HTTP/2.0 422 Unprocessable Entity\r\n\r\n{}\n'; exit 1 ;;
     500) printf 'HTTP/2.0 500 Internal Server Error\r\n\r\n{}\n'; exit 1 ;;
     noid) printf 'HTTP/2.0 200 OK\r\n\r\n{}\n'; exit 0 ;;
   esac
@@ -60579,10 +60580,23 @@ rv106_plan P1; rv106_plan P2
 rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
 rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
 rv106_cycle P1 "$rv106_h7"; rv106_cycle P2 "$rv106_h8"
-printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '557\n' > "$RV106_S/rid"; printf '500\n' > "$RV106_S/status"
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '557\n' > "$RV106_S/rid"; printf '422\n' > "$RV106_S/status"
+rv106_post P1
+rv106_pr=$(rv106_last '리뷰 게시')
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시')|$(sa_field "$rv106_pr" 대조)|$(sa_field "$rv106_pr" 응답)|$msg" in
+  "3|1|1|게시 실패|422|"*"리뷰 게시 거절"*) ok "106: 4xx 답의 게시는 게시 실패 행과 rc 3 이다" ;;
+  *) bad "106: 4xx 답의 게시는 게시 실패 행과 rc 3 이다" "rc=$rc posts=$(rv106_posts) $rv106_pr $msg" ;;
+esac
+printf 'none\n' > "$RV106_S/status"
 rv106_post P1
 case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시')|$(rv106_n '리뷰 게시 시도')|$msg" in
-  "3|1|0|1|"*"리뷰 게시 거절"*) ok "106: 5xx 답의 게시는 게시 행 없이 시도 행만 남긴다" ;;
+  "3|2|1|2|"*"리뷰 게시 거절"*) ok "106: 상태 줄 없는 답의 게시는 게시 행 없이 시도 행만 남긴다" ;;
+  *) bad "106: 상태 줄 없는 답의 게시는 게시 행 없이 시도 행만 남긴다" "rc=$rc posts=$(rv106_posts) $(rv106_last '리뷰 게시') $msg" ;;
+esac
+printf '500\n' > "$RV106_S/status"
+rv106_post P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시')|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|3|1|3|"*"리뷰 게시 거절"*) ok "106: 5xx 답의 게시는 게시 행 없이 시도 행만 남긴다" ;;
   *) bad "106: 5xx 답의 게시는 게시 행 없이 시도 행만 남긴다" "rc=$rc posts=$(rv106_posts) $(rv106_last '리뷰 게시') $msg" ;;
 esac
 rm -f "$RV106_S/status"
@@ -60590,26 +60604,26 @@ printf '[{"id":557,"user":{"login":"rv-bot"},"state":"APPROVED","commit_id":"%s"
 rv106_post P1
 rv106_pr=$(rv106_last '리뷰 게시')
 check "106: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다" \
-  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|1|557|일치"
+  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|3|557|일치"
 printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '558\n' > "$RV106_S/rid"; printf 'noid\n' > "$RV106_S/status"
 printf '[]\n' > "$RV106_S/reviews"
 rv106_post P2
 rv106_pr=$(rv106_last '리뷰 게시')
 case "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" 세그먼트)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)|$msg" in
-  "3|2|P2|-|판독불가|"*"게시 대조"*) ok "106: id 없는 2xx 답의 게시는 판독불가 행과 rc 3 이다" ;;
+  "3|4|P2|-|판독불가|"*"게시 대조"*) ok "106: id 없는 2xx 답의 게시는 판독불가 행과 rc 3 이다" ;;
   *) bad "106: id 없는 2xx 답의 게시는 판독불가 행과 rc 3 이다" "rc=$rc posts=$(rv106_posts) $rv106_pr $msg" ;;
 esac
 rm -f "$RV106_S/status"
 rv106_post P2
 case "$rc|$(rv106_posts)|$msg" in
-  "3|2|"*"게시 대조"*) ok "106: id 없이 받은 게시의 리뷰를 찾지 못한 재호출은 POST 없이 rc 3 이다" ;;
+  "3|4|"*"게시 대조"*) ok "106: id 없이 받은 게시의 리뷰를 찾지 못한 재호출은 POST 없이 rc 3 이다" ;;
   *) bad "106: id 없이 받은 게시의 리뷰를 찾지 못한 재호출은 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
 esac
 printf '[{"id":558,"user":{"login":"rv-bot"},"state":"APPROVED","commit_id":"%s"}]\n' "$rv106_h8" > "$RV106_S/reviews"
 rv106_post P2
 rv106_pr=$(rv106_last '리뷰 게시')
 check "106: id 없이 받은 게시의 리뷰를 찾은 재호출은 POST 없이 대조한다" \
-  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|2|558|일치"
+  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|4|558|일치"
 
 # 계획하지 못한 세그먼트 — 계획 행 없는 리뷰 PR 세그먼트의 첫 행은 park 만 받는다 ------------------
 rv106_w3=$(rv106_wt P3)
