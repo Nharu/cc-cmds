@@ -44,6 +44,7 @@ TS_ON=0
 TS_BROKEN=0
 TS_INIT_KEY=""
 TS_POOL_PID=""
+TS_POOL_FP=""
 TS_POOL_EPOCH=""
 TS_SEQ=0
 TS_TICKET=""
@@ -83,6 +84,41 @@ ts_fp() {
   # shellcheck disable=SC2086
   set -- $out
   printf '%s' "$*"
+}
+
+# One ps for the whole host, taken at the head of every reap: TS_PS holds a
+# "<pid> <start time>" line per process, the start time spelled as ts_fp spells
+# it, so the reap reads every owner and ticket against this one snapshot rather
+# than starting a ps per process. TS_PS_OK is 1 only when the snapshot came
+# back; otherwise each lookup asks ts_fp, so a failed ps never makes every
+# owner look gone. A pid the snapshot lacks is asked of ps directly too: a pool
+# started after the snapshot may already have put its ticket or taken a slot,
+# and only the dead entries pay for the second look.
+TS_PS=""
+TS_PS_OK=0
+ts_ps_snap() {
+  TS_PS=$(LC_ALL=C ps -A -o pid=,lstart= 2>/dev/null | awk '{ p = $1; $1 = ""; sub(/^ +/, ""); print p " " $0 }')
+  TS_PS_OK=0
+  [ -z "$TS_PS" ] || TS_PS_OK=1
+  TS_PS="
+$TS_PS
+"
+}
+
+# The start time of pid $1 from the snapshot, or from ps when the snapshot
+# lacks it; nothing when the pid is gone.
+ts_fp_snap() {
+  local nl='
+' rest
+  case "$TS_PS_OK:$TS_PS" in
+    1:*"$nl$1 "*) ;;
+    *)
+      ts_fp "$1"
+      return 0
+      ;;
+  esac
+  rest="${TS_PS#*"$nl$1 "}"
+  printf '%s' "${rest%%"$nl"*}"
 }
 
 ts_cpus() {
@@ -129,6 +165,7 @@ ts_init() {
   me="$TS_ME"
   if [ "$TS_POOL_PID" != "$me" ]; then
     TS_POOL_PID="$me"
+    TS_POOL_FP=$(ts_fp "$me")
     TS_POOL_EPOCH=""
     TS_SEQ=0
     TS_TICKET=""
@@ -153,7 +190,7 @@ ts_init() {
   else
     gd=$(git rev-parse --git-common-dir 2>/dev/null) && gd=$(cd "$gd" 2>/dev/null && pwd) && TS_DIR="$gd/cc-cmds-test-slots"
   fi
-  if [ -z "$TS_DIR" ] || ! mkdir -p "$TS_DIR/queue" "$TS_DIR/weights" 2>/dev/null || [ -z "$(ts_fp "$me")" ]; then
+  if [ -z "$TS_DIR" ] || ! mkdir -p "$TS_DIR/queue" "$TS_DIR/weights" 2>/dev/null || [ -z "$TS_POOL_FP" ]; then
     TS_BROKEN=1
     ts_msg "경고 — 시험 자리 저장소($(ts_or_none "$TS_DIR"))를 쓸 수 없다, 자리 없이 띄운다"
   fi
@@ -252,7 +289,7 @@ ts_owner_alive() {
   while read -r kind pid fp; do
     case "$kind" in
       pool|proc)
-        if [ -n "$pid" ] && [ -n "$fp" ] && [ "$(ts_fp "$pid")" = "$fp" ]; then return 0; fi
+        if [ -n "$pid" ] && [ -n "$fp" ] && [ "$(ts_fp_snap "$pid")" = "$fp" ]; then return 0; fi
         ;;
     esac
   done < "$1"
@@ -262,7 +299,7 @@ ts_owner_alive() {
 ts_ticket_alive() {
   local pid fp
   read -r pid fp < "$1" 2>/dev/null || [ -n "${pid:-}" ] || return 1
-  [ -n "$pid" ] && [ -n "$fp" ] && [ "$(ts_fp "$pid")" = "$fp" ]
+  [ -n "$pid" ] && [ -n "$fp" ] && [ "$(ts_fp_snap "$pid")" = "$fp" ]
 }
 
 ts_seen_at() {
@@ -278,6 +315,7 @@ EOF
 ts_reap() {
   local d f now ino id t seen=""
   now=$(ts_now)
+  ts_ps_snap
   for d in "$TS_DIR"/slot-*; do
     [ -d "$d" ] || continue
     if [ -f "$d/owner" ]; then
@@ -332,7 +370,7 @@ ts_ticket_put() {
   TS_SEQ=$((TS_SEQ + 1))
   name=$(printf '%010d-%010d-%06d' "$TS_POOL_EPOCH" "$TS_POOL_PID" "$TS_SEQ")
   tmp=$(mktemp "$TS_DIR/queue/.t.XXXXXX" 2>/dev/null) || return 1
-  if printf '%s %s\n' "$TS_POOL_PID" "$(ts_fp "$TS_POOL_PID")" > "$tmp" && mv -f "$tmp" "$TS_DIR/queue/$name"; then
+  if printf '%s %s\n' "$TS_POOL_PID" "$TS_POOL_FP" > "$tmp" && mv -f "$tmp" "$TS_DIR/queue/$name"; then
     TS_TICKET="$TS_DIR/queue/$name"
     return 0
   fi
@@ -353,7 +391,7 @@ ts_grab() {
   local w="$1" job="$2" k=1 got=0 lim d now tmp fp
   TS_GOT=""
   now=$(ts_now)
-  fp=$(ts_fp "$TS_POOL_PID")
+  fp="$TS_POOL_FP"
   lim=$((TS_N + $(ts_used) + w))
   while [ "$got" -lt "$w" ] && [ "$k" -le "$lim" ]; do
     d="$TS_DIR/slot-$k"
@@ -641,6 +679,16 @@ EOF
   out=$(LC_ALL=de_DE.UTF-8 LANG=de_DE.UTF-8 LC_TIME=fr_FR.UTF-8 ts_fp "$pa")
   if [ -n "$v" ] && [ "$out" = "$v" ]; then ok "지문: 비 C 로케일에서도 같은 시작 시각 지문"; else bad "지문: 비 C 로케일에서도 같은 시작 시각 지문" "「${out}」 「${v}」"; fi
   check "지문: 없는 pid 는 빈 지문" "$(ts_fp "$dp")" ""
+  ts_ps_snap
+  check "지문: 한 번의 스냅숏이 ps 한 번과 같은 지문" "$(ts_fp_snap "$pa")" "$v"
+  check "지문: 스냅숏에 없는 pid 는 빈 지문" "$(ts_fp_snap "$dp")" ""
+  TS_PS="
+$dp 다른 시각
+"
+  check "지문: 스냅숏 뒤에 뜬 pid 는 ps 로 다시 묻는다" "$(ts_fp_snap "$pa")" "$v"
+  TS_PS=""
+  TS_PS_OK=0
+  check "지문: 스냅숏이 비면 ps 로 직접 묻는다" "$(ts_fp_snap "$pa")" "$v"
 
   # --- weights --------------------------------------------------------------------------
   fresh 3
