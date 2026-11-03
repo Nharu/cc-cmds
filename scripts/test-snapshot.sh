@@ -976,6 +976,14 @@ check "세그먼트 워크트리에 커밋이 생기면 원소가 움직인다" 
 check "implement_next 의 값이 움직여도 H 는 그대로다" \
   "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null ) )" "$hi0"
 
+# `refutation_next[]` sits right after `implement_next[]`, outside the default
+# projection and outside `H`. No refutation record binds here, so it is empty;
+# the gate's section 107 drives its elements.
+check "refutation_next 는 implement_next 바로 뒤의 배열이다" \
+  "$(jq -r '[(keys_unsorted | index("refutation_next")) - (keys_unsorted | index("implement_next")), (.refutation_next | type), (.refutation_next | length)] | map(tostring) | join("|")' "$SNAP_I")" "1|array|0"
+check "refutation_next 는 기본 --fields 투영 밖이다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields "$GATE_SNAPSHOT_FIELDS_DEFAULT" 2>/dev/null ) | jq -r 'has("refutation_next")')" "false"
+
 # ---------------------------------------------------------------------------
 # 6e-2. `audit_skeleton_due` — the audit that asked for its skeletal re-convergence
 #

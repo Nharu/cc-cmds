@@ -1490,6 +1490,8 @@ done
 check "두 사본의 구현 뒤 라우팅 절이 바이트 동일하다" "$in_sec_rs" "$in_sec_ap"
 check "리드 사본의 키 표가 implement_next[] 행을 싣는다" \
   "$(grep -c -- '^| `implement_next\[\]` |' "$AP_ROUTER" || true)" "1"
+check "리드 사본의 키 표가 refutation_next[] 행을 싣는다" \
+  "$(grep -c -- '^| `refutation_next\[\]` |' "$AP_ROUTER" || true)" "1"
 ha_sec=$(router_section "$RS_CORPUS" "#### Handing on a person's answer to a halt")
 for lit in \
   '| `빈-대상` | 7 |' \
