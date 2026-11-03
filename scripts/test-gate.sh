@@ -34043,6 +34043,494 @@ sdh_seat T1 "$sdh_f"
 sdh_refused "상한에 닿은 키의 좌석 재수렴 답" 3
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SDH_PREV_AR"
 
+# --- 34v. 결정 초안 — 좌석이 기록의 초안을 바이트 대조 뒤에 채택한다 ---------------
+# --- section: 34v | group: cone | covers: act, snapshot | anchors: 34v: 좌석이 미결 결정 정지의 초안을 채택한다, 34v: 재수렴 S1 정지의 초안을 좌석이 채택한다, 34v: 같은 키의 두 번째 좌석 초안 채택은 키 단위 상한 1 에 걸린다, 34v: 사람의 초안 그대로 답은 스위치가 꺼져도 2/2 로 선다 ---
+#
+# A STAGE THAT STOPS ON A DECISION ONLY A PERSON MAKES WRITES WHAT IT WOULD
+# DECIDE, and the seat adopts that draft without a person only when every
+# quote the draft rests on stands byte for byte in the scope its kind names and
+# overlaps the decision. Every refusal below is asserted with the row count and
+# the attachment path, because the gate writes the attachment itself: a refusal
+# that left one behind would read as an answer nobody recorded.
+#
+# THE SWITCHES ARE THIS SECTION'S. The suite runs with
+# `CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0`; it is turned on here, and
+# `CC_CMDS_AUTOPILOT_AUTO_DRAFT` is unset so the default is what is measured.
+# Both are put back at the end.
+HD_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+HD_PREV_AD="${CC_CMDS_AUTOPILOT_AUTO_DRAFT-__unset__}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+unset CC_CMDS_AUTOPILOT_AUTO_DRAFT
+HD_RID=RHDR1
+cap_fx_new "$HD_RID"
+mkdir -p "$CAP_DIR/halt"
+HD_SEAT="7c7c7c7c-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$HD_SEAT.jsonl"
+
+# THE DOCUMENT. `## 결정` is the scope a re-convergence stop's question quotes;
+# the open-decision entries are the `### ` blocks of the last `미해결 이슈`
+# section, one per refusal the entry itself carries, and a table row before
+# them.
+hd_base=$(dirname "$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)")
+HD_KEY="docs/fixture-34v-$HD_RID.md"
+HD_DOC="$hd_base/$HD_KEY"
+sed -e "s|^\*\*설계 문서\*\*: .*|**설계 문서**: $HD_KEY|" -e "s|owner-doc=(없음)|owner-doc=$HD_KEY|" "$CAP_NM" > "$CAP_NM.t" && mv "$CAP_NM.t" "$CAP_NM"
+sed "s|owner-doc=(없음)|owner-doc=$HD_KEY|" "$CAP_GRANT" > "$CAP_GRANT.t" && mv "$CAP_GRANT.t" "$CAP_GRANT"
+mkdir -p "$hd_base/docs"
+printf '%s\n' '# 픽스처 설계 34v' '' '**상태**: 동결' '' '## 결정' '' \
+  '캐시 키에 사용자 id 를 넣어 사용자마다 따로 캐시한다.' '' \
+  '## 미해결 이슈 / 트레이드오프' '' '| 항목 | 상태 |' '|---|---|' '| 미결 표 항목 | 보류 |' '' \
+  '### 미결 1. 캐시 만료 시간' '' '**상태**: 보류' '**구현 처분**: 구현 전 결정' '**닿는 슬라이스**: 전체' '**사유**: 구현 판단' '' \
+  '만료 시간은 설정 파일의 기본값 300초를 따른다는 의견이 있다.' '' \
+  '### 미결 2. 재시도 횟수' '' '**상태**: 보류' '**구현 처분**: 구현 전 결정' '**닿는 슬라이스**: 전체' '**사유**: 구현 판단' '' \
+  '재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다.' '설정 예: max_retry=3 then report failure' '' \
+  '### 미결 3. 베이스 계약' '**상태**: 보류' '**사유**: 베이스 계약 변경 필요 — 픽스처' '베이스 계약의 응답 형식을 바꾸어야 한다는 의견이 있다.' '' \
+  '### 미결 4. 합성 요구' '**상태**: 보류' '**사유**: 감사 합성 요구 — 픽스처' '감사가 합성한 요구의 보존 기간을 정해야 한다는 의견이 있다.' '' \
+  '### 미결 5. 골격 결정' '**상태**: 보류' '**골격급**: 예' '**사유**: 구현 판단' '골격의 저장소 경계를 정해야 한다는 의견이 있다.' '' \
+  '### 미결 6. 굵은 골격' '**상태**: 보류' '**골격급: 예**' '**사유**: 구현 판단' '굵은 골격의 저장소 경계를 정해야 한다는 의견이 있다.' '' \
+  '### 미결 7. 닫힌 항목' '**상태**: 해결 — 앞선 재수렴이 닫았다' '**사유**: 구현 판단' '닫힌 항목의 값은 이미 문서에 적혀 있다는 의견이 있다.' > "$HD_DOC"
+
+# THE INTERVIEW RECORD sits beside the manifest under the name its `사전 인가`
+# row gives, and a second `사전 인가` row carries the words a `매니페스트 인가`
+# ground quotes.
+HD_IV="$(dirname "$CAP_NM")/interview-34v-$HD_RID.md"
+printf '%s\n' '# 인터뷰' '' '재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다고 사용자가 말했다.' > "$HD_IV"
+HD_IV_SHA=$(shasum -a 256 "$HD_IV" | cut -d' ' -f1)
+hd_nm="$CAP_NM.ins"
+: > "$hd_nm"
+while IFS= read -r hd_l || [ -n "$hd_l" ]; do
+  printf '%s\n' "$hd_l" >> "$hd_nm"
+  [ "$hd_l" = "## 인가" ] && printf '%s\n' \
+    "- \`사전 인가\` | 인터뷰 기록=docs/interview-34v-$HD_RID.md | sha256=$HD_IV_SHA" \
+    '- `사전 인가` | 형태=curl -X GET | 사유=재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다' >> "$hd_nm"
+done < "$CAP_NM"
+mv "$hd_nm" "$CAP_NM"
+check "34v: 픽스처 매니페스트가 인터뷰 기록 행과 사유 행을 싣는다" \
+  "$(grep -c -e '| 인터뷰 기록=docs/interview-34v-' -e '사유=재시도는 세 번까지' "$CAP_NM" | tr -d ' ')" "2"
+
+# THE CODE TREE. A `코드` ground is read at the merge base of the segment HEAD
+# and the base's tracking ref: the base commit carries the quoted line, the
+# segment rewrites it, and the tracking ref is then moved past a commit that
+# deletes it — the quote must still stand, and a line only the segment wrote
+# must not.
+HD_ORIGIN0=$(cd "$REPO" && git rev-parse -q --verify refs/remotes/origin/main 2>/dev/null || true)
+HD_WT="$WORK/hd-$HD_RID"
+HD_ADV="$WORK/hd-$HD_RID-adv"
+( cd "$REPO" && git worktree add -q -b "hd-$HD_RID" "$HD_WT" main \
+  && cd "$HD_WT" && mkdir -p src && printf 'ttl = 300  // 기본값 300초를 따른다\n' > src/cache.conf \
+  && git add -A && git commit -qm hd-base ) >/dev/null 2>&1
+HD_BASE=$(cd "$HD_WT" && git rev-parse HEAD)
+( cd "$HD_WT" && printf 'ttl = 600  // 세그먼트가 새로 쓴 문구만 있는 줄이다\n' > src/cache.conf \
+  && git commit -qam hd-seg ) >/dev/null 2>&1
+( cd "$REPO" && git worktree add -q -b "hd-$HD_RID-adv" "$HD_ADV" "$HD_BASE" \
+  && cd "$HD_ADV" && printf 'ttl = 900\n' > src/cache.conf && git commit -qam hd-adv ) >/dev/null 2>&1
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$(cd "$HD_ADV" && git rev-parse HEAD)" )
+check "34v: 코드 근거 픽스처의 갈라진 커밋은 세그먼트의 출발점이다" \
+  "$(cd "$HD_WT" && git merge-base HEAD refs/remotes/origin/main)" "$HD_BASE"
+cap_gate "$HD_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment H1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$HD_SEAT" '')" \
+         --rationale x -- "워크트리=$HD_WT" 상태=실행중 선행=없음
+check "34v: 픽스처의 세그먼트 행이 섰다" "$rc" "0"
+
+hd_rec() {
+  # hd_rec <파일> <작성 스킬> <stage> <스텝> <본문 줄…> — one halt record; the
+  # body lines go between `**분류**` and `**하네스 오류**` as given.
+  local f="$1" sk="$2" st="$3" step="$4"; shift 4
+  { printf '<!-- cc-pipeline-halt v1; writer=%s; reader=orchestrator; stage=%s; run=%s -->\n' "$sk" "$st" "$HD_RID"
+    printf '**중단 시각**: 2026-11-03T00:00:00Z\n**스킬**: %s\n**스텝**: %s\n**분류**: gate-unanswerable\n' "$sk" "$step"
+    printf '%s\n' "$@"
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$f"
+}
+hd_items() {  # hd_items <표제…> — the `**미결 결정 항목**` line
+  local s='' i
+  for i in "$@"; do s="$s${s:+, }「${i}」"; done
+  printf '**미결 결정 항목**: %s' "$s"
+}
+hd_line() {  # hd_line <항목> <결정> <이유> <근거> [대안] — one drafted line
+  printf -- '- 초안 「%s」 — 결정: %s — 이유: %s — 근거: %s' "$1" "$2" "$3" "$4"
+  [ -z "${5:-}" ] || printf ' — 대안: %s' "$5"
+}
+HD_REC_NONE='**추천**: (없음) — 항목마다 사람의 결정이 필요하다'
+HD_I1='### 미결 1. 캐시 만료 시간'
+HD_I2='### 미결 2. 재시도 횟수'
+HD_D1='만료 시간은 설정 파일의 기본값 300초를 따른다'
+HD_D2='재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다'
+HD_G1='설계 문서 「만료 시간은 설정 파일의 기본값 300초를 따른다」'
+HD_G2='설계 문서 「재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다」'
+HD_L1=$(hd_line "$HD_I1" "$HD_D1" '문서 본문이 그 값을 적는다' "$HD_G1")
+HD_L1C=$(hd_line "$HD_I1" "$HD_D1" '문서 본문과 코드가 같은 값을 적는다' "$HD_G1 / 코드 src/cache.conf:1 「기본값 300초를 따른다」")
+HD_L2=$(hd_line "$HD_I2" "$HD_D2" '문서 본문이 횟수를 적는다' "$HD_G2" '재시도 없이 바로 실패로 보고한다')
+hd_a() {  # hd_a <파일> <stage> <미결 결정 항목 줄> <초안 줄…> — an open-decision stop
+  local f="$1" st="$2" items="$3"; shift 3
+  hd_rec "$f" implement-unattended "$st" 'Step 1 CFI-U3 BT-STOP — 미결 결정' \
+    '**질문 문면**: 닫히지 않은 결정 항목을 정해야 한다.' "$items" '**결정 초안**:' "$@" \
+    '**선택지**:' '- `재수렴` — 첨부에 항목마다 고른 결정을 적어 답한다.' "$HD_REC_NONE" '**추천 근거**: (없음)'
+}
+hd_a2() {  # hd_a2 <파일> <stage> — the two-item stop whose draft passes every check
+  hd_a "$1" "$2" "$(hd_items "$HD_I1" "$HD_I2")" "$HD_L1" "$HD_L2"
+}
+hd_one() {  # hd_one <파일> <항목> — a one-item stop on that entry, grounds aside
+  hd_a "$1" 'HN#1' "$(hd_items "$2")" \
+    "$(hd_line "$2" '값은 문서 본문의 기본값 300초를 따른다' '픽스처' "$HD_G1")"
+}
+HD_B_Q='**질문 문면**: 「## 결정」 의 캐시 키가 새 요구와 충돌한다. 어떻게 할까?'
+HD_B_O1='- `사용자별 캐시` — 캐시 키에 사용자 id 를 넣어 사용자마다 따로 캐시한다.'
+HD_B_O2='- `캐시 끔` — 캐시를 쓰지 않는다.'
+HD_B_G='설계 문서 「캐시 키에 사용자 id 를 넣어 사용자마다 따로 캐시한다」'
+HD_B_L=$(hd_line 선택지 '`사용자별 캐시`' '결정 절이 사용자 구분을 적는다' "$HD_B_G")
+hd_b() {  # hd_b <파일> <stage> <스텝> <질문 줄> <초안 줄> [선택지 줄…] — a re-convergence stop
+  local f="$1" st="$2" step="$3" q="$4" l="$5"; shift 5
+  [ "$#" -gt 0 ] || set -- "$HD_B_O1" "$HD_B_O2"
+  hd_rec "$f" design-reconverge "$st" "$step" "$q" '**결정 초안**:' "$l" '**선택지**:' "$@" \
+    "$HD_REC_NONE" '**추천 근거**: (없음)'
+}
+hd_sr() {  # hd_sr <키> <종류> <실행 버전> <종단 부류>
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=%s | 실행 버전=%s | 세션 id=s-%s-%s | 종단 부류=%s | prev=x\n' \
+    "$1" "$1" "$2" "$3" "$1" "$3" "$4" >> "$CAP_LEDGER"
+}
+hd_call() {  # hd_call <답한 주체> <키> <기록> [argv…]
+  local by="$1" key="$2" rec="$3"; shift 3
+  cap_gate "$HD_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$HD_SEAT" '')" \
+           --rationale "픽스처 — 결정 초안에 대한 답" \
+           -- "중단 기록=$rec" "답한 주체=$by" '근거=결정 초안을 읽고 답함' "$@"
+}
+hd_seat() {  # hd_seat <키> <기록> [argv…] — the seat's draft adoption
+  local key="$1" rec="$2"; shift 2
+  hd_call 좌석 "$key" "$rec" '초안 그대로=예' "$@"
+}
+hd_ha() { { cap_rows '중단 답' | grep -c . || true; } | tr -d ' '; }
+hd_last() { cap_rows '중단 답' | tail -1; }
+hd_att() { if [ -e "${1%.md}.answer.md" ]; then printf 있음; else printf 없음; fi; }
+hd_no() {  # hd_no <이름> <기대 코드> <기록> — refused with that code, no row and no attachment
+  check "34v: $1 은 $2 로 거절된다" "$rc" "$2"
+  check "34v: $1 의 거절은 행도 첨부도 남기지 않는다" "$(hd_ha)/$(hd_att "$3")" "$hd_n0/없음"
+}
+hd_neg() {  # hd_neg <이름> <키> <기록> [기대 코드] — the seat's draft adoption of it, refused
+  hd_n0=$(hd_ha)
+  hd_seat "$2" "$3"
+  hd_no "$1" "${4:-3}" "$3"
+}
+hd_err() {  # hd_err <이름> <문면> — the last refusal carries that text
+  check "34v: $1" "$( { grep -qF -- "$2" "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+}
+
+# THE SWITCHES. Off, the seat's adoption is refused before anything is read;
+# a person's answer is not the seat's and passes with both off (below).
+hd_sr H1 implement 1 '의도된 park'
+HD_H1="$CAP_DIR/halt/H1#1.md"
+hd_a "$HD_H1" 'H1#1' "$(hd_items "$HD_I1" "$HD_I2")" "$HD_L1C" "$HD_L2"
+export CC_CMDS_AUTOPILOT_AUTO_DRAFT=off
+hd_neg "AUTO_DRAFT=off 에서의 좌석 초안 채택" H1 "$HD_H1"
+hd_err "그 거절은 두 스위치가 모두 켜져야 한다고 말한다" "CC_CMDS_AUTOPILOT_AUTO_RESOLVE 와 CC_CMDS_AUTOPILOT_AUTO_DRAFT 가 모두 켜져 있어야"
+unset CC_CMDS_AUTOPILOT_AUTO_DRAFT
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+hd_neg "AUTO_RESOLVE=0 이고 AUTO_DRAFT 미설정에서의 좌석 초안 채택" H1 "$HD_H1"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+
+# A `코드` QUOTE OF A LINE ONLY THE SEGMENT WROTE is not at the merge base.
+HD_SEGONLY="$CAP_DIR/halt/H1-segonly.md"
+hd_a "$HD_SEGONLY" 'H1#1' "$(hd_items "$HD_I1" "$HD_I2")" \
+  "$(hd_line "$HD_I1" '세그먼트가 새로 쓴 문구만 있는 줄이다 를 따른다' '픽스처' '코드 src/cache.conf:1 「세그먼트가 새로 쓴 문구만 있는 줄이다」')" "$HD_L2"
+hd_neg "세그먼트 워크트리의 새 커밋에만 있는 줄을 인용한 코드 근거" H1 "$HD_SEGONLY"
+
+# THE ADOPTION. The tracking ref already sits past a commit that deleted the
+# quoted line, so this also proves the merge base is what is read.
+hd_seat H1 "$HD_H1"
+check "34v: 좌석이 미결 결정 정지의 초안을 채택한다" "$rc" "0"
+check "34v: 원격 추적 참조가 옮겨져도 갈라진 커밋의 줄을 인용한 코드 근거는 통과한다" "$rc" "0"
+hd_r=$(hd_last)
+HD_H1A="${HD_H1%.md}.answer.md"
+check "34v: 그 행은 답한 주체=좌석 · 선택지=재수렴 이다" \
+  "$(row_field "$hd_r" '답한 주체')/$(row_field "$hd_r" '선택지')" "좌석/재수렴"
+check "34v: 그 행의 초안 채택은 2/2 다" "$(row_field "$hd_r" '초안 채택')" "2/2"
+check "34v: 그 행의 근거 종류는 설계 문서/코드 다" "$(row_field "$hd_r" '근거 종류')" "설계 문서/코드"
+check "34v: 그 행의 첨부는 게이트가 쓴 기록 이름의 첨부다" \
+  "$(row_field "$hd_r" '첨부')|$(row_field "$hd_r" '첨부 다이제스트')" "$HD_H1A|$(shasum -a 256 "$HD_H1A" 2>/dev/null | cut -d' ' -f1)"
+check "34v: 게이트가 쓴 첨부에 항목 표제 줄이 바이트 그대로 있다" \
+  "$( { grep -cxF -e "$HD_I1" -e "$HD_I2" "$HD_H1A" 2>/dev/null || true; } | tr -d ' ')" "2"
+check "34v: 첨부는 표제 바로 아래에 초안의 결정을 싣는다" \
+  "$(grep -A1 -xF "$HD_I2" "$HD_H1A" 2>/dev/null | sed -n 2p)" "$HD_D2"
+check "34v: 첨부는 되돌리는 법 절을 싣고 정지 기록 머리는 싣지 않는다" \
+  "$( { grep -cxF '## 되돌리는 법' "$HD_H1A" || true; } | tr -d ' ')/$( { grep -c '^<!-- cc-pipeline-halt' "$HD_H1A" || true; } | tr -d ' ')" "1/0"
+check "34v: 스냅숏이 그 답을 구속-재수렴 · draft_adopted 2/2 · 좌석으로 내놓는다" \
+  "$(cap_snap "$HD_SEAT" '' | jq -r --arg r "$HD_H1" '[.answered_halts[] | select(.record == $r) | "\(.route) \(.draft_adopted) \(.answered_by)"] | last // ""')" \
+  "구속-재수렴 2/2 좌석"
+
+# AN ATTACHMENT ALREADY BESIDE THE RECORD. On a key with no adoption yet, the
+# gate refuses rather than overwrite the file, and leaves it as it was.
+hd_sr HX implement 1 '의도된 park'
+HD_HX="$CAP_DIR/halt/HX#1.md"
+hd_a2 "$HD_HX" 'HX#1'
+printf '사람이 먼저 둔 파일\n' > "${HD_HX%.md}.answer.md"
+hd_n0=$(hd_ha)
+hd_seat HX "$HD_HX"
+check "34v: 첨부가 이미 있으면 초안 채택은 3 으로 거절된다" "$rc/$(hd_ha)" "3/$hd_n0"
+hd_err "그 거절은 첨부를 덮어쓰지 않는다고 말한다" "already exists, so the gate does not overwrite it"
+check "34v: 그 거절은 있던 첨부를 그대로 둔다" "$(cat "${HD_HX%.md}.answer.md")" "사람이 먼저 둔 파일"
+rm -f "${HD_HX%.md}.answer.md"
+
+# THE SAME RECORD AGAIN, with the gate's attachment moved aside: refused, and
+# the refusal leaves no attachment behind.
+mv "$HD_H1A" "$HD_H1A.bak"
+hd_seat H1 "$HD_H1"
+hd_no "아직 소비되지 않은 답이 있는 기록의 두 번째 초안 채택" 3 "$HD_H1"
+mv "$HD_H1A.bak" "$HD_H1A"
+
+# THE KEY'S BOUND (no `구속-이탈` row). The key's first seat adoption was taken
+# up; its next stop goes to a person.
+hd_sr H1 reconverge 2 '정상 완료'
+hd_sr H1 implement 3 '의도된 park'
+HD_H1B="$CAP_DIR/halt/H1#3.md"
+hd_a2 "$HD_H1B" 'H1#3'
+hd_neg "같은 키의 두 번째 좌석 초안 채택" H1 "$HD_H1B"
+check "34v: 같은 키의 두 번째 좌석 초안 채택은 키 단위 상한 1 에 걸린다" "$rc" "3"
+hd_err "그 거절은 다음 답이 사람에게 간다고 말한다" "H1 는 이미 좌석이 결정 초안을 채택한 답이 있어 키 단위 상한 1 에 걸렸습니다"
+
+# RE-CONVERGENCE STOPS, one per step form. The row's option is the label the
+# draft names, and the attachment names it.
+for hd_s in 'H2:Step 3 S1' 'H3:Step 3 S3 — 자율 채택 기준 판정' 'H4:Step 3 S4 — 자율 채택 기준 판정'; do
+  hd_k=${hd_s%%:*}; hd_step=${hd_s#*:}
+  hd_sr "$hd_k" reconverge 1 '의도된 park'
+  hd_f="$CAP_DIR/halt/$hd_k#1.md"
+  hd_b "$hd_f" "$hd_k#1" "$hd_step" "$HD_B_Q" "$HD_B_L"
+  hd_seat "$hd_k" "$hd_f"
+  hd_r=$(hd_last)
+  case "$hd_step" in 'Step 3 S1') hd_nm="34v: 재수렴 S1 정지의 초안을 좌석이 채택한다" ;;
+    *) hd_nm="34v: 재수렴 ${hd_step%% — *} 정지의 초안을 좌석이 채택한다" ;; esac
+  check "$hd_nm" "$rc|$(row_field "$hd_r" '선택지')|$(row_field "$hd_r" '초안 채택')|$(row_field "$hd_r" '근거 종류')" \
+    "0|사용자별 캐시|1/1|설계 문서"
+done
+check "34v: 재수렴 정지의 첨부는 채택한 선택지를 이름 댄다" \
+  "$(sed -n 1p "$CAP_DIR/halt/H2#1.answer.md" 2>/dev/null)" "채택한 선택지: 사용자별 캐시"
+hd_sr H2 reconverge 2 '정상 완료'
+hd_sr H2 reconverge 3 '의도된 park'
+hd_b "$CAP_DIR/halt/H2#3.md" 'H2#3' 'Step 3 S1' "$HD_B_Q" "$HD_B_L"
+hd_neg "재수렴 정지 키의 두 번째 좌석 초안 채택" H2 "$CAP_DIR/halt/H2#3.md"
+
+# A PERSON'S ANSWERS. `초안 그대로=예` with both switches off and no `선택지`
+# takes the draft whole; a person's own attachment is counted line by line, and
+# on a re-convergence stop the option against the drafted label. A key whose
+# only adoption row is a person's still lets the seat adopt its next draft.
+hd_sr H5 implement 1 '의도된 park'
+hd_a2 "$CAP_DIR/halt/H5#1.md" 'H5#1'
+export CC_CMDS_AUTOPILOT_AUTO_DRAFT=off
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+hd_call 사람 H5 "$CAP_DIR/halt/H5#1.md" '초안 그대로=예'
+check "34v: 사람의 초안 그대로 답은 스위치가 꺼져도 2/2 로 선다" \
+  "$rc|$(row_field "$(hd_last)" '답한 주체')|$(row_field "$(hd_last)" '선택지')|$(row_field "$(hd_last)" '초안 채택')|$(row_field "$(hd_last)" '근거 종류')" \
+  "0|사람|재수렴|2/2|"
+check "34v: 사람의 초안 그대로 답에도 게이트가 첨부를 쓴다" "$(hd_att "$CAP_DIR/halt/H5#1.md")" "있음"
+unset CC_CMDS_AUTOPILOT_AUTO_DRAFT
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+hd_sr H5 reconverge 2 '정상 완료'
+hd_sr H5 implement 3 '의도된 park'
+hd_a2 "$CAP_DIR/halt/H5#3.md" 'H5#3'
+hd_seat H5 "$CAP_DIR/halt/H5#3.md"
+check "34v: 사람의 초안 채택 행만 있는 키의 좌석 초안 채택은 통과한다" "$rc" "0"
+
+hd_sr H6 implement 1 '의도된 park'
+hd_a2 "$CAP_DIR/halt/H6#1.md" 'H6#1'
+printf '%s\n' "$HD_I1" "$HD_D1" '' "$HD_I2" '재시도는 다섯 번까지 한다' > "$CAP_DIR/halt/H6#1.answer.md"
+hd_call 사람 H6 "$CAP_DIR/halt/H6#1.md" '선택지=재수렴' "첨부=$CAP_DIR/halt/H6#1.answer.md"
+check "34v: 한 항목만 초안과 다른 사람의 첨부는 초안 채택=1/2 다" "$rc|$(row_field "$(hd_last)" '초안 채택')" "0|1/2"
+
+hd_sr H7 reconverge 1 '의도된 park'
+hd_b "$CAP_DIR/halt/H7#1.md" 'H7#1' 'Step 3 S1' "$HD_B_Q" "$HD_B_L"
+hd_call 사람 H7 "$CAP_DIR/halt/H7#1.md" '초안 그대로=예'
+check "34v: 재수렴 정지에 대한 사람의 초안 그대로 답은 1/1 이다" \
+  "$rc|$(row_field "$(hd_last)" '선택지')|$(row_field "$(hd_last)" '초안 채택')" "0|사용자별 캐시|1/1"
+hd_sr H8 reconverge 1 '의도된 park'
+hd_b "$CAP_DIR/halt/H8#1.md" 'H8#1' 'Step 3 S1' "$HD_B_Q" "$HD_B_L"
+hd_call 사람 H8 "$CAP_DIR/halt/H8#1.md" '선택지=캐시 끔'
+check "34v: 사람이 초안과 다른 라벨을 고르면 초안 채택=0/1 이다" \
+  "$rc|$(row_field "$(hd_last)" '초안 채택')" "0|0/1"
+check "34v: 스냅숏이 초안 없는 채택 비율도 행 그대로 낸다" \
+  "$(cap_snap "$HD_SEAT" '' | jq -r '[.answered_halts[] | select(.segment == "H8") | .draft_adopted] | last // ""')" "0/1"
+
+# THE OTHER GROUND KINDS AND THE LENGTH BOUNDARY. The interview record and the
+# manifest's `## 인가` alone settle a draft; a sixteen-byte quote is enough, and
+# a `구현 재량 — <기준>` decision is one value.
+hd_sr H9 implement 1 '의도된 park'
+hd_a "$CAP_DIR/halt/H9#1.md" 'H9#1' "$(hd_items "$HD_I2")" \
+  "$(hd_line "$HD_I2" "$HD_D2" '사용자와 매니페스트가 같은 횟수를 적는다' \
+     '인터뷰 기록 「재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다고 사용자가 말했다」 / 매니페스트 인가 「재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다」')"
+hd_seat H9 "$CAP_DIR/halt/H9#1.md"
+check "34v: 인터뷰 기록과 매니페스트 인가 근거만으로 초안을 채택한다" \
+  "$rc|$(row_field "$(hd_last)" '근거 종류')|$(row_field "$(hd_last)" '초안 채택')" "0|인터뷰 기록/매니페스트 인가|1/1"
+hd_sr H10 implement 1 '의도된 park'
+hd_a "$CAP_DIR/halt/H10#1.md" 'H10#1' "$(hd_items "$HD_I2")" \
+  "$(hd_line "$HD_I2" '구현 재량 — max_retry=3 then report failure 를 기준으로 고른다' '픽스처' '설계 문서 「max_retry=3 then」')"
+hd_seat H10 "$CAP_DIR/halt/H10#1.md"
+check "34v: 16바이트 인용과 구현 재량 결정의 초안을 채택한다" "$rc|$(row_field "$(hd_last)" '근거 종류')" "0|설계 문서"
+
+# THE REFUSALS, all on one key with a settled attempt and no segment row. Each
+# is the seat's draft adoption, refused with 3, with no row and no attachment.
+hd_sr HN implement 1 '의도된 park'
+hd_f="$CAP_DIR/halt/HN-ok.md"
+hd_a2 "$hd_f" 'HN#1'
+hd_call 좌석 HN "$hd_f" '선택지=재수렴' "첨부=$CAP_DIR/halt/HN-ok.answer.md"
+check "34v: 초안 그대로 없는 좌석 답은 미결 결정 정지에서 계속 3 이다" "$rc" "3"
+hd_n0=$(hd_ha)
+hd_seat HN "$hd_f" "첨부=$CAP_DIR/halt/HN-other.answer.md"
+hd_no "초안 그대로=예 와 첨부를 함께 실은 답" 2 "$hd_f"
+hd_call 좌석 HN "$hd_f" '초안 그대로=아니오'
+hd_no "초안 그대로=아니오" 2 "$hd_f"
+printf '앞서 있던 첨부\n' > "$CAP_DIR/halt/HN-ok.answer.md"
+hd_seat HN "$hd_f"
+check "34v: 첨부 파일이 이미 있으면 3 이고 그 파일은 그대로다" \
+  "$rc/$(hd_ha)/$(cat "$CAP_DIR/halt/HN-ok.answer.md")" "3/$hd_n0/앞서 있던 첨부"
+rm -f "$CAP_DIR/halt/HN-ok.answer.md"
+hd_f="$CAP_DIR/halt/HN-nowt.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" "$HD_L1C" "$HD_L2"
+hd_neg "세그먼트 워크트리가 없는 키의 코드 근거" HN "$hd_f"
+
+# The record kinds that take no draft.
+hd_f="$CAP_DIR/halt/HN-seatrun.md"
+hd_rec "$hd_f" implement-unattended 'HN#1' 'Step 3 잔여 검증 좌석 실행 — R2' '**질문 문면**: 픽스처' '**좌석 실행 항목**: R2' \
+  '**결정 초안**:' "$HD_L1" '**선택지**:' '- `좌석 실행` — 좌석이 R2 의 레시피를 이 호스트에서 돌린다.' "$HD_REC_NONE"
+hd_neg "좌석 실행 기록의 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-apply.md"
+hd_rec "$hd_f" implement-unattended 'HN#1' 'Step 3 강제 표면 좌석 적용 — 규칙 파일' '**질문 문면**: 픽스처' \
+  '**결정 초안**:' "$HD_L1" '**선택지**:' '- `좌석 적용` — 게이트가 커밋한다.' '- `보류` — 멈춘다.'
+hd_neg "강제 표면 좌석 적용 기록의 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-skill.md"
+hd_a2 "$hd_f" 'HN#1'
+sed 's/^\*\*스킬\*\*: .*/**스킬**: design-audit-unattended/' "$hd_f" > "$hd_f.t" && mv "$hd_f.t" "$hd_f"
+hd_neg "다른 스킬의 기록에 실린 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-skel.md"
+hd_b "$hd_f" 'HN#1' 'Step 3 S1 — 감사 골격급 K1' "$HD_B_Q" "$HD_B_L"
+hd_neg "감사 골격급 범위의 재수렴 정지 초안" HN "$hd_f"
+hd_err "그 거절은 감사가 수렴한 결정이라 사람이 답한다고 말한다" "감사 골격급 범위의 재수렴 정지는"
+
+# The forbidden shapes.
+hd_f="$CAP_DIR/halt/HN-label.md"
+hd_a2 "$hd_f" 'HN#1'
+sed 's/^\*\*추천\*\*: .*/**추천**: `재수렴` — 기록이 정한다/' "$hd_f" > "$hd_f.t" && mv "$hd_f.t" "$hd_f"
+hd_neg "추천이 라벨을 가리키는 기록의 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-risk.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" \
+  "$(hd_line "$HD_I1" "지금 값을 그대로 진행하고 기본값 300초를 따른다" '픽스처' "$HD_G1")" "$HD_L2"
+hd_neg "결정이 그대로 진행인 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-brisk.md"
+hd_b "$hd_f" 'HN#1' 'Step 3 S1' "$HD_B_Q" "$(hd_line 선택지 '`범위 줄임`' '픽스처' "$HD_B_G")" \
+  '- `범위 줄임` — 범위 축소로 캐시 키에 사용자 id 를 넣어 사용자마다 따로 캐시한다.' "$HD_B_O2"
+hd_neg "가리킨 선택지 설명이 범위 축소인 재수렴 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-surf.md"
+hd_b "$hd_f" 'HN#1' 'Step 3 S1' "$HD_B_Q" "$(hd_line 선택지 '`설정 고침`' '픽스처' "$HD_B_G")" \
+  '- `설정 고침` — .claude/settings.json 에서 캐시 키에 사용자 id 를 넣어 사용자마다 따로 캐시한다.' "$HD_B_O2"
+hd_neg "가리킨 선택지 줄이 강제 표면을 이름 대는 재수렴 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-blab.md"
+hd_b "$hd_f" 'HN#1' 'Step 3 S1' "$HD_B_Q" "$(hd_line 선택지 '`없는 라벨`' '픽스처' "$HD_B_G")"
+hd_neg "선택지에 없는 라벨을 가리킨 재수렴 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-none.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" "$HD_L1" "- 초안 「${HD_I2}」 — (없음) — 사용자만 아는 횟수"
+hd_neg "(없음) 줄이 하나 있는 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-order.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I2" "$HD_I1")" "$HD_L1" "$HD_L2"
+hd_neg "항목 순서가 미결 결정 항목과 다른 초안" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-notin.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" \
+  "$(hd_line "$HD_I1" "$HD_D1" '픽스처' '설계 문서 「만료 시간은 설정 파일의 기본값 300초를 따른다고 적혀 있지 않다」')" "$HD_L2"
+hd_neg "문서에 없는 인용" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-short.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I2")" "$(hd_line "$HD_I2" "$HD_D2 max_retry=3 then report failure" '픽스처' '설계 문서 「max_retry=3 the」')"
+hd_neg "15바이트 인용" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-dotdot.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" \
+  "$(hd_line "$HD_I1" "$HD_D1" '픽스처' '코드 ../src/cache.conf:1 「기본값 300초를 따른다」')" "$HD_L2"
+hd_neg "경로에 .. 이 있는 코드 근거" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-tiny.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I2")" "$(hd_line "$HD_I2" '세 번' '픽스처' "$HD_G2")"
+hd_neg "결정이 16바이트 미만이고 대안이 없는 초안" HN "$hd_f"
+for hd_s in '### 미결 3. 베이스 계약:베이스 계약 변경 필요 사유 항목' '### 미결 4. 합성 요구:감사 합성 요구 사유 항목' \
+            '### 미결 5. 골격 결정:골격급 예 항목' '### 미결 6. 굵은 골격:키와 값을 함께 굵게 쓴 골격급 예 항목' \
+            '### 미결 7. 닫힌 항목:해결로 닫힌 항목' '미결 표 항목:표 행 항목' '### 미결 9. 없는 항목:문서에 없는 표제'; do
+  hd_f="$CAP_DIR/halt/HN-entry.md"
+  hd_one "$hd_f" "${hd_s%%:*}"
+  hd_neg "${hd_s#*:}의 초안" HN "$hd_f"
+done
+
+# Quote scope and overlap. The same quote in scope and overlapping the decision
+# is the adoption above.
+hd_f="$CAP_DIR/halt/HN-head.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" \
+  "$(hd_line "$HD_I1" '미결 1. 캐시 만료 시간 은 기본값 300초를 따른다' '픽스처' '설계 문서 「미결 1. 캐시 만료 시간」')" "$HD_L2"
+hd_neg "항목 표제 줄에만 있는 인용" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-outside.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" \
+  "$(hd_line "$HD_I1" '캐시 키에 사용자 id 를 넣어 사용자마다 따로 캐시한다' '픽스처' "$HD_B_G")" "$HD_L2"
+hd_neg "항목 절 밖에만 있는 설계 문서 인용" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-overlap.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" \
+  "$(hd_line "$HD_I1" "$HD_D1" '픽스처' '설계 문서 「**사유**: 구현 판단」')" "$HD_L2"
+hd_neg "결정과 16바이트도 겹치지 않는 인용" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-auth.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I1" "$HD_I2")" \
+  "$(hd_line "$HD_I1" "만료 시간 문서는 $HD_KEY 에 둔다" '픽스처' "매니페스트 인가 「**설계 문서**: ${HD_KEY}」")" "$HD_L2"
+hd_neg "인가 절 밖에만 있는 매니페스트 인가 인용" HN "$hd_f"
+hd_f="$CAP_DIR/halt/HN-iv.md"
+hd_a "$hd_f" 'HN#1' "$(hd_items "$HD_I2")" \
+  "$(hd_line "$HD_I2" "$HD_D2" '픽스처' '인터뷰 기록 「재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다고 사용자가 말했다」')"
+printf '덧붙인 줄\n' >> "$HD_IV"
+hd_neg "sha256 이 사전 인가 행과 다른 인터뷰 기록" HN "$hd_f"
+printf '%s\n' '# 인터뷰' '' '재시도는 세 번까지 하고 그 뒤에는 실패로 보고한다고 사용자가 말했다.' > "$HD_IV"
+hd_f="$CAP_DIR/halt/HN-bq.md"
+hd_b "$hd_f" 'HN#1' 'Step 3 S1' '**질문 문면**: 결정 절의 캐시 키가 새 요구와 충돌한다. 어떻게 할까?' "$HD_B_L"
+hd_neg "질문 문면이 표제를 인용하지 않은 재수렴 정지의 설계 문서 근거" HN "$hd_f"
+
+# THE EXISTING AUTOMATIC-ANSWER CHECKS STILL HOLD, and a refusal that comes
+# after the draft check leaves no attachment either.
+hd_sr HL implement 1 '의도된 park'
+hd_sr HL implement 2 '의도된 park'
+hd_a2 "$CAP_DIR/halt/HL#1.md" 'HL#1'
+hd_neg "키의 최신 정산 정지가 아닌 기록의 초안" HL "$CAP_DIR/halt/HL#1.md"
+hd_sr HT implement 1 '의도된 park'
+printf -- '- `segment` | 교대=0 | id=HT | 상태=park | 선행=없음 | prev=x\n' >> "$CAP_LEDGER"
+hd_a2 "$CAP_DIR/halt/HT#1.md" 'HT#1'
+hd_neg "종단 세그먼트라 라우팅되지 않는 초안 채택" HT "$CAP_DIR/halt/HT#1.md"
+hd_err "그 거절은 라우팅 불가를 말한다" "라우팅 불가 — "
+hd_sr HR implement 1 '의도된 park'
+hd_f="$CAP_DIR/halt/HR-$(printf 'x%.0s' $(seq 1 236)).md"
+hd_a2 "$hd_f" 'HR#1'
+hd_neg "행 상한을 넘는 초안 채택" HR "$hd_f" 2
+hd_err "그 거절은 행 상한을 말한다" "does not fit the row cap"
+
+# A `구속-이탈` ROW WITH `상한=2` takes the key's bound over: two adoptions on
+# one key pass and the third is refused by the row's count.
+hd_nm="$CAP_NM.ins"
+: > "$hd_nm"
+while IFS= read -r hd_l || [ -n "$hd_l" ]; do
+  printf '%s\n' "$hd_l" >> "$hd_nm"
+  [ "$hd_l" = "## 인가" ] && printf '%s\n' '- `자동 채택` | 판단 부류=구속-이탈 | 상한=2 | 심각도 상한=minor | 사유=범위 한정 수선' >> "$hd_nm"
+done < "$CAP_NM"
+mv "$hd_nm" "$CAP_NM"
+hd_sr HC implement 1 '의도된 park'
+hd_a2 "$CAP_DIR/halt/HC#1.md" 'HC#1'
+hd_seat HC "$CAP_DIR/halt/HC#1.md"
+hd_rc1=$rc
+hd_sr HC reconverge 2 '정상 완료'
+hd_sr HC implement 3 '의도된 park'
+hd_a2 "$CAP_DIR/halt/HC#3.md" 'HC#3'
+hd_seat HC "$CAP_DIR/halt/HC#3.md"
+check "34v: 구속-이탈 상한=2 이면 같은 키의 두 번째 초안 채택은 통과한다" "$hd_rc1/$rc" "0/0"
+hd_sr HC reconverge 4 '정상 완료'
+hd_sr HC implement 5 '의도된 park'
+hd_a2 "$CAP_DIR/halt/HC#5.md" 'HC#5'
+hd_neg "구속-이탈 상한=2 를 넘는 세 번째 초안 채택" HC "$CAP_DIR/halt/HC#5.md"
+
+if [ -n "$HD_ORIGIN0" ]; then
+  ( cd "$REPO" && git update-ref refs/remotes/origin/main "$HD_ORIGIN0" )
+else
+  ( cd "$REPO" && git update-ref -d refs/remotes/origin/main ) >/dev/null 2>&1 || true
+fi
+( cd "$REPO" && git worktree remove --force "$HD_WT" && git worktree remove --force "$HD_ADV" \
+  && git branch -D "hd-$HD_RID" "hd-$HD_RID-adv" ) >/dev/null 2>&1 || true
+rm -f "$HD_DOC" "$HD_IV"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$HD_PREV_AR"
+if [ "$HD_PREV_AD" = "__unset__" ]; then unset CC_CMDS_AUTOPILOT_AUTO_DRAFT; else export CC_CMDS_AUTOPILOT_AUTO_DRAFT="$HD_PREV_AD"; fi
+
 # --- 34p. 설계 사다리 정지의 좌석 답 — 기록을 설계 문서와 대조한다 ---------------
 # --- section: 34p | group: cone | covers: act, snapshot | anchors: 34p: Step 7U / ladder-unsettled 의 코드-부재 기록에 좌석이 답한다, 34p: 사람-환경 항목이 구현 후를 적지 않은 기록은 거부된다, 34p: W3 표지 없는 항목을 뺀 기록은 거부된다, 34p: 네 양성이 행 넷을 남긴다, 34p: 100 항목 도장 행은 행 없이 거부된다 ---
 #
@@ -51766,6 +52254,29 @@ check "85: 들여온 답은 이 런의 다음 stage-result 가 쓴다" "$(halts8
 run85 R85L "$ROW85K"
 g15_plan act R85L SA 상태=계획됨 "워크트리=$WT85K"
 check "85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다" "$rc/$(carried85 R85L)" "0/0"
+
+# A DRAFT ADOPTION IS CARRIED BY WHO GAVE IT. The seat's adoption of a decision
+# draft was checked against the earlier run's document and code, so this run's
+# seat takes that check again rather than inherit it; a person's answer to a
+# record carrying a draft is carried with its `초안 채택` count.
+REC85D="$SRCDIR85/halt/S9#6.md"
+sed 's/stage=S9#4;/stage=S9#6;/' "$REC85" > "$REC85D"
+DIG85D=$(shasum -a 256 "$REC85D" | cut -d' ' -f1)
+src85d_ledger() {  # src85d_ledger <답한 주체> <근거> <더 붙는 필드> — the origin run's S9 rows and one answer to S9#6
+  { printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=리뷰중 | 워크트리=%s | 선행=없음\n' "$WT85K"
+    printf -- '- `stage-result` | 교대=0 | 세그먼트=S9 | 스테이지=S9 | 종류=implement | 실행 버전=6 | 세션 id=s-impl-6 | 종단 부류=의도된 park | prev=x\n'
+    printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=implement-unattended | 선택지=재수렴 | 답한 주체=%s | 근거=%s | %s | 기록 다이제스트=%s | 레인=좌석 | 기록 시각=2026-01-01T01:00:00Z\n' \
+      "$REC85D" "$1" "$2" "$3" "$DIG85D"; } > "$LEDGER85"
+}
+src85d_ledger 좌석 '좌석이 결정 초안을 채택함' '근거 종류=설계 문서 | 초안 채택=2/2'
+run85 R85T "$ROW85K"
+g15_plan act R85T SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 좌석이 결정 초안을 채택한 답은 입양 사본으로 들여오지 않는다" "$rc/$(carried85 R85T)" "0/0"
+src85d_ledger 사람 '사람이 첨부에 결정을 적음' '초안 채택=1/2'
+run85 R85U "$ROW85K"
+g15_plan act R85U SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 사람이 초안 기록에 준 답은 초안 채택을 지닌 채 들여온다" \
+  "$rc/$(carried85 R85U)/$(rf85 "$( { grep -F '`중단 답`' "$WT/docs/pipeline-run/R85U.md" 2>/dev/null || true; } | tail -1)" '초안 채택')" "0/1/1/2"
 ( cd "$WT" && git worktree remove --force "$WT85K" && git branch -D "seg/$SRC85-S9" ) >/dev/null 2>&1
 rm -rf "$SRCDIR85/halt"
 rm -f "$SMAN85"
