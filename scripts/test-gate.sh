@@ -49083,8 +49083,11 @@ BSXPROBEEOF
 bsx_stub "$WORK/bin/bsx-probe" "$BSX_LIT_SPLIT" ". \"$WORK/bin/bsx-probe-body.sh\""
 # Twenty probes, each a snapshot and a plan (the last an exec), so some forty
 # gate starts inside one stage: on a loaded machine that ran past the default
-# 60-second wait and cut the list off at its tail.
-bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1 600
+# 60-second wait and cut the list off at its tail. 600 seconds was cut off the
+# same way on a host running several pipeline runs at once, where one gate call
+# took 20 to 30 seconds; the bound is an upper limit only, so an unloaded run
+# still ends as soon as the probe does.
+bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1 1800
 check "78:탐침 스테이지가 대기 상한 안에 끝났다" "$BSX_WAIT_RC" "0"
 bsx_plan_rc() { sed -n "s/^$1 //p" "$BSX_PLANLOG" 2>/dev/null | tail -1; }
 [ "$(bsx_plan_rc gh)" = "0" ] || sed -n '1,12p' "$BSX_PLANLOG.gh" >&2
