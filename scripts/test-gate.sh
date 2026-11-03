@@ -14122,8 +14122,15 @@ plan15e_audit "$WORK/plan-R15EA.md"
 check "15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다" "$rc" "0"
 # The remote base runs one commit ahead of the local `main`, and the tracking
 # ref is put back on the local tip, so only the gate's own fetch can find the
-# newer commit. Undone right after the tree is measured below.
-ahead15e=$( cd "$WT" && git commit-tree "main^{tree}" -p main -m ahead-15e )
+# newer commit. The new commit sits on the remote's own tip, not on the local
+# `main`: sections run before this one can leave the remote ahead of the local
+# branch, and a push that is not a fast-forward would be refused silently and
+# leave the remote where it was. The remote tip and the tracking ref are put
+# back as they were right after the tree is measured below.
+orig15e=$( cd "$WT" && git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 )
+[ -n "$orig15e" ] || orig15e=$( cd "$WT" && git rev-parse main )
+otrk15e=$( cd "$WT" && git rev-parse --verify --quiet refs/remotes/origin/main ) || otrk15e=""
+ahead15e=$( cd "$WT" && git commit-tree "main^{tree}" -p "$orig15e" -m ahead-15e )
 ( cd "$WT" && git push -q origin "$ahead15e:refs/heads/main" \
   && git update-ref refs/remotes/origin/main main ) >/dev/null 2>&1
 au15_dispatch R15EA "$STUB_AU_AUDIT" audit "$audit15e"
@@ -14151,8 +14158,12 @@ check "15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 
   "분리/$ahead15e"
 check "15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다" \
   "$( [ -n "$ahead15e" ] && [ "$ahead15e" != "$( cd "$WT" && git rev-parse main )" ] && printf 다름 )" "다름"
-( cd "$WT" && git push -q -f origin main:refs/heads/main \
-  && git update-ref refs/remotes/origin/main main ) >/dev/null 2>&1
+( cd "$WT" && git push -q -f origin "$orig15e:refs/heads/main" ) >/dev/null 2>&1
+if [ -n "$otrk15e" ]; then
+  ( cd "$WT" && git update-ref refs/remotes/origin/main "$otrk15e" ) >/dev/null 2>&1
+else
+  ( cd "$WT" && git update-ref -d refs/remotes/origin/main ) >/dev/null 2>&1
+fi
 check "15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다" \
   "$(head -1 "$RD15E/stub-au-pwd.txt" 2>/dev/null)" "$AW15E"
 check "15e: 감사 워크트리가 스테이지 설정의 디렉터리 목록에 오른다" \

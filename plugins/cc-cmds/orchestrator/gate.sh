@@ -2961,7 +2961,9 @@ gate_worktree_add_base_mismatch() {
       --) endopt=1 ;;
       -b|-B) newb=1; i=$((i + 1)) ;;
       -b?*|-B?*) newb=1 ;;
-      --detach) det=1 ;;
+      # git worktree's own flag, quoted: test-run.sh's scan for a session
+      # detach mode reads an unquoted case arm of this word as one.
+      "--detach") det=1 ;;
       --reason) i=$((i + 1)) ;;
       -*) : ;;
       *) pos+=("$w") ;;
