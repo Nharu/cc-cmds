@@ -25317,6 +25317,28 @@ gate_segment_post_merge() {
   esac
 }
 
+gate_segment_merged_uncovered() {
+  # gate_segment_merged_uncovered <segment> — a review-before-merge segment a
+  # person merged before a review covered its merged tip: not a merge-first
+  # segment past its merge, its effective review policy is `선리뷰후머지`, and
+  # the last segment row carrying `머지 대조` reads `위반(미포함)` or
+  # `위반(카운트·미포함)`. The row is chosen the way termination condition 11
+  # chooses it — field equality on `id`, the last row carrying the field — so
+  # the review line offers the covering review exactly when condition 11 holds
+  # on a missing coverage.
+  local seg=$1 pol mrow
+  gate_segment_post_merge "$seg" && return 1
+  pol=$(gate_segment_field "$seg" '리뷰 정책')
+  [ "${pol:-선리뷰후머지}" = '선리뷰후머지' ] || return 1
+  mrow=$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" \
+          | gate_rows_having_field '머지 대조' | tail -1)
+  [ -n "$mrow" ] || return 1
+  case "$(gate_row_field "$mrow" '머지 대조')" in
+    '위반(미포함)'|'위반(카운트·미포함)') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 gate_post_merge_next() {
   # gate_post_merge_next <segment> — `다음` of a segment `gate_segment_post_merge`
   # holds. `사후리뷰` while no `cycle` row follows its last `머지됨` row: the
@@ -26884,10 +26906,13 @@ gate_review_line() {
   # gate_review_line <segment> [<flag>…] — prints the prompt of a review
   # dispatch of the segment, built the way the fixed-graph driver builds its
   # own: `/cc-cmds:review-unattended <브랜치> --report-path <경로>[ --slice
-  # <id>][ --base-sha <sha>][ --post-merge <sha>][ --declared-files "<집합>"][
-  # --seat-commits "<목록>"][ --expand <값>][ <flag>…] "설계는 <문서>"`.
+  # <id>][ --base-sha <sha>][ --post-merge <sha>][ --merged <sha>][
+  # --declared-files "<집합>"][ --seat-commits "<목록>"][ --expand <값>][
+  # --basis-cycle <n> --basis-review-head <sha> --basis-report-path <경로>][
+  # <flag>…] "설계는 <문서>"`.
   # Refused with GATE_EXIT_RULE when the segment has no row or no branch to
-  # review.
+  # review, and when a review-before-merge segment a person merged uncovered
+  # has no merge commit, recorded worktree or base to build its line from.
   #
   # THE ROUTER HAD NOTHING TO SPELL THIS FROM. The lead fix, the re-check, the
   # resolution review and the delta review are each written as "the segment's
@@ -26910,6 +26935,7 @@ gate_review_line() {
   # the gate's own and never reaches the prompt: it drops `--slice` for the one
   # review that answers a `cycle` row refused for its other-slice section.
   local seg=$1 rows br n rp base decl doc line a pm pmseg wtip slice=1
+  local mgseg mg mwt mtip mp brow blatest crow cs csn cm bhead brep
   local -a extra=()
   shift
   for a in "$@"; do
@@ -26939,6 +26965,47 @@ gate_review_line() {
   # request diffs nothing. A routed run writes no `베이스 sha` on its segment
   # rows, so the line takes the fork point the merge's obligation recorded.
   [ -n "$base" ] || [ "$pmseg" = 0 ] || base=$(gate_segment_post_merge_base "$seg")
+  # A REVIEW-BEFORE-MERGE SEGMENT A PERSON MERGED FIRST has to take its merged
+  # pull request as the review target, or the covering review that clears
+  # condition 11 stops on a merged pull request with nothing reviewed. The part
+  # an earlier full cycle already reviewed is skipped as a delta from that
+  # cycle. Its tip is an ancestor of the base after the merge, so without a
+  # base on its rows the base is the merge-base of the merge commit's first
+  # parent — the base just before the merge — and the recorded worktree's tip:
+  # the last base the segment took in. A line that cannot name the merge
+  # commit or that base is refused rather than printed without them, which
+  # would send the same review that stopped before.
+  mgseg=0
+  if [ "$pmseg" = 0 ] && gate_segment_merged_uncovered "$seg"; then
+    mgseg=1
+    mg=$(printf '%s\n' "$rows" | gate_rows_field_eq '상태' '머지됨' | tail -1 \
+           | gate_rows_field_values '머지 커밋' | awk 'NF { v = $0 } END { print v }')
+    if [ -z "$mg" ]; then
+      warn "segment $seg was merged before a review covered it, but its last 머지됨 row carries no 머지 커밋 — there is no merged pull request to name for the covering review"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ -z "$base" ]; then
+      mwt=$(gate_segment_anchor_worktree "$seg" "$(gate_segment_target_alias "$seg")")
+      if [ -z "$mwt" ]; then
+        warn "segment $seg has no recorded worktree to derive the base of the covering review of 머지 커밋 $mg from"
+        return "$GATE_EXIT_RULE"
+      fi
+      if ! mtip=$(gate_worktree_tip "$mwt"); then
+        warn "cannot read the tip of the recorded worktree $mwt of segment $seg — the base of the covering review of 머지 커밋 $mg cannot be derived"
+        return "$GATE_EXIT_RULE"
+      fi
+      mp=$( { cd "$mwt" && git rev-parse --verify --quiet "$mg^1^{commit}"; } 2>/dev/null) || mp=''
+      if [ -z "$mp" ]; then
+        warn "the first parent of 머지 커밋 $mg of segment $seg does not resolve in the recorded worktree $mwt"
+        return "$GATE_EXIT_RULE"
+      fi
+      base=$( { cd "$mwt" && git merge-base "$mp" "$mtip"; } 2>/dev/null) || base=''
+      if [ -z "$base" ]; then
+        warn "no merge-base of the first parent $mp of 머지 커밋 $mg and the worktree tip $mtip of segment $seg — the base of the covering review cannot be derived"
+        return "$GATE_EXIT_RULE"
+      fi
+    fi
+  fi
   [ -z "$base" ] || line="$line --base-sha $base"
   # A MERGE-FIRST SEGMENT PAST ITS MERGE is reviewed after it landed, so the
   # line names the merge commit its last `머지됨` row recorded: the review
@@ -26956,6 +27023,7 @@ gate_review_line() {
     esac
     [ -z "$pm" ] || line="$line --post-merge $pm"
   fi
+  [ "$mgseg" = 0 ] || line="$line --merged $mg"
   decl=$(gate_segment_decl_whole "$seg")
   case "$decl" in ''|'없음'|'(없음)') : ;; *) line="$line --declared-files \"$decl\"" ;; esac
   # The seat commits ride as a flag of their own: they are commits a stage did
@@ -26966,6 +27034,32 @@ gate_review_line() {
   # two paths spell the same flag; the review-dispatch check compares the
   # dispatched prompt against the same value.
   line="$line$(review_expand_flag)"
+  # The delta basis of the covering review is chosen the way the cycle row's
+  # write check chooses it: the highest-numbered full cycle of the segment, and
+  # among rows of that number the last full one. With no full cycle the line
+  # carries no basis and the review runs whole, which still covers the tip.
+  if [ "$mgseg" = 1 ]; then
+    brow=''; blatest=0
+    while IFS= read -r crow; do
+      [ -n "$crow" ] || continue
+      [ "$(gate_row_field "$crow" '세그먼트')" = "$seg" ] || continue
+      cs=$(gate_row_field "$crow" '사이클')
+      case "$cs" in ''|*[!0-9]*) continue ;; esac
+      csn=$((10#$cs))
+      cm=$(gate_row_field "$crow" '모드'); [ -n "$cm" ] || cm=전체
+      [ "$cm" = 전체 ] || continue
+      if [ "$csn" -ge "$blatest" ]; then blatest=$csn; brow="$crow"; fi
+    done <<EOF
+$( { gate_rows 'cycle' || true; } )
+EOF
+    if [ -n "$brow" ]; then
+      bhead=$(gate_row_field "$brow" '리뷰 HEAD')
+      brep=$(gate_report_abs "$(gate_row_field "$brow" '리포트 경로')")
+      if [ -n "$bhead" ] && [ -n "$brep" ]; then
+        line="$line --basis-cycle $blatest --basis-review-head $bhead --basis-report-path $brep"
+      fi
+    fi
+  fi
   [ "${#extra[@]}" -eq 0 ] || line="$line ${extra[*]}"
   doc=$(gate_doc_arg_path)
   [ -z "$doc" ] || line="$line \"설계는 $doc\""
