@@ -26913,7 +26913,8 @@ gate_review_line() {
   # Refused with GATE_EXIT_RULE when the segment has no row or no branch to
   # review, and when a review-before-merge segment a person merged uncovered
   # has no merge commit, recorded worktree or base to build its line from, or
-  # was fast-forward merged with no base on its rows.
+  # was fast-forward merged with no base on its rows — onto the worktree tip,
+  # or onto commits pushed to the branch past it.
   #
   # THE ROUTER HAD NOTHING TO SPELL THIS FROM. The lead fix, the re-check, the
   # resolution review and the delta review are each written as "the segment's
@@ -26974,9 +26975,10 @@ gate_review_line() {
   # base on its rows the base is the merge-base of the merge commit's first
   # parent — the base just before the merge, when the merge is not a
   # fast-forward — and the recorded worktree's tip: the last base the segment
-  # took in. A fast-forward merge is refused. A line that cannot name the merge
-  # commit or that base is refused rather than printed without them, which
-  # would send the same review that stopped before.
+  # took in. A fast-forward merge is refused, whether it landed on the worktree
+  # tip or on commits pushed to the branch past it. A line that cannot name the
+  # merge commit or that base is refused rather than printed without them,
+  # which would send the same review that stopped before.
   mgseg=0
   if [ "$pmseg" = 0 ] && gate_segment_merged_uncovered "$seg"; then
     mgseg=1
@@ -26998,7 +27000,8 @@ gate_review_line() {
       fi
       # A FAST-FORWARD MERGE HAS NO BASE BEHIND ITS MERGE COMMIT. The first
       # parent of the merge commit is the base just before the merge only when
-      # the merge commit is not an ancestor of the tip. When a person
+      # the merge commit is not an ancestor of the tip and its first parent does
+      # not hold the tip (checked below). When a person
       # fast-forwarded the base onto the segment — or merged the base into the
       # branch and then fast-forwarded — the merge commit is the tip itself or a
       # commit on the segment's line, its first parent is a segment commit or an
@@ -27023,6 +27026,29 @@ gate_review_line() {
         warn "the first parent of 머지 커밋 $mg of segment $seg does not resolve in the recorded worktree $mwt"
         return "$GATE_EXIT_RULE"
       fi
+      # A FAST-FORWARD PAST THE WORKTREE TIP is not caught above. When a person
+      # pushed more commits to the branch from another clone and fast-forwarded
+      # the base onto them, the merge commit is a descendant of the worktree
+      # tip, and its first parent is one of those commits — the worktree tip
+      # itself or a commit after it — not the base before the merge. The base
+      # derived from it would be the worktree tip, and the covering review's
+      # diff would hold only the commits made outside the worktree. A first
+      # parent that already holds the worktree tip is therefore refused too; the
+      # first parent of a real merge, squash or rebase onto the base does not
+      # hold the segment's tip.
+      rc=0
+      ( cd "$mwt" && git merge-base --is-ancestor "$mtip" "$mp" ) 2>/dev/null || rc=$?
+      case "$rc" in
+        0)
+          warn "머지 커밋 $mg of segment $seg is a fast-forward merge — its first parent $mp already holds the worktree tip $mtip, so it is not the base before the merge and the base of the covering review is not derived"
+          return "$GATE_EXIT_RULE"
+          ;;
+        1) : ;;
+        *)
+          warn "cannot tell whether the first parent $mp of 머지 커밋 $mg of segment $seg holds the worktree tip $mtip in the recorded worktree $mwt (exit $rc) — the base of the covering review cannot be derived"
+          return "$GATE_EXIT_RULE"
+          ;;
+      esac
       base=$( { cd "$mwt" && git merge-base "$mp" "$mtip"; } 2>/dev/null) || base=''
       if [ -z "$base" ]; then
         warn "no merge-base of the first parent $mp of 머지 커밋 $mg and the worktree tip $mtip of segment $seg — the base of the covering review cannot be derived"

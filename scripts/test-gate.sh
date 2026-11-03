@@ -29827,8 +29827,8 @@ check "26: 룰 끔 — 조건 11 이 나지 않는다" "$(sa_unmet11)" ""
 # 런을 붙든다. 그것을 푸는 덮는 리뷰는 머지된 PR 을 대상으로 받아야 하므로 줄이
 # --merged 와 머지 커밋, 머지 커밋의 첫 부모와 워크트리 팁의 merge-base 를 베이스로
 # 싣고, 앞 전체 사이클을 기준으로 한 델타 플래그 셋을 싣는다. 머지는 게이트 밖에서
-# 베이스에 --no-ff 머지 커밋을 만들어 민다. 빨리감기 머지는 베이스를 유도하지 않고
-# 거절하며, squash 머지는 분기점 베이스를 그대로 유도한다. 픽스처는 모두 이 절
+# 베이스에 --no-ff 머지 커밋을 만들어 민다. 빨리감기 머지는 워크트리 팁으로 했든
+# 워크트리 밖에서 올린 커밋으로 했든 베이스를 유도하지 않고 거절하며, squash 머지는 분기점 베이스를 그대로 유도한다. 픽스처는 모두 이 절
 # 안에서 만든다.
 sa26b_merge() {
   # sa26b_merge — 베이스에 다른 커밋 하나를 둔 뒤 세그먼트 브랜치를 --no-ff 머지
@@ -29994,6 +29994,33 @@ check "26b: squash 머지의 미포함 머지됨 행이 기록된다" \
 sag review-line --manifest "$SA_MANIFEST" --segment S26Q; l26q=$msg
 check "26b: squash 머지 세그먼트의 리뷰 줄은 머지 커밋과 분기점 베이스를 싣는다" \
   "$rc|$(sa26b_flag "$l26q" --merged)|$(sa26b_flag "$l26q" --base-sha)" "0|$M26Q|$F26Q"
+
+# 9 — 워크트리 밖 커밋을 올린 뒤의 빨리감기. 다른 클론에서 세그먼트 팁 위에 커밋을
+# 하나 더 올리고 원격 베이스를 그 커밋으로 빨리감기하면 머지 커밋은 워크트리 팁의
+# 자손이라 사례 7 의 판별은 거르지 못한다. 그 첫 부모가 워크트리 팁 자신이라 유도한
+# 베이스가 워크트리 팁이 되고 리뷰 뒤 커밋이 diff 에서 빠지므로, 줄을 내지 않고 거절한다.
+# 다른 클론의 커밋은 워크트리를 건드리지 않는 commit-tree 로 만든다.
+sa_new '워크트리 밖 커밋 뒤 빨리감기한 미포함'
+sa26b_row S26B
+T26B=$(sa_commit '리뷰된 작업')
+sa_cycle S26B 1 0 0 "$T26B"
+sa_commit '리뷰 뒤의 작업 1' >/dev/null
+U26B=$(sa_commit '리뷰 뒤의 작업 2')
+M26B=$( cd "$SA_REPO" && git commit-tree "$U26B^{tree}" -p "$U26B" -m '워크트리 밖의 작업' ) 2>/dev/null
+( cd "$SA_REPO" && git push -q origin "$M26B:refs/heads/$SA_BASE" ) >/dev/null 2>&1
+sa_seg_state S26B 머지됨 "머지 커밋=$M26B"
+check "26b: 워크트리 밖 커밋 뒤 빨리감기의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26B)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26B
+case "$msg" in
+  *"/cc-cmds:review-unattended"*) r26b="줄 있음" ;;
+  *) r26b="줄 없음" ;;
+esac
+check "26b: 워크트리 밖 커밋 뒤 빨리감기 세그먼트의 리뷰 줄은 rc 3 이고 줄을 내지 않는다" "$rc|$r26b" "3|줄 없음"
+case "$msg" in
+  *"is a fast-forward merge — its first parent"*"already holds the worktree tip"*) ok "26b: 그 거절이 첫 부모가 워크트리 팁을 담은 빨리감기를 지목한다" ;;
+  *) bad "26b 워크트리 밖 커밋 뒤 빨리감기 거절 문면" "$msg" ;;
+esac
 
 # --- 35-27. 게이트가 적는 필드는 호출자가 넘길 수 없고, 넘치는 행은 이름을 대며 거절된다 ---
 # --- section: 35-27 | group: sa | covers: act, snapshot | anchors: 27: 호출자가 넘긴 머지 대조 는 머지됨 행에서 거절된다 ---
