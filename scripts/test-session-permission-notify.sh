@@ -243,18 +243,32 @@ gate_case "세션 id 가 .." ".."
 # 3. Redaction — no raw value anywhere under the spool root or the state root.
 # ---------------------------------------------------------------------------
 reset
-TG="123456789:AAbbCCddEEffGGhhIIjjKKllMMnnOOppQQr"
+# The provider-shaped values below are joined from split pieces when the test
+# runs, so this file holds no literal a secret scanner reads as a credential
+# (a contiguous Telegram-shaped value here once raised a secret-scanning alert
+# on push). The hook under test only ever sees the joined value, so what it has
+# to redact is unchanged. Keep any new provider-shaped fixture split the same way.
+P_GHP="gh""p_"
+P_GHO="gh""o_"
+P_GHPAT="github""_pat_"
+P_SKANT="sk-""ant-api03-"
+P_XOXB="xo""xb-"
+P_AKIA="AK""IA"
+P_AIZA="AI""za"
+P_JWT="ey""J"
+P_PEMKEY="PRIVATE"" KEY"
+TG="123456789"":AAbbCCddEEffGGhhIIjjKKllMMnnOOppQQr"
 SECRETS=(
-  "ghp_AbCdEf0123456789AbCdEf0123456789AbCd"
-  "gho_Zyx987654321Zyx987654321"
-  "github_pat_11ABCDEFG0123456789_abcdefghijk"
-  "sk-ant-api03-Secretvalue_0123456789"
-  "xoxb-1111-2222-SlackSecretValue"
-  "AKIAABCDEFGHIJKLMNOP"
-  "AIzaSyDummyGoogleKey0123456789"
+  "${P_GHP}AbCdEf0123456789AbCdEf0123456789AbCd"
+  "${P_GHO}Zyx987654321Zyx987654321"
+  "${P_GHPAT}11ABCDEFG0123456789_abcdefghijk"
+  "${P_SKANT}Secretvalue_0123456789"
+  "${P_XOXB}1111-2222-SlackSecretValue"
+  "${P_AKIA}ABCDEFGHIJKLMNOP"
+  "${P_AIZA}SyDummyGoogleKey0123456789"
   "pk_1234_StripeLikeValue99"
   "$TG"
-  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpM"
+  "${P_JWT}hbGciOiJIUzI1NiJ9.${P_JWT}zdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpM"
   "BearerSecretValue987"
   "dXNlcjpwYXNzQmFzaWM"
   "hunter2xyz"
@@ -271,9 +285,9 @@ IN=$(jq -cn --arg c "$CMD" --arg k "${SECRETS[13]}" '{command: $c, description: 
 perm sess-red Bash "$IN"
 hook_run request "$PATH_FULL"
 check "가림 — Bash 사건이 생긴다" "$(n_events)" "1"
-PEM="-----BEGIN RSA PRIVATE KEY-----
+PEM="-----BEGIN RSA ${P_PEMKEY}-----
 ${SECRETS[17]}
------END RSA PRIVATE KEY-----"
+-----END RSA ${P_PEMKEY}-----"
 perm sess-red Write "$(jq -cn --arg c "key:
 $PEM
 done" '{file_path: "/tmp/k.pem", content: $c}')"
@@ -294,17 +308,17 @@ check "가림 — 키 이름은 남는다" \
 # quotes, as an object value or as the array element after a flag. The Telegram
 # token sits in a Bot API URL and ends with `-`.
 reset
-TG2="987654321:ZZyyXXwwVVuuTTssRRqqPPooNNmmLLkkJJ-"
+TG2="987654321"":ZZyyXXwwVVuuTTssRRqqPPooNNmmLLkkJJ-"
 SECRETS2=(
-  "ghp_NewlineTok0123456789abcdef"
+  "${P_GHP}NewlineTok0123456789abcdef"
   "QuotedPw77"
   "ArgTok55"
   "ObjPw66"
   "Spaced Pw88"
-  "xoxb-3333-4444-NewlineSlack"
+  "${P_XOXB}3333-4444-NewlineSlack"
   "HdrKey44"
-  "eyJhbGciOiJub25lIn0.eyJzIjoiMSJ9.NewlineJwtSig"
-  "ghp_MultiEditTok0123456789"
+  "${P_JWT}hbGciOiJub25lIn0.${P_JWT}zIjoiMSJ9.NewlineJwtSig"
+  "${P_GHP}MultiEditTok0123456789"
   "$TG2"
   "Pw88"
   "QuoteInVal"
