@@ -522,32 +522,12 @@ tg_marks_rows() {
 }
 
 # `<key><TAB><ms><TAB><출처>` for every key whose share is known without a model:
-# `실측` is the median of the record's rows for the key; `센서스` is a section's
-# census wall time less the census minimum (the head every invocation pays) and
-# less the shares of the sections its `needs:` closure pulls in, taken in the
-# same order, so the closure is counted once; `@head` falls back to that
-# minimum. A section the census lacks and the record lacks is left out here and
-# given its `추정` by the caller. Reads the index on stdin.
+# `실측` is the median of the record's rows for the key. A section the record
+# lacks is left out here and given its `추정` by the caller. Reads the index on
+# stdin.
 tg_known_shares() {
-  LC_ALL=C awk -v REC="$1" -v CEN="$repo_root/scripts/gate-census.tsv" '
-    function share(id,   v, g, i, qn, x, k, d, sb) {
-      if (id in rs) return rs[id]
-      if (id in memo) return memo[id]
-      if (!(id in cw) || (id in busy)) return 0
-      busy[id] = 1
-      g = ++G; qn = 1; q[g, 1] = id; seen[g, id] = 1
-      for (i = 1; i <= qn; i++) {
-        x = q[g, i]
-        for (k = 1; k <= ndn[x]; k++) { d = nd[x, k]; if (!((g SUBSEP d) in seen)) { seen[g, d] = 1; q[g, ++qn] = d } }
-      }
-      sb = 0
-      for (i = 2; i <= qn; i++) sb += share(q[g, i])
-      v = cw[id] - headmin - sb; if (v < 0) v = 0
-      delete busy[id]; memo[id] = v
-      return v
-    }
+  LC_ALL=C awk -v REC="$1" '
     $1 == "SEC" && $4 != "-" { nid++; ids[nid] = $4 }
-    $1 == "NED" { ndn[$2]++; nd[$2, ndn[$2]] = $3 }
     END {
       while (REC != "" && (getline line < REC) > 0) {
         split(line, f, "\t"); t = f[2]
@@ -564,22 +544,11 @@ tg_known_shares() {
         }
         rs[key] = (n % 2) ? sv[(n + 1) / 2] : int((sv[n / 2] + sv[n / 2 + 1]) / 2)
       }
-      headmin = -1
-      while ((getline line < CEN) > 0) {
-        if (line ~ /^#/ || line == "") continue
-        split(line, f, "\t")
-        if (f[1] == "id" || f[1] ~ /^@/ || f[4] !~ /^[0-9]+$/) continue
-        cw[f[1]] = f[4] * 1000
-        if (headmin < 0 || cw[f[1]] < headmin) headmin = cw[f[1]]
-      }
-      if (headmin < 0) headmin = 0
       for (i = 1; i <= nid; i++) {
         id = ids[i]
         if (id in rs) { print id "\t" rs[id] "\t실측"; done[id] = 1 }
-        else if (id in cw) { print id "\t" share(id) "\t센서스"; done[id] = 1 }
       }
       if ("@head" in rs) print "@head\t" rs["@head"] "\t실측"
-      else if (headmin > 0) print "@head\t" headmin "\t센서스"
       done["@head"] = 1
       for (j = 1; j <= nk; j++) if (!(rk[j] in done)) print rk[j] "\t" rs[rk[j]] "\t실측"
     }'
@@ -711,7 +680,7 @@ tg_estimate_print() {
             if (known && (key in est)) { printf "%s\t%d\t%s\n", key, int((est[key] + 500) / 1000), src[key]; tot += est[key] }
             else printf "%s\t-\t없음\n", key
           }
-        if (!known) { print "test-gate: 예상 합계 — 없음 (실측도 센서스도 없다)"; lim = 7200000; capped = 1 }
+        if (!known) { print "test-gate: 예상 합계 — 없음 (실측이 없다)"; lim = 7200000; capped = 1 }
         else {
           printf "test-gate: 예상 합계 — %d초\n", int((tot + 500) / 1000)
           lim = 2 * tot + 300000
@@ -929,7 +898,8 @@ oracle_probe() {
 # makes each run answerable for its own leftovers only.
 #
 # The age predicate is the part the design does not spell out and it is
-# load-bearing: the census runs sections in PARALLEL on one machine, so deleting
+# load-bearing: the isolation sweep and the tree runner run sections in PARALLEL
+# on one machine, so deleting
 # every `cc-gate-*` would delete a live sibling's `WORK` and re-create exactly the
 # contention the "clean in front" rule was written to avoid. 120 minutes is 2.5x
 # the full run measured on this host.
@@ -2186,7 +2156,7 @@ bad()  {
 }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
 # 건너뜀은 통과도 실패도 아니므로 따로 센다. 합계 줄은 바이트 모양이 고정이라
-# (`scripts/gate-census.sh`·`scripts/gate-shard.sh` 가 고정 정규식으로 읽는다) 그 앞에
+# (`scripts/gate-isolation.sh`·`scripts/gate-timing.sh` 가 고정 정규식으로 읽는다) 그 앞에
 # 제 줄로 찍는다.
 skip() { skipped=$((skipped + 1)); printf 'SKIP: %s\n' "$1"; [ -z "${tg_iso_rec:-}" ] || tg_iso_put SKIP "$1"; }
 
@@ -6926,7 +6896,7 @@ check "목표 줄은 기록이 있으면 실측, 없으면 없음이다" \
   "$(grep -E '^make:' "$est_dir/e.out" | tr '\t\n' ' |')" "make:g1 10 실측|make:g2 - 없음|"
 check "권장 한도는 10분 아래로 내려가지 않는다" \
   "$(grep -c '^test-gate: 권장 한도 — 600000ms$' "$est_dir/e.out" || true)" "1"
-# With neither a record nor a census there is no table to fit the model to.
+# With no record there is no table to fit the model to.
 mkdir -p "$est_dir/bare/scripts"
 cp "$est_suite" "$est_dir/bare/scripts/test-gate.sh"
 CC_TEST_GATE_REPO_ROOT="$est_dir/bare" CC_GATE_TIMING_RECORD="$est_dir/empty.tsv" \
@@ -51386,22 +51356,36 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83P"
 # `grep -c` with nothing to count exits 1.
 # ---------------------------------------------------------------------------
 W84="$WORK/s84"; mkdir -p "$W84"; : > "$W84/marker"
+# The sleeps are counted machine-wide, so their lengths carry a fraction drawn
+# for this run: another copy of this section running at the same time (a sweep
+# chunk beside a solo) leaves sleeps of other lengths, which are not counted. A
+# signalled process can still be listed for a moment under load, so each count
+# is retaken for up to three seconds until it reads zero.
+u84=$(( (RANDOM * 32768 + RANDOM) % 900000 + 100000 ))
 cat > "$W84/child.sh" <<'EOF'
-gate="$1"; o="$2"
+gate="$1"; o="$2"; u="$3"
 CC_GATE_SOURCE_ONLY=1 . "$gate" </dev/null
 exec 7<"$o/marker"
+count84() { ps -A -o command= | grep -cxE "$1" || true; }
+settle84() {  # settle84 <pattern> — the count, retaken until zero or 3 s
+  local n k=0
+  n=$(count84 "$1")
+  while [ "$n" != "0" ] && [ "$k" -lt 30 ]; do sleep 0.1; k=$((k + 1)); n=$(count84 "$1"); done
+  printf '%s\n' "$n"
+}
 t0=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
 i=0; nbad=0
 while [ "$i" -lt 40 ]; do
-  gate_metrics_timed 6.17 true || nbad=$((nbad + 1))
+  gate_metrics_timed "6.$u" true || nbad=$((nbad + 1))
   i=$((i + 1))
 done
 rc=0
-gate_metrics_timed 1 bash -c 'sleep 7.17 & sleep 7.18' || rc=$?
+gate_metrics_timed 1 bash -c "sleep 7.${u}1 & sleep 7.${u}2" || rc=$?
+echo "$nbad" > "$o/nbad"; echo "$rc" > "$o/to.rc"
+settle84 "sleep 6\\.$u" > "$o/n.watch"
+settle84 "sleep 7\\.${u}[12]" > "$o/n.desc"
 t1=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
-echo "$nbad" > "$o/nbad"; echo "$rc" > "$o/to.rc"; echo "$t0 $t1" > "$o/loop"
-ps -A -o command= | grep -cx 'sleep 6.17' > "$o/n.watch" || true
-ps -A -o command= | grep -cxE 'sleep 7\.1[78]' > "$o/n.desc" || true
+echo "$t0 $t1" > "$o/loop"
 lsof -t -- "$o/marker" > "$o/holders" 2>/dev/null 7<&- || true
 grep -vx "$$" "$o/holders" 7<&- | grep -c . > "$o/n.fd" 7<&- || true
 exec 7<&-
@@ -51409,7 +51393,7 @@ echo done > "$o/done"
 EOF
 cat > "$W84/recipe.sh" <<EOF
 . "$repo_root/plugins/cc-cmds/orchestrator/detach.sh"
-p=\$(cc_detach_exec "$W84/child.log" "$W84/child.log" bash "$W84/child.sh" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" "$W84")
+p=\$(cc_detach_exec "$W84/child.log" "$W84/child.log" bash "$W84/child.sh" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" "$W84" "$u84")
 i=0
 while [ ! -e "$W84/done" ] && kill -0 "\$p" 2>/dev/null && [ "\$i" -lt 600 ]; do
   sleep 0.1; i=\$((i + 1))
