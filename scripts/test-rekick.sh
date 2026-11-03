@@ -880,6 +880,20 @@ check "5: 베이스 설계 해시가 달라진 원천은 실패가 아니다" "$
 check "5: 그 원천은 질문 하나를 낸다" "$(cnt "$out" 질문)/$(col "$out" 질문)" "1/베이스설계"
 check "5: 질문이 지금 해시를 싣는다" "$(col "$out" 질문 5)" "$(sha "$BASE/docs/rk-base.md")"
 
+# 리뷰어 런은 남의 PR 에 리뷰를 게시한 런이라 이어받지 않는다 — 네 읽기 모드가 모두 거절한다.
+P_PLAN='{ "run_profile": "reviewer", "steps": [ { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": [] } ] }' mk_prev RKREV; fx_done
+rv_got=""
+for rv_mode in detect verify graph judge; do
+  if [ "$rv_mode" = detect ]; then
+    rk_as s-RKREV detect --arg '' >/dev/null; rc=$?
+  else
+    rk "$rv_mode" --prev RKREV --base "$BASE" >/dev/null; rc=$?
+  fi
+  rv_got="$rv_got$rv_mode=$rc/$(grep -c '리뷰어 런은 새 킥오프로 시작합니다' "$WORK/rk.err") "
+done
+check "5: 리뷰어 런 원천은 네 읽기 모드 모두 3 으로 거절된다" "$rv_got" "detect=3/1 verify=3/1 graph=3/1 judge=3/1 "
+unset rv_got rv_mode
+
 # ---------------------------------------------------------------------------
 # 11. 검증 표류 — 지금 금지된 자동 채택 부류
 # ---------------------------------------------------------------------------
