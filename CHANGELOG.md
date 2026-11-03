@@ -5,6 +5,28 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.28.0] - 2026-11-04
+
+무인 런의 승인 알림이 원격 답을 받을 수 있는 첨부를 싣고, `gate.sh close` 가 승인 답이 원격 경로로 왔는지를 닫힘 행에 적는다. 미인가 발신자의 원격 답과 자리 비움 시간 초과로 닫힌 질문 틀은 답으로 기록하지 않는다.
+
+### Added
+
+- **승인 알림 첨부** — 게이트의 승인 알림과 감시자의 승인 배너가 `gate_approval_attach_json` 이 만든 첨부(`kind: approval`, `reply.surface: approval`, 런·승인 id, 정규 질문, 게이트 라벨 선택지)를 함께 넘긴다. 선택지가 있고 `시각-승인` 이 아닌 판단 승인만 `actionable` 이다. 선택지는 `gate.sh prompt` 와 같은 라벨 규칙 하나(`gate_approval_option_labels`)에서 나온다.
+- **응답 경로 필드** — `close` 가 답 틀로 쓰는 닫힘 행에 `응답 경로`(`원격`·`로컬`)와, 원격이면 `원격 발신` 을 싣는다. 주의 스풀의 이 런 우편함 봉투가 가리키는 적용 기록 하나가 답 틀의 응답 토큰·봉투의 사건 id·답 다이제스트와 모두 맞을 때만 원격이다. 게이트는 스풀에 아무것도 쓰지 않는다. 행 상한에 걸리면 `원격 발신`, 그다음 `응답 경로` 를 빼고 닫는다.
+- **라우터 좌석의 깨우기** — 프롬프트 전체가 `<cc-remote-approval run=<rid> id=<승인 id>/>` 이면 그 승인이 아직 대기일 때만 정규 질문을 다시 연다.
+- **스풀 루트 공개 함수** — `attention.sh` 의 `cc_attention_root` 를 공개 이름으로 열고, 기존 내부 이름은 별칭으로 남긴다.
+
+### Changed
+
+- **발신자 재확인** — 원격 답의 발신자가 `~/.config/cc-cmds/remote-senders.json` 에 `option` 능력으로 올라 있지 않으면 승인은 대기로 남고 `처분 사유=원격 발신자 미인가` 행이 붙으며 `close` 는 5 로 끝난다. 자동 해소는 그 대기를 닫지 않는다.
+- **자리 비움 거르기** — `toolUseResult` 에 `afkTimeoutMs` 가 있는 답 틀은 행 없이 5 로 끝난다.
+- **스풀 쓰기 거절** — 런 훅이 편집 도구의 주의 스풀 쓰기를, 게이트가 Bash 의 스풀 쓰기를 페이싱 디렉터리와 같은 갈래로 거절한다. 페이싱 가드의 갈래는 루트 목록과 거절 문면을 받는 공용 함수로 옮겼다.
+- **argv 형태** — `CC_CMDS_ATTENTION_ROOT` 대입과 파이프라인 표지 넷의 `env -u` 지움은 `form` 이다. 표지가 서 있는 셸에서 게이트와 훅은 그 시험 좌석 변수를 읽지 않는다.
+
+### Why
+
+원격으로 답한 승인과 로컬에서 답한 승인이 원장에서 구별되지 않았고, 승인 알림은 답할 수 없는 배너로만 나갔다. 원격 답은 같은 질문 창에 입력되므로 원장의 구별은 스풀의 기록에서만 얻을 수 있고, 그 기록을 스테이지가 쓰지 못해야 구별이 위조되지 않는다.
+
 ## [3.27.3] - 2026-11-02
 
 라우터가 cc-lane 이 사용량 파일의 계정 행마다 싣는 5시간 한도 발행 상태(`five_hour_limit`)를 읽어, 발행 상태가 형태 추정보다 먼저 그룹의 5시간 한도를 정한다.
