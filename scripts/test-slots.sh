@@ -86,39 +86,52 @@ ts_fp() {
   printf '%s' "$*"
 }
 
-# One ps for the whole host, taken at the head of every reap: TS_PS holds a
-# "<pid> <start time>" line per process, the start time spelled as ts_fp spells
-# it, so the reap reads every owner and ticket against this one snapshot rather
-# than starting a ps per process. TS_PS_OK is 1 only when the snapshot came
-# back; otherwise each lookup asks ts_fp, so a failed ps never makes every
-# owner look gone. A pid the snapshot lacks is asked of ps directly too: a pool
-# started after the snapshot may already have put its ticket or taken a slot,
-# and only the dead entries pay for the second look.
-TS_PS=""
-TS_PS_OK=0
-ts_ps_snap() {
-  TS_PS=$(LC_ALL=C ps -A -o pid=,lstart= 2>/dev/null | awk '{ p = $1; $1 = ""; sub(/^ +/, ""); print p " " $0 }')
-  TS_PS_OK=0
-  [ -z "$TS_PS" ] || TS_PS_OK=1
-  TS_PS="
-$TS_PS
-"
+# Every process of the host as "<pid> <start time>" lines, in the C locale;
+# nothing while TS_PS_OFF is set, which only the self-test sets, to take the
+# path a failed ps takes.
+TS_PS_OFF=""
+ts_ps_all() {
+  [ -z "$TS_PS_OFF" ] || return 0
+  LC_ALL=C ps -A -o pid=,lstart= 2>/dev/null
 }
 
-# The start time of pid $1 from the snapshot, or from ps when the snapshot
-# lacks it; nothing when the pid is gone.
-ts_fp_snap() {
-  local nl='
-' rest
-  case "$TS_PS_OK:$TS_PS" in
-    1:*"$nl$1 "*) ;;
-    *)
-      ts_fp "$1"
-      return 0
-      ;;
-  esac
-  rest="${TS_PS#*"$nl$1 "}"
-  printf '%s' "${rest%%"$nl"*}"
+# The entry files among $1 whose processes are all gone, one per line, judged
+# against ONE ps of the whole host rather than a ps per process. $1 holds the
+# entries as "<file><TAB><pid><TAB><start time>" lines, plus one
+# "<file><TAB><TAB>" line per file so a file naming no process reads as gone.
+# The entries are read before the ps, so a process an entry names that is
+# still alive is in it. The lookup is awk's: matching the pids against the ps
+# output with bash's own pattern operators costs the square of its length,
+# which on a busy host is seconds per pid. 1 with nothing printed when the ps
+# came back empty.
+ts_dead_entries() {
+  local snap
+  snap=$(ts_ps_all)
+  [ -n "$snap" ] || return 1
+  printf '%s\n--\n%s' "$snap" "$1" | awk -F '\t' '
+    function words(s,    a, n, i, v) {
+      n = split(s, a, " ")
+      v = ""
+      for (i = 1; i <= n; i++) v = v (i > 1 ? " " : "") a[i]
+      return v
+    }
+    !sep {
+      if ($0 == "--") { sep = 1; next }
+      p = $0
+      sub(/^ +/, "", p)
+      q = p
+      sub(/ .*$/, "", p)
+      sub(/^[^ ]+/, "", q)
+      fp[p] = words(q)
+      next
+    }
+    $1 != "" {
+      if (!($1 in st)) { st[$1] = 0; ord[++k] = $1 }
+      v = words($3)
+      if ($2 != "" && v != "" && ($2 in fp) && fp[$2] == v) st[$1] = 1
+    }
+    END { for (i = 1; i <= k; i++) if (!st[ord[i]]) print ord[i] }
+  '
 }
 
 ts_cpus() {
@@ -289,7 +302,7 @@ ts_owner_alive() {
   while read -r kind pid fp; do
     case "$kind" in
       pool|proc)
-        if [ -n "$pid" ] && [ -n "$fp" ] && [ "$(ts_fp_snap "$pid")" = "$fp" ]; then return 0; fi
+        if [ -n "$pid" ] && [ -n "$fp" ] && [ "$(ts_fp "$pid")" = "$fp" ]; then return 0; fi
         ;;
     esac
   done < "$1"
@@ -299,7 +312,7 @@ ts_owner_alive() {
 ts_ticket_alive() {
   local pid fp
   read -r pid fp < "$1" 2>/dev/null || [ -n "${pid:-}" ] || return 1
-  [ -n "$pid" ] && [ -n "$fp" ] && [ "$(ts_fp_snap "$pid")" = "$fp" ]
+  [ -n "$pid" ] && [ -n "$fp" ] && [ "$(ts_fp "$pid")" = "$fp" ]
 }
 
 ts_seen_at() {
@@ -311,15 +324,27 @@ $TS_SEEN
 EOF
 }
 
-# Removes the slots and tickets of processes that are gone.
+# Removes the slots and tickets of processes that are gone. The owner files
+# and tickets are read here and judged together by ts_dead_entries; when its ps
+# comes back empty each one is asked of ps per process, so a failed ps never
+# makes every owner look gone. An empty owner file or ticket names nobody.
 ts_reap() {
-  local d f now ino id t seen=""
+  local d f now ino id t seen="" ents="" files="" nents=0 kind pid fp dead tab='	' nl='
+'
   now=$(ts_now)
-  ts_ps_snap
   for d in "$TS_DIR"/slot-*; do
     [ -d "$d" ] || continue
     if [ -f "$d/owner" ]; then
-      ts_owner_alive "$d/owner" || ts_rm "$d"
+      f="$d/owner"
+      # A file that went away between the listing and the read is skipped:
+      # its slot was given back, and may already be someone else's again.
+      if while read -r kind pid fp; do
+        case "$kind" in pool|proc) ents="$ents$f$tab$pid$tab$fp$nl" ;; esac
+      done 2>/dev/null < "$f"; then
+        ents="$ents$f$tab$tab$nl"
+        files="$files$f$nl"
+        nents=$((nents + 1))
+      fi
       continue
     fi
     # shellcheck disable=SC2046
@@ -338,8 +363,40 @@ ts_reap() {
   TS_SEEN="$seen"
   for f in "$TS_DIR"/queue/[0-9]*; do
     [ -f "$f" ] || continue
-    ts_ticket_alive "$f" || ts_rm "$f"
+    pid=""
+    fp=""
+    { read -r pid fp; } 2>/dev/null < "$f"
+    if [ -n "$pid" ]; then
+      ents="$ents$f$tab$pid$tab$fp$nl"
+    elif [ ! -f "$f" ]; then
+      continue
+    fi
+    ents="$ents$f$tab$tab$nl"
+    files="$files$f$nl"
+    nents=$((nents + 1))
   done
+  [ "$nents" -gt 0 ] || return 0
+  if dead=$(ts_dead_entries "$ents"); then
+    while IFS= read -r f; do
+      case "$f" in
+        '') ;;
+        */owner) ts_rm "${f%/owner}" ;;
+        *) ts_rm "$f" ;;
+      esac
+    done <<EOF
+$dead
+EOF
+    return 0
+  fi
+  while IFS= read -r f; do
+    case "$f" in
+      '') ;;
+      */owner) ts_owner_alive "$f" || ts_rm "${f%/owner}" ;;
+      *) ts_ticket_alive "$f" || ts_rm "$f" ;;
+    esac
+  done <<EOF
+$files
+EOF
   return 0
 }
 
@@ -630,6 +687,7 @@ ts_self_test() {
     IFS='|' read -r TS_POOL_PID TS_POOL_EPOCH TS_SEQ TS_TICKET TS_TICKET_T0 TS_LASTP <<EOF
 $s
 EOF
+    TS_POOL_FP=$(ts_fp "$TS_POOL_PID")
   }
   pool_out() { eval "st_$1=\"\$TS_POOL_PID|\$TS_POOL_EPOCH|\$TS_SEQ|\$TS_TICKET|\$TS_TICKET_T0|\$TS_LASTP\""; }
   # One try as pool $1 for job $2 with key $3. It runs in this shell, so the
@@ -679,16 +737,26 @@ EOF
   out=$(LC_ALL=de_DE.UTF-8 LANG=de_DE.UTF-8 LC_TIME=fr_FR.UTF-8 ts_fp "$pa")
   if [ -n "$v" ] && [ "$out" = "$v" ]; then ok "지문: 비 C 로케일에서도 같은 시작 시각 지문"; else bad "지문: 비 C 로케일에서도 같은 시작 시각 지문" "「${out}」 「${v}」"; fi
   check "지문: 없는 pid 는 빈 지문" "$(ts_fp "$dp")" ""
-  ts_ps_snap
-  check "지문: 한 번의 스냅숏이 ps 한 번과 같은 지문" "$(ts_fp_snap "$pa")" "$v"
-  check "지문: 스냅숏에 없는 pid 는 빈 지문" "$(ts_fp_snap "$dp")" ""
-  TS_PS="
-$dp 다른 시각
-"
-  check "지문: 스냅숏 뒤에 뜬 pid 는 ps 로 다시 묻는다" "$(ts_fp_snap "$pa")" "$v"
-  TS_PS=""
-  TS_PS_OK=0
-  check "지문: 스냅숏이 비면 ps 로 직접 묻는다" "$(ts_fp_snap "$pa")" "$v"
+  tb='	'
+  out=$(ts_dead_entries "fa${tb}${tb}
+fa${tb}$pa${tb}$v
+fb${tb}${tb}
+fb${tb}$dp${tb}$v
+fc${tb}${tb}
+fc${tb}$pa${tb}Mon Jan 1 00:00:00 2001
+fd${tb}${tb}
+fe${tb}${tb}
+fe${tb}$dp${tb}$v
+fe${tb}$pb${tb}$(ts_fp "$pb")
+ff${tb}${tb}
+ff${tb}$pa${tb}$(printf '%s' "$v" | sed 's/ /  /g')
+" | tr '\n' ' ')
+  check "판정: ps 한 번으로 죽은 pid·재사용된 pid·프로세스 없는 항목만 고른다" "$out" "fb fc fd "
+  TS_PS_OFF=1
+  ts_dead_entries "fa${tb}$pa${tb}$v
+" > /dev/null
+  check "판정: 프로세스 표가 비면 1 로 끝나 호출자가 pid 마다 묻는다" "$?" "1"
+  TS_PS_OFF=""
 
   # --- weights --------------------------------------------------------------------------
   fresh 3
@@ -777,6 +845,29 @@ proc $pb $(ts_fp "$pb")
   ts_reap
   check "회수: 죽은 소유자와 pid 재사용은 지우고, 풀이 죽어도 잡이 살아 있으면 남긴다" "$(cd "$T/s" && ls -d slot-* | tr '\n' ' ')" "slot-3 slot-4 "
   check "회수: 죽은 pid 와 재사용된 pid 의 표는 지우고 산 표는 남긴다" "$(cd "$T/s/queue" && ls | tr '\n' ' ')" "0000000002-$(printf '%010d' "$pb")-000001 "
+  fresh 4
+  owner slot-1 "pool $dp $fpa
+"
+  owner slot-2 "pool $pa $fpa
+"
+  owner slot-3 "job 목표 x
+"
+  printf '%s %s\n' "$dp" "$fpa" > "$T/s/queue/0000000001-$(printf '%010d' "$dp")-000001"
+  : > "$T/s/queue/0000000001-0000000001-000001"
+  printf '%s %s\n' "$pb" "$(ts_fp "$pb")" > "$T/s/queue/0000000002-$(printf '%010d' "$pb")-000001"
+  TS_PS_OFF=1
+  ts_reap
+  TS_PS_OFF=""
+  check "회수: 프로세스 표가 비면 pid 마다 물어 죽은 자리와 프로세스 없는 자리를 지운다" "$(cd "$T/s" && ls -d slot-* | tr '\n' ' ')" "slot-2 "
+  check "회수: 프로세스 표가 비면 pid 마다 물어 죽은 표와 빈 표를 지운다" "$(cd "$T/s/queue" && ls | tr '\n' ' ')" "0000000002-$(printf '%010d' "$pb")-000001 "
+  fresh 4
+  owner slot-1 "job 목표 x
+"
+  : > "$T/s/queue/0000000001-0000000001-000001"
+  printf '%s %s\n' "$pb" "$(ts_fp "$pb")" > "$T/s/queue/0000000002-$(printf '%010d' "$pb")-000001"
+  ts_reap
+  check "회수: 프로세스를 적지 않은 owner 의 자리는 지운다" "$(cd "$T/s" && ls -d slot-* 2>/dev/null | tr '\n' ' ')" ""
+  check "회수: 빈 표는 지운다" "$(cd "$T/s/queue" && ls | tr '\n' ' ')" "0000000002-$(printf '%010d' "$pb")-000001 "
   clock 2000
   mkdir "$T/s/slot-9"
   ts_reap
@@ -870,7 +961,7 @@ proc $pb $(ts_fp "$pb")
   rm -rf "$T"
   printf 'test-slots self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$mode" = inner ]; then w=60; else w=64; fi
+  if [ "$mode" = inner ]; then w=66; else w=70; fi
   if [ "$passed" -lt "$w" ]; then
     printf 'test-slots self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" "$w" >&2
     return 1
