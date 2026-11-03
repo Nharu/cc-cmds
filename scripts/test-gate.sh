@@ -44809,6 +44809,72 @@ check "60b-4: 기본 브랜치가 실패한 사람 회차의 정착된 실패는
 cb60_foot
 
 # ---------------------------------------------------------------------------
+# 60b-5. CI 수정 스테이지가 HEAD 를 움직이지 못하고 끝난 뒤 — 같은 head 로 다시 보내지 않는다
+# --- section: 60b-5 | group: sa | covers: act, plan, snapshot, gate_ci_fix_attempt | anchors: 60b-5: 멈춘 CI 수정 뒤 다음은 CI 수정 중단 이고 그 기록을 싣는다, 60b-5: CI 수정 중단 에서 CI 수정·리뷰 수정 파견은 rc 3 이고 재부착은 받아진다, 60b-5: 계획 실행이 HEAD 를 그대로 두고 끝나면 CI 수정 한도 이고 CI 수정 파견은 rc 3 이다, 60b-5: 크래시로 끝난 CI 수정은 같은 head 로 다시 파견된다 ---
+#
+# 60b 의 C2 처럼 회차 1 의 실패에서 CI 수정 행위를 지난 뒤, 그 스테이지가 쓴 꼴의 구현 행을
+# 원장에 붙여 끝을 고른다. 픽스처는 `cb60_head` 로 새로 세우고 헬퍼는 `pre_sa` 의 것을 쓴다.
+# ---------------------------------------------------------------------------
+cb60_head
+cb65_new() {  # cb65_new <라벨> — 회차 1 의 실패와 같은 head 의 CI 수정 행위까지 지난 세그먼트 CK
+  cb60_new "$1"
+  cb60_act
+  cb60_line 실패 1 0
+  cb60_impl act "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""
+}
+cb65_sr() {  # cb65_sr <종단 부류> <실행 버전> <plan_sha256> — CI 수정 스테이지의 구현 행 하나
+  printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=%s | 세션 id=sess-ci-%s | 부모=router-1 | plan_sha256=%s | 종단 부류=%s | 실패 서명=implement/%s/S4#%s/%s\n' \
+    "$2" "$2" "$3" "$1" "$1" "$2" "${CK60_SHA:0:8}" >> "$SA_LEDGER"
+}
+cb65_fix() { cb60_impl "$1" "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""; }
+cb65_rev() { cb60_impl plan "/cc-cmds:implement-unattended $SA_RUN/anchor-brief.md \"세그먼트 CK · 수정 대상: $SA_RUN/c1.md 의 P0·P1\""; }
+D65=cccc000000000000000000000000000000000000000000000000000000000003
+
+cb65_new "CI 수정 — 의도된 park"
+check "60b-5: CI 수정 행위 뒤 구현 행이 없으면 다음은 그대로 CI 수정 이다" \
+  "$(cb60_next)|$( { grep -c '^- `CI 처분` .*처분=수정' "$SA_LEDGER" || true; } )" "CI 수정|1"
+cb65_rev; cb65_m0=$msg
+cb65_sr '정상 완료' 2 "$D65"
+cb65_sr '의도된 park' 3 "$D65"
+check "60b-5: 멈춘 CI 수정 뒤 다음은 CI 수정 중단 이고 그 기록을 싣는다" \
+  "$( ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+      | jq -r '.review_next[] | select(.["세그먼트"] == "CK") | [.["다음"], .["head sha"], .["실패 체크"], .["중단 기록"]] | join("|")')" \
+  "CI 수정 중단|$CK60_SHA|gate|$SA_RUN/halt/S4#3.md"
+cb65_fix plan; cb65_r1=$rc; cb65_m1=$msg
+cb65_rev; cb65_r2=$rc; cb65_m2=$msg
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment CK --cutpoint 커밋 \
+    --surface 워크트리쓰기 --resume sess-ci-3 --snapshot-digest "$(SAH)" --rationale x -- implement -p "이어서 진행하세요"
+cb65_r3=$rc
+check "60b-5: CI 수정 중단 에서 CI 수정·리뷰 수정 파견은 rc 3 이고 재부착은 받아진다" \
+  "$cb65_r1|$cb65_r2|$cb65_r3" "3|3|0"
+# 리뷰 수정의 거부는 CI 판정 전 거부 문면으로 가린다 — 같은 파견이 CI 수정 자리에서는 그 문면을 내지 않는다.
+cb65_cw='CI 판정이 서기 전에는 리뷰 지적 수정을 파견하지 않습니다'
+cb65_has() { case "$1" in *"$2"*) printf 있음 ;; *) printf 없음 ;; esac; }
+case "$(cb65_has "$cb65_m0" "$cb65_cw")|$(cb65_has "$cb65_m2" "「CI 수정 중단」 입니다 — $cb65_cw")" in
+  '없음|있음') ok "60b-5: 리뷰 수정 파견의 거부는 CI 수정 중단 의 CI 판정 전 거부다" ;;
+  *) bad "60b-5: 리뷰 수정 파견의 거부는 CI 수정 중단 의 CI 판정 전 거부다" "앞: $cb65_m0 / 뒤: $cb65_m2" ;;
+esac
+case "$cb65_m1" in
+  *"CI 수정 중단"*"$SA_RUN/halt/S4#3.md"*) ok "60b-5: 그 거부 문면이 중단 기록을 든다" ;;
+  *) bad "60b-5: 그 거부 문면이 중단 기록을 든다" "$cb65_m1" ;;
+esac
+printf -- '- `중단 답` | 세그먼트=CK | 중단 기록=%s | prev=x\n' "$SA_RUN/halt/S4#3.md" >> "$SA_LEDGER"
+check "60b-5: 그 기록에 답이 실리면 다음은 다시 CI 수정 이다" "$(cb60_next)" "CI 수정"
+
+cb65_new "CI 수정 — 계획 실행의 정상 완료"
+cb65_sr '정상 완료' 2 "$D65"
+cb65_sr '정상 완료' 3 "$D65"
+cb65_fix plan; cb65_r1=$rc
+check "60b-5: 계획 실행이 HEAD 를 그대로 두고 끝나면 CI 수정 한도 이고 CI 수정 파견은 rc 3 이다" \
+  "$(cb60_next)|$cb65_r1" "CI 수정 한도|3"
+
+cb65_new "CI 수정 — 크래시"
+cb65_sr 크래시 2 "$D65"
+cb65_fix plan; cb65_r1=$rc
+check "60b-5: 크래시로 끝난 CI 수정은 같은 head 로 다시 파견된다" "$(cb60_next)|$cb65_r1" "CI 수정|0"
+cb60_foot
+
+# ---------------------------------------------------------------------------
 # 60c. 재실행·재요청 실행 철자 — 두 모드에서 도달·행과 무관하게 막힌다
 # --- section: 60c | group: sa | covers: plan, exec | anchors: 60c: 무인 모드에서 재실행 철자는 도달·행과 무관하게 rc 3 이다, 60c: 사람이 있는 모드에서 재실행 철자는 행이 있어도 승인 rc 5 다, 60c: 재실행 철자는 가짜 gh 를 부르지 않는다, 60c: 읽기 철자는 막히지 않는다 ---
 #
@@ -54939,7 +55005,7 @@ check "88b: 다음이 해소 리뷰 가 아닌 세그먼트의 해소 사이클 
 
 # ---------------------------------------------------------------------------
 # 88d. 리뷰가 깨끗한 세그먼트의 CI 층 — 원장만으로 정한 다음, 머지 검사, 추가 키
-# --- section: 88d | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json | anchors: 88d: CI 수정 뒤 HEAD 의 다음은 CI 리뷰 다, 88d: 베이스 충돌이 CI 실패보다 앞선다, 88d: 회차 0 의 대기 행은 CI 대기 다, 88d: 행이 없으면 다음은 CI 대기 다, 88d: 라우팅 기록이 없는 런은 실패에도 다음이 머지 다, 88d: CI 값에서만 추가 키가 실린다 ---
+# --- section: 88d | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json, gate_ci_fix_attempt | anchors: 88d: CI 수정 뒤 HEAD 의 다음은 CI 리뷰 다, 88d: 같은 head 의 CI 수정이 의도된 park 로 멈추고 답이 없으면 CI 수정 중단 이다 (L8h), 88d: 베이스 충돌이 CI 실패보다 앞선다, 88d: 회차 0 의 대기 행은 CI 대기 다, 88d: 행이 없으면 다음은 CI 대기 다, 88d: 라우팅 기록이 없는 런은 실패에도 다음이 머지 다, 88d: CI 값에서만 추가 키가 실린다 ---
 #
 # 판정표가 머지 를 내는 세그먼트(깨끗한 사이클 하나) 위에 `checks` 행과 `CI 처분` 행을
 # 손으로 붙여 층의 각 행을 잰다. 층은 원장만 읽으므로 원격도 gh 대역도 두지 않는다.
@@ -55048,7 +55114,55 @@ s88d_keys() { printf '%s' "$1" | grep -c '"재실행 회차"' || true; }
 check "88d: CI 값에서만 추가 키가 실린다" \
   "$(s88d_keys "$(sn88d "$L88DPS")")|$(s88d_keys "$(sn88d "$L88DF")")|$(sn88d "$L88DF" | grep -c "\"head sha\": \"$R88D\", \"PR\": \"o/r#5\", \"실패 체크\": \"gate\", \"재실행 회차\": \"0\", \"기본 브랜치\": \"\"" || true)" "0|1|1"
 
-# L0 — 워크트리에 CI 수정 커밋을 더한다. 다른 계열의 `처분=수정` 낱말은 L0 을 세우지 않는다.
+# L8h — 이 head 의 `처분=수정` 행 뒤에 쓰인 구현 시도가 어떻게 끝났는지로 L8 을 가른다.
+# 사례마다 L8 에 닿는 줄(같은 head 의 수정 행, 회차 1 의 가라앉은 실패) 위에 구현 행을 붙인다.
+l88dh() {  # l88dh <이름> — 수정 행과 회차 1 의 실패까지 쓴 원장
+  local l; l=$(l88d "$1")
+  cd88d "$l" 수정 - -; ck88d "$l" 실패 0 0; cd88d "$l" 재실행 요청 1; cd88d "$l" 재실행 수락 1; ck88d "$l" 실패 1 0
+  printf '%s' "$l"
+}
+sr88d() {  # sr88d <원장> <종단 부류> <실행 버전> <plan_sha256> [진척] [꼬리] — 구현 행 하나
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 스테이지=S | 종류=implement | 종료 코드=0 | 실행 버전=%s | plan_sha256=%s | 종단 부류=%s | 실패 서명=implement/%s/S#%s/%s%s | prev=x\n' \
+    "$3" "$4" "$2" "$2" "$3" "${5-${R88D:0:8}}" "${6:-}" >> "$1"
+}
+ha88d() {  # ha88d <원장> <중단 기록> — 사람의 답이 실린 중단 답 행
+  printf -- '- `중단 답` | 교대=1 | 세그먼트=S | 중단 기록=%s | prev=x\n' "$2" >> "$1"
+}
+DA88D=aaaa000000000000000000000000000000000000000000000000000000000001
+DB88D=bbbb000000000000000000000000000000000000000000000000000000000002
+L88DH=$(l88dh halt); sr88d "$L88DH" '정상 완료' 1 "$DA88D"; sr88d "$L88DH" '의도된 park' 2 "$DA88D"
+check "88d: 같은 head 의 CI 수정이 의도된 park 로 멈추고 답이 없으면 CI 수정 중단 이다 (L8h)" \
+  "$(n88d "$L88DH")" "CI 수정 중단"
+check "88d: CI 수정 중단 원소는 head sha·실패 체크와 중단 기록을 싣는다" \
+  "$(sn88d "$L88DH" | grep -c "\"head sha\": \"$R88D\", \"PR\": \"o/r#5\", \"실패 체크\": \"gate\", .*\"중단 기록\": \"${L88DH%/*}/halt/S#2.md\"" || true)" "1"
+L88DHA=$(l88d halt-ans); cp "$L88DH" "$L88DHA"; ha88d "$L88DHA" "${L88DH%/*}/halt/S#2.md"
+L88DHR=$(l88d halt-rel); cp "$L88DH" "$L88DHR"; ha88d "$L88DHR" "halt/S#2.md"
+check "88d: 그 기록에 답이 실리면 CI 수정 중단 이 풀린다 (절대·상대 경로)" "$(n88d "$L88DHA")|$(n88d "$L88DHR")" "CI 수정|CI 수정"
+L88DHD=$(l88d halt-done); cp "$L88DHA" "$L88DHD"; sr88d "$L88DHD" '정상 완료' 3 "$DA88D"
+L88DHP=$(l88d halt-again); cp "$L88DHA" "$L88DHP"; sr88d "$L88DHP" '의도된 park' 3 "$DA88D"
+check "88d: 다시 붙은 세션이 HEAD 를 그대로 두고 끝나면 CI 수정 한도 이고 다시 멈추면 새 기록의 CI 수정 중단 이다" \
+  "$(n88d "$L88DHD")|$(n88d "$L88DHP")|$(sn88d "$L88DHP" | grep -c "\"중단 기록\": \"${L88DHP%/*}/halt/S#3.md\"" || true)" "CI 수정 한도|CI 수정 중단|1"
+L88DE=$(l88d plan-exec); sr88d "$L88DE" '정상 완료' 1 "$DB88D"
+cd88d "$L88DE" 수정 - -; ck88d "$L88DE" 실패 0 0; cd88d "$L88DE" 재실행 요청 1; cd88d "$L88DE" 재실행 수락 1; ck88d "$L88DE" 실패 1 0
+L88DEF=$(l88d plan-first); cp "$L88DE" "$L88DEF"; sr88d "$L88DEF" '정상 완료' 2 "$DA88D"
+sr88d "$L88DE" '정상 완료' 2 "$DB88D"
+check "88d: 수정 행 앞에 다이제스트가 나온 계획 실행의 정상 완료 는 CI 수정 한도 이고 처음 나온 다이제스트의 정상 완료 는 CI 수정 이다" \
+  "$(n88d "$L88DE")|$(n88d "$L88DEF")" "CI 수정 한도|CI 수정"
+o88d=""
+for c88d in 크래시 '한도 종료' '외부 종료' 스폰; do
+  L88DK=$(l88dh "skip-${c88d// /-}")
+  if [ "$c88d" = 스폰 ]; then sr88d "$L88DK" '의도된 park' 2 "$DA88D" "${R88D:0:8}" ' | 관측=스폰 전 대기 중'
+  else sr88d "$L88DK" "$c88d" 2 "$DA88D"; fi
+  o88d="$o88d$(n88d "$L88DK")|"
+done
+check "88d: 크래시·한도 종료·외부 종료·스폰 전 대기 행은 세지 않아 CI 수정 이다" "$o88d" "CI 수정|CI 수정|CI 수정|CI 수정|"
+L88DHO=$(l88dh halt-other); sr88d "$L88DHO" '의도된 park' 2 "$DA88D" deadbeef
+L88DHN=$(l88dh halt-nosig)
+printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 스테이지=S | 종류=implement | 종료 코드=0 | 실행 버전=2 | 종단 부류=의도된 park | prev=x\n' >> "$L88DHN"
+check "88d: 다른 head 의 진척을 단 park 는 세지 않고 실패 서명이 없는 park 는 이 head 의 것으로 읽는다" \
+  "$(n88d "$L88DHO")|$(n88d "$L88DHN")" "CI 수정|CI 수정 중단"
+
+# L0 —워크트리에 CI 수정 커밋을 더한다. 다른 계열의 `처분=수정` 낱말은 L0 을 세우지 않는다.
 L88DL=$(l88d l0); ck88d "$L88DL" 실패 0 0; cd88d "$L88DL" 재실행 요청 1; cd88d "$L88DL" 재실행 수락 1
 ck88d "$L88DL" 실패 1 0; cd88d "$L88DL" 수정 - -
 L88DLN=$(l88d l0-neg); ck88d "$L88DLN" 실패 0 0
