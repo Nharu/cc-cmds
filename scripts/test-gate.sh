@@ -14101,7 +14101,7 @@ for rc15d3_l in '`베이스 개정 없이 계속`' '`베이스 개정 후 새 �
 done
 check "15d-3: 재수렴 문면이 두 선택지 라벨을 싣는다" "$rc15d3_n" "2"
 rc15d3_n=0
-printf '%s\n' "$rc15d3_sec" | grep -qF '사람 수용(충돌)' && printf '%s\n' "$rc15d3_sec" | grep -qF '## 베이스 제약' \
+grep -qF '사람 수용(충돌)' <<<"$rc15d3_sec" && grep -qF '## 베이스 제약' <<<"$rc15d3_sec" \
   && rc15d3_n=$((rc15d3_n + 1))
 for rc15d3_f in implement-unattended/SKILL.md _common/base-linkage.md; do
   grep -qF '사람 수용(충돌)' "$rc15d3_sk/$rc15d3_f" && grep -qF '## 베이스 제약' "$rc15d3_sk/$rc15d3_f" \
@@ -14112,7 +14112,7 @@ check "15d-3: 재수렴 문면이 우선 문구 고정 부분을 싣는다" \
   "$(grep -qF '보다 앞선다 (사유 거둠 — 사람 수용(충돌))' "$rc15d3_sk/design-reconverge/SKILL.md" && printf 있음 || printf 없음)" "있음"
 rc15d3_n=0
 for rc15d3_l in '대조 무충돌' '사람 수용(충돌)' '사람 수용(대조 문면 없음)' '사람 수용(지명할 줄 없음)'; do
-  printf '%s\n' "$rc15d3_sec" | grep -qF -- "$rc15d3_l" && rc15d3_n=$((rc15d3_n + 1))
+  grep -qF -- "$rc15d3_l" <<<"$rc15d3_sec" && rc15d3_n=$((rc15d3_n + 1))
 done
 check "15d-3: 사유 거둠 절이 네 표식 값을 모두 싣는다" "$rc15d3_n" "4"
 
