@@ -25,6 +25,7 @@
 #   scripts/review-seat-promotion-pair.sh [run] [--exp-id <id>] --budget-usd <N> [--repo <dir>] [--ref <commit>]
 #   scripts/review-seat-promotion-pair.sh run --dry-run [--exp-id <id>] [--repo <dir>] [--ref <commit>]
 #   scripts/review-seat-promotion-pair.sh run --pilot --budget-usd <N> [--exp-id <id>] [--repo <dir>] [--ref <commit>]
+#   scripts/review-seat-promotion-pair.sh run --pilot --rejudge --exp-id <id> [--repo <dir>] [--ref <commit>]
 #   scripts/review-seat-promotion-pair.sh status --exp-id <id> [--repo <dir>]
 #   scripts/review-seat-promotion-pair.sh --rerun-sample <n> --exp-id <id> --budget-usd <N> [--repo <dir>]
 #
@@ -37,11 +38,16 @@
 #                 lines; the model CLI is never called
 #   --pilot       select and branches, then prepare and review only the opus-1
 #                 branch of quantile 1's pick and check it as collect does,
-#                 then that the JSON has total_cost_usd and an empty
-#                 permission_denials and that the witness hook logged no
-#                 witness command it left undecided; pilot/result says `통과` or `실패 — <condition>`. The main run
-#                 (`run`, `--rerun-sample`) stops with exit 1 before any billed
-#                 call unless the same experiment's pilot/result says `통과`
+#                 then that the JSON has total_cost_usd; pilot/result says
+#                 `통과` or `실패 — <condition>`, then the session's refused tool
+#                 calls (`거부`) and the witness commands the hook left
+#                 undecided (`미승인`), which are recorded and fail nothing.
+#                 The main run (`run`, `--rerun-sample`) stops with exit 1
+#                 before any billed call unless the same experiment's
+#                 pilot/result says `통과`
+#   --rejudge     with --pilot: judge the session the last pilot left again,
+#                 under today's conditions, without starting one (no
+#                 --budget-usd needed, no billed call)
 #   --rerun-sample  discard slot n's state, runs and records and run it again
 #                 from `선정 <n>`
 #   --repo        the main checkout (default: the main worktree of this
@@ -175,6 +181,7 @@ ref=""
 rerun=""
 dry=0
 pilot=0
+rejudge=0
 
 while (( $# > 0 )); do
   case "$1" in
@@ -182,6 +189,7 @@ while (( $# > 0 )); do
     --rerun-sample) rerun="${2:-}"; cmd="rerun"; shift 2 || usage "--rerun-sample needs a sample number" ;;
     --dry-run) dry=1; shift ;;
     --pilot) pilot=1; shift ;;
+    --rejudge) rejudge=1; shift ;;
     --exp-id) exp_id="${2:-}"; shift 2 || usage "--exp-id needs a value" ;;
     --budget-usd) budget="${2:-}"; shift 2 || usage "--budget-usd needs a value" ;;
     --repo) repo="${2:-}"; shift 2 || usage "--repo needs a value" ;;
@@ -206,6 +214,8 @@ if [[ -n "$budget" && ! "$budget" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
   usage "--budget-usd must be a number: $budget"
 fi
 (( dry == 0 || pilot == 0 )) || usage "--dry-run and --pilot do not combine"
+(( rejudge == 0 || pilot == 1 )) || usage "--rejudge needs --pilot"
+(( rejudge == 0 )) || [[ -n "$exp_id" ]] || usage "--rejudge needs --exp-id"
 case "$cmd" in
   status) [[ -n "$exp_id" ]] || usage "status needs --exp-id" ;;
   rerun)
@@ -214,7 +224,7 @@ case "$cmd" in
     (( dry == 0 && pilot == 0 )) || usage "--rerun-sample does not combine with --dry-run or --pilot"
     ;;
 esac
-if [[ "$cmd" != "status" && "$dry" == "0" && -z "$budget" ]]; then
+if [[ "$cmd" != "status" && "$dry" == "0" && "$rejudge" == "0" && -z "$budget" ]]; then
   usage "--budget-usd <N> is required for a call that may start billed work (no default)"
 fi
 
@@ -884,7 +894,7 @@ witness_hook_write() {
 # decision, so the session's permission rules decide it. One that runs
 # mktemp, mv or mkdir and names one of the directories or a `$(dirname` is
 # also appended to the log as `<agent_id or ->\t<command>`, because a `-p`
-# session may refuse it and the pilot fails on a non-empty log; a call that
+# session may refuse it and the record counts the log's lines; a call that
 # only mentions those words, or a mktemp, mv or mkdir elsewhere — a scratch
 # directory under the system temp, say — is not logged: it is no witness
 # command.
@@ -1141,13 +1151,14 @@ HOOK
 # variable between Bash calls anyway — so a publish in a later call names the
 # temp's literal path. Any other call gets no decision from it, and one running
 # mktemp, or mv or mkdir on those directories, is logged to
-# <run dir>/witness-misses.log, which the pilot requires empty. A hook's allow
+# <run dir>/witness-misses.log, which the pilot result and each run's
+# deviations.tsv count. A hook's allow
 # does not lift a deny rule.
 #
 # The lead mints each member's witness nonce with `openssl rand -hex 8`, a Bash
 # call of its own that no plugin script makes for it and that neither the
 # read-only defaults nor `acceptEdits` approve. A refused call lands in
-# `permission_denials`, which fails the pilot, so that exact command is opened
+# `permission_denials` and the protocol's witness would go unpublished, so that exact command is opened
 # by a rule, and the hook also allows it as one of the commands of a call.
 # Leads also mint every member's nonce in one call (`openssl rand -hex 24`,
 # `-hex 32`), so the hook allows any byte count from 1 to 999; an exact rule
@@ -1379,6 +1390,7 @@ run_slot() {
       review_branch "$n" "$br" "$rd"
       mkdir -p "$EXP/reports"
       if [[ -f "$rd/report.md" ]]; then cp "$rd/report.md" "$EXP/reports/${n}-${br}.md"; else rm -f "$EXP/reports/${n}-${br}.md"; fi
+      deviations "$rd" > "$EXP/reports/${n}-${br}.deviations.tsv"
       reason=$(branch_reason "$rd" "$br" "$head")
       if [[ -n "$reason" ]]; then
         note=$(halt_note "$rd")
@@ -1393,7 +1405,7 @@ run_slot() {
     else
       samples_put "$n" "$(printf '%s\t%s\t%s\t%s\t무효\t%s\t%s' "$n" "$nm" "$base" "$head" "$reason" "$(seats_cell "$n")")"
       say "sample ${n}: invalid — ${reason}; next reserve"
-      for br in $BRANCHES; do rm -rf "$ST/runs/${n}-${br}"; rm -f "$EXP/reports/${n}-${br}.md"; done
+      for br in $BRANCHES; do rm -rf "$ST/runs/${n}-${br}"; rm -f "$EXP/reports/${n}-${br}.md" "$EXP/reports/${n}-${br}.deviations.tsv"; done
       kv_set "$f" try $((k + 1))
     fi
   done
@@ -1403,39 +1415,52 @@ run_slot() {
 
 pilot_ok() { [[ "$(head -n 1 "$EXP/pilot/result" 2>/dev/null || true)" == "통과" ]]; }
 
+# deviations <run dir> — two `키<TAB>값` lines: `거부` (the session's refused
+# tool calls, `<count> <tool>…`, or `-` when the JSON has no
+# permission_denials) and `미승인` (the lines the witness hook logged). A
+# refused call or a witness command the hook left undecided is a seat working
+# around the session's rules: the record keeps it next to the review so a
+# reader can weigh it, and neither fails a pilot nor voids a sample.
+deviations() {
+  local rd="$1" den
+  den=$(jq -r 'if type == "object" and (.permission_denials | type) == "array"
+    then ([.permission_denials | length | tostring] + [.permission_denials[] | .tool_name // "?"] | join(" ")) else empty end' "$rd/result.json" 2>/dev/null || true)
+  printf '거부\t%s\n미승인\t%s\n' "${den:--}" "$(awk 'END { print NR }' "$rd/witness-misses.log" 2>/dev/null || echo 0)"
+}
+
 run_pilot() {
   mkdir -p "$EXP/pilot"
   if pilot_ok; then say "pilot already passed → $EXP/pilot/result"; exit 0; fi
-  local nm rd head reason cost den why
+  local nm rd head reason cost why
   nm=$(sample_name 1 0)
   rd="$ST/pilot/opus-1"
-  rm -rf "$rd"
-  write_session_env
-  prepare_branch pilot opus-1 "$nm" "$rd"
   head=$(sel_field "$nm" 6)
-  review_branch pilot opus-1 "$rd"
+  if (( rejudge == 1 )); then
+    # Judge the session the last pilot left, without starting one: its
+    # result.json is there and the last pilot/result names the same sample.
+    [[ -f "$rd/result.json" && "$(kv "$EXP/pilot/result" 보고서)" == "$nm" ]] \
+      || die "no finished pilot session of $nm under $rd to judge again; no billed call was made"
+  else
+    rm -rf "$rd"
+    write_session_env
+    prepare_branch pilot opus-1 "$nm" "$rd"
+    review_branch pilot opus-1 "$rd"
+  fi
   [[ ! -f "$rd/report.md" ]] || cp "$rd/report.md" "$EXP/pilot/report.md"
   cost=$(jq -r 'if type == "object" and (.total_cost_usd | type) == "number" then .total_cost_usd else empty end' "$rd/result.json" 2>/dev/null || true)
-  # A refused tool call — a witness command the settings did not open, say —
-  # is a seat working around its instructions, which the pair would compare.
-  den=$(jq -r 'if type == "object" and (.permission_denials | type) == "array"
-    then ([.permission_denials | length | tostring] + [.permission_denials[] | .tool_name // "?"] | join(" ")) else empty end' "$rd/result.json" 2>/dev/null || true)
   why=""
   if [[ -n "$(halt_note "$rd")" ]]; then why="중단 기록이 있다$(halt_note "$rd")"
   else
     reason=$(branch_reason "$rd" opus-1 "$head")
     if [[ -n "$reason" ]]; then why="$reason"
     elif [[ -z "$cost" ]]; then why="total_cost_usd 가 JSON 에 없다"
-    elif [[ -z "$den" ]]; then why="permission_denials 가 JSON 에 없다"
-    elif [[ "${den%% *}" != "0" ]]; then why="거부된 도구 호출 ${den%% *}건 (${den#* })"
-    elif [[ -s "$rd/witness-misses.log" ]]; then why="증인 명령 미승인 $(awk 'END { print NR }' "$rd/witness-misses.log")건"
     fi
   fi
   if [[ -z "$why" ]]; then
-    printf '통과\n비용\t%s\n보고서\t%s\n' "$cost" "$nm" > "$EXP/pilot/result"
+    { printf '통과\n비용\t%s\n보고서\t%s\n' "$cost" "$nm"; deviations "$rd"; } > "$EXP/pilot/result"
     say "pilot passed (cost ${cost}) → $EXP/pilot/result"; exit 0
   fi
-  printf '실패 — %s\n비용\t%s\n보고서\t%s\n' "$why" "${cost:--}" "$nm" > "$EXP/pilot/result"
+  { printf '실패 — %s\n비용\t%s\n보고서\t%s\n' "$why" "${cost:--}" "$nm"; deviations "$rd"; } > "$EXP/pilot/result"
   say "pilot failed — ${why} → $EXP/pilot/result"; exit 1
 }
 
@@ -1452,7 +1477,7 @@ show_status() {
 
 discard_slot() {
   local n="$1" br
-  for br in $BRANCHES; do rm -rf "$ST/runs/${n}-${br}"; rm -f "$EXP/reports/${n}-${br}.md"; done
+  for br in $BRANCHES; do rm -rf "$ST/runs/${n}-${br}"; rm -f "$EXP/reports/${n}-${br}.md" "$EXP/reports/${n}-${br}.deviations.tsv"; done
   rm -f "$(slot_state "$n")"
   samples_put "$n" ""
 }

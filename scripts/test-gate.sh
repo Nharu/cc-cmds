@@ -2008,6 +2008,10 @@ trap 'eval "$CANON_REAP"; rm -rf "$WORK_ROOT"' EXIT
 FXREPORT="$WORK/fixture-review.md"
 printf '# 픽스처 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$FXREPORT"
 export XDG_STATE_HOME="$WORK/state"
+# The attention spool root points at a path under the work directory that is
+# never created, so the attention tap writes nothing from this suite and never
+# reaches the account spool. Every gate run below inherits it.
+export CC_CMDS_ATTENTION_ROOT="$WORK/attention-root-absent"
 # The pace root follows XDG_STATE_HOME unless GATE_PACE_ROOT names one, and the
 # base branch's readings live under it: a value inherited from the caller would
 # let this host's readings into every routed fixture's dispositions.
@@ -2473,6 +2477,16 @@ canon_put() {
   mkdir -p "$(dirname "$p")"; cp "$3" "$p"
   case "$p" in "$WORK_ROOT"/*) ;; *) printf '%s\n' "$p" >> "$WORK_ROOT/canon-outside" ;; esac
   printf '%s' "$p"
+}
+# canon_report <run> <segment> [k] — writes the smallest report a review stage
+# owes at that canonical path (a `발견 요약` line the driver's `predicate_review`
+# reads) and prints the path. For a fixture whose review stage must count as
+# having produced its report, so the gate's outcome recorder does not file it
+# as a hollow success.
+canon_report() {
+  local src="$WORK_ROOT/canon-report-src.md"
+  printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' > "$src"
+  canon_put "$1" "$2" "$src" ${3:+"$3"}
 }
 # rv_x <run> <segment> [base] — the smallest review prompt the gate lets through
 # for that segment's next review: the canonical `--report-path` and nothing
@@ -9763,7 +9777,10 @@ check "그 행이 미해결 의무로 세어진다 (조건 3 이 더는 공허�
 # line, so they are exercised through the seam with a synthetic log rather than
 # by launching a CLI the fixture does not have.
 outcome_probe() {
-  # outcome_probe <rc> <subtype> <cost> <extra-log-line>
+  # outcome_probe <rc> <subtype> <cost> <extra-log-line> [kind]
+  # The kind is `review` unless given. A review is asked for its report before
+  # the row-count and denial arms, so a probe of those arms names a kind the
+  # chain has no artifact arm for.
   cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
     . "'"$GATE"'"
     MANIFEST="'"$FX_MANIFEST"'"
@@ -9775,11 +9792,11 @@ outcome_probe() {
       printf "{\"type\":\"result\",\"subtype\":\"%s\",\"total_cost_usd\":%s,\"session_id\":\"sid-probe\"}\n" "$2" "$3"
     } > "$RUN_DIR/log/SP.json"
     nb=$(gate_rows "자율 승인" | gate_count)
-    gate_record_stage_outcome infra SP review 1 "$1" "$nb" >/dev/null 2>&1
-  ' _ "$1" "$2" "$3" "${4:-}"
+    gate_record_stage_outcome infra SP "$5" 1 "$1" "$nb" >/dev/null 2>&1
+  ' _ "$1" "$2" "$3" "${4:-}" "${5:-review}"
 }
 
-outcome_probe 0 success 1.25 ''
+outcome_probe 0 success 1.25 '' lead-fix
 row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
 case "$row" in
   *"종단 부류=공허한 성공"*) ok "행을 남기지 않고 성공한 스테이지는 공허한 성공이다" ;;
@@ -9795,7 +9812,7 @@ case "$crow" in
   *) bad "비용 누적" "$crow" ;;
 esac
 
-outcome_probe 0 success 0.75 '{"permission_denials":[{"tool_name":"Read"}]}'
+outcome_probe 0 success 0.75 '{"permission_denials":[{"tool_name":"Read"}]}' lead-fix
 row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
 case "$row" in
   *"종단 부류=산출물 없는 정지"*) ok "거부 흔적이 있으면 공허한 성공과 구별된다" ;;
@@ -9944,7 +9961,9 @@ esac
 # One session carried across attempts by re-attachment shares its session id
 # while the attempts end differently. The attempt is the file the pin names, so
 # three recorder calls give three rows, and the limit rows count two. The middle
-# attempt's `정상 완료` needs a stage row after its dispatch line.
+# attempt's `정상 완료` needs a stage row after its dispatch line, and, being a
+# review, this cycle's report at its canonical path.
+canon_report "$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | sed -n 1p)" LT >/dev/null
 limit_probe LT 1 1 "$LIM14/limit.json" 1
 printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=infra | 세그먼트=LT | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=한도 픽스처 | prev=x\n' >> "$FX_LEDGER"
 limit_probe LT 2 0 "$LIM14/ok.json" 1
@@ -15103,7 +15122,8 @@ au15_wait R15V S2V
 check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0"
 check "15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
 # A re-kicked run's visual stage reuses its source's published sidecar without
-# writing it, so a `발행됨` sidecar with the literal completes the step too.
+# generating it again (it rewrites only the record path line to this run's), so
+# a `발행됨` sidecar with the literal completes the step too.
 printf '# 시각 사이드카\n\n**상태**: 발행됨\n' > "$SC15V"
 au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
 check "15v: 발행됨 사이드카를 둔 시각 파견이 기동한다" "$rc" "0"
@@ -21158,11 +21178,15 @@ cat > "$LRC/judgment-grade.md" <<'EOF'
 | `**판단 기준**:` | always |
 | `**판단 되돌리는 법**:` | at grade 1 |
 | `**판단 근거**:` | always |
+| `**판단 추천**:` | optional |
+| `**판단 선택지 리스크**:` | optional |
 EOF
+# 픽스처의 파서 줄은 실물 gate.sh 에서 옮기므로, 파서가 읽는 선택 마커 둘(추천과
+# 선택지 리스크)도 문서 쪽에 있어야 양쪽이 축자로 일치한다.
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 다섯 방출 마커가 전부 정의돼 있으면 통과한다"
+  ok "린트 — 필수 다섯과 선택 둘의 방출 마커가 전부 정의돼 있으면 통과한다"
 else
-  bad "린트" "다섯 마커가 다 있는데 실패했다"
+  bad "린트" "필수 다섯과 선택 둘의 마커가 다 있는데 실패했다"
 fi
 grep -vF '**판단 되돌리는 법**:' "$LRC/judgment-grade.md" > "$LRC/judgment-grade.md.tmp" \
   && mv "$LRC/judgment-grade.md.tmp" "$LRC/judgment-grade.md"
@@ -40538,6 +40562,10 @@ klass42() { { grep -F '`stage-result`' "$FX_LEDGER" || true; } | grep -F "세그
 gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment S42A --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
 check "42 실험용 세그먼트 행 (A) 이 기록된다" "$rc" "0"
+# The report is in place for (A) too: without it the recorder's review arm would
+# file the stage as a hollow success before the row-count arm is read, and the
+# assertion below would pass without measuring which rows were counted.
+canon_report "$rid42" S42A >/dev/null
 # Forked: the stub CLI is read while the gate is sourced (see the 14h launch).
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42A" \
   bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42A --cutpoint 커밋 \
@@ -40563,6 +40591,9 @@ rm -f "$WT/s42-router.txt"
 gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment S42B --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
 check "42 실험용 세그먼트 행 (B) 이 기록된다" "$rc" "0"
+# The stage is a review, which the recorder also asks for this cycle's report;
+# the report is put in place so the assertion below reads the row-count arm.
+canon_report "$rid42" S42B >/dev/null
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
   bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42B --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
@@ -43779,7 +43810,7 @@ cb60_foot
 
 # ---------------------------------------------------------------------------
 # 60b-2. 리뷰가 깨끗한 세그먼트의 CI 실패 — 부적격 실행의 park
-# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: CRLF tip 워크플로는 커밋 뒤에도 줄 끝 CR 을 담는다, 60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋과 그 CRLF 사본은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 바닥 정규식은 master 의 grep 문자열과 바이트로 같다, 60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키를 배포 자리로 읽는다, 60b: X5 는 바닥 grep 이 맞고 면제 모양이 아닌 줄을 배포 자리로 읽는다, 60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄만 바닥에서 면제한다, 60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
+# --- section: 60b-2 | group: sa | covers: act, plan, snapshot | anchors: 60b: 부적격 실행은 POST 없이 park 한다, 60b: CRLF tip 워크플로는 커밋 뒤에도 줄 끝 CR 을 담는다, 60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다, 60b: 레포의 실제 워크플로 셋과 그 CRLF 사본은 X5 판독기에서 깨끗하다, 60b: X5 판독기의 어휘 경계가 모양마다 답한다, 60b: X5 바닥 정규식은 master 의 grep 문자열과 바이트로 같다, 60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키를 배포 자리로 읽는다, 60b: X5 는 바닥 grep 이 맞고 면제 모양이 아닌 줄을 배포 자리로 읽는다, 60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄을 바닥에서 면제한다, 60b: X5 는 블록 스칼라 본문과 flow 밖의 YAML 주석 줄을 바닥에서 면제한다,60b: X5 판독기는 앵커·태그가 붙은 키와 문서 표지 줄의 flow 문서를 배포 자리로 읽는다, 60b: X5 판독기는 run 이 아닌 키의 flow·다음 줄 값의 워크플로 경로를 배포 자리로 읽는다, 60b: X5 판독기는 flow 의 평문 값 안 따옴표를 글자로 읽는다, 60b: X5 판독기는 flow 의 따옴표 문자열을 escape 와 여러 줄에 걸쳐 한 값으로 읽는다 ---
 #
 # 60b 의 둘째 조각. 픽스처는 `cb60_head` 로 새로 세운다. 같은 argv 의 둘째 park 가 행을
 # 더 쓰지 않는지는 칸과 종류마다 처음 사례에서 `cb60_park` 이 모으고 그 단언은 60b-3
@@ -43842,7 +43873,8 @@ cb60_act
 check "60b: paths 필터·run 본문·별칭의 워크플로 글자는 park 하지 않고 수락된다" \
   "$rc|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(( $(cb60_posts) - cb60_np ))|$(( $(cb60_n blocked) - cb60_nb ))" "0|수락|1|0"
 # 판독기 함수 — 기대가 1 인 픽스처는 바닥 grep 에도 깨끗해야 한다. 바닥이 맞는데 1 인 것은
-# 트리거 paths 항목과 step `run` 본문의 `yq` 읽기 줄, 두 면제 모양뿐이라 그것만 `cb60_x5e` 로 부른다.
+# 트리거 paths 항목, step `run` 본문의 `yq` 읽기 줄, 블록 스칼라 본문·flow 밖의 줄 전체 주석, 세 면제
+# 모양뿐이라 그것만 `cb60_x5e` 로 부른다.
 cb60_x5at() {
   # cb60_x5at <기대 rc> <파일> <라벨> [e] — 파일 하나에 판독기 함수를 부른다. 넷째 인자 e 가
   # 없으면 기대 1 인 파일이 바닥 grep 에도 깨끗한지 함께 본다.
@@ -43900,7 +43932,6 @@ check "60b: X5 는 CRLF 줄 끝과 검증 태그 뒤에 가린 환경·uses 키�
 cb60_x5fail=""
 cb60_x5 0 $'jobs:\n  d:\n    steps:\n      - uses: a/b@v1\n        with:\n          workflow: >\n            .github/workflows/deploy.yml'
 cb60_x5 0 $'on: push\njobs:\n  t:\n    # environment: prod\n    steps:\n      - run: make'
-cb60_x5 0 $'on: push\n# see .github/workflows/x.yml\njobs: {}'
 cb60_x5 0 $'on:\n  push:\n    branches:\n      - .github/workflows/x.yml'
 cb60_x5 0 $'name: \'a\n  b\'\non:\n  push:\n    paths:\n      - .github/workflows/x.yml'
 cb60_x5 0 $'env: {a: 1,\n  b: 2}\non:\n  push:\n    paths:\n      - .github/workflows/x.yml'
@@ -43964,7 +43995,30 @@ for cb60_rk in '- run: |' '- run: &a >' $'- name: x\n        run: |'; do
     cb60_x5cr 1 "$(printf 'jobs:\n  t:\n    steps:\n      %s\n          %s' "$cb60_rk" "$cb60_l")" e
   done
 done
-check "60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄만 바닥에서 면제한다" "$cb60_x5fail" ""
+check "60b: X5 는 트리거 paths 항목과 step run 본문의 yq 읽기 줄을 바닥에서 면제한다" "$cb60_x5fail" ""
+# 줄 전체 주석 — 블록 스칼라 본문과 열린 flow 밖에서 첫 비공백이 `#` 인 바닥 줄은 YAML 파서가 버리는
+# 줄이라 풀린다. 본문 안 `#` 줄, 키 줄 뒤 꼬리, `environment` 갈래, 실행되는 줄의 배포 자리는 그대로
+# 0 이고, 판독기가 열지 않은 블록 스칼라 표지가 있는 파일, 줄 끝에서 닫히지 않은 따옴표가 있는 파일은
+# 주석 줄도 풀지 않는다.
+cb60_x5fail=""
+cb60_x5e 1 $'on: push\n# see .github/workflows/x.yml\njobs: {}'
+cb60_x5e 1 $'name: x\non:\n  pull_request:\n  push:\njobs:\n  t:\n    runs-on: ubuntu-latest\n    # 인자 없이 부르면 `.github/workflows/` 전량을 잰다.\n    steps:\n      - run: true'
+cb60_x5cr 1 $'name: x\non:\n  pull_request:\n  push:\njobs:\n  t:\n    runs-on: ubuntu-latest\n    # 인자 없이 부르면 `.github/workflows/` 전량을 잰다.\n    steps:\n      - run: true' e
+cb60_x5e 1 $'# .github/workflows/x.yml\nname: x\non: push\njobs: {}'
+cb60_x5e 1 $'on: push\njobs:\n  t:\n    steps:\n      - run: |\n          true\n\n      # 인자 없이 부르면 `.github/workflows/` 전량을 잰다.\n      - run: actionlint'
+cb60_x5e 1 $'on:\n  push:\n    paths:\n      # .github/workflows/x.yml\n      - a.txt\njobs: {}'
+cb60_x5e 1 $'on: push\n# .github/workflows/x.yml\njobs:\n  t:\n    steps:\n      - run: |\n          yq \'.on\' .github/workflows/x.yml'
+cb60_x5 0 $'name: x\non: push\njobs:\n  t:\n    steps:\n      - run: |\n          # gh workflow run .github/workflows/deploy.yml\n          true'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run: |\n          echo a\n         # .github/workflows/x.yml\n          echo b'
+cb60_x5 0 $'on: push\n# environment: x .github/workflows/y.yml\njobs: {}'
+cb60_x5 0 $'on:\n  push:\n    branches: [main] # .github/workflows/x.yml\njobs: {}'
+cb60_x5 0 $'on: push\n# .github/workflows/x.yml\njobs:\n  u:\n    uses: ./.github/workflows/deploy.yml'
+cb60_x5 0 $'on: push\n# .github/workflows/x.yml\njobs:\n  t:\n    steps:\n      - run: gh workflow run deploy.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - uses: a/b@v1\n        with:\n          args:\n            - |\n              # .github/workflows/x.yml'
+cb60_x5 0 $'jobs:\n  t:\n    steps:\n      - run:\n          |\n            # .github/workflows/x.yml\n            true'
+cb60_x5 0 $'on: push\n# .github/workflows/x.yml\njobs:\n  t:\n    steps:\n      - run: cmd |'
+cb60_x5 0 $'name: \'a\n  b\'\n# .github/workflows/x.yml\non: push\njobs: {}'
+check "60b: X5 는 블록 스칼라 본문과 flow 밖의 YAML 주석 줄을 바닥에서 면제한다" "$cb60_x5fail" ""
 # 키 노드 속성과 문서 표지 — 앵커·태그가 붙은 키도 그 이름으로 읽고, `---` 줄의 flow 문서도 읽는다.
 cb60_x5fail=""
 cb60_x5 0 $'jobs:\n  d:\n    &e environment: prod'
@@ -49123,7 +49177,7 @@ graded_as '읽기'         '79v:visual-config.sh snapshot 은 읽기다'        
 for w79v in account models bans seed append; do
   graded_as '등급 미상'  "79v:visual-config.sh $w79v 는 등급 미상이다"        -- "$CC_ORCH/visual-config.sh" "$w79v"
 done
-for w79v in scan size approval bundle binding reuse; do
+for w79v in scan size approval bundle binding system reuse; do
   graded_as '읽기'       "79v:visual-check.sh $w79v 은 읽기다"                -- "$CC_ORCH/visual-check.sh" "$w79v" docs/x.md
 done
 graded_as '등급 미상'    '79v:모르는 visual-check.sh 하위 명령은 등급 미상이다' -- "$CC_ORCH/visual-check.sh" frob docs/x.md
@@ -60190,6 +60244,391 @@ check "104d: 옮긴 판독 함수는 두 파일을 통틀어 정의가 하나씩
 check "104d: 정의는 정리 파일 쪽에 있다" \
   "$( { grep -cE '^(gate_rows|gate_row_field|gate_pending_approval_ids)\(\)' "$WTC_SRC" || true; } )" "3"
 unset d104 c104 p104 f104 d104n
+
+# ---------------------------------------------------------------------------
+# 106. 결정 보조 — 승인 사이드카의 결정 보조, 교대 정지 리스크 줄, 기다리는 결정 도우미
+# --- section: 106 | group: ledger_series | covers: gate_approval_sidecar_write, gate_approval_sidecar_aid, gate_issue_judgment_approval, gate_issue_act_approval, gate_issue_boundary_approval, gate_judgment_aid_take, gate_emitted_judgment_fields, gate_absorb_emitted_judgment, gate_shift_halt_risks, gate_halt_recommendation, waiting-decisions | anchors: 106: 판단 승인 발행이 결정 보조를 쓴다, 106: 경계 다섯 이름의 발행이 그 경계의 결정 보조를 쓴다, 106: 교대 정지 리스크 라벨 집합이 선택지 라벨 집합과 같다, 106: 도우미의 승인 id 집합이 게이트의 대기 승인 집합과 같다 ---
+#
+# 아침 보고가 사람에게 내보이는 결정 보조는 승인을 발행하는 세 자리가 사이드카에 쓴 것이고,
+# 보고 도우미는 게이트의 판독 함수만으로 그것을 읽는다. 그래서 이 절은 한 픽스처 원장에서
+# 발행 자리가 결정 보조를 쓰되 승인 id·질문·행을 바꾸지 않는지, 판독이 결정 보조의 생김새에
+# 흔들리지 않는지, 도우미가 고른 결정과 질문이 게이트의 대기 승인·프롬프트와 같은지를 잰다.
+# 행을 손으로 붙이는 것(run 행, park 행)은 게이트 기록이 모두 끝난 뒤에만 한다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+l106=$(lsr_ledger w106)
+d106="${l106%/*}"
+b106="$lsr_root/base106"
+rm -rf "$b106"; mkdir -p "$b106/docs/pipeline-grant" "$d106/halt"
+: > "$b106/docs/pipeline-grant/LS.md"
+m106=$(lsr_rp_manifest "$lsr_root/m106.md")
+mh106="$lsr_root/m106h.md"
+printf '# 매니페스트\n<!-- cc-pipeline-manifest v1; run-id=LS;\n     origin-worktree=%s;\n-->\n' "$b106" > "$mh106"
+s106="$b106/docs/pipeline-approval/LS.md"
+WD106="$repo_root/plugins/cc-cmds/orchestrator/waiting-decisions.sh"
+
+in106_body() {
+  # 라우터 좌석, 자동 해소 꺼짐(a106=1 이면 켜짐), 이 절의 베이스·인가 기록·매니페스트.
+  BASE="$b106"; GRANT="$b106/docs/pipeline-grant/LS.md"; MANIFEST="$m106"
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE="${a106:-0}"; export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+  unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  gate_notify_approval() { :; }
+  "$@"
+}
+in106() { lsr_in - "$l106" - in106_body "$@"; }
+f106() { printf '%s\n' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | sed -n '1p'; }
+id106() {  # id106 <막는 세그먼트> — 그 세그먼트를 막는 마지막 승인 행의 id
+  f106 "$( { grep -F -e '- `승인` |' "$l106" || true; } | grep -F -e "| 막는 세그먼트=$1 |" | tail -1)" '승인 id'
+}
+idj106() { gate_judgment_approval_id "$1" "$(gate_judgment_question "$2" "$3")"; }
+take106() {
+  gate_judgment_aid_take '기준=a' "추천=$rec106" "선택지 리스크=$long106" '근거=b'
+  printf '%s|%s|%s' "${#GATE_JUDGMENT_AID_REST[@]}" "$GATE_JUDGMENT_AID_REC" \
+    "$([ "$GATE_JUDGMENT_AID_RISK" = "$long106" ] && printf 같음 || printf 다름)"
+}
+res106() {  # res106 <앞|뒤> <부류> <등급> <기준> <근거> — 선택 표지를 다섯 표지 앞이나 뒤에 둔 종단 메시지
+  local five opt t
+  five="**판단 부류**: $2 **판단 등급**: $3 **판단 기준**: $4 **판단 되돌리는 법**: git revert HEAD **판단 근거**: $5"
+  opt="**판단 추천**: $rec106 **판단 선택지 리스크**: $long106"
+  if [ "$1" = "앞" ]; then t="$opt $five"; else t="$five $opt"; fi
+  jq -cn --arg t "$t" '{type: "result", subtype: "success", is_error: false, result: $t}'
+}
+sh106() {  # 자리마다 리스크 줄의 라벨 집합과 선택지 라벨 집합을 대조하고 어긋난 자리를 낸다
+  local s o r v bad=''
+  while IFS='|' read -r s _; do
+    [ -n "$s" ] || continue
+    o=$(gate_shift_halt_options "$s" | sed -n 's/^- `\([^`]*\)` — .*/\1/p' | LC_ALL=C sort | tr '\n' ',')
+    v=$(gate_shift_halt_risks "$s")
+    r=$(printf '%s\n' "$v" | awk '{ gsub(/ \/ `/, "\n`"); print }' | sed -n 's/^`\([^`]*\)` — .*/\1/p' | LC_ALL=C sort | tr '\n' ',')
+    [ "$o" = "$r" ] || bad="$bad[$s:$o/$r]"
+    case "$v" in *'— 미기재'*) bad="$bad[$s:미기재]" ;; esac
+  done <<EOF
+$(gate_shift_halt_site_table)
+EOF
+  printf '%s' "$bad"
+}
+hr106() {  # hr106 <파일> <스텝> <리스크 줄|-> — 추천이 라벨인 정지 기록 하나
+  {
+    printf '<!-- cc-pipeline-halt v1; writer=stage; reader=orchestrator; stage=%s; run=LS -->\n' "$(basename "$1" .md)"
+    printf '**스킬**: implement-unattended\n**스텝**: %s\n**분류**: gate-unanswerable\n**질문 문면**: 계속할까요\n**선택지**:\n' "$2"
+    printf -- '- `계속` — 다음 단계로 갑니다\n- `중단` — 세그먼트를 park 합니다\n'
+    printf '**추천**: `계속` — 상시 지침\n**추천 근거**: 상시 지침: 계속한다\n'
+    [ "$3" = "-" ] || printf '**선택지 리스크**: %s\n' "$3"
+    printf '**하네스 오류**: (없음)\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$1"
+}
+recq106() { local rc=0; gate_halt_recommendation "$1" >/dev/null 2>&1 || rc=$?; printf '%s:%s' "$rc" "${GATE_HALT_REC_LABEL:-}"; }
+auto106() {
+  gate_halt_auto_answer_current S106H "$1" >/dev/null 2>&1 && gate_halt_recommendation "$1" >/dev/null 2>&1 \
+    && printf 'halt/S106H#1.md '
+}
+
+# 판단 승인 — 결정 보조를 쓰고, 질문 읽기와 재발행은 그대로다.
+rec106='`승인` — 상시 지침이 재파견을 정한다'
+risk106='`승인` — 같은 계획으로 한 번 더 돈다 / `거부` — 이 세그먼트가 park 된다'
+long106="\`승인\` — $(printf '아주 긴 리스크 문장입니다 %.0s' $(seq 1 80)) / \`거부\` — 짧다"
+# 부류는 세그먼트 행을 요구하지 않는 것을 쓴다 — 사람이 정하는 부류는 원장에 세그먼트 행이
+# 있어야 열리고, 이 절의 손으로 붙이는 행은 게이트 기록이 끝난 뒤에만 온다.
+in106 gate_issue_judgment_approval cc-cmds S106J '기준 J' '근거 J' 문서-신선도 라우터 "$rec106" "$risk106" >/dev/null 2>&1 || true
+j106=$(id106 S106J)
+check "106: (선행) 판단 승인 행이 쓰였다" "$j106" "$(in106 idj106 S106J '기준 J' '근거 J' 2>/dev/null)"
+aj106=$(in106 gate_approval_sidecar_aid "$j106" 2>/dev/null)
+check "106: 판단 승인 발행이 결정 보조를 쓴다" \
+  "$(printf '%s\n' "$aj106" | grep -c -x -F -e '**추천**: `승인`' -e '**추천 근거**: 상시 지침이 재파견을 정한다' -e "**선택지 리스크**: $risk106" || true)" "3"
+check "106: 결정 보조는 질문 읽기를 바꾸지 않는다" "$(in106 gate_approval_sidecar_question "$j106" 2>/dev/null)" "기준 J — 근거 J"
+sha106=$(lsr_sha "$s106")
+in106 gate_issue_judgment_approval cc-cmds S106J '기준 J' '근거 J' 문서-신선도 라우터 '`거부` — 다른 추천' '`거부` — 다른 리스크' >/dev/null 2>&1 || true
+check "106: 같은 판단의 재발행은 사이드카를 바꾸지 않는다" "$(lsr_sha "$s106")" "$sha106"
+check "106: 재발행 뒤에도 그 세그먼트의 승인 행은 하나다" \
+  "$( { grep -F -e '- `승인` |' "$l106" || true; } | grep -c -F -e '| 막는 세그먼트=S106J |')" "1"
+
+# 행위 승인 — 행위 줄에는 프로그램 이름만, `무효` 리스크는 좌석 질문에 그 갈래가 없다고 말한다.
+in106 gate_issue_act_approval t S106A 커밋 G3 'git push origin s3cr3t-106' >/dev/null 2>&1 || true
+ai106=$(id106 S106A)
+aa106=$(in106 gate_approval_sidecar_aid "$ai106" 2>/dev/null)
+check "106: 행위 승인 발행이 결정 보조를 쓰고 행위 줄에는 프로그램 이름만 있다" \
+  "$(printf '%s\n' "$aa106" | sed -n 's/^\*\*행위\*\*: //p')" "git · 대상 t"
+check "106: 행위 인자는 사이드카 어디에도 없다" "$(grep -c -F 's3cr3t-106' "$s106" || true)" "0"
+check "106: 행위 승인 무효 리스크는 좌석 질문에 그 갈래가 없다고 말한다" \
+  "$(printf '%s\n' "$aa106" | sed -n 's/^\*\*선택지 리스크\*\*: //p' | awk '{ n = split($0, p, / \/ `/); print p[n] }' | grep -c -F -e '무효` — ' | tr -d ' ')|$(printf '%s\n' "$aa106" | grep -c -F '좌석 질문에 없습니다' || true)" "1|1"
+
+# 경계 승인 — 다섯 이름을 직접 발행한다.
+bm106=""
+for n106 in B1 B2 B3 B4 SHIFT-FLOOR; do
+  in106 gate_issue_boundary_approval "$n106" "경계 $n106 질문" "bind106-$n106" >/dev/null 2>&1 || true
+  i106=$(f106 "$( { grep -F -e '- `승인` |' "$l106" || true; } | grep -F -e "| 구속 튜플=$n106/" | tail -1)" '승인 id')
+  ba106=$(in106 gate_boundary_approval_aid "$n106" 2>/dev/null)
+  if [ -z "$i106" ] || [ "$(in106 gate_approval_sidecar_aid "$i106" 2>/dev/null)" != "$ba106" ]; then bm106="$bm106 $n106"; fi
+  case "$(printf '%s\n' "$ba106" | sed -n 's/^\*\*선택지 리스크\*\*: //p')" in
+    '`승인` — '*' / `거부` — '*' / `무효` — '*'좌석 질문에 없습니다'*) : ;;
+    *) bm106="$bm106 $n106(리스크)" ;;
+  esac
+done
+check "106: 경계 다섯 이름의 발행이 그 경계의 결정 보조를 쓴다" "$bm106" ""
+
+# 판독의 내성 — `## 승인` 줄과 긴 백틱 열을 든 결정 보조, 답변 뒤 유지, sha256 불일치.
+odd106=$(printf '**선택지**:\n## 승인 가짜-106\n`````` 긴 백틱 열\n**추천**: (없음) — x')
+in106 gate_approval_sidecar_write X106 issue '질문' '내성 질문' "$odd106" >/dev/null 2>&1 || true
+check "106: 결정 보조 판독은 ## 승인 줄과 긴 백틱 열을 견딘다" "$(in106 gate_approval_sidecar_aid X106 2>/dev/null)" "$odd106"
+check "106: 그 블록의 질문 읽기도 그대로다" "$(in106 gate_approval_sidecar_question X106 2>/dev/null)" "내성 질문"
+check "106: 다른 블록의 결정 보조는 흔들리지 않는다" "$(in106 gate_approval_sidecar_aid "$j106" 2>/dev/null)" "$aj106"
+in106 gate_approval_sidecar_write "$j106" answer '답변' '승인' >/dev/null 2>&1 || true
+check "106: 답변을 쓴 뒤에도 결정 보조가 그대로다" "$(in106 gate_approval_sidecar_aid "$j106" 2>/dev/null)" "$aj106"
+cp "$s106" "$s106.keep"
+awk '{ if ($0 == "**추천 근거**: 상시 지침이 재파견을 정한다") print "**추천 근거**: 바뀐 근거"; else print }' "$s106.keep" > "$s106"
+rc106=0; in106 gate_approval_sidecar_aid "$j106" >/dev/null 2>&1 || rc106=$?
+check "106: 결정 보조가 sha256 과 어긋나면 2 로 실패한다" "$rc106" "2"
+mv "$s106.keep" "$s106"
+
+# 판단 act 의 두 키와 스테이지 방출의 두 선택 표지.
+check "106: 두 키는 act 인자에서 빠지고 결정 보조로만 간다" "$(in106 take106 2>/dev/null)" "2|$rec106|같음"
+a106=1 in106 gate_absorb_emitted_judgment cc-cmds S106R "$(res106 뒤 문서-신선도 2 '채택 기준 R' '채택 근거 R')" design >/dev/null 2>&1 || true
+ad106=$( { grep -F -e '- `자율 승인` |' "$l106" || true; } | grep -F -e '| 세그먼트=S106R |' | tail -1)
+check "106: (선행) 긴 선택지 리스크를 실은 방출이 자율 승인으로 채택됐다" "$([ -n "$ad106" ] && printf 있음 || printf 없음)" "있음"
+check "106: 자율 승인 행에는 두 키가 없다" "$(printf '%s\n' "$ad106" | grep -c -e '추천=' -e '선택지 리스크=' -e '아주 긴 리스크' || true)" "0"
+em106=""
+for p106 in 앞:S106EA 뒤:S106EB; do
+  o106=${p106%%:*}; g106=${p106#*:}
+  in106 gate_absorb_emitted_judgment cc-cmds "$g106" "$(res106 "$o106" 문서-신선도 2 "방출 기준 $g106" "방출 근거 $g106")" design >/dev/null 2>&1 || true
+  e106=$(in106 gate_approval_sidecar_aid "$(id106 "$g106")" 2>/dev/null)
+  if grep -q -x -F -e '**추천**: `승인`' <<<"$e106" \
+     && grep -q -x -F -e "**선택지 리스크**: $long106" <<<"$e106"; then :; else em106="$em106 $o106"; fi
+done
+check "106: 선택 표지를 다섯 표지 앞에 두든 뒤에 두든 결정 보조가 된다" "$em106" ""
+
+# 긴 질문(발췌 상한을 넘는 기준)의 판단 승인 — 도우미의 질문 줄 대조에 쓴다.
+lq106=$(printf '아주 긴 기준 문면입니다 %.0s' $(seq 1 40))
+in106 gate_issue_judgment_approval cc-cmds S106L "$lq106" '긴 근거' 문서-신선도 라우터 >/dev/null 2>&1 || true
+
+# 교대 정지 기록의 리스크 줄, 그리고 리스크 줄이 좌석의 추천 검사를 바꾸지 않는다는 것.
+check "106: 교대 정지 리스크 라벨 집합이 선택지 라벨 집합과 같다" "$(in106 sh106 2>/dev/null)" ""
+hr106 "$lsr_root/S106P#1.md" 'Step 3 검사' '`계속` — 시간이 듭니다 / `중단` — 일이 빠집니다'
+hr106 "$lsr_root/S106Q#1.md" 'Step 3 검사' -
+check "106: (선행) 리스크 줄 없는 기록의 추천 검사가 통과한다" "$(in106 recq106 "$lsr_root/S106Q#1.md" 2>/dev/null)" "0:계속"
+check "106: 리스크 줄이 있든 없든 좌석의 추천 검사 결과가 같다" \
+  "$(in106 recq106 "$lsr_root/S106P#1.md" 2>/dev/null)" "$(in106 recq106 "$lsr_root/S106Q#1.md" 2>/dev/null)"
+
+# 도우미 — 게이트 기록이 끝난 뒤 run 행과 두 park 를 손으로 붙인다.
+hr106 "$d106/halt/S106H#1.md" 'Step 3 검사' '`계속` — 시간이 듭니다 / `중단` — 일이 빠집니다'
+hr106 "$d106/halt/S106S#1.md" 'Step 3 잔여 검증 좌석 실행' -
+for k106 in S106H S106S; do
+  printf -- '- `segment` | id=%s | 상태=park | prev=x\n- `stage-result` | 세그먼트=%s | 스테이지=%s | 실행 버전=1 | 종단 부류=의도된 park | prev=x\n' \
+    "$k106" "$k106" "$k106" >> "$l106"
+done
+printf -- '- `run` | run-id=LS | RUN_DIR=%s | prev=x\n' "$d106" >> "$l106"
+out106=$(bash "$WD106" report "$mh106" "$l106" LS 2>/dev/null); orc106=$?
+check "106: (선행) 도우미가 exit 0 으로 끝난다" "$orc106" "0"
+hid106=$(printf '%s\n' "$out106" | sed -n 's/^\[승인 \([^]]*\)\].*/\1/p' | LC_ALL=C sort | tr '\n' ' ')
+gid106=$(in106 gate_pending_approvals_json 2>/dev/null | { printf '['; cat; printf ']'; } | jq -r '.[].id' 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')
+check "106: (선행) 게이트의 대기 승인이 비어 있지 않다" "$([ -n "$gid106" ] && printf 있음 || printf 없음)" "있음"
+check "106: 도우미의 승인 id 집합이 게이트의 대기 승인 집합과 같다" "$hid106" "$gid106"
+qm106=""
+for i106 in $gid106; do
+  want106="질문: $(in106 gate_prompt "$i106" 2>/dev/null | jq -r '.question' 2>/dev/null)"
+  got106=$(printf '%s\n' "$out106" | awk -v h="[승인 $i106]" 'index($0, h) == 1 { on = 1; next } on && /^질문: / { print; exit }')
+  [ "$got106" = "$want106" ] || qm106="$qm106 $i106"
+done
+check "106: 도우미의 질문 줄이 게이트 프롬프트의 질문과 같다" "$qm106" ""
+check "106: 400 바이트를 넘는 질문도 전문으로 나온다" "$(printf '%s\n' "$out106" | grep -c -F -e "$lq106 — 긴 근거" || true)" "1"
+check "106: 정지 기록 집합은 좌석 실행 스텝을 뺀 가리킨 기록이다" \
+  "$(printf '%s\n' "$out106" | sed -n 's/^\[정지 기록 \([^]]*\)\].*/\1/p' | LC_ALL=C sort | tr '\n' ' ')" "halt/S106H#1.md "
+am106=$(printf '%s\n' "$out106" | awk '/^\[정지 기록 / { r = $3; sub(/\]$/, "", r) } /^자동 답 대상 — / { printf "%s ", r }')
+check "106: (선행) 자동 답 표지가 하나 이상이다" "$([ -n "$am106" ] && printf 있음 || printf 없음)" "있음"
+check "106: 자동 답 표지 집합은 자동 답 두 판정을 통과한 기록이다" "$am106" "$(in106 auto106 "$d106/halt/S106H#1.md" 2>/dev/null)"
+# 런의 고정 사본은 플러그인 디렉터리 전체다 — 게이트는 오케스트레이터 밖의 형제 파일도 읽는다.
+pin106="$lsr_root/pin106"; rm -rf "$pin106"; mkdir -p "$pin106"
+cp -R "$repo_root/plugins/cc-cmds" "$pin106/"
+check "106: 고정 사본에서 돌린 도우미의 출력이 같다" \
+  "$(diff <(bash "$pin106/cc-cmds/orchestrator/waiting-decisions.sh" report "$mh106" "$l106" LS 2>/dev/null) <(printf '%s\n' "$out106") || true)" ""
+rm -rf "$pin106"
+unset l106 d106 b106 m106 mh106 s106 WD106 rec106 risk106 long106 j106 aj106 sha106 ai106 aa106 bm106 n106 i106 ba106 \
+  odd106 rc106 ad106 em106 p106 o106 g106 e106 lq106 out106 orc106 hid106 gid106 qm106 want106 got106 am106 pin106 k106
+
+# ---------------------------------------------------------------------------
+# 107. 다른 대상 워크트리의 세션 — 검사 3 의 허용 집합, admit 의 이동 거부, 산출물 없는 리뷰의 종단 부류
+# --- section: 107 | group: tguard | covers: check_manifest, admit, gate_record_stage_outcome, gate_continuation_argv | anchors: 107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다, 107:두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다, 107:두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다, 107:선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다, 107:git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다, 107:홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다, 107:대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다, 107:리포트 없는 리뷰는 공허한 성공이다, 107:정규 경로 리포트가 있는 리뷰는 정상 완료다, 107:-r2 경로 리포트가 있는 리뷰는 정상 완료다, 107:닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다, 107:부분 복구 머리만 있는 리뷰는 정상 완료다, 107:두 종결 줄이 없는 초기 스텁 리포트의 리뷰는 공허한 성공이다, 107:공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다, 107:부분 복구 리뷰는 이어가기 메시지에 닿지 않는다 ---
+#
+# 세계는 이 절이 스스로 만든다: 홈 레포 H 와 그 링크된 워크트리, 두 번째로
+# 선언된 대상 레포 B 와 그 링크된 워크트리, 선언되지 않은 레포 U, git 저장소가
+# 아닌 디렉터리 N. 두 대상의 원격은 저마다 맨 저장소로 돌려, 스냅숏이 원격을
+# 읽어도 다이제스트가 움직이지 않는다. 쓰는 헬퍼는 머리의 `pre_tguard` 것뿐이다.
+# ---------------------------------------------------------------------------
+S106="$WORK/s106"; mkdir -p "$S106/bin" "$S106/N"
+S106=$(cd -P "$S106" && pwd)
+TG="$S106"; TG_A="$S106/H"; TG_RUN=RT106; TG_STATE="$S106/state"
+TG_RD="$TG_STATE/cc-cmds/run/$TG_RUN"; TG_M="$TG_A/plan.md"
+TG_L="$TG_A/docs/pipeline-run/$TG_RUN.md"; TG_GR="$TG_A/docs/pipeline-grant/$TG_RUN.md"
+TG_CALLER='S106#1'; TG_PD="$TG_A"
+cat > "$S106/bin/gh" <<S106GH
+#!/bin/sh
+case "\$*" in *"pr list"*) echo "[]" ;; *) exit 0 ;; esac
+S106GH
+chmod +x "$S106/bin/gh"
+TG_ENV_BASE=(XDG_STATE_HOME="$TG_STATE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE= GIT_ALLOW_PROTOCOL=file
+             CC_REMOTE_GH="$S106/bin/gh" PATH="$S106/bin:$PATH")
+TG_ENV=("${TG_ENV_BASE[@]}" GIT_CONFIG_COUNT=2
+        "GIT_CONFIG_KEY_0=url.$S106/h.git.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/t/h.git
+        "GIT_CONFIG_KEY_1=url.$S106/b.git.insteadOf" GIT_CONFIG_VALUE_1=https://github.com/t/b.git)
+for r106 in h:H b:B; do
+  a106=${r106%%:*}; d106="$S106/${r106#*:}"
+  git init -q --bare "$S106/$a106.git"
+  tgf_repo "$d106"
+  ( cd "$d106" && git remote add origin "https://github.com/t/$a106.git" \
+      && env "${TG_ENV[@]}" git push -q origin master \
+      && git worktree add -q -b "seg/$a106" "$d106-wt" ) >/dev/null 2>&1
+done
+tgf_repo "$S106/U"
+tg_manifest "$TG_M" "$TG_RUN" PR "$TG_A" "$(tg_target_row h "$TG_A" 예 PR)" "$(tg_target_row b "$S106/B" 아니오 PR)"
+tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target h --segment SH --cutpoint 커밋 \
+  --snapshot-digest "$(tg_H)" --rationale x -- 상태=실행중 "워크트리=$S106/H-wt" 브랜치=seg/h 선행=없음
+r106_sh=$rc
+tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target b --segment SB --cutpoint 커밋 \
+  --snapshot-digest "$(tg_H)" --rationale x -- 상태=실행중 "워크트리=$S106/B-wt" 브랜치=seg/b 선행=없음
+check "107:두 대상의 세그먼트 행이 기록된다 (아래 단언의 전제)" "$r106_sh|$rc" "0|0"
+
+# 단언 1 — 두 번째 대상의 링크된 워크트리는 허용 집합 안이다.
+s106_home=$(tg_snap | jq -S . 2>/dev/null)
+s106_b=$( ( cd "$S106/B-wt" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -S . 2>/dev/null)
+if [ -n "$s106_home" ] && [ "$s106_home" = "$s106_b" ]; then
+  ok "107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다"
+else
+  bad "107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다" \
+    "$(diff <(printf '%s\n' "$s106_home") <(printf '%s\n' "$s106_b") | sed -n '1,20p' | tr '\n' ' ')"
+fi
+tg_g "$S106/B-wt" exec --manifest "$TG_M" --target b --segment SB --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale x -- ls
+check "107:두 번째 대상의 링크된 워크트리에서 낸 exec 는 통과한다" "$rc" "0"
+tg_hook "git status" "$S106/B-wt"
+tg_g "$S106/B-wt" admit --request last --manifest "$TG_M" --target b --segment SB --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale x
+check "107:두 번째 대상의 링크된 워크트리에서 낸 admit 은 표를 낸다" \
+  "$rc|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)" "0|표"
+
+# 단언 2 — 선언되지 않은 레포와 git 저장소가 아닌 디렉터리는 여전히 거부된다.
+for d106 in U N; do
+  tg_g "$S106/$d106" snapshot --manifest "$TG_M"
+  r106_snap="$rc"; m106_snap="$msg"
+  tg_g "$S106/$d106" exec --manifest "$TG_M" --target h --segment SH --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest x --rationale x -- ls
+  case "$r106_snap|$rc|$m106_snap|$msg" in
+    0\|*|*\|0\|*) n106=rc ;;
+    *"선언된 어느 대상의 레포도 아닙니다"*"--target 으로 지목하세요"*"선언된 어느 대상의 레포도 아닙니다"*) n106=ok ;;
+    *) n106=문면 ;;
+  esac
+  if [ "$d106" = U ]; then t106="107:선언되지 않은 레포에서 낸 호출은 새 문면으로 거부된다"
+  else t106="107:git 저장소가 아닌 디렉터리에서 낸 호출은 새 문면으로 거부된다"; fi
+  if [ "$n106" = ok ]; then ok "$t106"; else bad "$t106" "$n106: snapshot rc=$r106_snap '$m106_snap' / exec rc=$rc '$msg'"; fi
+done
+
+# 단언 3 — 홈에서 낸 이동 요청. 선언된 대상 안으로의 이동은 등급으로 넘어가 표를
+# 받고, 밖으로의 이동과 목적지를 낱말만으로 정할 수 없는 이동은 등급 전에 rc 2 다.
+rm -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")"
+tg_hook "cd $S106/B-wt" "$TG_A"
+tg_g "$TG_A" admit --request last --manifest "$TG_M" --target h --segment SH --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale x
+check "107:홈에서 admit 한 cd 두 번째 대상 워크트리는 표를 받는다" \
+  "$rc|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)" "0|표"
+n106_rows=$(grep -c . "$TG_L" 2>/dev/null || printf '0')
+g106=""
+for c106 in "cd $S106/U" "cd $S106/N" "pushd $S106/U" cd 'cd $X' popd "cd $S106/없는-디렉터리"; do
+  tg_hook "$c106" "$TG_A"
+  tg_g "$TG_A" admit --request last --manifest "$TG_M" --target h --segment SH --surface 읽기 \
+    --snapshot-digest "$(tg_H)" --rationale x
+  [ "$rc" = 2 ] || g106="$g106 [$c106 → rc=$rc: $(printf '%s' "$msg" | tail -n 2 | tr '\n' ' ')]"
+done
+check "107:대상 밖으로 옮기는 cd·pushd·popd 는 rc 2 이고 원장 행이 늘지 않는다" \
+  "${g106:-없음}|$(grep -c . "$TG_L" 2>/dev/null || printf '0')" "없음|$n106_rows"
+tg_hook "cd $S106/U" "$TG_A"
+tg_g "$TG_A" admit --request last --manifest "$TG_M" --target h --segment SH --surface 읽기 \
+  --snapshot-digest "$(tg_H)" --rationale x
+case "$msg" in
+  *"선언된 대상 밖으로 옮겨"*"--target <별칭> --segment <세그먼트>"*) ok "107:그 거부는 갇히는 까닭과 머문 채 읽는 형태를 든다" ;;
+  *) bad "107:이동 거부 문면" "$msg" ;;
+esac
+
+# 단언 4·5 — 리뷰 시도의 종단 부류. 시도마다 세그먼트를 따로 두어 서로의 리포트와
+# 기록을 보지 않는다. 각 시도는 종료 코드 0, 스테이지 행 하나다. 리포트 경로는
+# 게이트에 묻지 않고 매니페스트의 두 단 위 기준과 사이클 1 로 여기서 센다.
+s106_base=$(dirname "$S106")
+s106_rp() { printf '%s/docs/reviews/seg-%s-%s-cycle1%s.md' "$s106_base" "$TG_RUN" "$1" "${2:+-r$2}"; }
+s106_outcome() {  # s106_outcome <seg> <없음|정규|r2|중단|복구|스텁>
+  local rp
+  rp=$(s106_rp "$1")
+  case "$2" in
+    정규|r2)
+      [ "$2" = 정규 ] || rp=$(s106_rp "$1" 2)
+      mkdir -p "$(dirname "$rp")"
+      printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' > "$rp" ;;
+    복구)
+      # 위젯·라운드가 모자란 복구가 정규 줄 대신 쓰는 부분 복구 머리만 있다.
+      mkdir -p "$(dirname "$rp")"
+      printf '# 리뷰\n\n<!-- cc-design-ledger v3\n- a1 | done\n-->\n\n- **발견 요약(부분 복구)**: 🔴 P0 미상 | 🟠 P1 미상 | 🟡 P2 미상 | 🟢 P3 미상\n- **P1 분류**: 차단 미상 | 이월 가능 미상\n' > "$rp" ;;
+    스텁)
+      # 첫 팀원을 띄울 때 쓰는 초기 스텁: 제목과 원장 블록뿐, 종결 줄은 둘 다 없다.
+      mkdir -p "$(dirname "$rp")"
+      printf '# 리뷰\n\n<!-- cc-design-ledger v3\n- a1 | running\n-->\n' > "$rp" ;;
+  esac
+  ( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" </dev/null >/dev/null 2>&1
+    MANIFEST="$2"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    mkdir -p "$RUN_DIR/log" "$RUN_DIR/halt"
+    printf "1\n" > "$RUN_DIR/$3.attempt"
+    printf "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.1,\"session_id\":\"s-106\",\"num_turns\":5}\n" \
+      > "$RUN_DIR/log/$3#1.json"
+    [ "$4" != 중단 ] || printf "# 파이프라인 중단 기록\n\n**분류**: gate-unanswerable\n**스텝**: 리뷰\n" > "$(halt_record_path "$3")"
+    nb=$(wc -l < "$LEDGER" | tr -d " ")
+    printf -- "- \`자율 승인\` | kind=skill | 결정=act | 대상=h | 세그먼트=%s | 절단점=커밋 | 축2=읽기 | 자격=주변 | 행위자=스테이지 | 근거=픽스처 | prev=x\n" "$3" >> "$LEDGER"
+    gate_record_stage_outcome h "$3" review 1 0 "$nb" "$RUN_DIR/log/$3#1.json" >/dev/null 2>&1
+  ' _ "$GATE" "$TG_M" "$1" "$2" )
+  grep '^- `stage-result` ' "$TG_L" | { grep -F "세그먼트=$1 " || true; } | tail -1 \
+    | sed -n 's/.*| 종단 부류=\([^|]*\) |.*/\1/p'
+}
+check "107:리포트 없는 리뷰는 공허한 성공이다" "$(s106_outcome SRA 없음)" "공허한 성공"
+check "107:정규 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRB 정규)" "정상 완료"
+check "107:-r2 경로 리포트가 있는 리뷰는 정상 완료다" "$(s106_outcome SRC r2)" "정상 완료"
+check "107:닫는 울타리 없는 중단 기록만 있는 리뷰는 공허한 성공이다" "$(s106_outcome SRD 중단)" "공허한 성공"
+check "107:부분 복구 머리만 있는 리뷰는 정상 완료다" "$(s106_outcome SRE 복구)" "정상 완료"
+check "107:두 종결 줄이 없는 초기 스텁 리포트의 리뷰는 공허한 성공이다" "$(s106_outcome SRF 스텁)" "공허한 성공"
+c106=$( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$1" </dev/null >/dev/null 2>&1
+  MANIFEST="$2"
+  check_manifest >/dev/null 2>&1
+  derive_paths_from_manifest
+  rundir_init 2>/dev/null || true
+  GATE_RESUME=s-106
+  r=0; gate_continuation_argv SRA review review -p "원래 프롬프트" 2>/dev/null || r=$?
+  printf "%s\n" "$r"
+  [ "$r" != 0 ] || { i=0; for a in "${GATE_CONTINUE_ARGV[@]}"; do [ "$i" = 1 ] && printf "%s\n" "$a"; [ "$a" = -p ] && i=1 || i=0; done; }
+' _ "$GATE" "$TG_M" )
+case "$c106" in
+  0*"이 사이클의 리뷰 리포트($(s106_rp SRA))에 \`발견 요약\` 줄이 없고 정지 기록도 없다"*)
+    ok "107:공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다" ;;
+  *) bad "107:공허한 리뷰의 계속 메시지는 리뷰 리포트 문면을 싣는다" "$c106" ;;
+esac
+case "$c106" in
+  *"게이트를 거친 행위도 정지 기록도 없다"*) bad "107:리뷰 계속 메시지" "기본 문면이 갔다: $c106" ;;
+  *) ok "107:그 메시지는 행위가 없다는 기본 문면을 싣지 않는다" ;;
+esac
+# 부분 복구 리뷰는 공허한 성공이 아니므로 같은 세션 재개가 이어가기가 되지 않는다:
+# 반환 0, GATE_CONTINUED 빈 값, 계속 argv 를 만들지 않는다.
+c106=$( cd "$TG_A" && env "${TG_ENV[@]}" CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$1" </dev/null >/dev/null 2>&1
+  MANIFEST="$2"
+  check_manifest >/dev/null 2>&1
+  derive_paths_from_manifest
+  rundir_init 2>/dev/null || true
+  GATE_RESUME=s-106
+  GATE_CONTINUE_ARGV=()
+  r=0; gate_continuation_argv SRE review review -p "원래 프롬프트" 2>/dev/null || r=$?
+  printf "%s|%s|%s\n" "$r" "${GATE_CONTINUED:-}" "${#GATE_CONTINUE_ARGV[@]}"
+' _ "$GATE" "$TG_M" )
+check "107:부분 복구 리뷰는 이어가기 메시지에 닿지 않는다" "$c106" "0||0"
+rm -rf "$s106_base/docs/reviews/seg-$TG_RUN-"*
+unset -f s106_rp s106_outcome
+unset S106 r106 a106 d106 r106_sh s106_home s106_b r106_snap m106_snap n106 t106 n106_rows g106 c106 s106_base
 
 # --- epilogue-begin ---
 #
