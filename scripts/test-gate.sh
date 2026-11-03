@@ -5732,7 +5732,8 @@ pre_ledger_series() {
     # 원인에만 값이다. `비용`·`비용 출처` 는 `까지` 와 함께 값이거나 함께 `-` 다.
     local r acct g u c cs
     for r in group-exhausted no-room unknown-concurrency fifo-yield \
-             resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention; do
+             resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention \
+             lease-hold-busy lease-hold-lost; do
       case "$r" in resume-bound-*) acct='acct-a' ;; *) acct='-' ;; esac
       for g in - org:0123456789abcdef acct:acct-b; do
         for u in 2026-09-27T01:02:03Z -; do
@@ -59164,6 +59165,221 @@ check "98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO �
   "0|WAIT|resume|bound|wait,resume,u1|424242|11|11"
 check "98: 그 파견의 stage-wait 행은 하나이고 차용 중 재개 대기다" \
   "$(lsr93_n "$h98_lw" '- `stage-wait` ')/$(lsr93_n "$h98_lw" '| 근거=resume-bound-borrowed |')" "1/1"
+
+# ---------------------------------------------------------------------------
+# 98h. 감독자의 임대 확보 — 잠금 경합·잃은 임대의 원인 행, wait 20, 끝난 런의 임대 정리
+# --- section: 98h | group: ledger_series | covers: gate_sup_lease_secure, gate_sup_lease_fail, gate_verb_supervise_stage, gate_verb_wait, gate_lease_sweep_tick, gate_launch_route, gate_end_run, route_lease_sweep_done, autopilot-router-shift | needs: 75 | anchors: 98h: 잠금이 보유 총예산 내내 바쁘면 감독자는 rc 3 으로 끝나고 기동하지 않는다, 98h: 그 끝은 lease-hold-busy 원인 행 하나를 남긴다, 98h: wait 은 그 시도를 rc 20 자원 대기로 읽는다, 98h: stale 임대의 감독자는 lease-hold-lost 원인 행을 남기고 임대를 되살리지 않는다, 98h: act 의 보유가 rc 3 이어도 감독자의 확보가 보유자 목록에 오른다, 98h: 보유 오류 rc 4 는 blocked 행을 남기고 wait 은 16 이다, 98h: done 기록이 그 런의 임대를 지운다, 98h: 첫 훑기는 끝난 런의 사망 보유자 기록만 지운다, 98h: carry 파견도 훑기 자리를 지난다, 98h: 교대 규약의 Exit codes 표에 20 from wait 행이 있다 ---
+#
+# 감독자 전체를 띄우지 않고, 감독자가 기동 앞에서 부르는 확보·실패 처분 두 함수를 절 75 의
+# 사본 자식에서 진짜 임대 동사로 부른다(임대 표 루트와 상태 루트는 픽스처 아래로 돌리고,
+# 반납만 절 75 의 기록 스텁이다). 잠금 경쟁자는 살아 있는 소유자를 적은 `.lock` 이고, 대기
+# 예산은 시험 전용 이음매로 1~3초로 줄인다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+sleep 300 >/dev/null 2>&1 &
+h98h_hold=$!
+sh -c 'exit 0' &
+h98h_dead=$!
+wait "$h98h_dead" 2>/dev/null || true
+h98h_xdg="$lsr_root/xdg98h"; rm -rf "$h98h_xdg"
+h98h_in() {  # h98h_in <pace 루트> <원장> <명령…> — 임대 표·상태 루트를 돌린 사본 자식에서 한 명령
+  local p="$1" l="$2"; shift 2
+  XDG_STATE_HOME="$h98h_xdg" RUN_PACE_ROOT="$p" lsr75_in "$l" "${H98H_ENV:-}" '' "$@"
+}
+h98h_c_lease() {  # h98h_c_lease <run> <계보> <nonce> <grant|wait> <pid> [지문] — 자식에서 임대 기록 하나
+  local t k fp rec
+  t="$(run_pace_root)/leases"; mkdir -p "$t"
+  fp=${6:-$(route__fp "$5")}
+  k=$(route__key "$1" "$2") || return 1
+  rec=$(jq -cn --arg s "$ROUTE_LEASE_SCHEMA" --arg kind "$4" --arg run "$1" --arg lin "$2" --arg n "$3" \
+          --argjson pid "$5" --arg fp "$fp" --argjson now "$(date -u +%s)" \
+    '{schema: $s, kind: $kind, run_id: $run, lineage: $lin, nonce: $n, seq: 1, account: "u1",
+      config_dir: "/h/.claude-u1", holders: [{pid: $pid, fp: $fp}], granted_at_epoch: $now}
+     + (if $kind == "grant" then {reservation_bp: {five_hour: 100, seven_day: 100},
+          admitted_as: "known", basis: "first", observed: "tracker@1"} else {} end)') || return 1
+  route__lease_put "$t" "$k" "$rec"
+}
+h98h_c_fail() {  # h98h_c_fail <키> <계보> <nonce> — 확보의 rc 와 실패 처분의 rc 를 「확보|처분」 으로
+  local hrc=0 r=0
+  gate_sup_lease_secure "$2" "$3" || hrc=$?
+  [ "$hrc" = 0 ] || { gate_sup_lease_fail infra "$1" implement 1 "$2" "$3" "" "$hrc" >/dev/null 2>&1 || r=$?; }
+  printf '%s|%s' "$hrc" "$r"
+}
+h98h_c_wait() {  # h98h_c_wait <키> — wait 의 마지막 줄과 rc
+  local r=0 out
+  GATE_SETTLED_SEGMENTS=""
+  out=$(gate_verb_wait "$1" 300 5 2>/dev/null) || r=$?
+  printf '%s|rc=%s' "$(printf '%s\n' "$out" | tail -1)" "$r"
+}
+export -f h98h_c_lease h98h_c_fail h98h_c_wait
+h98h_lock() {  # h98h_lock <pace 루트> — 살아 있는 소유자를 적은 임대 표 잠금
+  mkdir -p "$1/leases/.lock"
+  printf '%s\n%s\n' "$h98h_hold" "$h98h_hold_fp" > "$1/leases/.lock/owner"
+}
+h98h_files() {  # h98h_files <런 디렉터리> <키> — 남은 신원 파일과 핀
+  local d="$1" k="$2" f s=""
+  for f in sup sup.start launch launch.taken waiting pid attempt; do
+    [ -e "$d/$k.$f" ] && s="$s $f"
+  done
+  printf '%s' "${s# }"
+}
+h98h_seed() {  # h98h_seed <런 디렉터리> <키> — 감독자 실패 앞의 파견 기록(핀·선점·신원·토큰)
+  printf '1\n' > "$1/$2.attempt"; : > "$1/$2.attempt.1"
+  printf '4242\n' > "$1/$2.sup"; printf 'x\n' > "$1/$2.sup.start"
+  : > "$1/$2.launch.taken"; : > "$1/$2.launch"
+}
+h98h_list() {  # h98h_list <pace 루트> — 표에 남은 「run_id/계보」 를 정렬해 한 줄로
+  { jq -r '.run_id + "/" + .lineage' "$1"/leases/*.lease 2>/dev/null || true; } | LC_ALL=C sort | paste -sd' ' -
+}
+h98h_GRANT='{"verdict":"GRANT","nonce":"g98h","account":"u1","config_dir":"/h/.claude-u1","basis":"first"}'
+
+# 잠금 경합 — 확보 총예산(보유 예산 1초의 두 배) 내내 잠금이 바쁘다.
+h98h_pb="$lsr_root/pace98h-b"; rm -rf "$h98h_pb"
+h98h_lb=$(lsr75_new h98hb); h98h_db="${h98h_lb%/*}"
+h98h_hold_fp=$(h98h_in "$h98h_pb" "$h98h_lb" route__fp "$h98h_hold" 2>/dev/null)
+h98h_in "$h98h_pb" "$h98h_lb" h98h_c_lease LS 'B:SHB#1' nb grant "$h98h_hold" >/dev/null 2>&1
+h98h_seed "$h98h_db" SHB
+h98h_lock "$h98h_pb"
+SECONDS=0
+h98h_bout=$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pb" "$h98h_lb" h98h_c_fail SHB 'B:SHB#1' nb 2>/dev/null)
+h98h_bel=$SECONDS
+check "98h: 잠금이 보유 총예산 내내 바쁘면 감독자는 rc 3 으로 끝나고 기동하지 않는다" "$h98h_bout" "3|0"
+if [ "$h98h_bel" -ge 2 ] && [ "$h98h_bel" -le 10 ]; then ok "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다"
+else bad "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다" "${h98h_bel}초"; fi
+check "98h: 그 끝은 lease-hold-busy 원인 행 하나를 남긴다" \
+  "$( { grep '^- `stage-wait` ' "$h98h_lb" | grep -cF '| 계보=B:SHB#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-busy' || true; } )" "1"
+check "98h: 옛 임대를 nonce 로 반납한다" "$(cat "$h98h_db/released" 2>/dev/null)" "B:SHB#1 nb"
+check "98h: 신원 파일과 토큰은 지우고 핀만 남기며 대기 표지는 없다" "$(h98h_files "$h98h_db" SHB)" "attempt"
+check "98h: wait 은 그 시도를 rc 20 자원 대기로 읽는다" \
+  "$(h98h_in "$h98h_pb" "$h98h_lb" h98h_c_wait SHB | sed 's/^[^ ]* //')" "[wait] SHB 자원 대기 — 원인 lease-hold-busy — 시도 1 — rc=20|rc=20"
+check "98h: 그 키는 진행 중이 아니다" \
+  "$(h98h_in "$h98h_pb" "$h98h_lb" eval 'if gate_key_in_flight SHB; then printf 진행; else printf 없음; fi' 2>/dev/null)" "없음"
+h98h_in "$h98h_pb" "$h98h_lb" eval 'gate_settle_lost_dispatches; gate_settle_dead_waiters SHB; :' >/dev/null 2>&1
+check "98h: 전주의 두 정산은 그 시도에 외부 종료 행을 쓰지 않는다" \
+  "$( { grep -c '종단 부류=외부 종료' "$h98h_lb" || true; } )" "0"
+rm -rf "$h98h_pb/leases/.lock"
+check "98h: 경쟁자가 놓은 뒤 같은 키의 재파견은 새 시도 번호로 입장한다" \
+  "$(H98H_ENV=$h98h_GRANT h98h_in "$h98h_pb" "$h98h_lb" eval 'r=0; gate_launch_route infra SHB implement >/dev/null 2>&1 || r=$?; printf "%s %s" "$r" "$GATE_ROUTE_LINEAGE"' 2>/dev/null)" \
+  "0 B:SHB#2"
+
+# 잃은 임대 — stale 임대(보유자 모두 사망)와 없는 임대.
+h98h_ps="$lsr_root/pace98h-s"; rm -rf "$h98h_ps"
+h98h_ls=$(lsr75_new h98hs); h98h_ds="${h98h_ls%/*}"
+h98h_in "$h98h_ps" "$h98h_ls" h98h_c_lease LS 'B:SHS#1' ns grant "$h98h_dead" 'Thu Jan 1 00:00:00 1970' >/dev/null 2>&1
+h98h_seed "$h98h_ds" SHS
+h98h_seed "$h98h_ds" SHN
+check "98h: stale 임대의 감독자는 lease-hold-lost 원인 행을 남기고 임대를 되살리지 않는다" \
+  "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_fail SHS 'B:SHS#1' ns 2>/dev/null)/$( { grep -cF '| 계보=B:SHS#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-lost' "$h98h_ls" || true; } )/$(jq -c '[.holders[].pid]' "$h98h_ps"/leases/*.lease 2>/dev/null)" \
+  "5|0/1/[$h98h_dead]"
+check "98h: 없는 임대의 감독자도 lease-hold-lost 다" \
+  "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_fail SHN 'B:SHN#1' nn 2>/dev/null)/$( { grep -cF '| 계보=B:SHN#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-lost' "$h98h_ls" || true; } )" "1|0/1"
+check "98h: 잃은 임대의 두 끝도 반납하고 핀만 남긴다" \
+  "$(paste -sd, - < "$h98h_ds/released")/$(h98h_files "$h98h_ds" SHS)/$(h98h_files "$h98h_ds" SHN)" "B:SHS#1 ns,B:SHN#1 nn/attempt/attempt"
+check "98h: wait 은 잃은 임대의 시도도 rc 20 으로 읽는다" \
+  "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_wait SHS | sed 's/^[^ ]* //')" "[wait] SHS 자원 대기 — 원인 lease-hold-lost — 시도 1 — rc=20|rc=20"
+check "98h: resume 사건의 재파견도 원인 행 뒤에 입장으로 닫힌다" \
+  "$(H98H_ENV=$h98h_GRANT h98h_in "$h98h_ps" "$h98h_ls" eval 'GATE_RESUME=sess-98h; gate_resume_binding_of() { printf -; }; gate_resume_grant_ok() { return 0; }; r=0; gate_launch_route infra SHS implement >/dev/null 2>&1 || r=$?; printf "%s %s %s" "$r" "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_EVENT"' 2>/dev/null)" \
+  "0 B:SHS#2 resume"
+
+# 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다.
+h98h_pf="$lsr_root/pace98h-f"; rm -rf "$h98h_pf"
+h98h_lf=$(lsr75_new h98hf)
+h98h_lock "$h98h_pf"
+check "98h: 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다" \
+  "$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pf" "$h98h_lf" eval 'h98h_c_lease LS "B:SHF#1" nf grant $$ >/dev/null 2>&1; SECONDS=0; r=0; gate_sup_lease_secure "B:SHF#1" nf || r=$?; printf "%s|%s" "$r" "$SECONDS"' 2>/dev/null)" "0|0"
+
+# act 쪽 보유는 재시도 없이 rc 3 으로 돌아가고, 감독자의 확보가 잠금이 풀린 뒤 보유자에 든다.
+h98h_pa="$lsr_root/pace98h-a"; rm -rf "$h98h_pa"
+h98h_la=$(lsr75_new h98ha)
+h98h_in "$h98h_pa" "$h98h_la" h98h_c_lease LS 'B:SHA#1' na grant "$h98h_hold" >/dev/null 2>&1
+h98h_lock "$h98h_pa"
+h98h_aout=$(CC_ROUTE_LEASE_LOCK_WAIT_TEST_SECONDS=1 CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=3 H98H_ACT=$h98h_hold \
+  h98h_in "$h98h_pa" "$h98h_la" eval '
+    r=0; route_lease_hold "$(run_pace_root)/leases" LS "B:SHA#1" na "$H98H_ACT" >/dev/null 2>&1 || r=$?
+    ( sleep 1; rm -rf "$(run_pace_root)/leases/.lock" ) &
+    s=0; gate_sup_lease_secure "B:SHA#1" na || s=$?; wait
+    printf "%s|%s|%s" "$r" "$s" "$$"' 2>/dev/null)
+h98h_apid=${h98h_aout##*|}
+check "98h: act 의 보유가 rc 3 이어도 감독자의 확보가 보유자 목록에 오른다" \
+  "${h98h_aout%|*}/$(jq -r --argjson p "${h98h_apid:-0}" 'any(.holders[]; .pid == $p)' "$h98h_pa"/leases/*.lease 2>/dev/null)" "3|0/true"
+check "98h: act 쪽 감독자 보유는 예산 인자 없이 한 번이다" \
+  "$( { grep -cF 'route_lease_hold "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_NONCE" "$sup" >/dev/null 2>&1 || rrc=$?' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" || true; } )" "1"
+
+# 보유 오류 — rc 2·4 는 대기가 아니라 act 스코프 blocked 행이다.
+h98h_pe="$lsr_root/pace98h-e"; rm -rf "$h98h_pe"
+h98h_le=$(lsr75_new h98he); h98h_de="${h98h_le%/*}"
+h98h_seed "$h98h_de" SHE
+h98h_seed "$h98h_de" SHT
+check "98h: 보유 오류 rc 4 는 blocked 행을 남기고 wait 은 16 이다" \
+  "$(h98h_in "$h98h_pe" "$h98h_le" eval 'route_lease_has_holder() { return 4; }; h98h_c_fail SHE "B:SHE#1" ne' 2>/dev/null)/$( { grep -c '^- `blocked` .*| 스코프=act | .*| 근거=계보=B:SHE#1 보유 오류 rc=4 ' "$h98h_le" || true; } )/$(h98h_in "$h98h_pe" "$h98h_le" h98h_c_wait SHE | sed 's/^.*|rc=/rc=/')" \
+  "4|3/1/rc=16"
+check "98h: 보유 오류 rc 2 도 원인 이름과 rc 를 남기고 원인 행은 쓰지 않는다" \
+  "$(h98h_in "$h98h_pe" "$h98h_le" eval 'route_lease_has_holder() { return 2; }; h98h_c_fail SHT "B:SHT#1" nt' 2>/dev/null)/$( { grep -c '| 근거=계보=B:SHT#1 보유 오류 rc=2 ' "$h98h_le" || true; } )/$( { grep -c '근거=lease-hold-' "$h98h_le" || true; } )" \
+  "2|3/1/0"
+
+# 자기 정리 — done 이 기록되면 그 런의 임대가 표에서 빠진다.
+h98h_pd="$lsr_root/pace98h-d"; rm -rf "$h98h_pd"
+h98h_ld=$(lsr75_new h98hd); h98h_dd="${h98h_ld%/*}"
+h98h_in "$h98h_pd" "$h98h_ld" h98h_c_lease LS 'B:SD1#1' nd grant "$h98h_hold" >/dev/null 2>&1
+h98h_in "$h98h_pd" "$h98h_ld" h98h_c_lease OTHER 'B:SD1#1' no grant "$h98h_hold" >/dev/null 2>&1
+check "98h: done 기록이 그 런의 임대를 지운다" \
+  "$(h98h_in "$h98h_pd" "$h98h_ld" eval 'gate_pair_drain() { :; }; gate_end_row() { :; }; cc_caller_is_router() { return 1; }; r=0; gate_end_run B1 "시험 종단" 해당없음 완료 - "시험 종단 줄" >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)/$( [ -s "$h98h_dd/done" ] && printf done)/$(h98h_list "$h98h_pd")" \
+  "0/done/OTHER/B:SD1#1"
+
+# 끝난 런의 훑기 — 후보 판정, 도장 간격, 잠금 경합, carry 파견의 자리.
+h98h_pw="$lsr_root/pace98h-w"; rm -rf "$h98h_pw"
+h98h_lw=$(lsr75_new h98hw)
+mkdir -p "$h98h_xdg/cc-cmds/run/RDONE" "$h98h_xdg/cc-cmds/run/REMPTY" "$h98h_xdg/cc-cmds/run/RNODONE"
+printf '끝\n' > "$h98h_xdg/cc-cmds/run/RDONE/done"
+: > "$h98h_xdg/cc-cmds/run/REMPTY/done"
+h98h_dfp='Thu Jan 1 00:00:00 1970'
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W1#1' n1 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W2#1' n2 wait "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W3#1' n3 grant "$h98h_hold" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease REMPTY 'B:W4#1' n4 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RNODONE 'B:W5#1' n5 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RNODIR 'B:W6#1' n6 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease 'a/b' 'B:W7#1' n7 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_keep=$(printf '%s\n' 'RDONE/B:W3#1' 'REMPTY/B:W4#1' 'RNODONE/B:W5#1' 'RNODIR/B:W6#1' 'a/b/B:W7#1' | LC_ALL=C sort | paste -sd' ' -)
+check "98h: 훑기 앞의 표는 일곱 기록이다" "$(ls "$h98h_pw/leases" | grep -c '\.lease$')" "7"
+h98h_in "$h98h_pw" "$h98h_lw" gate_lease_sweep_tick >/dev/null 2>&1
+check "98h: 첫 훑기는 끝난 런의 사망 보유자 기록만 지운다" "$(h98h_list "$h98h_pw")" "$h98h_keep"
+h98h_st=$(cat "$h98h_pw/leases.sweep" 2>/dev/null | tr -d '[:space:]')
+case "$h98h_st" in
+  ''|*[!0-9]*) bad "98h: 끝난 훑기는 도장을 쓴다" "$h98h_st" ;;
+  *) ok "98h: 끝난 훑기는 도장을 쓴다" ;;
+esac
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W8#1' n8 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" gate_lease_sweep_tick >/dev/null 2>&1
+check "98h: 도장이 600초 안이면 다시 훑지 않는다" \
+  "$(h98h_list "$h98h_pw" | tr ' ' '\n' | grep -c '^RDONE/B:W8#1$')" "1"
+h98h_old=$(( $(date -u +%s) - 700 ))
+printf '%s\n' "$h98h_old" > "$h98h_pw/leases.sweep"
+h98h_lock "$h98h_pw"
+h98h_in "$h98h_pw" "$h98h_lw" gate_lease_sweep_tick >/dev/null 2>&1
+check "98h: 잠금 경합으로 건너뛴 훑기는 지우지 않고 도장을 갱신하지 않는다" \
+  "$(h98h_list "$h98h_pw" | tr ' ' '\n' | grep -c '^RDONE/B:W8#1$')/$(tr -d '[:space:]' < "$h98h_pw/leases.sweep")" "1/$h98h_old"
+# 키 이름은 대문자를 %XX 로 인코딩하므로 지울 기록은 계보로 찾는다.
+for h98h_f in "$h98h_pw"/leases/*.lease; do
+  [ "$(jq -r '.lineage' "$h98h_f" 2>/dev/null)" != 'B:W8#1' ] || rm -f "$h98h_f"
+done
+check "98h: 후보가 없으면 동사를 부르지 않는다 (잠금이 바빠도 rc 0)" \
+  "$(h98h_in "$h98h_pw" "$h98h_lw" eval 'r=0; route_lease_sweep_done "$(run_pace_root)/leases" >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)" "0"
+rm -rf "$h98h_pw/leases/.lock"
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W9#1' n9 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+check "98h: carry 파견도 훑기 자리를 지난다" \
+  "$(h98h_in "$h98h_pw" "$h98h_lw" eval 'GATE_HA_LINE=1; GATE_CARRY_ANSWER=1; gate_launch_route_carry() { return 0; }; r=0; gate_launch_route infra SW9 implement >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)/$(h98h_list "$h98h_pw")/$( [ "$(tr -d '[:space:]' < "$h98h_pw/leases.sweep")" != "$h98h_old" ] && printf 갱신)" \
+  "0/$h98h_keep/갱신"
+kill "$h98h_hold" 2>/dev/null || true
+wait "$h98h_hold" 2>/dev/null || true
+
+# 교대 규약 사본 — wait 의 20 이 교대가 읽는 세 자리에 있다.
+h98h_skill="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
+check "98h: 교대 규약의 Exit codes 표에 20 from wait 행이 있다" \
+  "$( { grep -c '^| `20` from `wait` | the supervisor could not hold its lease' "$h98h_skill" || true; } )" "1"
+check "98h: 교대 규약의 wait 동사 행과 Waiting on a stage 의 나열에 20 이 있다" \
+  "$( { grep -c 'one of 11–14, 16 or 20, or 15' "$h98h_skill" || true; } )/$( { grep -c 'one of 11–14 or 20 from the table above' "$h98h_skill" || true; } )" "1/1"
+unset -f h98h_in h98h_c_lease h98h_c_fail h98h_c_wait h98h_lock h98h_files h98h_seed h98h_list
 
 # ---------------------------------------------------------------------------
 # 98. gate-shard 레시피의 레인 — 행 배정, 레인별 결과 파일, 종료 코드와 합계 줄 검사
