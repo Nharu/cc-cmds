@@ -5523,6 +5523,54 @@ pre_sb() {
     ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
       | jq -r --arg k "$1" '[.[$k][]? | if type == "object" then (.["세그먼트"] // .id // .segment) else . end] | join(",")'
   }
+
+  sb18_dep() {  # sb18_dep <의존 세그먼트> <선행> — 의존 세그먼트의 계획 행
+    # 의존 세그먼트는 제 워크트리를 따로 쓴다. 선행이 완료되면 선행의 구현 워크트리가
+    # 지워지므로, 같이 쓰면 의존 세그먼트의 파견이 바닥이 아니라 워크트리 부재로 거부된다.
+    local wt="$SA_ROOT/seg-$1"
+    [ -d "$wt" ] || ( cd "$SA_REPO" && git worktree add -q --detach "$wt" main ) >/dev/null 2>&1
+    sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$1" --cutpoint 커밋 \
+        --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$wt" "선행=$2"
+  }
+  sb18_floor() {  # sb18_floor <의존 세그먼트> — 그 세그먼트의 디스패치 바닥 처분과 rc
+    sb_dispatch "$1"
+    printf '%s:%s' "$(sb_floor)" "$rc"
+  }
+
+  # ---- 들여온 적용의 정산(입구 d)의 픽스처 ----------------------------------
+  sd_rerun() {
+    # sd_rerun <런 id> — 같은 픽스처 레포에서 런 id 만 바꾼다: 매니페스트·인가 기록을
+    # 그 id 로 다시 쓰고 원장과 런 디렉터리를 그 id 의 것으로 돌린다. 이전 런과 이 런이
+    # 같은 레포·같은 원장 디렉터리를 쓰는 모양이다.
+    SA_ID=$1
+    SA_LEDGER="$SA_WT/docs/pipeline-run/$SA_ID.md"
+    SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
+    SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
+    sa_manifest 선리뷰후머지
+    rm -rf "$SA_RUN"
+  }
+  sd_import() {
+    # sd_import <라벨> <증거 런 id> <이 런 id> <프로브> [P1] — 증거 런이 세그먼트 SD 를
+    # 리뷰하고 두 부모 머지로 착지시킨 뒤 적용을 정산하지 못한 채 끝났고, 이 런이 그
+    # 착지를 `머지됨 적용=미정산` 으로 들여온 원장. 증거 원장은 게이트가 쓴 행
+    # 그대로라 해시 연쇄가 온전하고, 리포트는 발견 요약을 싣는다. 종료 코드 대응은
+    # SB_CODES(기본 `0 21`)다. SD_M·SD_TIP·SD_ELED(증거 원장)·SD_EREP(증거 원장의
+    # cycle 행이 가리키는 정본 리포트)를 남긴다.
+    SB_CODES="${SB_CODES:-0 21}" sb_apply_new "$1" "$4" 'true'
+    sd_rerun "$2"
+    SD_EREP=$(sa_canon SD)
+    sb_reviewed_landing SD "${5:-0}"
+    SD_M=$SB_M; SD_TIP=$SB_TIP; SD_ELED=$SA_LEDGER
+    sd_rerun "$3"
+    SAH >/dev/null
+    printf -- '- `segment` | 교대=0 | id=SD | 상태=머지됨 | PR=1 | 워크트리=- | 선행=없음 | 머지 커밋=%s | 적용=미정산 | 출처=%s | 이전 런=%s | prev=x\n' \
+      "$SD_M" "$2" "$2" >> "$SA_LEDGER"
+  }
+  sd_verdict() {
+    # sd_verdict — SD 의 마지막 `들여온 정산` 행.
+    { grep -F '`들여온 정산`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '세그먼트=SD ' || true; } | tail -1
+  }
+  sd_verdicts() { { grep -F '`들여온 정산`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -cF '세그먼트=SD ' || true; }; }
 }
 
 # `mf` — the merge-first sections (88f and its pieces, and 88h-2): a
@@ -17149,7 +17197,7 @@ rm -f "$WT/$DOC15GL" "$WT/$DOC15GI" "$WT/$DOC15GG" "$WT/$DOC15GS2" "$WT/$DOC15GX
 
 # ---------------------------------------------------------------------------
 # 15g-5. An earlier run whose apply did not end
-# --- section: 15g-5 | group: base | covers: snapshot, plan, act, apply, liveness | anchors: 15g-5: 정산 완료로 끝난 이전 런의 착지는 완료 행으로 들여오고 후속이 바닥을 지난다, 15g-5: 옛 수렴 완료의 고정 커밋은 머지 커밋으로 들여오고 후속이 바닥을 지난다, 15g-5: 끝이 적용 준비인 이전 런은 미정산으로 들여오고 슬라이스를 다시 계획하지 않으며 후속을 막는다, 15g-5: 끝이 적용 불명 park 인 이전 런도 미정산으로 들여온다, 15g-5: 명령이 돌지 않은 이전 런은 들여오지 않고 다시 계획한다, 15g-5: 드라이버의 자기 들여오기는 미정산 행을 쓰지 않고 1 로 끝난다, 15g-5: 드라이버 S9 의 사전 실패 원장은 다시 계획된다, 15g-5: 드라이버 S9 의 적용 불명 원장은 미정산으로 들여온다, 15g-5: 사슬의 미정산 행은 첫 런의 출처와 바로 앞 런을 함께 싣는다, 15g-5: 들여온 미정산 세그먼트는 스냅숏의 apply_imported 에만 든다, 15g-5: 적용 단계 술어가 다섯 단계를 가른다 ---
+# --- section: 15g-5 | group: base | covers: snapshot, plan, act, apply, liveness | anchors: 15g-5: 정산 완료로 끝난 이전 런의 착지는 완료 행으로 들여오고 후속이 바닥을 지난다, 15g-5: 옛 수렴 완료의 고정 커밋은 머지 커밋으로 들여오고 후속이 바닥을 지난다, 15g-5: 끝이 적용 준비인 이전 런은 미정산으로 들여오고 슬라이스를 다시 계획하지 않으며 후속을 막는다, 15g-5: 끝이 적용 불명 park 인 이전 런도 미정산으로 들여온다, 15g-5: 명령이 돌지 않은 이전 런은 들여오지 않고 다시 계획한다, 15g-5: 드라이버의 자기 들여오기는 미정산 행을 쓰지 않고 1 로 끝난다, 15g-5: 드라이버 S9 의 사전 실패 원장은 다시 계획된다, 15g-5: 드라이버 S9 의 적용 불명 원장은 미정산으로 들여온다, 15g-5: 사슬의 미정산 행은 첫 런의 출처와 바로 앞 런을 함께 싣는다, 15g-5: 판정 전의 들여온 미정산 세그먼트는 스냅숏의 apply_unsettled 에만 든다, 15g-5: 판정을 남긴 들여온 미정산 세그먼트는 스냅숏의 apply_imported 에만 든다, 15g-5: 적용 단계 술어가 다섯 단계를 가른다 ---
 #
 # A slice an earlier run merged while it owed the apply is on the base all the
 # same; what its ledger says after the merge decides what the next run of the
@@ -17257,7 +17305,14 @@ g15a_prior R15GA3 "$DOC15GA3" "$(g15a_prep R15GA3)"
 check "15g-5: 끝이 적용 준비인 이전 런은 미정산으로 들여오고 슬라이스를 다시 계획하지 않으며 후속을 막는다" \
   "$(g15a_this R15GA3N "$DOC15GA3")" "0/머지됨/미정산/$m15ga/R15GA3/R15GA3/-/계획됨=0/0/적용 미종료"
 r15ga3s=$(au15_snap "$WORK/plan-R15GA3N.md")
-check "15g-5: 들여온 미정산 세그먼트는 스냅숏의 apply_imported 에만 든다" \
+check "15g-5: 판정 전의 들여온 미정산 세그먼트는 스냅숏의 apply_unsettled 에만 든다" \
+  "$(printf '%s' "$r15ga3s" | jq -r '[(.apply_imported // [] | join(" ")), (.apply_unsettled // [] | join(" "))] | join("/")')" "/SA"
+# Once the gate has measured it in this run — a `들여온 정산` row after its last
+# segment row — the segment moves to apply_imported, where the shift stops.
+printf -- '- `들여온 정산` | 세그먼트=SA | 대상=infra | 정산 판정=검증 불성립 | 정산 근거=심은 행 | 고정 커밋=%s | 증거 런=R15GA3\n' \
+  "$m15ga" >> "$(g15a_led R15GA3N)"
+r15ga3s=$(au15_snap "$WORK/plan-R15GA3N.md")
+check "15g-5: 판정을 남긴 들여온 미정산 세그먼트는 스냅숏의 apply_imported 에만 든다" \
   "$(printf '%s' "$r15ga3s" | jq -r '[(.apply_imported // [] | join(" ")), (.apply_unsettled // [] | join(" "))] | join("/")')" "SA/"
 # The driver has no person to settle with: the same ledger is done again, and
 # nothing is written for it.
@@ -36190,7 +36245,7 @@ esac
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SPV_PREV_AR"
 
 # --- 34n. 답의 라우팅 — 갈래가 없는 답은 누구의 것이든 기록되지 않고, 교대가 되돌린 답은 다시 질문이 된다 ---
-# --- section: 34n | group: cone | covers: act, snapshot | anchors: 34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다, 34n: 같은 감사 키의 두 번째 자동 채택은 거절된다, 34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다, 34n: 되돌려진 기록의 좌석 자동 답은 거절된다 ---
+# --- section: 34n | group: cone | covers: act, snapshot, shift-halt | anchors: 34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다, 34n: 들여온 적용 정산 기록의 질문과 관측 끝에 게이트 정산 판정 줄이 붙는다, 34n: 긴 관측에서도 원뿔 행 근거가 게이트 정산 판정 줄을 온전히 싣는다, 34n: 같은 감사 키의 두 번째 자동 채택은 거절된다, 34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다, 34n: 되돌려진 기록의 좌석 자동 답은 거절된다 ---
 #
 # AN ANSWER NO BRANCH OF THE SHIFT CAN CARRY OUT IS NOT RECORDED. Recorded, it
 # sat in `answered_halts[]` as answered while the shift could only stop on it,
@@ -36385,6 +36440,23 @@ cap_gate "$RRT_SHIFT" "$RRT_RID#1" act --manifest "$CAP_NM" --kind shift-halt --
          --rationale "픽스처 — 교대 정지" -- '자리=종료 조건 11 판독 불가' '질문=가지 끝을 다시 읽는가?' '관측=종료 조건 11 을 읽지 못했다'
 RRT_MG="$CAP_DIR/halt/shift/MG1#1.md"
 check "34n: 머지된 세그먼트의 교대 정지가 선다" "$rc/$( [ -f "$RRT_MG" ] && printf yes || printf no)" "0/yes"
+# 들여온 적용 정산 — the gate's own verdict row rides the question, the
+# observation and, whole, the front of the cone row's 근거, however long the
+# shift's observation is.
+printf -- '- `segment` | 교대=0 | id=MGI | 워크트리=- | 상태=머지됨 | 선행=없음 | 적용=미정산 | 출처=20260101-0000aaaa | 이전 런=20260101-0000aaaa | prev=x\n' >> "$CAP_LEDGER"
+printf -- '- `들여온 정산` | 세그먼트=MGI | 대상=infra | 정산 판정=필요 | 정산 근거=프로브 exit 21(대응 불필요=0·필요=21)·입구 d | 고정 커밋=- | 증거 런=20260101-0000aaaa | prev=x\n' >> "$CAP_LEDGER"
+RRT_LONG=$(printf '%0400d' 0 | tr 0 o)
+cap_gate "$RRT_SHIFT" "$RRT_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment MGI \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RRT_SHIFT" "$RRT_RID#1")" \
+         --rationale "픽스처 — 들여온 정산 정지" -- '자리=들여온 적용 정산' '질문=대상을 확인했는가?' "관측=$RRT_LONG"
+RRT_MGI="$CAP_DIR/halt/shift/MGI#1.md"
+RRT_VERD='게이트 정산 판정: 필요 — 프로브 exit 21(대응 불필요=0·필요=21)·입구 d'
+check "34n: 들여온 적용 정산 기록의 질문과 관측 끝에 게이트 정산 판정 줄이 붙는다" \
+  "$rc/$(grep -cF -- "$RRT_VERD" "$RRT_MGI" 2>/dev/null || true)/$(grep -F '**질문 문면**: 대상을 확인했는가? ' "$RRT_MGI" 2>/dev/null | grep -cF -- "$RRT_VERD" || true)" "0/2/1"
+case "$(row_field "$( { grep -F '앵커 세그먼트=MGI ' "$CAP_LEDGER" || true; } | tail -1)" '근거')" in
+  "$RRT_VERD · oooo"*) ok "34n: 긴 관측에서도 원뿔 행 근거가 게이트 정산 판정 줄을 온전히 싣는다" ;;
+  *) bad "34n: 원뿔 행 근거의 판정 줄" "$( { grep -F '앵커 세그먼트=MGI ' "$CAP_LEDGER" || true; } | tail -1)" ;;
+esac
 rrt_person MG1 "$RRT_MG" '재시도'
 check "34n: 머지된 세그먼트의 교대 기록에 쓴 사람의 재시도 답이 선다" "$rc/$(rrt_route "$RRT_MG")" "0/교대-정지|"
 rrt_person MG1 "$RRT_MG" '세그먼트 park'
@@ -38995,18 +39067,6 @@ check "17: 측정 실패는 열린 적용 불명 막힘에 막힘을 더하지 �
 # 감독자가 끊긴 원장(마지막 행이 적용 준비)과 결과를 모르는 park(적용=불명)를, 명령을
 # 다시 돌리지 않고 얼린 프로브 한 번으로 잰다. 의존 세그먼트(선행=그 세그먼트)의 구현
 # 파견은 정산이 끝날 때까지 디스패치 바닥에서 막힌다.
-sb18_dep() {  # sb18_dep <의존 세그먼트> <선행> — 의존 세그먼트의 계획 행
-  # 의존 세그먼트는 제 워크트리를 따로 쓴다. 선행이 완료되면 선행의 구현 워크트리가
-  # 지워지므로, 같이 쓰면 의존 세그먼트의 파견이 바닥이 아니라 워크트리 부재로 거부된다.
-  local wt="$SA_ROOT/seg-$1"
-  [ -d "$wt" ] || ( cd "$SA_REPO" && git worktree add -q --detach "$wt" main ) >/dev/null 2>&1
-  sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$1" --cutpoint 커밋 \
-      --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$wt" "선행=$2"
-}
-sb18_floor() {  # sb18_floor <의존 세그먼트> — 그 세그먼트의 디스패치 바닥 처분과 rc
-  sb_dispatch "$1"
-  printf '%s:%s' "$(sb_floor)" "$rc"
-}
 
 # 입구 a — 감독자가 종단 행을 쓰기 전에 끊겼다. 명령은 끝까지 돌아 표지를 남겼다.
 sb18_mark="$WORK/sb18-applied"
@@ -39163,7 +39223,7 @@ esac
 check "18: 그 거부는 원장에 segment 행을 남기지 않는다" "$(sb_count 'id=SB18R | 상태=완료')" "0"
 
 # --- 38-19. 사람의 답으로 끝내는 적용 -----------------------------------------------
-# --- section: 38-19 | group: sb | covers: act, apply, apply-settle, apply-settle-confirm, halt-answer | anchors: 19: 사람이 아닌 재실행 답은 거부된다, 19: 사람의 재실행 답은 번호 붙은 새 워크트리로 한 번 다시 돈다, 19: 재실행이 수렴하면 막힘을 해소하고 적용 워크트리를 모두 지운다, 19: 답 한 줄로 두 번째 재실행은 하지 않는다, 19: 사람 확인 정산은 사람 주체 완료로 끝난다, 19: 세그먼트 park 답의 park 행이 막힘을 해소한다, 19: 들여온 세그먼트는 재실행도 게이트 정산도 하지 않는다, 19: 들여온 적용은 cycle 행 없이 사람 확인으로 완료된다, 19: 새 중단 뒤에는 앞선 답으로 확인하지 않는다 ---
+# --- section: 38-19 | group: sb | covers: act, apply, apply-settle, apply-settle-confirm, halt-answer | anchors: 19: 사람이 아닌 재실행 답은 거부된다, 19: 사람의 재실행 답은 번호 붙은 새 워크트리로 한 번 다시 돈다, 19: 재실행이 수렴하면 막힘을 해소하고 적용 워크트리를 모두 지운다, 19: 답 한 줄로 두 번째 재실행은 하지 않는다, 19: 사람 확인 정산은 사람 주체 완료로 끝난다, 19: 세그먼트 park 답의 park 행이 막힘을 해소한다, 19: 들여온 세그먼트는 재실행하지 않는다, 19: 증거가 서지 않은 들여온 정산은 검증 불성립 판정 행만 남기고 park 한다, 19: 판정을 남긴 들여온 세그먼트는 재시도 답 없이 다시 재지 않는다, 19: 들여온 적용은 cycle 행 없이 사람 확인으로 완료된다, 19: 새 중단 뒤에는 앞선 답으로 확인하지 않는다 ---
 #
 # 정산이 「필요」로 park 한 세그먼트에 교대가 적용 정산 자리의 중단 기록을 쓰고, 사람이
 # 답한다. 교대의 cone 막힘 행과 중단 답 행은 원장에 직접 심는다 — 답의 판독은 원장 행만
@@ -39257,14 +39317,31 @@ printf -- '- `segment` | 교대=0 | id=SB19I | 상태=머지됨 | PR=1 | 워크�
   "$sb19i_m" >> "$SA_LEDGER"
 check "19: 들여온 세그먼트에 cycle 행이 없다" "$( { grep '^- `cycle` ' "$SA_LEDGER" || true; } | { grep -cF '세그먼트=SB19I ' || true; } )" "0"
 sb19i_base=$(sa_rows)
+sb19i_seg=$(sb_seg_last SB19I)
 sb_apply SB19I
-sb19i_a="$rc:$msg"
+case "$rc:$msg" in
+  3:*"들여온"*)
+    [ "$(sa_rows)" = "$sb19i_base" ] && ok "19: 들여온 세그먼트는 재실행하지 않는다" \
+      || bad "19: 들여온 세그먼트 재실행 거부" "원장에 행이 늘었다" ;;
+  *) bad "19: 들여온 세그먼트 재실행 거부" "rc=$rc $msg" ;;
+esac
+# 답 없는 정산은 입구 d 로 잰다. 출처 RAOLD 는 런 id 꼴이 아니라 증거 원장을 정할 수
+# 없으므로, 프로브를 돌리지 않고 검증 불성립 판정 행 하나를 남긴 채 park 한다.
 sb_settle act SB19I
-case "$sb19i_a|$rc:$msg" in
-  3:*"들여온"*"|3:"*"이전 런에서 들여온 세그먼트입니다"*)
-    [ "$(sa_rows)" = "$sb19i_base" ] && ok "19: 들여온 세그먼트는 재실행도 게이트 정산도 하지 않는다" \
-      || bad "19: 들여온 세그먼트 거부" "원장에 행이 늘었다" ;;
-  *) bad "19: 들여온 세그먼트 거부" "적용 $sb19i_a / 정산 rc=$rc $msg" ;;
+case "$rc:$( { grep -F '`들여온 정산`' "$SA_LEDGER" || true; } | { grep -F '세그먼트=SB19I ' || true; } | tail -1 )" in
+  11:*"정산 판정=검증 불성립"*"정산 근거=들여온 행의 출처(RAOLD)가 런 id 꼴이 아니라"*"·입구 d"*"증거 런=RAOLD"*)
+    { [ "$(sb_count '`들여온 정산` ')" = "1" ] && [ "$(sb_seg_last SB19I)" = "$sb19i_seg" ]; } \
+      && ok "19: 증거가 서지 않은 들여온 정산은 검증 불성립 판정 행만 남기고 park 한다" \
+      || bad "19: 들여온 정산 검증 불성립" "판정 행 $(sb_count '`들여온 정산` ')개, 마지막 segment 행 $(sb_seg_last SB19I)" ;;
+  *) bad "19: 들여온 정산 검증 불성립" "rc=$rc $msg" ;;
+esac
+sb19i_base=$(sa_rows)
+sb_settle act SB19I
+case "$rc:$msg" in
+  3:*"이미 들여온 정산 판정(검증 불성립)을 남겼습니다"*)
+    [ "$(sa_rows)" = "$sb19i_base" ] && ok "19: 판정을 남긴 들여온 세그먼트는 재시도 답 없이 다시 재지 않는다" \
+      || bad "19: 두 번째 들여온 정산" "원장에 행이 늘었다" ;;
+  *) bad "19: 두 번째 들여온 정산" "rc=$rc $msg" ;;
 esac
 sb19i_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SB19I '들여온 적용 정산' SB19I-1)
 sb19i_l=$(sb19_ans "$SA_LEDGER" SB19I "$sb19i_rec" '사람 확인 정산' 사람)
@@ -39286,6 +39363,155 @@ case "$rc:$(sb_seg_last SB19I)" in
     ok "19: 들여온 적용은 cycle 행 없이 사람 확인으로 완료된다" ;;
   *) bad "19: 들여온 적용 확인" "rc=$rc $msg $(sb_seg_last SB19I)" ;;
 esac
+
+# --- 38-19d. 이전 런 원장을 증거로 재는 들여온 적용 ---------------------------------
+# --- section: 38-19d | group: sb | covers: act, plan, snapshot, apply-settle, apply-settle-confirm, halt-answer, liveness | anchors: 19d: 증거가 서고 불필요 코드면 게이트 주체 완료다, 19d: 들여온 정산 완료 뒤 의존 세그먼트가 디스패치 바닥을 지난다, 19d: 필요 코드는 판정 행 하나만 남기고 마지막 segment 행을 두며 막힘을 쓰지 않는다, 19d: 판정 뒤 스냅숏은 그 세그먼트를 apply_imported 에 둔다, 19d: 대응 행 밖의 코드는 측정 실패 판정이다, 19d: 증거가 서지 않으면 프로브 없이 검증 불성립 판정이다, 19d: 판정 행 뒤 재시도 답 없이는 행 없이 거부된다, 19d: 재시도 답 뒤 스냅숏은 apply_unsettled 에 두고 한 번 더 잰다, 19d: 판정 행 뒤 사람 확인 정산은 사람 주체 완료다, 19d: 이전 런의 감독자가 살아 있으면 행 없이 거부된다 ---
+#
+# 이전 런이 리뷰하고 두 부모 머지로 착지시킨 세그먼트를 이 런이 `머지됨 적용=미정산`
+# 으로 들여왔다. 이 런에는 그 세그먼트의 cycle 행이 없으므로 게이트는 이전 런의
+# 원장을 증거로 읽어 리뷰 HEAD 를 증명하고, 얼린 프로브를 한 번 돌린다. 판정이
+# 적용됨이 아니면 마지막 segment 행은 그대로 두고 `들여온 정산` 행 하나만 쓴다.
+
+# 불필요 코드 — 게이트 주체 완료.
+sd1_mark="$WORK/sd1-applied"; touch "$sd1_mark"
+sd_import '19d 완료' 20260901-000000d1 20260902-000000d1 "test -e $sd1_mark && exit 0 || exit 21"
+sd1_esum=$(shasum -a 256 < "$SD_ELED")
+sb18_dep SDD SD
+case "$(sb18_floor SDD)" in
+  "적용 미종료:3") ok "19d: 들여온 미정산 선행은 디스패치를 막는다" ;;
+  *) bad "19d: 들여온 미정산 선행" "rc=$rc $msg" ;;
+esac
+check "19d: 판정 전 스냅숏은 그 세그먼트를 apply_unsettled 에 둔다" \
+  "$(sb_snap_list apply_unsettled)/$(sb_snap_list apply_imported)" "SD/"
+sb_settle plan SD
+case "$rc:$msg:$(sd_verdicts)" in
+  0:*"통과 예상"*:0) ok "19d: 들여온 정산의 예보는 판정 행을 쓰지 않는다" ;;
+  *) bad "19d: 들여온 정산 예보" "rc=$rc $msg 판정 행 $(sd_verdicts)" ;;
+esac
+sb_settle act SD
+case "$rc:$(sb_seg_last SD)" in
+  0:*"상태=완료"*"고정 커밋=$SD_M"*"머지 커밋=$SD_M"*"적용=정산"*"정산 주체=게이트"*"정산 근거=프로브 exit 0(대응 불필요=0·필요=21)·입구 d·증거 런 20260901-000000d1"*"출처=20260901-000000d1"*"이전 런=20260901-000000d1"*)
+    ok "19d: 증거가 서고 불필요 코드면 게이트 주체 완료다" ;;
+  *) bad "19d: 입구 d 완료" "rc=$rc $msg $(sb_seg_last SD)" ;;
+esac
+check "19d: 완료는 판정 행을 쓰지 않는다" "$(sd_verdicts)" "0"
+check "19d: 증거 원장은 읽기만 한다" "$(shasum -a 256 < "$SD_ELED")" "$sd1_esum"
+case "$(sb18_floor SDD)" in
+  통과:0) ok "19d: 들여온 정산 완료 뒤 의존 세그먼트가 디스패치 바닥을 지난다" ;;
+  *) bad "19d: 완료 뒤 의존 세그먼트" "rc=$rc $msg" ;;
+esac
+
+# 필요 코드 — 판정 행 하나. 세그먼트는 들여온 그대로이고 런 범위 막힘은 없다.
+sd_import '19d 필요' 20260901-000000d2 20260902-000000d2 'exit 21'
+sd2_seg=$(sb_seg_last SD)
+sb_settle act SD
+case "$rc:$(sd_verdicts):$(sd_verdict)" in
+  11:1:*"정산 판정=필요"*"정산 근거=프로브 exit 21(대응 불필요=0·필요=21)·입구 d"*"고정 커밋=$SD_M"*"증거 런=20260901-000000d2"*)
+    { [ "$(sb_seg_last SD)" = "$sd2_seg" ] && [ "$(sb_blocked_open '적용 불명 SD')" = "0" ]; } \
+      && ok "19d: 필요 코드는 판정 행 하나만 남기고 마지막 segment 행을 두며 막힘을 쓰지 않는다" \
+      || bad "19d: 필요 판정의 원장" "$(sb_seg_last SD) 열린 막힘=$(sb_blocked_open '적용 불명 SD')" ;;
+  *) bad "19d: 필요 판정" "rc=$rc $msg $(sd_verdict)" ;;
+esac
+check "19d: 판정 뒤 스냅숏은 그 세그먼트를 apply_imported 에 둔다" \
+  "$(sb_snap_list apply_unsettled)/$(sb_snap_list apply_imported)" "/SD"
+sd2_n=$(sa_rows)
+sb_settle act SD
+case "$rc:$msg" in
+  3:*"이미 들여온 정산 판정(필요)을 남겼습니다"*) [ "$(sa_rows)" = "$sd2_n" ] \
+      && ok "19d: 판정 행 뒤 재시도 답 없이는 행 없이 거부된다" || bad "19d: 두 번째 정산" "원장에 행이 늘었다" ;;
+  *) bad "19d: 두 번째 정산" "rc=$rc $msg" ;;
+esac
+sb_settle plan SD
+check "19d: 같은 거부를 예보도 낸다" "$rc" "3"
+sd2_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SD '들여온 적용 정산' SD-1)
+sb19_ans "$SA_LEDGER" SD "$sd2_rec" 재시도 좌석 >/dev/null
+check "19d: 재시도 답 뒤 스냅숏은 apply_unsettled 에 두고 한 번 더 잰다 — 스냅숏" \
+  "$(sb_snap_list apply_unsettled)/$(sb_snap_list apply_imported)" "SD/"
+sb_settle act SD
+case "$rc:$(sd_verdicts)" in
+  11:2) ok "19d: 재시도 답 뒤 스냅숏은 apply_unsettled 에 두고 한 번 더 잰다" ;;
+  *) bad "19d: 재시도 뒤 재측정" "rc=$rc $msg 판정 행 $(sd_verdicts)" ;;
+esac
+check "19d: 재측정 뒤 스냅숏은 다시 apply_imported 다" \
+  "$(sb_snap_list apply_unsettled)/$(sb_snap_list apply_imported)" "/SD"
+sd2_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SD '들여온 적용 정산' SD-2)
+sd2_l=$(sb19_ans "$SA_LEDGER" SD "$sd2_rec" '사람 확인 정산' 사람)
+sag act --manifest "$SA_MANIFEST" --kind apply-settle-confirm --target main --segment SD --cutpoint 배포 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale x -- "중단 답=$sd2_l"
+case "$rc:$(sb_seg_last SD)" in
+  0:*"상태=완료"*"적용=정산"*"정산 주체=사람"*"출처=20260901-000000d2"*)
+    ok "19d: 판정 행 뒤 사람 확인 정산은 사람 주체 완료다" ;;
+  *) bad "19d: 판정 뒤 사람 확인" "rc=$rc $msg $(sb_seg_last SD)" ;;
+esac
+
+# 대응 행 밖의 코드 — 측정 실패 판정.
+sd_import '19d 측정 실패' 20260901-000000d3 20260902-000000d3 'exit 7'
+sb_settle act SD
+case "$rc:$(sd_verdicts):$(sd_verdict)" in
+  11:1:*"정산 판정=측정 실패"*"·입구 d"*) ok "19d: 대응 행 밖의 코드는 측정 실패 판정이다" ;;
+  *) bad "19d: 측정 실패 판정" "rc=$rc $msg $(sd_verdict)" ;;
+esac
+check "19d: 측정 실패도 런 범위 막힘을 쓰지 않는다" "$(sb_blocked_open '적용 불명 SD')" "0"
+
+# 증거가 서지 않는 경우 — 프로브는 돌지 않고(표지가 생기지 않는다) 검증 불성립이다.
+sd4_ok=0; sd4_n=0
+sd4_case() {  # sd4_case <번호> <기대 근거 조각> <변형 명령…>
+  local n="$1" want="$2" mark="$WORK/sd4-$1-probed"
+  shift 2
+  rm -f "$mark"
+  sd_import "19d 검증 $n" "20260901-00000d4$n" "20260902-00000d4$n" "touch $mark; exit 0" "${SD4_P1:-0}"
+  "$@"
+  sb_settle act SD
+  sd4_n=$((sd4_n + 1))
+  case "$rc:$(sd_verdicts):$(sd_verdict)" in
+    11:1:*"정산 판정=검증 불성립"*"$want"*"·입구 d"*)
+      if [ -e "$mark" ]; then bad "19d: 검증 $n" "프로브가 돌았다"
+      else sd4_ok=$((sd4_ok + 1)); fi ;;
+    *) bad "19d: 검증 $n ($want)" "rc=$rc $msg $(sd_verdict)" ;;
+  esac
+}
+sd4_noled() { rm -f "$SD_ELED"; }
+sd4_chain() {
+  awk '/^- `cycle` / && !d { sub(/P0=0/, "P0=0 "); d = 1 } { print }' "$SD_ELED" > "$SD_ELED.c" && mv "$SD_ELED.c" "$SD_ELED"
+}
+sd4_report() {
+  # 증거 원장의 cycle 행이 가리키는 정본 리포트를 고친다 — 그 자리에 파일이 없으면
+  # 변형이 아무것도 바꾸지 못한 것이다.
+  [ -f "$SD_EREP" ] || bad "19d: 검증 3 픽스처" "정본 리포트가 없다: $SD_EREP"
+  printf '# 코드 리뷰 리포트\n\n요약 없음\n' > "$SD_EREP"
+}
+sd4_merge() {
+  awk -v m="$SD_M" -v t="$SD_TIP" '/^- `segment` / && index($0, "출처=") { sub("머지 커밋=" m, "머지 커밋=" t) } { print }' \
+    "$SA_LEDGER" > "$SA_LEDGER.c" && mv "$SA_LEDGER.c" "$SA_LEDGER"
+}
+sd4_human() { SA_APPLY=사람; sa_manifest 선리뷰후머지; rm -rf "$SA_RUN"; }
+sd4_case 1 "증거 원장 20260901-00000d41.md 가 없다" sd4_noled
+sd4_case 2 "해시 연쇄가 온전하지 않다" sd4_chain
+sd4_case 3 "발견 요약 이 없다" sd4_report
+sd4_case 4 "들여온 행의 머지 커밋" sd4_merge
+sd4_case 5 "적용 전제 불성립" sd4_human
+SD4_P1=1 sd4_case 6 "증거 원장 20260901-00000d46 의" true
+check "19d: 증거가 서지 않으면 프로브 없이 검증 불성립 판정이다" "$sd4_ok" "$sd4_n"
+
+# 이전 런의 적용 감독자가 살아 있다 — 측정 기회를 쓰지 않고 거부한다.
+sd_import '19d 살아 있음' 20260901-000000d6 20260902-000000d6 'exit 0'
+sd6_dir="$XDG_STATE_HOME/cc-cmds/run/20260901-000000d6/apply"
+mkdir -p "$sd6_dir"
+sleep 300 &
+sd6_live=$!
+printf '%s\n' "$sd6_live" > "$sd6_dir/SD.sup"
+cc_proc_fingerprint "$sd6_live" > "$sd6_dir/SD.sup.start"
+sd6_n=$(sa_rows)
+sb_settle act SD
+case "$rc:$msg" in
+  3:*"이전 런이 아직 살아 있다: 20260901-000000d6"*)
+    { [ "$(sa_rows)" = "$sd6_n" ] && [ "$(sd_verdicts)" = "0" ]; } \
+      && ok "19d: 이전 런의 감독자가 살아 있으면 행 없이 거부된다" || bad "19d: 살아 있는 이전 런" "원장에 행이 늘었다" ;;
+  *) bad "19d: 살아 있는 이전 런" "rc=$rc $msg" ;;
+esac
+kill -9 "$sd6_live" 2>/dev/null || true
+wait "$sd6_live" 2>/dev/null || true
+rm -f "$sd6_dir/SD.sup" "$sd6_dir/SD.sup.start"
 
 # ---------------------------------------------------------------------------
 # 39. The in-process seam holds what it claims
