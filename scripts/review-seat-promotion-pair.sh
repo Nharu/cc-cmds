@@ -36,16 +36,22 @@
 #                 whole reserve)
 #   --dry-run     select, branches and prepare, then print the 15 review command
 #                 lines; the model CLI is never called
-#   --pilot       select and branches, then prepare and review only the opus-1
-#                 branch of quantile 1's pick and check it as collect does,
-#                 then that the JSON has total_cost_usd; pilot/result says
-#                 `통과` or `실패 — <condition>`, then the session's refused tool
-#                 calls (`거부`) and the witness commands the hook left
-#                 undecided (`미승인`), which are recorded and fail nothing.
+#   --pilot       select and branches, then prepare and review the sonnet
+#                 branch and then the opus-1 branch of quantile 1's pick, each
+#                 checked as collect does (the promoted seats' spawned models
+#                 included), then that its JSON has total_cost_usd; it stops at
+#                 the first branch that fails. pilot/<branch>/result says
+#                 `통과` or `실패 — <condition>`, then the cost, the session's
+#                 refused tool calls (`거부`) and the witness commands the hook
+#                 left undecided (`미승인`), which are recorded and fail
+#                 nothing. pilot/result holds the verdict, the summed cost and
+#                 one `갈래<TAB><branch><TAB><verdict>` line per branch judged;
+#                 a branch whose last pilot passed on the same sample is judged
+#                 again from its kept session rather than run again.
 #                 The main run (`run`, `--rerun-sample`) stops with exit 1
 #                 before any billed call unless the same experiment's
-#                 pilot/result says `통과`
-#   --rejudge     with --pilot: judge the session the last pilot left again,
+#                 pilot/result says `통과` with a passing sonnet line
+#   --rejudge     with --pilot: judge the sessions the last pilot left again,
 #                 under today's conditions, without starting one (no
 #                 --budget-usd needed, no billed call)
 #   --rerun-sample  discard slot n's state, runs and records and run it again
@@ -68,8 +74,12 @@
 #
 # Records: <repo>/docs/review-seat-promotion-pair/<exp-id>/ holds selection.tsv,
 # samples.tsv, costs.tsv, reports/, report.md, meta, session-env.tsv and, after a
-# pilot, pilot/. The state root holds the clones, runs/, the settings files and
-# the instruction files.
+# pilot, pilot/. reports/ keeps, per branch, the report, its deviations and
+# `<n>-<branch>.agents.tsv` — the Agent calls the session's hook logged, which
+# collect reads to check that a promoted seat ran on the branch's model; an
+# invalid try's records move to reports/invalid/ and its runs to
+# <state>/invalid/ rather than being deleted. The state root holds the clones,
+# runs/, the settings files and the instruction files.
 #
 # RESERVE_RUN. 150 is the reserve the precedent runner
 # (scripts/reader-model-pair-audit.sh) kept for one audit. Measured on this
@@ -160,8 +170,11 @@ LEAD_MODEL="opus"
 LEAD_EFFORT="medium"
 
 # The three sentences of the tier file the sonnet branch changes, old and new.
+# The first says outright which model the Agent() call takes: a lead given
+# only "a promoted seat runs its class model" still spawned promoted seats on
+# `opus` and recorded them so, which made the two branches the same.
 SWAP_OLD_1='A promoted seat runs `opus`.'
-SWAP_NEW_1='A promoted seat runs its class model; the record still writes `출처=승격` and its `지표`.'
+SWAP_NEW_1='A promoted seat runs its class model, never `opus` for a `sonnet` class: pass that class model as the `Agent()` call'"'"'s `model` and write it in `모델=`; the record still writes `출처=승격` and its `지표`.'
 SWAP_OLD_2='the triggers below keep its seat on `opus`'
 SWAP_NEW_2='the triggers below mark its seat as promoted'
 SWAP_OLD_3='promotes every `sonnet` seat'
@@ -1110,9 +1123,32 @@ for seg in "${segs[@]}"; do
     miss
   fi
   n=$((n + 1))
-done <<<"$segs"
+done
 (( n > 0 )) || miss
 printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"review-seat-promotion-pair: a witness command below the state home or the halt directory"}}'
+HOOK
+  chmod 755 "$1"
+}
+
+# agent_hook_write <file> — the PreToolUse hook on Agent and Task calls. It
+# decides nothing; it appends one line per call to the log its first argument
+# names: `<model or ->\t<seat or ->\t<agent_id or ->\t<description>`. The seat
+# is the role slug of the member's own hidden temp in the team protocol's
+# header, `/.<slug>.<round/phase>.XXXXXX`; peers' witnesses, which a later
+# round names by path, have no such temp and are not taken for it.
+agent_hook_write() {
+  cat > "$1" <<'HOOK'
+#!/usr/bin/env bash
+log="$1"
+in=$(cat)
+printf '%s' "$in" | jq -r '
+  (.tool_input // {}) as $t
+  | ([($t.prompt // "") | scan("/\\.([A-Za-z0-9_-]+)\\.[A-Za-z0-9_-]+\\.XXXXXX")] | map(.[0]) | unique) as $s
+  | [ ($t.model // "-"),
+      (if ($s | length) == 1 then $s[0] else "-" end),
+      (.agent_id // "-"),
+      (($t.description // "") | gsub("[\t\n]"; " ")) ] | @tsv' >> "$log" 2>/dev/null || true
+exit 0
 HOOK
 }
 
@@ -1168,14 +1204,17 @@ HOOK
 # These are the runner's own rules; the lane's user settings are merged in as
 # they are for a gate stage, so its allow rules and hooks reach the session too.
 write_settings() {
-  local f="$1" t="$2" rd="$3" pd="$4" cfg keys hook hcmd
+  local f="$1" t="$2" rd="$3" pd="$4" cfg keys hook hcmd ahook acmd
   cfg="$LANE_CFG"
   hook="$(dirname "$f")/witness-hook.sh"
   witness_hook_write "$hook"
   hcmd="bash $(shq "$hook") $(shq "$rd/witness-misses.log") $(shq "$rd/state") $(shq "$rd/halt")"
+  ahook="$(dirname "$f")/agent-hook.sh"
+  agent_hook_write "$ahook"
+  acmd="bash $(shq "$ahook") $(shq "$rd/agent-calls.tsv")"
   keys=$(jq -c '(.enabledPlugins // {}) | with_entries(.value = false)' "$cfg/settings.json" 2>/dev/null || echo '{}')
   [[ -n "$keys" ]] || keys='{}'
-  jq -n --arg t "$t" --arg rd "$rd" --arg pd "$pd" --arg hc "$hcmd" --argjson pl "$keys" '{
+  jq -n --arg t "$t" --arg rd "$rd" --arg pd "$pd" --arg hc "$hcmd" --arg ac "$acmd" --argjson pl "$keys" '{
     permissions: {
       defaultMode: "acceptEdits",
       allow: ([
@@ -1198,7 +1237,8 @@ write_settings() {
              ("Bash(bash " + $pd + "/*..*)"), ("Bash(" + $pd + "/*..*)")],
       additionalDirectories: [($rd + "/state"), ($rd + "/halt")]
     },
-    hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $hc}]}]},
+    hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $hc}]},
+                         {matcher: "Agent|Task", hooks: [{type: "command", command: $ac}]}]},
     enabledPlugins: $pl
   }' > "$f"
 }
@@ -1333,6 +1373,31 @@ halt_note() {
 # branch_reason <run dir> <branch> <head> — the first invalid reason of the
 # branch report, nothing when it is valid. Also leaves the promoted slugs in
 # <run dir>/promoted.
+# actual_bad <run dir> <promoted list> <model> — the promoted seats whose
+# spawned members, as the Agent hook logged them, did not run on the branch's
+# model: `<seat>=<models>`, or `<seat>=없음` for a seat with no logged call. A
+# logged model is read by its family, since a call may name `sonnet` or a full
+# id such as `claude-sonnet-5-5`; a call that names none runs the lead's model.
+# On the sonnet branch every call of the seat must be `sonnet`; on an opus
+# branch one `opus` call is enough, since a limit-error respawn may run a
+# review seat on `sonnet` there.
+actual_bad() {
+  local rd="$1" pl="$2" want="$3" seat got
+  for seat in $(printf '%s' "$pl" | tr ';' '\n' | awk -F'=' '{ print $1 }'); do
+    got=$(awk -F'\t' -v s="$seat" -v lead="$LEAD_MODEL" '$2 == s {
+        m = $1
+        if (m == "-" || m == "" || m == "inherit") m = lead
+        else if (m ~ /opus/) m = "opus"
+        else if (m ~ /sonnet/) m = "sonnet"
+        else if (m ~ /haiku/) m = "haiku"
+        print m }' "$rd/agent-calls.tsv" 2>/dev/null | LC_ALL=C sort -u | paste -sd/ -)
+    if [[ -z "$got" ]]; then printf '%s=없음\n' "$seat"
+    elif [[ "$want" == "sonnet" && "$got" != "sonnet" ]]; then printf '%s=%s\n' "$seat" "$got"
+    elif [[ "$want" != "sonnet" && "/$got/" != *"/$want/"* ]]; then printf '%s=%s\n' "$seat" "$got"
+    fi
+  done | paste -sd, -
+}
+
 branch_reason() {
   local rd="$1" br="$2" head="$3" rp h ex date summ sp0 sp1 rhead pl ntier miss fp want bad kinds
   rp="$rd/report.md"
@@ -1350,6 +1415,8 @@ branch_reason() {
   want="opus"; [[ "$br" != "sonnet" ]] || want="sonnet"
   bad=$(printf '%s' "$pl" | tr ';' '\n' | awk -F'=' -v w="$want" '$2 != w { print $1 "=" $2 }' | paste -sd, -)
   if [[ -n "$bad" ]]; then echo "승격 모델 불일치 (${bad})"; return 0; fi
+  bad=$(actual_bad "$rd" "$pl" "$want")
+  if [[ -n "$bad" ]]; then echo "승격 실제 모델 불일치 (${bad})"; return 0; fi
   if [[ "$miss" != "0" ]]; then echo "좌석 줄 누락 (${miss}건)"; return 0; fi
 }
 
@@ -1391,6 +1458,7 @@ run_slot() {
       mkdir -p "$EXP/reports"
       if [[ -f "$rd/report.md" ]]; then cp "$rd/report.md" "$EXP/reports/${n}-${br}.md"; else rm -f "$EXP/reports/${n}-${br}.md"; fi
       deviations "$rd" > "$EXP/reports/${n}-${br}.deviations.tsv"
+      cp "$rd/agent-calls.tsv" "$EXP/reports/${n}-${br}.agents.tsv" 2>/dev/null || rm -f "$EXP/reports/${n}-${br}.agents.tsv"
       reason=$(branch_reason "$rd" "$br" "$head")
       if [[ -n "$reason" ]]; then
         note=$(halt_note "$rd")
@@ -1405,7 +1473,7 @@ run_slot() {
     else
       samples_put "$n" "$(printf '%s\t%s\t%s\t%s\t무효\t%s\t%s' "$n" "$nm" "$base" "$head" "$reason" "$(seats_cell "$n")")"
       say "sample ${n}: invalid — ${reason}; next reserve"
-      for br in $BRANCHES; do rm -rf "$ST/runs/${n}-${br}"; rm -f "$EXP/reports/${n}-${br}.md" "$EXP/reports/${n}-${br}.deviations.tsv"; done
+      archive_slot "$n" "$k"
       kv_set "$f" try $((k + 1))
     fi
   done
@@ -1413,7 +1481,16 @@ run_slot() {
 
 # ---------- pilot, status, rerun ---------------------------------------------
 
-pilot_ok() { [[ "$(head -n 1 "$EXP/pilot/result" 2>/dev/null || true)" == "통과" ]]; }
+# The pilot runs the sonnet branch first, since that is the branch whose
+# promoted seats must leave `opus`, then opus-1. It passes only when both do,
+# and pilot/result names each branch it judged, so a result written before the
+# pilot ran both does not open the main run.
+PILOT_BRANCHES="sonnet opus-1"
+
+pilot_ok() {
+  [[ "$(head -n 1 "$EXP/pilot/result" 2>/dev/null || true)" == "통과" ]] \
+    && grep -qx $'갈래\tsonnet\t통과' "$EXP/pilot/result"
+}
 
 # deviations <run dir> — two `키<TAB>값` lines: `거부` (the session's refused
 # tool calls, `<count> <tool>…`, or `-` when the JSON has no
@@ -1428,40 +1505,57 @@ deviations() {
   printf '거부\t%s\n미승인\t%s\n' "${den:--}" "$(awk 'END { print NR }' "$rd/witness-misses.log" 2>/dev/null || echo 0)"
 }
 
-run_pilot() {
-  mkdir -p "$EXP/pilot"
-  if pilot_ok; then say "pilot already passed → $EXP/pilot/result"; exit 0; fi
-  local nm rd head reason cost why
-  nm=$(sample_name 1 0)
-  rd="$ST/pilot/opus-1"
-  head=$(sel_field "$nm" 6)
-  if (( rejudge == 1 )); then
-    # Judge the session the last pilot left, without starting one: its
-    # result.json is there and the last pilot/result names the same sample.
-    [[ -f "$rd/result.json" && "$(kv "$EXP/pilot/result" 보고서)" == "$nm" ]] \
-      || die "no finished pilot session of $nm under $rd to judge again; no billed call was made"
-  else
-    rm -rf "$rd"
-    write_session_env
-    prepare_branch pilot opus-1 "$nm" "$rd"
-    review_branch pilot opus-1 "$rd"
-  fi
-  [[ ! -f "$rd/report.md" ]] || cp "$rd/report.md" "$EXP/pilot/report.md"
+# judge_pilot <branch> <sample> <head> <run dir> — pilot/<branch>/result: the
+# verdict line, cost, report and deviations; prints the verdict line.
+judge_pilot() {
+  local br="$1" nm="$2" head="$3" rd="$4" o="$EXP/pilot/$1" cost why="" reason
+  mkdir -p "$o"
+  [[ ! -f "$rd/report.md" ]] || cp "$rd/report.md" "$o/report.md"
+  cp "$rd/agent-calls.tsv" "$o/agents.tsv" 2>/dev/null || rm -f "$o/agents.tsv"
   cost=$(jq -r 'if type == "object" and (.total_cost_usd | type) == "number" then .total_cost_usd else empty end' "$rd/result.json" 2>/dev/null || true)
-  why=""
   if [[ -n "$(halt_note "$rd")" ]]; then why="중단 기록이 있다$(halt_note "$rd")"
   else
-    reason=$(branch_reason "$rd" opus-1 "$head")
+    reason=$(branch_reason "$rd" "$br" "$head")
     if [[ -n "$reason" ]]; then why="$reason"
     elif [[ -z "$cost" ]]; then why="total_cost_usd 가 JSON 에 없다"
     fi
   fi
-  if [[ -z "$why" ]]; then
-    { printf '통과\n비용\t%s\n보고서\t%s\n' "$cost" "$nm"; deviations "$rd"; } > "$EXP/pilot/result"
-    say "pilot passed (cost ${cost}) → $EXP/pilot/result"; exit 0
-  fi
-  { printf '실패 — %s\n비용\t%s\n보고서\t%s\n' "$why" "${cost:--}" "$nm"; deviations "$rd"; } > "$EXP/pilot/result"
-  say "pilot failed — ${why} → $EXP/pilot/result"; exit 1
+  { if [[ -z "$why" ]]; then echo "통과"; else echo "실패 — $why"; fi
+    printf '비용\t%s\n보고서\t%s\n' "${cost:--}" "$nm"; deviations "$rd"; } > "$o/result"
+  head -n 1 "$o/result"
+}
+
+run_pilot() {
+  mkdir -p "$EXP/pilot"
+  if pilot_ok; then say "pilot already passed → $EXP/pilot/result"; exit 0; fi
+  local nm rd head br line verdict="통과" sum=0 c lines=""
+  nm=$(sample_name 1 0)
+  head=$(sel_field "$nm" 6)
+  for br in $PILOT_BRANCHES; do
+    rd="$ST/pilot/$br"
+    if (( rejudge == 1 )); then
+      # Judge the session the last pilot left, without starting one: its
+      # result.json is there and that branch's last result names the sample.
+      [[ -f "$rd/result.json" && "$(kv "$EXP/pilot/$br/result" 보고서)" == "$nm" ]] \
+        || die "no finished pilot session of $nm under $rd to judge again; no billed call was made"
+    elif [[ -f "$rd/result.json" && "$(head -n 1 "$EXP/pilot/$br/result" 2>/dev/null || true)" == "통과" \
+            && "$(kv "$EXP/pilot/$br/result" 보고서)" == "$nm" ]]; then
+      : # this branch passed in an earlier pilot; its session is kept and not run again
+    else
+      rm -rf "$rd"
+      write_session_env
+      prepare_branch pilot "$br" "$nm" "$rd"
+      review_branch pilot "$br" "$rd"
+    fi
+    line=$(judge_pilot "$br" "$nm" "$head" "$rd")
+    c=$(kv "$EXP/pilot/$br/result" 비용)
+    [[ "$c" == "-" ]] || sum=$(awk -v a="$sum" -v b="$c" 'BEGIN { print a + b }')
+    lines="${lines}$(printf '갈래\t%s\t%s' "$br" "$line")"$'\n'
+    if [[ "$line" != "통과" ]]; then verdict="실패 — ${br}: ${line#실패 — }"; break; fi
+  done
+  { echo "$verdict"; printf '비용\t%s\n보고서\t%s\n' "$sum" "$nm"; printf '%s' "$lines"; } > "$EXP/pilot/result"
+  if [[ "$verdict" == "통과" ]]; then say "pilot passed (cost ${sum}) → $EXP/pilot/result"; exit 0; fi
+  say "pilot failed — ${verdict#실패 — } → $EXP/pilot/result"; exit 1
 }
 
 show_status() {
@@ -1475,9 +1569,24 @@ show_status() {
   return 0
 }
 
+# archive_slot <n> <k> — an invalid try's runs and records move aside, to
+# <state>/invalid/<n>-<k>-<branch> and reports/invalid/<n>-<k>-<branch>.*, so the
+# reason stays checkable; the next try starts from empty run directories.
+archive_slot() {
+  local n="$1" k="$2" br x
+  mkdir -p "$ST/invalid" "$EXP/reports/invalid"
+  for br in $BRANCHES; do
+    rm -rf "$ST/invalid/${n}-${k}-${br}"
+    [[ ! -d "$ST/runs/${n}-${br}" ]] || mv "$ST/runs/${n}-${br}" "$ST/invalid/${n}-${k}-${br}"
+    for x in md deviations.tsv agents.tsv; do
+      [[ ! -f "$EXP/reports/${n}-${br}.$x" ]] || mv "$EXP/reports/${n}-${br}.$x" "$EXP/reports/invalid/${n}-${k}-${br}.$x"
+    done
+  done
+}
+
 discard_slot() {
   local n="$1" br
-  for br in $BRANCHES; do rm -rf "$ST/runs/${n}-${br}"; rm -f "$EXP/reports/${n}-${br}.md" "$EXP/reports/${n}-${br}.deviations.tsv"; done
+  for br in $BRANCHES; do rm -rf "$ST/runs/${n}-${br}"; rm -f "$EXP/reports/${n}-${br}".{md,deviations.tsv,agents.tsv}; done
   rm -f "$(slot_state "$n")"
   samples_put "$n" ""
 }
