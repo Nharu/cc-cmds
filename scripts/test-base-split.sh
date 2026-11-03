@@ -1506,6 +1506,11 @@ has "record --started: says the raced document is not a ticket delivery design" 
 check "record --started: nothing is written after a raced refusal" \
   "$(cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
 check "record --started: the lock is gone after a raced refusal" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
+run_bs revise "$RV/nodir/up.md" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
+check "revise: a document in a missing directory is a usage error" "$rc" "2"
+run_bs record --started "$RV/docs/missing.md" --ticket T1 --run r1
+check "record --started: a missing document is a usage error and takes no lock" \
+  "$rc:$([ -e "$RV/docs/missing.md.revise.lock" ] && echo y || echo n)" "2:n"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

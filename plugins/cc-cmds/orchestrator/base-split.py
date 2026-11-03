@@ -2085,6 +2085,13 @@ def take_lock(doc_path, run):
     return path
 
 
+def require_doc_file(path):
+    """A missing document is a usage error before the lock is tried, as Doc
+    reports it; only whether the path is a file is looked at here."""
+    if not os.path.isfile(path):
+        raise UsageError("cannot read %s (FileNotFoundError)" % path)
+
+
 def drop_lock(path):
     holder = os.path.join(path, "holder")
     if os.path.exists(holder):
@@ -2121,6 +2128,7 @@ def cmd_record_started(args):
     if not args.ticket or not args.run:
         raise UsageError("--started needs --ticket and --run")
     # The lock comes first: the document and the registry are read under it.
+    require_doc_file(args.doc)
     try:
         if not RUN_ID_RE.match(args.run):
             raise Refused("런 id 를 등록부에 쓸 수 없음")
@@ -2611,6 +2619,7 @@ def cmd_revise(args):
             raise UsageError("revise needs --from, --to, --ticket and --run")
     # The lock is the first act: the document is read and checked under it, so
     # a revision that finished in between is seen as a sha256 that moved.
+    require_doc_file(args.doc)
     try:
         if not RUN_ID_RE.match(args.run):
             raise Refused("런 id 꼴 어긋남")
