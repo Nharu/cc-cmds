@@ -1416,6 +1416,17 @@ check "수정 대상 조각: 공통 파일의 시작 조건이 두 조각을 모
 check "공통 fix-cycle 파일을 가리키는 파일은 두 무인 스킬뿐이다" \
   "$(cd "$repo_root" && grep -rl 'fix-cycle' plugins/cc-cmds/skills | LC_ALL=C sort | tr '\n' ' ')" \
   "plugins/cc-cmds/skills/implement-unattended/SKILL.md plugins/cc-cmds/skills/review-unattended/SKILL.md "
+iu_15a=$(grep -F -- '- **1.5a — Discovery & classification (read-only)**' "$IU" 2>/dev/null || true)
+for lit in \
+  'identical to the base skill, with one exception' \
+  'an item graded `반증됨(실패)` whose `반증 시 처리` reads `파킹`' \
+  '「A parking item the document already grades `반증됨(실패)`」'
+do
+  check "1.5a 의 종단 등급 건너뜀이 파킹 항목을 예외로 둔다: ${lit}" \
+    "$(printf '%s\n' "$iu_15a" | grep -cF -- "$lit" || true)" "1"
+done
+check "1.5a 가 가리키는 파킹 항목 정지 불릿이 있다" \
+  "$(grep -cF -- '- **A parking item the document already grades `반증됨(실패)` is not measured again.**' "$IU" || true)" "1"
 check "공통 fix-cycle 파일에 질문 면과 알림 면 문자열이 없다" \
   "$(grep -cE -- 'AskUserQuestion|question_form|EnterPlanMode|ExitPlanMode|PushNotification|notify\.sh|terminal-notifier' "$FC" 2>/dev/null || true)" "0"
 fc_copies=0
@@ -1490,6 +1501,8 @@ done
 check "두 사본의 구현 뒤 라우팅 절이 바이트 동일하다" "$in_sec_rs" "$in_sec_ap"
 check "리드 사본의 키 표가 implement_next[] 행을 싣는다" \
   "$(grep -c -- '^| `implement_next\[\]` |' "$AP_ROUTER" || true)" "1"
+check "리드 사본의 키 표가 refutation_next[] 행을 싣는다" \
+  "$(grep -c -- '^| `refutation_next\[\]` |' "$AP_ROUTER" || true)" "1"
 ha_sec=$(router_section "$RS_CORPUS" "#### Handing on a person's answer to a halt")
 for lit in \
   '| `빈-대상` | 7 |' \

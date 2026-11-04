@@ -97,3 +97,15 @@ A `--hotfix` kickoff (SKILL.md 「핫픽스 킥오프」) freezes through this s
 
 The manifest's `## 실행 계획` carries the entry judgment's plan with `run_profile` `hotfix`, and the entry checker above asserts its fixed frame. A frozen hotfix plan launches only in a routing run: `run.sh` refuses it otherwise, before anything else runs.
 
+## 리뷰어 킥오프
+
+A reviewer kickoff (SKILL.md 「리뷰어 킥오프」) freezes through this same file, with these differences and nothing else.
+
+- **One approval, two fields**, as on a hotfix kickoff: the person's `이대로` utterance on the screen of `references/boundaries.md` 「리뷰어 킥오프의 고정값과 승인 화면」 is written verbatim as the manifest's `승인 문면` and as the authorization record's `사용자 확인 문면`.
+- **No `재킥오프` row and no interview record row.** `설계 문서` is `(없음)` and `리뷰 대상` is `(없음)`.
+- **The four reviewer rows under `## 인가`**, in this form (`_common/pipeline-sidecar.md` 「2b.1」): one `- \`리뷰 PR\` | 세그먼트=P<k> | 대상=<별칭> | PR=<번호> | 작성자=<login> | 드래프트=예|아니오 | 베이스=<브랜치>` row per confirmed pull request, `P1`, `P2`, … in the screen's order, each `대상` a target row whose `원격 슬러그` is that pull request's repository; exactly one `- \`리뷰 게시\` | 방식=보류|직접 | 의사표시=허용|낮춤 | 계정=<login>` row, `계정` being the login the kickoff read; one `- \`리뷰 깊이\` | 깊이=전체|가벼움` row; and one `- \`리뷰 문면\` | 파일=docs/pipeline-run/<run id>.review-format.md | sha256=<hex> | 원천=기본|킥오프` row, the file written before the manifest. All four are in the binding set.
+- **The `사전 인가` rows the screen kept**: one review-post row per pull request, the `git fetch` row and the `git worktree` row. No `git push` row.
+- **One `종료 절` row per pull request**, its `문면` saying the review is posted on that pull request and its read-back matches.
+
+The manifest's `## 실행 계획` carries the entry judgment's plan with `run_profile` `reviewer`, and the entry checker asserts its fixed frame. A frozen reviewer plan launches only in a routing run: `run.sh` refuses it otherwise.
+

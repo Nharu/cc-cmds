@@ -288,5 +288,31 @@ A `--hotfix` kickoff (SKILL.md 「핫픽스 킥오프」) asks four questions. E
 
 Then ask one question — header `계획 승인`, options `이대로` and `고칠 항목 지정`, **no recommendation suffix on either** (the screen widens the run, and the skill does not recommend accepting that). `고칠 항목 지정` leads to one multi-select question (header `고칠 항목`) whose options are only the values on the screen that are not fixed — each target's cutpoint and identifiers and apply values, the deadline, the ladder, the cost ceiling, the stagnation bound, the terminal-act cap, the standard pre-authorization rows and the document path — and asks again only the values chosen, each as its question in this file asks it, then shows the screen again. The graph, the review policy ceiling, the review field, the launch and the `재킥오프` row are not offered: a person who wants them otherwise runs a kickoff without `--hotfix`. On `이대로` append the trace line `기본값 확정`; the utterance is recorded by `references/freeze.md` 「핫픽스 킥오프」.
 
+## 리뷰어 킥오프의 고정값과 승인 화면
+
+A reviewer kickoff (SKILL.md 「리뷰어 킥오프」) asks five questions. Every other answer of this file is fixed here and shown on one approval screen.
+
+**Fixed values.**
+
+- **Cutpoint** — `커밋` on every target row. No act of the run reaches past a commit height: the review post is an external write the gate judges at `커밋`, and nothing is pushed or merged.
+- **Graph** — the reviewer frame: one `review` step, no design, no audit, no implementation. The router plans one review-only segment per pull request.
+- **Launch** — immediate. 5n is not asked.
+- **No `재킥오프` row** — a reviewer run is not continued by a successor; a new kickoff starts the next one.
+- **No roster, no design document, no interview record** — 5k and 5j are not asked; the manifest's `설계 문서` is `(없음)`.
+- **Only when the defaults file gives no value**: the deadline is the kickoff time plus six hours, the ladder is `2` rungs, the terminal-act cap is `없음`, and there are no `자동 채택` and no `플러그인 허용` rows; the cost ceiling and the stagnation bound take the defaults file's value and are `없음` otherwise.
+- **Not asked**: 5b, 5c, 5s, 5t and 5u.
+
+**Pre-authorization rows.** One `사전 인가` row per pull request, `형태=gh api -X POST repos/<owner>/<name>/pulls/<n>/reviews`, with `사유` naming that pull request; one `git fetch` row (the pull request heads and bases under `refs/cc-review/`) and one `git worktree` row (the detached review worktrees). No `git push`, `gh pr create` or `gh api -X PUT` row.
+
+**The approval screen.** Append the trace line `기본값 고지`, then show, without emoji:
+
+- first, the block headed 「[이번 런이 새로 갖게 되는 권한] — 「이대로」 한 번으로 아래 권한이 모두 이 런에 생깁니다」: each pull request's review post row, in bold with the tag `[권한 확대]`, prefixed with its slug and number, and the posting account;
+- the line 「리뷰어 런 — 남이 쓴 PR 을 리뷰만 하고, 작성자 브랜치에는 쓰지 않습니다」;
+- per pull request: slug#number, title, author, draft or ready, base, and the excluded ones with 「제외(본인 작성)」;
+- the posting `방식` and `의사표시`, the depth and the wording file with its source;
+- the run-wide values, each marked `기본값` or `고정값`, and one termination clause per pull request (「PR <slug>#<n> 에 리뷰를 게시하고 대조가 일치한다」).
+
+Then ask one question — header `계획 승인`, options `이대로` and `고칠 항목 지정`, no recommendation suffix on either. `고칠 항목 지정` asks again only the values the person names among the pull request set, the posting values, the depth, the wording, the deadline, the ladder, the cost ceiling and the stagnation bound, then shows the screen again. On `이대로` append the trace line `기본값 확정`; the utterance is recorded by `references/freeze.md` 「리뷰어 킥오프」.
+
 ---
 
