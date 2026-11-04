@@ -35697,7 +35697,7 @@ EOF
       # (`판정 근거`, normalized, masked and cut by the gate) and each item's
       # grade (`측정 등급`). The gate stamps `판정 주체=좌석` and
       # `판정 신호=관측 근거`.
-      local hfix hfex hgr hfx=() hroute=''
+      local hfix hfex hgr hxj='' hxs='' hxe='' hxg='' hxr='' hroute=''
       hfix=$(gate_field_of '고칠 곳' "$@"); hfex=$(gate_field_of '판정 근거' "$@"); hgr=$(gate_field_of '측정 등급' "$@")
       if [ -n "$hfix$hfex$hgr" ]; then
         if [ -z "$hseatrun" ]; then
@@ -35715,13 +35715,13 @@ EOF
             warn "\`고칠 곳=${hfix}\` carries \`판정 근거\` — the excerpt of the run's output it rests on"
             return "$GATE_EXIT_VOCAB"
           fi
-          hfx=("고칠 곳=$hfix" "판정 주체=좌석" "판정 신호=관측 근거")
-          [ -z "$hfex" ] || hfx+=("판정 근거=$(gate_fix_excerpt "$hfex")")
+          hxj='좌석'; hxs='관측 근거'
+          [ -z "$hfex" ] || hxe=$(gate_fix_excerpt "$hfex")
         fi
         if [ -n "$hgr" ]; then
           gate_fix_grades_ok "$hgr" \
             || { warn "\`측정 등급\` is \`R<n>:<등급>[,R<m>:<등급>…]\` with each grade one of 검증됨(통과) · 반증됨(실패) · 검증불가(드리프트) · 구현 시 검증: $hgr"; return "$GATE_EXIT_VOCAB"; }
-          hfx+=("측정 등급=$hgr")
+          hxg=$hgr
         fi
       fi
       # ONE SEAT RUN PER ITEM WHILE AN EXTERNAL HOLD STANDS. A segment parked on
@@ -36050,7 +36050,7 @@ EOF
       fi
       # The route `외부-보류` is stamped on the row: the consumer, the park's
       # copy of the judgment and the hold predicate read the token alone.
-      [ "$GATE_HALT_ROUTE_ID" != "외부-보류" ] || hfx+=("라우팅=외부-보류")
+      [ "$GATE_HALT_ROUTE_ID" != "외부-보류" ] || hxr='외부-보류'
       if [ "$hby" != "사람" ]; then
         if [ "$hby" = "교대" ]; then
           log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
@@ -36071,7 +36071,9 @@ EOF
           ${hkinds:+"근거 종류=$hkinds"} ${hsac:+"좌석 커밋=$hsac"} ${hsana:+"적용 파일=$hsana"} \
           ${hsafr:+"승인 프레임=$hsafr"} ${hsasn:+"적용 범위 수=$hsasn"} ${hsasd:+"적용 범위 다이제스트=$hsasd"} \
           ${hsacf:+"승계 프레임=$hsacf"} ${hsacr:+"승계 원본=$hsacr"} ${hsanh:+"사람 몫=$hsanh"} \
-          ${hladder:+"잔여 판정=$hladder"} ${hfx[@]+"${hfx[@]}"} "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
+          ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} ${hxs:+"판정 신호=$hxs"} \
+          ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \
+          "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
           "레인=$hlane" "기록 시각=$hat")
         [ "$hlen" -le "$GATE_ROW_MAX" ] && break
         hw=$((hw - 40))
@@ -36121,7 +36123,9 @@ EOF
         # vector, and nothing is notified from it.
         gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
           "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
-          ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} ${hfx[@]+"${hfx[@]}"} "기록 다이제스트=$hdig" \
+          ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} \
+          ${hxs:+"판정 신호=$hxs"} ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \
+          "기록 다이제스트=$hdig" \
           ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
           "레인=$hlane" "기록 시각=$hat"
       fi
@@ -39179,6 +39183,8 @@ gate_apply_target_stop_block() {
   # once per stop: a block for the same alias and segment after the stopping
   # park row is not written again.
   local alias="$1" seg="$2" stopper="$3" pl fx=() f
+  # The gate's own writer: `판정 주체=게이트` on the row below is its stamp.
+  local GATE_FIX_STAMP=1
   pl=$(gate_apply_seg_rows_n "$stopper" | gate_rows_field_eq '판정 신호' "$APPLY_TARGET_SIGNAL" | tail -1 | cut -d: -f1)
   if [ -n "$(LC_ALL=C awk -v l="${pl:-0}" -v r="사유=대상 적용 정지 $alias" -v s="세그먼트=$seg" '
        NR > l && index($0, "- `blocked` ") == 1 && index($0, "| 스코프=act |") \
@@ -39191,7 +39197,7 @@ $(apply_target_judgment)
 EOF
   if gate_fix_fits 'blocked' "대상=$alias" "세그먼트=$seg" "스코프=act" "원인=막힘" \
        "사유=대상 적용 정지 $alias" "재개 명령=-" "${fx[@]}"; then
-    GATE_FIX_STAMP=1 gate_append 'blocked' "대상=$alias" "세그먼트=$seg" "스코프=act" "원인=막힘" \
+    gate_append 'blocked' "대상=$alias" "세그먼트=$seg" "스코프=act" "원인=막힘" \
       "사유=대상 적용 정지 $alias" "재개 명령=-" "${fx[@]}"
   else
     gate_append 'blocked' "대상=$alias" "세그먼트=$seg" "스코프=act" "원인=막힘" \
