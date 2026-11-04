@@ -1166,7 +1166,9 @@ readonly GATE_FIX_EXCERPT_MAX=160
 
 gate_fix_in() {
   # gate_fix_in <closed set> <value> — the value is one line of the set.
-  [ -n "$2" ] && printf '%s\n' "$1" | grep -qxF -- "$2"
+  [ -n "$2" ] && grep -qxF -- "$2" <<EOF
+$1
+EOF
 }
 
 gate_fix_mask() {
