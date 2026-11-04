@@ -854,7 +854,8 @@ process, so a consumer reads `last_activity_ms` as well as `state`.
 
 `autopilot-status.tsx` is a plugin module (`"modules"` in `hooks.json`), not a
 command hook. It is the plugin's only module entry, and its `register` also
-hands `register(on, options)` on to the question form under `question-form/`. In an interactive fullscreen session it docks, in a pane titled
+hands `register(on, options)` on to the question form under `question-form/`
+and then to the remote reply mode under `remote-reply/` (see the next section). In an interactive fullscreen session it docks, in a pane titled
 `autopilot`, the state of the one run the status line picked for this session:
 a title, the run's head line and its details, every segment with a detail line,
 the gate group (approvals, run-scope and cone-scope blocks with their full
@@ -1012,3 +1013,106 @@ returns when any of `CC_PIPELINE_SEGMENT`, `CC_PIPELINE_RUN_ID`,
 `CC_PIPELINE_STAGE_ID`, `CC_PIPELINE_SHIFT_ID` or `CC_PIPELINE_REENTRY` is non-empty. Only after both does the module register the
 command or start its clock, so a stage, a shift or a `-p` run gets no command,
 no process and no pane.
+
+## The remote reply seam
+
+`remote-reply/` puts an option answer the relay left in the attention spool's
+mailbox into this session's open question or question form, and picks up a
+run-address approval answer for the autopilot router seat. The formats
+(envelope, mailbox, pick-up marker, acceptance conditions, apply order, answer
+strings, wake literal, applied record) are fixed in
+`../skills/_common/remote-reply.md` and `../skills/_common/attention-event.md`;
+this section says which file moves them.
+
+| File | Role |
+| --- | --- |
+| `remote-reply/index.tsx` | The mode, registered by the run-status pane module right after the question form. Activation, the open-question race, the mailbox and watch clocks, the question-form apply, the idle check and the wake prompt |
+| `remote-reply/seam.sh` | Every read and write of the spool, as subcommands: `wait`, `commit`, `sat`, `scan`, `form-pick`, `form-unpick`, `form-record`, `wake-mark`, `cleanup` |
+| `remote-reply/pretool.sh` | The `PreToolUse(AskUserQuestion)` entry, the third for that matcher, `"timeout": 5`; it runs `seam.sh sat` |
+
+**Only the shell writes.** The mode looks at names with `$.fs` (the spool root
+`$HOME/.local/state/cc-cmds/attention`, the forward index, the mailboxes) and
+hands everything else to `seam.sh`, which sources `attention.sh` for the root,
+the host id and the time. Neither shell names the root's test seat. A rejection
+writes nothing, prints nothing and exits 0; nothing is shown on a screen.
+
+**Activation.** The mode turns on at an interactive `session.start` when the
+five pipeline markers (`CC_PIPELINE_SEGMENT`, `CC_PIPELINE_STAGE_ID`,
+`CC_PIPELINE_SHIFT_ID`, `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_REENTRY`) are all
+empty and `HOME` is set, so the person's router seat has it and a stage, a
+shift or a boot re-entry does not. Every hook passes a call with `agentId` on.
+While the spool root is not a directory the mode is asleep: a tick lists that
+one path and starts no process. Each shell entry sources `notify-run.sh` first
+and ends with rc 0 and no output when `cc_caller_is_router` is false;
+`pretool.sh` does the same for an input with `agent_id`.
+
+**The open question.** The mode's `tool.call` on `AskUserQuestion` starts the
+local dialog (`next(e)`) and one `seam.sh wait` child, which looks once a
+second for an envelope of this call and prints `<address> <reply_id>`. If the
+local dialog has ended by then, its result stands and nothing is written.
+Otherwise `seam.sh commit` checks the acceptance conditions, writes the pick-up
+marker (where it applies), claims the target cell, writes and reads back the
+applied record and leaves a handled marker with the cause `reply-applied`, and
+prints the answer map; the mode returns `{ result: { questions, answers } }`.
+A refused commit adds the reply id to the child's skip list and starts the
+child again. A call whose input already has `answers` is passed on untouched.
+
+**The pre-tool entry.** For one question opening with `승인 <approval_id> — `,
+`seam.sh sat` looks in each run mailbox of the forward index for a picked-up
+envelope of that approval that this session holds or inherits through the run's
+lineage, applies it with the same functions, and prints
+`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"answers":…}}}`.
+Anything else exits 0 with no output; it never waits.
+
+**The question form.** On a tick where this session's form is open and its own
+mailbox holds an envelope, `seam.sh scan` returns at most one acceptable form
+envelope. When the form has no draft at all (no choice, no free text, no note),
+the mode makes the pick-up marker with `form-pick`, then calls the question
+form's `applyRemote`, which checks open, id and no draft, applies `choose` per
+question and `submit` in one state update and, when it consumed the record,
+sends the bundle as the submit button does. The submitted text goes to
+`form-record`, which reads the event without the handled filter: the submit
+has already run the prompt hooks, whose return hook may have marked the event
+handled, and for a form envelope the applied record decides the result. When
+nothing was consumed, or the engine dropped the submit (a standing Stop, a host
+limit, a hook's refusal), `form-unpick` removes the marker and no record is
+written. On a dropped submit the question form leaves its pane and status line
+as they were, shows no sent toast, and puts the open record it consumed back,
+with its stored copy, when no other record has taken its place, so a person can
+still answer the same form by hand and a later tick can target it again. The
+return hook may already have marked the event handled during that submit; the
+envelope is then refused at the next `form-pick`, and the event carries a
+`return` marker with no applied record and no answer delivered.
+
+**Handled markers.** Every acceptance reads the spool's handled markers by the
+shared reader rules. The marker files reach one `jq` through a pipe, one line
+per file, never as arguments, so their number is not bounded by the argument
+limit; a file that does not parse is skipped. When the listing or the read of
+any marker file fails (a file removed mid-read, a permission error), the
+envelope is refused, since the unread marker may be the one that closes it.
+
+**Run-address pick-up and wake.** `scan` also picks up run-address envelopes
+for runs whose lineage lists this session and returns the approvals still to
+answer. The seat is idle when no main-loop turn is running and 45 seconds have
+passed since the last person input (a composer edit, a history recall or undo,
+a composer or bridge prompt; activation counts as one). On an idle tick the
+mode asks `wake-mark` to mark one envelope woken, checks the printed line
+against the wake literal's pattern and submits it as a plugin prompt. The
+literal starts with a tag, so the return hook does not read it as the person
+coming back.
+
+**Clocks.** A 15-second mailbox clock and a 40-second watch clock run together.
+The watch re-arms the mailbox clock when its last tick is more than 45 seconds
+old, the mailbox clock re-arms the watch past 120 seconds, and every event the
+mode hears applies the same checks. A tick skips while one is running, starts
+no process when no mailbox holds a `.json`, and does not call `scan` again
+within 60 seconds when the names, the open form id and the idle state are the
+same as the last call's. `seam.sh cleanup` runs right after activation and
+every 80 ticks; it removes pick-up markers, applied records and target cell
+files whose envelope is gone, and never an envelope, an event or a handled
+marker.
+
+**Target cells.** `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/remote-reply/target/<sha256>`
+holds the reply id that owns one cell (the call's `tool_use_id` or the form id),
+keyed by the spool root and the cell, so test spools and the real one never
+mix. It is how a cell finds its applied record.
