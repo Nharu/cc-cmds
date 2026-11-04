@@ -52196,6 +52196,214 @@ check "83e: 자동 처리를 끈 모드에서 도달 신고 없이도 PR라벨�
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83E"
 
 # ---------------------------------------------------------------------------
+# 83r. reach-screen — 런 없이 도달 판정 칸만 읽는 동사
+# --- section: 83r | group: reach | covers: reach-screen, plan, reach, gate_reach_disposition, gate_park_repair_line | anchors: 83r: reach-screen 의 칸과 수리 안내는 같은 입력의 plan 예측과 같다, 83r: reach-screen 은 런을 열지 않고 아무것도 쓰지 않는다, 83r: 원 관측 형태와 불투명 스크립트가 설계대로 갈린다, 83r: 옛 형식 수리 행은 축자 행을 더한 초안에서 통과한다, 83r: 새 형식 수리 칸은 축자 행으로 열리지 않는다, 83r: 킥오프 문면이 reach-screen 과 원천 문단을 담는다, 83r: 표면을 생략한 호출은 표 등급과 등급 출처를 돌려준다, 83r: 도달 신고가 필요한 호출은 신고필요 줄과 2 로 끝난다, 83r: 호출 환경 입력이 정한 대로 덮인다 ---
+#
+# 킥오프는 동결 전 초안 매니페스트로 잔여 레시피의 명령이 밤에 park 될지를 묻는다. 그
+# 답이 밤의 게이트와 같으려면 칸 계산이 `exec` 와 같은 코드여야 하므로, 이 절은 같은
+# 매니페스트·argv·신고로 `plan` 의 `park 예상` 칸·수리 안내와 나란히 잰다. 런 디렉터리가
+# 없는 초안에서 아무것도 쓰지 않는지는 새 상태 홈의 파일 목록을 부르기 전후로 비교해 잰다.
+# `reach-screen` 은 사전 인가 판단을 부르지 않으므로, 판단이 정하는 칸은 같음 비교에서 빼고
+# 원인 `판단` 과 고정 문장만 단언한다. 문면 고정은 킥오프 문면이 이 동사와 원천 문단을
+# 담는지를 레포 파일에서 읽는다.
+# ---------------------------------------------------------------------------
+CC_GATE_PREV_AR83R="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+rs_dir="$WORK/rs83r"
+rm -rf "$rs_dir"; mkdir -p "$rs_dir"
+# 불투명 스크립트는 대상 작업 트리 안에 둔다. `plan` 과 나란히 재는 1 은 상대 경로로
+# 부른다 — 절대 경로 스크립트는 `plan` 의 매니페스트 쓰기 방어가 도달 판정 전에 거절하고,
+# 그 축은 `reach-screen` 이 판정하지 않는다.
+mkdir -p "$WT/scripts"
+RS_REL="scripts/rs83r-p.sh"
+RS_SCR="$WT/scripts/rs83r-p.sh"
+printf '#!/bin/sh\nexit 0\n' > "$RS_SCR"
+# rs_call [--cwd <디렉터리>] <reach-screen 인자...> — 매니페스트는 RX_M. 표준 출력만 읽고,
+# 첫 줄·몸통(첫 줄과 마지막 줄 사이, 맨 앞 `수리: ` 를 뗀 것)·마지막 줄을 남긴다.
+rs_call() {
+  local cwd="$WT" out
+  [ "$1" = --cwd ] && { cwd="$2"; shift 2; }
+  out=$(cd "$cwd" && CC_CLAUDE_BIN="$PJ_STUB" PJ_DIR="$PJ_DIR" \
+    bash "$GATE" reach-screen --manifest "$RX_M" "$@" 2>"$rs_dir/err.txt"); RS_RC=$?
+  RS_OUT="$out"
+  RS_L1=$(printf '%s\n' "$out" | sed -n 1p)
+  RS_LAST=$(printf '%s\n' "$out" | sed -n '$p')
+  RS_BODY=$(printf '%s\n' "$out" | sed '1d;$d' | sed '1s/^수리: //')
+}
+rs_f() { printf '%s\n' "$RS_L1" | cut -f"$1"; }
+# rs_plan <표면> <도달> -- <argv...> — 같은 입력의 plan 예측. 칸과 수리 안내 몸통(머리말 뗀 것).
+rs_plan() {
+  local sf="$1" rr="$2"; shift 3
+  pj_gate plan --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+    --surface "$sf" --reach "$rr" --rationale t -- "$@"
+  RS_PRC=$rc; RS_PMSG=$msg
+  RS_PCELL=$(rx_cell)
+  RS_PBODY=$(sed -n 's/^[0-9TZ:-]* \[run\]\[warn\] \(repair.*\)$/\1/p' "$WORK/last-output.txt")
+}
+# rs_same <id> <표면> <도달> -- <argv...> — 두 동사의 판정·칸·수리 안내가 같은지 모은다.
+rs_same_fail=''
+rs_same() {
+  local id="$1" sf="$2" rr="$3"; shift 3
+  rs_plan "$sf" "$rr" "$@"
+  shift
+  rs_call --target front3 --surface "$sf" --reach "$rr" -- "$@"
+  local pc="${RS_PCELL:--}"
+  if [ "$RS_PRC" != "$RS_RC" ] || [ "$pc" != "$(rs_f 2)" ] || [ "$RS_PBODY" != "$RS_BODY" ]; then
+    rs_same_fail="$rs_same_fail[$id: plan rc=$RS_PRC 칸=$pc / reach-screen rc=$RS_RC 칸=$(rs_f 2) 안내 같음=$([ "$RS_PBODY" = "$RS_BODY" ] && echo 예 || echo 아니오): $RS_PMSG]"
+  fi
+}
+
+# 1 — 셀 같음. 판단을 부르지 않는 칸만 고른다(사전 인가 행이 없는 매니페스트이거나 축자
+# 행이 맞는 경우). 공백 인자 명령은 행이 있어 판단으로 가지만, 행이 취소되어 두 동사의
+# 수리 안내가 같은 「공백」 문구가 되므로 칸과 안내를 함께 잰다.
+pj_reset; PJ_VERDICT=park
+rx_manifest R83R ''
+rs_same claude 트리밖쓰기 기기전역 -- claude -p hello
+rs_same script-norow 트리밖쓰기 기기전역 -- bash "$RS_REL"
+rs_same script-runlocal 트리밖쓰기 런로컬 -- bash "$RS_REL"
+rs_same read 읽기 미상 -- git status --short
+rs_same write-unknown 트리밖쓰기 미상 -- touch "$rs_dir/out.txt"
+rx_manifest R83R "bash $RS_REL"
+rs_same script-row 트리밖쓰기 기기전역 -- bash "$RS_REL"
+rx_manifest R83R 'docker build -t img3:t ctx3'
+rs_same spaced 트리밖쓰기 기기전역 -- docker build -t img3:t "$rs_dir/ctx 3"
+check "83r: reach-screen 의 칸과 수리 안내는 같은 입력의 plan 예측과 같다" "$rs_same_fail" ""
+check "83r: 1 — 공백 인자 명령은 행으로 열림 아니오다" "$(rs_f 1)/$(rs_f 2)/$(rs_f 4)" "park/기기전역/아니오"
+
+# 2 — 부작용 없음. 새 상태 홈과 아직 런 디렉터리가 없는 런 id 의 초안(실행 계획 절 없음).
+rs_st=$(mktemp -d "$WORK/rs83r-state.XXXXXX")
+rs_draft="$rs_dir/draft.md"
+{
+  printf '# 파이프라인 런 매니페스트 — 초안\n'
+  printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=R83RDRAFT;\n'
+  printf '     anchor-kind=repo; anchor-key=t/front3; owner-doc=(없음); origin-worktree=%s;\n' "$WT"
+  printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+  printf '## 대상\n- `target` | 별칭=front3 | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/front3 | 절단점=배포 | 말단 행위 상한=없음\n\n' "$WT"
+  printf '## 인가\n- `사전 인가` | 형태=gh pr | 사유=테스트\n'
+} > "$rs_draft"
+rs_ls() { { find "$rs_st" "$WT/docs" 2>/dev/null || true; } | sort; }
+rs_before=$(rs_ls)
+rs_rcs=''
+rs_m_save="$RX_M"; RX_M="$rs_draft"
+for rs_c in "-|트리밖쓰기|기기전역|bash $RS_SCR" "-|읽기|-|git status --short" "-|-|-|claude -p hello" \
+            "--cutpoint|읽기|-|git status --short" "nosuch|읽기|-|git status --short"; do
+  IFS='|' read -r rs_x rs_sf rs_rr rs_argv <<RSEOF
+$rs_c
+RSEOF
+  rs_tg=front3; rs_extra=()
+  case "$rs_x" in --cutpoint) rs_extra=(--cutpoint 커밋) ;; nosuch) rs_tg=nosuch ;; esac
+  rs_opt=()
+  [ "$rs_sf" = - ] || rs_opt+=(--surface "$rs_sf")
+  [ "$rs_rr" = - ] || rs_opt+=(--reach "$rs_rr")
+  # shellcheck disable=SC2086
+  XDG_STATE_HOME="$rs_st" CC_GATE_PIN_DISABLE='' rs_call --target "$rs_tg" \
+    ${rs_extra[@]+"${rs_extra[@]}"} ${rs_opt[@]+"${rs_opt[@]}"} -- $rs_argv
+  rs_rcs="$rs_rcs $RS_RC:$([ -n "$RS_OUT" ] && echo 줄 || echo 없음)"
+done
+RX_M="$rs_m_save"
+check "83r: reach-screen 은 런을 열지 않고 아무것도 쓰지 않는다" "$(rs_ls)" "$rs_before"
+check "83r: 2 — 셀까지 간 호출은 0·11, 앞단 종료·거절은 판정 줄 없이 2 다" "${rs_rcs# }" "11:줄 0:줄 2:없음 2:없음 2:없음"
+pj_reset
+rs_call --target front3 --surface 트리밖쓰기 --reach 기기전역 -- bash "$RS_SCR"
+check "83r: 2 — reach-screen 은 판단 스텁을 부르지 않는다" "$(pj_calls)" "0"
+
+# 3 — 원 관측 형태와 불투명 스크립트(R3), 그리고 행 재대조.
+rx_manifest R83R ''
+rs_call --target front3 --surface 트리밖쓰기 --reach 기기전역 -- claude -p hello
+rs_r3a="$(rs_f 1)/$(rs_f 2)/$(rs_f 3)/$(rs_f 4)"
+rs_call --target front3 --surface 트리밖쓰기 --reach 기기전역 -- bash "$RS_SCR"
+rs_r3b="$(rs_f 1)/$(rs_f 4)"
+rx_manifest R83R "bash $RS_SCR"
+rs_call --target front3 --surface 트리밖쓰기 --reach 기기전역 -- bash "$RS_SCR"
+rs_r3c="$(rs_f 1)/$RS_RC"
+check "83r: 원 관측 형태와 불투명 스크립트가 설계대로 갈린다" "$rs_r3a|$rs_r3b|$rs_r3c" \
+  "park/신고등급한도/unlisted/아니오|park/예|통과/0"
+check "83r: 옛 형식 수리 행은 축자 행을 더한 초안에서 통과한다" "$rs_r3c" "통과/0"
+rx_manifest R83R ''
+rs_call --target front3 --surface 외부상태변경 --reach 기기전역 -- bash scripts/publish.sh "$HOME/.config/x"
+rs_x1="$(rs_f 2)/$(rs_f 3)/$(rs_f 4)"
+rx_manifest R83R "bash scripts/publish.sh $HOME/.config/x"
+rs_call --target front3 --surface 외부상태변경 --reach 기기전역 -- bash scripts/publish.sh "$HOME/.config/x"
+rs_x2="$(rs_f 1)/$(rs_f 2)"
+check "83r: 새 형식 수리 칸은 축자 행으로 열리지 않는다" "$rs_x1|$rs_x2" "기기전역/external/예|park/기기전역"
+
+# 4 — 문면 고정. 킥오프 문면이 동사와 다시 부르기 규칙·고지 문장을 담고, 원천 문단을
+# 가리키며, 가리킨 문단이 원천 파일에 실제로 있고, 좌석 실행 경계를 원천과 같은 말로 담는다.
+rs_sk="$repo_root/plugins/cc-cmds/skills"
+rs_txt_fail=''
+rs_has() { grep -qF -- "$2" "$1" || rs_txt_fail="$rs_txt_fail[${1#"$rs_sk"/}: $2]"; }
+rs_has "$rs_sk/autopilot/references/boundaries.md" 'gate.sh reach-screen --manifest <draft> --target <alias>'
+rs_has "$rs_sk/autopilot/references/freeze.md" 'gate.sh reach-screen --manifest <full draft> --target <alias>'
+rs_has "$rs_sk/autopilot/references/boundaries.md" 'When the `등급출처` reads `불투명`'
+rs_has "$rs_sk/autopilot/SKILL.md" '게이트 대조는 사전 인가 질문(5p)에서 합니다'
+rs_has "$rs_sk/autopilot/SKILL.md" 'Write `판정불가` for a command that cannot be one argv'
+for rs_q in '(a)/(b)/(d) read-only-local recipes run' 'Call external commands directly rather than inside `bash -c`.'; do
+  rs_has "$rs_sk/autopilot/SKILL.md" "$rs_q"
+  rs_has "$rs_sk/implement-unattended/SKILL.md" "$rs_q"
+done
+rs_has "$rs_sk/autopilot/references/boundaries.md" "A residual recipe this stage cannot run is the seat's to run."
+rs_has "$rs_sk/implement-unattended/SKILL.md" "A residual recipe this stage cannot run is the seat's to run."
+rs_has "$rs_sk/autopilot/references/boundaries.md" 'A halt that offers `좌석 실행` is run here, not asked.'
+rs_has "$rs_sk/autopilot/references/act2-seat.md" 'A halt that offers `좌석 실행` is run here, not asked.'
+for rs_q in 'every act of the recipe stays on this host or on dev without `--destructive`' \
+            'a recipe that needs `prod`, `협업`, `배포트리거`, a push or a destroying act'; do
+  rs_has "$rs_sk/autopilot/references/boundaries.md" "$rs_q"
+  rs_has "$rs_sk/implement-unattended/SKILL.md" "$rs_q"
+done
+check "83r: 킥오프 문면이 reach-screen 과 원천 문단을 담는다" "$rs_txt_fail" ""
+
+# 5 — 표면 생략과 도달 신고.
+rx_manifest R83R ''
+rs_call --target front3 -- git status --short
+check "83r: 표면을 생략한 호출은 표 등급과 등급 출처를 돌려준다" "$(rs_f 1)/$(rs_f 5)/$(rs_f 6)/$(rs_f 7)" "통과/읽기/표/불요"
+rs_call --target front3 -- claude -p hello
+check "83r: 5 — 표면 없는 등급표 밖 명령은 판정 줄 없이 2 다" "$RS_RC/${RS_OUT:-없음}" "2/없음"
+rs_call --target front3 --surface 트리밖쓰기 --reach 미상 -- touch "$rs_dir/out.txt"
+rs_u1="$(rs_f 2)/$(rs_f 4)"
+rs_call --target front3 --surface 트리밖쓰기 --reach 미상 -- docker build -t img3:t "$rs_dir/ctx3"
+rs_u2="$(rs_f 2)/$(rs_f 4)/$(rs_f 8)"
+check "83r: 5 — 미상 신고는 유도와 무관하게 도달미상·아니오 다" "$rs_u1|$rs_u2" "도달미상/아니오|도달미상/아니오/기기전역"
+rs_call --target front3 --reach 런로컬 -- bash "$RS_SCR"
+rs_o1="$(rs_f 1)/$(rs_f 2)/$(rs_f 3)/$(rs_f 4)/$(rs_f 6)"
+rs_call --target front3 --surface 워크트리쓰기 --reach 런로컬 -- bash "$RS_SCR"
+check "83r: 5 — 불투명 스크립트는 표면 없이 opaque 로, 정직 신고 표면으로 통과한다" \
+  "$rs_o1|$(rs_f 1)" "park/신고등급한도/opaque/예/불투명|통과"
+rs_call --target front3 -- docker build -t img3:t "$rs_dir/ctx3"
+rs_n1="$RS_RC/$(rs_f 1)/$(rs_f 2)/$(rs_f 7)/$(rs_f 8)"
+rs_call --target front3 --reach "$(printf '%s\n' "$rs_n1" | cut -d/ -f5)" -- docker build -t img3:t "$rs_dir/ctx3"
+check "83r: 도달 신고가 필요한 호출은 신고필요 줄과 2 로 끝난다" "$rs_n1|$RS_RC/$(rs_f 2)/$(rs_f 3)" \
+  "2/신고필요/-/필요/기기전역|11/기기전역/no-row"
+
+# 6 — 호출 환경 입력. 런로컬 증명이 걸리는 프로그램은 낮춰지지 않고, 꺼짐 환경도 켜짐과
+# 같고, 상대 경로는 대상 행의 워크트리 기준으로 풀리며, 판단 칸은 원인 `판단` 과 고정
+# 문장이고, 마지막 줄은 도달 판정 축만 판정했다고 적는다.
+rs_env_fail=''
+rs_call --target front3 --surface 트리밖쓰기 --reach 기기전역 -- mktemp -d "${TMPDIR:-/tmp}/cc-proto-R83R-S1#1.XXXXXX"
+[ "$(rs_f 1)/$(rs_f 2)" = park/기기전역 ] || rs_env_fail="$rs_env_fail[mktemp: $RS_L1]"
+rs_call --target front3 --reach 런로컬 -- bash "$RS_SCR"
+rs_on="$RS_RC|$RS_OUT"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0 rs_call --target front3 --reach 런로컬 -- bash "$RS_SCR"
+[ "$RS_RC|$RS_OUT" = "$rs_on" ] || rs_env_fail="$rs_env_fail[꺼짐: $RS_L1]"
+# 부르는 자리는 작업 트리 밖이고 임시 디렉터리 밖인 루트 디렉터리다 — 임시 디렉터리 아래
+# 쓰기는 작업 트리 쓰기와 같은 등급이라 대조가 갈리지 않는다. 피연산자로 등급이 갈리는
+# `mv` 를 쓴다(`touch` 는 이름으로 등급이 정해져 경로가 등급을 바꾸지 않는다). 명령은
+# 실행되지 않는다.
+rs_call --cwd / --target front3 -- mv rs83r-a.txt rs83r-b.txt
+[ "$(rs_f 1)/$(rs_f 5)" = 통과/워크트리쓰기 ] || rs_env_fail="$rs_env_fail[상대 경로: rc=$RS_RC $RS_L1]"
+rs_call --cwd / --target front3 -- mv /rs83r-a.txt /rs83r-b.txt
+[ "$(rs_f 1)" = 신고필요 ] || rs_env_fail="$rs_env_fail[절대 경로 대조: rc=$RS_RC $RS_L1]"
+[ "$RS_LAST" = '축: 도달 판정' ] || [ "$RS_RC" = 2 ] || rs_env_fail="$rs_env_fail[마지막 줄: $RS_LAST]"
+rs_call --target front3 -- git status --short
+[ "$RS_LAST" = '축: 도달 판정' ] || rs_env_fail="$rs_env_fail[통과 마지막 줄: $RS_LAST]"
+rx_manifest R83R 'docker build -t img3:t ctx3'
+rs_call --target front3 --surface 트리밖쓰기 --reach 기기전역 -- docker build -t img3:t "$rs_dir/ctx3"
+[ "$(rs_f 2)/$(rs_f 3)/$(rs_f 4)|$RS_BODY|$RS_LAST" = "기기전역/판단/예|축자 행이면 판단 없이 열리고, 그 밖은 밤의 판단 호출이 정한다|축: 도달 판정" ] \
+  || rs_env_fail="$rs_env_fail[판단: $RS_OUT]"
+check "83r: 호출 환경 입력이 정한 대로 덮인다" "$rs_env_fail" ""
+rm -rf "$rs_dir" "$rs_st" "$RS_SCR"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83R"
+
+# ---------------------------------------------------------------------------
 # 83p. 짝 정리 — 행위 직전에 열고, 스테이지 끝과 런 끝에 한 번만 부르고, 잔여를 드러낸다
 # --- section: 83p | group: reach | covers: gate_pair_open, gate_pair_append, gate_pair_drain, gate_preauth_pair_argv, gate_done_note, gate_end_run, driver_pair_drain_row, pair-residue | anchors: 83p: 스테이지 끝 정리가 성공하면 그 파견의 잔여가 빈다, 83p: 실패한 정리는 런 끝에도 다시 부르지 않는다, 83p: gate_end_run 의 정리는 done 이 서기 전에 돈다, 83p: 동시에 돈 두 정리가 한 번만 부른다, 83p: 같은 단위의 열림은 하나다, 83p: plan 은 열지 않고 예보만 한다, 83p: pair-residue 동사가 판독기와 같은 바이트를 낸다 ---
 #
