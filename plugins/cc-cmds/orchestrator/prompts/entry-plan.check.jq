@@ -51,8 +51,14 @@
 #       gate entry, and refusing it would stop runs that are already frozen.
 #       Whether a path really is a surface is the classifier's to say, not this
 #       file's: (e) checks the shape the kickoff reads out, nothing more.
-#   (f) a `run_profile` reads `hotfix` or `standard`, and a plan without the
-#       key reads `standard`. A `hotfix` plan is the fixed frame the `--hotfix`
+#   (f) a `run_profile` reads `hotfix`, `reviewer` or `standard`, and a plan
+#       without the key reads `standard`. A `reviewer` plan is the fixed frame
+#       the prompt writes for a review-only run: no design, the `solo` tier on
+#       both tier keys and no heavy reason, `design_path` `none`, the `single`
+#       scope, `estimated_files` 0, `work_class` `other`, exactly one step
+#       `R1` `review` with no prerequisite, `entry_skill` `review`,
+#       `anchor_kind` `intent`, and an `enforcement_surface` of `없음` with no
+#       class, no path and the `의도` source. A `hotfix` plan is the fixed frame the `--hotfix`
 #       kickoff fills: the `solo` tier, the `single` scope, and its steps'
 #       skills exactly `design` → `implement` → `review`. Its `unresolved`
 #       carries only the stop notices of the enforcement surface: empty when
@@ -94,12 +100,53 @@ def blank:
 def report:
   if length > 0 then (join("\n") + "\n") | halt_error(1) else empty end;
 
-# (f), as a list of violations.
-def hotfix_violations:
+# (f), the reviewer frame: every key the frame fixes, one violation each.
+def reviewer_violations:
+  . as $p
+  | ( if $p.design_required != false then
+        "(f) 리뷰어 계획의 design_required 가 false 가 아닙니다: \($p.design_required | tojson)"
+      else empty end ),
+    ( ["design_tier", "design_tier_judged"][] as $k
+      | if $p[$k] != "solo" then
+          "(f) 리뷰어 계획의 \($k) 가 solo 가 아닙니다: \($p[$k] | tojson)"
+        else empty end ),
+    ( if $p.design_heavy_reasons != [] then
+        "(f) 리뷰어 계획의 design_heavy_reasons 가 [] 가 아닙니다: \($p.design_heavy_reasons | tojson)"
+      else empty end ),
+    ( if $p.design_path != "none" then
+        "(f) 리뷰어 계획의 design_path 가 none 이 아닙니다: \($p.design_path | tojson)"
+      else empty end ),
+    ( if $p.design_scope != "single" then
+        "(f) 리뷰어 계획의 design_scope 가 single 이 아닙니다: \($p.design_scope | tojson)"
+      else empty end ),
+    ( if $p.estimated_files != 0 then
+        "(f) 리뷰어 계획의 estimated_files 가 0 이 아닙니다: \($p.estimated_files | tojson)"
+      else empty end ),
+    ( if $p.work_class != "other" then
+        "(f) 리뷰어 계획의 work_class 가 other 가 아닙니다: \($p.work_class | tojson)"
+      else empty end ),
+    ( [plan_steps[] | {id, skill, depends_on}] as $st
+      | if $st != [{id: "R1", skill: "review", depends_on: []}] then
+          "(f) 리뷰어 계획의 단계가 R1 review 하나(선행 없음)가 아닙니다: \($st | tojson)"
+        else empty end ),
+    ( if $p.entry_skill != "review" then
+        "(f) 리뷰어 계획의 entry_skill 이 review 가 아닙니다: \($p.entry_skill | tojson)"
+      else empty end ),
+    ( if $p.anchor_kind != "intent" then
+        "(f) 리뷰어 계획의 anchor_kind 가 intent 가 아닙니다: \($p.anchor_kind | tojson)"
+      else empty end ),
+    ( ($p.enforcement_surface // {}) as $es
+      | if ($es | type) != "object" or $es.judgment != "없음" or $es.classes != [] or $es.paths != [] or $es.source != "의도" then
+          "(f) 리뷰어 계획의 enforcement_surface 가 판정 없음 · classes [] · paths [] · source 의도 가 아닙니다: \($p.enforcement_surface | tojson)"
+        else empty end );
+
+# (f), as a list of violations: the fixed frame of the run profile.
+def profile_violations:
   . as $p
   | ($p.run_profile // "standard") as $rp
-  | if ($rp | IN("hotfix", "standard")) | not then
-      "(f) 핫픽스 계획 표지 run_profile 이 hotfix · standard 중 하나가 아닙니다: \($rp | tojson)"
+  | if ($rp | IN("hotfix", "reviewer", "standard")) | not then
+      "(f) 계획 표지 run_profile 이 hotfix · reviewer · standard 중 하나가 아닙니다: \($rp | tojson)"
+    elif $rp == "reviewer" then $p | reviewer_violations
     elif $rp != "hotfix" then empty
     else
       ( if $p.design_tier != "solo" then
@@ -139,7 +186,7 @@ def hotfix_violations:
 if type != "object" then
   "계획이 JSON 객체가 아닙니다\n" | halt_error(1)
 elif has("design_tier_judged") | not then
-  [hotfix_violations] | report
+  [profile_violations] | report
 else
   . as $p
   | ($p.design_tier_judged) as $judged
@@ -229,7 +276,7 @@ else
             end
         else empty end ),
       # (f)
-      ( $p | hotfix_violations ),
+      ( $p | profile_violations ),
       # (g)
       ( if $p | has("review_expand") then
           ($p.review_expand) as $rx

@@ -1039,6 +1039,21 @@ fresh_home; mkdir -p "$HH/.config" "$HH/.local/state/cc-cmds/run"
 router_row "라우터 입력 대조: 운영자 스코프는 기존 문면으로 거부" Write "$HH/.config/cc-cmds/x" deny 'the operator-scope configuration directory'
 router_row "라우터 입력 대조: 형제 런은 기존 문면으로 거부" Write "$HH/.local/state/cc-cmds/run/other/x" deny 'this is another run directory'
 
+# 주의 스풀. 기본 자리는 `HOME` 철자 하나이고, 우편함과 적용 기록 어느 쪽도
+# 편집 도구로 쓰지 못한다. 루트가 없을 때도, 대소문자 변형도 같은 문면이다.
+S_FRAG='the attention spool'
+fresh_home; mkdir -p "$HH/.local/state/cc-cmds"
+router_row "스풀 1: 루트 부재 직접 철자 거부" Write "$HH/.local/state/cc-cmds/attention/applied/r.json" deny "$S_FRAG"
+fresh_home; mkdir -p "$HH/.local/state/cc-cmds/attention/inbox"
+router_row "스풀 2: 루트 실재 우편함 봉투 거부" Write "$HH/.local/state/cc-cmds/attention/inbox/r-R1/e.json" deny "$S_FRAG"
+router_row "스풀 3: 대소문자 변형 ATTENTION 거부" Write "$HH/.local/state/cc-cmds/ATTENTION/applied/r.json" deny "$S_FRAG"
+for t in Edit MultiEdit; do
+  : > "$HH/.local/state/cc-cmds/attention/inbox/f.json"
+  router_row "스풀 4: 기존 파일 $t 거부" "$t" "$HH/.local/state/cc-cmds/attention/inbox/f.json" deny "$S_FRAG"
+done
+router_row "스풀 대조: 접두 이웃 attention-old 허용" Write "$HH/.local/state/cc-cmds/attention-old/x" allow
+router_row "스풀 대조: 이 런의 halt 기록은 허용" Write "$RUN_DIR/halt/x.md" allow
+
 # 빈 `HOME` 에 XDG 가 없으면 앵커를 만들지 않는다. 뒤의 것은 빈 기반에 `/cc-cmds` 를
 # 합성한 부모 철자라, 부모 문자열만 보고 앵커하는 구현을 이 대조가 잡는다. 같은
 # 환경에서 페이싱 루트의 기본 철자가 되는 자리는 보호되지 않는 잔여라 넣지 않는다.
