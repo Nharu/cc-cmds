@@ -14232,7 +14232,7 @@ check "15d-3: 사유 거둠 절이 네 표식 값을 모두 싣는다" "$rc15d3_
 
 # ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
-# --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
+# --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다,15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
 #
 # The audit is the second run-scope step. It reads the frozen document rather
 # than building a segment, so the router dispatches it with `--segment -` as it
@@ -14345,6 +14345,19 @@ esac
 # Accepted, launched and waited on by its step id.
 plan15e_audit "$WORK/plan-R15EA.md"
 check "15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다" "$rc" "0"
+# The remote base runs one commit ahead of the local `main`, and the tracking
+# ref is put back on the local tip, so only the gate's own fetch can find the
+# newer commit. The new commit sits on the remote's own tip, not on the local
+# `main`: sections run before this one can leave the remote ahead of the local
+# branch, and a push that is not a fast-forward would be refused silently and
+# leave the remote where it was. The remote tip and the tracking ref are put
+# back as they were right after the tree is measured below.
+orig15e=$( cd "$WT" && git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 )
+[ -n "$orig15e" ] || orig15e=$( cd "$WT" && git rev-parse main )
+otrk15e=$( cd "$WT" && git rev-parse --verify --quiet refs/remotes/origin/main ) || otrk15e=""
+ahead15e=$( cd "$WT" && git commit-tree "main^{tree}" -p "$orig15e" -m ahead-15e )
+( cd "$WT" && git push -q origin "$ahead15e:refs/heads/main" \
+  && git update-ref refs/remotes/origin/main main ) >/dev/null 2>&1
 au15_dispatch R15EA "$STUB_AU_AUDIT" audit "$audit15e"
 check "15e: 동결된 설계 뒤 감사 파견이 기동한다" "$rc" "0"
 au15_wait R15EA A1
@@ -14359,14 +14372,23 @@ check "15e: 감사 스테이지는 세그먼트 - 와 감사 단계 id 기반 �
 check "15e: 감사와 설계의 스트림이 각자의 단계 id 로 따로 남는다" \
   "$( [ -s "$RD15E/log/A1#1.json" ] && printf A1 )/$( [ -s "$RD15E/log/D1#1.json" ] && printf D1 )" "A1/D1"
 
-# The audit runs in a tree of its own, detached at the base: the main worktree
-# is the one other runs fast-forward after a merge, and the audit's freeze check
-# reads a moved `HEAD` there as a mismatch. No row names the tree; the gate
-# makes it at the dispatch and resolves the audit stage's `--segment -` acts to it.
+# The audit runs in a tree of its own, detached at the remote-tracking base the
+# gate fetched: the main worktree is the one other runs fast-forward after a
+# merge, and the audit's freeze check reads a moved `HEAD` there as a mismatch.
+# No row names the tree; the gate makes it at the dispatch and resolves the
+# audit stage's `--segment -` acts to it.
 AW15E="$WT-run-R15EA-A1"
-check "15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다" \
+check "15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 워크트리를 만든다" \
   "$( [ -d "$AW15E" ] && cd "$AW15E" && { git symbolic-ref -q HEAD >/dev/null && printf 브랜치 || printf 분리; } )/$( cd "$AW15E" 2>/dev/null && git rev-parse HEAD 2>/dev/null )" \
-  "분리/$( cd "$WT" && git rev-parse main )"
+  "분리/$ahead15e"
+check "15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다" \
+  "$( [ -n "$ahead15e" ] && [ "$ahead15e" != "$( cd "$WT" && git rev-parse main )" ] && printf 다름 )" "다름"
+( cd "$WT" && git push -q -f origin "$orig15e:refs/heads/main" ) >/dev/null 2>&1
+if [ -n "$otrk15e" ]; then
+  ( cd "$WT" && git update-ref refs/remotes/origin/main "$otrk15e" ) >/dev/null 2>&1
+else
+  ( cd "$WT" && git update-ref -d refs/remotes/origin/main ) >/dev/null 2>&1
+fi
 check "15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다" \
   "$(head -1 "$RD15E/stub-au-pwd.txt" 2>/dev/null)" "$AW15E"
 check "15e: 감사 워크트리가 스테이지 설정의 디렉터리 목록에 오른다" \
@@ -16102,7 +16124,7 @@ rm -f "$WT/$DOC15FP"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
-# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 깨진 슬라이스 하나는 그 슬라이스만 슬라이싱 으로 park 한다, 15g: 독립 슬라이스는 같은 런에서 계획된다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 계획 행이 선언 전체의 다이제스트를 싣는다 ---
+# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 스냅숏 슬라이싱 의 세그먼트마다 베이스 가 원격 추적 ref 다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 깨진 슬라이스 하나는 그 슬라이스만 슬라이싱 으로 park 한다, 15g: 독립 슬라이스는 같은 런에서 계획된다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 계획 행이 선언 전체의 다이제스트를 싣는다 ---
 #
 # The router used to copy a slice's fields into `act --kind segment` and dropped
 # some of them. Under `--from-declaration` the gate reads them from the frozen
@@ -16128,6 +16150,9 @@ check "15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 i
 check "15g: 스냅숏 슬라이싱 이 브랜치 이름과 유도 워크트리를 낸다" \
   "$(printf '%s' "$snap15g" | jq -r '.["슬라이싱"]["세그먼트"][0] | [.["브랜치"], .["워크트리"], .["대상"]] | join("|")' 2>/dev/null)" \
   "seg/R15GA-SA|$(g15_wt R15GA SA)|infra"
+check "15g: 스냅숏 슬라이싱 의 세그먼트마다 베이스 가 원격 추적 ref 다" \
+  "$(printf '%s' "$snap15g" | jq -r '[.["슬라이싱"]["세그먼트"][] | .["베이스"]] | join(",")' 2>/dev/null)" \
+  "refs/remotes/origin/main,refs/remotes/origin/main"
 g15_mkwt R15GA SA
 g15_mkwt R15GA SB
 
@@ -18059,6 +18084,92 @@ for r15m in R15MA:MX R15MA:MY R15MA:MZ R15MA:MW R15MB:NX R15MB:NY R15MB:NZ R15MB
       && git branch -D "seg/${r15m%%:*}-${r15m#*:}" ) >/dev/null 2>&1 || true
 done
 rm -f "$WT/$DOC15MA" "$WT/$DOC15MB" "$WT/$DOC15MC" "$WT/$DOC15MD" "$WT/$DOC15ME" "$WT/$DOC15MF" "$WT/$DOC15MF3" "$WT/$DOC15MG"
+
+# ---------------------------------------------------------------------------
+# 15n. A segment worktree is cut from the remote-tracking base, never a local one
+# --- section: 15n | group: base | covers: exec, snapshot | anchors: 15n: 로컬 베이스 이름을 시작점으로 단 세그먼트 워크트리는 거부되고 만들어지지 않는다, 15n: 그 거부는 받은 시작점과 기대 시작점을 이름 대고 스냅숏 값을 처방한다, 15n: 시작점 없는 -b 세그먼트 워크트리는 거부된다, 15n: HEAD 와 40자 sha 시작점도 거부된다, 15n: 원격 추적 ref 시작점은 통과하고 HEAD 가 원격 tip 이다, 15n: origin/main 시작점도 통과하고 HEAD 가 원격 tip 이다, 15n: mktemp 경로의 --detach HEAD 는 검사에 걸리지 않는다, 15n: 기존 브랜치를 다시 쓰는 형태는 검사에 걸리지 않는다 ---
+#
+# The router cuts a segment branch with `git worktree add -b <branch> <derived
+# worktree> <start>` before the segment has a row. Started from the local base
+# name, a branch carries whatever that name was left at on this machine, which
+# runs behind the remote whenever nobody pulled. The gate reads the start point
+# symbolically and refuses anything that is not `refs/remotes/origin/<base>`
+# for a path under this run's derived worktree prefix; experiment worktrees
+# elsewhere are not its business. The remote here runs one commit ahead of the
+# local `main` throughout, so a pass shows up as a different `HEAD`. The new
+# commit sits on the remote's own tip, not on the local `main`: sections run
+# before this one can leave the remote ahead of the local branch, and a push
+# that is not a fast-forward would be refused silently and leave the remote
+# where it was. The remote tip and the tracking ref are put back as they were
+# when the section ends.
+# ---------------------------------------------------------------------------
+DOC15N='docs/fixture-design-15n.md'
+two_slice_doc "$WT/$DOC15N" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_run R15N "$DOC15N" "$plan15c" 리뷰없음
+orig15n=$( cd "$WT" && git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 )
+[ -n "$orig15n" ] || orig15n=$( cd "$WT" && git rev-parse main )
+otrk15n=$( cd "$WT" && git rev-parse --verify --quiet refs/remotes/origin/main ) || otrk15n=""
+ahead15n=$( cd "$WT" && git commit-tree "main^{tree}" -p "$orig15n" -m ahead-15n )
+( cd "$WT" && git push -q origin "$ahead15n:refs/heads/main" \
+  && git update-ref refs/remotes/origin/main "$ahead15n" ) >/dev/null 2>&1
+n15_add() {  # n15_add <git worktree add args...> — the router's call 2 through the gate; sets rc, msg
+  gateL exec --manifest "$WORK/plan-R15N.md" --target infra --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(au15_H R15N)" --rationale x -- git worktree add "$@"
+}
+n15_state() {  # n15_state <worktree> <branch> — whether either was made
+  printf '%s/%s' \
+    "$( [ -e "$1" ] && printf 워크트리 || printf - )" \
+    "$( cd "$WT" && git rev-parse --verify --quiet "refs/heads/$2" >/dev/null && printf 브랜치 || printf - )"
+}
+n15_head() { ( cd "$1" 2>/dev/null && git rev-parse HEAD 2>/dev/null ); }
+WTN15A=$(g15_wt R15N SA)
+WTN15B=$(g15_wt R15N SB)
+WTN15R=$(g15_wt R15N RU)
+
+n15_add -b seg/R15N-SA "$WTN15A" main
+check "15n: 로컬 베이스 이름을 시작점으로 단 세그먼트 워크트리는 거부되고 만들어지지 않는다" \
+  "$rc/$(n15_state "$WTN15A" seg/R15N-SA)" "2/-/-"
+case "$msg" in
+  *"받은 시작점: main"*"기대 시작점: refs/remotes/origin/main"*"값으로 다시 부릅니다"*)
+    ok "15n: 그 거부는 받은 시작점과 기대 시작점을 이름 대고 스냅숏 값을 처방한다" ;;
+  *) bad "15n: 그 거부는 받은 시작점과 기대 시작점을 이름 대고 스냅숏 값을 처방한다" "$msg" ;;
+esac
+n15_add -b seg/R15N-SA "$WTN15A"
+check "15n: 시작점 없는 -b 세그먼트 워크트리는 거부된다" "$rc/$(n15_state "$WTN15A" seg/R15N-SA)" "2/-/-"
+n15_add -b seg/R15N-SA "$WTN15A" HEAD
+r15n_head="$rc"
+n15_add -b seg/R15N-SA "$WTN15A" "$ahead15n"
+check "15n: HEAD 와 40자 sha 시작점도 거부된다" "$r15n_head/$rc/$(n15_state "$WTN15A" seg/R15N-SA)" "2/2/-/-"
+
+n15_add -b seg/R15N-SA "$WTN15A" refs/remotes/origin/main
+check "15n: 원격 추적 ref 시작점은 통과하고 HEAD 가 원격 tip 이다" \
+  "$rc/$(n15_head "$WTN15A")/$( [ "$(n15_head "$WTN15A")" != "$( cd "$WT" && git rev-parse main )" ] && printf 로컬과다름 )" \
+  "0/$ahead15n/로컬과다름"
+[ "$rc" = 0 ] || bad "15n 원격 추적 ref 통과 문면" "$msg"
+n15_add -b seg/R15N-SB "$WTN15B" origin/main
+check "15n: origin/main 시작점도 통과하고 HEAD 가 원격 tip 이다" "$rc/$(n15_head "$WTN15B")" "0/$ahead15n"
+
+tmp15n=$(mktemp -d "$WORK/wt15n.XXXXXX")
+n15_add --detach "$tmp15n" HEAD
+check "15n: mktemp 경로의 --detach HEAD 는 검사에 걸리지 않는다" \
+  "$rc/$(n15_head "$tmp15n")" "0/$( cd "$WT" && git rev-parse HEAD )"
+( cd "$WT" && git branch seg/R15N-RU main ) >/dev/null 2>&1
+n15_add "$WTN15R" seg/R15N-RU
+check "15n: 기존 브랜치를 다시 쓰는 형태는 검사에 걸리지 않는다" \
+  "$rc/$(n15_head "$WTN15R")" "0/$( cd "$WT" && git rev-parse main )"
+
+for w15n in "$WTN15A" "$WTN15B" "$WTN15R" "$tmp15n"; do
+  ( cd "$WT" && git worktree remove --force "$w15n" ) >/dev/null 2>&1 || true
+done
+( cd "$WT" && git branch -D seg/R15N-SA seg/R15N-SB seg/R15N-RU ) >/dev/null 2>&1 || true
+rm -rf "$tmp15n"
+( cd "$WT" && git push -q -f origin "$orig15n:refs/heads/main" ) >/dev/null 2>&1
+if [ -n "$otrk15n" ]; then
+  ( cd "$WT" && git update-ref refs/remotes/origin/main "$otrk15n" ) >/dev/null 2>&1
+else
+  ( cd "$WT" && git update-ref -d refs/remotes/origin/main ) >/dev/null 2>&1
+fi
+rm -f "$WT/$DOC15N"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget
@@ -26566,6 +26677,139 @@ vba_seg S3 "$CONE_D" 상태=park 선행=없음
 check "31ba: 술어가 지워진 뒤 다시 park 하는 행이 받힌다" "$rc" "0"
 [ "$rc" = 0 ] || bad "31ba 다시 park 문면" "$msg"
 vz_drop RVZB
+HW_SID=""
+
+# ---------------------------------------------------------------------------
+# 31bb. The gate reads a person's halt answer on a ledger with no run heading
+# --- section: 31bb | group: cone | covers: close, act, exec, grade, visual_publish_person_answer, visual_publish_standing_refusal, run_section_rows | anchors: 31bb: 표제 없는 원장에서 사람의 승인 답이 있으면 승인 라벨이 닫는다, 31bb: 표제 없는 원장에서 사람의 승인 답 뒤 다시 낸 판단이 시각-승인 을 채택한다, 31bb: 표제 없는 원장에서 사람의 거부 답 기록이 같은 행위 안에서 시각-승인 을 거부로 닫는다, 31bb: 표제 없는 원장에서 사람 승인한 후보의 append 는 트리 밖 쓰기다, 31bb: 표제 아래 행의 원장에서 사람의 승인 답이 있으면 승인 라벨이 닫는다, 31bb: 표제 아래 행의 원장에서 사람의 승인 답 뒤 다시 낸 판단이 시각-승인 을 채택한다, 31bb: 표제 위에 놓인 사람의 승인 답으로는 승인 라벨이 닫히지 않는다 ---
+#
+# The three readers of a person's `중단 답` row — the approval provenance, the
+# linked close on a refusal and the forbidden-list `append` grade — are the
+# driver's, and they read the run's rows through the ledger's read scope. The
+# ledger a run writes today carries no `## 실행 <run-id>` heading, so a gate
+# that left the scope empty read it as a block and found no answer at all. Every
+# case here goes through the gate's own entry, because a test that sources the
+# definitions and calls a reader directly never passes the line that decides
+# the scope. Each case builds its own run, so none of them stands on rows
+# another case wrote. The cases with a heading pin what a block-scoped ledger
+# reads: rows under the heading are this run's, and rows above it are not.
+# ---------------------------------------------------------------------------
+VZ_AR=0
+HW_SID="31bb0000-1111-2222-3333-444455556660"
+VBB_PLAN='{ "steps": [ { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": [] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] } ] }'
+vbb_rec() {  # vbb_rec <n> <스텝> [금지 후보] — the publish stage's halt record S2P#<n>.md
+  { printf '<!-- cc-pipeline-halt v1; writer=visual-publish-unattended; reader=orchestrator; stage=S2P#%s; run=%s -->\n' "$1" "$(basename "$CAP_DIR")"
+    printf '**중단 시각**: 2026-11-03T00:00:00Z\n**스킬**: visual-publish-unattended\n'
+    printf '**스텝**: %s\n**분류**: gate-unanswerable\n' "$2"
+    [ -z "${3:-}" ] || printf '**금지 후보**: %s\n' "$3"
+    printf '**질문 문면**: 발행한 화면을 구현 기준으로 삼을까요?\n**선택지**:\n'
+    printf '%s\n' '- `승인` — 발행한 화면을 구현 기준으로 삼습니다' '- `거부` — 발행한 화면을 다시 만듭니다'
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$CAP_DIR/halt/S2P#$1.md"
+}
+vbb_answer() {  # vbb_answer <n> <선택지> — a person's `중단 답` row to S2P#<n>.md
+  hw_row '중단 답' 세그먼트=S2P "중단 기록=$CAP_DIR/halt/S2P#$1.md" 스킬=visual-publish-unattended \
+    "선택지=$2" '답한 주체=사람' 근거=픽스처
+}
+vbb_fx() {
+  # vbb_fx <run-id> — the visual run whose plan holds the publish stage, with
+  # its first `시각-판정` record S2P#1.md. Nothing has answered the record yet.
+  local pd
+  vz_fixture "$1"
+  pd=$(printf '%s\n' "$VBB_PLAN" | shasum -a 256 | cut -d' ' -f1)
+  sed -e "s/^{ \"steps\": \[\] }\$/$VBB_PLAN/" -e "s/^\*\*계획 다이제스트\*\*: .*/**계획 다이제스트**: $pd/" \
+    "$CAP_NM" > "$CAP_NM.t" && mv "$CAP_NM.t" "$CAP_NM"
+  if ! grep -qF '"skill": "visual-publish"' "$CAP_NM"; then
+    printf '31bb: 픽스처 매니페스트의 계획에 발행 단계를 넣지 못했다 (%s)\n' "$CAP_NM" >&2
+    exit 1
+  fi
+  mkdir -p "$CAP_DIR/halt"
+  vbb_rec 1 '시각-판정 — 화면 하나'
+}
+vbb_approve() {  # vbb_approve — the implementation approval line, its tail naming S2P#1.md
+  printf '**구현 승인**: 2026-11-03 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음 — 사람 답 S2P#1.md\n' \
+    "$(bash "$VZ_CHECK" bundle "$VZ_DOC")" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" >> "$VZ_SC"
+}
+vbb_heading_top() {  # vbb_heading_top <run-id> — the run's heading above every row of the ledger
+  { sed -n '1,3p' "$CAP_LEDGER"; printf '\n## 실행 %s\n' "$1"; sed -n '4,$p' "$CAP_LEDGER"; } > "$CAP_LEDGER.t"
+  mv "$CAP_LEDGER.t" "$CAP_LEDGER"
+}
+vbb_case() {
+  # vbb_case <run-id> <표제: 없음|아래|위> <닫기|재제출> — the screens' question
+  # raised before any answer, then a person's `승인` to S2P#1.md, then either
+  # the person's `승인` label at the seat or the same judgment submitted again.
+  # Leaves `<rc>/<상태>/<채택 행 수>` of the question in VBB_OUT, or a line that
+  # starts with `픽스처:` when the question was not waiting before the answer.
+  local rid="$1" shape="$2" how="$3" q
+  vbb_fx "$rid"
+  [ "$shape" != 아래 ] || vbb_heading_top "$rid"
+  vbb_approve
+  vz_ask S3 "31bb — S3 화면 승인"
+  q=$(vz_id S3)
+  VBB_OUT="$rc/$(row_field "$(vz_last "$q")" '상태')"
+  if [ "$VBB_OUT" != "5/대기" ]; then
+    VBB_OUT="픽스처: 답 전의 물음이 대기가 아니다 ($VBB_OUT) $msg"
+    vz_drop "$rid"
+    return 0
+  fi
+  vbb_answer 1 승인
+  [ "$shape" != 위 ] || printf '\n## 실행 %s\n' "$rid" >> "$CAP_LEDGER"
+  if [ "$how" = 닫기 ]; then
+    vz_close "$q" 승인
+  else
+    vz_ask S3 "31bb — S3 화면 승인"
+  fi
+  VBB_OUT="$rc/$(row_field "$(vz_last "$q")" '상태')/$( { cap_rows '자율 승인' | grep -cF "| 해소 승인=$q |" || true; } | tr -d ' ')"
+  vz_drop "$rid"
+}
+
+# T1·T2 — no heading: a person's `승인` opens the approval for the label and
+# for the resubmitted judgment alike.
+vbb_case RBB1 없음 닫기
+check "31bb: 표제 없는 원장에서 사람의 승인 답이 있으면 승인 라벨이 닫는다" "$VBB_OUT" "0/승인/0"
+vbb_case RBB2 없음 재제출
+check "31bb: 표제 없는 원장에서 사람의 승인 답 뒤 다시 낸 판단이 시각-승인 을 채택한다" "$VBB_OUT" "0/승인/1"
+
+# T3 — no heading: the person's `거부` to a later verdict record, recorded
+# through the gate, closes the waiting question in the same act. The publish
+# stage's settled row is what the answer routes back to.
+vbb_fx RBB3
+vz_ask S3 "31bb — S3 화면 승인"
+vbb_q=$(vz_id S3)
+check "31bb 픽스처: 답 전의 물음은 대기다" "$rc/$(row_field "$(vz_last "$vbb_q")" '상태')" "5/대기"
+vbb_rec 2 '시각-판정'
+hw_row stage-result 교대=0 '세그먼트=-' 스테이지=S2P 종류=visual-publish '종료 코드=0' '실행 버전=1' \
+  '세션 id=vbb-s2p' 기록자=게이트 '종단 부류=의도된 park' '실패 서명=-'
+vz_g act --manifest "$CAP_NM" --kind halt-answer --target infra --segment S2P --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(vz_H)" --rationale x \
+    -- "중단 기록=$CAP_DIR/halt/S2P#2.md" '선택지=거부' '답한 주체=사람' '근거=사람이 발행한 화면을 거부했다'
+check "31bb 픽스처: 사람의 거부 답이 기록된다" "$rc" "0"
+[ "$rc" = 0 ] || bad "31bb 거부 답 문면" "$msg"
+check "31bb: 표제 없는 원장에서 사람의 거부 답 기록이 같은 행위 안에서 시각-승인 을 거부로 닫는다" \
+  "$(row_field "$(vz_last "$vbb_q")" '상태')/$(row_field "$(vz_last "$vbb_q")" '처분 사유')" "거부/중단 답 연동"
+vz_drop RBB3
+
+# T4 — no heading: from the publish stage's seat, the `append` of the
+# candidate a person approved is graded as the write it is.
+vbb_fx RBB4
+vbb_rec 3 '금지-후보 — 반복 문구' hero-gradient
+vbb_answer 3 승인
+vbb_grade=$( ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+    CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_SEGMENT='' CC_PIPELINE_STAGE_ID='S2P#1' \
+    gate_inproc grade --manifest "$CAP_NM" \
+      -- "$CC_ORCH/visual-config.sh" append '- `hero-gradient` | 그라데이션 히어로 — 3회 home' 2>/dev/null ) \
+  | sed -n 's/^축2=//p' | tail -1)
+check "31bb: 표제 없는 원장에서 사람 승인한 후보의 append 는 트리 밖 쓰기다" "$vbb_grade" "트리밖쓰기"
+vz_drop RBB4
+
+# T5·T6 — a heading: rows under it read as before, and an answer above it is
+# not this run's, so the label is refused as it always was.
+vbb_case RBB5 아래 닫기
+check "31bb: 표제 아래 행의 원장에서 사람의 승인 답이 있으면 승인 라벨이 닫는다" "$VBB_OUT" "0/승인/0"
+vbb_case RBB6 아래 재제출
+check "31bb: 표제 아래 행의 원장에서 사람의 승인 답 뒤 다시 낸 판단이 시각-승인 을 채택한다" "$VBB_OUT" "0/승인/1"
+vbb_case RBB7 위 닫기
+check "31bb: 표제 위에 놓인 사람의 승인 답으로는 승인 라벨이 닫히지 않는다" "$VBB_OUT" "3/대기/0"
 HW_SID=""
 
 # ---------------------------------------------------------------------------
