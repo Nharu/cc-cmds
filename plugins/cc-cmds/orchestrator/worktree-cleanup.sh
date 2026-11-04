@@ -18,7 +18,8 @@
 # banner, adds no ledger row form and returns 0 whatever happens: a cleanup
 # failure is reported, never escalated. It never passes `--force` to
 # `git worktree remove` or `-D` to `git branch`, never prunes, never fetches,
-# and never deletes a remote branch. Every git call runs in a subshell rooted
+# and never deletes a remote branch. The only refs it deletes outside a merged
+# segment's branch are a reviewer run's own, under `refs/cc-review/<run id>/`. Every git call runs in a subshell rooted
 # at the declared target's main worktree, its exit status is captured and
 # checked here, and its stderr is dropped — a `ls-remote` error can print the
 # remote URL, and a URL can carry a credential.
@@ -472,7 +473,44 @@ EOF
 $states
 EOF
 
+  # The review ref pass: a reviewer run fetched each pull request's head and
+  # base under `refs/cc-review/<run id>/`. Those refs are this run's alone, so
+  # they go once the worktrees are swept — except a ref a kept worktree still
+  # sits on, which stays with it. `refs/cc-cmds/review/` is another namespace
+  # and is never read here.
+  local ref rsha2 ref_del=0 ref_keep=0 held
+  while IFS="$tab" read -r a eroot; do
+    [ -n "${eroot:-}" ] || continue
+    rc=0; out=$( cd "$eroot" && git for-each-ref --format='%(refname) %(objectname)' "refs/cc-review/${RUN_ID}/" 2>/dev/null ) || rc=$?
+    [ "$rc" -eq 0 ] || continue
+    while read -r ref rsha2; do
+      [ -n "${ref:-}" ] || continue
+      held=$(printf '%s\n' "$porc" | awk -F '\t' -v r="$eroot" -v h="head=$rsha2" '
+        $1 == r && (" " $4 " ") ~ (" " h " ") { print $2; exit }')
+      if [ -n "$held" ] && [ -d "$held" ] \
+         && printf '%s' "$outcomes" | awk -F '\t' -v w="$held" '$1 == w && $2 == "P" { f = 1 } END { exit f ? 0 : 1 }'; then
+        ref_keep=$((ref_keep + 1))
+        wtc_say '워크트리 정리' "보존 · $ref · 사유=보존한 워크트리 $held 가 가리킴"
+        continue
+      fi
+      rc=0; ( cd "$eroot" && git update-ref -d "$ref" ) >/dev/null 2>&1 || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        ref_del=$((ref_del + 1))
+        wtc_say '워크트리 정리' "제거 · $ref"
+      else
+        ref_keep=$((ref_keep + 1))
+        wtc_say '워크트리 정리' "보존 · $ref · 사유=ref 삭제 거부(git 종료 $rc)"
+      fi
+    done <<EOF
+$out
+EOF
+  done <<EOF
+$roots
+EOF
+
   wtc_say '워크트리 정리' "런 완주($mode) — 워크트리 제거 $wt_rm · 보존 $wt_keep · 브랜치 삭제 $br_del · 보존 $br_keep"
+  [ $((ref_del + ref_keep)) -eq 0 ] \
+    || wtc_say '워크트리 정리' "런 완주($mode) — 리뷰 ref 제거 $ref_del · 보존 $ref_keep"
   return 0
 }
 
@@ -523,11 +561,14 @@ EOF
   if [ -n "$open" ]; then printf '비종단 세그먼트(%s)' "$(wtc_brief "$open")"; return 0; fi
   # 3. Locked.
   case " $flags " in *" locked "*) printf '잠김'; return 0 ;; esac
-  # 4. A detached HEAD no branch or remote-tracking ref contains.
+  # 4. A detached HEAD no branch or remote-tracking ref contains. A reviewer
+  # run's worktree sits detached at a pull request head this run fetched under
+  # `refs/cc-review/<run id>/`, so a ref there contains it as well: the commit
+  # is the author's and stays on the remote's pull request ref.
   case " $flags " in
     *" detached "*)
       sha=$(printf '%s' "$flags" | tr ' ' '\n' | sed -n 's/^head=//p' | awk 'NR == 1')
-      rc=0; out=$( cd "$root" && git for-each-ref --contains "$sha" refs/heads refs/remotes 2>/dev/null ) || rc=$?
+      rc=0; out=$( cd "$root" && git for-each-ref --contains "$sha" refs/heads refs/remotes "refs/cc-review/${RUN_ID}/" 2>/dev/null ) || rc=$?
       if [ "$rc" -ne 0 ]; then printf '판정 읽기 실패(브랜치 밖 커밋 git 종료 %s)' "$rc"; return 0; fi
       [ -n "$out" ] || { printf '브랜치 밖 커밋'; return 0; } ;;
   esac
