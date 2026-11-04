@@ -214,25 +214,37 @@ async function rejoin($: Dollar) {
 }
 
 // 묶음을 내는 결과: 기록을 소비했는지와, 소비했으면 낸 텍스트. 엔진이 제출을 받지 않았으면
-// (훅의 거부, 서 있는 Stop, 호스트 한도) dropped 에 그 사유가 있다 — 기록은 소비됐지만 묶음은
-// 대화에 들어가지 않았다.
+// (훅의 거부, 서 있는 Stop, 호스트 한도) dropped 에 그 사유가 있다 — 묶음은 대화에 들어가지
+// 않았고, 소비한 기록은 비어 있는 자리에 한해 소비 전의 열린 기록으로 되돌려 두었다.
 export type Delivery = { consumed: true; text: string; dropped?: string } | { consumed: false }
 
-// 묶음을 내는 공통 경로: CAS 로 기록을 소비한 쪽만 제출한다. 묶음을 낸 자리에서 패널을
-// 닫고 기록을 버린다 — 답은 묶음이 들고 가고, 다음 질문지는 새로 열린다. take 는 열린
-// 기록을 받아 소비한 기록(제출이나 취소 단계)을 돌려주거나, 소비하지 않으면 undefined 다.
+// 묶음을 내는 공통 경로: CAS 로 기록을 소비한 쪽만 제출한다. 엔진이 묶음을 받았으면 패널을
+// 닫고 기록을 버린다 — 답은 묶음이 들고 가고, 다음 질문지는 새로 열린다. 엔진이 드롭했으면
+// 패널과 상태 줄을 그대로 두고 보냈다는 토스트도 띄우지 않으며, 그 사이 새 기록이 들어서지
+// 않았을 때만 소비 전의 열린 기록과 그 보관을 되살린다 — 사람이 같은 질문지에 손으로 답할 수
+// 있고, 원격 답은 다음 틱에 같은 질문지를 다시 겨눌 수 있다. 소비 전에 거울을 지우는 것은
+// 제출이 지나는 프롬프트 훅의 rejoin 이 지워질 보관을 되살리지 않게 하려는 것이다. take 는
+// 열린 기록을 받아 소비한 기록(제출이나 취소 단계)을 돌려주거나, 소비하지 않으면 undefined 다.
 async function deliver($: Dollar, status: FormStatus, take: (r: FormRecord | undefined) => FormRecord | undefined): Promise<Delivery> {
+  let held: FormRecord | undefined
   let taken: FormRecord | undefined
   await update($, recordAtom, r => {
-    taken = take(r ?? undefined)
+    held = r ?? undefined
+    taken = take(held)
     return taken ? null : r
   })
-  if (!taken) return { consumed: false }
+  if (!taken || !held) return { consumed: false }
   const done = taken
   const text = bundleText(done.id, status, done.form, done.drafts)
   await landFocus($, null)
   await mirror($, null, done.sessionId)
   const sent = await $.prompt.submit({ text })
+  const dropped = sent?.drop
+  if (dropped !== undefined) {
+    await putBack($, held)
+
+    return { consumed: true, text, dropped }
+  }
   await $.ui.status(undefined)
   await $.ui.close({ id: PANE_ID })
   if (status === '제출') {
@@ -240,9 +252,21 @@ async function deliver($: Dollar, status: FormStatus, take: (r: FormRecord | und
     await $.ui.toast(sentToast(answered, total))
   }
 
-  const dropped = sent?.drop
+  return { consumed: true, text }
+}
 
-  return dropped === undefined ? { consumed: true, text } : { consumed: true, text, dropped }
+// 드롭된 제출 뒤: 기록 자리가 비어 있을 때만 소비 전의 열린 기록을 다시 넣는다. 그 사이 다른
+// 기록이 들어섰으면(새 질문지 호출) 그것을 덮지 않는다. 되살렸으면 보관과 포커스도 맞춘다.
+async function putBack($: Dollar, rec: FormRecord) {
+  let restored = false
+  await update($, recordAtom, r => {
+    if (r !== null) return r
+    restored = true
+    return rec
+  })
+  if (!restored) return
+  await mirror($, rec)
+  await landFocus($, rec)
 }
 
 const finish = ($: Dollar, status: FormStatus) =>

@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { call, formIdOf, mount, twoQuestions } from '../question-form/kit'
 import type { FormInput } from '../question-form/spec'
-import { openRecord } from '../question-form/transitions'
+import { isOpen, openRecord } from '../question-form/transitions'
 import { normalizeForm } from '../question-form/validate'
 import { CLEANUP_TICKS, IDLE_MS, SCAN_MS } from './index'
 import { MARKS, OWN, QUESTIONS, ROOT, SID, STATE, ask, prompt, seamSubs, start, turnDone, turnStart, world } from './kit'
@@ -228,20 +228,38 @@ describe('질문지 적용', () => {
     expect(w.seams[3].args).toEqual(['r1'])
   })
 
-  test('엔진이 제출을 드롭하면 적용 기록 없이 수령 표지를 거둔다', async ($, on) => {
+  test('엔진이 제출을 드롭하면 적용 기록 없이 수령 표지를 거두고 질문지를 열린 채로 되살린다', async ($, on) => {
     const { w, clock } = world(on)
+    const writes: any[] = []
+    on('state.set', { plugin: 'cc-cmds', key: 'questionForm.record' }, (_$: any, e: any, next: any) => {
+      writes.push(e.value)
+
+      return next(e)
+    })
     await start($)
-    await openForm($)
+    const formId = await openForm($)
     w.dirs[OWN] = ['r1.json']
     w.replies.scan = scanOut({ reply_id: 'r1', picks: [{ id: 'scope', label: '넓게' }] })
     w.replies['form-pick'] = 'r1\n'
     w.submitDrop = 'host limit'
     const sent = w.submits.length
+    const before = writes.length
     await clock.advance(SCAN_MS)
     expect(w.submits).toHaveLength(sent + 1)
     expect(seamSubs(w)).toEqual(['cleanup', 'scan', 'form-pick', 'form-unpick'])
     expect(w.seams[3].args).toEqual(['r1'])
     expect(JSON.parse(w.seams[3].stdin ?? '{}')).toEqual({ session_id: SID })
+    expect(w.toasts).toEqual([])
+    const after = writes.slice(before)
+    expect(after).toHaveLength(2)
+    expect(after[0]).toBeNull()
+    expect(after[1]?.id).toBe(formId)
+    expect(isOpen(after[1])).toBe(true)
+    w.submitDrop = undefined
+    await clock.advance(60_000)
+    expect(seamSubs(w).slice(4)).toEqual(['scan', 'form-pick', 'form-record'])
+    expect(JSON.parse(w.seams[4].stdin ?? '{}').form.form_id).toBe(formId)
+    expect(w.toasts).toHaveLength(1)
   })
 
   test('수령 표지가 이 세션의 것이 아니면 적용하지 않는다', async ($, on) => {

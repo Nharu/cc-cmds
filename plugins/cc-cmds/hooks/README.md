@@ -1056,7 +1056,13 @@ has already run the prompt hooks, whose return hook may have marked the event
 handled, and for a form envelope the applied record decides the result. When
 nothing was consumed, or the engine dropped the submit (a standing Stop, a host
 limit, a hook's refusal), `form-unpick` removes the marker and no record is
-written.
+written. On a dropped submit the question form leaves its pane and status line
+as they were, shows no sent toast, and puts the open record it consumed back,
+with its stored copy, when no other record has taken its place, so a person can
+still answer the same form by hand and a later tick can target it again. The
+return hook may already have marked the event handled during that submit; the
+envelope is then refused at the next `form-pick`, and the event carries a
+`return` marker with no applied record and no answer delivered.
 
 **Handled markers.** Every acceptance reads the spool's handled markers by the
 shared reader rules. The marker files reach one `jq` through a pipe, one line
