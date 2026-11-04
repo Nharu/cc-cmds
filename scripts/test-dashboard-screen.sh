@@ -361,6 +361,42 @@ async function listCases() {
   before = root();
   gen++; await c.poll();
   report("화면 밖의 선택은 갱신을 막지 않는다", root() !== before, true);
+
+  // A copy chip leaves its selection in place, so this selection is never cleared.
+  c.selection = { isCollapsed: false, anchorNode: c.link("/run/old-run") };
+  before = root();
+  gen++;
+  for (let i = 0; i < 3; i++) await c.poll();
+  report("남아 있는 선택은 제한 안에서는 다시 만들지 않는다", root() === before, true);
+  report("선택으로 미루는 동안 띠가 갱신 미룸을 말한다", c.nodes.conn.textContent.includes("갱신 미룸"), true);
+  await c.poll();
+  report("남아 있는 선택도 제한이 지나면 밀린 화면을 그린다", root() !== before, true);
+  report("제한이 지나 그린 뒤 띠가 주기 갱신을 말한다", c.nodes.conn.textContent.includes("초마다 갱신"), true);
+
+  c.selection = { isCollapsed: false, anchorNode: c.link("/run/old-run") };
+  before = root();
+  gen++; await c.poll();
+  report("제한이 지나 그린 뒤 새로 만든 선택은 다시 미룬다", root() === before, true);
+  c.selection = null;
+}
+
+async function endedHoldCases() {
+  let gen = 1, state = "진행중";
+  const c = await boot("/run/r2", () => ({
+    tz_offset_s: 32400,
+    summary: { id: "r2", state, attention: "watch", started_at: 1793700000, elapsed_s: gen, prs: [], notes: [] },
+    judgments: { items: [], by_class: {} }, waiting: [], steps: [], timeline: [], shifts: [],
+    clauses: [], reviews: [], segments: [], links: {}, cost: {},
+  }));
+  const before = c.app.firstChild;
+  c.selection = { isCollapsed: false, anchorNode: before };
+  state = "종단"; gen++;
+  for (let i = 0; i < 3; i++) await c.poll();
+  report("끝난 런도 남아 있는 선택의 제한 안에서는 다시 만들지 않는다", c.app.firstChild === before, true);
+  report("끝난 런을 그리기 전에는 폴링을 이어 간다", c.timer !== null, true);
+  await c.poll();
+  report("남아 있는 선택의 제한이 지나면 끝난 런을 그린다", c.app.firstChild !== before, true);
+  report("남아 있는 선택의 제한이 지나면 끝난 런의 폴링이 멈춘다", c.timer === null, true);
 }
 
 async function detailCases() {
@@ -405,7 +441,7 @@ async function detailCases() {
   report("끝난 런을 그린 뒤 띠가 갱신 멈춤을 말한다", c.nodes.conn.textContent.includes("갱신 멈춤"), true);
 }
 
-listCases().then(detailCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+listCases().then(detailCases).then(endedHoldCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 JS
 
 if command -v node >/dev/null 2>&1; then

@@ -15,7 +15,8 @@
 // A redraw replaces every node under #app, and almost every poll redraws because
 // the list's `generated_at` and a live run's `elapsed_s` move the ETag. So what
 // the reader opened and focused is carried across by stable keys, and the redraw
-// waits while they hold a text selection or press the repo <select>.
+// waits, for a bounded time, while they hold a text selection or press the repo
+// <select>.
 //
 // Clock text is drawn in the server's display time zone: an epoch is shifted
 // by the response's `tz_offset_s` and read through the UTC accessors, so the
@@ -46,6 +47,11 @@
   // hold runs out by itself rather than waiting for one.
   var selectHeldUntil = 0;
   var SELECT_HOLD_MS = 15000;
+  // Until this wall-clock milli, a live text selection may keep a response off the
+  // screen; 0 while none does. A copy chip leaves its selection in place after the
+  // copy, so the hold cannot wait for the reader to clear it.
+  var textHeldUntil = 0;
+  var TEXT_HOLD_MS = 15000;
   var FOCUSABLE = "a, button, select, summary";
   var PERIODS = [["3", "3일"], ["7", "7일"], ["30", "30일"], ["all", "전체"]];
   var WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -221,7 +227,7 @@
     if (!conn) return;
     if (ok) {
       conn.className = "conn";
-      conn.replaceChildren(ico("i-plug", "ico-sm"), held ? "연결됨 · 갱신 미룸 — 선택을 풀면 이어집니다"
+      conn.replaceChildren(ico("i-plug", "ico-sm"), held ? "연결됨 · 갱신 미룸 — 곧 이어집니다"
         : stopped ? "연결됨 · 갱신 멈춤" : "연결됨 · " + (detail ? 3 : 5) + "초마다 갱신");
     } else {
       conn.className = "conn is-off";
@@ -1312,10 +1318,14 @@
 
   // Holding the redraw while a selection lives is what keeps the copy chips
   // usable; a selection outside #app is not lost by a redraw and holds nothing.
+  // Asked only when a response is waiting to be drawn, so the selection's clock
+  // measures how long the screen has been behind, and redraw() resets it.
   function readerBusy() {
     if (Date.now() < selectHeldUntil) return true;
     var s = window.getSelection();
-    return !!(s && !s.isCollapsed && (app.contains(s.anchorNode) || app.contains(s.focusNode)));
+    if (!s || s.isCollapsed || !(app.contains(s.anchorNode) || app.contains(s.focusNode))) return false;
+    if (!textHeldUntil) textHeldUntil = Date.now() + TEXT_HOLD_MS;
+    return Date.now() < textHeldUntil;
   }
 
   function focusKey(n) {
@@ -1368,6 +1378,7 @@
   }
 
   function redraw(paint) {
+    textHeldUntil = 0;
     var spot = focusSpot();
     rememberOpen();
     paint();
