@@ -52531,16 +52531,22 @@ for x83t in maestro xcodebuild adb xcrun; do
   chmod +x "$X83PB/$x83t"
 done
 : > "$X83L"
+# 낮은 신고는 상한 칸에서 멈추고, 그 수리 줄은 붙여 넣을 행을 찍지 않는다 — 어느 행도 이 형태를
+# 열지 않으므로 찍힌 행을 붙여 다시 킥오프하면 같은 칸에서 다시 멈춘다.
+x83_low() {
+  printf '%s|%s|%s' "$rc" "$(printf '%s' "$msg" | grep -c 'mobile device tool the grading table does not grade')" \
+    "$(printf '%s' "$msg" | grep -c 'repair row:')"
+}
 X83_SURF=읽기 x83_run "$X83PB/maestro" test f.yaml
-check "83x: 기본 행 아래 읽기로 신고한 경로 maestro 는 park 한다" "$rc" "11"
+check "83x: 기본 행 아래 읽기로 신고한 경로 maestro 는 park 한다" "$(x83_low)" "11|1|0"
 X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run "$X83PB/xcodebuild" build -scheme X -allowProvisioningUpdates
-check "83x: 기본 행 아래 런로컬 로 신고한 경로 xcodebuild 프로비저닝 빌드는 park 한다" "$rc" "11"
+check "83x: 기본 행 아래 런로컬 로 신고한 경로 xcodebuild 프로비저닝 빌드는 park 한다" "$(x83_low)" "11|1|0"
 X83_SURF=읽기 x83_run "$X83PB/adb" -s R58M12345 shell
-check "83x: 기본 행 아래 읽기로 신고한 경로 adb 실기기 shell 은 park 한다" "$rc" "11"
+check "83x: 기본 행 아래 읽기로 신고한 경로 adb 실기기 shell 은 park 한다" "$(x83_low)" "11|1|0"
 X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run "$X83PB/xcrun" simctl privacy booted reset all
-check "83x: 기본 행 아래 런로컬 로 신고한 경로 xcrun simctl 미상 동사는 park 한다" "$rc" "11"
+check "83x: 기본 행 아래 런로컬 로 신고한 경로 xcrun simctl 미상 동사는 park 한다" "$(x83_low)" "11|1|0"
 x83_run "$X83PB/maestro" test g.yaml
-check "83x: 기본 행 아래 기기전역 으로 신고한 경로 maestro 도 park 한다" "$rc" "11"
+check "83x: 기본 행 아래 기기전역 으로 신고한 경로 maestro 도 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'program is named by a path')" "11|1"
 check "83x: 기본 행 아래 park 한 경로 기기 도구는 대역에 닿지 않는다" "$(grep -c . "$X83L")" "0"
 rm -rf "$X83D"
 

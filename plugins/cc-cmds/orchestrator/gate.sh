@@ -3066,7 +3066,7 @@ gate_reach_disposition() {
   [ "$GATE_MARK" = "비밀출력" ] && S=1
   { [ "$GATE_MARK" = "파괴" ] || [ "${GATE_DESTRUCTIVE:-0}" = "1" ]; } && X=1
   GATE_RF_SX='-' GATE_RF_SW='-' GATE_RF_PROPOSAL='-' GATE_RF_REFF='-' GATE_RF_GEFF='-'
-  GATE_RF_NEVER='-' GATE_RF_TRIG='-' GATE_RF_EV=1
+  GATE_RF_NEVER='-' GATE_RF_TRIG='-' GATE_RF_EV=1 GATE_RF_UDT=0
   GATE_RF_ROW=0 GATE_RF_RN='-' GATE_RF_RS='-' GATE_RF_RR='-' GATE_RF_RPD=0 GATE_RF_PAIRN='-'
   GATE_RF_DECL_SURF="${GATE_DECLARED:--}" GATE_RF_DECL_REACH="$R" GATE_RF_CROWS='-' GATE_RF_SCOPE=0
   [ -n "$GATE_RF_DECL_SURF" ] || GATE_RF_DECL_SURF='-'
@@ -3286,6 +3286,7 @@ gate_reach_disposition() {
         # `--reach 기기전역` declaration of the same act does.
         local _udt=0
         [ "$cls" = "미상" ] && gate_device_tool_act "$@" && _udt=1
+        GATE_RF_UDT="$_udt"
         if [ "$_udt" = "0" ]; then
           # A read is trusted only when nothing but a path raised the reach. A
           # command arm or a deploy trigger is argv saying what the act does, and a
@@ -4474,8 +4475,14 @@ gate_park_repair_line() {
       msg="repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds') — kick off again with the row below"; row=1 ;;
     파괴형태미명시/*)
       msg="repair: the gate saw no destructive word in this act, so a row opens it only by naming the whole act verbatim — kick off again with the row below"; row=1 ;;
+    # An ungraded mobile device tool form keeps the cap whatever row matches
+    # it, so a row printed for it would park again at the same cell.
     신고등급한도/opaque)
-      msg="repair: kick off again with the row below — the runner with its script operand, or the subcommand with its operand and every option and option value before it (the whole act when no operand follows), as the act spells them. A shape that names only the runner does not open it"; row=1 ;;
+      if [ "${GATE_PARK_UDT:-0}" = "1" ]; then
+        msg="repair: no \`사전 인가\` row opens a form of a mobile device tool the grading table does not grade, whatever is declared — run the tool by its own name on PATH, bare or behind a launcher the gate peels, in a form the gate grades, declared --surface 트리밖쓰기 --reach 기기전역; or leave it to a person"
+      else
+        msg="repair: kick off again with the row below — the runner with its script operand, or the subcommand with its operand and every option and option value before it (the whole act when no operand follows), as the act spells them. A shape that names only the runner does not open it"; row=1
+      fi ;;
     신고등급한도/code) sx=code ;;
     신고등급한도/wrapper)
       msg="repair: no row opens a command assembled by xargs or sudo — call the wrapped command directly" ;;
@@ -46633,7 +46640,7 @@ gate_verb_act() {
   GATE_PARK_EV=1 GATE_PREAUTH_JUDGE='-'
   GATE_PARK_RFROW=0 GATE_PARK_RFN='-' GATE_PARK_RS='-' GATE_PARK_RR='-' GATE_PARK_RPD=0
   GATE_PARK_DECL_SURF='-' GATE_PARK_DECL_REACH='-' GATE_PARK_CROWS='-' GATE_PARK_SCOPE=0
-  GATE_PARK_PAIRN='-'
+  GATE_PARK_PAIRN='-' GATE_PARK_UDT=0
   # A plan that carries no act (`--kind propose-done`) has no argv at all.
   GATE_PARK_ARGV0="${1:-}"
   GATE_PARK_ARGV0="${GATE_PARK_ARGV0##*/}"
@@ -46683,12 +46690,12 @@ gate_verb_act() {
     # separator to `read` and an empty field would fold and shift the rest.
     local _out _cell _pcause _facts _rest
     _out=$(gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
-           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
              "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
              "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_EV" \
              "$GATE_RF_ROW" "$GATE_RF_RN" "$GATE_RF_RS" "$GATE_RF_RR" "$GATE_RF_RPD" \
              "$GATE_RF_DECL_SURF" "$GATE_RF_DECL_REACH" "$GATE_RF_CROWS" "$GATE_RF_SCOPE" \
-             "${GATE_RF_PAIRN:--}" "$GATE_RF_PROPOSAL")
+             "${GATE_RF_PAIRN:--}" "${GATE_RF_UDT:-0}" "$GATE_RF_PROPOSAL")
     _cell=${_out%%
 *}
     _facts=${_out#*
@@ -46705,7 +46712,7 @@ gate_verb_act() {
     IFS='	' read -r GATE_PARK_SX GATE_PARK_SW GATE_PARK_REFF GATE_PARK_GEFF GATE_PARK_NEVER \
       GATE_PARK_TRIG GATE_PARK_EV GATE_PARK_RFROW GATE_PARK_RFN GATE_PARK_RS GATE_PARK_RR \
       GATE_PARK_RPD GATE_PARK_DECL_SURF GATE_PARK_DECL_REACH GATE_PARK_CROWS GATE_PARK_SCOPE \
-      GATE_PARK_PAIRN GATE_PARK_PROPOSAL <<EOF || true
+      GATE_PARK_PAIRN GATE_PARK_UDT GATE_PARK_PROPOSAL <<EOF || true
 $_facts
 EOF
     if gate_auto_resolve_enabled; then
