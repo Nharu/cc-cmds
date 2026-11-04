@@ -249,7 +249,7 @@ collect_default_files() {
     [[ -d "$repo_root/plugins/cc-cmds/skills/active-notify/scripts" ]] \
       && find "$repo_root/plugins/cc-cmds/skills/active-notify/scripts" -maxdepth 1 -name "*.sh"
     [[ -d "$repo_root/plugins/cc-cmds/hooks" ]] \
-      && find "$repo_root/plugins/cc-cmds/hooks" -maxdepth 1 -name "*.sh"
+      && find "$repo_root/plugins/cc-cmds/hooks" -name "*.sh"
     [[ -d "$repo_root/scripts" ]] \
       && find "$repo_root/scripts" -maxdepth 1 -name "*.sh"
     [[ -d "$repo_root/plugins/cc-cmds/orchestrator" ]] \
