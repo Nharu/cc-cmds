@@ -10,8 +10,12 @@ export type PanePart = { tone: string; bold: boolean; text: string }
  */
 export type PaneLine = { bundle: string; wrap: boolean; parts: PanePart[] }
 
-/** 패널이 그리는 것: 마지막으로 성공한 헬퍼 실행의 본문과, 그 뒤 실패를 알리는 경고 줄. */
-export type PaneLines = { lines: PaneLine[]; warning: string | null }
+/**
+ * 패널이 그리는 것: 마지막으로 성공한 헬퍼 실행의 본문과, 그 뒤 실패를 알리는 경고 줄.
+ * `okAt` 은 마지막으로 성공한 헬퍼 호출이 시작된 모듈 시계 값이고, 성공한 적이 없으면
+ * `null` 이다. 이 필드를 모르던 모듈이 저장한 값에는 없으므로 `okAt ?? null` 로 읽는다.
+ */
+export type PaneLines = { lines: PaneLine[]; warning: string | null; okAt: number | null }
 
 /** 자동 열기·닫힘 기록과 갱신 주기 판단에 쓰는 값. 모듈이 다시 적재되어도 남아야 한다. */
 export type PaneControl = {
