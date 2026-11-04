@@ -1746,7 +1746,7 @@ cm_main() {
   local tmp line rid state ledger rd rec input_files=0 confirmed
   local n_collected=0 n_uncollected=0 n_gone=0 n_open=0 n_attempt=0 new_runs="" blocked=false
   local summary round at body counts journal_line all_f delta_f prior_f t0 members t1 delay n_delay=0
-  local sizes have want
+  local have want lpaths
   cm_args "$@"
   # 기준선 모드는 회차가 아니다 — 표지도 기록도 저널도 만들지 않는다.
   [ "$CM_MEMBER_BASELINE" = "0" ] || cm_member_baseline
