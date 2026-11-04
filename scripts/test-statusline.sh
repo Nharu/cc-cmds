@@ -2241,6 +2241,239 @@ XDG_STATE_HOME="$WORK/elsewhere" bash "$APPLY" --apply --settings "$SSTF" \
 check "음성 대조군 — 상태 루트 밖이면 같은 디렉터리가 설치된다" "$?" "10"
 
 # ---------------------------------------------------------------------------
+# DM1-DM7. Dormant screening — a finished run that cannot win is not judged
+# ---------------------------------------------------------------------------
+#
+# NO OPERATING-SYSTEM SKIP. The screening leans on `find -L … -mmin` and
+# `ls -1tL`, whose BSD and GNU builds could disagree on a boundary or an order,
+# so these cases run on the macOS host and on the Linux CI shard alike.
+#
+# EVERY CLOCK IS STAMPED FROM ONE EPOCH, and each dormant run gets its own
+# second: the dormant walk keeps going while clocks are equal, so a fixture made
+# within one second would have every run judged and count nothing. `dm_stamp`
+# sets an absolute time in one `utime`, so two files meant to share a second do.
+DM_NOW=$(date -u +%s)
+dm_stamp() {
+  # dm_stamp <seconds-ago> <file>... — those files' mtimes set to DM_NOW minus it.
+  perl -e 'my $t = shift; utime $t, $t, @ARGV or die "utime: $!";' "$((DM_NOW - $1))" "$@"
+}
+dm_run() {
+  # dm_run <run-id> <term|aband|appr> <seconds-ago> — a quiet run with no pid,
+  # no heartbeat, and its ledger (and `done`) that old: finished, abandoned, or
+  # holding an open approval.
+  fx_mkrun "$1"; fx_ledger_path
+  case "$2" in
+    term)  fx_segment S1 머지됨; fx_done ;;
+    aband) fx_segment S1 실행중 ;;
+    appr)  fx_segment S1 실행중; fx_approval A1 대기 ;;
+  esac
+  if [ -f "$FX_RUN_DIR/done" ]; then dm_stamp "$3" "$FX_LEDGER" "$FX_RUN_DIR/done"
+  else dm_stamp "$3" "$FX_LEDGER"; fi
+}
+dm_live() {
+  # dm_live <run-id> — a run with a stage that is up.
+  fx_mkrun "$1"; fx_ledger_path; fx_segment S1 실행중; fx_stage_live S1; fx_heartbeat 0 5
+}
+# The run ids `cc_run_state` was called on, one per line, in call order.
+dm_derived() { fx_statusline_stdin "$1" | CC_SL_TRACE=1 bash "$SL" 2>&1 >/dev/null | grep '^cc-sl-derive ' | sed 's/^cc-sl-derive //'; }
+dm_count() { dm_derived "$1" | grep -c . ; }
+dm_line() { fx_statusline_stdin "$1" | bash "$SL" 2>/dev/null; }
+
+# Thirty dormant finished runs, dm-t01 oldest and dm-t30 newest, two hours and
+# more in the past, ten seconds apart.
+dm_all=""
+for k in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+  dm_run "dm-t$k" term $((7200 + (31 - 10#$k) * 10))
+  dm_all="$dm_all dm-t$k"
+done
+# shellcheck disable=SC2086
+set -- $dm_all
+
+# DM1. A run in flight is the only one judged, whatever piles up behind it.
+dm_live dm-live
+fx_session_index sess-dm1-1 dm-t01 dm-live
+fx_session_index sess-dm1-30 "$@" dm-live
+check "DM1 진행 중 런 + 휴면 종단 1개 — 판정은 진행 중 런 하나" "$(dm_count sess-dm1-1)" "1"
+check "DM1 진행 중 런 + 휴면 종단 30개 — 판정 수가 같다" "$(dm_count sess-dm1-30)" "1"
+has "DM1 진행 중 런 + 휴면 종단 30개 — 진행 중 런을 고른다" "$(dm_line sess-dm1-30)" "⟳ dm-live"
+
+# DM2. Runs that finished inside the window are judged, and only they: their
+# number does not move with the dormant ones'.
+for k in 1 2 3; do dm_run "dm-w$k" term 600; done
+fx_session_index sess-dm2-1 dm-t01 dm-w1 dm-w2 dm-w3 dm-live
+fx_session_index sess-dm2-30 "$@" dm-w1 dm-w2 dm-w3 dm-live
+check "DM2 창 안의 끝난 런 3개 + 휴면 1개 — 판정 4줄" "$(dm_count sess-dm2-1)" "4"
+check "DM2 창 안의 끝난 런 3개 + 휴면 30개 — 판정 4줄" "$(dm_count sess-dm2-30)" "4"
+has "DM2 창 안의 끝난 런이 있어도 진행 중 런을 고른다" "$(dm_line sess-dm2-30)" "⟳ dm-live"
+
+# DM3. A finished run whose `watch.pid` names a process that answers is not
+# dormant — no fingerprint is read, so a reused pid costs a judgement and
+# nothing else.
+dm_run dm-p1 term 7000; fx_watch_pid live
+fx_session_index sess-dm3-1 dm-t01 dm-p1 dm-live
+fx_session_index sess-dm3-30 "$@" dm-p1 dm-live
+check "DM3 응답하는 watch.pid 를 가진 끝난 런 — 판정 한 줄 증가(휴면 1개)" "$(dm_count sess-dm3-1)" "2"
+check "DM3 응답하는 watch.pid 를 가진 끝난 런 — 판정 한 줄 증가(휴면 30개)" "$(dm_count sess-dm3-30)" "2"
+has "DM3 그래도 진행 중 런을 고른다" "$(dm_line sess-dm3-30)" "⟳ dm-live"
+
+# DM4. No run in flight: the dormant runs are walked newest first and the walk
+# stops at the first one older than a finished run already in hand.
+fx_session_index sess-dm4-30 "$@"
+check "DM4 휴면 종단 30개 — 판정 1줄" "$(dm_count sess-dm4-30)" "1"
+check "DM4 휴면 종단 30개 — 가장 최근 종단 런" "$(dm_line sess-dm4-30)" "✓ dm-t30 종료"
+
+dm_run dm-a1 aband 4000; dm_run dm-a2 aband 4010
+fx_session_index sess-dm4-ab dm-t29 dm-a1 dm-t30 dm-a2
+check "DM4 최근 버려짐 2 + 더 오래된 종단 — 판정 3줄" "$(dm_count sess-dm4-ab)" "3"
+check "DM4 최근 버려짐 2 + 더 오래된 종단 — 종단 런을 보인다" "$(dm_line sess-dm4-ab)" "✓ dm-t30 종료"
+
+# Two finished runs on one second: both are judged, and the earlier index line
+# wins as it does when every run is judged.
+dm_run dm-sa term 5000; dm_run dm-sb term 7000
+dm_stamp 5000 "$XDG_STATE_HOME/cc-cmds/run/dm-sa/fixture-ledger.md" "$XDG_STATE_HOME/cc-cmds/run/dm-sa/done" \
+  "$XDG_STATE_HOME/cc-cmds/run/dm-sb/fixture-ledger.md" "$XDG_STATE_HOME/cc-cmds/run/dm-sb/done"
+fx_session_index sess-dm4-tie dm-sb dm-t30 dm-sa
+check "DM4 같은 초의 종단 둘 — 판정 2줄" "$(dm_count sess-dm4-tie)" "2"
+check "DM4 같은 초의 종단 둘 — 색인에서 앞선 런" "$(dm_line sess-dm4-tie)" "✓ dm-sb 종료"
+
+dm_run dm-q1 appr 4000
+fx_session_index sess-dm4-q dm-t29 dm-q1 dm-t30
+check "DM4 최근 휴면 승인대기 + 오래된 종단 — 판정 2줄" "$(dm_count sess-dm4-q)" "2"
+check "DM4 최근 휴면 승인대기 + 오래된 종단 — 종단 런을 보인다" "$(dm_line sess-dm4-q)" "✓ dm-t30 종료"
+fx_session_index sess-dm4-qonly dm-q1
+check "DM4 휴면 승인대기 하나만 — 선별을 끈 출력과 같다" "$(dm_line sess-dm4-qonly)" \
+  "$(fx_statusline_stdin sess-dm4-qonly | CC_SL_SCREEN=0 bash "$SL" 2>/dev/null)"
+
+# A linked clock is read through the link. The link is new and its target is
+# older than dm-t30, so `ls -t` without `-L` would walk it first and judge both.
+dm_run dm-ln term 9000
+mv "$FX_LEDGER" "$FX_RUN_DIR/target-ledger.md"; ln -s "$FX_RUN_DIR/target-ledger.md" "$FX_LEDGER"; rm -f "$FX_RUN_DIR/done"
+fx_session_index sess-dm4-ln dm-ln dm-t30
+check "DM4 링크된 원장 — 링크 대상의 시각으로 걷는다(판정 1줄)" "$(dm_count sess-dm4-ln)" "1"
+check "DM4 링크된 원장 — 더 최근의 종단 런" "$(dm_line sess-dm4-ln)" "✓ dm-t30 종료"
+
+# DM5. Screening boundaries. Each run is judged beside a run in flight (it is
+# not dormant), and where its clock is older than the dormant finished run dm-x
+# it still wins over it — a run screened out by mistake would lose there,
+# because the walk would stop at dm-x before reaching it.
+dm_run dm-x term 4000
+dm_awake() {
+  # dm_awake <label> <run-id> [want-line] — judged beside dm-live, and, given a
+  # line, that line is what it shows beside dm-x alone.
+  fx_session_index "sess-dm5-$2-live" "$2" dm-live
+  case "$(dm_derived "sess-dm5-$2-live")" in
+    *"$2"*) ok "DM5 $1 — 휴면이 아니다(판정된다)" ;;
+    *) bad "DM5 $1 — 휴면이 아니다(판정된다)" "판정 줄에 $2 없음" ;;
+  esac
+  if [ -n "${3:-}" ]; then
+    fx_session_index "sess-dm5-$2-x" dm-x "$2"
+    has "DM5 $1 — 휴면 종단 런을 이긴다" "$(dm_line "sess-dm5-$2-x")" "$3"
+  fi
+}
+dm_run dm-b1 appr 7200; fx_heartbeat 0 7200
+dm_awake "창 밖 원장 + 신선한 심장박동 승인대기" dm-b1 "⏸ dm-b1"
+dm_run dm-b2 aband 7200; fx_stage_live S1
+dm_awake "창 밖 원장 + 응답하는 스테이지 pid" dm-b2 "⟳ dm-b2"
+dm_run dm-b3 term 7200; printf '1\n' > "$FX_RUN_DIR/ends-on-done"; sl_shift_live
+dm_awake "done + 살아 있는 shift.live(정산중)" dm-b3 "⟳ dm-b3 정산 중"
+dm_run dm-b4 aband 0; dm_stamp -600 "$FX_LEDGER"
+dm_awake "미래 시각 원장" dm-b4 "dm-b4"
+dm_run dm-b5 aband 7200
+sleep 120 & dm_b5_pid=$!; FX_PIDS="${FX_PIDS:-}$dm_b5_pid "
+printf '보유자=%s\n갱신=%s\n' "$dm_b5_pid" "$DM_NOW" > "$FX_RUN_DIR/S1.waiting"
+dm_awake "살아 있는 보유자의 *.waiting" dm-b5
+dm_run dm-b6 aband 1800
+dm_awake "원장 30분 전(정지경고)" dm-b6 "⚠ dm-b6"
+dm_run dm-b7 aband 3540
+dm_awake "원장 59분 전(CC_SL_ABANDON 안)" dm-b7 "⚠ dm-b7"
+dm_run dm-b8 aband 1800
+mv "$FX_LEDGER" "$FX_RUN_DIR/target-ledger.md"; ln -s "$FX_RUN_DIR/target-ledger.md" "$FX_LEDGER"
+dm_stamp 1800 "$FX_RUN_DIR/target-ledger.md"
+dm_awake "링크된 원장(대상 30분 전)" dm-b8 "⚠ dm-b8"
+# One minute past the dormancy window: dormant, and an abandoned run loses.
+dm_run dm-b9 aband $(( ((3600 + 59) / 60 + 1 + 1) * 60 ))
+fx_session_index sess-dm5-b9-live dm-b9 dm-live
+case "$(dm_derived sess-dm5-b9-live)" in
+  *dm-b9*) bad "DM5 휴면 창보다 1분 더 오래된 런 — 휴면이다" "판정 줄에 dm-b9 있음" ;;
+  *) ok "DM5 휴면 창보다 1분 더 오래된 런 — 휴면이다(판정되지 않는다)" ;;
+esac
+fx_session_index sess-dm5-b9-x dm-b9 dm-x
+check "DM5 휴면 창보다 1분 더 오래된 버려짐 런 — 휴면 종단 런에 진다" "$(dm_line sess-dm5-b9-x)" "✓ dm-x 종료"
+
+# DM7. Invalidation: a dormant finished run whose ledger moves to now is judged
+# again on the very next render — nothing about the earlier verdict is kept.
+dm_run dm-i1 term 7400
+fx_session_index sess-dm7 dm-i1 dm-live
+hasnt "DM7 휴면 종단 런은 진행 중 런 옆에서 판정되지 않는다" "$(dm_derived sess-dm7)" "dm-i1"
+dm_stamp 0 "$FX_LEDGER"
+has "DM7 원장 시각을 지금으로 옮기면 다시 판정된다" "$(dm_derived sess-dm7)" "dm-i1"
+
+# DM6. Equality: on every session this suite has built, the line and the pane's
+# field row are the same bytes with the screening on and off.
+#
+# BOTH RENDERS READ ONE PINNED CLOCK. A 30-run session takes about a second and
+# a half to render with the screening off, so two renders never fit in one
+# second and a compare-when-the-second-holds loop failed on every such session.
+# A `date` stand-in at the front of both calls' PATH answers exactly `-u +%s`
+# with a value read from the real clock once per pair, and hands every other
+# argument list (`cc_mtime`'s `-u -r <file> +%s`) to the real `date`. The status
+# line and `liveness.sh` read the current time only as `date -u +%s` through
+# PATH, so every clock read of both calls gets that value, and a pair is
+# compared once with no retry. The field row's clock (the sixth cell of the
+# `cc-sl` row) proves the stand-in was the one called. `find -mmin` and
+# `ls -t` still read the real clock; the pinned value trails it by one pair's
+# run time, far inside the one minute the dormancy window keeps over
+# `CC_SL_ABANDON`.
+#
+# EVERY FIXTURE PROCESS IS REAPED FIRST. The fixtures' live pids are two-minute
+# sleeps, and one that ran out between the two renders of a pair turned a run
+# in flight into a quiet one under the second render only. With all of them
+# gone and waited for, no pid changes state inside the loop.
+dm_eq_ln() {
+  # The ledger-path shapes the `read` builtin must reproduce, a session with no
+  # dormant run, and a one-line index.
+  dm_run dm-nl term 7300; printf '%s' "$FX_LEDGER" > "$FX_RUN_DIR/ledger-path"
+  dm_run dm-2l term 7310; printf '%s\n%s\n' "$FX_LEDGER" "둘째 줄" > "$FX_RUN_DIR/ledger-path"
+  fx_session_index sess-dm6-nl dm-nl dm-t01
+  fx_session_index sess-dm6-2l dm-2l dm-t01
+  fx_session_index sess-dm6-awake dm-w1 dm-live
+  fx_session_index sess-dm6-one dm-t30
+}
+dm_eq_ln
+dm_eq_pids=${FX_PIDS:-}
+fx_reap
+for p in $dm_eq_pids; do wait "$p" 2>/dev/null; done
+DM_REAL_DATE=$(command -v date)
+mkdir -p "$WORK/dm-clock"
+cat > "$WORK/dm-clock/date" <<STUB
+#!/usr/bin/env bash
+if [ "\$#" -eq 2 ] && [ "\$1" = "-u" ] && [ "\$2" = "+%s" ]; then
+  printf '%s\n' "\$DM_EQ_NOW"; exit 0
+fi
+exec "$DM_REAL_DATE" "\$@"
+STUB
+chmod +x "$WORK/dm-clock/date"
+dm_eq_bad=""; dm_eq_n=0
+for f in "$XDG_STATE_HOME/cc-cmds/session/"*; do
+  [ -f "$f" ] || continue
+  s=${f##*/}
+  for pf in "" 1; do
+    dm_eq_now=$("$DM_REAL_DATE" -u +%s)
+    a=$(fx_statusline_stdin "$s" | PATH="$WORK/dm-clock:$PATH" DM_EQ_NOW=$dm_eq_now CC_SL_PANE_FIELDS=$pf bash "$SL" 2>/dev/null)
+    b=$(fx_statusline_stdin "$s" | PATH="$WORK/dm-clock:$PATH" DM_EQ_NOW=$dm_eq_now CC_SL_PANE_FIELDS=$pf CC_SL_SCREEN=0 bash "$SL" 2>/dev/null)
+    [ "$a" = "$b" ] || dm_eq_bad="$dm_eq_bad $s(필드=${pf:-0})"
+    case "$a" in
+      *"$(printf '\ncc-sl\t')"*)
+        dm_eq_clk=$(printf '%s' "$a" | awk -F '\t' '$1 == "cc-sl" { print $6 }')
+        [ "$dm_eq_clk" = "$dm_eq_now" ] || dm_eq_bad="$dm_eq_bad $s(필드=${pf:-0}:시계 칸 ${dm_eq_clk:-없음}≠$dm_eq_now)"
+        ;;
+    esac
+    dm_eq_n=$((dm_eq_n + 1))
+  done
+done
+check "DM6 고정물 세션 ${dm_eq_n}쌍 — 선별을 켠 출력과 끈 출력이 바이트로 같다" "${dm_eq_bad:-없음}" "없음"
+
+# ---------------------------------------------------------------------------
 # SB01-SB20. The borrow segment
 # ---------------------------------------------------------------------------
 #

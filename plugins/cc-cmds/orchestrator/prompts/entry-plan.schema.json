@@ -71,7 +71,7 @@
       "required": ["judgment", "classes", "paths", "source", "rationale"],
       "additionalProperties": false
     },
-    "run_profile": { "type": "string", "enum": ["hotfix", "standard"] },
+    "run_profile": { "type": "string", "enum": ["hotfix", "reviewer", "standard"] },
     "review_expand": { "type": "array", "items": { "type": "string", "enum": ["요구", "문서표현"] } },
     "review_expand_rationale": { "type": "string" },
     "notes": { "type": "string" }

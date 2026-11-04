@@ -38,6 +38,15 @@
 #   CHECK_PUSH_JOBS         how many of the section lanes and goal jobs run at
 #                           once (default 4; 1 runs the sections in one
 #                           test-gate call and the goals in one make, in turn)
+#   CC_TEST_SLOTS           host-wide test slots the runs of this host share
+#                           (scripts/test-slots.sh): every step and job waits
+#                           for as many as its weight before it starts; a
+#                           positive whole number is that many, auto is
+#                           max(4, CPUs), and unset, empty or 0 (the default)
+#                           turns them off. The stamp's 자리대기= is the
+#                           seconds waited
+#   CC_TEST_SLOTS_DIR       the slot store (default: cc-cmds-test-slots under
+#                           the common git directory)
 #   CC_CHECK_PUSH_MAKE      the make for lint, readme and check-cheap (default
 #                           make); the self-test swaps in doubles through it,
 #                           as it does through CC_TEST_TREE_GATE,
@@ -152,7 +161,7 @@ check_push_gate_unchanged() {
 }
 
 check_push_run() {
-  local make_bin commit tree gdir stamp_dir stamp mode src base="" fetch="없음" secs goals added="없음" doubles rc stage="" step old
+  local make_bin commit tree gdir stamp_dir stamp mode src base="" fetch="없음" secs goals added="없음" doubles rc stage="" step old got how key
   make_bin="${CC_CHECK_PUSH_MAKE:-make}"
   secs="${CHECK_PUSH_SECTIONS:-}"
   goals="${CHECK_PUSH_GOALS:-}"
@@ -271,8 +280,24 @@ check_push_run() {
     return "$rc"
   fi
 
+  # Each step of the serial bundle waits for as many host-wide test slots as
+  # its weight and runs under a foreground job shell, which measures it and
+  # sends an interrupt on to make as TERM. The slots go back when it ends.
+  tt_slots_init
   for step in lint readme check-cheap; do
-    if ! (cd "$TT_WORK" && "$make_bin" "$step"); then
+    ts_slot_wait "단계 $step" "make:$step"
+    got="$TS_GOT"
+    how="$TS_MODE"
+    key=$(ts_job_key "make:$step")
+    (
+      cd "$TT_WORK" || exit 2
+      if [ "$how" = exec ]; then exec "$make_bin" "$step"; fi
+      if [ "$how" = held ]; then CC_TEST_SLOT_HELD=1; export CC_TEST_SLOT_HELD; fi
+      ts_job_shell fg "$key" "$make_bin" "$step"
+    )
+    rc=$?
+    ts_release "$got"
+    if [ "$rc" != 0 ]; then
       stage="$step"
       break
     fi
@@ -340,6 +365,7 @@ check_push_run() {
     printf '충돌경로=%s\n' "$(tt_or_none "$TT_CONFLICTS")"
     printf '대역=%s\n' "$doubles"
     printf '병렬=%s\n' "$TT_JOBS_USED"
+    printf '자리대기=%s\n' "$TS_WAIT_TOTAL"
   } > "$CP_TMP_STAMP" || return 1
   mv -f "$CP_TMP_STAMP" "$stamp" || return 1
   CP_TMP_STAMP=""
@@ -400,7 +426,7 @@ check_push_verify() {
 # --- self-test ---------------------------------------------------------------
 
 check_push_self_test() {
-  local passed=0 failed=0 T self rc out W sa sb1 sm2 sm3 sh shx th thx tm tg stamp before
+  local passed=0 failed=0 T self rc out W sa sb1 sm2 sm3 sh shx th thx tm tg stamp before stamp_keep
   ok()  { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
   bad() { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
   check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
@@ -421,6 +447,7 @@ check_push_self_test() {
 #!/usr/bin/env bash
 printf 'bundle:%s|MAKEFLAGS=%s|MFLAGS=%s|MAKELEVEL=%s\n' "$1" "${MAKEFLAGS-unset}" "${MFLAGS-unset}" "${MAKELEVEL-unset}" >> "@T@/order.log"
 [ ! -f base-only.txt ] || printf 'saw-base-only\n' >> "@T@/seen.log"
+printf '%s:%s\n' "$1" "${CC_TEST_SLOT_HELD-unset}" >> "@T@/held.log"
 if [ -f breaker.txt ] && [ "$1" = check-cheap ]; then exit 1; fi
 printf 'BUNDLE %s\n' "$1"
 EOF
@@ -552,15 +579,38 @@ EOF
   check "F12 픽스처: 추적 ref 는 그대로 B1 이다" "$(cd "$W" && git rev-parse refs/remotes/origin/master)" "$sb1"
   : > "$T/order.log"
   : > "$T/seen.log"
-  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
+  : > "$T/held.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CC_TEST_SLOTS=auto); rc=$?
   check "F12 통과" "$rc" "0"
   check "F12 base 는 FETCH_HEAD 의 sha" "$(check_push_field "$stamp" base) $(check_push_field "$stamp" base출처)" "$sm2 FETCH_HEAD"
   check "F12 tested_tree 가 따로 만든 merge-tree 와 같다" "$(check_push_field "$stamp" tested_tree)" "$tm"
   has "F12 make 대역이 base 에만 있는 파일을 본다" "$(cat "$T/seen.log")" "saw-base-only"
   case "$out" in "check-push: 시험 트리 — 합침=합침 base=$sm2 base출처=FETCH_HEAD head=$sh tree=$tm 절=없음 목표=없음 절+베이스=s2 fetch=20"*"BUNDLE lint"*) ok "F12 기록 줄이 검사보다 먼저 나온다" ;; *) bad "F12 기록 줄이 검사보다 먼저 나온다" "$out" ;; esac
+  has "F12 묶음 단계마다 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 lint (0초 대기)"
+  has "F12 마지막 묶음 단계도 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 check-cheap (0초 대기)"
   out=$(sed -n 's/=.*$//p' "$stamp" | tr '\n' ' ')
-  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 "
+  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 "
+  check "F12 사적 저장소에서는 자리를 기다리지 않는다" "$(check_push_field "$stamp" 자리대기)" "0"
+  check "F12 자리를 잡은 묶음 단계는 CC_TEST_SLOT_HELD=1 을 받는다" "$(tr '\n' ' ' < "$T/held.log")" "lint:1 readme:1 check-cheap:1 "
   before=$(cksum < "$stamp")
+
+  # --- F39 CC_TEST_SLOTS=0 -------------------------------------------------------
+  stamp_keep="$T/stamp.keep"
+  cp "$stamp" "$stamp_keep"
+  rm -f "$stamp"
+  : > "$T/held.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CC_TEST_SLOTS=0); rc=$?
+  check "F39 자리를 끄면 통과하고 자리대기=0" "$rc $(check_push_field "$stamp" 자리대기)" "0 0"
+  hasnt "F39 자리를 끄면 자리 잡음 줄이 없다" "$out" "자리 잡음"
+  check "F39 자리를 끄면 묶음 단계에 CC_TEST_SLOT_HELD 가 없다" "$(tr '\n' ' ' < "$T/held.log")" "lint:unset readme:unset check-cheap:unset "
+  rm -f "$stamp"
+  : > "$T/held.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CC_TEST_SLOTS_DIR="$T/dflt-slots"); rc=$?
+  check "F39 CC_TEST_SLOTS 가 없는 기본 실행은 통과하고 자리대기=0" "$rc $(check_push_field "$stamp" 자리대기)" "0 0"
+  hasnt "F39 기본 실행은 자리 잡음 줄이 없다" "$out" "자리 잡음"
+  check "F39 기본 실행은 묶음 단계에 CC_TEST_SLOT_HELD 가 없다" "$(tr '\n' ' ' < "$T/held.log")" "lint:unset readme:unset check-cheap:unset "
+  check "F39 기본 실행은 준 저장소를 만들지 않는다" "$([ -e "$T/dflt-slots" ] && echo 있음 || echo 없음)" "없음"
+  mv -f "$stamp_keep" "$stamp"
 
   # --- F19 head 모드는 합친 도장을 바꾸지 않는다 ------------------------------------
   out=$(cprun); rc=$?
@@ -807,8 +857,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 108 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 108 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 119 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 119 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
