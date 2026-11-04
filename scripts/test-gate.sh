@@ -5822,11 +5822,12 @@ pre_ledger_series() {
   }
 
   lsr_wait_cases() {
-    # 대기 원인 여덟 × `그룹` 세 모양 × `까지` 값/`-`. `계정` 은 재개 구속
+    # 대기 원인 열 × `그룹` 세 모양 × `까지` 값/`-`. `계정` 은 재개 구속
     # 원인에만 값이다. `비용`·`비용 출처` 는 `까지` 와 함께 값이거나 함께 `-` 다.
     local r acct g u c cs
     for r in group-exhausted no-room unknown-concurrency fifo-yield \
-             resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention; do
+             resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention \
+             lease-hold-busy lease-hold-lost; do
       case "$r" in resume-bound-*) acct='acct-a' ;; *) acct='-' ;; esac
       for g in - org:0123456789abcdef acct:acct-b; do
         for u in 2026-09-27T01:02:03Z -; do
@@ -30321,6 +30322,208 @@ check "26: 룰 끔 — 머지됨 행이 기록된다" "$rc" "0"
 check "26: 룰 끔 — 머지 대조는 그대로 적힌다" "$(sa_field "$(sa_seg_last S26O)" '머지 대조')" "리뷰 없음"
 check "26: 룰 끔 — 조건 11 이 나지 않는다" "$(sa_unmet11)" ""
 
+# --- 35-26b. 사람이 먼저 머지한 선리뷰후머지 세그먼트의 리뷰 줄은 머지된 PR 을 덮는 델타 리뷰를 싣는다 ---
+# --- section: 35-26b | group: sa | covers: act, snapshot, gate_review_line | anchors: 26b: 미포함 세그먼트의 리뷰 줄이 받아진다 ---
+#
+# 리뷰보다 먼저 사람이 머지하면 머지 대조가 미포함 위반이 되고 종료 조건 11 이
+# 런을 붙든다. 그것을 푸는 덮는 리뷰는 머지된 PR 을 대상으로 받아야 하므로 줄이
+# --merged 와 머지 커밋, 머지 커밋의 첫 부모와 워크트리 팁의 merge-base 를 베이스로
+# 싣고, 앞 전체 사이클을 기준으로 한 델타 플래그 셋을 싣는다. 머지는 게이트 밖에서
+# 베이스에 --no-ff 머지 커밋을 만들어 민다. 빨리감기 머지는 워크트리 팁으로 했든
+# 워크트리 밖에서 올린 커밋으로 했든 베이스를 유도하지 않고 거절하며, squash 머지는 분기점 베이스를 그대로 유도한다. 픽스처는 모두 이 절
+# 안에서 만든다.
+sa26b_merge() {
+  # sa26b_merge — 베이스에 다른 커밋 하나를 둔 뒤 세그먼트 브랜치를 --no-ff 머지
+  # 커밋으로 들이고 원격 베이스로 민다. 머지 커밋 sha 를 찍는다.
+  ( cd "${SA_REPO:?}" && git commit -q --allow-empty -m '베이스의 다른 커밋' \
+    && git merge -q --no-ff -m "머지 $SA_SEGBR" "$SA_SEGBR" \
+    && git push -q origin "$SA_BASE" && git rev-parse HEAD ) 2>/dev/null
+}
+sa26b_row() {
+  # sa26b_row <id> — 세그먼트 워크트리와 브랜치를 단 실행중 행 하나.
+  sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$1" \
+      --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+      -- 상태=실행중 워크트리="$SA_SEGWT" 브랜치="$SA_SEGBR" 선행=없음
+}
+sa26b_delta() {
+  # sa26b_delta <id> <사이클> <기준 사이클> <기준 리뷰 HEAD> <P1> <리뷰 HEAD> — 델타
+  # 리포트와 그 cycle 행 하나.
+  local rep="$SA_ROOT/delta-$2.md"
+  printf '# 코드 리뷰 리포트\n\n## 개요\n\n- **리뷰 대상**: x\n- **리뷰 모드**: 델타 (기준 사이클 %s, 기준 리뷰 HEAD `%s`)\n- **발견 요약**: P0 0건 | P1 %s건\n' \
+    "$3" "$4" "$5" > "$rep"
+  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x \
+      -- "사이클=$2" 모드=델타 "기준 사이클=$3" P0=0 "P1=$5" "리뷰 HEAD=$6" "리포트 경로=$(sa_canon "$1" "$rep")"
+}
+sa26b_flag() {
+  # sa26b_flag <줄> <플래그> — 줄에서 그 플래그 다음 낱말. 없으면 빈 값.
+  printf '%s\n' "$1" | awk -v f="$2" '{ for (i = 1; i < NF; i++) if ($i == f) print $(i + 1) }'
+}
+sa26b_has() {
+  # sa26b_has <줄> <플래그> — 줄에 그 플래그가 낱말로 있으면 예, 없으면 아니오.
+  case " $1 " in *" $2 "*) printf '예' ;; *) printf '아니오' ;; esac
+}
+
+# 1 — 미포함. 전체 사이클 1 뒤에 커밋이 쌓이고 사람이 머지했다.
+sa_new '사람이 먼저 머지한 미포함'
+sa26b_row S26R
+F26R=$(cd "$SA_REPO" && git rev-parse HEAD)
+T26R=$(sa_commit '리뷰된 작업')
+RP26R=$(sa_canon S26R)
+sa_cycle S26R 1 0 0 "$T26R"
+U26R=$(sa_commit '리뷰 뒤의 작업')
+M26R=$(sa26b_merge)
+sa_seg_state S26R 머지됨 "머지 커밋=$M26R"
+check "26b: 사람이 먼저 머지한 미포함 머지됨 행이 기록된다" "$rc|$(sa_field "$(sa_seg_last S26R)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26R; l26r=$msg
+check "26b: 미포함 세그먼트의 리뷰 줄이 받아진다" "$rc" "0"
+check "26b: 그 줄이 머지 커밋을 --merged 로 싣는다" "$(sa26b_flag "$l26r" --merged)" "$M26R"
+check "26b: 그 줄의 베이스가 머지 커밋 첫 부모와 워크트리 팁의 merge-base 다" \
+  "$(sa26b_flag "$l26r" --base-sha)" "$F26R"
+check "26b: 그 줄이 앞 전체 사이클을 기준으로 싣는다" \
+  "$(sa26b_flag "$l26r" --basis-cycle)|$(sa26b_flag "$l26r" --basis-review-head)|$(sa26b_flag "$l26r" --basis-report-path)" \
+  "1|$T26R|$RP26R"
+check "26b: 그 줄에 --post-merge 가 없다" "$(sa26b_has "$l26r" --post-merge)" "아니오"
+
+# 2 — 머지된 팁을 리뷰 HEAD 로 하는 델타 사이클이 받아지고 둘째 머지됨 행이 조건 11 을 지운다.
+sa26b_delta S26R 2 1 "$T26R" 0 "$U26R"
+check "26b: 머지된 팁을 덮는 델타 사이클 행이 받아들여진다" "$rc" "0"
+sa_seg_state S26R 머지됨 "머지 커밋=$M26R"
+check "26b: 덮는 델타 뒤 둘째 머지됨 행의 머지 대조가 충족이다" \
+  "$rc|$(sa_field "$(sa_seg_last S26R)" '머지 대조')" "0|충족"
+check "26b: 덮는 델타 뒤 조건 11 이 사라진다" "$(sa_unmet11)" ""
+sag review-line --manifest "$SA_MANIFEST" --segment S26R; l26r=$msg
+check "26b: 충족 세그먼트의 리뷰 줄에는 --merged 와 기준 플래그가 없다" \
+  "$rc|$(sa26b_has "$l26r" --merged)|$(sa26b_has "$l26r" --basis-cycle)" "0|아니오|아니오"
+
+# 3 — 카운트·미포함. 사이클 1 에 P1 이 열린 채 커밋이 쌓이고 머지되었다. 덮는
+# 델타가 P1 을 다시 판정하면 둘째 머지됨 행은 카운트 위반으로 남는다.
+sa_new '사람이 먼저 머지한 카운트·미포함'
+sa26b_row S26K
+T26K=$(sa_commit '리뷰된 작업')
+sa_cycle S26K 1 0 1 "$T26K"
+U26K=$(sa_commit '리뷰 뒤의 작업')
+M26K=$(sa26b_merge)
+sa_seg_state S26K 머지됨 "머지 커밋=$M26K"
+check "26b: 카운트·미포함 머지됨 행이 기록된다" "$rc|$(sa_field "$(sa_seg_last S26K)" '머지 대조')" "0|위반(카운트·미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26K; l26k=$msg
+check "26b: 카운트·미포함 세그먼트의 리뷰 줄도 --merged 와 기준 사이클을 싣는다" \
+  "$rc|$(sa26b_flag "$l26k" --merged)|$(sa26b_flag "$l26k" --basis-cycle)" "0|$M26K|1"
+sa26b_delta S26K 2 1 "$T26K" 1 "$U26K"
+check "26b: P1 을 다시 판정한 덮는 델타 행이 받아들여진다" "$rc" "0"
+sa_seg_state S26K 머지됨 "머지 커밋=$M26K"
+check "26b: 둘째 머지됨 행이 위반(카운트) 다" "$(sa_field "$(sa_seg_last S26K)" '머지 대조')" "위반(카운트)"
+check "26b: 조건 11 이 카운트 위반을 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S26K 의 머지 대조가 위반(카운트) 입니다"
+sag review-line --manifest "$SA_MANIFEST" --segment S26K; l26k=$msg
+check "26b: 카운트 위반 세그먼트의 리뷰 줄에는 --merged 와 기준 플래그가 없다" \
+  "$rc|$(sa26b_has "$l26k" --merged)|$(sa26b_has "$l26k" --basis-cycle)" "0|아니오|아니오"
+
+# 5 — 머지 커밋이 없는 머지됨 행. 줄을 조립할 수 없으니 거절하고 머지 커밋을 지목한다.
+sa_new '머지 커밋 없는 미포함'
+sa26b_row S26X
+T26X=$(sa_commit '리뷰된 작업')
+sa_cycle S26X 1 0 0 "$T26X"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+sa26b_merge >/dev/null
+sa_seg_state S26X 머지됨
+check "26b: 머지 커밋 없는 미포함 머지됨 행이 기록된다" "$(sa_field "$(sa_seg_last S26X)" '머지 대조')" "위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26X
+check "26b: 머지 커밋 없는 미포함 세그먼트의 리뷰 줄은 rc 3 이다" "$rc" "3"
+case "$msg" in
+  *"머지 커밋"*) ok "26b: 그 거절이 머지 커밋을 지목한다" ;;
+  *) bad "26b 머지 커밋 없는 거절 문면" "$msg" ;;
+esac
+
+# 6 — 앞 사이클 중 델타 행이 마지막이면 기준은 그 앞의 전체 사이클이다.
+sa_new '델타가 마지막인 미포함'
+sa26b_row S26D
+T26D1=$(sa_commit '전체 리뷰된 작업')
+RP26D=$(sa_canon S26D)
+sa_cycle S26D 1 0 0 "$T26D1"
+T26D2=$(sa_commit '델타 리뷰된 작업')
+sa26b_delta S26D 2 1 "$T26D1" 0 "$T26D2"
+check "26b: 머지 전 델타 사이클 행이 받아들여진다" "$rc" "0"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+M26D=$(sa26b_merge)
+sa_seg_state S26D 머지됨 "머지 커밋=$M26D"
+check "26b: 델타 뒤 미포함 머지됨 행이 기록된다" "$(sa_field "$(sa_seg_last S26D)" '머지 대조')" "위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26D; l26d=$msg
+check "26b: 델타가 마지막이면 기준 플래그는 그 앞 전체 사이클을 가리킨다" \
+  "$rc|$(sa26b_flag "$l26d" --basis-cycle)|$(sa26b_flag "$l26d" --basis-review-head)|$(sa26b_flag "$l26d" --basis-report-path)" \
+  "0|1|$T26D1|$RP26D"
+
+# 7 — 빨리감기 머지. 전체 사이클 1 의 리뷰 HEAD 뒤에 커밋 둘을 두고 원격 베이스를
+# 세그먼트 팁으로 빨리감기하면 머지 커밋이 팁 자신이다. 그 첫 부모는 머지 직전의
+# 베이스가 아니라 세그먼트 안의 커밋이라, 유도한 베이스는 앞 커밋을 diff 에서 뺀다.
+# 행에 베이스 sha 가 없으므로 줄을 내지 않고 거절한다.
+sa_new '빨리감기로 머지한 미포함'
+sa26b_row S26W
+T26W=$(sa_commit '리뷰된 작업')
+sa_cycle S26W 1 0 0 "$T26W"
+sa_commit '리뷰 뒤의 작업 1' >/dev/null
+U26W=$(sa_commit '리뷰 뒤의 작업 2')
+sa_land
+sa_seg_state S26W 머지됨 "머지 커밋=$U26W"
+check "26b: 빨리감기 머지의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26W)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26W
+case "$msg" in
+  *"/cc-cmds:review-unattended"*) r26w="줄 있음" ;;
+  *) r26w="줄 없음" ;;
+esac
+check "26b: 빨리감기 머지 세그먼트의 리뷰 줄은 rc 3 이고 줄을 내지 않는다" "$rc|$r26w" "3|줄 없음"
+case "$msg" in
+  *"is a fast-forward merge"*) ok "26b: 그 거절이 빨리감기 머지를 지목한다" ;;
+  *) bad "26b 빨리감기 거절 문면" "$msg" ;;
+esac
+
+# 8 — squash 머지. 머지 커밋은 세그먼트 변경을 한 커밋에 담은 새 커밋이라 팁의 조상이
+# 아니고, 그 첫 부모가 머지 직전의 베이스라 유도한 베이스가 분기점이다. 빨리감기
+# 판별이 이 머지를 거르지 않는다.
+sa_new 'squash 로 머지한 미포함'
+sa26b_row S26Q
+F26Q=$(cd "$SA_REPO" && git rev-parse HEAD)
+T26Q=$(sa_commit '리뷰된 작업')
+sa_cycle S26Q 1 0 0 "$T26Q"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+# --squash 는 -q 에도 「Squash commit -- not updating HEAD」를 표준출력에 찍으므로 버린다.
+M26Q=$( cd "$SA_REPO" && git merge -q --squash "$SA_SEGBR" >/dev/null && git commit -qm "squash $SA_SEGBR" \
+  && git push -q origin "$SA_BASE" && git rev-parse HEAD ) 2>/dev/null
+sa_seg_state S26Q 머지됨 "머지 커밋=$M26Q"
+check "26b: squash 머지의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26Q)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26Q; l26q=$msg
+check "26b: squash 머지 세그먼트의 리뷰 줄은 머지 커밋과 분기점 베이스를 싣는다" \
+  "$rc|$(sa26b_flag "$l26q" --merged)|$(sa26b_flag "$l26q" --base-sha)" "0|$M26Q|$F26Q"
+
+# 9 — 워크트리 밖 커밋을 올린 뒤의 빨리감기. 다른 클론에서 세그먼트 팁 위에 커밋을
+# 하나 더 올리고 원격 베이스를 그 커밋으로 빨리감기하면 머지 커밋은 워크트리 팁의
+# 자손이라 사례 7 의 판별은 거르지 못한다. 그 첫 부모가 워크트리 팁 자신이라 유도한
+# 베이스가 워크트리 팁이 되고 리뷰 뒤 커밋이 diff 에서 빠지므로, 줄을 내지 않고 거절한다.
+# 다른 클론의 커밋은 워크트리를 건드리지 않는 commit-tree 로 만든다.
+sa_new '워크트리 밖 커밋 뒤 빨리감기한 미포함'
+sa26b_row S26B
+T26B=$(sa_commit '리뷰된 작업')
+sa_cycle S26B 1 0 0 "$T26B"
+sa_commit '리뷰 뒤의 작업 1' >/dev/null
+U26B=$(sa_commit '리뷰 뒤의 작업 2')
+M26B=$( cd "$SA_REPO" && git commit-tree "$U26B^{tree}" -p "$U26B" -m '워크트리 밖의 작업' ) 2>/dev/null
+( cd "$SA_REPO" && git push -q origin "$M26B:refs/heads/$SA_BASE" ) >/dev/null 2>&1
+sa_seg_state S26B 머지됨 "머지 커밋=$M26B"
+check "26b: 워크트리 밖 커밋 뒤 빨리감기의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26B)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26B
+case "$msg" in
+  *"/cc-cmds:review-unattended"*) r26b="줄 있음" ;;
+  *) r26b="줄 없음" ;;
+esac
+check "26b: 워크트리 밖 커밋 뒤 빨리감기 세그먼트의 리뷰 줄은 rc 3 이고 줄을 내지 않는다" "$rc|$r26b" "3|줄 없음"
+case "$msg" in
+  *"is a fast-forward merge — its first parent"*"already holds the worktree tip"*) ok "26b: 그 거절이 첫 부모가 워크트리 팁을 담은 빨리감기를 지목한다" ;;
+  *) bad "26b 워크트리 밖 커밋 뒤 빨리감기 거절 문면" "$msg" ;;
+esac
+
 # --- 35-27. 게이트가 적는 필드는 호출자가 넘길 수 없고, 넘치는 행은 이름을 대며 거절된다 ---
 # --- section: 35-27 | group: sa | covers: act, snapshot | anchors: 27: 호출자가 넘긴 머지 대조 는 머지됨 행에서 거절된다 ---
 sa_new '유도 필드'
@@ -45965,27 +46168,27 @@ check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
 # 호스트를 Darwin 이 아닌 값으로 주입해 어느 러너에서도 락 없는 갈래를 탄다. 락
 # 걸린 갈래는 63 이 잰다.
 #
-# 사례표는 근거 여덟과 대기 원인 여덟을 모두 지나고, `교대` 원천 세 조건(표식 없음,
+# 사례표는 근거 여덟과 대기 원인 열을 모두 지나고, `교대` 원천 세 조건(표식 없음,
 # 한 자리, 두 자리)을 같은 원장 끝에 붙인다.
 # ---------------------------------------------------------------------------
 lsr62_g=$(lsr_ledger w62-gate)
 lsr62_d=$(lsr_ledger w62-driver)
 lsr62_m=$(lsr_ledger w62-mixed)
 { lsr_lease_cases; lsr_wait_cases; } > "$lsr_root/cases62.tsv"
-check "62: 사례표가 임대 48·대기 48 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "96"
+check "62: 사례표가 임대 48·대기 60 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "108"
 check "62: 주입한 호스트에서 lock_tool 이 비어 있다 (락 없는 갈래)" \
   "$(lsr_in Linux "$lsr62_g" - lock_tool)" ""
 check "62: 게이트 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "96 0"
+  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
 check "62: 드라이버 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "96 0"
+  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
 sed -n '1p;49p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
 for lsr62_sh in 'LS#7' 'LS#12'; do
   lsr_in Linux "$lsr62_g" "$lsr62_sh" lsr_each gate_append < "$lsr_root/shift62.tsv" >/dev/null
   lsr_in Linux "$lsr62_d" "$lsr62_sh" lsr_each ledger_row < "$lsr_root/shift62.tsv" >/dev/null
 done
-check "62: 두 원장이 각각 100행이다" \
-  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "100/100"
+check "62: 두 원장이 각각 112행이다" \
+  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "112/112"
 if cmp -s "$lsr62_g" "$lsr62_d"; then
   ok "62: 두 기록자가 같은 바이트와 같은 체인을 쓴다"
 else
@@ -46002,16 +46205,16 @@ check "62: 첫 행이 고정된 문법 그대로다" \
   "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000.5 | 단계=rest | 단계 출처=declared | 문턱=1.2000 | prev=$lsr62_seed"
 check "62: 교대 원천 세 조건 — 표식 없음 0, #7 은 7, #12 는 12" \
   "$( { grep -cF '| 교대=0 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=7 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=12 |' "$lsr62_d" || true; } )" \
-  "96/2/2"
+  "108/2/2"
 check "62: 락 없는 갈래는 락 파일을 만들지 않는다" \
   "$(ls -A "${lsr62_g%/*}" "${lsr62_d%/*}" | { grep -c 'ledger\.lock' || true; })" "0"
 check "62: 번갈아 쓴 두 기록자도 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "96 0"
+  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
 rc=0; lsr_in Linux "$lsr62_m" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "62: 번갈아 쓴 원장의 사슬이 검증된다" "$rc" "0"
 check "62: 번갈아 쓴 원장이 한 기록자가 쓴 원장과 같은 바이트다" \
   "$( { grep '^- `' "$lsr62_m" || true; } | shasum -a 256 | cut -d' ' -f1)" \
-  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,96p' | shasum -a 256 | cut -d' ' -f1)"
+  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,108p' | shasum -a 256 | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------
 # 63. 락 아래 섞어 쓴 두 기록자
@@ -57352,6 +57555,11 @@ mf2_line() {  # mf2_line — 리뷰 줄의 --base-sha 와 --post-merge 값, `<�
     "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--post-merge") print $(i + 1) }')"
 }
 check "88f-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$(mf2_line)" "$mf2_base|$MF_TIP"
+sag review-line --manifest "$SA_MANIFEST" --segment H
+case " $msg " in
+  *" --merged "*) bad "88f-2 사후리뷰 줄의 --merged" "$msg" ;;
+  *) ok "88f-2: 사후리뷰 줄에는 --merged 가 없다" ;;
+esac
 check "88f-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다" \
   "$(mf_snap | jq -r '.unmet_condition_numbers | index(1) != null')" "true"
 sa_cycle H 1 0 0 "$MF_TIP"
@@ -59965,6 +60173,227 @@ check "98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO �
   "0|WAIT|resume|bound|wait,resume,u1|424242|11|11"
 check "98: 그 파견의 stage-wait 행은 하나이고 차용 중 재개 대기다" \
   "$(lsr93_n "$h98_lw" '- `stage-wait` ')/$(lsr93_n "$h98_lw" '| 근거=resume-bound-borrowed |')" "1/1"
+
+# ---------------------------------------------------------------------------
+# 98h. 감독자의 임대 확보 — 잠금 경합·잃은 임대의 원인 행, wait 20, 끝난 런의 임대 정리
+# --- section: 98h | group: ledger_series | covers: gate_sup_lease_secure, gate_sup_lease_fail, gate_verb_supervise_stage, gate_verb_wait, gate_lease_sweep_tick, gate_launch_route, gate_end_run, route_lease_release_run_dead, route_lease_sweep_done, autopilot-router-shift | needs: 75 | anchors: 98h: 잠금이 보유 총예산 내내 바쁘면 감독자는 rc 3 으로 끝나고 기동하지 않는다, 98h: 그 끝은 lease-hold-busy 원인 행 하나를 남긴다, 98h: wait 은 그 시도를 rc 20 자원 대기로 읽는다, 98h: stale 임대의 감독자는 lease-hold-lost 원인 행을 남기고 임대를 되살리지 않는다, 98h: act 의 보유가 rc 3 이어도 감독자의 확보가 보유자 목록에 오른다, 98h: 보유 오류 rc 4 는 blocked 행을 남기고 wait 은 16 이다, 98h: done 기록은 그 런의 사망 보유자 임대만 지운다, 98h: 첫 훑기는 끝난 런의 사망 보유자 기록만 지운다, 98h: carry 파견도 훑기 자리를 지난다, 98h: 교대 규약의 Exit codes 표에 20 from wait 행이 있다 ---
+#
+# 감독자 전체를 띄우지 않고, 감독자가 기동 앞에서 부르는 확보·실패 처분 두 함수를 절 75 의
+# 사본 자식에서 진짜 임대 동사로 부른다(임대 표 루트와 상태 루트는 픽스처 아래로 돌리고,
+# 반납만 절 75 의 기록 스텁이다). 잠금 경쟁자는 살아 있는 소유자를 적은 `.lock` 이고, 대기
+# 예산은 시험 전용 이음매로 1~3초로 줄인다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+sleep 300 >/dev/null 2>&1 &
+h98h_hold=$!
+sh -c 'exit 0' &
+h98h_dead=$!
+wait "$h98h_dead" 2>/dev/null || true
+h98h_xdg="$lsr_root/xdg98h"; rm -rf "$h98h_xdg"
+h98h_in() {  # h98h_in <pace 루트> <원장> <명령…> — 임대 표·상태 루트를 돌린 사본 자식에서 한 명령
+  local p="$1" l="$2"; shift 2
+  XDG_STATE_HOME="$h98h_xdg" RUN_PACE_ROOT="$p" lsr75_in "$l" "${H98H_ENV:-}" '' "$@"
+}
+h98h_c_lease() {  # h98h_c_lease <run> <계보> <nonce> <grant|wait> <pid> [지문] — 자식에서 임대 기록 하나
+  local t k fp rec
+  t="$(run_pace_root)/leases"; mkdir -p "$t"
+  fp=${6:-$(route__fp "$5")}
+  k=$(route__key "$1" "$2") || return 1
+  rec=$(jq -cn --arg s "$ROUTE_LEASE_SCHEMA" --arg kind "$4" --arg run "$1" --arg lin "$2" --arg n "$3" \
+          --argjson pid "$5" --arg fp "$fp" --argjson now "$(date -u +%s)" \
+    '{schema: $s, kind: $kind, run_id: $run, lineage: $lin, nonce: $n, seq: 1, account: "u1",
+      config_dir: "/h/.claude-u1", holders: [{pid: $pid, fp: $fp}], granted_at_epoch: $now}
+     + (if $kind == "grant" then {reservation_bp: {five_hour: 100, seven_day: 100},
+          admitted_as: "known", basis: "first", observed: "tracker@1"} else {} end)') || return 1
+  route__lease_put "$t" "$k" "$rec"
+}
+h98h_c_fail() {  # h98h_c_fail <키> <계보> <nonce> — 확보의 rc 와 실패 처분의 rc 를 「확보|처분」 으로
+  local hrc=0 r=0
+  gate_sup_lease_secure "$2" "$3" || hrc=$?
+  [ "$hrc" = 0 ] || { gate_sup_lease_fail infra "$1" implement 1 "$2" "$3" "" "$hrc" >/dev/null 2>&1 || r=$?; }
+  printf '%s|%s' "$hrc" "$r"
+}
+h98h_c_wait() {  # h98h_c_wait <키> — wait 의 마지막 줄과 rc
+  local r=0 out
+  GATE_SETTLED_SEGMENTS=""
+  out=$(gate_verb_wait "$1" 300 5 2>/dev/null) || r=$?
+  printf '%s|rc=%s' "$(printf '%s\n' "$out" | tail -1)" "$r"
+}
+export -f h98h_c_lease h98h_c_fail h98h_c_wait
+h98h_lock() {  # h98h_lock <pace 루트> — 살아 있는 소유자를 적은 임대 표 잠금
+  mkdir -p "$1/leases/.lock"
+  printf '%s\n%s\n' "$h98h_hold" "$h98h_hold_fp" > "$1/leases/.lock/owner"
+}
+h98h_files() {  # h98h_files <런 디렉터리> <키> — 남은 신원 파일과 핀
+  local d="$1" k="$2" f s=""
+  for f in sup sup.start launch launch.taken waiting pid attempt; do
+    [ -e "$d/$k.$f" ] && s="$s $f"
+  done
+  printf '%s' "${s# }"
+}
+h98h_seed() {  # h98h_seed <런 디렉터리> <키> — 감독자 실패 앞의 파견 기록(핀·선점·신원·토큰)
+  printf '1\n' > "$1/$2.attempt"; : > "$1/$2.attempt.1"
+  printf '4242\n' > "$1/$2.sup"; printf 'x\n' > "$1/$2.sup.start"
+  : > "$1/$2.launch.taken"; : > "$1/$2.launch"
+}
+h98h_list() {  # h98h_list <pace 루트> — 표에 남은 「run_id/계보」 를 정렬해 한 줄로
+  { jq -r '.run_id + "/" + .lineage' "$1"/leases/*.lease 2>/dev/null || true; } | LC_ALL=C sort | paste -sd' ' -
+}
+h98h_GRANT='{"verdict":"GRANT","nonce":"g98h","account":"u1","config_dir":"/h/.claude-u1","basis":"first"}'
+
+# 잠금 경합 — 확보 총예산(보유 예산 1초의 두 배) 내내 잠금이 바쁘다.
+h98h_pb="$lsr_root/pace98h-b"; rm -rf "$h98h_pb"
+h98h_lb=$(lsr75_new h98hb); h98h_db="${h98h_lb%/*}"
+h98h_hold_fp=$(h98h_in "$h98h_pb" "$h98h_lb" route__fp "$h98h_hold" 2>/dev/null)
+h98h_in "$h98h_pb" "$h98h_lb" h98h_c_lease LS 'B:SHB#1' nb grant "$h98h_hold" >/dev/null 2>&1
+h98h_seed "$h98h_db" SHB
+h98h_lock "$h98h_pb"
+SECONDS=0
+h98h_bout=$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pb" "$h98h_lb" h98h_c_fail SHB 'B:SHB#1' nb 2>/dev/null)
+h98h_bel=$SECONDS
+check "98h: 잠금이 보유 총예산 내내 바쁘면 감독자는 rc 3 으로 끝나고 기동하지 않는다" "$h98h_bout" "3|3"
+if [ "$h98h_bel" -ge 2 ] && [ "$h98h_bel" -le 10 ]; then ok "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다"
+else bad "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다" "${h98h_bel}초"; fi
+check "98h: 그 끝은 lease-hold-busy 원인 행 하나를 남긴다" \
+  "$( { grep '^- `stage-wait` ' "$h98h_lb" | grep -cF '| 계보=B:SHB#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-busy' || true; } )" "1"
+check "98h: 옛 임대를 nonce 로 반납한다" "$(cat "$h98h_db/released" 2>/dev/null)" "B:SHB#1 nb"
+check "98h: 신원 파일과 토큰은 지우고 핀만 남기며 대기 표지는 없다" "$(h98h_files "$h98h_db" SHB)" "attempt"
+check "98h: wait 은 그 시도를 rc 20 자원 대기로 읽는다" \
+  "$(h98h_in "$h98h_pb" "$h98h_lb" h98h_c_wait SHB | sed 's/^[^ ]* //')" "[wait] SHB 자원 대기 — 원인 lease-hold-busy — 시도 1 — rc=20|rc=20"
+check "98h: 그 키는 진행 중이 아니다" \
+  "$(h98h_in "$h98h_pb" "$h98h_lb" eval 'if gate_key_in_flight SHB; then printf 진행; else printf 없음; fi' 2>/dev/null)" "없음"
+h98h_in "$h98h_pb" "$h98h_lb" eval 'gate_settle_lost_dispatches; gate_settle_dead_waiters SHB; :' >/dev/null 2>&1
+check "98h: 전주의 두 정산은 그 시도에 외부 종료 행을 쓰지 않는다" \
+  "$( { grep -c '종단 부류=외부 종료' "$h98h_lb" || true; } )" "0"
+rm -rf "$h98h_pb/leases/.lock"
+check "98h: 경쟁자가 놓은 뒤 같은 키의 재파견은 새 시도 번호로 입장한다" \
+  "$(H98H_ENV=$h98h_GRANT h98h_in "$h98h_pb" "$h98h_lb" eval 'r=0; gate_launch_route infra SHB implement >/dev/null 2>&1 || r=$?; printf "%s %s" "$r" "$GATE_ROUTE_LINEAGE"' 2>/dev/null)" \
+  "0 B:SHB#2"
+
+# 잃은 임대 — stale 임대(보유자 모두 사망)와 없는 임대.
+h98h_ps="$lsr_root/pace98h-s"; rm -rf "$h98h_ps"
+h98h_ls=$(lsr75_new h98hs); h98h_ds="${h98h_ls%/*}"
+h98h_in "$h98h_ps" "$h98h_ls" h98h_c_lease LS 'B:SHS#1' ns grant "$h98h_dead" 'Thu Jan 1 00:00:00 1970' >/dev/null 2>&1
+h98h_seed "$h98h_ds" SHS
+h98h_seed "$h98h_ds" SHN
+check "98h: stale 임대의 감독자는 lease-hold-lost 원인 행을 남기고 임대를 되살리지 않는다" \
+  "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_fail SHS 'B:SHS#1' ns 2>/dev/null)/$( { grep -cF '| 계보=B:SHS#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-lost' "$h98h_ls" || true; } )/$(jq -c '[.holders[].pid]' "$h98h_ps"/leases/*.lease 2>/dev/null)" \
+  "5|3/1/[$h98h_dead]"
+check "98h: 없는 임대의 감독자도 lease-hold-lost 다" \
+  "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_fail SHN 'B:SHN#1' nn 2>/dev/null)/$( { grep -cF '| 계보=B:SHN#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-lost' "$h98h_ls" || true; } )" "1|3/1"
+check "98h: 잃은 임대의 두 끝도 반납하고 핀만 남긴다" \
+  "$(paste -sd, - < "$h98h_ds/released")/$(h98h_files "$h98h_ds" SHS)/$(h98h_files "$h98h_ds" SHN)" "B:SHS#1 ns,B:SHN#1 nn/attempt/attempt"
+check "98h: wait 은 잃은 임대의 시도도 rc 20 으로 읽는다" \
+  "$(h98h_in "$h98h_ps" "$h98h_ls" h98h_c_wait SHS | sed 's/^[^ ]* //')" "[wait] SHS 자원 대기 — 원인 lease-hold-lost — 시도 1 — rc=20|rc=20"
+check "98h: resume 사건의 재파견도 원인 행 뒤에 입장으로 닫힌다" \
+  "$(H98H_ENV=$h98h_GRANT h98h_in "$h98h_ps" "$h98h_ls" eval 'GATE_RESUME=sess-98h; gate_resume_binding_of() { printf -; }; gate_resume_grant_ok() { return 0; }; r=0; gate_launch_route infra SHS implement >/dev/null 2>&1 || r=$?; printf "%s %s %s" "$r" "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_EVENT"' 2>/dev/null)" \
+  "0 B:SHS#2 resume"
+
+# 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다. 잠금을 기다렸다면 보유 예산
+# 1초를 두 번 다 쓰고 rc 3 이 되므로, rc 0 과 1초 이하의 경과가 잠금을 건너뛴 증거다
+# (SECONDS 는 초 경계에서 바뀌어 부하 아래 0 이 1 로 읽힐 수 있다).
+h98h_pf="$lsr_root/pace98h-f"; rm -rf "$h98h_pf"
+h98h_lf=$(lsr75_new h98hf)
+h98h_lock "$h98h_pf"
+check "98h: 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다" \
+  "$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pf" "$h98h_lf" eval 'h98h_c_lease LS "B:SHF#1" nf grant $$ >/dev/null 2>&1; SECONDS=0; r=0; gate_sup_lease_secure "B:SHF#1" nf || r=$?; e=$SECONDS; [ "$e" -le 1 ] && e=곧바로; printf "%s|%s" "$r" "$e"' 2>/dev/null)" "0|곧바로"
+
+# act 쪽 보유는 재시도 없이 rc 3 으로 돌아가고, 감독자의 확보가 잠금이 풀린 뒤 보유자에 든다.
+h98h_pa="$lsr_root/pace98h-a"; rm -rf "$h98h_pa"
+h98h_la=$(lsr75_new h98ha)
+h98h_in "$h98h_pa" "$h98h_la" h98h_c_lease LS 'B:SHA#1' na grant "$h98h_hold" >/dev/null 2>&1
+h98h_lock "$h98h_pa"
+h98h_aout=$(CC_ROUTE_LEASE_LOCK_WAIT_TEST_SECONDS=1 CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=3 H98H_ACT=$h98h_hold \
+  h98h_in "$h98h_pa" "$h98h_la" eval '
+    r=0; route_lease_hold "$(run_pace_root)/leases" LS "B:SHA#1" na "$H98H_ACT" >/dev/null 2>&1 || r=$?
+    ( sleep 1; rm -rf "$(run_pace_root)/leases/.lock" ) &
+    s=0; gate_sup_lease_secure "B:SHA#1" na || s=$?; wait
+    printf "%s|%s|%s" "$r" "$s" "$$"' 2>/dev/null)
+h98h_apid=${h98h_aout##*|}
+check "98h: act 의 보유가 rc 3 이어도 감독자의 확보가 보유자 목록에 오른다" \
+  "${h98h_aout%|*}/$(jq -r --argjson p "${h98h_apid:-0}" 'any(.holders[]; .pid == $p)' "$h98h_pa"/leases/*.lease 2>/dev/null)" "3|0/true"
+check "98h: act 쪽 감독자 보유는 예산 인자 없이 한 번이다" \
+  "$( { grep -cF 'route_lease_hold "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_NONCE" "$sup" >/dev/null 2>&1 || rrc=$?' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" || true; } )" "1"
+
+# 보유 오류 — rc 2·4 는 대기가 아니라 act 스코프 blocked 행이다.
+h98h_pe="$lsr_root/pace98h-e"; rm -rf "$h98h_pe"
+h98h_le=$(lsr75_new h98he); h98h_de="${h98h_le%/*}"
+h98h_seed "$h98h_de" SHE
+h98h_seed "$h98h_de" SHT
+check "98h: 보유 오류 rc 4 는 blocked 행을 남기고 wait 은 16 이다" \
+  "$(h98h_in "$h98h_pe" "$h98h_le" eval 'route_lease_has_holder() { return 4; }; h98h_c_fail SHE "B:SHE#1" ne' 2>/dev/null)/$( { grep -c '^- `blocked` .*| 스코프=act | .*| 근거=계보=B:SHE#1 보유 오류 rc=4 ' "$h98h_le" || true; } )/$(h98h_in "$h98h_pe" "$h98h_le" h98h_c_wait SHE | sed 's/^.*|rc=/rc=/')" \
+  "4|3/1/rc=16"
+check "98h: 보유 오류 rc 2 도 원인 이름과 rc 를 남기고 원인 행은 쓰지 않는다" \
+  "$(h98h_in "$h98h_pe" "$h98h_le" eval 'route_lease_has_holder() { return 2; }; h98h_c_fail SHT "B:SHT#1" nt' 2>/dev/null)/$( { grep -c '| 근거=계보=B:SHT#1 보유 오류 rc=2 ' "$h98h_le" || true; } )/$( { grep -c '근거=lease-hold-' "$h98h_le" || true; } )" \
+  "2|3/1/0"
+
+# 자기 정리 — done 이 기록되면 그 런의 보유자가 모두 죽은 임대만 표에서 빠지고, 산
+# 보유자의 임대(런이 멈추지 않은 스테이지·감독자의 예약)와 다른 런의 임대는 남는다.
+h98h_pd="$lsr_root/pace98h-d"; rm -rf "$h98h_pd"
+h98h_ld=$(lsr75_new h98hd); h98h_dd="${h98h_ld%/*}"
+h98h_in "$h98h_pd" "$h98h_ld" h98h_c_lease LS 'B:SD1#1' nd grant "$h98h_hold" >/dev/null 2>&1
+h98h_in "$h98h_pd" "$h98h_ld" h98h_c_lease LS 'B:SD2#1' nd2 grant "$h98h_dead" 'Thu Jan 1 00:00:00 1970' >/dev/null 2>&1
+h98h_in "$h98h_pd" "$h98h_ld" h98h_c_lease LS 'B:SD3#1' nd3 wait "$h98h_dead" 'Thu Jan 1 00:00:00 1970' >/dev/null 2>&1
+h98h_in "$h98h_pd" "$h98h_ld" h98h_c_lease OTHER 'B:SD1#1' no grant "$h98h_dead" 'Thu Jan 1 00:00:00 1970' >/dev/null 2>&1
+check "98h: 자기 정리 앞의 표는 네 기록이다" "$(ls "$h98h_pd/leases" | grep -c '\.lease$')" "4"
+check "98h: done 기록은 그 런의 사망 보유자 임대만 지운다" \
+  "$(h98h_in "$h98h_pd" "$h98h_ld" eval 'gate_pair_drain() { :; }; gate_end_row() { :; }; cc_caller_is_router() { return 1; }; r=0; gate_end_run B1 "시험 종단" 해당없음 완료 - "시험 종단 줄" >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)/$( [ -s "$h98h_dd/done" ] && printf done)/$(h98h_list "$h98h_pd")" \
+  "0/done/LS/B:SD1#1 OTHER/B:SD1#1"
+
+# 끝난 런의 훑기 — 후보 판정, 도장 간격, 잠금 경합, carry 파견의 자리.
+h98h_pw="$lsr_root/pace98h-w"; rm -rf "$h98h_pw"
+h98h_lw=$(lsr75_new h98hw)
+mkdir -p "$h98h_xdg/cc-cmds/run/RDONE" "$h98h_xdg/cc-cmds/run/REMPTY" "$h98h_xdg/cc-cmds/run/RNODONE"
+printf '끝\n' > "$h98h_xdg/cc-cmds/run/RDONE/done"
+: > "$h98h_xdg/cc-cmds/run/REMPTY/done"
+h98h_dfp='Thu Jan 1 00:00:00 1970'
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W1#1' n1 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W2#1' n2 wait "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W3#1' n3 grant "$h98h_hold" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease REMPTY 'B:W4#1' n4 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RNODONE 'B:W5#1' n5 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RNODIR 'B:W6#1' n6 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease 'a/b' 'B:W7#1' n7 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_keep=$(printf '%s\n' 'RDONE/B:W3#1' 'REMPTY/B:W4#1' 'RNODONE/B:W5#1' 'RNODIR/B:W6#1' 'a/b/B:W7#1' | LC_ALL=C sort | paste -sd' ' -)
+check "98h: 훑기 앞의 표는 일곱 기록이다" "$(ls "$h98h_pw/leases" | grep -c '\.lease$')" "7"
+h98h_in "$h98h_pw" "$h98h_lw" gate_lease_sweep_tick >/dev/null 2>&1
+check "98h: 첫 훑기는 끝난 런의 사망 보유자 기록만 지운다" "$(h98h_list "$h98h_pw")" "$h98h_keep"
+h98h_st=$(cat "$h98h_pw/leases.sweep" 2>/dev/null | tr -d '[:space:]')
+case "$h98h_st" in
+  ''|*[!0-9]*) bad "98h: 끝난 훑기는 도장을 쓴다" "$h98h_st" ;;
+  *) ok "98h: 끝난 훑기는 도장을 쓴다" ;;
+esac
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W8#1' n8 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+h98h_in "$h98h_pw" "$h98h_lw" gate_lease_sweep_tick >/dev/null 2>&1
+check "98h: 도장이 600초 안이면 다시 훑지 않는다" \
+  "$(h98h_list "$h98h_pw" | tr ' ' '\n' | grep -c '^RDONE/B:W8#1$')" "1"
+h98h_old=$(( $(date -u +%s) - 700 ))
+printf '%s\n' "$h98h_old" > "$h98h_pw/leases.sweep"
+h98h_lock "$h98h_pw"
+h98h_in "$h98h_pw" "$h98h_lw" gate_lease_sweep_tick >/dev/null 2>&1
+check "98h: 잠금 경합으로 건너뛴 훑기는 지우지 않고 도장을 갱신하지 않는다" \
+  "$(h98h_list "$h98h_pw" | tr ' ' '\n' | grep -c '^RDONE/B:W8#1$')/$(tr -d '[:space:]' < "$h98h_pw/leases.sweep")" "1/$h98h_old"
+# 키 이름은 대문자를 %XX 로 인코딩하므로 지울 기록은 계보로 찾는다.
+for h98h_f in "$h98h_pw"/leases/*.lease; do
+  [ "$(jq -r '.lineage' "$h98h_f" 2>/dev/null)" != 'B:W8#1' ] || rm -f "$h98h_f"
+done
+check "98h: 후보가 없으면 동사를 부르지 않는다 (잠금이 바빠도 rc 0)" \
+  "$(h98h_in "$h98h_pw" "$h98h_lw" eval 'r=0; route_lease_sweep_done "$(run_pace_root)/leases" >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)" "0"
+rm -rf "$h98h_pw/leases/.lock"
+h98h_in "$h98h_pw" "$h98h_lw" h98h_c_lease RDONE 'B:W9#1' n9 grant "$h98h_dead" "$h98h_dfp" >/dev/null 2>&1
+check "98h: carry 파견도 훑기 자리를 지난다" \
+  "$(h98h_in "$h98h_pw" "$h98h_lw" eval 'GATE_HA_LINE=1; GATE_CARRY_ANSWER=1; gate_launch_route_carry() { return 0; }; r=0; gate_launch_route infra SW9 implement >/dev/null 2>&1 || r=$?; printf %s "$r"' 2>/dev/null)/$(h98h_list "$h98h_pw")/$( [ "$(tr -d '[:space:]' < "$h98h_pw/leases.sweep")" != "$h98h_old" ] && printf 갱신)" \
+  "0/$h98h_keep/갱신"
+kill "$h98h_hold" 2>/dev/null || true
+wait "$h98h_hold" 2>/dev/null || true
+
+# 교대 규약 사본 — wait 의 20 이 교대가 읽는 세 자리에 있다.
+h98h_skill="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
+check "98h: 교대 규약의 Exit codes 표에 20 from wait 행이 있다" \
+  "$( { grep -c '^| `20` from `wait` | the supervisor could not hold its lease' "$h98h_skill" || true; } )" "1"
+check "98h: 교대 규약의 wait 동사 행과 Waiting on a stage 의 나열에 20 이 있다" \
+  "$( { grep -c 'one of 11–14, 16 or 20, or 15' "$h98h_skill" || true; } )/$( { grep -c 'one of 11–14 or 20 from the table above' "$h98h_skill" || true; } )" "1/1"
+unset -f h98h_in h98h_c_lease h98h_c_fail h98h_c_wait h98h_lock h98h_files h98h_seed h98h_list
 
 # ---------------------------------------------------------------------------
 # 98. gate-shard 레시피의 레인 — 행 배정, 레인별 결과 파일, 종료 코드와 합계 줄 검사
