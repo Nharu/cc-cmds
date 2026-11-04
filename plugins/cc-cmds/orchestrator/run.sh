@@ -9968,7 +9968,8 @@ apply_target_dependents() {
 apply_target_only_stop() {
   # apply_target_only_stop <segment> <radius> — a target defect stops only that
   # target's applies: the declared radius is not `런` and no segment of another
-  # repository waits on this one. Otherwise the radius stop stands as before.
+  # repository waits on this target (any of its segments). Otherwise the
+  # radius stop stands as before.
   [ "$2" != "런" ] && [ -z "$(apply_target_dependents "$1")" ]
 }
 
@@ -10021,11 +10022,12 @@ apply_stage() {
   # stop is an act-scope block naming the target, written before the command,
   # and the segment is not counted as landed. A radius stop wins over it: the
   # walk skips a segment inside a stopped radius before it reaches here. The
-  # stopping segment itself is not refused, as at the gate's apply act: its
-  # own rerun's completion is what releases the stop.
+  # stopping segment itself is refused here too: this driver takes no rerun
+  # answer, so the gate's exception for that segment's own rerun has no path
+  # into it.
   local al held
   al=$(seg_alias "$seg" 2>/dev/null) || al=""
-  if [ -n "$al" ] && held=$( { apply_target_stopped "$al" || true; } | awk -v me="$seg" '$0 != me' | sed -n '1p') && [ -n "$held" ]; then
+  if [ -n "$al" ] && held=$(apply_target_stopped "$al" | sed -n '1p') && [ -n "$held" ]; then
     ledger_row 'blocked' "대상=$al" "세그먼트=$seg" "스코프=act" "원인=막힘" \
       "사유=대상 적용 정지 $al" "관측=대상 $al 의 적용이 세그먼트 $held 의 대상 결함으로 멈춰 있다 — 명령을 실행하지 않는다" \
       "재개 명령=$cmd"
@@ -10114,7 +10116,7 @@ apply_stage() {
   # post-probe still reads 「필요」: the segment park row carries the gate's
   # judgment and the target's alias, which is what the target-stop predicate
   # reads, and when the radius is not `런` and no other repository's segment
-  # waits on this one, the run goes on without a radius stop. Every other
+  # waits on this target, the run goes on without a radius stop. Every other
   # unknown outcome keeps the radius stop.
   if [ -n "$al" ] && apply_target_defect "$ne" "$rc" "$post" && apply_target_only_stop "$seg" "$radius"; then
     local -a tfx=(); local l

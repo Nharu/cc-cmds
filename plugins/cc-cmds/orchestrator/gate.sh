@@ -16582,7 +16582,7 @@ gate_segment_target_stopped() {
   sa=$(alias_for_slug "$(gate_segment_field "$seg" '레포' | tr -d '`')" 2>/dev/null || true)
   [ -n "$sa" ] || sa=$(gate_segment_alias_guess "$seg")
   [ -n "$sa" ] || return 1
-  held=$( { apply_target_stopped "$sa" || true; } | awk -v me="$seg" '$0 != me' | sed -n '1p')
+  held=$( { apply_target_stopped "$sa" || true; } | awk -v me="$seg" '$0 "" != me ""' | sed -n '1p')
   [ -n "$held" ] || return 1
   printf '%s' "$held"
 }
@@ -28142,8 +28142,8 @@ gate_segment_landed_now() {
   # still waiting to be issued (`대기`) reads as landed, as before — unless its
   # target's applies are stopped by another segment's target defect: the target
   # stop refuses that apply and leaves the row `대기`, so it is 2 as well, and a
-  # segment of another repository waiting on it is not dispatched over an
-  # apply that has not run. The dispatch floor and the snapshot's `착지` read
+  # segment whose `선행` names it is not dispatched over an apply that has not
+  # run until the stop is released. The dispatch floor and the snapshot's `착지` read
   # landing through this one function.
   local seg="$1" dal
   gate_landing_walk gate_segment_row_landed <<ROWS || return 1
@@ -39520,7 +39520,7 @@ gate_apply_supervise() {
   # A TARGET DEFECT STOPS THAT TARGET'S APPLIES, NOT THE RUN. The command
   # exited 0 and the post-probe still reads 「필요」: the park row carries the
   # three judgment fields and the alias. When the declared radius is not `런`
-  # and no segment of another repository waits on this one, the run-scope block
+  # and no segment of another repository waits on this target, the run-scope block
   # is not written — the apply act refuses the target's next apply instead,
   # while the rest of the run goes on. Otherwise the block is written as
   # before, beside the fields. A row the fields would push over the cap is
@@ -43464,7 +43464,7 @@ gate_verb_act() {
     # The stopping segment itself is not refused: it reaches this act only by a
     # person's `재실행` answer at its settlement seat, and the completion of that
     # rerun is one of the rows that release the stop.
-    GATE_TS_SEG=$( { apply_target_stopped "$alias" || true; } | awk -v me="$segment" '$0 != me' | sed -n '1p')
+    GATE_TS_SEG=$( { apply_target_stopped "$alias" || true; } | awk -v me="$segment" '$0 "" != me ""' | sed -n '1p')
     if [ -n "$GATE_TS_SEG" ]; then
       if [ "$verb" = "plan" ]; then
         printf '통과 예상: kind=apply target=%s 처분=대상 적용 정지(%s)\n' "$alias" "$GATE_TS_SEG"
@@ -45617,9 +45617,9 @@ EOF
     # `머지됨`: the merged work is on the base whatever the park says, so
     # `gate_segment_landed_now` steps back over a trailing `park` (and any
     # `적용 준비`) to the row before it. A merge whose apply has not ended —
-    # running under its supervisor, unknown, unsettled from an earlier run, or
-    # still owed by this run after a park — did not finish the slice, and is
-    # refused as not landed.
+    # running under its supervisor, unknown, unsettled from an earlier run,
+    # still owed by this run after a park, or waiting behind a target stop —
+    # did not finish the slice, and is refused as not landed.
     #
     # A `완료` an earlier run left at a pull request still open is brought in
     # with its `출처` and without a `머지 커밋`, so that this run does not do the
@@ -45635,7 +45635,7 @@ EOF
       gate_segment_landed_now "$dep" || lrc=$?
       [ "$lrc" != "0" ] || continue
       if [ "$lrc" = "2" ]; then
-        warn "the preceding segment ${dep} was merged but its apply has not ended (적용이 끝나지 않았다 — still running, or not yet settled) — its slice is not finished"
+        warn "the preceding segment ${dep} was merged but its apply has not ended (적용이 끝나지 않았다 — still running, not yet settled, or held by a target stop) — its slice is not finished"
         warn "dispatch again once the apply of ${dep} ends or is settled, or if there is no dependency rewrite the \`선행\` of the segment row"
         exit "$GATE_EXIT_RULE"
       fi
