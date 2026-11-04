@@ -48413,7 +48413,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 95c. 재진입 표의 구현·토론·단독·분할 행은 원장 값 칸을 게이트가 지어 대조한다
-# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_ci_join_line_refuse,gate_carry_ledger_frame, gate_carry_frame_reads, gate_carry_prompt_of, gate_carry_origin_cap, gate_carry_cap_row, gate_answered_halts_json, gate_adoption_halt_carry, gate_carry_import_row, gate_carry_frame_build, gate_carry_origin, gate_reentry_row_of, gate_carry_doc_of, gate_carry_routed_elsewhere, gate_carry_untabled_after | needs: 95 | anchors: 95c: 재진입 표는 열두 행이다, 95c: 다음 런에 들인 수정 사이클 구현 정지의 carry_prompt 는 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 베이스 해소 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 표 밖 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 연쇄로 들인 분할 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 같은 런의 표 밖 정지 운반은 여전히 19·행 없음이고 재부착을 시킨다, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
+# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_ci_join_line_refuse,gate_carry_ledger_frame, gate_carry_frame_reads, gate_carry_prompt_of, gate_carry_origin_cap, gate_carry_cap_row, gate_answered_halts_json, gate_adoption_halt_carry, gate_carry_import_row, gate_carry_frame_build, gate_carry_origin, gate_reentry_row_of, gate_carry_doc_of, gate_carry_routed_elsewhere, gate_carry_untabled_after | needs: 95 | anchors: 95c: 재진입 표는 열네 행이다, 95c: 다음 런에 들인 수정 사이클 구현 정지의 carry_prompt 는 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 베이스 해소 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 표 밖 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 연쇄로 들인 분할 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 같은 런의 표 밖 정지 운반은 여전히 19·행 없음이고 재부착을 시킨다, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
 #
 # 구현·설계 토론·리드 단독 설계·베이스 분할의 정지는 보통 파견과 같은 틀로 운반된다.
 # 그 틀의 칸 중 문서 말고는 모두 원장에서 오므로, 게이트가 같은 원장에서 값을 지어
@@ -48445,9 +48445,9 @@ lsr95c_go() {
 lsr95c_ok='0|GRANT|first||u2|/h/.claude-u2'
 lsr95c_q() { printf '"%s"' "$1"; }
 
-check "95c: 재진입 표는 열두 행이다" \
+check "95c: 재진입 표는 열네 행이다" \
   "$(lsr93_in "$lsr_root/ta0/ledger.md" gate_reentry_table 2>/dev/null | cut -d'|' -f1,3 | paste -sd, -)" \
-  "design-audit-unattended|audit,design-reconverge|reconverge,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,implement-unattended|implement,design-discuss-unattended|design,design-solo-unattended|design,design-base-unattended|split"
+  "design-audit-unattended|audit,design-reconverge|reconverge,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,implement-unattended|implement,design-discuss-unattended|design,design-solo-unattended|design,design-base-unattended|split"
 check "95c: 픽스처 매니페스트의 의도 첫 줄" \
   "$(lsr93_in "$lsr_root/ta0/ledger.md" manifest_intent_line 2>/dev/null)" "테스트"
 
