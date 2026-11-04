@@ -55,7 +55,13 @@
 #                             건다 — 이 상한은 그 기한과 별개로, 한 회차가 새 수집에 쓰는 시간을
 #                             나누어 적체를 여러 회차에 걸쳐 전진시키려는 것이다. 회차의 첫 새 수집은
 #                             상한·예산과 무관하게 시도하므로(0 이면 회차당 한 런) 적체가 있어도
-#                             회차마다 전진한다. 예산은 모집단 판독이 끝난 뒤부터 잰다.
+#                             회차마다 전진한다. 예산은 모집단 판독이 끝난 뒤부터 잰다. 새 수집은
+#                             런 id 내림차순(최신 런 먼저)으로 시도한다.
+#   --delay-max <n>           지연 단계가 한 회차에 지연 기록을 시도하는 런 수의 상한(기본 100,
+#                             환경변수 `CC_METRICS_DELAY_MAX`).
+#   --delay-budget <초>       지연 단계의 벽시계 예산(기본 20, 환경변수
+#                             `CC_METRICS_DELAY_BUDGET_S`). 경과는 지연 단계가 시작될 때부터
+#                             잰다. 두 값 모두 첫 대상은 무관하게 시도한다.
 #   --release-boundary <ver>  요약의 `discussion_verdict` 가 `감사 공시` 행을 기준선과 릴리스
 #                             뒤로 가르는 경계 버전(기본 `CM_RELEASE_BOUNDARY_DEFAULT` — 설계
 #                             토론의 R3 를 측정 지명으로만 여는 릴리스의 버전). `플러그인` 의
@@ -74,6 +80,12 @@
 #                                          런별 팀원 기록. 새로 수집하는 런에만 만든다.
 #                                          요약의 층·트리거의 입력이 아니고, 요약의
 #                                          `members` 만 이 파일들에서 나온다.
+#   <ledger-dir>/metrics/<run-id>.delay.json
+#                                          런별 지연 기록. 지연 단계가 종단·버려짐 런마다
+#                                          쓴다(런별 기록 유무와 무관, 스키마가 바뀌면 다시
+#                                          쓴다). 원장의 시각 구간·스테이지 시간 분해·호스트
+#                                          부하·좌석 대기·무커밋 완료를 싣는다. 층·트리거의
+#                                          입력이 아니고, 요약의 `delay` 만 이 파일들에서 나온다.
 #   <저널>                                 회차마다 한 줄 JSON 추가. 회차 수·연속 수·시각은
 #                                          여기에만 있다. 첫 키 `schema` 는 층 값의 단위이고,
 #                                          앞선 단위의 줄은 기준선·연속 계수에서 빠진다.
@@ -127,7 +139,7 @@ if [ -r "$script_dir/route.sh" ] && . "$script_dir/route.sh" 2>/dev/null \
 fi
 
 cm_usage() {
-  printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect] [--max-new <n>] [--budget <초>] [--release-boundary <version>] [--verdict] [--member-baseline]\n' >&2
+  printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect] [--max-new <n>] [--budget <초>] [--delay-max <n>] [--delay-budget <초>] [--release-boundary <version>] [--verdict] [--member-baseline]\n' >&2
 }
 
 cm_diag() { printf 'collect-run-metrics: %s\n' "$*" >&2; }
@@ -183,6 +195,10 @@ CM_SWITCH_WINDOW="${CC_METRICS_SWITCH_WINDOW_S:-900}"
 CM_RECOLLECT=0
 CM_MAX_NEW="${CC_METRICS_ROUND_MAX:-20}"
 CM_BUDGET="${CC_METRICS_ROUND_BUDGET_S:-20}"
+CM_DELAY_MAX="${CC_METRICS_DELAY_MAX:-100}"
+CM_DELAY_BUDGET="${CC_METRICS_DELAY_BUDGET_S:-20}"
+# 런별 지연 기록의 스키마. 값이 다른 기록은 지연 단계가 다시 쓴다.
+CM_DELAY_SCHEMA=1
 CM_MEMBER_BASELINE=0
 # 판정 덩어리의 경계 버전 기본값 — 설계 토론의 R3 를 측정 지명으로만 여는 릴리스의 버전.
 # 플러그인 버전이 이 값보다 앞서는 행이 기준선(릴리스 전)이다. 그 변경보다 다른 릴리스가
@@ -205,6 +221,8 @@ $2"; shift 2 ;;
       --member-baseline) CM_MEMBER_BASELINE=1; shift ;;
       --max-new)       [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_MAX_NEW="$2"; shift 2 ;;
       --budget)        [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_BUDGET="$2"; shift 2 ;;
+      --delay-max)     [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_DELAY_MAX="$2"; shift 2 ;;
+      --delay-budget)  [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_DELAY_BUDGET="$2"; shift 2 ;;
       --release-boundary) [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_RELEASE_BOUNDARY="$2"; shift 2 ;;
       --verdict)       CM_VERDICT_ONLY=1; shift ;;
       -h|--help)       cm_usage; exit 2 ;;
@@ -220,6 +238,12 @@ $2"; shift 2 ;;
   esac
   case "$CM_BUDGET" in
     ''|*[!0-9]*) cm_diag "--budget 은 초 단위 정수여야 한다: '$CM_BUDGET'"; exit 2 ;;
+  esac
+  case "$CM_DELAY_MAX" in
+    ''|*[!0-9]*) cm_diag "--delay-max 는 정수여야 한다: '$CM_DELAY_MAX'"; exit 2 ;;
+  esac
+  case "$CM_DELAY_BUDGET" in
+    ''|*[!0-9]*) cm_diag "--delay-budget 은 초 단위 정수여야 한다: '$CM_DELAY_BUDGET'"; exit 2 ;;
   esac
   if [ -n "$CM_RELEASE_BOUNDARY" ] && ! printf '%s' "$CM_RELEASE_BOUNDARY" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
     cm_diag "--release-boundary 는 점으로 나눈 숫자 버전이어야 한다: '$CM_RELEASE_BOUNDARY'"; exit 2
@@ -1112,6 +1136,232 @@ cm_member_baseline() {
   exit 0
 }
 
+# --- 런별 지연 기록 ---------------------------------------------------------------
+#
+# 지연 기록은 런별 기록과 따로 도는 지연 단계가 쓴다. 층·트리거의 입력이 아니므로 런별
+# 기록을 다시 만들지 않고도 끝난 런 전부에 소급된다. 시각 비교는 모두 epoch 밀리초다 —
+# 원장과 스트림의 시각은 UTC(`Z`) ISO 이고, 소수 초가 붙거나 붙지 않는다.
+
+CM_JQ_DELAY_DEFS='
+def iso_ok: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$");
+def iso_ms: (sub("\\.[0-9]+Z$"; "Z") | fromdate) * 1000
+  + (if test("\\.[0-9]+Z$") then ((capture("\\.(?<f>[0-9]+)Z$").f + "00")[0:3] | tonumber) else 0 end);
+'
+
+# 원장 한 개의 지연 층 — 시각 구간·스테이지 행·좌석 대기·무커밋 완료. 입력은 원장의 원시
+# 줄들이고, 행은 `- \`<계열>\` | ` 로 시작하는 줄이다. 값은 `cm_field` 와 같은 규칙으로
+# 읽는다(`|` 로 자르고, 키 앞 공백과 값 뒤 공백을 떼고, 같은 키가 둘이면 마지막 것).
+#   - 시각 칸은 `관측`·`기록 시각`·`관측 시각`·`판독 시각` 의 ISO 값뿐이다. stage-lease 의
+#     `관측=tracker@…` 처럼 ISO 가 아닌 값은 버린다. `span` 은 그 값 전부의 최소·최대다.
+#   - 시각이 없는 행(stage-wait·stage-result)의 사건 시각 `at` 은 바로 앞의 시각 있는 행의 첫
+#     시각 칸이고 `at_source` 는 `앞 행`, 앞 행이 없으면 null 과 `없음` 이다.
+#   - 무커밋: 구현 `정상 완료` stage-result 의 진척 토큰(`실패 서명` 의 넷째 성분)이 그
+#     스테이지의 파견 행(그 행 앞의 마지막 `계보=B:<세그먼트>#<실행 버전>` stage-lease)보다 앞에
+#     나온 해시와 같으면 무커밋이다. 같은 세그먼트의 앞선 stage-result 토큰은 그대로 같아야
+#     하고, `master 판독` 의 `팁`·`원격 판독` 의 `워크트리 HEAD` 는 전체 해시라 토큰 길이만큼의
+#     앞자리가 같으면 된다. 파견 행 뒤의 해시는 보지 않는다 — 스테이지 도중의 판독은 그
+#     스테이지의 새 커밋을 보여 줄 수 있다. 토큰이 해시 꼴이 아니거나 파견 행이 없으면 가리지
+#     못한 것으로만 센다.
+CM_JQ_DELAY_LEDGER='
+def get($k): [.f[] | select(.k == $k) | .v] | last;
+def tkeys: . == "관측" or . == "기록 시각" or . == "관측 시각" or . == "판독 시각";
+def rtime: [.f[] | select(.k | tkeys) | .v | select(iso_ok)] | first;
+def nz: if . == null or . == "" then null else . end;
+def token: ((get("실패 서명") // "") | split("/") | .[3] // "") | if test("^[0-9a-f]{4,40}$") then . else null end;
+[inputs | select(test("^- `[^`]+` \\| "))
+ | capture("^- `(?<s>[^`]+)` \\| (?<rest>.*)$")
+ | {s, f: [.rest | split("|")[] | sub("^ +"; "") | capture("^(?<k>[^=]+)=(?<v>.*)$") | {k, v: (.v | sub("\\s+$"; ""))}]}] as $R
+| ($R | map(rtime)) as $RT
+| (reduce range(0; $R | length) as $i ({last: null, out: []};
+     .out += [.last] | if $RT[$i] != null then .last = $RT[$i] else . end) | .out) as $PREV
+| ([$R[] | .f[] | select(.k | tkeys) | .v | select(iso_ok)] | map({t: ., ms: iso_ms})) as $TS
+| {span: (if ($TS | length) == 0 then {start: null, end: null}
+          else {start: ($TS | min_by(.ms) | .t), end: ($TS | max_by(.ms) | .t)} end),
+   stages: [range(0; $R | length) as $i | $R[$i] | select(.s == "stage-result")
+            | ((get("스테이지") | nz) // (get("세그먼트") | nz) // "-") as $st
+            | (get("실행 버전") | nz) as $ver
+            | {segment: get("세그먼트"), st: $st, ver: $ver,
+               stage: (if $ver == null then $st else "\($st)#\($ver)" end),
+               kind: get("종류"), class: get("종단 부류")}],
+   waits: [range(0; $R | length) as $i | $R[$i] | select(.s == "stage-wait")
+           | {reason: get("근거"), lineage: get("계보"), at: $PREV[$i],
+              at_source: (if $PREV[$i] == null then "없음" else "앞 행" end)}],
+   judged: [range(0; $R | length) as $i | $R[$i]
+            | select(.s == "stage-result" and get("종류") == "implement" and get("종단 부류") == "정상 완료")
+            | get("세그먼트") as $seg | get("실행 버전") as $ver | token as $tok
+            | ([range(0; $i) | select($R[.].s == "stage-lease" and ($R[.] | get("계보")) == "B:\($seg)#\($ver)")] | last) as $d
+            | if $tok == null or $d == null then {undecidable: true}
+              else
+                ([range(0; $d) as $j | $R[$j]
+                  | select(.s == "stage-result" and get("세그먼트") == $seg) | token | select(. != null)]) as $exact
+                | ([range(0; $d) as $j | $R[$j]
+                    | if .s == "master 판독" then get("팁") elif .s == "원격 판독" then get("워크트리 HEAD") else empty end
+                    | select(. != null)]) as $full
+                | if any($exact[]; . == $tok) or any($full[]; startswith($tok)) then
+                    {undecidable: false, item: {segment: $seg,
+                      stage: (((get("스테이지") | nz) // $seg) + (if $ver == null then "" else "#\($ver)" end)),
+                      plan_sha256: get("plan_sha256"), at: $PREV[$i],
+                      at_source: (if $PREV[$i] == null then "없음" else "앞 행" end)}}
+                  else {undecidable: false} end
+              end]}
+| .nocommit = [.judged[] | .item // empty]
+| .nocommit_undecidable = ([.judged[] | select(.undecidable)] | length)
+| del(.judged)
+'
+
+# 스트림 로그 하나의 시간 분해. 시각 있는 줄 사이의 구간마다 하나로 나눈다 — 구간 안에
+# `result` 줄이 있으면 턴 사이이고, 그 안에 `task_notification` 이 있으면 백그라운드 대기,
+# 없으면 그 밖의 공백이다. 턴 사이가 아니면 구간을 연 줄이 `tool_use` 를 담은 assistant 면
+# 도구 실행, 그 밖은 모델 응답이다. 서브에이전트는 그것을 부른 도구 호출에 든다. `wall_ms`
+# 는 첫 시각~끝 시각이며 네 값의 합과 같다. JSON 이 아닌 줄은 건너뛴다.
+CM_JQ_DELAY_TIME='
+[inputs | fromjson? | objects] as $L
+| [range(0; $L | length) | select($L[.].timestamp | iso_ok)] as $T
+| [range(0; ($T | length) - 1) as $k | $T[$k] as $a | $T[$k + 1] as $b
+   | (($L[$b].timestamp | iso_ms) - ($L[$a].timestamp | iso_ms)) as $d
+   | $L[($a + 1):$b] as $mid
+   | if any($mid[]; .type == "result") then
+       (if any($mid[]; .type == "system" and .subtype == "task_notification") then {k: "bg_wait", d: $d} else {k: "idle", d: $d} end)
+     elif ($L[$a].type == "assistant"
+           and any(($L[$a].message.content // []) | if type == "array" then .[] else empty end;
+                   type == "object" and .type == "tool_use")) then {k: "tool", d: $d}
+     else {k: "model", d: $d} end] as $I
+| ([$L[] | select(.type == "system" and .subtype == "task_started" and .is_backgrounded == true)]) as $bgs
+| ([$bgs[] | .task_id | select(. != null)] | unique) as $bgid
+| ([$L[] | select(.type == "system" and .subtype == "task_notification")
+    | select(.task_id as $t | any($bgid[]; . == $t))]) as $bgn
+| def part($k): [$I[] | select(.k == $k) | .d] | add // 0;
+{start: (if ($T | length) == 0 then null else $L[$T[0]].timestamp end),
+ end: (if ($T | length) == 0 then null else $L[$T[-1]].timestamp end),
+ time: {wall_ms: (if ($T | length) < 2 then 0 else ($L[$T[-1]].timestamp | iso_ms) - ($L[$T[0]].timestamp | iso_ms) end),
+        model_ms: part("model"), tool_ms: part("tool"), bg_wait_ms: part("bg_wait"), idle_ms: part("idle"),
+        turns: ([$L[] | select(.type == "result")] | length),
+        wakeups: ([$I[] | select(.k == "bg_wait")] | length),
+        bg_tasks: {started: ($bgs | length),
+                   completed: ([$bgn[] | select(.status == "completed")] | length),
+                   failed: ([$bgn[] | select(.status == "failed")] | length),
+                   stopped: ([$bgn[] | select(.status == "stopped")] | length)}}}
+'
+
+# 런 하나의 지연 기록을 조립한다. 입력: 원장 층($led), 스테이지마다의 로그 판독($logs —
+# stages 와 같은 순서), 부하 표본($samples). 스테이지 구간 안의 표본으로 부하를 요약하고,
+# 구간이 없거나 표본이 없으면 null 이다.
+CM_JQ_DELAY_ASSEMBLE='
+def nums($k): [.[] | .[$k] | select(type == "number")];
+$led[0] as $l | $logs[0] as $g | $samples[0] as $S
+| {schema: $schema, run_id: $rid, span: $l.span,
+   host_load_source: (if $has_load then "기록" else "기록 없음" end),
+   stages: [range(0; $l.stages | length) as $i | $l.stages[$i] as $s | ($g[$i] // {}) as $x
+            | {segment: $s.segment, stage: $s.stage, kind: $s.kind, class: $s.class,
+               source: ($x.source // "로그 없음"), start: ($x.start // null), end: ($x.end // null),
+               time: ($x.time // null),
+               host_load: (if ($x.start // null) == null or ($x.end // null) == null then null
+                           else ($x.start | iso_ms) as $a | ($x.end | iso_ms) as $b
+                             | [$S[] | select((.at | iso_ok) and ((.at | iso_ms) >= $a) and ((.at | iso_ms) <= $b))] as $in
+                             | if ($in | length) == 0 then null
+                               else {samples: ($in | length),
+                                     load1_mean: (($in | nums("load1")) as $v | if ($v | length) == 0 then null else ($v | add / length * 100 | round / 100) end),
+                                     load1_max: ($in | nums("load1") | max),
+                                     ncpu: ($in | nums("ncpu") | max),
+                                     claude_procs_max: ($in | nums("claude_procs") | max),
+                                     runs_max: ($in | nums("runs") | max)} end end)}],
+   waits: $l.waits, nocommit: $l.nocommit, nocommit_undecidable: $l.nocommit_undecidable}
+'
+
+cm_delay_json() {
+  # cm_delay_json <run-id> <원장> <런 디렉터리> — 지연 기록 JSON 한 줄. 원장을 읽지 못하거나,
+  # 있는 스트림 로그를 읽지 못하면 rc 1(그 런은 다음 회차에 다시 대상이 된다). 로그가 없는
+  # 스테이지는 `로그 없음` 이고, 시도 번호 없는 로그 하나를 여러 시도가 나눠 쓰면 시도별로
+  # 가를 수 없어 `공유 로그` 이며, 둘 다 `time` 이 null 이다. 시도 번호 없는 로그를 한 시도만
+  # 쓰면 그 시도의 로그로 읽는다.
+  local rid="$1" ledger="$2" rd="$3" tmp st ver v f n has_load=false
+  [ -r "$ledger" ] || return 1
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-delay.XXXXXX") || return 1
+  if ! jq -Rn -c "$CM_JQ_DELAY_DEFS$CM_JQ_DELAY_LEDGER" "$ledger" > "$tmp/led.json" 2>/dev/null; then
+    rm -rf "$tmp"; return 1
+  fi
+  jq -r '.stages[] | [.st, (.ver // "")] | @tsv' "$tmp/led.json" > "$tmp/stages.tsv" || { rm -rf "$tmp"; return 1; }
+  : > "$tmp/logs.jsonl"
+  while IFS=$'\t' read -r st ver; do
+    [ -n "$st" ] || continue
+    case "$ver" in *[!0-9]*) ver="" ;; esac
+    if [ -n "$ver" ] && [ -f "$rd/log/$st#$ver.json" ]; then
+      f="$rd/log/$st#$ver.json"
+    elif [ -f "$rd/log/$st.json" ]; then
+      # 시도 번호 없는 로그 — 자기 시도 로그가 없어 이 파일로 내려오는 시도가 둘 이상이면 공유다.
+      n=0
+      while IFS= read -r v; do
+        case "$v" in *[!0-9]*) v="" ;; esac
+        [ -n "$v" ] && [ -f "$rd/log/$st#$v.json" ] && continue
+        n=$((n + 1))
+      done <<VERS
+$(awk -F '\t' -v s="$st" '$1 == s { print $2 }' "$tmp/stages.tsv" | sort -u)
+VERS
+      if [ "$n" -gt 1 ]; then
+        printf '{"source":"공유 로그"}\n' >> "$tmp/logs.jsonl"; continue
+      fi
+      f="$rd/log/$st.json"
+    else
+      printf '{"source":"로그 없음"}\n' >> "$tmp/logs.jsonl"; continue
+    fi
+    [ -r "$f" ] || { cm_diag "런 $rid 의 스트림 로그를 읽을 수 없다: $f"; rm -rf "$tmp"; return 1; }
+    if ! jq -Rn -c "$CM_JQ_DELAY_DEFS$CM_JQ_DELAY_TIME"' | . + {source: "시도 로그"}' "$f" >> "$tmp/logs.jsonl" 2>/dev/null; then
+      cm_diag "런 $rid 의 스트림 로그를 읽을 수 없다: $f"; rm -rf "$tmp"; return 1
+    fi
+  done < "$tmp/stages.tsv"
+  if [ -f "$rd/host-load.jsonl" ]; then
+    has_load=true
+    jq -Rn -c '[inputs | fromjson? | objects]' "$rd/host-load.jsonl" > "$tmp/samples.json" 2>/dev/null \
+      || printf '[]' > "$tmp/samples.json"
+  else
+    printf '[]' > "$tmp/samples.json"
+  fi
+  jq -s -c '.' "$tmp/logs.jsonl" > "$tmp/logs.json" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+  jq -n -c --arg rid "$rid" --argjson schema "$CM_DELAY_SCHEMA" --argjson has_load "$has_load" \
+    --slurpfile led "$tmp/led.json" --slurpfile logs "$tmp/logs.json" --slurpfile samples "$tmp/samples.json" \
+    "$CM_JQ_DELAY_DEFS$CM_JQ_DELAY_ASSEMBLE" || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+}
+
+cm_collect_delay() {
+  # cm_collect_delay <run-id> <원장> <런 디렉터리> <대상 파일> — 임시 파일에 쓴 뒤 `mv`.
+  local out tmpf
+  out=$(cm_delay_json "$1" "$2" "$3") || return 1
+  [ -n "$out" ] || return 1
+  mkdir -p "$(dirname "$4")" || return 1
+  tmpf=$(mktemp "$(dirname "$4")/.delay.XXXXXX") || return 1
+  printf '%s\n' "$out" > "$tmpf" || { rm -f "$tmpf"; return 1; }
+  mv -f "$tmpf" "$4" || { rm -f "$tmpf"; return 1; }
+}
+
+# 요약의 `delay` 키 — 모든 지연 기록에서. 현재 시각을 쓰지 않으므로 같은 입력이면 같은
+# 값이다. 동시 런 수는 사건 시각을 `span` 이 품는 지연 기록의 수(사건의 런 자신 포함)이고,
+# 사건 시각이 없는 사건은 `undated` 로만 간다. 시간 분해의 합은 `time` 이 있는 스테이지만이다.
+CM_JQ_DELAY_AGG='
+def zero: {lease_lock_busy: 0, nocommit: 0};
+def bump($k; $t): .[$k] = ((.[$k] // zero) | .[$t] += 1);
+. as $D
+| ([$D[] | .span | select(.start | iso_ok) | select(.end | iso_ok) | {a: (.start | iso_ms), b: (.end | iso_ms)}]) as $SP
+| ([$D[] | (.waits[]? | select(.reason == "lease-lock-busy") | {t: "lease_lock_busy", at}),
+          (.nocommit[]? | {t: "nocommit", at})]) as $E
+| {coverage: {records: ($D | length),
+               with_time: ([$D[] | select(any(.stages[]?; .time != null))] | length),
+               with_host_load: ([$D[] | select(.host_load_source == "기록")] | length)},
+   by_kind: (reduce ($D[] | .stages[]? | select(.time != null)) as $s ({};
+              (($s.kind // "-") | tostring) as $k
+              | .[$k] = ((.[$k] // {stages: 0, wall_ms: 0, model_ms: 0, tool_ms: 0, bg_wait_ms: 0, idle_ms: 0})
+                  | .stages += 1 | .wall_ms += $s.time.wall_ms | .model_ms += $s.time.model_ms
+                  | .tool_ms += $s.time.tool_ms | .bg_wait_ms += $s.time.bg_wait_ms | .idle_ms += $s.time.idle_ms))),
+   waits_by_reason: (reduce ($D[] | .waits[]?) as $w ({}; .[(($w.reason // "-") | tostring)] += 1)),
+   wasted: (reduce $E[] as $e ({by_date: {}, by_concurrency: {}, undated: zero};
+              if ($e.at | iso_ok) then
+                ($e.at | iso_ms) as $m
+                | .by_date = (.by_date | bump($e.at[0:10]; $e.t))
+                | .by_concurrency = (.by_concurrency | bump(([$SP[] | select(.a <= $m and $m <= .b)] | length | tostring); $e.t))
+              else .undated[$e.t] += 1 end)
+            | .nocommit_undecidable = ([$D[] | .nocommit_undecidable // 0] | add // 0))}
+'
+
 # --- 모집단 ---------------------------------------------------------------------
 
 cm_population() {
@@ -1468,19 +1718,20 @@ cm_append_journal() {
 cm_main() {
   local tmp line rid state ledger rd rec input_files=0 confirmed
   local n_collected=0 n_uncollected=0 n_gone=0 n_open=0 n_attempt=0 new_runs="" blocked=false
-  local summary round at body counts journal_line all_f delta_f prior_f t0 members
+  local summary round at body counts journal_line all_f delta_f prior_f t0 members t1 delay n_delay=0
   cm_args "$@"
   # 기준선 모드는 회차가 아니다 — 표지도 기록도 저널도 만들지 않는다.
   [ "$CM_MEMBER_BASELINE" = "0" ] || cm_member_baseline
   if [ "$CM_VERDICT_ONLY" = "1" ]; then
     # 판정 덩어리만 — 이미 있는 런별 기록에서 계산해 stdout 으로 내고 아무것도 쓰지 않는다.
-    # 팀원 기록(`*.members.json`)은 런 기록이 아니므로 전수 재계산과 같이 뺀다.
+    # 팀원 기록(`*.members.json`)과 지연 기록(`*.delay.json`)은 런 기록이 아니므로 전수
+    # 재계산과 같이 뺀다.
     set --
     if [ -d "$CM_LEDGER_DIR/metrics" ]; then
       for rec in "$CM_LEDGER_DIR"/metrics/*.json; do
         [ -f "$rec" ] || continue
         case "$rec" in
-          *.members.json) ;;
+          *.members.json|*.delay.json) ;;
           *) set -- "$@" "$rec" ;;
         esac
       done
@@ -1504,7 +1755,9 @@ $(cm_confirmed_runs)
 "
   # 모집단을 먼저 다 읽고 나서 예산의 기준 시각을 잡는다 — 판독 비용은 원장 수에 비례해
   # 늘기만 하므로, 예산에 넣으면 언젠가 판독만으로 예산이 다 쓰여 한 런도 수집하지 못한다.
-  cm_population > "$tmp/pop.tsv"
+  # 모집단은 런 id 내림차순이다 — 적체가 있어도 최근 런이 먼저 수집되어, 부하 기간의 집계가
+  # 오래된 런 뒤에 줄 서지 않는다. 상한·예산·차단 규칙은 순서와 무관하다.
+  cm_population | sort -t "$(printf '\t')" -k1,1 -r > "$tmp/pop.tsv"
   t0=$SECONDS
   while IFS=$'\t' read -r rid state ledger rd; do
     [ -n "$rid" ] || continue
@@ -1560,14 +1813,40 @@ $rid
   done < "$tmp/pop.tsv"
   [ "$n_uncollected" -gt 0 ] && blocked=true
 
-  # 전수 재계산 — 기록 디렉터리의 모든 런별 기록. 팀원 기록(`*.members.json`)은 런 기록이
-  # 아니므로 층과 트리거의 입력에서 빼고, 요약의 `members` 로만 따로 모은다.
-  : > "$tmp/runs.list"; : > "$tmp/members.list"
+  # 지연 단계 — 종단·버려짐 런 가운데 지연 기록이 없거나 스키마가 다른 런(`--recollect` 면
+  # 전부)에 지연 기록을 쓴다. 런별 기록 유무, `log/` 유무, 레인 기록 유무와 무관하다 — 대기와
+  # 무커밋은 원장만으로 정해진다. 순서는 위 모집단 그대로 최신 런 먼저이고, 자기 상한·예산으로
+  # 묶되 첫 대상은 무관하게 시도한다. 예산은 이 단계가 시작될 때부터 잰다. 만들지 못한 런도
+  # 시도로 세고 진단만 남긴다 — counts·차단·new_runs·저널은 이 단계와 무관하다.
+  t1=$SECONDS
+  while IFS=$'\t' read -r rid state ledger rd; do
+    [ -n "$rid" ] || continue
+    case "$state" in
+      종단|버려짐) ;;
+      *) continue ;;
+    esac
+    rec="$CM_LEDGER_DIR/metrics/$rid.delay.json"
+    if [ "$CM_RECOLLECT" = "0" ] && [ -f "$rec" ] \
+       && [ "$(jq -r '.schema // empty' "$rec" 2>/dev/null)" = "$CM_DELAY_SCHEMA" ]; then
+      continue
+    fi
+    if [ "$n_delay" -gt 0 ] && { [ "$n_delay" -ge "$CM_DELAY_MAX" ] || [ $((SECONDS - t1)) -ge "$CM_DELAY_BUDGET" ]; }; then
+      break
+    fi
+    n_delay=$((n_delay + 1))
+    cm_collect_delay "$rid" "$ledger" "$rd" "$rec" || cm_diag "런 $rid 의 지연 기록을 만들지 못했다"
+  done < "$tmp/pop.tsv"
+
+  # 전수 재계산 — 기록 디렉터리의 모든 런별 기록. 팀원 기록(`*.members.json`)과 지연
+  # 기록(`*.delay.json`)은 런 기록이 아니므로 층과 트리거의 입력에서 빼고, 요약의 `members`·
+  # `delay` 로만 따로 모은다.
+  : > "$tmp/runs.list"; : > "$tmp/members.list"; : > "$tmp/delay.list"
   if [ -d "$CM_LEDGER_DIR/metrics" ]; then
     for rec in "$CM_LEDGER_DIR"/metrics/*.json; do
       [ -f "$rec" ] || continue
       case "$rec" in
         *.members.json) printf '%s\n' "$rec" >> "$tmp/members.list" ;;
+        *.delay.json) printf '%s\n' "$rec" >> "$tmp/delay.list" ;;
         *) printf '%s\n' "$rec" >> "$tmp/runs.list" ;;
       esac
     done
@@ -1578,6 +1857,9 @@ $rid
   jq -e 'type == "array"' "$tmp/members.json" >/dev/null 2>&1 || printf '[]' > "$tmp/members.json"
   members=$(jq -c "$CM_JQ_MEMBERS_AGG" "$tmp/members.json" 2>/dev/null) || members='{}'
   [ -n "$members" ] || members='{}'
+  cm_slurp_list "$tmp/delay.list" > "$tmp/delay.json"
+  delay=$(jq -c "$CM_JQ_DELAY_DEFS$CM_JQ_DELAY_AGG" "$tmp/delay.json" 2>/dev/null) || delay='{}'
+  [ -n "$delay" ] || delay='{}'
   jq -Rn '[inputs]' "$tmp/delta.list" > "$tmp/ids.json"
   jq -c --slurpfile ids "$tmp/ids.json" '[.[] | select(.run_id as $r | $ids[0] | index($r) != null)]' "$all_f" > "$delta_f" 2>/dev/null \
     || printf '[]' > "$delta_f"
@@ -1586,7 +1868,7 @@ $rid
   counts=$(jq -cn --argjson a "$n_collected" --argjson b "$n_uncollected" --argjson c "$n_gone" --argjson d "$n_open" \
     '{"수집됨": $a, "미수집": $b, "사라짐": $c, "미종단": $d}')
   summary=$(cm_aggregate "$all_f" | jq -S --argjson counts "$counts" --argjson n "$input_files" --argjson members "$members" \
-    '. + {counts: $counts, input_files: $n, members: $members}')
+    --argjson delay "$delay" '. + {counts: $counts, input_files: $n, members: $members, delay: $delay}')
   [ -n "$summary" ] || summary='{}'
   cm_write_summary "$summary" || { cm_diag "요약을 쓰지 못했다"; }
 
