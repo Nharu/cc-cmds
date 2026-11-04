@@ -35631,7 +35631,17 @@ check "34qe: 대조 — 같은 기록에 사람 답은 선다" "$rc|$(( $(cx_n '
 
 # A GitHub write under a pre-authorized row fails under the read-scoped
 # credential, and so goes to a person.
-PATH="$CX_BIN:$PATH" cx_exec C5 외부상태변경 --reach 협업 -- gh api -X POST repos/t/infra/issues/1/comments -f body=x
+# The stand-in is reached through an exported function, not a PATH prefix:
+# run.sh puts the system prefixes ahead of the inherited PATH, so on a host
+# whose `gh` is /usr/bin/gh a PATH-only stand-in is shadowed by the real one.
+# The stub path rides an exported variable for the same scrubbed-shell reason
+# `g15_pr` gives.
+gh() { "$CX_GH_STUB" "$@"; }
+export -f gh
+export CX_GH_STUB="$CX_BIN/gh"
+cx_exec C5 외부상태변경 --reach 협업 -- gh api -X POST repos/t/infra/issues/1/comments -f body=x
+unset -f gh
+unset CX_GH_STUB
 cx_ga=$cx_a
 check "34qe: GitHub 쓰기는 읽기 자격 아래에서 실패한다" \
   "$( [ "$rc" != 0 ] && printf 실패 || printf "rc=$rc")|$(cat "$CX_STORE/gh-token" 2>/dev/null)|$(row_field "$(cx_xrow)" '절')" "실패|$CX_RO|C5"
