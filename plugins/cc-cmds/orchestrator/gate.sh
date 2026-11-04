@@ -1203,6 +1203,9 @@ gate_fix_argv_check() {
     case "$k" in 고칠\ 곳|판정\ 주체|판정\ 신호|판정\ 근거) has=1 ;; esac
   done
   [ -n "$has" ] || return 0
+  # A `중단 답` row takes the seat's judgment on its own branch, which knows
+  # which answer may carry it and stamps who judged and on what.
+  [ "$kind" != "halt-answer" ] || return 0
   fix=$(gate_field_of '고칠 곳' "$@"); judge=$(gate_field_of '판정 주체' "$@")
   sig=$(gate_field_of '판정 신호' "$@"); ex=$(gate_field_of '판정 근거' "$@")
   case "$kind" in
@@ -33513,7 +33516,7 @@ gate_record_row() {
   # only a `blocked` row or a `segment` park row carries them, with closed
   # values, and `판정 주체=게이트` comes from the gate's own writers alone.
   gate_fix_argv_check "$kind" "$@" || return "$?"
-  if [ -n "$(gate_field_of '판정 근거' "$@")" ]; then
+  if [ "$kind" != "halt-answer" ] && [ -n "$(gate_field_of '판정 근거' "$@")" ]; then
     local fxa=() fxf
     for fxf in "$@"; do
       case "$fxf" in
