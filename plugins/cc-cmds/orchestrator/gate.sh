@@ -3390,7 +3390,7 @@ gate_reach_disposition() {
         case "$_dw" in -exec|-execdir|-ok|-okdir) _dx=1; continue ;; esac
         [ "$_dx" = "1" ] || continue
         case "${_dw##*/}" in
-          xcrun|xcodebuild|adb|emulator|avdmanager|maestro) printf '기기전역\tforeign-device\t-'; return 0 ;;
+          xcrun|xcodebuild|adb|emulator|avdmanager|maestro|simctl|devicectl|xctrace|instruments) printf '기기전역\tforeign-device\t-'; return 0 ;;
         esac
       done
     fi
@@ -3617,7 +3617,11 @@ gate_device_tool_act() {
   # gate_device_tool_act <argv...> — 0 when the act its launchers wrap is run
   # by a mobile device tool: `xcodebuild`, `adb`, `emulator`, `avdmanager`,
   # `maestro`, or an `xcrun` that carries `simctl`, `devicectl`, `xctrace`,
-  # `instruments` or `xcodebuild`. `surface_of_xcrun` leaves `xcrun xcodebuild`
+  # `instruments` or `xcodebuild`. The Xcode sub-tools are device tools by
+  # their own name too: run by path from the Xcode bundle or bare from a PATH
+  # that holds Xcode's `usr/bin`, `simctl delete all` deletes the same devices
+  # it does behind `xcrun`, and the table grades no such spelling, so it parks
+  # on every declaration. `surface_of_xcrun` leaves `xcrun xcodebuild`
   # ungraded without reading its destination, so it is a device tool act here
   # and parks on every declaration, as the bare ungraded `xcodebuild` forms do.
   # A sub-tool is read by its basename, since `xcrun` also runs a path operand
@@ -3630,7 +3634,7 @@ gate_device_tool_act() {
   set -- "${@:$s}"
   w="${1##*/}"
   case "$w" in
-    xcodebuild|adb|emulator|avdmanager|maestro) return 0 ;;
+    xcodebuild|adb|emulator|avdmanager|maestro|simctl|devicectl|xctrace|instruments) return 0 ;;
     xcrun)
       shift
       for w in "$@"; do
@@ -3642,7 +3646,7 @@ gate_device_tool_act() {
         case "$w" in -exec|-execdir|-ok|-okdir) x=1; continue ;; esac
         [ "$x" = "1" ] || continue
         case "${w##*/}" in
-          xcrun|xcodebuild|adb|emulator|avdmanager|maestro) return 0 ;;
+          xcrun|xcodebuild|adb|emulator|avdmanager|maestro|simctl|devicectl|xctrace|instruments) return 0 ;;
         esac
       done ;;
   esac

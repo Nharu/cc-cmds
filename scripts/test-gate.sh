@@ -52434,8 +52434,32 @@ X83_SURF=읽기 x83_run xcrun /usr/bin/xcodebuild test -scheme X -destination 'p
 check "83x: 읽기로 신고한 xcrun 의 경로 피연산자 xcodebuild 도 park 한다" "$rc" "11"
 X83_SURF=읽기 x83_run find /dev/null -maxdepth 0 -exec adb shell ';'
 check "83x: 읽기로 신고한 find -exec 의 adb shell 은 park 한다" "$rc" "11"
+# Xcode 하위 도구를 xcrun 없이 Xcode 번들의 경로나 맨 이름으로 부르면 등급표가 매기지 않는
+# 철자다. 낮춰 신고해도 xcrun simctl 과 같게 park 해야 한다. 게이트는 basename 으로 읽으므로
+# 경로 철자는 Xcode 번들과 같은 꼴의 대역 경로로 잰다 — 열리는 회귀가 이 호스트의 진짜
+# simctl 로 시뮬레이터를 지우지 않게 한다. 맨 이름은 PATH 앞의 대역이 받는다.
+mkdir -p "$X83D/Xcode.app/Contents/Developer/usr/bin"
+X83XB="$X83D/Xcode.app/Contents/Developer/usr/bin"
+for x83t in simctl devicectl; do
+  printf '#!/bin/sh\nprintf '\''%s %%s\\n'\'' "$*" >> "%s"\nexit 0\n' "$x83t" "$X83L" > "$X83S/$x83t"
+  cp "$X83S/$x83t" "$X83XB/$x83t"
+  chmod +x "$X83S/$x83t" "$X83XB/$x83t"
+done
+X83_SURF=읽기 x83_run "$X83XB/simctl" delete all
+check "83x: 읽기로 신고한 경로 simctl delete all 은 park 한다" "$rc" "11"
+X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run "$X83XB/devicectl" device install app a.app
+check "83x: 런로컬 로 신고한 경로 devicectl 은 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run simctl erase 22222222-2222-3333-4444-555555555555
+check "83x: 읽기로 신고한 맨 이름 simctl 은 park 한다" "$rc" "11"
+X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run devicectl device install app a.app
+check "83x: 런로컬 로 신고한 맨 이름 devicectl 은 park 한다" "$rc" "11"
+# 매니페스트가 있는 작업 디렉터리 아래의 대역 경로를 find -exec 에 주면 게이트가 그것을 매니페스트
+# 쓰기로 먼저 거절해(종료 3) 기기 칸에 닿지 않는다. 그래서 이 철자는 없는 경로로 잰다 — 열리는
+# 회귀여도 find 가 그 경로를 찾지 못할 뿐 아무것도 돌지 않는다.
+X83_SURF=읽기 x83_run find /dev/null -maxdepth 0 -exec /nonexistent-xcode/usr/bin/simctl erase 22222222-2222-3333-4444-555555555555 ';'
+check "83x: 읽기로 신고한 find -exec 의 경로 simctl 은 park 한다" "$rc" "11"
 check "83x: 낮춰 신고한 미상 기기 형태는 대역에 닿지 않는다" \
-  "$(grep -c -e 'adb install -r' -e 'adb shell' -e 'devicectl' -e 'xctrace' -e 'xcrun xcodebuild' -e 'xcrun /usr/bin/xcodebuild' "$X83L")" "0"
+  "$(grep -c -e 'adb install -r' -e 'adb shell' -e 'devicectl' -e 'xctrace' -e 'xcrun xcodebuild' -e 'xcrun /usr/bin/xcodebuild' -e 'simctl delete all' -e 'simctl erase 22222222' "$X83L")" "0"
 X83_SURF=읽기 x83_run xcrun --find clang
 check "83x: 읽기로 신고한 xcrun --find 는 여전히 열린다" "$rc|$(grep -c 'xcrun --find clang' "$X83L")" "0|1"
 
