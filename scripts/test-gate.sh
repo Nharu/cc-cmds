@@ -30250,6 +30250,208 @@ check "26: 룰 끔 — 머지됨 행이 기록된다" "$rc" "0"
 check "26: 룰 끔 — 머지 대조는 그대로 적힌다" "$(sa_field "$(sa_seg_last S26O)" '머지 대조')" "리뷰 없음"
 check "26: 룰 끔 — 조건 11 이 나지 않는다" "$(sa_unmet11)" ""
 
+# --- 35-26b. 사람이 먼저 머지한 선리뷰후머지 세그먼트의 리뷰 줄은 머지된 PR 을 덮는 델타 리뷰를 싣는다 ---
+# --- section: 35-26b | group: sa | covers: act, snapshot, gate_review_line | anchors: 26b: 미포함 세그먼트의 리뷰 줄이 받아진다 ---
+#
+# 리뷰보다 먼저 사람이 머지하면 머지 대조가 미포함 위반이 되고 종료 조건 11 이
+# 런을 붙든다. 그것을 푸는 덮는 리뷰는 머지된 PR 을 대상으로 받아야 하므로 줄이
+# --merged 와 머지 커밋, 머지 커밋의 첫 부모와 워크트리 팁의 merge-base 를 베이스로
+# 싣고, 앞 전체 사이클을 기준으로 한 델타 플래그 셋을 싣는다. 머지는 게이트 밖에서
+# 베이스에 --no-ff 머지 커밋을 만들어 민다. 빨리감기 머지는 워크트리 팁으로 했든
+# 워크트리 밖에서 올린 커밋으로 했든 베이스를 유도하지 않고 거절하며, squash 머지는 분기점 베이스를 그대로 유도한다. 픽스처는 모두 이 절
+# 안에서 만든다.
+sa26b_merge() {
+  # sa26b_merge — 베이스에 다른 커밋 하나를 둔 뒤 세그먼트 브랜치를 --no-ff 머지
+  # 커밋으로 들이고 원격 베이스로 민다. 머지 커밋 sha 를 찍는다.
+  ( cd "${SA_REPO:?}" && git commit -q --allow-empty -m '베이스의 다른 커밋' \
+    && git merge -q --no-ff -m "머지 $SA_SEGBR" "$SA_SEGBR" \
+    && git push -q origin "$SA_BASE" && git rev-parse HEAD ) 2>/dev/null
+}
+sa26b_row() {
+  # sa26b_row <id> — 세그먼트 워크트리와 브랜치를 단 실행중 행 하나.
+  sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$1" \
+      --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+      -- 상태=실행중 워크트리="$SA_SEGWT" 브랜치="$SA_SEGBR" 선행=없음
+}
+sa26b_delta() {
+  # sa26b_delta <id> <사이클> <기준 사이클> <기준 리뷰 HEAD> <P1> <리뷰 HEAD> — 델타
+  # 리포트와 그 cycle 행 하나.
+  local rep="$SA_ROOT/delta-$2.md"
+  printf '# 코드 리뷰 리포트\n\n## 개요\n\n- **리뷰 대상**: x\n- **리뷰 모드**: 델타 (기준 사이클 %s, 기준 리뷰 HEAD `%s`)\n- **발견 요약**: P0 0건 | P1 %s건\n' \
+    "$3" "$4" "$5" > "$rep"
+  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x \
+      -- "사이클=$2" 모드=델타 "기준 사이클=$3" P0=0 "P1=$5" "리뷰 HEAD=$6" "리포트 경로=$(sa_canon "$1" "$rep")"
+}
+sa26b_flag() {
+  # sa26b_flag <줄> <플래그> — 줄에서 그 플래그 다음 낱말. 없으면 빈 값.
+  printf '%s\n' "$1" | awk -v f="$2" '{ for (i = 1; i < NF; i++) if ($i == f) print $(i + 1) }'
+}
+sa26b_has() {
+  # sa26b_has <줄> <플래그> — 줄에 그 플래그가 낱말로 있으면 예, 없으면 아니오.
+  case " $1 " in *" $2 "*) printf '예' ;; *) printf '아니오' ;; esac
+}
+
+# 1 — 미포함. 전체 사이클 1 뒤에 커밋이 쌓이고 사람이 머지했다.
+sa_new '사람이 먼저 머지한 미포함'
+sa26b_row S26R
+F26R=$(cd "$SA_REPO" && git rev-parse HEAD)
+T26R=$(sa_commit '리뷰된 작업')
+RP26R=$(sa_canon S26R)
+sa_cycle S26R 1 0 0 "$T26R"
+U26R=$(sa_commit '리뷰 뒤의 작업')
+M26R=$(sa26b_merge)
+sa_seg_state S26R 머지됨 "머지 커밋=$M26R"
+check "26b: 사람이 먼저 머지한 미포함 머지됨 행이 기록된다" "$rc|$(sa_field "$(sa_seg_last S26R)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26R; l26r=$msg
+check "26b: 미포함 세그먼트의 리뷰 줄이 받아진다" "$rc" "0"
+check "26b: 그 줄이 머지 커밋을 --merged 로 싣는다" "$(sa26b_flag "$l26r" --merged)" "$M26R"
+check "26b: 그 줄의 베이스가 머지 커밋 첫 부모와 워크트리 팁의 merge-base 다" \
+  "$(sa26b_flag "$l26r" --base-sha)" "$F26R"
+check "26b: 그 줄이 앞 전체 사이클을 기준으로 싣는다" \
+  "$(sa26b_flag "$l26r" --basis-cycle)|$(sa26b_flag "$l26r" --basis-review-head)|$(sa26b_flag "$l26r" --basis-report-path)" \
+  "1|$T26R|$RP26R"
+check "26b: 그 줄에 --post-merge 가 없다" "$(sa26b_has "$l26r" --post-merge)" "아니오"
+
+# 2 — 머지된 팁을 리뷰 HEAD 로 하는 델타 사이클이 받아지고 둘째 머지됨 행이 조건 11 을 지운다.
+sa26b_delta S26R 2 1 "$T26R" 0 "$U26R"
+check "26b: 머지된 팁을 덮는 델타 사이클 행이 받아들여진다" "$rc" "0"
+sa_seg_state S26R 머지됨 "머지 커밋=$M26R"
+check "26b: 덮는 델타 뒤 둘째 머지됨 행의 머지 대조가 충족이다" \
+  "$rc|$(sa_field "$(sa_seg_last S26R)" '머지 대조')" "0|충족"
+check "26b: 덮는 델타 뒤 조건 11 이 사라진다" "$(sa_unmet11)" ""
+sag review-line --manifest "$SA_MANIFEST" --segment S26R; l26r=$msg
+check "26b: 충족 세그먼트의 리뷰 줄에는 --merged 와 기준 플래그가 없다" \
+  "$rc|$(sa26b_has "$l26r" --merged)|$(sa26b_has "$l26r" --basis-cycle)" "0|아니오|아니오"
+
+# 3 — 카운트·미포함. 사이클 1 에 P1 이 열린 채 커밋이 쌓이고 머지되었다. 덮는
+# 델타가 P1 을 다시 판정하면 둘째 머지됨 행은 카운트 위반으로 남는다.
+sa_new '사람이 먼저 머지한 카운트·미포함'
+sa26b_row S26K
+T26K=$(sa_commit '리뷰된 작업')
+sa_cycle S26K 1 0 1 "$T26K"
+U26K=$(sa_commit '리뷰 뒤의 작업')
+M26K=$(sa26b_merge)
+sa_seg_state S26K 머지됨 "머지 커밋=$M26K"
+check "26b: 카운트·미포함 머지됨 행이 기록된다" "$rc|$(sa_field "$(sa_seg_last S26K)" '머지 대조')" "0|위반(카운트·미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26K; l26k=$msg
+check "26b: 카운트·미포함 세그먼트의 리뷰 줄도 --merged 와 기준 사이클을 싣는다" \
+  "$rc|$(sa26b_flag "$l26k" --merged)|$(sa26b_flag "$l26k" --basis-cycle)" "0|$M26K|1"
+sa26b_delta S26K 2 1 "$T26K" 1 "$U26K"
+check "26b: P1 을 다시 판정한 덮는 델타 행이 받아들여진다" "$rc" "0"
+sa_seg_state S26K 머지됨 "머지 커밋=$M26K"
+check "26b: 둘째 머지됨 행이 위반(카운트) 다" "$(sa_field "$(sa_seg_last S26K)" '머지 대조')" "위반(카운트)"
+check "26b: 조건 11 이 카운트 위반을 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S26K 의 머지 대조가 위반(카운트) 입니다"
+sag review-line --manifest "$SA_MANIFEST" --segment S26K; l26k=$msg
+check "26b: 카운트 위반 세그먼트의 리뷰 줄에는 --merged 와 기준 플래그가 없다" \
+  "$rc|$(sa26b_has "$l26k" --merged)|$(sa26b_has "$l26k" --basis-cycle)" "0|아니오|아니오"
+
+# 5 — 머지 커밋이 없는 머지됨 행. 줄을 조립할 수 없으니 거절하고 머지 커밋을 지목한다.
+sa_new '머지 커밋 없는 미포함'
+sa26b_row S26X
+T26X=$(sa_commit '리뷰된 작업')
+sa_cycle S26X 1 0 0 "$T26X"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+sa26b_merge >/dev/null
+sa_seg_state S26X 머지됨
+check "26b: 머지 커밋 없는 미포함 머지됨 행이 기록된다" "$(sa_field "$(sa_seg_last S26X)" '머지 대조')" "위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26X
+check "26b: 머지 커밋 없는 미포함 세그먼트의 리뷰 줄은 rc 3 이다" "$rc" "3"
+case "$msg" in
+  *"머지 커밋"*) ok "26b: 그 거절이 머지 커밋을 지목한다" ;;
+  *) bad "26b 머지 커밋 없는 거절 문면" "$msg" ;;
+esac
+
+# 6 — 앞 사이클 중 델타 행이 마지막이면 기준은 그 앞의 전체 사이클이다.
+sa_new '델타가 마지막인 미포함'
+sa26b_row S26D
+T26D1=$(sa_commit '전체 리뷰된 작업')
+RP26D=$(sa_canon S26D)
+sa_cycle S26D 1 0 0 "$T26D1"
+T26D2=$(sa_commit '델타 리뷰된 작업')
+sa26b_delta S26D 2 1 "$T26D1" 0 "$T26D2"
+check "26b: 머지 전 델타 사이클 행이 받아들여진다" "$rc" "0"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+M26D=$(sa26b_merge)
+sa_seg_state S26D 머지됨 "머지 커밋=$M26D"
+check "26b: 델타 뒤 미포함 머지됨 행이 기록된다" "$(sa_field "$(sa_seg_last S26D)" '머지 대조')" "위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26D; l26d=$msg
+check "26b: 델타가 마지막이면 기준 플래그는 그 앞 전체 사이클을 가리킨다" \
+  "$rc|$(sa26b_flag "$l26d" --basis-cycle)|$(sa26b_flag "$l26d" --basis-review-head)|$(sa26b_flag "$l26d" --basis-report-path)" \
+  "0|1|$T26D1|$RP26D"
+
+# 7 — 빨리감기 머지. 전체 사이클 1 의 리뷰 HEAD 뒤에 커밋 둘을 두고 원격 베이스를
+# 세그먼트 팁으로 빨리감기하면 머지 커밋이 팁 자신이다. 그 첫 부모는 머지 직전의
+# 베이스가 아니라 세그먼트 안의 커밋이라, 유도한 베이스는 앞 커밋을 diff 에서 뺀다.
+# 행에 베이스 sha 가 없으므로 줄을 내지 않고 거절한다.
+sa_new '빨리감기로 머지한 미포함'
+sa26b_row S26W
+T26W=$(sa_commit '리뷰된 작업')
+sa_cycle S26W 1 0 0 "$T26W"
+sa_commit '리뷰 뒤의 작업 1' >/dev/null
+U26W=$(sa_commit '리뷰 뒤의 작업 2')
+sa_land
+sa_seg_state S26W 머지됨 "머지 커밋=$U26W"
+check "26b: 빨리감기 머지의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26W)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26W
+case "$msg" in
+  *"/cc-cmds:review-unattended"*) r26w="줄 있음" ;;
+  *) r26w="줄 없음" ;;
+esac
+check "26b: 빨리감기 머지 세그먼트의 리뷰 줄은 rc 3 이고 줄을 내지 않는다" "$rc|$r26w" "3|줄 없음"
+case "$msg" in
+  *"is a fast-forward merge"*) ok "26b: 그 거절이 빨리감기 머지를 지목한다" ;;
+  *) bad "26b 빨리감기 거절 문면" "$msg" ;;
+esac
+
+# 8 — squash 머지. 머지 커밋은 세그먼트 변경을 한 커밋에 담은 새 커밋이라 팁의 조상이
+# 아니고, 그 첫 부모가 머지 직전의 베이스라 유도한 베이스가 분기점이다. 빨리감기
+# 판별이 이 머지를 거르지 않는다.
+sa_new 'squash 로 머지한 미포함'
+sa26b_row S26Q
+F26Q=$(cd "$SA_REPO" && git rev-parse HEAD)
+T26Q=$(sa_commit '리뷰된 작업')
+sa_cycle S26Q 1 0 0 "$T26Q"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+# --squash 는 -q 에도 「Squash commit -- not updating HEAD」를 표준출력에 찍으므로 버린다.
+M26Q=$( cd "$SA_REPO" && git merge -q --squash "$SA_SEGBR" >/dev/null && git commit -qm "squash $SA_SEGBR" \
+  && git push -q origin "$SA_BASE" && git rev-parse HEAD ) 2>/dev/null
+sa_seg_state S26Q 머지됨 "머지 커밋=$M26Q"
+check "26b: squash 머지의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26Q)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26Q; l26q=$msg
+check "26b: squash 머지 세그먼트의 리뷰 줄은 머지 커밋과 분기점 베이스를 싣는다" \
+  "$rc|$(sa26b_flag "$l26q" --merged)|$(sa26b_flag "$l26q" --base-sha)" "0|$M26Q|$F26Q"
+
+# 9 — 워크트리 밖 커밋을 올린 뒤의 빨리감기. 다른 클론에서 세그먼트 팁 위에 커밋을
+# 하나 더 올리고 원격 베이스를 그 커밋으로 빨리감기하면 머지 커밋은 워크트리 팁의
+# 자손이라 사례 7 의 판별은 거르지 못한다. 그 첫 부모가 워크트리 팁 자신이라 유도한
+# 베이스가 워크트리 팁이 되고 리뷰 뒤 커밋이 diff 에서 빠지므로, 줄을 내지 않고 거절한다.
+# 다른 클론의 커밋은 워크트리를 건드리지 않는 commit-tree 로 만든다.
+sa_new '워크트리 밖 커밋 뒤 빨리감기한 미포함'
+sa26b_row S26B
+T26B=$(sa_commit '리뷰된 작업')
+sa_cycle S26B 1 0 0 "$T26B"
+sa_commit '리뷰 뒤의 작업 1' >/dev/null
+U26B=$(sa_commit '리뷰 뒤의 작업 2')
+M26B=$( cd "$SA_REPO" && git commit-tree "$U26B^{tree}" -p "$U26B" -m '워크트리 밖의 작업' ) 2>/dev/null
+( cd "$SA_REPO" && git push -q origin "$M26B:refs/heads/$SA_BASE" ) >/dev/null 2>&1
+sa_seg_state S26B 머지됨 "머지 커밋=$M26B"
+check "26b: 워크트리 밖 커밋 뒤 빨리감기의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26B)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26B
+case "$msg" in
+  *"/cc-cmds:review-unattended"*) r26b="줄 있음" ;;
+  *) r26b="줄 없음" ;;
+esac
+check "26b: 워크트리 밖 커밋 뒤 빨리감기 세그먼트의 리뷰 줄은 rc 3 이고 줄을 내지 않는다" "$rc|$r26b" "3|줄 없음"
+case "$msg" in
+  *"is a fast-forward merge — its first parent"*"already holds the worktree tip"*) ok "26b: 그 거절이 첫 부모가 워크트리 팁을 담은 빨리감기를 지목한다" ;;
+  *) bad "26b 워크트리 밖 커밋 뒤 빨리감기 거절 문면" "$msg" ;;
+esac
+
 # --- 35-27. 게이트가 적는 필드는 호출자가 넘길 수 없고, 넘치는 행은 이름을 대며 거절된다 ---
 # --- section: 35-27 | group: sa | covers: act, snapshot | anchors: 27: 호출자가 넘긴 머지 대조 는 머지됨 행에서 거절된다 ---
 sa_new '유도 필드'
@@ -57281,6 +57483,11 @@ mf2_line() {  # mf2_line — 리뷰 줄의 --base-sha 와 --post-merge 값, `<�
     "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--post-merge") print $(i + 1) }')"
 }
 check "88f-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$(mf2_line)" "$mf2_base|$MF_TIP"
+sag review-line --manifest "$SA_MANIFEST" --segment H
+case " $msg " in
+  *" --merged "*) bad "88f-2 사후리뷰 줄의 --merged" "$msg" ;;
+  *) ok "88f-2: 사후리뷰 줄에는 --merged 가 없다" ;;
+esac
 check "88f-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다" \
   "$(mf_snap | jq -r '.unmet_condition_numbers | index(1) != null')" "true"
 sa_cycle H 1 0 0 "$MF_TIP"
