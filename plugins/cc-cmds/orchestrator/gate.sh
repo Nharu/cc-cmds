@@ -3018,6 +3018,95 @@ GATE_PUSH_UPS
   return 0
 }
 
+gate_worktree_add_base_mismatch() {
+  # gate_worktree_add_base_mismatch <alias> <argv...> — prints why a `git
+  # worktree add` into this run's segment worktree path starts somewhere other
+  # than the target's remote-tracking base, nothing when it does not or when the
+  # act is no such call. The caller refuses with `GATE_EXIT_VOCAB` on output.
+  #
+  # THE SCOPE IS THE PATH, NOT THE CALLER. Only a path under the derived prefix
+  # `gate_decl_worktree` gives (`<parent>/<name>-run-<run id>-`) is read. The
+  # experiment worktrees other skills make under `mktemp -d` start at `HEAD` or
+  # at a merge commit on purpose and never land under that prefix.
+  #
+  # A SYMBOLIC COMPARISON, NOT A SHA ONE. The start point must name
+  # `refs/remotes/origin/<base>` — what `git rev-parse --symbolic-full-name`
+  # reads it as. Concurrent runs in the same repository fetch and move that ref
+  # between the router's fetch and this check, so comparing shas or ancestry
+  # would refuse a correct call; a local branch, a bare sha and `HEAD` all read
+  # as another name and are refused. Nothing is fetched here.
+  #
+  # THE REUSE FORM PASSES. With none of `-b`, `-B` and `--detach`, a start point
+  # naming an existing local branch other than the base creates no new start
+  # point, so it is not read. Without a start point git cuts a new branch from
+  # `HEAD`, which is refused like any other wrong start.
+  local alias="$1" cmd
+  shift
+  [ "$#" -ge 1 ] || return 0
+  cmd="${1##*/}"
+  [ "$cmd" = git ] || return 0
+  shift
+  gate_git_subcommand "$@" >/dev/null
+  [ "$GATE_GIT_SUB" = worktree ] || return 0
+  local -a rest=("${@:$((GATE_GIT_SUBIDX + 1))}")
+  [ "${rest[0]:-}" = add ] || return 0
+  local dir="${GATE_ACT_CWD:-$PWD}" i=0 n="${#rest[@]}" w newb=0 det=0 endopt=0
+  local -a pos=()
+  # `-C <dir>` moves where git resolves the path and the start point.
+  while [ "$i" -lt "${#GATE_GIT_LOCFLAGS[@]}" ]; do
+    if [ "${GATE_GIT_LOCFLAGS[$i]}" = -C ]; then
+      case "${GATE_GIT_LOCFLAGS[$((i + 1))]}" in
+        /*) dir="${GATE_GIT_LOCFLAGS[$((i + 1))]}" ;;
+        *)  dir="$dir/${GATE_GIT_LOCFLAGS[$((i + 1))]}" ;;
+      esac
+    fi
+    i=$((i + 2))
+  done
+  i=1
+  while [ "$i" -lt "$n" ]; do
+    w="${rest[$i]}"
+    if [ "$endopt" = 1 ]; then pos+=("$w"); i=$((i + 1)); continue; fi
+    case "$w" in
+      --) endopt=1 ;;
+      -b|-B) newb=1; i=$((i + 1)) ;;
+      -b?*|-B?*) newb=1 ;;
+      # git worktree's own flag, quoted: test-run.sh's scan for a session
+      # detach mode reads an unquoted case arm of this word as one.
+      "--detach") det=1 ;;
+      --reason) i=$((i + 1)) ;;
+      -*) : ;;
+      *) pos+=("$w") ;;
+    esac
+    i=$((i + 1))
+  done
+  [ "${#pos[@]}" -ge 1 ] || return 0
+  local path="${pos[0]}" start="${pos[1]:-}" prefix br want got
+  case "$path" in /*) : ;; *) path="$dir/$path" ;; esac
+  while [ "${#path}" -gt 1 ] && [ "${path%/}" != "$path" ]; do path="${path%/}"; done
+  prefix=$(gate_decl_worktree "$alias" "") || return 0
+  [ -n "$prefix" ] || return 0
+  case "$path" in "$prefix"*) : ;; *) return 0 ;; esac
+  br=$(base_branch "$alias" 2>/dev/null || true)
+  if [ -z "$br" ]; then
+    printf '받은 시작점: %s, 기대 시작점: 해소되지 않음 — 대상 %s 의 베이스 브랜치를 정하지 못했습니다' "${start:-없음}" "$alias"
+    return 0
+  fi
+  want="refs/remotes/origin/$br"
+  if [ "$newb" = 0 ] && [ "$det" = 0 ] && [ -n "$start" ] && [ "$start" != "$br" ] \
+     && ( cd "$dir" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/$start" >/dev/null 2>&1 ); then
+    return 0
+  fi
+  if [ -z "$start" ]; then
+    printf '받은 시작점: 없음, 기대 시작점: %s' "$want"
+    return 0
+  fi
+  got=$(cd "$dir" 2>/dev/null && git rev-parse --symbolic-full-name "$start" 2>/dev/null) || got=""
+  got="${got%%$'\n'*}"
+  [ "$got" = "$want" ] && return 0
+  printf '받은 시작점: %s (%s), 기대 시작점: %s' "$start" "${got:-이름 없는 커밋}" "$want"
+  return 0
+}
+
 gate_rule_row_mismatch() {
   # gate_rule_row_mismatch <segment> — prints `segment` or `cycle` when the
   # review rule's selector picks another row than the gate's for that series;
@@ -13304,7 +13393,12 @@ gate_snapshot_slicing_json() {
   # write it: the branch, and per segment its id, branch name and worktree path
   # in declaration order. Read-only — the snapshot is a read verb, so the values
   # are written by `act --kind segment --from-declaration`, never from here.
-  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo="" lrow="" undecl=""
+  #
+  # `베이스` IS A REF NAME, NOT A SHA: `refs/remotes/origin/<base_branch>`, the
+  # start point the router's `git worktree add` writes verbatim after its own
+  # fetch. A sha read here would be stale by the time that fetch ran, and this
+  # read verb fetches nothing. Empty when the base branch cannot be resolved.
+  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo="" lrow="" bref="" undecl=""
   br=$(gate_slicing_branch)
   case "$br" in
     미통치) undecl=$(gate_undeclared_segments); ids=$(printf '%s\n' "$undecl" | cut -f1) ;;
@@ -13319,6 +13413,11 @@ gate_snapshot_slicing_json() {
     fi
     wt=""; bn="seg/$RUN_ID-$id"; adx=""
     [ -z "$al" ] || wt=$(gate_decl_worktree "$al" "$id") || wt=""
+    bref=""
+    if [ -n "$al" ]; then
+      bref=$(base_branch "$al" 2>/dev/null || true)
+      [ -z "$bref" ] || bref="refs/remotes/origin/$bref"
+    fi
     # AN ADOPTED SEGMENT NAMES THE EARLIER RUN'S BRANCH AND WORKTREE, and says
     # so: `입양` carries the run it came from and `PR` the pull request the
     # segment already has, so the router neither cuts a branch nor opens a PR.
@@ -13345,9 +13444,9 @@ gate_snapshot_slicing_json() {
     if gate_manifest_landing_row "$id" >/dev/null 2>&1; then lrow=true; fi
     [ "$first" = "1" ] || printf ', '
     first=0
-    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s", "선행": %s, "머지 순서": %s, "착지 행": %s%s}' \
+    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s", "베이스": "%s", "선행": %s, "머지 순서": %s, "착지 행": %s%s}' \
       "$(gate_json_escape "$id")" "$(gate_json_escape "$al")" \
-      "$(gate_json_escape "$bn")" "$(gate_json_escape "$wt")" \
+      "$(gate_json_escape "$bn")" "$(gate_json_escape "$wt")" "$(gate_json_escape "$bref")" \
       "$(gate_json_id_array $dpre)" "$(gate_json_id_array $dmo)" "$lrow" "$adx"
   done
   printf ']'
@@ -39449,15 +39548,22 @@ gate_caller_is_audit_stage() {
 
 gate_audit_worktree_ensure() {
   # gate_audit_worktree_ensure <별칭> — the audit dispatch's tree: created
-  # detached at the tip of the target's base branch when absent, reused when it
-  # is already a worktree of this target, and refused when the path is taken by
-  # anything else. Then admitted to the stage settings the way a `segment` row
-  # admits its worktree, because no row will name this one.
+  # detached at the remote-tracking tip of the target's base branch when absent
+  # (`refs/remotes/origin/<base_branch>` after fetching that one ref, the start
+  # the driver's `wt_create` uses), reused when it is already a worktree of this
+  # target, and refused when the path is taken by anything else. Then admitted
+  # to the stage settings the way a `segment` row admits its worktree, because
+  # no row will name this one.
+  #
+  # A FAILED FETCH IS A WARNING, NOT A REFUSAL. The tree then starts at the
+  # tracking ref as it stands, which a local base never runs ahead of; only a
+  # tracking ref that does not resolve at all refuses. A reused tree is never
+  # moved: the audit in progress compares against the start it was given.
   #
   # PERFORMED, NOT CHECKED. It runs from the dispatch switch, after the row and
   # every rule, so a refused dispatch leaves no tree behind; and before the
   # launch, so the stage's first act already resolves here.
-  local alias="$1" wt root base lk
+  local alias="$1" wt root base lk sha fetched
   if ! wt=$(gate_audit_worktree_path "$alias"); then
     warn "감사 워크트리 경로를 정하지 못했습니다 — 실행 계획의 감사 단계 하나와 대상 ${alias} 의 메인 워크트리가 있어야 합니다"
     return "$GATE_EXIT_RULE"
@@ -39470,16 +39576,27 @@ gate_audit_worktree_ensure() {
     log "감사 워크트리 재사용 — $wt"
   else
     root=$(target_field "$alias" '메인 워크트리')
-    base=$(target_field "$alias" '베이스 브랜치' 2>/dev/null || true)
+    base=$(base_branch "$alias" 2>/dev/null || true)
     if [ -z "$base" ]; then
       warn "대상 ${alias} 에 베이스 브랜치 가 없어 감사 워크트리를 만들 수 없습니다"
       return "$GATE_EXIT_RULE"
     fi
-    if ! ( cd "$root" && git worktree add --detach "$wt" "$base" >/dev/null 2>&1 ); then
-      warn "감사 워크트리를 베이스 ${base} 끝에 분리해 만들지 못했습니다: $wt"
+    if base_fetch_ref "$alias" "$base" >/dev/null 2>&1; then
+      fetched='fetch 성공'
+    else
+      fetched='fetch 실패'
+      warn "감사 워크트리 — origin/${base} fetch 가 실패했습니다; 지금의 refs/remotes/origin/${base} 에서 뜹니다"
+    fi
+    sha=$( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/${base}^{commit}" 2>/dev/null ) || sha=""
+    if [ -z "$sha" ]; then
+      warn "감사 워크트리의 시작점 refs/remotes/origin/${base} 가 커밋으로 해소되지 않습니다(${fetched}) — 감사 워크트리를 만들 수 없습니다"
       return "$GATE_EXIT_RULE"
     fi
-    log "감사 워크트리 — $wt (베이스 ${base} 끝에 분리)"
+    if ! ( cd "$root" && git worktree add --detach "$wt" "$sha" >/dev/null 2>&1 ); then
+      warn "감사 워크트리를 origin/${base} 끝 ${sha} 에 분리해 만들지 못했습니다: $wt"
+      return "$GATE_EXIT_RULE"
+    fi
+    log "감사 워크트리 — $wt (fetch 뒤 origin/${base} 끝 $(printf '%s' "$sha" | cut -c1-12) 에 분리)"
   fi
   [ -n "${RUN_DIR:-}" ] || return 0
   lk="$RUN_DIR/settings.lock"
@@ -44967,6 +45084,21 @@ gate_verb_act() {
   # worktree is, so the bare form grades and roots it there.
   [ "${GATE_ADMIT:-}" != "1" ] || GATE_ACT_CWD="$GATE_ADMIT_CWD"
   export GATE_ACT_CWD
+
+  # A SEGMENT WORKTREE STARTS AT THE REMOTE-TRACKING BASE. Refused here, at
+  # every cutpoint and with or without `--segment`, before any row or rule:
+  # the router cuts segment branches before their `segment` row exists, and a
+  # branch cut from a stale local base carries that base into every review and
+  # merge after it. See `gate_worktree_add_base_mismatch`.
+  if [ "$verb" = "exec" ]; then
+    local _wtb
+    _wtb=$(gate_worktree_add_base_mismatch "$alias" "$@")
+    if [ -n "$_wtb" ]; then
+      warn "이 런의 세그먼트 워크트리 경로로 가는 git worktree add 의 시작점이 원격 추적 베이스가 아닙니다 — ${_wtb}"
+      warn "스냅숏 \`슬라이싱\` 의 \`베이스\` 값으로 다시 부릅니다 — 로컬 브랜치 이름이나 HEAD 가 아니라 원격 추적 ref 를 시작점으로 적습니다"
+      exit "$GATE_EXIT_VOCAB"
+    fi
+  fi
 
   # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
   #

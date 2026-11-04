@@ -14235,7 +14235,7 @@ check "15d-3: 사유 거둠 절이 네 표식 값을 모두 싣는다" "$rc15d3_
 
 # ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
-# --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
+# --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다,15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
 #
 # The audit is the second run-scope step. It reads the frozen document rather
 # than building a segment, so the router dispatches it with `--segment -` as it
@@ -14348,6 +14348,19 @@ esac
 # Accepted, launched and waited on by its step id.
 plan15e_audit "$WORK/plan-R15EA.md"
 check "15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다" "$rc" "0"
+# The remote base runs one commit ahead of the local `main`, and the tracking
+# ref is put back on the local tip, so only the gate's own fetch can find the
+# newer commit. The new commit sits on the remote's own tip, not on the local
+# `main`: sections run before this one can leave the remote ahead of the local
+# branch, and a push that is not a fast-forward would be refused silently and
+# leave the remote where it was. The remote tip and the tracking ref are put
+# back as they were right after the tree is measured below.
+orig15e=$( cd "$WT" && git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 )
+[ -n "$orig15e" ] || orig15e=$( cd "$WT" && git rev-parse main )
+otrk15e=$( cd "$WT" && git rev-parse --verify --quiet refs/remotes/origin/main ) || otrk15e=""
+ahead15e=$( cd "$WT" && git commit-tree "main^{tree}" -p "$orig15e" -m ahead-15e )
+( cd "$WT" && git push -q origin "$ahead15e:refs/heads/main" \
+  && git update-ref refs/remotes/origin/main main ) >/dev/null 2>&1
 au15_dispatch R15EA "$STUB_AU_AUDIT" audit "$audit15e"
 check "15e: 동결된 설계 뒤 감사 파견이 기동한다" "$rc" "0"
 au15_wait R15EA A1
@@ -14362,14 +14375,23 @@ check "15e: 감사 스테이지는 세그먼트 - 와 감사 단계 id 기반 �
 check "15e: 감사와 설계의 스트림이 각자의 단계 id 로 따로 남는다" \
   "$( [ -s "$RD15E/log/A1#1.json" ] && printf A1 )/$( [ -s "$RD15E/log/D1#1.json" ] && printf D1 )" "A1/D1"
 
-# The audit runs in a tree of its own, detached at the base: the main worktree
-# is the one other runs fast-forward after a merge, and the audit's freeze check
-# reads a moved `HEAD` there as a mismatch. No row names the tree; the gate
-# makes it at the dispatch and resolves the audit stage's `--segment -` acts to it.
+# The audit runs in a tree of its own, detached at the remote-tracking base the
+# gate fetched: the main worktree is the one other runs fast-forward after a
+# merge, and the audit's freeze check reads a moved `HEAD` there as a mismatch.
+# No row names the tree; the gate makes it at the dispatch and resolves the
+# audit stage's `--segment -` acts to it.
 AW15E="$WT-run-R15EA-A1"
-check "15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다" \
+check "15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 워크트리를 만든다" \
   "$( [ -d "$AW15E" ] && cd "$AW15E" && { git symbolic-ref -q HEAD >/dev/null && printf 브랜치 || printf 분리; } )/$( cd "$AW15E" 2>/dev/null && git rev-parse HEAD 2>/dev/null )" \
-  "분리/$( cd "$WT" && git rev-parse main )"
+  "분리/$ahead15e"
+check "15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다" \
+  "$( [ -n "$ahead15e" ] && [ "$ahead15e" != "$( cd "$WT" && git rev-parse main )" ] && printf 다름 )" "다름"
+( cd "$WT" && git push -q -f origin "$orig15e:refs/heads/main" ) >/dev/null 2>&1
+if [ -n "$otrk15e" ]; then
+  ( cd "$WT" && git update-ref refs/remotes/origin/main "$otrk15e" ) >/dev/null 2>&1
+else
+  ( cd "$WT" && git update-ref -d refs/remotes/origin/main ) >/dev/null 2>&1
+fi
 check "15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다" \
   "$(head -1 "$RD15E/stub-au-pwd.txt" 2>/dev/null)" "$AW15E"
 check "15e: 감사 워크트리가 스테이지 설정의 디렉터리 목록에 오른다" \
@@ -16105,7 +16127,7 @@ rm -f "$WT/$DOC15FP"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
-# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 깨진 슬라이스 하나는 그 슬라이스만 슬라이싱 으로 park 한다, 15g: 독립 슬라이스는 같은 런에서 계획된다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 계획 행이 선언 전체의 다이제스트를 싣는다 ---
+# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 스냅숏 슬라이싱 의 세그먼트마다 베이스 가 원격 추적 ref 다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 깨진 슬라이스 하나는 그 슬라이스만 슬라이싱 으로 park 한다, 15g: 독립 슬라이스는 같은 런에서 계획된다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 계획 행이 선언 전체의 다이제스트를 싣는다 ---
 #
 # The router used to copy a slice's fields into `act --kind segment` and dropped
 # some of them. Under `--from-declaration` the gate reads them from the frozen
@@ -16131,6 +16153,9 @@ check "15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 i
 check "15g: 스냅숏 슬라이싱 이 브랜치 이름과 유도 워크트리를 낸다" \
   "$(printf '%s' "$snap15g" | jq -r '.["슬라이싱"]["세그먼트"][0] | [.["브랜치"], .["워크트리"], .["대상"]] | join("|")' 2>/dev/null)" \
   "seg/R15GA-SA|$(g15_wt R15GA SA)|infra"
+check "15g: 스냅숏 슬라이싱 의 세그먼트마다 베이스 가 원격 추적 ref 다" \
+  "$(printf '%s' "$snap15g" | jq -r '[.["슬라이싱"]["세그먼트"][] | .["베이스"]] | join(",")' 2>/dev/null)" \
+  "refs/remotes/origin/main,refs/remotes/origin/main"
 g15_mkwt R15GA SA
 g15_mkwt R15GA SB
 
@@ -18062,6 +18087,92 @@ for r15m in R15MA:MX R15MA:MY R15MA:MZ R15MA:MW R15MB:NX R15MB:NY R15MB:NZ R15MB
       && git branch -D "seg/${r15m%%:*}-${r15m#*:}" ) >/dev/null 2>&1 || true
 done
 rm -f "$WT/$DOC15MA" "$WT/$DOC15MB" "$WT/$DOC15MC" "$WT/$DOC15MD" "$WT/$DOC15ME" "$WT/$DOC15MF" "$WT/$DOC15MF3" "$WT/$DOC15MG"
+
+# ---------------------------------------------------------------------------
+# 15n. A segment worktree is cut from the remote-tracking base, never a local one
+# --- section: 15n | group: base | covers: exec, snapshot | anchors: 15n: 로컬 베이스 이름을 시작점으로 단 세그먼트 워크트리는 거부되고 만들어지지 않는다, 15n: 그 거부는 받은 시작점과 기대 시작점을 이름 대고 스냅숏 값을 처방한다, 15n: 시작점 없는 -b 세그먼트 워크트리는 거부된다, 15n: HEAD 와 40자 sha 시작점도 거부된다, 15n: 원격 추적 ref 시작점은 통과하고 HEAD 가 원격 tip 이다, 15n: origin/main 시작점도 통과하고 HEAD 가 원격 tip 이다, 15n: mktemp 경로의 --detach HEAD 는 검사에 걸리지 않는다, 15n: 기존 브랜치를 다시 쓰는 형태는 검사에 걸리지 않는다 ---
+#
+# The router cuts a segment branch with `git worktree add -b <branch> <derived
+# worktree> <start>` before the segment has a row. Started from the local base
+# name, a branch carries whatever that name was left at on this machine, which
+# runs behind the remote whenever nobody pulled. The gate reads the start point
+# symbolically and refuses anything that is not `refs/remotes/origin/<base>`
+# for a path under this run's derived worktree prefix; experiment worktrees
+# elsewhere are not its business. The remote here runs one commit ahead of the
+# local `main` throughout, so a pass shows up as a different `HEAD`. The new
+# commit sits on the remote's own tip, not on the local `main`: sections run
+# before this one can leave the remote ahead of the local branch, and a push
+# that is not a fast-forward would be refused silently and leave the remote
+# where it was. The remote tip and the tracking ref are put back as they were
+# when the section ends.
+# ---------------------------------------------------------------------------
+DOC15N='docs/fixture-design-15n.md'
+two_slice_doc "$WT/$DOC15N" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_run R15N "$DOC15N" "$plan15c" 리뷰없음
+orig15n=$( cd "$WT" && git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 )
+[ -n "$orig15n" ] || orig15n=$( cd "$WT" && git rev-parse main )
+otrk15n=$( cd "$WT" && git rev-parse --verify --quiet refs/remotes/origin/main ) || otrk15n=""
+ahead15n=$( cd "$WT" && git commit-tree "main^{tree}" -p "$orig15n" -m ahead-15n )
+( cd "$WT" && git push -q origin "$ahead15n:refs/heads/main" \
+  && git update-ref refs/remotes/origin/main "$ahead15n" ) >/dev/null 2>&1
+n15_add() {  # n15_add <git worktree add args...> — the router's call 2 through the gate; sets rc, msg
+  gateL exec --manifest "$WORK/plan-R15N.md" --target infra --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(au15_H R15N)" --rationale x -- git worktree add "$@"
+}
+n15_state() {  # n15_state <worktree> <branch> — whether either was made
+  printf '%s/%s' \
+    "$( [ -e "$1" ] && printf 워크트리 || printf - )" \
+    "$( cd "$WT" && git rev-parse --verify --quiet "refs/heads/$2" >/dev/null && printf 브랜치 || printf - )"
+}
+n15_head() { ( cd "$1" 2>/dev/null && git rev-parse HEAD 2>/dev/null ); }
+WTN15A=$(g15_wt R15N SA)
+WTN15B=$(g15_wt R15N SB)
+WTN15R=$(g15_wt R15N RU)
+
+n15_add -b seg/R15N-SA "$WTN15A" main
+check "15n: 로컬 베이스 이름을 시작점으로 단 세그먼트 워크트리는 거부되고 만들어지지 않는다" \
+  "$rc/$(n15_state "$WTN15A" seg/R15N-SA)" "2/-/-"
+case "$msg" in
+  *"받은 시작점: main"*"기대 시작점: refs/remotes/origin/main"*"값으로 다시 부릅니다"*)
+    ok "15n: 그 거부는 받은 시작점과 기대 시작점을 이름 대고 스냅숏 값을 처방한다" ;;
+  *) bad "15n: 그 거부는 받은 시작점과 기대 시작점을 이름 대고 스냅숏 값을 처방한다" "$msg" ;;
+esac
+n15_add -b seg/R15N-SA "$WTN15A"
+check "15n: 시작점 없는 -b 세그먼트 워크트리는 거부된다" "$rc/$(n15_state "$WTN15A" seg/R15N-SA)" "2/-/-"
+n15_add -b seg/R15N-SA "$WTN15A" HEAD
+r15n_head="$rc"
+n15_add -b seg/R15N-SA "$WTN15A" "$ahead15n"
+check "15n: HEAD 와 40자 sha 시작점도 거부된다" "$r15n_head/$rc/$(n15_state "$WTN15A" seg/R15N-SA)" "2/2/-/-"
+
+n15_add -b seg/R15N-SA "$WTN15A" refs/remotes/origin/main
+check "15n: 원격 추적 ref 시작점은 통과하고 HEAD 가 원격 tip 이다" \
+  "$rc/$(n15_head "$WTN15A")/$( [ "$(n15_head "$WTN15A")" != "$( cd "$WT" && git rev-parse main )" ] && printf 로컬과다름 )" \
+  "0/$ahead15n/로컬과다름"
+[ "$rc" = 0 ] || bad "15n 원격 추적 ref 통과 문면" "$msg"
+n15_add -b seg/R15N-SB "$WTN15B" origin/main
+check "15n: origin/main 시작점도 통과하고 HEAD 가 원격 tip 이다" "$rc/$(n15_head "$WTN15B")" "0/$ahead15n"
+
+tmp15n=$(mktemp -d "$WORK/wt15n.XXXXXX")
+n15_add --detach "$tmp15n" HEAD
+check "15n: mktemp 경로의 --detach HEAD 는 검사에 걸리지 않는다" \
+  "$rc/$(n15_head "$tmp15n")" "0/$( cd "$WT" && git rev-parse HEAD )"
+( cd "$WT" && git branch seg/R15N-RU main ) >/dev/null 2>&1
+n15_add "$WTN15R" seg/R15N-RU
+check "15n: 기존 브랜치를 다시 쓰는 형태는 검사에 걸리지 않는다" \
+  "$rc/$(n15_head "$WTN15R")" "0/$( cd "$WT" && git rev-parse main )"
+
+for w15n in "$WTN15A" "$WTN15B" "$WTN15R" "$tmp15n"; do
+  ( cd "$WT" && git worktree remove --force "$w15n" ) >/dev/null 2>&1 || true
+done
+( cd "$WT" && git branch -D seg/R15N-SA seg/R15N-SB seg/R15N-RU ) >/dev/null 2>&1 || true
+rm -rf "$tmp15n"
+( cd "$WT" && git push -q -f origin "$orig15n:refs/heads/main" ) >/dev/null 2>&1
+if [ -n "$otrk15n" ]; then
+  ( cd "$WT" && git update-ref refs/remotes/origin/main "$otrk15n" ) >/dev/null 2>&1
+else
+  ( cd "$WT" && git update-ref -d refs/remotes/origin/main ) >/dev/null 2>&1
+fi
+rm -f "$WT/$DOC15N"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget
