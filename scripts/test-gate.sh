@@ -61946,7 +61946,7 @@ rv108_tpl=$(awk '
       if (index(p[i], "gate.sh exec … ") == 1 || index(p[i], "git update-ref -d ") == 1) print p[i]
   }
 ' "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md" | awk '!seen[$0]++')
-rv108_pick() { printf '%s\n' "$rv108_tpl" | { grep -F -- "$1" || true; } | head -1; }
+rv108_pick() { printf '%s\n' "$rv108_tpl" | awk -v n="$1" '!f && index($0, n) { print; f = 1 }'; }
 rv108_fetch_t=$(rv108_pick 'git fetch origin ')
 rv108_add_t=$(rv108_pick 'git worktree add ')
 rv108_rm_t=$(rv108_pick 'git worktree remove ')
