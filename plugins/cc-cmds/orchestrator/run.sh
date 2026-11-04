@@ -9931,9 +9931,14 @@ apply_target_judgment() {
 
 apply_target_dependents() {
   # apply_target_dependents <segment> — the segments of ANOTHER repository
-  # whose `선행` or `머지 순서` names <segment>, read off the ledger's segment
-  # rows (the last value of each field per segment). A segment whose
-  # repository is not recorded counts as another's.
+  # whose `선행` or `머지 순서` names <segment> or any other segment of the
+  # same repository, read off the ledger's segment rows (the last value of
+  # each field per segment). The dependency is on the target, not on the one
+  # segment whose apply was judged: a later segment of the same target is
+  # refused by the target stop and left `머지됨 적용=대기`, so a segment of
+  # another repository that waits on it waits on the stopped target too. A
+  # segment whose repository is not recorded counts as another's, and when
+  # <segment>'s own repository is not recorded it alone stands for the target.
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
   awk -F'|' -v me="$1" '
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
@@ -9949,11 +9954,12 @@ apply_target_dependents() {
       v = fld("머지 순서"); if (v != "") ORD[s] = v
     }
     END {
+      MINE[me] = 1
+      if (me in REPO) for (i = 1; i <= n; i++) if ((ID[i] in REPO) && REPO[ID[i]] == REPO[me]) MINE[ID[i]] = 1
       for (i = 1; i <= n; i++) {
-        s = ID[i]; if (s == me) continue
-        if ((me in REPO) && (s in REPO) && REPO[s] == REPO[me]) continue
+        s = ID[i]; if (s in MINE) continue
         m = split(DEP[s] " " ORD[s], T, /[^A-Za-z0-9_.#-]+/)
-        for (j = 1; j <= m; j++) if (T[j] == me) { print s; break }
+        for (j = 1; j <= m; j++) if (T[j] != "" && (T[j] in MINE)) { print s; break }
       }
     }
   ' "$LEDGER"
@@ -10014,10 +10020,12 @@ apply_stage() {
   # not run against a target that said it finished and changed nothing. The
   # stop is an act-scope block naming the target, written before the command,
   # and the segment is not counted as landed. A radius stop wins over it: the
-  # walk skips a segment inside a stopped radius before it reaches here.
+  # walk skips a segment inside a stopped radius before it reaches here. The
+  # stopping segment itself is not refused, as at the gate's apply act: its
+  # own rerun's completion is what releases the stop.
   local al held
   al=$(seg_alias "$seg" 2>/dev/null) || al=""
-  if [ -n "$al" ] && held=$(apply_target_stopped "$al" | sed -n '1p') && [ -n "$held" ]; then
+  if [ -n "$al" ] && held=$( { apply_target_stopped "$al" || true; } | awk -v me="$seg" '$0 != me' | sed -n '1p') && [ -n "$held" ]; then
     ledger_row 'blocked' "대상=$al" "세그먼트=$seg" "스코프=act" "원인=막힘" \
       "사유=대상 적용 정지 $al" "관측=대상 $al 의 적용이 세그먼트 $held 의 대상 결함으로 멈춰 있다 — 명령을 실행하지 않는다" \
       "재개 명령=$cmd"

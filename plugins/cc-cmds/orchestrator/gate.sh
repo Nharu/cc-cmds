@@ -16554,9 +16554,7 @@ EOF
         # 대상 정지: the segment's apply is owed, and its target's applies are
         # stopped by an earlier apply judged a target defect. The shift reads
         # this list and moves on without acting or stopping on the segment.
-        sa=$(alias_for_slug "$(gate_segment_field "$seg" '레포' | tr -d '`')" 2>/dev/null || true)
-        [ -n "$sa" ] || sa=$(gate_segment_alias_guess "$seg")
-        if [ -n "$sa" ] && [ -n "$( { apply_target_stopped "$sa" || true; } | sed -n '1p')" ]; then
+        if gate_segment_target_stopped "$seg" >/dev/null; then
           tst="$tst${tst:+ }$seg"
         fi ;;
     esac
@@ -16572,6 +16570,21 @@ gate_segment_alias_guess() {
   n=$(printf '%s\n' "$a" | grep -c . || true)
   [ "$n" = "1" ] && printf '%s' "$a"
   return 0
+}
+
+gate_segment_target_stopped() {
+  # gate_segment_target_stopped <segment> — 0 when the target the segment's
+  # rows name (or the manifest's one target) holds a target stop set by
+  # another segment; prints that segment. The snapshot's `대상 정지` list and
+  # the landing reader both ask this, so the shift and the dispatch floor read
+  # the same refused segments.
+  local seg="$1" sa held
+  sa=$(alias_for_slug "$(gate_segment_field "$seg" '레포' | tr -d '`')" 2>/dev/null || true)
+  [ -n "$sa" ] || sa=$(gate_segment_alias_guess "$seg")
+  [ -n "$sa" ] || return 1
+  held=$( { apply_target_stopped "$sa" || true; } | awk -v me="$seg" '$0 != me' | sed -n '1p')
+  [ -n "$held" ] || return 1
+  printf '%s' "$held"
 }
 
 gate_snapshot_apply_array() {
@@ -28126,14 +28139,19 @@ gate_segment_landed_now() {
   # from an earlier run, or refused before its command after a merge that owed
   # it (`cc_segment_apply_phase` 진행·불명·미정산·멈춤). `머지됨` is not such a
   # segment's ending, so the slice is not finished. A merge whose apply is
-  # still waiting to be issued (`대기`) reads as landed, as before. The dispatch
-  # floor and the snapshot's `착지` read landing through this one function.
+  # still waiting to be issued (`대기`) reads as landed, as before — unless its
+  # target's applies are stopped by another segment's target defect: the target
+  # stop refuses that apply and leaves the row `대기`, so it is 2 as well, and a
+  # segment of another repository waiting on it is not dispatched over an
+  # apply that has not run. The dispatch floor and the snapshot's `착지` read
+  # landing through this one function.
   local seg="$1" dal
   gate_landing_walk gate_segment_row_landed <<ROWS || return 1
 $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg")
 ROWS
   case "$(cc_segment_apply_phase "$LEDGER" "$seg")" in
     진행|불명|미정산|멈춤) return 2 ;;
+    대기) gate_segment_target_stopped "$seg" >/dev/null && return 2 ;;
   esac
   # The net for a ledger the phase reads nothing on: a merge recorded before the
   # segment arm stamped `적용=대기`, parked while the manifest says it owes an
@@ -43443,7 +43461,10 @@ gate_verb_act() {
     # refused segment gets one act-scope block naming the target and itself,
     # with the judgment fields, and stays `머지됨 적용=대기` so it applies again
     # once the stop is released. This is an ending of its own: 0, not a park.
-    GATE_TS_SEG=$( { apply_target_stopped "$alias" || true; } | sed -n '1p')
+    # The stopping segment itself is not refused: it reaches this act only by a
+    # person's `재실행` answer at its settlement seat, and the completion of that
+    # rerun is one of the rows that release the stop.
+    GATE_TS_SEG=$( { apply_target_stopped "$alias" || true; } | awk -v me="$segment" '$0 != me' | sed -n '1p')
     if [ -n "$GATE_TS_SEG" ]; then
       if [ "$verb" = "plan" ]; then
         printf '통과 예상: kind=apply target=%s 처분=대상 적용 정지(%s)\n' "$alias" "$GATE_TS_SEG"

@@ -38784,6 +38784,28 @@ case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
   *) bad "13: 반경 런 막힘" "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" ;;
 esac
 
+# 의존은 대상 단위다 — 다른 레포 세그먼트 SXY 가 결함 세그먼트 SXA 가 아니라 같은 대상의
+# 둘째 세그먼트 SXB 를 선행으로 둔다. 의존 판독은 SXY 를 내고, 대상 정지로 거부돼 머지됨
+# 적용=대기 로 남은 SXB 는 착지로 읽히지 않으며(2), SXA 가 정산되면 다시 착지로 읽힌다.
+sb13x_l="$WORK/sb13x-ledger.md"
+{
+  printf -- '- `segment` | id=SXA | 상태=머지됨 | 레포=`o/main` | 적용=대기 | 머지 커밋=m1 | prev=p0\n'
+  printf -- '- `segment` | id=SXA | 상태=park | 적용=불명 | 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치 | 대상=main | prev=p1\n'
+  printf -- '- `segment` | id=SXB | 상태=머지됨 | 레포=`o/main` | 적용=대기 | 머지 커밋=m2 | prev=p2\n'
+  printf -- '- `segment` | id=SXY | 상태=실행중 | 레포=`o/other` | 선행=SXB | prev=p3\n'
+} >"$sb13x_l"
+sb13x_call() {  # sb13x_call <함수> <세그먼트> — 게이트를 소싱해 그 함수의 출력과 종료 코드
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; LEDGER="$2"; MANIFEST="$3"; r=0; out=$("$4" "$5") || r=$?; printf "%s:%s" "$r" "$out"' \
+    _ "$GATE" "$sb13x_l" "$SA_MANIFEST" "$1" "$2" 2>/dev/null
+}
+check "13: 의존 판독은 같은 대상의 다른 세그먼트에 기대는 다른 레포 세그먼트를 낸다" \
+  "$(sb13x_call apply_target_dependents SXA)" "0:SXY"
+check "13: 대상 정지로 대기 중인 같은 대상 세그먼트는 착지로 읽히지 않는다" \
+  "$(sb13x_call gate_segment_landed_now SXB | cut -d: -f1)" "2"
+printf -- '- `segment` | id=SXA | 상태=완료 | 적용=정산 | prev=p4\n' >>"$sb13x_l"
+check "13: 정지를 건 세그먼트가 정산되면 그 세그먼트는 다시 착지로 읽힌다" \
+  "$(sb13x_call gate_segment_landed_now SXB | cut -d: -f1)" "0"
+
 # 종료 코드 대응 행 — 필요=21 이면 사전 21 이 적용 필요이고, 2 는 더 이상 필요가 아니다.
 SB_CODES='0 21' sb_apply_new '13 대응 수렴' "if [ -f $WORK/sb13-map ]; then exit 0; else exit 21; fi" "touch $WORK/sb13-map"
 sb_reviewed_landing SB13M
@@ -39443,6 +39465,40 @@ check "19: park 답 전에는 막힘이 열려 있다" "$(sb_blocked_open '적�
 sa_seg_state SB19P park
 check "19: 라우터의 park 행이 받힌다" "$rc" "0"
 check "19: 세그먼트 park 답의 park 행이 막힘을 해소한다" "$(sb_blocked_open '적용 불명 SB19P')" "0"
+
+# 대상 결함의 재실행 — 명령은 exit 0 으로 끝나고 대상은 그대로라 대상 정지가 선다. 정산이
+# 다시 「필요」를 재 적용 정산 자리에서 사람이 재실행을 고르면, 정지를 건 세그먼트 자신의
+# 재실행은 대상 정지에 막히지 않고 돌며, 그 완료가 정지를 푼다.
+sb19t_mark="$WORK/sb19t-applied"; sb19t_go="$WORK/sb19t-go"
+rm -f "$sb19t_mark" "$sb19t_go"
+SB_CODES='0 21' sb_apply_new '19 대상 결함 재실행' "test -e $sb19t_mark && exit 0 || exit 21" \
+  "if test -e $sb19t_go; then touch $sb19t_mark; fi"
+sb_reviewed_landing SB19T
+sb_apply SB19T
+case "$(sb_seg_last SB19T)" in
+  *"상태=park"*"적용=불명"*"판정 신호=종료 코드·사후 프로브 불일치"*"대상=main"*) ok "19: SB19T 픽스처 — 대상 결함 park" ;;
+  *) bad "19: SB19T 픽스처" "$(sb_seg_last SB19T)" ;;
+esac
+sb_settle act SB19T
+case "$(sb_seg_last SB19T)" in
+  *"상태=park"*"적용=불명"*"정산 판정=필요"*) ok "19: SB19T 픽스처 — 정산 판정=필요" ;;
+  *) bad "19: SB19T 정산 픽스처" "$(sb_seg_last SB19T)" ;;
+esac
+sb19t_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SB19T '적용 정산' SB19T-1)
+touch "$sb19t_go"
+sb19t_l=$(sb19_ans "$SA_LEDGER" SB19T "$sb19t_rec" 재실행 사람)
+sb19t_stops=$(sb_count '사유=대상 적용 정지 main')
+sb_apply SB19T "$sb19t_l"
+check "19: 대상 결함 세그먼트의 사람 재실행 답이 받힌다" "$rc" "0"
+check "19: 정지를 건 세그먼트의 재실행은 대상 적용 정지 막힘을 쓰지 않는다" \
+  "$(sb_count '사유=대상 적용 정지 main')" "$sb19t_stops"
+case "$( { grep -F 'id=SB19T | 상태=적용 준비' "$SA_LEDGER" || true; } | tail -1 ):$(sb_seg_last SB19T)" in
+  *"재실행 근거=$sb19t_l"*:*"상태=완료"*"적용=수렴"*) ok "19: 대상 결함 세그먼트의 재실행은 대상 정지를 지나 한 번 돌고 수렴한다" ;;
+  *) bad "19: 대상 결함 재실행" "rc=$rc $msg $(sb_seg_last SB19T)" ;;
+esac
+sb19t_rc=0
+bash "$repo_root/plugins/cc-cmds/orchestrator/run-stops.sh" --predicate target-stop "$SA_LEDGER" main >/dev/null 2>&1 || sb19t_rc=$?
+check "19: 재실행의 완료가 대상 정지를 푼다" "$sb19t_rc" "1"
 
 # 들여온 세그먼트 — 이전 런이 머지했고 적용이 정산되지 않았다. 이 런에는 cycle 행이 없다.
 SB_CODES='0 21' sb_apply_new '19 들여옴' 'exit 21' 'true'
