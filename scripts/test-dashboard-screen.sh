@@ -213,7 +213,8 @@ async function boot(pathname, bodyOf) {
     createElementNS: (_ns, t) => new N(t, doc),
     createTextNode: (t) => { const n = new N(null, doc); n.text = String(t); return n; },
     createDocumentFragment: () => { const n = new N(null, doc); n.fragment = true; return n; },
-    addEventListener: () => {},
+    listeners: {},
+    addEventListener: (t, f) => { (doc.listeners[t] = doc.listeners[t] || []).push(f); },
     getElementById: (id) => nodes[id] || null,
   };
   const nodes = {};
@@ -368,7 +369,7 @@ async function listCases() {
   gen++;
   for (let i = 0; i < 3; i++) await c.poll();
   report("남아 있는 선택은 제한 안에서는 다시 만들지 않는다", root() === before, true);
-  report("선택으로 미루는 동안 띠가 갱신 미룸을 말한다", c.nodes.conn.textContent.includes("갱신 미룸"), true);
+  report("선택으로 미루는 동안 띠가 곧 이어진다고 말한다", c.nodes.conn.textContent.includes("갱신 미룸 — 곧 이어집니다"), true);
   await c.poll();
   report("남아 있는 선택도 제한이 지나면 밀린 화면을 그린다", root() !== before, true);
   report("제한이 지나 그린 뒤 띠가 주기 갱신을 말한다", c.nodes.conn.textContent.includes("초마다 갱신"), true);
@@ -377,6 +378,35 @@ async function listCases() {
   before = root();
   gen++; await c.poll();
   report("제한이 지나 그린 뒤 새로 만든 선택은 다시 미룬다", root() === before, true);
+  c.selection = null;
+  await c.poll();
+
+  // A second chip copied just before the first selection's limit runs out.
+  c.selection = { isCollapsed: false, anchorNode: c.link("/run/old-run") };
+  before = root();
+  gen++;
+  for (let i = 0; i < 3; i++) await c.poll();
+  c.selection = { isCollapsed: false, anchorNode: c.link("/run/today-run") };
+  await c.poll();
+  report("제한 직전에 다른 글자를 고르면 그 선택을 지우지 않는다", root() === before, true);
+  for (let i = 0; i < 2; i++) await c.poll();
+  report("다른 글자의 선택도 제한 안에서는 다시 만들지 않는다", root() === before, true);
+  await c.poll();
+  report("다른 글자의 선택도 제한이 지나면 밀린 화면을 그린다", root() !== before, true);
+  c.selection = null;
+  await c.poll();
+
+  // Copy, leave the tab to answer in a terminal, come back.
+  c.selection = { isCollapsed: false, anchorNode: c.link("/run/old-run") };
+  before = root();
+  c.doc.hidden = true;
+  c.doc.listeners.visibilitychange.forEach((f) => f());
+  gen++;
+  c.clock += 5000;
+  c.doc.hidden = false;
+  c.doc.listeners.visibilitychange.forEach((f) => f());
+  await c.settle();
+  report("탭을 떠났다 돌아오면 남은 선택이 있어도 곧바로 그린다", root() !== before, true);
   c.selection = null;
 }
 

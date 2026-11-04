@@ -47,10 +47,10 @@
   // hold runs out by itself rather than waiting for one.
   var selectHeldUntil = 0;
   var SELECT_HOLD_MS = 15000;
-  // Until this wall-clock milli, a live text selection may keep a response off the
-  // screen; 0 while none does. A copy chip leaves its selection in place after the
-  // copy, so the hold cannot wait for the reader to clear it.
-  var textHeldUntil = 0;
+  // The text selection keeping a response off the screen and the wall-clock milli
+  // it may do so until; null while none does. A copy chip leaves its selection in
+  // place after the copy, so the hold cannot wait for the reader to clear it.
+  var textHold = null;
   var TEXT_HOLD_MS = 15000;
   var FOCUSABLE = "a, button, select, summary";
   var PERIODS = [["3", "3일"], ["7", "7일"], ["30", "30일"], ["all", "전체"]];
@@ -1318,14 +1318,31 @@
 
   // Holding the redraw while a selection lives is what keeps the copy chips
   // usable; a selection outside #app is not lost by a redraw and holds nothing.
-  // Asked only when a response is waiting to be drawn, so the selection's clock
-  // measures how long the screen has been behind, and redraw() resets it.
+  // Asked only when a response is waiting to be drawn, so one selection's clock
+  // starts when it first keeps a response back. Making a different selection is the
+  // reader acting and starts it again, so a chip copied late keeps its selection;
+  // redraw() clears it.
+  function holdFor(s, until) {
+    return { anchorNode: s.anchorNode, anchorOffset: s.anchorOffset,
+      focusNode: s.focusNode, focusOffset: s.focusOffset, until: until };
+  }
+
   function readerBusy() {
     if (Date.now() < selectHeldUntil) return true;
     var s = window.getSelection();
     if (!s || s.isCollapsed || !(app.contains(s.anchorNode) || app.contains(s.focusNode))) return false;
-    if (!textHeldUntil) textHeldUntil = Date.now() + TEXT_HOLD_MS;
-    return Date.now() < textHeldUntil;
+    if (!textHold || textHold.anchorNode !== s.anchorNode || textHold.anchorOffset !== s.anchorOffset ||
+        textHold.focusNode !== s.focusNode || textHold.focusOffset !== s.focusOffset) {
+      textHold = holdFor(s, Date.now() + TEXT_HOLD_MS);
+    }
+    return Date.now() < textHold.until;
+  }
+
+  // A reader who leaves the tab has finished with the selection they leave behind,
+  // so coming back to that same selection holds nothing.
+  function spendTextHold() {
+    var s = window.getSelection();
+    if (s && !s.isCollapsed) textHold = holdFor(s, 0);
   }
 
   function focusKey(n) {
@@ -1378,7 +1395,7 @@
   }
 
   function redraw(paint) {
-    textHeldUntil = 0;
+    textHold = null;
     var spot = focusSpot();
     rememberOpen();
     paint();
@@ -1467,7 +1484,7 @@
   }
 
   document.addEventListener("visibilitychange", function () {
-    if (document.hidden) clearTimeout(timer); else refresh(true);
+    if (document.hidden) { clearTimeout(timer); spendTextHold(); } else refresh(true);
   });
   refresh(false);
 })();
