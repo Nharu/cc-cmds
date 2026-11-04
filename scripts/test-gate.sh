@@ -26211,7 +26211,7 @@ vbb_rec 3 '금지-후보 — 반복 문구' hero-gradient
 vbb_answer 3 승인
 vbb_grade=$( ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
     CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_SEGMENT='' CC_PIPELINE_STAGE_ID='S2P#1' \
-    bash "$GATE" grade --manifest "$CAP_NM" \
+    gate_inproc grade --manifest "$CAP_NM" \
       -- "$CC_ORCH/visual-config.sh" append '- `hero-gradient` | 그라데이션 히어로 — 3회 home' 2>/dev/null ) \
   | sed -n 's/^축2=//p' | tail -1)
 check "31bb: 표제 없는 원장에서 사람 승인한 후보의 append 는 트리 밖 쓰기다" "$vbb_grade" "트리밖쓰기"
