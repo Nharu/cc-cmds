@@ -1552,6 +1552,13 @@ grew_at "$R19D" 1000
 collect
 check "19: 그 런이 다시 버려짐이 되어 기록이 다시 쓰인 회차에서는 coverage.stale 이 0 이다" \
   "$(jdel "$R19D" '.stages | length'),$(jsum '.delay.coverage.stale')" "3,0"
+# 스키마와 원장 크기가 맞는 기록은 건너뛰고, `--recollect` 에서는 그런 기록도 다시 쓴다.
+jq -c '.stages = []' "$LEDGER_DIR/metrics/$R19E.delay.json" > "$WORK/e19b.json"
+cp "$WORK/e19b.json" "$LEDGER_DIR/metrics/$R19E.delay.json"
+collect
+check "19: 스키마와 ledger_bytes 가 맞는 기록은 다시 쓰이지 않는다" "$(jdel "$R19E" '.stages | length')" "0"
+collect --recollect
+check "19: --recollect 에서는 스키마와 ledger_bytes 가 맞는 기록도 다시 쓰인다" "$(jdel "$R19E" '.stages | length')" "1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
