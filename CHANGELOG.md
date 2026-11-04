@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **리뷰 게시와 리뷰 절 정산 문면** — 게이트가 `act` 에서 `--reach` 를 `remote-check` 에만 받으므로, 라우터 교대 스킬과 리드 사본의 `act --kind review-post` 문면에서 `--reach 협업` 을 뺐다.
 - **헤드 이동 재시도** — 재시도 순서를 fetch, `git worktree remove --force`, 워크트리 추가, 계획 행으로 바꿨다. 계획 행 전에는 세그먼트 행이 없어 게이트가 `--segment` 호출도 메인 워크트리에서 실행하기 때문이다.
 - **정리** — 워크트리를 만들지 못한 세그먼트는 `git worktree remove` 를 건너뛰고 `update-ref -d` 두 줄만 부른다.
+- **리뷰 워크트리의 시작점** — 세그먼트 워크트리를 원격 추적 베이스에서만 뜨게 하는 `exec` 검사가 같은 경로 접두를 쓰는 리뷰 전용 세그먼트의 분리 워크트리까지 거절하던 것을 고쳤다. 리뷰어 런에서 `--detach` 로, `-b`/`-B` 없이, 그 대상의 `리뷰 PR` 행이 선언한 세그먼트의 경로를 그 세그먼트 자기 리뷰 ref(`refs/cc-review/<run id>/<id>`)에서 뜨는 형태 하나만 통과한다.
 
 ### Changed
 
