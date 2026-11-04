@@ -268,6 +268,20 @@ open_approval_ids() {
 watch_approval_canon_question() {
   # watch_approval_canon_question <승인 id> — the gate's canonical question for
   # one approval, `승인 <id> — <question>`, or nothing.
+  watch_gate_approval_read gate_approval_canon_question "$1"
+}
+
+watch_approval_attach_json() {
+  # watch_approval_attach_json <승인 id> — the gate's attention attachment for
+  # one approval, the JSON line `gate_approval_attach_json` prints, or nothing.
+  # The gate's own approval site sends the same attachment, so whichever site
+  # leaves the event first, its reply target is the one the router asks with.
+  watch_gate_approval_read gate_approval_attach_json "$1"
+}
+
+watch_gate_approval_read() {
+  # watch_gate_approval_read <gate function> <승인 id> — what one of the gate's
+  # approval readers prints for that approval, or nothing.
   #
   # THE GATE IS SOURCED, NOT CALLED. Every gate verb writes the run directory's
   # entry records before it reaches its own branch, so calling even a read verb
@@ -290,16 +304,20 @@ watch_approval_canon_question() {
     ''|*/*) return 0 ;;
   esac
   [ -n "$base" ] && [ -r "$g" ] || return 0
+  case "$1" in
+    gate_approval_canon_question|gate_approval_attach_json) ;;
+    *) return 0 ;;
+  esac
   CC_GATE_SOURCE_ONLY=1 bash -c '
-    g=$1; base=$2; rid=$3; rd=$4; led=$5; id=$6
+    g=$1; base=$2; rid=$3; rd=$4; led=$5; fn=$6; id=$7
     set --
     . "$g" >/dev/null 2>&1 || exit 0
     set +e
     unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
     BASE=$base; RUN_ID=$rid; RUN_DIR=$rd; LEDGER=$led
     GRANT="$base/docs/pipeline-grant/$rid.md"
-    gate_approval_canon_question "$id"
-  ' watch-canon "$g" "$base" "$RUN_ID" "$RUN_DIR" "$LEDGER" "$1" </dev/null 2>/dev/null || true
+    "$fn" "$id"
+  ' watch-canon "$g" "$base" "$RUN_ID" "$RUN_DIR" "$LEDGER" "$1" "$2" </dev/null 2>/dev/null || true
   return 0
 }
 
@@ -1058,11 +1076,11 @@ pass() {
     printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals"
     newly=$((newly + 1))
     w_detail=
-    w_canon=$(watch_approval_canon_question "$id")
+    w_attach=$(watch_approval_attach_json "$id")
+    w_canon=$(printf '%s' "$w_attach" | jq -r '.body // empty' 2>/dev/null || true)
     case "$w_canon" in
       "승인 $id — "*)
-        w_detail=$(cc_attention_detail_make "$(jq -cn --arg b "$w_canon" \
-          '{kind: "approval", actionable: false, reply: null, body: $b}' 2>/dev/null || true)") || w_detail=
+        w_detail=$(cc_attention_detail_make "$w_attach") || w_detail=
         ;;
     esac
     CC_NOTIFY_ATTENTION_DETAIL="$w_detail" cc_notify_fire answer "승인 $id 이 답을 기다립니다" "$id" || true

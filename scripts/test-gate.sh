@@ -22366,6 +22366,45 @@ case "$pace_iw" in
   "rc=0") ok "페이싱 루트 옆 이름을 실은 원소는 페이싱 가드에 걸리지 않는다" ;;
   *) bad "페이싱 가드 오탐: 루트 옆 이름을 실은 원소" "$pace_iw" ;;
 esac
+# THE ATTENTION SPOOL TAKES THE SAME ARMS. The mailbox and the apply records are
+# what an approval's close reads to tell a remote answer from a local one, so a
+# stage write there forges a route. The guard is called alone with the markers
+# removed, so the test seat names the spool; the default `$HOME` spelling is
+# guarded before it exists.
+SPOOL_G="$WORK/spool-guard"
+SPOOL_GH="$WORK/spool-guard-home"
+mkdir -p "$SPOOL_G/inbox" "$SPOOL_GH"
+spool_alone() {
+  # spool_alone <grade> <argv…> — the spool guard called alone.
+  (cd "$WT" && env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID -u CC_PIPELINE_REENTRY \
+     CC_CMDS_ATTENTION_ROOT="$SPOOL_G" HOME="$SPOOL_GH" bash -c \
+    'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset MANIFEST; shift; g=$1; shift
+     r=0; gate_spool_write_guard "$g" "$@" || r=$?
+     [ "$r" = "$GATE_EXIT_RULE" ] && printf "rc=룰거부" || printf "rc=%s" "$r"' \
+    _ "$GATE" "$@" 2>&1)
+}
+for spell in "cp $WORK/r3x $SPOOL_G/applied/rep-x.json" \
+             "cp $WORK/r3x $SPOOL_G/inbox/r-R1/env.json" \
+             "dd of=$SPOOL_G/applied/rep-y.json" \
+             "cp $WORK/r3x $SPOOL_GH/.local/state/cc-cmds/attention/applied/rep-z.json" \
+             "rm -rf $SPOOL_G"; do
+  # shellcheck disable=SC2086
+  pace_iw=$(spool_alone 트리밖쓰기 $spell)
+  case "$pace_iw" in
+    *"the attention spool belongs to the relay"*"rc=룰거부")
+      ok "스풀 가드가 쓰기를 거절한다: $spell" ;;
+    *) bad "스풀 가드가 쓰기를 거절한다: $spell" "$pace_iw" ;;
+  esac
+done
+pace_iw=$(spool_alone 트리밖쓰기 bash -c "printf x > $SPOOL_G/inbox/env.json")
+case "$pace_iw" in
+  *"the attention spool belongs to the relay"*"rc=룰거부") ok "스풀 가드의 인터프리터 갈래가 명령 줄 속 경로를 거절한다" ;;
+  *) bad "스풀 가드의 인터프리터 갈래가 명령 줄 속 경로를 거절한다" "$pace_iw" ;;
+esac
+pace_iw=$(spool_alone 트리밖쓰기 cp "$WORK/r3x" "$SPOOL_G-old/a")
+check "스풀 루트 옆 이름은 스풀 가드에 걸리지 않는다" "$pace_iw" "rc=0"
+pace_iw=$(spool_alone 읽기 cat "$SPOOL_G/inbox/env.json")
+check "읽기 등급은 스풀을 이름해도 스풀 가드를 지난다" "$pace_iw" "rc=0"
 # THE SPELLINGS THE WORD SPLIT STILL MISSED. A destination glued to a command
 # letter or an option has no separator to split at; a case variant is the same
 # file on the default case-insensitive volume; an ancestor of the root as a
@@ -23573,6 +23612,209 @@ check "거부로 닫힌 승인의 등급 2 재제출도 거절된다" "$rc" "3"
 check "그 재제출도 승인을 다시 대기로 열지 않는다" \
       "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$xjid " | tail -1)" '상태')" \
       "거부"
+
+# --- 31ra. `close` names the route an answer came by, from the spool alone ---
+# --- section: 31ra | group: cone | covers: act, close, snapshot | anchors: 31ra: 원격 기록 하나가 맞으면 응답 경로=원격 과 원격 발신을 싣는다, 31ra: 미인가 발신자의 원격 답은 대기 행과 종료 코드 5 다, 31ra: 자리 비움으로 닫힌 틀은 행 없이 5 다 ---
+#
+# The answer frame is the same whether a person typed the answer here or the
+# session seam typed a remote one, so the route is read from the attention
+# spool: an envelope in this run's mailbox naming this approval, and the apply
+# record its reply id names, matching the frame's token, the envelope's event
+# and the digest of the frame's answers. Every case builds its own spool under
+# the work directory and runs `close` with the four pipeline markers removed,
+# so the test seat variable is the spool the gate reads.
+RA_HOME="$WORK/ra-home"
+mkdir -p "$RA_HOME/.config/cc-cmds"
+ra_senders() {
+  # ra_senders <json> — the sender authorization file of the case's HOME.
+  printf '%s\n' "$1" > "$RA_HOME/.config/cc-cmds/remote-senders.json"
+}
+ra_senders '{"schema":1,"senders":[{"id":"phone-1","capabilities":["option"]},{"id":"watch-2","capabilities":["text"]}]}'
+ra_issue() {
+  # ra_issue <criterion> — issue a judgment approval; RA_ID and RA_Q are set.
+  gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급=2 기준="$1" 근거="원격 답의 경로를 잰다"
+  RA_ID=$(row_field "$(last_judgment_approval)" '승인 id')
+  RA_Q=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$RA_ID " | tail -1)" '질문 문면')
+}
+ra_digest() {
+  # ra_digest <question as asked> <answer> — the answers digest of a frame with
+  # one question: the question, 0x1F, the answer, 0x1E.
+  printf '%s\037%s\036' "$1" "$2" | shasum -a 256 | cut -d' ' -f1
+}
+ra_record() {
+  # ra_record <spool> <envelope name> <reply id> <event id> <approval id> <tok>
+  # <answers digest> <sender> — one mailbox envelope and the apply record its
+  # reply id names.
+  local sp="$1"
+  mkdir -p "$sp/inbox/r-$CONE_RUN_ID" "$sp/applied"
+  jq -nc --arg r "$CONE_RUN_ID" --arg a "$5" --arg rid "$3" --arg e "$4" \
+    '{schema: 1, reply_id: $rid, event_id: $e, target: {surface: "approval", run_id: $r, approval_id: $a}}' \
+    > "$sp/inbox/r-$CONE_RUN_ID/$2.json"
+  jq -nc --arg t "$6" --arg e "$4" --arg d "$7" --arg s "$8" \
+    '{schema: 1, tool_use_id: $t, event_id: $e, answers_sha256: $d, sender: $s}' \
+    > "$sp/applied/$3.json"
+}
+ra_frame() {
+  # ra_frame <transcript> <approval id> <question> <answer> — `auq_frame` in this
+  # shell, so its counter moves and the next frame gets a new token; the token
+  # is left in ra_tok.
+  auq_frame "$@" > "$WORK/ra-tok"
+  ra_tok=$(cat "$WORK/ra-tok")
+}
+ra_close() {
+  # ra_close <spool> <session id> <approval id> [flag] — `close` with the
+  # markers removed, the case's HOME and the spool as the test seat.
+  local out
+  out=$( unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY
+         export CC_CMDS_ATTENTION_ROOT="$1" HOME="$RA_HOME"
+         cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+           CLAUDE_CODE_SESSION_ID="$2" gate_inproc close --manifest "$NM" --approval "$3" ${4:+"$4"} 2>&1 ); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+ra_last() {
+  { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$1 " | tail -1
+}
+ra_rows() {
+  { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$1 " || true
+}
+
+# (1) Local: no spool at all. The close is what it always was, plus the route.
+ra_issue "원격 경로 시험 — 로컬"
+RA_SID1="31313131-0000-4000-8000-000000000001"
+: > "$NTX/$RA_SID1.jsonl"; auq_frame "$NTX/$RA_SID1.jsonl" "$RA_ID" "$RA_Q" "승인" >/dev/null
+ra_close "$WORK/ra-spool-none" "$RA_SID1" "$RA_ID"
+check "31ra: 스풀이 없으면 로컬 답으로 닫힌다" "$rc" "0"
+check "31ra: 로컬 닫힘 행은 응답 경로=로컬 이다" "$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "로컬"
+check "31ra: 로컬 닫힘 행은 원격 발신을 싣지 않는다" "$(row_field "$(ra_last "$RA_ID")" '원격 발신')" ""
+check "31ra: 로컬 닫힘의 상태는 승인이다" "$(row_field "$(ra_last "$RA_ID")" '상태')" "승인"
+check "31ra: 이미 닫힌 승인을 다시 닫으면 거절되고 행이 늘지 않는다" \
+  "$(n0=$(ra_rows "$RA_ID"); ra_close "$WORK/ra-spool-none" "$RA_SID1" "$RA_ID"; printf '%s|%s' "$([ "$rc" != 0 ] && printf 거절 || printf 통과)" "$(( $(ra_rows "$RA_ID") - n0 ))")" "거절|0"
+
+# (2) Remote: one envelope, one matching record, an authorized sender. The state
+# and the exit code are the local close's; only the route fields differ.
+ra_issue "원격 경로 시험 — 원격"
+RA_SID2="31313131-0000-4000-8000-000000000002"
+: > "$NTX/$RA_SID2.jsonl"
+ra_frame "$NTX/$RA_SID2.jsonl" "$RA_ID" "$RA_Q" "승인"
+RA_SP2="$WORK/ra-spool-2"
+ra_record "$RA_SP2" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "승인")" phone-1
+ra_sp2_sum=$(cd "$RA_SP2" && find . -type f -exec shasum {} + | LC_ALL=C sort)
+ra_close "$RA_SP2" "$RA_SID2" "$RA_ID"
+check "31ra: 원격 답도 로컬 답과 같은 종료 코드로 닫힌다" "$rc" "0"
+check "31ra: 원격 기록 하나가 맞으면 응답 경로=원격 과 원격 발신을 싣는다" \
+  "$(row_field "$(ra_last "$RA_ID")" '응답 경로')|$(row_field "$(ra_last "$RA_ID")" '원격 발신')" "원격|phone-1"
+check "31ra: 원격 닫힘의 상태도 승인이다" "$(row_field "$(ra_last "$RA_ID")" '상태')" "승인"
+check "31ra: 게이트는 스풀에 아무것도 쓰지 않는다" \
+  "$(cd "$RA_SP2" && find . -type f -exec shasum {} + | LC_ALL=C sort)" "$ra_sp2_sum"
+
+# (3) A digest that does not match the frame's answers: local.
+ra_issue "원격 경로 시험 — 다이제스트 불일치"
+RA_SID3="31313131-0000-4000-8000-000000000003"
+: > "$NTX/$RA_SID3.jsonl"
+ra_frame "$NTX/$RA_SID3.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_record "$WORK/ra-spool-3" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "거부")" phone-1
+ra_close "$WORK/ra-spool-3" "$RA_SID3" "$RA_ID"
+check "31ra: 다이제스트가 틀린 기록이면 로컬이다" "$rc|$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "0|로컬"
+
+# (4) Two matching records for one frame: neither can be trusted, so local.
+ra_issue "원격 경로 시험 — 기록 둘"
+RA_SID4="31313131-0000-4000-8000-000000000004"
+: > "$NTX/$RA_SID4.jsonl"
+ra_frame "$NTX/$RA_SID4.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_d=$(ra_digest "승인 $RA_ID — $RA_Q" "승인")
+ra_record "$WORK/ra-spool-4" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$ra_d" phone-1
+ra_record "$WORK/ra-spool-4" env-b rep-b ev-b "$RA_ID" "$ra_tok" "$ra_d" phone-1
+ra_close "$WORK/ra-spool-4" "$RA_SID4" "$RA_ID"
+check "31ra: 맞는 기록이 둘이면 로컬이다" "$rc|$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "0|로컬"
+
+# (5) An apply record with no envelope in the mailbox: the gate never scans
+# `applied/`, so it is local.
+ra_issue "원격 경로 시험 — 봉투 없음"
+RA_SID5="31313131-0000-4000-8000-000000000005"
+: > "$NTX/$RA_SID5.jsonl"
+ra_frame "$NTX/$RA_SID5.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_record "$WORK/ra-spool-5" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "승인")" phone-1
+rm -f "$WORK/ra-spool-5/inbox/r-$CONE_RUN_ID/env-a.json"
+ra_close "$WORK/ra-spool-5" "$RA_SID5" "$RA_ID"
+check "31ra: 우편함 봉투가 없으면 로컬이다" "$rc|$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "0|로컬"
+
+# (6) A sender without the option capability: the approval stays waiting with
+# its own reason, exit 5, and the same frame is not recorded twice.
+ra_issue "원격 경로 시험 — 미인가"
+RA_SID6="31313131-0000-4000-8000-000000000006"
+: > "$NTX/$RA_SID6.jsonl"
+ra_frame "$NTX/$RA_SID6.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_record "$WORK/ra-spool-6" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "승인")" watch-2
+ra_n0=$(ra_rows "$RA_ID")
+ra_close "$WORK/ra-spool-6" "$RA_SID6" "$RA_ID"
+check "31ra: 미인가 발신자의 원격 답은 대기 행과 종료 코드 5 다" \
+  "$rc|$(row_field "$(ra_last "$RA_ID")" '상태')|$(row_field "$(ra_last "$RA_ID")" '처분 사유')" "5|대기|원격 발신자 미인가"
+check "31ra: 그 대기 행은 답 프레임의 응답 토큰을 싣는다" "$(row_field "$(ra_last "$RA_ID")" '응답 토큰')" "$ra_tok"
+check "31ra: 그 대기 행은 답변 문면을 얻지 않는다" "$(row_field "$(ra_last "$RA_ID")" '답변 문면')" ""
+check "31ra: 미인가 거절은 행 하나만 더한다" "$(( $(ra_rows "$RA_ID") - ra_n0 ))" "1"
+ra_close "$WORK/ra-spool-6" "$RA_SID6" "$RA_ID"
+check "31ra: 같은 틀을 다시 닫아도 미인가 행이 늘지 않는다" "$rc|$(( $(ra_rows "$RA_ID") - ra_n0 ))" "5|1"
+ra_disp=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null \
+          | jq -r --arg id "$RA_ID" '.pending_approvals[] | select(.id == $id) | .disposition')
+check "31ra: 스냅숏이 그 대기를 disposition=원격 발신자 미인가 로 표면화한다" "$ra_disp" "원격 발신자 미인가"
+# The person answers the same approval locally afterwards: that closes it.
+auq_frame "$NTX/$RA_SID6.jsonl" "$RA_ID" "$RA_Q" "승인" >/dev/null
+ra_close "$WORK/ra-spool-6" "$RA_SID6" "$RA_ID"
+check "31ra: 미인가 뒤의 로컬 답은 그 승인을 닫는다" \
+  "$rc|$(row_field "$(ra_last "$RA_ID")" '상태')|$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "0|승인|로컬"
+
+# (7) An unreadable sender file authorizes nobody.
+ra_issue "원격 경로 시험 — 발신자 파일 없음"
+RA_SID7="31313131-0000-4000-8000-000000000007"
+: > "$NTX/$RA_SID7.jsonl"
+ra_frame "$NTX/$RA_SID7.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_record "$WORK/ra-spool-7" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "승인")" phone-1
+ra_senders 'not json'
+ra_close "$WORK/ra-spool-7" "$RA_SID7" "$RA_ID"
+check "31ra: 읽을 수 없는 발신자 파일은 아무도 인가하지 않는다" \
+  "$rc|$(row_field "$(ra_last "$RA_ID")" '처분 사유')" "5|원격 발신자 미인가"
+ra_senders '{"schema":1,"senders":[{"id":"phone-1","capabilities":["option"]},{"id":"watch-2","capabilities":["text"]}]}'
+
+# (8) The away timeout settled the dialog: no row, exit 5.
+ra_issue "원격 경로 시험 — 자리 비움"
+RA_SID8="31313131-0000-4000-8000-000000000008"
+: > "$NTX/$RA_SID8.jsonl"
+auq_frame "$NTX/$RA_SID8.jsonl" "$RA_ID" "$RA_Q" "승인" >/dev/null
+ra_afk=$(tail -1 "$NTX/$RA_SID8.jsonl" | jq -c '.toolUseResult.afkTimeoutMs = 60000')
+sed '$d' "$NTX/$RA_SID8.jsonl" > "$NTX/$RA_SID8.tmp"
+printf '%s\n' "$ra_afk" >> "$NTX/$RA_SID8.tmp"
+mv "$NTX/$RA_SID8.tmp" "$NTX/$RA_SID8.jsonl"
+ra_n0=$(ra_rows "$RA_ID")
+ra_close "$WORK/ra-spool-none" "$RA_SID8" "$RA_ID"
+check "31ra: 자리 비움으로 닫힌 틀은 행 없이 5 다" "$rc|$(( $(ra_rows "$RA_ID") - ra_n0 ))" "5|0"
+case "$msg" in
+  *afkTimeoutMs*) ok "31ra: 경고가 자리 비움 시간 초과를 이름 붙인다" ;;
+  *) bad "31ra: 자리 비움 경고" "$msg" ;;
+esac
+
+# (9) A pipeline marker still set: the test seat is ignored, so the spool the
+# case built is not read and the close is local. Asked of the route function
+# itself, because a marker changes more than the spool root for a whole close.
+ra_mk=$( export CC_CMDS_ATTENTION_ROOT="$RA_SP2" HOME="$RA_HOME" RUN_ID="$CONE_RUN_ID"
+         unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY
+         cc_notify_attention_lib="${GATE%/*}/attention.sh"
+         a=$(gate_attention_root)
+         b=$(CC_PIPELINE_SHIFT_ID=S1 gate_attention_root)
+         if [ "$a" = "$RA_SP2" ]; then a=좌석; fi
+         printf '%s|%s' "${a:-없음}" "${b:-없음}" )
+check "31ra: 표지가 서 있으면 시험 좌석 변수를 읽지 않는다" "$ra_mk" "좌석|없음"
+
+# (10) The row cap: `원격 발신` goes first, then `응답 경로`, and the close goes on.
+ra_fit=$( GATE_CLOSE_ROUTE=원격; GATE_CLOSE_SENDER=phone-1
+          l1=$(gate_row_projected_bytes '승인' "x=" "응답 경로=원격")
+          l0=$(gate_row_projected_bytes '승인' "x=")
+          p1=$(printf "%$((GATE_ROW_MAX - l1))s" '' | tr ' ' a)
+          p0=$(printf "%$((GATE_ROW_MAX - l0))s" '' | tr ' ' a)
+          printf '%s,%s,%s' "$(gate_close_route_fit "x=" 2>/dev/null)" \
+            "$(gate_close_route_fit "x=$p1" 2>/dev/null)" "$(gate_close_route_fit "x=$p0" 2>/dev/null)" )
+check "31ra: 행 상한 앞에서 원격 발신부터, 그다음 응답 경로를 뺀다" "$ra_fit" "2,1,0"
 
 # --- 31ak. An act approval EXPIRES when the tree it named moves -------------
 # --- section: 31ak | group: cone | covers: act, close, plan | needs: 31c | anchors: 구속 튜플 실험용 행위가 승인을 발행한다 ---
@@ -27217,6 +27459,10 @@ esac
 # THE THREE RELEASE LINES LIVE ONCE, in `gate_close_settle`, and each terminal
 # of `gate_close` reaches them by calling it — so the pin is in two halves: the
 # helper holds the release, and each terminal's append is followed by the call.
+# Each terminal's anchor first matches its closing-field array, which is
+# followed by the three-arm `case` that writes the row in one of three route
+# spellings, and only then by the call — so the window spans 20 lines, which
+# reaches that terminal's call and stops short of the next terminal's.
 site_releases() {
   # site_releases <anchor-fixed-string> <lines-after>
   local ln
@@ -27234,13 +27480,13 @@ site_settles() {
 check "승인 닫기 — 종단 도우미가 슬롯을 회수한다" \
   "$( [ "$(site_releases "gate_close_settle() {" 20)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
 check "승인 닫기 — 무효 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=무효\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=무효\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 거부 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=거부\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=거부\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 승인 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=승인\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=승인\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 판단 라벨 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=\$label\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=\$label\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 
 # --- AND ALL THREE TAKE THE BANNER OFF THE SCREEN ---------------------------
 #
@@ -42494,6 +42740,18 @@ check "58: 읽을 수 없는 명령 값은 form 이다" "$(s57 "S env GIT_SSH_CO
 check "58: GH_REPO= 는 기록된다" "$(s57 'gp_parse env GH_REPO=o/r gh pr view 1; gp_env_get GH_REPO')" "o/r"
 check "58: env -u PATH 와 env -i 는 form 이 아니다" "$(s57 'S env -u PATH gh pr view 1; S env -i gh pr view 1')" "ok|
 ok|"
+# 주의 스풀의 루트를 옮기는 시험 좌석 변수는 게이트가 원격 답을 읽는 자리를
+# 고른다. 파이프라인 표지 넷을 지우면 표지가 꺼진 셸에서 그 변수가 다시 읽힌다.
+check "58: CC_CMDS_ATTENTION_ROOT= 는 스풀 선택자라 form 이다" \
+  "$(s57 'S env CC_CMDS_ATTENTION_ROOT=/x git status')" "form|env:spool-selector:CC_CMDS_ATTENTION_ROOT"
+check "58: 파이프라인 표지 넷을 지우는 env -u 는 form 이다" \
+  "$(s57 'S env -u CC_PIPELINE_SEGMENT git status; S env -u CC_PIPELINE_STAGE_ID git status; S env -u CC_PIPELINE_SHIFT_ID git status; S env -u CC_PIPELINE_REENTRY git status')" \
+  "form|env:pipeline-marker:CC_PIPELINE_SEGMENT
+form|env:pipeline-marker:CC_PIPELINE_STAGE_ID
+form|env:pipeline-marker:CC_PIPELINE_SHIFT_ID
+form|env:pipeline-marker:CC_PIPELINE_REENTRY"
+check "58: env -u CC_CMDS_ATTENTION_ROOT 는 form 이 아니다" \
+  "$(s57 'S env -u CC_CMDS_ATTENTION_ROOT git status')" "ok|"
 check "58: 조각의 export 는 이름을 가리지 않고 기록된다" \
   "$(s57 "gp_parse sh -c 'export AWS_PROFILE=prod; aws s3 ls'; gp_env_get AWS_PROFILE")" "prod"
 
@@ -44712,6 +44970,72 @@ check "60b-4: 재실행요청실패 정지의 사람 답도 회차 2 가 된다"
   "0|0|요청>수락|2|-|-|사람,사람|중단 답 줄 $cb64_l,중단 답 줄 $cb64_l|u=2 a=수락 g=2"
 cb60_line 실패 2 0
 check "60b-4: 기본 브랜치가 실패한 사람 회차의 정착된 실패는 CI 기존 실패 다" "$(cb60_next)" "CI 기존 실패"
+cb60_foot
+
+# ---------------------------------------------------------------------------
+# 60b-5. CI 수정 스테이지가 HEAD 를 움직이지 못하고 끝난 뒤 — 같은 head 로 다시 보내지 않는다
+# --- section: 60b-5 | group: sa | covers: act, plan, snapshot, gate_ci_fix_attempt | anchors: 60b-5: 멈춘 CI 수정 뒤 다음은 CI 수정 중단 이고 그 기록을 싣는다, 60b-5: CI 수정 중단 에서 CI 수정·리뷰 수정 파견은 rc 3 이고 재부착은 받아진다, 60b-5: 계획 실행이 HEAD 를 그대로 두고 끝나면 CI 수정 한도 이고 CI 수정 파견은 rc 3 이다, 60b-5: 크래시로 끝난 CI 수정은 같은 head 로 다시 파견된다 ---
+#
+# 60b 의 C2 처럼 회차 1 의 실패에서 CI 수정 행위를 지난 뒤, 그 스테이지가 쓴 꼴의 구현 행을
+# 원장에 붙여 끝을 고른다. 픽스처는 `cb60_head` 로 새로 세우고 헬퍼는 `pre_sa` 의 것을 쓴다.
+# ---------------------------------------------------------------------------
+cb60_head
+cb65_new() {  # cb65_new <라벨> — 회차 1 의 실패와 같은 head 의 CI 수정 행위까지 지난 세그먼트 CK
+  cb60_new "$1"
+  cb60_act
+  cb60_line 실패 1 0
+  cb60_impl act "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""
+}
+cb65_sr() {  # cb65_sr <종단 부류> <실행 버전> <plan_sha256> — CI 수정 스테이지의 구현 행 하나
+  printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=%s | 세션 id=sess-ci-%s | 부모=router-1 | plan_sha256=%s | 종단 부류=%s | 실패 서명=implement/%s/S4#%s/%s\n' \
+    "$2" "$2" "$3" "$1" "$1" "$2" "${CK60_SHA:0:8}" >> "$SA_LEDGER"
+}
+cb65_fix() { cb60_impl "$1" "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""; }
+cb65_rev() { cb60_impl plan "/cc-cmds:implement-unattended $SA_RUN/anchor-brief.md \"세그먼트 CK · 수정 대상: $SA_RUN/c1.md 의 P0·P1\""; }
+D65=cccc000000000000000000000000000000000000000000000000000000000003
+
+cb65_new "CI 수정 — 의도된 park"
+check "60b-5: CI 수정 행위 뒤 구현 행이 없으면 다음은 그대로 CI 수정 이다" \
+  "$(cb60_next)|$( { grep -c '^- `CI 처분` .*처분=수정' "$SA_LEDGER" || true; } )" "CI 수정|1"
+cb65_rev; cb65_m0=$msg
+cb65_sr '정상 완료' 2 "$D65"
+cb65_sr '의도된 park' 3 "$D65"
+check "60b-5: 멈춘 CI 수정 뒤 다음은 CI 수정 중단 이고 그 기록을 싣는다" \
+  "$( ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+      | jq -r '.review_next[] | select(.["세그먼트"] == "CK") | [.["다음"], .["head sha"], .["실패 체크"], .["중단 기록"]] | join("|")')" \
+  "CI 수정 중단|$CK60_SHA|gate|$SA_RUN/halt/S4#3.md"
+cb65_fix plan; cb65_r1=$rc; cb65_m1=$msg
+cb65_rev; cb65_r2=$rc; cb65_m2=$msg
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment CK --cutpoint 커밋 \
+    --surface 워크트리쓰기 --resume sess-ci-3 --snapshot-digest "$(SAH)" --rationale x -- implement -p "이어서 진행하세요"
+cb65_r3=$rc
+check "60b-5: CI 수정 중단 에서 CI 수정·리뷰 수정 파견은 rc 3 이고 재부착은 받아진다" \
+  "$cb65_r1|$cb65_r2|$cb65_r3" "3|3|0"
+# 리뷰 수정의 거부는 CI 판정 전 거부 문면으로 가린다 — 같은 파견이 CI 수정 자리에서는 그 문면을 내지 않는다.
+cb65_cw='CI 판정이 서기 전에는 리뷰 지적 수정을 파견하지 않습니다'
+cb65_has() { case "$1" in *"$2"*) printf 있음 ;; *) printf 없음 ;; esac; }
+case "$(cb65_has "$cb65_m0" "$cb65_cw")|$(cb65_has "$cb65_m2" "「CI 수정 중단」 입니다 — $cb65_cw")" in
+  '없음|있음') ok "60b-5: 리뷰 수정 파견의 거부는 CI 수정 중단 의 CI 판정 전 거부다" ;;
+  *) bad "60b-5: 리뷰 수정 파견의 거부는 CI 수정 중단 의 CI 판정 전 거부다" "앞: $cb65_m0 / 뒤: $cb65_m2" ;;
+esac
+case "$cb65_m1" in
+  *"CI 수정 중단"*"$SA_RUN/halt/S4#3.md"*) ok "60b-5: 그 거부 문면이 중단 기록을 든다" ;;
+  *) bad "60b-5: 그 거부 문면이 중단 기록을 든다" "$cb65_m1" ;;
+esac
+printf -- '- `중단 답` | 세그먼트=CK | 중단 기록=%s | prev=x\n' "$SA_RUN/halt/S4#3.md" >> "$SA_LEDGER"
+check "60b-5: 그 기록에 답이 실리면 다음은 다시 CI 수정 이다" "$(cb60_next)" "CI 수정"
+
+cb65_new "CI 수정 — 계획 실행의 정상 완료"
+cb65_sr '정상 완료' 2 "$D65"
+cb65_sr '정상 완료' 3 "$D65"
+cb65_fix plan; cb65_r1=$rc
+check "60b-5: 계획 실행이 HEAD 를 그대로 두고 끝나면 CI 수정 한도 이고 CI 수정 파견은 rc 3 이다" \
+  "$(cb60_next)|$cb65_r1" "CI 수정 한도|3"
+
+cb65_new "CI 수정 — 크래시"
+cb65_sr 크래시 2 "$D65"
+cb65_fix plan; cb65_r1=$rc
+check "60b-5: 크래시로 끝난 CI 수정은 같은 head 로 다시 파견된다" "$(cb60_next)|$cb65_r1" "CI 수정|0"
 cb60_foot
 
 # ---------------------------------------------------------------------------
@@ -54845,7 +55169,7 @@ check "88b: 다음이 해소 리뷰 가 아닌 세그먼트의 해소 사이클 
 
 # ---------------------------------------------------------------------------
 # 88d. 리뷰가 깨끗한 세그먼트의 CI 층 — 원장만으로 정한 다음, 머지 검사, 추가 키
-# --- section: 88d | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json | anchors: 88d: CI 수정 뒤 HEAD 의 다음은 CI 리뷰 다, 88d: 베이스 충돌이 CI 실패보다 앞선다, 88d: 회차 0 의 대기 행은 CI 대기 다, 88d: 행이 없으면 다음은 CI 대기 다, 88d: 라우팅 기록이 없는 런은 실패에도 다음이 머지 다, 88d: CI 값에서만 추가 키가 실린다 ---
+# --- section: 88d | group: ledger_series | covers: gate_segment_review_next, gate_check_merge_checks, gate_snapshot_review_next_json, gate_ci_fix_attempt | anchors: 88d: CI 수정 뒤 HEAD 의 다음은 CI 리뷰 다, 88d: 같은 head 의 CI 수정이 의도된 park 로 멈추고 답이 없으면 CI 수정 중단 이다 (L8h), 88d: 베이스 충돌이 CI 실패보다 앞선다, 88d: 회차 0 의 대기 행은 CI 대기 다, 88d: 행이 없으면 다음은 CI 대기 다, 88d: 라우팅 기록이 없는 런은 실패에도 다음이 머지 다, 88d: CI 값에서만 추가 키가 실린다 ---
 #
 # 판정표가 머지 를 내는 세그먼트(깨끗한 사이클 하나) 위에 `checks` 행과 `CI 처분` 행을
 # 손으로 붙여 층의 각 행을 잰다. 층은 원장만 읽으므로 원격도 gh 대역도 두지 않는다.
@@ -54954,7 +55278,55 @@ s88d_keys() { printf '%s' "$1" | grep -c '"재실행 회차"' || true; }
 check "88d: CI 값에서만 추가 키가 실린다" \
   "$(s88d_keys "$(sn88d "$L88DPS")")|$(s88d_keys "$(sn88d "$L88DF")")|$(sn88d "$L88DF" | grep -c "\"head sha\": \"$R88D\", \"PR\": \"o/r#5\", \"실패 체크\": \"gate\", \"재실행 회차\": \"0\", \"기본 브랜치\": \"\"" || true)" "0|1|1"
 
-# L0 — 워크트리에 CI 수정 커밋을 더한다. 다른 계열의 `처분=수정` 낱말은 L0 을 세우지 않는다.
+# L8h — 이 head 의 `처분=수정` 행 뒤에 쓰인 구현 시도가 어떻게 끝났는지로 L8 을 가른다.
+# 사례마다 L8 에 닿는 줄(같은 head 의 수정 행, 회차 1 의 가라앉은 실패) 위에 구현 행을 붙인다.
+l88dh() {  # l88dh <이름> — 수정 행과 회차 1 의 실패까지 쓴 원장
+  local l; l=$(l88d "$1")
+  cd88d "$l" 수정 - -; ck88d "$l" 실패 0 0; cd88d "$l" 재실행 요청 1; cd88d "$l" 재실행 수락 1; ck88d "$l" 실패 1 0
+  printf '%s' "$l"
+}
+sr88d() {  # sr88d <원장> <종단 부류> <실행 버전> <plan_sha256> [진척] [꼬리] — 구현 행 하나
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 스테이지=S | 종류=implement | 종료 코드=0 | 실행 버전=%s | plan_sha256=%s | 종단 부류=%s | 실패 서명=implement/%s/S#%s/%s%s | prev=x\n' \
+    "$3" "$4" "$2" "$2" "$3" "${5-${R88D:0:8}}" "${6:-}" >> "$1"
+}
+ha88d() {  # ha88d <원장> <중단 기록> — 사람의 답이 실린 중단 답 행
+  printf -- '- `중단 답` | 교대=1 | 세그먼트=S | 중단 기록=%s | prev=x\n' "$2" >> "$1"
+}
+DA88D=aaaa000000000000000000000000000000000000000000000000000000000001
+DB88D=bbbb000000000000000000000000000000000000000000000000000000000002
+L88DH=$(l88dh halt); sr88d "$L88DH" '정상 완료' 1 "$DA88D"; sr88d "$L88DH" '의도된 park' 2 "$DA88D"
+check "88d: 같은 head 의 CI 수정이 의도된 park 로 멈추고 답이 없으면 CI 수정 중단 이다 (L8h)" \
+  "$(n88d "$L88DH")" "CI 수정 중단"
+check "88d: CI 수정 중단 원소는 head sha·실패 체크와 중단 기록을 싣는다" \
+  "$(sn88d "$L88DH" | grep -c "\"head sha\": \"$R88D\", \"PR\": \"o/r#5\", \"실패 체크\": \"gate\", .*\"중단 기록\": \"${L88DH%/*}/halt/S#2.md\"" || true)" "1"
+L88DHA=$(l88d halt-ans); cp "$L88DH" "$L88DHA"; ha88d "$L88DHA" "${L88DH%/*}/halt/S#2.md"
+L88DHR=$(l88d halt-rel); cp "$L88DH" "$L88DHR"; ha88d "$L88DHR" "halt/S#2.md"
+check "88d: 그 기록에 답이 실리면 CI 수정 중단 이 풀린다 (절대·상대 경로)" "$(n88d "$L88DHA")|$(n88d "$L88DHR")" "CI 수정|CI 수정"
+L88DHD=$(l88d halt-done); cp "$L88DHA" "$L88DHD"; sr88d "$L88DHD" '정상 완료' 3 "$DA88D"
+L88DHP=$(l88d halt-again); cp "$L88DHA" "$L88DHP"; sr88d "$L88DHP" '의도된 park' 3 "$DA88D"
+check "88d: 다시 붙은 세션이 HEAD 를 그대로 두고 끝나면 CI 수정 한도 이고 다시 멈추면 새 기록의 CI 수정 중단 이다" \
+  "$(n88d "$L88DHD")|$(n88d "$L88DHP")|$(sn88d "$L88DHP" | grep -c "\"중단 기록\": \"${L88DHP%/*}/halt/S#3.md\"" || true)" "CI 수정 한도|CI 수정 중단|1"
+L88DE=$(l88d plan-exec); sr88d "$L88DE" '정상 완료' 1 "$DB88D"
+cd88d "$L88DE" 수정 - -; ck88d "$L88DE" 실패 0 0; cd88d "$L88DE" 재실행 요청 1; cd88d "$L88DE" 재실행 수락 1; ck88d "$L88DE" 실패 1 0
+L88DEF=$(l88d plan-first); cp "$L88DE" "$L88DEF"; sr88d "$L88DEF" '정상 완료' 2 "$DA88D"
+sr88d "$L88DE" '정상 완료' 2 "$DB88D"
+check "88d: 수정 행 앞에 다이제스트가 나온 계획 실행의 정상 완료 는 CI 수정 한도 이고 처음 나온 다이제스트의 정상 완료 는 CI 수정 이다" \
+  "$(n88d "$L88DE")|$(n88d "$L88DEF")" "CI 수정 한도|CI 수정"
+o88d=""
+for c88d in 크래시 '한도 종료' '외부 종료' 스폰; do
+  L88DK=$(l88dh "skip-${c88d// /-}")
+  if [ "$c88d" = 스폰 ]; then sr88d "$L88DK" '의도된 park' 2 "$DA88D" "${R88D:0:8}" ' | 관측=스폰 전 대기 중'
+  else sr88d "$L88DK" "$c88d" 2 "$DA88D"; fi
+  o88d="$o88d$(n88d "$L88DK")|"
+done
+check "88d: 크래시·한도 종료·외부 종료·스폰 전 대기 행은 세지 않아 CI 수정 이다" "$o88d" "CI 수정|CI 수정|CI 수정|CI 수정|"
+L88DHO=$(l88dh halt-other); sr88d "$L88DHO" '의도된 park' 2 "$DA88D" deadbeef
+L88DHN=$(l88dh halt-nosig)
+printf -- '- `stage-result` | 교대=1 | 세그먼트=S | 스테이지=S | 종류=implement | 종료 코드=0 | 실행 버전=2 | 종단 부류=의도된 park | prev=x\n' >> "$L88DHN"
+check "88d: 다른 head 의 진척을 단 park 는 세지 않고 실패 서명이 없는 park 는 이 head 의 것으로 읽는다" \
+  "$(n88d "$L88DHO")|$(n88d "$L88DHN")" "CI 수정|CI 수정 중단"
+
+# L0 —워크트리에 CI 수정 커밋을 더한다. 다른 계열의 `처분=수정` 낱말은 L0 을 세우지 않는다.
 L88DL=$(l88d l0); ck88d "$L88DL" 실패 0 0; cd88d "$L88DL" 재실행 요청 1; cd88d "$L88DL" 재실행 수락 1
 ck88d "$L88DL" 실패 1 0; cd88d "$L88DL" 수정 - -
 L88DLN=$(l88d l0-neg); ck88d "$L88DLN" 실패 0 0
