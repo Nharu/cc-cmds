@@ -225,7 +225,7 @@ route__hook_decided() { eval "${TRH_DECIDED:-:}"; }
 route__hook_written() { eval "${TRH_WRITTEN:-:}"; }
 route__hook_revalidate() { eval "${TRH_REVALIDATE:-:}"; }
 if [ -n "${TRH_NOLOCK:-}" ]; then
-  route__lock_acquire() { ROUTE_LOCK_DIR=""; return 0; }
+  route__lock_acquire() { : "${1:-}" "${2:-}"; ROUTE_LOCK_DIR=""; return 0; }
 fi
 if [ -n "${TRH_FP_EMPTY_PID:-}" ]; then
   route__fp() { [ "$1" = "$TRH_FP_EMPTY_PID" ] && return 0; TZ=UTC0 cc_proc_fingerprint "$1"; }
@@ -2084,6 +2084,98 @@ check "nonce 가 다른 hold 는 rc 1" "$rc" 1
 rc=0; out=$(bash "$TR_ROUTE" lease-hold "$d" r1 S2 n-r1-S2 "$H3") || rc=$?
 check "살아 있는 임대의 hold 는 rc 0" "$rc" 0
 expect "hold 는 보유자를 더한다" "$out" '(.holders | length) == 2'
+
+# hold 의 잠금 대기 예산. 입장 예산 1초·보유 예산 3초를 소싱 전에 readonly 로 둔
+# 래퍼로, 살아 있는 소유자가 쥔 락을 경쟁자로 둔다.
+WRAPH="$WORK/wrap-hold.sh"
+cat > "$WRAPH" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+readonly ROUTE_LEASE_LOCK_WAIT_S=1 ROUTE_LEASE_HOLD_WAIT_S=3
+. "$TRH_ORCH/liveness.sh"
+. "$TRH_ORCH/route.sh" 2>/dev/null
+case "${1:-}" in
+  hold-wait-s) route_lease_hold_wait_s; exit 0 ;;
+esac
+route__main "$@"
+EOF
+check "래퍼의 보유 예산은 readonly 로 둔 값이다" "$(bash "$WRAPH" hold-wait-s)" 3
+d=$(tnew hold-budget)
+live_lease "$d" r1 S1 a
+mkdir -p "$d/.lock"
+printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$d/.lock/owner"
+rc=0; bash "$WRAPH" lease-hold "$d" r1 S1 n-r1-S1 "$H3" >/dev/null 2>&1 || rc=$?
+check "(가) 입장 예산보다 길게 쥔 락 — 예산 인자 없는 hold 는 rc 3" "$rc" 3
+( sleep 1; rm -rf "$d/.lock" ) &
+pl=$!
+rc=0; bash "$WRAPH" lease-hold "$d" r1 S1 n-r1-S1 "$H3" 3 >/dev/null 2>&1 || rc=$?
+wait "$pl"
+check "(가) 보유 예산보다 짧게 쥔 락 — 긴 예산 hold 는 rc 0" "$rc" 0
+expect "(가) 긴 예산 hold 가 보유자를 더한다" "$(cat "$d/$(tr_key r1 S1).lease")" "any(.holders[]; .pid == $H3)"
+mkdir -p "$d/.lock"
+printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$d/.lock/owner"
+SECONDS=0
+rc=0; bash "$WRAPH" lease-hold "$d" r1 S1 n-r1-S1 "$H3" 2 >/dev/null 2>&1 || rc=$?
+el=$SECONDS
+check "(나) 보유 예산보다 오래 쥔 락 — 긴 예산 hold 도 rc 3" "$rc" 3
+if [ "$el" -ge 2 ]; then ok "(나) 긴 예산 hold 는 그 예산만큼 기다린다"; else bad "(나) 긴 예산 hold 는 그 예산만큼 기다린다" "${el}초"; fi
+check "(나) 살아 있는 소유자의 락은 그대로" "$(sed -n 1p "$d/.lock/owner")" "$TR_HOLDER"
+rm -rf "$d/.lock"
+for a in 0 -1 x 1.5 ''; do
+  rc=0; bash "$TR_ROUTE" lease-hold "$d" r1 S1 n-r1-S1 "$H3" "$a" >/dev/null 2>&1 || rc=$?
+  check "(마) hold 예산 인자 '$a' 는 rc 2" "$rc" 2
+done
+rc=0; bash "$TR_ROUTE" lease-hold "$d" r1 S1 n-r1-S1 "$H3" 1 extra >/dev/null 2>&1 || rc=$?
+check "(마) hold 인자가 일곱이면 rc 2" "$rc" 2
+
+# lease-has-holder — 잠금 없는 보유 확인.
+d=$(tnew has-holder)
+live_lease "$d" r1 S1 a
+mkdir -p "$d/.lock"
+printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$d/.lock/owner"
+rc=0; bash "$TR_ROUTE" lease-has-holder "$d" r1 S1 n-r1-S1 "$TR_HOLDER" || rc=$?
+check "(다) 보유자이면 락이 바빠도 rc 0" "$rc" 0
+rm -rf "$d/.lock"
+rc=0; bash "$TR_ROUTE" lease-has-holder "$d" r1 S1 other "$TR_HOLDER" || rc=$?
+check "(다) nonce 가 다르면 rc 1" "$rc" 1
+rc=0; bash "$TR_ROUTE" lease-has-holder "$d" r1 S1 n-r1-S1 "$H3" || rc=$?
+check "(다) 보유자 목록에 없는 pid 는 rc 1" "$rc" 1
+put_lease "$d" r1 S2 grant a "$RES_JSON" "$TR_HOLDER" "not-the-fingerprint"
+rc=0; bash "$TR_ROUTE" lease-has-holder "$d" r1 S2 n-r1-S2 "$TR_HOLDER" || rc=$?
+check "(다) 기록된 지문이 지금 지문과 다르면 rc 1" "$rc" 1
+rc=0; bash "$TR_ROUTE" lease-has-holder "$d" r1 S9 n-r1-S9 "$TR_HOLDER" || rc=$?
+check "(다) 임대 파일이 없으면 rc 1" "$rc" 1
+rc=0; bash "$TR_ROUTE" lease-has-holder "$d" r1 S1 n-r1-S1 || rc=$?
+check "(다) 인자가 모자라면 rc 2" "$rc" 2
+rc=0; bash "$TR_ROUTE" lease-has-holder "$d" r1 S1 n-r1-S1 x || rc=$?
+check "(다) pid 가 수가 아니면 rc 2" "$rc" 2
+
+# lease-sweep-done — 끝난 런 훑기의 nonce 비교 삭제.
+d=$(tnew sweep-done)
+dead_lease "$d" r1 S1 a
+dead_lease "$d" r1 S2 a
+k1=$(tr_key r1 S1); k2=$(tr_key r1 S2)
+rc=0; bash "$TR_ROUTE" lease-sweep-done "$d" "$k1" n-r1-S1 "$k2" stale-nonce || rc=$?
+check "(라) 훑기 동사 rc 0" "$rc" 0
+check "(라) nonce 가 그대로인 짝은 지워진다" "$([ -e "$d/$k1.lease" ] && printf 있음 || printf 없음)" "없음"
+check "(라) 다른 nonce 로 바뀐 기록은 남는다" "$([ -e "$d/$k2.lease" ] && printf 있음 || printf 없음)" "있음"
+mkdir -p "$d/.lock"
+printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$d/.lock/owner"
+SECONDS=0
+rc=0; bash "$TR_ROUTE" lease-sweep-done "$d" "$k2" n-r1-S2 || rc=$?
+el=$SECONDS
+check "(라) 락이 바쁘면 rc 3" "$rc" 3
+check "(라) 락이 바쁘면 아무것도 지우지 않는다" "$([ -e "$d/$k2.lease" ] && printf 있음 || printf 없음)" "있음"
+if [ "$el" -le 1 ]; then ok "(라) 훑기는 락을 기다리지 않는다"; else bad "(라) 훑기는 락을 기다리지 않는다" "${el}초"; fi
+rm -rf "$d/.lock"
+rc=0; bash "$TR_ROUTE" lease-sweep-done "$d" || rc=$?
+check "(라) 짝이 없으면 rc 2" "$rc" 2
+rc=0; bash "$TR_ROUTE" lease-sweep-done "$d" "$k2" n-r1-S2 "$k1" || rc=$?
+check "(라) 짝이 홀수면 rc 2" "$rc" 2
+rc=0; bash "$TR_ROUTE" lease-sweep-done "$d" "../$k2" n-r1-S2 || rc=$?
+check "(라) 키에 / 가 있으면 rc 2" "$rc" 2
+rc=0; bash "$TR_ROUTE" lease-sweep-done "$T/sweep-absent" "$k2" n-r1-S2 || rc=$?
+check "(라) 표가 없으면 rc 0" "$rc" 0
 
 d=$(tnew r20-4)
 live_lease "$d" r1 S1 a
