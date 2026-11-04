@@ -4575,6 +4575,9 @@ pre_sa() {
     # 유일하게 맞는 형태다.
     local ceil="$1"; shift
     local row td plan pd extra
+    # 대상 행·권한 절단점·런 최대 절단점. 실제 리뷰어 런처럼 `커밋` 으로 둘 집합만 이 값을
+    # 둔다. 빈 값이면 `배포` 이고 기존 매니페스트는 바이트 그대로다.
+    local cut="${SA_CUT:-배포}"
     cat > "$SA_GRANT" <<SAGEOF
 # 파이프라인 인가 기록 — $SA_ID
 <!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=${SA_OWNER_DOC:-(없음)}; origin-worktree=$SA_WT; NOT a design doc; mechanism-local, never staged by a skill -->
@@ -4582,7 +4585,7 @@ pre_sa() {
 ## 인가 $SA_ID
 **인가 일시**: 2026-08-30T00:00:00Z
 **종료 지점**: 픽스처
-**권한 절단점**: 배포
+**권한 절단점**: $cut
 **말단 행위 상한**: 없음
 **직렬 웨이브 고지**: 해당 없음
 **시각 정합 마커**: 없음
@@ -4590,7 +4593,7 @@ pre_sa() {
 **설계 문서 전체 sha256**: (해당 없음)
 **보고서**: $SA_LEDGER
 SAGEOF
-    row="- \`target\` | 별칭=main | 메인 워크트리=$SA_WT | 공통 git 디렉터리=$SA_CG | 베이스 브랜치=$SA_BASE | 홈=예 | 원격 슬러그=t/$SA_ID | 절단점=배포 | 말단 행위 상한=없음"
+    row="- \`target\` | 별칭=main | 메인 워크트리=$SA_WT | 공통 git 디렉터리=$SA_CG | 베이스 브랜치=$SA_BASE | 홈=예 | 원격 슬러그=t/$SA_ID | 절단점=$cut | 말단 행위 상한=없음"
     [ -n "$ceil" ] && row="$row | 리뷰 정책 상한=$ceil"
     # 대상 행에 더 실을 필드. 대상 맵 다이제스트가 이 행에서 계산되므로 행을 다
     # 만든 뒤가 아니라 여기서 붙인다. 빈 값이면 기존 매니페스트는 바이트 그대로다.
@@ -4623,7 +4626,7 @@ SAGEOF
         "$(printf '%s' "$SA_APPLY_PROBE" | shasum -a 256 | cut -d' ' -f1)"
       printf '\n'
       printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$pd" "$plan"
-      printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
+      printf '## 인가\n**런 최대 절단점**: %s\n**종료 지점**: 픽스처가 끝나면\n' "$cut"
       printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
       printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
       printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
@@ -4678,7 +4681,7 @@ SAPEOF
     SA_SEGBR="seg-$SA_ID"
     SA_APPLY="(해당 없음)"; SA_APPLY_CMD=""; SA_APPLY_PROBE=""; SA_APPLY_CODES=""
     SA_PREAUTH_EXTRA=""; SA_TARGET_EXTRA=""; SA_OWNER_DOC=""; SA_LABEL_ACK=""
-    SA_PLAN=""; SA_AUTH_RAW=""
+    SA_PLAN=""; SA_AUTH_RAW=""; SA_CUT=""
     mkdir -p "$SA_REPO"
     ( cd "$SA_REPO" \
       && git init -q . \
@@ -62048,7 +62051,7 @@ unset d104 c104 p104 f104 d104n
 
 # ---------------------------------------------------------------------------
 # 108. 리뷰어 런 — 리뷰 전용 세그먼트의 계획·리뷰 줄·쓰기 거절·게시·대조
-# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다 ---
+# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, gate_worktree_add_base_mismatch, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
 #
 # 베어 원격 하나에 다른 작성자의 PR 둘(`refs/pull/7/head`, `refs/pull/8/head`)을 두고,
 # 리뷰어 계획(`run_profile: reviewer`)과 `리뷰 PR`·`리뷰 게시`·`리뷰 깊이` 행을 실은
@@ -62108,9 +62111,11 @@ export RV106_STUB
 eval 'gh() { "$RV106_STUB" "$@"; }'; export -f gh
 
 rv106_new() {
-  # rv106_new <라벨> <방식> <의사표시> [더할 행] — 리뷰어 계획, PR 7·8 의 리뷰 PR 행 둘, 게시·깊이 행,
-  # 두 PR 의 게시용 사전 인가 행, 그리고 베어 원격의 두 PR 헤드 ref. 넷째 인자는 인가 절 끝에 붙는다.
+  # rv106_new <라벨> <방식> <의사표시> [더할 행] [절단점] — 리뷰어 계획, PR 7·8 의 리뷰 PR 행 둘,
+  # 게시·깊이 행, 두 PR 의 게시용 사전 인가 행, 그리고 베어 원격의 두 PR 헤드 ref. 넷째 인자는 인가
+  # 절 끝에 붙고, 다섯째 인자는 대상 행·권한·런 최대 절단점이 된다(없으면 `배포`).
   sa_new "$1" 리뷰없음
+  SA_CUT="${5:-}"
   SA_PLAN='{ "run_profile": "reviewer", "steps": [ { "id": "R1", "skill": "review", "depends_on": [] } ] }'
   SA_AUTH_RAW=$(printf -- '- `리뷰 PR` | 세그먼트=P1 | 대상=main | PR=7 | 작성자=other-dev | 드래프트=예 | 베이스=main\n- `리뷰 PR` | 세그먼트=P2 | 대상=main | PR=8 | 작성자=other-dev | 드래프트=아니오 | 베이스=main\n- `리뷰 게시` | 방식=%s | 의사표시=%s | 계정=rv-bot\n- `리뷰 깊이` | 깊이=가벼움' "$2" "$3")
   [ -z "${4:-}" ] || SA_AUTH_RAW=$(printf '%s\n%s' "$SA_AUTH_RAW" "$4")
@@ -62488,13 +62493,156 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S106B -
 check "108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다" \
   "$rc|$(sa_field "$(sa_seg_last S106B)" '베이스 sha')" "0|$rv106_t"
 
+# 스킬 문면 그대로 — 라우터 교대 스킬의 리뷰어 런 절이 적은 게이트 호출을 옮겨 적지 않고 태운다 ------
+#
+# fetch·분리 워크트리·계획 행·게시·정리의 argv 를 그 절에서 읽는다. 실제 리뷰어 런처럼 자동
+# 처리를 켜고 대상·권한 절단점을 `커밋` 으로 두며, `origin` 의 pushurl 을 대상 슬러그의 URL 로
+# 두어 원격 일치가 서게 한다. 그 뒤 PR 헤드를 옮기는 push 는 베어 원격 경로를 직접 지정한다 —
+# pushurl 이 가리키는 곳으로 나가지 않게. 자동 처리를 켠 게이트 호출은 한 번에 수십 초라서,
+# 협업 판정의 음성 대조는 exec 한 건만 태우고 나머지는 소싱한 판정 함수에 직접 묻는다.
+rv108_prev_ar="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+rv108_tpl=$(awk '
+  /^#### / { insec = ($0 == "#### Reviewing pull requests on a reviewer run"); next }
+  /^##?#? / { insec = 0 }
+  !insec { next }
+  /^ *```/ {
+    if (infence) { if (index(j, "gate.sh act ") == 1) print j; infence = 0; j = "" } else infence = 1
+    next
+  }
+  infence { l = $0; sub(/^ +/, "", l); sub(/ *\\$/, "", l); j = (j == "" ? l : j " " l); next }
+  {
+    n = split($0, p, "`")
+    for (i = 2; i <= n; i += 2)
+      if (index(p[i], "gate.sh exec … ") == 1 || index(p[i], "git update-ref -d ") == 1) print p[i]
+  }
+' "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md" | awk '!seen[$0]++')
+rv108_pick() { printf '%s\n' "$rv108_tpl" | awk -v n="$1" '!f && index($0, n) { print; f = 1 }'; }
+rv108_fetch_t=$(rv108_pick 'git fetch origin ')
+rv108_add_t=$(rv108_pick 'git worktree add ')
+rv108_rm_t=$(rv108_pick 'git worktree remove ')
+rv108_plan_t=$(rv108_pick '--review-pr')
+rv108_post_t=$(rv108_pick '--kind review-post')
+rv108_ur1=$(printf '%s\n' "$rv108_tpl" | { grep -F 'git update-ref -d ' || true; } | sed -n 1p)
+rv108_ur2=$(printf '%s\n' "$rv108_tpl" | { grep -F 'git update-ref -d ' || true; } | sed -n 2p)
+rv108_have=""
+for rv108_x in "$rv108_fetch_t" "$rv108_add_t" "$rv108_rm_t" "$rv108_plan_t" "$rv108_post_t" "$rv108_ur1" "$rv108_ur2"; do
+  if [ -n "$rv108_x" ]; then rv108_have="${rv108_have}o"; else rv108_have="${rv108_have}x"; fi
+done
+check "108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다" "$rv108_have" "ooooooo"
+rv108_call() {
+  # rv108_call <문면> <세그먼트> <PR> <워크트리> — 문면의 자리표시자를 픽스처 값으로 바꿔 게이트에
+  # 태운다. `…` 자리에는 매니페스트·절단점·스냅숏 다이제스트·근거만 채운다.
+  local t="$1" h p
+  local -a a
+  h=$(SAH)
+  p="exec --manifest $SA_MANIFEST --cutpoint 커밋 --snapshot-digest $h --rationale x"
+  t=${t//'gate.sh exec …'/$p}; t=${t#gate.sh }
+  t=${t//'<매니페스트>'/$SA_MANIFEST}; t=${t//'<대상>'/main}; t=${t//'<PR>'/$3}; t=${t//'<베이스>'/main}
+  t=${t//'<run id>'/$SA_ID}; t=${t//'<id>'/$2}; t=${t//'<워크트리>'/$4}; t=${t//'<H>'/$h}
+  read -ra a <<< "$t"
+  sag "${a[@]}"
+}
+rv108_ur() {
+  # rv108_ur <update-ref 문면> <세그먼트> <PR> <워크트리> — 정리의 ref 삭제는 같은 방식(`워크트리쓰기`)으로 부른다.
+  rv108_call "gate.sh exec … --target <대상> --surface 워크트리쓰기 -- $1" "$2" "$3" "$4"
+}
+rv106_new "스킬 문면 그대로" 직접 허용 "$(printf -- '- `리뷰 PR` | 세그먼트=P3 | 대상=main | PR=9 | 작성자=other-dev | 드래프트=아니오 | 베이스=main\n- `사전 인가` | 형태=git fetch | 사유=테스트\n- `사전 인가` | 형태=git worktree | 사유=테스트')" 커밋
+( cd "$SA_REPO" && git config remote.origin.pushurl "https://github.com/t/$SA_ID.git" ) >/dev/null 2>&1
+rv108_w1=$(rv106_wt P1); rv108_w2=$(rv106_wt P2); rv108_w3=$(rv106_wt P3)
+rv108_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+
+# 양성 경로 — fetch 부터 게시·완료·정리까지
+rv108_got=""
+rv108_call "$rv108_fetch_t" P1 7 "$rv108_w1"; rv108_got="$rv108_got fetch=$rc"
+rv108_fr=$( { grep -F "argv=git fetch origin +refs/pull/7/head:refs/cc-review/$SA_ID/P1" "$SA_LEDGER" || true; } | tail -1)
+rv108_call "$rv108_add_t" P1 7 "$rv108_w1"; rv108_got="$rv108_got add=$rc"
+rv108_call "$rv108_plan_t" P1 7 "$rv108_w1"; rv108_got="$rv108_got plan=$rc"
+sag review-line --manifest "$SA_MANIFEST" --segment P1; rv108_l1="$msg"
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment P1 --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(SAH)" --rationale x --trigger '첫 리뷰' -- review -p "$rv108_l1"
+rv108_got="$rv108_got dispatch=$rc"
+rv106_cycle P1 "$rv108_h7"; rv108_got="$rv108_got cycle=$rc"
+printf '%s\n' "$rv108_h7" > "$RV106_S/head"; printf '601\n' > "$RV106_S/rid"
+rv108_call "$rv108_post_t" P1 7 "$rv108_w1"; rv108_got="$rv108_got post=$rc"
+rv108_pv=$(sa_field "$(rv106_last '리뷰 게시')" 대조)
+rv106_done P1; rv108_got="$rv108_got done=$rc"
+rv108_call "$rv108_rm_t" P1 7 "$rv108_w1"; rv108_got="$rv108_got remove=$rc"
+rv108_ur "$rv108_ur1" P1 7 "$rv108_w1"; rv108_got="$rv108_got ur=$rc"
+rv108_ur "$rv108_ur2" P1 7 "$rv108_w1"; rv108_got="$rv108_got ur=$rc"
+check "108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다" "$rv108_got" \
+  " fetch=0 add=0 plan=0 dispatch=0 cycle=0 post=0 done=0 remove=0 ur=0 ur=0"
+check "108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다" \
+  "$(sa_field "$rv108_fr" 도달)|$rv108_pv" "협업|일치"
+
+# 헤드 이동 재시도 — 워크트리를 지우고 다시 만들며, 메인 체크아웃은 옮기지 않는다
+rv108_call "$rv108_fetch_t" P2 8 "$rv108_w2"; rv108_call "$rv108_add_t" P2 8 "$rv108_w2"
+( cd "$SA_REPO" && git checkout -q pr8 && printf 'z\n' >> b.txt && git commit -qam pr8c \
+    && git push -q -f "$SA_REMOTE" HEAD:refs/pull/8/head && git checkout -q main ) >/dev/null 2>&1
+rv108_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv108_got=""
+rv108_call "$rv108_plan_t" P2 8 "$rv108_w2"; rv108_got="$rv108_got plan=$rc"
+rv108_call "$rv108_fetch_t" P2 8 "$rv108_w2"; rv108_got="$rv108_got fetch=$rc"
+rv108_call "$rv108_rm_t" P2 8 "$rv108_w2"; rv108_got="$rv108_got remove=$rc"
+rv108_call "$rv108_add_t" P2 8 "$rv108_w2"; rv108_got="$rv108_got add=$rc"
+rv108_call "$rv108_plan_t" P2 8 "$rv108_w2"; rv108_got="$rv108_got plan=$rc"
+check "108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다" \
+  "$rv108_got|$(sa_field "$(sa_seg_last P2)" '고정 헤드')|$(cd "$SA_REPO" && git rev-parse --abbrev-ref HEAD)" \
+  " plan=3 fetch=0 remove=0 add=0 plan=0|$rv108_h8|main"
+
+# 닫힌 PR — fetch 는 도달 park 가 아닌 실패이고, 워크트리 없는 park 의 ref 정리는 통과한다
+rv108_got=""
+rv108_call "$rv108_fetch_t" P3 9 "$rv108_w3"; rv108_got="$rv108_got fetch=$rc"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=park "워크트리=$rv108_w3" 선행=없음
+rv108_got="$rv108_got park=$rc"
+rv108_ur "$rv108_ur1" P3 9 "$rv108_w3"; rv108_got="$rv108_got ur=$rc"
+rv108_ur "$rv108_ur2" P3 9 "$rv108_w3"; rv108_got="$rv108_got ur=$rc"
+check "108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다" "$rv108_got" \
+  " fetch=128 park=0 ur=0 ur=0"
+
+# 음성 대조 — 좁힌 형태 밖의 fetch 는 협업이 아니다
+rv108_call "gate.sh exec … --target <대상> --surface 워크트리쓰기 --reach 협업 -- git fetch origin +refs/pull/<PR>/head:refs/cc-review/RX0/<id>" P1 7 -
+check "108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다" "$rc" "11"
+# 리뷰 워크트리의 시작점 예외는 그 세그먼트 자기 리뷰 ref 하나다 — 다른 세그먼트의 ref 로
+# 뜨는 분리 워크트리는 세그먼트 워크트리 시작점 검사에 그대로 걸린다.
+rv108_call "gate.sh exec … --target <대상> --surface 워크트리쓰기 -- git worktree add --detach <워크트리> refs/cc-review/<run id>/P2" P1 7 "$rv108_w1"
+check "108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다" "$rc" "2"
+rv108_cs() {
+  # rv108_cs <매니페스트> <git argv...> — 소싱한 게이트의 협업 판정을 이 픽스처의 런 id 로 직접 묻는다.
+  local m="$1"; shift
+  ( cd "$SA_REPO" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; RUN_ID="$3"; shift 3
+      GATE_GRADE_SOURCE=표
+      if gate_collaboration_surface main 협업 "$@"; then printf 협업; else printf 아님; fi' \
+      _ "$GATE" "$m" "$SA_ID" "$@" 2>/dev/null )
+}
+rv108_ok="+refs/pull/7/head:refs/cc-review/$SA_ID/P1"
+rv108_okb="+refs/heads/main:refs/cc-review/$SA_ID/P1-base"
+sed 's/"run_profile": "reviewer", //' "$SA_MANIFEST" > "$RV106_ROOT/standard.md"
+rv108_got="$(rv108_cs "$SA_MANIFEST" git fetch origin "$rv108_ok" "$rv108_okb")"
+rv108_got="$rv108_got|$(rv108_cs "$SA_MANIFEST" git fetch origin --prune "$rv108_ok")"
+rv108_got="$rv108_got|$(rv108_cs "$SA_MANIFEST" git fetch origin "+refs/pull/7/head:refs/heads/x")"
+rv108_got="$rv108_got|$(rv108_cs "$SA_MANIFEST" git fetch "$SA_REMOTE" "$rv108_ok")"
+rv108_got="$rv108_got|$(rv108_cs "$SA_MANIFEST" git fetch origin "+refs/tags/v1:refs/cc-review/$SA_ID/P1")"
+rv108_got="$rv108_got|$(rv108_cs "$SA_MANIFEST" git fetch origin "+refs/pull/*/head:refs/cc-review/$SA_ID/*")"
+rv108_got="$rv108_got|$(rv108_cs "$SA_MANIFEST" git -c x.y=z fetch origin "$rv108_ok")"
+rv108_got="$rv108_got|$(rv108_cs "$RV106_ROOT/standard.md" git fetch origin "$rv108_ok")"
+( cd "$SA_REPO" && git config remote.origin.pushurl "https://github.com/t/other.git" ) >/dev/null 2>&1
+rv108_got="$rv108_got|$(rv108_cs "$SA_MANIFEST" git fetch origin "$rv108_ok")"
+check "108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다" "$rv108_got" \
+  "협업|아님|아님|아님|아님|아님|아님|아님|아님"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$rv108_prev_ar"
+unset -f rv108_pick rv108_call rv108_ur rv108_cs
+unset rv108_prev_ar rv108_tpl rv108_fetch_t rv108_add_t rv108_rm_t rv108_plan_t rv108_post_t rv108_ur1 rv108_ur2 \
+  rv108_have rv108_x rv108_w1 rv108_w2 rv108_w3 rv108_h7 rv108_h8 rv108_got rv108_fr rv108_l1 rv108_pv rv108_ok rv108_okb
+
 unset -f gh rv106_new rv106_done rv106_wt rv106_fetch rv106_plan rv106_cycle rv106_post rv106_next rv106_posts rv106_n rv106_last rv106_ev rv106_rp rv106_bsb rd106 rd106_ev rd106_v
 unset RV106_STUB RV106_S
 if [ -n "$RV106_HAD_RW" ]; then export CC_GATE_TOKEN_RW="$RV106_PREV_RW"; else unset CC_GATE_TOKEN_RW; fi
 
 # ---------------------------------------------------------------------------
 # 108s. 리뷰어 런 — 닫힌 표마다 새 이름이 등재되었다
-# --- section: 108s | covers: gate_shift_halt_site_table, review_next, segment, pipeline-sidecar, router-lead-copy | anchors: 108s: 정지 자리 표에 리뷰 게시 세 자리가 추천 없음으로 있다, 108s: 라우터 두 사본이 정산 게시를 review-post 로 적는다, 108s: 계약 문서가 리뷰어 원장 행과 세그먼트 필드를 싣는다 ---
+# --- section: 108s | covers: gate_shift_halt_site_table, review_next, segment, pipeline-sidecar, router-lead-copy | anchors: 108s: 정지 자리 표에 리뷰 게시 세 자리가 추천 없음으로 있다, 108s: 라우터 두 사본이 정산 게시를 review-post 로 적는다, 108s: review-post 문면은 두 사본 어디에도 --reach 를 싣지 않는다, 108s: 계약 문서가 리뷰어 원장 행과 세그먼트 필드를 싣는다 ---
 #
 # 정적 판독. 리뷰어 런이 더한 이름들이 그것을 읽는 닫힌 표 각각에 실렸는지 한 번씩 본다 —
 # 정지 자리 표와 중단 답 사본, 다음 값 사본, 라우터 두 사본, 계약 문서의 원장 행·세그먼트
@@ -62509,10 +62657,24 @@ check "108s: 다음 값 사본에 게시 가 있다" \
   "$( { grep -cF '**`게시`**' "$S106_SK/autopilot-router-shift/references/review-next-1.md" || true; } | awk '{ print ($1 > 0) ? "있음" : "없음" }')" "있음"
 s106_rt=""
 for s106_f in "$S106_SK/autopilot-router-shift/SKILL.md" "$S106_SK/autopilot/references/router-lead-copy.md"; do
-  s106_rt="$s106_rt$( { grep -cF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 --reach 협업 -- 게시' "$s106_f" || true; } ):"
+  s106_rt="$s106_rt$( { grep -cF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 -- 게시' "$s106_f" || true; } ):"
   s106_rt="$s106_rt$( { grep -cF -- '-f body=' "$s106_f" || true; } ) "
 done
 check "108s: 라우터 두 사본이 정산 게시를 review-post 로 적는다" "$s106_rt" "1:0 1:0 "
+# 게이트의 act 는 --reach 를 remote-check 에만 받고 나머지는 exit 2 로 거절하므로,
+# review-post 를 적은 문면은 어느 사본에서도 --reach 를 싣지 않는다. 줄 끝 역슬래시로 이은
+# 펜스 블록은 한 줄로 이어 붙여 읽는다.
+s106_rr=""
+for s106_f in "$S106_SK/autopilot-router-shift/SKILL.md" "$S106_SK/autopilot/references/router-lead-copy.md"; do
+  s106_rr="$s106_rr$(awk '
+    { l = (c == "" ? $0 : c " " $0) }
+    /\\$/ { c = substr(l, 1, length(l) - 1); next }
+    { c = "" }
+    index(l, "--kind review-post") { n++; if (index(l, "--reach")) r++ }
+    END { printf "%d/%d ", (n > 0 ? 1 : 0), r + 0 }
+  ' "$s106_f")"
+done
+check "108s: review-post 문면은 두 사본 어디에도 --reach 를 싣지 않는다" "$s106_rr" "1/0 1/0 "
 s106_sc="$S106_SK/_common/pipeline-sidecar.md"
 s106_got=""
 for s106_k in '`리뷰 게시 시도`' '`리뷰 게시`' '`리뷰 PR`' '`리뷰 깊이`' '`리뷰 문면`' '고정 헤드' '베이스 sha' '리뷰전용'; do
@@ -62523,7 +62685,7 @@ check "108s: 게이트 머리말의 종료 코드 3 설명이 review-post 를 �
   "$(awk 'NR < 200 && /review-post/ { print "있음"; exit }' "$GATE")" "있음"
 check "108s: 행위 종류 목록이 review-post 를 싣는다" \
   "$( { grep -cE '\|label-ack\|review-post\)' "$GATE" || true; } | awk '{ print ($1 > 0) ? "있음" : "없음" }')" "있음"
-unset S106_SK s106_rt s106_f s106_sc s106_got s106_k
+unset S106_SK s106_rt s106_rr s106_f s106_sc s106_got s106_k
 
 # ---------------------------------------------------------------------------
 # 108p. 리뷰어 계획 — 진입 검사기의 고정 틀과 라우팅 런에서만의 기동

@@ -1789,10 +1789,54 @@ gate_deploy_trigger_match() {
   return 1
 }
 
+gate_review_fetch_surface() {
+  # gate_review_fetch_surface <alias> <derived-reach> <git argv after `git`...>
+  # — 0 when this is the reviewer run's fetch of a pull request head or base
+  # into this run's own `refs/cc-review/<run id>/` namespace.
+  #
+  # THIS FETCH IS A COLLABORATION ACT, NOT A RUN-LOCAL ONE. It reads the
+  # target's remote, and the reach cell is the only record that the act
+  # touched that environment; declared `런로컬` it would pass, but the ledger
+  # would then write a remote read as an act inside the run. A read of the
+  # same tracker is already on this surface (the ClickUp lookup below), and
+  # the planning row reads these refs right after, as the review-only
+  # segment's head and base.
+  #
+  # ONLY THE ONE SHAPE THE ROUTER SHIFT'S SKILL WRITES: a reviewer run, no git
+  # global flag, `fetch` followed by exactly `origin`, no option, at least one
+  # refspec, each refspec's source `refs/pull/<n>/head` or `refs/heads/<x>`
+  # and its destination under `refs/cc-review/<this run id>/`, no `*` on
+  # either side, and `origin` resolving to the target row's remote slug. A
+  # fetch into another run's namespace or a local branch, with an option, from
+  # a path remote, of another source, or from an `origin` of another slug
+  # stays off this surface and keeps its reach contradiction.
+  local alias="$1" rd="$2"; shift 2
+  [ "$rd" != "배포트리거" ] || return 1
+  [ "${#GATE_GIT_GLOBALS[@]}" -eq 0 ] || return 1
+  [ -n "${RUN_ID:-}" ] || return 1
+  gate_reviewer_run || return 1
+  [ "${1:-}" = fetch ] && [ "${2:-}" = origin ] && [ "$#" -ge 3 ] || return 1
+  shift 2
+  local a src dst
+  for a in "$@"; do
+    a="${a#+}"
+    case "$a" in *\**|-*) return 1 ;; *:*) ;; *) return 1 ;; esac
+    src="${a%%:*}"; dst="${a#*:}"
+    case "$src" in refs/pull/*/head|refs/heads/?*) ;; *) return 1 ;; esac
+    case "$dst" in "refs/cc-review/$RUN_ID/"?*) ;; *) return 1 ;; esac
+  done
+  # Which remote `origin` is, asked the way a push asks it, so "is this the
+  # target's remote" has one definition. Run in a subshell: the question
+  # re-parses the argv and would leave the caller's parse of this fetch
+  # replaced by the parse of a push.
+  ( gate_push_remote_match "$alias" git push origin )
+}
+
 gate_collaboration_surface() {
   # gate_collaboration_surface <alias> <derived-reach> <argv...> — 1 when this act
   # is the collaboration surface the user authorized to proceed unattended:
-  # issues, comments, labels, projects, and a push that is not a deploy trigger.
+  # issues, comments, labels, projects, a push that is not a deploy trigger,
+  # and the reviewer run's fetch of a pull request into its own review refs.
   #
   # `gh run rerun`/`cancel` are NOT here. Re-running CI can start the very deploy
   # workflow the deploy-trigger cell exists to hold, so they take that cell.
@@ -1877,6 +1921,7 @@ gate_collaboration_surface() {
           [ "$rd" != "배포트리거" ] || return 1
           [ "${#GATE_GIT_GLOBALS[@]}" -eq 0 ] && return 0
           gate_git_argv_in_target "$alias" "${whole[@]}" && return 0 ;;
+        fetch) gate_review_fetch_surface "$alias" "$rd" "$@" && return 0 ;;
       esac ;;
     # The ClickUp ticket and dependency writers file tickets and relations,
     # which is the same surface as `gh issue` on the other tracker.
@@ -3166,6 +3211,21 @@ gate_worktree_add_base_mismatch() {
   prefix=$(gate_decl_worktree "$alias" "") || return 0
   [ -n "$prefix" ] || return 0
   case "$path" in "$prefix"*) : ;; *) return 0 ;; esac
+  # A REVIEW-ONLY SEGMENT'S WORKTREE IS NOT CUT FROM THE BASE. On a reviewer
+  # run the `P<k>` worktree shares this prefix, but it is the pull request's
+  # head checked out detached for reading, not a branch this run builds on:
+  # the router shift fetches that head into `refs/cc-review/<run id>/<id>` and
+  # makes the worktree there, and the planning row then compares that HEAD
+  # with the remote head. Only that one shape passes — `--detach`, no `-b`/`-B`,
+  # a path naming a segment the manifest's `리뷰 PR` rows declare on this
+  # target, and the start point that segment's own review ref.
+  local rseg="${path#"$prefix"}" rrow
+  if [ "$det" = 1 ] && [ "$newb" = 0 ] && [ -n "$rseg" ] && [ -n "${RUN_ID:-}" ] \
+     && [ "$start" = "refs/cc-review/$RUN_ID/$rseg" ] && gate_reviewer_run \
+     && rrow=$(gate_review_pr_row "$rseg") \
+     && [ "$(manifest_row_fields "$rrow" '대상')" = "$alias" ]; then
+    return 0
+  fi
   br=$(base_branch "$alias" 2>/dev/null || true)
   if [ -z "$br" ]; then
     printf '받은 시작점: %s, 기대 시작점: 해소되지 않음 — 대상 %s 의 베이스 브랜치를 정하지 못했습니다' "${start:-없음}" "$alias"
