@@ -48,8 +48,14 @@
 # Internal helpers. Each is called from inside a function's subshell only.
 # --------------------------------------------------------------------------
 
-cc_attention__root() {
+cc_attention_root() {
   # Print the spool root, or return 1 when there is none to write into.
+  #
+  # This is the one public reader of the spool root besides the two tap
+  # functions: the gate and the run hook call it from a child shell of a
+  # command substitution and take its output only, so the test seat variable is
+  # read here and nowhere else. A consumer that must not follow the test seat
+  # runs that child shell with the variable removed from its environment.
   local root="${CC_CMDS_ATTENTION_ROOT:-}"
   if [ -z "$root" ]; then
     [ -n "${HOME:-}" ] || return 1
@@ -57,6 +63,12 @@ cc_attention__root() {
   fi
   [ -d "$root" ] || return 1
   printf '%s' "$root"
+}
+
+cc_attention__root() {
+  # The internal name the tap functions and the session status snapshot hook
+  # call; it answers exactly what `cc_attention_root` answers.
+  cc_attention_root
 }
 
 cc_attention__host() {
