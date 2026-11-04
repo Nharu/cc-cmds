@@ -3,8 +3,8 @@
 import type { On, UiPane } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import type { PaneControl } from '../types'
-import { noteClose } from './autopilot-status'
+import type { PaneControl, PaneLines } from '../types'
+import { ageTail, noteClose } from './autopilot-status'
 
 const PANE = 'autopilot-status'
 const IDX = '/state/cc-cmds/session/sid-1'
@@ -217,6 +217,9 @@ const drawnLines = async (ui: any) =>
   ((await ui.findAll({ type: 'Text' })) as Array<{ props: Record<string, unknown>; children: unknown[] }>).filter(
     el => el.props.wrap === 'truncate-end' || el.props.wrap === 'wrap',
   )
+
+// 경고 줄(⚠ 로 시작하는 바깥 Text)의 보이는 글. 없으면 undefined.
+const warningLine = async (ui: any) => (await drawnLines(ui)).map(shown).find(text => text.startsWith('⚠'))
 
 describe('시작과 가드', () => {
   test('대화형 시작은 명령을 한 번 등록하고 첫 틱에 헬퍼를 한 번 돌린다', async ($, on) => {
@@ -486,9 +489,112 @@ describe('실패 처리', () => {
       expect(await ui.find({ type: 'Text', text: '옛 줄' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '새 줄' })).toBeUndefined()
       expect(await ui.find({ type: 'Text', text: '런 상태를 읽지 못했다' })).toBeDefined()
+      // 마지막 성공은 한 틱 전에 시작했다.
+      expect(await warningLine(ui)).toMatch(/ · 10초 전 화면$/)
       expect(w.opens).toHaveLength(0)
     })
   }
+
+  test('시한 초과: 8초 시한을 넘겼다고 적고 읽지 못했다는 적지 않으며 마지막 줄을 둔다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.reply = out('ended', 'r1', ['title\tcut\tnormal\t옛 줄'])
+    await start($)
+    await band($)
+    await clock.advance(TICK)
+    const ui = await mount($)
+
+    w.reply = 'reject'
+    w.helperDelayMs = 8000
+    w.mtime = 2
+    await clock.advance(TICK)
+    await clock.advance(8000)
+    expect(w.runs).toHaveLength(2)
+    expect(await ui.find({ type: 'Text', text: '옛 줄' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '8초 시한을 넘겼다' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '읽지 못했다' })).toBeUndefined()
+    expect(await warningLine(ui)).toBe('⚠ 런 상태 갱신이 8초 시한을 넘겼다 · 18초 전 화면')
+  })
+
+  test('즉시 거부: 실행하지 못함을 적고 시한은 적지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.reply = out('ended', 'r1', ['title\tcut\tnormal\t옛 줄'])
+    await start($)
+    await band($)
+    await clock.advance(TICK)
+    const ui = await mount($)
+
+    w.reply = 'reject'
+    w.mtime = 2
+    await clock.advance(TICK)
+    expect(await ui.find({ type: 'Text', text: '실행하지 못함' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '시한' })).toBeUndefined()
+  })
+
+  test('나이: 마지막 성공에서 실패까지의 경과를 분 단위로 적는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.reply = out('ended', 'r1', ['title\tcut\tnormal\t옛 줄'])
+    await start($)
+    await band($)
+    await clock.advance(TICK)
+    const ui = await mount($)
+
+    // 목록이 그대로면 놓이지 않은 ended 패널은 60초 주기로 다시 돈다.
+    w.reply = { exitCode: 2, stdout: '' }
+    await clock.advance(TICK * 6)
+    expect(w.runs).toHaveLength(2)
+    expect(await warningLine(ui)).toBe('⚠ 런 상태를 읽지 못했다 (종료 코드 2) · 1분 전 화면')
+  })
+
+  test('나이: 성공한 적 없는 첫 실패는 이전 화면 없음을 적는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.reply = 'reject'
+    await start($)
+    await clock.advance(TICK)
+    const ui = await mount($)
+    expect(await warningLine(ui)).toBe('⚠ 런 상태를 읽지 못했다 (실행하지 못함) · 이전 화면 없음')
+  })
+
+  test('나이: 줄이 빈 성공 뒤의 실패도 나이를 적는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.reply = out('ended', 'r1', [])
+    await start($)
+    await band($)
+    await clock.advance(TICK)
+    const ui = await mount($)
+
+    w.reply = 'reject'
+    w.mtime = 2
+    await clock.advance(TICK)
+    expect(await warningLine(ui)).toBe('⚠ 런 상태를 읽지 못했다 (실행하지 못함) · 10초 전 화면')
+  })
+
+  test('나이: okAt 없이 줄만 있는 원자에서의 실패는 꼬리를 적지 않는다', () => {
+    // 이 필드를 모르던 모듈이 저장한 값: 줄은 있고 okAt 은 없다. 시험 꾸러미의 상태는 시험 훅을
+    // 거치지 않고 답하므로 그 값을 원자에 심지 못해, 꼬리를 만드는 함수에 직접 넣는다.
+    const line = { bundle: 'title', wrap: false, parts: [{ tone: 'normal', bold: false, text: '옛 줄' }] }
+    const stale = { lines: [line], warning: null } as unknown as PaneLines
+    expect(ageTail(stale, 50_000)).toBe('')
+    expect(ageTail({ lines: [], warning: null } as unknown as PaneLines, 50_000)).toBe(' · 이전 화면 없음')
+    expect(ageTail({ lines: [line], warning: null, okAt: 40_000 }, 50_000)).toBe(' · 10초 전 화면')
+  })
+
+  test('44칸 도크에서 경고 줄은 감겨 그려지고 나이 꼬리를 끝까지 담는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.reply = out('ended', 'r1', ['title\tcut\tnormal\t옛 줄'])
+    await start($)
+    await band($)
+    await clock.advance(TICK)
+    const ui = await mount($, 'dock', 44)
+
+    w.reply = 'reject'
+    w.helperDelayMs = 8000
+    w.mtime = 2
+    await clock.advance(TICK)
+    await clock.advance(8000)
+    const line = (await drawnLines(ui)).find(el => shown(el).startsWith('⚠'))
+    expect(line?.props.wrap).toBe('wrap')
+    expect(shown(line)).toMatch(/ · 18초 전 화면$/)
+  })
 })
 
 describe('주기', () => {
