@@ -61724,7 +61724,7 @@ unset d104 c104 p104 f104 d104n
 
 # ---------------------------------------------------------------------------
 # 108. 리뷰어 런 — 리뷰 전용 세그먼트의 계획·리뷰 줄·쓰기 거절·게시·대조
-# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
+# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, gate_worktree_add_base_mismatch, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
 #
 # 베어 원격 하나에 다른 작성자의 PR 둘(`refs/pull/7/head`, `refs/pull/8/head`)을 두고,
 # 리뷰어 계획(`run_profile: reviewer`)과 `리뷰 PR`·`리뷰 게시`·`리뷰 깊이` 행을 실은
@@ -62277,6 +62277,10 @@ check "108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와
 # 음성 대조 — 좁힌 형태 밖의 fetch 는 협업이 아니다
 rv108_call "gate.sh exec … --target <대상> --surface 워크트리쓰기 --reach 협업 -- git fetch origin +refs/pull/<PR>/head:refs/cc-review/RX0/<id>" P1 7 -
 check "108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다" "$rc" "11"
+# 리뷰 워크트리의 시작점 예외는 그 세그먼트 자기 리뷰 ref 하나다 — 다른 세그먼트의 ref 로
+# 뜨는 분리 워크트리는 세그먼트 워크트리 시작점 검사에 그대로 걸린다.
+rv108_call "gate.sh exec … --target <대상> --surface 워크트리쓰기 -- git worktree add --detach <워크트리> refs/cc-review/<run id>/P2" P1 7 "$rv108_w1"
+check "108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다" "$rc" "2"
 rv108_cs() {
   # rv108_cs <매니페스트> <git argv...> — 소싱한 게이트의 협업 판정을 이 픽스처의 런 id 로 직접 묻는다.
   local m="$1"; shift

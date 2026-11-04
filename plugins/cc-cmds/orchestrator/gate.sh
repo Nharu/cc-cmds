@@ -3086,6 +3086,21 @@ gate_worktree_add_base_mismatch() {
   prefix=$(gate_decl_worktree "$alias" "") || return 0
   [ -n "$prefix" ] || return 0
   case "$path" in "$prefix"*) : ;; *) return 0 ;; esac
+  # A REVIEW-ONLY SEGMENT'S WORKTREE IS NOT CUT FROM THE BASE. On a reviewer
+  # run the `P<k>` worktree shares this prefix, but it is the pull request's
+  # head checked out detached for reading, not a branch this run builds on:
+  # the router shift fetches that head into `refs/cc-review/<run id>/<id>` and
+  # makes the worktree there, and the planning row then compares that HEAD
+  # with the remote head. Only that one shape passes — `--detach`, no `-b`/`-B`,
+  # a path naming a segment the manifest's `리뷰 PR` rows declare on this
+  # target, and the start point that segment's own review ref.
+  local rseg="${path#"$prefix"}" rrow
+  if [ "$det" = 1 ] && [ "$newb" = 0 ] && [ -n "$rseg" ] && [ -n "${RUN_ID:-}" ] \
+     && [ "$start" = "refs/cc-review/$RUN_ID/$rseg" ] && gate_reviewer_run \
+     && rrow=$(gate_review_pr_row "$rseg") \
+     && [ "$(manifest_row_fields "$rrow" '대상')" = "$alias" ]; then
+    return 0
+  fi
   br=$(base_branch "$alias" 2>/dev/null || true)
   if [ -z "$br" ]; then
     printf '받은 시작점: %s, 기대 시작점: 해소되지 않음 — 대상 %s 의 베이스 브랜치를 정하지 못했습니다' "${start:-없음}" "$alias"
