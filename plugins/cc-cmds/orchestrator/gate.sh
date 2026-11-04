@@ -54504,17 +54504,13 @@ gate_segment_ahead_count() {
   # `refs/remotes/origin/<base>` reaches, counting against every one of the two
   # that resolves: a local base left behind the remote would otherwise read the
   # difference as the segment's own work. The base is the `베이스 브랜치` of the
-  # target the segment row's `레포` names (the slice's, then the home target's,
-  # when the row names none). Prints an integer, or `미상` when the worktree is
-  # gone, no base ref resolves or the count fails.
-  local seg=$1 wt slug al br rn rems refs='' r n
+  # target the segment belongs to (`gate_segment_repo_alias`). Prints an
+  # integer, or `미상` when the worktree is gone, no base ref resolves or the
+  # count fails.
+  local seg=$1 wt al br rn rems refs='' r n
   wt=$(gate_segment_worktree "$seg")
   [ -n "$wt" ] && [ -d "$wt" ] || { printf '미상'; return 0; }
-  slug=$(gate_segment_field "$seg" '레포' | tr -d '`')
-  al=''
-  [ -z "$slug" ] || al=$(alias_for_slug "$slug" 2>/dev/null) || al=''
-  [ -n "$al" ] || al=$(gate_slice_alias "$seg" 2>/dev/null) || al=''
-  [ -n "$al" ] || al=$(home_alias 2>/dev/null) || al=''
+  al=$(gate_segment_repo_alias "$seg")
   br=''
   [ -z "$al" ] || br=$(base_branch "$al" 2>/dev/null) || br=''
   [ -n "$br" ] || { printf '미상'; return 0; }
