@@ -13949,9 +13949,15 @@ check "15d-2: 종료 코드 0 의 거절 스트림도 거절 종료다" "$(last1
 # The residual share of an implement process B.
 E4D15R="$WORK/e4-15r"
 mkdir -p "$E4D15R"
+# The document declares one implement slice, which owns every item. Without a
+# declaration the share depends on how many `segment` rows the ledger holds, and
+# the fixture ledger holds many (one per dispatch probe above), so no segment
+# would own any item.
 e4doc15r() {  # e4doc15r <path> <R1 노트 줄|-> — R1 is the share; R2 carries 실행 주의 and is not
   {
-    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 시 검증 항목\n\n'
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n'
+    printf '## 구현 슬라이싱\n\n### 슬라이스 A — 픽스처\n\n**스킬**: implement\n\n'
+    printf '## 구현 시 검증 항목\n\n'
     printf '### R1. 거절 판독이 선다\n\n- **검증 등급**: '
     if [ "$2" = "-" ]; then printf '구현 시 검증\n'; else printf '검증됨(통과)\n- **구현 시 검증 기록**: %s\n' "$2"; fi
     printf -- '- **검증 레시피**: `true`\n\n'
