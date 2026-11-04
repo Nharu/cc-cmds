@@ -889,9 +889,29 @@ Every row after it is
   any other tone is drawn plain.
 
 The module checks `cc-pane` and the schema `2` exactly (`1` and `3` are both
-refused); on a mismatch, a non-zero exit or a failed run it keeps the last good
-lines, adds one warning line, and opens nothing. The lines live in the session
-state key `paneLines`.
+refused); on a failure it keeps the last good lines, adds one warning line, and
+opens nothing. The warning line has two forms. When the helper call is rejected
+after at least the pane's limit less 500 ms (`HELPER_TIMEOUT_MS`, 8 seconds, so
+7.5 seconds) on the module clock, it reads `⚠ 런 상태 갱신이 8초 시한을 넘겼다`.
+Every other failure reads `⚠ 런 상태를 읽지 못했다 (<reason>)`: a rejection
+sooner than that (`실행하지 못함`), a non-zero exit (`종료 코드 N`), or a schema
+or head mismatch (the mismatch itself). The runtime reports a timeout and a
+command that could not start alike, as a rejection whose message is not part of
+its contract, so the module tells them apart by elapsed time and never reads
+the message. Both forms end with how old the screen still shown is,
+` · <age> 화면`, counted from the start of the last successful call to the
+moment this failure arrived, as `N초 전`, `N분 전` or `N시간 전` on the status
+line's boundaries; with no successful call and no lines it ends
+` · 이전 화면 없음` instead. The age is fixed when the failure arrives, and the
+next due call rewrites the line. The warning line wraps rather than truncating,
+so the age stays visible in the 44-column dock.
+
+The lines live in the session state key `paneLines`, as
+`{ lines, warning, okAt }`: `okAt` is the module clock at the start of the last
+successful helper call, `null` before the first. A value a module that did not
+know the field saved lacks it, so the module reads it as `okAt ?? null`; such a
+value with lines and no `okAt` gets no age on its warning line, because when
+those lines were drawn is not known.
 
 **The session title line.** When the session has a current title (see the
 current title file under the session title hook), the pane shows it as one
