@@ -540,6 +540,35 @@ gate_es() {  # gate_es <classifier function> [<arg>…]
   )
 }
 
+# The attention spool root, from the tap library's one public reader. The
+# library is sourced in a child shell for the reason `gate_thp` is, and only its
+# output comes back. The gate never reads the test seat variable itself: a call
+# that carries any of the four pipeline markers the router verdict reads — a
+# stage, a shift, a boot re-entry — runs that child with the variable removed
+# from its environment, so the root is the account's default spool whatever the
+# caller exported. Only a call with all four empty (the person's router seat, a
+# test suite that cleared them) lets the test seat move it. A child that fails
+# or prints nothing means there is no spool root.
+gate_attention_marked() {
+  [ -n "${CC_PIPELINE_SEGMENT:-}${CC_PIPELINE_STAGE_ID:-}${CC_PIPELINE_SHIFT_ID:-}${CC_PIPELINE_REENTRY:-}" ]
+}
+
+gate_attention_root() {  # gate_attention_root — print the spool root, or nothing
+  local lib="${cc_notify_attention_lib:-}" r=
+  [ -n "$lib" ] && [ -f "$lib" ] && [ -r "$lib" ] || return 0
+  if gate_attention_marked; then
+    r=$(env -u CC_CMDS_ATTENTION_ROOT bash -c '. "$1" || exit 2; cc_attention_root' \
+          gate-attention-root "$lib" </dev/null 2>/dev/null) || r=
+  else
+    r=$(
+      # shellcheck source=/dev/null
+      . "$lib" 2>/dev/null || exit 2  # lint-harness-global-collisions: child-shell
+      cc_attention_root
+    ) 2>/dev/null || r=
+  fi
+  printf '%s' "$r"
+}
+
 # ---------------------------------------------------------------------------
 # THE SEAT QUESTION HAS ONE OWNER, AND IT IS NOT THIS FILE.
 #
@@ -683,6 +712,12 @@ gate_approval_person_answered() {
   # gate_approval_person_answered <승인 id> — true when the approval's last row
   # records an answer a person gave that derived no disposition (`자유 입력`,
   # `슬롯 부재`). Auto-resolution does not close such an approval.
+  #
+  # `원격 발신자 미인가` is held open by the same test though it is not a
+  # person's answer: a remote answer was refused because its sender is no
+  # longer authorized, and the approval waits for the person to answer it
+  # locally. Closing it with the router's recommendation would put the router's
+  # choice where a person's answer was just refused.
   local r
   r=$(gate_row_field "$(gate_approval_last_row "$1")" '처분 사유')
   case "$r" in ''|-|'자동 해소') return 1 ;; esac
@@ -5070,6 +5105,10 @@ _gp_env_clear() {
 
 _gp_env_unset() {
   GP_ENV[${#GP_ENV[@]}]="-$1"
+  case "$1" in
+    CC_PIPELINE_SEGMENT|CC_PIPELINE_STAGE_ID|CC_PIPELINE_SHIFT_ID|CC_PIPELINE_REENTRY)
+      _gp_form "env:pipeline-marker:$1" ;;
+  esac
   return 0
 }
 
@@ -5078,6 +5117,10 @@ _gp_env_unset() {
 # `sh -c 'export AWS_PROFILE=prod; aws …'` leave no trace anywhere. Removals
 # (`-NAME`) are not assignments and never reach the table — `env -u PATH` leaves
 # the gate's own resolution PATH standing, so it is recorded and nothing more.
+# The one exception is a removal of the four pipeline markers the router
+# verdict reads (CC_PIPELINE_SEGMENT, CC_PIPELINE_STAGE_ID, CC_PIPELINE_SHIFT_ID,
+# CC_PIPELINE_REENTRY): with all four empty the gate follows the attention test
+# seat, so removing one in front of a stage's command is `form`.
 #
 #   execution identity   PATH, BASH_ENV, ENV, DYLD_*, LD_*, GIT_EXEC_PATH,
 #                        GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*
@@ -5112,12 +5155,18 @@ _gp_env_unset() {
 #   target selector      GH_REPO, GH_HOST, GH_ENTERPRISE_TOKEN, GH_TOKEN —
 #                        recorded; `gp_gh_repo` reads GH_REPO and GH_HOST
 #                        from the recorded chain
+#   spool selector       CC_CMDS_ATTENTION_ROOT — the attention spool's test
+#                        seat; set in front of a command it would move the
+#                        spool root the gate reads a remote answer from, so
+#                        the act is `form`
 #   everything else      recorded only
 _gp_env_assign() {
   local name="$1" value="$2"
   GP_ENV[${#GP_ENV[@]}]="$name=$value"
   case "$name" in
     '') _gp_form '' ;;
+    CC_CMDS_ATTENTION_ROOT)
+      _gp_form "env:spool-selector:$name" ;;
     PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
       _gp_form "env:exec-identity:$name" ;;
     GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
@@ -16879,6 +16928,9 @@ gate_pending_approvals_json() {
     # whose last `대기` row carries `처분 사유` was answered by a person and the
     # gate could derive no disposition from the answer; without this field it
     # is indistinguishable in the array from one nobody has answered.
+    # `원격 발신자 미인가` is not a person's answer: a remote answer was refused
+    # because its sender is not authorized, and the approval waits for a local
+    # re-ask.
     local disp pcls
     disp=$(gate_row_field "$row" '처분 사유'); [ -n "$disp" ] || disp='-'
     # `class` IS WHAT SEPARATES A QUESTION ONLY A PERSON ANSWERS from one the
@@ -20612,7 +20664,7 @@ gate_main() {
       # The pacing guard answers here, because a write into the dispatcher's
       # directory has no grade a declaration could meet. A read
       # grade passes it, so naming the directory while reading still grades.
-      if ! gate_pace_write_guard "$g" "$@"; then
+      if ! gate_pace_write_guard "$g" "$@" || ! gate_spool_write_guard "$g" "$@"; then
         printf '축2=거부\n'
         exit "$GATE_EXIT_RULE"
       fi
@@ -29664,16 +29716,58 @@ gate_prompt() {
   row=$(gate_approval_last_row "$id")
   [ -n "$row" ] || die "no such approval id in the ledger: $id"
   cutp=$(gate_row_field "$row" '절단점')
-  opts='[]'
-  if [ "$cutp" = "판단" ]; then
-    opts=$(for l in $(gate_menu_labels); do
-      jq -n --arg label "$l" --arg description "$(gate_menu_description "$l")" '{label: $label, description: $description}'
-    done | jq -s '.')
-  fi
+  opts=$(gate_approval_option_labels "$id" | while IFS= read -r l; do
+    jq -n --arg label "$l" --arg description "$(gate_menu_description "$l")" '{label: $label, description: $description}'
+  done | jq -s '.')
   jq -n --arg id "$id" --arg cutpoint "$cutp" --arg state "$(gate_row_field "$row" '상태')" \
         --arg question "$(gate_approval_canon_question "$id")" --arg mv "$GATE_MENU_VERSION" \
         --argjson options "$opts" \
         '{id: $id, cutpoint: $cutpoint, state: $state, question: $question, menu_version: $mv, options: $options}'
+}
+
+gate_approval_option_labels() {
+  # gate_approval_option_labels <승인 id> — the menu labels a person answers
+  # this approval with, one per line, or nothing when it has no menu.
+  #
+  # ONE RULE FOR THE PROMPT AND THE REMOTE COPY. A judgment approval — its last
+  # row's `절단점` is `판단` — is answered from the gate's label table; act and
+  # boundary approvals are asked yes or no and have no labels. The `prompt` verb
+  # and the approval's attention attachment both read the labels here, so the
+  # buttons a remote reader sees are the labels the router asks with.
+  local row l
+  row=$(gate_approval_last_row "$1")
+  [ -n "$row" ] || return 0
+  if [ "$(gate_row_field "$row" '절단점')" = "판단" ]; then
+    for l in $(gate_menu_labels); do printf '%s\n' "$l"; done
+  fi
+  return 0
+}
+
+gate_approval_attach_json() {
+  # gate_approval_attach_json <승인 id> — the attention attachment of one
+  # approval as a JSON line, `{kind, actionable, reply, body}`, or status 1 when
+  # the approval's canonical question cannot be read.
+  #
+  # The reply target is the approval surface: this run, the approval id, the
+  # canonical question and the labels of `gate_approval_option_labels`. The
+  # event is answerable only when there are labels and the judgment is not a
+  # visual approval — a visual approval is answered after looking at screens,
+  # so it carries the same labels and no buttons. The tap library derives
+  # `accepts` from `actionable`, so the attachment does not carry it.
+  local id="$1" canon labels act=false
+  canon=$(gate_approval_canon_question "$id" 2>/dev/null || true)
+  case "$canon" in
+    "승인 $id — "*) ;;
+    *) return 1 ;;
+  esac
+  labels=$(gate_approval_option_labels "$id" | jq -R . | jq -sc .) || return 1
+  if [ "$labels" != "[]" ] && [ "$(gate_approval_field "$id" '판단 부류')" != "시각-승인" ]; then
+    act=true
+  fi
+  jq -cn --arg b "$canon" --arg r "${RUN_ID:-}" --arg a "$id" --argjson o "$labels" --argjson act "$act" \
+    '{kind: "approval", actionable: $act,
+      reply: {surface: "approval", run_id: $r, approval_id: $a, question: $b, options: $o},
+      body: $b}'
 }
 
 gate_tuple_snap() {
@@ -33024,24 +33118,76 @@ gate_pace_write_guard() {
   # a copy, move, link or install destination and its `-t` value, `tar -C` when
   # extracting, an `rm` operand, and a `find` starting point under `-delete` or
   # `-exec`. An interpreter or wrapper keeps its whole operands and words.
+  #
+  # The arms themselves are `gate_root_write_guard`, which the attention spool
+  # guard runs over its own roots; this wrapper names the pacing roots.
   local graded="$1"; shift
   [ "$#" -ge 1 ] || return 0
   case "$graded" in
     읽기) return 0 ;;
   esac
-  # A destination read from a file is not one the arms below can see. This is
-  # the arm both verbs reach: `grade` calls this guard and not the sibling one.
-  if gate_progfile_opt "$@"; then
-    gate_progfile_refuse "pacing directory and every run's kickoff-frozen record"; return "$GATE_EXIT_RULE"
-  fi
-  local r1 r2 r1p r2p n a v an ap joinedn base first mode i ov gcwd eb inroot rc
-  local -a prim names
+  local r1 r2
   r1=$(gate_path_spelling "$(gate_lexical_abs "$(gate_pace_root)")")
   r2=''
   if declare -F run_pace_root >/dev/null 2>&1; then
     r2=$(gate_path_spelling "$(gate_lexical_abs "$(run_pace_root)")")
   fi
-  r1p=$(gate_path_spelling "$(gate_real_prefix "$r1")")
+  gate_root_write_guard gate_pace_write_refuse \
+    "pacing directory and every run's kickoff-frozen record" "$graded" "$r1" "$r2" -- "$@"
+}
+
+gate_spool_write_refuse() {
+  warn "rule refused: the attention spool belongs to the relay and the session seam — the remote-answer mailbox and the apply records there are what an approval's close reads to tell a remote answer from a local one, so a stage writing there forges or erases an answer's route, and no declaration and no auto-resolve admits it (spool root: $2): $1"
+}
+
+gate_spool_write_guard() {
+  # gate_spool_write_guard <graded-surface> <argv...> — the pacing guard's arms
+  # over the attention spool's roots. The roots are the one the spool library
+  # answers through `gate_attention_root` (the test seat variable is ignored
+  # inside a pipeline stage) and the default `$HOME` spelling, which is guarded
+  # even before the directory exists: the first write is the one that creates
+  # it. A read grade returns at once, as in the pacing guard.
+  local graded="$1"; shift
+  [ "$#" -ge 1 ] || return 0
+  case "$graded" in
+    읽기) return 0 ;;
+  esac
+  local r1 r2=''
+  r1=$(gate_attention_root)
+  [ -n "$r1" ] && r1=$(gate_path_spelling "$(gate_lexical_abs "$r1")")
+  if [ -n "${HOME:-}" ]; then
+    r2=$(gate_path_spelling "$(gate_lexical_abs "$HOME/.local/state/cc-cmds/attention")")
+  fi
+  [ "$r2" != "$r1" ] || r2=''
+  [ -n "$r1$r2" ] || return 0
+  gate_root_write_guard gate_spool_write_refuse \
+    "attention spool" "$graded" "$r1" "$r2" -- "$@"
+}
+
+gate_root_write_guard() {
+  # gate_root_write_guard <refuse function> <program-file label> <graded-surface>
+  # <root> <root> -- <argv...> — `GATE_EXIT_RULE`, with the refusal said by
+  # <refuse function>, when the act writes at, under or over one of the two
+  # roots (either may be empty); 0 otherwise. The arms are the ones the pacing
+  # guard's comment above describes. The refusal function is left in
+  # `GATE_ROOT_REFUSE` for the link and ancestor arms.
+  local refuse="$1" plabel="$2" graded="$3" r1="$4" r2="$5"
+  shift 5
+  [ "${1:-}" = "--" ] && shift
+  [ "$#" -ge 1 ] || return 0
+  case "$graded" in
+    읽기) return 0 ;;
+  esac
+  GATE_ROOT_REFUSE=$refuse
+  # A destination read from a file is not one the arms below can see. This is
+  # the arm both verbs reach: `grade` calls this guard and not the sibling one.
+  if gate_progfile_opt "$@"; then
+    gate_progfile_refuse "$plabel"; return "$GATE_EXIT_RULE"
+  fi
+  local r1p r2p n a v an ap joinedn base first mode i ov gcwd eb inroot rc
+  local -a prim names
+  r1p=''
+  [ -n "$r1" ] && r1p=$(gate_path_spelling "$(gate_real_prefix "$r1")")
   r2p=''
   [ -n "$r2" ] && r2p=$(gate_path_spelling "$(gate_real_prefix "$r2")")
   base="${GATE_ACT_CWD:-}"
@@ -33065,7 +33211,7 @@ gate_pace_write_guard() {
     for n in "$r1" "$r1p" "$r2" "$r2p"; do
       case "$n" in ''|'/'|'.') continue ;; esac
       if gate_nocase_contains "$joinedn" "$n"; then
-        gate_pace_write_refuse "$joinedn" "$n"; return "$GATE_EXIT_RULE"
+        "$refuse" "$joinedn" "$n"; return "$GATE_EXIT_RULE"
       fi
     done
   fi
@@ -33138,7 +33284,7 @@ gate_pace_write_guard() {
         rc=0
         gate_pace_path_hit "$n" "$base" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
         if [ "$rc" = 0 ]; then
-          gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+          "$refuse" "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
         fi
         if [ "$rc" = "$GATE_LEAF_UNRESOLVED" ]; then
           gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
@@ -33183,7 +33329,7 @@ gate_pace_link_guard() {
       rc=0
       gate_pace_path_hit "$a" "$t" "${roots[@]}" || rc=$?
       if [ "$rc" = 0 ]; then
-        gate_pace_write_refuse "ln $a (from $t)" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+        "${GATE_ROOT_REFUSE:-gate_pace_write_refuse}" "ln $a (from $t)" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
       fi
       if [ "$rc" = "$GATE_LEAF_UNRESOLVED" ]; then
         gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
@@ -33315,7 +33461,7 @@ gate_pace_ancestor_guard() {
           for r in "$@"; do
             [ -n "$r" ] || continue
             if gate_path_is_at_or_above "$anc" "$r"; then
-              gate_pace_write_refuse "$a" "$1"; return "$GATE_EXIT_RULE"
+              "${GATE_ROOT_REFUSE:-gate_pace_write_refuse}" "$a" "$r"; return "$GATE_EXIT_RULE"
             fi
           done
           anc=1 ;;
@@ -33325,7 +33471,7 @@ gate_pace_ancestor_guard() {
       gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
     fi
     if [ "$anc" = 0 ]; then
-      gate_pace_write_refuse "$a" "$1"; return "$GATE_EXIT_RULE"
+      "${GATE_ROOT_REFUSE:-gate_pace_write_refuse}" "$a" "$1"; return "$GATE_EXIT_RULE"
     fi
   done
   return 0
@@ -33867,21 +34013,19 @@ gate_notify_approval() {
   # The act approval's banner text adds the alias, cut and grade after the
   # question, which is right for a glance at a banner and wrong for the event a
   # remote reader answers from, so the canonical question goes in the funnel
-  # attachment instead. Both callers write the sidecar block and the ledger row
-  # before calling here, so the approval is found. A text that does not begin
-  # with the approval's own prefix (no row, an unreadable ledger) sends no
-  # attachment, and the banner goes up as before without an event.
+  # attachment instead, with the approval's reply target beside it. Both
+  # callers write the sidecar block and the ledger row before calling here, so
+  # the approval is found. An approval whose question cannot be read (no row,
+  # an unreadable ledger) sends no attachment, and the banner goes up as before
+  # without an event.
   #
   # The attachment is made here, after the seat check and the announcement
   # list, so no path that returns early leaves one behind.
   detail=
-  canon=$(gate_approval_canon_question "$id" 2>/dev/null || true)
-  case "$canon" in
-    "승인 $id — "*)
-      detail=$(cc_attention_detail_make "$(jq -cn --arg b "$canon" \
-        '{kind: "approval", actionable: false, reply: null, body: $b}' 2>/dev/null || true)") || detail=
-      ;;
-  esac
+  canon=$(gate_approval_attach_json "$id" 2>/dev/null || true)
+  if [ -n "$canon" ]; then
+    detail=$(cc_attention_detail_make "$canon") || detail=
+  fi
   CC_NOTIFY_ATTENTION_DETAIL="$detail" cc_notify_fire answer "$q" "$id" || true
   return 0
 }
@@ -45619,6 +45763,7 @@ gate_verb_act() {
        gate_plugin_root_write_guard "$graded" "$@" || exit $?
        gate_surface_write_guard "$graded" "$@" || exit $?
        gate_pace_write_guard "$graded" "$@" || exit $?
+       gate_spool_write_guard "$graded" "$@" || exit $?
        gate_shard_exec_guard "$@" || exit $? ;;
   esac
 
@@ -53093,6 +53238,11 @@ gate_frame_parse() {
     [ .message.content[]? | select(type == "object" and .type == "tool_result") | (.content | tostring)[0:300] ] | last // ""' 2>/dev/null || true)
   GATE_FRAME_HASANS=$(printf '%s' "$line" | jq -r '
     if (.toolUseResult.answers? | type) == "object" then "1" else "0" end' 2>/dev/null || printf '0')
+  # GATE_FRAME_AFK (1 when `toolUseResult` carries the `afkTimeoutMs` key): the
+  # harness settled the dialog by itself after the person was away, which is
+  # not a person's answer whatever the answers map says.
+  GATE_FRAME_AFK=$(printf '%s' "$line" | jq -r '
+    if (.toolUseResult? | type) == "object" and (.toolUseResult | has("afkTimeoutMs")) then "1" else "0" end' 2>/dev/null || printf '0')
   GATE_FRAME_KEY=$(printf '%s' "$line" | jq -r --arg id "$id" '
     [ .toolUseResult.questions[]? | .question | select(type == "string" and contains($id)) ] | first // ""' 2>/dev/null || true)
   [ -n "$GATE_FRAME_KEY" ] || GATE_FRAME_KEY=$(printf '%s' "$line" | jq -r --arg id "$id" '
@@ -53190,6 +53340,113 @@ gate_close_lost() {
   # here on refusal; the appends stay literal `gate_append '승인'` calls so the
   # field table lint keeps reading them.
   die "approval '$1' was resolved by another close while this close was reading the answer (now '$(gate_approval_state "$1")') — this answer was not recorded"
+}
+
+gate_close_answers_digest() {
+  # gate_close_answers_digest <tool_use_id> — the sha256 of the answers the
+  # joined frame carries, by the preimage the remote-reply rule fixes: for each
+  # question of the call's `input.questions`, in order, the question text, byte
+  # 0x1F, `toolUseResult.answers[question]`, byte 0x1E. Status 1 and nothing
+  # printed when the call is not found or any answer is missing or not a string.
+  local tok="$1" tu pre
+  tu=$( { grep -F "\"id\":\"$tok\"" "$GATE_FRAME_FILE" 2>/dev/null || true; } \
+        | { grep -F '"type":"tool_use"' || true; } | tail -1)
+  [ -n "$tu" ] || return 1
+  pre=$(printf '%s\n%s\n' "$tu" "$GATE_FRAME_LINE" | jq -sj --arg tid "$tok" '
+    ([ .[0].message.content[]? | select(type == "object" and .type == "tool_use" and .id == $tid) ] | last) as $c
+    | (.[1].toolUseResult.answers?) as $a
+    | if $c == null or ($a | type) != "object" or (($c.input.questions? | type) != "array") then error("unread") else . end
+    | [ $c.input.questions[] | .question as $q
+        | if ($q | type) != "string" or (($a[$q]? | type) != "string") then error("unanswered")
+          else $q + "\u001f" + $a[$q] + "\u001e" end ]
+    | add // error("empty")' 2>/dev/null) || return 1
+  [ -n "$pre" ] || return 1
+  printf '%s' "$pre" | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_close_response_route() {
+  # gate_close_response_route <승인 id> <tool_use_id> — sets GATE_CLOSE_ROUTE
+  # (`원격` or `로컬`) and GATE_CLOSE_SENDER (the remote record's sender, or
+  # empty) for the answer frame being closed.
+  #
+  # THE LOOKUP IS NARROWED BY THE RUN'S MAILBOX, NOT BY SCANNING `applied/`. An
+  # approval's remote answer arrives as an envelope in `inbox/r-<run id>/`, and
+  # its target names this run and this approval; only such envelopes are read,
+  # and each one's `reply_id` opens exactly one `applied/<reply_id>.json` by
+  # name. A record counts only when its schema is 1, its `tool_use_id` is the
+  # frame's, its `event_id` is the envelope's, and its `answers_sha256` equals
+  # the digest recomputed from the frame. Exactly one counting record makes the
+  # route remote; none, or more than one (the contract allows one envelope per
+  # event, so two cannot be told apart), keeps it local.
+  #
+  # THE GATE WRITES NOTHING IN THE SPOOL. It creates, edits and removes no file
+  # there; the mailbox and the records belong to the relay and the session seam.
+  # A missing spool root, mailbox or envelope is a local answer, and so is an
+  # envelope removed by the relay's seven-day cleanup before this close ran.
+  local id="$1" tok="$2" root env rid eid ap dig n=0 snd=""
+  GATE_CLOSE_ROUTE="로컬"; GATE_CLOSE_SENDER=""
+  root=$(gate_attention_root)
+  [ -n "$root" ] && [ -n "${RUN_ID:-}" ] && [ -d "$root/inbox/r-$RUN_ID" ] || return 0
+  dig=$(gate_close_answers_digest "$tok") || return 0
+  for env in "$root/inbox/r-$RUN_ID"/*.json; do
+    [ -f "$env" ] || continue
+    rid=$(jq -r --arg r "$RUN_ID" --arg a "$id" '
+      if .schema == 1 and (.target | type) == "object" and .target.surface == "approval"
+         and .target.run_id == $r and .target.approval_id == $a
+         and (.reply_id | type) == "string" and (.event_id | type) == "string"
+      then .reply_id else empty end' "$env" 2>/dev/null || true)
+    case "$rid" in
+      ''|*/*|.|..) continue ;;
+    esac
+    eid=$(jq -r '.event_id' "$env" 2>/dev/null || true)
+    ap="$root/applied/$rid.json"
+    [ -f "$ap" ] || continue
+    if jq -e --arg t "$tok" --arg e "$eid" --arg d "$dig" '
+         .schema == 1 and .tool_use_id == $t and .event_id == $e and .answers_sha256 == $d
+         and (.sender | type) == "string"' "$ap" >/dev/null 2>&1; then
+      n=$((n + 1))
+      snd=$(jq -r '.sender' "$ap" 2>/dev/null || true)
+    fi
+  done
+  if [ "$n" -eq 1 ] && [ -n "$snd" ]; then
+    GATE_CLOSE_ROUTE="원격"; GATE_CLOSE_SENDER="$snd"
+  elif [ "$n" -gt 1 ]; then
+    warn "approval $1 has $n remote apply records for one answer frame — none can be trusted over the others, so the close is recorded as local"
+  fi
+  return 0
+}
+
+gate_remote_sender_authorized() {
+  # gate_remote_sender_authorized <sender> — 0 when the sender authorization
+  # file registers that sender with the `option` capability. A missing file, a
+  # file that is not JSON or whose schema is not 1 authorizes nobody: reading an
+  # unreadable file as permission would turn the check off by deleting a file.
+  local f="${HOME:-}/.config/cc-cmds/remote-senders.json"
+  [ -n "${HOME:-}" ] && [ -f "$f" ] && [ -r "$f" ] || return 1
+  jq -e --arg s "$1" '
+    .schema == 1 and (.senders | type) == "array"
+    and any(.senders[]; type == "object" and .id == $s
+            and (.capabilities | type) == "array" and any(.capabilities[]; . == "option"))' \
+    "$f" >/dev/null 2>&1
+}
+
+gate_close_route_fit() {
+  # gate_close_route_fit <field=value>... — how many response-route fields a
+  # closing `승인` row with these fields can carry under `GATE_ROW_MAX`: 2 for
+  # `응답 경로` and `원격 발신` (a remote close only), 1 for `응답 경로` alone,
+  # 0 for neither. The close itself never waits on this: a row that cannot
+  # carry the fields is written without them.
+  if [ "$GATE_CLOSE_ROUTE" = "원격" ]; then
+    if [ "$(gate_row_projected_bytes '승인' "$@" "응답 경로=$GATE_CLOSE_ROUTE" "원격 발신=$GATE_CLOSE_SENDER")" -le "$GATE_ROW_MAX" ]; then
+      printf '2'; return 0
+    fi
+    warn "the closing row would exceed the row cap, so 「원격 발신」 is left off"
+  fi
+  if [ "$(gate_row_projected_bytes '승인' "$@" "응답 경로=$GATE_CLOSE_ROUTE")" -le "$GATE_ROW_MAX" ]; then
+    printf '1'; return 0
+  fi
+  warn "the closing row would exceed the row cap, so 「응답 경로」 is left off"
+  printf '0'
 }
 
 gate_close() {
@@ -53321,6 +53578,43 @@ gate_close() {
   fi
   tok="$GATE_FRAME_TID"
 
+  # AN AWAY-TIMEOUT SETTLEMENT IS NOT AN ANSWER. When `toolUseResult` carries
+  # `afkTimeoutMs`, the harness closed the dialog itself after the person was
+  # away; the answers map it carries was never chosen by anyone. Nothing is
+  # written, so the approval reads exactly as unanswered and the next answer
+  # frame is judged afresh.
+  if [ "$GATE_FRAME_AFK" = "1" ]; then
+    warn "the answer frame of approval $id was settled by the away timeout (afkTimeoutMs), not by a person — nothing is written to the ledger and it is left waiting"
+    exit "$GATE_EXIT_APPROVAL"
+  fi
+
+  # ---- response route: remote or local, from the spool's records only
+  gate_close_response_route "$id" "$tok"
+  # A REMOTE ANSWER COUNTS ONLY FROM A SENDER STILL AUTHORIZED NOW. The relay
+  # checked the sender when the answer arrived; the authorization file may have
+  # dropped that sender since, and the close is the last point where the answer
+  # can be refused before it becomes a disposition. The refusal is a `대기` row
+  # with its own reason, so the morning reader sees an answer that was refused
+  # and waits for a local re-ask rather than an approval nobody touched.
+  if [ "$GATE_CLOSE_ROUTE" = "원격" ] && ! gate_remote_sender_authorized "$GATE_CLOSE_SENDER"; then
+    if [ "$(gate_row_field "$row" '처분 사유')" = "원격 발신자 미인가" ] && [ "$(gate_row_field "$row" '응답 토큰')" = "$tok" ]; then
+      warn "approval $id is already recorded as '원격 발신자 미인가' for this answer frame — it is left waiting (it is looked at again when a new answer arrives)"
+      exit "$GATE_EXIT_APPROVAL"
+    fi
+    warn "the remote answer of approval $id came from sender '$GATE_CLOSE_SENDER', which the sender authorization file does not authorize for options now — no disposition was derived and it is left waiting for a local answer"
+    gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=대기" "대상=$(gate_row_field "$row" '대상')" "절단점=$cutp" \
+      "막는 세그먼트=$(gate_row_field "$row" '막는 세그먼트')" "질문 문면=$q" \
+      "판단 부류=$(c=$(gate_approval_field "$id" '판단 부류'); printf '%s' "${c:--}")" \
+      "처분 사유=원격 발신자 미인가" "응답 토큰=$tok" "사이드카 앵커=$anchor" "관측 시각=$(now_iso)" || gate_close_lost "$id"
+    exit "$GATE_EXIT_APPROVAL"
+  fi
+  # The closing rows below carry the route in three literal spellings each (both
+  # fields, `응답 경로` alone, neither), chosen by `gate_close_route_fit`: the
+  # field-table lint reads only literal keys, and the close never fails on the
+  # cap — it drops `원격 발신` first, then `응답 경로`.
+  local ts fit
+  local -a cf
+
   if [ "$cutp" != "판단" ]; then
     # ---- act and boundary approvals: the frame decides, the closer's flag is
     # the disposition. There is no menu to compare and no label set to read, so
@@ -53334,25 +53628,65 @@ gate_close() {
     adig=$(printf '%s' "$afull" | shasum -a 256 | cut -d' ' -f1)
     gate_approval_sidecar_write "$id" answer '답변' "$afull" \
       || warn "could not write the full answer text into the approval sidecar — the row is closed, but the answer section of anchor $anchor is empty"
+    ts=$(now_iso)
     if [ "$void" = "1" ]; then
-      gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=무효" "질문 문면=$q" \
-        "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)" \
-        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
+      cf=("승인 id=$id" "상태=무효" "질문 문면=$q" "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$ts"
+          "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor")
+      fit=$(gate_close_route_fit "${cf[@]}")
+      case "$fit" in
+        2) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=무효" "질문 문면=$q" \
+             "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$ts" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+             "응답 경로=$GATE_CLOSE_ROUTE" "원격 발신=$GATE_CLOSE_SENDER" || gate_close_lost "$id" ;;
+        1) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=무효" "질문 문면=$q" \
+             "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$ts" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+             "응답 경로=$GATE_CLOSE_ROUTE" || gate_close_lost "$id" ;;
+        *) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=무효" "질문 문면=$q" \
+             "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$ts" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id" ;;
+      esac
       gate_close_settle "$id"
       log "승인 무효 — $id (행위는 수행되지 않습니다)"
       return 0
     fi
     if [ "$reject" = "1" ]; then
-      gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=거부" "질문 문면=$q" \
-        "답변 문면=트랜스크립트 판독" "해소 시각=$(now_iso)" \
-        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
+      cf=("승인 id=$id" "상태=거부" "질문 문면=$q" "답변 문면=트랜스크립트 판독" "해소 시각=$ts"
+          "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor")
+      fit=$(gate_close_route_fit "${cf[@]}")
+      case "$fit" in
+        2) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=거부" "질문 문면=$q" \
+             "답변 문면=트랜스크립트 판독" "해소 시각=$ts" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+             "응답 경로=$GATE_CLOSE_ROUTE" "원격 발신=$GATE_CLOSE_SENDER" || gate_close_lost "$id" ;;
+        1) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=거부" "질문 문면=$q" \
+             "답변 문면=트랜스크립트 판독" "해소 시각=$ts" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+             "응답 경로=$GATE_CLOSE_ROUTE" || gate_close_lost "$id" ;;
+        *) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=거부" "질문 문면=$q" \
+             "답변 문면=트랜스크립트 판독" "해소 시각=$ts" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id" ;;
+      esac
       gate_close_settle "$id"
       log "승인 거부 — $id (물었고 답이 아니오입니다)"
       return 0
     fi
-    gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
-      "답변 문면=트랜스크립트 판독" "해소 시각=$(now_iso)" \
-      "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
+    cf=("승인 id=$id" "상태=승인" "질문 문면=$q" "답변 문면=트랜스크립트 판독" "해소 시각=$ts"
+        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor")
+    fit=$(gate_close_route_fit "${cf[@]}")
+    case "$fit" in
+      2) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
+           "답변 문면=트랜스크립트 판독" "해소 시각=$ts" \
+           "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+           "응답 경로=$GATE_CLOSE_ROUTE" "원격 발신=$GATE_CLOSE_SENDER" || gate_close_lost "$id" ;;
+      1) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
+           "답변 문면=트랜스크립트 판독" "해소 시각=$ts" \
+           "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+           "응답 경로=$GATE_CLOSE_ROUTE" || gate_close_lost "$id" ;;
+      *) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
+           "답변 문면=트랜스크립트 판독" "해소 시각=$ts" \
+           "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id" ;;
+    esac
     gate_close_settle "$id"
     log "승인 해소 — $id"
     return 0
@@ -53424,9 +53758,23 @@ gate_close() {
     # would make the listing show entries that are not answers.
     mkdir -p "$RUN_DIR/answer"
     printf '%s\n' "$afull" > "$RUN_DIR/answer/$id.md"
-    gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=$label" "질문 문면=$q" \
-      "답변 문면=$aex" "해소 시각=$(now_iso)" \
-      "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
+    ts=$(now_iso)
+    cf=("승인 id=$id" "상태=$label" "질문 문면=$q" "답변 문면=$aex" "해소 시각=$ts"
+        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor")
+    fit=$(gate_close_route_fit "${cf[@]}")
+    case "$fit" in
+      2) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=$label" "질문 문면=$q" \
+           "답변 문면=$aex" "해소 시각=$ts" \
+           "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+           "응답 경로=$GATE_CLOSE_ROUTE" "원격 발신=$GATE_CLOSE_SENDER" || gate_close_lost "$id" ;;
+      1) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=$label" "질문 문면=$q" \
+           "답변 문면=$aex" "해소 시각=$ts" \
+           "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+           "응답 경로=$GATE_CLOSE_ROUTE" || gate_close_lost "$id" ;;
+      *) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=$label" "질문 문면=$q" \
+           "답변 문면=$aex" "해소 시각=$ts" \
+           "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id" ;;
+    esac
     gate_close_settle "$id"
     case "$label" in
       승인) log "승인 해소 — $id" ;;
@@ -53468,9 +53816,23 @@ gate_close() {
       adig=$(printf '%s' "$afull" | shasum -a 256 | cut -d' ' -f1)
       mkdir -p "$RUN_DIR/answer"
       printf '%s\n' "$afull" > "$RUN_DIR/answer/$id.md"
-      gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
-        "답변 문면=자유 입력(답변 저장소)" "해소 시각=$(now_iso)" "처분 사유=$reason" \
-        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
+      ts=$(now_iso)
+      cf=("승인 id=$id" "상태=승인" "질문 문면=$q" "답변 문면=자유 입력(답변 저장소)" "해소 시각=$ts"
+          "처분 사유=$reason" "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor")
+      fit=$(gate_close_route_fit "${cf[@]}")
+      case "$fit" in
+        2) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
+             "답변 문면=자유 입력(답변 저장소)" "해소 시각=$ts" "처분 사유=$reason" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+             "응답 경로=$GATE_CLOSE_ROUTE" "원격 발신=$GATE_CLOSE_SENDER" || gate_close_lost "$id" ;;
+        1) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
+             "답변 문면=자유 입력(답변 저장소)" "해소 시각=$ts" "처분 사유=$reason" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" \
+             "응답 경로=$GATE_CLOSE_ROUTE" || gate_close_lost "$id" ;;
+        *) gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
+             "답변 문면=자유 입력(답변 저장소)" "해소 시각=$ts" "처분 사유=$reason" \
+             "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id" ;;
+      esac
       gate_close_settle "$id"
       log "승인 해소 — $id (자유 입력, $RUN_DIR/answer/$id.md)"
       return 0
