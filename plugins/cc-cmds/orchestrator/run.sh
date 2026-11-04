@@ -4401,12 +4401,20 @@ run_section_rows() {
   # the whole file is this run's and the headings — if a fresh `ledger_init`
   # wrote any — carry no scoping meaning, so they are not consulted.
   #
+  # An unset scope is resolved here rather than defaulted to `블록`. The driver
+  # resolves it before its first read, but the gate sources this file and never
+  # does, and the gate's ledger is `<run-id>.md` with no `## 실행 ` heading: a
+  # `블록` default there would find no block and return no rows, and every
+  # gate-side reader (the halt answers a person gave, a standing refusal) would
+  # read an empty ledger.
+  #
   # The series prefixes are joined with the unit separator (\037), not a
   # newline: BSD awk refuses a `-v` value holding a newline ("newline in
   # string") and the `2>/dev/null` below would turn that refusal into "no rows"
   # on every call on macOS.
   local ps="" s
   for s in "$@"; do ps="${ps}- \`$s\`"$'\037'; done
+  [ -n "$LEDGER_SCOPE" ] || ledger_scope_resolve
   awk -v h="## 실행 $RUN_ID" -v ps="$ps" -v scope="${LEDGER_SCOPE:-블록}" '
     BEGIN { whole = (scope == "파일"); inblk = whole; np = split(ps, p, "\037") - 1 }
     !whole && $0 == h { inblk = 1; next }
