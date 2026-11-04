@@ -38806,6 +38806,48 @@ printf -- '- `segment` | id=SXA | 상태=완료 | 적용=정산 | prev=p4\n' >>"
 check "13: 정지를 건 세그먼트가 정산되면 그 세그먼트는 다시 착지로 읽힌다" \
   "$(sb13x_call gate_segment_landed_now SXB | cut -d: -f1)" "0"
 
+# 대상 둘 — 홈 main 과 비홈 infra. 라우터의 `머지됨` 행에는 `레포` 가 없으므로, 세그먼트의
+# 대상은 마지막 행이 아니라 그 세그먼트 행들 가운데 마지막의 비어 있지 않은 `레포` 로 정해야
+# 한다. 마지막 행만 보면 빈 슬러그가 홈으로 읽혀, 비홈 정지 아래 대기 세그먼트가 착지로
+# 읽히고(그 위의 다른 레포 `선행` 이 디스패치된다) 홈 정지 아래 비홈 세그먼트가 붙들린다.
+sb13y_m="$WORK/sb13y-manifest.md"
+sb13y_home=$(grep -m1 '^- `target`' "$SA_MANIFEST")
+sb13y_hslug=$(printf '%s\n' "$sb13y_home" | tr '|' '\n' | sed -n 's/^ *원격 슬러그=//p' | sed 's/[[:space:]]*$//')
+sb13y_ri="- \`target\` | 별칭=infra | 메인 워크트리=$WORK/sb13y-infra | 공통 git 디렉터리=$WORK/sb13y-infra/.git | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/sb13y-infra | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=선머지후리뷰"
+awk -v b="$sb13y_ri" '{ print } /^- `target`/ && !done { print b; done = 1 }' "$SA_MANIFEST" >"$sb13y_m"
+sb13y_call() {  # sb13y_call <원장> <함수> <세그먼트> — 대상 둘 매니페스트로 게이트를 소싱해 부른다
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; LEDGER="$2"; MANIFEST="$3"; r=0; out=$("$4" "$5") || r=$?; printf "%s:%s" "$r" "$out"' \
+    _ "$GATE" "$1" "$sb13y_m" "$2" "$3" 2>/dev/null
+}
+check "13: 대상 둘 매니페스트가 두 별칭을 낸다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; target_aliases | LC_ALL=C sort | tr "\n" " "' _ "$GATE" "$sb13y_m" 2>/dev/null)" "infra main "
+sb13y_l="$WORK/sb13y-ledger.md"
+{
+  printf -- '- `segment` | id=SYA | 상태=실행중 | 레포=`t/sb13y-infra` | prev=q0\n'
+  printf -- '- `segment` | id=SYA | 상태=머지됨 | PR=1 | 머지 커밋=n1 | 워크트리=/x/a | 적용=대기 | prev=q1\n'
+  printf -- '- `segment` | id=SYA | 상태=park | 적용=불명 | 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치 | 대상=infra | prev=q2\n'
+  printf -- '- `segment` | id=SYB | 상태=실행중 | 레포=`t/sb13y-infra` | prev=q3\n'
+  printf -- '- `segment` | id=SYB | 상태=머지됨 | PR=2 | 머지 커밋=n2 | 워크트리=/x/b | 적용=대기 | prev=q4\n'
+  printf -- '- `segment` | id=SYM | 상태=실행중 | 레포=`%s` | 선행=SYB | prev=q5\n' "$sb13y_hslug"
+} >"$sb13y_l"
+check "13: 비홈 대상 정지가 레포 없는 라우터 머지됨 행의 같은 대상 세그먼트를 붙든다" \
+  "$(sb13y_call "$sb13y_l" gate_segment_target_stopped SYB)" "0:SYA"
+check "13: 비홈 대상 정지로 대기 중인 세그먼트는 착지로 읽히지 않는다" \
+  "$(sb13y_call "$sb13y_l" gate_segment_landed_now SYB | cut -d: -f1)" "2"
+check "13: 비홈 대상 정지는 홈 대상 세그먼트를 붙들지 않는다" \
+  "$(sb13y_call "$sb13y_l" gate_segment_target_stopped SYM)" "1:"
+sb13y_l2="$WORK/sb13y-ledger2.md"
+{
+  printf -- '- `segment` | id=SZH | 상태=실행중 | 레포=`%s` | prev=r0\n' "$sb13y_hslug"
+  printf -- '- `segment` | id=SZH | 상태=park | 적용=불명 | 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치 | 대상=main | prev=r1\n'
+  printf -- '- `segment` | id=SZI | 상태=실행중 | 레포=`t/sb13y-infra` | prev=r2\n'
+  printf -- '- `segment` | id=SZI | 상태=머지됨 | PR=3 | 머지 커밋=n3 | 워크트리=/x/c | 적용=대기 | prev=r3\n'
+} >"$sb13y_l2"
+check "13: 홈 대상 정지는 레포 없는 라우터 머지됨 행의 비홈 세그먼트를 붙들지 않는다" \
+  "$(sb13y_call "$sb13y_l2" gate_segment_target_stopped SZI)" "1:"
+check "13: 홈 대상 정지 중 비홈 대기 세그먼트는 착지로 읽힌다" \
+  "$(sb13y_call "$sb13y_l2" gate_segment_landed_now SZI | cut -d: -f1)" "0"
+
 # 종료 코드 대응 행 — 필요=21 이면 사전 21 이 적용 필요이고, 2 는 더 이상 필요가 아니다.
 SB_CODES='0 21' sb_apply_new '13 대응 수렴' "if [ -f $WORK/sb13-map ]; then exit 0; else exit 21; fi" "touch $WORK/sb13-map"
 sb_reviewed_landing SB13M

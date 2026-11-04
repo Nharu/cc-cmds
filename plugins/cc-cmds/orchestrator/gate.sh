@@ -16562,25 +16562,29 @@ EOF
   printf 'live_applies\t%s\napply_unsettled\t%s\napply_imported\t%s\napply_target_stopped\t%s\n' "$live" "$uns" "$imp" "$tst"
 }
 
-gate_segment_alias_guess() {
-  # gate_segment_alias_guess <segment> — the alias of a segment whose rows name
-  # no repository: the manifest's one target when it declares exactly one.
-  local a n
-  a=$(target_aliases 2>/dev/null || true)
-  n=$(printf '%s\n' "$a" | grep -c . || true)
-  [ "$n" = "1" ] && printf '%s' "$a"
-  return 0
+gate_segment_repo_alias() {
+  # gate_segment_repo_alias <segment> — the target alias the segment belongs
+  # to: the last non-empty `레포` over all of its rows, then its slice's `레포`,
+  # then the home target. The last row alone does not answer: the router's
+  # `머지됨` row carries no `레포`, and an empty slug would read as the home
+  # target in a run of several targets.
+  local seg="$1" slug al=''
+  slug=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values '레포' \
+           | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF { v = $0 } END { print v }')
+  [ -z "$slug" ] || al=$(alias_for_slug "$slug" 2>/dev/null) || al=''
+  [ -n "$al" ] || al=$(gate_slice_alias "$seg" 2>/dev/null) || al=''
+  [ -n "$al" ] || al=$(home_alias 2>/dev/null) || al=''
+  printf '%s' "$al"
 }
 
 gate_segment_target_stopped() {
-  # gate_segment_target_stopped <segment> — 0 when the target the segment's
-  # rows name (or the manifest's one target) holds a target stop set by
-  # another segment; prints that segment. The snapshot's `대상 정지` list and
-  # the landing reader both ask this, so the shift and the dispatch floor read
-  # the same refused segments.
+  # gate_segment_target_stopped <segment> — 0 when the target the segment
+  # belongs to (`gate_segment_repo_alias`) holds a target stop set by another
+  # segment; prints that segment. The snapshot's `대상 정지` list and the
+  # landing reader both ask this, so the shift and the dispatch floor read the
+  # same refused segments.
   local seg="$1" sa held
-  sa=$(alias_for_slug "$(gate_segment_field "$seg" '레포' | tr -d '`')" 2>/dev/null || true)
-  [ -n "$sa" ] || sa=$(gate_segment_alias_guess "$seg")
+  sa=$(gate_segment_repo_alias "$seg")
   [ -n "$sa" ] || return 1
   held=$( { apply_target_stopped "$sa" || true; } | awk -v me="$seg" '$0 "" != me ""' | sed -n '1p')
   [ -n "$held" ] || return 1
