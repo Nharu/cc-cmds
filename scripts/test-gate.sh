@@ -5415,13 +5415,16 @@ pre_sb() {
     # 종료 코드 대응 행을 싣는다. `SB_SLICE='<세그먼트> <프로브>'` 를 앞에 붙이면
     # 그 세그먼트의 슬라이스가 `**적용 프로브**` 를 선언한 설계 문서를 매니페스트의
     # 설계 문서로 둔다 — 대응 행은 여전히 매니페스트 프로브에 묶인다.
+    # `SB_RADIUS=<반경>` 을 함께 붙이면 그 슬라이스가 `**폭발 반경**` 도 선언한다.
     local label="$1" probe="$2" cmd="$3" actor="${4:-파이프라인}" ceil="${5:-선리뷰후머지}"
     shift 3; shift $(( $# < 2 ? $# : 2 ))
     sb_new "$label" "$ceil"
     SA_APPLY="$actor"; SA_APPLY_PROBE="$probe"; SA_APPLY_CMD="$cmd"; SA_APPLY_CODES="${SB_CODES:-}"
     if [ -n "${SB_SLICE:-}" ]; then
-      printf '# 픽스처\n\n## 구현 슬라이싱\n\n### 슬라이스 %s — 적용\n\n**스킬**: implement\n**레포**: t/%s\n**선언 파일**: `a.txt`\n**선행**: 없음\n**적용 프로브**: `%s`\n' \
-        "${SB_SLICE%% *}" "$SA_ID" "${SB_SLICE#* }" > "$SA_ROOT/slice-doc.md"
+      { printf '# 픽스처\n\n## 구현 슬라이싱\n\n### 슬라이스 %s — 적용\n\n**스킬**: implement\n**레포**: t/%s\n**선언 파일**: `a.txt`\n**선행**: 없음\n**적용 프로브**: `%s`\n' \
+          "${SB_SLICE%% *}" "$SA_ID" "${SB_SLICE#* }"
+        [ -z "${SB_RADIUS:-}" ] || printf '**폭발 반경**: %s\n' "$SB_RADIUS"
+      } > "$SA_ROOT/slice-doc.md"
       SA_OWNER_DOC="${SA_ROOT#/}/slice-doc.md"
     fi
     sa_manifest "$ceil" "$@"
@@ -35942,6 +35945,81 @@ SHH_SR4="$CAP_DIR/halt/SR4#1.md"
 shh_runrec "$SHH_SR4" 'SR4#1' 'Step 3 게이트 도달 좌석 실행 — 도구 설치가 막혔다' "$SHH_RUNOPT" '- `보류` — 사람이 처분을 정한다.'
 shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
 shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
+
+# 고칠 곳 판정 — 좌석 실행 답만 고칠 곳·판정 근거·측정 등급을 싣는다. 외부 서비스로
+# 판정하고 잰 항목이 모두 검증불가(드리프트)면 외부-보류 로 라우팅되고, 교대의 park 행이
+# 그 판정을 옮겨 싣는다. 그 park 이 선 동안 같은 R 항목을 다시 재는 좌석 실행 답은 거절된다.
+SHH_DRIFT='측정 등급=R2:검증불가(드리프트),R5:검증불가(드리프트)'
+shh_seg SR5 "$CONE_E" 선행=없음
+shh_sr SR5 1
+SHH_SR5="$CAP_DIR/halt/SR5#1.md"
+shh_runrec "$SHH_SR5" 'SR5#1' 'Step 3 잔여 검증 좌석 실행 — 외부 API 가 응답하지 않는다' "$SHH_RUNOPT" '- `보류` — 사람이 처분을 정한다.'
+shh_h0=$(shh_ha)
+shh_run SR5 "$SHH_SR5" '답한 주체=좌석' '고칠 곳=외부 서비스' "$SHH_DRIFT"
+shh_refused "판정 근거 없는 외부 서비스 판정" 2 '중단 답' "$shh_h0"
+shh_run SR5 "$SHH_SR5" '답한 주체=좌석' '고칠 곳=외부 서비스' '판정 근거=x' '판정 주체=게이트' "$SHH_DRIFT"
+shh_refused "판정 주체 를 넘긴 좌석 실행 답" 3 '중단 답' "$shh_h0"
+shh_run SR5 "$SHH_SR5" '답한 주체=좌석' '고칠 곳=외부 서비스' '판정 근거=x' '판정 신호=관측 근거' "$SHH_DRIFT"
+shh_refused "판정 신호 를 넘긴 좌석 실행 답" 3 '중단 답' "$shh_h0"
+shh_run SR5 "$SHH_SR5" '답한 주체=좌석' '고칠 곳=외부 서비스' '판정 근거=x' '측정 등급=R2:모름'
+shh_refused "닫힌 값이 아닌 측정 등급" 2 '중단 답' "$shh_h0"
+shh_run SR5 "$SHH_SR5" '답한 주체=좌석' '고칠 곳=외부 서비스' \
+  '판정 근거=GET /v1/items 503 Service Unavailable — Authorization: Bearer abcdef0123456789abcdef' "$SHH_DRIFT"
+check "34f: 외부 서비스 판정의 좌석 실행 답이 받힌다" "$rc" "0"
+shh_sr5row=$(cap_rows '중단 답' | tail -1)
+check "34f: 그 답 행은 고칠 곳·판정 주체·판정 신호·측정 등급·라우팅 을 싣는다" \
+  "$(row_field "$shh_sr5row" '고칠 곳')|$(row_field "$shh_sr5row" '판정 주체')|$(row_field "$shh_sr5row" '판정 신호')|$(row_field "$shh_sr5row" '측정 등급')|$(row_field "$shh_sr5row" '라우팅')" \
+  "외부 서비스|좌석|관측 근거|R2:검증불가(드리프트),R5:검증불가(드리프트)|외부-보류"
+case "$shh_sr5row" in
+  *abcdef0123456789abcdef*) bad "34f: 판정 근거의 비밀 가림" "토큰이 남았다: $shh_sr5row" ;;
+  *'<가림>'*) ok "34f: 판정 근거의 토큰은 가려진다" ;;
+  *) bad "34f: 판정 근거의 비밀 가림" "가림 표지가 없다: $shh_sr5row" ;;
+esac
+check "34f: 스냅숏이 그 답을 외부-보류 로 라우팅한다" \
+  "$(cap_snap "$SHH_SEAT" '' | jq -r --arg r "$SHH_SR5" '[.answered_halts[] | select(.record == $r) | .route] | last // ""')" "외부-보류"
+cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind segment --target infra --segment SR5 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SHIFT" "$SHH_RID#1")" \
+         --rationale "픽스처 — 외부-보류 park" -- 상태=park "워크트리=$CONE_E" 선행=없음
+shh_sr5park=$( { cap_rows 'segment' | grep -F 'id=SR5 ' || true; } | tail -1)
+check "34f: 외부-보류 답을 집행하는 park 행이 판정 필드 넷을 옮겨 싣는다" \
+  "$rc|$(row_field "$shh_sr5park" 상태)|$(row_field "$shh_sr5park" '고칠 곳')|$(row_field "$shh_sr5park" '판정 주체')|$(row_field "$shh_sr5park" '판정 신호')|$( [ -n "$(row_field "$shh_sr5park" '판정 근거')" ] && printf 있음 || printf 없음)" \
+  "0|park|외부 서비스|좌석|관측 근거|있음"
+check "34f: 그 park 이 외부-보류 답을 소진한다" \
+  "$(cap_snap "$SHH_SEAT" '' | jq -r --arg r "$SHH_SR5" '[.answered_halts[] | select(.record == $r)] | length')" "0"
+shh_sr SR5 2
+SHH_SR5B="$CAP_DIR/halt/SR5#2.md"
+shh_runrec "$SHH_SR5B" 'SR5#2' 'Step 3 잔여 검증 좌석 실행 — 외부 API 를 다시 잰다' "$SHH_RUNOPT" '- `보류` — 사람이 처분을 정한다.'
+shh_h0=$(shh_ha)
+shh_run SR5 "$SHH_SR5B" '답한 주체=좌석'
+shh_refused "외부-보류 park 중 같은 R 항목의 둘째 좌석 실행 답" 3 '중단 답' "$shh_h0"
+case "$msg" in
+  *"외부-보류 park 중"*"번째 줄의 좌석 실행 답이 이미 쟀습니다"*) ok "34f: 재측정 거절 문면이 앞선 답의 줄을 든다" ;;
+  *) bad "34f: 재측정 거절 문면" "$msg" ;;
+esac
+
+# 반증이 섞인 답은 외부 서비스로 판정해도 재부착이다.
+shh_seg SR6 "$CONE_E" 선행=없음
+shh_sr SR6 1
+SHH_SR6="$CAP_DIR/halt/SR6#1.md"
+shh_runrec "$SHH_SR6" 'SR6#1' 'Step 3 잔여 검증 좌석 실행 — 한 항목이 반증됐다' "$SHH_RUNOPT" '- `보류` — 사람이 처분을 정한다.'
+shh_run SR6 "$SHH_SR6" '답한 주체=좌석' '고칠 곳=외부 서비스' '판정 근거=503 Service Unavailable' \
+  '측정 등급=R2:반증됨(실패),R5:검증불가(드리프트)'
+check "34f: 반증이 섞인 외부 서비스 판정 답이 받힌다" "$rc" "0"
+check "34f: 반증이 섞인 답의 행에는 라우팅=외부-보류 가 없다" \
+  "$(row_field "$(cap_rows '중단 답' | tail -1)" '라우팅')" ""
+check "34f: 반증이 섞인 답은 재부착 으로 라우팅된다" \
+  "$(cap_snap "$SHH_SEAT" '' | jq -r --arg r "$SHH_SR6" '[.answered_halts[] | select(.record == $r) | .route] | last // ""')" "재부착"
+
+# 좌석 실행이 아닌 답에는 고칠 곳 을 싣지 못한다.
+shh_sr SR7 1
+SHH_SR7="$CAP_DIR/halt/SR7#1.md"
+shh_runrec "$SHH_SR7" 'SR7#1' 'Step 3 잔여 검증 좌석 실행 — 사람이 처분한다' "$SHH_RUNOPT" '- `보류` — 사람이 처분을 정한다.'
+shh_h0=$(shh_ha)
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SR7 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — 사람의 답" \
+         -- "중단 기록=$SHH_SR7" '선택지=보류' '답한 주체=사람' '근거=사람이 고름' '고칠 곳=런' '판정 근거=x'
+shh_refused "좌석 실행이 아닌 답의 고칠 곳" 3 '중단 답' "$shh_h0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
 
 # --- 34q. 종료 절 근거 요청 — 절 키 원뿔은 세그먼트를 잡지 않는다 ---
@@ -37284,6 +37362,29 @@ check "34n: 새 답이 서면 returned_halts 에서 빠진다" \
 check "34n: 새 답이 서면 답 없는 기록 수가 돌아온다" "$(cc_unanswered_halts "$CAP_DIR" "$CAP_LEDGER")" "$rrt_un0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$RRT_PREV_AR"
 
+# --- 34o-2. 고칠 곳 판정의 원장 토큰 — 쓰는 자리와 읽는 자리가 같은 어휘를 쓴다 ---
+# --- section: 34o-2 | group: base | covers: act, snapshot | anchors: 34o-2: 게이트가 쓰는 판정 토큰을 사이드카가 모두 이름 댄다, 34o-2: 교대 스킬이 대상 정지 목록을 읽고 그 세그먼트를 건너뛴다 ---
+#
+# 게이트가 원장에 찍는 판정 토큰과 스냅숏 필드는 사이드카의 닫힌 어휘와 교대 스킬이
+# 읽는다. 한쪽만 바뀌면 다른 곳 어디서도 실패하지 않으므로 리터럴을 짝지어 대조한다.
+FX_GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+FX_RUN="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
+FX_SIDECAR="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
+FX_SHIFT="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
+fx_miss=''
+for fx_tok in '고칠 곳' '판정 주체' '판정 신호' '판정 근거' '측정 등급' '베이스 일치' '라우팅=외부-보류' \
+              '종료 코드·사후 프로브 불일치' '베이스 동일 실패' '관측 근거' '대상 적용 정지' 'apply_target_stopped'; do
+  grep -qF -- "$fx_tok" "$FX_GATE" || fx_miss="$fx_miss 게이트:$fx_tok"
+  grep -qF -- "$fx_tok" "$FX_SIDECAR" || fx_miss="$fx_miss 사이드카:$fx_tok"
+done
+grep -qF -- "readonly APPLY_TARGET_SIGNAL='종료 코드·사후 프로브 불일치'" "$FX_RUN" || fx_miss="$fx_miss 드라이버:APPLY_TARGET_SIGNAL"
+grep -qF -- "'판정 신호=베이스 동일 실패'" "$FX_GATE" || fx_miss="$fx_miss 게이트:병합 거절 신호"
+check "34o-2: 게이트가 쓰는 판정 토큰을 사이드카가 모두 이름 댄다" "${fx_miss:-없음}" "없음"
+fx_miss=''
+grep -qF -- 'apply_target_stopped' "$FX_SHIFT" || fx_miss="$fx_miss 스냅숏 필드"
+grep -qF -- '대상 적용 정지' "$FX_SHIFT" || fx_miss="$fx_miss 정지 문면"
+check "34o-2: 교대 스킬이 대상 정지 목록을 읽고 그 세그먼트를 건너뛴다" "${fx_miss:-없음}" "없음"
+
 # --- 34o. 답 라우팅의 문면 — 게이트의 경로 id 와 기록의 고정 문자열이 읽는 쪽 문서에 있다 ---
 # --- section: 34o | group: base | covers: act | anchors: 34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다, 34o: 기록을 쓰는 스킬이 게이트가 경로를 가르는 문자열을 싣는다, 34o: 감사 스킬이 범위 재감사의 문면 아홉을 싣는다, 34o: 교대 스킬과 리드 사본이 재감사의 키당 상한 문장을 싣는다, 34o: 교대 스킬과 리드 사본에 키당·기록당 한 번 문장이 없다, 34o: 좌석 문면이 라우팅 불가 거절의 두 줄을 싣는다, 34o: 교대 스킬에 단계의 뒤 파견이 라우팅 막힘을 푼다는 문장이 없다 ---
 #
@@ -37306,7 +37407,7 @@ for rp_id in $rp_ids; do
   rp_n=$((rp_n + 1))
   grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
 done
-check "34o: 게이트 선언에서 경로 id 열을 읽는다 (아래가 공허하지 않다)" "$rp_n" "10"
+check "34o: 게이트 선언에서 경로 id 열하나를 읽는다 (아래가 공허하지 않다)" "$rp_n" "11"
 check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
 rp_lits=0
 grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
@@ -39350,7 +39451,7 @@ for ap12 in "$ap12_shift" "$ap12_lead"; do
 done
 
 # --- 38-13. 적용의 처분과 종료 조건 ----------------------------------------------
-# --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 21 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다, 13: 해시 불일치 거부 문면이 두 해시를 싣는다, 13: 해시 불일치에서 사전 프로브도 적용 명령도 돌지 않는다, 13: 불필요=22·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 22 는 완료 로 끝난다 ---
+# --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 21 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다, 13: 해시 불일치 거부 문면이 두 해시를 싣는다, 13: 해시 불일치에서 사전 프로브도 적용 명령도 돌지 않는다, 13: 불필요=22·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 22 는 완료 로 끝난다, 13: 대상 결함 park 행이 세 판정 필드와 대상을 싣는다, 13: 정지된 대상의 다음 적용은 act 범위 대상 적용 정지 막힘을 남긴다, 13: 정산이 정지를 풀어 둘째 세그먼트가 완료된다, 13: 반경 런의 대상 결함은 런 범위 막힘을 남긴다 ---
 #
 # 수렴: 사전 프로브는 표지 파일이 없으면 21, 있으면 0 이고 명령이 표지를 만든다.
 SB_CODES='0 21' sb_apply_new '13 수렴' "if [ -f $WORK/sb13-applied ]; then exit 0; else exit 21; fi" "touch $WORK/sb13-applied"
@@ -39427,14 +39528,19 @@ case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
 esac
 [ -e "$(sb_apply_wt SB13F)" ] && bad "13: 사전 실패 뒤 워크트리" "남았다"
 
-# 적용 불명 — 사전 21, 명령 성공, 사후 21. park 와 런 범위 막힘, 워크트리 보존.
-SB_CODES='0 21' sb_apply_new '13 불명' 'exit 21' 'true'
+# 적용 불명 — 사전 21, 명령 exit 3, 사후 21. 명령이 실패를 말했으니 대상 결함 신호가
+# 아니다. park 와 런 범위 막힘, 워크트리 보존, 판정 필드 없음.
+SB_CODES='0 21' sb_apply_new '13 불명' 'exit 21' 'exit 3'
 sb_reviewed_landing SB13U
 sb_apply SB13U
 check "13: 적용 불명 도 디스패치는 0 으로 끝나고 감독자가 park 한다" "$rc" "0"
 case "$(sb_seg_last SB13U)" in
   *"상태=park"*"적용=불명"*) ok "13: 적용 불명 은 세그먼트를 park 한다" ;;
   *) bad "13: 적용 불명 park" "$(sb_seg_last SB13U)" ;;
+esac
+case "$(sb_seg_last SB13U)" in
+  *"고칠 곳="*|*"판정 신호="*) bad "13: 명령 실패의 불명" "판정 필드가 붙었다: $(sb_seg_last SB13U)" ;;
+  *) ok "13: 명령이 실패한 적용 불명 park 행에는 판정 필드가 없다" ;;
 esac
 case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
   *"스코프=run"*"사유=적용 불명 SB13U"*) ok "13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다" ;;
@@ -39446,6 +39552,142 @@ case "$msg" in
   *"적용 행위 전제 1 불충족"*) ok "13: 불명 뒤 두 번째 적용은 전제 1 에서 거부된다" ;;
   *) bad "13: 불명 뒤 두 번째 적용" "rc=$rc $msg" ;;
 esac
+
+# 대상 결함 — 사전 21, 명령 exit 0, 사후 21. 명령은 끝났다고 말했는데 대상은 그대로다.
+# 반경이 런이 아니고 이 세그먼트를 기다리는 다른 레포가 없으니, 그 대상의 적용만 멈추고
+# 런 범위 막힘은 쓰지 않는다. 같은 대상의 둘째 세그먼트는 act 범위 막힘 하나를 받고
+# 머지됨 적용=대기 로 남으며, 첫 세그먼트를 정산하면 풀려 적용된다.
+sb13d_mark="$WORK/sb13d-fixed"
+rm -f "$sb13d_mark"
+SB_CODES='0 21' sb_apply_new '13 대상 결함' "test -e $sb13d_mark && exit 0 || exit 21" 'true'
+sb_reviewed_landing SB13D
+sb_reviewed_landing SB13E
+sb_apply SB13D
+check "13: 대상 결함 적용도 디스패치는 0 으로 끝난다" "$rc" "0"
+case "$(sb_seg_last SB13D)" in
+  *"상태=park"*"적용=불명"*"고칠 곳=대상 레포"*"판정 주체=게이트"*"판정 신호=종료 코드·사후 프로브 불일치"*"대상=main"*)
+    ok "13: 대상 결함 park 행이 세 판정 필드와 대상을 싣는다" ;;
+  *) bad "13: 대상 결함 park 행" "$(sb_seg_last SB13D)" ;;
+esac
+check "13: 대상 결함은 런 범위 적용 불명 막힘을 쓰지 않는다" "$(sb_count '사유=적용 불명 SB13D')" "0"
+[ -d "$(sb_apply_wt SB13D)" ] || bad "13: 대상 결함 워크트리" "보존되지 않았다"
+check "13: 스냅숏 대상 정지 목록이 같은 대상의 대기 세그먼트를 싣는다" \
+  "$( ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) | jq -r '.apply_target_stopped | join(" ")')" "SB13E"
+sb_apply SB13E
+check "13: 정지된 대상의 다음 적용은 0 으로 끝난다" "$rc" "0"
+case "$raw" in
+  *"대상 적용 정지 main"*) ok "13: 정지된 대상의 다음 적용은 정지 문면을 낸다" ;;
+  *) bad "13: 대상 적용 정지 문면" "$raw" ;;
+esac
+case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
+  *"대상=main"*"세그먼트=SB13E"*"스코프=act"*"사유=대상 적용 정지 main"*"고칠 곳=대상 레포"*)
+    ok "13: 정지된 대상의 다음 적용은 act 범위 대상 적용 정지 막힘을 남긴다" ;;
+  *) bad "13: 대상 적용 정지 막힘" "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" ;;
+esac
+case "$(sb_seg_last SB13E)" in
+  *"상태=머지됨"*"적용=대기"*) ok "13: 정지로 거부된 세그먼트는 머지됨 적용=대기 로 남는다" ;;
+  *) bad "13: 정지 뒤 세그먼트 행" "$(sb_seg_last SB13E)" ;;
+esac
+[ -e "$(sb_apply_wt SB13E)" ] && bad "13: 정지된 적용" "적용 워크트리를 만들었다"
+sb_apply SB13E
+check "13: 정지 중 다시 적용해도 막힘은 한 번만 쓴다" "$(sb_count '사유=대상 적용 정지 main')" "1"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment SB13G --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$SA_SEGWT" 선행=없음
+check "13: 정지 중에도 적용이 아닌 행위는 지난다" "$rc" "0"
+sb_done_msg
+case "$msg" in
+  *"세그먼트 SB13E 의 적용이 남았습니다"*) ok "13: 정지 동안 조건 1 이 그 세그먼트를 적용이 남은 것으로 읽는다" ;;
+  *) bad "13: 정지 중 조건 1" "$msg" ;;
+esac
+touch "$sb13d_mark"
+sb_settle act SB13D
+case "$rc:$(sb_seg_last SB13D)" in
+  0:*"상태=완료"*"적용=정산"*) ok "13: 대상 결함 세그먼트의 정산이 완료로 끝난다" ;;
+  *) bad "13: 대상 결함 정산" "rc=$rc $(sb_seg_last SB13D)" ;;
+esac
+sb_apply SB13E
+check "13: 정산 뒤 둘째 세그먼트의 적용이 지난다" "$rc" "0"
+case "$(sb_seg_last SB13E)" in
+  *"상태=완료"*) ok "13: 정산이 정지를 풀어 둘째 세그먼트가 완료된다" ;;
+  *) bad "13: 정지 해제 뒤 적용" "rc=$rc $(sb_seg_last SB13E)" ;;
+esac
+
+# 반경 런 — 같은 신호라도 슬라이스가 런 반경을 선언했으면 런 범위 막힘이 그대로 선다.
+SB_CODES='0 21' SB_SLICE="SB13R exit 21" SB_RADIUS='런' sb_apply_new '13 대상 결함 런' 'exit 21' 'true'
+sb_reviewed_landing SB13R
+sb_apply SB13R
+case "$(sb_seg_last SB13R)" in
+  *"상태=park"*"적용=불명"*"고칠 곳=대상 레포"*) ok "13: 반경 런의 대상 결함 park 행도 판정 필드를 싣는다" ;;
+  *) bad "13: 반경 런 park 행" "$(sb_seg_last SB13R)" ;;
+esac
+case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
+  *"스코프=run"*"사유=적용 불명 SB13R"*) ok "13: 반경 런의 대상 결함은 런 범위 막힘을 남긴다" ;;
+  *) bad "13: 반경 런 막힘" "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" ;;
+esac
+
+# 의존은 대상 단위다 — 다른 레포 세그먼트 SXY 가 결함 세그먼트 SXA 가 아니라 같은 대상의
+# 둘째 세그먼트 SXB 를 선행으로 둔다. 의존 판독은 SXY 를 내고, 대상 정지로 거부돼 머지됨
+# 적용=대기 로 남은 SXB 는 착지로 읽히지 않으며(2), SXA 가 정산되면 다시 착지로 읽힌다.
+sb13x_l="$WORK/sb13x-ledger.md"
+{
+  printf -- '- `segment` | id=SXA | 상태=머지됨 | 레포=`o/main` | 적용=대기 | 머지 커밋=m1 | prev=p0\n'
+  printf -- '- `segment` | id=SXA | 상태=park | 적용=불명 | 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치 | 대상=main | prev=p1\n'
+  printf -- '- `segment` | id=SXB | 상태=머지됨 | 레포=`o/main` | 적용=대기 | 머지 커밋=m2 | prev=p2\n'
+  printf -- '- `segment` | id=SXY | 상태=실행중 | 레포=`o/other` | 선행=SXB | prev=p3\n'
+} >"$sb13x_l"
+sb13x_call() {  # sb13x_call <함수> <세그먼트> — 게이트를 소싱해 그 함수의 출력과 종료 코드
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; LEDGER="$2"; MANIFEST="$3"; r=0; out=$("$4" "$5") || r=$?; printf "%s:%s" "$r" "$out"' \
+    _ "$GATE" "$sb13x_l" "$SA_MANIFEST" "$1" "$2" 2>/dev/null
+}
+check "13: 의존 판독은 같은 대상의 다른 세그먼트에 기대는 다른 레포 세그먼트를 낸다" \
+  "$(sb13x_call apply_target_dependents SXA)" "0:SXY"
+check "13: 대상 정지로 대기 중인 같은 대상 세그먼트는 착지로 읽히지 않는다" \
+  "$(sb13x_call gate_segment_landed_now SXB | cut -d: -f1)" "2"
+printf -- '- `segment` | id=SXA | 상태=완료 | 적용=정산 | prev=p4\n' >>"$sb13x_l"
+check "13: 정지를 건 세그먼트가 정산되면 그 세그먼트는 다시 착지로 읽힌다" \
+  "$(sb13x_call gate_segment_landed_now SXB | cut -d: -f1)" "0"
+
+# 대상 둘 — 홈 main 과 비홈 infra. 라우터의 `머지됨` 행에는 `레포` 가 없으므로, 세그먼트의
+# 대상은 마지막 행이 아니라 그 세그먼트 행들 가운데 마지막의 비어 있지 않은 `레포` 로 정해야
+# 한다. 마지막 행만 보면 빈 슬러그가 홈으로 읽혀, 비홈 정지 아래 대기 세그먼트가 착지로
+# 읽히고(그 위의 다른 레포 `선행` 이 디스패치된다) 홈 정지 아래 비홈 세그먼트가 붙들린다.
+sb13y_m="$WORK/sb13y-manifest.md"
+sb13y_home=$(grep -m1 '^- `target`' "$SA_MANIFEST")
+sb13y_hslug=$(printf '%s\n' "$sb13y_home" | tr '|' '\n' | sed -n 's/^ *원격 슬러그=//p' | sed 's/[[:space:]]*$//')
+sb13y_ri="- \`target\` | 별칭=infra | 메인 워크트리=$WORK/sb13y-infra | 공통 git 디렉터리=$WORK/sb13y-infra/.git | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/sb13y-infra | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=선머지후리뷰"
+awk -v b="$sb13y_ri" '{ print } /^- `target`/ && !done { print b; done = 1 }' "$SA_MANIFEST" >"$sb13y_m"
+sb13y_call() {  # sb13y_call <원장> <함수> <세그먼트> — 대상 둘 매니페스트로 게이트를 소싱해 부른다
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; LEDGER="$2"; MANIFEST="$3"; r=0; out=$("$4" "$5") || r=$?; printf "%s:%s" "$r" "$out"' \
+    _ "$GATE" "$1" "$sb13y_m" "$2" "$3" 2>/dev/null
+}
+check "13: 대상 둘 매니페스트가 두 별칭을 낸다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; target_aliases | LC_ALL=C sort | tr "\n" " "' _ "$GATE" "$sb13y_m" 2>/dev/null)" "infra main "
+sb13y_l="$WORK/sb13y-ledger.md"
+{
+  printf -- '- `segment` | id=SYA | 상태=실행중 | 레포=`t/sb13y-infra` | prev=q0\n'
+  printf -- '- `segment` | id=SYA | 상태=머지됨 | PR=1 | 머지 커밋=n1 | 워크트리=/x/a | 적용=대기 | prev=q1\n'
+  printf -- '- `segment` | id=SYA | 상태=park | 적용=불명 | 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치 | 대상=infra | prev=q2\n'
+  printf -- '- `segment` | id=SYB | 상태=실행중 | 레포=`t/sb13y-infra` | prev=q3\n'
+  printf -- '- `segment` | id=SYB | 상태=머지됨 | PR=2 | 머지 커밋=n2 | 워크트리=/x/b | 적용=대기 | prev=q4\n'
+  printf -- '- `segment` | id=SYM | 상태=실행중 | 레포=`%s` | 선행=SYB | prev=q5\n' "$sb13y_hslug"
+} >"$sb13y_l"
+check "13: 비홈 대상 정지가 레포 없는 라우터 머지됨 행의 같은 대상 세그먼트를 붙든다" \
+  "$(sb13y_call "$sb13y_l" gate_segment_target_stopped SYB)" "0:SYA"
+check "13: 비홈 대상 정지로 대기 중인 세그먼트는 착지로 읽히지 않는다" \
+  "$(sb13y_call "$sb13y_l" gate_segment_landed_now SYB | cut -d: -f1)" "2"
+check "13: 비홈 대상 정지는 홈 대상 세그먼트를 붙들지 않는다" \
+  "$(sb13y_call "$sb13y_l" gate_segment_target_stopped SYM)" "1:"
+sb13y_l2="$WORK/sb13y-ledger2.md"
+{
+  printf -- '- `segment` | id=SZH | 상태=실행중 | 레포=`%s` | prev=r0\n' "$sb13y_hslug"
+  printf -- '- `segment` | id=SZH | 상태=park | 적용=불명 | 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치 | 대상=main | prev=r1\n'
+  printf -- '- `segment` | id=SZI | 상태=실행중 | 레포=`t/sb13y-infra` | prev=r2\n'
+  printf -- '- `segment` | id=SZI | 상태=머지됨 | PR=3 | 머지 커밋=n3 | 워크트리=/x/c | 적용=대기 | prev=r3\n'
+} >"$sb13y_l2"
+check "13: 홈 대상 정지는 레포 없는 라우터 머지됨 행의 비홈 세그먼트를 붙들지 않는다" \
+  "$(sb13y_call "$sb13y_l2" gate_segment_target_stopped SZI)" "1:"
+check "13: 홈 대상 정지 중 비홈 대기 세그먼트는 착지로 읽힌다" \
+  "$(sb13y_call "$sb13y_l2" gate_segment_landed_now SZI | cut -d: -f1)" "0"
 
 # 종료 코드 대응 행 — 필요=21 이면 사전 21 이 적용 필요이고, 2 는 더 이상 필요가 아니다.
 SB_CODES='0 21' sb_apply_new '13 대응 수렴' "if [ -f $WORK/sb13-map ]; then exit 0; else exit 21; fi" "touch $WORK/sb13-map"
@@ -39597,7 +39839,7 @@ check "14: 구현 워크트리가 지워져도 적용은 게이트의 대상 HEA
 # 적용 준비 뒤 같은 세그먼트의 배포 exec — 적용 불명으로 적용 워크트리가 남은
 # 경우. 리뷰 뒤 구현 워크트리에 커밋이 하나 더 있으므로, exec 이 물려받은
 # GATE_SUBJECT_HEAD 를 규칙이 읽었다면 통과했을 행위다.
-SB_CODES='0 21' sb_apply_new '14 적용 뒤 exec' 'exit 21' 'true'
+SB_CODES='0 21' sb_apply_new '14 적용 뒤 exec' 'exit 21' 'exit 1'
 sb_reviewed_landing SB14U
 sb_apply SB14U
 case "$rc:$(sb_seg_last SB14U)" in
@@ -39917,10 +40159,10 @@ else
   ok "18: 정산 워크트리는 잰 뒤 지워진다"
 fi
 
-# 입구 b — 사전 21, 명령 0, 사후 21 로 불명. 그 뒤 대상이 맞춰졌다.
+# 입구 b — 사전 21, 명령 exit 1, 사후 21 로 불명. 그 뒤 대상이 맞춰졌다.
 sb18b_mark="$WORK/sb18b-applied"
 rm -f "$sb18b_mark"
-SB_CODES='0 21' sb_apply_new '18 입구 b 완료' "test -e $sb18b_mark && exit 0 || exit 21" 'true'
+SB_CODES='0 21' sb_apply_new '18 입구 b 완료' "test -e $sb18b_mark && exit 0 || exit 21" 'exit 1'
 sb_reviewed_landing SB18B
 sb18_dep SB18BD SB18B
 sb_apply SB18B
@@ -39948,7 +40190,7 @@ case "$(sb18_floor SB18BD)" in
 esac
 
 # 입구 b — 대상이 여전히 적용을 필요로 한다.
-SB_CODES='0 21' sb_apply_new '18 입구 b 필요' 'exit 21' 'true'
+SB_CODES='0 21' sb_apply_new '18 입구 b 필요' 'exit 21' 'exit 1'
 sb_reviewed_landing SB18N
 sb18_dep SB18ND SB18N
 sb_apply SB18N
@@ -39973,6 +40215,22 @@ esac
 check "18: 두 번째 정산은 원장에 행을 남기지 않는다" "$(sa_rows)" "$sb18n_base"
 sb_settle plan SB18N
 check "18: 같은 거부를 예보도 낸다" "$rc" "3"
+
+# 대상 결함으로 판정된 park — 명령은 0 이었고 대상은 그대로다. 정산이 다시 필요 를
+# 재도 그 대상의 적용만 멈춘 채라 런 범위 막힘은 열리지 않는다.
+SB_CODES='0 21' sb_apply_new '18 대상 결함 정산' 'exit 21' 'true'
+sb_reviewed_landing SB18T
+sb_apply SB18T
+case "$(sb_seg_last SB18T)" in
+  *"상태=park"*"적용=불명"*"고칠 곳=대상 레포"*) ok "18: 대상 결함 정산 픽스처" ;;
+  *) bad "18: 대상 결함 정산 픽스처" "$(sb_seg_last SB18T)" ;;
+esac
+sb_settle act SB18T
+case "$(sb_seg_last SB18T)" in
+  *"상태=park"*"적용=불명"*"정산 판정=필요"*) ok "18: 대상 결함 park 의 정산도 필요 를 재면 park 한다" ;;
+  *) bad "18: 대상 결함 정산 행" "rc=$rc $(sb_seg_last SB18T)" ;;
+esac
+check "18: 대상 결함 park 정산이 필요 를 다시 재도 런 범위 막힘이 열리지 않는다" "$(sb_blocked_open '적용 불명 SB18T')" "0"
 
 # 리뷰 기록 없음 — 이 런의 cycle 행이 없으면 리뷰 HEAD 를 증명할 길이 없어, 정산은
 # 프로브를 돌리지 않고 측정 실패로 park 한다. 완료 행은 생기지 않는다.
@@ -39999,7 +40257,9 @@ check "18: 그 거부는 원장에 segment 행을 남기지 않는다" "$(sb_cou
 # 읽고, 이 절이 재는 것은 그 판독이다. 두 행을 심는 도우미(`sb19_cone`·`sb19_ans`)는
 # CI 재실행·대기 시계 절도 함께 쓰므로 `pre_base` 에 있다.
 sb19_needed() {  # sb19_needed <라벨> <세그먼트> <표지> <허가 파일> — 불명 → 정산 필요 park 까지
-  SB_CODES='0 21' sb_apply_new "$1" "test -e $3 && exit 0 || exit 21" "test -e $4 && touch $3 || true"
+  # 허가 파일이 없으면 명령이 exit 1 로 끝난다 — 명령이 실패를 말한 불명이라 대상
+  # 결함 신호가 아니고, 런 범위 막힘이 선다.
+  SB_CODES='0 21' sb_apply_new "$1" "test -e $3 && exit 0 || exit 21" "test -e $4 && touch $3"
   sb_reviewed_landing "$2"
   sb_apply "$2"
   sb_settle act "$2"
@@ -40076,6 +40336,40 @@ check "19: park 답 전에는 막힘이 열려 있다" "$(sb_blocked_open '적�
 sa_seg_state SB19P park
 check "19: 라우터의 park 행이 받힌다" "$rc" "0"
 check "19: 세그먼트 park 답의 park 행이 막힘을 해소한다" "$(sb_blocked_open '적용 불명 SB19P')" "0"
+
+# 대상 결함의 재실행 — 명령은 exit 0 으로 끝나고 대상은 그대로라 대상 정지가 선다. 정산이
+# 다시 「필요」를 재 적용 정산 자리에서 사람이 재실행을 고르면, 정지를 건 세그먼트 자신의
+# 재실행은 대상 정지에 막히지 않고 돌며, 그 완료가 정지를 푼다.
+sb19t_mark="$WORK/sb19t-applied"; sb19t_go="$WORK/sb19t-go"
+rm -f "$sb19t_mark" "$sb19t_go"
+SB_CODES='0 21' sb_apply_new '19 대상 결함 재실행' "test -e $sb19t_mark && exit 0 || exit 21" \
+  "if test -e $sb19t_go; then touch $sb19t_mark; fi"
+sb_reviewed_landing SB19T
+sb_apply SB19T
+case "$(sb_seg_last SB19T)" in
+  *"상태=park"*"적용=불명"*"판정 신호=종료 코드·사후 프로브 불일치"*"대상=main"*) ok "19: SB19T 픽스처 — 대상 결함 park" ;;
+  *) bad "19: SB19T 픽스처" "$(sb_seg_last SB19T)" ;;
+esac
+sb_settle act SB19T
+case "$(sb_seg_last SB19T)" in
+  *"상태=park"*"적용=불명"*"정산 판정=필요"*) ok "19: SB19T 픽스처 — 정산 판정=필요" ;;
+  *) bad "19: SB19T 정산 픽스처" "$(sb_seg_last SB19T)" ;;
+esac
+sb19t_rec=$(sb19_cone "$SA_RUN" "$SA_LEDGER" SB19T '적용 정산' SB19T-1)
+touch "$sb19t_go"
+sb19t_l=$(sb19_ans "$SA_LEDGER" SB19T "$sb19t_rec" 재실행 사람)
+sb19t_stops=$(sb_count '사유=대상 적용 정지 main')
+sb_apply SB19T "$sb19t_l"
+check "19: 대상 결함 세그먼트의 사람 재실행 답이 받힌다" "$rc" "0"
+check "19: 정지를 건 세그먼트의 재실행은 대상 적용 정지 막힘을 쓰지 않는다" \
+  "$(sb_count '사유=대상 적용 정지 main')" "$sb19t_stops"
+case "$( { grep -F 'id=SB19T | 상태=적용 준비' "$SA_LEDGER" || true; } | tail -1 ):$(sb_seg_last SB19T)" in
+  *"재실행 근거=$sb19t_l"*:*"상태=완료"*"적용=수렴"*) ok "19: 대상 결함 세그먼트의 재실행은 대상 정지를 지나 한 번 돌고 수렴한다" ;;
+  *) bad "19: 대상 결함 재실행" "rc=$rc $msg $(sb_seg_last SB19T)" ;;
+esac
+sb19t_rc=0
+bash "$repo_root/plugins/cc-cmds/orchestrator/run-stops.sh" --predicate target-stop "$SA_LEDGER" main >/dev/null 2>&1 || sb19t_rc=$?
+check "19: 재실행의 완료가 대상 정지를 푼다" "$sb19t_rc" "1"
 
 # 들여온 세그먼트 — 이전 런이 머지했고 적용이 정산되지 않았다. 이 런에는 cycle 행이 없다.
 SB_CODES='0 21' sb_apply_new '19 들여옴' 'exit 21' 'true'
@@ -44894,6 +45188,39 @@ printf 'gate\tfailure\n' > "$CB60_S/base"
 cb60_act
 cb60_line 실패 1 0
 check "60b: 기본 브랜치가 실패한 회차의 재실패는 CI 기존 실패 다" "$(cb60_next)" "CI 기존 실패"
+check "60b: 그 회차의 요청 행은 실패 체크 전부가 베이스에서도 실패했다고 싣는다" \
+  "$(sa_field "$( { grep '^- `CI 처분` .*상태=요청' "$SA_LEDGER" || true; } | tail -1)" '베이스 일치')" "전부"
+# 교대의 병합 거절 정지 — 실패 체크 전부가 베이스에서도 실패했으니 게이트가 그 cone 막힘
+# 행에 대상 레포 판정을 찍는다. 호출자가 판정 필드를 넘기면 행 없이 거절한다.
+mkdir -p "$SA_RUN/halt/shift"
+cb60_shalt() {  # cb60_shalt [argv…] — 세그먼트 CK 의 병합 거절 교대 정지
+  CC_PIPELINE_SHIFT_ID="$SA_ID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+    sag act --manifest "$SA_MANIFEST" --kind shift-halt --target main --segment CK --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 교대 정지" \
+      -- '자리=병합 거절' '질문=병합 거절의 원인을 다시 읽는가?' '관측=CI 가 베이스와 같이 실패했다' "$@"
+}
+cb60_nb=$(cb60_n blocked)
+cb60_shalt '판정 주체=게이트'
+case "$rc" in
+  0) bad "60b: 호출자가 넘긴 판정 주체=게이트" "받혔다: $(cb60_last blocked)" ;;
+  *) check "60b: 호출자가 넘긴 판정 주체=게이트 는 행 없이 거절된다" "$(cb60_n blocked)" "$cb60_nb" ;;
+esac
+cb60_shalt
+cb60_sh=$(cb60_last blocked)
+check "60b: 베이스 동일 실패의 병합 거절 정지가 cone 막힘 행에 세 판정 필드를 싣는다" \
+  "$rc|$(sa_field "$cb60_sh" 스코프)|$(sa_field "$cb60_sh" 자리)|$(sa_field "$cb60_sh" '고칠 곳')|$(sa_field "$cb60_sh" '판정 주체')|$(sa_field "$cb60_sh" '판정 신호')" \
+  "0|cone|병합 거절|대상 레포|게이트|베이스 동일 실패"
+
+# 베이스 실패를 보지 않은 회차의 병합 거절 정지에는 판정 필드가 없다.
+cb60_new "CI 재실행 — 병합 거절 판정 없음"
+mkdir -p "$SA_RUN/halt/shift"
+cb60_shalt
+cb60_sh=$(cb60_last blocked)
+case "$rc|$cb60_sh" in
+  0\|*"고칠 곳="*) bad "60b: 베이스 실패 없는 병합 거절 정지" "판정 필드가 붙었다: $cb60_sh" ;;
+  0\|*"자리=병합 거절"*) ok "60b: 베이스 실패를 보지 않은 병합 거절 정지에는 판정 필드가 없다" ;;
+  *) bad "60b: 베이스 실패 없는 병합 거절 정지" "rc=$rc $msg $cb60_sh" ;;
+esac
 
 # C2 7 — 라우팅 기록 없는 쌍둥이. 같은 실패 행에서 다음은 머지 이고 머지는 CI실패 park 다.
 cb60_new "CI 재실행 — 라우팅 기록 없음"
