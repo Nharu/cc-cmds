@@ -155,9 +155,9 @@ const statusOf = (rec: FormRecord) => {
 }
 
 // 새로 연 질문지의 배너. 실패는 삼킨다 — 배너가 실패해도 질문지는 열린다.
-async function banner($: Dollar, form: FormInput) {
+async function banner($: Dollar, form: FormInput, formId: string) {
   try {
-    const call = bannerCall($.plugin.root, await $.session.id(), form)
+    const call = bannerCall($.plugin.root, await $.session.id(), form, formId)
     await $.process.run(call.argv, { stdin: call.stdin, env: call.env, timeoutMs: call.timeoutMs })
   } catch {
     // 배너 없이 연다.
@@ -340,7 +340,7 @@ export const register: Register = on => {
     }
     await $.ui.status(rec.hidden ? statusOf(rec) : undefined)
     before.delete(e.tool_use_id)
-    if (decision.kind === 'new') await banner($, form)
+    if (decision.kind === 'new') await banner($, form, id)
 
     return { result: openResult(id, form.questions.length, opened.isPlaced) }
   }).catch(async ($, e) => {

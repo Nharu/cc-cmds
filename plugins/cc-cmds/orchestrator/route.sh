@@ -115,6 +115,15 @@ case "${ROUTE_LEASE_LOCK_WAIT_S:-}" in
   5) ;;
   *) readonly ROUTE_LEASE_LOCK_WAIT_S=5 ;;
 esac
+# 보유 전용 잠금 대기 예산. `lease-hold` 는 인자로 받을 때만 이 값을 쓰고, 인자가
+# 없으면 입장과 같은 `ROUTE_LEASE_LOCK_WAIT_S` 다. 이 값을 넘기는 호출처는 떨어져
+# 나간 감독자의 자기 보유 하나다 — 보유는 입장 합계를 바꾸지 않는 쓰기라 오래
+# 기다려도 공정성을 해치지 않지만, 다른 호출처의 최악 대기를 늘리지 않으려고 기본값으로
+# 두지 않는다.
+case "${ROUTE_LEASE_HOLD_WAIT_S:-}" in
+  30) ;;
+  *) readonly ROUTE_LEASE_HOLD_WAIT_S=30 ;;
+esac
 case "${ROUTE_LEASE_LOCK_ORPHAN_S:-}" in
   60) ;;
   *) readonly ROUTE_LEASE_LOCK_ORPHAN_S=60 ;;
@@ -518,7 +527,9 @@ def rt_gpasses($c; $orgs; $fresh; $g):
          | . + {account: $id}]
        | unique_by(.id) | sort_by([.expires_at_epoch, .id]) end;
 
-# 5시간 한도 없음. 주간 창이 알려져 있을 때(known·reset_elapsed)만 5시간 창을 상태
+# 5시간 한도 없음의 형태 추정. 그룹의 발행 판정(`rt_pub5`)이 있으면 이 추정은 판정이
+# 되지 않고 `rt_five_win` 이 어긋남 칸의 비교값으로만 쓴다 — 판정은 발행 판정이 없을
+# 때만 이 결과다. 주간 창이 알려져 있을 때(known·reset_elapsed)만 5시간 창을 상태
 # `unlimited` 로 바꾼다. 사용률이 0 보다 크게 관측된 창은 그대로다. 5시간 창이 unknown
 # 이면 신선한 사용량 파일에 그 그룹의 주간 창 행이 있고, 그룹의 어느 사용량 행에도
 # 5시간 값이 없으며(키 부재 또는 null — 그 밖의 값은 형이 깨진 창이다), 스테이지 로그
@@ -544,12 +555,43 @@ def rt_unl_win($c; $orgs; $fresh; $g; $W; $ev):
       else $W end
     else $W end;
 
+# 그룹의 5시간 한도 발행 판정. 신선한 사용량 파일에서 그룹의 계정 행마다
+# `five_hour_limit.state` 가 `limited`·`unlimited` 인 것만 한 표로 센다 — `unknown`, 키
+# 없음, 객체가 아니거나 어휘 밖인 값은 표가 없고 경고도 내지 않는다. `source` 는 판정에
+# 쓰지 않는다. limited 표가 하나라도 있으면 limited, 없고 unlimited 표가 있으면
+# unlimited, 표가 없으면 null(형태 추정으로 판정한다).
+def rt_pub5($c; $orgs; $fresh; $g):
+  if $fresh | not then null
+  else [rt_uaccts($c)[] | select(rt_group_of($orgs; .id) == $g) | .five_hour_limit
+         | select(type == "object") | .state | select(. == "limited" or . == "unlimited")] as $v
+       | if any($v[]; . == "limited") then "limited"
+         elif any($v[]; . == "unlimited") then "unlimited"
+         else null end end;
+
+# 발행 판정과 형태 추정의 합성. 발행 판정이 없으면 추정 결과를 바이트 그대로 돌려준다.
+# 있으면 추정 전 창 `$W` 에서 5시간 창만 정한다 — limited 는 관측된 창 그대로, unlimited
+# 는 관측과 프레임 판독보다 우선한 한도 없음 창이고, 둘 다 `basis: "published"` 를 싣는다.
+# `mismatch` 는 추정이 내렸을 판정이 발행 판정과 다를 때 그 추정 판정(한도 없음이면 그
+# 근거 `absent`·`evidence`, 아니면 `limited`)이고 같으면 null 이다.
+def rt_five_win($c; $orgs; $fresh; $g; $W; $ev):
+  rt_unl_win($c; $orgs; $fresh; $g; $W; $ev) as $E
+  | rt_pub5($c; $orgs; $fresh; $g) as $p
+  | (if $E.five_hour.state == "unlimited" then $E.five_hour.basis else "limited" end) as $guess
+  | if $p == null then $E
+    elif $p == "limited" then
+      $W + {five_hour: ($W.five_hour + {basis: "published", mismatch: (if $guess == "limited" then null else $guess end)})}
+    else
+      (if $W.five_hour.observed != null then $W.five_hour else $W.seven_day end) as $o
+      | $W + {five_hour: {state: "unlimited", u_bp: 0, resets_at: null, observed: $o.observed, source: $o.source,
+                          basis: "published", mismatch: (if $guess == "limited" then "limited" else null end)}}
+    end;
+
 def rt_gview($c; $orgs; $fresh; $inv; $items; $g; $ev):
   [$items[] | select(rt_group_of($orgs; .account) == $g)] as $gi
   | {group: $g,
      windows: (reduce rt_wins[] as $w ({};
        .[$w] = (rt_cands($c; $orgs; $fresh; $g; $w) | (if length == 0 then null else max_by([.observed, .u]) end) | rt_wstate($c)))
-       | rt_unl_win($c; $orgs; $fresh; $g; .; $ev)),
+       | rt_five_win($c; $orgs; $fresh; $g; .; $ev)),
      sigma: (reduce rt_wins[] as $w ({}; .[$w] = ([$gi[] | (.reservation_bp[$w]? // 0)] | add // 0))),
      count: ($gi | length),
      reserved: any($inv[]; (rt_group_of($orgs; .id) == $g) and (.interactive_reserved == true)),
@@ -563,9 +605,10 @@ def rt_class_of($G; $ex):
   elif any($G.windows[]; .state == "reset_elapsed") then "R"
   else "K" end;
 def rt_ueff($x): if $x.state == "reset_elapsed" then 0 else $x.u_bp end;
-# 판정에 참여하지 않는 창 — 사용량 문서가 5시간 창이 없다고 알린 한도 없음뿐이다. 표본
-# 증거로 내린 한도 없음은 사용률 0 인 창으로 검사를 그대로 받는다.
-def rt_skip5($x): ($x.state == "unlimited") and ($x.basis == "absent");
+# 판정에 참여하지 않는 창 — 사용량 문서가 5시간 창이 없다고 알린 한도 없음(`absent`)과
+# 발행 판정이 한도 없음이라고 알린 창(`published`)이다. 표본 증거로 내린 한도 없음은
+# 추정이라 사용률 0 인 창으로 검사를 그대로 받는다.
+def rt_skip5($x): ($x.state == "unlimited") and (($x.basis == "absent") or ($x.basis == "published"));
 def rt_rem($G):
   [rt_wins[] as $w | ($G.windows[$w]) as $x | select(rt_skip5($x) | not)
     | 10000 - (if $x.state == "reset_elapsed" then 0 elif $x.state == "unknown" then 10000 else $x.u_bp end) - $G.sigma[$w]]
@@ -1120,7 +1163,7 @@ def rt_grant_new($p; $a; $adm; $basis):
            + {threshold_bp: null, ratio_source: null, tier: null, r7_bp: null, admitted: null,
               picked_by: null, load5_bp: null, affinity_account: null, affinity_hold_bp: null,
               ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null,
-              pressure_bp_h: null, five_hour_state: null, five_hour_basis: null})};
+              pressure_bp_h: null, five_hour_state: null, five_hour_basis: null, five_hour_mismatch: null})};
 # 질문으로 멈출 수 있는 스테이지의 종류. 이 종류는 멈춘 뒤 같은 계정의 재부착으로만
 # 답을 받는다. 문맥에 `config.ask` 가 있고 요청 종류가 이 목록에 있을 때만 새 기준이 켜진다.
 def rt_ask_kinds: ["design", "audit", "split", "visual", "implement", "review", "lead-fix", "reconverge"];
@@ -1177,10 +1220,12 @@ def rt_new_kr($p):
    .tier, (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end), (0 - (.p7 // 0)), rt_new_sticky($p), .a.id];
 def rt_new_names_b: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "pressure", "spread", "weekly", "sticky", "id"];
 def rt_new_names_r: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "spread", "weekly", "weekly", "pressure", "sticky", "id"];
-# 고른 그룹의 5시간 창 상태와 한도 없음의 근거. 한도 없음이 아니면 근거는 null 이다.
+# 고른 그룹의 5시간 창 상태, 판정 근거와 어긋남. 근거는 창의 `basis` 칸이다 — 발행 판정이
+# 정한 창은 한도 있음이어도 `published` 이고, 발행 판정이 없는 창은 형태 추정이 한도
+# 없음을 냈을 때만 근거가 있다. 어긋남은 발행 판정에 진 추정 판정이고 없으면 null 이다.
 def rt_five_rec($G):
   ($G.windows.five_hour // null) as $x
-  | {five_hour_state: ($x.state? // null), five_hour_basis: (if ($x.state? // null) == "unlimited" then ($x.basis // null) else null end)};
+  | {five_hour_state: ($x.state? // null), five_hour_basis: ($x.basis? // null), five_hour_mismatch: ($x.mismatch? // null)};
 # 정렬 첫째와 둘째의 키 배열이 처음 갈리는 자리의 이름. 후보가 하나면 `only` 다.
 def rt_picked_by($ks; $names):
   if ($ks | length) < 2 then "only"
@@ -2144,17 +2189,49 @@ route__lock_try_break() {
   return 0
 }
 
+route__lease_budget() {
+  # route__lease_budget <declared-s> <test-s> — 잠금 대기 예산. 시험 이음매 값은 양의
+  # 정수이고 선언값보다 작을 때만 쓴다 — 시험의 대기를 줄일 수는 있어도 출하 대기를
+  # 늘릴 수는 없다. 그 밖의 값(빈 값 포함)은 무시하고 선언값을 낸다.
+  local t="${2:-}"
+  case "$t" in
+    ''|*[!0-9]*) printf '%s' "$1"; return 0 ;;
+  esac
+  t=$((10#$t))
+  if [ "$t" -gt 0 ] && [ "$t" -lt "$1" ]; then
+    printf '%s' "$t"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# 두 예산의 시험 이음매. `route_lease_hold` 가 띄우는 `bash route.sh lease-hold` 하위
+# 프로세스는 환경을 물려받으므로, 소싱 전 `readonly` 선언이 닿지 않는 게이트 시험도
+# 잠금을 오래 쥐는 경쟁자를 수 초 안에 끝낸다. 상수 줄은 언제나 출하값을 선언한다.
+route__lock_wait_s() {
+  route__lease_budget "$ROUTE_LEASE_LOCK_WAIT_S" "${CC_ROUTE_LEASE_LOCK_WAIT_TEST_SECONDS:-}"
+}
+route_lease_hold_wait_s() {
+  # 감독자의 자기 보유가 넘기는 예산. 감독자의 보유 총예산은 이 값의 두 배다.
+  route__lease_budget "$ROUTE_LEASE_HOLD_WAIT_S" "${CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS:-}"
+}
+
 route__lock_acquire() {
-  # route__lock_acquire <table> — rc 0 쥠 / 3 대기 초과 / 4 표에 락을 만들 수 없음.
+  # route__lock_acquire <table> [<budget-s>] — rc 0 쥠 / 3 대기 초과 / 4 표에 락을 만들
+  # 수 없음. 예산이 없으면 `ROUTE_LEASE_LOCK_WAIT_S` 다. 예산 0 은 대기 없는 한 번
+  # 시도다 — `mkdir` 을 한 번만 해 보고, 잡지 못하면 깨기도 기다리기도 없이 rc 3.
   # 소유자는 이 프로세스의 `$$` 다 — 명령 치환 안에서 잡으면 드라이버가 소유자로
   # 적혀, 치환이 죽어도 락이 살아 있는 것처럼 남는다. trap 은 쥔 경우에만 놓는다.
   # 락이 없는데 `mkdir` 이 실패하면 기다려도 풀리지 않으므로 곧바로 rc 4 다. 깨기가
   # 성공한 뒤에도 예산을 다시 본다 — 깨기와 재획득이 계속 엇갈려도 끝이 있어야 한다.
-  local lk="$1/.lock" start now
+  local lk="$1/.lock" start now budget="${2:-}"
+  [ -n "$budget" ] || budget=$(route__lock_wait_s)
   start=$(date -u +%s)
   while :; do
     now=$(date -u +%s)
-    [ $((now - start)) -lt "$ROUTE_LEASE_LOCK_WAIT_S" ] || return 3
+    if [ "$budget" -gt 0 ]; then
+      [ $((now - start)) -lt "$budget" ] || return 3
+    fi
     if mkdir "$lk" 2>/dev/null; then
       if printf '%s\n%s\n' "$$" "$(route__fp "$$")" > "$lk/owner.tmp.$$" 2>/dev/null; then
         mv -f "$lk/owner.tmp.$$" "$lk/owner" 2>/dev/null || rm -f "$lk/owner.tmp.$$" 2>/dev/null
@@ -2168,6 +2245,7 @@ route__lock_acquire() {
     if [ ! -e "$lk" ] && [ ! -w "$1" ]; then
       return 4
     fi
+    [ "$budget" -gt 0 ] || return 3
     if route__lock_try_break "$lk"; then
       continue
     fi
@@ -2564,17 +2642,28 @@ route__txn_main() {
 }
 
 route__hold_main() {
-  # lease-hold <table> <run_id> <lineage> <nonce> <pid> — 락 아래 nonce 비교 뒤
-  # 보유자를 더한다. rc 0 더함 / 1 없음·nonce 불일치·깨짐 / 5 stale / 2 인자·보유자
+  # lease-hold <table> <run_id> <lineage> <nonce> <pid> [<wait-s>] — 락 아래 nonce 비교
+  # 뒤 보유자를 더한다. rc 0 더함 / 1 없음·nonce 불일치·깨짐 / 5 stale / 2 인자·보유자
   # 거부 / 3 락 대기 초과 / 4 쓰기 실패. stale 임대는 되살리지 않는다 — 합에서 빠진
   # 예약이 입장 없이 돌아오면 안 된다. 호출자는 다시 입장한다.
-  local t="${1:-}" key f rec h rc=0
-  [ $# -eq 5 ] || return 2
+  #
+  # <wait-s> 는 잠금 대기 예산(양의 정수, 아니면 rc 2)이다. 없으면 입장과 같은
+  # `ROUTE_LEASE_LOCK_WAIT_S` 다. 긴 예산(`route_lease_hold_wait_s`)을 넘기는 호출처는
+  # 감독자의 자기 보유 하나다.
+  local t="${1:-}" key f rec h rc=0 wait_s=""
+  [ $# -eq 5 ] || [ $# -eq 6 ] || return 2
   [ -n "$4" ] || return 2
+  if [ $# -eq 6 ]; then
+    case "$6" in
+      ''|*[!0-9]*) return 2 ;;
+    esac
+    wait_s=$((10#$6))
+    [ "$wait_s" -gt 0 ] || return 2
+  fi
   key=$(route__key "$2" "$3") || return 2
   h=$(route__holders_json "$5") || return 2
   [ -d "$t" ] || return 1
-  route__lock_acquire "$t" || return $?
+  route__lock_acquire "$t" ${wait_s:+"$wait_s"} || return $?
   f="$t/$key.lease"
   rec=$(route__lease_read "$f" "$key") || { route__lock_release; return 1; }
   if [ "$(printf '%s' "$rec" | jq -r '.nonce')" != "$4" ]; then
@@ -2617,6 +2706,66 @@ route__release_run_main() {
   route__lock_acquire "$1" || return $?
   for f in "$1/$pfx+"*.lease; do
     if [ -e "$f" ] || [ -L "$f" ]; then rm -f "$f"; fi
+  done
+  route__lock_release
+  return 0
+}
+
+route__has_holder_main() {
+  # lease-has-holder <table> <run_id> <lineage> <nonce> <pid> — 잠금을 잡지 않는 보유
+  # 확인. 그 계보의 임대 파일 하나만 읽어, nonce 가 같고 보유자 목록에 그 pid 가
+  # 있으며 그 pid 의 지금 지문이 기록된 지문과 같으면 rc 0. 파일 없음·판독 실패·
+  # nonce 다름·pid 없음·지문 다름(지금 지문을 못 읽은 경우 포함)은 rc 1, 인자 수·빈
+  # 값·키 유도 실패는 rc 2.
+  #
+  # 거짓 양성이 없는 이유: 임대 쓰기는 임시 파일 뒤 `mv -f` 라 잘린 파일이 보이지
+  # 않고, 보유자 목록은 hold 가 더하기만 한다. 임대가 바뀌는 다른 길은 파일째 지우기
+  # (해제, 런 해제, nonce 비교 삭제)와 새 nonce 로 덮는 재입장뿐이어서, 어느 쪽이든
+  # 파일 없음이나 nonce 다름으로 rc 1 이다.
+  local t="${1:-}" key rec fp
+  [ $# -eq 5 ] || return 2
+  [ -n "$t" ] && [ -n "$4" ] || return 2
+  case "$5" in
+    ''|0|*[!0-9]*) return 2 ;;
+  esac
+  key=$(route__key "$2" "$3") || return 2
+  rec=$(route__lease_read "$t/$key.lease" "$key") || return 1
+  [ "$(printf '%s' "$rec" | jq -r '.nonce')" = "$4" ] || return 1
+  fp=$(printf '%s' "$rec" | jq -r --argjson p "$5" '[.holders[] | select(.pid == $p) | .fp] | .[0] // empty') || return 1
+  [ -n "$fp" ] || return 1
+  [ "$(route__fp "$5")" = "$fp" ] || return 1
+  return 0
+}
+
+route__sweep_done_main() {
+  # lease-sweep-done <table> <key> <nonce> [<key> <nonce> …] — 끝난 런 훑기의 잠금
+  # 아래 삭제. 후보 판정은 호출자 셸의 `route_lease_sweep_done` 이 하고, 이 동사는
+  # 받은 짝마다 nonce 가 그대로일 때만 지운다(`route__lease_cmp_delete`) — 판정과
+  # 삭제 사이에 재입장이 같은 키를 새 nonce 로 덮었으면 남는다. 잠금은 기다리지 않는
+  # 한 번 시도이고, 못 잡으면 아무것도 지우지 않고 rc 3 이다. 짝이 없거나 홀수, 키가
+  # 임대 파일 이름 하나 꼴(`/` 없음, `.` 으로 시작하지 않음)이 아니거나 nonce 가 빈
+  # 값이면 rc 2. 표 디렉터리가 없으면 rc 0.
+  local t="${1:-}" i k n
+  [ $# -ge 3 ] || return 2
+  [ -n "$t" ] || return 2
+  shift
+  [ $(($# % 2)) -eq 0 ] || return 2
+  local -a a=("$@")
+  i=0
+  while [ "$i" -lt "${#a[@]}" ]; do
+    k=${a[$i]}; n=${a[$((i + 1))]}
+    case "$k" in
+      ''|.*|*/*) return 2 ;;
+    esac
+    [ -n "$n" ] || return 2
+    i=$((i + 2))
+  done
+  [ -d "$t" ] || return 0
+  route__lock_acquire "$t" 0 || return $?
+  i=0
+  while [ "$i" -lt "${#a[@]}" ]; do
+    route__lease_cmp_delete "$t/${a[$i]}.lease" "${a[$((i + 1))]}"
+    i=$((i + 2))
   done
   route__lock_release
   return 0
@@ -2883,6 +3032,76 @@ route_lease_release() {
   return "$rc"
 }
 route_lease_release_run() { bash "$(route__dir)/route.sh" lease-release-run "$@"; }
+route_lease_release_run_dead() {
+  # route_lease_release_run_dead <table> <run_id> — 방금 `done` 을 쓴 런의 자기 정리.
+  # 그 런의 기록(`<enc(run_id)>+*.lease`) 가운데 보유자가 모두 죽은 것만 지운다.
+  # 런은 자기 스테이지와 감독자를 멈추지 않고 끝날 수 있으므로(마감·경계), 산 보유자가
+  # 있는 기록은 남아 그 보유자의 예약을 계속 센다. 그 기록은 보유자가 죽은 뒤 끝난 런
+  # 훑기가 지운다. `done` 은 호출자가 이미 썼으므로 런 디렉터리를 다시 찾지 않는다.
+  #
+  # 판정은 잠금 없이 하고, 삭제는 `lease-sweep-done` 이 잠금 아래 nonce 비교로 한다 —
+  # 잠금은 기다리지 않는 한 번 시도다. 후보가 없으면 rc 0, 있으면 그 동사의 rc 를
+  # 돌려준다(rc 3 은 잠금 경합). 인자 수·빈 값·`.` 으로 시작하는 run_id 는 rc 2.
+  local t="${1:-}" pfx f key rec nonce
+  local -a pairs=()
+  [ $# -eq 2 ] && [ -n "$t" ] || return 2
+  case "$2" in
+    ''|.*) return 2 ;;
+  esac
+  pfx=$(route__enc "$2") || return 2
+  [ -d "$t" ] || return 0
+  for f in "$t/$pfx+"*.lease; do
+    [ -f "$f" ] || continue
+    key=${f##*/}
+    key=${key%.lease}
+    rec=$(route__lease_read "$f" "$key") || continue
+    [ "$(printf '%s' "$rec" | jq -r '.run_id // empty' 2>/dev/null)" = "$2" ] || continue
+    nonce=$(printf '%s' "$rec" | jq -r '.nonce // empty' 2>/dev/null) || continue
+    [ -n "$nonce" ] || continue
+    if route__lease_is_live "$rec"; then continue; fi
+    pairs+=("$key" "$nonce")
+  done
+  [ "${#pairs[@]}" -gt 0 ] || return 0
+  bash "$(route__dir)/route.sh" lease-sweep-done "$t" "${pairs[@]}"
+}
+route_lease_has_holder() { bash "$(route__dir)/route.sh" lease-has-holder "$@"; }
+route_lease_sweep_done() {
+  # route_lease_sweep_done <table> — 끝난 런의 묵은 임대 훑기. 호출자 셸에서 돈다:
+  # 런 디렉터리는 run.sh 의 `rundir_of_run_id` 한 곳이 정하므로, 그 함수가 없는 셸
+  # (route.sh 만 소싱했거나 단독 프로세스)에서는 rc 2 로 아무것도 하지 않는다.
+  #
+  # 잠금 없이 `<table>/*.lease` 만 읽는다(임시 파일은 점 파일이라 글롭에 오르지 않고
+  # `.lock` 은 `.lease` 로 끝나지 않는다). 후보는 기록의 `run_id` 로 찾은 런 디렉터리가
+  # 있고, 그 `done` 이 비어 있지 않으며, 보유자가 모두 죽은 기록이다 — 종류(grant·wait)는
+  # 가리지 않는다. 생존 판정(`ps` 포크)은 앞의 두 거름을 통과한 기록에만 부른다.
+  # `rundir_of_run_id` 가 거부한 run_id, 디렉터리가 없는 기록, `done` 이 없거나 빈 런의
+  # 기록은 나이와 상관없이 후보가 아니다.
+  #
+  # 후보가 없으면 동사를 부르지 않고 rc 0. 있으면 키·nonce 짝을 `lease-sweep-done` 에
+  # 넘기고 그 rc 를 돌려준다. rc 3(잠금 경합)은 경고 한 줄을 남긴다.
+  local t="${1:-}" f key rec run_id nonce rd rc=0
+  local -a pairs=()
+  [ $# -eq 1 ] && [ -n "$t" ] || return 2
+  declare -F rundir_of_run_id >/dev/null 2>&1 || return 2
+  [ -d "$t" ] || return 0
+  for f in "$t"/*.lease; do
+    [ -f "$f" ] || continue
+    key=${f##*/}
+    key=${key%.lease}
+    rec=$(route__lease_read "$f" "$key") || continue
+    run_id=$(printf '%s' "$rec" | jq -r '.run_id // empty' 2>/dev/null) || continue
+    nonce=$(printf '%s' "$rec" | jq -r '.nonce // empty' 2>/dev/null) || continue
+    [ -n "$run_id" ] && [ -n "$nonce" ] || continue
+    rd=$(rundir_of_run_id "$run_id" 2>/dev/null) || continue
+    [ -n "$rd" ] && [ -d "$rd" ] && [ -s "$rd/done" ] || continue
+    if route__lease_is_live "$rec"; then continue; fi
+    pairs+=("$key" "$nonce")
+  done
+  [ "${#pairs[@]}" -gt 0 ] || return 0
+  bash "$(route__dir)/route.sh" lease-sweep-done "$t" "${pairs[@]}" || rc=$?
+  [ "$rc" != "3" ] || route__warn "끝난 런 임대 훑기 — 임대 표 잠금이 바빠 이번 훑기를 건너뜁니다 ($((${#pairs[@]} / 2))건)"
+  return "$rc"
+}
 route_lease_wait_put() { bash "$(route__dir)/route.sh" lease-wait-put "$@"; }
 route_lease_wait_drop() { bash "$(route__dir)/route.sh" lease-wait-drop "$@"; }
 route_halt_hold_put() { bash "$(route__dir)/route.sh" halt-hold-put "$@"; }
@@ -3047,7 +3266,7 @@ route__affinity_grant() {
            ask_need_bp: $env.order.ask_need_bp, ask_r7_bp: $env.order.ask_r7_bp,
            ask_fits: $env.order.ask_fits, ask_avoided: $env.order.ask_avoided,
            pressure_bp_h: $env.order.pressure_bp_h, five_hour_state: $env.order.five_hour_state,
-           five_hour_basis: $env.order.five_hour_basis}' 2>/dev/null) || line=""
+           five_hour_basis: $env.order.five_hour_basis, five_hour_mismatch: $env.order.five_hour_mismatch}' 2>/dev/null) || line=""
   if [ -z "$line" ] || ! printf '%s\n' "$line" >> "$RUN_DIR/route-picks.jsonl" 2>/dev/null; then
     route__warn "부여 기록을 덧붙이지 못했다 ($RUN_DIR/route-picks.jsonl)"
   fi
@@ -3095,7 +3314,7 @@ route_resolve() {
 }
 
 route__usage() {
-  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop|halt-hold-put|halt-hold-drop|borrow-read|phase-read|cost-sample-put|cost-table> [args]' >&2
+  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-has-holder|lease-release|lease-release-run|lease-sweep-done|lease-of|lease-wait-put|lease-wait-drop|halt-hold-put|halt-hold-drop|borrow-read|phase-read|cost-sample-put|cost-table> [args]' >&2
 }
 
 route__main() {
@@ -3114,8 +3333,10 @@ route__main() {
     frames) route__frames_of_file "$@" ;;
     lease-txn) route__txn_main "$@" ;;
     lease-hold) route__hold_main "$@" ;;
+    lease-has-holder) route__has_holder_main "$@" ;;
     lease-release) route__release_main "$@" ;;
     lease-release-run) route__release_run_main "$@" ;;
+    lease-sweep-done) route__sweep_done_main "$@" ;;
     lease-of) route_lease_of "$@" ;;
     lease-wait-put) route__wait_put_main "$@" ;;
     lease-wait-drop) route__wait_drop_main "$@" ;;

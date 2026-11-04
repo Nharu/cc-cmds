@@ -51,7 +51,7 @@
 #       `@iso:@start` and an `@iso:@end` marker when --timing-out is given;
 #       a solo's exit code is kept in its directory and never returned
 #   bash scripts/gate-isolation.sh check --sections C [--with W] [--out D]
-#                                       [--bash B] [--suite F] [--census F]
+#                                       [--bash B] [--suite F]
 #       the local entry: the solos of each id of C and one cut of C (and W)
 #   bash scripts/gate-isolation.sh sweep [--out D] [--chunk-s S] [--jobs J]
 #                                       [--timing F] [--bash B]
@@ -91,7 +91,7 @@ repo_root=$(cd "$script_dir/.." && pwd)
 ISO_TOKEN='iso-R1R2R3R4R5R55R57R68'
 
 iso_usage() {
-  printf 'gate-isolation: 사용법 — compare --dir D --plan F [--out F] / solos --out D --spec S [--timing-out F] / check --sections C [--with W] [--out D] / sweep [--out D] [--chunk-s S] [--jobs J] / capacity --base REV / --self-test (공통: --bash B, --suite F, --census F, --timing F)\n' >&2
+  printf 'gate-isolation: 사용법 — compare --dir D --plan F [--out F] / solos --out D --spec S [--timing-out F] / check --sections C [--with W] [--out D] / sweep [--out D] [--chunk-s S] [--jobs J] / capacity --base REV / --self-test (공통: --bash B, --suite F, --timing F)\n' >&2
   exit 2
 }
 
@@ -409,9 +409,9 @@ iso_solos() {
 # would give them: one row holding the whole suite leaves no room, so every
 # solo lands on an extra row and the fifth column of those rows is the answer.
 iso_solo_spec() {
-  local suite="$1" census="$2" c="$3" n
+  local suite="$1" c="$2" n
   n=$(printf '%s\n' "$c" | tr ',' '\n' | grep -c . || true)
-  bash "$script_dir/gate-shard.sh" --suite "$suite" --census "$census" --shards 1 --table \
+  bash "$script_dir/gate-shard.sh" --suite "$suite" --shards 1 --table \
     --isolate "$c" --iso-extra "$(( 2 * n ))" 2>/dev/null \
     | awk -F '\t' '$5 != "" { printf "%s%s", (o++ ? ";" : ""), $5 }'
   return "${PIPESTATUS[0]}"
@@ -420,7 +420,7 @@ iso_solo_spec() {
 # --- check -------------------------------------------------------------------
 
 iso_check() {
-  local sections="" with="" out="" bsh="${ISO_BASH:-bash}" suite="$repo_root/scripts/test-gate.sh" census="$repo_root/scripts/gate-census.tsv"
+  local sections="" with="" out="" bsh="${ISO_BASH:-bash}" suite="$repo_root/scripts/test-gate.sh"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --sections) [ "$#" -ge 2 ] || iso_usage; sections="$2"; shift 2 ;;
@@ -428,7 +428,6 @@ iso_check() {
       --out)      [ "$#" -ge 2 ] || iso_usage; out="$2"; shift 2 ;;
       --bash)     [ "$#" -ge 2 ] || iso_usage; bsh="$2"; shift 2 ;;
       --suite)    [ "$#" -ge 2 ] || iso_usage; suite="$2"; shift 2 ;;
-      --census)   [ "$#" -ge 2 ] || iso_usage; census="$2"; shift 2 ;;
       *) iso_usage ;;
     esac
   done
@@ -440,7 +439,7 @@ iso_check() {
   if [ -z "$out" ]; then out=$(mktemp -d "${TMPDIR:-/tmp}/gate-isolation.XXXXXX") || return 2; fi
   out=$(iso_abs "$out"); mkdir -p "$out/iso-1" || return 2
   local spec rc ids tbase
-  spec=$(iso_solo_spec "$suite" "$census" "$sections"); rc=$?
+  spec=$(iso_solo_spec "$suite" "$sections"); rc=$?
   if [ "$rc" != "0" ] || [ -z "$spec" ]; then
     printf 'gate-isolation: 단독의 needs 폐포를 풀지 못했습니다 (gate-shard 종료 %s)\n' "$rc" >&2; return 2
   fi
@@ -632,7 +631,7 @@ iso_sweep_chunk() {
 
 iso_sweep() {
   local O="${ISO_OUT:-}" chunk="${ISO_CHUNK_S:-5400}" jobs=4 timing="${ISO_TIMING:-}" bsh="${ISO_BASH:-bash}"
-  local suite="$repo_root/scripts/test-gate.sh" census="$repo_root/scripts/gate-census.tsv"
+  local suite="$repo_root/scripts/test-gate.sh"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --out)     [ "$#" -ge 2 ] || iso_usage; O="$2"; shift 2 ;;
@@ -641,7 +640,6 @@ iso_sweep() {
       --timing)  [ "$#" -ge 2 ] || iso_usage; timing="$2"; shift 2 ;;
       --bash)    [ "$#" -ge 2 ] || iso_usage; bsh="$2"; shift 2 ;;
       --suite)   [ "$#" -ge 2 ] || iso_usage; suite="$2"; shift 2 ;;
-      --census)  [ "$#" -ge 2 ] || iso_usage; census="$2"; shift 2 ;;
       *) iso_usage ;;
     esac
   done
@@ -674,7 +672,7 @@ iso_sweep() {
   ids=$(bash "$suite" --list 2>/dev/null | cut -d' ' -f1 | paste -sd, -)
   [ -n "$ids" ] || { printf 'gate-isolation: 스위트의 절 목록을 읽지 못했습니다\n' >&2; return 2; }
   if [ ! -s "$O/solos.spec" ]; then
-    spec=$(iso_solo_spec "$suite" "$census" "$ids") || { printf 'gate-isolation: 단독의 needs 폐포를 풀지 못했습니다\n' >&2; return 2; }
+    spec=$(iso_solo_spec "$suite" "$ids") || { printf 'gate-isolation: 단독의 needs 폐포를 풀지 못했습니다\n' >&2; return 2; }
     printf '%s\n' "$spec" > "$O/solos.spec"
   fi
   spec=$(cat "$O/solos.spec")
@@ -900,7 +898,7 @@ EOS
     rec_v() { awk -F '\t' -v X="$2" '$1 == X { printf "%s%s", (n++ ? " " : ""), $2 }' "$1/rec.tsv" 2>/dev/null; }
 
     suite "$T/s0" ""
-    out=$(env CC_TEST_GATE_REPO_ROOT="$repo_root" ISO_BASH="$bsh" bash "$0" check --suite "$T/s0/test-gate.sh" --census /dev/null \
+    out=$(env CC_TEST_GATE_REPO_ROOT="$repo_root" ISO_BASH="$bsh" bash "$0" check --suite "$T/s0/test-gate.sh" \
       --sections 902,903 --with 901 --out "$T/c0" 2>"$T/c0.err"); rc=$?
     if [ "$rc" = "1" ] && [ "$(verdict "$T/c0" 902)" = "갈림" ] && [ "$(rec_v "$T/c0/iso-1/solo1-902" 902)" = "FAIL" ]; then
       ok "R3: 선언 없이 P 본문의 헬퍼를 부르는 Q 는 단독에서 실패해 갈림이다"
@@ -910,13 +908,13 @@ EOS
     else bad "R3 선언 없음 Q2" "「$(cat "$T/c0/result.tsv" 2>/dev/null)」"; fi
 
     suite "$T/s1" "901"
-    out=$(env CC_TEST_GATE_REPO_ROOT="$repo_root" ISO_BASH="$bsh" bash "$0" check --suite "$T/s1/test-gate.sh" --census /dev/null \
+    out=$(env CC_TEST_GATE_REPO_ROOT="$repo_root" ISO_BASH="$bsh" bash "$0" check --suite "$T/s1/test-gate.sh" \
       --sections 902,903 --with 901 --out "$T/c1" 2>"$T/c1.err"); rc=$?
     if [ "$rc" = "0" ] && [ "$(verdict "$T/c1" 902)" = "같음" ] && [ "$(verdict "$T/c1" 903)" = "같음" ]; then
       ok "R3: needs: 901 로 선언하면 Q 와 Q2 가 모든 맥락에서 같음이다"
     else bad "R3 needs 선언" "rc=$rc 「${out}」 $(tail -n 3 "$T/c1.err")"; fi
 
-    out=$(env CC_TEST_GATE_REPO_ROOT="$repo_root" ISO_BASH="$bsh" bash "$0" check --suite "$T/s1/test-gate.sh" --census /dev/null \
+    out=$(env CC_TEST_GATE_REPO_ROOT="$repo_root" ISO_BASH="$bsh" bash "$0" check --suite "$T/s1/test-gate.sh" \
       --sections 904 --out "$T/c2" 2>"$T/c2.err"); rc=$?
     if [ "$(rec_v "$T/c2/iso-1/solo1-904" 904)" = "PASS" ] && [ "$(rec_v "$T/c2/iso-1/solo2-904" 904)" = "FAIL" ] \
        && [ "$rc" = "1" ] && [ "$(verdict "$T/c2" 904)" = "갈림" ]; then

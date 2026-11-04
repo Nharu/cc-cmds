@@ -587,7 +587,7 @@ tt_run_items() {
 # every section runs in one lane: the same coverage, only slower. The heaviest
 # job starts first and a job with no estimate counts as the heaviest, so a long
 # job does not start last. bash 3.2: no `wait -n` and no associative arrays; a
-# slot is watched with kill -0, as gate-census.sh's pool does. Every job runs
+# slot is watched with kill -0. Every job runs
 # to its end, so one run names every failure.
 
 # The estimate of key $1 in the estimate file $2 in whole seconds, or nothing.
