@@ -63,7 +63,7 @@ The field key is the single literal **`검증 등급`** everywhere (no `상태` 
 | 2 | `반증됨(실패)` | ledger `### V<n>` | design-session verifier / review main session (run-now) | same as #1; `영향 결정` cites the decision **changed** by the refutation (preserved as refutation evidence) |
 | 2′ | `반증됨(실패)` | residual `### R<n>` flip | implement only (W1) | W2 note line + failure-surface utterance |
 | 3 | `미검증` | Step-3 inter-agent messages only | teammate / lead | none — **MUST NOT appear in a saved document** (sweep pass condition: both the full-line and inline-tag literal forms are document-wide grep 0; the absence-proof exception of the detection grammar in §3.4) |
-| 4 | `구현 시 검증` | at `### R<n>` creation (the only save-time residual token) | design/design-lite lead (via the transformation move) / review main session (`잔여 항목으로 기록` disposition) | `주장` `분류` `잔여 사유` `차단 사유` `검증 레시피` `기대 결과` `실패 시 영향`; optional: `필요한 것` `차단 부류` `검증 시점` `실행 주의` `예상 소요` `관측 시점` |
+| 4 | `구현 시 검증` | at `### R<n>` creation (the only save-time residual token) | design/design-lite lead (via the transformation move) / review main session (`잔여 항목으로 기록` disposition) | `주장` `분류` `잔여 사유` `차단 사유` `검증 레시피` `기대 결과` `실패 시 영향`; optional: `필요한 것` `차단 부류` `검증 시점` `실행 주의` `예상 소요` `관측 시점` `반증 시 처리` |
 | 5 | `검증불가(드리프트)` | residual `### R<n>` flip | implement only (Rung 3) | W2 note line (drift cause) + failure-surface utterance |
 
 > **Enumeration ≠ rendering.** This table (and the §4/§5 field lists, and bulleted field/value enumerations such as §3.1) fixes *which* fields exist and *what bytes* each token is; it does NOT prescribe the markdown *line rendering*. The one normative line rendering is the CANON form **`**key**: value`** — bold key, no leading bullet `- `, exactly one ASCII space after the colon — shown as a verbatim example block in §4 and §5. A markdown bullet used to enumerate a field/value in this contract's prose is a documentation device, not a rendering template; do not copy the bullet (or drop the bold) into an emitted V/R field line.
@@ -91,7 +91,7 @@ An implement flip reuses the ledger terminals (`검증됨(통과)` / `반증됨(
 
 ### 3.4 Detection grammar (the only sanctioned idiom)
 
-All token detection is key-anchored full-line, **tolerant to the bullet and bold axes**, performed within the enumerated range of the owning section. The sanctioned idiom is the `grep -E` ERE `^(- )?(\*\*<key>\*\*|<key>): <value>$` — `(- )?` absorbs an optional leading bullet, and the balanced alternation `(\*\*<key>\*\*|<key>)` absorbs bold-vs-no-bold while **rejecting a half-bold impossible line** (`**검증 등급:`; a naive `(\*\*)?<key>(\*\*)?` would widen to match those). `grep -E` is POSIX ERE (BSD/GNU-portable, not on the `lint-bash-portability` denylist). The key stays anchored as a full line, so a bare-token document-wide grep is still forbidden (the heading substring `구현 시 검증` ⊂ `## 구현 시 검증 항목`, note-line key substrings, `분류 제외` ⊃ `제외` near-collisions, and prose mentions of a token would all defeat a single bare-token rule). Keys instantiated: `검증 등급`, `잔여 사유`, and the note-line key **`구현 시 검증 기록`** (the §3.3 adjacency check rides this grammar, so the note-line key MUST be a member — otherwise a legacy bullet/no-bold note line on a correctly-flipped item reads as false-malformed).
+All token detection is key-anchored full-line, **tolerant to the bullet and bold axes**, performed within the enumerated range of the owning section. The sanctioned idiom is the `grep -E` ERE `^(- )?(\*\*<key>\*\*|<key>): <value>$` — `(- )?` absorbs an optional leading bullet, and the balanced alternation `(\*\*<key>\*\*|<key>)` absorbs bold-vs-no-bold while **rejecting a half-bold impossible line** (`**검증 등급:`; a naive `(\*\*)?<key>(\*\*)?` would widen to match those). `grep -E` is POSIX ERE (BSD/GNU-portable, not on the `lint-bash-portability` denylist). The key stays anchored as a full line, so a bare-token document-wide grep is still forbidden (the heading substring `구현 시 검증` ⊂ `## 구현 시 검증 항목`, note-line key substrings, `분류 제외` ⊃ `제외` near-collisions, and prose mentions of a token would all defeat a single bare-token rule). Keys instantiated: `검증 등급`, `잔여 사유`, `반증 시 처리` (read by the gate's refutation route and by `design-reconverge`, so a non-canonical `파킹` line still reads as `파킹`), and the note-line key **`구현 시 검증 기록`** (the §3.3 adjacency check rides this grammar, so the note-line key MUST be a member — otherwise a legacy bullet/no-bold note line on a correctly-flipped item reads as false-malformed).
 
 **`<value>` binding**: (i) section-internal key-presence detection uses the generic `<value>` arm as-is; (ii) the `미검증` document-wide absence proof pins `<value>` to the literal `미검증` (a generic arm would over-match arbitrary `검증 등급` lines and break the absence semantics). The W1 lookup / flip-gate value arms are pinned separately by `implement` (the un-flipped `구현 시 검증` value / the terminal-token set).
 
@@ -162,6 +162,7 @@ An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` a
     - `차단 부류` — §3.1.
     - `관측 시점` = external-environment residuals only — the date of the external observation referenced when the recipe was authored (distinct from the ledger's `관측 일시`, which is the date a verification was performed); an input to implement's drift-ladder staleness/flake judgment.
     - `실행 주의` / `예상 소요` = per §3.2 / free-form duration estimate.
+    - `반증 시 처리` = `재수렴` | `파킹`, closed; an item without the line reads `재수렴`. `파킹` is a design decision: when this item's claim is graded `반증됨(실패)` during implementation, the run does not measure it again — the segment is pushed, a pull request is opened, and the segment is parked for a person. It does not act on `검증불가(드리프트)`, which goes to re-convergence whatever the value: a recipe that lost its location is not an observation that the claim is wrong. Write `파킹` only when the design decided that a refutation ends the item without a re-measurement, and state the same decision in `**실패 시 영향**` in words a person reads; when the field and the prose disagree, the machine follows the field. Whether a failure was caused by an implementation defect is not this field's value — that is known only when the failure is observed, and the implementation stage carries it in its halt record.
 - 0 items → omit the section; the consumer treats absence as "no gate".
 - The heading contains neither `미해결` nor `이슈`, so it can NEVER match the walkthrough parse regex (which requires the literal `미해결\s+이슈`) — under the LAST-match doctrine a non-matching heading is inert. `## 검증 기록` proves the same.
 
@@ -179,7 +180,7 @@ An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` a
 **검증 등급**: 구현 시 검증
 ```
 
-(Optional fields — `필요한 것` / `차단 부류` / `검증 시점` / `실행 주의` / `예상 소요` / `관측 시점` — render with the same `**key**: value` form. On flip, `implement` rewrites the `검증 등급` line to a terminal token and appends `**구현 시 검증 기록**: …` directly after it.)
+(Optional fields — `필요한 것` / `차단 부류` / `검증 시점` / `실행 주의` / `예상 소요` / `관측 시점` / `반증 시 처리` — render with the same `**key**: value` form. On flip, `implement` rewrites the `검증 등급` line to a terminal token and appends `**구현 시 검증 기록**: …` directly after it.)
 
 ### 5.1 The three birth paths of a residual item
 
@@ -193,7 +194,7 @@ The ledger holds only performed-and-completed entries; a blocked attempt lives i
 
 ### 5.2 Well-formedness predicate
 
-An R-item is MALFORMED if any of: a required field is missing / it contains a `/tmp` literal / `실패 시 영향` is an unresolved anchor / it uses a token or enum value outside this vocabulary / its `차단 부류` breaks §3.1's pairing / it carries a terminal token (`검증됨(통과)`/`반증됨(실패)`/`검증불가(드리프트)`) without an adjacent `**구현 시 검증 기록**:` line (per §3.3).
+An R-item is MALFORMED if any of: a required field is missing / it contains a `/tmp` literal / `실패 시 영향` is an unresolved anchor / it uses a token or enum value outside this vocabulary / its `차단 부류` breaks §3.1's pairing / its `반증 시 처리` value is outside the closed `재수렴` | `파킹` vocabulary / it carries a terminal token (`검증됨(통과)`/`반증됨(실패)`/`검증불가(드리프트)`) without an adjacent `**구현 시 검증 기록**:` line (per §3.3).
 
 **Line rendering (the bullet/bold axes) is NOT a malformedness axis.** A non-canonical field-line rendering is a §3.4-tolerant-readable form, not a malformed item — the detection grammar reads all four renderings and the consumer's tolerant W1 lookup flips a legacy rendering, so a bullet/no-bold line is cosmetic drift, not a flip-breaker. It is surfaced only as a **trivial** style note by whatever pass is reading the document, scoped to lines that pass actually edited, never via this predicate and never as a retro-flag of untouched lines.
 
