@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.31.1] - 2026-11-04
+
+리뷰어 런이 라우터 교대 스킬 문면대로 부르는 게이트 호출이 계획부터 게시·정리까지 막히지 않는다. 문면의 PR 헤드·베이스 fetch 는 자동 처리를 켠 게이트에서 `도달모순`(exit 11)으로 멈췄고, 리뷰 게시는 exit 2 로 거절됐으며, 헤드가 움직였을 때의 재시도는 리뷰 워크트리 대신 사람의 메인 체크아웃을 분리 HEAD 로 옮겼다.
+
+### Fixed
+
+- **리뷰어 런 fetch 의 도달** — 게이트의 협업 판정이 리뷰어 런의 `git fetch origin` 중 모든 refspec 이 PR 헤드나 브랜치를 이 런의 `refs/cc-review/<run id>/` 아래로만 받고, 옵션·전역 플래그·`*` 가 없으며, `origin` 이 대상의 원격 슬러그로 풀리는 형태 하나를 협업으로 받는다. 스킬의 `--reach 협업` 선언이 그대로 통과하고 원장의 도달 칸이 원격 접촉을 기록한다. 그 밖의 fetch 는 전처럼 `도달모순` 이다.
+- **리뷰 게시와 리뷰 절 정산 문면** — 게이트가 `act` 에서 `--reach` 를 `remote-check` 에만 받으므로, 라우터 교대 스킬과 리드 사본의 `act --kind review-post` 문면에서 `--reach 협업` 을 뺐다.
+- **헤드 이동 재시도** — 재시도 순서를 fetch, `git worktree remove --force`, 워크트리 추가, 계획 행으로 바꿨다. 계획 행 전에는 세그먼트 행이 없어 게이트가 `--segment` 호출도 메인 워크트리에서 실행하기 때문이다.
+- **정리** — 워크트리를 만들지 못한 세그먼트는 `git worktree remove` 를 건너뛰고 `update-ref -d` 두 줄만 부른다.
+
+### Changed
+
+- **시험** — test-gate 절 108 이 라우터 교대 스킬의 리뷰어 런 절에서 argv 를 읽어 양성 경로·헤드 이동 재시도·닫힌 PR 을 게이트에 태우고 협업 판정의 음성 대조를 잰다. 절 108s 는 `review-post` 문면이 두 사본 어디에도 `--reach` 를 싣지 않음을 단언한다.
+
 ## [3.31.0] - 2026-11-04
 
 구현 중 반증된 검증 항목이 설계를 언제나 다시 수렴시키지 않는다. 설계 문서가 항목마다 반증 뒤의 처리를 정해 둘 수 있고, 반증이 설계가 아니라 이번 구현의 결함일 때는 같은 런 안에서 구현을 고쳐 다시 잰다. 드라이버와 라우팅 교대가 같은 결정 함수로 갈래를 고른다.
