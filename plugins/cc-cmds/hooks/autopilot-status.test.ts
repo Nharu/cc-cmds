@@ -89,7 +89,12 @@ const world = (on: On, env: Record<string, string> = {}) => {
     // 참이면 시계의 다음 주기를 거부해 간격을 끝낸다.
     isEveryRefused: false,
   }
-  mock.env(on, env)
+  // HOME·XDG_STATE_HOME 은 없는 경로로 고정해, 같은 진입으로 실리는 원격 답 모드가 이
+  // 세계에서 잠든 채로 있게 한다(스풀 루트를 찾지 못하면 프로세스를 띄우지 않는다).
+  mock.env(on, { HOME: '/nonexistent/home', XDG_STATE_HOME: '/nonexistent/state', ...env })
+  on('fs.list', () => {
+    throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' })
+  })
   // mock.clock 도 clock.every 를 받으므로, 이 훅은 mod 의 주기에만 매처로 걸고 먼저 둔다.
   on('clock.every', { ms: TICK }, (_$, e, next) => (w.isEveryRefused ? { deny: '주기 거부' } : next(e)))
   const clock = mock.clock(on, { now: 1_000_000 })

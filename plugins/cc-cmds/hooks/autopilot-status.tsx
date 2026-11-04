@@ -1,12 +1,14 @@
 // 런 상태 패널 mod. 대화형 세션에서만 깨어나, 상태 표시줄이 고른 런 하나의 상태를
 // orchestrator/run-pane.sh 에서 받아 패널에 그린다. 문구·순서·색조·부류·주기와 줄 상한은
 // 모두 그 헬퍼가 정하고, 이 모듈은 언제 헬퍼를 부르고 언제 패널을 여닫는지만 정한다.
-// 이 모듈이 플러그인의 유일한 `modules` 진입이며, 질문지 서브 mod 의 등록도 넘겨준다.
+// 이 모듈이 플러그인의 유일한 `modules` 진입이며, 질문지 서브 mod 와 원격 답 모드의 등록도
+// 넘겨준다.
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
 import type { PaneControl, PaneLine, PaneLines, PanePart } from '../types'
 import { register as registerQuestionForm } from './question-form/index'
+import { register as registerRemoteReply } from './remote-reply/index'
 
 type Dollar = Parameters<Hook<'session.start'>>[0]
 
@@ -347,4 +349,5 @@ export const register: Register = (on, options) => {
   })
 
   registerQuestionForm(on, options)
+  registerRemoteReply(on, options)
 }

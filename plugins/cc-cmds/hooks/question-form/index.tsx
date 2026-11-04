@@ -7,7 +7,7 @@ import type { Hook, Register } from 'claude-code'
 
 import { anyMarked } from '../pipeline-marks'
 import { bannerCall } from './banner'
-import { bundleText, counts, mimicsHeader, mintFormId } from './bundle'
+import { bundleText, counts, draftOf, mimicsHeader, mintFormId } from './bundle'
 import type { FormStatus } from './bundle'
 import { SUBMIT_KEY, arrowTarget, landingKey, layoutRows, openEditorKey, paneSize, revealKeys } from './layout'
 import { drawForm } from './render'
@@ -213,25 +213,76 @@ async function rejoin($: Dollar) {
   else await $.store.delete(key)
 }
 
+// 묶음을 내는 결과: 기록을 소비했는지와, 소비했으면 제출한 텍스트.
+export type Delivery = { consumed: true; text: string } | { consumed: false }
+
 // 묶음을 내는 공통 경로: CAS 로 기록을 소비한 쪽만 제출한다. 묶음을 낸 자리에서 패널을
-// 닫고 기록을 버린다 — 답은 묶음이 들고 가고, 다음 질문지는 새로 열린다.
-async function finish($: Dollar, status: FormStatus) {
+// 닫고 기록을 버린다 — 답은 묶음이 들고 가고, 다음 질문지는 새로 열린다. take 는 열린
+// 기록을 받아 소비한 기록(제출이나 취소 단계)을 돌려주거나, 소비하지 않으면 undefined 다.
+async function deliver($: Dollar, status: FormStatus, take: (r: FormRecord | undefined) => FormRecord | undefined): Promise<Delivery> {
   let taken: FormRecord | undefined
   await update($, recordAtom, r => {
-    taken = status === '제출' ? submit(r ?? undefined) : cancel(r ?? undefined)
+    taken = take(r ?? undefined)
     return taken ? null : r
   })
-  if (!taken) return
+  if (!taken) return { consumed: false }
   const done = taken
+  const text = bundleText(done.id, status, done.form, done.drafts)
   await landFocus($, null)
   await mirror($, null, done.sessionId)
-  await $.prompt.submit({ text: bundleText(done.id, status, done.form, done.drafts) })
+  await $.prompt.submit({ text })
   await $.ui.status(undefined)
   await $.ui.close({ id: PANE_ID })
   if (status === '제출') {
     const { answered, total } = counts(done.form, done.drafts)
     await $.ui.toast(sentToast(answered, total))
   }
+
+  return { consumed: true, text }
+}
+
+const finish = ($: Dollar, status: FormStatus) =>
+  deliver($, status, r => (status === '제출' ? submit(r) : cancel(r)))
+
+// 질문지에 사람이 남긴 것이 하나라도 있는가: 어느 질문이든 고른 선택지, 자유 입력, 메모.
+const hasDraft = (rec: FormRecord) =>
+  rec.form.questions.some(q => {
+    const d = draftOf(rec.drafts, q.id)
+    return d.selected.length > 0 || d.other !== '' || d.note !== ''
+  })
+
+// 원격 답이 대상으로 삼는 열린 질문지. 이 세션이 연 열린 기록만 내놓는다 — 다른 세션의
+// 기록이나 닫힌 기록이면 null 이다.
+export type FormTarget = {
+  form_id: string
+  session_id: string
+  questions: { id: string; question: string; options: { label: string }[] }[]
+  hasDraft: boolean
+}
+
+export async function openFormTarget($: Dollar): Promise<FormTarget | null> {
+  const rec = await read($, recordAtom)
+  if (!rec || !isOpen(rec)) return null
+  if (rec.sessionId !== (await $.session.id())) return null
+
+  return {
+    form_id: rec.id,
+    session_id: rec.sessionId,
+    questions: rec.form.questions.map(q => ({ id: q.id, question: q.question, options: (q.options ?? []).map(o => ({ label: o.label })) })),
+    hasDraft: hasDraft(rec),
+  }
+}
+
+// 원격 답 적용: 한 번의 기록 갱신 안에서 열림·id 일치·초안 없음을 보고, 질문마다 choose 를,
+// 이어서 submit 을 적용한다. 그 사이에 사람의 누름이 끼어들 창이 없다. 소비했으면 버튼의
+// 제출과 같은 나머지 일을 하고 제출 텍스트를 돌려준다.
+export function applyRemote($: Dollar, formId: string, picks: readonly { id: string; label: string }[]): Promise<Delivery> {
+  return deliver($, '제출', r => {
+    if (!isOpen(r) || r.id !== formId || hasDraft(r)) return undefined
+    let rec: FormRecord = r
+    for (const pick of picks) rec = choose(rec, pick.id, pick.label).record
+    return submit(rec)
+  })
 }
 
 // 열린 기록을 순수 전이로 바꾼다. 제목이나 바라는 크기가 바뀌었으면 패널을 다시 열고,
