@@ -54313,14 +54313,23 @@ gate_refutation_router_unit() {
 }
 
 gate_refutation_unit() {
-  # gate_refutation_unit <segment> <header stage> — the dispatch unit a record
-  # of the segment counts under, or 1 when the header does not bind to the
-  # segment. run.sh writes `S4:<segment>:<사이클>[.fix<k>][.retry]#<n>`: the
-  # attempt number and a crash retry stay in the unit they retry, and every
-  # implementation fix (`.fix<k>`) is a unit of its own. A routing run writes
-  # `<segment>#<실행 버전>` or `<segment>`. A header that is the skill's own
-  # name counts only when the run has one segment.
-  local seg=$1 hd=$2 rest u
+  # gate_refutation_unit <segment> <header stage> [<record file name>] — the
+  # dispatch unit a record of the segment counts under, or 1 when the header does
+  # not bind to the segment. run.sh writes
+  # `S4:<segment>:<사이클>[.fix<k>][.retry]#<n>`: the attempt number and a crash
+  # retry stay in the unit they retry, and every implementation fix (`.fix<k>`)
+  # is a unit of its own. A routing run writes `<segment>#<실행 버전>` or
+  # `<segment>`. A header that is the skill's own name counts as the stage id its
+  # file name carries, the same reading `gate_refutation_record_of` binds it by,
+  # so each dispatch is its own unit however many segments the run has; with no
+  # attempt in the name it counts only when the run has one segment.
+  local seg=$1 hd=$2 name=${3:-} rest u
+  case "$hd" in
+    implement-unattended|implement-unattended#*)
+      case "$name" in
+        *'#'*) gate_refutation_unit "$seg" "${name%.md}"; return ;;
+      esac ;;
+  esac
   case "$hd" in
     S4:*)
       rest=${hd#S4:}
@@ -54352,7 +54361,7 @@ gate_refutation_defect_units() {
     it=$(gate_refutation_item_of "$f")
     [ "${it%% *}" = "$rn" ] || continue
     hd=$(gate_refutation_header_stage "$f")
-    u=$(gate_refutation_unit "$seg" "$hd") || continue
+    u=$(gate_refutation_unit "$seg" "$hd" "${f##*/}") || continue
     units="$units$u
 "
   done

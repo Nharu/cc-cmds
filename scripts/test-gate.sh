@@ -60680,6 +60680,13 @@ for h107 in implement-unattended implement-unattended#7; do
   mv "$w107/bind/halt/rec.md" "$w107/bind/halt/SB#1.md"
   printf -- '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 실행 버전=3 | 종단 부류=정상 완료\n' >> "$L107"
   check "107: 머리 $h107 — 후보가 여럿이면 자기 이름의 기록도 묶이지 않는다" "$(rf107 "$w107/bind" gate_refutation_next_of SB)" ""
+  # 이 머리의 기록도 파일 이름의 시도마다 단위가 되어 항목 상한이 걸린다. 다른 세그먼트 이름의 기록은 세지 않는다.
+  mk107 "$w107/bind/halt/SA#4.md" "$h107" 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'lib/b.sh'
+  mk107 "$w107/bind/halt/SB#2.md" "$h107" 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'lib/b.sh'
+  check "107: 머리 $h107 — 여러 세그먼트 런에서도 시도마다 단위다" "$(rf107 "$w107/bind" gate_refutation_defect_units SB R2 "$w107/bind/halt/SB#2.md")" "2"
+  mk107 "$w107/bind/halt/SB#3.md" "$h107" 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'lib/b.sh'
+  check "107: 머리 $h107 — 셋째 단위에서 수정 한도로 파킹한다" \
+    "$(rf107 "$w107/bind" gate_refutation_route SB "$w107/bind/halt/SB#3.md" "$D107" | sed -n 's/^사유=//p')" "구현 결함 수정 한도"
 done
 {
   printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=src/,lib/b.sh\n'
@@ -60858,7 +60865,7 @@ rfa_sr implement 1 '의도된 park'
 r107b=$(rfa_rec 'RF#1.md' 'RF#1' 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'work.txt')
 sa_commit '작업' >/dev/null
 sag act --manifest "$SA_MANIFEST" --kind blocked --target main --segment RF --cutpoint 커밋 --surface 읽기 \
-    --snapshot-digest "$(SAH)" --rationale x -- 스코프=cone 원인=막힘 '사유=반증 라우팅 — 판정 불가 (선언 파일 집합을 읽지 못함)' "근거=$r107b" '앵커 세그먼트=RF'
+    --snapshot-digest "$(SAH)" --rationale x -- 스코프=cone 원인=막힘 '사유=반증 라우팅 — 판정 불가 (설계 문서를 읽지 못함)' "근거=$r107b" '앵커 세그먼트=RF'
 check "107b: 막힘 행이 원소를 닫는다" "$rc|$(rfa_el '다음')" "0|"
 rfa_ans "$r107b" '구현 수정'
 check "107b: 막힘 행 뒤의 구현 수정 답이 선다" "$rc" "0"
@@ -60915,6 +60922,7 @@ check "107b: 그 시도는 수정 시도로 읽힌다" \
   "$( ( LEDGER="$SA_LEDGER" RUN_DIR="$SA_RUN" gate_refutation_fix_attempt_halted RF "$SA_LEDGER" "$SA_RUN" ); printf '%s' "$?")" "0"
 p107b=$(rfa_ans_field "$f107b" carry_prompt)
 case "$p107b" in
+  *'수정 대상'*) bad "107b: 그 답의 carry_prompt 는 수정 대상 꼬리 없는 틀이다" "$p107b" ;;
   *'세그먼트 RF (사이클 1)'*) ok "107b: 그 답의 carry_prompt 는 수정 대상 꼬리 없는 틀이다" ;;
   *) bad "107b: 그 답의 carry_prompt 는 수정 대상 꼬리 없는 틀이다" "$p107b" ;;
 esac
