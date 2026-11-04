@@ -26569,6 +26569,139 @@ vz_drop RVZB
 HW_SID=""
 
 # ---------------------------------------------------------------------------
+# 31bb. The gate reads a person's halt answer on a ledger with no run heading
+# --- section: 31bb | group: cone | covers: close, act, exec, grade, visual_publish_person_answer, visual_publish_standing_refusal, run_section_rows | anchors: 31bb: 표제 없는 원장에서 사람의 승인 답이 있으면 승인 라벨이 닫는다, 31bb: 표제 없는 원장에서 사람의 승인 답 뒤 다시 낸 판단이 시각-승인 을 채택한다, 31bb: 표제 없는 원장에서 사람의 거부 답 기록이 같은 행위 안에서 시각-승인 을 거부로 닫는다, 31bb: 표제 없는 원장에서 사람 승인한 후보의 append 는 트리 밖 쓰기다, 31bb: 표제 아래 행의 원장에서 사람의 승인 답이 있으면 승인 라벨이 닫는다, 31bb: 표제 아래 행의 원장에서 사람의 승인 답 뒤 다시 낸 판단이 시각-승인 을 채택한다, 31bb: 표제 위에 놓인 사람의 승인 답으로는 승인 라벨이 닫히지 않는다 ---
+#
+# The three readers of a person's `중단 답` row — the approval provenance, the
+# linked close on a refusal and the forbidden-list `append` grade — are the
+# driver's, and they read the run's rows through the ledger's read scope. The
+# ledger a run writes today carries no `## 실행 <run-id>` heading, so a gate
+# that left the scope empty read it as a block and found no answer at all. Every
+# case here goes through the gate's own entry, because a test that sources the
+# definitions and calls a reader directly never passes the line that decides
+# the scope. Each case builds its own run, so none of them stands on rows
+# another case wrote. The cases with a heading pin what a block-scoped ledger
+# reads: rows under the heading are this run's, and rows above it are not.
+# ---------------------------------------------------------------------------
+VZ_AR=0
+HW_SID="31bb0000-1111-2222-3333-444455556660"
+VBB_PLAN='{ "steps": [ { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": [] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] } ] }'
+vbb_rec() {  # vbb_rec <n> <스텝> [금지 후보] — the publish stage's halt record S2P#<n>.md
+  { printf '<!-- cc-pipeline-halt v1; writer=visual-publish-unattended; reader=orchestrator; stage=S2P#%s; run=%s -->\n' "$1" "$(basename "$CAP_DIR")"
+    printf '**중단 시각**: 2026-11-03T00:00:00Z\n**스킬**: visual-publish-unattended\n'
+    printf '**스텝**: %s\n**분류**: gate-unanswerable\n' "$2"
+    [ -z "${3:-}" ] || printf '**금지 후보**: %s\n' "$3"
+    printf '**질문 문면**: 발행한 화면을 구현 기준으로 삼을까요?\n**선택지**:\n'
+    printf '%s\n' '- `승인` — 발행한 화면을 구현 기준으로 삼습니다' '- `거부` — 발행한 화면을 다시 만듭니다'
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$CAP_DIR/halt/S2P#$1.md"
+}
+vbb_answer() {  # vbb_answer <n> <선택지> — a person's `중단 답` row to S2P#<n>.md
+  hw_row '중단 답' 세그먼트=S2P "중단 기록=$CAP_DIR/halt/S2P#$1.md" 스킬=visual-publish-unattended \
+    "선택지=$2" '답한 주체=사람' 근거=픽스처
+}
+vbb_fx() {
+  # vbb_fx <run-id> — the visual run whose plan holds the publish stage, with
+  # its first `시각-판정` record S2P#1.md. Nothing has answered the record yet.
+  local pd
+  vz_fixture "$1"
+  pd=$(printf '%s\n' "$VBB_PLAN" | shasum -a 256 | cut -d' ' -f1)
+  sed -e "s/^{ \"steps\": \[\] }\$/$VBB_PLAN/" -e "s/^\*\*계획 다이제스트\*\*: .*/**계획 다이제스트**: $pd/" \
+    "$CAP_NM" > "$CAP_NM.t" && mv "$CAP_NM.t" "$CAP_NM"
+  if ! grep -qF '"skill": "visual-publish"' "$CAP_NM"; then
+    printf '31bb: 픽스처 매니페스트의 계획에 발행 단계를 넣지 못했다 (%s)\n' "$CAP_NM" >&2
+    exit 1
+  fi
+  mkdir -p "$CAP_DIR/halt"
+  vbb_rec 1 '시각-판정 — 화면 하나'
+}
+vbb_approve() {  # vbb_approve — the implementation approval line, its tail naming S2P#1.md
+  printf '**구현 승인**: 2026-11-03 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음 — 사람 답 S2P#1.md\n' \
+    "$(bash "$VZ_CHECK" bundle "$VZ_DOC")" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" >> "$VZ_SC"
+}
+vbb_heading_top() {  # vbb_heading_top <run-id> — the run's heading above every row of the ledger
+  { sed -n '1,3p' "$CAP_LEDGER"; printf '\n## 실행 %s\n' "$1"; sed -n '4,$p' "$CAP_LEDGER"; } > "$CAP_LEDGER.t"
+  mv "$CAP_LEDGER.t" "$CAP_LEDGER"
+}
+vbb_case() {
+  # vbb_case <run-id> <표제: 없음|아래|위> <닫기|재제출> — the screens' question
+  # raised before any answer, then a person's `승인` to S2P#1.md, then either
+  # the person's `승인` label at the seat or the same judgment submitted again.
+  # Leaves `<rc>/<상태>/<채택 행 수>` of the question in VBB_OUT, or a line that
+  # starts with `픽스처:` when the question was not waiting before the answer.
+  local rid="$1" shape="$2" how="$3" q
+  vbb_fx "$rid"
+  [ "$shape" != 아래 ] || vbb_heading_top "$rid"
+  vbb_approve
+  vz_ask S3 "31bb — S3 화면 승인"
+  q=$(vz_id S3)
+  VBB_OUT="$rc/$(row_field "$(vz_last "$q")" '상태')"
+  if [ "$VBB_OUT" != "5/대기" ]; then
+    VBB_OUT="픽스처: 답 전의 물음이 대기가 아니다 ($VBB_OUT) $msg"
+    vz_drop "$rid"
+    return 0
+  fi
+  vbb_answer 1 승인
+  [ "$shape" != 위 ] || printf '\n## 실행 %s\n' "$rid" >> "$CAP_LEDGER"
+  if [ "$how" = 닫기 ]; then
+    vz_close "$q" 승인
+  else
+    vz_ask S3 "31bb — S3 화면 승인"
+  fi
+  VBB_OUT="$rc/$(row_field "$(vz_last "$q")" '상태')/$( { cap_rows '자율 승인' | grep -cF "| 해소 승인=$q |" || true; } | tr -d ' ')"
+  vz_drop "$rid"
+}
+
+# T1·T2 — no heading: a person's `승인` opens the approval for the label and
+# for the resubmitted judgment alike.
+vbb_case RBB1 없음 닫기
+check "31bb: 표제 없는 원장에서 사람의 승인 답이 있으면 승인 라벨이 닫는다" "$VBB_OUT" "0/승인/0"
+vbb_case RBB2 없음 재제출
+check "31bb: 표제 없는 원장에서 사람의 승인 답 뒤 다시 낸 판단이 시각-승인 을 채택한다" "$VBB_OUT" "0/승인/1"
+
+# T3 — no heading: the person's `거부` to a later verdict record, recorded
+# through the gate, closes the waiting question in the same act. The publish
+# stage's settled row is what the answer routes back to.
+vbb_fx RBB3
+vz_ask S3 "31bb — S3 화면 승인"
+vbb_q=$(vz_id S3)
+check "31bb 픽스처: 답 전의 물음은 대기다" "$rc/$(row_field "$(vz_last "$vbb_q")" '상태')" "5/대기"
+vbb_rec 2 '시각-판정'
+hw_row stage-result 교대=0 '세그먼트=-' 스테이지=S2P 종류=visual-publish '종료 코드=0' '실행 버전=1' \
+  '세션 id=vbb-s2p' 기록자=게이트 '종단 부류=의도된 park' '실패 서명=-'
+vz_g act --manifest "$CAP_NM" --kind halt-answer --target infra --segment S2P --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(vz_H)" --rationale x \
+    -- "중단 기록=$CAP_DIR/halt/S2P#2.md" '선택지=거부' '답한 주체=사람' '근거=사람이 발행한 화면을 거부했다'
+check "31bb 픽스처: 사람의 거부 답이 기록된다" "$rc" "0"
+[ "$rc" = 0 ] || bad "31bb 거부 답 문면" "$msg"
+check "31bb: 표제 없는 원장에서 사람의 거부 답 기록이 같은 행위 안에서 시각-승인 을 거부로 닫는다" \
+  "$(row_field "$(vz_last "$vbb_q")" '상태')/$(row_field "$(vz_last "$vbb_q")" '처분 사유')" "거부/중단 답 연동"
+vz_drop RBB3
+
+# T4 — no heading: from the publish stage's seat, the `append` of the
+# candidate a person approved is graded as the write it is.
+vbb_fx RBB4
+vbb_rec 3 '금지-후보 — 반복 문구' hero-gradient
+vbb_answer 3 승인
+vbb_grade=$( ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+    CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_SEGMENT='' CC_PIPELINE_STAGE_ID='S2P#1' \
+    gate_inproc grade --manifest "$CAP_NM" \
+      -- "$CC_ORCH/visual-config.sh" append '- `hero-gradient` | 그라데이션 히어로 — 3회 home' 2>/dev/null ) \
+  | sed -n 's/^축2=//p' | tail -1)
+check "31bb: 표제 없는 원장에서 사람 승인한 후보의 append 는 트리 밖 쓰기다" "$vbb_grade" "트리밖쓰기"
+vz_drop RBB4
+
+# T5·T6 — a heading: rows under it read as before, and an answer above it is
+# not this run's, so the label is refused as it always was.
+vbb_case RBB5 아래 닫기
+check "31bb: 표제 아래 행의 원장에서 사람의 승인 답이 있으면 승인 라벨이 닫는다" "$VBB_OUT" "0/승인/0"
+vbb_case RBB6 아래 재제출
+check "31bb: 표제 아래 행의 원장에서 사람의 승인 답 뒤 다시 낸 판단이 시각-승인 을 채택한다" "$VBB_OUT" "0/승인/1"
+vbb_case RBB7 위 닫기
+check "31bb: 표제 위에 놓인 사람의 승인 답으로는 승인 라벨이 닫히지 않는다" "$VBB_OUT" "3/대기/0"
+HW_SID=""
+
+# ---------------------------------------------------------------------------
 # 12b. B3's budget is a WINDOW, and the two halves are asserted separately
 # --- section: 12b | group: base | covers: snapshot, act | needs: 33 | anchors: B3 이 한 창 안에서 예산을 넘기면 발동한다 ---
 #
