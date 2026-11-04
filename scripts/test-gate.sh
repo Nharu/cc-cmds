@@ -18019,12 +18019,20 @@ rm -f "$WT/$DOC15MA" "$WT/$DOC15MB" "$WT/$DOC15MC" "$WT/$DOC15MD" "$WT/$DOC15ME"
 # symbolically and refuses anything that is not `refs/remotes/origin/<base>`
 # for a path under this run's derived worktree prefix; experiment worktrees
 # elsewhere are not its business. The remote here runs one commit ahead of the
-# local `main` throughout, so a pass shows up as a different `HEAD`.
+# local `main` throughout, so a pass shows up as a different `HEAD`. The new
+# commit sits on the remote's own tip, not on the local `main`: sections run
+# before this one can leave the remote ahead of the local branch, and a push
+# that is not a fast-forward would be refused silently and leave the remote
+# where it was. The remote tip and the tracking ref are put back as they were
+# when the section ends.
 # ---------------------------------------------------------------------------
 DOC15N='docs/fixture-design-15n.md'
 two_slice_doc "$WT/$DOC15N" t/infra 머지 '**리뷰 정책**: 리뷰없음'
 g15_run R15N "$DOC15N" "$plan15c" 리뷰없음
-ahead15n=$( cd "$WT" && git commit-tree "main^{tree}" -p main -m ahead-15n )
+orig15n=$( cd "$WT" && git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 )
+[ -n "$orig15n" ] || orig15n=$( cd "$WT" && git rev-parse main )
+otrk15n=$( cd "$WT" && git rev-parse --verify --quiet refs/remotes/origin/main ) || otrk15n=""
+ahead15n=$( cd "$WT" && git commit-tree "main^{tree}" -p "$orig15n" -m ahead-15n )
 ( cd "$WT" && git push -q origin "$ahead15n:refs/heads/main" \
   && git update-ref refs/remotes/origin/main "$ahead15n" ) >/dev/null 2>&1
 n15_add() {  # n15_add <git worktree add args...> — the router's call 2 through the gate; sets rc, msg
@@ -18078,8 +18086,12 @@ for w15n in "$WTN15A" "$WTN15B" "$WTN15R" "$tmp15n"; do
 done
 ( cd "$WT" && git branch -D seg/R15N-SA seg/R15N-SB seg/R15N-RU ) >/dev/null 2>&1 || true
 rm -rf "$tmp15n"
-( cd "$WT" && git push -q -f origin main:refs/heads/main \
-  && git update-ref refs/remotes/origin/main main ) >/dev/null 2>&1
+( cd "$WT" && git push -q -f origin "$orig15n:refs/heads/main" ) >/dev/null 2>&1
+if [ -n "$otrk15n" ]; then
+  ( cd "$WT" && git update-ref refs/remotes/origin/main "$otrk15n" ) >/dev/null 2>&1
+else
+  ( cd "$WT" && git update-ref -d refs/remotes/origin/main ) >/dev/null 2>&1
+fi
 rm -f "$WT/$DOC15N"
 
 # ---------------------------------------------------------------------------
