@@ -227,6 +227,7 @@ async function boot(pathname, bodyOf) {
   const fetchStub = async (url, opts) => {
     if (url === "/healthz") return { json: async () => ({ version: "1" }) };
     c.urls.push(url);
+    if (c.hold) await c.hold(url);
     if (c.failWith) return { status: c.failWith, ok: false };
     const body = bodyOf(url), etag = JSON.stringify(body);
     if ((opts.headers || {})["If-None-Match"] === etag) return { status: 304, ok: false };
@@ -471,7 +472,73 @@ async function detailCases() {
   report("끝난 런을 그린 뒤 띠가 갱신 멈춤을 말한다", c.nodes.conn.textContent.includes("갱신 멈춤"), true);
 }
 
-listCases().then(detailCases).then(endedHoldCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+// The stub follows the read layer: `bases` is gathered after experiment hiding and
+// before the base filter, so with experiment runs off an experiment-only repo is
+// not listed while a request naming it is still filtered to it.
+async function baseFilterCases() {
+  let gen = 1, bases = ["/a", "/b"];
+  const row = (id, base) => ({
+    id, goal: "목표 " + id, attention: "ended", state: "종단", ended_day: "2026-11-04", elapsed_s: 60,
+    ended_at: 1793700000, base, seg: {}, cost_usd: 1, result: { "class": "종료 조건 성립" }, waiting: [], prs: [],
+  });
+  const c = await boot("/", (url) => {
+    const q = new URL(url, "http://stub").searchParams, exp = q.get("exp") === "1", base = q.get("base");
+    const runs = [row("plain-run", "/a"), row("other-run", "/b")].concat(exp ? [row("exp-run", "/exp-only")] : []);
+    return {
+      tz_offset_s: 32400, tz_label: "KST", generated_at: 1793700000 + gen, today: "2026-11-04",
+      runs: runs.filter((r) => !base || r.base === base), totals: {},
+      bases: exp ? bases.concat(["/exp-only"]) : bases, hidden: 0, hidden_experiment: exp ? 0 : 1,
+    };
+  });
+  const expSwitch = () => c.app.querySelectorAll("button").find((b) => b.getAttribute("data-fk") === "exp");
+  const toggleExp = async () => { expSwitch().fire("click"); await c.settle(); };
+  const pick = async (base) => { c.select().value = base; c.select().fire("change"); await c.settle(); };
+  const lastURL = () => c.urls[c.urls.length - 1];
+  const chosen = () => c.select().querySelectorAll("option").filter((o) => o.hasAttribute("selected")).length;
+  const root = () => c.app.firstChild;
+
+  await toggleExp();
+  await pick("/exp-only");
+  report("실험 전용 레포를 고르면 그 레포의 런만 보인다", !!c.link("/run/exp-run") && !c.link("/run/plain-run"), true);
+
+  await toggleExp();
+  report("실험을 끄면 목록에서 빠진 레포의 필터를 비운다", lastURL().includes("base=&") && lastURL().endsWith("exp=0"), true);
+  report("비운 필터는 표시된 모든 레포와 같은 목록을 그린다", !!c.link("/run/plain-run") && !!c.link("/run/other-run") && chosen() === 0, true);
+  gen++; await c.poll();
+  report("비운 필터는 다음 폴링에도 모든 레포를 읽는다", lastURL().includes("base=&"), true);
+
+  await toggleExp();
+  await pick("/a");
+  await toggleExp();
+  report("실험을 꺼도 목록에 남은 레포의 필터는 그대로다", lastURL().includes("base=%2Fa") && chosen() === 1 && !c.link("/run/other-run"), true);
+  await pick("");
+
+  // The answer to turning experiment runs off arrives after they are back on.
+  await toggleExp();
+  await pick("/exp-only");
+  let release;
+  c.hold = (u) => (u.includes("base=%2Fexp-only") && u.endsWith("exp=0") ? new Promise((r) => { release = r; }) : null);
+  await toggleExp();
+  c.hold = null;
+  await toggleExp();
+  release();
+  await c.settle();
+  gen++; await c.poll();
+  report("늦게 온 옛 응답은 다시 유효해진 필터를 지우지 않는다", lastURL().includes("base=%2Fexp-only") && lastURL().endsWith("exp=1") && !!c.link("/run/exp-run"), true);
+  await toggleExp();
+
+  await pick("/b");
+  bases = ["/a", "/c"];
+  c.selection = { isCollapsed: false, anchorNode: c.link("/run/other-run") };
+  const before = root();
+  gen++; await c.poll();
+  report("남아 있는 선택 동안에는 빠진 레포의 필터를 비우지 않는다", lastURL().includes("base=%2Fb") && root() === before, true);
+  c.selection = null;
+  await c.poll();
+  report("선택이 풀리면 빠진 레포의 필터를 비운다", lastURL().includes("base=&") && !!c.link("/run/plain-run"), true);
+}
+
+listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 JS
 
 if command -v node >/dev/null 2>&1; then

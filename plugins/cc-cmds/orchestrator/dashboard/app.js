@@ -315,6 +315,14 @@
       "&dead=" + (view.dead ? 1 : 0) + "&exp=" + (view.exp ? 1 : 0);
   }
 
+  // The repo <select> offers only `bases`, so a chosen repo missing from them
+  // (turning experiment runs off drops an experiment-only repo) would read as every
+  // repo while the response stays filtered to that one. A late answer to a filter
+  // the reader has since left says nothing about the current one.
+  function baseGone(d, url) {
+    return !!view.base && url === listURL() && (d.bases || []).indexOf(view.base) < 0;
+  }
+
   function resultBucket(r) {
     var c = r.result && r.result["class"];
     if (c === "종료 조건 성립") return "ok";
@@ -1463,6 +1471,11 @@
       if (!res.same || !sameView || redrawOwed) {
         if (sameView && readerBusy()) {
           redrawOwed = true;
+        } else if (baseGone(d, url)) {
+          // An empty base is never missing, so this asks at most once more.
+          view.base = "";
+          refresh(false);
+          return;
         } else {
           redraw(function () { if (r.run) renderDetail(d); else renderList(d); });
           app.setAttribute("data-url", url);
