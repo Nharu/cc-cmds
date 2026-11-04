@@ -54530,8 +54530,9 @@ gate_refutation_record_of() {
   # shift's binding rule: a record of `implement-unattended` classed
   # `precondition-failed`, closed, whose `**스텝**` begins with a refutation
   # token and whose header's `stage=` is `<segment>#<실행 버전>` of that attempt,
-  # or `<segment>` or the skill's own name while exactly one segment is a
-  # candidate, those two when `gate_refutation_written_in_attempt` holds. A
+  # or `<segment>`, or the skill's own name while exactly one segment is a
+  # candidate and the record's file name is `<segment>#…` or carries no attempt,
+  # those last two when `gate_refutation_written_in_attempt` holds. A
   # record a `blocked` row already names as `근거`, or a routing block handed
   # back by its file name in `사유`, has been carried out and binds no more,
   # unless a person's answer stands open on it or the optional second argument
@@ -54547,6 +54548,14 @@ gate_refutation_record_of() {
       "$seg")
         gate_refutation_written_in_attempt "$seg" "$a" "$f" || continue ;;
       implement-unattended|implement-unattended#*)
+        # The file name is the stage id the gate made the stage write under, so
+        # a name carrying an attempt says whose record this is whatever the
+        # header says; the record stays with that segment once it stops being
+        # the only candidate.
+        case "${f##*/}" in
+          "$seg#"*) ;;
+          *'#'*) continue ;;
+        esac
         if [ -z "$single" ]; then
           cnt=0
           while IFS= read -r s; do

@@ -5145,6 +5145,23 @@ CB60EOF
         -- implement -p "/cc-cmds:implement-unattended \"세그먼트 RF (사이클 1) · 선언 파일: work.txt · 수정 대상: $1 의 $2 구현 결함\""
   }
   rfa_n() { { grep -c "^- \`$1\` " "$SA_LEDGER" || true; }; }
+  rfa_stop_rec() {
+    # rfa_stop_rec <stage id> — 반증이 아닌 사람 정지의 기록을 halt/<stage id>.md 로 둔다. 경로를 찍는다.
+    local f="$SA_RUN/halt/$1.md"
+    {
+      printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=%s; run=%s -->\n' "$1" "$SA_ID"
+      printf '**중단 시각**: 2026-11-04T00:00:00Z\n**스킬**: implement-unattended\n**스텝**: Step 3 — 픽스처의 정지\n**분류**: gate-unanswerable\n**질문 문면**: 픽스처의 질문\n**선택지**:\n'
+      printf '%s\n' '- `재시도` — 세션을 다시 붙인다'
+      printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+    } > "$f"
+    printf '%s' "$f"
+  }
+  rfa_ans_line() { grep -n '^- `중단 답` ' "$SA_LEDGER" | tail -1 | cut -d: -f1; }
+  rfa_carry() {
+    # rfa_carry <답 줄> <프롬프트> — 그 답을 운반하는 구현 act.
+    sag act --manifest "$SA_MANIFEST" --kind skill --carry-answer "$1" --target main --segment RF --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x -- implement -p "$2"
+  }
   cb60_park() {
     # cb60_park <칸> <관측 조각> <라벨> [performer] — 픽스처는 이미 사례의 답으로 고쳐져 있다.
     # 예보·행위·같은 행위를 차례로 내고 정해진 칸의 blocked 행 하나를 단언한다. 예보는 행위와
@@ -60639,6 +60656,31 @@ check "107: 묶인 기록이 있는 정상 완료 시도는 implement_next 원�
 touch -t 202601010000 "$w107/bare/halt/rec.md"
 check "107: 기록이 묶이지 않으면 같은 시도가 implement_next 원소를 낸다" \
   "$(rf107 "$w107/bare" gate_implement_next_of SA | grep -c '"세그먼트": "SA"' || true)" "1"
+
+# 스킬 이름 머리의 기록은 파일 이름이 가리키는 세그먼트를 떠나지 않는다. SA 가 리뷰로 넘어가
+# 후보에서 빠지면 SB 가 단일 후보인데, SA 의 이름으로 쓰인 기록이 거기 묶이면 SB 는 자기가
+# 쓰지 않은 기록으로 수정·파킹되고 implement_next 도 잃는다.
+for h107 in implement-unattended implement-unattended#7; do
+  rm -rf "$w107/bind"; mkdir -p "$w107/bind/halt" "$w107/bind/log"
+  {
+    printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=src/,lib/b.sh\n'
+    printf -- '- `segment` | id=SB | 상태=실행중 | 선언 파일 집합=src/,lib/b.sh\n'
+    printf -- '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park\n'
+    printf -- '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=review | 종료 코드=0 | 실행 버전=2 | 종단 부류=정상 완료\n'
+    printf -- '- `stage-result` | 세그먼트=SB | 스테이지=SB | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=정상 완료\n'
+  } > "$L107"
+  mk107 "$w107/bind/halt/SA#1.md" "$h107" 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'lib/b.sh'
+  check "107: 머리 $h107 — 다른 세그먼트 이름의 기록은 단일 후보에 묶이지 않는다" "$(rf107 "$w107/bind" gate_refutation_next_of SB)" ""
+  check "107: 머리 $h107 — 그 후보는 implement_next 원소를 지킨다" \
+    "$(rf107 "$w107/bind" gate_implement_next_of SB | grep -c '"세그먼트": "SB"' || true)" "1"
+  mv "$w107/bind/halt/SA#1.md" "$w107/bind/halt/SB#1.md"
+  check "107: 머리 $h107 — 후보 자신의 이름으로 쓰인 기록은 묶인다" "$(rf107 "$w107/bind" gate_refutation_next_field SB '다음')" "구현 수정"
+  mv "$w107/bind/halt/SB#1.md" "$w107/bind/halt/rec.md"
+  check "107: 머리 $h107 — 시도 없는 파일 이름은 단일 후보에 묶인다" "$(rf107 "$w107/bind" gate_refutation_next_field SB '다음')" "구현 수정"
+  mv "$w107/bind/halt/rec.md" "$w107/bind/halt/SB#1.md"
+  printf -- '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 실행 버전=3 | 종단 부류=정상 완료\n' >> "$L107"
+  check "107: 머리 $h107 — 후보가 여럿이면 자기 이름의 기록도 묶이지 않는다" "$(rf107 "$w107/bind" gate_refutation_next_of SB)" ""
+done
 {
   printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=src/,lib/b.sh\n'
   printf -- '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park\n'
@@ -60740,7 +60782,7 @@ unset w107 D107 L107 x107 rc107 nx107 pb107 pf107 sw107 lz107 A107 h107
 
 # ---------------------------------------------------------------------------
 # 107b. 라우터 스냅숏과 수락 — 실제 원소가 있는 원장 위의 act
-# --- section: 107b | group: sa | covers: act, halt-answer, snapshot, gate_refutation_next_of, gate_refutation_record_of, gate_refutation_candidate, gate_refutation_written_in_attempt, gate_refutation_answer_opens, gate_refutation_bound_name, gate_refutation_fix_attempt_halted, gate_halt_answer_route, gate_halt_answer_consumer, gate_implement_next_of | anchors: 107b: 원소가 구현 수정 이면 수정 파견을 받는다, 107b: 틀린 기록과 틀린 항목은 거절한다, 107b: 수정 파견은 사이클 상한에서도 받고 cycle 행을 쓰지 않는다, 107b: 앞선 커밋은 브랜치의 커밋 수다, 107b: 기록을 닫은 막힘 행 뒤에 사람의 답이 원소를 연다, 107b: park 행이 파킹 답을 소진한다, 107b: 집행 뒤 원소가 닫히고 둘째 파견은 거절된다 ---
+# --- section: 107b | group: sa | covers: act, halt-answer, snapshot, gate_refutation_next_of, gate_refutation_record_of, gate_refutation_candidate, gate_refutation_written_in_attempt, gate_refutation_answer_opens, gate_refutation_bound_name, gate_refutation_fix_attempt_halted, gate_carry_ledger_frame, gate_halt_answer_route, gate_halt_answer_consumer, gate_implement_next_of | anchors: 107b: 멈춘 수정 시도의 틀 운반은 exit 19·행 없음이다, 107b: 그 틀 운반은 게이트를 지난다, 107b: 원소가 구현 수정 이면 수정 파견을 받는다, 107b: 틀린 기록과 틀린 항목은 거절한다, 107b: 수정 파견은 사이클 상한에서도 받고 cycle 행을 쓰지 않는다, 107b: 앞선 커밋은 브랜치의 커밋 수다, 107b: 기록을 닫은 막힘 행 뒤에 사람의 답이 원소를 연다, 107b: park 행이 파킹 답을 소진한다, 107b: 집행 뒤 원소가 닫히고 둘째 파견은 거절된다 ---
 #
 # 절 107 은 접근자를 직접 부른다. 이 절은 같은 값이 `act` 와 스냅숏을 지나는지 잰다 — 꼬리
 # 수락과 거절, 예산 면제, 앞선 커밋과 원격 단계, 사람의 답이 막힘 행 뒤에 원소를 여는 길,
@@ -60816,7 +60858,7 @@ rfa_sr implement 1 '의도된 park'
 r107b=$(rfa_rec 'RF#1.md' 'RF#1' 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'work.txt')
 sa_commit '작업' >/dev/null
 sag act --manifest "$SA_MANIFEST" --kind blocked --target main --segment RF --cutpoint 커밋 --surface 읽기 \
-    --snapshot-digest "$(SAH)" --rationale x -- 스코프=cone 원인=막힘 '사유=구현 수정 재파견 거절' "근거=$r107b" '앵커 세그먼트=RF'
+    --snapshot-digest "$(SAH)" --rationale x -- 스코프=cone 원인=막힘 '사유=반증 라우팅 — 판정 불가 (선언 파일 집합을 읽지 못함)' "근거=$r107b" '앵커 세그먼트=RF'
 check "107b: 막힘 행이 원소를 닫는다" "$rc|$(rfa_el '다음')" "0|"
 rfa_ans "$r107b" '구현 수정'
 check "107b: 막힘 행 뒤의 구현 수정 답이 선다" "$rc" "0"
@@ -60866,18 +60908,36 @@ rfa_new "반증 수정 시도 정지"
 rfa_sr implement 1 '의도된 park'
 r107b=$(rfa_rec 'RF#1.md' 'RF#1' 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'work.txt')
 rfa_sr implement 2 '의도된 park'
-f107b="$SA_RUN/halt/RF#2.md"
-{
-  printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=RF#2; run=%s -->\n' "$SA_ID"
-  printf '**중단 시각**: 2026-11-04T00:00:00Z\n**스킬**: implement-unattended\n**스텝**: Step 3 — 픽스처의 정지\n**분류**: gate-unanswerable\n**질문 문면**: 픽스처의 질문\n**선택지**:\n'
-  printf '%s\n' '- `재시도` — 세션을 다시 붙인다'
-  printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
-} > "$f107b"
+f107b=$(rfa_stop_rec 'RF#2')
 rfa_ans "$f107b" '재시도'
 check "107b: 멈춘 수정 시도에 온 답은 재부착으로 간다" "$rc|$(rfa_ans_field "$f107b" route)" "0|재부착"
 check "107b: 그 시도는 수정 시도로 읽힌다" \
   "$( ( LEDGER="$SA_LEDGER" RUN_DIR="$SA_RUN" gate_refutation_fix_attempt_halted RF "$SA_LEDGER" "$SA_RUN" ); printf '%s' "$?")" "0"
-unset r107b n107b h107b f107b
+p107b=$(rfa_ans_field "$f107b" carry_prompt)
+case "$p107b" in
+  *'세그먼트 RF (사이클 1)'*) ok "107b: 그 답의 carry_prompt 는 수정 대상 꼬리 없는 틀이다" ;;
+  *) bad "107b: 그 답의 carry_prompt 는 수정 대상 꼬리 없는 틀이다" "$p107b" ;;
+esac
+s107b=$(cksum < "$SA_LEDGER")
+rfa_carry "$(rfa_ans_line)" "$p107b"
+check "107b: 멈춘 수정 시도의 틀 운반은 exit 19·행 없음이다" "$rc|$(cksum < "$SA_LEDGER")" "19|$s107b"
+case "$msg" in
+  *'반증 구현 결함의 수정 대상 꼬리로 파견된 구현입니다'*) ok "107b: 그 거절이 수정 대상 꼬리를 이유로 재부착에 보낸다" ;;
+  *) bad "107b: 그 거절이 수정 대상 꼬리를 이유로 재부착에 보낸다" "$msg" ;;
+esac
+
+# 대조 — 앞 시도에 구현 결함 기록이 없으면 같은 모양의 멈춘 시도도 틀로 운반된다.
+rfa_new "반증 수정 시도 아닌 정지"
+rfa_sr implement 1 '의도된 park'
+rfa_stop_rec 'RF#1' >/dev/null
+rfa_sr implement 2 '의도된 park'
+f107b=$(rfa_stop_rec 'RF#2')
+rfa_ans "$f107b" '재시도'
+check "107b: 결함 기록 없는 앞 시도 뒤의 시도는 수정 시도가 아니다" \
+  "$( ( LEDGER="$SA_LEDGER" RUN_DIR="$SA_RUN" gate_refutation_fix_attempt_halted RF "$SA_LEDGER" "$SA_RUN" ); printf '%s' "$?")" "1"
+rfa_carry "$(rfa_ans_line)" "$(rfa_ans_field "$f107b" carry_prompt)"
+check "107b: 그 틀 운반은 게이트를 지난다" "$(cb60_pass)" "통과"
+unset r107b n107b h107b f107b p107b s107b
 
 # --- epilogue-begin ---
 #
