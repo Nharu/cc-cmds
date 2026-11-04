@@ -3,13 +3,13 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--merged <commit>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [--pr-head <sha>] [--depth 전체|가벼움] [--post-ready] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
       required: true
       summary: "리뷰 대상. 드라이버가 방금 만든 PR 번호나 브랜치를 넘긴다."
-      parse_note: "숫자만 포함된 토큰은 PR 번호, 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지."
+      parse_note: "숫자만 포함된 토큰은 PR 번호, `https://github.com/<owner>/<repo>/pull/<n>` 형태는 그 레포의 PR 번호(리뷰어 런이 넘긴다), 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지."
     - name: "--report-path <abs-path>"
       kind: flag
       default: "off (리포트를 cwd 상대 `docs/reviews/{slug}.md`에 기록)"
@@ -35,6 +35,11 @@ options:
       default: "off (머지 전 리뷰 — 머지 커밋에서 아무것도 다시 돌리지 않는다)"
       summary: "머지 먼저(선머지후리뷰) 세그먼트의 사후 리뷰. 값은 다시 검증할 커밋 — 베이스에 생긴 머지 커밋, 또는 브랜치가 머지된 것보다 앞선 커밋을 지녔을 때(아직 머지되지 않은 리드 수정) 게이트가 고른 브랜치 팁. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀고, 그 커밋을 분리 체크아웃에 꺼내 설계 문서의 재현 절차와 이 슬라이스 몫의 구현 시 검증 레시피를 다시 돌려 결과를 리포트에 남기며, 실패는 P0 로 적는다. 다른 슬라이스의 항목은 `미실행 — 다른 슬라이스`, 어느 슬라이스에도 배정되지 않은 항목은 `미실행 — 배정 없음` 으로 적는다. diff 기준은 그대로 `--base-sha`...브랜치 팁."
       parse_note: "`--post-merge` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다."
+    - name: "--merged <commit>"
+      kind: flag
+      default: "off (머지된 PR 은 정지 사유)"
+      summary: "사람이 리뷰보다 먼저 머지해 머지 대조가 미포함 위반이 된 리뷰 먼저(선리뷰후머지) 세그먼트의 덮는 리뷰. 값은 베이스에 생긴 머지 커밋. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀어 가장 최근 PR 을 대상으로 삼고, diff 는 `--base-sha`...PR 의 head 다. `--post-merge` 와 달리 머지 커밋에서 설계 점검을 다시 돌리지 않고, 개요에 머지 커밋을 지목하는 한 줄만 남긴다. `--post-merge` 와 함께 오면 `--post-merge` 가 이긴다."
+      parse_note: "`--merged` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다. `--post-merge` 와 함께 오면 `--merged` 를 버리고 개요에 한 줄 남긴다."
     - name: "--slice <id>"
       kind: flag
       default: "off (슬라이스 범위를 적용하지 않고 모든 발견을 센다 — 개요에 `적용 안 됨 — 인자 없음`)"
@@ -95,11 +100,26 @@ options:
       default: "off (상한 리포트 항목을 다시 판정하지 않는다)"
       summary: "확인 리뷰. 평소의 리뷰를 그대로 돌리면서, 뒤에 오는 상한 리포트의 P0·P1 항목을 리드 수정의 수정 기록과 함께 항목마다 코드에서 다시 판정하고, 중복을 걷어 이번 사이클의 발견과 합쳐 센다."
       parse_note: "`--recheck` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니거나 읽을 수 있는 리포트가 아니면 중단 기록을 남기고 정지 — 상한 항목을 빼고 센 리뷰는 알려진 결함을 머지로 보낸다. 수정 기록이 없는 것은 정지 사유가 아니다. `--recover` 와 함께 오면 크래시한 확인 리뷰의 복구이며, 위트니스에 판정이 없는 상한 항목은 `미해결` 로 센다."
+    - name: "--pr-head <sha>"
+      kind: flag
+      default: "off (PR 의 head 를 원격에서 읽어 diff 끝으로 쓴다)"
+      summary: "리뷰어 런의 고정 헤드. 리뷰 전용 세그먼트를 계획할 때 게이트가 원격의 PR 헤드와 대조해 고정한 커밋이다. 이 값이 있으면 diff 는 cwd(분리 HEAD 워크트리)에서 `git diff <--base-sha>...<pr-head>` 이고 `리뷰 HEAD` 줄도 이 sha 다 — 리뷰 중에 작성자가 브랜치를 옮겨도 리뷰와 게시는 같은 커밋을 본다."
+      parse_note: "`--pr-head` 다음 토큰을 값으로 취한다. 값이 없거나 `git rev-parse --verify <값>^{commit}` 이 cwd 에서 풀지 못하면 중단 기록을 남기고 정지 — 고정 헤드 없는 게시용 리뷰는 게시 위치가 어긋난다."
+    - name: "--depth 전체|가벼움"
+      kind: flag
+      default: "전체 (Step 3 의 팀 구성 그대로)"
+      summary: "리뷰 깊이. `가벼움` 은 Step 3 의 팀 구성 대신 단일 라운드의 작은 구성 — 대화형 `review-lite` 의 단일 라운드와 같은 수·역할의 리뷰어 — 으로 리뷰한다. 리포트 형식·등급 판정선·게시 항목은 깊이와 무관하게 같다."
+      parse_note: "`--depth` 다음 토큰을 값으로 취한다. `전체`·`가벼움` 밖의 값이거나 값이 없으면 버리고 `전체` 로 리뷰하며 개요에 한 줄 남긴다 — 정지하지 않는다."
+    - name: "--post-ready"
+      kind: flag
+      default: "off (게시 항목 절을 쓰지 않는다)"
+      summary: "리포트에 `## 게시 항목` 절을 쓴다 — P0·P1 지적마다 게시용 한 항목. 이 스테이지는 그래도 게시하지 않으며, 게시는 게이트의 `act --kind review-post` 가 이 절을 읽어 한다."
+      parse_note: "값을 취하지 않는다."
     - name: "<directive>"
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--merged`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`·`--pr-head`·`--depth`·`--post-ready`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(수렴 술어를 얇게 만들기 때문 — 드라이버가 넘긴 `--slice` 에 따른 다른 슬라이스 몫 제외와, 기본 분야 밖 관찰을 `## 범위 밖 관찰` 로 보내는 것은 스스로 좁히기가 아니다 — 둘 다 버리지 않고 리포트에 남긴다), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -229,15 +249,21 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
   1. **Resolve a branch target across open and closed pull requests** — `gh pr list --head {branch} --state all --json number,title,state --jq '.[0]'` — since its pull request is merged. Merged pull requests on the branch beside at most one open one are its expected history, one per merge, and the most recent is the target (1d). The diff still spans `--base-sha`...the branch tip, as 1b says; the commit to re-verify does not move the diff.
   2. **Re-run the design's checks on that commit.** `git fetch` the commit, make a detached checkout of it in a directory from `mktemp -d` (`git worktree add --detach <dir> <commit>`), and there run the design document's reproduction steps and the `검증 레시피` of the `## 구현 시 검증 항목` entries this slice owns. The share is the one the driver counts an implement stage's residual items by: when the document has one implement slice, or none, every item is this slice's; when it has two or more, the items the resolved block's `**잔여 항목**` names are, and a block without the field, or with `없음`, owns none. Every other item is not run and is listed there — `미실행 — 다른 슬라이스` for an item another block names, which may not exist on this commit yet, and `미실행 — 배정 없음` for an item no block names. Record each one's command, exit status and a short tail of its output in the report under `## 머지 커밋 재검증`; a failed one is a P0 finding citing the commit. A recipe marked `실행 주의`, or one that probes an external service, is not run: list it there as `미실행` with the reason. Remove the checkout (`git worktree remove --force <dir>`) when done, whatever the results.
   3. A `<commit>` that cannot be fetched or checked out is not a halt: say so in the overview and in that section, record a P0 finding that the merged commit was not re-verified, and review the diff as usual.
+- **`--merged <commit>`** → the covering review of a review-before-merge (`선리뷰후머지`) segment a person merged before a review covered its merged tip: its `머지 대조` reads a missing coverage, and termination condition 11 holds it until a review covers that tip. `<commit>` is the merge commit its last `머지됨` row recorded on the base. It takes the **next token** as its value and is removed with it before the directive is extracted, exactly as `--declared-files` is; a missing value drops the flag and leaves one overview line. With it present:
+  1. **Resolve a branch target across open and closed pull requests**, as `--post-merge` item 1 does — `gh pr list --head {branch} --state all --json number,title,state --jq '.[0]'` — and take the most recent pull request as the target (1d).
+  2. **The diff is `--base-sha`...the target head, as 1b says, and the target head is the pull request's head** (`headRefOid`), which survives the branch's deletion after the merge. The gate already chose the base and, when an earlier full cycle exists, the delta basis on the same line; take both as given.
+  3. **Do not re-run the design's checks on the merge commit** — `--post-merge` item 2 is not part of this review. Write one overview line naming `<commit>` as the merge commit the review covers.
+  `--merged` together with `--post-merge` keeps `--post-merge`: drop `--merged` with its value and leave one overview line naming the drop.
 - **`--slice <id>`** → the design slice this segment implemented. It takes the **next token** as its value, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. A `--slice` whose value is missing is dropped along with the flag and leaves one overview line naming the drop; the slice scope then falls back to `인자 없음` in 1c′. What the value selects is decided in 1c′, not here.
 - **`--expand <분야>[,<분야>]`** → the fields the run's plan opened beyond the default (context-package item 14's Field scope), carried by the driver and the gate from the manifest's `review_expand`. It takes the **next token** as its value, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. Split the value on commas; the known values are `요구` and `문서표현`, and given twice the open fields are the union. A missing value drops the flag, and an unknown value is discarded; either is **not a halt** and leaves one overview line naming what was dropped. When nothing is left, it is as if the flag were not given. Without this bullet the flag would fall to the `Any other token beginning with --` bullet below and be discarded.
 - **`--basis-cycle <n>`, `--basis-review-head <sha>` and `--basis-report-path <abs-path>`** → the delta basis the driver selected. Each takes the **next token** as its value, and each flag is removed together with its value **before** the directive is extracted, exactly as the two flags above are. A flag whose value is missing is dropped along with the flag. Whether the three values qualify is decided in 1b′, not here — parsing only strips them.
 - **`--resolve-basis-cycle <n>`, `--resolve-basis-head <sha>` and `--resolve-base <sha>`** → the resolution basis the router read off `review_next[]`. Stripped with their values before the directive is extracted, exactly as the basis flags are; whether they qualify is decided in 1b″. The three together with any basis flag is not a delta and not a halt: the basis flags are dropped with one overview line, and 1b″ decides alone.
 - **`--recover` and `--scratch-dir <abs-path>`** → the recovery dispatch. `--recover` takes no value; `--scratch-dir` takes the **next token**, and both the flag and its value are removed from the argument string before the directive is extracted. `--scratch-dir` with a missing or non-absolute value is dropped along with the flag and read as *no naming*, which routes to the enumerate-then-refuse path rather than to a halt. With `--recover` present, skip Steps 2–4, Read `${CLAUDE_SKILL_DIR}/references/recovery-arm.md` and follow its `## Recovery arm` section; without `--recover`, do not read that file.
 - **`--lead-fix <abs-path>` and `--recheck <abs-path>`** → the two dispatches after a segment reaches its re-implementation cycle cap. Each takes the **next token** — the cap report, an absolute path — and both the flag and its value are removed before the directive is extracted. Unlike the basis flags, a missing, non-absolute or unreadable value is a **halt** with `분류: precondition-failed`, not a degradation: a lead fix that does not know its items has nothing to fix, and a re-check that drops the cap items would count a known P0 out of the merge decision. `--lead-fix` together with `--recover` or `--recheck` is the same halt. With `--lead-fix` present, run Step 1 only as far as parsing and the 1b context, then go to `## Lead-fix mode` below. With `--recheck` present, run the whole workflow and add to it the re-check section below. **`--recheck` together with `--recover` is not a halt**: it is the recovery of a crashed re-check, and the recovery arm's item 11 (`references/recovery-arm.md`) says what it adds.
+- **`--pr-head <sha>`, `--depth 전체|가벼움` and `--post-ready`** → a reviewer run's review of someone else's pull request, dispatched from the pull request's URL in a detached worktree. `--pr-head` and `--depth` take the **next token** as their value and `--post-ready` takes none; all three are removed before the directive is extracted, exactly as `--declared-files` is. `--pr-head` is the head the gate pinned when it planned the segment: a missing value, or one `git rev-parse --verify <value>^{commit}` does not resolve in the cwd, is a **halt** with `분류: precondition-failed` naming the value — a review meant for posting that reads another head would anchor its comments to lines that are not there. `--depth` outside `전체`·`가벼움`, or without a value, is dropped with one overview line and the review runs `전체`. What the three change is said in 1b, Step 3 and Step 5; nothing else in the workflow changes, and the stage still posts nothing.
 - **Any other token beginning with `--`** → not a directive, and **not a halt**. Discard it and record one line in the report overview naming the token. Halting here would park a segment over a mistyped or newly-added flag, and the loss — a whole segment's review, and the run's only termination signal for it — is far larger than the loss from proceeding without a hint whose meaning this arm does not know. Silently absorbing it into the directive is the other wrong answer: the directive reaches the reviewers as a weighting instruction, so an unknown flag would arrive as a review perspective nobody wrote, and nothing would report that it had.
 - **Directive** → propagate to Step 3 (composition weighting) and Step 4 (`User directive: …` in the context package) and Step 5 (`Review focus:` in the overview). The directive influences depth and coverage; **severity is assessed independently on technical criteria.**
-- **Anything that resolves to no target, or to more than one** — an unparseable argument, a branch carrying multiple open PRs, an empty argument — is a **halt** (merged PRs beside one open PR under `--post-merge` are not more than one target; see 1d) with `분류: precondition-failed`, listing the candidates it found.
+- **Anything that resolves to no target, or to more than one** — an unparseable argument, a branch carrying multiple open PRs, an empty argument — is a **halt** (merged PRs beside one open PR under `--post-merge` or `--merged` are not more than one target; see 1d) with `분류: precondition-failed`, listing the candidates it found.
 
 **If the target is a non-PR** (local diff or file path), Read `${CLAUDE_SKILL_DIR}/../review/references/03-non-pr-mode.md` and apply its adaptations to Steps 2–5.
 
@@ -246,6 +272,8 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 Collect exactly what the base skill collects — repository slug, PR metadata, per-file `{path,additions,deletions}`, the full diff, existing inline review comments and review decisions (`--paginate`), general PR comments, and CI check status. For a local diff target use `git diff {DEFAULT_BRANCH}...HEAD` and `git log {DEFAULT_BRANCH}..HEAD --oneline`.
 
 **A supplied `--base-sha` is verified before it is used, and its failure is a fallback rather than a halt.** (A branch target in a repository with no remote is the exception: the pre-validation's no-remote branch halts instead, since there is no derivation to fall back to.) Run `git merge-base --is-ancestor <supplied base> <target head>`, where `<target head>` is this review's target named explicitly — the branch, or the PR's head — and never the bare `HEAD` of whatever directory the command happens to run in. On success, take the diff against that value — `git diff <supplied base>...<target head>`, `git log <supplied base>..<target head> --oneline` — **in place of the base derivation only**; a PR target still collects its metadata and comments the way it already does, and what is replaced is which two commits the diff spans. Binding to the ambient `HEAD` would make the guard depend on the caller's working directory, which is the same class of failure the flag exists to close: an interactive caller sitting in another checkout would verify a base against a tree the review is not about. that substitution is the whole reason the flag exists, since the driver resolved this base when it created the segment and re-deriving it here only re-answers a settled question. **On failure, fall back to the derivation this step already describes and record one line in the report overview naming the rejected value and the base actually used.** The failure mode being bought off is silent: a base that is not an ancestor of `<target head>` yields a diff of a tree nobody wrote, so the reviewers produce real findings about the wrong change and the report reads exactly as it would have. Halting instead would be the wrong trade for the same reason the unknown-flag bullet gives — the segment's review is the run's only `P0 + P1` signal, and a base the driver got wrong is recoverable by deriving one, while a parked segment is not recoverable by anything this arm can do.
+
+**A pinned pull request head replaces the pull request's head.** With `--pr-head <sha>` present, `<target head>` in this step and everywhere after it is that sha, read in the cwd — the detached worktree the gate checked out at it — and never the pull request's current head on GitHub, which the author may have moved since the gate pinned it. The diff is `git diff <--base-sha>...<pr-head>`, the log `git log <--base-sha>..<pr-head> --oneline`, and the report's `리뷰 HEAD` line names `<pr-head>`. The pull request's metadata, comments and checks are still collected from `gh` as for any PR target; only the two commits the diff spans are fixed.
 
 **A target with no commits over its base is not reviewed — it halts in a shape the seat can answer (`등급 2`).** Once both ends of the diff are fixed — the supplied `--base-sha` verified, or the derivation it fell back to — count the commits between them: `git rev-list --count <base>..<target head>`, the target head named explicitly as above. A count of 0 means the implementation that preceded this review left nothing to read, and a review of it would report `P0 + P1 == 0` about a change nobody made. Do not review: write the halt record with `**스텝**: Step 1b 빈 대상` and `**분류**: gate-unanswerable`; a `**질문 문면**` that names the target and the base and says the target has no commits over the base; a `**관측 상세**` carrying the target, the base, the command as it ran and its value; and exactly these options, verbatim:
 
@@ -354,8 +382,8 @@ The slice scope changes what is **counted**, never what is **read**: the whole c
 | Case | Handling |
 | --- | --- |
 | Draft PR | proceed; mark draft status in the report header |
-| Closed / merged PR | **halt** (`precondition-failed`) — in a pipeline run the PR was created moments ago, so this state means something else moved it. **Except under `--post-merge`**: there a merged PR whose head branch is the target is the expected target, and only a PR closed without merging, or a merged one of another head branch, halts |
-| Multiple PRs on one branch | **halt**, listing them. **Except under `--post-merge`**: each merge after the first opens a new PR from the same branch, so merged PRs on the target branch and at most one open PR are the expected history — take the most recent (`.[0]` of 1a's query) as the target, and halt only when two or more PRs are open or the most recent one was closed without merging |
+| Closed / merged PR | **halt** (`precondition-failed`) — in a pipeline run the PR was created moments ago, so this state means something else moved it. **Except under `--post-merge` or `--merged`**: there a merged PR whose head branch is the target is the expected target, and only a PR closed without merging, or a merged one of another head branch, halts |
+| Multiple PRs on one branch | **halt**, listing them. **Except under `--post-merge` or `--merged`**: each merge after the first opens a new PR from the same branch, so merged PRs on the target branch and at most one open PR are the expected history — take the most recent (`.[0]` of 1a's query) as the target, and halt only when two or more PRs are open or the most recent one was closed without merging |
 | Empty target (0 commits from base to target head) | **halt** (`gate-unanswerable`, `Step 1b 빈 대상`) — the fixed shape of 1b, recommending `구현 재파견` |
 | Fork PR | `gh pr view` handles it normally |
 | No GitHub remote | a branch target in a repository with no remote at all takes the pre-validation's no-remote branch: no `gh` commands, local diff mode against `--base-sha`, and a halt when that value is missing or fails verification |
@@ -374,6 +402,8 @@ Identical to the base skill. Survey the tree (`ls` at root), read `CLAUDE.md` an
 Compose from PR characteristics and the Step 2 exploration, then **proceed** — there is no approval round. Write the composition and its rationale into the report so the morning reader sees what ran and why.
 
 **How many reviewers**: bounded by `_common/agent-team-protocol.md`'s `### Team size budget`. Read the ceiling **and its coordinator-class carve-out** there; this step states no number of its own.
+
+**`--depth 가벼움` replaces this whole step with the single-round small composition** of interactive `review-lite`: two seats — a Security reviewer and a Code-quality/Logic reviewer — composed from no risk indicator and no type row, no Scope Coordinator, and Step 4 run as one independent round plus one cross-validation round with no follow-up round. Seat models still come from the tier file below. Open fields join the Code-quality/Logic reviewer. Write `리뷰 깊이: 가벼움` and the two seats in the composition record so the morning reader sees the smaller team. The report's sections, the severity line and the `## 게시 항목` section are the same as a `전체` review's. `--depth 전체`, or no `--depth`, leaves this step as written.
 
 #### Small-work gate (evaluated once on entering this step)
 
@@ -551,6 +581,28 @@ Below each P0~P2 finding's analysis, write a self-contained, paste-ready GitHub 
 - **P3 = the item line is the comment**: write each P3 line itself in polite, self-contained form; the trailing `— {리뷰어명}` attribution is excluded when copied.
 - **dedup exception**: a finding that only confirms an existing PR comment (carries `📎 관련 PR 코멘트`) gets a plain-text note instead of a blockquote. The absence of a blockquote signals "nothing new to post".
 - **The comments are written, never posted.** Posting to GitHub is an outward-facing act and belongs to the permission cutpoint, not to a review stage.
+
+#### `## 게시 항목` — only with `--post-ready`
+
+With `--post-ready`, write one more section after the severity sections: one item per P0 and P1 finding the report counts, in P0-then-P1 order, and nothing for P2 or P3. The gate's `act --kind review-post` renders the posted review from this section and nothing else, so its grammar is fixed and `report-check` checks it:
+
+```
+## 게시 항목
+
+### G1
+- **등급**: P0
+- **제목**: <지적 한 줄>
+- **파일**: <레포 기준 경로 | 없음>
+- **줄**: <양의 정수 | 없음>
+- **면**: RIGHT | LEFT
+- **근거**: <무엇이 왜 문제인지, 「-습니다」 체>
+- **제안**: <어떻게 고치면 되는지, 「-습니다」 체>
+```
+
+- Items are `### G1`, `### G2`, … in order, each exactly these seven one-line fields in this order; no value is empty or carries `**`. Their number equals the `발견 요약` P0 + P1, and their `등급` counts equal its P0 and P1.
+- `파일` and `줄` are the item's anchor in the diff `--base-sha`...`--pr-head` spans: `면` is `RIGHT` for a line of the new side and `LEFT` for a deleted line of the old side. A finding about a whole file writes `줄: 없음`; one about no single file writes `파일: 없음` and `줄: 없음`. The gate posts an item whose line is not in the diff in the review body instead of as an inline comment, so an anchor is never invented to make an item inline.
+- `근거` and `제안` are written for the pull request's author and end in 「-습니다」 체, one paragraph each, self-contained — the paste-ready comment's facts and request in that tone, without its label or the reviewer's name.
+- The stage still posts nothing. Without `--post-ready` this section is not written.
 
 #### Self-check of the written report — `report-check`, at most two rounds
 
