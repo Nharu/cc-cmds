@@ -104,10 +104,14 @@ the run, when the person keeps the base as it is. The base design document,
 its ticket and the document's own `## 베이스 제약` section stay byte for byte;
 the closing is recorded in this document only.
 
-- **The one writer.** The `구속 티어 이탈 <halt record>` scope of
-  `/cc-cmds:design-reconverge`, in its sub-case whose record's `**스텝**` is
-  exactly `Step 1 CFI-U3 BT-STOP — 미결 결정`, and that sub-case's re-entry on a
-  person's answer to its own base contract check stop. A design stage, an
+- **The one writer.** The base contract check of the `구속 티어 이탈 <halt
+  record>` scope of `/cc-cmds:design-reconverge`, in its two sub-cases whose
+  record's `**스텝**` is exactly `Step 1 CFI-U3 BT-STOP — 미결 결정` (an
+  implement stage's open-decision stop) or exactly `결정 수거 — 구현 전 결정`
+  (the gate's decision collection), and each sub-case's re-entry on a person's
+  answer to its own base contract check stop. The two sub-cases run one check
+  and write one form; they differ only in where the decision comes from. A
+  design stage, an
   audit, a walkthrough and every other re-convergence scope — `감사 골격급`
   among them — neither closes such an entry nor writes it `해결`.
 - **When it closes.** The re-convergence checks the person's decision against
@@ -134,8 +138,10 @@ the closing is recorded in this document only.
     session's `CC_PIPELINE_STAGE_ID` as it is, `#` kept — not the `#`→`-` form
     the re-convergence uses in a temporary directory name.
   - `중단 기록` names the file of the halt record: for `대조 무충돌`, the
-    implement stage's open-decision stop that carried the attachment; for a
-    `사람 수용(…)` value, the base contract check stop the person answered.
+    record the re-convergence's scope names — the implement stage's
+    open-decision stop that carried the attachment, or the gate's
+    decision-collection record; for a `사람 수용(…)` value, the base contract
+    check stop the person answered.
   - `**대조 기록**` gives one part per block. When several lines of one block
     conflict, `「<블록 제목>」 충돌: 「<어긋난 줄 축자>」` repeats once per line,
     so each part names one line. Its value is the single word
@@ -224,7 +230,10 @@ document order, and nothing when none does. It reads **fail closed**:
 - The gate's `decision-collect` collects every entry of a document before any
   process A implement dispatch of it, writes one halt record that lists each
   with its recommendation, and holds the segments the entries reach until a
-  re-convergence closes them (`_common/pipeline-sidecar.md` §4).
+  re-convergence closes them (`_common/pipeline-sidecar.md` §4). While the
+  re-convergence an answered record opened has not ended `정상 완료` — it
+  stopped at its base contract check and waits for the person, among others —
+  the hold stays under that record whatever the document's digest now is.
 - The unattended implement stage asks `gate.sh unclosed-decisions` before it
   plans (process A) and halts on a non-empty answer with the
   `Step 1 CFI-U3 BT-STOP — 미결 결정` record of `_common/pipeline-sidecar.md`

@@ -52741,7 +52741,7 @@ rm -rf "$D83V"
 
 # ---------------------------------------------------------------------------
 # 83w. 결정 수거의 답이 게이트 동사만으로 재수렴까지 가고, 새 수거가 보류를 푼다
-# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route, gate_audit_concluded, audit_key_reconverge_rows, audit_key_collect_reconverge_lines | anchors: 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다, 83w: 수거 재수렴과 그 재개·새 세션 이음 행은 감사 키의 재수렴으로 세지 않고 골격급 재수렴만 센다,83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다 ---
+# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_reconverge_pending, gate_decision_collect_pending_row, gate_snapshot_decision_holds_json, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route, gate_audit_concluded, audit_key_reconverge_rows, audit_key_collect_reconverge_lines | anchors: 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다, 83w: 수거 재수렴과 그 재개·새 세션 이음 행은 감사 키의 재수렴으로 세지 않고 골격급 재수렴만 센다,83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다, 83w: 대조 정지가 답을 기다리는 동안의 수거는 첫 기록의 보류를 그대로 읽는다, 83w: 대조 정지의 답은 같은 키의 재부착으로 간다, 83w: 멈춘 수거 재수렴을 잇는 --resume 은 통과한다, 83w: 이은 재수렴이 끝나 항목이 닫힌 뒤의 수거는 보류를 푼다 ---
 #
 # 런 범위 설계 → 감사 → 구현 계획에서 감사까지 정상 완료로 띄운 뒤, 게이트 동사만으로 수거
 # → 사람의 답 → `--segment -` 재수렴 → 새 다이제스트의 수거를 잇는다. 둘째 런은 설계 단계를
@@ -52892,6 +52892,64 @@ check "83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다" 
 check "83w: 그 수거 행은 수거 생략을 싣는다" \
   "$( { grep -F '`결정 수거`' "$WT/docs/pipeline-run/R83WN.md" 2>/dev/null || true; } | { grep -cF '| 수거 생략=설계 단계 없음 |' || true; })" "1"
 rm -f "$WT/$DOC83WN"
+
+# 넷째 런 — 수거 재수렴이 베이스 계약 대조에서 멈춘다. 그 재수렴은 다른 결정을 쓴 뒤 멈추므로
+# 다이제스트가 움직이지만, 정상 완료로 끝나기 전까지 보류는 첫 기록 아래 남고 새 수거 기록도
+# 순환 상한도 서지 않는다. 정지의 답은 같은 키의 재부착으로 가고, 그 --resume 은 받아들여진다.
+DOC83WB='docs/fixture-design-83w-b.md'
+au15_run R83WB "$DOC83WB" "$plan15d"
+w83_doc "$WT/$DOC83WB" 보류 '기존 상한과 같다'
+w83_dc R83WB "$DOC83WB"
+w83_rec4=$W83_REC
+check "83w 픽스처의 넷째 런 첫 수거가 S2 를 보류한다 (아래가 공허하지 않다)" "$rc|$W83_HOLDS" "0|S2"
+w83_ans R83WB D1 사람 '추천대로 확정'
+check "83w 픽스처의 넷째 런에서 사람의 답이 선다 (아래가 공허하지 않다)" "$rc" "0"
+w83_stub="$WORK/bin/claude-stub-83w-bcheck"
+cat > "$w83_stub" <<'STUB83WEOF'
+#!/usr/bin/env bash
+mkdir -p "$CC_PIPELINE_RUN_DIR/halt"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-reconverge; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=$CC_PIPELINE_RUN_ID -->" \
+  '**스킬**: design-reconverge' '**스텝**: Step 3 구속 티어 이탈 — 베이스 계약 대조' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 「### 미결 1. 값」 — 결정 기본값 3 — 결과 충돌' \
+  '**선택지**:' '- `베이스 개정 없이 계속` — 이 런에서 이어 간다' '- `베이스 개정 후 새 런` — 새 런이 필요하다' \
+  '**추천**: (없음) — 베이스와 어긋난 결정을 받아들일지는 사람만 정한다' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s83w-bcheck","num_turns":1,"result":"베이스 계약 대조에서 멈춥니다."}\n'
+exit 0
+STUB83WEOF
+chmod +x "$w83_stub"
+au15_dispatch R83WB "$w83_stub" reconverge "/cc-cmds:design-reconverge $WT/$DOC83WB 구속 티어 이탈 $w83_rec4"
+au15_wait R83WB D1
+check "83w: 대조에서 멈춘 수거 재수렴의 행은 의도된 park 다" "$(au15_class R83WB D1 reconverge)" "의도된 park"
+w83_bc="$STATE_LATE/cc-cmds/run/R83WB/halt/D1#1.md"
+check "83w 픽스처의 대조 정지 기록이 있다 (아래가 공허하지 않다)" "$([ -f "$w83_bc" ] && echo 기록)" "기록"
+# 그 재수렴은 멈추기 전에 다른 결정을 문서에 썼다 — 구속 표면이 움직인다.
+w83_doc "$WT/$DOC83WB" 보류 '다른 결정을 쓴 뒤 멈췄다'
+w83_dc R83WB "$DOC83WB"
+check "83w: 대조 정지가 답을 기다리는 동안의 수거는 첫 기록의 보류를 그대로 읽는다" \
+  "$rc|$W83_HOLDS|$W83_REC|$(printf '%s' "$msg" | grep -c '재수렴 대기=예' || true)|$(printf '%s' "$msg" | grep -c '순환 상한=' || true)" \
+  "0|S2|$w83_rec4|1|0"
+check "83w: 그 수거는 새 기록도 새 행도 쓰지 않는다" \
+  "$( { grep -F '`결정 수거`' "$WT/docs/pipeline-run/R83WB.md" 2>/dev/null || true; } | grep -c . || true)" "1"
+check "83w: 스냅숏의 decision_holds 도 첫 기록을 든다" \
+  "$(au15_snap "$WORK/plan-R83WB.md" | jq -r '[.decision_holds[] | "\(.record)/\(.segments | join(" "))"] | join(",")')" "$w83_rec4/S2"
+W83_REC=$w83_bc
+w83_ans R83WB D1 사람 '베이스 개정 없이 계속'
+check "83w: 대조 정지에 대한 사람의 답이 선다" "$rc" "0"
+check "83w: 대조 정지의 답은 같은 키의 재부착으로 간다" "$(w83_route R83WB "$w83_bc")" "D1/재부착/"
+gateL plan --manifest "$WORK/plan-R83WB.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 --resume s83w-bcheck -- reconverge -p "중단 기록 $w83_bc 의 질문에 사람이 \`베이스 개정 없이 계속\` 을 골랐습니다."
+check "83w: 멈춘 수거 재수렴을 잇는 --resume 은 통과한다" "$rc" "0"
+au15_dispatch R83WB "$STUB_AU_RECONV" reconverge "중단 기록 $w83_bc 의 질문에 사람이 \`베이스 개정 없이 계속\` 을 골랐습니다." \
+  --resume s83w-bcheck
+au15_wait R83WB D1
+check "83w 픽스처의 이은 재수렴이 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R83WB D1 reconverge)" "정상 완료"
+w83_doc "$WT/$DOC83WB" 해결 '다른 결정을 쓴 뒤 멈췄다'
+w83_dc R83WB "$DOC83WB"
+check "83w: 이은 재수렴이 끝나 항목이 닫힌 뒤의 수거는 보류를 푼다" "$rc|$W83_HOLDS|$W83_REC" "0|없음|없음"
+( cd "$WT" && git worktree remove --force "$WT-run-R83WB-D1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC83WB" "$w83_stub"
 
 # ---------------------------------------------------------------------------
 # 83x. 기기 짝 정리 — exec 가 열고, 스테이지 끝과 런 끝 정리가 이 런의 기기만 지운다

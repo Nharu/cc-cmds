@@ -12509,7 +12509,10 @@ EOF
 # the record and the segments the entries reach. A process A dispatch of such
 # a segment is refused while the row of the document's current digest holds
 # it, answered or not: only a re-convergence that closes the entries changes
-# the digest, and the collection under the new digest then lets it go.
+# the digest, and the collection under the new digest then lets it go. A
+# re-convergence that wrote some decisions and stopped at its base contract
+# check moved the digest without closing everything, so while it has not ended
+# `정상 완료` the hold stays under the record that opened it.
 # ---------------------------------------------------------------------------
 readonly GATE_DC_STEP='결정 수거 — 구현 전 결정'
 
@@ -12590,6 +12593,57 @@ EOF
   return 1
 }
 
+gate_decision_reconverge_pending() {
+  # gate_decision_reconverge_pending <record> — 0 when the re-convergence an
+  # answer to the collection record opened has started and has not ended
+  # `정상 완료`: a `세그먼트=- | 스테이지=<key> | 종류=reconverge` row, not
+  # still waiting to spawn, stands after the record's first `중단 답` on the
+  # key the record's header names, and no such row ends `정상 완료`.
+  #
+  # THAT RE-CONVERGENCE WRITES THE DOCUMENT BEFORE IT STOPS. At its base
+  # contract check it writes every other decision of the record and then waits
+  # on the person, so the binding digest moves while the record's question is
+  # still being answered. A collection under the moved digest would hold the
+  # same segments again under a new record — a second question on the same
+  # entries, past the loop cap — while the first one is still open. The
+  # collection reads this test first and keeps the hold under the record.
+  local rec="$1" key first rows r
+  [ -n "$rec" ] && [ "$rec" != "없음" ] || return 1
+  key=$(sed -n '1s/.*; stage=\([^;]*\)#[0-9][0-9]*; .*/\1/p' "$rec" 2>/dev/null)
+  [ -n "$key" ] || return 1
+  first=$( { grep -n -F "| 세그먼트=$key | 중단 기록=$rec |" "$LEDGER" 2>/dev/null || true; } \
+           | { grep "^[0-9]*:- \`중단 답\` " || true; } | sed -n '1p' | cut -d: -f1)
+  [ -n "$first" ] || return 1
+  rows=$( { grep -n -F "세그먼트=- | 스테이지=$key | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
+          | { grep "^[0-9]*:- \`stage-result\` " || true; } \
+          | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+          | awk -F: -v l="$first" '$1 > l')
+  [ -n "$rows" ] || return 1
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "${r#*:}" '종단 부류')" = "정상 완료" ] && return 1
+  done <<EOF
+$rows
+EOF
+  return 0
+}
+
+gate_decision_collect_pending_row() {
+  # gate_decision_collect_pending_row — the run's last `결정 수거` row when
+  # its record's re-convergence is pending (`gate_decision_reconverge_pending`),
+  # or nothing. The collection and the snapshot both read the hold from it
+  # before they read the row of the current digest.
+  local r last=''
+  while IFS= read -r r; do
+    [ -n "$r" ] && last=$r
+  done <<EOF
+$(gate_rows '결정 수거' 2>/dev/null || true)
+EOF
+  [ -n "$last" ] || return 0
+  gate_decision_reconverge_pending "$(gate_row_field "$last" '중단 기록')" || return 0
+  printf '%s' "$last"
+}
+
 gate_decision_holds_seg() {
   # gate_decision_holds_seg <space-separated holds> <segment> — 0 when the
   # list names the segment or reads `전체`.
@@ -12603,13 +12657,15 @@ gate_decision_collect() {
   # gate_decision_collect <document> — collects the document's open
   # `구현 전 결정` entries under its current binding digest and leaves
   # GATE_DC_DIGEST, GATE_DC_RECORD (`없음` when nothing is open),
-  # GATE_DC_HOLDS (space-separated slice ids, `전체`, or `없음`) and
-  # GATE_DC_LOOPCAP. A digest that already has its row is read back and
-  # nothing is written. A document the reader cannot read writes nothing and
+  # GATE_DC_HOLDS (space-separated slice ids, `전체`, or `없음`),
+  # GATE_DC_LOOPCAP and GATE_DC_PENDING (`1` when the hold is read from a
+  # record whose re-convergence is still pending). A digest that already has
+  # its row is read back and nothing is written, and so is the last row while
+  # its record's re-convergence is pending. A document the reader cannot read writes nothing and
   # returns GATE_EXIT_RULE with the reader's line warned.
   local DOC="$1" ids id out heads='' holds='' loopcap='' h f key n rec tmp dig
   local rdig='없음' prev items='' nitems=0 fa fr fs
-  GATE_DC_DIGEST=''; GATE_DC_RECORD=''; GATE_DC_HOLDS=''; GATE_DC_LOOPCAP=''
+  GATE_DC_DIGEST=''; GATE_DC_RECORD=''; GATE_DC_HOLDS=''; GATE_DC_LOOPCAP=''; GATE_DC_PENDING=''
   { [ -n "$DOC" ] && [ -f "$DOC" ] && [ -r "$DOC" ]; } || {
     warn "결정 수거: 읽을 수 있는 설계 문서가 아닙니다: ${DOC:-(없음)}"
     return "$GATE_EXIT_VOCAB"; }
@@ -12617,7 +12673,14 @@ gate_decision_collect() {
     warn "결정 수거: 구속 표면 다이제스트를 구하지 못했습니다: $DOC"
     return "$GATE_EXIT_RULE"; }
   GATE_DC_DIGEST=$dig
-  prev=$(gate_decision_collect_row "$dig")
+  # A PENDING RE-CONVERGENCE KEEPS THE HOLD where it is, under the record
+  # whose answer opened it, until it ends (`gate_decision_reconverge_pending`).
+  prev=$(gate_decision_collect_pending_row)
+  if [ -n "$prev" ]; then
+    GATE_DC_PENDING=1
+  else
+    prev=$(gate_decision_collect_row "$dig")
+  fi
   if [ -n "$prev" ]; then
     GATE_DC_RECORD=$(gate_row_field "$prev" '중단 기록')
     GATE_DC_HOLDS=$(gate_row_field "$prev" '보류 세그먼트')
@@ -12696,11 +12759,11 @@ EOF
       printf '「항목별로 답함」 은 이 기록 옆의 %s 를 첨부로 싣습니다 — 항목 표제를 축자로 `### ` 소제목으로 부르고 그 아래에 고른 결정을 적은 파일이며, 첨부에 없는 항목은 추천 답으로 닫힙니다.\n' \
         "${rec%.md}.answer.md"
       if [ -n "$loopcap" ]; then
-        printf '순환 상한: 세그먼트 %s 는 답을 받아 재수렴을 거친 수거가 이미 한 번 보류했던 세그먼트입니다. 이 기록의 답은 교대가 실행하지 않습니다 — 사람이 문서의 항목을 직접 닫아야 합니다.\n' "$loopcap"
+        printf '순환 상한: 세그먼트 %s 는 답을 받아 재수렴을 거친 수거가 이미 한 번 보류했던 세그먼트입니다. 이 기록의 답은 교대가 실행하지 않고, 이 런은 그 세그먼트를 다시 보내지 않습니다 — 남은 항목은 새 런의 수거가 다시 묻습니다. 문서의 항목을 손으로 닫지 않습니다: 사유가 「베이스 계약 변경 필요」 인 항목은 재수렴의 베이스 계약 대조만 닫습니다.\n' "$loopcap"
       fi
       printf '**미결 결정 항목**: %s\n' "$(printf '%s\n' "$heads" | awk 'NF { printf "%s「%s」", (n++ ? ", " : ""), $0 }')"
       printf '**선택지**:\n'
-      printf -- '- `추천대로 확정` — 항목마다 적힌 추천 답으로 모든 항목을 닫는다: 같은 런의 교대가 /cc-cmds:design-reconverge %s 구속 티어 이탈 %s 를 보내 항목을 해결로 닫고 본문에 반영하며, 보류된 세그먼트는 새 수거가 놓아 준 뒤 프로세스 A 부터 다시 계획한다\n' "$DOC" "$rec"
+      printf -- '- `추천대로 확정` — 항목마다 적힌 추천 답을 결정으로 삼는다: 같은 런의 교대가 /cc-cmds:design-reconverge %s 구속 티어 이탈 %s 를 보내 결정을 본문에 반영하고 항목을 해결로 닫는다. 사유가 「베이스 계약 변경 필요」 인 항목은 재수렴이 결정을 베이스 계약과 대조해 어긋남이 없으면 닫고, 있으면 베이스를 그대로 둔 채 이어 갈지 사람에게 한 번 더 묻는다. 보류된 세그먼트는 그 재수렴이 끝나 새 수거가 놓아 준 뒤 프로세스 A 부터 다시 계획한다\n' "$DOC" "$rec"
       printf -- '- `항목별로 답함` — 첨부의 결정으로 그 항목을 닫고 첨부에 없는 항목은 추천 답으로 닫는다. 그 뒤의 경로는 `추천대로 확정` 과 같다\n'
       printf '**추천**: (없음) — 항목마다 사람의 결정이 필요하다\n'
       printf '**추천 근거**: (없음)\n'
@@ -12747,7 +12810,10 @@ gate_decision_hold_refuse() {
     exit "$GATE_EXIT_RULE"
   fi
   gate_decision_holds_seg "$GATE_DC_HOLDS" "$seg" || return 0
-  if [ -n "$GATE_DC_LOOPCAP" ] && gate_decision_holds_seg "$GATE_DC_LOOPCAP" "$seg"; then
+  if [ -n "$GATE_DC_PENDING" ]; then
+    warn "세그먼트 ${seg} 는 결정 수거 기록 ${GATE_DC_RECORD} 의 보류 세그먼트이고, 그 답이 연 재수렴이 아직 정상 완료로 끝나지 않았습니다 — 베이스 계약 대조 정지가 사람의 답을 기다리는 동안을 포함해, 그 재수렴이 끝날 때까지 구현을 보내지 않습니다"
+    warn "보류 집합 밖의 세그먼트를 계속 라우팅하세요. 재수렴의 정지는 그 정지 기록의 중단 답으로 받습니다"
+  elif [ -n "$GATE_DC_LOOPCAP" ] && gate_decision_holds_seg "$GATE_DC_LOOPCAP" "$seg"; then
     warn "세그먼트 ${seg} 는 결정 수거의 순환 상한에 닿았습니다 — 답을 받아 재수렴을 거친 뒤에도 같은 세그먼트가 다시 보류돼, 기록 ${GATE_DC_RECORD} 은 사람 몫입니다"
     warn "이 세그먼트는 park 로 두고 보류 집합 밖의 세그먼트를 계속 라우팅하세요"
   else
@@ -12807,7 +12873,7 @@ gate_decision_reconverge_open() {
        return 1 ;;
   esac
   if gate_decision_collect_capped "$rec"; then
-    GATE_DCR_WHY="결정 수거의 순환 상한에 닿은 기록입니다 — 교대가 실행할 갈래가 없고, 사람이 문서의 항목을 직접 닫아야 합니다"
+    GATE_DCR_WHY="결정 수거의 순환 상한에 닿은 기록입니다 — 교대가 실행할 갈래가 없고, 이 런은 그 세그먼트를 다시 보내지 않습니다(남은 항목은 새 런의 수거가 다시 묻습니다)"
     return 1
   fi
   first=$( { grep -n -F "| 세그먼트=$key | 중단 기록=$rec |" "$LEDGER" 2>/dev/null || true; } \
@@ -13065,14 +13131,17 @@ gate_reconverge_spent() {
 }
 
 gate_snapshot_decision_holds_json() {
-  # One element for the `결정 수거` row of the document's current binding
-  # digest, when it holds anything: `record`, `digest`, `segments` and
-  # `loop_cap`. A read — the digest is computed, nothing is collected.
+  # One element for the `결정 수거` row the collection reads — the last row
+  # while its record's re-convergence is pending, else the row of the
+  # document's current binding digest — when it holds anything: `record`,
+  # `digest` (the current one), `segments` and `loop_cap`. A read — the digest
+  # is computed, nothing is collected.
   local LC_CTYPE=C; export LC_CTYPE
   [ -n "${DOC:-}" ] && [ -r "${DOC:-}" ] || return 0
   local dig row holds cap s first segs='' caps=''
   dig=$(binding_digest 2>/dev/null) && [ -n "$dig" ] || return 0
-  row=$(gate_decision_collect_row "$dig")
+  row=$(gate_decision_collect_pending_row)
+  [ -n "$row" ] || row=$(gate_decision_collect_row "$dig")
   [ -n "$row" ] || return 0
   holds=$(gate_row_field "$row" '보류 세그먼트')
   [ -n "$holds" ] && [ "$holds" != "없음" ] || return 0
@@ -22358,7 +22427,9 @@ gate_main() {
       # Writing under the run directory and one ledger row: the collection of
       # the named document's `구현 전 결정` entries under its current binding
       # digest (`gate_decision_collect`). A digest already collected writes
-      # nothing and prints its row's values again.
+      # nothing and prints its row's values again, and so does a collection
+      # while the last record's re-convergence is pending, adding
+      # `재수렴 대기=예`.
       [ -n "$dc_doc" ] || { printf 'gate: decision-collect requires --document <path>\n' >&2; exit 2; }
       local dc_rc=0
       gate_decision_collect "$dc_doc" || dc_rc=$?
@@ -22366,6 +22437,7 @@ gate_main() {
       printf '문서 다이제스트=%s\n중단 기록=%s\n보류 세그먼트=%s\n' \
         "$GATE_DC_DIGEST" "$GATE_DC_RECORD" "$GATE_DC_HOLDS"
       [ -z "$GATE_DC_LOOPCAP" ] || printf '순환 상한=%s\n' "$GATE_DC_LOOPCAP"
+      [ -z "$GATE_DC_PENDING" ] || printf '재수렴 대기=예\n'
       ;;
     defect-fix)
       # Writing one ledger row and the segment's triage file under the run
