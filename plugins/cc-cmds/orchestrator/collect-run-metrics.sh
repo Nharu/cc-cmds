@@ -1249,7 +1249,7 @@ CM_JQ_DELAY_TIME='
 CM_JQ_DELAY_ASSEMBLE='
 def nums($k): [.[] | .[$k] | select(type == "number")];
 $led[0] as $l | $logs[0] as $g | $samples[0] as $S
-| {schema: $schema, run_id: $rid, span: $l.span,
+| {schema: $schema, run_id: $rid, span: $l.span, ledger_bytes: $ledger_bytes,
    host_load_source: (if $has_load then "기록" else "기록 없음" end),
    stages: [range(0; $l.stages | length) as $i | $l.stages[$i] as $s | ($g[$i] // {}) as $x
             | {segment: $s.segment, stage: $s.stage, kind: $s.kind, class: $s.class,
@@ -1273,9 +1273,12 @@ cm_delay_json() {
   # 있는 스트림 로그를 읽지 못하면 rc 1(그 런은 다음 회차에 다시 대상이 된다). 로그가 없는
   # 스테이지는 `로그 없음` 이고, 시도 번호 없는 로그 하나를 여러 시도가 나눠 쓰면 시도별로
   # 가를 수 없어 `공유 로그` 이며, 둘 다 `time` 이 null 이다. 시도 번호 없는 로그를 한 시도만
-  # 쓰면 그 시도의 로그로 읽는다.
-  local rid="$1" ledger="$2" rd="$3" tmp st ver v f n has_load=false
+  # 쓰면 그 시도의 로그로 읽는다. 원장 바이트 크기(`ledger_bytes`)는 원장을 읽기 전에 잰다 —
+  # 읽은 뒤에 재면 그 사이에 덧붙은 행이 기록에서 빠진 채 크기만 맞아 기록이 굳는다.
+  local rid="$1" ledger="$2" rd="$3" tmp st ver v f n has_load=false lbytes
   [ -r "$ledger" ] || return 1
+  lbytes=$(cc_ledger_size "$ledger")
+  case "$lbytes" in ''|*[!0-9]*) return 1 ;; esac
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-delay.XXXXXX") || return 1
   if ! jq -Rn -c "$CM_JQ_DELAY_DEFS$CM_JQ_DELAY_LEDGER" "$ledger" > "$tmp/led.json" 2>/dev/null; then
     rm -rf "$tmp"; return 1
@@ -1318,7 +1321,7 @@ VERS
   fi
   jq -s -c '.' "$tmp/logs.jsonl" > "$tmp/logs.json" 2>/dev/null || { rm -rf "$tmp"; return 1; }
   jq -n -c --arg rid "$rid" --argjson schema "$CM_DELAY_SCHEMA" --argjson has_load "$has_load" \
-    --slurpfile led "$tmp/led.json" --slurpfile logs "$tmp/logs.json" --slurpfile samples "$tmp/samples.json" \
+    --argjson ledger_bytes "$lbytes" --slurpfile led "$tmp/led.json" --slurpfile logs "$tmp/logs.json" --slurpfile samples "$tmp/samples.json" \
     "$CM_JQ_DELAY_DEFS$CM_JQ_DELAY_ASSEMBLE" || { rm -rf "$tmp"; return 1; }
   rm -rf "$tmp"
 }
@@ -1334,19 +1337,42 @@ cm_collect_delay() {
   mv -f "$tmpf" "$4" || { rm -f "$tmpf"; return 1; }
 }
 
+cm_ledger_sizes() {
+  # cm_ledger_sizes <원장>… — 원장마다 `<run-id> <바이트>` 한 줄. `wc -c` 한 번으로 잰다(원장마다
+  # 띄우면 런 수만큼 fork 한다). 크기를 읽지 못한 원장은 줄이 없고, 파일이 둘 이상일 때 `wc` 가
+  # 붙이는 합계 줄은 `.md` 로 끝나지 않아 빠진다. BSD `wc` 가 앞에 붙이는 공백은 `read` 가 버린다.
+  local n p r
+  [ $# -gt 0 ] || return 0
+  LC_ALL=C wc -c -- "$@" 2>/dev/null | while read -r n p; do
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    case "$p" in *.md) ;; *) continue ;; esac
+    r=${p##*/}
+    printf '%s %s\n' "${r%.md}" "$n"
+  done
+  return 0
+}
+
 # 요약의 `delay` 키 — 모든 지연 기록에서. 현재 시각을 쓰지 않으므로 같은 입력이면 같은
 # 값이다. 동시 런 수는 사건 시각을 `span` 이 품는 지연 기록의 수(사건의 런 자신 포함)이고,
 # 사건 시각이 없는 사건은 `undated` 로만 간다. 시간 분해의 합은 `time` 이 있는 스테이지만이다.
+# `coverage.stale` 은 원장 디렉터리에 그 런의 원장이 있는 지연 기록 가운데 `ledger_bytes` 가
+# 그 원장의 현재 바이트 크기($lsizes, run-id → 바이트)와 다른 기록의 수다(`ledger_bytes` 가
+# 없는 기록 포함) — 기록을 쓴 뒤 원장이 자라 그 뒤 구간이 빠진 기록이다. 원장 크기도 입력이므로
+# 같은 입력이면 같은 값이다. `coverage.records` 가 지연 단계의 대상 모집단(`input_files` 에서
+# 비종단 런 수를 뺀 값)보다 작거나 `stale` 이 0 이 아니면 `by_date`·`by_concurrency` 는 완결
+# 집계가 아니다.
 CM_JQ_DELAY_AGG='
 def zero: {lease_lock_busy: 0, nocommit: 0};
 def bump($k; $t): .[$k] = ((.[$k] // zero) | .[$t] += 1);
-. as $D
+. as $D | ($lsizes[0] // {}) as $LS
 | ([$D[] | .span | select(.start | iso_ok) | select(.end | iso_ok) | {a: (.start | iso_ms), b: (.end | iso_ms)}]) as $SP
 | ([$D[] | (.waits[]? | select(.reason == "lease-lock-busy") | {t: "lease_lock_busy", at}),
           (.nocommit[]? | {t: "nocommit", at})]) as $E
 | {coverage: {records: ($D | length),
                with_time: ([$D[] | select(any(.stages[]?; .time != null))] | length),
-               with_host_load: ([$D[] | select(.host_load_source == "기록")] | length)},
+               with_host_load: ([$D[] | select(.host_load_source == "기록")] | length),
+               stale: ([$D[] | .run_id as $r | select(($r | type) == "string" and ($LS | has($r)))
+                              | select(.ledger_bytes != $LS[$r])] | length)},
    by_kind: (reduce ($D[] | .stages[]? | select(.time != null)) as $s ({};
               (($s.kind // "-") | tostring) as $k
               | .[$k] = ((.[$k] // {stages: 0, wall_ms: 0, model_ms: 0, tool_ms: 0, bg_wait_ms: 0, idle_ms: 0})
@@ -1719,6 +1745,7 @@ cm_main() {
   local tmp line rid state ledger rd rec input_files=0 confirmed
   local n_collected=0 n_uncollected=0 n_gone=0 n_open=0 n_attempt=0 new_runs="" blocked=false
   local summary round at body counts journal_line all_f delta_f prior_f t0 members t1 delay n_delay=0
+  local sizes have want
   cm_args "$@"
   # 기준선 모드는 회차가 아니다 — 표지도 기록도 저널도 만들지 않는다.
   [ "$CM_MEMBER_BASELINE" = "0" ] || cm_member_baseline
@@ -1813,11 +1840,27 @@ $rid
   done < "$tmp/pop.tsv"
   [ "$n_uncollected" -gt 0 ] && blocked=true
 
-  # 지연 단계 — 종단·버려짐 런 가운데 지연 기록이 없거나 스키마가 다른 런(`--recollect` 면
-  # 전부)에 지연 기록을 쓴다. 런별 기록 유무, `log/` 유무, 레인 기록 유무와 무관하다 — 대기와
-  # 무커밋은 원장만으로 정해진다. 순서는 위 모집단 그대로 최신 런 먼저이고, 자기 상한·예산으로
-  # 묶되 첫 대상은 무관하게 시도한다. 예산은 이 단계가 시작될 때부터 잰다. 만들지 못한 런도
-  # 시도로 세고 진단만 남긴다 — counts·차단·new_runs·저널은 이 단계와 무관하다.
+  # 지연 단계 — 종단·버려짐 런 가운데 지연 기록이 없거나, 그 스키마가 현재 값과 다르거나, 그
+  # `ledger_bytes` 가 원장의 현재 바이트 크기와 다른 런(`--recollect` 면 전부)에 지연 기록을
+  # 쓴다. 크기가 다르면 기록을 쓴 뒤 원장이 자란 것이다 — 미해소 `blocked` 행으로 사람의 답을
+  # 기다리다 한 시간 유휴 뒤 `버려짐` 으로 읽힌 런이 답을 받아 재개된 경우로, 스키마만 보면 그
+  # 런의 기록은 재개 뒤의 단계·대기·무커밋 없이 굳는다. 원장이 자라지 않은 `버려짐` 런은 다시
+  # 쓰지 않으므로, 끝내 종단에 이르지 않는 런들이 매 회차 상한·예산을 차지하지 않는다.
+  # `ledger_bytes` 가 없거나 원장 크기를 읽지 못하면 다른 것으로 본다. 런별 기록 유무, `log/`
+  # 유무, 레인 기록 유무와 무관하다 — 대기와 무커밋은 원장만으로 정해진다. 순서는 위 모집단
+  # 그대로 최신 런 먼저이고, 자기 상한·예산으로 묶되 첫 대상은 무관하게 시도한다. 예산은 이
+  # 단계가 시작될 때부터 잰다. 만들지 못한 런도 시도로 세고 진단만 남긴다 — counts·차단·
+  # new_runs·저널은 이 단계와 무관하다. 원장 크기는 이 단계 앞에서 `wc -c` 한 번으로 재고,
+  # 앞뒤 줄바꿈으로 감싸 런마다 fork 없이 찾는다.
+  set --
+  while IFS=$'\t' read -r rid state ledger rd; do
+    case "$state" in
+      종단|버려짐) [ -f "$ledger" ] && set -- "$@" "$ledger" ;;
+    esac
+  done < "$tmp/pop.tsv"
+  sizes="
+$(cm_ledger_sizes "$@")
+"
   t1=$SECONDS
   while IFS=$'\t' read -r rid state ledger rd; do
     [ -n "$rid" ] || continue
@@ -1826,9 +1869,18 @@ $rid
       *) continue ;;
     esac
     rec="$CM_LEDGER_DIR/metrics/$rid.delay.json"
-    if [ "$CM_RECOLLECT" = "0" ] && [ -f "$rec" ] \
-       && [ "$(jq -r '.schema // empty' "$rec" 2>/dev/null)" = "$CM_DELAY_SCHEMA" ]; then
-      continue
+    if [ "$CM_RECOLLECT" = "0" ] && [ -f "$rec" ]; then
+      want=""
+      case "$sizes" in
+        *"
+$rid "*) want=${sizes#*"
+$rid "}; want=${want%%"
+"*} ;;
+      esac
+      have=$(jq -r '"\(.schema // "") \(.ledger_bytes // "")"' "$rec" 2>/dev/null)
+      if [ -n "$want" ] && [ "$have" = "$CM_DELAY_SCHEMA $want" ]; then
+        continue
+      fi
     fi
     if [ "$n_delay" -gt 0 ] && { [ "$n_delay" -ge "$CM_DELAY_MAX" ] || [ $((SECONDS - t1)) -ge "$CM_DELAY_BUDGET" ]; }; then
       break
@@ -1840,17 +1892,24 @@ $rid
   # 전수 재계산 — 기록 디렉터리의 모든 런별 기록. 팀원 기록(`*.members.json`)과 지연
   # 기록(`*.delay.json`)은 런 기록이 아니므로 층과 트리거의 입력에서 빼고, 요약의 `members`·
   # `delay` 로만 따로 모은다.
+  # 지연 기록마다 그 런의 원장이 원장 디렉터리에 있으면 그 현재 크기를 모아 요약의
+  # `coverage.stale` 에 넘긴다(원장이 없는 런은 넣지 않는다).
   : > "$tmp/runs.list"; : > "$tmp/members.list"; : > "$tmp/delay.list"
+  set --
   if [ -d "$CM_LEDGER_DIR/metrics" ]; then
     for rec in "$CM_LEDGER_DIR"/metrics/*.json; do
       [ -f "$rec" ] || continue
       case "$rec" in
         *.members.json) printf '%s\n' "$rec" >> "$tmp/members.list" ;;
-        *.delay.json) printf '%s\n' "$rec" >> "$tmp/delay.list" ;;
+        *.delay.json) printf '%s\n' "$rec" >> "$tmp/delay.list"
+           rid=${rec##*/}; rid=${rid%.delay.json}
+           [ -f "$CM_LEDGER_DIR/$rid.md" ] && set -- "$@" "$CM_LEDGER_DIR/$rid.md" ;;
         *) printf '%s\n' "$rec" >> "$tmp/runs.list" ;;
       esac
     done
   fi
+  cm_ledger_sizes "$@" | jq -Rn -c '[inputs | split(" ") | select(length == 2) | {key: .[0], value: (.[1] | tonumber)}] | from_entries' \
+    > "$tmp/lsizes.json" 2>/dev/null || printf '{}' > "$tmp/lsizes.json"
   cm_slurp_list "$tmp/runs.list" > "$all_f"
   jq -e 'type == "array"' "$all_f" >/dev/null 2>&1 || printf '[]' > "$all_f"
   cm_slurp_list "$tmp/members.list" > "$tmp/members.json"
@@ -1858,7 +1917,7 @@ $rid
   members=$(jq -c "$CM_JQ_MEMBERS_AGG" "$tmp/members.json" 2>/dev/null) || members='{}'
   [ -n "$members" ] || members='{}'
   cm_slurp_list "$tmp/delay.list" > "$tmp/delay.json"
-  delay=$(jq -c "$CM_JQ_DELAY_DEFS$CM_JQ_DELAY_AGG" "$tmp/delay.json" 2>/dev/null) || delay='{}'
+  delay=$(jq -c --slurpfile lsizes "$tmp/lsizes.json" "$CM_JQ_DELAY_DEFS$CM_JQ_DELAY_AGG" "$tmp/delay.json" 2>/dev/null) || delay='{}'
   [ -n "$delay" ] || delay='{}'
   jq -Rn '[inputs]' "$tmp/delta.list" > "$tmp/ids.json"
   jq -c --slurpfile ids "$tmp/ids.json" '[.[] | select(.run_id as $r | $ids[0] | index($r) != null)]' "$all_f" > "$delta_f" 2>/dev/null \

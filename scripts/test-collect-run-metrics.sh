@@ -1442,7 +1442,7 @@ check "19: 부하 표본이 있으면 스테이지 구간 안의 표본으로 ho
 check "19: 로그가 없는 런은 time 이 null 이고 대기·무커밋이 채워진다" \
   "$(jdel "$R19B" '[.host_load_source, (.stages[0] | .source, (.time | tostring)), (.waits | length), (.waits[0].at | tostring), .waits[0].at_source, (.nocommit | length)] | map(tostring) | join(",")')" \
   "기록 없음,로그 없음,null,3,null,없음,1"
-check "19: 요약의 coverage" "$(jsum '.delay.coverage | [.records, .with_time, .with_host_load] | map(tostring) | join(",")')" "3,2,1"
+check "19: 요약의 coverage" "$(jsum '.delay.coverage | [.records, .with_time, .with_host_load, .stale] | map(tostring) | join(",")')" "3,2,1,0"
 check "19: 요약의 by_date" "$(jsum '.delay.wasted.by_date | tojson')" '{"2026-10-01":{"lease_lock_busy":2,"nocommit":3}}'
 check "19: 요약의 by_concurrency 는 사건 시각을 품는 런 수다" \
   "$(jsum '.delay.wasted.by_concurrency | tojson')" '{"1":{"lease_lock_busy":1,"nocommit":0},"2":{"lease_lock_busy":1,"nocommit":3}}'
@@ -1512,6 +1512,46 @@ OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --delay-max abc 2>/dev/null); r
 check "19: 지연 상한이 정수가 아니면 exit 2 다" "$rc" "2"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --delay-budget abc 2>/dev/null); rc=$?
 check "19: 지연 예산이 정수가 아니면 exit 2 다" "$rc" "2"
+
+# 원장이 자란 지연 기록 — 사람의 답을 기다리다 `버려짐` 으로 읽힌 런이 재개되어 원장이 자라면
+# 다음 회차에 기록이 다시 쓰이고, 원장이 그대로인 `버려짐` 런의 기록은 다시 쓰이지 않는다.
+# 런 상태는 감시자 심박의 `마지막성장` 으로 정한다 — 오래전이면 버려짐, 지금이면 비종단이다.
+reset_all
+R19D=20261002-dddddd19; R19E=20261002-eeeeee19
+grew_at() { printf '런=x 마지막성장=%s\n' "$2" > "$STATE/run/$1/watch.heartbeat"; }
+for r in "$R19D" "$R19E"; do
+  mk_rundir "$r" nodone
+  mk_ledger "$r" "$(ir_row S1 1 __none__)" "- \`cost\` | 누적 usd=1.0 | 관측 시각=2026-10-02T00:00:00Z | prev=abc"
+  grew_at "$r" 1000
+done
+lsize() { wc -c < "$LEDGER_DIR/$1.md" | tr -d ' '; }
+collect
+check "19: 원장 성장 픽스처의 두 런은 버려짐이다(미종단 0)" "$(jline '.counts["미종단"]')" "0"
+check "19: 지연 기록의 ledger_bytes 는 원장의 바이트 크기다" "$(jdel "$R19D" '.ledger_bytes')" "$(lsize "$R19D")"
+check "19: 굳은 기록이 없으면 coverage.stale 은 0 이다" "$(jsum '.delay.coverage.stale')" "0"
+cp "$LEDGER_DIR/metrics/$R19E.delay.json" "$WORK/e19.json"
+printf '%s\n' "$(ir_row S1 2 __none__)" >> "$LEDGER_DIR/$R19D.md"
+collect
+check "19: 원장이 자란 버려짐 런은 기록이 다시 쓰여 새 단계가 든다" \
+  "$(jdel "$R19D" '[.stages[] | .stage] | join(",")')" "S1#1,S1#2"
+check "19: 다시 쓴 기록의 ledger_bytes 는 새 크기다" "$(jdel "$R19D" '.ledger_bytes')" "$(lsize "$R19D")"
+check "19: 원장이 그대로인 버려짐 런의 기록은 다시 쓰이지 않는다" \
+  "$(cmp -s "$LEDGER_DIR/metrics/$R19E.delay.json" "$WORK/e19.json" && printf same || printf diff)" "same"
+# ledger_bytes 가 없는 기록 — 스키마가 같아도 다시 대상이 된다.
+jq -c 'del(.ledger_bytes)' "$WORK/e19.json" > "$LEDGER_DIR/metrics/$R19E.delay.json"
+collect
+check "19: ledger_bytes 가 없는 지연 기록은 스키마가 같아도 다시 쓰인다" \
+  "$(jdel "$R19E" '[.schema, .ledger_bytes] | map(tostring) | join(",")')" "1,$(lsize "$R19E")"
+# 기록을 쓴 뒤 원장이 자라 비종단이 된 런 — 대상이 아니므로 기록은 굳은 채이고 stale 이 센다.
+printf '%s\n' "$(ir_row S1 3 __none__)" >> "$LEDGER_DIR/$R19D.md"
+grew_at "$R19D" "$(date -u +%s)"
+collect
+check "19: 원장이 자라 비종단이 된 런의 기록은 굳어 coverage.stale 이 1 이다" \
+  "$(jline '.counts["미종단"]'),$(jdel "$R19D" '.stages | length'),$(jsum '.delay.coverage.stale')" "1,2,1"
+grew_at "$R19D" 1000
+collect
+check "19: 그 런이 다시 버려짐이 되어 기록이 다시 쓰인 회차에서는 coverage.stale 이 0 이다" \
+  "$(jdel "$R19D" '.stages | length'),$(jsum '.delay.coverage.stale')" "3,0"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
