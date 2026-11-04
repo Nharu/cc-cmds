@@ -646,6 +646,30 @@ check "12 기본 루트 없음: HOME 아래 파일 없음" "$(nfiles "$s/home")"
 check "12 기본 루트 없음: XDG 아래 없음" "$(nfiles "$s/xdg")" "0"
 check "12 기본 루트 없음: 설정 디렉터리 아래 없음" "$(nfiles "$s/cfg")" "0"
 
+# --------------------------------------------------------------------------
+# 13. The public root reader and the internal name answer the same root, with
+#     the test seat set and with it empty.
+# --------------------------------------------------------------------------
+root_pair_code() {
+  printf '%s' "printf '%s|%s' \"\$(cc_attention_root || true)\" \"\$(cc_attention__root || true)\" > $(q "$s/root.out")"
+}
+fresh_root
+run_lib "$(root_pair_code)"
+strict "13 시험 자리 있음"
+check "13 시험 자리 있음: 공개 함수와 내부 이름이 같은 루트" "$(cat "$s/root.out")" "$ROOT|$ROOT"
+
+fresh
+mkdir -p "$s/home/.local/state/cc-cmds/attention"
+run_lib "$(root_pair_code)" CC_CMDS_ATTENTION_ROOT=
+strict "13 시험 자리 비움"
+check "13 시험 자리 비움: 공개 함수와 내부 이름이 같은 기본 루트" "$(cat "$s/root.out")" \
+  "$s/home/.local/state/cc-cmds/attention|$s/home/.local/state/cc-cmds/attention"
+
+fresh
+run_lib "$(root_pair_code)"
+strict "13 루트 없음"
+check "13 루트 없음: 둘 다 빈 값" "$(cat "$s/root.out")" "|"
+
 echo "test-attention: $passed passed, $failed failed"
 if [ "$failed" -gt 0 ]; then
   exit 1
