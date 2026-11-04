@@ -3,15 +3,15 @@
 #
 # THE PARTITION IS NEVER COMMITTED. Every shard job recomputes it from the
 # suite's own `--list` and takes its own share, so a section added after the
-# census was taken still lands somewhere. A committed partition would silently
-# drop that section, and a workflow that names ids would need an edit nobody
-# remembers to make — both lose coverage, which is the one direction this file
-# must never fail in. What IS committed is the census (`scripts/gate-census.tsv`),
-# and a stale census costs balance, never coverage.
+# timing table was measured still lands somewhere. A committed partition would
+# silently drop that section, and a workflow that names ids would need an edit
+# nobody remembers to make — both lose coverage, which is the one direction this
+# file must never fail in. Nothing about the weights is committed either: a
+# stale or missing timing table costs balance, never coverage.
 #
 # THE UNIT IS A CONNECTED COMPONENT, NOT A SECTION AND NOT A GROUP. Two sections
-# joined by a `needs:` edge — declared on a banner, or found by the census — run
-# in one cut, so they must land in one shard. Edges are taken as undirected: a
+# joined by a banner's `needs:` edge run in one cut, so they must land in one
+# shard. Edges are taken as undirected: a
 # mutual pair is real in this suite, and a component crosses groups whenever an
 # edge does. A group that disagrees with a component loses.
 #
@@ -21,22 +21,13 @@
 # each recompute the partition independently, and without a total order two
 # jobs can disagree and a section belongs to nobody.
 #
-# THE WEIGHT DOES NOT ASSUME ADDITIVITY. A census wall time is the whole
-# invocation — head, family prelude and closure included — so summing those per
-# section counts the head and the prelude once per section. The floor of a group
-# (the smallest wall time any of its sections showed) approximates that shared
-# cost; a component weighs the sum of what each member adds above its group's
-# floor, plus each distinct group's floor once. A section the census does not
-# know weighs the census maximum, so it is placed pessimistically and never
-# skipped.
-#
-# A MEASURED WEIGHT REPLACES ALL OF THAT WHEN ONE IS GIVEN. `--timing PATH` reads
-# the per-section times CI took from the boundary markers of its own shards
-# (`scripts/gate-timing.sh merge` writes the file: a `# gate-timing v1 — source:
-# <run id> <sha> generated: <UTC>` comment, a `id<TAB>ms<TAB>run` header, one row
-# per section and one `@pre-<group>` row per prelude). A marker interval is the
-# section's own share, not the whole invocation, so nothing is subtracted: a
-# section weighs its ms (at least 1), and the table's load column is in ms.
+# THE WEIGHT IS MEASURED. `--timing PATH` reads the per-section times CI took
+# from the boundary markers of its own shards (`scripts/gate-timing.sh merge`
+# writes the file: a `# gate-timing v1 — source: <run id> <sha> generated:
+# <UTC>` comment, a `id<TAB>ms<TAB>run` header, one row per section and one
+# `@pre-<group>` row per prelude). A marker interval is the section's own share,
+# not the whole invocation, so nothing is subtracted: a section weighs its ms
+# (at least 1), and the table's load column is in ms.
 #
 # A SECTION THE FILE DOES NOT CARRY IS WEIGHED BY ITS LENGTH. Added since, or on
 # a shard that died before reaching it, it has no ms of its own. Its span is the
@@ -46,17 +37,22 @@
 # (the ascending rate at rank ⌈0.9 n⌉) times the span is its estimate, and it
 # weighs that estimate or the MEDIAN of the measured sections, whichever is
 # larger. The median alone was too light for a long new section, which is the
-# kind whose weight the balance depends on; the census maximum was too heavy for
-# most. Each such section is reported on its own line with its span and
-# estimate.
+# kind whose weight the balance depends on. Each such section is reported on its
+# own line with its span and estimate.
+#
+# WITHOUT A TABLE EVERY SECTION WEIGHS ITS SPAN. No `--timing`, a path that does
+# not exist, or a table that measures none of the listed sections gives no rate
+# to fit, so a section weighs its span in lines (at least 1), and without a
+# table there is no prelude or head either. The load column is then in lines,
+# not ms: the partition still
+# covers every section and keeps a long section apart from the rest, but its
+# numbers are not seconds and nothing compares them with a row's wall time.
 #
 # A PRELUDE IS PAID ONCE PER SHARD AND GROUP. A component's weight for ordering
 # and for the budget is the sum of its members plus each distinct group's
 # `@pre-<group>` ms once. Placing it adds its members and the prelude of each of
 # its groups the shard does not run yet, because a shard runs a group's prelude
-# once however many of its components land there. Components, LPT and every tie
-# rule are the same in both modes. A path that does not exist falls back to the
-# census model, so the committed seed's absence costs balance and nothing else.
+# once however many of its components land there.
 #
 # A COMPONENT OVER BUDGET IS PLACED WHOLE AND REPORTED. The budget is 0.6/N of
 # the total weight. It does not mean "split here" — splitting a component is the
@@ -65,8 +61,8 @@
 #
 # ISOLATION WORK RIDES ON THE PARTITION, IT DOES NOT CHANGE IT. `--isolate C`
 # takes the changed sections C and, with the regular rows exactly as they would
-# be without it, adds two things for each X of C and its needs closure (banner
-# and census edges, the graph the components are built from). The limit is F:
+# be without it, adds two things for each X of C and its needs closure (the
+# banner edges, the graph the components are built from). The limit is F:
 # the heaviest regular row with the head time — the `@head` row of the timing
 # file, 0 without one — paid once, since every process pays it. First the
 # solos: two per X, each a process of its own weighing the closure, the
@@ -110,11 +106,9 @@
 #                   weighs them with their `needs:` closure, and there are
 #                   min(N, components) rows (check-push's lanes)
 #   --suite PATH    the suite to partition (default: scripts/test-gate.sh)
-#   --census PATH   the census to weigh with (default: scripts/gate-census.tsv;
-#                   a missing file weighs every section 1)
-#   --timing PATH   weigh with measured ms instead (a missing file means the
-#                   census model); `status` and `needs` still come from the
-#                   census and the banners
+#   --timing PATH   weigh with measured ms (none, or a missing file, weighs
+#                   every section by its span); `group` and `needs` come from
+#                   the banners
 #   --isolate C     place the isolation work of the comma list C (may be empty)
 #   --iso-extra E   at most E extra rows for it (default 0)
 #   --extra E       the extra rows a table already made carries (default 0)
@@ -135,7 +129,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 
 shard_usage() {
-  printf 'gate-shard: 사용법 — --shards N 와 함께 --shard K / --table / --digest / --check 중 하나, --timing PATH 와 함께 --weights, 또는 --self-test (선택: --suite PATH, --census PATH, --timing PATH, --from-table F, --only IDS, --isolate C, --iso-extra E, --extra E, --overlay / --solo / --own)\n' >&2
+  printf 'gate-shard: 사용법 — --shards N 와 함께 --shard K / --table / --digest / --check 중 하나, --timing PATH 와 함께 --weights, 또는 --self-test (선택: --suite PATH, --timing PATH, --from-table F, --only IDS, --isolate C, --iso-extra E, --extra E, --overlay / --solo / --own)\n' >&2
   exit 2
 }
 
@@ -192,10 +186,10 @@ shard_banners() {
 # per ignored edge, `B <message>` per component over budget. Everything runs
 # under LC_ALL=C so that every string comparison is bytewise on every awk.
 shard_partition() {
-  local suite="$1" census="$2" shards="$3" timing="${4:-}" only="${5:-}" iso_on="${6:-0}" iso="${7:-}" iso_extra="${8:-0}"
-  local tmp ids_f ban_f cen_f tim_f rc
+  local suite="$1" shards="$2" timing="${3:-}" only="${4:-}" iso_on="${5:-0}" iso="${6:-}" iso_extra="${7:-0}"
+  local tmp ids_f ban_f tim_f rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard.XXXXXX")
-  ids_f="$tmp/ids"; ban_f="$tmp/banners"; cen_f="$tmp/census"; tim_f=""
+  ids_f="$tmp/ids"; ban_f="$tmp/banners"; tim_f=""
   if ! bash "$suite" --list < /dev/null > "$tmp/list" 2> "$tmp/list.err"; then
     printf 'gate-shard: 절 목록을 얻지 못했습니다 (%s --list 실패) — 분할을 추측하지 않습니다\n' "$suite" >&2
     sed 's/^/  /' "$tmp/list.err" >&2
@@ -209,16 +203,15 @@ shard_partition() {
     return 3
   fi
   shard_banners "$suite" > "$ban_f"
-  if [ -f "$census" ]; then cp "$census" "$cen_f"; else : > "$cen_f"; fi
   if [ -n "$timing" ] && [ -f "$timing" ]; then tim_f="$tmp/timing"; cp "$timing" "$tim_f"; fi
 
-  LC_ALL=C awk -F '\t' -v N="$shards" -v IDS="$ids_f" -v BAN="$ban_f" -v CEN="$cen_f" -v TIM="$tim_f" -v ONLY="$only" \
+  LC_ALL=C awk -F '\t' -v N="$shards" -v IDS="$ids_f" -v BAN="$ban_f" -v TIM="$tim_f" -v ONLY="$only" \
       -v ISOON="$iso_on" -v ISO="$iso" -v EXTRA="$iso_extra" '
     # What one section adds to a cut, and what a group adds the first time the
     # cut runs it: the same two terms the partition sums, so a solo or an
     # overlay is weighed in the unit of the rows it is compared with.
-    function idw(id,   a) { if (tm) return w[id]; a = w[id] - ((grp[id] in fl) ? fl[grp[id]] : 0); return (a < 1) ? 1 : a }
-    function grpw(g) { if (tm) return (g in pre) ? pre[g] : 0; return (g in fl) ? fl[g] : 0 }
+    function idw(id) { return w[id] }
+    function grpw(g) { return (g in pre) ? pre[g] : 0 }
     function find(x,   r) { r = x; while (par[r] != r) r = par[r]; while (par[x] != r) { nx = par[x]; par[x] = r; x = nx } return r }
     function unite(a, b,   ra, rb) { ra = find(a); rb = find(b); if (ra != rb) { if (rb < ra) par[ra] = rb; else par[rb] = ra } }
     function edges(id, list,   n, k, arr, d) {
@@ -234,16 +227,8 @@ shard_partition() {
     BEGIN {
       while ((getline line < IDS) > 0) { if (line != "" && !(line in known)) { nid++; ids[nid] = line; known[line] = 1 } }
       while ((getline line < BAN) > 0) { split(line, f, "\t"); bgrp[f[1]] = f[2]; bned[f[1]] = f[3]; if (f[4] ~ /^[0-9]+$/ && f[4] > 0) bspan[f[1]] = f[4] + 0 }
-      while ((getline line < CEN) > 0) {
-        if (line ~ /^#/ || line == "") continue
-        nf = split(line, f, "\t")
-        if (f[1] == "id" || f[1] ~ /^@/) continue
-        cgrp[f[1]] = f[2]; cned[f[1]] = (nf >= 7 ? f[7] : "-")
-        if (f[4] ~ /^[0-9]+$/) cw[f[1]] = f[4] + 0
-      }
-      tm = 0; hd = 0
+      hd = 0
       if (TIM != "") {
-        tm = 1
         while ((getline line < TIM) > 0) {
           if (line ~ /^#/ || line == "") continue
           split(line, f, "\t")
@@ -254,19 +239,11 @@ shard_partition() {
           tw[f[1]] = int(f[2] + 0)
         }
       }
-      maxw = 0
-      for (i = 1; i <= nid; i++) { id = ids[i]; if ((id in cw) && cw[id] > maxw) maxw = cw[id] }
-      if (maxw < 1) maxw = 1
       for (i = 1; i <= nid; i++) {
         id = ids[i]; par[id] = id
-        g = "-"
-        if ((id in cgrp) && cgrp[id] != "" && cgrp[id] != "-") g = cgrp[id]
-        else if (id in bgrp) g = bgrp[id]
-        grp[id] = g
-        w[id] = (id in cw) ? cw[id] : maxw
-        if (id in cw) { if (!(g in fl) || cw[id] < fl[g]) fl[g] = cw[id] }
+        grp[id] = (id in bgrp) ? bgrp[id] : "-"
       }
-      if (tm) {
+      {
         # The median of the measured sections of this list, by insertion sort:
         # the runner awk is mawk, which has no asort.
         nm = 0
@@ -291,23 +268,28 @@ shard_partition() {
           rv[j + 1] = v; nr++
         }
         rate = (nr > 0) ? rv[int((9 * nr + 9) / 10)] : 0
-        un = 0; uids = ""; nul = 0
-        for (i = 1; i <= nid; i++) {
-          id = ids[i]
-          if (id in tw) { w[id] = (tw[id] < 1) ? 1 : tw[id]; continue }
-          est = "-"; w[id] = med
-          if ((id in bspan) && nr > 0) { est = int(bspan[id] * rate + 0.5); if (est > w[id]) w[id] = est }
-          un++; uids = uids (un > 1 ? "," : "") id
-          ul[++nul] = "U\t미측정 절 " id " — 범위 " ((id in bspan) ? bspan[id] : "-") "줄, 추정 " est " ms, 적재 " w[id] " ms"
+        if (nr == 0) {
+          # No rate to fit: every section weighs its span in lines.
+          for (i = 1; i <= nid; i++) { id = ids[i]; w[id] = (id in bspan) ? bspan[id] : 1 }
+          print "U\t실측 없는 절 " nid "개 — " ((TIM == "") ? "타이밍 표가 없어" : "타이밍 표에 이 목록의 실측이 없어") " 모든 절을 본문 길이(줄 수)로 적재합니다. 적재 단위는 ms 가 아니라 줄입니다"
+        } else {
+          un = 0; uids = ""; nul = 0
+          for (i = 1; i <= nid; i++) {
+            id = ids[i]
+            if (id in tw) { w[id] = (tw[id] < 1) ? 1 : tw[id]; continue }
+            est = "-"; w[id] = med
+            if (id in bspan) { est = int(bspan[id] * rate + 0.5); if (est > w[id]) w[id] = est }
+            un++; uids = uids (un > 1 ? "," : "") id
+            ul[++nul] = "U\t미측정 절 " id " — 범위 " ((id in bspan) ? bspan[id] : "-") "줄, 추정 " est " ms, 적재 " w[id] " ms"
+          }
+          print "U\t실측 없는 절 " un "개 — 실측 절 " nm "개의 중앙값 " med " ms 와 본문 길이 추정(줄당 p90 " sprintf("%.1f", rate) " ms) 가운데 큰 값으로 적재합니다" (un ? ": " uids : "")
+          for (i = 1; i <= nul; i++) print ul[i]
         }
-        print "U\t실측 없는 절 " un "개 — 실측 절 " nm "개의 중앙값 " med " ms 와 본문 길이 추정(줄당 p90 " sprintf("%.1f", rate) " ms) 가운데 큰 값으로 적재합니다" (un ? ": " uids : "")
-        for (i = 1; i <= nul; i++) print ul[i]
         for (i = 1; i <= nid; i++) { id = ids[i]; print "X\t" id "\t" w[id] "\t" ((id in tw) ? "표" : "추정") }
       }
       for (i = 1; i <= nid; i++) {
         id = ids[i]
         if (id in bned) edges(id, bned[id])
-        if (id in cned) edges(id, cned[id])
       }
       # A SUBSET KEEPS THE WHOLE SUITE`S COMPONENTS. The components above are the
       # full graph`s, so two named ids that CI would put in one shard land in one
@@ -345,18 +327,11 @@ shard_partition() {
         c = cidx[r]
         if (id < cid[c]) cid[c] = id
         if (ONLY == "" || (id in named)) { cn[c]++; cmem[c, cn[c]] = id }
-        if (tm) {
-          cwt[c] += w[id]; cms[c] += w[id]
-          if (!((c SUBSEP grp[id]) in cg)) {
-            cg[c, grp[id]] = 1; cng[c]++; cgl[c, cng[c]] = grp[id]
-            if (grp[id] in pre) cwt[c] += pre[grp[id]]
-          }
-          continue
+        cwt[c] += w[id]; cms[c] += w[id]
+        if (!((c SUBSEP grp[id]) in cg)) {
+          cg[c, grp[id]] = 1; cng[c]++; cgl[c, cng[c]] = grp[id]
+          if (grp[id] in pre) cwt[c] += pre[grp[id]]
         }
-        f0 = (grp[id] in fl) ? fl[grp[id]] : 0
-        ex = w[id] - f0; if (ex < 1) ex = 1
-        cwt[c] += ex
-        if (!((c SUBSEP grp[id]) in cg)) { cg[c, grp[id]] = 1; cwt[c] += f0 }
       }
       total = 0
       for (c = 1; c <= nc; c++) { ord[c] = c; total += cwt[c] }
@@ -371,17 +346,15 @@ shard_partition() {
       for (i = 1; i <= nc; i++) {
         c = ord[i]; best = 1
         for (k = 2; k <= N; k++) if (load[k] < load[best]) best = k
-        if (tm) {
-          # A prelude is paid once per shard and group, not once per component.
-          add = cms[c]
-          for (m = 1; m <= cng[c]; m++) {
-            g = cgl[c, m]
-            if ((best SUBSEP g) in sg) continue
-            sg[best, g] = 1
-            if (g in pre) add += pre[g]
-          }
-          load[best] += add
-        } else load[best] += cwt[c]
+        # A prelude is paid once per shard and group, not once per component.
+        add = cms[c]
+        for (m = 1; m <= cng[c]; m++) {
+          g = cgl[c, m]
+          if ((best SUBSEP g) in sg) continue
+          sg[best, g] = 1
+          if (g in pre) add += pre[g]
+        }
+        load[best] += add
         for (m = 1; m <= cn[c]; m++) { sn[best]++; smem[best, sn[best]] = cmem[c, m] }
         if (cwt[c] * N * 10 > total * 6) {
           print "B\t덩어리 " cid[c] " — 무게 " cwt[c] ", 절 " cn[c] "개, 샤드 예산 " int(total * 6 / (N * 10)) " (총무게 " total " 의 0.6/" N ") 을 넘어 쪼개지 않고 샤드 " best " 에 넣었습니다"
@@ -390,7 +363,7 @@ shard_partition() {
       ne = 0
       if (ISOON) {
         # The changed sections, each with its needs closure along the same
-        # graph the components were built from: banner needs and census needs.
+        # graph the components were built from: the banner needs.
         # A closure that reaches an id --list does not have is an error, not a
         # warning: the selector runs everything for an unknown id, so one solo
         # would become a full run.
@@ -408,7 +381,7 @@ shard_partition() {
           split("", vis); vis[x] = 1; ns = 1; stk[1] = x
           while (ns > 0) {
             id = stk[ns]; ns--
-            lst = ((id in bned) ? bned[id] : "-") "," ((id in cned) ? cned[id] : "-")
+            lst = (id in bned) ? bned[id] : "-"
             m = split(lst, da, ",")
             for (j = 1; j <= m; j++) {
               d = da[j]; gsub(/[ \t]/, "", d)
@@ -643,33 +616,33 @@ shard_self_test() {
       done
     } > "$f"
   }
-  mk_census() {
+  mk_timing() {
     local f="$1"; shift
-    { printf '# gate-census v1\n'; printf 'id\tgroup\tstatus\twall_seconds\tpassed\tfailed\tneeds\tcrash_symbol\n'
-      local r; for r in "$@"; do printf '%s\n' "$r"; done; } > "$f"
+    { printf '# gate-timing v1 — source: 1 abc generated: 2026-01-01T00:00:00Z\n'; printf 'id\tms\trun\n'
+      local r; for r in "$@"; do printf '%s\t1\n' "$r"; done; } > "$f"
   }
 
-  # (a) determinism, (b) an uncensused section, (c) coverage
+  # (a) determinism, (b) an unmeasured section, (c) coverage
   mk_suite "$T/s1.sh" 'a|g1|-' 'b|g1|-' 'c|g2|-' 'd|g2|-' 'e|g2|-' 'new|g1|-'
-  mk_census "$T/c1.tsv" "a	g1	ok	30	1	0	-	-" "b	g1	ok	10	1	0	-	-" \
-    "c	g2	ok	20	1	0	-	-" "d	g2	ok	5	1	0	-	-" "e	g2	ok	5	1	0	-	-"
-  out=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 2 --table 2>/dev/null)
-  out2=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 2 --table 2>/dev/null)
+  mk_timing "$T/t1.tsv" "a	30" "b	10" "c	20" "d	5" "e	5"
+  out=$(bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 2 --table 2>/dev/null)
+  out2=$(bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 2 --table 2>/dev/null)
   if [ -n "$out" ] && [ "$out" = "$out2" ]; then ok "(a) 같은 입력의 --table 두 번이 바이트 동일"; else bad "(a) 같은 입력의 --table 두 번이 바이트 동일" "「${out}」 대 「${out2}」"; fi
-  d1=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 2 --digest 2>/dev/null)
+  d1=$(bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 2 --digest 2>/dev/null)
   d2=$(printf '%s\n' "$out" | shard_sha256)
   if [ "$d1" = "$d2" ]; then ok "(a) --digest 는 --table 출력의 sha256"; else bad "(a) --digest 는 --table 출력의 sha256" "$d1 대 $d2"; fi
-  # new weighs the census maximum (30) minus g1 floor (10) plus the floor = 30.
+  # Every span is 1, so the rates are the ms themselves and their p90 is 30:
+  # new weighs 30, as heavy as a.
   case "$out" in
-    *new*) ok "(b) 센서스 행이 없는 절도 어느 샤드엔가 들어간다" ;;
-    *) bad "(b) 센서스 행이 없는 절도 어느 샤드엔가 들어간다" "$out" ;;
+    *new*) ok "(b) 실측 행이 없는 절도 어느 샤드엔가 들어간다" ;;
+    *) bad "(b) 실측 행이 없는 절도 어느 샤드엔가 들어간다" "$out" ;;
   esac
   load_new=$(printf '%s\n' "$out" | awk -F '\t' '$3 ~ /(^|,)new(,|$)/ { print $1 }')
   load_a=$(printf '%s\n' "$out" | awk -F '\t' '$3 ~ /(^|,)a(,|$)/ { print $1 }')
-  if [ -n "$load_new" ] && [ "$load_new" != "$load_a" ]; then ok "(b) 미측정 절은 최대 시간으로 적재되어 가장 무거운 절과 다른 샤드에 간다"; else bad "(b) 미측정 절은 최대 시간으로 적재되어 가장 무거운 절과 다른 샤드에 간다" "$out"; fi
-  if bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 2 --check > /dev/null 2>&1; then ok "(c) --check 가 합집합 = --list 집합을 확인한다"; else bad "(c) --check 가 합집합 = --list 집합을 확인한다" "비영 종료"; fi
+  if [ -n "$load_new" ] && [ "$load_new" != "$load_a" ]; then ok "(b) 미측정 절은 본문 길이 추정으로 적재되어 가장 무거운 절과 다른 샤드에 간다"; else bad "(b) 미측정 절은 본문 길이 추정으로 적재되어 가장 무거운 절과 다른 샤드에 간다" "$out"; fi
+  if bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 2 --check > /dev/null 2>&1; then ok "(c) --check 가 합집합 = --list 집합을 확인한다"; else bad "(c) --check 가 합집합 = --list 집합을 확인한다" "비영 종료"; fi
   printf '1\t1\ta,b,c\n2\t1\tc,d,new\n' > "$T/badtable"
-  err=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 2 --check --from-table "$T/badtable" 2>&1 >/dev/null); rc=$?
+  err=$(bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 2 --check --from-table "$T/badtable" 2>&1 >/dev/null); rc=$?
   if [ "$rc" = "3" ] && printf '%s' "$err" | grep -q '두 샤드 이상에 든 절 — c' && printf '%s' "$err" | grep -q '어느 샤드에도 없는 절 — e'; then
     ok "(c) 중복과 누락을 집합으로 잡는다 (개수가 같아도)"
   else
@@ -678,25 +651,25 @@ shard_self_test() {
 
   # (d) ties: four equal singletons over two shards go a,c / b,d
   mk_suite "$T/s2.sh" 'd|g|-' 'c|g|-' 'b|g|-' 'a|g|-'
-  mk_census "$T/c2.tsv" "a	g	ok	10	1	0	-	-" "b	g	ok	10	1	0	-	-" "c	g	ok	10	1	0	-	-" "d	g	ok	10	1	0	-	-"
-  out=$(bash "$0" --suite "$T/s2.sh" --census "$T/c2.tsv" --shards 2 --table 2>/dev/null)
-  want=$(printf '1\t22\ta,c\n2\t22\tb,d')
+  mk_timing "$T/t2.tsv" "a	10" "b	10" "c	10" "d	10"
+  out=$(bash "$0" --suite "$T/s2.sh" --timing "$T/t2.tsv" --shards 2 --table 2>/dev/null)
+  want=$(printf '1\t20\ta,c\n2\t20\tb,d')
   if [ "$out" = "$want" ]; then ok "(d) 동률은 덩어리 id 사전순, 적재 동률은 낮은 샤드 번호"; else bad "(d) 동률은 덩어리 id 사전순, 적재 동률은 낮은 샤드 번호" "「${out}」"; fi
-  k2=$(bash "$0" --suite "$T/s2.sh" --census "$T/c2.tsv" --shards 2 --shard 2 2>/dev/null)
+  k2=$(bash "$0" --suite "$T/s2.sh" --timing "$T/t2.tsv" --shards 2 --shard 2 2>/dev/null)
   if [ "$k2" = "b,d" ]; then ok "(d) --shard K 는 --sections 에 바로 쓸 한 줄"; else bad "(d) --shard K 는 --sections 에 바로 쓸 한 줄" "「${k2}」"; fi
 
-  # (e) a mutual pair and a cross-group edge (banner and census) make one component
+  # (e) a mutual pair and a cross-group edge make one component; sections no
+  # banner joins stay components of their own.
   mk_suite "$T/s3.sh" 'x|g1|y' 'y|g1|x' 'z|g2|x' 'p|g2|-' 'q|g3|-'
-  mk_census "$T/c3.tsv" "x	g1	ok	5	1	0	-	-" "y	g1	ok	5	1	0	-	-" "z	g2	ok	5	1	0	-	-" \
-    "p	g2	ok	5	1	0	-	-" "q	g3	crash	5	-	-	p	FOO"
-  out=$(bash "$0" --suite "$T/s3.sh" --census "$T/c3.tsv" --shards 4 --table 2>/dev/null)
+  mk_timing "$T/t3.tsv" "x	5" "y	5" "z	5" "p	5" "q	5"
+  out=$(bash "$0" --suite "$T/s3.sh" --timing "$T/t3.tsv" --shards 4 --table 2>/dev/null)
   if printf '%s\n' "$out" | grep -q '	x,y,z$'; then ok "(e) 상호 needs 쌍과 교차 그룹 간선이 한 덩어리"; else bad "(e) 상호 needs 쌍과 교차 그룹 간선이 한 덩어리" "$out"; fi
-  if printf '%s\n' "$out" | grep -q '	p,q$'; then ok "(e) 센서스 needs 간선도 덩어리를 묶는다"; else bad "(e) 센서스 needs 간선도 덩어리를 묶는다" "$out"; fi
+  if printf '%s\n' "$out" | grep -q '	p$' && printf '%s\n' "$out" | grep -q '	q$'; then ok "(e) 배너 needs 간선이 없는 절은 따로 덩어리다"; else bad "(e) 배너 needs 간선이 없는 절은 따로 덩어리다" "$out"; fi
 
   # (f) an unknown needs id warns and is ignored
   mk_suite "$T/s4.sh" 'm|g|ghost' 'n|g|-'
-  err=$(bash "$0" --suite "$T/s4.sh" --census "$T/none.tsv" --shards 2 --table 2>&1 >/dev/null); rc=$?
-  out=$(bash "$0" --suite "$T/s4.sh" --census "$T/none.tsv" --shards 2 --table 2>/dev/null)
+  err=$(bash "$0" --suite "$T/s4.sh" --shards 2 --table 2>&1 >/dev/null); rc=$?
+  out=$(bash "$0" --suite "$T/s4.sh" --shards 2 --table 2>/dev/null)
   if [ "$rc" = "0" ] && printf '%s' "$err" | grep -q '모르는 id ghost' && [ "$(printf '%s\n' "$out" | grep -c .)" = "2" ]; then
     ok "(f) 모르는 needs id 는 경고 후 무시"
   else
@@ -705,34 +678,29 @@ shard_self_test() {
 
   # (g) a component over budget is reported and still placed
   mk_suite "$T/s5.sh" 'big|g|-' 's1|h|-' 's2|h|-' 's3|h|-'
-  mk_census "$T/c5.tsv" "big	g	ok	100	1	0	-	-" "s1	h	ok	1	1	0	-	-" "s2	h	ok	1	1	0	-	-" "s3	h	ok	1	1	0	-	-"
-  err=$(bash "$0" --suite "$T/s5.sh" --census "$T/c5.tsv" --shards 4 --table 2>&1 >/dev/null)
-  out=$(bash "$0" --suite "$T/s5.sh" --census "$T/c5.tsv" --shards 4 --table 2>/dev/null)
+  mk_timing "$T/t5.tsv" "big	100" "s1	1" "s2	1" "s3	1"
+  err=$(bash "$0" --suite "$T/s5.sh" --timing "$T/t5.tsv" --shards 4 --table 2>&1 >/dev/null)
+  out=$(bash "$0" --suite "$T/s5.sh" --timing "$T/t5.tsv" --shards 4 --table 2>/dev/null)
   if printf '%s' "$err" | grep -q '예산 초과 덩어리 — 덩어리 big' && printf '%s\n' "$out" | grep -q '	big$'; then
     ok "(g) 예산 초과 덩어리는 쪼개지 않고 넣고 보고한다"
   else
     bad "(g) 예산 초과 덩어리는 쪼개지 않고 넣고 보고한다" "err=$err out=$out"
   fi
-  bash "$0" --suite "$T/s2.sh" --census "$T/c2.tsv" --shards 9 --shard 9 > /dev/null 2>&1; rc=$?
+  bash "$0" --suite "$T/s2.sh" --timing "$T/t2.tsv" --shards 9 --shard 9 > /dev/null 2>&1; rc=$?
   if [ "$rc" = "4" ]; then ok "빈 샤드의 --shard 는 빈 목록이 아니라 exit 4 (빈 --sections 는 전량이다)"; else bad "빈 샤드의 --shard 는 빈 목록이 아니라 exit 4 (빈 --sections 는 전량이다)" "rc=$rc"; fi
 
   # (h) a suite that cannot list refuses to partition
   printf '#!/usr/bin/env bash\nexit 1\n' > "$T/s6.sh"
-  bash "$0" --suite "$T/s6.sh" --census "$T/c1.tsv" --shards 2 --table > /dev/null 2>&1; rc=$?
+  bash "$0" --suite "$T/s6.sh" --timing "$T/t1.tsv" --shards 2 --table > /dev/null 2>&1; rc=$?
   if [ "$rc" = "3" ]; then ok "(h) --list 실패 시 비영 종료"; else bad "(h) --list 실패 시 비영 종료" "rc=$rc"; fi
 
   # (i) measured weights: deterministic, and a prelude counts once per group of
   # a component — x and y share g1 and one component, so g1's 5 ms is added
   # once to their 30, and z carries g2's 7 on its own 40.
-  mk_timing() {
-    local f="$1"; shift
-    { printf '# gate-timing v1 — source: 1 abc generated: 2026-01-01T00:00:00Z\n'; printf 'id\tms\trun\n'
-      local r; for r in "$@"; do printf '%s\t1\n' "$r"; done; } > "$f"
-  }
   mk_suite "$T/s7.sh" 'x|g1|y' 'y|g1|-' 'z|g2|-'
   mk_timing "$T/t7.tsv" "x	10" "y	20" "z	40" "@pre-g1	5" "@pre-g2	7"
-  out=$(bash "$0" --suite "$T/s7.sh" --census "$T/none.tsv" --timing "$T/t7.tsv" --shards 2 --table 2>/dev/null)
-  out2=$(bash "$0" --suite "$T/s7.sh" --census "$T/none.tsv" --timing "$T/t7.tsv" --shards 2 --table 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s7.sh" --timing "$T/t7.tsv" --shards 2 --table 2>/dev/null)
+  out2=$(bash "$0" --suite "$T/s7.sh" --timing "$T/t7.tsv" --shards 2 --table 2>/dev/null)
   if [ -n "$out" ] && [ "$out" = "$out2" ]; then ok "(i) 실측 모드의 --table 두 번이 바이트 동일"; else bad "(i) 실측 모드의 --table 두 번이 바이트 동일" "「${out}」 대 「${out2}」"; fi
   want=$(printf '1\t47\tz\n2\t35\tx,y')
   if [ "$out" = "$want" ]; then ok "(i) 덩어리 무게는 절 ms 합에 그룹당 프렐류드 ms 한 번"; else bad "(i) 덩어리 무게는 절 ms 합에 그룹당 프렐류드 ms 한 번" "「${out}」"; fi
@@ -743,9 +711,9 @@ shard_self_test() {
   # 10 + 30 + 20 + 30; `gone` is not in the list and adds no rate.
   mk_suite "$T/s8.sh" 'a|g|-' 'b|g|-' 'c|g|-' 'n|g|-'
   mk_timing "$T/t8.tsv" "a	10" "b	30" "c	20" "gone	99"
-  out=$(bash "$0" --suite "$T/s8.sh" --census "$T/none.tsv" --timing "$T/t8.tsv" --shards 1 --table 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s8.sh" --timing "$T/t8.tsv" --shards 1 --table 2>/dev/null)
   if [ "$out" = "$(printf '1\t90\ta,b,c,n')" ]; then ok "(j) 실측 없는 절은 중앙값과 본문 길이 추정 가운데 큰 값으로 적재된다"; else bad "(j) 실측 없는 절은 중앙값과 본문 길이 추정 가운데 큰 값으로 적재된다" "「${out}」"; fi
-  err=$(bash "$0" --suite "$T/s8.sh" --census "$T/none.tsv" --timing "$T/t8.tsv" --shards 1 --table 2>&1 >/dev/null)
+  err=$(bash "$0" --suite "$T/s8.sh" --timing "$T/t8.tsv" --shards 1 --table 2>&1 >/dev/null)
   if printf '%s' "$err" | grep -q '^gate-shard: 실측 없는 절 1개.*중앙값 20 ms.*줄당 p90 30\.0 ms.*: n$'; then ok "(j) 실측 없는 절의 수와 id 를 보고한다"; else bad "(j) 실측 없는 절의 수와 id 를 보고한다" "$err"; fi
   # Each unmeasured id has its own line, and none of them starts the way the
   # head line does: the workflow takes every line starting that way into the
@@ -756,9 +724,9 @@ shard_self_test() {
   else
     bad "(j) 미측정 id 별 줄은 실측 없는 절 머리 줄과 다르게 시작한다" "$err"
   fi
-  out=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --timing "$T/absent.tsv" --shards 2 --table 2>/dev/null)
-  out2=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 2 --table 2>/dev/null)
-  if [ -n "$out" ] && [ "$out" = "$out2" ]; then ok "(j) 없는 실측 파일은 센서스 모델로 돌아간다"; else bad "(j) 없는 실측 파일은 센서스 모델로 돌아간다" "「${out}」 대 「${out2}」"; fi
+  out=$(bash "$0" --suite "$T/s1.sh" --timing "$T/absent.tsv" --shards 2 --table 2>/dev/null)
+  out2=$(bash "$0" --suite "$T/s1.sh" --shards 2 --table 2>/dev/null)
+  if [ -n "$out" ] && [ "$out" = "$out2" ]; then ok "(j) 없는 실측 파일은 표가 없을 때와 같이 적재한다"; else bad "(j) 없는 실측 파일은 표가 없을 때와 같이 적재한다" "「${out}」 대 「${out2}」"; fi
 
   # (k) a shard taken from a table already made
   printf '1\t5\ta,b\n2\t0\t\n' > "$T/plan.tsv"
@@ -772,16 +740,26 @@ shard_self_test() {
   # where the median would have given it 10 — it takes a shard alone.
   mk_suite "$T/s9.sh" 'a|g|-' 'b|g|-' 'c|g|-' 'd|g|-' 'big|g|-|50'
   mk_timing "$T/t9.tsv" "a	10" "b	10" "c	10" "d	10"
-  out=$(bash "$0" --suite "$T/s9.sh" --census "$T/none.tsv" --timing "$T/t9.tsv" --shards 3 --table 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s9.sh" --timing "$T/t9.tsv" --shards 3 --table 2>/dev/null)
   if [ "$out" = "$(printf '1\t510\tbig\n2\t20\ta,c\n3\t20\tb,d')" ]; then ok "(l) 본문이 긴 미측정 절은 본문 길이로 적재되어 한 행에 혼자 놓인다"; else bad "(l) 본문이 긴 미측정 절은 본문 길이로 적재되어 한 행에 혼자 놓인다" "「${out}」"; fi
+
+  # (z) with no table every section weighs its span in lines: big's 51 takes a
+  # row alone and the four one-line sections share the other two. The head
+  # line says the unit is lines.
+  out=$(bash "$0" --suite "$T/s9.sh" --shards 3 --table 2>"$T/e9")
+  if [ "$out" = "$(printf '1\t51\tbig\n2\t2\ta,c\n3\t2\tb,d')" ] && grep -q '^gate-shard: 실측 없는 절 5개 — 타이밍 표가 없어 모든 절을 본문 길이(줄 수)로 적재합니다' "$T/e9"; then
+    ok "(z) 타이밍 표가 없으면 모든 절을 본문 길이(줄 수)로 적재한다"
+  else
+    bad "(z) 타이밍 표가 없으면 모든 절을 본문 길이(줄 수)로 적재한다" "「${out}」 $(cat "$T/e9")"
+  fi
 
   # (m) a short unmeasured section stays at the median: the rates are 10, 20
   # and 30 ms a line over spans of 10, so s (span 1) is estimated at 30 and
   # weighs the median 200.
   mk_suite "$T/s10.sh" 'a|g|-|9' 'b|g|-|9' 'c|g|-|9' 's|g|-'
   mk_timing "$T/t10.tsv" "a	100" "b	200" "c	300"
-  err=$(bash "$0" --suite "$T/s10.sh" --census "$T/none.tsv" --timing "$T/t10.tsv" --shards 1 --table 2>&1 >/dev/null)
-  out=$(bash "$0" --suite "$T/s10.sh" --census "$T/none.tsv" --timing "$T/t10.tsv" --shards 1 --table 2>/dev/null)
+  err=$(bash "$0" --suite "$T/s10.sh" --timing "$T/t10.tsv" --shards 1 --table 2>&1 >/dev/null)
+  out=$(bash "$0" --suite "$T/s10.sh" --timing "$T/t10.tsv" --shards 1 --table 2>/dev/null)
   if [ "$out" = "$(printf '1\t800\ta,b,c,s')" ] && printf '%s\n' "$err" | grep -q '^gate-shard: 미측정 절 s — 범위 1줄, 추정 30 ms, 적재 200 ms$'; then
     ok "(m) 본문이 짧은 미측정 절은 중앙값 무게에 머문다"
   else
@@ -793,22 +771,22 @@ shard_self_test() {
   # so it carries 30 + 20 + 5 and not 30 + 5 + 20 + 5.
   mk_suite "$T/s11.sh" 'p|g|-' 'q|g|-' 'r|g|-'
   mk_timing "$T/t11.tsv" "p	50" "q	30" "r	20" "@pre-g	5"
-  out=$(bash "$0" --suite "$T/s11.sh" --census "$T/none.tsv" --timing "$T/t11.tsv" --shards 2 --table 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s11.sh" --timing "$T/t11.tsv" --shards 2 --table 2>/dev/null)
   if [ "$out" = "$(printf '1\t55\tp\n2\t55\tq,r')" ]; then ok "(n) 프렐류드는 행마다 그룹당 한 번 더해진다"; else bad "(n) 프렐류드는 행마다 그룹당 한 번 더해진다" "「${out}」"; fi
 
   # (o) a slot table: N runners × L lanes are S = N × L rows, and the table and
   # its check take S. The rows are exactly 1..S; a 13-row table checked under
   # `--shards 26` fails, though every id it carries is in range; and a row past
   # the runner count is still a row, not a usage error.
-  out=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 26 --table 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 26 --table 2>/dev/null)
   if [ "$(printf '%s\n' "$out" | awk -F '\t' '{ print $1 }' | tr '\n' ' ')" = "$(seq 1 26 | tr '\n' ' ')" ] \
-     && bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 26 --check > /dev/null 2>&1; then
+     && bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 26 --check > /dev/null 2>&1; then
     ok "(o) --shards 26 의 표는 행 id 가 정확히 1..26 이고 --check 가 통과한다"
   else
     bad "(o) --shards 26 의 표는 행 id 가 정확히 1..26 이고 --check 가 통과한다" "「${out}」"
   fi
-  bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 13 --table > "$T/t13.tsv" 2>/dev/null
-  err=$(bash "$0" --suite "$T/s1.sh" --census "$T/c1.tsv" --shards 26 --check --from-table "$T/t13.tsv" 2>&1 >/dev/null); rc=$?
+  bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 13 --table > "$T/t13.tsv" 2>/dev/null
+  err=$(bash "$0" --suite "$T/s1.sh" --timing "$T/t1.tsv" --shards 26 --check --from-table "$T/t13.tsv" 2>&1 >/dev/null); rc=$?
   if [ "$rc" = "3" ] && printf '%s' "$err" | grep -q '표의 행 id 가 1..26 와 다름'; then
     ok "(o) --shards 26 아래 13행 표는 --check 에서 실패한다"
   else
@@ -820,27 +798,25 @@ shard_self_test() {
 
   # (x) the weights a caller reads: the table's ms for a measured section and
   # the estimate (j) placed `n` with for the one the table lacks.
-  out=$(bash "$0" --suite "$T/s8.sh" --census "$T/none.tsv" --timing "$T/t8.tsv" --weights 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s8.sh" --timing "$T/t8.tsv" --weights 2>/dev/null)
   if [ "$out" = "$(printf 'a\t10\t표\nb\t30\t표\nc\t20\t표\nn\t30\t추정')" ]; then ok "(x) --weights 는 표에 있는 절은 표 값, 없는 절은 추정 값을 낸다"; else bad "(x) --weights 는 표에 있는 절은 표 값, 없는 절은 추정 값을 낸다" "「${out}」"; fi
-  bash "$0" --suite "$T/s8.sh" --census "$T/none.tsv" --timing "$T/absent.tsv" --weights > /dev/null 2>&1; rc=$?
+  bash "$0" --suite "$T/s8.sh" --timing "$T/absent.tsv" --weights > /dev/null 2>&1; rc=$?
   if [ "$rc" = "2" ]; then ok "(x) 없는 표의 --weights 는 exit 2"; else bad "(x) 없는 표의 --weights 는 exit 2" "rc=$rc"; fi
 
-  # (y) a subset is cut from the whole suite's components: p and z are joined by
-  # a census edge alone and share a row; x's row weighs its closure y too but
-  # lists only x; the unnamed component of q is dropped, so two rows come out
-  # of four asked for.
-  mk_suite "$T/s20.sh" 'x|g|y' 'y|g|-' 'z|g|-' 'p|g|-' 'q|g|-'
-  mk_census "$T/c20.tsv" "p	g	ok	5	1	0	z	-"
+  # (y) a subset is cut from the whole suite's components: p needs z, so the
+  # two share a row; x's row weighs its closure y too but lists only x; the
+  # unnamed component of q is dropped, so two rows come out of four asked for.
+  mk_suite "$T/s20.sh" 'x|g|y' 'y|g|-' 'z|g|-' 'p|g|z' 'q|g|-'
   mk_timing "$T/t20.tsv" "x	10" "y	20" "z	40" "p	5" "q	99"
-  out=$(bash "$0" --suite "$T/s20.sh" --census "$T/c20.tsv" --timing "$T/t20.tsv" --shards 4 --only x,z,p --table 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s20.sh" --timing "$T/t20.tsv" --shards 4 --only x,z,p --table 2>/dev/null)
   if [ "$out" = "$(printf '1\t45\tp,z\n2\t30\tx')" ]; then ok "(y) --only 는 전체 성분을 지명 절로 투영하고 행 수는 성분 수를 넘지 않는다"; else bad "(y) --only 는 전체 성분을 지명 절로 투영하고 행 수는 성분 수를 넘지 않는다" "「${out}」"; fi
-  bash "$0" --suite "$T/s20.sh" --census "$T/c20.tsv" --shards 2 --only x,ghost --table > /dev/null 2>&1; rc=$?
+  bash "$0" --suite "$T/s20.sh" --shards 2 --only x,ghost --table > /dev/null 2>&1; rc=$?
   if [ "$rc" = "3" ]; then ok "(y) --only 의 모르는 id 는 exit 3"; else bad "(y) --only 의 모르는 id 는 exit 3" "rc=$rc"; fi
 
   # (p) --isolate with nothing changed keeps the regular rows as they are and
   # only adds the three empty columns.
-  out=$(bash "$0" --suite "$T/s7.sh" --census "$T/none.tsv" --timing "$T/t7.tsv" --shards 2 --table 2>/dev/null)
-  out2=$(bash "$0" --suite "$T/s7.sh" --census "$T/none.tsv" --timing "$T/t7.tsv" --shards 2 --table --isolate '' --iso-extra 2 2>/dev/null)
+  out=$(bash "$0" --suite "$T/s7.sh" --timing "$T/t7.tsv" --shards 2 --table 2>/dev/null)
+  out2=$(bash "$0" --suite "$T/s7.sh" --timing "$T/t7.tsv" --shards 2 --table --isolate '' --iso-extra 2 2>/dev/null)
   if [ "$(printf '%s\n' "$out2" | cut -f1-3)" = "$out" ] && [ "$(printf '%s\n' "$out2" | awk -F '\t' 'NF != 6' | grep -c .)" = "0" ]; then
     ok "(p) 빈 --isolate 는 정규 행을 그대로 두고 빈 열 셋만 더한다"
   else
@@ -853,7 +829,7 @@ shard_self_test() {
   # The overlay of x on row 2 then adds 10 + h's 2 and fills it to exactly F.
   mk_suite "$T/s12.sh" 'p|g|-' 'q|g|-' 'r|g|-' 'x|h|-'
   mk_timing "$T/t12.tsv" "p	50" "q	30" "r	20" "x	10" "@pre-g	5" "@pre-h	2" "@head	3"
-  out=$(bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --timing "$T/t12.tsv" --shards 2 --table --isolate x --iso-extra 2 2>"$T/e12")
+  out=$(bash "$0" --suite "$T/s12.sh" --timing "$T/t12.tsv" --shards 2 --table --isolate x --iso-extra 2 2>"$T/e12")
   if [ "$out" = "$(printf '1\t67\tp,x\t\t\tx\n2\t55\tq,r\tx\t\t\n3\t30\t\t\t1:x;2:x\t')" ]; then ok "(q) 여유가 없는 단독은 추가 행에 가고, 얹힘은 F 까지 채운다"; else bad "(q) 여유가 없는 단독은 추가 행에 가고, 얹힘은 F 까지 채운다" "「${out}」"; fi
   if grep -q '^gate-shard: 격리 배치 — 바뀐 절 1개 · F 70 · 머리 3 · 추가 행 1/2 · 격리 작업 행 3개$' "$T/e12"; then ok "(q) F 는 정규 행 부하에 @head 한 번을 더한 최댓값이다"; else bad "(q) F 는 정규 행 부하에 @head 한 번을 더한 최댓값이다" "$(cat "$T/e12")"; fi
   printf '%s\n' "$out" > "$T/p12.tsv"
@@ -863,30 +839,30 @@ shard_self_test() {
   # 2 and not row 1, which is reported.
   mk_suite "$T/s13.sh" 'a|g|-' 'b|g|-' 'c|g|-' 'x|g|-'
   mk_timing "$T/t13.tsv" "a	100" "b	40" "c	30" "x	10"
-  out=$(bash "$0" --suite "$T/s13.sh" --census "$T/none.tsv" --timing "$T/t13.tsv" --shards 3 --table --isolate x --iso-extra 2 2>"$T/e13")
+  out=$(bash "$0" --suite "$T/s13.sh" --timing "$T/t13.tsv" --shards 3 --table --isolate x --iso-extra 2 2>"$T/e13")
   if [ "$out" = "$(printf '1\t100\ta\t\t\t\n2\t40\tb\tx\t1:x\t\n3\t40\tc,x\t\t2:x\tx')" ]; then ok "(r) 단독이 먼저 정규 행의 여유를 쓰고 추가 행을 열지 않는다"; else bad "(r) 단독이 먼저 정규 행의 여유를 쓰고 추가 행을 열지 않는다" "「${out}」"; fi
   if grep -q '^gate-shard: 덮지 못한 쌍 — x: 행 1$' "$T/e13"; then ok "(r) 여유가 모자라 얹지 못한 행은 덮지 못한 쌍으로 적는다"; else bad "(r) 여유가 모자라 얹지 못한 행은 덮지 못한 쌍으로 적는다" "$(cat "$T/e13")"; fi
 
   # (s) capacity: the solos of (q) with no extra row allowed do not fit.
-  out=$(bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --timing "$T/t12.tsv" --shards 2 --table --isolate x --iso-extra 0 2>"$T/e14"); rc=$?
+  out=$(bash "$0" --suite "$T/s12.sh" --timing "$T/t12.tsv" --shards 2 --table --isolate x --iso-extra 0 2>"$T/e14"); rc=$?
   if [ "$rc" = "5" ] && [ -z "$out" ] && grep -q '격리 검사 용량 초과 — 단독을 싣지 못한 바뀐 절: x ' "$T/e14"; then ok "(s) 단독을 다 싣지 못하면 표 없이 exit 5"; else bad "(s) 단독을 다 싣지 못하면 표 없이 exit 5" "rc=$rc 「${out}」 $(cat "$T/e14")"; fi
 
   # (t) a closure with an id --list does not have, and a changed id it does not
   # have, are exit 2 with no table.
-  out=$(bash "$0" --suite "$T/s4.sh" --census "$T/none.tsv" --shards 2 --table --isolate m 2>"$T/e15"); rc=$?
+  out=$(bash "$0" --suite "$T/s4.sh" --shards 2 --table --isolate m 2>"$T/e15"); rc=$?
   if [ "$rc" = "2" ] && [ -z "$out" ] && grep -q '폐포에 --list 에 없는 id ghost' "$T/e15"; then ok "(t) 폐포의 모르는 id 는 표 없이 exit 2"; else bad "(t) 폐포의 모르는 id 는 표 없이 exit 2" "rc=$rc 「${out}」 $(cat "$T/e15")"; fi
-  bash "$0" --suite "$T/s4.sh" --census "$T/none.tsv" --shards 2 --table --isolate nope > /dev/null 2>&1; rc=$?
+  bash "$0" --suite "$T/s4.sh" --shards 2 --table --isolate nope > /dev/null 2>&1; rc=$?
   if [ "$rc" = "2" ]; then ok "(t) --list 에 없는 바뀐 절은 exit 2"; else bad "(t) --list 에 없는 바뀐 절은 exit 2" "rc=$rc"; fi
 
-  # (u) the closure follows census needs too: q needs p only in the census.
-  out=$(bash "$0" --suite "$T/s3.sh" --census "$T/c3.tsv" --shards 4 --table --isolate q --iso-extra 2 2>/dev/null)
-  if printf '%s\n' "$out" | cut -f5 | grep -q '1:q,p'; then ok "(u) 단독의 폐포는 센서스 needs 간선도 따른다"; else bad "(u) 단독의 폐포는 센서스 needs 간선도 따른다" "「${out}」"; fi
+  # (u) the closure follows the banner needs transitively: z needs x, x needs y.
+  out=$(bash "$0" --suite "$T/s3.sh" --timing "$T/t3.tsv" --shards 4 --table --isolate z --iso-extra 2 2>/dev/null)
+  if printf '%s\n' "$out" | cut -f5 | grep -q '1:z,x,y'; then ok "(u) 단독의 폐포는 배너 needs 간선을 끝까지 따른다"; else bad "(u) 단독의 폐포는 배너 needs 간선을 끝까지 따른다" "「${out}」"; fi
 
   # (v) the row check takes the extra rows: 1..N+E.
-  if bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --shards 2 --extra 1 --check --from-table "$T/p12.tsv" > /dev/null 2>&1; then ok "(v) --extra E 의 --check 는 행 1..N+E 를 받는다"; else bad "(v) --extra E 의 --check 는 행 1..N+E 를 받는다" "비영 종료"; fi
-  bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --shards 2 --check --from-table "$T/p12.tsv" > /dev/null 2>&1; rc=$?
+  if bash "$0" --suite "$T/s12.sh" --shards 2 --extra 1 --check --from-table "$T/p12.tsv" > /dev/null 2>&1; then ok "(v) --extra E 의 --check 는 행 1..N+E 를 받는다"; else bad "(v) --extra E 의 --check 는 행 1..N+E 를 받는다" "비영 종료"; fi
+  bash "$0" --suite "$T/s12.sh" --shards 2 --check --from-table "$T/p12.tsv" > /dev/null 2>&1; rc=$?
   if [ "$rc" = "3" ]; then ok "(v) --extra 없이 추가 행이 있는 표는 --check 에서 실패한다"; else bad "(v) --extra 없이 추가 행이 있는 표는 --check 에서 실패한다" "rc=$rc"; fi
-  if bash "$0" --suite "$T/s12.sh" --census "$T/none.tsv" --timing "$T/t12.tsv" --shards 2 --isolate x --iso-extra 2 --check > /dev/null 2>&1; then ok "(v) 표를 직접 짜는 --check 는 자기 추가 행을 센다"; else bad "(v) 표를 직접 짜는 --check 는 자기 추가 행을 센다" "비영 종료"; fi
+  if bash "$0" --suite "$T/s12.sh" --timing "$T/t12.tsv" --shards 2 --isolate x --iso-extra 2 --check > /dev/null 2>&1; then ok "(v) 표를 직접 짜는 --check 는 자기 추가 행을 센다"; else bad "(v) 표를 직접 짜는 --check 는 자기 추가 행을 센다" "비영 종료"; fi
 
   # (w) a row of a table already made, column by column.
   k1=$(bash "$0" --suite "$T/s6.sh" --shards 2 --extra 1 --shard 3 --from-table "$T/p12.tsv" 2>/dev/null); rc=$?
@@ -903,8 +879,8 @@ shard_self_test() {
   rm -rf "$T"
   printf 'gate-shard self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 48 ]; then
-    printf 'gate-shard self-test: 통과 수 %d 가 하한 48 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 49 ]; then
+    printf 'gate-shard self-test: 통과 수 %d 가 하한 49 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -913,7 +889,6 @@ shard_self_test() {
 # --- main --------------------------------------------------------------------
 
 suite="$repo_root/scripts/test-gate.sh"
-census="$repo_root/scripts/gate-census.tsv"
 shards=""
 mode=""
 shard_k=""
@@ -928,7 +903,6 @@ col=3
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --suite)      [ "$#" -ge 2 ] || shard_usage; suite="$2"; shift 2 ;;
-    --census)     [ "$#" -ge 2 ] || shard_usage; census="$2"; shift 2 ;;
     --timing)     [ "$#" -ge 2 ] || shard_usage; timing="$2"; shift 2 ;;
     --shards)     [ "$#" -ge 2 ] || shard_usage; shards="$2"; shift 2 ;;
     --shard)      [ "$#" -ge 2 ] || shard_usage; mode="shard"; shard_k="$2"; shift 2 ;;
@@ -954,8 +928,9 @@ if [ "$mode" = "self-test" ]; then
   exit $?
 fi
 [ -n "$mode" ] || shard_usage
-# The weights are the measured model's, so they need a table to fit it to; the
-# census model has no per-section weight that a caller could read as seconds.
+# The weights are the measured model's, so they need a table to fit it to;
+# without one a section weighs its span in lines, which no caller could read as
+# seconds.
 if [ "$mode" = "weights" ]; then
   if [ -z "$timing" ] || [ ! -f "$timing" ]; then
     printf 'gate-shard: --weights 는 있는 --timing 표와 함께 씁니다 (받은 것: 「%s」)\n' "$timing" >&2
@@ -963,7 +938,7 @@ if [ "$mode" = "weights" ]; then
   fi
   work=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard-main.XXXXXX")
   trap 'rm -rf "$work"' EXIT
-  SHARD_WEIGHTS_OUT="$work/weights" shard_partition "$suite" "$census" 1 "$timing" > /dev/null
+  SHARD_WEIGHTS_OUT="$work/weights" shard_partition "$suite" 1 "$timing" > /dev/null
   prc=$?
   [ "$prc" = "0" ] || exit "$prc"
   cat "$work/weights"
@@ -1010,7 +985,7 @@ fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard-main.XXXXXX")
 trap 'rm -rf "$work"' EXIT
-SHARD_IDS_OUT="$work/ids" shard_partition "$suite" "$census" "$shards" "$timing" "$only" "$iso_on" "$iso" "$iso_extra" > "$work/table"
+SHARD_IDS_OUT="$work/ids" shard_partition "$suite" "$shards" "$timing" "$only" "$iso_on" "$iso" "$iso_extra" > "$work/table"
 prc=$?
 [ "$prc" = "0" ] || exit "$prc"
 

@@ -639,7 +639,7 @@ hook_suffix_verdict() {
 }
 
 # ---------------------------------------------------------------------------
-# 라우터 입력 디렉터리 — 이 런이 끝난 뒤 다른 행위자가 읽는 세 자리
+# 라우터 입력 디렉터리 — 이 런이 끝난 뒤 다른 행위자가 읽는 세 자리, 그리고 주의 스풀
 #
 # cc-lane 설정 디렉터리(계정 인벤토리), cc-lane 상태 디렉터리(사용량 관측), 페이싱
 # 디렉터리(기기 임대 표·페이싱 판정·이연 킥오프 큐). 셋 다 뒤따르는 런의 계정
@@ -671,6 +671,7 @@ hook_router_msg() {
     config) HOOK_ROUTER_MSG='gate: the cc-lane configuration directory is an enforcement surface — the account inventory here decides which account every later stage is assigned, so a write here moves an assignment this stage does not own' ;;
     state)  HOOK_ROUTER_MSG='gate: the cc-lane state directory is an enforcement surface — the usage observed here decides which account every later stage is assigned, so a write here moves an assignment this stage does not own' ;;
     pace)   HOOK_ROUTER_MSG='gate: the pacing directory is an enforcement surface — the lease table, the pacing verdict and the deferred-run queue here are read by the router, the gate and the dispatcher after this stage ends, so a write here reserves an account, relaxes pacing or queues a run by the hand of this stage' ;;
+    spool)  HOOK_ROUTER_MSG='gate: the attention spool is an enforcement surface — the remote-answer mailbox and the apply records here are what the gate reads to tell a remote answer from a local one when it closes an approval, so a write here forges or erases the route of an answer by the hand of this stage' ;;
   esac
 }
 
@@ -693,7 +694,7 @@ hook_router_pair_add() {
 }
 
 hook_router_pairs() {
-  # 세 루트의 쌍 목록을 만든다. 순서는 설정·상태·페이싱.
+  # 네 루트의 쌍 목록을 만든다. 순서는 설정·상태·페이싱·스풀.
   #
   # 부모는 XDG 유도 철자와 `$HOME` 기본 철자의 **합집합**이다. 위협은 이 런이 아니라
   # 뒤따르는 런과 사람의 cc-lane CLI 가 읽는 파일이고, cc-lane 이 XDG 를 따를지는
@@ -724,6 +725,24 @@ hook_router_pairs() {
   hook_router_pair_add state  "${HOME:-}"            /.local/state        cc-lane
   hook_router_pair_add pace   "${XDG_STATE_HOME:-}"  /cc-cmds             pace
   hook_router_pair_add pace   "${HOME:-}"            /.local/state/cc-cmds pace
+  # 주의 스풀. 원격 답의 우편함·적용 기록·포인터는 릴레이와 세션 이음매가 쓰고
+  # 게이트가 승인 닫힘에서 읽는다. 기본 자리는 `HOME` 철자 하나다 — 스풀 라이브러리가
+  # XDG 를 따르지 않는다. 그 라이브러리가 기본과 다른 자리를 답하면(시험 좌석
+  # 변수를 지운 자식 셸에서 물으므로, 실제로는 `HOME` 철자가 다를 때뿐이다) 그
+  # 자리도 막는다. 라이브러리를 못 찾거나 답이 없으면 기본 쌍만 남는다.
+  hook_router_pair_add spool  "${HOME:-}"            /.local/state/cc-cmds attention
+  local alib sroot
+  alib="${GATE%/*}/attention.sh"
+  if [ -n "$GATE" ] && [ -f "$alib" ] && [ -r "$alib" ]; then
+    sroot=$(env -u CC_CMDS_ATTENTION_ROOT bash -c '. "$1" || exit 2; cc_attention_root' \
+              hook-attention-root "$alib" </dev/null 2>/dev/null) || sroot=""
+    case "$sroot" in
+      /*[!/]*)
+        if [ "$sroot" != "${HOME:-}/.local/state/cc-cmds/attention" ] && [ -d "$sroot" ]; then
+          hook_router_pair_add spool "${sroot%/*}" "" "${sroot##*/}"
+        fi ;;
+    esac
+  fi
 }
 
 hook_router_next() {

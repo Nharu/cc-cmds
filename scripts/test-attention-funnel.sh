@@ -279,6 +279,9 @@ CANON="승인 $AID — $FULLQ"
 fixture_run() {
   # fixture_run — a base with the ledger, the authorization record and the
   # sidecar block of one waiting judgment approval, under a fresh case dir.
+  # fixture_run <fields> puts other fields in place of `절단점=판단` — another
+  # cut for an act approval, or a judgment class beside the cut.
+  local fields="${1:-절단점=판단}"
   FX="$WORK/fx.$RANDOM$RANDOM"
   BASE_DIR="$FX/base"
   RUN_DIR_FX="$FX/runs/$RID"
@@ -286,8 +289,8 @@ fixture_run() {
   GRANT_FX="$BASE_DIR/docs/pipeline-grant/$RID.md"
   mkdir -p "$BASE_DIR/docs/pipeline-run" "$BASE_DIR/docs/pipeline-grant" "$RUN_DIR_FX"
   printf '# 인가\n' > "$GRANT_FX"
-  printf -- '- `승인` | 승인 id=%s | 상태=대기 | 절단점=판단 | 막는 세그먼트=S1 | 질문 문면=%s\n' \
-    "$AID" "$EXCERPT" > "$LEDGER_FX"
+  printf -- '- `승인` | 승인 id=%s | 상태=대기 | %s | 막는 세그먼트=S1 | 질문 문면=%s\n' \
+    "$AID" "$fields" "$EXCERPT" > "$LEDGER_FX"
   printf '%s\n' 1577836800 > "$RUN_DIR_FX/started-at"
   gate_src 'gate_approval_sidecar_write "$AID" issue 질문 "$FULLQ"' >/dev/null 2>&1
 }
@@ -340,7 +343,14 @@ gate_src 'gate_notify_approval "$AID" "$FULLQ — alias / 커밋 / 워크트리�
 notify_settle 1
 check "5 라우터 좌석의 승인 사건 하나" "$(appr_files | grep -c . || true)" "1"
 check "5 승인 사건 본문은 정규 질문" "$(appr_jq .body)" "$CANON"
-check "5 승인 사건은 답할 수 없음" "$(appr_jq .actionable)" "false"
+check "5 게이트 자리 — 판단 승인은 답할 수 있음" "$(appr_jq .actionable)" "true"
+check "5 게이트 자리 — accepts" "$(appr_jq '.accepts | join(",")')" "option"
+check "5 게이트 자리 — 답 대상 표면" "$(appr_jq '.reply.surface')" "approval"
+check "5 게이트 자리 — 답 대상 런·승인" "$(appr_jq '.reply.run_id + " " + .reply.approval_id')" "$RID $AID"
+check "5 게이트 자리 — 답 대상 질문은 정규 질문" "$(appr_jq '.reply.question')" "$CANON"
+check "5 게이트 자리 — 답 대상 라벨은 프롬프트 명령의 라벨" "$(appr_jq '.reply.options | join(",")')" \
+  "$(gate_src 'gate_prompt "$AID"' | jq -r '[.options[].label] | join(",")')"
+check "5 게이트 자리 — 라벨 셋" "$(appr_jq '.reply.options | join(",")')" "승인,거부,무효"
 check "5 로컬 배너 문면은 이전과 같다" \
   "$(grep -cF -- "-message $FULLQ — alias / 커밋 / 워크트리쓰기 -group cc-cmds-autopilot-$RID-$AID " "$NOTIFY_LOG" || true)" "1"
 check "5 게이트 자리의 첨부 파일이 남지 않음" "$(n_leftover_detail)" "0"
@@ -364,8 +374,39 @@ fixture_run
 watch_pass
 check "5 감시자의 승인 사건 하나" "$(appr_files | grep -c . || true)" "1"
 check "5 감시자 사건 본문은 사이드카의 전체 질문" "$(appr_jq .body)" "$CANON"
+check "5 감시자 자리 — 판단 승인은 답할 수 있음" "$(appr_jq .actionable)" "true"
+check "5 감시자 자리 — 답 대상 런·승인" "$(appr_jq '.reply.surface + " " + .reply.run_id + " " + .reply.approval_id')" \
+  "approval $RID $AID"
+check "5 감시자 자리 — 답 대상 질문은 정규 질문" "$(appr_jq '.reply.question')" "$CANON"
+check "5 감시자 자리 — 라벨 셋" "$(appr_jq '.reply.options | join(",")')" "승인,거부,무효"
 check "5 감시자는 게이트의 진입 기록을 남기지 않음" "$([ -e "$RUN_DIR_FX/ledger-path" ] && echo written || echo none)" "none"
 check "5 감시자 자리의 첨부 파일이 남지 않음" "$(n_leftover_detail)" "0"
+
+# A visual approval carries the same labels and no buttons; an act approval has
+# no labels. Each is seen from both sites.
+for site in gate watch; do
+  spool
+  fixture_run '절단점=판단 | 판단 부류=시각-승인'
+  case "$site" in
+    gate) gate_src 'gate_notify_approval "$AID" "$FULLQ"' >/dev/null 2>&1; notify_settle 1 ;;
+    watch) watch_pass ;;
+  esac
+  check "5 $site 자리 — 시각-승인은 답할 수 없음" "$(appr_jq .actionable)" "false"
+  check "5 $site 자리 — 시각-승인 accepts 비어 있음" "$(appr_jq '.accepts | length')" "0"
+  check "5 $site 자리 — 시각-승인도 라벨 셋을 실음" "$(appr_jq '.reply.options | join(",")')" "승인,거부,무효"
+
+  spool
+  fixture_run '절단점=커밋'
+  case "$site" in
+    gate) gate_src 'gate_notify_approval "$AID" "$FULLQ"' >/dev/null 2>&1; notify_settle 1 ;;
+    watch) watch_pass ;;
+  esac
+  check "5 $site 자리 — 행위 승인은 답할 수 없음" "$(appr_jq .actionable)" "false"
+  check "5 $site 자리 — 행위 승인 선택지 비어 있음" "$(appr_jq '.reply.options | length')" "0"
+  check "5 $site 자리 — 행위 승인 답 대상 질문은 정규 질문" "$(appr_jq '.reply.question')" "$CANON"
+done
+check "5 게이트 첨부 함수는 행 없는 승인에서 1" \
+  "$(gate_src 'gate_approval_attach_json J-ffffffff; printf "rc=%s" "$?"')" "rc=1"
 
 # Both orders. The announcement list is cleared between the two drives so the
 # second site raises its banner too — the race the gate accepts — and the
