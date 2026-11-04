@@ -83,7 +83,13 @@
 #   3  rule refusal — a catalog rule said no. From `seat-apply-preview` also:
 #      the record or the segment worktree fails a check the apply makes. From
 #      `surface-provenance`: the branch changed an enforcement surface outside
-#      a seat apply
+#      a seat apply. The reviewer run's fixed rules refuse with 3 too: planning
+#      a review-only segment whose pull-request head moved, any write to an
+#      author's branch from a review-only segment (push, commit, implement
+#      dispatch, lead fix, merge, pull-request creation), `review-post`'s
+#      precondition, account and held-review refusals, a direct review post
+#      through `exec` in any run, and a clause settled on a review whose post
+#      did not match
 #   4  stale snapshot digest — the router judged against state that has moved
 #   5  approval issued — the act is outside pre-authorization and irreversible
 #   6  grade self-declaration mismatch — the claimed grade is not the graded one
@@ -7574,6 +7580,7 @@ surface_of_git() {
     add|commit|checkout|switch|restore|rebase|merge|cherry-pick|revert|stash|apply|am|reset|tag)
       printf '워크트리쓰기' ;;
     remote)   surface_of_git_remote "$@" ;;
+    update-ref) surface_of_git_update_ref "$@" ;;
     # `fetch` and `clone` left this arm: the first only moves remote-tracking
     # refs unless a refspec names a local branch, and the second writes a tree.
     # `push` and `pull` stay — one publishes and the other merges what it fetched.
@@ -7600,6 +7607,29 @@ surface_of_git() {
       printf '외부상태변경' ;;
     pull)
       printf '외부상태변경' ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
+surface_of_git_update_ref() {
+  # A reviewer run pins each PR's base under `refs/cc-review/` and drops the pin
+  # at cleanup, and neither touches a branch, HEAD or a remote-tracking ref. Only
+  # those two shapes are graded: `update-ref <ref> <value>` creating or moving a
+  # ref under that namespace, and `update-ref -d <ref>` deleting one. Any other
+  # update-ref — HEAD, a branch, `--stdin`, a ref outside the namespace — stays
+  # `등급 미상`, because moving those is what the rest of the grading guards.
+  shift
+  case "${1:-}" in
+    -d)
+      case "$#:${2:-}" in
+        2:refs/cc-review/?*|3:refs/cc-review/?*) printf '워크트리쓰기' ;;
+        *) printf '등급 미상' ;;
+      esac ;;
+    refs/cc-review/?*)
+      case "$#:${2:-}" in
+        2:?*|3:?*) case "${2:-}" in -*) printf '등급 미상' ;; *) printf '워크트리쓰기' ;; esac ;;
+        *) printf '등급 미상' ;;
+      esac ;;
     *) printf '등급 미상' ;;
   esac
 }
@@ -10930,6 +10960,160 @@ gate_segment_field() {
     | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
+gate_segment_kept_field() {
+  # gate_segment_kept_field <segment> <key> — the value of <key> on the LAST
+  # segment row of that id that carries the key at all. A review-only segment's
+  # planning row is the only one that writes `종류`, `고정 헤드` and `베이스 sha`;
+  # the router's later rows (`리뷰중`, `완료`) do not repeat them, so the
+  # last-row reading of `gate_segment_field` would lose them. Only rows marked
+  # `종류=리뷰전용` are read: the driver writes `베이스 sha` on an ordinary
+  # segment's merged row, and that value is no review-only segment's pin.
+  gate_rows 'segment' | gate_rows_field_eq 'id' "$1" | gate_rows_field_eq '종류' '리뷰전용' | gate_rows_field_values "$2" \
+    | awk 'NF { v = $0 } END { printf "%s", v }'
+}
+
+gate_segment_review_only() {
+  # gate_segment_review_only <segment> — the segment was planned as a
+  # review-only segment (`종류=리뷰전용`): a pull request someone else wrote,
+  # read in a detached worktree. It has no branch of its own, and every act
+  # that writes an author's branch is refused for it.
+  [ "$(gate_segment_kept_field "$1" '종류')" = '리뷰전용' ]
+}
+
+gate_reviewer_run() {
+  # gate_reviewer_run — the manifest's plan reads `run_profile: reviewer`.
+  [ "$(manifest_plan_field '.run_profile // "standard"' 2>/dev/null || true)" = 'reviewer' ]
+}
+
+gate_review_pr_row() {
+  # gate_review_pr_row <segment> — the manifest's `리뷰 PR` row of that
+  # segment (`P<k>`), or nothing and 1.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    if [ "$(manifest_row_fields "$row" '세그먼트')" = "$1" ]; then printf '%s' "$row"; return 0; fi
+  done <<EOF
+$(manifest_review_pr_rows)
+EOF
+  return 1
+}
+
+gate_review_post_field() {
+  # gate_review_post_field <key> — a field of the manifest's `리뷰 게시` row
+  # (`방식`, `의사표시`, `계정`); empty when the run has none.
+  local row
+  row=$(manifest_review_post_rows | sed -n '1p')
+  [ -n "$row" ] || return 0
+  manifest_row_fields "$row" "$1"
+}
+
+gate_review_depth() {
+  # gate_review_depth — the frozen review depth, `전체` when the run froze none.
+  local row v=""
+  row=$(manifest_review_depth_rows | sed -n '1p')
+  [ -z "$row" ] || v=$(manifest_row_fields "$row" '깊이')
+  printf '%s' "${v:-전체}"
+}
+
+gate_review_worktree_of() {
+  # gate_review_worktree_of <alias> <segment> — the detached worktree a
+  # review-only segment is read in, by the slice rule:
+  # `<main worktree>-run-<run id>-P<k>`.
+  gate_decl_worktree "$1" "$2"
+}
+
+gate_snapshot_review_segments_json() {
+  # The review-only segments a reviewer manifest declares, in `리뷰 PR` row
+  # order: id, target, pull request, worktree and the state the segment's last
+  # row reads (`미계획` before its planning act). The snapshot prints this in
+  # place of `슬라이싱` on a reviewer run.
+  local row seg al pr wt st first=1
+  printf '['
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    seg=$(manifest_row_fields "$row" '세그먼트')
+    al=$(manifest_row_fields "$row" '대상')
+    pr=$(manifest_row_fields "$row" 'PR')
+    wt=$(gate_review_worktree_of "$al" "$seg") || wt=""
+    st=$(gate_segment_field "$seg" '상태')
+    [ "$first" = "1" ] || printf ', '
+    first=0
+    printf '{"id": "%s", "대상": "%s", "PR": "%s", "슬러그": "%s", "베이스": "%s", "워크트리": "%s", "상태": "%s"}' \
+      "$(gate_json_escape "$seg")" "$(gate_json_escape "$al")" "$(gate_json_escape "$pr")" \
+      "$(gate_json_escape "$(target_field "$al" '원격 슬러그' 2>/dev/null || true)")" \
+      "$(gate_json_escape "$(manifest_row_fields "$row" '베이스')")" \
+      "$(gate_json_escape "$wt")" "$(gate_json_escape "${st:-미계획}")"
+  done <<EOF
+$(manifest_review_pr_rows)
+EOF
+  printf ']'
+}
+
+gate_review_pr_plan() {
+  # gate_review_pr_plan <alias> <segment> <state> <worktree> — the checks of a
+  # review-only segment's planning act (`act --kind segment --review-pr`). On
+  # success sets GATE_RP_HEAD (the pull request head, pinned) and GATE_RP_BASE
+  # (the base commit the router fetched under `refs/cc-review/<run>/P<k>-base`).
+  # Every refusal is exit 3: the run's fixed rule, not an unknown token.
+  local al="$1" sg="$2" st="$3" wt="$4" row ral pr want_wt wt_p want_p head remote
+  GATE_RP_HEAD=""; GATE_RP_BASE=""
+  if ! gate_reviewer_run; then
+    warn "--review-pr 는 리뷰어 런(run_profile: reviewer)에서만 씁니다 — 이 런의 계획은 리뷰어 계획이 아닙니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if ! row=$(gate_review_pr_row "$sg"); then
+    warn "세그먼트 ${sg} 는 이 런의 「리뷰 PR」 행에 없습니다 — 리뷰 전용 세그먼트는 매니페스트가 동결한 PR 마다 하나입니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  ral=$(manifest_row_fields "$row" '대상')
+  if [ "$ral" != "$al" ]; then
+    warn "세그먼트 ${sg} 의 「리뷰 PR」 행은 대상 ${ral} 을 이름합니다 — --target ${al} 과 다릅니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$st" != '계획됨' ]; then
+    warn "--review-pr 는 계획 행에만 씁니다 — 「상태=계획됨」 이어야 하는데 ${st:-(없음)} 입니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if gate_segment_review_only "$sg"; then
+    warn "세그먼트 ${sg} 는 이미 리뷰 전용으로 계획되었습니다 — 고정 헤드는 한 번만 매깁니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  want_wt=$(gate_review_worktree_of "$al" "$sg") || want_wt=""
+  wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
+  want_p=$(cd "$want_wt" 2>/dev/null && pwd -P) || want_p=""
+  if [ -z "$wt_p" ] || [ "$wt_p" != "$want_p" ]; then
+    warn "리뷰 전용 세그먼트 ${sg} 의 워크트리는 ${want_wt:-(대상 경로 미상)} 입니다 — 받은 ${wt} 가 아니거나 아직 없습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  # A checkout on a branch could carry a commit onto the author's branch; the
+  # review reads a detached HEAD and nothing else.
+  if ( cd "$wt" && git symbolic-ref -q HEAD ) >/dev/null 2>&1; then
+    warn "리뷰 전용 세그먼트 ${sg} 의 워크트리 ${wt} 가 브랜치에 있습니다 — git worktree add --detach 로 만든 분리 HEAD 여야 합니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  pr=$(manifest_row_fields "$row" 'PR')
+  head=$( cd "$wt" && git rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null ) || head=""
+  GATE_RP_BASE=$( cd "$wt" && git rev-parse --verify -q "refs/cc-review/${RUN_ID}/${sg}-base^{commit}" 2>/dev/null ) || GATE_RP_BASE=""
+  if [ -z "$head" ] || [ -z "$GATE_RP_BASE" ]; then
+    warn "리뷰 전용 세그먼트 ${sg} 의 HEAD 나 refs/cc-review/${RUN_ID}/${sg}-base 를 읽지 못했습니다 — PR 헤드와 베이스를 먼저 fetch 합니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  # The pull request's head as the remote reads it NOW. A head that moved
+  # between the fetch and this act would pin a commit the author has already
+  # replaced, and the posted review would land on a stale diff.
+  remote=$( cd "$wt" && git ls-remote origin "refs/pull/${pr}/head" 2>/dev/null | awk 'NR == 1 { print $1 }' ) || remote=""
+  if [ -z "$remote" ]; then
+    warn "PR #${pr} 의 현재 헤드를 원격에서 읽지 못했습니다 — git ls-remote origin refs/pull/${pr}/head 가 비었습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$remote" != "$head" ]; then
+    warn "PR #${pr} 의 현재 헤드 ${remote} 가 워크트리 HEAD ${head} 와 다릅니다 — fetch 부터 한 번 다시 합니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  GATE_RP_HEAD="$head"
+  return 0
+}
+
 gate_segment_anchor_worktree() {
   # gate_segment_anchor_worktree <segment> <alias> — the `워크트리` of the
   # segment's FIRST NON-TERMINAL row THAT DOES NOT NAME THE TARGET'S MAIN
@@ -12230,6 +12414,40 @@ gate_plan_implement_step() {
     || true
 }
 
+gate_undeclared_segments() {
+  # gate_undeclared_segments — the segments of a run with no declaration, one
+  # `<id><TAB><alias>` line each, in plan order. With no `세그먼트 입양` row it
+  # is the plan's first implementation step on the home target, as before.
+  # With one or more rows it is every implementation step a row names, each on
+  # the target whose common git directory the row's worktree shares, and the
+  # implementation steps no row names on the home target — `check_manifest`
+  # admits at most one of those. A row whose worktree is gone, or belongs to no
+  # declared target, keeps the home target; `gate_adoption_check` refuses it
+  # when the segment is planned.
+  local ids id row wt cg a al home
+  home=$(home_alias 2>/dev/null || true)
+  if [ -z "$(manifest_adoption_rows)" ]; then
+    id=$(gate_plan_implement_step)
+    [ -z "$id" ] || printf '%s\t%s\n' "$id" "$home"
+    return 0
+  fi
+  ids=$(manifest_plan_json 2>/dev/null \
+    | jq -r '.steps[]? | select(type == "object" and .skill == "implement") | .id // empty | select(. != "")' 2>/dev/null || true)
+  for id in $ids; do
+    al="$home"
+    if row=$(gate_adoption_row "$id"); then
+      wt=$(manifest_row_fields "$row" '워크트리')
+      cg=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+      if [ -n "$cg" ]; then
+        for a in $(target_aliases); do
+          if [ "$(target_field "$a" '공통 git 디렉터리')" = "$cg" ]; then al="$a"; break; fi
+        done
+      fi
+    fi
+    printf '%s\t%s\n' "$id" "$al"
+  done
+}
+
 gate_decl_worktree() {
   # gate_decl_worktree <alias> <segment id> — the worktree path the driver's
   # `wt_path` gives the same segment, derived from the alias rather than from
@@ -13020,15 +13238,19 @@ gate_snapshot_slicing_json() {
   # write it: the branch, and per segment its id, branch name and worktree path
   # in declaration order. Read-only — the snapshot is a read verb, so the values
   # are written by `act --kind segment --from-declaration`, never from here.
-  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo="" lrow=""
+  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo="" lrow="" undecl=""
   br=$(gate_slicing_branch)
   case "$br" in
-    미통치) ids=$(gate_plan_implement_step) ;;
+    미통치) undecl=$(gate_undeclared_segments); ids=$(printf '%s\n' "$undecl" | cut -f1) ;;
     *)      ids=$(slice_ids "$DOC" 2>/dev/null || true) ;;
   esac
   printf '{"분기": "%s", "세그먼트": [' "$(gate_json_escape "$br")"
   for id in $ids; do
-    if [ "$br" = "미통치" ]; then al=$(home_alias 2>/dev/null || true); else al=$(gate_slice_alias "$id") || al=""; fi
+    if [ "$br" = "미통치" ]; then
+      al=$(printf '%s\n' "$undecl" | awk -F'\t' -v id="$id" '$1 == id { print $2; exit }')
+    else
+      al=$(gate_slice_alias "$id") || al=""
+    fi
     wt=""; bn="seg/$RUN_ID-$id"; adx=""
     [ -z "$al" ] || wt=$(gate_decl_worktree "$al" "$id") || wt=""
     # AN ADOPTED SEGMENT NAMES THE EARLIER RUN'S BRANCH AND WORKTREE, and says
@@ -14273,12 +14495,22 @@ gate_from_declaration() {
       GATE_DECL_FIELDS+=( "강제 표면=$(gate_surface_stamp ${sdf[@]+"${sdf[@]}"})" )
       ;;
     *)
-      step=$(gate_plan_implement_step)
-      if [ -z "$step" ] || [ "$seg" != "$step" ]; then
-        warn "슬라이싱 선언이 없는 런의 세그먼트는 하나이고 그 id 는 계획의 구현 단계 id(${step:-없음}) 입니다 — 받은 값: $seg"
+      # The segments `gate_undeclared_segments` lists, each on its own target:
+      # the first implementation step on the home target when the manifest
+      # carries no adoption row, and every adopted step on its worktree's
+      # target (plus at most one unadopted step on the home target) when it does.
+      local undecl
+      undecl=$(gate_undeclared_segments)
+      step=$(printf '%s\n' "$undecl" | cut -f1 | tr '\n' ' ' | sed 's/ *$//')
+      al=$(printf '%s\n' "$undecl" | awk -F'\t' -v id="$seg" '$1 == id { print $2; found = 1; exit } END { if (!found) exit 1 }') || al=""
+      if [ -z "$step" ] || [ -z "$al" ]; then
+        if [ -z "$(manifest_adoption_rows)" ]; then
+          warn "슬라이싱 선언이 없는 런의 세그먼트는 하나이고 그 id 는 계획의 구현 단계 id(${step:-없음}) 입니다 — 받은 값: $seg"
+        else
+          warn "슬라이싱 선언이 없는 입양 런의 세그먼트는 입양 행이 이름한 구현 단계와 입양 행 없는 구현 단계(많아야 하나)입니다 — 계획할 수 있는 id: ${step:-없음}, 받은 값: $seg"
+        fi
         return "$GATE_EXIT_VOCAB"
       fi
-      al=$(home_alias)
       GATE_DECL_FIELDS=( "상태=계획됨" "선행=없음" )
       k=""
       ;;
@@ -15125,6 +15357,15 @@ gate_review_report_shape() {
   #   앵커 없음=<n>         items whose first backtick token is not `파일:라인`
   #   태그 밖=<n>           items whose category is not in the template's list
   #   재현 근거=<n>         P0 items flagged `재현 없음` or `재현 형식`
+  #   게시 항목=<n>|없음    `### G<n>` items of the `## 게시 항목` section a
+  #                         reviewer run's review writes, or `없음` without it.
+  #                         Each item is seven `- **<키>**: <값>` lines in the
+  #                         order 등급 제목 파일 줄 면 근거 제안 — 등급 P0|P1,
+  #                         줄 a positive integer or 없음 (없음 with 파일 없음),
+  #                         면 RIGHT|LEFT, 근거 and 제안 ending in `-습니다`,
+  #                         no value empty or carrying `**` — and with a 정규
+  #                         summary their number and grades equal its P0 and
+  #                         P1. Every mismatch is a `게시 항목` problem.
   #   문제=<line>: <kind>: <text>
   #                         one per problem `report-check` names, in line order
   #
@@ -15281,16 +15522,56 @@ gate_review_report_shape() {
       }
       return ""
     }
+    function pflush(   i, want, okv) {
+      if (!ing) return
+      ing = 0
+      split("등급 제목 파일 줄 면 근거 제안", want, " ")
+      if (nf != 7) { prob(gstart, "게시 항목", "G" ng " 의 필드 줄이 일곱이 아니다 (" nf "줄)"); return }
+      for (i = 1; i <= 7; i++)
+        if (FK[i] != want[i]) { prob(gstart, "게시 항목", "G" ng " 의 " i "번째 필드가 " want[i] " 가 아니다: " FK[i]); return }
+      for (i = 1; i <= 7; i++)
+        if (FV[i] == "" || index(FV[i], "**") > 0) { prob(gstart, "게시 항목", "G" ng " 의 " FK[i] " 값이 비었거나 ** 를 담았다"); return }
+      if (FV[1] == "P0") g0++
+      else if (FV[1] == "P1") g1++
+      else { prob(gstart, "게시 항목", "G" ng " 의 등급이 P0·P1 이 아니다: " FV[1]); return }
+      if (FV[4] != "없음" && FV[4] !~ /^[1-9][0-9]*$/) { prob(gstart, "게시 항목", "G" ng " 의 줄이 양의 정수나 없음 이 아니다: " FV[4]); return }
+      if (FV[4] != "없음" && FV[3] == "없음") { prob(gstart, "게시 항목", "G" ng " 는 파일 없이 줄을 적었다"); return }
+      if (FV[5] != "RIGHT" && FV[5] != "LEFT") { prob(gstart, "게시 항목", "G" ng " 의 면이 RIGHT·LEFT 가 아니다: " FV[5]); return }
+      for (i = 6; i <= 7; i++) {
+        okv = FV[i]; sub(/[.]$/, "", okv)
+        if (okv !~ /니다$/) { prob(gstart, "게시 항목", "G" ng " 의 " FK[i] " 이 「-습니다」 체로 끝나지 않는다"); return }
+      }
+    }
     { line = $0; sub(/[ \t\r]+$/, "", line) }
     sl == 0 && index(line, "- **발견 요약") == 1 { sl = NR }
     index(line, "## ") == 1 {
       flush()
+      pflush()
       if (index(line, "## " R " P0") == 1) sec = "p0"
       else if (index(line, "## " O " P1") == 1) sec = "p1"
+      else if (line == "## 게시 항목") { sec = "post"; hasp = 1 }
       else sec = ""
       next
     }
     sec == "" { next }
+    sec == "post" {
+      if (index(line, "### ") == 1) {
+        pflush()
+        ng++; gstart = NR; nf = 0; ing = 1
+        if (line != "### G" ng) prob(NR, "게시 항목", "항목 머리가 ### G" ng " 가 아니다: " line)
+        next
+      }
+      if (line == "") next
+      if (!ing) { prob(NR, "게시 항목", "### G<n> 머리 밖의 줄: " line); next }
+      if (line ~ /^- \*\*[^*]+\*\*: /) {
+        nf++
+        FK[nf] = substr(line, 5); sub(/\*\*: .*$/, "", FK[nf])
+        FV[nf] = line; sub(/^- \*\*[^*]+\*\*: /, "", FV[nf])
+      } else {
+        nf = 99
+      }
+      next
+    }
     inp0 && index(line, "- **[") != 1 { bl[++bn] = line }
     index(line, "### ") == 1 { nh++; prob(NR, "비불릿", line); next }
     index(line, "- **[") == 1 {
@@ -15304,6 +15585,12 @@ gate_review_report_shape() {
     }
     END {
       flush()
+      pflush()
+      if (hasp && summ == "정규") {
+        if (ng != sp0 + sp1) prob(sl, "게시 항목", "P0+P1 요약 " (sp0 + sp1) "건, 게시 항목 " ng "개")
+        else if (g0 != sp0 + 0 || g1 != sp1 + 0) prob(sl, "게시 항목", "게시 항목의 등급 수 P0 " g0 "·P1 " g1 " 가 요약 P0 " sp0 "·P1 " sp1 " 과 다르다")
+      }
+      print "게시 항목=" (hasp ? ng : "없음")
       if (summ == "없음")
         prob(sl, "요약 없음", (sl ? "정규 발견 요약 줄의 모양이 아니다" : "발견 요약 줄이 없다"))
       if (summ == "정규") {
@@ -16120,7 +16407,14 @@ gate_snapshot() {
   # THE DECLARED SEGMENT PLAN, beside the graph for the same reason: the shift
   # that plans segments has no other input, and the values it would otherwise
   # copy out of the document are what the copy used to drop.
-  printf '  "슬라이싱": %s,\n' "$(gate_snapshot_slicing_json)"
+  # A REVIEWER RUN DECLARES NO SLICES: its segments are the `리뷰 PR` rows, one
+  # review-only segment per pull request, and the shift plans them from this
+  # array instead.
+  if gate_reviewer_run; then
+    printf '  "리뷰 세그먼트": %s,\n' "$(gate_snapshot_review_segments_json)"
+  else
+    printf '  "슬라이싱": %s,\n' "$(gate_snapshot_slicing_json)"
+  fi
   # THE DOCUMENT ARGUMENT a dispatch puts first, announced and not written: the
   # snapshot is a read, so the brief of a run without a design document is made
   # by the dispatch arm that first needs it (`gate_dispatch_doc_arg`).
@@ -19798,6 +20092,15 @@ gate_main() {
   # A plain global, reset here, so a value the caller's environment carries
   # never reaches the arm that reads it — only the argv flag below sets it.
   GATE_FROM_DECLARATION=""
+  # The review-only planning marker of a reviewer run, the same way: only the
+  # argv flag sets it, and only `act --kind segment` takes it.
+  GATE_REVIEW_PR=""
+  # The termination clause a settlement post answers, the same way: only the
+  # argv flag sets it, and only `act --kind review-post` takes it.
+  GATE_REVIEW_CLAUSE=""
+  # The post act's verdict and the values its precondition read, cleared here
+  # so an inherited one never reaches the performer.
+  unset GATE_RVP_VERDICT GATE_RVP_PRE
   # The recovery marker of a review re-dispatch, the same way: only the argv
   # flag sets it, and only `act --kind skill` of a review takes it.
   GATE_RECOVERY=""
@@ -19893,7 +20196,9 @@ gate_main() {
       --rerun-answer)    GATE_APPLY_RERUN_ANSWER="$2"; shift 2 ;;
       --answer)          GATE_SETTLE_ANSWER="$2"; shift 2 ;;
       --from-declaration) GATE_FROM_DECLARATION=1; shift ;;
-      --recovery)        GATE_RECOVERY="$2"; shift 2 ;;
+      --review-pr)       GATE_REVIEW_PR=1; shift ;;
+      --clause)          GATE_REVIEW_CLAUSE="$2"; shift 2 ;;
+      --recovery)      GATE_RECOVERY="$2"; shift 2 ;;
       --trigger)         GATE_TRIGGER="$2"; GATE_TRIGGER_SEEN=1; shift 2 ;;
       --trigger-reason)  GATE_TRIGGER_REASON="$2"; GATE_TRIGGER_SEEN=1; shift 2 ;;
       --report)          report_arg="$2"; report_seen=1; shift 2 ;;
@@ -19940,6 +20245,33 @@ gate_main() {
     case "$verb:$kind" in
       act:segment|plan:segment) ;;
       *) printf 'gate: --from-declaration is used only with act/plan --kind segment (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
+         exit 2 ;;
+    esac
+  fi
+  # `--review-pr` plans a reviewer run's review-only segment; on any other kind
+  # or verb it would be a flag the caller believes is working.
+  if [ "$GATE_REVIEW_PR" = "1" ]; then
+    if [ "$verb:$kind" != "act:segment" ]; then
+      printf 'gate: --review-pr is used only with act --kind segment (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
+      exit 2
+    fi
+    if [ "$GATE_FROM_DECLARATION" = "1" ]; then
+      printf 'gate: --review-pr and --from-declaration together — a review-only segment is planned from its 리뷰 PR row, not from a declaration\n' >&2
+      exit 2
+    fi
+  fi
+  # `--clause` names the termination clause a settlement post answers; on any
+  # other kind or verb it would be a flag the caller believes is working.
+  if [ -n "$GATE_REVIEW_CLAUSE" ] && [ "$verb:$kind" != "act:review-post" ] && [ "$verb:$kind" != "plan:review-post" ]; then
+    printf 'gate: --clause is used only with act --kind review-post (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
+    exit 2
+  fi
+  # `review-post` names an act the gate performs and a forecast of it, the way
+  # `label-ack` does.
+  if [ "$kind" = "review-post" ]; then
+    case "$verb" in
+      act|plan) ;;
+      *) printf 'gate: --kind review-post is used only with act/plan (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -24102,9 +24434,12 @@ gate_shift_halt_site_table() {
   #
   # `추천=없음` IS FIXED FOR THE IRREVERSIBLE SITES. A push the remote disagrees
   # with, a reach the gate refused, a base that could not be resolved and a
-  # target repository's own hook refusing an act, and a base branch broken in a
-  # way no repair run on this host could be started for, each hang on the state of
-  # something outside this run, which no record of the run settles. Whatever the shift passes as a recommendation there is dropped
+  # target repository's own hook refusing an act, a base branch broken in a
+  # way no repair run on this host could be started for, and the three review
+  # post sites — a posted review that does not match its render, a post GitHub
+  # or the account refused, a pending review of the account in the way — each
+  # hang on the state of something outside this run, which no record of the
+  # run settles. Whatever the shift passes as a recommendation there is dropped
   # and the record reads `(없음)`.
   #
   # Run-scope stops are not here: the enforcement surface moving (exit 7), a
@@ -24133,6 +24468,9 @@ push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남�
 들여온 적용 정산|없음|이전 런이 머지한 이 세그먼트의 적용을 게이트가 이전 런 원장을 증거로 재었으나 적용됨이 아니었거나, 그 증거가 서지 않았다. 대상 환경에 들어갔는지는 그 환경을 본 사람만 안다|사람이 대상 상태를 확인하거나 조치한 뒤, 다음 교대가 정산 프로브를 다시 잰다|사람 확인 정산:사람이 대상에서 이전 런의 적용 결과를 확인했으므로 다음 교대가 이 세그먼트를 완료로 정산한다
 종료 절 근거|없음|그 절이 요구하는 실행과 그 결과는 이 런의 읽기로 만들 수 없고, 실행할지는 사람이 정한다|-
 master 수리 불가|없음|수리 런을 띄울 수 없게 한 원인(끄는 스위치·렌더·적재)을 고칠지, 사람이 직접 고칠지는 사람만 정한다|사람이 원인을 고치거나 고침을 master 에 넣은 뒤, 다음 교대가 이 세그먼트의 CI 를 다시 대조한다
+게시 대조|없음|게시물이 렌더 결과와 바이트로 다르다 — 남의 PR 에 이미 올라간 리뷰를 그대로 둘지 손으로 고칠지는 그 리뷰를 본 사람만 정한다|다음 교대가 게시하지 않고 그 리뷰를 다시 읽어 렌더 결과와 다시 대조한다
+리뷰 게시 거절|없음|GitHub 가 게시를 거절했거나 실행 계정이 동결한 계정과 다르다 — 원인이 권한·계정·PR 상태 중 어디에 있는지는 원격을 본 사람만 안다|사람이 원인을 고친 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
+보류 리뷰 선점|없음|이 계정의 보류 리뷰가 이미 있다 — 그 보류 리뷰를 제출할지 지울지는 그것을 쓴 사람만 정한다|사람이 그 보류 리뷰를 제출하거나 지운 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
 EOF
 }
 
@@ -24211,6 +24549,12 @@ push원격불일치|세그먼트 park|이 세그먼트의 변경이 원격에 �
 종료 절 근거|불가능으로 정산|이 절이 불가능으로 정산되어 런이 무효화로 끝나고, 그 절이 요구한 결과는 이 런에서 얻지 못합니다
 master 수리 불가|재시도|사람이 원인을 고치기 전에 고르면 CI 대조가 같은 결과를 내어 이 자리에 다시 섭니다
 master 수리 불가|세그먼트 park|이 세그먼트가 깨진 베이스 위에서 머지되지 않은 채 이번 런에서 빠지고, 이 세그먼트에 기대는 세그먼트도 함께 빠집니다
+게시 대조|재시도|올라간 리뷰를 사람이 손대지 않았으면 다시 읽어도 같은 바이트라 같은 불일치로 이 자리에 다시 섭니다
+게시 대조|세그먼트 park|렌더와 다른 리뷰가 PR 에 올라간 채 남고, 원장에는 대조 불일치로만 기록됩니다
+리뷰 게시 거절|재시도|사람이 원인을 고치기 전에 고르면 같은 거절에 다시 닿아 이 자리에 다시 섭니다
+리뷰 게시 거절|세그먼트 park|이 PR 의 리뷰가 이번 런에서 게시되지 않은 채 빠지고, 리뷰 리포트는 런 기록에만 남습니다
+보류 리뷰 선점|재시도|사람이 보류 리뷰를 제출하거나 지우기 전에 고르면 같은 보류 리뷰를 다시 만나 이 자리에 다시 섭니다
+보류 리뷰 선점|세그먼트 park|이 PR 의 리뷰가 이번 런에서 게시되지 않은 채 빠지고, 이 계정의 보류 리뷰는 그대로 남습니다
 EOF
 }
 
@@ -24956,8 +25300,15 @@ gate_preauth_argv() {
   # PUT` row word for word. The flags ahead of `api` go after it, where gh
   # reads them too. An argv with an `api` word whose place cannot be told gets
   # an `api` word no row names, so only a row of bare `gh` opens it.
+  #
+  # AN ACT WITH NO ARGV GETS AN EMPTY STRING. A plan with no act
+  # (`--kind propose-done`) and an empty-argv act (`base-check`) reach here
+  # with the alias alone; the caller assigns the result, so a failure here
+  # would end the gate under `set -e` instead of leaving the rules nothing to
+  # match.
   local alias="$1"; shift
-  local cmd="${1##*/}" m
+  local cmd="${1:-}" m
+  cmd="${cmd##*/}"
   if [ "$cmd" = git ] && [ -n "$alias" ]; then
     gate_git_subcommand "${@:2}" >/dev/null
     if [ "${#GATE_GIT_GLOBALS[@]}" -gt 0 ] && [ "$GATE_GIT_LOCONLY" = 1 ] \
@@ -25298,6 +25649,15 @@ gate_segment_review_next_table() {
   local seg=$1 row p0 p1 walk n
   row=$(gate_segment_last_cycle_row "$seg")
   [ -n "$row" ] || { printf '리뷰 없음'; return 0; }
+  # A REVIEW-ONLY SEGMENT'S ONE NEXT STEP IS TO POST. Its tree is someone
+  # else's pull request, so no row of this table that fixes, re-authors,
+  # re-converges or merges applies: a finished review with canonical counts
+  # reads `게시`, whatever the counts are.
+  if gate_segment_review_only "$seg"; then
+    p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
+    gate_canon_count "$p0" && gate_canon_count "$p1" || { printf '판정 불가'; return 0; }
+    printf '게시'; return 0
+  fi
   [ -n "$(gate_segment_review_dismissed "$seg")" ] && { printf '머지'; return 0; }
   p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
   gate_canon_count "$p0" && gate_canon_count "$p1" || { printf '판정 불가'; return 0; }
@@ -25368,6 +25728,10 @@ gate_segment_review_next() {
   # its review comes after the merge, so neither overlay has a merge left to
   # stand on.
   local seg=$1 nx
+  if gate_segment_review_only "$seg"; then
+    gate_segment_review_next_table "$seg"
+    return 0
+  fi
   if gate_segment_post_merge "$seg"; then
     gate_post_merge_next "$seg"
     return 0
@@ -26985,6 +27349,14 @@ gate_segment_body_source() {
       *) printf 'PR %s' "$pr"; return 0 ;;
     esac
   fi
+  # A review-only segment names the pull request its `리뷰 PR` row froze; it
+  # has no branch to name.
+  if gate_segment_review_only "$seg"; then
+    adopt=$(gate_review_pr_row "$seg" 2>/dev/null) || return 1
+    pr=$(manifest_row_fields "$adopt" 'PR')
+    case "$pr" in ''|*[!0-9]*) return 1 ;; esac
+    printf 'PR %s' "$pr"; return 0
+  fi
   br=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values '브랜치' \
          | awk 'NF { v = $0 } END { print v }')
   [ -n "$br" ] || return 1
@@ -27199,6 +27571,33 @@ gate_review_line() {
   if [ -z "$rows" ]; then
     warn "segment $seg has no segment row — there is no branch to review"
     return "$GATE_EXIT_RULE"
+  fi
+  # A REVIEW-ONLY SEGMENT HAS NO BRANCH OF ITS OWN. It reads someone else's
+  # pull request in a detached worktree, so the line names the pull request,
+  # the base and head the planning act pinned, the frozen depth, and asks for
+  # the report's postable items. Nothing here writes the author's branch, so
+  # no flag of a fix, a re-check or a resolution review is taken, and a
+  # reviewer plan carries no design document to name.
+  if gate_segment_review_only "$seg"; then
+    if [ "${#extra[@]}" -gt 0 ]; then
+      warn "세그먼트 $seg 는 리뷰 전용 세그먼트입니다 — 작성자 브랜치를 고치는 리뷰(${extra[*]})는 파견하지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    local rprow rpal rpslug rpn rphead rpbase
+    rprow=$(gate_review_pr_row "$seg") || rprow=""
+    rpal=$(manifest_row_fields "$rprow" '대상')
+    rpn=$(manifest_row_fields "$rprow" 'PR')
+    rpslug=$(target_field "$rpal" '원격 슬러그' 2>/dev/null) || rpslug=""
+    rphead=$(gate_segment_kept_field "$seg" '고정 헤드')
+    rpbase=$(gate_segment_kept_field "$seg" '베이스 sha')
+    if [ -z "$rprow" ] || [ -z "$rpslug" ] || [ -z "$rphead" ] || [ -z "$rpbase" ]; then
+      warn "리뷰 전용 세그먼트 $seg 의 PR·원격 슬러그·고정 헤드·베이스 sha 중 하나를 읽지 못했습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    rp=$(gate_review_report_path "$seg")
+    printf '/cc-cmds:review-unattended https://github.com/%s/pull/%s --report-path %s --base-sha %s --pr-head %s --depth %s --post-ready 리뷰어 런 — 작성자 브랜치 읽기 전용\n' \
+      "$rpslug" "$rpn" "$rp" "$rpbase" "$rphead" "$(gate_review_depth)"
+    return 0
   fi
   br=$(printf '%s\n' "$rows" | gate_rows_field_values '브랜치' | awk 'NF { v = $0 } END { print v }')
   if [ -z "$br" ]; then
@@ -33648,6 +34047,59 @@ gate_record_row() {
       # missing worktree instead of the review — the wrong repair at 3am.
       [ -n "$wt" ] || { warn "a segment row needs \`워크트리\`"; return "$GATE_EXIT_VOCAB"; }
 
+      # `종류` AND `고정 헤드` ARE THE GATE'S. They mark a review-only segment
+      # and pin the head its review reads, and only the `--review-pr` planning
+      # act writes them, after reading the pull request's head on the remote. A
+      # caller's value would make a segment review-only — or stop being one —
+      # with nothing checked. Later rows leave them off; `gate_segment_kept_field`
+      # carries them.
+      #
+      # `베이스 sha` IS THE GATE'S ONLY ON A REVIEW-ONLY SEGMENT. The driver
+      # writes it on every segment's merged row and the merge-check rows read it
+      # there, so a refusal on every run turned each driver merge into a refused
+      # gate row and its fallback row carried no `머지 대조`. On a reviewer run's
+      # `리뷰 PR` segment, and on a segment already planned review-only, the
+      # caller's value would move the diff the posted review is rendered from.
+      local rp_f rp_seg=""
+      if gate_segment_review_only "$seg" || { gate_reviewer_run && gate_review_pr_row "$seg" >/dev/null; }; then
+        rp_seg=1
+      fi
+      for rp_f in '종류' '고정 헤드' '베이스 sha'; do
+        [ "$rp_f" != '베이스 sha' ] || [ -n "$rp_seg" ] || continue
+        if [ -n "$(gate_field_of "$rp_f" "$@")" ]; then
+          warn "segment 행의 「${rp_f}」는 게이트가 act --kind segment --review-pr 에서만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      done
+      if [ "${GATE_REVIEW_PR:-}" = "1" ]; then
+        local rp_rc=0
+        gate_review_pr_plan "$alias" "$seg" "$st" "$wt" || rp_rc=$?
+        [ "$rp_rc" = 0 ] || return "$rp_rc"
+        set -- "$@" "종류=리뷰전용" "고정 헤드=$GATE_RP_HEAD" "베이스 sha=$GATE_RP_BASE"
+        [ -n "$(gate_field_of '선행' "$@")" ] || set -- "$@" "선행=없음"
+      elif gate_reviewer_run && gate_review_pr_row "$seg" >/dev/null && ! gate_segment_review_only "$seg"; then
+        # A `park` is the one other first row: a segment whose fetch, worktree
+        # or planning act failed — a pull request closed overnight, a head that
+        # moved twice — has no planning row, and the run's done proposal waits
+        # for every `리뷰 PR` segment to end in `완료` or `park`.
+        if [ "$st" != 'park' ]; then
+          warn "세그먼트 ${seg} 는 이 리뷰어 런의 리뷰 전용 세그먼트입니다 — 첫 행은 act --kind segment --review-pr 로 쓰고, 계획하지 못한 세그먼트는 「상태=park」 로만 닫습니다"
+          return "$GATE_EXIT_RULE"
+        fi
+        [ -n "$(gate_field_of '선행' "$@")" ] || set -- "$@" "선행=없음"
+      fi
+      # A review-only segment is `완료` once its review is posted and read back
+      # as rendered; any other ending is a `park`.
+      if [ "$st" = '완료' ] && gate_segment_review_only "$seg"; then
+        local rp_post rp_cmp=""
+        rp_post=$( { gate_rows '리뷰 게시' || true; } | gate_rows_field_eq '세그먼트' "$seg" | tail -1)
+        [ -z "$rp_post" ] || rp_cmp=$(gate_row_field "$rp_post" '대조')
+        if [ "$rp_cmp" != '일치' ]; then
+          warn "리뷰 전용 세그먼트 ${seg} 의 마지막 「리뷰 게시」 행이 대조=일치 가 아닙니다 (${rp_cmp:-행 없음}) — 「완료」 는 게시와 재판독 대조가 일치한 뒤에만 씁니다"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
+
       # `출처` IS THE GATE'S. It marks a row copied from an earlier run's
       # ledger or from the manifest's `선행 착지` row, and only the
       # declaration-filled planning act writes it, after checking the merge
@@ -35002,7 +35454,9 @@ EOF
         *) warn "this termination clause is not in the manifest: ${cid}"; return "$GATE_EXIT_VOCAB" ;;
       esac
       case "$cst" in
-        충족|불가능) : ;;
+        충족)
+          gate_clause_review_evidence_check "$(gate_field_of '근거' "$@")" || return $? ;;
+        불가능) : ;;
         보류)
           # A CLAUSE HANDED TO THE NEXT RUN, and its disposition is not
           # `불가능`'s. Impossible ends the clause forever; on hold says a
@@ -42182,6 +42636,342 @@ gate_perform_label_ack() {
   return "$GATE_EXIT_PARK"
 }
 
+# ---------------------------------------------------------------------------
+# The review post act — `act --kind review-post --segment <seg> [--clause <id>]
+# -- 게시`.
+#
+# THE RUN'S ONLY WAY TO PUT A REVIEW ON A PULL REQUEST. The exec path refuses
+# every review write (`gate_exec_review_post_form`), so a review reaches
+# GitHub through this act or not at all. Two modes share it:
+#
+#   a review-only segment of a reviewer run — the pull request of its `리뷰 PR`
+#     row, the report of its last `cycle` row rendered with the run's format
+#     file into a body and inline comments, the event the frozen `리뷰 게시`
+#     row decides (`보류` leaves the review pending);
+#   `--clause <id>` — a termination clause's settlement post on an ordinary
+#     segment: the `정산 본문` template alone, on the segment's open pull
+#     request, at the last cycle's `리뷰 HEAD`, as COMMENT unless the clause
+#     names another event.
+#
+# ORDER. The preconditions read only local files (exit 3); the check reads the
+# remote with the write credential — the login, the reviews already there and
+# the pull request's head — and decides between a fresh POST and a re-read of a
+# review an earlier attempt left (exit 3 with a halt site on a refusal); the
+# performer writes `리뷰 게시 시도`, POSTs once, re-reads, compares and writes
+# `리뷰 게시`. There is no retry and no edit, deletion or second POST of a
+# review this act made.
+# ---------------------------------------------------------------------------
+gate_review_post_format_file() {
+  # gate_review_post_format_file — the format file a post renders with: the
+  # `리뷰 문면` row's file when the run froze one, whose sha256 must still be
+  # the row's, else the plugin's default. Prints the path; returns 3 with the
+  # mismatch named.
+  local row f want got
+  row=$(manifest_review_format_rows | sed -n '1p')
+  if [ -z "$row" ]; then
+    printf '%s/review-format.default.md' "$GATE_DIR"
+    return 0
+  fi
+  f=$(gate_report_abs "$(manifest_row_fields "$row" '파일')")
+  want=$(manifest_row_fields "$row" 'sha256')
+  got=$( { shasum -a 256 "$f" 2>/dev/null || true; } | cut -d' ' -f1)
+  if [ -z "$got" ] || [ "$got" != "$want" ]; then
+    warn "리뷰 문면 파일 ${f:-(없음)} 의 sha256 ${got:-(읽지 못함)} 이 매니페스트 「리뷰 문면」 행의 ${want:-(없음)} 과 다릅니다 — 동결한 문면이 아니면 게시하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  printf '%s' "$f"
+}
+
+gate_review_post_preconditions() {
+  # gate_review_post_preconditions <alias> <segment> — the local checks of the
+  # post act. On success sets the GATE_RVP_* values the check and the
+  # performer read, and GATE_RVP_PRE.
+  local al="$1" seg="$2" row pr ral crow rh rep shape sh p0 p1 fmt slug cid crowc br
+  GATE_RVP_MODE=""; GATE_RVP_STANCE=""; GATE_RVP_ACCOUNT=""; GATE_RVP_EVENT=""
+  if [ -z "$GATE_REVIEW_CLAUSE" ]; then
+    if ! gate_segment_review_only "$seg"; then
+      warn "세그먼트 ${seg} 는 리뷰 전용 세그먼트가 아닙니다 — 종료 절 정산 게시는 --clause <절 id> 로 냅니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    row=$(gate_review_pr_row "$seg") || { warn "세그먼트 ${seg} 의 「리뷰 PR」 행이 없습니다"; return "$GATE_EXIT_RULE"; }
+    ral=$(manifest_row_fields "$row" '대상'); pr=$(manifest_row_fields "$row" 'PR')
+    if [ "$ral" != "$al" ]; then
+      warn "세그먼트 ${seg} 의 「리뷰 PR」 행은 대상 ${ral} 이고 이 행위는 대상 ${al} 입니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ "$(gate_segment_field "$seg" '상태')" = "완료" ] || [ "$(gate_segment_field "$seg" '상태')" = "park" ]; then
+      warn "세그먼트 ${seg} 는 이미 $(gate_segment_field "$seg" '상태') 입니다 — 게시는 끝난 세그먼트에 다시 서지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ "$(gate_segment_review_next_table "$seg")" != "게시" ]; then
+      warn "세그먼트 ${seg} 의 다음 값이 「$(gate_segment_review_next_table "$seg")」 입니다 — 게시는 정상 완료한 리뷰 뒤(다음=게시)에만 섭니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    rh=$(gate_segment_kept_field "$seg" '고정 헤드')
+    GATE_RVP_BASE=$(gate_segment_kept_field "$seg" '베이스 sha')
+    GATE_RVP_MODE=$(gate_review_post_field '방식')
+    GATE_RVP_STANCE=$(gate_review_post_field '의사표시')
+    GATE_RVP_ACCOUNT=$(gate_review_post_field '계정')
+    case "$GATE_RVP_MODE:$GATE_RVP_STANCE" in
+      보류:허용|보류:낮춤|직접:허용|직접:낮춤) ;;
+      *) warn "매니페스트 「리뷰 게시」 행의 방식·의사표시(${GATE_RVP_MODE:-없음}·${GATE_RVP_STANCE:-없음})를 읽지 못했습니다"
+         return "$GATE_EXIT_RULE" ;;
+    esac
+    [ -n "$GATE_RVP_ACCOUNT" ] || { warn "매니페스트 「리뷰 게시」 행에 계정이 없습니다"; return "$GATE_EXIT_RULE"; }
+  else
+    cid="$GATE_REVIEW_CLAUSE"
+    case " $(gate_clause_ids | tr '\n' ' ') " in
+      *" $cid "*) ;;
+      *) warn "종료 절 ${cid} 는 이 런의 절이 아닙니다"; return "$GATE_EXIT_RULE" ;;
+    esac
+    if gate_segment_review_only "$seg"; then
+      warn "세그먼트 ${seg} 는 리뷰 전용 세그먼트입니다 — 그 게시는 --clause 없이 냅니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+    br=$(gate_segment_branch "$seg")
+    if [ -z "$slug" ] || [ -z "$br" ]; then
+      warn "정산 게시가 PR 을 정하지 못했습니다 (슬러그 ${slug:-없음}, 브랜치 ${br:-없음})"
+      return "$GATE_EXIT_RULE"
+    fi
+    pr=$(gate_ci_rerun_gh pr list -R "$slug" --head "$br" --state all --json number --jq '.[0].number // empty' 2>/dev/null || true)
+    case "$pr" in ''|*[!0-9]*) warn "브랜치 ${br} 의 PR 을 읽지 못했습니다 — 정산 게시는 PR 하나에 섭니다"; return "$GATE_EXIT_RULE" ;; esac
+    crowc=$(manifest_clause_rows_raw | gate_rows_field_eq 'id' "$cid" | tail -1)
+    case "$crowc" in
+      *REQUEST_CHANGES*) GATE_RVP_EVENT=REQUEST_CHANGES ;;
+      *APPROVE*) GATE_RVP_EVENT=APPROVE ;;
+      *) GATE_RVP_EVENT=COMMENT ;;
+    esac
+    GATE_RVP_MODE='직접'; GATE_RVP_STANCE='-'
+    GATE_RVP_ACCOUNT=$(gate_review_post_field '계정')
+    rh=""
+  fi
+  crow=$(gate_segment_last_cycle_row "$seg")
+  [ -n "$crow" ] || { warn "세그먼트 ${seg} 에 리뷰 cycle 행이 없습니다 — 게시할 리뷰가 없습니다"; return "$GATE_EXIT_RULE"; }
+  [ -n "$rh" ] || rh=$(gate_row_field "$crow" '리뷰 HEAD')
+  if [ -z "$rh" ] || [ "$(gate_row_field "$crow" '리뷰 HEAD')" != "$rh" ]; then
+    warn "세그먼트 ${seg} 의 마지막 cycle 행 리뷰 HEAD($(gate_row_field "$crow" '리뷰 HEAD')) 가 고정 헤드(${rh:-없음}) 와 다릅니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  rep=$(gate_report_abs "$(gate_row_field "$crow" '리포트 경로')")
+  shape=$(gate_review_report_shape "$rep") || { warn "리포트 ${rep:-(없음)} 를 읽지 못했습니다"; return "$GATE_EXIT_RULE"; }
+  sh=$(printf '%s\n' "$shape" | sed -n 's/^리뷰 HEAD=//p' | sed -n '1p')
+  if [ "$sh" != "$rh" ]; then
+    warn "리포트의 리뷰 HEAD(${sh:-없음}) 가 고정 헤드 ${rh} 와 다릅니다: $rep"
+    return "$GATE_EXIT_RULE"
+  fi
+  p0=$(gate_row_field "$crow" 'P0'); p1=$(gate_row_field "$crow" 'P1')
+  gate_canon_count "$p0" && gate_canon_count "$p1" || { warn "마지막 cycle 행의 P0·P1 을 읽지 못했습니다"; return "$GATE_EXIT_RULE"; }
+  if [ -z "$GATE_REVIEW_CLAUSE" ] && [ "$((p0 + p1))" -gt 0 ] \
+     && [ "$(printf '%s\n' "$shape" | sed -n 's/^게시 항목=//p' | sed -n '1p')" = "없음" ]; then
+    warn "리포트에 「## 게시 항목」 절이 없습니다 — 리뷰 전용 세그먼트의 리뷰는 --post-ready 로 냅니다: $rep"
+    return "$GATE_EXIT_RULE"
+  fi
+  fmt=$(gate_review_post_format_file) || return $?
+  slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+  [ -n "$slug" ] || { warn "대상 ${al} 에 원격 슬러그가 없습니다"; return "$GATE_EXIT_RULE"; }
+  # The method goes after the path: `gate_preauth_argv` puts the method gh will
+  # send right after `api`, so a leading `-X POST` would reach the rule twice and
+  # no `gh api -X POST repos/…/reviews` row would match word for word.
+  if [ -z "$GATE_REVIEW_CLAUSE" ] && ! gate_manifest_preauthorizes gh api "repos/$slug/pulls/$pr/reviews" -X POST; then
+    warn "매니페스트에 이 PR 의 게시용 「사전 인가」 행(형태=gh api -X POST repos/${slug}/pulls/${pr}/reviews)이 없습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  GATE_RVP_SLUG="$slug"; GATE_RVP_PR="$pr"; GATE_RVP_HEAD="$rh"; GATE_RVP_REPORT="$rep"
+  GATE_RVP_P0="$p0"; GATE_RVP_P1="$p1"; GATE_RVP_FORMAT="$fmt"
+  GATE_RVP_WT=$(gate_segment_worktree "$seg")
+  GATE_RVP_PRE=1
+  export GATE_RVP_PRE
+}
+
+gate_review_post_filter() {
+  # gate_review_post_filter <segment> — the rows on stdin that are about this
+  # post: the segment's, and of those the rows whose `절` is this settlement's
+  # clause id, or `-` when the post is a review-only segment's own.
+  gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_eq '절' "${GATE_REVIEW_CLAUSE:--}"
+}
+
+gate_review_post_rows() {
+  # gate_review_post_rows <series> <segment> — that series' rows about this post.
+  gate_rows "$1" | gate_review_post_filter "$2"
+}
+
+gate_review_post_kind() {
+  # gate_review_post_kind — the `종류` of the `리뷰 게시` row: the event sent,
+  # or on a `보류` run `제안:<event>`, the one a `직접` run would have sent —
+  # the renderer's own rule, for the re-read path that renders nothing.
+  local ev
+  if [ -n "$GATE_REVIEW_CLAUSE" ]; then printf '%s' "$GATE_RVP_EVENT"; return 0; fi
+  if [ "$GATE_RVP_STANCE" = "낮춤" ]; then ev=COMMENT
+  elif [ "$((GATE_RVP_P0 + GATE_RVP_P1))" -gt 0 ]; then ev=REQUEST_CHANGES
+  else ev=APPROVE; fi
+  if [ "$GATE_RVP_MODE" = "직접" ]; then printf '%s' "$ev"; else printf '제안:%s' "$ev"; fi
+}
+
+gate_check_review_post() {
+  # gate_check_review_post <kind> — the remote reads of the post act: the
+  # login, the pull request's head, the reviews already there. Sets
+  # GATE_RVP_VERDICT to `post` or `verify:<review id>`; refuses with exit 3,
+  # naming the halt site, when the login is not the frozen account or another
+  # pending review of the account is in the way, and when this post already
+  # matched.
+  [ "$1" = "review-post" ] || return 0
+  [ "${GATE_RVP_PRE:-}" = "1" ] || { warn "the post act reached its check without its preconditions"; exit "$GATE_EXIT_RULE"; }
+  local seg="$segment" creds login cur revs last tries lastc rid mine
+  creds=$(cred_gate_env) || { warn "게이트 쓰기 자격을 읽지 못했습니다 — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"; exit "$GATE_EXIT_RULE"; }
+  login=$(gate_label_ack_gh_write "$creds" api user --jq '.login' 2>/dev/null || true)
+  if [ -z "$login" ]; then
+    warn "실행 계정 login 을 읽지 못했습니다 — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
+    exit "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$GATE_RVP_ACCOUNT" ] && [ "$login" != "$GATE_RVP_ACCOUNT" ]; then
+    warn "실행 계정 ${login} 이 매니페스트 「리뷰 게시」 행이 동결한 계정 ${GATE_RVP_ACCOUNT} 와 다릅니다 — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
+    exit "$GATE_EXIT_RULE"
+  fi
+  cur=$(gate_label_ack_gh_write "$creds" api "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR" --jq '.head.sha' 2>/dev/null || true)
+  case "$cur" in
+    [0-9a-f]*) ;;
+    *) warn "PR ${GATE_RVP_PR} 의 현재 헤드를 읽지 못했습니다 — 게시하지 않습니다"; exit "$GATE_EXIT_RULE" ;;
+  esac
+  if ! revs=$(gate_label_ack_gh_write "$creds" api --paginate "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews" 2>/dev/null \
+              | jq -s -c 'add // []' 2>/dev/null) || [ -z "$revs" ]; then
+    warn "PR ${GATE_RVP_PR} 의 리뷰 목록을 읽지 못했습니다 — 게시하지 않습니다"
+    exit "$GATE_EXIT_RULE"
+  fi
+  GATE_RVP_LOGIN="$login"; GATE_RVP_CUR="$cur"; GATE_RVP_CREDS="$creds"
+  last=$(gate_review_post_rows '리뷰 게시' "$seg" | tail -1)
+  local landed=""
+  case "$(gate_row_field "$last" '대조')" in
+    일치)
+      warn "세그먼트 ${seg} 의 리뷰는 이미 게시되어 대조가 일치했습니다 (리뷰 id $(gate_row_field "$last" '리뷰 id')) — 다시 게시하지 않습니다"
+      exit "$GATE_EXIT_RULE" ;;
+    불일치|판독불가)
+      rid=$(gate_row_field "$last" '리뷰 id')
+      case "$rid" in
+        ''|*[!0-9]*) landed=1 ;;
+        *) GATE_RVP_VERDICT="verify:$rid"; return 0 ;;
+      esac ;;
+  esac
+  # An attempt row with no post row after it: the POST may have landed with its
+  # answer lost (no status line, a 5xx) — the performer writes no post row then.
+  # A post row without a review id is a POST GitHub accepted whose id was not
+  # read, so its attempt rows stand before it and are read too. A review of this
+  # account at the pinned head is that POST. Only `게시 실패` — a 4xx, nothing
+  # landed — leaves the attempts before it behind.
+  if [ -n "$last" ] && [ -z "$landed" ]; then
+    tries=$( { gate_ledger_rows_after "$last" | grep -E '^- `리뷰 게시 시도` ' || true; } | gate_review_post_filter "$seg")
+  else
+    tries=$(gate_review_post_rows '리뷰 게시 시도' "$seg")
+  fi
+  if [ -n "$tries" ]; then
+    mine=$(printf '%s' "$revs" | jq -r --arg u "$login" --arg h "$GATE_RVP_HEAD" \
+      '[.[] | select(.user.login == $u and .commit_id == $h)] | last | .id // empty' 2>/dev/null || true)
+    case "$mine" in
+      ''|*[!0-9]*) ;;
+      *) GATE_RVP_VERDICT="verify:$mine"; return 0 ;;
+    esac
+  fi
+  if [ -n "$landed" ]; then
+    warn "세그먼트 ${seg} 의 마지막 게시는 GitHub 가 받았으나 리뷰 id 를 읽지 못했고, 고정 헤드에서 계정 ${login} 의 리뷰를 찾지 못했습니다 — 다시 게시하지 않습니다 (정지 자리 「게시 대조」)"
+    exit "$GATE_EXIT_RULE"
+  fi
+  lastc=$(printf '%s' "$revs" | jq -r --arg u "$login" \
+    '[.[] | select(.user.login == $u and .state == "PENDING")] | length' 2>/dev/null || echo x)
+  if [ "$lastc" != "0" ]; then
+    warn "계정 ${login} 의 보류 리뷰가 PR ${GATE_RVP_PR} 에 이미 있습니다 — 새 리뷰를 게시하지 않습니다 (정지 자리 「보류 리뷰 선점」)"
+    exit "$GATE_EXIT_RULE"
+  fi
+  GATE_RVP_VERDICT=post
+  return 0
+}
+
+gate_perform_review_post() {
+  # gate_perform_review_post <alias> <segment> — render, the attempt row, one
+  # POST, the re-read, the comparison and the `리뷰 게시` row. A POST refused
+  # with a 4xx is recorded as `대조=게시 실패` with its response code and not
+  # retried; a POST whose outcome is unknown writes no post row.
+  local al="$1" seg="$2"
+  case "${GATE_RVP_VERDICT:-}" in
+    post|verify:*) ;;
+    *) warn "the post act reached its performer without a verdict — nothing was posted"; return "$GATE_EXIT_RULE" ;;
+  esac
+  local dir tag req sum kind="" hc rsha raw code body rid rev com verdict creds="$GATE_RVP_CREDS" rc=0
+  dir="$RUN_DIR/review-post"
+  mkdir -p "$dir" || return "$GATE_EXIT_RULE"
+  tag="$seg${GATE_REVIEW_CLAUSE:+-$GATE_REVIEW_CLAUSE}"
+  req="$dir/$tag.json"
+  if [ "$GATE_RVP_CUR" != "$GATE_RVP_HEAD" ]; then hc='예'; else hc='아니오'; fi
+  if [ "$GATE_RVP_VERDICT" = "post" ]; then
+    if [ -n "$GATE_REVIEW_CLAUSE" ]; then
+      sum=$("$GATE_DIR/review-post.sh" render --settle --format "$GATE_RVP_FORMAT" --report "$GATE_RVP_REPORT" \
+              --head "$GATE_RVP_HEAD" --p0 "$GATE_RVP_P0" --p1 "$GATE_RVP_P1" --event "$GATE_RVP_EVENT" --out "$req") || rc=$?
+    else
+      sum=$("$GATE_DIR/review-post.sh" render --format "$GATE_RVP_FORMAT" --report "$GATE_RVP_REPORT" \
+              --worktree "$GATE_RVP_WT" --base "$GATE_RVP_BASE" --head "$GATE_RVP_HEAD" \
+              --mode "$GATE_RVP_MODE" --stance "$GATE_RVP_STANCE" --p0 "$GATE_RVP_P0" --p1 "$GATE_RVP_P1" \
+              --current-head "$GATE_RVP_CUR" --out "$req") || rc=$?
+    fi
+    if [ "$rc" != "0" ]; then
+      warn "리뷰 렌더가 실패했습니다 (rc=$rc) — 게시하지 않았습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    kind=$(printf '%s' "$sum" | sed -n 's/^종류=\([^ ]*\).*$/\1/p')
+    rsha=$(shasum -a 256 "$req" | cut -d' ' -f1)
+    gate_append '리뷰 게시 시도' "세그먼트=$seg" "PR=$GATE_RVP_PR" "렌더 sha256=$rsha" "절=${GATE_REVIEW_CLAUSE:--}" || return $?
+    raw=$(gate_label_ack_gh_write "$creds" api -X POST -i "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews" --input "$req" 2>/dev/null || true)
+    code=$(printf '%s\n' "$raw" | awk 'NR == 1 && /^HTTP\// { print $2; exit }')
+    [ -n "$code" ] || code=000
+    body=$(printf '%s\n' "$raw" | awk 'b { print; next } /^\r?$/ { b = 1 }')
+    rid=$(printf '%s' "$body" | jq -r '.id // empty' 2>/dev/null || true)
+    # Only a 4xx is a refusal: nothing landed, and the row says so. With no
+    # status line or a 5xx the review may exist all the same, so no post row is
+    # written — the attempt row stays the last record, and the next call looks
+    # for this account's review at the pinned head before it posts again.
+    case "$code" in
+      2??) ;;
+      4??)
+        gate_append '리뷰 게시' "세그먼트=$seg" "PR=$GATE_RVP_PR" "리뷰 id=-" "방식=$GATE_RVP_MODE" "종류=${kind:--}" \
+          "헤드 변경=$hc" "대조=게시 실패" "응답=$(gate_row_safe "$code" 40)" "렌더 sha256=$rsha" "절=${GATE_REVIEW_CLAUSE:--}" || return $?
+        warn "GitHub 가 리뷰 게시를 거절했습니다 (응답=$code) — 다시 시도하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
+        return "$GATE_EXIT_RULE" ;;
+      *)
+        warn "리뷰 게시의 결과를 알 수 없습니다 (응답=$code) — 게시 행을 쓰지 않았고, 다시 부르면 고정 헤드에서 이 계정의 리뷰를 먼저 찾습니다 (정지 자리 「리뷰 게시 거절」)"
+        return "$GATE_EXIT_RULE" ;;
+    esac
+  else
+    rid=${GATE_RVP_VERDICT#verify:}
+    rsha=$(gate_review_post_rows '리뷰 게시 시도' "$seg" | tail -1)
+    rsha=$(gate_row_field "$rsha" '렌더 sha256')
+    if [ ! -f "$req" ] || [ "$(shasum -a 256 "$req" | cut -d' ' -f1)" != "$rsha" ]; then
+      req=""
+    fi
+    kind=$(gate_review_post_kind)
+  fi
+  verdict='판독불가'
+  case "$rid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ -n "$req" ] \
+         && rev=$(gate_label_ack_gh_write "$creds" api "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews/$rid" 2>/dev/null) \
+         && com=$(gate_label_ack_gh_write "$creds" api --paginate "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews/$rid/comments" 2>/dev/null \
+                  | jq -s -c 'add // []' 2>/dev/null); then
+        printf '%s' "$rev" > "$dir/$tag.review.json"
+        printf '%s' "$com" > "$dir/$tag.comments.json"
+        verdict=$("$GATE_DIR/review-post.sh" verify --request "$req" --review "$dir/$tag.review.json" \
+                    --comments "$dir/$tag.comments.json" 2>/dev/null || echo '판독불가')
+      fi ;;
+  esac
+  case "$verdict" in 일치|불일치|판독불가) ;; *) verdict='판독불가' ;; esac
+  gate_append '리뷰 게시' "세그먼트=$seg" "PR=$GATE_RVP_PR" "리뷰 id=${rid:--}" "방식=$GATE_RVP_MODE" "종류=${kind:--}" \
+    "헤드 변경=$hc" "대조=$verdict" "렌더 sha256=${rsha:--}" "절=${GATE_REVIEW_CLAUSE:--}" || return $?
+  if [ "$verdict" != "일치" ]; then
+    warn "게시한 리뷰 ${rid:-(id 없음)} 가 렌더 결과와 바이트로 같지 않습니다 (대조=$verdict) — 고치거나 지우지 않습니다 (정지 자리 「게시 대조」)"
+    return "$GATE_EXIT_RULE"
+  fi
+  log "$seg: 리뷰 게시 — PR $GATE_RVP_PR, 리뷰 $rid, 종류 $kind, 대조 일치"
+  return 0
+}
+
 gate_kind_is_bookkeeping() {
   # gate_kind_is_bookkeeping <kind> — the row kinds an `act` performs by
   # APPENDING A ROW and doing nothing else. Every one of them grades `읽기`.
@@ -42595,6 +43385,10 @@ gate_segment_branch() {
   # gate_segment_branch <segment> — the branch the segment row names, else the
   # branch its worktree is on; empty when neither answers.
   local seg="$1" br wt
+  # A review-only segment has no branch of its own: its detached worktree
+  # holds someone else's pull request head, and the remote reads, merge checks
+  # and pushes keyed on a branch do not apply to it.
+  if gate_segment_review_only "$seg"; then return 0; fi
   # The last value any of the segment's rows carried — a later state row does
   # not repeat it — read the way `gate_review_line` reads it.
   br=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values '브랜치' \
@@ -43181,6 +43975,168 @@ gate_admit_issue() {
     "$GATE_ADMIT_TID" "$GATE_ADMIT_TTL" "$GATE_ADMIT_BYTES"
 }
 
+gate_rv_unwrap() {
+  # gate_rv_unwrap <argv…> — GATE_RV_ARGV set to the argv with the prefix
+  # runners an exec may stand behind (`env` with its assignments and options,
+  # `command`, `nice`, `nohup`, `time`, `xargs`, `sudo` with their options)
+  # taken off, so the two review refusals read the program the act runs.
+  GATE_RV_ARGV=("$@")
+  local b
+  while [ "${#GATE_RV_ARGV[@]}" -gt 0 ]; do
+    b=${GATE_RV_ARGV[0]##*/}
+    case "$b" in
+      env)
+        GATE_RV_ARGV=("${GATE_RV_ARGV[@]:1}")
+        while [ "${#GATE_RV_ARGV[@]}" -gt 0 ]; do
+          case "${GATE_RV_ARGV[0]}" in -*|*=*) GATE_RV_ARGV=("${GATE_RV_ARGV[@]:1}") ;; *) break ;; esac
+        done ;;
+      command|nice|nohup|time|xargs|sudo)
+        GATE_RV_ARGV=("${GATE_RV_ARGV[@]:1}")
+        while [ "${#GATE_RV_ARGV[@]}" -gt 0 ]; do
+          case "${GATE_RV_ARGV[0]}" in -*) GATE_RV_ARGV=("${GATE_RV_ARGV[@]:1}") ;; *) break ;; esac
+        done ;;
+      *) return 0 ;;
+    esac
+  done
+}
+
+gate_rv_gh_api_parse() {
+  # gate_rv_gh_api_parse <args after `gh api`…> — GATE_RV_EP the endpoint with
+  # the host, a leading `/` and the query string taken off; GATE_RV_METHOD the
+  # method in upper case (`GET` unless `-X` names one or a body field or input
+  # is given, which gh sends as `POST`); GATE_RV_VALS every field value; and
+  # GATE_RV_INP the `--input` path.
+  local w n i=0 body=0
+  local -a a=("$@")
+  n=${#a[@]}
+  GATE_RV_EP=""; GATE_RV_METHOD=""; GATE_RV_VALS=""; GATE_RV_INP=""
+  while [ "$i" -lt "$n" ]; do
+    w=${a[$i]}
+    case "$w" in
+      -X|--method) GATE_RV_METHOD=${a[$((i + 1))]:-}; i=$((i + 2)); continue ;;
+      --method=*) GATE_RV_METHOD=${w#--method=} ;;
+      -X?*) GATE_RV_METHOD=${w#-X} ;;
+      -f|-F|--field|--raw-field) body=1; GATE_RV_VALS="$GATE_RV_VALS ${a[$((i + 1))]:-}"; i=$((i + 2)); continue ;;
+      --field=*|--raw-field=*) body=1; GATE_RV_VALS="$GATE_RV_VALS ${w#*=}" ;;
+      -f?*|-F?*) body=1; GATE_RV_VALS="$GATE_RV_VALS ${w#-?}" ;;
+      --input) body=1; GATE_RV_INP=${a[$((i + 1))]:-}; i=$((i + 2)); continue ;;
+      --input=*) body=1; GATE_RV_INP=${w#--input=} ;;
+      -H|--header|-q|--jq|-t|--template|--hostname|--cache|-p|--preview) i=$((i + 2)); continue ;;
+      -*) : ;;
+      *) [ -n "$GATE_RV_EP" ] || GATE_RV_EP=$w ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ -z "$GATE_RV_METHOD" ]; then
+    if [ "$body" = 1 ]; then GATE_RV_METHOD=POST; else GATE_RV_METHOD=GET; fi
+  fi
+  GATE_RV_METHOD=$(printf '%s' "$GATE_RV_METHOD" | tr '[:lower:]' '[:upper:]')
+  GATE_RV_EP=${GATE_RV_EP#https://api.github.com/}
+  GATE_RV_EP=${GATE_RV_EP#/}
+  GATE_RV_EP=${GATE_RV_EP%%\?*}
+}
+
+gate_exec_review_post_form() {
+  # gate_exec_review_post_form <argv…> — prints what makes the argv a direct
+  # pull request review post, or nothing. A review is posted only by
+  # `act --kind review-post`, which renders it from the report, posts it once
+  # and reads it back; a direct post skips all three. Covered: `gh pr review`,
+  # a non-GET REST call on a pull request's reviews or review comments (and
+  # the paths under them), and a GraphQL call naming a review mutation in a
+  # field value or in an `--input` file this process can read.
+  gate_rv_unwrap "$@"
+  [ "${#GATE_RV_ARGV[@]}" -ge 2 ] || return 0
+  [ "${GATE_RV_ARGV[0]##*/}" = gh ] || return 0
+  case "${GATE_RV_ARGV[1]}" in
+    pr) [ "${GATE_RV_ARGV[2]:-}" != review ] || printf 'gh pr review'
+        return 0 ;;
+    api) ;;
+    *) return 0 ;;
+  esac
+  gate_rv_gh_api_parse "${GATE_RV_ARGV[@]:2}"
+  local q m
+  case "$GATE_RV_EP" in
+    graphql)
+      q=$GATE_RV_VALS
+      if [ -n "$GATE_RV_INP" ] && [ "$GATE_RV_INP" != - ] && [ -f "$GATE_RV_INP" ]; then
+        q="$q $(cat "$GATE_RV_INP" 2>/dev/null || true)"
+      fi
+      for m in addPullRequestReview submitPullRequestReview updatePullRequestReview deletePullRequestReview dismissPullRequestReview; do
+        case "$q" in *"$m"*) printf 'gh api graphql 의 %s' "$m"; return 0 ;; esac
+      done ;;
+    repos/*/pulls/*/reviews|repos/*/pulls/*/reviews/*|repos/*/pulls/*/comments|repos/*/pulls/*/comments/*|repos/*/pulls/comments/*)
+      [ "$GATE_RV_METHOD" = GET ] || printf 'gh api -X %s %s' "$GATE_RV_METHOD" "$GATE_RV_EP" ;;
+  esac
+  return 0
+}
+
+gate_exec_author_write_form() {
+  # gate_exec_author_write_form <argv…> — prints what makes the argv a write
+  # of a pull request author's branch or of the pull request itself, or
+  # nothing: a git commit, push, merge, rebase, cherry-pick, am, revert or
+  # pull; `gh pr merge|create|edit|close|ready`; a non-GET REST call on a pull
+  # request's merge endpoint.
+  gate_rv_unwrap "$@"
+  [ "${#GATE_RV_ARGV[@]}" -ge 2 ] || return 0
+  local i=1 n=${#GATE_RV_ARGV[@]} w
+  case "${GATE_RV_ARGV[0]##*/}" in
+    git)
+      while [ "$i" -lt "$n" ]; do
+        w=${GATE_RV_ARGV[$i]}
+        case "$w" in
+          -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env) i=$((i + 2)); continue ;;
+          -*) i=$((i + 1)); continue ;;
+        esac
+        break
+      done
+      case "${GATE_RV_ARGV[$i]:-}" in
+        commit|push|merge|rebase|cherry-pick|am|revert|pull) printf 'git %s' "${GATE_RV_ARGV[$i]}" ;;
+      esac ;;
+    gh)
+      case "${GATE_RV_ARGV[1]}:${GATE_RV_ARGV[2]:-}" in
+        pr:merge|pr:create|pr:edit|pr:close|pr:ready) printf 'gh pr %s' "${GATE_RV_ARGV[2]}" ;;
+        api:*)
+          gate_rv_gh_api_parse "${GATE_RV_ARGV[@]:2}"
+          case "$GATE_RV_EP" in
+            repos/*/pulls/*/merge|repos/*/pulls/*/merge-async|repos/*/pulls/*/update-branch)
+              [ "$GATE_RV_METHOD" = GET ] || printf 'gh api -X %s %s' "$GATE_RV_METHOD" "$GATE_RV_EP" ;;
+            graphql)
+              case "$GATE_RV_VALS" in
+                *mergePullRequest*|*enablePullRequestAutoMerge*|*enqueuePullRequest*|*updatePullRequestBranch*)
+                  printf 'gh api graphql 의 머지 변형' ;;
+              esac ;;
+          esac ;;
+      esac ;;
+  esac
+  return 0
+}
+
+gate_review_only_seg_of_act() {
+  # gate_review_only_seg_of_act <segment> — prints the review-only segment an
+  # exec acts on: the `--segment` it names when that is one, else, on a
+  # reviewer run, the one whose detached worktree holds the act's directory.
+  # Status 1 when the act touches none.
+  local sg="$1" row al wt wt_p here
+  if [ -n "$sg" ] && [ "$sg" != - ] && gate_segment_review_only "$sg"; then
+    printf '%s' "$sg"; return 0
+  fi
+  gate_reviewer_run || return 1
+  here=$(pwd -P 2>/dev/null) || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    sg=$(manifest_row_fields "$row" '세그먼트')
+    al=$(manifest_row_fields "$row" '대상')
+    wt=$(gate_review_worktree_of "$al" "$sg") || continue
+    wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || continue
+    case "$here/" in
+      "$wt_p"/*) printf '%s' "$sg"; return 0 ;;
+    esac
+  done <<EOF
+$(manifest_review_pr_rows)
+EOF
+  return 1
+}
+
 gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
@@ -43236,6 +44192,28 @@ gate_verb_act() {
 
   # Vocabulary first, and by return status rather than `die` — see surface_index.
   cutpoint_index "$cutpoint" >/dev/null || exit "$GATE_EXIT_VOCAB"
+
+  # A PULL REQUEST REVIEW IS POSTED BY `act --kind review-post` AND NOTHING ELSE,
+  # and a review-only segment's tree is never written. Both refusals are about
+  # the argv itself, so they come before every row and every approval: a
+  # pre-authorization row naming the act word for word does not open it.
+  if [ "$verb" = "exec" ]; then
+    local rv_why=""
+    rv_why=$(gate_exec_review_post_form "$@")
+    if [ -n "$rv_why" ]; then
+      warn "리뷰 게시는 act --kind review-post 로만 합니다 — ${rv_why} 는 직접 게시라 사전 인가 행이 있어도 받지 않습니다"
+      warn "리뷰 전용 세그먼트는 act --kind review-post --segment <세그먼트>, 종료 절 정산은 act --kind review-post --segment <세그먼트> --clause <절 id> 로 부릅니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+    local rv_seg=""
+    if rv_seg=$(gate_review_only_seg_of_act "$segment"); then
+      rv_why=$(gate_exec_author_write_form "$@")
+      if [ -n "$rv_why" ]; then
+        warn "세그먼트 ${rv_seg} 는 리뷰 전용 세그먼트입니다 — 작성자 브랜치에 쓰는 ${rv_why} 는 받지 않습니다"
+        exit "$GATE_EXIT_RULE"
+      fi
+    fi
+  fi
 
   # THE APPLY ACT HAS ONE SPELLING. Its argv is the fixed token and nothing else,
   # its rung is `배포`, and it names a segment — the command it runs is the frozen
@@ -43297,6 +44275,19 @@ gate_verb_act() {
     { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
       || { warn "act --kind label-ack 은 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
   fi
+  # THE POST ACT'S ONE SPELLING: the token `게시`, the `커밋` rung, one
+  # segment. The pull request, the body, the comments and the event are the
+  # gate's — read from the manifest, the report and the format file — never
+  # the router's.
+  if [ "$kind" = "review-post" ]; then
+    if [ $# -ne 1 ] || [ "$1" != "게시" ]; then
+      warn "act --kind review-post 의 argv 는 고정 토큰 「게시」 하나입니다 — PR·본문·코멘트·종류는 게이트가 매니페스트·리포트·문면 파일에서 읽습니다"
+      exit "$GATE_EXIT_VOCAB"
+    fi
+    [ "$cutpoint" = "커밋" ] || { warn "act --kind review-post 는 --cutpoint 커밋 으로만 냅니다 (받은 값: ${cutpoint})"; exit "$GATE_EXIT_VOCAB"; }
+    { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
+      || { warn "act --kind review-post 는 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
+  fi
 
   # ---- the argv ladder, derived and compared against the declaration --------
   #
@@ -43322,7 +44313,7 @@ gate_verb_act() {
   GATE_ACT_DERIVED=""
   GATE_ACT_ARGV_LADDER=""
   case "$kind" in
-    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack) : ;;
+    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post) : ;;
     *) if ! gate_kind_is_bookkeeping "$kind"; then
          GATE_ACT_ARGV_LADDER=1
          GATE_ACT_DERIVED=$(ladder_of_argv0 "$@")
@@ -43562,6 +44553,11 @@ gate_verb_act() {
   fi
   if [ "$kind" = "label-ack" ]; then
     gate_label_ack_preconditions "$segment" "$2" || exit $?
+  fi
+  # The post act's local checks, on the same seat: files and rows only, so
+  # the remote reads wait for the check beside the label act's.
+  if [ "$kind" = "review-post" ]; then
+    gate_review_post_preconditions "$alias" "$segment" || exit $?
   fi
 
   case " $(target_aliases | tr '\n' ' ') " in
@@ -44301,6 +45297,17 @@ gate_verb_act() {
     # branch on `다음` is what holds them.
     local rn_prompt rn_next rn_slice rn_row rn_rhead rn_head
     rn_prompt=$(gate_skill_prompt_of "$@")
+    # A REVIEW-ONLY SEGMENT IS READ, NEVER WRITTEN. Its tree is someone else's
+    # pull request, so a stage that commits there — an implementation, a lead
+    # fix, a re-convergence or an apply — would write the author's branch. Only
+    # the review itself is dispatched for it.
+    if [ -n "$segment" ] && gate_segment_review_only "$segment"; then
+      case "${1:-}" in
+        review) : ;;
+        *) warn "세그먼트 ${segment} 는 리뷰 전용 세그먼트입니다 — 작성자 브랜치에 쓰는 ${1:-(없음)} 스테이지는 파견하지 않습니다"
+           exit "$GATE_EXIT_RULE" ;;
+      esac
+    fi
     case "${1:-}" in
       lead-fix)
         rn_next=$(gate_segment_review_next "$segment")
@@ -44376,6 +45383,26 @@ gate_verb_act() {
           warn "리뷰 파견의 --expand (${rn_xgot:-없음}) 가 매니페스트의 review_expand (${rn_xwant:-없음}) 와 다릅니다 — 스냅숏의 리뷰 줄을 그대로 실어 다시 파견하세요"
           exit "$GATE_EXIT_RULE"
         fi
+        # A review-only segment's three reviewer flags are rebuilt from its rows
+        # and compared byte for byte: a head other than the pinned one reviews a
+        # diff the post will not be anchored to, a depth other than the frozen one
+        # reviews with a team the person did not choose, and a dispatch without
+        # `--post-ready` writes a report with nothing to post. Such a segment has
+        # no branch of its own, so the enforcement-surface provenance below,
+        # which reads a branch's own commits, does not apply to it.
+        if gate_segment_review_only "$segment"; then
+          local rn_rpwant rn_rpgot
+          rn_rpwant="--pr-head $(gate_segment_kept_field "$segment" '고정 헤드') --depth $(gate_review_depth) --post-ready"
+          rn_rpgot=$(printf '%s\n' "$rn_prompt" | awk '
+            { for (i = 1; i <= NF; i++) {
+                if ($i == "--pr-head" || $i == "--depth") { o = o (o == "" ? "" : " ") $i " " (i < NF ? $(i + 1) : "") }
+                else if ($i == "--post-ready") { o = o (o == "" ? "" : " ") $i }
+            } } END { printf "%s", o }')
+          if [ "$rn_rpgot" != "$rn_rpwant" ]; then
+            warn "리뷰 전용 세그먼트 ${segment} 의 리뷰 파견 플래그 (${rn_rpgot:-없음}) 가 행에서 다시 만든 값 (${rn_rpwant}) 과 다릅니다 — 스냅숏의 리뷰 줄을 그대로 실어 다시 파견하세요"
+            exit "$GATE_EXIT_RULE"
+          fi
+        else
         # A branch whose enforcement surface changed outside a seat apply is
         # not reviewed: the review would pass bytes nobody approved on to the
         # merge. The hold writes the cone `blocked` row once and says why; a
@@ -44398,6 +45425,7 @@ gate_verb_act() {
           fi
           warn "세그먼트 ${segment} 의 강제 표면 출처를 판정할 수 없습니다 — 리뷰를 파견하지 않습니다: $(printf '%s' "$rn_pv" | tr '\t\n' ' ;')"
           exit "$GATE_EXIT_RULE"
+        fi
         fi ;;
     esac
   fi
@@ -44713,10 +45741,10 @@ gate_verb_act() {
       # reads the deployment the apply touched — at the apply's own rung, so the
       # settlement is never opened where the apply would not be.
       graded="외부상태변경" ;;
-    ci-rerun|label-ack)
-      # The same: `재실행 <sha>` and `라벨 <sha>` are tokens, and what the act
-      # performs is the gate's own POST to GitHub, a change of state outside
-      # the tree.
+    ci-rerun|label-ack|review-post)
+      # The same: `재실행 <sha>`, `라벨 <sha>` and `게시` are tokens, and what
+      # the act performs is the gate's own POST to GitHub, a change of state
+      # outside the tree.
       graded="외부상태변경" ;;
     ci-match)
       # `대조 <sha>` is a token as well; what the act performs is GETs and the
@@ -45032,7 +46060,7 @@ gate_verb_act() {
   # has no answer, and 0 is the honest one: no history is being integrated.
   GATE_HISTORY_INTEGRATION=0
   case "$kind" in
-    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack) : ;;
+    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post) : ;;
     *) gate_kind_is_bookkeeping "$kind" \
          || GATE_HISTORY_INTEGRATION=$(gate_history_integration "$@") ;;
   esac
@@ -45184,7 +46212,7 @@ gate_verb_act() {
      && [ -n "$segment" ] && [ "$segment" != '-' ] \
      && [ -n "$(gate_segment_field "$segment" '상태')" ]; then
     case "$kind" in
-      propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack) : ;;
+      propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post) : ;;
       *)
         [ "$(gate_merge_binding_of_argv0 "$@")" = '해당없음' ] || _mo_land=1
         if [ "$_mo_land" = 0 ]; then
@@ -45356,8 +46384,19 @@ gate_verb_act() {
   # gate's function.
   if gate_auto_resolve_enabled; then GATE_AUTO_RESOLVE=1; else GATE_AUTO_RESOLVE=0; fi
   export GATE_AUTO_RESOLVE
+  # THE POST ACT IS COMPARED AS THE POST IT PERFORMS. Its argv is the token
+  # `게시`, which no `사전 인가` row names; the row the kickoff froze names the
+  # POST to that pull request's reviews, so that is the string the
+  # preauthorization rule reads. The method goes after the path, because
+  # `gate_preauth_argv` already puts it right after `api`.
+  local _rv_pargv
+  if [ "$kind" = "review-post" ] && [ -n "${GATE_RVP_SLUG:-}" ]; then
+    _rv_pargv=$(gate_preauth_argv "$alias" gh api "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews" -X POST)
+  else
+    _rv_pargv=$(gate_preauth_argv "$alias" "$@")
+  fi
   gate_run_rules "$GATE_ACT_EFFECTIVE" "$alias" "$segment" "$argv" \
-    "$(gate_preauth_argv "$alias" "$@")" || rules_rc=$?
+    "$_rv_pargv" || rules_rc=$?
 
   # THE AUTO-ADOPTION FLOOR. It runs beside the catalog rather than only inside
   # it because its other consumer — a judgment a stage emitted in its terminal
@@ -45976,6 +47015,7 @@ EOF
   gate_check_ci_rerun "$kind"
   gate_check_ci_match "$kind"
   gate_check_label_ack "$kind"
+  gate_check_review_post "$kind"
   gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
   # THE LANDING TREE'S OWN GATE, asked before it lands. Same seat as the CI
   # verdict above and for the same three reasons; it does nothing when that
@@ -46031,7 +47071,7 @@ EOF
     # The pair the same argv would open as an act, forecast and never written:
     # the dry run writes no row. Only the kinds that run their argv open one.
     case "$kind" in
-      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|propose-done) ;;
+      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post|propose-done) ;;
       *)
         if [ "${GATE_PARK_RFROW:-0}" = "1" ] && ! gate_kind_is_bookkeeping "$kind" \
            && [ -n "$(gate_preauth_pair_argv "${GATE_PARK_RFN:--}")" ]; then
@@ -46237,7 +47277,7 @@ EOF
     # left off and the exec row is the only one that records them. A router's
     # own kinds never reach a row value — their argv is the table's to grade.
     case "$kind" in
-      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack) ;;
+      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post) ;;
       *)
         gate_row_value_fields
         gate_kind_is_bookkeeping "$kind" && GATE_RV_FIELDS=()
@@ -46368,6 +47408,8 @@ EOF
         ci-match) gate_perform_ci_match "$alias" "$segment" || rc=$? ;;
         # The label POST and its confirmation, the same way as the rerun's.
         label-ack) gate_perform_label_ack "$alias" "$segment" "$@" || rc=$? ;;
+        # The review POST, its re-read and its row, never the argv.
+        review-post) gate_perform_review_post "$alias" "$segment" || rc=$? ;;
         # The argv itself runs here, so the pair opens here as it does on exec.
         *)     gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
                gate_run_readonly "$@" || rc=$? ;;
@@ -46780,6 +47822,41 @@ gate_clause_ids() {
   # conditions measured the ledger's shape and never the thing the user actually
   # authorized the run against.
   manifest_clause_rows_raw | gate_row_ids
+}
+
+gate_clause_review_evidence_check() {
+  # gate_clause_review_evidence_check <근거> — a `충족` clause whose grounds point
+  # at a posted pull request review stands only on a review the gate posted and
+  # read back byte for byte. The grounds point at one when they carry a
+  # `pullrequestreview-<id>` URL, a `리뷰 id=<id>` (or `리뷰 id <id>`) or the
+  # words `리뷰 게시`. Every id named needs a `리뷰 게시` row of that id whose
+  # last such row reads `대조=일치`; grounds naming `리뷰 게시` with no id are
+  # refused, since no row can be told from them. Grounds that point at no
+  # review pass. Returns 3 with the reason on stderr.
+  local ev="$1" ids id row
+  ids=$(printf '%s\n' "$ev" \
+    | grep -oE 'pullrequestreview-[0-9]+|리뷰 id[= ][0-9]+' 2>/dev/null \
+    | grep -oE '[0-9]+$' | sort -u || true)
+  if [ -z "$ids" ]; then
+    case "$ev" in
+      *'리뷰 게시'*)
+        warn "종료 절의 근거가 「리뷰 게시」를 가리키는데 리뷰 id 가 없습니다 — 「리뷰 id=<id>」 나 pullrequestreview-<id> URL 로 그 리뷰를 이름하세요"
+        return "$GATE_EXIT_RULE" ;;
+    esac
+    return 0
+  fi
+  for id in $ids; do
+    row=$( { gate_rows '리뷰 게시' || true; } | gate_rows_field_eq '리뷰 id' "$id" | tail -1)
+    if [ -z "$row" ]; then
+      warn "종료 절의 근거가 가리키는 리뷰 ${id} 의 「리뷰 게시」 행이 없습니다 — 리뷰는 act --kind review-post 로 게시하고 대조한 것만 근거가 됩니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ "$(gate_row_field "$row" '대조')" != "일치" ]; then
+      warn "종료 절의 근거가 가리키는 리뷰 ${id} 의 「리뷰 게시」 행이 대조=$(gate_row_field "$row" '대조') 입니다 — 대조=일치 인 리뷰만 근거가 됩니다"
+      return "$GATE_EXIT_RULE"
+    fi
+  done
+  return 0
 }
 
 gate_clause_evidence_ids() {
@@ -53678,6 +54755,24 @@ gate_done_conditions() {
       *) printf '1 세그먼트 %s 의 상태가 종단이 아닙니다 (%s)\n' "$sid" "${st:-미상}" ;;
     esac
   done
+  # A REVIEWER RUN ENDS ONLY WHEN EVERY PULL REQUEST IT FROZE HAS ENDED. Each
+  # `리뷰 PR` row is one review-only segment, and its last row must read `완료`
+  # (posted and read back) or `park`; a segment never planned holds the run as
+  # surely as one still under review, since the loop above sees only rows.
+  if gate_reviewer_run; then
+    local rv_row rv_sg rv_st
+    while IFS= read -r rv_row; do
+      [ -n "$rv_row" ] || continue
+      rv_sg=$(manifest_row_fields "$rv_row" '세그먼트')
+      rv_st=$(gate_segment_field "$rv_sg" '상태')
+      case "$rv_st" in
+        완료|park) : ;;
+        *) printf '1 리뷰 전용 세그먼트 %s 가 완료나 park 로 끝나지 않았습니다 (%s)\n' "$rv_sg" "${rv_st:-미계획}" ;;
+      esac
+    done <<EOF
+$(manifest_review_pr_rows)
+EOF
+  fi
 
   # 2 — no ACT approval still waiting. `절단점=판단` is excluded deliberately:
   # its answer is an input to work that has not begun, so it survives the night
@@ -53849,6 +54944,8 @@ gate_done_conditions() {
     local pol mcv mrow
     for sid in $(gate_segment_ids); do
       [ -n "$sid" ] || continue
+      # A review-only segment merges nothing, so it has no merge to compare.
+      ! gate_segment_review_only "$sid" || continue
       pol=$(gate_segment_field "$sid" '리뷰 정책')
       [ "${pol:-선리뷰후머지}" = '선리뷰후머지' ] || continue
       mrow=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$sid" \
@@ -53885,6 +54982,7 @@ gate_done_conditions() {
   local orow otip ohead onx
   for sid in $(gate_segment_ids); do
     [ -n "$sid" ] || continue
+    ! gate_segment_review_only "$sid" || continue
     gate_segment_merge_first "$sid" || continue
     [ "$(gate_segment_field "$sid" '상태')" = 'park' ] && continue
     orow=$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$sid" | tail -1)

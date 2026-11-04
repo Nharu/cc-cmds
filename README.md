@@ -433,7 +433,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review-unattended
 
-**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]`
+**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [--pr-head <sha>] [--depth 전체|가벼움] [--post-ready] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -456,10 +456,13 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `--scratch-dir <abs-path>` | off (지명 없음 — 후보를 열거하고 하나가 지명될 때까지 아무것도 복구하지 않는다) | 드라이버가 지명한 위트니스 scratch 디렉터리. 한 논리 세그먼트가 여러 번 재시도되면 디렉터리도 여럿이고 각 시도가 자기 원장에서 `epoch 1` 을 얻으므로, 어느 시도를 관측했는지 아는 드라이버만 지명할 수 있다. |
 | `--lead-fix <abs-path>` | off (리뷰 모드 — 코드를 고치지 않는다) | 리드 수정 모드. 뒤에 오는 상한 리포트의 P0·P1 항목만 리드가 직접 고쳐 세그먼트 브랜치에 커밋하고(대상 절단점이 push 를 인가하면 민 뒤), 항목마다 `수정됨` 또는 `수정 불가 — <사유>` 한 줄을 적은 수정 기록을 리포트 옆에 남긴다. 팀을 띄우지 않고 새 리포트를 쓰지 않는다. |
 | `--recheck <abs-path>` | off (상한 리포트 항목을 다시 판정하지 않는다) | 확인 리뷰. 평소의 리뷰를 그대로 돌리면서, 뒤에 오는 상한 리포트의 P0·P1 항목을 리드 수정의 수정 기록과 함께 항목마다 코드에서 다시 판정하고, 중복을 걷어 이번 사이클의 발견과 합쳐 센다. |
+| `--pr-head <sha>` | off (PR 의 head 를 원격에서 읽어 diff 끝으로 쓴다) | 리뷰어 런의 고정 헤드. 리뷰 전용 세그먼트를 계획할 때 게이트가 원격의 PR 헤드와 대조해 고정한 커밋이다. 이 값이 있으면 diff 는 cwd(분리 HEAD 워크트리)에서 `git diff <--base-sha>...<pr-head>` 이고 `리뷰 HEAD` 줄도 이 sha 다 — 리뷰 중에 작성자가 브랜치를 옮겨도 리뷰와 게시는 같은 커밋을 본다. |
+| `--depth 전체|가벼움` | 전체 (Step 3 의 팀 구성 그대로) | 리뷰 깊이. `가벼움` 은 Step 3 의 팀 구성 대신 단일 라운드의 작은 구성 — 대화형 `review-lite` 의 단일 라운드와 같은 수·역할의 리뷰어 — 으로 리뷰한다. 리포트 형식·등급 판정선·게시 항목은 깊이와 무관하게 같다. |
+| `--post-ready` | off (게시 항목 절을 쓰지 않는다) | 리포트에 `## 게시 항목` 절을 쓴다 — P0·P1 지적마다 게시용 한 항목. 이 스테이지는 그래도 게시하지 않으며, 게시는 게이트의 `act --kind review-post` 가 이 절을 읽어 한다. |
 
-> _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
+> _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, `https://github.com/<owner>/<repo>/pull/<n>` 형태는 그 레포의 PR 번호(리뷰어 런이 넘긴다), 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
 
-> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
+> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`·`--pr-head`·`--depth`·`--post-ready`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
 
 > _Parsing (`--report-path <abs-path>`): `--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지._
 
@@ -494,6 +497,12 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 > _Parsing (`--lead-fix <abs-path>`): `--lead-fix` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니거나 읽을 수 있는 리포트가 아니면 중단 기록을 남기고 정지 — 고칠 항목을 모르는 수정은 하지 않는다. `--recover`·`--recheck` 와 함께 오면 중단 기록을 남기고 정지._
 
 > _Parsing (`--recheck <abs-path>`): `--recheck` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니거나 읽을 수 있는 리포트가 아니면 중단 기록을 남기고 정지 — 상한 항목을 빼고 센 리뷰는 알려진 결함을 머지로 보낸다. 수정 기록이 없는 것은 정지 사유가 아니다. `--recover` 와 함께 오면 크래시한 확인 리뷰의 복구이며, 위트니스에 판정이 없는 상한 항목은 `미해결` 로 센다._
+
+> _Parsing (`--pr-head <sha>`): `--pr-head` 다음 토큰을 값으로 취한다. 값이 없거나 `git rev-parse --verify <값>^{commit}` 이 cwd 에서 풀지 못하면 중단 기록을 남기고 정지 — 고정 헤드 없는 게시용 리뷰는 게시 위치가 어긋난다._
+
+> _Parsing (`--depth 전체|가벼움`): `--depth` 다음 토큰을 값으로 취한다. `전체`·`가벼움` 밖의 값이거나 값이 없으면 버리고 `전체` 로 리뷰하며 개요에 한 줄 남긴다 — 정지하지 않는다._
+
+> _Parsing (`--post-ready`): 값을 취하지 않는다._
 
 ### /cc-cmds:review-upgrade
 

@@ -434,6 +434,17 @@ rk_copy() {
   printf '%s' "$dst"
 }
 
+# rk_not_reviewer — refuse (exit 3) when the source manifest in `MANIFEST` is
+# a reviewer run's. That run posted reviews on pull requests other people
+# wrote, against heads and an account frozen at its kickoff; a follow-up run
+# would carry those over to pull requests that have moved on, so a reviewer
+# run is started again by a new kickoff. Every mode that reads the source
+# manifest calls this right after loading it.
+rk_not_reviewer() {
+  [ "$(manifest_plan_field '.run_profile // "standard"' 2>/dev/null || true)" != 'reviewer' ] \
+    || rk_refuse "리뷰어 런은 새 킥오프로 시작합니다 — 원천 런의 매니페스트가 run_profile: reviewer 입니다"
+}
+
 # rk_doc_path <key> — the design document a manifest's `설계 문서` key names.
 # The key is repo-relative when the document's repository contains it, and
 # otherwise the absolute path with its leading separator removed; the two read
@@ -1123,6 +1134,7 @@ EOF
   RK_PREV=$best_id; RK_BASE=$best_base
   rk_prev_paths
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_detect_none
+  rk_not_reviewer
 
   # The argument.
   local raw n t intent rekick_word=0
@@ -1753,6 +1765,7 @@ rk_judge() {
   local endrow etok ekind nprog nclause=0 nmet=0 cid cst cev remain
   rk_prev_paths
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_fail "원천 매니페스트를 읽을 수 없습니다: $RK_PM"
+  rk_not_reviewer
   rk_fire() { lines="${lines}금지선${TAB}$1${TAB}$2
 "; }
 
@@ -1916,6 +1929,7 @@ rk_verify() {
   printf 'cc-rekick v1\n'
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || {
     printf '검사\t다이제스트\t실패\t원천 매니페스트를 읽을 수 없습니다\n판정\t실패\t다이제스트\n'; exit 1; }
+  rk_not_reviewer
   pm_sha=$(rk_sha "$MANIFEST")
 
   # (a) the two digests, re-derived.
@@ -2211,6 +2225,7 @@ EOF
 rk_graph() {
   rk_prev_paths
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_fail "원천 매니페스트를 읽을 수 없습니다: $RK_PM"
+  rk_not_reviewer
   if [ -n "$RK_XSHA" ] && [ "$(rk_sha "$MANIFEST")" != "$RK_XSHA" ]; then
     rk_fail "원천 매니페스트가 검증한 해시와 다릅니다 — 검증 뒤에 바뀐 파일은 이어받지 않습니다"
   fi
@@ -2651,6 +2666,7 @@ EOF
 rk_render_manifest() {
   rk_prev_paths
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_fail "원천 매니페스트를 읽을 수 없습니다: $RK_PM"
+  rk_not_reviewer
   [ "$(rk_sha "$MANIFEST")" = "$RK_XSHA" ] \
     || rk_fail "원천 매니페스트가 검증한 해시와 다릅니다 — 검증 뒤에 바뀐 파일은 이어받지 않습니다"
   local gcopy
@@ -2733,6 +2749,7 @@ EOF
 rk_render_interview() {
   rk_prev_paths
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_fail "원천 매니페스트를 읽을 수 없습니다: $RK_PM"
+  rk_not_reviewer
   if [ -n "$RK_XSHA" ] && [ "$(rk_sha "$MANIFEST")" != "$RK_XSHA" ]; then
     rk_fail "원천 매니페스트가 검증한 해시와 다릅니다 — 검증 뒤에 바뀐 파일은 이어받지 않습니다"
   fi
@@ -3357,6 +3374,7 @@ EOF
 rk_adopt() {
   rk_prev_paths
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_fail "원천 매니페스트를 읽을 수 없습니다: $RK_PM"
+  rk_not_reviewer
   [ "$(rk_sha "$MANIFEST")" = "$RK_XSHA" ] \
     || rk_fail "원천 매니페스트가 검증한 해시와 다릅니다 — 검증 뒤에 바뀐 파일은 이어받지 않습니다"
   rk_graph_compute
