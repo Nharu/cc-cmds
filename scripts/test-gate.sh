@@ -60751,22 +60751,40 @@ check "107: 드라이버 훅이 게이트의 갈래를 그대로 받는다" \
 check "107: 드라이버 훅이 반증 기록의 문서 필드 갈래를 받는다" \
   "$(dr107 'refutation_hook SA '"'$x107/h.md'"'; printf "%s|%s" "$REFUTATION_BRANCH" "$REFUTATION_ITEM"')" "재수렴|R3"
 check "107: 반증이 아닌 기록에는 훅이 1 이다" "$(dr107 'refutation_hook SA '"'$x107/a.md'"'; printf "%s" "$?"')" "1"
-# 계획기 세그먼트 — 절 102 가 단언한 계획기 행의 값을 그대로 세그먼트 행에 두고, 결정 함수와
-# 드라이버의 호출 꼴이 같은 갈래를 내는지 잰다. 이 런 디렉터리의 R2 기록은 한 파견 단위뿐이라
-# 갈래를 가르는 것은 선언 파일 판독이다.
+# 계획기 세그먼트 — plan_via_planner 가 실제로 쓴 값을 세그먼트 행에 두고, 결정 함수와 드라이버의
+# 호출 꼴이 같은 갈래를 내는지 잰다. 쓰는 쪽의 꼴이 바뀌면 이 사례의 갈래가 함께 바뀐다. 이 런
+# 디렉터리의 R2 기록은 한 파견 단위뿐이라 갈래를 가르는 것은 선언 파일 판독이다.
 cp "$L107" "$w107/l107.keep"
+pl107=$(bash -s "$RUNSH" "$D107" "$w107" 2>/dev/null <<'EOF'
+  CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null
+  set +eu
+  RUN_DIR=$(mktemp -d "$3/pl.XXXXXX")
+  ledger_row() { local s="$1"; shift; [ "$s" = "segment" ] || return 0; local IFS='|'; printf '%s\n' "$*"; }
+  park() { return 0; }
+  binding_digest() { printf x; }; generation_now() { printf 1; }; whole_digest() { printf x; }
+  wt_path() { printf 'WT-%s' "$1"; }
+  run_segment_ids() { :; }; run_segment_field() { :; }
+  report_append() { :; }; plan_dep_floor_or_park() { return 0; }
+  judgment_call() { printf '%s' '{"segmentation":"ok","author_grouping_adopted":true,"segments":[{"id":"P1","declared_files":["a.txt",".claude/settings.json","docs/CLAUDE.md"],"depends_on":[]},{"id":"P2","declared_files":["b.txt"],"depends_on":["P1"]}]}'; }
+  judgment_result() { printf '%s' "$1"; }
+  plan_via_planner "$2"
+EOF
+)
+pm107=$(printf '%s\n' "$pl107" | sed -n 's/^id=P1|.*선언 파일 집합=\([^|]*\)|.*/\1/p')
+po107=$(printf '%s\n' "$pl107" | sed -n 's/^id=P2|.*선언 파일 집합=\([^|]*\)|.*/\1/p')
+check "107: 계획기가 쓴 두 행의 값을 읽는다 (아래가 공허하지 않다)" "$pm107/$po107" "a.txt, .claude/settings.json, docs/CLAUDE.md/b.txt"
 mk107 "$x107/p-many.md" S4:SA:1#1 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'docs/CLAUDE.md, a.txt'
 mk107 "$x107/p-one.md" S4:SA:1#1 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'b.txt'
 mk107 "$x107/p-out.md" S4:SA:1#1 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'etc/out.sh'
 hk107='; printf "%s|%s|%s" "$REFUTATION_BRANCH" "$REFUTATION_REASON" "$REFUTATION_ITEM"'
-printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=a.txt, .claude/settings.json, docs/CLAUDE.md\n' > "$L107"
+printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=%s\n' "$pm107" > "$L107"
 check "107: 계획기 꼴의 여러 원소 안 경로는 구현 수정이다" \
   "$(br107 "$w107/run" "$x107/p-many.md") / $(dr107 'refutation_hook SA '"'$x107/p-many.md'$hk107")" \
   "구현 수정|구현 결함 — R2|R2 / 구현 수정|구현 결함 — R2|R2"
 check "107: 계획기 꼴의 집합 밖 경로는 선언 파일 밖 파킹이다" \
   "$(br107 "$w107/run" "$x107/p-out.md") / $(dr107 'refutation_hook SA '"'$x107/p-out.md'$hk107")" \
   "파킹|결함 경로가 선언 파일 밖|R2 / 파킹|결함 경로가 선언 파일 밖|R2"
-printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=b.txt\n' > "$L107"
+printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=%s\n' "$po107" > "$L107"
 check "107: 계획기 꼴의 한 원소 안 경로는 구현 수정이다" \
   "$(br107 "$w107/run" "$x107/p-one.md") / $(dr107 'refutation_hook SA '"'$x107/p-one.md'$hk107")" \
   "구현 수정|구현 결함 — R2|R2 / 구현 수정|구현 결함 — R2|R2"
@@ -60809,7 +60827,7 @@ rm -f "$w107/run/SB#1.fix1.lease"
 check "107: 수정 파견마다 그 전에 끝난 임대를 돌려준다" \
   "$(dr107 "$lz107; C0='의도된 park'; BR='구현 수정,구현 수정,파킹,'; CL='의도된 park,의도된 park,'; $sw107")" \
   "SA#1;SA#1.fix1;SA#1.fix1;SA#1.fix2;|1|park:SA:br;"
-unset w107 D107 L107 x107 rc107 nx107 pb107 pf107 sw107 lz107 A107 h107 hk107
+unset w107 D107 L107 x107 rc107 nx107 pb107 pf107 sw107 lz107 A107 h107 hk107 pl107 pm107 po107
 
 # ---------------------------------------------------------------------------
 # 107b. 라우터 스냅숏과 수락 — 실제 원소가 있는 원장 위의 act
