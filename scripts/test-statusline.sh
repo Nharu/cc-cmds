@@ -2241,7 +2241,7 @@ XDG_STATE_HOME="$WORK/elsewhere" bash "$APPLY" --apply --settings "$SSTF" \
 check "음성 대조군 — 상태 루트 밖이면 같은 디렉터리가 설치된다" "$?" "10"
 
 # ---------------------------------------------------------------------------
-# DM1-DM6. Dormant screening — a finished run that cannot win is not judged
+# DM1-DM7. Dormant screening — a finished run that cannot win is not judged
 # ---------------------------------------------------------------------------
 #
 # NO OPERATING-SYSTEM SKIP. The screening leans on `find -L … -mmin` and
@@ -2400,41 +2400,6 @@ esac
 fx_session_index sess-dm5-b9-x dm-b9 dm-x
 check "DM5 휴면 창보다 1분 더 오래된 버려짐 런 — 휴면 종단 런에 진다" "$(dm_line sess-dm5-b9-x)" "✓ dm-x 종료"
 
-# DM6. Equality: on every session this suite has built, the line and the pane's
-# field row are the same bytes with the screening on and off. The two renders
-# read the clock separately, so a pair is compared only when one second holds
-# both; a pair that crosses a second is run again, and three crossings fail.
-dm_eq_ln() {
-  # The two ledger-path shapes the `read` builtin must reproduce.
-  dm_run dm-nl term 7300; printf '%s' "$FX_LEDGER" > "$FX_RUN_DIR/ledger-path"
-  dm_run dm-2l term 7310; printf '%s\n%s\n' "$FX_LEDGER" "둘째 줄" > "$FX_RUN_DIR/ledger-path"
-  fx_session_index sess-dm6-nl dm-nl dm-t01
-  fx_session_index sess-dm6-2l dm-2l dm-t01
-}
-dm_eq_ln
-dm_eq_bad=""; dm_eq_n=0
-for f in "$XDG_STATE_HOME/cc-cmds/session/"*; do
-  [ -f "$f" ] || continue
-  s=${f##*/}
-  for pf in "" 1; do
-    try=0; done_pair=0
-    while [ "$try" -lt 3 ]; do
-      t0=$(date -u +%s)
-      a=$(fx_statusline_stdin "$s" | CC_SL_PANE_FIELDS=$pf bash "$SL" 2>/dev/null)
-      b=$(fx_statusline_stdin "$s" | CC_SL_PANE_FIELDS=$pf CC_SL_SCREEN=0 bash "$SL" 2>/dev/null)
-      t1=$(date -u +%s)
-      if [ "$t0" = "$t1" ]; then
-        [ "$a" = "$b" ] || dm_eq_bad="$dm_eq_bad $s(필드=${pf:-0})"
-        done_pair=1; break
-      fi
-      try=$((try + 1))
-    done
-    [ "$done_pair" = 1 ] || dm_eq_bad="$dm_eq_bad $s(필드=${pf:-0}:초 넘김 3회)"
-    dm_eq_n=$((dm_eq_n + 1))
-  done
-done
-check "DM6 고정물 세션 ${dm_eq_n}쌍 — 선별을 켠 출력과 끈 출력이 바이트로 같다" "${dm_eq_bad:-없음}" "없음"
-
 # DM7. Invalidation: a dormant finished run whose ledger moves to now is judged
 # again on the very next render — nothing about the earlier verdict is kept.
 dm_run dm-i1 term 7400
@@ -2442,6 +2407,71 @@ fx_session_index sess-dm7 dm-i1 dm-live
 hasnt "DM7 휴면 종단 런은 진행 중 런 옆에서 판정되지 않는다" "$(dm_derived sess-dm7)" "dm-i1"
 dm_stamp 0 "$FX_LEDGER"
 has "DM7 원장 시각을 지금으로 옮기면 다시 판정된다" "$(dm_derived sess-dm7)" "dm-i1"
+
+# DM6. Equality: on every session this suite has built, the line and the pane's
+# field row are the same bytes with the screening on and off.
+#
+# BOTH RENDERS READ ONE PINNED CLOCK. A 30-run session takes about a second and
+# a half to render with the screening off, so two renders never fit in one
+# second and a compare-when-the-second-holds loop failed on every such session.
+# A `date` stand-in at the front of both calls' PATH answers exactly `-u +%s`
+# with a value read from the real clock once per pair, and hands every other
+# argument list (`cc_mtime`'s `-u -r <file> +%s`) to the real `date`. The status
+# line and `liveness.sh` read the current time only as `date -u +%s` through
+# PATH, so every clock read of both calls gets that value, and a pair is
+# compared once with no retry. The field row's clock (the sixth cell of the
+# `cc-sl` row) proves the stand-in was the one called. `find -mmin` and
+# `ls -t` still read the real clock; the pinned value trails it by one pair's
+# run time, far inside the one minute the dormancy window keeps over
+# `CC_SL_ABANDON`.
+#
+# EVERY FIXTURE PROCESS IS REAPED FIRST. The fixtures' live pids are two-minute
+# sleeps, and one that ran out between the two renders of a pair turned a run
+# in flight into a quiet one under the second render only. With all of them
+# gone and waited for, no pid changes state inside the loop.
+dm_eq_ln() {
+  # The ledger-path shapes the `read` builtin must reproduce, a session with no
+  # dormant run, and a one-line index.
+  dm_run dm-nl term 7300; printf '%s' "$FX_LEDGER" > "$FX_RUN_DIR/ledger-path"
+  dm_run dm-2l term 7310; printf '%s\n%s\n' "$FX_LEDGER" "둘째 줄" > "$FX_RUN_DIR/ledger-path"
+  fx_session_index sess-dm6-nl dm-nl dm-t01
+  fx_session_index sess-dm6-2l dm-2l dm-t01
+  fx_session_index sess-dm6-awake dm-w1 dm-live
+  fx_session_index sess-dm6-one dm-t30
+}
+dm_eq_ln
+dm_eq_pids=${FX_PIDS:-}
+fx_reap
+for p in $dm_eq_pids; do wait "$p" 2>/dev/null; done
+DM_REAL_DATE=$(command -v date)
+mkdir -p "$WORK/dm-clock"
+cat > "$WORK/dm-clock/date" <<STUB
+#!/usr/bin/env bash
+if [ "\$#" -eq 2 ] && [ "\$1" = "-u" ] && [ "\$2" = "+%s" ]; then
+  printf '%s\n' "\$DM_EQ_NOW"; exit 0
+fi
+exec "$DM_REAL_DATE" "\$@"
+STUB
+chmod +x "$WORK/dm-clock/date"
+dm_eq_bad=""; dm_eq_n=0
+for f in "$XDG_STATE_HOME/cc-cmds/session/"*; do
+  [ -f "$f" ] || continue
+  s=${f##*/}
+  for pf in "" 1; do
+    dm_eq_now=$("$DM_REAL_DATE" -u +%s)
+    a=$(fx_statusline_stdin "$s" | PATH="$WORK/dm-clock:$PATH" DM_EQ_NOW=$dm_eq_now CC_SL_PANE_FIELDS=$pf bash "$SL" 2>/dev/null)
+    b=$(fx_statusline_stdin "$s" | PATH="$WORK/dm-clock:$PATH" DM_EQ_NOW=$dm_eq_now CC_SL_PANE_FIELDS=$pf CC_SL_SCREEN=0 bash "$SL" 2>/dev/null)
+    [ "$a" = "$b" ] || dm_eq_bad="$dm_eq_bad $s(필드=${pf:-0})"
+    case "$a" in
+      *"$(printf '\ncc-sl\t')"*)
+        dm_eq_clk=$(printf '%s' "$a" | awk -F '\t' '$1 == "cc-sl" { print $6 }')
+        [ "$dm_eq_clk" = "$dm_eq_now" ] || dm_eq_bad="$dm_eq_bad $s(필드=${pf:-0}:시계 칸 ${dm_eq_clk:-없음}≠$dm_eq_now)"
+        ;;
+    esac
+    dm_eq_n=$((dm_eq_n + 1))
+  done
+done
+check "DM6 고정물 세션 ${dm_eq_n}쌍 — 선별을 켠 출력과 끈 출력이 바이트로 같다" "${dm_eq_bad:-없음}" "없음"
 
 # ---------------------------------------------------------------------------
 # SB01-SB20. The borrow segment
