@@ -3295,7 +3295,12 @@ gate_reach_disposition() {
             워크트리쓰기|트리밖쓰기) [ "$Reff" = "런로컬" ] && return 0 ;;
           esac
         fi
-        if [ "$lift" != "1" ]; then
+        # The cap below holds for an ungraded device tool form even when a row
+        # lifted it. A kickoff candidate row such as `형태=maestro` matches a
+        # path spelling of the same tool by its basename, and a lift there would
+        # let a `읽기` or run-local declaration skip every machine-global check
+        # while the honest declaration parks at the path cell.
+        if [ "$lift" != "1" ] || [ "$_udt" = "1" ]; then
           if [ "$Sx" = "code" ]; then printf '신고등급한도\tcode\t-'; return 0
           elif [ "$cls" = "미상" ] && case "$1" in */*) false ;; *) true ;; esac; then
             printf '신고등급한도\tunlisted\t-'; return 0

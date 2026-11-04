@@ -52515,6 +52515,33 @@ check "83x: 정리가 다 성공하면 pair-residue 가 빈다" "${x83_res%x}" "
   gate_run_device_aware env FOO=1 xcrun simctl create cc-R83X-S5-w iPhone
 ) >/dev/null 2>&1
 check "83x: env 로 감싼 simctl create 도 기기를 목록에 남긴다" "$(x83_tsv cc-R83X-S5-w)" "S5/$X83U"
+
+# 킥오프가 iOS·Android 흔적을 보고 내는 기본 후보 행(`형태=maestro`·`형태=xcodebuild`·`형태=adb`·
+# `형태=xcrun simctl`) 아래의 경로 철자 — 대조기가 argv0 를 basename 으로 읽으므로 경로로 부른
+# 같은 도구의 미상 형태가 그 행과 완전 일치해 상한을 들어 올린다. 그래도 등급 없는 기기 형태는
+# 낮춰 신고하면 상한에서, 정직하게 기기전역 으로 신고하면 경로 칸에서 park 해야 한다. 경로는
+# 대역 디렉터리로 잰다 — 열리는 회귀가 이 호스트의 진짜 도구를 부르지 않고 대역 기록에만 남는다.
+rx_manifest R83Y "maestro | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
+xcodebuild | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=테스트
+adb | 표면=트리밖쓰기 | 도달=기기전역 | 사유=테스트
+xcrun simctl | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=테스트"
+X83PB="$X83D/pathbin"; mkdir -p "$X83PB"
+for x83t in maestro xcodebuild adb xcrun; do
+  printf '#!/bin/sh\nprintf '\''%s %%s\\n'\'' "$*" >> "%s"\nexit 0\n' "$x83t" "$X83L" > "$X83PB/$x83t"
+  chmod +x "$X83PB/$x83t"
+done
+: > "$X83L"
+X83_SURF=읽기 x83_run "$X83PB/maestro" test f.yaml
+check "83x: 기본 행 아래 읽기로 신고한 경로 maestro 는 park 한다" "$rc" "11"
+X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run "$X83PB/xcodebuild" build -scheme X -allowProvisioningUpdates
+check "83x: 기본 행 아래 런로컬 로 신고한 경로 xcodebuild 프로비저닝 빌드는 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run "$X83PB/adb" -s R58M12345 shell
+check "83x: 기본 행 아래 읽기로 신고한 경로 adb 실기기 shell 은 park 한다" "$rc" "11"
+X83_SURF=트리밖쓰기 X83_REACH=런로컬 x83_run "$X83PB/xcrun" simctl privacy booted reset all
+check "83x: 기본 행 아래 런로컬 로 신고한 경로 xcrun simctl 미상 동사는 park 한다" "$rc" "11"
+x83_run "$X83PB/maestro" test g.yaml
+check "83x: 기본 행 아래 기기전역 으로 신고한 경로 maestro 도 park 한다" "$rc" "11"
+check "83x: 기본 행 아래 park 한 경로 기기 도구는 대역에 닿지 않는다" "$(grep -c . "$X83L")" "0"
 rm -rf "$X83D"
 
 # ---------------------------------------------------------------------------
