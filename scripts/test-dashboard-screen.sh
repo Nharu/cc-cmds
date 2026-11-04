@@ -483,11 +483,12 @@ async function baseFilterCases() {
   });
   const c = await boot("/", (url) => {
     const q = new URL(url, "http://stub").searchParams, exp = q.get("exp") === "1", base = q.get("base");
+    const listed = exp ? bases.concat(["/exp-only"]) : bases;
     const runs = [row("plain-run", "/a"), row("other-run", "/b")].concat(exp ? [row("exp-run", "/exp-only")] : []);
     return {
       tz_offset_s: 32400, tz_label: "KST", generated_at: 1793700000 + gen, today: "2026-11-04",
-      runs: runs.filter((r) => !base || r.base === base), totals: {},
-      bases: exp ? bases.concat(["/exp-only"]) : bases, hidden: 0, hidden_experiment: exp ? 0 : 1,
+      runs: runs.filter((r) => listed.includes(r.base) && (!base || r.base === base)), totals: {},
+      bases: listed, hidden: 0, hidden_experiment: !exp && (!base || base === "/exp-only") ? 1 : 0,
     };
   });
   const expSwitch = () => c.app.querySelectorAll("button").find((b) => b.getAttribute("data-fk") === "exp");
@@ -517,7 +518,8 @@ async function baseFilterCases() {
   await toggleExp();
   await pick("/exp-only");
   let release;
-  c.hold = (u) => (u.includes("base=%2Fexp-only") && u.endsWith("exp=0") ? new Promise((r) => { release = r; }) : null);
+  const holdExpOff = (u) => (u.includes("base=%2Fexp-only") && u.endsWith("exp=0") ? new Promise((r) => { release = r; }) : null);
+  c.hold = holdExpOff;
   await toggleExp();
   c.hold = null;
   await toggleExp();
@@ -526,6 +528,20 @@ async function baseFilterCases() {
   gen++; await c.poll();
   report("늦게 온 옛 응답은 다시 유효해진 필터를 지우지 않는다", lastURL().includes("base=%2Fexp-only") && lastURL().endsWith("exp=1") && !!c.link("/run/exp-run"), true);
   await toggleExp();
+
+  // That late answer is on screen, and turning experiment runs off again asks for
+  // the same URL, so an unchanged response finds the filter missing with nothing new
+  // to draw.
+  await toggleExp();
+  await pick("/exp-only");
+  c.hold = holdExpOff;
+  await toggleExp();
+  c.hold = null;
+  await toggleExp();
+  release();
+  await c.settle();
+  await toggleExp();
+  report("늦게 그린 옛 응답과 같은 304 에서도 빠진 레포의 필터를 비운다", lastURL().includes("base=&") && !!c.link("/run/plain-run"), true);
 
   await pick("/b");
   bases = ["/a", "/c"];

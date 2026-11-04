@@ -1468,7 +1468,7 @@
       var d = res.data;
       setTz(d.tz_offset_s, d.tz_label);
       var sameView = app.getAttribute("data-url") === url;
-      if (!res.same || !sameView || redrawOwed) {
+      if (!res.same || !sameView || redrawOwed || baseGone(d, url)) {
         if (sameView && readerBusy()) {
           redrawOwed = true;
         } else if (baseGone(d, url)) {
