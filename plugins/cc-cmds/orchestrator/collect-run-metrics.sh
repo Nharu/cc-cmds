@@ -1852,18 +1852,21 @@ $rid
   # 그대로 최신 런 먼저이고, 자기 상한·예산으로 묶되 첫 대상은 무관하게 시도한다. 예산은 이
   # 단계가 시작될 때부터 잰다. 만들지 못한 런도 시도로 세고 진단만 남긴다 — counts·차단·
   # new_runs·저널은 이 단계와 무관하다. 원장 크기는 이 단계 앞에서 `wc -c` 한 번으로 재고,
-  # 앞뒤 줄바꿈으로 감싸 런마다 fork 없이 찾는다.
-  set --
+  # `awk` 한 번으로 모집단의 다섯째 열에 붙인다 — 런마다 크기 목록을 셸 확장으로 찾으면 목록
+  # 안의 위치에 대해 제곱, 회차 전체로는 런 수의 세제곱으로 느려져 예산을 먹는다. 경로 목록도
+  # 같은 까닭으로 위치 인자를 하나씩 덧붙이지 않고 배열 끝에 더한다.
+  lpaths=()
   while IFS=$'\t' read -r rid state ledger rd; do
     case "$state" in
-      종단|버려짐) [ -f "$ledger" ] && set -- "$@" "$ledger" ;;
+      종단|버려짐) [ -f "$ledger" ] && lpaths[${#lpaths[@]}]=$ledger ;;
     esac
   done < "$tmp/pop.tsv"
-  sizes="
-$(cm_ledger_sizes "$@")
-"
+  cm_ledger_sizes ${lpaths[@]+"${lpaths[@]}"} > "$tmp/dsizes.txt"
+  awk -F '\t' -v sf="$tmp/dsizes.txt" '
+    BEGIN { while ((getline l < sf) > 0) { split(l, a, " "); s[a[1]] = a[2] } }
+    { print $0 "\t" (($1 in s) ? s[$1] : "") }' "$tmp/pop.tsv" > "$tmp/dpop.tsv"
   t1=$SECONDS
-  while IFS=$'\t' read -r rid state ledger rd; do
+  while IFS=$'\t' read -r rid state ledger rd want; do
     [ -n "$rid" ] || continue
     case "$state" in
       종단|버려짐) ;;
@@ -1871,13 +1874,6 @@ $(cm_ledger_sizes "$@")
     esac
     rec="$CM_LEDGER_DIR/metrics/$rid.delay.json"
     if [ "$CM_RECOLLECT" = "0" ] && [ -f "$rec" ]; then
-      want=""
-      case "$sizes" in
-        *"
-$rid "*) want=${sizes#*"
-$rid "}; want=${want%%"
-"*} ;;
-      esac
       have=$(jq -r '"\(.schema // "") \(.ledger_bytes // "")"' "$rec" 2>/dev/null)
       if [ -n "$want" ] && [ "$have" = "$CM_DELAY_SCHEMA $want" ]; then
         continue
@@ -1888,7 +1884,7 @@ $rid "}; want=${want%%"
     fi
     n_delay=$((n_delay + 1))
     cm_collect_delay "$rid" "$ledger" "$rd" "$rec" || cm_diag "런 $rid 의 지연 기록을 만들지 못했다"
-  done < "$tmp/pop.tsv"
+  done < "$tmp/dpop.tsv"
 
   # 전수 재계산 — 기록 디렉터리의 모든 런별 기록. 팀원 기록(`*.members.json`)과 지연
   # 기록(`*.delay.json`)은 런 기록이 아니므로 층과 트리거의 입력에서 빼고, 요약의 `members`·
@@ -1896,7 +1892,7 @@ $rid "}; want=${want%%"
   # 지연 기록마다 그 런의 원장이 원장 디렉터리에 있으면 그 현재 크기를 모아 요약의
   # `coverage.stale` 에 넘긴다(원장이 없는 런은 넣지 않는다).
   : > "$tmp/runs.list"; : > "$tmp/members.list"; : > "$tmp/delay.list"
-  set --
+  lpaths=()
   if [ -d "$CM_LEDGER_DIR/metrics" ]; then
     for rec in "$CM_LEDGER_DIR"/metrics/*.json; do
       [ -f "$rec" ] || continue
@@ -1904,12 +1900,12 @@ $rid "}; want=${want%%"
         *.members.json) printf '%s\n' "$rec" >> "$tmp/members.list" ;;
         *.delay.json) printf '%s\n' "$rec" >> "$tmp/delay.list"
            rid=${rec##*/}; rid=${rid%.delay.json}
-           [ -f "$CM_LEDGER_DIR/$rid.md" ] && set -- "$@" "$CM_LEDGER_DIR/$rid.md" ;;
+           [ -f "$CM_LEDGER_DIR/$rid.md" ] && lpaths[${#lpaths[@]}]="$CM_LEDGER_DIR/$rid.md" ;;
         *) printf '%s\n' "$rec" >> "$tmp/runs.list" ;;
       esac
     done
   fi
-  cm_ledger_sizes "$@" | jq -Rn -c '[inputs | split(" ") | select(length == 2) | {key: .[0], value: (.[1] | tonumber)}] | from_entries' \
+  cm_ledger_sizes ${lpaths[@]+"${lpaths[@]}"} | jq -Rn -c '[inputs | split(" ") | select(length == 2) | {key: .[0], value: (.[1] | tonumber)}] | from_entries' \
     > "$tmp/lsizes.json" 2>/dev/null || printf '{}' > "$tmp/lsizes.json"
   cm_slurp_list "$tmp/runs.list" > "$all_f"
   jq -e 'type == "array"' "$all_f" >/dev/null 2>&1 || printf '[]' > "$all_f"
