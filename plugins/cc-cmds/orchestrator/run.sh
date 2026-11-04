@@ -6135,14 +6135,16 @@ spawn_cost_samples() {
 }
 
 spawn_lineage_release() {
-  # spawn_lineage_release <dispatch id> — the end of a lineage: the dispatch and
-  # every `.retry` of it that holds a record. A crash retry sits back on the same
-  # lease and a limit reclaim replaces it, so the family is released together
-  # where the lineage ends, not after the first row.
+  # spawn_lineage_release <dispatch id> — the end of a lineage: the dispatch, every
+  # `.retry` of it and every implementation fix (`.fix<k>`, with its own retries)
+  # that holds a record. A crash retry sits back on the same lease and a limit
+  # reclaim replaces it, so the family is released together where the lineage
+  # ends, not after the first row. A fix is a lineage of its own to the router,
+  # and nothing else collects its record before the run ends.
   local base f n=0
   run_routed || return 0
   base=$(route_lineage_of "$1")
-  for f in "$RUN_DIR/$base.lease" "$RUN_DIR/$base".retry*.lease; do
+  for f in "$RUN_DIR/$base.lease" "$RUN_DIR/$base".retry*.lease "$RUN_DIR/$base".fix*.lease; do
     [ -f "$f" ] || continue
     n=$((n + 1))
     spawn_lease_release "$(basename "$f" .lease)"
@@ -11371,13 +11373,33 @@ segment_cycle() {
       case "$(terminal_route_class "$class")" in
         '정상 완료') : ;;
         '의도된 park')
-          # A halt on open decisions has no answer path on this driver: its
-          # reason says how the person carries the decision forward.
-          local preason="중단 기록"
-          ! halt_step_is_unclosed_decision "$(halt_record_path "$sid")" \
-            || preason="중단 기록 — 닫히지 않은 결정 항목: 결정을 문서에 쓰고 런을 새로 연다"
-          park "$seg" cone 무효화 "게이트 park" "$preason" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
-          return 1 ;;
+          # A refutation stop is routed by the gate's decision on its record
+          # (`s4_refutation_turn`, then `s4_park_unfinished`) rather than
+          # parked here: an implementation
+          # defect is fixed inside this cycle, and a parking item is pushed
+          # and opened as a pull request before the park.
+          if halt_refutation_token "$(halt_record_path "$sid")"; then
+            CONTINUE_CLASS='의도된 park'; CONTINUE_BLOCKED=""; CONTINUE_REFUSED=""
+            CONTINUE_MISSING=""; CONTINUE_UNCLOSED=""
+            CONTINUE_PARK_REASON="중단 기록"
+            CONTINUE_HALT_RECORD=$(halt_record_path "$sid")
+            CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$CONTINUE_HALT_RECORD" 2>/dev/null || true)
+            if ! s4_refutation_turn "$seg" "$sid" "$jkey" "$wt" "$cycle" "$files" "$(seg_alias "$seg")" "$branch" \
+                   "$att_base" "$seg_base" "$plan_digest"; then
+              s4_park_unfinished "$seg"
+              return 1
+            fi
+            fileset_escape "$seg" "$files" "$wt" || return 1
+            stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+          else
+            # A halt on open decisions has no answer path on this driver: its
+            # reason says how the person carries the decision forward.
+            local preason="중단 기록"
+            ! halt_step_is_unclosed_decision "$(halt_record_path "$sid")" \
+              || preason="중단 기록 — 닫히지 않은 결정 항목: 결정을 문서에 쓰고 런을 새로 연다"
+            park "$seg" cone 무효화 "게이트 park" "$preason" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
+            return 1
+          fi ;;
         '공허한 성공')
           # Resume first, a fresh process only for the shape resuming cannot
           # help, then a park under the reason `continue_or_park` names. The
@@ -11398,7 +11420,10 @@ segment_cycle() {
             fileset_escape "$seg" "$files" "$wt" || return 1
             stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
           else
-            s4_park_unfinished "$seg"; return 1
+            s4_refutation_turn "$seg" "$sid" "$jkey" "$wt" "$cycle" "$files" "$(seg_alias "$seg")" "$branch" \
+              "$att_base" "$seg_base" "$plan_digest" || { s4_park_unfinished "$seg"; return 1; }
+            fileset_escape "$seg" "$files" "$wt" || return 1
+            stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
           fi ;;
         '거절 종료')
           # One re-attachment of the same session, then a park of this
@@ -11414,7 +11439,10 @@ segment_cycle() {
             fileset_escape "$seg" "$files" "$wt" || return 1
             stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
           else
-            s4_park_unfinished "$seg"; return 1
+            s4_refutation_turn "$seg" "$sid" "$jkey" "$wt" "$cycle" "$files" "$(seg_alias "$seg")" "$branch" \
+              "$att_base" "$seg_base" "$plan_digest" || { s4_park_unfinished "$seg"; return 1; }
+            fileset_escape "$seg" "$files" "$wt" || return 1
+            stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
           fi ;;
         '크래시')
           # The same one retry as the arm three lines up, and for a stronger
@@ -11443,7 +11471,10 @@ segment_cycle() {
             fileset_escape "$seg" "$files" "$wt" || return 1
             stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
           else
-            s4_park_unfinished "$seg"; return 1
+            s4_refutation_turn "$seg" "$sid" "$jkey" "$wt" "$cycle" "$files" "$(seg_alias "$seg")" "$branch" \
+              "$att_base" "$seg_base" "$plan_digest" || { s4_park_unfinished "$seg"; return 1; }
+            fileset_escape "$seg" "$files" "$wt" || return 1
+            stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
           fi ;;
         '한도-형상 회수')
           # The driver itself signalled this stage, from the limit-shape arm,
@@ -11463,7 +11494,10 @@ segment_cycle() {
             fileset_escape "$seg" "$files" "$wt" || return 1
             stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
           else
-            s4_park_unfinished "$seg"; return 1
+            s4_refutation_turn "$seg" "$sid" "$jkey" "$wt" "$cycle" "$files" "$(seg_alias "$seg")" "$branch" \
+              "$att_base" "$seg_base" "$plan_digest" || { s4_park_unfinished "$seg"; return 1; }
+            fileset_escape "$seg" "$files" "$wt" || return 1
+            stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
           fi ;;
         *) park "$seg" cone 무효화 "게이트 park" "종단 부류 $class"; return 1 ;;
       esac
@@ -11935,6 +11969,7 @@ continue_or_park() {
   CONTINUE_REFUSED=""
   CONTINUE_PARK_REASON=""
   CONTINUE_PARK_RECALL=""
+  CONTINUE_HALT_RECORD=""
   while :; do
     if stage_open_judgment "$jkey"; then
       log "$sid: 공허한 성공 — 이 스테이지가 낸 판단 승인 $OPEN_JUDGMENT_ID 가 대기 중이라 계속하지 않는다"
@@ -12098,9 +12133,11 @@ continue_attempt() {
   [ "$rkind" != "S2" ] || run_gate_call gate_record_audit_disclosure S2 "$(stage_attempt_pinned "$did")" || true
   # A continued design attempt leaves its own `토론 패스` row after its row.
   [ "$rkind" != "S1design" ] || run_gate_call gate_record_discussion_passes S1design "$(stage_attempt_pinned "$did")" || true
+  CONTINUE_HALT_RECORD=""
   if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
     CONTINUE_PARK_REASON="중단 기록"
-    CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$did")" 2>/dev/null || true)
+    CONTINUE_HALT_RECORD=$(halt_record_path "$did")
+    CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$CONTINUE_HALT_RECORD" 2>/dev/null || true)
   fi
 }
 
@@ -12148,6 +12185,7 @@ refusal_or_park() {
   CONTINUE_REFUSED=""
   CONTINUE_PARK_REASON=""
   CONTINUE_PARK_RECALL=""
+  CONTINUE_HALT_RECORD=""
   n=$(refusal_count "$rseg" "$rkind")
   if [ "${n:-0}" -ge 2 ]; then
     CONTINUE_REFUSED=1
@@ -12260,6 +12298,7 @@ s4_retry() {
   CONTINUE_REFUSED=""
   CONTINUE_PARK_REASON=""
   CONTINUE_PARK_RECALL=""
+  CONTINUE_HALT_RECORD=""
   STAGE_RESUME=""
   CONTINUE_MISSING=""
   CONTINUE_UNCLOSED=""
@@ -12302,7 +12341,197 @@ s4_park_unfinished() {
     || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(unclosed_unmet_message "$CONTINUE_UNCLOSED") — 문서에 결정을 쓰고 런을 새로 연다"; return 1; }
   [ -z "$CONTINUE_MISSING" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
     || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(residual_unmet_message "$CONTINUE_MISSING")"; return 1; }
+  # A REFUTATION STOP IS ROUTED BEFORE IT IS PARKED. The implementation fixes
+  # its record asks for were dispatched before this call (`s4_refutation_turn`),
+  # so what reaches here is the gate's last decision: a parking item goes to
+  # `refutation_park` with the context that call recorded for this segment, and
+  # a re-convergence or an undecidable branch parks as before, the branch named
+  # in the reason. A decision that call already took on this very record is
+  # used as it stands rather than asked of the gate a second time.
+  if [ "$CONTINUE_CLASS" = "의도된 park" ] && [ -n "${CONTINUE_HALT_RECORD:-}" ] \
+     && { { [ "${S4_RF_SEG:-}" = "$seg" ] && [ "${REFUTATION_RECORD:-}" = "$CONTINUE_HALT_RECORD" ] \
+            && [ -n "${REFUTATION_BRANCH:-}" ]; } \
+          || refutation_hook "$seg" "$CONTINUE_HALT_RECORD"; }; then
+    if [ "$REFUTATION_BRANCH" = 파킹 ] && [ "${S4_RF_SEG:-}" = "$seg" ]; then
+      refutation_park "$seg" "$S4_RF_ALIAS" "$S4_RF_BRANCH" "$S4_RF_WT" "$S4_RF_SBASE" "$S4_RF_PDIG"
+      return 1
+    fi
+    park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON — 반증 갈래 $REFUTATION_BRANCH ($REFUTATION_REASON)" \
+      "${CONTINUE_PARK_RECALL:-(없음)}"
+    return 1
+  fi
   park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"
+  return 1
+}
+
+# The segment context `s4_refutation_turn` records for `s4_park_unfinished`,
+# which holds only the segment id, to park a refutation's parking item with.
+S4_RF_SEG="" S4_RF_ALIAS="" S4_RF_BRANCH="" S4_RF_WT="" S4_RF_SBASE="" S4_RF_PDIG=""
+
+halt_refutation_token() {
+  # halt_refutation_token <record> — 0 when the record's `**스텝**` begins with
+  # one of the three refutation stop tokens of an implement stage.
+  case "$(sed -n 's/^\*\*스텝\*\*: //p' "$1" 2>/dev/null | sed -n '1p')" in
+    'Step 1.5d'*|'Step 3 구현 중 반증'*|'Step 3 구현 결함 반증'*) return 0 ;;
+  esac
+  return 1
+}
+
+refutation_hook() {
+  # refutation_hook <segment> <record> — when the record is a refutation stop,
+  # asks the gate's `gate_refutation_route` for its branch and returns 0 with
+  # REFUTATION_BRANCH, REFUTATION_REASON, REFUTATION_ITEM and REFUTATION_RECORD
+  # set; 1, touching nothing else, for any other record. A call that fails or
+  # names no branch is `판정 불가`, as on the routing shift's side.
+  local seg=$1 rec=$2 out=""
+  REFUTATION_BRANCH=""; REFUTATION_REASON=""; REFUTATION_ITEM=""; REFUTATION_RECORD=$rec
+  [ -f "$rec" ] && halt_refutation_token "$rec" || return 1
+  out=$(run_gate_call gate_refutation_route "$seg" "$rec" "${DOC:-}" 2>/dev/null) || out=""
+  REFUTATION_BRANCH=$(bundle_val "$out" '갈래')
+  REFUTATION_REASON=$(bundle_val "$out" '사유')
+  REFUTATION_ITEM=$(bundle_val "$out" '항목')
+  if [ -z "$REFUTATION_BRANCH" ]; then
+    REFUTATION_BRANCH='판정 불가'
+    REFUTATION_REASON='결정 함수가 갈래를 내지 않음'
+  fi
+  log "$seg: 반증 중단 기록 $rec — 갈래 $REFUTATION_BRANCH ($REFUTATION_REASON)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# s4_refutation_turn — the implementation fixes a `Step 3 구현 결함 반증`
+# record asks for, inside the same cycle, before an unfinished S4 attempt chain
+# is parked.
+#
+#   s4_refutation_turn <segment> <stage id> <judgment key> <cwd> <cycle>
+#                      <declared files> <alias> <branch> <attempt base>
+#                      <segment base sha> <plan digest>
+#
+# While the last attempt ended `의도된 park` on a refutation record the gate
+# decides `구현 수정` for, a new dispatch `<stage id>.fix<k>` goes out. Each is
+# a unit of its own toward the item's allowance, and it writes no `cycle` row:
+# the defect is the stage's own code, not a review's finding. Its line names
+# the record in the tail `· 수정 대상: <record> 의 R<n> 구현 결함`, in place of
+# a review fix's tail. A fix that stops on another implementation defect goes
+# round again until the gate's decision is something else (`구현 결함 수정
+# 한도` on the item's third unit).
+#
+# Returns 0 when a fix completed, the caller then going on as after any
+# finished attempt. Returns 1 with the CONTINUE_* outputs of the last attempt
+# set and the segment's context recorded, and the caller parks with
+# `s4_park_unfinished`, which takes a parking item to `refutation_park`.
+# ---------------------------------------------------------------------------
+s4_refutation_turn() {
+  local seg="$1" sid="$2" jkey="$3" wt="$4" cycle="$5" files="$6" al="$7" branch="$8" abase="$9"
+  local k=0 did prompt unmet da
+  S4_RF_SEG=$seg; S4_RF_ALIAS=$al; S4_RF_BRANCH=$branch; S4_RF_WT=$wt
+  S4_RF_SBASE=${10}; S4_RF_PDIG=${11}
+  # THE DRIVER BOUNDS THE TURN ITSELF. The gate parks on an item's third unit,
+  # but it counts only the records whose header binds to the segment; a fix
+  # whose record it cannot bind would leave its count where it was and the
+  # turn going round. Two fixes after the first attempt are the same three
+  # units, and a decision still reading `구현 수정` after them parks with that
+  # branch named in the reason.
+  while [ "$k" -lt 2 ] && [ "$CONTINUE_CLASS" = "의도된 park" ] && [ -n "${CONTINUE_HALT_RECORD:-}" ] \
+        && refutation_hook "$seg" "$CONTINUE_HALT_RECORD" && [ "$REFUTATION_BRANCH" = '구현 수정' ]; do
+    k=$((k + 1))
+    did="$sid.fix$k"
+    # The finished attempts hand their leases back first: a fix is a new lineage
+    # to the router, and they would otherwise count against its admission.
+    spawn_lineage_release "$sid"
+    da=$(doc_arg)
+    prompt="/cc-cmds:implement-unattended $da \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files$(dispatch_surface_note "$seg") · 수정 대상: $REFUTATION_RECORD 의 $REFUTATION_ITEM 구현 결함\""
+    log "$seg: 구현 결함 반증 ($REFUTATION_ITEM) — $did 로 구현 수정 재파견"
+    unmet="세그먼트 브랜치에 새 커밋도 정지 기록도 없다"
+    CONTINUE_CLASS=""; CONTINUE_BLOCKED=""; CONTINUE_REFUSED=""
+    CONTINUE_PARK_REASON=""; CONTINUE_PARK_RECALL=""; CONTINUE_HALT_RECORD=""
+    CONTINUE_MISSING=""; CONTINUE_UNCLOSED=""
+    STAGE_RESUME=""
+    CC_SPAWN_EVENT=first continue_attempt "$did" "$jkey" "$seg" S4 "$wt" "$prompt" "$al" \
+      -- predicate_implement_share "$branch" "$abase" "$seg"
+    if [ -n "${CONTINUE_UNCLOSED:-}" ]; then
+      unmet=$(unclosed_unmet_message "$CONTINUE_UNCLOSED")
+    elif [ -n "$CONTINUE_MISSING" ]; then
+      unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+    fi
+    case "$CONTINUE_CLASS" in
+      '정상 완료') return 0 ;;
+      '의도된 park') : ;;
+      '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
+      '공허한 성공')
+        if continue_or_park "$did" "$jkey" "$seg" S4 "$wt" "$prompt" "$unmet" "$al" \
+             -- predicate_implement_share "$branch" "$abase" "$seg"; then
+          return 0
+        fi ;;
+      '거절 종료')
+        if refusal_or_park "$did" "$jkey" "$seg" S4 "$wt" "$prompt" "$unmet" "$al" \
+             -- predicate_implement_share "$branch" "$abase" "$seg"; then
+          return 0
+        fi ;;
+      *)
+        ! s4_died_after_work S4 || return 0
+        CONTINUE_PARK_REASON="구현 결함 수정 파견의 종단 부류 $CONTINUE_CLASS"; return 1 ;;
+    esac
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# refutation_park — the `파킹` branch of a refutation stop.
+#
+#   refutation_park <segment> <alias> <branch> <worktree> <base sha> <plan digest>
+#
+# The branch is pushed and a pull request opened, so the work the stage
+# committed reaches a person, and the segment is parked `막힘` with the
+# decision's reason and the pull request. A branch no commit ahead of its base
+# has nothing to show: the push and the pull request are skipped and the reason
+# says so. A pull request already open on the branch is not opened again. A
+# push or a pull request that fails does not hold the park back; the failure
+# goes into `근거`, as `residual_park` does with its issue. Always returns 1.
+# ---------------------------------------------------------------------------
+refutation_park() {
+  local seg="$1" al="$2" branch="$3" wt="$4" sbase="$5" pdig="$6"
+  local slug root ahead pr="" u="" why="" skip="" out t f bb item reason
+  item=${REFUTATION_ITEM:--}
+  reason=${REFUTATION_REASON:-"반증 파킹 — $item"}
+  slug=$(alias_slug "$al")
+  ahead=$(run_gate_call gate_segment_ahead_count "$seg" 2>/dev/null) || ahead='미상'
+  if [ "$ahead" = "0" ]; then
+    skip="앞선 커밋 없음 — push·PR 생략"
+  else
+    root=$(seg_root "$seg") || root=""
+    if authorized push; then
+      if [ -z "$root" ] || ! ( cd "$root" && GIT_TERMINAL_PROMPT=0 git push origin "$branch" ) >/dev/null 2>&1; then
+        why="push 실패"
+      fi
+    fi
+    if [ -z "$why" ] && authorized PR; then
+      pr=$(gh_q "$slug" pr list --head "$branch" --json number --jq '.[0].number' || printf '')
+      case "$pr" in ''|*[!0-9]*) pr="" ;; esac
+      if [ -z "$pr" ]; then
+        out=$(run_gate_call gate_refutation_pr_body "$seg" "${REFUTATION_RECORD:-}" "$item" "$reason" 2>/dev/null) || out=""
+        t=$(bundle_val "$out" '반증 제목'); f=$(bundle_val "$out" '반증 본문 파일')
+        bb=$(base_branch "$al" 2>/dev/null) || bb=""
+        bb=${bb#origin/}
+        if [ -z "$t" ] || [ ! -f "$f" ] || [ -z "$bb" ]; then
+          why="PR 본문 생성 거절"
+        else
+          u=$(gh_q "$slug" pr create --head "$branch" --base "$bb" --title "$t" --body-file "$f" | tail -1) || u=""
+          case "$u" in
+            https://*/pull/*) pr=${u##*/} ;;
+            *) why="PR 생성 실패${GH_STDERR:+ — $GH_STDERR}" ;;
+          esac
+        fi
+      fi
+    fi
+  fi
+  if [ -n "$pr" ]; then
+    ledger_row 'segment' "id=$seg" "상태=실행중" "브랜치=$branch" "PR=$pr" "레포=$slug" \
+      "베이스 sha=$sbase" "워크트리=$wt" "plan-binding-digest=$pdig"
+  fi
+  ledger_row 'segment' "id=$seg" "상태=park"
+  park "$seg" cone 막힘 "$reason${pr:+ — PR #$pr}" "반증 중단 기록 ${REFUTATION_RECORD:-(없음)}" "(없음)" "" \
+    "반증 갈래 파킹${skip:+ · $skip}${why:+ · $why}"
   return 1
 }
 
@@ -14284,7 +14513,7 @@ plan_via_planner() {
     while IFS= read -r _pf; do [ -z "$_pf" ] || _pdf+=("$_pf"); done \
       <<<"$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files[]? | strings')"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
-      "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
+      "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
       "강제 표면=$(run_surface_stamp ${_pdf[@]+"${_pdf[@]}"})" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
   done
