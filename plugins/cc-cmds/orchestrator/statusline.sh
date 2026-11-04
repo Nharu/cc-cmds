@@ -686,12 +686,13 @@ sl_judge() {
 
 sl_pid_answers() {
   # sl_pid_answers <file> — succeeds when the file's first line, blanks
-  # removed, is a pid that answers `kill -0`. Builtins only.
+  # removed, is a pid some process holds. The existence test is
+  # `cc_pid_exists` from `liveness.sh`, so this file keeps no liveness
+  # judgement of its own; a reused pid only costs a judgement here.
   local p=""
   IFS= read -r p < "$1" || [ -n "$p" ] || return 1
   p=${p//[[:space:]]/}
-  [ -n "$p" ] || return 1
-  kill -0 "$p" 2>/dev/null
+  cc_pid_exists "$p"
 }
 
 sl_awake_by_pid() {
@@ -713,7 +714,7 @@ sl_awake_by_pid() {
       l=""
     done < "$f"
     h=${h//[[:space:]]/}
-    [ -n "$h" ] && kill -0 "$h" 2>/dev/null && return 0
+    cc_pid_exists "$h" && return 0
   done
   if [ -f "$rd/shift.live" ]; then
     [ -r "$rd/shift.live" ] || return 0
