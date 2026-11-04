@@ -474,6 +474,10 @@ manifest_snapshot_take() {
   #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
   #   RE <row>     every `- \`수리 사건\`` row anywhere, in order
+  #   VP <row>     every `- \`리뷰 PR\`` row anywhere, in order
+  #   VG <row>     every `- \`리뷰 게시\`` row anywhere, in order
+  #   VD <row>     every `- \`리뷰 깊이\`` row anywhere, in order
+  #   VF <row>     every `- \`리뷰 문면\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -511,6 +515,10 @@ $(LC_ALL=C awk '
     index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
     index($0, "- `수리 사건`") == 1 { print "RE\t" $0 }
+    index($0, "- `리뷰 PR`") == 1 { print "VP\t" $0 }
+    index($0, "- `리뷰 게시`") == 1 { print "VG\t" $0 }
+    index($0, "- `리뷰 깊이`") == 1 { print "VD\t" $0 }
+    index($0, "- `리뷰 문면`") == 1 { print "VF\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -745,6 +753,26 @@ manifest_base_design_rows() {
 manifest_adoption_rows() {
   if manifest_memo_on; then manifest_memo_all "AD	"; return 0; fi
   grep -E '^- `세그먼트 입양`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_review_pr_rows() {
+  if manifest_memo_on; then manifest_memo_all "VP	"; return 0; fi
+  grep -E '^- `리뷰 PR`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_review_post_rows() {
+  if manifest_memo_on; then manifest_memo_all "VG	"; return 0; fi
+  grep -E '^- `리뷰 게시`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_review_depth_rows() {
+  if manifest_memo_on; then manifest_memo_all "VD	"; return 0; fi
+  grep -E '^- `리뷰 깊이`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_review_format_rows() {
+  if manifest_memo_on; then manifest_memo_all "VF	"; return 0; fi
+  grep -E '^- `리뷰 문면`' "$MANIFEST" 2>/dev/null || true
 }
 
 manifest_predecessor_landing_rows() {
@@ -1182,6 +1210,18 @@ binding_set_bytes() {
     # bounds or onto another event. Whole-file scan, zero bytes when absent, so a
     # manifest written before this row existed keeps its digest.
     manifest_repair_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/repair\t/'
+    # THE FOUR REVIEWER ROWS ARE IN THE FROZEN SET, on the same terms. `리뷰 PR`
+    # names the pull requests a reviewer run may post a review on, `리뷰 게시`
+    # the posting form and the account it posts as, `리뷰 깊이` the review
+    # depth, and `리뷰 문면` the hash of the wording file the renderer fills. A
+    # row any act could rewrite mid-run would let a stage post on a pull
+    # request, as an account or in words no person confirmed. Whole-file scans,
+    # zero bytes when absent, so a manifest written before these rows existed
+    # keeps its digest.
+    manifest_review_pr_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/reviewpr\t/'
+    manifest_review_post_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/reviewpost\t/'
+    manifest_review_depth_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/reviewdepth\t/'
+    manifest_review_format_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/reviewformat\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1552,7 +1592,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1934,6 +1974,68 @@ EOF
   done <<EOF
 $(manifest_adoption_rows)
 EOF
+  # 17b — adoption rows on a manifest with no design document. There the
+  # routing shift plans one segment per implementation step an adoption row
+  # names, bound to the target whose common git directory the row's worktree
+  # shares, and at most one more for an implementation step no row names, on
+  # the home target. So every row must name one of the plan's implementation
+  # steps, and with any row present at most one step may be left without one —
+  # a second would be planned nowhere. A manifest without adoption rows keeps
+  # the old reading: the first implementation step, on the home target.
+  if [ "$ad_segs" != " " ] && [ "$b_owner" = "(없음)" ]; then
+    local impl_ids impl_id impl_free=0
+    impl_ids=" $(manifest_plan_json | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id] | join(" ")' 2>/dev/null || true) "
+    for ad_seg in $ad_segs; do
+      case "$impl_ids" in
+        *" $ad_seg "*) : ;;
+        *) die "「세그먼트 입양」 행의 세그먼트 ${ad_seg} 가 설계 문서 없는 계획의 구현 단계 id 가 아닙니다 — 구현 단계:${impl_ids}" ;;
+      esac
+    done
+    for impl_id in $impl_ids; do
+      case "$ad_segs" in *" $impl_id "*) : ;; *) impl_free=$((impl_free + 1)) ;; esac
+    done
+    [ "$impl_free" -le 1 ] \
+      || die "설계 문서 없는 계획에 입양 행이 있는데 입양 행 없는 구현 단계가 ${impl_free}개입니다 — 많아야 하나입니다"
+  fi
+  # 17c — the four reviewer rows. `리뷰 PR` names one pull request a reviewer
+  # run reviews, on a declared target whose remote slug is the pull request's
+  # repository; the row's segment ids are `P1`, `P2`, … in row order. The other
+  # three are at most one each. Whether the wording file still hashes to its
+  # row is the posting act's to check, not this conjunction's: the file sits
+  # under `docs/`, and this runs on every gate entry.
+  local vp_row vp_k=0 vp_t vp_slug vp_n vg_n vd_n vf_n
+  while IFS= read -r vp_row; do
+    [ -n "$vp_row" ] || continue
+    vp_k=$((vp_k + 1))
+    grep -qE '^- `리뷰 PR` \| 세그먼트=P[1-9][0-9]* \| 대상=[^ |]+ \| PR=[1-9][0-9]* \| 작성자=[^ |]+ \| 드래프트=(예|아니오) \| 베이스=[^ |]+$' <<<"$vp_row" \
+      || die "「리뷰 PR」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`리뷰 PR\` | 세그먼트=P<k> | 대상=<별칭> | PR=<번호> | 작성자=<login> | 드래프트=예|아니오 | 베이스=<브랜치>\` 입니다: $vp_row"
+    [ "$(manifest_row_fields "$vp_row" '세그먼트')" = "P$vp_k" ] \
+      || die "「리뷰 PR」 행의 세그먼트가 행 순서 P${vp_k} 가 아닙니다: $vp_row"
+    vp_t=$(manifest_row_fields "$vp_row" '대상')
+    vp_slug=$(target_field "$vp_t" '원격 슬러그')
+    [ -n "$vp_slug" ] \
+      || die "「리뷰 PR」 행의 대상 '${vp_t}' 이 원격 슬러그를 가진 대상 행이 아닙니다 — PR 의 레포가 그 대상의 원격 슬러그여야 합니다: $vp_row"
+  done <<EOF
+$(manifest_review_pr_rows)
+EOF
+  vg_n=$(manifest_review_post_rows | grep -c . || true)
+  vd_n=$(manifest_review_depth_rows | grep -c . || true)
+  vf_n=$(manifest_review_format_rows | grep -c . || true)
+  for vp_n in "리뷰 게시:${vg_n:-0}" "리뷰 깊이:${vd_n:-0}" "리뷰 문면:${vf_n:-0}"; do
+    [ "${vp_n##*:}" -le 1 ] || die "「${vp_n%%:*}」 행이 ${vp_n##*:}개입니다 — 많아야 하나입니다"
+  done
+  if [ "${vg_n:-0}" = 1 ]; then
+    grep -qE '^- `리뷰 게시` \| 방식=(보류|직접) \| 의사표시=(허용|낮춤) \| 계정=[^ |]+$' <<<"$(manifest_review_post_rows)" \
+      || die "「리뷰 게시」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`리뷰 게시\` | 방식=보류|직접 | 의사표시=허용|낮춤 | 계정=<login>\` 입니다"
+  fi
+  if [ "${vd_n:-0}" = 1 ]; then
+    grep -qE '^- `리뷰 깊이` \| 깊이=(전체|가벼움)$' <<<"$(manifest_review_depth_rows)" \
+      || die "「리뷰 깊이」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`리뷰 깊이\` | 깊이=전체|가벼움\` 입니다"
+  fi
+  if [ "${vf_n:-0}" = 1 ]; then
+    grep -qE '^- `리뷰 문면` \| 파일=docs/pipeline-run/[^ |]+\.review-format\.md \| sha256=[0-9a-f]{64} \| 원천=(기본|킥오프)$' <<<"$(manifest_review_format_rows)" \
+      || die "「리뷰 문면」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`리뷰 문면\` | 파일=docs/pipeline-run/<run id>.review-format.md | sha256=<hex> | 원천=기본|킥오프\` 입니다"
+  fi
   # 18 — `선행 착지` rows: a predecessor slice that landed outside every run
   # ledger, as a person confirmed it at kickoff. Its form and the uniqueness of
   # its slice are checked here; whether the slice is declared, whether the slug is the slice's
@@ -4821,16 +4923,33 @@ hotfix_routing_check() {
   # `check_manifest` "no record yet" and "not routed" read the same; here both
   # are refused, the opposite of `routing_guard_check`, which lets a run with no
   # record through as unrouted. A plan without the key reads `standard`.
-  local profile rec="없음"
+  #
+  # A `reviewer` plan is refused the same way: its review-only segments are
+  # planned by the routing shift alone, and the driver has no path that plans
+  # them. A manifest with no design document that carries a `세그먼트 입양` row
+  # is refused too: only the routing shift binds an adopted implementation step
+  # to the target its worktree belongs to, and the driver's undeclared path
+  # would bind it to the home target.
+  local profile rec="없음" what=""
   [ -n "${MANIFEST:-}" ] && [ -f "$MANIFEST" ] || return 0
   profile=$(manifest_plan_field '.run_profile // "standard"')
-  [ "$profile" = "hotfix" ] || return 0
+  case "$profile" in
+    hotfix) what="핫픽스 계획은" ;;
+    reviewer) what="리뷰어 계획은" ;;
+    *)
+      case "$(manifest_field '요소' '설계 문서')" in
+        ''|'(없음)')
+          [ -n "$(manifest_adoption_rows)" ] && what="설계 문서 없는 입양 매니페스트는" ;;
+      esac
+      ;;
+  esac
+  [ -n "$what" ] || return 0
   run_routed && return 0
   if [ -e "${RUN_DIR:-}/routing-guard" ]; then
     rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
     rec=${rec:-빈 값}
   fi
-  printf '핫픽스 계획은 라우팅 런에서만 기동합니다 — 런 라우팅 기록 %s' "$rec"
+  printf '%s 라우팅 런에서만 기동합니다 — 런 라우팅 기록 %s' "$what" "$rec"
   return 1
 }
 

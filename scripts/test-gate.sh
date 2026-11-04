@@ -4597,6 +4597,8 @@ SAGEOF
     [ -z "${SA_TARGET_EXTRA:-}" ] || row="$row | $SA_TARGET_EXTRA"
     td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
     plan='{ "steps": [] }'
+    # 계획을 바꿔 싣는 집합(리뷰어 프로필)만 이 값을 둔다. 빈 값이면 바이트 그대로다.
+    [ -z "${SA_PLAN:-}" ] || plan="$SA_PLAN"
     pd=$(printf '%s\n' "$plan" | shasum -a 256 | cut -d' ' -f1)
     {
       printf '# 파이프라인 런 매니페스트 — %s\n' "$SA_ID"
@@ -4646,6 +4648,8 @@ SALEOF
 $SA_PREAUTH_EXTRA
 SAPEOF
       fi
+      # `## 인가` 안에 그대로 싣는 행(리뷰어 런의 네 행 등). 빈 값이면 바이트 그대로다.
+      [ -z "${SA_AUTH_RAW:-}" ] || printf '%s\n' "$SA_AUTH_RAW"
       if [ $# -gt 0 ]; then
         printf '\n## 룰 설정\n'
         for extra in "$@"; do printf '%s\n' "$extra"; done
@@ -4674,6 +4678,7 @@ SAPEOF
     SA_SEGBR="seg-$SA_ID"
     SA_APPLY="(해당 없음)"; SA_APPLY_CMD=""; SA_APPLY_PROBE=""; SA_APPLY_CODES=""
     SA_PREAUTH_EXTRA=""; SA_TARGET_EXTRA=""; SA_OWNER_DOC=""; SA_LABEL_ACK=""
+    SA_PLAN=""; SA_AUTH_RAW=""
     mkdir -p "$SA_REPO"
     ( cd "$SA_REPO" \
       && git init -q . \
@@ -21537,7 +21542,7 @@ sed 's/| 사유=밤새 이어서 돈다$/| 사유=런이 고쳐 썼다/' "$BRK" 
 gate snapshot --manifest "$BRK"
 case "$rc/$msg" in
   0/*) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
-  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
   *) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
 # The form of each row is refused before anything reads it, fail-closed.
@@ -22361,6 +22366,45 @@ case "$pace_iw" in
   "rc=0") ok "페이싱 루트 옆 이름을 실은 원소는 페이싱 가드에 걸리지 않는다" ;;
   *) bad "페이싱 가드 오탐: 루트 옆 이름을 실은 원소" "$pace_iw" ;;
 esac
+# THE ATTENTION SPOOL TAKES THE SAME ARMS. The mailbox and the apply records are
+# what an approval's close reads to tell a remote answer from a local one, so a
+# stage write there forges a route. The guard is called alone with the markers
+# removed, so the test seat names the spool; the default `$HOME` spelling is
+# guarded before it exists.
+SPOOL_G="$WORK/spool-guard"
+SPOOL_GH="$WORK/spool-guard-home"
+mkdir -p "$SPOOL_G/inbox" "$SPOOL_GH"
+spool_alone() {
+  # spool_alone <grade> <argv…> — the spool guard called alone.
+  (cd "$WT" && env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID -u CC_PIPELINE_REENTRY \
+     CC_CMDS_ATTENTION_ROOT="$SPOOL_G" HOME="$SPOOL_GH" bash -c \
+    'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset MANIFEST; shift; g=$1; shift
+     r=0; gate_spool_write_guard "$g" "$@" || r=$?
+     [ "$r" = "$GATE_EXIT_RULE" ] && printf "rc=룰거부" || printf "rc=%s" "$r"' \
+    _ "$GATE" "$@" 2>&1)
+}
+for spell in "cp $WORK/r3x $SPOOL_G/applied/rep-x.json" \
+             "cp $WORK/r3x $SPOOL_G/inbox/r-R1/env.json" \
+             "dd of=$SPOOL_G/applied/rep-y.json" \
+             "cp $WORK/r3x $SPOOL_GH/.local/state/cc-cmds/attention/applied/rep-z.json" \
+             "rm -rf $SPOOL_G"; do
+  # shellcheck disable=SC2086
+  pace_iw=$(spool_alone 트리밖쓰기 $spell)
+  case "$pace_iw" in
+    *"the attention spool belongs to the relay"*"rc=룰거부")
+      ok "스풀 가드가 쓰기를 거절한다: $spell" ;;
+    *) bad "스풀 가드가 쓰기를 거절한다: $spell" "$pace_iw" ;;
+  esac
+done
+pace_iw=$(spool_alone 트리밖쓰기 bash -c "printf x > $SPOOL_G/inbox/env.json")
+case "$pace_iw" in
+  *"the attention spool belongs to the relay"*"rc=룰거부") ok "스풀 가드의 인터프리터 갈래가 명령 줄 속 경로를 거절한다" ;;
+  *) bad "스풀 가드의 인터프리터 갈래가 명령 줄 속 경로를 거절한다" "$pace_iw" ;;
+esac
+pace_iw=$(spool_alone 트리밖쓰기 cp "$WORK/r3x" "$SPOOL_G-old/a")
+check "스풀 루트 옆 이름은 스풀 가드에 걸리지 않는다" "$pace_iw" "rc=0"
+pace_iw=$(spool_alone 읽기 cat "$SPOOL_G/inbox/env.json")
+check "읽기 등급은 스풀을 이름해도 스풀 가드를 지난다" "$pace_iw" "rc=0"
 # THE SPELLINGS THE WORD SPLIT STILL MISSED. A destination glued to a command
 # letter or an option has no separator to split at; a case variant is the same
 # file on the default case-insensitive volume; an ancestor of the root as a
@@ -23568,6 +23612,209 @@ check "거부로 닫힌 승인의 등급 2 재제출도 거절된다" "$rc" "3"
 check "그 재제출도 승인을 다시 대기로 열지 않는다" \
       "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$xjid " | tail -1)" '상태')" \
       "거부"
+
+# --- 31ra. `close` names the route an answer came by, from the spool alone ---
+# --- section: 31ra | group: cone | covers: act, close, snapshot | anchors: 31ra: 원격 기록 하나가 맞으면 응답 경로=원격 과 원격 발신을 싣는다, 31ra: 미인가 발신자의 원격 답은 대기 행과 종료 코드 5 다, 31ra: 자리 비움으로 닫힌 틀은 행 없이 5 다 ---
+#
+# The answer frame is the same whether a person typed the answer here or the
+# session seam typed a remote one, so the route is read from the attention
+# spool: an envelope in this run's mailbox naming this approval, and the apply
+# record its reply id names, matching the frame's token, the envelope's event
+# and the digest of the frame's answers. Every case builds its own spool under
+# the work directory and runs `close` with the four pipeline markers removed,
+# so the test seat variable is the spool the gate reads.
+RA_HOME="$WORK/ra-home"
+mkdir -p "$RA_HOME/.config/cc-cmds"
+ra_senders() {
+  # ra_senders <json> — the sender authorization file of the case's HOME.
+  printf '%s\n' "$1" > "$RA_HOME/.config/cc-cmds/remote-senders.json"
+}
+ra_senders '{"schema":1,"senders":[{"id":"phone-1","capabilities":["option"]},{"id":"watch-2","capabilities":["text"]}]}'
+ra_issue() {
+  # ra_issue <criterion> — issue a judgment approval; RA_ID and RA_Q are set.
+  gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급=2 기준="$1" 근거="원격 답의 경로를 잰다"
+  RA_ID=$(row_field "$(last_judgment_approval)" '승인 id')
+  RA_Q=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$RA_ID " | tail -1)" '질문 문면')
+}
+ra_digest() {
+  # ra_digest <question as asked> <answer> — the answers digest of a frame with
+  # one question: the question, 0x1F, the answer, 0x1E.
+  printf '%s\037%s\036' "$1" "$2" | shasum -a 256 | cut -d' ' -f1
+}
+ra_record() {
+  # ra_record <spool> <envelope name> <reply id> <event id> <approval id> <tok>
+  # <answers digest> <sender> — one mailbox envelope and the apply record its
+  # reply id names.
+  local sp="$1"
+  mkdir -p "$sp/inbox/r-$CONE_RUN_ID" "$sp/applied"
+  jq -nc --arg r "$CONE_RUN_ID" --arg a "$5" --arg rid "$3" --arg e "$4" \
+    '{schema: 1, reply_id: $rid, event_id: $e, target: {surface: "approval", run_id: $r, approval_id: $a}}' \
+    > "$sp/inbox/r-$CONE_RUN_ID/$2.json"
+  jq -nc --arg t "$6" --arg e "$4" --arg d "$7" --arg s "$8" \
+    '{schema: 1, tool_use_id: $t, event_id: $e, answers_sha256: $d, sender: $s}' \
+    > "$sp/applied/$3.json"
+}
+ra_frame() {
+  # ra_frame <transcript> <approval id> <question> <answer> — `auq_frame` in this
+  # shell, so its counter moves and the next frame gets a new token; the token
+  # is left in ra_tok.
+  auq_frame "$@" > "$WORK/ra-tok"
+  ra_tok=$(cat "$WORK/ra-tok")
+}
+ra_close() {
+  # ra_close <spool> <session id> <approval id> [flag] — `close` with the
+  # markers removed, the case's HOME and the spool as the test seat.
+  local out
+  out=$( unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY
+         export CC_CMDS_ATTENTION_ROOT="$1" HOME="$RA_HOME"
+         cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+           CLAUDE_CODE_SESSION_ID="$2" gate_inproc close --manifest "$NM" --approval "$3" ${4:+"$4"} 2>&1 ); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+ra_last() {
+  { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$1 " | tail -1
+}
+ra_rows() {
+  { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$1 " || true
+}
+
+# (1) Local: no spool at all. The close is what it always was, plus the route.
+ra_issue "원격 경로 시험 — 로컬"
+RA_SID1="31313131-0000-4000-8000-000000000001"
+: > "$NTX/$RA_SID1.jsonl"; auq_frame "$NTX/$RA_SID1.jsonl" "$RA_ID" "$RA_Q" "승인" >/dev/null
+ra_close "$WORK/ra-spool-none" "$RA_SID1" "$RA_ID"
+check "31ra: 스풀이 없으면 로컬 답으로 닫힌다" "$rc" "0"
+check "31ra: 로컬 닫힘 행은 응답 경로=로컬 이다" "$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "로컬"
+check "31ra: 로컬 닫힘 행은 원격 발신을 싣지 않는다" "$(row_field "$(ra_last "$RA_ID")" '원격 발신')" ""
+check "31ra: 로컬 닫힘의 상태는 승인이다" "$(row_field "$(ra_last "$RA_ID")" '상태')" "승인"
+check "31ra: 이미 닫힌 승인을 다시 닫으면 거절되고 행이 늘지 않는다" \
+  "$(n0=$(ra_rows "$RA_ID"); ra_close "$WORK/ra-spool-none" "$RA_SID1" "$RA_ID"; printf '%s|%s' "$([ "$rc" != 0 ] && printf 거절 || printf 통과)" "$(( $(ra_rows "$RA_ID") - n0 ))")" "거절|0"
+
+# (2) Remote: one envelope, one matching record, an authorized sender. The state
+# and the exit code are the local close's; only the route fields differ.
+ra_issue "원격 경로 시험 — 원격"
+RA_SID2="31313131-0000-4000-8000-000000000002"
+: > "$NTX/$RA_SID2.jsonl"
+ra_frame "$NTX/$RA_SID2.jsonl" "$RA_ID" "$RA_Q" "승인"
+RA_SP2="$WORK/ra-spool-2"
+ra_record "$RA_SP2" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "승인")" phone-1
+ra_sp2_sum=$(cd "$RA_SP2" && find . -type f -exec shasum {} + | LC_ALL=C sort)
+ra_close "$RA_SP2" "$RA_SID2" "$RA_ID"
+check "31ra: 원격 답도 로컬 답과 같은 종료 코드로 닫힌다" "$rc" "0"
+check "31ra: 원격 기록 하나가 맞으면 응답 경로=원격 과 원격 발신을 싣는다" \
+  "$(row_field "$(ra_last "$RA_ID")" '응답 경로')|$(row_field "$(ra_last "$RA_ID")" '원격 발신')" "원격|phone-1"
+check "31ra: 원격 닫힘의 상태도 승인이다" "$(row_field "$(ra_last "$RA_ID")" '상태')" "승인"
+check "31ra: 게이트는 스풀에 아무것도 쓰지 않는다" \
+  "$(cd "$RA_SP2" && find . -type f -exec shasum {} + | LC_ALL=C sort)" "$ra_sp2_sum"
+
+# (3) A digest that does not match the frame's answers: local.
+ra_issue "원격 경로 시험 — 다이제스트 불일치"
+RA_SID3="31313131-0000-4000-8000-000000000003"
+: > "$NTX/$RA_SID3.jsonl"
+ra_frame "$NTX/$RA_SID3.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_record "$WORK/ra-spool-3" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "거부")" phone-1
+ra_close "$WORK/ra-spool-3" "$RA_SID3" "$RA_ID"
+check "31ra: 다이제스트가 틀린 기록이면 로컬이다" "$rc|$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "0|로컬"
+
+# (4) Two matching records for one frame: neither can be trusted, so local.
+ra_issue "원격 경로 시험 — 기록 둘"
+RA_SID4="31313131-0000-4000-8000-000000000004"
+: > "$NTX/$RA_SID4.jsonl"
+ra_frame "$NTX/$RA_SID4.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_d=$(ra_digest "승인 $RA_ID — $RA_Q" "승인")
+ra_record "$WORK/ra-spool-4" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$ra_d" phone-1
+ra_record "$WORK/ra-spool-4" env-b rep-b ev-b "$RA_ID" "$ra_tok" "$ra_d" phone-1
+ra_close "$WORK/ra-spool-4" "$RA_SID4" "$RA_ID"
+check "31ra: 맞는 기록이 둘이면 로컬이다" "$rc|$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "0|로컬"
+
+# (5) An apply record with no envelope in the mailbox: the gate never scans
+# `applied/`, so it is local.
+ra_issue "원격 경로 시험 — 봉투 없음"
+RA_SID5="31313131-0000-4000-8000-000000000005"
+: > "$NTX/$RA_SID5.jsonl"
+ra_frame "$NTX/$RA_SID5.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_record "$WORK/ra-spool-5" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "승인")" phone-1
+rm -f "$WORK/ra-spool-5/inbox/r-$CONE_RUN_ID/env-a.json"
+ra_close "$WORK/ra-spool-5" "$RA_SID5" "$RA_ID"
+check "31ra: 우편함 봉투가 없으면 로컬이다" "$rc|$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "0|로컬"
+
+# (6) A sender without the option capability: the approval stays waiting with
+# its own reason, exit 5, and the same frame is not recorded twice.
+ra_issue "원격 경로 시험 — 미인가"
+RA_SID6="31313131-0000-4000-8000-000000000006"
+: > "$NTX/$RA_SID6.jsonl"
+ra_frame "$NTX/$RA_SID6.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_record "$WORK/ra-spool-6" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "승인")" watch-2
+ra_n0=$(ra_rows "$RA_ID")
+ra_close "$WORK/ra-spool-6" "$RA_SID6" "$RA_ID"
+check "31ra: 미인가 발신자의 원격 답은 대기 행과 종료 코드 5 다" \
+  "$rc|$(row_field "$(ra_last "$RA_ID")" '상태')|$(row_field "$(ra_last "$RA_ID")" '처분 사유')" "5|대기|원격 발신자 미인가"
+check "31ra: 그 대기 행은 답 프레임의 응답 토큰을 싣는다" "$(row_field "$(ra_last "$RA_ID")" '응답 토큰')" "$ra_tok"
+check "31ra: 그 대기 행은 답변 문면을 얻지 않는다" "$(row_field "$(ra_last "$RA_ID")" '답변 문면')" ""
+check "31ra: 미인가 거절은 행 하나만 더한다" "$(( $(ra_rows "$RA_ID") - ra_n0 ))" "1"
+ra_close "$WORK/ra-spool-6" "$RA_SID6" "$RA_ID"
+check "31ra: 같은 틀을 다시 닫아도 미인가 행이 늘지 않는다" "$rc|$(( $(ra_rows "$RA_ID") - ra_n0 ))" "5|1"
+ra_disp=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null \
+          | jq -r --arg id "$RA_ID" '.pending_approvals[] | select(.id == $id) | .disposition')
+check "31ra: 스냅숏이 그 대기를 disposition=원격 발신자 미인가 로 표면화한다" "$ra_disp" "원격 발신자 미인가"
+# The person answers the same approval locally afterwards: that closes it.
+auq_frame "$NTX/$RA_SID6.jsonl" "$RA_ID" "$RA_Q" "승인" >/dev/null
+ra_close "$WORK/ra-spool-6" "$RA_SID6" "$RA_ID"
+check "31ra: 미인가 뒤의 로컬 답은 그 승인을 닫는다" \
+  "$rc|$(row_field "$(ra_last "$RA_ID")" '상태')|$(row_field "$(ra_last "$RA_ID")" '응답 경로')" "0|승인|로컬"
+
+# (7) An unreadable sender file authorizes nobody.
+ra_issue "원격 경로 시험 — 발신자 파일 없음"
+RA_SID7="31313131-0000-4000-8000-000000000007"
+: > "$NTX/$RA_SID7.jsonl"
+ra_frame "$NTX/$RA_SID7.jsonl" "$RA_ID" "$RA_Q" "승인"
+ra_record "$WORK/ra-spool-7" env-a rep-a ev-a "$RA_ID" "$ra_tok" "$(ra_digest "승인 $RA_ID — $RA_Q" "승인")" phone-1
+ra_senders 'not json'
+ra_close "$WORK/ra-spool-7" "$RA_SID7" "$RA_ID"
+check "31ra: 읽을 수 없는 발신자 파일은 아무도 인가하지 않는다" \
+  "$rc|$(row_field "$(ra_last "$RA_ID")" '처분 사유')" "5|원격 발신자 미인가"
+ra_senders '{"schema":1,"senders":[{"id":"phone-1","capabilities":["option"]},{"id":"watch-2","capabilities":["text"]}]}'
+
+# (8) The away timeout settled the dialog: no row, exit 5.
+ra_issue "원격 경로 시험 — 자리 비움"
+RA_SID8="31313131-0000-4000-8000-000000000008"
+: > "$NTX/$RA_SID8.jsonl"
+auq_frame "$NTX/$RA_SID8.jsonl" "$RA_ID" "$RA_Q" "승인" >/dev/null
+ra_afk=$(tail -1 "$NTX/$RA_SID8.jsonl" | jq -c '.toolUseResult.afkTimeoutMs = 60000')
+sed '$d' "$NTX/$RA_SID8.jsonl" > "$NTX/$RA_SID8.tmp"
+printf '%s\n' "$ra_afk" >> "$NTX/$RA_SID8.tmp"
+mv "$NTX/$RA_SID8.tmp" "$NTX/$RA_SID8.jsonl"
+ra_n0=$(ra_rows "$RA_ID")
+ra_close "$WORK/ra-spool-none" "$RA_SID8" "$RA_ID"
+check "31ra: 자리 비움으로 닫힌 틀은 행 없이 5 다" "$rc|$(( $(ra_rows "$RA_ID") - ra_n0 ))" "5|0"
+case "$msg" in
+  *afkTimeoutMs*) ok "31ra: 경고가 자리 비움 시간 초과를 이름 붙인다" ;;
+  *) bad "31ra: 자리 비움 경고" "$msg" ;;
+esac
+
+# (9) A pipeline marker still set: the test seat is ignored, so the spool the
+# case built is not read and the close is local. Asked of the route function
+# itself, because a marker changes more than the spool root for a whole close.
+ra_mk=$( export CC_CMDS_ATTENTION_ROOT="$RA_SP2" HOME="$RA_HOME" RUN_ID="$CONE_RUN_ID"
+         unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY
+         cc_notify_attention_lib="${GATE%/*}/attention.sh"
+         a=$(gate_attention_root)
+         b=$(CC_PIPELINE_SHIFT_ID=S1 gate_attention_root)
+         if [ "$a" = "$RA_SP2" ]; then a=좌석; fi
+         printf '%s|%s' "${a:-없음}" "${b:-없음}" )
+check "31ra: 표지가 서 있으면 시험 좌석 변수를 읽지 않는다" "$ra_mk" "좌석|없음"
+
+# (10) The row cap: `원격 발신` goes first, then `응답 경로`, and the close goes on.
+ra_fit=$( GATE_CLOSE_ROUTE=원격; GATE_CLOSE_SENDER=phone-1
+          l1=$(gate_row_projected_bytes '승인' "x=" "응답 경로=원격")
+          l0=$(gate_row_projected_bytes '승인' "x=")
+          p1=$(printf "%$((GATE_ROW_MAX - l1))s" '' | tr ' ' a)
+          p0=$(printf "%$((GATE_ROW_MAX - l0))s" '' | tr ' ' a)
+          printf '%s,%s,%s' "$(gate_close_route_fit "x=" 2>/dev/null)" \
+            "$(gate_close_route_fit "x=$p1" 2>/dev/null)" "$(gate_close_route_fit "x=$p0" 2>/dev/null)" )
+check "31ra: 행 상한 앞에서 원격 발신부터, 그다음 응답 경로를 뺀다" "$ra_fit" "2,1,0"
 
 # --- 31ak. An act approval EXPIRES when the tree it named moves -------------
 # --- section: 31ak | group: cone | covers: act, close, plan | needs: 31c | anchors: 구속 튜플 실험용 행위가 승인을 발행한다 ---
@@ -27212,6 +27459,10 @@ esac
 # THE THREE RELEASE LINES LIVE ONCE, in `gate_close_settle`, and each terminal
 # of `gate_close` reaches them by calling it — so the pin is in two halves: the
 # helper holds the release, and each terminal's append is followed by the call.
+# Each terminal's anchor first matches its closing-field array, which is
+# followed by the three-arm `case` that writes the row in one of three route
+# spellings, and only then by the call — so the window spans 20 lines, which
+# reaches that terminal's call and stops short of the next terminal's.
 site_releases() {
   # site_releases <anchor-fixed-string> <lines-after>
   local ln
@@ -27229,13 +27480,13 @@ site_settles() {
 check "승인 닫기 — 종단 도우미가 슬롯을 회수한다" \
   "$( [ "$(site_releases "gate_close_settle() {" 20)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
 check "승인 닫기 — 무효 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=무효\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=무효\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 거부 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=거부\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=거부\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 승인 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=승인\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=승인\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 check "승인 닫기 — 판단 라벨 종단이 도우미를 부른다" \
-  "$( [ "$(site_settles "\"상태=\$label\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+  "$( [ "$(site_settles "\"상태=\$label\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 
 # --- AND ALL THREE TAKE THE BANNER OFF THE SCREEN ---------------------------
 #
@@ -29998,6 +30249,208 @@ sa_seg_state S26O 머지됨
 check "26: 룰 끔 — 머지됨 행이 기록된다" "$rc" "0"
 check "26: 룰 끔 — 머지 대조는 그대로 적힌다" "$(sa_field "$(sa_seg_last S26O)" '머지 대조')" "리뷰 없음"
 check "26: 룰 끔 — 조건 11 이 나지 않는다" "$(sa_unmet11)" ""
+
+# --- 35-26b. 사람이 먼저 머지한 선리뷰후머지 세그먼트의 리뷰 줄은 머지된 PR 을 덮는 델타 리뷰를 싣는다 ---
+# --- section: 35-26b | group: sa | covers: act, snapshot, gate_review_line | anchors: 26b: 미포함 세그먼트의 리뷰 줄이 받아진다 ---
+#
+# 리뷰보다 먼저 사람이 머지하면 머지 대조가 미포함 위반이 되고 종료 조건 11 이
+# 런을 붙든다. 그것을 푸는 덮는 리뷰는 머지된 PR 을 대상으로 받아야 하므로 줄이
+# --merged 와 머지 커밋, 머지 커밋의 첫 부모와 워크트리 팁의 merge-base 를 베이스로
+# 싣고, 앞 전체 사이클을 기준으로 한 델타 플래그 셋을 싣는다. 머지는 게이트 밖에서
+# 베이스에 --no-ff 머지 커밋을 만들어 민다. 빨리감기 머지는 워크트리 팁으로 했든
+# 워크트리 밖에서 올린 커밋으로 했든 베이스를 유도하지 않고 거절하며, squash 머지는 분기점 베이스를 그대로 유도한다. 픽스처는 모두 이 절
+# 안에서 만든다.
+sa26b_merge() {
+  # sa26b_merge — 베이스에 다른 커밋 하나를 둔 뒤 세그먼트 브랜치를 --no-ff 머지
+  # 커밋으로 들이고 원격 베이스로 민다. 머지 커밋 sha 를 찍는다.
+  ( cd "${SA_REPO:?}" && git commit -q --allow-empty -m '베이스의 다른 커밋' \
+    && git merge -q --no-ff -m "머지 $SA_SEGBR" "$SA_SEGBR" \
+    && git push -q origin "$SA_BASE" && git rev-parse HEAD ) 2>/dev/null
+}
+sa26b_row() {
+  # sa26b_row <id> — 세그먼트 워크트리와 브랜치를 단 실행중 행 하나.
+  sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$1" \
+      --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+      -- 상태=실행중 워크트리="$SA_SEGWT" 브랜치="$SA_SEGBR" 선행=없음
+}
+sa26b_delta() {
+  # sa26b_delta <id> <사이클> <기준 사이클> <기준 리뷰 HEAD> <P1> <리뷰 HEAD> — 델타
+  # 리포트와 그 cycle 행 하나.
+  local rep="$SA_ROOT/delta-$2.md"
+  printf '# 코드 리뷰 리포트\n\n## 개요\n\n- **리뷰 대상**: x\n- **리뷰 모드**: 델타 (기준 사이클 %s, 기준 리뷰 HEAD `%s`)\n- **발견 요약**: P0 0건 | P1 %s건\n' \
+    "$3" "$4" "$5" > "$rep"
+  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x \
+      -- "사이클=$2" 모드=델타 "기준 사이클=$3" P0=0 "P1=$5" "리뷰 HEAD=$6" "리포트 경로=$(sa_canon "$1" "$rep")"
+}
+sa26b_flag() {
+  # sa26b_flag <줄> <플래그> — 줄에서 그 플래그 다음 낱말. 없으면 빈 값.
+  printf '%s\n' "$1" | awk -v f="$2" '{ for (i = 1; i < NF; i++) if ($i == f) print $(i + 1) }'
+}
+sa26b_has() {
+  # sa26b_has <줄> <플래그> — 줄에 그 플래그가 낱말로 있으면 예, 없으면 아니오.
+  case " $1 " in *" $2 "*) printf '예' ;; *) printf '아니오' ;; esac
+}
+
+# 1 — 미포함. 전체 사이클 1 뒤에 커밋이 쌓이고 사람이 머지했다.
+sa_new '사람이 먼저 머지한 미포함'
+sa26b_row S26R
+F26R=$(cd "$SA_REPO" && git rev-parse HEAD)
+T26R=$(sa_commit '리뷰된 작업')
+RP26R=$(sa_canon S26R)
+sa_cycle S26R 1 0 0 "$T26R"
+U26R=$(sa_commit '리뷰 뒤의 작업')
+M26R=$(sa26b_merge)
+sa_seg_state S26R 머지됨 "머지 커밋=$M26R"
+check "26b: 사람이 먼저 머지한 미포함 머지됨 행이 기록된다" "$rc|$(sa_field "$(sa_seg_last S26R)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26R; l26r=$msg
+check "26b: 미포함 세그먼트의 리뷰 줄이 받아진다" "$rc" "0"
+check "26b: 그 줄이 머지 커밋을 --merged 로 싣는다" "$(sa26b_flag "$l26r" --merged)" "$M26R"
+check "26b: 그 줄의 베이스가 머지 커밋 첫 부모와 워크트리 팁의 merge-base 다" \
+  "$(sa26b_flag "$l26r" --base-sha)" "$F26R"
+check "26b: 그 줄이 앞 전체 사이클을 기준으로 싣는다" \
+  "$(sa26b_flag "$l26r" --basis-cycle)|$(sa26b_flag "$l26r" --basis-review-head)|$(sa26b_flag "$l26r" --basis-report-path)" \
+  "1|$T26R|$RP26R"
+check "26b: 그 줄에 --post-merge 가 없다" "$(sa26b_has "$l26r" --post-merge)" "아니오"
+
+# 2 — 머지된 팁을 리뷰 HEAD 로 하는 델타 사이클이 받아지고 둘째 머지됨 행이 조건 11 을 지운다.
+sa26b_delta S26R 2 1 "$T26R" 0 "$U26R"
+check "26b: 머지된 팁을 덮는 델타 사이클 행이 받아들여진다" "$rc" "0"
+sa_seg_state S26R 머지됨 "머지 커밋=$M26R"
+check "26b: 덮는 델타 뒤 둘째 머지됨 행의 머지 대조가 충족이다" \
+  "$rc|$(sa_field "$(sa_seg_last S26R)" '머지 대조')" "0|충족"
+check "26b: 덮는 델타 뒤 조건 11 이 사라진다" "$(sa_unmet11)" ""
+sag review-line --manifest "$SA_MANIFEST" --segment S26R; l26r=$msg
+check "26b: 충족 세그먼트의 리뷰 줄에는 --merged 와 기준 플래그가 없다" \
+  "$rc|$(sa26b_has "$l26r" --merged)|$(sa26b_has "$l26r" --basis-cycle)" "0|아니오|아니오"
+
+# 3 — 카운트·미포함. 사이클 1 에 P1 이 열린 채 커밋이 쌓이고 머지되었다. 덮는
+# 델타가 P1 을 다시 판정하면 둘째 머지됨 행은 카운트 위반으로 남는다.
+sa_new '사람이 먼저 머지한 카운트·미포함'
+sa26b_row S26K
+T26K=$(sa_commit '리뷰된 작업')
+sa_cycle S26K 1 0 1 "$T26K"
+U26K=$(sa_commit '리뷰 뒤의 작업')
+M26K=$(sa26b_merge)
+sa_seg_state S26K 머지됨 "머지 커밋=$M26K"
+check "26b: 카운트·미포함 머지됨 행이 기록된다" "$rc|$(sa_field "$(sa_seg_last S26K)" '머지 대조')" "0|위반(카운트·미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26K; l26k=$msg
+check "26b: 카운트·미포함 세그먼트의 리뷰 줄도 --merged 와 기준 사이클을 싣는다" \
+  "$rc|$(sa26b_flag "$l26k" --merged)|$(sa26b_flag "$l26k" --basis-cycle)" "0|$M26K|1"
+sa26b_delta S26K 2 1 "$T26K" 1 "$U26K"
+check "26b: P1 을 다시 판정한 덮는 델타 행이 받아들여진다" "$rc" "0"
+sa_seg_state S26K 머지됨 "머지 커밋=$M26K"
+check "26b: 둘째 머지됨 행이 위반(카운트) 다" "$(sa_field "$(sa_seg_last S26K)" '머지 대조')" "위반(카운트)"
+check "26b: 조건 11 이 카운트 위반을 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S26K 의 머지 대조가 위반(카운트) 입니다"
+sag review-line --manifest "$SA_MANIFEST" --segment S26K; l26k=$msg
+check "26b: 카운트 위반 세그먼트의 리뷰 줄에는 --merged 와 기준 플래그가 없다" \
+  "$rc|$(sa26b_has "$l26k" --merged)|$(sa26b_has "$l26k" --basis-cycle)" "0|아니오|아니오"
+
+# 5 — 머지 커밋이 없는 머지됨 행. 줄을 조립할 수 없으니 거절하고 머지 커밋을 지목한다.
+sa_new '머지 커밋 없는 미포함'
+sa26b_row S26X
+T26X=$(sa_commit '리뷰된 작업')
+sa_cycle S26X 1 0 0 "$T26X"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+sa26b_merge >/dev/null
+sa_seg_state S26X 머지됨
+check "26b: 머지 커밋 없는 미포함 머지됨 행이 기록된다" "$(sa_field "$(sa_seg_last S26X)" '머지 대조')" "위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26X
+check "26b: 머지 커밋 없는 미포함 세그먼트의 리뷰 줄은 rc 3 이다" "$rc" "3"
+case "$msg" in
+  *"머지 커밋"*) ok "26b: 그 거절이 머지 커밋을 지목한다" ;;
+  *) bad "26b 머지 커밋 없는 거절 문면" "$msg" ;;
+esac
+
+# 6 — 앞 사이클 중 델타 행이 마지막이면 기준은 그 앞의 전체 사이클이다.
+sa_new '델타가 마지막인 미포함'
+sa26b_row S26D
+T26D1=$(sa_commit '전체 리뷰된 작업')
+RP26D=$(sa_canon S26D)
+sa_cycle S26D 1 0 0 "$T26D1"
+T26D2=$(sa_commit '델타 리뷰된 작업')
+sa26b_delta S26D 2 1 "$T26D1" 0 "$T26D2"
+check "26b: 머지 전 델타 사이클 행이 받아들여진다" "$rc" "0"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+M26D=$(sa26b_merge)
+sa_seg_state S26D 머지됨 "머지 커밋=$M26D"
+check "26b: 델타 뒤 미포함 머지됨 행이 기록된다" "$(sa_field "$(sa_seg_last S26D)" '머지 대조')" "위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26D; l26d=$msg
+check "26b: 델타가 마지막이면 기준 플래그는 그 앞 전체 사이클을 가리킨다" \
+  "$rc|$(sa26b_flag "$l26d" --basis-cycle)|$(sa26b_flag "$l26d" --basis-review-head)|$(sa26b_flag "$l26d" --basis-report-path)" \
+  "0|1|$T26D1|$RP26D"
+
+# 7 — 빨리감기 머지. 전체 사이클 1 의 리뷰 HEAD 뒤에 커밋 둘을 두고 원격 베이스를
+# 세그먼트 팁으로 빨리감기하면 머지 커밋이 팁 자신이다. 그 첫 부모는 머지 직전의
+# 베이스가 아니라 세그먼트 안의 커밋이라, 유도한 베이스는 앞 커밋을 diff 에서 뺀다.
+# 행에 베이스 sha 가 없으므로 줄을 내지 않고 거절한다.
+sa_new '빨리감기로 머지한 미포함'
+sa26b_row S26W
+T26W=$(sa_commit '리뷰된 작업')
+sa_cycle S26W 1 0 0 "$T26W"
+sa_commit '리뷰 뒤의 작업 1' >/dev/null
+U26W=$(sa_commit '리뷰 뒤의 작업 2')
+sa_land
+sa_seg_state S26W 머지됨 "머지 커밋=$U26W"
+check "26b: 빨리감기 머지의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26W)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26W
+case "$msg" in
+  *"/cc-cmds:review-unattended"*) r26w="줄 있음" ;;
+  *) r26w="줄 없음" ;;
+esac
+check "26b: 빨리감기 머지 세그먼트의 리뷰 줄은 rc 3 이고 줄을 내지 않는다" "$rc|$r26w" "3|줄 없음"
+case "$msg" in
+  *"is a fast-forward merge"*) ok "26b: 그 거절이 빨리감기 머지를 지목한다" ;;
+  *) bad "26b 빨리감기 거절 문면" "$msg" ;;
+esac
+
+# 8 — squash 머지. 머지 커밋은 세그먼트 변경을 한 커밋에 담은 새 커밋이라 팁의 조상이
+# 아니고, 그 첫 부모가 머지 직전의 베이스라 유도한 베이스가 분기점이다. 빨리감기
+# 판별이 이 머지를 거르지 않는다.
+sa_new 'squash 로 머지한 미포함'
+sa26b_row S26Q
+F26Q=$(cd "$SA_REPO" && git rev-parse HEAD)
+T26Q=$(sa_commit '리뷰된 작업')
+sa_cycle S26Q 1 0 0 "$T26Q"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+# --squash 는 -q 에도 「Squash commit -- not updating HEAD」를 표준출력에 찍으므로 버린다.
+M26Q=$( cd "$SA_REPO" && git merge -q --squash "$SA_SEGBR" >/dev/null && git commit -qm "squash $SA_SEGBR" \
+  && git push -q origin "$SA_BASE" && git rev-parse HEAD ) 2>/dev/null
+sa_seg_state S26Q 머지됨 "머지 커밋=$M26Q"
+check "26b: squash 머지의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26Q)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26Q; l26q=$msg
+check "26b: squash 머지 세그먼트의 리뷰 줄은 머지 커밋과 분기점 베이스를 싣는다" \
+  "$rc|$(sa26b_flag "$l26q" --merged)|$(sa26b_flag "$l26q" --base-sha)" "0|$M26Q|$F26Q"
+
+# 9 — 워크트리 밖 커밋을 올린 뒤의 빨리감기. 다른 클론에서 세그먼트 팁 위에 커밋을
+# 하나 더 올리고 원격 베이스를 그 커밋으로 빨리감기하면 머지 커밋은 워크트리 팁의
+# 자손이라 사례 7 의 판별은 거르지 못한다. 그 첫 부모가 워크트리 팁 자신이라 유도한
+# 베이스가 워크트리 팁이 되고 리뷰 뒤 커밋이 diff 에서 빠지므로, 줄을 내지 않고 거절한다.
+# 다른 클론의 커밋은 워크트리를 건드리지 않는 commit-tree 로 만든다.
+sa_new '워크트리 밖 커밋 뒤 빨리감기한 미포함'
+sa26b_row S26B
+T26B=$(sa_commit '리뷰된 작업')
+sa_cycle S26B 1 0 0 "$T26B"
+sa_commit '리뷰 뒤의 작업 1' >/dev/null
+U26B=$(sa_commit '리뷰 뒤의 작업 2')
+M26B=$( cd "$SA_REPO" && git commit-tree "$U26B^{tree}" -p "$U26B" -m '워크트리 밖의 작업' ) 2>/dev/null
+( cd "$SA_REPO" && git push -q origin "$M26B:refs/heads/$SA_BASE" ) >/dev/null 2>&1
+sa_seg_state S26B 머지됨 "머지 커밋=$M26B"
+check "26b: 워크트리 밖 커밋 뒤 빨리감기의 미포함 머지됨 행이 기록된다" \
+  "$rc|$(sa_field "$(sa_seg_last S26B)" '머지 대조')" "0|위반(미포함)"
+sag review-line --manifest "$SA_MANIFEST" --segment S26B
+case "$msg" in
+  *"/cc-cmds:review-unattended"*) r26b="줄 있음" ;;
+  *) r26b="줄 없음" ;;
+esac
+check "26b: 워크트리 밖 커밋 뒤 빨리감기 세그먼트의 리뷰 줄은 rc 3 이고 줄을 내지 않는다" "$rc|$r26b" "3|줄 없음"
+case "$msg" in
+  *"is a fast-forward merge — its first parent"*"already holds the worktree tip"*) ok "26b: 그 거절이 첫 부모가 워크트리 팁을 담은 빨리감기를 지목한다" ;;
+  *) bad "26b 워크트리 밖 커밋 뒤 빨리감기 거절 문면" "$msg" ;;
+esac
 
 # --- 35-27. 게이트가 적는 필드는 호출자가 넘길 수 없고, 넘치는 행은 이름을 대며 거절된다 ---
 # --- section: 35-27 | group: sa | covers: act, snapshot | anchors: 27: 호출자가 넘긴 머지 대조 는 머지됨 행에서 거절된다 ---
@@ -42904,6 +43357,18 @@ check "58: 읽을 수 없는 명령 값은 form 이다" "$(s57 "S env GIT_SSH_CO
 check "58: GH_REPO= 는 기록된다" "$(s57 'gp_parse env GH_REPO=o/r gh pr view 1; gp_env_get GH_REPO')" "o/r"
 check "58: env -u PATH 와 env -i 는 form 이 아니다" "$(s57 'S env -u PATH gh pr view 1; S env -i gh pr view 1')" "ok|
 ok|"
+# 주의 스풀의 루트를 옮기는 시험 좌석 변수는 게이트가 원격 답을 읽는 자리를
+# 고른다. 파이프라인 표지 넷을 지우면 표지가 꺼진 셸에서 그 변수가 다시 읽힌다.
+check "58: CC_CMDS_ATTENTION_ROOT= 는 스풀 선택자라 form 이다" \
+  "$(s57 'S env CC_CMDS_ATTENTION_ROOT=/x git status')" "form|env:spool-selector:CC_CMDS_ATTENTION_ROOT"
+check "58: 파이프라인 표지 넷을 지우는 env -u 는 form 이다" \
+  "$(s57 'S env -u CC_PIPELINE_SEGMENT git status; S env -u CC_PIPELINE_STAGE_ID git status; S env -u CC_PIPELINE_SHIFT_ID git status; S env -u CC_PIPELINE_REENTRY git status')" \
+  "form|env:pipeline-marker:CC_PIPELINE_SEGMENT
+form|env:pipeline-marker:CC_PIPELINE_STAGE_ID
+form|env:pipeline-marker:CC_PIPELINE_SHIFT_ID
+form|env:pipeline-marker:CC_PIPELINE_REENTRY"
+check "58: env -u CC_CMDS_ATTENTION_ROOT 는 form 이 아니다" \
+  "$(s57 'S env -u CC_CMDS_ATTENTION_ROOT git status')" "ok|"
 check "58: 조각의 export 는 이름을 가리지 않고 기록된다" \
   "$(s57 "gp_parse sh -c 'export AWS_PROFILE=prod; aws s3 ls'; gp_env_get AWS_PROFILE")" "prod"
 
@@ -57433,6 +57898,11 @@ mf2_line() {  # mf2_line — 리뷰 줄의 --base-sha 와 --post-merge 값, `<�
     "$(printf '%s\n' "$msg" | awk '{ for (i = 1; i < NF; i++) if ($i == "--post-merge") print $(i + 1) }')"
 }
 check "88f-2: 리뷰 줄이 베이스 sha 와 머지 커밋을 싣는다" "$(mf2_line)" "$mf2_base|$MF_TIP"
+sag review-line --manifest "$SA_MANIFEST" --segment H
+case " $msg " in
+  *" --merged "*) bad "88f-2 사후리뷰 줄의 --merged" "$msg" ;;
+  *) ok "88f-2: 사후리뷰 줄에는 --merged 가 없다" ;;
+esac
 check "88f-2: 사후리뷰 세그먼트가 종료 조건 1 을 연다" \
   "$(mf_snap | jq -r '.unmet_condition_numbers | index(1) != null')" "true"
 sa_cycle H 1 0 0 "$MF_TIP"
@@ -58481,7 +58951,7 @@ check "101: 키 이전 계획의 판정 키는 단언하지 않는다" "$TIER_RC
 pre_tier
 check "101h: 스키마가 run_profile 을 속성과 필수 키 양쪽에 둔다" \
   "$(jq -c '[(.properties.run_profile.enum // null), ((.required | index("run_profile")) != null)]' \
-    "$repo_root/plugins/cc-cmds/orchestrator/prompts/entry-plan.schema.json")" '[["hotfix","standard"],true]'
+    "$repo_root/plugins/cc-cmds/orchestrator/prompts/entry-plan.schema.json")" '[["hotfix","reviewer","standard"],true]'
 HF101_STEPS='[{"id":"D1","skill":"design","summary":"설계","depends_on":[]},{"id":"I1","skill":"implement","summary":"구현","depends_on":["D1"]},{"id":"R1","skill":"review","summary":"리뷰","depends_on":["I1"]}]'
 HF101_ES_NONE='{"judgment":"없음","classes":[],"paths":[],"source":"의도","rationale":"x"}'
 HF101_ES_ONE='{"judgment":"확인됨","classes":["규칙카탈로그"],"paths":[{"path":"plugins/cc-cmds/orchestrator/rules/r.rule","class":"규칙카탈로그","slice":""}],"source":"의도","rationale":"룰 파일을 고친다"}'
@@ -58519,7 +58989,13 @@ hf101_bad "101h: 가능성 판정에 예고 둘을 단 핫픽스 계획은 거�
 hf101_bad "101h: team-4 핫픽스 계획은 거부된다" \
   '.design_tier = "team-4" | .design_tier_judged = "team-4" | .design_heavy_reasons = ["x"]'
 hf101_bad "101h: 판정 키가 없는 핫픽스 계획은 거부된다" 'del(.enforcement_surface)'
-hf101_bad "101h: 두 값 밖의 표지는 거부된다" '.run_profile = "fast"'
+# 표지 값 검사는 핫픽스·리뷰어 고정 틀보다 앞서 모든 계획에 서므로 그 문구로 거부된다.
+tier_check "$(hf101 '.run_profile = "fast"')"
+case "$TIER_RC/$TIER_OUT" in
+  0/*) bad "101h: 세 값 밖의 표지는 거부된다" "통과했다" ;;
+  *"(f) 계획 표지 run_profile 이 hotfix · reviewer · standard 중 하나가 아닙니다"*) ok "101h: 세 값 밖의 표지는 거부된다" ;;
+  *) bad "101h: 세 값 밖의 표지는 거부된다" "$TIER_OUT" ;;
+esac
 # 조기 반환 갈래 — 티어 판정 키가 없어도 (f) 는 돈다.
 hf101_bad "101h: 티어 판정 키가 없는 핫픽스 계획도 거부된다" \
   'del(.design_tier_judged) | .steps += [{id: "A1", skill: "design-audit", summary: "감사", depends_on: ["D1"]}]'
@@ -61116,6 +61592,600 @@ check "104d: 옮긴 판독 함수는 두 파일을 통틀어 정의가 하나씩
 check "104d: 정의는 정리 파일 쪽에 있다" \
   "$( { grep -cE '^(gate_rows|gate_row_field|gate_pending_approval_ids)\(\)' "$WTC_SRC" || true; } )" "3"
 unset d104 c104 p104 f104 d104n
+
+# ---------------------------------------------------------------------------
+# 108. 리뷰어 런 — 리뷰 전용 세그먼트의 계획·리뷰 줄·쓰기 거절·게시·대조
+# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다 ---
+#
+# 베어 원격 하나에 다른 작성자의 PR 둘(`refs/pull/7/head`, `refs/pull/8/head`)을 두고,
+# 리뷰어 계획(`run_profile: reviewer`)과 `리뷰 PR`·`리뷰 게시`·`리뷰 깊이` 행을 실은
+# 매니페스트로 라우터가 하는 순서를 그대로 밟는다 — fetch 와 분리 워크트리, `--review-pr`
+# 계획 행, 리뷰 줄, cycle 행, `act --kind review-post`. GitHub 는 함수로 가린 대역이 받고,
+# POST 의 요청 본문을 파일로 남겨 재판독에 그대로 돌려준다. `tamper` 파일이 있으면 재판독
+# 본문에 한 바이트를 더해 돌려준다. 렌더러는 따로 불러 종류·인라인·본문 배치를 잰다.
+# ---------------------------------------------------------------------------
+RV106_RP="$repo_root/plugins/cc-cmds/orchestrator/review-post.sh"
+RV106_FMT="$repo_root/plugins/cc-cmds/orchestrator/review-format.default.md"
+# 쓰기 자격은 고정한 픽스처 값이다. 비워 두면 게이트가 이 기기의 키체인을 읽는다.
+RV106_PREV_RW="${CC_GATE_TOKEN_RW-}"; RV106_HAD_RW="${CC_GATE_TOKEN_RW+1}"
+export CC_GATE_TOKEN_RW=rv106-rw-fixture
+RV106_ROOT="$WORK/rv106"; rm -rf "$RV106_ROOT"; mkdir -p "$RV106_ROOT"
+RV106_STUB="$RV106_ROOT/gh"
+cat > "$RV106_STUB" <<'RV106EOF'
+#!/bin/bash
+# 리뷰 게시 행위의 GitHub 대역. 답은 `$RV106_S` 의 파일이 고른다:
+#   login · head · reviews · rid · tamper(있으면 재판독 본문 끝에 x 를 더한다)
+#   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 422 는 4xx, 500 은 5xx, noid 는 id 없는 200)
+D=${RV106_S:?}
+printf '%s\n' "$*" >> "$D/gh.log"
+if [ "$*" = "api user --jq .login" ]; then cat "$D/login"; exit 0; fi
+[ "${1:-}" = api ] || exit 1
+if [ "$2 $3" = "-X POST" ]; then
+  cp "$7" "$D/posted.json"
+  case "$(cat "$D/status" 2>/dev/null)" in
+    none) exit 1 ;;
+    422) printf 'HTTP/2.0 422 Unprocessable Entity\r\n\r\n{}\n'; exit 1 ;;
+    500) printf 'HTTP/2.0 500 Internal Server Error\r\n\r\n{}\n'; exit 1 ;;
+    noid) printf 'HTTP/2.0 200 OK\r\n\r\n{}\n'; exit 0 ;;
+  esac
+  printf 'HTTP/2.0 200 OK\r\n\r\n{"id":%s}\n' "$(cat "$D/rid")"
+  exit 0
+fi
+if [ "$2" = --paginate ]; then
+  case "$3" in
+    */reviews) cat "$D/reviews"; exit 0 ;;
+    */comments) jq -c '.comments // []' "$D/posted.json"; exit 0 ;;
+  esac
+  exit 1
+fi
+case "$2" in
+  repos/*/pulls/*/reviews/*)
+    t=""; [ -f "$D/tamper" ] && t=x
+    jq -c --argjson id "$(cat "$D/rid")" --arg t "$t" \
+      '{id: $id, body: (.body + $t), commit_id: .commit_id,
+        state: ({"COMMENT": "COMMENTED", "APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}[.event // ""] // "PENDING")}' \
+      "$D/posted.json"
+    exit 0 ;;
+  repos/*/pulls/*) cat "$D/head"; exit 0 ;;
+esac
+exit 1
+RV106EOF
+chmod +x "$RV106_STUB"
+export RV106_STUB
+eval 'gh() { "$RV106_STUB" "$@"; }'; export -f gh
+
+rv106_new() {
+  # rv106_new <라벨> <방식> <의사표시> [더할 행] — 리뷰어 계획, PR 7·8 의 리뷰 PR 행 둘, 게시·깊이 행,
+  # 두 PR 의 게시용 사전 인가 행, 그리고 베어 원격의 두 PR 헤드 ref. 넷째 인자는 인가 절 끝에 붙는다.
+  sa_new "$1" 리뷰없음
+  SA_PLAN='{ "run_profile": "reviewer", "steps": [ { "id": "R1", "skill": "review", "depends_on": [] } ] }'
+  SA_AUTH_RAW=$(printf -- '- `리뷰 PR` | 세그먼트=P1 | 대상=main | PR=7 | 작성자=other-dev | 드래프트=예 | 베이스=main\n- `리뷰 PR` | 세그먼트=P2 | 대상=main | PR=8 | 작성자=other-dev | 드래프트=아니오 | 베이스=main\n- `리뷰 게시` | 방식=%s | 의사표시=%s | 계정=rv-bot\n- `리뷰 깊이` | 깊이=가벼움' "$2" "$3")
+  [ -z "${4:-}" ] || SA_AUTH_RAW=$(printf '%s\n%s' "$SA_AUTH_RAW" "$4")
+  SA_PREAUTH_EXTRA=$(printf 'gh api -X POST repos/t/%s/pulls/7/reviews\ngh api -X POST repos/t/%s/pulls/8/reviews' "$SA_ID" "$SA_ID")
+  sa_manifest 리뷰없음
+  ( cd "$SA_REPO" && git checkout -q -b pr7 main && printf 'one\ntwo\n' > a.txt && git commit -qam pr7 \
+      && git push -q origin HEAD:refs/pull/7/head \
+      && git checkout -q -b pr8 main && printf 'x\n' > b.txt && git add b.txt && git commit -qm pr8 \
+      && git push -q origin HEAD:refs/pull/8/head && git checkout -q main ) >/dev/null 2>&1
+  RV106_S="$RV106_ROOT/s$SA_N"; export RV106_S
+  rm -rf "$RV106_S"; mkdir -p "$RV106_S"; : > "$RV106_S/gh.log"
+  printf 'rv-bot\n' > "$RV106_S/login"; printf '[]\n' > "$RV106_S/reviews"
+}
+rv106_wt() {
+  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+    | jq -r --arg s "$1" '.["리뷰 세그먼트"][]? | select(.id == $s) | .["워크트리"]'
+}
+rv106_fetch() {
+  # rv106_fetch <세그먼트> <PR> — 라우터의 fetch 와 분리 워크트리. 이미 있으면 새 ref 로 옮긴다.
+  local w; w=$(rv106_wt "$1")
+  ( cd "$SA_REPO" && git fetch -q origin "+refs/pull/$2/head:refs/cc-review/$SA_ID/$1" \
+      "+refs/heads/main:refs/cc-review/$SA_ID/$1-base" ) >/dev/null 2>&1
+  if [ -d "$w" ]; then
+    ( cd "$w" && git checkout -q --detach "refs/cc-review/$SA_ID/$1" ) >/dev/null 2>&1
+  else
+    ( cd "$SA_REPO" && git worktree add -q --detach "$w" "refs/cc-review/$SA_ID/$1" ) >/dev/null 2>&1
+  fi
+}
+rv106_plan() {
+  sag act --manifest "$SA_MANIFEST" --kind segment --review-pr --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x -- 상태=계획됨 "워크트리=$(rv106_wt "$1")"
+}
+rv106_cycle() {
+  # rv106_cycle <세그먼트> <리뷰 HEAD> — 깨끗한 리뷰 리포트 하나와 그 cycle 행.
+  printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' "$2" \
+    > "$RV106_ROOT/rep-$SA_ID-$1.md"
+  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x \
+      -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$2" "리포트 경로=$(sa_canon "$1" "$RV106_ROOT/rep-$SA_ID-$1.md")"
+}
+rv106_post() {
+  sag act --manifest "$SA_MANIFEST" --kind review-post --target main --segment "$1" --cutpoint 커밋 \
+      --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x -- 게시
+}
+rv106_done() {
+  sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x -- 상태=완료 "워크트리=$(rv106_wt "$1")" 선행=없음
+}
+rv106_next() {
+  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+    | jq -r --arg s "$1" '.review_next[]? | select(.["세그먼트"] == $s) | .["다음"]'
+}
+rv106_posts() { { grep -c -- '-X POST' "$RV106_S/gh.log" || true; }; }
+rv106_n() { { grep -c "^- \`$1\` " "$SA_LEDGER" || true; }; }
+rv106_last() { { grep "^- \`$1\` " "$SA_LEDGER" || true; } | tail -1; }
+rv106_ev() {
+  # rv106_ev <근거> — 종료 절 근거 검사의 종료 코드를 이 픽스처 원장 위에서 잰다.
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; LEDGER="$2"; gate_clause_review_evidence_check "$3"' \
+    _ "$GATE" "$SA_LEDGER" "$1" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+
+# 계획 — 스냅숏의 리뷰 세그먼트, --review-pr 계획 행, 헤드가 움직인 계획 -------------------
+rv106_new "리뷰어 런" 직접 허용
+rv106_sn=$( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null )
+check "108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다" \
+  "$(printf '%s' "$rv106_sn" | jq -r '[.["리뷰 세그먼트"][]? | "\(.id):\(.["대상"]):\(.PR):\(.["상태"])"] | join(" ")')" \
+  "P1:main:7:미계획 P2:main:8:미계획"
+check "108: 리뷰어 스냅숏에는 슬라이싱 키가 없다" "$(printf '%s' "$rv106_sn" | jq -r 'has("슬라이싱")')" "false"
+rv106_w1=$(rv106_wt P1); rv106_w2=$(rv106_wt P2)
+check "108: 두 세그먼트의 워크트리는 런 인픽스와 세그먼트 id 로 갈린다" \
+  "${rv106_w1##*/}|${rv106_w2##*/}|$([ "$(cd "$SA_ROOT" && pwd -P)" = "$(dirname "$rv106_w1")" ] && echo 형제)" \
+  "repo-run-$SA_ID-P1|repo-run-$SA_ID-P2|형제"
+rv106_fetch P1 7; rv106_fetch P2 8
+rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+rv106_base=$(git --git-dir="$SA_REMOTE" rev-parse refs/heads/main)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P1 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=계획됨 "워크트리=$rv106_w1" 선행=없음
+check "108: --review-pr 없는 리뷰 전용 세그먼트의 첫 행은 rc 3 이다" "$rc" "3"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P1 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=계획됨 "워크트리=$rv106_w1" 선행=없음 종류=리뷰전용
+check "108: 호출자가 넘긴 종류 필드는 rc 2 다" "$rc" "2"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P1 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=계획됨 "워크트리=$rv106_w1" 선행=없음 "베이스 sha=$rv106_base"
+check "108: 리뷰 PR 세그먼트에 호출자가 넘긴 베이스 sha 는 rc 2 다" "$rc" "2"
+rv106_plan P1
+check "108: 리뷰 전용 세그먼트 계획이 통과한다" "$rc" "0"
+rv106_row=$(sa_seg_last P1)
+check "108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다" \
+  "$(sa_field "$rv106_row" 종류)|$(sa_field "$rv106_row" '고정 헤드')|$(sa_field "$rv106_row" '베이스 sha')" \
+  "리뷰전용|$rv106_h7|$rv106_base"
+rv106_plan P1
+check "108: 이미 계획한 리뷰 전용 세그먼트의 두 번째 계획은 rc 3 이다" "$rc" "3"
+( cd "$SA_REPO" && git checkout -q pr8 && printf 'y\n' >> b.txt && git commit -qam pr8b \
+    && git push -q -f origin HEAD:refs/pull/8/head && git checkout -q main ) >/dev/null 2>&1
+rv106_plan P2
+case "$rc|$msg" in
+  "3|"*"현재 헤드"*) ok "108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다" ;;
+  *) bad "108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다" "rc=$rc $msg" ;;
+esac
+rv106_fetch P2 8
+rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv106_plan P2
+check "108: 다시 fetch 한 뒤의 계획은 새 헤드를 고정한다" "$rc|$(sa_field "$(sa_seg_last P2)" '고정 헤드')" "0|$rv106_h8"
+
+# 리뷰 줄 — 두 세그먼트가 서로 다른 리포트 경로를 받는다 ------------------------------------
+sag review-line --manifest "$SA_MANIFEST" --segment P1; rv106_l1="$msg"
+sag review-line --manifest "$SA_MANIFEST" --segment P2; rv106_l2="$msg"
+case "$rv106_l1" in
+  "/cc-cmds:review-unattended https://github.com/t/$SA_ID/pull/7 --report-path "*" --base-sha $rv106_base --pr-head $rv106_h7 --depth 가벼움 --post-ready 리뷰어 런"*)
+    ok "108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다" ;;
+  *) bad "108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다" "$rv106_l1" ;;
+esac
+rv106_rp() { printf '%s\n' "$1" | awk '{ for (i = 1; i < NF; i++) if ($i == "--report-path") print $(i + 1) }'; }
+check "108: 두 리뷰 줄의 리포트 경로가 다르다" \
+  "$([ -n "$(rv106_rp "$rv106_l1")" ] && [ "$(rv106_rp "$rv106_l1")" != "$(rv106_rp "$rv106_l2")" ] && echo 다름)" "다름"
+case "$rv106_l1" in *"설계는"*) bad "108: 리뷰어 리뷰 줄에는 설계는 지시가 없다" "$rv106_l1" ;; *) ok "108: 리뷰어 리뷰 줄에는 설계는 지시가 없다" ;; esac
+
+# 작성자 브랜치 쓰기 — 커밋·push·구현 파견, 원격 PR 헤드는 그대로 ------------------------------
+rv106_wh=$(cd "$rv106_w1" && git rev-parse HEAD)
+rv106_fail=""
+sag exec --manifest "$SA_MANIFEST" --target main --segment P1 --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(SAH)" --rationale x -- git commit --allow-empty -qm x
+[ "$rc" = 3 ] || rv106_fail="$rv106_fail[commit rc=$rc]"
+sag exec --manifest "$SA_MANIFEST" --target main --segment P1 --cutpoint 커밋 --surface 외부상태변경 --reach 협업 \
+    --snapshot-digest "$(SAH)" --rationale x -- git push origin HEAD:refs/heads/feature
+[ "$rc" = 3 ] || rv106_fail="$rv106_fail[push rc=$rc]"
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment P1 --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(SAH)" --rationale x -- implement -p x
+[ "$rc" = 3 ] || rv106_fail="$rv106_fail[implement rc=$rc]"
+sag exec --manifest "$SA_MANIFEST" --target main --segment P1 --cutpoint 커밋 --surface 외부상태변경 --reach 협업 \
+    --snapshot-digest "$(SAH)" --rationale x -- gh pr merge 7 --squash
+[ "$rc" = 3 ] || rv106_fail="$rv106_fail[merge rc=$rc]"
+[ "$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)" = "$rv106_h7" ] || rv106_fail="$rv106_fail[원격 PR 헤드]"
+[ "$(cd "$rv106_w1" && git rev-parse HEAD)" = "$rv106_wh" ] || rv106_fail="$rv106_fail[워크트리 HEAD]"
+check "108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다" "$rv106_fail" ""
+
+# 리뷰 파견 — 행에서 다시 만든 세 플래그와 다르면 rc 3 ----------------------------------------
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment P1 --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(SAH)" --rationale x -- review -p "${rv106_l1/--depth 가벼움/--depth 전체}"
+check "108: 동결한 깊이와 다른 리뷰 파견은 rc 3 이다" "$rc" "3"
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment P1 --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(SAH)" --rationale x -- review -p "${rv106_l1/ --post-ready/}"
+check "108: --post-ready 를 뺀 리뷰 파견은 rc 3 이다" "$rc" "3"
+
+# 게시 — 계정 불일치, 보류 리뷰 선점, 일치, 다시 게시 -----------------------------------------
+rv106_cycle P1 "$rv106_h7"
+check "108: 리뷰 전용 세그먼트의 cycle 행이 기록된다" "$rc" "0"
+check "108: 리뷰가 끝난 리뷰 전용 세그먼트의 다음은 게시다" "$(rv106_next P1)" "게시"
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '555\n' > "$RV106_S/rid"
+printf 'someone-else\n' > "$RV106_S/login"
+rv106_post P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|0|0|"*"리뷰 게시 거절"*) ok "108: 동결한 계정과 다른 실행 계정의 게시는 POST 없이 rc 3 이다" ;;
+  *) bad "108: 동결한 계정과 다른 실행 계정의 게시는 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
+esac
+printf 'rv-bot\n' > "$RV106_S/login"
+printf '[{"id":1,"user":{"login":"rv-bot"},"state":"PENDING","commit_id":"x"}]\n' > "$RV106_S/reviews"
+rv106_post P1
+case "$rc|$(rv106_posts)|$msg" in
+  "3|0|"*"보류 리뷰 선점"*) ok "108: 이 계정의 보류 리뷰가 있으면 POST 없이 rc 3 이다" ;;
+  *) bad "108: 이 계정의 보류 리뷰가 있으면 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
+esac
+printf '[]\n' > "$RV106_S/reviews"
+rv106_post P1
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: 게시가 POST 한 번과 대조 일치 행을 남긴다" \
+  "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시 시도')|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 종류)|$(sa_field "$rv106_pr" 대조)|$(sa_field "$rv106_pr" '헤드 변경')" \
+  "0|1|1|555|APPROVE|일치|아니오"
+check "108: POST 본문은 고정 헤드에 APPROVE 로 인라인 코멘트 없이 나간다" \
+  "$(jq -c '[.commit_id, .event, ((.comments // []) | length)]' "$RV106_S/posted.json" 2>/dev/null)" \
+  "[\"$rv106_h7\",\"APPROVE\",0]"
+rv106_post P1
+check "108: 대조가 일치한 세그먼트의 두 번째 게시는 POST 없이 rc 3 이다" "$rc|$(rv106_posts)" "3|1"
+rv106_done P1
+case "$rc" in
+  0) ok "108: 대조가 일치한 리뷰 전용 세그먼트는 완료로 닫힌다" ;;
+  *) bad "108: 대조가 일치한 리뷰 전용 세그먼트는 완료로 닫힌다" "rc=$rc $msg" ;;
+esac
+
+# 대조 불일치 — 재판독이 한 바이트 다르다 ------------------------------------------------------
+rv106_cycle P2 "$rv106_h8"
+printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '556\n' > "$RV106_S/rid"; : > "$RV106_S/tamper"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+case "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" 세그먼트)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)|$msg" in
+  "3|2|P2|556|불일치|"*"게시 대조"*) ok "108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다" ;;
+  *) bad "108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다" "rc=$rc posts=$(rv106_posts) $rv106_pr $msg" ;;
+esac
+rv106_done P2
+check "108: 대조가 일치하지 않은 리뷰 전용 세그먼트의 완료는 rc 3 이다" "$rc" "3"
+
+# 종료 절 근거 — 리뷰를 가리키면 그 리뷰의 게시 행이 대조=일치 여야 한다 ------------------------
+rv106_got="$(rv106_ev '리뷰 id=555 로 게시했다')|$(rv106_ev "https://github.com/t/$SA_ID/pull/8#pullrequestreview-556")"
+rv106_got="$rv106_got|$(rv106_ev '리뷰 id=999')|$(rv106_ev '리뷰 게시를 마쳤다')|$(rv106_ev 'CI 가 통과했다')"
+check "108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다" "$rv106_got" "0|3|3|3|0"
+
+# 직접 게시 — 사전 인가 행이 있어도 exec 는 받지 않는다 ----------------------------------------
+rv106_fail=""
+printf '{}\n' > "$RV106_ROOT/x.json"
+for rv106_a in "gh api -X POST repos/t/$SA_ID/pulls/7/reviews --input $RV106_ROOT/x.json" \
+               "gh pr review 7 --approve" \
+               "gh api graphql -f query=mutation{addPullRequestReview(input:{pullRequestId:\"x\"}){clientMutationId}}" \
+               "gh api -X PATCH repos/t/$SA_ID/pulls/comments/5 -f body=x" \
+               "gh api -X POST repos/t/$SA_ID/pulls/7/comments -f body=x"; do
+  # shellcheck disable=SC2086
+  sag exec --manifest "$SA_MANIFEST" --target main --segment - --cutpoint 커밋 --surface 외부상태변경 --reach 협업 \
+      --snapshot-digest "$(SAH)" --rationale x -- $rv106_a
+  case "$rc|$msg" in
+    "3|"*"act --kind review-post"*) ;;
+    *) rv106_fail="$rv106_fail[$rv106_a rc=$rc]" ;;
+  esac
+done
+check "108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다" "$rv106_fail|$(rv106_posts)" "|2"
+sag exec --manifest "$SA_MANIFEST" --target main --segment - --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(SAH)" --rationale x -- gh api "repos/t/$SA_ID/pulls/7/reviews"
+case "$msg" in
+  *"act --kind review-post 로만"*) bad "108: 리뷰 목록 GET 은 직접 게시 거절에 닿지 않는다" "$msg" ;;
+  *) ok "108: 리뷰 목록 GET 은 직접 게시 거절에 닿지 않는다" ;;
+esac
+
+# 구속 다이제스트 — 네 행이 직렬화에 들고, 행 없는 매니페스트에는 흔적이 없다 ------------------
+rv106_bsb() {
+  ( cd "$SA_WT" && bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1"; MANIFEST="$2"; binding_set_bytes' \
+      _ "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$1" 2>/dev/null )
+}
+grep -vE '^- `(리뷰 PR|리뷰 게시|리뷰 깊이)`' "$SA_MANIFEST" > "$RV106_ROOT/plain.md"
+rv106_full=$(rv106_bsb "$SA_MANIFEST" | shasum -a 256 | cut -d' ' -f1)
+rv106_plain=$(rv106_bsb "$RV106_ROOT/plain.md")
+check "108: 리뷰어 네 행이 구속 다이제스트를 움직인다" \
+  "$([ -n "$rv106_plain" ] && [ "$rv106_full" != "$(printf '%s' "$rv106_plain" | shasum -a 256 | cut -d' ' -f1)" ] && echo 다름)|$(printf '%s\n' "$rv106_plain" | { grep -c '리뷰 PR\|리뷰 게시\|리뷰 깊이\|리뷰 문면' || true; })" \
+  "다름|0"
+
+# 렌더러 — 종류, 인라인과 본문 배치, 결정성, 대조 세 값, 모르는 자리표시자 -------------------------
+RD106="$RV106_ROOT/render"; mkdir -p "$RD106"
+( cd "$RD106" && git init -q -b main . && git config user.email t@t && git config user.name t \
+    && printf 'a\nb\nc\nd\n' > f.txt && printf 'gone\n' > del.txt && git add -A && git commit -qm base ) >/dev/null 2>&1
+rd106_base=$(cd "$RD106" && git rev-parse HEAD)
+( cd "$RD106" && printf 'a\nB\nc\nd\ne\n' > f.txt && git rm -q del.txt && git add -A && git commit -qm head ) >/dev/null 2>&1
+rd106_head=$(cd "$RD106" && git rev-parse HEAD)
+cat > "$RV106_ROOT/items.md" <<'RD106EOF'
+# 코드 리뷰 리포트
+
+## 게시 항목
+
+### G1
+- **등급**: P1
+- **제목**: 둘째 줄이 대문자입니다
+- **파일**: f.txt
+- **줄**: 2
+- **면**: RIGHT
+- **근거**: 소문자여야 합니다.
+- **제안**: 소문자로 바꾸면 됩니다.
+
+### G2
+- **등급**: P0
+- **제목**: 파일 없는 구조 지적
+- **파일**: 없음
+- **줄**: 없음
+- **면**: RIGHT
+- **근거**: 전체 구조 문제입니다.
+- **제안**: 나누면 됩니다.
+
+### G3
+- **등급**: P1
+- **제목**: 지운 파일 지적
+- **파일**: del.txt
+- **줄**: 1
+- **면**: RIGHT
+- **근거**: 지우면 안 됩니다.
+- **제안**: 되살리면 됩니다.
+RD106EOF
+printf '# 코드 리뷰 리포트\n\n## 게시 항목\n' > "$RV106_ROOT/items0.md"
+rd106() {
+  # rd106 <출력> <방식> <의사표시> <P0> <P1> [현재 헤드] — P0·P1 이 모두 0 이면 항목 없는 리포트.
+  local it="$RV106_ROOT/items.md"
+  [ "$4$5" = 00 ] && it="$RV106_ROOT/items0.md"
+  "$RV106_RP" render --format "$RV106_FMT" --report "$it" --worktree "$RD106" \
+    --base "$rd106_base" --head "$rd106_head" --mode "$2" --stance "$3" --p0 "$4" --p1 "$5" \
+    --current-head "${6:-$rd106_head}" --out "$RV106_ROOT/$1" >/dev/null 2>&1
+}
+rd106 rq-rc.json 직접 허용 1 2; rd106 rq-ap.json 직접 허용 0 0; rd106 rq-lo.json 직접 낮춤 1 2
+rd106 rq-hd.json 보류 허용 1 2; rd106 rq-rc2.json 직접 허용 1 2
+rd106_ev() { jq -r 'if has("event") then .event else "없음" end' "$RV106_ROOT/$1" 2>/dev/null; }
+rd106_got="$(rd106_ev rq-rc.json)|$(rd106_ev rq-ap.json)|$(rd106_ev rq-lo.json)|$(rd106_ev rq-hd.json)"
+rd106_got="$rd106_got|$(jq -c '[.comments[]? | "\(.path):\(.line):\(.side)"]' "$RV106_ROOT/rq-rc.json" 2>/dev/null)"
+rd106_got="$rd106_got|$(jq -r '.body' "$RV106_ROOT/rq-rc.json" 2>/dev/null | { grep -c '파일 없는 구조 지적\|지운 파일 지적' || true; })"
+rd106_got="$rd106_got|$(jq -r '.commit_id' "$RV106_ROOT/rq-rc.json" 2>/dev/null)"
+check "108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다" "$rd106_got" \
+  "REQUEST_CHANGES|APPROVE|COMMENT|없음|[\"f.txt:2:RIGHT\"]|2|$rd106_head"
+check "108: 같은 입력의 두 렌더는 바이트가 같다" \
+  "$(cmp -s "$RV106_ROOT/rq-rc.json" "$RV106_ROOT/rq-rc2.json" && echo 같음)" "같음"
+rd106 rq-mv.json 직접 허용 1 2 1111111111111111111111111111111111111111
+check "108: 헤드가 움직인 렌더는 본문이 달라진다" \
+  "$([ "$(jq -r .body "$RV106_ROOT/rq-mv.json")" != "$(jq -r .body "$RV106_ROOT/rq-rc.json")" ] && echo 다름)" "다름"
+jq '{body, commit_id, state: "CHANGES_REQUESTED"}' "$RV106_ROOT/rq-rc.json" > "$RV106_ROOT/rv.json"
+jq '.comments' "$RV106_ROOT/rq-rc.json" > "$RV106_ROOT/cm.json"
+jq '.body += "x"' "$RV106_ROOT/rv.json" > "$RV106_ROOT/rv2.json"
+printf 'notjson\n' > "$RV106_ROOT/rv3.json"
+rd106_v() { "$RV106_RP" verify --request "$RV106_ROOT/rq-rc.json" --review "$RV106_ROOT/$1" --comments "$RV106_ROOT/cm.json" 2>/dev/null; }
+check "108: 대조는 일치·불일치·판독불가 셋을 낸다" "$(rd106_v rv.json)|$(rd106_v rv2.json)|$(rd106_v rv3.json)" "일치|불일치|판독불가"
+awk '{ print } /^자동 리뷰 결과를/ && !done { print "{모름}"; done = 1 }' "$RV106_FMT" > "$RV106_ROOT/badfmt.md"
+"$RV106_RP" render --settle --format "$RV106_ROOT/badfmt.md" --report "$RV106_ROOT/items.md" --head "$rd106_head" \
+  --p0 1 --p1 2 --out "$RV106_ROOT/s.json" >/dev/null 2>&1
+check "108: 모르는 자리표시자를 가진 문면 파일은 렌더가 거절한다" "$([ $? != 0 ] && echo 거절)" "거절"
+
+# 결과 미상 게시 — 5xx 와 id 없는 2xx 뒤의 재호출은 올라간 리뷰를 찾아 대조하고 다시 POST 하지 않는다 --
+rv106_new "결과 미상 게시" 직접 허용 '- `리뷰 PR` | 세그먼트=P3 | 대상=main | PR=9 | 작성자=other-dev | 드래프트=아니오 | 베이스=main'
+rv106_fetch P1 7; rv106_fetch P2 8
+rv106_plan P1; rv106_plan P2
+rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv106_cycle P1 "$rv106_h7"; rv106_cycle P2 "$rv106_h8"
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '557\n' > "$RV106_S/rid"; printf '422\n' > "$RV106_S/status"
+rv106_post P1
+rv106_pr=$(rv106_last '리뷰 게시')
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시')|$(sa_field "$rv106_pr" 대조)|$(sa_field "$rv106_pr" 응답)|$msg" in
+  "3|1|1|게시 실패|422|"*"리뷰 게시 거절"*) ok "108: 4xx 답의 게시는 게시 실패 행과 rc 3 이다" ;;
+  *) bad "108: 4xx 답의 게시는 게시 실패 행과 rc 3 이다" "rc=$rc posts=$(rv106_posts) $rv106_pr $msg" ;;
+esac
+printf 'none\n' > "$RV106_S/status"
+rv106_post P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시')|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|2|1|2|"*"리뷰 게시 거절"*) ok "108: 상태 줄 없는 답의 게시는 게시 행 없이 시도 행만 남긴다" ;;
+  *) bad "108: 상태 줄 없는 답의 게시는 게시 행 없이 시도 행만 남긴다" "rc=$rc posts=$(rv106_posts) $(rv106_last '리뷰 게시') $msg" ;;
+esac
+printf '500\n' > "$RV106_S/status"
+rv106_post P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시')|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|3|1|3|"*"리뷰 게시 거절"*) ok "108: 5xx 답의 게시는 게시 행 없이 시도 행만 남긴다" ;;
+  *) bad "108: 5xx 답의 게시는 게시 행 없이 시도 행만 남긴다" "rc=$rc posts=$(rv106_posts) $(rv106_last '리뷰 게시') $msg" ;;
+esac
+rm -f "$RV106_S/status"
+printf '[{"id":557,"user":{"login":"rv-bot"},"state":"APPROVED","commit_id":"%s"}]\n' "$rv106_h7" > "$RV106_S/reviews"
+rv106_post P1
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다" \
+  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|3|557|일치"
+printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '558\n' > "$RV106_S/rid"; printf 'noid\n' > "$RV106_S/status"
+printf '[]\n' > "$RV106_S/reviews"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+case "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" 세그먼트)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)|$msg" in
+  "3|4|P2|-|판독불가|"*"게시 대조"*) ok "108: id 없는 2xx 답의 게시는 판독불가 행과 rc 3 이다" ;;
+  *) bad "108: id 없는 2xx 답의 게시는 판독불가 행과 rc 3 이다" "rc=$rc posts=$(rv106_posts) $rv106_pr $msg" ;;
+esac
+rm -f "$RV106_S/status"
+rv106_post P2
+case "$rc|$(rv106_posts)|$msg" in
+  "3|4|"*"게시 대조"*) ok "108: id 없이 받은 게시의 리뷰를 찾지 못한 재호출은 POST 없이 rc 3 이다" ;;
+  *) bad "108: id 없이 받은 게시의 리뷰를 찾지 못한 재호출은 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
+esac
+printf '[{"id":558,"user":{"login":"rv-bot"},"state":"APPROVED","commit_id":"%s"}]\n' "$rv106_h8" > "$RV106_S/reviews"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: id 없이 받은 게시의 리뷰를 찾은 재호출은 POST 없이 대조한다" \
+  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|4|558|일치"
+
+# 계획하지 못한 세그먼트 — 계획 행 없는 리뷰 PR 세그먼트의 첫 행은 park 만 받는다 ------------------
+rv106_w3=$(rv106_wt P3)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 "워크트리=$rv106_w3" 선행=없음
+rv106_got="$rc"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=park "워크트리=$rv106_w3"
+check "108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다" \
+  "$rv106_got|$rc|$(sa_field "$(sa_seg_last P3)" 상태)" "3|0|park"
+
+# 리뷰어 런 밖 — 드라이버가 머지 행에 싣는 베이스 sha 는 호출자 값으로 받는다 ---------------------
+sa_new "드라이버 머지 행의 베이스 sha"
+sa_seg_row S106B ""
+rv106_t=$(sa_commit 작업)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S106B --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=리뷰중 워크트리="$SA_SEGWT" 선행=없음 "베이스 sha=$rv106_t"
+check "108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다" \
+  "$rc|$(sa_field "$(sa_seg_last S106B)" '베이스 sha')" "0|$rv106_t"
+
+unset -f gh rv106_new rv106_done rv106_wt rv106_fetch rv106_plan rv106_cycle rv106_post rv106_next rv106_posts rv106_n rv106_last rv106_ev rv106_rp rv106_bsb rd106 rd106_ev rd106_v
+unset RV106_STUB RV106_S
+if [ -n "$RV106_HAD_RW" ]; then export CC_GATE_TOKEN_RW="$RV106_PREV_RW"; else unset CC_GATE_TOKEN_RW; fi
+
+# ---------------------------------------------------------------------------
+# 108s. 리뷰어 런 — 닫힌 표마다 새 이름이 등재되었다
+# --- section: 108s | covers: gate_shift_halt_site_table, review_next, segment, pipeline-sidecar, router-lead-copy | anchors: 108s: 정지 자리 표에 리뷰 게시 세 자리가 추천 없음으로 있다, 108s: 라우터 두 사본이 정산 게시를 review-post 로 적는다, 108s: 계약 문서가 리뷰어 원장 행과 세그먼트 필드를 싣는다 ---
+#
+# 정적 판독. 리뷰어 런이 더한 이름들이 그것을 읽는 닫힌 표 각각에 실렸는지 한 번씩 본다 —
+# 정지 자리 표와 중단 답 사본, 다음 값 사본, 라우터 두 사본, 계약 문서의 원장 행·세그먼트
+# 필드·동결 집합, 게이트 머리말의 종료 코드 3 설명, 행위 종류 목록.
+# ---------------------------------------------------------------------------
+S106_SK="$repo_root/plugins/cc-cmds/skills"
+check "108s: 정지 자리 표에 리뷰 게시 세 자리가 추천 없음으로 있다" \
+  "$( { grep -cE '^(리뷰 게시 거절|게시 대조|보류 리뷰 선점)\|없음\|' "$GATE" || true; } )" "3"
+check "108s: 중단 답 사본이 세 자리의 재시도를 review-post 로 적는다" \
+  "$( { grep -c 'review-post' "$S106_SK/autopilot-router-shift/references/halt-answer-2.md" || true; } | awk '{ print ($1 > 0) ? "있음" : "없음" }')" "있음"
+check "108s: 다음 값 사본에 게시 가 있다" \
+  "$( { grep -cF '**`게시`**' "$S106_SK/autopilot-router-shift/references/review-next-1.md" || true; } | awk '{ print ($1 > 0) ? "있음" : "없음" }')" "있음"
+s106_rt=""
+for s106_f in "$S106_SK/autopilot-router-shift/SKILL.md" "$S106_SK/autopilot/references/router-lead-copy.md"; do
+  s106_rt="$s106_rt$( { grep -cF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 --reach 협업 -- 게시' "$s106_f" || true; } ):"
+  s106_rt="$s106_rt$( { grep -cF -- '-f body=' "$s106_f" || true; } ) "
+done
+check "108s: 라우터 두 사본이 정산 게시를 review-post 로 적는다" "$s106_rt" "1:0 1:0 "
+s106_sc="$S106_SK/_common/pipeline-sidecar.md"
+s106_got=""
+for s106_k in '`리뷰 게시 시도`' '`리뷰 게시`' '`리뷰 PR`' '`리뷰 깊이`' '`리뷰 문면`' '고정 헤드' '베이스 sha' '리뷰전용'; do
+  s106_got="$s106_got$( { grep -cF -- "$s106_k" "$s106_sc" || true; } | awk '{ print ($1 > 0) ? "o" : "x" }')"
+done
+check "108s: 계약 문서가 리뷰어 원장 행과 세그먼트 필드를 싣는다" "$s106_got" "oooooooo"
+check "108s: 게이트 머리말의 종료 코드 3 설명이 review-post 를 이름한다" \
+  "$(awk 'NR < 200 && /review-post/ { print "있음"; exit }' "$GATE")" "있음"
+check "108s: 행위 종류 목록이 review-post 를 싣는다" \
+  "$( { grep -cE '\|label-ack\|review-post\)' "$GATE" || true; } | awk '{ print ($1 > 0) ? "있음" : "없음" }')" "있음"
+unset S106_SK s106_rt s106_f s106_sc s106_got s106_k
+
+# ---------------------------------------------------------------------------
+# 108p. 리뷰어 계획 — 진입 검사기의 고정 틀과 라우팅 런에서만의 기동
+# --- section: 108p | group: tier | covers: tier, run_profile, check_manifest, hotfix_routing_check | anchors: 108p: 고정 틀의 리뷰어 계획이 통과한다, 108p: 고정 틀을 벗어난 리뷰어 계획은 거부된다, 108p: 라우팅 기록이 1 이 아닌 런의 리뷰어 기동은 거부된다, 108p: 라우팅 런의 리뷰어 기동은 통과한다, 108p: 문서 없는 입양 매니페스트는 라우팅 런에서만 기동한다 ---
+#
+# 리뷰어 계획은 진입 판단이 고정 틀을 채운다. 검사기의 (f) 가 그 틀의 키마다 위반 하나를
+# 내고, run.sh 는 라우팅 기록이 `1` 이 아닌 런에서 리뷰어 계획과, 설계 문서 없이 입양 행을
+# 실은 매니페스트를 기동하지 않는다. 101h 의 기동 도우미는 같은 절 본문에만 있어 여기서
+# 따로 만든다.
+# ---------------------------------------------------------------------------
+pre_tier
+RV106P_ES='{"judgment":"없음","classes":[],"paths":[],"source":"의도","rationale":"리뷰어 고정 틀"}'
+rv106p() {
+  jq -nc --argjson es "$RV106P_ES" \
+    '{design_required: false, design_tier_judged: "solo", design_tier: "solo", design_heavy_reasons: [],
+      estimated_files: 0, design_scope: "single", design_path: "none", run_profile: "reviewer",
+      work_class: "other", entry_skill: "review", anchor_kind: "intent",
+      steps: [{id: "R1", skill: "review", summary: "리뷰", depends_on: []}], unresolved: [],
+      enforcement_surface: $es, review_expand: [], review_expand_rationale: "리뷰어 고정 틀이라 기본 분야로 리뷰한다"} | '"$1"
+}
+tier_check "$(rv106p '.')"
+check "108p: 고정 틀의 리뷰어 계획이 통과한다" "$TIER_RC/$TIER_OUT" "0/"
+rv106p_fail=""
+for rv106p_u in '.design_required = true' '.estimated_files = 3' '.steps += [{id: "I1", skill: "implement", summary: "구현", depends_on: ["R1"]}]' \
+                '.entry_skill = "implement"' '.anchor_kind = "pr"' '.work_class = "feature"' '.design_path = "single"'; do
+  tier_check "$(rv106p "$rv106p_u")"
+  case "$TIER_RC/$TIER_OUT" in
+    0/*) rv106p_fail="$rv106p_fail[$rv106p_u 통과]" ;;
+    *"(f) 리뷰어 계획"*) ;;
+    *) rv106p_fail="$rv106p_fail[$rv106p_u $TIER_OUT]" ;;
+  esac
+done
+check "108p: 고정 틀을 벗어난 리뷰어 계획은 거부된다" "$rv106p_fail" ""
+rv106p_launch() {
+  # rv106p_launch <매니페스트 본문> <routing-guard 내용|없음> — rc/출력.
+  local d
+  d=$(mktemp -d "$WORK/rv106p.XXXXXX")
+  printf '%s\n' "$1" > "$d/manifest.md"
+  [ "$2" = "없음" ] || printf '%s\n' "$2" > "$d/routing-guard"
+  RV106P_OUT=$(bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; MANIFEST="$2"; RUN_DIR="$3"; hotfix_routing_check' \
+    _ "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$d/manifest.md" "$d" 2>&1)
+  RV106P_RC=$?
+}
+rv106p_m=$(printf '# 매니페스트\n\n## 실행 계획\n\n```json\n%s\n```\n' "$(rv106p '.')")
+rv106p_fail=""
+for rv106p_g in 없음 0; do
+  rv106p_launch "$rv106p_m" "$rv106p_g"
+  case "$RV106P_RC/$RV106P_OUT" in
+    0/*) rv106p_fail="$rv106p_fail[$rv106p_g 통과]" ;;
+    *리뷰어*라우팅*) ;;
+    *) rv106p_fail="$rv106p_fail[$rv106p_g $RV106P_OUT]" ;;
+  esac
+done
+check "108p: 라우팅 기록이 1 이 아닌 런의 리뷰어 기동은 거부된다" "$rv106p_fail" ""
+rv106p_launch "$rv106p_m" 1
+check "108p: 라우팅 런의 리뷰어 기동은 통과한다" "$RV106P_RC/$RV106P_OUT" "0/"
+rv106p_ad=$(printf '# 매니페스트\n\n## 요소\n**설계 문서**: (없음)\n\n## 실행 계획\n\n```json\n%s\n```\n\n## 인가\n- `세그먼트 입양` | 세그먼트=I1 | 브랜치=seg/20260101-0000abcd-I1 | 워크트리=/x/flow-run-20260101-0000abcd-I1 | 출처 런=20260101-0000abcd | PR=7\n' "$TIER_PLAN_SOLO")
+rv106p_launch "$rv106p_ad" 없음
+case "$RV106P_OUT" in *"입양 매니페스트는"*"라우팅"*) rv106p_got="$RV106P_RC" ;; *) rv106p_got=0 ;; esac
+rv106p_launch "$rv106p_ad" 1
+check "108p: 문서 없는 입양 매니페스트는 라우팅 런에서만 기동한다" "$( [ "$rv106p_got" != 0 ] && echo 거부)/$RV106P_RC" "거부/0"
+unset -f rv106p rv106p_launch
+unset RV106P_ES rv106p_fail rv106p_u rv106p_m rv106p_g rv106p_ad rv106p_got
+
+# ---------------------------------------------------------------------------
+# 109. 문서 없는 런의 입양 — 입양 행이 이름한 구현 단계가 그 워크트리의 대상에 계획된다
+# --- section: 109 | group: sa | covers: check_manifest, snapshot, gate_snapshot_slicing_json, gate_undeclared_segments | anchors: 109: 입양 행의 세그먼트가 구현 단계 id 가 아니면 거부된다, 109: 입양 행 없는 구현 단계가 둘이면 거부된다, 109: 입양 행 하나와 입양 행 없는 단계 하나의 계획은 검사를 지난다, 109: 문서 없는 계획의 슬라이싱은 입양 단계와 입양 행 없는 단계를 함께 낸다 ---
+#
+# 설계 문서 없는 매니페스트에서 `세그먼트 입양` 행은 계획의 구현 단계를 하나씩 이름하고,
+# 그런 행이 하나라도 있으면 입양 행 없는 구현 단계는 많아야 하나다. 행이 없으면 지금처럼 첫
+# 구현 단계 하나가 홈에 계획된다. 게이트는 진입마다 매니페스트 검사를 돌리므로 스냅숏 한
+# 번으로 검사의 처분을 잰다.
+# ---------------------------------------------------------------------------
+sa_new "문서 없는 입양" 리뷰없음
+rv107_row() {
+  # rv107_row <세그먼트> — 이 픽스처 저장소의 워크트리 하나를 이름한 입양 행.
+  printf -- '- `세그먼트 입양` | 세그먼트=%s | 브랜치=seg/20260101-0000abcd-%s | 워크트리=%s | 출처 런=20260101-0000abcd | PR=7' \
+    "$1" "$1" "$SA_ROOT/repo-run-20260101-0000abcd-$1"
+}
+rv107_snap() {
+  # rv107_snap <계획 json> <입양 행…> — 매니페스트를 다시 쓰고 스냅숏의 rc/출력.
+  local p="$1"; shift
+  SA_PLAN="$p"; SA_AUTH_RAW=$(printf '%s\n' "$@")
+  sa_manifest 리뷰없음
+  RV107_JSON=$( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>"$WORK/rv107.err" ); RV107_RC=$?
+  RV107_OUT="$(cat "$WORK/rv107.err")$RV107_JSON"
+}
+RV107_P2='{ "steps": [ { "id": "I1", "skill": "implement", "depends_on": [] }, { "id": "I2", "skill": "implement", "depends_on": [] } ] }'
+RV107_P3='{ "steps": [ { "id": "I1", "skill": "implement", "depends_on": [] }, { "id": "I2", "skill": "implement", "depends_on": [] }, { "id": "I3", "skill": "implement", "depends_on": [] } ] }'
+rv107_snap "$RV107_P2" "$(rv107_row X9)"
+case "$RV107_RC|$RV107_OUT" in
+  0*) bad "109: 입양 행의 세그먼트가 구현 단계 id 가 아니면 거부된다" "통과했다" ;;
+  *"구현 단계 id 가 아닙니다"*) ok "109: 입양 행의 세그먼트가 구현 단계 id 가 아니면 거부된다" ;;
+  *) bad "109: 입양 행의 세그먼트가 구현 단계 id 가 아니면 거부된다" "rc=$RV107_RC $RV107_OUT" ;;
+esac
+rv107_snap "$RV107_P3" "$(rv107_row I1)"
+case "$RV107_RC|$RV107_OUT" in
+  0*) bad "109: 입양 행 없는 구현 단계가 둘이면 거부된다" "통과했다" ;;
+  *"입양 행 없는 구현 단계가 2개"*) ok "109: 입양 행 없는 구현 단계가 둘이면 거부된다" ;;
+  *) bad "109: 입양 행 없는 구현 단계가 둘이면 거부된다" "rc=$RV107_RC $RV107_OUT" ;;
+esac
+rv107_snap "$RV107_P2" "$(rv107_row I1)"
+case "$RV107_OUT" in
+  *"구현 단계 id 가 아닙니다"*|*"입양 행 없는 구현 단계가"*)
+    bad "109: 입양 행 하나와 입양 행 없는 단계 하나의 계획은 검사를 지난다" "$RV107_OUT" ;;
+  *) ok "109: 입양 행 하나와 입양 행 없는 단계 하나의 계획은 검사를 지난다" ;;
+esac
+case "$(printf '%s' "$RV107_JSON" | jq -r '[.["슬라이싱"]["세그먼트"][]? | "\(.id):\(.["입양"] // "-")"] | sort | join(" ")' 2>/dev/null)" in
+  "I1:20260101-0000abcd I2:-") ok "109: 문서 없는 계획의 슬라이싱은 입양 단계와 입양 행 없는 단계를 함께 낸다" ;;
+  *) bad "109: 문서 없는 계획의 슬라이싱은 입양 단계와 입양 행 없는 단계를 함께 낸다" \
+       "rc=$RV107_RC 슬라이싱=$(printf '%s' "$RV107_JSON" | jq -c '.["슬라이싱"]' 2>&1) $RV107_OUT" ;;
+esac
+SA_PLAN=""; SA_AUTH_RAW=""
+unset -f rv107_row rv107_snap
+unset RV107_P2 RV107_P3 RV107_OUT RV107_JSON RV107_RC
 
 # ---------------------------------------------------------------------------
 # 106. 결정 보조 — 승인 사이드카의 결정 보조, 교대 정지 리스크 줄, 기다리는 결정 도우미
