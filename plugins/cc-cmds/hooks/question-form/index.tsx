@@ -213,8 +213,10 @@ async function rejoin($: Dollar) {
   else await $.store.delete(key)
 }
 
-// 묶음을 내는 결과: 기록을 소비했는지와, 소비했으면 제출한 텍스트.
-export type Delivery = { consumed: true; text: string } | { consumed: false }
+// 묶음을 내는 결과: 기록을 소비했는지와, 소비했으면 낸 텍스트. 엔진이 제출을 받지 않았으면
+// (훅의 거부, 서 있는 Stop, 호스트 한도) dropped 에 그 사유가 있다 — 기록은 소비됐지만 묶음은
+// 대화에 들어가지 않았다.
+export type Delivery = { consumed: true; text: string; dropped?: string } | { consumed: false }
 
 // 묶음을 내는 공통 경로: CAS 로 기록을 소비한 쪽만 제출한다. 묶음을 낸 자리에서 패널을
 // 닫고 기록을 버린다 — 답은 묶음이 들고 가고, 다음 질문지는 새로 열린다. take 는 열린
@@ -230,7 +232,7 @@ async function deliver($: Dollar, status: FormStatus, take: (r: FormRecord | und
   const text = bundleText(done.id, status, done.form, done.drafts)
   await landFocus($, null)
   await mirror($, null, done.sessionId)
-  await $.prompt.submit({ text })
+  const sent = await $.prompt.submit({ text })
   await $.ui.status(undefined)
   await $.ui.close({ id: PANE_ID })
   if (status === '제출') {
@@ -238,7 +240,9 @@ async function deliver($: Dollar, status: FormStatus, take: (r: FormRecord | und
     await $.ui.toast(sentToast(answered, total))
   }
 
-  return { consumed: true, text }
+  const dropped = sent?.drop
+
+  return dropped === undefined ? { consumed: true, text } : { consumed: true, text, dropped }
 }
 
 const finish = ($: Dollar, status: FormStatus) =>

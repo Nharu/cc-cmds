@@ -183,20 +183,21 @@ async function look($: Dollar) {
   if (first && (await isIdle($, await $.clock.now()))) await wake($, sid, first)
 }
 
-// 질문지 봉투 하나: 초안이 없을 때만 수령하고, 원자 갱신이 소비했을 때만 기록한다.
-// 소비하지 못했으면 방금 만든 수령 표지를 거둔다.
+// 질문지 봉투 하나: 초안이 없을 때만 수령하고, 원자 갱신이 소비했고 엔진이 제출을 받았을
+// 때만 기록한다. 소비하지 못했거나 제출이 드롭됐으면 방금 만든 수령 표지를 거둔다 — 드롭된
+// 묶음은 대화에 들어가지 않았으므로 적용 기록을 쓰면 제출되지 않은 답이 적용됨으로 나간다.
 async function applyForm($: Dollar, sid: string, target: FormTarget, form: NonNullable<ScanOut['form']>): Promise<boolean> {
   if (target.hasDraft) return false
   const stdin = JSON.stringify({ session_id: sid, form: formArg(target) })
   const picked = (await seam($, 'form-pick', [form.reply_id], stdin)).trim()
   if (picked !== form.reply_id) return false
   const delivered = await applyRemote($, target.form_id, form.picks)
-  if (delivered.consumed) {
+  if (delivered.consumed && delivered.dropped === undefined) {
     await seam($, 'form-record', [sid, form.reply_id], delivered.text)
     return true
   }
   await seam($, 'form-unpick', [form.reply_id], JSON.stringify({ session_id: sid }))
-  return false
+  return delivered.consumed
 }
 
 async function wake($: Dollar, sid: string, one: Wake) {

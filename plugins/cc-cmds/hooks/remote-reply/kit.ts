@@ -48,6 +48,8 @@ export function world(on: On, options: WorldOptions = {}) {
     locals: 0,
     lists: 0,
     submits: [] as Submitted[],
+    // 있으면 엔진이 제출을 받지 않고 이 사유로 드롭한다(서 있는 Stop, 호스트 한도).
+    submitDrop: undefined as string | undefined,
     toasts: [] as string[],
     refusedEvery: new Set<number>(),
   }
@@ -71,6 +73,7 @@ export function world(on: On, options: WorldOptions = {}) {
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('prompt.submit', (_$, e) => {
     w.submits.push({ text: e.text, origin: e.origin as Submitted['origin'] })
+    if (w.submitDrop !== undefined) return { drop: w.submitDrop }
 
     return { text: e.text, context: e.context }
   })

@@ -149,38 +149,62 @@ seam_create() {
 # Events and handled markers
 # --------------------------------------------------------------------------
 
-# seam_event <event_id> — print the event's slot and created_at_ms on one line
-# separated by a tab when the record is schema 1, accepts `option` and is not
-# handled by the reader rules; print nothing otherwise.
-seam_event() {
-  local ev="$1" f info slot created hd n
+# seam_event_record <event_id> — print the event's slot and created_at_ms on one
+# line separated by a tab when the record is schema 1 and accepts `option`;
+# print nothing otherwise. Handled markers are not read here.
+seam_event_record() {
+  local ev="$1" f
   case "$ev" in
     ''|.*|*/*) return 0 ;;
   esac
   f="$root/events/$ev.json"
   [ -f "$f" ] || return 0
-  info=$(jq -r 'select(.schema == 1 and ((.accepts // []) | type) == "array"
-                       and any(.accepts[]; . == "option")
-                       and (.slot | type) == "string" and (.slot | length) > 0
-                       and (.created_at_ms | type) == "number")
-                | "\(.slot)\t\(.created_at_ms)"' "$f" 2>/dev/null) || return 0
+  jq -r 'select(.schema == 1 and ((.accepts // []) | type) == "array"
+                and any(.accepts[]; . == "option")
+                and (.slot | type) == "string" and (.slot | length) > 0
+                and (.created_at_ms | type) == "number")
+         | "\(.slot)\t\(.created_at_ms)"' "$f" 2>/dev/null || return 0
+}
+
+# seam_handled_state <slot> <created_at_ms> — print `handled` when a handled
+# marker closes the event by the reader rules, `open` when none does, and
+# nothing when the markers could not be read. Every marker file goes to one jq
+# through a pipe as one line of its own, never as an argument, so the number of
+# markers is not bounded by the argument limit, and a file that does not parse
+# as one JSON object is skipped instead of stopping the read. A file's own
+# newlines are joined with spaces, which no JSON string can hold raw.
+seam_handled_state() {
+  local slot="$1" created="$2" hd="$root/handled"
+  if [ ! -d "$hd" ]; then
+    printf 'open\n'
+    return 0
+  fi
+  find "$hd" -maxdepth 1 -type f -name '*.json' ! -name '.*' \
+      -exec awk 'FNR == 1 && NR > 1 { printf "\n" } { printf "%s ", $0 } END { if (NR > 0) printf "\n" }' {} + 2>/dev/null \
+    | jq -nrR --arg slot "$slot" --argjson c "$created" '
+        if any(inputs | (try fromjson catch null)
+                      | select(type == "object" and .schema == 1
+                               and (.slot | type) == "string"
+                               and (.at_ms | type) == "number");
+               .slot as $m
+               | .at_ms > $c
+                 and ($m == $slot or (.prefix == true and ($slot | startswith($m)))))
+        then "handled" else "open" end' 2>/dev/null
+}
+
+# seam_event <event_id> — print the event's slot and created_at_ms on one line
+# separated by a tab when the record is schema 1, accepts `option` and is not
+# handled by the reader rules; print nothing otherwise. Markers that could not
+# be read reject the envelope: an unread marker may be the one that closed the
+# event, and applying an answer to a closed question is the worse outcome.
+seam_event() {
+  local info slot created state
+  info=$(seam_event_record "$1")
   [ -n "$info" ] || return 0
   slot=${info%%	*}
   created=${info#*	}
-  hd="$root/handled"
-  if [ -d "$hd" ]; then
-    set -- "$hd"/*.json
-    if [ -e "$1" ]; then
-      n=$(jq -s -r --arg slot "$slot" --argjson c "$created" '
-            [ .[] | select(type == "object" and .schema == 1
-                           and (.slot | type) == "string"
-                           and (.at_ms | type) == "number" and .at_ms > $c
-                           and (.slot == $slot
-                                or (.prefix == true and ($slot | startswith(.slot))))) ]
-            | length' "$@" 2>/dev/null) || return 0
-      [ "$n" = "0" ] || return 0
-    fi
-  fi
+  state=$(seam_handled_state "$slot" "$created") || return 0
+  [ "$state" = open ] || return 0
   printf '%s\t%s\n' "$slot" "$created"
 }
 
@@ -624,7 +648,10 @@ cmd_form_record() {
   IFS='	' read -r cell ev transport sender <<EOF
 $info
 EOF
-  slotinfo=$(seam_event "$ev")
+  # The submit has already run its prompt hooks, and the return hook marks a
+  # submitted bundle handled, so the event is read without the handled filter:
+  # for a form envelope the applied record, not the marker, decides the result.
+  slotinfo=$(seam_event_record "$ev")
   [ -n "$slotinfo" ] || return 0
   slot=${slotinfo%%	*}
   seam_record "$cell" "$sid" "$rid" "$ev" "$hash" "$transport" "$sender" "$now" || return 0

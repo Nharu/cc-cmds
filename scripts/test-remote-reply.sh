@@ -210,6 +210,64 @@ check "2 다중 선택 답 문자열" "$(out | jq -r '."이번 판에 무엇을 
 check "2 단일 선택 답" "$(out | jq -r '."결과를 어디에 남길까요?"')" "PR 본문"
 
 # ---------------------------------------------------------------------------
+# 2b. Handled markers that do not close the event leave it open: a later prefix
+#     marker of another slot, a file that does not parse, and more markers than
+#     one argument list holds. The matching prefix marker is the negative
+#     control: it closes the event.
+# ---------------------------------------------------------------------------
+# hmark <name> <slot> <prefix> — a marker later than every event of the suite.
+hmark() {
+  mkdir -p "$ROOT/handled"
+  jq -n --arg s "$2" --argjson p "$3" \
+    '{schema: 1, id: "h", host: "host-a1", at_ms: 2000, slot: $s, prefix: $p, cause: "return"}' > "$ROOT/handled/$1.json"
+}
+fresh
+env1=$(put_env "$AUQ1")
+put_event "$env1" "cc-cmds-session-ask-$SID1"
+hmark other "cc-cmds-active-notify-other@" true
+seam "$(auq_call "$env1" "$SID1")" commit "$SAFE1" "$RID_AUQ1"
+check "2b 다른 slot 의 나중 접두 표지가 있어도 수락" "$(out | jq -r '."어느 브랜치로 진행할까요?"' 2>/dev/null)" "새 브랜치"
+
+fresh
+env1=$(put_env "$AUQ1")
+put_event "$env1" "cc-cmds-session-ask-$SID1"
+mkdir -p "$ROOT/handled"
+printf '{"schema":1,"slot":' > "$ROOT/handled/broken.json"
+seam "$(auq_call "$env1" "$SID1")" commit "$SAFE1" "$RID_AUQ1"
+check "2b 파싱되지 않는 표지 파일이 있어도 수락" "$(out | jq -r '."어느 브랜치로 진행할까요?"' 2>/dev/null)" "새 브랜치"
+
+fresh
+env1=$(put_env "$AUQ1")
+put_event "$env1" "cc-cmds-session-ask-$SID1"
+hmark unrelated "cc-cmds-active-notify-other" false
+printf '{"schema":1,"slot":' > "$ROOT/handled/a-broken.json"
+hmark z-match "cc-cmds-session-ask-$SID1" false
+b=$(listing)
+seam "$(auq_call "$env1" "$SID1")" commit "$SAFE1" "$RID_AUQ1"
+rejected "2b 파싱되지 않는 표지 뒤의 정확 일치 표지가 사건을 닫음" "$b"
+
+fresh
+env1=$(put_env "$AUQ1")
+put_event "$env1" "cc-cmds-session-ask-$SID1" '.slot = "cc-cmds-active-notify-'"$SID1"'@x"'
+hmark match "cc-cmds-active-notify-$SID1@" true
+b=$(listing)
+seam "$(auq_call "$env1" "$SID1")" commit "$SAFE1" "$RID_AUQ1"
+rejected "2b 사건 slot 의 접두인 접두 표지가 사건을 닫음" "$b"
+
+fresh
+env1=$(put_env "$AUQ1")
+put_event "$env1" "cc-cmds-session-ask-$SID1"
+mkdir -p "$ROOT/handled"
+i=0
+while [ "$i" -lt 12000 ]; do
+  printf '{"schema":1,"id":"h%d","host":"host-a1","at_ms":2000,"slot":"cc-cmds-session-ask-other-%d","prefix":false,"cause":"return"}\n' \
+    "$i" "$i" > "$ROOT/handled/host-a1.17934999$(printf '%05d' "$i").0a0b0c0d.json"
+  i=$((i + 1))
+done
+seam "$(auq_call "$env1" "$SID1")" commit "$SAFE1" "$RID_AUQ1"
+check "2b 표지 1만 2천 개에서도 수락" "$(out | jq -r '."어느 브랜치로 진행할까요?"' 2>/dev/null)" "새 브랜치"
+
+# ---------------------------------------------------------------------------
 # 3. S-open pair — the record and hash match applied-sopen.json for the call
 #    of frame-sopen.jsonl.
 # ---------------------------------------------------------------------------
@@ -311,6 +369,25 @@ check "5 기록이 applied-form.json 과 같음(적용 시각 밖)" \
   "$(jq -cS 'del(.applied_at_ms)' "$(applied_of "$RID_FORM")" 2>/dev/null)" \
   "$(jq -cS 'del(.applied_at_ms)' "$FX/applied-form.json")"
 check "5 처리 표지 하나" "$(handled_count)" "1"
+
+# The submit runs the prompt hooks before form-record, and the return hook may
+# mark the event handled first — by the event's own slot or by a session prefix
+# marker. The applied record is written all the same.
+for kind in exact prefix; do
+  fresh
+  envf=$(put_env "$FORM")
+  put_event "$envf" "cc-cmds-session-ask-$SID1"
+  fin=$(jq -cn --arg sid "$SID1" --argjson f "$(jq -c '.target | {form_id, session_id, questions}' "$envf")" '{session_id: $sid, form: $f}')
+  seam "$fin" form-pick "$RID_FORM"
+  if [ "$kind" = exact ]; then hmark ret "cc-cmds-session-ask-$SID1" false
+  else hmark ret "cc-cmds-session-ask-" true; fi
+  seam "$(cat "$FX/submit-form.txt")" form-record "$SID1" "$RID_FORM"
+  check "5 제출 뒤 귀환 표지($kind)가 있어도 적용 기록을 씀" \
+    "$(jq -cS 'del(.applied_at_ms)' "$(applied_of "$RID_FORM")" 2>/dev/null)" \
+    "$(jq -cS 'del(.applied_at_ms)' "$FX/applied-form.json")"
+  check "5 제출 뒤 귀환 표지($kind)가 있어도 reply-applied 표지를 씀" \
+    "$(find "$ROOT/handled" -name '*.json' ! -name 'ret.json' -exec jq -r '.cause' {} + 2>/dev/null)" "reply-applied"
+done
 
 fresh
 envf=$(put_env "$FORM")
