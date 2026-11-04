@@ -1061,8 +1061,9 @@ written.
 **Handled markers.** Every acceptance reads the spool's handled markers by the
 shared reader rules. The marker files reach one `jq` through a pipe, one line
 per file, never as arguments, so their number is not bounded by the argument
-limit; a file that does not parse is skipped. Only when the markers cannot be
-read at all is the envelope refused.
+limit; a file that does not parse is skipped. When the listing or the read of
+any marker file fails (a file removed mid-read, a permission error), the
+envelope is refused, since the unread marker may be the one that closes it.
 
 **Run-address pick-up and wake.** `scan` also picks up run-address envelopes
 for runs whose lineage lists this session and returns the approvals still to

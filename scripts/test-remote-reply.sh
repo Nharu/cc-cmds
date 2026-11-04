@@ -244,7 +244,7 @@ printf '{"schema":1,"slot":' > "$ROOT/handled/a-broken.json"
 hmark z-match "cc-cmds-session-ask-$SID1" false
 b=$(listing)
 seam "$(auq_call "$env1" "$SID1")" commit "$SAFE1" "$RID_AUQ1"
-rejected "2b 파싱되지 않는 표지 뒤의 정확 일치 표지가 사건을 닫음" "$b"
+rejected "2b 파싱되지 않는 표지와 함께 있는 정확 일치 표지가 사건을 닫음" "$b"
 
 fresh
 env1=$(put_env "$AUQ1")
@@ -258,10 +258,12 @@ fresh
 env1=$(put_env "$AUQ1")
 put_event "$env1" "cc-cmds-session-ask-$SID1"
 mkdir -p "$ROOT/handled"
+# Long names keep the paths past the argument limit of macOS and Linux alike.
+pad=$(printf '%0200d' 0)
 i=0
 while [ "$i" -lt 12000 ]; do
   printf '{"schema":1,"id":"h%d","host":"host-a1","at_ms":2000,"slot":"cc-cmds-session-ask-other-%d","prefix":false,"cause":"return"}\n' \
-    "$i" "$i" > "$ROOT/handled/host-a1.17934999$(printf '%05d' "$i").0a0b0c0d.json"
+    "$i" "$i" > "$ROOT/handled/host-a1.$pad$(printf '%05d' "$i").json"
   i=$((i + 1))
 done
 seam "$(auq_call "$env1" "$SID1")" commit "$SAFE1" "$RID_AUQ1"
