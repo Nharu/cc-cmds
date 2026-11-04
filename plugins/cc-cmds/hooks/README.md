@@ -1051,8 +1051,18 @@ the mode makes the pick-up marker with `form-pick`, then calls the question
 form's `applyRemote`, which checks open, id and no draft, applies `choose` per
 question and `submit` in one state update and, when it consumed the record,
 sends the bundle as the submit button does. The submitted text goes to
-`form-record`; when nothing was consumed, `form-unpick` removes the marker and
-no record is written.
+`form-record`, which reads the event without the handled filter: the submit
+has already run the prompt hooks, whose return hook may have marked the event
+handled, and for a form envelope the applied record decides the result. When
+nothing was consumed, or the engine dropped the submit (a standing Stop, a host
+limit, a hook's refusal), `form-unpick` removes the marker and no record is
+written.
+
+**Handled markers.** Every acceptance reads the spool's handled markers by the
+shared reader rules. The marker files reach one `jq` through a pipe, one line
+per file, never as arguments, so their number is not bounded by the argument
+limit; a file that does not parse is skipped. Only when the markers cannot be
+read at all is the envelope refused.
 
 **Run-address pick-up and wake.** `scan` also picks up run-address envelopes
 for runs whose lineage lists this session and returns the approvals still to
