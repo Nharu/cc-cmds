@@ -13280,6 +13280,25 @@ gate_decl_norm() {
   decl_norm "$1"
 }
 
+gate_decl_row_fields() {
+  # gate_decl_row_fields <slice id> — the five declared values a planned row
+  # carries beside its declared set and digest, one `키=값` line each, in the row's
+  # order: `레포`, `선행`, `절단점`, then `머지 순서` and `리뷰 정책` when the
+  # document declares them. A read and nothing else, so the planning act and the
+  # re-declaration comparison derive these values the same way.
+  local seg="$1" k
+  printf '레포=%s\n' "$(slice_field "$DOC" "$seg" '레포')"
+  printf '선행=%s\n' "$(slice_field "$DOC" "$seg" '선행')"
+  printf '절단점=%s\n' "$(slice_field "$DOC" "$seg" '절단점')"
+  # `머지 순서` only when it is not `없음`, the condition the declaration
+  # digest uses for its sixth line: an absent field reads as `없음`.
+  k=$(slice_field "$DOC" "$seg" '머지 순서')
+  [ -z "$(gate_dep_tokens "$k")" ] || printf '머지 순서=%s\n' "$k"
+  k=$(slice_field "$DOC" "$seg" '리뷰 정책')
+  [ -z "$k" ] || printf '리뷰 정책=%s\n' "$k"
+  return 0
+}
+
 gate_prior_decl_whole() {
   # gate_prior_decl_whole <path> — the whole value a planned row clipped and kept
   # beside its run, printed; 1 when there is no such file to read.
@@ -14202,16 +14221,11 @@ gate_from_declaration() {
         selfland=1
       fi
       GATE_DECL_FIELDS=( "상태=계획됨" \
-        "선언 파일 집합=$(declared_field_for_row "$seg" "$(slice_field "$DOC" "$seg" '선언 파일')")" \
-        "레포=$(slice_field "$DOC" "$seg" '레포')" \
-        "선행=$(slice_field "$DOC" "$seg" '선행')" \
-        "절단점=$(slice_field "$DOC" "$seg" '절단점')" )
-      # `머지 순서` only when it is not `없음`, the condition the declaration
-      # digest uses for its sixth line: an absent field reads as `없음`.
-      k=$(slice_field "$DOC" "$seg" '머지 순서')
-      [ -z "$(gate_dep_tokens "$k")" ] || GATE_DECL_FIELDS+=( "머지 순서=$k" )
+        "선언 파일 집합=$(declared_field_for_row "$seg" "$(slice_field "$DOC" "$seg" '선언 파일')")" )
+      while IFS= read -r d; do
+        [ -z "$d" ] || GATE_DECL_FIELDS+=( "$d" )
+      done <<<"$(gate_decl_row_fields "$seg")"
       k=$(slice_field "$DOC" "$seg" '리뷰 정책')
-      [ -z "$k" ] || GATE_DECL_FIELDS+=( "리뷰 정책=$k" )
       GATE_DECL_FIELDS+=( "선언 다이제스트=$(slice_decl_digest "$DOC" "$seg")" )
       # `강제 표면` from the same declared files, through the classifier the run
       # hook sources: a slice that has to edit what the hook refuses says so on
@@ -19731,6 +19745,9 @@ gate_main() {
   # A plain global, reset here, so a value the caller's environment carries
   # never reaches the arm that reads it — only the argv flag below sets it.
   GATE_FROM_DECLARATION=""
+  # The marker that lets the segment arm take a re-declaration row. No flag sets
+  # it: only `gate_segment_redeclare` does, around its own write.
+  GATE_REDECLARE=""
   # The recovery marker of a review re-dispatch, the same way: only the argv
   # flag sets it, and only `act --kind skill` of a review takes it.
   GATE_RECOVERY=""
@@ -23661,10 +23678,14 @@ gate_halt_settle() {
     "effort=(미상)" "서빙 모델=(미상)" "재수렴 판정=$sverd" "종단 부류=정상 완료" \
     "실패 서명=$(failure_signature reconverge '정상 완료' - "$(stage_progress_of reconverge - -)")" \
     "정산=중단 답 줄 $ln" "관측=중단 답 정산"
-  gate_dispatch_lock_release
   # The same void the stream path makes after a re-convergence row, so the
-  # segment's next implement dispatch plans again.
+  # segment's next implement dispatch plans again, and the re-declaration behind
+  # it. The dispatch lock stays held across both: a dispatch of this key arriving
+  # between the row and the re-declaration would meet the old set and be parked
+  # for a state that lasts a moment.
   void_segment_plan "$rowseg"
+  gate_redeclare_after_reconverge "$rowseg" "$key#$attempt"
+  gate_dispatch_lock_release
   log "중단 답 정산 — $key#$attempt (원장 ${ln} 번째 줄, 재수렴 판정 $sverd)"
   return 0
 }
@@ -33355,7 +33376,50 @@ gate_record_row() {
           warn "segment 행의 「id」는 게이트가 --segment 에서 싣는 필드입니다 — 호출자가 넘길 수 없습니다"
           return "$GATE_EXIT_VOCAB"
         fi
+        # `재선언` names the re-convergence a re-declaration row answers, so a
+        # caller's value would claim a re-declaration nothing compared. The key's
+        # presence is refused, an empty value included.
+        if [ "${f%%=*}" = '재선언' ] && [ "${GATE_REDECLARE:-}" != "1" ]; then
+          warn "segment 행의 「재선언」은 게이트가 재수렴 뒤 세그먼트 행을 다시 쓸 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
       done
+
+      # A DECLARATION-GOVERNED SEGMENT'S SET IS THE GATE'S. Once a planning or
+      # re-declaration row stated it, a caller's `선언 파일 집합` is replaced by
+      # that value, so a later row spelling an old set cannot undo a re-declaration
+      # for the readers of the last value. A segment with no such row keeps what
+      # its caller writes, and a row that names no set still names none.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ] && [ "${GATE_REDECLARE:-}" != "1" ]; then
+        local dset_arg="" dset_seen="" dset_gate dset_whole dset_side
+        local -a dset_argv=()
+        dset_gate=$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" \
+                     | gate_rows_having_field '선언 다이제스트' \
+                     | gate_rows_having_field '선언 파일 집합' | tail -1 \
+                     | gate_rows_field_values '선언 파일 집합')
+        if [ -n "$dset_gate" ]; then
+          for f in "$@"; do
+            if [ "${f%%=*}" = '선언 파일 집합' ]; then
+              dset_seen=1
+              dset_arg="${f#*=}"
+              dset_argv+=( "선언 파일 집합=$dset_gate" )
+            else
+              dset_argv+=( "$f" )
+            fi
+          done
+          if [ -n "$dset_seen" ]; then
+            set -- "${dset_argv[@]}"
+            dset_whole="$dset_gate"
+            case "$dset_gate" in
+              *"(전체: "*")")
+                dset_side=${dset_gate##*"(전체: "}; dset_side=${dset_side%)}
+                dset_whole=$(gate_prior_decl_whole "$dset_side") || dset_whole="$dset_gate" ;;
+            esac
+            [ "$(gate_decl_norm "$dset_arg")" = "$(gate_decl_norm "$dset_whole")" ] \
+              || warn "segment 행의 「선언 파일 집합」은 게이트가 마지막으로 쓴 값으로 덮었습니다 — 세그먼트 $seg 에 넘긴 값이 그 값과 다릅니다"
+          fi
+        fi
+      fi
 
       local st wt
       st=$(gate_field_of '상태' "$@")
@@ -33407,8 +33471,10 @@ gate_record_row() {
       fi
       # `선언 다이제스트` is the gate's too: a later run takes a landing as built
       # to the declaration this digest names, so a caller's value would vouch
-      # for a declaration nothing read. Only the declaration-filled act writes it.
-      if [ "${GATE_FROM_DECLARATION:-}" != "1" ] && [ -n "$(gate_field_of '선언 다이제스트' "$@")" ]; then
+      # for a declaration nothing read. Only the declaration-filled act and the
+      # re-declaration write it.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ] && [ "${GATE_REDECLARE:-}" != "1" ] \
+         && [ -n "$(gate_field_of '선언 다이제스트' "$@")" ]; then
         warn "segment 행의 「선언 다이제스트」는 게이트가 동결 문서에서 계획 행을 채울 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB"
       fi
@@ -34084,8 +34150,9 @@ gate_record_row() {
       # classifier's count over the declared files, written by the
       # declaration-filled act, and a caller's value would claim — or deny —
       # an enforcement-surface edit nothing screened. The key's presence is
-      # refused, an empty value included, as `머지 대조` is above.
-      if [ "${GATE_FROM_DECLARATION:-}" != "1" ]; then
+      # refused, an empty value included, as `머지 대조` is above. The
+      # re-declaration writes it too, from the document's new declared files.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ] && [ "${GATE_REDECLARE:-}" != "1" ]; then
         for f in "$@"; do
           if [ "${f%%=*}" = '강제 표면' ]; then
             warn "segment 행의 「강제 표면」은 게이트가 동결 문서의 선언 파일을 분류해 적는 필드입니다 — 호출자가 넘길 수 없습니다"
@@ -36185,6 +36252,7 @@ EOF
       # replaces anyway.
       void_segment_plan "$seg"
       gate_append '재계획' "세그먼트=$seg" "재수렴=$rpc" "회차=$GATE_REPLAN_ROUND"
+      gate_redeclare_isolated "$seg" "$rpc"
       log "형제 재계획 — $seg ($rpc 인용, 회차 $GATE_REPLAN_ROUND): 다음 구현 파견은 과정 A 입니다"
       ;;
     apply-settle-confirm)
@@ -38811,6 +38879,386 @@ gate_apply_segment_row() {
   gate_record_row 'segment' "$seg" "$alias" "$@" ${deps:+"선행=$deps"} || rc=$?
   GATE_APPLY_ARM=""
   return "$rc"
+}
+
+gate_redeclare_block() {
+  # gate_redeclare_block <alias> <segment> <원인> <사유> [<재개 명령>] — the row
+  # that stops a segment a re-declaration could not settle: cone-scope, anchored
+  # on the segment key, so `cone_blocks[]` shows it. Written directly, because
+  # `gate_record_cone` does not take `원인=판정 불가`. A reason already on the
+  # ledger for this segment is not written twice. Nothing is announced here: the
+  # row is the record, and the dispatch comparison is what actually holds the
+  # segment.
+  local al="$1" seg="$2" cause="$3" why resume="${5:-}"
+  why=$(gate_row_safe "$4" 480)
+  [ -n "$resume" ] \
+    || resume='사람이 원인을 정리한 뒤 다시 킥오프 — 다른 슬라이스는 이 런에서 계속 갑니다'
+  gate_has_row 'blocked' "앵커 세그먼트=$seg" '재킥 원인=슬라이싱' "사유=$why" && return 0
+  gate_append 'blocked' "대상=${al:--}" "세그먼트=$seg" "앵커 세그먼트=$seg" "스코프=cone" \
+    "원인=$cause" "사유=$why" "관측=$(now_iso)" "재개 명령=$resume" "재킥 원인=슬라이싱"
+}
+
+gate_redeclare_csv() {
+  # gate_redeclare_csv <value> — a normalized declared set, one element per line.
+  printf '%s' "$1" | tr ',' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | { grep -v '^$' || true; }
+}
+
+gate_redeclare_range_paths() {
+  # gate_redeclare_range_paths <directory> <base end> <tip> — the paths the tip
+  # changed since its merge base with the base end, one per line. 2 when that
+  # cannot be read. The merge base follows `gate_surface_provenance`: no common
+  # history compares from the empty tree, and a shallow repository cannot say.
+  local dir="$1" bend="$2" tip="$3" mb mbrc=0
+  mb=$(cd "$dir" && git merge-base "$bend" "$tip" 2>/dev/null) || mbrc=$?
+  if [ "$mbrc" = 1 ] && [ -z "$mb" ]; then
+    [ "$(cd "$dir" && git rev-parse --is-shallow-repository 2>/dev/null)" != true ] || return 2
+    mb=$(cd "$dir" && git hash-object -t tree /dev/null 2>/dev/null) || return 2
+  elif [ "$mbrc" != 0 ]; then
+    return 2
+  fi
+  [ -n "$mb" ] || return 2
+  ( cd "$dir" && git -c core.quotePath=false diff -z --name-only --no-renames "$mb" "$tip" ) 2>/dev/null \
+    | tr '\0' '\n'
+  [ "${PIPESTATUS[0]}" = 0 ] || return 2
+}
+
+gate_redeclare_base_end() {
+  # gate_redeclare_base_end <directory> <alias> <segment> — the base end a
+  # segment's changes are measured from, in the order
+  # `gate_surface_provenance` looks: the remote-tracking ref, the local ref on a
+  # repository with no remote, then the segment row's `베이스 sha`. 1 when none
+  # of them reads.
+  local dir="$1" al="$2" seg="$3" bref bend=""
+  if [ -n "$al" ]; then
+    bref=$(base_branch "$al" 2>/dev/null) || bref=''
+    if [ -n "$bref" ]; then
+      if (cd "$dir" && git remote get-url origin >/dev/null 2>&1); then
+        bref="refs/remotes/origin/$bref"
+      else
+        bref="refs/heads/$bref"
+      fi
+      bend=$(cd "$dir" && git rev-parse --verify --quiet "$bref^{commit}" 2>/dev/null) || bend=''
+    fi
+  fi
+  [ -n "$bend" ] || bend=$(gate_segment_field "$seg" '베이스 sha')
+  [ -n "$bend" ] || return 1
+  printf '%s' "$bend"
+}
+
+gate_redeclare_changed_paths() {
+  # gate_redeclare_changed_paths <segment> <alias> — every path the segment has
+  # changed, one per line: its branch since the merge base and its uncommitted
+  # tracked changes. An untracked file is not counted, because no turn commits
+  # one outside the declaration and it never lands. 2 when that cannot be read.
+  #
+  # With no worktree to read, a segment that never left `계획됨` and has no
+  # stage-result row has changed nothing. Any other falls back to the commits of
+  # its branch, read from the target's checkout.
+  local seg="$1" al="$2" wt bend root br tip wal
+  wt=$(gate_segment_worktree "$seg")
+  case "$wt" in ''|-) wt='' ;; esac
+  if [ -n "$wt" ] && [ -d "$wt" ]; then
+    wal=$(gate_surface_alias_of "$wt") || wal=''
+    bend=$(gate_redeclare_base_end "$wt" "$wal" "$seg") || return 2
+    gate_redeclare_range_paths "$wt" "$bend" HEAD || return 2
+    ( cd "$wt" && git -c core.quotePath=false status --porcelain -z --no-renames --untracked-files=no ) 2>/dev/null \
+      | tr '\0' '\n' | cut -c4-
+    [ "${PIPESTATUS[0]}" = 0 ] || return 2
+    return 0
+  fi
+  if [ -z "$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" | gate_rows_field_ne '상태' '계획됨')" ] \
+     && [ -z "$( { gate_rows 'stage-result' || true; } | gate_rows_field_eq '세그먼트' "$seg")" ]; then
+    return 0
+  fi
+  br=$(gate_segment_branch "$seg")
+  [ -n "$br" ] && [ "$br" != "-" ] || return 2
+  root=$(alias_root "$al" 2>/dev/null) || return 2
+  [ -n "$root" ] && [ -d "$root" ] || return 2
+  tip=$(cd "$root" && git rev-parse --verify --quiet "refs/heads/$br^{commit}" 2>/dev/null) || return 2
+  bend=$(gate_redeclare_base_end "$root" "$al" "$seg") || return 2
+  gate_redeclare_range_paths "$root" "$bend" "$tip" || return 2
+}
+
+gate_redeclare_caught() {
+  # gate_redeclare_caught <old set> <new set> <changed paths> — the changed paths
+  # an element only the old set had covers and no element of the new set does,
+  # once each, in the prefix rule of `gate_fileset_escape`.
+  local old new f p in_new in_gone
+  old=$(gate_redeclare_csv "$1")
+  new=$(gate_redeclare_csv "$2")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    in_new=0
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      case "$f" in "$p"|"$p"*) in_new=1 ;; esac
+    done <<<"$new"
+    [ "$in_new" = 0 ] || continue
+    in_gone=0
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      grep -qxF -- "$p" <<<"$new" && continue
+      case "$f" in "$p"|"$p"*) in_gone=1 ;; esac
+    done <<<"$old"
+    [ "$in_gone" = 0 ] || printf '%s\n' "$f"
+  done <<<"$3" | awk '!s[$0]++'
+}
+
+gate_redeclare_moved_field() {
+  # gate_redeclare_moved_field <segment> <plan row> — the first declared field
+  # other than `선언 파일` that the document moved against the segment's planning
+  # row, by name; empty when none did. The planning row and not the last row:
+  # what a router added to `선행` or joined to `리뷰 정책` later is not the
+  # document moving.
+  local seg="$1" base="$2" k doc_v base_v doc_dep base_dep doc_mo base_mo di bi lines
+  lines=$(gate_decl_row_fields "$seg")
+  for k in '레포' '절단점'; do
+    doc_v=$(printf '%s\n' "$lines" | sed -n "s/^$k=//p")
+    base_v=$(gate_row_field "$base" "$k")
+    [ "$(gate_decl_norm "$doc_v")" = "$(gate_decl_norm "$base_v")" ] || { printf '%s' "$k"; return 0; }
+  done
+  doc_dep=$(gate_dep_tokens "$(printf '%s\n' "$lines" | sed -n 's/^선행=//p')" | tr ' ' '\n' | { grep -v '^$' || true; } | sort -u)
+  base_dep=$(gate_dep_tokens "$(gate_row_field "$base" '선행')" | tr ' ' '\n' | { grep -v '^$' || true; } | sort -u)
+  [ "$doc_dep" = "$base_dep" ] || { printf '선행'; return 0; }
+  doc_mo=$(gate_dep_tokens "$(printf '%s\n' "$lines" | sed -n 's/^머지 순서=//p')" | tr ' ' '\n' | { grep -v '^$' || true; } | sort -u)
+  base_mo=$(gate_dep_tokens "$(gate_row_field "$base" '머지 순서')" | tr ' ' '\n' | { grep -v '^$' || true; } | sort -u)
+  doc_mo=$(comm -23 <(printf '%s\n' "$doc_mo") <(printf '%s\n' "$doc_dep"))
+  base_mo=$(comm -23 <(printf '%s\n' "$base_mo") <(printf '%s\n' "$base_dep"))
+  [ "$doc_mo" = "$base_mo" ] || { printf '머지 순서'; return 0; }
+  doc_v=$(printf '%s\n' "$lines" | sed -n 's/^리뷰 정책=//p')
+  base_v=$(gate_row_field "$base" '리뷰 정책')
+  di=$(review_policy_index "${doc_v:-선리뷰후머지}") || { printf '리뷰 정책'; return 0; }
+  bi=$(review_policy_index "${base_v:-선리뷰후머지}") || bi=0
+  [ "$di" -le "$bi" ] || printf '리뷰 정책'
+  return 0
+}
+
+gate_redeclare_carry_fields() {
+  # gate_redeclare_carry_fields <row> — the fields a re-declaration row takes
+  # from the segment's last row, one `키=값` per line. Left out: what the ledger
+  # writer stamps, the fields this row states anew, those the segment arm carries
+  # or derives itself, and those it refuses from a caller.
+  printf '%s\n' "$1" | awk '
+    { n = split($0, f, "|")
+      for (i = 2; i <= n; i++) {
+        s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
+        p = index(s, "=")
+        if (p == 0) continue
+        k = substr(s, 1, p - 1)
+        if (k == "교대" || k == "id" || k == "prev" || k == "상태" || k == "선언 파일 집합" \
+            || k == "선언 다이제스트" || k == "강제 표면" || k == "재선언" || k == "머지 순서" \
+            || k == "리뷰 정책" || k == "출처" || k == "적용" || k == "인가면" || k == "머지 대조" \
+            || k == "최종 사이클" || k == "수렴" || k == "정산 주체" || k == "정산 근거" \
+            || k == "정산 판정" || k == "재실행 근거" || k == "감독 토큰" || k == "이전 런") continue
+        print s
+      } }'
+}
+
+gate_segment_redeclare() {
+  # gate_segment_redeclare <segment> <스테이지 키>#<실행 버전> — after a
+  # re-convergence voided the segment's plan, bring the segment's rows to the
+  # declared set the frozen document now states, so every reader of the last
+  # value reads the new set.
+  #
+  # IT NEVER REPORTS BY ITS STATUS. What stops a segment is the `blocked` row this
+  # writes and the dispatch comparison; each call site runs this isolated and
+  # ignores what comes back, and the re-convergence row already written stands
+  # whatever happens here.
+  local seg="$1" cite="$2" key ver srow rows st al dd last_dd base
+  local new_raw new_norm old_whole old_ok=1 moved cause="" caught="" paths prc=0 joined why
+  key=${cite%#*}; ver=${cite##*#}
+
+  srow=$( { gate_rows 'stage-result' || true; } | gate_rows_field_eq '스테이지' "$key" \
+          | gate_rows_field_eq '실행 버전' "$ver" | gate_rows_field_eq '종류' 'reconverge' | tail -1)
+  if [ "$(gate_row_field "$srow" '종단 부류')" != '정상 완료' ]; then
+    warn "재선언 생략 — 세그먼트 $seg: 재수렴 $cite 의 종단 부류가 정상 완료가 아닙니다"
+    return 0
+  fi
+  st=$(gate_segment_field "$seg" '상태')
+  case "$st" in
+    계획됨|실행중|리뷰중) : ;;
+    *) warn "재선언 생략 — 세그먼트 $seg 의 마지막 상태 「${st:-없음}」 에서는 재선언하지 않습니다"
+       return 0 ;;
+  esac
+  if ! { [ -n "${DOC:-}" ] && grep -qxF '**상태**: 동결됨' "$DOC" 2>/dev/null \
+         && grep -qxF "$seg" <<<"$(slice_ids "$DOC" 2>/dev/null)"; }; then
+    warn "재선언 미룸 — 세그먼트 $seg: 문서가 동결 상태가 아니거나 이 세그먼트를 선언하지 않습니다. 어긋나면 다음 구현 파견이 막힙니다"
+    return 0
+  fi
+
+  rows=$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg")
+  dd=$(slice_decl_digest "$DOC" "$seg")
+  last_dd=$(printf '%s\n' "$rows" | gate_rows_field_values '선언 다이제스트' | awk 'NF { v = $0 } END { print v }')
+  [ "$dd" != "$last_dd" ] || return 0
+
+  al=$(gate_slice_alias "$seg") || al=""
+  base=$(printf '%s\n' "$rows" | gate_rows_field_eq '상태' '계획됨' | gate_rows_having_field '선언 다이제스트' | sed -n 1p)
+  if [ -z "$base" ]; then
+    warn "재선언 불가 — 세그먼트 $seg 에 선언 다이제스트를 실은 계획 행이 없습니다"
+    gate_redeclare_block "$al" "$seg" '막힘' "재수렴 $cite 뒤 재선언 불가 — 세그먼트 $seg 에 선언 다이제스트를 실은 계획 행이 없습니다"
+    return 0
+  fi
+  moved=$(gate_redeclare_moved_field "$seg" "$base")
+  if [ -n "$moved" ]; then
+    warn "재선언 생략 — 세그먼트 $seg: 재수렴이 「${moved}」 도 움직였습니다. 선언 파일 집합이 어긋나면 다음 구현 파견이 막힙니다"
+    return 0
+  fi
+
+  new_raw=$(slice_field "$DOC" "$seg" '선언 파일')
+  new_norm=$(gate_decl_norm "$new_raw")
+  old_whole=$(gate_segment_declared_whole "$seg") || old_ok=0
+  if [ "$old_ok" = 1 ]; then
+    [ "$old_whole" != "$new_norm" ] || return 0
+    if [ -n "$(gate_redeclare_csv "$old_whole" | { grep -vxF -f <(gate_redeclare_csv "$new_norm") || true; })" ]; then
+      paths=$(gate_redeclare_changed_paths "$seg" "$al") || prc=$?
+      if [ "$prc" = 0 ]; then
+        caught=$(gate_redeclare_caught "$old_whole" "$new_norm" "$paths")
+      else
+        cause='판정 불가'
+      fi
+    fi
+  else
+    cause='판정 불가'
+  fi
+
+  local park_why resume
+  resume='사람이 그 경로의 변경을 정리한 뒤 다시 킥오프 — 다른 슬라이스는 이 런에서 계속 갑니다'
+  if [ -n "$caught" ]; then
+    joined=$(printf '%s\n' "$caught" | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')
+    park_why="재수렴이 선언에서 뺀 경로를 세그먼트가 이미 바꿨습니다 — $joined"
+    cause='막힘'
+  elif [ -n "$cause" ]; then
+    park_why="재수렴 $cite 가 바꾼 선언과 세그먼트 $seg 의 변경을 맞대어 볼 수 없습니다 — 옛 선언 집합이나 바뀐 경로를 판독하지 못해 판정 불가입니다"
+  else
+    park_why=""
+  fi
+
+  local wt
+  wt=$(gate_segment_worktree "$seg")
+  if [ -z "$wt" ] || [ "$wt" = "-" ] || [ ! -d "$wt" ]; then
+    why="재수렴 $cite 뒤 재선언 불가 — 세그먼트 $seg 의 기록된 워크트리 「${wt:-없음}」 가 없습니다"
+    [ -z "$park_why" ] || why="$why · $park_why"
+    gate_redeclare_block "$al" "$seg" "${cause:-막힘}" "$why" "$resume"
+    return 0
+  fi
+  if [ -z "$al" ]; then
+    gate_redeclare_block "" "$seg" "${cause:-막힘}" "재수렴 $cite 뒤 재선언 불가 — 슬라이스 $seg 의 레포가 매니페스트의 어느 대상도 아닙니다" "$resume"
+    return 0
+  fi
+
+  # THE LONG VALUE'S CHECKS COME BEFORE ANY FILE IS WRITTEN, with the bound the
+  # reader holds a sidecar to: a sidecar it would refuse is one no reader can use.
+  local nb
+  nb=$(printf '%s' "$new_raw" | wc -c | tr -d ' ')
+  if [ "$((nb + 1))" -gt 65536 ]; then
+    gate_redeclare_block "$al" "$seg" "${cause:-막힘}" "재수렴 $cite 뒤 재선언 불가 — 세그먼트 $seg 의 새 선언이 ${nb} 바이트로 사이드카 상한을 넘습니다" "$resume"
+    return 0
+  fi
+  if [ "$nb" -gt "$RUN_FIELD_MAX" ]; then
+    case "/${RUN_DIR:-}/$key/" in
+      */../*)
+        gate_redeclare_block "$al" "$seg" "${cause:-막힘}" "재수렴 $cite 뒤 재선언 불가 — 사이드카 경로가 절대 경로 검증을 넘지 못합니다" "$resume"
+        return 0 ;;
+    esac
+    case "${RUN_DIR:-}" in
+      /*) : ;;
+      *) gate_redeclare_block "$al" "$seg" "${cause:-막힘}" "재수렴 $cite 뒤 재선언 불가 — 사이드카 경로가 절대 경로 검증을 넘지 못합니다" "$resume"
+         return 0 ;;
+    esac
+    case "$key" in
+      */*) gate_redeclare_block "$al" "$seg" "${cause:-막힘}" "재수렴 $cite 뒤 재선언 불가 — 사이드카 경로가 절대 경로 검증을 넘지 못합니다" "$resume"
+           return 0 ;;
+    esac
+  fi
+  local field
+  field=$(declared_field_for_row "$seg" "$new_raw" "declared-redeclare-$key-$ver")
+  if [ "$nb" -gt "$RUN_FIELD_MAX" ]; then
+    case "$field" in
+      *"(전체: "*) : ;;
+      *) gate_redeclare_block "$al" "$seg" "${cause:-막힘}" "재수렴 $cite 뒤 재선언 불가 — 세그먼트 $seg 의 새 선언을 사이드카에 쓰지 못했습니다" "$resume"
+         return 0 ;;
+    esac
+  fi
+
+  local -a sdf=() carry=()
+  local d new_st rc=0
+  while IFS= read -r d; do [ -z "$d" ] || sdf+=("$d"); done <<<"$(slice_decl_files "$DOC" "$seg")"
+  while IFS= read -r d; do [ -z "$d" ] || carry+=("$d"); done <<<"$(gate_redeclare_carry_fields "$(printf '%s\n' "$rows" | tail -1)")"
+  new_st="$st"
+  [ -z "$park_why" ] || new_st='park'
+  GATE_REDECLARE=1
+  gate_record_row 'segment' "$seg" "$al" "상태=$new_st" "선언 파일 집합=$field" "선언 다이제스트=$dd" \
+    "강제 표면=$(gate_surface_stamp ${sdf[@]+"${sdf[@]}"})" "재선언=$cite" \
+    ${carry[@]+"${carry[@]}"} || rc=$?
+  GATE_REDECLARE=""
+  if [ -n "$park_why" ]; then
+    [ "$rc" = 0 ] || park_why="$park_why (재선언 park 행 기록 실패)"
+    gate_redeclare_block "$al" "$seg" "$cause" "$park_why" "$resume"
+  elif [ "$rc" != 0 ]; then
+    gate_redeclare_block "$al" "$seg" '막힘' "재수렴 $cite 뒤 재선언 행을 쓰지 못했습니다 — 세그먼트 $seg, 코드 $rc" "$resume"
+  fi
+  return 0
+}
+
+gate_redeclare_isolated() {
+  # gate_redeclare_isolated <segment> <cite> — one re-declaration in a subshell,
+  # so a `die` inside it (a ledger write that failed) ends the subshell and not
+  # the act or supervisor that already wrote the re-convergence row. A subshell
+  # does not inherit the EXIT trap, so the settings lock the segment arm may hold
+  # is released by a trap of its own. Its stdout goes to stderr: a caller's
+  # stdout is not this function's to write on.
+  ( trap 'gate_settings_lock_release' EXIT; gate_segment_redeclare "$1" "$2" ) >&2 \
+    || warn "재선언이 끝까지 돌지 못했습니다 — 세그먼트 $1 (재수렴 $2). 어긋나면 다음 구현 파견이 막힙니다"
+  return 0
+}
+
+gate_redeclare_after_reconverge() {
+  # gate_redeclare_after_reconverge <row segment> <cite> — the segment the
+  # re-convergence row names, or for a run-scope one (`-`) every segment still in
+  # a state a re-declaration can touch. A run-scope document change can move any
+  # slice, and a segment outside those states is skipped quietly here because it
+  # was never a candidate.
+  local rowseg="$1" cite="$2" s
+  if [ "$rowseg" != "-" ]; then
+    gate_redeclare_isolated "$rowseg" "$cite"
+    return 0
+  fi
+  for s in $(gate_segment_ids); do
+    case "$(gate_segment_field "$s" '상태')" in
+      계획됨|실행중|리뷰중) gate_redeclare_isolated "$s" "$cite" ;;
+    esac
+  done
+  return 0
+}
+
+gate_segment_decl_dispatch_check() {
+  # gate_segment_decl_dispatch_check <verb> <alias> <segment> — 0 when an
+  # implement dispatch of this segment may go; 1 when the set its rows last
+  # carried differs from what the document declares now, or cannot be read. The
+  # last place an old declaration can be stopped, whichever way the re-declaration
+  # missed it. A dry run records nothing.
+  local verb="$1" alias="$2" seg="$3" branch defects have new
+  branch=$(gate_slicing_branch)
+  case "$branch" in
+    선언통치) : ;;
+    선언불완전)
+      defects=$(gate_decl_defect_slices)
+      [ -n "$defects" ] || return 0
+      case " $defects " in *" $seg "*) return 0 ;; esac ;;
+    *) return 0 ;;
+  esac
+  grep -qxF "$seg" <<<"$(slice_ids "$DOC" 2>/dev/null)" || return 0
+  new=$(gate_decl_norm "$(slice_field "$DOC" "$seg" '선언 파일')")
+  if ! have=$(gate_segment_declared_whole "$seg"); then
+    warn "세그먼트 $seg 의 선언 파일 집합을 판독할 수 없어 구현을 보내지 않습니다"
+    [ "$verb" != "act" ] || gate_redeclare_block "$alias" "$seg" '판정 불가' "세그먼트 $seg 의 선언 파일 집합을 판독할 수 없어 구현을 보내지 않습니다"
+    return 1
+  fi
+  [ "$have" != "$new" ] || return 0
+  warn "세그먼트 $seg 의 행이 실은 선언 파일 집합이 동결 문서의 선언과 다릅니다 — 구현을 보내지 않습니다"
+  [ "$verb" != "act" ] || gate_redeclare_block "$alias" "$seg" '막힘' "세그먼트 $seg 의 행이 실은 선언 파일 집합이 동결 문서의 선언과 달라 구현을 보내지 않습니다"
+  return 1
 }
 
 gate_apply_worktree_drop() {
@@ -43582,6 +44030,13 @@ gate_verb_act() {
       warn "$(visual_approval_route_hint) — 그 뒤 디스패치하세요"
       exit "$GATE_EXIT_RULE"
     fi
+  fi
+  # AN IMPLEMENT DISPATCH GOES OUT ONLY ON THE SET THE DOCUMENT DECLARES NOW. The
+  # stage's prompt and every reader of the segment's rows name the set the rows
+  # carry, so a stage sent on an older one stops on the document at its first edit.
+  if [ "$kind" = "skill" ] && [ "${1:-}" = "implement" ] && [ "$segment" != "-" ] \
+     && ! gate_segment_decl_dispatch_check "$verb" "$alias" "$segment"; then
+    exit "$GATE_EXIT_PARK"
   fi
 
   # THE DOCUMENT ARGUMENT AND THE CYCLE BUDGET, the two facts the driver fixes
@@ -51559,8 +52014,12 @@ gate_record_stage_outcome() {
   # Every design attempt leaves its `토론 패스` row right after its own row.
   [ "$kind" != "design" ] || gate_record_discussion_passes "$seg" "$attempt"
   # A re-convergence row voids the segment's plan; the file goes too, or the
-  # plan-file fallback above would put the void digest back on the next row.
-  [ "$kind" != "reconverge" ] || void_segment_plan "$rowseg"
+  # plan-file fallback above would put the void digest back on the next row. The
+  # segment's rows then follow the set the document declares now.
+  if [ "$kind" = "reconverge" ]; then
+    void_segment_plan "$rowseg"
+    gate_redeclare_after_reconverge "$rowseg" "$seg#$attempt"
+  fi
 
   # A TERMINAL CLASS THAT LEFT EVIDENCE OF REACHING A POINT NEEDING A PERSON is
   # announced the instant the row is seated — before the cost block, because the
@@ -53823,7 +54282,12 @@ gate_snapshot_segments_json() {
            # implement dispatch line, spelled as the driver spells its own.
            sland=false
            gate_segment_landed_now "$sid" && sland=true
-           printf '    {"id": "%s", "상태": "%s", "적용": "%s", "착지": %s, "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s", "브랜치": %s, "HEAD": %s, "원격 팁": %s, "PR": {"번호": %s, "상태": %s, "HEAD": %s}, "원격 단계": "%s", "리뷰 줄": %s, "강제 표면": "%s", "좌석 적용 커밋": "%s"},\n' \
+           # `선언 파일` is what a shift copies into `· 선언 파일:`, in the spelling
+           # the re-entry frame gives it. The unreadable token and the empty set
+           # are told apart here by the reader's status, which
+           # `gate_segment_decl_whole` swallows.
+           sdeclared=$(gate_segment_declared_whole "$sid") || sdeclared='판정불가'
+           printf '    {"id": "%s", "상태": "%s", "적용": "%s", "착지": %s, "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s", "브랜치": %s, "HEAD": %s, "원격 팁": %s, "PR": {"번호": %s, "상태": %s, "HEAD": %s}, "원격 단계": "%s", "리뷰 줄": %s, "강제 표면": "%s", "좌석 적용 커밋": "%s", "선언 파일": "%s"},\n' \
              "$(gate_json_escape "$sid")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '상태')")" \
              "$(gate_json_escape "$(gate_segment_apply_state "" "$sid")")" \
@@ -53842,7 +54306,8 @@ gate_snapshot_segments_json() {
              "$(gate_json_escape "$(gate_remote_stage "$sid")")" \
              "$(gate_json_str_or_null "$srl")" \
              "$(gate_json_escape "$(gate_segment_surface_paths "$sid")")" \
-             "$(gate_json_escape "$(gate_segment_seat_commits "$sid")")"
+             "$(gate_json_escape "$(gate_segment_seat_commits "$sid")")" \
+             "$(gate_json_escape "$sdeclared")"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"

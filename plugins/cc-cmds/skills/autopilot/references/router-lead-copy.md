@@ -86,7 +86,7 @@ A shift's cost grows with the square of its length, so the cheapest thing a rout
 **Several `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
 
 ```
-act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>' [브랜치=<세그먼트 브랜치>] ['리뷰 정책=<선리뷰후머지|선머지후리뷰|리뷰없음>']
+act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 [브랜치=<세그먼트 브랜치>] ['리뷰 정책=<선리뷰후머지|선머지후리뷰|리뷰없음>']
 act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>' ['모드=전체|델타'] ['기준 사이클=<n>']
 act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
 act --kind judgment   -- 등급=1 '판단 부류=<열세 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
@@ -559,6 +559,8 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
   --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> --emit-digest \
   -- implement -p "/cc-cmds:implement-unattended <문서 인자> \"세그먼트 <seg> (사이클 <n>) · 선언 파일: <files> · 수정 대상: <리포트 절대 경로> 의 P0·P1\""
 ```
+
+**Copy `<files>` of `· 선언 파일: <files>` byte for byte from the `선언 파일` of the segment's `segments[]` element; do not write it from memory or from an earlier prompt.** A segment whose `선언 파일` reads `판정불가` is not dispatched: move to the next candidate.
 
 `<n>` is that cycle row's `사이클` and the report path is made absolute as 「Dispatching a review cycle in delta mode」 item 2 says. When the element reads `CI 합류 수정` instead, the same directive carries ` · CI 합류: <head sha> · 실패 체크: <…> · PR: <…>` after `의 P0·P1`, the three values the element's. The gate refuses a prompt whose document argument differs from the snapshot's `문서 인자`. Once the fix ends, the next review is that subsection's to dispatch. The gate refuses (exit 3) a review while no implementation or lead fix followed the last `cycle` row and the segment's worktree HEAD is still that row's `리뷰 HEAD` — the same HEAD is not reviewed twice. **The gate caps the cycles**: it counts the segment's `cycle` rows at every implementation dispatch and refuses with exit 3 once they reach `REIMPL_CYCLE_CAP` (2), unless `다음` reads `재구현`, or reads `확인 리뷰` with a `정상` re-convergence after the last `cycle` row, no lead fix after it and the segment's `implement_next[]` element reading `구현` — the same re-implementation's run after its process A. On that refusal dispatch no implementation and read the segment's `다음` instead: past the cap it is a step of the segment's ladder — `리드 수정`, `확인 리뷰`, `재수렴`, `재구현` — or a value that ends the review loop — 「Branching on `다음` after a review」 routes each.
 

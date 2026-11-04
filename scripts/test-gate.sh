@@ -3548,6 +3548,91 @@ EOF
     { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } \
       | { if [ -n "${3:-}" ]; then grep -F "| 상태=$3 " || true; else cat; fi; } | grep -c . || true
   }
+  # THE RE-DECLARATION FIXTURE. A run of its own for each scenario on the two-slice
+  # document, whose declared fields move between planning and the re-convergence
+  # row written through the gate's own stage-result writer.
+  rd_docp() { printf 'docs/fixture-design-rd-%s.md' "$1"; }
+  rd_set() {  # rd_set <run id> <슬라이스> <키> <값> — one declared field of one slice of the run's document
+    local f="$WT/$(rd_docp "$1")"
+    awk -v s="### 슬라이스 $2 " -v k="**$3**: " -v v="$4" '
+      index($0, "### 슬라이스 ") == 1 { inside = (index($0, s) == 1) }
+      inside && index($0, k) == 1 { print k v; next }
+      { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  }
+  rd_paths() {  # rd_paths <접두> <개수> — that many declared paths, in the document's spelling
+    awk -v p="$1" -v n="$2" 'BEGIN { for (i = 1; i <= n; i++) printf "%s`%s%d.txt`", (i > 1 ? ", " : ""), p, i }'
+  }
+  rd_fx() {  # rd_fx <run id> <SA 선언 파일> [<리뷰 정책>] [<plan json>] [<상한 | ->] — the run, both worktrees, SA planned
+    local r="$1"
+    two_slice_doc "$WT/$(rd_docp "$r")" t/infra 머지 "**리뷰 정책**: ${3:-리뷰없음}"
+    rd_set "$r" SA '선언 파일' "$2"
+    g15_run "$r" "$(rd_docp "$r")" "${4:-$plan15c}" "${5:-리뷰없음}"
+    g15_mkwt "$r" SA
+    g15_mkwt "$r" SB
+    g15_plan act "$r" SA 상태=계획됨 "워크트리=$(g15_wt "$r" SA)"
+    [ "$rc" = "0" ] || bad "재선언 픽스처 $r 의 SA 계획" "rc=$rc $msg"
+  }
+  rd_in() {  # rd_in <run id> <명령…> — one call into the gate's own functions against that run
+    local r="$1"
+    shift
+    ( cd "$WT" || exit 97
+      gate_seam_enter
+      XDG_STATE_HOME="$STATE_LATE"
+      MANIFEST="$WORK/plan-$r.md"; LEDGER="$WT/docs/pipeline-run/$r.md"
+      RUN_DIR="$STATE_LATE/cc-cmds/run/$r"; RUN_ID="$r"; DOC="$WT/$(rd_docp "$r")"
+      "$@" )
+  }
+  rd_lit() { printf '%s' "$LIT_RECONVERGE_TERMINAL"; }
+  rd_stream() {  # rd_stream <파일> <run id> — a re-convergence stream ending the way a finished one does
+    jq -nc --arg t "$(printf '재수렴 요약\n판정: 재설계 필요\n%s' "$(rd_in "$2" rd_lit)")" \
+      '{type: "result", subtype: "success", is_error: false, total_cost_usd: 0.1, session_id: "rd-s", num_turns: 1, result: $t}' > "$1"
+  }
+  rd_acted() {  # rd_acted <run id> <행의 세그먼트> — the row a stage leaves by acting, without which it ended empty
+    printf -- '- `자율 승인` | 세그먼트=%s | 행위자=스테이지 | prev=x\n' "$2" >> "$WT/docs/pipeline-run/$1.md"
+  }
+  rd_reconv() {  # rd_reconv <run id> <키> <실행 버전> [<종료 코드>] — the re-convergence row; stderr in rd.err, sets rc
+    local s="$WORK/rd-$1-$2-$3.jsonl" k="$2"
+    [ "$k" != "D1" ] || k='-'
+    rd_acted "$1" "$k"
+    rd_stream "$s" "$1"
+    rc=0
+    rd_in "$1" gate_record_stage_outcome infra "$2" reconverge "$3" "${4:-0}" 0 "$s" >/dev/null 2>"$WORK/rd.err" || rc=$?
+  }
+  rd_seg_rows() {  # rd_seg_rows <run id> <세그먼트> — that segment's rows
+    { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; }
+  }
+  rd_redecl_n() {  # rd_redecl_n <run id> <세그먼트> — that segment's re-declaration rows
+    rd_seg_rows "$1" "$2" | { grep -cF '| 재선언=' || true; } | tr -d ' '
+  }
+  rd_cones() {  # rd_cones <run id> <세그먼트> — the cone-scope blocked rows anchored on that segment
+    { grep -F '`blocked`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F '스코프=cone' || true; } \
+      | { grep -F "앵커 세그먼트=$2 " || true; }
+  }
+  rd_cone_n() { rd_cones "$1" "$2" | { grep -c . || true; } | tr -d ' '; }
+  rd_snap_set() {  # rd_snap_set <run id> <세그먼트> — the snapshot's `선언 파일` of that segment
+    au15_snap "$WORK/plan-$1.md" | jq -r --arg s "$2" '.segments[] | select(.id == $s) | .["선언 파일"]'
+  }
+  rd_dispatch() {  # rd_dispatch <act|plan> <run id> <세그먼트> — an implement dispatch; sets rc, msg
+    local v="$1" r="$2" s="$3" d
+    local -a g=()
+    [ "$v" != "act" ] || g=(--snapshot-digest "$(au15_H "$r")" --rationale x)
+    d="/cc-cmds:implement-unattended $WT/$(rd_docp "$r") \"세그먼트 $s (사이클 1) · 선언 파일: $s.txt\""
+    gateL "$v" --manifest "$WORK/plan-$r.md" --kind skill --target infra --segment "$s" --cutpoint 커밋 \
+      --surface 워크트리쓰기 ${g[@]+"${g[@]}"} -- implement -p "$d"
+  }
+  rd_state() {  # rd_state <run id> <세그먼트> <상태> [필드…] — a row a router wrote, through the gate; sets rc, msg
+    local r="$1" s="$2" st="$3"
+    shift 3
+    gateL act --manifest "$WORK/plan-$r.md" --kind segment --target infra --segment "$s" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(au15_H "$r")" --rationale x -- "상태=$st" "워크트리=$(g15_wt "$r" "$s")" "$@"
+  }
+  rd_plant() {  # rd_plant <run id> <세그먼트> <필드…> — a segment row past the gate, for a state no verb reaches here
+    local r="$1" s="$2" f fields=""
+    shift 2
+    for f in "$@"; do fields="$fields | $f"; done
+    printf -- '- `segment` | 교대=0 | id=%s%s | prev=x\n' "$s" "$fields" >> "$WT/docs/pipeline-run/$r.md"
+  }
+  rd_fill() { awk -v n="$1" 'BEGIN { for (i = 0; i < n; i++) printf "x" }'; }
   g15_pr() {  # g15_pr <pr view 답 | fail> <g15_plan 인자...> — g15_plan with the stub answering the PR
     # The stub path rides an exported variable: the in-process gate starts from
     # a scrubbed shell, and a variable this script did not export is gone there.
@@ -47878,6 +47963,97 @@ case "$( { grep -F '| 정산=중단 답 줄 ' "$lsr95b_l" || true; } )" in
 esac
 
 # ---------------------------------------------------------------------------
+# 95e. 중단 답 정산이 쓴 재수렴 행 뒤에도 세그먼트 행이 새 선언을 따른다
+# --- section: 95e | group: ledger_series | covers: act, gate_halt_settle, gate_segment_redeclare, gate_redeclare_after_reconverge, gate_redeclare_isolated, gate_redeclare_block, gate_segment_decl_dispatch_check, gate_record_row | needs: 75,95,95b | anchors: 95e: 정산이 쓴 재수렴 행 뒤에 재선언 행이 생긴다, 95e: 넓힘 행 거부 뒤에도 정산은 0 이고 막힘 행이 남는다, 95e: 좁힘 park 행 거부는 기록 실패 막힘 행을 남긴다, 95e: 원장 쓰기 실패 뒤에도 정산은 0 이다 ---
+#
+# 절 95b 의 정산 픽스처 위에, 세그먼트를 슬라이스로 선언한 동결 문서와 그 계획 행을 얹는다.
+# 정산이 지나는 문서 값은 고친 뒤의 문서다. 칸 거부는 앞 행의 긴 필드가 이월되어 투영을 넘기는
+# 것으로, 원장 쓰기 실패는 칸 자리의 대역으로 만든다.
+# ---------------------------------------------------------------------------
+lsr95e_doc0=$lsr93_doc
+lsr95e_dsha0=$lsr95b_dsha
+lsr93_doc="$lsr_root/doc95e.md"
+lsr95e_doc() {  # lsr95e_doc <선언 파일> — 슬라이스 S3 하나의 동결 문서
+  { printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: 1\n'
+    printf '\n### 슬라이스 S3 — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n' "$1"
+    printf '**선행**: 없음\n**절단점**: 머지\n**리뷰 정책**: 선리뷰후머지\n'; } > "$lsr93_doc"
+}
+lsr95e_fx() {
+  # lsr95e_fx <이름> <옛 선언> <새 선언> [<앞 행 더하기 필드>] — 정산 픽스처에 옛 선언의 계획 행을 얹고
+  # 문서를 새 선언으로 둔 뒤, 답 줄 번호를 낸다.
+  local n="$1" l="$lsr_root/$1/ledger.md" ln dig
+  lsr95e_doc "$3"
+  lsr95b_dsha=$(shasum -a 256 "$lsr93_doc" | cut -d' ' -f1)
+  ln=$(lsr95b_fx "$n")
+  lsr95e_doc "$2"
+  dig=$(lsr93_in "$l" slice_decl_digest "$lsr93_doc" S3 2>/dev/null)
+  lsr95e_doc "$3"
+  lsr93_in "$l" gate_append 'segment' 'id=S3' '상태=계획됨' "선언 파일 집합=$2" '레포=t/infra' '선행=없음' \
+    '절단점=머지' '리뷰 정책=선리뷰후머지' "선언 다이제스트=$dig" '강제 표면=없음' "워크트리=$WT" >/dev/null 2>&1
+  [ -z "${4:-}" ] || printf -- '- `segment` | 교대=0 | id=S3 | 상태=계획됨 | 워크트리=%s | %s | prev=x\n' "$WT" "$4" >> "$l"
+  printf '%s' "$ln"
+}
+lsr95e_act() {
+  # lsr95e_act <원장> <답 줄> [<자식 안에서 먼저 볼 코드>] — 정산 act 의 rc. 경고는 원장 옆 settle.err.
+  LSR95E_PRE=${3:-} LSR95E_A1="중단 답 줄=$2" LSR93_DL=1900000000 lsr93_in "$1" eval '
+    GATE_RESUME=""; GATE_FROM_DECLARATION=""; GATE_RECOVERY=""; GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
+    GATE_EMIT_DIGEST_TO=""; GATE_SHIFT_HALT_SITE=""; GATE_SHIFT_HALT_WRITING=""; GATE_ADMIT=""
+    GATE_REACH=""; GATE_DESTRUCTIVE=0; GATE_SETTLED_SEGMENTS=""; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+    GATE_TRIGGER=""; GATE_TRIGGER_SEEN=""; GATE_TRIGGER_REASON=""; GATE_CARRY_ANSWER=""
+    eval "$LSR95E_PRE"
+    r=0
+    ( gate_verb_act act halt-settle infra S3 커밋 읽기 "$(gate_snapshot_digest)" "정산 시험" "" "$LSR95E_A1" ) \
+      >/dev/null 2>"$RUN_DIR/settle.err" || r=$?
+    printf %s "$r"' 2>/dev/null
+}
+lsr95e_seg() { { grep -F '`segment`' "$1" 2>/dev/null || true; } | { grep -F '| id=S3 ' || true; }; }
+lsr95e_field() {  # lsr95e_field <행> <키>
+  printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+lsr95e_redecl() { lsr95e_seg "$1" | { grep -cF '| 재선언=' || true; } | tr -d ' '; }
+lsr95e_cones() { { grep -F '`blocked`' "$1" 2>/dev/null || true; } | { grep -F '스코프=cone' || true; } | { grep -F '앵커 세그먼트=S3 ' || true; }; }
+lsr95e_park() {  # lsr95e_park <원장> — 이 세그먼트 구현 파견의 대조: 파견하면 0, 멈추면 1
+  lsr93_in "$1" eval 'gate_segment_decl_dispatch_check act infra S3 >/dev/null 2>&1; printf %s "$?"' 2>/dev/null
+}
+
+lsr95e_l="$lsr_root/ts95e1/ledger.md"
+lsr95e_ln=$(lsr95e_fx ts95e1 '`S3.txt`' '`S3.txt`, `s3b.txt`')
+lsr95e_rc=$(lsr95e_act "$lsr95e_l" "$lsr95e_ln")
+check "95e: 넓힘 정산 act 는 exit 0 이다" "$lsr95e_rc$( [ "$lsr95e_rc" = 0 ] || cat "${lsr95e_l%/*}/settle.err" 2>/dev/null)" "0"
+lsr95e_r=$(lsr95e_seg "$lsr95e_l" | tail -1)
+check "95e: 정산이 쓴 재수렴 행 뒤에 재선언 행이 생긴다" \
+  "$(lsr95e_redecl "$lsr95e_l")/$(lsr95e_field "$lsr95e_r" '재선언')/$(lsr95e_field "$lsr95e_r" '상태')/$(lsr95e_field "$lsr95e_r" '선언 다이제스트')" \
+  "1/S3#3/계획됨/$(lsr93_in "$lsr95e_l" slice_decl_digest "$lsr93_doc" S3 2>/dev/null)"
+check "95e: 재선언 뒤 구현 파견 대조는 통과한다" "$(lsr95e_park "$lsr95e_l")" "0"
+
+lsr95e_l="$lsr_root/ts95e2/ledger.md"
+lsr95e_ln=$(lsr95e_fx ts95e2 '`S3.txt`' '`S3.txt`, `s3b.txt`' "메모=$(awk 'BEGIN { for (i = 0; i < 1100; i++) printf "x" }')")
+check "95e: 넓힘 행 거부 뒤에도 정산은 0 이고 막힘 행이 남는다" \
+  "$(lsr95e_act "$lsr95e_l" "$lsr95e_ln")/$(lsr95e_redecl "$lsr95e_l")/$(lsr95e_cones "$lsr95e_l" | { grep -cF '재선언 행을 쓰지 못했습니다' || true; } | tr -d ' ')" "0/0/1"
+check "95e: 넓힘 행 거부 뒤 구현 파견 대조는 멈춘다" "$(lsr95e_park "$lsr95e_l")" "1"
+
+lsr95e_l="$lsr_root/ts95e3/ledger.md"
+lsr95e_ln=$(lsr95e_fx ts95e3 '`S3.txt`, `gone.txt`' '`S3.txt`' "메모=$(awk 'BEGIN { for (i = 0; i < 1100; i++) printf "x" }')")
+check "95e: 좁힘 정산 act 는 exit 0 이다" \
+  "$(lsr95e_act "$lsr95e_l" "$lsr95e_ln" 'gate_redeclare_changed_paths() { printf "gone.txt\n"; }')" "0"
+case "$(lsr95e_field "$(lsr95e_cones "$lsr95e_l")" '사유')" in
+  *gone.txt*"(재선언 park 행 기록 실패)") ok "95e: 좁힘 park 행 거부는 기록 실패 막힘 행을 남긴다" ;;
+  *) bad "95e: 좁힘 park 행 거부는 기록 실패 막힘 행을 남긴다" "$(lsr95e_cones "$lsr95e_l") / $(cat "${lsr95e_l%/*}/settle.err" 2>/dev/null)" ;;
+esac
+check "95e: 좁힘 행 거부 뒤 구현 파견 대조는 멈춘다" "$(lsr95e_park "$lsr95e_l")" "1"
+
+lsr95e_l="$lsr_root/ts95e4/ledger.md"
+lsr95e_ln=$(lsr95e_fx ts95e4 '`S3.txt`' '`S3.txt`, `s3b.txt`')
+lsr95e_rc=$(lsr95e_act "$lsr95e_l" "$lsr95e_ln" 'gate_segment_redeclare() { die "시험 대역 — 원장 쓰기 실패"; }')
+check "95e: 원장 쓰기 실패 뒤에도 정산은 0 이다" "$lsr95e_rc$( [ "$lsr95e_rc" = 0 ] || cat "${lsr95e_l%/*}/settle.err" 2>/dev/null)" "0"
+check "95e: 그 정산은 재수렴 행을 남긴다" "$(lsr93_n "$lsr95e_l" '| 정산=중단 답 줄 ')" "1"
+check "95e: 원장 쓰기 실패 뒤 구현 파견 대조는 멈춘다" "$(lsr95e_park "$lsr95e_l")" "1"
+
+lsr93_doc=$lsr95e_doc0
+lsr95b_dsha=$lsr95e_dsha0
+
+# ---------------------------------------------------------------------------
 # 95c. 재진입 표의 구현·토론·단독·분할 행은 원장 값 칸을 게이트가 지어 대조한다
 # --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_ci_join_line_refuse,gate_carry_ledger_frame, gate_carry_frame_reads, gate_carry_prompt_of, gate_carry_origin_cap, gate_carry_cap_row, gate_answered_halts_json, gate_adoption_halt_carry, gate_carry_import_row, gate_carry_frame_build, gate_carry_origin, gate_reentry_row_of, gate_carry_doc_of, gate_carry_routed_elsewhere, gate_carry_untabled_after | needs: 95 | anchors: 95c: 재진입 표는 열두 행이다, 95c: 다음 런에 들인 수정 사이클 구현 정지의 carry_prompt 는 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 베이스 해소 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 표 밖 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 연쇄로 들인 분할 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 같은 런의 표 밖 정지 운반은 여전히 19·행 없음이고 재부착을 시킨다, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
 #
@@ -57774,6 +57950,435 @@ check "102: 분류기를 읽지 못하면 판정불가다 (드라이버)" \
 gs102() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_surface_stamp "$@"' _ "$@" 2>/dev/null; }
 check "102: 분류기를 읽지 못하면 판정불가다 (게이트)" \
   "$(gs102 "$d102/nolib/orchestrator/gate.sh" SB.txt)/$(gs102 "$GATE" SB.txt CLAUDE.md)" "판정불가/1건 지침파일"
+
+# ---------------------------------------------------------------------------
+# 102b. 재수렴이 바꾼 선언 파일이 세그먼트 행과 구현 파견에 닿는다
+# --- section: 102b | group: base | covers: act, plan, snapshot, replan, gate_record_row, gate_record_stage_outcome, gate_segment_redeclare, gate_redeclare_after_reconverge, gate_redeclare_isolated, gate_redeclare_block, gate_redeclare_changed_paths, gate_redeclare_caught, gate_redeclare_moved_field, gate_segment_decl_dispatch_check, gate_snapshot_segments_json, gate_decl_row_fields, gate_review_line, gate_carry_frame_build | anchors: 102b: 재수렴 뒤 재선언 행이 정확히 하나다, 102b: 재선언 행의 다이제스트는 문서의 다이제스트다, 102b: 같은 문서의 둘째 재수렴은 행을 더하지 않는다, 102b: 빠진 경로를 커밋한 좁힘은 park 와 막힘 행을 쓴다, 102b: 선행도 움직인 재수렴은 재선언하지 않는다, 102b: 호출자의 재선언 필드는 거부된다, 102b: 재선언 뒤에도 계획 행의 사이드카는 옛 집합을 낸다, 102b: 미추적 파일만 있는 좁힘은 park 하지 않는다, 102b: 좁힘 park 행 거부는 기록 실패 막힘 행을 남긴다, 102b: 커밋 안 된 추적 변경의 좁힘은 park 한다, 102b: 새 원소가 덮는 경로는 park 하지 않는다, 102b: 옛 사이드카를 읽지 못하면 판정 불가다, 102b: 정상 완료가 아닌 재수렴은 재선언하지 않는다, 102b: 같은 사유의 막힘 행은 하나다, 102b: 라우터가 더한 선행과 조인한 정책은 재선언을 막지 않는다, 102b: 재선언은 허용 상태의 상태를 잇는다, 102b: 허용 밖 상태는 재선언하지 않는다, 102b: 워크트리 없는 세그먼트는 막힘 행을 남긴다, 102b: 호출자의 옛 집합은 게이트 값으로 덮인다, 102b: 런 범위 재수렴은 허용 상태 세그먼트만 재선언한다, 102b: 판독 불가 스냅숏은 판정불가다, 102b: 어긋난 집합의 구현 파견은 park 다, 102b: 동결 줄 없는 재수렴은 경고만 남긴다, 102b: 사이드카 상한을 넘는 선언은 막힘 행을 남긴다, 102b: 형제 재계획이 새 집합을 싣는다, 102b: 두 사본이 새 문장을 펜스 밖에 싣는다 ---
+#
+# 재수렴이 동결 문서의 선언 파일을 바꾸면 게이트가 세그먼트 행을 그 집합으로 다시 쓴다.
+# 재수렴 행은 게이트의 stage-result 기록 함수로 남기고, 파견은 act 와 plan 동사로 재며,
+# 칸 거부는 앞 행에 긴 필드를 심어 투영 초과로 만든다. 중단 답 정산 자리는 절 95e 가 잰다.
+# ---------------------------------------------------------------------------
+rd8=$(rd_paths a 8); rd9=$(rd_paths a 9)
+rd_fx RD1 "$rd8" 리뷰없음
+rd_wt1=$(g15_wt RD1 SA)
+rd_d8=$(seg_field "$(g15_row RD1 SA)" '선언 다이제스트')
+rd_seg_before=$(g15_segs RD1)
+rd_set RD1 SA '선언 파일' "$rd9"
+rd_reconv RD1 SA 2
+rd_r=$(g15_row RD1 SA)
+rd_n9=$(rd_in RD1 gate_decl_norm "$rd9")
+check "102b: 재수렴 뒤 재선언 행이 정확히 하나다" "$(rd_redecl_n RD1 SA)/$(( $(g15_segs RD1) - rd_seg_before ))" "1/1"
+check "102b: 재선언 행은 아홉 경로를 싣는다" "$(rd_in RD1 gate_decl_norm "$(seg_field "$rd_r" '선언 파일 집합')")" "$rd_n9"
+check "102b: 재선언 행의 다이제스트는 문서의 다이제스트다" "$(seg_field "$rd_r" '선언 다이제스트')" "$(rd_in RD1 slice_decl_digest "$WT/$(rd_docp RD1)" SA)"
+if [ "$(seg_field "$rd_r" '선언 다이제스트')" != "$rd_d8" ] && [ -n "$rd_d8" ]; then
+  ok "102b: 재선언 다이제스트는 계획 다이제스트와 다르다"
+else
+  bad "102b: 재선언 다이제스트는 계획 다이제스트와 다르다" "d8=$rd_d8 row=$rd_r"
+fi
+check "102b: 재선언 필드는 재수렴 행의 스테이지와 실행 버전이다" "$(seg_field "$rd_r" '재선언')" "SA#2"
+check "102b: 재선언 행은 상태·워크트리·선행을 잇는다" \
+  "$(seg_field "$rd_r" '상태')/$(seg_field "$rd_r" '워크트리')/$(seg_field "$rd_r" '선행')" "계획됨/$rd_wt1/없음"
+check "102b: 스냅숏 선언 파일이 아홉 경로다" "$(rd_snap_set RD1 SA)" "$rd_n9"
+rd_frame() { gate_carry_frame_build '<세그먼트> · 선언 파일: <선언 파일>' SA "$LEDGER" "$RUN_DIR" SA; printf '%s' "$GATE_CARRY_WANT"; }
+check "102b: 재진입 틀의 선언 파일이 아홉 경로다" "$(rd_in RD1 rd_frame 2>/dev/null)" "SA · 선언 파일: $rd_n9"
+rd_state RD1 SA 리뷰중 브랜치=seg/RD1-SA
+case "$(rd_in RD1 gate_review_line SA 2>/dev/null)" in
+  *"--declared-files \"$rd_n9\""*) ok "102b: 리뷰 줄의 declared-files 가 아홉 경로다" ;;
+  *) bad "102b: 리뷰 줄의 declared-files 가 아홉 경로다" "$(rd_in RD1 gate_review_line SA 2>&1)" ;;
+esac
+check "102b: 넓힘은 막힘 행을 쓰지 않는다" "$( { grep -cF '`blocked`' "$WT/docs/pipeline-run/RD1.md" || true; } | tr -d ' ')" "0"
+
+rd_reconv RD1 SA 3
+check "102b: 같은 문서의 둘째 재수렴은 행을 더하지 않는다" "$(rd_redecl_n RD1 SA)" "1"
+
+rd_set RD1 SA '선언 파일' "$rd8"
+rd_reconv RD1 SA 4
+rd_r=$(g15_row RD1 SA)
+check "102b: 브랜치 변경 없는 좁힘은 park 없이 여덟 경로를 쓴다" \
+  "$(rd_redecl_n RD1 SA)/$(seg_field "$rd_r" '상태')/$(rd_in RD1 gate_decl_norm "$(seg_field "$rd_r" '선언 파일 집합')")/$(rd_cone_n RD1 SA)" \
+  "2/리뷰중/$(rd_in RD1 gate_decl_norm "$rd8")/0"
+
+# 좁힘이 빠뜨린 경로를 세그먼트가 이미 커밋했다.
+rd_fx RD5 '`SA.txt`, `gone.txt`'
+rd_wt=$(g15_wt RD5 SA)
+( cd "$rd_wt" && printf 'x\n' > gone.txt && git add gone.txt && git commit -qm x ) >/dev/null 2>&1
+rd_set RD5 SA '선언 파일' '`SA.txt`'
+rd_reconv RD5 SA 2
+rd_r=$(g15_row RD5 SA); rd_b=$(rd_cones RD5 SA)
+check "102b: 빠진 경로를 커밋한 좁힘은 park 와 막힘 행을 쓴다" \
+  "$(seg_field "$rd_r" '상태')/$(seg_field "$rd_r" '재선언')/$(seg_field "$rd_b" '원인')/$(seg_field "$rd_b" '재킥 원인')" "park/SA#2/막힘/슬라이싱"
+case "$(seg_field "$rd_b" '사유')" in
+  *gone.txt*) ok "102b: 막힘 사유가 그 경로를 든다" ;;
+  *) bad "102b: 막힘 사유가 그 경로를 든다" "$rd_b" ;;
+esac
+check "102b: 좁힘 park 는 act 범위 막힘 행을 쓰지 않는다" "$(g15_slice_parks RD5 SA)" "0"
+rd_set RD5 SA '선언 파일' '`SA.txt`, `gone.txt`, `more.txt`'
+rd_n=$(g15_segs RD5)
+rd_reconv RD5 SA 3
+check "102b: park 재선언 행 뒤의 넓힘은 행을 더하지 않는다" "$(g15_segs RD5)" "$rd_n"
+
+# 선행까지 움직인 재수렴과, 라우터가 뒤 행에서 더한 값.
+rd_fx RD6 '`SA.txt`'
+g15_plan act RD6 SB 상태=계획됨 "워크트리=$(g15_wt RD6 SB)"
+rd_set RD6 SB '선언 파일' '`SB.txt`, `sb2.txt`'
+rd_set RD6 SB '선행' '없음'
+rd_reconv RD6 SB 2
+check "102b: 선행도 움직인 재수렴은 재선언하지 않는다" "$(rd_redecl_n RD6 SB)" "0"
+case "$(cat "$WORK/rd.err")" in
+  *"재선언 생략"*"선행"*) ok "102b: 그 생략은 움직인 필드를 경고로 이름 댄다" ;;
+  *) bad "102b: 그 생략은 움직인 필드를 경고로 이름 댄다" "$(cat "$WORK/rd.err")" ;;
+esac
+rd_dispatch plan RD6 SB
+check "102b: 선언이 어긋난 채 생략된 세그먼트의 구현 파견은 park 다" "$rc" "11"
+
+rd_fx RD19 '`SA.txt`' 선리뷰후머지 "$plan15g_rv" -
+g15_plan act RD19 SB 상태=계획됨 "워크트리=$(g15_wt RD19 SB)"
+rd_plant RD19 S9 상태=계획됨 "워크트리=$(g15_wt RD19 S9)"
+rd_plant RD19 SB 상태=실행중 "워크트리=$(g15_wt RD19 SB)" '선행=SA,S9' '리뷰 정책=선리뷰후머지'
+rd_set RD19 SB '선언 파일' '`SB.txt`, `sb2.txt`'
+rd_reconv RD19 SB 2
+check "102b: 라우터가 더한 선행과 조인한 정책은 재선언을 막지 않는다" \
+  "$(rd_redecl_n RD19 SB)/$(seg_field "$(g15_row RD19 SB)" '상태')" "1/실행중"
+rd_set RD19 SB '선언 파일' '`SB.txt`, `sb2.txt`, `sb3.txt`'
+rd_set RD19 SB '리뷰 정책' '리뷰없음'
+rd_reconv RD19 SB 3
+check "102b: 문서의 리뷰 정책이 느슨해지면 재선언하지 않는다" "$(rd_redecl_n RD19 SB)" "1"
+
+# 호출자의 표지 없는 필드.
+rd_state RD6 SA 실행중 '재선언=SA#1'
+case "$rc/$msg" in
+  2/*"「재선언」은 게이트가"*) ok "102b: 호출자의 재선언 필드는 거부된다" ;;
+  *) bad "102b: 호출자의 재선언 필드는 거부된다" "rc=$rc $msg" ;;
+esac
+rd_state RD6 SA 실행중 '재선언='
+check "102b: 호출자의 빈 재선언 필드도 거부된다" "$rc" "2"
+rd_state RD6 SA 실행중 '선언 다이제스트=abc'
+case "$rc/$msg" in
+  2/*"「선언 다이제스트」는 게이트가"*) ok "102b: 호출자의 선언 다이제스트는 거부된다" ;;
+  *) bad "102b: 호출자의 선언 다이제스트는 거부된다" "rc=$rc $msg" ;;
+esac
+
+# 사이드카. 계획 행의 옛 값은 재선언 뒤에도 그대로 읽힌다.
+rd_long1=$(rd_paths longpath-old-name- 30); rd_long2=$(rd_paths longpath-new-name- 31)
+rd_fx RD10 "$rd_long1"
+rd_plan_row=$(g15_row RD10 SA)
+rd_side=$(seg_field "$rd_plan_row" '선언 파일 집합'); rd_side=${rd_side##*"(전체: "}; rd_side=${rd_side%)}
+rd_side_sha=$(shasum -a 256 < "$rd_side" | cut -d' ' -f1)
+rd_reconv RD10 SA 2
+check "102b: 같음으로 끝난 재수렴 뒤 계획 사이드카 바이트가 그대로다" \
+  "$(shasum -a 256 < "$rd_side" | cut -d' ' -f1)/$(rd_redecl_n RD10 SA)" "$rd_side_sha/0"
+rd_set RD10 SA '선언 파일' "$rd_long2"
+rd_reconv RD10 SA 3
+rd_r=$(g15_row RD10 SA)
+rd_side2=$(seg_field "$rd_r" '선언 파일 집합'); rd_side2=${rd_side2##*"(전체: "}; rd_side2=${rd_side2%)}
+check "102b: 재선언 뒤에도 계획 행의 사이드카는 옛 집합을 낸다" \
+  "$(shasum -a 256 < "$rd_side" | cut -d' ' -f1)" "$rd_side_sha"
+rd_line=$( { grep -nF '| 재선언=SA#3 ' "$WT/docs/pipeline-run/RD10.md" || true; } | cut -d: -f1)
+check "102b: 승인 줄 앞의 행만 읽으면 옛 집합이다" \
+  "$(rd_in RD10 gate_segment_declared_whole SA "$rd_line")" "$(rd_in RD10 gate_decl_norm "$rd_long1")"
+check "102b: 마지막 값은 새 집합이다" "$(rd_snap_set RD10 SA)" "$(rd_in RD10 gate_decl_norm "$rd_long2")"
+case "$rd_side2" in
+  "$STATE_LATE/cc-cmds/run/RD10/"*) ok "102b: 재선언 행의 사이드카는 런 디렉터리 안에 있다" ;;
+  *) bad "102b: 재선언 행의 사이드카는 런 디렉터리 안에 있다" "$rd_side2" ;;
+esac
+
+# 미추적 파일, 커밋 안 된 추적 변경, 새 원소가 덮는 경로.
+rd_fx RD11 '`SA.txt`, `gone.txt`'
+printf 'x\n' > "$(g15_wt RD11 SA)/gone.txt"
+rd_set RD11 SA '선언 파일' '`SA.txt`'
+rd_reconv RD11 SA 2
+check "102b: 미추적 파일만 있는 좁힘은 park 하지 않는다" \
+  "$(seg_field "$(g15_row RD11 SA)" '상태')/$(rd_cone_n RD11 SA)" "계획됨/0"
+
+rd_tracked=$(cd "$WT" && git ls-files | sed -n 1p)
+rd_fx RD14 "\`SA.txt\`, \`$rd_tracked\`, \`한글경로.txt\`"
+( cd "$(g15_wt RD14 SA)" && printf 'changed\n' >> "$rd_tracked" ) >/dev/null 2>&1
+rd_set RD14 SA '선언 파일' "\`SA.txt\`, \`한글경로.txt\`"
+rd_reconv RD14 SA 2
+rd_b=$(rd_cones RD14 SA)
+check "102b: 커밋 안 된 추적 변경의 좁힘은 park 한다" "$(seg_field "$(g15_row RD14 SA)" '상태')/$(seg_field "$rd_b" '원인')" "park/막힘"
+case "$rd_b" in
+  *"$rd_tracked"*) ok "102b: 그 막힘 사유가 그 경로를 든다" ;;
+  *) bad "102b: 그 막힘 사유가 그 경로를 든다" "$rd_b" ;;
+esac
+rd_fx RD14K '`SA.txt`, `한글경로.txt`'
+( cd "$(g15_wt RD14K SA)" && printf 'x\n' > 한글경로.txt && git add 한글경로.txt ) >/dev/null 2>&1
+rd_set RD14K SA '선언 파일' '`SA.txt`'
+rd_reconv RD14K SA 2
+case "$(rd_cones RD14K SA)" in
+  *한글경로.txt*) ok "102b: 한글 경로의 커밋 안 된 변경도 사유에 원래 철자로 든다" ;;
+  *) bad "102b: 한글 경로의 커밋 안 된 변경도 사유에 원래 철자로 든다" "$(rd_cones RD14K SA)" ;;
+esac
+
+rd_fx RD15 '`src/`, `SA.txt`'
+( cd "$(g15_wt RD15 SA)" && mkdir src && printf 'x\n' > src/a.txt && git add src/a.txt && git commit -qm x ) >/dev/null 2>&1
+rd_set RD15 SA '선언 파일' '`src/a.txt`, `SA.txt`'
+rd_reconv RD15 SA 2
+check "102b: 새 원소가 덮는 경로는 park 하지 않는다" \
+  "$(seg_field "$(g15_row RD15 SA)" '상태')/$(rd_redecl_n RD15 SA)/$(rd_cone_n RD15 SA)" "계획됨/1/0"
+
+# 판정 불가 — 옛 사이드카를 읽지 못하거나 베이스 끝을 읽지 못한다.
+rd_fx RD16 "$rd_long1"
+rd_plan_row=$(g15_row RD16 SA)
+rd_side=$(seg_field "$rd_plan_row" '선언 파일 집합'); rd_side=${rd_side##*"(전체: "}; rd_side=${rd_side%)}
+check "102b: 판정 불가 픽스처의 사이드카가 있다 (아래가 공허하지 않다)" "$(rd_snap_set RD16 SA)" "$(rd_in RD16 gate_decl_norm "$rd_long1")"
+rm -f "$rd_side"
+check "102b: 판독 불가 스냅숏은 판정불가다" "$(rd_snap_set RD16 SA)" "판정불가"
+rd_dispatch act RD16 SA
+check "102b: 판독 불가 집합의 구현 파견은 park 다" "$rc/$(seg_field "$(rd_cones RD16 SA | tail -1)" '원인')" "11/판정 불가"
+rd_set RD16 SA '선언 파일' '`SA.txt`'
+rd_reconv RD16 SA 2
+rd_b=$(rd_cones RD16 SA | tail -1)
+check "102b: 옛 사이드카를 읽지 못하면 판정 불가다" \
+  "$(seg_field "$(g15_row RD16 SA)" '상태')/$(seg_field "$rd_b" '원인')" "park/판정 불가"
+
+rd_fx RD16B '`SA.txt`, `gone.txt`'
+rd_set RD16B SA '선언 파일' '`SA.txt`'
+rd_16b() { gate_redeclare_base_end() { return 1; }; gate_record_stage_outcome infra SA reconverge 2 0 0 "$1"; }
+rd_stream "$WORK/rd-16b.jsonl" RD16B
+rd_acted RD16B SA
+rd_in RD16B rd_16b "$WORK/rd-16b.jsonl" >/dev/null 2>&1
+check "102b: 베이스 끝을 읽지 못한 좁힘은 판정 불가다" \
+  "$(seg_field "$(g15_row RD16B SA)" '상태')/$(seg_field "$(rd_cones RD16B SA)" '원인')" "park/판정 불가"
+
+# 빈 집합의 스냅숏과, 계획 행 없는 세그먼트.
+rd_fx RD26 '`SA.txt`'
+rd_plant RD26 SB 상태=계획됨 "워크트리=$(g15_wt RD26 SB)"
+check "102b: 빈 집합의 스냅숏은 빈 문자열이다" "$(rd_snap_set RD26 SB)" ""
+rd_set RD26 SB '선언 파일' '`SB.txt`, `sb2.txt`'
+rd_reconv RD26 SB 2
+rd_b=$(rd_cones RD26 SB)
+case "$(cat "$WORK/rd.err")/$(seg_field "$rd_b" '사유')" in
+  *"재선언 불가"*"계획 행이 없습니다"*"/"*"계획 행이 없습니다"*) ok "102b: 계획 행 없는 세그먼트는 경고와 막힘 행을 남긴다" ;;
+  *) bad "102b: 계획 행 없는 세그먼트는 경고와 막힘 행을 남긴다" "$(cat "$WORK/rd.err")/$rd_b" ;;
+esac
+check "102b: 계획 행 없는 세그먼트는 재선언 행을 쓰지 않는다" "$(rd_redecl_n RD26 SB)" "0"
+
+# 정상 완료가 아닌 재수렴, 허용 밖 상태.
+rd_fx RD17 '`SA.txt`'
+rd_set RD17 SA '선언 파일' '`SA.txt`, `sa2.txt`'
+rd_reconv RD17 SA 2 1
+check "102b: 정상 완료가 아닌 재수렴은 재선언하지 않는다" "$(rd_redecl_n RD17 SA)" "0"
+for rd_st in 머지됨 '적용 준비' 사후리뷰 완료 park; do
+  rd_plant RD17 SA "상태=$rd_st" "워크트리=$(g15_wt RD17 SA)"
+  rd_reconv RD17 SA "$(( 3 + $(rd_seg_rows RD17 SA | grep -c .) ))"
+  check "102b: 허용 밖 상태는 재선언하지 않는다 ($rd_st)" "$(rd_redecl_n RD17 SA)" "0"
+done
+
+# 같은 사유의 막힘 행.
+rd_in RD17 gate_redeclare_block infra SA 막힘 '같은 사유' >/dev/null 2>&1
+rd_in RD17 gate_redeclare_block infra SA 막힘 '같은 사유' >/dev/null 2>&1
+check "102b: 같은 사유의 막힘 행은 하나다" "$(rd_cones RD17 SA | { grep -cF '사유=같은 사유 ' || true; } | tr -d ' ')" "1"
+
+# 허용 상태와 이월 값. 머지 순서·리뷰 정책은 칸이 잇는다.
+rd_fx RD20 '`SA.txt`'
+rd_ver=1
+for rd_st in 계획됨 실행중 리뷰중; do
+  rd_ver=$((rd_ver + 1))
+  [ "$rd_st" = 계획됨 ] || rd_state RD20 SA "$rd_st" 브랜치=seg/RD20-SA 선행=없음
+  rd_prev=$(g15_row RD20 SA)
+  rd_set RD20 SA '선언 파일' "\`SA.txt\`, \`v$rd_ver.txt\`"
+  rd_reconv RD20 SA "$rd_ver"
+  rd_r=$(g15_row RD20 SA)
+  check "102b: 재선언은 허용 상태의 상태를 잇는다 ($rd_st)" \
+    "$(seg_field "$rd_r" '재선언')/$(seg_field "$rd_r" '상태')/$(seg_field "$rd_r" '워크트리')/$(seg_field "$rd_r" '브랜치')/$(seg_field "$rd_r" '선행')/$(seg_field "$rd_r" '리뷰 정책')" \
+    "SA#$rd_ver/$rd_st/$(seg_field "$rd_prev" '워크트리')/$(seg_field "$rd_prev" '브랜치')/$(seg_field "$rd_prev" '선행')/$(seg_field "$rd_prev" '리뷰 정책')"
+done
+check "102b: 재선언 쓰기는 설정 락을 남기지 않는다" "$( [ -e "$STATE_LATE/cc-cmds/run/RD20/settings.lock" ] && printf 남음 || printf 없음)" "없음"
+rd_20mo() { GATE_REDECLARE=1; gate_record_row 'segment' SA infra 상태=계획됨 "워크트리=$1" '머지 순서=SB'; }
+rd_rc=0; rd_in RD20 rd_20mo "$(g15_wt RD20 SA)" >/dev/null 2>&1 || rd_rc=$?
+check "102b: 표지를 세운 호출자의 머지 순서도 받지 않는다" "$rd_rc" "2"
+
+# 워크트리 없는 세그먼트와 브랜치에 남은 커밋.
+rd_fx RD22 '`SA.txt`'
+g15_drop RD22:SA
+rd_set RD22 SA '선언 파일' '`SA.txt`, `sa2.txt`'
+rd_reconv RD22 SA 2
+rd_b=$(rd_cones RD22 SA)
+case "$(seg_field "$rd_b" '사유')" in
+  *"재선언 불가"*"워크트리"*) ok "102b: 워크트리 없는 세그먼트는 막힘 행을 남긴다" ;;
+  *) bad "102b: 워크트리 없는 세그먼트는 막힘 행을 남긴다" "$rd_b" ;;
+esac
+check "102b: 워크트리 없는 세그먼트는 재선언 행을 쓰지 않는다" "$(rd_redecl_n RD22 SA)" "0"
+rd_dispatch act RD22 SA
+check "102b: 워크트리 없는 세그먼트의 다음 파견은 park 다" "$rc" "11"
+
+rd_fx RD31 '`SA.txt`, `gone.txt`'
+( cd "$(g15_wt RD31 SA)" && printf 'x\n' > gone.txt && git add gone.txt && git commit -qm x ) >/dev/null 2>&1
+( cd "$WT" && git worktree remove --force "$(g15_wt RD31 SA)" ) >/dev/null 2>&1
+rd_set RD31 SA '선언 파일' '`SA.txt`'
+rd_reconv RD31 SA 2
+rd_b=$(rd_cones RD31 SA)
+case "$(seg_field "$rd_b" '원인')/$(seg_field "$rd_b" '사유')" in
+  막힘/*gone.txt*) ok "102b: 워크트리를 지운 뒤 브랜치에 커밋이 남은 좁힘은 걸림으로 막힌다" ;;
+  *) bad "102b: 워크트리를 지운 뒤 브랜치에 커밋이 남은 좁힘은 걸림으로 막힌다" "$rd_b" ;;
+esac
+rd_fx RD31B '`SA.txt`, `gone.txt`'
+( cd "$WT" && git worktree remove --force "$(g15_wt RD31B SA)" && git branch -D seg/RD31B-SA ) >/dev/null 2>&1
+rd_set RD31B SA '선언 파일' '`SA.txt`'
+rd_reconv RD31B SA 2
+check "102b: 워크트리와 브랜치를 모두 지운 좁힘은 판정 불가로 막힌다" "$(seg_field "$(rd_cones RD31B SA)" '원인')" "판정 불가"
+
+# 호출자의 옛 집합.
+rd_fx RD24 '`SA.txt`'
+rd_set RD24 SA '선언 파일' '`SA.txt`, `sa2.txt`'
+rd_reconv RD24 SA 2
+rd_state RD24 SA 실행중 '선언 파일 집합=`SA.txt`' 브랜치=seg/RD24-SA 선행=없음
+rd_n2=$(rd_in RD24 gate_decl_norm '`SA.txt`, `sa2.txt`')
+case "$rc/$msg" in
+  0/*"게이트가 마지막으로 쓴 값으로 덮었습니다"*) ok "102b: 호출자의 옛 집합은 게이트 값으로 덮인다" ;;
+  *) bad "102b: 호출자의 옛 집합은 게이트 값으로 덮인다" "rc=$rc $msg" ;;
+esac
+check "102b: 덮은 뒤의 스냅숏과 리뷰 줄이 새 집합이다" \
+  "$(rd_snap_set RD24 SA)/$(rd_in RD24 gate_review_line SA 2>/dev/null | { grep -cF -- "--declared-files \"$rd_n2\"" || true; } | tr -d ' ')" "$rd_n2/1"
+rd_dispatch plan RD24 SA
+if [ "$rc" != "11" ]; then
+  ok "102b: 두 집합이 같으면 구현 파견이 park 하지 않는다"
+else
+  bad "102b: 두 집합이 같으면 구현 파견이 park 하지 않는다" "rc=$rc $msg"
+fi
+
+# 런 범위 재수렴. 허용 상태 세그먼트만 쓰고, 뒤따르는 재계획은 행을 더하지 않는다.
+rd_fx RD25 '`SA.txt`'
+g15_plan act RD25 SB 상태=계획됨 "워크트리=$(g15_wt RD25 SB)"
+rd_plant RD25 SB 상태=머지됨 "워크트리=$(g15_wt RD25 SB)"
+rd_set RD25 SA '선언 파일' '`SA.txt`, `sa2.txt`'
+rd_set RD25 SB '선언 파일' '`SB.txt`, `sb2.txt`'
+rd_25pl() { gate_append stage-result 세그먼트=SA 스테이지=SA 종류=implement '종료 코드=0' '실행 버전=1' '세션 id=rd-s' \
+  부모=- 기록자=게이트 plan_sha256=3333 '종단 부류=정상 완료' '실패 서명=-' >/dev/null; printf '# 계획\n' > "$RUN_DIR/SA.plan.md"; }
+rd_in RD25 rd_25pl >/dev/null 2>&1
+rd_reconv RD25 D1 1
+check "102b: 런 범위 재수렴은 허용 상태 세그먼트만 재선언한다" "$(rd_redecl_n RD25 SA)/$(rd_redecl_n RD25 SB)" "1/0"
+rd_snap=$(g15_segs RD25)
+gateL act --manifest "$WORK/plan-RD25.md" --kind replan --target infra --segment SA --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(au15_H RD25)" --rationale x -- 재수렴=D1#1
+check "102b: 뒤따르는 재계획은 같은 집합의 행을 더하지 않는다" "$rc/$(g15_segs RD25)" "0/$rd_snap"
+
+# 형제 세그먼트. SA 의 재수렴이 SB 의 선언을 바꾸면 SB 는 재계획 때 새 집합을 싣는다.
+rd_fx RD30 '`SA.txt`'
+g15_plan act RD30 SB 상태=계획됨 "워크트리=$(g15_wt RD30 SB)"
+rd_30pl() { gate_append stage-result 세그먼트=SB 스테이지=SB 종류=implement '종료 코드=0' '실행 버전=1' '세션 id=rd-s' \
+  부모=- 기록자=게이트 plan_sha256=3333 '종단 부류=정상 완료' '실패 서명=-' >/dev/null; printf '# 계획\n' > "$RUN_DIR/SB.plan.md"; }
+rd_in RD30 rd_30pl >/dev/null 2>&1
+rd_set RD30 SB '선언 파일' '`SB.txt`, `sb2.txt`'
+rd_reconv RD30 SA 2
+check "102b: 형제의 행은 그 재수렴만으로는 움직이지 않는다" "$(rd_redecl_n RD30 SB)" "0"
+gateL act --manifest "$WORK/plan-RD30.md" --kind replan --target infra --segment SB --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(au15_H RD30)" --rationale x -- 재수렴=SA#2
+check "102b: 형제 재계획이 새 집합을 싣는다" \
+  "$rc/$(seg_field "$(g15_row RD30 SB)" '재선언')/$(rd_snap_set RD30 SB)" \
+  "0/SA#2/$(rd_in RD30 gate_decl_norm '`SB.txt`, `sb2.txt`')"
+
+# 파견 대조.
+rd_fx RD27 '`SA.txt`'
+rd_dispatch plan RD27 SA
+if [ "$rc" != "11" ]; then
+  ok "102b: 어긋나지 않은 구현 파견은 park 하지 않는다"
+else
+  bad "102b: 어긋나지 않은 구현 파견은 park 하지 않는다" "rc=$rc $msg"
+fi
+rd_set RD27 SA '선언 파일' '`SA.txt`, `sa2.txt`'
+rd_dispatch plan RD27 SA
+check "102b: plan 동사의 대조는 park 코드를 내고 행을 쓰지 않는다" "$rc/$(rd_cone_n RD27 SA)" "11/0"
+rd_dispatch act RD27 SA
+check "102b: 어긋난 집합의 구현 파견은 park 다" "$rc/$(seg_field "$(rd_cones RD27 SA)" '원인')" "11/막힘"
+
+# 동결 줄 없는 문서.
+rd_fx RD28 '`SA.txt`'
+rd_set RD28 SA '선언 파일' '`SA.txt`, `sa2.txt`'
+rd_doc="$WT/$(rd_docp RD28)"
+sed 's/^\*\*상태\*\*: 동결됨$/**상태**: 초안/' "$rd_doc" > "$rd_doc.tmp" && mv "$rd_doc.tmp" "$rd_doc"
+rd_reconv RD28 SA 2
+check "102b: 동결 줄 없는 재수렴은 경고만 남긴다" \
+  "$(rd_redecl_n RD28 SA)/$(rd_cone_n RD28 SA)/$( { grep -c '재선언 미룸' "$WORK/rd.err" || true; } | tr -d ' ')" "0/0/1"
+sed 's/^\*\*상태\*\*: 초안$/**상태**: 동결됨/' "$rd_doc" > "$rd_doc.tmp" && mv "$rd_doc.tmp" "$rd_doc"
+rd_dispatch plan RD28 SA
+check "102b: 동결로 돌아온 문서가 어긋나면 다음 파견이 멈춘다" "$rc" "11"
+
+# 크기 예산.
+rd_fx RD29 '`SA.txt`'
+rd_set RD29 SA '선언 파일' "$(rd_paths very-long-path-name-for-the-sidecar-budget- 1600)"
+rd_reconv RD29 SA 2
+case "$(rd_cones RD29 SA)" in
+  *"사이드카 상한"*) ok "102b: 사이드카 상한을 넘는 선언은 막힘 행을 남긴다" ;;
+  *) bad "102b: 사이드카 상한을 넘는 선언은 막힘 행을 남긴다" "$(rd_cones RD29 SA)" ;;
+esac
+check "102b: 그 경우 사이드카를 쓰지 않는다" \
+  "$(ls "$STATE_LATE/cc-cmds/run/RD29" 2>/dev/null | { grep -c 'declared-redeclare-' || true; } | tr -d ' ')/$(rd_redecl_n RD29 SA)" "0/0"
+
+# 칸 거부와 원장 쓰기 실패 — 넓힘과 좁힘. 앞 행의 긴 필드가 이월되어 투영을 넘긴다.
+rd_fx RD13W '`SA.txt`'
+rd_plant RD13W SA 상태=계획됨 "워크트리=$(g15_wt RD13W SA)" "메모=$(rd_fill 1100)"
+rd_set RD13W SA '선언 파일' '`SA.txt`, `sa2.txt`'
+rd_reconv RD13W SA 2
+case "$rc/$(rd_cones RD13W SA)" in
+  0/*"재선언 행을 쓰지 못했습니다"*) ok "102b: 넓힘 행 거부는 막힘 행을 남긴다" ;;
+  *) bad "102b: 넓힘 행 거부는 막힘 행을 남긴다" "rc=$rc $(rd_cones RD13W SA)" ;;
+esac
+check "102b: 거부된 넓힘은 재선언 행이 없다" "$(rd_redecl_n RD13W SA)" "0"
+rd_dispatch act RD13W SA
+check "102b: 넓힘 행 거부 뒤 다음 파견은 park 다" "$rc" "11"
+
+rd_fx RD13N '`SA.txt`, `gone.txt`'
+( cd "$(g15_wt RD13N SA)" && printf 'x\n' > gone.txt && git add gone.txt && git commit -qm x ) >/dev/null 2>&1
+rd_plant RD13N SA 상태=계획됨 "워크트리=$(g15_wt RD13N SA)" "메모=$(rd_fill 1100)"
+rd_set RD13N SA '선언 파일' '`SA.txt`'
+rd_reconv RD13N SA 2
+rd_b=$(rd_cones RD13N SA)
+case "$(seg_field "$rd_b" '사유')" in
+  *"(재선언 park 행 기록 실패)") ok "102b: 좁힘 park 행 거부는 기록 실패 막힘 행을 남긴다" ;;
+  *) bad "102b: 좁힘 park 행 거부는 기록 실패 막힘 행을 남긴다" "$rd_b" ;;
+esac
+check "102b: 그 막힘 행은 하나이고 재선언 행이 없다" "$(rd_cone_n RD13N SA)/$(rd_redecl_n RD13N SA)" "1/0"
+rd_dispatch act RD13N SA
+check "102b: 좁힘 행 거부 뒤 다음 파견은 park 다" "$rc" "11"
+
+rd_fx RD13D '`SA.txt`'
+rd_set RD13D SA '선언 파일' '`SA.txt`, `sa2.txt`'
+rd_13d() {
+  gate_record_row() { die "시험 대역 — 원장 쓰기 실패"; }
+  gate_record_stage_outcome infra SA reconverge 2 0 0 "$1"
+  printf '감독자가 이어 간다:%s' "$?"
+}
+rd_stream "$WORK/rd-13d.jsonl" RD13D
+rd_acted RD13D SA
+check "102b: 원장 쓰기 실패가 재수렴 기록 뒤의 감독자를 끊지 않는다" \
+  "$(rd_in RD13D rd_13d "$WORK/rd-13d.jsonl" 2>/dev/null)" "감독자가 이어 간다:0"
+check "102b: 그 실패 뒤에도 재수렴 행은 남는다" \
+  "$( { grep -F '`stage-result`' "$WT/docs/pipeline-run/RD13D.md" || true; } | { grep -cF '| 종류=reconverge |' || true; } | tr -d ' ')" "1"
+rd_dispatch act RD13D SA
+check "102b: 원장 쓰기 실패 뒤 다음 파견은 park 다" "$rc" "11"
+rd_sup_at() {  # rd_sup_at <고정 문자열> — 감독자 본문에서 처음 나오는 줄 번호, 없으면 0
+  awk -v s="$1" '
+    /^gate_verb_supervise_stage\(\) \{/ { in_fn = 1 }
+    in_fn && index($0, s) { print NR; found = 1; exit }
+    in_fn && /^}/ { exit }
+    END { if (!found) print 0 }' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+}
+rd_a=$(rd_sup_at 'gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" "${effort:--}" "$r_acct"')
+rd_h=$(rd_sup_at 'gate_sup_halt_hold_put "$seg"')
+rd_l=$(rd_sup_at 'route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" || hrc=$?')
+if [ "$rd_a" -gt 0 ] && [ "$rd_a" -lt "$rd_h" ] && [ "$rd_h" -lt "$rd_l" ]; then
+  ok "102b: 감독자는 재수렴 기록 뒤 halt 표시와 임대 해제를 한다"
+else
+  bad "102b: 감독자는 재수렴 기록 뒤 halt 표시와 임대 해제를 한다" "$rd_a $rd_h $rd_l"
+fi
+
+# 두 사본의 문장. 펜스 밖에 같은 고정 문구가 있고, 틀에 그 인자가 없다.
+rd_sentence='**Copy `<files>` of `· 선언 파일: <files>` byte for byte from the `선언 파일` of the segment'"'"'s `segments[]` element; do not write it from memory or from an earlier prompt.**'
+for rd_copy in plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md; do
+  rd_outside=$(awk -v s="$rd_sentence" '/^[[:space:]]*```/ { f = !f; next } !f && index($0, s) { n++ } END { print n + 0 }' "$repo_root/$rd_copy")
+  rd_inside=$(awk -v s="$rd_sentence" '/^[[:space:]]*```/ { f = !f; next } f && index($0, s) { n++ } END { print n + 0 }' "$repo_root/$rd_copy")
+  check "102b: 두 사본이 새 문장을 펜스 밖에 싣는다 ($rd_copy)" "$rd_outside/$rd_inside" "1/0"
+  check "102b: 틀에 호출자의 선언 파일 집합 인자가 없다 ($rd_copy)" \
+    "$( { grep -cF "'선언 파일 집합=<CSV>'" "$repo_root/$rd_copy" || true; } | tr -d ' ')" "0"
+done
+g15_drop RD1:SA RD1:SB RD5:SA RD5:SB RD6:SA RD6:SB RD19:SA RD19:SB RD10:SA RD10:SB RD11:SA RD11:SB RD14:SA RD14:SB \
+  RD14K:SA RD14K:SB RD15:SA RD15:SB RD16:SA RD16:SB RD16B:SA RD16B:SB RD26:SA RD26:SB RD17:SA RD17:SB RD20:SA RD20:SB \
+  RD22:SB RD31:SA RD31:SB RD31B:SB RD24:SA RD24:SB RD25:SA RD25:SB RD30:SA RD30:SB RD27:SA RD27:SB RD28:SA RD28:SB \
+  RD29:SA RD29:SB RD13W:SA RD13W:SB RD13N:SA RD13N:SB RD13D:SA RD13D:SB
+( cd "$WT" && git branch -D seg/RD31-SA seg/RD22-SA ) >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # 99. 탐지 도구와 게이트의 읽기 동사는 같은 것을 낸다
