@@ -60,6 +60,7 @@
 #                       --expect-sha256 <hex> [--now <epoch>] [--auto]
 #   kickoff-defaults.sh --apply-probe-sha <manifest draft>
 #   kickoff-defaults.sh --plugin-candidates [--confirmed <키>]… [--released <키>]…
+#   kickoff-defaults.sh --preauth-candidates <worktree>
 #
 # Output (main mode) is TAB-separated, the first line `cc-kickoff-defaults v1`:
 #
@@ -99,6 +100,19 @@
 # it is left out of the candidates. `--released <키>` names one the person
 # released at 5o: it is a candidate whether or not an account holds it, and its
 # description is `킥오프 기본값`. Both repeat; without them the output is the same.
+#
+# `--preauth-candidates <worktree>` takes no other argument and prints, with no
+# header, the `사전 인가` rows the kickoff's 5p proposes from the traces among
+# the worktree's tracked files (`git ls-files`):
+#
+#   후보  <row: 형태=… | … | 사유=…>  <the trace path>
+#
+# A build wrapper (`gradlew`, `mvnw`) gives the runner row the opaque repair
+# line prints; an `.xcodeproj`/`.xcworkspace` gives `xcrun simctl` and
+# `xcodebuild`; a Gradle build file applying `com.android.application` gives
+# `emulator -avd`, `avdmanager` and `adb`; a `.maestro/` flow gives `maestro`.
+# Every device row reaches `기기전역`, and the rows that make or boot a device
+# carry `짝 정리=기기 정리`. No trace, no line.
 #
 # The keys are the ones the gate turns off in every run's settings; a candidate
 # becomes on only through a `플러그인 허용` row the person accepted at 5t, or
@@ -206,6 +220,7 @@ KD_RESOLVE_GIVEN=0; KD_RESOLVE=''
 KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''; KD_AUTO=0
 KD_APS_GIVEN=0; KD_APS=''
 KD_PC_GIVEN=0; KD_PC_CONFIRMED=''; KD_PC_RELEASED=''
+KD_PA_GIVEN=0; KD_PA=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
@@ -251,6 +266,9 @@ while [ $# -gt 0 ]; do
       KD_APS_GIVEN=1; KD_APS="$2"; shift 2 ;;
     --plugin-candidates)
       KD_PC_GIVEN=1; shift ;;
+    --preauth-candidates)
+      [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--preauth-candidates 에 작업 트리 경로가 없습니다"
+      KD_PA_GIVEN=1; KD_PA="$2"; shift 2 ;;
     --confirmed|--released)
       [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "$1 에 값이 없습니다"
       printf '%s\n' "$2" | grep -E '^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$' >/dev/null \
@@ -313,6 +331,63 @@ if [ "$KD_PC_GIVEN" = "1" ]; then
   exit 0
 fi
 [ -z "$KD_PC_CONFIRMED$KD_PC_RELEASED" ] || kd_usage "--confirmed·--released 는 --plugin-candidates 와 함께만 씁니다"
+
+if [ "$KD_PA_GIVEN" = "1" ]; then
+  [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
+    && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ "$KD_APS_GIVEN" = "0" ] \
+    && [ -z "$KD_KAT$KD_XSHA$KD_NOW" ] && [ "$KD_AUTO" = "0" ] \
+    || kd_usage "--preauth-candidates 는 다른 인자와 함께 쓰지 않습니다"
+  [ -d "$KD_PA" ] || kd_usage "--preauth-candidates 의 작업 트리가 디렉터리가 아닙니다: '$KD_PA'"
+  # The tracked files of the target's worktree are the only evidence: a trace
+  # that is not committed is not one the run's worktree will hold.
+  KD_PA_FILES=$(cd "$KD_PA" && git ls-files 2>/dev/null) \
+    || kd_refuse "작업 트리의 추적 파일을 읽지 못했습니다: $KD_PA"
+  kd_pa_first() {
+    # kd_pa_first <awk regex on the path> — the first tracked path matching it.
+    printf '%s\n' "$KD_PA_FILES" | awk -v re="$1" '$0 ~ re { print; exit }'
+  }
+  kd_pa_emit() { printf '후보\t%s\t%s\n' "$1" "$2"; }
+  # This mode returns before run.sh is sourced, so the reserved value is spelled
+  # here; the manifest check (`PREAUTH_DEVICE_PAIR` in run.sh) is what accepts it.
+  PREAUTH_DEVICE_PAIR='기기 정리'
+  # Build wrappers: the runner row the opaque repair line prints for a script
+  # the manifest does not name — the runner with its script operand.
+  for kd_pa_w in gradlew mvnw; do
+    kd_pa_p=$(kd_pa_first "(^|/)$kd_pa_w\$")
+    [ -n "$kd_pa_p" ] || continue
+    kd_pa_emit "형태=bash $kd_pa_p | 사유=레포에 $kd_pa_p 가 있어 빌드가 이 러너를 부른다" "$kd_pa_p"
+  done
+  # Xcode: the simulator lifecycle and the build and test of a simulator
+  # destination, both under the device cleanup.
+  kd_pa_p=$(printf '%s\n' "$KD_PA_FILES" \
+    | awk 'match($0, /\.(xcodeproj|xcworkspace)\//) { print substr($0, 1, RSTART + RLENGTH - 2); exit }')
+  if [ -n "$kd_pa_p" ]; then
+    kd_pa_emit "형태=xcrun simctl | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=$PREAUTH_DEVICE_PAIR | 사유=레포에 $kd_pa_p 가 있어 시뮬레이터 수명주기가 필요하다" "$kd_pa_p"
+    kd_pa_emit "형태=xcodebuild | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=$PREAUTH_DEVICE_PAIR | 사유=같은 흔적 — 시뮬레이터 목적지의 빌드·시험" "$kd_pa_p"
+  fi
+  # Android: a Gradle build file that applies the application plugin.
+  kd_pa_p=''
+  while IFS= read -r kd_pa_f; do
+    [ -n "$kd_pa_f" ] || continue
+    if grep -q 'com\.android\.application' "$KD_PA/$kd_pa_f" 2>/dev/null; then
+      kd_pa_p="$kd_pa_f"; break
+    fi
+  done <<EOF
+$(printf '%s\n' "$KD_PA_FILES" | awk '/(^|\/)build\.gradle(\.kts)?$/')
+EOF
+  if [ -n "$kd_pa_p" ]; then
+    kd_pa_emit "형태=emulator -avd | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=$PREAUTH_DEVICE_PAIR | 사유=레포에 $kd_pa_p 이 있어 에뮬레이터가 필요하다" "$kd_pa_p"
+    kd_pa_emit "형태=avdmanager | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=$PREAUTH_DEVICE_PAIR | 사유=같은 흔적 — AVD 만들기·지우기" "$kd_pa_p"
+    kd_pa_emit "형태=adb | 표면=트리밖쓰기 | 도달=기기전역 | 사유=같은 흔적 — 에뮬레이터 대상 설치·실행" "$kd_pa_p"
+  fi
+  # Maestro: a flow directory.
+  kd_pa_p=$(printf '%s\n' "$KD_PA_FILES" \
+    | awk 'match($0, /(^|\/)\.maestro\//) { print substr($0, 1, RSTART + RLENGTH - 2); exit }')
+  if [ -n "$kd_pa_p" ]; then
+    kd_pa_emit "형태=maestro | 표면=트리밖쓰기 | 도달=기기전역 | 사유=레포에 $kd_pa_p 흐름이 있다" "$kd_pa_p"
+  fi
+  exit 0
+fi
 
 if [ "$KD_APS_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
@@ -1376,6 +1451,8 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
           KD_EFF="이 접두의 행위를 행의 도달 칸($(manifest_row_fields "${E_X[$i]}" '도달'))에서 승인 없이 수행합니다(이 런의 모든 대상에 적용)"
           case "${E_X[$i]}" in
             *'| 짝 정리=- |'*) ;;
+            *"| 짝 정리=$PREAUTH_DEVICE_PAIR |"*)
+              KD_EFF="$KD_EFF. 이 런이 만든 이름 접두 \`cc-<run id>-<파견 id>-\` 의 시뮬레이터·에뮬레이터만, 그 행위를 연 파견이나 런이 끝날 때 승인 없이 끄고 지웁니다" ;;
             *) KD_EFF="$KD_EFF. 짝 정리 명령 \`$(manifest_row_fields "${E_X[$i]}" '짝 정리')\` 을 그 행위를 연 파견이나 런이 끝날 때 승인 없이 실행합니다" ;;
           esac ;;
         *) KD_EFF='이 접두의 행위를 승인 없이 수행합니다(이 런의 모든 대상에 적용)' ;;

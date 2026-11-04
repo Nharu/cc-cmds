@@ -1275,6 +1275,46 @@ check "--confirmed 의 키 모양이 틀리면 2" "$(pc --confirmed notakey >/de
 check "--released 는 --plugin-candidates 와 함께만 쓴다" "$(kd $T --released ghost@m >/dev/null 2>&1; echo $?)" "2"
 
 # ---------------------------------------------------------------------------
+# --preauth-candidates — 대상 작업 트리의 추적 파일 흔적으로 사전 인가 행 후보를 낸다.
+# 픽스처 레포 넷(빌드 래퍼, Xcode, Android, Maestro)과 흔적 없는 레포 하나.
+# ---------------------------------------------------------------------------
+pac_repo() {  # pac_repo <이름> <경로=내용>... — 그 파일들을 커밋한 레포 경로
+  local d="$WORK/pac-$1" kv
+  shift
+  rm -rf "$d"; mkdir -p "$d"
+  for kv in "$@"; do
+    mkdir -p "$d/$(dirname "${kv%%=*}")"
+    printf '%s\n' "${kv#*=}" > "$d/${kv%%=*}"
+  done
+  ( cd "$d" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -q -m init ) >/dev/null 2>&1
+  printf '%s' "$d"
+}
+pac() { kd --preauth-candidates "$1" | awk -F'\t' '$1=="후보" { print $2 }'; }
+PAC_W=$(pac_repo wrap 'gradlew=#!/bin/sh' 'mvnw=#!/bin/sh')
+check "--preauth-candidates: 빌드 래퍼마다 러너 행 하나" \
+  "$(pac "$PAC_W" | sed 's/ | 사유=.*//' | paste -sd'|' -)" "형태=bash gradlew|형태=bash mvnw"
+PAC_X=$(pac_repo xcode 'App.xcodeproj/project.pbxproj=x')
+check "--preauth-candidates: Xcode 흔적은 기기 정리 짝을 단 simctl·xcodebuild 두 행" \
+  "$(pac "$PAC_X" | sed 's/ | 사유=.*//' | paste -sd'|' -)" \
+  "형태=xcrun simctl | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리|형태=xcodebuild | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리"
+check "--preauth-candidates: 후보의 설명은 흔적 경로다" \
+  "$(kd --preauth-candidates "$PAC_X" | awk -F'\t' '$1=="후보" { print $3 }' | sort -u)" "App.xcodeproj"
+PAC_A=$(pac_repo android 'app/build.gradle=plugins { id "com.android.application" }' 'lib/build.gradle=plugins { id "java" }')
+check "--preauth-candidates: Android 앱 빌드 파일은 emulator·avdmanager(기기 정리)·adb 세 행" \
+  "$(pac "$PAC_A" | sed 's/ | 사유=.*//' | paste -sd'|' -)" \
+  "형태=emulator -avd | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리|형태=avdmanager | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리|형태=adb | 표면=트리밖쓰기 | 도달=기기전역"
+PAC_M=$(pac_repo maestro '.maestro/login.yaml=appId: x')
+check "--preauth-candidates: Maestro 흐름 디렉터리는 maestro 행 하나" \
+  "$(pac "$PAC_M" | sed 's/ | 사유=.*//')" "형태=maestro | 표면=트리밖쓰기 | 도달=기기전역"
+PAC_N=$(pac_repo none 'README.md=x' 'lib/build.gradle=plugins { id "java" }')
+check "--preauth-candidates: 흔적이 없으면 후보도 없고 0 이다" \
+  "$(kd --preauth-candidates "$PAC_N" | grep -c . || true)|$(kd --preauth-candidates "$PAC_N" >/dev/null 2>&1; echo $?)" "0|0"
+check "--preauth-candidates 는 다른 인자와 함께 쓰지 않는다" \
+  "$(kd --preauth-candidates "$PAC_N" $T >/dev/null 2>&1; echo $?)" "2"
+check "--preauth-candidates 의 작업 트리가 디렉터리가 아니면 2" \
+  "$(kd --preauth-candidates "$WORK/pac-missing" >/dev/null 2>&1; echo $?)" "2"
+
+# ---------------------------------------------------------------------------
 # plugin-allow — 킥오프가 읽는 계정 디렉터리로 키마다 시드·켬·미설치·판정 불가를
 # 가린다. 계정은 파일 머리에서 고정한 CLAUDE_CONFIG_DIR 와, XDG_CONFIG_HOME 아래
 # 레인 인벤토리가 더하는 디렉터리다.
