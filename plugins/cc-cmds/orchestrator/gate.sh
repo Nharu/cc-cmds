@@ -25248,8 +25248,15 @@ gate_preauth_argv() {
   # PUT` row word for word. The flags ahead of `api` go after it, where gh
   # reads them too. An argv with an `api` word whose place cannot be told gets
   # an `api` word no row names, so only a row of bare `gh` opens it.
+  #
+  # AN ACT WITH NO ARGV GETS AN EMPTY STRING. A plan with no act
+  # (`--kind propose-done`) and an empty-argv act (`base-check`) reach here
+  # with the alias alone; the caller assigns the result, so a failure here
+  # would end the gate under `set -e` instead of leaving the rules nothing to
+  # match.
   local alias="$1"; shift
-  local cmd="${1##*/}" m
+  local cmd="${1:-}" m
+  cmd="${cmd##*/}"
   if [ "$cmd" = git ] && [ -n "$alias" ]; then
     gate_git_subcommand "${@:2}" >/dev/null
     if [ "${#GATE_GIT_GLOBALS[@]}" -gt 0 ] && [ "$GATE_GIT_LOCONLY" = 1 ] \
