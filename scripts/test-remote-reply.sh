@@ -190,7 +190,7 @@ check "1 기록의 대상 칸·세션·발신" "$(jq -r '[.tool_use_id, .session
   "toolu_01AuqSingle00000000000001 $SID1 telegram tg:123456789"
 check "1 수령 표지가 이 세션 것" "$(jq -r '.session_id' "$ROOT/inbox/$SAFE1/$RID_AUQ1.picked" 2>/dev/null)" "$SID1"
 check "1 수령 표지의 적용 기한" "$(jq -r '.apply_by_ms - .picked_at_ms' "$ROOT/inbox/$SAFE1/$RID_AUQ1.picked")" "120000"
-hm=$(find "$ROOT/handled" -name '*.json' 2>/dev/null | head -n 1)
+hm=$(find "$ROOT/handled" -name '*.json' -print -quit 2>/dev/null)
 check "1 처리 표지 — 원인·정확 일치·사건 slot" "$(jq -r '[.cause, (.prefix | tostring), .slot] | join(" ")' "$hm" 2>/dev/null)" \
   "reply-applied false cc-cmds-session-ask-$SID1"
 h=$(printf '%s\037%s' "$ROOT" "toolu_01AuqSingle00000000000001" | shasum -a 256 | cut -d' ' -f1)
@@ -290,7 +290,7 @@ check "4 기록이 applied-sat.json 과 같음(적용 시각 밖)" \
   "$(jq -cS 'del(.applied_at_ms)' "$(applied_of "$RID_APPR")" 2>/dev/null)" \
   "$(jq -cS 'del(.applied_at_ms)' "$FX/applied-sat.json")"
 if [ $((t1 - t0)) -lt 3000 ]; then ok "4 S-at 이 기다리지 않음"; else bad "4 S-at 이 기다리지 않음" "$((t1 - t0)) ms"; fi
-check "4 처리 표지 slot 이 승인 사건 slot" "$(jq -r '.slot' "$(find "$ROOT/handled" -name '*.json' | head -n 1)")" "$APPR_SLOT"
+check "4 처리 표지 slot 이 승인 사건 slot" "$(jq -r '.slot' "$(find "$ROOT/handled" -name '*.json' -print -quit)")" "$APPR_SLOT"
 
 # ---------------------------------------------------------------------------
 # 5. Question form — scan, form-pick, form-record with the submitted bytes.
@@ -488,7 +488,7 @@ seam "{\"session_id\":\"$SID2\",\"form\":null}" scan
 seam "{\"session_id\":\"$SID2\"}" wake-mark "$RUN" "$RID_APPR"
 lit=$(out)
 check "9 깨우기 리터럴이 고정 예제와 같음" "$lit" "$(head -n 1 "$FX/wake-approval.txt")"
-if printf '%s' "$lit" | grep -Eq '^<cc-remote-approval run=[A-Za-z0-9-]{1,64} id=[A-Za-z0-9_-]{1,55}-[0-9a-f]{8}/>$'; then
+if grep -Eq <<<"$lit" '^<cc-remote-approval run=[A-Za-z0-9-]{1,64} id=[A-Za-z0-9_-]{1,55}-[0-9a-f]{8}/>$'; then
   ok "9 리터럴이 정본 정규식에 맞음"; else bad "9 리터럴이 정본 정규식에 맞음" "$lit"; fi
 check "9 표지에 woken_at_ms" "$(jq -r 'has("woken_at_ms")' "$ROOT/inbox/r-$RUN/$RID_APPR.picked")" "true"
 check "9 덧쓰기가 다른 키를 바꾸지 않음" "$(jq -c 'del(.woken_at_ms) | keys' "$ROOT/inbox/r-$RUN/$RID_APPR.picked")" \
@@ -497,8 +497,8 @@ seam "{\"session_id\":\"$SID2\"}" wake-mark "$RUN" "$RID_APPR"
 check "9 두 번째 wake-mark 는 아무것도 내지 않음" "$(out)" ""
 seam "{\"session_id\":\"$SID2\",\"form\":null}" scan
 check "9 깨운 봉투는 후보가 아님" "$(out | jq -c '.wake')" "[]"
-envelope_re=$(grep -E '^envelope_re=' "$DISMISS" | head -n 1)
-pasted_re=$(grep -E '^pasted_re=' "$DISMISS" | head -n 1)
+envelope_re=$(grep -m 1 -E '^envelope_re=' "$DISMISS")
+pasted_re=$(grep -m 1 -E '^pasted_re=' "$DISMISS")
 eval "$envelope_re"
 eval "$pasted_re"
 if [[ hi =~ $envelope_re ]]; then bad "9 귀환 훅 정규식의 양성 대조" "hi 가 봉투로 읽힘"; else ok "9 귀환 훅 정규식의 양성 대조"; fi
