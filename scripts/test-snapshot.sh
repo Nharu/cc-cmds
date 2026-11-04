@@ -838,7 +838,7 @@ done
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; f=${pair#*:}
   check "$who 사본이 리뷰 절 정산을 review-post 로 적는다" \
-    "$(grep -qF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 --reach 협업 -- 게시' "$f" && echo 있음)" "있음"
+    "$(grep -qF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 -- 게시' "$f" && echo 있음)" "있음"
   check "$who 사본에 손으로 쓴 리뷰 본문 게시가 없다" "$(grep -cF -- '-f body=' "$f" || true)" "0"
 done
 for lit in \
