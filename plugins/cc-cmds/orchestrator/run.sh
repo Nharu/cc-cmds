@@ -14317,7 +14317,7 @@ plan_via_planner() {
     while IFS= read -r _pf; do [ -z "$_pf" ] || _pdf+=("$_pf"); done \
       <<<"$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files[]? | strings')"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
-      "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
+      "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
       "강제 표면=$(run_surface_stamp ${_pdf[@]+"${_pdf[@]}"})" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
   done

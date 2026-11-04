@@ -57782,6 +57782,10 @@ check "102: 계획기 경로가 선언 파일에서 강제 표면을 적는다" 
   "$(seg_field "$(printf '%s\n' "$drv102p" | grep '^id=P1|')" '강제 표면')/$(seg_field "$(printf '%s\n' "$drv102p" | grep '^id=P2|')" '강제 표면')" \
   "2건 프로젝트설정,지침파일/없음"
 [ "$(printf '%s\n' "$drv102p" | grep -c '^id=' || true)" = "2" ] || bad "102 계획기 경로 stderr" "$(tail -5 "$d102/drv.err" 2>/dev/null)"
+# 독자들은 이 값을 쉼표로 나눈다. 절 107 의 결정 함수 사례가 같은 문자열을 세그먼트 행에 쓴다.
+check "102: 계획기 행의 선언 파일 집합은 쉼표 꼴이다" \
+  "$(seg_field "$(printf '%s\n' "$drv102p" | grep '^id=P1|')" '선언 파일 집합')/$(seg_field "$(printf '%s\n' "$drv102p" | grep '^id=P2|')" '선언 파일 집합')" \
+  "a.txt, .claude/settings.json, docs/CLAUDE.md/b.txt"
 
 # 분류기를 읽지 못하는 사본 — 오케스트레이터 디렉터리만 있고 옆의 hooks 가 없다.
 mkdir -p "$d102/nolib"
@@ -60747,6 +60751,26 @@ check "107: 드라이버 훅이 게이트의 갈래를 그대로 받는다" \
 check "107: 드라이버 훅이 반증 기록의 문서 필드 갈래를 받는다" \
   "$(dr107 'refutation_hook SA '"'$x107/h.md'"'; printf "%s|%s" "$REFUTATION_BRANCH" "$REFUTATION_ITEM"')" "재수렴|R3"
 check "107: 반증이 아닌 기록에는 훅이 1 이다" "$(dr107 'refutation_hook SA '"'$x107/a.md'"'; printf "%s" "$?"')" "1"
+# 계획기 세그먼트 — 절 102 가 단언한 계획기 행의 값을 그대로 세그먼트 행에 두고, 결정 함수와
+# 드라이버의 호출 꼴이 같은 갈래를 내는지 잰다. 이 런 디렉터리의 R2 기록은 한 파견 단위뿐이라
+# 갈래를 가르는 것은 선언 파일 판독이다.
+cp "$L107" "$w107/l107.keep"
+mk107 "$x107/p-many.md" S4:SA:1#1 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'docs/CLAUDE.md, a.txt'
+mk107 "$x107/p-one.md" S4:SA:1#1 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'b.txt'
+mk107 "$x107/p-out.md" S4:SA:1#1 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'etc/out.sh'
+hk107='; printf "%s|%s|%s" "$REFUTATION_BRANCH" "$REFUTATION_REASON" "$REFUTATION_ITEM"'
+printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=a.txt, .claude/settings.json, docs/CLAUDE.md\n' > "$L107"
+check "107: 계획기 꼴의 여러 원소 안 경로는 구현 수정이다" \
+  "$(br107 "$w107/run" "$x107/p-many.md") / $(dr107 'refutation_hook SA '"'$x107/p-many.md'$hk107")" \
+  "구현 수정|구현 결함 — R2|R2 / 구현 수정|구현 결함 — R2|R2"
+check "107: 계획기 꼴의 집합 밖 경로는 선언 파일 밖 파킹이다" \
+  "$(br107 "$w107/run" "$x107/p-out.md") / $(dr107 'refutation_hook SA '"'$x107/p-out.md'$hk107")" \
+  "파킹|결함 경로가 선언 파일 밖|R2 / 파킹|결함 경로가 선언 파일 밖|R2"
+printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=b.txt\n' > "$L107"
+check "107: 계획기 꼴의 한 원소 안 경로는 구현 수정이다" \
+  "$(br107 "$w107/run" "$x107/p-one.md") / $(dr107 'refutation_hook SA '"'$x107/p-one.md'$hk107")" \
+  "구현 수정|구현 결함 — R2|R2 / 구현 수정|구현 결함 — R2|R2"
+cp "$w107/l107.keep" "$L107"
 # 수정 차례는 게이트 결정(훅)과 시도(continue_attempt)를 차례 목록으로 갈아 끼운 채 돌고, 1 이면
 # 호출부처럼 s4_park_unfinished 로 넘어간다 — 파킹 항목은 기록해 둔 세그먼트 문맥으로 refutation_park 에 닿는다.
 # 문자열 안 줄은 들여 쓴다 — 0열의 대입은 하니스 전역 충돌 린트가 최상위 전역으로 읽는다.
@@ -60785,7 +60809,7 @@ rm -f "$w107/run/SB#1.fix1.lease"
 check "107: 수정 파견마다 그 전에 끝난 임대를 돌려준다" \
   "$(dr107 "$lz107; C0='의도된 park'; BR='구현 수정,구현 수정,파킹,'; CL='의도된 park,의도된 park,'; $sw107")" \
   "SA#1;SA#1.fix1;SA#1.fix1;SA#1.fix2;|1|park:SA:br;"
-unset w107 D107 L107 x107 rc107 nx107 pb107 pf107 sw107 lz107 A107 h107
+unset w107 D107 L107 x107 rc107 nx107 pb107 pf107 sw107 lz107 A107 h107 hk107
 
 # ---------------------------------------------------------------------------
 # 107b. 라우터 스냅숏과 수락 — 실제 원소가 있는 원장 위의 act
@@ -60896,8 +60920,36 @@ check "107b: 구현 수정 원소의 기록에 사람이 파킹을 답할 수 �
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment RF --cutpoint 커밋 \
     --snapshot-digest "$(SAH)" --rationale x -- 상태=park 워크트리="$SA_SEGWT" 선행=없음 '선언 파일 집합=work.txt'
 check "107b: park 행이 파킹 답을 소진한다" "$rc|$(rfa_ans_field "$r107b" route)|$(rfa_el '다음')" "0||"
-rfa_ans "$r107b" '구현 수정'
-check "107b: park 뒤의 사람 답은 라우팅 불가다" "$rc" "3"
+n107b=$(rfa_n '중단 답')
+for a107b in '구현 수정' '파킹'; do
+  rfa_ans "$r107b" "$a107b"
+  case "$rc|$msg" in
+    3'|'*'라우팅 불가'*) ok "107b: 파킹 답의 park 뒤 $a107b 답은 라우팅 불가다" ;;
+    *) bad "107b: 파킹 답의 park 뒤 $a107b 답은 라우팅 불가다" "$rc|$msg" ;;
+  esac
+done
+check "107b: 파킹 답의 park 뒤 거절된 답은 중단 답 행을 남기지 않는다" "$(rfa_n '중단 답')" "$n107b"
+
+# 라우터의 구현 수정 파견이 거절되어 park 로 간 세그먼트 — 이 답은 그 런에서 집행되지 않는다.
+rfa_new "반증 재파견 거절 뒤 답"
+rfa_sr implement 1 '의도된 park'
+r107b=$(rfa_rec 'RF#1.md' 'RF#1' 'Step 3 구현 결함 반증 — x' 'R2 · 반증됨(실패)' 'work.txt')
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment RF --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=park 워크트리="$SA_SEGWT" 선행=없음 '선언 파일 집합=work.txt'
+check "107b: 재파견 거절의 park 행이 선다" "$rc" "0"
+sag act --manifest "$SA_MANIFEST" --kind blocked --target main --segment RF --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(SAH)" --rationale x -- 스코프=cone 원인=막힘 '사유=구현 수정 재파견 거절' "근거=$r107b" '앵커 세그먼트=RF'
+check "107b: 재파견 거절의 막힘 행이 서고 원소가 없다" "$rc|$(rfa_el '다음')" "0|"
+n107b=$(rfa_n '중단 답')
+for a107b in '구현 수정' '파킹'; do
+  rfa_ans "$r107b" "$a107b"
+  case "$rc|$msg" in
+    3'|'*'라우팅 불가'*) ok "107b: 재파견 거절 park 뒤 $a107b 답은 라우팅 불가다" ;;
+    *) bad "107b: 재파견 거절 park 뒤 $a107b 답은 라우팅 불가다" "$rc|$msg" ;;
+  esac
+done
+check "107b: 재파견 거절 park 뒤 거절된 답은 중단 답 행을 남기지 않는다" "$(rfa_n '중단 답')" "$n107b"
 
 # 기록의 갈래가 바뀌면 답 시점에 거절한다.
 rfa_new "반증 답 거절"
@@ -60945,7 +60997,7 @@ check "107b: 결함 기록 없는 앞 시도 뒤의 시도는 수정 시도가 �
   "$( ( LEDGER="$SA_LEDGER" RUN_DIR="$SA_RUN" gate_refutation_fix_attempt_halted RF "$SA_LEDGER" "$SA_RUN" ); printf '%s' "$?")" "1"
 rfa_carry "$(rfa_ans_line)" "$(rfa_ans_field "$f107b" carry_prompt)"
 check "107b: 그 틀 운반은 게이트를 지난다" "$(cb60_pass)" "통과"
-unset r107b n107b h107b f107b p107b s107b
+unset r107b n107b h107b f107b p107b s107b a107b
 
 # --- epilogue-begin ---
 #
