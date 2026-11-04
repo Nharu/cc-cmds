@@ -6899,8 +6899,8 @@ surface_of_argv0() {
       esac ;;
     visual-check.sh)
       case "${1:-}" in
-        scan|size|approval|bundle|binding|system|reuse) printf '읽기' ;;
-        *)                                              printf '등급 미상' ;;
+        scan|size|approval|bundle|binding|system|confirm|system-users|reuse) printf '읽기' ;;
+        *)                                                                  printf '등급 미상' ;;
       esac ;;
     visual-capture.sh)
       case "${1:-}" in
@@ -11487,6 +11487,76 @@ gate_run_scope_rows() {
 gate_run_scope_last_row() {
   # gate_run_scope_last_row <step id> <row kind> — the latest of those rows.
   gate_run_scope_rows "$1" "$2" | tail -1
+}
+
+gate_row_ledger_line() {
+  # gate_row_ledger_line <row> — the ledger line number of the row's last
+  # occurrence, empty when the row is not there.
+  [ -n "$1" ] || return 0
+  { grep -nFx -- "$1" "$LEDGER" 2>/dev/null || true; } | tail -1 | cut -d: -f1
+}
+
+gate_visual_redispatch_why() {
+  # gate_visual_redispatch_why <step id> <row kind> — 0 when a visual generate
+  # or publish step may be dispatched again; on 1 prints why not.
+  #
+  # A STEP WHOSE LAST ROW ENDED `정상 완료` IS DISPATCHED AGAIN ONLY FOR THE
+  # DESIGN SYSTEM ROUND TRIP. The predecessor check reads only `depends_on`, so
+  # without this a router could re-run a finished generate stage over screens
+  # already made, or a finished publish stage with nothing new to publish.
+  # - The generate step runs again when its last row ended on the design system
+  #   (`시각 종단=디자인 시스템`; a row without the field ended on the screens),
+  #   the confirmation line is a person's approval naming this document, a
+  #   person's `승인` to the run's `디자인-시스템-판정` record stands behind that
+  #   line (`visual_ds_confirm_provenance`), and this document's sidecar is
+  #   absent or pins another palette (`visual_system_unpinned`). A hand-written
+  #   approval line names no such record, so it re-dispatches nothing.
+  # - The publish step runs again when the generate step's last `정상 완료` row
+  #   is later in the ledger than the publish step's last row: there are new
+  #   screens to judge.
+  # A step whose last row ended any other way is not this rule's to judge.
+  local key="$1" k="$2" last vend why dep vkey='' vlast vln pln
+  last=$(gate_run_scope_last_row "$key" "$k")
+  [ "$(gate_row_field "$last" '종단 부류')" = '정상 완료' ] || return 0
+  case "$k" in
+    visual)
+      vend=$(gate_row_field "$last" '시각 종단')
+      if [ "$vend" != '디자인 시스템' ]; then
+        printf '생성 단계 %s 는 화면 종단(시각 종단=%s)으로 정상 완료했습니다 — 같은 런에서 다시 띄우는 것은 디자인 시스템 종단 뒤 사람이 그 디자인 시스템을 승인했을 때뿐입니다' "$key" "${vend:-화면}"
+        return 1
+      fi
+      if ! visual_confirm_approved_here "${DOC:-}"; then
+        printf '생성 단계 %s 는 디자인 시스템 종단으로 끝났지만, 디자인 시스템의 확인 줄이 이 문서의 사람 승인이 아닙니다(%s) — 디자인-시스템-판정 에 사람이 답하고 발행 단계가 확인 줄을 바꾼 뒤 다시 띄웁니다' \
+          "$key" "$(visual_confirm_state "${DOC:-}" || printf '확인 줄을 읽지 못함')"
+        return 1
+      fi
+      if ! why=$(visual_ds_confirm_provenance "${DOC:-}"); then
+        printf '생성 단계 %s 를 다시 띄우지 않습니다 — %s' "$key" "$why"
+        return 1
+      fi
+      if ! visual_system_unpinned "${DOC:-}"; then
+        printf '생성 단계 %s 를 다시 띄우지 않습니다 — 이 문서의 시각 사이드카가 이미 지금의 디자인 시스템으로 만든 화면을 가리킵니다' "$key"
+        return 1
+      fi
+      return 0 ;;
+    visual-publish)
+      for dep in $( { manifest_plan_json 2>/dev/null \
+                      | jq -r --arg id "$key" '.steps[]? | select(type == "object" and .id == $id) | .depends_on[]? // empty' 2>/dev/null \
+                      || true; } ); do
+        if [ "$(gate_run_scope_kind_of_key "$dep" 2>/dev/null || true)" = 'visual' ]; then vkey=$dep; fi
+      done
+      vlast=''
+      [ -z "$vkey" ] || vlast=$(gate_run_scope_rows "$vkey" visual | awk 'index($0, "| 종단 부류=정상 완료 |")' | tail -1)
+      vln=$(gate_row_ledger_line "$vlast")
+      pln=$(gate_row_ledger_line "$last")
+      if [ -z "$vln" ] || [ -z "$pln" ] || [ "$vln" -le "$pln" ]; then
+        printf '발행 단계 %s 는 정상 완료했고, 그 뒤 생성 단계%s 가 정상 완료한 행이 없습니다 — 같은 런에서 다시 띄우는 것은 생성 단계가 새 화면을 만든 뒤뿐입니다' \
+          "$key" "${vkey:+ $vkey}"
+        return 1
+      fi
+      return 0 ;;
+  esac
+  return 0
 }
 
 gate_stage_row_segment() {
@@ -22842,7 +22912,7 @@ gate_reentry_table() {
   # A review's halts are not here, and neither are the re-convergence scopes the
   # gate cannot check — a problem identity, `설계 수준 잔여` and `상한 P0 잔여`.
   #
-  # The visual publish stage's three person-only questions are here, each as
+  # The visual publish stage's four person-only questions are here, each as
   # the bare prefix and the prefix followed by ` — `, the two forms a step
   # matches a prefix in.
   printf '%s\n' \
@@ -22854,6 +22924,8 @@ gate_reentry_table() {
     'visual-publish-unattended|금지-후보 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
     'visual-publish-unattended|발행-실패|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
     'visual-publish-unattended|발행-실패 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|디자인-시스템-판정|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
+    'visual-publish-unattended|디자인-시스템-판정 — *|visual-publish|/cc-cmds:visual-publish-unattended <문서>' \
     'implement-unattended|*|implement|/cc-cmds:implement-unattended <문서> "세그먼트 <세그먼트> (사이클 <사이클>) · 선언 파일: <선언 파일>[ · 수정 대상: <리포트> 의 P0·P1]"' \
     'design-discuss-unattended|*|design|/cc-cmds:design-discuss-unattended <문서> "<의도>"' \
     'design-solo-unattended|*|design|/cc-cmds:design-solo-unattended <문서> "<의도>"' \
@@ -36649,12 +36721,13 @@ EOF
       # the append.
       # THE PUBLISH STAGE'S JUDGMENT QUESTIONS ARE A PERSON'S. Whether the
       # published screens are right, whether a candidate joins the forbidden
-      # list and whether a failed publish is given up are answered by looking
-      # at the screens, which neither the seat's recommendation nor a shift
-      # has done; the answer is refused before anything else is checked.
+      # list, whether a failed publish is given up and whether a new design
+      # system's palette is right are answered by looking at the screens or the
+      # design system, which neither the seat's recommendation nor a shift has
+      # done; the answer is refused before anything else is checked.
       if [ "$hby" != "사람" ] \
-         && halt_step_is_visual_publish_site "$hrec" '시각-판정' '금지-후보' '발행-실패'; then
-        warn "이 중단 기록은 시각 발행 단계의 사람 전용 질문입니다(시각-판정·금지-후보·발행-실패) — 답한 주체=사람 의 답만 기록합니다: $hrec"
+         && halt_step_is_visual_publish_site "$hrec" '시각-판정' '금지-후보' '발행-실패' '디자인-시스템-판정'; then
+        warn "이 중단 기록은 시각 발행 단계의 사람 전용 질문입니다(시각-판정·금지-후보·발행-실패·디자인-시스템-판정) — 답한 주체=사람 의 답만 기록합니다: $hrec"
         return "$GATE_EXIT_RULE"
       fi
       local hladder=''
@@ -36880,12 +36953,12 @@ EOF
       fi
       log "중단 답 기록 — $seg ← $hopt ($hby)"
       # A PERSON'S NO AT THE PUBLISH STAGE CLOSES THE SCREENS' QUESTION IN THE
-      # SAME ACT: `거부` on a `시각-판정` record closes the run's open
-      # `시각-승인` as `거부`, `발행하지 않음` on a `발행-실패` record closes it
-      # as `무효`. Left open, the question would wait for an answer the person
-      # has already given.
+      # SAME ACT: `거부` on a `시각-판정` or `디자인-시스템-판정` record closes
+      # the run's open `시각-승인` as `거부`, `발행하지 않음` on a `발행-실패`
+      # record closes it as `무효`. Left open, the question would wait for an
+      # answer the person has already given.
       if [ "$hby" = "사람" ] \
-         && { { [ "$hopt" = "거부" ] && halt_step_is_visual_publish_site "$hrec" '시각-판정'; } \
+         && { { [ "$hopt" = "거부" ] && halt_step_is_visual_publish_site "$hrec" '시각-판정' '디자인-시스템-판정'; } \
               || { [ "$hopt" = "발행하지 않음" ] && halt_step_is_visual_publish_site "$hrec" '발행-실패'; }; }; then
         gate_visual_halt_linked_close || true
       fi
@@ -45341,6 +45414,17 @@ gate_verb_act() {
         exit "$GATE_EXIT_RULE"
       fi
     done
+    # A VISUAL STEP'S OWN LAST ROW, which the loop above never reads: one that
+    # ended `정상 완료` runs again only for the design system round trip
+    # (`gate_visual_redispatch_why`).
+    case "$rs_kind" in
+      visual | visual-publish)
+        local rs_vwhy
+        if ! rs_vwhy=$(gate_visual_redispatch_why "$stage_key" "$rs_kind"); then
+          warn "$rs_vwhy"
+          exit "$GATE_EXIT_RULE"
+        fi ;;
+    esac
   elif [ "$kind" = "skill" ] && [ -z "$(gate_segment_field "$segment" '상태')" ]; then
     warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"
     warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
@@ -49658,8 +49742,8 @@ gate_continuation_argv() {
   case "$skind" in
     design) unmet="동결된 설계 문서도 정지 기록도 없다" ;;
     audit)  unmet="판독자 리포트 파일(docs/design-audit/<slug>.reader-*.md)도 감사 종결 문구($LIT_AUDIT_TERMINAL)도 없다" ;;
-    visual) unmet="검토 통과로 확정된 시각 사이드카도 시각 종결 문구($LIT_VISUAL_TERMINAL)도 정지 기록도 없다" ;;
-    visual-publish) unmet="발행 종결 문구($LIT_VISUAL_PUBLISH_TERMINAL)와 함께 발행됨 상태의 시각 사이드카나 사람의 거부·발행하지 않음 답이 없고, 정지 기록도 없다" ;;
+    visual) unmet="검토 통과로 확정된 시각 사이드카와 시각 종결 문구($LIT_VISUAL_TERMINAL)도, 사람 확인을 기다리는 디자인 시스템과 그 종결 문구($LIT_VISUAL_DS_TERMINAL)도, 정지 기록도 없다" ;;
+    visual-publish) unmet="발행 종결 문구($LIT_VISUAL_PUBLISH_TERMINAL)와 함께 발행됨 상태의 시각 사이드카나 사람의 거부·발행하지 않음 답, 또는 사람이 승인한 이 문서의 디자인 시스템이 없고, 정지 기록도 없다" ;;
     # An implement attempt filed `공허한 성공` for its residual share names the
     # missing headings verbatim, so the continued session can find each item.
     # A process A whose segment open decisions reach is told those first: no
@@ -53401,9 +53485,10 @@ gate_record_stage_outcome() {
   # `검토 통과` or `발행됨` (a re-kicked run reusing the source's published
   # screens ends without writing the sidecar). Either alone is a stage that said
   # it finished over screens nobody reviewed, or reviewed screens whose stage
-  # never said it was done.
-  elif [ "$kind" = "visual" ] \
-       && ! { grep -qF "$LIT_VISUAL_TERMINAL" "$out" 2>/dev/null && visual_sidecar_complete "${DOC:-}"; }; then
+  # never said it was done. A stage that generated a new design system and left
+  # it for a person ends with its own terminal literal instead, and its artifact
+  # is the system file waiting on that person (`visual_generate_artifact_complete`).
+  elif [ "$kind" = "visual" ] && ! visual_generate_artifact_complete "$out"; then
     klass='공허한 성공'
   # The visual publish stage: its terminal literal, and either the sidecar at
   # `발행됨` or a person's `거부`/`발행하지 않음` at one of its halts.
@@ -53598,6 +53683,18 @@ gate_record_stage_outcome() {
     sk=$(gate_audit_skeleton_count)
     rq=$(audit_row_request "$sk" "$klass" "$seg")
   fi
+  # `시각 종단`, on a visual generate stage's row only: `디자인 시스템` when its
+  # stream carries the literal of a stage that generated a new design system
+  # and left it for a person, `화면` otherwise. The same-run re-dispatch rule
+  # reads it to tell a generate stage that must run again once the person has
+  # approved the design system from one that already produced the screens. The
+  # gate derives it from the stream and nothing else, and no `act` kind writes a
+  # `stage-result` row, so a caller has no way to put a value of its own on one.
+  # A row written before the field existed reads as `화면`.
+  local vend=""
+  if [ "$kind" = "visual" ]; then
+    if grep -qF "$LIT_VISUAL_DS_TERMINAL" "$out" 2>/dev/null; then vend='디자인 시스템'; else vend='화면'; fi
+  fi
   # The re-attachment's measured fields, when the dispatch left a base record.
   # They sit before `종단 부류` and after `세션 id`, the order the router's
   # cut count reads a row in.
@@ -53617,7 +53714,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
-      "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${vend:+"시각 종단=$vend"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
@@ -53629,7 +53726,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
-      "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${vend:+"시각 종단=$vend"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}
   fi
   # Every audit attempt leaves its `감사 공시` row right after its own row.
