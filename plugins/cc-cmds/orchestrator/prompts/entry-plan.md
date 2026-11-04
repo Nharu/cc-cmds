@@ -124,9 +124,21 @@ Anything you could not settle goes here as a question a person can answer in one
 
 **A hotfix plan is the one exception.** Its `unresolved` carries the enforcement-surface notices above and nothing else; every other open point goes to the design stage as a requirement decision, not into this list.
 
-## `run_profile` marks a hotfix plan, and a hotfix plan is a fixed frame
+## `run_profile` marks a hotfix or reviewer plan, and each is a fixed frame
 
-`run_profile` is `hotfix` only when the kickoff hands you, as input, that it runs in hotfix mode (`--hotfix`). Every other judgment writes `standard`. A manifest frozen before this field existed has no such key, and a reader takes it as `standard`.
+`run_profile` is `hotfix` only when the kickoff hands you, as input, that it runs in hotfix mode (`--hotfix`). It is `reviewer` when the person's words ask the run to review pull requests someone else wrote — "handle the reviews assigned to me", "review these three PRs" — and do not ask it to fix them or land them. That one you judge from their words, not from an input; the kickoff shows the person that the run is a reviewer run beside the pull-request set, so a wrong `reviewer` is caught in front of them. Every other judgment writes `standard`. A manifest frozen before this field existed has no such key, and a reader takes it as `standard`.
+
+A `reviewer` plan does not choose its graph either. Write this frame:
+
+- `design_required` `false`; `design_tier` and `design_tier_judged` `solo`; `design_heavy_reasons` `[]`; `design_path` `none`; `design_scope` `single`; `estimated_files` `0`; `work_class` `other`; no `visual` step.
+- `steps` exactly one: `id` `R1`, `skill` `review`, `depends_on` `[]`, and a `summary` sentence of your own.
+- `entry_skill` `review` and `anchor_kind` `intent` — even when the person named a single pull request. Review alone is an intent; the `pr` anchor stays with the wish to fix or land one.
+- `targets` one per repository of the pull requests, each the repository its pull request lives in.
+- `enforcement_surface` with `judgment` `없음`, `classes` `[]`, `paths` `[]` and `source` `의도`: a reviewer run writes no file.
+- `unresolved` holds only the questions left about which pull requests make up the set.
+- `review_expand` is judged from the person's words, as on any plan.
+
+The rationale keys of the fixed keys say that it is the reviewer frame.
 
 A `hotfix` plan does not choose its graph. Write this frame and nothing else:
 

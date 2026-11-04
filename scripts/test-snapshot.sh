@@ -829,6 +829,34 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   done
 done
 
+# 6c-4. A pull request review is posted by the gate in both router copies
+#
+# A review clause settled by a hand-spelled `gh api … -f body=` is one the gate
+# now refuses at exec, so each copy carries the gate's own posting act and no
+# hand spelling. The reviewer run's `게시` branch and its three stop sites live in
+# the shift's copy alone: the lead's copy points to it.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; f=${pair#*:}
+  check "$who 사본이 리뷰 절 정산을 review-post 로 적는다" \
+    "$(grep -qF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 --reach 협업 -- 게시' "$f" && echo 있음)" "있음"
+  check "$who 사본에 손으로 쓴 리뷰 본문 게시가 없다" "$(grep -cF -- '-f body=' "$f" || true)" "0"
+done
+for lit in \
+  '**`게시`**' \
+  '--kind review-post' \
+  '--review-pr' \
+  '| `리뷰 게시 거절` |' \
+  '| `게시 대조` |' \
+  '| `보류 리뷰 선점` |'; do
+  if grep -qF -- "$lit" "$RS_CORPUS"; then
+    ok "교대 사본이 리뷰어 런 리터럴을 싣는다: $lit"
+  else
+    bad "교대 사본의 리뷰어 런 리터럴" "없다: $lit"
+  fi
+done
+check "리드 사본이 리뷰어 런의 갈래를 교대 사본으로 넘긴다" \
+  "$(grep -cF -- "the shift's copy gives the fetch, the detached worktree, the \`--review-pr\` planning row" "$AP_ROUTER" || true)" "1"
+
 # Both router copies read the design skill from the snapshot as it stands and
 # name the `solo-audit` branch of the selection function. A copy that kept the
 # two-branch sentence would tell its router a team-4 plan always takes the
@@ -871,7 +899,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.' \
     '2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for' \
     '4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.' \
-    '- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit'"'"'s full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks only that `근거` is not empty, so keeping to this is yours.' \
+    '- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit'"'"'s full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks that `근거` is not empty and, when it names a posted review, that the review'"'"'s `리뷰 게시` row reads `대조=일치`; the rest of keeping to this is yours.' \
     '- **`불가능` cites what decided it** — a residual issue URL, a design step'"'"'s `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer.' \
     '- **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.'; do
     if grep -qF -- "$lit" "$f"; then
