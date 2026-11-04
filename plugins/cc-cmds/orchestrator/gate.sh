@@ -32,7 +32,7 @@
 #   exec       check, record, perform one bash line (the unit B3 counts)
 #   wait       block until a dispatched stage terminates; writes no row and
 #              evaluates no boundary — its exit status is the stage's own rc,
-#              or one of 11..14 below. Called by a shift it evaluates the hard
+#              or one of 11..14 or 20 below. Called by a shift it evaluates the hard
 #              context cap on the way in and can end at 15 without waiting
 #   supervise-stage
 #              INTERNAL. The detached half of `act --kind skill`: consumes the
@@ -112,6 +112,10 @@
 #      supervisor ever wrote a `stage-result` row (launch token refused, or the
 #      dispatch died between the pin and the detach). `wait` removes the
 #      leftover `.sup`, `.sup.start` and `.launch` so a re-dispatch is clean.
+#  20  `wait` only: resource wait — the supervisor could not hold its lease,
+#      left a cause row (`stage-wait` with `근거` `lease-hold-busy` or
+#      `lease-hold-lost`) and ended without launching the stage. Dispatch the
+#      same step again: the new attempt is admitted by its own `lease-txn`.
 #
 # Usage:
 #   gate.sh snapshot --manifest <path> [--render]
@@ -860,6 +864,23 @@ readonly GATE_EXIT_WAIT_NONE=11
 readonly GATE_EXIT_WAIT_SETTLED=12
 readonly GATE_EXIT_WAIT_TIMEOUT=13
 readonly GATE_EXIT_WAIT_NOROW=14
+
+# A SUPERVISOR THAT COULD NOT HOLD ITS LEASE IS A RESOURCE WAIT, NOT A LAUNCH
+# FAILURE. When the supervisor's own hold fails for good with rc 3 (lock busy)
+# or rc 1·5 (no lease, another nonce, stale), it writes one `stage-wait` row
+# naming the cause on its lineage, gives the old lease back, removes its own
+# `.sup`, `.sup.start` and `.launch` and ends; `wait` reads that row and
+# answers 20. Not 14: 14 says nothing explains the missing row, and a person's
+# requirement is that this case is not read as a launch failure. Not 11 (never
+# dispatched) and not 16 (do not dispatch again): the repair is the opposite —
+# dispatch the same step again, and its `lease-txn` admits it honestly. 20 is
+# the first value past the 10..19 the table uses.
+readonly GATE_EXIT_WAIT_LEASE_HOLD=20
+
+# How often, at most, a routed dispatch sweeps the lease table for the records
+# of runs that have ended (`gate_lease_sweep_tick`). The stamp beside the table
+# is shared by every run on this host.
+readonly GATE_LEASE_SWEEP_EVERY_S=600
 
 # THE SHIFT'S CONTEXT CAP. Not a refusal and deliberately outside the 2..7 band:
 # it belongs with 8, 10 and 11, the codes the gate writes to say WHAT TO DO next
@@ -38834,6 +38855,18 @@ gate_end_run() {
     return 0
   fi
   rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
+  # THE RUN'S DEAD LEASES GO WITH ITS END. A run that ended no longer
+  # dispatches, so a lease nobody holds any more only lengthens the scan every
+  # other run's admission makes under the table lock. Only records whose holders
+  # are all dead go: ending the run stops no process, and a deadline or a B4/B5
+  # boundary can end it while a stage or a supervisor still runs, whose lease
+  # has to keep counting against its account until it exits — the finished-run
+  # sweep removes it then. A failure is logged and does not hold the end.
+  if run_routed; then
+    local lrc=0
+    route_lease_release_run_dead "$(run_pace_root)/leases" "$RUN_ID" >/dev/null 2>&1 || lrc=$?
+    [ "$lrc" = "0" ] || log "끝난 런의 임대를 지우지 못했습니다 rc=$lrc — 다른 런의 훑기가 지웁니다"
+  fi
   # The rationale is clipped to what the row has left; see `gate_free_budget`.
   gate_end_row "$name" "$why" "$cause" "$ekind" "$fp"
   warn "boundary $name ends the run — $why"
@@ -50233,6 +50266,36 @@ gate_launch_route_drop() {
   return 0
 }
 
+gate_lease_sweep_tick() {
+  # gate_lease_sweep_tick — at most once in GATE_LEASE_SWEEP_EVERY_S on this
+  # host, remove the leases and wait entries of runs that have ended and whose
+  # holders are all dead. A run that ended by a route its own end does not
+  # reach — killed, or ended before this cleanup existed — otherwise leaves its
+  # records in the table for good, and every admission scans them under the
+  # table lock. The stamp moves only when the sweep finished; a sweep skipped
+  # because the lock was busy, or refused, is tried again by the next dispatch.
+  # Never fails the dispatch.
+  local t stamp last now tmp rc=0
+  t="$(run_pace_root)/leases"
+  stamp="$(run_pace_root)/leases.sweep"
+  now=$(now_epoch)
+  last=$( { cat "$stamp" 2>/dev/null || true; } | tr -d '[:space:]')
+  case "$last" in
+    ''|*[!0-9]*) ;;
+    *) [ $((now - last)) -ge "$GATE_LEASE_SWEEP_EVERY_S" ] || return 0 ;;
+  esac
+  route_lease_sweep_done "$t" >/dev/null || rc=$?
+  [ "$rc" = "0" ] || return 0
+  [ -d "$(run_pace_root)" ] || return 0
+  if tmp=$(mktemp "$(run_pace_root)/.leases.sweep.XXXXXX" 2>/dev/null) \
+     && printf '%s\n' "$now" > "$tmp" && mv -f "$tmp" "$stamp"; then
+    return 0
+  fi
+  [ -z "${tmp:-}" ] || rm -f "$tmp" 2>/dev/null || true
+  log "임대 훑기 도장을 쓰지 못했습니다 — 다음 파견이 다시 훑습니다"
+  return 0
+}
+
 gate_launch_route() {
   # gate_launch_route <alias> <segment> <stage-kind> — routing on: derive the
   # attempt, claim it, and ask the router for this launch. Leaves the answer in
@@ -50255,6 +50318,9 @@ gate_launch_route() {
   GATE_ROUTE_VERDICT=""; GATE_ROUTE_WHY=""; GATE_ROUTE_EVENT=""
   GATE_ROUTE_ACCOUNT="-"; GATE_ROUTE_CFG=""; GATE_ROUTE_MINTED=0; GATE_ROUTE_BIND=""
   rowseg=$(gate_stage_row_segment "$seg" "$kind")
+  # Every routed dispatch passes here, a carry included, before its own
+  # admission scans the table.
+  gate_lease_sweep_tick || true
   GATE_ROUTE_ATTEMPT=$(gate_derive_attempt "$seg")
   if ! ( set -C; : > "$RUN_DIR/$seg.attempt.$GATE_ROUTE_ATTEMPT" ) 2>/dev/null; then
     warn "attempt $GATE_ROUTE_ATTEMPT of $seg is already claimed by another dispatch — this one is refused"
@@ -50667,6 +50733,86 @@ gate_sup_await_dispatch() {
     sleep 0.2
   done
   return 0
+}
+
+gate_sup_lease_secure() {
+  # gate_sup_lease_secure <lineage> <nonce> — make this supervisor one of the
+  # lease's holders before anything is launched. 0 once it is one; otherwise the
+  # last answer of the lease verbs: 3 when the table lock stayed busy for the
+  # whole budget, 1 or 5 when the lease is gone or stale, 2 or 4 on a malformed
+  # call or table.
+  #
+  # FIRST READ, THEN HOLD. The dispatch act already tried to put this pid on the
+  # holders, and when it did the lock is not needed at all: the read takes no
+  # lock, so a supervisor that is already a holder starts at once even while
+  # another run's admission is queued on the table lock. The hold that follows
+  # waits the hold budget, longer than an admission's, because a dispatch that
+  # was admitted is spent if this hold fails — and a hold that ran out of budget
+  # reads again before it tries again, inside twice the hold budget in all. This
+  # is the one hold that retries; the act's hold and the stage pid's hold do not.
+  local lin="$1" nonce="$2" t budget deadline rem rc
+  t="$(run_pace_root)/leases"
+  budget=$(route_lease_hold_wait_s)
+  deadline=$(( $(now_epoch) + 2 * budget ))
+  while :; do
+    rc=0
+    route_lease_has_holder "$t" "$RUN_ID" "$lin" "$nonce" "$$" >/dev/null 2>&1 || rc=$?
+    case "$rc" in 0) return 0 ;; 1) ;; *) return "$rc" ;; esac
+    rem=$(( deadline - $(now_epoch) ))
+    [ "$rem" -gt 0 ] || return 3
+    [ "$rem" -le "$budget" ] || rem=$budget
+    rc=0
+    route_lease_hold "$t" "$RUN_ID" "$lin" "$nonce" "$$" "$rem" >/dev/null 2>&1 || rc=$?
+    [ "$rc" = "3" ] || return "$rc"
+  done
+}
+
+gate_sup_lease_fail() {
+  # gate_sup_lease_fail <alias> <segment> <stage-kind> <attempt> <lineage>
+  #                     <nonce> <waiting marker or ""> <rc> — the end of a
+  # supervisor that could not hold its lease, after `gate_sup_lease_secure`
+  # answered <rc>. Nothing has been launched.
+  #
+  # A BUSY LOCK OR A LOST LEASE IS A WAIT FOR A RESOURCE, NOT A FAULT. The rc 3
+  # and rc 1/5 ends leave one `stage-wait` row naming the cause and nothing that
+  # waits: no waiting marker, no wait loop. `gate.sh wait` reads that row as
+  # exit 20, and the routing shift dispatches the step again, whose admission
+  # takes a fresh lease. The old lease goes back by nonce compare, and the
+  # identity files this attempt left are removed so no snapshot list and no
+  # settlement takes the attempt for a live, orphaned or waiting stage; the pin
+  # stays, as the consumed attempt it names. The act that started this process
+  # writes `.sup` after it returns from its own hold, so this waits for that act
+  # to end before it removes anything.
+  #
+  # ANY OTHER ANSWER IS A FAULT. A malformed call or table (rc 2/4) leaves the
+  # act-scope park row with this attempt's lineage, which `wait` reads as 16,
+  # never as 14.
+  #
+  # Every end is the rule exit: no stage was launched, whichever row was left.
+  # Nothing routes on this process's exit status — `wait` reads the row.
+  local alias="$1" seg="$2" kind="$3" attempt="$4" lin="$5" nonce="$6" wm="$7" hrc="$8" why rc=0
+  gate_sup_await_dispatch "$seg"
+  case "$hrc" in
+    3) why=lease-hold-busy ;;
+    1|5) why=lease-hold-lost ;;
+    *) why="" ;;
+  esac
+  if [ -n "$why" ]; then
+    gate_append 'stage-wait' "계보=$lin" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' "근거=$why" || rc=$?
+  else
+    gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
+      "보유 오류 rc=$hrc — 감독자가 임대를 보유하지 못했다" "$lin"
+  fi
+  route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || true
+  [ -z "$wm" ] || wait_drop "$wm"
+  rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken" "$RUN_DIR/$seg.launch"
+  [ -n "$why" ] || return "$GATE_EXIT_RULE"
+  if [ "$rc" != "0" ]; then
+    warn "the supervisor could not hold its lease (rc=$hrc, $lin) and its cause row was refused (rc=$rc) — the stage is not launched ($seg#$attempt)"
+    return "$GATE_EXIT_RULE"
+  fi
+  warn "the supervisor could not hold its lease (rc=$hrc, $why, $lin) — the stage is not launched and the step is dispatched again ($seg#$attempt)"
+  return "$GATE_EXIT_RULE"
 }
 
 gate_launch_kind_env() {
@@ -51280,8 +51426,12 @@ gate_verb_supervise_stage() {
   #
   # ROUTING ON: THIS PROCESS HOLDS THE LEASE BEFORE IT LAUNCHES ANYTHING. The
   # dispatch act that took the grant has returned, so without this hold a stage
-  # could run on a lease whose holders are all dead. A stale lease is not
-  # revived (rc 5), and no stage is launched on any answer but 0. Then the
+  # could run on a lease whose holders are all dead. It is a securing step, not
+  # one try: already a holder (the act's hold took) is enough, and a hold that
+  # found the table lock busy reads and tries again inside twice the hold
+  # budget. A stale lease is not revived (rc 5), and no stage is launched on any
+  # answer but 0 — a busy lock or a lost lease ends with a cause row the shift
+  # dispatches again on, any other answer with a park row. Then the
   # four-line record goes down before the launch — a settlement reads the
   # account from its fourth line, and it must be there however early the stage
   # dies — and the wrapper is handed the grant's directory explicitly; the
@@ -51295,10 +51445,10 @@ gate_verb_supervise_stage() {
   if [ "$routed" = "1" ]; then
     if [ -n "$r_nonce" ]; then
       hrc=0
-      route_lease_hold "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" "$$" >/dev/null 2>&1 || hrc=$?
+      gate_sup_lease_secure "$r_lineage" "$r_nonce" || hrc=$?
       if [ "$hrc" != "0" ]; then
-        warn "the supervisor could not hold its lease (rc=$hrc, $r_lineage) — the stage is not launched ($seg#$attempt)"
-        return "$GATE_EXIT_RULE"
+        gate_sup_lease_fail "$alias" "$seg" "$kind" "$attempt" "$r_lineage" "$r_nonce" "$wm" "$hrc"
+        return $?
       fi
     fi
     printf '%s\n%s\n%s\n%s\n' "$window" "$(lane_label_of "$r_cfg")" "${effort:--}" "$r_acct" > "$RUN_DIR/$seg.window"
@@ -53341,7 +53491,7 @@ gate_verb_wait() {
   # gate_verb_wait <segment> <interval-seconds> <timeout-seconds>
   #
   # Block until the segment's dispatched stage terminates, then exit with the
-  # stage's own rc — or 11/12/13/14/16 (see the exit-code table at the top).
+  # stage's own rc — or 11/12/13/14/16/20 (see the exit-code table at the top).
   #
   # THE AUTHORITY IS THE LEDGER READ IN STEP (3); STEP (1) IS A FAST PATH IN
   # FRONT OF IT. This call's own prelude may have just settled the segment, and
@@ -53368,6 +53518,9 @@ gate_verb_wait() {
   #       `외부 종료` is 12, otherwise the row's `종료 코드`
   #   (3b) pinned, no such row, and a `blocked` row naming `계보=B:<seg>#<N>`
   #       of that attempt → 16 (the supervisor parked before spawning)
+  #   (3c) pinned, neither row, and a `stage-wait` row of that lineage whose
+  #       `근거` is `lease-hold-busy` or `lease-hold-lost` → 20 (the supervisor
+  #       could not hold its lease and launched nothing)
   #   (4) no `<seg>.attempt` → 11
   #   (5) pinned but no row: wait one grace period, re-run (2)/(3); still
   #       nothing → remove `.sup`/`.sup.start`/`.launch`, exit 14
@@ -53437,6 +53590,25 @@ gate_verb_wait() {
     if [ -n "$( { gate_rows 'blocked' | cc_rows_naming_lineage "B:$seg#$attempt" || true; } | tail -1)" ]; then
       printf '%s [wait] %s 라우터 park — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_ROUTE"
       return "$GATE_EXIT_ROUTE"
+    fi
+    # (3c) A supervisor that could not hold its lease — the table lock stayed
+    # busy, or the lease was gone or stale — leaves neither of those rows but a
+    # `stage-wait` row of this attempt's lineage whose `근거` names that cause.
+    # It is a wait for a resource, read before (5) so the attempt is not taken
+    # for a launch that failed: the shift dispatches the step again. A
+    # `stage-wait` row of the same lineage with any other cause is a heartbeat
+    # and is not read here.
+    local hold_cause="" hr hc
+    while IFS= read -r hr; do
+      [ -n "$hr" ] || continue
+      hc=$(gate_row_field "$hr" '근거')
+      case "$hc" in lease-hold-busy|lease-hold-lost) hold_cause=$hc ;; esac
+    done <<EOF
+$( { gate_rows 'stage-wait' | cc_rows_naming_lineage "B:$seg#$attempt"; } 2>/dev/null || true )
+EOF
+    if [ -n "$hold_cause" ]; then
+      printf '%s [wait] %s 자원 대기 — 원인 %s — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$hold_cause" "$attempt" "$GATE_EXIT_WAIT_LEASE_HOLD"
+      return "$GATE_EXIT_WAIT_LEASE_HOLD"
     fi
     # Pinned, nothing alive, no row. Once: a grace period, because the
     # supervisor may be between consuming the token and writing `.pid`, or
