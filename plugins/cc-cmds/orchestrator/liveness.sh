@@ -1105,6 +1105,18 @@ cc_failover_wait_resume() {
   cc_iso_to_epoch "$at"
 }
 
+cc_failover_waiting_now() {
+  # cc_failover_waiting_now <ledger> [<now>] — succeeds while the run's
+  # account-failover wait has not reached its resume time. The watcher reads it
+  # to keep silence and post-terminal non-response records out of a wait the
+  # gate chose, and the fleet tick to know a chain ended in one.
+  local at now="${2:-}"
+  at=$(cc_failover_wait_resume "${1:-}")
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  case "$now" in ''|*[!0-9]*) now=$(date -u +%s) ;; esac
+  [ "$now" -lt "$at" ]
+}
+
 cc_relay_condition_consumed() {
   # cc_relay_condition_consumed <last launch line> <last launch epoch> <wake
   # epoch> <evidence line> — succeeds when the last `교대 기동` row stands below
@@ -1151,6 +1163,8 @@ cc_relay_wake_keys() {
   #                   `기록 시각`)
   #   dl:이월\t<ep>   the `이월` hand-off's clock — the deadline plus one second —
   #                   has passed (clock: that time, the `defer=` line)
+  #   fr:계정 이전\t<ep>  the resume time of the run's account-failover wait has
+  #                   passed (clock: that time, the `resume=` line)
   #
   # ONE READER FOR THE RELAY AND THE WATCHER. The relay wakes when this prints
   # anything; the watcher asks how long each line has stood. A segment with no
@@ -1184,6 +1198,11 @@ cc_relay_wake_keys() {
   case "$ep" in
     ''|*[!0-9]*) : ;;
     *) [ "$now" -lt "$ep" ] || printf 'dl:이월\t%s\n' "$ep" ;;
+  esac
+  ep=$(cc_relay_field "$run_dir" resume)
+  case "$ep" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$now" -lt "$ep" ] || printf 'fr:계정 이전\t%s\n' "$ep" ;;
   esac
   for k in $(cc_relay_field "$run_dir" stages | tr ',' ' '); do
     [ "$k" != "-" ] || continue

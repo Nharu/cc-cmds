@@ -56998,11 +56998,16 @@ gate_failover_defers_reset() {
   # stage or supervisor is live. That one wait moves after the lane judgment,
   # so a shift that died of the seat lane's limit moves to a listed account
   # with room at once instead of waiting out the seat lane's reset. A stage,
-  # CI, a `리셋 대기` key or an `이월` deadline is still waited on first.
+  # CI, a `리셋 대기` key or an `이월` deadline is still waited on first, and
+  # so is the run's own failover wait while its resume time is ahead: the
+  # judgment that wrote it found no room, and judging again before that time
+  # would only find the same.
   run_failover_allowed 2>/dev/null || return 1
-  local last
+  local last r
   last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
   [ "$(gate_row_field "$last" '사유')" = "무기록" ] || return 1
+  r=$(gate_relay_resume_clock)
+  [ -z "$r" ] || [ "$(date -u +%s)" -ge "$r" ] || return 1
   [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ]
 }
 
@@ -57952,6 +57957,16 @@ gate_relay_defer_clock() {
   printf '%s' "$((dl + 1))"
 }
 
+gate_relay_resume_clock() {
+  # gate_relay_resume_clock — the `계정 이전` member of the relay's wait set:
+  # the resume time, as an epoch, of the latest `계정 이전` row after the latest
+  # `handoff` when that row is `결과=대기`, or empty. Derived again from the
+  # ledger on every call. The relay wakes at that time
+  # (`cc_relay_wake_keys`) and launches, and the launch judges the lanes again.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  cc_failover_wait_resume "$LEDGER"
+}
+
 gate_cut_reset_within() {
   # gate_cut_reset_within <epoch> — the clock is close enough to wait on: no
   # further than one five_hour window plus the grace from now. A relay has no
@@ -57977,13 +57992,19 @@ gate_relay_write() {
   # `defer=` IS DERIVED HERE, not passed: it is the `이월` member's clock
   # (`gate_relay_defer_clock`), and computing it inside keeps every caller —
   # the hand-back included — writing it without one more argument each.
-  local t="$RUN_DIR/relay.live.tmp.$$" defer
+  #
+  # `resume=` IS DERIVED THE SAME WAY: the `계정 이전` member's clock, the
+  # resume time of the run's current failover wait (`gate_relay_resume_clock`),
+  # and `-` with none. It is that time itself, not the earlier of it and the
+  # hold; the hold is counted by the poll on its own.
+  local t="$RUN_DIR/relay.live.tmp.$$" defer resume
   [ -n "$GATE_RELAY_FP" ] || GATE_RELAY_FP=$(cc_proc_fingerprint "$$")
   defer=$(gate_relay_defer_clock)
+  resume=$(gate_relay_resume_clock)
   {
     printf '%s\n%s\n' "$$" "$GATE_RELAY_FP"
-    printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\nreset=%s\ndefer=%s\n' \
-      "$(date -u +%s)" "$GATE_RELAY_STARTED" "${1:--}" "${2:--}" "${3:--}" "${defer:--}"
+    printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\nreset=%s\ndefer=%s\nresume=%s\n' \
+      "$(date -u +%s)" "$GATE_RELAY_STARTED" "${1:--}" "${2:--}" "${3:--}" "${defer:--}" "${resume:--}"
     [ -z "${4:-}" ] || printf 'handback=%s\n' "$4"
   } > "$t" 2>/dev/null && mv -f "$t" "$RUN_DIR/relay.live" 2>/dev/null || {
     rm -f "$t" 2>/dev/null
@@ -58061,16 +58082,24 @@ gate_relay_wait() {
   # row hold the set open, and the relay wakes when `gate_relay_master_wake`
   # says their base branch's reading moved or went stale. The watcher's keys
   # do not carry this member: the relay reads the reading files itself.
-  local stages ci reset defer hold now mw
+  #
+  # A FAILOVER WAIT IS THE SIXTH. A `계정 이전` row with `결과=대기` after the
+  # latest `handoff` holds the set open until its resume time, so a judgment
+  # that found no account with room does not come back as an empty set and
+  # launch at once; the relay wakes at that time (`cc_relay_wake_keys`) and the
+  # launch judges again. When it and a reset name the same time, it is read as
+  # that time and the launch is tried.
+  local stages ci reset defer resume hold now mw
   stages=$(cc_relay_wait_stages "$RUN_DIR")
   ci=$(gate_relay_ci_segments)
   reset=$(gate_relay_reset_set)
   defer=$(gate_relay_defer_clock)
+  resume=$(gate_relay_resume_clock)
   mw=$(gate_relay_master_segments)
   [ -n "$GATE_RELAY_STARTED" ] || GATE_RELAY_STARTED=$(date -u +%s)
   gate_relay_write "$stages" "$ci" "$reset"
   hold=$(gate_relay_hold)
-  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · master ${mw:--}"
+  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · 계정 이전 ${resume:--} · master ${mw:--}"
   while :; do
     now=$(date -u +%s)
     if [ -e "$RUN_DIR/done" ]; then
@@ -58085,7 +58114,7 @@ gate_relay_wait() {
       gate_relay_hand_back "$stages" "$ci" "$reset" "CI 를 기다리는데 checks 폴러가 살아 있지 않다"
       return 1
     fi
-    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$mw" ]; then
+    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$resume" ] && [ -z "$mw" ]; then
       log "교대 대기 끝 — 기다리던 것이 이미 끝났다"
       return 0
     fi
