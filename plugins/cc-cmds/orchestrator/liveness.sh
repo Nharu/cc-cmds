@@ -1078,6 +1078,33 @@ cc_relay_last_shift_launch() {
   printf '%s\t%s' "${r%%"$tab"*}" "$(cc_iso_to_epoch "${r#*"$tab"}")"
 }
 
+cc_failover_wait_resume() {
+  # cc_failover_wait_resume <ledger> — the resume time, as epoch seconds, of the
+  # run's account-failover wait, or nothing when the run is not in one.
+  #
+  # ONE DEFINITION FOR THE GATE, THE RELAY, THE FLEET TICK AND THE WATCHER. A
+  # run is in that wait when the latest `계정 이전` row after the latest
+  # `handoff` reads `결과=대기`, and its `재개 시각` is the resume time. A row of
+  # any other result after it ends the wait, and so does a new `handoff`.
+  # Read from the file and not a row memo: readers call it while the gate
+  # appends.
+  local r at
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+  r=$(LC_ALL=C awk '
+    /^- `handoff` / { r = "" }
+    /^- `계정 이전` / { r = $0 }
+    END { printf "%s", r }
+  ' "$1" 2>/dev/null || true)
+  case "$r" in *" | 결과=대기 | "*) : ;; *) return 0 ;; esac
+  at=$(printf '%s\n' "$r" | LC_ALL=C awk -F'|' '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    { for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, "재개 시각=") == 1) v = substr(f, length("재개 시각=") + 1) } }
+    END { printf "%s", v }
+  ' 2>/dev/null || true)
+  [ -n "$at" ] && [ "$at" != "-" ] || return 0
+  cc_iso_to_epoch "$at"
+}
+
 cc_relay_condition_consumed() {
   # cc_relay_condition_consumed <last launch line> <last launch epoch> <wake
   # epoch> <evidence line> — succeeds when the last `교대 기동` row stands below

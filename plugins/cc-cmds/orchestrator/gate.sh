@@ -983,6 +983,15 @@ readonly GATE_RELAY_HOLD_SECONDS=3000
 # is refused rather than waited on for days.
 readonly GATE_RESET_HORIZON_SECONDS=18060
 
+# THE GRACE AFTER AN ACCOUNT-FAILOVER WAIT'S RESUME TIME. A judgment made at the
+# resume time can still read inputs from before it: the usage file is published
+# on its own period, and the fleet tick that re-calls the run waits out a quiet
+# window of 600 seconds first. 900 is that window plus 300 seconds of publish
+# slack. Inside it a judgment with no candidate does not become `마감 초과`; the
+# gate writes one more `결과=대기` row at the previous resume time plus this
+# grace instead, once per wait.
+readonly GATE_FAILOVER_RESUME_GRACE_SECONDS=900
+
 # AN INTERNAL SIGNAL AND NOT AN EXIT CODE. `gate_issue_judgment_approval`
 # returns it to say "this question already has an answer, so nothing was
 # issued" — a state its callers must route rather than propagate, because the
@@ -56642,6 +56651,399 @@ gate_shift_launch_drop_claim() {
   return 0
 }
 
+gate_shift_launch_drop_claims() {
+  # The account-failover outcomes that launch nothing — `대기` and `마감 초과` —
+  # take down both claims this launcher may have published: `shift.live` for
+  # a reason other than `대기`, `relay.live` for `대기` and inside the relay
+  # loop. Left behind, a dead launcher's `relay.live` falls inside the fleet
+  # tick's quiet window and keeps the run from being re-called. A marker that
+  # names another process is not this launcher's, and stays.
+  local p
+  gate_shift_launch_drop_claim
+  p=$( { sed -n '1p' "$RUN_DIR/relay.live" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$p" != "$$" ] || rm -f "$RUN_DIR/relay.live"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Account failover — the lane a successor shift runs on when the seat's lane
+# is at its usage limit.
+#
+# ONLY IN A FAILOVER RUN: the manifest carries at least one `계정 이전 허용`
+# row and the run is routed (`run_failover_allowed`). Everywhere else the
+# successor runs on the caller's lane, as it always has.
+#
+# ONE JUDGMENT FUNCTION. `gate_failover_judge` reads one router view and gives
+# the seat lane's limit evidence, each listed account's state, the pick, the
+# resume time and the reason it could not judge. The launcher, the relay's
+# re-entry check and the fleet tick read only its output.
+
+gate_failover_seat_dir() {
+  # The run's seat as its `config-dir` record holds it — never the environment,
+  # which inside a moved shift is the moved-to account. rc 1 when the record
+  # cannot be read.
+  [ -n "${RUN_DIR:-}" ] || return 1
+  local rc=0
+  lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 config-dir" \
+    "계정 이전 판정이 좌석 레인을 알 수 없습니다" 2>/dev/null || rc=$?
+  [ "$rc" = "0" ] || return 1
+  printf '%s' "$LANE_RECORD"
+}
+
+gate_failover_launch_lane() {
+  # gate_failover_launch_lane <n> — the `레인=` label of shift n's `교대 기동`
+  # row, or nothing. Read from the file: the fleet tick calls this too.
+  local row
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  row=$( { LC_ALL=C grep -E '^- `교대 기동` ' "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "| 서수=$1 |" || true; } | tail -1)
+  [ -n "$row" ] || return 0
+  gate_row_field "$row" '레인'
+}
+
+gate_failover_dead_at() {
+  # gate_failover_dead_at <ordinal> <now> — the reset clock of shift <ordinal>
+  # when it died limit-shaped — a `handoff 사유=무기록` row the gate wrote for
+  # it, and its own stream yields a reset — and that reset is still ahead of
+  # <now>; otherwise nothing. The clock is `gate_cut_reset_at`'s, the one the
+  # relay's `교대#<n>` key reads.
+  local n="$1" now="$2" rows at
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  rows=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } \
+          | { grep -F ' | 사유=무기록 | ' || true; } | gate_rows_field_eq '교대' "$n")
+  [ -n "$rows" ] || return 0
+  at=$(gate_cut_reset_at "$RUN_DIR/log/shift-$n.json")
+  case "$at" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$at" -gt "$now" ] || return 0
+  printf '%s' "$at"
+}
+
+gate_failover_stream_evidence() {
+  # gate_failover_stream_evidence <seat label> <now> — evidence (b): the
+  # ledger's latest `handoff` is the gate's `무기록` for a shift launched on the
+  # seat lane, and that shift's stream yields a reset after <now>. Prints the
+  # reset, or nothing.
+  local lab="$1" now="$2" last n
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = "무기록" ] || return 0
+  n=$(gate_row_field "$last" '교대')
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$(gate_failover_launch_lane "$n")" = "$lab" ] || return 0
+  gate_failover_dead_at "$n" "$now"
+}
+
+gate_failover_lane_dead() {
+  # gate_failover_lane_dead <lane label> <now> — succeeds when the latest shift
+  # launched on that lane died the way evidence (b) reads a death.
+  local lab="$1" now="$2" r n=""
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '레인')" = "$lab" ] && n=$(gate_row_field "$r" '서수')
+  done <<EOF
+$( { LC_ALL=C grep -E '^- `교대 기동` ' "$LEDGER" 2>/dev/null || true; } )
+EOF
+  [ -n "$n" ] || return 1
+  [ -n "$(gate_failover_dead_at "$n" "$now")" ]
+}
+
+gate_failover_judge() {
+  # gate_failover_judge — the account-failover judgment, one line per output,
+  # `<name>\t<value>`:
+  #
+  #   증거   `사용량` (a), `교대 스트림` (b), or `-` when the seat lane shows
+  #          no limit
+  #   좌석   the seat lane's label
+  #   후보   `<id>:<state>` per listed account, in manifest order, `,`-joined;
+  #          `-` when no router view was read
+  #   고름   `<id>\t<config dir>` of the account picked, absent when none
+  #   재개   the resume time T as epoch seconds, or `-`
+  #   불가   why it could not judge, or `-`
+  #
+  # rc 0 judged, rc 2 could not judge. The evidence line is printed on both: a
+  # caller reads it first, and with no evidence the seat lane takes the shift
+  # whatever the rest says.
+  #
+  # THE INPUTS ARE THIS PROCESS'S GLOBALS — `RUN_DIR`, `RUN_ID`, `LEDGER`, the
+  # manifest, `RUN_PACE_SESSION_WINDOW_PCT_MAX`, `run_pace_root`, `boot_epoch`
+  # and the XDG paths — gathered by `route_gather_context`, which the gate and
+  # the fleet tick's sourced shell both reach. Any of them missing reads as
+  # rc 2, never as "no candidate".
+  #
+  # STATES, first that applies: `같은 조직` (the seat account's group: it shares
+  # the seat's limit), `인벤토리 밖` (not in the inventory, or `unattended` is
+  # not `enabled`), `로그인`, `라우터 제외` (`group_reserved`, `mismatch`,
+  # `borrowed`, and class `U`), `소진` (class `X`), `죽은 교대` (the latest
+  # shift launched on its lane died the evidence-(b) way), else `여유`. The pick
+  # is the `여유` account with the largest `remaining_bp`, manifest order on a
+  # tie.
+  #
+  # T is the earliest of the `소진` accounts' times and the seat lane's, counted
+  # in whole epoch seconds after now: an account's time is its
+  # `exhausted_until`, else the latest `resets_at` of its group's exhausted
+  # windows, and none when one of those is not a number. The seat lane takes
+  # one time per evidence that stood — (a) by the same rule on the seat
+  # account, (b) its reset — the later of them, and none when one cannot be
+  # counted.
+  local now seat lab nb ctx view req ids dead='[]' id dir jrc=0
+  now=$(date -u +%s)
+  if ! seat=$(gate_failover_seat_dir); then
+    printf '증거\t-\n좌석\t-\n후보\t-\n재개\t-\n불가\t좌석 기록\n'
+    return 2
+  fi
+  lab=$(lane_label_of "$seat")
+  nb=$(gate_failover_stream_evidence "$lab" "$now")
+  req=$(jq -cn --arg run "${RUN_ID:-}" \
+        '{run_id: $run, lineage: "failover-judge", event: "failover-judge", kind: "shift", holders: []}' 2>/dev/null) || req=""
+  if [ -z "$req" ] || ! ctx=$(route_gather_context "$req" "$seat" 2>/dev/null) || [ -z "$ctx" ]; then
+    printf '증거\t%s\n좌석\t%s\n후보\t-\n재개\t-\n불가\t문맥\n' "$( [ -n "$nb" ] && printf '교대 스트림' || printf -- '-')" "$lab"
+    return 2
+  fi
+  ids=$(manifest_failover_accounts | jq -R . | jq -cs . 2>/dev/null) || ids='[]'
+  [ -n "$ids" ] || ids='[]'
+  while IFS="$(printf '\t')" read -r id dir; do
+    [ -n "$dir" ] || continue
+    if gate_failover_lane_dead "$(lane_label_of "$dir")" "$now"; then
+      dead=$(printf '%s' "$dead" | jq -c --arg d "${dir%/}" '. + [$d]')
+    fi
+  done <<EOF
+$(printf '%s' "$ctx" | jq -r --argjson ids "$ids" \
+    '(.inventory.accounts // [])[] | select(type == "object") | select(.id as $i | any($ids[]; . == $i))
+     | "\(.id)\t\(.config_dir // "")"' 2>/dev/null || true)
+EOF
+  if ! view=$(printf '%s' "$ctx" | route_classify 2>/dev/null) || [ -z "$view" ]; then
+    printf '%s' "$ctx" | jq -r --arg seat "$seat" --arg lab "$lab" --arg nb "$nb" '
+      def norm: if type == "string" then rtrimstr("/") else . end;
+      . as $c
+      | ($seat | norm) as $s
+      | ([(.usage.accounts // [])[] | select(type == "object") | select((.config_dir | norm) == $s)] | .[0]) as $u
+      | (($c.usage.fresh == true) and $u != null
+         and ((($u.exhausted_until_epoch | type) == "number" and $u.exhausted_until_epoch > $c.now)
+              or any(($u.windows // {}) | .five_hour, .seven_day; (type == "object")
+                     and ((.utilization | type) == "number") and .utilization >= 1
+                     and ((.resets_at_epoch | type) == "number") and .resets_at_epoch > $c.now))) ) as $a
+      | "증거\t" + (if $a then "사용량" elif $nb != "" then "교대 스트림" else "-" end),
+        "좌석\t" + $lab, "후보\t-", "재개\t-", "불가\t분류"' 2>/dev/null \
+      || printf '증거\t-\n좌석\t%s\n후보\t-\n재개\t-\n불가\t분류\n' "$lab"
+    return 2
+  fi
+  printf '%s' "$ctx" | jq -r --argjson v "$view" --argjson ids "$ids" --argjson dead "$dead" \
+      --arg seat "$seat" --arg lab "$lab" --arg nb "$nb" '
+    def norm: if type == "string" then rtrimstr("/") else . end;
+    . as $c
+    | ($seat | norm) as $s
+    | ($v.accounts // []) as $A
+    | ([$A[] | select((.config_dir | norm) == $s)] | .[0]) as $sa
+    # Evidence (a): the seat row of a fresh usage file is exhausted until a
+    # time ahead, or one of its windows is full and resets ahead.
+    | ([(($c.usage.accounts // [])[]) | select(type == "object") | select((.config_dir | norm) == $s)] | .[0]) as $u
+    | (($c.usage.fresh == true) and $u != null
+       and ((($u.exhausted_until_epoch | type) == "number" and $u.exhausted_until_epoch > $c.now)
+            or any(($u.windows // {}) | .five_hour, .seven_day; (type == "object")
+                   and ((.utilization | type) == "number") and .utilization >= 1
+                   and ((.resets_at_epoch | type) == "number") and .resets_at_epoch > $c.now))) ) as $ea
+    | ($nb != "") as $eb
+    | (if $ea then "사용량" elif $eb then "교대 스트림" else "-" end) as $ev
+    | def acct_time($a):
+        if ($a.exhausted_until | type) == "number" then ($a.exhausted_until | floor)
+        else ([($v.groups // [])[] | select(.group == $a.group) | (.windows // {})[] | select(.state == "exhausted") | .resets_at]) as $r
+          | if ($r | length) == 0 then null
+            elif all($r[]; type == "number") then ($r | max | floor)
+            else null end end;
+      (if ($c.inventory.state // "") != "valid" or (($c.inventory.accounts // []) | length) == 0 then "인벤토리"
+       elif ($c.usage.state // "") != "valid" or $c.usage.fresh != true then "사용량"
+       elif $sa == null then "좌석 계정"
+       else null end) as $why
+    | if $why != null then
+        "증거\t" + $ev, "좌석\t" + $lab, "후보\t-", "재개\t-", "불가\t" + $why
+      else
+        [ $ids | to_entries[] | .key as $k | .value as $id
+          | ([$A[] | select(.id == $id)] | .[0]) as $a
+          | (if $a == null then "인벤토리 밖"
+             elif $a.group == $sa.group then "같은 조직"
+             elif $a.unattended != "enabled" then "인벤토리 밖"
+             elif $a.login_bad == true then "로그인"
+             elif ($a.group_reserved == true) or ($a.mismatch == true) or ($a.borrowed != null) or ($a.class == "U") then "라우터 제외"
+             elif $a.class == "X" then "소진"
+             elif any($dead[]; . == ($a.config_dir | norm)) then "죽은 교대"
+             else "여유" end) as $st
+          | {k: $k, id: $id, st: $st, dir: ($a.config_dir // null), bp: ($a.remaining_bp // 0),
+             t: (if $st == "소진" then acct_time($a) else null end)} ] as $L
+        | ([$L[] | select(.st == "여유")] | sort_by([-(.bp), .k]) | .[0]) as $pick
+        | ([(if $ea then acct_time($sa) else empty end), (if $eb then ($nb | tonumber) else empty end)]) as $sts
+        | (if ($sts | length) == 0 or any($sts[]; . == null) then null else ($sts | max) end) as $seat_t
+        | ([$L[] | .t] + [$seat_t] | map(select(. != null and . > $c.now)) | min) as $t
+        | "증거\t" + $ev, "좌석\t" + $lab,
+          "후보\t" + (if ($L | length) == 0 then "-" else ([$L[] | "\(.id):\(.st)"] | join(",")) end),
+          (if $pick != null then "고름\t\($pick.id)\t\($pick.dir)" else empty end),
+          "재개\t" + (if $t == null then "-" else ($t | tostring) end),
+          "불가\t-"
+      end' 2>/dev/null || jrc=$?
+  if [ "$jrc" != "0" ]; then
+    printf '증거\t-\n좌석\t%s\n후보\t-\n재개\t-\n불가\t분류\n' "$lab"
+    return 2
+  fi
+  return 0
+}
+
+gate_failover_field() {
+  # gate_failover_field <judgment> <name> — one output line's value; for `고름`
+  # the id and the directory, tab-separated.
+  printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == k { sub(/^[^\t]*\t/, ""); print; exit }'
+}
+
+gate_failover_has_room() {
+  # Succeeds when the judgment yields at least one `여유` account.
+  local j rc=0
+  j=$(gate_failover_judge) || rc=$?
+  [ "$rc" = "0" ] && [ -n "$(gate_failover_field "$j" '고름')" ]
+}
+
+gate_failover_row() {
+  # gate_failover_row <서수> <좌석 레인> <증거> <결과> <레인> <계정> <재개 epoch|-> <후보>
+  # — the `계정 이전` row. Every field is written, `-` for a value it does not
+  # have; lanes are labels and `후보` carries ids and states only, which keeps
+  # the row inside `GATE_ROW_MAX`.
+  local at="-"
+  case "${7:-}" in ''|-|*[!0-9]*) : ;; *) at=$(cc_epoch_to_iso "$7") ;; esac
+  [ -n "$at" ] || at="-"
+  gate_append '계정 이전' "서수=${1:--}" "좌석 레인=${2:--}" "증거=${3:--}" "결과=${4:--}" \
+    "레인=${5:--}" "계정=${6:--}" "재개 시각=$at" "후보=${8:--}" "기록 시각=$(now_iso)"
+}
+
+gate_failover_wait_resumes() {
+  # The `재개 시각` epochs of every `결과=대기` `계정 이전` row after the latest
+  # `handoff`, one per line, oldest first.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    cc_iso_to_epoch "$(gate_row_field "$r" '재개 시각')"
+    printf '\n'
+  done <<EOF
+$(LC_ALL=C awk '
+    /^- `handoff` / { n = 0 }
+    /^- `계정 이전` / && index($0, " | 결과=대기 | ") > 0 { r[++n] = $0 }
+    END { for (i = 1; i <= n; i++) print r[i] }
+  ' "$LEDGER" 2>/dev/null || true)
+EOF
+}
+
+gate_failover_defers_reset() {
+  # Succeeds in a failover run when the pre-launch wait would wait on nothing
+  # but a limit-shaped `무기록` reset: the latest `handoff` is `무기록` and no
+  # stage or supervisor is live. That one wait moves after the lane judgment,
+  # so a shift that died of the seat lane's limit moves to a listed account
+  # with room at once instead of waiting out the seat lane's reset. A stage,
+  # CI, a `리셋 대기` key or an `이월` deadline is still waited on first.
+  run_failover_allowed 2>/dev/null || return 1
+  local last
+  last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = "무기록" ] || return 1
+  [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ]
+}
+
+gate_failover_lease_put() (
+  # gate_failover_lease_put <account> <config dir> <holder pid> <lineage> — a
+  # router lease on the moved-to account, basis `failover-shift`, held by the
+  # shift's pid; prints the nonce. Without it a moved shift spends an account
+  # outside the lease ledger, and an admission of another run counts nothing
+  # against it. Written under the table lock as the router's own wait entry is.
+  #
+  # A SUBSHELL BODY: the table lock sets and clears the EXIT trap of the shell
+  # that takes it, and the gate's own EXIT trap emits the digest.
+  acct="$1"; dir="$2"; pid="$3"; lin="$4"; rc=0
+  t="$(run_pace_root)/leases"
+  now=$(date -u +%s)
+  key=$(route__key "$RUN_ID" "$lin") || exit 2
+  holders=$(route__holders_json "$pid") || exit 2
+  nonce=$(route__nonce)
+  [ -n "$nonce" ] || exit 4
+  mkdir -p "$t" 2>/dev/null || exit 4
+  route__lock_acquire "$t" || exit $?
+  leases=$(route__table_read "$t" "") || rc=2
+  if [ "$rc" = "0" ]; then
+    rec=$(jq -cn --argjson leases "$leases" --arg schema "$ROUTE_LEASE_SCHEMA" --arg run "$RUN_ID" \
+          --arg lin "$lin" --arg nonce "$nonce" --arg acct "$acct" --arg dir "$dir" \
+          --argjson now "$now" --argjson holders "$holders" '
+          {schema: $schema, kind: "grant", run_id: $run, lineage: $lin, nonce: $nonce,
+           seq: ((([($leases.items // [])[] | .seq | select(type == "number")] | max) // 0) + 1),
+           account: $acct, config_dir: $dir, reservation_bp: {five_hour: 0, seven_day: 0},
+           admitted_as: "known", basis: "failover-shift", observed: "-", granted_at_epoch: $now,
+           holders: $holders}' 2>/dev/null) || rc=2
+  fi
+  if [ "$rc" = "0" ] && ! route__lease_put "$t" "$key" "$rec"; then rc=4; fi
+  route__lock_release
+  [ "$rc" = "0" ] || exit "$rc"
+  printf '%s' "$nonce"
+)
+
+gate_failover_wait() {
+  # gate_failover_wait <alias> <seat label> <evidence> <T or ""> <후보> — no
+  # account has room and the reason is `대기` or `상한`: write the wait and
+  # launch nothing. Always returns the rule exit, 3, after taking down this
+  # launcher's claims — the seat reads 3 as "another launcher drives this run",
+  # and the fleet tick's chain stops on it; the tick re-calls the run once the
+  # resume time has passed.
+  #
+  #   T at or before the deadline, or no deadline   `결과=대기`, `재개 시각=T`
+  #   T past the deadline, or no T                  `결과=마감 초과`, and a
+  #                                                 run-scope `blocked` row for
+  #                                                 a person
+  #
+  # NOT EXIT 5. The seat reads 5 from `router-shift` as an approval to answer,
+  # and this outcome issues none; a person learns of it from the `blocked` row.
+  #
+  # ONE ROW PER WAIT. When the run is already in a failover wait with the same
+  # resume time, nothing is written. A judgment after the resume time with no
+  # candidate writes a new `결과=대기` with the new T.
+  #
+  # THE GRACE. A judgment made within `GATE_FAILOVER_RESUME_GRACE_SECONDS` after
+  # the current wait's resume time does not become `마감 초과`: the inputs may
+  # not have caught up yet. It writes `결과=대기` at that resume time plus the
+  # grace instead — once per wait: a wait whose resume time is an earlier wait
+  # row's plus the grace already had it.
+  local alias="$1" lab="$2" ev="$3" t="$4" cands="$5" dl now prev g n res r graced=""
+  GATE_FAILOVER_DEFERRED=""
+  dl=$(gate_deadline_epoch)
+  now=$(date -u +%s)
+  g=$GATE_FAILOVER_RESUME_GRACE_SECONDS
+  prev=$(cc_failover_wait_resume "$LEDGER")
+  n=$(( $(gate_shift_launches) + 1 ))
+  if [ -n "$t" ] && { [ -z "$dl" ] || [ "$t" -le "$dl" ]; }; then
+    res=대기
+  else
+    res="마감 초과"
+    if [ -n "$prev" ] && [ "$now" -ge "$prev" ] && [ "$now" -lt $((prev + g)) ]; then
+      while IFS= read -r r; do
+        case "$r" in ''|*[!0-9]*) continue ;; esac
+        [ $((r + g)) -ne "$prev" ] || graced=1
+      done <<EOF
+$(gate_failover_wait_resumes)
+EOF
+      if [ -z "$graced" ] && { [ -z "$dl" ] || [ $((prev + g)) -le "$dl" ]; }; then
+        res=대기
+        t=$((prev + g))
+      fi
+    fi
+  fi
+  if [ "$res" = "대기" ] && [ "$prev" = "$t" ]; then
+    log "계정 이전 대기 — 재개 시각 $(cc_epoch_to_iso "$t") 의 대기가 이미 기록돼 있어 다시 쓰지 않고 교대를 띄우지 않는다"
+  elif [ "$res" = "대기" ]; then
+    gate_failover_row "$n" "$lab" "$ev" 대기 - - "$t" "$cands"
+    log "계정 이전 대기 — 여유 계정이 없다 · 재개 시각 $(cc_epoch_to_iso "$t")"
+  else
+    gate_failover_row "$n" "$lab" "$ev" "마감 초과" - - - "$cands"
+    gate_append 'blocked' "대상=$alias" "스코프=run" "원인=막힘" "사유=계정 이전 마감 초과" \
+      "관측=좌석 레인 $lab 이 한도($ev)이고 목록 계정에 여유가 없으며 재개 시각이 $( [ -n "$t" ] && cc_epoch_to_iso "$t" || printf '없음') 으로 마감 $( [ -n "$dl" ] && cc_epoch_to_iso "$dl" || printf '없음') 안에 들지 않는다" \
+      "재개 명령=한도가 풀린 뒤 좌석에서 router-shift 를 사유=중단 으로 다시 낸다"
+    warn "계정 이전 마감 초과 — 여유 계정이 없고 재개 시각이 마감 안에 들지 않아 교대를 띄우지 않는다; blocked 행을 남겼다"
+  fi
+  gate_shift_launch_drop_claims
+  return "$GATE_EXIT_RULE"
+}
+
 gate_launch_shift() {
   # gate_launch_shift <alias> <사유> <cli args...>
   #
@@ -56845,6 +57247,64 @@ gate_launch_shift() {
     log "전송 단절 뒤 연결 확인 ${probe_note} — 교대를 기동한다"
   fi
 
+  # THE LANE, IN A FAILOVER RUN ONLY. Five outcomes, in order: not a failover
+  # run, or no evidence that the seat lane is at its limit — the caller's lane,
+  # as always, and no row; an account with room — `결과=이전`, the shift runs
+  # under that account's directory; no account with room under `대기` or `상한`
+  # — the reasons the fleet tick can re-issue — the wait (`결과=대기` with the
+  # resume time, or `결과=마감 초과`), and nothing is launched; no account with
+  # room under `승인`, `종단` or `중단` — `결과=좌석 복귀`, the seat lane; and
+  # no judgment — `결과=판정불가`, the seat lane's path as it is today.
+  #
+  # THE TWO VARIABLES ARE FUNCTION-LOCAL AND EXPORTED BEFORE ANYTHING IS BUILT.
+  # The instructions, the window reading and the launch line all read the
+  # chosen directory; a prefix assignment on the launch line alone would reach
+  # none of the values computed above it. Every launch that is not a move
+  # passes `CC_GATE_SHIFT_LANE` empty, so a seat-lane shift never takes the
+  # seat-revert branch of `resolve_account`.
+  local -x CC_GATE_SHIFT_LANE=
+  local fo_res="" fo_dir="" fo_acct="" fo_ev="-" fo_lab="-" fo_cands="-" fo_t="" fo_j="" fo_jrc=0
+  local fo_pick fo_prev_cfg="" fo_prev_set="" fo_nonce=""
+  if run_failover_allowed 2>/dev/null; then
+    fo_j=$(gate_failover_judge) || fo_jrc=$?
+    fo_ev=$(gate_failover_field "$fo_j" '증거'); fo_ev=${fo_ev:--}
+    fo_lab=$(gate_failover_field "$fo_j" '좌석'); fo_lab=${fo_lab:--}
+    fo_cands=$(gate_failover_field "$fo_j" '후보'); fo_cands=${fo_cands:--}
+    fo_t=$(gate_failover_field "$fo_j" '재개'); [ "$fo_t" != "-" ] || fo_t=""
+    fo_pick=$(gate_failover_field "$fo_j" '고름')
+    if [ "$fo_ev" = "-" ]; then
+      fo_res=""
+    elif [ "$fo_jrc" != "0" ]; then
+      fo_res=판정불가
+      log "계정 이전 판정불가 — $(gate_failover_field "$fo_j" '불가') · 좌석 레인 경로로 간다"
+    elif [ -n "$fo_pick" ]; then
+      fo_res=이전
+      fo_acct=${fo_pick%%"$(printf '\t')"*}
+      fo_dir=${fo_pick#*"$(printf '\t')"}
+    else
+      case "$reason" in
+        대기|상한)
+          gate_failover_wait "$alias" "$fo_lab" "$fo_ev" "$fo_t" "$fo_cands"
+          return $? ;;
+        *) fo_res="좌석 복귀" ;;
+      esac
+    fi
+    # THE DEFERRED RESET WAIT. The pre-launch wait skipped a lone limit-shaped
+    # `무기록` reset so this judgment could move the shift first; a shift that
+    # stays on the seat lane waits that reset out here, as it did before.
+    if [ -n "$GATE_FAILOVER_DEFERRED" ] && [ "$fo_res" != "이전" ]; then
+      GATE_FAILOVER_DEFERRED=""
+      gate_relay_wait || return 0
+    fi
+    GATE_FAILOVER_DEFERRED=""
+  fi
+  if [ "$fo_res" = "이전" ]; then
+    if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then fo_prev_set=1; fo_prev_cfg="$CLAUDE_CONFIG_DIR"; fi
+    local -x CLAUDE_CONFIG_DIR="$fo_dir"
+    CC_GATE_SHIFT_LANE="$fo_dir"
+    log "계정 이전 — 좌석 레인 $fo_lab 의 한도 증거($fo_ev)로 교대를 $fo_acct ($(lane_label_of "$fo_dir")) 에서 띄운다"
+  fi
+
   # THE SHIFT'S INSTRUCTIONS — the same policy file and the same synthesis as a
   # stage of the home target, never a narrower variant (that would be a second
   # drift surface and a second cache head). Synthesized BEFORE the `교대 기동`
@@ -56924,8 +57384,8 @@ gate_launch_shift() {
   #
   # `조직 이동` IS THE OUTGOING SHIFT'S TOO, for the same reason, and silent
   # when it is 0 or unreadable — a kickoff launch has no outgoing shift at all.
-  local window effort model launch_flags prev_ctx='' som=''
-  window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
+  local window effort model launch_flags prev_ctx='' som='' lane_lab
+  window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD" "$fo_dir")
   effort=$(stage_effort_of shift)
   model=$(stage_model_of shift)
   launch_flags=$(stage_launch_flags shift)
@@ -56939,10 +57399,25 @@ gate_launch_shift() {
   # left; the drain appends under its own lock and is done before the row below.
   # The base branch's reading goes in first for the same reason: a relay woken
   # by it hands over a snapshot whose `다음` already reads the new reading.
+  # THE `계정 이전` ROW OF A SHIFT THAT LAUNCHES — `이전`, `좌석 복귀` or
+  # `판정불가` — stands above that shift's `교대 기동` row and below the
+  # instruction synthesis, so a refused synthesis leaves neither. The launch
+  # row's `레인=` is the lane the shift runs on: the chosen account's label for
+  # a move, never the launching process's resolution, which inside a moved
+  # shift answers the seat.
+  if [ -n "$fo_res" ]; then
+    gate_failover_row "$n" "$fo_lab" "$fo_ev" "$fo_res" \
+      "$( [ -n "$fo_dir" ] && lane_label_of "$fo_dir" || printf -- '-')" "${fo_acct:--}" - "$fo_cands"
+  fi
+  if [ "$fo_res" = "이전" ]; then
+    lane_lab=$(lane_label_of "$fo_dir")
+  else
+    lane_lab=$(gate_lane_label)
+  fi
   gate_master_row_if_changed
   gate_drain_checks
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
-    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
+    "세션 id=$(session_uuid "shift" "$n")" "레인=$lane_lab" "압축 창=$window" \
     "컨텍스트=${prev_ctx:--}" "effort=${effort:--}" "모델=${model:--}" \
     ${som:+"조직 이동=$som"} ${probe_note:+"연결 확인=$probe_note"}
   # THE RUN NOW ENDS ON `done`, AND ONLY THE SEAT SAYS SO. A seat that hands its
@@ -57028,7 +57503,26 @@ gate_launch_shift() {
   printf '%s\n%s\n%s\n%s\n' "$spid" "$(cc_proc_fingerprint "$spid")" \
     "$$" "$(cc_proc_fingerprint "$$")" > "$RUN_DIR/shift.live"
   rm -f "$RUN_DIR/relay.live"
+  # A MOVED SHIFT HOLDS A ROUTER LEASE ON ITS ACCOUNT for its whole life, and
+  # the launcher gets its own values back before the tail: the tail — the
+  # wait, the relay's re-entry, the trace, the banner — is the caller's work and
+  # does not run on the chosen lane. A lease that could not be taken is logged
+  # and the shift runs.
+  if [ "$fo_res" = "이전" ]; then
+    local lrc=0
+    fo_nonce=$(gate_failover_lease_put "$fo_acct" "$fo_dir" "$spid" "shift-$n") || lrc=$?
+    [ "$lrc" = "0" ] || { fo_nonce=""; log "교대 $n 의 계정 이전 임대를 잡지 못했다 (rc=$lrc) — 교대는 그대로 돈다"; }
+    if [ -n "$fo_prev_set" ]; then CLAUDE_CONFIG_DIR="$fo_prev_cfg"; else unset CLAUDE_CONFIG_DIR; fi
+    CC_GATE_SHIFT_LANE=
+  fi
   wait "$spid" || rc=$?
+  # Released through the verb, not `route_lease_release`: that wrapper also
+  # moves the run's stage affinity to the released account, and a moved shift
+  # is not a stage placement.
+  if [ -n "$fo_nonce" ]; then
+    bash "$(route__dir)/route.sh" lease-release "$(run_pace_root)/leases" "$RUN_ID" "shift-$n" "$fo_nonce" \
+      >/dev/null 2>&1 || true
+  fi
   [ "$rc" != "0" ] || gate_relay_enter_if_waiting
   rm -f "$RUN_DIR/shift.in-progress" "$RUN_DIR/shift.live"
   log "교대 $n 종료 (rc=$rc)"
@@ -57098,6 +57592,10 @@ GATE_RELAY_ENTERED=""
 GATE_RELAY_HANDED_BACK=""
 GATE_RELAY_STARTED=""
 GATE_RELAY_FP=""
+# Set when the pre-launch wait skipped a lone `무기록` reset for the failover
+# judgment (`gate_failover_defers_reset`); the launcher waits it out after the
+# judgment when the shift stays on the seat lane.
+GATE_FAILOVER_DEFERRED=""
 
 gate_relay_route() {
   # gate_relay_route <alias> <사유> <cli args...> — the `router-shift` act: one
@@ -57112,6 +57610,7 @@ gate_relay_route() {
   GATE_RELAY_INNER=""
   GATE_RELAY_ENTERED=""
   GATE_RELAY_HANDED_BACK=""
+  GATE_FAILOVER_DEFERRED=""
   gate_launch_shift "$alias" "$reason" "$@" || rc=$?
   while [ "$rc" = "0" ] && [ -n "$GATE_RELAY_ENTERED" ] && [ -z "$GATE_RELAY_HANDED_BACK" ]; do
     gate_relay_wait || return 0
@@ -57184,6 +57683,20 @@ gate_relay_reentry_allowed() {
   n=$(gate_row_field "$n" '서수')
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
   at=$(gate_cut_key_reset_at "교대#$n")
+  # IN A FAILOVER RUN THE TEST IS THE DEADLINE OR ROOM, NOT THE HORIZON. A
+  # seven_day reset lies past the horizon, and the run must still take `대기`
+  # there when a listed account has room to move the next shift to — and when
+  # the reset lands before the deadline (or the run has none) the wait is one
+  # the run can finish after. The horizon and `gate_cut_reset_within` stay as
+  # they are for every other reader.
+  if run_failover_allowed 2>/dev/null; then
+    local dl
+    [ -n "$at" ] || return 1
+    dl=$(gate_deadline_epoch)
+    if [ -z "$dl" ] || [ "$at" -le "$dl" ]; then return 0; fi
+    gate_failover_has_room
+    return
+  fi
   [ -n "$at" ] && gate_cut_reset_within "$at"
 }
 
@@ -57452,6 +57965,12 @@ gate_relay_before_launch() {
   gate_relay_write "$(cc_relay_wait_stages "$RUN_DIR")" "$(gate_relay_ci_segments)" \
     "$(gate_relay_reset_set)"
   GATE_RELAY_ENTERED=""
+  # IN A FAILOVER RUN A LONE `무기록` RESET IS JUDGED FIRST. The launcher waits
+  # it out after the lane judgment when the shift stays on the seat lane.
+  if gate_failover_defers_reset; then
+    GATE_FAILOVER_DEFERRED=1
+    return 0
+  fi
   gate_relay_wait
 }
 
