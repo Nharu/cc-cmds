@@ -348,9 +348,9 @@ check "pin: the shift halt record is <seg>#<n>.md under the shift halt directory
 check "pin: the shift halt directory is the run's halt/shift" \
   "$(sed -n '/^gate_shift_halt_dir() {/,/^}/p' "$GATE" | grep -cF 'local d="$RUN_DIR/halt/shift"')" "1"
 check "pin: the shift halt cone row names its record and its site" \
-  "$( { grep -cF '"앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \' "$GATE" || true; } )" "2"
+  "$( { grep -cF '"앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \' "$GATE" || true; } )" "3"
 check "pin: the shift halt cone row carries the site field" \
-  "$( { grep -cF '"기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} || r=$?' "$GATE" || true; } )" "1"
+  "$( { grep -cF '"기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} ${sfx[@]+"${sfx[@]}"} || r=$?' "$GATE" || true; } )" "1"
 check "pin: the gate launches a shift with no stage id" \
   "$( { grep -cxF '  CC_PIPELINE_STAGE_ID= \' "$GATE" || true; } )" "1"
 check "pin: a reach park with no stage id writes 스테이지=-" \
@@ -481,7 +481,112 @@ row 승인 '승인 id=J-3' '상태=대기' '절단점=판단' '연 자리=미상
 row 승인 '승인 id=J-3' '상태=승인' '처분 사유=자동 해소'
 check "a closed approval is no event" "$(stops)" ""
 
+# --- fix sites ----------------------------------------------------------------
+
+# A halt record whose `**관측 상세**` carries the given body verbatim.
+halt_detail() { printf '<!-- cc-pipeline-halt v1 -->\n**분류**: %s\n**관측 상세**: %s\n<!-- /cc-pipeline-halt v1 -->\n' "$2" "$3" > "$RD/halt/$1.md"; }
+byfix() { bash "$STOPS" "$LG" "$RD" --by-fix-site 2>&1; }
+SIG='종료 코드·사후 프로브 불일치'
+
+newcase
+row segment 'id=t1' '상태=park' '적용=불명' '고칠 곳=대상 레포' '판정 주체=게이트' "판정 신호=$SIG" '대상=al'
+row segment 'id=t2' '상태=park'
+row stage-result '세그먼트=h1' '스테이지=h1' '종류=implement' '실행 버전=1' '종단 부류=의도된 park'
+halt_detail 'h1#1' precondition-failed '도구 실패 / 고칠 곳=런 / 고칠 곳 근거=bash: jq: command not found / 고칠 곳=외부 서비스'
+row stage-result '세그먼트=h2' '스테이지=h2' '종류=implement' '실행 버전=1' '종단 부류=의도된 park'
+halt_detail 'h2#1' precondition-failed '고칠 곳=외부 서비스 / 고칠 곳 근거=HTTP 503	from vendor'
+row stage-result '세그먼트=h3' '스테이지=h3' '종류=implement' '실행 버전=1' '종단 부류=의도된 park'
+halt_detail 'h3#1' precondition-failed '고칠 곳=아무데나'
+out=$(byfix)
+has "fix site: a gate-stamped park row is the target's" "$out" "대상 레포${T}게이트${T}segment/park${T}t1${T}$SIG"
+has "fix site: a park with no field reads 판정 불가" "$out" "판정 불가${T}-${T}segment/park${T}t2${T}-"
+has "fix site: the stage's part before its excerpt decides" "$out" "런${T}스테이지${T}halt/precondition-failed/implement${T}h1#1${T}bash: jq: command not found / 고칠 곳=외부 서비스"
+has "fix site: a tab in the excerpt is one space" "$out" "외부 서비스${T}스테이지${T}halt/precondition-failed/implement${T}h2#1${T}HTTP 503 from vendor"
+has "fix site: a value outside the closed set reads 판정 불가" "$out" "판정 불가${T}-${T}halt/precondition-failed/implement${T}h3#1${T}-"
+check "fix site: every line has five columns" "$(printf '%s\n' "$out" | awk -F'\t' 'NF != 5' | wc -l | tr -d ' ')" "0"
+
+# The park rows since the segment last left `park` decide, the last one carrying
+# a field wins, and a judgment of an earlier park is not inherited.
+newcase
+row segment 'id=p1' '상태=park' '고칠 곳=대상 레포' '판정 주체=게이트' "판정 신호=$SIG"
+row segment 'id=p1' '상태=실행중'
+row segment 'id=p1' '상태=park'
+row segment 'id=p2' '상태=park' '고칠 곳=외부 서비스' '판정 주체=좌석' '판정 신호=관측 근거' '판정 근거=503'
+row segment 'id=p2' '상태=park'
+out=$(byfix)
+has "fix site: a park after leaving park does not inherit" "$out" "판정 불가${T}-${T}segment/park${T}p1${T}-"
+has "fix site: a later park without fields keeps the earlier park's" "$out" "외부 서비스${T}좌석${T}segment/park${T}p2${T}503"
+
+# Two segments with the same signature stay two lines; intended events are left out.
+newcase
+row segment 'id=d1' '상태=park'
+row segment 'id=d2' '상태=park'
+row 승인 '승인 id=J-1' '상태=대기' '절단점=판단' '연 자리=design'
+out=$(byfix)
+check "fix site: one line per segment of the same signature" "$(printf '%s\n' "$out" | grep -c 'segment/park')" "2"
+hasnt "fix site: an intended event is left out" "$out" "approval/판단"
+
+# An answer of an earlier attempt's record does not judge the later stop.
+newcase
+row stage-result '세그먼트=q1' '스테이지=q1' '종류=implement' '실행 버전=1' '종단 부류=의도된 park'
+row stage-result '세그먼트=q1' '스테이지=q1' '종류=implement' '실행 버전=2' '종단 부류=의도된 park'
+halt_detail 'q1#2' precondition-failed '자유 문면'
+row '중단 답' "중단 기록=$RD/halt/q1#1.md" '고칠 곳=외부 서비스' '판정 주체=좌석' '판정 신호=관측 근거' '판정 근거=old'
+out=$(byfix)
+has "fix site: an earlier attempt's answer is not applied" "$out" "판정 불가${T}-${T}halt/precondition-failed/implement${T}q1#2${T}-"
+row '중단 답' "중단 기록=$RD/halt/q1#2.md" '고칠 곳=외부 서비스' '판정 주체=좌석' '판정 신호=관측 근거' '판정 근거=new'
+has "fix site: the stop's own answer is applied" "$(byfix)" "외부 서비스${T}좌석${T}halt/precondition-failed/implement${T}q1#2${T}new"
+
+# --- target stop, external hold and remeasure predicates ---------------------
+
+pred() { bash "$STOPS" --predicate "$@" 2>/dev/null; }
+newcase
+row segment 'id=a1' '레포=o/r' '상태=park' '적용=불명' '고칠 곳=대상 레포' '판정 주체=게이트' "판정 신호=$SIG" '대상=al'
+check "target-stop: the park row holds the alias" "$(pred target-stop "$LG" al; echo "rc=$?")" "a1
+rc=0"
+check "target-stop: another alias is not held" "$(pred target-stop "$LG" other; echo "rc=$?")" "rc=1"
+row blocked '대상=al' '세그먼트=a2' '스코프=act' '원인=막힘' '사유=대상 적용 정지 al' '재개 명령=-'
+row segment 'id=a2' '상태=머지됨' '적용=대기'
+has "act stop: a held target's act block is one event" "$(stops)" "$(ev 'act/대상 적용 정지' 비의도)"
+has "act stop: the act stop is the target's to fix" "$(byfix)" "판정 불가${T}-${T}act/대상 적용 정지${T}a2${T}-"
+row segment 'id=a1' '상태=완료' '적용=정산'
+check "target-stop: a later 완료 row releases it" "$(pred target-stop "$LG" al; echo "rc=$?")" "rc=1"
+hasnt "act stop: a released target's act block is no event" "$(stops)" "act/대상 적용 정지"
+
+newcase
+row segment 'id=b1' '상태=park' '적용=불명' '고칠 곳=대상 레포' '판정 주체=게이트' "판정 신호=$SIG" '대상=al'
+row '중단 답' '세그먼트=b1' "중단 기록=$RD/halt/shift/b1#1.md" '선택지=세그먼트 park' '답한 주체=사람'
+check "target-stop: a person's 세그먼트 park answer releases it" "$(pred target-stop "$LG" al; echo "rc=$?")" "rc=1"
+
+newcase
+row segment 'id=c1' '상태=park' '적용=불명' '대상=al'
+check "target-stop: an unknown row without the signal holds nothing" "$(pred target-stop "$LG" al; echo "rc=$?")" "rc=1"
+
+newcase
+row '중단 답' '세그먼트=e1' "중단 기록=$RD/halt/e1#1.md" '선택지=좌석 실행' '답한 주체=좌석' \
+  '고칠 곳=외부 서비스' '판정 주체=좌석' '판정 신호=관측 근거' '판정 근거=503' '측정 등급=R2:검증불가(드리프트)' '라우팅=외부-보류'
+check "external-hold: an answer alone holds nothing" "$(pred external-hold "$LG" e1; echo "rc=$?")" "rc=1"
+row segment 'id=e1' '상태=park'
+check "external-hold: the park after the answer holds" "$(pred external-hold "$LG" e1 >/dev/null; echo "rc=$?")" "rc=0"
+check "remeasure: the same R-item is refused" "$(pred remeasure-refused "$LG" e1 R2 >/dev/null; echo "rc=$?")" "rc=0"
+check "remeasure: another R-item is not" "$(pred remeasure-refused "$LG" e1 R3 >/dev/null; echo "rc=$?")" "rc=1"
+row '한도 해제' '세그먼트=e1'
+check "external-hold: a 한도 해제 row releases it" "$(pred external-hold "$LG" e1; echo "rc=$?")" "rc=1"
+
+newcase
+row '중단 답' '세그먼트=f1' "중단 기록=$RD/halt/f1#1.md" '선택지=좌석 실행' '답한 주체=좌석' '측정 등급=R2:검증불가(드리프트)' '라우팅=외부-보류'
+row segment 'id=f1' '상태=park'
+row '중단 답' '세그먼트=f1' "중단 기록=$RD/halt/f1#1.md" '선택지=재시도' '답한 주체=사람'
+check "external-hold: a person's answer to the record releases it" "$(pred external-hold "$LG" f1; echo "rc=$?")" "rc=1"
+check "predicate: an unknown kind is a usage error" "$(pred nope "$LG" x; echo "rc=$?")" "rc=2"
+
 # --- vocabulary pins ----------------------------------------------------------
+
+check "pin: the act-stop table is the gate's act-stop reason prefix" \
+  "$( { grep -cF "사유=$(bash "$STOPS" --vocab act-stop) \$alias" "$ORCH/gate.sh" || true; } | sed 's/^[1-9][0-9]*$/있음/')" "있음"
+check "pin: the fix-site table is the gate's closed set" \
+  "$(bash "$STOPS" --vocab fix-site | tr '\n' ',')" \
+  "$(sed -n "/^readonly GATE_FIX_SITES='/,/'\$/p" "$ORCH/gate.sh" | sed "s/^readonly GATE_FIX_SITES='//; s/'\$//" | tr '\n' ',')"
 
 table=$(bash "$STOPS" --vocab run-blocked)
 missing=""
