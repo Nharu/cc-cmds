@@ -53161,7 +53161,7 @@ rm -f "$WT/$DOC83WB" "$w83_stub"
 
 # ---------------------------------------------------------------------------
 # 83x. 기기 짝 정리 — exec 가 열고, 스테이지 끝과 런 끝 정리가 이 런의 기기만 지운다
-# --- section: 83x | group: reach | covers: exec, reach, gate_reach_derived_full, gate_reach_fold_find, gate_act_mark, gate_device_act_kind, gate_device_peel_argc, gate_device_act_start, gate_device_peeled_kind, gate_device_listed, gate_device_targets_listed, gate_device_open_check, gate_device_record, gate_device_withdraw_serial, gate_run_device_aware, gate_pair_open, gate_pair_drain, device-cleanup, pair-residue | anchors: 83x: 짝 정리 행의 simctl create 가 열리고 기기를 목록에 남긴다, 83x: 만든 기기를 겨누는 simctl shutdown 은 열린다, 83x: simctl shutdown all 은 park 한다, 83x: simctl delete unavailable 은 park 한다, 83x: 이 런이 만들지 않은 UDID 는 foreign-device 로 park 한다, 83x: timeout 으로 감싼 남의 기기 erase 는 foreign-device 로 park 한다, 83x: env 로 감싼 남의 기기 delete 는 foreign-device 로 park 한다, 83x: nice 로 감싼 남의 기기 shutdown 은 foreign-device 로 park 한다, 83x: 감싼 쪽이 경로인 기기 도구는 열리지 않는다,83x: find -exec 뒤의 기기 행위는 foreign-device 로 park 한다, 83x: 접두가 맞지 않는 만들기는 device-name 수리 줄과 park 한다, 83x: 정리 짝 없는 만들기는 no-cleanup 수리 줄과 park 한다, 83x: 도는 에뮬레이터의 시리얼을 겨누는 adb 는 열린다, 83x: 끝난 에뮬레이터의 시리얼을 겨누는 adb 는 park 한다, 83x: 스테이지 끝 정리가 그 파견의 기기만 지운다, 83x: 런 끝 쓸기가 이 런의 남은 기기를 지운다, 83x: 정리가 다 성공하면 pair-residue 가 빈다, 83x: env 로 감싼 simctl create 도 기기를 목록에 남긴다 ---
+# --- section: 83x | group: reach | covers: exec, reach, gate_reach_derived_full, gate_reach_fold_find, gate_act_mark, gate_device_act_kind, gate_device_peel_argc, gate_device_act_start, gate_device_peeled_kind, gate_device_tool_act, gate_device_listed, gate_device_targets_listed, gate_device_open_check, gate_device_record, gate_device_withdraw_serial, gate_run_device_aware, gate_pair_open, gate_pair_drain, device-cleanup, pair-residue | anchors: 83x: 짝 정리 행의 simctl create 가 열리고 기기를 목록에 남긴다, 83x: 만든 기기를 겨누는 simctl shutdown 은 열린다, 83x: simctl shutdown all 은 park 한다, 83x: simctl delete unavailable 은 park 한다, 83x: 이 런이 만들지 않은 UDID 는 foreign-device 로 park 한다, 83x: timeout 으로 감싼 남의 기기 erase 는 foreign-device 로 park 한다, 83x: env 로 감싼 남의 기기 delete 는 foreign-device 로 park 한다, 83x: nice 로 감싼 남의 기기 shutdown 은 foreign-device 로 park 한다, 83x: 감싼 쪽이 경로인 기기 도구는 열리지 않는다,83x: find -exec 뒤의 기기 행위는 foreign-device 로 park 한다, 83x: 접두가 맞지 않는 만들기는 device-name 수리 줄과 park 한다, 83x: 정리 짝 없는 만들기는 no-cleanup 수리 줄과 park 한다, 83x: 도는 에뮬레이터의 시리얼을 겨누는 adb 는 열린다, 83x: 끝난 에뮬레이터의 시리얼을 겨누는 adb 는 park 한다, 83x: 스테이지 끝 정리가 그 파견의 기기만 지운다, 83x: 런 끝 쓸기가 이 런의 남은 기기를 지운다, 83x: 정리가 다 성공하면 pair-residue 가 빈다, 83x: env 로 감싼 simctl create 도 기기를 목록에 남긴다 ---
 #
 # rx 매니페스트로 게이트의 exec 를 부르고, 기기 도구는 PATH 앞의 대역이 받는다. 대역
 # xcrun 은 만들기에 고정 UDID 를 내고 목록에 이 파견의 기기·다른 파견의 기기·남의 기기를
@@ -53311,6 +53311,31 @@ X83_REACH=런로컬 x83_run timeout 60 find /dev/null -maxdepth 0 -exec xcrun si
 check "83x: 런로컬 로 선언한 감싼 find -exec 의 남의 기기 erase 는 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
 X83_REACH=런로컬 x83_run find /dev/null -maxdepth 0 -exec true ';' -exec xcrun simctl delete "$X83V" ';'
 check "83x: 런로컬 로 선언한 find 의 둘째 -exec 기기 delete 도 foreign-device 로 park 한다" "$rc|$(printf '%s' "$msg" | grep -c 'did not create')" "11|1"
+# 감싸개 목록에 없는 실행기(caffeinate·arch) 뒤의 기기 도구 — 등급표는 이 철자를 매기지
+# 않으므로 미상이고, 기기 판정이 실행기 뒤의 기기 도구 낱말을 읽지 않으면 읽기·런로컬
+# 선언이 그대로 신뢰되어 기기 검사를 모두 건너뛰고 원장에 통과 행이 남는다. park 기억이
+# 같은 argv 에 수리 문구 없이 답하므로 선언마다 철자를 조금씩 달리한다.
+x83_udt() {
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    if gate_device_tool_act "$@"; then printf 기기; else printf 아님; fi
+  ' _ "$@" 2>/dev/null )
+}
+check "83x: caffeinate 뒤의 simctl 은 기기 도구 행위다" "$(x83_udt caffeinate -i xcrun simctl delete all)" "기기"
+check "83x: arch 뒤의 xcodebuild 는 기기 도구 행위다" "$(x83_udt arch -arm64 xcodebuild test -destination 'platform=iOS Simulator,name=X')" "기기"
+check "83x: 대조 — 기기 도구 없는 caffeinate 는 기기 도구 행위가 아니다" "$(x83_udt caffeinate -i true)" "아님"
+check "83x: 대조 — 기기 도구 없는 xcrun 을 실은 caffeinate 는 기기 도구 행위가 아니다" "$(x83_udt caffeinate -i xcrun --find clang)" "아님"
+x83_xpass() { { grep -c -e '결정=exec .*argv=caffeinate' -e '결정=exec .*argv=arch' "$X83LED" 2>/dev/null || true; }; }
+X83_SURF=읽기 x83_run caffeinate -i xcrun simctl delete all
+check "83x: 읽기 로 선언한 caffeinate 뒤의 simctl delete all 은 park 한다" "$rc" "11"
+X83_REACH=런로컬 x83_run caffeinate -s xcrun simctl delete all
+check "83x: 런로컬 로 선언한 caffeinate 뒤의 simctl delete all 은 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run arch -arm64 xcodebuild test -destination 'platform=iOS Simulator,name=X'
+check "83x: 읽기 로 선언한 arch 뒤의 xcodebuild test 는 park 한다" "$rc" "11"
+X83_REACH=런로컬 x83_run arch -x86_64 xcodebuild test -destination 'platform=iOS Simulator,name=X'
+check "83x: 런로컬 로 선언한 arch 뒤의 xcodebuild test 는 park 한다" "$rc" "11"
+check "83x: 실행기 뒤의 기기 행위는 원장에 통과 행을 남기지 않고 대역에 닿지 않는다" \
+  "$(x83_xpass)|$(grep -c -e 'delete all' -e 'xcodebuild test' "$X83L")" "0|0"
 # 셸·러너 -exec 를 곁들인 find — 그 -exec 하나가 find 전체를 불투명으로 만든다. 기기 검사가
 # 등급 출처 `표` 에서만 돌면 이 철자는 선언과 감싸개를 가리지 않고 기기 검사를 모두 지나
 # 판단 갈래로 가므로, 종료 코드와 수리 문구를 함께 본다. 앞서 park 한 argv 는 park 기억이

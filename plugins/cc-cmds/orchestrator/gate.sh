@@ -3699,6 +3699,14 @@ gate_device_tool_act() {
   # device. A `find` is one when a word from its first
   # `-exec` family primary on names any of those tools, as the machine-global
   # cell reads it; the words before are start paths and tests.
+  #
+  # ANY OTHER FIRST WORD IS A LAUNCHER THE PEEL LIST DOES NOT NAME, and a word
+  # behind it that names a device tool makes the act a device tool act.
+  # `caffeinate -i xcrun simctl delete all` and `arch -arm64 xcodebuild test …`
+  # run the device tool as their bare spellings do, and the launchers are not
+  # enumerated so that `sudo`, `xargs` and a launcher nobody listed close by
+  # the same rule. The caller asks only for an act the table left `미상`, so a
+  # device tool word in a graded command's operands is never read here.
   local s w x=0
   s=$(gate_device_act_start "$@")
   set -- "${@:$s}"
@@ -3717,6 +3725,13 @@ gate_device_tool_act() {
         [ "$x" = "1" ] || continue
         case "${w##*/}" in
           xcrun|xcodebuild|adb|emulator|avdmanager|maestro|simctl|devicectl|xctrace|instruments) return 0 ;;
+        esac
+      done ;;
+    *)
+      shift
+      for w in "$@"; do
+        case "${w##*/}" in
+          xcodebuild|adb|emulator|avdmanager|maestro|simctl|devicectl|xctrace|instruments) return 0 ;;
         esac
       done ;;
   esac
