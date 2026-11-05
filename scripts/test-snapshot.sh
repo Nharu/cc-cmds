@@ -221,11 +221,15 @@ check "크래시로 끝난 스테이지 결과 행은 진전이 아니다" "$(di
 # `answered_by` says who chose the option, and a row written before `답한 주체`
 # existed is read by its `근거`: the shift's pre-adopted prefix is `교대`, any
 # other row a person's. An answer is not progress, whoever gave it.
-printf -- '- `중단 답` | 세그먼트=S2 | 중단 기록=/x/halt/S2.md | 스킬=design-reconverge | 선택지=reject | 답한 주체=좌석 | 근거=기록의 추천 | 근거 종류=상시 지침\n' >> "$LEDGER"
+# `draft_adopted` is the row's `초안 채택` as written, and empty on a row that
+# carries none.
+printf -- '- `중단 답` | 세그먼트=S2 | 중단 기록=/x/halt/S2.md | 스킬=design-reconverge | 선택지=reject | 답한 주체=좌석 | 근거=기록의 결정 초안 | 근거 종류=설계 문서 | 초안 채택=1/1\n' >> "$LEDGER"
 printf -- '- `중단 답` | 세그먼트=S3 | 중단 기록=/x/halt/S3.md | 스킬=implement-unattended | 선택지=재수렴 | 근거=자동 채택(구속-이탈) — 매니페스트가 미리 정한 답\n' >> "$LEDGER"
 printf -- '- `중단 답` | 세그먼트=S4 | 중단 기록=/x/halt/S4.md | 스킬=design-audit-unattended | 선택지=reject | 근거=사람이 기각\n' >> "$LEDGER"
 ah=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -c '[.answered_halts[] | [.segment, .answered_by]]')
 check "스냅숏의 answered_by 는 답한 주체를 읽고, 옛 행은 근거의 접두로 가른다" "$ah" '[["S2","좌석"],["S3","교대"],["S4","사람"]]'
+ah=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -c '[.answered_halts[] | [.segment, .draft_adopted]]')
+check "스냅숏의 draft_adopted 는 초안 채택을 읽고, 그 필드가 없는 행은 빈 문자열이다" "$ah" '[["S2","1/1"],["S3",""],["S4",""]]'
 check "중단 답 행은 진전이 아니다" "$(digest)" "$d0"
 
 # `route` and `route_refusal` are the gate's verdict on the answer as it reads
@@ -838,7 +842,7 @@ done
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; f=${pair#*:}
   check "$who 사본이 리뷰 절 정산을 review-post 로 적는다" \
-    "$(grep -qF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 --reach 협업 -- 게시' "$f" && echo 있음)" "있음"
+    "$(grep -qF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 -- 게시' "$f" && echo 있음)" "있음"
   check "$who 사본에 손으로 쓴 리뷰 본문 게시가 없다" "$(grep -cF -- '-f body=' "$f" || true)" "0"
 done
 for lit in \
@@ -896,10 +900,12 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   for lit in \
     '**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, no `shift_halts[]` element holds a segment, and no segment parked by a `스코프=cone` row reading `사유=시각 승인 대기` still has its `시각-승인` approval open in `pending_approvals[]`.' \
     'While one is open, end with `사유=승인` as item 2 of 「Dispatching the visual stage」 says, and do not propose done.' \
-    '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.' \
+    '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거`, `요청` (the evidence request still open on it), `근거 실행` (the execution shape the kickoff bound the clause to, or `null`), `실행` (the last `종료 절 실행` row'"'"'s `앵커`, `종료 코드` and `축2`, or `null`) and `실행 이력` (every such row in order — take a write'"'"'s anchor back from here after your context was compacted).' \
     '2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for' \
     '4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.' \
-    '- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit'"'"'s full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks that `근거` is not empty and, when it names a posted review, that the review'"'"'s `리뷰 게시` row reads `대조=일치`; the rest of keeping to this is yours.' \
+    '- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit'"'"'s full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. For grounds that cite no execution the gate checks only that `근거` is not empty and, when they name a posted review, that the review'"'"'s `리뷰 게시` row reads `대조=일치`; the rest of keeping to this is yours.' \
+    'Grounds citing `실행 A-…` are checked by the gate: the row is this clause'"'"'s `종료 절 실행` row and exited 0' \
+    'The gate adds `자체 근거=예` to a row that passed; never pass it yourself (exit 2).' \
     '- **`불가능` cites what decided it** — a residual issue URL, a design step'"'"'s `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer.' \
     '- **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.'; do
     if grep -qF -- "$lit" "$f"; then
@@ -925,11 +931,14 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   done
 done
 for lit in \
-  '| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence no read of this run can produce | never |' \
+  '| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence neither a read nor a `clause-exec` of this run produced | `근거 제출` only; a person answers |' \
   "--segment - \\" \
   "-- '절=<절 id>'" \
   '**Do not end on `사유=중단` with a clause unsettled unless every unsettled clause has an open evidence request.**' \
-  'Do not run it yourself, and do not settle such a clause `불가능` without a question.' \
+  'Do not settle such a clause `불가능` without a question.' \
+  '1. **Runnable** — the execution is a read the grading table grades `읽기`, or a `사전 인가` row names it whole' \
+  '2. **Ran, and failed or did not match** — ask with `shift-halt -- 절=<id> 실행=A-… 질문=… 관측=…`.' \
+  '3. **Outside the authorization** — ask with `shift-halt -- 절=<id> '"'"'명령 초안=<argv>'"'"' '"'"'기대 결과=<한 줄>'"'"'' \
   '**`근거 제출`** → read the element'"'"'s `attachment` with a gate read' \
   'act --kind clause -- id=<id> 상태=불가능 '"'"'근거=중단 답 줄 <line>'"'"''; do
   if grep -qF -- "$lit" "$RS_CORPUS"; then
