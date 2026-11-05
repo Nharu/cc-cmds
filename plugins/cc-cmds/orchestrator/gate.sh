@@ -56929,7 +56929,7 @@ EOF
          and ((($u.exhausted_until_epoch | type) == "number" and $u.exhausted_until_epoch > $c.now)
               or any(($u.windows // {}) | .five_hour, .seven_day; (type == "object")
                      and ((.utilization | type) == "number") and .utilization >= 1
-                     and ((.resets_at_epoch | type) == "number") and .resets_at_epoch > $c.now))) ) as $a
+                     and ((.resets_at_epoch | type) == "number") and .resets_at_epoch > $c.now))) as $a
       | "증거\t" + (if $a then "사용량" elif $nb != "" then "교대 스트림" else "-" end),
         "좌석\t" + $lab, "후보\t-", "재개\t-", "불가\t분류"' 2>/dev/null \
       || printf '증거\t-\n좌석\t%s\n후보\t-\n재개\t-\n불가\t분류\n' "$lab"
@@ -56949,7 +56949,7 @@ EOF
        and ((($u.exhausted_until_epoch | type) == "number" and $u.exhausted_until_epoch > $c.now)
             or any(($u.windows // {}) | .five_hour, .seven_day; (type == "object")
                    and ((.utilization | type) == "number") and .utilization >= 1
-                   and ((.resets_at_epoch | type) == "number") and .resets_at_epoch > $c.now))) ) as $ea
+                   and ((.resets_at_epoch | type) == "number") and .resets_at_epoch > $c.now))) as $ea
     | ($nb != "") as $eb
     | (if $ea then "사용량" elif $eb then "교대 스트림" else "-" end) as $ev
     | def acct_time($a):
