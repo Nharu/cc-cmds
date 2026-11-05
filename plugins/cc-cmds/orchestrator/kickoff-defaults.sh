@@ -42,13 +42,16 @@
 #
 # The run-wide keys can also come from the environment, and a valid variable
 # beats the file: CC_CMDS_AUTOPILOT_DEFAULT_{LADDER_RUNGS,STAGNATION_BOUND,
-# COST_CEILING,DEADLINE,ROSTER_MODEL,PLUGIN_ALLOW}. An invalid variable is ignored
-# together with the file's value for the same key; an empty one is unset.
+# COST_CEILING,DEADLINE,ROSTER_MODEL,PLUGIN_ALLOW,ACCOUNT_FAILOVER}. An invalid
+# variable is ignored together with the file's value for the same key; an empty
+# one is unset.
 # PLUGIN_ALLOW is a `,`-separated list of `<이름>@<마켓>` keys and replaces every
 # run-wide `plugin-allow` line of the file; its value `없음` means no run-wide
 # plugin default for this run. One element of the wrong shape (an empty one, or
 # `없음` beside another) voids the whole variable. Repository sections are not
-# replaced.
+# replaced. ACCOUNT_FAILOVER is the same kind of list of lane inventory ids and
+# replaces every `account-failover` line, a run-wide key only: the accounts are
+# the host's, not a repository's.
 #
 # Usage
 #
@@ -129,6 +132,8 @@
 # only when none of those exists. It has no `차이` row. A previous row whose key
 # is now in the seed or judged not installed is not carried; one whose key
 # cannot be judged, because an account file could not be read, is.
+# `account-failover` yields rows per account the same way, with every previous
+# `계정 이전 허용` row carried byte for byte and nothing judged again.
 # The previous manifest is copied once to a
 # private file whose whole sha256 must equal `--expect-sha256` — the hash the
 # kickoff verified — and every read after that is of the copy.
@@ -158,7 +163,7 @@ done
 
 # The key table — a closed set. These two lines are the code side of the key
 # table SKILL.md 5o carries, and a lint compares the two sets.
-KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline roster-model roster-model.<역할> auto-adopt plugin-allow'
+KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline roster-model roster-model.<역할> auto-adopt plugin-allow account-failover'
 KD_REPO_KEYS='cutpoint review-ceiling terminal-cap dev-ids deploy-triggers act-allow apply-probe apply-probe-codes apply-actor plugin-allow'
 # Where `--carry` finds each key in a frozen manifest. Not compared by the lint
 # that compares the two lines above with 5o, so the test asserts that every key
@@ -183,6 +188,7 @@ kd_carry_field() {
     apply-probe-codes)  printf '행\t적용 프로브 코드' ;;
     apply-actor)        printf '요소\t적용 주체' ;;
     plugin-allow)       printf '행\t플러그인 허용' ;;
+    account-failover)   printf '행\t계정 이전 허용' ;;
     *) return 1 ;;
   esac
 }
@@ -191,7 +197,7 @@ KD_NAMED_REFUSED='termination launch defer notify apply-command apply-radius'
 
 KD_ENV_PREFIX='CC_CMDS_AUTOPILOT_DEFAULT'
 KD_ENV_FILE_VAR='CC_CMDS_AUTOPILOT_DEFAULTS_FILE'
-KD_ENV_RUN_VARS='CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND'
+KD_ENV_RUN_VARS='CC_CMDS_AUTOPILOT_DEFAULT_ACCOUNT_FAILOVER CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILINGCC_CMDS_AUTOPILOT_DEFAULT_DEADLINE CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND'
 
 KD_ABS_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$'
 
@@ -463,7 +469,7 @@ kd_wide_instant() {
   deadline_instant "$s"
 }
 if [ "$KD_CARRY_GIVEN" = "1" ]; then
-  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows apply_code_row_reask; do
+  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows manifest_failover_allow_rows apply_code_row_reask; do
     command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
   done
   KD_KAT_E=$(kd_wide_instant "$KD_KAT")
@@ -810,6 +816,15 @@ kd_validate() {
         미설치) kd_ign "$i" '미설치' '킥오프가 읽는 어느 계정 디렉터리에도 설치돼 있지 않습니다' ;;
         '판정 불가'*) kd_ign "$i" '판정 불가' "계정 설치 기록을 읽지 못해 설치 여부를 판정하지 못했습니다 — 읽지 못한 경로: ${r#*	}" ;;
       esac ;;
+    account-failover)
+      # One lane inventory id, the `계정=` cell the manifest check accepts.
+      # Whether the inventory still enables it is judged at launch, not here:
+      # an account outside it shows as `인벤토리 밖` on the `후보=` field.
+      v=$(kd_trim "$v")
+      if ! printf '%s\n' "$v" | grep -Ex '[a-z0-9-]+' >/dev/null; then
+        kd_ign "$i" '형식 오류' '레인 인벤토리 id 하나입니다 — 영문 소문자·숫자·- 만 씁니다'; return
+      fi
+      E_NORM[$i]="$v"; E_ID[$i]="$v" ;;
   esac
 }
 
@@ -1000,7 +1015,7 @@ kd_i=0
 while [ "$kd_i" -lt "$KD_N" ]; do
   if [ "${E_PLACED[kd_i]}" = "1" ]; then
     case "${E_KEY[kd_i]}" in
-      act-allow|auto-adopt|plugin-allow) ;;
+      act-allow|auto-adopt|plugin-allow|account-failover) ;;
       *)
         kd_j=$((kd_i + 1))
         while [ "$kd_j" -lt "$KD_N" ]; do
@@ -1021,7 +1036,7 @@ done
 kd_i=0
 while [ "$kd_i" -lt "$KD_N" ]; do
   case "${E_KEY[kd_i]}" in
-    act-allow|auto-adopt|plugin-allow)
+    act-allow|auto-adopt|plugin-allow|account-failover)
       if [ "${E_ST[kd_i]}" = "ok" ]; then
         kd_j=$((kd_i + 1))
         while [ "$kd_j" -lt "$KD_N" ]; do
@@ -1067,15 +1082,17 @@ kd_key_of_var() {
     CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE) printf 'deadline' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL) printf 'roster-model' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW) printf 'plugin-allow' ;;
+    CC_CMDS_AUTOPILOT_DEFAULT_ACCOUNT_FAILOVER) printf 'account-failover' ;;
     *) return 1 ;;
   esac
 }
-# kd_env_plugins <variable> <value> — the plugin list variable, one entry per
-# element. Sets KD_ENV_OK to 1 when the variable stands (`없음` included, which
-# makes no entry) and 0 when it is void; a void one leaves a single ignored
-# entry carrying the whole value.
+# kd_env_plugins <variable> <value> [key] — a list variable, one entry per
+# element: the plugin list (`plugin-allow`, the default) or the account list
+# (`account-failover`). Sets KD_ENV_OK to 1 when the variable stands (`없음`
+# included, which makes no entry) and 0 when it is void; a void one leaves a
+# single ignored entry carrying the whole value.
 kd_env_plugins() {
-  local var="$1" val="$2" e seen='' bad='' IFS_SAVE="$IFS"
+  local var="$1" val="$2" key="${3:-plugin-allow}" e seen='' bad='' IFS_SAVE="$IFS"
   KD_ENV_OK=1
   case "$val" in
     *[[:cntrl:]]*) bad='값에 TAB 이나 제어 문자가 있습니다' ;;
@@ -1094,7 +1111,11 @@ kd_env_plugins() {
       e=$(kd_trim "$e")
       if [ -z "$e" ]; then bad='빈 원소가 있습니다 — 쉼표 사이와 양 끝에 키를 씁니다'; break; fi
       if [ "$e" = "없음" ]; then bad='없음 은 값 전체로만 씁니다 — 다른 키와 섞지 않습니다'; break; fi
-      if [ "$(printf '%s\n' "$e" | pi_filter_keys)" != "$e" ]; then
+      if [ "$key" = "account-failover" ]; then
+        if ! printf '%s\n' "$e" | grep -Ex '[a-z0-9-]+' >/dev/null; then
+          bad="원소 '$e' 가 레인 인벤토리 id 가 아닙니다 — 영문 소문자·숫자·- 만 씁니다"; break
+        fi
+      elif [ "$(printf '%s\n' "$e" | pi_filter_keys)" != "$e" ]; then
         bad="원소 '$e' 가 <이름>@<마켓> 이 아니거나 @inline·@builtin 키입니다"; break
       fi
       IFS=','
@@ -1104,15 +1125,15 @@ kd_env_plugins() {
   if [ -n "$bad" ]; then
     set +f
     KD_ENV_OK=0
-    kd_add run plugin-allow "$val" "환경:$var"
-    kd_ign "$KD_I" '형식 오류' "$bad — 변수 전체와 파일의 런 전역 plugin-allow 줄을 쓰지 않습니다"
+    kd_add run "$key" "$val" "환경:$var"
+    kd_ign "$KD_I" '형식 오류' "$bad — 변수 전체와 파일의 런 전역 $key 줄을 쓰지 않습니다"
     return
   fi
   IFS=','
   for e in $val; do
     IFS="$IFS_SAVE"
     e=$(kd_trim "$e")
-    kd_add run plugin-allow "$e" "환경:$var"
+    kd_add run "$key" "$e" "환경:$var"
     if printf '%s' "$seen" | grep -qxF -- "$e"; then
       kd_ign "$KD_I" '중복' '같은 원소가 변수 앞쪽에 이미 있습니다 — 뒤엣것을 쓰지 않습니다'
     else
@@ -1141,10 +1162,10 @@ for kd_v in $kd_env_names; do
   eval "kd_val=\${$kd_v:-}"
   [ -n "$kd_val" ] || continue
   kd_ei=$KD_N
-  if [ "$kd_k" = "plugin-allow" ]; then
+  if [ "$kd_k" = "plugin-allow" ] || [ "$kd_k" = "account-failover" ]; then
     # A list: the variable stands or falls whole, whatever each element's own
     # judgment, and it replaces the file's run-wide lines as a whole.
-    kd_env_plugins "$kd_v" "$kd_val"
+    kd_env_plugins "$kd_v" "$kd_val" "$kd_k"
   else
     kd_add run "$kd_k" "$kd_val" "환경:$kd_v"
     case "$kd_val" in
@@ -1406,6 +1427,9 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
     plugin-allow)
       KD_WIDE=1
       KD_EFF='이 플러그인을 이 런의 모든 대상·모든 스테이지 세션에서 켭니다 — 라우터 교대는 끈 채로 둡니다' ;;
+    account-failover)
+      KD_WIDE=1
+      KD_EFF='좌석 레인이 사용 한도일 때만 라우터 교대를 이 계정으로 옮겨 띄웁니다 — 이 행이 하나도 없으면 지금처럼 사람을 기다립니다' ;;
   esac
 }
 
@@ -1693,6 +1717,64 @@ EOF
   done
   [ "$kd_pa_out" = "1" ] \
     || kd_out_not run plugin-allow '원천 없음' '이전 매니페스트에 플러그인 허용 행이 없고 기본값 파일도 채우지 않습니다'
+
+  # `account-failover` — rows per account, never a `차이` row, like
+  # `plugin-allow` but with nothing judged again: every previous row is carried
+  # byte for byte as a `권한` row, and an account the lane inventory no longer
+  # enables shows at launch as `인벤토리 밖`. A default no previous row holds is
+  # a `빈칸`; an ignored default nothing else names is named once.
+  kd_fa_prev=''; kd_fa_auth=''; kd_fa_out=0
+  while IFS= read -r kd_r; do
+    [ -n "$kd_r" ] || continue
+    kd_fk=$(manifest_row_fields "$kd_r" '계정')
+    kd_fa_prev="$kd_fa_prev$kd_fk
+"
+    kd_add run account-failover "$kd_r" '이전 매니페스트'
+    E_ID[KD_I]="$kd_fk"; E_NORM[KD_I]="$kd_fk"
+    kd_fa_auth="$kd_fa_auth$KD_I
+"
+  done <<EOF
+$(manifest_failover_allow_rows)
+EOF
+  if [ -n "$kd_fa_auth" ]; then
+    printf '적용\t런\taccount-failover\t%s\t이전 매니페스트\t1\t%s\n' \
+      "$(kd_cell "$(printf '%s' "$kd_fa_prev" | grep . | sort -u | paste -sd, -)")" \
+      '이전 런의 행을 그대로 이어받습니다 — 행마다 권한 행이 있습니다'
+    while IFS= read -r kd_ci; do
+      [ -n "$kd_ci" ] || continue
+      kd_out_auth "$kd_ci" "${E_RAW[kd_ci]}"
+    done <<EOF
+$kd_fa_auth
+EOF
+    kd_fa_out=1
+  fi
+  kd_fa_named="$kd_fa_prev"
+  kd_j=0
+  while [ "$kd_j" -lt "$KD_FILE_N" ]; do
+    if [ "${E_ST[kd_j]}" = "ok" ] && [ "${E_KEY[kd_j]}" = "account-failover" ]; then
+      if ! printf '%s' "$kd_fa_prev" | grep -qxF -- "${E_ID[kd_j]}"; then
+        kd_out_blank "$kd_j"; kd_fa_out=1
+      fi
+      kd_fa_named="$kd_fa_named${E_ID[kd_j]}
+"
+    fi
+    kd_j=$((kd_j + 1))
+  done
+  kd_j=0
+  while [ "$kd_j" -lt "$KD_FILE_N" ]; do
+    kd_nk="${E_NORM[kd_j]:-$(kd_trim "${E_RAW[kd_j]}")}"
+    if [ "${E_ST[kd_j]}" = "ign" ] && [ "${E_KEY[kd_j]}" = "account-failover" ] \
+       && ! printf '%s' "$kd_fa_named" | grep -qxF -- "$kd_nk"; then
+      kd_out_not run account-failover "${E_RT[kd_j]}" \
+        "이전 매니페스트에 계정 '$kd_nk' 의 행이 없고 기본값 파일의 값은 쓰지 않습니다 — ${E_RM[kd_j]}"
+      kd_fa_named="$kd_fa_named$kd_nk
+"
+      kd_fa_out=1
+    fi
+    kd_j=$((kd_j + 1))
+  done
+  [ "$kd_fa_out" = "1" ] \
+    || kd_out_not run account-failover '원천 없음' '이전 매니페스트에 계정 이전 허용 행이 없고 기본값 파일도 채우지 않습니다'
 
   kd_t=0
   while [ "$kd_t" -lt "$KD_NT" ]; do
