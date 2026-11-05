@@ -246,6 +246,12 @@ gate.sh act --manifest <매니페스트> --kind router-shift --target <alias> \
 
 A `stall` or CI-observation unit moved aside loses what it carried — a stall observation, or a CI state the merge check would have read — so when the person is asked in step 3, say which unit it was (`drain_blocked`'s `계열` and `경로`).
 
+**A run whose manifest carries `계정 이전 허용` rows does not wait at this seat for the seat lane's limit.** Before each shift launch the gate judges the seat lane and writes one `계정 이전` row: at its limit with a listed account that has room, the shift runs on that account (`결과=이전`); with room on the seat lane it runs here (`좌석 복귀`); when the judgment cannot be made it launches as it would without the rows (`판정불가`). Read the outcome from `router-shift`'s exit status as always — none of these changes it.
+
+1. **No listed account has room.** The gate writes `결과=대기` with the earliest listed reset as `재개 시각`, starts nothing, and `router-shift` ends with `3`. Wait: do not issue the call again, do not answer it as a refusal and do not offer a new run. A second call before that time writes nothing and ends with `3` again. The relay wakes this seat once the resume time passes; with nobody at the seat, the fleet's dispatch tick calls the run again itself — a `좌석 한도 재호출` row, then the same `router-shift` the seat would issue — once the resume time has passed and nothing has driven the run for 600 seconds. A judgment within 900 seconds after the resume time that still finds no room waits once more, to the resume time plus 900, before it gives up; so the run resumes no later than the reset plus 900 seconds plus 600 seconds plus one dispatch tick.
+2. **`마감 초과` is the person's.** When the earliest reset falls past the run's deadline, or there is none, the gate writes `결과=마감 초과` and a run-scope `blocked` row with `사유=계정 이전 마감 초과`, starts nothing, and `router-shift` ends with `3` — not `5`: no approval is issued and there is nothing for this seat to answer. Tell the person at this seat what the `blocked` row says; the run waits on them, as on any `blocked` row. Its `재개 명령` is the way on: once the limit has cleared, issue `router-shift` with `사유=중단` again.
+3. **`한도 해제` stays the seat's alone.** A move to another account writes no `한도 해제` row, and a shift that runs on a moved account never writes one. Write it below only on the person's own words, as before.
+
 **When the person says the limit has cleared or that they switched accounts, write it down before launching:**
 
 ```

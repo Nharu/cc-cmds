@@ -56922,7 +56922,7 @@ EOF
   if ! view=$(printf '%s' "$ctx" | route_classify 2>/dev/null) || [ -z "$view" ]; then
     printf '%s' "$ctx" | jq -r --arg seat "$seat" --arg lab "$lab" --arg nb "$nb" '
       def norm: if type == "string" then rtrimstr("/") else . end;
-      . as $c
+      (.) as $c
       | ($seat | norm) as $s
       | ([(.usage.accounts // [])[] | select(type == "object") | select((.config_dir | norm) == $s)] | .[0]) as $u
       | (($c.usage.fresh == true) and $u != null
@@ -56938,7 +56938,7 @@ EOF
   printf '%s' "$ctx" | jq -r --argjson v "$view" --argjson ids "$ids" --argjson dead "$dead" \
       --arg seat "$seat" --arg lab "$lab" --arg nb "$nb" '
     def norm: if type == "string" then rtrimstr("/") else . end;
-    . as $c
+    (.) as $c
     | ($seat | norm) as $s
     | ($v.accounts // []) as $A
     | ([$A[] | select((.config_dir | norm) == $s)] | .[0]) as $sa
