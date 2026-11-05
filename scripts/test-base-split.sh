@@ -991,6 +991,7 @@ raw = {}
 r1_body = "**검증 레시피**: §저장 형식 의 필드를 본다. R2 와 R3 을 함께 본다."
 r3_body = "**검증 레시피**: R1 을 먼저 본다."
 open1_body = []
+open1_head = "열린 항목 하나"
 table = []
 
 if variant == "bothkinds":
@@ -1044,6 +1045,9 @@ elif variant == "labels":
     # `## 베이스 제약`; T9 and C7 are not labels of this document.
     r1_body = "**검증 레시피**: §저장 형식 의 필드를 T2 가 C1 으로 읽는다. T9·C7 은 그대로. R2 를 본다."
     open1_body = ["**사유**: T2 의 화면이 C1 을 읽는다. T9 은 그대로."]
+    # The heading carries an upper label too: it must stay byte for byte.
+    open1_head = "열린 항목 하나 T2"
+    t1["open"] = [open1_head]
 elif variant != "ok":
     raise SystemExit("unknown variant " + variant)
 
@@ -1074,7 +1078,7 @@ L = ["# 상태 파일 티켓 배달", ""] + kind_lines + ["**상태**: 초안", 
      "## 주요 결정사항과 근거", "", "### 읽기", "읽기는 잠그지 않는다.", "",
      "### 결정 둘", "쓰기는 원자적이다.", "",
      "## 미해결 이슈 / 트레이드오프", ""] + table + [
-     "### 열린 항목 하나", "**상태**: 보류", "**구현 처분**: 구현 전 결정"] + open1_body + ["",
+     "### " + open1_head, "**상태**: 보류", "**구현 처분**: 구현 전 결정"] + open1_body + ["",
      "### 열린 항목 둘", "**상태**: 구현 재량", "",
      "### 닫힌 항목", "**상태**: 해결 — 정함", "",
      "## 검증 기록", "V1 관측한 사실.", "",
@@ -1225,7 +1229,7 @@ has "child-doc labels: upper labels in a moved residual body gain the document q
 has "child-doc labels: upper labels in a moved open entry body gain the document qualifier" "$CLDOC" \
   "**사유**: 상위 문서의 T2 의 화면이 상위 문서의 C1 을 읽는다. T9 은 그대로."
 check "child-doc labels: the moved open entry heading stays byte for byte" \
-  "$(grep -A1 '^## 미해결 이슈 / 트레이드오프$' "$CHILD/labels.md" | sed -n 2p):$(grep -c '^### 열린 항목 하나$' "$CHILD/labels.md")" ":1"
+  "$(grep -c '^### 열린 항목 하나 T2$' "$CHILD/labels.md"):$(grep -c '상위 문서의 T2$' "$CHILD/labels.md")" "1:0"
 has "child-doc labels: the ticket block inside 베이스 제약 keeps its labels" "$CLDOC" "**제공 계약**: C1"
 
 # ---------------------------------------------------------------------------
