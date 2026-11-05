@@ -323,6 +323,11 @@
 # `reentry` writes a `재진입` row for a boot-time re-entry, before the
 # `router-shift` it issues; a shift or a stage is refused with 3. The gate
 # stamps `대상`, `부팅 시각` (kern.boottime) and `기록 시각`.
+#   gate.sh act --kind seat-limit-recall --target <alias> ... \\
+#               -- 사유=<대기|상한> 레이블=<label> 열쇠=<gap key>
+# `seat-limit-recall` writes a `좌석 한도 재호출` row for the fleet tick's
+# seat-limit trigger, before the `router-shift` chain it starts; a shift or a
+# stage is refused with 3. The gate stamps `기록 시각`.
 #   gate.sh act --kind halt-answer --target <alias> --segment <key> ... \\
 #               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약> \\
 #                  ['첨부=<RUN_DIR/halt/…answer.md>']
@@ -34121,7 +34126,8 @@ gate_record_row() {
   # named in argv would not even have a single right answer to be checked
   # against. `limit-cleared` is a statement about the run's account window, not
   # about a part of the run, so it is exempt on the ground `blocked` is.
-  # `reentry` is a boot of the machine the whole run was cut by, so it is too.
+  # `reentry` is a boot of the machine the whole run was cut by, so it is too,
+  # and `seat-limit-recall` is the seat lane's limit, a statement about the run.
   # `shift-halt` checks its own key: a clause's evidence request takes
   # `--segment -` and the arm builds the key, and every other site still
   # refuses a key with no segment row.
@@ -34129,6 +34135,7 @@ gate_record_row() {
      && [ "$kind" != "obligation" ] && [ "$kind" != "handoff" ] \
      && [ "$kind" != "obligation-done" ] && [ "$kind" != "obligation-drop" ] \
      && [ "$kind" != "limit-cleared" ] && [ "$kind" != "reentry" ] \
+     && [ "$kind" != "seat-limit-recall" ] \
      && [ "$kind" != "shift-halt" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "a $kind row needs --segment"
@@ -36250,6 +36257,42 @@ EOF
       gate_append '재진입' "대상=$alias" "부팅 시각=${rboot:--}" "기록 시각=$rat" \
         "사유=$rwhy" "레이블=$rlabel"
       log "재진입 기록 — 부팅 ${rboot:--} · 사유 $rwhy · 레이블 $rlabel"
+      ;;
+    seat-limit-recall)
+      # THE FLEET TICK'S SEAT-LIMIT TRIGGER WRITES THIS ROW, `좌석 한도 재호출`,
+      # in the same tick and before the `router-shift` chain it starts. It is
+      # not a `재진입`: no boot cut the run, so the re-attach base and the
+      # `재진입` vocabulary stay as they are. Same callers as `reentry`: a shift
+      # or a stage writing it would be a run calling itself in the seat's
+      # place.
+      if [ -n "$(gate_shift_self_ordinal)" ] || cc_caller_is_stage \
+         || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+        warn "a \`좌석 한도 재호출\` row is written by the fleet tick only — a shift or a stage cannot write it"
+        return "$GATE_EXIT_RULE"
+      fi
+      # `사유`, `레이블` AND `열쇠` FROM ARGV; the gate stamps the time. `열쇠`
+      # is the gap the tick handled: the latest `handoff` row's time and the
+      # resume time of the latest `결과=대기` `계정 이전` row after it, or `-`.
+      local sf sk swhy slabel skey sat
+      for sf in "$@"; do
+        sk="${sf%%=*}"
+        case "$sk" in 사유|레이블|열쇠) continue ;; esac
+        warn "a \`좌석 한도 재호출\` row takes \`사유\`, \`레이블\` and \`열쇠\` and nothing else from argv: ${sk} — \`기록 시각\` is the gate's"
+        return "$GATE_EXIT_VOCAB"
+      done
+      swhy=$(gate_field_of '사유' "$@")
+      case "$swhy" in
+        대기|상한) : ;;
+        *) warn "the \`사유\` of a \`좌석 한도 재호출\` row is the reason the tick issues: \`대기\` \`상한\` (received: ${swhy:-(none)})"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      slabel=$(gate_row_safe "$(gate_field_of '레이블' "$@")" 80)
+      [ -n "$slabel" ] || { warn "a \`좌석 한도 재호출\` row needs \`레이블\` — the dispatch label that ran it"; return "$GATE_EXIT_VOCAB"; }
+      skey=$(gate_row_safe "$(gate_field_of '열쇠' "$@")" 80)
+      [ -n "$skey" ] || { warn "a \`좌석 한도 재호출\` row needs \`열쇠\` — the gap key the tick handled"; return "$GATE_EXIT_VOCAB"; }
+      sat=$(now_iso)
+      gate_append '좌석 한도 재호출' "사유=$swhy" "레이블=$slabel" "열쇠=$skey" "기록 시각=$sat"
+      log "좌석 한도 재호출 기록 — 사유 $swhy · 레이블 $slabel · 열쇠 $skey"
       ;;
     halt-answer)
       # THE SEAT'S WAY TO CARRY A PERSON'S ANSWER TO A HALT RECORD INTO THE RUN.
@@ -39349,7 +39392,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry|shift-halt|base-check|remote-check|replan|apply-settle-confirm|halt-settle)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|reentry|seat-limit-recall|halt-answer|review-dismiss|review-carry|shift-halt|base-check|remote-check|replan|apply-settle-confirm|halt-settle)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -43210,12 +43253,14 @@ gate_kind_is_bookkeeping() {
   # session id under launchd, so the context reading falls back to the lane's
   # newest transcript, and a large one would refuse the row the reboot-class
   # delay is measured from. It writes one row and enters no tree.
+  # `seat-limit-recall` is here for the same reason: the fleet tick that writes
+  # it carries the same re-entry marker and no session id. One row, no tree.
   # `apply-settle-confirm` records a person's `사람 확인 정산` answer on a
   # segment brought in unsettled from an earlier run: one `segment` row, no
   # probe, no tree, and its authorization is the person's answer row.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
-    obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry) return 0 ;;
+    obligation-done|obligation-drop|limit-cleared|reentry|seat-limit-recall|halt-answer|review-dismiss|review-carry) return 0 ;;
     shift-halt|base-check|remote-check|replan|apply-settle-confirm|halt-settle) return 0 ;;
   esac
   return 1
@@ -56946,6 +56991,26 @@ EOF
     printf '증거\t-\n좌석\t%s\n후보\t-\n재개\t-\n불가\t분류\n' "$lab"
     return 2
   fi
+  return 0
+}
+
+gate_failover_inputs() {
+  # gate_failover_inputs <run dir> — set the globals the failover judgment and
+  # `gate_relay_reentry_allowed` read, for a shell that sourced this file with
+  # `CC_GATE_SOURCE_ONLY=1` (the fleet tick): `RUN_DIR`, `RUN_ID`, `LEDGER`
+  # from the run's `ledger-path` record and `MANIFEST` from its `seat-call`.
+  # rc 1 when one of them cannot be had, which the caller reads as "could not
+  # judge" and never as "no candidate". A gate process has all four already
+  # and never calls this.
+  local rd="${1%/}" l m
+  [ -n "$rd" ] && [ -d "$rd" ] || return 1
+  l=$(sed -n '1p' "$rd/ledger-path" 2>/dev/null || true)
+  m=$( { sed -n 's/^manifest=//p' "$rd/seat-call" 2>/dev/null || true; } | tail -1)
+  [ -n "$l" ] && [ -f "$l" ] && [ -n "$m" ] && [ -f "$m" ] || return 1
+  RUN_DIR="$rd"
+  RUN_ID=$(basename "$rd")
+  LEDGER="$l"
+  MANIFEST="$m"
   return 0
 }
 
