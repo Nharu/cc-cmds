@@ -425,10 +425,12 @@
       legend.appendChild(el("span", null, el("i", { cls: "lg-" + c.key }), c.label + " ", el("b", { text: String(c.n) })));
     });
     var hiddenTotal = (d.hidden || 0) + (d.hidden_experiment || 0);
+    var noSeat = d.hidden_no_seat || 0;
     var td = el("div", { cls: "tile tile-dist" },
       el("div", { cls: "dist-head" },
         el("span", { cls: "l" }, "상태 분포 · 보이는 런 ", el("b", { cls: "num", text: String(runs.length) })),
-        span("hid num", "숨긴 런 " + hiddenTotal + " — 실험 " + (d.hidden_experiment || 0) + " · 버려짐 " + (d.hidden || 0))),
+        span("hid num", "숨긴 런 " + hiddenTotal + " — 실험 " + (d.hidden_experiment || 0) +
+          " · 버려짐 " + ((d.hidden || 0) - noSeat) + (noSeat ? " · 세션 없음 " + noSeat : ""))),
       distBar(counts, runs.length), legend);
     sec.appendChild(td);
 
@@ -526,7 +528,9 @@
   function emptyList(d) {
     var parts = [];
     if (d.hidden_experiment) parts.push("숨긴 실험 런 " + d.hidden_experiment + "건");
-    if (d.hidden) parts.push("버려진 런 " + d.hidden + "건");
+    var noSeat = d.hidden_no_seat || 0;
+    if ((d.hidden || 0) - noSeat) parts.push("버려진 런 " + ((d.hidden || 0) - noSeat) + "건");
+    if (noSeat) parts.push("세션 없는 대기 런 " + noSeat + "건");
     var idx = -1;
     PERIODS.forEach(function (p, i) { if (p[0] === view.days) idx = i; });
     var wider = idx >= 0 && idx < PERIODS.length - 1 ? PERIODS[idx + 1] : null;
@@ -651,8 +655,10 @@
 
   function rowGone(r) {
     var sub = r.last_growth != null ? "마지막 성장 " + fmtMDHM(r.last_growth) : "지금 단계 없음";
+    // A waiting run hidden for a dead seat keeps its own state as its mark.
+    if (r.seat_active === false && r.state !== "버려짐") sub = "활성 세션 없음 · " + sub;
     return el("div", { cls: "row", id: "run-" + r.id },
-      goalCell(r), el("div", { cls: "cell" }, tag("neutral", "버려짐"), span("t2 num", sub)),
+      goalCell(r), el("div", { cls: "cell" }, tag("neutral", r.state || "버려짐"), span("t2 num", sub)),
       el("div", { cls: "cell none", text: "—" }), prCell(r.prs), elapsedCell(r, false), costCell(r));
   }
 
@@ -706,7 +712,7 @@
     var box = el("div", { cls: "rows" });
     rows.forEach(function (r) { box.appendChild(rowGone(r)); });
     return el("section", { cls: "group g-gone", id: "g-gone", "aria-labelledby": "h-gone" },
-      groupHead("i-archive", "h-gone", "버려진 런", "한 시간 넘게 성장이 없고 기다리는 것도 없는 런", rows.length), box);
+      groupHead("i-archive", "h-gone", "버려진 런", "버려졌거나 활성 세션 없이 기다리는 런", rows.length), box);
   }
 
   function renderList(d) {

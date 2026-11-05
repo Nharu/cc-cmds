@@ -633,12 +633,12 @@ def platform_supported():
     return host == "Darwin"
 
 
-def wake_epoch():
-    """`wake_epoch` — the field two after `sec` in `sysctl -n kern.waketime`, or ""."""
+def _sysctl_sec(name):
+    """The field two after `sec` in `sysctl -n <name>`, or "" off macOS or on any failure."""
     if not platform_supported():
         return ""
     try:
-        r = subprocess.run(["sysctl", "-n", "kern.waketime"], stdout=subprocess.PIPE,
+        r = subprocess.run(["sysctl", "-n", name], stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -648,6 +648,100 @@ def wake_epoch():
             if w == "sec":
                 return f[i + 2] if i + 2 < len(f) else ""
     return ""
+
+
+def wake_epoch():
+    """`wake_epoch` — the field two after `sec` in `sysctl -n kern.waketime`, or ""."""
+    return _sysctl_sec("kern.waketime")
+
+
+def boot_epoch():
+    """The host's boot time in epoch seconds, read from `sysctl -n kern.boottime`
+    the way `wake_epoch` reads `kern.waketime`; None when it cannot be read."""
+    v = _sysctl_sec("kern.boottime")
+    return int(v) if _DIGITS.fullmatch(v) else None
+
+
+# ---------------------------------------------------------------------------
+# Seat sessions (the session status snapshots of the attention spool)
+# ---------------------------------------------------------------------------
+
+_UNSAFE_SID = re.compile(r"[^A-Za-z0-9_.-]")
+_MEASURE = object()
+
+
+def attention_root():
+    """The attention spool root, or None when it is not a directory.
+
+    Twin of `cc_attention_root` in `orchestrator/attention.sh`: a non-empty
+    `CC_CMDS_ATTENTION_ROOT`, else `$HOME/.local/state/cc-cmds/attention`. The
+    XDG values play no part, and the root is never created.
+    """
+    root = os.environ.get("CC_CMDS_ATTENTION_ROOT", "")
+    if not root:
+        home = os.environ.get("HOME", "")
+        if not home:
+            return None
+        root = os.path.join(home, ".local", "state", "cc-cmds", "attention")
+    return root if os.path.isdir(root) else None
+
+
+def safe_sid(sid):
+    """Twin of `safe_sid` in `hooks/session-status-snapshot.sh`: every character
+    outside `[A-Za-z0-9_.-]` becomes `_`."""
+    return _UNSAFE_SID.sub("_", sid)
+
+
+class SeatTable:
+    """One reading of the live session snapshots, answering whether a run's seat
+    session is alive.
+
+    A snapshot `<root>/status/<safe_sid>.json` lives while its session lives and
+    is removed at `SessionEnd`. One whose `last_activity_ms` is older than the
+    host's boot time cannot belong to a live session and is not counted. `boot`
+    is that time in epoch seconds; left out, it is measured, and None skips the
+    filter.
+    """
+
+    def __init__(self, boot=_MEASURE):
+        self.root = attention_root()
+        self.live = set()
+        if self.root is None:
+            return
+        if boot is _MEASURE:
+            boot = boot_epoch()
+        d = os.path.join(self.root, "status")
+        try:
+            names = os.listdir(d)
+        except OSError:
+            return
+        for n in names:
+            if n.startswith(".") or not n.endswith(".json"):
+                continue
+            t = read_text(os.path.join(d, n))
+            if t is None:
+                continue
+            try:
+                ms = json.loads(t).get("last_activity_ms")
+            except (ValueError, AttributeError):
+                continue
+            if not isinstance(ms, int) or isinstance(ms, bool):
+                continue
+            if boot is not None and ms < boot * 1000:
+                continue
+            self.live.add(n[:-len(".json")])
+
+    def seat_active(self, run_dir):
+        """None with no spool root; True when a session the run's
+        `session-lineage` names has a live snapshot; False otherwise, a run
+        without a lineage file included."""
+        if self.root is None:
+            return None
+        t = read_text(os.path.join(run_dir, "session-lineage"))
+        for ln in (t or "").split("\n"):
+            if ln and safe_sid(ln) in self.live:
+                return True
+        return False
 
 
 def effective_stall(run_dir, procs):
@@ -1483,13 +1577,16 @@ class Model:
             return src.ledger.mtime
         return None
 
-    def evaluate(self, src, procs, now):
+    def evaluate(self, src, procs, now, seats=None):
+        """One run's row. `seats` is the `SeatTable` of this request; without
+        one, no seat is judged and a waiting run's attention does not depend on
+        its seat."""
         if src.ledger:
             src.ledger.refresh()
         key = stamp_key(src)
         if src.frozen is not None and src.frozen_key == key:
             out = dict(src.frozen)
-            self._band(out, now)
+            self._band(out, now, seats)
             return out
         lines = src.ledger.lines() if src.ledger else []
         live = live_stages(src.run_dir, procs) if src.run_dir else []
@@ -1599,10 +1696,10 @@ class Model:
         else:
             src.frozen = None
             src.frozen_key = None
-        self._band(out, now)
+        self._band(out, now, seats)
         return out
 
-    def _band(self, out, now):
+    def _band(self, out, now, seats=None):
         state = out["state"]
         notes = [n for n in out["notes"] if n != "승인대기(오래됨)"]
         if out["run_dir"] is None:
@@ -1621,17 +1718,23 @@ class Model:
             band = "recent" if e is not None and now - e < self.window else "older"
         out["band"] = band
         out["notes"] = notes
+        # A run asking a person needs one only while its seat session is alive
+        # and it is not abandoned; the seat is judged for asking runs alone.
         asking = any(w["kind"] in ("승인", "중단 기록") for w in out["waiting"])
-        if state != "종단" and out["run_dir"] is not None and asking:
-            attention = "need"
-        elif state == "종단":
+        seat = None
+        if state == "종단":
             attention = "ended"
+        elif out["run_dir"] is not None and asking:
+            if seats is not None:
+                seat = seats.seat_active(out["run_dir"])
+            attention = "dead" if state == "버려짐" or seat is False else "need"
         elif state == "버려짐":
             attention = "dead"
         else:
             attention = "watch"
         out["attention"] = attention
         out["hidden"] = attention == "dead"
+        out["seat_active"] = seat
         s = out["started_at"]
         if s is None:
             out["elapsed_s"] = None
@@ -1650,23 +1753,27 @@ class Model:
         """The list. The base filter comes first, so a run outside the chosen
         base is in no hidden count; then the two hiding reasons, each run
         counted once (an experiment first); then the period, which a `need`
-        run does not get. `bases` is gathered after experiment hiding alone."""
+        run does not get. `bases` is gathered after experiment hiding alone.
+        `hidden_no_seat` is the part of `hidden` hidden for a dead seat alone:
+        a waiting run that is not abandoned."""
         if now is None:
             now = int(time.time())
         self.discover()
         procs = ProcTable()
+        seats = SeatTable()
         span = None if days == "all" else int(days) * 86400
         off, label = display_tz()
         midnight = day_start(now, off)
         rows = []
         hidden = len(self.shells)
+        hidden_no_seat = 0
         hidden_exp = 0
         bases = set()
         period_usd = today_usd = 0.0
         by_base = {}
         for key in sorted(self.sources):
             src = self.sources[key]
-            r = self.evaluate(src, procs, now)
+            r = self.evaluate(src, procs, now, seats)
             if exp or not r["experiment"]:
                 if r["base"]:
                     bases.add(r["base"])
@@ -1677,6 +1784,8 @@ class Model:
                 continue
             if r["hidden"] and not dead:
                 hidden += 1
+                if r["seat_active"] is False and r["state"] != "버려짐":
+                    hidden_no_seat += 1
                 continue
             if r["attention"] != "need" and r["band"] != "live" and span is not None:
                 t = r["ended_at"] if r["ended_at"] is not None else r["last_growth"]
@@ -1697,7 +1806,7 @@ class Model:
                     "live_stages": [], "watch_age_s": None,
                     "run_dir": os.path.join(self.root, name), "ended_at": None,
                     "notes": ["ledger-path 없음"], "hidden": True,
-                    "attention": "dead", "waiting": [], "now": None, "result": None, "prs": [],
+                    "attention": "dead", "seat_active": None, "waiting": [], "now": None, "result": None, "prs": [],
                     "experiment": False, "started_at": None, "elapsed_s": None, "deadline": None,
                     "deadline_left_s": None, "ended_day": None,
                 })
@@ -1705,8 +1814,8 @@ class Model:
         rows.sort(key=lambda r: (0 if r["band"] == "live" else 1,
                                  r["grade"] if r["band"] == "live" else 0,
                                  -(r["ended_at"] or r["last_growth"] or 0)))
-        return {"generated_at": now, "runs": rows, "hidden": hidden, "bases": sorted(bases),
-                "hidden_experiment": hidden_exp,
+        return {"generated_at": now, "runs": rows, "hidden": hidden, "hidden_no_seat": hidden_no_seat,
+                "bases": sorted(bases), "hidden_experiment": hidden_exp,
                 "totals": {"period_usd": period_usd, "today_usd": today_usd, "by_base": by_base},
                 "today": day_key(now, off), "tz_label": label, "tz_offset_s": off}
 
@@ -1755,7 +1864,7 @@ class Model:
         if src is None:
             return None
         procs = ProcTable()
-        summary = self.evaluate(src, procs, now)
+        summary = self.evaluate(src, procs, now, SeatTable())
         manifest = self.manifest(src)
         led = src.ledger
         lines = led.lines() if led else []
