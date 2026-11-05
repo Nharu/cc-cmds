@@ -325,15 +325,20 @@
 # stamps `대상`, `부팅 시각` (kern.boottime) and `기록 시각`.
 #   gate.sh act --kind halt-answer --target <alias> --segment <key> ... \\
 #               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약> \\
-#                  ['첨부=<RUN_DIR/halt/…answer.md>']
+#                  ['첨부=<RUN_DIR/halt/…answer.md>'] ['초안 그대로=예']
 # `halt-answer` is the seat's alone on the same terms, save one shift case: an
 # implement-unattended CFI-U3 BT-STOP record answered `재수렴` under a
 # `자동 채택` row of class 구속-이탈, once per record. A record whose whole
 # `**스텝**` reads `Step 1 CFI-U3 BT-STOP — 미결 결정` — the halt an implement
 # stage writes when open decisions reach its segment, listing their headings
-# in `**미결 결정 항목**` — is outside that case: only `답한 주체=사람` is
-# recorded for it, and only with `첨부=<the record without .md>.answer.md`,
-# which names each decision under the entry's verbatim heading. `<key>` is the segment
+# in `**미결 결정 항목**` — is outside that case: `답한 주체=사람` is recorded
+# for it with `첨부=<the record without .md>.answer.md`, which names each
+# decision under the entry's verbatim heading, and `답한 주체=좌석` only with
+# `초안 그대로=예`, when the record carries a `**결정 초안**` block
+# `gate_halt_draft_admit` passes (a re-convergence's S1/S3/S4 stop takes the
+# same argument). `초안 그대로=예` carries no `첨부`: the gate writes the
+# attachment from the draft itself, and the row gains `초안 채택=<m>/<n>`, which
+# a person's answer to a drafted record carries too. `<key>` is the segment
 # id, or the step id for the design step, of the stage that halted; the gate
 # checks the record is this run's, complete, and lists the option verbatim,
 # and refuses with 3 an answer no branch of the shift can carry out
@@ -674,6 +679,17 @@ gate_may_raise_banner() {
 # ---------------------------------------------------------------------------
 gate_auto_resolve_enabled() {
   case "${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}" in
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+  esac
+  return 0
+}
+
+# The seat's adoption of a halt record's `**결정 초안**` has a switch of its own,
+# `CC_CMDS_AUTOPILOT_AUTO_DRAFT`, with the same value grammar. Unset means ON,
+# and the adoption opens only while CC_CMDS_AUTOPILOT_AUTO_RESOLVE is on too:
+# turning off every answer no person gave turns this one off with it.
+gate_auto_draft_enabled() {
+  case "${CC_CMDS_AUTOPILOT_AUTO_DRAFT:-}" in
     0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
   esac
   return 0
@@ -12949,6 +12965,14 @@ gate_adoption_halt_source() {
       GATE_CARRY_WHY="교대가 매니페스트의 자동 채택으로 쓴 답이라 사람의 답이 아닙니다"
       return 2 ;;
   esac
+  # A seat's answer that adopted the record's decision draft was checked against
+  # the earlier run's document and code; the next run's seat answers the record
+  # again under its own check rather than inheriting that one.
+  if [ "$(gate_row_field "$row" '답한 주체')" = "좌석" ] \
+     && [ -n "$(gate_row_field "$row" '초안 채택')" ]; then
+    GATE_CARRY_WHY="좌석이 기록의 결정 초안을 채택한 답이라 사람의 답이 아닙니다 — 이 런의 좌석이 이 런의 문서와 코드로 게이트 확인을 다시 받습니다"
+    return 2
+  fi
   skill=$(gate_row_field "$row" '스킬')
   opt=$(gate_row_field "$row" '선택지')
   case "$rec" in
@@ -13276,15 +13300,16 @@ gate_carry_import_row() {
   # THE ROW IS MEASURED BY `gate_carry_row_fits`, which the two callers also
   # ask before they copy anything, so a row that does not fit is refused before
   # a copy exists; the 1 here is the guard for a row that changed in between.
-  local key="$1" dst="$2" adst="$3" adig="$4" ck="${6:-}" lane at by kinds
+  local key="$1" dst="$2" adst="$3" adig="$4" ck="${6:-}" lane at by kinds dm
   gate_carry_row_fits "$@" || return 1
   lane=$(gate_row_field "$GATE_CARRY_ROW" '레인')
   at=$(gate_row_field "$GATE_CARRY_ROW" '기록 시각')
   by=$(gate_halt_answered_by "$GATE_CARRY_ROW")
   kinds=$(gate_row_field "$GATE_CARRY_ROW" '근거 종류')
+  dm=$(gate_row_field "$GATE_CARRY_ROW" '초안 채택')
   gate_append '중단 답' "세그먼트=$key" "중단 기록=$dst" \
     "스킬=$(gate_row_field "$GATE_CARRY_ROW" '스킬')" "선택지=$(gate_row_field "$GATE_CARRY_ROW" '선택지')" \
-    "답한 주체=$by" "근거=$GATE_CARRY_FIT_WHY" ${kinds:+"근거 종류=$kinds"} \
+    "답한 주체=$by" "근거=$GATE_CARRY_FIT_WHY" ${kinds:+"근거 종류=$kinds"} ${dm:+"초안 채택=$dm"} \
     "기록 다이제스트=$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')" \
     ${adst:+"첨부=$adst"} ${adst:+"첨부 다이제스트=$adig"} \
     "출처 런=$GATE_CARRY_FIT_OSRC" "출처 기록=$GATE_CARRY_FIT_OREC" \
@@ -13311,7 +13336,7 @@ gate_carry_row_fits() {
   # older gate wrote with an absolute path is written as a tail too — and the
   # copy this answer came through, the earlier row's `중단 기록`, is
   # `경유 기록`.
-  local key="$1" dst="$2" adst="$3" adig="$4" pre="$5" ck="${6:-}" why w=300 len=0 lane at by kinds
+  local key="$1" dst="$2" adst="$3" adig="$4" pre="$5" ck="${6:-}" why w=300 len=0 lane at by kinds dm
   local osrc="$GATE_CARRY_SRC" orec via=''
   GATE_CARRY_FIT_WHY=''; GATE_CARRY_FIT_LEN=''
   orec=$(gate_carry_tail "$GATE_CARRY_REC")
@@ -13319,6 +13344,7 @@ gate_carry_row_fits() {
   at=$(gate_row_field "$GATE_CARRY_ROW" '기록 시각')
   by=$(gate_halt_answered_by "$GATE_CARRY_ROW")
   kinds=$(gate_row_field "$GATE_CARRY_ROW" '근거 종류')
+  dm=$(gate_row_field "$GATE_CARRY_ROW" '초안 채택')
   if [ -n "$(gate_row_field "$GATE_CARRY_ROW" '출처 런')" ]; then
     osrc=$(gate_row_field "$GATE_CARRY_ROW" '출처 런')
     orec=$(gate_carry_tail "$(gate_carry_abs "$(gate_row_field "$GATE_CARRY_ROW" '출처 기록')")")
@@ -13329,7 +13355,7 @@ gate_carry_row_fits() {
     why=$(gate_row_safe "${pre}(출처 런 $GATE_CARRY_SRC 원장 ${GATE_CARRY_LINE} 번째 줄) — $(gate_row_field "$GATE_CARRY_ROW" '근거')" "$w")
     len=$(gate_row_projected_bytes '중단 답' "세그먼트=$key" "중단 기록=$dst" \
       "스킬=$(gate_row_field "$GATE_CARRY_ROW" '스킬')" "선택지=$(gate_row_field "$GATE_CARRY_ROW" '선택지')" \
-      "답한 주체=$by" "근거=$why" ${kinds:+"근거 종류=$kinds"} \
+      "답한 주체=$by" "근거=$why" ${kinds:+"근거 종류=$kinds"} ${dm:+"초안 채택=$dm"} \
       "기록 다이제스트=$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')" \
       ${adst:+"첨부=$adst"} ${adst:+"첨부 다이제스트=$adig"} \
       "출처 런=$osrc" "출처 기록=$orec" ${via:+"경유 기록=$via"} ${ck:+"연쇄 종류=$ck"} \
@@ -21778,8 +21804,10 @@ gate_answered_halts_json() {
     # solo design or split halt sends as `-p`, built by the gate from the
     # ledger the halted attempt halted in (`gate_carry_prompt_of`) — the
     # shift copies it byte for byte and never spells those slots itself — and
-    # empty for every other halt. None of the three enters the digest H or the
-    # default `--fields` projection.
+    # empty for every other halt. `draft_adopted` is the row's `초안 채택` — the
+    # `<m>/<n>` of a record that carried a decision draft, `n/n` for a seat
+    # that adopted it — and empty for an answer to a record without one. None
+    # of these enters the digest H or the default `--fields` projection.
     local rrec rby rroute='' rwhy=''
     rrec=$(gate_row_field "$row" '중단 기록')
     rby=$(gate_halt_answered_by "$row")
@@ -21791,12 +21819,13 @@ gate_answered_halts_json() {
         rwhy=$GATE_HALT_ROUTE_REASON
       fi
     fi
-    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "attachment": "%s", "origin_run": "%s", "route": "%s", "route_refusal": "%s", "carry_prompt": "%s", "line": %s, "state": "%s"}' \
+    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "draft_adopted": "%s", "attachment": "%s", "origin_run": "%s", "route": "%s", "route_refusal": "%s", "carry_prompt": "%s", "line": %s, "state": "%s"}' \
       "$(gate_json_escape "$key")" \
       "$(gate_json_escape "$rrec")" \
       "$(gate_json_escape "$(gate_row_field "$row" '스킬')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '선택지')")" \
       "$(gate_json_escape "$rby")" \
+      "$(gate_json_escape "$(gate_row_field "$row" '초안 채택')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '첨부')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '출처 런')")" \
       "$(gate_json_escape "$rroute")" \
@@ -22149,6 +22178,585 @@ gate_halt_surface_tokens() {
     *) warn "the enforcement-surface classifier could not be loaded, so whether $2 names an enforcement surface cannot be judged — the seat does not answer it without a person: $3"
        return "$GATE_EXIT_RULE" ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# THE DECISION DRAFT OF A HALT RECORD.
+#
+# A stage that halts on decisions only a person makes writes `**추천**: (없음)`
+# and, beside it, a `**결정 초안**:` block: one line per decision, each naming
+# the decision it would take and the quotes that decide it. Two record kinds
+# carry one the gate takes — an implement stage's open-decision stop
+# (`Step 1 CFI-U3 BT-STOP — 미결 결정`) and a re-convergence's S1/S3/S4 stop —
+# and the grammar is `_common/pipeline-sidecar.md` §4's.
+#
+# THE SEAT ADOPTS A DRAFT ONLY WHOLE, AND ONLY WHAT BYTES PROVE. Every line has
+# a draft, every quote stands byte for byte on a non-heading line of the scope
+# its kind names and shares sixteen contiguous bytes with the decision or an
+# alternative, and no decision is one of the four risk-acceptance shapes.
+# Whether the decision is right is not judged here; that the record's own
+# sources contain the words it rests on is.
+# ---------------------------------------------------------------------------
+readonly GATE_DRAFT_UNDO_BT='재수렴이 해결로 닫은 항목을 사람이 보류로 되돌려 다음 구현 정지에서 다시 답한다'
+readonly GATE_DRAFT_UNDO_RC='재수렴이 바꾼 문서 결정을 사람이 고쳐 쓰고 재수렴과 재감사를 다시 받는다'
+
+gate_halt_draft_present() {
+  # gate_halt_draft_present <record> — 0 when the record carries a
+  # `**결정 초안**:` header line above its closing fence.
+  LC_ALL=C awk '$0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
+    $0 == "**결정 초안**:" { f = 1; exit } END { exit !f }' "$1" 2>/dev/null
+}
+
+gate_halt_draft_parse() {
+  # gate_halt_draft_parse <record> — reads the `**결정 초안**:` block into
+  # GATE_DRAFT_LINES, one `<항목>\t<none|draft>\t<결정>\t<이유>\t<근거>\t<대안>`
+  # line per draft line, and GATE_DRAFT_N, their count. Returns 1 with the
+  # reason in GATE_DRAFT_WHY when the record has no header or more than one, a
+  # line breaks the grammar, or the block is empty.
+  #
+  # THE LINE IS CUT BY ITS MARKERS. ` — 결정: `, ` — 이유: `, ` — 근거: ` and
+  # ` — 대안: ` stand once each, in that order, the last optional; a bare ` — `
+  # inside the decision stays part of it, so `구현 재량 — <기준>` is one value.
+  local out ln tag rest heads=0 bad=''
+  GATE_DRAFT_LINES=''; GATE_DRAFT_N=0; GATE_DRAFT_WHY=''
+  out=$(LC_ALL=C awk '
+    function cnt(s, m,   n, q) { n = 0; while ((q = index(s, m)) > 0) { n++; s = substr(s, q + length(m)) } return n }
+    BEGIN { mk[1] = " — 결정: "; mk[2] = " — 이유: "; mk[3] = " — 근거: "; mk[4] = " — 대안: "; hp = "- 초안 「"; cl = "」 — " }
+    $0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
+    inb && /^\*\*/ { inb = 0 }
+    $0 == "**결정 초안**:" { nh++; inb = 1; next }
+    !inb || /^[ \t]*$/ { next }
+    /\t/ { print "E\t" NR "\t탭 문자가 있다"; next }
+    index($0, hp) != 1 { print "E\t" NR "\t줄이 「- 초안 「」 로 시작하지 않는다"; next }
+    {
+      r = substr($0, length(hp) + 1); p = index(r, cl)
+      if (p < 2) { print "E\t" NR "\t항목의 「」 다음에 「 — 」 가 없다"; next }
+      item = substr(r, 1, p - 1); rest = substr(r, p + length("」"))
+      if (index(rest, " — (없음)") == 1) { print "L\t" item "\tnone\t\t\t\t"; next }
+      for (i = 1; i <= 4; i++) { c[i] = cnt(rest, mk[i]); pos[i] = index(rest, mk[i]) }
+      if (pos[1] != 1 || c[1] != 1 || c[2] != 1 || c[3] != 1 || c[4] > 1 \
+          || pos[2] < pos[1] || pos[3] < pos[2] || (c[4] == 1 && pos[4] < pos[3])) {
+        print "E\t" NR "\t결정·이유·근거·대안 표지의 순서나 횟수가 문법과 다르다"; next }
+      d = substr(rest, length(mk[1]) + 1, pos[2] - length(mk[1]) - 1)
+      rs = substr(rest, pos[2] + length(mk[2]), pos[3] - pos[2] - length(mk[2]))
+      if (c[4]) { g = substr(rest, pos[3] + length(mk[3]), pos[4] - pos[3] - length(mk[3])); a = substr(rest, pos[4] + length(mk[4])) }
+      else { g = substr(rest, pos[3] + length(mk[3])); a = "" }
+      if (d == "" || rs == "" || g == "") { print "E\t" NR "\t결정·이유·근거 가운데 빈 값이 있다"; next }
+      if (c[4] && a == "") { print "E\t" NR "\t대안 표지 뒤가 비었다"; next }
+      print "L\t" item "\tdraft\t" d "\t" rs "\t" g "\t" a
+    }
+    END { print "H\t" nh + 0 }
+  ' "$1" 2>/dev/null || true)
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    tag=${ln%%$'\t'*}; rest=${ln#*$'\t'}
+    case "$tag" in
+      H) heads=$rest ;;
+      E) [ -n "$bad" ] || bad="결정 초안 ${rest%%$'\t'*} 번째 줄: ${rest#*$'\t'}" ;;
+      L) GATE_DRAFT_LINES="$GATE_DRAFT_LINES$rest"$'\n'; GATE_DRAFT_N=$((GATE_DRAFT_N + 1)) ;;
+    esac
+  done <<EOF
+$out
+EOF
+  if [ "$heads" != "1" ]; then
+    GATE_DRAFT_WHY="\`**결정 초안**:\` 머리 줄이 정확히 하나여야 합니다 — ${heads:-0}개"
+    return 1
+  fi
+  if [ -n "$bad" ]; then GATE_DRAFT_WHY=$bad; return 1; fi
+  if [ "$GATE_DRAFT_N" -eq 0 ]; then GATE_DRAFT_WHY="\`**결정 초안**:\` 블록에 초안 줄이 없습니다"; return 1; fi
+  return 0
+}
+
+gate_halt_draft_kind() {
+  # gate_halt_draft_kind <record> — sets GATE_DRAFT_KIND to `a` for an
+  # implement stage's open-decision stop and `b` for a re-convergence's
+  # S1/S3/S4 stop; for every other record exit 1 with the reason in
+  # GATE_DRAFT_WHY. A re-convergence stop in the audit's skeleton-grade scope
+  # (`Step 3 S<n> — 감사 골격급…`) decides what an audit converged on, which is
+  # a person's, so it is no draft kind.
+  local rec="$1" cls skill step
+  GATE_DRAFT_WHY=''; GATE_DRAFT_KIND=''
+  cls=$(sed -n 's/^\*\*분류\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+  skill=$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+  step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+  if [ "$cls" != "gate-unanswerable" ]; then
+    GATE_DRAFT_WHY="결정 초안은 \`gate-unanswerable\` 기록에서만 받습니다 — 이 기록은 ${cls:-분류 없음}입니다"
+    return 1
+  fi
+  if [ "$skill" = "implement-unattended" ] && [ "$step" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]; then
+    GATE_DRAFT_KIND=a; return 0
+  fi
+  if [ "$skill" = "design-reconverge" ]; then
+    case "$step" in
+      'Step 3 S1 — 감사 골격급'*|'Step 3 S3 — 감사 골격급'*|'Step 3 S4 — 감사 골격급'*)
+        GATE_DRAFT_WHY="감사 골격급 범위의 재수렴 정지는 감사가 수렴한 결정을 뒤집는 판단이라 사람이 답합니다 — 스텝 \`$step\`"
+        return 1 ;;
+      'Step 3 S1'|'Step 3 S3'|'Step 3 S4'|'Step 3 S1 — '*|'Step 3 S3 — '*|'Step 3 S4 — '*)
+        GATE_DRAFT_KIND=b; return 0 ;;
+    esac
+  fi
+  GATE_DRAFT_WHY="결정 초안을 받는 기록은 구현 스테이지의 미결 결정 정지와 재수렴의 S1·S3·S4 정지뿐입니다 — 이 기록은 스킬 \`${skill:-없음}\` · 스텝 \`${step:-없음}\` 입니다"
+  return 1
+}
+
+gate_halt_draft_option() {
+  # gate_halt_draft_option <record> — the option a draft answer takes: `재수렴`
+  # on an open-decision stop, the label the single draft line names on a
+  # re-convergence stop. Prints nothing when neither can be read.
+  local ln d
+  gate_halt_draft_kind "$1" || return 0
+  if [ "$GATE_DRAFT_KIND" = "a" ]; then printf '재수렴'; return 0; fi
+  gate_halt_draft_parse "$1" || return 0
+  ln=${GATE_DRAFT_LINES%%$'\n'*}
+  d=$(printf '%s' "$ln" | cut -f3)
+  case "$d" in '`'*'`') d=${d#\`}; d=${d%\`}; printf '%s' "$d" ;; esac
+}
+
+gate_halt_draft_items() {
+  # gate_halt_draft_items <record> — the 「」 entries of the record's
+  # `**미결 결정 항목**` line, one per line, in order.
+  sed -n 's/^\*\*미결 결정 항목\*\*: //p' "$1" | sed -n '1p' | sed 's/[[:space:]]*$//' \
+    | LC_ALL=C awk '{ s = $0
+        while ((p = index(s, "「")) > 0) {
+          s = substr(s, p + length("「")); q = index(s, "」, 「")
+          if (q == 0) { q = length(s) - length("」") + 1; if (substr(s, q) != "」") exit; print substr(s, 1, q - 1); exit }
+          print substr(s, 1, q - 1); s = substr(s, q + length("」, ") ) } }'
+}
+
+gate_draft_quote_in() {
+  # gate_draft_quote_in <quote> <file> — 0 when <quote> stands byte for byte in
+  # a line of <file> that does not start with `#`.
+  GQ="$1" LC_ALL=C awk 'BEGIN { q = ENVIRON["GQ"] } substr($0, 1, 1) != "#" && index($0, q) { f = 1; exit } END { exit !f }' "$2" 2>/dev/null
+}
+
+gate_draft_overlaps() {
+  # gate_draft_overlaps <quote> <targets> — 0 when some sixteen contiguous bytes
+  # of <quote> stand byte for byte inside <targets>.
+  GQ="$1" GT="$2" LC_ALL=C awk 'BEGIN { q = ENVIRON["GQ"]; t = ENVIRON["GT"]; n = length(q)
+    for (i = 1; i + 15 <= n; i++) if (index(t, substr(q, i, 16))) exit 0
+    exit 1 }'
+}
+
+gate_draft_bytes() {
+  # gate_draft_bytes <string> — its length in bytes.
+  GQ="$1" LC_ALL=C awk 'BEGIN { print length(ENVIRON["GQ"]) }'
+}
+
+gate_draft_doc_entry_scope() {
+  # gate_draft_doc_entry_scope <doc> <heading> — the body of the `### ` block
+  # whose trimmed line equals <heading>, inside the last `## ` section naming
+  # `미해결 이슈`: from the line after the heading up to the next `### ` or `## `.
+  GH="$2" LC_ALL=C awk '
+    function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    BEGIN { h = ENVIRON["GH"] }
+    /^## / { inr = ($0 ~ /미해결[ \t]+이슈/); if (inr) { buf = ""; found = 0 } cap = 0; next }
+    /^### / { cap = 0; if (inr && trim($0) == h) { cap = 1; found = 1; buf = "" } next }
+    cap { buf = buf $0 "\n" }
+    END { if (!found) exit 1; printf "%s", buf }' "$1" 2>/dev/null
+}
+
+gate_draft_doc_quoted_scope() {
+  # gate_draft_doc_quoted_scope <doc> <question text> — the sections of every
+  # `## ` or `### ` heading the question quotes in 「」 byte for byte: from the
+  # line after the heading up to the next heading of the same level or above.
+  # Exit 1 when the question quotes no heading of the document.
+  QT="$2" LC_ALL=C awk '
+    function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    BEGIN { qt = ENVIRON["QT"] }
+    /^## / || /^### / {
+      lvl = ($0 ~ /^### /) ? 3 : 2
+      if (cap && lvl <= caplvl) cap = 0
+      if (!cap && index(qt, "「" trim($0) "」")) { cap = 1; caplvl = lvl; any = 1; next }
+    }
+    cap { print }
+    END { exit !any }' "$1" 2>/dev/null
+}
+
+gate_draft_manifest_auth_scope() {
+  # gate_draft_manifest_auth_scope <manifest> — the lines of its `## 인가`
+  # section, from the line after the heading up to the next `## `.
+  LC_ALL=C awk '
+    function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    /^## / { cap = (trim($0) == "## 인가"); if (cap) any = 1; next }
+    cap { print }
+    END { exit !any }' "$1" 2>/dev/null
+}
+
+gate_draft_interview_file() {
+  # gate_draft_interview_file — sets GATE_DRAFT_IFILE to the interview record
+  # the manifest's `사전 인가` row names, read beside the manifest by its file
+  # name (never the run's copy), only when its sha256 equals the row's
+  # `sha256`. Exit 1 with GATE_DRAFT_WHY otherwise.
+  local row ipath isha src cur
+  GATE_DRAFT_IFILE=''
+  row=$(manifest_interview_row)
+  [ -n "$row" ] || { GATE_DRAFT_WHY="매니페스트에 \`인터뷰 기록\` 을 담은 \`사전 인가\` 행이 없습니다"; return 1; }
+  ipath=$(manifest_row_fields "$row" '인터뷰 기록')
+  isha=$(manifest_row_fields "$row" 'sha256')
+  [ -n "$ipath" ] && [ -n "$isha" ] || { GATE_DRAFT_WHY="\`사전 인가\` 인터뷰 기록 행에 경로나 \`sha256\` 값이 없습니다"; return 1; }
+  src="$(dirname "$MANIFEST")/$(basename "$ipath")"
+  [ -f "$src" ] || { GATE_DRAFT_WHY="인터뷰 기록 파일이 없습니다: $src"; return 1; }
+  cur=$(shasum -a 256 "$src" | cut -d' ' -f1)
+  [ "$cur" = "$isha" ] || { GATE_DRAFT_WHY="인터뷰 기록의 sha256 이 \`사전 인가\` 행과 다릅니다: $src"; return 1; }
+  GATE_DRAFT_IFILE=$src
+}
+
+gate_draft_code_commit() {
+  # gate_draft_code_commit <alias> <segment> — sets GATE_DRAFT_WT and
+  # GATE_DRAFT_MB to the segment worktree and the commit `코드` grounds are
+  # read from: the merge base of that worktree's HEAD and
+  # `refs/remotes/origin/<base branch>`. The segment branched from that base,
+  # so a later merge into the base moves the tracking ref but not this value.
+  # Exit 1 with GATE_DRAFT_WHY otherwise.
+  local al="$1" seg="$2" wt br mb
+  GATE_DRAFT_WT=''; GATE_DRAFT_MB=''
+  wt=$(gate_segment_worktree "$seg" 2>/dev/null) || wt=''
+  case "$wt" in ''|-) wt=$(gate_decl_worktree "$al" "$seg") || wt='' ;; esac
+  [ -n "$wt" ] && [ -d "$wt" ] || { GATE_DRAFT_WHY="세그먼트 $seg 의 워크트리가 없어 \`코드\` 근거를 읽을 커밋을 구할 수 없습니다"; return 1; }
+  br=$(base_branch "$al" 2>/dev/null) || br=''
+  br=${br#origin/}
+  [ -n "$br" ] || { GATE_DRAFT_WHY="대상 $al 의 베이스 브랜치를 읽을 수 없어 \`코드\` 근거를 읽을 커밋을 구할 수 없습니다"; return 1; }
+  mb=$(cd "$wt" && git merge-base HEAD "refs/remotes/origin/$br" 2>/dev/null) || mb=''
+  [ -n "$mb" ] || { GATE_DRAFT_WHY="세그먼트 워크트리의 HEAD 와 refs/remotes/origin/$br 의 갈라진 커밋을 구할 수 없습니다"; return 1; }
+  GATE_DRAFT_WT=$wt; GATE_DRAFT_MB=$mb
+}
+
+gate_halt_draft_admit() {
+  # gate_halt_draft_admit <record> <key> <answered_by> <alias> — whether a
+  # `초안 그대로=예` answer takes the record's `**결정 초안**`. On success
+  # GATE_DRAFT_OPT holds the option it answers, GATE_DRAFT_KINDS the
+  # `/`-joined ground kinds in the order they first appear, GATE_DRAFT_KIND
+  # `a` or `b`, and GATE_DRAFT_LINES / GATE_DRAFT_N the draft lines. On failure
+  # the reason is warned and the exit is GATE_EXIT_RULE.
+  #
+  # A PERSON'S `초안 그대로=예` TAKES THE FORM CHECKS ONLY — the record kind,
+  # the block's grammar and that every line has a draft. The person read the
+  # decisions in the table the seat showed, so neither the grounds, nor the
+  # risk-acceptance shapes, nor the bound are theirs to pass.
+  local rec="$1" key="$2" by="$3" al="$4" kind n line item what d rs g a lab ol desc='' found=''
+  local items want got tmp rc=0
+  GATE_DRAFT_OPT=''; GATE_DRAFT_KINDS=''; GATE_DRAFT_KIND=''
+  # D1
+  if [ "$by" = "좌석" ] && { ! gate_auto_resolve_enabled || ! gate_auto_draft_enabled; }; then
+    warn "CC_CMDS_AUTOPILOT_AUTO_RESOLVE 와 CC_CMDS_AUTOPILOT_AUTO_DRAFT 가 모두 켜져 있어야 좌석이 결정 초안을 채택합니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  # D2
+  gate_halt_draft_kind "$rec" || { warn "$GATE_DRAFT_WHY: $rec"; return "$GATE_EXIT_RULE"; }
+  kind=$GATE_DRAFT_KIND
+  # D3
+  if [ "$by" = "좌석" ]; then
+    n=$(grep -c '^\*\*추천\*\*: ' "$rec" || true)
+    case "$n:$(sed -n 's/^\*\*추천\*\*: //p' "$rec" | sed -n '1p')" in
+      '1:(없음)'*) ;;
+      *) warn "좌석은 \`**추천**\` 줄이 하나이고 \`(없음)\` 으로 시작하는 기록의 결정 초안만 채택합니다 — 추천이 선택지를 가리키는 기록은 기존 추천 답으로 갑니다: $rec"
+         return "$GATE_EXIT_RULE" ;;
+    esac
+  fi
+  # D4
+  gate_halt_draft_parse "$rec" || { warn "결정 초안의 형식이 문법과 다릅니다 — $GATE_DRAFT_WHY: $rec"; return "$GATE_EXIT_RULE"; }
+  if [ "$kind" = "a" ]; then
+    want=$(gate_halt_draft_items "$rec")
+    got=$(printf '%s' "$GATE_DRAFT_LINES" | cut -f1)
+    if [ -z "$want" ] || [ "$want" != "$got" ]; then
+      warn "결정 초안의 항목 목록이 \`**미결 결정 항목**\` 의 「」 목록과 순서까지 같아야 합니다: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    GATE_DRAFT_OPT='재수렴'
+  else
+    line=${GATE_DRAFT_LINES%%$'\n'*}
+    item=$(printf '%s' "$line" | cut -f1)
+    d=$(printf '%s' "$line" | cut -f3)
+    if [ "$GATE_DRAFT_N" -ne 1 ] || [ "$item" != "선택지" ]; then
+      warn "재수렴 정지의 결정 초안은 항목이 \`선택지\` 인 줄 하나입니다: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    case "$d" in
+      '`'*'`') lab=${d#\`}; lab=${lab%\`} ;;
+      *) lab='' ;;
+    esac
+    case "$lab" in *'`'*) lab='' ;; esac
+    while IFS= read -r ol; do
+      case "$ol" in
+        "- \`$lab\` — "*) desc=${ol#"- \`$lab\` — "}; found=1; break ;;
+        "- \`$lab\`") found=1; break ;;
+      esac
+    done <<EOF
+$(gate_halt_option_lines "$rec")
+EOF
+    if [ "$(printf '%s' "$line" | cut -f2)" = "draft" ] && { [ -z "$lab" ] || [ -z "$found" ]; }; then
+      warn "결정 초안이 가리킨 \`${lab:-$d}\` 는 이 기록의 선택지 라벨이 아닙니다: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    GATE_DRAFT_OPT=$lab
+  fi
+  # D5
+  if [ "$(printf '%s' "$GATE_DRAFT_LINES" | cut -f2 | grep -cx 'none')" != 0 ]; then
+    warn "결정 초안에 \`(없음)\` 줄이 있어 기록 전체가 사람에게 갑니다 — 초안은 모든 항목에 있을 때만 그대로 채택합니다: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  [ "$by" = "좌석" ] || return 0
+  # D7, then D6 and D8, line by line.
+  if [ "$kind" = "b" ]; then
+    case "$desc" in
+      *'위험 수용'*|*'게이트 비활성'*|*'그대로 진행'*|*'범위 축소'*)
+        warn "결정 초안이 가리킨 선택지 \`$lab\` 의 설명이 위험 수용(위험 수용 · 게이트 비활성 · 그대로 진행 · 범위 축소)이라 사람이 답합니다: $rec"
+        return "$GATE_EXIT_RULE" ;;
+    esac
+    gate_halt_surface_tokens "$ol" "the drafted option \`$lab\`" "$rec" || return "$?"
+  fi
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-draft.XXXXXX") || return 1
+  gate_halt_draft_grounds "$rec" "$key" "$al" "$kind" "$desc" "$tmp" || rc=$?
+  rm -rf "$tmp"
+  [ "$rc" -eq 0 ] || return "$rc"
+  # D9
+  if [ "$kind" = "b" ] || ! gate_draft_bind_escape_row; then
+    local r cnt=0
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      [ "$(gate_row_field "$r" '세그먼트')" = "$key" ] || continue
+      [ "$(gate_row_field "$r" '답한 주체')" = "좌석" ] || continue
+      [ -n "$(gate_row_field "$r" '초안 채택')" ] || continue
+      cnt=$((cnt + 1))
+    done <<EOF
+$( { gate_rows '중단 답' || true; } )
+EOF
+    if [ "$cnt" -ge 1 ]; then
+      warn "$key 는 이미 좌석이 결정 초안을 채택한 답이 있어 키 단위 상한 1 에 걸렸습니다 — 다음 답은 사람에게 갑니다"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
+  return 0
+}
+
+gate_draft_bind_escape_row() {
+  # gate_draft_bind_escape_row — 0 when the manifest's `## 인가` carries a
+  # `자동 채택` row of class `구속-이탈`, whatever its `상한`.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(gate_row_field "$row" '판단 부류')" = "구속-이탈" ] && return 0
+  done <<EOF
+$(manifest_autoadopt_rows)
+EOF
+  return 1
+}
+
+gate_halt_draft_grounds() {
+  # gate_halt_draft_grounds <record> <key> <alias> <a|b> <option description>
+  # <scratch dir> — D6, D7 and D8 of every draft line; sets GATE_DRAFT_KINDS.
+  local rec="$1" key="$2" al="$3" kind="$4" desc="$5" tmp="$6"
+  local line item d rs g a targets part rest k q loc p ln scope kinds='' seen=$'\n' doc_q='' vals vrow
+  vals=''
+  if [ "$kind" = "a" ]; then
+    vals=$(unresolved_closure_pending "${DOC:-}" "$key" values)
+  else
+    doc_q=$(LC_ALL=C awk '$0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
+      inb && /^\*\*/ { exit }
+      index($0, "**질문 문면**: ") == 1 { inb = 1; print substr($0, length("**질문 문면**: ") + 1); next }
+      inb { print }' "$rec" 2>/dev/null)
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    item=$(printf '%s' "$line" | cut -f1)
+    d=$(printf '%s' "$line" | cut -f3)
+    rs=$(printf '%s' "$line" | cut -f4)
+    g=$(printf '%s' "$line" | cut -f5)
+    a=$(printf '%s' "$line" | cut -f6)
+    if [ "$kind" = "a" ]; then
+      # D7
+      case "$d$rs" in
+        *'위험 수용'*|*'게이트 비활성'*|*'그대로 진행'*|*'범위 축소'*)
+          warn "「${item}」 의 결정 초안이 위험 수용(위험 수용 · 게이트 비활성 · 그대로 진행 · 범위 축소)에 해당해 사람이 답합니다: $rec"
+          return "$GATE_EXIT_RULE" ;;
+      esac
+      gate_halt_surface_tokens "$d" "the drafted decision of 「${item}」" "$rec" || return "$?"
+      # D8
+      vrow=$(GH="$item" LC_ALL=C awk -F '\t' 'BEGIN { h = ENVIRON["GH"] } $2 == h { r = $0 } END { if (r != "") print r }' <<EOF
+$vals
+EOF
+)
+      if [ -z "$vrow" ]; then
+        warn "「${item}」 을 설계 문서의 미해결 이슈 절에서 찾지 못했습니다 — 닫혔거나 표제가 바뀐 항목은 사람이 답합니다: $rec"
+        return "$GATE_EXIT_RULE"
+      fi
+      if [ "$(printf '%s' "$vrow" | cut -f1)" != "블록" ]; then
+        warn "「${item}」 은 표 행이라 \`사유\` 를 읽을 수 없어 사람이 답합니다: $rec"
+        return "$GATE_EXIT_RULE"
+      fi
+      if [ "$(printf '%s' "$vrow" | cut -f3 | LC_ALL=C grep -cE '^해결(됨)?[[:blank:]]*(—|·|\(|$)')" != 0 ]; then
+        warn "「${item}」 은 이미 \`해결\` 로 닫혀 있어 사람이 답합니다: $rec"
+        return "$GATE_EXIT_RULE"
+      fi
+      case "$(printf '%s' "$vrow" | cut -f4)" in
+        '베이스 계약 변경 필요'*|'감사 합성 요구'*)
+          warn "「${item}」 의 \`사유\` 가 \`$(printf '%s' "$vrow" | cut -f4)\` 라 사람이 답합니다: $rec"
+          return "$GATE_EXIT_RULE" ;;
+      esac
+      if [ "$(printf '%s' "$vrow" | cut -f5)" = "예" ]; then
+        warn "「${item}」 은 \`골격급: 예\` 라 사람이 답합니다: $rec"
+        return "$GATE_EXIT_RULE"
+      fi
+      targets=$d
+      if [ -n "$a" ]; then
+        targets="$targets"$'\n'"$(printf '%s' "$a" | tr '|' '\n' | sed -e 's/^[[:blank:]]*//' -e 's/[[:blank:]]*$//')"
+      fi
+    else
+      targets=$desc
+    fi
+    # D6
+    rest=$g
+    while [ -n "$rest" ]; do
+      case "$rest" in
+        *' / '*) part=${rest%%' / '*}; rest=${rest#*' / '} ;;
+        *) part=$rest; rest='' ;;
+      esac
+      case "$part" in
+        '설계 문서 「'*'」') k='설계 문서'; q=${part#'설계 문서 「'} ;;
+        '인터뷰 기록 「'*'」') k='인터뷰 기록'; q=${part#'인터뷰 기록 「'} ;;
+        '매니페스트 인가 「'*'」') k='매니페스트 인가'; q=${part#'매니페스트 인가 「'} ;;
+        '코드 '*' 「'*'」') k='코드'; loc=${part#'코드 '}; loc=${loc%%' 「'*}; q=${part#*' 「'} ;;
+        *) warn "「${item}」 의 근거 \`$part\` 가 네 근거 꼴(설계 문서 · 코드 · 인터뷰 기록 · 매니페스트 인가) 가운데 하나가 아닙니다: $rec"
+           return "$GATE_EXIT_RULE" ;;
+      esac
+      q=${q%'」'}
+      case "$q" in
+        *'」'*|*' — 결정: '*|*' — 이유: '*|*' — 근거: '*|*' — 대안: '*)
+          warn "「${item}」 의 인용에 「」」 나 표지 문자열이 있습니다: $part"
+          return "$GATE_EXIT_RULE" ;;
+      esac
+      if [ "$(gate_draft_bytes "$q")" -lt 16 ]; then
+        warn "「${item}」 의 인용이 16바이트 미만입니다: $part"
+        return "$GATE_EXIT_RULE"
+      fi
+      if ! gate_draft_overlaps "$q" "$targets"; then
+        warn "「${item}」 의 인용이 결정이나 대안의 문구와 16바이트도 겹치지 않습니다: $part"
+        return "$GATE_EXIT_RULE"
+      fi
+      scope="$tmp/scope"
+      case "$k" in
+        '설계 문서')
+          [ -n "${DOC:-}" ] && [ -f "$DOC" ] || { warn "매니페스트의 설계 문서를 읽을 수 없어 \`설계 문서\` 근거를 대조할 수 없습니다: $part"; return "$GATE_EXIT_RULE"; }
+          if [ "$kind" = "a" ]; then
+            gate_draft_doc_entry_scope "$DOC" "$item" > "$scope" \
+              || { warn "「${item}」 의 절을 설계 문서에서 찾지 못해 \`설계 문서\` 근거의 범위를 정할 수 없습니다: $part"; return "$GATE_EXIT_RULE"; }
+          else
+            gate_draft_doc_quoted_scope "$DOC" "$doc_q" > "$scope" \
+              || { warn "기록의 \`**질문 문면**\` 이 설계 문서의 표제를 「」 안에 바이트 그대로 적지 않아 \`설계 문서\` 근거의 범위를 정할 수 없습니다: $part"; return "$GATE_EXIT_RULE"; }
+          fi ;;
+        '매니페스트 인가')
+          gate_draft_manifest_auth_scope "$MANIFEST" > "$scope" \
+            || { warn "매니페스트에 \`## 인가\` 절이 없어 \`매니페스트 인가\` 근거를 대조할 수 없습니다: $part"; return "$GATE_EXIT_RULE"; } ;;
+        '인터뷰 기록')
+          gate_draft_interview_file || { warn "$GATE_DRAFT_WHY — \`인터뷰 기록\` 근거를 대조할 수 없습니다: $part"; return "$GATE_EXIT_RULE"; }
+          cat "$GATE_DRAFT_IFILE" > "$scope" ;;
+        '코드')
+          p=${loc%:*}; ln=${loc##*:}
+          case "$ln" in ''|*[!0-9]*) warn "\`코드\` 근거는 \`코드 <경로>:<줄> 「<인용>」\` 꼴입니다: $part"; return "$GATE_EXIT_RULE" ;; esac
+          case "$p" in
+            ''|/*) warn "\`코드\` 근거의 경로는 레포 상대 경로입니다: $part"; return "$GATE_EXIT_RULE" ;;
+          esac
+          case "/$p/" in
+            */../*) warn "\`코드\` 근거의 경로에 \`..\` 조각이 있습니다: $part"; return "$GATE_EXIT_RULE" ;;
+          esac
+          gate_draft_code_commit "$al" "$key" || { warn "$GATE_DRAFT_WHY: $part"; return "$GATE_EXIT_RULE"; }
+          ( cd "$GATE_DRAFT_WT" && git show "$GATE_DRAFT_MB:$p" ) > "$scope" 2>/dev/null \
+            || { warn "갈라진 커밋 $GATE_DRAFT_MB 에 \`$p\` 가 없습니다: $part"; return "$GATE_EXIT_RULE"; } ;;
+      esac
+      if ! gate_draft_quote_in "$q" "$scope"; then
+        warn "「${item}」 의 \`$k\` 인용이 그 범위 안의 표제가 아닌 줄에 바이트 그대로 있지 않습니다: $part"
+        return "$GATE_EXIT_RULE"
+      fi
+      case "$seen" in
+        *$'\n'"$k"$'\n'*) ;;
+        *) seen="$seen$k"$'\n'; kinds="$kinds${kinds:+/}$k" ;;
+      esac
+    done
+  done <<EOF
+$GATE_DRAFT_LINES
+EOF
+  GATE_DRAFT_KINDS=$kinds
+  return 0
+}
+
+gate_halt_draft_attach_write() {
+  # gate_halt_draft_attach_write <record> <attachment path> — writes the
+  # attachment of a `초안 그대로=예` answer from GATE_DRAFT_LINES, atomically:
+  # a temp file beside it, then a rename that refuses to overwrite. It carries
+  # no halt record header.
+  #
+  # An open-decision stop's attachment names each entry by its heading line
+  # verbatim, its decision below, then the quotes it rests on — the
+  # re-convergence reads the decision under the heading and skips the
+  # `초안 근거:` line and the `## 되돌리는 법` section.
+  local rec="$1" att="$2" t line item d g part rest
+  t=$(mktemp "${att%/*}/.draft-answer.XXXXXX") || return 1
+  {
+    if [ "$GATE_DRAFT_KIND" = "a" ]; then
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        item=$(printf '%s' "$line" | cut -f1)
+        d=$(printf '%s' "$line" | cut -f3)
+        g=$(printf '%s' "$line" | cut -f5)
+        printf '%s\n%s\n초안 근거: %s\n\n' "$item" "$d" "$g"
+      done <<EOF
+$GATE_DRAFT_LINES
+EOF
+      printf '## 되돌리는 법\n\n%s\n' "$GATE_DRAFT_UNDO_BT"
+    else
+      line=${GATE_DRAFT_LINES%%$'\n'*}
+      g=$(printf '%s' "$line" | cut -f5)
+      printf '채택한 선택지: %s\n초안 근거:\n' "$GATE_DRAFT_OPT"
+      rest=$g
+      while [ -n "$rest" ]; do
+        case "$rest" in
+          *' / '*) part=${rest%%' / '*}; rest=${rest#*' / '} ;;
+          *) part=$rest; rest='' ;;
+        esac
+        printf -- '- %s\n' "$part"
+      done
+      printf '\n## 되돌리는 법\n\n%s\n' "$GATE_DRAFT_UNDO_RC"
+    fi
+  } > "$t" || { rm -f "$t"; return 1; }
+  if [ -e "$att" ] || ! mv -n "$t" "$att" || [ -e "$t" ]; then
+    rm -f "$t"
+    return 1
+  fi
+}
+
+gate_halt_draft_human_count() {
+  # gate_halt_draft_human_count <record> <attachment> <option> — `<m>/<n>` for
+  # a person's answer to a record that carries a decision draft: n draft lines,
+  # m of them answered as drafted. On an open-decision stop a line counts when
+  # the first non-blank line under its heading in the attachment equals its
+  # decision byte for byte; on a re-convergence stop m is 1 when the option is
+  # the drafted label. Prints nothing when the record carries no readable draft.
+  local rec="$1" att="$2" opt="$3" line item d m=0
+  gate_halt_draft_present "$rec" || return 0
+  gate_halt_draft_kind "$rec" || return 0
+  gate_halt_draft_parse "$rec" || return 0
+  if [ "$GATE_DRAFT_KIND" = "b" ]; then
+    [ "$opt" = "$(gate_halt_draft_option "$rec")" ] && m=1
+    printf '%s/%s' "$m" "$GATE_DRAFT_N"
+    return 0
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "$(printf '%s' "$line" | cut -f2)" = "draft" ] || continue
+    [ -n "$att" ] && [ -f "$att" ] || continue
+    item=$(printf '%s' "$line" | cut -f1)
+    d=$(printf '%s' "$line" | cut -f3)
+    if GH="$item" GD="$d" LC_ALL=C awk 'BEGIN { h = ENVIRON["GH"]; d = ENVIRON["GD"] }
+         !hit && $0 == h { hit = 1; next }
+         hit && /^[ \t]*$/ { next }
+         hit { ok = ($0 == d); exit }
+         END { exit !ok }' "$att" 2>/dev/null; then
+      m=$((m + 1))
+    fi
+  done <<EOF
+$GATE_DRAFT_LINES
+EOF
+  printf '%s/%s' "$m" "$GATE_DRAFT_N"
 }
 
 # The body of every seat-apply commit. A fixed sentence: the subject is the
@@ -36873,21 +37481,43 @@ EOF
         hshift=1
       fi
       local hf hk hrec hopt hwhy hw=300 hlen hskill hdig hlane hat hatt hattdig hstep hpre='' hcls hrow hadopt='' hby hkinds=''
+      local hdraft='' hdm=''
       for hf in "$@"; do
         hk="${hf%%=*}"
-        case "$hk" in 중단\ 기록|선택지|근거|첨부|답한\ 주체|고칠\ 곳|판정\ 근거|측정\ 등급) continue ;; esac
+        case "$hk" in 중단\ 기록|선택지|근거|첨부|답한\ 주체|초안\ 그대로|고칠\ 곳|판정\ 근거|측정\ 등급) continue ;; esac
         case "$hk" in
           판정\ 주체|판정\ 신호)
             warn "\`${hk}\` is the gate's on a \`중단 답\` row — the seat names \`고칠 곳\` and \`판정 근거\`, and the gate stamps who judged and on what"
             return "$GATE_EXIT_RULE" ;;
         esac
-        warn "a \`중단 답\` row takes \`중단 기록\`, \`선택지\`, \`근거\`, an optional \`답한 주체\` and an optional \`첨부\` from argv, and \`고칠 곳\`, \`판정 근거\` and \`측정 등급\` on a seat's \`좌석 실행\` answer, and nothing else: ${hk} — the rest is the gate's"
+        warn "a \`중단 답\` row takes \`중단 기록\`, \`선택지\`, \`근거\`, an optional \`답한 주체\`, an optional \`첨부\` and an optional \`초안 그대로\` from argv, and \`고칠 곳\`, \`판정 근거\` and \`측정 등급\` on a seat's \`좌석 실행\` answer, and nothing else: ${hk} — the rest is the gate's"
         return "$GATE_EXIT_VOCAB"
       done
       hrec=$(gate_field_of '중단 기록' "$@")
       hopt=$(gate_field_of '선택지' "$@")
       hwhy=$(gate_field_of '근거' "$@")
       hby=$(gate_field_of '답한 주체' "$@")
+      hdraft=$(gate_field_of '초안 그대로' "$@")
+      # `초안 그대로=예` TAKES THE RECORD'S DECISION DRAFT AS THE ANSWER. The
+      # seat passes it to adopt the draft without a person once
+      # `gate_halt_draft_admit` passes, and a person's `초안대로 전부` passes it
+      # too; either way the gate writes the attachment from the draft, so the
+      # call carries no `첨부`, and the option is derived from the record.
+      if [ -n "$hdraft" ]; then
+        if [ "$hdraft" != "예" ]; then
+          warn "\`초안 그대로\` takes the one value \`예\`: $hdraft"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        if [ -n "$hshift" ] || { [ "$hby" != "좌석" ] && [ "$hby" != "사람" ]; }; then
+          warn "\`초안 그대로=예\` comes with \`답한 주체=좌석\` or \`답한 주체=사람\` only"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        if [ -n "$(gate_field_of '첨부' "$@")" ]; then
+          warn "\`초안 그대로=예\` has the gate write the attachment from the draft, so the call carries no \`첨부\`"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        [ -n "$hopt" ] || [ ! -f "$hrec" ] || hopt=$(gate_halt_draft_option "$hrec")
+      fi
       if [ -n "$hshift" ]; then
         if [ -n "$hby" ]; then
           warn "a shift does not name \`답한 주체\` — the gate stamps \`교대\` on the one \`중단 답\` row a shift may write"
@@ -37172,7 +37802,19 @@ EOF
         return "$GATE_EXIT_RULE"
       fi
       local hladder=''
-      if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && [ -z "$hsa" ]; then
+      # A DRAFT ANSWER TAKES THE DRAFT CHECK INSTEAD OF THE RECOMMENDATION'S.
+      # The record recommends `(없음)`, which `gate_halt_recommendation` refuses,
+      # and its step is closed by `gate_halt_draft_admit`'s record kinds, so the
+      # design check that reads step substrings has nothing to read here.
+      if [ -n "$hdraft" ]; then
+        gate_halt_draft_admit "$hrec" "$seg" "$hby" "$alias" || return "$?"
+        if [ "$hopt" != "$GATE_DRAFT_OPT" ]; then
+          warn "an answer \`초안 그대로=예\` takes the option the draft names (\`$GATE_DRAFT_OPT\`), not \`$hopt\`"
+          return "$GATE_EXIT_RULE"
+        fi
+        if [ "$hby" = "좌석" ]; then hkinds=$GATE_DRAFT_KINDS; fi
+        hdm="$GATE_DRAFT_N/$GATE_DRAFT_N"
+      elif [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && [ -z "$hsa" ]; then
         gate_halt_recommendation "$hrec" || return "$?"
         gate_halt_design_check "$hrec" || return "$?"
         hladder=$GATE_HALT_LADDER_STAMP
@@ -37213,7 +37855,16 @@ EOF
       # halt-directory scan identifies by its header.
       hatt=$(gate_field_of '첨부' "$@")
       hattdig=''
-      if [ -n "$hatt" ]; then
+      # The attachment of a draft answer is the gate's to write, beside the
+      # record, once every refusal below has passed; here only its path is
+      # fixed, and a file already there is refused rather than overwritten.
+      if [ -n "$hdraft" ]; then
+        hatt="${hrec%.md}.answer.md"
+        if [ -e "$hatt" ]; then
+          warn "the attachment a draft answer would write already exists, so the gate does not overwrite it: $hatt"
+          return "$GATE_EXIT_RULE"
+        fi
+      elif [ -n "$hatt" ]; then
         case "$hatt" in
           "$RUN_DIR"/halt/*.md) ;;
           *) warn "\`첨부\` has to be a .md file under this run's halt directory ($RUN_DIR/halt/): $hatt"
@@ -37230,19 +37881,27 @@ EOF
         fi
         hattdig=$(shasum -a 256 "$hatt" | cut -d' ' -f1)
       fi
+      # HOW MUCH OF THE DRAFT A PERSON TOOK is stamped as `초안 채택=<m>/<n>`
+      # on every answer to a record that carries one, so the share of drafts
+      # taken as written stays countable from the ledger.
+      if [ -z "$hdraft" ] && [ "$hby" = "사람" ]; then
+        hdm=$(gate_halt_draft_human_count "$hrec" "$hatt" "$hopt")
+      fi
       # AN IMPLEMENT STAGE'S OPEN-DECISION HALT IS A PERSON'S, AND ITS DECISION
-      # IS THE ATTACHMENT. The record's whole `**스텝**` line is compared
-      # (`halt_step_is_unclosed_decision`), never the cut at the first ` — ` the
-      # shift's exception below reads, which this record passes: an automatic
-      # `재수렴` would send a re-convergence with no decision to write, so it is
-      # refused here, before that exception. The seat's answer was already
-      # refused above, by the `(없음)` recommendation the record carries. A
-      # person's answer names each decision under the entry's verbatim heading in
-      # the file beside the record; `근거` is clipped and is not where the
-      # re-convergence reads the decision from.
+      # IS THE ATTACHMENT — with one exception, the seat's `초안 그대로=예`
+      # that `gate_halt_draft_admit` passed above. The record's whole
+      # `**스텝**` line is compared (`halt_step_is_unclosed_decision`), never
+      # the cut at the first ` — ` the shift's exception below reads, which this
+      # record passes: an automatic `재수렴` would send a re-convergence with no
+      # decision to write, so it is refused here, before that exception. Any
+      # other seat answer was already refused above, by the `(없음)`
+      # recommendation the record carries. A person's answer names each decision
+      # under the entry's verbatim heading in the file beside the record, and a
+      # draft answer's attachment is the gate's, written the same way; `근거`
+      # is clipped and is not where the re-convergence reads the decision from.
       if halt_step_is_unclosed_decision "$hrec"; then
-        if [ "$hby" != "사람" ]; then
-          warn "이 중단 기록은 닫히지 않은 결정 항목의 정지(Step 1 CFI-U3 BT-STOP — 미결 결정)입니다 — 답한 주체=사람 의 답만 기록합니다: $hrec"
+        if [ "$hby" != "사람" ] && { [ "$hby" != "좌석" ] || [ -z "$hdraft" ]; }; then
+          warn "이 중단 기록은 닫히지 않은 결정 항목의 정지(Step 1 CFI-U3 BT-STOP — 미결 결정)입니다 — 답한 주체=사람 의 답만 기록합니다(좌석은 게이트가 확인한 결정 초안을 초안 그대로=예 로 채택할 때만 답합니다): $hrec"
           return "$GATE_EXIT_RULE"
         fi
         if [ "$hatt" != "${hrec%.md}.answer.md" ]; then
@@ -37324,6 +37983,8 @@ EOF
       if [ "$hby" != "사람" ]; then
         if [ "$hby" = "교대" ]; then
           log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
+        elif [ -n "$hdraft" ]; then
+          log "자동 답 — 좌석이 기록의 결정 초안을 채택함 ($seg ← $hopt)"
         else
           log "자동 답 — 좌석이 기록의 추천을 고름 ($seg ← $hopt)"
         fi
@@ -37333,12 +37994,16 @@ EOF
       hat=$(now_iso)
       # The seat-apply fields are measured with a 40-character placeholder for
       # `좌석 커밋`, so a row that cannot fit is refused before anything is
-      # committed rather than after, on the rollback path.
+      # committed rather than after, on the rollback path. A draft answer's
+      # attachment does not exist yet, so its digest is measured as 64
+      # characters.
+      local hattm=$hattdig
+      [ -z "$hdraft" ] || hattm=0000000000000000000000000000000000000000000000000000000000000000
       while [ "$hw" -ge 40 ]; do
         hwhy=$(gate_row_safe "$hpre$(gate_field_of '근거' "$@")" "$hw")
         hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$hrec" \
           "스킬=${hskill:-미상}" "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" \
-          ${hkinds:+"근거 종류=$hkinds"} ${hsac:+"좌석 커밋=$hsac"} ${hsana:+"적용 파일=$hsana"} \
+          ${hkinds:+"근거 종류=$hkinds"} ${hdm:+"초안 채택=$hdm"} ${hsac:+"좌석 커밋=$hsac"} ${hsana:+"적용 파일=$hsana"} \
           ${hsafr:+"승인 프레임=$hsafr"} ${hsasn:+"적용 범위 수=$hsasn"} ${hsasd:+"적용 범위 다이제스트=$hsasd"} \
           ${hsacf:+"승계 프레임=$hsacf"} ${hsacr:+"승계 원본=$hsacr"} ${hsanh:+"사람 몫=$hsanh"} \
           ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} ${hxs:+"판정 신호=$hxs"} \
@@ -37391,13 +38056,31 @@ EOF
         # ITS ONE READER IS THE SNAPSHOT'S `answered_halts[]`, which a shift
         # routes from. It enters no termination condition and no progress
         # vector, and nothing is notified from it.
-        gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
-          "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
-          ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} \
-          ${hxs:+"판정 신호=$hxs"} ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \
-          "기록 다이제스트=$hdig" \
-          ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
-          "레인=$hlane" "기록 시각=$hat"
+        # A DRAFT ANSWER'S ATTACHMENT IS WRITTEN LAST, AND UNDONE WITH THE ROW.
+        # Every refusal above has passed, so only the row itself can fail now;
+        # an attachment no row names would read as an answer nobody recorded.
+        if [ -n "$hdraft" ]; then
+          gate_halt_draft_attach_write "$hrec" "$hatt" || {
+            warn "the attachment of the draft answer could not be written: $hatt"
+            return "$GATE_EXIT_RULE"; }
+          hattdig=$(shasum -a 256 "$hatt" | cut -d' ' -f1)
+          if ! ( gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
+                   "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
+                   "초안 채택=$hdm" "기록 다이제스트=$hdig" "첨부=$hatt" "첨부 다이제스트=$hattdig" \
+                   "레인=$hlane" "기록 시각=$hat" ); then
+            rm -f "$hatt"
+            warn "the \`중단 답\` row of the draft answer could not be written, so its attachment was removed: $hatt"
+            return "$GATE_EXIT_RULE"
+          fi
+        else
+          gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
+            "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
+            ${hdm:+"초안 채택=$hdm"} ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} \
+            ${hxs:+"판정 신호=$hxs"} ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \
+            "기록 다이제스트=$hdig" \
+            ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
+            "레인=$hlane" "기록 시각=$hat"
+        fi
       fi
       log "중단 답 기록 — $seg ← $hopt ($hby)"
       # A PERSON'S NO AT THE PUBLISH STAGE CLOSES THE SCREENS' QUESTION IN THE
