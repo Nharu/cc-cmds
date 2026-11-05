@@ -1105,16 +1105,28 @@ cc_failover_wait_resume() {
   cc_iso_to_epoch "$at"
 }
 
+# How long past a failover wait's resume time the watcher still reads the run
+# as waiting: the gate's resume grace (`GATE_FAILOVER_RESUME_GRACE_SECONDS`,
+# 900), the fleet tick's quiet window (`FLEET_FAILOVER_QUIET_SECONDS`, 600) and
+# one dispatch tick (`FLEET_DISPATCH_START_INTERVAL`, 120). The next call is
+# due by then, so a silence before it is the wait's and not a stopped router.
+CC_FAILOVER_WATCH_SLACK_SECONDS=1620
+
 cc_failover_waiting_now() {
-  # cc_failover_waiting_now <ledger> [<now>] — succeeds while the run's
-  # account-failover wait has not reached its resume time. The watcher reads it
-  # to keep silence and post-terminal non-response records out of a wait the
-  # gate chose, and the fleet tick to know a chain ended in one.
-  local at now="${2:-}"
+  # cc_failover_waiting_now <ledger> [<now>] [<slack>] — succeeds while the
+  # run's account-failover wait has not reached its resume time plus <slack>
+  # seconds (0 when absent). The fleet tick reads it with no slack to know a
+  # chain ended in a wait still ahead. The watcher reads it with
+  # `CC_FAILOVER_WATCH_SLACK_SECONDS` to keep silence and post-terminal
+  # non-response records out of a wait the gate chose: at the resume time
+  # itself the relay or the tick has yet to call, and a silence record there
+  # would leave a run-scope `blocked` row nothing clears on its own.
+  local at now="${2:-}" slack="${3:-0}"
   at=$(cc_failover_wait_resume "${1:-}")
   case "$at" in ''|*[!0-9]*) return 1 ;; esac
   case "$now" in ''|*[!0-9]*) now=$(date -u +%s) ;; esac
-  [ "$now" -lt "$at" ]
+  case "$slack" in ''|*[!0-9]*) slack=0 ;; esac
+  [ "$now" -lt $((at + slack)) ]
 }
 
 cc_relay_condition_consumed() {

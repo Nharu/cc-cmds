@@ -485,11 +485,12 @@ fleet_run_marker_live() {
 }
 
 failover_waiting() {
-  # The run is inside an account-failover wait whose resume time is ahead: the
-  # latest `계정 이전` row after the latest `handoff` is `결과=대기` and its
-  # `재개 시각` has not come. Read by the shared helper the gate and the fleet
-  # tick use, with this watcher's clock.
-  cc_failover_waiting_now "$LEDGER" "$(now_epoch)"
+  # The run is inside an account-failover wait: the latest `계정 이전` row
+  # after the latest `handoff` is `결과=대기` and its `재개 시각`, plus the
+  # slack in which the relay or the fleet tick makes the next call
+  # (`CC_FAILOVER_WATCH_SLACK_SECONDS`), has not come. Read by the shared
+  # helper the gate and the fleet tick use, with this watcher's clock.
+  cc_failover_waiting_now "$LEDGER" "$(now_epoch)" "$CC_FAILOVER_WATCH_SLACK_SECONDS"
 }
 
 stall_threshold() {

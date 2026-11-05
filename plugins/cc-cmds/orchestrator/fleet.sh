@@ -1470,7 +1470,8 @@ fleet_failover_gate_probe() {
     gate_failover_inputs "$2" || exit 2
     run_failover_allowed 2>/dev/null || exit 3
     if gate_relay_reentry_allowed 2>/dev/null; then w=1; else w=0; fi
-    e=$(gate_failover_judge 2>/dev/null | awk -F"\t" "\$1 == \"증거\" { print \$2; exit }")
+    j=$(gate_failover_judge 2>/dev/null) || :
+    e=$(printf "%s\n" "$j" | awk -F"\t" "\$1 == \"증거\" { print \$2; exit }") || :
     printf "%s\t%s" "$w" "${e:--}"
   ' _ "$gate" "$rd" 2>/dev/null
 }
@@ -1494,7 +1495,10 @@ fleet_failover_candidate() {
   #      (the three markers `fleet_reentry_driven_since` reads)
   #   7  the `.gap` marker does not hold this gap's key already
   #
-  # The cheap file tests run first; 1, 4(a) and 5's evidence ask the gate.
+  # The cheap file tests run first; 1, 4(a) and 5's evidence ask the gate. A
+  # judgment that could not judge (rc 2) still prints its evidence line, and
+  # the probe reads that line rather than dying on the status: the launcher
+  # takes such a run on the seat lane's path.
   local rd="$1" now="$2" ledger at probe w ev
   [ -f "$rd/ends-on-done" ] && [ ! -e "$rd/done" ] || return 1
   [ -s "$rd/config-dir" ] && [ -s "$rd/ledger-path" ] && [ -s "$rd/seat-call" ] || return 1
@@ -1541,7 +1545,20 @@ fleet_reentry_settled_since() {
 fleet_reentry_reason_wait() {
   # fleet_reentry_reason_wait <run dir> <ledger> — succeeds in the two states
   # the run's own pinned gate takes `대기` in, asked of that gate.
-  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; LEDGER="$3"; gate_relay_reentry_allowed' \
+  #
+  # THE GATE'S OWN INPUTS FIRST. `gate_relay_reentry_allowed` reads whether the
+  # run is a failover run, and that needs the manifest; with `RUN_DIR` and
+  # `LEDGER` alone it would judge a failover run by the horizon. When the
+  # inputs can be had they are set the way the seat-limit probe sets them
+  # (`gate_failover_inputs`); when they cannot, the ledger the caller read is
+  # used and `MANIFEST` stays empty, and the run is judged as one that is not
+  # a failover run — a pinned gate without `gate_failover_inputs` has no
+  # failover judgment to give.
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+    if ! { command -v gate_failover_inputs >/dev/null 2>&1 && gate_failover_inputs "$2"; }; then
+      RUN_DIR="$2"; LEDGER="$3"; MANIFEST=""
+    fi
+    gate_relay_reentry_allowed' \
     _ "$R_GATE" "$1" "$2" >/dev/null 2>&1
 }
 

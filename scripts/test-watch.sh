@@ -2826,16 +2826,20 @@ sil_fleet_clear
 
 # 계정 이전 대기 — 최신 handoff 뒤의 최신 `계정 이전` 행이 `결과=대기` 이고 그
 # `재개 시각` 이 아직 오지 않았으면, 그 조용함은 게이트가 고른 기다림이므로 일반
-# 갈래도 스테이지 종료 뒤 갈래도 기록하지 않는다. 재개 시각이 지나면 전과 같이 판정한다.
-sil_iso() { perl -MPOSIX -e 'print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(time + $ARGV[0]))' "$1"; }
+# 갈래도 스테이지 종료 뒤 갈래도 기록하지 않는다. 재개 시각 직후에는 릴레이나 틱이
+# 아직 부르지 않았으므로 여유(CC_FAILOVER_WATCH_SLACK_SECONDS) 동안 기다림으로 읽고,
+# 그 여유가 지나면 전과 같이 판정한다.
+sil_iso() { perl -MPOSIX -e 'print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(time + $ARGV[0]))' -- "$1"; }
 sil_fo_row() {  # sil_fo_row <결과> <재개 시각까지 초> — 원장 끝에 계정 이전 행 하나
   printf -- '- `계정 이전` | 서수=1 | 좌석 레인=~/.claude | 증거=사용량 | 결과=%s | 레인=- | 계정=- | 재개 시각=%s | 후보=- | 기록 시각=%s\n' \
     "$1" "$(sil_iso "$2")" "$(sil_iso 0)" >> "$LG"
 }
 sil_case 1201; sil_fo_row 대기 600; sil_measure 1201
 check "계정 이전: 재개 시각 전의 대기는 1201초에도 기록하지 않는다" "$(sil_fired)" "0"
-sil_case 301; sil_fo_row 대기 -5; sil_measure 301
-check "계정 이전: 재개 시각이 지난 대기는 301초에 기록한다" "$(sil_fired)" "1"
+sil_case 1201; sil_fo_row 대기 -5; sil_measure 1201
+check "계정 이전: 재개 시각 5초 뒤의 대기는 다음 호출의 여유 안이라 1201초에도 기록하지 않는다" "$(sil_fired)" "0"
+sil_case 301; sil_fo_row 대기 "-$((CC_FAILOVER_WATCH_SLACK_SECONDS + 5))"; sil_measure 301
+check "계정 이전: 재개 시각에 여유를 더한 시각이 지난 대기는 301초에 기록한다" "$(sil_fired)" "1"
 sil_case 301; sil_fo_row 대기 600; sil_fo_row 이전 0; sil_measure 301
 check "계정 이전: 대기 뒤의 다른 결과 행은 대기를 끝내 301초에 기록한다" "$(sil_fired)" "1"
 sil_case 121; sil_fo_row 대기 600
@@ -2843,10 +2847,10 @@ printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=impleme
 sil_measure 121
 check "계정 이전: 재개 시각 전에는 스테이지 종료 뒤 갈래도 기록하지 않는다" \
   "$( [ -f "$RD/watch.announced-after-stage" ] && printf 1 || printf 0)" "0"
-sil_case 121; sil_fo_row 대기 -5
+sil_case 121; sil_fo_row 대기 "-$((CC_FAILOVER_WATCH_SLACK_SECONDS + 5))"
 printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종단 부류=정상 완료\n' >> "$LG"
 sil_measure 121
-check "계정 이전: 재개 시각이 지나면 스테이지 종료 뒤 갈래가 121초에 기록한다" \
+check "계정 이전: 재개 시각에 여유를 더한 시각이 지나면 스테이지 종료 뒤 갈래가 121초에 기록한다" \
   "$( [ -f "$RD/watch.announced-after-stage" ] && printf 1 || printf 0)" "1"
 sil_case 0
 printf 'resume=%s\n' "$(( $(date -u +%s) + 60 ))" > "$RD/relay.live"

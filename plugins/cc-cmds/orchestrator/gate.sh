@@ -56935,7 +56935,8 @@ EOF
       || printf '증거\t-\n좌석\t%s\n후보\t-\n재개\t-\n불가\t분류\n' "$lab"
     return 2
   fi
-  printf '%s' "$ctx" | jq -r --argjson v "$view" --argjson ids "$ids" --argjson dead "$dead" \
+  local out why
+  out=$(printf '%s' "$ctx" | jq -r --argjson v "$view" --argjson ids "$ids" --argjson dead "$dead" \
       --arg seat "$seat" --arg lab "$lab" --arg nb "$nb" '
     def norm: if type == "string" then rtrimstr("/") else . end;
     (.) as $c
@@ -56986,11 +56987,18 @@ EOF
           (if $pick != null then "고름\t\($pick.id)\t\($pick.dir)" else empty end),
           "재개\t" + (if $t == null then "-" else ($t | tostring) end),
           "불가\t-"
-      end' 2>/dev/null || jrc=$?
-  if [ "$jrc" != "0" ]; then
+      end' 2>/dev/null) || jrc=$?
+  if [ "$jrc" != "0" ] || [ -z "$out" ]; then
     printf '증거\t-\n좌석\t%s\n후보\t-\n재개\t-\n불가\t분류\n' "$lab"
     return 2
   fi
+  printf '%s\n' "$out"
+  # THE INPUT REASONS ARE rc 2 TOO. A missing or stale inventory or usage file,
+  # or a seat account the inventory lacks, is printed on the `불가` line by the
+  # jq above; leaving it at rc 0 would have the launcher read "no candidate"
+  # and write a wait or a deadline overrun from inputs it could not read.
+  why=$(gate_failover_field "$out" '불가')
+  [ -z "$why" ] || [ "$why" = "-" ] || return 2
   return 0
 }
 
@@ -57112,9 +57120,19 @@ gate_failover_lease_put() (
 )
 
 gate_failover_wait() {
-  # gate_failover_wait <alias> <seat label> <evidence> <T or ""> <후보> — no
-  # account has room and the reason is `대기` or `상한`: write the wait and
-  # launch nothing. Always returns the rule exit, 3, after taking down this
+  # gate_failover_wait <alias> <seat label> <evidence> <T or ""> <후보> <사유> —
+  # no account has room and the reason is `대기` or `상한`: write the wait and
+  # launch nothing.
+  #
+  # INSIDE THE RELAY THE WAIT IS WAITED ON. A `대기` launch is the relay's — the
+  # seat's re-entry, the fleet chain's call or the loop's own successor — and a
+  # `결과=대기` there keeps `relay.live`, marks the relay entered and returns 0:
+  # `gate_relay_route` then polls the wait set, whose resume member holds it
+  # until the resume time (`cc_relay_wake_keys`) or the hold, whichever comes
+  # first, and launches again so the lanes are judged again. A hold that comes
+  # first hands back as it always does.
+  #
+  # OUTSIDE IT, AND ON `마감 초과`, the rule exit, 3, after taking down this
   # launcher's claims — the seat reads 3 as "another launcher drives this run",
   # and the fleet tick's chain stops on it; the tick re-calls the run once the
   # resume time has passed.
@@ -57136,7 +57154,7 @@ gate_failover_wait() {
   # not have caught up yet. It writes `결과=대기` at that resume time plus the
   # grace instead — once per wait: a wait whose resume time is an earlier wait
   # row's plus the grace already had it.
-  local alias="$1" lab="$2" ev="$3" t="$4" cands="$5" dl now prev g n res r graced=""
+  local alias="$1" lab="$2" ev="$3" t="$4" cands="$5" why="${6:-}" dl now prev g n res r graced=""
   GATE_FAILOVER_DEFERRED=""
   dl=$(gate_deadline_epoch)
   now=$(date -u +%s)
@@ -57171,6 +57189,10 @@ EOF
       "관측=좌석 레인 $lab 이 한도($ev)이고 목록 계정에 여유가 없으며 재개 시각이 $( [ -n "$t" ] && cc_epoch_to_iso "$t" || printf '없음') 으로 마감 $( [ -n "$dl" ] && cc_epoch_to_iso "$dl" || printf '없음') 안에 들지 않는다" \
       "재개 명령=한도가 풀린 뒤 좌석에서 router-shift 를 사유=중단 으로 다시 낸다"
     warn "계정 이전 마감 초과 — 여유 계정이 없고 재개 시각이 마감 안에 들지 않아 교대를 띄우지 않는다; blocked 행을 남겼다"
+  fi
+  if [ "$res" = "대기" ] && [ "$why" = "대기" ]; then
+    GATE_RELAY_ENTERED=1
+    return 0
   fi
   gate_shift_launch_drop_claims
   return "$GATE_EXIT_RULE"
@@ -57416,7 +57438,7 @@ gate_launch_shift() {
     else
       case "$reason" in
         대기|상한)
-          gate_failover_wait "$alias" "$fo_lab" "$fo_ev" "$fo_t" "$fo_cands"
+          gate_failover_wait "$alias" "$fo_lab" "$fo_ev" "$fo_t" "$fo_cands" "$reason"
           return $? ;;
         *) fo_res="좌석 복귀" ;;
       esac
@@ -58182,6 +58204,18 @@ gate_relay_wait() {
     if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$resume" ] && [ -z "$mw" ]; then
       log "교대 대기 끝 — 기다리던 것이 이미 끝났다"
       return 0
+    fi
+    # BEFORE A FAILOVER WAIT'S RESUME TIME NO OTHER KEY WAKES THE RELAY. A wake
+    # key is consumed only by a `교대 기동` row below its evidence, and a wait
+    # writes none, so a key that woke the launch which found no account with
+    # room is still standing: reading it here would launch, judge the same wait
+    # and come back on every poll until the resume time or the hold. The
+    # return conditions above still apply; at the resume time the keys are read
+    # as always, the `fr:` key among them.
+    if cc_failover_waiting_now "$LEDGER" "$now"; then
+      sleep "$GATE_WAIT_POLL_SECONDS"
+      gate_relay_write "$stages" "$ci" "$reset"
+      continue
     fi
     if [ -n "$(cc_relay_wake_keys "$RUN_DIR" "$LEDGER")" ]; then
       log "교대 대기 끝 — 깨움 조건이 섰다"
