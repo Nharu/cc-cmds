@@ -63343,7 +63343,7 @@ jq '.body += "x"' "$RV106_ROOT/rv.json" > "$RV106_ROOT/rv2.json"
 printf 'notjson\n' > "$RV106_ROOT/rv3.json"
 rd106_v() { "$RV106_RP" verify --request "$RV106_ROOT/rq-rc.json" --review "$RV106_ROOT/$1" --comments "$RV106_ROOT/cm.json" 2>/dev/null; }
 check "108: 대조는 일치·불일치·판독불가 셋을 낸다" "$(rd106_v rv.json)|$(rd106_v rv2.json)|$(rd106_v rv3.json)" "일치|불일치|판독불가"
-awk '{ print } /^자동 리뷰 결과를/ && !done { print "{모름}"; done = 1 }' "$RV106_FMT" > "$RV106_ROOT/badfmt.md"
+awk '{ print } /^리뷰 결과를 올립니다/ && !done { print "{모름}"; done = 1 }' "$RV106_FMT" > "$RV106_ROOT/badfmt.md"
 "$RV106_RP" render --settle --format "$RV106_ROOT/badfmt.md" --report "$RV106_ROOT/items.md" --head "$rd106_head" \
   --p0 1 --p1 2 --out "$RV106_ROOT/s.json" >/dev/null 2>&1
 check "108: 모르는 자리표시자를 가진 문면 파일은 렌더가 거절한다" "$([ $? != 0 ] && echo 거절)" "거절"
