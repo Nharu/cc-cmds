@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.35.1] - 2026-11-06
+
+리뷰어 런이 PR 에 올리는 리뷰 본문이 사람이 쓴 리뷰처럼 읽히도록 기본 리뷰 게시 문면에서 기계적인 표현을 걷어 냈다.
+
+### Changed
+
+- **리뷰 게시 기본 문면** — `review-format.default.md` 의 세 틀 첫 줄을 바꿨다. `본문` 은 「자동 리뷰 결과를 올립니다.」에서 「리뷰 결과를 올립니다.」로, `본문 지적 없음` 은 「자동 리뷰에서 P0·P1 지적이 나오지 않았습니다.」에서 「리뷰에서 P0·P1 지적이 나오지 않았습니다.」로, `정산 본문` 은 「종료 절 정산 리뷰입니다.」에서 「리뷰 결과를 정리해 올립니다.」로 바뀐다. 자리표시자와 다른 틀은 그대로다.
+- **렌더 시험** — test-gate 절 108 의 잘못된 문면 파일 시험이 `본문` 틀 첫 줄을 찾는 앵커를 새 문면에 맞췄다.
+
 ## [3.35.0] - 2026-11-06
 
 사람만 정할 수 있는 결정에서 멈춘 정지 기록이 `**결정 초안**` 블록에 스테이지가 내릴 결정과 그 결정을 정하는 인용을 함께 싣는다. 게이트가 인용을 바이트 단위로 대조해 통과시키면 좌석은 사람 없이 `초안 그대로=예` 로 그 초안을 채택한다.
