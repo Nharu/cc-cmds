@@ -2854,9 +2854,18 @@ residual_unmet_message() {
 # THE SEGMENT is a slice id of `## 구현 슬라이싱`. `**닿는 슬라이스**` naming
 # an id the document has no `### 슬라이스 <id>` for reads `전체`, and so does
 # every entry of a document with no slicing section.
+#
+# THE VALUES MODE (a third argument `values`) reads the same section with the
+# same field grammar, but prints every entry, open or closed, reaching the
+# segment or not: one line `<kind>\t<heading>\t<상태>\t<사유>\t<골격급>` per
+# entry in document order, where <kind> is `블록` for a `### ` block and `표`
+# for a table row (whose `사유` and `골격급` cannot be read and print empty).
+# The gate's check of a seat-adopted decision draft reads it, so the two
+# readings of an entry never part. Without the third argument the output is
+# the headings above, unchanged.
 # ---------------------------------------------------------------------------
 unresolved_closure_pending() {
-  local doc="${1:-}" seg="${2:-}" ids="" sliced=0
+  local doc="${1:-}" seg="${2:-}" mode="${3:-}" ids="" sliced=0
   [ -n "$doc" ] || return 0
   if [ ! -f "$doc" ]; then printf '문서 판독 불가 — 파일이 없다: %s\n' "$doc"; return 0; fi
   if [ ! -r "$doc" ]; then printf '문서 판독 불가 — 읽을 수 없다: %s\n' "$doc"; return 0; fi
@@ -2865,7 +2874,7 @@ unresolved_closure_pending() {
     sliced=1
     ids=$(slice_ids "$doc" | tr '\n' ' ' || true)
   fi
-  defenced "$doc" | UCP_SEG="$seg" UCP_IDS=" $ids " UCP_SLICED="$sliced" awk '
+  defenced "$doc" | UCP_SEG="$seg" UCP_IDS=" $ids " UCP_SLICED="$sliced" UCP_MODE="$mode" awk '
     function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
     function field(line, key,   s, v) {
       s = line; sub(/^- /, "", s)
@@ -2889,6 +2898,10 @@ unresolved_closure_pending() {
     function resolved(s) { return (s ~ /^해결(됨)?[ \t]*(—|·|\(|$)/) }
     function flush(   forced, touch) {
       if (head == "") return
+      if (ENVIRON["UCP_MODE"] == "values") {
+        out[++nout] = "블록\t" head "\t" state "\t" reason "\t" skel
+        head = ""; return
+      }
       if (hasstate && resolved(state)) { head = ""; return }
       forced = (skel == "예" || index(reason, "감사 합성 요구") == 1 || index(reason, "베이스 계약 변경 필요") == 1)
       if (!forced && disp == "구현 무관") { head = ""; return }
@@ -2912,6 +2925,7 @@ unresolved_closure_pending() {
       first = trim(cell[2]); if (first == "") return
       st = (statecol ? trim(cell[statecol]) : "")
       gsub(/\*\*/, "", st)
+      if (ENVIRON["UCP_MODE"] == "values") { out[++nout] = "표\t" first "\t" st "\t\t"; return }
       if (resolved(st)) return
       if (reaches("")) out[++nout] = first
     }
@@ -2992,8 +3006,10 @@ unresolved_plan_suppress() {
 
 # halt_step_is_unclosed_decision <halt record> — 0 when the record's whole
 # `**스텝**` value is exactly `Step 1 CFI-U3 BT-STOP — 미결 결정`: the halt an
-# implement stage writes when open decisions reach its segment, which only a
-# person answers. The whole value is compared, never a cut at the first ` — `.
+# implement stage writes when open decisions reach its segment, which a person
+# answers — or the seat, only by adopting the record's `**결정 초안**` with
+# `초안 그대로=예` once the gate's check of the draft passed. The whole value is
+# compared, never a cut at the first ` — `.
 halt_step_is_unclosed_decision() {
   [ -f "$1" ] || return 1
   [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]
