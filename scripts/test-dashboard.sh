@@ -27,6 +27,13 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-dashboard.XXXXXX")
 XDG_STATE_HOME="$WORK/state"
 export XDG_STATE_HOME
 mkdir -p "$XDG_STATE_HOME"
+# The attention spool every server and query of this suite reads, in place of
+# the host's: a waiting run needs a person only while a session its lineage
+# names has a live status snapshot here.
+SPOOL="$WORK/spool"
+mkdir -p "$SPOOL/status"
+CC_CMDS_ATTENTION_ROOT="$SPOOL"
+export CC_CMDS_ATTENTION_ROOT
 
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
@@ -43,6 +50,17 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 pyq() { PYTHONDONTWRITEBYTECODE=1 python3 "$@"; }
+
+seat_line() {
+  # seat_line <run-dir> <session-id> — one more session in the run's lineage.
+  printf '%s\n' "$2" >> "$1/session-lineage"
+}
+seat_snap() {
+  # seat_snap <session-id> [<last_activity_ms>] — the session's status snapshot
+  # in the suite's spool; the activity time defaults to now.
+  printf '{"schema":1,"session_id":"%s","last_activity_ms":%s}\n' "$1" "${2:-$(date +%s)000}" \
+    > "$SPOOL/status/$1.json"
+}
 
 dash() {
   # dash <state-home> <port> <verb> [args…] — the switch ON, for this call only.
@@ -133,8 +151,9 @@ fx_mkrun done-run; fx_ledger_path; fx_segment S1 머지됨; fx_done
 fx_mkrun dead-run; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 7200
 mkdir -p "$XDG_STATE_HOME/cc-cmds/run/noledger"
 
-# T3 — waiting on an approval, grown four days ago.
+# T3 — waiting on an approval, grown four days ago, its seat session alive.
 fx_mkrun old-pend; fx_ledger_path; fx_segment S1 실행중; fx_approval A1 대기; fx_heartbeat 0 345600
+seat_line "$FX_RUN_DIR" sid-old-pend; seat_snap sid-old-pend
 
 # T4 — no sup.log, a size-0 .err, one stage without its cost row.
 fx_mkrun t4-run; fx_ledger_path
@@ -474,11 +493,15 @@ ids_in() {
 
 fx_mkrun need-dead; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 7200
 halt_rec "$FX_RUN_DIR/halt/S1#1.md" "어느 쪽으로   갈까요" "  둘째 줄입니다"
-fx_mkrun need-old; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 432000
+# An open approval keeps it 승인대기 past the abandon age, and its live seat
+# keeps it a need, which the period does not hide.
+fx_mkrun need-old; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 432000; fx_approval O1 대기
 halt_rec "$FX_RUN_DIR/halt/shift/S1#1.md" "오래된 질문" ""
 fx_age_file "$FX_LEDGER" 432000
+seat_line "$FX_RUN_DIR" sid-need-old; seat_snap sid-need-old
 
 fx_mkrun pend-run; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 5
+seat_line "$FX_RUN_DIR" sid-pend-run; seat_snap sid-pend-run
 for a in "P1|-" "P2|A"; do
   fx_row '승인' "승인 id=${a%%|*}" '상태=대기' '대상=cc-cmds' '절단점=머지' '유도 절단점=머지' \
     '행위 다이제스트=d1' "막는 세그먼트=${a#*|}" '질문 문면=사전 인가 밖 행위를 수행할까요' '답변 문면=-' \
@@ -621,24 +644,25 @@ fx_mkrun tl-run; fx_ledger_path
   printf -- '- `stage-result` | 세그먼트=A | 스테이지=A | 종류=review | 종료 코드=1 | 실행 버전=2 | 종단 부류=외부 종료\n'
 } > "$FX_LEDGER"
 
-NEW_KEYS="['attention', 'deadline', 'deadline_left_s', 'elapsed_s', 'ended_day', 'experiment', 'now', 'prs', 'result', 'started_at', 'waiting']"
+NEW_KEYS="['attention', 'deadline', 'deadline_left_s', 'elapsed_s', 'ended_day', 'experiment', 'now', 'prs', 'result', 'seat_active', 'started_at', 'waiting']"
 
-# T15 — a halt record makes an abandoned run need a person.
-check "T15 답 없는 기록이 있는 두 시간 무성장 런은 버려짐·need 다" \
-  "$(row_of need-dead '(r["state"], r["attention"], r["hidden"])' 3)" "[('버려짐', 'need', False)]"
-check "T15 그 런이 기본 목록에 보인다" "$(nq "'need-dead' in [r['id'] for r in M.runs(now=now)['runs']]")" "True"
+# T15 — a halt record does not make an abandoned run need a person.
+check "T15 답 없는 기록이 있는 두 시간 무성장 런은 버려짐·dead·숨김이다" \
+  "$(row_of need-dead '(r["state"], r["attention"], r["hidden"], r["seat_active"])' 3)" "[('버려짐', 'dead', True, False)]"
+check "T15 그 런이 기본 목록에 없다" "$(nq "'need-dead' in [r['id'] for r in M.runs(now=now)['runs']]")" "False"
 check "T15 waiting 에 기록의 질문 문면이 공백을 접어 담긴다" \
   "$(row_of need-dead '[(w["kind"], w["text"], w["returned"], w["recommend"]) for w in r["waiting"]]' 3)" \
   "[[('중단 기록', '어느 쪽으로 갈까요 둘째 줄입니다', False, '\`재시도\`')]]"
-check "T15 기간 밖 need 런이 기본 목록에 보이고 band 는 그대로다" \
+check "T15 활성 좌석의 기간 밖 need 런이 기본 목록에 보이고 band 는 그대로다" \
   "$(nq "[(r['attention'], r['band']) for r in M.runs(now=now)['runs'] if r['id'] == 'need-old']")" \
   "[('need', 'older')]"
 check "T15 halt/shift/ 의 기록도 기다리는 것이다" \
-  "$(row_of need-old '[w["ref"].endswith("/halt/shift/S1#1.md") for w in r["waiting"]]' all)" "[[True]]"
+  "$(row_of need-old 'any(w["ref"].endswith("/halt/shift/S1#1.md") for w in r["waiting"])' all)" "[True]"
 
 # T16 — open approvals: an action approval carries its target, cut point and
 # blocked segment; judgment and boundary approvals carry their question as is.
-check "T16 열린 승인 런은 승인대기·need 다" "$(row_of pend-run '(r["state"], r["attention"])' 3)" "[('승인대기', 'need')]"
+check "T16 활성 좌석의 열린 승인 런은 승인대기·need 다" \
+  "$(row_of pend-run '(r["state"], r["attention"], r["seat_active"])' 3)" "[('승인대기', 'need', True)]"
 check "T16 승인 문면 (행위 승인 덧붙임, 막는 세그먼트=- 생략, 판단·경계 그대로)" \
   "$(row_of pend-run '[(w["ref"], w["text"]) for w in r["waiting"]]' 3)" \
   "[[('B1', '픽스처'), ('P1', '사전 인가 밖 행위를 수행할까요 — 대상 cc-cmds · 절단점 머지'), ('P2', '사전 인가 밖 행위를 수행할까요 — 대상 cc-cmds · 절단점 머지 · 막는 세그먼트 A'), ('P3', '어느 안을 고를까요')]]"
@@ -662,7 +686,7 @@ check "T18 모두 끝난 회수 런은 종단·ended·미상이다" \
   "[('종단', 'ended', {'class': '미상', 'label': None, 'line': None})]"
 
 # T19 — the two hiding reasons and the experiment toggle.
-for t in "False False|2|2" "True False|3|0" "False True|1|2" "True True|1|0"; do
+for t in "False False|3|2" "True False|4|0" "False True|1|2" "True True|1|0"; do
   q=${t%%|*}; e=${q% *}; d=${q#* }; rest=${t#*|}
   check "T19 exp=$e dead=$d 의 숨긴 수와 실험 숨긴 수" \
     "$(nq "(lambda R: (R['hidden'], R['hidden_experiment']))(M.runs(days='all', exp=$e, dead=$d, now=now))")" \
@@ -812,6 +836,58 @@ print(a, b, c, n(whole))' "$LN")" "0 0 1 1"
 check "T27 그 판정이 셸과 같다" \
   "$(bash -c '. "$1"; cc_unanswered_halts "$2" "$2/L.md"' _ "$LIVENESS" "$LN")" "1"
 
+# T30 — the seat: a waiting run needs a person only while a session its lineage
+# names has a live snapshot. These runs sit in a run root of their own, so the
+# counts T19 asserts do not move.
+XDG_STATE_HOME="$WORK/sx"
+SXR="$XDG_STATE_HOME/cc-cmds/run"
+mkdir -p "$SXR"
+for id in seat-on seat-off seat-two seat-boot seat-nolin; do
+  fx_mkrun "$id"; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 5; fx_approval A1 대기
+done
+seat_line "$SXR/seat-on" sid-on; seat_snap sid-on
+seat_line "$SXR/seat-off" sid-off
+seat_line "$SXR/seat-two" sid-gone; seat_line "$SXR/seat-two" sid-back; seat_snap sid-back
+# A snapshot last active at epoch 1000 s: before any boot time a case passes
+# above 1000, after any it passes below.
+seat_line "$SXR/seat-boot" sid-boot; seat_snap sid-boot 1000000
+fx_mkrun seat-dead; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 7200
+halt_rec "$FX_RUN_DIR/halt/S1#1.md" "버려진 런의 질문" ""
+seat_line "$FX_RUN_DIR" sid-dead; seat_snap sid-dead
+XDG_STATE_HOME="$NX"
+
+sx_row() {
+  # sx_row <run-id> <expression over r> — one row of the seat root's list, every run shown.
+  nq "[($2) for r in m.Model(root='$SXR').runs(days='all', dead=True, exp=True, now=now)['runs'] if r['id'] == '$1']"
+}
+check "T30 활성 스냅샷이 있는 좌석의 승인대기 런은 need 다" \
+  "$(sx_row seat-on '(r["state"], r["attention"], r["hidden"], r["seat_active"])')" "[('승인대기', 'need', False, True)]"
+check "T30 스냅샷이 없는 좌석의 승인대기 런은 dead·숨김이다" \
+  "$(sx_row seat-off '(r["state"], r["attention"], r["hidden"], r["seat_active"])')" "[('승인대기', 'dead', True, False)]"
+# The boot filter is off on a host that is not macOS, so the counts read the
+# same on every host.
+check "T30 좌석 없는 대기 런은 hidden 과 hidden_no_seat 에 함께 세이고 기본 목록에 없다 (버려짐은 hidden 에만)" \
+  "$(ORCH_HOST_OS=Linux nq "(lambda R: (R['hidden'], R['hidden_no_seat'], sorted(r['id'] for r in R['runs'])))(m.Model(root='$SXR').runs(days='all', now=now))")" \
+  "(3, 2, ['seat-boot', 'seat-on', 'seat-two'])"
+check "T30 dead=True 면 좌석 없는 대기 런이 목록에 나온다" \
+  "$(nq "'seat-off' in [r['id'] for r in m.Model(root='$SXR').runs(days='all', dead=True, now=now)['runs']]")" "True"
+check "T30 계보의 뒤 세션만 스냅샷이 있어도 need 다" \
+  "$(sx_row seat-two '(r["attention"], r["seat_active"])')" "[('need', True)]"
+check "T30 버려짐 런은 살아 있는 스냅샷이 있어도 dead·숨김이다" \
+  "$(sx_row seat-dead '(r["state"], r["attention"], r["hidden"], r["seat_active"])')" "[('버려짐', 'dead', True, True)]"
+check "T30 부팅 시각보다 이른 스냅샷은 비활성이고 늦은 스냅샷은 활성이다" \
+  "$(nq "(lambda M2: (M2.discover(), [(M2.evaluate(M2.find('seat-boot'), m.ProcTable(), now, seats=m.SeatTable(boot=b)))['attention'] for b in (2000, 999)])[1])(m.Model(root='$SXR'))")" \
+  "['dead', 'need']"
+check "T30 부팅 시각이 없으면 거름을 건너뛴다" \
+  "$(nq "m.SeatTable(boot=None).seat_active('$SXR/seat-boot')")" "True"
+check "T30 스풀 루트가 없으면 승인대기 런은 need 이고 seat_active 는 None 이다" \
+  "$(CC_CMDS_ATTENTION_ROOT="$WORK/nospool" sx_row seat-off '(r["attention"], r["seat_active"])')" "[('need', None)]"
+check "T30 계보 파일이 없는 대기 런은 스풀이 있으면 비활성이다" \
+  "$(sx_row seat-nolin '(r["attention"], r["seat_active"])')" "[('dead', False)]"
+check "T30 상세 summary 에도 같은 attention·hidden·seat_active 가 실린다" \
+  "$(nq "(lambda s: (s['attention'], s['hidden'], s['seat_active']))(m.Model(root='$SXR').detail('seat-off', now=now)['summary'])")" \
+  "('dead', True, False)"
+
 # T28 — the HTTP layer over this root: the toggle reaches the tick cache, the
 # shell row, and the evaluation cache picking up a new halt record.
 PN=$(free_port)
@@ -832,11 +908,11 @@ check "T28 얼어 있는 끝난 런은 기록이 없을 때 waiting 이 비어 �
 halt_rec "$NX/cc-cmds/run/cache-end/halt/S1#1.md" "얼린 뒤 생긴 질문" ""
 halt_rec "$NX/cc-cmds/run/cache-dead/halt/S1#1.md" "버려진 뒤 생긴 질문" ""
 sleep 3.2
-get "$PN" '/api/runs?days=all' >/dev/null
+get "$PN" '/api/runs?days=all&dead=1' >/dev/null
 check "T28 얼어 있던 끝난 런에 기록을 더하면 waiting 이 바뀌고 ended 그대로다" \
   "$(jq_body '[(r["attention"], len(r["waiting"])) for r in d["runs"] if r["id"] == "cache-end"]')" "[('ended', 1)]"
-check "T28 버려진 런에 기록을 더하면 다음 응답에서 need 다" \
-  "$(jq_body '[r["attention"] for r in d["runs"] if r["id"] == "cache-dead"]')" "['need']"
+check "T28 버려진 런에 기록을 더하면 다음 응답에서 waiting 이 바뀌고 dead 그대로다" \
+  "$(jq_body '[(r["attention"], len(r["waiting"])) for r in d["runs"] if r["id"] == "cache-dead"]')" "[('dead', 1)]"
 
 # T29 — the preview entry: up inside a stage, the resident server untouched.
 REC_BEFORE=$(cat "$(rec_file "$NX")")
