@@ -18655,6 +18655,20 @@ gate_lane_label() {
   lane_label_of "${cfg:-${HOME:-}/.claude}"
 }
 
+gate_seat_config_dir() {
+  # The configuration directory the run's settings are rendered for. Inside a
+  # shift the gate moved to another account the environment names that
+  # account, while the settings file, its cache key and the instruction-file
+  # read it grants belong to the seat; there the answer is the seat that
+  # `resolve_account` gives with its environment tier skipped. Everywhere else
+  # it is the environment value, empty when unset, as it always was.
+  if resolve_account_seat_reverted; then
+    resolve_account 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "${CLAUDE_CONFIG_DIR:-}"
+}
+
 gate_autocompact_layer() {
   # gate_autocompact_layer <settings-file> — one layer's reading, as
   # `<enabled>\t<window>`: each side is the key's value or empty when absent.
@@ -18793,7 +18807,7 @@ gate_settings_key() {
     printf 'doc-base\t%s\n' "${DOC_BASE:-}"
     printf 'doc-dir-phys\t%s\n' "$( [ -n "${DOC_DIR:-}" ] && cd "$DOC_DIR" 2>/dev/null && pwd -P || true)"
     printf 'doc-base-phys\t%s\n' "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)"
-    printf 'config-dir\t%s\n' "${CLAUDE_CONFIG_DIR:-}"
+    printf 'config-dir\t%s\n' "$(gate_seat_config_dir)"
     printf 'home\t%s\n' "${HOME:-}"
     # The target rows verbatim: both worktree fields of every declared target
     # are interpolated into `additionalDirectories`.
@@ -19007,7 +19021,7 @@ $(gate_segment_worktrees_for_settings)"
   # granting a read of it grants nothing the stage's own prompt did not already
   # contain.
   local cfgdir adir aprev allow_extra=""
-  cfgdir="${CLAUDE_CONFIG_DIR:-}"
+  cfgdir=$(gate_seat_config_dir)
   [ -n "$cfgdir" ] || cfgdir="${HOME:-}${HOME:+/.claude}"
   cfgdir="${cfgdir%/}"
   # `Read(` takes the path with ONE extra leading slash — the repo's own
@@ -50298,9 +50312,19 @@ gate_launch_stage() {
       return "$GATE_EXIT_ROUTE"
     fi
   fi
+  # A STAGE DISPATCHED FROM A SHIFT THE GATE MOVED TO ANOTHER ACCOUNT runs on
+  # the seat, not on that account. The answer is taken here, while the moved
+  # shift's environment is still in force: with routing on the router's own
+  # seat reading skips the environment tier under the same condition, and with
+  # routing off the seat is exported below. Either way the stage and its
+  # supervisor are launched with `CC_GATE_SHIFT_LANE` empty, so nothing below
+  # this dispatch ever reads itself as a moved shift.
+  local seat_rev=0 seat_cfg=""
+  resolve_account_seat_reverted && seat_rev=1
   if run_routed; then
     routed=1
     gate_launch_route "$alias" "$seg" "$kind" "$@" || return $?
+    local -x CC_GATE_SHIFT_LANE=
     # A CARRY THAT PICKED THE HALTED SESSION re-attaches it with the fixed resume
     # sentence, not the dispatch form, and a waiting one wakes up with the same:
     # the session already holds its question, and the card holds the answer.
@@ -50323,6 +50347,14 @@ gate_launch_stage() {
       return $?
     fi
   fi
+  if [ "$routed" = "0" ] && [ "$seat_rev" = "1" ]; then
+    if seat_cfg=$(resolve_account 2>/dev/null) && [ -n "$seat_cfg" ]; then
+      local -x CLAUDE_CONFIG_DIR="$seat_cfg"
+    else
+      warn "the seat lane could not be resolved for a stage dispatched from a moved shift — it inherits the shift's lane ($seg)"
+    fi
+  fi
+  local -x CC_GATE_SHIFT_LANE=
   # THE STAGE INSTRUCTIONS, SYNTHESIZED BEFORE ANY SIDE EFFECT. A refusal here
   # (127, like a missing wrapper) is a launch precondition — a host or
   # repository state a person has to change — so it must not consume an
@@ -55792,6 +55824,36 @@ gate_shift_self_ordinal() {
   printf '%s' "$n"
 }
 
+gate_shift_transcript_of() {
+  # gate_shift_transcript_of <ordinal> — the transcript file of routing shift
+  # <ordinal>, rc 1 when there is none. A shift writes its transcript under the
+  # lane it was launched on, and the gate may have launched it on an inventory
+  # account rather than the seat, so the lane its `교대 기동` row names, with a
+  # leading `~` expanded, is searched first. A row that is missing, names no
+  # lane or names one whose `projects` directory is not there falls back to the
+  # caller's own directory, as before.
+  local sid="$1" lab dir f
+  sid=$(session_uuid "shift" "$1")
+  lab=$(gate_failover_launch_lane "$1" 2>/dev/null || true)
+  case "$lab" in
+    '~') lab="${HOME:-}" ;;
+    '~/'*) lab="${HOME:-}/${lab#\~/}" ;;
+  esac
+  case "$lab" in
+    /*)
+      dir="${lab%/}/projects"
+      if [ -d "$dir" ]; then
+        for f in "$dir/$sid.jsonl" "$dir"/*/"$sid.jsonl"; do
+          [ -f "$f" ] || continue
+          printf '%s\n' "$f"
+          return 0
+        done
+      fi
+      ;;
+  esac
+  gate_transcript_of_session "$sid"
+}
+
 gate_shift_context_of() {
   # gate_shift_context_of <ordinal> — the current context of routing shift
   # <ordinal>, in tokens, or nothing when its transcript cannot be found or
@@ -55808,7 +55870,7 @@ gate_shift_context_of() {
   local n="$1" f v
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
   [ "$n" -ge 1 ] || return 0
-  f=$(gate_transcript_of_session "$(session_uuid "shift" "$n")") || f=""
+  f=$(gate_shift_transcript_of "$n") || f=""
   [ -n "$f" ] && [ -f "$f" ] || return 0
   v=$(tail -c 262144 "$f" 2>/dev/null | gate_usage_scan | awk '{print $2}')
   case "${v:-}" in ''|*[!0-9]*) return 0 ;; esac
@@ -55827,7 +55889,7 @@ gate_shift_org_moves_of() {
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
   [ "$n" -ge 1 ] || return 0
   sid=$(session_uuid "shift" "$n")
-  f=$(gate_transcript_of_session "$sid") || f=""
+  f=$(gate_shift_transcript_of "$n") || f=""
   [ -n "$f" ] && [ -f "$f" ] || return 0
   m=$(transcript_org_moves "$f")
   case "$m" in ''|0|*[!0-9]*) return 0 ;; esac
