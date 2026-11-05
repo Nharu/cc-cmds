@@ -972,6 +972,126 @@ check "재진입: 두 번째 틱은 백로그로 간다" "$(backlog_status t2h)"
 kill "$t2_relay" 2>/dev/null || true
 rm -rf "$WORK"/xdg/cc-cmds/run/T2?
 
+# --- seat-limit recall: a run the boot did not cut, its seat lane at its limit -----
+# Each fixture run carries the boot marker of this boot, so the boot branch passes
+# it over and only the seat-limit trigger can take it. The fake pinned gate answers
+# the four functions the tick sources from it: `run_failover_allowed` holds while
+# `fo-allowed` exists, the judgment's `증거` is `fo-ev`, and the relay re-entry
+# predicate is the real one's `대기` reading. A `router-shift` does what `t3.mode`
+# says: `stop` launches and leaves `중단`, `wait-future` writes a failover wait
+# whose resume time is ahead and launches nothing, `handback` writes nothing.
+T3O="$WORK/t3orch"; mkdir -p "$T3O"
+cat > "$T3O/gate.sh" <<'EOF'
+#!/usr/bin/env bash
+if [ "${CC_GATE_SOURCE_ONLY:-0}" = "1" ]; then
+  gate_failover_inputs() { RUN_DIR="$1"; LEDGER=$(sed -n '1p' "$1/ledger-path"); [ -f "$LEDGER" ]; }
+  run_failover_allowed() { [ -e "$RUN_DIR/fo-allowed" ]; }
+  gate_relay_reentry_allowed() {
+    [ "$(awk '/^- `handoff` /{w=(index($0," | 사유=대기 | ")>0)?"w":"x"} /^- `교대 기동` /{w="x"} END{printf "%s",w}' "$LEDGER" 2>/dev/null)" = w ]
+  }
+  gate_failover_judge() { printf '증거\t%s\n' "$(cat "$RUN_DIR/fo-ev" 2>/dev/null || printf -- '-')"; }
+  return 0 2>/dev/null || exit 0
+fi
+verb=$1; shift
+man=""; kind=""; first=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --manifest) man=$2; shift 2 ;;
+    --kind) kind=$2; shift 2 ;;
+    --) shift; first=${1:-}; break ;;
+    *) shift ;;
+  esac
+done
+rid=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$man" | sed -n '1p')
+rd="$XDG_STATE_HOME/cc-cmds/run/$rid"
+led=$(cat "$rd/ledger-path")
+printf '%s %s %s CLAUDE_CONFIG_DIR=%s REENTRY=%s\n' "${kind:-$verb}" "$rid" "${first:--}" "${CLAUDE_CONFIG_DIR:-}" "${CC_PIPELINE_REENTRY:-}" >> "$TEST_LOG_DIR/t3.log"
+now=$(date -u +%s)
+case "$verb:$kind" in
+  snapshot:) printf '{"H":"h-%s"}\n' "$rid" ;;
+  act:router-shift)
+    case "$(cat "$rd/t3.mode" 2>/dev/null)" in
+      stop)
+        n=$(cat "$rd/t3.calls" 2>/dev/null || echo 1); n=$((n + 1)); echo "$n" > "$rd/t3.calls"
+        printf -- '- `교대 기동` | 서수=%s\n- `handoff` | 교대=%s | 사유=중단 | 대상=infra | 기록 시각=%s\n' \
+          "$n" "$n" "$(date -u -r "$now" +%FT%TZ 2>/dev/null || date -u -d "@$now" +%FT%TZ)" >> "$led" ;;
+      wait-future)
+        printf -- '- `계정 이전` | 서수=2 | 좌석 레인=cc | 증거=사용량 | 결과=대기 | 레인=- | 계정=- | 재개 시각=%s | 후보=acct-a:소진 | 기록 시각=%s\n' \
+          "$(date -u -r $((now + 3600)) +%FT%TZ 2>/dev/null || date -u -d "@$((now + 3600))" +%FT%TZ)" \
+          "$(date -u -r "$now" +%FT%TZ 2>/dev/null || date -u -d "@$now" +%FT%TZ)" >> "$led" ;;
+    esac ;;
+esac
+exit 0
+EOF
+cp "$T2O/watch.sh" "$T2O/checks.sh" "$T3O/"
+chmod +x "$T3O"/*.sh
+T3BOOT=$(( NOW - 7200 ))
+T3_HO_AT=$(iso $(( NOW - 1800 )))
+T3_WAIT="- \`handoff\` | 교대=1 | 사유=대기 | 대상=infra | 기록 시각=$T3_HO_AT"
+T3_CAP="- \`handoff\` | 교대=1 | 사유=상한 | 대상=infra | 기록 시각=$T3_HO_AT"
+T3_STOP="- \`handoff\` | 교대=1 | 사유=중단 | 대상=infra | 기록 시각=$T3_HO_AT"
+t3_fo_wait() {  # t3_fo_wait <resume epoch> — a `계정 이전` wait row.
+  printf -- '- `계정 이전` | 서수=2 | 좌석 레인=cc | 증거=사용량 | 결과=대기 | 레인=- | 계정=- | 재개 시각=%s | 후보=acct-a:소진 | 기록 시각=%s' \
+    "$(iso "$1")" "$(iso $(( NOW - 1700 )))"
+}
+t3_run() {
+  # t3_run <run-id> <ledger rows…> — a failover run of the interactive lane that
+  # this boot did not cut, its seat lane at its limit, nothing driving it.
+  local rd="$WORK/xdg/cc-cmds/run/$1"
+  t2_run "$@"
+  printf 'manifest=%s\ntarget=infra\ngate=%s\ncutpoint=머지\nsurface=워크트리쓰기\n' "$WORK/t2man/$1.plan.md" "$T3O/gate.sh" > "$rd/seat-call"
+  touch -t 202001010000 "$rd/seat-call"
+  mkdir -p "$PACE/reentry"; printf '%s\n' "$T3BOOT" > "$PACE/reentry/$1.boot"
+  : > "$rd/fo-allowed"; printf '사용량\n' > "$rd/fo-ev"; printf 'stop\n' > "$rd/t3.mode"
+}
+d_fresh d-t3 t3h
+t3_run F1 "$T2_LAUNCH" "$T3_WAIT"
+t3_run F2 "$T2_LAUNCH" "$T3_CAP"
+t3_run F3 "$T2_LAUNCH" "$T3_WAIT" "$(t3_fo_wait $(( NOW + 3600 )))"; printf -- '-\n' > "$WORK/xdg/cc-cmds/run/F3/fo-ev"
+t3_run F4 "$T2_LAUNCH" "$T3_WAIT" "$(t3_fo_wait $(( NOW - 60 )))"; printf -- '-\n' > "$WORK/xdg/cc-cmds/run/F4/fo-ev"
+printf 'wait-future\n' > "$WORK/xdg/cc-cmds/run/F4/t3.mode"
+t3_run F5 "$T2_LAUNCH" "$T3_WAIT"; printf 'handback\n' > "$WORK/xdg/cc-cmds/run/F5/t3.mode"
+# One run per predicate, each the F1 state with that one predicate failing.
+t3_run P1 "$T2_LAUNCH" "$T3_WAIT"; rm -f "$WORK/xdg/cc-cmds/run/P1/fo-allowed"
+t3_run P2 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/P2/done"
+t3_run P3 "$T2_LAUNCH" "$T3_WAIT"
+sleep 300 & t3_relay=$!; BG_PIDS="$BG_PIDS $t3_relay"
+printf '%s\n%s\n' "$t3_relay" "$(bash -c '. "$1" && cc_proc_fingerprint "$2"' _ "$ORCH/liveness.sh" "$t3_relay")" > "$WORK/xdg/cc-cmds/run/P3/relay.live"
+touch -t 202001010000 "$WORK/xdg/cc-cmds/run/P3/relay.live"
+t3_run P4 "$T2_LAUNCH" "$T3_STOP"
+t3_run P5 "$T2_LAUNCH" "$T3_WAIT"; printf -- '-\n' > "$WORK/xdg/cc-cmds/run/P5/fo-ev"
+t3_run P6 "$T2_LAUNCH" "$T3_WAIT"; touch "$WORK/xdg/cc-cmds/run/P6/seat-call"
+t3_run P7 "$T2_LAUNCH" "$T3_WAIT"; printf '%s/-\n' "$T3_HO_AT" > "$PACE/reentry/P7.gap"
+rm -f "$TEST_LOG_DIR/t3.log" "$TEST_LOG_DIR/t2.log" "$TEST_LOG_DIR/t2-checks.log"
+FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T3BOOT" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t3-1.err"; rc=$?
+t3n() { grep -c "^$1 $2 " "$TEST_LOG_DIR/t3.log" 2>/dev/null || true; }
+check "좌석 한도: 틱은 0 으로 끝난다" "$rc" "0"
+check "좌석 한도: 대기 후보는 전용 행 한 번과 router-shift 한 번, 사유는 대기" \
+  "$(t3n seat-limit-recall F1):$(t3n router-shift F1):$(grep '^seat-limit-recall F1 ' "$TEST_LOG_DIR/t3.log" | cut -d' ' -f3):$(grep '^router-shift F1 ' "$TEST_LOG_DIR/t3.log" | cut -d' ' -f3)" \
+  "1:1:사유=대기:대기"
+check "좌석 한도: 상한 뒤 기동 없는 런은 사유 상한으로 부른다" \
+  "$(grep '^seat-limit-recall F2 ' "$TEST_LOG_DIR/t3.log" | cut -d' ' -f3):$(grep '^router-shift F2 ' "$TEST_LOG_DIR/t3.log" | cut -d' ' -f3)" "사유=상한:상한"
+check "좌석 한도: 어느 런에도 재진입 행은 쓰지 않는다" "$(grep -c '^reentry ' "$TEST_LOG_DIR/t3.log" || true)" "0"
+check "좌석 한도: router-shift 는 좌석 레인의 CLAUDE_CONFIG_DIR 로 낸다" \
+  "$(grep '^router-shift F1 ' "$TEST_LOG_DIR/t3.log" | sed -n 's/.*CLAUDE_CONFIG_DIR=\([^ ]*\) .*/\1/p')" "$H_CC"
+check "좌석 한도: 다룬 공백의 열쇠를 .gap 표지에 남긴다" "$(cat "$PACE/reentry/F1.gap" 2>/dev/null)" "$T3_HO_AT/-"
+check "좌석 한도: 재개 시각 전의 계정 이전 대기는 후보가 아니다" "$(grep -c -E '^[a-z-]+ F3 ' "$TEST_LOG_DIR/t3.log" || true)" "0"
+check "좌석 한도: 재개 시각이 지난 대기는 증거 없이도 한 번 부르고, 미래 대기에서 사슬이 끝난다" \
+  "$(t3n seat-limit-recall F4):$(t3n router-shift F4)" "1:1"
+check "좌석 한도: 곧바로 돌아오는 대기는 두 번째에서 사슬을 멈춘다" "$(t3n router-shift F5)" "2"
+for p in P1 P2 P3 P4 P5 P6 P7; do
+  check "좌석 한도: 술어 하나가 빠진 런($p)에는 스냅숏도 행도 호출도 없다" "$(grep -c -E "^[a-z-]+ $p " "$TEST_LOG_DIR/t3.log" || true)" "0"
+done
+check "좌석 한도: 계기를 돌린 틱은 백로그를 집지 않는다" "$(backlog_status t3h)" "pending"
+check "좌석 한도: 런마다의 점유는 풀려 있다" "$(ls -d "$PACE"/reentry/*.lock 2>/dev/null | count_lines /dev/stdin)" "0"
+t3_before=$(count_lines "$TEST_LOG_DIR/t3.log")
+FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T3BOOT" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t3-2.err"
+check "좌석 한도: 두 번째 틱은 아무 런도 다시 부르지 않는다 (새 대기는 재개 전, 새 handoff 없는 공백은 이미 다룸)" \
+  "$(( $(count_lines "$TEST_LOG_DIR/t3.log") - t3_before ))" "0"
+check "좌석 한도: 두 번째 틱은 백로그로 간다" "$(backlog_status t3h)" "done"
+kill "$t3_relay" 2>/dev/null || true
+rm -rf "$WORK"/xdg/cc-cmds/run/F? "$WORK"/xdg/cc-cmds/run/P?
+
 # --- usage ----------------------------------------------------------------------
 fresh_pace d-usage
 fleet dispatch >/dev/null 2>&1; rc=$?
