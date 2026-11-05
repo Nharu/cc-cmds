@@ -36178,6 +36178,421 @@ cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind propose-done 
 check "34q: 모든 절이 정산된 뒤 propose-done 이 받아들여진다" "$rc" "0"
 [ "$rc" = "0" ] || printf '  34q: %s\n' "$msg"
 
+# --- 34qe. 종료 절 근거 실행 — 사전 인가 행이 연 실행으로 절을 정산한다 ---
+# --- section: 34qe | group: cone | covers: act, snapshot, shift-halt, halt-answer, clause-exec, check_manifest, feed, gate_done_conditions, gate_reach_disposition | anchors: 34qe: 관측된 꼴의 쓰기 실행이 승인 대기·도달 park 없이 0 이다, 34qe: 쓰기 실행이 읽기 자격 아래에서 돌았다, 34qe: 재조회를 인용한 충족 행에 자체 근거=예 가 붙는다, 34qe: 결속 형태로 시작하지 않는 실행은 거절된다, 34qe: 요지는 가리고 160자에서 자른다, 34qe: 종료 절 근거 기록에 좌석 답은 거절된다, 34qe: 같은 argv 의 exec 는 도달모순으로 park 된다, 34qe: 파괴를 명시하지 않은 행 아래의 파괴 실행은 협업 칸에서 park 된다, 34qe: 근거 실행이 없는 매니페스트의 구속 다이제스트는 그대로다 ---
+#
+# A CLAUSE WHOSE WORDING ASKS FOR AN EXECUTION IS SETTLED BY THE RUN WHEN A
+# `사전 인가` ROW NAMES THAT EXECUTION WHOLE. The shift hands the command to the
+# gate as `clause-exec`; the gate runs it under the read-scoped credential,
+# keeps the whole output in an owner-only file and writes a `종료 절 실행` row
+# whose anchor the `충족` grounds cite. A write is read back by a different
+# command before it counts. A failure is not run again: it goes to a person
+# with the gate's own account of the run on the record.
+#
+# The first fixture is the observed shape — a script that writes a tracker
+# comment outside the worktree and a second script that reads it back — taken
+# through the reach disposition, the credential and the re-read grade to an
+# accepted `propose-done`. The second holds every refusal.
+# Auto-resolution is on, as in the run this models: with it off, the reach
+# disposition's park cells are dropped for the opaque class, so neither the
+# collaboration cell's clause-exec opening nor the `exec` contradiction below
+# would be measured at all.
+CX_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+CX_RO=cx-ro-fixture
+CX_PREV_RO="${CC_GATE_TOKEN_RO-}"; CX_HAD_RO="${CC_GATE_TOKEN_RO+1}"
+export CC_GATE_TOKEN_RO="$CX_RO"
+CX_STORE="$WORK/cx-tracker"; CX_BIN="$WORK/cx-bin"
+mkdir -p "$CX_STORE" "$CX_BIN"
+cx_auth_row() {  # cx_auth_row <행> — one row placed inside `## 인가` of the cap manifest
+  awk -v r="$1" '{ print } !d && $0 == "## 인가" { print r; d = 1 }' "$CAP_NM" > "$CAP_NM.ins" \
+    && mv "$CAP_NM.ins" "$CAP_NM"
+}
+cx_fx() {
+  # cx_fx <run-id> <절 행…> — the cap run with those clause rows, two merged
+  # segments, a seat and a routing shift in `CX_SHIFT`; the scripts the rows
+  # name are written into the target's worktree as `CX_TWT`.
+  local rid="$1" c; shift
+  CX_RID="$rid"
+  cap_fx_new "$rid"
+  mkdir -p "$CAP_DIR/halt/shift"
+  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+  sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+  for c in "$@"; do cx_auth_row "$c"; done
+  CX_TWT=$(sed -n 's/^- `target` | 별칭=infra | 메인 워크트리=\([^|]*\) |.*/\1/p' "$CAP_NM" | sed -n 1p)
+  case "$rid" in
+    RCXA) CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000a" ;;
+    *)    CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000b" ;;
+  esac
+  { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SEAT.jsonl"
+  cap_gate "$CX_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CX_SEAT" '')" \
+           --rationale "픽스처 — 교대 기동" \
+           -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+  check "34qe: 픽스처 $rid 의 교대 기동이 섰다" "$rc" "0"
+  [ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
+  CX_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+  { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SHIFT.jsonl"
+  hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+  hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+}
+cx_script() {  # cx_script <이름> <본문> — one script under the target worktree's scripts/
+  mkdir -p "$CX_TWT/scripts"
+  printf '%s\n' "$2" > "$CX_TWT/scripts/$1"
+  CX_MADE="${CX_MADE:-} $CX_TWT/scripts/$1"
+}
+cx_exec() {
+  # cx_exec <절> <표면> [--reach <도달>] -- <argv…> — the shift's clause-exec;
+  # leaves `rc`, `msg` and the anchor the gate printed in `cx_a`.
+  local c="$1" s="$2"; shift 2
+  # With auto-resolution on, an opaque act above a read owes a reach, as it
+  # does on `exec`; a script that writes nowhere but the worktree declares
+  # `런로컬` unless the call names another.
+  local reach=()
+  if [ "${1:-}" = "--reach" ]; then reach=(--reach "$2"); shift 2
+  elif [ "$s" != "읽기" ]; then reach=(--reach 런로컬); fi
+  local destr=()
+  if [ "${1:-}" = "--destructive" ]; then destr=(--destructive); shift; fi
+  [ "${1:-}" = "--" ] && shift
+  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
+           --cutpoint 커밋 --surface "$s" ${reach[@]+"${reach[@]}"} ${destr[@]+"${destr[@]}"} \
+           --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 종료 절 근거 실행" \
+           -- "절=$c" "$@"
+  cx_a=$( { grep -oE '\[clause-exec\] 행 A-[0-9a-f]{8}' "$CAP_ERR" || true; } | tail -1 | sed 's/^.*행 //')
+}
+cx_clause() {  # cx_clause <id> <상태> <근거> [추가 필드…] — the shift's clause row
+  local id="$1" st="$2" ev="$3"; shift 3
+  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" \
+           --rationale "픽스처 — 절 정산" -- "id=$id" "상태=$st" "근거=$ev" "$@"
+}
+cx_halt() {  # cx_halt <세그먼트> <자리> <필드…> — the shift's stop
+  local s="$1" site="$2"; shift 2
+  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment "$s" \
+           --site "$site" --cutpoint 커밋 --surface 읽기 \
+           --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 절 근거 요청" -- "$@"
+}
+cx_n() { cap_rows "$1" | grep -c . || true; }
+cx_xrow() { cap_rows '종료 절 실행' | tail -1; }
+cx_cl() {  # cx_cl <id> <jq 식> — one expression over that clause's `clauses[]` element
+  cap_snap "$CX_SEAT" '' | jq -r --arg i "$1" "[.clauses[] | select(.id == \$i)] | first | $2"
+}
+
+# ---- 관측된 꼴: 쓰기 · 재조회 · 충족 · 종료 ----
+cx_fx RCXA '- `종료 절` | id=C1 | 문면=FE 인계 코멘트가 티켓에 남아 있다' \
+           '- `사전 인가` | 형태=sh scripts/fe-handoff-comment.sh | 사유=FE 인계 코멘트' \
+           '- `사전 인가` | 형태=sh scripts/fe-handoff-check.sh | 사유=FE 인계 코멘트 재조회'
+cx_script fe-handoff-comment.sh "printf '%s\\n' 'FE 인계: API 계약 v2' >> '$CX_STORE/comments'
+printf '%s' \"\${GH_TOKEN:-}\" > '$CX_STORE/token'
+printf '%s\\n' 'comment posted'"
+cx_script fe-handoff-check.sh "cat '$CX_STORE/comments'"
+CX_HEAD=$(cd "$CX_TWT" && git rev-parse HEAD)
+hw_row segment 교대=0 id=Q3 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=$CX_HEAD"
+cx_ap0=$(cx_n '승인'); cx_bl0=$(cx_n 'blocked')
+cx_exec C1 외부상태변경 --reach 협업 -- sh scripts/fe-handoff-comment.sh
+cx_xa=$cx_a
+check "34qe: 관측된 꼴의 쓰기 실행이 승인 대기·도달 park 없이 0 이다" \
+  "$rc|$(( $(cx_n '승인') - cx_ap0 ))|$(( $(cx_n 'blocked') - cx_bl0 ))" "0|0|0"
+[ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
+check "34qe: 쓰기 실행이 읽기 자격 아래에서 돌았다" "$(cat "$CX_STORE/token" 2>/dev/null)" "$CX_RO"
+check "34qe: 실행의 출력이 호출자에게 그대로 간다" "$(cat "$CAP_OUT")" "comment posted"
+cx_w=$(cx_xrow)
+check "34qe: 쓰기 실행 행이 절·회차·축2·결속·사전 인가 행·종료 코드를 싣는다" \
+  "$(row_field "$cx_w" '절')|$(row_field "$cx_w" '회차')|$(row_field "$cx_w" '축2')|$(row_field "$cx_w" '결속')|$(row_field "$cx_w" '종료 코드')" \
+  "C1|1|외부상태변경|대조|0"
+# The matcher numbers only the rows that carry `표면=`/`도달=`; the observed
+# runs' rows carry neither, so the field reads `-` under them.
+check "34qe: 옛 형식 사전 인가 행이 덮은 실행 행의 사전 인가 행은 - 다" \
+  "$(row_field "$cx_w" '사전 인가 행')" "-"
+check "34qe: 행의 앵커가 그 행 prev 의 앞 8 hex 다" "$cx_xa" "A-$(row_field "$cx_w" 'prev' | cut -c1-8)"
+check "34qe: 행의 커밋은 실행 워크트리의 HEAD 다" "$(row_field "$cx_w" '커밋')" "$CX_HEAD"
+check "34qe: 행의 명령 sha256 은 argv 를 NUL 로 이은 바이트의 것이다" "$(row_field "$cx_w" '명령 sha256')" \
+  "$(printf 'sh\0scripts/fe-handoff-comment.sh' | shasum -a 256 | cut -d' ' -f1)"
+
+# After a write, only its re-read: not the same command, not another write.
+cx_n0=$(cx_n '종료 절 실행')
+cx_exec C1 워크트리쓰기 -- sh scripts/fe-handoff-comment.sh
+check "34qe: 쓰기와 같은 명령의 재조회는 거절된다" "$rc|$(cx_n '종료 절 실행')" "3|$cx_n0"
+cx_exec C1 외부상태변경 --reach 협업 -- sh scripts/fe-handoff-check.sh
+check "34qe: 쓰기 뒤의 다른 쓰기는 거절된다" "$rc|$(cx_n '종료 절 실행')" "3|$cx_n0"
+cx_clause C1 충족 "실행 $cx_xa"
+check "34qe: 쓰기 실행만 인용한 충족은 거절된다" "$rc" "3"
+cx_exec C1 워크트리쓰기 -- sh scripts/fe-handoff-check.sh
+cx_ra=$cx_a
+cx_r=$(cx_xrow)
+check "34qe: 재조회가 0 이고 축2 워크트리쓰기에 회차 2 다" \
+  "$rc|$(row_field "$cx_r" '축2')|$(row_field "$cx_r" '회차')" "0|워크트리쓰기|2"
+case "$(row_field "$cx_r" '명령 sha256')" in
+  "$(row_field "$cx_w" '명령 sha256')") bad "34qe: 재조회의 명령 sha256 은 쓰기의 것과 다르다" "$cx_r" ;;
+  *) ok "34qe: 재조회의 명령 sha256 은 쓰기의 것과 다르다" ;;
+esac
+check "34qe: 재조회 출력에 쓰기가 남긴 코멘트가 있다" "$(cat "$CAP_OUT")" "FE 인계: API 계약 v2"
+check "34qe: 스냅숏 실행은 마지막 행의 앵커·종료 코드·축2 다" \
+  "$(cx_cl C1 '.["실행"] | .["앵커"] + "|" + .["종료 코드"] + "|" + .["축2"]')" "$cx_ra|0|워크트리쓰기"
+check "34qe: 스냅숏 실행 이력은 두 행을 회차 순으로 싣는다" \
+  "$(cx_cl C1 '[.["실행 이력"][] | .["앵커"]] | join(",")')" "$cx_xa,$cx_ra"
+check "34qe: 결속이 없는 절의 근거 실행은 null 이다" "$(cx_cl C1 '.["근거 실행"] | tostring')" "null"
+cx_clause C1 충족 "실행 $cx_xa · 재조회 $cx_ra" '자체 근거=예'
+check "34qe: 호출자가 넘긴 자체 근거는 exit 2 로 거절된다" "$rc" "2"
+cx_clause C1 충족 "실행 $cx_xa · 재조회 $cx_ra"
+check "34qe: 재조회를 인용한 충족이 선다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
+check "34qe: 재조회를 인용한 충족 행에 자체 근거=예 가 붙는다" \
+  "$(row_field "$(cap_rows '종료 절' | tail -1)" '자체 근거')" "예"
+cx_exec C1 워크트리쓰기 -- sh scripts/fe-handoff-check.sh
+check "34qe: 정산된 절은 실행을 받지 않는다" "$rc" "3"
+
+# The feed's clause line names the run's own grounds.
+cx_fd="$WORK/cx-feed"; mkdir -p "$cx_fd"
+grep -v '^- `종료 절` ' "$CAP_LEDGER" > "$cx_fd/ledger.md"
+cx_feed() {
+  bash "$repo_root/plugins/cc-cmds/orchestrator/feed.sh" --run-dir "$cx_fd" --ledger "$cx_fd/ledger.md" \
+    --once --stall 1200 2>&1
+}
+cx_feed >/dev/null
+cap_rows '종료 절' | tail -1 >> "$cx_fd/ledger.md"
+case "$(cx_feed)" in
+  *'종료 절 C1 충족 · 자체 근거'*) ok "34qe: 피드의 종료 절 줄이 자체 근거를 붙인다" ;;
+  *) bad "34qe: 피드의 종료 절 줄이 자체 근거를 붙인다" "$(cx_feed)" ;;
+esac
+cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind propose-done --target infra --segment - \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" \
+         --rationale "픽스처 — 종료 제안" -- 절=C1 "근거=$CAP_LEDGER"
+check "34qe: 자체 근거로 정산된 런의 propose-done 이 받아들여진다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
+case "$(sed -n 1p "$CAP_DIR/done" 2>/dev/null)" in
+  *'종료 조건 성립 · 자체 근거 C1 · 근거 '*) ok "34qe: done 줄이 자체 근거 절을 이름 댄다" ;;
+  *) bad "34qe: done 줄이 자체 근거 절을 이름 댄다" "$(cat "$CAP_DIR/done" 2>/dev/null)" ;;
+esac
+
+# ---- 거절 · 실패 · 인가 밖 ----
+cx_fx RCXB '- `종료 절` | id=C2 | 문면=단위 시험이 통과한다 | 근거 실행=sh scripts/cx-unit.sh' \
+           '- `종료 절` | id=C3 | 문면=검증 스크립트가 결과를 낸다' \
+           '- `종료 절` | id=C4 | 문면=dev 검증이 통과한다' \
+           '- `종료 절` | id=C5 | 문면=PR 에 인계 코멘트가 있다' \
+           '- `종료 절` | id=C6 | 문면=실기기에서 화면이 뜬다' \
+           '- `종료 절` | id=C7 | 문면=유료 호출이 성공한다' \
+           '- `종료 절` | id=C8 | 문면=만료된 인계 티켓이 지워졌다' \
+           '- `사전 인가` | 형태=sh scripts/cx-purge.sh | 사유=인계 티켓 정리' \
+           '- `사전 인가` | 형태=sh scripts/cx-wipe.sh expired | 사유=만료 인계 티켓 삭제' \
+           '- `사전 인가` | 형태=sh scripts/cx-unit.sh | 사유=단위 시험' \
+           '- `사전 인가` | 형태=sh scripts/cx-other.sh | 사유=다른 시험' \
+           '- `사전 인가` | 형태=sh scripts/cx-gist.sh | 사유=검증 스크립트' \
+           '- `사전 인가` | 형태=sh scripts/cx-fail.sh | 사유=dev 검증' \
+           '- `사전 인가` | 형태=gh api -X POST repos/t/infra/issues/1/comments | 사유=PR 코멘트'
+cx_script cx-unit.sh "printf '%s\\n' 'ok 12 tests'"
+cx_script cx-other.sh "printf '%s\\n' 'other'"
+CX_LONG=$(printf 'x%.0s' $(seq 1 170))
+cx_script cx-gist.sh "printf '%s\\n' '첫 줄' 'token=hunter2 키 AbC123def456GhI789jkl012 $CX_LONG' ''"
+cx_script cx-fail.sh "printf '%s\\n' '실패 줄'; exit 1"
+cx_script cx-purge.sh "printf '%s\\n' \"\$*\" >> '$CX_STORE/purged'"
+cx_script cx-wipe.sh "printf '%s\\n' \"\$*\" >> '$CX_STORE/wiped'"
+cat > "$CX_BIN/gh" <<EOF
+#!/bin/sh
+printf '%s' "\${GH_TOKEN:-}" > '$CX_STORE/gh-token'
+if [ "\${GH_TOKEN:-}" = '$CX_RO' ]; then
+  printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >&2
+  exit 1
+fi
+printf '%s\n' '{"id": 1}'
+EOF
+chmod +x "$CX_BIN/gh"
+
+# The run's last merge is not in the tree the command would run in.
+hw_row segment 교대=0 id=Q3 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=0123456789abcdef0123456789abcdef01234567"
+cx_n0=$(cx_n '종료 절 실행'); cx_ap0=$(cx_n '자율 승인')
+cx_exec C3 워크트리쓰기 -- sh scripts/cx-gist.sh
+check "34qe: 마지막 머지 커밋이 실행 워크트리 HEAD 의 조상이 아니면 거절된다" \
+  "$rc|$(cx_n '종료 절 실행')|$(cx_n '자율 승인')" "3|$cx_n0|$cx_ap0"
+case "$msg" in
+  *'0123456789abcdef0123456789abcdef01234567'*"$(cd "$CX_TWT" && git rev-parse HEAD)"*) ok "34qe: 조상 거절 문면이 머지 커밋과 HEAD 를 싣는다" ;;
+  *) bad "34qe: 조상 거절 문면이 머지 커밋과 HEAD 를 싣는다" "$msg" ;;
+esac
+hw_row segment 교대=0 id=Q4 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=$(cd "$CX_TWT" && git rev-parse HEAD)"
+
+# Unknown clause, no covering row, a runner-shape cover.
+cx_exec C9 워크트리쓰기 -- sh scripts/cx-unit.sh
+check "34qe: 매니페스트에 없는 절의 실행은 거절된다" "$rc" "3"
+cx_exec C6 워크트리쓰기 -- sh scripts/unknown.sh
+check "34qe: 사전 인가 행이 덮지 않는 실행은 거절된다" "$rc|$(cx_n '종료 절 실행')" "3|$cx_n0"
+
+# The binding: the bound clause takes only a command that starts with its shape.
+cx_exec C2 워크트리쓰기 -- sh scripts/cx-other.sh
+check "34qe: 결속 형태로 시작하지 않는 실행은 거절된다" "$rc|$(cx_n '종료 절 실행')" "3|$cx_n0"
+cx_exec C2 워크트리쓰기 -- sh scripts/cx-unit.sh
+cx_ua=$cx_a
+check "34qe: 결속 형태의 실행은 결속=명시 로 선다" "$rc|$(row_field "$(cx_xrow)" '결속')" "0|명시"
+check "34qe: 결속된 절의 근거 실행이 스냅숏에 실린다" "$(cx_cl C2 '.["근거 실행"]')" "sh scripts/cx-unit.sh"
+cx_clause C2 충족 "$CAP_LEDGER 의 머지됨 행"
+check "34qe: 실행이 있는 절의 충족은 실행이나 중단 답을 인용해야 한다" "$rc" "3"
+cx_clause C2 충족 "실행 $cx_ua"
+check "34qe: 워크트리쓰기 실행은 재조회 없이 충족된다" "$rc|$(row_field "$(cap_rows '종료 절' | tail -1)" '자체 근거')" "0|예"
+
+# The gist: masked, then cut at 160 characters; the output file is the owner's.
+cx_exec C3 워크트리쓰기 -- sh scripts/cx-gist.sh
+cx_g=$(cx_xrow)
+check "34qe: 요지는 가리고 160자에서 자른다" "$(row_field "$cx_g" '요지')" \
+  "token=[가림] 키 [가림] $(printf 'x%.0s' $(seq 1 142))…"
+check "34qe: 요지 가림은 행·기록 어디에도 원문 토큰을 남기지 않는다" \
+  "$( { grep -cE 'hunter2|AbC123def456GhI789jkl012' "$CAP_LEDGER" || true; } )" "0"
+cx_gout=$(row_field "$cx_g" '출력')
+check "34qe: 출력 파일은 clause-exec/<id>#<회차>.out 에 mode 600 이다" \
+  "$cx_gout|$(ls -l "$cx_gout" | cut -c1-10)" "$CAP_DIR/clause-exec/C3#1.out|-rw-------"
+check "34qe: 출력 디렉터리는 mode 700 이다" "$(ls -ld "$CAP_DIR/clause-exec" | cut -c1-10)" "drwx------"
+check "34qe: 출력 파일이 전체 출력을 담고 sha256 이 행과 같다" \
+  "$(grep -c 'hunter2' "$cx_gout")|$(shasum -a 256 "$cx_gout" | cut -d' ' -f1)" "1|$(row_field "$cx_g" '출력 sha256')"
+check "34qe: 결속 없는 절의 워크트리쓰기 실행은 결속=대조 다" "$(row_field "$cx_g" '결속')" "대조"
+
+# A failure is not run again and goes to a person with the gate's account.
+cx_ap0=$(cx_n '자율 승인')
+cx_exec C4 워크트리쓰기 -- sh scripts/cx-fail.sh
+cx_fa=$cx_a
+cx_f=$(cx_xrow)
+check "34qe: 실패한 실행은 명령의 종료 코드를 돌려주고 행에 남긴다" "$rc|$(row_field "$cx_f" '종료 코드')" "1|1"
+check "34qe: 실패한 실행은 결정=결과 자율 승인 행을 하나 더 쓴다" \
+  "$(( $(cx_n '자율 승인') - cx_ap0 ))|$(row_field "$(cap_rows '자율 승인' | tail -1)" '결정')" "2|결과"
+cx_n1=$(cx_n '종료 절 실행')
+cx_exec C4 워크트리쓰기 -- sh scripts/cx-fail.sh
+check "34qe: 실패한 절의 실행은 다시 시도하지 않는다" "$rc|$(cx_n '종료 절 실행')" "3|$cx_n1"
+cx_clause C4 충족 "실행 $cx_fa"
+check "34qe: 실패한 실행을 인용한 충족은 거절된다" "$rc" "3"
+cx_halt - '종료 절 근거' '절=C4' "실행=$cx_ua" '질문=C4?' '관측=x'
+check "34qe: 다른 절의 실행을 실은 정지는 거절된다" "$rc" "3"
+cx_halt - '종료 절 근거' '절=C4' "실행=$cx_fa" '질문=dev 검증이 실패했다 — 어떻게 정산하는가?' '관측=종료 코드 1'
+check "34qe: 실행을 실은 종료 절 근거 정지가 선다" "$rc" "0"
+CX_REC4="$CAP_DIR/halt/shift/clause-C4#1.md"
+check "34qe: 기록의 실행 결과 줄은 게이트가 행에서 쓴다" \
+  "$(grep '^\*\*실행 결과\*\*: ' "$CX_REC4")" \
+  "**실행 결과**: 명령 sh scripts/cx-fail.sh · 종료 코드 1 · 요지 실패 줄 · 출력 $(row_field "$cx_f" '출력') · 출력 sha256 $(row_field "$cx_f" '출력 sha256') · 행 $cx_fa"
+check "34qe: 실행 결과 줄은 질문 문면과 선택지 사이에 있다" \
+  "$(grep -E '^\*\*(질문 문면|실행 결과|선택지)\*\*' "$CX_REC4" | cut -d: -f1 | tr '\n' ' ')" \
+  "**질문 문면** **실행 결과** **선택지** "
+cx_seat_ans() {  # cx_seat_ans <기록> <답한 주체> <선택지> <segment>
+  cap_gate "$CX_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$4" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CX_SEAT" '')" \
+           --rationale "픽스처 — 절 근거 요청의 답" \
+           -- "중단 기록=$1" "선택지=$3" "답한 주체=$2" '근거=실행 결과를 보고 골랐다'
+}
+cx_an0=$(cx_n '중단 답')
+cx_seat_ans "$CX_REC4" 좌석 '불가능으로 정산' clause-C4
+check "34qe: 종료 절 근거 기록에 좌석 답은 거절된다" "$rc|$(cx_n '중단 답')" "3|$cx_an0"
+cx_seat_ans "$CX_REC4" 사람 '불가능으로 정산' clause-C4
+check "34qe: 대조 — 같은 기록에 사람 답은 선다" "$rc|$(( $(cx_n '중단 답') - cx_an0 ))" "0|1"
+
+# A GitHub write under a pre-authorized row fails under the read-scoped
+# credential, and so goes to a person.
+# The stand-in is reached through an exported function, not a PATH prefix:
+# run.sh puts the system prefixes ahead of the inherited PATH, so on a host
+# whose `gh` is /usr/bin/gh a PATH-only stand-in is shadowed by the real one.
+# The stub path rides an exported variable for the same scrubbed-shell reason
+# `g15_pr` gives.
+gh() { "$CX_GH_STUB" "$@"; }
+export -f gh
+export CX_GH_STUB="$CX_BIN/gh"
+cx_exec C5 외부상태변경 --reach 협업 -- gh api -X POST repos/t/infra/issues/1/comments -f body=x
+unset -f gh
+unset CX_GH_STUB
+cx_ga=$cx_a
+check "34qe: GitHub 쓰기는 읽기 자격 아래에서 실패한다" \
+  "$( [ "$rc" != 0 ] && printf 실패 || printf "rc=$rc")|$(cat "$CX_STORE/gh-token" 2>/dev/null)|$(row_field "$(cx_xrow)" '절')" "실패|$CX_RO|C5"
+[ -n "$cx_ga" ] || printf '  34qe: %s\n' "$msg"
+cx_clause C5 충족 "실행 $cx_ga"
+check "34qe: 실패한 GitHub 쓰기를 인용한 충족은 거절된다" "$rc" "3"
+cx_halt - '종료 절 근거' '절=C5' "실행=$cx_ga" '질문=PR 코멘트를 사람이 남기는가?' '관측=HTTP 403'
+check "34qe: GitHub 쓰기 실패는 실행 결과를 실은 사람 정지로 간다" \
+  "$rc|$(grep -c '^\*\*실행 결과\*\*: 명령 gh api -X POST' "$CAP_DIR/halt/shift/clause-C5#1.md" 2>/dev/null)" "0|1"
+
+# Outside every row: the stop carries the command draft and the expected result.
+cx_halt - '종료 절 근거' '절=C7' '추천=재시도' '추천 근거=x' '질문=?' '관측=x'
+check "34qe: 종료 절 근거 자리의 다른 추천은 거절된다" "$rc" "3"
+cx_halt Q1 '병합 거절' '명령 초안=sh x.sh' '질문=?' '관측=x'
+check "34qe: 다른 자리의 명령 초안은 exit 2 다" "$rc" "2"
+cx_halt - '종료 절 근거' '절=C6' '명령 초안=adb shell am start -n app/.Main' '기대 결과=첫 화면이 뜬다' \
+        '질문=실기기 확인을 사람이 하는가?' '관측=사전 인가 행이 없다'
+check "34qe: 인가 밖 절의 정지가 선다" "$rc" "0"
+CX_REC6="$CAP_DIR/halt/shift/clause-C6#1.md"
+check "34qe: 인가 밖 정지 기록이 명령 초안과 기대 결과를 질문 문면과 선택지 사이에 싣는다" \
+  "$(grep -E '^\*\*(질문 문면|명령 초안|기대 결과|선택지)\*\*' "$CX_REC6" | cut -d: -f1 | tr '\n' ' ')" \
+  "**질문 문면** **명령 초안** **기대 결과** **선택지** "
+check "34qe: 명령 초안 줄은 받은 argv 그대로다" \
+  "$(grep '^\*\*명령 초안\*\*: ' "$CX_REC6")" "**명령 초안**: adb shell am start -n app/.Main"
+
+# The same argv as a plain `exec` still meets the 협업 cell's contradiction.
+cx_bl0=$(cx_n 'blocked')
+cap_gate "$CX_SHIFT" "$CX_RID#1" exec --manifest "$CAP_NM" --target infra --segment - \
+         --cutpoint 커밋 --surface 외부상태변경 --reach 협업 \
+         --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — exec 대조" \
+         -- sh scripts/cx-unit.sh
+case "$rc|$(cap_rows 'blocked' | tail -1)" in
+  11\|*도달모순*) ok "34qe: 같은 argv 의 exec 는 도달모순으로 park 된다" ;;
+  *) bad "34qe: 같은 argv 의 exec 는 도달모순으로 park 된다" "rc=$rc $msg" ;;
+esac
+
+# A destructive act opens the 협업 cell only under a row that names the
+# destruction: a row that covers the script but not the destructive operand
+# parks it as the prod cell does, and the script does not run.
+cx_n0=$(cx_n '종료 절 실행')
+cx_exec C8 외부상태변경 --reach 협업 --destructive -- sh scripts/cx-purge.sh all
+case "$rc|$(cx_n '종료 절 실행')|$(cap_rows 'blocked' | tail -1)" in
+  "11|$cx_n0|"*파괴형태미명시*) ok "34qe: 파괴를 명시하지 않은 행 아래의 파괴 실행은 협업 칸에서 park 된다" ;;
+  *) bad "34qe: 파괴를 명시하지 않은 행 아래의 파괴 실행은 협업 칸에서 park 된다" "rc=$rc $msg" ;;
+esac
+check "34qe: park 된 파괴 실행은 돌지 않았다" "$( [ -e "$CX_STORE/purged" ] && echo 돌았다 || echo 안돌았다)" "안돌았다"
+cx_exec C8 외부상태변경 --reach 협업 --destructive -- sh scripts/cx-wipe.sh expired
+check "34qe: 대조 — 파괴 실행을 축자로 담은 행 아래에서는 협업 칸이 열린다" \
+  "$rc|$(( $(cx_n '종료 절 실행') - cx_n0 ))|$(cat "$CX_STORE/wiped" 2>/dev/null)" "0|1|expired"
+[ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
+
+# ---- 매니페스트의 근거 실행 ----
+cx_m="$WORK/cx-manifest.md"
+cx_mcheck() {  # cx_mcheck <매니페스트> — the driver's manifest check; leaves `rc` and `msg`
+  msg=$(cd "$WT" && bash -c '
+    CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+    MANIFEST="'"$1"'"
+    check_manifest' 2>&1); rc=$?
+}
+cx_bd() { sed -n 's/^\*\*구속 다이제스트\*\*: //p' "$1"; }
+grep -v '^- `종료 절` ' "$FX_MANIFEST" > "$cx_m"
+printf -- '- `종료 절` | id=C1 | 문면=PR 에 인계 코멘트가 있다\n' >> "$cx_m"
+refresh_bd "$cx_m"
+cx_bd0=$(cx_bd "$cx_m")
+cx_mcheck "$cx_m"
+check "34qe: 근거 실행이 없는 매니페스트는 검사를 통과한다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
+cp "$cx_m" "$cx_m.ref"; refresh_bd "$cx_m.ref"
+check "34qe: 근거 실행이 없는 매니페스트의 구속 다이제스트는 그대로다" "$(cx_bd "$cx_m.ref")" "$cx_bd0"
+cx_bind() {  # cx_bind <근거 실행> — a copy whose clause row binds that shape, digest recomputed
+  sed "s#^- \`종료 절\` | id=C1 | 문면=PR 에 인계 코멘트가 있다\$#& | 근거 실행=$1#" "$cx_m" > "$cx_m.b"
+  refresh_bd "$cx_m.b"
+  cx_mcheck "$cx_m.b"
+}
+cx_bind 'gh api'
+check "34qe: 사전 인가 행의 형태와 같은 근거 실행은 통과한다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
+cx_bind 'gh api -X POST repos/t/front/issues/1/comments'
+check "34qe: 사전 인가 행의 낱말로 시작하는 근거 실행은 통과한다" "$rc" "0"
+case "$(cx_bd "$cx_m.b")" in
+  "$cx_bd0") bad "34qe: 근거 실행은 구속 다이제스트가 얼린다" "같은 다이제스트" ;;
+  *) ok "34qe: 근거 실행은 구속 다이제스트가 얼린다" ;;
+esac
+cx_bind 'sh x.sh'
+case "$rc|$msg" in
+  0\|*) bad "34qe: 덮는 사전 인가 행이 없는 근거 실행은 거절된다" "$msg" ;;
+  *'근거 실행」을 덮는 「사전 인가」 행의 형태가 없습니다'*) ok "34qe: 덮는 사전 인가 행이 없는 근거 실행은 거절된다" ;;
+  *) bad "34qe: 덮는 사전 인가 행이 없는 근거 실행은 거절된다" "$msg" ;;
+esac
+cx_bind 'gh'
+case "$rc|$msg" in
+  *'두 낱말 이상의 형태입니다'*) ok "34qe: 한 낱말 근거 실행은 거절된다" ;;
+  *) bad "34qe: 한 낱말 근거 실행은 거절된다" "rc=$rc $msg" ;;
+esac
+
+for cx_f in $CX_MADE; do rm -f "$cx_f"; done
+rmdir "$CX_TWT/scripts" 2>/dev/null || true
+unset CX_MADE
+if [ -n "$CX_HAD_RO" ]; then export CC_GATE_TOKEN_RO="$CX_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CX_PREV_AR"
+
 # --- 34m. 빈 대상 리뷰 정지 — 좌석은 구현 재파견으로 답하고, park 답은 park 행이 소비한다 ---
 # --- section: 34m | group: cone | covers: snapshot, act | anchors: 34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다, 34m: 뒤의 park 행이 세그먼트 park 답을 소비한다, 34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다 ---
 #

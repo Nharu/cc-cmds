@@ -867,6 +867,41 @@ EOF
   return 0
 }
 
+clause_binding_check() {
+  # Every `종료 절` row's optional `근거 실행`: one value, two words or more, no
+  # tab or run of spaces, and equal to a `사전 인가` row's `형태` or starting
+  # with that shape's words. A manifest without the field checks as before. The
+  # binding digest already freezes the whole row.
+  local row v n pr shape ok
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    case "$row" in *"| 근거 실행="*) ;; *) continue ;; esac
+    v=$(manifest_row_fields "$row" '근거 실행' 1)
+    [ "$(printf '%s\n' "$v" | wc -l | tr -d ' ')" = 1 ] \
+      || die "「종료 절」 행의 「근거 실행」이 둘 이상입니다: $row"
+    v="${v%"${v##*[! ]}"}"
+    case "$v" in
+      *'	'*|*'  '*|' '*|'') die "「종료 절」 행의 「근거 실행」이 비었거나 탭·연속 공백이 있습니다: $row" ;;
+    esac
+    n=$(printf '%s' "$v" | awk '{ print NF }')
+    [ "$n" -ge 2 ] || die "「종료 절」 행의 「근거 실행」은 두 낱말 이상의 형태입니다: $v"
+    ok=0
+    while IFS= read -r pr; do
+      [ -n "$pr" ] || continue
+      shape=$(manifest_row_fields "$pr" '형태' 1 | sed -n 1p)
+      shape=$(printf '%s' "$shape" | sed 's/[[:space:]]\{1,\}/ /g;s/ $//')
+      [ -n "$shape" ] || continue
+      case "$v" in "$shape"|"$shape "*) ok=1; break ;; esac
+    done <<EOF
+$(manifest_preauth_rows)
+EOF
+    [ "$ok" = 1 ] || die "「종료 절」 행의 「근거 실행」을 덮는 「사전 인가」 행의 형태가 없습니다: $v"
+  done <<EOF
+$(manifest_clause_rows_raw)
+EOF
+  return 0
+}
+
 # The interpreter options that take the program as a code string. A new-form
 # `사전 인가` row whose shape ends in one opens every program the act can spell,
 # so the writers refuse it. One list, read by both writers.
@@ -1596,6 +1631,9 @@ check_manifest() {
   # 9 (cont.) — the `라벨 인정` rows' shape. A row the gate cannot match exactly
   # would acknowledge nothing, or the wrong check, so it is refused at kickoff.
   label_ack_row_check
+  # 9 (cont.) — a `종료 절` row's `근거 실행` binding. A shape no `사전 인가`
+  # row covers binds the clause to an execution the run can never open.
+  clause_binding_check
   # 9 (cont.) — the `사전 인가` rows' new-form fields. A new-form row decides
   # where an act lands and runs its cleanup with no person, so a row that would
   # freeze with no effect, open every program, or run a cleanup through a shell
@@ -3838,7 +3876,13 @@ run_chained_append() {
   # THE TOOL IS SELECTED BY PLATFORM AND USED ONLY IF IT IS THERE — a suite
   # injecting the host OS reaches this on a runner without the BSD path, and
   # absence falls through to the same sequence without the lock.
-  local body="$1" tool prev rc=0
+  #
+  # run_chained_append <body> <prev file> — the same, and the `prev` the row was
+  # written with is also put in <prev file>, from inside the same lock. A caller
+  # that names the row it just wrote by its `prev` must take the value here:
+  # re-reading the ledger's end after the lock is released can find another
+  # writer's row.
+  local body="$1" pout="${2:-}" tool prev rc=0
   tool=$(lock_tool)
   # A run directory that is named but absent takes the unlocked path too: the
   # lock file cannot be created there, and a row that cannot be locked is still
@@ -3849,12 +3893,16 @@ run_chained_append() {
         last=$(grep "$3" "$2" 2>/dev/null | tail -1)
         [ -n "$last" ] || last="$4"
         prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
-        printf "%s | prev=%s\n" "$1" "$prev" >> "$2"
-      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" || rc=$?
+        printf "%s | prev=%s\n" "$1" "$prev" >> "$2" || exit $?
+        if [ -n "$5" ]; then printf "%s" "$prev" > "$5"; fi
+      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" "$pout" || rc=$?
   else
     prev=$(run_chain_tip) || rc=$?
     if [ "$rc" = "0" ]; then
       printf '%s | prev=%s\n' "$body" "$prev" >> "$LEDGER" || rc=$?
+    fi
+    if [ "$rc" = "0" ] && [ -n "$pout" ]; then
+      printf '%s' "$prev" > "$pout" || rc=$?
     fi
   fi
   return "$rc"

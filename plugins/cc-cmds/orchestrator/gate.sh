@@ -3663,6 +3663,23 @@ gate_reach_disposition() {
       esac ;;
     협업)
       [ "$C" = "1" ] && return 0
+      # A CLAUSE EXECUTION THE MANIFEST NAMED WHOLE. An opaque or unknown act
+      # has no collaboration-surface verdict to give (`C=0` above), so its
+      # honest `협업` declaration would park as a contradiction even under a
+      # complete-shape row. For `clause-exec` alone that row opens the cell —
+      # the judgment the `dev` cell below already makes for an act with no
+      # comparable identifier. The caller sets the marker by act kind. A
+      # destructive act opens only as the prod cell opens it — when the deciding
+      # row named the destruction — because `P=1` says a row covers the act,
+      # not that it named the destructive word.
+      if [ "${GATE_CLAUSE_EXEC_REACH:-0}" = "1" ] && [ "$P" = "1" ] && [ "$pkind" = "완전" ]; then
+        case "$cls" in
+          불투명|미상)
+            { [ "$X" = "0" ] || [ "$_pdx" = "1" ]; } && return 0
+            if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked\t-'; else printf '파괴형태미명시\tdeclared\t-'; fi
+            return 0 ;;
+        esac
+      fi
       printf '도달모순\t-\t-'; return 0 ;;
     dev)
       [ "$X" = "1" ] && { printf 'dev파괴\t-\t-'; return 0; }
@@ -10873,9 +10890,12 @@ gate_append() {
   # what the script below does when `$5` is empty, so the bytes are the same.
   # The guarded tail stays here because its unlocked fallback reads the
   # approval through functions only this file defines.
+  # `GATE_APPEND_PREV_OUT` names a file that receives the `prev` this row was
+  # written with, taken inside the lock — the one caller that names its own row
+  # by that value (`clause-exec`'s anchor) sets it for one call.
   local tool rc=0
   if [ -z "$guard_id" ]; then
-    run_chained_append "$body" || rc=$?
+    run_chained_append "$body" "${GATE_APPEND_PREV_OUT:-}" || rc=$?
     [ "$rc" = "0" ] || die "could not write the ledger row (rc=$rc) — an act with no record is not performed: ${series}"
     return 0
   fi
@@ -20717,10 +20737,11 @@ gate_main() {
     esac
   fi
   # `ci-match` too: the gate reads the failing logs and writes the match row.
-  if [ "$kind" = "ci-match" ]; then
+  # `clause-exec` too: the gate runs the command and writes its result row.
+  if [ "$kind" = "ci-match" ] || [ "$kind" = "clause-exec" ]; then
     case "$verb" in
       act|plan) ;;
-      *) printf 'gate: --kind ci-match is used only with act/plan (verb received: %s)\n' "$verb" >&2
+      *) printf 'gate: --kind %s is used only with act/plan (verb received: %s)\n' "$kind" "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -20810,9 +20831,10 @@ gate_main() {
   if [ -n "$reach" ] || [ "$destructive" = "1" ]; then
     case "$verb" in
       exec|admit) ;;
-      # The remote read names where it reaches; it changes nothing there.
-      act) [ "$kind" = "remote-check" ] && [ "$destructive" = "0" ] || {
-              printf 'gate: --reach is used with act only on --kind remote-check, and --destructive never\n' >&2
+      # The remote read names where it reaches; it changes nothing there. A
+      # clause execution runs a command, so it takes both flags as exec does.
+      act) [ "$kind" = "clause-exec" ] || { [ "$kind" = "remote-check" ] && [ "$destructive" = "0" ]; } || {
+              printf 'gate: --reach is used with act only on --kind remote-check and clause-exec, and --destructive only on clause-exec\n' >&2
               exit 2; } ;;
       plan) [ -z "$kind" ] || {
               printf 'gate: --reach and --destructive are used only with a plan that has no --kind\n' >&2
@@ -25099,7 +25121,12 @@ gate_clauses_json() {
   # row's `근거`, and the evidence request still open on it. The wording is
   # here because a shift reads the manifest through nothing else, and without
   # it cannot tell what evidence a clause asks for.
-  local first=1 id row st why req
+  #
+  # `근거 실행` is the clause's bound execution shape (JSON null when none);
+  # `실행` is its last `종료 절 실행` row as anchor, exit code and axis 2 (null
+  # when none) and `실행 이력` every such row in order — a shift whose context
+  # was compacted gets a write's anchor back from there.
+  local first=1 id row st why req bx bxj xr xh xl xe
   for id in $(gate_clause_ids); do
     row=$( { manifest_clause_rows_raw | grep -F "id=$id " || true; } | sed -n '1p')
     if gate_clause_settled "$id"; then
@@ -25110,11 +25137,24 @@ gate_clauses_json() {
     why=$( { gate_rows '종료 절' | grep -F "id=$id " || true; } | tail -1)
     why=$(gate_row_field "$why" '근거')
     req=$(gate_clause_open_request "$id")
+    bx=$(gate_row_field "$row" '근거 실행')
+    if [ -n "$bx" ] && [ "$bx" != "-" ]; then bxj="\"$(gate_json_escape "$bx")\""; else bxj=null; fi
+    xh=''; xl=null
+    while IFS= read -r xr; do
+      [ -n "$xr" ] || continue
+      xe=$(printf '{"앵커": "%s", "종료 코드": "%s", "축2": "%s"}' \
+        "$(gate_clause_exec_anchor_of "$xr")" "$(gate_json_escape "$(gate_row_field "$xr" '종료 코드')")" \
+        "$(gate_json_escape "$(gate_row_field "$xr" '축2')")")
+      xh="${xh:+$xh, }$xe"; xl=$xe
+    done <<EOF
+$(gate_clause_exec_rows "$id")
+EOF
     [ "$first" = "1" ] || printf ',\n'
     first=0
-    printf '    {"id": "%s", "문면": "%s", "상태": "%s", "근거": "%s", "요청": "%s"}' \
+    printf '    {"id": "%s", "문면": "%s", "상태": "%s", "근거": "%s", "요청": "%s", "근거 실행": %s, "실행": %s, "실행 이력": [%s]}' \
       "$(gate_json_escape "$id")" "$(gate_json_escape "$(gate_row_field "$row" '문면')")" \
-      "$(gate_json_escape "$st")" "$(gate_json_escape "$why")" "$(gate_json_escape "$req")"
+      "$(gate_json_escape "$st")" "$(gate_json_escape "$why")" "$(gate_json_escape "$req")" \
+      "$bxj" "$xl" "$xh"
   done
   [ "$first" = "1" ] || printf '\n'
 }
@@ -36239,7 +36279,26 @@ EOF
       # contract exists to remove.
       [ -n "$(gate_field_of '근거' "$@")" ] \
         || { warn "a termination-clause row needs \`근거\`"; return "$GATE_EXIT_VOCAB"; }
-      gate_append '종료 절' "$@"
+      # `자체 근거` IS THE GATE'S WORD, never the caller's: it says the run ran
+      # the evidence itself and judged it itself, and only the check below
+      # knows that.
+      local _cf _cself=''
+      for _cf in "$@"; do
+        case "$_cf" in 자체\ 근거=*)
+          warn "\`자체 근거\` is written by the gate when the grounds cite the run's own execution — a caller does not pass it"
+          return "$GATE_EXIT_VOCAB" ;;
+        esac
+      done
+      if [ "$cst" = "충족" ]; then
+        local _crc=0
+        _cself=$(gate_clause_exec_evidence_check "$cid" "$(gate_field_of '근거' "$@")") || _crc=$?
+        [ "$_crc" = "0" ] || return "$_crc"
+      fi
+      if [ "$_cself" = "예" ]; then
+        gate_append '종료 절' "$@" "자체 근거=예"
+      else
+        gate_append '종료 절' "$@"
+      fi
       log "종료 절 정산 — $cid ($cst)"
       ;;
     judgment)
@@ -37104,6 +37163,14 @@ EOF
         warn "이 중단 기록은 시각 발행 단계의 사람 전용 질문입니다(시각-판정·금지-후보·발행-실패) — 답한 주체=사람 의 답만 기록합니다: $hrec"
         return "$GATE_EXIT_RULE"
       fi
+      # A CLAUSE'S EVIDENCE REQUEST IS A PERSON'S TOO, recommendation or not:
+      # the run already ran what it could and judged what it ran, so an answer
+      # from the seat would be the run settling its own clause a second time.
+      if [ "$hby" != "사람" ] \
+         && grep -qxF -- '**스텝**: 교대 정지 — 종료 절 근거' "$hrec" 2>/dev/null; then
+        warn "이 중단 기록은 종료 절 근거 요청입니다 — 추천이 실려 있어도 답한 주체=사람 의 답만 기록합니다: $hrec"
+        return "$GATE_EXIT_RULE"
+      fi
       local hladder=''
       if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && [ -z "$hsa" ]; then
         gate_halt_recommendation "$hrec" || return "$?"
@@ -37364,8 +37431,8 @@ EOF
       local sw=300 slen sline sexp
       for sf in "$@"; do
         sk="${sf%%=*}"
-        case "$sk" in 자리|질문|관측|추천|추천\ 근거|절) continue ;; esac
-        warn "\`shift-halt\` takes \`자리\`, \`질문\`, \`관측\`, an optional \`추천\`, an optional \`추천 근거\` and, at \`종료 절 근거\` only, \`절\` from argv and nothing else: ${sk} — the rest is the gate's"
+        case "$sk" in 자리|질문|관측|추천|추천\ 근거|절|실행|명령\ 초안|기대\ 결과) continue ;; esac
+        warn "\`shift-halt\` takes \`자리\`, \`질문\`, \`관측\`, an optional \`추천\`, an optional \`추천 근거\` and, at \`종료 절 근거\` only, \`절\`, \`실행\`, \`명령 초안\` and \`기대 결과\` from argv and nothing else: ${sk} — the rest is the gate's"
         return "$GATE_EXIT_VOCAB"
       done
       ssite=$(gate_field_of '자리' "$@")
@@ -37382,8 +37449,11 @@ EOF
       [ -n "$sq" ] && [ -n "$sobs" ] || {
         warn "\`shift-halt\` needs \`질문\` (what a person is asked) and \`관측\` (what the shift saw)"
         return "$GATE_EXIT_VOCAB"; }
-      local sclause
+      local sclause sxa sdraft sexpect sresult='' sxrow
       sclause=$(gate_field_of '절' "$@")
+      sxa=$(gate_field_of '실행' "$@")
+      sdraft=$(gate_field_of '명령 초안' "$@")
+      sexpect=$(gate_field_of '기대 결과' "$@")
       if [ "$ssite" = "종료 절 근거" ]; then
         # A CLAUSE'S EVIDENCE REQUEST STOPS NO SEGMENT. The key is the gate's
         # own `clause-<id>`, so a shift cannot misspell it into a segment id,
@@ -37403,6 +37473,19 @@ EOF
             warn "termination clause $sclause is already settled as $(gate_clause_last_state "$sclause") — no evidence is asked for it"
             return "$GATE_EXIT_RULE" ;;
         esac
+        # THE EXECUTION'S RESULT IS THE GATE'S LINE, read off the cited row: the
+        # shift names the row and the gate copies what it recorded, the masked
+        # `요지` included, so the record carries nothing the row does not.
+        if [ -n "$sxa" ]; then
+          sxrow=$(gate_clause_exec_row_by_anchor "$sxa") || {
+            warn "\`실행\` names no 종료 절 실행 row: $sxa"
+            return "$GATE_EXIT_RULE"; }
+          sxrow=${sxrow#*:}
+          [ "$(gate_row_field "$sxrow" '절')" = "$sclause" ] || {
+            warn "the execution $sxa belongs to clause $(gate_row_field "$sxrow" '절'), not $sclause"
+            return "$GATE_EXIT_RULE"; }
+          sresult="명령 $(gate_row_field "$sxrow" '명령') · 종료 코드 $(gate_row_field "$sxrow" '종료 코드') · 요지 $(gate_row_field "$sxrow" '요지') · 출력 $(gate_row_field "$sxrow" '출력') · 출력 sha256 $(gate_row_field "$sxrow" '출력 sha256') · 행 $sxa"
+        fi
         seg="clause-$sclause"
         # One open request per clause, except the one the shift writes when an
         # answer's attachment fell short: that request carries the answer out,
@@ -37418,8 +37501,8 @@ EOF
           fi
         fi
       else
-        [ -z "$sclause" ] || {
-          warn "\`절\` rides only at \`종료 절 근거\`: $ssite"
+        [ -z "$sclause$sxa$sdraft$sexpect" ] || {
+          warn "\`절\`, \`실행\`, \`명령 초안\` and \`기대 결과\` ride only at \`종료 절 근거\`: $ssite"
           return "$GATE_EXIT_VOCAB"; }
         [ -n "$(gate_segment_field "$seg" '상태')" ] || {
           warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
@@ -37436,7 +37519,18 @@ EOF
       srec=$(gate_field_of '추천' "$@")
       sgr=$(gate_field_of '추천 근거' "$@")
       sinfo=$(printf '%s' "$srow" | cut -d'|' -f3)
-      if [ "$(printf '%s' "$srow" | cut -d'|' -f2)" = "없음" ]; then
+      if [ "$ssite" = "종료 절 근거" ] && [ -n "$srec" ]; then
+        # THE ONE RECOMMENDATION THIS SITE TAKES, while its table cell stays
+        # `없음`: a shift whose evidence is of the kind the clause asks for may
+        # point at `근거 제출`. It does not let anyone but a person answer —
+        # `halt-answer` refuses every other answerer for this site.
+        case "$srec" in
+          '근거 제출') ;;
+          *) warn "at \`종료 절 근거\` the only \`추천\` is \`근거 제출\`: $srec"
+             return "$GATE_EXIT_RULE" ;;
+        esac
+        gate_shift_halt_grounds "$alias" "$sgr" || return "$?"
+      elif [ "$(printf '%s' "$srow" | cut -d'|' -f2)" = "없음" ]; then
         # Dropped, not refused: the site settles that no record of the run
         # answers it, so the shift's argument changes nothing it could change.
         [ -z "$srec$sgr" ] || warn "$ssite 은 추천을 싣지 않는 자리입니다 — 넘어온 추천을 버리고 (없음) 으로 씁니다"
@@ -37490,6 +37584,9 @@ EOF
         printf '**스텝**: 교대 정지 — %s\n' "$ssite"
         printf '**분류**: gate-unanswerable\n'
         printf '**질문 문면**: %s%s\n' "$(printf '%s' "$sq" | tr '\n\r' '  ')" "${sverd:+ $sverd}"
+        [ -z "$sresult" ] || printf '**실행 결과**: %s\n' "$sresult"
+        [ -z "$sdraft" ] || printf '**명령 초안**: %s\n' "$(printf '%s' "$sdraft" | tr '\n\r' '  ')"
+        [ -z "$sexpect" ] || printf '**기대 결과**: %s\n' "$(printf '%s' "$sexpect" | tr '\n\r' '  ')"
         printf '**선택지**:\n%s\n' "$sopts"
         if [ -n "$srec" ]; then
           printf '**추천**: `%s` — 추천 근거의 인용이 이 선택지를 정한다\n' "$srec"
@@ -38847,13 +38944,29 @@ gate_satisfied_done_line() {
   # design put in this file rather than in a condition of its own, so it has to
   # carry what is actually outstanding.
   held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  # A clause the run settled on its own execution is named the same way, so
+  # the morning sees which clauses no one but the run looked at.
+  local selfx
+  selfx=$(gate_self_evidence_clause_ids)
   if [ -n "$qids" ]; then
-    printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s' \
-      "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$why"
+    printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s%s · 근거 %s' \
+      "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "${selfx:+ · 자체 근거 $selfx}" "$why"
   else
-    printf '%s 종단 — 종료 조건 성립%s · 근거 %s' \
-      "$(now_iso)" "${held:+ · 보류 절 $held}" "$why"
+    printf '%s 종단 — 종료 조건 성립%s%s · 근거 %s' \
+      "$(now_iso)" "${held:+ · 보류 절 $held}" "${selfx:+ · 자체 근거 $selfx}" "$why"
   fi
+}
+
+gate_self_evidence_clause_ids() {
+  # The clauses whose LAST `종료 절` row carries `자체 근거=예`, comma-joined,
+  # or nothing.
+  local id last out=''
+  for id in $(gate_clause_ids); do
+    last=$( { gate_rows '종료 절' | grep -F "id=$id " || true; } | tail -1)
+    [ "$(gate_row_field "$last" '자체 근거')" = "예" ] || continue
+    out="${out:+$out,}$id"
+  done
+  printf '%s' "$out"
 }
 
 gate_fleet_busy_state() {
@@ -43557,6 +43670,347 @@ gate_perform_label_ack() {
   return "$GATE_EXIT_PARK"
 }
 
+gate_clause_exec_rows() {
+  # gate_clause_exec_rows <clause id> — that clause's `종료 절 실행` rows, in
+  # ledger order.
+  { gate_rows '종료 절 실행' || true; } | gate_rows_field_eq '절' "$1"
+}
+
+gate_clause_exec_anchor_of() {
+  # gate_clause_exec_anchor_of <row> — the row's anchor, `A-` and the first 8
+  # hex of its `prev`.
+  local p
+  p=$(gate_row_field "$1" 'prev')
+  printf 'A-%s' "$(printf '%s' "$p" | cut -c1-8)"
+}
+
+gate_clause_exec_row_by_anchor() {
+  # gate_clause_exec_row_by_anchor <A-xxxxxxxx> — the `종료 절 실행` row that
+  # anchor names, as `<ordinal>:<row>` (its place among those rows), or nothing.
+  local a="${1#A-}" r n=0
+  case "$a" in ????????) ;; *) return 1 ;; esac
+  case "$a" in *[!0-9a-f]*) return 1 ;; esac
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    n=$((n + 1))
+    case "$(gate_row_field "$r" 'prev')" in
+      "$a"*) printf '%s:%s' "$n" "$r"; return 0 ;;
+    esac
+  done <<EOF
+$(gate_rows '종료 절 실행')
+EOF
+  return 1
+}
+
+gate_clause_exec_argv_sha() {
+  # gate_clause_exec_argv_sha <argv…> — the sha256 of the argv words joined
+  # with NUL, no trailing NUL.
+  {
+    printf '%s' "$1"; shift
+    while [ $# -gt 0 ]; do printf '\0%s' "$1"; shift; done
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_clause_exec_last_merge() {
+  # The run's last merge commit: the `머지 커밋` of the last `segment` row with
+  # `상태=머지됨` whose value is a commit, or nothing.
+  local r v last=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    v=$(gate_row_field "$r" '머지 커밋')
+    # A whole-value hex check without a pipe: an early exit under pipefail
+    # would read as no match.
+    case "$v" in ''|*[!0-9a-f]*) continue ;; esac
+    [ "${#v}" -ge 7 ] && [ "${#v}" -le 64 ] && last="$v"
+  done <<EOF
+$(gate_rows 'segment' | gate_rows_field_eq '상태' '머지됨')
+EOF
+  printf '%s' "$last"
+}
+
+gate_clause_exec_evidence_check() {
+  # gate_clause_exec_evidence_check <clause id> <근거> — the check a `충족` row
+  # meets when its grounds cite the run's own execution. Prints `예` when the
+  # grounds cite one and every check passed; prints nothing for grounds that
+  # cite no execution on a clause that has none. Exit 3 on any failure.
+  #
+  # What the ledger can decide is decided here: the cited execution is this
+  # clause's and succeeded, and a write is followed by a re-read of the same
+  # clause, graded read or worktree write, that succeeded, came after it and is
+  # a different command. Whether the output shows what the clause's wording
+  # asks for is not decidable here, which is why the row carries `자체 근거=예`.
+  local id="$1" ev="$2" xa ra x r xn rn xs rs
+  xa=$( { printf '%s' "$ev" | grep -oE '실행 A-[0-9a-f]{8}' || true; } | tail -1 | sed 's/^.*A-/A-/')
+  ra=$( { printf '%s' "$ev" | grep -oE '재조회 A-[0-9a-f]{8}' || true; } | tail -1 | sed 's/^.*A-/A-/')
+  if [ -z "$xa" ]; then
+    if [ -n "$(gate_clause_exec_rows "$id" | sed '/^$/d')" ]; then
+      case "$ev" in
+        *'중단 답 줄'*) return 0 ;;
+      esac
+      warn "clause $id has an execution of this run — its \`충족\` grounds cite it (\`실행 A-…\`) or a person's answer (\`중단 답 줄\`)"
+      return "$GATE_EXIT_RULE"
+    fi
+    [ -z "$ra" ] || { warn "clause $id: a \`재조회\` is cited without the \`실행\` it re-reads"; return "$GATE_EXIT_RULE"; }
+    return 0
+  fi
+  x=$(gate_clause_exec_row_by_anchor "$xa") || {
+    warn "clause $id: no 종료 절 실행 row has the anchor $xa"; return "$GATE_EXIT_RULE"; }
+  xn=${x%%:*}; x=${x#*:}
+  [ "$(gate_row_field "$x" '절')" = "$id" ] || {
+    warn "clause $id: the cited execution $xa belongs to clause $(gate_row_field "$x" '절')"; return "$GATE_EXIT_RULE"; }
+  [ "$(gate_row_field "$x" '종료 코드')" = "0" ] || {
+    warn "clause $id: the cited execution $xa ended with $(gate_row_field "$x" '종료 코드') — a failed execution is not evidence"; return "$GATE_EXIT_RULE"; }
+  xs=$(gate_row_field "$x" '축2')
+  case "$xs" in
+    트리밖쓰기|외부상태변경)
+      [ -n "$ra" ] || {
+        warn "clause $id: the cited execution $xa is a $xs act — its result is read back (\`재조회 A-…\`) before the clause is met"; return "$GATE_EXIT_RULE"; }
+      r=$(gate_clause_exec_row_by_anchor "$ra") || {
+        warn "clause $id: no 종료 절 실행 row has the anchor $ra"; return "$GATE_EXIT_RULE"; }
+      rn=${r%%:*}; r=${r#*:}
+      [ "$(gate_row_field "$r" '절')" = "$id" ] || {
+        warn "clause $id: the cited re-read $ra belongs to clause $(gate_row_field "$r" '절')"; return "$GATE_EXIT_RULE"; }
+      rs=$(gate_row_field "$r" '축2')
+      case "$rs" in 읽기|워크트리쓰기) ;; *)
+        warn "clause $id: the re-read $ra is a $rs act — a re-read is graded 읽기 or 워크트리쓰기"; return "$GATE_EXIT_RULE" ;;
+      esac
+      [ "$(gate_row_field "$r" '종료 코드')" = "0" ] || {
+        warn "clause $id: the re-read $ra ended with $(gate_row_field "$r" '종료 코드')"; return "$GATE_EXIT_RULE"; }
+      [ "$rn" -gt "$xn" ] || {
+        warn "clause $id: the re-read $ra does not come after the execution $xa"; return "$GATE_EXIT_RULE"; }
+      [ "$(gate_row_field "$r" '명령 sha256')" != "$(gate_row_field "$x" '명령 sha256')" ] || {
+        warn "clause $id: the re-read $ra is the same command as the execution $xa"; return "$GATE_EXIT_RULE"; }
+      ;;
+  esac
+  printf '예'
+}
+
+gate_clause_exec_preconditions() {
+  # gate_clause_exec_preconditions <alias> <argv…> — the checks a clause
+  # execution passes before any row is written; the clause id is in
+  # GATE_CLAUSE_EXEC_ID and the argv is the one with `절=` taken off. Each
+  # failure is exit 3 with nothing written and nothing run. What the performer
+  # needs travels in GATE_CLAUSE_EXEC_* globals.
+  local al="$1"; shift
+  local id="$GATE_CLAUSE_EXEC_ID" st req shape probe pf pk='없음' pp=0 n='-' sha
+  local rows last lrc w wsha bind='-' mc head
+  case " $(gate_clause_ids | tr '\n' ' ') " in
+    *" $id "*) ;;
+    *) warn "the manifest declares no termination clause '$id' — clause-exec runs only for a declared clause"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+  st=$(gate_clause_last_state "$id")
+  case "$st" in
+    충족|불가능)
+      warn "termination clause $id is already settled ($st) — a settled clause takes no execution"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  req=$(gate_clause_open_request "$id")
+  if [ -n "$req" ]; then
+    warn "termination clause $id has an open evidence request ($req) — the person's answer settles it, not an execution"
+    return "$GATE_EXIT_RULE"
+  fi
+  # ABOVE A READ, ONLY A ROW THAT NAMES THE ACT WHOLE. The probe is the rule's
+  # one copy, called with the reach disposition's inputs; its `형태` and `행`
+  # words are read here because the plain preauthorization question answers
+  # yes for a runner-shape row too.
+  if [ "${GATE_SURFACE:-읽기}" != "읽기" ]; then
+    probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK="${GATE_MARK:-}" GATE_MARK_TRIGGER="${GATE_MARK_TRIGGER:-}" \
+            GATE_DESTRUCTIVE="${GATE_DESTRUCTIVE:-0}" GATE_REACH_EFF="${GATE_REACH:--}" \
+            GATE_ARGV="$(gate_preauth_argv "$al" "$@")" GATE_MANIFEST="$MANIFEST" \
+            /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
+    pf=" ${probe%% 제안=*} "
+    case "$pf" in *" P=1 "*) pp=1 ;; esac
+    case "$pf" in *" 형태=완전 "*) pk=완전 ;; *" 형태=러너 "*) pk=러너 ;; esac
+    case "$pf" in *" 행="*) n=${pf#* 행=}; n=${n%% *} ;; esac
+    case "$n" in ''|*[!0-9]*) n='-' ;; esac
+    if [ "$pp" != "1" ] || [ "$pk" != "완전" ]; then
+      warn "clause $id: a ${GATE_SURFACE} execution needs a 사전 인가 row that names it whole (probe P=$pp 형태=$pk) — a runner-shape row or no row does not open it"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
+  sha=$(gate_clause_exec_argv_sha "$@")
+  rows=$(gate_clause_exec_rows "$id")
+  last=$(printf '%s\n' "$rows" | sed '/^$/d' | tail -1)
+  if [ -n "$last" ]; then
+    lrc=$(gate_row_field "$last" '종료 코드')
+    if [ "$lrc" != "0" ]; then
+      warn "clause $id: its last execution ended with $lrc — a failed execution is not run again; the clause goes to a person"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
+  # AFTER A WRITE, ONLY ITS RE-READ. The re-read is not the bound execution, so
+  # the binding below is checked on the execution and not on it.
+  w=$(printf '%s\n' "$rows" | sed '/^$/d' \
+      | awk -F'|' '{ for (i = 2; i <= NF; i++) { s = $i; sub(/^ +/, "", s); sub(/ +$/, "", s)
+                     if (s == "축2=트리밖쓰기" || s == "축2=외부상태변경") print $0 } }' | tail -1)
+  if [ -n "$w" ]; then
+    wsha=$(gate_row_field "$w" '명령 sha256')
+    case "${GATE_SURFACE:-}" in
+      읽기|워크트리쓰기) ;;
+      *) warn "clause $id: its write execution already ran — what follows is a re-read graded 읽기 or 워크트리쓰기, not another ${GATE_SURFACE:-} act"
+         return "$GATE_EXIT_RULE" ;;
+    esac
+    if [ "$sha" = "$wsha" ]; then
+      warn "clause $id: the re-read is the same command as the write execution — read the result with a different command"
+      return "$GATE_EXIT_RULE"
+    fi
+    [ "${GATE_SURFACE}" = "읽기" ] || bind='대조'
+  else
+    shape=$( { manifest_clause_rows_raw | grep -F "id=$id " || true; } | sed -n '1p')
+    shape=$(gate_row_field "$shape" '근거 실행')
+    if [ -n "$shape" ] && [ "$shape" != "-" ]; then
+      # Word for word from the first word: the bound shape is the start of the
+      # command, never a substring of it.
+      local -a sw
+      read -r -a sw <<<"$shape"
+      local i=0 argv=("$@")
+      while [ "$i" -lt "${#sw[@]}" ]; do
+        if [ "${argv[$i]:-}" != "${sw[$i]}" ]; then
+          warn "clause $id is bound to the execution '$shape' — this command does not start with it"
+          return "$GATE_EXIT_RULE"
+        fi
+        i=$((i + 1))
+      done
+      bind='명시'
+    else
+      bind='대조'
+    fi
+    [ "${GATE_SURFACE:-읽기}" = "읽기" ] && bind='-'
+  fi
+  # THE RUN'S LAST MERGE IS IN THE TREE THE COMMAND RUNS IN, or the evidence is
+  # about code the run did not ship.
+  mc=$(gate_clause_exec_last_merge)
+  if [ -n "$mc" ]; then
+    head=$( (cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git rev-parse HEAD 2>/dev/null) || true)
+    if ! (cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git merge-base --is-ancestor "$mc" HEAD 2>/dev/null); then
+      warn "clause $id: the run's last merge commit $mc is not an ancestor of HEAD ${head:-미상} in ${GATE_ACT_CWD:-.} — the command would not run on the merged code"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
+  GATE_CLAUSE_EXEC_SHA="$sha"
+  GATE_CLAUSE_EXEC_BIND="$bind"
+  GATE_CLAUSE_EXEC_ROWN="$n"
+  GATE_CLAUSE_EXEC_ROUND=$(( $(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d ' ') + 1 ))
+  return 0
+}
+
+gate_clause_exec_dir() {
+  # The run's `clause-exec` output directory, made on first use with mode 700,
+  # or nothing (exit 1) when it is not a real directory at the place it is
+  # named — the same symlink and physical-path check as `halt/shift`.
+  local d="$RUN_DIR/clause-exec" have want
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 1
+  [ -L "$d" ] && return 1
+  [ -d "$d" ] || mkdir -m 700 "$d" 2>/dev/null || return 1
+  [ -d "$d" ] && [ ! -L "$d" ] || return 1
+  have=$(cd -P -- "$d" 2>/dev/null && pwd -P) || return 1
+  want="$(cd -P -- "$RUN_DIR" 2>/dev/null && pwd -P)/clause-exec" || return 1
+  [ "$have" = "$want" ] || return 1
+  printf '%s' "$d"
+}
+
+gate_clause_exec_gist() {
+  # gate_clause_exec_gist <output file> — the one line of an execution's output
+  # a record carries: its last non-empty line, masked, then cut at 160
+  # characters with `…` when cut. Masking comes before the cut, so a token cut
+  # below 20 characters cannot slip past (나).
+  #   (가) a word holding token, secret, password, passwd, apikey, api_key,
+  #        api-key, authorization, bearer or credential (any case), followed by
+  #        `=`, `:` or a space: the value after it, up to the next space,
+  #        quote or comma, becomes `[가림]`.
+  #   (나) a run of 20 or more of A-Za-z0-9_-+/=. holding a letter and a digit
+  #        becomes `[가림]` — hashes too; the whole output is in the file.
+  [ -f "$1" ] || return 0
+  LC_ALL=C awk '
+    NF { last = $0 }
+    END {
+      s = last; sub(/\r$/, "", s)
+      kw = "(token|secret|password|passwd|apikey|api_key|api-key|authorization|bearer|credential)"
+      out = ""
+      while (1) {
+        l = tolower(s)
+        if (!match(l, kw "[A-Za-z0-9_.-]*(=|:| )[ ]*")) break
+        pre = substr(s, 1, RSTART + RLENGTH - 1); rest = substr(s, RSTART + RLENGTH)
+        if (match(rest, /^[^ \t"'"'"',]+/)) {
+          v = substr(rest, 1, RLENGTH)
+          if (tolower(v) ~ ("^[A-Za-z0-9_.-]*" kw)) { out = out pre; s = rest; continue }
+          out = out pre "[가림]"; s = substr(rest, RLENGTH + 1)
+        } else { out = out pre; s = rest }
+      }
+      s = out s
+      out = ""
+      while (match(s, /[A-Za-z0-9_+\/=.-][A-Za-z0-9_+\/=.-]*/)) {
+        t = substr(s, RSTART, RLENGTH)
+        out = out substr(s, 1, RSTART - 1)
+        if (RLENGTH >= 20 && t ~ /[A-Za-z]/ && t ~ /[0-9]/) out = out "[가림]"; else out = out t
+        s = substr(s, RSTART + RLENGTH)
+      }
+      s = out s
+      # Characters, not bytes: a byte outside 0x80-0xBF starts a character.
+      for (i = 128; i < 256; i++) cont[sprintf("%c", i)] = (i < 192)
+      n = 0; cut = 0; res = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (!(c in cont) || !cont[c]) { n++; if (n > 160) { cut = 1; break } }
+        res = res c
+      }
+      printf "%s%s", res, (cut ? "…" : "")
+    }' "$1"
+}
+
+gate_perform_clause_exec() {
+  # gate_perform_clause_exec <alias> <axis-2 grade> <argv…> — run a clause's
+  # evidence command into its own output file, hand the output to the caller,
+  # and write the `종료 절 실행` row with its anchor. The `자율 승인` row is
+  # already written. Returns the command's own status.
+  local al="$1" graded="$2"; shift 2
+  local id="$GATE_CLAUSE_EXEC_ID" k="${GATE_CLAUSE_EXEC_ROUND:-1}" dir out rc=0
+  local osha head free gist cmd pfile prev
+  dir=$(gate_clause_exec_dir) || {
+    warn "the run's clause-exec directory is not a real directory at $RUN_DIR/clause-exec — nothing was run"
+    return "$GATE_EXIT_RULE"; }
+  out="$dir/$id#$k.out"
+  gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
+  # No pipe between the command and its file: the status is the command's.
+  ( umask 077; gate_run_readonly "$@" >"$out" 2>&1 ) || rc=$?
+  chmod 600 "$out" 2>/dev/null || true
+  cat "$out" 2>/dev/null || true
+  if [ "$rc" != "0" ]; then
+    warn "the act failed (rc=$rc) — the row is already in the ledger"
+    gate_append '자율 승인' "kind=clause-exec" "결정=결과" "대상=$al" "세그먼트=-" \
+      "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
+      "축2=$graded" "근거=rc=$rc"
+  fi
+  osha=$(shasum -a 256 "$out" 2>/dev/null | cut -d' ' -f1)
+  head=$( (cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git rev-parse HEAD 2>/dev/null) || true)
+  gist=$(gate_clause_exec_gist "$out")
+  local -a fx=("절=$id" "회차=$k" "명령=" "명령 sha256=${GATE_CLAUSE_EXEC_SHA:--}"
+    "축2=${GATE_SURFACE:--}" "결속=${GATE_CLAUSE_EXEC_BIND:--}" "사전 인가 행=${GATE_CLAUSE_EXEC_ROWN:--}"
+    "커밋=${head:--}" "종료 코드=$rc" "출력=$out" "출력 sha256=${osha:--}")
+  # The series name is four bytes longer than the one the budget measures.
+  free=$(( $(gate_free_budget "${fx[@]}") - 4 ))
+  [ "$free" -lt 0 ] && free=0
+  gist=$(gate_row_safe "$gist" $(( free / 2 )))
+  cmd=$(gate_row_safe "$*" $(( free - $(printf '%s' "$gist" | wc -c | tr -d ' ') )))
+  pfile=$(mktemp "${TMPDIR:-/tmp}/gate-cx-prev.XXXXXX") || pfile=''
+  GATE_APPEND_PREV_OUT="$pfile"
+  gate_append '종료 절 실행' "절=$id" "회차=$k" "명령=$cmd" \
+    "명령 sha256=${GATE_CLAUSE_EXEC_SHA:--}" "축2=${GATE_SURFACE:--}" "결속=${GATE_CLAUSE_EXEC_BIND:--}" \
+    "사전 인가 행=${GATE_CLAUSE_EXEC_ROWN:--}" "커밋=${head:--}" "종료 코드=$rc" "출력=$out" \
+    "출력 sha256=${osha:--}" "요지=$gist"
+  GATE_APPEND_PREV_OUT=''
+  prev=''
+  [ -n "$pfile" ] && prev=$(cat "$pfile" 2>/dev/null || true)
+  [ -n "$pfile" ] && rm -f "$pfile"
+  if [ -n "$prev" ]; then
+    printf '[clause-exec] 행 A-%s\n' "$(printf '%s' "$prev" | cut -c1-8)" >&2
+  else
+    warn "the 종료 절 실행 row was written but its anchor could not be read back"
+  fi
+  return "$rc"
+}
+
 # ---------------------------------------------------------------------------
 # The review post act — `act --kind review-post --segment <seg> [--clause <id>]
 # -- 게시`.
@@ -45071,6 +45525,20 @@ gate_verb_act() {
     gate_judgment_aid_take "$@"
     set -- ${GATE_JUDGMENT_AID_REST[@]+"${GATE_JUDGMENT_AID_REST[@]}"}
   fi
+  # A CLAUSE EXECUTION'S FIRST WORD NAMES THE CLAUSE, AND IT LEAVES THE argv HERE,
+  # once, before anything grades, records or measures it. Every judgment below —
+  # the argv0 grade, the rule catalog, the history comparison, the merge-order
+  # check and the `plan` forecast — reads the command the same way `exec` would
+  # read it, so its refusals, approval waits and parks are `exec`'s own.
+  GATE_CLAUSE_EXEC_ID=""
+  if [ "$kind" = "clause-exec" ]; then
+    case "${1:-}" in
+      절=?*) GATE_CLAUSE_EXEC_ID="${1#절=}"; shift ;;
+      *) warn "act --kind clause-exec 의 argv 는 「절=<id> <명령 낱말…>」 입니다 — 첫 낱말이 그 실행이 근거를 만들 종료 절입니다"
+         exit "$GATE_EXIT_VOCAB" ;;
+    esac
+    [ $# -ge 1 ] || { warn "act --kind clause-exec 는 「절=<id>」 뒤에 실행할 명령이 있어야 합니다"; exit "$GATE_EXIT_VOCAB"; }
+  fi
   local argv="$*" impl_budget_out='' impl_cj_out=''
 
   [ -n "$alias" ]    || { printf 'gate: --target is required\n' >&2; exit 2; }
@@ -45195,6 +45663,16 @@ gate_verb_act() {
     [ "$cutpoint" = "PR" ] || { warn "act --kind label-ack 은 --cutpoint PR 로만 냅니다 (받은 값: ${cutpoint})"; exit "$GATE_EXIT_VOCAB"; }
     { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
       || { warn "act --kind label-ack 은 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
+  fi
+  # THE CLAUSE EXECUTION'S CALLER AND SCOPE. A termination clause belongs to the
+  # run, not to a segment, and the one party that settles clauses is the routing
+  # shift — so a stage or the seat is refused here, before anything writes.
+  if [ "$kind" = "clause-exec" ]; then
+    [ "$segment" = "-" ] || { warn "act --kind clause-exec 는 --segment - 로만 냅니다 — 종료 절은 세그먼트가 아니라 런의 것입니다 (받은 값: ${segment:-(없음)})"; exit "$GATE_EXIT_VOCAB"; }
+    if cc_caller_is_stage || { [ -z "$(gate_shift_self_ordinal)" ] && [ -z "${CC_PIPELINE_SHIFT_ID:-}" ]; }; then
+      warn "\`clause-exec\` 는 라우터 교대만 냅니다 — 스테이지와 좌석은 종료 절의 근거를 실행으로 만들지 않습니다"
+      exit "$GATE_EXIT_RULE"
+    fi
   fi
   # THE POST ACT'S ONE SPELLING: the token `게시`, the `커밋` rung, one
   # segment. The pull request, the body, the comments and the event are the
@@ -47036,6 +47514,13 @@ gate_verb_act() {
   esac
   export GATE_SURFACE
 
+  # THE CLAUSE EXECUTION'S PRECONDITIONS, once the argv is graded and before the
+  # rule catalog, the approval block or any row: a refusal here leaves nothing
+  # behind, and the shift goes to the person stop with the argv it issued.
+  if [ "$kind" = "clause-exec" ]; then
+    gate_clause_exec_preconditions "$alias" "$@" || exit $?
+  fi
+
   # THE SECOND argv-DERIVED VALUE, PUBLISHED BESIDE THE FIRST. `리뷰-후-머지`
   # narrows on the graded surface and then splits that surface's worktree-write
   # cell with this; keeping the two exports together is what stops a later
@@ -47445,8 +47930,13 @@ gate_verb_act() {
     # facts ride on the second line too, ahead of the free-text proposal; every
     # one of them is `-` or a digit when empty, because tab is a whitespace
     # separator to `read` and an empty field would fold and shift the rest.
-    local _out _cell _pcause _facts _rest
-    _out=$(gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
+    local _out _cell _pcause _facts _rest _cx_reach=0
+    # The collaboration cell's clause-execution exception is switched on HERE
+    # and nowhere else, by the act kind: the same argv issued as `exec` keeps
+    # today's disposition, and a value in the caller's environment cannot turn
+    # it on because this assignment always names it.
+    [ "$kind" = "clause-exec" ] && _cx_reach=1
+    _out=$(GATE_CLAUSE_EXEC_REACH=$_cx_reach gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
            printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
              "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
              "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_EV" \
@@ -48397,6 +48887,11 @@ EOF
         ci-match) gate_perform_ci_match "$alias" "$segment" || rc=$? ;;
         # The label POST and its confirmation, the same way as the rerun's.
         label-ack) gate_perform_label_ack "$alias" "$segment" "$@" || rc=$? ;;
+        # The command runs into its own output file and the result row follows
+        # it. The arm writes its own failure row, so it returns past the shared
+        # failure tail below rather than through it.
+        clause-exec) gate_perform_clause_exec "$alias" "$graded" "$@" || rc=$?
+                     return "$rc" ;;
         # The review POST, its re-read and its row, never the argv.
         review-post) gate_perform_review_post "$alias" "$segment" || rc=$? ;;
         # The argv itself runs here, so the pair opens here as it does on exec.
