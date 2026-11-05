@@ -796,11 +796,12 @@ collect --max-new 1
 check "10: 상한에 걸린 런은 수집하지 않고 미수집으로 센다" "$(counts4)" "1,1,0,0"
 check "10: 상한에 걸린 회차는 차단된다" "$(jline '.probe')" "차단"
 check "10: 차단된 회차는 트리거를 내지 않는다" "$(jline '.fired | length')" "0"
-check "10: 미룬 런의 기록은 만들어지지 않는다" \
-  "$([ -e "$LEDGER_DIR/metrics/$R10B.json" ] && printf 있음 || printf 없음)" "없음"
+# 새 수집은 런 id 내림차순이다 — 상한에 걸려 미뤄지는 것은 오래된 쪽이다.
+check "10: 최신 런이 먼저 수집되고 미룬 오래된 런의 기록은 만들어지지 않는다" \
+  "$([ -e "$LEDGER_DIR/metrics/$R10B.json" ] && printf 있음 || printf 없음),$([ -e "$LEDGER_DIR/metrics/$R10A.json" ] && printf 있음 || printf 없음)" "있음,없음"
 collect
 check "10: 다음 회차는 미룬 런을 수집한다" "$(counts4)" "2,0,0,0"
-check "10: 미룬 런이 다음 회차의 new_runs 에 든다" "$(jline ".new_runs | index(\"$R10B\") != null")" "true"
+check "10: 미룬 런이 다음 회차의 new_runs 에 든다" "$(jline ".new_runs | index(\"$R10A\") != null")" "true"
 check "10: 상한이 풀린 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
 # 회차의 첫 새 수집은 상한·예산과 무관하게 시도한다 — 그렇지 않으면 예산이 다 쓰인 채 시작하는
 # 회차(예산 0, 또는 판독만으로 예산을 넘긴 회차)가 한 런도 수집하지 못한 채 매번 차단된다.
@@ -809,12 +810,12 @@ n_run "$R10C" 100000
 n_run "$R10D" 100000
 collect --budget 0
 check "10: 예산 0 이어도 회차의 첫 새 런은 수집하고 나머지는 미수집으로 센다" "$(counts4)" "3,1,0,0"
-check "10: 먼저 든 런의 기록은 만들어지고 예산에 걸린 런의 기록은 만들어지지 않는다" \
-  "$([ -e "$LEDGER_DIR/metrics/$R10C.json" ] && printf 있음 || printf 없음),$([ -e "$LEDGER_DIR/metrics/$R10D.json" ] && printf 있음 || printf 없음)" "있음,없음"
+check "10: 먼저 든 최신 런의 기록은 만들어지고 예산에 걸린 런의 기록은 만들어지지 않는다" \
+  "$([ -e "$LEDGER_DIR/metrics/$R10D.json" ] && printf 있음 || printf 없음),$([ -e "$LEDGER_DIR/metrics/$R10C.json" ] && printf 있음 || printf 없음)" "있음,없음"
 check "10: 미수집이 남은 회차는 차단된다" "$(jline '.probe')" "차단"
 collect --budget 0
 check "10: 예산 0 인 다음 회차도 전진해 남은 런을 수집한다" "$(counts4)" "4,0,0,0"
-check "10: 그 런이 new_runs 에 든다" "$(jline ".new_runs | index(\"$R10D\") != null")" "true"
+check "10: 그 런이 new_runs 에 든다" "$(jline ".new_runs | index(\"$R10C\") != null")" "true"
 check "10: 남은 런이 없어진 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
 R10E=20260910-aaaaaa05; R10F=20260910-aaaaaa06
 n_run "$R10E" 100000
@@ -846,7 +847,8 @@ check "10: 예산이 정수가 아니면 exit 2 다" "$rc" "2"
 # 남기기 전에 끝난 회차의 런은 기록만 보면 이미 센 런이라 트리거를 한 번도 거치지 않는다.
 in_new() { jline "[.new_runs[] | select(. == \"$1\")] | length"; }
 reset_all
-R11A=20260911-aaaaaa01; R11B=20260911-aaaaaa02; R11C=20260911-aaaaaa03; R11D=20260911-aaaaaa04
+# 수집은 최신 런 먼저라, 상한 1 에서 먼저 수집될 R11B 가 R11C 보다 큰 id 를 갖는다.
+R11A=20260911-aaaaaa01; R11B=20260911-aaaaaa03; R11C=20260911-aaaaaa02; R11D=20260911-aaaaaa04
 n_run "$R11A" 100000
 collect
 check "11: (선행) 앞선 런은 판정된 회차에서 확정된다" "$(jline '.probe')" "ok"
@@ -1053,7 +1055,8 @@ d14_run 20261002-eeeeee22 "$(ad_row solo-audit 최초 e5e5e5e5e5e5 2.104.1 99 10
 d14_run 20261002-eeeeee23 "$(ad_row discuss-audit 최초 e5e5e5e5e5e5 미상 99 10000)"
 d14_run 20261002-eeeeee24 "$(ad_row discuss-audit 최초 미상 2.104.1 99 10000)"
 d14_run 20261002-eeeeee25 "$(ad_row discuss-audit 최초 e6e6e6e6e6e6 2.104.1 7 1000)"
-collect --release-boundary 2.100.0
+# 열다섯 런을 한 회차에 다 모아야 하므로, 부하가 높은 호스트에서도 기본 예산에 걸리지 않게 넓힌다.
+collect --release-boundary 2.100.0 --budget 600
 check "15: 수집기는 exit 0 이다" "$rc" "0"
 check "15: 런별 기록이 토론 패스 행마다 하나를 싣는다" "$(jrec "$R15" '.design.discussion | length')" "2"
 check "15: 토론 패스의 미상 셈은 null 이다" "$(jrec "$R15" '.design.discussion[0].r3_minutes')" "null"
@@ -1326,6 +1329,236 @@ collect
 check "18: 수집기는 exit 0 이다" "$rc" "0"
 check "18: 요약은 기본 경계 2.114.0 을 싣는다" "$(jsum '.discussion_verdict.boundary')" "2.114.0"
 check "18: 2.112.0·2.113.0·2.99.0 은 기준선, 2.114.0 과 2.115.0 은 릴리스 뒤다" "$(jsum '.discussion_verdict.editions["e7e7e7e7e7e7"] | [.baseline.n, .after.n] | map(tostring) | join(",")')" "3,2"
+
+# --- 19. 런별 지연 기록과 요약의 `delay` ----------------------------------------------------
+# 지연 기록은 층·트리거의 입력이 아니다. 원장만으로 정해지는 대기·무커밋은 로그가 없는 런에도
+# 채워지고, 시간 분해는 시도 단위 스트림 로그가 있을 때만 나온다.
+reset_all
+jdel() { jq -r "$2" "$LEDGER_DIR/metrics/$1.delay.json"; }
+TIP_A=aaaaaaaa11111111111111111111111111111111
+HEAD_B=bbbbbbbb22222222222222222222222222222222
+TIP_E=eeeeeeee33333333333333333333333333333333
+ir_row() {
+  # ir_row <seg> <ver> <실패 서명|__none__> [plan] — 레인 기록이 없는 구현 정상 완료 행.
+  local sig=""
+  [ "$3" = "__none__" ] || sig=" | 실패 서명=$3"
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=%s | 스테이지=%s | 종류=implement | 실행 버전=%s | 세션 id=s-%s-%s | plan_sha256=%s | 종단 부류=정상 완료%s | prev=abc' \
+    "$1" "$1" "$2" "$1" "$2" "${4:-p$2}" "$sig"
+}
+lease_row() { printf -- '- `stage-lease` | 교대=1 | 파견 id=%s | 계보=%s | 계정=u1 | 관측=tracker@1793689940.2379742 | prev=abc' "$1" "$1"; }
+wait_row()  { printf -- '- `stage-wait` | 교대=1 | 계보=%s | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=%s | prev=abc' "$1" "$2"; }
+
+# 런 A — 시도 로그·공유 로그·로그 없음, 무커밋 네 경우, 부하 표본.
+R19A=20261001-aaaaaa19; R19B=20261001-bbbbbb19; R19C=20261001-cccccc19
+mk_rundir "$R19A"
+mk_ledger "$R19A" \
+  "- \`master 판독\` | 교대=0 | 대상=x | 팁=$TIP_A | 상태=초록 | 관측=2026-10-01T00:00:00Z | prev=abc" \
+  "$(lease_row B:S1#1)" \
+  "$(wait_row B:D1#2 lease-lock-busy)" \
+  "- \`handoff\` | 교대=1 | 사유=대기 | 기록 시각=2026-10-01T00:01:40Z | prev=abc" \
+  "$(ir_row S1 1 implement/정상\ 완료/d7aca8873bfa/aaaaaaaa)" \
+  "$(lease_row B:S1#2)" \
+  "- \`원격 판독\` | 교대=1 | 워크트리 HEAD=$HEAD_B | 관측=2026-10-01T00:03:20Z | prev=abc" \
+  "$(ir_row S1 2 implement/정상\ 완료/d7aca8873bfa/bbbbbbbb)" \
+  "$(lease_row B:S1#3)" \
+  "$(ir_row S1 3 implement/정상\ 완료/d7aca8873bfa/bbbbbbbb)" \
+  "$(lease_row B:S1#4)" \
+  "$(ir_row S1 4 implement/정상\ 완료/d7aca8873bfa/dddddddd)" \
+  "$(lease_row B:S1#5)" \
+  "$(ir_row S1 5 __none__)" \
+  "$(ir_row S1 6 implement/정상\ 완료/d7aca8873bfa/aaaaaaaa)" \
+  "- \`stage-result\` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=review | 실행 버전=1 | 종단 부류=정상 완료 | prev=abc" \
+  "- \`stage-result\` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=review | 실행 버전=2 | 종단 부류=정상 완료 | prev=abc" \
+  "- \`stage-result\` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=review | 실행 버전=1 | 종단 부류=정상 완료 | prev=abc" \
+  "- \`cost\` | 누적 usd=1.0 | 관측 시각=2026-10-01T01:00:00Z | prev=abc"
+# S1#1 의 스트림 로그 — 모델 2500+500+750, 도구 2000, 백그라운드 대기 60000, 그 밖의 공백 10250.
+{
+  printf '{"type":"assistant","timestamp":"2026-10-01T00:00:00.000Z","message":{"content":[{"type":"text","text":"a"}]}}\n'
+  printf '{"type":"user","timestamp":"2026-10-01T00:00:02.500Z","message":{"content":"u"}}\n'
+  printf '{"type":"assistant","timestamp":"2026-10-01T00:00:03Z","message":{"content":[{"type":"tool_use","id":"t"}]}}\n'
+  printf '{"type":"user","timestamp":"2026-10-01T00:00:05.000Z","message":{"content":"r"}}\n'
+  printf '{"type":"result","subtype":"success","result_index":1}\n'
+  printf '{"type":"system","subtype":"task_started","task_id":"bg1","is_backgrounded":true}\n'
+  printf '{"type":"system","subtype":"task_started","task_id":"fg1","is_backgrounded":false}\n'
+  printf '{"type":"system","subtype":"task_started","task_id":"fg2"}\n'
+  printf '{"type":"system","subtype":"task_notification","task_id":"fg1","status":"completed"}\n'
+  printf '{"type":"system","subtype":"task_notification","task_id":"bg1","status":"failed"}\n'
+  printf '{"type":"user","timestamp":"2026-10-01T00:01:05.000Z","message":{"content":"n"}}\n'
+  printf '{"type":"result","subtype":"success","result_index":2}\n'
+  printf '{"type":"user","timestamp":"2026-10-01T00:01:15.250Z","message":{"content":"p"}}\n'
+  printf '{"type":"assistant","timestamp":"2026-10-01T00:01:16.000Z","message":{"content":[{"type":"text","text":"b"}]}}\n'
+} > "$STATE/run/$R19A/log/S1#1.json"
+mk_stream "$STATE/run/$R19A/log/S2.json" 1
+{
+  printf '{"schema":1,"at":"2026-10-01T00:00:30Z","load1":2,"load5":1,"load15":1,"ncpu":8,"claude_procs":3,"runs":1,"stages":1}\n'
+  printf '{"schema":1,"at":"2026-10-01T00:01:00Z","load1":4,"load5":1,"load15":1,"ncpu":8,"claude_procs":5,"runs":2,"stages":1}\n'
+  printf '{"schema":1,"at":"2026-10-01T00:05:00Z","load1":9,"load5":1,"load15":1,"ncpu":8,"claude_procs":9,"runs":9,"stages":1}\n'
+} > "$STATE/run/$R19A/host-load.jsonl"
+
+# 런 B — log/ 가 없는 런. 첫 대기는 앞에 시각 있는 행이 없다.
+mkdir -p "$STATE/run/$R19B"; : > "$STATE/run/$R19B/done"
+mk_ledger "$R19B" \
+  "$(wait_row B:S9#1 lease-lock-busy)" \
+  "- \`master 판독\` | 교대=0 | 대상=x | 팁=$TIP_E | 상태=초록 | 관측=2026-10-01T00:01:00Z | prev=abc" \
+  "$(wait_row B:S9#2 lease-lock-busy)" \
+  "$(wait_row B:S9#3 account-busy)" \
+  "$(lease_row B:S1#1)" \
+  "$(ir_row S1 1 implement/정상\ 완료/d7aca8873bfa/eeeeeeee)" \
+  "- \`cost\` | 누적 usd=1.0 | 관측 시각=2026-10-02T00:00:00Z | prev=abc"
+
+# 런 C — 런별 기록이 수집되는 런.
+n_run "$R19C" 100000
+collect
+check "19: 지연 단계가 있어도 수집기는 exit 0 이다" "$rc" "0"
+check "19: 종단 런 셋 모두 지연 기록을 갖는다" \
+  "$(for r in "$R19A" "$R19B" "$R19C"; do [ -f "$LEDGER_DIR/metrics/$r.delay.json" ] && printf y || printf n; done)" "yyy"
+check "19: 시간 분해 다섯 값과 합" \
+  "$(jdel "$R19A" '.stages[] | select(.stage == "S1#1") | .time | [.wall_ms, .model_ms, .tool_ms, .bg_wait_ms, .idle_ms, (.model_ms + .tool_ms + .bg_wait_ms + .idle_ms)] | map(tostring) | join(",")')" \
+  "76000,3750,2000,60000,10250,76000"
+check "19: 턴·깨어남·백그라운드 태스크는 백그라운드 태스크의 알림만 센다" \
+  "$(jdel "$R19A" '.stages[] | select(.stage == "S1#1") | .time | [.turns, .wakeups, .bg_tasks.started, .bg_tasks.completed, .bg_tasks.failed, .bg_tasks.stopped] | map(tostring) | join(",")')" \
+  "2,1,1,0,1,0"
+check "19: 시도 로그의 스테이지는 출처와 시작·끝을 싣는다" \
+  "$(jdel "$R19A" '.stages[] | select(.stage == "S1#1") | [.source, .start, .end, .segment, .kind, .class] | join(",")')" \
+  "시도 로그,2026-10-01T00:00:00.000Z,2026-10-01T00:01:16.000Z,S1,implement,정상 완료"
+check "19: 시도 번호 없는 로그 하나를 두 시도가 나눠 쓰면 둘 다 공유 로그이고 time 이 null 이다" \
+  "$(jdel "$R19A" '[.stages[] | select(.segment == "S2") | "\(.source)/\(.time)"] | join(",")')" "공유 로그/null,공유 로그/null"
+check "19: 로그가 없는 스테이지는 로그 없음이다" \
+  "$(jdel "$R19A" '.stages[] | select(.segment == "S3") | "\(.source)/\(.time)"')" "로그 없음/null"
+check "19: span 은 ISO 시각 칸의 최소·최대이고 tracker@ 값은 버린다" \
+  "$(jdel "$R19A" '.span | "\(.start)~\(.end)"')" "2026-10-01T00:00:00Z~2026-10-01T01:00:00Z"
+check "19: stage-wait 의 at 은 앞 행의 시각이다" \
+  "$(jdel "$R19A" '.waits[0] | [.reason, .lineage, .at, .at_source] | join(",")')" \
+  "lease-lock-busy,B:D1#2,2026-10-01T00:00:00Z,앞 행"
+check "19: 무커밋 — 파견 전 팁의 앞자리와 같은 8자 토큰과 앞선 시도의 같은 토큰" \
+  "$(jdel "$R19A" '[.nocommit[] | "\(.stage)@\(.at)/\(.plan_sha256)"] | join(",")')" \
+  "S1#1@2026-10-01T00:01:40Z/p1,S1#3@2026-10-01T00:03:20Z/p3"
+check "19: 파견 뒤 원격 판독에만 나온 토큰과 새 토큰은 무커밋이 아니고, 토큰 없음·파견 행 없음은 판정 불가다" \
+  "$(jdel "$R19A" '[([.nocommit[] | .stage] | index("S1#2") == null), ([.nocommit[] | .stage] | index("S1#4") == null), .nocommit_undecidable] | map(tostring) | join(",")')" \
+  "true,true,2"
+check "19: 부하 표본이 있으면 스테이지 구간 안의 표본으로 host_load 를 채운다" \
+  "$(jdel "$R19A" '[.host_load_source, (.stages[] | select(.stage == "S1#1") | .host_load | .samples, .load1_mean, .load1_max, .ncpu, .claude_procs_max, .runs_max)] | map(tostring) | join(",")')" \
+  "기록,2,3,4,8,5,2"
+check "19: 로그가 없는 런은 time 이 null 이고 대기·무커밋이 채워진다" \
+  "$(jdel "$R19B" '[.host_load_source, (.stages[0] | .source, (.time | tostring)), (.waits | length), (.waits[0].at | tostring), .waits[0].at_source, (.nocommit | length)] | map(tostring) | join(",")')" \
+  "기록 없음,로그 없음,null,3,null,없음,1"
+check "19: 요약의 coverage" "$(jsum '.delay.coverage | [.records, .with_time, .with_host_load, .stale] | map(tostring) | join(",")')" "3,2,1,0"
+check "19: 요약의 by_date" "$(jsum '.delay.wasted.by_date | tojson')" '{"2026-10-01":{"lease_lock_busy":2,"nocommit":3}}'
+check "19: 요약의 by_concurrency 는 사건 시각을 품는 런 수다" \
+  "$(jsum '.delay.wasted.by_concurrency | tojson')" '{"1":{"lease_lock_busy":1,"nocommit":0},"2":{"lease_lock_busy":1,"nocommit":3}}'
+check "19: 시각 없는 사건은 undated 로 가고 판정 불가는 합해진다" \
+  "$(jsum '.delay.wasted | [.undated.lease_lock_busy, .undated.nocommit, .nocommit_undecidable] | map(tostring) | join(",")')" "1,0,2"
+check "19: 대기 근거별 수" "$(jsum '.delay.waits_by_reason | tojson')" '{"account-busy":1,"lease-lock-busy":3}'
+check "19: by_kind 는 time 이 있는 스테이지만 합한다" \
+  "$(jsum '.delay.by_kind.implement | [.stages, .wall_ms, .bg_wait_ms] | map(tostring) | join(",")')" "1,76000,60000"
+cp "$LEDGER_DIR/metrics.json" "$WORK/m19a.json"
+collect
+check "19: 같은 입력으로 두 번 돌린 요약은 바이트 단위로 같다" \
+  "$(cmp -s "$LEDGER_DIR/metrics.json" "$WORK/m19a.json" && printf same || printf diff)" "same"
+
+# 지연 기록은 런별 기록의 자리(층·트리거·판정 덩어리)에 들지 않는다.
+strata19=$(jsum '.strata | tojson'); runs19=$(jsum '.counts | tojson')
+verdict19=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>/dev/null)
+mkdir -p "$WORK/delay-aside"; mv "$LEDGER_DIR"/metrics/*.delay.json "$WORK/delay-aside/"
+check "19: --verdict 결과는 지연 기록이 없을 때와 같다" \
+  "$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>/dev/null)" "$verdict19"
+mv "$WORK/delay-aside/"*.delay.json "$LEDGER_DIR/metrics/"
+# 런 기록으로 읽히면 층 집계를 깨뜨릴 꼴의 지연 기록을 하나 더 둔다.
+printf '{"schema":1,"run_id":"20990101-deadbeef","stages":[{"kind":"review","class":"정상 완료"}]}\n' \
+  > "$LEDGER_DIR/metrics/20990101-deadbeef.delay.json"
+collect
+check "19: 지연 기록은 전수 재계산의 런 기록에 들지 않는다 — 층이 그대로다" "$(jsum '.strata | tojson')" "$strata19"
+check "19: 지연 기록은 counts 를 바꾸지 않는다" "$(jsum '.counts | tojson')" "$runs19"
+check "19: 지연 기록이 있어도 --verdict 결과가 같다" \
+  "$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" --config-home "$HOME_A" --verdict 2>/dev/null)" "$verdict19"
+rm -f "$LEDGER_DIR/metrics/20990101-deadbeef.delay.json"
+
+# 런별 기록이 이미 있고 지연 기록이 없는 런에 소급된다.
+rm -f "$LEDGER_DIR/metrics/$R19C.delay.json"
+collect
+check "19: 런별 기록만 있는 런에 지연 기록이 소급된다" \
+  "$([ -f "$LEDGER_DIR/metrics/$R19C.delay.json" ] && printf 있음 || printf 없음),$(jline '.new_runs | length')" "있음,0"
+check "19: 부하 표본이 없는 런은 host_load 가 null 이다" \
+  "$(jdel "$R19C" '[.host_load_source, (.stages[0].host_load | tostring)] | join(",")')" "기록 없음,null"
+
+# 읽을 수 없는 로그 — 지연 기록을 만들지 못해도 회차의 counts·probe·new_runs 는 그대로다.
+if [ "$(id -u)" = "0" ]; then
+  ok "19: (root 에서는 읽기 권한 픽스처가 성립하지 않아 건너뛴다)"
+else
+  collect
+  base19=$(jline '[(.counts | tojson), .probe, (.new_runs | tojson)] | join("|")')
+  rm -f "$LEDGER_DIR/metrics/$R19C.delay.json"
+  chmod 000 "$STATE/run/$R19C/log/S1#1.json"
+  collect
+  chmod 644 "$STATE/run/$R19C/log/S1#1.json"
+  check "19: 지연 단계 실패는 counts·probe·new_runs 를 바꾸지 않는다" \
+    "$(jline '[(.counts | tojson), .probe, (.new_runs | tojson)] | join("|")')" "$base19"
+  check "19: 실패한 런은 지연 기록이 없고 진단을 남긴다" \
+    "$([ -f "$LEDGER_DIR/metrics/$R19C.delay.json" ] && printf 있음 || printf 없음),$(grep -c "런 $R19C 의 지연 기록을 만들지 못했다" "$WORK/err" || true)" "없음,1"
+  collect
+  check "19: 다음 회차에 그 런이 다시 대상이 된다" \
+    "$([ -f "$LEDGER_DIR/metrics/$R19C.delay.json" ] && printf 있음 || printf 없음)" "있음"
+fi
+
+# 지연 단계의 상한 — 첫 대상은 무조건, 순서는 최신 런 먼저.
+rm -f "$LEDGER_DIR"/metrics/*.delay.json
+collect --delay-max 0
+check "19: 지연 상한 0 이어도 최신 런 하나는 쓴다" \
+  "$(for r in "$R19A" "$R19B" "$R19C"; do [ -f "$LEDGER_DIR/metrics/$r.delay.json" ] && printf y || printf n; done)" "nny"
+collect --delay-max 1 --delay-budget 0
+check "19: 다음 회차가 그다음 최신 런을 쓴다" \
+  "$(for r in "$R19A" "$R19B" "$R19C"; do [ -f "$LEDGER_DIR/metrics/$r.delay.json" ] && printf y || printf n; done)" "nyy"
+OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --delay-max abc 2>/dev/null); rc=$?
+check "19: 지연 상한이 정수가 아니면 exit 2 다" "$rc" "2"
+OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --delay-budget abc 2>/dev/null); rc=$?
+check "19: 지연 예산이 정수가 아니면 exit 2 다" "$rc" "2"
+
+# 원장이 자란 지연 기록 — 사람의 답을 기다리다 `버려짐` 으로 읽힌 런이 재개되어 원장이 자라면
+# 다음 회차에 기록이 다시 쓰이고, 원장이 그대로인 `버려짐` 런의 기록은 다시 쓰이지 않는다.
+# 런 상태는 감시자 심박의 `마지막성장` 으로 정한다 — 오래전이면 버려짐, 지금이면 비종단이다.
+reset_all
+R19D=20261002-dddddd19; R19E=20261002-eeeeee19
+grew_at() { printf '런=x 마지막성장=%s\n' "$2" > "$STATE/run/$1/watch.heartbeat"; }
+for r in "$R19D" "$R19E"; do
+  mk_rundir "$r" nodone
+  mk_ledger "$r" "$(ir_row S1 1 __none__)" "- \`cost\` | 누적 usd=1.0 | 관측 시각=2026-10-02T00:00:00Z | prev=abc"
+  grew_at "$r" 1000
+done
+lsize() { wc -c < "$LEDGER_DIR/$1.md" | tr -d ' '; }
+collect
+check "19: 원장 성장 픽스처의 두 런은 버려짐이다(미종단 0)" "$(jline '.counts["미종단"]')" "0"
+check "19: 지연 기록의 ledger_bytes 는 원장의 바이트 크기다" "$(jdel "$R19D" '.ledger_bytes')" "$(lsize "$R19D")"
+check "19: 굳은 기록이 없으면 coverage.stale 은 0 이다" "$(jsum '.delay.coverage.stale')" "0"
+cp "$LEDGER_DIR/metrics/$R19E.delay.json" "$WORK/e19.json"
+printf '%s\n' "$(ir_row S1 2 __none__)" >> "$LEDGER_DIR/$R19D.md"
+collect
+check "19: 원장이 자란 버려짐 런은 기록이 다시 쓰여 새 단계가 든다" \
+  "$(jdel "$R19D" '[.stages[] | .stage] | join(",")')" "S1#1,S1#2"
+check "19: 다시 쓴 기록의 ledger_bytes 는 새 크기다" "$(jdel "$R19D" '.ledger_bytes')" "$(lsize "$R19D")"
+check "19: 원장이 그대로인 버려짐 런의 기록은 다시 쓰이지 않는다" \
+  "$(cmp -s "$LEDGER_DIR/metrics/$R19E.delay.json" "$WORK/e19.json" && printf same || printf diff)" "same"
+# ledger_bytes 가 없는 기록 — 스키마가 같아도 다시 대상이 된다.
+jq -c 'del(.ledger_bytes)' "$WORK/e19.json" > "$LEDGER_DIR/metrics/$R19E.delay.json"
+collect
+check "19: ledger_bytes 가 없는 지연 기록은 스키마가 같아도 다시 쓰인다" \
+  "$(jdel "$R19E" '[.schema, .ledger_bytes] | map(tostring) | join(",")')" "1,$(lsize "$R19E")"
+# 기록을 쓴 뒤 원장이 자라 비종단이 된 런 — 대상이 아니므로 기록은 굳은 채이고 stale 이 센다.
+printf '%s\n' "$(ir_row S1 3 __none__)" >> "$LEDGER_DIR/$R19D.md"
+grew_at "$R19D" "$(date -u +%s)"
+collect
+check "19: 원장이 자라 비종단이 된 런의 기록은 굳어 coverage.stale 이 1 이다" \
+  "$(jline '.counts["미종단"]'),$(jdel "$R19D" '.stages | length'),$(jsum '.delay.coverage.stale')" "1,2,1"
+grew_at "$R19D" 1000
+collect
+check "19: 그 런이 다시 버려짐이 되어 기록이 다시 쓰인 회차에서는 coverage.stale 이 0 이다" \
+  "$(jdel "$R19D" '.stages | length'),$(jsum '.delay.coverage.stale')" "3,0"
+# 스키마와 원장 크기가 맞는 기록은 건너뛰고, `--recollect` 에서는 그런 기록도 다시 쓴다.
+jq -c '.stages = []' "$LEDGER_DIR/metrics/$R19E.delay.json" > "$WORK/e19b.json"
+cp "$WORK/e19b.json" "$LEDGER_DIR/metrics/$R19E.delay.json"
+collect
+check "19: 스키마와 ledger_bytes 가 맞는 기록은 다시 쓰이지 않는다" "$(jdel "$R19E" '.stages | length')" "0"
+collect --recollect
+check "19: --recollect 에서는 스키마와 ledger_bytes 가 맞는 기록도 다시 쓰인다" "$(jdel "$R19E" '.stages | length')" "1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

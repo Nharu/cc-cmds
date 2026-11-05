@@ -867,6 +867,41 @@ EOF
   return 0
 }
 
+clause_binding_check() {
+  # Every `종료 절` row's optional `근거 실행`: one value, two words or more, no
+  # tab or run of spaces, and equal to a `사전 인가` row's `형태` or starting
+  # with that shape's words. A manifest without the field checks as before. The
+  # binding digest already freezes the whole row.
+  local row v n pr shape ok
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    case "$row" in *"| 근거 실행="*) ;; *) continue ;; esac
+    v=$(manifest_row_fields "$row" '근거 실행' 1)
+    [ "$(printf '%s\n' "$v" | wc -l | tr -d ' ')" = 1 ] \
+      || die "「종료 절」 행의 「근거 실행」이 둘 이상입니다: $row"
+    v="${v%"${v##*[! ]}"}"
+    case "$v" in
+      *'	'*|*'  '*|' '*|'') die "「종료 절」 행의 「근거 실행」이 비었거나 탭·연속 공백이 있습니다: $row" ;;
+    esac
+    n=$(printf '%s' "$v" | awk '{ print NF }')
+    [ "$n" -ge 2 ] || die "「종료 절」 행의 「근거 실행」은 두 낱말 이상의 형태입니다: $v"
+    ok=0
+    while IFS= read -r pr; do
+      [ -n "$pr" ] || continue
+      shape=$(manifest_row_fields "$pr" '형태' 1 | sed -n 1p)
+      shape=$(printf '%s' "$shape" | sed 's/[[:space:]]\{1,\}/ /g;s/ $//')
+      [ -n "$shape" ] || continue
+      case "$v" in "$shape"|"$shape "*) ok=1; break ;; esac
+    done <<EOF
+$(manifest_preauth_rows)
+EOF
+    [ "$ok" = 1 ] || die "「종료 절」 행의 「근거 실행」을 덮는 「사전 인가」 행의 형태가 없습니다: $v"
+  done <<EOF
+$(manifest_clause_rows_raw)
+EOF
+  return 0
+}
+
 # The interpreter options that take the program as a code string. A new-form
 # `사전 인가` row whose shape ends in one opens every program the act can spell,
 # so the writers refuse it. One list, read by both writers.
@@ -1596,6 +1631,9 @@ check_manifest() {
   # 9 (cont.) — the `라벨 인정` rows' shape. A row the gate cannot match exactly
   # would acknowledge nothing, or the wrong check, so it is refused at kickoff.
   label_ack_row_check
+  # 9 (cont.) — a `종료 절` row's `근거 실행` binding. A shape no `사전 인가`
+  # row covers binds the clause to an execution the run can never open.
+  clause_binding_check
   # 9 (cont.) — the `사전 인가` rows' new-form fields. A new-form row decides
   # where an act lands and runs its cleanup with no person, so a row that would
   # freeze with no effect, open every program, or run a cleanup through a shell
@@ -3854,7 +3892,13 @@ run_chained_append() {
   # THE TOOL IS SELECTED BY PLATFORM AND USED ONLY IF IT IS THERE — a suite
   # injecting the host OS reaches this on a runner without the BSD path, and
   # absence falls through to the same sequence without the lock.
-  local body="$1" tool prev rc=0
+  #
+  # run_chained_append <body> <prev file> — the same, and the `prev` the row was
+  # written with is also put in <prev file>, from inside the same lock. A caller
+  # that names the row it just wrote by its `prev` must take the value here:
+  # re-reading the ledger's end after the lock is released can find another
+  # writer's row.
+  local body="$1" pout="${2:-}" tool prev rc=0
   tool=$(lock_tool)
   # A run directory that is named but absent takes the unlocked path too: the
   # lock file cannot be created there, and a row that cannot be locked is still
@@ -3865,12 +3909,16 @@ run_chained_append() {
         last=$(grep "$3" "$2" 2>/dev/null | tail -1)
         [ -n "$last" ] || last="$4"
         prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
-        printf "%s | prev=%s\n" "$1" "$prev" >> "$2"
-      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" || rc=$?
+        printf "%s | prev=%s\n" "$1" "$prev" >> "$2" || exit $?
+        if [ -n "$5" ]; then printf "%s" "$prev" > "$5"; fi
+      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" "$pout" || rc=$?
   else
     prev=$(run_chain_tip) || rc=$?
     if [ "$rc" = "0" ]; then
       printf '%s | prev=%s\n' "$body" "$prev" >> "$LEDGER" || rc=$?
+    fi
+    if [ "$rc" = "0" ] && [ -n "$pout" ]; then
+      printf '%s' "$prev" > "$pout" || rc=$?
     fi
   fi
   return "$rc"
@@ -6293,18 +6341,29 @@ readonly PARK_CAUSES="막힘|무효화|불명|거절 소진"
 park() {
   # park <target> <scope> <cause> <reason> <observed> [<resume command>]
   #      [<anchor segment>] [<basis>] [<issue url>] [<unmet predecessors>]
-  #      [<re-kickoff cause>]
-  # The seventh to eleventh fields are written only when given, so a call with
+  #      [<re-kickoff cause>] [<fix site>]
+  # The seventh to twelfth fields are written only when given, so a call with
   # six arguments writes the same bytes it always did. The anchor is what a
   # cone reader matches on; the basis carries a deadline park's lineage or a
   # residual park's class; the issue is the one a `리뷰 잔여` park filed; the
   # unmet predecessors, comma-joined, mark a dependency park and are what the
   # gate's `P0잔존` selector reads — the free sentence in `관측` is never parsed.
   # The re-kickoff cause is the token `run_end_park_cause` hands the end row
-  # when the walk ends on this park.
+  # when the walk ends on this park. The fix site (`-` or empty for none) is
+  # the gate's judgment of where the stop is to be fixed; only `대상 레포`
+  # is given here, by the apply's target defect, and it carries the judge and
+  # the signal of `apply_target_judgment` with it.
   local target="$1" scope="$2" cause="$3" reason="$4" observed="$5" recmd="${6:-(없음)}"
-  local anchor="${7:-}" basis="${8:-}" issue="${9:-}" unmet="${10:-}" rekick="${11:-}"
+  local anchor="${7:-}" basis="${8:-}" issue="${9:-}" unmet="${10:-}" rekick="${11:-}" fix="${12:-}"
   local -a extra=()
+  [ "$fix" != "-" ] || fix=""
+  if [ -n "$fix" ]; then
+    [ "$fix" = "대상 레포" ] || die "park 고칠 곳은 대상 레포만 받는다: '$fix' (대상 $target)"
+    local fl
+    while IFS= read -r fl; do [ -z "$fl" ] || extra+=("$fl"); done <<EOF
+$(apply_target_judgment)
+EOF
+  fi
   case " $PARK_SCOPES " in *" $scope "*) : ;; *) die "park 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;; esac
   case "|$PARK_CAUSES|" in *"|$cause|"*) : ;; *) die "park 원인을 지명하지 못했다: '$cause' (대상 $target)" ;; esac
   [ -z "$anchor" ] || extra+=("앵커 세그먼트=$anchor")
@@ -10037,6 +10096,78 @@ apply_disposition() {
   fi
 }
 
+# THE TARGET DEFECT JUDGMENT, shared by this driver's S9 and the gate's apply
+# supervisor, so the two write the same three fields on the same evidence. The
+# command exited 0 and the post-probe still reads the 「필요」 code: the command
+# said it finished and the target says nothing changed, which is the target
+# repository's to fix, not the run's.
+readonly APPLY_TARGET_SIGNAL='종료 코드·사후 프로브 불일치'
+
+apply_target_defect() {
+  # apply_target_defect <필요> <명령 rc> <사후 프로브 rc>
+  [ "$1" != "-" ] && [ "$2" = "0" ] && [ "$3" = "$1" ]
+}
+
+apply_target_judgment() {
+  # apply_target_judgment — the three fields a target defect puts on its
+  # `park 적용=불명` row, one per line.
+  printf '%s\n' '고칠 곳=대상 레포' '판정 주체=게이트' "판정 신호=$APPLY_TARGET_SIGNAL"
+}
+
+apply_target_dependents() {
+  # apply_target_dependents <segment> — the segments of ANOTHER repository
+  # whose `선행` or `머지 순서` names <segment> or any other segment of the
+  # same repository, read off the ledger's segment rows (the last value of
+  # each field per segment). The dependency is on the target, not on the one
+  # segment whose apply was judged: a later segment of the same target is
+  # refused by the target stop and left `머지됨 적용=대기`, so a segment of
+  # another repository that waits on it waits on the stopped target too. A
+  # segment whose repository is not recorded counts as another's, and when
+  # <segment>'s own repository is not recorded it alone stands for the target.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  awk -F'|' -v me="$1" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function fld(k,   i, p) {
+      for (i = 2; i <= NF; i++) { p = trim($i); if (index(p, k "=") == 1) return substr(p, length(k) + 2) }
+      return ""
+    }
+    index($0, "- `segment` ") == 1 {
+      s = fld("id"); if (s == "") next
+      if (!(s in SEEN)) { SEEN[s] = 1; n++; ID[n] = s }
+      v = fld("레포"); if (v != "") REPO[s] = v
+      v = fld("선행"); if (v != "") DEP[s] = v
+      v = fld("머지 순서"); if (v != "") ORD[s] = v
+    }
+    END {
+      MINE[me] = 1
+      if (me in REPO) for (i = 1; i <= n; i++) if ((ID[i] in REPO) && REPO[ID[i]] == REPO[me]) MINE[ID[i]] = 1
+      for (i = 1; i <= n; i++) {
+        s = ID[i]; if (s in MINE) continue
+        m = split(DEP[s] " " ORD[s], T, /[^A-Za-z0-9_.#-]+/)
+        for (j = 1; j <= m; j++) if (T[j] != "" && (T[j] in MINE)) { print s; break }
+      }
+    }
+  ' "$LEDGER"
+}
+
+apply_target_only_stop() {
+  # apply_target_only_stop <segment> <radius> — a target defect stops only that
+  # target's applies: the declared radius is not `런` and no segment of another
+  # repository waits on this target (any of its segments). Otherwise the
+  # radius stop stands as before.
+  [ "$2" != "런" ] && [ -z "$(apply_target_dependents "$1")" ]
+}
+
+apply_target_stopped() {
+  # apply_target_stopped <alias> — the segment holding the target stop of
+  # <alias>, by the run-stops predicate run as a child: that file ends by
+  # running its main, so it is never sourced.
+  local d
+  d=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
+  bash "$d/run-stops.sh" --predicate target-stop "$LEDGER" "$1" 2>/dev/null
+}
+
 apply_stage() {
   local seg="$1" cmd actor radius wt root pre post rc acct
   cmd=$(apply_unquote "$(apply_field "$seg" '적용 명령')")
@@ -10069,6 +10200,27 @@ apply_stage() {
   fi
 
   [ -n "$MERGE_COMMIT" ] || { park "$seg" act 막힘 "게이트 park" "머지 커밋을 고정할 수 없어 apply 를 시작하지 않는다"; return 2; }
+
+  # A TARGET WHOSE APPLY IS STOPPED RUNS NO FURTHER APPLY. An earlier segment
+  # of the same target ended its apply on a target defect, so the command is
+  # not run against a target that said it finished and changed nothing. The
+  # stop is an act-scope block naming the target, written before the command,
+  # and the segment is not counted as landed. A radius stop wins over it: the
+  # walk skips a segment inside a stopped radius before it reaches here. The
+  # stopping segment itself is refused here too: this driver takes no rerun
+  # answer, so the gate's exception for that segment's own rerun has no path
+  # into it.
+  local al held
+  al=$(seg_alias "$seg" 2>/dev/null) || al=""
+  if [ -n "$al" ] && held=$(apply_target_stopped "$al" | sed -n '1p') && [ -n "$held" ]; then
+    ledger_row 'blocked' "대상=$al" "세그먼트=$seg" "스코프=act" "원인=막힘" \
+      "사유=대상 적용 정지 $al" "관측=대상 $al 의 적용이 세그먼트 $held 의 대상 결함으로 멈춰 있다 — 명령을 실행하지 않는다" \
+      "재개 명령=$cmd"
+    report_append "보류" "$seg — [act/막힘] 대상 적용 정지 $al — 세그먼트 $held 의 대상 결함이 풀릴 때까지 적용하지 않는다"
+    log "park: $seg (act/막힘 · 대상 적용 정지 $al)"
+    spawn_lease_release_target "$seg"
+    return 3
+  fi
 
   # The probe and its mapping are settled before the apply worktree and the
   # `적용 준비` row exist, the order the gate's apply act reads them in, so a
@@ -10145,6 +10297,24 @@ apply_stage() {
     "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
     "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 $pre → 사후 $post ($map)" \
     "실패 서명=$(failure_signature apply '적용 불명' - -)"
+  # A TARGET DEFECT STOPS ONLY THAT TARGET. The command exited 0 and the
+  # post-probe still reads 「필요」: the segment park row carries the gate's
+  # judgment and the target's alias, which is what the target-stop predicate
+  # reads, and when the radius is not `런` and no other repository's segment
+  # waits on this target, the run goes on without a radius stop. Every other
+  # unknown outcome keeps the radius stop.
+  if [ -n "$al" ] && apply_target_defect "$ne" "$rc" "$post" && apply_target_only_stop "$seg" "$radius"; then
+    local -a tfx=(); local l
+    while IFS= read -r l; do [ -z "$l" ] || tfx+=("$l"); done <<EOF
+$(apply_target_judgment)
+EOF
+    ledger_row 'segment' "id=$seg" "상태=park" "적용=불명" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT" \
+      "${tfx[@]}" "대상=$al"
+    park "$seg" act 불명 "게이트 park" "적용 불명 — 명령 exit 0 · 사후 프로브 $post(필요) — 대상 $al 의 적용만 멈춘다, 워크트리 보존: $wt" "$cmd" \
+      "" "" "" "" "" "대상 레포"
+    report_append "사람 대조 필요" "$seg — 대상 $al 의 결함으로 apply 결과 불명. 같은 대상의 적용만 멈췄고 워크트리 $wt 를 보존했다"
+    return 3
+  fi
   ledger_row 'segment' "id=$seg" "상태=park" "적용=불명" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT"
   park "$seg" run 불명 "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
   report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
@@ -11811,8 +11981,10 @@ EOF
   local arc=0; apply_stage "$seg" || arc=$?
   # 2 is the ACT arm here too — refused before touching anything, so nothing is
   # in an unknown state and no radius is stopped. 1 is 적용 불명, the only RUN
-  # scope this driver reaches from a segment.
+  # scope this driver reaches from a segment. 3 is a target stop: the target's
+  # applies stop and nothing else does, and the segment did not land.
   [ "$arc" = "2" ] && return 4
+  [ "$arc" = "3" ] && return 5
   [ "$arc" = "0" ] || return 3
 
   # The worktree stays: the run-complete cleanup removes it once the run ends.
@@ -13880,6 +14052,9 @@ main_loop_body() {
          # parks and a single cutpoint typo emptied the night.
          landed=$((landed + 1))
          report_append "완성-미착지" "$seg — 산출물은 전부 보존됐고 말단 행위 하나만 막혔다" ;;
+      5) # A target stop. Only that target's applies stop, so no radius is
+         # recorded, and the segment is not landed: its apply did not finish.
+         parked=$((parked + 1)) ;;
       *) parked=$((parked + 1)) ;;
     esac
   done < "$RUN_DIR/plan.tsv"

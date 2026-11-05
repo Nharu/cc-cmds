@@ -385,6 +385,8 @@ project() {
       ;;
     '종료 절')
       printf '종료 절 %s %s' "$(row_field "$row" 'id')" "$(row_field "$row" '상태')"
+      # A clause the run settled on its own execution says so on the feed.
+      if [ "$(row_field "$row" '자체 근거')" = "예" ]; then printf ' · 자체 근거'; fi
       ;;
     problem)
       printf '문제 %s · 현재 단 %s' \

@@ -2448,8 +2448,10 @@ else
   bad "수렴 기록" "정상 완료 행이 없다"
 fi
 
-# (5) 사전 21 → 사후 21 — 적용 불명. 재시도 0회, 워크트리 보존, 사람 대조 표시.
-ap_manifest_codes "sh -c 'echo x >> $AP_CNT'" 0 21
+# (5) 사전 21 → 명령 exit 1 → 사후 21 — 적용 불명. 재시도 0회, 워크트리 보존, 사람
+# 대조 표시. 명령이 실패했으니 대상 결함 신호(exit 0 인데 사후가 「필요」)가 아니고,
+# 선언된 반경 정지가 그대로 선다.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT; exit 1'" 0 21
 : > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
 if apply_stage segA; then
   bad "적용 불명" "사후에도 변경이 남았는데 성공을 돌려줬다"
@@ -2477,6 +2479,64 @@ else
 fi
 check "park 이 선언된 폭발 반경을 싣는다" \
   "$(grep -c "폭발 반경 '레포'" "$LEDGER")" "1"
+check "명령이 실패한 적용 불명에는 고칠 곳이 없다" "$( { grep -c '고칠 곳=' "$LEDGER" || true; } )" "0"
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+# (5e) 사전 21 → 명령 exit 0 → 사후 21 — 대상 결함. 명령은 끝났다고 하는데 대상은
+# 아무것도 바뀌지 않았다고 말한다. 반경이 `런` 이 아니고 다른 레포가 기대지 않으면
+# 반경 정지 대신 반환 코드 3 으로 그 대상의 적용만 멈추고, park 행이 게이트 판정
+# 세 필드를 싣는다. 같은 대상의 다음 적용은 명령 전에 act 스코프로 막힌다.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT'" 0 21
+: > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
+RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"
+ap_rc=0; apply_stage segA || ap_rc=$?
+check "대상 결함: 반환 코드 3 을 돌려준다" "$ap_rc" "3"
+check "대상 결함: 명령은 한 번 돈다" "$(grep -c . "$AP_CNT")" "1"
+check "대상 결함: segment park 행이 판정 세 필드와 대상 별칭을 싣는다" \
+  "$( { grep -F '`segment`' "$LEDGER" || true; } | tail -1 \
+      | grep -c '상태=park | 적용=불명 .*| 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치 | 대상=only' || true)" "1"
+check "대상 결함: park 의 blocked 행이 12번째 인자로 판정 세 필드를 싣는다" \
+  "$( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1 \
+      | grep -c '스코프=act | 원인=불명 .*| 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치' || true)" "1"
+check "대상 결함: 런 스코프 막힘이 없다" "$( { grep -F '`blocked`' "$LEDGER" | grep -c '스코프=run' || true; } )" "0"
+check "대상 결함: 반경 정지를 기록하지 않는다" \
+  "$( [ -e "$RUN_DIR/halted-repo.txt" ] || [ -e "$RUN_DIR/halted-segments.txt" ] || [ "$RUN_HALTED" = 1 ] && echo 있다 || echo 없다 )" "없다"
+check "대상 결함: 정지 술어가 그 세그먼트를 낸다" "$(apply_target_stopped only)" "segA"
+: > "$AP_CNT"
+ap_rc=0; apply_stage segA || ap_rc=$?
+check "대상 정지: 같은 대상의 다음 적용도 반환 코드 3" "$ap_rc" "3"
+check "대상 정지: 명령 전에 막혀 명령이 돌지 않는다" "$(grep -c . "$AP_CNT")" "0"
+check "대상 정지: act 스코프 대상 적용 정지 막힘을 쓴다" \
+  "$( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1 \
+      | grep -c '대상=only | 세그먼트=segA | 스코프=act | 원인=막힘 | 사유=대상 적용 정지 only' || true)" "1"
+ledger_row 'segment' 'id=segA' '상태=완료' '적용=정산'
+if apply_target_stopped only >/dev/null; then
+  bad "대상 정지 풀림" "완료 행 뒤에도 정지가 남았다"
+else
+  ok "대상 정지: 그 세그먼트의 완료 행이 정지를 푼다"
+fi
+check "드라이버 호출자: 반환 코드 3 은 세그먼트 반환 5 로 옮겨진다" \
+  "$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -cF '[ "$arc" = "3" ] && return 5')" "1"
+check "드라이버 걷기: 반환 5 는 landed 가 아니라 parked 로 센다" \
+  "$(awk '/^      5\) # A target stop/{f=1} f && /parked=\$\(\(parked \+ 1\)\) ;;/{print "parked"; exit} f && /landed=/{print "landed"; exit}' "$DRIVER")" "parked"
+check "대상 결함: 반경 런이면 대상만 멈추지 않는다" "$(apply_target_only_stop segA 런 && echo 대상만 || echo 반경)" "반경"
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+# (5f) 반경 `런` 이 선언된 대상 결함 — 반경 정지가 이긴다. 대상 정지 없이 예전처럼
+# 반환 1 로 반경 정지에 넘기고, park 행에 고칠 곳을 싣지 않는다.
+eval "ap_field_orig() $(declare -f apply_field | sed '1d')"
+apply_field() { if [ "$2" = '폭발 반경' ]; then printf '런'; else ap_field_orig "$@"; fi; }
+: > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
+ap_rc=0; apply_stage segA || ap_rc=$?
+check "반경 런 대상 결함: 반경 정지(반환 1)로 간다" "$ap_rc" "1"
+check "반경 런 대상 결함: park 이 반경 런을 싣는다" "$(grep -c "폭발 반경 '런'" "$LEDGER")" "1"
+check "반경 런 대상 결함: 고칠 곳 필드가 없다" "$( { grep -c '고칠 곳=' "$LEDGER" || true; } )" "0"
+eval "apply_field() $(declare -f ap_field_orig | sed '1d')"
+unset -f ap_field_orig
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
 
 # (5b) 처분 함수는 대응을 인자로 받는 순수 함수다. 기본 0/2 에서 옛 처분과 같고,
 # 다른 대응에서는 「불필요」·「필요」 코드로만 가른다. 사후 프로브도 같은 대응으로 읽는다.
