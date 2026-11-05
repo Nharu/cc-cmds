@@ -12797,6 +12797,65 @@ EOF
   return 1
 }
 
+gate_decision_collect_undecided() {
+  # gate_decision_collect_undecided <record> <option> — prints, one per line,
+  # the heading of every entry the record lists with `추천 답: (없음)` (a reason
+  # may follow the mark) that the
+  # answer leaves without a decision: all of them for `추천대로 확정`, and for
+  # `항목별로 답함` those the attachment `<record without .md>.answer.md` does
+  # not name with a line equal to the heading (the heading carries its `### `,
+  # else `### ` is put in front). That is the rule the re-convergence reads the
+  # decisions by, and an entry it finds no decision for stays open, so the
+  # segment the record holds would never be let go. Nothing is printed for any
+  # other option.
+  local rec="$1" opt="$2" att line h want
+  [ -f "$rec" ] || return 0
+  case "$opt" in
+    '추천대로 확정') att='' ;;
+    '항목별로 답함') att="${rec%.md}.answer.md" ;;
+    *) return 0 ;;
+  esac
+  local ans
+  while IFS= read -r line; do
+    case "$line" in
+      '- 「'*'」 — 추천 답: '*' · 추천 근거: '*) ;;
+      *) continue ;;
+    esac
+    h=${line#- 「}
+    h=${h%%」 — 추천 답: *}
+    ans=${line#*」 — 추천 답: }
+    ans=${ans%% · 추천 근거: *}
+    # A document may give the reason after the mark, `(없음) — <why>`.
+    case "$ans" in
+      '(없음)'|'(없음) '*|'') ;;
+      *) continue ;;
+    esac
+    if [ -n "$att" ] && [ -f "$att" ]; then
+      case "$h" in '#'*) want=$h ;; *) want="### $h" ;; esac
+      grep -q -x -F -- "$want" "$att" 2>/dev/null && continue
+    fi
+    printf '%s\n' "$h"
+  done < "$rec"
+}
+
+gate_decision_collect_undecided_why() {
+  # gate_decision_collect_undecided_why <record> <option> — 0 and the reason
+  # in GATE_DCU_WHY when the answer leaves an entry with no recommendation and
+  # no decision (`gate_decision_collect_undecided`); 1 otherwise.
+  local heads
+  GATE_DCU_WHY=''
+  heads=$(gate_decision_collect_undecided "$1" "$2")
+  [ -n "$heads" ] || return 1
+  heads=$(printf '%s\n' "$heads" | awk 'NF { printf "%s「%s」", (n++ ? ", " : ""), $0 }')
+  case "$2" in
+    '추천대로 확정')
+      GATE_DCU_WHY="결정 수거 기록에 추천 답이 없는 항목이 있어 「추천대로 확정」 으로는 닫히지 않습니다 — 그 항목: ${heads}. 「항목별로 답함」 으로 첨부 ${1%.md}.answer.md 에 그 표제를 소제목으로 부르고 결정을 적어 답합니다" ;;
+    *)
+      GATE_DCU_WHY="「항목별로 답함」 의 첨부 ${1%.md}.answer.md 가 추천 답이 없는 항목을 소제목으로 부르지 않아 그 항목이 닫히지 않습니다 — 그 항목: ${heads}. 표제와 바이트 단위로 같은 \`### \` 소제목 아래에 결정을 적습니다" ;;
+  esac
+  return 0
+}
+
 gate_decision_collect_capped() {
   # gate_decision_collect_capped <record> — 0 when the `결정 수거` row that
   # wrote the record carries `순환 상한`: a segment an answered collection
@@ -12976,7 +13035,7 @@ EOF
       printf '**질문 문면**: 설계 문서 %s 의 「구현 전 결정」 항목 %s개가 구현 전에 사람의 결정을 기다립니다. 항목마다 표제 · 추천 답 · 추천 근거 · 닿는 슬라이스를 적습니다. 보류 세그먼트: %s.\n' \
         "$DOC" "$nitems" "$holds"
       printf '%s' "$items"
-      printf '「항목별로 답함」 은 이 기록 옆의 %s 를 첨부로 싣습니다 — 항목 표제를 축자로 `### ` 소제목으로 부르고 그 아래에 고른 결정을 적은 파일이며, 첨부에 없는 항목은 추천 답으로 닫힙니다.\n' \
+      printf '「항목별로 답함」 은 이 기록 옆의 %s 를 첨부로 싣습니다 — 항목 표제를 축자로 `### ` 소제목으로 부르고 그 아래에 고른 결정을 적은 파일이며, 첨부에 없는 항목은 추천 답으로 닫힙니다. 추천 답이 (없음) 인 항목은 첨부에 결정을 적어야 닫히므로, 그런 항목이 있으면 「추천대로 확정」 은 거부되고 「항목별로 답함」 은 첨부가 그 항목을 모두 부를 때만 받습니다.\n' \
         "${rec%.md}.answer.md"
       if [ -n "$loopcap" ]; then
         printf '순환 상한: 세그먼트 %s 는 답을 받아 재수렴을 거친 수거가 이미 한 번 보류했던 세그먼트입니다. 이 기록의 답은 교대가 실행하지 않고, 이 런은 그 세그먼트를 다시 보내지 않습니다 — 남은 항목은 새 런의 수거가 다시 묻습니다. 문서의 항목을 손으로 닫지 않습니다: 사유가 「베이스 계약 변경 필요」 인 항목은 재수렴의 베이스 계약 대조만 닫습니다.\n' "$loopcap"
@@ -12987,6 +13046,7 @@ EOF
       printf -- '- `항목별로 답함` — 첨부의 결정으로 그 항목을 닫고 첨부에 없는 항목은 추천 답으로 닫는다. 그 뒤의 경로는 `추천대로 확정` 과 같다\n'
       printf '**추천**: (없음) — 항목마다 사람의 결정이 필요하다\n'
       printf '**추천 근거**: (없음)\n'
+      printf '**선택지 리스크**: `추천대로 확정` — 추천 답이 (없음) 인 항목이 하나라도 있으면 게이트가 거부하고, 받으면 적힌 추천 답이 그대로 구속 티어에 쓰인다 / `항목별로 답함` — 첨부가 추천 답이 (없음) 인 항목을 모두 소제목으로 부르지 않으면 게이트가 거부하고, 받으면 첨부에 없는 항목은 추천 답으로 닫힌다\n'
       printf '**하네스 오류**: (없음)\n'
       printf '**재호출 명령**: (없음)\n'
       printf '**후속**: 보류 큐\n'
@@ -13150,6 +13210,10 @@ gate_decision_reconverge_entry() {
   esac
   if [ "$(gate_halt_answered_by "$row")" != '사람' ]; then
     GATE_DCR_WHY="결정 수거 기록의 마지막 답(원장 ${last%%:*}번째 줄)이 사람의 답이 아닙니다"
+    return 1
+  fi
+  if gate_decision_collect_undecided_why "$rec" "$(gate_row_field "$row" '선택지')"; then
+    GATE_DCR_WHY=$GATE_DCU_WHY
     return 1
   fi
   gate_decision_reconverge_open "$key" "$rec" || return 1
@@ -26157,6 +26221,9 @@ gate_halt_answer_route() {
       '추천대로 확정'|'항목별로 답함') ;;
       *) why="결정 수거 기록에는 「${opt}」 를 실행할 갈래가 없습니다 — 갈래는 「추천대로 확정」 과 「항목별로 답함」 뿐입니다" ;;
     esac
+    if [ -z "$why" ] && gate_decision_collect_undecided_why "$rec" "$opt"; then
+      why=$GATE_DCU_WHY
+    fi
     if [ -z "$why" ] && ! gate_decision_reconverge_open "$key" "$rec"; then
       why=$GATE_DCR_WHY
     fi
@@ -38414,6 +38481,9 @@ EOF
       # its header names — the last design step key, which the re-convergence
       # the answer routes to is keyed on. `항목별로 답함` is the attachment;
       # `추천대로 확정` needs none, since every recommendation is in the record.
+      # An answer that leaves an entry with no recommendation undecided is
+      # refused, and no row is written, so the same record can be answered
+      # again (`gate_decision_collect_undecided`).
       if halt_step_is_decision_collect "$hrec"; then
         local hdckey
         if [ "$hby" != "사람" ]; then
@@ -38427,6 +38497,10 @@ EOF
         fi
         if [ "$hopt" = "항목별로 답함" ] && [ "$hatt" != "${hrec%.md}.answer.md" ]; then
           warn "「항목별로 답함」 은 \`첨부=${hrec%.md}.answer.md\` 를 싣습니다 — 항목 표제를 축자로 소제목으로 부르고 그 아래에 고른 결정을 적은 파일"
+          return "$GATE_EXIT_RULE"
+        fi
+        if gate_decision_collect_undecided_why "$hrec" "$hopt"; then
+          warn "$GATE_DCU_WHY: $hrec"
           return "$GATE_EXIT_RULE"
         fi
       fi

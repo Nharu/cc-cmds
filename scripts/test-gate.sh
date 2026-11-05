@@ -52949,7 +52949,7 @@ rm -rf "$D83V"
 
 # ---------------------------------------------------------------------------
 # 83w. 결정 수거의 답이 게이트 동사만으로 재수렴까지 가고, 새 수거가 보류를 푼다
-# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_reconverge_pending, gate_decision_collect_pending_row, gate_snapshot_decision_holds_json, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route, gate_audit_concluded, audit_key_reconverge_rows, audit_key_collect_reconverge_lines | anchors: 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다, 83w: 수거 재수렴과 그 재개·새 세션 이음 행은 감사 키의 재수렴으로 세지 않고 골격급 재수렴만 센다,83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다, 83w: 대조 정지가 답을 기다리는 동안의 수거는 첫 기록의 보류를 그대로 읽는다, 83w: 대조 정지의 답은 같은 키의 재부착으로 간다, 83w: 멈춘 수거 재수렴을 잇는 --resume 은 통과한다, 83w: 이은 재수렴이 끝나 항목이 닫힌 뒤의 수거는 보류를 푼다 ---
+# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_reconverge_pending, gate_decision_collect_pending_row, gate_snapshot_decision_holds_json, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route, gate_audit_concluded, audit_key_reconverge_rows, audit_key_collect_reconverge_lines, gate_decision_collect_undecided, gate_decision_collect_undecided_why, gate_halt_stops, gate_halt_stops_view, gate_halt_is_collect_record, run-stops, cc_unanswered_halts | anchors: 83w: 추천 답 없는 항목이 있으면 추천대로 확정은 거부되고 행이 없다, 83w: 첨부가 추천 답 없는 항목을 부르지 않는 항목별로 답함은 거부되고 행이 없다, 83w: 첨부가 그 항목을 소제목으로 부르는 항목별로 답함은 선다, 83w: 게이트의 정지 판독은 결정 수거 기록을 분류기에 넘기지 않는다, 83w: 미답 중단 판독은 그 수거 기록을 여전히 센다, 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다, 83w: 수거 재수렴과 그 재개·새 세션 이음 행은 감사 키의 재수렴으로 세지 않고 골격급 재수렴만 센다,83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다, 83w: 대조 정지가 답을 기다리는 동안의 수거는 첫 기록의 보류를 그대로 읽는다, 83w: 대조 정지의 답은 같은 키의 재부착으로 간다, 83w: 멈춘 수거 재수렴을 잇는 --resume 은 통과한다, 83w: 이은 재수렴이 끝나 항목이 닫힌 뒤의 수거는 보류를 푼다 ---
 #
 # 런 범위 설계 → 감사 → 구현 계획에서 감사까지 정상 완료로 띄운 뒤, 게이트 동사만으로 수거
 # → 사람의 답 → `--segment -` 재수렴 → 새 다이제스트의 수거를 잇는다. 둘째 런은 설계 단계를
@@ -53158,6 +53158,54 @@ check "83w: 이은 재수렴이 끝나 항목이 닫힌 뒤의 수거는 보류�
 ( cd "$WT" && git worktree remove --force "$WT-run-R83WB-D1" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 rm -f "$WT/$DOC83WB" "$w83_stub"
+
+# 다섯째 런 — 추천 답이 (없음) 인 항목. 첨부가 그 항목을 부르지 않는 답은 그 항목을 닫지
+# 못하므로 거부되고 행을 쓰지 않는다. 그 수거 기록은 런 정지 분류기에 정지로 넘어가지 않는다.
+DOC83WX='docs/fixture-design-83w-x.md'
+au15_run R83WX "$DOC83WX" "$plan15d"
+w83_doc "$WT/$DOC83WX" 보류 '(없음)'
+w83_x=$(sed 's/^\*\*추천 답\*\*: 기본값 3$/**추천 답**: (없음) — 운영 쪽만 아는 값이다/' "$WT/$DOC83WX")
+printf '%s\n' "$w83_x" > "$WT/$DOC83WX"
+w83_dc R83WX "$DOC83WX"
+w83_rec5=$W83_REC
+check "83w 픽스처의 다섯째 런 수거가 추천 답 없는 항목으로 S2 를 보류한다 (아래가 공허하지 않다)" \
+  "$rc|$W83_HOLDS|$(grep -c -F '」 — 추천 답: (없음) — 운영 쪽만 아는 값이다 · ' "$w83_rec5" 2>/dev/null || true)" "0|S2|1"
+check "83w: 수거 기록은 선택지 리스크 줄을 싣는다" \
+  "$(grep -c '^\*\*선택지 리스크\*\*: `추천대로 확정` — .* / `항목별로 답함` — ' "$w83_rec5" 2>/dev/null || true)" "1"
+w83_rx_rows() { { grep -F '`중단 답`' "$WT/docs/pipeline-run/R83WX.md" 2>/dev/null || true; } | grep -c . || true; }
+check "83w: 추천 답 없는 항목은 표제를 소싱한 판독기로도 미결로 읽힌다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_decision_collect_undecided "$2" "추천대로 확정"' _ "$GATE" "$w83_rec5")" "### 미결 1. 값"
+w83_ans R83WX D1 사람 '추천대로 확정'
+check "83w: 추천 답 없는 항목이 있으면 추천대로 확정은 거부되고 행이 없다" "$rc|$(w83_rx_rows)" "3|0"
+case "$msg" in
+  *"「### 미결 1. 값」"*) ok "83w: 그 거부는 추천 답 없는 항목을 든다" ;;
+  *) bad "83w 추천 답 없는 항목 거부 문면" "$msg" ;;
+esac
+printf '### 미결 2. 다른 항목\n\n다른 결정\n' > "${w83_rec5%.md}.answer.md"
+w83_ans R83WX D1 사람 '항목별로 답함' "첨부=${w83_rec5%.md}.answer.md"
+check "83w: 첨부가 추천 답 없는 항목을 부르지 않는 항목별로 답함은 거부되고 행이 없다" "$rc|$(w83_rx_rows)" "3|0"
+check "83w: 거부된 답은 경로가 없다" "$(w83_route R83WX "$w83_rec5")" ""
+printf '### 미결 1. 값\n\n값은 5 다\n' > "${w83_rec5%.md}.answer.md"
+w83_ans R83WX D1 사람 '항목별로 답함' "첨부=${w83_rec5%.md}.answer.md"
+check "83w: 첨부가 그 항목을 소제목으로 부르는 항목별로 답함은 선다" "$rc|$(w83_rx_rows)" "0|1"
+check "83w: 그 답의 route 는 구속-재수렴이다" "$(w83_route R83WX "$w83_rec5")" "D1/구속-재수렴/"
+# 수거 기록은 답을 받기 전에도 정지가 아니다. 답이 없는 기록을 실제 분류기에 넘겨, 기록을
+# 그대로 넘기면 비의도 줄이 나오고 게이트의 판독을 거치면 나오지 않는 것을 본다.
+DOC83WY='docs/fixture-design-83w-y.md'
+au15_run R83WY "$DOC83WY" "$plan15d"
+w83_doc "$WT/$DOC83WY" 보류 '기존 상한과 같다'
+w83_dc R83WY "$DOC83WY"
+w83_rd6="$STATE_LATE/cc-cmds/run/R83WY"
+w83_lg6="$WT/docs/pipeline-run/R83WY.md"
+check "83w 픽스처의 답 없는 수거 기록을 그대로 넘긴 분류기는 비의도 줄을 낸다 (아래가 공허하지 않다)" \
+  "$(bash "$repo_root/plugins/cc-cmds/orchestrator/run-stops.sh" "$w83_lg6" "$w83_rd6" --manifest "$WORK/plan-R83WY.md" 2>/dev/null | awk -F'\t' '$2 == "비의도"' | grep -c . || true)" "1"
+check "83w: 게이트의 정지 판독은 결정 수거 기록을 분류기에 넘기지 않는다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset CC_HALT_STOPS; gate_halt_stops "$2" "$3" "$4" | awk -F"\t" "\$2 == \"비의도\"" | grep -c . || true' _ "$GATE" "$w83_lg6" "$w83_rd6" "$WORK/plan-R83WY.md")" "0"
+check "83w: 미답 중단 판독은 그 수거 기록을 여전히 센다" \
+  "$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_unanswered_halts "$w83_rd6" "$w83_lg6" )" "1"
+check "83w: 판독용 보기는 런 디렉터리를 바꾸지 않는다" "$([ -f "$W83_REC" ] && echo 기록)" "기록"
+rm -f "$WT/$DOC83WX" "$WT/$DOC83WY" "${w83_rec5%.md}.answer.md"
+unset -f w83_rx_rows
 
 # ---------------------------------------------------------------------------
 # 83x. 기기 짝 정리 — exec 가 열고, 스테이지 끝과 런 끝 정리가 이 런의 기기만 지운다
