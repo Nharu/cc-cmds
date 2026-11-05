@@ -473,7 +473,8 @@ manifest_snapshot_take() {
   #   AC <row>     every `- \`적용 프로브 코드\`` row anywhere, in order
   #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
-  #   RE <row>     every `- \`수리 사건\`` row anywhere, in order
+  #   FA <row>     every `- \`계정 이전 허용\`` row anywhere, in order
+  #   RE <row>    every `- \`수리 사건\`` row anywhere, in order
   #   VP <row>     every `- \`리뷰 PR\`` row anywhere, in order
   #   VG <row>     every `- \`리뷰 게시\`` row anywhere, in order
   #   VD <row>     every `- \`리뷰 깊이\`` row anywhere, in order
@@ -514,6 +515,7 @@ $(LC_ALL=C awk '
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
     index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
+    index($0, "- `계정 이전 허용`") == 1 { print "FA\t" $0 }
     index($0, "- `수리 사건`") == 1 { print "RE\t" $0 }
     index($0, "- `리뷰 PR`") == 1 { print "VP\t" $0 }
     index($0, "- `리뷰 게시`") == 1 { print "VG\t" $0 }
@@ -1018,6 +1020,28 @@ manifest_plugin_allow_rows() {
   grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_failover_allow_rows() {
+  # Every `계정 이전 허용` row, in manifest order: the accounts a person
+  # accepted at kickoff as places a shift may move to while the seat lane is
+  # at its usage limit. The row order is the list order the lane choice
+  # breaks ties with.
+  if manifest_memo_on; then manifest_memo_all "FA	"; return 0; fi
+  grep -E '^- `계정 이전 허용`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_failover_accounts() {
+  # The account ids of the `계정 이전 허용` rows, one per line, in row order.
+  manifest_failover_allow_rows | sed -n 's/^- `계정 이전 허용` | 계정=\([a-z0-9-]*\) |.*/\1/p'
+}
+
+run_failover_allowed() {
+  # True when this run may move a shift off the seat lane: the manifest
+  # carries at least one `계정 이전 허용` row AND the run is routed. Either
+  # missing turns every lane-choice branch off, so the run behaves as before.
+  [ -n "$(manifest_failover_allow_rows)" ] || return 1
+  run_routed
+}
+
 manifest_repair_rows() {
   if manifest_memo_on; then manifest_memo_all "RE	"; return 0; fi
   grep -E '^- `수리 사건`' "$MANIFEST" 2>/dev/null || true
@@ -1168,6 +1192,12 @@ binding_set_bytes() {
     # load a plugin no person accepted at kickoff. Whole-file scan, zero bytes
     # when absent, so a manifest written before this row existed keeps its digest.
     manifest_plugin_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/pluginallow\t/'
+    # THE `계정 이전 허용` ROWS ARE IN THE FROZEN SET, on the same terms. Each one
+    # names an account a shift may be moved to while the seat lane is at its
+    # usage limit; a row any act could append mid-run would let the run spend
+    # an account no person accepted at kickoff. Whole-file scan, zero bytes
+    # when absent, so a manifest written before this row existed keeps its digest.
+    manifest_failover_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/failoverallow\t/'
     # THE `수리 사건` ROW IS IN THE FROZEN SET, on the same terms. It marks a run
     # the plugin started on its default consent, and the gate holds such a run's
     # authorization to that consent's bounds only while the row is there; a row
@@ -1557,7 +1587,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·계정 이전 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -2063,6 +2093,28 @@ EOF
     pa_keys="$pa_keys$pa_key "
   done <<EOF
 $pa_rows
+EOF
+
+  # 20a — `계정 이전 허용` rows: an account a person accepted at kickoff as a
+  # place a shift may move to while the seat lane is at its usage limit. One
+  # row per account, the inventory id grammar and a non-empty one-line
+  # reason. Whether the account is still an unattended account in the
+  # inventory is NOT checked here: the gate re-reads the run's inventory
+  # snapshot at launch and records an account that no longer qualifies, so an
+  # inventory change cannot block every gate call of the run.
+  local fa_rows fa_row fa_key fa_keys=" "
+  fa_rows=$(manifest_failover_allow_rows)
+  while IFS= read -r fa_row; do
+    [ -n "$fa_row" ] || continue
+    grep -qE '^- `계정 이전 허용` \| 계정=[a-z0-9-]+ \| 사유=[^|]*[^ |]$' <<<"$fa_row" \
+      || die "「계정 이전 허용」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`계정 이전 허용\` | 계정=<인벤토리 id> | 사유=<한 줄>\` 입니다: $fa_row"
+    fa_key=$(printf '%s' "$fa_row" | sed -n 's/^- `계정 이전 허용` | 계정=\([a-z0-9-]*\) |.*/\1/p')
+    case "$fa_keys" in
+      *" $fa_key "*) die "「계정 이전 허용」 행이 계정 ${fa_key} 에 둘 이상입니다 — 계정마다 많아야 하나입니다" ;;
+    esac
+    fa_keys="$fa_keys$fa_key "
+  done <<EOF
+$fa_rows
 EOF
 
   # 20b — the `수리 사건` row: the event a repair run fixes, written by the
@@ -3946,7 +3998,7 @@ run_ledger_series_check() {
   # meet only inputs on which both are the identity.
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
-  local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
+  local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat failover-shift '
   local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention lease-hold-busy lease-hold-lost '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
@@ -5575,6 +5627,20 @@ write_run_record() {
   return 0
 }
 
+resolve_account_seat_reverted() {
+  # True inside the process tree of a shift the gate moved to another account:
+  # the actor is a shift (`CC_PIPELINE_SHIFT_ID` is set), the gate exported
+  # `CC_GATE_SHIFT_LANE`, and that value is the current `CLAUDE_CONFIG_DIR`,
+  # compared with any trailing slash dropped. Every launch that is not such a
+  # move exports `CC_GATE_SHIFT_LANE` empty, so a seat-lane shift and a stage
+  # never take this branch.
+  [ -n "${CC_PIPELINE_SHIFT_ID:-}" ] || return 1
+  [ -n "${CC_GATE_SHIFT_LANE:-}" ] || return 1
+  [ -n "${CLAUDE_CONFIG_DIR:-}" ] || return 1
+  local a="${CC_GATE_SHIFT_LANE%/}" b="${CLAUDE_CONFIG_DIR%/}"
+  [ "$a" = "$b" ]
+}
+
 resolve_account() {
   # FOUR TIERS, in order: the environment, this run's own record, the machine's
   # setting for the operator, the built-in default. Tier 1's return value is
@@ -5621,8 +5687,17 @@ resolve_account() {
   # the subshell and hand the caller an empty string — which concatenates into
   # `/projects` and reads as an ordinary miss. The callers below turn the
   # non-zero into the stop.
+  #
+  # A SHIFT MOVED OFF THE SEAT LANE SKIPS TIER 1. The gate launches such a
+  # shift with `CLAUDE_CONFIG_DIR` and `CC_GATE_SHIFT_LANE` both set to the
+  # chosen account's directory; inside it, tier 1 would answer that account
+  # as the run's seat, and every stage that falls back to the seat would land
+  # on it, outside the router's lease ledger. `resolve_account_seat_reverted`
+  # is evaluated on every call against the environment as it is then, so a
+  # routed stage launch that rebinds `CLAUDE_CONFIG_DIR` function-locally
+  # breaks the match and gets tier 1 back for that span.
   local f rc
-  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && ! resolve_account_seat_reverted; then
     printf '%s' "$CLAUDE_CONFIG_DIR"
     return 0
   fi
