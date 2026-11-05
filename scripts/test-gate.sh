@@ -53184,11 +53184,19 @@ esac
 printf '### 미결 2. 다른 항목\n\n다른 결정\n' > "${w83_rec5%.md}.answer.md"
 w83_ans R83WX D1 사람 '항목별로 답함' "첨부=${w83_rec5%.md}.answer.md"
 check "83w: 첨부가 추천 답 없는 항목을 부르지 않는 항목별로 답함은 거부되고 행이 없다" "$rc|$(w83_rx_rows)" "3|0"
-check "83w: 거부된 답은 경로가 없다" "$(w83_route R83WX "$w83_rec5")" ""
 printf '### 미결 1. 값\n\n값은 5 다\n' > "${w83_rec5%.md}.answer.md"
 w83_ans R83WX D1 사람 '항목별로 답함' "첨부=${w83_rec5%.md}.answer.md"
 check "83w: 첨부가 그 항목을 소제목으로 부르는 항목별로 답함은 선다" "$rc|$(w83_rx_rows)" "0|1"
 check "83w: 그 답의 route 는 구속-재수렴이다" "$(w83_route R83WX "$w83_rec5")" "D1/구속-재수렴/"
+# 답이 선 뒤 첨부에서 그 소제목이 빠지면, 경로 판정과 재수렴 파견 입구가 기록된 답에 같은
+# 시험을 걸어 거절한다.
+printf '### 미결 2. 다른 항목\n\n다른 결정\n' > "${w83_rec5%.md}.answer.md"
+case "$(w83_route R83WX "$w83_rec5")" in
+  D1/*/*'「### 미결 1. 값」'*) ok "83w: 기록된 답의 첨부가 그 항목을 잃으면 경로가 거절 사유를 든다" ;;
+  *) bad "83w: 기록된 답의 첨부가 그 항목을 잃으면 경로가 거절 사유를 든다" "$(w83_route R83WX "$w83_rec5")" ;;
+esac
+w83_plan R83WX "/cc-cmds:design-reconverge $WT/$DOC83WX 구속 티어 이탈 $w83_rec5"
+check "83w: 그 기록의 - reconverge 파견은 거부된다" "$rc" "3"
 # 수거 기록은 답을 받기 전에도 정지가 아니다. 답이 없는 기록을 실제 분류기에 넘겨, 기록을
 # 그대로 넘기면 비의도 줄이 나오고 게이트의 판독을 거치면 나오지 않는 것을 본다.
 DOC83WY='docs/fixture-design-83w-y.md'
@@ -53199,8 +53207,11 @@ w83_rd6="$STATE_LATE/cc-cmds/run/R83WY"
 w83_lg6="$WT/docs/pipeline-run/R83WY.md"
 check "83w 픽스처의 답 없는 수거 기록을 그대로 넘긴 분류기는 비의도 줄을 낸다 (아래가 공허하지 않다)" \
   "$(bash "$repo_root/plugins/cc-cmds/orchestrator/run-stops.sh" "$w83_lg6" "$w83_rd6" --manifest "$WORK/plan-R83WY.md" 2>/dev/null | awk -F'\t' '$2 == "비의도"' | grep -c . || true)" "1"
+w83_tmp6=$(mktemp -d "$WORK/w83-view.XXXXXX")
 check "83w: 게이트의 정지 판독은 결정 수거 기록을 분류기에 넘기지 않는다" \
-  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset CC_HALT_STOPS; gate_halt_stops "$2" "$3" "$4" | awk -F"\t" "\$2 == \"비의도\"" | grep -c . || true' _ "$GATE" "$w83_lg6" "$w83_rd6" "$WORK/plan-R83WY.md")" "0"
+  "$(TMPDIR="$w83_tmp6" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset CC_HALT_STOPS; o=$(gate_halt_stops "$2" "$3" "$4"); r=$?; printf "%s|%s" "$r" "$(printf "%s\n" "$o" | awk -F"\t" "\$2 == \"비의도\"" | grep -c . || true)"' _ "$GATE" "$w83_lg6" "$w83_rd6" "$WORK/plan-R83WY.md")" "0|0"
+check "83w: 정지 판독은 임시 보기를 남기지 않는다" "$(find "$w83_tmp6" -mindepth 1 -maxdepth 1 | grep -c . || true)" "0"
+rm -rf "$w83_tmp6"
 check "83w: 미답 중단 판독은 그 수거 기록을 여전히 센다" \
   "$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_unanswered_halts "$w83_rd6" "$w83_lg6" )" "1"
 check "83w: 판독용 보기는 런 디렉터리를 바꾸지 않는다" "$([ -f "$W83_REC" ] && echo 기록)" "기록"
@@ -53371,7 +53382,10 @@ x83_udt() {
 }
 check "83x: caffeinate 뒤의 simctl 은 기기 도구 행위다" "$(x83_udt caffeinate -i xcrun simctl delete all)" "기기"
 check "83x: arch 뒤의 xcodebuild 는 기기 도구 행위다" "$(x83_udt arch -arm64 xcodebuild test -destination 'platform=iOS Simulator,name=X')" "기기"
+check "83x: caffeinate 뒤 셸 -c 문자열 속의 simctl 도 기기 도구 행위다" "$(x83_udt caffeinate -i sh -c 'xcrun simctl delete all')" "기기"
+check "83x: arch 뒤 경로 셸 -c 문자열 속의 simctl 도 기기 도구 행위다" "$(x83_udt arch -arm64 /bin/bash -c 'true;xcrun simctl erase all')" "기기"
 check "83x: 대조 — 기기 도구 없는 caffeinate 는 기기 도구 행위가 아니다" "$(x83_udt caffeinate -i true)" "아님"
+check "83x: 대조 — 기기 도구 없는 셸 -c 를 실은 caffeinate 는 기기 도구 행위가 아니다" "$(x83_udt caffeinate -i sh -c 'xcrun --find clang')" "아님"
 check "83x: 대조 — 기기 도구 없는 xcrun 을 실은 caffeinate 는 기기 도구 행위가 아니다" "$(x83_udt caffeinate -i xcrun --find clang)" "아님"
 x83_xpass() { { grep -c -e '결정=exec .*argv=caffeinate' -e '결정=exec .*argv=arch' "$X83LED" 2>/dev/null || true; }; }
 X83_SURF=읽기 x83_run caffeinate -i xcrun simctl delete all
@@ -53382,6 +53396,8 @@ X83_SURF=읽기 x83_run arch -arm64 xcodebuild test -destination 'platform=iOS S
 check "83x: 읽기 로 선언한 arch 뒤의 xcodebuild test 는 park 한다" "$rc" "11"
 X83_REACH=런로컬 x83_run arch -x86_64 xcodebuild test -destination 'platform=iOS Simulator,name=X'
 check "83x: 런로컬 로 선언한 arch 뒤의 xcodebuild test 는 park 한다" "$rc" "11"
+X83_SURF=읽기 x83_run caffeinate -i sh -c 'xcrun simctl delete all'
+check "83x: 읽기 로 선언한 caffeinate 뒤 셸 -c 의 simctl delete all 은 park 한다" "$rc" "11"
 check "83x: 실행기 뒤의 기기 행위는 원장에 통과 행을 남기지 않고 대역에 닿지 않는다" \
   "$(x83_xpass)|$(grep -c -e 'delete all' -e 'xcodebuild test' "$X83L")" "0|0"
 # 셸·러너 -exec 를 곁들인 find — 그 -exec 하나가 find 전체를 불투명으로 만든다. 기기 검사가

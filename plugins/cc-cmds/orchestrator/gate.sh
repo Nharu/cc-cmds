@@ -3704,8 +3704,10 @@ gate_device_tool_act() {
   # behind it that names a device tool makes the act a device tool act.
   # `caffeinate -i xcrun simctl delete all` and `arch -arm64 xcodebuild test …`
   # run the device tool as their bare spellings do, and the launchers are not
-  # enumerated so that `sudo`, `xargs` and a launcher nobody listed close by
-  # the same rule. The caller asks only for an act the table left `미상`, so a
+  # enumerated so that a launcher nobody listed closes by the same rule. Each
+  # word is split on blanks and shell separators first, so the string a shell
+  # behind the launcher runs (`caffeinate -i sh -c 'xcrun simctl erase all'`)
+  # is read too. The caller asks only for an act the table left `미상`, so a
   # device tool word in a graded command's operands is never read here.
   local s w x=0
   s=$(gate_device_act_start "$@")
@@ -3729,10 +3731,15 @@ gate_device_tool_act() {
       done ;;
     *)
       shift
+      local t toks
       for w in "$@"; do
-        case "${w##*/}" in
-          xcodebuild|adb|emulator|avdmanager|maestro|simctl|devicectl|xctrace|instruments) return 0 ;;
-        esac
+        IFS=$' \t\n;&|()`' read -r -a toks <<< "$w" || true
+        for t in ${toks[@]+"${toks[@]}"}; do
+          t="${t#[\"\']}"; t="${t%[\"\']}"
+          case "${t##*/}" in
+            xcodebuild|adb|emulator|avdmanager|maestro|simctl|devicectl|xctrace|instruments) return 0 ;;
+          esac
+        done
       done ;;
   esac
   return 1
