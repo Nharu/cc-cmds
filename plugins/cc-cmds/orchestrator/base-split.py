@@ -2165,6 +2165,7 @@ SLICE_HEAD_RE = re.compile(r"^### 슬라이스 (\S+) — (.+)$")
 OUTSIDE_FIELD = "티켓 밖 파일"
 OUTSIDE_ITEM_RE = re.compile(r"^- `([^`]+)` —(?: (.*))?$")
 R_REF_RE = re.compile(r"(?<![A-Za-z0-9_])R(\d+)(?![A-Za-z0-9_])")
+LABEL_REF_RE = re.compile(r"(?<![A-Za-z0-9_])([TC]\d+)(?![A-Za-z0-9_])")
 
 
 def ticket_block(doc, tid):
@@ -2198,15 +2199,44 @@ def section_body(doc, heading):
     return body
 
 
-def rewrite_residual(line, titles, moved, upper):
-    """One pass over a residual body line: `§<heading>` becomes
-    `상위 문서의 「<heading>」` (the longest heading that prefixes the text
-    after `§`), a word-boundary `R<n>` becomes the new number of an item moved
-    into the same child document or `상위 문서의 「### R<n>. …」`. The text put
-    in is not scanned again."""
+def upper_labels(doc):
+    """The ticket and contract labels (`T<n>`, `C<n>`) of the upper document."""
+    return set(ticket_ids(doc)) | set(cid for cid, _, _, _ in doc.contracts)
+
+
+def rewrite_labels(line, labels):
+    """One pass over a moved unresolved-entry body line: only the upper
+    document's `T<n>`/`C<n>` labels are rewritten, as `rewrite_residual`
+    rewrites them."""
     out = []
     pos = 0
     while pos < len(line):
+        m = LABEL_REF_RE.match(line, pos)
+        if m and m.group(1) in labels:
+            out.append("상위 문서의 %s" % m.group(1))
+            pos = m.end()
+            continue
+        out.append(line[pos])
+        pos += 1
+    return "".join(out)
+
+
+def rewrite_residual(line, titles, moved, upper, labels=frozenset()):
+    """One pass over a residual body line: `§<heading>` becomes
+    `상위 문서의 「<heading>」` (the longest heading that prefixes the text
+    after `§`), a word-boundary `R<n>` becomes the new number of an item moved
+    into the same child document or `상위 문서의 「### R<n>. …」`, and a
+    word-boundary `T<n>`/`C<n>` that is one of the upper document's ticket or
+    contract labels becomes `상위 문서의 T<n>`/`상위 문서의 C<n>`. The text put
+    in is not scanned again, so a label inside a heading `§` took stays."""
+    out = []
+    pos = 0
+    while pos < len(line):
+        m = LABEL_REF_RE.match(line, pos)
+        if m and m.group(1) in labels:
+            out.append("상위 문서의 %s" % m.group(1))
+            pos = m.end()
+            continue
         if line[pos] == "§":
             t = longest_heading(line[pos + 1:], titles)
             if t is None:
@@ -2254,11 +2284,15 @@ def build_child_doc(doc, g, tid, cutpoint):
     out += ["", ARCH_HEADING, "", LINKAGE_SENTENCE, "", CHILD_SENTENCE]
 
     out += ["", "## 미해결 이슈 / 트레이드오프", ""]
+    labels = upper_labels(doc)
     entries, _ = open_entries(doc)
     mine = [(i, j) for title, i, j in entries if title in lists[tid]["미해결 항목"]]
     if mine:
         for k, (i, j) in enumerate(mine):
-            out += ([""] if k else []) + doc.block_lines(i, j)
+            # The heading line stays byte for byte: the open-decision reader
+            # and an answer's sub-heading are matched against it.
+            block = doc.block_lines(i, j)
+            out += ([""] if k else []) + block[:1] + [rewrite_labels(x, labels) for x in block[1:]]
     else:
         out.append("없음")
 
@@ -2274,7 +2308,7 @@ def build_child_doc(doc, g, tid, cutpoint):
             head = "R%d. %s" % (moved[n], R_HEAD_RE.match("### " + title).group(2))
             new_heads.append(head)
             out += ["", "### " + head]
-            out += [rewrite_residual(x, titles, moved, upper) for x in doc.block_lines(i + 1, j)]
+            out += [rewrite_residual(x, titles, moved, upper, labels) for x in doc.block_lines(i + 1, j)]
 
     declared = []
     for p in t["owned"] + t["shared"]:
@@ -2551,8 +2585,13 @@ def revise_faults(old, new, own, started, changed):
             for tid in ticket_ids(new):
                 if tid in ever or tid not in gnew.t or tid not in gold.t:
                     continue
-                added = [x for x in gnew.t[tid]["owned"] + gnew.t[tid]["shared"]
-                         if x not in gold.t[tid]["owned"] + gold.t[tid]["shared"]]
+                # New per field: an entry moved from the shared list to the
+                # owned list (or back) is a new entry of the list it moved to.
+                added = []
+                for key in ("owned", "shared"):
+                    for x in gnew.t[tid][key]:
+                        if x not in gold.t[tid][key] and x not in added:
+                            added.append(x)
                 for s in sorted(ever):
                     if s not in gnew.t or gnew.t[s]["repo"] != gnew.t[tid]["repo"]:
                         continue
@@ -2640,8 +2679,13 @@ def cmd_revise(args):
         reg = open_registry_by_head(doc)
         if (args.ticket, args.run) not in reg.started:
             raise Refused("등록부에 %s 의 런 %s 착수 행이 없음" % (args.ticket, args.run))
+        # The calling run's id comes from its environment, never from --run
+        # alone: a missing value is refused rather than skipped, since
+        # skipping it is the same path as clearing the variable.
         env_run = os.environ.get("CC_PIPELINE_RUN_ID")
-        if env_run and env_run != args.run:
+        if not env_run:
+            raise Refused("환경에 이 런의 run id(CC_PIPELINE_RUN_ID)가 없음")
+        if env_run != args.run:
             raise Refused("--run 이 이 런의 run id 와 다름")
         # 4 — exactly one new revision entry (its changed sections bound 3).
         changed, fault = revision_entry(old, new, args.ticket, args.run)

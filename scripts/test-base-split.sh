@@ -988,7 +988,9 @@ t2 = {"owned": ["ui/"], "shared": [],
       "design": ["화면", "읽기, 쓰기 경로"], "sub": "필요",
       "residual": ["R3. 화면 확인"], "open": ["열린 항목 둘"]}
 raw = {}
+r1_body = "**검증 레시피**: §저장 형식 의 필드를 본다. R2 와 R3 을 함께 본다."
 r3_body = "**검증 레시피**: R1 을 먼저 본다."
+open1_body = []
 table = []
 
 if variant == "bothkinds":
@@ -1033,6 +1035,15 @@ elif variant == "t4row":
     table = ["| 항목 | 상태 |", "|---|---|", "| 표로 적은 항목 | 보류 |", ""]
 elif variant == "t5":
     r3_body = "**검증 레시피**: §없는 절 을 본다."
+elif variant == "sharedstarted":
+    # T2 shares a file T1 owns, which P3 lets through as covered by the
+    # shared list; a revision may then try to move it to T2's owned list.
+    t2["shared"] = ["src/fmt.py"]
+elif variant == "labels":
+    # Upper ticket and contract labels in the bodies child-doc moves out of
+    # `## 베이스 제약`; T9 and C7 are not labels of this document.
+    r1_body = "**검증 레시피**: §저장 형식 의 필드를 T2 가 C1 으로 읽는다. T9·C7 은 그대로. R2 를 본다."
+    open1_body = ["**사유**: T2 의 화면이 C1 을 읽는다. T9 은 그대로."]
 elif variant != "ok":
     raise SystemExit("unknown variant " + variant)
 
@@ -1063,12 +1074,12 @@ L = ["# 상태 파일 티켓 배달", ""] + kind_lines + ["**상태**: 초안", 
      "## 주요 결정사항과 근거", "", "### 읽기", "읽기는 잠그지 않는다.", "",
      "### 결정 둘", "쓰기는 원자적이다.", "",
      "## 미해결 이슈 / 트레이드오프", ""] + table + [
-     "### 열린 항목 하나", "**상태**: 보류", "**구현 처분**: 구현 전 결정", "",
+     "### 열린 항목 하나", "**상태**: 보류", "**구현 처분**: 구현 전 결정"] + open1_body + ["",
      "### 열린 항목 둘", "**상태**: 구현 재량", "",
      "### 닫힌 항목", "**상태**: 해결 — 정함", "",
      "## 검증 기록", "V1 관측한 사실.", "",
      "## 구현 시 검증 항목", "",
-     "### R1. 형식 확인", "**검증 레시피**: §저장 형식 의 필드를 본다. R2 와 R3 을 함께 본다.", "",
+     "### R1. 형식 확인", r1_body, "",
      "### R2. 경로 확인", "**검증 레시피**: §읽기, 쓰기 경로 아래를 본다.", "",
      "### R3. 화면 확인", r3_body, "",
      "## 티켓 간 계약", "",
@@ -1205,6 +1216,17 @@ PYEOF
 run_bs child-doc "$DOCS/td-noopen.md" --ticket T1 --cutpoint 머지 --out "$CHILD/noopen.md"
 check "child-doc: 없음 when no entry is assigned" \
   "$(grep -A2 '^## 미해결 이슈 / 트레이드오프$' "$CHILD/noopen.md" | sed -n 3p)" "없음"
+tdgen labels
+run_bs child-doc "$DOCS/td-labels.md" --ticket T1 --cutpoint 머지 --out "$CHILD/labels.md"
+check "child-doc labels: exits 0" "$rc" "0"
+CLDOC=$(cat "$CHILD/labels.md")
+has "child-doc labels: upper labels in a moved residual body gain the document qualifier" "$CLDOC" \
+  "**검증 레시피**: 상위 문서의 「저장 형식」 의 필드를 상위 문서의 T2 가 상위 문서의 C1 으로 읽는다. T9·C7 은 그대로. R2 를 본다."
+has "child-doc labels: upper labels in a moved open entry body gain the document qualifier" "$CLDOC" \
+  "**사유**: 상위 문서의 T2 의 화면이 상위 문서의 C1 을 읽는다. T9 은 그대로."
+check "child-doc labels: the moved open entry heading stays byte for byte" \
+  "$(grep -A1 '^## 미해결 이슈 / 트레이드오프$' "$CHILD/labels.md" | sed -n 2p):$(grep -c '^### 열린 항목 하나$' "$CHILD/labels.md")" ":1"
+has "child-doc labels: the ticket block inside 베이스 제약 keeps its labels" "$CLDOC" "**제공 계약**: C1"
 
 # ---------------------------------------------------------------------------
 # fence-check
@@ -1365,9 +1387,17 @@ if hist:
 open(dst, "w", encoding="utf-8").write(t)
 PYEOF
 }
+# run_rv <revise argv...>: run_bs with CC_PIPELINE_RUN_ID set to the argv's
+# --run value, as a pipeline stage carries its own run id. The suite unsets
+# every CC_PIPELINE_ variable at the top; only this call gets the value.
+run_rv() {
+  local a prev="" r=""
+  for a in "$@"; do [ "$prev" = "--run" ] && r=$a; prev=$a; done
+  rc=0; out=$(CC_PIPELINE_RUN_ID="$r" "$BS" "$@" 2>"$WORK/stderr") || rc=$?
+}
 # revise_ok <case> <candidate> [revise args...]
 revise_ok() {
-  run_bs revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/$2.md" --ticket T1 "${@:3}"
+  run_rv revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/$2.md" --ticket T1 "${@:3}"
   check "revise $1: exits 0" "$rc" "0"
   check "revise $1: the document is the candidate" "$(cmp -s "$RVDOC" "$RV/$2.md" && echo same || echo differs)" "same"
   check "revise $1: the registry head carries the new sha256" \
@@ -1376,7 +1406,7 @@ revise_ok() {
 }
 # revise_no <case> <candidate> <needle> [revise args...]
 revise_no() {
-  run_bs revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/$2.md" --ticket T1 "${@:4}"
+  run_rv revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/$2.md" --ticket T1 "${@:4}"
   check "revise $1: refused" "$rc" "3"
   has "revise $1: says why" "$(cat "$WORK/stderr")" "$3"
   check "revise $1: the document and the registry are unchanged" \
@@ -1453,6 +1483,22 @@ rc=0; out=$(CC_PIPELINE_RUN_ID=r7 "$BS" revise "$RVDOC" --from "$RV/pristine.md"
   --ticket T1 --run r1 2>"$WORK/stderr") || rc=$?
 check "revise: refused when --run is not the run's id" "$rc" "3"
 has "revise: says the run id differs" "$(cat "$WORK/stderr")" "--run 이 이 런의 run id 와 다름"
+for env_case in unset empty; do
+  reg_with T1:r1 T2:r0
+  rc=0
+  if [ "$env_case" = unset ]; then
+    out=$("$BS" revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" \
+      --ticket T1 --run r1 2>"$WORK/stderr") || rc=$?
+  else
+    out=$(CC_PIPELINE_RUN_ID= "$BS" revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" \
+      --ticket T1 --run r1 2>"$WORK/stderr") || rc=$?
+  fi
+  check "revise: refused when CC_PIPELINE_RUN_ID is $env_case" "$rc" "3"
+  has "revise: says the run id is missing ($env_case)" "$(cat "$WORK/stderr")" "환경에 이 런의 run id(CC_PIPELINE_RUN_ID)가 없음"
+  check "revise: a missing run id ($env_case) leaves the document and the registry unchanged" \
+    "$(cmp -s "$RVDOC" "$RV/pristine.md" && cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
+  check "revise: the lock is gone after a missing run id ($env_case)" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
+done
 
 reg_with T1:r1
 cand addowned '**소유 파일**: `ui/`' '**소유 파일**: `ui/`, `src/fmt.py`'
@@ -1460,13 +1506,30 @@ revise_no "an unstarted ticket taking a started ticket's file" addowned "T2 에 
 cand addshared '**공유 파일**: 없음' '**공유 파일**: `src/fmt.py`'
 revise_no "an unstarted ticket sharing a started ticket's file" addshared "T2 에 더한 src/fmt.py 가 착수한 T1 의 소유 파일 src/fmt.py 와 겹침" --run r1
 
+# A file T2 already shares and T1 owns, moved from T2's shared list to its
+# owned list, is a new owned entry: the overlap refusal is per field, not over
+# the union of the two lists.
+tdgen sharedstarted
+run_bs check "$DOCS/td-sharedstarted.md"
+check "td check sharedstarted: a shared entry covering a started ticket's file passes" "$rc:$out" "0:"
+cp "$RV/pristine.md" "$RV/pristine.keep"
+cp "$DOCS/td-sharedstarted.md" "$RV/pristine.md"
+reg_with T1:r1
+cand moveowned '**소유 파일**: `ui/`' '**소유 파일**: `ui/`, `src/fmt.py`' \
+  '**공유 파일**: `src/fmt.py`' '**공유 파일**: 없음' \
+  '**범위**: 화면 의 범위.' '**중첩 사유**: 화면이 형식 파일을 이어 고친다.
+**범위**: 화면 의 범위.'
+revise_no "a started ticket's file moved from shared to owned" moveowned "T2 에 더한 src/fmt.py 가 착수한 T1 의 소유 파일 src/fmt.py 와 겹침" --run r1
+cp "$RV/pristine.keep" "$RV/pristine.md"
+reg_with T1:r1
+
 cp "$RV/design.md" "$RV/other.md"
 printf '\n' >> "$RV/other.md"
-run_bs revise "$RVDOC" --from "$RV/other.md" --to "$RV/design.md" --ticket T1 --run r1
+run_rv revise "$RVDOC" --from "$RV/other.md" --to "$RV/design.md" --ticket T1 --run r1
 check "revise: refused when the document is not the --from copy" "$rc" "3"
 has "revise: says the sha256 differs" "$(cat "$WORK/stderr")" "상위 문서의 sha256 이 --from 과 다름"
 mkdir "$RVDOC.revise.lock"
-run_bs revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
+run_rv revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
 check "revise: refused while another call holds the lock" "$rc" "3"
 check "revise: a held lock leaves the document unchanged" "$(cmp -s "$RVDOC" "$RV/pristine.md" && echo same || echo differs)" "same"
 check "revise: a lock it did not take stays" "$([ -d "$RVDOC.revise.lock" ] && echo y || echo n)" "y"
@@ -1506,7 +1569,7 @@ has "record --started: says the raced document is not a ticket delivery design" 
 check "record --started: nothing is written after a raced refusal" \
   "$(cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
 check "record --started: the lock is gone after a raced refusal" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
-run_bs revise "$RV/nodir/up.md" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
+run_rv revise "$RV/nodir/up.md" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
 check "revise: a document in a missing directory is a usage error" "$rc" "2"
 run_bs record --started "$RV/docs/missing.md" --ticket T1 --run r1
 check "record --started: a missing document is a usage error and takes no lock" \
