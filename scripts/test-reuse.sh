@@ -10,8 +10,9 @@
 # starts, and after it ends a file whose access time moved, whose modification
 # time changed or that is gone was read. A tracked symbolic link always counts
 # as read. When one of the four .git files moved, or a watch shim saw a git
-# call or a cloning cp that could reach the checkout, the item read the whole
-# tree. A later tree reuses the pass when the record's doubles and tool
+# call or a cloning cp aimed at the checkout, the item read the whole tree; a
+# git call whose calling directory alone is inside the checkout is not such a
+# call. A later tree reuses the pass when the record's doubles and tool
 # fingerprint are today's, the record is under 24 hours old, the tracked paths
 # match by (path, mode, empty or not), and every path it read has the same
 # blob; a whole-tree record also needs the same tree object, the same input
@@ -206,6 +207,21 @@ EOF
 # Writes the git and cp watch shims into <prefix>.shim/. Each passes the call on
 # to the command PATH finds now and leaves a line in <prefix>.mark when the
 # call can reach the checkout.
+#
+# The git shim marks a call when, resolved to a physical path, one of these is
+# inside the checkout (its .git included): the directory the -C arguments reach
+# when applied in order on top of the calling directory, a --git-dir or
+# --work-tree argument, the value of GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
+# GIT_OBJECT_DIRECTORY or GIT_ALTERNATE_OBJECT_DIRECTORIES, or any other
+# argument that resolves to an existing path. The calling directory itself only
+# anchors relative paths and -C: a git that finds its repository from there
+# reads that repository's HEAD and config, which the access times of the four
+# .git files show, and a call that names a repository outside reads nothing of
+# the checkout.
+#
+# The cp shim marks a call that carries a clone option (-c alone or inside a
+# group of short options, --reflink, --reflink=<anything but never>) when one
+# of its operands, read against the calling directory, is inside the checkout.
 tr_shims() {
   local ck="$1" side="$2" d real_git real_cp
   ck=$(cd "$ck" && pwd -P) || return 1
@@ -221,7 +237,6 @@ tr_shims() {
     cat <<'EOF'
 hit=""
 cwd=$(pwd -P)
-if tr_in "$cwd"; then hit=cwd; fi
 for v in "${GIT_DIR:-}" "${GIT_WORK_TREE:-}" "${GIT_INDEX_FILE:-}" "${GIT_OBJECT_DIRECTORY:-}"; do
   [ -n "$v" ] || continue
   tr_phys "$v" "$cwd"
@@ -625,7 +640,8 @@ tr_self_test() {
     if [ -s "$S.mark" ]; then echo 표지; else echo 없음; fi
     rm -f "$S.mark"
   }
-  check "git 감시 꼴: 작업 디렉터리가 체크아웃 안" "$(gmark "$CK/sub" status)" "표지"
+  check "git 감시 꼴: 작업 디렉터리만 체크아웃 안이면 표지 없음" "$(gmark "$CK/sub" status)" "없음"
+  check "git 감시 꼴: 작업 디렉터리만 체크아웃 안이고 밖을 복제하면 표지 없음" "$(gmark "$CK" clone -q "$FX" "$T/clone-out")" "없음"
   check "git 감시 꼴: -C 가 체크아웃" "$(gmark "$FX" -C "$CK" status)" "표지"
   check "git 감시 꼴: 앞에서부터 적용한 -C" "$(gmark "$T" -C items -C 1 status)" "표지"
   out=$(rm -f "$S.mark"; cd "$FX" && GIT_DIR="$CK/.git" "$S.shim/git" status >/dev/null 2>&1; if [ -s "$S.mark" ]; then echo 표지; else echo 없음; fi)
@@ -666,15 +682,15 @@ tr_self_test() {
   if tr_baseline "$CK" "$S" "$L"; then ok "기준선을 다시 세운다"; else bad "기준선을 다시 세운다"; fi
   tr_collect "$CK" "$S" "$L" "$T/rsc"
   check "감시 꼴 표지가 없으면 트리 전체가 아니다" "$(head -n 1 "$T/rsc")" "아니오"
-  printf 'git cwd x\n' > "$S.mark"
+  printf 'git arg x\n' > "$S.mark"
   tr_collect "$CK" "$S" "$L" "$T/rsc"
   check "감시 꼴 표지가 있으면 트리 전체" "$(head -n 1 "$T/rsc")" "예"
 
   rm -rf "$T"
   printf 'test-reuse self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 65 ]; then
-    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 65 >&2
+  if [ "$passed" -lt 66 ]; then
+    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 66 >&2
     return 1
   fi
   [ "$failed" = "0" ]

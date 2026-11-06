@@ -564,6 +564,7 @@ if [ "$*" = "-s --no-print-directory print-rest-goals" ]; then cat goals.txt; ex
 printf 'menv:%s|REC=%s\n' "$*" "${CC_GATE_TIMING_RECORD-unset}" >> "@T@/env.log"
 for a in "$@"; do last="$a"; done
 [ ! -f "@T@/reads-$last" ] || while IFS= read -r f; do cat "$f" > /dev/null; done < "@T@/reads-$last"
+[ ! -f "@T@/run-$last" ] || bash "@T@/run-$last"
 [ ! -f "@T@/fail-$last" ] || exit 1
 exit 0
 EOF
@@ -995,6 +996,35 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   out=$(crr); rc=$?
   check "F41 트리 전체 기록은 읽지 않은 파일만 바뀌어도 다시 돈다" "$rc $(cur_reuse)" "0 $(ve make:g1 없음)"
   rm -f "$T/git-cc"
+  # Goal g1 runs the commands of $T/run-g1 in its item checkout, and each case
+  # reads the 트리전체 field of the record that run leaves. The record of the
+  # tree is removed first, so g1 runs again on the same tree.
+  sgit init -q "$T/fx" > /dev/null 2>&1
+  (cd "$T/fx" && printf 'f\n' > f && sgit add f && sgit commit -q -m f) > /dev/null 2>&1
+  printf 'outside\n' > "$T/outside.txt"
+  gw() {  # <case> <commands run by g1 in its checkout> <트리전체 expected>
+    printf 'ck=$(pwd -P)\n%s\n' "$2" > "$T/run-g1"
+    rm -rf "$items_dir/make:g1" "$T/fxc" "$T/cpo"
+    out=$(crr); rc=$?
+    rm -f "$T/run-g1"
+    check "F41 $1" "$rc $(awk -F'\t' '$1 == "트리전체" { print $2 }' "$items_dir/make:g1/$(cur_tree)" 2>/dev/null)" "0 $(ve "$3" '')"
+  }
+  gw "-C 로 체크아웃을 향한 git 은 트리 전체" "cd \"$T/fx\" && git -C \"\$ck\" status > /dev/null 2>&1" 예
+  gw "GIT_DIR 로 체크아웃을 향한 git 은 트리 전체" "cd \"$T/fx\" && GIT_DIR=\"\$ck/.git\" git status > /dev/null 2>&1" 예
+  gw "체크아웃을 경로 인자로 받은 git 은 트리 전체" "cd \"$T\" && git clone -q \"\$ck\" \"$T/fxc\" > /dev/null 2>&1" 예
+  gw "픽스처 저장소만 향한 git 은 트리 전체가 아니다" "git -C \"$T/fx\" status > /dev/null 2>&1" 아니오
+  gw "작업 디렉터리만 체크아웃 안이고 밖을 밖으로 복제한 git 은 트리 전체가 아니다" "git clone -q \"$T/fx\" \"$T/fxc\" > /dev/null 2>&1" 아니오
+  gw "작업 디렉터리에서 저장소를 찾은 git 은 .git 의 atime 으로 트리 전체" "git rev-parse HEAD > /dev/null 2>&1" 예
+  tr_os_init
+  if [ "$TR_OS" = bsd ]; then
+    gw "체크아웃 파일을 이 OS 의 복제 선택지(-c)로 복사한 cp 는 트리 전체" "cp -c h.txt \"$T/cpo\"" 예
+    gw "체크아웃 밖 파일만 복제 선택지(-c)로 복사한 cp 는 트리 전체가 아니다" "cp -c \"$T/outside.txt\" \"$T/cpo\"" 아니오
+  else
+    gw "체크아웃 파일을 이 OS 의 복제 선택지(--reflink=auto)로 복사한 cp 는 트리 전체" "cp --reflink=auto h.txt \"$T/cpo\"" 예
+    gw "체크아웃 밖 파일만 복제 선택지(--reflink=auto)로 복사한 cp 는 트리 전체가 아니다" "cp --reflink=auto \"$T/outside.txt\" \"$T/cpo\"" 아니오
+  fi
+  gw "복제 선택지 없이 체크아웃 파일을 복사한 cp 는 트리 전체가 아니다" "cp h.txt \"$T/cpo\"" 아니오
+  rm -rf "$T/fx" "$T/fxc" "$T/cpo" "$T/outside.txt"
   fh_line "$sm2"
   out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
   check "F41 합친 트리의 첫 실행은 head 트리의 기록을 쓰지 않는다" "$rc $(cur_reuse)" "0 없음"
@@ -1036,8 +1066,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 148 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 148 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 157 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 157 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
