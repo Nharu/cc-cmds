@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.36.2] - 2026-11-07
+## [3.36.3] - 2026-11-07
 
 리뷰어 런의 리뷰 게시가 전용 쓰기 자격이 없는 호스트에서 정지하지 않는다. 지금까지는 게시 행위가 전용 쓰기 자격(`CC_GATE_TOKEN_RW` 또는 키체인 `cc-cmds-autopilot`/`write`)을 읽지 못하면 그 자리에서 「리뷰 게시 거절」로 멈췄고, 정지 문면은 원인이 이 호스트의 자격 부재라는 것을 말하지 않았다.
 
@@ -16,6 +16,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **원장 필드 `게시 자격`** — `리뷰 게시 시도`·`리뷰 게시` 행의 마지막 필드로 `전용` 또는 `주변` 을 남긴다. POST 없이 올라간 리뷰를 다시 읽는 호출은 시도 행의 값을 이어 적고, 시도 행을 읽지 못하면 `-` 다.
 - **리뷰어 킥오프 고지** — 게시 방식 질문 앞에서 `credentials.sh` 로 쓰기 자격 유무를 읽어, 없으면 게시가 1단계에서 읽은 `gh` 로그인으로 나간다고 알린다. 승인 화면에 `게시 자격` 줄이 더해진다.
 - **시험** — test-gate 절 108 이 전용 자격 없이 내는 게시의 성공·계정 불일치·로그인 부재·환경 토큰 제거·재판독 갈래의 값 잇기를 잰다.
+
+## [3.36.2] - 2026-11-06
+
+본문만 바꾸는 `SKILL.md` 슬라이스가 `README.md` 를 선언하지 않았다는 이유로 세그먼트 계획에서 거부되어 런이 멈추던 결함을 고쳤다. README 는 스킬 frontmatter 에서 생성되므로, 스킬을 새로 만들거나 frontmatter 를 바꾸는 슬라이스만 `README.md` 를 선언하면 된다.
+
+### Fixed
+
+- **슬라이싱 필드 검사** — `run.sh` 의 `slicing_fields_ok` 가 `선언 파일` 에 `SKILL.md` 가 있고 `README.md` 가 없으면 슬라이스를 실패로 돌리던 문자열 포함 검사를 없앴다. 이 검사는 frontmatter 변경과 본문 변경을 가리지 못해, 설계가 본문만 바꾼다고 옳게 판단하고 README 를 빼면 게이트 분기가 `선언불완전` 이 되어 계획 행위가 거부됐고, 감사·재수렴 스테이지는 옳은 선언을 고칠 수 없어 런이 사람의 답을 기다리며 멈췄다. README 를 실제로 다시 생성하면서 선언하지 않은 슬라이스는 구현 뒤 선언 밖 파일 편집으로 park 된다.
+
+### Changed
+
+- **선언 규칙 문면** — `design` 스킬의 슬라이싱 자가 점검 규칙, `design-discuss-unattended` 의 같은 규칙 요약, 세그먼트 계획 프롬프트의 구성 규칙이 `README.md` 선언을 스킬 생성이나 frontmatter 변경에만 요구하도록 바꿨다. 슬라이스 설명이 어느 쪽인지 밝히지 않으면 `README.md` 를 선언한다.
+- **시험** — `test-run.sh` 의 슬라이싱 시험에서 `SKILL.md` 만 선언한 문서가 `선언통치` 로 읽히는지 단언한다.
+
+### Why
+
+본문만 바꾸는 슬라이스에서 `README.md` 는 바뀌지 않는 파일인데, 셸은 선언에서 그것을 판별할 수 없다. 판별은 설계의 몫으로 두고, 판단이 틀린 경우는 이미 있는 선언 밖 편집 검사가 잡는다.
 
 ## [3.36.1] - 2026-11-06
 
