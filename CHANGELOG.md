@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.36.2] - 2026-11-06
+
+본문만 바꾸는 `SKILL.md` 슬라이스가 `README.md` 를 선언하지 않았다는 이유로 세그먼트 계획에서 거부되어 런이 멈추던 결함을 고쳤다. README 는 스킬 frontmatter 에서 생성되므로, 스킬을 새로 만들거나 frontmatter 를 바꾸는 슬라이스만 `README.md` 를 선언하면 된다.
+
+### Fixed
+
+- **슬라이싱 필드 검사** — `run.sh` 의 `slicing_fields_ok` 가 `선언 파일` 에 `SKILL.md` 가 있고 `README.md` 가 없으면 슬라이스를 실패로 돌리던 문자열 포함 검사를 없앴다. 이 검사는 frontmatter 변경과 본문 변경을 가리지 못해, 설계가 본문만 바꾼다고 옳게 판단하고 README 를 빼면 게이트 분기가 `선언불완전` 이 되어 계획 행위가 거부됐고, 감사·재수렴 스테이지는 옳은 선언을 고칠 수 없어 런이 사람의 답을 기다리며 멈췄다. README 를 실제로 다시 생성하면서 선언하지 않은 슬라이스는 구현 뒤 선언 밖 파일 편집으로 park 된다.
+
+### Changed
+
+- **선언 규칙 문면** — `design` 스킬의 슬라이싱 자가 점검 규칙, `design-discuss-unattended` 의 같은 규칙 요약, 세그먼트 계획 프롬프트의 구성 규칙이 `README.md` 선언을 스킬 생성이나 frontmatter 변경에만 요구하도록 바꿨다. 슬라이스 설명이 어느 쪽인지 밝히지 않으면 `README.md` 를 선언한다.
+- **시험** — `test-run.sh` 의 슬라이싱 시험에서 `SKILL.md` 만 선언한 문서가 `선언통치` 로 읽히는지 단언한다.
+
+### Why
+
+본문만 바꾸는 슬라이스에서 `README.md` 는 바뀌지 않는 파일인데, 셸은 선언에서 그것을 판별할 수 없다. 판별은 설계의 몫으로 두고, 판단이 틀린 경우는 이미 있는 선언 밖 편집 검사가 잡는다.
+
 ## [3.36.1] - 2026-11-06
 
 리뷰어 런이 PR 에 올리는 리뷰 본문이 사람이 쓴 리뷰처럼 읽히도록 기본 리뷰 게시 문면에서 기계적인 표현을 걷어 냈다.
