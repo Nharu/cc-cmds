@@ -2182,7 +2182,7 @@ check "다중 바이트 후행 글자: 한글 뒤" "$(slice_field "$SLI/mbtail.m
 check "id 로 끝나는 헤딩" "$(slice_field "$SLI/mbtail.md" G '선언 파일')" '`g.txt`'
 check "체크섬은 PR 이상 블록 수에서 파생된다" "$(slicing_pr_count "$SLI/tilde.md")" "1"
 sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`|' "$SLI/tilde.md" > "$SLI/skillonly.md"
-check "SKILL.md 만 선언하면 필드 검사 실패" "$(slicing_branch "$SLI/skillonly.md" 2>/dev/null)" "선언불완전"
+check "SKILL.md 만 선언해도 필드 검사는 통과한다(README 선언은 설계 판단)" "$(slicing_branch "$SLI/skillonly.md" 2>/dev/null)" "선언통치"
 sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`, `README.md`|' "$SLI/tilde.md" > "$SLI/skillreadme.md"
 check "SKILL.md + README.md 는 통과한다" "$(slicing_branch "$SLI/skillreadme.md")" "선언통치"
 
