@@ -289,6 +289,7 @@ A reviewer kickoff (SKILL.md 「리뷰어 킥오프」) asks five questions. Eve
 - the line 「리뷰어 런 — 남이 쓴 PR 을 리뷰만 하고, 작성자 브랜치에는 쓰지 않습니다」;
 - per pull request: slug#number, title, author, draft or ready, base, and the excluded ones with 「제외(본인 작성)」;
 - the posting `방식` and `의사표시`, the depth and the wording file with its source;
+- the line `게시 자격: 전용 | 주변(gh 로그인 <계정>)` — `전용` when the `쓰기 자격` line read at the posting question was `있음`, else `주변` with the login read at the pull request set — marked as the reading at kickoff time: the gate reads the credential again when it posts, and records what it used as `게시 자격` on its rows;
 - the run-wide values, each marked `기본값` or `고정값`, and one termination clause per pull request (「PR <slug>#<n> 에 리뷰를 게시하고 대조가 일치한다」).
 
 Then ask one question — header `계획 승인`, options `이대로` and `고칠 항목 지정`, no recommendation suffix on either. `고칠 항목 지정` asks again only the values the person names among the pull request set, the posting values, the depth, the wording, the deadline, the ladder, the cost ceiling and the stagnation bound, then shows the screen again. On `이대로` append the trace line `기본값 확정`; the utterance is recorded by `references/freeze.md` 「리뷰어 킥오프」.
