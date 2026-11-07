@@ -2389,8 +2389,11 @@ EOF
   fi
   rm -rf "$T/rg"
   : > "$T/rmake.log"
+  # Only a cwd that is itself an item checkout counts: this self-test may run
+  # inside check-push's own item checkout, so the shared clone's path can hold
+  # an /items/ component too.
   out=$(rp r1 0 2> "$T/rp.err")
-  check "F40 끈 실행은 공유 복제본에서 돌고 기록하지 않는다" "$out|$(grep -c '/items/' "$T/rmake.log")|$([ -e "$T/rg" ] && echo 있음 || echo 없음)" "rc=0 reused=|0|없음"
+  check "F40 끈 실행은 공유 복제본에서 돌고 기록하지 않는다" "$out|$(grep -c ' cwd=[^ ]*/items/[0-9]* ' "$T/rmake.log")|$([ -e "$T/rg" ] && echo 있음 || echo 없음)" "rc=0 reused=|0|없음"
   rm -f "$T/probe".*
 
   # --- F28 repro side ---------------------------------------------------------
