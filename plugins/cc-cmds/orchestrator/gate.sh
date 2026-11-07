@@ -83,7 +83,7 @@
 #   3  rule refusal — a catalog rule said no. From `seat-apply-preview` also:
 #      the record or the segment worktree fails a check the apply makes. From
 #      `surface-provenance`: the branch changed an enforcement surface outside
-#      a seat apply. The reviewer run's fixed rules refuse with 3 too: planning
+#      a seat apply and no `강제 표면 승인` row lets it through. The reviewer run's fixed rules refuse with 3 too: planning
 #      a review-only segment whose pull-request head moved, any write to an
 #      author's branch from a review-only segment (push, commit, implement
 #      dispatch, lead fix, merge, pull-request creation), `review-post`'s
@@ -219,6 +219,14 @@
 #                    manifest's design document, one per line in document
 #                    order, or `문서 판독 불가 — <reason>`; empty when none
 #                    does. Writes nothing
+#   gate.sh pr-links --manifest <path> --segment <id>
+#                    prints the lines a pull request of the segment carries
+#                    under `## 관련 이슈·티켓`, one per `출처 티켓` row in row
+#                    order: `Closes <owner>/<name>#<N>` on the last segment by
+#                    merge order and `Refs <owner>/<name>#<N>` on the others for
+#                    a github row, `원 티켓: <URL>` on every segment for a
+#                    clickup row; empty on a manifest with no such row. Writes
+#                    nothing
 #   gate.sh seat-apply-preview --manifest <path> --record <halt record> [--target <alias>]
 #                    for a `Step 3 강제 표면 좌석 적용` halt record: prints the
 #                    record digest, the `--numstat` and unified diff of the
@@ -227,6 +235,11 @@
 #                    the apply scope and the question line the seat asks with;
 #                    writes nothing. Refused (3) when the record or the segment
 #                    worktree fails the apply's own checks
+#   gate.sh surface-approval-preview --manifest <path> --record <halt record>
+#                    for a `강제 표면 승인` shift halt record: prints the
+#                    question line the seat asks a person with, first and alone
+#                    on its line, then each `**승인 대상**` path with its class,
+#                    both entries and the diff between them; writes nothing
 #   gate.sh surface-provenance --manifest <path> --segment <id> [--target <alias>]
 #                    the merge-time provenance check of the segment's
 #                    enforcement surface: one `<path>\t<why>` line per
@@ -323,6 +336,11 @@
 # `reentry` writes a `재진입` row for a boot-time re-entry, before the
 # `router-shift` it issues; a shift or a stage is refused with 3. The gate
 # stamps `대상`, `부팅 시각` (kern.boottime) and `기록 시각`.
+#   gate.sh act --kind seat-limit-recall --target <alias> ... \\
+#               -- 사유=<대기|상한> 레이블=<label> 열쇠=<gap key>
+# `seat-limit-recall` writes a `좌석 한도 재호출` row for the fleet tick's
+# seat-limit trigger, before the `router-shift` chain it starts; a shift or a
+# stage is refused with 3. The gate stamps `기록 시각`.
 #   gate.sh act --kind halt-answer --target <alias> --segment <key> ... \\
 #               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약> \\
 #                  ['첨부=<RUN_DIR/halt/…answer.md>'] ['초안 그대로=예']
@@ -998,6 +1016,23 @@ readonly GATE_RELAY_HOLD_SECONDS=3000
 # A relay has no deadline exit, so a clock beyond this — a seven_day window's —
 # is refused rather than waited on for days.
 readonly GATE_RESET_HORIZON_SECONDS=18060
+
+# THE GRACE AFTER AN ACCOUNT-FAILOVER WAIT'S RESUME TIME. A judgment made at the
+# resume time can still read inputs from before it: the usage file is published
+# on its own period, and the fleet tick that re-calls the run waits out a quiet
+# window of 600 seconds and a tick of 120 first. 900 covers those 720 seconds.
+# Inside it a judgment with no candidate does not become `마감 초과`; the gate
+# writes one more `결과=대기` row at the previous resume time plus this grace
+# instead, once per wait.
+readonly GATE_FAILOVER_RESUME_GRACE_SECONDS=900
+
+# HOW FAR A NEWLY COUNTED RESUME TIME MAY SIT FROM THE CURRENT WAIT'S AND STILL
+# BE THE SAME WAIT, before that wait's resume time has passed. One window's
+# reset time wobbles by about a second between observations, so an exact match
+# would stack a row per call and move the gap key every time. The comparison is
+# against the fixed row's value, so the wobble does not add up. Below the tick
+# interval of 120 seconds, so it does not visibly delay the resume.
+readonly GATE_FAILOVER_RESUME_TOLERANCE_SECONDS=60
 
 # AN INTERNAL SIGNAL AND NOT AN EXIT CODE. `gate_issue_judgment_approval`
 # returns it to say "this question already has an answer, so nothing was
@@ -7162,15 +7197,15 @@ surface_of_argv0() {
     clickup-relate.py)
       printf '외부상태변경' ;;
     # The base split helper is graded by its subcommand, which is its first
-    # argument. `check` only reads the document; `plan` writes its plan file
-    # under the run directory; `record` rewrites the ticket registry beside the
-    # document. Anything else is a spelling the helper refuses, and it takes the
-    # highest of the three rather than a guess.
+    # argument. `check` and `fence-check` only read; `plan` writes its plan file
+    # under the run directory; `record`, `child-doc` and `revise` write the
+    # registry or a document. Anything else is a spelling the helper refuses, and
+    # it takes the highest of the three rather than a guess.
     base-split.py)
       case "${1:-}" in
-        check)  printf '읽기' ;;
-        plan)   printf '트리밖쓰기' ;;
-        *)      printf '워크트리쓰기' ;;
+        check|fence-check) printf '읽기' ;;
+        plan)              printf '트리밖쓰기' ;;
+        *)                 printf '워크트리쓰기' ;;
       esac ;;
     # The stage rules helper. `status` only reads the instruction file it is
     # given and prints counts. `extract --out-dir` writes the run's snapshot and
@@ -7189,7 +7224,8 @@ surface_of_argv0() {
     # the line names (`gate_ban_append_answer`). Both land in host files, so the
     # stage declares them `기기전역`, and the machine-global cell of
     # `gate_reach_disposition` opens exactly the two this row grades
-    # `트리밖쓰기`. Anywhere else, and every other subcommand, writes the
+    # `트리밖쓰기`. `share` prints the configured share scope and writes nothing.
+    # Anywhere else, and every other subcommand, writes the
     # settings home or the sidecar, which is the seat's work, so they take the
     # unknown grade and its refusal.
     # `visual-check.sh` only reads the document, the sidecar and the screens.
@@ -7197,7 +7233,7 @@ surface_of_argv0() {
     # the tree, and `app` serves the build on a loopback port it takes down itself.
     visual-config.sh)
       case "${1:-}" in
-        snapshot|lane) printf '읽기' ;;
+        snapshot|lane|share) printf '읽기' ;;
         account)
           if gate_caller_is_visual_publish_stage; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
         append)
@@ -12928,8 +12964,12 @@ gate_adoption_halt_source() {
   # in an `이월` row (`gate_halt_answer_deferred`): a carry act there found no
   # room before the deadline and kept the answer for the next run, and only a
   # halt of the re-entry table is carried that way, so a fresh session of this
-  # run takes it up through this run's own carry act. Any other open answer —
-  # one the earlier run never tried to carry — is warned about and stays.
+  # run takes it up through this run's own carry act. A person's `승인` at the
+  # shift site `강제 표면 승인` is not carried either way: its approval already
+  # rides the next manifest as `강제 표면 승인` rows, so it reads as nothing
+  # open (1) once `gate_adoption_surface_approval_settled` vouches for it.
+  # Any other open answer — one the earlier run never tried to carry — is
+  # warned about and stays.
   #
   # Every guarantee of the seat's own `halt-answer` holds for the copy. The
   # answer must be the seat's — a person's, or the record's recommendation the
@@ -12988,6 +13028,20 @@ gate_adoption_halt_source() {
   fi
   step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p')
   step="${step%% — *}"
+  # A `승인` at the shift site `강제 표면 승인` has nothing to carry: its
+  # approval already stands as the earlier ledger's `강제 표면 승인` rows,
+  # which the next manifest carries. Carrying the answer itself would copy the
+  # record outside `halt/shift/`, where no reader takes it for a shift's
+  # record, and leave an answer no session can take up. So it reads as
+  # nothing open (1) when the earlier ledger vouches for it as a person's
+  # answer to a record the gate wrote there, and as an open answer that does
+  # not carry (2) otherwise.
+  if [ "$opt" = "승인" ] && [ "$step" = "교대 정지" ] \
+     && grep -qxF '**스텝**: 교대 정지 — 강제 표면 승인' "$rec"; then
+    gate_adoption_surface_approval_settled "$sledger" "$sdir" "$skey" "$rec" "$row" || return 2
+    GATE_CARRY_SRC=''; GATE_CARRY_LINE=''
+    return 1
+  fi
   if { [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
        || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; } \
      && ! gate_halt_answer_deferred "$sledger" "$ln"; then
@@ -13014,6 +13068,60 @@ gate_adoption_halt_source() {
   done
   gate_carry_source_doc_same "$src" || return 2
   GATE_CARRY_ROW=$row; GATE_CARRY_REC=$rec; GATE_CARRY_ATT=$att
+  return 0
+}
+
+gate_adoption_surface_approval_settled() {
+  # gate_adoption_surface_approval_settled <earlier ledger> <earlier run dir>
+  # <earlier key> <record> <earlier `중단 답` row> — whether an earlier run's
+  # `승인` to a record that reads as the shift's `강제 표면 승인` stop is one
+  # that run's ledger vouches for, so the adoption has nothing to carry for it.
+  # All three must hold: (1) the record lies directly under the earlier run's
+  # `halt/shift/` and that ledger holds a cone `blocked` row anchored on
+  # <earlier key> that names it as `중단 기록` at `자리=강제 표면 승인` with a
+  # `기록 다이제스트`; (2) the record's bytes hash to that digest; (3) the
+  # answer row reads `답한 주체=사람`. 1 with the condition that failed in
+  # GATE_CARRY_WHY otherwise. The record's own bytes are not trusted for any of
+  # them: a stage's record can carry the same step line.
+  local sledger="$1" sdir="$2" skey="$3" rec="$4" row="$5" r brow='' by
+  case "$rec" in
+    "$sdir"/halt/shift/*.md) ;;
+    *) GATE_CARRY_WHY="강제 표면 승인 답의 기록이 출처 런의 halt/shift 바로 아래에 있지 않아 교대 정지 기록으로 확인되지 않습니다: $rec"
+       return 1 ;;
+  esac
+  case "${rec#"$sdir"/halt/shift/}" in
+    */*) GATE_CARRY_WHY="강제 표면 승인 답의 기록이 출처 런의 halt/shift 바로 아래에 있지 않아 교대 정지 기록으로 확인되지 않습니다: $rec"
+         return 1 ;;
+  esac
+  if [ ! -d "$sdir/halt/shift" ] || [ -L "$sdir/halt/shift" ]; then
+    GATE_CARRY_WHY="출처 런의 halt/shift 가 제자리의 실제 디렉터리가 아니어서 교대 정지 기록으로 확인되지 않습니다: $rec"
+    return 1
+  fi
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '스코프')" = "cone" ] || continue
+    [ "$(gate_row_field "$r" '중단 기록')" = "$rec" ] || continue
+    [ "$(gate_row_field "$r" '자리')" = "강제 표면 승인" ] || continue
+    [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$skey" ] || continue
+    [ -n "$(gate_row_field "$r" '기록 다이제스트')" ] || continue
+    brow=$r
+  done <<EOF
+$( { grep "^- \`blocked\` " "$sledger" 2>/dev/null || true; } | { grep -F "중단 기록=$rec " || true; } )
+EOF
+  if [ -z "$brow" ]; then
+    GATE_CARRY_WHY="출처 원장에 이 기록을 쓴 자리=강제 표면 승인 교대 정지 행이 없어 강제 표면 승인 답으로 확인되지 않습니다: $rec"
+    return 1
+  fi
+  if [ ! -f "$rec" ] || [ -L "$rec" ] \
+     || [ "$(shasum -a 256 "$rec" | cut -d' ' -f1)" != "$(gate_row_field "$brow" '기록 다이제스트')" ]; then
+    GATE_CARRY_WHY="강제 표면 승인 기록이 출처 원장 교대 정지 행의 기록 다이제스트와 다릅니다: $rec"
+    return 1
+  fi
+  by=$(gate_row_field "$row" '답한 주체')
+  if [ "$by" != "사람" ]; then
+    GATE_CARRY_WHY="강제 표면 승인 답의 답한 주체가 사람이 아닙니다(답한 주체=${by:-(없음)}): $rec"
+    return 1
+  fi
   return 0
 }
 
@@ -15299,15 +15407,22 @@ gate_resume_grant_ok() {
   # - A `resume-bound-*` `WAIT` is held to the same rule: route.sh's live-lease
   #   branch hands back the lease's account without consulting the binding, so
   #   route cannot be assumed to refuse a wrong resume on its own.
-  local bind="${1:-}" env="${2:-}" facts verdict dormant acct reason
+  # - A migration `GRANT` (`fresh: true` with `migrated.from` equal to the
+  #   binding) passes: the router moved the visual publish pin off the bound
+  #   account, and `fresh` tells the launch to start a new session on the new
+  #   account rather than re-attach the bound one, so nothing is resumed across
+  #   accounts.
+  local bind="${1:-}" env="${2:-}" facts verdict dormant acct reason mfrom
   facts=$(printf '%s' "$env" | jq -r '
     if type != "object" then error("envelope") else . end
     | [ (.verdict // "" | tostring),
         (if .dormant == true then "1" else "0" end),
         (if .account == null then "" else (.account | tostring) end),
-        (.reason // "" | tostring) ]
+        (.reason // "" | tostring),
+        (if .fresh == true and (.migrated | type) == "object" and (.migrated.from | type) == "string"
+         then .migrated.from else "" end) ]
     | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) || return 1
-  { IFS= read -r verdict; IFS= read -r dormant; IFS= read -r acct; IFS= read -r reason; } <<EOF
+  { IFS= read -r verdict; IFS= read -r dormant; IFS= read -r acct; IFS= read -r reason; IFS= read -r mfrom; } <<EOF
 $facts
 EOF
   case "$verdict" in
@@ -15315,7 +15430,8 @@ EOF
       if [ "$dormant" = "1" ]; then
         case "$bind" in ''|-) return 0 ;; esac
         return 1
-      fi ;;
+      fi
+      [ -n "$mfrom" ] && [ -n "$bind" ] && [ "$bind" = "$mfrom" ] && return 0 ;;
     WAIT)
       case "$reason" in resume-bound-*) ;; *) return 1 ;; esac ;;
     *) return 1 ;;
@@ -16749,6 +16865,9 @@ gate_snapshot() {
   # sends and whether the audit carries `--base` and a split follows. A plan
   # frozen before the field existed has no key and reads as `single`.
   printf '  "design_scope": "%s",\n' "$(gate_snapshot_design_scope)"
+  # THE DELIVERY SHAPE, because `tickets` ends a single-scope run at the split
+  # the same way a base scope does. A plan with no key reads as `slices`.
+  printf '  "design_delivery": "%s",\n' "$(gate_snapshot_design_delivery)"
   # THE DESIGN SKILL, so a shift sends `/cc-cmds:<design_skill>` rather than
   # mapping scope and tier itself. The value is `manifest_design_skill`'s, the
   # same function the driver's design arm and the design-dispatch check below
@@ -16960,6 +17079,23 @@ gate_snapshot_design_scope() {
     base) printf 'base' ;;
     *) printf 'single' ;;
   esac
+}
+
+gate_snapshot_design_delivery() {
+  # `slices` or `tickets`. An absent key, an unparsable plan block and a value
+  # outside the two all read `slices` — the shape every run had before the field.
+  local v
+  v=$( { manifest_plan_json 2>/dev/null | jq -r '.design_delivery // "slices"' 2>/dev/null; } || true)
+  case "$v" in
+    tickets) printf 'tickets' ;;
+    *) printf 'slices' ;;
+  esac
+}
+
+gate_split_run() {
+  # 0 when the run's graph ends at the split rather than at segments: a base
+  # scope, or a single-scope design delivered as tickets.
+  [ "$(gate_snapshot_design_scope)" = "base" ] || [ "$(gate_snapshot_design_delivery)" = "tickets" ]
 }
 
 gate_snapshot_design_skill_json() {
@@ -19025,6 +19161,20 @@ gate_lane_label() {
   lane_label_of "${cfg:-${HOME:-}/.claude}"
 }
 
+gate_seat_config_dir() {
+  # The configuration directory the run's settings are rendered for. Inside a
+  # shift the gate moved to another account the environment names that
+  # account, while the settings file, its cache key and the instruction-file
+  # read it grants belong to the seat; there the answer is the seat that
+  # `resolve_account` gives with its environment tier skipped. Everywhere else
+  # it is the environment value, empty when unset, as it always was.
+  if resolve_account_seat_reverted; then
+    resolve_account 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "${CLAUDE_CONFIG_DIR:-}"
+}
+
 gate_autocompact_layer() {
   # gate_autocompact_layer <settings-file> — one layer's reading, as
   # `<enabled>\t<window>`: each side is the key's value or empty when absent.
@@ -19163,7 +19313,7 @@ gate_settings_key() {
     printf 'doc-base\t%s\n' "${DOC_BASE:-}"
     printf 'doc-dir-phys\t%s\n' "$( [ -n "${DOC_DIR:-}" ] && cd "$DOC_DIR" 2>/dev/null && pwd -P || true)"
     printf 'doc-base-phys\t%s\n' "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)"
-    printf 'config-dir\t%s\n' "${CLAUDE_CONFIG_DIR:-}"
+    printf 'config-dir\t%s\n' "$(gate_seat_config_dir)"
     printf 'home\t%s\n' "${HOME:-}"
     # The target rows verbatim: both worktree fields of every declared target
     # are interpolated into `additionalDirectories`.
@@ -19377,7 +19527,7 @@ $(gate_segment_worktrees_for_settings)"
   # granting a read of it grants nothing the stage's own prompt did not already
   # contain.
   local cfgdir adir aprev allow_extra=""
-  cfgdir="${CLAUDE_CONFIG_DIR:-}"
+  cfgdir=$(gate_seat_config_dir)
   [ -n "$cfgdir" ] || cfgdir="${HOME:-}${HOME:+/.claude}"
   cfgdir="${cfgdir%/}"
   # `Read(` takes the path with ONE extra leading slash — the repo's own
@@ -20483,7 +20633,7 @@ gate_main() {
   local approval="" render=0 worktree="" void=0 reject=0
   local emit_digest_seen=0 emit_digest_dir=""
   local reach="" destructive=0
-  local wait_interval="" wait_timeout="" nonce=""
+  local wait_interval="" wait_timeout="" nonce="" launch_dir=""
   local fields="" fields_seen=0
   local end_cause="" end_successor=""
   local -a ss_flags=()
@@ -20605,12 +20755,18 @@ gate_main() {
       --interval)        wait_interval="$2"; shift 2 ;;
       --timeout)         wait_timeout="$2"; shift 2 ;;
       --nonce)           nonce="$2"; shift 2 ;;
+      --launch-dir)      launch_dir="$2"; shift 2 ;;
       --request)         request="$2"; shift 2 ;;
       --cause)           end_cause="$2"; shift 2 ;;
       --successor)       end_successor="$2"; shift 2 ;;
       --record)          sa_record="$2"; shift 2 ;;
       # The screening tool's own three switches, handed to it as they came.
       --list|--tokens|-z) ss_flags+=("$1"); shift ;;
+      # The listing mode between two revisions is a kickoff's, run outside any
+      # run; the relay inside a run does not hand it on.
+      --between)
+        printf 'gate: surface-screen does not relay --between — the kickoff runs enforcement-surface-screen.sh --between itself, outside the run\n' >&2
+        exit 2 ;;
       # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
       # token is another flag or the `--` separator) selects the default list;
       # the value is never read as a filename, so `--fields --` cannot swallow
@@ -20622,12 +20778,12 @@ gate_main() {
     esac
   done
 
-  if [ -n "$sa_record" ] && [ "$verb" != "seat-apply-preview" ]; then
-    printf 'gate: --record is used only with seat-apply-preview (verb received: %s)\n' "$verb" >&2
+  if [ -n "$sa_record" ] && [ "$verb" != "seat-apply-preview" ] && [ "$verb" != "surface-approval-preview" ]; then
+    printf 'gate: --record is used only with seat-apply-preview and surface-approval-preview (verb received: %s)\n' "$verb" >&2
     exit 2
   fi
-  if [ "$verb" = "seat-apply-preview" ] && [ -z "$sa_record" ]; then
-    printf 'gate: seat-apply-preview needs --record <halt record>\n' >&2
+  if { [ "$verb" = "seat-apply-preview" ] || [ "$verb" = "surface-approval-preview" ]; } && [ -z "$sa_record" ]; then
+    printf 'gate: %s needs --record <halt record>\n' "$verb" >&2
     exit 2
   fi
   if [ "${#ss_flags[@]}" -gt 0 ] && [ "$verb" != "surface-screen" ]; then
@@ -20794,6 +20950,12 @@ gate_main() {
       *) printf 'gate: --nonce is used only with supervise-stage, supervise-apply, metrics-round, halt-report-round and attention-round (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
+  fi
+  # The directory a supervised stage starts in, chosen by the dispatch half and
+  # meaningful to the supervisor alone.
+  if [ -n "$launch_dir" ] && [ "$verb" != "supervise-stage" ]; then
+    printf 'gate: --launch-dir is used only with supervise-stage (verb received: %s)\n' "$verb" >&2
+    exit 2
   fi
   # The same rule for the two closing flags: they decide something on one verb
   # only. Their vocabulary is checked in that verb, after the run is known.
@@ -21441,6 +21603,7 @@ gate_main() {
         || { printf 'gate: supervise-stage requires --segment\n' >&2; exit 2; }
       [ -n "$nonce" ] || { printf 'gate: supervise-stage requires --nonce\n' >&2; exit 2; }
       [ $# -ge 1 ] || { printf 'gate: supervise-stage needs the stage kind and the CLI argv after --\n' >&2; exit 2; }
+      GATE_SUP_LAUNCH_DIR=$launch_dir
       gate_verb_supervise_stage "$alias" "$segment" "$nonce" "$@"
       ;;
     supervise-apply)
@@ -21504,11 +21667,24 @@ gate_main() {
         || { printf 'gate: unclosed-decisions requires --segment\n' >&2; exit 2; }
       unresolved_closure_pending "${DOC:-}" "$segment"
       ;;
+    pr-links)
+      # Reading, not acting: the lines the shift copies under `## 관련 이슈·티켓`,
+      # the same lines the check on `gh pr create` looks for. No ledger row.
+      [ "$segment" != "-" ] && [ -n "$segment" ] \
+        || { printf 'gate: pr-links requires --segment\n' >&2; exit 2; }
+      gate_pr_links "$segment"
+      ;;
     seat-apply-preview)
       # Reading, not acting: the diff a seat apply of the record would commit,
       # built in an isolated object directory, and the question the seat asks.
       # No ledger row, no ref, no object in the common store.
       gate_seat_apply_preview "$sa_record" "$alias"
+      ;;
+    surface-approval-preview)
+      # Reading, not acting: the question line the seat asks a person with for
+      # a `강제 표면 승인` shift record, first and alone on its line, then what
+      # each `**승인 대상**` path changes. No ledger row.
+      gate_surface_approval_preview "$sa_record"
       ;;
     surface-provenance)
       # Reading, not acting: the merge-time provenance check of one segment's
@@ -23087,7 +23263,7 @@ gate_seat_apply_question() {
 }
 
 gate_seat_apply_frame() {
-  # gate_seat_apply_frame <record digest> <question line> <record copy> <option>
+  # gate_seat_apply_frame <record digest> <question line> <record copy> <option> [<preview verb>]
   # — 0 with GATE_SA_FRAME set to the `tool_use_id` when the caller's lineage
   # holds the harness-written answer of an `AskUserQuestion` whose question
   # carried the question line, whose options were the record's labels and whose
@@ -23098,7 +23274,12 @@ gate_seat_apply_frame() {
   # required verbatim: a frame that carries the digest in another question
   # would otherwise pass. The id is spent once — a frame already quoted as some
   # row's `승인 프레임` proves nothing new.
-  local dig="$1" q="$2" rec="$3" opt="$4" shown want r
+  #
+  # The fifth argument names the read verb whose first line the seat asked
+  # with — `seat-apply-preview` by default, `surface-approval-preview` for an
+  # enforcement-surface approval — so the refusal points at the verb that
+  # prints the line this caller compares.
+  local dig="$1" q="$2" rec="$3" opt="$4" verb="${5:-seat-apply-preview}" shown want r
   GATE_SA_FRAME=''
   if gate_transcript_torn; then
     warn "a transcript of this session's lineage ends mid-line, so the person's answer cannot be read yet — answer again once it is written out: $rec"
@@ -23117,11 +23298,11 @@ gate_seat_apply_frame() {
   fi
   case "$GATE_FRAME_KEY" in
     *"$q"*) ;;
-    *) warn "the question the person was shown does not carry the preview's question line verbatim — ask with the line \`seat-apply-preview\` prints"
+    *) warn "the question the person was shown does not carry the preview's question line verbatim — ask with the line \`$verb\` prints"
        return "$GATE_EXIT_RULE" ;;
   esac
   if [ "$GATE_FRAME_ANSWER" != "$opt" ]; then
-    warn "the person answered \`$GATE_FRAME_ANSWER\`, not \`$opt\` — a free answer or another label is not a seat-apply approval"
+    warn "the person answered \`$GATE_FRAME_ANSWER\`, not \`$opt\` — a free answer or another label is not an approval of what \`$verb\` showed"
     return "$GATE_EXIT_RULE"
   fi
   shown=$(printf '%s\n' "$GATE_FRAME_LABELS" | while IFS= read -r r; do [ -n "$r" ] && gate_menu_normalize "$r" && printf '\n'; done | LC_ALL=C sort -u)
@@ -23133,7 +23314,7 @@ gate_seat_apply_frame() {
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     if [ "$(gate_row_field "$r" '승인 프레임')" = "$GATE_FRAME_TID" ]; then
-      warn "the question frame $GATE_FRAME_TID already approved a seat apply, and one frame approves one record"
+      warn "the question frame $GATE_FRAME_TID already approved a halt record (\`$verb\`), and one frame approves one record"
       return "$GATE_EXIT_RULE"
     fi
   done <<EOF
@@ -25363,7 +25544,7 @@ gate_halt_answer_route() {
       [ -n "$st" ] || why="$key 에 segment 행이 없어 교대가 교대 정지 기록의 답을 실행할 세그먼트가 없습니다"
       hsite=$(gate_row_field "$(gate_shift_halt_row_of "$rec" | cut -d: -f2-)" '자리')
       case "$hsite:$opt" in
-        '적용 정산:재실행'|'적용 정산:사람 확인 정산'|'들여온 적용 정산:사람 확인 정산')
+        '적용 정산:재실행'|'적용 정산:사람 확인 정산'|'들여온 적용 정산:사람 확인 정산'|'강제 표면 승인:승인')
           [ "$by" = "사람" ] \
             || why="「${opt}」 는 사람의 답으로만 집행됩니다 — 답한 주체=${by:-(없음)} 인 답은 교대가 실행할 갈래가 없습니다" ;;
       esac
@@ -25566,6 +25747,7 @@ master 수리 불가|없음|수리 런을 띄울 수 없게 한 원인(끄는 �
 게시 대조|없음|게시물이 렌더 결과와 바이트로 다르다 — 남의 PR 에 이미 올라간 리뷰를 그대로 둘지 손으로 고칠지는 그 리뷰를 본 사람만 정한다|다음 교대가 게시하지 않고 그 리뷰를 다시 읽어 렌더 결과와 다시 대조한다
 리뷰 게시 거절|없음|전용 쓰기 자격이 없고 이 호스트의 gh 로그인도 읽히지 않았거나, 실행 계정이 동결한 계정과 다르거나, GitHub 가 게시를 4xx 로 거절했거나, 게시의 결과를 모른다 — 그중 어느 것인지는 관측에 실린 게이트 거절 줄이 말한다|사람이 원인을 고친 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
 보류 리뷰 선점|없음|이 계정의 보류 리뷰가 이미 있다 — 그 보류 리뷰를 제출할지 지울지는 그것을 쓴 사람만 정한다|사람이 그 보류 리뷰를 제출하거나 지운 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
+강제 표면 승인|없음|세그먼트가 바꾼 강제 표면 경로를 보인 내용 그대로 받아들일지는 그 diff 를 본 사람만 정한다|다음 교대가 승인 없이 출처 검사를 다시 잰다 — 사람이 브랜치를 고쳤으면 리뷰를 다시 파견하고, 그대로면 같은 거절에 닿아 이 자리에 다시 선다|승인:사람이 기록의 승인 대상 경로와 항목을 그대로 승인하면 게이트가 경로마다 강제 표면 승인 원장 행을 쓰고, 다음 교대가 이 세그먼트의 리뷰를 다시 파견한다(선머지후리뷰 세그먼트는 거절된 머지 행위를 다시 낸다)
 EOF
 }
 
@@ -25644,6 +25826,9 @@ push원격불일치|세그먼트 park|이 세그먼트의 변경이 원격에 �
 종료 절 근거|불가능으로 정산|이 절이 불가능으로 정산되어 런이 무효화로 끝나고, 그 절이 요구한 결과는 이 런에서 얻지 못합니다
 master 수리 불가|재시도|사람이 원인을 고치기 전에 고르면 CI 대조가 같은 결과를 내어 이 자리에 다시 섭니다
 master 수리 불가|세그먼트 park|이 세그먼트가 깨진 베이스 위에서 머지되지 않은 채 이번 런에서 빠지고, 이 세그먼트에 기대는 세그먼트도 함께 빠집니다
+강제 표면 승인|재시도|사람이 브랜치를 고치지 않고 고르면 출처 검사가 같은 거절을 내어 이 자리에 다시 섭니다
+강제 표면 승인|세그먼트 park|이 세그먼트가 리뷰·머지되지 않은 채 이번 런에서 빠지고, 이 세그먼트에 기대는 세그먼트도 함께 빠집니다
+강제 표면 승인|승인|게이트·훅·지침 같은 강제 표면이 보인 내용 그대로 리뷰와 머지를 지나가므로, 그 변경이 방벽을 약하게 만들면 그대로 베이스에 들어갑니다
 게시 대조|재시도|올라간 리뷰를 사람이 손대지 않았으면 다시 읽어도 같은 바이트라 같은 불일치로 이 자리에 다시 섭니다
 게시 대조|세그먼트 park|렌더와 다른 리뷰가 PR 에 올라간 채 남고, 원장에는 대조 불일치로만 기록됩니다
 리뷰 게시 거절|재시도|사람이 원인을 고치기 전에 고르면 같은 거절에 다시 닿아 이 자리에 다시 섭니다
@@ -30001,11 +30186,372 @@ gate_surface_alias_of() {
   return 1
 }
 
+gate_surface_path_chars_ok() {
+  # gate_surface_path_chars_ok <path> — 0 when the path can stand in a
+  # `강제 표면 승인` row: no `|`, tab, newline or other control character, and
+  # no leading or trailing space. A row splits its fields on ` | ` and the
+  # ledger writer rewrites a `|` inside a value, so such a path would come back
+  # as another path, and no approval could ever name it.
+  case "$1" in
+    ''|*'|'*|*[[:cntrl:]]*|' '*|*' ') return 1 ;;
+  esac
+  return 0
+}
+
+gate_surface_path_verdict() {
+  # gate_surface_path_verdict <path> <eh> <eb> <em> [<approval row>] — the one
+  # place a single enforcement-surface path is judged. <eh>, <eb> and <em> are
+  # the `<mode> <oid>` entries (or `없음`) of the path at the segment HEAD, at
+  # the base end and at the merge base. Prints one of
+  #   `양쪽 변경`  the base and the segment both changed it; nothing lifts this
+  #   `통과`       HEAD carries it as the base end does
+  #   `경로 문자`  no approval row can name the path
+  #   `승인 가능`  an approval row can let it through
+  # and, given an approval row on `승인 가능`, a second tab-separated column:
+  # `맞음` when the row's `베이스 항목` is <eb> and its `승인 항목` is <eh>,
+  # `내용 다름` otherwise.
+  #
+  # EVERY READER CALLS THIS, NOT A COPY OF IT. The provenance check, the kickoff
+  # listing mode of `enforcement-surface-screen.sh` and the rekick carry-over
+  # all judge a path here — the last two by sourcing this file with
+  # `CC_GATE_SOURCE_ONLY=1` — so a listing a person approved and the check that
+  # later reads the approval cannot disagree about the same bytes. It reads no
+  # manifest, no ledger and no repository.
+  local p="$1" eh="$2" eb="$3" em="$4" row="${5:-}"
+  if [ "$eb" != "$em" ] && [ "$eh" != "$eb" ]; then printf '양쪽 변경\n'; return 0; fi
+  if [ "$eh" = "$eb" ]; then printf '통과\n'; return 0; fi
+  if ! gate_surface_path_chars_ok "$p"; then printf '경로 문자\n'; return 0; fi
+  if [ -z "$row" ]; then printf '승인 가능\n'; return 0; fi
+  if [ "$(manifest_row_fields "$row" '베이스 항목')" = "$eb" ] \
+     && [ "$(manifest_row_fields "$row" '승인 항목')" = "$eh" ]; then
+    printf '승인 가능\t맞음\n'
+  else
+    printf '승인 가능\t내용 다름\n'
+  fi
+}
+
+gate_surface_approval_ledger_rows() {
+  # gate_surface_approval_ledger_rows <segment> — this run's own
+  # `강제 표면 승인` ledger rows of the segment that stand: no `출처 런`, and a
+  # `중단 답` row of the same `중단 기록` answering `선택지=승인` with the same
+  # `승인 프레임`.
+  #
+  # ALL OR NOTHING ON THE READING SIDE TOO. The answer writes its approval rows
+  # first and its `중단 답` row last, so a write that stopped between them
+  # leaves rows no answer stands behind. They are not counted until the answer
+  # row is there, and then all of them are.
+  local seg="$1" r rec fr a ok answers
+  answers=$( { gate_rows '중단 답' 2>/dev/null || true; } )
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(manifest_row_fields "$r" '세그먼트')" = "$seg" ] || continue
+    [ -z "$(manifest_row_fields "$r" '출처 런')" ] || continue
+    rec=$(manifest_row_fields "$r" '중단 기록')
+    fr=$(manifest_row_fields "$r" '승인 프레임')
+    [ -n "$rec" ] && [ -n "$fr" ] || continue
+    ok=0
+    while IFS= read -r a; do
+      [ -n "$a" ] || continue
+      [ "$(manifest_row_fields "$a" '중단 기록')" = "$rec" ] || continue
+      [ "$(manifest_row_fields "$a" '선택지')" = '승인' ] || continue
+      [ "$(manifest_row_fields "$a" '승인 프레임')" = "$fr" ] || continue
+      ok=1; break
+    done <<EOF
+$answers
+EOF
+    [ "$ok" = 1 ] && printf '%s\n' "$r"
+  done <<EOF
+$( { gate_rows '강제 표면 승인' 2>/dev/null || true; } )
+EOF
+}
+
+gate_surface_approval_rows() {
+  # gate_surface_approval_rows <segment> — every `강제 표면 승인` row that may
+  # let a path of the segment through: the manifest's kickoff rows and this
+  # run's standing ledger rows, each only when its `브랜치` is the segment's
+  # branch. Whether a row matches the bytes is `gate_surface_path_verdict`'s.
+  local seg="$1" br r
+  br=$(gate_segment_branch "$seg" 2>/dev/null || true)
+  [ -n "$br" ] || return 0
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(manifest_row_fields "$r" '세그먼트')" = "$seg" ] || continue
+    [ "$(manifest_row_fields "$r" '브랜치')" = "$br" ] || continue
+    printf '%s\n' "$r"
+  done <<EOF
+$(manifest_surface_approval_rows 2>/dev/null || true)
+$( [ -n "${LEDGER:-}" ] && [ -f "${LEDGER:-}" ] && gate_surface_approval_ledger_rows "$seg" )
+EOF
+}
+
+gate_surface_verdict_kind() {
+  # gate_surface_verdict_kind <provenance output> — the one verdict a refusal
+  # as a whole carries: `양쪽 변경` when any refused path has it, else
+  # `경로 문자` when any has that, else `승인 가능`. Read from the third column
+  # of `gate_surface_provenance`'s lines, never from the reason text.
+  local out="$1"
+  case $'\n'"$out" in
+    *$'\t양쪽 변경\n'*|*$'\t양쪽 변경') printf '양쪽 변경' ;;
+    *$'\t경로 문자\n'*|*$'\t경로 문자') printf '경로 문자' ;;
+    *) printf '승인 가능' ;;
+  esac
+}
+
+gate_surface_resume_text() {
+  # gate_surface_resume_text <verdict kind> — what a person does about a
+  # refused enforcement surface, chosen by the verdict kind alone. The cone's
+  # `blocked` row, the merge act's refusal and the driver's merge park all
+  # print these bytes, so none of them names a step this run cannot take.
+  case "$1" in
+    '양쪽 변경')
+      printf '%s' "베이스와 세그먼트가 함께 바꾼 강제 표면 경로가 있어 승인으로는 풀리지 않습니다 — 사람이 그 경로를 베이스에 맞춰 세그먼트 브랜치를 고치세요" ;;
+    '경로 문자')
+      printf '%s' "승인 행에 담을 수 없는 문자(\`|\`·탭·개행·제어 문자·앞뒤 공백)가 든 강제 표면 경로가 있어 승인으로는 풀리지 않습니다 — 사람이 세그먼트 브랜치에서 그 경로의 이름을 고치거나 그 변경을 되돌리세요" ;;
+    *)
+      printf '%s' "교대 정지 \`강제 표면 승인\` 기록에 사람이 \`승인\` 으로 답하거나, 다음 킥오프에서 이 세그먼트를 입양하며 그 경로를 승인하세요 — 변경을 원하지 않으면 세그먼트 브랜치에서 되돌려도 됩니다" ;;
+  esac
+}
+
+gate_surface_approval_targets() {
+  # gate_surface_approval_targets <segment> [<alias>] — 0 when the segment's
+  # provenance check refuses (status 3) and every refused path is `승인 가능`,
+  # with GATE_SURFACE_TARGETS set to one `<경로> | <분류> | <베이스 항목> |
+  # <승인 항목>` line per refused path, sorted; otherwise a warning naming why
+  # and GATE_EXIT_RULE. The approval site writes these lines into its record
+  # and the answer measures them again, so the two compare as text.
+  local seg="$1" al="${2:-}" tf rc=0 p cls eb eh v bad=''
+  GATE_SURFACE_TARGETS=''
+  tf=$(mktemp "${TMPDIR:-/tmp}/gate-sp.XXXXXX") || return 1
+  gate_surface_provenance "$seg" "$al" > "$tf" || rc=$?
+  if [ "$rc" != "$GATE_EXIT_RULE" ]; then
+    if [ "$rc" = 0 ]; then
+      warn "세그먼트 $seg 의 강제 표면 출처 검사가 통과합니다 — 승인할 경로가 없습니다"
+    else
+      warn "세그먼트 $seg 의 강제 표면 출처를 판정할 수 없어(rc=$rc) 승인 자리를 세우지 않습니다: $(tr '\t\n' ' ;' < "$tf")"
+    fi
+    rm -f "$tf"
+    return "$GATE_EXIT_RULE"
+  fi
+  rm -f "$tf"
+  while IFS=$'\t' read -r p cls eb eh v; do
+    [ -n "$p" ] || continue
+    [ "$v" = '승인 가능' ] || bad="$bad${bad:+, }$p ($v)"
+    GATE_SURFACE_TARGETS="$GATE_SURFACE_TARGETS$p | $cls | $eb | $eh"$'\n'
+  done <<EOF
+$GATE_SURFACE_DETAIL
+EOF
+  if [ -n "$bad" ]; then
+    GATE_SURFACE_TARGETS=''
+    warn "세그먼트 $seg 의 거절 경로 중 승인으로 풀리지 않는 경로가 있습니다: $bad — $(gate_surface_resume_text "$(gate_surface_verdict_kind "$(printf '%s' "$GATE_SURFACE_DETAIL" | awk -F'\t' 'NF { print $1 "\t-\t" $5 }')")")"
+    return "$GATE_EXIT_RULE"
+  fi
+  GATE_SURFACE_TARGETS=$(printf '%s' "$GATE_SURFACE_TARGETS" | LC_ALL=C sort)
+  [ -n "$GATE_SURFACE_TARGETS" ] || return "$GATE_EXIT_RULE"
+  return 0
+}
+
+gate_surface_record_targets() {
+  # gate_surface_record_targets <record> — the record's `**승인 대상**` values,
+  # one per line, sorted.
+  sed -n 's/^\*\*승인 대상\*\*: //p' "$1" 2>/dev/null | LC_ALL=C sort
+}
+
+gate_surface_open_approval_record() {
+  # gate_surface_open_approval_record <segment> — the path of the segment's
+  # `강제 표면 승인` shift record no `중단 답` row answers yet, or nothing.
+  local seg="$1" r rec answered
+  answered=$( { gate_rows '중단 답' 2>/dev/null || true; } | while IFS= read -r r; do
+    [ -n "$r" ] && manifest_row_fields "$r" '중단 기록' && printf '\n'; done)
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(manifest_row_fields "$r" '앵커 세그먼트')" = "$seg" ] || continue
+    [ "$(manifest_row_fields "$r" '자리')" = '강제 표면 승인' ] || continue
+    rec=$(manifest_row_fields "$r" '중단 기록')
+    [ -n "$rec" ] || continue
+    case "
+$answered
+" in *"
+$rec
+"*) continue ;; esac
+    printf '%s' "$rec"
+    return 0
+  done <<EOF
+$( { gate_rows 'blocked' 2>/dev/null || true; } )
+EOF
+  return 1
+}
+
+gate_surface_approval_question() {
+  # gate_surface_approval_question <record digest> <segment> <targets> — the
+  # question line the seat asks verbatim and the frame check looks for: the
+  # record digest and every `**승인 대상**` path.
+  local paths n
+  paths=$(printf '%s\n' "$3" | LC_ALL=C awk -F ' \\| ' 'NF { printf "%s%s", (n++ ? ", " : ""), $1 }')
+  n=$(printf '%s\n' "$3" | grep -c . || true)
+  printf '기록 %s — 세그먼트 %s 의 강제 표면 변경 %s건을 보인 내용 그대로 승인합니다: %s.' "$1" "$2" "$n" "$paths"
+}
+
+gate_surface_approval_preview() {
+  # gate_surface_approval_preview <record> — the question line the seat asks,
+  # first and alone on its line, then what each `**승인 대상**` path changes:
+  # its class, both entries and the diff between the two blobs, read in the
+  # segment worktree. Nothing is written.
+  local rec="$1" seg first dig tg wt p cls eb eh ob oh
+  case "$rec" in
+    "$RUN_DIR"/halt/shift/*.md) ;;
+    *) warn "--record has to be a shift record under this run's halt directory ($RUN_DIR/halt/shift/): $rec"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+  case "$rec" in */../*|*/./*) warn "--record cannot carry a relative segment: $rec"; return "$GATE_EXIT_VOCAB" ;; esac
+  [ -f "$rec" ] || { warn "the halt record does not exist: $rec"; return "$GATE_EXIT_VOCAB"; }
+  grep -qxF -- '**스텝**: 교대 정지 — 강제 표면 승인' "$rec" \
+    || { warn "the record is not a \`강제 표면 승인\` shift halt: $rec"; return "$GATE_EXIT_RULE"; }
+  first=$(sed -n '1p' "$rec")
+  seg=$(printf '%s' "$first" | sed -n 's/^<!-- cc-pipeline-halt v1;.* stage=\([^;#]*\)[#;].*/\1/p')
+  [ -n "$seg" ] || { warn "the record's header names no stage: $rec"; return "$GATE_EXIT_VOCAB"; }
+  dig=$(shasum -a 256 "$rec" | cut -d' ' -f1)
+  tg=$(gate_surface_record_targets "$rec")
+  [ -n "$tg" ] || { warn "the record carries no \`**승인 대상**\` line: $rec"; return "$GATE_EXIT_RULE"; }
+  gate_surface_approval_question "$dig" "$seg" "$tg"; printf '\n'
+  wt=$(gate_segment_worktree "$seg")
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    eh=${p##* | }; p=${p% | *}
+    eb=${p##* | }; p=${p% | *}
+    cls=${p##* | }; p=${p% | *}
+    printf '\n경로: %s\n분류: %s\n베이스 항목: %s\n승인 항목: %s\n' "$p" "$cls" "$eb" "$eh"
+    ob=${eb##* }; oh=${eh##* }
+    case "$wt" in /*) [ -d "$wt" ] || continue ;; *) continue ;; esac
+    if [ "$eb" != '없음' ] && [ "$eh" != '없음' ]; then
+      (cd "$wt" && git -c core.quotePath=false diff --no-color "$ob" "$oh" 2>/dev/null) || true
+    elif [ "$eh" != '없음' ]; then
+      printf '%s\n' '(새 파일)'
+      (cd "$wt" && git cat-file -p "$oh" 2>/dev/null) || true
+    else
+      printf '%s\n' '(삭제)'
+    fi
+  done <<EOF
+$tg
+EOF
+}
+
+gate_surface_approval_rows_each() {
+  # gate_surface_approval_rows_each <mode> <segment> <branch> <record> <digest>
+  # <frame> <targets> — with <mode> `measure`, 0 when every `강제 표면 승인`
+  # ledger row the answer would write fits the row cap, else the first path
+  # that does not on stdout and 1; with <mode> `write`, append them in order.
+  local mode="$1" seg="$2" br="$3" rec="$4" dig="$5" fr="$6" tg="$7" p cls eb eh
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    eh=${p##* | }; p=${p% | *}
+    eb=${p##* | }; p=${p% | *}
+    cls=${p##* | }; p=${p% | *}
+    set -- "세그먼트=$seg" "브랜치=$br" "경로=$p" "분류=$cls" "베이스 항목=$eb" "승인 항목=$eh" \
+      '근거=교대 정지 승인' "중단 기록=$rec" "기록 다이제스트=$dig" "승인 프레임=$fr"
+    if [ "$mode" = measure ]; then
+      [ "$(gate_row_projected_bytes '강제 표면 승인' "$@")" -le "$GATE_ROW_MAX" ] || { printf '%s' "$p"; return 1; }
+    else
+      gate_append '강제 표면 승인' "$@" || return 1
+    fi
+  done <<EOF
+$tg
+EOF
+  return 0
+}
+
+gate_surface_approval_status() {
+  # gate_surface_approval_status <segment> — `<record>\t<status>` for the
+  # segment's last `강제 표면 승인` shift record: `미답`, `세그먼트 park`, or the
+  # answered option's name followed by ` 이행 전` while no later act of the
+  # next shift took it up. `-\t기록 없음` when the segment has none.
+  local seg="$1" r rec='' ar ln opt st
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$seg" ] || continue
+    [ "$(gate_row_field "$r" '자리')" = '강제 표면 승인' ] || continue
+    rec=$(gate_row_field "$r" '중단 기록')
+  done <<EOF
+$( { gate_rows 'blocked' || true; } )
+EOF
+  if [ -z "$rec" ]; then printf '%s\t%s\n' '-' '기록 없음'; return 0; fi
+  ar=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+        | { grep -F "| 중단 기록=$rec |" || true; } | tail -1)
+  if [ -z "$ar" ]; then printf '%s\t%s\n' "$rec" '미답'; return 0; fi
+  ln=${ar%%:*}
+  opt=$(gate_row_field "${ar#*:}" '선택지')
+  st=$opt
+  if [ "$opt" != '세그먼트 park' ] && ! gate_halt_answer_spent "$LEDGER" "$seg" "$ln"; then
+    st="$opt 이행 전"
+  fi
+  printf '%s\t%s\n' "$rec" "$st"
+}
+
+gate_surface_unapproved_report() {
+  # gate_surface_unapproved_report — the morning report's enforcement-surface
+  # entries, one `<label>\t<text>` line each, for every segment of this run that
+  # did not land. A segment whose worktree is there is measured again: status 3
+  # is `강제 표면 미승인` with each refused path, its class and reason, the
+  # person's next step for its verdict kind and the last approval record's
+  # state; status 2 is `강제 표면 출처 판정 불가`. A segment whose worktree is
+  # gone cannot be measured — the check passes silently there — so its entry
+  # rests on what the run recorded, in this order: its last provenance block
+  # row (the verdict kind it carries), the `**승인 대상**` lines of its last
+  # approval record, the driver's merge park. With none of them, no entry.
+  # Writes nothing.
+  local seg wt rc out st rec stat why ps br pr vk
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  for seg in $( { gate_rows 'segment' || true; } | gate_row_ids | LC_ALL=C sort -u); do
+    [ -z "$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" | gate_rows_field_eq '상태' '머지됨')" ] || continue
+    st=$(gate_surface_approval_status "$seg")
+    rec=${st%%$'\t'*}; stat=${st#*$'\t'}
+    wt=$(gate_segment_worktree "$seg")
+    if [ -n "$wt" ] && [ "$wt" != '-' ] && [ -d "$wt" ]; then
+      rc=0
+      out=$(gate_surface_provenance "$seg" 2>/dev/null) || rc=$?
+      case "$rc" in
+        0) continue ;;
+        "$GATE_EXIT_RULE")
+          ps=$(printf '%s\n' "$out" | LC_ALL=C awk -F'\t' 'NF { printf "%s%s (%s)", (n++ ? "; " : ""), $1, $2 }')
+          printf '%s\t%s — %s — %s — 승인 기록 %s (%s)\n' '강제 표면 미승인' "$seg" "$ps" \
+            "$(gate_surface_resume_text "$(gate_surface_verdict_kind "$out")")" "$rec" "$stat" ;;
+        *)
+          printf '%s\t%s — rc=%s — %s\n' '강제 표면 출처 판정 불가' "$seg" "$rc" \
+            "$(printf '%s' "${out:-(출력 없음)}" | tr '\t\n' ' ;')" ;;
+      esac
+      continue
+    fi
+    br=$( { gate_rows 'blocked' || true; } | gate_rows_field_eq '앵커 세그먼트' "$seg" \
+          | gate_rows_field_eq '사유' '강제 표면이 좌석 적용 밖에서 바뀜' | tail -1)
+    if [ -n "$br" ]; then
+      vk=$(gate_row_field "$br" '판정')
+      printf '%s\t%s — 워크트리 없음, 막힘 행 기준(판정 %s) — %s — 승인 기록 %s (%s)\n' '강제 표면 미승인' "$seg" \
+        "${vk:-승인 가능}" "$(gate_surface_resume_text "${vk:-승인 가능}")" "$rec" "$stat"
+      continue
+    fi
+    if [ "$rec" != '-' ] && [ -f "$rec" ]; then
+      ps=$(gate_surface_record_targets "$rec" | LC_ALL=C awk -F ' \\| ' 'NF { printf "%s%s (%s)", (n++ ? "; " : ""), $1, $2 }')
+      printf '%s\t%s — 워크트리 없음, 승인 기록 기준 — %s — %s — 승인 기록 %s (%s)\n' '강제 표면 미승인' "$seg" \
+        "${ps:-(승인 대상 없음)}" "$(gate_surface_resume_text '승인 가능')" "$rec" "$stat"
+      continue
+    fi
+    pr=$( { gate_rows 'blocked' || true; } | gate_rows_field_eq '대상' "$seg" \
+          | gate_rows_field_eq '사유' '머지 직전 강제 표면 출처' | tail -1)
+    if [ -n "$pr" ]; then
+      why=$(gate_row_field "$pr" '관측')
+      printf '%s\t%s — 워크트리 없음, 드라이버 머지 park 기준 — %s — %s\n' '강제 표면 미승인' "$seg" \
+        "$why" "$(gate_row_field "$pr" '재개 명령')"
+    fi
+  done
+  return 0
+}
+
 gate_surface_provenance() {
   # gate_surface_provenance <segment> [<alias>] — 0 when every enforcement-surface
-  # path the segment branch changed stands as this run's seat applies left it or
-  # as the base has it; otherwise one `<path>\t<why>` line per path that does
-  # not, and status 3. Status 2, with one `-\t<why>` line, when the check cannot
+  # path the segment branch changed stands as this run's seat applies left it,
+  # as the base has it, or as a `강제 표면 승인` row approved it; otherwise one
+  # `<path>\t<why>\t<verdict kind>` line per path that does not, and status 3.
+  # The verdict kind is `gate_surface_path_verdict`'s: `양쪽 변경`, `승인 가능`
+  # or `경로 문자`. The first two columns are what they always were, so a
+  # reader of `<path>\t<why>` still reads them. Status 2, with one `-\t<why>` line, when the check cannot
   # be decided: the classifier, the merge base or the changed paths could not be
   # read. Every caller refuses on both, but only 3 says that a surface changed —
   # a reader that wrote "changed outside a seat apply" for an unreadable branch
@@ -30038,11 +30584,30 @@ gate_surface_provenance() {
   # cannot be found refuses, because what it covered can no longer be shown.
   # Rows carried in by an adoption (`출처 런`) are not counted — a seat apply of
   # another run is that run's trust, not this one's.
+  #
+  # A REVIEW-ONLY SEGMENT AT ITS PINNED HEAD IS NOT CHECKED. Its worktree is a
+  # detached checkout of someone else's pull request at the `고정 헤드` the
+  # planning row recorded, so the surfaces that pull request changed are what
+  # the review reads, not changes this run would have to approve. The check is
+  # skipped only while the worktree HEAD equals that pin and both are readable:
+  # once anything moves the HEAD, the exemption is off and the ordinary check
+  # refuses again. Every caller gets the same answer because it lives here.
   local seg="$1" al="${2:-}" wt bref bend mb mbrc=0 lst rc=0 out='' line cls p eh eb em s es found ok
-  local shas='' r row tch anchored
+  local shas='' r row tch anchored rohead ropin v why apr ar am ad
+  # GATE_SURFACE_DETAIL — one `<path>\t<class>\t<eb>\t<eh>\t<verdict>` line per
+  # refused path, for a caller that runs this in the current shell (the
+  # approval site and its answer); a `$(…)` caller never sees it.
+  GATE_SURFACE_DETAIL=''
   wt=$(gate_segment_worktree "$seg")
   case "$wt" in ''|-) return 0 ;; esac
   [ -d "$wt" ] || return 0
+  if gate_segment_review_only "$seg"; then
+    rohead=$(cd "$wt" && git rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null) || rohead=''
+    ropin=$(gate_segment_kept_field "$seg" '고정 헤드')
+    if [ -n "$rohead" ] && [ -n "$ropin" ] && [ "$rohead" = "$ropin" ]; then
+      return 0
+    fi
+  fi
   if ! gate_es true; then
     printf '%s\t%s\n' '-' '분류 라이브러리를 읽을 수 없어 판정 불가'
     return 2
@@ -30114,16 +30679,20 @@ gate_surface_provenance() {
   done <<EOF
 $( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } )
 EOF
+  apr=$(gate_surface_approval_rows "$seg")
   while IFS=$'\t' read -r cls p; do
     [ -n "$p" ] || continue
     eh=$(cd "$wt" && gate__tree_entry HEAD "$p")
     eb=$(cd "$wt" && gate__tree_entry "$bend" "$p")
     em=$(cd "$wt" && gate__tree_entry "$mb" "$p")
-    if [ "$eb" != "$em" ] && [ "$eh" != "$eb" ]; then
-      out="$out$p"$'\t'"베이스와 세그먼트 양쪽에서 바뀜 ($cls)"$'\n'
-      continue
-    fi
-    [ "$eh" = "$eb" ] && continue
+    v=$(gate_surface_path_verdict "$p" "$eh" "$eb" "$em")
+    case "$v" in
+      '양쪽 변경')
+        out="$out$p"$'\t'"베이스와 세그먼트 양쪽에서 바뀜 ($cls)"$'\t양쪽 변경\n'
+        GATE_SURFACE_DETAIL="$GATE_SURFACE_DETAIL$p"$'\t'"$cls"$'\t'"$eb"$'\t'"$eh"$'\t양쪽 변경\n'
+        continue ;;
+      '통과') continue ;;
+    esac
     # A SEAT COMMIT IS AN APPROVAL OF BYTES OVER ONE BASE ENTRY. `anchored` says
     # some seat commit that touched the path was made over the entry the base end
     # holds now; when none was, the base changed the path under the approval,
@@ -30147,18 +30716,44 @@ EOF
     done <<EOF
 $shas
 EOF
+    why=''
     case "$found" in
-      '') out="$out$p"$'\t'"좌석 적용 커밋 없이 바뀜 ($cls)"$'\n' ;;
-      '!'*) out="$out$p"$'\t'"좌석 커밋 ${found#!} 을 찾을 수 없음 ($cls)"$'\n' ;;
+      '') why="좌석 적용 커밋 없이 바뀜 ($cls)" ;;
+      '!'*) why="좌석 커밋 ${found#!} 을 찾을 수 없음 ($cls)" ;;
       *)
         es=$(cd "$wt" && gate__tree_entry "$found" "$p")
         [ "$es" = "$eh" ] && ok=1
         if [ "$ok" != 1 ]; then
-          out="$out$p"$'\t'"마지막 좌석 커밋 ${found} 과 다름 ($cls)"$'\n'
+          why="마지막 좌석 커밋 ${found} 과 다름 ($cls)"
         elif [ "$anchored" != 1 ]; then
-          out="$out$p"$'\t'"베이스와 세그먼트 양쪽에서 바뀜 — 좌석 커밋이 지금의 베이스 위에서 만들어지지 않음 ($cls)"$'\n'
+          # The base end equals the merge base here (the verdict was not
+          # `양쪽 변경`), so the base did not change the path: an approval can
+          # still let it through, and its verdict stays `승인 가능`.
+          why="베이스와 세그먼트 양쪽에서 바뀜 — 좌석 커밋이 지금의 베이스 위에서 만들어지지 않음 ($cls)"
         fi ;;
     esac
+    [ -n "$why" ] || continue
+    # AN APPROVAL ROW IS THE BRANCH AFTER THE SEAT COMMIT. It binds the path to
+    # the base entry and the HEAD entry a person was shown; any row of the path
+    # that matches both lets it through, and when rows exist but none matches,
+    # the refusal says so.
+    if [ "$v" = '승인 가능' ] && [ -n "$apr" ]; then
+      am=0; ad=0
+      while IFS= read -r ar; do
+        [ -n "$ar" ] || continue
+        [ "$(manifest_row_fields "$ar" '경로')" = "$p" ] || continue
+        case "$(gate_surface_path_verdict "$p" "$eh" "$eb" "$em" "$ar")" in
+          *$'\t맞음') am=1; break ;;
+          *) ad=1 ;;
+        esac
+      done <<EOF
+$apr
+EOF
+      [ "$am" = 1 ] && continue
+      [ "$ad" = 1 ] && why="$why — 승인된 내용과 다름"
+    fi
+    out="$out$p"$'\t'"$why"$'\t'"$v"$'\n'
+    GATE_SURFACE_DETAIL="$GATE_SURFACE_DETAIL$p"$'\t'"$cls"$'\t'"$eb"$'\t'"$eh"$'\t'"$v"$'\n'
   done <<EOF
 $lst
 EOF
@@ -30184,16 +30779,22 @@ gate_surface_provenance_hold() {
   # shift-halt array, and a read that appended a `blocked` row would change the
   # ledger it reports on; with `GATE_CONE_MEMBERS_ONLY=1` the answer is the same
   # and nothing is written or warned.
-  local seg="$1" out rc=0 why='강제 표면이 좌석 적용 밖에서 바뀜'
+  #
+  # THE ROW IS KEYED ON THE VERDICT TOO. Its `재개 명령` is fixed when it is
+  # first written, so a base that moves the refusal from `승인 가능` to
+  # `양쪽 변경` writes a new row with the text that verdict calls for; a reader
+  # takes the segment's last row.
+  local seg="$1" out rc=0 why='강제 표면이 좌석 적용 밖에서 바뀜' vk
   out=$(gate_surface_provenance "$seg") || rc=$?
   [ "$rc" = "$GATE_EXIT_RULE" ] || return 1
   [ "${GATE_CONE_MEMBERS_ONLY:-0}" = 1 ] && return 0
-  if ! gate_has_row 'blocked' "앵커 세그먼트=$seg" "사유=$why"; then
+  vk=$(gate_surface_verdict_kind "$out")
+  if ! gate_has_row 'blocked' "앵커 세그먼트=$seg" "사유=$why" "판정=$vk"; then
     gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=cone" "원인=막힘" \
-      "앵커 세그먼트=$seg" "사유=$why" \
+      "앵커 세그먼트=$seg" "사유=$why" "판정=$vk" \
       "근거=$(gate_row_safe "$(printf '%s' "$out" | tr '\t\n' ' ;')" 300)" \
       "관측=$(now_iso)" \
-      "재개 명령=그 경로의 편집을 \`Step 3 강제 표면 좌석 적용\` 기록으로 다시 적용하거나 세그먼트 브랜치에서 되돌리세요" || true
+      "재개 명령=$(gate_surface_resume_text "$vk")" || true
   fi
   warn "segment $seg changed an enforcement surface outside a seat apply — it stays inside the cone: $(printf '%s' "$out" | tr '\t\n' ' ;')"
   return 0
@@ -30220,8 +30821,8 @@ gate_check_surface_provenance() {
     warn "repair the segment worktree, its HEAD or the plugin's classifier library and issue the same merge again"
     return "$GATE_EXIT_RULE"
   fi
-  warn "rule refused: segment $seg changed an enforcement surface that no seat apply of this run left as it is, and the base does not have it either — $(printf '%s' "$out" | tr '\t\n' ' ;')"
-  warn "apply the edit through a \`Step 3 강제 표면 좌석 적용\` halt record a person approves, or revert it on the segment branch; a path both the base and the segment changed goes to a person"
+  warn "rule refused: segment $seg changed an enforcement surface that no seat apply of this run and no \`강제 표면 승인\` row lets through, and the base does not have it either — $(printf '%s' "$out" | tr '\t\n' ' ;')"
+  warn "$(gate_surface_resume_text "$(gate_surface_verdict_kind "$out")")"
   return "$GATE_EXIT_RULE"
 }
 
@@ -31612,6 +32213,32 @@ gate_argv_visual_helper_write() {
   )
 }
 
+gate_argv_visual_account_rundir() {
+  # gate_argv_visual_account_rundir <argv...> — 0 when argv runs
+  # `visual-config.sh account` and some word of it assigns
+  # `CC_PIPELINE_RUN_DIR` (`env CC_PIPELINE_RUN_DIR=… <helper> account`, a
+  # leading `CC_PIPELINE_RUN_DIR=…` before the helper, or the same inside an
+  # interpreter's string). `account` reads the account it expects from the
+  # run-local migration record under that directory, so pointing it at another
+  # directory lets the stage choose the account it is checked against. Read
+  # the same quote-blind way as `gate_argv_visual_helper_write`, so a false hit
+  # refuses, never opens.
+  gate_argv_visual_helper_write "$@" || return 1
+  (
+    set -f
+    local w t prev='' acct=1 asg=1
+    for w in "$@"; do
+      w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
+      for t in $w; do
+        case "${prev##*/}:$t" in visual-config.sh:account) acct=0 ;; esac
+        case "$t" in CC_PIPELINE_RUN_DIR=*) asg=0 ;; esac
+        prev=$t
+      done
+    done
+    [ "$acct" = 0 ] && [ "$asg" = 0 ]
+  )
+}
+
 gate_own_helper() {
   # gate_own_helper <argv0> — 0 when argv0 is the file of that name beside this
   # gate, compared as physical paths. A bare name is what the act's PATH finds,
@@ -32991,6 +33618,24 @@ gate_rundir_write_guard() {
         # an argument. Allowing the directory opens nothing beyond `halt/*`, which
         # is already allowed, and `halt/*/*` is refused above.
         halt) continue ;;
+        # THE CANVAS MIGRATION PROGRESS FILES, ONE LEVEL DOWN ONLY. After an
+        # account migration the visual publish stage records how far the
+        # canvases moved in `visual-migration/<s>.md`, and the gate reads its
+        # `**완료**: 예` line to decide whether the document-level record is
+        # written. The directory itself is listed for `mkdir -p`; anything deeper
+        # is refused, and so is a leaf that is a symbolic link, which would let
+        # the stage's write land on a file the gate reads elsewhere. Safe on the
+        # witness exception's terms — absent when the run opens, read by no
+        # enforcement-surface check. `visual-lane`, the run-local migration
+        # record, is not listed: the gate writes it and the stage reads it.
+        visual-migration/*/*) ;;
+        visual-migration/*)
+          if [ -L "$rdn/$rel" ] || [ -L "$rdln/$rel" ]; then
+            warn "rule refused: run directory write — a migration progress file that is a symbolic link is not written through: $a"
+            return "$GATE_EXIT_RULE"
+          fi
+          continue ;;
+        visual-migration) continue ;;
         # THE DESIGN DOCUMENT LOCK. Every stage that edits the design document —
         # the implementation arm's token writes, the audit's reconciliation pass
         # and the re-convergence pass — wraps the write in `lockf -k -t 0
@@ -33912,6 +34557,19 @@ gate_sibling_record_refuse() {
   warn "a rekick copies the predecessor's manifest and grant record byte for byte, so a run that edits a sibling's record writes the authorization of the run that comes after it"
 }
 
+gate_visual_lane_doc_spelling() {
+  # gate_visual_lane_doc_spelling <path> — 0 when the path is the
+  # document-level migration record directory `docs/visual-lane` or lies under
+  # it. Only the gate writes there, when it closes a visual publish stage whose
+  # canvas migration finished; a stage that wrote it would choose the lane the
+  # next run of the same document pins.
+  gate_nocase_glob "/$1" '*/docs/visual-lane/*' || gate_nocase_glob "/$1" '*/docs/visual-lane'
+}
+
+gate_visual_lane_doc_refuse() {
+  warn "rule refused: the document-level migration record is the gate's to write, when it closes a visual publish stage whose canvas migration finished — a stage does not write under docs/visual-lane/: $1"
+}
+
 gate_sibling_record_write_guard() {
   # gate_sibling_record_write_guard <매니페스트 디렉터리> <그 물리 철자> <argv...>
   #
@@ -33998,6 +34656,9 @@ gate_sibling_record_write_guard() {
       if gate_nocase_contains "$joinedn" 'pipeline-grant/'; then
         gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE"
       fi
+      if gate_nocase_contains "$joinedn" 'docs/visual-lane'; then
+        gate_visual_lane_doc_refuse "$joinedn"; return "$GATE_EXIT_RULE"
+      fi
       if [ -n "$gdir" ]; then
         gdirn=$(gate_path_spelling "$gdir")
         gdirpn=$(gate_path_spelling "$gdirp")
@@ -34076,6 +34737,14 @@ gate_sibling_record_write_guard() {
       if [ "$i" = "$GATE_LEAF_UNRESOLVED" ]; then
         gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
       fi
+      # The same final-link walk, for the document-level migration record.
+      x=$(gate_leaf_spelling "$ap" 2>/dev/null) || x=''
+      if [ -n "$x" ] && gate_visual_lane_doc_spelling "$x"; then
+        gate_visual_lane_doc_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
+    fi
+    if gate_visual_lane_doc_spelling "$a" || gate_visual_lane_doc_spelling "$ap"; then
+      gate_visual_lane_doc_refuse "$a"; return "$GATE_EXIT_RULE"
     fi
     # THE DIRECTORY ITSELF AS A DESTINATION, remembered and judged after every
     # candidate is seen — the record-suffixed source may come before or after.
@@ -35240,7 +35909,8 @@ gate_record_row() {
   # named in argv would not even have a single right answer to be checked
   # against. `limit-cleared` is a statement about the run's account window, not
   # about a part of the run, so it is exempt on the ground `blocked` is.
-  # `reentry` is a boot of the machine the whole run was cut by, so it is too.
+  # `reentry` is a boot of the machine the whole run was cut by, so it is too,
+  # and `seat-limit-recall` is the seat lane's limit, a statement about the run.
   # `shift-halt` checks its own key: a clause's evidence request takes
   # `--segment -` and the arm builds the key, and every other site still
   # refuses a key with no segment row.
@@ -35248,6 +35918,7 @@ gate_record_row() {
      && [ "$kind" != "obligation" ] && [ "$kind" != "handoff" ] \
      && [ "$kind" != "obligation-done" ] && [ "$kind" != "obligation-drop" ] \
      && [ "$kind" != "limit-cleared" ] && [ "$kind" != "reentry" ] \
+     && [ "$kind" != "seat-limit-recall" ] \
      && [ "$kind" != "shift-halt" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "a $kind row needs --segment"
@@ -37429,6 +38100,42 @@ EOF
         "사유=$rwhy" "레이블=$rlabel"
       log "재진입 기록 — 부팅 ${rboot:--} · 사유 $rwhy · 레이블 $rlabel"
       ;;
+    seat-limit-recall)
+      # THE FLEET TICK'S SEAT-LIMIT TRIGGER WRITES THIS ROW, `좌석 한도 재호출`,
+      # in the same tick and before the `router-shift` chain it starts. It is
+      # not a `재진입`: no boot cut the run, so the re-attach base and the
+      # `재진입` vocabulary stay as they are. Same callers as `reentry`: a shift
+      # or a stage writing it would be a run calling itself in the seat's
+      # place.
+      if [ -n "$(gate_shift_self_ordinal)" ] || cc_caller_is_stage \
+         || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+        warn "a \`좌석 한도 재호출\` row is written by the fleet tick only — a shift or a stage cannot write it"
+        return "$GATE_EXIT_RULE"
+      fi
+      # `사유`, `레이블` AND `열쇠` FROM ARGV; the gate stamps the time. `열쇠`
+      # is the gap the tick handled: the latest `handoff` row's time and the
+      # resume time of the latest `결과=대기` `계정 이전` row after it, or `-`.
+      local sf sk swhy slabel skey sat
+      for sf in "$@"; do
+        sk="${sf%%=*}"
+        case "$sk" in 사유|레이블|열쇠) continue ;; esac
+        warn "a \`좌석 한도 재호출\` row takes \`사유\`, \`레이블\` and \`열쇠\` and nothing else from argv: ${sk} — \`기록 시각\` is the gate's"
+        return "$GATE_EXIT_VOCAB"
+      done
+      swhy=$(gate_field_of '사유' "$@")
+      case "$swhy" in
+        대기|상한) : ;;
+        *) warn "the \`사유\` of a \`좌석 한도 재호출\` row is the reason the tick issues: \`대기\` \`상한\` (received: ${swhy:-(none)})"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      slabel=$(gate_row_safe "$(gate_field_of '레이블' "$@")" 80)
+      [ -n "$slabel" ] || { warn "a \`좌석 한도 재호출\` row needs \`레이블\` — the dispatch label that ran it"; return "$GATE_EXIT_VOCAB"; }
+      skey=$(gate_row_safe "$(gate_field_of '열쇠' "$@")" 80)
+      [ -n "$skey" ] || { warn "a \`좌석 한도 재호출\` row needs \`열쇠\` — the gap key the tick handled"; return "$GATE_EXIT_VOCAB"; }
+      sat=$(now_iso)
+      gate_append '좌석 한도 재호출' "사유=$swhy" "레이블=$slabel" "열쇠=$skey" "기록 시각=$sat"
+      log "좌석 한도 재호출 기록 — 사유 $swhy · 레이블 $slabel · 열쇠 $skey"
+      ;;
     halt-answer)
       # THE SEAT'S WAY TO CARRY A PERSON'S ANSWER TO A HALT RECORD INTO THE RUN.
       # A stage that reached a question only a person can answer writes a halt
@@ -37980,6 +38687,39 @@ EOF
       # The route `외부-보류` is stamped on the row: the consumer, the park's
       # copy of the judgment and the hold predicate read the token alone.
       [ "$GATE_HALT_ROUTE_ID" != "외부-보류" ] || hxr='외부-보류'
+      # AN ENFORCEMENT-SURFACE APPROVAL IS A PERSON'S, PROVED BY THE FRAME, AND
+      # IT COVERS EXACTLY WHAT WAS SHOWN. The route above already refused every
+      # answerer but a person. The frame proves the person was asked with the
+      # line `surface-approval-preview` prints; the provenance check is run
+      # again and its refused paths and entries have to be the record's
+      # `**승인 대상**` lines byte for byte, so a branch that moved after the
+      # record was written is refused. Every row the answer writes is measured
+      # first, and none is written when one does not fit.
+      local hfs='' hfsq='' hfstg='' hfsdig='' hfsbr='' hfslong
+      if [ -n "$hsrow" ] && [ "$hopt" = "승인" ] \
+         && [ "$(gate_row_field "${hsrow#*:}" '자리')" = "강제 표면 승인" ]; then
+        hfsdig=$(shasum -a 256 "$hrec" | cut -d' ' -f1)
+        hfstg=$(gate_surface_record_targets "$hrec")
+        [ -n "$hfstg" ] || { warn "the record carries no \`**승인 대상**\` line, so there is nothing to approve: $hrec"; return "$GATE_EXIT_RULE"; }
+        hfsq=$(gate_surface_approval_question "$hfsdig" "$seg" "$hfstg")
+        gate_seat_apply_frame "$hfsdig" "$hfsq" "$hrec" "$hopt" surface-approval-preview || return "$?"
+        hsafr=$GATE_SA_FRAME
+        gate_surface_approval_targets "$seg" "$alias" || {
+          warn "기록 뒤 세그먼트 $seg 의 강제 표면 판정이 바뀌어 이 승인을 기록하지 않습니다: $hrec"
+          return "$GATE_EXIT_RULE"; }
+        if [ "$GATE_SURFACE_TARGETS" != "$hfstg" ]; then
+          warn "기록 뒤 세그먼트 $seg 의 브랜치나 베이스가 움직여 거절 경로·항목이 기록의 승인 대상과 다릅니다 — 이 승인을 기록하지 않습니다: $hrec"
+          return "$GATE_EXIT_RULE"
+        fi
+        hfsbr=$(gate_segment_branch "$seg")
+        [ -n "$hfsbr" ] || { warn "세그먼트 $seg 의 브랜치를 읽을 수 없어 승인 행을 쓸 수 없습니다"; return "$GATE_EXIT_RULE"; }
+        if ! hfslong=$(gate_surface_approval_rows_each measure "$seg" "$hfsbr" "$hrec" "$hfsdig" "$hsafr" "$hfstg"); then
+          warn "경로 ${hfslong} 의 \`강제 표면 승인\` 행이 원장 행 상한(${GATE_ROW_MAX}바이트)을 넘어 아무 행도 쓰지 않습니다 — 기록은 미답으로 남습니다: \`세그먼트 park\` 로 답하거나 브랜치에서 그 경로를 고치세요"
+          return "$GATE_EXIT_RULE"
+        fi
+        hkinds='강제 표면 승인'
+        hfs=1
+      fi
       if [ "$hby" != "사람" ]; then
         if [ "$hby" = "교대" ]; then
           log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
@@ -38073,8 +38813,18 @@ EOF
             return "$GATE_EXIT_RULE"
           fi
         else
+          # THE APPROVAL ROWS FIRST, THE ANSWER ROW LAST. A write that stops in
+          # between leaves rows no `중단 답` stands behind, which the reader does
+          # not count; the record stays unanswered and its frame unspent, and
+          # answering it again writes every row again.
+          if [ -n "$hfs" ]; then
+            gate_surface_approval_rows_each write "$seg" "$hfsbr" "$hrec" "$hfsdig" "$hsafr" "$hfstg" || {
+              warn "\`강제 표면 승인\` 행을 다 쓰지 못했습니다 — \`중단 답\` 을 쓰지 않으므로 기록은 미답으로 남습니다: $hrec"
+              return "$GATE_EXIT_RULE"; }
+          fi
           gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
             "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
+            ${hsafr:+"승인 프레임=$hsafr"} \
             ${hdm:+"초안 채택=$hdm"} ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} \
             ${hxs:+"판정 신호=$hxs"} ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \
             "기록 다이제스트=$hdig" \
@@ -38191,6 +38941,23 @@ EOF
           warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
           return "$GATE_EXIT_VOCAB"; }
       fi
+      # AN APPROVAL SITE STANDS ONLY ON WHAT THE GATE MEASURES NOW. The shift
+      # says the review or the merge was refused; the gate runs the provenance
+      # check itself and writes the record only when it refuses and every
+      # refused path is one an approval can let through. The paths and entries
+      # the person approves are the gate's, written as `**승인 대상**` lines.
+      # One unanswered record per segment: a second would ask the same person
+      # the same thing while the first still waits.
+      local stg='' sopen
+      if [ "$ssite" = "강제 표면 승인" ]; then
+        sopen=$(gate_surface_open_approval_record "$seg") || sopen=''
+        if [ -n "$sopen" ]; then
+          warn "세그먼트 $seg 에는 아직 답이 없는 \`강제 표면 승인\` 기록이 있습니다 — 새 기록을 쓰지 않습니다: $sopen"
+          return "$GATE_EXIT_RULE"
+        fi
+        gate_surface_approval_targets "$seg" "$alias" || return "$?"
+        stg=$GATE_SURFACE_TARGETS
+      fi
       # A SEGMENT WHOSE ANSWER IS CARRIED OVER IS NOT STOPPED AGAIN. The person
       # already answered its halt and the next run takes the answer up; a shift
       # record here would put a second question about the same stop before them.
@@ -38270,6 +39037,7 @@ EOF
         [ -z "$sresult" ] || printf '**실행 결과**: %s\n' "$sresult"
         [ -z "$sdraft" ] || printf '**명령 초안**: %s\n' "$(printf '%s' "$sdraft" | tr '\n\r' '  ')"
         [ -z "$sexpect" ] || printf '**기대 결과**: %s\n' "$(printf '%s' "$sexpect" | tr '\n\r' '  ')"
+        [ -z "$stg" ] || printf '%s\n' "$stg" | sed '/^$/d;s/^/**승인 대상**: /'
         printf '**선택지**:\n%s\n' "$sopts"
         if [ -n "$srec" ]; then
           printf '**추천**: `%s` — 추천 근거의 인용이 이 선택지를 정한다\n' "$srec"
@@ -40219,9 +40987,10 @@ gate_stage_instructions() {
   # the target's instruction chain: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` of
   # every ancestor of the target's MAIN worktree, root first, whichever exist.
   #
-  # THE MAIN WORKTREE, NOT THE STAGE'S. The launchers never `cd` into a stage
-  # worktree (the automatic loader read the router's cwd chain, which for a
-  # non-home target was not even the target's), a review of a PR that edits
+  # THE MAIN WORKTREE, NOT THE STAGE'S. The chain does not follow the directory
+  # a stage starts in (`gate_stage_launch_dir`: the dispatching directory for
+  # the home target, a checkout of the target otherwise, which may be a
+  # segment's worktree), a review of a PR that edits
   # `CLAUDE.md` must not be judged by the rule that PR proposes, and orderbook's
   # repository-root file is gitignored and exists only in the main worktree. The
   # chain is the ANCESTOR chain because that is where the orderbook rules live —
@@ -40422,10 +41191,11 @@ gate_stage_instructions() {
   done < <(gate_ancestor_dirs "$rootp")
 
   # THE TARGET-HOOK PARAGRAPH, decided at the root the launched session starts
-  # at. The launch does not move the directory, so that root is this process's
-  # own; when it carries a Bash hook of its own, the session is told how a
-  # remote command gets past both hooks. Members do not issue remote commands
-  # and their file goes without it.
+  # at. The dispatch runs this synthesis inside the launch directory it chose
+  # (`gate_stage_launch_dir`), so that root is this process's own; when it
+  # carries a Bash hook of its own, the session is told how a remote command
+  # gets past both hooks. Members do not issue remote commands and their file
+  # goes without it.
   local hooked=0
   gate_target_has_bash_hook "$(pwd -P)" && hooked=1
 
@@ -40664,6 +41434,90 @@ gate_audit_worktree_path() {
   printf '%s%s%s-%s' "$main" "$WORKTREE_INFIX" "$RUN_ID" "$step"
 }
 
+gate_stage_launch_dir() {
+  # gate_stage_launch_dir <alias> <segment or step> <stage-kind> — the directory
+  # a stage of this dispatch starts in, printed; 1 with a warning and nothing
+  # printed when the checkout it names is missing.
+  #
+  # WHY THE DIRECTORY MATTERS. A session's project hooks, its project settings
+  # layer and the issuing-root rule of `admit` are all read from the directory
+  # it starts in. A stage of another target started in the dispatching
+  # session's directory has the home repository's Bash hook judge every command
+  # it issues against the other target: the gate form is refused there, and the
+  # bare form is refused by `admit` because the session's project directory is
+  # outside the target's common git directory.
+  #
+  # THE ORDER, first match wins:
+  #   (i)   a re-attachment starts where the session was born — the record
+  #         `gate_stage_launch_dir_record` left for it, or, for a session with
+  #         no record (born before the record existed), this process's own
+  #         directory, which is where such a session was born;
+  #   (ii)  when this process's directory is a checkout of the target itself
+  #         (same common git directory), it stays put: a stage of the home
+  #         target starts exactly where it always did;
+  #   (iii) a run-scope step (its rows carry `세그먼트=-`) starts in the audit's
+  #         worktree when the dispatch set `GATE_LAUNCH_AUDIT_TREE=1` (the audit,
+  #         and a re-convergence of it), and otherwise in the target's
+  #         execution worktree, the main worktree when there is none;
+  #   (iv)  a review-only segment starts in the target's MAIN worktree, never in
+  #         the segment's worktree: that tree is somebody else's pull request
+  #         head, and starting there would load the project hooks and settings
+  #         that pull request proposes into a session holding the gate token.
+  #         The head is read through gate acts naming the segment instead;
+  #   (v)   every other segment starts in its own worktree, falling back to the
+  #         execution worktree and then the main worktree, as its acts do.
+  #
+  # CHECKED HERE because `gate_act_worktree` never fails — it falls back to a
+  # field that may read `(없음)` — and an empty or missing directory would let
+  # the caller's `cd` land somewhere else without a word.
+  local alias="$1" seg="$2" kind="$3" d rec
+  if [ -n "${GATE_RESUME:-}" ]; then
+    rec="$RUN_DIR/launch-dir/$GATE_RESUME"
+    if [ -f "$rec" ]; then
+      d=$(head -n 1 "$rec")
+    else
+      d=$PWD
+    fi
+  elif gate_path_of_target "$(pwd -P)" "$alias"; then
+    d=$PWD
+  elif [ "$(gate_stage_row_segment "$seg" "$kind")" = "-" ]; then
+    if [ "${GATE_LAUNCH_AUDIT_TREE:-0}" = "1" ]; then
+      d=$(gate_audit_worktree_path "$alias") || d=""
+    else
+      d=$(gate_act_worktree "$alias" -)
+    fi
+  elif gate_segment_review_only "$seg"; then
+    d=$(target_field "$alias" '메인 워크트리' 2>/dev/null || true)
+  else
+    d=$(gate_act_worktree "$alias" "$seg")
+  fi
+  case "$d" in
+    ''|'(없음)') warn "the launch directory of $seg could not be resolved for target $alias"; return 1 ;;
+    /*) ;;
+    *) warn "the launch directory of $seg is not an absolute path: $d"; return 1 ;;
+  esac
+  [ -d "$d" ] || { warn "the launch directory of $seg does not exist: $d"; return 1; }
+  printf '%s' "$d"
+}
+
+gate_stage_launch_dir_record() {
+  # gate_stage_launch_dir_record <session-id> <dir> — remember the directory a
+  # NEW session was launched in, so a re-attachment starts in the same place:
+  # the harness keys a session's transcript by that directory, and a resumed
+  # session started elsewhere would get another project layer than the one it
+  # was born with. Same umask and atomic publish as the instructions record; a
+  # failure only warns, and a resume without a record stays where it is.
+  local sid="$1" d="$2" tmp
+  [ -n "$sid" ] && [ -n "$d" ] || return 0
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/launch-dir" || exit 1
+    tmp=$(mktemp "$RUN_DIR/launch-dir/.rec.XXXXXX") || exit 1
+    printf '%s\n' "$d" > "$tmp" || { rm -f "$tmp"; exit 1; }
+    mv "$tmp" "$RUN_DIR/launch-dir/$sid"
+  ) || warn "stage launch: could not record the launch directory for session $sid"
+}
+
 gate_caller_is_audit_stage() {
   # 0 when this gate call comes from the run-scope audit stage or a member it
   # spawned: the launcher hands the stage `CC_PIPELINE_STAGE_ID=<step>#<attempt>`
@@ -40761,7 +41615,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry|shift-halt|base-check|remote-check|replan|apply-settle-confirm|halt-settle)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|reentry|seat-limit-recall|halt-answer|review-dismiss|review-carry|shift-halt|base-check|remote-check|replan|apply-settle-confirm|halt-settle)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -45091,12 +45945,14 @@ gate_kind_is_bookkeeping() {
   # session id under launchd, so the context reading falls back to the lane's
   # newest transcript, and a large one would refuse the row the reboot-class
   # delay is measured from. It writes one row and enters no tree.
+  # `seat-limit-recall` is here for the same reason: the fleet tick that writes
+  # it carries the same re-entry marker and no session id. One row, no tree.
   # `apply-settle-confirm` records a person's `사람 확인 정산` answer on a
   # segment brought in unsettled from an earlier run: one `segment` row, no
   # probe, no tree, and its authorization is the person's answer row.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
-    obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry) return 0 ;;
+    obligation-done|obligation-drop|limit-cleared|reentry|seat-limit-recall|halt-answer|review-dismiss|review-carry) return 0 ;;
     shift-halt|base-check|remote-check|replan|apply-settle-confirm|halt-settle) return 0 ;;
   esac
   return 1
@@ -46192,6 +47048,181 @@ gate_exec_author_write_form() {
   return 0
 }
 
+gate_pr_links_last_segment() {
+  # gate_pr_links_last_segment <segment> — prints the last segment by merge
+  # order. The nodes are the document's declared slices, then the ledger's
+  # segments by first row, then the asked segment; the edges are `선행` and
+  # `머지 순서` from the declaration and the ledger alike. Each pick takes the
+  # first node in that order whose predecessors are all placed, so a tie falls
+  # to declaration order and the later-declared node ends up last. A cycle, which
+  # the plan admission refuses elsewhere, takes the first unplaced node rather
+  # than stopping.
+  local seg="$1" n d i placed=" " seen=" " last="" ready pick
+  local -a nodes=() deps=()
+  for n in $(if [ -n "${DOC:-}" ] && [ -f "${DOC:-}" ]; then slice_ids "$DOC" 2>/dev/null || true; fi) \
+           $(gate_rows 'segment' | gate_row_ids | awk '!s[$0]++') "$seg"; do
+    case "$seen" in *" $n "*) continue ;; esac
+    seen="$seen$n "
+    nodes+=("$n")
+    d=$(gate_chain_deps_of "$n")
+    if [ -n "${DOC:-}" ] && [ -f "${DOC:-}" ]; then
+      d="$d $(gate_dep_tokens "$(slice_field "$DOC" "$n" '선행' 2>/dev/null || true)") $(gate_dep_tokens "$(slice_field "$DOC" "$n" '머지 순서' 2>/dev/null || true)")"
+    fi
+    deps+=("$d")
+  done
+  local left=${#nodes[@]}
+  while [ "$left" -gt 0 ]; do
+    pick=""
+    i=0
+    while [ "$i" -lt "${#nodes[@]}" ]; do
+      n=${nodes[$i]}
+      ready=1
+      case "$placed" in *" $n "*) ready=0 ;; esac
+      if [ "$ready" = 1 ]; then
+        for d in ${deps[$i]}; do
+          case "$seen" in *" $d "*) ;; *) continue ;; esac
+          case "$placed" in *" $d "*) ;; *) ready=0; break ;; esac
+        done
+      fi
+      if [ "$ready" = 1 ]; then pick=$n; break; fi
+      i=$((i + 1))
+    done
+    if [ -z "$pick" ]; then
+      for n in "${nodes[@]}"; do
+        case "$placed" in *" $n "*) ;; *) pick=$n; break ;; esac
+      done
+    fi
+    placed="$placed$pick "
+    last=$pick
+    left=$((left - 1))
+  done
+  printf '%s' "$last"
+}
+
+gate_pr_links() {
+  # gate_pr_links <segment> — prints the segment's `## 관련 이슈·티켓` lines, one
+  # per `출처 티켓` row in row order; nothing on a manifest with no such row.
+  local seg="$1" rows row tracker ref last=""
+  rows=$(manifest_source_ticket_rows)
+  [ -n "$rows" ] || return 0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    tracker=$(manifest_row_fields "$row" '트래커')
+    ref=$(manifest_row_fields "$row" '참조')
+    case "$tracker" in
+      github)
+        [ -n "$last" ] || last=$(gate_pr_links_last_segment "$seg")
+        if [ "$last" = "$seg" ]; then printf 'Closes %s\n' "$ref"; else printf 'Refs %s\n' "$ref"; fi ;;
+      clickup)
+        printf '원 티켓: %s\n' "$ref" ;;
+    esac
+  done <<ROWS
+$rows
+ROWS
+}
+
+gate_pr_create_body_args() {
+  # gate_pr_create_body_args <args of gh…> — reads the flags of a `gh pr create`
+  # the way pflag does, wherever they stand. GATE_PRC_BODIES holds each `--body`
+  # value, GATE_PRC_FILES each `--body-file` value, and GATE_PRC_OPAQUE the first
+  # flag that fills the body some other way.
+  local n=$# i=0 j w c
+  local -a a=("$@")
+  GATE_PRC_BODIES=() GATE_PRC_FILES=() GATE_PRC_OPAQUE=""
+  while [ "$i" -lt "$n" ]; do
+    w=${a[$i]}
+    i=$((i + 1))
+    case "$w" in
+      --) break ;;
+      --body=*) GATE_PRC_BODIES+=("${w#--body=}") ;;
+      --body) GATE_PRC_BODIES+=("${a[$i]:-}"); i=$((i + 1)) ;;
+      --body-file=*) GATE_PRC_FILES+=("${w#--body-file=}") ;;
+      --body-file) GATE_PRC_FILES+=("${a[$i]:-}"); i=$((i + 1)) ;;
+      --template|--recover) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:-$w}; i=$((i + 1)) ;;
+      --fill|--fill=*|--fill-first|--fill-first=*|--fill-verbose|--fill-verbose=*|--editor|--editor=*|--web|--web=*|--template=*|--recover=*)
+        GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:-${w%%=*}} ;;
+      --attach|--base|--head|--repo|--assignee|--label|--milestone|--project|--reviewer|--title) i=$((i + 1)) ;;
+      --*) ;;
+      -?*)
+        j=1
+        while [ "$j" -lt "${#w}" ]; do
+          c=${w:j:1}
+          j=$((j + 1))
+          case "$c" in
+            e|f|w) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:--$c} ;;
+            d|h) ;;
+            B|F|H|R|T|a|b|l|m|p|r|t)
+              local v=${w:j}
+              v=${v#=}
+              if [ "$j" -ge "${#w}" ]; then v=${a[$i]:-}; i=$((i + 1)); fi
+              case "$c" in
+                b) GATE_PRC_BODIES+=("$v") ;;
+                F) GATE_PRC_FILES+=("$v") ;;
+                T) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:--T} ;;
+              esac
+              break ;;
+          esac
+        done ;;
+    esac
+  done
+}
+
+gate_exec_pr_create_refusal() {
+  # gate_exec_pr_create_refusal <target> <segment> <argv…> — prints why the argv
+  # is a `gh pr create` the run's `출처 티켓` rows refuse, or nothing. On a run
+  # with such a row, every pull request carries its segment's `pr-links` lines,
+  # so the body has to be one the gate can read — a `--body` value or a regular
+  # file named by `--body-file`, resolved from the directory the act runs in —
+  # and hold each line whole.
+  local alias="$1" seg="$2"
+  shift 2
+  gate_rv_unwrap "$@"
+  [ "${#GATE_RV_ARGV[@]}" -ge 2 ] && [ "${GATE_RV_ARGV[0]##*/}" = gh ] || return 0
+  gate_gh_strip_repo "${GATE_RV_ARGV[@]:1}"
+  gate_gh_group_verb ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
+  [ "$GATE_GH_CG" = pr ] && { [ "$GATE_GH_CV" = create ] || [ "$GATE_GH_CV" = new ]; } || return 0
+  [ -n "$(manifest_source_ticket_rows)" ] || return 0
+  if [ -z "$seg" ] || [ "$seg" = "-" ]; then
+    printf '이 호출에 --segment 가 없어 넣어야 할 줄을 정할 수 없습니다'
+    return 0
+  fi
+  gate_pr_create_body_args "${GATE_RV_ARGV[@]:1}"
+  if [ -n "$GATE_PRC_OPAQUE" ]; then
+    printf '%s 는 게이트가 읽을 수 없는 본문입니다' "$GATE_PRC_OPAQUE"
+    return 0
+  fi
+  if [ "${#GATE_PRC_BODIES[@]}" -eq 0 ] && [ "${#GATE_PRC_FILES[@]}" -eq 0 ]; then
+    printf '본문 인자가 없습니다'
+    return 0
+  fi
+  local lines line body f path dir
+  lines=$(gate_pr_links "$seg")
+  dir=$(gate_act_worktree "$alias" "$seg" 2>/dev/null) || dir=""
+  for f in ${GATE_PRC_FILES[@]+"${GATE_PRC_FILES[@]}"}; do
+    case "$f" in
+      /*) path=$f ;;
+      *) path="${dir:-.}/$f" ;;
+    esac
+    if [ "$f" = "-" ] || [ ! -f "$path" ] || [ ! -r "$path" ]; then
+      printf -- '--body-file %s 는 게이트가 읽을 수 없는 본문입니다' "$f"
+      return 0
+    fi
+    GATE_PRC_BODIES+=("$(cat "$path")")
+  done
+  for body in "${GATE_PRC_BODIES[@]}"; do
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if ! grep -Fxq -- "$line" <<<"$body"; then
+        printf '본문에 「%s」 줄이 없습니다' "$line"
+        return 0
+      fi
+    done <<LINES
+$lines
+LINES
+  done
+  return 0
+}
+
 gate_review_only_seg_of_act() {
   # gate_review_only_seg_of_act <segment> — prints the review-only segment an
   # exec acts on: the `--segment` it names when that is one, else, on a
@@ -46307,6 +47338,12 @@ gate_verb_act() {
         warn "세그먼트 ${rv_seg} 는 리뷰 전용 세그먼트입니다 — 작성자 브랜치에 쓰는 ${rv_why} 는 받지 않습니다"
         exit "$GATE_EXIT_RULE"
       fi
+    fi
+    rv_why=$(gate_exec_pr_create_refusal "$alias" "$segment" "$@")
+    if [ -n "$rv_why" ]; then
+      warn "출처 티켓 행이 있는 런의 gh pr create 를 받지 않습니다 — ${rv_why}"
+      warn "본문을 --body 또는 --body-file <파일> 로 주고, gate.sh pr-links --manifest <매니페스트> --segment <세그먼트> 의 줄을 그대로 넣으십시오"
+      exit "$GATE_EXIT_RULE"
     fi
   fi
 
@@ -46923,8 +47960,8 @@ gate_verb_act() {
         ;;
     esac
 
-    if [ "$rs_kind" = "split" ] && [ "$(gate_snapshot_design_scope)" != "base" ]; then
-      warn "분할 스테이지는 실행 계획의 design_scope 가 base 인 런에서만 띄웁니다"
+    if [ "$rs_kind" = "split" ] && ! gate_split_run; then
+      warn "분할 스테이지는 실행 계획의 design_scope 가 base 이거나 design_delivery 가 tickets 인 런에서만 띄웁니다"
       exit "$GATE_EXIT_RULE"
     fi
 
@@ -47026,7 +48063,10 @@ gate_verb_act() {
     # NOT ON A `--resume`. A re-attachment, a continuation and a halt answer
     # carry a fixed sentence, never the slash command, and the session they
     # resume is pinned further down to this step's own `stage-result` rows — the
-    # rows of a dispatch that passed this check when it first started.
+    # rows of a dispatch that passed this check when it first started. A
+    # migration grant that turns the resume into a new session does not reuse
+    # this argv's prompt unchecked: `gate_fresh_session_prompt` builds that
+    # session's prompt from the kind's re-entry frame and `DOC`.
     local dd_prompt="" dd_arg dd_prev="" dd_cmd="" dd_path
     for dd_arg in "$@"; do
       [ "$dd_prev" = "-p" ] && dd_prompt="$dd_arg"
@@ -47586,6 +48626,7 @@ gate_verb_act() {
         if [ "$rn_pvrc" = "$GATE_EXIT_RULE" ]; then
           [ "$verb" = "plan" ] || gate_surface_provenance_hold "$segment" >/dev/null 2>&1 || true
           warn "세그먼트 ${segment} 의 브랜치에서 강제 표면이 좌석 적용 밖에서 바뀌었습니다 — 리뷰를 파견하지 않습니다: $(printf '%s' "$rn_pv" | tr '\t\n' ' ;')"
+          warn "$(gate_surface_resume_text "$(gate_surface_verdict_kind "$rn_pv")")"
           exit "$GATE_EXIT_RULE"
         elif [ "$rn_pvrc" != 0 ]; then
           if [ "$verb" != "plan" ] \
@@ -48047,6 +49088,15 @@ gate_verb_act() {
     # and the caller sets that environment. The gate's own copy is graded only
     # when it is called directly, so no interpreter spelling is needed for it.
     warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
+    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
+  fi
+  if gate_argv_visual_account_rundir "$@"; then
+    # THE EXPECTED ACCOUNT COMES FROM THE RUN DIRECTORY. `account` compares the
+    # logged-in account with the one the run-local migration record under
+    # `CC_PIPELINE_RUN_DIR` names, so an act that sets that variable itself
+    # picks the record it is checked against. The stage inherits the run's
+    # value; no spelling that reassigns it is admitted.
+    warn "\`visual-config.sh account\` with \`CC_PIPELINE_RUN_DIR\` reassigned is refused — the expected account is read from the run's own migration record, so the act runs with the inherited value"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
   if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
@@ -49570,10 +50620,13 @@ EOF
         # act's failure and nothing is launched.
         skill) gate_dispatch_doc_arg "${1:-}"
                # The design's review runs where the design ran, not in the
-               # audit's tree.
+               # audit's tree. The same answer picks the stage's launch
+               # directory, so the audit starts in the tree its acts run in.
+               GATE_LAUNCH_AUDIT_TREE=0
                if [ "$stage_is_run_scope_step" = "1" ] \
                   && { [ "${1:-}" = "audit" ] \
                        || { [ "${1:-}" = "reconverge" ] && [ "$rs_table" = "audit" ]; }; }; then
+                 GATE_LAUNCH_AUDIT_TREE=1
                  gate_audit_worktree_ensure "$alias" || rc=$?
                fi
                [ "$rc" != "0" ] || gate_launch_stage "$alias" "$stage_key" "$@" || rc=$? ;;
@@ -51529,6 +52582,163 @@ gate_continuation_argv() {
   return 0
 }
 
+# THE RUN-LOCAL MIGRATION RECORD `$RUN_DIR/visual-lane` has this one writer.
+# Every dispatch path that launches a stage on a router grant calls it once,
+# after the grant is final (the re-attach binding check passed, and a carry has
+# settled on the grant it keeps) and before the stage process starts; a grant
+# that is handed back never reaches it. The stage itself cannot write the file:
+# the run-directory write guard refuses it on both surfaces. The visual publish
+# stage reads it through `visual-config.sh account`/`lane` as the account its
+# K0~K3 checks expect, so a stage that could write it could re-point its own
+# account pin.
+#
+#   <!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->
+#   **레인**: <lane id>
+#   **계정**: <email the new lane's config directory is logged in as>
+#   **이관**: <s> · <from lane> → <to lane> · <reserve|exhausted|cap> · <UTC ISO>
+#
+# A migration grant (`migrated` on the envelope) reads the account with
+# `claude auth status --json` in the granted config directory at this moment,
+# keeps the earlier `**이관**`/`**승계**` lines and adds one `**이관**` line,
+# numbered one past the earlier ones. A grant whose pin came from the
+# document-level record, in a run that has no run-local record yet, inherits:
+# the record's lane and account are copied with a `**승계**` line instead, and
+# the account is not read again. Any other grant writes nothing.
+
+gate_visual_lane_auth_email() {
+  # gate_visual_lane_auth_email <config dir> — the email `claude auth status
+  # --json` reports in <config dir>. rc 0 with the email; otherwise rc 1 with
+  # the cause on stdout: `읽기 실패` (the command failed or did not print a JSON
+  # object), `loggedIn false`, or `email 없음`.
+  local cfg="$1" bin out rc=0 facts
+  bin=${CLI_BIN:-claude}
+  out=$(CLAUDE_CONFIG_DIR="$cfg" command "$bin" auth status --json 2>/dev/null) || rc=$?
+  if [ "$rc" != "0" ]; then printf '읽기 실패'; return 1; fi
+  facts=$(printf '%s' "$out" | jq -r 'if type != "object" then error("shape") else . end
+           | [ (if .loggedIn == true then "1" else "0" end),
+               (if (.email | type) == "string" then .email else "" end) ]
+           | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) \
+    || { printf '읽기 실패'; return 1; }
+  case "$facts" in
+    1$'\n'?*) printf '%s' "${facts#1$'\n'}"; return 0 ;;
+    1*) printf 'email 없음'; return 1 ;;
+    *) printf 'loggedIn false'; return 1 ;;
+  esac
+}
+
+gate_visual_lane_write() {
+  # gate_visual_lane_write <lane> <account> <last line> — the record's three
+  # head lines, the earlier `**이관**`/`**승계**` lines of the record being
+  # replaced, and <last line>, through a temporary file in the run directory
+  # and a `mv`.
+  local rec="$RUN_DIR/visual-lane" tmp
+  tmp=$(mktemp "$RUN_DIR/.visual-lane.XXXXXX") || return 1
+  {
+    printf '%s\n' '<!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->'
+    printf '**레인**: %s\n**계정**: %s\n' "$1" "$2"
+    [ ! -f "$rec" ] || grep -E '^\*\*(이관|승계)\*\*: ' "$rec" 2>/dev/null || true
+    printf '%s\n' "$3"
+  } > "$tmp" && mv -f "$tmp" "$rec" && return 0
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
+gate_visual_lane_commit() {
+  # gate_visual_lane_commit <stage kind> <grant envelope> — write the run-local
+  # migration record for this final grant when it calls for one. rc 0 when it
+  # wrote one or none was due. rc 1 with nothing written when a migration grant's
+  # account could not be read or the write failed; the reason, naming the lane
+  # and the cause, is on stdout, and the caller hands the lease back and parks
+  # without launching.
+  local kind="${1:-}" env="${2:-}" rec facts from to why cfg email s dl dlane dacct dsrc
+  [ "$kind" = "visual-publish" ] || return 0
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  rec="$RUN_DIR/visual-lane"
+  facts=$(printf '%s' "$env" | jq -r 'if type != "object" then error("shape") else . end
+           | [ (.verdict // "" | tostring),
+               (if (.migrated | type) == "object" then "1" else "0" end),
+               (.migrated.from? // "" | tostring), (.migrated.to? // "" | tostring),
+               (.migrated.why? // "" | tostring), (.config_dir // "" | tostring),
+               (.account // "" | tostring) ]
+           | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) || return 0
+  local verdict migf acct
+  { IFS= read -r verdict; IFS= read -r migf; IFS= read -r from; IFS= read -r to; IFS= read -r why
+    IFS= read -r cfg; IFS= read -r acct; } <<EOF
+$facts
+EOF
+  [ "$verdict" = "GRANT" ] || return 0
+  if [ "$migf" = "1" ]; then
+    if [ -z "$to" ] || [ -z "$cfg" ]; then
+      printf '이관 기록 미작성 — 이관 봉투에 새 레인이나 설정 디렉터리가 없다 (레인 %s)' "${to:--}"
+      return 1
+    fi
+    if ! email=$(gate_visual_lane_auth_email "$cfg"); then
+      printf '이관 기록 미작성 — 새 레인 %s 의 계정 읽기 실패: %s (claude auth status --json, %s)' "$to" "$email" "$cfg"
+      return 1
+    fi
+    s=$(grep -cE '^\*\*이관\*\*: ' "$rec" 2>/dev/null) || true
+    case "$s" in ''|*[!0-9]*) s=0 ;; esac
+    s=$(( s + 1 ))
+    if ! gate_visual_lane_write "$to" "$email" "**이관**: $s · ${from:--} → $to · ${why:--} · $(now_iso)"; then
+      printf '이관 기록 미작성 — %s 를 쓰지 못했다 (레인 %s)' "$rec" "$to"
+      return 1
+    fi
+    log "시각 발행 이관 기록 — $rec: ${from:--} → $to (${why:--}, 이관 $s)"
+    return 0
+  fi
+  [ ! -e "$rec" ] || return 0
+  dl=$(visual_lane_doc_path "${DOC:-}" 2>/dev/null) || return 0
+  dlane=$(visual_lane_doc_field "$dl" 레인) || return 0
+  dacct=$(visual_lane_doc_field "$dl" 계정) || return 0
+  [ "$acct" = "$dlane" ] || return 0
+  dsrc=$(visual_lane_doc_field "$dl" 출처 || true)
+  dsrc=${dsrc%% · *}
+  if ! gate_visual_lane_write "$dlane" "$dacct" "**승계**: $dl · ${dsrc:--} · $(now_iso)"; then
+    printf '이관 기록 미작성 — %s 를 쓰지 못했다 (승계, 레인 %s)' "$rec" "$dlane"
+    return 1
+  fi
+  log "시각 발행 이관 승계 — $rec ← $dl (레인 $dlane)"
+  return 0
+}
+
+gate_visual_lane_doc_commit() {
+  # gate_visual_lane_doc_commit — when the last `**이관**` of the run-local
+  # record has its progress file `$RUN_DIR/visual-migration/<s>.md` at
+  # `**완료**: 예`, write the document-level record `visual_lane_doc_path` names
+  # from the run-local record's lane and account, through a temporary file and
+  # a `mv`. Nothing is written otherwise, so the file keeps the last finished
+  # migration's values. Called when the gate closes a visual publish stage's
+  # row, after the terminal class is decided. Always rc 0: a failed write warns
+  # and the row closes all the same.
+  local rec="${RUN_DIR:-}/visual-lane" last s lane acct dl tmp=""
+  [ -n "${RUN_DIR:-}" ] && [ -f "$rec" ] || return 0
+  last=$(grep -E '^\*\*이관\*\*: [0-9]+ ' "$rec" 2>/dev/null | tail -n 1) || return 0
+  s=${last#\*\*이관\*\*: }
+  s=${s%% *}
+  grep -qxF '**완료**: 예' "$RUN_DIR/visual-migration/$s.md" 2>/dev/null || return 0
+  lane=$(CC_PIPELINE_RUN_DIR="$RUN_DIR" bash "$GATE_DIR/visual-config.sh" lane 2>/dev/null) || {
+    warn "the run-local migration record does not parse — the document-level record is not written"
+    return 0
+  }
+  acct=$(grep -E '^\*\*계정\*\*: ' "$rec" | tail -n 1)
+  acct=${acct#\*\*계정\*\*: }
+  dl=$(visual_lane_doc_path "${DOC:-}" 2>/dev/null) || {
+    warn "the document-level migration record has no path (no design document) — it is not written"
+    return 0
+  }
+  if mkdir -p "$(dirname "$dl")" 2>/dev/null && tmp=$(mktemp "$(dirname "$dl")/.visual-lane.XXXXXX" 2>/dev/null) \
+     && printf '%s\n**레인**: %s\n**계정**: %s\n**출처**: %s · 이관 %s · %s\n' \
+          '<!-- cc-visual-lane-doc v1; writer=gate; reader=run.sh,gate.sh,visual,visual-publish-unattended -->' \
+          "$lane" "$acct" "$RUN_ID" "$s" "$(now_iso)" > "$tmp" \
+     && mv -f "$tmp" "$dl"; then
+    log "문서 단위 이관 기록 — $dl (레인 $lane, 이관 $s)"
+  else
+    [ -z "${tmp:-}" ] || rm -f "$tmp" 2>/dev/null
+    warn "the document-level migration record could not be written: $dl"
+  fi
+  return 0
+}
+
 gate_launch_route_park() {
   # gate_launch_route_park <alias> <row segment> <segment> <why> [<lineage>] —
   # the row a routed dispatch leaves when it stops before the pin. Act scope,
@@ -51647,6 +52857,7 @@ gate_launch_route() {
   GATE_ROUTE_ATTEMPT=""; GATE_ROUTE_LINEAGE=""; GATE_ROUTE_ENV=""; GATE_ROUTE_NONCE=""
   GATE_ROUTE_VERDICT=""; GATE_ROUTE_WHY=""; GATE_ROUTE_EVENT=""
   GATE_ROUTE_ACCOUNT="-"; GATE_ROUTE_CFG=""; GATE_ROUTE_MINTED=0; GATE_ROUTE_BIND=""
+  GATE_ROUTE_FRESH=""
   rowseg=$(gate_stage_row_segment "$seg" "$kind")
   # Every routed dispatch passes here, a carry included, before its own
   # admission scans the table.
@@ -51675,11 +52886,11 @@ gate_launch_route() {
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$reqbind" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
-          --arg pin "$(kind_pin_lane_of "$kind" || true)" \
+          --argjson pinf "$(kind_pin_request_json "$kind")" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
            + (if $dl == null then {} else {deadline: $dl} end)
-           + (if $pin == "" then {} else {pin_lane: $pin} end)') \
+           + $pinf') \
     || { warn "could not build the router request ($seg)"; return 1; }
   prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
            | { jq -r '.nonce // empty' 2>/dev/null || true; })
@@ -51734,6 +52945,102 @@ gate_launch_route() {
     gate_launch_route_park "$alias" "$rowseg" "$seg" "$why"
     return "$GATE_EXIT_ROUTE"
   fi
+  # A MIGRATION GRANT ON A RESUME STARTS A NEW SESSION: the bound session lives
+  # in the old account's config directory, and the grant names another one.
+  # GATE_ROUTE_FRESH tells the caller to give the new session the prompt
+  # `gate_fresh_session_prompt` builds, not the re-attach argv it was handed.
+  if [ "$event" = "resume" ] && gate_route_env_fresh "$GATE_ROUTE_ENV"; then
+    log "시각 발행 이관 — $seg 는 세션 $GATE_RESUME 을 재부착하지 않고 새 세션으로 뜬다"
+    GATE_RESUME=""; GATE_ROUTE_FRESH=1
+  fi
+  return 0
+}
+
+gate_route_env_fresh() {
+  # gate_route_env_fresh <envelope> — 0 when the grant carries `fresh: true`,
+  # the router's word that the launch starts a new session rather than
+  # re-attaching the bound one.
+  [ "$(printf '%s' "${1:-}" | jq -r 'if type == "object" and .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]
+}
+
+gate_argv_prompt_keep() {
+  # gate_argv_prompt_keep <cli args...> — keep the argv's first `-p` value in
+  # GATE_DISPATCH_PROMPT, with GATE_DISPATCH_PROMPT_SET `1` when the argv
+  # carries one and `0` when it does not. A global rather than a command
+  # substitution, so the prompt keeps its bytes, trailing newlines included.
+  GATE_DISPATCH_PROMPT="" GATE_DISPATCH_PROMPT_SET=0
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+      GATE_DISPATCH_PROMPT=$2 GATE_DISPATCH_PROMPT_SET=1
+      return 0
+    fi
+    shift
+  done
+  return 0
+}
+
+gate_argv_prompt_restore() {
+  # gate_argv_prompt_restore <prompt> <cli args...> — GATE_RESTORED_ARGV gets
+  # the argv with every `-p` value replaced by <prompt>, and <prompt> appended
+  # as `-p` when the argv carries none. The inverse of the re-attach and
+  # continuation substitutions, for a launch that starts a new session after
+  # its argv was rewritten for a re-attachment: a new session has no
+  # conversation to apply a re-attach sentence to, and the dispatch prompt is
+  # what names the skill and its document.
+  local p="$1" had=0
+  shift
+  GATE_RESTORED_ARGV=()
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+      GATE_RESTORED_ARGV+=(-p "$p"); shift 2; had=1
+    else
+      GATE_RESTORED_ARGV+=("$1"); shift
+    fi
+  done
+  [ "$had" = "1" ] || GATE_RESTORED_ARGV+=(-p "$p")
+  return 0
+}
+
+gate_fresh_session_prompt() {
+  # gate_fresh_session_prompt <stage-kind> <kept-set> <kept-prompt> — the `-p`
+  # of the new session a migration grant (`fresh: true`) starts in place of a
+  # re-attachment, in GATE_FRESH_PROMPT; 1, with it empty, when there is none.
+  # <kept-set> and <kept-prompt> are what `gate_argv_prompt_keep` kept from the
+  # caller's argv.
+  #
+  # THE GATE BUILDS IT; THE CALLER'S PROMPT IS NOT TRUSTED. A re-attachment of
+  # a stage that was cut off (a limit, a crash, an end from outside) or ended
+  # in a refusal carries the shift's fixed re-attach sentence, never the slash
+  # command, and the pre-launch check that binds a prompt to the step's
+  # command and `DOC` does not run on a `--resume`. A new session handed that
+  # sentence has no conversation to continue and is told neither the skill nor
+  # the document. So a kind whose re-entry frame has no slot but `<문서>` gets
+  # that frame filled with the kind's document, and the caller's prompt is kept
+  # only when it begins with exactly that form — the bytes the first dispatch's
+  # check would have let through. A kind with no such frame keeps the caller's
+  # prompt.
+  local kind="$1" kset="$2" kept="$3" sk sg tkind frame doc built=""
+  GATE_FRESH_PROMPT=""
+  doc=$(gate_carry_doc_of "$kind")
+  while IFS='|' read -r sk sg tkind frame; do
+    [ "$tkind" = "$kind" ] || continue
+    case "$(gate_fill_slot "$frame" '<문서>' '')" in
+      *'<'*'>'*) ;;
+      *) [ -z "$doc" ] || built=$(gate_fill_slot "$frame" '<문서>' "$doc") ;;
+    esac
+    break
+  done <<EOF
+$(gate_reentry_table)
+EOF
+  if [ -n "$built" ]; then
+    GATE_FRESH_PROMPT=$built
+    if [ "$kset" = "1" ]; then
+      case "$kept" in "$built"|"$built "*) GATE_FRESH_PROMPT=$kept ;; esac
+    fi
+    return 0
+  fi
+  [ "$kset" = "1" ] || return 1
+  GATE_FRESH_PROMPT=$kept
   return 0
 }
 
@@ -51745,11 +53052,11 @@ gate_launch_route_ask() {
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$bound" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
-          --arg pin "$(kind_pin_lane_of "$kind" || true)" \
+          --argjson pinf "$(kind_pin_request_json "$kind")" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
            + (if $dl == null then {} else {deadline: $dl} end)
-           + (if $pin == "" then {} else {pin_lane: $pin} end)') \
+           + $pinf') \
     || { warn "could not build the router request ($seg)"; return 1; }
   route_resolve "$req" || { warn "the account resolver stopped — $seg is not launched"; return 1; }
 }
@@ -51860,6 +53167,16 @@ gate_launch_route_carry() {
   if [ "$bcls" = "grant" ]; then
     GATE_RESUME=$bound; GATE_ROUTE_EVENT=resume; GATE_ROUTE_BIND=$bind
     GATE_ROUTE_VERDICT=GRANT; GATE_ROUTE_WHY=$bwhy
+    # A MIGRATION GRANT IS KEPT, NOT HANDED BACK for the fresh question: the
+    # router already moved the pin, and asking `first` would only ask the same
+    # blocked account again. The bound session is not re-attached — it lives in
+    # the old account's config directory — so the stage starts as a new session
+    # and takes the answer from the card the dispatch writes.
+    if gate_route_env_fresh "$benv"; then
+      GATE_RESUME=""; GATE_ROUTE_FRESH=1
+      log "중단 답 운반 — $seg 는 이관 GRANT 로 새 세션이 답 카드를 받는다 (묶인 세션 $bound 은 재부착하지 않음)"
+      return 0
+    fi
     log "중단 답 운반 — $seg ← 묶인 세션 $bound 재부착"
     return 0
   fi
@@ -51956,7 +53273,12 @@ gate_launch_wait() {
   fi
   # A TRIAL SYNTHESIS in the environment this act runs in: the account is not
   # known yet, and the supervisor synthesizes again under the one it is granted.
-  instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  # It runs in the launch directory `gate_launch_stage` chose, because the
+  # target-hook paragraph is decided at the directory the stage starts in.
+  instr=$(cd "$GATE_LAUNCH_DIR" && gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  # The caller kept the dispatch prompt before its carry substitution; a caller
+  # that did not leaves it to be kept here, before the continuation's.
+  [ -n "${GATE_DISPATCH_PROMPT_SET:-}" ] || gate_argv_prompt_keep "$@"
   if [ -n "${GATE_RESUME:-}" ]; then
     gate_continuation_argv "$seg" "$kind" "$@" || return $?
     [ -z "$GATE_CONTINUED" ] || set -- "${GATE_CONTINUE_ARGV[@]}"
@@ -51979,10 +53301,16 @@ gate_launch_wait() {
   printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$nonce" "${GATE_RESUME:-}" "" wait \
     "$GATE_ROUTE_LINEAGE" "${GATE_ROUTE_EVENT:-first}" "${GATE_ROUTE_BIND:--}" > "$tmp"
   mv "$tmp" "$RUN_DIR/$seg.launch"
+  # THE DISPATCH PROMPT RIDES IN THE ENVIRONMENT, not on the token: the token's
+  # shape is fixed at seven lines, and a prompt may hold a newline. Both are
+  # set on every wait launch, so a value the act inherited is never passed on.
   sup=$( cc_detach_exec "$suplog" "$suplog" \
            env CC_CLAUDE_BIN="$CLI_BIN" \
+             CC_GATE_DISPATCH_PROMPT_SET="$GATE_DISPATCH_PROMPT_SET" \
+             CC_GATE_DISPATCH_PROMPT="$GATE_DISPATCH_PROMPT" \
            bash "$GATE_DIR/gate.sh" supervise-stage --manifest "$MANIFEST" \
-             --target "$alias" --segment "$seg" --nonce "$nonce" -- "$kind" "$@" )
+             --target "$alias" --segment "$seg" --nonce "$nonce" \
+             --launch-dir "$GATE_LAUNCH_DIR" -- "$kind" "$@" )
   if [ -z "$sup" ]; then
     warn "the waiting supervisor failed to start ($seg) — the launch token is withdrawn"
     rm -f "$RUN_DIR/$seg.launch"
@@ -52171,6 +53499,9 @@ gate_launch_stage() {
   local alias="$1" seg="$2" kind="$3"; shift 3
   local wrapper="$GATE_DIR/stage-wrapper.sh"
   [ -f "$wrapper" ] || { warn "the stage wrapper is missing: $wrapper"; return 127; }
+  # The launch directory, a global like GATE_RESUME so `gate_launch_wait` reads
+  # it without a change to its signature; set below by `gate_stage_launch_dir`.
+  GATE_LAUNCH_DIR=""
 
   # RE-ATTACH, NOT RE-RUN. The contract already says a stage cut mid-flight is
   # continued rather than restarted, and the wrapper already accepts `--resume`
@@ -52296,15 +53627,51 @@ gate_launch_stage() {
         "라우팅 꺼짐 — 시각 발행 단계는 고정 레인으로만 뜬다. 라우팅을 켠 런에서 다시 파견하세요"
       return "$GATE_EXIT_ROUTE"
     fi
+    # The lookup is the migration's (`kind_pin_resolve`): the run-local record,
+    # the document-level record, then the host file. Any one of them pins.
     if ! kind_pin_lane_of "$kind" >/dev/null; then
       gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
-        "고정 레인 없음 — 호스트 파일 ${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design 에 'lane = <레인 id>' 줄이 없다. 그 줄을 쓴 뒤 다시 파견하세요"
+        "고정 레인 없음 — 호스트 파일 ${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design 에 'lane = <레인 id>' 줄이 없고, 런 지역 이관 기록 $RUN_DIR/visual-lane 도 문서 단위 이관 기록 $(visual_lane_doc_path "${DOC:-}" 2>/dev/null || printf '(문서 없음)') 도 레인을 주지 않는다. 호스트 파일에 그 줄을 쓴 뒤 다시 파견하세요"
       return "$GATE_EXIT_ROUTE"
     fi
+  fi
+  # A STAGE DISPATCHED FROM A SHIFT THE GATE MOVED TO ANOTHER ACCOUNT runs on
+  # the seat, not on that account. The answer is taken here, while the moved
+  # shift's environment is still in force: with routing on the router's own
+  # seat reading skips the environment tier under the same condition. Every
+  # path to a stage below then exports the seat and an empty
+  # `CC_GATE_SHIFT_LANE` before it launches anything, so nothing under this
+  # dispatch reads itself as a moved shift or takes the moved account for the
+  # seat: the routing-off launch, and the supervisor a `WAIT` starts, which
+  # asks the router again with the seat its environment names.
+  local seat_rev=0 seat_cfg=""
+  if resolve_account_seat_reverted; then
+    seat_rev=1
+    seat_cfg=$(resolve_account 2>/dev/null) || seat_cfg=""
+    [ -n "$seat_cfg" ] \
+      || warn "the seat lane could not be resolved for a stage dispatched from a moved shift — it inherits the shift's lane ($seg)"
   fi
   if run_routed; then
     routed=1
     gate_launch_route "$alias" "$seg" "$kind" "$@" || return $?
+    local -x CC_GATE_SHIFT_LANE=
+    # THE DISPATCH PROMPT, KEPT BEFORE ANY SUBSTITUTION BELOW: a WAIT hands it to
+    # the supervisor, whose grant at the end of the wait may start a new session
+    # that needs the dispatch form, not the re-attach sentence.
+    gate_argv_prompt_keep "$@"
+    # A MIGRATION GRANT THAT TURNED A RESUME INTO A NEW SESSION gets the prompt
+    # the gate builds for the kind: the argv of a cut-off or refused stage's
+    # re-attachment carries the shift's fixed re-attach sentence, which names
+    # neither the skill nor the document.
+    if [ "${GATE_ROUTE_FRESH:-}" = "1" ]; then
+      if gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"; then
+        gate_argv_prompt_restore "$GATE_FRESH_PROMPT" "$@"
+        set -- "${GATE_RESTORED_ARGV[@]}"
+        gate_argv_prompt_keep "$@"
+      else
+        warn "a migration grant starts a new session of $seg, but neither its kind nor the argv gives a dispatch prompt — the new session starts with the argv as handed over"
+      fi
+    fi
     # A CARRY THAT PICKED THE HALTED SESSION re-attaches it with the fixed resume
     # sentence, not the dispatch form, and a waiting one wakes up with the same:
     # the session already holds its question, and the card holds the answer.
@@ -52320,24 +53687,44 @@ gate_launch_stage() {
       [ "$ha_p" = "1" ] || ha_argv+=(-p "$GATE_CARRY_RESUME_MESSAGE")
       set -- "${ha_argv[@]}"
     fi
+    # THE LAUNCH DIRECTORY, decided once for both halves here — after the route,
+    # because the route decides whether this is a re-attachment — and before
+    # the WAIT branch, so a waiting supervisor starts its stage where a granted
+    # one would. On a WAIT no lease was minted and the drop does nothing; the
+    # first `stage-wait` row the route wrote stays, as a refusal of the trial
+    # synthesis leaves it.
+    if ! GATE_LAUNCH_DIR=$(gate_stage_launch_dir "$alias" "$seg" "$kind"); then
+      warn "대상 $alias 의 체크아웃이 없어 스테이지를 띄우지 않습니다 ($seg)"
+      gate_launch_route_drop
+      return 127
+    fi
     # A WAIT IS NOT A STOP: the dispatch half pins, starts a supervisor that
     # waits for an account before it spawns, and returns.
     if [ "$GATE_ROUTE_VERDICT" = "WAIT" ]; then
+      [ -z "$seat_cfg" ] || local -x CLAUDE_CONFIG_DIR="$seat_cfg"
       gate_launch_wait "$alias" "$seg" "$kind" "$@"
       return $?
     fi
   fi
+  [ "$routed" = "1" ] || [ -z "$seat_cfg" ] || local -x CLAUDE_CONFIG_DIR="$seat_cfg"
+  local -x CC_GATE_SHIFT_LANE=
   # THE STAGE INSTRUCTIONS, SYNTHESIZED BEFORE ANY SIDE EFFECT. A refusal here
   # (127, like a missing wrapper) is a launch precondition — a host or
   # repository state a person has to change — so it must not consume an
   # attempt number or leave a session record behind: the pin below and the
-  # record after it both come later on purpose.
+  # record after it both come later on purpose. Synthesized in the launch
+  # directory, so the target-hook paragraph follows the root the stage starts
+  # at; an unrouted launch decides that directory here, with the same refusal.
   local instr
   if [ "$routed" = "1" ]; then
-    instr=$(CLAUDE_CONFIG_DIR="$GATE_ROUTE_CFG" gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") \
+    instr=$(cd "$GATE_LAUNCH_DIR" && CLAUDE_CONFIG_DIR="$GATE_ROUTE_CFG" gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") \
       || { rrc=$?; gate_launch_route_drop; return "$rrc"; }
   else
-    instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+    if ! GATE_LAUNCH_DIR=$(gate_stage_launch_dir "$alias" "$seg" "$kind"); then
+      warn "대상 $alias 의 체크아웃이 없어 스테이지를 띄우지 않습니다 ($seg)"
+      return 127
+    fi
+    instr=$(cd "$GATE_LAUNCH_DIR" && gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
   fi
   # A RESUME OF A STAGE THAT ENDED IN PROSE carries the continue message instead
   # of the router's prompt, and is refused here — still before the pin — when it
@@ -52369,10 +53756,19 @@ gate_launch_stage() {
       gate_launch_route_drop
       return "$GATE_EXIT_RULE"
     }
+    # THE MIGRATION RECORD, on the grant this dispatch keeps, before the stage
+    # can read it. A migration whose new account cannot be read parks here.
+    local vwhy
+    if ! vwhy=$(gate_visual_lane_commit "$kind" "$GATE_ROUTE_ENV"); then
+      gate_launch_route_drop
+      gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" "$vwhy"
+      return "$GATE_EXIT_ROUTE"
+    fi
   fi
   if [ -z "${GATE_RESUME:-}" ] && [ -n "$instr" ]; then
     gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
   fi
+  [ -n "${GATE_RESUME:-}" ] || gate_stage_launch_dir_record "$(session_uuid "$seg" "$attempt")" "$GATE_LAUNCH_DIR"
   # THE STREAM IS SCOPED BY ATTEMPT; the supervisor derives the same name from
   # the same pin through `stage_log_path`, so the supervisor's own log sits
   # beside the stage's stream under the same attempt.
@@ -52409,7 +53805,8 @@ gate_launch_stage() {
   sup=$( cc_detach_exec "$suplog" "$suplog" \
            env CC_CLAUDE_BIN="$CLI_BIN" \
            bash "$GATE_DIR/gate.sh" supervise-stage --manifest "$MANIFEST" \
-             --target "$alias" --segment "$seg" --nonce "$nonce" -- "$kind" "$@" )
+             --target "$alias" --segment "$seg" --nonce "$nonce" \
+             --launch-dir "$GATE_LAUNCH_DIR" -- "$kind" "$@" )
   if [ -z "$sup" ]; then
     warn "the supervisor failed to start ($seg) — the launch token is withdrawn"
     rm -f "$RUN_DIR/$seg.launch"
@@ -52491,6 +53888,11 @@ gate_verb_supervise_stage() {
   # boundaries; this is the performing half of that same act, split across a
   # process boundary. Its only ledger write is the `stage-result` row.
   local alias="$1" seg="$2" nonce="$3" kind="$4"; shift 4
+  # THE DISPATCH PROMPT A WAIT LAUNCH HANDED DOWN, read once and taken out of
+  # the environment so the stage does not inherit it. Only the waiting branch
+  # reads it, and only on a grant that starts a new session.
+  local disp_set="${CC_GATE_DISPATCH_PROMPT_SET:-}" disp_p="${CC_GATE_DISPATCH_PROMPT:-}"
+  unset CC_GATE_DISPATCH_PROMPT_SET CC_GATE_DISPATCH_PROMPT
   local wrapper="$GATE_DIR/stage-wrapper.sh"
   [ -f "$wrapper" ] || { warn "the stage wrapper is missing: $wrapper"; return 127; }
   [ -n "${CLI_BIN:-}" ] || { warn "the gate could not resolve the CLI binary"; return 127; }
@@ -52575,6 +53977,22 @@ gate_verb_supervise_stage() {
       ;;
   esac
 
+  # THE LAUNCH DIRECTORY the dispatch half chose (`--launch-dir`), entered
+  # before anything reads this process's directory: the waiting supervisor's
+  # synthesis, the compaction window's project layer and the wrapper all follow
+  # it. A launch without the option stays where it was started. A waiting
+  # supervisor does not enter it here — the wait can last hours, and an end
+  # here would leave its marker, `.sup` and FIFO entry behind — but right after
+  # its grant, as the first condition of its preparation, where a refusal takes
+  # that preparation's own cleanup.
+  local launch_dir="${GATE_SUP_LAUNCH_DIR:-}"
+  if [ -n "$launch_dir" ] && [ "$waiting" = "0" ] && ! cd "$launch_dir" 2>/dev/null; then
+    warn "the launch directory is gone ($seg: $launch_dir) — the stage is not started"
+    [ "$routed" = "0" ] || [ -z "$r_nonce" ] \
+      || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
+    return "$GATE_EXIT_RULE"
+  fi
+
   # THE PIN IS READ, NEVER WRITTEN, HERE. The dispatch half wrote it; a second
   # writer would let the two halves disagree about which attempt this is.
   local attempt
@@ -52615,7 +54033,30 @@ gate_verb_supervise_stage() {
     # spawn: the loop read it on the grant, and synthesizing the instructions
     # under the granted account takes long enough for a boundary to land.
     local prep_why="부여 뒤 기동 준비 거부 — 지시문 합성 또는 stage-lease 행이 거절됐다"
-    if [ -z "$r_cfg" ] \
+    # A MIGRATION GRANT AT THE END OF A WAIT starts a new session, as it does at
+    # dispatch time: the bound session lives in the old account's directory.
+    # The binding is still checked, by the lease row below. The argv the
+    # dispatch half handed over was rewritten for a re-attachment (the carry's
+    # resume sentence, a continuation's message), and the prompt it kept before
+    # that is the caller's — the shift's fixed re-attach sentence when the stage
+    # was cut off or refused. So the new session gets the prompt
+    # `gate_fresh_session_prompt` builds for the kind: it names the skill and
+    # the document, and the answer card, when there is one, still reaches it
+    # through CC_PIPELINE_HALT_ANSWER.
+    if [ -n "$resume" ] && gate_route_env_fresh "$wenv"; then
+      log "시각 발행 이관 — $seg 는 대기 끝에 세션 $resume 을 재부착하지 않고 새 세션으로 뜬다"
+      resume=""
+      if gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"; then
+        gate_argv_prompt_restore "$GATE_FRESH_PROMPT" "$@"
+        set -- "${GATE_RESTORED_ARGV[@]}"
+        log "시각 발행 이관 — $seg 의 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
+      else
+        warn "the wait launch handed down no dispatch prompt ($seg) — the new session starts with the argv as handed over"
+      fi
+    fi
+    if { [ -n "$launch_dir" ] && ! cd "$launch_dir" 2>/dev/null \
+           && prep_why="부여 뒤 기동 준비 거부 — 기동 디렉터리 $launch_dir 가 없다"; } \
+       || [ -z "$r_cfg" ] \
        || ! instr=$(CLAUDE_CONFIG_DIR="$r_cfg" gate_stage_instructions_for_launch "$alias" "$resume") \
        || ! gate_stage_lease_row "$r_lineage" "$wenv" "$r_bound" \
        || { ! gate_sup_wait_ended && prep_why="런이 이미 종료됐다 — $seg 는 부여를 받았지만 기동하지 않는다"; }; then
@@ -52625,9 +54066,20 @@ gate_verb_supervise_stage() {
       rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
       return "$GATE_EXIT_RULE"
     fi
+    # THE MIGRATION RECORD, written by the same function every dispatch path
+    # calls, after the lease row and before the spawn.
+    local vwhy
+    if ! vwhy=$(gate_visual_lane_commit "$kind" "$wenv"); then
+      gate_sup_wait_stop "$vwhy"
+      [ -z "$r_nonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
+      wait_drop "$wm"
+      rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+      return "$GATE_EXIT_RULE"
+    fi
     if [ -z "$resume" ] && [ -n "$instr" ]; then
       gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
     fi
+    [ -n "$resume" ] || [ -z "$launch_dir" ] || gate_stage_launch_dir_record "$(session_uuid "$seg" "$attempt")" "$launch_dir"
   fi
   # The plugin root the wrapper injects, so the stage's slash commands resolve.
   # This assignment was once deleted by an edit that moved the block above it;
@@ -52677,9 +54129,9 @@ gate_verb_supervise_stage() {
   # happens only when the reading itself says `(argv)`; `(꺼짐)` and `(미상)`
   # inject nothing — the window is an optimisation, and an uncertain reading
   # must not stop a launch. The project layer is read from this process's cwd,
-  # which is its caller's: the act does not move it, so a stage starts in the
-  # directory the session that dispatched it was in, not in the segment's
-  # worktree.
+  # which is the launch directory entered above when the dispatch passed one:
+  # the dispatching session's directory for the home target, a checkout of the
+  # target otherwise — the stage starts there too.
   # A `--resume` re-attachment passes through here too, so the same flag rides
   # beside `-r`. The flag goes to the WRAPPER, before `--`: the wrapper refuses
   # a caller's `--autocompact` after `--` as a reserved flag, and it puts the
@@ -55399,6 +56851,11 @@ gate_record_stage_outcome() {
            "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
   fi
 
+  # A visual publish stage that finished moving the canvases to a migrated lane
+  # leaves the document-level record here, once its class is decided; the
+  # function warns on a failed write and never holds the row back.
+  [ "$kind" != "visual-publish" ] || gate_visual_lane_doc_commit
+
   # `실패 서명`, by the driver's one helper. The cause clue is the halt record's
   # id for a halt, the first open decision for a suppressed implementation's
   # hollow success and the unmet residual headings for any other; otherwise the
@@ -56920,11 +58377,12 @@ gate_done_conditions() {
     if dstep=$(gate_run_scope_step design); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
-      # The driver names its design stage `S1design` and writes no `종류`. A base
-      # run never has a segment, so this arm is where the driver's design row
-      # has to be read too — otherwise its finished design reads as no row at all
-      # and the document it froze as one nobody will dispatch again.
-      if [ -z "$drows" ] && [ "$(gate_snapshot_design_scope)" = "base" ]; then
+      # The driver names its design stage `S1design` and writes no `종류`. A run
+      # that ends at the split never has a segment, so this arm is where the
+      # driver's design row has to be read too — otherwise its finished design
+      # reads as no row at all and the document it froze as one nobody will
+      # dispatch again.
+      if [ -z "$drows" ] && gate_split_run; then
         drows=$( { gate_rows 'stage-result' || true; } \
                  | { grep -F '세그먼트=- | 스테이지=S1design |' || true; })
       fi
@@ -56957,7 +58415,7 @@ gate_done_conditions() {
           # audit after one, is the run's next work whatever follows the audit
           # in the plan: the line names the wait, as the audit-first arm does,
           # and is not a head the disposition drops.
-          if [ -z "$dnext" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+          if [ -z "$dnext" ] && ! gate_split_run \
              && astep=$(gate_run_scope_step audit) \
              && ! gate_audit_concluded "$astep"; then
             case "$GATE_AUDIT_WAIT" in
@@ -56966,7 +58424,7 @@ gate_done_conditions() {
                 dwhy="" ;;
             esac
           fi
-          if [ -z "$dnext" ] && [ -z "$dwait" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+          if [ -z "$dnext" ] && [ -z "$dwait" ] && ! gate_split_run \
              && gate_plan_ends_at_design; then
             if astep=$(gate_run_scope_step audit); then
               if gate_audit_concluded "$astep"; then
@@ -57001,21 +58459,21 @@ gate_done_conditions() {
           fi
         fi
       fi
-      # A BASE RUN'S FINISHED DESIGN IS NOT A DEAD ONE. In a single run a design
-      # that ended `정상 완료` with no segment after it means the plan stopped
-      # there, and when the plan ends at the design (and its audit) that ending
-      # and the frozen document are the run's work done, judged above; in a base
-      # run it is the normal road to the audit and the split, which the base arm
-      # below judges.
+      # THE FINISHED DESIGN OF A RUN THAT ENDS AT THE SPLIT IS NOT A DEAD ONE. In
+      # any other run a design that ended `정상 완료` with no segment after it
+      # means the plan stopped there, and when the plan ends at the design (and
+      # its audit) that ending and the frozen document are the run's work done,
+      # judged above; here it is the normal road to the audit and the split,
+      # which the split arm below judges.
       #
       # So is one that was never dispatched because the document was already
-      # there and frozen. A base run kicked off again over the same document —
+      # there and frozen. Such a run kicked off again over the same document —
       # the recovery after a split stopped and a person fixed the document —
       # skips the design in both routers and the driver, so it has no design row
       # at all, and the frozen document is the same input a `정상 완료` would
       # have left. An unfrozen document keeps the line: nothing audits or splits
       # it.
-      if [ "$(gate_snapshot_design_scope)" = "base" ]; then
+      if gate_split_run; then
         if [ "$dlast" = '정상 완료' ] \
            || { [ -z "$drows" ] && [ "$dwhy" = '설계 문서가 이미 있음' ] && doc_is_frozen "${DOC:-}"; }; then
           dwhy=""
@@ -57047,10 +58505,10 @@ gate_done_conditions() {
     elif [ "$dmet" = 1 ]; then
       # The plan ended at the design (and its audit), and it froze: held.
       :
-    elif [ "$(gate_snapshot_design_scope)" = "base" ]; then
-      # A BASE RUN NEVER HAS A SEGMENT. Its graph ends at the split, so "no
-      # segment" is its normal end and the plain line below would hold it
-      # forever. What it waits on instead is the split: met when the split step's
+    elif gate_split_run; then
+      # A BASE OR TICKET-DELIVERY RUN NEVER HAS A SEGMENT. Its graph ends at the
+      # split, so "no segment" is its normal end and the plain line below would
+      # hold it forever. What it waits on instead is the split: met when the split step's
       # latest attempt carries its terminal literal and the registry is complete
       # for the current document, closed when the audit or the split will not be
       # dispatched again, and otherwise not finished yet.
@@ -57796,6 +59254,36 @@ gate_shift_self_ordinal() {
   printf '%s' "$n"
 }
 
+gate_shift_transcript_of() {
+  # gate_shift_transcript_of <ordinal> — the transcript file of routing shift
+  # <ordinal>, rc 1 when there is none. A shift writes its transcript under the
+  # lane it was launched on, and the gate may have launched it on an inventory
+  # account rather than the seat, so the lane its `교대 기동` row names, with a
+  # leading `~` expanded, is searched first. A row that is missing, names no
+  # lane or names one whose `projects` directory is not there falls back to the
+  # caller's own directory, as before.
+  local sid lab dir f
+  sid=$(session_uuid "shift" "$1")
+  lab=$(gate_failover_launch_lane "$1" 2>/dev/null || true)
+  case "$lab" in
+    '~') lab="${HOME:-}" ;;
+    '~/'*) lab="${HOME:-}/${lab#\~/}" ;;
+  esac
+  case "$lab" in
+    /*)
+      dir="${lab%/}/projects"
+      if [ -d "$dir" ]; then
+        for f in "$dir/$sid.jsonl" "$dir"/*/"$sid.jsonl"; do
+          [ -f "$f" ] || continue
+          printf '%s\n' "$f"
+          return 0
+        done
+      fi
+      ;;
+  esac
+  gate_transcript_of_session "$sid"
+}
+
 gate_shift_context_of() {
   # gate_shift_context_of <ordinal> — the current context of routing shift
   # <ordinal>, in tokens, or nothing when its transcript cannot be found or
@@ -57812,7 +59300,7 @@ gate_shift_context_of() {
   local n="$1" f v
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
   [ "$n" -ge 1 ] || return 0
-  f=$(gate_transcript_of_session "$(session_uuid "shift" "$n")") || f=""
+  f=$(gate_shift_transcript_of "$n") || f=""
   [ -n "$f" ] && [ -f "$f" ] || return 0
   v=$(tail -c 262144 "$f" 2>/dev/null | gate_usage_scan | awk '{print $2}')
   case "${v:-}" in ''|*[!0-9]*) return 0 ;; esac
@@ -57831,7 +59319,7 @@ gate_shift_org_moves_of() {
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
   [ "$n" -ge 1 ] || return 0
   sid=$(session_uuid "shift" "$n")
-  f=$(gate_transcript_of_session "$sid") || f=""
+  f=$(gate_shift_transcript_of "$n") || f=""
   [ -n "$f" ] && [ -f "$f" ] || return 0
   m=$(transcript_org_moves "$f")
   case "$m" in ''|0|*[!0-9]*) return 0 ;; esac
@@ -59085,6 +60573,501 @@ gate_shift_launch_drop_claim() {
   return 0
 }
 
+gate_shift_launch_drop_claims() {
+  # The account-failover outcomes that launch nothing — `대기` and `마감 초과` —
+  # take down both claims this launcher may have published: `shift.live` for
+  # a reason other than `대기`, `relay.live` for `대기` and inside the relay
+  # loop. Left behind, a dead launcher's `relay.live` falls inside the fleet
+  # tick's quiet window and keeps the run from being re-called. A marker that
+  # names another process is not this launcher's, and stays.
+  local p
+  gate_shift_launch_drop_claim
+  p=$( { sed -n '1p' "$RUN_DIR/relay.live" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$p" != "$$" ] || rm -f "$RUN_DIR/relay.live"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Account failover — the lane a successor shift runs on when the seat's lane
+# is at its usage limit.
+#
+# ONLY IN A FAILOVER RUN: the manifest carries at least one `계정 이전 허용`
+# row and the run is routed (`run_failover_allowed`). Everywhere else the
+# successor runs on the caller's lane, as it always has.
+#
+# ONE JUDGMENT FUNCTION. `gate_failover_judge` reads one router view and gives
+# the seat lane's limit evidence, each listed account's state, the pick, the
+# resume time and the reason it could not judge. The launcher, the relay's
+# re-entry check and the fleet tick read only its output.
+
+gate_failover_seat_dir() {
+  # The run's seat as its `config-dir` record holds it — never the environment,
+  # which inside a moved shift is the moved-to account. rc 1 when the record
+  # cannot be read.
+  [ -n "${RUN_DIR:-}" ] || return 1
+  local rc=0
+  lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 config-dir" \
+    "계정 이전 판정이 좌석 레인을 알 수 없습니다" 2>/dev/null || rc=$?
+  [ "$rc" = "0" ] || return 1
+  printf '%s' "$LANE_RECORD"
+}
+
+gate_failover_launch_lane() {
+  # gate_failover_launch_lane <n> — the `레인=` label of shift n's `교대 기동`
+  # row, or nothing. Read from the file: the fleet tick calls this too.
+  local row
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  row=$( { LC_ALL=C grep -E '^- `교대 기동` ' "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "| 서수=$1 |" || true; } | tail -1)
+  [ -n "$row" ] || return 0
+  gate_row_field "$row" '레인'
+}
+
+gate_failover_moved_shift() {
+  # gate_failover_moved_shift <n> — succeeds in a failover run when shift n's
+  # `교대 기동` row names a lane other than the seat lane: the gate launched it
+  # on a listed account. A missing row, a row with no lane, or a `config-dir`
+  # record that does not read is not a move, so the caller keeps reading that
+  # shift's reset as the seat lane's. The seat label is the one evidence (b)
+  # compares against (`gate_failover_stream_evidence`).
+  run_failover_allowed 2>/dev/null || return 1
+  local lab seat
+  lab=$(gate_failover_launch_lane "$1")
+  [ -n "$lab" ] && [ "$lab" != "-" ] || return 1
+  seat=$(gate_failover_seat_dir) && [ -n "$seat" ] || return 1
+  [ "$lab" != "$(lane_label_of "$seat")" ]
+}
+
+gate_failover_dead_at() {
+  # gate_failover_dead_at <ordinal> <now> — the reset clock of shift <ordinal>
+  # when it died limit-shaped — a `handoff 사유=무기록` row the gate wrote for
+  # it, and its own stream yields a reset — and that reset is still ahead of
+  # <now>; otherwise nothing. The clock is `gate_cut_reset_at`'s, the one the
+  # relay's `교대#<n>` key reads.
+  local n="$1" now="$2" rows at
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  rows=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } \
+          | { grep -F ' | 사유=무기록 | ' || true; } | gate_rows_field_eq '교대' "$n")
+  [ -n "$rows" ] || return 0
+  at=$(gate_cut_reset_at "$RUN_DIR/log/shift-$n.json")
+  case "$at" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$at" -gt "$now" ] || return 0
+  printf '%s' "$at"
+}
+
+gate_failover_stream_evidence() {
+  # gate_failover_stream_evidence <seat label> <now> — evidence (b): the
+  # ledger's latest `handoff` is the gate's `무기록` for a shift launched on the
+  # seat lane, and that shift's stream yields a reset after <now>. Prints the
+  # reset, or nothing.
+  local lab="$1" now="$2" last n
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = "무기록" ] || return 0
+  n=$(gate_row_field "$last" '교대')
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$(gate_failover_launch_lane "$n")" = "$lab" ] || return 0
+  gate_failover_dead_at "$n" "$now"
+}
+
+gate_failover_lane_dead() {
+  # gate_failover_lane_dead <lane label> <now> — succeeds when the latest shift
+  # launched on that lane died the way evidence (b) reads a death.
+  local lab="$1" now="$2" r n=""
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '레인')" = "$lab" ] && n=$(gate_row_field "$r" '서수')
+  done <<EOF
+$( { LC_ALL=C grep -E '^- `교대 기동` ' "$LEDGER" 2>/dev/null || true; } )
+EOF
+  [ -n "$n" ] || return 1
+  [ -n "$(gate_failover_dead_at "$n" "$now")" ]
+}
+
+gate_failover_judge_request() {
+  # The request both the judgment and the moved shift's lease read the router
+  # with: a lineage of its own, so this run's own leases count as reservations.
+  jq -cn --arg run "${RUN_ID:-}" \
+    '{run_id: $run, lineage: "failover-judge", event: "failover-judge", kind: "shift", holders: []}' 2>/dev/null
+}
+
+gate_failover_judge() {
+  # gate_failover_judge — the account-failover judgment, one line per output,
+  # `<name>\t<value>`:
+  #
+  #   증거   `사용량` (a), `교대 스트림` (b), or `-` when the seat lane shows
+  #          no limit
+  #   좌석   the seat lane's label
+  #   후보   `<id>:<state>` per listed account, in manifest order, `,`-joined;
+  #          `-` when no router view was read
+  #   고름   `<id>\t<config dir>` of the account picked, absent when none
+  #   재개   the resume time T as epoch seconds, or `-`
+  #   불가   why it could not judge, or `-`
+  #
+  # rc 0 judged, rc 2 could not judge. The evidence line is printed on both,
+  # with whatever evidence the inputs that could be read still show, and the
+  # caller reads the rc first: a judgment that could not be made is `판정불가`
+  # whatever the evidence line says.
+  #
+  # THE INPUTS ARE THIS PROCESS'S GLOBALS — `RUN_DIR`, `RUN_ID`, `LEDGER`, the
+  # manifest, `RUN_PACE_SESSION_WINDOW_PCT_MAX`, `run_pace_root`, `boot_epoch`
+  # and the XDG paths — gathered by `route_gather_context`, which the gate and
+  # the fleet tick's sourced shell both reach. Any of them missing reads as
+  # rc 2 with `불가=문맥`, never as "no candidate".
+  #
+  # STATES, first that applies: `같은 조직` (the seat account's group: it shares
+  # the seat's limit), `인벤토리 밖` (not in the inventory, `unattended` is not
+  # `enabled`, or the account is reserved for interactive use or publish-only),
+  # `라우터 제외` (`group_reserved`), `로그인`, `라우터 제외` (`mismatch`,
+  # `borrowed`), `소진` (class `X`), `라우터 제외` (class `U`), `죽은 교대` (the
+  # latest shift launched on its lane died the evidence-(b) way), else `여유`.
+  # The pick is the `여유` account with the largest `remaining_bp`, manifest
+  # order on a tie.
+  #
+  # T is the earliest of the `소진` accounts' times and the seat lane's, counted
+  # in whole epoch seconds after now: an account's time is its
+  # `exhausted_until`, else the latest `resets_at` of its group's exhausted
+  # windows, and none when one of those is not a number. The seat lane takes
+  # one time per evidence that stood — (a) by the same rule on the seat
+  # account, (b) its reset — the later of them, and none when one cannot be
+  # counted.
+  local now seat lab nb nbev ctx view req ids dead='[]' id dir jrc=0
+  now=$(date -u +%s)
+  if [ -z "${RUN_DIR:-}" ] || [ -z "${RUN_ID:-}" ] || [ -z "${LEDGER:-}" ] || [ -z "${MANIFEST:-}" ] \
+     || ! seat=$(gate_failover_seat_dir); then
+    printf '증거\t-\n좌석\t-\n후보\t-\n재개\t-\n불가\t문맥\n'
+    return 2
+  fi
+  lab=$(lane_label_of "$seat")
+  nb=$(gate_failover_stream_evidence "$lab" "$now")
+  if [ -n "$nb" ]; then nbev='교대 스트림'; else nbev='-'; fi
+  # Evidence (a): the seat row of a fresh usage file is exhausted until a time
+  # ahead, or one of its windows is full and resets ahead.
+  local seat_limited='
+    def norm: if type == "string" then rtrimstr("/") else . end;
+    def seat_limited($c; $s):
+      ([(($c.usage.accounts // [])[]) | select(type == "object") | select((.config_dir | norm) == $s)] | .[0]) as $u
+      | (($c.usage.fresh == true) and $u != null
+         and ((($u.exhausted_until_epoch | type) == "number" and $u.exhausted_until_epoch > $c.now)
+              or any(($u.windows // {}) | .five_hour, .seven_day; (type == "object")
+                     and ((.utilization | type) == "number") and .utilization >= 1
+                     and ((.resets_at_epoch | type) == "number") and .resets_at_epoch > $c.now)));'
+  req=$(gate_failover_judge_request) || req=""
+  if [ -z "$req" ] || ! ctx=$(route_gather_context "$req" "$seat" 2>/dev/null) || [ -z "$ctx" ]; then
+    printf '증거\t%s\n좌석\t%s\n후보\t-\n재개\t-\n불가\t문맥\n' "$nbev" "$lab"
+    return 2
+  fi
+  ids=$(manifest_failover_accounts | jq -R . | jq -cs . 2>/dev/null) || ids='[]'
+  [ -n "$ids" ] || ids='[]'
+  while IFS="$(printf '\t')" read -r id dir; do
+    [ -n "$dir" ] || continue
+    if gate_failover_lane_dead "$(lane_label_of "$dir")" "$now"; then
+      dead=$(printf '%s' "$dead" | jq -c --arg d "${dir%/}" '. + [$d]')
+    fi
+  done <<EOF
+$(printf '%s' "$ctx" | jq -r --argjson ids "$ids" \
+    '(.inventory.accounts // [])[] | select(type == "object") | select(.id as $i | any($ids[]; . == $i))
+     | "\(.id)\t\(.config_dir // "")"' 2>/dev/null || true)
+EOF
+  if ! view=$(printf '%s' "$ctx" | route_classify 2>/dev/null) || [ -z "$view" ]; then
+    printf '%s' "$ctx" | jq -r --arg seat "$seat" --arg lab "$lab" --arg nbev "$nbev" "$seat_limited"'
+      (.) as $c
+      | "증거\t" + (if seat_limited($c; ($seat | norm)) then "사용량" else $nbev end),
+        "좌석\t" + $lab, "후보\t-", "재개\t-", "불가\t분류"' 2>/dev/null \
+      || printf '증거\t%s\n좌석\t%s\n후보\t-\n재개\t-\n불가\t분류\n' "$nbev" "$lab"
+    return 2
+  fi
+  local out why
+  out=$(printf '%s' "$ctx" | jq -r --argjson v "$view" --argjson ids "$ids" --argjson dead "$dead" \
+      --arg seat "$seat" --arg lab "$lab" --arg nb "$nb" "$seat_limited"'
+    (.) as $c
+    | ($seat | norm) as $s
+    | ($v.accounts // []) as $A
+    | ([$A[] | select((.config_dir | norm) == $s)] | .[0]) as $sa
+    | seat_limited($c; $s) as $ea
+    | ($nb != "") as $eb
+    | (if $ea then "사용량" elif $eb then "교대 스트림" else "-" end) as $ev
+    | def acct_time($a):
+        if ($a.exhausted_until | type) == "number" then ($a.exhausted_until | floor)
+        else ([($v.groups // [])[] | select(.group == $a.group) | (.windows // {})[] | select(.state == "exhausted") | .resets_at]) as $r
+          | if ($r | length) == 0 then null
+            elif all($r[]; type == "number") then ($r | max | floor)
+            else null end end;
+      (if ($c.inventory.state // "") != "valid" or (($c.inventory.accounts // []) | length) == 0 then "인벤토리"
+       elif ($c.usage.state // "") != "valid" or $c.usage.fresh != true then "사용량"
+       elif $sa == null then "좌석 계정"
+       else null end) as $why
+    | if $why != null then
+        "증거\t" + $ev, "좌석\t" + $lab, "후보\t-", "재개\t-", "불가\t" + $why
+      else
+        [ $ids | to_entries[] | .key as $k | .value as $id
+          | ([$A[] | select(.id == $id)] | .[0]) as $a
+          | (if $a == null then "인벤토리 밖"
+             elif $a.group == $sa.group then "같은 조직"
+             elif $a.unattended != "enabled" or $a.interactive_reserved == true
+                  or $a.publish_row == true or $a.publish_defect == true then "인벤토리 밖"
+             elif $a.group_reserved == true then "라우터 제외"
+             elif $a.login_bad == true then "로그인"
+             elif ($a.mismatch == true) or ($a.borrowed != null) then "라우터 제외"
+             elif $a.class == "X" then "소진"
+             elif $a.class == "U" then "라우터 제외"
+             elif any($dead[]; . == ($a.config_dir | norm)) then "죽은 교대"
+             else "여유" end) as $st
+          | {k: $k, id: $id, st: $st, dir: ($a.config_dir // null), bp: ($a.remaining_bp // 0),
+             t: (if $st == "소진" then acct_time($a) else null end)} ] as $L
+        | ([$L[] | select(.st == "여유")] | sort_by([-(.bp), .k]) | .[0]) as $pick
+        | ([(if $ea then acct_time($sa) else empty end), (if $eb then ($nb | tonumber) else empty end)]) as $sts
+        | (if ($sts | length) == 0 or any($sts[]; . == null) then null else ($sts | max) end) as $seat_t
+        | ([$L[] | .t] + [$seat_t] | map(select(. != null and . > $c.now)) | min) as $t
+        | "증거\t" + $ev, "좌석\t" + $lab,
+          "후보\t" + (if ($L | length) == 0 then "-" else ([$L[] | "\(.id):\(.st)"] | join(",")) end),
+          (if $pick != null then "고름\t\($pick.id)\t\($pick.dir)" else empty end),
+          "재개\t" + (if $t == null then "-" else ($t | tostring) end),
+          "불가\t-"
+      end' 2>/dev/null) || jrc=$?
+  if [ "$jrc" != "0" ] || [ -z "$out" ]; then
+    printf '증거\t%s\n좌석\t%s\n후보\t-\n재개\t-\n불가\t분류\n' "$nbev" "$lab"
+    return 2
+  fi
+  printf '%s\n' "$out"
+  # THE INPUT REASONS ARE rc 2 TOO. A missing or stale inventory or usage file,
+  # or a seat account the inventory lacks, is printed on the `불가` line by the
+  # jq above; leaving it at rc 0 would have the launcher read "no candidate"
+  # and write a wait or a deadline overrun from inputs it could not read.
+  why=$(gate_failover_field "$out" '불가')
+  [ -z "$why" ] || [ "$why" = "-" ] || return 2
+  return 0
+}
+
+gate_failover_inputs() {
+  # gate_failover_inputs <run dir> — set the globals the failover judgment and
+  # `gate_relay_reentry_allowed` read, for a shell that sourced this file with
+  # `CC_GATE_SOURCE_ONLY=1` (the fleet tick): `RUN_DIR`, `RUN_ID`, `LEDGER`
+  # from the run's `ledger-path` record and `MANIFEST` from its `seat-call`.
+  # rc 1 when one of them cannot be had, which the caller reads as "could not
+  # judge" and never as "no candidate". A gate process has all four already
+  # and never calls this.
+  local rd="${1%/}" l m
+  [ -n "$rd" ] && [ -d "$rd" ] || return 1
+  l=$(sed -n '1p' "$rd/ledger-path" 2>/dev/null || true)
+  m=$( { sed -n 's/^manifest=//p' "$rd/seat-call" 2>/dev/null || true; } | tail -1)
+  [ -n "$l" ] && [ -f "$l" ] && [ -n "$m" ] && [ -f "$m" ] || return 1
+  RUN_DIR="$rd"
+  RUN_ID=$(basename "$rd")
+  LEDGER="$l"
+  MANIFEST="$m"
+  return 0
+}
+
+gate_failover_field() {
+  # gate_failover_field <judgment> <name> — one output line's value; for `고름`
+  # the id and the directory, tab-separated.
+  printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == k { sub(/^[^\t]*\t/, ""); print; exit }'
+}
+
+gate_failover_has_room() {
+  # Succeeds when the judgment yields at least one `여유` account. A judgment
+  # that could not be made (rc 2) is not room.
+  local j rc=0
+  j=$(gate_failover_judge) || rc=$?
+  [ "$rc" = "0" ] && [ -n "$(gate_failover_field "$j" '고름')" ]
+}
+
+gate_failover_row() {
+  # gate_failover_row <서수> <좌석 레인> <증거> <결과> <레인> <계정> <재개 epoch|-> <후보>
+  # — the `계정 이전` row. Every field is written, `-` for a value it does not
+  # have; lanes are labels and `후보` carries ids and states only, which keeps
+  # the row inside `GATE_ROW_MAX`. `교대` is the routing seat `gate_append`
+  # stamps on every row.
+  local at="-"
+  case "${7:-}" in ''|-|*[!0-9]*) : ;; *) at=$(cc_epoch_to_iso "$7") ;; esac
+  [ -n "$at" ] || at="-"
+  gate_append '계정 이전' "서수=${1:--}" "좌석 레인=${2:--}" "증거=${3:--}" "결과=${4:--}" \
+    "레인=${5:--}" "계정=${6:--}" "재개 시각=$at" "후보=${8:--}" "기록 시각=$(now_iso)"
+}
+
+gate_failover_wait_resumes() {
+  # The `재개 시각` epochs of every `결과=대기` `계정 이전` row after the latest
+  # `handoff`, one per line, oldest first.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    cc_iso_to_epoch "$(gate_row_field "$r" '재개 시각')"
+    printf '\n'
+  done <<EOF
+$(LC_ALL=C awk '
+    /^- `handoff` / { n = 0 }
+    /^- `계정 이전` / && index($0, " | 결과=대기 | ") > 0 { r[++n] = $0 }
+    END { for (i = 1; i <= n; i++) print r[i] }
+  ' "$LEDGER" 2>/dev/null || true)
+EOF
+}
+
+gate_failover_defers_reset() {
+  # Succeeds in a failover run when the pre-launch wait would wait on nothing
+  # but a limit-shaped `무기록` reset: the latest `handoff` is `무기록` and no
+  # stage or supervisor is live. That one wait moves after the lane judgment,
+  # so a shift that died of the seat lane's limit moves to a listed account
+  # with room at once instead of waiting out the seat lane's reset. A stage,
+  # CI, a `리셋 대기` key or an `이월` deadline is still waited on first, and
+  # so is the run's own failover wait while its resume time is ahead: the
+  # judgment that wrote it found no room, and judging again before that time
+  # would only find the same.
+  run_failover_allowed 2>/dev/null || return 1
+  local last r
+  last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = "무기록" ] || return 1
+  r=$(gate_relay_resume_clock)
+  [ -z "$r" ] || [ "$(date -u +%s)" -ge "$r" ] || return 1
+  [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ]
+}
+
+gate_failover_reservation() {
+  # gate_failover_reservation <account> — the `reservation_bp` the router gives
+  # that account for a shift, as JSON, from the `admit` verb over the judgment's
+  # context. `admit` gives the value whether or not it admits the account, and
+  # its admission is not read: the judgment already chose the account. rc 1 when
+  # it cannot be read.
+  local seat req ctx out
+  seat=$(gate_failover_seat_dir) || return 1
+  req=$(gate_failover_judge_request) || return 1
+  ctx=$(route_gather_context "$req" "$seat" 2>/dev/null) || return 1
+  [ -n "$ctx" ] || return 1
+  out=$(printf '%s' "$ctx" | bash "$(route__dir)/route.sh" admit 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -ce --arg a "$1" \
+    '[.[] | select(.account == $a)][0].reservation_bp
+     | select(type == "object" and (.five_hour | type) == "number" and (.seven_day | type) == "number")' 2>/dev/null
+}
+
+gate_failover_lease_put() (
+  # gate_failover_lease_put <account> <config dir> <holder pid> <lineage> <reservation> —
+  # a router lease on the moved-to account, basis `failover-shift`, held by the
+  # shift's pid; prints the nonce. Without it a moved shift spends an account
+  # outside the lease ledger, and an admission of another run counts nothing
+  # against it. Written under the table lock as the router's own wait entry is.
+  #
+  # A SUBSHELL BODY: the table lock sets and clears the EXIT trap of the shell
+  # that takes it, and the gate's own EXIT trap emits the digest.
+  acct="$1"; dir="$2"; pid="$3"; lin="$4"; res="$5"; rc=0
+  t="$(run_pace_root)/leases"
+  now=$(date -u +%s)
+  key=$(route__key "$RUN_ID" "$lin") || exit 2
+  holders=$(route__holders_json "$pid") || exit 2
+  nonce=$(route__nonce)
+  [ -n "$nonce" ] || exit 4
+  mkdir -p "$t" 2>/dev/null || exit 4
+  route__lock_acquire "$t" || exit $?
+  leases=$(route__table_read "$t" "") || rc=2
+  if [ "$rc" = "0" ]; then
+    rec=$(jq -cn --argjson leases "$leases" --arg schema "$ROUTE_LEASE_SCHEMA" --arg run "$RUN_ID" \
+          --arg lin "$lin" --arg nonce "$nonce" --arg acct "$acct" --arg dir "$dir" \
+          --argjson now "$now" --argjson holders "$holders" --argjson res "$res" '
+          {schema: $schema, kind: "grant", run_id: $run, lineage: $lin, nonce: $nonce,
+           seq: ((([($leases.items // [])[] | .seq | select(type == "number")] | max) // 0) + 1),
+           account: $acct, config_dir: $dir, reservation_bp: $res,
+           admitted_as: "known", basis: "failover-shift", observed: "-", granted_at_epoch: $now,
+           holders: $holders}' 2>/dev/null) || rc=2
+  fi
+  if [ "$rc" = "0" ] && ! route__lease_put "$t" "$key" "$rec"; then rc=4; fi
+  route__lock_release
+  [ "$rc" = "0" ] || exit "$rc"
+  printf '%s' "$nonce"
+)
+
+gate_failover_wait() {
+  # gate_failover_wait <alias> <seat label> <evidence> <T or ""> <후보> <사유> —
+  # no account has room and the reason is `대기` or `상한`: write the wait and
+  # launch nothing.
+  #
+  # INSIDE THE RELAY THE WAIT IS WAITED ON. A `대기` launch is the relay's — the
+  # seat's re-entry, the fleet chain's call or the loop's own successor — and a
+  # `결과=대기` there keeps `relay.live`, marks the relay entered and returns 0:
+  # `gate_relay_route` then polls the wait set, whose resume member holds it
+  # until the resume time (`cc_relay_wake_keys`) or the hold, whichever comes
+  # first, and launches again so the lanes are judged again. A hold that comes
+  # first hands back as it always does.
+  #
+  # OUTSIDE IT, AND ON `마감 초과`, the rule exit, 3, after taking down this
+  # launcher's claims — the seat reads 3 as "another launcher drives this run",
+  # and the fleet tick's chain stops on it; the tick re-calls the run once the
+  # resume time has passed.
+  #
+  #   T at or before the deadline, or no deadline   `결과=대기`, `재개 시각=T`
+  #   T past the deadline, or no T                  `결과=마감 초과`, and a
+  #                                                 run-scope `blocked` row for
+  #                                                 a person
+  #
+  # NOT EXIT 5. The seat reads 5 from `router-shift` as an approval to answer,
+  # and this outcome issues none; a person learns of it from the `blocked` row.
+  #
+  # ONE ROW PER WAIT, AND THIS IS READ BEFORE THE DEADLINE. While the current
+  # wait's resume time is ahead and a newly counted T sits within
+  # `GATE_FAILOVER_RESUME_TOLERANCE_SECONDS` of it, inclusive, that T is the same
+  # wait: nothing is written and the resume time and the gap key stay as the row
+  # has them. That row already passed the deadline comparison, so a wobble over
+  # the deadline does not become `마감 초과`. Once the resume time has passed the
+  # tolerance is not read: a judgment with no candidate writes a new row, so the
+  # gap key moves and the fleet tick can come back.
+  #
+  # THE GRACE. A judgment made within `GATE_FAILOVER_RESUME_GRACE_SECONDS` after
+  # the current wait's resume time does not become `마감 초과`: the inputs may
+  # not have caught up yet. It writes `결과=대기` at that resume time plus the
+  # grace instead — once per wait: a wait whose resume time is an earlier wait
+  # row's plus the grace already had it.
+  local alias="$1" lab="$2" ev="$3" t="$4" cands="$5" why="${6:-}" dl now prev g n res r d graced="" same=""
+  GATE_FAILOVER_DEFERRED=""
+  dl=$(gate_deadline_epoch)
+  now=$(date -u +%s)
+  g=$GATE_FAILOVER_RESUME_GRACE_SECONDS
+  prev=$(cc_failover_wait_resume "$LEDGER")
+  n=$(( $(gate_shift_launches) + 1 ))
+  if [ -n "$prev" ] && [ -n "$t" ] && [ "$now" -lt "$prev" ]; then
+    d=$((t - prev))
+    [ "$d" -ge 0 ] || d=$((0 - d))
+    [ "$d" -gt "$GATE_FAILOVER_RESUME_TOLERANCE_SECONDS" ] || same=1
+  fi
+  if [ -n "$same" ]; then
+    res=대기
+    t=$prev
+  elif [ -n "$t" ] && { [ -z "$dl" ] || [ "$t" -le "$dl" ]; }; then
+    res=대기
+  else
+    res="마감 초과"
+    if [ -n "$prev" ] && [ "$now" -ge "$prev" ] && [ "$now" -lt $((prev + g)) ]; then
+      while IFS= read -r r; do
+        case "$r" in ''|*[!0-9]*) continue ;; esac
+        [ $((r + g)) -ne "$prev" ] || graced=1
+      done <<EOF
+$(gate_failover_wait_resumes)
+EOF
+      if [ -z "$graced" ] && { [ -z "$dl" ] || [ $((prev + g)) -le "$dl" ]; }; then
+        res=대기
+        t=$((prev + g))
+      fi
+    fi
+  fi
+  if [ -n "$same" ]; then
+    log "계정 이전 대기 — 재개 시각 $(cc_epoch_to_iso "$t") 의 대기가 이미 기록돼 있어 다시 쓰지 않고 교대를 띄우지 않는다"
+  elif [ "$res" = "대기" ]; then
+    gate_failover_row "$n" "$lab" "$ev" 대기 - - "$t" "$cands"
+    log "계정 이전 대기 — 여유 계정이 없다 · 재개 시각 $(cc_epoch_to_iso "$t")"
+  else
+    gate_failover_row "$n" "$lab" "$ev" "마감 초과" - - - "$cands"
+    gate_append 'blocked' "대상=$alias" "스코프=run" "원인=막힘" "사유=계정 이전 마감 초과" \
+      "관측=좌석 레인 $lab 이 한도($ev)이고 목록 계정에 여유가 없으며 재개 시각이 $( [ -n "$t" ] && cc_epoch_to_iso "$t" || printf '없음') 으로 마감 $( [ -n "$dl" ] && cc_epoch_to_iso "$dl" || printf '없음') 안에 들지 않는다" \
+      "재개 명령=한도가 풀린 뒤 좌석에서 router-shift 를 사유=중단 으로 다시 낸다"
+    warn "계정 이전 마감 초과 — 여유 계정이 없고 재개 시각이 마감 안에 들지 않아 교대를 띄우지 않는다; blocked 행을 남겼다"
+  fi
+  if [ "$res" = "대기" ] && [ "$why" = "대기" ]; then
+    GATE_RELAY_ENTERED=1
+    return 0
+  fi
+  gate_shift_launch_drop_claims
+  return "$GATE_EXIT_RULE"
+}
+
 gate_launch_shift() {
   # gate_launch_shift <alias> <사유> <cli args...>
   #
@@ -59288,6 +61271,77 @@ gate_launch_shift() {
     log "전송 단절 뒤 연결 확인 ${probe_note} — 교대를 기동한다"
   fi
 
+  # THE LANE, IN A FAILOVER RUN ONLY. Five outcomes, in order: not a failover
+  # run — the caller's lane, as always, and no row; no judgment — `결과=판정불가`,
+  # the seat lane's path as it is today, read before the evidence line, which is
+  # also what a missing or stale input leaves on it; no evidence that the seat
+  # lane is at its limit — the seat lane, and no row; an account with room —
+  # `결과=이전`, the shift runs under that account's directory; no account with
+  # room under `대기` or `상한` — the reasons the fleet tick can re-issue — the
+  # wait (`결과=대기` with the resume time, or `결과=마감 초과`), and nothing is
+  # launched; no account with room under `승인`, `종단` or `중단` — `결과=좌석
+  # 복귀`, the seat lane.
+  #
+  # THE TWO VARIABLES ARE FUNCTION-LOCAL AND EXPORTED BEFORE ANYTHING IS BUILT.
+  # The instructions, the window reading and the launch line all read the
+  # chosen directory; a prefix assignment on the launch line alone would reach
+  # none of the values computed above it. Every launch that is not a move
+  # passes `CC_GATE_SHIFT_LANE` empty, so a seat-lane shift never takes the
+  # seat-revert branch of `resolve_account`, and in a failover run it also
+  # passes the `config-dir` record as `CLAUDE_CONFIG_DIR`: launched from inside
+  # a moved shift, it would otherwise inherit that shift's account while its row
+  # reads the seat. Both values are saved first and put back right after the
+  # launch line, because the tail below is the caller's work.
+  local fo_prev_lane="${CC_GATE_SHIFT_LANE:-}" fo_prev_cfg="" fo_prev_set=""
+  if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then fo_prev_set=1; fo_prev_cfg="$CLAUDE_CONFIG_DIR"; fi
+  local -x CC_GATE_SHIFT_LANE=
+  local fo_res="" fo_dir="" fo_acct="" fo_ev="-" fo_lab="-" fo_cands="-" fo_t="" fo_j="" fo_jrc=0
+  local fo_pick fo_nonce="" fo_seat="" fo_cfg_moved=""
+  if run_failover_allowed 2>/dev/null; then
+    fo_j=$(gate_failover_judge) || fo_jrc=$?
+    fo_ev=$(gate_failover_field "$fo_j" '증거'); fo_ev=${fo_ev:--}
+    fo_lab=$(gate_failover_field "$fo_j" '좌석'); fo_lab=${fo_lab:--}
+    fo_cands=$(gate_failover_field "$fo_j" '후보'); fo_cands=${fo_cands:--}
+    fo_t=$(gate_failover_field "$fo_j" '재개'); [ "$fo_t" != "-" ] || fo_t=""
+    fo_pick=$(gate_failover_field "$fo_j" '고름')
+    if [ "$fo_jrc" != "0" ]; then
+      fo_res=판정불가
+      log "계정 이전 판정불가 — $(gate_failover_field "$fo_j" '불가') · 좌석 레인 경로로 간다"
+    elif [ "$fo_ev" = "-" ]; then
+      fo_res=""
+    elif [ -n "$fo_pick" ]; then
+      fo_res=이전
+      fo_acct=${fo_pick%%"$(printf '\t')"*}
+      fo_dir=${fo_pick#*"$(printf '\t')"}
+    else
+      case "$reason" in
+        대기|상한)
+          gate_failover_wait "$alias" "$fo_lab" "$fo_ev" "$fo_t" "$fo_cands" "$reason"
+          return $? ;;
+        *) fo_res="좌석 복귀" ;;
+      esac
+    fi
+    # THE DEFERRED RESET WAIT. The pre-launch wait skipped a lone limit-shaped
+    # `무기록` reset so this judgment could move the shift first; a shift that
+    # stays on the seat lane waits that reset out here, as it did before.
+    if [ -n "$GATE_FAILOVER_DEFERRED" ] && [ "$fo_res" != "이전" ]; then
+      GATE_FAILOVER_DEFERRED=""
+      gate_relay_wait || return 0
+    fi
+    GATE_FAILOVER_DEFERRED=""
+    if [ "$fo_res" = "이전" ]; then
+      local -x CLAUDE_CONFIG_DIR="$fo_dir"
+      CC_GATE_SHIFT_LANE="$fo_dir"
+      fo_cfg_moved=1
+      log "계정 이전 — 좌석 레인 $fo_lab 의 한도 증거($fo_ev)로 교대를 $fo_acct ($(lane_label_of "$fo_dir")) 에서 띄운다"
+    elif fo_seat=$(gate_failover_seat_dir) && [ -n "$fo_seat" ]; then
+      local -x CLAUDE_CONFIG_DIR="$fo_seat"
+      fo_cfg_moved=1
+    else
+      warn "계정 이전 런의 config-dir 기록을 읽지 못해 교대가 부른 쪽 레인을 물려받는다"
+    fi
+  fi
+
   # THE SHIFT'S INSTRUCTIONS — the same policy file and the same synthesis as a
   # stage of the home target, never a narrower variant (that would be a second
   # drift surface and a second cache head). Synthesized BEFORE the `교대 기동`
@@ -59367,8 +61421,8 @@ gate_launch_shift() {
   #
   # `조직 이동` IS THE OUTGOING SHIFT'S TOO, for the same reason, and silent
   # when it is 0 or unreadable — a kickoff launch has no outgoing shift at all.
-  local window effort model launch_flags prev_ctx='' som=''
-  window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
+  local window effort model launch_flags prev_ctx='' som='' lane_lab
+  window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD" "$fo_dir")
   effort=$(stage_effort_of shift)
   model=$(stage_model_of shift)
   launch_flags=$(stage_launch_flags shift)
@@ -59382,10 +61436,26 @@ gate_launch_shift() {
   # left; the drain appends under its own lock and is done before the row below.
   # The base branch's reading goes in first for the same reason: a relay woken
   # by it hands over a snapshot whose `다음` already reads the new reading.
+  #
+  # THE `계정 이전` ROW OF A SHIFT THAT LAUNCHES — `이전`, `좌석 복귀` or
+  # `판정불가` — stands above that shift's `교대 기동` row and below the
+  # instruction synthesis, so a refused synthesis leaves neither. The launch
+  # row's `레인=` is the lane the shift runs on: the chosen account's label for
+  # a move, never the launching process's resolution, which inside a moved
+  # shift answers the seat.
+  if [ -n "$fo_res" ]; then
+    gate_failover_row "$n" "$fo_lab" "$fo_ev" "$fo_res" \
+      "$( [ -n "$fo_dir" ] && lane_label_of "$fo_dir" || printf -- '-')" "${fo_acct:--}" - "$fo_cands"
+  fi
+  if [ "$fo_res" = "이전" ]; then
+    lane_lab=$(lane_label_of "$fo_dir")
+  else
+    lane_lab=$(gate_lane_label)
+  fi
   gate_master_row_if_changed
   gate_drain_checks
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
-    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
+    "세션 id=$(session_uuid "shift" "$n")" "레인=$lane_lab" "압축 창=$window" \
     "컨텍스트=${prev_ctx:--}" "effort=${effort:--}" "모델=${model:--}" \
     ${som:+"조직 이동=$som"} ${probe_note:+"연결 확인=$probe_note"}
   # THE RUN NOW ENDS ON `done`, AND ONLY THE SEAT SAYS SO. A seat that hands its
@@ -59471,7 +61541,34 @@ gate_launch_shift() {
   printf '%s\n%s\n%s\n%s\n' "$spid" "$(cc_proc_fingerprint "$spid")" \
     "$$" "$(cc_proc_fingerprint "$$")" > "$RUN_DIR/shift.live"
   rm -f "$RUN_DIR/relay.live"
+  # THE LAUNCHER GETS ITS OWN VALUES BACK BEFORE THE TAIL. The wait, the relay's
+  # re-entry, the trace and the banner are the caller's work and do not run on
+  # the lane the shift was given.
+  CC_GATE_SHIFT_LANE="$fo_prev_lane"
+  if [ -n "$fo_cfg_moved" ]; then
+    if [ -n "$fo_prev_set" ]; then CLAUDE_CONFIG_DIR="$fo_prev_cfg"; else unset CLAUDE_CONFIG_DIR; fi
+  fi
+  # A MOVED SHIFT HOLDS A ROUTER LEASE ON ITS ACCOUNT for its whole life, sized
+  # by what `admit` reserves for a shift on it, or its use would not reach
+  # another run's admission. A lease that could not be read or written is logged
+  # and the shift runs: a lease never stops the run.
+  if [ "$fo_res" = "이전" ]; then
+    local fo_resv lrc=0
+    if fo_resv=$(gate_failover_reservation "$fo_acct") && [ -n "$fo_resv" ]; then
+      fo_nonce=$(gate_failover_lease_put "$fo_acct" "$fo_dir" "$spid" "shift-$n" "$fo_resv") || lrc=$?
+      [ "$lrc" = "0" ] || { fo_nonce=""; log "교대 $n 의 계정 이전 임대를 잡지 못했다 (rc=$lrc) — 교대는 그대로 돈다"; }
+    else
+      log "교대 $n 의 계정 이전 임대 예약값을 읽지 못했다 — 임대 없이 교대는 그대로 돈다"
+    fi
+  fi
   wait "$spid" || rc=$?
+  # Released through the verb, not `route_lease_release`: that wrapper also
+  # moves the run's stage affinity to the released account, and a moved shift
+  # is not a stage placement.
+  if [ -n "$fo_nonce" ]; then
+    bash "$(route__dir)/route.sh" lease-release "$(run_pace_root)/leases" "$RUN_ID" "shift-$n" "$fo_nonce" \
+      >/dev/null 2>&1 || true
+  fi
   [ "$rc" != "0" ] || gate_relay_enter_if_waiting
   rm -f "$RUN_DIR/shift.in-progress" "$RUN_DIR/shift.live"
   log "교대 $n 종료 (rc=$rc)"
@@ -59541,6 +61638,10 @@ GATE_RELAY_ENTERED=""
 GATE_RELAY_HANDED_BACK=""
 GATE_RELAY_STARTED=""
 GATE_RELAY_FP=""
+# Set when the pre-launch wait skipped a lone `무기록` reset for the failover
+# judgment (`gate_failover_defers_reset`); the launcher waits it out after the
+# judgment when the shift stays on the seat lane.
+GATE_FAILOVER_DEFERRED=""
 
 gate_relay_route() {
   # gate_relay_route <alias> <사유> <cli args...> — the `router-shift` act: one
@@ -59555,6 +61656,7 @@ gate_relay_route() {
   GATE_RELAY_INNER=""
   GATE_RELAY_ENTERED=""
   GATE_RELAY_HANDED_BACK=""
+  GATE_FAILOVER_DEFERRED=""
   gate_launch_shift "$alias" "$reason" "$@" || rc=$?
   while [ "$rc" = "0" ] && [ -n "$GATE_RELAY_ENTERED" ] && [ -z "$GATE_RELAY_HANDED_BACK" ]; do
     gate_relay_wait || return 0
@@ -59605,6 +61707,25 @@ gate_relay_reentry_allowed() {
   # The seat (or a boot-time re-entry) re-issues `대기` at once instead of
   # waiting for the reset itself, and the relay holds it until the reset. With
   # no clock, or one further than the horizon, it stays refused.
+  #
+  # A SHIFT THE GATE MOVED IS NOT A SEAT-LANE DEATH. In a failover run, when
+  # that shift ran on a listed account (`gate_failover_moved_shift`), its reset
+  # is that account's and says nothing of the seat lane: the death still has to
+  # be limit-shaped — its stream yields a reset clock — but the deadline, the
+  # horizon and room are not asked, there is no reset to hold for, and the
+  # launch's judgment picks the lane. While that clock is ahead the judgment
+  # reads the moved lane as `죽은 교대`; once it has passed, that account may be
+  # picked again. A moved shift that died with no clock stays refused, as any
+  # other clock-less death.
+  #
+  # A FAILOVER WAIT THE GATE WROTE IS WAITED IN TOO. Once the latest `계정 이전`
+  # row after that `무기록` reads `결과=대기` (`cc_failover_wait_resume`), the
+  # gate has already judged the lanes and chosen to wait, and the next judgment
+  # decides again: a move, a new `결과=대기`, the grace, or `마감 초과`. The seat's
+  # re-issue after a hold, the relay's launch at the resume time and the fleet
+  # tick's probe all reach that judgment through here, so the reset, the
+  # deadline and room are not asked again: asking them would refuse with rc 3
+  # before any of those rows is written, whatever the resume time.
   local st n at
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
   # `이월` waits too: for the deadline, after which the successor ends the run
@@ -59626,7 +61747,23 @@ gate_relay_reentry_allowed() {
   n=$( { LC_ALL=C grep -E '^- `교대 기동` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
   n=$(gate_row_field "$n" '서수')
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  if run_failover_allowed 2>/dev/null && [ -n "$(cc_failover_wait_resume "$LEDGER")" ]; then return 0; fi
   at=$(gate_cut_key_reset_at "교대#$n")
+  if gate_failover_moved_shift "$n"; then [ -n "$at" ]; return; fi
+  # IN A FAILOVER RUN THE TEST IS THE DEADLINE OR ROOM, NOT THE HORIZON. A
+  # seven_day reset lies past the horizon, and the run must still take `대기`
+  # there when a listed account has room to move the next shift to — and when
+  # the reset lands before the deadline (or the run has none) the wait is one
+  # the run can finish after. The horizon and `gate_cut_reset_within` stay as
+  # they are for every other reader.
+  if run_failover_allowed 2>/dev/null; then
+    local dl
+    [ -n "$at" ] || return 1
+    dl=$(gate_deadline_epoch)
+    if [ -z "$dl" ] || [ "$at" -le "$dl" ]; then return 0; fi
+    gate_failover_has_room
+    return
+  fi
   [ -n "$at" ] && gate_cut_reset_within "$at"
 }
 
@@ -59761,7 +61898,10 @@ gate_relay_reset_set() {
   # derived again from the reference row on every call, never carried in memory.
   # The reference row is the latest `handoff`: under `대기` its `리셋 대기` keys,
   # each with the clock it has now; under a limit-shaped `무기록` the shift that
-  # wrote nothing, `교대#<n>` with the clock of its own stream.
+  # wrote nothing, `교대#<n>` with the clock of its own stream — unless the gate
+  # moved that shift to a listed account (`gate_failover_moved_shift`): that
+  # clock is the account's, not the seat lane's, so the set has no reset
+  # member and the launch's judgment picks the lane without waiting for it.
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
   local last why keys k at out="" n
   last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
@@ -59777,6 +61917,7 @@ gate_relay_reset_set() {
     무기록)
       n=$(gate_row_field "$last" '교대')
       case "$n" in ''|*[!0-9]*) return 0 ;; esac
+      ! gate_failover_moved_shift "$n" || return 0
       at=$(gate_cut_key_reset_at "교대#$n")
       [ -z "$at" ] || out="교대#$n:$at" ;;
   esac
@@ -59820,6 +61961,16 @@ gate_relay_defer_clock() {
   printf '%s' "$((dl + 1))"
 }
 
+gate_relay_resume_clock() {
+  # gate_relay_resume_clock — the `계정 이전` member of the relay's wait set:
+  # the resume time, as an epoch, of the latest `계정 이전` row after the latest
+  # `handoff` when that row is `결과=대기`, or empty. Derived again from the
+  # ledger on every call. The relay wakes at that time
+  # (`cc_relay_wake_keys`) and launches, and the launch judges the lanes again.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  cc_failover_wait_resume "$LEDGER"
+}
+
 gate_cut_reset_within() {
   # gate_cut_reset_within <epoch> — the clock is close enough to wait on: no
   # further than one five_hour window plus the grace from now. A relay has no
@@ -59845,13 +61996,19 @@ gate_relay_write() {
   # `defer=` IS DERIVED HERE, not passed: it is the `이월` member's clock
   # (`gate_relay_defer_clock`), and computing it inside keeps every caller —
   # the hand-back included — writing it without one more argument each.
-  local t="$RUN_DIR/relay.live.tmp.$$" defer
+  #
+  # `resume=` IS DERIVED THE SAME WAY: the `계정 이전` member's clock, the
+  # resume time of the run's current failover wait (`gate_relay_resume_clock`),
+  # and `-` with none. It is that time itself, not the earlier of it and the
+  # hold; the hold is counted by the poll on its own.
+  local t="$RUN_DIR/relay.live.tmp.$$" defer resume
   [ -n "$GATE_RELAY_FP" ] || GATE_RELAY_FP=$(cc_proc_fingerprint "$$")
   defer=$(gate_relay_defer_clock)
+  resume=$(gate_relay_resume_clock)
   {
     printf '%s\n%s\n' "$$" "$GATE_RELAY_FP"
-    printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\nreset=%s\ndefer=%s\n' \
-      "$(date -u +%s)" "$GATE_RELAY_STARTED" "${1:--}" "${2:--}" "${3:--}" "${defer:--}"
+    printf 'refreshed=%s\nstarted=%s\nstages=%s\nci=%s\nreset=%s\ndefer=%s\nresume=%s\n' \
+      "$(date -u +%s)" "$GATE_RELAY_STARTED" "${1:--}" "${2:--}" "${3:--}" "${defer:--}" "${resume:--}"
     [ -z "${4:-}" ] || printf 'handback=%s\n' "$4"
   } > "$t" 2>/dev/null && mv -f "$t" "$RUN_DIR/relay.live" 2>/dev/null || {
     rm -f "$t" 2>/dev/null
@@ -59895,6 +62052,12 @@ gate_relay_before_launch() {
   gate_relay_write "$(cc_relay_wait_stages "$RUN_DIR")" "$(gate_relay_ci_segments)" \
     "$(gate_relay_reset_set)"
   GATE_RELAY_ENTERED=""
+  # IN A FAILOVER RUN A LONE `무기록` RESET IS JUDGED FIRST. The launcher waits
+  # it out after the lane judgment when the shift stays on the seat lane.
+  if gate_failover_defers_reset; then
+    GATE_FAILOVER_DEFERRED=1
+    return 0
+  fi
   gate_relay_wait
 }
 
@@ -59923,16 +62086,24 @@ gate_relay_wait() {
   # row hold the set open, and the relay wakes when `gate_relay_master_wake`
   # says their base branch's reading moved or went stale. The watcher's keys
   # do not carry this member: the relay reads the reading files itself.
-  local stages ci reset defer hold now mw
+  #
+  # A FAILOVER WAIT IS THE SIXTH. A `계정 이전` row with `결과=대기` after the
+  # latest `handoff` holds the set open until its resume time, so a judgment
+  # that found no account with room does not come back as an empty set and
+  # launch at once; the relay wakes at that time (`cc_relay_wake_keys`) and the
+  # launch judges again. When it and a reset name the same time, it is read as
+  # that time and the launch is tried.
+  local stages ci reset defer resume hold now mw
   stages=$(cc_relay_wait_stages "$RUN_DIR")
   ci=$(gate_relay_ci_segments)
   reset=$(gate_relay_reset_set)
   defer=$(gate_relay_defer_clock)
+  resume=$(gate_relay_resume_clock)
   mw=$(gate_relay_master_segments)
   [ -n "$GATE_RELAY_STARTED" ] || GATE_RELAY_STARTED=$(date -u +%s)
   gate_relay_write "$stages" "$ci" "$reset"
   hold=$(gate_relay_hold)
-  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · master ${mw:--}"
+  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · 계정 이전 ${resume:--} · master ${mw:--}"
   while :; do
     now=$(date -u +%s)
     if [ -e "$RUN_DIR/done" ]; then
@@ -59947,9 +62118,21 @@ gate_relay_wait() {
       gate_relay_hand_back "$stages" "$ci" "$reset" "CI 를 기다리는데 checks 폴러가 살아 있지 않다"
       return 1
     fi
-    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$mw" ]; then
+    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$resume" ] && [ -z "$mw" ]; then
       log "교대 대기 끝 — 기다리던 것이 이미 끝났다"
       return 0
+    fi
+    # BEFORE A FAILOVER WAIT'S RESUME TIME NO OTHER KEY WAKES THE RELAY. A wake
+    # key is consumed only by a `교대 기동` row below its evidence, and a wait
+    # writes none, so a key that woke the launch which found no account with
+    # room is still standing: reading it here would launch, judge the same wait
+    # and come back on every poll until the resume time or the hold. The
+    # return conditions above still apply; at the resume time the keys are read
+    # as always, the `fr:` key among them.
+    if cc_failover_waiting_now "$LEDGER" "$now"; then
+      sleep "$GATE_WAIT_POLL_SECONDS"
+      gate_relay_write "$stages" "$ci" "$reset"
+      continue
     fi
     if [ -n "$(cc_relay_wake_keys "$RUN_DIR" "$LEDGER")" ]; then
       log "교대 대기 끝 — 깨움 조건이 섰다"

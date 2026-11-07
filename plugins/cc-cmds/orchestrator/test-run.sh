@@ -1683,6 +1683,24 @@ fi
 grep -v '^\*\*비용 천장\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "천장 필드가 없으면 그 필드를 얼리기 전과 같은 바이트다 (기존 매니페스트가 그대로 적합하다)" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+# 계정 이전 목록은 교대가 다른 계정을 쓰게 하므로 같은 조건으로 같은 집합에 든다.
+cp "$MF" "$MF.fo-save"
+printf -- '- `계정 이전 허용` | 계정=u-a | 사유=픽스처\n' >> "$MF"
+bd_fo=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_fo" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "계정 이전 허용 행을 더했는데 다이제스트가 그대로다"
+else
+  ok "계정 이전 허용 행이 생기면 구속 다이제스트가 움직인다"
+fi
+printf -- '- `계정 이전 허용` | 계정=u-b | 사유=픽스처\n' >> "$MF"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_fo" ]; then
+  bad "구속 집합 감도" "목록에 계정을 더했는데 다이제스트가 그대로다"
+else
+  ok "목록의 계정이 늘면 구속 다이제스트가 움직인다"
+fi
+mv "$MF.fo-save" "$MF"
+check "계정 이전 허용 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
 # 무진전 상한도 런을 끝내므로 같은 조건으로 같은 집합에 든다.
 awk '/^\*\*벽시계 마감\*\*: /{print; print "**무진전 상한**: 7"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "픽스처가 실제로 상한 줄을 얻었다 (아래 둘이 공허하지 않다)" \
@@ -3506,6 +3524,40 @@ MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
 grep -v '^- `선행 착지`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
 check "선행 착지 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
+
+# 구속 집합의 출처 티켓 행. 이 런의 PR 이 닫거나 참조할 이슈를 이 행이 정하므로 런
+# 도중 행을 덧붙일 수 있으면 사람이 지목하지 않은 이슈가 닫힌다. 그래서 다이제스트가
+# 움직여야 하고, 행이 없으면 0바이트여야 진행 중인 런이 부적합이 되지 않는다.
+printf -- '- `출처 티켓` | 트래커=github | 참조=Nharu/cc-cmds#7\n' >> "$MFROS"
+check "픽스처가 실제로 출처 티켓 행을 얻었다 (아래가 공허하지 않다)" \
+  "$(manifest_source_ticket_rows | grep -c .)" "1"
+bd_st=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_st" = "$bd_noros" ]; then
+  bad "구속 집합 감도" "출처 티켓 행을 더했는데 다이제스트가 그대로다 — 런 도중 닫을 이슈를 바꿀 수 있다"
+else
+  ok "출처 티켓 행이 생기면 구속 다이제스트가 움직인다"
+fi
+check "구속 집합이 출처 티켓 행을 자기 접두로 싣는다" \
+  "$( { binding_set_bytes | grep -c '^srcticket' || true; } )" "1"
+manifest_snapshot_take
+check "메모 판독기가 파일 판독기와 같은 출처 티켓 행을 낸다" \
+  "$(manifest_source_ticket_rows)" "$(grep -E '^- `출처 티켓`' "$MFROS")"
+check "메모가 켜진 상태의 출처 티켓 다이제스트가 파일 판독과 같다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_st"
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+MFST_DIG="$WORK/mf-st-digest.md"
+write_manifest "$MFST_DIG" "" "$bd_st"
+printf -- '- `출처 티켓` | 트래커=github | 참조=Nharu/cc-cmds#8\n' >> "$MFST_DIG"
+st_dig_out=$( ( MANIFEST="$MFST_DIG"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 ); st_dig_rc=$?
+case "$st_dig_rc/$st_dig_out" in
+  0/*) bad "구속 다이제스트 불일치" "얼린 뒤 바뀐 출처 티켓 행이 통과했다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"베이스 설계·출처 티켓·세그먼트 입양"*)
+    ok "얼린 뒤 바뀐 출처 티켓 행은 구속 다이제스트에서 거부되고 문면이 그 행을 부른다" ;;
+  *) bad "구속 다이제스트 불일치" "$st_dig_out" ;;
+esac
+grep -v '^- `출처 티켓`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
+check "출처 티켓 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
 MANIFEST="$MANIFEST_SAVE21r"
 
 # --- 21c 설계 팔의 발화 조건과 재개 판별 — 팔을 태운다 ------------------------
@@ -3683,6 +3735,101 @@ for bp_row in '- `베이스 발행` | 트래커=clickup | 대상=900 | 원 티�
     0\ *) bad "원 티켓 형식 오류" "통과했다: $bp_row" ;;
     *"「베이스 발행」 행의 형식이 어긋났습니다"*"원 티켓=<task id>"*) ok "원 티켓 형식 오류는 행 형식 오류다 (${bp_row#*트래커=})" ;;
     *) bad "원 티켓 형식 오류" "$bp_r" ;;
+  esac
+done
+
+# 티켓 배달 런 — 그래프는 베이스 런과 같고 분할에서 끝난다. 절단점은 전 대상 커밋이고
+# 대상 맵 다이제스트가 대상 행을 덮으므로 그 값을 행과 함께 다시 잰다.
+TKD="$WORK/ticket-delivery"; mkdir -p "$TKD"
+TK_STEPS='"steps": [ { "id": "D1", "skill": "design", "summary": "s", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "s", "depends_on": ["D1"] }, { "id": "S1", "skill": "split", "summary": "s", "depends_on": ["D1", "A1"] } ]'
+TK_HEAD='"design_required": true, "design_tier_judged": "team-4", "design_tier": "team-4", "design_heavy_reasons": ["세 티켓의 계약"], "estimated_files": 9'
+TK_PLAN="{ $TK_HEAD, \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", $TK_STEPS }"
+TK_PUB='- `베이스 발행` | 트래커=없음 | 대상=-'
+tk_manifest() {   # tk_manifest <출력> <계획 json> [절단점] — 대상 절단점과 그 다이제스트를 함께 맞춘다
+  local out="$1" plan="$2" cut="${3:-커밋}" trow tdig
+  write_manifest "$out" "" "" main "docs/x.md"
+  awk -v p="$plan" -v c="$cut" '
+    $0 == "{ \"steps\": [\"audit\", \"implement\"] }" { print p; next }
+    index($0, "- `target`") == 1 { sub(/절단점=머지/, "절단점=" c) }
+    { print }' "$out" > "$out.t" && mv "$out.t" "$out"
+  trow=$(grep -F -- '- `target`' "$out")
+  tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+  awk -v d="$tdig" 'index($0, "**대상 맵 다이제스트**:") == 1 { print "**대상 맵 다이제스트**: " d; next } { print }' "$out" > "$out.t" \
+    && mv "$out.t" "$out"
+}
+tk_verdict() {   # tk_verdict <매니페스트> — 「rc 마지막줄」
+  local out rc
+  out=$( ( MANIFEST="$1"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 ); rc=$?
+  printf '%s %s' "$rc" "$(printf '%s\n' "$out" | tail -1)"
+}
+tk_refused() {   # tk_refused <라벨> <매니페스트> <기대 문면>
+  local r; r=$(tk_verdict "$2")
+  case "$r" in
+    0\ *) bad "$1" "통과했다" ;;
+    *"$3"*) ok "$1" ;;
+    *) bad "$1" "$r" ;;
+  esac
+}
+MFTK="$TKD/ok.md"; tk_manifest "$MFTK" "$TK_PLAN"; printf '%s\n' "$TK_PUB" >> "$MFTK"
+check "티켓 배달 계획은 design_delivery 를 tickets 로, 범위를 single 로 읽는다" \
+  "$(MANIFEST="$MFTK"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_delivery)/$(MANIFEST="$MFTK"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_scope)" "tickets/single"
+tk_r=$(tk_verdict "$MFTK")
+case "$tk_r" in 0\ *) ok "티켓 배달 그래프와 베이스 발행 행 하나가 통과한다" ;; *) bad "티켓 배달 그래프" "$tk_r" ;; esac
+if ( MANIFEST="$MFTK"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_split_run ); then
+  ok "티켓 배달 런은 분할에서 끝나는 런이다"
+else
+  bad "manifest_split_run" "티켓 배달 런을 분할 런으로 읽지 않았다"
+fi
+MFTK_NOKEY="$TKD/nokey.md"; write_manifest "$MFTK_NOKEY"
+check "키 없는 계획은 slices 로 읽고 분할 런이 아니다" \
+  "$(MANIFEST="$MFTK_NOKEY"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_delivery)/$( (MANIFEST="$MFTK_NOKEY"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_split_run) && echo 분할 || echo 아님)" "slices/아님"
+
+MFTK_NOPUB="$TKD/nopub.md"; tk_manifest "$MFTK_NOPUB" "$TK_PLAN"
+tk_refused "티켓 배달 런은 베이스 발행 행을 요구한다" "$MFTK_NOPUB" "design_delivery 가 tickets 인데 「베이스 발행」 행이 0개입니다"
+
+MFTK_G="$TKD/graph.md"; tk_manifest "$MFTK_G" "{ $TK_HEAD, \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", \"steps\": [ { \"id\": \"D1\", \"skill\": \"design\", \"summary\": \"s\", \"depends_on\": [] }, { \"id\": \"A1\", \"skill\": \"design-audit\", \"summary\": \"s\", \"depends_on\": [\"D1\"] }, { \"id\": \"I1\", \"skill\": \"implement\", \"summary\": \"s\", \"depends_on\": [\"D1\", \"A1\"] } ] }"
+printf '%s\n' "$TK_PUB" >> "$MFTK_G"
+tk_refused "분할로 끝나지 않는 티켓 배달 그래프는 거부된다" "$MFTK_G" "design_delivery 가 tickets 인 런의 단계 그래프는"
+
+MFTK_B="$TKD/base.md"; tk_manifest "$MFTK_B" "{ $TK_HEAD, \"design_scope\": \"base\", \"design_path\": \"none\", \"design_delivery\": \"tickets\", $TK_STEPS }"
+printf '%s\n' "$TK_PUB" >> "$MFTK_B"
+tk_refused "tickets 이면서 범위가 base 인 계획은 거부된다" "$MFTK_B" "design_delivery 가 tickets 인데 design_scope 가 base 입니다"
+
+MFTK_BD="$TKD/basedesign.md"; tk_manifest "$MFTK_BD" "$TK_PLAN"; printf '%s\n' "$TK_PUB" >> "$MFTK_BD"
+printf -- '- `베이스 설계` | 문서=docs/u.md | sha256=%064d | 티켓=T1\n' 0 >> "$MFTK_BD"
+tk_refused "베이스 설계 행이 있는 하위 런은 티켓 배달을 고르지 못한다" "$MFTK_BD" "하위 런은 티켓 배달을 고르지 않습니다"
+
+MFTK_C="$TKD/cut.md"; tk_manifest "$MFTK_C" "$TK_PLAN" 머지; printf '%s\n' "$TK_PUB" >> "$MFTK_C"
+tk_refused "절단점이 커밋이 아닌 대상은 거부된다" "$MFTK_C" "대상 home 의 절단점이 커밋이 아닙니다"
+
+MFTK_V="$TKD/value.md"; tk_manifest "$MFTK_V" "{ $TK_HEAD, \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"chunks\", \"steps\": [ { \"id\": \"D1\", \"skill\": \"design\", \"summary\": \"s\", \"depends_on\": [] }, { \"id\": \"A1\", \"skill\": \"design-audit\", \"summary\": \"s\", \"depends_on\": [\"D1\"] }, { \"id\": \"I1\", \"skill\": \"implement\", \"summary\": \"s\", \"depends_on\": [\"D1\", \"A1\"] } ] }"
+tk_refused "목록 밖 design_delivery 값은 검사기에서 거부된다" "$MFTK_V" "(h) design_delivery 가 slices · tickets 중 하나가 아닙니다"
+
+# design_tier_judged 가 없어도 design_delivery 가 있으면 검사기가 돈다. 검사기가 돌지
+# 않으면 (h) 가 그 계획에는 공허하다.
+MFTK_NJ="$TKD/nojudged.md"; tk_manifest "$MFTK_NJ" "{ \"design_required\": true, \"design_tier\": \"team-4\", \"design_delivery\": \"tickets\", \"design_scope\": \"single\", $TK_STEPS }"
+printf '%s\n' "$TK_PUB" >> "$MFTK_NJ"
+tk_refused "판정 키 없이 design_delivery 만 있는 계획도 검사기를 지난다" "$MFTK_NJ" "(h) tickets 계획의 design_path 가"
+MFTK_NJS="$TKD/nojudged-slices.md"; tk_manifest "$MFTK_NJS" '{ "design_required": false, "design_delivery": "slices", "steps": ["audit", "implement"] }' 머지
+tk_r=$(tk_verdict "$MFTK_NJS")
+case "$tk_r" in 0\ *) ok "판정 키 없이 slices 만 있는 계획은 통과한다" ;; *) bad "판정 키 없는 slices 계획" "$tk_r" ;; esac
+
+# 출처 티켓 행의 형식. 값은 이 런의 PR 본문에 그대로 들어가므로 형식 밖은 킥오프에서 멈춘다.
+st_check() {   # st_check <행> — 「rc 마지막줄」
+  local m="$TKD/st.md"
+  write_manifest "$m"; printf '%s\n' "$1" >> "$m"
+  tk_verdict "$m"
+}
+for st_row in '- `출처 티켓` | 트래커=github | 참조=Nharu/cc-cmds#12' '- `출처 티켓` | 트래커=clickup | 참조=https://app.clickup.com/t/86ab'; do
+  st_r=$(st_check "$st_row")
+  case "$st_r" in 0\ *) ok "출처 티켓 행이 통과한다 (${st_row#*트래커=})" ;; *) bad "출처 티켓 행" "$st_r" ;; esac
+done
+for st_row in '- `출처 티켓` | 트래커=github | 참조=cc-cmds#12' '- `출처 티켓` | 트래커=github | 참조=Nharu/cc-cmds' '- `출처 티켓` | 트래커=clickup | 참조=86ab' '- `출처 티켓` | 트래커=jira | 참조=X-1' '- `출처 티켓` | 참조=Nharu/cc-cmds#12 | 트래커=github'; do
+  st_r=$(st_check "$st_row")
+  case "$st_r" in
+    0\ *) bad "출처 티켓 형식 오류" "통과했다: $st_row" ;;
+    *"「출처 티켓」 행의 형식이 어긋났습니다"*) ok "출처 티켓 형식 오류가 거부된다 (${st_row#*| })" ;;
+    *) bad "출처 티켓 형식 오류" "$st_r" ;;
   esac
 done
 
@@ -8006,6 +8153,20 @@ want=$(CLAUDE_CONFIG_DIR="$LD/env" HOME="$LD/home" \
 got=$(CLAUDE_CONFIG_DIR="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
 check "T7 1단의 반환값이 변경 전 구현과 바이트 동일" "$got" "$want"
 
+# --- T7a: 옮긴 교대 안에서만 1단을 건너뛴다 ---------------------------------
+# 게이트가 옮긴 교대는 고른 계정의 디렉터리를 환경변수와 표지에 함께 받는다. 그 안에서
+# 해석하는 좌석은 런의 기록이어야 하고, 표지가 없거나 값이 다르면 1단은 그대로다.
+v=$(CLAUDE_CONFIG_DIR="$LD/env" CC_GATE_SHIFT_LANE="$LD/env" CC_PIPELINE_SHIFT_ID="R#2" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 옮긴 교대: 표지와 환경이 같으면 1단을 건너뛰어 런의 기록을 낸다" "$v" "$LD/runrec"
+v=$(CLAUDE_CONFIG_DIR="$LD/env/" CC_GATE_SHIFT_LANE="$LD/env" CC_PIPELINE_SHIFT_ID="R#2" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 옮긴 교대: 끝 슬래시 차이는 같은 값이다" "$v" "$LD/runrec"
+v=$(CLAUDE_CONFIG_DIR="$LD/env" CC_GATE_SHIFT_LANE="" CC_PIPELINE_SHIFT_ID="R#2" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 빈 표지: 1단이 그대로다" "$v" "$LD/env"
+v=$(CLAUDE_CONFIG_DIR="$LD/env" CC_GATE_SHIFT_LANE="$LD/other" CC_PIPELINE_SHIFT_ID="R#2" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 다른 값의 표지: 1단이 그대로다" "$v" "$LD/env"
+v=$(unset CC_PIPELINE_SHIFT_ID; CLAUDE_CONFIG_DIR="$LD/env" CC_GATE_SHIFT_LANE="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 교대 밖의 표지: 1단이 그대로다" "$v" "$LD/env"
+
 # --- T7b: init 이 쓰는 값이 init 이 읽는 술어를 만족한다 --------------------
 # 이것을 **왕복**으로 재지 않으면 잡히지 않는다. 4단은 `$HOME/.claude` 를 검증 없이
 # 내고 `rundir_init` 은 그것을 그대로 영속화하는데, 같은 함수가 다음 진입에서 그
@@ -11824,6 +11985,17 @@ RUN_DIR="$SP_ROOT/run"; ORCH_DIR="$SP_ROOT/orch"; CLI_BIN=/usr/bin/true
 RUN_ID=sp-run; DOC_KEY=sp; GRANT=""; LEDGER=""; MANIFEST=""
 resolve_account() { printf '%s' "$SP_ROOT/cfg"; }
 home_alias() { printf 'sp'; }
+# A routed launch on the grant SP_GRANT_ENV names: the router, the lease row
+# and the hand-back are stand-ins, so only stage_spawn's own choices are read.
+if [ -n "${SP_GRANT_ENV:-}" ]; then
+  run_routed() { return 0; }
+  spawn_route_grant() {
+    SPAWN_ENV=$SP_GRANT_ENV; SPAWN_LINEAGE="B:$1#1"; SPAWN_NONCE=sp-n; SPAWN_ACCOUNT=u2
+    SPAWN_MINTED=1; SPAWN_BIND=u1; return 0
+  }
+  run_gate_call() { return 0; }
+  spawn_lease_drop() { :; }
+fi
 STAGE_RESUME="${SP_RESUME:-}"
 stage_spawn "$sp_sid" "$SP_ROOT" "prompt" 2>/dev/null
 stage_collect "$sp_sid"
@@ -11852,6 +12024,32 @@ case "$sp_resume" in
     ok "재부착의 래퍼 argv 도 effort 와 model 을 싣는다 (재개된 세션은 effort 를 잃는다)" ;;
   *) bad "재부착 argv" "재부착: $sp_resume" ;;
 esac
+# 이관 GRANT(`fresh: true`) 로 재개가 새 세션이 되면, 재부착용 프롬프트(계속·거절
+# 문장)가 아니라 호출자가 STAGE_RESUME_DISPATCH 로 넘긴 디스패치 프롬프트로 뜬다.
+sp_mig_env=$(printf '{"verdict":"GRANT","account":"u2","config_dir":"%s","basis":"resume","fresh":true,"migrated":{"from":"u1","to":"u2","why":"reserve"}}' "$SPD/cfg")
+sp_mig=$(sp_spawn "S5:segM:1" "$SPD/mig.txt" SP_RESUME=12121212-3434-5656-7878-909090909090 \
+  SP_GRANT_ENV="$sp_mig_env" STAGE_RESUME_DISPATCH='/cc-cmds:visual-publish-unattended docs/d.md')
+case "$sp_mig" in
+  *"--resume"*) bad "이관 재개 argv" "새 세션이어야 할 기동이 재부착했다: $sp_mig" ;;
+  *"--session-id "*" -- -p /cc-cmds:visual-publish-unattended docs/d.md"*)
+    ok "이관 GRANT 의 재개는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다" ;;
+  *) bad "이관 재개 argv" "디스패치 프롬프트가 아니다: ${sp_mig:-(기동 안 됨)}" ;;
+esac
+sp_keep=$(sp_spawn "S5:segK:1" "$SPD/keep.txt" SP_RESUME=12121212-3434-5656-7878-909090909090 \
+  SP_GRANT_ENV="$(printf '%s' "$sp_mig_env" | jq -c 'del(.fresh, .migrated)')" \
+  STAGE_RESUME_DISPATCH='/cc-cmds:visual-publish-unattended docs/d.md')
+case "$sp_keep" in
+  *"--resume 12121212-3434-5656-7878-909090909090 "*" -- -p prompt"*)
+    ok "fresh 가 아닌 재개는 넘겨받은 디스패치 프롬프트를 쓰지 않고 재부착한다" ;;
+  *) bad "재개 argv" "재부착 프롬프트가 바뀌었다: ${sp_keep:-(기동 안 됨)}" ;;
+esac
+# 위 두 사례는 STAGE_RESUME_DISPATCH 를 직접 준다. 드라이버에서 그 값을 넘기는 것은
+# STAGE_RESUME 에 세션을 넣고 띄우는 호출자들이므로, 세션을 넣는 자리마다 기동 줄이
+# 디스패치 프롬프트를 접두 할당으로 넘기는지 센다.
+check "STAGE_RESUME 에 세션을 넣는 자리는 셋이다" \
+  "$(grep -c -E 'STAGE_RESUME=(\$|"\$)' "$DRIVER")" "3"
+check "세 재부착 기동 줄 모두 디스패치 프롬프트를 STAGE_RESUME_DISPATCH 로 넘긴다" \
+  "$(grep -c -E 'STAGE_RESUME_DISPATCH=\$[a-z_]+ CC_SPAWN_EVENT=' "$DRIVER")" "3"
 sp_design=$(sp_spawn "S1design" "$SPD/design.txt")
 case "$sp_design" in
   *" --effort high --model opus -- "*) ok "S1design 기동은 high 를 싣는다" ;;
@@ -13705,5 +13903,70 @@ check "36: main_loop_body 가 s0_arm 을 design_arm 바로 앞에서 부른다" 
   "$(printf '%s\n' "$s0_mlb" | grep -A1 -x '  s0_arm || return 0' | sed -n 2p)" "  design_arm || return 0"
 check "36: 설계 스테이지의 첫 파견·계속·거절 재부착 셋이 design_stage_cmd 를 지나고 직접 철자가 남지 않는다" \
   "$(grep -c '"$(design_stage_cmd "$skill1")"' "$DRIVER" || true)/$(grep -c '"/cc-cmds:$skill1 $DOC ' "$DRIVER" || true)" "3/0"
+
+# --- 시각 발행 고정 레인의 조회 순서와 출처, 아침 보고의 이관 절 -------------
+# 고정 레인은 런 지역 이관 기록 → 문서 단위 레인 기록 → 호스트 파일 순으로 찾고,
+# 앞의 둘에서 찾으면 출처가 `run-record`, 호스트에서 찾으면 `host` 다. 런 지역
+# 기록이 있는데 읽히지 않으면 다음 출처로 넘어가지 않고 실패한다. 진짜
+# visual-config.sh 가 답하고, 호스트 파일은 XDG_CONFIG_HOME 을 옮겨 가린다.
+VP="$WORK/vpin"
+mkdir -p "$VP/repo/docs" "$VP/cfg/cc-cmds" "$VP/state" "$VP/run/halt" "$VP/run/visual-migration"
+git -c init.defaultBranch=main init -q "$VP/repo" 2>/dev/null
+printf '# d\n' > "$VP/repo/docs/d.md"
+printf 'account = a@example.com\nlane = host-lane\n' > "$VP/cfg/cc-cmds/claude-design"
+VP_DOCREC="$VP/repo/docs/visual-lane/docs-d.md"
+vp_run() {  # vp_run <함수> <인자...> — 격리한 환경에서 드라이버 함수를 부른다
+  (
+    XDG_CONFIG_HOME="$VP/cfg" XDG_STATE_HOME="$VP/state"; export XDG_CONFIG_HOME XDG_STATE_HOME
+    unset CC_PIPELINE_RUN_DIR
+    RUN_DIR="$VP/run"; DOC="$VP/repo/docs/d.md"; ORCH_DIR="$(dirname "$DRIVER")"; RUN_ID=vp
+    report_append() { printf '%s | %s\n' "$1" "$2"; }
+    "$@"
+  )
+}
+vp_runrec() {  # vp_runrec <레인> [줄...] — 런 지역 이관 기록을 쓴다
+  local lane="$1"; shift
+  { printf '%s\n' '<!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->'
+    printf '**레인**: %s\n**계정**: b@example.com\n' "$lane"
+    [ "$#" -eq 0 ] || printf '%s\n' "$@"
+  } > "$VP/run/visual-lane"
+}
+check "시각 고정: 기록이 없으면 호스트 파일의 레인과 출처 host" \
+  "$(vp_run kind_pin_resolve visual-publish)" "host-lane host"
+check "시각 고정: 다른 종류는 고정이 없고 요청 칸이 빈 객체다" \
+  "$(vp_run kind_pin_resolve implement)/$(vp_run kind_pin_request_json implement)" "/{}"
+check "시각 고정: 요청 칸이 migratable 과 호스트 출처를 싣는다" \
+  "$(vp_run kind_pin_request_json visual-publish | jq -c '[.migratable, .pin_lane, .pin_source]')" '[true,"host-lane","host"]'
+mkdir -p "$(dirname "$VP_DOCREC")"
+printf '%s\n**레인**: doc-lane\n' '<!-- cc-visual-lane-doc v1; writer=gate; reader=run.sh,gate.sh,visual,visual-publish-unattended -->' > "$VP_DOCREC"
+check "시각 고정: 계정 줄이 없는 문서 단위 기록은 읽지 않고 호스트로 간다" \
+  "$(vp_run kind_pin_resolve visual-publish)" "host-lane host"
+printf '**계정**: b@example.com\n**출처**: r0 · 이관 1 · 2026-11-01T00:00:00Z\n' >> "$VP_DOCREC"
+check "시각 고정: 문서 단위 기록이 호스트보다 먼저이고 출처는 run-record" \
+  "$(vp_run kind_pin_resolve visual-publish)/$(vp_run kind_pin_source_of visual-publish)" "doc-lane run-record/run-record"
+vp_runrec run-lane
+check "시각 고정: 런 지역 기록이 문서 단위 기록보다 먼저다" \
+  "$(vp_run kind_pin_lane_of visual-publish)/$(vp_run kind_pin_request_json visual-publish | jq -r .pin_source)" "run-lane/run-record"
+printf 'broken\n' > "$VP/run/visual-lane"
+check "시각 고정: 읽히지 않는 런 지역 기록은 다음 출처로 넘어가지 않고 실패한다" \
+  "$(vp_run kind_pin_resolve visual-publish; printf 'rc=%s' "$?")" "rc=1"
+# 아침 보고 — `**이관**` 줄마다 그 진행 파일의 `**완료**: 예` 로 두 문면을 가른다.
+vp_runrec new-lane '**이관**: 1 · old-lane → new-lane · 원 계정 소진 · 2026-11-07T00:00:00Z'
+check "아침 보고: 진행 파일이 끝나지 않았으면 미완료 문면과 진행 파일 경로" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — old-lane → new-lane(원 계정 소진), 진행 파일 $VP/run/visual-migration/1.md"
+printf '**완료**: 예\n' > "$VP/run/visual-migration/1.md"
+check "아침 보고: 끝난 이관에 시각-판정 기록이 없으면 새 URL 자리로 사이드카 경로" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $(cd "$VP/repo" && pwd -P)/docs/visual/docs-d.md"
+printf '**분류**: 시각-판정\n' > "$VP/run/halt/S2P#2.md"
+check "아침 보고: 끝난 이관은 최신 시각-판정 기록 경로를 새 URL 자리로 적는다" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $VP/run/halt/S2P#2.md"
+vp_runrec doc-lane "**승계**: $VP_DOCREC · r0 · 2026-11-07T00:00:00Z"
+check "아침 보고: 승계 줄만 있는 기록은 이관 절을 두지 않는다" \
+  "$(vp_run report_visual_migration)" ""
+check "아침 보고: 런 끝 꼬리가 이관 절을 종료 줄 앞에서 부른다" \
+  "$(grep -A1 -x '  report_visual_migration || true' "$DRIVER" | sed -n 2p | grep -c '^  report_append "종료" ' || true)" "1"
 
 tr_summary

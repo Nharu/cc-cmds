@@ -6,8 +6,9 @@
 # Three host files live in the host settings directory, all mode 644 and none
 # named `*.env`:
 #
-#   claude-design   `account = <address>` and `lane = <lane id>` — written by a
-#                   person, never seeded, never copied into a run
+#   claude-design   `account = <address>`, `lane = <lane id>` and
+#                   `share = <address>` — written by a person, never seeded,
+#                   never copied into a run
 #   visual-models   `key = value` lines overriding the skill defaults
 #   visual-bans     `<id> | <kind> | <description> | <pattern or ->` lines,
 #                   seeded from visual-bans.seed beside this script
@@ -20,14 +21,25 @@
 # Subcommands:
 #   account            read `command claude auth status --json` in THIS
 #                      process's own config directory, compare its `email`
-#                      with `account` in claude-design, append one line to the
+#                      with the expected account, append one line to the
 #                      host log, print the verdict. 일치 exits 0; 불일치, 미설정
 #                      and 판독실패 exit 1. Refused inside a run, except in the
-#                      visual publish stage (below).
-#   lane               print the `lane` value of claude-design — the lane id
-#                      the gate pins a visual publish stage to. No value (no
-#                      file, no line, an empty value) prints nothing and exits
-#                      1. Read-only, and allowed inside a run.
+#                      visual publish stage (below). The expected account is
+#                      the `**계정**` of the run-local migration record
+#                      `${CC_PIPELINE_RUN_DIR}/visual-lane` when that file
+#                      exists, else `account` in claude-design. A record that
+#                      exists but does not parse is 판독실패 naming its path,
+#                      never a fall back to the host file.
+#   lane               print the lane id the gate pins a visual publish stage
+#                      to: the record's `**레인**` when the record exists, else
+#                      the `lane` value of claude-design. No value (no file, no
+#                      line, an empty value) or a record that does not parse
+#                      prints nothing and exits 1. Read-only, and allowed
+#                      inside a run.
+#   share              print the `share` value of claude-design — the address
+#                      a migrated canvas is shared with. No value prints
+#                      nothing and exits 1. Read-only, and allowed inside a
+#                      run.
 #   models            print the resolved model table, `<key> = <value> |
 #                      <기본값|호스트 설정>`, one line per key in a fixed order.
 #                      An unknown key or a value outside the vocabulary keeps
@@ -84,7 +96,7 @@ MODEL_KEYS='ds-generate screen-generate polish implement-large implement-large-t
 MODEL_VOCAB='opus sonnet haiku fable'
 
 usage() {
-  echo "사용법: visual-config.sh account | lane | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
+  echo "사용법: visual-config.sh account | lane | share | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
   exit 2
 }
 
@@ -161,15 +173,61 @@ is_model_key() {
   return 1
 }
 
+# --- run-local migration record -----------------------------------------------
+# `${CC_PIPELINE_RUN_DIR}/visual-lane` is written by the gate alone when the
+# router migrates (or a next run inherits) the publish pin. When it exists it
+# replaces the host file's `lane` and `account`. A record that exists but does
+# not parse never falls back to the host file: `rec_state` is `없음`, `정상` or
+# `손상`, and `rec_lane`/`rec_account` hold the values of a `정상` record. The
+# `**이관**` and `**승계**` lines are not read here.
+RUN_LANE_RECORD=''
+rec_state=없음
+rec_lane=''
+rec_account=''
+
+run_record_read() {
+  [ -n "${CC_PIPELINE_RUN_DIR:-}" ] || return 0
+  RUN_LANE_RECORD="${CC_PIPELINE_RUN_DIR}/visual-lane"
+  [ -e "$RUN_LANE_RECORD" ] || return 0
+  rec_state=손상
+  [ -f "$RUN_LANE_RECORD" ] || return 0
+  local head line
+  head=$(head -n 1 "$RUN_LANE_RECORD" 2>/dev/null || true)
+  case "$head" in '<!-- cc-visual-lane v1;'*) ;; *) return 0 ;; esac
+  line=$(grep -E '^\*\*레인\*\*: ' "$RUN_LANE_RECORD" | tail -n 1 || true)
+  rec_lane=$(trim "${line#\*\*레인\*\*: }")
+  line=$(grep -E '^\*\*계정\*\*: ' "$RUN_LANE_RECORD" | tail -n 1 || true)
+  rec_account=$(trim "${line#\*\*계정\*\*: }")
+  if [ -z "$rec_lane" ] || [ -z "$rec_account" ]; then
+    rec_lane=''
+    rec_account=''
+    return 0
+  fi
+  rec_state=정상
+}
+
 # --- account ------------------------------------------------------------------
 cmd_account() {
   refuse_in_run_unless_publish account
   local expected='' read_email='' verdict out rc line
-  if [ -f "$ACCOUNT_FILE" ]; then
+  run_record_read
+  if [ "$rec_state" = 정상 ]; then
+    expected=$rec_account
+  elif [ "$rec_state" = 없음 ] && [ -f "$ACCOUNT_FILE" ]; then
     line=$(grep -E '^[[:space:]]*account[[:space:]]*=' "$ACCOUNT_FILE" | tail -n 1 || true)
     if [ -n "$line" ]; then
       expected=$(trim "${line#*=}")
     fi
+  fi
+
+  if [ "$rec_state" = 손상 ]; then
+    mkdir -p "$STATE_DIR"
+    printf '%s %s 판독=%s 기대=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 판독실패 - - >> "$ACCOUNT_LOG"
+    echo "계정 판정: 판독실패 (판독 -, 기대 -)"
+    echo "멈춤 — 이관 기록 ${RUN_LANE_RECORD} 을 읽지 못했다 (머리가 cc-visual-lane v1 이 아니거나 **레인**·**계정** 줄이 없거나 비었다)"
+    echo "로그: ${ACCOUNT_LOG}"
+    echo "고칠 길: 게이트가 쓴 이관 기록을 확인하고 같은 국면을 다시 실행한다"
+    exit 1
   fi
 
   rc=0
@@ -218,8 +276,24 @@ cmd_account() {
 # --- lane ---------------------------------------------------------------------
 cmd_lane() {
   local line val=''
+  run_record_read
+  case "$rec_state" in
+    정상) printf '%s\n' "$rec_lane"; return 0 ;;
+    손상) exit 1 ;;
+  esac
   if [ -f "$ACCOUNT_FILE" ]; then
     line=$(grep -E '^[[:space:]]*lane[[:space:]]*=' "$ACCOUNT_FILE" | tail -n 1 || true)
+    [ -z "$line" ] || val=$(trim "${line#*=}")
+  fi
+  [ -n "$val" ] || exit 1
+  printf '%s\n' "$val"
+}
+
+# --- share --------------------------------------------------------------------
+cmd_share() {
+  local line val=''
+  if [ -f "$ACCOUNT_FILE" ]; then
+    line=$(grep -E '^[[:space:]]*share[[:space:]]*=' "$ACCOUNT_FILE" | tail -n 1 || true)
     [ -z "$line" ] || val=$(trim "${line#*=}")
   fi
   [ -n "$val" ] || exit 1
@@ -450,6 +524,7 @@ shift
 case "$sub" in
   account) [ $# -eq 0 ] || usage; cmd_account ;;
   lane) [ $# -eq 0 ] || usage; cmd_lane ;;
+  share) [ $# -eq 0 ] || usage; cmd_share ;;
   models) [ $# -eq 0 ] || usage; cmd_models ;;
   bans) [ $# -eq 0 ] || usage; cmd_bans ;;
   seed) [ $# -eq 0 ] || usage; cmd_seed ;;
