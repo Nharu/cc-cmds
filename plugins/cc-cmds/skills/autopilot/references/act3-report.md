@@ -61,9 +61,34 @@ Cover, in this order:
   - With nothing to show, one line of these: 「이 런에는 설계 스테이지가 없었습니다」 · 「lead-solo 런 — 요구 결정은 킥오프 대화에서 물었습니다」(티어가 `lead-solo` 인 옛 계획의 런에서만) · 「문서에 절이 없습니다 — 설계 스테이지가 목록을 남기지 않았습니다」 · 「설계 문서가 없습니다」.
 - **새 티켓 초안** — the tickets a child run set aside for a person to publish: every entry of the design document's `## 미해결 이슈 / 트레이드오프` whose `**사유**` reads `새 티켓 필요 — 앞 티켓 결함`, each with its heading and its `**티켓 초안**` verbatim. End with 「런은 트래커에 쓰지 않았습니다 — 사람이 발행합니다」. With no such entry, leave the section out.
 - **상위 출처 이슈** — only when the manifest carries a `베이스 설계` row whose upper document carries `**문서 종류**: 티켓 배달 설계`. The upper run ends at its split and cannot see its tickets land, so this read belongs to the child run's report. All of it is reading.
-  - `<base>` is what `cd "<manifest directory>/../.." && pwd` prints. For each `착수` row of the registry `<base>/docs/design-base/<slug>.tickets.md`, take the run's ledger `<base>/docs/pipeline-run/<런>.md`. **A ledger file that does not exist is not a failed read**: that run was refused or given up before it began, and its ticket line reads `없음`. Read an existing ledger with this program and nothing else, as `LC_ALL=C awk -f <이 프로그램> <원장>`. It reads every `segment` row of a segment, because the park, apply and import rows carry no `PR=`, and prints one line `<세그먼트><TAB><종류><TAB><값><TAB><행 레포>` per segment: `머지` when a row carries `머지 커밋`, which only a merged segment's row carries; then `PR` with the last non-empty `PR=`; then `브랜치` with the last non-empty `브랜치=`; then `없음`. `<행 레포>` is the last non-empty `레포=`, or `-` when no row carries one. A ledger with no `segment` row, a run that has not planned a segment yet, prints the one line `-<TAB>없음<TAB>-<TAB>-`, so such a run never reads as merged:
+  - `<base>` is what `cd "<manifest directory>/../.." && pwd` prints. For each `착수` row of the registry `<base>/docs/design-base/<slug>.tickets.md`, take the run's ledger `<base>/docs/pipeline-run/<런>.md`. **A ledger file that does not exist is not a failed read**: that run was refused or given up before it began, and its ticket line reads `없음`. For an existing ledger take `<문서>` from the `**설계 문서**` line of the run's `<base>/docs/pipeline-run/<런>.plan.md`: `<base>/<값>` when that is a file, otherwise `/<값>` when that is a file; `/dev/null` when the value is `(없음)` or the plan has no such line. A plan that cannot be read, or a value that names no file, is a failed read. Read the ledger with this program and nothing else, as `LC_ALL=C awk -f <이 프로그램> <문서> <원장>`. It reads every `segment` row of a segment, because the park, apply and import rows carry no `PR=`, and prints one line `<세그먼트><TAB><종류><TAB><값><TAB><행 레포>` per segment: `머지` when a row carries `머지 커밋`, which only a merged segment's row carries; then `PR` with the last non-empty `PR=`; then `브랜치` with the last non-empty `브랜치=`; then `없음`. `<행 레포>` is the last non-empty `레포=`, or `-` when no row carries one. A slice `## 구현 슬라이싱` of `<문서>` declares with `### 슬라이스 <id>` and no `segment` row has yet, because the router plans a slice only after its predecessor landed, prints `<id><TAB>없음<TAB>-<TAB>-` after them, so a run that landed only part of its slices never reads as merged. `**슬라이스 수**` is not read: it leaves out a slice cut below `PR`, and such a slice is a ticket PR that has not landed. A ledger with no `segment` row and no declared slice, a run that has not planned a segment yet, prints the one line `-<TAB>없음<TAB>-<TAB>-`, so such a run never reads as merged:
 
   ```awk
+  FILENAME == ARGV[1] {
+    line = $0
+    sub(/^[ \t]+/, "", line)
+    c = substr(line, 1, 1)
+    if (c == "`" || c == "~") {
+      m = 0
+      while (substr(line, m + 1, 1) == c) m++
+      if (m >= 3) {
+        rest = substr(line, m + 1)
+        gsub(/[ \t]/, "", rest)
+        if (!fenced) { fenced = 1; fc = c; fl = m }
+        else if (c == fc && m >= fl && rest == "") fenced = 0
+        next
+      }
+    }
+    if (fenced) next
+    if ($0 == "## 구현 슬라이싱") { body = 1; next }
+    if (index($0, "## ") == 1) { body = 0; next }
+    head = "### 슬라이스 "
+    if (body && index($0, head) == 1) {
+      rest = substr($0, length(head) + 1)
+      if (match(rest, /^[A-Za-z0-9]+/)) declared[++nd] = substr(rest, 1, RLENGTH)
+    }
+    next
+  }
   /^- `segment` \| / {
     n = split($0, f, " \\| ")
     id = pr = mc = br = rp = ""
@@ -87,6 +112,10 @@ Cover, in this order:
     if (rp != "") repos[id] = rp
   }
   END {
+    for (i = 1; i <= nd; i++) {
+      s = declared[i]
+      if (!(s in seen)) { seen[s] = 1; order[++total] = s; repos[s] = "-" }
+    }
     if (!total) { print "-\t없음\t-\t-"; exit }
     for (i = 1; i <= total; i++) {
       s = order[i]
