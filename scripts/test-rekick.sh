@@ -3477,5 +3477,215 @@ gh13
 check "13 자식: 모르는 모드는 판정불가 다" "$(rkg no-such-mode "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err")" "판정불가"
 unset CC_REMOTE_GH
 
+# ---------------------------------------------------------------------------
+# 16. 강제 표면 승인 — 입양되는 세그먼트의 승인이 새 런으로 이어지는가
+# ---------------------------------------------------------------------------
+# The adopted branch adds `CLAUDE.md`, an instruction file the classifier
+# names, so the kickoff listing of the branch holds one `승인 가능` line. An
+# approval of it rides the previous manifest (copied byte for byte) or the
+# previous ledger (rewritten as a manifest row with `근거=이월 <run> 원장
+# <line>`), and a person's `승인 <sha256>` answer adds a `근거=킥오프 확인`
+# row. Section 13's fixture helpers build each source.
+export CC_REMOTE_GH="$WORK/bin/gh"
+# mksa <src> — a worktree on seg/<src>-I1 whose commit adds seg.txt and
+# CLAUDE.md, pushed; leaves "<worktree> <branch> <head>" in MKSA.
+mksa() {
+  local w="$WORK/repo-run-$1-I1" b="seg/$1-I1"
+  ( cd "$WT" && git worktree add -q -b "$b" "$w" main && cd "$w" && printf '%s\n' "$1" > seg.txt \
+      && printf '# 지침 %s\n' "$1" > CLAUDE.md && git add seg.txt CLAUDE.md && git commit -qm "$1" && git push -q origin "$b" ) >/dev/null 2>&1
+  MKSA="$w $b $(cd "$w" && git rev-parse HEAD)"
+}
+# sa_ledger <record> — the gate's writes for a person's `승인` at the shift's
+# `강제 표면 승인` stop: the cone `blocked` row naming the record, the
+# approval row, and the `중단 답` row last. SA_APPROVED replaces the approved
+# entry; SA_NOANSWER leaves out the answer row.
+sa_ledger() {
+  local rec="$1" dig
+  mkdir -p "$(dirname "$rec")"
+  printf '# 교대 정지\n\n**분류**: gate-unanswerable\n**스텝**: 교대 정지 — 강제 표면 승인\n' > "$rec"
+  dig=$(sha "$rec")
+  fx_row 'blocked' "대상=rk" "스코프=cone" "원인=막힘" "앵커 세그먼트=I1" "자리=강제 표면 승인" "중단 기록=$rec" "기록 다이제스트=$dig" "사유=픽스처"
+  fx_row '강제 표면 승인' "세그먼트=I1" "브랜치=$S13_B" "경로=CLAUDE.md" "분류=지침파일" "베이스 항목=없음" \
+    "승인 항목=${SA_APPROVED:-$SAEH}" "근거=교대 정지 승인" "중단 기록=$rec" "기록 다이제스트=$dig" "승인 프레임=F1"
+  [ -n "${SA_NOANSWER:-}" ] || fx_row '중단 답' "세그먼트=I1" "중단 기록=$rec" "스킬=autopilot" "선택지=승인" "답한 주체=사람" \
+    "승인 프레임=F1" "기록 다이제스트=$dig" "근거=픽스처"
+}
+# under14 <draft> — the `## 인가` lines right under its `세그먼트 입양` row
+# that are `강제 표면 승인` rows.
+under14() {
+  awk '/^## / { sec = $0; inb = 0; next }
+       sec == "## 인가" && /^- `세그먼트 입양`/ { inb = 1; next }
+       sec == "## 인가" && inb && /^- `강제 표면 승인`/ { print; next }
+       { inb = 0 }' "$1"
+}
+# note14 <verdict> — the render's notice line for CLAUDE.md, counted in sl.rerr.
+note14() { grep -c -x -F "강제 표면 승인 알림${TAB}$1${TAB}I1${TAB}CLAUDE.md" "$WORK/sl.rerr" || true; }
+# take14 <file> — the person's `이어받기` answer for the current S13_* source.
+take14() { printf '입양 I1\t이어받기 — I1 · PR #41 · %s · %s\n' "$S13_B" "$(printf '%s' "$S13_H" | cut -c1-12)" > "$1"; }
+# v14 <label> <want> <draft> <src> <asked> [args…] — verify-subset over that
+# source; on 실패 the failed list must name 강제표면.
+v14() {
+  local label="$1" want="$2" d="$3" s="$4" a="$5" o; shift 5
+  o=$(rk verify-subset "$d" "$BASE/docs/pipeline-run/$s.plan.md" --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$s.plan.md")" \
+        --expect-grant-sha256 "$(sha "$BASE/docs/pipeline-grant/$s.md")" --asked "$a" "$@")
+  check "16: $label" "$(col "$o" 판정)" "$want"
+  if [ "$want" = 실패 ]; then has "16: $label — 실패한 검사에 강제표면 이 있다" "$(col "$o" 판정 3)" "강제표면"; fi
+}
+
+# The ledger source: a person approved CLAUDE.md at the shift's stop.
+L14=20261001-a0000021
+mksa "$L14"; K13_REUSE="$MKSA" mk13 "$L14"; gh13
+LW=$S13_W; LB=$S13_B; LH=$S13_H
+SAEH=$(cd "$LW" && git ls-tree HEAD -- CLAUDE.md | awk '{ print $1 " " $3 }')
+sa_ledger "$S13_RD/halt/shift/I1-1.md"
+LLN=$(lineof13 '- `강제 표면 승인` | ' "$L14")
+ROWL="- \`강제 표면 승인\` | 세그먼트=I1 | 브랜치=$LB | 경로=CLAUDE.md | 분류=지침파일 | 베이스 항목=없음 | 승인 항목=$SAEH | 근거=이월 $L14 원장 $LLN"
+bash "$ORCH/enforcement-surface-screen.sh" --between "$LW" refs/remotes/origin/main "$LH" > "$WORK/sa14.list" 2>/dev/null
+check "16 픽스처: 목록 도구가 CLAUDE.md 를 승인 가능 한 줄로 낸다" \
+  "$(cat "$WORK/sa14.list")" "CLAUDE.md${TAB}지침파일${TAB}없음${TAB}$SAEH${TAB}승인 가능"
+LSHA=$(sha "$WORK/sa14.list")
+
+# 9 — a run that ended right after the person's `승인` is adopted by the seat.
+a13 "$L14" --auto
+check "16 좌석: 승인 답 직후 끝난 런의 세그먼트는 --auto 입양 후보다" "$(why13)" "후보"
+
+# 2 — the person's path: the ledger row becomes a manifest row under the adoption row.
+take14 "$WORK/a14-take"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a14-take" seat_link "$L14" 20261003-c0000001
+HD14="$WORK/hd14.md"; cp "$SL_OUT" "$HD14"
+check "16 사람: render-manifest 와 verify-subset 이 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "16 사람: 원장 승인 행이 근거=이월 <런> 원장 <줄> 의 행으로 입양 행 바로 아래에 온다" "$(under14 "$HD14")" "$ROWL"
+check "16 사람: 그 행이 초안 전체에 한 줄뿐이다" "$(grep -c '^- `강제 표면 승인`' "$HD14")" "1"
+check "16 사람: 바이트가 같은 이월 행은 이어받음 알림 한 줄을 낸다" "$(note14 이어받음)" "1"
+mf_check "$HD14"; rc=$?
+check "16 사람: 승인 행을 실은 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+
+# 3 — the seat's path carries the same row.
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$L14" 20261003-c0000002
+SD14="$WORK/sd14.md"; cp "$SL_OUT" "$SD14"
+check "16 좌석: render-manifest --auto 와 verify-subset --auto 가 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "16 좌석: --auto 도 같은 이월 행을 입양 행 바로 아래에 쓴다" "$(under14 "$SD14")" "$ROWL"
+check "16 좌석: 승인 답 직후 끝난 런을 다시 킥오프한 초안에 그 세그먼트의 입양 행이 있다" \
+  "$(grep -c "^- \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$LB | 워크트리=$LW | 출처 런=$L14 | PR=41$" "$SD14" || true)" "1"
+mf_check "$SD14"; rc=$?
+check "16 좌석: 좌석 초안이 check_manifest 를 통과한다" "$rc" "0"
+
+# 5 — verify-subset refuses a row only the draft holds, a changed row and a row
+# away from its adoption row.
+: > "$WORK/a14-none"
+v14 "좌석 초안은 --auto 에서 통과한다" 통과 "$SD14" "$L14" "$WORK/a14-none" --auto
+EXTRA14="- \`강제 표면 승인\` | 세그먼트=I1 | 브랜치=$LB | 경로=sub/CLAUDE.md | 분류=지침파일 | 베이스 항목=없음 | 승인 항목=$SAEH | 근거=킥오프 확인"
+RE_ROW="$ROWL" RE_X="$EXTRA14" awk '{ print } $0 == ENVIRON["RE_ROW"] { print ENVIRON["RE_X"] }' "$SD14" > "$WORK/sd14-extra.md"
+v14 "초안에만 있는 승인 행은 실패한다" 실패 "$WORK/sd14-extra.md" "$L14" "$WORK/a14-none" --auto
+RE_ROW="$ROWL" awk '$0 == ENVIRON["RE_ROW"] { sub(/ 원장 [0-9]+$/, " 원장 1") } { print }' "$SD14" > "$WORK/sd14-line.md"
+v14 "원장 줄 번호를 바꾼 승인 행은 실패한다" 실패 "$WORK/sd14-line.md" "$L14" "$WORK/a14-none" --auto
+RE_ROW="$ROWL" awk '$0 == ENVIRON["RE_ROW"] { next } { print } $0 == "## 요소" { print ENVIRON["RE_ROW"] }' "$SD14" > "$WORK/sd14-away.md"
+v14 "## 인가 밖으로 옮긴 승인 행은 실패한다" 실패 "$WORK/sd14-away.md" "$L14" "$WORK/a14-none" --auto
+grep -v '^- `강제 표면 승인`' "$SD14" > "$WORK/sd14-drop.md"
+v14 "이어 나를 승인 행을 뺀 초안은 실패한다" 실패 "$WORK/sd14-drop.md" "$L14" "$WORK/a14-none" --auto
+
+# 12 — the seat never asks: a `강제 표면` key under --auto is refused by both.
+printf '강제 표면 I1\t승인 %s\n' "$LSHA" > "$WORK/a14-seatkey"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="$WORK/a14-seatkey" seat_link "$L14" 20261003-c0000003
+check "16 좌석: --asked 에 강제 표면 키가 있으면 render-manifest --auto 가 거부한다" "$( [ "$SL_RC" != 0 ] && echo 거부)" "거부"
+has "16 좌석: 그 거부 사유가 강제 표면 키를 이름한다" "$(cat "$WORK/sl.rerr")" "강제 표면 키"
+v14 "좌석에서 --asked 에 강제 표면 키가 있으면 실패한다" 실패 "$SD14" "$L14" "$WORK/a14-seatkey" --auto
+
+# 7 — the private copy the adoption check reads carries no approval row.
+RAM14="$WORK/rk-adopt-defs.sh"
+awk '/^rk_adopt_manifest\(\) \{/,/^}/' "$RK" > "$RAM14"
+( . "$RAM14"; MANIFEST="$HD14" rk_adopt_manifest "$ROW13" "$WORK/copy14.md" )
+check "16: 입양 검사용 사본에는 강제 표면 승인 행이 없다" \
+  "$(grep -c '^- `강제 표면 승인`' "$WORK/copy14.md" || true)/$(grep -c '^- `세그먼트 입양`' "$WORK/copy14.md" || true)" "0/1"
+
+# 6 — a segment that is not adopted carries nothing.
+printf '입양 I1\t다시 하기 — I1 · PR #41\n' > "$WORK/a14-redo"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a14-redo" seat_link "$L14" 20261003-c0000004
+check "16 사람: 다시 하기 답이면 입양 행도 승인 행도 없고 검증을 통과한다" \
+  "$SL_RC/$SL_VS/$(grep -c -e '^- `세그먼트 입양`' -e '^- `강제 표면 승인`' "$SL_OUT" || true)" "0/통과/0"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$L14" 20261003-c0000005 --no-adopt
+check "16 좌석: --no-adopt 초안에는 승인 행이 없다" "$SL_RC/$SL_VS/$(grep -c '^- `강제 표면 승인`' "$SL_OUT" || true)" "0/통과/0"
+check "16 좌석: 입양하지 않으면 승인 알림도 없다" "$(grep -c '^강제 표면 승인 알림' "$WORK/sl.rerr" || true)" "0"
+
+# 8 and 13 — a person's new answer: a hash of another listing is refused, the
+# hash of this one writes a `킥오프 확인` row that replaces the carried one.
+{ cat "$WORK/a14-take"; printf '강제 표면 I1\t승인 %s\n' 0000000000000000000000000000000000000000000000000000000000000000; } > "$WORK/a14-badsha"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a14-badsha" seat_link "$L14" 20261003-c0000006
+check "16 사람: 보여 준 목록과 sha256 이 다른 승인 답은 렌더가 거부한다" "$( [ "$SL_RC" != 0 ] && echo 거부)" "거부"
+has "16 사람: 그 거부 사유가 목록이 다르다고 말한다" "$(cat "$WORK/sl.rerr")" "질문 때 보인 것과 다릅니다"
+{ cat "$WORK/a14-take"; printf '강제 표면 I1\t승인 %s\n' "$LSHA"; } > "$WORK/a14-ok"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a14-ok" seat_link "$L14" 20261003-c0000007
+ROWK="- \`강제 표면 승인\` | 세그먼트=I1 | 브랜치=$LB | 경로=CLAUDE.md | 분류=지침파일 | 베이스 항목=없음 | 승인 항목=$SAEH | 근거=킥오프 확인"
+check "16 사람: 목록 해시가 맞는 승인 답은 render-manifest 와 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "16 사람: 새로 답한 행이 같은 경로의 이월 행을 대신한다" "$(under14 "$SL_OUT")" "$ROWK"
+check "16 사람: 새 답의 행에는 이어받음 알림이 없다" "$(grep -c '^강제 표면 승인 알림' "$WORK/sl.rerr" || true)" "0"
+mf_check "$SL_OUT"; rc=$?
+check "16 사람: 새 답의 행을 실은 초안이 check_manifest 를 통과한다" "$rc" "0"
+v14 "새 답의 행을 실은 초안에서 그 답을 빼면 실패한다" 실패 "$SL_OUT" "$L14" "$WORK/a14-take"
+{ cat "$WORK/a14-ok"; printf '강제 표면 I9\t승인 %s\n' "$LSHA"; } > "$WORK/a14-other"
+v14 "입양 행이 없는 세그먼트의 강제 표면 키는 실패한다" 실패 "$SL_OUT" "$L14" "$WORK/a14-other"
+
+# 10 — a ledger row whose `중단 답` never landed is not carried.
+N14=20261001-a0000022
+mksa "$N14"; K13_REUSE="$MKSA" mk13 "$N14"; gh13
+SA_NOANSWER=1 sa_ledger "$S13_RD/halt/shift/I1-1.md"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$N14" 20261003-c0000008
+check "16 좌석: 중단 답이 없는 원장 승인 행은 옮겨지지 않는다" \
+  "$SL_RC/$SL_VS/$(grep -c '^- `세그먼트 입양`' "$SL_OUT" || true)/$(grep -c '^- `강제 표면 승인`' "$SL_OUT" || true)" "0/통과/1/0"
+
+# 4 and 11 — the branch end is not the approved bytes: the row is carried and
+# the notice says 내용 다름, as the gate's own verdict function says.
+D14=20261001-a0000023
+mksa "$D14"; K13_REUSE="$MKSA" mk13 "$D14"; gh13
+DEH=$(cd "$S13_W" && git ls-tree HEAD -- CLAUDE.md | awk '{ print $1 " " $3 }')
+SA_APPROVED="100644 $HEXA40" sa_ledger "$S13_RD/halt/shift/I1-1.md"
+DLN=$(lineof13 '- `강제 표면 승인` | ' "$D14")
+ROWD="- \`강제 표면 승인\` | 세그먼트=I1 | 브랜치=$S13_B | 경로=CLAUDE.md | 분류=지침파일 | 베이스 항목=없음 | 승인 항목=100644 $HEXA40 | 근거=이월 $D14 원장 $DLN"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$D14" 20261003-c0000009
+check "16 좌석: 브랜치 항목이 승인과 다르면 행은 이어지고 검증을 통과한다" "$SL_RC/$SL_VS/$(under14 "$SL_OUT")" "0/통과/$ROWD"
+check "16 좌석: 그때 알림은 내용 다름 이다" "$(note14 '내용 다름')/$(note14 이어받음)" "1/0"
+GV14=$( ( CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY; . "$GATE_SH" >/dev/null 2>&1; set +e
+          gate_surface_path_verdict CLAUDE.md "$DEH" 없음 없음 "$ROWD" ) 2>/dev/null )
+check "16: 같은 입력의 게이트 판정 함수도 승인 가능/내용 다름 이다" "$GV14" "승인 가능${TAB}내용 다름"
+RKS14="$WORK/rk-sa-defs.sh"
+{ printf 'RK_DIR=%q\nTAB=$(printf "\\t")\n' "$ORCH"; awk '/^rk_gate\(\) \{/,/^}/' "$RK"; } > "$RKS14"
+check "16 자식: sa-verdict 는 게이트 판정 함수의 출력을 그대로 낸다" \
+  "$( ( . "$RKS14"; rk_gate sa-verdict "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" CLAUDE.md "$DEH" 없음 없음 "$ROWD" ) 2>/dev/null )" "$GV14"
+
+# 4 — only the base end moved: it now holds a CLAUDE.md of its own, so the path
+# is changed on both sides; the row is still carried and the notice says 내용 다름.
+use13 "$LW" "$LB" "$LH"
+OLDMAIN=$(cd "$WT" && git rev-parse refs/remotes/origin/main)
+NEWMAIN=$(cd "$LW" && blob=$(printf '# 베이스 지침\n' | git hash-object -w --stdin) \
+  && tree=$(printf '100644 blob %s\tCLAUDE.md\n' "$blob" | git mktree) \
+  && git commit-tree "$tree" -p "$OLDMAIN" -m base)
+( cd "$WT" && git update-ref refs/remotes/origin/main "$NEWMAIN" )
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$L14" 20261003-c0000010
+check "16 좌석: 베이스 쪽만 바뀌어도 행은 이어지고 검증을 통과한다" "$SL_RC/$SL_VS/$(under14 "$SL_OUT")" "0/통과/$ROWL"
+check "16 좌석: 그때 알림은 내용 다름 이다 (베이스 쪽)" "$(note14 '내용 다름')/$(note14 이어받음)" "1/0"
+( cd "$WT" && git update-ref refs/remotes/origin/main "$OLDMAIN" )
+
+# 1 — a source that adopted the segment itself: its manifest row is copied byte
+# for byte under the new adoption row.
+M14=20261001-a0000024
+ROWM="- \`강제 표면 승인\` | 세그먼트=I1 | 브랜치=$LB | 경로=CLAUDE.md | 분류=지침파일 | 베이스 항목=없음 | 승인 항목=$SAEH | 근거=킥오프 확인"
+P_EXTRA="$SEAT_ROW
+- \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$LB | 워크트리=$LW | 출처 런=$L14 | PR=41
+$ROWM" K13_REUSE="$LW $LB $LH" mk13 "$M14"; gh13
+mf_check "$BASE/docs/pipeline-run/$M14.plan.md"; rc=$?
+check "16 연쇄: 승인 행을 가진 원천 매니페스트가 check_manifest 를 통과한다 (픽스처)" "$rc" "0"
+take14 "$WORK/a14-mtake"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a14-mtake" seat_link "$M14" 20261003-c0000011
+check "16 연쇄: 이전 매니페스트의 승인 행이 새 입양 행 바로 아래로 바이트 그대로 옮겨진다" "$SL_RC/$SL_VS/$(under14 "$SL_OUT")" "0/통과/$ROWM"
+check "16 연쇄: 그 행의 알림은 이어받음 이다" "$(note14 이어받음)" "1"
+mf_check "$SL_OUT"; rc=$?
+check "16 연쇄: 그 초안이 check_manifest 를 통과한다" "$rc" "0"
+{ cat "$WORK/a14-mtake"; printf '강제 표면 I1\t승인 %s\n' "$LSHA"; } > "$WORK/a14-mnew"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a14-mnew" seat_link "$M14" 20261003-c0000012
+check "16 연쇄: 새로 답한 행이 같은 경로의 매니페스트 행보다 앞선다 (한 줄만 남는다)" \
+  "$SL_RC/$SL_VS/$(under14 "$SL_OUT" | grep -c . || true)/$(grep -c '^강제 표면 승인 알림' "$WORK/sl.rerr" || true)" "0/통과/1/0"
+unset CC_REMOTE_GH
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
