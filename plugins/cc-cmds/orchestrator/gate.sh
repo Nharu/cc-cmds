@@ -7197,7 +7197,8 @@ surface_of_argv0() {
     # the line names (`gate_ban_append_answer`). Both land in host files, so the
     # stage declares them `기기전역`, and the machine-global cell of
     # `gate_reach_disposition` opens exactly the two this row grades
-    # `트리밖쓰기`. Anywhere else, and every other subcommand, writes the
+    # `트리밖쓰기`. `share` prints the configured share scope and writes nothing.
+    # Anywhere else, and every other subcommand, writes the
     # settings home or the sidecar, which is the seat's work, so they take the
     # unknown grade and its refusal.
     # `visual-check.sh` only reads the document, the sidecar and the screens.
@@ -7205,7 +7206,7 @@ surface_of_argv0() {
     # the tree, and `app` serves the build on a loopback port it takes down itself.
     visual-config.sh)
       case "${1:-}" in
-        snapshot|lane) printf '읽기' ;;
+        snapshot|lane|share) printf '읽기' ;;
         account)
           if gate_caller_is_visual_publish_stage; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
         append)
@@ -15307,15 +15308,22 @@ gate_resume_grant_ok() {
   # - A `resume-bound-*` `WAIT` is held to the same rule: route.sh's live-lease
   #   branch hands back the lease's account without consulting the binding, so
   #   route cannot be assumed to refuse a wrong resume on its own.
-  local bind="${1:-}" env="${2:-}" facts verdict dormant acct reason
+  # - A migration `GRANT` (`fresh: true` with `migrated.from` equal to the
+  #   binding) passes: the router moved the visual publish pin off the bound
+  #   account, and `fresh` tells the launch to start a new session on the new
+  #   account rather than re-attach the bound one, so nothing is resumed across
+  #   accounts.
+  local bind="${1:-}" env="${2:-}" facts verdict dormant acct reason mfrom
   facts=$(printf '%s' "$env" | jq -r '
     if type != "object" then error("envelope") else . end
     | [ (.verdict // "" | tostring),
         (if .dormant == true then "1" else "0" end),
         (if .account == null then "" else (.account | tostring) end),
-        (.reason // "" | tostring) ]
+        (.reason // "" | tostring),
+        (if .fresh == true and (.migrated | type) == "object" and (.migrated.from | type) == "string"
+         then .migrated.from else "" end) ]
     | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) || return 1
-  { IFS= read -r verdict; IFS= read -r dormant; IFS= read -r acct; IFS= read -r reason; } <<EOF
+  { IFS= read -r verdict; IFS= read -r dormant; IFS= read -r acct; IFS= read -r reason; IFS= read -r mfrom; } <<EOF
 $facts
 EOF
   case "$verdict" in
@@ -15323,7 +15331,8 @@ EOF
       if [ "$dormant" = "1" ]; then
         case "$bind" in ''|-) return 0 ;; esac
         return 1
-      fi ;;
+      fi
+      [ -n "$mfrom" ] && [ -n "$bind" ] && [ "$bind" = "$mfrom" ] && return 0 ;;
     WAIT)
       case "$reason" in resume-bound-*) ;; *) return 1 ;; esac ;;
     *) return 1 ;;
@@ -31670,6 +31679,32 @@ gate_argv_visual_helper_write() {
   )
 }
 
+gate_argv_visual_account_rundir() {
+  # gate_argv_visual_account_rundir <argv...> — 0 when argv runs
+  # `visual-config.sh account` and some word of it assigns
+  # `CC_PIPELINE_RUN_DIR` (`env CC_PIPELINE_RUN_DIR=… <helper> account`, a
+  # leading `CC_PIPELINE_RUN_DIR=…` before the helper, or the same inside an
+  # interpreter's string). `account` reads the account it expects from the
+  # run-local migration record under that directory, so pointing it at another
+  # directory lets the stage choose the account it is checked against. Read
+  # the same quote-blind way as `gate_argv_visual_helper_write`, so a false hit
+  # refuses, never opens.
+  gate_argv_visual_helper_write "$@" || return 1
+  (
+    set -f
+    local w t prev='' acct=1 asg=1
+    for w in "$@"; do
+      w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
+      for t in $w; do
+        case "${prev##*/}:$t" in visual-config.sh:account) acct=0 ;; esac
+        case "$t" in CC_PIPELINE_RUN_DIR=*) asg=0 ;; esac
+        prev=$t
+      done
+    done
+    [ "$acct" = 0 ] && [ "$asg" = 0 ]
+  )
+}
+
 gate_own_helper() {
   # gate_own_helper <argv0> — 0 when argv0 is the file of that name beside this
   # gate, compared as physical paths. A bare name is what the act's PATH finds,
@@ -33049,6 +33084,24 @@ gate_rundir_write_guard() {
         # an argument. Allowing the directory opens nothing beyond `halt/*`, which
         # is already allowed, and `halt/*/*` is refused above.
         halt) continue ;;
+        # THE CANVAS MIGRATION PROGRESS FILES, ONE LEVEL DOWN ONLY. After an
+        # account migration the visual publish stage records how far the
+        # canvases moved in `visual-migration/<s>.md`, and the gate reads its
+        # `**완료**: 예` line to decide whether the document-level record is
+        # written. The directory itself is listed for `mkdir -p`; anything deeper
+        # is refused, and so is a leaf that is a symbolic link, which would let
+        # the stage's write land on a file the gate reads elsewhere. Safe on the
+        # witness exception's terms — absent when the run opens, read by no
+        # enforcement-surface check. `visual-lane`, the run-local migration
+        # record, is not listed: the gate writes it and the stage reads it.
+        visual-migration/*/*) ;;
+        visual-migration/*)
+          if [ -L "$rdn/$rel" ] || [ -L "$rdln/$rel" ]; then
+            warn "rule refused: run directory write — a migration progress file that is a symbolic link is not written through: $a"
+            return "$GATE_EXIT_RULE"
+          fi
+          continue ;;
+        visual-migration) continue ;;
         # THE DESIGN DOCUMENT LOCK. Every stage that edits the design document —
         # the implementation arm's token writes, the audit's reconciliation pass
         # and the re-convergence pass — wraps the write in `lockf -k -t 0
@@ -33970,6 +34023,19 @@ gate_sibling_record_refuse() {
   warn "a rekick copies the predecessor's manifest and grant record byte for byte, so a run that edits a sibling's record writes the authorization of the run that comes after it"
 }
 
+gate_visual_lane_doc_spelling() {
+  # gate_visual_lane_doc_spelling <path> — 0 when the path is the
+  # document-level migration record directory `docs/visual-lane` or lies under
+  # it. Only the gate writes there, when it closes a visual publish stage whose
+  # canvas migration finished; a stage that wrote it would choose the lane the
+  # next run of the same document pins.
+  gate_nocase_glob "/$1" '*/docs/visual-lane/*' || gate_nocase_glob "/$1" '*/docs/visual-lane'
+}
+
+gate_visual_lane_doc_refuse() {
+  warn "rule refused: the document-level migration record is the gate's to write, when it closes a visual publish stage whose canvas migration finished — a stage does not write under docs/visual-lane/: $1"
+}
+
 gate_sibling_record_write_guard() {
   # gate_sibling_record_write_guard <매니페스트 디렉터리> <그 물리 철자> <argv...>
   #
@@ -34056,6 +34122,9 @@ gate_sibling_record_write_guard() {
       if gate_nocase_contains "$joinedn" 'pipeline-grant/'; then
         gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE"
       fi
+      if gate_nocase_contains "$joinedn" 'docs/visual-lane'; then
+        gate_visual_lane_doc_refuse "$joinedn"; return "$GATE_EXIT_RULE"
+      fi
       if [ -n "$gdir" ]; then
         gdirn=$(gate_path_spelling "$gdir")
         gdirpn=$(gate_path_spelling "$gdirp")
@@ -34134,6 +34203,14 @@ gate_sibling_record_write_guard() {
       if [ "$i" = "$GATE_LEAF_UNRESOLVED" ]; then
         gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
       fi
+      # The same final-link walk, for the document-level migration record.
+      x=$(gate_leaf_spelling "$ap" 2>/dev/null) || x=''
+      if [ -n "$x" ] && gate_visual_lane_doc_spelling "$x"; then
+        gate_visual_lane_doc_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
+    fi
+    if gate_visual_lane_doc_spelling "$a" || gate_visual_lane_doc_spelling "$ap"; then
+      gate_visual_lane_doc_refuse "$a"; return "$GATE_EXIT_RULE"
     fi
     # THE DIRECTORY ITSELF AS A DESTINATION, remembered and judged after every
     # candidate is seen — the record-suffixed source may come before or after.
@@ -47351,7 +47428,10 @@ gate_verb_act() {
     # NOT ON A `--resume`. A re-attachment, a continuation and a halt answer
     # carry a fixed sentence, never the slash command, and the session they
     # resume is pinned further down to this step's own `stage-result` rows — the
-    # rows of a dispatch that passed this check when it first started.
+    # rows of a dispatch that passed this check when it first started. A
+    # migration grant that turns the resume into a new session does not reuse
+    # this argv's prompt unchecked: `gate_fresh_session_prompt` builds that
+    # session's prompt from the kind's re-entry frame and `DOC`.
     local dd_prompt="" dd_arg dd_prev="" dd_cmd="" dd_path
     for dd_arg in "$@"; do
       [ "$dd_prev" = "-p" ] && dd_prompt="$dd_arg"
@@ -48372,6 +48452,15 @@ gate_verb_act() {
     # and the caller sets that environment. The gate's own copy is graded only
     # when it is called directly, so no interpreter spelling is needed for it.
     warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
+    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
+  fi
+  if gate_argv_visual_account_rundir "$@"; then
+    # THE EXPECTED ACCOUNT COMES FROM THE RUN DIRECTORY. `account` compares the
+    # logged-in account with the one the run-local migration record under
+    # `CC_PIPELINE_RUN_DIR` names, so an act that sets that variable itself
+    # picks the record it is checked against. The stage inherits the run's
+    # value; no spelling that reassigns it is admitted.
+    warn "\`visual-config.sh account\` with \`CC_PIPELINE_RUN_DIR\` reassigned is refused — the expected account is read from the run's own migration record, so the act runs with the inherited value"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
   if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
@@ -51857,6 +51946,163 @@ gate_continuation_argv() {
   return 0
 }
 
+# THE RUN-LOCAL MIGRATION RECORD `$RUN_DIR/visual-lane` has this one writer.
+# Every dispatch path that launches a stage on a router grant calls it once,
+# after the grant is final (the re-attach binding check passed, and a carry has
+# settled on the grant it keeps) and before the stage process starts; a grant
+# that is handed back never reaches it. The stage itself cannot write the file:
+# the run-directory write guard refuses it on both surfaces. The visual publish
+# stage reads it through `visual-config.sh account`/`lane` as the account its
+# K0~K3 checks expect, so a stage that could write it could re-point its own
+# account pin.
+#
+#   <!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->
+#   **레인**: <lane id>
+#   **계정**: <email the new lane's config directory is logged in as>
+#   **이관**: <s> · <from lane> → <to lane> · <reserve|exhausted|cap> · <UTC ISO>
+#
+# A migration grant (`migrated` on the envelope) reads the account with
+# `claude auth status --json` in the granted config directory at this moment,
+# keeps the earlier `**이관**`/`**승계**` lines and adds one `**이관**` line,
+# numbered one past the earlier ones. A grant whose pin came from the
+# document-level record, in a run that has no run-local record yet, inherits:
+# the record's lane and account are copied with a `**승계**` line instead, and
+# the account is not read again. Any other grant writes nothing.
+
+gate_visual_lane_auth_email() {
+  # gate_visual_lane_auth_email <config dir> — the email `claude auth status
+  # --json` reports in <config dir>. rc 0 with the email; otherwise rc 1 with
+  # the cause on stdout: `읽기 실패` (the command failed or did not print a JSON
+  # object), `loggedIn false`, or `email 없음`.
+  local cfg="$1" bin out rc=0 facts
+  bin=${CLI_BIN:-claude}
+  out=$(CLAUDE_CONFIG_DIR="$cfg" command "$bin" auth status --json 2>/dev/null) || rc=$?
+  if [ "$rc" != "0" ]; then printf '읽기 실패'; return 1; fi
+  facts=$(printf '%s' "$out" | jq -r 'if type != "object" then error("shape") else . end
+           | [ (if .loggedIn == true then "1" else "0" end),
+               (if (.email | type) == "string" then .email else "" end) ]
+           | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) \
+    || { printf '읽기 실패'; return 1; }
+  case "$facts" in
+    1$'\n'?*) printf '%s' "${facts#1$'\n'}"; return 0 ;;
+    1*) printf 'email 없음'; return 1 ;;
+    *) printf 'loggedIn false'; return 1 ;;
+  esac
+}
+
+gate_visual_lane_write() {
+  # gate_visual_lane_write <lane> <account> <last line> — the record's three
+  # head lines, the earlier `**이관**`/`**승계**` lines of the record being
+  # replaced, and <last line>, through a temporary file in the run directory
+  # and a `mv`.
+  local rec="$RUN_DIR/visual-lane" tmp
+  tmp=$(mktemp "$RUN_DIR/.visual-lane.XXXXXX") || return 1
+  {
+    printf '%s\n' '<!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->'
+    printf '**레인**: %s\n**계정**: %s\n' "$1" "$2"
+    [ ! -f "$rec" ] || grep -E '^\*\*(이관|승계)\*\*: ' "$rec" 2>/dev/null || true
+    printf '%s\n' "$3"
+  } > "$tmp" && mv -f "$tmp" "$rec" && return 0
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
+gate_visual_lane_commit() {
+  # gate_visual_lane_commit <stage kind> <grant envelope> — write the run-local
+  # migration record for this final grant when it calls for one. rc 0 when it
+  # wrote one or none was due. rc 1 with nothing written when a migration grant's
+  # account could not be read or the write failed; the reason, naming the lane
+  # and the cause, is on stdout, and the caller hands the lease back and parks
+  # without launching.
+  local kind="${1:-}" env="${2:-}" rec facts from to why cfg email s dl dlane dacct dsrc
+  [ "$kind" = "visual-publish" ] || return 0
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  rec="$RUN_DIR/visual-lane"
+  facts=$(printf '%s' "$env" | jq -r 'if type != "object" then error("shape") else . end
+           | [ (.verdict // "" | tostring),
+               (if (.migrated | type) == "object" then "1" else "0" end),
+               (.migrated.from? // "" | tostring), (.migrated.to? // "" | tostring),
+               (.migrated.why? // "" | tostring), (.config_dir // "" | tostring),
+               (.account // "" | tostring) ]
+           | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) || return 0
+  local verdict migf acct
+  { IFS= read -r verdict; IFS= read -r migf; IFS= read -r from; IFS= read -r to; IFS= read -r why
+    IFS= read -r cfg; IFS= read -r acct; } <<EOF
+$facts
+EOF
+  [ "$verdict" = "GRANT" ] || return 0
+  if [ "$migf" = "1" ]; then
+    if [ -z "$to" ] || [ -z "$cfg" ]; then
+      printf '이관 기록 미작성 — 이관 봉투에 새 레인이나 설정 디렉터리가 없다 (레인 %s)' "${to:--}"
+      return 1
+    fi
+    if ! email=$(gate_visual_lane_auth_email "$cfg"); then
+      printf '이관 기록 미작성 — 새 레인 %s 의 계정 읽기 실패: %s (claude auth status --json, %s)' "$to" "$email" "$cfg"
+      return 1
+    fi
+    s=$(grep -cE '^\*\*이관\*\*: ' "$rec" 2>/dev/null) || true
+    case "$s" in ''|*[!0-9]*) s=0 ;; esac
+    s=$(( s + 1 ))
+    if ! gate_visual_lane_write "$to" "$email" "**이관**: $s · ${from:--} → $to · ${why:--} · $(now_iso)"; then
+      printf '이관 기록 미작성 — %s 를 쓰지 못했다 (레인 %s)' "$rec" "$to"
+      return 1
+    fi
+    log "시각 발행 이관 기록 — $rec: ${from:--} → $to (${why:--}, 이관 $s)"
+    return 0
+  fi
+  [ ! -e "$rec" ] || return 0
+  dl=$(visual_lane_doc_path "${DOC:-}" 2>/dev/null) || return 0
+  dlane=$(visual_lane_doc_field "$dl" 레인) || return 0
+  dacct=$(visual_lane_doc_field "$dl" 계정) || return 0
+  [ "$acct" = "$dlane" ] || return 0
+  dsrc=$(visual_lane_doc_field "$dl" 출처 || true)
+  dsrc=${dsrc%% · *}
+  if ! gate_visual_lane_write "$dlane" "$dacct" "**승계**: $dl · ${dsrc:--} · $(now_iso)"; then
+    printf '이관 기록 미작성 — %s 를 쓰지 못했다 (승계, 레인 %s)' "$rec" "$dlane"
+    return 1
+  fi
+  log "시각 발행 이관 승계 — $rec ← $dl (레인 $dlane)"
+  return 0
+}
+
+gate_visual_lane_doc_commit() {
+  # gate_visual_lane_doc_commit — when the last `**이관**` of the run-local
+  # record has its progress file `$RUN_DIR/visual-migration/<s>.md` at
+  # `**완료**: 예`, write the document-level record `visual_lane_doc_path` names
+  # from the run-local record's lane and account, through a temporary file and
+  # a `mv`. Nothing is written otherwise, so the file keeps the last finished
+  # migration's values. Called when the gate closes a visual publish stage's
+  # row, after the terminal class is decided. Always rc 0: a failed write warns
+  # and the row closes all the same.
+  local rec="${RUN_DIR:-}/visual-lane" last s lane acct dl tmp=""
+  [ -n "${RUN_DIR:-}" ] && [ -f "$rec" ] || return 0
+  last=$(grep -E '^\*\*이관\*\*: [0-9]+ ' "$rec" 2>/dev/null | tail -n 1) || return 0
+  s=${last#\*\*이관\*\*: }
+  s=${s%% *}
+  grep -qxF '**완료**: 예' "$RUN_DIR/visual-migration/$s.md" 2>/dev/null || return 0
+  lane=$(CC_PIPELINE_RUN_DIR="$RUN_DIR" bash "$GATE_DIR/visual-config.sh" lane 2>/dev/null) || {
+    warn "the run-local migration record does not parse — the document-level record is not written"
+    return 0
+  }
+  acct=$(grep -E '^\*\*계정\*\*: ' "$rec" | tail -n 1)
+  acct=${acct#\*\*계정\*\*: }
+  dl=$(visual_lane_doc_path "${DOC:-}" 2>/dev/null) || {
+    warn "the document-level migration record has no path (no design document) — it is not written"
+    return 0
+  }
+  if mkdir -p "$(dirname "$dl")" 2>/dev/null && tmp=$(mktemp "$(dirname "$dl")/.visual-lane.XXXXXX" 2>/dev/null) \
+     && printf '%s\n**레인**: %s\n**계정**: %s\n**출처**: %s · 이관 %s · %s\n' \
+          '<!-- cc-visual-lane-doc v1; writer=gate; reader=run.sh,gate.sh,visual,visual-publish-unattended -->' \
+          "$lane" "$acct" "$RUN_ID" "$s" "$(now_iso)" > "$tmp" \
+     && mv -f "$tmp" "$dl"; then
+    log "문서 단위 이관 기록 — $dl (레인 $lane, 이관 $s)"
+  else
+    [ -z "${tmp:-}" ] || rm -f "$tmp" 2>/dev/null
+    warn "the document-level migration record could not be written: $dl"
+  fi
+  return 0
+}
+
 gate_launch_route_park() {
   # gate_launch_route_park <alias> <row segment> <segment> <why> [<lineage>] —
   # the row a routed dispatch leaves when it stops before the pin. Act scope,
@@ -51975,6 +52221,7 @@ gate_launch_route() {
   GATE_ROUTE_ATTEMPT=""; GATE_ROUTE_LINEAGE=""; GATE_ROUTE_ENV=""; GATE_ROUTE_NONCE=""
   GATE_ROUTE_VERDICT=""; GATE_ROUTE_WHY=""; GATE_ROUTE_EVENT=""
   GATE_ROUTE_ACCOUNT="-"; GATE_ROUTE_CFG=""; GATE_ROUTE_MINTED=0; GATE_ROUTE_BIND=""
+  GATE_ROUTE_FRESH=""
   rowseg=$(gate_stage_row_segment "$seg" "$kind")
   # Every routed dispatch passes here, a carry included, before its own
   # admission scans the table.
@@ -52003,11 +52250,11 @@ gate_launch_route() {
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$reqbind" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
-          --arg pin "$(kind_pin_lane_of "$kind" || true)" \
+          --argjson pinf "$(kind_pin_request_json "$kind")" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
            + (if $dl == null then {} else {deadline: $dl} end)
-           + (if $pin == "" then {} else {pin_lane: $pin} end)') \
+           + $pinf') \
     || { warn "could not build the router request ($seg)"; return 1; }
   prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
            | { jq -r '.nonce // empty' 2>/dev/null || true; })
@@ -52062,6 +52309,102 @@ gate_launch_route() {
     gate_launch_route_park "$alias" "$rowseg" "$seg" "$why"
     return "$GATE_EXIT_ROUTE"
   fi
+  # A MIGRATION GRANT ON A RESUME STARTS A NEW SESSION: the bound session lives
+  # in the old account's config directory, and the grant names another one.
+  # GATE_ROUTE_FRESH tells the caller to give the new session the prompt
+  # `gate_fresh_session_prompt` builds, not the re-attach argv it was handed.
+  if [ "$event" = "resume" ] && gate_route_env_fresh "$GATE_ROUTE_ENV"; then
+    log "시각 발행 이관 — $seg 는 세션 $GATE_RESUME 을 재부착하지 않고 새 세션으로 뜬다"
+    GATE_RESUME=""; GATE_ROUTE_FRESH=1
+  fi
+  return 0
+}
+
+gate_route_env_fresh() {
+  # gate_route_env_fresh <envelope> — 0 when the grant carries `fresh: true`,
+  # the router's word that the launch starts a new session rather than
+  # re-attaching the bound one.
+  [ "$(printf '%s' "${1:-}" | jq -r 'if type == "object" and .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]
+}
+
+gate_argv_prompt_keep() {
+  # gate_argv_prompt_keep <cli args...> — keep the argv's first `-p` value in
+  # GATE_DISPATCH_PROMPT, with GATE_DISPATCH_PROMPT_SET `1` when the argv
+  # carries one and `0` when it does not. A global rather than a command
+  # substitution, so the prompt keeps its bytes, trailing newlines included.
+  GATE_DISPATCH_PROMPT="" GATE_DISPATCH_PROMPT_SET=0
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+      GATE_DISPATCH_PROMPT=$2 GATE_DISPATCH_PROMPT_SET=1
+      return 0
+    fi
+    shift
+  done
+  return 0
+}
+
+gate_argv_prompt_restore() {
+  # gate_argv_prompt_restore <prompt> <cli args...> — GATE_RESTORED_ARGV gets
+  # the argv with every `-p` value replaced by <prompt>, and <prompt> appended
+  # as `-p` when the argv carries none. The inverse of the re-attach and
+  # continuation substitutions, for a launch that starts a new session after
+  # its argv was rewritten for a re-attachment: a new session has no
+  # conversation to apply a re-attach sentence to, and the dispatch prompt is
+  # what names the skill and its document.
+  local p="$1" had=0
+  shift
+  GATE_RESTORED_ARGV=()
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+      GATE_RESTORED_ARGV+=(-p "$p"); shift 2; had=1
+    else
+      GATE_RESTORED_ARGV+=("$1"); shift
+    fi
+  done
+  [ "$had" = "1" ] || GATE_RESTORED_ARGV+=(-p "$p")
+  return 0
+}
+
+gate_fresh_session_prompt() {
+  # gate_fresh_session_prompt <stage-kind> <kept-set> <kept-prompt> — the `-p`
+  # of the new session a migration grant (`fresh: true`) starts in place of a
+  # re-attachment, in GATE_FRESH_PROMPT; 1, with it empty, when there is none.
+  # <kept-set> and <kept-prompt> are what `gate_argv_prompt_keep` kept from the
+  # caller's argv.
+  #
+  # THE GATE BUILDS IT; THE CALLER'S PROMPT IS NOT TRUSTED. A re-attachment of
+  # a stage that was cut off (a limit, a crash, an end from outside) or ended
+  # in a refusal carries the shift's fixed re-attach sentence, never the slash
+  # command, and the pre-launch check that binds a prompt to the step's
+  # command and `DOC` does not run on a `--resume`. A new session handed that
+  # sentence has no conversation to continue and is told neither the skill nor
+  # the document. So a kind whose re-entry frame has no slot but `<문서>` gets
+  # that frame filled with the kind's document, and the caller's prompt is kept
+  # only when it begins with exactly that form — the bytes the first dispatch's
+  # check would have let through. A kind with no such frame keeps the caller's
+  # prompt.
+  local kind="$1" kset="$2" kept="$3" sk sg tkind frame doc built=""
+  GATE_FRESH_PROMPT=""
+  doc=$(gate_carry_doc_of "$kind")
+  while IFS='|' read -r sk sg tkind frame; do
+    [ "$tkind" = "$kind" ] || continue
+    case "$(gate_fill_slot "$frame" '<문서>' '')" in
+      *'<'*'>'*) ;;
+      *) [ -z "$doc" ] || built=$(gate_fill_slot "$frame" '<문서>' "$doc") ;;
+    esac
+    break
+  done <<EOF
+$(gate_reentry_table)
+EOF
+  if [ -n "$built" ]; then
+    GATE_FRESH_PROMPT=$built
+    if [ "$kset" = "1" ]; then
+      case "$kept" in "$built"|"$built "*) GATE_FRESH_PROMPT=$kept ;; esac
+    fi
+    return 0
+  fi
+  [ "$kset" = "1" ] || return 1
+  GATE_FRESH_PROMPT=$kept
   return 0
 }
 
@@ -52073,11 +52416,11 @@ gate_launch_route_ask() {
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$bound" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
-          --arg pin "$(kind_pin_lane_of "$kind" || true)" \
+          --argjson pinf "$(kind_pin_request_json "$kind")" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
            + (if $dl == null then {} else {deadline: $dl} end)
-           + (if $pin == "" then {} else {pin_lane: $pin} end)') \
+           + $pinf') \
     || { warn "could not build the router request ($seg)"; return 1; }
   route_resolve "$req" || { warn "the account resolver stopped — $seg is not launched"; return 1; }
 }
@@ -52188,6 +52531,16 @@ gate_launch_route_carry() {
   if [ "$bcls" = "grant" ]; then
     GATE_RESUME=$bound; GATE_ROUTE_EVENT=resume; GATE_ROUTE_BIND=$bind
     GATE_ROUTE_VERDICT=GRANT; GATE_ROUTE_WHY=$bwhy
+    # A MIGRATION GRANT IS KEPT, NOT HANDED BACK for the fresh question: the
+    # router already moved the pin, and asking `first` would only ask the same
+    # blocked account again. The bound session is not re-attached — it lives in
+    # the old account's config directory — so the stage starts as a new session
+    # and takes the answer from the card the dispatch writes.
+    if gate_route_env_fresh "$benv"; then
+      GATE_RESUME=""; GATE_ROUTE_FRESH=1
+      log "중단 답 운반 — $seg 는 이관 GRANT 로 새 세션이 답 카드를 받는다 (묶인 세션 $bound 은 재부착하지 않음)"
+      return 0
+    fi
     log "중단 답 운반 — $seg ← 묶인 세션 $bound 재부착"
     return 0
   fi
@@ -52287,6 +52640,9 @@ gate_launch_wait() {
   # It runs in the launch directory `gate_launch_stage` chose, because the
   # target-hook paragraph is decided at the directory the stage starts in.
   instr=$(cd "$GATE_LAUNCH_DIR" && gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  # The caller kept the dispatch prompt before its carry substitution; a caller
+  # that did not leaves it to be kept here, before the continuation's.
+  [ -n "${GATE_DISPATCH_PROMPT_SET:-}" ] || gate_argv_prompt_keep "$@"
   if [ -n "${GATE_RESUME:-}" ]; then
     gate_continuation_argv "$seg" "$kind" "$@" || return $?
     [ -z "$GATE_CONTINUED" ] || set -- "${GATE_CONTINUE_ARGV[@]}"
@@ -52309,8 +52665,13 @@ gate_launch_wait() {
   printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$nonce" "${GATE_RESUME:-}" "" wait \
     "$GATE_ROUTE_LINEAGE" "${GATE_ROUTE_EVENT:-first}" "${GATE_ROUTE_BIND:--}" > "$tmp"
   mv "$tmp" "$RUN_DIR/$seg.launch"
+  # THE DISPATCH PROMPT RIDES IN THE ENVIRONMENT, not on the token: the token's
+  # shape is fixed at seven lines, and a prompt may hold a newline. Both are
+  # set on every wait launch, so a value the act inherited is never passed on.
   sup=$( cc_detach_exec "$suplog" "$suplog" \
            env CC_CLAUDE_BIN="$CLI_BIN" \
+             CC_GATE_DISPATCH_PROMPT_SET="$GATE_DISPATCH_PROMPT_SET" \
+             CC_GATE_DISPATCH_PROMPT="$GATE_DISPATCH_PROMPT" \
            bash "$GATE_DIR/gate.sh" supervise-stage --manifest "$MANIFEST" \
              --target "$alias" --segment "$seg" --nonce "$nonce" \
              --launch-dir "$GATE_LAUNCH_DIR" -- "$kind" "$@" )
@@ -52630,15 +52991,34 @@ gate_launch_stage() {
         "라우팅 꺼짐 — 시각 발행 단계는 고정 레인으로만 뜬다. 라우팅을 켠 런에서 다시 파견하세요"
       return "$GATE_EXIT_ROUTE"
     fi
+    # The lookup is the migration's (`kind_pin_resolve`): the run-local record,
+    # the document-level record, then the host file. Any one of them pins.
     if ! kind_pin_lane_of "$kind" >/dev/null; then
       gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
-        "고정 레인 없음 — 호스트 파일 ${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design 에 'lane = <레인 id>' 줄이 없다. 그 줄을 쓴 뒤 다시 파견하세요"
+        "고정 레인 없음 — 호스트 파일 ${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design 에 'lane = <레인 id>' 줄이 없고, 런 지역 이관 기록 $RUN_DIR/visual-lane 도 문서 단위 이관 기록 $(visual_lane_doc_path "${DOC:-}" 2>/dev/null || printf '(문서 없음)') 도 레인을 주지 않는다. 호스트 파일에 그 줄을 쓴 뒤 다시 파견하세요"
       return "$GATE_EXIT_ROUTE"
     fi
   fi
   if run_routed; then
     routed=1
     gate_launch_route "$alias" "$seg" "$kind" "$@" || return $?
+    # THE DISPATCH PROMPT, KEPT BEFORE ANY SUBSTITUTION BELOW: a WAIT hands it to
+    # the supervisor, whose grant at the end of the wait may start a new session
+    # that needs the dispatch form, not the re-attach sentence.
+    gate_argv_prompt_keep "$@"
+    # A MIGRATION GRANT THAT TURNED A RESUME INTO A NEW SESSION gets the prompt
+    # the gate builds for the kind: the argv of a cut-off or refused stage's
+    # re-attachment carries the shift's fixed re-attach sentence, which names
+    # neither the skill nor the document.
+    if [ "${GATE_ROUTE_FRESH:-}" = "1" ]; then
+      if gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"; then
+        gate_argv_prompt_restore "$GATE_FRESH_PROMPT" "$@"
+        set -- "${GATE_RESTORED_ARGV[@]}"
+        gate_argv_prompt_keep "$@"
+      else
+        warn "a migration grant starts a new session of $seg, but neither its kind nor the argv gives a dispatch prompt — the new session starts with the argv as handed over"
+      fi
+    fi
     # A CARRY THAT PICKED THE HALTED SESSION re-attaches it with the fixed resume
     # sentence, not the dispatch form, and a waiting one wakes up with the same:
     # the session already holds its question, and the card holds the answer.
@@ -52720,6 +53100,14 @@ gate_launch_stage() {
       gate_launch_route_drop
       return "$GATE_EXIT_RULE"
     }
+    # THE MIGRATION RECORD, on the grant this dispatch keeps, before the stage
+    # can read it. A migration whose new account cannot be read parks here.
+    local vwhy
+    if ! vwhy=$(gate_visual_lane_commit "$kind" "$GATE_ROUTE_ENV"); then
+      gate_launch_route_drop
+      gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" "$vwhy"
+      return "$GATE_EXIT_ROUTE"
+    fi
   fi
   if [ -z "${GATE_RESUME:-}" ] && [ -n "$instr" ]; then
     gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
@@ -52844,6 +53232,11 @@ gate_verb_supervise_stage() {
   # boundaries; this is the performing half of that same act, split across a
   # process boundary. Its only ledger write is the `stage-result` row.
   local alias="$1" seg="$2" nonce="$3" kind="$4"; shift 4
+  # THE DISPATCH PROMPT A WAIT LAUNCH HANDED DOWN, read once and taken out of
+  # the environment so the stage does not inherit it. Only the waiting branch
+  # reads it, and only on a grant that starts a new session.
+  local disp_set="${CC_GATE_DISPATCH_PROMPT_SET:-}" disp_p="${CC_GATE_DISPATCH_PROMPT:-}"
+  unset CC_GATE_DISPATCH_PROMPT_SET CC_GATE_DISPATCH_PROMPT
   local wrapper="$GATE_DIR/stage-wrapper.sh"
   [ -f "$wrapper" ] || { warn "the stage wrapper is missing: $wrapper"; return 127; }
   [ -n "${CLI_BIN:-}" ] || { warn "the gate could not resolve the CLI binary"; return 127; }
@@ -52984,6 +53377,27 @@ gate_verb_supervise_stage() {
     # spawn: the loop read it on the grant, and synthesizing the instructions
     # under the granted account takes long enough for a boundary to land.
     local prep_why="부여 뒤 기동 준비 거부 — 지시문 합성 또는 stage-lease 행이 거절됐다"
+    # A MIGRATION GRANT AT THE END OF A WAIT starts a new session, as it does at
+    # dispatch time: the bound session lives in the old account's directory.
+    # The binding is still checked, by the lease row below. The argv the
+    # dispatch half handed over was rewritten for a re-attachment (the carry's
+    # resume sentence, a continuation's message), and the prompt it kept before
+    # that is the caller's — the shift's fixed re-attach sentence when the stage
+    # was cut off or refused. So the new session gets the prompt
+    # `gate_fresh_session_prompt` builds for the kind: it names the skill and
+    # the document, and the answer card, when there is one, still reaches it
+    # through CC_PIPELINE_HALT_ANSWER.
+    if [ -n "$resume" ] && gate_route_env_fresh "$wenv"; then
+      log "시각 발행 이관 — $seg 는 대기 끝에 세션 $resume 을 재부착하지 않고 새 세션으로 뜬다"
+      resume=""
+      if gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"; then
+        gate_argv_prompt_restore "$GATE_FRESH_PROMPT" "$@"
+        set -- "${GATE_RESTORED_ARGV[@]}"
+        log "시각 발행 이관 — $seg 의 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
+      else
+        warn "the wait launch handed down no dispatch prompt ($seg) — the new session starts with the argv as handed over"
+      fi
+    fi
     if { [ -n "$launch_dir" ] && ! cd "$launch_dir" 2>/dev/null \
            && prep_why="부여 뒤 기동 준비 거부 — 기동 디렉터리 $launch_dir 가 없다"; } \
        || [ -z "$r_cfg" ] \
@@ -52991,6 +53405,16 @@ gate_verb_supervise_stage() {
        || ! gate_stage_lease_row "$r_lineage" "$wenv" "$r_bound" \
        || { ! gate_sup_wait_ended && prep_why="런이 이미 종료됐다 — $seg 는 부여를 받았지만 기동하지 않는다"; }; then
       gate_sup_wait_stop "$prep_why"
+      [ -z "$r_nonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
+      wait_drop "$wm"
+      rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+      return "$GATE_EXIT_RULE"
+    fi
+    # THE MIGRATION RECORD, written by the same function every dispatch path
+    # calls, after the lease row and before the spawn.
+    local vwhy
+    if ! vwhy=$(gate_visual_lane_commit "$kind" "$wenv"); then
+      gate_sup_wait_stop "$vwhy"
       [ -z "$r_nonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
       wait_drop "$wm"
       rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
@@ -55770,6 +56194,11 @@ gate_record_stage_outcome() {
       || gate_append '문서 해시' "스테이지=$seg 이후" "sha256=$dcur" \
            "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
   fi
+
+  # A visual publish stage that finished moving the canvases to a migrated lane
+  # leaves the document-level record here, once its class is decided; the
+  # function warns on a failed write and never holds the row back.
+  [ "$kind" != "visual-publish" ] || gate_visual_lane_doc_commit
 
   # `실패 서명`, by the driver's one helper. The cause clue is the halt record's
   # id for a halt, the first open decision for a suppressed implementation's

@@ -15696,6 +15696,8 @@ rm -f "$SC15VP" "$WT/docs/fixture-design-15vp.md"
 # `append` adds the one line a person approved, once.
 check "15vp: lane 은 읽기다" \
   "$(vp15 "$VP15/m.md" - 'surface_of_argv0 "$1" lane' "$CC_ORCH/visual-config.sh")" "읽기"
+check "15vp: share 는 읽기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" share' "$CC_ORCH/visual-config.sh")" "읽기"
 check "15vp: 발행 단계 밖의 account 는 등급 미상이다" \
   "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "등급 미상"
 check "15vp: 발행 단계가 없는 계획의 account 는 등급 미상이다" \
@@ -15903,8 +15905,161 @@ case "$msg" in
   *"a runner in front of"*) bad "15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다" "$msg" ;;
   *) ok "15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다" ;;
 esac
+# `account` reads the account it expects from the run-local migration record
+# under `CC_PIPELINE_RUN_DIR`, so an act that reassigns that variable picks the
+# record it is checked against: refused behind `env`, as a leading assignment
+# and inside an interpreter's string. The inherited spelling is not.
+for vpc15 in env pre sh; do
+  case "$vpc15" in
+    env) gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+           --surface 트리밖쓰기 --reach 기기전역 -- env "CC_PIPELINE_RUN_DIR=$VPC15" "$CC_ORCH/visual-config.sh" account ;;
+    pre) gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+           --surface 트리밖쓰기 --reach 기기전역 -- "CC_PIPELINE_RUN_DIR=$VPC15" "$CC_ORCH/visual-config.sh" account ;;
+    sh)  gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+           --surface 트리밖쓰기 --reach 기기전역 -- sh -c "CC_PIPELINE_RUN_DIR=$VPC15 $CC_ORCH/visual-config.sh account" ;;
+  esac
+  case "$msg" in
+    *"with \`CC_PIPELINE_RUN_DIR\` reassigned is refused"*) ok "15vp: account 행위의 CC_PIPELINE_RUN_DIR 재대입은 거부된다 ($vpc15)" ;;
+    *) bad "15vp: account 행위의 CC_PIPELINE_RUN_DIR 재대입은 거부된다 ($vpc15)" "rc=$rc $msg" ;;
+  esac
+done
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 기기전역 -- "$CC_ORCH/visual-config.sh" account
+case "$msg" in
+  *"CC_PIPELINE_RUN_DIR\` reassigned"*) bad "15vp: 재대입 없는 account 는 재대입 거부에 걸리지 않는다" "$msg" ;;
+  *) ok "15vp: 재대입 없는 account 는 재대입 거부에 걸리지 않는다" ;;
+esac
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 읽기 -- env "CC_PIPELINE_RUN_DIR=$VPC15" "$CC_ORCH/visual-config.sh" lane
+case "$msg" in
+  *"CC_PIPELINE_RUN_DIR\` reassigned"*) bad "15vp: lane 의 재대입은 account 거부에 걸리지 않는다" "$msg" ;;
+  *) ok "15vp: lane 의 재대입은 account 거부에 걸리지 않는다" ;;
+esac
 rm -rf "$VPC15"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR15VP"
+
+# ---------------------------------------------------------------------------
+# 15vm. A visual publish pin the router migrates is recorded by the gate
+# --- section: 15vm | group: base | covers: grade, gate_resume_grant_ok, gate_visual_lane_auth_email, gate_visual_lane_write, gate_visual_lane_commit, gate_visual_lane_doc_commit, gate_route_env_fresh, kind_pin_resolve, kind_pin_request_json, gate_launch_stage, gate_launch_route, gate_launch_route_ask, gate_launch_route_carry, gate_verb_supervise_stage, gate_record_stage_outcome | anchors: 15vm: 시각 발행 요청 칸은 migratable 과 호스트 고정을 싣는다, 15vm: 이관 fresh GRANT 는 재부착 구속을 지난다, 15vm: 이관 GRANT 가 런 지역 이관 기록을 쓴다, 15vm: 새 레인의 계정을 읽지 못하면 기록을 쓰지 않고 레인과 원인을 낸다, 15vm: 문서 단위 기록의 레인을 받은 첫 GRANT 는 승계 줄을 쓴다, 15vm: 마지막 이관이 끝났으면 문서 단위 기록이 쓰인다, 15vm: 파견 경로 다섯이 같은 기록 함수와 요청 칸을 지난다 ---
+#
+# The router (slice A) answers a visual publish request whose pin is blocked
+# with a GRANT on another lane: `migrated: {from, to, why}` and `fresh: true`.
+# The gate is the one writer of the run-local record `$RUN_DIR/visual-lane`
+# that the publish stage then reads as the account it expects, and of the
+# document-level record a finished migration leaves for the next run. The
+# envelopes below have the router's shape; the CLI is a stub whose `auth
+# status --json` answer each case picks.
+# ---------------------------------------------------------------------------
+VM15="$WORK/vm15"
+rm -rf "$VM15"; mkdir -p "$VM15/run/visual-migration" "$VM15/repo/docs" "$VM15/cfg/cc-cmds" "$VM15/state" "$VM15/bin"
+git -c init.defaultBranch=main init -q "$VM15/repo" 2>/dev/null
+printf '# d\n' > "$VM15/repo/docs/d.md"
+printf '%s\n' 'account = old@example.com' 'lane = a' > "$VM15/cfg/cc-cmds/claude-design"
+cat > "$VM15/bin/claude" <<'VMSTUB'
+#!/bin/sh
+case "${VM_AUTH:-ok}" in
+  ok) printf '{"loggedIn":true,"email":"new@example.com"}\n' ;;
+  fail) exit 1 ;;
+  out) printf '{"loggedIn":false}\n' ;;
+  noemail) printf '{"loggedIn":true}\n' ;;
+esac
+VMSTUB
+chmod +x "$VM15/bin/claude"
+vm15() {  # vm15 <snippet> [args...] — run a snippet in the sourced gate, on this fixture run
+  local snip="$1"; shift
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 VM_SNIP="$snip" VM_D="$VM15" \
+      XDG_CONFIG_HOME="$VM15/cfg" XDG_STATE_HOME="$VM15/state" bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    set +e
+    unset CC_PIPELINE_RUN_DIR
+    RUN_ID=R15VM; RUN_DIR="$VM_D/run"; DOC="$VM_D/repo/docs/d.md"; CLI_BIN="$VM_D/bin/claude"
+    eval "$VM_SNIP"' _ "$@" 2>/dev/null )
+}
+vm15_env() {  # vm15_env <from> <to> — a migration GRANT as the router writes it
+  printf '{"verdict":"GRANT","account":"%s","config_dir":"%s","basis":"first","fresh":true,"migrated":{"from":"%s","to":"%s","why":"reserve"}}' \
+    "$2" "$VM15/cfg-$2" "$1" "$2"
+}
+vm15_sum() { if [ -f "$VM15/run/visual-lane" ]; then shasum -a 256 "$VM15/run/visual-lane" | cut -d' ' -f1; else printf 없음; fi; }
+
+check "15vm: 시각 발행 요청 칸은 migratable 과 호스트 고정을 싣는다" \
+  "$(vm15 'kind_pin_request_json visual-publish')/$(vm15 'kind_pin_request_json implement')" \
+  '{"migratable":true,"pin_lane":"a","pin_source":"host"}/{}'
+check "15vm: fresh 봉투만 새 세션으로 읽힌다" \
+  "$(vm15 'gate_route_env_fresh "$1" && printf 1 || printf 0' "$(vm15_env a b)")$(vm15 'gate_route_env_fresh "$1" && printf 1 || printf 0' '{"verdict":"GRANT","account":"a"}')" "10"
+check "15vm: 이관 fresh GRANT 는 재부착 구속을 지난다" \
+  "$(vm15 'gate_resume_grant_ok a "$1"; printf "rc=%s" "$?"' "$(vm15_env a b)")" "rc=0"
+check "15vm: 묶인 계정이 아닌 곳에서 옮긴 이관 GRANT 는 구속을 지나지 않는다" \
+  "$(vm15 'gate_resume_grant_ok c "$1" >/dev/null; [ "$?" != 0 ] && printf 막힘' "$(vm15_env a b)")" "막힘"
+check "15vm: fresh 없는 이관 봉투는 구속을 지나지 않는다" \
+  "$(vm15 'gate_resume_grant_ok a "$1" >/dev/null; [ "$?" != 0 ] && printf 막힘' "$(vm15_env a b | jq -c 'del(.fresh)')")" "막힘"
+
+# The record is written on the grant, before the stage process starts.
+VM_AUTH=ok vm15 'gate_visual_lane_commit visual-publish "$1"; printf "rc=%s" "$?"' "$(vm15_env a b)" > "$VM15/out1"
+check "15vm: 이관 GRANT 가 런 지역 이관 기록을 쓴다" \
+  "$(cat "$VM15/out1")|$(sed -n 1p "$VM15/run/visual-lane" | cut -c1-22)|$(sed -n '2,3p' "$VM15/run/visual-lane" | tr '\n' ' ')|$(grep -c '^\*\*이관\*\*: 1 · a → b · reserve · ' "$VM15/run/visual-lane")" \
+  "rc=0|<!-- cc-visual-lane v1|**레인**: b **계정**: new@example.com |1"
+check "15vm: 기록이 생긴 뒤의 고정은 그 레인이고 출처는 run-record 다" \
+  "$(vm15 'kind_pin_request_json visual-publish')" '{"migratable":true,"pin_lane":"b","pin_source":"run-record"}'
+check "15vm: 런 지역 기록의 계정을 visual-config.sh 가 기대 계정으로 읽는다" \
+  "$(CC_PIPELINE_RUN_DIR="$VM15/run" XDG_CONFIG_HOME="$VM15/cfg" XDG_STATE_HOME="$VM15/state" bash "$CC_ORCH/visual-config.sh" lane)" "b"
+VM_AUTH=ok vm15 'gate_visual_lane_commit visual-publish "$1"' "$(vm15_env b c)" >/dev/null
+check "15vm: 둘째 이관은 일련번호 2 를 달고 앞의 이관 줄을 남긴다" \
+  "$(grep -c '^\*\*이관\*\*: 1 · a → b' "$VM15/run/visual-lane")/$(grep -c '^\*\*이관\*\*: 2 · b → c' "$VM15/run/visual-lane")/$(sed -n 2p "$VM15/run/visual-lane")" "1/1/**레인**: c"
+vm15_before=$(vm15_sum)
+for vm15_mode in fail:'읽기 실패' out:'loggedIn false' noemail:'email 없음'; do
+  vm15_out=$(VM_AUTH="${vm15_mode%%:*}" vm15 'gate_visual_lane_commit visual-publish "$1"; printf "|rc=%s" "$?"' "$(vm15_env c d)")
+  case "$vm15_out" in
+    "이관 기록 미작성 — 새 레인 d 의 계정 읽기 실패: ${vm15_mode#*:} ("*"|rc=1") ok "15vm: 새 레인의 계정을 읽지 못하면 기록을 쓰지 않고 레인과 원인을 낸다 (${vm15_mode%%:*})" ;;
+    *) bad "15vm: 새 레인의 계정을 읽지 못하면 기록을 쓰지 않고 레인과 원인을 낸다 (${vm15_mode%%:*})" "$vm15_out" ;;
+  esac
+done
+check "15vm: 실패한 이관은 기록을 바꾸지 않는다" "$(vm15_sum)" "$vm15_before"
+check "15vm: GRANT 가 아니거나 다른 종류면 기록 함수는 아무것도 쓰지 않는다" \
+  "$(vm15 'gate_visual_lane_commit visual-publish "{\"verdict\":\"PARK\"}"; printf "%s" "$?"; gate_visual_lane_commit implement "$1"; printf "%s" "$?"' "$(vm15_env c d)")/$(vm15_sum)" "00/$vm15_before"
+
+# The document-level record: written when the stage row closes and the last
+# migration's progress file says `**완료**: 예`, and nowhere else.
+VM15_DL="$(cd "$VM15/repo" && pwd -P)/docs/visual-lane/docs-d.md"
+vm15 'gate_visual_lane_doc_commit' >/dev/null
+check "15vm: 마지막 이관이 끝나지 않았으면 문서 단위 기록이 쓰이지 않는다" "$([ -e "$VM15_DL" ] && printf 있음 || printf 없음)" "없음"
+printf '**완료**: 예\n' > "$VM15/run/visual-migration/1.md"
+vm15 'gate_visual_lane_doc_commit' >/dev/null
+check "15vm: 앞 이관만 끝난 것으로는 문서 단위 기록이 쓰이지 않는다" "$([ -e "$VM15_DL" ] && printf 있음 || printf 없음)" "없음"
+printf '**완료**: 예\n' > "$VM15/run/visual-migration/2.md"
+vm15 'gate_visual_lane_doc_commit' >/dev/null
+check "15vm: 마지막 이관이 끝났으면 문서 단위 기록이 쓰인다" \
+  "$(sed -n 1p "$VM15_DL" 2>/dev/null | cut -c1-26)|$(sed -n '2,3p' "$VM15_DL" 2>/dev/null | tr '\n' ' ')|$(grep -c '^\*\*출처\*\*: R15VM · 이관 2 · ' "$VM15_DL" 2>/dev/null)" \
+  "<!-- cc-visual-lane-doc v1|**레인**: c **계정**: new@example.com |1"
+check "15vm: 스테이지 행 닫기가 시각 발행 종류에서 문서 단위 기록 함수를 부른다" \
+  "$(sed -n '/^gate_record_stage_outcome()/,/^}/p' "$GATE" | grep -c '\[ "$kind" != "visual-publish" \] || gate_visual_lane_doc_commit' || true)" "1"
+
+# A new run of the same document: no run-local record, and the document-level
+# record pins. The first grant on that lane inherits it with a `**승계**` line.
+rm -f "$VM15/run/visual-lane"
+check "15vm: 새 런의 고정은 문서 단위 기록의 레인이고 출처는 run-record 다" \
+  "$(vm15 'kind_pin_request_json visual-publish')" '{"migratable":true,"pin_lane":"c","pin_source":"run-record"}'
+vm15 'gate_visual_lane_commit visual-publish "{\"verdict\":\"GRANT\",\"account\":\"z\"}"' >/dev/null
+check "15vm: 다른 레인의 GRANT 는 승계 줄을 쓰지 않는다" "$(vm15_sum)" "없음"
+vm15 'gate_visual_lane_commit visual-publish "{\"verdict\":\"GRANT\",\"account\":\"c\"}"; printf "rc=%s" "$?"' > "$VM15/out2"
+check "15vm: 문서 단위 기록의 레인을 받은 첫 GRANT 는 승계 줄을 쓴다" \
+  "$(cat "$VM15/out2")|$(sed -n '2,3p' "$VM15/run/visual-lane" | tr '\n' ' ')|$(grep -c "^\*\*승계\*\*: $VM15_DL · R15VM · " "$VM15/run/visual-lane")|$(grep -c '^\*\*이관\*\*' "$VM15/run/visual-lane" || true)" \
+  "rc=0|**레인**: c **계정**: new@example.com |1|0"
+
+# The wiring: every dispatch path builds its request with the one pin builder,
+# and every path that launches on a kept grant writes the record through the
+# one function — the driver's launch, the gate's dispatch and the end of a
+# wait. The carry keeps a fresh grant for a new session instead of handing it
+# back, and a resume on a fresh grant is dropped on each path.
+RUN_SH="$CC_ORCH/run.sh"
+check "15vm: 파견 경로 다섯이 같은 기록 함수와 요청 칸을 지난다" \
+  "$(grep -c -- '--argjson pinf "$(kind_pin_request_json "$kind")"' "$GATE")/$(grep -c -E -- '--argjson pinf "\$\(kind_pin_request_json "\$(kind|3)"\)"' "$RUN_SH")/$(grep -c 'gate_visual_lane_commit "$kind"' "$GATE")/$(grep -c 'gate_visual_lane_commit "$kind"' "$RUN_SH")/$(grep -c -- '--arg pin "$(kind_pin_lane_of' "$GATE" "$RUN_SH" | awk -F: '{s+=$2} END{print s}')" \
+  "2/2/2/1/0"
+check "15vm: 운반·일반 기동·대기 재질의가 fresh GRANT 에서 재부착을 비운다" \
+  "$(sed -n '/^gate_launch_route_carry()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$benv"')/$(sed -n '/^gate_launch_route()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$GATE_ROUTE_ENV"')/$(sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$wenv"')/$(grep -c '\.fresh == true' "$RUN_SH")" \
+  "1/1/1/1"
+check "15vm: 고정 레인 없음 문면이 세 출처를 모두 이름 댄다" \
+  "$(grep -c "고정 레인 없음 — 호스트 파일 .* 런 지역 이관 기록 \$RUN_DIR/visual-lane 도 문서 단위 이관 기록 " "$GATE")" "1"
+rm -rf "$VM15"
 
 # ---------------------------------------------------------------------------
 # 15w. A screen slice is not dispatched before its screens are approved
@@ -23419,6 +23574,88 @@ case "$(printf '%s' "$hook_card_out" | jq -r '.hookSpecificOutput.permissionDeci
   "deny gate: the only paths in the run directory a stage is declared to write are "*) ok "훅도 halt-answer/ 쓰기를 같은 런 디렉터리 문면으로 거부한다" ;;
   *) bad "훅의 halt-answer/ 판정" "$hook_card_out" ;;
 esac
+
+# 캔버스 이관 진행 파일. 계정 이관 뒤 시각 발행 스테이지가 `visual-migration/<s>.md` 에
+# 캔버스가 어디까지 옮겨졌는지를 적고 게이트가 그 `**완료**: 예` 줄을 읽는다. 두 가드가
+# 한 단계 아래와 디렉터리 자신만 열고, 더 깊은 경로·말단 심링크·런 지역 이관 기록
+# `visual-lane` 은 거부한다. 문서 단위 레인 기록 `docs/visual-lane/` 은 게이트만 쓴다.
+vm_hook() {  # vm_hook <파일 경로> — 훅의 Write 판정과 사유
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
+    | CC_PIPELINE_STAGE_ID='S2#4' bash "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" --run-dir "$RD3" \
+        --gate "$GATE" --ledger "$LEDGER2" --grant "$CONE_GRANT" --manifest "$NM" 2>/dev/null \
+    | jq -r '(.hookSpecificOutput.permissionDecision // "allow") + " " + (.hookSpecificOutput.permissionDecisionReason // "")' 2>/dev/null
+}
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mkdir -p "$RD3/visual-migration"
+check "이관 진행 디렉터리 mkdir 는 통과한다" "$rc" "0"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/visual-migration/1.md"
+check "이관 진행 파일 visual-migration/1.md 쓰기는 통과한다" "$rc" "0"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/visual-migration/deep/1.md"
+check "이관 진행 디렉터리 두 단계 아래 쓰기는 거절된다" "$rc" "3"
+ln -s "$RD3/surface-digest" "$RD3/visual-migration/2.md" 2>/dev/null || true
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/visual-migration/2.md"
+check "말단이 심링크인 이관 진행 파일 쓰기는 거절된다" "$rc" "3"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/visual-lane"
+check "런 지역 이관 기록 visual-lane 쓰기는 거절된다" "$rc" "3"
+case "$(vm_hook "$RD3/visual-migration/1.md")" in
+  'allow '*) ok "훅도 이관 진행 파일 쓰기를 연다" ;;
+  *) bad "훅의 이관 진행 파일 판정" "$(vm_hook "$RD3/visual-migration/1.md")" ;;
+esac
+case "$(vm_hook "$RD3/visual-migration/deep/1.md")" in
+  'deny gate: a canvas migration progress file in the run directory is one level deep only'*) ok "훅은 이관 진행 디렉터리 두 단계 아래를 거부한다" ;;
+  *) bad "훅의 깊은 이관 진행 판정" "$(vm_hook "$RD3/visual-migration/deep/1.md")" ;;
+esac
+case "$(vm_hook "$RD3/visual-migration/2.md")" in
+  'deny '*) ok "훅은 말단이 심링크인 이관 진행 파일을 거부한다" ;;
+  *) bad "훅의 심링크 이관 진행 판정" "$(vm_hook "$RD3/visual-migration/2.md")" ;;
+esac
+case "$(vm_hook "$RD3/visual-lane")" in
+  'deny gate: the only paths in the run directory a stage is declared to write are '*) ok "훅은 런 지역 이관 기록을 기본 거부로 막는다" ;;
+  *) bad "훅의 visual-lane 판정" "$(vm_hook "$RD3/visual-lane")" ;;
+esac
+rm -rf "$RD3/visual-migration"
+if grep -qE '^[[:space:]]*visual-migration/\*/\*\)' "$GATE" \
+   && grep -qE '^[[:space:]]*visual-migration/\*/\*\)' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
+   && grep -qE '^[[:space:]]*visual-migration\)' "$GATE" \
+   && grep -qE '^[[:space:]]*visual-migration\)' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
+  ok "게이트와 훅이 같은 이관 진행 디렉터리 팔을 싣는다"
+else
+  bad "가드·훅 불일치" "이관 진행 디렉터리 팔이 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+fi
+VL3=$(mktemp -d "${TMPDIR:-/tmp}/cc-vl3.XXXXXX")
+mkdir -p "$VL3/repo/docs/visual-lane"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$VL3/repo/docs/visual-lane/d.md"
+check "문서 단위 레인 기록 쓰기는 Bash 에서 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-lane/d.md" ] && printf yes || printf no )" "3/no"
+case "$msg" in
+  *"the document-level migration record is the gate's to write"*) ok "그 거절이 문서 단위 기록 문면이다" ;;
+  *) bad "문서 단위 기록 거절 문면" "$msg" ;;
+esac
+: > "$VL3/repo/docs/visual-lane/d.md"
+ln -s "$VL3/repo/docs/visual-lane/d.md" "$VL3/link.md"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$VL3/link.md"
+check "문서 단위 레인 기록을 가리키는 말단 심링크 쓰기도 거절된다" "$rc" "3"
+case "$(vm_hook "$VL3/repo/docs/visual-lane/d.md")" in
+  "deny gate: the document-level migration record is the gate's to write"*) ok "훅은 문서 단위 레인 기록 편집을 거부한다" ;;
+  *) bad "훅의 문서 단위 기록 판정" "$(vm_hook "$VL3/repo/docs/visual-lane/d.md")" ;;
+esac
+case "$(vm_hook "$VL3/link.md")" in
+  "deny gate: the document-level migration record is the gate's to write"*) ok "훅은 문서 단위 레인 기록을 가리키는 심링크 편집도 거부한다" ;;
+  *) bad "훅의 심링크 문서 단위 기록 판정" "$(vm_hook "$VL3/link.md")" ;;
+esac
+rm -rf "$VL3"
 
 # 정지 기록 이름은 쓰는 쪽에서 막는다. 시도 4 의 스테이지가 세그먼트 이름만으로
 # `halt/S2.md` 를 썼고, 두 독자는 시도 번호를 단 이름만 찾으므로 그 턴을 `정상 완료` 로
@@ -62210,7 +62447,7 @@ check "97: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다" \
 
 # ---------------------------------------------------------------------------
 # 98b. 멈춘 스테이지의 보호 기록 — 감독자의 쓰기·지우기, 차용 중 재개 대기
-# --- section: 98b | group: ledger_series | covers: gate_sup_halt_hold_put, gate_verb_supervise_stage, gate_launch_route_carry, gate_launch_wait, gate_stage_wait_row, run_ledger_series_check | needs: 75,95 | anchors: 98: 의도된 park 의 시도는 보호 기록 하나를 남긴다, 98: 정상 완료로 끝난 시도는 보호 기록을 남기지 않는다, 98: 보호 디렉터리에 쓸 수 없어도 rc 0 이고 경고 한 줄이다, 98: 감독자는 종단 행 뒤 반납 앞에서 보호 기록을 한 번 쓴다, 98: 감독자는 세 기록 뒤 스폰 대기 앞에서 보호 기록을 지운다, 98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다, 98: 차용 중 재개 대기는 계정=- 로는 거부된다, 98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다, 98: 차용된 묶인 대기와 새 GRANT 면 새 세션이다, 98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다 ---
+# --- section: 98b | group: ledger_series | covers: gate_sup_halt_hold_put, gate_verb_supervise_stage, gate_launch_route_carry, gate_launch_wait, gate_stage_wait_row, run_ledger_series_check, gate_argv_prompt_keep, gate_argv_prompt_restore, gate_route_env_fresh, gate_fresh_session_prompt, gate_launch_stage, gate_launch_route | needs: 75,95 | anchors: 98: 대기 끝 이관 GRANT 의 감독자는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다, 98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다, 98: 이관 GRANT 의 새 세션 프롬프트는 종류의 재진입 틀과 DOC 로 짓는다, 98: 재부착 문장을 실은 디스패치 시점 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다, 98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다,98: 의도된 park 의 시도는 보호 기록 하나를 남긴다, 98: 정상 완료로 끝난 시도는 보호 기록을 남기지 않는다, 98: 보호 디렉터리에 쓸 수 없어도 rc 0 이고 경고 한 줄이다, 98: 감독자는 종단 행 뒤 반납 앞에서 보호 기록을 한 번 쓴다, 98: 감독자는 세 기록 뒤 스폰 대기 앞에서 보호 기록을 지운다, 98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다, 98: 차용 중 재개 대기는 계정=- 로는 거부된다, 98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다, 98: 차용된 묶인 대기와 새 GRANT 면 새 세션이다, 98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다 ---
 #
 # 보호 기록은 라우팅된 시도가 질문으로 멈춘 뒤 임대가 반납되는 순간에도 그 계정이 cc 레인의
 # 차용 기증자 순위 맨 뒤로 가도록 남기는 표다. 감독자 전체를 띄우는 대신 감독자가 부르는
@@ -62346,6 +62583,129 @@ check "98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO �
   "0|WAIT|resume|bound|wait,resume,u1|424242|11|11"
 check "98: 그 파견의 stage-wait 행은 하나이고 차용 중 재개 대기다" \
   "$(lsr93_n "$h98_lw" '- `stage-wait` ')/$(lsr93_n "$h98_lw" '| 근거=resume-bound-borrowed |')" "1/1"
+
+# 대기 끝의 이관 GRANT(`fresh: true`). 운반은 묶인 세션을 골라 CLI 의 `-p` 를 재부착
+# 문장으로 바꾼 뒤 대기에 들어갔으므로, 대기 반쪽은 바꾸기 전의 디스패치 프롬프트를
+# 감독자 환경에 따로 넘긴다. 감독자는 대기 반쪽이 넘긴 argv·환경·토큰을 그대로 받아
+# 돌리고, 대기 고리·임대 확보·임대 행만 대역으로 둔다. 기동 래퍼 자리의 대역은 받은
+# argv 와 답 카드 경로를 적고 감독자를 끝낸다.
+h98_av="$h98_wd/argv"
+h98_dp=$(sed -n 's/^CC_GATE_DISPATCH_PROMPT=//p' "$h98_av" 2>/dev/null)
+h98_nonce=$(awk 'p { print; exit } $0 == "--nonce" { p = 1 }' "$h98_av" 2>/dev/null)
+h98_cli=(); h98_seen=0
+while IFS= read -r h98_l; do
+  if [ "$h98_seen" = 1 ]; then h98_cli+=("$h98_l"); elif [ "$h98_l" = -- ]; then h98_seen=1; fi
+done < "$h98_av"
+case "${#h98_cli[@]}|${h98_cli[0]:-}|${h98_cli[1]:-}|${h98_cli[2]:-}" in
+  "3|reconverge|-p|멈췄던 스텝의 사람 답이 CC_PIPELINE_HALT_ANSWER 의 답 카드에 있다."*) ok "98: 대기 반쪽이 감독자에 넘긴 CLI 의 -p 는 운반의 재부착 문장이다" ;;
+  *) bad "98: 대기 반쪽이 감독자에 넘긴 CLI 의 -p 는 운반의 재부착 문장이다" "${h98_cli[*]:-(없음)}" ;;
+esac
+check "98: 대기 반쪽은 바꾸기 전의 디스패치 프롬프트를 감독자 환경에 넘긴다" \
+  "$(lsr93_n "$h98_av" 'CC_GATE_DISPATCH_PROMPT_SET=1')|$h98_dp" "1|/cc-cmds:design-reconverge $lsr93_doc R2"
+h98_fenv='{"verdict":"GRANT","nonce":"g98f","account":"u2","config_dir":"/h/.claude-u2","basis":"resume","fresh":true,"migrated":{"from":"u1","to":"u2","why":"reserve"}}'
+rm -f "$h98_wd/spawn-argv" "$h98_wd/spawn-card"
+RUN_PACE_ROOT="$h98_pw" CC_GATE_DISPATCH_PROMPT_SET=1 CC_GATE_DISPATCH_PROMPT="$h98_dp" \
+  H98_FENV=$h98_fenv H98_NONCE=$h98_nonce H98_K=${h98_cli[0]:-} H98_P1=${h98_cli[1]:-} H98_P2=${h98_cli[2]:-} \
+  lsr93_in "$h98_lw" eval '
+    gate_sup_await_dispatch() { :; }
+    eval "h98_cwf() $(declare -f cc_waiting_field | tail -n +2)"
+    cc_waiting_field() { if [ "$2" = 보유자 ]; then printf "%s" "$$"; else h98_cwf "$@"; fi; }
+    stage_wait_loop() { WAIT_LOOP_ENV=$H98_FENV; return 0; }
+    gate_stage_lease_row() { return 0; }
+    gate_sup_wait_ended() { return 0; }
+    gate_sup_lease_secure() { return 0; }
+    bash() {
+      if [ "${1:-}" = "$GATE_DIR/stage-wrapper.sh" ]; then
+        printf "%s\n" "$@" > "$RUN_DIR/spawn-argv"
+        printf "%s|%s\n" "${CC_PIPELINE_HALT_ANSWER:-}" "${CC_GATE_DISPATCH_PROMPT-unset}" > "$RUN_DIR/spawn-card"
+        kill -KILL $$
+      fi
+      command bash "$@"
+    }
+    gate_verb_supervise_stage infra S98 "$H98_NONCE" "$H98_K" "$H98_P1" "$H98_P2"' >/dev/null 2>&1
+h98_sp=$(cat "$h98_wd/spawn-argv" 2>/dev/null)
+case "$h98_sp" in
+  *--resume*) bad "98: 대기 끝 이관 GRANT 의 감독자는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다" "재부착했다: $h98_sp" ;;
+  *"--session-id"*"
+--
+-p
+/cc-cmds:design-reconverge $lsr93_doc R2") ok "98: 대기 끝 이관 GRANT 의 감독자는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다" ;;
+  *) bad "98: 대기 끝 이관 GRANT 의 감독자는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다" "${h98_sp:-(기동 안 됨)}" ;;
+esac
+h98_card=$(cat "$h98_wd/spawn-card" 2>/dev/null)
+check "98: 그 새 세션은 운반의 답 카드를 받고 디스패치 프롬프트 환경은 물려받지 않는다" \
+  "$( [ -n "${h98_card%%|*}" ] && [ -f "${h98_card%%|*}" ] && printf 카드 || printf 없음)|${h98_card#*|}" "카드|unset"
+
+# 끊긴 시각 발행 스테이지의 재부착 모양. 시프트는 한도·크래시·외부 종료나 거절 종료로
+# 끊긴 스테이지를 `--resume` 과 고정 재부착 문장으로 재부착하므로, 대기 반쪽이 보존한
+# 호출자의 `-p` 도 그 문장이다. 대기 끝 이관 GRANT 의 새 세션은 그 문장이 아니라 게이트가
+# 종류의 재진입 틀과 DOC 로 지은 디스패치 형식을 받아야 한다. 같은 토큰을 되살려 같은
+# 감독자를 종류 `visual-publish` 로 한 번 더 돌린다(이관 기록 쓰기는 대역).
+h98_ra='중단된 지점부터 이어 간다. 같은 일을 처음부터 다시 하지 않는다.'
+rm -f "$h98_wd/spawn-argv" "$h98_wd/spawn-card"
+cp "$h98_wd/S98.launch.taken" "$h98_wd/S98.launch" 2>/dev/null || true
+RUN_PACE_ROOT="$h98_pw" CC_GATE_DISPATCH_PROMPT_SET=1 CC_GATE_DISPATCH_PROMPT="$h98_ra" \
+  H98_FENV=$h98_fenv H98_NONCE=$h98_nonce H98_RA=$h98_ra \
+  lsr93_in "$h98_lw" eval '
+    gate_sup_await_dispatch() { :; }
+    eval "h98_cwf() $(declare -f cc_waiting_field | tail -n +2)"
+    cc_waiting_field() { if [ "$2" = 보유자 ]; then printf "%s" "$$"; else h98_cwf "$@"; fi; }
+    stage_wait_loop() { WAIT_LOOP_ENV=$H98_FENV; return 0; }
+    gate_stage_lease_row() { return 0; }
+    gate_visual_lane_commit() { return 0; }
+    gate_sup_wait_ended() { return 0; }
+    gate_sup_lease_secure() { return 0; }
+    bash() {
+      if [ "${1:-}" = "$GATE_DIR/stage-wrapper.sh" ]; then
+        printf "%s\n" "$@" > "$RUN_DIR/spawn-argv"
+        kill -KILL $$
+      fi
+      command bash "$@"
+    }
+    gate_verb_supervise_stage infra S98 "$H98_NONCE" visual-publish -p "$H98_RA"' >/dev/null 2>&1
+h98_sp=$(cat "$h98_wd/spawn-argv" 2>/dev/null)
+case "$h98_sp" in
+  *--resume*) bad "98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다" "재부착했다: $h98_sp" ;;
+  *"--session-id"*"
+--
+-p
+/cc-cmds:visual-publish-unattended $lsr93_doc") ok "98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다" ;;
+  *) bad "98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다" "${h98_sp:-(기동 안 됨)}" ;;
+esac
+
+# 새 세션 프롬프트를 짓는 함수 자체. 재진입 틀이 `<문서>` 말고 칸이 없는 종류는 틀을
+# 채운 형식을 받고, 호출자의 프롬프트가 정확히 그 형식으로 시작할 때만 그것을 지킨다.
+# 다른 문서를 실은 슬래시 커맨드도 지은 형식으로 바뀐다. 그런 틀이 없는 종류는 호출자의
+# 프롬프트를 지키고, 그것마저 없으면 1 이다. 디스패치 시점과 운반의 이관 GRANT 도 같은
+# 함수를 지난다.
+check "98: 이관 GRANT 의 새 세션 프롬프트는 종류의 재진입 틀과 DOC 로 짓는다" \
+  "$(lsr93_in "$h98_lw" eval '
+      for c in "visual-publish|1|중단된 지점부터 이어 간다." \
+               "visual-publish|1|/cc-cmds:visual-publish-unattended $DOC --x" \
+               "visual-publish|1|/cc-cmds:visual-publish-unattended /tmp/other.md" \
+               "visual-publish|0|" \
+               "reconverge|1|/cc-cmds:design-reconverge $DOC R2" \
+               "implement|0|"; do
+        k=${c%%|*}; r=${c#*|}; s=${r%%|*}; p=${r#*|}
+        if gate_fresh_session_prompt "$k" "$s" "$p"; then printf "%s;" "${GATE_FRESH_PROMPT/"$DOC"/DOC}"; else printf "rc1;"; fi
+      done' 2>/dev/null)" \
+  "/cc-cmds:visual-publish-unattended DOC;/cc-cmds:visual-publish-unattended DOC --x;/cc-cmds:visual-publish-unattended DOC;/cc-cmds:visual-publish-unattended DOC;/cc-cmds:design-reconverge DOC R2;rc1;"
+# 디스패치 시점의 같은 모양. 계정 u1 의 세션으로 끊긴 감사 스테이지를 시프트가
+# `--resume` 과 고정 재부착 문장으로 재부착할 때 라우터가 u1 에서 옮긴 이관 GRANT 를
+# 내면, 파견 반쪽은 재부착하지 않고(토큰 둘째 줄이 빈다) 게이트가 지은 디스패치
+# 형식으로 감독자를 띄운다. 감사의 재진입 틀은 `<문서>` 칸뿐이라 같은 함수를 지난다.
+h98_dl=$(lsr75_new fresh98)
+lsr93_park "$h98_dl" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 질문' audit '외부 종료'
+h98_dgr='{"verdict":"GRANT","basis":"resume-bound","account":"u2","config_dir":"/h/.claude-u2","nonce":"n98d","dormant":false,"fresh":true,"migrated":{"from":"u1","to":"u2","why":"reserve"}}'
+check "98: 재부착 문장을 실은 디스패치 시점 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다" \
+  "$(LSR93_BENV=$h98_dgr LSR93_DL=1900000000 H98_RA=$h98_ra H98_SID=$lsr93_sid lsr93_in "$h98_dl" eval '
+      GATE_RESUME=$H98_SID; r=0
+      gate_launch_stage infra A1 audit -p "$H98_RA" >"$RUN_DIR/h98d.err" 2>&1 || r=$?
+      printf "%s" "$r"; [ "$r" = 0 ] || tail -3 "$RUN_DIR/h98d.err" | tr "\n" " "' 2>/dev/null)|$(sed -n '/^--$/,$p' "${h98_dl%/*}/argv" 2>/dev/null | sed -n '2,4p' | paste -sd'|' -)|$(sed -n '2p' "${h98_dl%/*}/A1.launch" 2>/dev/null)|$(lsr93_n "${h98_dl%/*}/argv" "$h98_ra")" \
+  "0|audit|-p|/cc-cmds:design-audit-unattended $lsr93_doc||0"
+check "98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다" \
+  "$(sed -n '/^gate_launch_route()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_route_carry()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"')/$(sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"')" \
+  "1/1/1/1"
 
 # ---------------------------------------------------------------------------
 # 98h. 감독자의 임대 확보 — 잠금 경합·잃은 임대의 원인 행, wait 20, 끝난 런의 임대 정리

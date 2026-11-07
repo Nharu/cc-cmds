@@ -11953,6 +11953,17 @@ RUN_DIR="$SP_ROOT/run"; ORCH_DIR="$SP_ROOT/orch"; CLI_BIN=/usr/bin/true
 RUN_ID=sp-run; DOC_KEY=sp; GRANT=""; LEDGER=""; MANIFEST=""
 resolve_account() { printf '%s' "$SP_ROOT/cfg"; }
 home_alias() { printf 'sp'; }
+# A routed launch on the grant SP_GRANT_ENV names: the router, the lease row
+# and the hand-back are stand-ins, so only stage_spawn's own choices are read.
+if [ -n "${SP_GRANT_ENV:-}" ]; then
+  run_routed() { return 0; }
+  spawn_route_grant() {
+    SPAWN_ENV=$SP_GRANT_ENV; SPAWN_LINEAGE="B:$1#1"; SPAWN_NONCE=sp-n; SPAWN_ACCOUNT=u2
+    SPAWN_MINTED=1; SPAWN_BIND=u1; return 0
+  }
+  run_gate_call() { return 0; }
+  spawn_lease_drop() { :; }
+fi
 STAGE_RESUME="${SP_RESUME:-}"
 stage_spawn "$sp_sid" "$SP_ROOT" "prompt" 2>/dev/null
 stage_collect "$sp_sid"
@@ -11981,6 +11992,32 @@ case "$sp_resume" in
     ok "재부착의 래퍼 argv 도 effort 와 model 을 싣는다 (재개된 세션은 effort 를 잃는다)" ;;
   *) bad "재부착 argv" "재부착: $sp_resume" ;;
 esac
+# 이관 GRANT(`fresh: true`) 로 재개가 새 세션이 되면, 재부착용 프롬프트(계속·거절
+# 문장)가 아니라 호출자가 STAGE_RESUME_DISPATCH 로 넘긴 디스패치 프롬프트로 뜬다.
+sp_mig_env=$(printf '{"verdict":"GRANT","account":"u2","config_dir":"%s","basis":"resume","fresh":true,"migrated":{"from":"u1","to":"u2","why":"reserve"}}' "$SPD/cfg")
+sp_mig=$(sp_spawn "S5:segM:1" "$SPD/mig.txt" SP_RESUME=12121212-3434-5656-7878-909090909090 \
+  SP_GRANT_ENV="$sp_mig_env" STAGE_RESUME_DISPATCH='/cc-cmds:visual-publish-unattended docs/d.md')
+case "$sp_mig" in
+  *"--resume"*) bad "이관 재개 argv" "새 세션이어야 할 기동이 재부착했다: $sp_mig" ;;
+  *"--session-id "*" -- -p /cc-cmds:visual-publish-unattended docs/d.md"*)
+    ok "이관 GRANT 의 재개는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다" ;;
+  *) bad "이관 재개 argv" "디스패치 프롬프트가 아니다: ${sp_mig:-(기동 안 됨)}" ;;
+esac
+sp_keep=$(sp_spawn "S5:segK:1" "$SPD/keep.txt" SP_RESUME=12121212-3434-5656-7878-909090909090 \
+  SP_GRANT_ENV="$(printf '%s' "$sp_mig_env" | jq -c 'del(.fresh, .migrated)')" \
+  STAGE_RESUME_DISPATCH='/cc-cmds:visual-publish-unattended docs/d.md')
+case "$sp_keep" in
+  *"--resume 12121212-3434-5656-7878-909090909090 "*" -- -p prompt"*)
+    ok "fresh 가 아닌 재개는 넘겨받은 디스패치 프롬프트를 쓰지 않고 재부착한다" ;;
+  *) bad "재개 argv" "재부착 프롬프트가 바뀌었다: ${sp_keep:-(기동 안 됨)}" ;;
+esac
+# 위 두 사례는 STAGE_RESUME_DISPATCH 를 직접 준다. 드라이버에서 그 값을 넘기는 것은
+# STAGE_RESUME 에 세션을 넣고 띄우는 호출자들이므로, 세션을 넣는 자리마다 기동 줄이
+# 디스패치 프롬프트를 접두 할당으로 넘기는지 센다.
+check "STAGE_RESUME 에 세션을 넣는 자리는 셋이다" \
+  "$(grep -c -E 'STAGE_RESUME=(\$|"\$)' "$DRIVER")" "3"
+check "세 재부착 기동 줄 모두 디스패치 프롬프트를 STAGE_RESUME_DISPATCH 로 넘긴다" \
+  "$(grep -c -E 'STAGE_RESUME_DISPATCH=\$[a-z_]+ CC_SPAWN_EVENT=' "$DRIVER")" "3"
 sp_design=$(sp_spawn "S1design" "$SPD/design.txt")
 case "$sp_design" in
   *" --effort high --model opus -- "*) ok "S1design 기동은 high 를 싣는다" ;;
@@ -13834,5 +13871,70 @@ check "36: main_loop_body 가 s0_arm 을 design_arm 바로 앞에서 부른다" 
   "$(printf '%s\n' "$s0_mlb" | grep -A1 -x '  s0_arm || return 0' | sed -n 2p)" "  design_arm || return 0"
 check "36: 설계 스테이지의 첫 파견·계속·거절 재부착 셋이 design_stage_cmd 를 지나고 직접 철자가 남지 않는다" \
   "$(grep -c '"$(design_stage_cmd "$skill1")"' "$DRIVER" || true)/$(grep -c '"/cc-cmds:$skill1 $DOC ' "$DRIVER" || true)" "3/0"
+
+# --- 시각 발행 고정 레인의 조회 순서와 출처, 아침 보고의 이관 절 -------------
+# 고정 레인은 런 지역 이관 기록 → 문서 단위 레인 기록 → 호스트 파일 순으로 찾고,
+# 앞의 둘에서 찾으면 출처가 `run-record`, 호스트에서 찾으면 `host` 다. 런 지역
+# 기록이 있는데 읽히지 않으면 다음 출처로 넘어가지 않고 실패한다. 진짜
+# visual-config.sh 가 답하고, 호스트 파일은 XDG_CONFIG_HOME 을 옮겨 가린다.
+VP="$WORK/vpin"
+mkdir -p "$VP/repo/docs" "$VP/cfg/cc-cmds" "$VP/state" "$VP/run/halt" "$VP/run/visual-migration"
+git -c init.defaultBranch=main init -q "$VP/repo" 2>/dev/null
+printf '# d\n' > "$VP/repo/docs/d.md"
+printf 'account = a@example.com\nlane = host-lane\n' > "$VP/cfg/cc-cmds/claude-design"
+VP_DOCREC="$VP/repo/docs/visual-lane/docs-d.md"
+vp_run() {  # vp_run <함수> <인자...> — 격리한 환경에서 드라이버 함수를 부른다
+  (
+    XDG_CONFIG_HOME="$VP/cfg" XDG_STATE_HOME="$VP/state"; export XDG_CONFIG_HOME XDG_STATE_HOME
+    unset CC_PIPELINE_RUN_DIR
+    RUN_DIR="$VP/run"; DOC="$VP/repo/docs/d.md"; ORCH_DIR="$(dirname "$DRIVER")"; RUN_ID=vp
+    report_append() { printf '%s | %s\n' "$1" "$2"; }
+    "$@"
+  )
+}
+vp_runrec() {  # vp_runrec <레인> [줄...] — 런 지역 이관 기록을 쓴다
+  local lane="$1"; shift
+  { printf '%s\n' '<!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->'
+    printf '**레인**: %s\n**계정**: b@example.com\n' "$lane"
+    [ "$#" -eq 0 ] || printf '%s\n' "$@"
+  } > "$VP/run/visual-lane"
+}
+check "시각 고정: 기록이 없으면 호스트 파일의 레인과 출처 host" \
+  "$(vp_run kind_pin_resolve visual-publish)" "host-lane host"
+check "시각 고정: 다른 종류는 고정이 없고 요청 칸이 빈 객체다" \
+  "$(vp_run kind_pin_resolve implement)/$(vp_run kind_pin_request_json implement)" "/{}"
+check "시각 고정: 요청 칸이 migratable 과 호스트 출처를 싣는다" \
+  "$(vp_run kind_pin_request_json visual-publish | jq -c '[.migratable, .pin_lane, .pin_source]')" '[true,"host-lane","host"]'
+mkdir -p "$(dirname "$VP_DOCREC")"
+printf '%s\n**레인**: doc-lane\n' '<!-- cc-visual-lane-doc v1; writer=gate; reader=run.sh,gate.sh,visual,visual-publish-unattended -->' > "$VP_DOCREC"
+check "시각 고정: 계정 줄이 없는 문서 단위 기록은 읽지 않고 호스트로 간다" \
+  "$(vp_run kind_pin_resolve visual-publish)" "host-lane host"
+printf '**계정**: b@example.com\n**출처**: r0 · 이관 1 · 2026-11-01T00:00:00Z\n' >> "$VP_DOCREC"
+check "시각 고정: 문서 단위 기록이 호스트보다 먼저이고 출처는 run-record" \
+  "$(vp_run kind_pin_resolve visual-publish)/$(vp_run kind_pin_source_of visual-publish)" "doc-lane run-record/run-record"
+vp_runrec run-lane
+check "시각 고정: 런 지역 기록이 문서 단위 기록보다 먼저다" \
+  "$(vp_run kind_pin_lane_of visual-publish)/$(vp_run kind_pin_request_json visual-publish | jq -r .pin_source)" "run-lane/run-record"
+printf 'broken\n' > "$VP/run/visual-lane"
+check "시각 고정: 읽히지 않는 런 지역 기록은 다음 출처로 넘어가지 않고 실패한다" \
+  "$(vp_run kind_pin_resolve visual-publish; printf 'rc=%s' "$?")" "rc=1"
+# 아침 보고 — `**이관**` 줄마다 그 진행 파일의 `**완료**: 예` 로 두 문면을 가른다.
+vp_runrec new-lane '**이관**: 1 · old-lane → new-lane · 원 계정 소진 · 2026-11-07T00:00:00Z'
+check "아침 보고: 진행 파일이 끝나지 않았으면 미완료 문면과 진행 파일 경로" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — old-lane → new-lane(원 계정 소진), 진행 파일 $VP/run/visual-migration/1.md"
+printf '**완료**: 예\n' > "$VP/run/visual-migration/1.md"
+check "아침 보고: 끝난 이관에 시각-판정 기록이 없으면 새 URL 자리로 사이드카 경로" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $(cd "$VP/repo" && pwd -P)/docs/visual/docs-d.md"
+printf '**분류**: 시각-판정\n' > "$VP/run/halt/S2P#2.md"
+check "아침 보고: 끝난 이관은 최신 시각-판정 기록 경로를 새 URL 자리로 적는다" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $VP/run/halt/S2P#2.md"
+vp_runrec doc-lane "**승계**: $VP_DOCREC · r0 · 2026-11-07T00:00:00Z"
+check "아침 보고: 승계 줄만 있는 기록은 이관 절을 두지 않는다" \
+  "$(vp_run report_visual_migration)" ""
+check "아침 보고: 런 끝 꼬리가 이관 절을 종료 줄 앞에서 부른다" \
+  "$(grep -A1 -x '  report_visual_migration || true' "$DRIVER" | sed -n 2p | grep -c '^  report_append "종료" ' || true)" "1"
 
 tr_summary

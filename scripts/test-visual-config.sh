@@ -15,6 +15,12 @@
 #              beside CC_PIPELINE_GATE
 #   lane       the pinned lane from claude-design, read inside a run too; no
 #              key or no file is an empty output and exit 1
+#   record     the run-local migration record `${CC_PIPELINE_RUN_DIR}/visual-lane`
+#              replaces the host `lane` and `account` (an inheriting
+#              `**승계**` record included); a broken record is 판독실패 for
+#              account and exit 1 for lane, never the host file
+#   share      the `share` address from claude-design, read inside a run too;
+#              no key, an empty value or no file is an empty output and exit 1
 #   models     defaults, overrides, an out-of-vocabulary value and an unknown
 #              key reported
 #   seed       copies only when the host file is absent; writes nothing when
@@ -81,6 +87,7 @@ vc() {
   shift
   RC=0
   env -u CC_PIPELINE_RUN_ID -u CC_PIPELINE_MANIFEST -u CC_PIPELINE_GATE -u CC_PIPELINE_VISUAL_PUBLISH \
+    -u CC_PIPELINE_RUN_DIR \
     PATH="$T/bin:$PATH" \
     XDG_CONFIG_HOME="$home/config" XDG_STATE_HOME="$home/state" ${envs[@]+"${envs[@]}"} \
     bash "${VC_HELPER:-$CONFIG}" "$@" > "$T/out" 2> "$T/err" || RC=$?
@@ -163,6 +170,63 @@ vc "$HL" -- lane
 [ "$RC" = 0 ] && [ "$(cat "$T/out")" = "u3" ] && pass "lane: 여러 줄이면 마지막 줄" || fail "lane 마지막 줄 = ${RC} $(cat "$T/out")"
 vc "$T/h-unset" -- lane
 [ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "lane: 호스트 파일이 없으면 종료 1" || fail "lane 파일 없음 = ${RC}"
+
+# --- run-local migration record -----------------------------------------------
+# The gate's record `${CC_PIPELINE_RUN_DIR}/visual-lane` replaces the host
+# file's `lane` and `account`; a broken record never falls back to the host.
+HR="$T/h-record"
+mkdir -p "$HR/config/cc-cmds" "$HR/run"
+printf '%s\n' 'account = design.owner@example.com' 'lane = pub' > "$HR/config/cc-cmds/claude-design"
+RECF="$HR/run/visual-lane"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" -- lane
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = pub ] && pass "이관 기록: 기록이 없으면 lane 은 호스트 파일" || fail "기록 없음 lane = ${RC} $(cat "$T/out")"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" FAKE_CLAUDE_EMAIL=design.owner@example.com -- account
+[ "$RC" = 0 ] && grep -q '계정 판정: 일치' "$T/out" && pass "이관 기록: 기록이 없으면 account 는 호스트 파일" || fail "기록 없음 account = ${RC} $(cat "$T/out")"
+printf '%s\n' '<!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->' \
+  '**레인**: u3' '**계정**: unattended.three@example.com' \
+  '**이관**: 1 · pub → u3 · reserve · 2026-11-07T00:00:00Z' > "$RECF"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" -- lane
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = u3 ] && pass "이관 기록: lane 은 기록의 **레인**" || fail "기록 lane = ${RC} $(cat "$T/out")"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" FAKE_CLAUDE_EMAIL=unattended.three@example.com -- account
+[ "$RC" = 0 ] && grep -q '계정 판정: 일치 (판독 unattended.three, 기대 unattended.three)' "$T/out" \
+  && pass "이관 기록: account 의 기대 계정은 기록의 **계정**" || fail "기록 account = ${RC} $(cat "$T/out")"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" FAKE_CLAUDE_EMAIL=design.owner@example.com -- account
+[ "$RC" = 1 ] && grep -q '계정 판정: 불일치' "$T/out" && pass "이관 기록: 호스트 계정은 기록이 있으면 불일치" || fail "기록 있음 호스트 계정 = ${RC} $(cat "$T/out")"
+printf '%s\n' '<!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->' \
+  '**레인**: u5' '**계정**: unattended.five@example.com' \
+  '**승계**: /base/docs/visual-lane/doc.md · 20261101-00000000 · 2026-11-07T00:00:00Z' > "$RECF"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" -- lane
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = u5 ] && pass "이관 기록: **승계** 줄 기록에서도 lane 은 **레인**" || fail "승계 기록 lane = ${RC} $(cat "$T/out")"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" FAKE_CLAUDE_EMAIL=unattended.five@example.com -- account
+[ "$RC" = 0 ] && grep -q '계정 판정: 일치' "$T/out" && pass "이관 기록: **승계** 줄 기록에서도 account 는 **계정**" || fail "승계 기록 account = ${RC} $(cat "$T/out")"
+for broken in head nolane emptyacct; do
+  case "$broken" in
+    head) printf '%s\n' '<!-- other v1 -->' '**레인**: u3' '**계정**: unattended.three@example.com' > "$RECF" ;;
+    nolane) printf '%s\n' '<!-- cc-visual-lane v1; writer=gate -->' '**계정**: unattended.three@example.com' > "$RECF" ;;
+    emptyacct) printf '%s\n' '<!-- cc-visual-lane v1; writer=gate -->' '**레인**: u3' '**계정**: ' > "$RECF" ;;
+  esac
+  vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" FAKE_CLAUDE_EMAIL=design.owner@example.com -- account
+  [ "$RC" = 1 ] && grep -q '계정 판정: 판독실패' "$T/out" && grep -qF "$RECF" "$T/out" \
+    && pass "이관 기록 손상(${broken}): account 는 판독실패이고 기록 경로를 싣는다(호스트로 떨어지지 않음)" \
+    || fail "손상 기록(${broken}) account = ${RC} $(cat "$T/out")"
+  vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" -- lane
+  [ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "이관 기록 손상(${broken}): lane 은 빈 출력과 종료 1" || fail "손상 기록(${broken}) lane = ${RC} $(cat "$T/out")"
+done
+
+# --- share --------------------------------------------------------------------
+HS="$T/h-share"
+mkdir -p "$HS/config/cc-cmds"
+printf '%s\n' 'account = design.owner@example.com' > "$HS/config/cc-cmds/claude-design"
+vc "$HS" CC_PIPELINE_RUN_ID=20261012-deadbeef -- share
+[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "share: 키가 없으면 빈 출력과 종료 1" || fail "share 없음 = ${RC} $(cat "$T/out")"
+printf '%s\n' 'share =   ' >> "$HS/config/cc-cmds/claude-design"
+vc "$HS" -- share
+[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "share: 값이 비면 빈 출력과 종료 1" || fail "share 빈 값 = ${RC} $(cat "$T/out")"
+printf '%s\n' ' share = human.cc@example.com ' >> "$HS/config/cc-cmds/claude-design"
+vc "$HS" CC_PIPELINE_RUN_ID=20261012-deadbeef -- share
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = human.cc@example.com ] && pass "share: 런 안에서도 마지막 줄 값을 다듬어 낸다" || fail "share 판독 = ${RC} $(cat "$T/out")"
+vc "$T/h-unset" -- share
+[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "share: 호스트 파일이 없으면 종료 1" || fail "share 파일 없음 = ${RC}"
 
 # --- models -------------------------------------------------------------------
 H="$T/h-models"
