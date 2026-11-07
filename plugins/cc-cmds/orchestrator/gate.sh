@@ -30257,7 +30257,11 @@ gate_surface_open_approval_record() {
     [ "$(manifest_row_fields "$r" '자리')" = '강제 표면 승인' ] || continue
     rec=$(manifest_row_fields "$r" '중단 기록')
     [ -n "$rec" ] || continue
-    printf '%s\n' "$answered" | grep -qxF -- "$rec" && continue
+    case "
+$answered
+" in *"
+$rec
+"*) continue ;; esac
     printf '%s' "$rec"
     return 0
   done <<EOF
