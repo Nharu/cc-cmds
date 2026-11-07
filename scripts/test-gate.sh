@@ -23503,6 +23503,7 @@ case "$msg" in
   *"the document-level migration record is the gate's to write"*) ok "그 거절이 문서 단위 기록 문면이다" ;;
   *) bad "문서 단위 기록 거절 문면" "$msg" ;;
 esac
+: > "$VL3/repo/docs/visual-lane/d.md"
 ln -s "$VL3/repo/docs/visual-lane/d.md" "$VL3/link.md"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
