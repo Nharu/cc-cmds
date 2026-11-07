@@ -3630,8 +3630,8 @@ expect "이관 고정 재개 대조: 이관 가능 없는 고정의 다른 계�
 # 규칙). 어긋난 WAIT 는 실제 런에서 stage-wait 행이 거부되어 PARK 로 바뀐다.
 check "이관 절: 모은 WAIT 가 모두 대기 행 작성기의 구속 규칙을 지킨다" \
   "$(jq -c 'select(.env.verdict == "WAIT")
-            | select(((.env.reason | startswith("resume-bound-")) != (.env.account != null))
-                     or ((.env.reason | startswith("resume-bound-"))
+            | select(((.env.reason // "" | startswith("resume-bound-")) != (.env.account != null))
+                     or ((.env.reason // "" | startswith("resume-bound-"))
                          and (.event != "resume" or .bound == null or .env.account != .bound)))' "$MIGSEEN" | grep -c . || true)" 0
 check "이관 절: 모은 WAIT 는 열여섯 줄" "$(jq -c 'select(.env.verdict == "WAIT")' "$MIGSEEN" | grep -c . || true)" 16
 
