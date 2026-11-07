@@ -531,6 +531,18 @@ hook_run_dir_verdict() {
     # 예외와 같은 근거로 안전하다 — 런 시작 시점에 없고, 강제 표면 다이제스트가 읽지
     # 않으며, `lockf -k` 가 남기는 빈 파일이다. 정확히 이 이름 하나만 연다.
     designdoc.lock) ;;
+    # 캔버스 이관 진행 파일. 계정 이관 뒤 시각 발행 스테이지가 캔버스가 어디까지
+    # 옮겨졌는지를 `visual-migration/<s>.md` 에 적고, 게이트는 그 `**완료**: 예`
+    # 줄로 문서 단위 레인 기록을 쓸지 정한다. 한 단계 아래만 열고(깊이 팔이 먼저),
+    # 말단이 심링크면 거부하며, `mkdir -p` 를 위해 디렉터리 자신도 연다. 게이트의
+    # `gate_rundir_write_guard()` 도 같은 팔을 갖는다. 런 지역 이관 기록
+    # `visual-lane` 은 게이트가 쓰고 스테이지는 읽기만 하므로 열지 않는다.
+    visual-migration/*/*)
+      deny "$(jstr 'gate: a canvas migration progress file in the run directory is one level deep only — visual-migration/<s>.md')" ;;
+    visual-migration/*)
+      hook_leaf_is_symlink "$ap" \
+        && deny "$(jstr 'gate: even an allowed name in the run directory cannot be judged when its leaf is a symlink — what is allowed is the file sitting in that place, not the name')" ;;
+    visual-migration) ;;
     */*)
       deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md (the witness directory cc-team-witness-*/ and the shared generation directory shared/<gen>/ excepted; a file directly under shared/ is not) — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
     # 허용되는 것은 이름이 아니라 그 자리에 있는 파일이다. 이름만 맞춘 심링크는
@@ -592,7 +604,18 @@ hook_suffix_verdict() {
   # 여기서는 그 토큰으로 문면만 고른다 — 게이트·드라이버·탐지 도구가 같은 분류를
   # 소싱하므로 팔이 늘면 모두가 함께 따라간다. 분류기를 적재하지 못했으면 판정할
   # 수 없다는 것이고, 그것은 허용이 아니다.
-  local es_tok es_route
+  local es_tok es_route lc
+  # 문서 단위 레인 기록(`<base>/docs/visual-lane/<slug>.md`). 캔버스 이관이 끝난
+  # 시각 발행 스테이지의 행을 닫을 때 게이트만 쓰고, 같은 문서의 다음 런이 이
+  # 기록의 레인으로 고정한다 — 스테이지가 쓰면 다음 런의 고정 레인을 스스로 고르는
+  # 셈이다. 대소문자를 접는 파일 시스템이라 접어서 비교하고, 1차 철자와 접힌 철자
+  # 두 패스가 모두 이 함수를 지나므로 말단 심링크도 같은 팔에 걸린다. 게이트의
+  # `gate_visual_lane_doc_spelling` 이 Bash 쪽의 같은 거부다.
+  lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$lc" in
+    */docs/visual-lane|*/docs/visual-lane/*)
+      deny "$(jstr 'gate: the document-level migration record is the gate'"'"'s to write, when it closes a visual publish stage whose canvas migration finished — a stage does not write under docs/visual-lane/')" ;;
+  esac
   [ "$ES_OK" = 1 ] \
     || deny "$(jstr 'gate: the enforcement surface classifier next to this hook could not be loaded, so this edit cannot be judged — cannot judge is not allow')"
   es_tok=$(es_class "$1") || return 0
