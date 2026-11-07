@@ -11824,6 +11824,17 @@ RUN_DIR="$SP_ROOT/run"; ORCH_DIR="$SP_ROOT/orch"; CLI_BIN=/usr/bin/true
 RUN_ID=sp-run; DOC_KEY=sp; GRANT=""; LEDGER=""; MANIFEST=""
 resolve_account() { printf '%s' "$SP_ROOT/cfg"; }
 home_alias() { printf 'sp'; }
+# A routed launch on the grant SP_GRANT_ENV names: the router, the lease row
+# and the hand-back are stand-ins, so only stage_spawn's own choices are read.
+if [ -n "${SP_GRANT_ENV:-}" ]; then
+  run_routed() { return 0; }
+  spawn_route_grant() {
+    SPAWN_ENV=$SP_GRANT_ENV; SPAWN_LINEAGE="B:$1#1"; SPAWN_NONCE=sp-n; SPAWN_ACCOUNT=u2
+    SPAWN_MINTED=1; SPAWN_BIND=u1; return 0
+  }
+  run_gate_call() { return 0; }
+  spawn_lease_drop() { :; }
+fi
 STAGE_RESUME="${SP_RESUME:-}"
 stage_spawn "$sp_sid" "$SP_ROOT" "prompt" 2>/dev/null
 stage_collect "$sp_sid"
@@ -11851,6 +11862,25 @@ case "$sp_resume" in
   *"--resume 12121212-3434-5656-7878-909090909090 --effort medium --model opus -- -p prompt"*)
     ok "재부착의 래퍼 argv 도 effort 와 model 을 싣는다 (재개된 세션은 effort 를 잃는다)" ;;
   *) bad "재부착 argv" "재부착: $sp_resume" ;;
+esac
+# 이관 GRANT(`fresh: true`) 로 재개가 새 세션이 되면, 재부착용 프롬프트(계속·거절
+# 문장)가 아니라 호출자가 STAGE_RESUME_DISPATCH 로 넘긴 디스패치 프롬프트로 뜬다.
+sp_mig_env=$(printf '{"verdict":"GRANT","account":"u2","config_dir":"%s","basis":"resume","fresh":true,"migrated":{"from":"u1","to":"u2","why":"reserve"}}' "$SPD/cfg")
+sp_mig=$(sp_spawn "S5:segM:1" "$SPD/mig.txt" SP_RESUME=12121212-3434-5656-7878-909090909090 \
+  SP_GRANT_ENV="$sp_mig_env" STAGE_RESUME_DISPATCH='/cc-cmds:visual-publish-unattended docs/d.md')
+case "$sp_mig" in
+  *"--resume"*) bad "이관 재개 argv" "새 세션이어야 할 기동이 재부착했다: $sp_mig" ;;
+  *"--session-id "*" -- -p /cc-cmds:visual-publish-unattended docs/d.md"*)
+    ok "이관 GRANT 의 재개는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다" ;;
+  *) bad "이관 재개 argv" "디스패치 프롬프트가 아니다: ${sp_mig:-(기동 안 됨)}" ;;
+esac
+sp_keep=$(sp_spawn "S5:segK:1" "$SPD/keep.txt" SP_RESUME=12121212-3434-5656-7878-909090909090 \
+  SP_GRANT_ENV="$(printf '%s' "$sp_mig_env" | jq -c 'del(.fresh, .migrated)')" \
+  STAGE_RESUME_DISPATCH='/cc-cmds:visual-publish-unattended docs/d.md')
+case "$sp_keep" in
+  *"--resume 12121212-3434-5656-7878-909090909090 "*" -- -p prompt"*)
+    ok "fresh 가 아닌 재개는 넘겨받은 디스패치 프롬프트를 쓰지 않고 재부착한다" ;;
+  *) bad "재개 argv" "재부착 프롬프트가 바뀌었다: ${sp_keep:-(기동 안 됨)}" ;;
 esac
 sp_design=$(sp_spawn "S1design" "$SPD/design.txt")
 case "$sp_design" in

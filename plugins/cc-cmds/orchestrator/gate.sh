@@ -52008,6 +52008,44 @@ gate_route_env_fresh() {
   [ "$(printf '%s' "${1:-}" | jq -r 'if type == "object" and .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]
 }
 
+gate_argv_prompt_keep() {
+  # gate_argv_prompt_keep <cli args...> — keep the argv's first `-p` value in
+  # GATE_DISPATCH_PROMPT, with GATE_DISPATCH_PROMPT_SET `1` when the argv
+  # carries one and `0` when it does not. A global rather than a command
+  # substitution, so the prompt keeps its bytes, trailing newlines included.
+  GATE_DISPATCH_PROMPT="" GATE_DISPATCH_PROMPT_SET=0
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+      GATE_DISPATCH_PROMPT=$2 GATE_DISPATCH_PROMPT_SET=1
+      return 0
+    fi
+    shift
+  done
+  return 0
+}
+
+gate_argv_prompt_restore() {
+  # gate_argv_prompt_restore <prompt> <cli args...> — GATE_RESTORED_ARGV gets
+  # the argv with every `-p` value replaced by <prompt>, and <prompt> appended
+  # as `-p` when the argv carries none. The inverse of the re-attach and
+  # continuation substitutions, for a launch that starts a new session after
+  # its argv was rewritten for a re-attachment: a new session has no
+  # conversation to apply a re-attach sentence to, and the dispatch prompt is
+  # what names the skill and its document.
+  local p="$1" had=0
+  shift
+  GATE_RESTORED_ARGV=()
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+      GATE_RESTORED_ARGV+=(-p "$p"); shift 2; had=1
+    else
+      GATE_RESTORED_ARGV+=("$1"); shift
+    fi
+  done
+  [ "$had" = "1" ] || GATE_RESTORED_ARGV+=(-p "$p")
+  return 0
+}
+
 gate_launch_route_ask() {
   # gate_launch_route_ask <segment> <stage-kind> <event> <bound account or ""> —
   # one router question for this dispatch's lineage, the request built the way
@@ -52238,6 +52276,9 @@ gate_launch_wait() {
   # A TRIAL SYNTHESIS in the environment this act runs in: the account is not
   # known yet, and the supervisor synthesizes again under the one it is granted.
   instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  # The caller kept the dispatch prompt before its carry substitution; a caller
+  # that did not leaves it to be kept here, before the continuation's.
+  [ -n "${GATE_DISPATCH_PROMPT_SET:-}" ] || gate_argv_prompt_keep "$@"
   if [ -n "${GATE_RESUME:-}" ]; then
     gate_continuation_argv "$seg" "$kind" "$@" || return $?
     [ -z "$GATE_CONTINUED" ] || set -- "${GATE_CONTINUE_ARGV[@]}"
@@ -52260,8 +52301,13 @@ gate_launch_wait() {
   printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$nonce" "${GATE_RESUME:-}" "" wait \
     "$GATE_ROUTE_LINEAGE" "${GATE_ROUTE_EVENT:-first}" "${GATE_ROUTE_BIND:--}" > "$tmp"
   mv "$tmp" "$RUN_DIR/$seg.launch"
+  # THE DISPATCH PROMPT RIDES IN THE ENVIRONMENT, not on the token: the token's
+  # shape is fixed at seven lines, and a prompt may hold a newline. Both are
+  # set on every wait launch, so a value the act inherited is never passed on.
   sup=$( cc_detach_exec "$suplog" "$suplog" \
            env CC_CLAUDE_BIN="$CLI_BIN" \
+             CC_GATE_DISPATCH_PROMPT_SET="$GATE_DISPATCH_PROMPT_SET" \
+             CC_GATE_DISPATCH_PROMPT="$GATE_DISPATCH_PROMPT" \
            bash "$GATE_DIR/gate.sh" supervise-stage --manifest "$MANIFEST" \
              --target "$alias" --segment "$seg" --nonce "$nonce" -- "$kind" "$@" )
   if [ -z "$sup" ]; then
@@ -52588,6 +52634,10 @@ gate_launch_stage() {
   if run_routed; then
     routed=1
     gate_launch_route "$alias" "$seg" "$kind" "$@" || return $?
+    # THE DISPATCH PROMPT, KEPT BEFORE ANY SUBSTITUTION BELOW: a WAIT hands it to
+    # the supervisor, whose grant at the end of the wait may start a new session
+    # that needs the dispatch form, not the re-attach sentence.
+    gate_argv_prompt_keep "$@"
     # A CARRY THAT PICKED THE HALTED SESSION re-attaches it with the fixed resume
     # sentence, not the dispatch form, and a waiting one wakes up with the same:
     # the session already holds its question, and the card holds the answer.
@@ -52782,6 +52832,11 @@ gate_verb_supervise_stage() {
   # boundaries; this is the performing half of that same act, split across a
   # process boundary. Its only ledger write is the `stage-result` row.
   local alias="$1" seg="$2" nonce="$3" kind="$4"; shift 4
+  # THE DISPATCH PROMPT A WAIT LAUNCH HANDED DOWN, read once and taken out of
+  # the environment so the stage does not inherit it. Only the waiting branch
+  # reads it, and only on a grant that starts a new session.
+  local disp_set="${CC_GATE_DISPATCH_PROMPT_SET:-}" disp_p="${CC_GATE_DISPATCH_PROMPT:-}"
+  unset CC_GATE_DISPATCH_PROMPT_SET CC_GATE_DISPATCH_PROMPT
   local wrapper="$GATE_DIR/stage-wrapper.sh"
   [ -f "$wrapper" ] || { warn "the stage wrapper is missing: $wrapper"; return 127; }
   [ -n "${CLI_BIN:-}" ] || { warn "the gate could not resolve the CLI binary"; return 127; }
@@ -52908,10 +52963,21 @@ gate_verb_supervise_stage() {
     local prep_why="부여 뒤 기동 준비 거부 — 지시문 합성 또는 stage-lease 행이 거절됐다"
     # A MIGRATION GRANT AT THE END OF A WAIT starts a new session, as it does at
     # dispatch time: the bound session lives in the old account's directory.
-    # The binding is still checked, by the lease row below.
+    # The binding is still checked, by the lease row below. The argv the
+    # dispatch half handed over was rewritten for a re-attachment (the carry's
+    # resume sentence, a continuation's message), so the new session gets the
+    # dispatch prompt back: it names the skill and the document, and the answer
+    # card, when there is one, still reaches it through CC_PIPELINE_HALT_ANSWER.
     if [ -n "$resume" ] && gate_route_env_fresh "$wenv"; then
       log "시각 발행 이관 — $seg 는 대기 끝에 세션 $resume 을 재부착하지 않고 새 세션으로 뜬다"
       resume=""
+      if [ "$disp_set" = "1" ]; then
+        gate_argv_prompt_restore "$disp_p" "$@"
+        set -- "${GATE_RESTORED_ARGV[@]}"
+        log "시각 발행 이관 — $seg 의 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
+      else
+        warn "the wait launch handed down no dispatch prompt ($seg) — the new session starts with the argv as handed over"
+      fi
     fi
     if [ -z "$r_cfg" ] \
        || ! instr=$(CLAUDE_CONFIG_DIR="$r_cfg" gate_stage_instructions_for_launch "$alias" "$resume") \

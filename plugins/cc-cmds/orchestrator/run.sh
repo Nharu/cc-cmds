@@ -7330,12 +7330,21 @@ stage_spawn() {
   # are kept on purpose — see its note.
   local -a id_flag
   # A MIGRATION GRANT (`fresh: true`) names another account's directory, where
-  # the bound session does not exist: the launch starts a new session.
+  # the bound session does not exist: the launch starts a new session. The
+  # prompt a re-attachment carries (a continue or refusal message) means
+  # nothing to a new session, so it gets the dispatch prompt the caller named
+  # in STAGE_RESUME_DISPATCH, the one a new process of the same dispatch runs.
   local resume_id="${STAGE_RESUME:-}"
   if [ -n "$resume_id" ] && [ "$routed" = "1" ] \
      && [ "$(printf '%s' "$env" | jq -r 'if .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]; then
     log "$stage: 이관 GRANT — 세션 $resume_id 을 재부착하지 않고 새 세션으로 띄운다"
     resume_id=""
+    if [ -n "${STAGE_RESUME_DISPATCH:-}" ]; then
+      prompt=$STAGE_RESUME_DISPATCH
+      log "$stage: 이관 GRANT — 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
+    else
+      warn "$stage: 이관 GRANT 인데 호출자가 디스패치 프롬프트를 넘기지 않았다 — 받은 프롬프트로 띄운다"
+    fi
   fi
   if [ -n "$resume_id" ]; then
     id_flag=(--resume "$resume_id")
@@ -12309,7 +12318,7 @@ continue_or_park() {
     STAGE_RESUME="$sess"
     CONTINUE_MISSING=""
     CONTINUE_UNCLOSED=""
-    CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
+    STAGE_RESUME_DISPATCH=$retry_prompt CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
     # The next message says what THIS attempt left unmet: the open decisions
     # when those block the plan, the residual headings when those are what is
     # missing, otherwise the caller's own text.
@@ -12495,7 +12504,7 @@ refusal_or_park() {
   STAGE_RESUME="$sess"
   CONTINUE_MISSING=""
   CONTINUE_UNCLOSED=""
-  CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(refusal_message)" "$alias" -- "$@"
+  STAGE_RESUME_DISPATCH=$retry_prompt CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(refusal_message)" "$alias" -- "$@"
   # A re-attachment that ended in prose is continued with what IT left unmet.
   if [ -n "${CONTINUE_UNCLOSED:-}" ]; then
     unmet=$(unclosed_unmet_message "$CONTINUE_UNCLOSED")
