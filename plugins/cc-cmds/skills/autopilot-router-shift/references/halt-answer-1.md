@@ -14,8 +14,6 @@ The gate admits a shift on exactly these conditions, stamps the row `답한 주�
 
 **A seat-apply stop is the seat's, and you dispatch nothing on it.** When the segment's halt record has `**스킬**: implement-unattended` and a `**스텝**` beginning with `Step 3 강제 표면 좌석 적용`, the stage wrote an enforcement-surface edit it cannot commit, and only the gate commits it once a person at the seat approves — or once the seat carries an earlier approval of the same segment on. Handle it as any stage halt that is not `재수렴`: dispatch nothing on the segment, write no answer (the gate refuses a shift's), route the others, and when nothing is left end with `사유=중단`, naming the record in `막힌 지점`. The seat's answer comes back through the steps below like any other, with route `재부착` — or `적용-보류` when the person answered `보류`, which parks the segment instead.
 
-**A `강제 표면 승인` shift stop is a person's too, and its answer comes back as route `교대-정지`.** The record is the gate's (「Stopping one segment for a person」), and every option of it — `재시도`, `세그먼트 park` and `승인` — takes only a person's answer: the gate refuses the seat's proxy answer and yours. Until it is answered, hold the segment as the snapshot's `shift_halts[]` says and route the others. A `승인` answer arrives with the approval rows already in the ledger, written by the gate in the same act; item 6 carries it out by dispatching the segment's review again, and never writes an approval itself — `act --kind 강제 표면 승인` is refused.
-
 1. **Nothing is running on it.** The key is in none of `live_stages[]`, `orphan_stages[]` and `waiting_stages[]`.
 2. **Which path is the element's `route`.** The gate decided it, for every writer, before it wrote the answer; do not read the record to decide it again.
 
