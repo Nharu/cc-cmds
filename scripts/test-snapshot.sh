@@ -865,6 +865,19 @@ for lit in \
     bad "교대 사본의 리뷰어 런 리터럴" "없다: $lit"
   fi
 done
+# The enforcement-surface approval site is a person's: the shift's copy names
+# it in the site table, and the lead's copy, which has no shift-halt, parks.
+for lit in \
+  '| `강제 표면 승인` |' \
+  '**At `강제 표면 승인` the gate measures before it writes.**'; do
+  if grep -qF -- "$lit" "$RS_CORPUS"; then
+    ok "교대 사본이 강제 표면 승인 자리를 싣는다: $lit"
+  else
+    bad "교대 사본의 강제 표면 승인 자리" "없다: $lit"
+  fi
+done
+check "리드 사본이 강제 표면 출처 거절을 park 로 적는다" \
+  "$(grep -cF -- '**An enforcement-surface provenance refusal is not answered in this loop either.**' "$AP_ROUTER" || true)" "1"
 check "리드 사본이 리뷰어 런의 갈래를 교대 사본으로 넘긴다" \
   "$(grep -cF -- "the shift's copy gives the fetch, the detached worktree, the \`--review-pr\` planning row" "$AP_ROUTER" || true)" "1"
 
