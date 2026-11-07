@@ -89,7 +89,7 @@ The freeze is unchanged and byte-identical: `**상태**: 동결됨` on the statu
 
 ## Workflow — split mode (`--split <문서>`)
 
-Driver dispatch only: `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_RUN_DIR`, `CC_PIPELINE_STAGE_ID` and `CC_PIPELINE_MANIFEST` are read by name. Every Bash command goes through `gate.sh exec`; plugin scripts are called by path as argv0, never behind an interpreter. `BS` below is `${CLAUDE_SKILL_DIR}/../../orchestrator/base-split.py`, `OUT` is `${CC_PIPELINE_RUN_DIR}/split/${CC_PIPELINE_STAGE_ID}/`. In this order:
+Driver dispatch only: `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_RUN_DIR`, `CC_PIPELINE_STAGE_ID` and `CC_PIPELINE_MANIFEST` are read by name. Every Bash command goes through `gate.sh exec`; plugin scripts are called by path as argv0, never behind an interpreter. `BS` below is `${CLAUDE_SKILL_DIR}/../../orchestrator/base-split.py`, `OUT` is `${CC_PIPELINE_RUN_DIR}/split/${CC_PIPELINE_STAGE_ID}/`. `--split` reads both document kinds, `**문서 종류**: 베이스 설계` and `**문서 종류**: 티켓 배달 설계`, and `BS check` adds the second kind's checks by itself; a ticket-delivery run comes here with the same steps. In this order:
 
 1. **Check.** `BS check <문서>` (`--surface 읽기`). Any violation → halt `split-check-failed`, the output lines in `관측 상세`.
 2. **Open audit items.** An entry of `## 미해결 이슈 / 트레이드오프` at `상태: 대기` → halt `audit-open-items`, naming each entry.

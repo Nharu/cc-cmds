@@ -1,6 +1,6 @@
 # 하위 설계의 베이스 연결
 
-베이스 설계(`base-design.md` 의 뜻 — 여러 티켓으로 나눌 상위 설계)의 한 티켓을 일반 design 으로 설계할 때, 하위 설계가 베이스 문서를 찾아 그 티켓의 골격과 계약을 **바꾸지 않는 제약**으로 읽는 방법이다. 읽는 쪽은 대화형 `design` 의 Step 1 과 무인 `design-discuss-unattended` 의 Step 1 이다.
+베이스 설계(`base-design.md` 의 뜻 — 여러 티켓으로 나눌 상위 설계)의 한 티켓을 일반 design 으로 설계할 때, 하위 설계가 베이스 문서를 찾아 그 티켓의 골격과 계약을 **바꾸지 않는 제약**으로 읽는 방법이다. 읽는 쪽은 대화형 `design` 의 Step 1 과 무인 `design-discuss-unattended`·`design-solo-unattended` 의 Step 1 이다.
 
 티켓 배달 설계(`ticket-delivery.md`)의 상위 문서도 같은 해소와 묶기를 쓴다. 다만 하위 문서의 꼴과 `## 베이스 제약` 에 더하는 복사(설계 절 소절, 상위 주요 결정사항, 배정된 미해결 항목과 R 항목)는 `ticket-delivery.md` 를 따른다.
 
@@ -25,7 +25,7 @@ autopilot 하위 런에서는 사람이 있는 자리인 킥오프가 해소하�
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>
 ```
 
-무인 설계 단계(`design-discuss-unattended` Step 1, 드라이버 디스패치)는 이 행을 읽고 **생성 전에** 다음을 확인한다.
+무인 설계 단계(`design-discuss-unattended`·`design-solo-unattended` Step 1, 드라이버 디스패치)는 이 행을 읽고 **생성 전에** 다음을 확인한다.
 
 - `문서` 의 파일이 메인 작업트리에 있다.
 - 그 파일의 whole-file `sha256` 이 행의 `sha256` 과 같다.
