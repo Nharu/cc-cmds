@@ -54647,7 +54647,7 @@ rm -f "$LEDGER85" "$WT/$DOC85"
 
 # ---------------------------------------------------------------------------
 # 95d. 런을 넘는 이월 — 입양과 재킥오프 연쇄가 앞선 런의 이월된 중단 답을 들이고, 운반 act 만 그 답을 낸다
-# --- section: 95d | group: base | covers: act, plan, snapshot, halt-answer, gate_adoption_halt_source, gate_chain_halt_import, gate_key_imported_deferred_answer, gate_carry_check, gate_carry_scope_ok, gate_carry_defer_row, gate_carry_import_row, gate_chain_source_key, gate_halt_answer_route, cc_unanswered_halts, gate_carry_tail, gate_carry_abs, gate_carry_row_fits, gate_carry_fit_block, gate_adoption_carry_fits, gate_carry_already_imported, gate_carry_source_last_row, gate_carry_origin | anchors: 95d: 이월 행이 없는 답은 연쇄가 들이지 않는다, 95d: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다, 95d: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다, 95d: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다, 95d: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다, 95d: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다, 95d: 그 파견은 시동 대역을 부르지 않는다, 95d: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다, 95d: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다, 95d: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다, 95d: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다, 95d: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다, 95d: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다, 95d: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다, 95d: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다 ---
+# --- section: 95d | group: base | covers: act, plan, snapshot, halt-answer, gate_adoption_halt_source, gate_chain_halt_import, gate_key_imported_deferred_answer, gate_carry_check, gate_carry_scope_ok, gate_carry_defer_row, gate_carry_import_row, gate_chain_source_key, gate_halt_answer_route, cc_unanswered_halts, gate_carry_tail, gate_carry_abs, gate_carry_row_fits, gate_carry_fit_block, gate_adoption_carry_fits, gate_carry_already_imported, gate_carry_source_last_row, gate_carry_origin, gate_adoption_surface_approval_settled | anchors: 95d: 이월 행이 없는 답은 연쇄가 들이지 않는다, 95d: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다, 95d: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다, 95d: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다, 95d: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다, 95d: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다, 95d: 그 파견은 시동 대역을 부르지 않는다, 95d: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다, 95d: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다, 95d: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다, 95d: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다, 95d: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다, 95d: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다, 95d: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다, 95d: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 교대 정지 강제 표면 승인 자리의 사람 승인 답은 이월할 것 없음(1)이다, 95d: 답한 주체가 사람이 아니면 그 승인 답은 경고(2)다, 95d: 그 승인 답의 입양 계획 act 는 사본도 들인 중단 답 행도 남기지 않는다 ---
 #
 # 앞선 런이 마감 안에 자리를 찾지 못해 다음 런으로 넘긴 사람의 답(`이월` 행이 이름
 # 짓는 `중단 답`)은 다음 런이 사본으로 들여 그 런의 운반 act 로 낸다. 두 길이 있다.
@@ -55180,15 +55180,94 @@ check "95d: 다시 계획해도 같은 거절이고 막힘 행은 늘지 않는�
 check "95d: 입양 출처 원장은 그대로이고 그 답은 이월된 채 남는다" \
   "$(shasum -a 256 "$LED96/$SRC96L.md" | cut -d' ' -f1)|$(deferred96 "$SRC96L" "$ln96l")" "$srcsha96l|1"
 
+# 입양 — 앞선 런의 교대가 강제 표면 승인 자리에서 세그먼트를 멈췄고, 사람이 승인으로
+# 답했지만 다음 교대가 그 답을 집행하기 전에 런이 끝났다. 승인은 다음 매니페스트의
+# 승인 행으로 이어지므로 이 답에는 들여올 것이 없다(종료 코드 1). 출처 원장의 교대
+# 정지 행·기록 다이제스트·답한 주체=사람 중 하나라도 확인되지 않으면 경고(2)다.
+SRC96S='20260301-5a5a5a5a'
+RDS96S="$STATE_LATE/cc-cmds/run/$SRC96S"
+WT96S="$(dirname "$WT")/$(basename "$WT")-run-$SRC96S-S9"
+( cd "$WT" && git worktree add -q -b "seg/$SRC96S-S9" "$WT96S" HEAD ) >/dev/null 2>&1
+ROW96S="- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC96S-S9 | 워크트리=$WT96S | 출처 런=$SRC96S | PR=98"
+g15_run "$SRC96S" "$DOC96A" "$plan15c" 리뷰없음
+src96 "$SRC96S"
+mkdir -p "$RDS96S/halt/shift"
+REC96S="$RDS96S/halt/shift/S9#1.md"
+REC96SF="$RDS96S/halt/S9#2.md"
+for r96 in "$REC96S" "$REC96SF"; do
+  printf '%s\n' "<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=S9#1; run=$SRC96S -->" \
+    '**스킬**: autopilot-router-shift' '**스텝**: 교대 정지 — 강제 표면 승인' \
+    '**분류**: gate-unanswerable' '**질문 문면**: 강제 표면 변경을 승인할까요?' '**선택지**:' \
+    '- `재시도` — 다시 시도한다' '- `세그먼트 park` — 세그먼트를 park 한다' '- `승인` — 보인 변경을 승인한다' \
+    '<!-- /cc-pipeline-halt v1 -->' > "$r96"
+done
+dig96s=$(shasum -a 256 "$REC96S" | cut -d' ' -f1)
+led96s() {  # led96s <답 기록> <답한 주체> <교대 정지 행 자리|-> — 출처 원장을 쓴다
+  { printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=리뷰중 | 워크트리=%s | 선행=없음\n' "$WT96S"
+    [ "$3" = "-" ] || printf -- '- `blocked` | 대상=infra | 스코프=cone | 원인=막힘 | 앵커 세그먼트=S9 | 사유=교대 정지 — %s | 근거=x | 중단 기록=%s | 기록 다이제스트=%s | 자리=%s | 교대=1 | prev=x\n' \
+      "$3" "$REC96S" "$dig96s" "$3"
+    printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=autopilot-router-shift | 선택지=승인 | 답한 주체=%s | 근거=사람이 승인을 골랐다 | 기록 다이제스트=%s | 승인 프레임=f | 근거 종류=강제 표면 승인 | 레인=좌석 | 기록 시각=2026-03-01T02:00:00Z\n' \
+      "$1" "$2" "$(shasum -a 256 "$1" | cut -d' ' -f1)"; } > "$LED96/$SRC96S.md"
+}
+g15_run R96S "$DOC96A" "$plan15c" 리뷰없음
+printf '%s\n' "$ROW96S" >> "$WORK/plan-R96S.md"
+RD96S="$STATE_LATE/cc-cmds/run/R96S"
+src96s() {  # src96s — R96S 에서 gate_adoption_halt_source SA 의 종료 코드와 GATE_CARRY_WHY·GATE_CARRY_SRC
+  gfn96 R96S 'gate_adoption_halt_source SA; printf "%s|%s|%s" "$?" "$GATE_CARRY_WHY" "$GATE_CARRY_SRC"'
+}
+led96s "$REC96S" 사람 '강제 표면 승인'
+check "95d 픽스처: 그 답은 완결된 기록에 대한 소비되지 않은 답이다 (아래가 공허하지 않다)" \
+  "$(gfn96 R96S 'gate_carry_record_whole "$1" "$2" "$3" && printf ok; gate_halt_answer_spent "$4" S9 "$5" && printf 소비' \
+     "$RDS96S" "$REC96S" "$(sed -n "$(ln96 "$SRC96S")p" "$LED96/$SRC96S.md")" "$LED96/$SRC96S.md" "$(ln96 "$SRC96S")")" "ok"
+check "95d: 교대 정지 강제 표면 승인 자리의 사람 승인 답은 이월할 것 없음(1)이다" "$(src96s)" "1||"
+cp "$REC96S" "$REC96S.keep"
+printf '\n' >> "$REC96S"
+case "$(src96s)" in
+  "2|"*"기록 다이제스트와 다릅니다"*) ok "95d: 기록이 교대 정지 행의 다이제스트와 다르면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 기록이 교대 정지 행의 다이제스트와 다르면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+mv "$REC96S.keep" "$REC96S"
+led96s "$REC96S" 사람 -
+case "$(src96s)" in
+  "2|"*"교대 정지 행이 없어"*) ok "95d: 출처 원장에 교대 정지 행이 없으면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 출처 원장에 교대 정지 행이 없으면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96S" 사람 '병합 거절'
+case "$(src96s)" in
+  "2|"*"교대 정지 행이 없어"*) ok "95d: 교대 정지 행의 자리가 강제 표면 승인이 아니면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 교대 정지 행의 자리가 강제 표면 승인이 아니면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96S" 좌석 '강제 표면 승인'
+case "$(src96s)" in
+  "2|"*"답한 주체가 사람이 아닙니다(답한 주체=좌석)"*) ok "95d: 답한 주체가 사람이 아니면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 답한 주체가 사람이 아니면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96SF" 사람 '강제 표면 승인'
+case "$(src96s)" in
+  "2|"*"halt/shift 바로 아래에 있지 않아"*) ok "95d: 같은 스텝 줄을 든 halt/shift 밖 기록의 승인 답은 경고(2)다" ;;
+  *) bad "95d: 같은 스텝 줄을 든 halt/shift 밖 기록의 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96S" 사람 '강제 표면 승인'
+srcsha96s=$(shasum -a 256 "$LED96/$SRC96S.md" | cut -d' ' -f1)
+g15_plan act R96S SA 상태=계획됨 "워크트리=$WT96S"
+check "95d: 그 승인 답의 입양 계획 act 는 사본도 들인 중단 답 행도 남기지 않는다" \
+  "$rc/$(copies96 "$RD96S" adopted)/$(carried96 R96S)" "0/0/0"
+case "$msg" in
+  *"출처 런 $SRC96S 의 열린 중단 답"*) bad "95d: 그 입양 계획 act 는 열린 중단 답 경고를 내지 않는다" "$msg" ;;
+  *) ok "95d: 그 입양 계획 act 는 열린 중단 답 경고를 내지 않는다" ;;
+esac
+check "95d: 그 입양 뒤 출처 원장은 그대로다" "$(shasum -a 256 "$LED96/$SRC96S.md" | cut -d' ' -f1)" "$srcsha96s"
+
 for wt96 in "$WT-run-R96C-A1" "$WT-run-R96D-A1" "$WT-run-R96N-A1" "$WT-run-$SRC96C-A1" "$WT-run-$SRC96D-A1" \
             "$WT-run-$SRC96E-A1" "$WT-run-R96E-A1" "$WT-run-R96G-A1" "$WT-run-R96H-A1" "$WT-run-R96K-A1"; do
   ( cd "$WT" && git worktree remove --force "$wt96" ) >/dev/null 2>&1 || true
 done
 ( cd "$WT" && git worktree remove --force "$WT96A" && git branch -D "seg/$SRC96A-S9" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree remove --force "$WT96L" && git branch -D "seg/$SRC96L-S9" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree remove --force "$WT96S" && git branch -D "seg/$SRC96S-S9" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 rm -f "$LED96/$SRC96C.plan.md" "$LED96/$SRC96D.plan.md" "$LED96/$SRC96A.plan.md" "$LED96/$SRC96E.plan.md" "$LED96/R96E.plan.md" \
-  "$LED96/$SRC96K.plan.md" "$LED96/$SRC96L.plan.md" "$WT/$DOC96" "$WT/$DOC96A"
+  "$LED96/$SRC96K.plan.md" "$LED96/$SRC96L.plan.md" "$LED96/$SRC96S.plan.md" "$WT/$DOC96" "$WT/$DOC96A"
 
 # ---------------------------------------------------------------------------
 # 86. 런 개시가 대시보드 서버를 하나 띄우고, 띄우지 말아야 할 자리에서는 띄우지 않는다

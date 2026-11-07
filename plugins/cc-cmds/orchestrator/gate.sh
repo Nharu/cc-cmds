@@ -12941,8 +12941,12 @@ gate_adoption_halt_source() {
   # in an `이월` row (`gate_halt_answer_deferred`): a carry act there found no
   # room before the deadline and kept the answer for the next run, and only a
   # halt of the re-entry table is carried that way, so a fresh session of this
-  # run takes it up through this run's own carry act. Any other open answer —
-  # one the earlier run never tried to carry — is warned about and stays.
+  # run takes it up through this run's own carry act. A person's `승인` at the
+  # shift site `강제 표면 승인` is not carried either way: its approval already
+  # rides the next manifest as `강제 표면 승인` rows, so it reads as nothing
+  # open (1) once `gate_adoption_surface_approval_settled` vouches for it.
+  # Any other open answer — one the earlier run never tried to carry — is
+  # warned about and stays.
   #
   # Every guarantee of the seat's own `halt-answer` holds for the copy. The
   # answer must be the seat's — a person's, or the record's recommendation the
@@ -13001,14 +13005,22 @@ gate_adoption_halt_source() {
   fi
   step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p')
   step="${step%% — *}"
-  # A person's `승인` at the shift site `강제 표면 승인` needs no session
-  # either: its approval already stands as the earlier ledger's
-  # `강제 표면 승인` rows, which the next manifest carries, so it is not an
-  # answer that blocks the adoption.
+  # A `승인` at the shift site `강제 표면 승인` has nothing to carry: its
+  # approval already stands as the earlier ledger's `강제 표면 승인` rows,
+  # which the next manifest carries. Carrying the answer itself would copy the
+  # record outside `halt/shift/`, where no reader takes it for a shift's
+  # record, and leave an answer no session can take up. So it reads as
+  # nothing open (1) when the earlier ledger vouches for it as a person's
+  # answer to a record the gate wrote there, and as an open answer that does
+  # not carry (2) otherwise.
+  if [ "$opt" = "승인" ] && [ "$step" = "교대 정지" ] \
+     && grep -qxF '**스텝**: 교대 정지 — 강제 표면 승인' "$rec"; then
+    gate_adoption_surface_approval_settled "$sledger" "$sdir" "$skey" "$rec" "$row" || return 2
+    GATE_CARRY_SRC=''; GATE_CARRY_LINE=''
+    return 1
+  fi
   if { [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
        || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; } \
-     && { [ "$opt" != "승인" ] || [ "$step" != "교대 정지" ] \
-          || ! grep -qxF '**스텝**: 교대 정지 — 강제 표면 승인' "$rec"; } \
      && ! gate_halt_answer_deferred "$sledger" "$ln"; then
     GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있는 기록에 대한 「재수렴」 답과, 출처 원장의 이월 행이 이름 짓는 답만 이 런으로 이어집니다"
     return 2
@@ -13033,6 +13045,56 @@ gate_adoption_halt_source() {
   done
   gate_carry_source_doc_same "$src" || return 2
   GATE_CARRY_ROW=$row; GATE_CARRY_REC=$rec; GATE_CARRY_ATT=$att
+  return 0
+}
+
+gate_adoption_surface_approval_settled() {
+  # gate_adoption_surface_approval_settled <earlier ledger> <earlier run dir>
+  # <earlier key> <record> <earlier `중단 답` row> — whether an earlier run's
+  # `승인` to a record that reads as the shift's `강제 표면 승인` stop is one
+  # that run's ledger vouches for, so the adoption has nothing to carry for it.
+  # All three must hold: (1) the record lies directly under the earlier run's
+  # `halt/shift/` and that ledger holds a cone `blocked` row anchored on
+  # <earlier key> that names it as `중단 기록` at `자리=강제 표면 승인` with a
+  # `기록 다이제스트`; (2) the record's bytes hash to that digest; (3) the
+  # answer row reads `답한 주체=사람`. 1 with the condition that failed in
+  # GATE_CARRY_WHY otherwise. The record's own bytes are not trusted for any of
+  # them: a stage's record can carry the same step line.
+  local sledger="$1" sdir="$2" skey="$3" rec="$4" row="$5" r brow='' by
+  case "$rec" in
+    "$sdir"/halt/shift/*.md) ;;
+    *) GATE_CARRY_WHY="강제 표면 승인 답의 기록이 출처 런의 halt/shift 바로 아래에 있지 않아 교대 정지 기록으로 확인되지 않습니다: $rec"
+       return 1 ;;
+  esac
+  case "${rec#"$sdir"/halt/shift/}" in
+    */*) GATE_CARRY_WHY="강제 표면 승인 답의 기록이 출처 런의 halt/shift 바로 아래에 있지 않아 교대 정지 기록으로 확인되지 않습니다: $rec"
+         return 1 ;;
+  esac
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '스코프')" = "cone" ] || continue
+    [ "$(gate_row_field "$r" '중단 기록')" = "$rec" ] || continue
+    [ "$(gate_row_field "$r" '자리')" = "강제 표면 승인" ] || continue
+    [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$skey" ] || continue
+    [ -n "$(gate_row_field "$r" '기록 다이제스트')" ] || continue
+    brow=$r
+  done <<EOF
+$( { grep "^- \`blocked\` " "$sledger" 2>/dev/null || true; } | { grep -F "중단 기록=$rec " || true; } )
+EOF
+  if [ -z "$brow" ]; then
+    GATE_CARRY_WHY="출처 원장에 이 기록을 쓴 자리=강제 표면 승인 교대 정지 행이 없어 강제 표면 승인 답으로 확인되지 않습니다: $rec"
+    return 1
+  fi
+  if [ ! -f "$rec" ] || [ -L "$rec" ] \
+     || [ "$(shasum -a 256 "$rec" | cut -d' ' -f1)" != "$(gate_row_field "$brow" '기록 다이제스트')" ]; then
+    GATE_CARRY_WHY="강제 표면 승인 기록이 출처 원장 교대 정지 행의 기록 다이제스트와 다릅니다: $rec"
+    return 1
+  fi
+  by=$(gate_row_field "$row" '답한 주체')
+  if [ "$by" != "사람" ]; then
+    GATE_CARRY_WHY="강제 표면 승인 답의 답한 주체가 사람이 아닙니다(답한 주체=${by:-(없음)}): $rec"
+    return 1
+  fi
   return 0
 }
 
