@@ -39642,7 +39642,7 @@ CAP_STUB="$RJ_CAP_STUB_SAVE"; RL_SEAT="$RJ_RL_SEAT_SAVE"
 rm -rf "$RJ_F"
 
 # --- 34w. 계정 이전 — 좌석 레인이 한도에 닿은 런에서 좌석의 실제 router-shift ---------
-# --- section: 34w | group: cone | covers: act, gate_launch_shift, gate_failover_judge, route_gather_context, route_classify, run_failover_allowed | needs: 34e | anchors: 34w: 계정 이전 픽스처의 세그먼트 행이 기록된다, 34w: 좌석 레인이 한도인 런의 router-shift 는 여유 계정의 설정 디렉터리에서 교대를 띄운다, 34w: 계정 이전 행이 교대 기동 앞에 이전 으로 서고 소진 계정을 후보에 싣는다, 34w: 교대 기동 행의 레인은 고른 계정의 레인이고 한도 해제 행은 없다 ---
+# --- section: 34w | group: cone | covers: act, gate_launch_shift, gate_failover_judge, gate_failover_moved_shift, gate_relay_reentry_allowed, gate_relay_reset_set, route_gather_context, route_classify, run_failover_allowed | needs: 34e | anchors: 34w: 계정 이전 픽스처의 세그먼트 행이 기록된다, 34w: 좌석 레인이 한도인 런의 router-shift 는 여유 계정의 설정 디렉터리에서 교대를 띄운다, 34w: 계정 이전 행이 교대 기동 앞에 이전 으로 서고 소진 계정을 후보에 싣는다, 34w: 교대 기동 행의 레인은 고른 계정의 레인이고 한도 해제 행은 없다 ---
 #
 # 좌석 레인이 다섯 시간 한도에 닿고, 사람이 허용한 두 계정 가운데 하나는 주간 한도에,
 # 다른 하나는 여유가 있는 런이다. 판정은 손으로 쓴 문맥이 아니라 실제 라우터가 런
@@ -40032,6 +40032,44 @@ rl_join
 check "34w: 옮긴 교대가 한도로 죽은 레인은 다음 판정에서 죽은 교대 이고 다른 계정을 고른다" \
   "$rc|$(cat "$RL_O/cfg.1" 2>/dev/null)|$(cat "$RL_O/cfg.2" 2>/dev/null)|$(row_field "$(fk_last)" 후보)" \
   "0|$FK_H/.claude-u-b|$FK_H/.claude-u-a|u-a:여유,u-b:죽은 교대"
+
+# 옮긴 교대가 그 계정의 한도로 죽은 뒤 — 그 교대의 리셋은 목록 계정의 것이라 좌석 레인의
+# 대기에 들지 않는다. 목록 계정이 u-b 하나이고 좌석 레인이 회복하면, 리셋이 마감 안이든
+# 마감 뒤이든 좌석의 `대기` 는 그 리셋을 기다리지 않고 좌석 레인으로 뜬다.
+fk_moved_fn() {  # fk_moved_fn — 틱의 소싱 셸에서 「리셋 원소|재진입」
+  printf '%s\n' "$CAP_LEDGER" > "$CAP_DIR/ledger-path"
+  printf 'manifest=%s\n' "$CAP_NM" > "$CAP_DIR/seat-call"
+  ( cd "$WT" && HOME="$FK_H" XDG_STATE_HOME="$STATE_CONE" CC_GATE_SOURCE_ONLY=1 bash -c '. "$1" </dev/null >/dev/null 2>&1; gate_failover_inputs "$2" || exit 9; printf "%s|" "$(gate_relay_reset_set)"; gate_relay_reentry_allowed 2>/dev/null && printf y || printf n' _ "$GATE" "$CAP_DIR" )
+}
+fk_moved_die() {  # fk_moved_die <런 id> <리셋까지 초> — u-b 만 목록에 둔 런에서 u-b 로 옮긴 교대 1 이 한도로 죽는다; fk_md 에 「rc|cfg|사유」
+  fk_new "$1" u-b
+  fk_usage
+  RL_RESETAT=$((fk_now + $2))
+  rl_case "fomoved-$1" limitdie
+  HOME="$FK_H" rl_call 상한
+  rl_join
+  fk_md="$rc|$(cat "$RL_O/cfg.1" 2>/dev/null)|$(row_field "$(cap_rows handoff | tail -1)" 사유)"
+}
+fk_moved_reissue() {  # fk_moved_reissue <이름> — 좌석이 회복한 뒤의 `대기` 재호출; fk_mr 에 「rc|기동 수|cfg」
+  fk_usage 'acct("seat"; free)'
+  rl_case "$1" cap
+  RL_HOLD=5 HOME="$FK_H" rl_call 대기
+  rl_join
+  fk_mr="$rc|$(rl_calls)|$(cat "$RL_O/cfg.1" 2>/dev/null)"
+}
+fk_moved_die RFOR 2400
+check "34w: (가) 옮긴 교대가 그 계정 한도로 죽으면 무기록 이 선다" "$fk_md" "1|$FK_H/.claude-u-b|무기록"
+check "34w: (가) 옮긴 교대의 리셋은 릴레이의 리셋 원소가 아니고 재진입은 허용된다" "$(fk_moved_fn)" "|y"
+fk_moved_reissue fomovedseat
+check "34w: (가) 리셋이 마감 안이어도 좌석이 회복하면 대기 는 그 리셋을 기다리지 않고 좌석 레인으로 뜬다" \
+  "$fk_mr" "0|1|$FK_H/.claude-seat"
+fk_moved_die RFOS 7200
+check "34w: (나) 리셋이 마감 뒤인 옮긴 교대도 무기록 이 선다" "$fk_md" "1|$FK_H/.claude-u-b|무기록"
+fk_deadline "$(rl_ep_iso "$((fk_now + 1800))")"
+check "34w: (나) 목록 계정이 하나이고 리셋이 마감 뒤여도 재진입은 거부되지 않는다" "$(fk_moved_fn)" "|y"
+fk_moved_reissue fomovedseat2
+check "34w: (나) 그 대기 는 rc 3 으로 거부되지 않고 좌석 레인으로 뜬다" "$fk_mr" "0|1|$FK_H/.claude-seat"
+unset fk_md fk_mr
 RL_RESETAT=''
 
 # 기동하지 않는 호출 — 탐침 거부에는 기동하는 행이 없다.

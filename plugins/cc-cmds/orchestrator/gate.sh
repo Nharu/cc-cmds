@@ -59634,6 +59634,21 @@ gate_failover_launch_lane() {
   gate_row_field "$row" '레인'
 }
 
+gate_failover_moved_shift() {
+  # gate_failover_moved_shift <n> — succeeds in a failover run when shift n's
+  # `교대 기동` row names a lane other than the seat lane: the gate launched it
+  # on a listed account. A missing row, a row with no lane, or a `config-dir`
+  # record that does not read is not a move, so the caller keeps reading that
+  # shift's reset as the seat lane's. The seat label is the one evidence (b)
+  # compares against (`gate_failover_stream_evidence`).
+  run_failover_allowed 2>/dev/null || return 1
+  local lab seat
+  lab=$(gate_failover_launch_lane "$1")
+  [ -n "$lab" ] && [ "$lab" != "-" ] || return 1
+  seat=$(gate_failover_seat_dir) && [ -n "$seat" ] || return 1
+  [ "$lab" != "$(lane_label_of "$seat")" ]
+}
+
 gate_failover_dead_at() {
   # gate_failover_dead_at <ordinal> <now> — the reset clock of shift <ordinal>
   # when it died limit-shaped — a `handoff 사유=무기록` row the gate wrote for
@@ -60703,6 +60718,12 @@ gate_relay_reentry_allowed() {
   # The seat (or a boot-time re-entry) re-issues `대기` at once instead of
   # waiting for the reset itself, and the relay holds it until the reset. With
   # no clock, or one further than the horizon, it stays refused.
+  #
+  # A SHIFT THE GATE MOVED IS NOT A SEAT-LANE DEATH. In a failover run, when
+  # that shift ran on a listed account (`gate_failover_moved_shift`), its reset
+  # is that account's and says nothing of the seat lane: re-entry is allowed
+  # with no reset to hold for, and the launch's judgment picks the lane — the
+  # judgment already reads the moved lane's death as `죽은 교대`.
   local st n at
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
   # `이월` waits too: for the deadline, after which the successor ends the run
@@ -60724,6 +60745,7 @@ gate_relay_reentry_allowed() {
   n=$( { LC_ALL=C grep -E '^- `교대 기동` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
   n=$(gate_row_field "$n" '서수')
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  if gate_failover_moved_shift "$n"; then return 0; fi
   at=$(gate_cut_key_reset_at "교대#$n")
   # IN A FAILOVER RUN THE TEST IS THE DEADLINE OR ROOM, NOT THE HORIZON. A
   # seven_day reset lies past the horizon, and the run must still take `대기`
@@ -60873,7 +60895,10 @@ gate_relay_reset_set() {
   # derived again from the reference row on every call, never carried in memory.
   # The reference row is the latest `handoff`: under `대기` its `리셋 대기` keys,
   # each with the clock it has now; under a limit-shaped `무기록` the shift that
-  # wrote nothing, `교대#<n>` with the clock of its own stream.
+  # wrote nothing, `교대#<n>` with the clock of its own stream — unless the gate
+  # moved that shift to a listed account (`gate_failover_moved_shift`): that
+  # clock is the account's, not the seat lane's, so the set has no reset
+  # member and the launch's judgment picks the lane without waiting for it.
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
   local last why keys k at out="" n
   last=$( { LC_ALL=C grep -E '^- `handoff` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
@@ -60889,6 +60914,7 @@ gate_relay_reset_set() {
     무기록)
       n=$(gate_row_field "$last" '교대')
       case "$n" in ''|*[!0-9]*) return 0 ;; esac
+      ! gate_failover_moved_shift "$n" || return 0
       at=$(gate_cut_key_reset_at "교대#$n")
       [ -z "$at" ] || out="교대#$n:$at" ;;
   esac
