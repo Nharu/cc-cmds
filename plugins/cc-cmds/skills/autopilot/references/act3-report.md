@@ -61,7 +61,42 @@ Cover, in this order:
   - With nothing to show, one line of these: 「이 런에는 설계 스테이지가 없었습니다」 · 「lead-solo 런 — 요구 결정은 킥오프 대화에서 물었습니다」(티어가 `lead-solo` 인 옛 계획의 런에서만) · 「문서에 절이 없습니다 — 설계 스테이지가 목록을 남기지 않았습니다」 · 「설계 문서가 없습니다」.
 - **새 티켓 초안** — the tickets a child run set aside for a person to publish: every entry of the design document's `## 미해결 이슈 / 트레이드오프` whose `**사유**` reads `새 티켓 필요 — 앞 티켓 결함`, each with its heading and its `**티켓 초안**` verbatim. End with 「런은 트래커에 쓰지 않았습니다 — 사람이 발행합니다」. With no such entry, leave the section out.
 - **상위 출처 이슈** — only when the manifest carries a `베이스 설계` row whose upper document carries `**문서 종류**: 티켓 배달 설계`. The upper run ends at its split and cannot see its tickets land, so this read belongs to the child run's report. All of it is reading.
-  - For each `착수` row of the registry `docs/design-base/<slug>.tickets.md`, read `<base>/docs/pipeline-run/<런>.md` and, for every segment of that run, the `PR=` of its last `segment` row, then the state with `gh pr view <n> -R <레포> --json state`, `<레포>` being the `원격 슬러그` of the manifest's target row (a read that reaches the collaboration surface). Write one line `<티켓><TAB><상태>` per run into a scratch file under `${TMPDIR:-/tmp}`: `MERGED` only when every segment of that run has a pull request and all of them are merged, otherwise the first other state, or `없음` when a segment has none. A ticket with no `착수` row gets no line and does not count as landed.
+  - `<base>` is what `cd "<manifest directory>/../.." && pwd` prints. For each `착수` row of the registry `<base>/docs/design-base/<slug>.tickets.md`, take the run's ledger `<base>/docs/pipeline-run/<런>.md`. **A ledger file that does not exist is not a failed read**: that run was refused or given up before it began, and its ticket line reads `없음`. Read an existing ledger with this program and nothing else, as `LC_ALL=C awk -f <이 프로그램> <원장>`. It reads every `segment` row of a segment, because the park, apply and import rows carry no `PR=`, and prints one line `<세그먼트><TAB><종류><TAB><값>` per segment: `PR` with the last non-empty `PR=`; with no `PR=` on any row, `머지` when a row carries `머지 커밋`, which only a merged segment's row carries; then `브랜치` with the last non-empty `브랜치=`; then `없음`. A ledger with no `segment` row, a run that has not planned a segment yet, prints the one line `-<TAB>없음<TAB>-`, so such a run never reads as merged:
+
+  ```awk
+  /^- `segment` \| / {
+    n = split($0, f, " \\| ")
+    id = pr = mc = br = ""
+    for (i = 2; i <= n; i++) {
+      p = index(f[i], "=")
+      if (!p) continue
+      k = substr(f[i], 1, p - 1)
+      v = substr(f[i], p + 1)
+      if (v == "" || v == "-") continue
+      if (k == "id") id = v
+      else if (k == "PR") pr = v
+      else if (k == "머지 커밋") mc = v
+      else if (k == "브랜치") br = v
+    }
+    if (id == "") next
+    if (!(id in seen)) { seen[id] = 1; order[++total] = id }
+    if (pr != "") prs[id] = pr
+    if (mc != "") merges[id] = mc
+    if (br != "") branches[id] = br
+  }
+  END {
+    if (!total) { print "-\t없음\t-"; exit }
+    for (i = 1; i <= total; i++) {
+      s = order[i]
+      if (s in prs) print s "\tPR\t" prs[s]
+      else if (s in merges) print s "\t머지\t-"
+      else if (s in branches) print s "\t브랜치\t" branches[s]
+      else print s "\t없음\t-"
+    }
+  }
+  ```
+
+  - Turn each printed line into a state. `PR` and `브랜치` read `gh pr view <값> -R <레포> --json state` (a read that reaches the collaboration surface), and a `브랜치` whose answer reads `no pull requests found for branch` is `없음`, not a failed read. `머지` is `MERGED`. `없음` is `없음`. `<레포>` is the `**레포**` of that ticket's `### 티켓 T<n> — ` block in the upper document, code span stripped, because a ticket may land in another repository than the run's target. Write one line `<티켓><TAB><상태>` per run into a scratch file under `${TMPDIR:-/tmp}`: `MERGED` only when every printed line of that run is `MERGED`, otherwise the first other state. A ticket with no `착수` row gets no line and does not count as landed.
   - Judge with this program and nothing else, as `LC_ALL=C awk -f <이 프로그램> <상태 파일> <레지스트리>`. It prints `착지` only when every `티켓` row has a `착수` row and a `MERGED` line, `미착지 <남은 티켓 수>` otherwise, and `판정 못 함` for a registry with no `티켓` row:
 
   ```awk
