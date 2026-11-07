@@ -551,9 +551,9 @@ stall_threshold() {
   #
   # `STALL` too while the run waits for an account-failover resume time
   # (`failover_waiting`): the gate wrote that wait and launches nothing until
-  # then, so the quiet is the wait itself. The silence and after-stage arms
-  # also read the same judgment as a conjunct and write no record before that
-  # time; past it they judge as before.
+  # then, so the quiet is the wait itself. The silence, after-stage, run-open
+  # and settle arms also read the same judgment as a conjunct and raise nothing
+  # before that time; past it they judge as before.
   local h
   if seat_turn_open; then printf '%s' "$STALL"; return 0; fi
   if failover_waiting; then printf '%s' "$STALL"; return 0; fi
@@ -769,6 +769,7 @@ settle_stall_arm() {
   [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" = "0" ] || return 0
   [ -n "${quiet:-}" ] && [ "$quiet" -ge "$thr" ] || return 0
   [ "${relay_eff:-0}" = "0" ] || return 0
+  ! failover_waiting || return 0
   mk="$RUN_DIR/watch.announced-settle-stall-$size"
   [ ! -f "$mk" ] || return 0
   : > "$mk"
@@ -932,11 +933,11 @@ pass() {
   # justification: an unresolved run-scope block stands up a termination condition
   # and the shared state predicate then refuses terminal forever, so one long
   # legitimate stage would stop the run from ending all night and would need a
-  # person to write the resolving row. The tolerance for false positives above is
-  # bought entirely by "firing leaves a line, it does not kill" — a block row
-  # spends that. And the two differ in kind: the sibling arms measure the
-  # ROUTER's silence, which needs a person to break, while this one measures a
-  # STAGE's, which resolves by itself when the stage ends.
+  # person or a shift to write the resolving row. The tolerance for false positives
+  # above is bought entirely by "firing leaves a line, it does not kill" — a block
+  # row spends that. And the two differ in kind: the sibling arms measure the
+  # ROUTER's silence, which takes a person or a shift to break, while this one
+  # measures a STAGE's, which resolves by itself when the stage ends.
   #
   # The once-guard is a dedicated per-stage marker for the same reason the arms
   # above use one: the gate empties `stall` on every act, so a guard reading that
@@ -1017,6 +1018,10 @@ pass() {
   # segment row, so the segment count alone excludes it, and the `done` guard
   # excludes it a second time.
   #
+  # A RUN WAITING ON AN ACCOUNT-FAILOVER RESUME TIME STAYS OUT TOO: a first shift
+  # can hit the limit before any segment opens, and then no segment and no gate
+  # entry is the wait the gate wrote, which the next call ends.
+  #
   # The once-guard is a dedicated marker for the same reason the arm above's is:
   # the gate empties `stall` on every act, so a guard that read that file would
   # come back to life and this arm would re-fire every pass.
@@ -1026,6 +1031,7 @@ pass() {
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
      && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ -n "$gate_idle" ] && [ "$gate_idle" -ge "$AFTER_STAGE" ] \
+     && ! failover_waiting \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; then
     : > "$RUN_DIR/watch.announced-run-open"
