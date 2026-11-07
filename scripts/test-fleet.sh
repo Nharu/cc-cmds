@@ -58,6 +58,15 @@
 
 set -uo pipefail
 
+# One block sources the real gate for the account-failover probe, so this suite
+# is a gate-family suite: the pipeline's variables must not reach it, and the
+# gate's notification channel and dashboard server stay off.
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
@@ -971,6 +980,214 @@ check "재진입: 같은 부팅의 두 번째 틱에서는 호출 0" "$(( $(coun
 check "재진입: 두 번째 틱은 백로그로 간다" "$(backlog_status t2h)" "done"
 kill "$t2_relay" 2>/dev/null || true
 rm -rf "$WORK"/xdg/cc-cmds/run/T2?
+
+# --- seat-limit recall: a run the boot did not cut, its seat lane at its limit -----
+# Each fixture run carries the boot marker of this boot, so the boot branch passes
+# it over and only the seat-limit trigger can take it. The fake pinned gate answers
+# the functions the tick sources from it: `gate_failover_inputs` fails while
+# `fo-no-inputs` exists, `run_failover_allowed` holds while `fo-allowed` exists,
+# the judgment's `증거` is `fo-ev` and its status is 2 while `fo-rc2` exists, and
+# the relay re-entry predicate is the real one's `대기` reading. `fo-flip` makes
+# that predicate true on its first call and false after; `fo-late` has the
+# judgment write a wait whose resume time is ahead, as another label's chain would
+# between the tick's reading and the lock. A `router-shift` does what `t3.mode`
+# says: `stop` launches and leaves `중단`, `wait-future` writes a failover wait
+# whose resume time is ahead and launches nothing, `handback` writes nothing.
+T3O="$WORK/t3orch"; mkdir -p "$T3O"
+cat > "$T3O/gate.sh" <<'EOF'
+#!/usr/bin/env bash
+if [ "${CC_GATE_SOURCE_ONLY:-0}" = "1" ]; then
+  gate_failover_inputs() { [ ! -e "$1/fo-no-inputs" ] || return 1; RUN_DIR="$1"; LEDGER=$(sed -n '1p' "$1/ledger-path"); [ -f "$LEDGER" ]; }
+  run_failover_allowed() { [ -e "$RUN_DIR/fo-allowed" ]; }
+  gate_relay_reentry_allowed() {
+    if [ -e "$RUN_DIR/fo-flip" ]; then
+      [ ! -e "$RUN_DIR/fo-flip.used" ] || return 1
+      : > "$RUN_DIR/fo-flip.used"; return 0
+    fi
+    [ "$(awk '/^- `handoff` /{w=(index($0," | 사유=대기 | ")>0)?"w":"x"} /^- `교대 기동` /{w="x"} END{printf "%s",w}' "$LEDGER" 2>/dev/null)" = w ]
+  }
+  gate_failover_field() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == k { print $2; exit }'; }
+  gate_failover_judge() {
+    if [ -e "$RUN_DIR/fo-late" ]; then
+      rm -f "$RUN_DIR/fo-late"
+      printf -- '- `계정 이전` | 서수=2 | 좌석 레인=cc | 증거=사용량 | 결과=대기 | 레인=- | 계정=- | 재개 시각=%s | 후보=acct-a:소진 | 기록 시각=%s\n' \
+        "$(date -u -r $(( $(date -u +%s) + 3600 )) +%FT%TZ 2>/dev/null || date -u -d "@$(( $(date -u +%s) + 3600 ))" +%FT%TZ)" \
+        "$(date -u +%FT%TZ)" >> "$LEDGER"
+    fi
+    printf '증거\t%s\n' "$(cat "$RUN_DIR/fo-ev" 2>/dev/null || printf -- '-')"
+    [ ! -e "$RUN_DIR/fo-rc2" ] || return 2
+  }
+  return 0 2>/dev/null || exit 0
+fi
+verb=$1; shift
+man=""; kind=""; first=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --manifest) man=$2; shift 2 ;;
+    --kind) kind=$2; shift 2 ;;
+    --) shift; first=${1:-}; break ;;
+    *) shift ;;
+  esac
+done
+rid=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$man" | sed -n '1p')
+rd="$XDG_STATE_HOME/cc-cmds/run/$rid"
+led=$(cat "$rd/ledger-path")
+printf '%s %s %s CLAUDE_CONFIG_DIR=%s REENTRY=%s\n' "${kind:-$verb}" "$rid" "${first:--}" "${CLAUDE_CONFIG_DIR:-}" "${CC_PIPELINE_REENTRY:-}" >> "$TEST_LOG_DIR/t3.log"
+now=$(date -u +%s)
+case "$verb:$kind" in
+  snapshot:) printf '{"H":"h-%s"}\n' "$rid" ;;
+  act:router-shift)
+    case "$(cat "$rd/t3.mode" 2>/dev/null)" in
+      stop)
+        n=$(cat "$rd/t3.calls" 2>/dev/null || echo 1); n=$((n + 1)); echo "$n" > "$rd/t3.calls"
+        printf -- '- `교대 기동` | 서수=%s\n- `handoff` | 교대=%s | 사유=중단 | 대상=infra | 기록 시각=%s\n' \
+          "$n" "$n" "$(date -u -r "$now" +%FT%TZ 2>/dev/null || date -u -d "@$now" +%FT%TZ)" >> "$led" ;;
+      wait-future)
+        printf -- '- `계정 이전` | 서수=2 | 좌석 레인=cc | 증거=사용량 | 결과=대기 | 레인=- | 계정=- | 재개 시각=%s | 후보=acct-a:소진 | 기록 시각=%s\n' \
+          "$(date -u -r $((now + 3600)) +%FT%TZ 2>/dev/null || date -u -d "@$((now + 3600))" +%FT%TZ)" \
+          "$(date -u -r "$now" +%FT%TZ 2>/dev/null || date -u -d "@$now" +%FT%TZ)" >> "$led" ;;
+    esac ;;
+esac
+exit 0
+EOF
+cp "$T2O/watch.sh" "$T2O/checks.sh" "$T3O/"
+chmod +x "$T3O"/*.sh
+T3BOOT=$(( NOW - 7200 ))
+T3_HO_AT=$(iso $(( NOW - 1800 )))
+T3_WAIT="- \`handoff\` | 교대=1 | 사유=대기 | 대상=infra | 기록 시각=$T3_HO_AT"
+T3_CAP="- \`handoff\` | 교대=1 | 사유=상한 | 대상=infra | 기록 시각=$T3_HO_AT"
+T3_STOP="- \`handoff\` | 교대=1 | 사유=중단 | 대상=infra | 기록 시각=$T3_HO_AT"
+t3_fo_wait() {  # t3_fo_wait <resume epoch> — a `계정 이전` wait row.
+  printf -- '- `계정 이전` | 서수=2 | 좌석 레인=cc | 증거=사용량 | 결과=대기 | 레인=- | 계정=- | 재개 시각=%s | 후보=acct-a:소진 | 기록 시각=%s' \
+    "$(iso "$1")" "$(iso $(( NOW - 1700 )))"
+}
+t3_run() {
+  # t3_run <run-id> <ledger rows…> — a failover run of the interactive lane that
+  # this boot did not cut, its seat lane at its limit, nothing driving it.
+  local rd="$WORK/xdg/cc-cmds/run/$1"
+  t2_run "$@"
+  printf 'manifest=%s\ntarget=infra\ngate=%s\ncutpoint=머지\nsurface=워크트리쓰기\n' "$WORK/t2man/$1.plan.md" "$T3O/gate.sh" > "$rd/seat-call"
+  touch -t 202001010000 "$rd/seat-call"
+  mkdir -p "$PACE/reentry"; printf '%s\n' "$T3BOOT" > "$PACE/reentry/$1.boot"
+  printf '1\n' > "$rd/routing-guard"
+  printf -- '- `계정 이전 허용` | 계정=acct-a\n' >> "$WORK/t2man/$1.plan.md"
+  : > "$rd/fo-allowed"; printf '사용량\n' > "$rd/fo-ev"; printf 'stop\n' > "$rd/t3.mode"
+}
+d_fresh d-t3 t3h
+t3_run F1 "$T2_LAUNCH" "$T3_WAIT"
+t3_run F2 "$T2_LAUNCH" "$T3_CAP"
+t3_run F3 "$T2_LAUNCH" "$T3_WAIT" "$(t3_fo_wait $(( NOW + 3600 )))"
+t3_run F4 "$T2_LAUNCH" "$T3_WAIT" "$(t3_fo_wait $(( NOW - 60 )))"; printf -- '-\n' > "$WORK/xdg/cc-cmds/run/F4/fo-ev"
+printf 'wait-future\n' > "$WORK/xdg/cc-cmds/run/F4/t3.mode"
+t3_run F5 "$T2_LAUNCH" "$T3_WAIT"; printf 'handback\n' > "$WORK/xdg/cc-cmds/run/F5/t3.mode"
+t3_run F6 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/F6/fo-rc2"
+t3_run F7 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/F7/fo-flip"
+t3_run F8 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/F8/fo-late"
+# One run per predicate, each the F1 state with that one predicate failing.
+t3_run P1 "$T2_LAUNCH" "$T3_WAIT"
+printf '<!-- cc-run-manifest v1; run-id=P1; owner-doc=docs/x.md; origin-worktree=%s; -->\n' "$WT" > "$WORK/t2man/P1.plan.md"
+t3_run P2 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/P2/done"
+t3_run P3 "$T2_LAUNCH" "$T3_WAIT"
+sleep 300 & t3_relay=$!; BG_PIDS="$BG_PIDS $t3_relay"
+printf '%s\n%s\n' "$t3_relay" "$(bash -c '. "$1" && cc_proc_fingerprint "$2"' _ "$ORCH/liveness.sh" "$t3_relay")" > "$WORK/xdg/cc-cmds/run/P3/relay.live"
+touch -t 202001010000 "$WORK/xdg/cc-cmds/run/P3/relay.live"
+t3_run P4 "$T2_LAUNCH" "$T3_STOP"
+t3_run P5 "$T2_LAUNCH" "$T3_WAIT"; printf -- '-\n' > "$WORK/xdg/cc-cmds/run/P5/fo-ev"
+t3_run P6 "$T2_LAUNCH" "$T3_WAIT"; touch "$WORK/xdg/cc-cmds/run/P6/seat-call"
+t3_run P7 "$T2_LAUNCH" "$T3_WAIT"; printf '%s/-\n' "$T3_HO_AT" > "$PACE/reentry/P7.gap"
+t3_run P8 "$T2_LAUNCH" "$T3_WAIT"; printf '0\n' > "$WORK/xdg/cc-cmds/run/P8/routing-guard"
+t3_run P9 "$T2_LAUNCH" "$T3_WAIT"; rm -f "$WORK/xdg/cc-cmds/run/P9/fo-allowed"
+t3_run PA "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/PA/fo-no-inputs"
+t3_run PB "$T2_LAUNCH" "$T3_WAIT"; printf 'manifest=%s\ntarget=infra\ngate=%s\ncutpoint=머지\nsurface=워크트리쓰기\n' "$WORK/t2man/PB.plan.md" "$T3O/missing.sh" > "$WORK/xdg/cc-cmds/run/PB/seat-call"; touch -t 202001010000 "$WORK/xdg/cc-cmds/run/PB/seat-call"
+t3_run PC "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/PC/fo-rc2"; printf -- '-\n' > "$WORK/xdg/cc-cmds/run/PC/fo-ev"
+rm -f "$TEST_LOG_DIR/t3.log" "$TEST_LOG_DIR/t2.log" "$TEST_LOG_DIR/t2-checks.log"
+FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T3BOOT" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t3-1.err"; rc=$?
+t3n() { grep -c "^$1 $2 " "$TEST_LOG_DIR/t3.log" 2>/dev/null || true; }
+check "좌석 한도: 틱은 0 으로 끝난다" "$rc" "0"
+check "좌석 한도: 대기 후보는 전용 행 한 번과 router-shift 한 번, 사유는 대기" \
+  "$(t3n seat-limit-recall F1):$(t3n router-shift F1):$(grep '^seat-limit-recall F1 ' "$TEST_LOG_DIR/t3.log" | cut -d' ' -f3):$(grep '^router-shift F1 ' "$TEST_LOG_DIR/t3.log" | cut -d' ' -f3)" \
+  "1:1:사유=대기:대기"
+check "좌석 한도: 상한 뒤 기동 없는 런은 사유 상한으로 부른다" \
+  "$(grep '^seat-limit-recall F2 ' "$TEST_LOG_DIR/t3.log" | cut -d' ' -f3):$(grep '^router-shift F2 ' "$TEST_LOG_DIR/t3.log" | cut -d' ' -f3)" "사유=상한:상한"
+check "좌석 한도: 어느 런에도 재진입 행은 쓰지 않는다" "$(grep -c '^reentry ' "$TEST_LOG_DIR/t3.log" || true)" "0"
+check "좌석 한도: router-shift 는 좌석 레인의 CLAUDE_CONFIG_DIR 로 낸다" \
+  "$(grep '^router-shift F1 ' "$TEST_LOG_DIR/t3.log" | sed -n 's/.*CLAUDE_CONFIG_DIR=\([^ ]*\) .*/\1/p')" "$H_CC"
+check "좌석 한도: 다룬 공백의 열쇠를 .gap 표지에 남긴다" "$(cat "$PACE/reentry/F1.gap" 2>/dev/null)" "$T3_HO_AT/-"
+check "좌석 한도: 재개 시각 전의 계정 이전 대기는 후보가 아니다" "$(grep -c -E '^[a-z-]+ F3 ' "$TEST_LOG_DIR/t3.log" || true)" "0"
+check "좌석 한도: 재개 시각이 지난 대기는 증거 없이도 한 번 부르고, 미래 대기에서 사슬이 끝난다" \
+  "$(t3n seat-limit-recall F4):$(t3n router-shift F4)" "1:1"
+check "좌석 한도: 곧바로 돌아오는 대기는 두 번째에서 사슬을 멈춘다" "$(t3n router-shift F5)" "2"
+check "좌석 한도: 판정이 rc 2 여도 증거 줄이 있으면 후보가 되어 부른다" \
+  "$(t3n seat-limit-recall F6):$(t3n router-shift F6)" "1:1"
+check "좌석 한도: 정산 뒤 낼 사유가 없으면 행도 호출도 .gap 표지도 없다" \
+  "$(t3n seat-limit-recall F7):$(t3n router-shift F7):$( [ -e "$PACE/reentry/F7.gap" ] && printf marked || printf none)" "0:0:none"
+check "좌석 한도: 잠금 사이에 쓰인 미래 대기는 잠금 뒤 재확인이 막는다" \
+  "$(t3n seat-limit-recall F8):$(t3n router-shift F8):$( [ -e "$PACE/reentry/F8.gap" ] && printf marked || printf none)" "0:0:none"
+check "좌석 한도: 부팅 표지는 읽지도 옮기지도 않는다" \
+  "$(cat "$PACE/reentry/F1.boot" 2>/dev/null)" "$T3BOOT"
+for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 PA PB PC; do
+  check "좌석 한도: 술어 하나가 빠진 런($p)에는 스냅숏도 행도 호출도 없다" "$(grep -c -E "^[a-z-]+ $p " "$TEST_LOG_DIR/t3.log" || true)" "0"
+done
+check "좌석 한도: 계기를 돌린 틱은 백로그를 집지 않는다" "$(backlog_status t3h)" "pending"
+check "좌석 한도: 런마다의 점유는 풀려 있다" "$(ls -d "$PACE"/reentry/*.lock 2>/dev/null | count_lines /dev/stdin)" "0"
+t3_before=$(count_lines "$TEST_LOG_DIR/t3.log")
+FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T3BOOT" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t3-2.err"
+check "좌석 한도: 두 번째 틱은 아무 런도 다시 부르지 않는다 (새 대기는 재개 전, 새 handoff 없는 공백은 이미 다룸)" \
+  "$(( $(count_lines "$TEST_LOG_DIR/t3.log") - t3_before ))" "0"
+check "좌석 한도: 두 번째 틱은 백로그로 간다" "$(backlog_status t3h)" "done"
+# The trigger left the `.boot` marker of the old boot alone, so the next boot's
+# re-entry still takes a run it cuts.
+T3BOOT2=$(( T3BOOT + 60 ))
+FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T3BOOT2" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t3-3.err"
+check "좌석 한도: 그 뒤의 부팅 재진입은 막히지 않는다" \
+  "$(grep -c '^reentry F5 사유=대기 ' "$TEST_LOG_DIR/t3.log" || true):$(cat "$PACE/reentry/F5.boot" 2>/dev/null)" "1:$T3BOOT2"
+kill "$t3_relay" 2>/dev/null || true
+rm -rf "$WORK"/xdg/cc-cmds/run/F? "$WORK"/xdg/cc-cmds/run/P?
+
+# The real gate, not the fake: the functions the tick lifts from `fleet.sh` run
+# against the gate this tree ships, so the two cannot drift apart unseen.
+fo_fn() { awk -v n="$1" '$0 == n "() {" {p=1} p {print} p && /^}$/ {exit}' "$ORCH/fleet.sh"; }
+t3r_run() {
+  # t3r_run <run-id> <guard line or -> <row or -> — a run pinned to the real gate.
+  local rd="$WORK/xdg/cc-cmds/run/$1"
+  t2_run "$1" "$T2_LAUNCH" "$T3_WAIT"
+  printf 'manifest=%s\ntarget=infra\ngate=%s\ncutpoint=머지\nsurface=워크트리쓰기\n' "$WORK/t2man/$1.plan.md" "$ORCH/gate.sh" > "$rd/seat-call"
+  [ "$2" = "-" ] || printf '%s\n' "$2" > "$rd/routing-guard"
+  [ "$3" = "-" ] || printf '%s\n' "$3" >> "$WORK/t2man/$1.plan.md"
+}
+t3r_probe() {
+  local out rc=0
+  out=$(bash -c "$(fo_fn fleet_failover_gate_probe)"'
+    fleet_failover_gate_probe "$1"' _ "$WORK/xdg/cc-cmds/run/$1") || rc=$?
+  printf '%s:%s' "$rc" "$out"
+}
+T3R_ROW='- `계정 이전 허용` | 계정=acct-a'
+t3r_run RA 1 "$T3R_ROW"
+check "실제 게이트: 프로브는 대기 판독과 증거 줄을 돌려준다" "$(t3r_probe RA)" "0:1$(printf '\t')-"
+t3r_run RB 1 -
+check "실제 게이트: 이전 허용 행이 없는 런은 프로브 rc 3 이다" "$(t3r_probe RB)" "3:"
+printf 'manifest=%s\ntarget=infra\ngate=%s\ncutpoint=머지\nsurface=워크트리쓰기\n' "$WORK/missing.plan.md" "$ORCH/gate.sh" > "$WORK/xdg/cc-cmds/run/RB/seat-call"
+check "실제 게이트: 입력을 못 얻은 런은 프로브 rc 2 다" "$(t3r_probe RB)" "2:"
+# `fleet_failover_allowed` reads the same answer off the files as the gate's own
+# predicate, for every shape of the guard record.
+t3r_same() {
+  local rd="$WORK/xdg/cc-cmds/run/$1" a=no b=no
+  bash -c "$(fo_fn fleet_failover_allowed)"'
+    fleet_failover_allowed "$1"' _ "$rd" 2>/dev/null && a=yes
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; gate_failover_inputs "$2" && run_failover_allowed' _ "$ORCH/gate.sh" "$rd" >/dev/null 2>&1 && b=yes
+  printf '%s:%s' "$a" "$b"
+}
+t3r_run RC 1 "$T3R_ROW"
+check "실제 게이트: 가드 1 과 행이 있으면 둘 다 이전 허용 런이다" "$(t3r_same RC)" "yes:yes"
+t3r_run RD 0 "$T3R_ROW"
+check "실제 게이트: 가드 0 이면 둘 다 아니다" "$(t3r_same RD)" "no:no"
+t3r_run RE - "$T3R_ROW"
+check "실제 게이트: 가드 기록이 없으면 둘 다 아니다" "$(t3r_same RE)" "no:no"
+t3r_run RF ' 1 ' "$T3R_ROW"
+check "실제 게이트: 가드 앞뒤 공백은 둘 다 같게 읽는다" "$(t3r_same RF)" "yes:yes"
+t3r_run RG 1 -
+check "실제 게이트: 행이 없으면 둘 다 아니다" "$(t3r_same RG)" "no:no"
+rm -rf "$WORK"/xdg/cc-cmds/run/R?
 
 # --- usage ----------------------------------------------------------------------
 fresh_pace d-usage
