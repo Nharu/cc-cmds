@@ -38202,7 +38202,7 @@ fk_seat_H() {
     -- 워크트리="$CONE_A" 상태=실행중 선행=없음 ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
 fk_sum0=$(fk_settings_sum)
 check "34v: 설정 변형의 읽기 허용은 좌석 레인을 싣고 고른 레인을 싣지 않는다" \
-  "$rc|$( cat "$CAP_DIR"/settings/*.json 2>/dev/null | grep -q -F "Read(/$FK_H/.claude-seat/CLAUDE.md)" && printf 있음 || printf 없음)|$( { cat "$CAP_DIR"/settings/*.json 2>/dev/null | grep -c -F "Read(/$FK_H/.claude-u-b" || true; } | tr -d ' ')" "0|있음|0"
+  "$rc|$( grep -q -F "Read(/$FK_H/.claude-seat/CLAUDE.md)" "$CAP_DIR"/settings/*.json 2>/dev/null && printf 있음 || printf 없음)|$( { cat "$CAP_DIR"/settings/*.json 2>/dev/null | grep -c -F "Read(/$FK_H/.claude-u-b" || true; } | tr -d ' ')" "0|있음|0"
 fk_moved_gate() {  # fk_moved_gate <argv…> — 이전 교대의 환경으로 게이트를 부른다; rc 를 남긴다
   ( cd "$WT" && HOME="$FK_H" XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$FK_H/.claude-u-b" CC_GATE_SHIFT_LANE="$FK_H/.claude-u-b" \
     CLAUDE_CODE_SESSION_ID="$FK_SEAT" CC_CLAUDE_BIN="$CAP_STUB" \
