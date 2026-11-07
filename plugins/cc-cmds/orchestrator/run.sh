@@ -14232,7 +14232,6 @@ main_loop_body() {
   if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ $((merged + imported_landed)) -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
   run_end_record || true
   report_run_residual
-  report_surface_unapproved || true
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the
   # driver parked, while `보류` is the disposition of a termination clause waiting
   # on a person's answer — and both appear in the same report, so the reader had
@@ -14274,11 +14273,11 @@ main_loop_body() {
 report_run_residual() {
   [ -n "${RUN_DIR:-}" ] || return 0
   [ -f "$RUN_DIR/done" ] || return 0
-  if [ -e "$RUN_DIR/residual-reported" ]; then
-    return 0
+  if [ ! -e "$RUN_DIR/residual-reported" ]; then
+    : > "$RUN_DIR/residual-reported"
+    report_append "종료 잔여" "$(cat "$RUN_DIR/done")"
   fi
-  : > "$RUN_DIR/residual-reported"
-  report_append "종료 잔여" "$(cat "$RUN_DIR/done")"
+  report_surface_unapproved || true
 }
 
 # THE ENFORCEMENT SURFACES NOBODY APPROVED, ONCE, HOWEVER THE RUN ENDS.
@@ -14288,11 +14287,16 @@ report_run_residual() {
 # fixes the branch. The entries come from the gate's own function, which
 # measures each segment that did not land again and reads the run's records for
 # one whose worktree is gone, so the verdict and the next step are the gate's
-# bytes. Called from the walk's tail and from the EXIT trap — the trap is set
-# before the ledger exists, so no ledger writes nothing — and the flag file
-# keeps the two from reporting twice.
+# bytes. Called from `report_run_residual`, so it rides the same two callers —
+# the walk's tail and the EXIT trap — behind the same `done` guard: a driver
+# that exits before the run ended (a second `run.sh` on a live run id refused
+# by `check_inflight`, say) has no `done` and reports nothing, and so does not
+# take the flag the real end needs. The trap is set before the ledger exists,
+# so no ledger writes nothing, and the flag file keeps the two callers from
+# reporting twice.
 report_surface_unapproved() {
   [ -n "${RUN_DIR:-}" ] || return 0
+  [ -f "$RUN_DIR/done" ] || return 0
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
   [ ! -e "$RUN_DIR/surface-unapproved-reported" ] || return 0
   : > "$RUN_DIR/surface-unapproved-reported"
@@ -14938,7 +14942,7 @@ hotfix_refusal=$(hotfix_routing_check) || die "$hotfix_refusal"
 # THE END ROW GOES FIRST, so the `done` it writes is there for the residual line
 # to forward. It is armed only once the walk starts: a run refused before its
 # ledger exists has nothing to end.
-trap 'run_end_record || true; report_run_residual || true; report_surface_unapproved || true' EXIT
+trap 'run_end_record || true; report_run_residual || true' EXIT
 
 check_grant
 # BEFORE `ledger_init`, because that call is what makes this run's heading exist
