@@ -976,13 +976,7 @@ for pair in \
   "리드:$AP_ROUTER:read from the snapshot, not from a read of the plan" \
   "리드:$AP_SEAT:start the next shift only when a person at this seat asked for it or the reset has passed" \
   "리드:$AP_SEAT:**except when the person at this seat asks to continue or says the limit has cleared.**" \
-  "리드:$AP_SEAT:a \`handoff\` row with \`사유=무기록\`, its \`종료 코드\` and its \`행위 수\`" \
-  "리드:$AP_SEAT:**A run whose manifest carries \`계정 이전 허용\` rows does not wait at this seat for the seat lane's limit.**" \
-  "리드:$AP_SEAT:a \`좌석 한도 재호출\` row, then the same \`router-shift\` the seat would issue" \
-  "리드:$AP_SEAT:and \`router-shift\` ends with \`3\` — not \`5\`: no approval is issued and there is nothing for this seat to answer." \
-  "리드:$AP_SEAT:**\`한도 해제\` stays the seat's alone.**" \
-  "교대:$RS_CORPUS:**You may be running on another account than the seat's.**" \
-  "교대:$RS_CORPUS:**Your wake can also be a \`계정 이전\` resume**"
+  "리드:$AP_SEAT:a \`handoff\` row with \`사유=무기록\`, its \`종료 코드\` and its \`행위 수\`"
 do
   who=${pair%%:*}; rest=${pair#*:}; file=${rest%%:*}; lit=${rest#*:}
   nlit=$(grep -cF -- "$lit" "$file" || true)

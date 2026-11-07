@@ -484,15 +484,6 @@ fleet_run_marker_live() {
   return 1
 }
 
-failover_waiting() {
-  # The run is inside an account-failover wait: the latest `계정 이전` row
-  # after the latest `handoff` is `결과=대기` and its `재개 시각`, plus the
-  # slack in which the relay or the fleet tick makes the next call
-  # (`CC_FAILOVER_WATCH_SLACK_SECONDS`), has not come. Read by the shared
-  # helper the gate and the fleet tick use, with this watcher's clock.
-  cc_failover_waiting_now "$LEDGER" "$(now_epoch)" "$CC_FAILOVER_WATCH_SLACK_SECONDS"
-}
-
 stall_threshold() {
   # The threshold T of the general and settle-stall arms. `STALL` while a seat
   # turn is open or a halt record waits for a person's answer — neither is a
@@ -505,15 +496,8 @@ stall_threshold() {
   # the gate for up to an hour — no gate entry, no ledger row, no stage — so
   # `SILENCE` would call a healthy merge wait a stall and leave a run-scope
   # `blocked` row only a person can resolve.
-  #
-  # `STALL` too while the run waits for an account-failover resume time
-  # (`failover_waiting`): the gate wrote that wait and launches nothing until
-  # then, so the quiet is the wait itself. The silence and after-stage arms
-  # also read the same judgment as a conjunct and write no record before that
-  # time; past it they judge as before.
   local h
   if seat_turn_open; then printf '%s' "$STALL"; return 0; fi
-  if failover_waiting; then printf '%s' "$STALL"; return 0; fi
   h=$(cc_unanswered_halts "$RUN_DIR" "$LEDGER" 2>/dev/null || printf 0)
   if [ "${h:-0}" -ge 1 ] 2>/dev/null; then printf '%s' "$STALL"; return 0; fi
   if fleet_run_marker_live; then printf '%s' "$STALL"; return 0; fi
@@ -838,7 +822,7 @@ pass() {
   # stranding, and it is read as an EXPIRY rather than as a flag; see
   # `shift_active`.
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
-     && [ "$nonterm" -ge 1 ] && ! shift_active && ! failover_waiting \
+     && [ "$nonterm" -ge 1 ] && ! shift_active \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
              | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
@@ -1030,7 +1014,7 @@ pass() {
   silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ -n "$quiet" ] && [ "$quiet" -ge "$thr" ] \
-     && [ "$relay_eff" = "0" ] && ! failover_waiting \
+     && [ "$relay_eff" = "0" ] \
      && { [ "$nonterm" -ge 1 ] \
           || { [ "$(cc_segment_count "$LEDGER")" = "0" ] \
                && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; }; } \

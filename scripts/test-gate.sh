@@ -4377,8 +4377,6 @@ printf '%s\n' "$$" > "$o/pid.$k"
 date +%s > "$o/start.$k"
 # The boot-time re-entry marker as this shift sees it: `unset`, or its value.
 printf '%s\n' "${CC_PIPELINE_REENTRY-unset}" > "$o/reentry.$k"
-# The configuration directory this launch runs under: `unset`, or its value.
-printf '%s\n' "${CLAUDE_CONFIG_DIR-unset}" > "$o/cfg.$k"
 hh() { bash "$g" snapshot --manifest "$m" --fields H 2>/dev/null; }
 handoff() {  # handoff <사유> <CI 대기> [<리셋 대기>] — the shift's own handoff; its code lands in handoff.<k>.rc
   bash "$g" act --manifest "$m" --kind handoff --target infra --cutpoint 커밋 --surface 읽기 \
@@ -5727,14 +5725,13 @@ pre_ledger_series() {
   }
 
   lsr_lease_cases() {
-    # 근거 아홉 × 예약 값/`-` × 관측 값/`none`/`-`. `계정` 은 결합 규칙에 맞는
-    # 쪽만 — 좌석 근거는 `-`, 그 밖은 계정 id(계정 이전 교대의 `failover-shift`
-    # 포함). 어긋난 조합은 거부 사례다.
+    # 근거 여덟 × 예약 값/`-` × 관측 값/`none`/`-`. `계정` 은 결합 규칙에 맞는
+    # 쪽만 — 좌석 근거는 `-`, 그 밖은 계정 id. 어긋난 조합은 거부 사례다.
     # `비용`·`비용 출처` 는 예약과 함께 값이거나 함께 `-` 다. 예약이 값이면 단계 세
     # 칸은 1.0000 을 넘는 문턱을 단 쉼이고, 아니면 셋 다 `-` 다.
     local b acct lane bp obs c cs ph ps th
     for b in first sticky resume-bound reassigned-after-limit reassigned-no-room \
-             after-wait shift-seat-fallback single-seat failover-shift; do
+             after-wait shift-seat-fallback single-seat; do
       case "$b" in
         single-seat|shift-seat-fallback) acct='-'; lane='~' ;;
         *) acct='acct-a'; lane='~/.claude-a' ;;
@@ -5907,66 +5904,6 @@ pre_ledger_series() {
     if gate_segment_authored_after_last_cycle "$2"; then aa=1; else aa=0; fi
     printf '%s|%s|%s|%s|%s' "$nx" "${n:-0}" "$imp" "$lf" "$aa"
   }
-}
-
-# `failover` — the account-failover family: the judgment function, the wait
-# and `마감 초과` rows with their exit code and claim cleanup, the seat revert
-# and the lease basis. It stands on the ledger-series seam: every call runs in
-# an `lsr_in` subshell, and the router view the judgment reads is stubbed THERE,
-# after the seam is entered, so the stubs reach no other section.
-pre_failover() {
-  [ -n "${PRE_FAILOVER_DONE:-}" ] && return 0
-  PRE_FAILOVER_DONE=1
-  pre_ledger_series
-  fo_root="$lsr_root/failover"
-  rm -rf "$fo_root"
-  mkdir -p "$fo_root/seat" "$fo_root/acct-b" "$fo_root/acct-c" "$fo_root/acct-d" "$fo_root/acct-e"
-  FO_SEAT="$fo_root/seat"
-
-  fo_judge() {
-    # fo_judge <원장> <문맥 파일|-> <분류 파일|-> <id…> — 좌석 기록(FO_SEAT, `-` 면
-    # 읽지 못함)·라우터 문맥·분류·목록 id 를 갈아 끼운 서브셸에서 판정 함수를 부르고,
-    # 그 출력 끝에 `rc<탭><코드>` 한 줄을 붙인다. 파일 자리가 `-` 면 그 단계가 실패한다.
-    local l="$1" cx="$2" vw="$3"; shift 3
-    lsr_in - "$l" - fo_judge_in "$cx" "$vw" "$*" 2>/dev/null
-  }
-  fo_judge_in() {
-    FO_CX="$1"; FO_VW="$2"; FO_IDS="$3"
-    gate_failover_seat_dir() { [ "$FO_SEAT" != "-" ] || return 1; printf '%s' "$FO_SEAT"; }
-    route_gather_context() { [ "$FO_CX" != "-" ] || return 1; cat "$FO_CX"; }
-    route_classify() { [ "$FO_VW" != "-" ] || return 1; cat "$FO_VW"; }
-    manifest_failover_accounts() { local i; for i in $FO_IDS; do printf '%s\n' "$i"; done; }
-    local rc=0
-    gate_failover_judge || rc=$?
-    printf 'rc\t%s\n' "$rc"
-  }
-  fo_field() {  # fo_field <판정 출력> <이름> — 한 줄의 값(`고름` 은 id 와 디렉터리를 탭으로)
-    printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == k { sub(/^[^\t]*\t/, ""); print; exit }'
-  }
-
-  fo_wait() {
-    # fo_wait <원장> <마감 epoch|-> <T|""> [<기동 사유>] — 마감을 갈아 끼운 서브셸에서
-    # 대기 함수를 부르고 종료 코드를 낸다. 좌석 레인 `~/.claude`, 증거 `사용량`, 후보
-    # `acct-b:소진`. 사유를 주지 않으면 릴레이 밖의 기동(`상한`)이다. 사유가 `대기` 면
-    # 종료 코드 뒤에 `/<GATE_RELAY_ENTERED>` 를 붙인다.
-    lsr_in - "$1" - fo_wait_in "$2" "$3" "${4:-상한}" 2>/dev/null
-  }
-  fo_wait_in() {
-    FO_DL="$1"
-    gate_deadline_epoch() { [ "$FO_DL" = "-" ] || printf '%s' "$FO_DL"; }
-    local rc=0
-    GATE_RELAY_ENTERED=""
-    gate_failover_wait infra '~/.claude' 사용량 "$2" 'acct-b:소진' "$3" >/dev/null || rc=$?
-    printf '%s' "$rc"
-    [ "$3" != "대기" ] || printf '/%s' "${GATE_RELAY_ENTERED:--}"
-  }
-  fo_rows() {  # fo_rows <원장> <계열> — 그 계열 행의 수
-    { grep -c "^- \`$2\` " "$1" || true; } | tr -d ' '
-  }
-  fo_last() {  # fo_last <원장> <계열> — 그 계열의 마지막 행
-    { grep "^- \`$2\` " "$1" || true; } | tail -1
-  }
-  fo_iso() { lsr_in - "$1" - cc_epoch_to_iso "$2"; }  # fo_iso <원장> <epoch>
 }
 
 # THE BASE RUN FAMILY. A base run is `design → design-audit → split` with no
@@ -21606,7 +21543,7 @@ sed 's/| 사유=밤새 이어서 돈다$/| 사유=런이 고쳐 썼다/' "$BRK" 
 gate snapshot --manifest "$BRK"
 case "$rc/$msg" in
   0/*) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
-  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·계정 이전 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
   *) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
 # The form of each row is refused before anything reads it, fail-closed.
@@ -21656,38 +21593,6 @@ bsq_form "@inline 키의 플러그인 허용 행은 거부된다" \
   '- `플러그인 허용` | 플러그인=cc-cmds@inline | 사유=x' "@inline·@builtin 키는 허용 행으로 다루지 않습니다"
 bsq_form "@builtin 키의 플러그인 허용 행은 거부된다" \
   '- `플러그인 허용` | 플러그인=cc-plugin-telemetry@builtin | 사유=x' "@inline·@builtin 키는 허용 행으로 다루지 않습니다"
-
-# THE `계정 이전 허용` ROWS ARE IN THE FROZEN SET, ON THE SAME TERMS, AND CHECK
-# 20a REFUSES A MALFORMED OR DUPLICATED ONE. Absent rows add no line, so a
-# manifest frozen before the row existed keeps its digest.
-BSQ_FA='- `계정 이전 허용` | 계정=acct-b | 사유=좌석 한도 때 교대를 옮길 자리'
-case "$(bsq_bytes "$FX_MANIFEST")" in
-  *"failoverallow	"*) bad "계정 이전 허용 행이 없는 매니페스트의 구속 집합" "failoverallow 줄이 생겼다" ;;
-  "") bad "계정 이전 허용 행이 없는 매니페스트의 구속 집합" "구속 집합을 계산하지 못했다" ;;
-  *) ok "계정 이전 허용 행이 없는 매니페스트의 구속 집합에는 failoverallow 줄이 없다 (다이제스트 불변)" ;;
-esac
-cp "$FX_MANIFEST" "$BRK"
-printf '%s\n' "$BSQ_FA" >> "$BRK"
-case "$(bsq_bytes "$BRK")" in
-  *"failoverallow	$BSQ_FA"*) ok "계정 이전 허용 행이 구속 집합에 실린다" ;;
-  *) bad "계정 이전 허용 행의 구속 집합" "$(bsq_bytes "$BRK" | grep -E '^failoverallow')" ;;
-esac
-gate snapshot --manifest "$BRK"
-case "$rc/$msg" in
-  0/*) bad "다시 얼리기 전의 계정 이전 허용 행 사본은 대조에 걸린다" "통과했다 — 다이제스트가 대조되지 않는다" ;;
-  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"계정 이전 허용"*) ok "다시 얼리기 전의 계정 이전 허용 행 사본은 대조에 걸린다" ;;
-  *) bad "다시 얼리기 전의 계정 이전 허용 행 사본은 대조에 걸린다" "$msg" ;;
-esac
-printf '%s\n' "${BSQ_FA%acct-b*}acct-c | 사유=둘째 자리" >> "$BRK"
-bsq_reseal "$BRK"
-gate snapshot --manifest "$BRK"
-check "계정 이전 허용 행 둘을 실어 다시 얼린 사본은 대조를 통과한다 (20a 검사가 받아들인다)" "$rc" "0"
-bsq_form "계정 id 가 문법 밖인 계정 이전 허용 행은 거부된다" \
-  '- `계정 이전 허용` | 계정=Acct_B | 사유=x' "「계정 이전 허용」 행의 형식이 어긋났습니다"
-bsq_form "사유가 빈 계정 이전 허용 행은 거부된다" \
-  '- `계정 이전 허용` | 계정=acct-b | 사유=' "「계정 이전 허용」 행의 형식이 어긋났습니다"
-bsq_form "같은 계정의 계정 이전 허용 행 둘은 거부된다" "$BSQ_FA
-${BSQ_FA%| 사유=*}| 사유=둘째" "「계정 이전 허용」 행이 계정 acct-b 에 둘 이상입니다"
 
 # THE FLOOR HONOURS ONLY `## 인가`. "Exactly one authorization section" is the
 # uniqueness guarantee arm (a) leans on, and a whole-file scan does not inherit
@@ -38090,75 +37995,6 @@ check "34j: (8) 선언된 G + 2·poll 은 180초 이하다" \
 CAP_STUB="$RJ_CAP_STUB_SAVE"; RL_SEAT="$RJ_RL_SEAT_SAVE"
 rm -rf "$RJ_F"
 
-# --- 34v. 계정 이전 — 좌석 레인이 한도에 닿은 런에서 좌석의 실제 router-shift ---------
-# --- section: 34v | group: cone | covers: act, gate_launch_shift, gate_failover_judge, route_gather_context, route_classify, run_failover_allowed | needs: 34e | anchors: 34v: 계정 이전 픽스처의 세그먼트 행이 기록된다, 34v: 좌석 레인이 한도인 런의 router-shift 는 여유 계정의 설정 디렉터리에서 교대를 띄운다, 34v: 계정 이전 행이 교대 기동 앞에 이전 으로 서고 소진 계정을 후보에 싣는다, 34v: 교대 기동 행의 레인은 고른 계정의 레인이고 한도 해제 행은 없다 ---
-#
-# 좌석 레인이 다섯 시간 한도에 닿고, 사람이 허용한 두 계정 가운데 하나는 주간 한도에,
-# 다른 하나는 여유가 있는 런이다. 판정은 손으로 쓴 문맥이 아니라 실제 라우터가 런
-# 디렉터리의 인벤토리 스냅샷과 상태 홈의 사용량 파일에서 읽는다: 인벤토리의 설정
-# 디렉터리는 `$HOME/.claude-` 로 시작해야 하므로 이 절은 자기 홈을 두고, 계정마다
-# 조직 해시가 달라 묶음이 갈리며, 창 항목은 관측 시각과 출처를 싣는다. 기동은 릴레이
-# 픽스처의 가짜 CLI 가 받고, 그 기동이 본 설정 디렉터리를 남긴다.
-# ---------------------------------------------------------------------------
-cap_fx_new RFO1
-FK_SEAT="e4e4e4e4-aaaa-2222-3333-444444444444"
-{ cap_usage_line 10000 5000 1000; } > "$NTX/$FK_SEAT.jsonl"
-RL_OUT="${RL_OUT:-$WORK/rl-out}"; mkdir -p "$RL_OUT"
-RL_CI=''; RL_KILL=''; RL_SEG=''; RL_HOLD=''; RL_RESET=''; RL_RESETAT=''; RL_GRACE=''
-cap_gate "$FK_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment FK0 \
-         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$FK_SEAT" '')" \
-         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
-check "34v: 계정 이전 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
-FK_H="$WORK/fk-home"
-rm -rf "$FK_H"; mkdir -p "$FK_H/.claude-seat" "$FK_H/.claude-u-a" "$FK_H/.claude-u-b"
-FK_USAGE="$STATE_CONE/cc-lane/usage.json"
-mkdir -p "$STATE_CONE/cc-lane"
-printf -- '- `계정 이전 허용` | 계정=u-a | 사유=픽스처 — 주간 한도 계정\n- `계정 이전 허용` | 계정=u-b | 사유=픽스처 — 여유 계정\n' >> "$CAP_NM"
-printf '1\n' > "$CAP_DIR/routing-guard"
-printf '%s\n' "$FK_H/.claude-seat" > "$CAP_DIR/config-dir"
-# The run's first gate entry (the segment row above) found no live inventory
-# and left the absent marker, a symlink, at the snapshot name. The name is
-# removed first, so the snapshot is a regular file and not a write through
-# that link; the gate keeps a usable snapshot and never re-takes it.
-rm -f "$CAP_DIR/inventory.json"
-jq -n --arg h "$FK_H" '{schema: "cc-lane-accounts v1", accounts: [
-  {id: "seat", config_dir: "\($h)/.claude-seat", unattended: "enabled", interactive_reserved: false},
-  {id: "u-a", config_dir: "\($h)/.claude-u-a", unattended: "enabled", interactive_reserved: false},
-  {id: "u-b", config_dir: "\($h)/.claude-u-b", unattended: "enabled", interactive_reserved: false}]}' \
-  > "$CAP_DIR/inventory.json"
-chmod 600 "$CAP_DIR/inventory.json"
-fk_now=$(date -u +%s)
-jq -n --arg h "$FK_H" --argjson now "$fk_now" '
-  def win(u; r): {utilization: u, resets_at_epoch: ($now + r), observed_at_epoch: ($now - 60), source: "tracker"};
-  {schema: "cc-lane-usage v1", written_at_epoch: $now, publish_interval_s: 300, accounts: [
-    {id: "seat", config_dir: "\($h)/.claude-seat", org_hash: "hseat", login: "ok", exhausted_until_epoch: ($now + 3600),
-     windows: {five_hour: win(1; 3600), seven_day: win(0.2; 86400)}},
-    {id: "u-a", config_dir: "\($h)/.claude-u-a", org_hash: "ha", login: "ok", exhausted_until_epoch: null,
-     windows: {five_hour: win(0.1; 3600), seven_day: win(1; 7200)}},
-    {id: "u-b", config_dir: "\($h)/.claude-u-b", org_hash: "hb", login: "ok", exhausted_until_epoch: null,
-     windows: {five_hour: win(0.2; 3600), seven_day: win(0.3; 86400)}}]}' > "$FK_USAGE"
-FK_CAP_STUB_SAVE="$CAP_STUB"; CAP_STUB="$RL_STUB"
-FK_RL_SEAT_SAVE="${RL_SEAT:-}"; RL_SEAT="$FK_SEAT"
-rl_case failover cap
-HOME="$FK_H" rl_call 상한
-rl_join
-check "34v: 좌석 레인이 한도인 런의 router-shift 는 여유 계정의 설정 디렉터리에서 교대를 띄운다" \
-  "$rc|$(rl_calls)|$(cat "$RL_O/cfg.1" 2>/dev/null)" "0|1|$FK_H/.claude-u-b"
-fk_fo=$(cap_rows '계정 이전' | tail -1)
-fk_fo_n=$( { grep -n -F -e '- `계정 이전` |' "$CAP_LEDGER" || true; } | tail -1 | cut -d: -f1)
-fk_la_n=$( { grep -n -F -e '- `교대 기동` |' "$CAP_LEDGER" || true; } | tail -1 | cut -d: -f1)
-check "34v: 계정 이전 행이 교대 기동 앞에 이전 으로 서고 소진 계정을 후보에 싣는다" \
-  "$(row_field "$fk_fo" 결과)|$(row_field "$fk_fo" 계정)|$(row_field "$fk_fo" 증거)|$(row_field "$fk_fo" 후보)|$( [ -n "$fk_fo_n" ] && [ -n "$fk_la_n" ] && [ "$fk_fo_n" -lt "$fk_la_n" ] && printf 앞 || printf 아님)" \
-  "이전|u-b|사용량|u-a:소진,u-b:여유|앞"
-fk_la=$(cap_rows '교대 기동' | tail -1)
-check "34v: 교대 기동 행의 레인은 고른 계정의 레인이고 한도 해제 행은 없다" \
-  "$(row_field "$fk_la" 레인)|$(row_field "$fk_fo" 레인)|$( { cap_rows '한도 해제' | grep -c . || true; } | tr -d ' ')" \
-  "~/.claude-u-b|~/.claude-u-b|0"
-CAP_STUB="$FK_CAP_STUB_SAVE"; RL_SEAT="$FK_RL_SEAT_SAVE"
-rm -f "$FK_USAGE" "$CAP_DIR/routing-guard" "$CAP_DIR/config-dir"
-rm -rf "$FK_H"
-unset FK_SEAT FK_H FK_USAGE FK_CAP_STUB_SAVE FK_RL_SEAT_SAVE fk_now fk_fo fk_fo_n fk_la_n fk_la
-
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
 #
@@ -46261,27 +46097,27 @@ check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
 # 호스트를 Darwin 이 아닌 값으로 주입해 어느 러너에서도 락 없는 갈래를 탄다. 락
 # 걸린 갈래는 63 이 잰다.
 #
-# 사례표는 근거 아홉과 대기 원인 열을 모두 지나고, `교대` 원천 세 조건(표식 없음,
+# 사례표는 근거 여덟과 대기 원인 열을 모두 지나고, `교대` 원천 세 조건(표식 없음,
 # 한 자리, 두 자리)을 같은 원장 끝에 붙인다.
 # ---------------------------------------------------------------------------
 lsr62_g=$(lsr_ledger w62-gate)
 lsr62_d=$(lsr_ledger w62-driver)
 lsr62_m=$(lsr_ledger w62-mixed)
 { lsr_lease_cases; lsr_wait_cases; } > "$lsr_root/cases62.tsv"
-check "62: 사례표가 임대 54·대기 60 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "114"
+check "62: 사례표가 임대 48·대기 60 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "108"
 check "62: 주입한 호스트에서 lock_tool 이 비어 있다 (락 없는 갈래)" \
   "$(lsr_in Linux "$lsr62_g" - lock_tool)" ""
 check "62: 게이트 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
+  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
 check "62: 드라이버 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
-sed -n '1p;55p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
+  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
+sed -n '1p;49p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
 for lsr62_sh in 'LS#7' 'LS#12'; do
   lsr_in Linux "$lsr62_g" "$lsr62_sh" lsr_each gate_append < "$lsr_root/shift62.tsv" >/dev/null
   lsr_in Linux "$lsr62_d" "$lsr62_sh" lsr_each ledger_row < "$lsr_root/shift62.tsv" >/dev/null
 done
-check "62: 두 원장이 각각 118행이다" \
-  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "118/118"
+check "62: 두 원장이 각각 112행이다" \
+  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "112/112"
 if cmp -s "$lsr62_g" "$lsr62_d"; then
   ok "62: 두 기록자가 같은 바이트와 같은 체인을 쓴다"
 else
@@ -46298,16 +46134,16 @@ check "62: 첫 행이 고정된 문법 그대로다" \
   "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000.5 | 단계=rest | 단계 출처=declared | 문턱=1.2000 | prev=$lsr62_seed"
 check "62: 교대 원천 세 조건 — 표식 없음 0, #7 은 7, #12 는 12" \
   "$( { grep -cF '| 교대=0 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=7 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=12 |' "$lsr62_d" || true; } )" \
-  "114/2/2"
+  "108/2/2"
 check "62: 락 없는 갈래는 락 파일을 만들지 않는다" \
   "$(ls -A "${lsr62_g%/*}" "${lsr62_d%/*}" | { grep -c 'ledger\.lock' || true; })" "0"
 check "62: 번갈아 쓴 두 기록자도 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
+  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "108 0"
 rc=0; lsr_in Linux "$lsr62_m" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "62: 번갈아 쓴 원장의 사슬이 검증된다" "$rc" "0"
 check "62: 번갈아 쓴 원장이 한 기록자가 쓴 원장과 같은 바이트다" \
   "$( { grep '^- `' "$lsr62_m" || true; } | shasum -a 256 | cut -d' ' -f1)" \
-  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,114p' | shasum -a 256 | cut -d' ' -f1)"
+  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,108p' | shasum -a 256 | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------
 # 63. 락 아래 섞어 쓴 두 기록자
@@ -62157,201 +61993,6 @@ esac
 SA_PLAN=""; SA_AUTH_RAW=""
 unset -f rv107_row rv107_snap
 unset RV107_P2 RV107_P3 RV107_OUT RV107_JSON RV107_RC
-
-# ---------------------------------------------------------------------------
-# 110. 계정 이전 — 판정 함수의 출력, 대기·마감 초과 행과 종료 코드, 좌석 되돌림, 허용 술어
-# --- section: 110 | group: failover | covers: gate_failover_judge, gate_failover_wait, gate_relay_wait, gate_failover_row, gate_shift_launch_drop_claims, run_failover_allowed, resolve_account_seat_reverted, resolve_account, gate_seat_config_dir, gate_append | anchors: 110: 판정이 후보 상태 일곱과 고름·재개 시각을 낸다, 110: 판정불가 여섯 사유는 rc 2 이고 고름이 없다, 110: 대기는 rc 3 과 계정 이전 행 하나를 남기고 이 기동자의 점유만 지운다, 110: 같은 재개 시각의 대기는 다시 쓰지 않는다, 110: 릴레이 안의 대기는 rc 0 으로 릴레이를 잇고 relay.live 를 남긴다, 110: 릴레이는 선 깨움 키가 있어도 계정 이전 대기의 재개 시각 전에는 깨지 않는다, 110: 마감을 넘는 재개 시각은 마감 초과 행과 blocked 행이고 rc 3 이다, 110: 재개 시각 직후의 판정은 유예 대기를 한 번만 쓴다, 110: 아홉 계정이 모두 인벤토리 밖인 행도 행 상한 안이다, 110: 옮긴 교대 안에서만 좌석으로 되돌린다, 110: 계정 이전 허용 행과 라우팅 기록이 함께 있을 때만 이전 런이다 ---
-#
-# 판정 함수는 라우터 문맥·분류·목록 id 를 읽고 한 줄씩 낸다. 그 셋을 서브셸에서 갈아 끼워
-# 상태 일곱과 고르기 규칙(남은 몫이 큰 쪽, 같으면 목록 순서), 재개 시각(소진 계정과 좌석
-# 레인의 시각 가운데 지금 뒤의 가장 이른 것), 판정불가 사유를 잰다. 대기 함수는 마감을 갈아
-# 끼워 한 원장에 차례로 부른다: 행은 대기마다 하나, 마감을 넘으면 마감 초과와 런 범위
-# blocked 행, 종료 코드는 언제나 3 이다.
-# ---------------------------------------------------------------------------
-pre_failover
-fo110_l=$(lsr_ledger w110)
-fo110_now=$(date -u +%s)
-fo110_cx="$fo_root/ctx.json"; fo110_vw="$fo_root/view.json"
-fo110_mkctx() {  # fo110_mkctx [jq 필터] — 문맥 파일을 쓴다. 좌석은 한 시간 뒤까지 소진
-  jq -n --argjson now "$fo110_now" --arg s "$FO_SEAT" --arg r "$fo_root" '
-    {now: $now,
-     inventory: {state: "valid", accounts: ([{id: "acct-s", config_dir: $s}]
-       + ([ "b", "c", "d", "e" ] | map({id: "acct-\(.)", config_dir: "\($r)/acct-\(.)"})))},
-     usage: {state: "valid", fresh: true,
-             accounts: [{config_dir: $s, exhausted_until_epoch: ($now + 3600), windows: {}}]}}
-    | '"${1:-.}" > "$fo110_cx"
-}
-fo110_mkview() {  # fo110_mkview [jq 필터] — 분류 파일을 쓴다
-  jq -n --argjson now "$fo110_now" --arg s "$FO_SEAT" --arg r "$fo_root" '
-    {accounts: [
-      {id: "acct-s", config_dir: $s, group: "g0", unattended: "enabled", class: "X", exhausted_until: ($now + 3600)},
-      {id: "acct-b", config_dir: "\($r)/acct-b", group: "g0", unattended: "enabled", class: "A", remaining_bp: 9000},
-      {id: "acct-c", config_dir: "\($r)/acct-c", group: "g1", unattended: "enabled", class: "X", exhausted_until: ($now + 1800)},
-      {id: "acct-d", config_dir: "\($r)/acct-d", group: "g2", unattended: "enabled", class: "A", remaining_bp: 4000},
-      {id: "acct-e", config_dir: "\($r)/acct-e", group: "g3", unattended: "enabled", class: "A", remaining_bp: 6000},
-      {id: "acct-f", group: "g4", unattended: "disabled"},
-      {id: "acct-g", group: "g5", unattended: "enabled", login_bad: true},
-      {id: "acct-h", group: "g6", unattended: "enabled", borrowed: "acct-x"}],
-     groups: []}
-    | '"${1:-.}" > "$fo110_vw"
-}
-FO110_IDS="acct-b acct-c acct-d acct-e acct-f acct-g acct-h acct-z"
-fo110_mkctx; fo110_mkview
-fo110_j=$(fo_judge "$fo110_l" "$fo110_cx" "$fo110_vw" $FO110_IDS)
-check "110: 판정이 후보 상태 일곱과 고름·재개 시각을 낸다" \
-  "$(fo_field "$fo110_j" 증거)|$(fo_field "$fo110_j" 후보)|$(fo_field "$fo110_j" 고름)|$(fo_field "$fo110_j" 재개)|$(fo_field "$fo110_j" 불가)|$(fo_field "$fo110_j" rc)" \
-  "사용량|acct-b:같은 조직,acct-c:소진,acct-d:여유,acct-e:여유,acct-f:인벤토리 밖,acct-g:로그인,acct-h:라우터 제외,acct-z:인벤토리 밖|$(printf 'acct-e\t%s' "$fo_root/acct-e")|$((fo110_now + 1800))|-|0"
-fo110_mkview '.accounts |= map(if .id == "acct-d" then .remaining_bp = 6000 else . end)'
-fo110_j=$(fo_judge "$fo110_l" "$fo110_cx" "$fo110_vw" $FO110_IDS)
-check "110: 남은 몫이 같으면 목록 순서가 앞선 계정을 고른다" "$(fo_field "$fo110_j" 고름)" "$(printf 'acct-d\t%s' "$fo_root/acct-d")"
-fo110_mkview '.accounts |= map(if .class == "A" then .class = "X" | .exhausted_until = (.exhausted_until // null) else . end)'
-fo110_j=$(fo_judge "$fo110_l" "$fo110_cx" "$fo110_vw" $FO110_IDS)
-check "110: 여유가 없으면 고름이 없고 재개 시각은 셀 수 있는 가장 이른 시각이다" \
-  "$(fo_field "$fo110_j" 고름)|$(fo_field "$fo110_j" 재개)|$(fo_field "$fo110_j" rc)" "|$((fo110_now + 1800))|0"
-fo110_mkview
-fo110_mkctx '.usage.accounts[0].exhausted_until_epoch = null'
-fo110_j=$(fo_judge "$fo110_l" "$fo110_cx" "$fo110_vw" $FO110_IDS)
-check "110: 좌석 레인에 한도 증거가 없으면 증거는 - 다" "$(fo_field "$fo110_j" 증거)|$(fo_field "$fo110_j" rc)" "-|0"
-# 판정불가 — 좌석 기록, 문맥, 분류, 그리고 문맥 안의 세 결손.
-fo110_mkctx
-fo110_why=""
-fo110_case() {  # fo110_case <문맥|-> <분류|-> — 그 판정의 「불가/rc/고름 줄 수」를 fo110_why 에 붙인다
-  local j
-  j=$(fo_judge "$fo110_l" "$1" "$2" $FO110_IDS)
-  fo110_why="$fo110_why$(fo_field "$j" 불가)/$(fo_field "$j" rc)/$(printf '%s\n' "$j" | { grep -c '^고름' || true; } | tr -d ' ') "
-}
-FO_SEAT=-; fo110_case "$fo110_cx" "$fo110_vw"; FO_SEAT="$fo_root/seat"
-fo110_case - "$fo110_vw"
-fo110_case "$fo110_cx" -
-fo110_mkctx '.inventory.state = "absent"'; fo110_case "$fo110_cx" "$fo110_vw"
-fo110_mkctx '.usage.fresh = false'; fo110_case "$fo110_cx" "$fo110_vw"
-fo110_mkctx; fo110_mkview '.accounts |= map(select(.id != "acct-s"))'; fo110_case "$fo110_cx" "$fo110_vw"
-check "110: 판정불가 여섯 사유는 rc 2 이고 고름이 없다" "$fo110_why" \
-  "좌석 기록/2/0 문맥/2/0 분류/2/0 인벤토리/2/0 사용량/2/0 좌석 계정/2/0 "
-fo110_mkview
-fo110_j=$(fo_judge "$fo110_l" "$fo110_cx" - $FO110_IDS)
-check "110: 분류에 실패한 판정도 문맥에서 증거를 읽는다" "$(fo_field "$fo110_j" 증거)" "사용량"
-
-# 대기 — 같은 원장에 차례로.
-fo110_d="${fo110_l%/*}"
-printf '%s\n%s\n' "$$" x > "$fo110_d/relay.live"
-printf '%s\n%s\n' 1 x > "$fo110_d/shift.live"
-fo110_t1=$((fo110_now + 600))
-rc=$(fo_wait "$fo110_l" - "$fo110_t1")
-check "110: 대기는 rc 3 과 계정 이전 행 하나를 남기고 이 기동자의 점유만 지운다" \
-  "$rc|$(fo_rows "$fo110_l" '계정 이전')|$(gate_row_field "$(fo_last "$fo110_l" '계정 이전')" 결과)|$(gate_row_field "$(fo_last "$fo110_l" '계정 이전')" '재개 시각')|$( [ -e "$fo110_d/relay.live" ] && printf 남음 || printf 지움)|$( [ -e "$fo110_d/shift.live" ] && printf 남음 || printf 지움)" \
-  "3|1|대기|$(fo_iso "$fo110_l" "$fo110_t1")|지움|남음"
-check "110: 계정 이전 행이 필드 아홉을 고정 순서로 싣는다" \
-  "$(fo_last "$fo110_l" '계정 이전' | sed -E 's/ \| prev=.*$//; s/=[^|]* \|/= |/g; s/=[^|]*$/=/')" \
-  "- \`계정 이전\` | 교대= | 서수= | 좌석 레인= | 증거= | 결과= | 레인= | 계정= | 재개 시각= | 후보= | 기록 시각="
-rc=$(fo_wait "$fo110_l" - "$fo110_t1")
-check "110: 같은 재개 시각의 대기는 다시 쓰지 않는다" "$rc|$(fo_rows "$fo110_l" '계정 이전')" "3|1"
-rc=$(fo_wait "$fo110_l" - "$((fo110_now + 1200))")
-check "110: 새 재개 시각의 대기는 행 하나를 더 쓴다" "$rc|$(fo_rows "$fo110_l" '계정 이전')" "3|2"
-# 릴레이 안(기동 사유 `대기`)의 대기는 점유를 두고 0 으로 돌아가 릴레이가 재개 시각까지 기다린다.
-printf '%s\n%s\n' "$$" x > "$fo110_d/relay.live"
-rc=$(fo_wait "$fo110_l" - "$((fo110_now + 1300))" 대기)
-check "110: 릴레이 안의 대기는 rc 0 으로 릴레이를 잇고 relay.live 를 남긴다" \
-  "$rc|$(fo_rows "$fo110_l" '계정 이전')|$(gate_row_field "$(fo_last "$fo110_l" '계정 이전')" 결과)|$( [ -e "$fo110_d/relay.live" ] && printf 남음 || printf 지움)" \
-  "0/1|3|대기|남음"
-rm -f "$fo110_d/relay.live"
-# 릴레이의 기다림 — 앞서 선 깨움 키(대기 인계 뒤의 stage-result 가 세우는 `sr`)가 있어도
-# 계정 이전 대기의 재개 시각 전에는 깨지 않고, 그 시각이 지난 뒤의 폴에서 깬다. 대기는
-# 교대 기동 행을 쓰지 않으므로 그 키는 그대로 서 있고, 그것을 읽으면 같은 대기를 쉼 없이
-# 다시 판정한다.
-fo110_r=$(lsr_ledger w110r)
-fo110_rd="${fo110_r%/*}"
-fo110_rt=$(( $(date -u +%s) + 4 ))
-{
-  printf -- '- `handoff` | 교대=1 | 대상=infra | 사유=대기 | 기록 시각=%s\n' "$(fo_iso "$fo110_r" "$fo110_now")"
-  printf -- '- `stage-result` | 교대=0 | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 실행 버전=1 | 종단 부류=정상 완료\n'
-  printf -- '- `계정 이전` | 교대=1 | 서수=1 | 좌석 레인=~/.claude | 증거=사용량 | 결과=대기 | 레인=- | 계정=- | 재개 시각=%s | 후보=acct-b:소진 | 기록 시각=%s\n' \
-    "$(fo_iso "$fo110_r" "$fo110_rt")" "$(fo_iso "$fo110_r" "$fo110_now")"
-} >> "$fo110_r"
-printf '%s\n%s\n' "$$" x > "$fo110_rd/relay.live"
-fo110_rw_in() {  # 「선 키에 sr 이 있음 0/1|gate_relay_wait 의 rc|재개 시각 전에 돌아옴 0/1」
-  local s k r=0
-  k=$(cc_relay_wake_keys "$RUN_DIR" "$LEDGER" | { grep -c '^sr' || true; } | tr -d ' ')
-  GATE_RELAY_SEAT_START=$(date -u +%s); GATE_RELAY_STARTED=""
-  gate_relay_wait >/dev/null 2>&1 || r=$?
-  s=$(date -u +%s)
-  printf '%s|%s|%s' "$k" "$r" "$( [ "$s" -lt "$1" ] && printf 1 || printf 0)"
-}
-check "110: 릴레이는 선 깨움 키가 있어도 계정 이전 대기의 재개 시각 전에는 깨지 않는다" \
-  "$(lsr_in - "$fo110_r" - fo110_rw_in "$fo110_rt" 2>/dev/null)" "1|0|0"
-rm -f "$fo110_rd/relay.live"
-unset -f fo110_rw_in
-unset fo110_r fo110_rd fo110_rt
-rc=$(fo_wait "$fo110_l" "$((fo110_now + 900))" "$((fo110_now + 1500))")
-fo110_b=$(fo_last "$fo110_l" blocked)
-check "110: 마감을 넘는 재개 시각은 마감 초과 행과 blocked 행이고 rc 3 이다" \
-  "$rc|$(gate_row_field "$(fo_last "$fo110_l" '계정 이전')" 결과)|$(gate_row_field "$(fo_last "$fo110_l" '계정 이전')" '재개 시각')|$(gate_row_field "$fo110_b" 스코프)|$(gate_row_field "$fo110_b" 사유)|$(gate_row_field "$fo110_b" '재개 명령')" \
-  "3|마감 초과|-|run|계정 이전 마감 초과|한도가 풀린 뒤 좌석에서 router-shift 를 사유=중단 으로 다시 낸다"
-rc=$(fo_wait "$fo110_l" - "")
-check "110: 재개 시각이 없는 판정은 마감이 없어도 마감 초과다" "$rc|$(gate_row_field "$(fo_last "$fo110_l" '계정 이전')" 결과)" "3|마감 초과"
-rc=0; lsr_in - "$fo110_l" - gate_chain_verify >/dev/null 2>&1 || rc=$?
-check "110: 대기 행들이 쓰인 원장의 사슬이 검증된다" "$rc" "0"
-
-# 유예 — 재개 시각 직후의 판정은 마감 초과가 되지 않고, 대기마다 한 번만.
-fo110_g=$(lsr_ledger w110g)
-lsr_in - "$fo110_g" - gate_failover_row 1 '~/.claude' 사용량 대기 - - "$((fo110_now - 60))" 'acct-b:소진' 2>/dev/null
-rc=$(fo_wait "$fo110_g" - "")
-fo110_gr=$(gate_row_field "$(fo_last "$fo110_g" '계정 이전')" '재개 시각')
-fo110_ge=$(lsr_in - "$fo110_g" - cc_iso_to_epoch "$fo110_gr")
-fo110_g2=$(lsr_ledger w110g2)
-lsr_in - "$fo110_g2" - gate_failover_row 1 '~/.claude' 사용량 대기 - - "$((fo110_now - 1000))" 'acct-b:소진' 2>/dev/null
-lsr_in - "$fo110_g2" - gate_failover_row 1 '~/.claude' 사용량 대기 - - "$((fo110_now - 100))" 'acct-b:소진' 2>/dev/null
-rc2=$(fo_wait "$fo110_g2" - "")
-check "110: 재개 시각 직후의 판정은 유예 대기를 한 번만 쓴다" \
-  "$rc|$(gate_row_field "$(fo_last "$fo110_g" '계정 이전')" 결과)|$((fo110_ge - fo110_now))|$rc2|$(gate_row_field "$(fo_last "$fo110_g2" '계정 이전')" 결과)" \
-  "3|대기|840|3|마감 초과"
-fo110_g3=$(lsr_ledger w110g3)
-lsr_in - "$fo110_g3" - gate_failover_row 1 '~/.claude' 사용량 대기 - - "$((fo110_now - 60))" 'acct-b:소진' 2>/dev/null
-rc=$(fo_wait "$fo110_g3" "$((fo110_now + 100))" "")
-check "110: 유예 대기가 마감을 넘으면 마감 초과다" "$rc|$(gate_row_field "$(fo_last "$fo110_g3" '계정 이전')" 결과)" "3|마감 초과"
-
-# 행 길이 — 긴 id 아홉이 모두 인벤토리 밖이어도 행 상한 안이다.
-fo110_n=$(lsr_ledger w110n)
-fo110_c=""
-for fo110_i in 1 2 3 4 5 6 7 8 9; do
-  fo110_c="${fo110_c:+$fo110_c,}unattended-account-0$fo110_i:인벤토리 밖"
-done
-rc=0; lsr_in - "$fo110_n" - gate_failover_row 1 '~/.claude-seat-lane' '교대 스트림' '마감 초과' - - - "$fo110_c" >/dev/null 2>&1 || rc=$?
-fo110_row=$(fo_last "$fo110_n" '계정 이전')
-check "110: 아홉 계정이 모두 인벤토리 밖인 행도 행 상한 안이다" \
-  "$rc|$( [ "$(printf '%s' "$fo110_row" | LC_ALL=C wc -c | tr -d ' ')" -le "$(lsr_in - "$fo110_n" - printenv GATE_ROW_MAX 2>/dev/null || printf 1024)" ] && printf 안 || printf 넘침)|$(gate_row_field "$fo110_row" 후보)" \
-  "0|안|$fo110_c"
-
-# 좌석 되돌림 — 교대 표지·교대 레인·현재 설정 디렉터리가 모두 맞을 때만.
-printf '%s\n' "$FO_SEAT" > "$fo110_d/config-dir"
-fo110_rev_in() {  # fo110_rev_in <교대 id> <교대 레인> <설정 디렉터리> — 「되돌림|resolve_account|좌석 설정 디렉터리」
-  local -x CC_PIPELINE_SHIFT_ID="$1" CC_GATE_SHIFT_LANE="$2" CLAUDE_CONFIG_DIR="$3"
-  [ -n "$1" ] || unset CC_PIPELINE_SHIFT_ID
-  printf '%s|%s|%s' "$(resolve_account_seat_reverted && printf 1 || printf 0)" \
-    "$(resolve_account 2>/dev/null)" "$(gate_seat_config_dir 2>/dev/null)"
-}
-fo110_rev=""
-for fo110_rc in "LS#2|$fo_root/acct-e|$fo_root/acct-e/" "LS#2||$fo_root/acct-e" "|$fo_root/acct-e|$fo_root/acct-e" "LS#2|$fo_root/acct-e|$fo_root/acct-d"; do
-  IFS='|' read -r fo110_a fo110_b fo110_c <<< "$fo110_rc"
-  fo110_rev="$fo110_rev$(lsr_in - "$fo110_l" - fo110_rev_in "$fo110_a" "$fo110_b" "$fo110_c") "
-done
-check "110: 옮긴 교대 안에서만 좌석으로 되돌린다" "$fo110_rev" \
-  "1|$FO_SEAT|$FO_SEAT 0|$fo_root/acct-e|$fo_root/acct-e 0|$fo_root/acct-e|$fo_root/acct-e 0|$fo_root/acct-d|$fo_root/acct-d "
-
-# 허용 술어 — 행과 라우팅 기록이 함께 있어야 한다.
-fo110_m="$fo_root/m110.md"
-fo110_allowed() {  # fo110_allowed <행 있음 0/1> <라우팅 기록> — run_failover_allowed 의 0/1
-  printf '# 매니페스트\n' > "$fo110_m"
-  [ "$1" = 0 ] || printf -- '- `계정 이전 허용` | 계정=acct-e | 사유=x\n' >> "$fo110_m"
-  printf '%s\n' "$2" > "$fo110_d/routing-guard"
-  lsr_in - "$fo110_l" - lsr_rp_in "$fo110_m" run_failover_allowed >/dev/null 2>&1 && printf 1 || printf 0
-}
-check "110: 계정 이전 허용 행과 라우팅 기록이 함께 있을 때만 이전 런이다" \
-  "$(fo110_allowed 1 1)$(fo110_allowed 1 0)$(fo110_allowed 0 1)" "100"
-rm -f "$fo110_d/routing-guard" "$fo110_d/config-dir" "$fo110_d/shift.live"
-unset -f fo110_mkctx fo110_mkview fo110_case fo110_rev_in fo110_allowed
-unset fo110_l fo110_now fo110_cx fo110_vw fo110_j fo110_why fo110_d fo110_t1 fo110_b fo110_g fo110_gr fo110_ge \
-  fo110_g2 fo110_g3 fo110_n fo110_c fo110_i fo110_row fo110_rev fo110_rc fo110_a fo110_m FO110_IDS rc2
 
 # ---------------------------------------------------------------------------
 # 106. 결정 보조 — 승인 사이드카의 결정 보조, 교대 정지 리스크 줄, 기다리는 결정 도우미
