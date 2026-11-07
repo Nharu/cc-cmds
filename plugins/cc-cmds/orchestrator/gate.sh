@@ -13070,6 +13070,10 @@ gate_adoption_surface_approval_settled() {
     */*) GATE_CARRY_WHY="강제 표면 승인 답의 기록이 출처 런의 halt/shift 바로 아래에 있지 않아 교대 정지 기록으로 확인되지 않습니다: $rec"
          return 1 ;;
   esac
+  if [ ! -d "$sdir/halt/shift" ] || [ -L "$sdir/halt/shift" ]; then
+    GATE_CARRY_WHY="출처 런의 halt/shift 가 제자리의 실제 디렉터리가 아니어서 교대 정지 기록으로 확인되지 않습니다: $rec"
+    return 1
+  fi
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     [ "$(gate_row_field "$r" '스코프')" = "cone" ] || continue
