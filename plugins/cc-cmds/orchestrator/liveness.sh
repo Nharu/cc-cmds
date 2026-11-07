@@ -1078,6 +1078,60 @@ cc_relay_last_shift_launch() {
   printf '%s\t%s' "${r%%"$tab"*}" "$(cc_iso_to_epoch "${r#*"$tab"}")"
 }
 
+cc_failover_wait_resume() {
+  # cc_failover_wait_resume <ledger> — the resume time, as epoch seconds, of the
+  # run's account-failover wait, or nothing when the run is not in one.
+  #
+  # ONE DEFINITION FOR THE GATE, THE RELAY, THE FLEET TICK AND THE WATCHER. A
+  # run is in that wait when the latest `계정 이전` row after the latest
+  # `handoff` reads `결과=대기`, and its `재개 시각` is the resume time. A row of
+  # any other result after it ends the wait, and so does a new `handoff`.
+  # Read from the file and not a row memo: readers call it while the gate
+  # appends.
+  local r at
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+  r=$(LC_ALL=C awk '
+    /^- `handoff` / { r = "" }
+    /^- `계정 이전` / { r = $0 }
+    END { printf "%s", r }
+  ' "$1" 2>/dev/null || true)
+  case "$r" in *" | 결과=대기 | "*) : ;; *) return 0 ;; esac
+  at=$(printf '%s\n' "$r" | LC_ALL=C awk -F'|' '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    { for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, "재개 시각=") == 1) v = substr(f, length("재개 시각=") + 1) } }
+    END { printf "%s", v }
+  ' 2>/dev/null || true)
+  [ -n "$at" ] && [ "$at" != "-" ] || return 0
+  cc_iso_to_epoch "$at"
+}
+
+# How long past a failover wait's resume time the watcher still reads the run
+# as waiting: the gate's resume grace (`GATE_FAILOVER_RESUME_GRACE_SECONDS`,
+# 900), the fleet tick's quiet window (`FLEET_FAILOVER_QUIET_SECONDS`, 600) and
+# one dispatch tick (`FLEET_DISPATCH_START_INTERVAL`, 120). This is the delay
+# while the host stays awake and ticks run on their interval: the interval is
+# a floor, so a tick held by dispatch work or a sleeping host adds to it. The
+# watcher takes a sleep off its own clock (`failover_waiting` in `watch.sh`);
+# nothing here promises the next call by this time.
+CC_FAILOVER_WATCH_SLACK_SECONDS=1620
+
+cc_failover_waiting_now() {
+  # cc_failover_waiting_now <ledger> [<now>] [<slack>] — succeeds while the
+  # run's account-failover wait has not reached its resume time plus <slack>
+  # seconds (0 when absent). The fleet tick reads it with no slack to know a
+  # chain ended in a wait still ahead. The watcher reads it with
+  # `CC_FAILOVER_WATCH_SLACK_SECONDS` to keep silence and post-terminal
+  # non-response records out of a wait the gate chose: at the resume time
+  # itself the relay or the tick has yet to call, and a silence record there
+  # would leave a run-scope `blocked` row nothing clears on its own.
+  local at now="${2:-}" slack="${3:-0}"
+  at=$(cc_failover_wait_resume "${1:-}")
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  case "$now" in ''|*[!0-9]*) now=$(date -u +%s) ;; esac
+  case "$slack" in ''|*[!0-9]*) slack=0 ;; esac
+  [ "$now" -lt $((at + slack)) ]
+}
+
 cc_relay_condition_consumed() {
   # cc_relay_condition_consumed <last launch line> <last launch epoch> <wake
   # epoch> <evidence line> — succeeds when the last `교대 기동` row stands below
@@ -1124,6 +1178,8 @@ cc_relay_wake_keys() {
   #                   `기록 시각`)
   #   dl:이월\t<ep>   the `이월` hand-off's clock — the deadline plus one second —
   #                   has passed (clock: that time, the `defer=` line)
+  #   fr:계정 이전\t<ep>  the resume time of the run's account-failover wait has
+  #                   passed (clock: that time, the `resume=` line)
   #
   # ONE READER FOR THE RELAY AND THE WATCHER. The relay wakes when this prints
   # anything; the watcher asks how long each line has stood. A segment with no
@@ -1157,6 +1213,11 @@ cc_relay_wake_keys() {
   case "$ep" in
     ''|*[!0-9]*) : ;;
     *) [ "$now" -lt "$ep" ] || printf 'dl:이월\t%s\n' "$ep" ;;
+  esac
+  ep=$(cc_relay_field "$run_dir" resume)
+  case "$ep" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$now" -lt "$ep" ] || printf 'fr:계정 이전\t%s\n' "$ep" ;;
   esac
   for k in $(cc_relay_field "$run_dir" stages | tr ',' ' '); do
     [ "$k" != "-" ] || continue
