@@ -61861,7 +61861,7 @@ check "97: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다" \
 
 # ---------------------------------------------------------------------------
 # 98b. 멈춘 스테이지의 보호 기록 — 감독자의 쓰기·지우기, 차용 중 재개 대기
-# --- section: 98b | group: ledger_series | covers: gate_sup_halt_hold_put, gate_verb_supervise_stage, gate_launch_route_carry, gate_launch_wait, gate_stage_wait_row, run_ledger_series_check, gate_argv_prompt_keep, gate_argv_prompt_restore, gate_route_env_fresh | needs: 75,95 | anchors: 98: 대기 끝 이관 GRANT 의 감독자는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다,98: 의도된 park 의 시도는 보호 기록 하나를 남긴다, 98: 정상 완료로 끝난 시도는 보호 기록을 남기지 않는다, 98: 보호 디렉터리에 쓸 수 없어도 rc 0 이고 경고 한 줄이다, 98: 감독자는 종단 행 뒤 반납 앞에서 보호 기록을 한 번 쓴다, 98: 감독자는 세 기록 뒤 스폰 대기 앞에서 보호 기록을 지운다, 98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다, 98: 차용 중 재개 대기는 계정=- 로는 거부된다, 98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다, 98: 차용된 묶인 대기와 새 GRANT 면 새 세션이다, 98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다 ---
+# --- section: 98b | group: ledger_series | covers: gate_sup_halt_hold_put, gate_verb_supervise_stage, gate_launch_route_carry, gate_launch_wait, gate_stage_wait_row, run_ledger_series_check, gate_argv_prompt_keep, gate_argv_prompt_restore, gate_route_env_fresh, gate_fresh_session_prompt, gate_launch_stage, gate_launch_route | needs: 75,95 | anchors: 98: 대기 끝 이관 GRANT 의 감독자는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다, 98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다, 98: 이관 GRANT 의 새 세션 프롬프트는 종류의 재진입 틀과 DOC 로 짓는다, 98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다,98: 의도된 park 의 시도는 보호 기록 하나를 남긴다, 98: 정상 완료로 끝난 시도는 보호 기록을 남기지 않는다, 98: 보호 디렉터리에 쓸 수 없어도 rc 0 이고 경고 한 줄이다, 98: 감독자는 종단 행 뒤 반납 앞에서 보호 기록을 한 번 쓴다, 98: 감독자는 세 기록 뒤 스폰 대기 앞에서 보호 기록을 지운다, 98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다, 98: 차용 중 재개 대기는 계정=- 로는 거부된다, 98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다, 98: 차용된 묶인 대기와 새 GRANT 면 새 세션이다, 98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다 ---
 #
 # 보호 기록은 라우팅된 시도가 질문으로 멈춘 뒤 임대가 반납되는 순간에도 그 계정이 cc 레인의
 # 차용 기증자 순위 맨 뒤로 가도록 남기는 표다. 감독자 전체를 띄우는 대신 감독자가 부르는
@@ -62049,6 +62049,64 @@ esac
 h98_card=$(cat "$h98_wd/spawn-card" 2>/dev/null)
 check "98: 그 새 세션은 운반의 답 카드를 받고 디스패치 프롬프트 환경은 물려받지 않는다" \
   "$( [ -n "${h98_card%%|*}" ] && [ -f "${h98_card%%|*}" ] && printf 카드 || printf 없음)|${h98_card#*|}" "카드|unset"
+
+# 끊긴 시각 발행 스테이지의 재부착 모양. 시프트는 한도·크래시·외부 종료나 거절 종료로
+# 끊긴 스테이지를 `--resume` 과 고정 재부착 문장으로 재부착하므로, 대기 반쪽이 보존한
+# 호출자의 `-p` 도 그 문장이다. 대기 끝 이관 GRANT 의 새 세션은 그 문장이 아니라 게이트가
+# 종류의 재진입 틀과 DOC 로 지은 디스패치 형식을 받아야 한다. 같은 토큰을 되살려 같은
+# 감독자를 종류 `visual-publish` 로 한 번 더 돌린다(이관 기록 쓰기는 대역).
+h98_ra='중단된 지점부터 이어 간다. 같은 일을 처음부터 다시 하지 않는다.'
+rm -f "$h98_wd/spawn-argv" "$h98_wd/spawn-card"
+cp "$h98_wd/S98.launch.taken" "$h98_wd/S98.launch" 2>/dev/null || true
+RUN_PACE_ROOT="$h98_pw" CC_GATE_DISPATCH_PROMPT_SET=1 CC_GATE_DISPATCH_PROMPT="$h98_ra" \
+  H98_FENV=$h98_fenv H98_NONCE=$h98_nonce H98_RA=$h98_ra \
+  lsr93_in "$h98_lw" eval '
+    gate_sup_await_dispatch() { :; }
+    eval "h98_cwf() $(declare -f cc_waiting_field | tail -n +2)"
+    cc_waiting_field() { if [ "$2" = 보유자 ]; then printf "%s" "$$"; else h98_cwf "$@"; fi; }
+    stage_wait_loop() { WAIT_LOOP_ENV=$H98_FENV; return 0; }
+    gate_stage_lease_row() { return 0; }
+    gate_visual_lane_commit() { return 0; }
+    gate_sup_wait_ended() { return 0; }
+    gate_sup_lease_secure() { return 0; }
+    bash() {
+      if [ "${1:-}" = "$GATE_DIR/stage-wrapper.sh" ]; then
+        printf "%s\n" "$@" > "$RUN_DIR/spawn-argv"
+        kill -KILL $$
+      fi
+      command bash "$@"
+    }
+    gate_verb_supervise_stage infra S98 "$H98_NONCE" visual-publish -p "$H98_RA"' >/dev/null 2>&1
+h98_sp=$(cat "$h98_wd/spawn-argv" 2>/dev/null)
+case "$h98_sp" in
+  *--resume*) bad "98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다" "재부착했다: $h98_sp" ;;
+  *"--session-id"*"
+--
+-p
+/cc-cmds:visual-publish-unattended $lsr93_doc") ok "98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다" ;;
+  *) bad "98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다" "${h98_sp:-(기동 안 됨)}" ;;
+esac
+
+# 새 세션 프롬프트를 짓는 함수 자체. 재진입 틀이 `<문서>` 말고 칸이 없는 종류는 틀을
+# 채운 형식을 받고, 호출자의 프롬프트가 정확히 그 형식으로 시작할 때만 그것을 지킨다.
+# 다른 문서를 실은 슬래시 커맨드도 지은 형식으로 바뀐다. 그런 틀이 없는 종류는 호출자의
+# 프롬프트를 지키고, 그것마저 없으면 1 이다. 디스패치 시점과 운반의 이관 GRANT 도 같은
+# 함수를 지난다.
+check "98: 이관 GRANT 의 새 세션 프롬프트는 종류의 재진입 틀과 DOC 로 짓는다" \
+  "$(lsr93_in "$h98_lw" eval '
+      for c in "visual-publish|1|중단된 지점부터 이어 간다." \
+               "visual-publish|1|/cc-cmds:visual-publish-unattended $DOC --x" \
+               "visual-publish|1|/cc-cmds:visual-publish-unattended /tmp/other.md" \
+               "visual-publish|0|" \
+               "reconverge|1|/cc-cmds:design-reconverge $DOC R2" \
+               "implement|0|"; do
+        k=${c%%|*}; r=${c#*|}; s=${r%%|*}; p=${r#*|}
+        if gate_fresh_session_prompt "$k" "$s" "$p"; then printf "%s;" "${GATE_FRESH_PROMPT/"$DOC"/DOC}"; else printf "rc1;"; fi
+      done' 2>/dev/null)" \
+  "/cc-cmds:visual-publish-unattended DOC;/cc-cmds:visual-publish-unattended DOC --x;/cc-cmds:visual-publish-unattended DOC;/cc-cmds:visual-publish-unattended DOC;/cc-cmds:design-reconverge DOC R2;rc1;"
+check "98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다" \
+  "$(sed -n '/^gate_launch_route()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_route_carry()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"')/$(sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"')" \
+  "1/1/1/1"
 
 # ---------------------------------------------------------------------------
 # 98h. 감독자의 임대 확보 — 잠금 경합·잃은 임대의 원인 행, wait 20, 끝난 런의 임대 정리

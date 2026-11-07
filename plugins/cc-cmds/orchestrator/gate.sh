@@ -47118,7 +47118,10 @@ gate_verb_act() {
     # NOT ON A `--resume`. A re-attachment, a continuation and a halt answer
     # carry a fixed sentence, never the slash command, and the session they
     # resume is pinned further down to this step's own `stage-result` rows — the
-    # rows of a dispatch that passed this check when it first started.
+    # rows of a dispatch that passed this check when it first started. A
+    # migration grant that turns the resume into a new session does not reuse
+    # this argv's prompt unchecked: `gate_fresh_session_prompt` builds that
+    # session's prompt from the kind's re-entry frame and `DOC`.
     local dd_prompt="" dd_arg dd_prev="" dd_cmd="" dd_path
     for dd_arg in "$@"; do
       [ "$dd_prev" = "-p" ] && dd_prompt="$dd_arg"
@@ -51905,6 +51908,7 @@ gate_launch_route() {
   GATE_ROUTE_ATTEMPT=""; GATE_ROUTE_LINEAGE=""; GATE_ROUTE_ENV=""; GATE_ROUTE_NONCE=""
   GATE_ROUTE_VERDICT=""; GATE_ROUTE_WHY=""; GATE_ROUTE_EVENT=""
   GATE_ROUTE_ACCOUNT="-"; GATE_ROUTE_CFG=""; GATE_ROUTE_MINTED=0; GATE_ROUTE_BIND=""
+  GATE_ROUTE_FRESH=""
   rowseg=$(gate_stage_row_segment "$seg" "$kind")
   # Every routed dispatch passes here, a carry included, before its own
   # admission scans the table.
@@ -51994,9 +51998,11 @@ gate_launch_route() {
   fi
   # A MIGRATION GRANT ON A RESUME STARTS A NEW SESSION: the bound session lives
   # in the old account's config directory, and the grant names another one.
+  # GATE_ROUTE_FRESH tells the caller to give the new session the prompt
+  # `gate_fresh_session_prompt` builds, not the re-attach argv it was handed.
   if [ "$event" = "resume" ] && gate_route_env_fresh "$GATE_ROUTE_ENV"; then
     log "시각 발행 이관 — $seg 는 세션 $GATE_RESUME 을 재부착하지 않고 새 세션으로 뜬다"
-    GATE_RESUME=""
+    GATE_RESUME=""; GATE_ROUTE_FRESH=1
   fi
   return 0
 }
@@ -52043,6 +52049,49 @@ gate_argv_prompt_restore() {
     fi
   done
   [ "$had" = "1" ] || GATE_RESTORED_ARGV+=(-p "$p")
+  return 0
+}
+
+gate_fresh_session_prompt() {
+  # gate_fresh_session_prompt <stage-kind> <kept-set> <kept-prompt> — the `-p`
+  # of the new session a migration grant (`fresh: true`) starts in place of a
+  # re-attachment, in GATE_FRESH_PROMPT; 1, with it empty, when there is none.
+  # <kept-set> and <kept-prompt> are what `gate_argv_prompt_keep` kept from the
+  # caller's argv.
+  #
+  # THE GATE BUILDS IT; THE CALLER'S PROMPT IS NOT TRUSTED. A re-attachment of
+  # a stage that was cut off (a limit, a crash, an end from outside) or ended
+  # in a refusal carries the shift's fixed re-attach sentence, never the slash
+  # command, and the pre-launch check that binds a prompt to the step's
+  # command and `DOC` does not run on a `--resume`. A new session handed that
+  # sentence has no conversation to continue and is told neither the skill nor
+  # the document. So a kind whose re-entry frame has no slot but `<문서>` gets
+  # that frame filled with the kind's document, and the caller's prompt is kept
+  # only when it begins with exactly that form — the bytes the first dispatch's
+  # check would have let through. A kind with no such frame keeps the caller's
+  # prompt.
+  local kind="$1" kset="$2" kept="$3" sk sg tkind frame doc built=""
+  GATE_FRESH_PROMPT=""
+  doc=$(gate_carry_doc_of "$kind")
+  while IFS='|' read -r sk sg tkind frame; do
+    [ "$tkind" = "$kind" ] || continue
+    case "$(gate_fill_slot "$frame" '<문서>' '')" in
+      *'<'*'>'*) ;;
+      *) [ -z "$doc" ] || built=$(gate_fill_slot "$frame" '<문서>' "$doc") ;;
+    esac
+    break
+  done <<EOF
+$(gate_reentry_table)
+EOF
+  if [ -n "$built" ]; then
+    GATE_FRESH_PROMPT=$built
+    if [ "$kset" = "1" ]; then
+      case "$kept" in "$built"|"$built "*) GATE_FRESH_PROMPT=$kept ;; esac
+    fi
+    return 0
+  fi
+  [ "$kset" = "1" ] || return 1
+  GATE_FRESH_PROMPT=$kept
   return 0
 }
 
@@ -52175,7 +52224,7 @@ gate_launch_route_carry() {
     # the old account's config directory — so the stage starts as a new session
     # and takes the answer from the card the dispatch writes.
     if gate_route_env_fresh "$benv"; then
-      GATE_RESUME=""
+      GATE_RESUME=""; GATE_ROUTE_FRESH=1
       log "중단 답 운반 — $seg 는 이관 GRANT 로 새 세션이 답 카드를 받는다 (묶인 세션 $bound 은 재부착하지 않음)"
       return 0
     fi
@@ -52638,6 +52687,19 @@ gate_launch_stage() {
     # the supervisor, whose grant at the end of the wait may start a new session
     # that needs the dispatch form, not the re-attach sentence.
     gate_argv_prompt_keep "$@"
+    # A MIGRATION GRANT THAT TURNED A RESUME INTO A NEW SESSION gets the prompt
+    # the gate builds for the kind: the argv of a cut-off or refused stage's
+    # re-attachment carries the shift's fixed re-attach sentence, which names
+    # neither the skill nor the document.
+    if [ "${GATE_ROUTE_FRESH:-}" = "1" ]; then
+      if gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"; then
+        gate_argv_prompt_restore "$GATE_FRESH_PROMPT" "$@"
+        set -- "${GATE_RESTORED_ARGV[@]}"
+        gate_argv_prompt_keep "$@"
+      else
+        warn "a migration grant starts a new session of $seg, but neither its kind nor the argv gives a dispatch prompt — the new session starts with the argv as handed over"
+      fi
+    fi
     # A CARRY THAT PICKED THE HALTED SESSION re-attaches it with the fixed resume
     # sentence, not the dispatch form, and a waiting one wakes up with the same:
     # the session already holds its question, and the card holds the answer.
@@ -52965,14 +53027,17 @@ gate_verb_supervise_stage() {
     # dispatch time: the bound session lives in the old account's directory.
     # The binding is still checked, by the lease row below. The argv the
     # dispatch half handed over was rewritten for a re-attachment (the carry's
-    # resume sentence, a continuation's message), so the new session gets the
-    # dispatch prompt back: it names the skill and the document, and the answer
-    # card, when there is one, still reaches it through CC_PIPELINE_HALT_ANSWER.
+    # resume sentence, a continuation's message), and the prompt it kept before
+    # that is the caller's — the shift's fixed re-attach sentence when the stage
+    # was cut off or refused. So the new session gets the prompt
+    # `gate_fresh_session_prompt` builds for the kind: it names the skill and
+    # the document, and the answer card, when there is one, still reaches it
+    # through CC_PIPELINE_HALT_ANSWER.
     if [ -n "$resume" ] && gate_route_env_fresh "$wenv"; then
       log "시각 발행 이관 — $seg 는 대기 끝에 세션 $resume 을 재부착하지 않고 새 세션으로 뜬다"
       resume=""
-      if [ "$disp_set" = "1" ]; then
-        gate_argv_prompt_restore "$disp_p" "$@"
+      if gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"; then
+        gate_argv_prompt_restore "$GATE_FRESH_PROMPT" "$@"
         set -- "${GATE_RESTORED_ARGV[@]}"
         log "시각 발행 이관 — $seg 의 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
       else
