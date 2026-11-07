@@ -46368,7 +46368,7 @@ gate_exec_pr_create_refusal() {
   for body in "${GATE_PRC_BODIES[@]}"; do
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      if ! printf '%s\n' "$body" | grep -Fxq -- "$line"; then
+      if ! grep -Fxq -- "$line" <<<"$body"; then
         printf '본문에 「%s」 줄이 없습니다' "$line"
         return 0
       fi
