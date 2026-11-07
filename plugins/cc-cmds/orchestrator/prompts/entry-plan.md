@@ -59,6 +59,10 @@ Write both keys on every judgment; a manifest frozen before this field existed h
 
 `design_path` is a closed enum — `solo-audit` | `discuss-audit` | `none` — and it is not a judgment of yours. Write it by one rule: **`design_required` is `true`, `design_tier` is `team-4` and `design_scope` is `single` → `solo-audit`; every other plan → `none`.** `solo-audit` sends the design to the `design-solo-unattended` stage, one headless lead, and the audit after it stays; `discuss-audit` sends it to the `design-discuss-unattended` stage, a design discussion team whose roster the kickoff takes from the person. Never write `discuss-audit` yourself: the kickoff asks the person which path a heavy single design takes and rewrites the key with their answer. Write the key even when `design_required` is false — the schema requires it unconditionally. A manifest frozen before this field existed has no such key, and a reader takes it as `discuss-audit` on a `team-4` single-scope design and `none` elsewhere.
 
+## `design_delivery` is always `slices` here
+
+`design_delivery` is a closed enum — `slices` | `tickets` — and it is not a judgment of yours. Write `slices` on every plan, in every frame, the `hotfix` and `reviewer` frames included. `slices` delivers a design in slices inside one run; `tickets` delivers a single design as tickets that later runs implement, and only the kickoff writes it, on a person's answer. A manifest frozen before this field existed has no such key, and a reader takes it as `slices`.
+
 ## A `visual` step designs the screens before they are built
 
 `visual` is a step skill only, like `split` — it is never an `entry_skill`. Put one in the graph when the work builds or changes screens a person will look at: the `visual-unattended` stage generates the screens locally and reviews them, the `visual-publish-unattended` stage then publishes them to Claude Design on the pinned account, and every slice that carries screens waits for a person to approve them by answering that publish stage's question in the morning, while the slices without screens go ahead that night. Work with no screen carries no `visual` step.
