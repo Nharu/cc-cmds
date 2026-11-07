@@ -30,6 +30,7 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `disposition` | `충족`, `무효화` or `미충족` — what a `propose-done` would be recorded as right now. `무효화` means the run may record its end but only as invalid |
 | `design_required` | `true`, `false` or `null` — the frozen plan's own value, never folded (`null` when the plan does not declare it). With `steps[]` it is how a shift learns the run has a design step to dispatch, which no `segments[]` entry can say |
 | `design_scope` | `single` or `base` — the frozen plan's design scope, read as `single` when the plan does not declare it. `base` means the graph is the base run's three steps (design → audit → split) and nothing after them, which decides the audit's `--base` and whether a split step is dispatched at all |
+| `design_delivery` | `slices` or `tickets` — the frozen plan's delivery shape, read as `slices` when the plan does not declare it. `tickets` means a `single`-scope design whose graph also ends at the split (design → audit → split) and publishes tickets, so a split step is dispatched on it as on a `base` run; the audit takes no `--base` and the design skill is chosen as for any `single` run |
 | `design_skill` | the slash-command name of the run's design stage, as the selection function picked it from the frozen plan — `design-base-unattended` for a `base` scope, `design-solo-unattended` for a `solo` tier, `design-solo-unattended` for a `team-4` tier with `design_path` `solo-audit`, `design-discuss-unattended` otherwise; `null` when the plan has no design step. The design dispatch uses it as it stands |
 | `steps[]` | `id`, `skill`, `depends_on` — the frozen plan's step graph, one object per step, without the prose summary. The design step is the one whose `skill` is `design`; a step the plan wrote as a bare skill string has a `null` id |
 | `segments[]`, `segments_total` | `id`, `상태`, `워크트리`, `선행`, `커밋`, `마지막 스테이지`, `머지 순서`, `머지 대기` — one object per segment. A shift starts with no history, so this is where it learns the run has segments at all. `머지 순서` is the row's value, `없음` when the row carries none. `머지 대기` is the array of ids among the segment's `선행 ∪ 머지 순서` tokens that have never landed, computed by the same helper as the gate's merge-order check, so the shift's choice to merge and the gate's refusal cannot disagree; the segment merges only when it is empty |
@@ -315,7 +316,7 @@ The gate keys that `- reconverge` on the audit step only while the step's last r
 
 #### Dispatching the split stage
 
-When the snapshot's `design_scope` is `base`, `steps[]` carries exactly one step whose `skill` is `split`, and the audit is complete as above, dispatch it — `--segment -`, stage kind `split`:
+When the run ends at the split — the snapshot's `design_scope` is `base` or its `design_delivery` is `tickets` —, `steps[]` carries exactly one step whose `skill` is `split`, and the audit is complete as above, dispatch it — `--segment -`, stage kind `split`:
 
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment - \

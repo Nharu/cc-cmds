@@ -1,6 +1,6 @@
 #### Dispatching the split stage
 
-When the snapshot's `design_scope` is `base`, `steps[]` carries exactly one step whose `skill` is `split`, and the audit is complete as above, dispatch it — `--segment -`, stage kind `split`:
+When the run ends at the split — the snapshot's `design_scope` is `base` or its `design_delivery` is `tickets` —, `steps[]` carries exactly one step whose `skill` is `split`, and the audit is complete as above, dispatch it — `--segment -`, stage kind `split`:
 
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment - \
