@@ -37710,7 +37710,7 @@ check "34s: 미리보기의 diff 가 적용된 커밋의 diff 와 같다" \
 # THE SAME FRAME DOES NOT APPROVE TWICE.
 sap_mark
 sap_ans "$SAP_OK" 사람
-sap_refused "같은 프레임의 두 번째 좌석 적용" 'already approved a seat apply'
+sap_refused "같은 프레임의 두 번째 좌석 적용" 'already approved a halt record'
 
 # THE ROW FAILS, AND THE COMMIT GOES WITH IT.
 SAP_RB="$CAP_DIR/halt/SAP#21.md"
@@ -38458,6 +38458,160 @@ check "34ro: 고정 헤드가 없는 리뷰전용 세그먼트는 면제되지 �
 ( cd "$REPO" && git worktree remove --force "$SRO_WT" && git worktree remove --force "$SRM_WT" ) >/dev/null 2>&1
 ( cd "$REPO" && git update-ref refs/remotes/origin/main "$SRO_ORIGIN0" )
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SRO_PREV_AR"
+
+# --- 34ra. 강제 표면 승인 — 사람이 승인한 경로는 보인 바이트 그대로만 출처 검사를 지난다 ---
+# --- section: 34ra | group: cone | covers: act, snapshot, surface-class, shift-halt | anchors: 34ra: 판정 함수가 네 판정과 승인 행 대조를 낸다, 34ra: 출처 검사의 셋째 열이 승인 가능이다, 34ra: 리뷰 막힘 행이 판정과 승인 쪽 재개 문면을 싣는다, 34ra: --between 이 다섯 열을 낸다, 34ra: 교대의 강제 표면 승인 정지가 승인 대상을 싣는다, 34ra: 답이 없는 기록이 있으면 두 번째 정지는 거절된다, 34ra: 미리보기의 첫 줄이 질문 문면이다, 34ra: 좌석의 승인 답은 거절되고 행을 남기지 않는다, 34ra: 기록 뒤 브랜치가 움직이면 승인 답은 행을 남기지 않는다, 34ra: 사람의 승인 답이 승인 행을 먼저 쓰고 중단 답을 마지막에 쓴다, 34ra: 승인 뒤 출처 검사는 통과한다, 34ra: 승인 뒤 바뀐 경로는 다시 거절된다, 34ra: 양쪽 변경에서는 승인 자리를 세우지 않는다, 34ra: 아침 보고가 미승인 세그먼트를 싣는다 ---
+#
+# A BRANCH THAT CHANGED A RULE FILE OUTSIDE A SEAT APPLY is refused at its review
+# and its merge, and a person may decide that the change is wanted. The routing
+# shift stops the segment at `강제 표면 승인`; the gate measures the branch
+# itself and writes the record only when every refused path is one an approval
+# can carry, the seat asks with the line the preview prints, and the person's
+# `승인` writes one `강제 표면 승인` row per path before the `중단 답` row. The
+# approval covers those bytes and nothing else: a branch commit after it, or a
+# base that changed the same path, refuses again.
+SRA_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+SRA_RID=RSRA1
+sap_fx "$SRA_RID" SRA "4d4d4d4d-1111-2222-3333-444444444444"
+check "34ra: 픽스처의 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+mkdir -p "$CAP_DIR/halt/shift"
+SRA_ORIGIN0=$(cd "$REPO" && git rev-parse refs/remotes/origin/main)
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SAP_BASE" )
+printf -- '- `segment` | id=SRA | 상태=실행중 | 워크트리=%s | 브랜치=sap-%s | 선행=없음 | prev=x\n' "$SAP_WT" "$SRA_RID" >> "$CAP_LEDGER"
+sra_pv() { cap_gate "$SAP_SEAT" '' surface-provenance --manifest "$CAP_NM" --segment SRA --target infra; }
+sra_n() { { cap_rows "$1" | grep -c . || true; } | tr -d ' '; }
+SRA_EB="100644 $(sap_blob "$SAP_RULE")"
+
+# THE VERDICT FUNCTION, called the way every reader calls it: the gate sourced.
+sra_v() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; shift; gate_surface_path_verdict "$@" | tr "\t" ":"' _ "$GATE" "$@"; }
+SRA_E="100644 $(printf 'e%.0s' $(seq 1 40))"; SRA_X="100644 $(printf 'f%.0s' $(seq 1 40))"
+SRA_ROWOK="- \`강제 표면 승인\` | 세그먼트=SRA | 경로=r.sh | 베이스 항목=$SRA_E | 승인 항목=$SRA_X"
+SRA_ROWNO="- \`강제 표면 승인\` | 세그먼트=SRA | 경로=r.sh | 베이스 항목=$SRA_E | 승인 항목=없음"
+check "34ra: 판정 함수가 네 판정과 승인 행 대조를 낸다" \
+  "$(sra_v r.sh "$SRA_X" "$SRA_E" "$SRA_E")/$(sra_v r.sh "$SRA_E" "$SRA_E" 없음)/$(sra_v r.sh "$SRA_X" "$SRA_E" 없음)/$(sra_v 'a|b' "$SRA_X" "$SRA_E" "$SRA_E")/$(sra_v 'a ' "$SRA_X" "$SRA_E" "$SRA_E")/$(sra_v r.sh "$SRA_X" "$SRA_E" "$SRA_E" "$SRA_ROWOK")/$(sra_v r.sh "$SRA_X" "$SRA_E" "$SRA_E" "$SRA_ROWNO")" \
+  "승인 가능/통과/양쪽 변경/경로 문자/경로 문자/승인 가능:맞음/승인 가능:내용 다름"
+
+# The stage changes the rule file on the branch, with no seat apply.
+( cd "$SAP_WT" && printf 'rule stage\n' > "$SAP_RULE" && git add -A && git commit -qm '규칙을 고친다' ) >/dev/null 2>&1
+SRA_H1=$(sap_head)
+SRA_EH="100644 $(sap_blob "$SAP_RULE")"
+sra_pv
+check "34ra: 출처 검사의 셋째 열이 승인 가능이다" "$rc/$(cut -f1,3 "$CAP_OUT" | tr '\t' ':')" "3/$SAP_RULE:승인 가능"
+cap_gate "$SAP_SEAT" '' review-line --manifest "$CAP_NM" --segment SRA >/dev/null
+cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind skill --target infra --segment SRA --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+  -- review -p "$(cat "$CAP_OUT")"
+sra_bl=$( { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' "$CAP_LEDGER" || true; } | { grep -F '앵커 세그먼트=SRA' || true; } | tail -1)
+sra_side=다름
+case "$(row_field "$sra_bl" '재개 명령')" in *'강제 표면 승인'*'승인'*) sra_side=승인쪽 ;; esac
+check "34ra: 리뷰 막힘 행이 판정과 승인 쪽 재개 문면을 싣는다" \
+  "$rc/$(row_field "$sra_bl" '판정')/$sra_side" "3/승인 가능/승인쪽"
+
+# THE KICKOFF LISTING, the same measurement before any run: five columns.
+SRA_BT=$(bash "$repo_root/plugins/cc-cmds/orchestrator/enforcement-surface-screen.sh" --between "$SAP_WT" "$SAP_BASE" HEAD 2>&1); sra_btrc=$?
+check "34ra: --between 이 다섯 열을 낸다" "$sra_btrc/$SRA_BT" "0/$SAP_RULE"$'\t'"규칙카탈로그"$'\t'"$SRA_EB"$'\t'"$SRA_EH"$'\t'"승인 가능"
+bash "$repo_root/plugins/cc-cmds/orchestrator/enforcement-surface-screen.sh" --between "$SAP_WT" "$SAP_BASE" >/dev/null 2>&1; sra_btrc1=$?
+bash "$repo_root/plugins/cc-cmds/orchestrator/enforcement-surface-screen.sh" --between "$SAP_WT" "$SAP_BASE" no-such-rev >/dev/null 2>&1; sra_btrc2=$?
+check "34ra: --between 의 인자 수 오류는 1, 읽을 수 없는 리비전은 2 다" "$sra_btrc1/$sra_btrc2" "1/2"
+
+# THE SHIFT'S STOP. The shift is launched the way the seat launches it.
+cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34ra: 교대 기동이 섰다" "$rc" "0"
+SRA_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SRA_SHIFT.jsonl"
+sra_halt() {
+  cap_gate "$SRA_SHIFT" "$SRA_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment SRA \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SRA_SHIFT" "$SRA_RID#1")" \
+           --rationale "픽스처 — 교대 정지" -- '자리=강제 표면 승인' '질문=이 강제 표면 변경을 승인하는가?' \
+           '관측=리뷰 파견이 강제 표면 출처 검사에 막혔다' '추천=승인' "추천 근거=매니페스트 인가:## 인가"
+}
+sra_halt
+SRA_REC="$CAP_DIR/halt/shift/SRA#1.md"
+check "34ra: 교대의 강제 표면 승인 정지가 승인 대상을 싣는다" \
+  "$rc/$(sed -n 's/^\*\*승인 대상\*\*: //p' "$SRA_REC" 2>/dev/null)/$(grep -c '^\*\*추천\*\*: (없음)' "$SRA_REC" 2>/dev/null)" \
+  "0/$SAP_RULE | 규칙카탈로그 | $SRA_EB | $SRA_EH/1"
+check "34ra: 기록은 세 선택지를 싣는다" \
+  "$(grep -c -e '^- `재시도` — ' -e '^- `세그먼트 park` — ' -e '^- `승인` — ' "$SRA_REC")" "3"
+sra_b0=$(sra_n blocked)
+sra_halt
+check "34ra: 답이 없는 기록이 있으면 두 번째 정지는 거절된다" "$rc/$(sra_n blocked)" "3/$sra_b0"
+
+# THE PREVIEW: the question line first and alone, then the path and its diff.
+SRA_DIG=$(shasum -a 256 "$SRA_REC" | cut -d' ' -f1)
+SRA_Q="기록 $SRA_DIG — 세그먼트 SRA 의 강제 표면 변경 1건을 보인 내용 그대로 승인합니다: $SAP_RULE."
+cap_gate "$SAP_SEAT" '' surface-approval-preview --manifest "$CAP_NM" --record "$SRA_REC"
+check "34ra: 미리보기의 첫 줄이 질문 문면이다" "$rc/$(sed -n '1p' "$CAP_OUT")" "0/$SRA_Q"
+check "34ra: 미리보기가 diff 를 싣는다" "$(grep -c '^+rule stage$' "$CAP_OUT")" "1"
+
+# THE ANSWERS. The seat cannot approve; a person with no proven frame cannot
+# either; a person whose branch moved after the record is refused and nothing
+# is written; the person's proven `승인` writes the rows, the answer row last.
+sra_ans() {  # sra_ans <답한 주체> [선택지]
+  cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SRA \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SAP_SEAT" '')" \
+           --rationale "픽스처 — 강제 표면 승인 답" \
+           -- "중단 기록=$SRA_REC" "답한 주체=$1" '근거=사람이 미리보기의 diff 를 보고 골랐다' "선택지=${2:-승인}"
+}
+sra_a0=$(sra_n '중단 답'); sra_s0=$(sra_n '강제 표면 승인')
+sra_ans 좌석
+check "34ra: 좌석의 승인 답은 거절되고 행을 남기지 않는다" "$rc/$(sra_n '중단 답')/$(sra_n '강제 표면 승인')" "3/$sra_a0/$sra_s0"
+sra_ans 사람
+check "34ra: 프레임 없는 사람의 승인 답도 거절된다" "$rc/$(sra_n '중단 답')/$(sra_n '강제 표면 승인')" "3/$sra_a0/$sra_s0"
+auq_frame "$NTX/$SAP_SEAT.jsonl" "$SRA_DIG" "$SRA_Q" 승인 재시도 '세그먼트 park' 승인 > /dev/null
+( cd "$SAP_WT" && printf 'rule moved\n' > "$SAP_RULE" && git add -A && git commit -qm '규칙을 또 고친다' ) >/dev/null 2>&1
+sra_ans 사람
+check "34ra: 기록 뒤 브랜치가 움직이면 승인 답은 행을 남기지 않는다" "$rc/$(sra_n '중단 답')/$(sra_n '강제 표면 승인')" "3/$sra_a0/$sra_s0"
+( cd "$SAP_WT" && git reset -q --hard "$SRA_H1" ) >/dev/null 2>&1
+sra_ans 사람
+sra_sa=$(cap_rows '강제 표면 승인' | tail -1)
+sra_l1=$( { grep -n -F '`강제 표면 승인`' "$CAP_LEDGER" || true; } | tail -1 | cut -d: -f1)
+sra_l2=$( { grep -n -F '`중단 답`' "$CAP_LEDGER" || true; } | tail -1 | cut -d: -f1)
+sra_order=뒤
+[ -n "$sra_l1" ] && [ -n "$sra_l2" ] && [ "$sra_l1" -lt "$sra_l2" ] && sra_order=앞
+check "34ra: 사람의 승인 답이 승인 행을 먼저 쓰고 중단 답을 마지막에 쓴다" \
+  "$rc/$(sra_n '강제 표면 승인')/$sra_order" "0/$((sra_s0 + 1))/앞"
+check "34ra: 승인 행은 경로·항목·기록·프레임을 싣는다" \
+  "$(row_field "$sra_sa" '세그먼트')/$(row_field "$sra_sa" '경로')/$(row_field "$sra_sa" '베이스 항목')/$(row_field "$sra_sa" '승인 항목')/$(row_field "$sra_sa" '중단 기록')/$( [ -n "$(row_field "$sra_sa" '승인 프레임')" ] && echo 프레임)" \
+  "SRA/$SAP_RULE/$SRA_EB/$SRA_EH/$SRA_REC/프레임"
+check "34ra: 중단 답 행의 근거 종류가 강제 표면 승인이다" \
+  "$(row_field "$(sap_last)" '근거 종류')/$(row_field "$(sap_last)" '선택지')/$(row_field "$(sap_last)" '답한 주체')" "강제 표면 승인/승인/사람"
+sra_pv
+check "34ra: 승인 뒤 출처 검사는 통과한다" "$rc/$(cat "$CAP_OUT")" "0/"
+( cd "$SAP_WT" && printf 'rule after\n' > "$SAP_RULE" && git add -A && git commit -qm '승인 뒤 규칙을 고친다' ) >/dev/null 2>&1
+sra_pv
+check "34ra: 승인 뒤 바뀐 경로는 다시 거절된다" "$rc/$(cut -f2 "$CAP_OUT")" "3/좌석 적용 커밋 없이 바뀜 (규칙카탈로그) — 승인된 내용과 다름"
+
+# THE MORNING REPORT measures the segment again and names the approval record.
+sra_rep=$( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; set +e; MANIFEST=$2; RUN_DIR=$3; LEDGER=$4; RUN_ID=$5; gate_surface_unapproved_report' \
+  _ "$GATE" "$CAP_NM" "$CAP_DIR" "$CAP_LEDGER" "$SRA_RID" 2>/dev/null | { grep -F "	SRA — " || true; } )
+case "$sra_rep" in
+  "강제 표면 미승인	SRA — $SAP_RULE (좌석 적용 커밋 없이 바뀜 (규칙카탈로그) — 승인된 내용과 다름) — "*"승인 기록 $SRA_REC (승인"*) ok "34ra: 아침 보고가 미승인 세그먼트를 싣는다" ;;
+  *) bad "34ra: 아침 보고가 미승인 세그먼트를 싣는다" "$sra_rep" ;;
+esac
+
+# A PATH THE BASE CHANGED TOO is no approval's to carry: the stop is refused
+# and nothing is written.
+( cd "$SAP_WT" && git reset -q --hard "$SRA_H1" ) >/dev/null 2>&1
+sra_idx="$WORK/sra-index.$$"
+SRA_B2=$( cd "$SAP_WT" && rm -f "$sra_idx" && GIT_INDEX_FILE="$sra_idx" git read-tree "$SAP_BASE" \
+  && b=$(printf 'rule base\n' | git hash-object -w --stdin) \
+  && GIT_INDEX_FILE="$sra_idx" git update-index --add --cacheinfo "100644,$b,$SAP_RULE" \
+  && t=$(GIT_INDEX_FILE="$sra_idx" git write-tree) && rm -f "$sra_idx" \
+  && git commit-tree "$t" -p "$SAP_BASE" -m sra-base-change )
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SRA_B2" )
+sra_pv
+check "34ra: 양쪽 변경의 셋째 열은 양쪽 변경이다" "$rc/$(cut -f3 "$CAP_OUT")" "3/양쪽 변경"
+sra_b0=$(sra_n blocked)
+sra_halt
+check "34ra: 양쪽 변경에서는 승인 자리를 세우지 않는다" "$rc/$(sra_n blocked)/$( [ -f "$CAP_DIR/halt/shift/SRA#2.md" ] && echo 기록 || echo 없음)" "3/$sra_b0/없음"
+
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SRA_ORIGIN0" )
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SRA_PREV_AR"
+unset -f sra_pv sra_n sra_v sra_halt sra_ans
 
 # --- 34n. 답의 라우팅 — 갈래가 없는 답은 누구의 것이든 기록되지 않고, 교대가 되돌린 답은 다시 질문이 된다 ---
 # --- section: 34n | group: cone | covers: act, snapshot, shift-halt | anchors: 34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다, 34n: 들여온 적용 정산 기록의 질문과 관측 끝에 게이트 정산 판정 줄이 붙는다, 34n: 긴 관측에서도 원뿔 행 근거가 게이트 정산 판정 줄을 온전히 싣는다, 34n: 같은 감사 키의 두 번째 자동 채택은 거절된다, 34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다, 34n: 되돌려진 기록의 좌석 자동 답은 거절된다 ---
@@ -54320,7 +54474,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 85. A segment an earlier run cut is adopted through the manifest
-# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest, gate_carry_tail | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다, 85: 머지 커밋 없는 완료 세그먼트는 입양 계획된다, 85: 머지 커밋을 지닌 완료 세그먼트는 입양하지 않는다, 85: 고정 커밋을 지닌 적용 완료 세그먼트는 입양하지 않는다, 85: PR 과 커밋만 지닌 PR 절단점 완료 세그먼트는 입양 계획된다, 85: 대시 표기 출처 런의 입양 행은 매니페스트 검사를 통과한다, 85: 대시 표기 출처 런의 세그먼트는 입양 계획된다 ---
+# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest, gate_carry_tail | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다, 85: 머지 커밋 없는 완료 세그먼트는 입양 계획된다, 85: 머지 커밋을 지닌 완료 세그먼트는 입양하지 않는다, 85: 고정 커밋을 지닌 적용 완료 세그먼트는 입양하지 않는다, 85: PR 과 커밋만 지닌 PR 절단점 완료 세그먼트는 입양 계획된다, 85: 대시 표기 출처 런의 입양 행은 매니페스트 검사를 통과한다, 85: 대시 표기 출처 런의 세그먼트는 입양 계획된다, 85: 입양 행에 맞는 강제 표면 승인 행은 매니페스트 검사를 통과한다, 85: 승인 행을 바꾸면 구속 다이제스트가 깨진다 ---
 #
 # Segment names derive from the run id, so a run could not continue a segment
 # an earlier run left unmerged: its branch, worktree and pull request were out
@@ -54509,6 +54663,54 @@ case "$rc/$msg" in
   *) bad "85: 입양 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
 
+# A PERSON'S APPROVAL OF AN ADOPTED BRANCH'S ENFORCEMENT-SURFACE CHANGE rides on
+# the adoption row: a `강제 표면 승인` row names the same segment and branch, one
+# path, the class the classifier gives it now and the two entries it was shown.
+# The manifest check holds the row to that, and the binding digest covers it.
+SAO85="$(printf '1%.0s' $(seq 1 40))"; SAH85="$(printf '2%.0s' $(seq 1 40))"
+sa85() {  # sa85 <경로> <분류> [브랜치] [베이스 항목] — one approval row on SA
+  printf -- '- `강제 표면 승인` | 세그먼트=SA | 브랜치=%s | 경로=%s | 분류=%s | 베이스 항목=%s | 승인 항목=100644 %s | 근거=킥오프에서 사람이 승인\n' \
+    "${3:-seg/$SRC85-SA}" "$1" "$2" "${4:-100644 $SAO85}" "$SAH85"
+}
+run85 R85SA "$ROW85
+$(sa85 CLAUDE.md 지침파일)
+$(sa85 plugins/x/orchestrator/rules/r.sh 규칙카탈로그 '' 없음)"
+snap85 R85SA
+check "85: 입양 행에 맞는 강제 표면 승인 행은 매니페스트 검사를 통과한다" "$rc" "0"
+sa85_refused() {  # sa85_refused <이름> <문면 조각> <승인 행…>
+  local name="$1" frag="$2"; shift 2
+  run85 R85SB "$ROW85
+$(printf '%s\n' "$@")"
+  snap85 R85SB
+  case "$rc/$msg" in
+    0/*) bad "85: $name" "$msg" ;;
+    *"$frag"*) ok "85: $name" ;;
+    *) bad "85: $name" "$msg" ;;
+  esac
+}
+sa85_refused "분류기 판정과 다른 분류의 승인 행은 거부된다" '지금 분류기 판정과 다릅니다' "$(sa85 CLAUDE.md 규칙카탈로그)"
+sa85_refused "입양 행과 브랜치가 다른 승인 행은 거부된다" '「세그먼트 입양」 행이 없습니다' "$(sa85 CLAUDE.md 지침파일 seg/other)"
+sa85_refused "한 경로의 승인 행 둘은 거부된다" '둘 이상입니다' "$(sa85 CLAUDE.md 지침파일)" "$(sa85 CLAUDE.md 지침파일)"
+sa85_refused "항목 형식이 어긋난 승인 행은 거부된다" '형식이 어긋났습니다' "$(sa85 CLAUDE.md 지침파일 '' '100644 xyz')"
+sa85_refused "끝에 공백이 있는 경로의 승인 행은 거부된다" '형식이 어긋났습니다' "$(sa85 'CLAUDE.md ' 지침파일)"
+sa85_refused "닫힌 집합 밖 분류의 승인 행은 거부된다" '형식이 어긋났습니다' "$(sa85 a.txt 통과)"
+run85 R85SE "$ROW85
+$(sa85 CLAUDE.md 지침파일)"
+bd85s=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; binding_set_bytes | shasum -a 256 | cut -d" " -f1' \
+  _ "$GATE" "$WORK/plan-R85SE.md" 2>/dev/null)
+printf '**구속 다이제스트**: %s\n' "$bd85s" >> "$WORK/plan-R85SE.md"
+snap85 R85SE
+check "85: 승인 행을 실은 구속 다이제스트가 맞는다 (아래가 공허하지 않다)" "$rc" "0"
+sed -i.bak "s/| 승인 항목=100644 $SAH85 |/| 승인 항목=없음 |/" "$WORK/plan-R85SE.md"
+snap85 R85SE
+case "$rc/$msg" in
+  0/*) bad "85: 승인 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*) ok "85: 승인 행을 바꾸면 구속 다이제스트가 깨진다" ;;
+  *) bad "85: 승인 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
+esac
+unset -f sa85 sa85_refused
+unset SAO85 SAH85 bd85s
+
 # THE EARLIER RUN'S OPEN ANSWER TO A HALT. A person answered a binding-tier stop
 # at the seat of the earlier run and that run ended before a stage took the
 # answer up; the run adopting the segment read only its own ledger, so the
@@ -54682,7 +54884,7 @@ rm -f "$LEDGER85" "$WT/$DOC85"
 
 # ---------------------------------------------------------------------------
 # 95d. 런을 넘는 이월 — 입양과 재킥오프 연쇄가 앞선 런의 이월된 중단 답을 들이고, 운반 act 만 그 답을 낸다
-# --- section: 95d | group: base | covers: act, plan, snapshot, halt-answer, gate_adoption_halt_source, gate_chain_halt_import, gate_key_imported_deferred_answer, gate_carry_check, gate_carry_scope_ok, gate_carry_defer_row, gate_carry_import_row, gate_chain_source_key, gate_halt_answer_route, cc_unanswered_halts, gate_carry_tail, gate_carry_abs, gate_carry_row_fits, gate_carry_fit_block, gate_adoption_carry_fits, gate_carry_already_imported, gate_carry_source_last_row, gate_carry_origin | anchors: 95d: 이월 행이 없는 답은 연쇄가 들이지 않는다, 95d: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다, 95d: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다, 95d: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다, 95d: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다, 95d: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다, 95d: 그 파견은 시동 대역을 부르지 않는다, 95d: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다, 95d: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다, 95d: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다, 95d: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다, 95d: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다, 95d: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다, 95d: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다, 95d: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다 ---
+# --- section: 95d | group: base | covers: act, plan, snapshot, halt-answer, gate_adoption_halt_source, gate_chain_halt_import, gate_key_imported_deferred_answer, gate_carry_check, gate_carry_scope_ok, gate_carry_defer_row, gate_carry_import_row, gate_chain_source_key, gate_halt_answer_route, cc_unanswered_halts, gate_carry_tail, gate_carry_abs, gate_carry_row_fits, gate_carry_fit_block, gate_adoption_carry_fits, gate_carry_already_imported, gate_carry_source_last_row, gate_carry_origin, gate_adoption_surface_approval_settled | anchors: 95d: 이월 행이 없는 답은 연쇄가 들이지 않는다, 95d: 두 번 이월된 답도 첫 감사 파견이 들이고 exit 3 이다, 95d: 두 번 이월된 답의 운반 act 가 사람이 답한 런의 원장으로 판정받아 기동한다, 95d: 두 번 이월된 답의 route 는 재부착이고 거절 사유가 없다, 95d: 연쇄로 들인 첨부 사본은 답 없는 정지 기록으로 세지 않는다, 95d: 4필드 출처 행 런의 첫 감사 파견은 사본을 들이고 exit 3 이다, 95d: 그 파견은 시동 대역을 부르지 않는다, 95d: 들인 미소비 이월 답이 있는 연쇄 키의 일반 파견은 exit 3 이다, 95d: 출처 기록 다이제스트가 다르면 연쇄 운반 act 는 exit 3 이다, 95d: 들인 재수렴 답(감사 종합 요구)의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 7필드 좌석 연쇄 행 런의 첫 감사 파견도 사본을 들이고 exit 3 이다, 95d: 들인 감사 답의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 출처 행이 없는 매니페스트의 첫 감사 파견은 아무것도 들이지 않고 기동한다, 95d: 이월 행이 없는 재부착 답은 입양이 들이지 않고 경고로 이름 댄다, 95d: 이월 행이 이름 짓는 답은 입양 계획 act 가 들인다, 95d: 들인 미소비 이월 답이 있는 입양 키의 일반 파견은 exit 3 이다, 95d: 들인 재수렴 답(구속 티어 이탈)의 운반 act 가 출처 원장으로 판정받아 기동한다, 95d: 교대 정지 강제 표면 승인 자리의 사람 승인 답은 이월할 것 없음(1)이다, 95d: 답한 주체가 사람이 아니면 그 승인 답은 경고(2)다, 95d: 그 승인 답의 입양 계획 act 는 사본도 들인 중단 답 행도 남기지 않는다 ---
 #
 # 앞선 런이 마감 안에 자리를 찾지 못해 다음 런으로 넘긴 사람의 답(`이월` 행이 이름
 # 짓는 `중단 답`)은 다음 런이 사본으로 들여 그 런의 운반 act 로 낸다. 두 길이 있다.
@@ -55215,15 +55417,99 @@ check "95d: 다시 계획해도 같은 거절이고 막힘 행은 늘지 않는�
 check "95d: 입양 출처 원장은 그대로이고 그 답은 이월된 채 남는다" \
   "$(shasum -a 256 "$LED96/$SRC96L.md" | cut -d' ' -f1)|$(deferred96 "$SRC96L" "$ln96l")" "$srcsha96l|1"
 
+# 입양 — 앞선 런의 교대가 강제 표면 승인 자리에서 세그먼트를 멈췄고, 사람이 승인으로
+# 답했지만 다음 교대가 그 답을 집행하기 전에 런이 끝났다. 승인은 다음 매니페스트의
+# 승인 행으로 이어지므로 이 답에는 들여올 것이 없다(종료 코드 1). 출처 원장의 교대
+# 정지 행·기록 다이제스트·답한 주체=사람 중 하나라도 확인되지 않으면 경고(2)다.
+SRC96S='20260301-5a5a5a5a'
+RDS96S="$STATE_LATE/cc-cmds/run/$SRC96S"
+WT96S="$(dirname "$WT")/$(basename "$WT")-run-$SRC96S-S9"
+( cd "$WT" && git worktree add -q -b "seg/$SRC96S-S9" "$WT96S" HEAD ) >/dev/null 2>&1
+ROW96S="- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC96S-S9 | 워크트리=$WT96S | 출처 런=$SRC96S | PR=98"
+g15_run "$SRC96S" "$DOC96A" "$plan15c" 리뷰없음
+src96 "$SRC96S"
+mkdir -p "$RDS96S/halt/shift"
+REC96S="$RDS96S/halt/shift/S9#1.md"
+REC96SF="$RDS96S/halt/S9#2.md"
+for r96 in "$REC96S" "$REC96SF"; do
+  printf '%s\n' "<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=S9#1; run=$SRC96S -->" \
+    '**스킬**: autopilot-router-shift' '**스텝**: 교대 정지 — 강제 표면 승인' \
+    '**분류**: gate-unanswerable' '**질문 문면**: 강제 표면 변경을 승인할까요?' '**선택지**:' \
+    '- `재시도` — 다시 시도한다' '- `세그먼트 park` — 세그먼트를 park 한다' '- `승인` — 보인 변경을 승인한다' \
+    '<!-- /cc-pipeline-halt v1 -->' > "$r96"
+done
+dig96s=$(shasum -a 256 "$REC96S" | cut -d' ' -f1)
+led96s() {  # led96s <답 기록> <답한 주체> <교대 정지 행 자리|-> [앵커] — 출처 원장을 쓴다
+  { printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=리뷰중 | 워크트리=%s | 선행=없음\n' "$WT96S"
+    [ "$3" = "-" ] || printf -- '- `blocked` | 대상=infra | 스코프=cone | 원인=막힘 | 앵커 세그먼트=%s | 사유=교대 정지 — %s | 근거=x | 중단 기록=%s | 기록 다이제스트=%s | 자리=%s | 교대=1 | prev=x\n' \
+      "${4:-S9}" "$3" "$REC96S" "$dig96s" "$3"
+    printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=autopilot-router-shift | 선택지=승인 | 답한 주체=%s | 근거=사람이 승인을 골랐다 | 기록 다이제스트=%s | 승인 프레임=f | 근거 종류=강제 표면 승인 | 레인=좌석 | 기록 시각=2026-03-01T02:00:00Z\n' \
+      "$1" "$2" "$(shasum -a 256 "$1" | cut -d' ' -f1)"; } > "$LED96/$SRC96S.md"
+}
+g15_run R96S "$DOC96A" "$plan15c" 리뷰없음
+printf '%s\n' "$ROW96S" >> "$WORK/plan-R96S.md"
+RD96S="$STATE_LATE/cc-cmds/run/R96S"
+src96s() {  # src96s — R96S 에서 gate_adoption_halt_source SA 의 종료 코드와 GATE_CARRY_WHY·GATE_CARRY_SRC
+  gfn96 R96S 'gate_adoption_halt_source SA; printf "%s|%s|%s" "$?" "$GATE_CARRY_WHY" "$GATE_CARRY_SRC"'
+}
+led96s "$REC96S" 사람 '강제 표면 승인'
+check "95d 픽스처: 그 답은 완결된 기록에 대한 소비되지 않은 답이다 (아래가 공허하지 않다)" \
+  "$(gfn96 R96S 'gate_carry_record_whole "$1" "$2" "$3" && printf ok; gate_halt_answer_spent "$4" S9 "$5" && printf 소비' \
+     "$RDS96S" "$REC96S" "$(sed -n "$(ln96 "$SRC96S")p" "$LED96/$SRC96S.md")" "$LED96/$SRC96S.md" "$(ln96 "$SRC96S")")" "ok"
+check "95d: 교대 정지 강제 표면 승인 자리의 사람 승인 답은 이월할 것 없음(1)이다" "$(src96s)" "1||"
+cp "$REC96S" "$REC96S.keep"
+printf '\n' >> "$REC96S"
+case "$(src96s)" in
+  "2|"*"기록 다이제스트와 다릅니다"*) ok "95d: 기록이 교대 정지 행의 다이제스트와 다르면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 기록이 교대 정지 행의 다이제스트와 다르면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+mv "$REC96S.keep" "$REC96S"
+led96s "$REC96S" 사람 -
+case "$(src96s)" in
+  "2|"*"교대 정지 행이 없어"*) ok "95d: 출처 원장에 교대 정지 행이 없으면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 출처 원장에 교대 정지 행이 없으면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96S" 사람 '병합 거절'
+case "$(src96s)" in
+  "2|"*"교대 정지 행이 없어"*) ok "95d: 교대 정지 행의 자리가 강제 표면 승인이 아니면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 교대 정지 행의 자리가 강제 표면 승인이 아니면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96S" 사람 '강제 표면 승인' S8
+case "$(src96s)" in
+  "2|"*"교대 정지 행이 없어"*) ok "95d: 교대 정지 행이 다른 세그먼트에 앵커되면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 교대 정지 행이 다른 세그먼트에 앵커되면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96S" 좌석 '강제 표면 승인'
+case "$(src96s)" in
+  "2|"*"답한 주체가 사람이 아닙니다(답한 주체=좌석)"*) ok "95d: 답한 주체가 사람이 아니면 그 승인 답은 경고(2)다" ;;
+  *) bad "95d: 답한 주체가 사람이 아니면 그 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96SF" 사람 '강제 표면 승인'
+case "$(src96s)" in
+  "2|"*"halt/shift 바로 아래에 있지 않아"*) ok "95d: 같은 스텝 줄을 든 halt/shift 밖 기록의 승인 답은 경고(2)다" ;;
+  *) bad "95d: 같은 스텝 줄을 든 halt/shift 밖 기록의 승인 답은 경고(2)다" "$(src96s)" ;;
+esac
+led96s "$REC96S" 사람 '강제 표면 승인'
+srcsha96s=$(shasum -a 256 "$LED96/$SRC96S.md" | cut -d' ' -f1)
+g15_plan act R96S SA 상태=계획됨 "워크트리=$WT96S"
+check "95d: 그 승인 답의 입양 계획 act 는 사본도 들인 중단 답 행도 남기지 않는다" \
+  "$rc/$(copies96 "$RD96S" adopted)/$(carried96 R96S)" "0/0/0"
+case "$msg" in
+  *"출처 런 $SRC96S 의 열린 중단 답"*) bad "95d: 그 입양 계획 act 는 열린 중단 답 경고를 내지 않는다" "$msg" ;;
+  *) ok "95d: 그 입양 계획 act 는 열린 중단 답 경고를 내지 않는다" ;;
+esac
+check "95d: 그 입양 뒤 출처 원장은 그대로다" "$(shasum -a 256 "$LED96/$SRC96S.md" | cut -d' ' -f1)" "$srcsha96s"
+
 for wt96 in "$WT-run-R96C-A1" "$WT-run-R96D-A1" "$WT-run-R96N-A1" "$WT-run-$SRC96C-A1" "$WT-run-$SRC96D-A1" \
             "$WT-run-$SRC96E-A1" "$WT-run-R96E-A1" "$WT-run-R96G-A1" "$WT-run-R96H-A1" "$WT-run-R96K-A1"; do
   ( cd "$WT" && git worktree remove --force "$wt96" ) >/dev/null 2>&1 || true
 done
 ( cd "$WT" && git worktree remove --force "$WT96A" && git branch -D "seg/$SRC96A-S9" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree remove --force "$WT96L" && git branch -D "seg/$SRC96L-S9" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree remove --force "$WT96S" && git branch -D "seg/$SRC96S-S9" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 rm -f "$LED96/$SRC96C.plan.md" "$LED96/$SRC96D.plan.md" "$LED96/$SRC96A.plan.md" "$LED96/$SRC96E.plan.md" "$LED96/R96E.plan.md" \
-  "$LED96/$SRC96K.plan.md" "$LED96/$SRC96L.plan.md" "$WT/$DOC96" "$WT/$DOC96A"
+  "$LED96/$SRC96K.plan.md" "$LED96/$SRC96L.plan.md" "$LED96/$SRC96S.plan.md" "$WT/$DOC96" "$WT/$DOC96A"
 
 # ---------------------------------------------------------------------------
 # 86. 런 개시가 대시보드 서버를 하나 띄우고, 띄우지 말아야 할 자리에서는 띄우지 않는다
@@ -64706,7 +64992,7 @@ unset S106_SK s106_rt s106_rr s106_f s106_sc s106_got s106_k
 
 # ---------------------------------------------------------------------------
 # 108p. 리뷰어 계획 — 진입 검사기의 고정 틀과 라우팅 런에서만의 기동
-# --- section: 108p | group: tier | covers: tier, run_profile, check_manifest, hotfix_routing_check | anchors: 108p: 고정 틀의 리뷰어 계획이 통과한다, 108p: 고정 틀을 벗어난 리뷰어 계획은 거부된다, 108p: 라우팅 기록이 1 이 아닌 런의 리뷰어 기동은 거부된다, 108p: 라우팅 런의 리뷰어 기동은 통과한다, 108p: 문서 없는 입양 매니페스트는 라우팅 런에서만 기동한다 ---
+# --- section: 108p | group: tier | covers: tier, run_profile, check_manifest, hotfix_routing_check | anchors: 108p: 고정 틀의 리뷰어 계획이 통과한다, 108p: 고정 틀을 벗어난 리뷰어 계획은 거부된다, 108p: 라우팅 기록이 1 이 아닌 런의 리뷰어 기동은 거부된다, 108p: 라우팅 런의 리뷰어 기동은 통과한다, 108p: 문서 없는 입양 매니페스트는 라우팅 런에서만 기동한다, 108p: 문서 있는 입양 매니페스트도 라우팅 런에서만 기동한다 ---
 #
 # 리뷰어 계획은 진입 판단이 고정 틀을 채운다. 검사기의 (f) 가 그 틀의 키마다 위반 하나를
 # 내고, run.sh 는 라우팅 기록이 `1` 이 아닌 런에서 리뷰어 계획과, 설계 문서 없이 입양 행을
@@ -64764,8 +65050,15 @@ rv106p_launch "$rv106p_ad" 없음
 case "$RV106P_OUT" in *"입양 매니페스트는"*"라우팅"*) rv106p_got="$RV106P_RC" ;; *) rv106p_got=0 ;; esac
 rv106p_launch "$rv106p_ad" 1
 check "108p: 문서 없는 입양 매니페스트는 라우팅 런에서만 기동한다" "$( [ "$rv106p_got" != 0 ] && echo 거부)/$RV106P_RC" "거부/0"
+# 설계 문서가 있는 입양 매니페스트도 라우팅 런에서만 기동한다: 런 중 브랜치의 강제 표면
+# 변경을 승인받는 자리가 교대 정지뿐이라 고정 드라이버에는 답할 곳이 없다.
+rv106p_add=$(printf '# 매니페스트\n\n## 요소\n**설계 문서**: docs/x.md\n\n## 실행 계획\n\n```json\n%s\n```\n\n## 인가\n- `세그먼트 입양` | 세그먼트=I1 | 브랜치=seg/20260101-0000abcd-I1 | 워크트리=/x/flow-run-20260101-0000abcd-I1 | 출처 런=20260101-0000abcd | PR=7\n' "$TIER_PLAN_SOLO")
+rv106p_launch "$rv106p_add" 없음
+case "$RV106P_OUT" in *"입양 매니페스트는"*"라우팅"*) rv106p_got="$RV106P_RC" ;; *) rv106p_got=0 ;; esac
+rv106p_launch "$rv106p_add" 1
+check "108p: 문서 있는 입양 매니페스트도 라우팅 런에서만 기동한다" "$( [ "$rv106p_got" != 0 ] && echo 거부)/$RV106P_RC" "거부/0"
 unset -f rv106p rv106p_launch
-unset RV106P_ES rv106p_fail rv106p_u rv106p_m rv106p_g rv106p_ad rv106p_got
+unset RV106P_ES rv106p_fail rv106p_u rv106p_m rv106p_g rv106p_ad rv106p_add rv106p_got
 
 # ---------------------------------------------------------------------------
 # 109. 문서 없는 런의 입양 — 입양 행이 이름한 구현 단계가 그 워크트리의 대상에 계획된다
