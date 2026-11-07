@@ -13706,4 +13706,69 @@ check "36: main_loop_body 가 s0_arm 을 design_arm 바로 앞에서 부른다" 
 check "36: 설계 스테이지의 첫 파견·계속·거절 재부착 셋이 design_stage_cmd 를 지나고 직접 철자가 남지 않는다" \
   "$(grep -c '"$(design_stage_cmd "$skill1")"' "$DRIVER" || true)/$(grep -c '"/cc-cmds:$skill1 $DOC ' "$DRIVER" || true)" "3/0"
 
+# --- 시각 발행 고정 레인의 조회 순서와 출처, 아침 보고의 이관 절 -------------
+# 고정 레인은 런 지역 이관 기록 → 문서 단위 레인 기록 → 호스트 파일 순으로 찾고,
+# 앞의 둘에서 찾으면 출처가 `run-record`, 호스트에서 찾으면 `host` 다. 런 지역
+# 기록이 있는데 읽히지 않으면 다음 출처로 넘어가지 않고 실패한다. 진짜
+# visual-config.sh 가 답하고, 호스트 파일은 XDG_CONFIG_HOME 을 옮겨 가린다.
+VP="$WORK/vpin"
+mkdir -p "$VP/repo/docs" "$VP/cfg/cc-cmds" "$VP/state" "$VP/run/halt" "$VP/run/visual-migration"
+git -c init.defaultBranch=main init -q "$VP/repo" 2>/dev/null
+printf '# d\n' > "$VP/repo/docs/d.md"
+printf 'account = a@example.com\nlane = host-lane\n' > "$VP/cfg/cc-cmds/claude-design"
+VP_DOCREC="$VP/repo/docs/visual-lane/docs-d.md"
+vp_run() {  # vp_run <함수> <인자...> — 격리한 환경에서 드라이버 함수를 부른다
+  (
+    XDG_CONFIG_HOME="$VP/cfg" XDG_STATE_HOME="$VP/state"; export XDG_CONFIG_HOME XDG_STATE_HOME
+    unset CC_PIPELINE_RUN_DIR
+    RUN_DIR="$VP/run"; DOC="$VP/repo/docs/d.md"; ORCH_DIR="$(dirname "$DRIVER")"; RUN_ID=vp
+    report_append() { printf '%s | %s\n' "$1" "$2"; }
+    "$@"
+  )
+}
+vp_runrec() {  # vp_runrec <레인> [줄...] — 런 지역 이관 기록을 쓴다
+  local lane="$1"; shift
+  { printf '%s\n' '<!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->'
+    printf '**레인**: %s\n**계정**: b@example.com\n' "$lane"
+    [ "$#" -eq 0 ] || printf '%s\n' "$@"
+  } > "$VP/run/visual-lane"
+}
+check "시각 고정: 기록이 없으면 호스트 파일의 레인과 출처 host" \
+  "$(vp_run kind_pin_resolve visual-publish)" "host-lane host"
+check "시각 고정: 다른 종류는 고정이 없고 요청 칸이 빈 객체다" \
+  "$(vp_run kind_pin_resolve implement)/$(vp_run kind_pin_request_json implement)" "/{}"
+check "시각 고정: 요청 칸이 migratable 과 호스트 출처를 싣는다" \
+  "$(vp_run kind_pin_request_json visual-publish | jq -c '[.migratable, .pin_lane, .pin_source]')" '[true,"host-lane","host"]'
+mkdir -p "$(dirname "$VP_DOCREC")"
+printf '%s\n**레인**: doc-lane\n' '<!-- cc-visual-lane-doc v1; writer=gate; reader=run.sh,gate.sh,visual,visual-publish-unattended -->' > "$VP_DOCREC"
+check "시각 고정: 계정 줄이 없는 문서 단위 기록은 읽지 않고 호스트로 간다" \
+  "$(vp_run kind_pin_resolve visual-publish)" "host-lane host"
+printf '**계정**: b@example.com\n**출처**: r0 · 이관 1 · 2026-11-01T00:00:00Z\n' >> "$VP_DOCREC"
+check "시각 고정: 문서 단위 기록이 호스트보다 먼저이고 출처는 run-record" \
+  "$(vp_run kind_pin_resolve visual-publish)/$(vp_run kind_pin_source_of visual-publish)" "doc-lane run-record/run-record"
+vp_runrec run-lane
+check "시각 고정: 런 지역 기록이 문서 단위 기록보다 먼저다" \
+  "$(vp_run kind_pin_lane_of visual-publish)/$(vp_run kind_pin_request_json visual-publish | jq -r .pin_source)" "run-lane/run-record"
+printf 'broken\n' > "$VP/run/visual-lane"
+check "시각 고정: 읽히지 않는 런 지역 기록은 다음 출처로 넘어가지 않고 실패한다" \
+  "$(vp_run kind_pin_resolve visual-publish; printf 'rc=%s' "$?")" "rc=1"
+# 아침 보고 — `**이관**` 줄마다 그 진행 파일의 `**완료**: 예` 로 두 문면을 가른다.
+vp_runrec new-lane '**이관**: 1 · old-lane → new-lane · 원 계정 소진 · 2026-11-07T00:00:00Z'
+check "아침 보고: 진행 파일이 끝나지 않았으면 미완료 문면과 진행 파일 경로" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — old-lane → new-lane(원 계정 소진), 진행 파일 $VP/run/visual-migration/1.md"
+printf '**완료**: 예\n' > "$VP/run/visual-migration/1.md"
+check "아침 보고: 끝난 이관에 시각-판정 기록이 없으면 새 URL 자리로 사이드카 경로" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $(cd "$VP/repo" && pwd -P)/docs/visual/docs-d.md"
+printf '**분류**: 시각-판정\n' > "$VP/run/halt/S2P#2.md"
+check "아침 보고: 끝난 이관은 최신 시각-판정 기록 경로를 새 URL 자리로 적는다" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $VP/run/halt/S2P#2.md"
+vp_runrec doc-lane "**승계**: $VP_DOCREC · r0 · 2026-11-07T00:00:00Z"
+check "아침 보고: 승계 줄만 있는 기록은 이관 절을 두지 않는다" \
+  "$(vp_run report_visual_migration)" ""
+check "아침 보고: 런 끝 꼬리가 이관 절을 종료 줄 앞에서 부른다" \
+  "$(grep -A1 -x '  report_visual_migration || true' "$DRIVER" | sed -n 2p | grep -c '^  report_append "종료" ' || true)" "1"
+
 tr_summary
