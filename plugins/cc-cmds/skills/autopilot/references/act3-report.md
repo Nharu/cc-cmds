@@ -1,7 +1,7 @@
 # autopilot seat — the morning report (`--report`)
 
 
-Read the manifest, the run ledger and the report for the named run; for the requirement-decision and frozen-residual bullets only, the design document `## 요소` names; and, when the manifest is absent or the run ledger file carries no line beginning ``- `run` |``, the kickoff trace; and the output of the waiting-decisions helper, which reads the run directory's `halt/` and the approval sidecar for 「기다리는 결정」 below. Then render in Korean. **Render only — this mode starts nothing and writes nothing.** Whether the ledger file exists is never the test of whether the run started: the report stub is that same file.
+Read the manifest, the run ledger and the report for the named run; for the requirement-decision, frozen-residual and new-ticket-draft bullets only, the design document `## 요소` names; and, when the manifest is absent or the run ledger file carries no line beginning ``- `run` |``, the kickoff trace; and the output of the waiting-decisions helper, which reads the run directory's `halt/` and the approval sidecar for 「기다리는 결정」 below. Then render in Korean. **Render only — this mode starts nothing and writes nothing.** Whether the ledger file exists is never the test of whether the run started: the report stub is that same file.
 
 Put the dashboard link line at the very top, before every section below: the one line `python3 <plugin root>/orchestrator/dashboard.py url <run-id>` prints, verbatim, or 「대시보드 없음 — python3 를 찾지 못했습니다」 when `command -v python3` finds nothing. This does not break "Render only": `url` reads the server record and `/healthz` and starts nothing, and this seat is outside the gate hook as Step 7's is.
 
@@ -59,6 +59,99 @@ Cover, in this order:
   - (c) when the document's `**상태**` line does not read frozen, 「동결 전 문서에서 읽음」.
   - (d) 「이 목록은 결정한 팀이 직접 적은 것입니다 — 팀이 적지 않은 결정은 여기에 나타나지 않습니다」.
   - With nothing to show, one line of these: 「이 런에는 설계 스테이지가 없었습니다」 · 「lead-solo 런 — 요구 결정은 킥오프 대화에서 물었습니다」(티어가 `lead-solo` 인 옛 계획의 런에서만) · 「문서에 절이 없습니다 — 설계 스테이지가 목록을 남기지 않았습니다」 · 「설계 문서가 없습니다」.
+- **새 티켓 초안** — the tickets a child run set aside for a person to publish: every entry of the design document's `## 미해결 이슈 / 트레이드오프` whose `**사유**` reads `새 티켓 필요 — 앞 티켓 결함`, each with its heading and its `**티켓 초안**` verbatim. End with 「런은 트래커에 쓰지 않았습니다 — 사람이 발행합니다」. With no such entry, leave the section out.
+- **상위 출처 이슈** — only when the manifest carries a `베이스 설계` row whose upper document carries `**문서 종류**: 티켓 배달 설계`. The upper run ends at its split and cannot see its tickets land, so this read belongs to the child run's report. All of it is reading.
+  - `<base>` is what `cd "<manifest directory>/../.." && pwd` prints. For each `착수` row of the registry `<base>/docs/design-base/<slug>.tickets.md`, take the run's ledger `<base>/docs/pipeline-run/<런>.md`. **A ledger file that does not exist is not a failed read**: that run was refused or given up before it began, and its ticket line reads `없음`. For an existing ledger take `<문서>` from the `**설계 문서**` line of the run's `<base>/docs/pipeline-run/<런>.plan.md`: `<base>/<값>` when that is a file, otherwise `/<값>` when that is a file; `/dev/null` when the value is `(없음)` or the plan has no such line. A plan that cannot be read is a failed read. **A value that names no file is not a failed read**: that run's design stage has not written its document yet, and its ticket line reads `없음`. Read the ledger with this program and nothing else, as `LC_ALL=C awk -f <이 프로그램> <문서> <원장>`; any non-zero exit is a failed read, and exit 3 with nothing printed means a fence in `<문서>` never closes, the state the driver also refuses to read. It reads every `segment` row of a segment, because the park, apply and import rows carry no `PR=`, and prints one line `<세그먼트><TAB><종류><TAB><값><TAB><행 레포>` per segment: `머지` when a row carries `머지 커밋`, which only a merged segment's row carries; then `PR` with the last non-empty `PR=`; then `브랜치` with the last non-empty `브랜치=`; then `없음`. `<행 레포>` is the last non-empty `레포=`, or `-` when no row carries one. A slice `## 구현 슬라이싱` of `<문서>` declares with `### 슬라이스 <id>` and no `segment` row has yet, because the router plans a slice only after its predecessor landed, prints `<id><TAB>없음<TAB>-<TAB>-` after them, so a run that landed only part of its slices never reads as merged. `**슬라이스 수**` is not read: it leaves out a slice cut below `PR`, and such a slice is a ticket PR that has not landed. A ledger with no `segment` row and no declared slice, a run that has not planned a segment yet, prints the one line `-<TAB>없음<TAB>-<TAB>-`, so such a run never reads as merged:
+
+  ```awk
+  FILENAME == ARGV[1] {
+    line = $0
+    sub(/^[ \t]+/, "", line)
+    c = substr(line, 1, 1)
+    if (c == "`" || c == "~") {
+      m = 0
+      while (substr(line, m + 1, 1) == c) m++
+      if (m >= 3) {
+        rest = substr(line, m + 1)
+        gsub(/[ \t]/, "", rest)
+        if (!fenced) { fenced = 1; fc = c; fl = m }
+        else if (c == fc && m >= fl && rest == "") fenced = 0
+        next
+      }
+    }
+    if (fenced) next
+    if ($0 == "## 구현 슬라이싱") { body = 1; next }
+    if (index($0, "## ") == 1) { body = 0; next }
+    head = "### 슬라이스 "
+    if (body && index($0, head) == 1) {
+      rest = substr($0, length(head) + 1)
+      if (match(rest, /^[A-Za-z0-9]+/)) declared[++nd] = substr(rest, 1, RLENGTH)
+    }
+    next
+  }
+  /^- `segment` \| / {
+    n = split($0, f, " \\| ")
+    id = pr = mc = br = rp = ""
+    for (i = 2; i <= n; i++) {
+      p = index(f[i], "=")
+      if (!p) continue
+      k = substr(f[i], 1, p - 1)
+      v = substr(f[i], p + 1)
+      if (v == "" || v == "-") continue
+      if (k == "id") id = v
+      else if (k == "PR") pr = v
+      else if (k == "머지 커밋") mc = v
+      else if (k == "브랜치") br = v
+      else if (k == "레포") rp = v
+    }
+    if (id == "") next
+    if (!(id in seen)) { seen[id] = 1; order[++total] = id; repos[id] = "-" }
+    if (pr != "") prs[id] = pr
+    if (mc != "") merges[id] = mc
+    if (br != "") branches[id] = br
+    if (rp != "") repos[id] = rp
+  }
+  END {
+    if (fenced) exit 3
+    for (i = 1; i <= nd; i++) {
+      s = declared[i]
+      if (!(s in seen)) { seen[s] = 1; order[++total] = s; repos[s] = "-" }
+    }
+    if (!total) { print "-\t없음\t-\t-"; exit }
+    for (i = 1; i <= total; i++) {
+      s = order[i]
+      if (s in merges) print s "\t머지\t-\t" repos[s]
+      else if (s in prs) print s "\tPR\t" prs[s] "\t" repos[s]
+      else if (s in branches) print s "\t브랜치\t" branches[s] "\t" repos[s]
+      else print s "\t없음\t-\t" repos[s]
+    }
+  }
+  ```
+
+  - Turn each printed line into a state. `PR` and `브랜치` read `gh pr view <값> -R <레포> --json state` (a read that reaches the collaboration surface), and a `브랜치` whose answer reads `no pull requests found for branch` is `없음`, not a failed read. `머지` is `MERGED`. `없음` is `없음`. `<레포>` is the line's `<행 레포>`; when that is `-`, it is the `**레포**` of that ticket's `### 티켓 T<n> — ` block in the upper document, code span stripped. It is never the manifest's target row, because a ticket or a slice may land in another repository than the run's target. Write one line `<티켓><TAB><상태>` per run into a scratch file under `${TMPDIR:-/tmp}`: `MERGED` only when every printed line of that run is `MERGED`, otherwise the first other state. A ticket with no `착수` row gets no line and does not count as landed.
+  - Judge with this program and nothing else, as `LC_ALL=C awk -f <이 프로그램> <상태 파일> <레지스트리>`. It prints `착지` only when every `티켓` row has a `착수` row and a `MERGED` line, `미착지 <남은 티켓 수>` otherwise, and `판정 못 함` for a registry with no `티켓` row:
+
+  ```awk
+  FILENAME == ARGV[1] {
+    split($0, f, "\t")
+    if (f[2] == "MERGED") merged[f[1]] = 1
+    next
+  }
+  /^- `티켓` \| / {
+    if (match($0, /\| id=[^ |]+/)) tickets[++total] = substr($0, RSTART + 5, RLENGTH - 5)
+    next
+  }
+  /^- `착수` \| / {
+    if (match($0, /\| id=[^ |]+/)) started[substr($0, RSTART + 5, RLENGTH - 5)] = 1
+  }
+  END {
+    if (!total) { print "판정 못 함"; exit }
+    for (i = 1; i <= total; i++) if (!(tickets[i] in merged && tickets[i] in started)) left++
+    print (left ? "미착지 " left : "착지")
+  }
+  ```
+
+  - The upper source issues are the `출처 티켓` rows of the `<base>/docs/pipeline-run/*.plan.md` whose `설계 문서` is the upper document and whose plan reads `design_delivery` `tickets`. On `착지`, list those issues and end with 「모든 티켓이 착지했습니다 — 런은 닫지 않았으니 사람이 닫습니다」. On `미착지 <n>`, one line: 「상위 문서의 티켓 <n>건이 아직 착지하지 않았습니다」. When a read above failed, or on `판정 못 함`, one line: 「상위 출처 이슈 — 판정 못 함: <사유>」, never read as landed.
 - **리뷰 게시** — only on a reviewer run (`run_profile: reviewer`), and before every other section but the stage summary: one line per `리뷰 PR` row, in row order — `<owner>/<name>#<PR>`, the `리뷰 게시` row's `방식`, its `종류` as written (the submitted event, or `제안:<event>` on a pending review, which the review's body does not carry), the P0, P1, P2 and P3 counts of the segment's last `cycle` row, its `리포트 경로`, `대조` and `헤드 변경`. A pull request with no `리뷰 게시` row reads 「게시 안 됨」 with the segment's last state and, when the segment stopped at a shift site, that site. A `대조` other than `일치` is copied as it is and also listed under 「사람 대조 필요」: the review on the pull request is not the one the run rendered, and the run did not edit or delete it. On `방식=보류`, add one line: 「보류 리뷰는 GitHub 의 PR 화면에서 직접 제출해야 작성자에게 보입니다」.
 - **도달 감사** — the acts that PASSED and touched something outside this machine, which no other section reports: every exec row whose `도달` is `dev`, `prod`, `배포트리거` or `협업`, every row whose `등급 출처` is `불투명` or `미상`, every row carrying a `표지`, every `dev` row whose `식별자 대조` is `미선언` or `대조불가`, and every read whose `도달` is `prod`. An exec row carrying `행 값=<표면>/<도달>` — an act a new-form `사전 인가` row decided — is selected and ordered by the reach in its `행 값`, not by its declared `도달`, and its `신고 불일치=` is shown beside it when present. List them prod first. `런로컬` and `-` are reported as a COUNT and not enumerated — they are the bulk and reading them teaches the eye to skip.
 - **남은 외부 상태** — the pair cleanups that did not succeed: an act a `사전 인가` row opened turned something on outside this machine, and the command that turns it off failed, was cut off, or never ran. Find the reader copy the way the stall labels below find theirs: (1) the `RUN_DIR=` of the ledger's `run` row; (2) the `plugin-dir` line of `<RUN_DIR>/plugin-pin`; (3) when both exist and `<plugin-dir>/orchestrator/pair-residue.awk` can be read, use that file; (4) otherwise use the installed `<plugin root>/orchestrator/pair-residue.awk`. Run `LC_ALL=C awk -f <copy> <ledger>` and copy each line it prints — dispatch id, row ordinal, cleanup command and state (`실패 rc=<n|->`, `호출중단`, `미호출`) — as written. Do not call `gate.sh` for it: entering the gate rewrites the run's reap clock. When the reader prints nothing, leave the section out.
