@@ -6377,9 +6377,15 @@ PJEOF
 # helpers: the gate and the run hook called the way a session calls them, and
 # the target's own hook run on the same bytes, which is what the harness does
 # after the run hook allows.
+#
+# IT ALSO CALLS `ledger_series`, whose `lsr_ledger` section 111 uses. Called in
+# that section's body instead, the prelude would run its whole body only in a
+# cut where no earlier section ran it, so the section's traced line set would
+# differ by context.
 pre_tguard() {
   [ -n "${PRE_TGUARD_DONE:-}" ] && return 0
   PRE_TGUARD_DONE=1
+  pre_ledger_series
   # shellcheck source=/dev/null
   . "$repo_root/scripts/target-guard-fixtures.sh"
   # shellcheck source=/dev/null
@@ -64819,7 +64825,6 @@ unset S106 r106 a106 d106 r106_sh s106_home s106_b r106_snap m106_snap n106 t106
 # 픽스처에서 라우터·임대 동사를 대역으로 바꾸고 기동 디렉터리의 결정도 대역으로 고정해,
 # 그 갈래가 결정을 어떻게 쓰는지만 본다.
 # ---------------------------------------------------------------------------
-pre_ledger_series
 S111="$WORK/s111"; rm -rf "$S111"; mkdir -p "$S111/bin" "$S111/out"
 S111=$(cd -P "$S111" && pwd)
 TG="$S111"; TG_A="$S111/H"; TG_RUN=RT111; TG_STATE="$S111/state"
