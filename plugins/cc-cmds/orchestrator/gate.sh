@@ -51724,8 +51724,9 @@ EOF
       printf '이관 기록 미작성 — 새 레인 %s 의 계정 읽기 실패: %s (claude auth status --json, %s)' "$to" "$email" "$cfg"
       return 1
     fi
-    s=$( { grep -cE '^\*\*이관\*\*: ' "$rec" 2>/dev/null || true; } | head -n 1)
-    s=$(( ${s:-0} + 1 ))
+    s=$(grep -cE '^\*\*이관\*\*: ' "$rec" 2>/dev/null) || true
+    case "$s" in ''|*[!0-9]*) s=0 ;; esac
+    s=$(( s + 1 ))
     if ! gate_visual_lane_write "$to" "$email" "**이관**: $s · ${from:--} → $to · ${why:--} · $(now_iso)"; then
       printf '이관 기록 미작성 — %s 를 쓰지 못했다 (레인 %s)' "$rec" "$to"
       return 1
