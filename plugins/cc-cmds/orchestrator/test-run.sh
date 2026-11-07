@@ -11882,6 +11882,13 @@ case "$sp_keep" in
     ok "fresh 가 아닌 재개는 넘겨받은 디스패치 프롬프트를 쓰지 않고 재부착한다" ;;
   *) bad "재개 argv" "재부착 프롬프트가 바뀌었다: ${sp_keep:-(기동 안 됨)}" ;;
 esac
+# 위 두 사례는 STAGE_RESUME_DISPATCH 를 직접 준다. 드라이버에서 그 값을 넘기는 것은
+# STAGE_RESUME 에 세션을 넣고 띄우는 호출자들이므로, 세션을 넣는 자리마다 기동 줄이
+# 디스패치 프롬프트를 접두 할당으로 넘기는지 센다.
+check "STAGE_RESUME 에 세션을 넣는 자리는 셋이다" \
+  "$(grep -c -E 'STAGE_RESUME=(\$|"\$)' "$DRIVER")" "3"
+check "세 재부착 기동 줄 모두 디스패치 프롬프트를 STAGE_RESUME_DISPATCH 로 넘긴다" \
+  "$(grep -c -E 'STAGE_RESUME_DISPATCH=\$[a-z_]+ CC_SPAWN_EVENT=' "$DRIVER")" "3"
 sp_design=$(sp_spawn "S1design" "$SPD/design.txt")
 case "$sp_design" in
   *" --effort high --model opus -- "*) ok "S1design 기동은 high 를 싣는다" ;;

@@ -7158,6 +7158,11 @@ stage_spawn() {
   # second, divergent liveness path.
   local stage="$1" cwd="$2" prompt="$3"; shift 3
   local cfg out err pid pgid attempt env why
+  # The dispatch prompt a re-attaching caller names for a migration GRANT, read
+  # once and taken out of the environment: a prefix assignment is exported, and
+  # neither the router's calls nor the launched stage are to inherit it.
+  local resume_dispatch="${STAGE_RESUME_DISPATCH:-}"
+  unset STAGE_RESUME_DISPATCH
   # THE GUARD RECORD IS CHECKED BEFORE THE ROUTER IS ASKED. A routed record with
   # no regular baseline would ask a router that has nothing to route on; the
   # launch is declined and the caller parks this stage.
@@ -7339,8 +7344,8 @@ stage_spawn() {
      && [ "$(printf '%s' "$env" | jq -r 'if .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]; then
     log "$stage: 이관 GRANT — 세션 $resume_id 을 재부착하지 않고 새 세션으로 띄운다"
     resume_id=""
-    if [ -n "${STAGE_RESUME_DISPATCH:-}" ]; then
-      prompt=$STAGE_RESUME_DISPATCH
+    if [ -n "$resume_dispatch" ]; then
+      prompt=$resume_dispatch
       log "$stage: 이관 GRANT — 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
     else
       warn "$stage: 이관 GRANT 인데 호출자가 디스패치 프롬프트를 넘기지 않았다 — 받은 프롬프트로 띄운다"
@@ -11587,9 +11592,13 @@ segment_cycle() {
           aj=""
         fi
       fi
+      # The dispatch prompt, kept before the re-attach message replaces it: a
+      # migration GRANT starts a new session, which gets this one instead.
+      local aj_dispatch=""
       if [ -n "$aj" ]; then
         jkey="$aj_stage"
         STAGE_RESUME=$(stage_session_id_strict "$aj_stage")
+        aj_dispatch=$prompt
         prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 그리고 끝내기 전에 반드시 같은 판단을 다시 방출하라 — 같은 \`판단 기준\`·\`판단 근거\`로 재제출해야 게이트가 닫힌 승인의 상태를 읽어 \`해소 승인=$aj_id\` 를 담은 \`자율 승인\` 행을 남긴다. 그 행이 없으면 이 답은 소비되지 않은 것으로 남아 다음 사이클에 같은 스테이지가 같은 답을 다시 받는다. 선언 파일: $files"
         log "$seg: 답이 온 판단 $aj_id — 방출한 스테이지 $aj_stage 를 재부착한다"
       else
@@ -11608,7 +11617,7 @@ segment_cycle() {
       local spawn_event=first
       src=0
       [ -z "$STAGE_RESUME" ] || spawn_event=resume
-      CC_SPAWN_EVENT=$spawn_event stage_spawn "$sid" "$wt" "$prompt" || src=$?
+      STAGE_RESUME_DISPATCH=$aj_dispatch CC_SPAWN_EVENT=$spawn_event stage_spawn "$sid" "$wt" "$prompt" || src=$?
       STAGE_RESUME=""
       if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
         park_router "$seg" "$seg" cone
