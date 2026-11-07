@@ -6377,9 +6377,15 @@ PJEOF
 # helpers: the gate and the run hook called the way a session calls them, and
 # the target's own hook run on the same bytes, which is what the harness does
 # after the run hook allows.
+#
+# IT ALSO CALLS `ledger_series`, whose `lsr_ledger` section 111 uses. Called in
+# that section's body instead, the prelude would run its whole body only in a
+# cut where no earlier section ran it, so the section's traced line set would
+# differ by context.
 pre_tguard() {
   [ -n "${PRE_TGUARD_DONE:-}" ] && return 0
   PRE_TGUARD_DONE=1
+  pre_ledger_series
   # shellcheck source=/dev/null
   . "$repo_root/scripts/target-guard-fixtures.sh"
   # shellcheck source=/dev/null
@@ -65220,6 +65226,225 @@ check "107:부분 복구 리뷰는 이어가기 메시지에 닿지 않는다" "
 rm -rf "$s106_base/docs/reviews/seg-$TG_RUN-"*
 unset -f s106_rp s106_outcome
 unset S106 r106 a106 d106 r106_sh s106_home s106_b r106_snap m106_snap n106 t106 n106_rows g106 c106 s106_base
+
+# ---------------------------------------------------------------------------
+# 111. 스테이지의 기동 디렉터리 — 비홈 대상의 세그먼트 워크트리, 감사 워크트리, 리뷰전용의 메인 워크트리, 재부착, 소실 거절
+# --- section: 111 | group: tguard | covers: launch, gate_stage_launch_dir, gate_stage_launch_dir_record, gate_launch_stage, gate_launch_wait, gate_verb_supervise_stage | anchors: 111: 비홈 대상 스테이지는 그 대상의 세그먼트 워크트리에서 뜬다, 111: 그 스테이지의 지시 파일은 대상 훅 문단을 싣는다, 111: 홈 대상 스테이지는 파견한 디렉터리에서 뜬다, 111: 런 범위 감사 단계는 감사 워크트리에서 뜬다, 111: 리뷰전용 세그먼트 스테이지는 대상 메인 워크트리에서 뜨고 PR 헤드 트리의 훅을 따르지 않는다, 111: 재부착은 기록된 디렉터리를 쓰고 기록 없는 세션은 움직이지 않는다, 111: 체크아웃이 없으면 rc 127 이고 임대를 반납하며 시도 핀을 남기지 않는다, 111: WAIT 판정에서도 체크아웃이 없으면 rc 127 이고 대기 흔적을 남기지 않는다, 111: WAIT 갈래의 감독자는 기동 디렉터리를 받고 지시문을 그 안에서 합성한다, 111: 부여 뒤 기동 디렉터리가 사라지면 감독자는 준비 거절로 끝나고 흔적을 남기지 않는다 ---
+#
+# 스테이지는 대상의 체크아웃에서 떠야 그 대상의 훅과 프로젝트 설정 아래에서 일한다.
+# 세계는 절 107 과 같은 꼴로 이 절이 만든다: 훅 없는 홈 대상 h, 자기 Bash 훅을 커밋한
+# 비홈 대상 b, 훅 없는 비홈 대상 c 와 그 PR 헤드 워크트리(그 트리에만 훅을 커밋한다).
+# 기동은 게이트를 소싱한 자식에서 파견 반쪽을 직접 불러, 진짜 감독자와 래퍼를 지나 받은
+# 디렉터리와 argv 를 적는 스텁 CLI 까지 간다 — 파견 행위의 인가는 절 14h 가 잰다.
+# 리뷰전용 판정과 감사 단계 id 는 계획 표면의 사실이라 자식에서 고정한다(그 판정 자체는
+# 절 108 이 잰다). 라우팅 켠 갈래(부여·WAIT·대기 감독자의 준비)는 기록 1 을 심은 원장
+# 픽스처에서 라우터·임대 동사를 대역으로 바꾸고 기동 디렉터리의 결정도 대역으로 고정해,
+# 그 갈래가 결정을 어떻게 쓰는지만 본다.
+# ---------------------------------------------------------------------------
+S111="$WORK/s111"; rm -rf "$S111"; mkdir -p "$S111/bin" "$S111/out"
+S111=$(cd -P "$S111" && pwd)
+TG="$S111"; TG_A="$S111/H"; TG_RUN=RT111; TG_STATE="$S111/state"
+TG_RD="$TG_STATE/cc-cmds/run/$TG_RUN"; TG_M="$TG_A/plan.md"
+TG_L="$TG_A/docs/pipeline-run/$TG_RUN.md"; TG_GR="$TG_A/docs/pipeline-grant/$TG_RUN.md"
+TG_CALLER='S111#1'; TG_PD="$TG_A"
+cat > "$S111/bin/gh" <<'S111GH'
+#!/bin/sh
+case "$*" in *"pr list"*) echo "[]" ;; *) exit 0 ;; esac
+S111GH
+chmod +x "$S111/bin/gh"
+# 스텁 CLI — 받은 디렉터리와 argv 를 `-p` 값 이름의 파일에 적고 결과 한 줄을 낸다.
+cat > "$S111/bin/stub-cli" <<S111CLI
+#!/usr/bin/env bash
+p=x; prev=""
+for a in "\$@"; do [ "\$prev" = -p ] && p=\$a; prev=\$a; done
+pwd -P > "$S111/out/\$p.pwd"
+printf '%s\n' "\$@" > "$S111/out/\$p.argv"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s-111","num_turns":1}\n'
+S111CLI
+chmod +x "$S111/bin/stub-cli"
+TG_ENV_BASE=(XDG_STATE_HOME="$TG_STATE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE= GIT_ALLOW_PROTOCOL=file
+             CC_REMOTE_GH="$S111/bin/gh" PATH="$S111/bin:$PATH")
+TG_ENV=("${TG_ENV_BASE[@]}" GIT_CONFIG_COUNT=3
+        "GIT_CONFIG_KEY_0=url.$S111/h.git.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/t/h.git
+        "GIT_CONFIG_KEY_1=url.$S111/b.git.insteadOf" GIT_CONFIG_VALUE_1=https://github.com/t/b.git
+        "GIT_CONFIG_KEY_2=url.$S111/c.git.insteadOf" GIT_CONFIG_VALUE_2=https://github.com/t/c.git)
+for r111 in h:H:- b:B:guard_b0.py c:C:-; do
+  a111=${r111%%:*}; d111=${r111#*:}; g111=${d111#*:}; d111="$S111/${d111%%:*}"
+  git init -q --bare "$S111/$a111.git"
+  if [ "$g111" = - ]; then tgf_repo "$d111"; else tgf_repo "$d111" "$g111"; fi
+  ( cd "$d111" && git remote add origin "https://github.com/t/$a111.git" \
+      && env "${TG_ENV[@]}" git push -q origin master \
+      && git worktree add -q -b "seg/$a111" "$d111-wt" ) >/dev/null 2>&1
+done
+# c 의 PR 헤드 트리에만 있는 Bash 훅.
+tgf_install "$S111/C-wt" guard_b0.py settings.json >/dev/null 2>&1
+( cd "$S111/C-wt" && git add -f .claude/settings.json && git commit -q -m guard ) >/dev/null 2>&1
+tg_manifest "$TG_M" "$TG_RUN" PR "$TG_A" "$(tg_target_row h "$TG_A" 예 PR)" \
+  "$(tg_target_row b "$S111/B" 아니오 PR)" "$(tg_target_row c "$S111/C" 아니오 PR)"
+r111=""
+for a111 in h:H:SH b:B:SB c:C:SR; do
+  d111=${a111#*:}
+  tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target "${a111%%:*}" --segment "${d111#*:}" --cutpoint 커밋 \
+    --snapshot-digest "$(tg_H)" --rationale x -- 상태=실행중 "워크트리=$S111/${d111%%:*}-wt" "브랜치=seg/${a111%%:*}" 선행=없음
+  r111="$r111$rc"
+done
+check "111: 세 대상의 세그먼트 행이 기록된다 (아래 단언의 전제)" "$r111" "000"
+
+s111_in() {  # s111_in <cwd> <명령…> — 세계의 환경으로 게이트를 소싱한 자식에서 한 명령
+  local d="$1"; shift
+  ( cd "$d" && env -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_TARGET \
+      -u CC_PIPELINE_RUN_DIR -u CC_PIPELINE_RUN_ID -u CC_PIPELINE_MANIFEST -u CC_PIPELINE_LEDGER -u CC_PIPELINE_GRANT \
+      "${TG_ENV[@]}" CC_CLAUDE_BIN="$S111/bin/stub-cli" bash -c '
+    g=$1; m=$2; shift 2
+    s111_argv=("$@"); set --
+    CC_GATE_SOURCE_ONLY=1 . "$g" </dev/null >/dev/null 2>&1
+    set +e
+    unset CC_GATE_SOURCE_ONLY
+    MANIFEST="$m"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    gate_segment_review_only() { [ "$1" = SR ]; }
+    gate_run_scope_step() { [ "$1" = audit ] && printf A1; }
+    gate_run_scope_kind_of_key() { [ "$1" = A1 ] && printf audit; }
+    "${s111_argv[@]}"
+  ' _ "$GATE" "$TG_M" "$@" )
+}
+s111_d() {  # s111_d <cwd> <별칭> <키> <종류> — 결정된 기동 디렉터리, 거절이면 「거절」
+  s111_in "$1" eval "gate_stage_launch_dir $2 $3 $4 2>/dev/null || printf 거절"
+}
+s111_launch() {  # s111_launch <파견 디렉터리> <별칭> <세그먼트> — 파견 반쪽의 rc; 감독자가 끝나기를 기다린다
+  local r i=0
+  r=$(s111_in "$1" eval "r=0; gate_launch_stage $2 $3 implement -p x-$3 >/dev/null 2>&1 || r=\$?; printf '%s' \"\$r\"")
+  while [ -e "$TG_RD/$3.sup" ] && [ "$i" -lt 150 ]; do sleep 0.2; i=$((i + 1)); done
+  printf '%s' "$r"
+}
+s111_instr() {  # s111_instr <스텁 이름> — 그 기동이 받은 지시 파일의 대상 훅 문단 수, 파일이 없으면 「없음」
+  local f
+  f=$(awk 'p { print; exit } $0 == "--append-system-prompt-file" { p = 1 }' "$S111/out/$1.argv" 2>/dev/null)
+  if [ -f "$f" ]; then grep -c "^## Remote commands under this repository's own Bash hook" "$f"; else printf 없음; fi
+}
+
+# (가)(나) 홈에서 파견한 비홈 대상 세그먼트 스테이지.
+s111_rb=$(s111_launch "$TG_A" b SB)
+check "111: 비홈 대상 스테이지는 그 대상의 세그먼트 워크트리에서 뜬다" \
+  "$s111_rb|$(cat "$S111/out/x-SB.pwd" 2>/dev/null)" "0|$S111/B-wt"
+check "111: 그 스테이지의 지시 파일은 대상 훅 문단을 싣는다" "$(s111_instr x-SB)" "1"
+check "111: 첫 기동은 그 디렉터리를 세션의 기동 디렉터리 기록으로 남긴다" \
+  "$(cat "$TG_RD"/launch-dir/* 2>/dev/null)" "$S111/B-wt"
+# (다) 홈 대상 스테이지는 옮기지 않는다.
+s111_rh=$(s111_launch "$TG_A" h SH)
+check "111: 홈 대상 스테이지는 파견한 디렉터리에서 뜬다" \
+  "$s111_rh|$(cat "$S111/out/x-SH.pwd" 2>/dev/null)|$(s111_instr x-SH)" "0|$TG_A|0"
+
+# (사) 런 범위 감사 단계 — 감사 워크트리가 있으면 그곳, 감사가 아닌 런 범위 단계는 실행 워크트리.
+s111_aw=$(s111_in "$TG_A" gate_audit_worktree_path b 2>/dev/null)
+[ -z "$s111_aw" ] || mkdir -p "$s111_aw"
+check "111: 런 범위 감사 단계는 감사 워크트리에서 뜬다" \
+  "$(GATE_LAUNCH_AUDIT_TREE=1 s111_d "$TG_A" b A1 audit)|$(s111_d "$TG_A" b A1 audit)" "$s111_aw|$S111/B"
+[ -n "$s111_aw" ] && [ "$s111_aw" != "$S111/B" ] || bad "111: 감사 워크트리 경로" "'$s111_aw'"
+
+# (아) 리뷰전용 세그먼트 — 세그먼트 워크트리가 PR 헤드여도 메인 워크트리, 훅도 그쪽을 따른다.
+s111_im=$(s111_in "$S111/C" gate_stage_instructions_for_launch c '' 2>/dev/null)
+s111_ip=$(s111_in "$S111/C-wt" gate_stage_instructions_for_launch c '' 2>/dev/null)
+check "111: 리뷰전용 세그먼트 스테이지는 대상 메인 워크트리에서 뜨고 PR 헤드 트리의 훅을 따르지 않는다" \
+  "$(s111_d "$TG_A" c SR review)|$(grep -c 'Remote commands under this repository' "$s111_im" 2>/dev/null)" "$S111/C|0"
+check "111: 그 PR 헤드 트리에서 합성하면 훅 문단이 실린다 (위 단언의 픽스처 확인)" \
+  "$(grep -c "^## Remote commands under this repository's own Bash hook" "$s111_ip" 2>/dev/null)" "1"
+
+# (바) 재부착 — 기록이 있으면 그 디렉터리, 없으면 파견한 디렉터리 그대로, 기록이 가리키는 곳이 없으면 거절.
+mkdir -p "$TG_RD/launch-dir"
+printf '%s\n' "$S111/B-wt" > "$TG_RD/launch-dir/s111-bound"
+printf '%s\n' "$S111/없는-디렉터리" > "$TG_RD/launch-dir/s111-gone"
+check "111: 재부착은 기록된 디렉터리를 쓰고 기록 없는 세션은 움직이지 않는다" \
+  "$(GATE_RESUME=s111-bound s111_d "$TG_A" c SR review)|$(GATE_RESUME=s111-none s111_d "$S111/C" b SB implement)" \
+  "$S111/B-wt|$S111/C"
+check "111: 기록된 디렉터리가 없으면 결정은 거절이다" "$(GATE_RESUME=s111-gone s111_d "$TG_A" b SB implement)" "거절"
+
+# 라우팅 켠 갈래 ---------------------------------------------------------------
+s111_ls() {  # s111_ls <원장> <명령…> — 기록 1 의 원장 픽스처에서 게이트를 소싱한 자식의 한 명령
+  local l="$1"; shift
+  S111_REL="${l%/*}/released" S111_MF="$FX_MANIFEST" bash -c '
+    g=$1; l=$2; shift 2
+    s111_argv=("$@"); set --
+    CC_GATE_SOURCE_ONLY=1 . "$g" >/dev/null 2>&1 || exit 97
+    set +e
+    unset CC_GATE_SOURCE_ONLY CC_PIPELINE_SHIFT_ID
+    MANIFEST=$S111_MF; LEDGER=$l; RUN_DIR=${l%/*}; RUN_ID=LS; CLI_BIN=/usr/bin/true
+    route_resolve() { printf "%s" "$S111_ENV"; }
+    route_lease_of() { :; }
+    route_lease_release() { printf "%s %s\n" "$3" "$4" >> "$S111_REL"; }
+    route_lease_hold() { :; }
+    route_lease_wait_put() { printf "{\"nonce\":\"w111\"}"; }
+    cc_detach_exec() {
+      shift 2
+      printf "%s\n" "$@" > "$RUN_DIR/argv"
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = --segment ]; then : > "$RUN_DIR/$2.pid"; fi
+        shift
+      done
+      printf 424242
+    }
+    "${s111_argv[@]}"
+  ' _ "$GATE" "$l" "$@"
+}
+s111_new() {  # s111_new <이름> — 기록 1 과 정규 파일 스냅숏을 든 새 원장
+  local l
+  l=$(lsr_ledger "$1")
+  printf '1\n' > "${l%/*}/routing-guard"
+  printf '{}\n' > "${l%/*}/inventory.json"
+  printf '%s' "$l"
+}
+s111_left() {  # s111_left <런 디렉터리> <키> — 남은 핀·토큰·대기 표지·감독자 기록
+  local f s=""
+  for f in attempt launch launch.taken waiting sup sup.start; do
+    [ -e "$1/$2.$f" ] && s="$s $f"
+  done
+  printf '%s' "${s# }"
+}
+s111_GRANT='{"verdict":"GRANT","nonce":"g111","account":"u1","config_dir":"/h/.claude-u1","basis":"first"}'
+s111_WAIT='{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null}'
+s111_NODIR='gate_stage_launch_dir() { return 1; }; r=0; gate_launch_stage infra SN implement -p x >/dev/null 2>&1 || r=$?; printf "%s" "$r"'
+
+# (라) 체크아웃이 없는 대상 — 부여든 WAIT 든 127, 시도 핀과 대기 흔적이 없다.
+s111_lg=$(s111_new g111)
+s111_r=$(S111_ENV=$s111_GRANT s111_ls "$s111_lg" eval "$s111_NODIR" 2>/dev/null)
+check "111: 체크아웃이 없으면 rc 127 이고 임대를 반납하며 시도 핀을 남기지 않는다" \
+  "$s111_r|$(cat "${s111_lg%/*}/released" 2>/dev/null)|$(s111_left "${s111_lg%/*}" SN)" "127|B:SN#1 g111|"
+s111_lw=$(s111_new w111)
+s111_r=$(S111_ENV=$s111_WAIT s111_ls "$s111_lw" eval "$s111_NODIR" 2>/dev/null)
+check "111: WAIT 판정에서도 체크아웃이 없으면 rc 127 이고 대기 흔적을 남기지 않는다" \
+  "$s111_r|$(test -e "${s111_lw%/*}/released" && echo 반납)|$(s111_left "${s111_lw%/*}" SN)|$(test -e "${s111_lw%/*}/argv" && echo 감독자)" "127|||"
+
+# (마) WAIT 갈래 — 감독자 argv 의 기동 디렉터리, 그 안에서의 합성, 대기 토큰.
+mkdir -p "$S111/launch-m"
+s111_lm=$(s111_new m111); s111_dm="${s111_lm%/*}"
+s111_r=$(S111_ENV=$s111_WAIT S111_DIR="$S111/launch-m" s111_ls "$s111_lm" eval '
+  gate_stage_launch_dir() { printf "%s" "$S111_DIR"; }
+  gate_stage_instructions_for_launch() { pwd -P > "$RUN_DIR/synth-pwd"; }
+  r=0; gate_launch_stage infra SM implement -p x >/dev/null 2>&1 || r=$?; printf "%s" "$r"' 2>/dev/null)
+check "111: WAIT 갈래의 감독자는 기동 디렉터리를 받고 지시문을 그 안에서 합성한다" \
+  "$s111_r|$(awk 'p { print; exit } $0 == "--launch-dir" { p = 1 }' "$s111_dm/argv" 2>/dev/null)|$(cat "$s111_dm/synth-pwd" 2>/dev/null)|$(sed -n '4p' "$s111_dm/SM.launch" 2>/dev/null)" \
+  "0|$S111/launch-m|$S111/launch-m|wait"
+
+# (자) 대기 감독자가 부여를 받은 뒤 기동 디렉터리가 사라졌다.
+s111_lz=$(s111_new z111); s111_dz="${s111_lz%/*}"
+printf 'n111\n\n\nwait\nB:SZ#1\nfirst\n-\n' > "$s111_dz/SZ.launch"
+printf '1\n' > "$s111_dz/SZ.attempt"; : > "$s111_dz/SZ.attempt.1"
+: > "$s111_dz/SZ.sup"; : > "$s111_dz/SZ.sup.start"
+s111_r=$(S111_DIR="$S111/사라진-디렉터리" s111_ls "$s111_lz" eval '
+  printf "보유자=%s\n계보=B:SZ#1\n논스=-\n" "$$" > "$RUN_DIR/SZ.waiting"
+  stage_wait_loop() { WAIT_LOOP_ENV="{\"verdict\":\"GRANT\",\"nonce\":\"gz\",\"account\":\"u1\",\"config_dir\":\"/h/.claude-u1\"}"; return 0; }
+  gate_sup_wait_stop() { printf "%s\n" "$1" > "$RUN_DIR/stop-why"; }
+  GATE_SUP_LAUNCH_DIR=$S111_DIR; r=0
+  gate_verb_supervise_stage infra SZ n111 implement -p x >/dev/null 2>&1 || r=$?
+  printf "%s|%s" "$r" "$GATE_EXIT_RULE"' 2>/dev/null)
+check "111: 부여 뒤 기동 디렉터리가 사라지면 감독자는 준비 거절로 끝나고 흔적을 남기지 않는다" \
+  "$( [ -n "${s111_r%%|*}" ] && [ "${s111_r%%|*}" = "${s111_r#*|}" ] && echo 규칙)|$(cat "$s111_dz/stop-why" 2>/dev/null)|$(cat "$s111_dz/released" 2>/dev/null)|$(s111_left "$s111_dz" SZ)" \
+  "규칙|부여 뒤 기동 준비 거부 — 기동 디렉터리 $S111/사라진-디렉터리 가 없다|B:SZ#1 gz|attempt"
+unset -f s111_in s111_d s111_launch s111_instr s111_ls s111_new s111_left
+unset S111 r111 a111 d111 g111 s111_rb s111_rh s111_aw s111_im s111_ip s111_GRANT s111_WAIT s111_NODIR \
+  s111_lg s111_lw s111_lm s111_dm s111_lz s111_dz s111_r
 
 # --- epilogue-begin ---
 #
