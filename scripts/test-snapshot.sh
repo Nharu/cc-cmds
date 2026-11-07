@@ -455,6 +455,9 @@ check "그 부재의 사유가 곁에 실린다" "$(jq -r .pace_absent_reason "$
 check "--fields 의 기본 목록은 라우터가 읽는 열한 필드를 그 순서로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields 2>/dev/null | jq -r 'keys_unsorted | join(",")')" \
   "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,live_applies,apply_unsettled,apply_imported,shift,pace"
+check "계획에 design_delivery 키가 없으면 스냅숏은 slices 로 찍는다" "$(jq -r .design_delivery "$WORK/s1.json")" "slices"
+check "--fields 로 design_delivery 만 골라 읽는다" \
+  "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields design_delivery 2>/dev/null)" "slices"
 check "적용 감독자도 정산 대상도 없으면 세 적용 목록은 빈 배열이다" \
   "$(jq -c '[.live_applies, .apply_unsettled, .apply_imported]' "$WORK/s1.json")" "[[],[],[]]"
 check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이다" "$(jq -c .waiting_stages "$WORK/s1.json")" "[]"

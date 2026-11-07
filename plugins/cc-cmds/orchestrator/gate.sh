@@ -219,6 +219,14 @@
 #                    manifest's design document, one per line in document
 #                    order, or `문서 판독 불가 — <reason>`; empty when none
 #                    does. Writes nothing
+#   gate.sh pr-links --manifest <path> --segment <id>
+#                    prints the lines a pull request of the segment carries
+#                    under `## 관련 이슈·티켓`, one per `출처 티켓` row in row
+#                    order: `Closes <owner>/<name>#<N>` on the last segment by
+#                    merge order and `Refs <owner>/<name>#<N>` on the others for
+#                    a github row, `원 티켓: <URL>` on every segment for a
+#                    clickup row; empty on a manifest with no such row. Writes
+#                    nothing
 #   gate.sh seat-apply-preview --manifest <path> --record <halt record> [--target <alias>]
 #                    for a `Step 3 강제 표면 좌석 적용` halt record: prints the
 #                    record digest, the `--numstat` and unified diff of the
@@ -7162,15 +7170,15 @@ surface_of_argv0() {
     clickup-relate.py)
       printf '외부상태변경' ;;
     # The base split helper is graded by its subcommand, which is its first
-    # argument. `check` only reads the document; `plan` writes its plan file
-    # under the run directory; `record` rewrites the ticket registry beside the
-    # document. Anything else is a spelling the helper refuses, and it takes the
-    # highest of the three rather than a guess.
+    # argument. `check` and `fence-check` only read; `plan` writes its plan file
+    # under the run directory; `record`, `child-doc` and `revise` write the
+    # registry or a document. Anything else is a spelling the helper refuses, and
+    # it takes the highest of the three rather than a guess.
     base-split.py)
       case "${1:-}" in
-        check)  printf '읽기' ;;
-        plan)   printf '트리밖쓰기' ;;
-        *)      printf '워크트리쓰기' ;;
+        check|fence-check) printf '읽기' ;;
+        plan)              printf '트리밖쓰기' ;;
+        *)                 printf '워크트리쓰기' ;;
       esac ;;
     # The stage rules helper. `status` only reads the instruction file it is
     # given and prints counts. `extract --out-dir` writes the run's snapshot and
@@ -16758,6 +16766,9 @@ gate_snapshot() {
   # sends and whether the audit carries `--base` and a split follows. A plan
   # frozen before the field existed has no key and reads as `single`.
   printf '  "design_scope": "%s",\n' "$(gate_snapshot_design_scope)"
+  # THE DELIVERY SHAPE, because `tickets` ends a single-scope run at the split
+  # the same way a base scope does. A plan with no key reads as `slices`.
+  printf '  "design_delivery": "%s",\n' "$(gate_snapshot_design_delivery)"
   # THE DESIGN SKILL, so a shift sends `/cc-cmds:<design_skill>` rather than
   # mapping scope and tier itself. The value is `manifest_design_skill`'s, the
   # same function the driver's design arm and the design-dispatch check below
@@ -16969,6 +16980,23 @@ gate_snapshot_design_scope() {
     base) printf 'base' ;;
     *) printf 'single' ;;
   esac
+}
+
+gate_snapshot_design_delivery() {
+  # `slices` or `tickets`. An absent key, an unparsable plan block and a value
+  # outside the two all read `slices` — the shape every run had before the field.
+  local v
+  v=$( { manifest_plan_json 2>/dev/null | jq -r '.design_delivery // "slices"' 2>/dev/null; } || true)
+  case "$v" in
+    tickets) printf 'tickets' ;;
+    *) printf 'slices' ;;
+  esac
+}
+
+gate_split_run() {
+  # 0 when the run's graph ends at the split rather than at segments: a base
+  # scope, or a single-scope design delivered as tickets.
+  [ "$(gate_snapshot_design_scope)" = "base" ] || [ "$(gate_snapshot_design_delivery)" = "tickets" ]
 }
 
 gate_snapshot_design_skill_json() {
@@ -20492,7 +20520,7 @@ gate_main() {
   local approval="" render=0 worktree="" void=0 reject=0
   local emit_digest_seen=0 emit_digest_dir=""
   local reach="" destructive=0
-  local wait_interval="" wait_timeout="" nonce=""
+  local wait_interval="" wait_timeout="" nonce="" launch_dir=""
   local fields="" fields_seen=0
   local end_cause="" end_successor=""
   local -a ss_flags=()
@@ -20614,6 +20642,7 @@ gate_main() {
       --interval)        wait_interval="$2"; shift 2 ;;
       --timeout)         wait_timeout="$2"; shift 2 ;;
       --nonce)           nonce="$2"; shift 2 ;;
+      --launch-dir)      launch_dir="$2"; shift 2 ;;
       --request)         request="$2"; shift 2 ;;
       --cause)           end_cause="$2"; shift 2 ;;
       --successor)       end_successor="$2"; shift 2 ;;
@@ -20803,6 +20832,12 @@ gate_main() {
       *) printf 'gate: --nonce is used only with supervise-stage, supervise-apply, metrics-round, halt-report-round and attention-round (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
+  fi
+  # The directory a supervised stage starts in, chosen by the dispatch half and
+  # meaningful to the supervisor alone.
+  if [ -n "$launch_dir" ] && [ "$verb" != "supervise-stage" ]; then
+    printf 'gate: --launch-dir is used only with supervise-stage (verb received: %s)\n' "$verb" >&2
+    exit 2
   fi
   # The same rule for the two closing flags: they decide something on one verb
   # only. Their vocabulary is checked in that verb, after the run is known.
@@ -21450,6 +21485,7 @@ gate_main() {
         || { printf 'gate: supervise-stage requires --segment\n' >&2; exit 2; }
       [ -n "$nonce" ] || { printf 'gate: supervise-stage requires --nonce\n' >&2; exit 2; }
       [ $# -ge 1 ] || { printf 'gate: supervise-stage needs the stage kind and the CLI argv after --\n' >&2; exit 2; }
+      GATE_SUP_LAUNCH_DIR=$launch_dir
       gate_verb_supervise_stage "$alias" "$segment" "$nonce" "$@"
       ;;
     supervise-apply)
@@ -21512,6 +21548,13 @@ gate_main() {
       [ "$segment" != "-" ] && [ -n "$segment" ] \
         || { printf 'gate: unclosed-decisions requires --segment\n' >&2; exit 2; }
       unresolved_closure_pending "${DOC:-}" "$segment"
+      ;;
+    pr-links)
+      # Reading, not acting: the lines the shift copies under `## 관련 이슈·티켓`,
+      # the same lines the check on `gh pr create` looks for. No ledger row.
+      [ "$segment" != "-" ] && [ -n "$segment" ] \
+        || { printf 'gate: pr-links requires --segment\n' >&2; exit 2; }
+      gate_pr_links "$segment"
       ;;
     seat-apply-preview)
       # Reading, not acting: the diff a seat apply of the record would commit,
@@ -40311,9 +40354,10 @@ gate_stage_instructions() {
   # the target's instruction chain: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` of
   # every ancestor of the target's MAIN worktree, root first, whichever exist.
   #
-  # THE MAIN WORKTREE, NOT THE STAGE'S. The launchers never `cd` into a stage
-  # worktree (the automatic loader read the router's cwd chain, which for a
-  # non-home target was not even the target's), a review of a PR that edits
+  # THE MAIN WORKTREE, NOT THE STAGE'S. The chain does not follow the directory
+  # a stage starts in (`gate_stage_launch_dir`: the dispatching directory for
+  # the home target, a checkout of the target otherwise, which may be a
+  # segment's worktree), a review of a PR that edits
   # `CLAUDE.md` must not be judged by the rule that PR proposes, and orderbook's
   # repository-root file is gitignored and exists only in the main worktree. The
   # chain is the ANCESTOR chain because that is where the orderbook rules live —
@@ -40514,10 +40558,11 @@ gate_stage_instructions() {
   done < <(gate_ancestor_dirs "$rootp")
 
   # THE TARGET-HOOK PARAGRAPH, decided at the root the launched session starts
-  # at. The launch does not move the directory, so that root is this process's
-  # own; when it carries a Bash hook of its own, the session is told how a
-  # remote command gets past both hooks. Members do not issue remote commands
-  # and their file goes without it.
+  # at. The dispatch runs this synthesis inside the launch directory it chose
+  # (`gate_stage_launch_dir`), so that root is this process's own; when it
+  # carries a Bash hook of its own, the session is told how a remote command
+  # gets past both hooks. Members do not issue remote commands and their file
+  # goes without it.
   local hooked=0
   gate_target_has_bash_hook "$(pwd -P)" && hooked=1
 
@@ -40754,6 +40799,90 @@ gate_audit_worktree_path() {
   main=$(target_field "$1" '메인 워크트리' 2>/dev/null || true)
   case "$main" in ''|'(없음)') return 1 ;; esac
   printf '%s%s%s-%s' "$main" "$WORKTREE_INFIX" "$RUN_ID" "$step"
+}
+
+gate_stage_launch_dir() {
+  # gate_stage_launch_dir <alias> <segment or step> <stage-kind> — the directory
+  # a stage of this dispatch starts in, printed; 1 with a warning and nothing
+  # printed when the checkout it names is missing.
+  #
+  # WHY THE DIRECTORY MATTERS. A session's project hooks, its project settings
+  # layer and the issuing-root rule of `admit` are all read from the directory
+  # it starts in. A stage of another target started in the dispatching
+  # session's directory has the home repository's Bash hook judge every command
+  # it issues against the other target: the gate form is refused there, and the
+  # bare form is refused by `admit` because the session's project directory is
+  # outside the target's common git directory.
+  #
+  # THE ORDER, first match wins:
+  #   (i)   a re-attachment starts where the session was born — the record
+  #         `gate_stage_launch_dir_record` left for it, or, for a session with
+  #         no record (born before the record existed), this process's own
+  #         directory, which is where such a session was born;
+  #   (ii)  when this process's directory is a checkout of the target itself
+  #         (same common git directory), it stays put: a stage of the home
+  #         target starts exactly where it always did;
+  #   (iii) a run-scope step (its rows carry `세그먼트=-`) starts in the audit's
+  #         worktree when the dispatch set `GATE_LAUNCH_AUDIT_TREE=1` (the audit,
+  #         and a re-convergence of it), and otherwise in the target's
+  #         execution worktree, the main worktree when there is none;
+  #   (iv)  a review-only segment starts in the target's MAIN worktree, never in
+  #         the segment's worktree: that tree is somebody else's pull request
+  #         head, and starting there would load the project hooks and settings
+  #         that pull request proposes into a session holding the gate token.
+  #         The head is read through gate acts naming the segment instead;
+  #   (v)   every other segment starts in its own worktree, falling back to the
+  #         execution worktree and then the main worktree, as its acts do.
+  #
+  # CHECKED HERE because `gate_act_worktree` never fails — it falls back to a
+  # field that may read `(없음)` — and an empty or missing directory would let
+  # the caller's `cd` land somewhere else without a word.
+  local alias="$1" seg="$2" kind="$3" d rec
+  if [ -n "${GATE_RESUME:-}" ]; then
+    rec="$RUN_DIR/launch-dir/$GATE_RESUME"
+    if [ -f "$rec" ]; then
+      d=$(head -n 1 "$rec")
+    else
+      d=$PWD
+    fi
+  elif gate_path_of_target "$(pwd -P)" "$alias"; then
+    d=$PWD
+  elif [ "$(gate_stage_row_segment "$seg" "$kind")" = "-" ]; then
+    if [ "${GATE_LAUNCH_AUDIT_TREE:-0}" = "1" ]; then
+      d=$(gate_audit_worktree_path "$alias") || d=""
+    else
+      d=$(gate_act_worktree "$alias" -)
+    fi
+  elif gate_segment_review_only "$seg"; then
+    d=$(target_field "$alias" '메인 워크트리' 2>/dev/null || true)
+  else
+    d=$(gate_act_worktree "$alias" "$seg")
+  fi
+  case "$d" in
+    ''|'(없음)') warn "the launch directory of $seg could not be resolved for target $alias"; return 1 ;;
+    /*) ;;
+    *) warn "the launch directory of $seg is not an absolute path: $d"; return 1 ;;
+  esac
+  [ -d "$d" ] || { warn "the launch directory of $seg does not exist: $d"; return 1; }
+  printf '%s' "$d"
+}
+
+gate_stage_launch_dir_record() {
+  # gate_stage_launch_dir_record <session-id> <dir> — remember the directory a
+  # NEW session was launched in, so a re-attachment starts in the same place:
+  # the harness keys a session's transcript by that directory, and a resumed
+  # session started elsewhere would get another project layer than the one it
+  # was born with. Same umask and atomic publish as the instructions record; a
+  # failure only warns, and a resume without a record stays where it is.
+  local sid="$1" d="$2" tmp
+  [ -n "$sid" ] && [ -n "$d" ] || return 0
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/launch-dir" || exit 1
+    tmp=$(mktemp "$RUN_DIR/launch-dir/.rec.XXXXXX") || exit 1
+    printf '%s\n' "$d" > "$tmp" || { rm -f "$tmp"; exit 1; }
+    mv "$tmp" "$RUN_DIR/launch-dir/$sid"
+  ) || warn "stage launch: could not record the launch directory for session $sid"
 }
 
 gate_caller_is_audit_stage() {
@@ -46284,6 +46413,181 @@ gate_exec_author_write_form() {
   return 0
 }
 
+gate_pr_links_last_segment() {
+  # gate_pr_links_last_segment <segment> — prints the last segment by merge
+  # order. The nodes are the document's declared slices, then the ledger's
+  # segments by first row, then the asked segment; the edges are `선행` and
+  # `머지 순서` from the declaration and the ledger alike. Each pick takes the
+  # first node in that order whose predecessors are all placed, so a tie falls
+  # to declaration order and the later-declared node ends up last. A cycle, which
+  # the plan admission refuses elsewhere, takes the first unplaced node rather
+  # than stopping.
+  local seg="$1" n d i placed=" " seen=" " last="" ready pick
+  local -a nodes=() deps=()
+  for n in $(if [ -n "${DOC:-}" ] && [ -f "${DOC:-}" ]; then slice_ids "$DOC" 2>/dev/null || true; fi) \
+           $(gate_rows 'segment' | gate_row_ids | awk '!s[$0]++') "$seg"; do
+    case "$seen" in *" $n "*) continue ;; esac
+    seen="$seen$n "
+    nodes+=("$n")
+    d=$(gate_chain_deps_of "$n")
+    if [ -n "${DOC:-}" ] && [ -f "${DOC:-}" ]; then
+      d="$d $(gate_dep_tokens "$(slice_field "$DOC" "$n" '선행' 2>/dev/null || true)") $(gate_dep_tokens "$(slice_field "$DOC" "$n" '머지 순서' 2>/dev/null || true)")"
+    fi
+    deps+=("$d")
+  done
+  local left=${#nodes[@]}
+  while [ "$left" -gt 0 ]; do
+    pick=""
+    i=0
+    while [ "$i" -lt "${#nodes[@]}" ]; do
+      n=${nodes[$i]}
+      ready=1
+      case "$placed" in *" $n "*) ready=0 ;; esac
+      if [ "$ready" = 1 ]; then
+        for d in ${deps[$i]}; do
+          case "$seen" in *" $d "*) ;; *) continue ;; esac
+          case "$placed" in *" $d "*) ;; *) ready=0; break ;; esac
+        done
+      fi
+      if [ "$ready" = 1 ]; then pick=$n; break; fi
+      i=$((i + 1))
+    done
+    if [ -z "$pick" ]; then
+      for n in "${nodes[@]}"; do
+        case "$placed" in *" $n "*) ;; *) pick=$n; break ;; esac
+      done
+    fi
+    placed="$placed$pick "
+    last=$pick
+    left=$((left - 1))
+  done
+  printf '%s' "$last"
+}
+
+gate_pr_links() {
+  # gate_pr_links <segment> — prints the segment's `## 관련 이슈·티켓` lines, one
+  # per `출처 티켓` row in row order; nothing on a manifest with no such row.
+  local seg="$1" rows row tracker ref last=""
+  rows=$(manifest_source_ticket_rows)
+  [ -n "$rows" ] || return 0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    tracker=$(manifest_row_fields "$row" '트래커')
+    ref=$(manifest_row_fields "$row" '참조')
+    case "$tracker" in
+      github)
+        [ -n "$last" ] || last=$(gate_pr_links_last_segment "$seg")
+        if [ "$last" = "$seg" ]; then printf 'Closes %s\n' "$ref"; else printf 'Refs %s\n' "$ref"; fi ;;
+      clickup)
+        printf '원 티켓: %s\n' "$ref" ;;
+    esac
+  done <<ROWS
+$rows
+ROWS
+}
+
+gate_pr_create_body_args() {
+  # gate_pr_create_body_args <args of gh…> — reads the flags of a `gh pr create`
+  # the way pflag does, wherever they stand. GATE_PRC_BODIES holds each `--body`
+  # value, GATE_PRC_FILES each `--body-file` value, and GATE_PRC_OPAQUE the first
+  # flag that fills the body some other way.
+  local n=$# i=0 j w c
+  local -a a=("$@")
+  GATE_PRC_BODIES=() GATE_PRC_FILES=() GATE_PRC_OPAQUE=""
+  while [ "$i" -lt "$n" ]; do
+    w=${a[$i]}
+    i=$((i + 1))
+    case "$w" in
+      --) break ;;
+      --body=*) GATE_PRC_BODIES+=("${w#--body=}") ;;
+      --body) GATE_PRC_BODIES+=("${a[$i]:-}"); i=$((i + 1)) ;;
+      --body-file=*) GATE_PRC_FILES+=("${w#--body-file=}") ;;
+      --body-file) GATE_PRC_FILES+=("${a[$i]:-}"); i=$((i + 1)) ;;
+      --template|--recover) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:-$w}; i=$((i + 1)) ;;
+      --fill|--fill=*|--fill-first|--fill-first=*|--fill-verbose|--fill-verbose=*|--editor|--editor=*|--web|--web=*|--template=*|--recover=*)
+        GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:-${w%%=*}} ;;
+      --attach|--base|--head|--repo|--assignee|--label|--milestone|--project|--reviewer|--title) i=$((i + 1)) ;;
+      --*) ;;
+      -?*)
+        j=1
+        while [ "$j" -lt "${#w}" ]; do
+          c=${w:j:1}
+          j=$((j + 1))
+          case "$c" in
+            e|f|w) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:--$c} ;;
+            d|h) ;;
+            B|F|H|R|T|a|b|l|m|p|r|t)
+              local v=${w:j}
+              v=${v#=}
+              if [ "$j" -ge "${#w}" ]; then v=${a[$i]:-}; i=$((i + 1)); fi
+              case "$c" in
+                b) GATE_PRC_BODIES+=("$v") ;;
+                F) GATE_PRC_FILES+=("$v") ;;
+                T) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:--T} ;;
+              esac
+              break ;;
+          esac
+        done ;;
+    esac
+  done
+}
+
+gate_exec_pr_create_refusal() {
+  # gate_exec_pr_create_refusal <target> <segment> <argv…> — prints why the argv
+  # is a `gh pr create` the run's `출처 티켓` rows refuse, or nothing. On a run
+  # with such a row, every pull request carries its segment's `pr-links` lines,
+  # so the body has to be one the gate can read — a `--body` value or a regular
+  # file named by `--body-file`, resolved from the directory the act runs in —
+  # and hold each line whole.
+  local alias="$1" seg="$2"
+  shift 2
+  gate_rv_unwrap "$@"
+  [ "${#GATE_RV_ARGV[@]}" -ge 2 ] && [ "${GATE_RV_ARGV[0]##*/}" = gh ] || return 0
+  gate_gh_strip_repo "${GATE_RV_ARGV[@]:1}"
+  gate_gh_group_verb ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
+  [ "$GATE_GH_CG" = pr ] && { [ "$GATE_GH_CV" = create ] || [ "$GATE_GH_CV" = new ]; } || return 0
+  [ -n "$(manifest_source_ticket_rows)" ] || return 0
+  if [ -z "$seg" ] || [ "$seg" = "-" ]; then
+    printf '이 호출에 --segment 가 없어 넣어야 할 줄을 정할 수 없습니다'
+    return 0
+  fi
+  gate_pr_create_body_args "${GATE_RV_ARGV[@]:1}"
+  if [ -n "$GATE_PRC_OPAQUE" ]; then
+    printf '%s 는 게이트가 읽을 수 없는 본문입니다' "$GATE_PRC_OPAQUE"
+    return 0
+  fi
+  if [ "${#GATE_PRC_BODIES[@]}" -eq 0 ] && [ "${#GATE_PRC_FILES[@]}" -eq 0 ]; then
+    printf '본문 인자가 없습니다'
+    return 0
+  fi
+  local lines line body f path dir
+  lines=$(gate_pr_links "$seg")
+  dir=$(gate_act_worktree "$alias" "$seg" 2>/dev/null) || dir=""
+  for f in ${GATE_PRC_FILES[@]+"${GATE_PRC_FILES[@]}"}; do
+    case "$f" in
+      /*) path=$f ;;
+      *) path="${dir:-.}/$f" ;;
+    esac
+    if [ "$f" = "-" ] || [ ! -f "$path" ] || [ ! -r "$path" ]; then
+      printf -- '--body-file %s 는 게이트가 읽을 수 없는 본문입니다' "$f"
+      return 0
+    fi
+    GATE_PRC_BODIES+=("$(cat "$path")")
+  done
+  for body in "${GATE_PRC_BODIES[@]}"; do
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if ! grep -Fxq -- "$line" <<<"$body"; then
+        printf '본문에 「%s」 줄이 없습니다' "$line"
+        return 0
+      fi
+    done <<LINES
+$lines
+LINES
+  done
+  return 0
+}
+
 gate_review_only_seg_of_act() {
   # gate_review_only_seg_of_act <segment> — prints the review-only segment an
   # exec acts on: the `--segment` it names when that is one, else, on a
@@ -46399,6 +46703,12 @@ gate_verb_act() {
         warn "세그먼트 ${rv_seg} 는 리뷰 전용 세그먼트입니다 — 작성자 브랜치에 쓰는 ${rv_why} 는 받지 않습니다"
         exit "$GATE_EXIT_RULE"
       fi
+    fi
+    rv_why=$(gate_exec_pr_create_refusal "$alias" "$segment" "$@")
+    if [ -n "$rv_why" ]; then
+      warn "출처 티켓 행이 있는 런의 gh pr create 를 받지 않습니다 — ${rv_why}"
+      warn "본문을 --body 또는 --body-file <파일> 로 주고, gate.sh pr-links --manifest <매니페스트> --segment <세그먼트> 의 줄을 그대로 넣으십시오"
+      exit "$GATE_EXIT_RULE"
     fi
   fi
 
@@ -47015,8 +47325,8 @@ gate_verb_act() {
         ;;
     esac
 
-    if [ "$rs_kind" = "split" ] && [ "$(gate_snapshot_design_scope)" != "base" ]; then
-      warn "분할 스테이지는 실행 계획의 design_scope 가 base 인 런에서만 띄웁니다"
+    if [ "$rs_kind" = "split" ] && ! gate_split_run; then
+      warn "분할 스테이지는 실행 계획의 design_scope 가 base 이거나 design_delivery 가 tickets 인 런에서만 띄웁니다"
       exit "$GATE_EXIT_RULE"
     fi
 
@@ -49674,10 +49984,13 @@ EOF
         # act's failure and nothing is launched.
         skill) gate_dispatch_doc_arg "${1:-}"
                # The design's review runs where the design ran, not in the
-               # audit's tree.
+               # audit's tree. The same answer picks the stage's launch
+               # directory, so the audit starts in the tree its acts run in.
+               GATE_LAUNCH_AUDIT_TREE=0
                if [ "$stage_is_run_scope_step" = "1" ] \
                   && { [ "${1:-}" = "audit" ] \
                        || { [ "${1:-}" = "reconverge" ] && [ "$rs_table" = "audit" ]; }; }; then
+                 GATE_LAUNCH_AUDIT_TREE=1
                  gate_audit_worktree_ensure "$alias" || rc=$?
                fi
                [ "$rc" != "0" ] || gate_launch_stage "$alias" "$stage_key" "$@" || rc=$? ;;
@@ -52324,7 +52637,9 @@ gate_launch_wait() {
   fi
   # A TRIAL SYNTHESIS in the environment this act runs in: the account is not
   # known yet, and the supervisor synthesizes again under the one it is granted.
-  instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  # It runs in the launch directory `gate_launch_stage` chose, because the
+  # target-hook paragraph is decided at the directory the stage starts in.
+  instr=$(cd "$GATE_LAUNCH_DIR" && gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
   # The caller kept the dispatch prompt before its carry substitution; a caller
   # that did not leaves it to be kept here, before the continuation's.
   [ -n "${GATE_DISPATCH_PROMPT_SET:-}" ] || gate_argv_prompt_keep "$@"
@@ -52358,7 +52673,8 @@ gate_launch_wait() {
              CC_GATE_DISPATCH_PROMPT_SET="$GATE_DISPATCH_PROMPT_SET" \
              CC_GATE_DISPATCH_PROMPT="$GATE_DISPATCH_PROMPT" \
            bash "$GATE_DIR/gate.sh" supervise-stage --manifest "$MANIFEST" \
-             --target "$alias" --segment "$seg" --nonce "$nonce" -- "$kind" "$@" )
+             --target "$alias" --segment "$seg" --nonce "$nonce" \
+             --launch-dir "$GATE_LAUNCH_DIR" -- "$kind" "$@" )
   if [ -z "$sup" ]; then
     warn "the waiting supervisor failed to start ($seg) — the launch token is withdrawn"
     rm -f "$RUN_DIR/$seg.launch"
@@ -52547,6 +52863,9 @@ gate_launch_stage() {
   local alias="$1" seg="$2" kind="$3"; shift 3
   local wrapper="$GATE_DIR/stage-wrapper.sh"
   [ -f "$wrapper" ] || { warn "the stage wrapper is missing: $wrapper"; return 127; }
+  # The launch directory, a global like GATE_RESUME so `gate_launch_wait` reads
+  # it without a change to its signature; set below by `gate_stage_launch_dir`.
+  GATE_LAUNCH_DIR=""
 
   # RE-ATTACH, NOT RE-RUN. The contract already says a stage cut mid-flight is
   # continued rather than restarted, and the wrapper already accepts `--resume`
@@ -52715,6 +53034,17 @@ gate_launch_stage() {
       [ "$ha_p" = "1" ] || ha_argv+=(-p "$GATE_CARRY_RESUME_MESSAGE")
       set -- "${ha_argv[@]}"
     fi
+    # THE LAUNCH DIRECTORY, decided once for both halves here — after the route,
+    # because the route decides whether this is a re-attachment — and before
+    # the WAIT branch, so a waiting supervisor starts its stage where a granted
+    # one would. On a WAIT no lease was minted and the drop does nothing; the
+    # first `stage-wait` row the route wrote stays, as a refusal of the trial
+    # synthesis leaves it.
+    if ! GATE_LAUNCH_DIR=$(gate_stage_launch_dir "$alias" "$seg" "$kind"); then
+      warn "대상 $alias 의 체크아웃이 없어 스테이지를 띄우지 않습니다 ($seg)"
+      gate_launch_route_drop
+      return 127
+    fi
     # A WAIT IS NOT A STOP: the dispatch half pins, starts a supervisor that
     # waits for an account before it spawns, and returns.
     if [ "$GATE_ROUTE_VERDICT" = "WAIT" ]; then
@@ -52726,13 +53056,19 @@ gate_launch_stage() {
   # (127, like a missing wrapper) is a launch precondition — a host or
   # repository state a person has to change — so it must not consume an
   # attempt number or leave a session record behind: the pin below and the
-  # record after it both come later on purpose.
+  # record after it both come later on purpose. Synthesized in the launch
+  # directory, so the target-hook paragraph follows the root the stage starts
+  # at; an unrouted launch decides that directory here, with the same refusal.
   local instr
   if [ "$routed" = "1" ]; then
-    instr=$(CLAUDE_CONFIG_DIR="$GATE_ROUTE_CFG" gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") \
+    instr=$(cd "$GATE_LAUNCH_DIR" && CLAUDE_CONFIG_DIR="$GATE_ROUTE_CFG" gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") \
       || { rrc=$?; gate_launch_route_drop; return "$rrc"; }
   else
-    instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+    if ! GATE_LAUNCH_DIR=$(gate_stage_launch_dir "$alias" "$seg" "$kind"); then
+      warn "대상 $alias 의 체크아웃이 없어 스테이지를 띄우지 않습니다 ($seg)"
+      return 127
+    fi
+    instr=$(cd "$GATE_LAUNCH_DIR" && gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
   fi
   # A RESUME OF A STAGE THAT ENDED IN PROSE carries the continue message instead
   # of the router's prompt, and is refused here — still before the pin — when it
@@ -52776,6 +53112,7 @@ gate_launch_stage() {
   if [ -z "${GATE_RESUME:-}" ] && [ -n "$instr" ]; then
     gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
   fi
+  [ -n "${GATE_RESUME:-}" ] || gate_stage_launch_dir_record "$(session_uuid "$seg" "$attempt")" "$GATE_LAUNCH_DIR"
   # THE STREAM IS SCOPED BY ATTEMPT; the supervisor derives the same name from
   # the same pin through `stage_log_path`, so the supervisor's own log sits
   # beside the stage's stream under the same attempt.
@@ -52812,7 +53149,8 @@ gate_launch_stage() {
   sup=$( cc_detach_exec "$suplog" "$suplog" \
            env CC_CLAUDE_BIN="$CLI_BIN" \
            bash "$GATE_DIR/gate.sh" supervise-stage --manifest "$MANIFEST" \
-             --target "$alias" --segment "$seg" --nonce "$nonce" -- "$kind" "$@" )
+             --target "$alias" --segment "$seg" --nonce "$nonce" \
+             --launch-dir "$GATE_LAUNCH_DIR" -- "$kind" "$@" )
   if [ -z "$sup" ]; then
     warn "the supervisor failed to start ($seg) — the launch token is withdrawn"
     rm -f "$RUN_DIR/$seg.launch"
@@ -52983,6 +53321,22 @@ gate_verb_supervise_stage() {
       ;;
   esac
 
+  # THE LAUNCH DIRECTORY the dispatch half chose (`--launch-dir`), entered
+  # before anything reads this process's directory: the waiting supervisor's
+  # synthesis, the compaction window's project layer and the wrapper all follow
+  # it. A launch without the option stays where it was started. A waiting
+  # supervisor does not enter it here — the wait can last hours, and an end
+  # here would leave its marker, `.sup` and FIFO entry behind — but right after
+  # its grant, as the first condition of its preparation, where a refusal takes
+  # that preparation's own cleanup.
+  local launch_dir="${GATE_SUP_LAUNCH_DIR:-}"
+  if [ -n "$launch_dir" ] && [ "$waiting" = "0" ] && ! cd "$launch_dir" 2>/dev/null; then
+    warn "the launch directory is gone ($seg: $launch_dir) — the stage is not started"
+    [ "$routed" = "0" ] || [ -z "$r_nonce" ] \
+      || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
+    return "$GATE_EXIT_RULE"
+  fi
+
   # THE PIN IS READ, NEVER WRITTEN, HERE. The dispatch half wrote it; a second
   # writer would let the two halves disagree about which attempt this is.
   local attempt
@@ -53044,7 +53398,9 @@ gate_verb_supervise_stage() {
         warn "the wait launch handed down no dispatch prompt ($seg) — the new session starts with the argv as handed over"
       fi
     fi
-    if [ -z "$r_cfg" ] \
+    if { [ -n "$launch_dir" ] && ! cd "$launch_dir" 2>/dev/null \
+           && prep_why="부여 뒤 기동 준비 거부 — 기동 디렉터리 $launch_dir 가 없다"; } \
+       || [ -z "$r_cfg" ] \
        || ! instr=$(CLAUDE_CONFIG_DIR="$r_cfg" gate_stage_instructions_for_launch "$alias" "$resume") \
        || ! gate_stage_lease_row "$r_lineage" "$wenv" "$r_bound" \
        || { ! gate_sup_wait_ended && prep_why="런이 이미 종료됐다 — $seg 는 부여를 받았지만 기동하지 않는다"; }; then
@@ -53067,6 +53423,7 @@ gate_verb_supervise_stage() {
     if [ -z "$resume" ] && [ -n "$instr" ]; then
       gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
     fi
+    [ -n "$resume" ] || [ -z "$launch_dir" ] || gate_stage_launch_dir_record "$(session_uuid "$seg" "$attempt")" "$launch_dir"
   fi
   # The plugin root the wrapper injects, so the stage's slash commands resolve.
   # This assignment was once deleted by an edit that moved the block above it;
@@ -53116,9 +53473,9 @@ gate_verb_supervise_stage() {
   # happens only when the reading itself says `(argv)`; `(꺼짐)` and `(미상)`
   # inject nothing — the window is an optimisation, and an uncertain reading
   # must not stop a launch. The project layer is read from this process's cwd,
-  # which is its caller's: the act does not move it, so a stage starts in the
-  # directory the session that dispatched it was in, not in the segment's
-  # worktree.
+  # which is the launch directory entered above when the dispatch passed one:
+  # the dispatching session's directory for the home target, a checkout of the
+  # target otherwise — the stage starts there too.
   # A `--resume` re-attachment passes through here too, so the same flag rides
   # beside `-r`. The flag goes to the WRAPPER, before `--`: the wrapper refuses
   # a caller's `--autocompact` after `--` as a reserved flag, and it puts the
@@ -57364,11 +57721,12 @@ gate_done_conditions() {
     if dstep=$(gate_run_scope_step design); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
-      # The driver names its design stage `S1design` and writes no `종류`. A base
-      # run never has a segment, so this arm is where the driver's design row
-      # has to be read too — otherwise its finished design reads as no row at all
-      # and the document it froze as one nobody will dispatch again.
-      if [ -z "$drows" ] && [ "$(gate_snapshot_design_scope)" = "base" ]; then
+      # The driver names its design stage `S1design` and writes no `종류`. A run
+      # that ends at the split never has a segment, so this arm is where the
+      # driver's design row has to be read too — otherwise its finished design
+      # reads as no row at all and the document it froze as one nobody will
+      # dispatch again.
+      if [ -z "$drows" ] && gate_split_run; then
         drows=$( { gate_rows 'stage-result' || true; } \
                  | { grep -F '세그먼트=- | 스테이지=S1design |' || true; })
       fi
@@ -57401,7 +57759,7 @@ gate_done_conditions() {
           # audit after one, is the run's next work whatever follows the audit
           # in the plan: the line names the wait, as the audit-first arm does,
           # and is not a head the disposition drops.
-          if [ -z "$dnext" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+          if [ -z "$dnext" ] && ! gate_split_run \
              && astep=$(gate_run_scope_step audit) \
              && ! gate_audit_concluded "$astep"; then
             case "$GATE_AUDIT_WAIT" in
@@ -57410,7 +57768,7 @@ gate_done_conditions() {
                 dwhy="" ;;
             esac
           fi
-          if [ -z "$dnext" ] && [ -z "$dwait" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+          if [ -z "$dnext" ] && [ -z "$dwait" ] && ! gate_split_run \
              && gate_plan_ends_at_design; then
             if astep=$(gate_run_scope_step audit); then
               if gate_audit_concluded "$astep"; then
@@ -57445,21 +57803,21 @@ gate_done_conditions() {
           fi
         fi
       fi
-      # A BASE RUN'S FINISHED DESIGN IS NOT A DEAD ONE. In a single run a design
-      # that ended `정상 완료` with no segment after it means the plan stopped
-      # there, and when the plan ends at the design (and its audit) that ending
-      # and the frozen document are the run's work done, judged above; in a base
-      # run it is the normal road to the audit and the split, which the base arm
-      # below judges.
+      # THE FINISHED DESIGN OF A RUN THAT ENDS AT THE SPLIT IS NOT A DEAD ONE. In
+      # any other run a design that ended `정상 완료` with no segment after it
+      # means the plan stopped there, and when the plan ends at the design (and
+      # its audit) that ending and the frozen document are the run's work done,
+      # judged above; here it is the normal road to the audit and the split,
+      # which the split arm below judges.
       #
       # So is one that was never dispatched because the document was already
-      # there and frozen. A base run kicked off again over the same document —
+      # there and frozen. Such a run kicked off again over the same document —
       # the recovery after a split stopped and a person fixed the document —
       # skips the design in both routers and the driver, so it has no design row
       # at all, and the frozen document is the same input a `정상 완료` would
       # have left. An unfrozen document keeps the line: nothing audits or splits
       # it.
-      if [ "$(gate_snapshot_design_scope)" = "base" ]; then
+      if gate_split_run; then
         if [ "$dlast" = '정상 완료' ] \
            || { [ -z "$drows" ] && [ "$dwhy" = '설계 문서가 이미 있음' ] && doc_is_frozen "${DOC:-}"; }; then
           dwhy=""
@@ -57491,10 +57849,10 @@ gate_done_conditions() {
     elif [ "$dmet" = 1 ]; then
       # The plan ended at the design (and its audit), and it froze: held.
       :
-    elif [ "$(gate_snapshot_design_scope)" = "base" ]; then
-      # A BASE RUN NEVER HAS A SEGMENT. Its graph ends at the split, so "no
-      # segment" is its normal end and the plain line below would hold it
-      # forever. What it waits on instead is the split: met when the split step's
+    elif gate_split_run; then
+      # A BASE OR TICKET-DELIVERY RUN NEVER HAS A SEGMENT. Its graph ends at the
+      # split, so "no segment" is its normal end and the plain line below would
+      # hold it forever. What it waits on instead is the split: met when the split step's
       # latest attempt carries its terminal literal and the registry is complete
       # for the current document, closed when the audit or the split will not be
       # dispatched again, and otherwise not finished yet.

@@ -478,6 +478,7 @@ manifest_snapshot_take() {
   #   VG <row>     every `- \`리뷰 게시\`` row anywhere, in order
   #   VD <row>     every `- \`리뷰 깊이\`` row anywhere, in order
   #   VF <row>     every `- \`리뷰 문면\`` row anywhere, in order
+  #   ST <row>     every `- \`출처 티켓\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -519,6 +520,7 @@ $(LC_ALL=C awk '
     index($0, "- `리뷰 게시`") == 1 { print "VG\t" $0 }
     index($0, "- `리뷰 깊이`") == 1 { print "VD\t" $0 }
     index($0, "- `리뷰 문면`") == 1 { print "VF\t" $0 }
+    index($0, "- `출처 티켓`") == 1 { print "ST\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -748,6 +750,11 @@ manifest_base_publish_rows() {
 manifest_base_design_rows() {
   if manifest_memo_on; then manifest_memo_all "BD	"; return 0; fi
   grep -E '^- `베이스 설계`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_source_ticket_rows() {
+  if manifest_memo_on; then manifest_memo_all "ST	"; return 0; fi
+  grep -E '^- `출처 티켓`' "$MANIFEST" 2>/dev/null || true
 }
 
 manifest_adoption_rows() {
@@ -1163,6 +1170,12 @@ binding_set_bytes() {
     # when absent, so no in-flight manifest's digest moves.
     manifest_base_publish_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basepub\t/'
     manifest_base_design_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basedesign\t/'
+    # THE `출처 티켓` ROWS ARE IN THE FROZEN SET, on the same terms. They name the
+    # issues a pull request of this run closes or refers to, and the gate refuses
+    # a pull request without those lines, so a row any act could rewrite mid-run
+    # would let a run close an issue a person never named. Whole-file scan, zero
+    # bytes when absent.
+    manifest_source_ticket_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/srcticket\t/'
     # THE ADOPTION ROWS ARE IN THE FROZEN SET, on the same terms. A `세그먼트
     # 입양` row lets this run plan a segment in a worktree and branch it did not
     # cut, so a row any act could append mid-run would hand the run a tree a
@@ -1592,7 +1605,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·출처 티켓·세그먼트 입양·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1808,26 +1821,34 @@ EOF
     fi
   done
 
-  # 16 — the design scope and the rows only a base run may carry.
+  # 16 — the design scope and the rows only a run ending at the split may carry.
   #
-  # A BASE RUN'S GRAPH IS FIXED, so it is checked as a shape rather than read as
+  # THE GRAPH OF A RUN ENDING AT THE SPLIT IS FIXED — a base run and a
+  # ticket-delivery run alike — so it is checked as a shape rather than read as
   # a plan: design, then the audit depending on it, then the split depending on
   # both, and nothing after. The split publishes to a tracker and cannot be
   # undone, so a graph that let anything else run first — or after — is refused
   # here, while a person can still fix it. The one `베이스 발행` row is the only
   # carrier of "publish, and where"; its target is checked against the tracker
-  # it names. A `single` run carries neither a split step nor that row, so
-  # neither can come into force by accident. A plan frozen before the field
-  # existed has no key and is `single`.
-  local scope bp_rows bp_n bp_trk bp_tgt bp_org_seg bp_org bp_ok
-  scope=$(manifest_design_scope)
+  # it names. Any other run carries neither a split step nor that row, so
+  # neither can come into force by accident. A plan frozen before the fields
+  # existed has no keys and reads `single` and `slices`.
+  local bp_rows bp_n bp_trk bp_tgt bp_org_seg bp_org bp_ok sr_word
   bp_rows=$(manifest_base_publish_rows)
   bp_n=$(printf '%s' "$bp_rows" | grep -c . || true)
-  if [ "$scope" = "base" ]; then
+  if [ "$(manifest_design_delivery)" = "tickets" ] && [ "$(manifest_design_scope)" = "base" ]; then
+    die "design_delivery 가 tickets 인데 design_scope 가 base 입니다 — 티켓 배달의 범위는 single 입니다"
+  fi
+  if manifest_split_run; then
+    if [ "$(manifest_design_scope)" = "base" ]; then
+      sr_word="design_scope 가 base"
+    else
+      sr_word="design_delivery 가 tickets"
+    fi
     [ "$(manifest_plan_field '.design_required')" = "true" ] \
-      || die "design_scope 가 base 인데 design_required 가 true 가 아닙니다"
+      || die "$sr_word 인데 design_required 가 true 가 아닙니다"
     [ "$(manifest_plan_field '.design_tier')" = "team-4" ] \
-      || die "design_scope 가 base 인데 design_tier 가 team-4 가 아닙니다"
+      || die "$sr_word 인데 design_tier 가 team-4 가 아닙니다"
     manifest_plan_json | jq -e '
       [.steps[]? | if type == "object" then . else {skill: .} end] as $s
       | ($s | length) == 3
@@ -1837,8 +1858,8 @@ EOF
       and (($s[2].depends_on // []) | sort) == ([$s[0].id, $s[1].id] | sort)
       and ([$s[].id] | unique | length) == 3
     ' >/dev/null 2>&1 \
-      || die "design_scope 가 base 인 런의 단계 그래프는 design → design-audit(설계에 의존) → split(설계·감사에 의존) 세 단계뿐이어야 합니다"
-    [ "$bp_n" = "1" ] || die "design_scope 가 base 인데 「베이스 발행」 행이 ${bp_n}개입니다 — 정확히 하나여야 합니다"
+      || die "$sr_word 인 런의 단계 그래프는 design → design-audit(설계에 의존) → split(설계·감사에 의존) 세 단계뿐이어야 합니다"
+    [ "$bp_n" = "1" ] || die "$sr_word 인데 「베이스 발행」 행이 ${bp_n}개입니다 — 정확히 하나여야 합니다"
     # The optional ` | 원 티켓=<task id>` names the ClickUp ticket the base splits
     # off; it follows the target, and only on a clickup row.
     bp_trk=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)\( | 원 티켓=[^ ]*\)\{0,1\}$/\1/p')
@@ -1936,6 +1957,28 @@ EOF
   if [ "${bd_n:-0}" = "1" ]; then
     grep -qE '^- `베이스 설계` \| 문서=docs/[^ |]+\.md \| sha256=[0-9a-f]{64} \| 티켓=T[0-9]+$' <<<"$bd_rows" \
       || die "「베이스 설계」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 설계\` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>\` 입니다"
+  fi
+  # 16d — what a ticket-delivery run fixes beyond its plan fields. The upper run
+  # makes a document and tickets, so every target stops at the commit, and a
+  # `베이스 설계` row would make it a child run, which never delivers tickets of
+  # its own. Only `tickets` reaches this: a base run's rows are not touched.
+  if [ "$(manifest_design_delivery)" = "tickets" ]; then
+    [ "${bd_n:-0}" = "0" ] || die "design_delivery 가 tickets 인데 「베이스 설계」 행이 있습니다 — 하위 런은 티켓 배달을 고르지 않습니다"
+    local td_al
+    for td_al in $(target_aliases); do
+      [ "$(target_field "$td_al" '절단점')" = "커밋" ] \
+        || die "design_delivery 가 tickets 인데 대상 $td_al 의 절단점이 커밋이 아닙니다"
+    done
+  fi
+  # 16e — `출처 티켓` rows, FORM ONLY. Each names an issue or an original ticket a
+  # pull request of this run links to; a run may carry several, or none.
+  local st_rows st_row
+  st_rows=$(manifest_source_ticket_rows)
+  if [ -n "$st_rows" ]; then
+    while IFS= read -r st_row; do
+      grep -qE '^- `출처 티켓` \| 트래커=(github \| 참조=[^ |/#]+/[^ |/#]+#[0-9]+|clickup \| 참조=https?://[^ |]+)$' <<<"$st_row" \
+        || die "「출처 티켓」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`출처 티켓\` | 트래커=github | 참조=<owner>/<name>#<N>\` 또는 \`- \`출처 티켓\` | 트래커=clickup | 참조=<URL>\` 입니다: $st_row"
+    done <<<"$st_rows"
   fi
   # 17 — `세그먼트 입양` rows, FORM ONLY. A row hands this run a segment an
   # earlier run cut: its branch, its worktree and its pull request. Whether that
@@ -2123,12 +2166,14 @@ EOF
   # 21 — the entry judgment's structure, for a plan that carries one. The
   # checker beside the entry prompt asserts it: a reason for every `team-4`
   # judgment and none for `solo`, a confirmed tier never below the judged one,
-  # and a `solo` graph with one design step and no audit or split, and (d) a
-  # `design_path` key, when present, inside its enum and matching the plan. A
-  # plan frozen before `design_tier_judged` existed has no key and is not
-  # asserted at all. The checker file is required once the key is there: a gate
-  # copy without it cannot say whether the judgment holds, and refuses.
-  if manifest_plan_json | jq -e 'type == "object" and has("design_tier_judged")' >/dev/null 2>&1; then
+  # and a `solo` graph with one design step and no audit or split, (d) a
+  # `design_path` key, when present, inside its enum and matching the plan, and
+  # (h) a `design_delivery` key, when present, inside its enum and with the
+  # fields of a ticket-delivery plan. A plan frozen before `design_tier_judged`
+  # and `design_delivery` existed has neither key and is not asserted at all.
+  # The checker file is required once a key is there: a gate copy without it
+  # cannot say whether the judgment holds, and refuses.
+  if manifest_plan_json | jq -e 'type == "object" and (has("design_tier_judged") or has("design_delivery"))' >/dev/null 2>&1; then
     local ep_why
     ep_why=$(manifest_plan_json | jq -f "$ORCH_DIR/prompts/entry-plan.check.jq" 2>&1 >/dev/null) \
       || die "진입 판정이 검사기를 통과하지 못했습니다 — $(printf '%s' "${ep_why:-검사기를 돌리지 못했습니다}" | tr '\n' ' ')"
@@ -2153,6 +2198,25 @@ manifest_design_scope() {
     base) printf 'base' ;;
     *) printf 'single' ;;
   esac
+}
+
+manifest_design_delivery() {
+  # `tickets` or `slices`. An absent key and an unparsable plan block read
+  # `slices` — the shape every run had before the field. A value outside the two
+  # reads `slices` too, and `entry-plan.check.jq` refuses it in `check_manifest`
+  # first.
+  case "$(manifest_plan_field '.design_delivery')" in
+    tickets) printf 'tickets' ;;
+    *) printf 'slices' ;;
+  esac
+}
+
+manifest_split_run() {
+  # True when this run's graph ends at the split: a base run or a ticket-delivery
+  # run. Each ticket is designed and implemented by a later run, so such a run
+  # plans no segment. The values that split further — the audit's `--base` and
+  # the design skill — stay on `manifest_design_scope`.
+  [ "$(manifest_design_scope)" = "base" ] || [ "$(manifest_design_delivery)" = "tickets" ]
 }
 
 manifest_design_tier() {
@@ -14022,11 +14086,11 @@ main_loop_body() {
       "기준=이 런의 매니페스트가 설계 문서를 선언하지 않는다" \
       "되돌리는 법=매니페스트에 설계 문서를 적고 런을 다시 킥오프한다" \
       "근거=앵커 종류 $ANCHOR_KIND · 앵커 키 $ANCHOR_KEY"
-  elif [ "$(manifest_design_scope)" = "base" ] \
+  elif manifest_split_run \
        && [ "$(s2_last_audit_field '종단 부류')" = "정상 완료" ]; then
-    # A BASE RUN SKIPS ONLY AN AUDIT IT RAN ITSELF. A reader report on disk
-    # names the slug, not the bytes it read, and a base run publishes tickets
-    # after this — so a report left by an earlier run over an earlier revision
+    # A RUN ENDING AT THE SPLIT SKIPS ONLY AN AUDIT IT RAN ITSELF. A reader report
+    # on disk names the slug, not the bytes it read, and such a run publishes
+    # tickets after this — so a report left by an earlier run over an earlier revision
     # would send a document nobody audited to the tracker. The run's own
     # finished audit row is the evidence instead, and the split checks it again.
     #
@@ -14038,7 +14102,7 @@ main_loop_body() {
       골격급) s2_next=reconverge ;;
       *)      s2_next=audit ;;
     esac
-  elif [ "$(manifest_design_scope)" != "base" ] && [ -n "$DOC_SLUG" ] \
+  elif ! manifest_split_run && [ -n "$DOC_SLUG" ] \
        && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
     # A READER REPORT SKIPS THE AUDIT ONLY WHEN NOTHING SAYS IT OWES MORE. With
     # an audit row in this run, the rows decide as on the base path; without
@@ -14070,11 +14134,11 @@ main_loop_body() {
     s2_audit_run "$audit_cmd2" "$s2_next" || return 0
   fi
 
-  # A BASE RUN ENDS AT THE SPLIT. Its graph has no segment: each ticket is
-  # designed and implemented by a later run, so after the audit — run here or
-  # skipped because a reader report already exists — the split runs and the
-  # driver returns before the segment plan on every path.
-  if [ "$(manifest_design_scope)" = "base" ]; then
+  # A BASE OR TICKET-DELIVERY RUN ENDS AT THE SPLIT. Its graph has no segment:
+  # each ticket is designed and implemented by a later run, so after the audit —
+  # run here or skipped because a reader report already exists — the split runs
+  # and the driver returns before the segment plan on every path.
+  if manifest_split_run; then
     split_arm || true
     return 0
   fi

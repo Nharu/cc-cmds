@@ -154,7 +154,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `자동 채택` | 판단 부류=<열세 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
 - `사전 인가` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>     ← 설계 요구사항 인터뷰가 있었을 때만
 - `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>     ← 팀 티어 설계 스테이지가 있을 때만, 한 팀원 한 행
-- `베이스 발행` | 트래커=github | 대상=<owner>/<name>     ← design_scope 가 base 일 때만, 정확히 한 행. 대상은 선언된 대상의 원격 슬러그
+- `베이스 발행` | 트래커=github | 대상=<owner>/<name>     ← 분할로 끝나는 런(design_scope 가 base 이거나 design_delivery 가 tickets)일 때만, 정확히 한 행. 대상은 선언된 대상의 원격 슬러그
 - `베이스 발행` | 트래커=clickup | 대상=<목록 id>[ | 원 티켓=<task id>]     ← 원 티켓 은 clickup 행에만 두는 선택 필드 — 이 베이스가 떼어 내는 기존 티켓
 - `베이스 발행` | 트래커=없음 | 대상=-
 - `사전 인가` | 형태=gh issue create | 사유=<…>     ← 트래커=github 일 때
@@ -162,6 +162,8 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `사전 인가` | 형태=clickup-create.py | 사유=<…>   ← 트래커=clickup 일 때
 - `사전 인가` | 형태=clickup-relate.py | 사유=<…>   ← 트래커=clickup 일 때
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
+- `출처 티켓` | 트래커=github | 참조=<owner>/<name>#<N>     ← 이 런의 PR 이 이어야 할 이슈마다 한 행, 여러 행 가능
+- `출처 티켓` | 트래커=clickup | 참조=<URL>     ← 이 런의 PR 이 이어야 할 ClickUp 티켓마다 한 행, 여러 행 가능
 - `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트나 런 밖에서 사람이 만든 브랜치·PR 을 이어받을 때만(런 밖이면 `출처 런=-`), 세그먼트당 많아야 한 행. 재킥오프가 쓰는 행은 사람이 읽어 준 값이 아니라 rekick.sh 가 다시 유도한 값
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 - `플러그인 허용` | 플러그인=<이름@마켓> | 사유=<한 줄>     ← 킥오프 5t 에서 사람이 고르거나 5o 에서 확정한 플러그인마다 한 행(5o 확정 행의 사유는 `킥오프 기본값`), 키마다 많아야 한 행
@@ -197,22 +199,26 @@ What IS frozen, and what `구속 다이제스트` covers: the goal, the terminat
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
 irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, **the
-`베이스 발행` and `베이스 설계` rows**, **the `세그먼트 입양` rows**, **the `선행
+`베이스 발행` and `베이스 설계` rows**, **the `출처 티켓` rows**, **the `세그먼트 입양` rows**, **the `선행
 착지` rows**, **the `플러그인 허용` rows**, **the `적용 프로브 코드` row when written**, **the `라벨 인정` rows**, **the
 `리뷰 PR`, `리뷰 게시`, `리뷰 깊이` and `리뷰 문면` rows** (a manifest without them
 serializes none, so its digest does not move), the cost ceiling and
 the stagnation bound when declared, and the deadline. The gate compares that
 digest at entry.
 
-**The `베이스 발행` row is a base run's publication decision**, taken at kickoff
+**The `베이스 발행` row is the publication decision of a run that ends at the split**, taken at kickoff
 and the only input the split stage publishes from: exactly one row when the
-plan's `design_scope` is `base`, none otherwise. Its `사전 인가` form rows are a
+plan's `design_scope` is `base` or its `design_delivery` is `tickets`, none otherwise. Its `사전 인가` form rows are a
 supplement that lets each tracker write proceed without an approval; they decide
 nothing about where the tickets go. **The `베이스 설계` row binds a child run to
 the base ticket it designs**, at most one row. The manifest check reads its form
 and count and never the file's bytes — it runs on every gate entry and dies on a
 failure, so comparing there would kill every gate call of a child run the moment
 the base is revised; the design stage re-hashes the file before it spawns anyone.
+**The `출처 티켓` rows name what this run's pull requests link to**: `gate.sh pr-links`
+prints a segment's lines from them, and on a manifest with such a row the gate
+refuses (exit 3) a `gh pr create` whose body it cannot read or that lacks one of
+those lines.
 
 **The `세그먼트 입양` row hands this run a segment an earlier run cut and did not
 land** — its branch, its worktree, the run it came from and its pull request. A
@@ -587,7 +593,7 @@ match act reads it to decide `수리 통과` (§3.2).
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양`, `선행 착지`, `플러그인 허용`, `적용 프로브 코드`, `라벨 인정`, `수리 사건`, `리뷰 PR`, `리뷰 게시`, `리뷰 깊이`, `리뷰 문면` and `재킥오프` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `출처 티켓`, `세그먼트 입양`, `선행 착지`, `플러그인 허용`, `적용 프로브 코드`, `라벨 인정`, `수리 사건`, `리뷰 PR`, `리뷰 게시`, `리뷰 깊이`, `리뷰 문면` and `재킥오프` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -702,10 +708,16 @@ never compared.
     `github` target equal to a declared target's `원격 슬러그`, a non-empty
     `clickup` target, a `-` target for `없음`, and an optional trailing
     ` | 원 티켓=<task id>` only on a `clickup` row, with an id of letters,
-    digits, `_` and `-`. `single` forbids a `split` step and
-    any `베이스 발행` row. A `베이스 설계` row may appear at most once and must
-    match its form; its `sha256` is not compared against the file here. Each
-    violation is a **hard stop**.
+    digits, `_` and `-`. A plan's `design_delivery` of `tickets` makes a run that
+    ends at the split too: the same graph and `베이스 발행` row, with
+    `design_scope` `single`, `design_path` `solo-audit` or `discuss-audit`,
+    `run_profile` `standard`, every target's cutpoint `커밋` and no `베이스 설계`
+    row; `tickets` with `design_scope` `base` is refused. A run that does not end
+    at the split forbids a `split` step and any `베이스 발행` row. A `베이스 설계`
+    row may appear at most once and must match its form; its `sha256` is not
+    compared against the file here. Each `출처 티켓` row reads
+    `트래커=github | 참조=<owner>/<name>#<N>` or `트래커=clickup | 참조=<URL>`.
+    Each violation is a **hard stop**.
 17. **`세그먼트 입양` rows, form only.** Each row matches its form, its
     `워크트리` is absolute, carries the reserved infix `-run-` the teardown guard
     requires and no double quote, backslash or control byte, its `출처 런` is a
