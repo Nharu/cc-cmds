@@ -479,6 +479,7 @@ manifest_snapshot_take() {
   #   VD <row>     every `- \`리뷰 깊이\`` row anywhere, in order
   #   VF <row>     every `- \`리뷰 문면\`` row anywhere, in order
   #   ST <row>     every `- \`출처 티켓\`` row anywhere, in order
+  #   SA <row>     every `- \`강제 표면 승인\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -521,6 +522,7 @@ $(LC_ALL=C awk '
     index($0, "- `리뷰 깊이`") == 1 { print "VD\t" $0 }
     index($0, "- `리뷰 문면`") == 1 { print "VF\t" $0 }
     index($0, "- `출처 티켓`") == 1 { print "ST\t" $0 }
+    index($0, "- `강제 표면 승인`") == 1 { print "SA\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -760,6 +762,14 @@ manifest_source_ticket_rows() {
 manifest_adoption_rows() {
   if manifest_memo_on; then manifest_memo_all "AD	"; return 0; fi
   grep -E '^- `세그먼트 입양`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_surface_approval_rows() {
+  # The kickoff's `강제 표면 승인` rows: one enforcement-surface path of an
+  # adopted segment a person approved at kickoff, bound to the base entry and
+  # the branch entry that were shown.
+  if manifest_memo_on; then manifest_memo_all "SA	"; return 0; fi
+  grep -E '^- `강제 표면 승인`' "$MANIFEST" 2>/dev/null || true
 }
 
 manifest_review_pr_rows() {
