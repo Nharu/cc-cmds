@@ -484,6 +484,57 @@ fleet_run_marker_live() {
   return 1
 }
 
+failover_clock_note() {
+  # Called once per pass. Keeps `watch.failover-clock`: this pass's epoch, the
+  # current account-failover wait's resume time (`-` with none), and the seconds
+  # of clock jump this watcher saw after that resume time.
+  #
+  # A JUMP IS THE GAP BETWEEN TWO PASSES PAST THREE INTERVALS: the host slept,
+  # or something held this process. The slack `failover_waiting` gives covers a
+  # host that stays awake and a tick that runs on time; a sleep over the whole
+  # slack would otherwise have the first pass after it read a run the next tick
+  # will resume as silent, and write a `blocked` row a resolving row has to take
+  # back, a shift's or a person's. No
+  # ordering holds between that pass and the tick, so the part of the jump past
+  # the resume time is taken off the clock the slack is measured on: the tick
+  # gets its own awake slack, and with no jump nothing is taken off. A new
+  # resume time starts from zero.
+  local f="$RUN_DIR/watch.failover-clock" now at last prev_at held iv from
+  now=$(now_epoch)
+  at=$(cc_failover_wait_resume "$LEDGER" 2>/dev/null || true)
+  last=$(sed -n '1p' "$f" 2>/dev/null || true)
+  prev_at=$(sed -n '2p' "$f" 2>/dev/null || true)
+  held=$(sed -n '3p' "$f" 2>/dev/null || true)
+  case "$last" in ''|*[!0-9]*) last=$now ;; esac
+  case "$held" in ''|*[!0-9]*) held=0 ;; esac
+  [ "$prev_at" = "${at:--}" ] || held=0
+  if [ -n "$at" ]; then
+    iv=${INTERVAL%.*}
+    case "$iv" in ''|*[!0-9]*) iv=1 ;; esac
+    if [ $((now - last)) -gt $((iv * 3)) ]; then
+      from=$last
+      [ "$from" -ge "$at" ] || from=$at
+      [ "$now" -le "$from" ] || held=$((held + now - from))
+    fi
+  fi
+  printf '%s\n%s\n%s\n' "$now" "${at:--}" "$held" > "$f.tmp.$$" 2>/dev/null \
+    && mv -f "$f.tmp.$$" "$f" 2>/dev/null || rm -f "$f.tmp.$$" 2>/dev/null
+  return 0
+}
+
+failover_waiting() {
+  # The run is inside an account-failover wait: the latest `계정 이전` row
+  # after the latest `handoff` is `결과=대기` and its `재개 시각`, plus the
+  # slack in which the relay or the fleet tick makes the next call
+  # (`CC_FAILOVER_WATCH_SLACK_SECONDS`), has not come. Read by the shared
+  # helper the gate and the fleet tick use, on this watcher's clock less the
+  # jump `failover_clock_note` kept, which is none on a host that stayed awake.
+  local held
+  held=$(sed -n '3p' "$RUN_DIR/watch.failover-clock" 2>/dev/null || true)
+  case "$held" in ''|*[!0-9]*) held=0 ;; esac
+  cc_failover_waiting_now "$LEDGER" "$(( $(now_epoch) - held ))" "$CC_FAILOVER_WATCH_SLACK_SECONDS"
+}
+
 stall_threshold() {
   # The threshold T of the general and settle-stall arms. `STALL` while a seat
   # turn is open or a halt record waits for a person's answer — neither is a
@@ -495,9 +546,17 @@ stall_threshold() {
   # router, no shift and no handoff row, and its driver polls CI inline outside
   # the gate for up to an hour — no gate entry, no ledger row, no stage — so
   # `SILENCE` would call a healthy merge wait a stall and leave a run-scope
-  # `blocked` row only a person can resolve.
+  # `blocked` row that stays until a resolving row takes it back, which that run
+  # has no shift to write.
+  #
+  # `STALL` too while the run waits for an account-failover resume time
+  # (`failover_waiting`): the gate wrote that wait and launches nothing until
+  # then, so the quiet is the wait itself. The silence and after-stage arms
+  # also read the same judgment as a conjunct and write no record before that
+  # time; past it they judge as before.
   local h
   if seat_turn_open; then printf '%s' "$STALL"; return 0; fi
+  if failover_waiting; then printf '%s' "$STALL"; return 0; fi
   h=$(cc_unanswered_halts "$RUN_DIR" "$LEDGER" 2>/dev/null || printf 0)
   if [ "${h:-0}" -ge 1 ] 2>/dev/null; then printf '%s' "$STALL"; return 0; fi
   if fleet_run_marker_live; then printf '%s' "$STALL"; return 0; fi
@@ -731,6 +790,7 @@ pass() {
   local age live live_w pend nonterm run_age gate_idle size grew silent id newly stale
   local cause reason slug mk thr quiet relay_eff
   beat
+  failover_clock_note
   # THE GATE'S IDLE TIME SITS BESIDE `age` because two arms read it: the
   # run-open arm, and the quiet base of the general and settle-stall arms.
   gate_idle=$(gate_idle_seconds)
@@ -822,7 +882,7 @@ pass() {
   # stranding, and it is read as an EXPIRY rather than as a flag; see
   # `shift_active`.
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
-     && [ "$nonterm" -ge 1 ] && ! shift_active \
+     && [ "$nonterm" -ge 1 ] && ! shift_active && ! failover_waiting \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
              | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
@@ -1014,7 +1074,7 @@ pass() {
   silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ -n "$quiet" ] && [ "$quiet" -ge "$thr" ] \
-     && [ "$relay_eff" = "0" ] \
+     && [ "$relay_eff" = "0" ] && ! failover_waiting \
      && { [ "$nonterm" -ge 1 ] \
           || { [ "$(cc_segment_count "$LEDGER")" = "0" ] \
                && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; }; } \
