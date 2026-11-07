@@ -25564,7 +25564,7 @@ push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남�
 종료 절 근거|없음|그 절이 요구하는 실행과 그 결과는 이 런의 읽기로 만들 수 없고, 실행할지는 사람이 정한다|-
 master 수리 불가|없음|수리 런을 띄울 수 없게 한 원인(끄는 스위치·렌더·적재)을 고칠지, 사람이 직접 고칠지는 사람만 정한다|사람이 원인을 고치거나 고침을 master 에 넣은 뒤, 다음 교대가 이 세그먼트의 CI 를 다시 대조한다
 게시 대조|없음|게시물이 렌더 결과와 바이트로 다르다 — 남의 PR 에 이미 올라간 리뷰를 그대로 둘지 손으로 고칠지는 그 리뷰를 본 사람만 정한다|다음 교대가 게시하지 않고 그 리뷰를 다시 읽어 렌더 결과와 다시 대조한다
-리뷰 게시 거절|없음|GitHub 가 게시를 거절했거나 실행 계정이 동결한 계정과 다르다 — 원인이 권한·계정·PR 상태 중 어디에 있는지는 원격을 본 사람만 안다|사람이 원인을 고친 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
+리뷰 게시 거절|없음|전용 쓰기 자격이 없고 이 호스트의 gh 로그인도 읽히지 않았거나, 실행 계정이 동결한 계정과 다르거나, GitHub 가 게시를 4xx 로 거절했거나, 게시의 결과를 모른다 — 그중 어느 것인지는 관측에 실린 게이트 거절 줄이 말한다|사람이 원인을 고친 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
 보류 리뷰 선점|없음|이 계정의 보류 리뷰가 이미 있다 — 그 보류 리뷰를 제출할지 지울지는 그것을 쓴 사람만 정한다|사람이 그 보류 리뷰를 제출하거나 지운 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
 EOF
 }
@@ -44297,10 +44297,14 @@ gate_label_ack_gh_write() {
   # WRITE-scoped credential the merge uses, exported inside a subshell only and
   # with the repository named on the command line alone. Never the read-scoped
   # runner: every stage holds that credential, and a label it could POST would
-  # put a second way to label around this act.
+  # put a second way to label around this act. The review post is the one
+  # caller that may pass an empty credential string: with no write credential
+  # it posts under this host's own `gh` login, so the subshell then also drops
+  # GH_TOKEN and GITHUB_TOKEN and leaves GH_CONFIG_DIR, where that login lives.
   local creds="$1" line; shift
   (
     unset GH_REPO GH_HOST GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+    [ -n "$creds" ] || unset GH_TOKEN GITHUB_TOKEN
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       export "$line"
@@ -44760,7 +44764,7 @@ gate_review_post_preconditions() {
   # post act. On success sets the GATE_RVP_* values the check and the
   # performer read, and GATE_RVP_PRE.
   local al="$1" seg="$2" row pr ral crow rh rep shape sh p0 p1 fmt slug cid crowc br
-  GATE_RVP_MODE=""; GATE_RVP_STANCE=""; GATE_RVP_ACCOUNT=""; GATE_RVP_EVENT=""
+  GATE_RVP_MODE=""; GATE_RVP_STANCE=""; GATE_RVP_ACCOUNT=""; GATE_RVP_EVENT=""; GATE_RVP_CREDSRC=""
   if [ -z "$GATE_REVIEW_CLAUSE" ]; then
     if ! gate_segment_review_only "$seg"; then
       warn "세그먼트 ${seg} 는 리뷰 전용 세그먼트가 아닙니다 — 종료 절 정산 게시는 --clause <절 id> 로 냅니다"
@@ -44887,18 +44891,29 @@ gate_check_review_post() {
   # GATE_RVP_VERDICT to `post` or `verify:<review id>`; refuses with exit 3,
   # naming the halt site, when the login is not the frozen account or another
   # pending review of the account is in the way, and when this post already
-  # matched.
+  # matched. With no write credential it posts under this host's `gh` login
+  # (GATE_RVP_CREDSRC=주변) and still compares that login with the frozen
+  # account.
   [ "$1" = "review-post" ] || return 0
   [ "${GATE_RVP_PRE:-}" = "1" ] || { warn "the post act reached its check without its preconditions"; exit "$GATE_EXIT_RULE"; }
-  local seg="$segment" creds login cur revs last tries lastc rid mine
-  creds=$(cred_gate_env) || { warn "게이트 쓰기 자격을 읽지 못했습니다 — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"; exit "$GATE_EXIT_RULE"; }
+  local seg="$segment" creds login cur revs last tries lastc rid mine credsrc
+  if creds=$(cred_gate_env 2>/dev/null); then
+    credsrc='전용'
+  else
+    creds=''; credsrc='주변'
+    warn "전용 쓰기 자격이 없어 이 게시는 이 호스트의 gh 로그인으로 냅니다 — 게시 계정 일치 확인은 그대로 합니다"
+  fi
   login=$(gate_label_ack_gh_write "$creds" api user --jq '.login' 2>/dev/null || true)
   if [ -z "$login" ]; then
-    warn "실행 계정 login 을 읽지 못했습니다 — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
+    if [ "$credsrc" = "주변" ]; then
+      warn "전용 쓰기 자격이 없고 이 호스트의 gh 로그인도 읽지 못했습니다(로그인되지 않았거나 만료) — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
+    else
+      warn "실행 계정 login 을 읽지 못했습니다 — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
+    fi
     exit "$GATE_EXIT_RULE"
   fi
   if [ -n "$GATE_RVP_ACCOUNT" ] && [ "$login" != "$GATE_RVP_ACCOUNT" ]; then
-    warn "실행 계정 ${login} 이 매니페스트 「리뷰 게시」 행이 동결한 계정 ${GATE_RVP_ACCOUNT} 와 다릅니다 — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
+    warn "실행 계정 ${login} 이 매니페스트 「리뷰 게시」 행이 동결한 계정 ${GATE_RVP_ACCOUNT} 와 다릅니다 (자격 출처=${credsrc}) — 게시하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
     exit "$GATE_EXIT_RULE"
   fi
   cur=$(gate_label_ack_gh_write "$creds" api "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR" --jq '.head.sha' 2>/dev/null || true)
@@ -44911,7 +44926,7 @@ gate_check_review_post() {
     warn "PR ${GATE_RVP_PR} 의 리뷰 목록을 읽지 못했습니다 — 게시하지 않습니다"
     exit "$GATE_EXIT_RULE"
   fi
-  GATE_RVP_LOGIN="$login"; GATE_RVP_CUR="$cur"; GATE_RVP_CREDS="$creds"
+  GATE_RVP_LOGIN="$login"; GATE_RVP_CUR="$cur"; GATE_RVP_CREDS="$creds"; GATE_RVP_CREDSRC="$credsrc"
   last=$(gate_review_post_rows '리뷰 게시' "$seg" | tail -1)
   local landed=""
   case "$(gate_row_field "$last" '대조')" in
@@ -44969,6 +44984,7 @@ gate_perform_review_post() {
     *) warn "the post act reached its performer without a verdict — nothing was posted"; return "$GATE_EXIT_RULE" ;;
   esac
   local dir tag req sum kind="" hc rsha raw code body rid rev com verdict creds="$GATE_RVP_CREDS" rc=0
+  local credsrc="${GATE_RVP_CREDSRC:--}" trow
   dir="$RUN_DIR/review-post"
   mkdir -p "$dir" || return "$GATE_EXIT_RULE"
   tag="$seg${GATE_REVIEW_CLAUSE:+-$GATE_REVIEW_CLAUSE}"
@@ -44990,7 +45006,8 @@ gate_perform_review_post() {
     fi
     kind=$(printf '%s' "$sum" | sed -n 's/^종류=\([^ ]*\).*$/\1/p')
     rsha=$(shasum -a 256 "$req" | cut -d' ' -f1)
-    gate_append '리뷰 게시 시도' "세그먼트=$seg" "PR=$GATE_RVP_PR" "렌더 sha256=$rsha" "절=${GATE_REVIEW_CLAUSE:--}" || return $?
+    gate_append '리뷰 게시 시도' "세그먼트=$seg" "PR=$GATE_RVP_PR" "렌더 sha256=$rsha" "절=${GATE_REVIEW_CLAUSE:--}" \
+      "게시 자격=$credsrc" || return $?
     raw=$(gate_label_ack_gh_write "$creds" api -X POST -i "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews" --input "$req" 2>/dev/null || true)
     code=$(printf '%s\n' "$raw" | awk 'NR == 1 && /^HTTP\// { print $2; exit }')
     [ -n "$code" ] || code=000
@@ -45004,7 +45021,8 @@ gate_perform_review_post() {
       2??) ;;
       4??)
         gate_append '리뷰 게시' "세그먼트=$seg" "PR=$GATE_RVP_PR" "리뷰 id=-" "방식=$GATE_RVP_MODE" "종류=${kind:--}" \
-          "헤드 변경=$hc" "대조=게시 실패" "응답=$(gate_row_safe "$code" 40)" "렌더 sha256=$rsha" "절=${GATE_REVIEW_CLAUSE:--}" || return $?
+          "헤드 변경=$hc" "대조=게시 실패" "응답=$(gate_row_safe "$code" 40)" "렌더 sha256=$rsha" "절=${GATE_REVIEW_CLAUSE:--}" \
+          "게시 자격=$credsrc" || return $?
         warn "GitHub 가 리뷰 게시를 거절했습니다 (응답=$code) — 다시 시도하지 않습니다 (정지 자리 「리뷰 게시 거절」)"
         return "$GATE_EXIT_RULE" ;;
       *)
@@ -45013,8 +45031,12 @@ gate_perform_review_post() {
     esac
   else
     rid=${GATE_RVP_VERDICT#verify:}
-    rsha=$(gate_review_post_rows '리뷰 게시 시도' "$seg" | tail -1)
-    rsha=$(gate_row_field "$rsha" '렌더 sha256')
+    # No POST in this call: `게시 자격` carries the credential of the POST that
+    # put the review there, read off its attempt row, not this call's own.
+    trow=$(gate_review_post_rows '리뷰 게시 시도' "$seg" | tail -1)
+    rsha=$(gate_row_field "$trow" '렌더 sha256')
+    credsrc=$(gate_row_field "$trow" '게시 자격')
+    [ -n "$credsrc" ] || credsrc='-'
     if [ ! -f "$req" ] || [ "$(shasum -a 256 "$req" | cut -d' ' -f1)" != "$rsha" ]; then
       req=""
     fi
@@ -45036,7 +45058,8 @@ gate_perform_review_post() {
   esac
   case "$verdict" in 일치|불일치|판독불가) ;; *) verdict='판독불가' ;; esac
   gate_append '리뷰 게시' "세그먼트=$seg" "PR=$GATE_RVP_PR" "리뷰 id=${rid:--}" "방식=$GATE_RVP_MODE" "종류=${kind:--}" \
-    "헤드 변경=$hc" "대조=$verdict" "렌더 sha256=${rsha:--}" "절=${GATE_REVIEW_CLAUSE:--}" || return $?
+    "헤드 변경=$hc" "대조=$verdict" "렌더 sha256=${rsha:--}" "절=${GATE_REVIEW_CLAUSE:--}" \
+    "게시 자격=$credsrc" || return $?
   if [ "$verdict" != "일치" ]; then
     warn "게시한 리뷰 ${rid:-(id 없음)} 가 렌더 결과와 바이트로 같지 않습니다 (대조=$verdict) — 고치거나 지우지 않습니다 (정지 자리 「게시 대조」)"
     return "$GATE_EXIT_RULE"

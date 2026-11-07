@@ -63085,8 +63085,10 @@ cat > "$RV106_STUB" <<'RV106EOF'
 # 리뷰 게시 행위의 GitHub 대역. 답은 `$RV106_S` 의 파일이 고른다:
 #   login · head · reviews · rid · tamper(있으면 재판독 본문 끝에 x 를 더한다)
 #   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 422 는 4xx, 500 은 5xx, noid 는 id 없는 200)
+# 받은 환경에 GH_TOKEN·GITHUB_TOKEN 이 있었는지를 호출마다 env.log 에 한 줄로 남긴다.
 D=${RV106_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
+printf 'GH_TOKEN=%s GITHUB_TOKEN=%s\n' "${GH_TOKEN+있음}" "${GITHUB_TOKEN+있음}" >> "$D/env.log"
 if [ "$*" = "api user --jq .login" ]; then cat "$D/login"; exit 0; fi
 [ "${1:-}" = api ] || exit 1
 if [ "$2 $3" = "-X POST" ]; then
@@ -63298,6 +63300,8 @@ rv106_pr=$(rv106_last '리뷰 게시')
 check "108: 게시가 POST 한 번과 대조 일치 행을 남긴다" \
   "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시 시도')|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 종류)|$(sa_field "$rv106_pr" 대조)|$(sa_field "$rv106_pr" '헤드 변경')" \
   "0|1|1|555|APPROVE|일치|아니오"
+check "108: 전용 쓰기 자격의 게시는 두 행에 게시 자격=전용 을 남긴다" \
+  "$(sa_field "$(rv106_last '리뷰 게시 시도')" '게시 자격')|$(sa_field "$rv106_pr" '게시 자격')" "전용|전용"
 check "108: POST 본문은 고정 헤드에 APPROVE 로 인라인 코멘트 없이 나간다" \
   "$(jq -c '[.commit_id, .event, ((.comments // []) | length)]' "$RV106_S/posted.json" 2>/dev/null)" \
   "[\"$rv106_h7\",\"APPROVE\",0]"
@@ -63497,6 +63501,60 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cu
 check "108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다" \
   "$rv106_got|$rc|$(sa_field "$(sa_seg_last P3)" 상태)" "3|0|park"
 
+# 전용 쓰기 자격 없음 — 이 호스트의 gh 로그인으로 게시하고, 계정 일치 확인은 그대로 건다 -----------
+#
+# 이 구간의 게시만 `bash "$GATE"` 로 띄운다. `credentials.sh` 는 CC_GATE_KEYCHAIN 을 소싱할 때 한 번
+# 읽으므로, 그 값을 바꾼 호출은 gate_inproc 이 97 로 거절한다. 쓰기 자격 비움과 없는 키체인 서비스
+# 이름은 그 호출의 환경에만 둬서, 구간이 끝나면 따로 되돌릴 것이 없다.
+rv106_post_amb() {
+  # rv106_post_amb <세그먼트> [VAR=값 ...] — 전용 쓰기 자격 없이 내는 게시. 뒤 인자는 그 호출의 환경에 더한다.
+  local seg="$1" out h; shift
+  h=$(SAH)
+  out=$(cd "$SA_WT" && env CC_GATE_TOKEN_RW= CC_GATE_KEYCHAIN=cc-cmds-rv106-absent "$@" \
+      bash "$GATE" act --manifest "$SA_MANIFEST" --kind review-post --target main --segment "$seg" --cutpoint 커밋 \
+        --surface 외부상태변경 --snapshot-digest "$h" --rationale x -- 게시 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+rv106_new "주변 자격 게시" 직접 허용
+rv106_fetch P1 7; rv106_fetch P2 8
+rv106_plan P1; rv106_plan P2
+rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv106_cycle P1 "$rv106_h7"; rv106_cycle P2 "$rv106_h8"
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '561\n' > "$RV106_S/rid"
+: > "$RV106_S/login"
+rv106_post_amb P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|0|0|"*"전용 쓰기 자격이 없고 이 호스트의 gh 로그인도 읽지 못했습니다"*"리뷰 게시 거절"*)
+    ok "108: 쓰기 자격도 gh 로그인도 없는 게시는 둘 다 없다고 말하며 POST 없이 rc 3 이다" ;;
+  *) bad "108: 쓰기 자격도 gh 로그인도 없는 게시는 둘 다 없다고 말하며 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
+esac
+printf 'someone-else\n' > "$RV106_S/login"
+rv106_post_amb P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|0|0|"*"자격 출처=주변"*"리뷰 게시 거절"*) ok "108: 주변 자격의 계정 불일치 게시는 자격 출처를 말하며 POST 없이 rc 3 이다" ;;
+  *) bad "108: 주변 자격의 계정 불일치 게시는 자격 출처를 말하며 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
+esac
+printf 'rv-bot\n' > "$RV106_S/login"; : > "$RV106_S/env.log"
+rv106_post_amb P1 GH_TOKEN=rv106-ambient-leak GITHUB_TOKEN=rv106-ambient-leak
+rv106_pr=$(rv106_last '리뷰 게시')
+case "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)|$(sa_field "$(rv106_last '리뷰 게시 시도')" '게시 자격')|$(sa_field "$rv106_pr" '게시 자격')|$msg" in
+  "0|1|561|일치|주변|주변|"*"이 호스트의 gh 로그인으로 냅니다"*) ok "108: 쓰기 자격 없는 게시는 gh 로그인으로 나가 두 행에 게시 자격=주변 을 남긴다" ;;
+  *) bad "108: 쓰기 자격 없는 게시는 gh 로그인으로 나가 두 행에 게시 자격=주변 을 남긴다" "rc=$rc posts=$(rv106_posts) $rv106_pr $msg" ;;
+esac
+check "108: 주변 자격의 게시에서 gh 대역이 받은 환경에는 GH_TOKEN·GITHUB_TOKEN 이 없다" \
+  "$([ -s "$RV106_S/env.log" ] && echo 기록)|$({ grep -c '있음' "$RV106_S/env.log" || true; })" "기록|0"
+printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '562\n' > "$RV106_S/rid"; printf '500\n' > "$RV106_S/status"
+rv106_post_amb P2
+rv106_got="$rc|$(rv106_posts)|$(sa_field "$(rv106_last '리뷰 게시 시도')" '게시 자격')"
+rm -f "$RV106_S/status"
+printf '[{"id":562,"user":{"login":"rv-bot"},"state":"APPROVED","commit_id":"%s"}]\n' "$rv106_h8" > "$RV106_S/reviews"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: 재판독 갈래의 게시 행은 시도 행의 게시 자격을 이어 적는다" \
+  "$rv106_got|$rc|$(rv106_posts)|$(sa_field "$rv106_pr" 세그먼트)|$(sa_field "$rv106_pr" 대조)|$(sa_field "$rv106_pr" '게시 자격')" \
+  "3|2|주변|0|2|P2|일치|주변"
+
 # 리뷰어 런 밖 — 드라이버가 머지 행에 싣는 베이스 sha 는 호출자 값으로 받는다 ---------------------
 sa_new "드라이버 머지 행의 베이스 sha"
 sa_seg_row S106B ""
@@ -63649,7 +63707,7 @@ unset -f rv108_pick rv108_call rv108_ur rv108_cs
 unset rv108_prev_ar rv108_tpl rv108_fetch_t rv108_add_t rv108_rm_t rv108_plan_t rv108_post_t rv108_ur1 rv108_ur2 \
   rv108_have rv108_x rv108_w1 rv108_w2 rv108_w3 rv108_h7 rv108_h8 rv108_got rv108_fr rv108_l1 rv108_pv rv108_ok rv108_okb
 
-unset -f gh rv106_new rv106_done rv106_wt rv106_fetch rv106_plan rv106_cycle rv106_post rv106_next rv106_posts rv106_n rv106_last rv106_ev rv106_rp rv106_bsb rd106 rd106_ev rd106_v
+unset -f gh rv106_new rv106_done rv106_wt rv106_fetch rv106_plan rv106_cycle rv106_post rv106_post_amb rv106_next rv106_posts rv106_n rv106_last rv106_ev rv106_rp rv106_bsb rd106 rd106_ev rd106_v
 unset RV106_STUB RV106_S
 if [ -n "$RV106_HAD_RW" ]; then export CC_GATE_TOKEN_RW="$RV106_PREV_RW"; else unset CC_GATE_TOKEN_RW; fi
 
